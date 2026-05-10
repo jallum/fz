@@ -6,14 +6,15 @@
   "blocks": [
     "fz-ul4.11.9"
   ],
+  "closed_at": "2026-05-10T17:03:38Z",
   "created": "2026-05-10T13:02:51Z",
   "description": "GOAL: Calls actually allocate frames. Recursion works. Tail-self-recursion stays bounded.\n\n## Decisions captured\n\n- Per Term::Call: codegen emits fz_alloc(schema_id, size) -\u003e *mut HeapHeader, fills in the frame's fields (continuation pointer, captured locals), returns the new frame_ptr.\n- Per Term::TailCall: REUSE the caller's frame — overwrite locals + return new frame_ptr (essentially the same frame_ptr if shapes match; new alloc if larger schema).\n- Generated Cranelift fns know their frame schema (from .11.6) and emit field-offset access at load/store sites.\n- Frame schema is registered in .11.2 SchemaRegistry; codegen treats it as a static constant (offset table) at lowering time.\n- Codegen MUST agree with the GC tracer on field offsets — same Schema is used by both. Mismatch = silent corruption.\n\n## Deliverables\n\n- Per-call lowering in src/ir_codegen.rs: alloc frame via runtime fn, write args + continuation, return ptr.\n- Tail-call lowering: detect Term::TailCall, reuse the caller's frame (rewrite fields, return).\n- Frame access helpers: load/store at known offsets for each local.\n- Runtime fz_alloc fn (callable from JIT) that defers to .11.2 Heap::alloc.\n\n## Tests\n\n- `fn add1(n), do: n + 1; main: print(add1(41))` -\u003e 42.\n- `fn fact(0): 1; fn fact(n): n * fact(n-1); main: print(fact(10))` -\u003e 3628800.\n- `fn count(0,acc): acc; fn count(n,acc): count(n-1, acc+1); main: print(count(100000, 0))` -\u003e 100000. CRITICAL TEST: must not allocate per-call (tail-call frame reuse) and must not stack-overflow.\n- Mutual recursion: `even / odd` for small N.\n\n## Risks\n\n- Frame schema mismatch between codegen and tracer = silent corruption. Mitigation: single source of truth in SchemaRegistry; FieldDescriptor offsets computed once.\n- Tail-call frame reuse correctness: if callee schema is LARGER than caller, must alloc new frame; if smaller-or-equal, can reuse. Static decision.\n\n## Out of scope\n\n- Tier-up integration / interp marshaling (.11.9).\n- Heap types beyond scalars (.11.10+).\n- Frame inlining (.11.15).",
   "id": "fz-ul4.11.8",
   "labels": [],
   "parent": "fz-ul4.11",
   "priority": 3,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Cranelift codegen — frame allocation via schemas",
   "type": "task",
-  "updated_at": "2026-05-10T16:46:28Z"
+  "updated_at": "2026-05-10T17:03:38Z"
 }
