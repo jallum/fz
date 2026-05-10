@@ -6,6 +6,7 @@ mod bitstr;
 mod codegen;
 mod eval;
 mod fz_value;
+mod heap;
 mod lexer;
 mod macros;
 mod parser;
