@@ -9,9 +9,15 @@
   "id": "fz-ul4.11.19",
   "labels": [],
   "parent": "fz-ul4.11",
+  "comments": [
+    {
+      "text": "Implementation notes:\n- Repr: HeapKind::Closure (dedicated kind, ticket-authorized alternative). header.schema_id = fn_id; header.flags = captured count (u16). No per-fn closure schema needed.\n- Runtime: TLS-staged builder (begin/push/finalize) for MakeClosure; TLS-staged args (arg) + invoke/tail_closure for CallClosure/TailCallClosure.\n- fz_alloc_frame_dyn looks up frame size via FRAME_SIZES TLS populated at compile() time.\n- Frame reuse in tail-call path triggers when closure.fn_id == caller_frame.schema_id.\n- ir_lower change: bare top-level fn name in expression position lowers to MakeClosure(fn_id, []) (0-captured); first defined arity wins.\n- Tests: 5 in ir_codegen (apply/no-cap, captures-local, map-higher-order, GC trace, tail-loop 100k iters) + 2 in heap (closure trace, closure unrooted-frees).\n- Legacy gated tests in src/{codegen,jit,aot}.rs not literally un-gated: those exercised the retired monomorphize-and-JIT pipeline (specialization, tier-up) whose architecture no longer exists. The HOF coverage they intended (map(double, ...)) is now in ir_codegen::map_higher_order_renders_doubled_list.",
+      "timestamp": "2026-05-10T20:00:53Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "Closures end-to-end via CPS",
   "type": "task",
-  "updated_at": "2026-05-10T19:05:14Z"
+  "updated_at": "2026-05-10T20:00:53Z"
 }
