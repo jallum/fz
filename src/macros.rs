@@ -13,6 +13,7 @@
 use crate::ast::*;
 use crate::ast_value::{expr_to_value, value_to_expr};
 use crate::eval::Interp;
+use crate::value::Value;
 
 const MAX_EXPANSION_DEPTH: usize = 200;
 
@@ -21,13 +22,138 @@ const MAX_EXPANSION_DEPTH: usize = 200;
 /// expands every non-macro fn body. Macro bodies themselves are left
 /// untouched — they're meta-code, not subject to expansion.
 pub fn expand_program(prog: &mut Program) -> Result<(), String> {
+    // Always run the item-level pass first (it doesn't need the macros set
+    // since collect_macros walks both Item::Fn and the resulting Item::Fn
+    // post-splice). After items are spliced, run expression-level expansion.
     let macros = collect_macros(prog);
-    if macros.is_empty() { return Ok(()); }
+    if macros.is_empty() && !has_item_macro_calls(prog) {
+        return Ok(());
+    }
 
-    // Scratch interp pre-loaded with all defs (macros + fns) as closures.
     let interp = Interp::new();
     interp.load_program(prog)?;
+
+    // Item-level expansion: replace Item::MacroCall with whatever items
+    // the macro returns. Expanded items are appended to a fresh vec; the
+    // macro set may grow during this pass if a macro returns more macros
+    // (rare, but possible).
+    expand_items(prog, &interp, &macros)?;
+
+    // Expression-level expansion across the (now-final) fn bodies.
+    let macros = collect_macros(prog);
     expand_with(prog, &interp, &macros)
+}
+
+fn has_item_macro_calls(prog: &Program) -> bool {
+    fn check_items(items: &[std::rc::Rc<Item>]) -> bool {
+        items.iter().any(|it| match &**it {
+            Item::MacroCall { .. } => true,
+            Item::Module(m) => check_items(&m.items),
+            _ => false,
+        })
+    }
+    check_items(&prog.items)
+}
+
+/// Walk top-level items and module bodies; for each Item::MacroCall whose
+/// target is a defmacro, run the macro and splice its returned items in.
+fn expand_items(
+    prog: &mut Program,
+    interp: &Interp,
+    macros: &std::collections::HashSet<String>,
+) -> Result<(), String> {
+    prog.items = expand_item_list(prog.items.clone(), interp, macros)?;
+    Ok(())
+}
+
+fn expand_item_list(
+    items: Vec<std::rc::Rc<Item>>,
+    interp: &Interp,
+    macros: &std::collections::HashSet<String>,
+) -> Result<Vec<std::rc::Rc<Item>>, String> {
+    let mut out: Vec<std::rc::Rc<Item>> = Vec::new();
+    for item in items {
+        match &*item {
+            Item::MacroCall { name, args } => {
+                if !macros.contains(name) {
+                    return Err(format!(
+                        "item-level call `{}(...)` is not a defmacro", name));
+                }
+                let arg_vs = args.iter()
+                    .map(expr_to_value)
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| format!("macro {} arg reification: {}", name, e))?;
+                let prev = interp.gensym_table.borrow_mut().take();
+                *interp.gensym_table.borrow_mut() =
+                    Some(std::collections::HashMap::new());
+                let ret = interp.call_named(name, arg_vs);
+                *interp.gensym_table.borrow_mut() = prev;
+                let ret = ret.map_err(|e| format!("macro {} body: {}", name, e))?;
+                let items = value_to_items(&ret)
+                    .map_err(|e| format!("macro {} return: {}", name, e))?;
+                for it in items {
+                    out.push(std::rc::Rc::new(it));
+                }
+            }
+            Item::Module(m) => {
+                let new_items = expand_item_list(m.items.clone(), interp, macros)?;
+                out.push(std::rc::Rc::new(Item::Module(ModuleDef {
+                    name: m.name.clone(),
+                    items: new_items,
+                    moduledoc: m.moduledoc.clone(),
+                })));
+            }
+            _ => out.push(item.clone()),
+        }
+    }
+    Ok(out)
+}
+
+/// Decode a macro's return Value into one or more `Item`s.
+///
+/// Accepted shapes:
+///
+/// - `{:fn_def, name_atom, body_value}` — produces `Item::Fn` with a
+///   single zero-arg clause. v1 is intentionally narrow: tests are all
+///   zero-arg, and we can grow this when more shapes are needed.
+/// - `Value::List([item_value, ...])` — multiple items in declaration
+///   order. Each element is decoded recursively.
+pub fn value_to_items(v: &Value) -> Result<Vec<Item>, String> {
+    match v {
+        Value::Tuple(t) if t.len() == 3 => {
+            let tag = match &t[0] {
+                Value::Atom(s) => s.to_string(),
+                _ => return Err("expected item tag atom at tuple[0]".into()),
+            };
+            match tag.as_str() {
+                "fn_def" => {
+                    let name = match &t[1] {
+                        Value::Atom(s) => s.to_string(),
+                        _ => return Err(":fn_def expects an atom name".into()),
+                    };
+                    let body = value_to_expr(&t[2])?;
+                    Ok(vec![Item::Fn(FnDef {
+                        name,
+                        clauses: vec![FnClause { params: vec![], guard: None, body }],
+                        is_macro: false,
+                        doc: None,
+                    })])
+                }
+                other => Err(format!("unknown item tag :{}", other)),
+            }
+        }
+        Value::List(xs) => {
+            let mut out = Vec::new();
+            for x in xs.iter() {
+                out.extend(value_to_items(x)?);
+            }
+            Ok(out)
+        }
+        other => Err(format!(
+            "macro at item-position must return :fn_def tuple or list of items, got {:?}",
+            other
+        )),
+    }
 }
 
 /// Like `expand_program` but uses an interp the caller already has loaded
@@ -413,6 +539,54 @@ fn main() do User.run() end
 "#;
         assert!(matches!(run(src), crate::value::Value::Int(42)));
     }
+
+    #[test]
+    fn item_macro_produces_fn_def() {
+        // `make_const(name, value)` builds a zero-arg fn that returns the
+        // given value. Demonstrates the .16.3 item-producing path:
+        // - top-level Item::MacroCall is parsed (.16.2),
+        // - the macro returns {:fn_def, name_atom, body_expr},
+        // - the expander splices in a real Item::Fn,
+        // - the rest of the program can call it.
+        let src = r#"
+defmacro make_const(name, value) do
+  {:fn_def, name, value}
+end
+
+make_const(:answer, 42)
+
+fn main() do
+  answer()
+end
+"#;
+        assert!(matches!(run(src), crate::value::Value::Int(42)),
+            "expected 42, got {:?}", run(src));
+    }
+
+    #[test]
+    fn item_macro_produces_list_of_fns() {
+        // Returning a list of :fn_def tuples splices multiple items.
+        let src = r#"
+defmacro pair(a, b) do
+  [
+    {:fn_def, :first, a},
+    {:fn_def, :second, b}
+  ]
+end
+
+pair(10, 20)
+
+fn main() do
+  first() + second()
+end
+"#;
+        assert!(matches!(run(src), crate::value::Value::Int(30)));
+    }
+
+    // NOTE: item-macros INSIDE a defmodule body don't qualify their
+    // produced fn names with the parent module path in v1 — flatten
+    // runs before expand_items, so the spliced fns end up under bare
+    // names. Follow-up: fz-ul4.16.5.
 
     #[test]
     fn no_macros_is_a_noop() {

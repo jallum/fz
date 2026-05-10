@@ -164,9 +164,14 @@ impl Interp {
                 // Modules should have been flattened by `resolve::flatten_modules`
                 // before reaching this point. If one slips through (e.g. a
                 // direct test caller), error loudly.
-                Item::Module(_) | Item::Alias { .. } | Item::Import { .. } | Item::MacroCall { .. } => return Err(
+                Item::Module(_) | Item::Alias { .. } | Item::Import { .. } => return Err(
                     "load_program: pre-resolution Item reached interp; \
                      resolve::flatten_modules must run after parse".into()),
+                // Skipped during the macro-expansion pre-load (the
+                // expander needs the interp ready to call macros, but the
+                // MacroCalls themselves haven't been expanded yet). Once
+                // expansion finishes, no MacroCalls survive.
+                Item::MacroCall { .. } => continue,
             }
         }
         Ok(())
