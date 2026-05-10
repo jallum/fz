@@ -2,6 +2,53 @@ use crate::ast::*;
 use crate::lexer::{Tok, Token};
 use std::rc::Rc;
 
+#[cfg(test)]
+mod do_block_sugar_tests {
+    use super::*;
+    use crate::lexer::Lexer;
+
+    fn parse_fn_body(src: &str) -> Expr {
+        let wrapped = format!("fn _t() do {} end", src);
+        let toks = Lexer::new(&wrapped).tokenize().unwrap();
+        let prog = Parser::new(toks).parse_program().unwrap();
+        match &*prog.items[0] {
+            Item::Fn(d) => match &d.clauses[0].body {
+                Expr::Block(xs) => xs[0].clone(),
+                other => other.clone(),
+            },
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn trailing_do_block_appended_as_arg() {
+        let e = parse_fn_body(r#"f("x") do
+            1
+            2
+        end"#);
+        let Expr::Call(callee, args) = e else { panic!("not a call") };
+        assert!(matches!(*callee, Expr::Var(ref n) if n == "f"));
+        assert_eq!(args.len(), 2, "name + body block");
+        assert!(matches!(args[0], Expr::Str(_)));
+        assert!(matches!(args[1], Expr::Block(_)));
+    }
+
+    #[test]
+    fn comma_do_kw_appended_as_arg() {
+        let e = parse_fn_body(r#"f("x"), do: 42"#);
+        let Expr::Call(_, args) = e else { panic!("not a call") };
+        assert_eq!(args.len(), 2);
+        assert!(matches!(args[1], Expr::Int(42)));
+    }
+
+    #[test]
+    fn plain_call_no_extra_arg() {
+        let e = parse_fn_body("f(1, 2)");
+        let Expr::Call(_, args) = e else { panic!() };
+        assert_eq!(args.len(), 2);
+    }
+}
+
 /// Drain pending fn-clause groups into the items vec in declaration order.
 fn flush_fn_groups(
     items: &mut Vec<Rc<Item>>,
@@ -516,8 +563,26 @@ impl Parser {
             match self.peek() {
                 Tok::LParen => {
                     self.bump();
-                    let args = self.parse_expr_list(&Tok::RParen)?;
+                    let mut args = self.parse_expr_list(&Tok::RParen)?;
                     self.expect(&Tok::RParen, "`)`")?;
+                    // Trailing do-block sugar: `f(args) do <body> end`
+                    // appends <body> as a positional arg, and
+                    // `f(args), do: <expr>` does the same with a single
+                    // expr. Macros (e.g. test "x" do ... end) pull this
+                    // last arg out as their body.
+                    if matches!(self.peek(), Tok::Do) {
+                        self.bump();
+                        self.skip_newlines();
+                        let body = self.parse_block_until(&[Tok::End])?;
+                        self.expect(&Tok::End, "`end`")?;
+                        args.push(body);
+                    } else if matches!(self.peek(), Tok::Comma)
+                        && matches!(self.peek_at(1), Tok::KwKey(s) if s == "do")
+                    {
+                        self.bump(); self.bump();
+                        let body = self.parse_expr()?;
+                        args.push(body);
+                    }
                     lhs = Expr::Call(Box::new(lhs), args);
                     continue;
                 }
