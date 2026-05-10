@@ -19,6 +19,9 @@ pub enum Expr {
     /// Vector literal: monotyped contiguous storage; sigil determines element kind.
     /// `~v[1, 2, 3]` -> kind Numeric (I64/F64 inferred), `~b[0xff]` -> Bytes, `~bits[1,0,1]` -> Bits.
     VecLit(VecKind, Vec<Expr>),
+    /// Bitstring literal: `<< field, field, ... >>` where each field carries a value
+    /// (an arbitrary expression) and a type/size/endian/signedness/unit spec.
+    Bitstring(Vec<BitField<Expr>>),
     Map(Vec<(Expr, Expr)>),
 
     // call: target(args...)  — target is an expr (usually Var or Dot)
@@ -97,7 +100,75 @@ pub enum Pattern {
     /// pinned/literal pattern — `^name` would go here (deferred)
     /// As-pattern: name = pattern (Elixir lets you write it both ways)
     As(String, Box<Pattern>),
+    /// Bitstring pattern: `<< field, field, ... >>`. Each field's `value` is a
+    /// Pattern (binds variables or matches a literal); the spec governs how
+    /// many bits to consume and how to interpret them.
+    Bitstring(Vec<BitField<Pattern>>),
 }
+
+// ----------------------------------------------------------------------
+// Bitstring fields (shared between expressions and patterns)
+// ----------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+pub struct BitField<V> {
+    pub value: V,
+    pub spec: BitFieldSpec,
+}
+
+#[derive(Debug, Clone)]
+pub struct BitFieldSpec {
+    pub ty: BitType,
+    pub size: Option<BitSize>,
+    pub endian: Endian,
+    pub signed: bool,
+    pub unit: Option<u32>,
+}
+
+impl Default for BitFieldSpec {
+    fn default() -> Self {
+        Self { ty: BitType::Integer, size: None, endian: Endian::Big, signed: false, unit: None }
+    }
+}
+
+impl BitFieldSpec {
+    /// Resolve the unit (bits per element) for this spec, applying type-default
+    /// when no explicit unit was provided.
+    pub fn resolved_unit(&self) -> u32 {
+        if let Some(u) = self.unit { return u; }
+        match self.ty {
+            BitType::Integer => 1,
+            BitType::Float   => 1,
+            BitType::Binary  => 8,
+            BitType::Bits    => 1,
+            BitType::Utf8 | BitType::Utf16 | BitType::Utf32 => 1,
+        }
+    }
+    /// Default size in elements when `size` is `None` (Elixir defaults). Returns
+    /// `None` for binary/bits "rest" semantics.
+    pub fn default_size(&self) -> Option<u32> {
+        match self.ty {
+            BitType::Integer => Some(8),
+            BitType::Float => Some(64),
+            BitType::Binary | BitType::Bits => None, // "rest"
+            BitType::Utf8 | BitType::Utf16 | BitType::Utf32 => None, // size is implicit per codepoint
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BitType { Integer, Float, Binary, Bits, Utf8, Utf16, Utf32 }
+
+#[derive(Debug, Clone)]
+pub enum BitSize {
+    /// `::8`, `::16`, `::size(42)` with a literal
+    Literal(u32),
+    /// `::size(n)` where n is an in-scope variable name (or, in patterns, a previously-bound variable)
+    Var(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Endian { Big, Little, Native }
 
 #[derive(Debug, Clone)]
 pub struct FnClause {

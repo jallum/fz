@@ -179,6 +179,27 @@ impl Parser {
                 self.expect(&Tok::RBrace, "`}`")?;
                 Pattern::Tuple(elems)
             }
+            Tok::LBitstr => {
+                self.bump();
+                let mut fields = Vec::new();
+                self.skip_newlines();
+                if !matches!(self.peek(), Tok::RBitstr) {
+                    loop {
+                        let value = self.parse_pattern_atom()?;
+                        let spec = if self.eat(&Tok::ColonColon) {
+                            self.parse_bit_spec()?
+                        } else {
+                            BitFieldSpec::default()
+                        };
+                        fields.push(BitField { value, spec });
+                        self.skip_newlines();
+                        if !self.eat(&Tok::Comma) { break; }
+                        self.skip_newlines();
+                    }
+                }
+                self.expect(&Tok::RBitstr, "`>>`")?;
+                Pattern::Bitstring(fields)
+            }
             Tok::LBrack => {
                 self.bump();
                 let mut elems = Vec::new();
@@ -330,6 +351,7 @@ impl Parser {
                 blk
             }
             Tok::Fn => self.parse_lambda()?,
+            Tok::LBitstr => self.parse_bitstring_expr()?,
             Tok::Sigil(name) => {
                 let kind = match name.as_str() {
                     "v" => VecKind::Numeric,
@@ -427,6 +449,89 @@ impl Parser {
         }
         self.expect(&Tok::End, "`end`")?;
         Ok(Expr::Case(Box::new(scrut), clauses))
+    }
+
+    fn parse_bitstring_expr(&mut self) -> PR<Expr> {
+        self.expect(&Tok::LBitstr, "`<<`")?;
+        let mut fields: Vec<BitField<Expr>> = Vec::new();
+        self.skip_newlines();
+        if !matches!(self.peek(), Tok::RBitstr) {
+            loop {
+                let value = self.parse_expr()?;
+                let spec = if self.eat(&Tok::ColonColon) {
+                    self.parse_bit_spec()?
+                } else {
+                    BitFieldSpec::default()
+                };
+                fields.push(BitField { value, spec });
+                self.skip_newlines();
+                if !self.eat(&Tok::Comma) { break; }
+                self.skip_newlines();
+            }
+        }
+        self.expect(&Tok::RBitstr, "`>>`")?;
+        Ok(Expr::Bitstring(fields))
+    }
+
+    /// Parse a `::`-suffix bitstring spec like `8`, `little-integer-32`,
+    /// `binary-size(len)`, `unit(4)-size(n)`. Modifiers separated by `-`.
+    fn parse_bit_spec(&mut self) -> PR<BitFieldSpec> {
+        let mut spec = BitFieldSpec::default();
+        loop {
+            match self.peek().clone() {
+                Tok::Int(n) => {
+                    self.bump();
+                    spec.size = Some(BitSize::Literal(n as u32));
+                }
+                Tok::Ident(name) => {
+                    self.bump();
+                    self.apply_bit_modifier(&mut spec, &name)?;
+                }
+                other => return self.err(format!("expected bitstring modifier, got {:?}", other)),
+            }
+            if !self.eat(&Tok::Minus) { break; }
+        }
+        Ok(spec)
+    }
+
+    fn apply_bit_modifier(&mut self, spec: &mut BitFieldSpec, name: &str) -> PR<()> {
+        match name {
+            "integer" => spec.ty = BitType::Integer,
+            "float"   => spec.ty = BitType::Float,
+            "binary"  => spec.ty = BitType::Binary,
+            "bits" | "bitstring" => spec.ty = BitType::Bits,
+            "utf8"    => spec.ty = BitType::Utf8,
+            "utf16"   => spec.ty = BitType::Utf16,
+            "utf32"   => spec.ty = BitType::Utf32,
+            "big"     => spec.endian = Endian::Big,
+            "little"  => spec.endian = Endian::Little,
+            "native"  => spec.endian = Endian::Native,
+            "signed"   => spec.signed = true,
+            "unsigned" => spec.signed = false,
+            "size" => {
+                self.expect(&Tok::LParen, "`(`")?;
+                spec.size = Some(self.parse_bit_size()?);
+                self.expect(&Tok::RParen, "`)`")?;
+            }
+            "unit" => {
+                self.expect(&Tok::LParen, "`(`")?;
+                match self.bump() {
+                    Tok::Int(n) => spec.unit = Some(n as u32),
+                    other => return self.err(format!("unit expects int, got {:?}", other)),
+                }
+                self.expect(&Tok::RParen, "`)`")?;
+            }
+            other => return self.err(format!("unknown bitstring modifier: {}", other)),
+        }
+        Ok(())
+    }
+
+    fn parse_bit_size(&mut self) -> PR<BitSize> {
+        Ok(match self.bump() {
+            Tok::Int(n) => BitSize::Literal(n as u32),
+            Tok::Ident(name) => BitSize::Var(name),
+            other => return self.err(format!("size expects int or var, got {:?}", other)),
+        })
     }
 
     fn parse_with(&mut self) -> PR<Expr> {

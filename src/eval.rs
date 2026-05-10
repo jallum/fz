@@ -1,4 +1,5 @@
 use crate::ast::*;
+use crate::bitstr::*;
 use crate::value::*;
 use std::rc::Rc;
 
@@ -202,6 +203,14 @@ impl Interp {
             Expr::VecLit(kind, elems) => {
                 let vs: Vec<Value> = elems.iter().map(|e| self.eval(e, env)).collect::<Result<_, _>>()?;
                 Ok(Value::Vec(build_vec(*kind, &vs)?))
+            }
+            Expr::Bitstring(fields) => {
+                let mut writer = BitWriter::new();
+                for f in fields {
+                    let v = self.eval(&f.value, env)?;
+                    encode_field(&v, &f.spec, env, &mut writer)?;
+                }
+                Ok(writer.finalize())
             }
             Expr::Call(f, args) => {
                 // Pipe lowering happens in BinOp; here we just have direct calls.

@@ -202,6 +202,10 @@ impl Typer {
                 VecKind::Bytes   => Descr::vec_u8(),
                 VecKind::Bits    => Descr::vec_bit(),
             },
+            Expr::Bitstring(_) => {
+                // Bitstring literal: byte-aligned or not. Unions both.
+                Descr::vec_u8().union(&Descr::vec_bit())
+            }
             Expr::Call(callee, args) => {
                 let f = self.infer(env, callee);
                 let arg_ts: Vec<Descr> = args.iter().map(|a| self.infer(env, a)).collect();
@@ -442,6 +446,7 @@ pub fn pattern_type(p: &Pattern) -> Descr {
         }
         Pattern::As(_, inner) => pattern_type(inner),
         Pattern::Map(_) => Descr::any(),
+        Pattern::Bitstring(_) => Descr::vec_u8().union(&Descr::vec_bit()),
     }
 }
 
@@ -468,6 +473,17 @@ fn extract(p: &Pattern, scrut: &Descr, out: &mut Vec<(String, Descr)>) {
             let elem = list_element_type(scrut);
             for h in heads { extract(h, &elem, out); }
             if let Some(t) = tail { extract(t, scrut, out); }
+        }
+        Pattern::Bitstring(fields) => {
+            for f in fields {
+                let scrut_for_field = match f.spec.ty {
+                    BitType::Integer | BitType::Utf8 | BitType::Utf16 | BitType::Utf32 => Descr::int(),
+                    BitType::Float => Descr::float(),
+                    BitType::Binary => Descr::vec_u8(),
+                    BitType::Bits => Descr::vec_u8().union(&Descr::vec_bit()),
+                };
+                extract(&f.value, &scrut_for_field, out);
+            }
         }
         _ => {} // literals, wildcard, etc., bind nothing.
     }
@@ -703,6 +719,23 @@ mod tests {
         // Else fully handles: result = :handled.
         assert!(ret_t.is_equiv(&expected),
             "with-else type wrong: got {}, expected {}", ret_t, expected);
+    }
+
+    #[test]
+    fn bitstring_pattern_typed() {
+        let src = r#"
+            fn parse(<<m::8, v::4, k::4>>) do
+              {m, v, k}
+            end
+        "#;
+        let t = type_of(src, "parse");
+        // The function takes a binary; returns a tuple of three ints.
+        // (We don't assert the input type precisely yet — just that the body
+        // produces a 3-tuple of ints.)
+        let ret_t = (*t.funcs[0].pos[0].ret).clone();
+        let expected = Descr::tuple_of([Descr::int(), Descr::int(), Descr::int()]);
+        assert!(ret_t.is_subtype(&expected),
+            "bitstring pattern body type wrong: {} not subtype of {}", ret_t, expected);
     }
 
     #[test]

@@ -14,11 +14,29 @@ pub enum Value {
     List(Rc<Vec<Value>>),
     Tuple(Rc<Vec<Value>>),
     Vec(FzVec),
+    /// Non-byte-aligned bitstring. Byte-aligned bitstrings produced by `<<...>>`
+    /// expressions promote to `Value::Vec(FzVec::U8(...))` instead.
+    /// Bits are packed MSB-first within each byte (network/big-endian layout).
+    BitStr(Rc<BitString>),
     /// User-defined function: ordered clauses + captured environment.
     /// Multi-clause dispatch happens at call time.
     Closure(Rc<Closure>),
     /// Built-in (host) function.
     Builtin(Rc<Builtin>),
+}
+
+#[derive(Clone)]
+pub struct BitString {
+    pub bytes: Vec<u8>,    // MSB-first packed
+    pub bit_len: usize,
+}
+
+impl BitString {
+    pub fn empty() -> Self { Self { bytes: Vec::new(), bit_len: 0 } }
+    pub fn from_bytes(b: Vec<u8>) -> Self {
+        let n = b.len();
+        Self { bytes: b, bit_len: n * 8 }
+    }
 }
 
 /// Monotyped contiguous storage. The point of this type: SIMD-friendly,
@@ -184,6 +202,16 @@ impl fmt::Display for Value {
                 }
                 write!(f, "]")
             }
+            Value::BitStr(bs) => {
+                // Show as "<< b1, b2, ... :: N-bit total >>" — printable but
+                // not a valid surface form (we don't have a non-aligned literal).
+                write!(f, "<<")?;
+                for (i, b) in bs.bytes.iter().enumerate() {
+                    if i > 0 { write!(f, ", ")?; }
+                    write!(f, "{}", b)?;
+                }
+                write!(f, " :: {} bits>>", bs.bit_len)
+            }
             Value::Closure(c) => write!(f, "#fn<{}/{}>",
                 c.name.as_deref().unwrap_or("anon"),
                 c.clauses.first().map(|cl| cl.params.len()).unwrap_or(0)),
@@ -224,6 +252,9 @@ pub fn match_pattern(pat: &Pattern, v: &Value, env: &Env) -> bool {
         (Pattern::As(name, inner), v) => {
             env.bind(name, v.clone());
             match_pattern(inner, v, env)
+        }
+        (Pattern::Bitstring(fields), v) => {
+            crate::bitstr::match_bitstring(fields, v, env)
         }
         _ => false,
     }

@@ -1,4 +1,5 @@
 mod ast;
+mod bitstr;
 mod eval;
 mod lexer;
 mod parser;
@@ -52,7 +53,19 @@ fn else_handles() do
   end
 end
 
+fn build_packet() do
+  payload = ~b[1, 2, 3, 4]
+  <<0xA5::8, 0::4, 1::4, 4::16, payload::binary>>
+end
+
+fn parse_packet(<<magic::8, ver::4, kind::4, len::16, payload::binary-size(len), rest::binary>>) do
+  {magic, ver, kind, len, payload, rest}
+end
+
 fn main() do
+  pkt = build_packet()
+  print(pkt)
+  print(parse_packet(pkt))
   print(happy())
   print(falls_through())
   print(else_handles())
