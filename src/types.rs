@@ -34,18 +34,17 @@ use std::fmt;
 pub struct BasicBits(u32);
 
 impl BasicBits {
+    // Kinds without value-level distinctions (or where we choose not to track
+    // them). int/float/str/atom moved into their own LiteralSet axes.
     pub const NIL:     BasicBits = BasicBits(1 << 0);
     pub const BOOL:    BasicBits = BasicBits(1 << 1);
-    pub const INT:     BasicBits = BasicBits(1 << 2);
-    pub const FLOAT:   BasicBits = BasicBits(1 << 3);
-    pub const STR:     BasicBits = BasicBits(1 << 4);
-    pub const VEC_I64: BasicBits = BasicBits(1 << 5);
-    pub const VEC_F64: BasicBits = BasicBits(1 << 6);
-    pub const VEC_U8:  BasicBits = BasicBits(1 << 7);
-    pub const VEC_BIT: BasicBits = BasicBits(1 << 8);
+    pub const VEC_I64: BasicBits = BasicBits(1 << 2);
+    pub const VEC_F64: BasicBits = BasicBits(1 << 3);
+    pub const VEC_U8:  BasicBits = BasicBits(1 << 4);
+    pub const VEC_BIT: BasicBits = BasicBits(1 << 5);
 
     pub const NONE: BasicBits = BasicBits(0);
-    pub const ALL:  BasicBits = BasicBits((1 << 9) - 1);
+    pub const ALL:  BasicBits = BasicBits((1 << 6) - 1);
 
     pub const fn raw(self) -> u32 { self.0 }
     pub const fn from_raw(b: u32) -> Self { BasicBits(b) }
@@ -62,9 +61,6 @@ impl fmt::Debug for BasicBits {
 const BASIC_NAMES: &[(BasicBits, &str)] = &[
     (BasicBits::NIL,     "nil"),
     (BasicBits::BOOL,    "bool"),
-    (BasicBits::INT,     "int"),
-    (BasicBits::FLOAT,   "float"),
-    (BasicBits::STR,     "str"),
     (BasicBits::VEC_I64, "vec(i64)"),
     (BasicBits::VEC_F64, "vec(f64)"),
     (BasicBits::VEC_U8,  "vec(u8)"),
@@ -72,27 +68,75 @@ const BASIC_NAMES: &[(BasicBits, &str)] = &[
 ];
 
 // ----------------------------------------------------------------------
-// Atom set (finite or cofinite over atom literals)
+// Literal sets (finite or cofinite over a primitive value type)
 // ----------------------------------------------------------------------
 
-/// `Finite(s)` = exactly the atoms in `s` (so `Finite({})` = no atoms).
-/// `Cofinite(s)` = every atom EXCEPT those in `s` (so `Cofinite({})` = all atoms).
+/// A finite-or-cofinite set over `T`. `cofinite=false` means "exactly these";
+/// `cofinite=true` means "every value of T EXCEPT these". `(false, {})` is
+/// empty; `(true, {})` is the full universe of T.
+///
+/// Used to track singleton-type precision for atoms, ints, strs, and floats
+/// (the latter via the `F64Bits` wrapper for sane equality/ordering).
 #[derive(Clone, PartialEq, Eq, Hash)]
-pub enum AtomSet {
-    Finite(BTreeSet<String>),
-    Cofinite(BTreeSet<String>),
+pub struct LiteralSet<T: Ord + Clone> {
+    pub set: BTreeSet<T>,
+    pub cofinite: bool,
 }
 
-impl AtomSet {
-    pub fn none() -> Self { AtomSet::Finite(BTreeSet::new()) }
-    pub fn any()  -> Self { AtomSet::Cofinite(BTreeSet::new()) }
-    pub fn lit(name: impl Into<String>) -> Self {
-        let mut s = BTreeSet::new();
-        s.insert(name.into());
-        AtomSet::Finite(s)
+impl<T: Ord + Clone> LiteralSet<T> {
+    pub fn none() -> Self { Self { set: BTreeSet::new(), cofinite: false } }
+    pub fn any()  -> Self { Self { set: BTreeSet::new(), cofinite: true } }
+    pub fn lit(v: T) -> Self {
+        let mut s = BTreeSet::new(); s.insert(v);
+        Self { set: s, cofinite: false }
     }
-    pub fn is_none(&self) -> bool { matches!(self, AtomSet::Finite(s) if s.is_empty()) }
-    pub fn is_any(&self)  -> bool { matches!(self, AtomSet::Cofinite(s) if s.is_empty()) }
+    pub fn is_none(&self) -> bool { !self.cofinite && self.set.is_empty() }
+    pub fn is_any(&self)  -> bool {  self.cofinite && self.set.is_empty() }
+
+    pub fn union(&self, o: &Self) -> Self {
+        let (a, b) = (&self.set, &o.set);
+        match (self.cofinite, o.cofinite) {
+            (false, false) => Self { set: a | b, cofinite: false },
+            (false, true)  => Self { set: b - a, cofinite: true },
+            (true, false)  => Self { set: a - b, cofinite: true },
+            (true, true)   => Self { set: a & b, cofinite: true },
+        }
+    }
+    pub fn intersect(&self, o: &Self) -> Self {
+        let (a, b) = (&self.set, &o.set);
+        match (self.cofinite, o.cofinite) {
+            (false, false) => Self { set: a & b, cofinite: false },
+            (false, true)  => Self { set: a - b, cofinite: false },
+            (true, false)  => Self { set: b - a, cofinite: false },
+            (true, true)   => Self { set: a | b, cofinite: true },
+        }
+    }
+    pub fn neg(&self) -> Self {
+        Self { set: self.set.clone(), cofinite: !self.cofinite }
+    }
+}
+
+pub type AtomSet  = LiteralSet<String>;
+pub type IntSet   = LiteralSet<i64>;
+pub type StrSet   = LiteralSet<String>;
+pub type FloatSet = LiteralSet<F64Bits>;
+
+/// Bit-pattern wrapper around a non-NaN `f64` so we can put floats in
+/// ordered/hashed sets. Two distinct bit patterns are considered distinct
+/// values. `+0.0` and `-0.0` are distinct (matches IEEE bit equality but not
+/// IEEE value equality — fine here, where the type system tracks values).
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct F64Bits(u64);
+
+impl F64Bits {
+    pub fn new(f: f64) -> Self {
+        assert!(!f.is_nan(), "F64Bits literal types do not support NaN");
+        Self(f.to_bits())
+    }
+    pub fn get(self) -> f64 { f64::from_bits(self.0) }
+}
+impl fmt::Debug for F64Bits {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { write!(f, "{}", self.get()) }
 }
 
 // ----------------------------------------------------------------------
@@ -132,6 +176,9 @@ impl<T: Clone> Conj<T> {
 pub struct Descr {
     pub basic: BasicBits,
     pub atoms: AtomSet,
+    pub ints: IntSet,
+    pub floats: FloatSet,
+    pub strs: StrSet,
     /// DNF over tuple shapes. Empty Vec = no tuples ("false"); a single
     /// `Conj::top()` clause = every tuple ("true").
     pub tuples: Vec<Conj<TupleSig>>,
@@ -146,6 +193,9 @@ impl Descr {
         Descr {
             basic: BasicBits::ALL,
             atoms: AtomSet::any(),
+            ints:  IntSet::any(),
+            floats: FloatSet::any(),
+            strs:  StrSet::any(),
             tuples: vec![Conj::top()],
             lists:  vec![Conj::top()],
             funcs:  vec![Conj::top()],
@@ -156,6 +206,9 @@ impl Descr {
         Descr {
             basic: BasicBits::NONE,
             atoms: AtomSet::none(),
+            ints:  IntSet::none(),
+            floats: FloatSet::none(),
+            strs:  StrSet::none(),
             tuples: Vec::new(),
             lists: Vec::new(),
             funcs: Vec::new(),
@@ -171,15 +224,12 @@ impl Descr {
     }
     pub fn nil()     -> Self { Self::from_basic(BasicBits::NIL) }
     pub fn bool_t()  -> Self { Self::from_basic(BasicBits::BOOL) }
-    pub fn int()     -> Self { Self::from_basic(BasicBits::INT) }
-    pub fn float()   -> Self { Self::from_basic(BasicBits::FLOAT) }
-    pub fn str_t()   -> Self { Self::from_basic(BasicBits::STR) }
     pub fn vec_i64() -> Self { Self::from_basic(BasicBits::VEC_I64) }
     pub fn vec_f64() -> Self { Self::from_basic(BasicBits::VEC_F64) }
     pub fn vec_u8()  -> Self { Self::from_basic(BasicBits::VEC_U8) }
     pub fn vec_bit() -> Self { Self::from_basic(BasicBits::VEC_BIT) }
 
-    // ---- atoms ----
+    // ---- singletons (atoms / ints / floats / strs) ----
 
     /// Every atom literal — the type usually called `atom`.
     pub fn atom_top() -> Self {
@@ -187,11 +237,43 @@ impl Descr {
         d.atoms = AtomSet::any();
         d
     }
-
-    /// A specific atom literal as a singleton type, e.g. `:ok`.
     pub fn atom_lit(name: impl Into<String>) -> Self {
         let mut d = Self::none();
-        d.atoms = AtomSet::lit(name);
+        d.atoms = AtomSet::lit(name.into());
+        d
+    }
+
+    /// "any int" — top of the int axis.
+    pub fn int() -> Self {
+        let mut d = Self::none();
+        d.ints = IntSet::any();
+        d
+    }
+    pub fn int_lit(n: i64) -> Self {
+        let mut d = Self::none();
+        d.ints = IntSet::lit(n);
+        d
+    }
+
+    pub fn float() -> Self {
+        let mut d = Self::none();
+        d.floats = FloatSet::any();
+        d
+    }
+    pub fn float_lit(f: f64) -> Self {
+        let mut d = Self::none();
+        d.floats = FloatSet::lit(F64Bits::new(f));
+        d
+    }
+
+    pub fn str_t() -> Self {
+        let mut d = Self::none();
+        d.strs = StrSet::any();
+        d
+    }
+    pub fn str_lit(s: impl Into<String>) -> Self {
+        let mut d = Self::none();
+        d.strs = StrSet::lit(s.into());
         d
     }
 
@@ -220,21 +302,23 @@ impl Descr {
 
     // ---- recognizers ----
 
-    /// True if every component is at its bottom. This is a *structural* check
-    /// after the operations in this ticket; the real semantic emptiness
-    /// (`is_empty`) lands in fz-ul4.3 and reasons about element subtyping.
     pub fn looks_empty(&self) -> bool {
         self.basic.is_empty()
             && self.atoms.is_none()
+            && self.ints.is_none()
+            && self.floats.is_none()
+            && self.strs.is_none()
             && self.tuples.is_empty()
             && self.lists.is_empty()
             && self.funcs.is_empty()
     }
 
-    /// True if every component is at its top.
     pub fn looks_full(&self) -> bool {
         self.basic == BasicBits::ALL
             && self.atoms.is_any()
+            && self.ints.is_any()
+            && self.floats.is_any()
+            && self.strs.is_any()
             && is_dnf_top(&self.tuples)
             && is_dnf_top(&self.lists)
             && is_dnf_top(&self.funcs)
@@ -246,6 +330,9 @@ impl Descr {
         Descr {
             basic: self.basic.union(other.basic),
             atoms: self.atoms.union(&other.atoms),
+            ints:  self.ints.union(&other.ints),
+            floats: self.floats.union(&other.floats),
+            strs:  self.strs.union(&other.strs),
             tuples: dnf_union(&self.tuples, &other.tuples),
             lists:  dnf_union(&self.lists,  &other.lists),
             funcs:  dnf_union(&self.funcs,  &other.funcs),
@@ -256,19 +343,22 @@ impl Descr {
         Descr {
             basic: self.basic.intersect(other.basic),
             atoms: self.atoms.intersect(&other.atoms),
+            ints:  self.ints.intersect(&other.ints),
+            floats: self.floats.intersect(&other.floats),
+            strs:  self.strs.intersect(&other.strs),
             tuples: dnf_intersect(&self.tuples, &other.tuples),
             lists:  dnf_intersect(&self.lists,  &other.lists),
             funcs:  dnf_intersect(&self.funcs,  &other.funcs),
         }
     }
 
-    /// Negation within each kind, then unioned across kinds (since values
-    /// belong to exactly one kind, ¬D restricted to kind K equals ¬(D ∩ K)
-    /// within K). The result has saturated other-kind components.
     pub fn neg(&self) -> Descr {
         Descr {
             basic: self.basic.neg(),
             atoms: self.atoms.neg(),
+            ints:  self.ints.neg(),
+            floats: self.floats.neg(),
+            strs:  self.strs.neg(),
             tuples: dnf_neg(&self.tuples),
             lists:  dnf_neg(&self.lists),
             funcs:  dnf_neg(&self.funcs),
@@ -311,7 +401,10 @@ impl Descr {
         memo.in_flight.insert(self.clone());
 
         let result = self.basic.is_empty()
-            && atoms_empty(&self.atoms)
+            && self.atoms.is_none()
+            && self.ints.is_none()
+            && self.floats.is_none()
+            && self.strs.is_none()
             && self.tuples.iter().all(|c| tuple_clause_empty(c, memo))
             && self.lists.iter().all(|c| list_clause_empty(c, memo))
             && self.funcs.iter().all(|c| func_clause_empty(c, memo));
@@ -324,10 +417,6 @@ impl Descr {
 #[derive(Default)]
 struct Memo {
     in_flight: HashSet<Descr>,
-}
-
-fn atoms_empty(a: &AtomSet) -> bool {
-    matches!(a, AtomSet::Finite(s) if s.is_empty())
 }
 
 // ----------------------------------------------------------------------
@@ -500,37 +589,6 @@ impl BasicBits {
 }
 
 // ----------------------------------------------------------------------
-// AtomSet operations
-// ----------------------------------------------------------------------
-
-impl AtomSet {
-    pub fn union(&self, o: &Self) -> Self {
-        use AtomSet::*;
-        match (self, o) {
-            (Finite(a), Finite(b))     => Finite(a | b),
-            (Finite(a), Cofinite(b))   => Cofinite(b - a),
-            (Cofinite(a), Finite(b))   => Cofinite(a - b),
-            (Cofinite(a), Cofinite(b)) => Cofinite(a & b),
-        }
-    }
-    pub fn intersect(&self, o: &Self) -> Self {
-        use AtomSet::*;
-        match (self, o) {
-            (Finite(a), Finite(b))     => Finite(a & b),
-            (Finite(a), Cofinite(b))   => Finite(a - b),
-            (Cofinite(a), Finite(b))   => Finite(b - a),
-            (Cofinite(a), Cofinite(b)) => Cofinite(a | b),
-        }
-    }
-    pub fn neg(&self) -> Self {
-        match self {
-            AtomSet::Finite(s)   => AtomSet::Cofinite(s.clone()),
-            AtomSet::Cofinite(s) => AtomSet::Finite(s.clone()),
-        }
-    }
-}
-
-// ----------------------------------------------------------------------
 // DNF operations
 // ----------------------------------------------------------------------
 
@@ -596,16 +654,10 @@ impl fmt::Display for Descr {
             if self.basic.contains_all(*bit) { parts.push((*name).to_string()); }
         }
 
-        match &self.atoms {
-            AtomSet::Finite(s) => {
-                for a in s { parts.push(format!(":{}", a)); }
-            }
-            AtomSet::Cofinite(s) if s.is_empty() => parts.push("atom".into()),
-            AtomSet::Cofinite(s) => {
-                let exc: Vec<String> = s.iter().map(|a| format!(":{}", a)).collect();
-                parts.push(format!("atom \\ {{{}}}", exc.join(", ")));
-            }
-        }
+        format_lit_set(&mut parts, &self.ints,   "int",   |n| format!("{}", n));
+        format_lit_set(&mut parts, &self.floats, "float", |f| format!("{}", f.get()));
+        format_lit_set(&mut parts, &self.strs,   "str",   |s| format!("{:?}", s));
+        format_lit_set(&mut parts, &self.atoms,  "atom",  |a| format!(":{}", a));
 
         for c in &self.tuples { parts.push(format_tuple_clause(c)); }
         for c in &self.lists  { parts.push(format_list_clause(c)); }
@@ -617,6 +669,25 @@ impl fmt::Display for Descr {
 
 impl fmt::Debug for Descr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { write!(f, "{}", self) }
+}
+
+fn format_lit_set<T: Ord + Clone>(
+    parts: &mut Vec<String>,
+    s: &LiteralSet<T>,
+    top_name: &str,
+    fmt_one: impl Fn(&T) -> String,
+) {
+    if s.is_none() { return; }
+    if s.cofinite {
+        if s.set.is_empty() {
+            parts.push(top_name.into());
+        } else {
+            let exc: Vec<String> = s.set.iter().map(&fmt_one).collect();
+            parts.push(format!("{} \\ {{{}}}", top_name, exc.join(", ")));
+        }
+    } else {
+        for v in &s.set { parts.push(fmt_one(v)); }
+    }
 }
 
 fn format_tuple_clause(c: &Conj<TupleSig>) -> String {
@@ -765,8 +836,8 @@ mod tests {
         let i = Descr::int();
         let f = Descr::float();
         let u = i.union(&f);
-        assert!(u.basic.contains_all(BasicBits::INT));
-        assert!(u.basic.contains_all(BasicBits::FLOAT));
+        assert!(u.ints.is_any());
+        assert!(u.floats.is_any());
         assert_eq!(u.to_string(), "int | float");
 
         let inter = i.intersect(&f);
@@ -774,12 +845,11 @@ mod tests {
     }
 
     #[test]
-    fn neg_int_excludes_int_only_in_basics() {
+    fn neg_int_top_saturates_other_kinds() {
         let n = Descr::int().neg();
-        assert!(!n.basic.contains_all(BasicBits::INT));
-        assert!(n.basic.contains_all(BasicBits::FLOAT));
-        assert!(n.basic.contains_all(BasicBits::STR));
-        // and the other kinds saturate
+        assert!(n.ints.is_none(), "ints axis flipped to empty");
+        assert!(n.floats.is_any());
+        assert!(n.strs.is_any());
         assert!(n.atoms.is_any());
         assert!(is_dnf_top(&n.tuples));
     }
@@ -819,11 +889,9 @@ mod tests {
     #[test]
     fn neg_atom_lit_excludes_only_that_atom() {
         let n = Descr::atom_lit("ok").neg();
-        // restricted to atoms: cofinite excluding "ok"
-        match &n.atoms {
-            AtomSet::Cofinite(s) => assert!(s.contains("ok") && s.len() == 1),
-            other => panic!("expected Cofinite, got {:?}", other.is_any()),
-        }
+        assert!(n.atoms.cofinite);
+        assert_eq!(n.atoms.set.len(), 1);
+        assert!(n.atoms.set.contains("ok"));
     }
 
     // ---- DNF mechanics ----
@@ -891,9 +959,6 @@ mod tests {
     fn diff_int_or_float_minus_int_is_float() {
         let either = Descr::int().union(&Descr::float());
         let only_float = either.diff(&Descr::int());
-        // The saturated other-kind parts of ¬int (atoms/tuples/lists/funcs)
-        // get killed by intersecting with the empty parts of (int|float),
-        // so the result is structurally exactly float.
         assert_eq!(only_float, Descr::float());
     }
 
@@ -1083,11 +1148,68 @@ mod tests {
         assert!(!bad.is_subtype(&result_t));
     }
 
+    // ---- singleton types (int / float / str) ----
+
+    #[test]
+    fn int_lit_subtype_of_int_top() {
+        assert!(Descr::int_lit(0).is_subtype(&Descr::int()));
+        assert!(Descr::int_lit(42).is_subtype(&Descr::int()));
+        assert!(!Descr::int().is_subtype(&Descr::int_lit(0)));
+    }
+
+    #[test]
+    fn int_lit_distinct_singletons() {
+        assert!(!Descr::int_lit(0).is_subtype(&Descr::int_lit(1)));
+        assert!(Descr::int_lit(0).intersect(&Descr::int_lit(1)).is_empty());
+        let zero_or_one = Descr::int_lit(0).union(&Descr::int_lit(1));
+        assert!(Descr::int_lit(0).is_subtype(&zero_or_one));
+        assert!(zero_or_one.is_subtype(&Descr::int()));
+    }
+
+    #[test]
+    fn int_lit_diff_excludes_value() {
+        // int \ {0} keeps every int except 0
+        let nonzero = Descr::int().diff(&Descr::int_lit(0));
+        assert!(!Descr::int_lit(0).is_subtype(&nonzero));
+        assert!(Descr::int_lit(1).is_subtype(&nonzero));
+    }
+
+    #[test]
+    fn float_lit_singletons() {
+        assert!(Descr::float_lit(1.5).is_subtype(&Descr::float()));
+        assert!(!Descr::float_lit(1.5).is_subtype(&Descr::float_lit(2.5)));
+        let pair = Descr::float_lit(1.5).union(&Descr::float_lit(2.5));
+        assert_eq!(pair.to_string(), "1.5 | 2.5");
+    }
+
+    #[test]
+    fn str_lit_singletons() {
+        assert!(Descr::str_lit("hello").is_subtype(&Descr::str_t()));
+        assert!(!Descr::str_lit("a").is_subtype(&Descr::str_lit("b")));
+        assert_eq!(Descr::str_lit("hi").to_string(), "\"hi\"");
+    }
+
+    #[test]
+    fn singleton_in_tuple() {
+        // {:ok, 0} <: {:ok, int} but {:ok, 0} </: {:ok, 1}
+        let one = Descr::tuple_of([Descr::atom_lit("ok"), Descr::int_lit(0)]);
+        let any_ok = Descr::tuple_of([Descr::atom_lit("ok"), Descr::int()]);
+        let ok_one = Descr::tuple_of([Descr::atom_lit("ok"), Descr::int_lit(1)]);
+        assert!(one.is_subtype(&any_ok));
+        assert!(!one.is_subtype(&ok_one));
+    }
+
+    #[test]
+    fn display_int_singleton() {
+        assert_eq!(Descr::int_lit(42).to_string(), "42");
+        assert_eq!(Descr::int_lit(0).union(&Descr::int_lit(1)).to_string(), "0 | 1");
+    }
+
     #[test]
     fn basic_bits_flags_are_disjoint() {
         let bits = [
-            BasicBits::NIL, BasicBits::BOOL, BasicBits::INT, BasicBits::FLOAT,
-            BasicBits::STR, BasicBits::VEC_I64, BasicBits::VEC_F64,
+            BasicBits::NIL, BasicBits::BOOL,
+            BasicBits::VEC_I64, BasicBits::VEC_F64,
             BasicBits::VEC_U8, BasicBits::VEC_BIT,
         ];
         for (i, a) in bits.iter().enumerate() {

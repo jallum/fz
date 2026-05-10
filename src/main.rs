@@ -2,6 +2,7 @@ mod ast;
 mod eval;
 mod lexer;
 mod parser;
+mod typer;
 mod types;
 mod value;
 
