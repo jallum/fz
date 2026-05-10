@@ -1,0 +1,15 @@
+defmodule Outer do
+  fn f(x), do: x
+
+  defmodule Inner do
+    fn f(x), do: x + 1000
+  end
+
+  fn use_inner(x), do: Inner.f(x)
+end
+
+fn main() do
+  print(Outer.f(7))
+  print(Outer.Inner.f(7))
+  print(Outer.use_inner(7))
+end
