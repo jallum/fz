@@ -11,9 +11,15 @@
   "id": "fz-ul4.5",
   "labels": [],
   "parent": "fz-ul4",
+  "comments": [
+    {
+      "text": "Work landed inside fz-ul4.4 (commit e608a1b) per user's decision to collapse 4.4 + 4.5. Pattern narrowing + multi-clause intersection are both in src/typer.rs.",
+      "timestamp": "2026-05-10T02:07:13Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Pattern-match narrowing + multi-clause intersection",
   "type": "task",
-  "updated_at": "2026-05-10T01:26:31Z"
+  "updated_at": "2026-05-10T02:07:13Z"
 }
