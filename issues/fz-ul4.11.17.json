@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-10T13:38:54Z",
+  "description": "Split-out from fz-ul4.11.4. Remaining AST -\u003e fz-IR lowering after fz-ul4.11.16 (core) lands.\n\n## In scope\n\n- Expr: Case (pattern dispatch -\u003e if-cascade with bind), Cond ((cond,body) chain -\u003e if-cascade), With (pattern \u003c- expr / Bare(expr) chain -\u003e cascading conditionals; failure cases -\u003e else_clauses dispatch).\n- Expr: Map (Prim::MakeMap entries), MapUpdate (Prim::MapUpdate base + entries), Index (Prim::MapGet — bracket access returning nil if absent).\n- Expr: Bitstring expressions (Prim::MakeBitstring with field specs preserved).\n- Expr: VecLit for all VecKind (Numeric/Bytes/Bits) -\u003e Prim::MakeVec(kind, elems).\n- Patterns: Map (key extractions + recursive), Bitstring (bit-extraction prims, mirroring eval.rs/bitstr.rs matcher logic).\n- Prim variants added: MakeMap, MapUpdate, MapGet, MakeBitstring(Vec\u003cBitFieldIr\u003e), MakeVec(VecKindIr, Vec\u003cVar\u003e), MatchBitstring (for pattern), MatchMapKey.\n- Quote/Unquote: hard error LowerError::PostExpansionNode (should have been removed by macro expansion).\n\n## Tests\n\n- Lower remaining fixtures end-to-end (any with maps/bitstrings/vecs/case/cond/with).\n- Bitstring pattern with size/endian/signed/utf8 specs round-trips.\n- With-form: success path threads results, else-clause path runs on first failure.\n- Map pattern matches present keys, fails on absent.\n- Vec literal of each VecKind produces correct prim.\n\n## UNBLOCKS\n\n- fz-ul4.11.6 (frame liveness needs full IR shape)",
+  "id": "fz-ul4.11.17",
+  "labels": [],
+  "parent": "fz-ul4.11",
+  "priority": 3,
+  "status": "open",
+  "title": "AST -\u003e fz-IR translator (rest of variants)",
+  "type": "task",
+  "updated_at": "2026-05-10T13:38:54Z"
+}
