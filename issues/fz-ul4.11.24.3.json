@@ -9,14 +9,15 @@
     "fz-ul4.11.24.6",
     "fz-ul4.11.24.7"
   ],
+  "closed_at": "2026-05-10T21:11:32Z",
   "created": "2026-05-10T20:51:16Z",
   "description": "GOAL: Make the IR-shaped typer flow-sensitive enough to narrow types through structural pattern operations. After this ticket, downstream consumers can rely on tighter Descrs at branch successors (e.g. tuple fields, list head/tail, map values, bitstring fields, post-If branches).\n\n## Why this is atomic\n\nAfter this ticket, type_module produces tighter Descrs at branches and pattern projections. Existing .11.24.2 unit tests still pass; new tests exercise the narrowing. No consumer wiring yet — that's .11.24.4 / .11.24.5 / .11.24.6.\n\n## Deliverables\n\nsrc/ir_typer.rs:\n- Switch driver from flow-insensitive (single pass over blocks) to flow-sensitive: per-block entry env, propagated through stmts, joined at block params.\n- Narrowing rules:\n  * `Term::If(cond, then_b, else_b)`: if `cond` was bound by a predicate prim (e.g. `ListIsNil(v)`), narrow v in then_b to nil; in else_b to non-nil ListSig. Same for `BinOp::Eq(v, Const(Int n))` -\u003e v narrowed to int_lit(n) on truthy branch. Generalize via a small predicate-recognizer.\n  * `Stmt::Let(h, ListHead(v))`: h gets list_element_type(env[v]); env[v] retains list shape (no change).\n  * `Stmt::Let(t, ListTail(v))`: t gets non-empty-list-tail Descr (could be empty list, so list ∪ nil).\n  * `Stmt::Let(f, TupleField(v, i))`: f gets tuple_projections(env[v], arity)[i].\n  * `Stmt::Let(r, MapGet(m, k))`: r gets map_field_lookup(env[m], expr_to_map_key(k)) ∪ Nil.\n  * `Stmt::Let(_, BitReadField{...})`: result tuple's success-branch field has the field's Descr (Int width / Float / Bitstring).\n- Reuse existing pure helpers: pattern_type, pattern_bindings, tuple_projections, list_element_type, map_field_lookup, refine_map_field.\n- Fixpoint on block params; converge in O(blocks * vars) for typical cases.\n\n## Tests\n\n- `fn f(t), do: TupleField(t, 0)` — when called with TupleSig{[Int, Atom]}, field 0 has Descr Int.\n- `fn f(l) when ListIsNil(l), do: 0` — within the truthy branch body, l is narrowed to nil; calling list_element_type returns bottom there.\n- `fn f(l), do: ListHead(l)` — head's Descr equals list_element_type(param).\n- A case-style fn lowered to chained If's narrows correctly through each branch.\n- A nested tuple destructure: `{ {a, b}, c }` produces correct per-field Descrs at each level.\n\n## Out of scope\n\n- Consumer wiring (.11.24.4-.7).\n- Narrowing through closure invocation (.11.24.7's specialize_return makes this meaningful).\n- Negative type information from guards more elaborate than direct predicates (e.g. arithmetic guard conditions narrowing operand types) — file follow-up if profiling shows it matters.\n\n## Dependencies\n\n- BLOCKED BY: fz-ul4.11.24.2.\n- BLOCKS: fz-ul4.11.24.4, fz-ul4.11.24.5, fz-ul4.11.24.6, fz-ul4.11.24.7.",
   "id": "fz-ul4.11.24.3",
   "labels": [],
   "parent": "fz-ul4.11.24",
   "priority": 3,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Pattern narrowing through IR pattern ops",
   "type": "task",
-  "updated_at": "2026-05-10T21:08:47Z"
+  "updated_at": "2026-05-10T21:11:32Z"
 }
