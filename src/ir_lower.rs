@@ -59,6 +59,15 @@ impl AtomTable {
         self.map.insert(name.to_string(), id);
         id
     }
+
+    /// Return atom names in id order: id N -> names[N].
+    pub fn names(&self) -> Vec<String> {
+        let mut out = vec![String::new(); self.map.len()];
+        for (k, &id) in &self.map {
+            out[id as usize] = k.clone();
+        }
+        out
+    }
 }
 
 /// Builtin registry. Stable ids 0..N seeded for the v1 set.
