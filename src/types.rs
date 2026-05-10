@@ -23,7 +23,7 @@
 //! manipulation (concat / cross-product / De Morgan) on the structurals.
 //! Semantic subtyping — `T <: U` iff `T ∧ ¬U` is empty — lands in fz-ul4.3.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::fmt;
 
 // ----------------------------------------------------------------------
@@ -276,6 +276,217 @@ impl Descr {
     }
 
     pub fn diff(&self, other: &Descr) -> Descr { self.intersect(&other.neg()) }
+
+    // ----------------------------------------------------------------
+    // Semantic emptiness / subtyping
+    // ----------------------------------------------------------------
+
+    /// Is this descriptor the empty set of values?
+    ///
+    /// The kernel of semantic subtyping: `T <: U` iff `is_empty(T ∧ ¬U)`.
+    /// Recurses through structural element types; coinductive for recursive
+    /// shapes via a memoized in-flight stack (greatest fixpoint).
+    pub fn is_empty(&self) -> bool {
+        let mut memo = Memo::default();
+        self.is_empty_memo(&mut memo)
+    }
+
+    /// `self <: other` iff `(self ∧ ¬other)` is empty.
+    pub fn is_subtype(&self, other: &Descr) -> bool {
+        self.diff(other).is_empty()
+    }
+
+    /// Mutual subtyping.
+    pub fn is_equiv(&self, other: &Descr) -> bool {
+        self.is_subtype(other) && other.is_subtype(self)
+    }
+
+    fn is_empty_memo(&self, memo: &mut Memo) -> bool {
+        if memo.in_flight.contains(self) {
+            // Coinductive assumption: re-entering the same query along this
+            // recursive descent. Greatest-fixpoint reading says "yes, empty"
+            // is consistent until proven otherwise.
+            return true;
+        }
+        memo.in_flight.insert(self.clone());
+
+        let result = self.basic.is_empty()
+            && atoms_empty(&self.atoms)
+            && self.tuples.iter().all(|c| tuple_clause_empty(c, memo))
+            && self.lists.iter().all(|c| list_clause_empty(c, memo))
+            && self.funcs.iter().all(|c| func_clause_empty(c, memo));
+
+        memo.in_flight.remove(self);
+        result
+    }
+}
+
+#[derive(Default)]
+struct Memo {
+    in_flight: HashSet<Descr>,
+}
+
+fn atoms_empty(a: &AtomSet) -> bool {
+    matches!(a, AtomSet::Finite(s) if s.is_empty())
+}
+
+// ----------------------------------------------------------------------
+// Tuple emptiness — Φ algorithm
+// ----------------------------------------------------------------------
+//
+// A clause `⋀ pos ∧ ⋀ ¬neg` over n-tuples is empty iff it describes the
+// empty set. We split on arity:
+//
+//   * Empty positives: the clause matches "any tuple of any arity not in
+//     ⋃neg". Tuple arity is unbounded in fz, so a finite set of negatives
+//     can never cover all arities — hence this is always non-empty.
+//
+//   * Non-empty positives: every positive must agree on arity (else the
+//     positive intersection is empty). With shared arity n, intersect
+//     positives componentwise to get a "rectangle" (t1, ..., tn). Filter
+//     negatives down to those of arity n (others can't intersect this
+//     rectangle, so they're vacuously satisfied). Run Φ.
+//
+// Φ(t, N): is the rectangle t covered by the union of negative rectangles
+// in N? Pick a negative s, split t by "first index where the value falls
+// outside s_i":
+//
+//   slab_i = (t_1 ∩ s_1, ..., t_{i-1} ∩ s_{i-1}, t_i \ s_i, t_{i+1}, ..., t_n)
+//
+// Each slab must be covered by N \ {s}. Base case: an empty rectangle
+// (some component empty) is trivially covered.
+
+fn tuple_clause_empty(c: &Conj<TupleSig>, memo: &mut Memo) -> bool {
+    if c.pos.is_empty() {
+        // Tuple universe is unbounded in arity; a finite set of negative
+        // tuple shapes can never cover it.
+        return false;
+    }
+    let arity = c.pos[0].elems.len();
+    if c.pos.iter().any(|p| p.elems.len() != arity) {
+        // Distinct arities in positives → intersection is empty.
+        return true;
+    }
+    // Componentwise intersection of positives.
+    let mut t: Vec<Descr> = c.pos[0].elems.clone();
+    for p in &c.pos[1..] {
+        for (i, e) in p.elems.iter().enumerate() {
+            t[i] = t[i].intersect(e);
+        }
+    }
+    // Negatives at this arity contribute; other arities don't intersect the
+    // rectangle and are vacuously satisfied.
+    let negs: Vec<Vec<Descr>> = c.neg.iter()
+        .filter(|n| n.elems.len() == arity)
+        .map(|n| n.elems.clone())
+        .collect();
+    phi_tuple(&t, &negs, memo)
+}
+
+fn phi_tuple(t: &[Descr], n: &[Vec<Descr>], memo: &mut Memo) -> bool {
+    if n.is_empty() {
+        return t.iter().any(|d| d.is_empty_memo(memo));
+    }
+    let head = &n[0];
+    let rest = &n[1..];
+    for i in 0..t.len() {
+        let mut t_split = t.to_vec();
+        for j in 0..i {
+            t_split[j] = t_split[j].intersect(&head[j]);
+        }
+        t_split[i] = t_split[i].diff(&head[i]);
+        if !phi_tuple(&t_split, rest, memo) {
+            return false;
+        }
+    }
+    true
+}
+
+// ----------------------------------------------------------------------
+// List emptiness — homogeneous-list rule
+// ----------------------------------------------------------------------
+//
+// Every `list(T)` contains nil, so the positive part is always inhabited.
+// A clause `pos ∧ ⋀ ¬neg` is empty iff `list(t) ⊆ ⋃ list(N_j)` where
+// `t` is the intersection of positive element types.
+//
+// Standard rule: `list(t) ⊆ ⋃ list(N_j)` iff there's a single j with
+// `t ⊆ N_j` — because lists are homogeneous, every value of a single
+// list must use the same N_j. The empty list trivially fits any list type.
+//
+// `is_subtype` here recurses through `is_empty`, which is what makes the
+// memo necessary for recursive list types.
+
+fn list_clause_empty(c: &Conj<ListSig>, memo: &mut Memo) -> bool {
+    let t = if c.pos.is_empty() {
+        Descr::any() // implicit positive: list(any)
+    } else {
+        let mut t = (*c.pos[0].elem).clone();
+        for p in &c.pos[1..] { t = t.intersect(&p.elem); }
+        t
+    };
+    if c.neg.is_empty() {
+        return false; // list(t) is non-empty (contains nil)
+    }
+    // exists j: t ⊆ N_j
+    c.neg.iter().any(|n| t.diff(&n.elem).is_empty_memo(memo))
+}
+
+// ----------------------------------------------------------------------
+// Arrow emptiness — contravariant subsumption
+// ----------------------------------------------------------------------
+//
+// Standard semantic-subtyping result for arrows:
+//   ⋀_i (t_i → u_i)  ⊆  (s → v)
+//   iff  for every P' ⊆ P:  s ⊆ ⋃_{i ∈ P'} t_i  OR  ⋂_{i ∉ P'} u_i ⊆ v
+//
+// A clause is empty iff some negative `(s, v)` is subsumed by the
+// positives — meaning every function satisfying the positives is forced
+// into `(s → v)`, contradicting `¬(s → v)`. We try each negative; if any
+// passes the for-all-subsets test, the clause is empty.
+//
+// For multi-arg arrows, the "input domain" is the n-tuple of args.
+
+fn arrow_input(sig: &ArrowSig) -> Descr {
+    Descr::tuple_of(sig.args.clone())
+}
+
+fn func_clause_empty(c: &Conj<ArrowSig>, memo: &mut Memo) -> bool {
+    let p = &c.pos;
+    let n = &c.neg;
+    if n.is_empty() {
+        // ⋀ positives is non-empty: at least one function (e.g., the constant
+        // function) satisfies any consistent set of positive arrows.
+        return false;
+    }
+    let n_pos = p.len();
+    if n_pos > 24 {
+        // 2^n subsets becomes painful; we don't expect this in practice.
+        // Fall through and let it run; users can split clauses if needed.
+    }
+    'next_neg: for negj in n {
+        let s = arrow_input(negj);
+        let v = (*negj.ret).clone();
+        for mask in 0u32..(1u32 << n_pos) {
+            let mut union_in = Descr::none();
+            let mut inter_out = Descr::any();
+            for i in 0..n_pos {
+                if (mask >> i) & 1 == 1 {
+                    union_in = union_in.union(&arrow_input(&p[i]));
+                } else {
+                    inter_out = inter_out.intersect(&p[i].ret);
+                }
+            }
+            // Either inputs of P' cover s, OR outputs of P\P' refine v.
+            if s.diff(&union_in).is_empty_memo(memo) { continue; }
+            if inter_out.diff(&v).is_empty_memo(memo) { continue; }
+            // Neither side held — this subset breaks subsumption for negj.
+            continue 'next_neg;
+        }
+        // Every subset passed → negj is subsumed → clause is empty.
+        return true;
+    }
+    false
 }
 
 // ----------------------------------------------------------------------
@@ -684,6 +895,192 @@ mod tests {
         // get killed by intersecting with the empty parts of (int|float),
         // so the result is structurally exactly float.
         assert_eq!(only_float, Descr::float());
+    }
+
+    // ---- emptiness / subtyping ----
+
+    #[test]
+    fn empty_basics() {
+        assert!(Descr::none().is_empty());
+        assert!(!Descr::any().is_empty());
+        assert!(!Descr::int().is_empty());
+        assert!(!Descr::atom_lit("ok").is_empty());
+        assert!(Descr::int().diff(&Descr::int()).is_empty());
+        assert!(Descr::int().intersect(&Descr::float()).is_empty());
+    }
+
+    #[test]
+    fn subtype_basics() {
+        assert!(Descr::int().is_subtype(&Descr::int()));
+        assert!(Descr::int().is_subtype(&Descr::int().union(&Descr::float())));
+        assert!(!Descr::int().union(&Descr::float()).is_subtype(&Descr::int()));
+        assert!(!Descr::int().is_subtype(&Descr::atom_top()));
+        assert!(Descr::none().is_subtype(&Descr::int()));
+        assert!(Descr::int().is_subtype(&Descr::any()));
+    }
+
+    #[test]
+    fn subtype_atoms() {
+        assert!(Descr::atom_lit("ok").is_subtype(&Descr::atom_top()));
+        assert!(!Descr::atom_top().is_subtype(&Descr::atom_lit("ok")));
+        let either = Descr::atom_lit("ok").union(&Descr::atom_lit("error"));
+        assert!(Descr::atom_lit("ok").is_subtype(&either));
+        assert!(!either.is_subtype(&Descr::atom_lit("ok")));
+        assert!(!Descr::atom_lit("ok").is_subtype(&Descr::atom_lit("error")));
+    }
+
+    #[test]
+    fn equiv_after_double_neg() {
+        let a = Descr::int().union(&Descr::atom_lit("ok"));
+        assert!(a.is_equiv(&a.neg().neg()));
+    }
+
+    #[test]
+    fn equiv_de_morgan() {
+        let a = Descr::int();
+        let b = Descr::atom_lit("ok");
+        // ¬(a ∪ b) ≡ ¬a ∩ ¬b
+        let lhs = a.union(&b).neg();
+        let rhs = a.neg().intersect(&b.neg());
+        assert!(lhs.is_equiv(&rhs));
+        // ¬(a ∩ b) ≡ ¬a ∪ ¬b
+        let lhs = a.intersect(&b).neg();
+        let rhs = a.neg().union(&b.neg());
+        assert!(lhs.is_equiv(&rhs));
+    }
+
+    // ---- tuples ----
+
+    #[test]
+    fn tuple_subtype_same_arity() {
+        let t1 = Descr::tuple_of([Descr::int(), Descr::str_t()]);
+        let t2 = Descr::tuple_of([Descr::int(), Descr::str_t()]);
+        assert!(t1.is_subtype(&t2));
+    }
+
+    #[test]
+    fn tuple_subtype_arity_mismatch() {
+        let t1 = Descr::tuple_of([Descr::int()]);
+        let t2 = Descr::tuple_of([Descr::int(), Descr::str_t()]);
+        assert!(!t1.is_subtype(&t2));
+        assert!(!t2.is_subtype(&t1));
+    }
+
+    #[test]
+    fn tuple_covariance_in_components() {
+        // {int, str} <: {int|float, str}
+        let narrow = Descr::tuple_of([Descr::int(), Descr::str_t()]);
+        let wide = Descr::tuple_of([Descr::int().union(&Descr::float()), Descr::str_t()]);
+        assert!(narrow.is_subtype(&wide));
+        assert!(!wide.is_subtype(&narrow));
+    }
+
+    #[test]
+    fn tuple_union_distributes_over_components() {
+        // {int|float, str} <: {int, str} ∪ {float, str}
+        let lhs = Descr::tuple_of([Descr::int().union(&Descr::float()), Descr::str_t()]);
+        let rhs = Descr::tuple_of([Descr::int(), Descr::str_t()])
+            .union(&Descr::tuple_of([Descr::float(), Descr::str_t()]));
+        assert!(lhs.is_subtype(&rhs));
+        assert!(rhs.is_subtype(&lhs));
+        assert!(lhs.is_equiv(&rhs));
+    }
+
+    // ---- lists ----
+
+    #[test]
+    fn list_subtype_in_element_type() {
+        // list(int) <: list(int|float)
+        let narrow = Descr::list_of(Descr::int());
+        let wide = Descr::list_of(Descr::int().union(&Descr::float()));
+        assert!(narrow.is_subtype(&wide));
+        assert!(!wide.is_subtype(&narrow));
+    }
+
+    #[test]
+    fn list_of_none_is_subtype_of_any_list() {
+        // list(none) only contains nil, so it's a subtype of every list type.
+        let nil_only = Descr::list_of(Descr::none());
+        assert!(nil_only.is_subtype(&Descr::list_of(Descr::int())));
+        assert!(nil_only.is_subtype(&Descr::list_of(Descr::atom_top())));
+    }
+
+    #[test]
+    fn list_union_does_not_distribute_homogeneously() {
+        // Heterogeneous list types are NOT a union of homogeneous lists.
+        // list({:a, :b}) ⊄ list(:a) ∪ list(:b)  — the list [:a, :b] would
+        // have to live in one of the homogeneous types, but it doesn't.
+        let mixed = Descr::list_of(Descr::atom_lit("a").union(&Descr::atom_lit("b")));
+        let parts = Descr::list_of(Descr::atom_lit("a"))
+            .union(&Descr::list_of(Descr::atom_lit("b")));
+        assert!(!mixed.is_subtype(&parts), "homogeneous lists do not cover mixed");
+        // But the reverse holds:
+        assert!(parts.is_subtype(&mixed));
+    }
+
+    // ---- arrows ----
+
+    #[test]
+    fn arrow_contravariance_in_input() {
+        // (int|float) -> int   <:   int -> int   (wider input is subtype)
+        let wider_in = Descr::arrow([Descr::int().union(&Descr::float())], Descr::int());
+        let narrow_in = Descr::arrow([Descr::int()], Descr::int());
+        assert!(wider_in.is_subtype(&narrow_in));
+        assert!(!narrow_in.is_subtype(&wider_in));
+    }
+
+    #[test]
+    fn arrow_covariance_in_output() {
+        // int -> int   <:   int -> (int|float)
+        let narrow_out = Descr::arrow([Descr::int()], Descr::int());
+        let wide_out = Descr::arrow([Descr::int()], Descr::int().union(&Descr::float()));
+        assert!(narrow_out.is_subtype(&wide_out));
+        assert!(!wide_out.is_subtype(&narrow_out));
+    }
+
+    #[test]
+    fn arrow_intersection_is_multiclause() {
+        // (int -> int) ∩ (str -> str)  <:  (int|str) -> (int|str)
+        // — the multi-clause function semantics. NOT equivalent because the
+        // intersection knows which return type matches which input.
+        let multi = Descr::arrow([Descr::int()], Descr::int())
+            .intersect(&Descr::arrow([Descr::str_t()], Descr::str_t()));
+        let combined = Descr::arrow(
+            [Descr::int().union(&Descr::str_t())],
+            Descr::int().union(&Descr::str_t()),
+        );
+        assert!(multi.is_subtype(&combined));
+        assert!(!combined.is_subtype(&multi),
+            "combined arrow loses the per-clause return refinement");
+    }
+
+    // ---- mixed kinds ----
+
+    #[test]
+    fn disjoint_kinds_dont_subtype() {
+        assert!(!Descr::int().is_subtype(&Descr::atom_top()));
+        assert!(!Descr::atom_top().is_subtype(&Descr::int()));
+        assert!(!Descr::int().is_subtype(&Descr::tuple_of([Descr::int()])));
+        assert!(!Descr::list_of(Descr::int()).is_subtype(&Descr::tuple_of([Descr::int()])));
+    }
+
+    #[test]
+    fn intersection_with_disjoint_is_empty() {
+        assert!(Descr::int().intersect(&Descr::atom_top()).is_empty());
+        assert!(Descr::list_of(Descr::int()).intersect(&Descr::tuple_of([Descr::int()])).is_empty());
+    }
+
+    #[test]
+    fn ok_or_error_result_subtype() {
+        // Result(int, atom) = {:ok, int} ∪ {:error, atom}
+        // {:ok, int} <: Result(int, atom)
+        let result_t = Descr::tuple_of([Descr::atom_lit("ok"), Descr::int()])
+            .union(&Descr::tuple_of([Descr::atom_lit("error"), Descr::atom_top()]));
+        let an_ok = Descr::tuple_of([Descr::atom_lit("ok"), Descr::int()]);
+        assert!(an_ok.is_subtype(&result_t));
+        // {:ok, str} </: Result(int, atom)
+        let bad = Descr::tuple_of([Descr::atom_lit("ok"), Descr::str_t()]);
+        assert!(!bad.is_subtype(&result_t));
     }
 
     #[test]
