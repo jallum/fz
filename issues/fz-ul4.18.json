@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-ul4.16"
+  ],
   "created": "2026-05-10T10:23:36Z",
   "description": "fz currently has a flat global namespace. All fn/defmacro items go into one env; `Mod.fn` parses but is treated like a Var. Adds Elixir-style modules so the test runner (.16) and any non-trivial program can avoid global-name collisions.\n\n## Scope\n\n- Lexer: tokens already exist (Tok::Upper, Tok::Defmodule maybe new).\n- Parser:\n  - Top-level item `defmodule Name do \u003citems\u003e end` containing fn/defmacro/nested defmodule.\n  - Qualified call: `Mod.fn(args)` — Expr::Call where the callee is Expr::Dot(Var(\"Mod\"), \"fn\").\n  - Plain calls in module body resolve to the enclosing module's fn first.\n- AST:\n  - Item::Module(ModuleDef { name, items }) — recursive for nested modules.\n- Eval:\n  - Per-module env. Lookup walks the current module then up.\n  - Mod.fn dispatches by qualified name.\n- Aot/Jit:\n  - Mangling: ModName__fnName for compiled symbols.\n  - Cross-module monomorphization: probably already works with the user_name -\u003e mangled rename.\n- Macros:\n  - Macro expansion lives at the module that defined the macro; calling Mod.macro(x) expands inline.\n- Imports/alias: defer if not strictly needed for tests.\n\n## Tests\n\n- defmodule M do; fn f(x), do: x + 1; end + main calling M.f(41) -\u003e 42.\n- Two modules each defining fn helper(x) without collision.\n- Macro defined in module A, called as A.macro(x) from module B.\n\n## Followups out of scope\n\n- import/alias/use sugar\n- Module attributes (@spec, @doc)\n- Protocols / behaviours\n",
   "id": "fz-ul4.18",
