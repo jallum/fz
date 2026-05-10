@@ -1,3 +1,4 @@
+mod aot;
 mod ast;
 mod bitstr;
 mod codegen;
@@ -109,7 +110,13 @@ end
 "#;
 
 fn main() {
-    let (src, show_ast) = parse_args();
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("build") {
+        run_build(&args[1..]);
+        return;
+    }
+
+    let (src, show_ast) = parse_args(&args);
 
     let toks = match Lexer::new(&src).tokenize() {
         Ok(t) => t,
@@ -135,10 +142,43 @@ fn main() {
     }
 }
 
-fn parse_args() -> (String, bool) {
+fn run_build(args: &[String]) {
+    let mut src: Option<String> = None;
+    let mut out: Option<String> = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "-o" => {
+                i += 1;
+                out = Some(args.get(i).cloned().unwrap_or_else(|| {
+                    eprintln!("fz build: -o requires an argument");
+                    std::process::exit(2);
+                }));
+            }
+            other => src = Some(other.to_string()),
+        }
+        i += 1;
+    }
+    let src = src.unwrap_or_else(|| {
+        eprintln!("fz build <src.fz> -o <out>");
+        std::process::exit(2);
+    });
+    let out = out.unwrap_or_else(|| {
+        std::path::Path::new(&src)
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "a.out".into())
+    });
+    if let Err(e) = aot::build(std::path::Path::new(&src), std::path::Path::new(&out)) {
+        eprintln!("{}", e);
+        std::process::exit(1);
+    }
+}
+
+fn parse_args(args: &[String]) -> (String, bool) {
     let mut show_ast = false;
     let mut path: Option<String> = None;
-    for a in std::env::args().skip(1) {
+    for a in args {
         match a.as_str() {
             "--ast" => show_ast = true,
             other => path = Some(other.to_string()),

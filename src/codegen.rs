@@ -159,33 +159,25 @@ impl LV {
     }
 }
 
-/// Atom interning is delegated to the shared `fz_runtime` atom table —
-/// compile-time and runtime see the same id↔name mapping. Codegen also
-/// records which atoms it has interned so the AOT driver (.12.3) can emit
-/// `fz_register_atom` calls in interning order at binary startup.
+/// Per-compilation-unit atom interning. Ids are sequential 0..N-1 in order
+/// of first appearance, so AOT can emit `fz_register_atom(i, name, len)`
+/// calls in id order at binary startup and the runtime's table will line
+/// up. JIT (.12.4) calls `fz_runtime::intern` from the driver after
+/// lowering to populate the shared runtime table in matching order.
 #[derive(Default)]
 pub struct AtomInterner {
-    /// Names in interning order, indexed by id. Compile-time-only mirror of
-    /// what we've seen during lowering this compilation unit.
     pub names: Vec<String>,
     seen: HashMap<String, u32>,
 }
 
 impl AtomInterner {
     pub fn intern(&mut self, name: &str) -> u32 {
-        let id = fz_runtime::intern(name);
-        if !self.seen.contains_key(name) {
-            self.seen.insert(name.to_string(), id);
-            // Maintain `names` indexed by id, growing as needed. Different
-            // compilation units can see overlapping/skipping ids if the
-            // shared table was touched elsewhere; that's fine — the AOT
-            // driver only emits `fz_register_atom` for ids it has actually
-            // observed.
-            if (id as usize) >= self.names.len() {
-                self.names.resize(id as usize + 1, String::new());
-            }
-            self.names[id as usize] = name.to_string();
+        if let Some(&id) = self.seen.get(name) {
+            return id;
         }
+        let id = self.names.len() as u32;
+        self.names.push(name.to_string());
+        self.seen.insert(name.to_string(), id);
         id
     }
 }
@@ -1266,30 +1258,19 @@ mod tests {
     }
 
     #[test]
-    fn shared_atom_table_assigns_consistent_ids() {
-        // Two lowerings interning the same atom name see the same id —
-        // because the table is shared across the process.
-        let def1 = parse_one("fn a() do :foo end");
-        let def2 = parse_one("fn b() do :foo end");
-        let mut atoms1 = AtomInterner::default();
-        let mut atoms2 = AtomInterner::default();
+    fn atom_interner_is_local_and_sequential() {
+        let def = parse_one("fn p() do print(:hello) end");
+        let mut atoms = AtomInterner::default();
         let _ = lower_fn(
-            &def1,
-            &FnSig { params: vec![], ret: ty_atom() },
+            &def,
+            &FnSig { params: vec![], ret: LowerTy::Nil },
             &HashMap::new(),
-            &mut atoms1,
+            &mut atoms,
         )
         .unwrap();
-        let _ = lower_fn(
-            &def2,
-            &FnSig { params: vec![], ret: ty_atom() },
-            &HashMap::new(),
-            &mut atoms2,
-        )
-        .unwrap();
-        let id1 = fz_runtime::intern("foo");
-        let id2 = fz_runtime::intern("foo");
-        assert_eq!(id1, id2);
+        // Fresh interner → :hello gets id 0 regardless of any prior runtime
+        // intern state in the process.
+        assert_eq!(atoms.names, vec!["hello".to_string()]);
     }
 
     #[test]
