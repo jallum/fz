@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-ul4.11.3"
+  ],
   "blocks": [],
   "created": "2026-05-10T13:01:39Z",
   "description": "GOAL: Tree-walking interpreter for fz-IR. Critical correctness oracle: lets us validate .11.4 (AST-\u003eIR) end-to-end without dragging Cranelift in.\n\n## Decisions captured\n\n- Walks fz-IR directly; mirrors existing interp semantics on Value.\n- Bridges with the existing Rc\u003cValue\u003e-based interp at boundaries: IR runs a fn, returns a Value.\n- Uses the same builtin set as the interp.\n- Without this we'd be debugging fz-IR + Cranelift simultaneously, which is hell. Critical infra.\n\n## Deliverables (new src/ir_interp.rs)\n\n- pub fn run_ir_fn(module: \u0026ir::Module, fn_id: FnId, args: Vec\u003cValue\u003e) -\u003e Result\u003cValue, String\u003e\n- Implements Stmt + Term semantics:\n  - Let evaluates Prim, binds Var.\n  - Goto jumps to block, threads block params.\n  - If branches.\n  - Call invokes another fn, captures continuation.\n  - Return calls current frame's continuation.\n  - Halt returns the result to caller.\n- Trampoline-style: top-level driver loops until Halt.\n\n## Tests\n\n- Run each fixture in fixtures/ through both Rc\u003cValue\u003e interp and IR interp; assert results identical.\n- Multi-clause dispatch (classify, fact, fib).\n- Recursion (count, sum).\n- Higher-order (apply2, compose, vec_map).\n- Pattern matching across all Pattern variants.\n- Macros + modules (post-expand + post-resolve correctness).\n\n## Out of scope\n\n- Tier-up integration (IR interp purely for IR validation; runtime fz programs go through Cranelift codegen via .11.7+).\n- Performance — this is for correctness, not speed.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "fz-IR interpreter (debug oracle)",
   "type": "task",
-  "updated_at": "2026-05-10T13:01:39Z"
+  "updated_at": "2026-05-10T13:05:54Z"
 }
