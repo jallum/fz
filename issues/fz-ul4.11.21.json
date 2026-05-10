@@ -7,9 +7,15 @@
   "id": "fz-ul4.11.21",
   "labels": [],
   "parent": "fz-ul4.11",
+  "comments": [
+    {
+      "text": "Implementation notes:\n\n- Both-ptr inline test replaces the .11.20 either-ptr dispatch: '(a|b) \u0026 7 == 0' is a 3-op fast path that fires only when there's actually a heap value to inspect. Cross-tag pairs (Ptr vs Int, etc.) take the inline icmp eq path with the correct false answer.\n- fz_value_eq is now a thin shim around eq_fz, an internal recursive equality. eq_fz short-circuits on raw bit-eq (handles all scalar same-tag and ptr-identity cases), refuses cross-tag, then dispatches per HeapKind:\n  - Float: read payload, value-compare (.11.20 contract preserved)\n  - List: walk both cons chains in lockstep, eq_fz head, recurse on tail\n  - Struct: schema_id must match; iterate fields per schema, eq_fz each\n  - Bitstring: bit_len match, full bytes equal, last partial byte masked\n  - Map: count match, walk canonical-sorted entries pairwise\n  - Closure / Vec / future kinds: ptr-identity (already false at that point); explicit per-ticket scope\n- Different kinds compare unequal via the kind-mismatch short-circuit.\n- 10 new ir_codegen tests: list (same-content distinct, length mismatch), tuple (same arity content, different arity), bitstring (byte-aligned), map (sort-order-independent, value mismatch), heterogeneous List vs Tuple, nested Map\u003cAtom, List\u003e, Neq inverts.",
+      "timestamp": "2026-05-10T20:34:29Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "Structural equality for heap-typed values",
   "type": "task",
-  "updated_at": "2026-05-10T19:42:43Z"
+  "updated_at": "2026-05-10T20:34:29Z"
 }
