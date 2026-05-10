@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-ul4.11.24.1"
   ],
@@ -12,8 +12,8 @@
   "labels": [],
   "parent": "fz-ul4.11.24",
   "priority": 3,
-  "status": "open",
+  "status": "in_progress",
   "title": "IR-shaped inference driver: Var -\u003e Descr per FnIr",
   "type": "task",
-  "updated_at": "2026-05-10T20:52:42Z"
+  "updated_at": "2026-05-10T21:04:21Z"
 }
