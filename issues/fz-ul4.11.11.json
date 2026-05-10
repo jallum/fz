@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-ul4.11.9"
+  ],
   "blocks": [],
   "created": "2026-05-10T13:03:22Z",
   "description": "GOAL: Wire heap-allocated tuples through the CPS pipeline.\n\n## Decisions captured\n\n- Tuple of arity N -\u003e HeapKind::Struct{schema_id} where schema is N FzValue fields. Reuses the foundational struct mechanism (mostly free given .11.2).\n- Schema registered per arity (1, 2, 3, ...) at compile-time. Could extend to per-distinct-shape later if profitable; per-arity simpler.\n- IR prim: Prim::AllocStruct(schema_id, [f0, f1, ...]). Projection by static index becomes a field load.\n\n## Deliverables\n\n- IR codegen for Prim::AllocStruct (used for tuples; reused later for user records).\n- Schema registration for arities encountered in the program.\n- Tuple destructuring in pattern lowering (already covered in .11.4 — this connects).\n\n## Tests\n\n- `fn main() do print({1, 2}) end`.\n- `fn fst({a, _}): a; fn snd({_, b}): b`.\n- Tuple of mixed types: `{1, :ok, true}`.\n- GC traces tuple fields (allocate tuple of pointers; drop outer; GC; verify pointed-to-objects freed).\n\n## Out of scope\n\n- User-definable struct syntax (future epic).",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Tuples as struct schema (heap-allocated)",
   "type": "task",
-  "updated_at": "2026-05-10T13:03:22Z"
+  "updated_at": "2026-05-10T13:05:54Z"
 }
