@@ -7,9 +7,15 @@
   "id": "fz-ul4.11",
   "labels": [],
   "parent": "fz-ul4",
+  "comments": [
+    {
+      "text": "Scope addition (approved 2026-05-09): the tagged 64-bit Value representation (NaN-box vs low-bit tag) was originally on .12.2's plate, but with .12 having zero heap types, there's nothing to tag. The boundary ABI design — including the tagged-Value layout, GC barrier strategy, and how compiled code holds heap pointers across calls — moves here, alongside the GC itself.",
+      "timestamp": "2026-05-10T03:12:14Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "Tracing GC",
   "type": "task",
-  "updated_at": "2026-05-10T01:26:31Z"
+  "updated_at": "2026-05-10T03:12:14Z"
 }
