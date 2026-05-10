@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-ul4.10.3"
+  ],
   "blocks": [],
   "created": "2026-05-10T10:03:29Z",
   "description": "Fourth subticket of fz-ul4.10. Depends on .10.3 (expansion pass).\n\nWithout hygiene, a macro that introduces a local `x` will shadow any `x` in the caller's scope. Elixir's solution is gensym + a context tag.\n\nApproach for v1: when a macro returns AST containing a Var node `{name, meta, ctx}`, rename name to a unique gensym (e.g. `name__macro_\u003cn\u003e`) UNLESS the var came from an unquoted caller-side expression (which carries the caller's ctx).\n\nDefer until .10.3 lands and we can see real failure modes.",
