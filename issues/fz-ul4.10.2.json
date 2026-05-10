@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-10T10:03:29Z",
+  "description": "Second subticket of fz-ul4.10. Depends on .10.1 (reification API).\n\nAdd lexer + parser support so:\n- `quote do: \u003cexpr\u003e` and `quote do ... end` parse as Expr::Quote(Box\u003cExpr\u003e).\n- `unquote(e)` inside a quote parses as Expr::Unquote(Box\u003cExpr\u003e).\n- Outside a quote, unquote is a parse error.\n\nEval semantics (interp): Expr::Quote(e) walks e and calls expr_to_value, with one twist — wherever it sees Expr::Unquote(u), it evaluates u in the surrounding env and splices the resulting Value in place of the reified node. So `x = 5; quote do: 1 + unquote(x)` evaluates to the reified form of `1 + 5`.\n\nTests: a few quote/unquote programs run through the REPL/interp and produce the expected reified-AST values.",
+  "id": "fz-ul4.10.2",
+  "labels": [],
+  "parent": "fz-ul4.10",
+  "priority": 3,
+  "status": "open",
+  "title": "quote / unquote syntax",
+  "type": "task",
+  "updated_at": "2026-05-10T10:03:29Z"
+}
