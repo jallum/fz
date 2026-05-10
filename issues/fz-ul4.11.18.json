@@ -4,14 +4,15 @@
   "blocks": [
     "fz-ul4.11.10"
   ],
+  "closed_at": "2026-05-10T18:36:47Z",
   "created": "2026-05-10T18:33:01Z",
   "description": "GOAL: Switch ir_codegen's scalar value representation from raw i64 to FzValue (tagged u64). Foundation for .11.10+ heap-typed values flowing through the JIT alongside scalars.\n\n## Why this is a blocking sub-ticket\n\n.11.10 needs `head` / `tail` to return values that have meaningful tags (heap-ptr vs int vs nil), since cons cells store FzValue at offsets 16/24. Once any prim returns an FzValue, every BinOp / If / print / Const must agree on the encoding. That representation switch is orthogonal to \"wire 4 list prims\" and is filed here so the .11.10 commit stays focused on lists.\n\n## Decisions captured\n\n- Halt ABI stays `i64`. Term::Halt unboxes FzValue → i64 at the IR layer; existing 13 ir_codegen tests keep their literal expected values byte-for-byte. Halt is a debugging seam that goes away once processes land in .11.16+; not worth churning now. (Authorized 2026-05-10.)\n- `print` becomes a Rust-side dispatching runtime fn `fz_print_value(FzValue)`. v1 dispatches int / nil / true / false / atom only; .11.10 extends it with list. TEST_CAPTURE switches from `Vec\u003ci64\u003e` to a structured capture (rendered string per call, or small enum) so existing tests can still assert.\n- Booleans encode via `FzValue::TRUE` / `FzValue::FALSE` (special tag). `Term::If` tests truthy-ness on FzValue, NOT on raw i64.\n\n## Deliverables\n\n- Helpers in src/ir_codegen.rs: `box_int(b, raw_i64) -\u003e ir::Value`, `unbox_int(b, fz_val) -\u003e ir::Value`, `is_truthy(b, fz_val) -\u003e ir::Value (i8)`, `fz_nil()` / `fz_true()` / `fz_false()` constants.\n- Const lowering: Int(n) → iconst((n\u003c\u003c3)|1); True → iconst(TRUE_BITS); False → iconst(FALSE_BITS); Nil → iconst(NIL_BITS); Atom(id) → iconst((id\u003c\u003c3)|2).\n- BinOp / UnOp: arithmetic unboxes both operands, does i64 op, re-boxes. Comparisons return tagged true/false.\n- Term::If: `is_truthy(cond)` then brif.\n- Term::Halt: unbox int (or rely on caller having an int) before storing into host_ctx.halt_value.\n- Runtime fn fz_print_value(FzValue) replacing fz_test_print_i64. Dispatch on tag.\n- All 13 existing ir_codegen tests pass unchanged in their assertions.\n\n## Tests\n\n- All 13 existing ir_codegen scalar/control-flow/recursion tests pass byte-for-byte.\n- New unit test: round-trip box_int/unbox_int for MAX/MIN/0.\n- New unit test: print captures `:atom` / `nil` / `true` / `false` / `42` correctly.\n\n## Out of scope\n\n- List / cons / head / tail / is_nil prims (.11.10).\n- Tuple / map / vec / bitstring (.11.11+).\n- Heap-shared frame allocator (.11.10 or its own sub-ticket).\n- Float boxing (separate; tag 1xx reserved).",
   "id": "fz-ul4.11.18",
   "labels": [],
   "parent": "fz-ul4.11",
   "priority": 3,
-  "status": "in_progress",
+  "status": "closed",
   "title": "JIT scalar repr switches to FzValue (foundation for .11.10+)",
   "type": "task",
-  "updated_at": "2026-05-10T18:33:08Z"
+  "updated_at": "2026-05-10T18:36:47Z"
 }
