@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-ul4.14"
+  ],
   "created": "2026-05-10T01:26:31Z",
   "description": "Replace Rc with a real tracing GC. Likely a stop-the-world mark-sweep first; generational/incremental later.\n\nVectors should be off-the-managed-heap or pinned (no copy of large contiguous data).",
   "id": "fz-ul4.11",
@@ -17,5 +19,5 @@
   "status": "open",
   "title": "Tracing GC",
   "type": "task",
-  "updated_at": "2026-05-10T03:12:14Z"
+  "updated_at": "2026-05-10T10:01:45Z"
 }
