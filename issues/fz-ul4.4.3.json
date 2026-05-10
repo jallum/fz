@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-ul4.4.2"
+  ],
   "created": "2026-05-10T08:35:05Z",
   "description": "BinOp::Pipe in src/typer.rs::infer dispatches via apply_arrow directly, bypassing the Expr::Call arm where fz-ul4.4.1 records call_obs_curr. So a |\u003e f(b, c) does not accumulate observations for f, and any pipe-only call site of a user fn fails to drive monomorphization.\n\nFix: factor the obs-recording out of the Call arm into a helper, call it from the Pipe arm too. Two-line change once factored.\n\nAcceptance: a synthetic test where main only ever invokes f via pipe: f types as if it had been called directly.\n\nLow priority — the codebase rarely uses pipe with user fns at top level; mostly pipes into vec_map / list builtins.",
   "id": "fz-ul4.4.3",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Typer: pipe-operator call-site observation",
   "type": "task",
-  "updated_at": "2026-05-10T08:35:05Z"
+  "updated_at": "2026-05-10T08:35:11Z"
 }
