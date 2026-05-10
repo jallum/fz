@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-ul4.12.3"
+  ],
   "created": "2026-05-10T02:59:46Z",
   "description": "Typed AST → Cranelift IR for the in-scope subset, with no driver yet.\n\nScope:\n- Value types: int (i64), float (f64), bool (i8), atom (interned u32), nil, tuples-of-scalars (struct-like, fixed layout).\n- Operations: +, -, *, /, %, comparisons, \u0026\u0026, ||, !.\n- Control: if/else; case on literal + tuple patterns (scalar leaves only); direct calls.\n- No multi-clause yet (single-clause functions only — multi-clause lands in .12e).\n- No tail-call lowering yet (.12e).\n\nOut: closures, heap types, builtins-with-runtime-state. Builtin calls land in .12b.\n\nVerification: emit CLIF, run cranelift verifier, snapshot tests on representative functions (arith, tuple destructure, nested if). No JIT, no binary, no execution yet — that comes in .12c/.12d.",
   "id": "fz-ul4.12.1",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "CLIF lowering core (scalars + tuples-of-scalars)",
   "type": "task",
-  "updated_at": "2026-05-10T02:59:46Z"
+  "updated_at": "2026-05-10T03:00:21Z"
 }
