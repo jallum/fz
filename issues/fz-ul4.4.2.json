@@ -6,14 +6,15 @@
   "blocks": [
     "fz-ul4.13"
   ],
+  "closed_at": "2026-05-10T09:09:49Z",
   "created": "2026-05-10T08:34:52Z",
   "description": "Extend call-site observation (fz-ul4.4.1) to higher-order callees.\n\nProblem: fz-ul4.4.1 only accumulates obs when callee is Expr::Var(name) with name in user_fns. For HOF use like\n\n  fn map(_, []), do: []\n  fn map(f, [h | t]), do: [f(h) | map(f, t)]\n  fn double(x), do: x * 2\n  map(double, [1, 2, 3])\n\nthe f(h) call inside map's body has callee Var(\"f\") which isn't a user_fn, so we don't accumulate obs and f's type stays Pattern::Var(any). Result: map types as (any, any) → any and falls out of JIT/AOT eligibility — even though the program is fully monomorphic in practice.\n\nApproach: track 'fn-valued parameter origin' per call site. When a fn parameter is bound at call sites consistently to a single user fn (or a set we can join), substitute that fn's arrow type in place of  for the parameter binding. Specifically:\n\n1. At every call site of a user fn f, record the *types* of arg positions that hold fn values (per-arrow types, not just any). 2. In type_function, after pattern_bindings on a fn-typed param, replace its env binding with the union of observed fn types for that param position. 3. Inside the body, calls to that param now apply_arrow against a real arrow rather than 'any'.\n\nThis is interim coverage before fz-ul4.6 (parametric polymorphism) — call-site monomorphization gives us most of the benefit for closed programs without needing full generalization.\n\nConcrete acceptance: `fn map(f, [h | t]), do: [f(h) | map(f, t)]` typed precisely when called with double, drives a JIT-eligible map. Add an end-to-end test in jit::tests.\n\nRisk: when a fn-param is observed bound to multiple incompatible fns, we degrade to union-of-arrows; apply_arrow already handles that path.",
   "id": "fz-ul4.4.2",
   "labels": [],
   "parent": "fz-ul4.4",
   "priority": 3,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Typer: higher-order call-site observation for fn-valued parameters",
   "type": "task",
-  "updated_at": "2026-05-10T08:50:36Z"
+  "updated_at": "2026-05-10T09:09:49Z"
 }
