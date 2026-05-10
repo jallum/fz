@@ -374,7 +374,7 @@ mod tests {
                 Expr::Block(xs) => xs[0].clone(),
                 other => other.clone(),
             }
-            Item::Module(_) | Item::Alias { .. } | Item::Import { .. } => panic!("test fixture should be a fn"),
+            Item::Module(_) | Item::Alias { .. } | Item::Import { .. } | Item::MacroCall { .. } => panic!("test fixture should be a fn"),
         }
     }
 

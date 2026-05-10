@@ -42,6 +42,49 @@ mod do_block_sugar_tests {
     }
 
     #[test]
+    fn item_level_call_parses_as_macro_call() {
+        // Top-of-program: the parser accepts a bare-ident call as
+        // Item::MacroCall (the expansion pass replaces it with real
+        // items in .16.3).
+        let toks = Lexer::new(r#"
+test("addition") do
+  1 + 2
+end
+"#).tokenize().unwrap();
+        let prog = Parser::new(toks).parse_program().unwrap();
+        let mc = prog.items.iter().find_map(|it| match &**it {
+            Item::MacroCall { name, args } => Some((name.clone(), args.clone())),
+            _ => None,
+        });
+        let (name, args) = mc.expect("expected an Item::MacroCall");
+        assert_eq!(name, "test");
+        assert_eq!(args.len(), 2, "name + body");
+        assert!(matches!(args[0], Expr::Str(ref s) if s == "addition"));
+        // body is whatever parse_block_until returns; for a single-stmt
+        // block it can collapse to the inner expr.
+        match &args[1] {
+            Expr::Block(_) | Expr::BinOp(_, _, _) => {}
+            other => panic!("unexpected body shape: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn item_level_call_inside_module() {
+        let toks = Lexer::new(r#"
+defmodule MyTest do
+  test("addition") do
+    1 + 2
+  end
+end
+"#).tokenize().unwrap();
+        let prog = Parser::new(toks).parse_program().unwrap();
+        let m = prog.items.iter().find_map(|it| match &**it {
+            Item::Module(m) => Some(m), _ => None,
+        }).unwrap();
+        assert!(m.items.iter().any(|it| matches!(&**it, Item::MacroCall { .. })));
+    }
+
+    #[test]
     fn plain_call_no_extra_arg() {
         let e = parse_fn_body("f(1, 2)");
         let Expr::Call(_, args) = e else { panic!() };
@@ -194,8 +237,27 @@ impl Parser {
                         });
                     }
                 }
+                // A bare ident at item-position with a paren follow is an
+                // item-level macro call: `test("name") do <body> end`. The
+                // expansion pass (.16.3) splices in the items the macro
+                // returns. We delegate to parse_expr so all the call-arg /
+                // do-block sugar gets reused, then validate the shape.
+                Tok::Ident(_) => {
+                    flush_fn_groups(&mut items, &mut order, &mut groups);
+                    let e = self.parse_expr()?;
+                    let (name, args): (String, Vec<Expr>) = match e {
+                        Expr::Call(callee, args) => match *callee {
+                            Expr::Var(n) => (n, args),
+                            _ => return self.err(
+                                "item-level call must have a bare-name callee"),
+                        },
+                        _ => return self.err(
+                            "expected a macro call at item position"),
+                    };
+                    items.push(Rc::new(Item::MacroCall { name, args }));
+                }
                 _ => return self.err(format!(
-                    "expected `fn`, `defmacro`, `defmodule`, `alias`, `import`, or `@`, got {:?}",
+                    "expected `fn`, `defmacro`, `defmodule`, `alias`, `import`, `@`, or a macro call, got {:?}",
                     self.peek()
                 )),
             }

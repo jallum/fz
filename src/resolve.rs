@@ -61,6 +61,19 @@ pub fn flatten_modules(prog: Program) -> Result<Program, String> {
             Item::Import { .. } => return Err(
                 "import is only valid inside a defmodule body".into()
             ),
+            Item::MacroCall { name, args } => {
+                // Preserve as-is — expansion (.16.3) replaces with real
+                // items. Rewrite expression args so any cross-module
+                // references resolve before the macro sees them.
+                let no_siblings: HashSet<String> = HashSet::new();
+                let mut new_args: Vec<Expr> = args.clone();
+                for a in &mut new_args {
+                    let mut intro: HashSet<String> = HashSet::new();
+                    rewrite_expr(a, "", &no_siblings, &mut intro,
+                        &module_paths, &no_aliases, &no_imports);
+                }
+                out.push(Rc::new(Item::MacroCall { name: name.clone(), args: new_args }));
+            }
         }
     }
     Ok(Program { items: out })
@@ -160,7 +173,7 @@ fn flatten_module(
                     imports.insert((name, arity), path_s.clone());
                 }
             }
-            Item::Module(_) => {}
+            Item::Module(_) | Item::MacroCall { .. } => {}
         }
     }
 
@@ -185,6 +198,17 @@ fn flatten_module(
                 flatten_module(inner, &module_path, out, module_paths, module_fns)?;
             }
             Item::Alias { .. } | Item::Import { .. } => {} // consumed by the resolver
+            Item::MacroCall { name, args } => {
+                let mut new_args: Vec<Expr> = args.clone();
+                for a in &mut new_args {
+                    let mut intro: HashSet<String> = HashSet::new();
+                    rewrite_expr(a, &module_path, &siblings, &mut intro,
+                        module_paths, &aliases, &imports);
+                }
+                out.push(Rc::new(Item::MacroCall {
+                    name: name.clone(), args: new_args,
+                }));
+            }
         }
     }
     Ok(())
