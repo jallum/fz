@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-ul4.12.3"
+  ],
   "blocks": [],
   "created": "2026-05-10T03:00:17Z",
   "description": "Extends the lowering and both drivers to compile real fz functions, not just single-clause toys.\n\nScope:\n- Multi-clause functions: lower the whole function as one CLIF function with a guard chain (clause-1 patterns+guard → body, fall-through to clause-2, …, raise no-match panic at end).\n- Guards: must be in the scalar-pure subset (arith, comparisons, boolean, tuple field reads). Guard outside subset → compile error.\n- Tuple patterns: destructure into Cranelift values; nested tuples ok.\n- Self-tail-calls: detect direct recursion in tail position, lower as a CLIF loop with parameter rebinding. Mutual TCO out of scope.\n\nVerification: fact, fib, classify, scalar-only sum-style functions all run identically in tier-0, jit, and AOT binary.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Multi-clause + guards + tuple patterns + self-TCO (both backends)",
   "type": "task",
-  "updated_at": "2026-05-10T03:00:17Z"
+  "updated_at": "2026-05-10T03:00:21Z"
 }
