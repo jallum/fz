@@ -84,12 +84,20 @@ fn try_eval(src: &str, interp: &Interp, env: &Env) -> Outcome {
     if starts_with_fn {
         let mut p = Parser::new(toks);
         match p.parse_program() {
-            Ok(prog) => {
-                // Re-bind every declared fn into globals (replaces any prior
-                // definition under the same name, so REPL redefinition just
-                // works).
-                if let Err(e) = load_items(interp, &prog.items) {
-                    return Outcome::Err(format!("load: {}", e));
+            Ok(mut prog) => {
+                // Two-phase: load macros first (so they're callable during
+                // expansion), expand fn bodies, then load the expanded fns.
+                // Loading macros early also accumulates macro_names across
+                // REPL batches.
+                if let Err(e) = load_items_filtered(interp, &prog.items, /*macros=*/ true) {
+                    return Outcome::Err(format!("load macros: {}", e));
+                }
+                let live = interp.macro_names.borrow().clone();
+                if let Err(e) = crate::macros::expand_with(&mut prog, interp, &live) {
+                    return Outcome::Err(format!("macro: {}", e));
+                }
+                if let Err(e) = load_items_filtered(interp, &prog.items, /*macros=*/ false) {
+                    return Outcome::Err(format!("load fns: {}", e));
                 }
                 return Outcome::Ok;
             }
@@ -102,10 +110,16 @@ fn try_eval(src: &str, interp: &Interp, env: &Env) -> Outcome {
 
     let mut p = Parser::new(toks);
     match p.parse_expr_eof() {
-        Ok(e) => match interp.eval(&e, env) {
-            Ok(Value::Nil) => Outcome::Ok,
-            Ok(v) => { println!("{}", v); Outcome::Ok }
-            Err(msg) => Outcome::Err(msg),
+        Ok(mut e) => {
+            let live = interp.macro_names.borrow().clone();
+            if let Err(msg) = crate::macros::expand_expr(&mut e, interp, &live, 0) {
+                return Outcome::Err(format!("macro: {}", msg));
+            }
+            match interp.eval(&e, env) {
+                Ok(Value::Nil) => Outcome::Ok,
+                Ok(v) => { println!("{}", v); Outcome::Ok }
+                Err(msg) => Outcome::Err(msg),
+            }
         }
         Err(e) => {
             if is_incomplete(&e) { Outcome::Incomplete }
@@ -115,11 +129,23 @@ fn try_eval(src: &str, interp: &Interp, env: &Env) -> Outcome {
 }
 
 fn load_items(interp: &Interp, items: &[std::rc::Rc<Item>]) -> Result<(), String> {
+    load_items_filtered(interp, items, false)?;
+    load_items_filtered(interp, items, true)?;
+    Ok(())
+}
+
+/// `which == true` loads only macros; `which == false` loads only non-macros.
+/// Splitting the two phases lets the REPL register macros before running
+/// expansion on fn bodies that may call them.
+fn load_items_filtered(interp: &Interp, items: &[std::rc::Rc<Item>], macros_only: bool) -> Result<(), String> {
     use std::rc::Rc;
     for item in items {
         match &**item {
             Item::Fn(def) => {
-                if def.is_macro { continue; }
+                if macros_only != def.is_macro { continue; }
+                if def.is_macro {
+                    interp.macro_names.borrow_mut().insert(def.name.clone());
+                }
                 // If a closure already exists under this name *and* the new
                 // clauses match arity, append. Otherwise replace. Matches
                 // user expectation: typing several `fn foo(...)` lines in

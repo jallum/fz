@@ -537,9 +537,11 @@ pub fn build(src_path: &Path, out_path: &Path) -> Result<(), BuildError> {
     let toks = Lexer::new(&src)
         .tokenize()
         .map_err(|e| BuildError(format!("{}", e)))?;
-    let prog = Parser::new(toks)
+    let mut prog = Parser::new(toks)
         .parse_program()
         .map_err(|e| BuildError(format!("{}", e)))?;
+    crate::macros::expand_program(&mut prog)
+        .map_err(|e| BuildError(format!("macro expansion: {}", e)))?;
     let mut typer = Typer::new();
     typer.type_program(&prog);
     if !typer.errors.is_empty() {

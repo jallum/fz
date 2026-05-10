@@ -320,7 +320,9 @@ pub fn run(src_path: &Path) -> Result<(), JitError> {
 
 pub fn run_str(src: &str) -> Result<(), JitError> {
     let toks = Lexer::new(src).tokenize().map_err(|e| JitError(format!("{}", e)))?;
-    let prog = Parser::new(toks).parse_program().map_err(|e| JitError(format!("{}", e)))?;
+    let mut prog = Parser::new(toks).parse_program().map_err(|e| JitError(format!("{}", e)))?;
+    crate::macros::expand_program(&mut prog)
+        .map_err(|e| JitError(format!("macro expansion: {}", e)))?;
     let mut typer = Typer::new();
     typer.type_program(&prog);
     if !typer.errors.is_empty() {

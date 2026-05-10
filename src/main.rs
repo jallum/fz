@@ -6,6 +6,7 @@ mod bitstr;
 mod codegen;
 mod eval;
 mod lexer;
+mod macros;
 mod parser;
 mod repl;
 mod typer;
@@ -139,10 +140,13 @@ fn main() {
         Err(e) => { eprintln!("{}", e); std::process::exit(1); }
     };
 
-    let prog = match Parser::new(toks).parse_program() {
+    let mut prog = match Parser::new(toks).parse_program() {
         Ok(p) => p,
         Err(e) => { eprintln!("{}", e); std::process::exit(1); }
     };
+    if let Err(e) = macros::expand_program(&mut prog) {
+        eprintln!("macro expansion: {}", e); std::process::exit(1);
+    }
 
     if show_ast {
         for item in &prog.items { println!("{:#?}", item); }

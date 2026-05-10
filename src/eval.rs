@@ -15,12 +15,20 @@ pub type CallHook = Rc<dyn Fn(&str, &Interp)>;
 pub struct Interp {
     pub globals: Env,
     pub on_user_call: RefCell<Option<CallHook>>,
+    /// Names of fns flagged `defmacro` in the loaded program(s). Used by
+    /// the macro expansion pass; persists across REPL inputs so a macro
+    /// defined on one line is callable from later inputs.
+    pub macro_names: RefCell<std::collections::HashSet<String>>,
 }
 
 impl Interp {
     pub fn new() -> Self {
         let globals = Env::empty().child();
-        let me = Self { globals, on_user_call: RefCell::new(None) };
+        let me = Self {
+            globals,
+            on_user_call: RefCell::new(None),
+            macro_names: RefCell::new(std::collections::HashSet::new()),
+        };
         me.install_builtins();
         me
     }
@@ -133,7 +141,11 @@ impl Interp {
         for item in &prog.items {
             match &**item {
                 Item::Fn(def) => {
-                    if def.is_macro { continue; } // macros not yet expanded
+                    if def.is_macro {
+                        self.macro_names.borrow_mut().insert(def.name.clone());
+                    }
+                    // Macros load alongside regular fns so the expansion pass
+                    // can dispatch them by name through the same interp.
                     let closure = Value::Closure(Rc::new(Closure {
                         name: Some(def.name.clone()),
                         clauses: def.clauses.clone(),
