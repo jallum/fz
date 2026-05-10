@@ -1,9 +1,6 @@
-mod aot;
 mod ast;
 mod ast_value;
-mod jit;
 mod bitstr;
-mod codegen;
 mod eval;
 mod fz_ir;
 mod fz_value;
@@ -19,10 +16,12 @@ mod repl;
 mod resolve;
 mod test_runner;
 mod typer;
-#[cfg(test)]
-mod test_support;
 mod types;
 mod value;
+// fz-ul4.11.9 cutover: legacy direct-style codegen modules retired. The
+// source files (codegen.rs / jit.rs / aot.rs / test_support.rs) are
+// preserved verbatim with a top-level `#![cfg(any())]` so test intent can
+// be re-verified once ir_codegen reaches feature parity in .11.10-.11.14.
 
 use eval::Interp;
 use lexer::Lexer;
@@ -186,48 +185,60 @@ fn main() {
     }
 }
 
-fn run_build(args: &[String]) {
-    let mut src: Option<String> = None;
-    let mut out: Option<String> = None;
-    let mut i = 0;
-    while i < args.len() {
-        match args[i].as_str() {
-            "-o" => {
-                i += 1;
-                out = Some(args.get(i).cloned().unwrap_or_else(|| {
-                    eprintln!("fz build: -o requires an argument");
-                    std::process::exit(2);
-                }));
-            }
-            other => src = Some(other.to_string()),
-        }
-        i += 1;
-    }
-    let src = src.unwrap_or_else(|| {
-        eprintln!("fz build <src.fz> -o <out>");
-        std::process::exit(2);
-    });
-    let out = out.unwrap_or_else(|| {
-        std::path::Path::new(&src)
-            .file_stem()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "a.out".into())
-    });
-    if let Err(e) = aot::build(std::path::Path::new(&src), std::path::Path::new(&out)) {
-        eprintln!("{}", e);
-        std::process::exit(1);
-    }
+fn run_build(_args: &[String]) {
+    eprintln!(
+        "fz build: AOT path is being rewired through ir_codegen \
+         (fz-ul4.11.9 cutover); reinstated alongside heap-type support \
+         in .11.10-.11.14"
+    );
+    std::process::exit(2);
 }
 
 fn run_jit(args: &[String]) {
-    let src = args.first().cloned().unwrap_or_else(|| {
+    // New CPS-based pipeline: lex -> parse -> resolve -> macro-expand ->
+    // ir_lower -> ir_codegen -> trampoline. Currently only handles programs
+    // within ir_codegen's scalar-frame scope; heap types fail at codegen
+    // until .11.10-.11.14.
+    let src_path = args.first().cloned().unwrap_or_else(|| {
         eprintln!("fz run <src.fz>");
         std::process::exit(2);
     });
-    if let Err(e) = jit::run(std::path::Path::new(&src)) {
+    let src = std::fs::read_to_string(&src_path).unwrap_or_else(|e| {
+        eprintln!("read {}: {}", src_path, e);
+        std::process::exit(1);
+    });
+    let toks = Lexer::new(&src).tokenize().unwrap_or_else(|e| {
         eprintln!("{}", e);
         std::process::exit(1);
+    });
+    let prog = Parser::new(toks).parse_program().unwrap_or_else(|e| {
+        eprintln!("{}", e);
+        std::process::exit(1);
+    });
+    let mut prog = resolve::flatten_modules(prog).unwrap_or_else(|e| {
+        eprintln!("module resolution: {}", e);
+        std::process::exit(1);
+    });
+    if let Err(e) = macros::expand_program(&mut prog) {
+        eprintln!("macro expansion: {}", e);
+        std::process::exit(1);
     }
+    let module = ir_lower::lower_program(&prog).unwrap_or_else(|e| {
+        eprintln!("lower: {}", e);
+        std::process::exit(1);
+    });
+    let main_fn = match module.fn_by_name("main") {
+        Some(f) => f.id,
+        None => {
+            eprintln!("fz run: no main/0 fn found");
+            std::process::exit(1);
+        }
+    };
+    let cm = ir_codegen::compile(&module).unwrap_or_else(|e| {
+        eprintln!("{}", e);
+        std::process::exit(1);
+    });
+    let _ = cm.run(main_fn);
 }
 
 fn parse_args(args: &[String]) -> (String, bool) {

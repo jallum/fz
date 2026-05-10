@@ -1,3 +1,4 @@
+#![cfg(any())] // fz-ul4.11.9: legacy direct-style codegen retired; preserved verbatim for intent verification once ir_codegen reaches feature parity (.11.10-.11.14). To re-enable, drop this attr.
 //! fz-ul4.12.4 — JIT driver: source → in-process compiled code, mixed with
 //! interpreter fallback for fns outside the .12 scope.
 //!

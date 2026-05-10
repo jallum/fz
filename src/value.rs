@@ -51,8 +51,10 @@ pub struct IrClosure {
 
 pub struct JitFn {
     pub name: String,
-    pub sig: crate::codegen::FnSig,
     /// Reverse-thunk pointer (transmute target: `unsafe extern "C" fn(*const u64, *mut u64)`).
+    /// Empty / never populated under the .11.9 cutover; stays declared so the
+    /// Value::Jit variant compiles. Wired up again as ir_codegen reaches
+    /// feature parity in .11.10-.11.14.
     pub fn_ptr: usize,
 }
 
@@ -295,7 +297,7 @@ impl fmt::Display for Value {
                 c.name.as_deref().unwrap_or("anon"),
                 c.clauses.first().map(|cl| cl.params.len()).unwrap_or(0)),
             Value::Builtin(b) => write!(f, "#builtin<{}/{}>", b.name, b.arity),
-            Value::Jit(j) => write!(f, "#jit<{}/{}>", j.name, j.sig.params.len()),
+            Value::Jit(j) => write!(f, "#jit<{}>", j.name),
             Value::JitPoly(j) => write!(f, "#jit_poly<{}|{}>", j.user_name, j.specs.len()),
             Value::IrClosure(c) => {
                 write!(f, "#ir_closure<fn{}/cap{}>", c.fn_id, c.captured.len())
