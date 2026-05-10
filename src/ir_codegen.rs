@@ -147,6 +147,7 @@ fn render_fz_value(bits: u64) -> String {
             match HeapKind::from_u16(kind) {
                 Some(HeapKind::List) => render_list(bits),
                 Some(HeapKind::Struct) => render_struct(bits),
+                Some(HeapKind::Bitstring) => render_bitstring(bits),
                 _ => format!("#ptr<{:#x}>", bits),
             }
         }
@@ -184,6 +185,26 @@ fn render_struct(bits: u64) -> String {
             .collect()
     });
     format!("{{{}}}", parts.join(", "))
+}
+
+/// Render a heap Bitstring. For byte-aligned bitstrings, render bytes as
+/// `<<a, b, c>>`. For sub-byte bit_len, append `::<bits>` to the partial
+/// byte's value. Mirrors the interp's display for tests.
+fn render_bitstring(bits: u64) -> String {
+    use crate::fz_value::FzValue;
+    let p = FzValue(bits).unbox_ptr().unwrap();
+    let bit_len = unsafe { std::ptr::read((p as *const u8).add(16) as *const u64) } as usize;
+    let total_bytes = bit_len.div_ceil(8);
+    let bytes = unsafe { std::slice::from_raw_parts((p as *const u8).add(24), total_bytes) };
+    let full_bytes = bit_len / 8;
+    let trailing_bits = bit_len % 8;
+    let mut parts: Vec<String> = bytes[..full_bytes].iter().map(|b| b.to_string()).collect();
+    if trailing_bits > 0 {
+        // Show the trailing partial byte right-shifted to its high bits.
+        let last = bytes[full_bytes] >> (8 - trailing_bits);
+        parts.push(format!("{}::{}", last, trailing_bits));
+    }
+    format!("<<{}>>", parts.join(", "))
 }
 
 fn render_list(bits: u64) -> String {
@@ -305,6 +326,370 @@ extern "C" fn fz_alloc_struct(schema_id: u32) -> u64 {
     p as u64
 }
 
+// ----- Bitstring runtime fns -----
+//
+// Construction uses a thread-local BitWriter populated across a sequence of
+// `fz_bs_write_field` calls between `fz_bs_begin` and `fz_bs_finalize`. The
+// codegen for a single Prim::MakeBitstring emits this whole sequence within
+// one block — no CPS splits between begin and finalize, so per-thread state
+// is safe.
+//
+// Reader prims model the reader as a 3-tuple `[bs_ptr, bit_len_int, pos_int]`
+// (heap-allocated via fz_alloc_struct). Each BitReadField allocates a fresh
+// 3-tuple result `[ok, extracted, new_reader]` on success or 1-tuple
+// `[false]` on failure. Tuple schema_ids for arities 1 and 3 are registered
+// at compile() time when any bitstring prim is present.
+
+thread_local! {
+    static BS_BUILDER: std::cell::RefCell<Option<crate::bitstr::BitWriter>> =
+        std::cell::RefCell::new(None);
+    /// Heap-registered schema ids for the bitstring reader/result tuples.
+    /// Set by compile() when any bitstring prim is present; consumed by the
+    /// runtime fns below. None means "no bitstring prim in this module".
+    static BS_TUPLE_ARITY3_SCHEMA: std::cell::Cell<Option<u32>> =
+        std::cell::Cell::new(None);
+    static BS_TUPLE_ARITY1_SCHEMA: std::cell::Cell<Option<u32>> =
+        std::cell::Cell::new(None);
+}
+
+extern "C" fn fz_bs_begin() {
+    BS_BUILDER.with(|b| *b.borrow_mut() = Some(crate::bitstr::BitWriter::new()));
+}
+
+/// Write one field into the active builder. Field-type tags match the order
+/// in `crate::ast::BitType`: Integer=0, Float=1, Binary=2, Bits=3, Utf8=4,
+/// Utf16=5, Utf32=6. `size_present` distinguishes None (0) vs Some (1);
+/// `size_value` is in size-units (multiplied by `unit` internally).
+#[allow(clippy::too_many_arguments)]
+extern "C" fn fz_bs_write_field(
+    value_bits: u64,
+    ty_tag: u32,
+    size_present: u32,
+    size_value: u32,
+    unit: u32,
+    endian_tag: u32,
+    signed: u32,
+) {
+    use crate::ast::{BitType, Endian};
+    use crate::fz_value::{FzValue, HeapKind, Tag};
+    let ty = decode_bit_type(ty_tag);
+    let size = if size_present != 0 { Some(size_value) } else { None };
+    let endian = decode_endian(endian_tag);
+    let signed_b = signed != 0;
+    BS_BUILDER.with(|b| {
+        let mut bopt = b.borrow_mut();
+        let w = bopt
+            .as_mut()
+            .expect("fz_bs_write_field called without fz_bs_begin");
+        match ty {
+            BitType::Integer => {
+                let n = FzValue(value_bits)
+                    .unbox_int()
+                    .expect("integer bit field expects boxed int");
+                let total = size.unwrap_or(8) * unit;
+                assert!(total <= 64, "integer field too wide: {}", total);
+                let masked = if total < 64 {
+                    (n as u64) & ((1u64 << total) - 1)
+                } else {
+                    n as u64
+                };
+                let bswap = crate::bitstr::apply_endian_for_write(masked, total, endian);
+                w.write_bits(bswap, total as usize);
+            }
+            BitType::Binary | BitType::Bits => {
+                // Source must be a heap Bitstring (Vec(U8) lands in .11.14;
+                // until then both Binary and Bits read from a Bitstring).
+                let v = FzValue(value_bits);
+                let p = match v.tag() {
+                    Tag::Ptr => v.unbox_ptr().expect("binary field: bad ptr"),
+                    _ => panic!("binary/bits bit field expects heap bitstring"),
+                };
+                let header = unsafe { &*p };
+                if HeapKind::from_u16(header.kind) != Some(HeapKind::Bitstring) {
+                    panic!("binary/bits bit field source is not a Bitstring");
+                }
+                let src_bit_len = unsafe {
+                    std::ptr::read((p as *const u8).add(16) as *const u64)
+                } as usize;
+                let src_bytes_ptr = unsafe { (p as *const u8).add(24) };
+                let needed_bits = match (ty, size) {
+                    (BitType::Binary, None) => src_bit_len,
+                    (BitType::Binary, Some(n)) => (n * unit) as usize,
+                    (BitType::Bits, None) => src_bit_len,
+                    (BitType::Bits, Some(n)) => (n * unit) as usize,
+                    _ => unreachable!(),
+                };
+                assert!(needed_bits <= src_bit_len, "binary/bits field exceeds source");
+                let src_bytes = unsafe {
+                    std::slice::from_raw_parts(src_bytes_ptr, src_bit_len.div_ceil(8))
+                };
+                if needed_bits % 8 == 0 && w.bit_len % 8 == 0 {
+                    w.bytes.extend_from_slice(&src_bytes[..needed_bits / 8]);
+                    w.bit_len += needed_bits;
+                } else {
+                    let mut r = crate::bitstr::BitReader {
+                        bytes: src_bytes,
+                        bit_len: src_bit_len,
+                        pos: 0,
+                    };
+                    for _ in 0..needed_bits {
+                        w.append_bit(r.read_bit().unwrap());
+                    }
+                }
+            }
+            BitType::Utf8 | BitType::Utf16 | BitType::Utf32 => {
+                let cp = FzValue(value_bits)
+                    .unbox_int()
+                    .expect("utf field expects integer codepoint")
+                    as u32;
+                let bytes = match ty {
+                    BitType::Utf8 => crate::bitstr::encode_utf8(cp),
+                    BitType::Utf16 => crate::bitstr::encode_utf16(cp, endian),
+                    BitType::Utf32 => crate::bitstr::encode_utf32(cp, endian),
+                    _ => unreachable!(),
+                };
+                let bytes = bytes.expect("invalid codepoint");
+                w.write_bytes(&bytes);
+            }
+            BitType::Float => {
+                // Floats not yet boxed in JIT (Tag::Reserved). Lands when
+                // float repr arrives — separate ticket.
+                panic!(
+                    "float bit field not supported in JIT yet (signed={}, value_bits={:#x})",
+                    signed_b, value_bits
+                );
+            }
+        }
+    });
+}
+
+extern "C" fn fz_bs_finalize() -> u64 {
+    BS_BUILDER.with(|b| {
+        let w = b
+            .borrow_mut()
+            .take()
+            .expect("fz_bs_finalize without fz_bs_begin");
+        let bit_len = w.bit_len as u64;
+        let bytes = w.bytes;
+        let p = HEAP.with(|h| h.borrow_mut().alloc_bitstring(&bytes, bit_len));
+        p as u64
+    })
+}
+
+fn decode_bit_type(t: u32) -> crate::ast::BitType {
+    use crate::ast::BitType;
+    match t {
+        0 => BitType::Integer,
+        1 => BitType::Float,
+        2 => BitType::Binary,
+        3 => BitType::Bits,
+        4 => BitType::Utf8,
+        5 => BitType::Utf16,
+        6 => BitType::Utf32,
+        _ => panic!("unknown bit type tag {}", t),
+    }
+}
+
+fn decode_endian(e: u32) -> crate::ast::Endian {
+    use crate::ast::Endian;
+    match e {
+        0 => Endian::Big,
+        1 => Endian::Little,
+        2 => Endian::Native,
+        _ => panic!("unknown endian tag {}", e),
+    }
+}
+
+fn encode_bit_type(t: crate::ast::BitType) -> u32 {
+    use crate::ast::BitType;
+    match t {
+        BitType::Integer => 0,
+        BitType::Float => 1,
+        BitType::Binary => 2,
+        BitType::Bits => 3,
+        BitType::Utf8 => 4,
+        BitType::Utf16 => 5,
+        BitType::Utf32 => 6,
+    }
+}
+
+fn encode_endian(e: crate::ast::Endian) -> u32 {
+    use crate::ast::Endian;
+    match e {
+        Endian::Big => 0,
+        Endian::Little => 1,
+        Endian::Native => 2,
+    }
+}
+
+/// Default unit per type, mirroring `crate::ir_lower::resolved_unit_for`.
+fn default_unit_for(ty: crate::ast::BitType) -> u32 {
+    use crate::ast::BitType;
+    match ty {
+        BitType::Integer | BitType::Float | BitType::Bits => 1,
+        BitType::Binary => 8,
+        BitType::Utf8 | BitType::Utf16 | BitType::Utf32 => 1,
+    }
+}
+
+/// Allocate a 3-tuple reader `[bs_ptr, bit_len_int, pos_int]` for an input
+/// bitstring. Schema id is set by compile() into BS_TUPLE_ARITY3_SCHEMA.
+extern "C" fn fz_bs_reader_init(bs_bits: u64) -> u64 {
+    use crate::fz_value::{FzValue, HeapKind, Tag};
+    let v = FzValue(bs_bits);
+    let p = match v.tag() {
+        Tag::Ptr => v.unbox_ptr().expect("reader_init: bad ptr"),
+        _ => panic!("reader_init expects heap value"),
+    };
+    let header = unsafe { &*p };
+    if HeapKind::from_u16(header.kind) != Some(HeapKind::Bitstring) {
+        panic!("reader_init source is not a Bitstring");
+    }
+    let bit_len = unsafe { std::ptr::read((p as *const u8).add(16) as *const u64) } as i64;
+    let arity3 = BS_TUPLE_ARITY3_SCHEMA
+        .with(|c| c.get())
+        .expect("BS_TUPLE_ARITY3_SCHEMA not set");
+    let tuple_p = HEAP.with(|h| h.borrow_mut().alloc_struct(arity3));
+    unsafe {
+        let base = (tuple_p as *mut u8).add(16);
+        // [bs_ptr, bit_len_boxed, 0_boxed]
+        std::ptr::write(base as *mut u64, bs_bits);
+        std::ptr::write(base.add(8) as *mut u64, ((bit_len as u64) << 3) | 0b001);
+        std::ptr::write(base.add(16) as *mut u64, ((0i64 as u64) << 3) | 0b001);
+    }
+    tuple_p as u64
+}
+
+#[allow(clippy::too_many_arguments)]
+extern "C" fn fz_bs_read_field(
+    reader_bits: u64,
+    ty_tag: u32,
+    size_present: u32,
+    size_value: u32,
+    unit: u32,
+    endian_tag: u32,
+    signed: u32,
+    is_last: u32,
+) -> u64 {
+    use crate::ast::BitType;
+    use crate::bitstr::{apply_endian_for_read, sign_extend};
+    use crate::fz_value::{FzValue, HeapKind, Tag};
+    let ty = decode_bit_type(ty_tag);
+    let size = if size_present != 0 { Some(size_value) } else { None };
+    let endian = decode_endian(endian_tag);
+    let signed_b = signed != 0;
+    let is_last_b = is_last != 0;
+
+    // Decode reader tuple.
+    let v = FzValue(reader_bits);
+    let rp = v.unbox_ptr().expect("read_field: reader is not a ptr");
+    let bs_bits = unsafe { std::ptr::read((rp as *const u8).add(16) as *const u64) };
+    let bit_len = (FzValue(unsafe {
+        std::ptr::read((rp as *const u8).add(24) as *const u64)
+    }))
+    .unbox_int()
+    .unwrap() as usize;
+    let pos = (FzValue(unsafe {
+        std::ptr::read((rp as *const u8).add(32) as *const u64)
+    }))
+    .unbox_int()
+    .unwrap() as usize;
+
+    // Bytes pointer from bs.
+    let bs_v = FzValue(bs_bits);
+    let bsp = bs_v.unbox_ptr().expect("read_field: reader bs not a ptr");
+    let bs_header = unsafe { &*bsp };
+    if HeapKind::from_u16(bs_header.kind) != Some(HeapKind::Bitstring) {
+        panic!("read_field reader bs is not a Bitstring");
+    }
+    let bytes_ptr = unsafe { (bsp as *const u8).add(24) };
+    let bytes = unsafe { std::slice::from_raw_parts(bytes_ptr, bit_len.div_ceil(8)) };
+
+    // Failure path: alloc 1-tuple [false].
+    let arity1 = BS_TUPLE_ARITY1_SCHEMA
+        .with(|c| c.get())
+        .expect("BS_TUPLE_ARITY1_SCHEMA not set");
+    let arity3 = BS_TUPLE_ARITY3_SCHEMA
+        .with(|c| c.get())
+        .expect("BS_TUPLE_ARITY3_SCHEMA not set");
+    let fail = || -> u64 {
+        let p = HEAP.with(|h| h.borrow_mut().alloc_struct(arity1));
+        unsafe {
+            let base = (p as *mut u8).add(16);
+            std::ptr::write(base as *mut u64, FzValue::FALSE.0);
+        }
+        p as u64
+    };
+
+    let mut r = crate::bitstr::BitReader { bytes, bit_len, pos };
+
+    let (extracted_bits, consumed) = match ty {
+        BitType::Integer => {
+            let total = size.unwrap_or(8) * unit;
+            if total > 64 { return fail(); }
+            let raw = match r.read_bits(total as usize) {
+                Some(v) => v,
+                None => return fail(),
+            };
+            let raw = apply_endian_for_read(raw, total, endian);
+            let n: i64 = if signed_b { sign_extend(raw, total) } else { raw as i64 };
+            (FzValue::from_int(n).0, total as usize)
+        }
+        BitType::Binary | BitType::Bits => {
+            let needed_bits = match (ty, size, is_last_b) {
+                (BitType::Binary, None, true) | (BitType::Bits, None, true) => bit_len - pos,
+                (BitType::Binary, None, false) => return fail(), // size required
+                (BitType::Bits, None, false) => return fail(),
+                (BitType::Binary, Some(n), _) => (n * unit) as usize,
+                (BitType::Bits, Some(n), _) => (n * unit) as usize,
+                _ => unreachable!(),
+            };
+            if pos + needed_bits > bit_len { return fail(); }
+            // Build a fresh Bitstring from the slice. Always copy for v1
+            // (zero-copy slicing deferred — see ticket "Open").
+            let mut sub_bytes = Vec::with_capacity(needed_bits.div_ceil(8));
+            let mut w = crate::bitstr::BitWriter::new();
+            for _ in 0..needed_bits {
+                w.append_bit(r.read_bit().unwrap());
+            }
+            sub_bytes.extend_from_slice(&w.bytes);
+            let new_bs = HEAP
+                .with(|h| h.borrow_mut().alloc_bitstring(&sub_bytes, needed_bits as u64));
+            let new_bs_bits = new_bs as u64;
+            (new_bs_bits, needed_bits)
+        }
+        BitType::Float | BitType::Utf8 | BitType::Utf16 | BitType::Utf32 => {
+            // Float: same restriction as on the construction side.
+            // UTF: read uses crate::bitstr::decode_utf*; not exercised by
+            // ticket tests, so panic to surface intent rather than partial.
+            panic!(
+                "BitReadField for {:?} not yet wired in JIT (lands with float / UTF support)",
+                ty
+            );
+        }
+    };
+
+    // Allocate fresh reader tuple [bs_bits, bit_len_boxed, new_pos_boxed].
+    let new_pos = (pos + consumed) as i64;
+    let new_reader_p = HEAP.with(|h| h.borrow_mut().alloc_struct(arity3));
+    unsafe {
+        let base = (new_reader_p as *mut u8).add(16);
+        std::ptr::write(base as *mut u64, bs_bits);
+        std::ptr::write(base.add(8) as *mut u64, ((bit_len as u64) << 3) | 0b001);
+        std::ptr::write(base.add(16) as *mut u64, ((new_pos as u64) << 3) | 0b001);
+    }
+
+    // Allocate result tuple [true, extracted, new_reader].
+    let result_p = HEAP.with(|h| h.borrow_mut().alloc_struct(arity3));
+    unsafe {
+        let base = (result_p as *mut u8).add(16);
+        std::ptr::write(base as *mut u64, FzValue::TRUE.0);
+        std::ptr::write(base.add(8) as *mut u64, extracted_bits);
+        std::ptr::write(base.add(16) as *mut u64, new_reader_p as u64);
+    }
+    result_p as u64
+}
+
 extern "C" fn fz_alloc_frame(schema_id: u32, total_size: u32) -> *mut u8 {
     use std::alloc::{alloc_zeroed, Layout};
     // Round size up to a multiple of 16 to keep allocator happy and ensure
@@ -379,6 +764,11 @@ pub fn compile(module: &Module) -> Result<CompiledModule, CodegenError> {
     builder.symbol("fz_alloc_frame", fz_alloc_frame as *const u8);
     builder.symbol("fz_alloc_list_cons", fz_alloc_list_cons as *const u8);
     builder.symbol("fz_alloc_struct", fz_alloc_struct as *const u8);
+    builder.symbol("fz_bs_begin", fz_bs_begin as *const u8);
+    builder.symbol("fz_bs_write_field", fz_bs_write_field as *const u8);
+    builder.symbol("fz_bs_finalize", fz_bs_finalize as *const u8);
+    builder.symbol("fz_bs_reader_init", fz_bs_reader_init as *const u8);
+    builder.symbol("fz_bs_read_field", fz_bs_read_field as *const u8);
     let mut jmod = JITModule::new(builder);
 
     // Declare runtime imports.
@@ -402,6 +792,49 @@ pub fn compile(module: &Module) -> Result<CompiledModule, CodegenError> {
     let alloc_struct_id = jmod
         .declare_function("fz_alloc_struct", Linkage::Import, &alloc_struct_sig)
         .map_err(|e| CodegenError(format!("declare alloc_struct: {}", e)))?;
+    let bs_begin_sig = sig1(&[], &[]);
+    let bs_begin_id = jmod
+        .declare_function("fz_bs_begin", Linkage::Import, &bs_begin_sig)
+        .map_err(|e| CodegenError(format!("declare bs_begin: {}", e)))?;
+    let bs_write_sig = sig1(
+        &[
+            types::I64, // value bits
+            types::I32, // ty tag
+            types::I32, // size_present
+            types::I32, // size_value
+            types::I32, // unit
+            types::I32, // endian
+            types::I32, // signed
+        ],
+        &[],
+    );
+    let bs_write_id = jmod
+        .declare_function("fz_bs_write_field", Linkage::Import, &bs_write_sig)
+        .map_err(|e| CodegenError(format!("declare bs_write_field: {}", e)))?;
+    let bs_finalize_sig = sig1(&[], &[types::I64]);
+    let bs_finalize_id = jmod
+        .declare_function("fz_bs_finalize", Linkage::Import, &bs_finalize_sig)
+        .map_err(|e| CodegenError(format!("declare bs_finalize: {}", e)))?;
+    let bs_reader_init_sig = sig1(&[types::I64], &[types::I64]);
+    let bs_reader_init_id = jmod
+        .declare_function("fz_bs_reader_init", Linkage::Import, &bs_reader_init_sig)
+        .map_err(|e| CodegenError(format!("declare bs_reader_init: {}", e)))?;
+    let bs_read_field_sig = sig1(
+        &[
+            types::I64, // reader bits
+            types::I32, // ty tag
+            types::I32, // size_present
+            types::I32, // size_value
+            types::I32, // unit
+            types::I32, // endian
+            types::I32, // signed
+            types::I32, // is_last
+        ],
+        &[types::I64],
+    );
+    let bs_read_field_id = jmod
+        .declare_function("fz_bs_read_field", Linkage::Import, &bs_read_field_sig)
+        .map_err(|e| CodegenError(format!("declare bs_read_field: {}", e)))?;
 
     // Per-fn signature: extern "C" fn(*mut u8, *mut u8) -> *mut u8.
     let fn_sig = sig1(&[types::I64, types::I64], &[types::I64]);
@@ -423,20 +856,43 @@ pub fn compile(module: &Module) -> Result<CompiledModule, CodegenError> {
         alloc_id,
         alloc_cons_id,
         alloc_struct_id,
+        bs_begin_id,
+        bs_write_id,
+        bs_finalize_id,
+        bs_reader_init_id,
+        bs_read_field_id,
     };
 
     // Register a heap Schema for every tuple arity used by MakeTuple, so the
     // GC tracer can walk fields and so codegen can iconst the schema_id.
+    // Also detect any bitstring prim so we can pre-register arity-1 / arity-3
+    // schemas used by the reader / result tuples even if no MakeTuple uses
+    // those arities directly.
     let mut tuple_arities: std::collections::HashSet<usize> =
         std::collections::HashSet::new();
+    let mut has_bs_prim = false;
     for f in &module.fns {
         for blk in &f.blocks {
             for stmt in &blk.stmts {
-                if let Stmt::Let(_, Prim::MakeTuple(args)) = stmt {
-                    tuple_arities.insert(args.len());
+                let Stmt::Let(_, prim) = stmt;
+                match prim {
+                    Prim::MakeTuple(args) => {
+                        tuple_arities.insert(args.len());
+                    }
+                    Prim::MakeBitstring(_)
+                    | Prim::BitReaderInit(_)
+                    | Prim::BitReadField { .. }
+                    | Prim::BitReaderDone(_) => {
+                        has_bs_prim = true;
+                    }
+                    _ => {}
                 }
             }
         }
+    }
+    if has_bs_prim {
+        tuple_arities.insert(1);
+        tuple_arities.insert(3);
     }
     let mut tuple_schema_ids: HashMap<usize, u32> = HashMap::new();
     HEAP.with(|h| {
@@ -456,6 +912,12 @@ pub fn compile(module: &Module) -> Result<CompiledModule, CodegenError> {
             tuple_schema_ids.insert(arity, id);
         }
     });
+    if has_bs_prim {
+        let id1 = *tuple_schema_ids.get(&1).expect("arity-1 schema registered");
+        let id3 = *tuple_schema_ids.get(&3).expect("arity-3 schema registered");
+        BS_TUPLE_ARITY1_SCHEMA.with(|c| c.set(Some(id1)));
+        BS_TUPLE_ARITY3_SCHEMA.with(|c| c.set(Some(id3)));
+    }
 
     for f in &module.fns {
         let func_id = *fn_ids.get(&f.id.0).unwrap();
@@ -504,6 +966,11 @@ struct RuntimeRefs {
     alloc_id: FuncId,
     alloc_cons_id: FuncId,
     alloc_struct_id: FuncId,
+    bs_begin_id: FuncId,
+    bs_write_id: FuncId,
+    bs_finalize_id: FuncId,
+    bs_reader_init_id: FuncId,
+    bs_read_field_id: FuncId,
 }
 
 fn compile_fn(
@@ -967,15 +1434,113 @@ fn lower_prim(
             }
             p
         }
+        Prim::MakeBitstring(fields) => {
+            let begin = jmod.declare_func_in_func(runtime.bs_begin_id, b.func);
+            b.ins().call(begin, &[]);
+            let write = jmod.declare_func_in_func(runtime.bs_write_id, b.func);
+            for f in fields {
+                let value_v = *env.get(&f.value.0).expect("unbound bs field val");
+                let ty_tag = b.ins().iconst(types::I32, encode_bit_type(f.ty) as i64);
+                let unit = b
+                    .ins()
+                    .iconst(types::I32, f.unit.unwrap_or(default_unit_for(f.ty)) as i64);
+                let endian = b.ins().iconst(types::I32, encode_endian(f.endian) as i64);
+                let signed = b.ins().iconst(types::I32, f.signed as i64);
+                let (size_present, size_value) = match &f.size {
+                    None => (
+                        b.ins().iconst(types::I32, 0),
+                        b.ins().iconst(types::I32, 0),
+                    ),
+                    Some(crate::fz_ir::BitSizeIr::Literal(n)) => (
+                        b.ins().iconst(types::I32, 1),
+                        b.ins().iconst(types::I32, *n as i64),
+                    ),
+                    Some(crate::fz_ir::BitSizeIr::Var(v)) => {
+                        let raw = *env.get(&v.0).expect("unbound bs size var");
+                        // Boxed int -> raw int -> truncate to i32.
+                        let unb = unbox_int(b, raw);
+                        let truncated = b.ins().ireduce(types::I32, unb);
+                        (b.ins().iconst(types::I32, 1), truncated)
+                    }
+                };
+                b.ins().call(
+                    write,
+                    &[value_v, ty_tag, size_present, size_value, unit, endian, signed],
+                );
+            }
+            let fin = jmod.declare_func_in_func(runtime.bs_finalize_id, b.func);
+            let inst = b.ins().call(fin, &[]);
+            b.inst_results(inst)[0]
+        }
+        Prim::BitReaderInit(v) => {
+            let vv = *env.get(&v.0).expect("unbound reader init src");
+            let fref = jmod.declare_func_in_func(runtime.bs_reader_init_id, b.func);
+            let inst = b.ins().call(fref, &[vv]);
+            b.inst_results(inst)[0]
+        }
+        Prim::BitReadField {
+            reader,
+            ty,
+            size,
+            endian,
+            signed,
+            unit,
+            is_last,
+        } => {
+            let rv = *env.get(&reader.0).expect("unbound read_field reader");
+            let ty_tag = b.ins().iconst(types::I32, encode_bit_type(*ty) as i64);
+            let unit_v = b
+                .ins()
+                .iconst(types::I32, unit.unwrap_or(default_unit_for(*ty)) as i64);
+            let endian_v = b.ins().iconst(types::I32, encode_endian(*endian) as i64);
+            let signed_v = b.ins().iconst(types::I32, *signed as i64);
+            let is_last_v = b.ins().iconst(types::I32, *is_last as i64);
+            let (size_present, size_value) = match size {
+                None => (
+                    b.ins().iconst(types::I32, 0),
+                    b.ins().iconst(types::I32, 0),
+                ),
+                Some(crate::fz_ir::BitSizeIr::Literal(n)) => (
+                    b.ins().iconst(types::I32, 1),
+                    b.ins().iconst(types::I32, *n as i64),
+                ),
+                Some(crate::fz_ir::BitSizeIr::Var(v)) => {
+                    let raw = *env.get(&v.0).expect("unbound read_field size var");
+                    let unb = unbox_int(b, raw);
+                    let truncated = b.ins().ireduce(types::I32, unb);
+                    (b.ins().iconst(types::I32, 1), truncated)
+                }
+            };
+            let fref = jmod.declare_func_in_func(runtime.bs_read_field_id, b.func);
+            let inst = b.ins().call(
+                fref,
+                &[
+                    rv,
+                    ty_tag,
+                    size_present,
+                    size_value,
+                    unit_v,
+                    endian_v,
+                    signed_v,
+                    is_last_v,
+                ],
+            );
+            b.inst_results(inst)[0]
+        }
+        Prim::BitReaderDone(r) => {
+            // Reader tuple shape: [bs_ptr@16, bit_len_boxed@24, pos_boxed@32].
+            // Compare bit_len == pos; return tagged bool.
+            let rv = *env.get(&r.0).expect("unbound reader_done");
+            let bit_len_b = b.ins().load(types::I64, MemFlags::trusted(), rv, 24);
+            let pos_b = b.ins().load(types::I64, MemFlags::trusted(), rv, 32);
+            let cmp = b.ins().icmp(IntCC::Equal, bit_len_b, pos_b);
+            bool_to_fz(b, cmp)
+        }
         Prim::MakeClosure(_, _)
         | Prim::MakeMap(_)
         | Prim::MapUpdate(_, _)
         | Prim::MapGet(_, _)
-        | Prim::MakeVec(_, _)
-        | Prim::MakeBitstring(_)
-        | Prim::BitReaderInit(_)
-        | Prim::BitReadField { .. }
-        | Prim::BitReaderDone(_) => {
+        | Prim::MakeVec(_, _) => {
             return Err(CodegenError(
                 "heap/aggregate prims land in later tickets".into(),
             ));
@@ -1377,6 +1942,310 @@ mod tests {
             captured,
             vec![":atom_1".to_string(), "true".to_string(), "false".to_string()]
         );
+    }
+
+    // ----- .11.12 bitstring tests -----
+
+    #[test]
+    fn print_bitstring_literal_via_jit() {
+        // fn main() do print(<<0xff::8, 0xab::8>>) end
+        let main = fn_def(
+            "main",
+            vec![cl(
+                vec![],
+                Expr::Call(
+                    Box::new(Expr::Var("print".into())),
+                    vec![Expr::Bitstring(vec![
+                        crate::ast::BitField {
+                            value: Expr::Int(0xff),
+                            spec: crate::ast::BitFieldSpec {
+                                ty: crate::ast::BitType::Integer,
+                                size: Some(crate::ast::BitSize::Literal(8)),
+                                endian: crate::ast::Endian::Big,
+                                signed: false,
+                                unit: None,
+                            },
+                        },
+                        crate::ast::BitField {
+                            value: Expr::Int(0xab),
+                            spec: crate::ast::BitFieldSpec {
+                                ty: crate::ast::BitType::Integer,
+                                size: Some(crate::ast::BitSize::Literal(8)),
+                                endian: crate::ast::Endian::Big,
+                                signed: false,
+                                unit: None,
+                            },
+                        },
+                    ])],
+                ),
+            )],
+        );
+        let m = lower(vec![main]);
+        let entry = m.fn_by_name("main").unwrap().id;
+        heap_reset_for_test();
+        let _ = test_capture_take();
+        let cm = compile(&m).unwrap();
+        let _ = cm.run(entry);
+        assert_eq!(test_capture_take(), vec!["<<255, 171>>".to_string()]);
+    }
+
+    #[test]
+    fn match_simple_header_and_rest() {
+        // fn parse(<<n::8, rest::binary>>), do: {n, rest}
+        // fn main(), do: parse(<<0xa5::8, 0x01::8, 0x02::8>>)   -> {165, <<1, 2>>}
+        let parse = fn_def(
+            "parse",
+            vec![cl(
+                vec![Pattern::Bitstring(vec![
+                    crate::ast::BitField {
+                            value: Pattern::Var("n".into()),
+                            spec: crate::ast::BitFieldSpec {
+                                ty: crate::ast::BitType::Integer,
+                                size: Some(crate::ast::BitSize::Literal(8)),
+                                endian: crate::ast::Endian::Big,
+                                signed: false,
+                                unit: None,
+                            },
+                        },
+                    crate::ast::BitField {
+                            value: Pattern::Var("rest".into()),
+                            spec: crate::ast::BitFieldSpec {
+                                ty: crate::ast::BitType::Binary,
+                                size: None,
+                                endian: crate::ast::Endian::Big,
+                                signed: false,
+                                unit: None,
+                            },
+                        },
+                ])],
+                Expr::Tuple(vec![Expr::Var("n".into()), Expr::Var("rest".into())]),
+            )],
+        );
+        let main = fn_def(
+            "main",
+            vec![cl(
+                vec![],
+                Expr::Call(
+                    Box::new(Expr::Var("parse".into())),
+                    vec![Expr::Bitstring(vec![
+                        crate::ast::BitField {
+                            value: Expr::Int(0xa5),
+                            spec: crate::ast::BitFieldSpec {
+                                ty: crate::ast::BitType::Integer,
+                                size: Some(crate::ast::BitSize::Literal(8)),
+                                endian: crate::ast::Endian::Big,
+                                signed: false,
+                                unit: None,
+                            },
+                        },
+                        crate::ast::BitField {
+                            value: Expr::Int(0x01),
+                            spec: crate::ast::BitFieldSpec {
+                                ty: crate::ast::BitType::Integer,
+                                size: Some(crate::ast::BitSize::Literal(8)),
+                                endian: crate::ast::Endian::Big,
+                                signed: false,
+                                unit: None,
+                            },
+                        },
+                        crate::ast::BitField {
+                            value: Expr::Int(0x02),
+                            spec: crate::ast::BitFieldSpec {
+                                ty: crate::ast::BitType::Integer,
+                                size: Some(crate::ast::BitSize::Literal(8)),
+                                endian: crate::ast::Endian::Big,
+                                signed: false,
+                                unit: None,
+                            },
+                        },
+                    ])],
+                ),
+            )],
+        );
+        // Wrap the result in a print so we can assert on the rendering.
+        let main_print = fn_def(
+            "main",
+            vec![cl(
+                vec![],
+                Expr::Call(
+                    Box::new(Expr::Var("print".into())),
+                    vec![Expr::Call(
+                        Box::new(Expr::Var("parse".into())),
+                        vec![Expr::Bitstring(vec![
+                            crate::ast::BitField {
+                            value: Expr::Int(0xa5),
+                            spec: crate::ast::BitFieldSpec {
+                                ty: crate::ast::BitType::Integer,
+                                size: Some(crate::ast::BitSize::Literal(8)),
+                                endian: crate::ast::Endian::Big,
+                                signed: false,
+                                unit: None,
+                            },
+                        },
+                            crate::ast::BitField {
+                            value: Expr::Int(0x01),
+                            spec: crate::ast::BitFieldSpec {
+                                ty: crate::ast::BitType::Integer,
+                                size: Some(crate::ast::BitSize::Literal(8)),
+                                endian: crate::ast::Endian::Big,
+                                signed: false,
+                                unit: None,
+                            },
+                        },
+                            crate::ast::BitField {
+                            value: Expr::Int(0x02),
+                            spec: crate::ast::BitFieldSpec {
+                                ty: crate::ast::BitType::Integer,
+                                size: Some(crate::ast::BitSize::Literal(8)),
+                                endian: crate::ast::Endian::Big,
+                                signed: false,
+                                unit: None,
+                            },
+                        },
+                        ])],
+                    )],
+                ),
+            )],
+        );
+        let _ = main; // keep above as a reference; main_print is the runner.
+        let m = lower(vec![parse, main_print]);
+        let entry = m.fn_by_name("main").unwrap().id;
+        heap_reset_for_test();
+        let _ = test_capture_take();
+        let cm = compile(&m).unwrap();
+        let _ = cm.run(entry);
+        assert_eq!(test_capture_take(), vec!["{165, <<1, 2>>}".to_string()]);
+    }
+
+    #[test]
+    fn match_variable_size_payload_via_size_var() {
+        // fn parse(<<len::8, payload::binary-size(len), rest::binary>>) do
+        //   {len, payload, rest}
+        // end
+        // fn main() do
+        //   print(parse(<<3::8, 0x01::8, 0x02::8, 0x03::8, 0xff::8>>))
+        // end
+        let parse = fn_def(
+            "parse",
+            vec![cl(
+                vec![Pattern::Bitstring(vec![
+                    crate::ast::BitField {
+                            value: Pattern::Var("len".into()),
+                            spec: crate::ast::BitFieldSpec {
+                                ty: crate::ast::BitType::Integer,
+                                size: Some(crate::ast::BitSize::Literal(8)),
+                                endian: crate::ast::Endian::Big,
+                                signed: false,
+                                unit: None,
+                            },
+                        },
+                    crate::ast::BitField {
+                            value: Pattern::Var("payload".into()),
+                            spec: crate::ast::BitFieldSpec {
+                                ty: crate::ast::BitType::Binary,
+                                size: Some(crate::ast::BitSize::Var("len".into())),
+                                endian: crate::ast::Endian::Big,
+                                signed: false,
+                                unit: None,
+                            },
+                        },
+                    crate::ast::BitField {
+                            value: Pattern::Var("rest".into()),
+                            spec: crate::ast::BitFieldSpec {
+                                ty: crate::ast::BitType::Binary,
+                                size: None,
+                                endian: crate::ast::Endian::Big,
+                                signed: false,
+                                unit: None,
+                            },
+                        },
+                ])],
+                Expr::Tuple(vec![
+                    Expr::Var("len".into()),
+                    Expr::Var("payload".into()),
+                    Expr::Var("rest".into()),
+                ]),
+            )],
+        );
+        let mk_byte = |v: i64| crate::ast::BitField {
+                            value: Expr::Int(v),
+                            spec: crate::ast::BitFieldSpec {
+                                ty: crate::ast::BitType::Integer,
+                                size: Some(crate::ast::BitSize::Literal(8)),
+                                endian: crate::ast::Endian::Big,
+                                signed: false,
+                                unit: None,
+                            },
+                        };
+        let main = fn_def(
+            "main",
+            vec![cl(
+                vec![],
+                Expr::Call(
+                    Box::new(Expr::Var("print".into())),
+                    vec![Expr::Call(
+                        Box::new(Expr::Var("parse".into())),
+                        vec![Expr::Bitstring(vec![
+                            mk_byte(3),
+                            mk_byte(1),
+                            mk_byte(2),
+                            mk_byte(3),
+                            mk_byte(0xff),
+                        ])],
+                    )],
+                ),
+            )],
+        );
+        let m = lower(vec![parse, main]);
+        let entry = m.fn_by_name("main").unwrap().id;
+        heap_reset_for_test();
+        let _ = test_capture_take();
+        let cm = compile(&m).unwrap();
+        let _ = cm.run(entry);
+        assert_eq!(
+            test_capture_take(),
+            vec!["{3, <<1, 2, 3>>, <<255>>}".to_string()]
+        );
+    }
+
+    #[test]
+    fn gc_reclaims_bitstring_when_unrooted() {
+        let main = fn_def(
+            "main",
+            vec![cl(
+                vec![],
+                Expr::Bitstring(vec![
+                    crate::ast::BitField {
+                            value: Expr::Int(0xde),
+                            spec: crate::ast::BitFieldSpec {
+                                ty: crate::ast::BitType::Integer,
+                                size: Some(crate::ast::BitSize::Literal(8)),
+                                endian: crate::ast::Endian::Big,
+                                signed: false,
+                                unit: None,
+                            },
+                        },
+                    crate::ast::BitField {
+                            value: Expr::Int(0xad),
+                            spec: crate::ast::BitFieldSpec {
+                                ty: crate::ast::BitType::Integer,
+                                size: Some(crate::ast::BitSize::Literal(8)),
+                                endian: crate::ast::Endian::Big,
+                                signed: false,
+                                unit: None,
+                            },
+                        },
+                ]),
+            )],
+        );
+        let m = lower(vec![main]);
+        let entry = m.fn_by_name("main").unwrap().id;
+        heap_reset_for_test();
+        let cm = compile(&m).unwrap();
+        let _ = cm.run(entry);
+        assert_eq!(heap_live_count(), 1, "single bitstring alive");
+        heap_gc(&[]);
+        assert_eq!(heap_live_count(), 0, "bitstring reclaimed");
     }
 
     // ----- .11.11 tuple tests -----

@@ -166,6 +166,41 @@ impl Heap {
         p
     }
 
+    /// Bitstring layout: HeapHeader (16) + bit_len: u64 (8) + bytes (padded
+    /// to 16). Caller supplies a fully-built byte buffer + bit_len; this
+    /// performs the heap copy.
+    pub fn alloc_bitstring(&mut self, bytes: &[u8], bit_len: u64) -> *mut HeapHeader {
+        let total = (16 + 8 + bytes.len() + 15) & !15;
+        let p = self.alloc(total);
+        unsafe {
+            std::ptr::write(
+                p,
+                HeapHeader {
+                    kind: HeapKind::Bitstring as u16,
+                    flags: 0,
+                    size_bytes: total as u32,
+                    schema_id: 0,
+                    _reserved: 0,
+                },
+            );
+            // bit_len at offset 16, then byte payload at offset 24.
+            let bit_len_p = (p as *mut u8).add(16) as *mut u64;
+            std::ptr::write(bit_len_p, bit_len);
+            let bytes_p = (p as *mut u8).add(24);
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), bytes_p, bytes.len());
+            // Zero the trailing padding so renders / debug aren't garbage.
+            let pad_start = 24 + bytes.len();
+            if pad_start < total {
+                std::ptr::write_bytes(
+                    (p as *mut u8).add(pad_start),
+                    0,
+                    total - pad_start,
+                );
+            }
+        }
+        p
+    }
+
     pub fn alloc_vec_i64(&mut self, len: usize) -> *mut HeapHeader {
         let total = (16 + len * 8 + 15) & !15;
         let p = self.alloc(total);
