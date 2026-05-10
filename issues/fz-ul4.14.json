@@ -3,6 +3,7 @@
   "blocked_by": [
     "fz-ul4.11",
     "fz-ul4.11.14",
+    "fz-ul4.11.24.5",
     "fz-ul4.12"
   ],
   "blocks": [],
@@ -21,5 +22,5 @@
   "status": "open",
   "title": "SIMD codegen for vector ops",
   "type": "task",
-  "updated_at": "2026-05-10T13:05:54Z"
+  "updated_at": "2026-05-10T20:52:42Z"
 }
