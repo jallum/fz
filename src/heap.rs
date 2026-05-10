@@ -231,6 +231,46 @@ impl Heap {
         p
     }
 
+    /// Closure layout: `HeapHeader (16) + captured: [FzValue; n]`.
+    /// `header.kind = HeapKind::Closure`. `header.schema_id` is repurposed
+    /// to hold the IR fn id of the lambda body — the trampoline never sees
+    /// closure headers (closures are values inside frames, not frames),
+    /// so reusing schema_id is safe and skips a per-fn closure schema
+    /// registration. Captured count is recoverable as
+    /// `(size_bytes - 16) / 8`.
+    pub fn alloc_closure(&mut self, fn_id: u32, captured: &[FzValue]) -> *mut HeapHeader {
+        let total = (16 + captured.len() * 8 + 15) & !15;
+        assert!(captured.len() <= u16::MAX as usize, "closure captured count overflow");
+        let p = self.alloc(total);
+        unsafe {
+            std::ptr::write(
+                p,
+                HeapHeader {
+                    kind: HeapKind::Closure as u16,
+                    flags: captured.len() as u16,
+                    size_bytes: total as u32,
+                    schema_id: fn_id,
+                    _reserved: 0,
+                },
+            );
+            let mut cursor = (p as *mut u8).add(16) as *mut FzValue;
+            for v in captured {
+                std::ptr::write(cursor, *v);
+                cursor = cursor.add(1);
+            }
+            // Zero any trailing 16-alignment padding so renders stay clean.
+            let used = 16 + captured.len() * 8;
+            if used < total {
+                std::ptr::write_bytes(
+                    (p as *mut u8).add(used),
+                    0,
+                    total - used,
+                );
+            }
+        }
+        p
+    }
+
     pub fn alloc_vec_i64(&mut self, len: usize) -> *mut HeapHeader {
         let total = (16 + len * 8 + 15) & !15;
         let p = self.alloc(total);
@@ -357,6 +397,16 @@ fn trace(v: FzValue, reg: &SchemaRegistry, marked: &mut HashSet<*mut HeapHeader>
         | Some(HeapKind::VecU8)
         | Some(HeapKind::VecBit) => {
             // Raw payloads: no FzValue children to trace.
+        }
+        Some(HeapKind::Closure) => {
+            // Captured FzValues at offset 16; count is stored in header.flags
+            // (u16, set by Heap::alloc_closure).
+            let captured_count = h.flags as usize;
+            let cursor = unsafe { (p as *const u8).add(16) as *const FzValue };
+            for i in 0..captured_count {
+                let child = unsafe { std::ptr::read(cursor.add(i)) };
+                trace(child, reg, marked);
+            }
         }
         Some(HeapKind::Map) => {
             // Map payload: count: u64 at offset 16, then (key, val) pairs at
@@ -537,6 +587,29 @@ mod tests {
         h.gc(&[]);
         assert_eq!(h.live_count(), 0);
         assert_eq!(h.freelist_len(), 1);
+    }
+
+    #[test]
+    fn gc_traces_closure_captured() {
+        let reg = empty_registry();
+        let mut h = Heap::new(1024, reg);
+        // captured[0] = leaf list cell. If closure is the only root, leaf
+        // must survive GC.
+        let leaf = h.alloc_list_cons(FzValue::from_int(7), FzValue::NIL);
+        let cl = h.alloc_closure(42, &[FzValue::from_ptr(leaf)]);
+        h.gc(&[FzValue::from_ptr(cl)]);
+        assert_eq!(h.live_count(), 2);
+    }
+
+    #[test]
+    fn gc_frees_closure_when_unrooted() {
+        let reg = empty_registry();
+        let mut h = Heap::new(1024, reg);
+        let leaf = h.alloc_list_cons(FzValue::from_int(7), FzValue::NIL);
+        let _cl = h.alloc_closure(42, &[FzValue::from_ptr(leaf)]);
+        h.gc(&[]);
+        assert_eq!(h.live_count(), 0);
+        assert_eq!(h.freelist_len(), 2);
     }
 
     #[test]

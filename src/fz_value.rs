@@ -138,6 +138,7 @@ pub enum HeapKind {
     VecU8 = 5,
     VecBit = 6,
     Map = 7,
+    Closure = 8,
 }
 
 impl HeapKind {
@@ -151,6 +152,7 @@ impl HeapKind {
             5 => Some(HeapKind::VecU8),
             6 => Some(HeapKind::VecBit),
             7 => Some(HeapKind::Map),
+            8 => Some(HeapKind::Closure),
             _ => None,
         }
     }
@@ -390,6 +392,7 @@ mod tests {
             HeapKind::VecU8,
             HeapKind::VecBit,
             HeapKind::Map,
+            HeapKind::Closure,
         ] {
             assert_eq!(HeapKind::from_u16(k as u16), Some(k));
         }

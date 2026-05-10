@@ -361,7 +361,22 @@ fn lower_expr(ctx: &mut LowerCtx, e: &Expr, is_tail: bool) -> Result<Var, LowerE
         Expr::Bool(false) => Ok(ctx.let_(Prim::Const(Const::False))),
         Expr::Nil => Ok(ctx.let_(Prim::Const(Const::Nil))),
 
-        Expr::Var(name) => ctx.lookup(name).ok_or_else(|| LowerError::Unbound(name.clone())),
+        Expr::Var(name) => {
+            if let Some(v) = ctx.lookup(name) { return Ok(v); }
+            // Fall back: bare top-level fn name used as a value -> 0-captured
+            // closure pointing at the fn's IR id. Picks the first matching
+            // arity if the source has multiple (fz currently has no syntax
+            // to disambiguate `&name/arity`; the first defined wins).
+            if let Some((_, fn_id)) = ctx
+                .fns
+                .iter()
+                .find(|((n, _), _)| n == name)
+                .map(|(k, v)| (k.clone(), *v))
+            {
+                return Ok(ctx.let_(Prim::MakeClosure(fn_id, vec![])));
+            }
+            Err(LowerError::Unbound(name.clone()))
+        }
 
         Expr::BinOp(op, a, b) => {
             let va_raw = lower_expr(ctx, a, false)?;

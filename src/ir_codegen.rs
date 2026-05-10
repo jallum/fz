@@ -149,6 +149,7 @@ fn render_fz_value(bits: u64) -> String {
                 Some(HeapKind::Struct) => render_struct(bits),
                 Some(HeapKind::Bitstring) => render_bitstring(bits),
                 Some(HeapKind::Map) => render_map(bits),
+                Some(HeapKind::Closure) => render_closure(bits),
                 _ => format!("#ptr<{:#x}>", bits),
             }
         }
@@ -223,6 +224,14 @@ fn render_bitstring(bits: u64) -> String {
         parts.push(format!("{}::{}", last, trailing_bits));
     }
     format!("<<{}>>", parts.join(", "))
+}
+
+/// Render a closure as `#fn<id/cap>` for debug. cap = captured count.
+fn render_closure(bits: u64) -> String {
+    use crate::fz_value::FzValue;
+    let p = FzValue(bits).unbox_ptr().unwrap();
+    let header = unsafe { &*p };
+    format!("#fn<{}/{}>", header.schema_id, header.flags)
 }
 
 fn render_list(bits: u64) -> String {
@@ -828,6 +837,138 @@ extern "C" fn fz_bs_read_field(
     result_p as u64
 }
 
+// ----- Closure runtime fns -----
+//
+// Closures are heap objects (HeapKind::Closure) holding [...captured FzValues].
+// `header.schema_id` is repurposed to hold the IR fn id of the lambda body.
+// `header.flags` holds the captured count (u16). The trampoline never sees
+// closure headers — it dispatches off frame headers — so the schema_id reuse
+// is safe and avoids registering a per-fn closure schema.
+//
+// Construction is staged via TLS: begin(fn_id) -> push(v) ×n -> finalize().
+// Invocation is staged via TLS args: arg(v) ×n -> invoke(closure, cont_ptr)
+// returns the callee frame ptr. TailCallClosure uses the same staging plus a
+// frame-reuse path when the closure's fn shares the caller's schema (fn_id
+// equality).
+
+thread_local! {
+    static CLOSURE_BUILDER: std::cell::RefCell<Option<(u32, Vec<u64>)>> =
+        std::cell::RefCell::new(None);
+    static CLOSURE_ARGS: std::cell::RefCell<Vec<u64>> =
+        std::cell::RefCell::new(Vec::new());
+    /// Per-fn frame size (bytes), indexed by FnId.0. Populated at compile()
+    /// time; consumed by `fz_alloc_frame_dyn` to allocate frames for fns
+    /// whose id is known only dynamically (closure invocation).
+    static FRAME_SIZES: std::cell::RefCell<Vec<u32>> =
+        std::cell::RefCell::new(Vec::new());
+}
+
+extern "C" fn fz_closure_begin(fn_id: u32) {
+    CLOSURE_BUILDER.with(|b| *b.borrow_mut() = Some((fn_id, Vec::new())));
+}
+
+extern "C" fn fz_closure_push(v: u64) {
+    CLOSURE_BUILDER.with(|b| {
+        b.borrow_mut()
+            .as_mut()
+            .expect("fz_closure_push without begin")
+            .1
+            .push(v);
+    });
+}
+
+extern "C" fn fz_closure_finalize() -> u64 {
+    use crate::fz_value::FzValue;
+    let (fn_id, captured) = CLOSURE_BUILDER
+        .with(|b| b.borrow_mut().take())
+        .expect("fz_closure_finalize without begin");
+    let cap_fz: Vec<FzValue> = captured.into_iter().map(FzValue).collect();
+    let p = HEAP.with(|h| h.borrow_mut().alloc_closure(fn_id, &cap_fz));
+    p as u64
+}
+
+extern "C" fn fz_closure_arg(v: u64) {
+    CLOSURE_ARGS.with(|a| a.borrow_mut().push(v));
+}
+
+/// Allocate a frame for fn `fn_id`, looking up its size in the per-thread
+/// FRAME_SIZES table populated at compile() time.
+extern "C" fn fz_alloc_frame_dyn(fn_id: u32) -> *mut u8 {
+    let size = FRAME_SIZES.with(|t| {
+        let v = t.borrow();
+        *v.get(fn_id as usize)
+            .unwrap_or_else(|| panic!("FRAME_SIZES has no entry for fn_id {}", fn_id))
+    });
+    fz_alloc_frame(fn_id, size)
+}
+
+/// Build a callee frame for `closure` invocation:
+///   frame[16] = cont_ptr
+///   frame[24..24+cap*8]   = closure.captured
+///   frame[24+cap*8..]     = staged args (consumed from CLOSURE_ARGS)
+/// Returns the callee frame ptr for the trampoline to invoke next.
+extern "C" fn fz_closure_invoke(closure_bits: u64, cont_ptr: u64) -> *mut u8 {
+    use crate::fz_value::FzValue;
+    let cp = FzValue(closure_bits)
+        .unbox_ptr()
+        .expect("fz_closure_invoke: closure not a heap ptr");
+    let header = unsafe { &*cp };
+    let fn_id = header.schema_id;
+    let captured_count = header.flags as usize;
+    let frame = fz_alloc_frame_dyn(fn_id);
+    let args = CLOSURE_ARGS.with(|a| std::mem::take(&mut *a.borrow_mut()));
+    unsafe {
+        std::ptr::write((frame as *mut u8).add(16) as *mut u64, cont_ptr);
+        let cap_src = (cp as *const u8).add(16) as *const u64;
+        let frame_slots = (frame as *mut u8).add(24) as *mut u64;
+        std::ptr::copy_nonoverlapping(cap_src, frame_slots, captured_count);
+        for (i, v) in args.iter().enumerate() {
+            std::ptr::write(frame_slots.add(captured_count + i), *v);
+        }
+    }
+    frame
+}
+
+/// Tail-call a closure. If the closure's fn_id matches the caller's frame
+/// schema_id, overwrite the caller's frame in place (cont_ptr stays).
+/// Otherwise allocate a fresh frame and copy the cont_ptr from the caller's.
+extern "C" fn fz_tail_closure(closure_bits: u64, current_frame: *mut u8) -> *mut u8 {
+    use crate::fz_value::{FzValue, HeapHeader};
+    let cp = FzValue(closure_bits)
+        .unbox_ptr()
+        .expect("fz_tail_closure: closure not a heap ptr");
+    let header = unsafe { &*cp };
+    let fn_id = header.schema_id;
+    let captured_count = header.flags as usize;
+    let cur_header = unsafe { &*(current_frame as *const HeapHeader) };
+    let cur_fn_id = cur_header.schema_id;
+    let args = CLOSURE_ARGS.with(|a| std::mem::take(&mut *a.borrow_mut()));
+    let cap_src = unsafe { (cp as *const u8).add(16) as *const u64 };
+
+    if cur_fn_id == fn_id {
+        unsafe {
+            let frame_slots = current_frame.add(24) as *mut u64;
+            std::ptr::copy_nonoverlapping(cap_src, frame_slots, captured_count);
+            for (i, v) in args.iter().enumerate() {
+                std::ptr::write(frame_slots.add(captured_count + i), *v);
+            }
+        }
+        current_frame
+    } else {
+        let frame = fz_alloc_frame_dyn(fn_id);
+        unsafe {
+            let old_cont = std::ptr::read(current_frame.add(16) as *const u64);
+            std::ptr::write(frame.add(16) as *mut u64, old_cont);
+            let frame_slots = frame.add(24) as *mut u64;
+            std::ptr::copy_nonoverlapping(cap_src, frame_slots, captured_count);
+            for (i, v) in args.iter().enumerate() {
+                std::ptr::write(frame_slots.add(captured_count + i), *v);
+            }
+        }
+        frame
+    }
+}
+
 extern "C" fn fz_alloc_frame(schema_id: u32, total_size: u32) -> *mut u8 {
     use std::alloc::{alloc_zeroed, Layout};
     // Round size up to a multiple of 16 to keep allocator happy and ensure
@@ -912,6 +1053,12 @@ pub fn compile(module: &Module) -> Result<CompiledModule, CodegenError> {
     builder.symbol("fz_map_push", fz_map_push as *const u8);
     builder.symbol("fz_map_finalize", fz_map_finalize as *const u8);
     builder.symbol("fz_map_get", fz_map_get as *const u8);
+    builder.symbol("fz_closure_begin", fz_closure_begin as *const u8);
+    builder.symbol("fz_closure_push", fz_closure_push as *const u8);
+    builder.symbol("fz_closure_finalize", fz_closure_finalize as *const u8);
+    builder.symbol("fz_closure_arg", fz_closure_arg as *const u8);
+    builder.symbol("fz_closure_invoke", fz_closure_invoke as *const u8);
+    builder.symbol("fz_tail_closure", fz_tail_closure as *const u8);
     let mut jmod = JITModule::new(builder);
 
     // Declare runtime imports.
@@ -998,6 +1145,30 @@ pub fn compile(module: &Module) -> Result<CompiledModule, CodegenError> {
     let map_get_id = jmod
         .declare_function("fz_map_get", Linkage::Import, &map_get_sig)
         .map_err(|e| CodegenError(format!("declare map_get: {}", e)))?;
+    let closure_begin_sig = sig1(&[types::I32], &[]);
+    let closure_begin_id = jmod
+        .declare_function("fz_closure_begin", Linkage::Import, &closure_begin_sig)
+        .map_err(|e| CodegenError(format!("declare closure_begin: {}", e)))?;
+    let closure_push_sig = sig1(&[types::I64], &[]);
+    let closure_push_id = jmod
+        .declare_function("fz_closure_push", Linkage::Import, &closure_push_sig)
+        .map_err(|e| CodegenError(format!("declare closure_push: {}", e)))?;
+    let closure_finalize_sig = sig1(&[], &[types::I64]);
+    let closure_finalize_id = jmod
+        .declare_function("fz_closure_finalize", Linkage::Import, &closure_finalize_sig)
+        .map_err(|e| CodegenError(format!("declare closure_finalize: {}", e)))?;
+    let closure_arg_sig = sig1(&[types::I64], &[]);
+    let closure_arg_id = jmod
+        .declare_function("fz_closure_arg", Linkage::Import, &closure_arg_sig)
+        .map_err(|e| CodegenError(format!("declare closure_arg: {}", e)))?;
+    let closure_invoke_sig = sig1(&[types::I64, types::I64], &[types::I64]);
+    let closure_invoke_id = jmod
+        .declare_function("fz_closure_invoke", Linkage::Import, &closure_invoke_sig)
+        .map_err(|e| CodegenError(format!("declare closure_invoke: {}", e)))?;
+    let tail_closure_sig = sig1(&[types::I64, types::I64], &[types::I64]);
+    let tail_closure_id = jmod
+        .declare_function("fz_tail_closure", Linkage::Import, &tail_closure_sig)
+        .map_err(|e| CodegenError(format!("declare tail_closure: {}", e)))?;
 
     // Per-fn signature: extern "C" fn(*mut u8, *mut u8) -> *mut u8.
     let fn_sig = sig1(&[types::I64, types::I64], &[types::I64]);
@@ -1029,6 +1200,12 @@ pub fn compile(module: &Module) -> Result<CompiledModule, CodegenError> {
         map_push_id,
         map_finalize_id,
         map_get_id,
+        closure_begin_id,
+        closure_push_id,
+        closure_finalize_id,
+        closure_arg_id,
+        closure_invoke_id,
+        tail_closure_id,
     };
 
     // Register a heap Schema for every tuple arity used by MakeTuple, so the
@@ -1087,6 +1264,18 @@ pub fn compile(module: &Module) -> Result<CompiledModule, CodegenError> {
         BS_TUPLE_ARITY3_SCHEMA.with(|c| c.set(Some(id3)));
     }
 
+    // Populate per-fn frame sizes for `fz_alloc_frame_dyn`. Closure dispatch
+    // looks up the callee fn's frame size by fn_id at runtime; the table is
+    // indexed by FnId.0 so it parallels `schemas`.
+    FRAME_SIZES.with(|t| {
+        let mut v = t.borrow_mut();
+        v.clear();
+        v.resize(schemas.len(), 0);
+        for (i, s) in schemas.iter().enumerate() {
+            v[i] = s.size;
+        }
+    });
+
     for f in &module.fns {
         let func_id = *fn_ids.get(&f.id.0).unwrap();
         let mut ctx = jmod.make_context();
@@ -1144,6 +1333,12 @@ struct RuntimeRefs {
     map_push_id: FuncId,
     map_finalize_id: FuncId,
     map_get_id: FuncId,
+    closure_begin_id: FuncId,
+    closure_push_id: FuncId,
+    closure_finalize_id: FuncId,
+    closure_arg_id: FuncId,
+    closure_invoke_id: FuncId,
+    tail_closure_id: FuncId,
 }
 
 fn compile_fn(
@@ -1280,10 +1475,36 @@ fn compile_fn(
                     &arg_vals,
                 );
             }
-            Term::CallClosure { .. } | Term::TailCallClosure { .. } => {
-                return Err(CodegenError(
-                    "closure call codegen lands later (heap-typed closures)".into(),
-                ));
+            Term::CallClosure { closure, args, continuation } => {
+                let cl_val = *var_map.get(&closure.0).expect("unbound callclosure closure");
+                let arg_vals: Vec<ir::Value> = args
+                    .iter()
+                    .map(|v| *var_map.get(&v.0).expect("unbound callclosure arg"))
+                    .collect();
+                let cap_vals: Vec<ir::Value> = continuation
+                    .captured
+                    .iter()
+                    .map(|v| *var_map.get(&v.0).expect("unbound captured val"))
+                    .collect();
+                emit_call_closure(
+                    &mut b,
+                    jmod,
+                    runtime,
+                    schemas,
+                    frame_ptr,
+                    cl_val,
+                    &arg_vals,
+                    continuation.fn_id.0,
+                    &cap_vals,
+                );
+            }
+            Term::TailCallClosure { closure, args } => {
+                let cl_val = *var_map.get(&closure.0).expect("unbound tailcallclosure closure");
+                let arg_vals: Vec<ir::Value> = args
+                    .iter()
+                    .map(|v| *var_map.get(&v.0).expect("unbound tailcallclosure arg"))
+                    .collect();
+                emit_tail_call_closure(&mut b, jmod, runtime, frame_ptr, cl_val, &arg_vals);
             }
         }
     }
@@ -1425,6 +1646,66 @@ fn emit_tail_call(
         }
         b.ins().return_(&[nf]);
     }
+}
+
+/// Term::CallClosure: build the continuation frame the same way as Term::Call,
+/// stage args via fz_closure_arg(), then call fz_closure_invoke(closure,
+/// cont_frame_ptr) which returns the callee frame ptr.
+fn emit_call_closure(
+    b: &mut FunctionBuilder<'_>,
+    jmod: &mut JITModule,
+    runtime: &RuntimeRefs,
+    schemas: &[Schema],
+    frame_ptr: ir::Value,
+    closure_val: ir::Value,
+    args: &[ir::Value],
+    cont_fn_id: u32,
+    captured: &[ir::Value],
+) {
+    let alloc_fref = jmod.declare_func_in_func(runtime.alloc_id, b.func);
+    let my_cont = b.ins().load(types::I64, MemFlags::trusted(), frame_ptr, HEADER_SIZE);
+
+    // Build continuation frame: [my_cont, result_placeholder, ...captured].
+    let cont_schema = &schemas[cont_fn_id as usize];
+    let sid = b.ins().iconst(types::I32, cont_fn_id as i64);
+    let sz = b.ins().iconst(types::I32, cont_schema.size as i64);
+    let call_inst = b.ins().call(alloc_fref, &[sid, sz]);
+    let cf = b.inst_results(call_inst)[0];
+    b.ins().store(MemFlags::trusted(), my_cont, cf, HEADER_SIZE);
+    for (i, cv) in captured.iter().enumerate() {
+        let off = HEADER_SIZE + SLOT_BYTES * (2 + i as i32);
+        b.ins().store(MemFlags::trusted(), *cv, cf, off);
+    }
+
+    // Stage args, then invoke.
+    let arg_fref = jmod.declare_func_in_func(runtime.closure_arg_id, b.func);
+    for av in args {
+        b.ins().call(arg_fref, &[*av]);
+    }
+    let invoke_fref = jmod.declare_func_in_func(runtime.closure_invoke_id, b.func);
+    let inv = b.ins().call(invoke_fref, &[closure_val, cf]);
+    let callee_frame = b.inst_results(inv)[0];
+    b.ins().return_(&[callee_frame]);
+}
+
+/// Term::TailCallClosure: stage args, then call fz_tail_closure(closure,
+/// current_frame). Runtime fn handles same-fn-id frame reuse vs. fresh alloc.
+fn emit_tail_call_closure(
+    b: &mut FunctionBuilder<'_>,
+    jmod: &mut JITModule,
+    runtime: &RuntimeRefs,
+    frame_ptr: ir::Value,
+    closure_val: ir::Value,
+    args: &[ir::Value],
+) {
+    let arg_fref = jmod.declare_func_in_func(runtime.closure_arg_id, b.func);
+    for av in args {
+        b.ins().call(arg_fref, &[*av]);
+    }
+    let tail_fref = jmod.declare_func_in_func(runtime.tail_closure_id, b.func);
+    let inv = b.ins().call(tail_fref, &[closure_val, frame_ptr]);
+    let callee_frame = b.inst_results(inv)[0];
+    b.ins().return_(&[callee_frame]);
 }
 
 fn lower_prim(
@@ -1743,9 +2024,22 @@ fn lower_prim(
             let inst = b.ins().call(fref, &[mv, kv]);
             b.inst_results(inst)[0]
         }
-        Prim::MakeClosure(_, _) | Prim::MakeVec(_, _) => {
+        Prim::MakeClosure(fn_id, captured) => {
+            let begin = jmod.declare_func_in_func(runtime.closure_begin_id, b.func);
+            let id_val = b.ins().iconst(types::I32, fn_id.0 as i64);
+            b.ins().call(begin, &[id_val]);
+            let push = jmod.declare_func_in_func(runtime.closure_push_id, b.func);
+            for cv in captured {
+                let v = *env.get(&cv.0).expect("unbound makeclosure capture");
+                b.ins().call(push, &[v]);
+            }
+            let fin = jmod.declare_func_in_func(runtime.closure_finalize_id, b.func);
+            let inst = b.ins().call(fin, &[]);
+            b.inst_results(inst)[0]
+        }
+        Prim::MakeVec(_, _) => {
             return Err(CodegenError(
-                "heap/aggregate prims land in later tickets".into(),
+                "MakeVec codegen lands in fz-ul4.11.14".into(),
             ));
         }
     })
@@ -2952,5 +3246,301 @@ mod tests {
         let entry = m.fn_by_name("main").unwrap().id;
         let cm = compile(&m).unwrap();
         assert_eq!(cm.run(entry), 1); // true
+    }
+
+    // ----- .11.19 closure tests -----
+
+    #[test]
+    fn apply_simple_closure_no_captures() {
+        // fn double(x), do: x*2
+        // fn apply(f, n), do: f(n)
+        // fn main(), do: apply(double, 21)
+        let double = fn_def(
+            "double",
+            vec![cl(
+                vec![Pattern::Var("x".into())],
+                Expr::BinOp(
+                    ABinOp::Mul,
+                    Box::new(Expr::Var("x".into())),
+                    Box::new(Expr::Int(2)),
+                ),
+            )],
+        );
+        let apply = fn_def(
+            "apply",
+            vec![cl(
+                vec![Pattern::Var("f".into()), Pattern::Var("n".into())],
+                Expr::Call(Box::new(Expr::Var("f".into())), vec![Expr::Var("n".into())]),
+            )],
+        );
+        let main = fn_def(
+            "main",
+            vec![cl(
+                vec![],
+                Expr::Call(
+                    Box::new(Expr::Var("apply".into())),
+                    vec![Expr::Var("double".into()), Expr::Int(21)],
+                ),
+            )],
+        );
+        let m = lower(vec![double, apply, main]);
+        let entry = m.fn_by_name("main").unwrap().id;
+        heap_reset_for_test();
+        let cm = compile(&m).unwrap();
+        assert_eq!(cm.run(entry), 42);
+    }
+
+    #[test]
+    fn closure_captures_local_value() {
+        // fn make_adder(k), do: fn(x) -> x + k end
+        // fn main(), do: (make_adder(10))(5)
+        let make_adder = fn_def(
+            "make_adder",
+            vec![cl(
+                vec![Pattern::Var("k".into())],
+                Expr::Lambda(
+                    vec![Pattern::Var("x".into())],
+                    Box::new(Expr::BinOp(
+                        ABinOp::Add,
+                        Box::new(Expr::Var("x".into())),
+                        Box::new(Expr::Var("k".into())),
+                    )),
+                ),
+            )],
+        );
+        // main: let f = make_adder(10) in f(5)
+        let main = fn_def(
+            "main",
+            vec![cl(
+                vec![],
+                Expr::Block(vec![
+                    Expr::Match(
+                        Pattern::Var("f".into()),
+                        Box::new(Expr::Call(
+                            Box::new(Expr::Var("make_adder".into())),
+                            vec![Expr::Int(10)],
+                        )),
+                    ),
+                    Expr::Call(
+                        Box::new(Expr::Var("f".into())),
+                        vec![Expr::Int(5)],
+                    ),
+                ]),
+            )],
+        );
+        let m = lower(vec![make_adder, main]);
+        let entry = m.fn_by_name("main").unwrap().id;
+        heap_reset_for_test();
+        let cm = compile(&m).unwrap();
+        assert_eq!(cm.run(entry), 15);
+    }
+
+    #[test]
+    fn map_higher_order_renders_doubled_list() {
+        // fn double(x), do: x*2
+        // fn map(_, []), do: []
+        // fn map(f, [h|t]), do: [f(h) | map(f, t)]
+        // fn main(), do: print(map(double, [1, 2, 3]))
+        let double = fn_def(
+            "double",
+            vec![cl(
+                vec![Pattern::Var("x".into())],
+                Expr::BinOp(
+                    ABinOp::Mul,
+                    Box::new(Expr::Var("x".into())),
+                    Box::new(Expr::Int(2)),
+                ),
+            )],
+        );
+        let map = fn_def(
+            "map",
+            vec![
+                cl(
+                    vec![Pattern::Wildcard, Pattern::List(vec![], None)],
+                    Expr::List(vec![], None),
+                ),
+                cl(
+                    vec![
+                        Pattern::Var("f".into()),
+                        Pattern::List(
+                            vec![Pattern::Var("h".into())],
+                            Some(Box::new(Pattern::Var("t".into()))),
+                        ),
+                    ],
+                    Expr::List(
+                        vec![Expr::Call(
+                            Box::new(Expr::Var("f".into())),
+                            vec![Expr::Var("h".into())],
+                        )],
+                        Some(Box::new(Expr::Call(
+                            Box::new(Expr::Var("map".into())),
+                            vec![Expr::Var("f".into()), Expr::Var("t".into())],
+                        ))),
+                    ),
+                ),
+            ],
+        );
+        let main = fn_def(
+            "main",
+            vec![cl(
+                vec![],
+                Expr::Call(
+                    Box::new(Expr::Var("print".into())),
+                    vec![Expr::Call(
+                        Box::new(Expr::Var("map".into())),
+                        vec![
+                            Expr::Var("double".into()),
+                            Expr::List(
+                                vec![Expr::Int(1), Expr::Int(2), Expr::Int(3)],
+                                None,
+                            ),
+                        ],
+                    )],
+                ),
+            )],
+        );
+        let m = lower(vec![double, map, main]);
+        let entry = m.fn_by_name("main").unwrap().id;
+        heap_reset_for_test();
+        let _ = test_capture_take();
+        let cm = compile(&m).unwrap();
+        let _ = cm.run(entry);
+        let captured = test_capture_take();
+        assert_eq!(captured, vec!["[2, 4, 6]".to_string()]);
+    }
+
+    #[test]
+    fn gc_traces_closure_captured_via_jit() {
+        // fn make_adder(k), do: fn(x) -> x + k end
+        // fn main(), do: make_adder(7)
+        // After run: heap holds 1 closure with 1 captured int. Drop root,
+        // GC reclaims everything (closure was the only heap object since
+        // the captured value is an unboxed FzValue Int).
+        let make_adder = fn_def(
+            "make_adder",
+            vec![cl(
+                vec![Pattern::Var("k".into())],
+                Expr::Lambda(
+                    vec![Pattern::Var("x".into())],
+                    Box::new(Expr::BinOp(
+                        ABinOp::Add,
+                        Box::new(Expr::Var("x".into())),
+                        Box::new(Expr::Var("k".into())),
+                    )),
+                ),
+            )],
+        );
+        let main = fn_def(
+            "main",
+            vec![cl(
+                vec![],
+                Expr::Call(
+                    Box::new(Expr::Var("make_adder".into())),
+                    vec![Expr::Int(7)],
+                ),
+            )],
+        );
+        let m = lower(vec![make_adder, main]);
+        let entry = m.fn_by_name("main").unwrap().id;
+        heap_reset_for_test();
+        let cm = compile(&m).unwrap();
+        let halt = cm.run(entry);
+        // Closure object on the heap.
+        assert_eq!(heap_live_count(), 1);
+        // Holding halt as a root keeps it alive...
+        let root = crate::fz_value::FzValue(halt as u64);
+        heap_gc(&[root]);
+        assert_eq!(heap_live_count(), 1);
+        // ...without the root, GC reclaims it.
+        heap_gc(&[]);
+        assert_eq!(heap_live_count(), 0);
+    }
+
+    #[test]
+    fn tail_call_closure_reuses_frame_via_count_loop() {
+        // fn count(0, acc), do: acc
+        // fn count(n, acc), do: count(n - 1, acc + 1)
+        // fn main(), do: count_via_closure(100_000, 0)
+        // We invoke `count` indirectly via a closure value to exercise the
+        // TailCallClosure frame-reuse path. Use a small wrapper:
+        // fn run(f, n, acc), do: f(n, acc)   — TailCallClosure
+        // fn main(), do: run(count, 100_000, 0)
+        // Closure is fz-shape; TailCallClosure inside `run` invokes count.
+        // Then count tail-recurses via Term::TailCall (not closure), but the
+        // initial closure dispatch into count exercises the closure entry path.
+        // To stress *closure* tail-reuse specifically, count_loop itself
+        // becomes a closure that re-invokes itself by binding to a local:
+        //
+        //   fn count_loop(n, acc) when n == 0, do: acc
+        //   fn count_loop(n, acc), do: count_loop(n - 1, acc + 1)
+        //   fn main(), do: count_loop(100_000, 0)
+        //
+        // To force closure-tail-call: introduce
+        //   fn run(f, n, acc) when n == 0, do: acc
+        //   fn run(f, n, acc), do: run(f, n - 1, acc + 1)
+        //   fn main(), do: run(some_unused_fn, 100_000, 0)
+        // But we want the tail recursion target to be the closure itself.
+        //
+        // Cleanest: use a recursive closure pattern via top-level fn taking
+        // a closure parameter that calls itself. Below: `loop_with(f, n, acc)`
+        // invokes `f(f, n, acc)` so the closure can recurse via its own
+        // first arg — this routes through TailCallClosure each iteration.
+        let loop_with = fn_def(
+            "loop_with",
+            vec![
+                cl(
+                    vec![
+                        Pattern::Var("f".into()),
+                        Pattern::Int(0),
+                        Pattern::Var("acc".into()),
+                    ],
+                    Expr::Var("acc".into()),
+                ),
+                cl(
+                    vec![
+                        Pattern::Var("f".into()),
+                        Pattern::Var("n".into()),
+                        Pattern::Var("acc".into()),
+                    ],
+                    Expr::Call(
+                        Box::new(Expr::Var("f".into())),
+                        vec![
+                            Expr::Var("f".into()),
+                            Expr::BinOp(
+                                ABinOp::Sub,
+                                Box::new(Expr::Var("n".into())),
+                                Box::new(Expr::Int(1)),
+                            ),
+                            Expr::BinOp(
+                                ABinOp::Add,
+                                Box::new(Expr::Var("acc".into())),
+                                Box::new(Expr::Int(1)),
+                            ),
+                        ],
+                    ),
+                ),
+            ],
+        );
+        let main = fn_def(
+            "main",
+            vec![cl(
+                vec![],
+                Expr::Call(
+                    Box::new(Expr::Var("loop_with".into())),
+                    vec![
+                        Expr::Var("loop_with".into()),
+                        Expr::Int(100_000),
+                        Expr::Int(0),
+                    ],
+                ),
+            )],
+        );
+        let m = lower(vec![loop_with, main]);
+        let entry = m.fn_by_name("main").unwrap().id;
+        heap_reset_for_test();
+        let cm = compile(&m).unwrap();
+        // Cap iterations in the trampoline guards us if frame-reuse is broken.
+        let result = cm.run(entry);
+        assert_eq!(result, 100_000);
     }
 }
