@@ -37,6 +37,8 @@ pub struct BuiltinId(pub u32);
 #[derive(Debug, Clone, PartialEq)]
 pub enum Const {
     Int(i64),
+    Float(f64),
+    Str(String),
     Atom(u32),
     Nil,
     True,
@@ -77,6 +79,15 @@ pub enum Prim {
     ListHead(Var),
     ListTail(Var),
     ListIsNil(Var),
+    /// Build a tuple (struct with the canonical tuple-of-arity-N schema).
+    MakeTuple(Vec<Var>),
+    /// Project the i-th element of a tuple.
+    TupleField(Var, u32),
+    /// Build a list [v1, v2, ... | optional_tail]; tail defaults to Nil.
+    MakeList(Vec<Var>, Option<Var>),
+    /// Allocate a closure: a struct holding the IR fn id of the lambda body
+    /// plus the captured environment locals.
+    MakeClosure(FnId, Vec<Var>),
 }
 
 #[derive(Debug, Clone)]
@@ -294,6 +305,8 @@ impl fmt::Display for Const {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Const::Int(n) => write!(f, "{}", n),
+            Const::Float(x) => write!(f, "{}f", x),
+            Const::Str(s) => write!(f, "{:?}", s),
             Const::Atom(id) => write!(f, ":atom_{}", id),
             Const::Nil => write!(f, "nil"),
             Const::True => write!(f, "true"),
@@ -353,6 +366,15 @@ impl fmt::Display for Prim {
             Prim::ListHead(l) => write!(f, "head({})", l),
             Prim::ListTail(l) => write!(f, "tail({})", l),
             Prim::ListIsNil(l) => write!(f, "is_nil({})", l),
+            Prim::MakeTuple(args) => write!(f, "tuple([{}])", fmt_var_list(args)),
+            Prim::TupleField(v, i) => write!(f, "tuple_field({}, {})", v, i),
+            Prim::MakeList(els, tail) => match tail {
+                Some(t) => write!(f, "list([{}] | {})", fmt_var_list(els), t),
+                None => write!(f, "list([{}])", fmt_var_list(els)),
+            },
+            Prim::MakeClosure(fid, captured) => {
+                write!(f, "closure({}, captured=[{}])", fid, fmt_var_list(captured))
+            }
         }
     }
 }
