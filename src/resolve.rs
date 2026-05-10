@@ -332,10 +332,14 @@ fn rewrite_expr(
             rewrite_expr(body, module_path, siblings, &mut nested, module_paths, aliases, imports);
         }
 
-        // Quote bodies are reified, not resolved — they get treated literally
-        // by the macro pipeline. (.18.5 may revisit cross-module macro
-        // resolution.) Unquote bodies ARE regular code — recurse.
-        Expr::Quote(_) => {}
+        // Quote bodies: resolve names against the macro's home module
+        // (.18.5). When the macro runs and reifies, it produces an AST
+        // that already carries qualified names — so the caller of the
+        // macro sees `M.helper(x)` rather than a bare `helper(x)` that
+        // would have to resolve in the caller's scope.
+        // Unquote bodies are regular code that runs at macro-expansion
+        // time, also in the macro's home module — same recursion.
+        Expr::Quote(inner) => rewrite_expr(inner, module_path, siblings, intro, module_paths, aliases, imports),
         Expr::Unquote(inner) => rewrite_expr(inner, module_path, siblings, intro, module_paths, aliases, imports),
 
         // Leaves.

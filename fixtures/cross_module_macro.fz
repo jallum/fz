@@ -1,0 +1,19 @@
+defmodule Helpers do
+  fn double(x), do: x * 2
+
+  defmacro twice(x) do
+    quote do: double(unquote(x))
+  end
+end
+
+defmodule App do
+  import Helpers, only: [twice: 1]
+
+  fn run(n) do
+    twice(n)
+  end
+end
+
+fn main() do
+  print(App.run(21))
+end

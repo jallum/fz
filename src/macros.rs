@@ -219,10 +219,11 @@ mod tests {
         Parser::new(toks).parse_program().expect("parse")
     }
 
-    /// Run the full pipeline (parse → expand → eval main) and return
-    /// main's return value.
+    /// Run the full pipeline (parse → flatten → expand → eval main) and
+    /// return main's return value.
     fn run(src: &str) -> crate::value::Value {
-        let mut prog = parse(src);
+        let prog = parse(src);
+        let mut prog = crate::resolve::flatten_modules(prog).expect("flatten");
         expand_program(&mut prog).expect("expand");
         let interp = Interp::new();
         interp.load_program(&prog).expect("load");
@@ -371,6 +372,45 @@ end
 "#;
         // Macro returns Block([t__hyg_N = 21, t__hyg_N + t__hyg_N]) → 42.
         // Caller's t stays at 100; macro's t__hyg_N is 21+21.
+        assert!(matches!(run(src), crate::value::Value::Int(42)));
+    }
+
+    #[test]
+    fn cross_module_macro_resolves_quote_against_home_module() {
+        // Macro M.bump's body refers to bare `helper`. Resolution
+        // qualifies it as M.helper inside the quote, so when expanded
+        // into a different module's caller the spliced AST carries the
+        // home-module path.
+        let src = r#"
+defmodule M do
+  fn helper(x), do: x + 100
+  defmacro bump(x) do
+    quote do: helper(unquote(x))
+  end
+end
+defmodule User do
+  fn run(), do: M.bump(7)
+end
+fn main() do User.run() end
+"#;
+        // M.bump expands at compile time into M.helper(7) (a fully
+        // qualified call), so the result is 107.
+        assert!(matches!(run(src), crate::value::Value::Int(107)),
+            "expected 107, got {:?}", run(src));
+    }
+
+    #[test]
+    fn imported_macro_works_unqualified() {
+        let src = r#"
+defmodule M do
+  defmacro bump(x), do: quote do: unquote(x) + 1
+end
+defmodule User do
+  import M, only: [bump: 1]
+  fn run(), do: bump(41)
+end
+fn main() do User.run() end
+"#;
         assert!(matches!(run(src), crate::value::Value::Int(42)));
     }
 
