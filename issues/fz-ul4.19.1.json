@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-ul4.11.14"
+  ],
   "blocks": [],
   "created": "2026-05-10T13:04:50Z",
   "description": "GOAL: Cooperative scheduler with processes-as-continuations. Single OS thread for v1.\n\n## Decisions captured (from design discussion)\n\n- ONE shared address space across processes (NOT BEAM-style separate spaces). Pointers valid across process boundaries.\n- Per-process heap chosen specifically for BOUNDED GC PAUSES: each process's heap is GC'd independently; other processes keep running.\n- CPS codegen (from .11) makes processes trivial: a process IS a continuation pointer + a per-process heap. No stackful coroutines, no corosensei, no fiber stacks. Switching processes = update which continuation the trampoline drives next.\n- Cooperative: yields at receive (and possibly at allocation safepoints for fairness — TBD).\n- Single OS thread for v1. Multi-thread / work-stealing later.\n\n## Deliverables (new src/runtime/process.rs and src/runtime/scheduler.rs)\n\n```rust\npub struct Process {\n    pid: PidId,\n    next_frame: *mut HeapHeader,  // current continuation; null = exited\n    heap: Heap,                    // private per-process heap\n    mailbox: VecDeque\u003cFzValue\u003e,    // .19.3\n    state: State,                  // Ready / Blocked(receive) / Exited\n}\n\npub struct Scheduler {\n    procs: HashMap\u003cPidId, Process\u003e,\n    run_queue: VecDeque\u003cPidId\u003e,\n    next_pid: u32,\n}\n\nimpl Scheduler {\n    pub fn new() -\u003e Self;\n    pub fn spawn_initial(\u0026mut self, entry_frame: *mut HeapHeader) -\u003e PidId;\n    pub fn run_until_idle(\u0026mut self);  // drives trampoline across all ready procs\n}\n```\n\nThe trampoline now picks the current process from scheduler, runs ITS continuation one step (or until it yields), then switches.\n\n## Tests\n\n- Spawn 3 processes, each running a counter loop; verify all make progress.\n- A process that exits (returns Halt) is removed from scheduler.\n- Single-process degenerate case: existing JIT tests still work (one process named \"main\").\n\n## Risks\n\n- Cooperative-only means a tight loop without yield can monopolize the scheduler. v1 acceptable; preemption (reductions counter) is a follow-up.\n- Mailbox + receive (.19.3) introduces scheduler ↔ process interaction (block / wake); design here must accommodate.\n\n## Out of scope\n\n- spawn / self / pid (.19.2 — depends on this infra)\n- Mailbox + send / receive (.19.3)\n- Multi-threaded scheduler (follow-up)\n- Preemption via reductions counter (follow-up)",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Process / scheduler infrastructure (process = continuation ptr)",
   "type": "task",
-  "updated_at": "2026-05-10T13:04:50Z"
+  "updated_at": "2026-05-10T13:05:54Z"
 }
