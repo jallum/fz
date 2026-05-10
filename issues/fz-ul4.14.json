@@ -10,9 +10,15 @@
   "id": "fz-ul4.14",
   "labels": [],
   "parent": "fz-ul4",
+  "comments": [
+    {
+      "text": "Depends on fz-ul4.11. Cranelift SIMD lowering for vec_map/vec_reduce needs Vec values reachable from JIT'd code, which means heap pointers across the JIT/interp boundary — that's the tagged-Value + heap-pointer-ABI work that moved into .11 alongside the GC. Could ship as interp-only SIMD with std::simd, but the ticket explicitly says \"lower to Cranelift's vector IR\".",
+      "timestamp": "2026-05-10T10:01:46Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "SIMD codegen for vector ops",
   "type": "task",
-  "updated_at": "2026-05-10T10:01:45Z"
+  "updated_at": "2026-05-10T10:01:46Z"
 }
