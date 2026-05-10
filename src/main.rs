@@ -30,7 +30,32 @@ fn map(f, [h | t]), do: [f(h) | map(f, t)]
 
 fn double(x), do: x * 2
 
+fn happy() do
+  with {:ok, a} <- {:ok, 1},
+       {:ok, b} <- {:ok, 2} do
+    a + b
+  end
+end
+
+fn falls_through() do
+  with {:ok, a} <- {:error, "boom"},
+       {:ok, _} <- {:ok, a} do
+    :unreached
+  end
+end
+
+fn else_handles() do
+  with {:ok, _} <- {:error, "boom"} do
+    :unreached
+  else
+    {:error, msg} -> {:handled, msg}
+  end
+end
+
 fn main() do
+  print(happy())
+  print(falls_through())
+  print(else_handles())
   print(fact(10))
   print(fib(20))
   print(classify(-5))

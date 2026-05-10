@@ -258,7 +258,51 @@ impl Typer {
                 result
             }
             Expr::Cond(_) => Descr::any(),
-            Expr::With(_, _) => Descr::any(),
+            Expr::With(bindings, body, else_clauses) => {
+                let mut local = env.clone();
+                let mut fail_t = Descr::none();
+                let mut body_reachable = true;
+                for b in bindings {
+                    match b {
+                        WithBinding::Match(pat, e) => {
+                            let rhs_t = self.infer(&local, e);
+                            let pat_t = pattern_type(pat);
+                            let matched = rhs_t.intersect(&pat_t);
+                            let failing = rhs_t.diff(&pat_t);
+                            if matched.is_empty() { body_reachable = false; }
+                            if !failing.is_empty() {
+                                if else_clauses.is_empty() {
+                                    fail_t = fail_t.union(&failing);
+                                } else {
+                                    let mut remaining = failing.clone();
+                                    for cl in else_clauses {
+                                        let cpt = pattern_type(&cl.pattern);
+                                        let cmatched = remaining.intersect(&cpt);
+                                        if cmatched.is_empty() { continue; }
+                                        remaining = remaining.diff(&cpt);
+                                        let mut e2 = local.clone();
+                                        for (n, ty) in pattern_bindings(&cl.pattern, &cmatched) {
+                                            e2.insert(n, ty);
+                                        }
+                                        fail_t = fail_t.union(&self.infer(&e2, &cl.body));
+                                    }
+                                    if !remaining.is_empty() {
+                                        fail_t = fail_t.union(&remaining);
+                                    }
+                                }
+                            }
+                            for (n, ty) in pattern_bindings(pat, &matched) {
+                                local.insert(n, ty);
+                            }
+                        }
+                        WithBinding::Bare(e) => { let _ = self.infer(&local, e); }
+                    }
+                }
+                // We always type-check the body (catches errors), but only
+                // include its type in the result when it can actually run.
+                let body_t = self.infer(&local, body);
+                if body_reachable { body_t.union(&fail_t) } else { fail_t }
+            }
             Expr::Match(pat, rhs) => {
                 let rt = self.infer(env, rhs);
                 // Match introduces bindings into the env (mutating env semantics
@@ -617,6 +661,48 @@ mod tests {
         assert!(s.contains(":first"), "missing first-clause return: {}", s);
         // The second clause's narrowed input was empty, so it's dropped — no :second.
         assert!(!s.contains(":second"), "unreachable second clause leaked: {}", s);
+    }
+
+    #[test]
+    fn with_form_unions_body_and_failure() {
+        // `with {:ok, n} <- expr do n end`
+        // expr is a constant {:error, "x"} so it can't match — body is unreachable
+        // and the type collapses to the failure value's type ({:error, "x"}).
+        let src = r#"
+            fn run() do
+              with {:ok, n} <- {:error, "x"} do
+                n
+              end
+            end
+        "#;
+        let t = type_of(src, "run");
+        let ret_t = (*t.funcs[0].pos[0].ret).clone();
+        let expected = Descr::tuple_of([Descr::atom_lit("error"), Descr::str_lit("x")]);
+        assert!(ret_t.is_equiv(&expected),
+            "with-fall-through type wrong: got {}, expected {}", ret_t, expected);
+    }
+
+    #[test]
+    fn with_form_else_branch_typed() {
+        // The else clause handles failures; its body type contributes.
+        let src = r#"
+            fn run() do
+              with {:ok, _} <- {:error, "x"} do
+                :unreached
+              else
+                {:error, _} -> :handled
+              end
+            end
+        "#;
+        let t = type_of(src, "run");
+        let ret_t = (*t.funcs[0].pos[0].ret).clone();
+        let expected = Descr::atom_lit("handled");
+        // Body :unreached unions in too because matched-portion of rhs is non-empty
+        // (rhs intersect {:ok, _} pattern). Wait — rhs is precisely {:error, "x"},
+        // so matched portion is empty, failing portion is the whole thing.
+        // Else fully handles: result = :handled.
+        assert!(ret_t.is_equiv(&expected),
+            "with-else type wrong: got {}, expected {}", ret_t, expected);
     }
 
     #[test]

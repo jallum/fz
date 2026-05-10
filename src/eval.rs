@@ -275,7 +275,34 @@ impl Interp {
                 Err(format!("no case clause matched: {}", sv))
             }
             Expr::Cond(_) => Err("cond not implemented".into()),
-            Expr::With(_, _) => Err("with not implemented".into()),
+            Expr::With(bindings, body, else_clauses) => {
+                let frame = env.child();
+                for b in bindings {
+                    match b {
+                        WithBinding::Match(pat, e) => {
+                            let v = self.eval(e, &frame)?;
+                            if !match_pattern(pat, &v, &frame) {
+                                // Failed match: try else clauses, fall back to value itself
+                                for cl in else_clauses {
+                                    let f2 = frame.child();
+                                    if !match_pattern(&cl.pattern, &v, &f2) { continue; }
+                                    if let Some(g) = &cl.guard {
+                                        let gv = self.eval(g, &f2)?;
+                                        if !is_truthy(&gv) { continue; }
+                                    }
+                                    return self.eval(&cl.body, &f2);
+                                }
+                                if !else_clauses.is_empty() {
+                                    return Err(format!("no else clause matched in `with`: {}", v));
+                                }
+                                return Ok(v);
+                            }
+                        }
+                        WithBinding::Bare(e) => { self.eval(e, &frame)?; }
+                    }
+                }
+                self.eval(body, &frame)
+            }
             Expr::Match(pat, rhs) => {
                 let v = self.eval(rhs, env)?;
                 if !match_pattern(pat, &v, env) {

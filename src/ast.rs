@@ -34,7 +34,7 @@ pub enum Expr {
     If(Box<Expr>, Box<Expr>, Option<Box<Expr>>),
     Case(Box<Expr>, Vec<MatchClause>),
     Cond(Vec<(Expr, Expr)>),
-    With(Vec<WithBinding>, Box<Expr>),
+    With(Vec<WithBinding>, Box<Expr>, Vec<MatchClause>),
 
     // bindings
     // pattern = expr (rebinds names; immutable, just shadows)

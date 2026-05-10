@@ -321,6 +321,7 @@ impl Parser {
             }
             Tok::If => self.parse_if()?,
             Tok::Case => self.parse_case()?,
+            Tok::With => self.parse_with()?,
             Tok::Do => {
                 self.bump();
                 self.skip_newlines();
@@ -426,6 +427,69 @@ impl Parser {
         }
         self.expect(&Tok::End, "`end`")?;
         Ok(Expr::Case(Box::new(scrut), clauses))
+    }
+
+    fn parse_with(&mut self) -> PR<Expr> {
+        self.expect(&Tok::With, "`with`")?;
+        let mut bindings: Vec<WithBinding> = Vec::new();
+        loop {
+            self.skip_newlines();
+            // A binding is either `pat <- expr` or a bare expression.
+            // We try-parse a pattern + `<-`; if the `<-` isn't there we treat
+            // what we parsed as a bare expression instead.
+            let saved = self.pos;
+            let try_pat = self.parse_pattern();
+            if let Ok(pat) = try_pat {
+                if matches!(self.peek(), Tok::LArrow) {
+                    self.bump();
+                    let e = self.parse_expr()?;
+                    bindings.push(WithBinding::Match(pat, e));
+                } else {
+                    // not a binding — restore and parse as bare expr
+                    self.pos = saved;
+                    let e = self.parse_expr()?;
+                    bindings.push(WithBinding::Bare(e));
+                }
+            } else {
+                self.pos = saved;
+                let e = self.parse_expr()?;
+                bindings.push(WithBinding::Bare(e));
+            }
+            self.skip_newlines();
+            if matches!(self.peek(), Tok::Comma) {
+                self.bump();
+                continue;
+            }
+            break;
+        }
+        // Body: either `, do: expr` shorthand OR `do ... end` (with optional `else`).
+        let body;
+        let mut else_clauses: Vec<MatchClause> = Vec::new();
+        if matches!(self.peek(), Tok::Comma) && matches!(self.peek_at(1), Tok::KwKey(s) if s == "do") {
+            self.bump(); self.bump();
+            body = self.parse_expr()?;
+        } else {
+            self.expect(&Tok::Do, "`do`")?;
+            self.skip_newlines();
+            body = self.parse_block_until(&[Tok::Else, Tok::End])?;
+            if self.eat(&Tok::Else) {
+                self.skip_newlines();
+                while !matches!(self.peek(), Tok::End | Tok::Eof) {
+                    let pat = self.parse_pattern()?;
+                    let guard = if matches!(self.peek(), Tok::When) {
+                        self.bump();
+                        Some(self.parse_expr()?)
+                    } else { None };
+                    self.expect(&Tok::Arrow, "`->`")?;
+                    self.skip_newlines();
+                    let cb = self.parse_expr()?;
+                    else_clauses.push(MatchClause { pattern: pat, guard, body: cb });
+                    self.skip_newlines();
+                }
+            }
+            self.expect(&Tok::End, "`end`")?;
+        }
+        Ok(Expr::With(bindings, Box::new(body), else_clauses))
     }
 
     fn parse_lambda(&mut self) -> PR<Expr> {
