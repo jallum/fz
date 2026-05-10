@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-10T01:26:31Z",
+  "description": "vec_map / vec_reduce / arithmetic over Vec(F64) etc. lower to Cranelift's vector IR. ~b[] and ~bits[] get their own specializations. The whole point of having vectors as a distinct type from lists.",
+  "id": "fz-ul4.14",
+  "labels": [],
+  "parent": "fz-ul4",
+  "priority": 3,
+  "status": "open",
+  "title": "SIMD codegen for vector ops",
+  "type": "task",
+  "updated_at": "2026-05-10T01:26:31Z"
+}
