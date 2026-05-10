@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-10T03:00:09Z",
+  "description": "Same lowering (.12a) + same runtime (.12b), but in-process via cranelift-jit.\n\nScope:\n- JITModule with the runtime staticlib's symbols pre-registered.\n- Per-function compile-on-demand (manual trigger in this ticket — counter-based tier-up is .13).\n- Mixed execution: jitted fns call interpreted fns and vice versa via the Value ABI boundary defined in .12b.\n- Functions outside the in-scope subset stay tier-0 forever.\n\nVerification: same fact/fib samples, called from interpreter, transparent jit. Microbenchmark vs. tier-0 for confidence the lowering is actually fast.",
+  "id": "fz-ul4.12.4",
+  "labels": [],
+  "parent": "fz-ul4.12",
+  "priority": 2,
+  "status": "open",
+  "title": "JIT driver: in-process cranelift-jit, mixed execution",
+  "type": "task",
+  "updated_at": "2026-05-10T03:00:09Z"
+}
