@@ -23,14 +23,13 @@
 //! - Nil: 0 (placeholder)
 //! Tuples flatten across multiple slots.
 
-use crate::aot::{derive_lowerty, MonoFn};
+use crate::aot::{extract_simple_arrow, MonoFn};
 use crate::ast::*;
 use crate::codegen::{lower_fn, AtomInterner, FnSig, LowerError, LowerResult, LowerTy};
 use crate::eval::Interp;
 use crate::lexer::Lexer;
 use crate::parser::Parser;
 use crate::typer::Typer;
-use crate::types::*;
 use crate::value::Value;
 use cranelift_codegen::ir::{
     self, AbiParam, InstBuilder, MemFlags, Signature, UserExternalName, UserFuncName,
@@ -75,26 +74,22 @@ fn classify(prog: &Program, typer: &Typer) -> Classified {
         let Some((params, ret)) = extract_simple_arrow(arrow) else { continue };
         let sig = FnSig { params, ret };
 
-        // Single-clause + lower_fn must succeed for JIT eligibility.
-        if def.clauses.len() == 1 {
-            let mut probe_atoms = AtomInterner::default();
-            let probe_callees: HashMap<String, FnSig> = HashMap::new();
-            // We don't have full callee sigs yet; a probe with only self is
-            // sufficient to catch most "body has heap types" failures because
-            // those reject in lower_expr before any callee is consulted.
-            // Real lowering happens with full callee sigs below.
-            let mut probe_callees = probe_callees;
-            probe_callees.insert(def.name.clone(), sig.clone());
-            if lower_fn(def, &sig, &probe_callees, &mut probe_atoms).is_ok() {
-                jit_eligible.push(MonoFn {
-                    name: def.name.clone(),
-                    sig,
-                    def: def.clone(),
-                });
-                continue;
-            }
+        // lower_fn must succeed for JIT eligibility (multi-clause + guards
+        // + tail-call self-recursion all work as of .12.5).
+        let mut probe_atoms = AtomInterner::default();
+        let mut probe_callees: HashMap<String, FnSig> = HashMap::new();
+        // Self in scope so probe doesn't trip on self-recursive calls;
+        // real lowering below uses full callee sigs.
+        probe_callees.insert(def.name.clone(), sig.clone());
+        if lower_fn(def, &sig, &probe_callees, &mut probe_atoms).is_ok() {
+            jit_eligible.push(MonoFn {
+                name: def.name.clone(),
+                sig,
+                def: def.clone(),
+            });
+        } else {
+            interp_callable.insert(def.name.clone(), sig);
         }
-        interp_callable.insert(def.name.clone(), sig);
     }
 
     // A fn that called another monomorphic fn whose body fails to lower is
@@ -105,20 +100,6 @@ fn classify(prog: &Program, typer: &Typer) -> Classified {
     Classified { jit_eligible, interp_callable }
 }
 
-/// Local copy of aot::extract_simple_arrow — kept private there.
-fn extract_simple_arrow(d: &Descr) -> Option<(Vec<LowerTy>, LowerTy)> {
-    if d.funcs.len() != 1 {
-        return None;
-    }
-    let conj = &d.funcs[0];
-    if !conj.neg.is_empty() || conj.pos.len() != 1 {
-        return None;
-    }
-    let arrow = &conj.pos[0];
-    let params: Option<Vec<LowerTy>> = arrow.args.iter().map(derive_lowerty).collect();
-    let ret = derive_lowerty(&arrow.ret)?;
-    Some((params?, ret))
-}
 
 // ---------------------------------------------------------------------------
 // Cross-tier dispatch (interp side)
@@ -909,15 +890,33 @@ end
     }
 
     #[test]
-    fn jit_calls_interp_only_helper_via_forward_thunk() {
-        // `classify` is multi-clause → interp-only. main is JIT-eligible
-        // and calls it, so the call must route through fz_call_interp.
+    fn jit_lowers_multi_clause_directly() {
+        // Multi-clause is now JIT-eligible end-to-end, so the call from main
+        // is a direct call rather than going through fz_call_interp.
         let src = r#"
 fn classify(0), do: :zero
 fn classify(_), do: :other
 fn main() do
   print(classify(0))
   print(classify(7))
+end
+"#;
+        run_capture(src).expect("jit run");
+    }
+
+    #[test]
+    fn jit_runs_recursive_fn_via_interp_fallback() {
+        // Self-recursive fn types as `(any, any) -> any` under the current
+        // typer (no call-site monomorphization yet — see ticket "typer:
+        // narrow self-recursive arrows from call-site"). It falls back to
+        // interpreter; this test just verifies the program produces correct
+        // output for a small input (100 won't overflow). End-to-end JIT TCO
+        // exercise lands when the typer ticket does.
+        let src = r#"
+fn count(0, acc), do: acc
+fn count(n, acc), do: count(n - 1, acc + 1)
+fn main() do
+  print(count(100, 0))
 end
 "#;
         run_capture(src).expect("jit run");

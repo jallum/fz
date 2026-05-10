@@ -106,13 +106,6 @@ pub fn monomorphize(prog: &Program, typer: &Typer) -> Result<Vec<MonoFn>, Vec<St
         if def.is_macro {
             continue;
         }
-        if def.clauses.len() != 1 {
-            errs.push(format!(
-                "{}/{}: multi-clause functions are not supported in AOT (lands in fz-ul4.12.5)",
-                def.name, def.clauses.first().map(|c| c.params.len()).unwrap_or(0)
-            ));
-            continue;
-        }
         let arrow = match typer.globals.get(&def.name) {
             Some(t) => t,
             None => {
@@ -142,20 +135,31 @@ pub fn monomorphize(prog: &Program, typer: &Typer) -> Result<Vec<MonoFn>, Vec<St
     Ok(out)
 }
 
-fn extract_simple_arrow(d: &Descr) -> Option<(Vec<LowerTy>, LowerTy)> {
-    // We expect a Descr that is exactly one func clause with one positive
-    // ArrowSig and no negatives, no other axes populated.
+pub fn extract_simple_arrow(d: &Descr) -> Option<(Vec<LowerTy>, LowerTy)> {
+    // Expect one DNF func conjunction with no negatives. Multi-clause fns
+    // produce an intersection of arrows (one positive per clause); we accept
+    // them if all positives reduce to the same LowerTy signature.
     if d.funcs.len() != 1 {
         return None;
     }
     let conj = &d.funcs[0];
-    if !conj.neg.is_empty() || conj.pos.len() != 1 {
+    if !conj.neg.is_empty() || conj.pos.is_empty() {
         return None;
     }
-    let arrow = &conj.pos[0];
-    let params: Option<Vec<LowerTy>> = arrow.args.iter().map(derive_lowerty).collect();
-    let ret = derive_lowerty(&arrow.ret)?;
-    Some((params?, ret))
+    let mut sig: Option<(Vec<LowerTy>, LowerTy)> = None;
+    for arrow in &conj.pos {
+        let params: Vec<LowerTy> = arrow.args.iter().map(derive_lowerty).collect::<Option<_>>()?;
+        let ret = derive_lowerty(&arrow.ret)?;
+        match &sig {
+            None => sig = Some((params, ret)),
+            Some((p0, r0)) => {
+                if p0 != &params || r0 != &ret {
+                    return None;
+                }
+            }
+        }
+    }
+    sig
 }
 
 fn format_descr_short(d: &Descr) -> String {
@@ -589,16 +593,6 @@ end
         assert!(stdout.contains(":ok"), "stdout missing ':ok': {}", stdout);
     }
 
-    #[test]
-    fn rejects_multi_clause_at_aot() {
-        let src = "fn classify(0), do: :zero\nfn classify(_), do: :other\nfn main() do print(classify(0)) end";
-        let toks = Lexer::new(src).tokenize().unwrap();
-        let prog = Parser::new(toks).parse_program().unwrap();
-        let mut t = Typer::new();
-        t.type_program(&prog);
-        let res = monomorphize(&prog, &t);
-        assert!(res.is_err());
-    }
 
     #[test]
     fn rejects_heap_typed_fn_at_aot() {

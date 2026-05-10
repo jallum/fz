@@ -193,67 +193,69 @@ pub struct LowerResult {
     pub builtin_imports: Vec<&'static str>,
 }
 
-/// Public API: lower a single-clause function with explicit signature info.
+/// Public API: lower a function (one or more clauses) with explicit signature
+/// info.
 ///
 /// `callees` provides signatures for any cross-function calls in the body
-/// (including the function being lowered, for self-recursion). Direct
-/// recursion compiles fine; tail-call detection / loop emission is .12.5.
+/// (including the function being lowered, for self-recursion). Tail-position
+/// self-calls compile to a jump back to a per-fn TCO header; non-tail
+/// self-calls are normal `call` instructions.
 pub fn lower_fn(
     def: &FnDef,
     sig: &FnSig,
     callees: &HashMap<String, FnSig>,
     atoms: &mut AtomInterner,
 ) -> Result<LowerResult, LowerError> {
-    if def.clauses.len() != 1 {
-        return Err(LowerError::Unsupported(
-            "multi-clause functions (lands in .12.5)".into(),
-        ));
+    if def.clauses.is_empty() {
+        return Err(LowerError::Internal(format!("{}: zero clauses", def.name)));
     }
-    let clause = &def.clauses[0];
-    if clause.guard.is_some() {
-        return Err(LowerError::Unsupported("guards (.12.5)".into()));
-    }
-    if clause.params.len() != sig.params.len() {
-        return Err(LowerError::Internal(format!(
-            "{}: arity mismatch — sig has {}, clause has {}",
-            def.name,
-            sig.params.len(),
-            clause.params.len()
-        )));
+    for c in &def.clauses {
+        if c.params.len() != sig.params.len() {
+            return Err(LowerError::Internal(format!(
+                "{}: arity mismatch — sig has {}, clause has {}",
+                def.name,
+                sig.params.len(),
+                c.params.len()
+            )));
+        }
     }
 
-    let call_conv = CallConv::SystemV;
-    let _ = call_conv;
     let cl_sig = sig.to_cranelift(CallConv::SystemV);
     let mut func = Function::with_name_signature(UserFuncName::user(0, 0), cl_sig);
     let mut fbctx = FunctionBuilderContext::new();
     let mut builder = FunctionBuilder::new(&mut func, &mut fbctx);
 
-    // Entry block + parameters
+    // Entry block: receives the function's incoming args.
     let entry = builder.create_block();
     builder.append_block_params_for_function_params(entry);
     builder.switch_to_block(entry);
     builder.seal_block(entry);
+    let entry_params: Vec<Value> = builder.block_params(entry).to_vec();
 
-    // Bind params: walk patterns, expect Pattern::Var or Pattern::Wildcard; pull
-    // values from entry block params, unflattening per param's LowerTy.
-    let block_params: Vec<Value> = builder.block_params(entry).to_vec();
-    let mut env: HashMap<String, LV> = HashMap::new();
+    // TCO header: a block parameterized like entry. Tail-position self-calls
+    // jump here with new arg values, so each iteration re-runs clause
+    // dispatch on fresh values without growing the stack.
+    let tco_hdr = builder.create_block();
+    let mut flat_param_tys: Vec<clt::Type> = Vec::new();
+    for pty in &sig.params {
+        pty.flatten(&mut flat_param_tys);
+    }
+    for t in &flat_param_tys {
+        builder.append_block_param(tco_hdr, *t);
+    }
+    let entry_args = vals_to_block_args(&entry_params);
+    builder.ins().jump(tco_hdr, &entry_args);
+    builder.switch_to_block(tco_hdr);
+    // tco_hdr is sealed only after all clauses have been lowered, so any
+    // tail-position self-calls have a chance to add themselves as
+    // predecessors. Sealing is done in lower_fn after lower_clauses returns.
+
+    // Build per-arg LVs from the TCO header's params.
+    let tco_params: Vec<Value> = builder.block_params(tco_hdr).to_vec();
     let mut idx = 0;
-    for (pat, pty) in clause.params.iter().zip(sig.params.iter()) {
-        let lv = LV::unflatten(pty, &block_params, &mut idx);
-        match pat {
-            Pattern::Var(n) => {
-                env.insert(n.clone(), lv);
-            }
-            Pattern::Wildcard => { /* discard */ }
-            _ => {
-                return Err(LowerError::Unsupported(format!(
-                    "param pattern other than Var/Wildcard (.12.5): {:?}",
-                    pat
-                )));
-            }
-        }
+    let mut arg_lvs: Vec<LV> = Vec::with_capacity(sig.params.len());
+    for pty in &sig.params {
+        arg_lvs.push(LV::unflatten(pty, &tco_params, &mut idx));
     }
 
     let mut ctx = LoweringCtx {
@@ -263,13 +265,13 @@ pub fn lower_fn(
         callee_refs: HashMap::new(),
         builtin_refs: HashMap::new(),
         case_result_ty: None,
+        self_name: def.name.clone(),
+        self_sig: sig.clone(),
+        tco_hdr,
     };
-    let body_lv = ctx.lower_expr(&clause.body, &env)?;
-    expect_assignable(&sig.ret, &body_lv.ty()).map_err(LowerError::TypeMismatch)?;
 
-    let mut ret_vals = Vec::new();
-    body_lv.flatten(&mut ret_vals);
-    ctx.builder.ins().return_(&ret_vals);
+    ctx.lower_clauses(&def.clauses, &arg_lvs, &sig.ret)?;
+    ctx.builder.seal_block(tco_hdr);
 
     // Capture import tables in id order before finalize() consumes ctx.
     let callee_imports = order_by_id(&ctx.callee_refs, &ctx.builder, /*ns=*/ 0);
@@ -348,6 +350,15 @@ struct LoweringCtx<'a, 'b> {
     /// `extern "C"` symbols.
     builtin_refs: HashMap<&'static str, cranelift_codegen::ir::FuncRef>,
     case_result_ty: Option<LowerTy>,
+    /// Name of the function currently being lowered. Used to detect tail-
+    /// position self-calls for TCO.
+    self_name: String,
+    /// Signature of the function currently being lowered. Tail self-calls
+    /// type-check against this and jump to `tco_hdr`.
+    self_sig: FnSig,
+    /// TCO header block: a per-fn jump target whose block params shape
+    /// matches `self_sig`. Tail self-calls evaluate new args and jump here.
+    tco_hdr: cranelift_codegen::ir::Block,
 }
 
 impl<'a, 'b> LoweringCtx<'a, 'b> {
@@ -971,6 +982,329 @@ impl<'a, 'b> LoweringCtx<'a, 'b> {
         }
     }
 
+    /// Multi-clause function dispatch. Each clause tests its parameter
+    /// patterns (combined via `band`), then its guard if any; on full match
+    /// jumps to its body block, on fail to next clause's test block. Last
+    /// clause's fail block traps. Bodies emit their own returns via
+    /// `lower_expr_tail`.
+    fn lower_clauses(
+        &mut self,
+        clauses: &[FnClause],
+        args: &[LV],
+        ret_ty: &LowerTy,
+    ) -> Result<(), LowerError> {
+        let n = clauses.len();
+        let mut next_blks: Vec<cranelift_codegen::ir::Block> = (0..n)
+            .map(|_| self.builder.create_block())
+            .collect();
+        let panic_blk = self.builder.create_block();
+
+        for (i, clause) in clauses.iter().enumerate() {
+            if i > 0 {
+                self.builder.switch_to_block(next_blks[i - 1]);
+                self.builder.seal_block(next_blks[i - 1]);
+            }
+            let body_blk = self.builder.create_block();
+            let fail_blk = next_blks[i];
+
+            // Build pattern-match boolean across all param patterns.
+            let mut bindings: Vec<(String, LV)> = Vec::new();
+            let mut acc: Option<Value> = None;
+            for (pat, lv) in clause.params.iter().zip(args.iter()) {
+                let cond = self.match_cond(pat, lv, &mut bindings)?;
+                if let MatchCond::OnValue(b) = cond {
+                    acc = Some(match acc {
+                        None => b,
+                        Some(prev) => self.builder.ins().band(prev, b),
+                    });
+                }
+            }
+
+            // Guard, if present, gets its own block so bindings are in scope.
+            if let Some(guard) = &clause.guard {
+                let guard_blk = self.builder.create_block();
+                let no_args: Vec<BlockArg> = Vec::new();
+                match acc {
+                    None => { self.builder.ins().jump(guard_blk, &no_args); }
+                    Some(b) => {
+                        self.builder.ins().brif(b, guard_blk, &no_args, fail_blk, &no_args);
+                    }
+                }
+                self.builder.switch_to_block(guard_blk);
+                self.builder.seal_block(guard_blk);
+                let mut env: HashMap<String, LV> = HashMap::new();
+                for (name, lv) in &bindings {
+                    env.insert(name.clone(), lv.clone());
+                }
+                let gv = self.lower_expr(guard, &env)?;
+                let gv_b = match gv {
+                    LV::Scalar(LowerTy::Bool, v) => v,
+                    other => {
+                        return Err(LowerError::TypeMismatch(format!(
+                            "guard must be bool, got {:?}",
+                            other.ty()
+                        )));
+                    }
+                };
+                let no_args: Vec<BlockArg> = Vec::new();
+                self.builder
+                    .ins()
+                    .brif(gv_b, body_blk, &no_args, fail_blk, &no_args);
+            } else {
+                let no_args: Vec<BlockArg> = Vec::new();
+                match acc {
+                    None => { self.builder.ins().jump(body_blk, &no_args); }
+                    Some(b) => {
+                        self.builder.ins().brif(b, body_blk, &no_args, fail_blk, &no_args);
+                    }
+                }
+            }
+
+            // Body block: bindings active, lower body in tail position.
+            self.builder.switch_to_block(body_blk);
+            self.builder.seal_block(body_blk);
+            let mut env: HashMap<String, LV> = HashMap::new();
+            for (name, lv) in &bindings {
+                env.insert(name.clone(), lv.clone());
+            }
+            self.lower_expr_tail(&clause.body, &env, ret_ty)?;
+        }
+
+        // Last failure → panic.
+        let last_fail = *next_blks.last().unwrap();
+        self.builder.switch_to_block(last_fail);
+        self.builder.seal_block(last_fail);
+        let no_args: Vec<BlockArg> = Vec::new();
+        self.builder.ins().jump(panic_blk, &no_args);
+
+        self.builder.switch_to_block(panic_blk);
+        self.builder.seal_block(panic_blk);
+        self.builder
+            .ins()
+            .trap(cranelift_codegen::ir::TrapCode::user(2).unwrap());
+        let _ = next_blks; // keep for clarity
+        Ok(())
+    }
+
+    /// Lower an expression in tail position. Emits its own terminator —
+    /// either `return_` for normal exits or `jump` to the TCO header for
+    /// self-tail-calls. Recurses for control-flow forms (Block/If/Case)
+    /// so each branch arm can independently emit its own terminator.
+    fn lower_expr_tail(
+        &mut self,
+        e: &Expr,
+        env: &HashMap<String, LV>,
+        ret_ty: &LowerTy,
+    ) -> Result<(), LowerError> {
+        match e {
+            Expr::Block(stmts) => self.lower_block_tail(stmts, env, ret_ty),
+            Expr::If(c, t, els) => {
+                let els = els.as_ref().ok_or_else(|| {
+                    LowerError::Unsupported("if without else (.12 requires both arms)".into())
+                })?;
+                self.lower_if_tail(c, t, els, env, ret_ty)
+            }
+            Expr::Case(scrut, clauses) => self.lower_case_tail(scrut, clauses, env, ret_ty),
+            Expr::Call(target, args) => {
+                if let Expr::Var(name) = target.as_ref() {
+                    if name == &self.self_name {
+                        return self.emit_tail_self_call(args, env);
+                    }
+                }
+                // Non-tail-eligible call: lower normally and return.
+                let lv = self.lower_expr(e, env)?;
+                self.emit_normal_return(lv, ret_ty)
+            }
+            _ => {
+                let lv = self.lower_expr(e, env)?;
+                self.emit_normal_return(lv, ret_ty)
+            }
+        }
+    }
+
+    fn emit_normal_return(&mut self, lv: LV, ret_ty: &LowerTy) -> Result<(), LowerError> {
+        expect_assignable(ret_ty, &lv.ty()).map_err(LowerError::TypeMismatch)?;
+        let mut rv = Vec::new();
+        lv.flatten(&mut rv);
+        self.builder.ins().return_(&rv);
+        Ok(())
+    }
+
+    fn emit_tail_self_call(
+        &mut self,
+        args: &[Expr],
+        env: &HashMap<String, LV>,
+    ) -> Result<(), LowerError> {
+        if args.len() != self.self_sig.params.len() {
+            return Err(LowerError::TypeMismatch(format!(
+                "tail self-call: arity {} vs {} args",
+                self.self_sig.params.len(),
+                args.len()
+            )));
+        }
+        let mut flat: Vec<Value> = Vec::new();
+        let param_tys = self.self_sig.params.clone();
+        for (a, pty) in args.iter().zip(param_tys.iter()) {
+            let lv = self.lower_expr(a, env)?;
+            expect_assignable(pty, &lv.ty()).map_err(LowerError::TypeMismatch)?;
+            lv.flatten(&mut flat);
+        }
+        let jump_args = vals_to_block_args(&flat);
+        self.builder.ins().jump(self.tco_hdr, &jump_args);
+        Ok(())
+    }
+
+    fn lower_block_tail(
+        &mut self,
+        stmts: &[Expr],
+        env: &HashMap<String, LV>,
+        ret_ty: &LowerTy,
+    ) -> Result<(), LowerError> {
+        let mut local_env = env.clone();
+        if stmts.is_empty() {
+            return Err(LowerError::Unsupported("empty block".into()));
+        }
+        for (i, s) in stmts.iter().enumerate() {
+            let is_last = i + 1 == stmts.len();
+            if is_last {
+                return self.lower_expr_tail(s, &local_env, ret_ty);
+            }
+            match s {
+                Expr::Match(pat, rhs) => {
+                    let v = self.lower_expr(rhs, &local_env)?;
+                    self.bind_pattern(pat, v, &mut local_env)?;
+                }
+                _ => {
+                    let _ = self.lower_expr(s, &local_env)?;
+                }
+            }
+        }
+        unreachable!()
+    }
+
+    fn lower_if_tail(
+        &mut self,
+        cond: &Expr,
+        then_e: &Expr,
+        else_e: &Expr,
+        env: &HashMap<String, LV>,
+        ret_ty: &LowerTy,
+    ) -> Result<(), LowerError> {
+        let cv = self.lower_expr(cond, env)?;
+        let bv = match cv {
+            LV::Scalar(LowerTy::Bool, v) => v,
+            other => {
+                return Err(LowerError::TypeMismatch(format!(
+                    "if condition must be bool, got {:?}",
+                    other.ty()
+                )));
+            }
+        };
+        let then_blk = self.builder.create_block();
+        let else_blk = self.builder.create_block();
+        let no_args: Vec<BlockArg> = Vec::new();
+        self.builder
+            .ins()
+            .brif(bv, then_blk, &no_args, else_blk, &no_args);
+
+        self.builder.switch_to_block(then_blk);
+        self.builder.seal_block(then_blk);
+        self.lower_expr_tail(then_e, env, ret_ty)?;
+
+        self.builder.switch_to_block(else_blk);
+        self.builder.seal_block(else_blk);
+        self.lower_expr_tail(else_e, env, ret_ty)?;
+        Ok(())
+    }
+
+    fn lower_case_tail(
+        &mut self,
+        scrut: &Expr,
+        clauses: &[MatchClause],
+        env: &HashMap<String, LV>,
+        ret_ty: &LowerTy,
+    ) -> Result<(), LowerError> {
+        if clauses.is_empty() {
+            return Err(LowerError::Unsupported("empty case".into()));
+        }
+        let scrut_v = self.lower_expr(scrut, env)?;
+
+        let n = clauses.len();
+        let next_blks: Vec<cranelift_codegen::ir::Block> = (0..n)
+            .map(|_| self.builder.create_block())
+            .collect();
+        let panic_blk = self.builder.create_block();
+
+        for (i, clause) in clauses.iter().enumerate() {
+            if i > 0 {
+                self.builder.switch_to_block(next_blks[i - 1]);
+                self.builder.seal_block(next_blks[i - 1]);
+            }
+            let body_blk = self.builder.create_block();
+            let fail_blk = next_blks[i];
+            let mut bindings: Vec<(String, LV)> = Vec::new();
+            let cond = self.match_cond(&clause.pattern, &scrut_v, &mut bindings)?;
+            let no_args: Vec<BlockArg> = Vec::new();
+
+            // Optional guard layered on top.
+            if let Some(guard) = &clause.guard {
+                let guard_blk = self.builder.create_block();
+                match cond {
+                    MatchCond::Always => { self.builder.ins().jump(guard_blk, &no_args); }
+                    MatchCond::OnValue(b) => {
+                        self.builder.ins().brif(b, guard_blk, &no_args, fail_blk, &no_args);
+                    }
+                }
+                self.builder.switch_to_block(guard_blk);
+                self.builder.seal_block(guard_blk);
+                let mut g_env = env.clone();
+                for (n, lv) in &bindings {
+                    g_env.insert(n.clone(), lv.clone());
+                }
+                let gv = self.lower_expr(guard, &g_env)?;
+                let gv_b = match gv {
+                    LV::Scalar(LowerTy::Bool, v) => v,
+                    other => {
+                        return Err(LowerError::TypeMismatch(format!(
+                            "case guard must be bool, got {:?}",
+                            other.ty()
+                        )));
+                    }
+                };
+                self.builder
+                    .ins()
+                    .brif(gv_b, body_blk, &no_args, fail_blk, &no_args);
+            } else {
+                match cond {
+                    MatchCond::Always => { self.builder.ins().jump(body_blk, &no_args); }
+                    MatchCond::OnValue(b) => {
+                        self.builder.ins().brif(b, body_blk, &no_args, fail_blk, &no_args);
+                    }
+                }
+            }
+
+            self.builder.switch_to_block(body_blk);
+            self.builder.seal_block(body_blk);
+            let mut body_env = env.clone();
+            for (name, lv) in &bindings {
+                body_env.insert(name.clone(), lv.clone());
+            }
+            self.lower_expr_tail(&clause.body, &body_env, ret_ty)?;
+        }
+
+        let last_fail = *next_blks.last().unwrap();
+        self.builder.switch_to_block(last_fail);
+        self.builder.seal_block(last_fail);
+        let no_args: Vec<BlockArg> = Vec::new();
+        self.builder.ins().jump(panic_blk, &no_args);
+        self.builder.switch_to_block(panic_blk);
+        self.builder.seal_block(panic_blk);
+        self.builder
+            .ins()
+            .trap(cranelift_codegen::ir::TrapCode::user(3).unwrap());
+        Ok(())
+    }
+
     fn lower_unop(&mut self, op: UnOp, x: LV) -> Result<LV, LowerError> {
         match (&op, &x) {
             (UnOp::Neg, LV::Scalar(LowerTy::I64, v)) => {
@@ -1163,7 +1497,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_multi_clause() {
+    fn lowers_multi_clause_with_literal_dispatch() {
         let toks = Lexer::new("fn f(0), do: 0\nfn f(n), do: n").tokenize().unwrap();
         let prog = Parser::new(toks).parse_program().unwrap();
         let def = match &*prog.items[0] {
@@ -1171,13 +1505,97 @@ mod tests {
             _ => panic!(),
         };
         let mut atoms = AtomInterner::default();
-        let res = lower_fn(
+        let r = lower_fn(
             &def,
             &FnSig { params: vec![ty_i64()], ret: ty_i64() },
             &HashMap::new(),
             &mut atoms,
+        )
+        .expect("lower");
+        verify(&r.func).expect("verify");
+        let s = r.func.display().to_string();
+        // Two clauses → at least one brif on the first clause's literal test.
+        assert!(s.contains("brif"));
+    }
+
+    #[test]
+    fn lowers_clause_with_guard() {
+        let toks = Lexer::new("fn classify(n) when n > 0, do: 1\nfn classify(_), do: 0")
+            .tokenize()
+            .unwrap();
+        let prog = Parser::new(toks).parse_program().unwrap();
+        let def = match &*prog.items[0] {
+            Item::Fn(d) => d.clone(),
+            _ => panic!(),
+        };
+        let mut atoms = AtomInterner::default();
+        let r = lower_fn(
+            &def,
+            &FnSig { params: vec![ty_i64()], ret: ty_i64() },
+            &HashMap::new(),
+            &mut atoms,
+        )
+        .expect("lower");
+        verify(&r.func).expect("verify");
+    }
+
+    #[test]
+    fn lowers_tail_self_call_to_jump() {
+        // Tail recursion: `tally(n - 1, acc + n)` is a tail call to self.
+        let toks = Lexer::new(
+            "fn tally(0, acc), do: acc\nfn tally(n, acc), do: tally(n - 1, acc + n)",
+        )
+        .tokenize()
+        .unwrap();
+        let prog = Parser::new(toks).parse_program().unwrap();
+        let def = match &*prog.items[0] {
+            Item::Fn(d) => d.clone(),
+            _ => panic!(),
+        };
+        let mut callees = HashMap::new();
+        callees.insert(
+            "tally".to_string(),
+            FnSig { params: vec![ty_i64(), ty_i64()], ret: ty_i64() },
         );
-        assert!(matches!(res, Err(LowerError::Unsupported(_))));
+        let mut atoms = AtomInterner::default();
+        let r = lower_fn(
+            &def,
+            &FnSig { params: vec![ty_i64(), ty_i64()], ret: ty_i64() },
+            &callees,
+            &mut atoms,
+        )
+        .expect("lower");
+        verify(&r.func).expect("verify");
+        let s = r.func.display().to_string();
+        // Tail self-call must NOT emit a `call` to itself — it should be a
+        // `jump` to the TCO header instead.
+        assert!(
+            !s.contains("call "),
+            "expected tail-self-call to be jump, not call:\n{}",
+            s
+        );
+    }
+
+    #[test]
+    fn lowers_param_tuple_pattern() {
+        let toks = Lexer::new("fn first({a, _}), do: a").tokenize().unwrap();
+        let prog = Parser::new(toks).parse_program().unwrap();
+        let def = match &*prog.items[0] {
+            Item::Fn(d) => d.clone(),
+            _ => panic!(),
+        };
+        let mut atoms = AtomInterner::default();
+        let r = lower_fn(
+            &def,
+            &FnSig {
+                params: vec![LowerTy::Tuple(vec![ty_i64(), ty_i64()])],
+                ret: ty_i64(),
+            },
+            &HashMap::new(),
+            &mut atoms,
+        )
+        .expect("lower");
+        verify(&r.func).expect("verify");
     }
 
     #[test]
