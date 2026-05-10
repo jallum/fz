@@ -2,8 +2,7 @@
   "assignee": "",
   "blocked_by": [
     "fz-ul4.11.16",
-    "fz-ul4.11.3",
-    "fz-ul4.11.4"
+    "fz-ul4.11.3"
   ],
   "blocks": [],
   "created": "2026-05-10T13:01:39Z",
@@ -15,5 +14,5 @@
   "status": "open",
   "title": "fz-IR interpreter (debug oracle)",
   "type": "task",
-  "updated_at": "2026-05-10T13:39:01Z"
+  "updated_at": "2026-05-10T13:39:11Z"
 }
