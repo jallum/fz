@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-ul4.12"
+  ],
   "blocks": [],
   "created": "2026-05-10T01:26:31Z",
   "description": "Track call counts in the interpreter. When a function crosses a threshold, JIT-compile it and patch the closure value to point at native code. Cold code stays in the interpreter forever (the user explicitly chose this design — saves JIT compile time on the long tail).",
