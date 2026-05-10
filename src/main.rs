@@ -1,5 +1,6 @@
 mod ast;
 mod bitstr;
+mod codegen;
 mod eval;
 mod lexer;
 mod parser;
