@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-10T12:59:46Z",
+  "description": "Second concurrency epic, follow-up to fz-ul4.11 (heap + GC + CPS codegen). Builds Erlang-style processes, cooperative scheduler, mailbox + send/receive, per-process independent GC, and transferable arenas for the zero-copy send fast path.\n\n## Design context (decisions captured in planning, do not relitigate)\n\n- ONE shared address space across all processes — NOT BEAM-style separate spaces. Pointers are valid across process boundaries.\n- Per-process heap chosen specifically for BOUNDED GC PAUSES. Each process's heap is GC'd independently; other processes keep running.\n- \"Gift\" mechanism: when runtime can prove (statically OR dynamically) that a value's reachability is owned solely by the sender, transfer arena ownership to receiver. O(1) instead of deep copy. Closes BEAM's biggest performance hole.\n- Static path: linear/uniqueness types (typer arc, separate ticket later); arena-tagged allocation when typer can prove uniqueness.\n- Dynamic path: runtime walk-and-decide; if reachability is closed within a sender-owned arena, transfer; else deep copy fallback (correct under all conditions).\n- Cooperative scheduler, single OS thread for v1. Multi-thread later.\n- CPS codegen from fz-ul4.11 makes this trivial: a process IS a continuation pointer; switching processes is updating which continuation the trampoline drives next. The .19.1 \"fiber model\" question (corosensei? hand-rolled asm?) DISAPPEARS — there's no native stack to manage.\n\n## Children\n\n- .19.1 Process / scheduler infrastructure (process = continuation ptr)\n- .19.2 spawn / self / pid (pid as a struct schema)\n- .19.3 Mailbox + send / receive (copy fallback only)\n- .19.4 Per-process independent GC (verification-heavy given .11 design)\n- .19.5 Transferable arenas + zero-copy send fast path\n\n## Out of scope (filed as follow-ups when they bite)\n\n- Linking / monitoring / exit signals (BEAM's link/monitor)\n- Multi-threaded scheduler / work-stealing\n- Static uniqueness types in the typer\n- Selective receive with pattern matching",
+  "id": "fz-ul4.19",
+  "labels": [],
+  "parent": "fz-ul4",
+  "priority": 3,
+  "status": "open",
+  "title": "Processes + cooperative scheduler + send/receive",
+  "type": "task",
+  "updated_at": "2026-05-10T12:59:46Z"
+}
