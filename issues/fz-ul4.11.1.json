@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
     "fz-ul4.11.2"
@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-ul4.11",
   "priority": 3,
-  "status": "open",
+  "status": "in_progress",
   "title": "Tagged FzValue + heap object header",
   "type": "task",
-  "updated_at": "2026-05-10T13:05:54Z"
+  "updated_at": "2026-05-10T13:12:37Z"
 }
