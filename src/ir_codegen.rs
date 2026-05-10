@@ -130,20 +130,57 @@ extern "C" fn fz_print_value(fz_bits: u64) {
 }
 
 fn render_fz_value(bits: u64) -> String {
-    use crate::fz_value::{FzValue, Tag};
+    use crate::fz_value::{FzValue, HeapKind, Tag};
     let v = FzValue(bits);
     match v.tag() {
         Tag::Int => v.unbox_int().unwrap().to_string(),
         Tag::Atom => format!(":atom_{}", v.unbox_atom().unwrap()),
         Tag::Special => {
-            if v.is_nil() { "nil".into() }
+            if v.is_nil() { "[]".into() }
             else if v.is_true() { "true".into() }
             else if v.is_false() { "false".into() }
             else { format!("#special<{:#x}>", bits) }
         }
-        // Heap-typed values (lists, etc.) extend rendering in .11.10+.
-        Tag::Ptr => format!("#ptr<{:#x}>", bits),
+        Tag::Ptr => {
+            let p = v.unbox_ptr().unwrap();
+            let kind = unsafe { (*p).kind };
+            match HeapKind::from_u16(kind) {
+                Some(HeapKind::List) => render_list(bits),
+                _ => format!("#ptr<{:#x}>", bits),
+            }
+        }
         Tag::Reserved => format!("#reserved<{:#x}>", bits),
+    }
+}
+
+fn render_list(bits: u64) -> String {
+    use crate::fz_value::{FzValue, HeapKind, ListCons};
+    let mut parts: Vec<String> = Vec::new();
+    let mut cur_bits = bits;
+    let mut tail_render: Option<String> = None;
+    loop {
+        let cv = FzValue(cur_bits);
+        if cv.is_nil() { break; }
+        let cp = match cv.unbox_ptr() {
+            Some(p) => p,
+            None => {
+                // improper tail (atom / int / etc.)
+                tail_render = Some(render_fz_value(cur_bits));
+                break;
+            }
+        };
+        let ch = unsafe { &*cp };
+        if HeapKind::from_u16(ch.kind) != Some(HeapKind::List) {
+            tail_render = Some(render_fz_value(cur_bits));
+            break;
+        }
+        let cons = unsafe { &*(cp as *const ListCons) };
+        parts.push(render_fz_value(cons.head.0));
+        cur_bits = cons.tail.0;
+    }
+    match tail_render {
+        Some(t) => format!("[{} | {}]", parts.join(", "), t),
+        None => format!("[{}]", parts.join(", ")),
     }
 }
 
@@ -173,6 +210,57 @@ extern "C" fn fz_halt(host_ctx: *mut u8, fz_bits: u64) {
         Tag::Ptr | Tag::Reserved => fz_bits as i64,
     };
     unsafe { (*(host_ctx as *mut HostCtx)).halt_value = i; }
+}
+
+// ----- Heap (managed cons-cell allocator) -----
+//
+// The JIT-side `fz_alloc_list_cons` routes through this thread-local heap so
+// the GC tracer in src/heap.rs can reclaim cons cells. Frames stay on the
+// system allocator for now (frames don't yet root-trace; that lands when the
+// frame inliner / process-context arrives in .11.15+).
+
+thread_local! {
+    pub static HEAP: std::cell::RefCell<crate::heap::Heap> = std::cell::RefCell::new(
+        crate::heap::Heap::new(
+            64 * 1024,
+            std::rc::Rc::new(std::cell::RefCell::new(crate::heap::SchemaRegistry::new())),
+        )
+    );
+}
+
+/// Reset the per-thread heap. Call at the start of any test that needs a
+/// clean heap state (allocs / freelist / bump). Tests share threads via the
+/// cargo test runner's worker pool, so leftover state is otherwise sticky.
+pub fn heap_reset_for_test() {
+    HEAP.with(|h| {
+        *h.borrow_mut() = crate::heap::Heap::new(
+            64 * 1024,
+            std::rc::Rc::new(std::cell::RefCell::new(crate::heap::SchemaRegistry::new())),
+        );
+    });
+}
+
+pub fn heap_live_count() -> usize {
+    HEAP.with(|h| h.borrow().live_count())
+}
+
+pub fn heap_freelist_len() -> usize {
+    HEAP.with(|h| h.borrow().freelist_len())
+}
+
+pub fn heap_gc(roots: &[crate::fz_value::FzValue]) {
+    HEAP.with(|h| h.borrow_mut().gc(roots));
+}
+
+extern "C" fn fz_alloc_list_cons(head_bits: u64, tail_bits: u64) -> u64 {
+    use crate::fz_value::FzValue;
+    let p = HEAP.with(|h| {
+        h.borrow_mut()
+            .alloc_list_cons(FzValue(head_bits), FzValue(tail_bits))
+    });
+    // Heap returns 16-byte-aligned pointers (low 4 bits zero), so the raw
+    // pointer doubles as the FzValue ptr-tagged encoding (tag bits = 000).
+    p as u64
 }
 
 extern "C" fn fz_alloc_frame(schema_id: u32, total_size: u32) -> *mut u8 {
@@ -247,6 +335,7 @@ pub fn compile(module: &Module) -> Result<CompiledModule, CodegenError> {
     builder.symbol("fz_print_value", fz_print_value as *const u8);
     builder.symbol("fz_halt", fz_halt as *const u8);
     builder.symbol("fz_alloc_frame", fz_alloc_frame as *const u8);
+    builder.symbol("fz_alloc_list_cons", fz_alloc_list_cons as *const u8);
     let mut jmod = JITModule::new(builder);
 
     // Declare runtime imports.
@@ -262,6 +351,10 @@ pub fn compile(module: &Module) -> Result<CompiledModule, CodegenError> {
     let alloc_id = jmod
         .declare_function("fz_alloc_frame", Linkage::Import, &alloc_sig)
         .map_err(|e| CodegenError(format!("declare alloc: {}", e)))?;
+    let alloc_cons_sig = sig1(&[types::I64, types::I64], &[types::I64]);
+    let alloc_cons_id = jmod
+        .declare_function("fz_alloc_list_cons", Linkage::Import, &alloc_cons_sig)
+        .map_err(|e| CodegenError(format!("declare alloc_cons: {}", e)))?;
 
     // Per-fn signature: extern "C" fn(*mut u8, *mut u8) -> *mut u8.
     let fn_sig = sig1(&[types::I64, types::I64], &[types::I64]);
@@ -277,7 +370,7 @@ pub fn compile(module: &Module) -> Result<CompiledModule, CodegenError> {
     }
 
     let mut fbctx = FunctionBuilderContext::new();
-    let runtime = RuntimeRefs { print_id, halt_id, alloc_id };
+    let runtime = RuntimeRefs { print_id, halt_id, alloc_id, alloc_cons_id };
 
     for f in &module.fns {
         let func_id = *fn_ids.get(&f.id.0).unwrap();
@@ -315,6 +408,7 @@ struct RuntimeRefs {
     print_id: FuncId,
     halt_id: FuncId,
     alloc_id: FuncId,
+    alloc_cons_id: FuncId,
 }
 
 fn compile_fn(
@@ -698,14 +792,47 @@ fn lower_prim(
             b.ins().call(fref, &[av]);
             b.ins().iconst(types::I64, 0)
         }
+        Prim::ListCons(h, t) => {
+            let hv = *env.get(&h.0).expect("unbound listcons head");
+            let tv = *env.get(&t.0).expect("unbound listcons tail");
+            let fref = jmod.declare_func_in_func(runtime.alloc_cons_id, b.func);
+            let inst = b.ins().call(fref, &[hv, tv]);
+            b.inst_results(inst)[0]
+        }
+        Prim::ListHead(c) => {
+            // `c` is FzValue ptr-tagged (tag bits = 000), so `c` is the raw
+            // ListCons base address. head sits at byte offset 16 (after
+            // HeapHeader); load it as i64 (raw FzValue bits).
+            let cv = *env.get(&c.0).expect("unbound listhead cell");
+            b.ins().load(types::I64, MemFlags::trusted(), cv, 16)
+        }
+        Prim::ListTail(c) => {
+            let cv = *env.get(&c.0).expect("unbound listtail cell");
+            b.ins().load(types::I64, MemFlags::trusted(), cv, 24)
+        }
+        Prim::ListIsNil(c) => {
+            let cv = *env.get(&c.0).expect("unbound listisnil cell");
+            let nil_v = b.ins().iconst(types::I64, NIL_BITS);
+            let cmp = b.ins().icmp(IntCC::Equal, cv, nil_v);
+            bool_to_fz(b, cmp)
+        }
+        Prim::MakeList(elems, tail) => {
+            // Fold right: cons(e0, cons(e1, ..., cons(eN, tail-or-nil))).
+            let mut acc = match tail {
+                Some(t) => *env.get(&t.0).expect("unbound makelist tail"),
+                None => b.ins().iconst(types::I64, NIL_BITS),
+            };
+            let fref = jmod.declare_func_in_func(runtime.alloc_cons_id, b.func);
+            for e in elems.iter().rev() {
+                let ev = *env.get(&e.0).expect("unbound makelist elem");
+                let inst = b.ins().call(fref, &[ev, acc]);
+                acc = b.inst_results(inst)[0];
+            }
+            acc
+        }
         Prim::AllocStruct(_, _)
-        | Prim::ListCons(_, _)
-        | Prim::ListHead(_)
-        | Prim::ListTail(_)
-        | Prim::ListIsNil(_)
         | Prim::MakeTuple(_)
         | Prim::TupleField(_, _)
-        | Prim::MakeList(_, _)
         | Prim::MakeClosure(_, _)
         | Prim::MakeMap(_)
         | Prim::MapUpdate(_, _)
@@ -1075,7 +1202,7 @@ mod tests {
         assert_eq!(render_fz_value(FzValue::from_int(42).0), "42");
         assert_eq!(render_fz_value(FzValue::from_int(0).0), "0");
         assert_eq!(render_fz_value(FzValue::from_int(-7).0), "-7");
-        assert_eq!(render_fz_value(FzValue::NIL.0), "nil");
+        assert_eq!(render_fz_value(FzValue::NIL.0), "[]");
         assert_eq!(render_fz_value(FzValue::TRUE.0), "true");
         assert_eq!(render_fz_value(FzValue::FALSE.0), "false");
         assert_eq!(render_fz_value(FzValue::from_atom_id(3).0), ":atom_3");
@@ -1116,6 +1243,137 @@ mod tests {
             captured,
             vec![":atom_1".to_string(), "true".to_string(), "false".to_string()]
         );
+    }
+
+    // ----- .11.10 list tests -----
+
+    #[test]
+    fn print_list_literal_renders_via_jit() {
+        // fn main() do print([1, 2, 3]) end
+        let main = fn_def(
+            "main",
+            vec![cl(
+                vec![],
+                Expr::Call(
+                    Box::new(Expr::Var("print".into())),
+                    vec![Expr::List(
+                        vec![Expr::Int(1), Expr::Int(2), Expr::Int(3)],
+                        None,
+                    )],
+                ),
+            )],
+        );
+        let m = lower(vec![main]);
+        let entry = m.fn_by_name("main").unwrap().id;
+        heap_reset_for_test();
+        let _ = test_capture_take();
+        let cm = compile(&m).unwrap();
+        let _ = cm.run(entry);
+        assert_eq!(test_capture_take(), vec!["[1, 2, 3]".to_string()]);
+    }
+
+    #[test]
+    fn sum_list_via_head_tail_recursion() {
+        // fn sum([]),     do: 0
+        // fn sum([h | t]), do: h + sum(t)
+        // fn main(),      do: sum([1, 2, 3, 4, 5])    -> 15
+        let sum = fn_def(
+            "sum",
+            vec![
+                cl(vec![Pattern::List(vec![], None)], Expr::Int(0)),
+                cl(
+                    vec![Pattern::List(
+                        vec![Pattern::Var("h".into())],
+                        Some(Box::new(Pattern::Var("t".into()))),
+                    )],
+                    Expr::BinOp(
+                        ABinOp::Add,
+                        Box::new(Expr::Var("h".into())),
+                        Box::new(Expr::Call(
+                            Box::new(Expr::Var("sum".into())),
+                            vec![Expr::Var("t".into())],
+                        )),
+                    ),
+                ),
+            ],
+        );
+        let main = fn_def(
+            "main",
+            vec![cl(
+                vec![],
+                Expr::Call(
+                    Box::new(Expr::Var("sum".into())),
+                    vec![Expr::List(
+                        vec![
+                            Expr::Int(1),
+                            Expr::Int(2),
+                            Expr::Int(3),
+                            Expr::Int(4),
+                            Expr::Int(5),
+                        ],
+                        None,
+                    )],
+                ),
+            )],
+        );
+        let m = lower(vec![sum, main]);
+        let entry = m.fn_by_name("main").unwrap().id;
+        heap_reset_for_test();
+        let cm = compile(&m).unwrap();
+        assert_eq!(cm.run(entry), 15);
+    }
+
+    #[test]
+    fn allocate_list_drop_root_gc_reclaims() {
+        // fn main(), do: [1, 2, 3]   — three cons cells allocated, halt returns
+        // the head ptr. We then drop our reference to that ptr and call gc with
+        // empty roots; freelist should grow by 3 (or live_count drop by 3).
+        let main = fn_def(
+            "main",
+            vec![cl(
+                vec![],
+                Expr::List(
+                    vec![Expr::Int(1), Expr::Int(2), Expr::Int(3)],
+                    None,
+                ),
+            )],
+        );
+        let m = lower(vec![main]);
+        let entry = m.fn_by_name("main").unwrap().id;
+        heap_reset_for_test();
+        let cm = compile(&m).unwrap();
+        let halt = cm.run(entry);
+        assert_eq!(heap_live_count(), 3, "expected 3 cons cells alive after run");
+        // halt holds the FzValue ptr-bits of the head cons. Drop our local
+        // by simply not passing it as a root.
+        drop(halt);
+        heap_gc(&[]);
+        assert_eq!(heap_live_count(), 0, "expected all cons cells reclaimed");
+        assert_eq!(heap_freelist_len(), 3, "expected 3 freelist entries");
+    }
+
+    #[test]
+    fn allocate_list_keep_root_gc_preserves() {
+        // Same shape as above, but pass the halt ptr as a root — list survives.
+        let main = fn_def(
+            "main",
+            vec![cl(
+                vec![],
+                Expr::List(
+                    vec![Expr::Int(7), Expr::Int(8), Expr::Int(9)],
+                    None,
+                ),
+            )],
+        );
+        let m = lower(vec![main]);
+        let entry = m.fn_by_name("main").unwrap().id;
+        heap_reset_for_test();
+        let cm = compile(&m).unwrap();
+        let halt_bits = cm.run(entry) as u64;
+        assert_eq!(heap_live_count(), 3);
+        let root = crate::fz_value::FzValue(halt_bits);
+        heap_gc(&[root]);
+        assert_eq!(heap_live_count(), 3, "list rooted via halt ptr should survive GC");
     }
 
     #[test]
