@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-10T10:03:29Z",
+  "description": "First subticket of fz-ul4.10. Implement the encoding from AST nodes (`Expr`, `Pattern`) to fz Values and back, so quote can produce a real fz value and the expansion pass can decode a macro's return value into an AST node.\n\nEncoding choice: Elixir-style 3-tuple {name, meta, args} for calls/ops, with vars as {name, meta, ctx}. Literals stay literal (an int 42 is just Value::Int(42), not wrapped). meta is a map (line/col); for v1 keep it empty %{}.\n\nExamples:\n- 42                  -\u003e Value::Int(42)\n- 1 + 2               -\u003e Value::Tuple([:+, %{}, [1, 2]])\n- foo(1)              -\u003e Value::Tuple([:foo, %{}, [1]])\n- x                   -\u003e Value::Tuple([:x, %{}, :Elixir])    # var\n- [1, 2]              -\u003e Value::List([1, 2])\n- {a, b}              -\u003e Value::Tuple([{:\"{}\", %{}, [a, b]}]) — bikeshed at impl\n\nDeliverable:\n- Module ast_value (or in ast.rs): `fn expr_to_value(e: \u0026Expr) -\u003e Value` and `fn value_to_expr(v: \u0026Value) -\u003e Result\u003cExpr, String\u003e`.\n- Round-trip tests for each Expr variant we care about (lits, vars, BinOp, Call, List, Tuple, If, Block).\n- Patterns can wait if scoped narrowly — file follow-up if needed.\n\nNo lexer / parser changes here. quote/unquote syntax lives in .10.2.",
+  "id": "fz-ul4.10.1",
+  "labels": [],
+  "parent": "fz-ul4.10",
+  "priority": 3,
+  "status": "open",
+  "title": "AST reification: Expr \u003c-\u003e Value encoding",
+  "type": "task",
+  "updated_at": "2026-05-10T10:03:29Z"
+}
