@@ -6,14 +6,15 @@
   "blocks": [
     "fz-ul4.11.7"
   ],
+  "closed_at": "2026-05-10T15:01:38Z",
   "created": "2026-05-10T13:02:14Z",
   "description": "GOAL: Analyze each fz-IR fn to determine its frame schema. The frame schema is the contract between .11.8 Cranelift codegen (lays out the struct) and the .11.2 GC tracer (walks the same offsets). Single source of truth.\n\n## Decisions captured\n\n- Frames are heap-allocated structs registered in the .11.2 SchemaRegistry. One schema per fn.\n- Liveness: only vars live ACROSS a call need to be in the frame. Vars used only between adjacent stmts can stay in registers (Cranelift handles register allocation).\n- Continuation pointer slot is always present (FzValue field, offset 0 by convention).\n- Frame schema layout: continuation pointer first, then live FzValue locals, then live raw locals. Aligned to 8 bytes.\n- Tail calls don't need a fresh frame — they forward the caller's continuation. Liveness analysis must distinguish tail from non-tail call sites.\n\n## Deliverables (new src/ir_liveness.rs or extend src/fz_ir.rs)\n\n- Liveness analysis pass over fz-IR fn bodies (backward dataflow).\n- For each fn: compute its frame schema (ordered list of FieldDescriptor).\n- Register the schema in SchemaRegistry; record the assigned schema_id back into FnIr.frame_schema_id.\n- Helper: given a Var live across a specific call site, where does it land in the frame? Codegen needs offsets.\n\n## Tests\n\n- Simple fn (no calls): frame schema has only the continuation pointer (8 bytes).\n- Recursive fn: locals live across recursive call show up in schema.\n- Multi-clause fn: schema covers all clauses' live locals (union).\n- Tail-self-call: no frame growth needed (can reuse caller's frame).\n\n## Open / research\n\n- Coalescing same-shape frames across fns (reduce schema count): NOT for v1.\n- Handling phi-like joins where two block paths bind different vars to the same name: liveness analysis must handle SSA correctly OR we use a non-SSA IR with explicit block params (current sketch uses block params; same effect).\n\n## Out of scope\n\n- Codegen using these schemas (.11.8).\n- Schema sharing optimization across similar fns.",
   "id": "fz-ul4.11.6",
   "labels": [],
   "parent": "fz-ul4.11",
   "priority": 3,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Frame liveness analysis -\u003e emit frame schemas",
   "type": "task",
-  "updated_at": "2026-05-10T14:59:40Z"
+  "updated_at": "2026-05-10T15:01:38Z"
 }
