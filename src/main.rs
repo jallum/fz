@@ -1,5 +1,6 @@
 mod aot;
 mod ast;
+mod ast_value;
 mod jit;
 mod bitstr;
 mod codegen;
