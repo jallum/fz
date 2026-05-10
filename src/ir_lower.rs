@@ -80,10 +80,10 @@ pub struct BuiltinTable {
 
 impl BuiltinTable {
     pub fn new() -> Self {
+        use crate::fz_ir::BuiltinKind;
         let mut t = Self { map: HashMap::new() };
-        for name in ["print", "assert", "assert_eq", "assert_neq"] {
-            let id = BuiltinId(t.map.len() as u32);
-            t.map.insert(name.into(), id);
+        for k in BuiltinKind::ALL {
+            t.map.insert(k.name().into(), k.id());
         }
         t
     }
@@ -979,10 +979,27 @@ fn lower_vec_lit(
     kind: crate::ast::VecKind,
     els: &[Expr],
 ) -> Result<Var, LowerError> {
+    use crate::ast::VecKind;
+    use crate::fz_ir::VecKindIr;
+    // Bifurcate the AST sigil into a concrete element kind. ~v[..] is
+    // numeric: inspect element exprs to choose I64 vs F64. Any literal
+    // float in the elements forces F64 (currently deferred to .11.23).
+    let ir_kind = match kind {
+        VecKind::Numeric => {
+            if els.iter().any(|e| matches!(e, Expr::Float(_))) {
+                return Err(LowerError::Unsupported(
+                    "VecF64 (~v[..] with float elements) deferred to fz-ul4.11.23".into(),
+                ));
+            }
+            VecKindIr::I64
+        }
+        VecKind::Bytes => VecKindIr::U8,
+        VecKind::Bits => VecKindIr::Bit,
+    };
     let parks = lower_seq(ctx, els)?;
     let vs: Vec<Var> = parks.iter().map(|n| ctx.unpark(n)).collect();
     for n in &parks { ctx.unbind(n); }
-    Ok(ctx.let_(Prim::MakeVec(kind, vs)))
+    Ok(ctx.let_(Prim::MakeVec(ir_kind, vs)))
 }
 
 fn lower_bitstring_expr(
@@ -1600,7 +1617,7 @@ mod tests {
         );
         let m = lower_one(vec![f]);
         let s = format!("{}", m);
-        assert!(s.contains("vec(numeric, ["), "got:\n{}", s);
+        assert!(s.contains("vec(i64, ["), "got:\n{}", s);
     }
 
     #[test]

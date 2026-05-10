@@ -19,11 +19,21 @@
 
 #![allow(dead_code)]
 
-use crate::ast::{BitType, Endian, Pattern, VecKind};
+use crate::ast::{BitType, Endian, Pattern};
 use crate::heap::Schema;
 use std::fmt;
 
-pub type VecKindIr = VecKind;
+/// Element-kind for a heap-allocated vector. The AST-level `VecKind` (Numeric
+/// / Bytes / Bits) is a sigil-shape; lowering bifurcates `Numeric` into I64
+/// or F64 by inspecting the element exprs, so by IR time the element type
+/// is concrete. Mirrors `HeapKind::VecI64 / VecF64 / VecU8 / VecBit`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VecKindIr {
+    I64,
+    F64,
+    U8,
+    Bit,
+}
 
 #[derive(Debug, Clone)]
 pub enum BitSizeIr {
@@ -64,6 +74,49 @@ pub struct Var(pub u32);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct BuiltinId(pub u32);
+
+/// Typed view of a `BuiltinId`. The discriminants match the registration
+/// order in `BuiltinTable::new` (single source of truth for that mapping
+/// is `BuiltinKind::name`). Codegen dispatches on this enum so the wire
+/// between ir_lower's name-based BuiltinTable and ir_codegen's per-builtin
+/// runtime fns stays type-checked.
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuiltinKind {
+    Print = 0,
+    Assert = 1,
+    AssertEq = 2,
+    AssertNeq = 3,
+    VecGet = 4,
+}
+
+impl BuiltinKind {
+    pub const ALL: [BuiltinKind; 5] = [
+        Self::Print,
+        Self::Assert,
+        Self::AssertEq,
+        Self::AssertNeq,
+        Self::VecGet,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Print => "print",
+            Self::Assert => "assert",
+            Self::AssertEq => "assert_eq",
+            Self::AssertNeq => "assert_neq",
+            Self::VecGet => "vec_get",
+        }
+    }
+
+    pub fn from_id(id: BuiltinId) -> Option<Self> {
+        Self::ALL.iter().copied().find(|k| *k as u32 == id.0)
+    }
+
+    pub fn id(self) -> BuiltinId {
+        BuiltinId(self as u32)
+    }
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Const {
@@ -466,9 +519,10 @@ impl fmt::Display for Prim {
             Prim::MapGet(m, k) => write!(f, "map_get({}, {})", m, k),
             Prim::MakeVec(kind, els) => {
                 let kstr = match kind {
-                    VecKindIr::Numeric => "numeric",
-                    VecKindIr::Bytes => "bytes",
-                    VecKindIr::Bits => "bits",
+                    VecKindIr::I64 => "i64",
+                    VecKindIr::F64 => "f64",
+                    VecKindIr::U8 => "u8",
+                    VecKindIr::Bit => "bit",
                 };
                 write!(f, "vec({}, [{}])", kstr, fmt_var_list(els))
             }

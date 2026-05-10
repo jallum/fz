@@ -271,23 +271,77 @@ impl Heap {
         p
     }
 
-    pub fn alloc_vec_i64(&mut self, len: usize) -> *mut HeapHeader {
-        let total = (16 + len * 8 + 15) & !15;
+    /// Vec layout (all kinds): `HeapHeader (16) + len: u32 (4) + pad: u32 (4)
+    /// + raw_payload (16-byte aligned)`. Kind in the header, payload pure
+    /// raw data so SIMD codegen can address it uniformly. Returns the
+    /// header pointer with header + len written; payload is zeroed and the
+    /// caller writes element bytes directly at offset 24.
+    fn alloc_vec_raw(
+        &mut self,
+        kind: HeapKind,
+        len: u32,
+        payload_bytes: usize,
+    ) -> *mut HeapHeader {
+        let total = (24 + payload_bytes + 15) & !15;
         let p = self.alloc(total);
         unsafe {
             std::ptr::write(
                 p,
                 HeapHeader {
-                    kind: HeapKind::VecI64 as u16,
+                    kind: kind as u16,
                     flags: 0,
                     size_bytes: total as u32,
                     schema_id: 0,
                     _reserved: 0,
                 },
             );
-            std::ptr::write_bytes((p as *mut u8).add(16), 0, total - 16);
+            // len at offset 16 (u32); pad u32 at offset 20.
+            std::ptr::write((p as *mut u8).add(16) as *mut u32, len);
+            std::ptr::write((p as *mut u8).add(20) as *mut u32, 0);
+            // Zero payload + any 16-alignment trailing pad.
+            std::ptr::write_bytes((p as *mut u8).add(24), 0, total - 24);
         }
         p
+    }
+
+    pub fn alloc_vec_i64(&mut self, elements: &[i64]) -> *mut HeapHeader {
+        let p = self.alloc_vec_raw(HeapKind::VecI64, elements.len() as u32, elements.len() * 8);
+        unsafe {
+            let payload = (p as *mut u8).add(24) as *mut i64;
+            std::ptr::copy_nonoverlapping(elements.as_ptr(), payload, elements.len());
+        }
+        p
+    }
+
+    pub fn alloc_vec_u8(&mut self, elements: &[u8]) -> *mut HeapHeader {
+        let p = self.alloc_vec_raw(HeapKind::VecU8, elements.len() as u32, elements.len());
+        unsafe {
+            let payload = (p as *mut u8).add(24);
+            std::ptr::copy_nonoverlapping(elements.as_ptr(), payload, elements.len());
+        }
+        p
+    }
+
+    /// Pack `bits` MSB-first into bytes (matches `bitstr::BitWriter`).
+    pub fn alloc_vec_bit(&mut self, bits: &[bool]) -> *mut HeapHeader {
+        let nbytes = bits.len().div_ceil(8);
+        let p = self.alloc_vec_raw(HeapKind::VecBit, bits.len() as u32, nbytes);
+        unsafe {
+            let payload = (p as *mut u8).add(24);
+            for (i, &b) in bits.iter().enumerate() {
+                if b {
+                    let byte_idx = i / 8;
+                    let bit_idx = 7 - (i % 8);
+                    *payload.add(byte_idx) |= 1 << bit_idx;
+                }
+            }
+        }
+        p
+    }
+
+    /// Read `len` field (offset 16) of any heap vec.
+    pub fn vec_len(p: *const HeapHeader) -> u32 {
+        unsafe { std::ptr::read((p as *const u8).add(16) as *const u32) }
     }
 
     /// Write an FzValue into a Struct's payload at the given field offset.
@@ -580,13 +634,79 @@ mod tests {
     }
 
     #[test]
+    fn alloc_vec_i64_writes_header_len_and_payload() {
+        let reg = empty_registry();
+        let mut h = Heap::new(1024, reg);
+        let p = h.alloc_vec_i64(&[10, 20, 30]);
+        unsafe {
+            assert_eq!((*p).kind, HeapKind::VecI64 as u16);
+        }
+        assert_eq!(Heap::vec_len(p), 3);
+        unsafe {
+            let payload = (p as *const u8).add(24) as *const i64;
+            assert_eq!(std::ptr::read(payload), 10);
+            assert_eq!(std::ptr::read(payload.add(1)), 20);
+            assert_eq!(std::ptr::read(payload.add(2)), 30);
+        }
+    }
+
+    #[test]
+    fn alloc_vec_u8_packs_bytes() {
+        let reg = empty_registry();
+        let mut h = Heap::new(1024, reg);
+        let p = h.alloc_vec_u8(&[0xff, 0xab, 0x12]);
+        assert_eq!(Heap::vec_len(p), 3);
+        unsafe {
+            let payload = (p as *const u8).add(24);
+            assert_eq!(*payload, 0xff);
+            assert_eq!(*payload.add(1), 0xab);
+            assert_eq!(*payload.add(2), 0x12);
+        }
+    }
+
+    #[test]
+    fn alloc_vec_bit_packs_msb_first() {
+        let reg = empty_registry();
+        let mut h = Heap::new(1024, reg);
+        // 1 0 1 1 0 0 1 _ -> 0b1011_0010 = 0xB2 (high 7 bits) + low bit pad 0
+        // Per MSB-first packing: bit0 -> high bit. So 1,0,1,1,0,0,1 = 1011001x
+        // -> 0xB2 (= 0b10110010, the trailing zero is unused in 7-bit slice).
+        let p = h.alloc_vec_bit(&[true, false, true, true, false, false, true]);
+        assert_eq!(Heap::vec_len(p), 7);
+        unsafe {
+            let payload = (p as *const u8).add(24);
+            assert_eq!(*payload, 0b1011_0010);
+        }
+    }
+
+    #[test]
     fn gc_frees_vec_i64_when_unrooted() {
         let reg = empty_registry();
         let mut h = Heap::new(1024, reg);
-        let _v = h.alloc_vec_i64(8);
+        let _v = h.alloc_vec_i64(&[1, 2, 3]);
         h.gc(&[]);
         assert_eq!(h.live_count(), 0);
         assert_eq!(h.freelist_len(), 1);
+    }
+
+    #[test]
+    fn gc_keeps_vec_address_stable_when_rooted() {
+        // Non-moving GC: a rooted vec keeps its exact address across a GC.
+        // Critical for SIMD codegen which holds payload pointers.
+        let reg = empty_registry();
+        let mut h = Heap::new(1024, reg);
+        let p_before = h.alloc_vec_i64(&[100, 200, 300]);
+        let root = FzValue::from_ptr(p_before);
+        h.gc(&[root]);
+        // After GC: root still alive at same address; payload still readable.
+        assert_eq!(h.live_count(), 1);
+        let p_after = root.unbox_ptr().unwrap();
+        assert_eq!(p_before, p_after, "non-moving GC must preserve addresses");
+        assert_eq!(Heap::vec_len(p_after), 3);
+        unsafe {
+            let payload = (p_after as *const u8).add(24) as *const i64;
+            assert_eq!(std::ptr::read(payload.add(1)), 200);
+        }
     }
 
     #[test]

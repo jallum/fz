@@ -150,6 +150,9 @@ fn render_fz_value(bits: u64) -> String {
                 Some(HeapKind::Bitstring) => render_bitstring(bits),
                 Some(HeapKind::Map) => render_map(bits),
                 Some(HeapKind::Closure) => render_closure(bits),
+                Some(HeapKind::VecI64) => render_vec_i64(bits),
+                Some(HeapKind::VecU8) => render_vec_u8(bits),
+                Some(HeapKind::VecBit) => render_vec_bit(bits),
                 _ => format!("#ptr<{:#x}>", bits),
             }
         }
@@ -224,6 +227,44 @@ fn render_bitstring(bits: u64) -> String {
         parts.push(format!("{}::{}", last, trailing_bits));
     }
     format!("<<{}>>", parts.join(", "))
+}
+
+fn render_vec_i64(bits: u64) -> String {
+    use crate::fz_value::FzValue;
+    let p = FzValue(bits).unbox_ptr().unwrap();
+    let len = crate::heap::Heap::vec_len(p) as usize;
+    let payload = unsafe { (p as *const u8).add(24) as *const i64 };
+    let parts: Vec<String> = (0..len)
+        .map(|i| unsafe { std::ptr::read(payload.add(i)) }.to_string())
+        .collect();
+    format!("~v[{}]", parts.join(", "))
+}
+
+fn render_vec_u8(bits: u64) -> String {
+    use crate::fz_value::FzValue;
+    let p = FzValue(bits).unbox_ptr().unwrap();
+    let len = crate::heap::Heap::vec_len(p) as usize;
+    let payload = unsafe { (p as *const u8).add(24) };
+    let parts: Vec<String> = (0..len)
+        .map(|i| unsafe { *payload.add(i) }.to_string())
+        .collect();
+    format!("~b[{}]", parts.join(", "))
+}
+
+fn render_vec_bit(bits: u64) -> String {
+    use crate::fz_value::FzValue;
+    let p = FzValue(bits).unbox_ptr().unwrap();
+    let len = crate::heap::Heap::vec_len(p) as usize;
+    let payload = unsafe { (p as *const u8).add(24) };
+    let parts: Vec<String> = (0..len)
+        .map(|i| {
+            let byte_idx = i / 8;
+            let bit_idx = 7 - (i % 8);
+            let byte = unsafe { *payload.add(byte_idx) };
+            ((byte >> bit_idx) & 1).to_string()
+        })
+        .collect();
+    format!("~bits[{}]", parts.join(", "))
 }
 
 /// Render a closure as `#fn<id/cap>` for debug. cap = captured count.
@@ -837,6 +878,101 @@ extern "C" fn fz_bs_read_field(
     result_p as u64
 }
 
+// ----- Vec runtime fns -----
+//
+// Vecs are heap objects with raw element-payload (no FzValues inside).
+// Construction stages elements in TLS via begin(kind) -> push(v) ×n ->
+// finalize(); per-kind decoding happens at push (for U8/Bit) or finalize
+// (Bit packs at the end). VecF64 is gated behind .11.20/.11.23.
+
+#[derive(Debug)]
+enum VecBuild {
+    I64(Vec<i64>),
+    U8(Vec<u8>),
+    Bit(Vec<bool>),
+}
+
+thread_local! {
+    static VEC_BUILDER: std::cell::RefCell<Option<VecBuild>> =
+        std::cell::RefCell::new(None);
+}
+
+/// kind tag matches `HeapKind as u16`: VecI64=3, VecU8=5, VecBit=6.
+extern "C" fn fz_vec_begin(kind_tag: u32) {
+    use crate::fz_value::HeapKind;
+    let b = match HeapKind::from_u16(kind_tag as u16) {
+        Some(HeapKind::VecI64) => VecBuild::I64(Vec::new()),
+        Some(HeapKind::VecU8) => VecBuild::U8(Vec::new()),
+        Some(HeapKind::VecBit) => VecBuild::Bit(Vec::new()),
+        Some(HeapKind::VecF64) => panic!("VecF64 deferred to fz-ul4.11.23"),
+        _ => panic!("fz_vec_begin: invalid kind tag {}", kind_tag),
+    };
+    VEC_BUILDER.with(|c| *c.borrow_mut() = Some(b));
+}
+
+extern "C" fn fz_vec_push(value_bits: u64) {
+    use crate::fz_value::FzValue;
+    let n = FzValue(value_bits)
+        .unbox_int()
+        .expect("fz_vec_push: vec element not Int");
+    VEC_BUILDER.with(|c| {
+        let mut bo = c.borrow_mut();
+        match bo.as_mut().expect("fz_vec_push without begin") {
+            VecBuild::I64(v) => v.push(n),
+            VecBuild::U8(v) => v.push(n as u8),
+            VecBuild::Bit(v) => v.push(n != 0),
+        }
+    });
+}
+
+extern "C" fn fz_vec_finalize() -> u64 {
+    let b = VEC_BUILDER
+        .with(|c| c.borrow_mut().take())
+        .expect("fz_vec_finalize without begin");
+    let p = HEAP.with(|h| {
+        let mut heap = h.borrow_mut();
+        match b {
+            VecBuild::I64(v) => heap.alloc_vec_i64(&v),
+            VecBuild::U8(v) => heap.alloc_vec_u8(&v),
+            VecBuild::Bit(v) => heap.alloc_vec_bit(&v),
+        }
+    });
+    p as u64
+}
+
+/// vec_get(vec, index) -> element as FzValue Int (for I64/U8/Bit).
+/// Out-of-bounds returns FzValue::NIL (mirrors Map's missing-key behavior).
+extern "C" fn fz_vec_get(vec_bits: u64, index_bits: u64) -> u64 {
+    use crate::fz_value::{FzValue, HeapKind};
+    let p = FzValue(vec_bits)
+        .unbox_ptr()
+        .expect("fz_vec_get: vec not a heap ptr");
+    let header = unsafe { &*p };
+    let i = FzValue(index_bits)
+        .unbox_int()
+        .expect("fz_vec_get: index not Int") as usize;
+    let len = crate::heap::Heap::vec_len(p) as usize;
+    if i >= len {
+        return FzValue::NIL.0;
+    }
+    let payload = unsafe { (p as *const u8).add(24) };
+    let n: i64 = match HeapKind::from_u16(header.kind) {
+        Some(HeapKind::VecI64) => unsafe {
+            std::ptr::read((payload as *const i64).add(i))
+        },
+        Some(HeapKind::VecU8) => unsafe { *payload.add(i) as i64 },
+        Some(HeapKind::VecBit) => {
+            let byte_idx = i / 8;
+            let bit_idx = 7 - (i % 8);
+            let byte = unsafe { *payload.add(byte_idx) };
+            ((byte >> bit_idx) & 1) as i64
+        }
+        Some(HeapKind::VecF64) => panic!("VecF64 deferred to fz-ul4.11.23"),
+        _ => panic!("fz_vec_get on non-vec heap kind"),
+    };
+    FzValue::from_int(n).0
+}
+
 // ----- Closure runtime fns -----
 //
 // Closures are heap objects (HeapKind::Closure) holding [...captured FzValues].
@@ -1053,6 +1189,10 @@ pub fn compile(module: &Module) -> Result<CompiledModule, CodegenError> {
     builder.symbol("fz_map_push", fz_map_push as *const u8);
     builder.symbol("fz_map_finalize", fz_map_finalize as *const u8);
     builder.symbol("fz_map_get", fz_map_get as *const u8);
+    builder.symbol("fz_vec_begin", fz_vec_begin as *const u8);
+    builder.symbol("fz_vec_push", fz_vec_push as *const u8);
+    builder.symbol("fz_vec_finalize", fz_vec_finalize as *const u8);
+    builder.symbol("fz_vec_get", fz_vec_get as *const u8);
     builder.symbol("fz_closure_begin", fz_closure_begin as *const u8);
     builder.symbol("fz_closure_push", fz_closure_push as *const u8);
     builder.symbol("fz_closure_finalize", fz_closure_finalize as *const u8);
@@ -1145,6 +1285,22 @@ pub fn compile(module: &Module) -> Result<CompiledModule, CodegenError> {
     let map_get_id = jmod
         .declare_function("fz_map_get", Linkage::Import, &map_get_sig)
         .map_err(|e| CodegenError(format!("declare map_get: {}", e)))?;
+    let vec_begin_sig = sig1(&[types::I32], &[]);
+    let vec_begin_id = jmod
+        .declare_function("fz_vec_begin", Linkage::Import, &vec_begin_sig)
+        .map_err(|e| CodegenError(format!("declare vec_begin: {}", e)))?;
+    let vec_push_sig = sig1(&[types::I64], &[]);
+    let vec_push_id = jmod
+        .declare_function("fz_vec_push", Linkage::Import, &vec_push_sig)
+        .map_err(|e| CodegenError(format!("declare vec_push: {}", e)))?;
+    let vec_finalize_sig = sig1(&[], &[types::I64]);
+    let vec_finalize_id = jmod
+        .declare_function("fz_vec_finalize", Linkage::Import, &vec_finalize_sig)
+        .map_err(|e| CodegenError(format!("declare vec_finalize: {}", e)))?;
+    let vec_get_sig = sig1(&[types::I64, types::I64], &[types::I64]);
+    let vec_get_id = jmod
+        .declare_function("fz_vec_get", Linkage::Import, &vec_get_sig)
+        .map_err(|e| CodegenError(format!("declare vec_get: {}", e)))?;
     let closure_begin_sig = sig1(&[types::I32], &[]);
     let closure_begin_id = jmod
         .declare_function("fz_closure_begin", Linkage::Import, &closure_begin_sig)
@@ -1206,6 +1362,10 @@ pub fn compile(module: &Module) -> Result<CompiledModule, CodegenError> {
         closure_arg_id,
         closure_invoke_id,
         tail_closure_id,
+        vec_begin_id,
+        vec_push_id,
+        vec_finalize_id,
+        vec_get_id,
     };
 
     // Register a heap Schema for every tuple arity used by MakeTuple, so the
@@ -1339,6 +1499,10 @@ struct RuntimeRefs {
     closure_arg_id: FuncId,
     closure_invoke_id: FuncId,
     tail_closure_id: FuncId,
+    vec_begin_id: FuncId,
+    vec_push_id: FuncId,
+    vec_finalize_id: FuncId,
+    vec_get_id: FuncId,
 }
 
 fn compile_fn(
@@ -1796,19 +1960,37 @@ fn lower_prim(
             }
         }
         Prim::Builtin(bid, args) => {
-            if bid.0 != 0 {
-                return Err(CodegenError(format!(
-                    "builtin#{} not wired (only print)",
-                    bid.0
-                )));
+            use crate::fz_ir::BuiltinKind;
+            let kind = BuiltinKind::from_id(*bid).ok_or_else(|| {
+                CodegenError(format!("unknown builtin id {}", bid.0))
+            })?;
+            match kind {
+                BuiltinKind::Print => {
+                    if args.len() != 1 {
+                        return Err(CodegenError("print/1 expected".into()));
+                    }
+                    let av = *env.get(&args[0].0).expect("unbound print arg");
+                    let fref = jmod.declare_func_in_func(runtime.print_id, b.func);
+                    b.ins().call(fref, &[av]);
+                    b.ins().iconst(types::I64, 0)
+                }
+                BuiltinKind::VecGet => {
+                    if args.len() != 2 {
+                        return Err(CodegenError("vec_get/2 expected".into()));
+                    }
+                    let vv = *env.get(&args[0].0).expect("unbound vec_get vec");
+                    let iv = *env.get(&args[1].0).expect("unbound vec_get index");
+                    let fref = jmod.declare_func_in_func(runtime.vec_get_id, b.func);
+                    let inst = b.ins().call(fref, &[vv, iv]);
+                    b.inst_results(inst)[0]
+                }
+                BuiltinKind::Assert | BuiltinKind::AssertEq | BuiltinKind::AssertNeq => {
+                    return Err(CodegenError(format!(
+                        "builtin {} not yet wired through JIT",
+                        kind.name()
+                    )));
+                }
             }
-            if args.len() != 1 {
-                return Err(CodegenError("print/1 expected".into()));
-            }
-            let av = *env.get(&args[0].0).expect("unbound print arg");
-            let fref = jmod.declare_func_in_func(runtime.print_id, b.func);
-            b.ins().call(fref, &[av]);
-            b.ins().iconst(types::I64, 0)
         }
         Prim::ListCons(h, t) => {
             let hv = *env.get(&h.0).expect("unbound listcons head");
@@ -2037,10 +2219,30 @@ fn lower_prim(
             let inst = b.ins().call(fin, &[]);
             b.inst_results(inst)[0]
         }
-        Prim::MakeVec(_, _) => {
-            return Err(CodegenError(
-                "MakeVec codegen lands in fz-ul4.11.14".into(),
-            ));
+        Prim::MakeVec(kind, els) => {
+            use crate::fz_ir::VecKindIr;
+            use crate::fz_value::HeapKind;
+            let kind_tag = match kind {
+                VecKindIr::I64 => HeapKind::VecI64 as i64,
+                VecKindIr::U8 => HeapKind::VecU8 as i64,
+                VecKindIr::Bit => HeapKind::VecBit as i64,
+                VecKindIr::F64 => {
+                    return Err(CodegenError(
+                        "MakeVec(F64) deferred to fz-ul4.11.23".into(),
+                    ));
+                }
+            };
+            let begin = jmod.declare_func_in_func(runtime.vec_begin_id, b.func);
+            let kt = b.ins().iconst(types::I32, kind_tag);
+            b.ins().call(begin, &[kt]);
+            let push = jmod.declare_func_in_func(runtime.vec_push_id, b.func);
+            for ev in els {
+                let v = *env.get(&ev.0).expect("unbound makevec element");
+                b.ins().call(push, &[v]);
+            }
+            let fin = jmod.declare_func_in_func(runtime.vec_finalize_id, b.func);
+            let inst = b.ins().call(fin, &[]);
+            b.inst_results(inst)[0]
         }
     })
 }
@@ -3454,6 +3656,192 @@ mod tests {
         // ...without the root, GC reclaims it.
         heap_gc(&[]);
         assert_eq!(heap_live_count(), 0);
+    }
+
+    // ----- .11.14 vec tests -----
+
+    #[test]
+    fn print_vec_i64_renders_via_jit() {
+        // fn main() do print(~v[1, 2, 3]) end
+        let main = fn_def(
+            "main",
+            vec![cl(
+                vec![],
+                Expr::Call(
+                    Box::new(Expr::Var("print".into())),
+                    vec![Expr::VecLit(
+                        crate::ast::VecKind::Numeric,
+                        vec![Expr::Int(1), Expr::Int(2), Expr::Int(3)],
+                    )],
+                ),
+            )],
+        );
+        let m = lower(vec![main]);
+        let entry = m.fn_by_name("main").unwrap().id;
+        heap_reset_for_test();
+        let _ = test_capture_take();
+        let cm = compile(&m).unwrap();
+        let _ = cm.run(entry);
+        assert_eq!(test_capture_take(), vec!["~v[1, 2, 3]".to_string()]);
+    }
+
+    #[test]
+    fn print_vec_u8_renders_via_jit() {
+        let main = fn_def(
+            "main",
+            vec![cl(
+                vec![],
+                Expr::Call(
+                    Box::new(Expr::Var("print".into())),
+                    vec![Expr::VecLit(
+                        crate::ast::VecKind::Bytes,
+                        vec![Expr::Int(0xff), Expr::Int(0xab)],
+                    )],
+                ),
+            )],
+        );
+        let m = lower(vec![main]);
+        let entry = m.fn_by_name("main").unwrap().id;
+        heap_reset_for_test();
+        let _ = test_capture_take();
+        let cm = compile(&m).unwrap();
+        let _ = cm.run(entry);
+        assert_eq!(test_capture_take(), vec!["~b[255, 171]".to_string()]);
+    }
+
+    #[test]
+    fn print_vec_bit_renders_via_jit() {
+        let main = fn_def(
+            "main",
+            vec![cl(
+                vec![],
+                Expr::Call(
+                    Box::new(Expr::Var("print".into())),
+                    vec![Expr::VecLit(
+                        crate::ast::VecKind::Bits,
+                        vec![Expr::Int(1), Expr::Int(0), Expr::Int(1), Expr::Int(1)],
+                    )],
+                ),
+            )],
+        );
+        let m = lower(vec![main]);
+        let entry = m.fn_by_name("main").unwrap().id;
+        heap_reset_for_test();
+        let _ = test_capture_take();
+        let cm = compile(&m).unwrap();
+        let _ = cm.run(entry);
+        assert_eq!(test_capture_take(), vec!["~bits[1, 0, 1, 1]".to_string()]);
+    }
+
+    #[test]
+    fn vec_f64_lowering_blocks_with_pointer_to_followup_ticket() {
+        // ~v[1.0, 2.0] should fail to lower (deferred to fz-ul4.11.23) until
+        // boxed floats land. This guards against silent regression to a
+        // half-working f64 path.
+        let main = fn_def(
+            "main",
+            vec![cl(
+                vec![],
+                Expr::VecLit(
+                    crate::ast::VecKind::Numeric,
+                    vec![Expr::Float(1.0), Expr::Float(2.0)],
+                ),
+            )],
+        );
+        let res = lower_program(&Program { items: vec![main] });
+        let err = res.expect_err("VecF64 lowering should be gated");
+        let msg = format!("{:?}", err);
+        assert!(
+            msg.contains("11.23"),
+            "expected ticket reference in error, got: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn vec_get_returns_indexed_element() {
+        // fn main(), do: vec_get(~v[10, 20, 30], 1)
+        let main = fn_def(
+            "main",
+            vec![cl(
+                vec![],
+                Expr::Call(
+                    Box::new(Expr::Var("vec_get".into())),
+                    vec![
+                        Expr::VecLit(
+                            crate::ast::VecKind::Numeric,
+                            vec![Expr::Int(10), Expr::Int(20), Expr::Int(30)],
+                        ),
+                        Expr::Int(1),
+                    ],
+                ),
+            )],
+        );
+        let m = lower(vec![main]);
+        let entry = m.fn_by_name("main").unwrap().id;
+        heap_reset_for_test();
+        let cm = compile(&m).unwrap();
+        assert_eq!(cm.run(entry), 20);
+    }
+
+    #[test]
+    fn vec_get_out_of_bounds_returns_nil() {
+        // vec_get(~v[1, 2], 10) -> nil (halt unboxes to 0).
+        let main = fn_def(
+            "main",
+            vec![cl(
+                vec![],
+                Expr::Call(
+                    Box::new(Expr::Var("vec_get".into())),
+                    vec![
+                        Expr::VecLit(
+                            crate::ast::VecKind::Numeric,
+                            vec![Expr::Int(1), Expr::Int(2)],
+                        ),
+                        Expr::Int(10),
+                    ],
+                ),
+            )],
+        );
+        let m = lower(vec![main]);
+        let entry = m.fn_by_name("main").unwrap().id;
+        heap_reset_for_test();
+        let cm = compile(&m).unwrap();
+        assert_eq!(cm.run(entry), 0); // nil halts as 0
+    }
+
+    #[test]
+    fn vec_address_stable_across_gc_via_jit() {
+        // Allocate a vec via JIT, GC with halt-ptr as root, read element back.
+        // Proves the non-moving collector preserves vec payloads.
+        let main = fn_def(
+            "main",
+            vec![cl(
+                vec![],
+                Expr::VecLit(
+                    crate::ast::VecKind::Numeric,
+                    vec![Expr::Int(100), Expr::Int(200), Expr::Int(300)],
+                ),
+            )],
+        );
+        let m = lower(vec![main]);
+        let entry = m.fn_by_name("main").unwrap().id;
+        heap_reset_for_test();
+        let cm = compile(&m).unwrap();
+        let halt_bits = cm.run(entry) as u64;
+        assert_eq!(heap_live_count(), 1);
+        let root = crate::fz_value::FzValue(halt_bits);
+        let p_before = root.unbox_ptr().unwrap();
+        heap_gc(&[root]);
+        assert_eq!(heap_live_count(), 1, "vec rooted via halt should survive GC");
+        // Address stable + payload still readable.
+        let p_after = crate::fz_value::FzValue(halt_bits).unbox_ptr().unwrap();
+        assert_eq!(p_before, p_after);
+        assert_eq!(crate::heap::Heap::vec_len(p_after), 3);
+        unsafe {
+            let payload = (p_after as *const u8).add(24) as *const i64;
+            assert_eq!(std::ptr::read(payload.add(2)), 300);
+        }
     }
 
     #[test]

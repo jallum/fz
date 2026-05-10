@@ -333,8 +333,17 @@ fn eval_prim(
             }
         }
         Prim::MakeVec(kind_ir, els) => {
+            use crate::ast::VecKind;
+            use crate::fz_ir::VecKindIr;
             let vs: Vec<Value> = els.iter().map(|v| env_get(env, *v)).collect::<Result<_, _>>()?;
-            build_vec(*kind_ir, vs)?
+            // ir_interp builds via ast::VecKind sigil; collapse the per-element
+            // bifurcation back to the AST-level shape.
+            let ast_kind = match kind_ir {
+                VecKindIr::I64 | VecKindIr::F64 => VecKind::Numeric,
+                VecKindIr::U8 => VecKind::Bytes,
+                VecKindIr::Bit => VecKind::Bits,
+            };
+            build_vec(ast_kind, vs)?
         }
         Prim::MakeBitstring(fields) => build_bitstring(env, fields)?,
         Prim::BitReaderInit(v) => {
