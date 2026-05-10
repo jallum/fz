@@ -196,6 +196,9 @@ pub struct FnDef {
     pub name: String,
     pub clauses: Vec<FnClause>,
     pub is_macro: bool,
+    /// `@doc "..."` attached above the first clause of this fn. Inert
+    /// in v1 — stored for future doc tooling and the test runner (.16).
+    pub doc: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -225,6 +228,9 @@ pub struct ModuleDef {
     /// In .18.1 the body holds only Item::Fn (incl. defmacro). Nested
     /// modules join in .18.2 (recursive Item::Module here).
     pub items: Vec<Rc<Item>>,
+    /// `@moduledoc "..."` attached at the top of the module body.
+    /// Inert in v1.
+    pub moduledoc: Option<String>,
 }
 
 #[derive(Debug, Clone)]

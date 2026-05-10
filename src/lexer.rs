@@ -56,6 +56,7 @@ pub enum Tok {
     Lt, LtEq, Gt, GtEq,
     Plus, Minus, Star, Slash, Percent,
     Bang, AndAnd, OrOr,
+    At,                  // @ — for module attributes (@doc, @moduledoc)
 
     Newline,
     Eof,
@@ -254,6 +255,7 @@ impl<'a> Lexer<'a> {
             b',' => { self.bump(); Tok::Comma }
             b'.' => { self.bump(); Tok::Dot }
             b';' => { self.bump(); Tok::Semi }
+            b'@' => { self.bump(); Tok::At }
 
             b'%' if self.peek(1) == Some(b'{') => { self.bump(); self.bump(); Tok::PercentLBrace }
             b'%' => { self.bump(); Tok::Percent }

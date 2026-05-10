@@ -732,6 +732,60 @@ fn main(), do: nil
     }
 
     #[test]
+    fn moduledoc_and_doc_parse() {
+        // We test the parsed AST directly so we don't have to flatten;
+        // attributes survive flattening because flatten_module clones
+        // FnDef as-is.
+        let prog = parse(r#"
+defmodule Greeter do
+  @moduledoc "Greets people."
+
+  @doc "Says hi."
+  fn hi(name), do: name
+end
+"#);
+        let m = prog.items.iter().find_map(|it| match &**it {
+            Item::Module(m) => Some(m), _ => None,
+        }).unwrap();
+        assert_eq!(m.moduledoc.as_deref(), Some("Greets people."));
+        let hi = m.items.iter().find_map(|it| match &**it {
+            Item::Fn(d) if d.name == "hi" => Some(d), _ => None,
+        }).unwrap();
+        assert_eq!(hi.doc.as_deref(), Some("Says hi."));
+    }
+
+    #[test]
+    fn unknown_attribute_errors() {
+        let toks = crate::lexer::Lexer::new("@bogus \"x\"\nfn main(), do: nil")
+            .tokenize().unwrap();
+        let r = Parser::new(toks).parse_program();
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn moduledoc_at_top_level_errors() {
+        let toks = crate::lexer::Lexer::new("@moduledoc \"x\"\nfn main(), do: nil")
+            .tokenize().unwrap();
+        let r = Parser::new(toks).parse_program();
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn doc_survives_flatten() {
+        let p = flatten(r#"
+defmodule M do
+  @doc "doubles"
+  fn d(x), do: x * 2
+end
+"#);
+        let d = p.items.iter().find_map(|it| match &**it {
+            Item::Fn(d) if d.name == "M.d" => Some(d),
+            _ => None,
+        }).unwrap();
+        assert_eq!(d.doc.as_deref(), Some("doubles"));
+    }
+
+    #[test]
     fn outer_sibling_not_shadowed_by_inner_same_name() {
         // A.f and A.B.f coexist. From inside A's `caller`, bare `f(x)`
         // resolves to A.f, not A.B.f.

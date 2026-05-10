@@ -72,26 +72,52 @@ impl Parser {
     // --- entry ---
 
     pub fn parse_program(&mut self) -> PR<Program> {
-        let items = self.parse_items_until(&[Tok::Eof])?;
+        let (items, moduledoc) = self.parse_items_until(&[Tok::Eof])?;
+        if moduledoc.is_some() {
+            return self.err("@moduledoc only valid inside a defmodule body".to_string());
+        }
         Ok(Program { items })
     }
 
     /// Parse a sequence of top-level items (fn/defmacro/defmodule). Used both
     /// at program top-level (terminator: Eof) and inside `defmodule … end`
     /// bodies (terminator: End). Fn clauses with the same name are merged
-    /// into a single FnDef in declaration order.
-    fn parse_items_until(&mut self, terminators: &[Tok]) -> PR<Vec<Rc<Item>>> {
+    /// into a single FnDef in declaration order. The optional out param
+    /// returns a `@moduledoc "..."` if one was encountered (only meaningful
+    /// when called for a module body).
+    fn parse_items_until(&mut self, terminators: &[Tok]) -> PR<(Vec<Rc<Item>>, Option<String>)> {
         let mut items: Vec<Rc<Item>> = Vec::new();
         let mut order: Vec<String> = Vec::new();
         let mut groups: std::collections::HashMap<String, FnDef> =
             std::collections::HashMap::new();
+        let mut moduledoc: Option<String> = None;
+        let mut pending_doc: Option<String> = None;
 
         self.skip_newlines();
         while !self.peek_in(terminators) {
             match self.peek() {
+                Tok::At => {
+                    let (attr, val) = self.parse_attribute()?;
+                    match attr.as_str() {
+                        "moduledoc" => {
+                            if moduledoc.is_some() {
+                                return self.err("duplicate @moduledoc".to_string());
+                            }
+                            moduledoc = Some(val);
+                        }
+                        "doc" => {
+                            if pending_doc.is_some() {
+                                return self.err("duplicate @doc before fn".to_string());
+                            }
+                            pending_doc = Some(val);
+                        }
+                        other => return self.err(format!(
+                            "unknown attribute `@{}` (only @doc and @moduledoc supported)",
+                            other
+                        )),
+                    }
+                }
                 Tok::Defmodule => {
-                    // Flush pending fn groups so module ordering stays
-                    // declaration-order with respect to surrounding fns.
                     flush_fn_groups(&mut items, &mut order, &mut groups);
                     let m = self.parse_module()?;
                     items.push(Rc::new(Item::Module(m)));
@@ -114,19 +140,43 @@ impl Parser {
                         }
                         def.clauses.push(clause);
                     } else {
+                        let doc = pending_doc.take();
                         order.push(name.clone());
-                        groups.insert(name.clone(), FnDef { name, clauses: vec![clause], is_macro });
+                        groups.insert(name.clone(), FnDef {
+                            name, clauses: vec![clause], is_macro, doc,
+                        });
                     }
                 }
                 _ => return self.err(format!(
-                    "expected `fn`, `defmacro`, or `defmodule`, got {:?}",
+                    "expected `fn`, `defmacro`, `defmodule`, `alias`, `import`, or `@`, got {:?}",
                     self.peek()
                 )),
             }
             self.skip_newlines();
         }
         flush_fn_groups(&mut items, &mut order, &mut groups);
-        Ok(items)
+        if pending_doc.is_some() {
+            return self.err("@doc not followed by a fn or defmacro".to_string());
+        }
+        Ok((items, moduledoc))
+    }
+
+    /// `@<ident> <string>`. v1 only supports string-valued attributes.
+    fn parse_attribute(&mut self) -> PR<(String, String)> {
+        self.expect(&Tok::At, "`@`")?;
+        let name = match self.bump() {
+            Tok::Ident(n) => n,
+            other => return self.err(format!(
+                "expected attribute name after `@`, got {:?}", other
+            )),
+        };
+        let value = match self.bump() {
+            Tok::Str(s) => s,
+            other => return self.err(format!(
+                "expected string value after `@{}`, got {:?}", name, other
+            )),
+        };
+        Ok((name, value))
     }
 
     fn peek_in(&self, terminators: &[Tok]) -> bool {
@@ -290,9 +340,9 @@ impl Parser {
         };
         self.expect(&Tok::Do, "`do`")?;
         self.skip_newlines();
-        let items = self.parse_items_until(&[Tok::End])?;
+        let (items, moduledoc) = self.parse_items_until(&[Tok::End])?;
         self.expect(&Tok::End, "`end`")?;
-        Ok(ModuleDef { name, items })
+        Ok(ModuleDef { name, items, moduledoc })
     }
 
     // --- patterns ---
