@@ -12,9 +12,15 @@
   "id": "fz-ul4.12",
   "labels": [],
   "parent": "fz-ul4",
+  "comments": [
+    {
+      "text": "All five sub-tickets shipped (.12.1–.12.5) plus follow-ons fz-ul4.6 polymorphism, fz-ul4.4.1 typer narrowing, fz-ul4.4.3 pipe-op obs, fz-ul4.4.2 HOF specialization. Scope (scalar+tuple) fully covered.",
+      "timestamp": "2026-05-10T09:10:10Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Cranelift codegen backend (JIT + AOT, scalar)",
   "type": "task",
-  "updated_at": "2026-05-10T02:59:37Z"
+  "updated_at": "2026-05-10T09:10:10Z"
 }
