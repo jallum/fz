@@ -12,9 +12,15 @@
   "id": "fz-ul4.12.3",
   "labels": [],
   "parent": "fz-ul4.12",
+  "comments": [
+    {
+      "text": "Scope addition (approved 2026-05-09): the typer→codegen monomorphization glue lives here, not in .12.1. .12.1 takes explicit per-fn LowerTy annotations from its test harness. .12.3's pre-codegen pass walks the typed AST, derives LowerTy from each fn's inferred arrow type, and rejects fns whose params/return aren't unambiguously monomorphic in the .12 in-scope subset.",
+      "timestamp": "2026-05-10T03:02:43Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "AOT driver: fz build → standalone binary",
   "type": "task",
-  "updated_at": "2026-05-10T03:00:21Z"
+  "updated_at": "2026-05-10T03:02:43Z"
 }
