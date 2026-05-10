@@ -19,8 +19,39 @@
 
 #![allow(dead_code)]
 
+use crate::ast::{BitType, Endian, Pattern, VecKind};
 use crate::heap::Schema;
 use std::fmt;
+
+pub type VecKindIr = VecKind;
+
+#[derive(Debug, Clone)]
+pub enum BitSizeIr {
+    Literal(u32),
+    Var(Var),
+}
+
+#[derive(Debug, Clone)]
+pub struct BitFieldIr {
+    pub value: Var,
+    pub ty: BitType,
+    pub size: Option<BitSizeIr>,
+    pub endian: Endian,
+    pub signed: bool,
+    pub unit: Option<u32>,
+}
+
+#[derive(Debug, Clone)]
+pub struct BitFieldPatIr {
+    /// Per-field AST pattern (binding/literal-check) — applied to the extracted
+    /// IR value via standard pattern lowering after BitstringMatch returns.
+    pub pattern: Pattern,
+    pub ty: BitType,
+    pub size: Option<BitSizeIr>,
+    pub endian: Endian,
+    pub signed: bool,
+    pub unit: Option<u32>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FnId(pub u32);
@@ -88,6 +119,36 @@ pub enum Prim {
     /// Allocate a closure: a struct holding the IR fn id of the lambda body
     /// plus the captured environment locals.
     MakeClosure(FnId, Vec<Var>),
+    /// Build a map from (key, value) pairs in insertion order.
+    MakeMap(Vec<(Var, Var)>),
+    /// Functional update of `base` map: every key in entries must exist.
+    MapUpdate(Var, Vec<(Var, Var)>),
+    /// `m[k]` — bracket access. Returns nil if key absent.
+    MapGet(Var, Var),
+    /// Monotyped vector literal.
+    MakeVec(VecKindIr, Vec<Var>),
+    /// Build a bitstring from a sequence of fields.
+    MakeBitstring(Vec<BitFieldIr>),
+    /// Initialize a bit-reader from a binary/bitstring value. Returns an
+    /// opaque reader value. Pattern-matching of bitstrings uses this plus
+    /// `BitReadField` per field, so size-vars in later fields can refer to
+    /// IR vars bound from earlier fields' patterns.
+    BitReaderInit(Var),
+    /// Read one field from a reader. Returns
+    /// `Tuple([ok_bool, extracted_value, new_reader])` on success and
+    /// `Tuple([false])` on failure (in which case extracted/new_reader are
+    /// absent). `is_last` matters for None-sized binary/bits ("rest").
+    BitReadField {
+        reader: Var,
+        ty: BitType,
+        size: Option<BitSizeIr>,
+        endian: Endian,
+        signed: bool,
+        unit: Option<u32>,
+        is_last: bool,
+    },
+    /// True if the reader has consumed all bits.
+    BitReaderDone(Var),
 }
 
 #[derive(Debug, Clone)]
@@ -386,6 +447,37 @@ impl fmt::Display for Prim {
             Prim::MakeClosure(fid, captured) => {
                 write!(f, "closure({}, captured=[{}])", fid, fmt_var_list(captured))
             }
+            Prim::MakeMap(entries) => {
+                let s = entries
+                    .iter()
+                    .map(|(k, v)| format!("{} => {}", k, v))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                write!(f, "map({{{}}})", s)
+            }
+            Prim::MapUpdate(base, entries) => {
+                let s = entries
+                    .iter()
+                    .map(|(k, v)| format!("{} => {}", k, v))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                write!(f, "map_update({}, {{{}}})", base, s)
+            }
+            Prim::MapGet(m, k) => write!(f, "map_get({}, {})", m, k),
+            Prim::MakeVec(kind, els) => {
+                let kstr = match kind {
+                    VecKindIr::Numeric => "numeric",
+                    VecKindIr::Bytes => "bytes",
+                    VecKindIr::Bits => "bits",
+                };
+                write!(f, "vec({}, [{}])", kstr, fmt_var_list(els))
+            }
+            Prim::MakeBitstring(fields) => {
+                write!(f, "bitstring([{}])", fields.len())
+            }
+            Prim::BitReaderInit(v) => write!(f, "bit_reader_init({})", v),
+            Prim::BitReadField { reader, .. } => write!(f, "bit_read_field({})", reader),
+            Prim::BitReaderDone(v) => write!(f, "bit_reader_done({})", v),
         }
     }
 }

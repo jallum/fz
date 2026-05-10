@@ -10,10 +10,15 @@
 
 #![allow(dead_code)]
 
-use crate::fz_ir::{
-    BinOp, Const, FnId, Module, Prim, Stmt, Term, UnOp, Var,
+use crate::ast::{BitType, Endian, VecKind};
+use crate::bitstr::{
+    apply_endian_for_read, decode_utf16, decode_utf32, decode_utf8, encode_utf16, encode_utf32,
+    encode_utf8, sign_extend, BitReader, BitWriter,
 };
-use crate::value::{FzMap, IrClosure, Value};
+use crate::fz_ir::{
+    BinOp, BitFieldIr, BitSizeIr, Const, FnId, Module, Prim, Stmt, Term, UnOp, Var,
+};
+use crate::value::{BitVec, FzMap, FzVec, IrClosure, Value};
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -294,6 +299,60 @@ fn eval_prim(
                 .collect::<Result<_, _>>()?;
             Value::IrClosure(Rc::new(IrClosure { fn_id: fn_id.0, captured }))
         }
+        Prim::MakeMap(entries) => {
+            let mut m = FzMap::new();
+            for (k, v) in entries {
+                let kv = env_get(env, *k)?;
+                let vv = env_get(env, *v)?;
+                m = m.put(kv, vv);
+            }
+            Value::Map(Rc::new(m))
+        }
+        Prim::MapUpdate(base, entries) => {
+            let bv = env_get(env, *base)?;
+            let mut m = match bv {
+                Value::Map(m) => (*m).clone(),
+                other => return Err(format!("map_update on non-map {:?}", kind(&other))),
+            };
+            for (k, v) in entries {
+                let kv = env_get(env, *k)?;
+                let vv = env_get(env, *v)?;
+                if !m.has(&kv) {
+                    return Err(format!("map_update: key not present"));
+                }
+                m = m.put(kv, vv);
+            }
+            Value::Map(Rc::new(m))
+        }
+        Prim::MapGet(m, k) => {
+            let mv = env_get(env, *m)?;
+            let kv = env_get(env, *k)?;
+            match mv {
+                Value::Map(m) => m.get(&kv).cloned().unwrap_or(Value::Nil),
+                other => return Err(format!("map_get on non-map {:?}", kind(&other))),
+            }
+        }
+        Prim::MakeVec(kind_ir, els) => {
+            let vs: Vec<Value> = els.iter().map(|v| env_get(env, *v)).collect::<Result<_, _>>()?;
+            build_vec(*kind_ir, vs)?
+        }
+        Prim::MakeBitstring(fields) => build_bitstring(env, fields)?,
+        Prim::BitReaderInit(v) => {
+            let sv = env_get(env, *v)?;
+            reader_init(&sv)?
+        }
+        Prim::BitReadField { reader, ty, size, endian, signed, unit, is_last } => {
+            let r = env_get(env, *reader)?;
+            let size_resolved = match resolve_size_ir(env, size)? {
+                Some(s) => Some(s),
+                None => default_size_for(*ty),
+            };
+            read_field(&r, *ty, size_resolved, resolved_unit_for(*ty, *unit), *endian, *signed, *is_last)
+        }
+        Prim::BitReaderDone(r) => {
+            let rv = env_get(env, *r)?;
+            Value::Bool(reader_pos(&rv)? == reader_bit_len(&rv)?)
+        }
     })
 }
 
@@ -454,6 +513,338 @@ fn kind(v: &Value) -> &'static str {
 #[allow(dead_code)]
 fn _unused_fzmap_import(_: &FzMap) {}
 
+// ----------------------------------------------------------------------
+// Vec / Bitstring helpers
+// ----------------------------------------------------------------------
+
+fn build_vec(kind: VecKind, vs: Vec<Value>) -> Result<Value, String> {
+    match kind {
+        VecKind::Numeric => {
+            let all_int = vs.iter().all(|v| matches!(v, Value::Int(_)));
+            let any_float = vs.iter().any(|v| matches!(v, Value::Float(_)));
+            if any_float {
+                let xs: Vec<f64> = vs
+                    .iter()
+                    .map(|v| match v {
+                        Value::Float(x) => Ok(*x),
+                        Value::Int(n) => Ok(*n as f64),
+                        other => Err(format!("vec(numeric): expected number, got {:?}", kind_v(other))),
+                    })
+                    .collect::<Result<_, _>>()?;
+                Ok(Value::Vec(FzVec::F64(Rc::new(xs))))
+            } else if all_int {
+                let xs: Vec<i64> = vs.iter().map(|v| if let Value::Int(n) = v { *n } else { 0 }).collect();
+                Ok(Value::Vec(FzVec::I64(Rc::new(xs))))
+            } else {
+                Err("vec(numeric): expected ints or floats".into())
+            }
+        }
+        VecKind::Bytes => {
+            let xs: Vec<u8> = vs
+                .iter()
+                .map(|v| match v {
+                    Value::Int(n) if *n >= 0 && *n <= 255 => Ok(*n as u8),
+                    other => Err(format!("vec(bytes): expected 0..=255, got {:?}", kind_v(other))),
+                })
+                .collect::<Result<_, _>>()?;
+            Ok(Value::Vec(FzVec::U8(Rc::new(xs))))
+        }
+        VecKind::Bits => {
+            let xs: Vec<u8> = vs
+                .iter()
+                .map(|v| match v {
+                    Value::Int(n) if *n == 0 || *n == 1 => Ok(*n as u8),
+                    other => Err(format!("vec(bits): expected 0 or 1, got {:?}", kind_v(other))),
+                })
+                .collect::<Result<_, _>>()?;
+            Ok(Value::Vec(FzVec::Bit(Rc::new(BitVec::from_bits(&xs)))))
+        }
+    }
+}
+
+fn kind_v(v: &Value) -> &'static str { kind(v) }
+
+fn resolve_size_ir(env: &HashMap<Var, Value>, size: &Option<BitSizeIr>) -> Result<Option<u32>, String> {
+    match size {
+        Some(BitSizeIr::Literal(n)) => Ok(Some(*n)),
+        Some(BitSizeIr::Var(v)) => match env_get(env, *v)? {
+            Value::Int(n) if n >= 0 => Ok(Some(n as u32)),
+            other => Err(format!("bit size must be non-negative int, got {:?}", kind(&other))),
+        },
+        None => Ok(None),
+    }
+}
+
+fn default_size_for(ty: BitType) -> Option<u32> {
+    match ty {
+        BitType::Integer => Some(8),
+        BitType::Float => Some(64),
+        BitType::Binary | BitType::Bits => None,
+        BitType::Utf8 | BitType::Utf16 | BitType::Utf32 => None,
+    }
+}
+
+fn resolved_unit_for(ty: BitType, unit: Option<u32>) -> u32 {
+    if let Some(u) = unit { return u; }
+    match ty {
+        BitType::Integer | BitType::Float | BitType::Bits => 1,
+        BitType::Binary => 8,
+        BitType::Utf8 | BitType::Utf16 | BitType::Utf32 => 1,
+    }
+}
+
+fn build_bitstring(env: &HashMap<Var, Value>, fields: &[BitFieldIr]) -> Result<Value, String> {
+    let mut writer = BitWriter::new();
+    for f in fields {
+        let unit = resolved_unit_for(f.ty, f.unit);
+        let size = match resolve_size_ir(env, &f.size)? {
+            Some(s) => Some(s),
+            None => default_size_for(f.ty),
+        };
+        let val = env_get(env, f.value)?;
+        encode_field_ir(&val, f.ty, size, unit, f.endian, f.signed, &mut writer)?;
+    }
+    Ok(writer.finalize())
+}
+
+fn encode_field_ir(
+    value: &Value,
+    ty: BitType,
+    size: Option<u32>,
+    unit: u32,
+    endian: Endian,
+    _signed: bool,
+    writer: &mut BitWriter,
+) -> Result<(), String> {
+    match ty {
+        BitType::Integer => {
+            let n = match value {
+                Value::Int(n) => *n,
+                _ => return Err("integer bit field expects int".into()),
+            };
+            let total = size.unwrap_or(8) * unit;
+            if total > 64 { return Err(format!("integer field too wide: {}", total)); }
+            let masked = if total < 64 { (n as u64) & ((1u64 << total) - 1) } else { n as u64 };
+            let bswap = crate::bitstr::apply_endian_for_write(masked, total, endian);
+            writer.write_bits(bswap, total as usize);
+            Ok(())
+        }
+        BitType::Float => {
+            let f = match value {
+                Value::Float(f) => *f,
+                Value::Int(n) => *n as f64,
+                _ => return Err("float bit field expects number".into()),
+            };
+            let total = size.unwrap_or(64) * unit;
+            let bits = match total {
+                32 => (f as f32).to_bits() as u64,
+                64 => f.to_bits(),
+                _ => return Err(format!("float field size must be 32 or 64, got {}", total)),
+            };
+            let bswap = crate::bitstr::apply_endian_for_write(bits, total, endian);
+            writer.write_bits(bswap, total as usize);
+            Ok(())
+        }
+        BitType::Binary => {
+            let bytes = match value {
+                Value::Vec(FzVec::U8(b)) => b.clone(),
+                _ => return Err("binary bit field expects byte-vector".into()),
+            };
+            let total_bits = match size {
+                None => bytes.len() * 8,
+                Some(n) => (n * unit) as usize,
+            };
+            if total_bits > bytes.len() * 8 {
+                return Err(format!("binary field exceeds available bits"));
+            }
+            if total_bits % 8 == 0 && writer.bit_len % 8 == 0 {
+                writer.bytes.extend_from_slice(&bytes[..total_bits / 8]);
+                writer.bit_len += total_bits;
+            } else {
+                let mut r = BitReader { bytes: &bytes, bit_len: bytes.len() * 8, pos: 0 };
+                for _ in 0..total_bits {
+                    writer.append_bit(r.read_bit().unwrap());
+                }
+            }
+            Ok(())
+        }
+        BitType::Bits => {
+            let (bytes, bit_len): (Vec<u8>, usize) = match value {
+                Value::Vec(FzVec::U8(b)) => ((**b).clone(), b.len() * 8),
+                Value::BitStr(bs) => (bs.bytes.clone(), bs.bit_len),
+                _ => return Err("bits field expects bitstring".into()),
+            };
+            let total_bits = match size {
+                None => bit_len,
+                Some(n) => (n * unit) as usize,
+            };
+            if total_bits > bit_len { return Err("bits field exceeds available".into()); }
+            let mut r = BitReader { bytes: &bytes, bit_len, pos: 0 };
+            for _ in 0..total_bits {
+                writer.append_bit(r.read_bit().unwrap());
+            }
+            Ok(())
+        }
+        BitType::Utf8 => {
+            let cp = codepoint_v(value)?;
+            let bytes = encode_utf8(cp).ok_or_else(|| format!("invalid codepoint: {}", cp))?;
+            writer.write_bytes(&bytes);
+            Ok(())
+        }
+        BitType::Utf16 => {
+            let cp = codepoint_v(value)?;
+            let bytes = encode_utf16(cp, endian).ok_or_else(|| format!("invalid codepoint: {}", cp))?;
+            writer.write_bytes(&bytes);
+            Ok(())
+        }
+        BitType::Utf32 => {
+            let cp = codepoint_v(value)?;
+            let bytes = encode_utf32(cp, endian).ok_or_else(|| format!("invalid codepoint: {}", cp))?;
+            writer.write_bytes(&bytes);
+            Ok(())
+        }
+    }
+}
+
+fn codepoint_v(v: &Value) -> Result<u32, String> {
+    match v {
+        Value::Int(n) if *n >= 0 && *n <= 0x10ffff => Ok(*n as u32),
+        _ => Err("expected codepoint".into()),
+    }
+}
+
+// Reader is modelled as a Tuple([Vec(U8), Int(bit_len), Int(pos)]). Persistent —
+// each read produces a new reader value with the position advanced.
+
+fn reader_init(v: &Value) -> Result<Value, String> {
+    let (bytes, bit_len): (Rc<Vec<u8>>, usize) = match v {
+        Value::Vec(FzVec::U8(b)) => (b.clone(), b.len() * 8),
+        Value::BitStr(bs) => (Rc::new(bs.bytes.clone()), bs.bit_len),
+        other => return Err(format!("bit_reader_init on non-bitstring {:?}", kind(other))),
+    };
+    Ok(Value::Tuple(Rc::new(vec![
+        Value::Vec(FzVec::U8(bytes)),
+        Value::Int(bit_len as i64),
+        Value::Int(0),
+    ])))
+}
+
+fn reader_parts(v: &Value) -> Result<(Rc<Vec<u8>>, usize, usize), String> {
+    let xs = match v {
+        Value::Tuple(xs) => xs,
+        other => return Err(format!("expected reader, got {:?}", kind(other))),
+    };
+    if xs.len() != 3 {
+        return Err("reader tuple has wrong shape".into());
+    }
+    let bytes = match &xs[0] {
+        Value::Vec(FzVec::U8(b)) => b.clone(),
+        _ => return Err("reader bytes slot wrong".into()),
+    };
+    let bit_len = match &xs[1] { Value::Int(n) => *n as usize, _ => return Err("reader bit_len".into()) };
+    let pos = match &xs[2] { Value::Int(n) => *n as usize, _ => return Err("reader pos".into()) };
+    Ok((bytes, bit_len, pos))
+}
+
+fn reader_pos(v: &Value) -> Result<usize, String> { reader_parts(v).map(|(_, _, p)| p) }
+fn reader_bit_len(v: &Value) -> Result<usize, String> { reader_parts(v).map(|(_, b, _)| b) }
+
+fn make_reader(bytes: Rc<Vec<u8>>, bit_len: usize, pos: usize) -> Value {
+    Value::Tuple(Rc::new(vec![
+        Value::Vec(FzVec::U8(bytes)),
+        Value::Int(bit_len as i64),
+        Value::Int(pos as i64),
+    ]))
+}
+
+/// Read one field from the reader, returning Tuple([ok, extracted, new_reader])
+/// on success or Tuple([false]) on failure.
+fn read_field(
+    reader_val: &Value,
+    ty: BitType,
+    size: Option<u32>,
+    unit: u32,
+    endian: Endian,
+    signed: bool,
+    is_last: bool,
+) -> Value {
+    let (bytes, bit_len, pos) = match reader_parts(reader_val) {
+        Ok(p) => p,
+        Err(_) => return Value::Tuple(Rc::new(vec![Value::Bool(false)])),
+    };
+    let mut r = BitReader { bytes: &bytes, bit_len, pos };
+    let extracted: Value = match ty {
+        BitType::Integer => {
+            let total = size.unwrap_or(8) * unit;
+            if total > 64 { return Value::Tuple(Rc::new(vec![Value::Bool(false)])); }
+            let raw = match r.read_bits(total as usize) {
+                Some(v) => v,
+                None => return Value::Tuple(Rc::new(vec![Value::Bool(false)])),
+            };
+            let raw = apply_endian_for_read(raw, total, endian);
+            let n = if signed { sign_extend(raw, total) } else { raw as i64 };
+            Value::Int(n)
+        }
+        BitType::Float => {
+            let total = size.unwrap_or(64) * unit;
+            let raw = match r.read_bits(total as usize) {
+                Some(v) => v,
+                None => return Value::Tuple(Rc::new(vec![Value::Bool(false)])),
+            };
+            let raw = apply_endian_for_read(raw, total, endian);
+            let fv = match total {
+                32 => f32::from_bits(raw as u32) as f64,
+                64 => f64::from_bits(raw),
+                _ => return Value::Tuple(Rc::new(vec![Value::Bool(false)])),
+            };
+            Value::Float(fv)
+        }
+        BitType::Binary => {
+            let n_bits = match size {
+                None => {
+                    if !is_last { return Value::Tuple(Rc::new(vec![Value::Bool(false)])); }
+                    r.remaining()
+                }
+                Some(n) => (n * unit) as usize,
+            };
+            if n_bits % 8 != 0 { return Value::Tuple(Rc::new(vec![Value::Bool(false)])); }
+            match r.take_bits(n_bits) {
+                Some(v) => v,
+                None => return Value::Tuple(Rc::new(vec![Value::Bool(false)])),
+            }
+        }
+        BitType::Bits => {
+            let n_bits = match size {
+                None => {
+                    if !is_last { return Value::Tuple(Rc::new(vec![Value::Bool(false)])); }
+                    r.remaining()
+                }
+                Some(n) => (n * unit) as usize,
+            };
+            match r.take_bits(n_bits) {
+                Some(v) => v,
+                None => return Value::Tuple(Rc::new(vec![Value::Bool(false)])),
+            }
+        }
+        BitType::Utf8 => match decode_utf8(&mut r) {
+            Some(c) => Value::Int(c as i64),
+            None => return Value::Tuple(Rc::new(vec![Value::Bool(false)])),
+        },
+        BitType::Utf16 => match decode_utf16(&mut r, endian) {
+            Some(c) => Value::Int(c as i64),
+            None => return Value::Tuple(Rc::new(vec![Value::Bool(false)])),
+        },
+        BitType::Utf32 => match decode_utf32(&mut r, endian) {
+            Some(c) => Value::Int(c as i64),
+            None => return Value::Tuple(Rc::new(vec![Value::Bool(false)])),
+        },
+    };
+    let new_pos = r.pos;
+    let new_reader = make_reader(bytes, bit_len, new_pos);
+    Value::Tuple(Rc::new(vec![Value::Bool(true), extracted, new_reader]))
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -478,25 +869,18 @@ mod tests {
     /// for the IR interp. The atom table after lowering has every interned
     /// atom; the builtin table is the v1 stable set seeded by the lowerer.
     fn lower_for_interp(items: Vec<Rc<Item>>) -> (Module, Vec<String>, Vec<String>) {
+        use crate::ir_lower::lower_program_full;
         let prog = Program { items };
-        let module = lower_program(&prog).expect("lower failed");
-        // Re-derive atoms by re-lowering with a peek at the table.
-        // (The crate exposes AtomTable but lower_program consumes it; for
-        // tests we just need the names that may appear at runtime, which
-        // are the standard halt atoms plus any test-specific atoms.)
-        // Easiest path: synthesize from a fresh AtomTable used during
-        // lowering — we can't access the consumed one, so we run a parallel
-        // intern to reconstruct. For these tests we don't observe atoms at
-        // runtime, so we leave the names empty and rely on synthetic.
-        let _ = AtomTable::default();
+        let (module, atoms, _builtins) = lower_program_full(&prog).expect("lower failed");
         let builtins = vec![
             "print".to_string(),
             "assert".to_string(),
             "assert_eq".to_string(),
             "assert_neq".to_string(),
         ];
+        let _ = AtomTable::default();
         let _ = BuiltinTable::new();
-        (module, Vec::new(), builtins)
+        (module, atoms.names(), builtins)
     }
 
     fn run_named(items: Vec<Rc<Item>>, name: &str, args: Vec<Value>) -> Result<Value, String> {
@@ -819,8 +1203,8 @@ mod tests {
         match (&r0, &r5) {
             (Value::Atom(a), Value::Atom(b)) => {
                 assert_ne!(&**a, &**b, "two clauses should return distinct atoms");
-                assert_eq!(&**a, "atom_1");
-                assert_eq!(&**b, "atom_2");
+                assert_eq!(&**a, "zero");
+                assert_eq!(&**b, "other");
             }
             _ => panic!("expected atoms, got {:?} / {:?}", super::kind(&r0), super::kind(&r5)),
         }
@@ -920,6 +1304,342 @@ mod tests {
         );
         let r = run_named(vec![mk, use_fn], "use", vec![Value::Int(10), Value::Int(32)]).unwrap();
         assert!(matches!(r, Value::Int(42)), "got {:?}", super::kind(&r));
+    }
+
+    // ----- fz-ul4.11.17 coverage: VecLit / Map / MapUpdate / Index / Case / Cond / With / Bitstring -----
+
+    #[test]
+    fn interp_vec_numeric_int() {
+        use crate::ast::VecKind;
+        let f = fn_def(
+            "v",
+            vec![cl(
+                vec![],
+                Expr::VecLit(VecKind::Numeric, vec![Expr::Int(1), Expr::Int(2), Expr::Int(3)]),
+            )],
+        );
+        let r = run_named(vec![f], "v", vec![]).unwrap();
+        match r {
+            Value::Vec(super::FzVec::I64(xs)) => assert_eq!(&*xs, &[1, 2, 3]),
+            other => panic!("got {:?}", super::kind(&other)),
+        }
+    }
+
+    #[test]
+    fn interp_vec_bytes() {
+        use crate::ast::VecKind;
+        let f = fn_def(
+            "v",
+            vec![cl(
+                vec![],
+                Expr::VecLit(VecKind::Bytes, vec![Expr::Int(255), Expr::Int(0)]),
+            )],
+        );
+        let r = run_named(vec![f], "v", vec![]).unwrap();
+        match r {
+            Value::Vec(super::FzVec::U8(xs)) => assert_eq!(&*xs, &[255, 0]),
+            other => panic!("got {:?}", super::kind(&other)),
+        }
+    }
+
+    #[test]
+    fn interp_vec_bits() {
+        use crate::ast::VecKind;
+        let f = fn_def(
+            "v",
+            vec![cl(
+                vec![],
+                Expr::VecLit(VecKind::Bits, vec![Expr::Int(1), Expr::Int(0), Expr::Int(1)]),
+            )],
+        );
+        let r = run_named(vec![f], "v", vec![]).unwrap();
+        match r {
+            Value::Vec(super::FzVec::Bit(b)) => {
+                assert_eq!(b.len, 3);
+                assert_eq!(b.get(0), 1);
+                assert_eq!(b.get(1), 0);
+                assert_eq!(b.get(2), 1);
+            }
+            other => panic!("got {:?}", super::kind(&other)),
+        }
+    }
+
+    #[test]
+    fn interp_map_construction_and_lookup() {
+        // fn m(), do: %{:k => 7}[:k]
+        let f = fn_def(
+            "m",
+            vec![cl(
+                vec![],
+                Expr::Index(
+                    Box::new(Expr::Map(vec![(Expr::Atom("k".into()), Expr::Int(7))])),
+                    Box::new(Expr::Atom("k".into())),
+                ),
+            )],
+        );
+        let r = run_named(vec![f], "m", vec![]).unwrap();
+        assert!(matches!(r, Value::Int(7)));
+    }
+
+    #[test]
+    fn interp_index_returns_nil_when_absent() {
+        let f = fn_def(
+            "m",
+            vec![cl(
+                vec![],
+                Expr::Index(
+                    Box::new(Expr::Map(vec![(Expr::Atom("k".into()), Expr::Int(7))])),
+                    Box::new(Expr::Atom("missing".into())),
+                ),
+            )],
+        );
+        let r = run_named(vec![f], "m", vec![]).unwrap();
+        assert!(matches!(r, Value::Nil));
+    }
+
+    #[test]
+    fn interp_map_update() {
+        // fn u(), do: %{ %{:k => 1} | :k => 2 }[:k]
+        let f = fn_def(
+            "u",
+            vec![cl(
+                vec![],
+                Expr::Index(
+                    Box::new(Expr::MapUpdate(
+                        Box::new(Expr::Map(vec![(Expr::Atom("k".into()), Expr::Int(1))])),
+                        vec![(Expr::Atom("k".into()), Expr::Int(2))],
+                    )),
+                    Box::new(Expr::Atom("k".into())),
+                ),
+            )],
+        );
+        let r = run_named(vec![f], "u", vec![]).unwrap();
+        assert!(matches!(r, Value::Int(2)));
+    }
+
+    #[test]
+    fn interp_map_pattern_extracts_value() {
+        // fn first(%{:name => n}), do: n
+        let f = fn_def(
+            "first",
+            vec![cl(
+                vec![Pattern::Map(vec![(
+                    Pattern::Atom("name".into()),
+                    Pattern::Var("n".into()),
+                )])],
+                Expr::Var("n".into()),
+            )],
+        );
+        let mut entries = FzMap::new();
+        entries = entries.put(Value::Atom(Rc::from("name")), Value::Int(42));
+        let r = run_named(vec![f], "first", vec![Value::Map(Rc::new(entries))]).unwrap();
+        assert!(matches!(r, Value::Int(42)));
+    }
+
+    #[test]
+    fn interp_case_dispatch() {
+        // fn c(x), do: case x do 0 -> :zero; _ -> :other end
+        let f = fn_def(
+            "c",
+            vec![cl(
+                vec![Pattern::Var("x".into())],
+                Expr::Case(
+                    Box::new(Expr::Var("x".into())),
+                    vec![
+                        crate::ast::MatchClause {
+                            pattern: Pattern::Int(0),
+                            guard: None,
+                            body: Expr::Atom("zero".into()),
+                        },
+                        crate::ast::MatchClause {
+                            pattern: Pattern::Wildcard,
+                            guard: None,
+                            body: Expr::Atom("other".into()),
+                        },
+                    ],
+                ),
+            )],
+        );
+        let r0 = run_named(vec![f.clone()], "c", vec![Value::Int(0)]).unwrap();
+        let r5 = run_named(vec![f], "c", vec![Value::Int(5)]).unwrap();
+        match (&r0, &r5) {
+            (Value::Atom(a), Value::Atom(b)) => {
+                assert_eq!(&**a, "zero");
+                assert_eq!(&**b, "other");
+            }
+            _ => panic!("expected atoms"),
+        }
+    }
+
+    #[test]
+    fn interp_cond_first_truthy_wins() {
+        // fn c(x), do: cond do x > 0 -> :pos; true -> :nonpos end
+        let f = fn_def(
+            "c",
+            vec![cl(
+                vec![Pattern::Var("x".into())],
+                Expr::Cond(vec![
+                    (
+                        Expr::BinOp(
+                            ABinOp::Gt,
+                            Box::new(Expr::Var("x".into())),
+                            Box::new(Expr::Int(0)),
+                        ),
+                        Expr::Atom("pos".into()),
+                    ),
+                    (Expr::Bool(true), Expr::Atom("nonpos".into())),
+                ]),
+            )],
+        );
+        let r = run_named(vec![f.clone()], "c", vec![Value::Int(10)]).unwrap();
+        if let Value::Atom(a) = r { assert_eq!(&*a, "pos"); } else { panic!(); }
+        let r = run_named(vec![f], "c", vec![Value::Int(-1)]).unwrap();
+        if let Value::Atom(a) = r { assert_eq!(&*a, "nonpos"); } else { panic!(); }
+    }
+
+    #[test]
+    fn interp_with_success_threads_bindings() {
+        // fn w(), do: with {:ok, a} <- {:ok, 41} do a + 1 end
+        let f = fn_def(
+            "w",
+            vec![cl(
+                vec![],
+                Expr::With(
+                    vec![crate::ast::WithBinding::Match(
+                        Pattern::Tuple(vec![Pattern::Atom("ok".into()), Pattern::Var("a".into())]),
+                        Expr::Tuple(vec![Expr::Atom("ok".into()), Expr::Int(41)]),
+                    )],
+                    Box::new(Expr::BinOp(
+                        ABinOp::Add,
+                        Box::new(Expr::Var("a".into())),
+                        Box::new(Expr::Int(1)),
+                    )),
+                    vec![],
+                ),
+            )],
+        );
+        let r = run_named(vec![f], "w", vec![]).unwrap();
+        assert!(matches!(r, Value::Int(42)));
+    }
+
+    #[test]
+    fn interp_with_else_handles_failure() {
+        // fn w(), do:
+        //   with {:ok, _} <- {:error, :boom} do :unreached
+        //   else {:error, m} -> {:handled, m} end
+        let f = fn_def(
+            "w",
+            vec![cl(
+                vec![],
+                Expr::With(
+                    vec![crate::ast::WithBinding::Match(
+                        Pattern::Tuple(vec![Pattern::Atom("ok".into()), Pattern::Wildcard]),
+                        Expr::Tuple(vec![Expr::Atom("error".into()), Expr::Atom("boom".into())]),
+                    )],
+                    Box::new(Expr::Atom("unreached".into())),
+                    vec![crate::ast::MatchClause {
+                        pattern: Pattern::Tuple(vec![
+                            Pattern::Atom("error".into()),
+                            Pattern::Var("m".into()),
+                        ]),
+                        guard: None,
+                        body: Expr::Tuple(vec![Expr::Atom("handled".into()), Expr::Var("m".into())]),
+                    }],
+                ),
+            )],
+        );
+        let r = run_named(vec![f], "w", vec![]).unwrap();
+        match r {
+            Value::Tuple(xs) => {
+                assert_eq!(xs.len(), 2);
+                if let Value::Atom(a) = &xs[0] { assert_eq!(&**a, "handled"); } else { panic!(); }
+                if let Value::Atom(a) = &xs[1] { assert_eq!(&**a, "boom"); } else { panic!(); }
+            }
+            other => panic!("got {:?}", super::kind(&other)),
+        }
+    }
+
+    #[test]
+    fn interp_bitstring_round_trip_simple() {
+        use crate::ast::{BitField, BitFieldSpec};
+        // fn b(), do: <<0xA5::8>>
+        let f = fn_def(
+            "b",
+            vec![cl(
+                vec![],
+                Expr::Bitstring(vec![BitField {
+                    value: Expr::Int(0xA5),
+                    spec: BitFieldSpec::default(),
+                }]),
+            )],
+        );
+        let r = run_named(vec![f], "b", vec![]).unwrap();
+        match r {
+            Value::Vec(super::FzVec::U8(b)) => assert_eq!(&*b, &[0xA5]),
+            other => panic!("got {:?}", super::kind(&other)),
+        }
+    }
+
+    #[test]
+    fn interp_bitstring_pattern_extracts_int() {
+        use crate::ast::{BitField, BitFieldSpec};
+        // fn parse(<<a::8, b::8>>), do: a + b
+        let f = fn_def(
+            "parse",
+            vec![cl(
+                vec![Pattern::Bitstring(vec![
+                    BitField {
+                        value: Pattern::Var("a".into()),
+                        spec: BitFieldSpec::default(),
+                    },
+                    BitField {
+                        value: Pattern::Var("b".into()),
+                        spec: BitFieldSpec::default(),
+                    },
+                ])],
+                Expr::BinOp(
+                    ABinOp::Add,
+                    Box::new(Expr::Var("a".into())),
+                    Box::new(Expr::Var("b".into())),
+                ),
+            )],
+        );
+        let bs = Value::Vec(super::FzVec::U8(Rc::new(vec![10, 32])));
+        let r = run_named(vec![f], "parse", vec![bs]).unwrap();
+        assert!(matches!(r, Value::Int(42)));
+    }
+
+    #[test]
+    fn interp_bitstring_pattern_with_size_var() {
+        use crate::ast::{BitField, BitFieldSpec, BitSize, BitType};
+        // fn parse(<<n::8, payload::binary-size(n)>>), do: payload
+        let bin_spec = BitFieldSpec {
+            ty: BitType::Binary,
+            size: Some(BitSize::Var("n".into())),
+            endian: crate::ast::Endian::Big,
+            signed: false,
+            unit: None,
+        };
+        let f = fn_def(
+            "parse",
+            vec![cl(
+                vec![Pattern::Bitstring(vec![
+                    BitField {
+                        value: Pattern::Var("n".into()),
+                        spec: BitFieldSpec::default(),
+                    },
+                    BitField { value: Pattern::Var("payload".into()), spec: bin_spec },
+                ])],
+                Expr::Var("payload".into()),
+            )],
+        );
+        // <<3, "abc">> = [3, 'a', 'b', 'c']
+        let bs = Value::Vec(super::FzVec::U8(Rc::new(vec![3, b'a', b'b', b'c'])));
+        let r = run_named(vec![f], "parse", vec![bs]).unwrap();
+        match r {
+            Value::Vec(super::FzVec::U8(b)) => assert_eq!(&*b, &[b'a', b'b', b'c']),
+            other => panic!("got {:?}", super::kind(&other)),
+        }
     }
 
     #[test]

@@ -16,10 +16,13 @@
 
 #![allow(dead_code)]
 
-use crate::ast::{BinOp as AstBinOp, Expr, FnDef, Item, Pattern, Program, UnOp as AstUnOp};
+use crate::ast::{
+    BinOp as AstBinOp, BitField as AstBitField, BitSize as AstBitSize, Expr, FnDef, Item,
+    MatchClause, Pattern, Program, UnOp as AstUnOp, WithBinding,
+};
 use crate::fz_ir::{
-    BinOp, BlockId, BuiltinId, Const, Cont, FnBuilder, FnId, Module, ModuleBuilder, Prim, Term,
-    UnOp, Var,
+    BinOp, BitFieldIr, BitSizeIr, BlockId, BuiltinId, Const, Cont, FnBuilder, FnId, Module,
+    ModuleBuilder, Prim, Term, UnOp, Var,
 };
 use std::collections::HashMap;
 
@@ -201,6 +204,13 @@ impl Default for LowerCtx {
 }
 
 pub fn lower_program(prog: &Program) -> Result<Module, LowerError> {
+    let (m, _, _) = lower_program_full(prog)?;
+    Ok(m)
+}
+
+pub fn lower_program_full(
+    prog: &Program,
+) -> Result<(Module, AtomTable, BuiltinTable), LowerError> {
     let mut ctx = LowerCtx::new();
 
     // First pass: assign FnIds to every top-level FnDef.
@@ -234,7 +244,8 @@ pub fn lower_program(prog: &Program) -> Result<Module, LowerError> {
         }
     }
 
-    Ok(ctx.mb.build())
+    let module = ctx.mb.build();
+    Ok((module, ctx.atoms, ctx.builtins))
 }
 
 fn lower_fn(ctx: &mut LowerCtx, fn_def: &FnDef) -> Result<(), LowerError> {
@@ -481,15 +492,16 @@ fn lower_expr(ctx: &mut LowerCtx, e: &Expr, is_tail: bool) -> Result<Var, LowerE
 
         Expr::Lambda(params, body) => lower_lambda(ctx, params, body),
 
-        // Out of scope -> fz-ul4.11.17:
-        Expr::Case(_, _) => Err(LowerError::Unsupported("Case (.11.17)".into())),
-        Expr::Cond(_) => Err(LowerError::Unsupported("Cond (.11.17)".into())),
-        Expr::With(_, _, _) => Err(LowerError::Unsupported("With (.11.17)".into())),
-        Expr::Map(_) => Err(LowerError::Unsupported("Map (.11.17)".into())),
-        Expr::MapUpdate(_, _) => Err(LowerError::Unsupported("MapUpdate (.11.17)".into())),
-        Expr::Index(_, _) => Err(LowerError::Unsupported("Index (.11.17)".into())),
-        Expr::Bitstring(_) => Err(LowerError::Unsupported("Bitstring (.11.17)".into())),
-        Expr::VecLit(_, _) => Err(LowerError::Unsupported("VecLit (.11.17)".into())),
+        Expr::Case(subject, clauses) => lower_case(ctx, subject, clauses, is_tail),
+        Expr::Cond(arms) => lower_cond(ctx, arms, is_tail),
+        Expr::With(bindings, body, else_clauses) => {
+            lower_with(ctx, bindings, body, else_clauses, is_tail)
+        }
+        Expr::Map(entries) => lower_map(ctx, entries),
+        Expr::MapUpdate(base, entries) => lower_map_update(ctx, base, entries),
+        Expr::Index(map, key) => lower_index(ctx, map, key),
+        Expr::Bitstring(fields) => lower_bitstring_expr(ctx, fields),
+        Expr::VecLit(kind, els) => lower_vec_lit(ctx, *kind, els),
         Expr::Dot(_, _) => Err(LowerError::Unsupported(
             "Expr::Dot should be resolved before lowering".into(),
         )),
@@ -776,9 +788,102 @@ fn lower_pattern_bind(
                 }
             }
         }
-        Pattern::Map(_) => Err(LowerError::Unsupported("Map pattern (.11.17)".into())),
-        Pattern::Bitstring(_) => Err(LowerError::Unsupported("Bitstring pattern (.11.17)".into())),
+        Pattern::Map(entries) => {
+            // For each (key_pattern, value_pattern) in the map pattern: build the
+            // key (must be a literal expression-equivalent), call MapGet, ensure
+            // result is non-nil (key present), then recurse into value pattern.
+            for (key_pat, val_pat) in entries {
+                let key_var = lower_pattern_as_key_expr(ctx, key_pat)?;
+                let got = ctx.let_(Prim::MapGet(subject, key_var));
+                // MapGet returns nil if absent; check it is not nil.
+                let nil_v = ctx.let_(Prim::Const(Const::Nil));
+                let is_nil = ctx.let_(Prim::BinOp(BinOp::Eq, got, nil_v));
+                let cont_b = ctx.cur_mut().block(vec![]);
+                ctx.set_term(Term::If(is_nil, fail_block, cont_b));
+                ctx.cur_block = Some(cont_b);
+                lower_pattern_bind(ctx, got, val_pat, fail_block)?;
+            }
+            Ok(())
+        }
+        Pattern::Bitstring(fields) => {
+            // Initialize a reader, then per field: read with size resolved
+            // against any IR vars bound by *earlier* fields' patterns; check
+            // success; pattern-bind the extracted value (which may bind names
+            // visible to later fields' size resolution); thread the new
+            // reader. Finally require the reader is fully consumed.
+            let mut reader = ctx.let_(Prim::BitReaderInit(subject));
+            let n = fields.len();
+            for (i, field) in fields.iter().enumerate() {
+                let is_last = i + 1 == n;
+                let size_ir = lower_bit_size(ctx, &field.spec.size)?;
+                let result = ctx.let_(Prim::BitReadField {
+                    reader,
+                    ty: field.spec.ty,
+                    size: size_ir,
+                    endian: field.spec.endian,
+                    signed: field.spec.signed,
+                    unit: field.spec.unit,
+                    is_last,
+                });
+                let ok = ctx.let_(Prim::TupleField(result, 0));
+                let cont_b = ctx.cur_mut().block(vec![]);
+                ctx.set_term(Term::If(ok, cont_b, fail_block));
+                ctx.cur_block = Some(cont_b);
+                let extracted = ctx.let_(Prim::TupleField(result, 1));
+                let next_reader = ctx.let_(Prim::TupleField(result, 2));
+                // Park reader so any CPS-split inside the pattern keeps it.
+                let r_park = ctx.park(next_reader);
+                lower_pattern_bind(ctx, extracted, &field.value, fail_block)?;
+                reader = ctx.unpark(&r_park);
+                ctx.unbind(&r_park);
+            }
+            // Require empty reader.
+            let done = ctx.let_(Prim::BitReaderDone(reader));
+            let cont_b = ctx.cur_mut().block(vec![]);
+            ctx.set_term(Term::If(done, cont_b, fail_block));
+            ctx.cur_block = Some(cont_b);
+            Ok(())
+        }
     }
+}
+
+/// Lower a Pattern that represents a map key. Map keys in patterns are
+/// constants (atoms, ints, strings, ...) — no var-binding allowed.
+fn lower_pattern_as_key_expr(ctx: &mut LowerCtx, p: &Pattern) -> Result<Var, LowerError> {
+    Ok(match p {
+        Pattern::Int(n) => ctx.let_(Prim::Const(Const::Int(*n))),
+        Pattern::Float(x) => ctx.let_(Prim::Const(Const::Float(*x))),
+        Pattern::Str(s) => ctx.let_(Prim::Const(Const::Str(s.clone()))),
+        Pattern::Atom(s) => {
+            let id = ctx.atoms.intern(s);
+            ctx.let_(Prim::Const(Const::Atom(id)))
+        }
+        Pattern::Bool(true) => ctx.let_(Prim::Const(Const::True)),
+        Pattern::Bool(false) => ctx.let_(Prim::Const(Const::False)),
+        Pattern::Nil => ctx.let_(Prim::Const(Const::Nil)),
+        other => {
+            return Err(LowerError::Unsupported(format!(
+                "map-pattern keys must be constants, got {:?}",
+                std::mem::discriminant(other)
+            )));
+        }
+    })
+}
+
+fn lower_bit_size(
+    ctx: &LowerCtx,
+    size: &Option<AstBitSize>,
+) -> Result<Option<BitSizeIr>, LowerError> {
+    Ok(match size {
+        None => None,
+        Some(AstBitSize::Literal(n)) => Some(BitSizeIr::Literal(*n)),
+        Some(AstBitSize::Var(name)) => {
+            let v = ctx
+                .lookup(name)
+                .ok_or_else(|| LowerError::Unbound(format!("bit size var {}", name)))?;
+            Some(BitSizeIr::Var(v))
+        }
+    })
 }
 
 fn emit_eq_check(
@@ -793,6 +898,316 @@ fn emit_eq_check(
     ctx.set_term(Term::If(eq_v, cont_b, fail_block));
     ctx.cur_block = Some(cont_b);
     Ok(())
+}
+
+// ----------------------------------------------------------------------
+// Expression lowerings added in fz-ul4.11.17
+// ----------------------------------------------------------------------
+
+fn lower_map(ctx: &mut LowerCtx, entries: &[(Expr, Expr)]) -> Result<Var, LowerError> {
+    let mut key_parks = Vec::with_capacity(entries.len());
+    let mut val_parks = Vec::with_capacity(entries.len());
+    for (k, v) in entries {
+        let kv = lower_expr(ctx, k, false)?;
+        key_parks.push(ctx.park(kv));
+        let vv = lower_expr(ctx, v, false)?;
+        val_parks.push(ctx.park(vv));
+    }
+    let pairs: Vec<(Var, Var)> = key_parks
+        .iter()
+        .zip(val_parks.iter())
+        .map(|(kn, vn)| (ctx.unpark(kn), ctx.unpark(vn)))
+        .collect();
+    for n in &key_parks { ctx.unbind(n); }
+    for n in &val_parks { ctx.unbind(n); }
+    Ok(ctx.let_(Prim::MakeMap(pairs)))
+}
+
+fn lower_map_update(
+    ctx: &mut LowerCtx,
+    base: &Expr,
+    entries: &[(Expr, Expr)],
+) -> Result<Var, LowerError> {
+    let bv = lower_expr(ctx, base, false)?;
+    let base_park = ctx.park(bv);
+    let mut key_parks = Vec::with_capacity(entries.len());
+    let mut val_parks = Vec::with_capacity(entries.len());
+    for (k, v) in entries {
+        let kv = lower_expr(ctx, k, false)?;
+        key_parks.push(ctx.park(kv));
+        let vv = lower_expr(ctx, v, false)?;
+        val_parks.push(ctx.park(vv));
+    }
+    let base_v = ctx.unpark(&base_park);
+    let pairs: Vec<(Var, Var)> = key_parks
+        .iter()
+        .zip(val_parks.iter())
+        .map(|(kn, vn)| (ctx.unpark(kn), ctx.unpark(vn)))
+        .collect();
+    ctx.unbind(&base_park);
+    for n in &key_parks { ctx.unbind(n); }
+    for n in &val_parks { ctx.unbind(n); }
+    Ok(ctx.let_(Prim::MapUpdate(base_v, pairs)))
+}
+
+fn lower_index(ctx: &mut LowerCtx, m: &Expr, k: &Expr) -> Result<Var, LowerError> {
+    let mv = lower_expr(ctx, m, false)?;
+    let m_park = ctx.park(mv);
+    let kv = lower_expr(ctx, k, false)?;
+    let m_resolved = ctx.unpark(&m_park);
+    ctx.unbind(&m_park);
+    Ok(ctx.let_(Prim::MapGet(m_resolved, kv)))
+}
+
+fn lower_vec_lit(
+    ctx: &mut LowerCtx,
+    kind: crate::ast::VecKind,
+    els: &[Expr],
+) -> Result<Var, LowerError> {
+    let parks = lower_seq(ctx, els)?;
+    let vs: Vec<Var> = parks.iter().map(|n| ctx.unpark(n)).collect();
+    for n in &parks { ctx.unbind(n); }
+    Ok(ctx.let_(Prim::MakeVec(kind, vs)))
+}
+
+fn lower_bitstring_expr(
+    ctx: &mut LowerCtx,
+    fields: &[AstBitField<Expr>],
+) -> Result<Var, LowerError> {
+    // Lower each field's value expression, parking results so any CPS-split in
+    // a later field's value still rebinds earlier ones.
+    let mut value_parks = Vec::with_capacity(fields.len());
+    for f in fields {
+        let v = lower_expr(ctx, &f.value, false)?;
+        value_parks.push(ctx.park(v));
+    }
+    let mut ir_fields: Vec<BitFieldIr> = Vec::with_capacity(fields.len());
+    for (f, vn) in fields.iter().zip(value_parks.iter()) {
+        ir_fields.push(BitFieldIr {
+            value: ctx.unpark(vn),
+            ty: f.spec.ty,
+            size: lower_bit_size(ctx, &f.spec.size)?,
+            endian: f.spec.endian,
+            signed: f.spec.signed,
+            unit: f.spec.unit,
+        });
+    }
+    for n in &value_parks { ctx.unbind(n); }
+    Ok(ctx.let_(Prim::MakeBitstring(ir_fields)))
+}
+
+fn lower_case(
+    ctx: &mut LowerCtx,
+    subject: &Expr,
+    clauses: &[MatchClause],
+    is_tail: bool,
+) -> Result<Var, LowerError> {
+    if clauses.is_empty() {
+        return Err(LowerError::Unsupported("case with no clauses".into()));
+    }
+    let sv = lower_expr(ctx, subject, false)?;
+    let subject_park = ctx.park(sv);
+
+    // Allocate try blocks + fail block + join block.
+    let try_blocks: Vec<BlockId> =
+        (0..clauses.len()).map(|_| ctx.cur_mut().block(vec![])).collect();
+    let fail_block = ctx.cur_mut().block(vec![]);
+    let join_param = ctx.cur_mut().fresh_var();
+    let join_b = ctx.cur_mut().block(vec![join_param]);
+
+    // Seal fail block with halt :case_clause.
+    let saved_block = ctx.cur_block();
+    ctx.cur_block = Some(fail_block);
+    let cc = ctx.atoms.intern("case_clause");
+    let v = ctx.let_(Prim::Const(Const::Atom(cc)));
+    ctx.set_term(Term::Halt(v));
+    ctx.cur_block = Some(saved_block);
+
+    // Goto the first try block.
+    ctx.set_term(Term::Goto(try_blocks[0], vec![]));
+
+    let saved_env = ctx.env.clone();
+    let saved_order = ctx.env_order.clone();
+
+    for (i, clause) in clauses.iter().enumerate() {
+        if let Some(_g) = &clause.guard {
+            return Err(LowerError::Unsupported("case guard (deferred)".into()));
+        }
+        let next = try_blocks.get(i + 1).copied().unwrap_or(fail_block);
+        ctx.cur_block = Some(try_blocks[i]);
+        ctx.env = saved_env.clone();
+        ctx.env_order = saved_order.clone();
+        ctx.terminated = false;
+        let subj_v = ctx.unpark(&subject_park);
+        // Re-park so subsequent clauses still see it.
+        let inner_park = ctx.park(subj_v);
+        lower_pattern_bind(ctx, subj_v, &clause.pattern, next)?;
+        ctx.unbind(&inner_park);
+        let result = lower_expr(ctx, &clause.body, is_tail)?;
+        if !ctx.terminated {
+            ctx.set_term(Term::Goto(join_b, vec![result]));
+        }
+    }
+
+    ctx.unbind(&subject_park);
+    ctx.env = saved_env;
+    ctx.env_order = saved_order;
+    ctx.cur_block = Some(join_b);
+    Ok(join_param)
+}
+
+fn lower_cond(
+    ctx: &mut LowerCtx,
+    arms: &[(Expr, Expr)],
+    is_tail: bool,
+) -> Result<Var, LowerError> {
+    // cond is right-associative: each arm is a fresh test/body; on test false,
+    // fall through to the next arm. If all fail, halt :cond_clause.
+    if arms.is_empty() {
+        let cc = ctx.atoms.intern("cond_clause");
+        let v = ctx.let_(Prim::Const(Const::Atom(cc)));
+        ctx.set_term(Term::Halt(v));
+        ctx.terminated = true;
+        return Ok(Var(0));
+    }
+
+    let join_param = ctx.cur_mut().fresh_var();
+    let join_b = ctx.cur_mut().block(vec![join_param]);
+    let arm_test_blocks: Vec<BlockId> =
+        (0..arms.len()).map(|_| ctx.cur_mut().block(vec![])).collect();
+    let fail_block = ctx.cur_mut().block(vec![]);
+    let saved_blk = ctx.cur_block();
+    ctx.cur_block = Some(fail_block);
+    let cc = ctx.atoms.intern("cond_clause");
+    let v = ctx.let_(Prim::Const(Const::Atom(cc)));
+    ctx.set_term(Term::Halt(v));
+    ctx.cur_block = Some(saved_blk);
+    ctx.set_term(Term::Goto(arm_test_blocks[0], vec![]));
+
+    let saved_env = ctx.env.clone();
+    let saved_order = ctx.env_order.clone();
+
+    for (i, (test, body)) in arms.iter().enumerate() {
+        let next = arm_test_blocks.get(i + 1).copied().unwrap_or(fail_block);
+        ctx.cur_block = Some(arm_test_blocks[i]);
+        ctx.env = saved_env.clone();
+        ctx.env_order = saved_order.clone();
+        ctx.terminated = false;
+        let cv = lower_expr(ctx, test, false)?;
+        let body_b = ctx.cur_mut().block(vec![]);
+        ctx.set_term(Term::If(cv, body_b, next));
+        ctx.cur_block = Some(body_b);
+        let result = lower_expr(ctx, body, is_tail)?;
+        if !ctx.terminated {
+            ctx.set_term(Term::Goto(join_b, vec![result]));
+        }
+    }
+
+    ctx.env = saved_env;
+    ctx.env_order = saved_order;
+    ctx.cur_block = Some(join_b);
+    Ok(join_param)
+}
+
+fn lower_with(
+    ctx: &mut LowerCtx,
+    bindings: &[WithBinding],
+    body: &Expr,
+    else_clauses: &[MatchClause],
+    is_tail: bool,
+) -> Result<Var, LowerError> {
+    // Plan: each binding in turn evaluates an expression. For Match(pat, expr):
+    //   evaluate expr; match pat against it; if mismatch, jump to a shared
+    //   "with_fail" join (carrying the unmatched value). If all match, evaluate
+    //   the body and goto join_b with its result. with_fail dispatches to
+    //   else_clauses (case-style on the unmatched value); if none match, halt
+    //   :with_clause.
+    let join_param = ctx.cur_mut().fresh_var();
+    let join_b = ctx.cur_mut().block(vec![join_param]);
+
+    // with_fail receives the unmatched value as a block param, then dispatches.
+    let with_fail_param = ctx.cur_mut().fresh_var();
+    let with_fail = ctx.cur_mut().block(vec![with_fail_param]);
+
+    let saved_env = ctx.env.clone();
+    let saved_order = ctx.env_order.clone();
+
+    // -- with_fail block: case-on the unmatched value.
+    {
+        let saved_blk = ctx.cur_block();
+        ctx.cur_block = Some(with_fail);
+        if else_clauses.is_empty() {
+            // No else: halt :with_clause (re-raise the unmatched value).
+            let cc = ctx.atoms.intern("with_clause");
+            let v = ctx.let_(Prim::Const(Const::Atom(cc)));
+            ctx.set_term(Term::Halt(v));
+        } else {
+            // Build try blocks + fail.
+            let try_blocks: Vec<BlockId> =
+                (0..else_clauses.len()).map(|_| ctx.cur_mut().block(vec![])).collect();
+            let else_fail = ctx.cur_mut().block(vec![]);
+            let saved_b2 = ctx.cur_block();
+            ctx.cur_block = Some(else_fail);
+            let cc = ctx.atoms.intern("with_clause");
+            let v = ctx.let_(Prim::Const(Const::Atom(cc)));
+            ctx.set_term(Term::Halt(v));
+            ctx.cur_block = Some(saved_b2);
+            ctx.set_term(Term::Goto(try_blocks[0], vec![]));
+            for (i, clause) in else_clauses.iter().enumerate() {
+                if let Some(_g) = &clause.guard {
+                    return Err(LowerError::Unsupported("with-else guard (deferred)".into()));
+                }
+                let next = try_blocks.get(i + 1).copied().unwrap_or(else_fail);
+                ctx.cur_block = Some(try_blocks[i]);
+                ctx.env = saved_env.clone();
+                ctx.env_order = saved_order.clone();
+                ctx.terminated = false;
+                lower_pattern_bind(ctx, with_fail_param, &clause.pattern, next)?;
+                let result = lower_expr(ctx, &clause.body, is_tail)?;
+                if !ctx.terminated {
+                    ctx.set_term(Term::Goto(join_b, vec![result]));
+                }
+            }
+        }
+        ctx.cur_block = Some(saved_blk);
+        ctx.env = saved_env.clone();
+        ctx.env_order = saved_order.clone();
+    }
+
+    // -- main path: walk bindings.
+    for binding in bindings {
+        match binding {
+            WithBinding::Bare(e) => {
+                lower_expr(ctx, e, false)?;
+            }
+            WithBinding::Match(pat, e) => {
+                let v = lower_expr(ctx, e, false)?;
+                // Park v so that any CPS-split during pattern lowering rebinds it.
+                let v_park = ctx.park(v);
+                // Custom mismatch path: build a per-binding "mismatch" block
+                // that gotos with_fail with the unmatched value.
+                let mismatch_b = ctx.cur_mut().block(vec![]);
+                let saved_blk = ctx.cur_block();
+                ctx.cur_block = Some(mismatch_b);
+                let v_in_mismatch = ctx.unpark(&v_park);
+                ctx.set_term(Term::Goto(with_fail, vec![v_in_mismatch]));
+                ctx.cur_block = Some(saved_blk);
+                let v_resolved = ctx.unpark(&v_park);
+                ctx.unbind(&v_park);
+                lower_pattern_bind(ctx, v_resolved, pat, mismatch_b)?;
+            }
+        }
+    }
+
+    let result = lower_expr(ctx, body, is_tail)?;
+    if !ctx.terminated {
+        ctx.set_term(Term::Goto(join_b, vec![result]));
+    }
+
+    ctx.env = saved_env;
+    ctx.env_order = saved_order;
+    ctx.cur_block = Some(join_b);
+    Ok(join_param)
 }
 
 #[cfg(test)]
@@ -1145,7 +1560,7 @@ mod tests {
     }
 
     #[test]
-    fn case_returns_unsupported() {
+    fn empty_case_returns_unsupported() {
         let f = fn_def(
             "f",
             vec![cl(
@@ -1156,6 +1571,209 @@ mod tests {
         let prog = Program { items: vec![f] };
         let err = lower_program(&prog).unwrap_err();
         assert!(matches!(err, LowerError::Unsupported(_)));
+    }
+
+    #[test]
+    fn vec_lit_lowers_to_make_vec() {
+        use crate::ast::VecKind;
+        let f = fn_def(
+            "v",
+            vec![cl(
+                vec![],
+                Expr::VecLit(VecKind::Numeric, vec![Expr::Int(1), Expr::Int(2), Expr::Int(3)]),
+            )],
+        );
+        let m = lower_one(vec![f]);
+        let s = format!("{}", m);
+        assert!(s.contains("vec(numeric, ["), "got:\n{}", s);
+    }
+
+    #[test]
+    fn map_lowers_to_make_map() {
+        let f = fn_def(
+            "m",
+            vec![cl(
+                vec![],
+                Expr::Map(vec![(Expr::Atom("k".into()), Expr::Int(1))]),
+            )],
+        );
+        let m = lower_one(vec![f]);
+        let s = format!("{}", m);
+        assert!(s.contains("map({"), "got:\n{}", s);
+    }
+
+    #[test]
+    fn map_update_lowers() {
+        let f = fn_def(
+            "u",
+            vec![cl(
+                vec![Pattern::Var("m".into())],
+                Expr::MapUpdate(
+                    Box::new(Expr::Var("m".into())),
+                    vec![(Expr::Atom("k".into()), Expr::Int(2))],
+                ),
+            )],
+        );
+        let m = lower_one(vec![f]);
+        let s = format!("{}", m);
+        assert!(s.contains("map_update("), "got:\n{}", s);
+    }
+
+    #[test]
+    fn index_lowers_to_map_get() {
+        let f = fn_def(
+            "g",
+            vec![cl(
+                vec![Pattern::Var("m".into())],
+                Expr::Index(
+                    Box::new(Expr::Var("m".into())),
+                    Box::new(Expr::Atom("k".into())),
+                ),
+            )],
+        );
+        let m = lower_one(vec![f]);
+        let s = format!("{}", m);
+        assert!(s.contains("map_get("), "got:\n{}", s);
+    }
+
+    #[test]
+    fn bitstring_expr_lowers() {
+        use crate::ast::{BitField, BitFieldSpec};
+        let f = fn_def(
+            "b",
+            vec![cl(
+                vec![],
+                Expr::Bitstring(vec![BitField {
+                    value: Expr::Int(0xA5),
+                    spec: BitFieldSpec::default(),
+                }]),
+            )],
+        );
+        let m = lower_one(vec![f]);
+        let s = format!("{}", m);
+        assert!(s.contains("bitstring(["), "got:\n{}", s);
+    }
+
+    #[test]
+    fn case_lowers_to_try_chain() {
+        // case x do
+        //   0 -> :zero
+        //   _ -> :other
+        // end
+        let f = fn_def(
+            "c",
+            vec![cl(
+                vec![Pattern::Var("x".into())],
+                Expr::Case(
+                    Box::new(Expr::Var("x".into())),
+                    vec![
+                        crate::ast::MatchClause {
+                            pattern: Pattern::Int(0),
+                            guard: None,
+                            body: Expr::Atom("zero".into()),
+                        },
+                        crate::ast::MatchClause {
+                            pattern: Pattern::Wildcard,
+                            guard: None,
+                            body: Expr::Atom("other".into()),
+                        },
+                    ],
+                ),
+            )],
+        );
+        let m = lower_one(vec![f]);
+        let s = format!("{}", m);
+        assert!(s.contains("if v"), "expected if for pattern check: {}", s);
+        assert!(s.contains("goto bb"), "expected goto for fallthrough: {}", s);
+    }
+
+    #[test]
+    fn cond_lowers() {
+        // cond do
+        //   x > 0 -> :pos
+        //   true  -> :nonpos
+        // end
+        let f = fn_def(
+            "c",
+            vec![cl(
+                vec![Pattern::Var("x".into())],
+                Expr::Cond(vec![
+                    (
+                        Expr::BinOp(
+                            BinOp::Gt,
+                            Box::new(Expr::Var("x".into())),
+                            Box::new(Expr::Int(0)),
+                        ),
+                        Expr::Atom("pos".into()),
+                    ),
+                    (Expr::Bool(true), Expr::Atom("nonpos".into())),
+                ]),
+            )],
+        );
+        let m = lower_one(vec![f]);
+        let s = format!("{}", m);
+        assert!(s.contains("if v"), "got:\n{}", s);
+    }
+
+    #[test]
+    fn with_simple_lowers() {
+        // with {:ok, a} <- {:ok, 1} do a end
+        let f = fn_def(
+            "w",
+            vec![cl(
+                vec![],
+                Expr::With(
+                    vec![crate::ast::WithBinding::Match(
+                        Pattern::Tuple(vec![Pattern::Atom("ok".into()), Pattern::Var("a".into())]),
+                        Expr::Tuple(vec![Expr::Atom("ok".into()), Expr::Int(1)]),
+                    )],
+                    Box::new(Expr::Var("a".into())),
+                    vec![],
+                ),
+            )],
+        );
+        let m = lower_one(vec![f]);
+        let s = format!("{}", m);
+        assert!(s.contains("tuple_field"), "expected pattern projection: {}", s);
+    }
+
+    #[test]
+    fn map_pattern_uses_map_get_check() {
+        // fn first(%{name: n}), do: n
+        let f = fn_def(
+            "first",
+            vec![cl(
+                vec![Pattern::Map(vec![(
+                    Pattern::Atom("name".into()),
+                    Pattern::Var("n".into()),
+                )])],
+                Expr::Var("n".into()),
+            )],
+        );
+        let m = lower_one(vec![f]);
+        let s = format!("{}", m);
+        assert!(s.contains("map_get("), "got:\n{}", s);
+    }
+
+    #[test]
+    fn bitstring_pattern_lowers_to_per_field_reads() {
+        use crate::ast::{BitField, BitFieldSpec};
+        // fn p(<<x::8>>), do: x
+        let f = fn_def(
+            "p",
+            vec![cl(
+                vec![Pattern::Bitstring(vec![BitField {
+                    value: Pattern::Var("x".into()),
+                    spec: BitFieldSpec::default(),
+                }])],
+                Expr::Var("x".into()),
+            )],
+        );
+        let m = lower_one(vec![f]);
+        let s = format!("{}", m);
+        assert!(s.contains("bit_reader_init("), "got:\n{}", s);
+        assert!(s.contains("bit_read_field("), "got:\n{}", s);
+        assert!(s.contains("bit_reader_done("), "got:\n{}", s);
     }
 
     #[test]
