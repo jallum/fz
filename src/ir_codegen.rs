@@ -1795,7 +1795,19 @@ pub fn compile(module: &Module) -> Result<CompiledModule, CodegenError> {
     // .11.24.4: run the typer ahead of codegen so per-fn Var->Descr info is
     // available during lowering (used for arithmetic dispatch elision when
     // both operands are provably Int).
-    let module_types = crate::ir_typer::type_module(module);
+    //
+    // .11.24.5: clone module so the typed-schema refinement pass can rewrite
+    // MakeVec(I64, ..) to MakeVec(F64, ..) when elements are typed Float.
+    // Mixed Int+Float without an explicit coercion rule errors here.
+    let mut working = module.clone();
+    let pre_types = crate::ir_typer::type_module(&working);
+    crate::ir_typer::rewrite_vec_kinds(&mut working, &pre_types)
+        .map_err(CodegenError)?;
+    // Re-run after the rewrite so MakeVec result Descrs reflect the chosen
+    // kind. Element Var Descrs are unaffected by the rewrite, but downstream
+    // consumers may read the MakeVec result.
+    let module_types = crate::ir_typer::type_module(&working);
+    let module = &working;
 
     for (fn_idx, f) in module.fns.iter().enumerate() {
         let func_id = *fn_ids.get(&f.id.0).unwrap();
@@ -4628,10 +4640,11 @@ mod tests {
     }
 
     #[test]
-    fn vec_f64_lowering_blocks_with_pointer_to_followup_ticket() {
-        // ~v[1.0, 2.0] should fail to lower (deferred to fz-ul4.11.23) until
-        // boxed floats land. This guards against silent regression to a
-        // half-working f64 path.
+    fn vec_f64_codegen_blocks_with_pointer_to_followup_ticket() {
+        // ~v[1.0, 2.0] now lowers to MakeVec(F64, ..) per fz-ul4.11.24.5
+        // (the kind bifurcation moved from lower-time-error to a typed
+        // selection). The codegen-side VecF64 storage still gates at
+        // fz-ul4.11.23 — this test enforces the gate sits there.
         let main = fn_def(
             "main",
             vec![cl(
@@ -4642,8 +4655,12 @@ mod tests {
                 ),
             )],
         );
-        let res = lower_program(&Program { items: vec![main] });
-        let err = res.expect_err("VecF64 lowering should be gated");
+        let m = lower_program(&Program { items: vec![main] })
+            .expect("lower should now succeed under .24.5");
+        let err = match compile(&m) {
+            Ok(_) => panic!("VecF64 codegen should be gated"),
+            Err(e) => e,
+        };
         let msg = format!("{:?}", err);
         assert!(
             msg.contains("11.23"),

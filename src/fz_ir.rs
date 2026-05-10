@@ -269,7 +269,7 @@ impl FnIr {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct Module {
     pub fns: Vec<FnIr>,
     pub schemas: Vec<Schema>,

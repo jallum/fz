@@ -436,6 +436,52 @@ fn var_as_map_key(v: Var, env: &HashMap<Var, Descr>) -> Option<MapKey> {
 #[allow(dead_code)]
 fn _suppress_block(_: &Block) {}
 
+/// .11.24.5: refine `MakeVec(I64, els)` to `MakeVec(F64, els)` when any
+/// element is typed Float. Errors on the "mixed Int and Float" case under
+/// the no-auto-promotion rule.
+///
+/// Operates in-place on `module`. Caller supplies a typer output that was
+/// produced from the same module shape (run `type_module(module)` first).
+pub fn rewrite_vec_kinds(
+    module: &mut Module,
+    types: &ModuleTypes,
+) -> Result<(), String> {
+    use crate::fz_ir::Stmt;
+    for (i, f) in module.fns.iter_mut().enumerate() {
+        let vars = &types[i].vars;
+        for blk in &mut f.blocks {
+            for stmt in &mut blk.stmts {
+                let Stmt::Let(_, prim) = stmt;
+                if let Prim::MakeVec(kind @ VecKindIr::I64, els) = prim {
+                    let mut any_float = false;
+                    let mut any_int = false;
+                    for &ev in els.iter() {
+                        let d = vars.get(&ev).cloned().unwrap_or_else(Descr::any);
+                        if !d.intersect(&Descr::float()).is_empty()
+                            && d.intersect(&Descr::int()).is_empty()
+                        {
+                            any_float = true;
+                        } else if d.is_subtype(&Descr::int()) {
+                            any_int = true;
+                        }
+                    }
+                    if any_float && any_int {
+                        return Err(format!(
+                            "~v[..] in {} mixes Int and Float element types; \
+                             no auto-promotion (fz-ul4.11.24.5)",
+                            f.name
+                        ));
+                    }
+                    if any_float {
+                        *kind = VecKindIr::F64;
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 // ----------------------------------------------------------------------
 // Tests
 // ----------------------------------------------------------------------
@@ -632,6 +678,58 @@ mod tests {
         let p00_t = mt[0].vars.get(&p00).cloned().unwrap();
         assert!(p00_t.is_equiv(&Descr::int_lit(7)),
             "outer.0.0 should be int_lit(7), got {}", p00_t);
+    }
+
+    // ---- .24.5 vec kind refinement ----
+
+    #[test]
+    fn rewrite_vec_kinds_keeps_int_vec_when_all_elems_int() {
+        let mut b = FnBuilder::new(FnId(0), "f");
+        let entry = b.block(vec![]);
+        let one = b.let_(entry, Prim::Const(Const::Int(1)));
+        let two = b.let_(entry, Prim::Const(Const::Int(2)));
+        let v = b.let_(entry, Prim::MakeVec(VecKindIr::I64, vec![one, two]));
+        b.set_terminator(entry, Term::Return(v));
+        let mut m = build_module(vec![b.build()]);
+        let t = type_module(&m);
+        rewrite_vec_kinds(&mut m, &t).expect("no error");
+        let stmt = &m.fns[0].blocks[0].stmts[2];
+        match stmt {
+            crate::fz_ir::Stmt::Let(_, Prim::MakeVec(VecKindIr::I64, _)) => {}
+            other => panic!("expected MakeVec(I64), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn rewrite_vec_kinds_promotes_to_f64_when_elem_typed_float() {
+        // Build: f0 = const(1.0); v = MakeVec(I64, [f0])  -- intentionally I64 to test the rewrite.
+        let mut b = FnBuilder::new(FnId(0), "f");
+        let entry = b.block(vec![]);
+        let f0 = b.let_(entry, Prim::Const(Const::Float(1.0)));
+        let v = b.let_(entry, Prim::MakeVec(VecKindIr::I64, vec![f0]));
+        b.set_terminator(entry, Term::Return(v));
+        let mut m = build_module(vec![b.build()]);
+        let t = type_module(&m);
+        rewrite_vec_kinds(&mut m, &t).expect("no error");
+        let stmt = &m.fns[0].blocks[0].stmts[1];
+        match stmt {
+            crate::fz_ir::Stmt::Let(_, Prim::MakeVec(VecKindIr::F64, _)) => {}
+            other => panic!("expected MakeVec(F64) after rewrite, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn rewrite_vec_kinds_errors_on_mixed_int_and_float_elems() {
+        let mut b = FnBuilder::new(FnId(0), "f");
+        let entry = b.block(vec![]);
+        let i0 = b.let_(entry, Prim::Const(Const::Int(1)));
+        let f0 = b.let_(entry, Prim::Const(Const::Float(2.0)));
+        let v = b.let_(entry, Prim::MakeVec(VecKindIr::I64, vec![i0, f0]));
+        b.set_terminator(entry, Term::Return(v));
+        let mut m = build_module(vec![b.build()]);
+        let t = type_module(&m);
+        let err = rewrite_vec_kinds(&mut m, &t).expect_err("expected mixed error");
+        assert!(err.contains("11.24.5"), "expected ticket reference, got: {}", err);
     }
 
     #[test]

@@ -984,14 +984,22 @@ fn lower_vec_lit(
     // Bifurcate the AST sigil into a concrete element kind. ~v[..] is
     // numeric: inspect element exprs to choose I64 vs F64. Any literal
     // float in the elements forces F64 (currently deferred to .11.23).
+    // .11.24.5: syntactic bifurcation of ~v[..]. Any element with a literal
+    // Float forces F64; any mix of literal Int and literal Float is an error
+    // (no auto-promotion under the "mixed without coercion" rule). Non-literal
+    // elements (Vars referring to typed Float values) are refined post-lower
+    // by ir_typer::rewrite_vec_kinds — which also catches the all-Float case
+    // when the floats arrive via variables instead of literals.
     let ir_kind = match kind {
         VecKind::Numeric => {
-            if els.iter().any(|e| matches!(e, Expr::Float(_))) {
+            let has_float = els.iter().any(|e| matches!(e, Expr::Float(_)));
+            let has_int = els.iter().any(|e| matches!(e, Expr::Int(_)));
+            if has_float && has_int {
                 return Err(LowerError::Unsupported(
-                    "VecF64 (~v[..] with float elements) deferred to fz-ul4.11.23".into(),
+                    "~v[..] mixes Int and Float literals; no auto-promotion (fz-ul4.11.24.5)".into(),
                 ));
             }
-            VecKindIr::I64
+            if has_float { VecKindIr::F64 } else { VecKindIr::I64 }
         }
         VecKind::Bytes => VecKindIr::U8,
         VecKind::Bits => VecKindIr::Bit,
