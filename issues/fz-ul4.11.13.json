@@ -9,9 +9,15 @@
   "id": "fz-ul4.11.13",
   "labels": [],
   "parent": "fz-ul4.11",
+  "comments": [
+    {
+      "text": "Landing notes (2026-05-10): The \"Equality between maps (deep) works correctly\" deliverable test was deferred to fz-ul4.11.21 (Structural equality for heap-typed values), authorized at landing. Spotted that lists, tuples, bitstrings, and maps all need the same BinOp::Eq tag-dispatch rewrite — folding into one ticket avoids touching that codegen path four times.\n\nEverything else from the ticket landed: heap-allocated sorted-array layout, MakeMap / MapUpdate / MapGet codegen, GC tracer for HeapKind::Map walking both keys and values, canonical %{...} rendering, and tests covering construction / persistence / GC tracing.",
+      "timestamp": "2026-05-10T19:42:51Z"
+    }
+  ],
   "priority": 3,
   "status": "in_progress",
   "title": "Maps as heap type (sorted-array v1)",
   "type": "task",
-  "updated_at": "2026-05-10T19:37:22Z"
+  "updated_at": "2026-05-10T19:42:51Z"
 }
