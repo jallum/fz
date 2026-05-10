@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-ul4.11.9"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-ul4.14"
+  ],
   "created": "2026-05-10T13:04:21Z",
   "description": "GOAL: Heap-allocated vectors with raw contiguous payloads. SIMD-friendly. Unblocks fz-ul4.14 (SIMD codegen).\n\n## Decisions captured\n\n- Per-element-kind: HeapKind::VecI64 / VecF64 / VecU8 / VecBit. Kind is in the header, NOT a discriminant byte in the payload (keeps payload pure raw data, faster SIMD).\n- Layout: HeapHeader (16) + len:u32 (4) + padding (4) + raw_payload (16-byte aligned for SIMD).\n- NON-MOVING collector (.11.2 design choice) ensures stable addresses — SIMD codegen in .14 can rely on this.\n- Builtins (already in interp): vec_get / vec_map / vec_reduce / etc. Wire to IR prims.\n- ~v[1, 2, 3] / ~b[0xff] / ~bits[1, 0, 1, 1] sigils -\u003e Prim::AllocVec(kind, [elements]).\n\n## Deliverables\n\n- IR prims for vec alloc / get / per-kind ops.\n- Codegen for each kind.\n- Tracer branches for VecI64/F64/U8/Bit in .11.2 (no FzValue inside; nothing to trace, just account for size).\n\n## Tests\n\n- `~v[1, 2, 3]` allocates a Vec(I64).\n- `~v[1.0, 2.0]` allocates a Vec(F64).\n- `~b[0xff, 0xab]` allocates a Vec(U8).\n- `~bits[1, 0, 1, 1]` allocates a Vec(Bit).\n- vec_map and vec_reduce work via JIT (currently interp-only via builtins).\n- Pinned-stable address: allocate + GC + read still works (proves non-moving GC).\n- Existing vec fixtures (from main.rs SAMPLE constant) work via JIT.\n\n## Unblocks\n\n- fz-ul4.14 SIMD codegen.",
   "id": "fz-ul4.11.14",
