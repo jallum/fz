@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-10T01:25:40Z",
+  "description": "fz: functional, immutable, set-theoretic-typed language with Elixir-flavored surface syntax and a Cranelift JIT backend. The tree-walking interpreter is kept permanently as the tier-0 evaluator for cold code (V8/HotSpot model).\n\nSee ~/.claude/projects/-Users-j5n-Workspace-fz/memory/project_fz_language.md for full design context.",
+  "id": "fz-ul4",
+  "labels": [],
+  "priority": 1,
+  "status": "open",
+  "title": "Build fz language v1",
+  "type": "epic",
+  "updated_at": "2026-05-10T01:25:40Z"
+}
