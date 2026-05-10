@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-ul4.16.3"
+  ],
   "blocks": [],
   "created": "2026-05-10T10:50:26Z",
   "description": "Fourth subticket. Depends on .16.3.\n\nThe user-facing feature: an ExUnit-shaped test framework atop the substrate from .16.1-.16.3.\n\n## Scope\n\n- New module fixtures/test_lib.fz (or a small built-in equivalent) defining:\n  - defmodule Test do; defmacro test(name, do_body), do: \u003cquote producing fn _test_\u003cgensym\u003e(), do: do_body + registration\u003e end\n  - assert(cond) / assert_eq(a, b) / assert_neq(a, b) builtins (probably interp-level).\n- Auto-discovery: any fn whose name starts with `_test_` (or matches the macro's mangled output) is a test.\n- `fz test \u003cpath\u003e` subcommand: load + expand + flatten, find tests, run each in isolation, report pass/fail with assertion messages. ExUnit-style summary line.\n\n## Out of scope\n\n- Tags / filters / setup blocks / on_exit / capture_log — file follow-ups if useful.\n- Test contexts (`test \"name\", %{key: val}, do: ...`) — depends on map-arg patterns at call sites.\n\n## Tests\n\n- A handful of sample test fixtures (passing + failing) under fixtures/tests/.\n- An integration test that invokes `fz test` and asserts the report.\n",
