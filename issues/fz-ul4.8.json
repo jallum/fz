@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-05-10T02:25:48Z",
   "created": "2026-05-10T01:26:31Z",
   "description": "\u003c\u003cx::8, len::16, payload::binary-size(len), rest::binary\u003e\u003e\n\nThe classic Elixir feature, doubly important for fz because byte vectors (~b[..]) and binaries are similar shapes. Lex \u003c\u003c \u003e\u003e as delimiters, parse field specs (size, type-tag, endianness).",
   "id": "fz-ul4.8",
   "labels": [],
   "parent": "fz-ul4",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Bitstring literals and patterns",
   "type": "task",
-  "updated_at": "2026-05-10T02:12:44Z"
+  "updated_at": "2026-05-10T02:25:48Z"
 }
