@@ -1,0 +1,14 @@
+defmodule M do
+  fn double(x), do: x * 2
+  fn quad(x), do: double(double(x))
+end
+
+defmodule N do
+  fn helper(x), do: x + 100
+end
+
+fn main() do
+  print(M.double(21))
+  print(M.quad(5))
+  print(N.helper(7))
+end

@@ -2,6 +2,19 @@ use crate::ast::*;
 use crate::lexer::{Tok, Token};
 use std::rc::Rc;
 
+/// Drain pending fn-clause groups into the items vec in declaration order.
+fn flush_fn_groups(
+    items: &mut Vec<Rc<Item>>,
+    order: &mut Vec<String>,
+    groups: &mut std::collections::HashMap<String, FnDef>,
+) {
+    for name in order.drain(..) {
+        if let Some(def) = groups.remove(&name) {
+            items.push(Rc::new(Item::Fn(def)));
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct ParseError {
     pub msg: String,
@@ -59,69 +72,107 @@ impl Parser {
     // --- entry ---
 
     pub fn parse_program(&mut self) -> PR<Program> {
+        let items = self.parse_items_until(&[Tok::Eof])?;
+        Ok(Program { items })
+    }
+
+    /// Parse a sequence of top-level items (fn/defmacro/defmodule). Used both
+    /// at program top-level (terminator: Eof) and inside `defmodule … end`
+    /// bodies (terminator: End). Fn clauses with the same name are merged
+    /// into a single FnDef in declaration order.
+    fn parse_items_until(&mut self, terminators: &[Tok]) -> PR<Vec<Rc<Item>>> {
         let mut items: Vec<Rc<Item>> = Vec::new();
-        // Group fn clauses by name in declaration order.
         let mut order: Vec<String> = Vec::new();
         let mut groups: std::collections::HashMap<String, FnDef> =
             std::collections::HashMap::new();
 
         self.skip_newlines();
-        while !matches!(self.peek(), Tok::Eof) {
-            let is_macro = match self.peek() {
-                Tok::Defmacro => { self.bump(); true }
-                Tok::Fn => { self.bump(); false }
-                _ => return self.err(format!("expected `fn` or `defmacro` at top level, got {:?}", self.peek())),
-            };
-
-            let name = match self.bump() {
-                Tok::Ident(n) => n,
-                other => return self.err(format!("expected function name, got {:?}", other)),
-            };
-
-            self.expect(&Tok::LParen, "`(`")?;
-            let params = self.parse_pattern_list(&Tok::RParen)?;
-            self.expect(&Tok::RParen, "`)`")?;
-
-            let guard = if matches!(self.peek(), Tok::When) {
-                self.bump();
-                Some(self.parse_expr()?)
-            } else { None };
-
-            // body: either `, do: expr` shorthand OR `do ... end`
-            let body = if matches!(self.peek(), Tok::Comma) && matches!(self.peek_at(1), Tok::KwKey(s) if s == "do") {
-                self.bump(); // ,
-                self.bump(); // do:
-                self.parse_expr()?
-            } else if matches!(self.peek(), Tok::Do) {
-                self.bump();
-                self.skip_newlines();
-                let blk = self.parse_block_until(&[Tok::End])?;
-                self.expect(&Tok::End, "`end`")?;
-                blk
-            } else {
-                return self.err(format!("expected `do` or `, do:` after function head, got {:?}", self.peek()));
-            };
-
-            let clause = FnClause { params, guard, body };
-            if let Some(def) = groups.get_mut(&name) {
-                if def.is_macro != is_macro {
-                    return self.err(format!("`{}` declared as both fn and defmacro", name));
+        while !self.peek_in(terminators) {
+            match self.peek() {
+                Tok::Defmodule => {
+                    // Flush pending fn groups so module ordering stays
+                    // declaration-order with respect to surrounding fns.
+                    flush_fn_groups(&mut items, &mut order, &mut groups);
+                    let m = self.parse_module()?;
+                    items.push(Rc::new(Item::Module(m)));
                 }
-                def.clauses.push(clause);
-            } else {
-                order.push(name.clone());
-                groups.insert(name.clone(), FnDef { name, clauses: vec![clause], is_macro });
+                Tok::Fn | Tok::Defmacro => {
+                    let (name, clause, is_macro) = self.parse_fn_clause()?;
+                    if let Some(def) = groups.get_mut(&name) {
+                        if def.is_macro != is_macro {
+                            return self.err(format!("`{}` declared as both fn and defmacro", name));
+                        }
+                        def.clauses.push(clause);
+                    } else {
+                        order.push(name.clone());
+                        groups.insert(name.clone(), FnDef { name, clauses: vec![clause], is_macro });
+                    }
+                }
+                _ => return self.err(format!(
+                    "expected `fn`, `defmacro`, or `defmodule`, got {:?}",
+                    self.peek()
+                )),
             }
-
             self.skip_newlines();
         }
+        flush_fn_groups(&mut items, &mut order, &mut groups);
+        Ok(items)
+    }
 
-        for name in order {
-            if let Some(def) = groups.remove(&name) {
-                items.push(Rc::new(Item::Fn(def)));
-            }
-        }
-        Ok(Program { items })
+    fn peek_in(&self, terminators: &[Tok]) -> bool {
+        terminators.iter().any(|t|
+            std::mem::discriminant(self.peek()) == std::mem::discriminant(t))
+    }
+
+    /// Parse one fn or defmacro clause (the leading keyword has already been
+    /// peeked). Returns (name, clause, is_macro).
+    fn parse_fn_clause(&mut self) -> PR<(String, FnClause, bool)> {
+        let is_macro = match self.peek() {
+            Tok::Defmacro => { self.bump(); true }
+            Tok::Fn => { self.bump(); false }
+            _ => return self.err(format!("expected `fn` or `defmacro`, got {:?}", self.peek())),
+        };
+        let name = match self.bump() {
+            Tok::Ident(n) => n,
+            other => return self.err(format!("expected function name, got {:?}", other)),
+        };
+        self.expect(&Tok::LParen, "`(`")?;
+        let params = self.parse_pattern_list(&Tok::RParen)?;
+        self.expect(&Tok::RParen, "`)`")?;
+
+        let guard = if matches!(self.peek(), Tok::When) {
+            self.bump();
+            Some(self.parse_expr()?)
+        } else { None };
+
+        let body = if matches!(self.peek(), Tok::Comma) && matches!(self.peek_at(1), Tok::KwKey(s) if s == "do") {
+            self.bump(); self.bump();
+            self.parse_expr()?
+        } else if matches!(self.peek(), Tok::Do) {
+            self.bump();
+            self.skip_newlines();
+            let blk = self.parse_block_until(&[Tok::End])?;
+            self.expect(&Tok::End, "`end`")?;
+            blk
+        } else {
+            return self.err(format!("expected `do` or `, do:` after function head, got {:?}", self.peek()));
+        };
+        Ok((name, FnClause { params, guard, body }, is_macro))
+    }
+
+    fn parse_module(&mut self) -> PR<ModuleDef> {
+        self.expect(&Tok::Defmodule, "`defmodule`")?;
+        let name = match self.bump() {
+            Tok::Upper(n) => n,
+            other => return self.err(format!(
+                "expected capitalized module name after `defmodule`, got {:?}", other
+            )),
+        };
+        self.expect(&Tok::Do, "`do`")?;
+        self.skip_newlines();
+        let items = self.parse_items_until(&[Tok::End])?;
+        self.expect(&Tok::End, "`end`")?;
+        Ok(ModuleDef { name, items })
     }
 
     // --- patterns ---

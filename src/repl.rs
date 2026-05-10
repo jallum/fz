@@ -78,13 +78,20 @@ fn try_eval(src: &str, interp: &Interp, env: &Env) -> Outcome {
     let starts_with_fn = toks.iter()
         .map(|t| &t.tok)
         .find(|t| !matches!(t, crate::lexer::Tok::Newline | crate::lexer::Tok::Semi))
-        .map(|t| matches!(t, crate::lexer::Tok::Fn | crate::lexer::Tok::Defmacro))
+        .map(|t| matches!(t,
+            crate::lexer::Tok::Fn
+            | crate::lexer::Tok::Defmacro
+            | crate::lexer::Tok::Defmodule))
         .unwrap_or(false);
 
     if starts_with_fn {
         let mut p = Parser::new(toks);
         match p.parse_program() {
-            Ok(mut prog) => {
+            Ok(prog) => {
+                let mut prog = match crate::resolve::flatten_modules(prog) {
+                    Ok(p) => p,
+                    Err(e) => return Outcome::Err(format!("module: {}", e)),
+                };
                 // Two-phase: load macros first (so they're callable during
                 // expansion), expand fn bodies, then load the expanded fns.
                 // Loading macros early also accumulates macro_names across
@@ -111,6 +118,7 @@ fn try_eval(src: &str, interp: &Interp, env: &Env) -> Outcome {
     let mut p = Parser::new(toks);
     match p.parse_expr_eof() {
         Ok(mut e) => {
+            crate::resolve::rewrite_expr_top_level(&mut e);
             let live = interp.macro_names.borrow().clone();
             if let Err(msg) = crate::macros::expand_expr(&mut e, interp, &live, 0) {
                 return Outcome::Err(format!("macro: {}", msg));
@@ -141,6 +149,7 @@ fn load_items_filtered(interp: &Interp, items: &[std::rc::Rc<Item>], macros_only
     use std::rc::Rc;
     for item in items {
         match &**item {
+            Item::Module(_) => continue, // flattened away upstream
             Item::Fn(def) => {
                 if macros_only != def.is_macro { continue; }
                 if def.is_macro {

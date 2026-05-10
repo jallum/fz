@@ -9,6 +9,7 @@ mod lexer;
 mod macros;
 mod parser;
 mod repl;
+mod resolve;
 mod typer;
 #[cfg(test)]
 mod test_support;
@@ -140,9 +141,13 @@ fn main() {
         Err(e) => { eprintln!("{}", e); std::process::exit(1); }
     };
 
-    let mut prog = match Parser::new(toks).parse_program() {
+    let prog = match Parser::new(toks).parse_program() {
         Ok(p) => p,
         Err(e) => { eprintln!("{}", e); std::process::exit(1); }
+    };
+    let mut prog = match resolve::flatten_modules(prog) {
+        Ok(p) => p,
+        Err(e) => { eprintln!("module resolution: {}", e); std::process::exit(1); }
     };
     if let Err(e) = macros::expand_program(&mut prog) {
         eprintln!("macro expansion: {}", e); std::process::exit(1);

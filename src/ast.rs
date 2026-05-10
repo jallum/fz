@@ -201,6 +201,15 @@ pub struct FnDef {
 #[derive(Debug, Clone)]
 pub enum Item {
     Fn(FnDef),
+    Module(ModuleDef),
+}
+
+#[derive(Debug, Clone)]
+pub struct ModuleDef {
+    pub name: String,
+    /// In .18.1 the body holds only Item::Fn (incl. defmacro). Nested
+    /// modules join in .18.2 (recursive Item::Module here).
+    pub items: Vec<Rc<Item>>,
 }
 
 #[derive(Debug, Clone)]

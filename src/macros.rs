@@ -52,6 +52,9 @@ pub fn expand_with(
                     }
                 }
             }
+            Item::Module(_) => return Err(
+                "expand_with: Item::Module reached macro expander; \
+                 resolve::flatten_modules must run first".into()),
         }
     }
     Ok(())
@@ -66,6 +69,10 @@ pub fn collect_macros(prog: &Program) -> std::collections::HashSet<String> {
         match &**item {
             Item::Fn(def) => {
                 if def.is_macro { out.insert(def.name.clone()); }
+            }
+            Item::Module(_) => {
+                // Pre-flatten programs may still hit this path in tests;
+                // be tolerant since post-flatten there are none.
             }
         }
     }
