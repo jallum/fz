@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-05-10T08:34:37Z",
   "created": "2026-05-10T08:34:32Z",
   "description": "Whole-program call-site observation in the typer.\n\nProblem: self-recursive fns with var-bound params (count(n, acc), fact(n)) typed as (any,…) → any, falling out of JIT/AOT eligibility because derive_lowerty rejects any.\n\nFix: per-fn-name accumulate union of arg types across all observed call sites; on next iteration intersect each clause's narrowed_args with the obs. Two-pass within type_function: exit clauses first, then self-recursive clauses under a snapshot where self has return narrowed to the union of exit-clause returns. Guarded clauses no longer subtract from prior_inputs (so a wildcard catch-all after a guard stays reachable).\n\nShipped: commit 0a02092.",
   "id": "fz-ul4.4.1",
   "labels": [],
   "parent": "fz-ul4.4",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "Typer: call-site observation for recursive/multi-clause monomorphization",
   "type": "task",
-  "updated_at": "2026-05-10T08:34:32Z"
+  "updated_at": "2026-05-10T08:34:37Z"
 }
