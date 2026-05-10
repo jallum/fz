@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-10T10:50:26Z",
+  "description": "Second subticket. Depends on .16.1.\n\nToday `defmodule` bodies only accept fn/defmacro/defmodule/alias/import/@. To support `test \"name\" do ... end` we need calls (specifically: macro calls) at item-position.\n\n## Scope\n\n- AST: Item::MacroCall { name: String, args: Vec\u003cExpr\u003e } — recognized in parse_items_until alongside Tok::Fn etc.\n- Parser: at the start of an item slot, peek for Ident followed by LParen; if so, parse it as a Call and wrap as Item::MacroCall.\n- Resolver: pass through MacroCall items unchanged for .16.2 — .16.3 takes over expansion.\n- Eval / load_program errors on MacroCall reaching it (must be expanded first).\n\n## Tests\n\n- defmodule with a top-level call parses without erroring.\n- Item::MacroCall lands in the parsed AST.\n",
+  "id": "fz-ul4.16.2",
+  "labels": [],
+  "parent": "fz-ul4.16",
+  "priority": 3,
+  "status": "open",
+  "title": "Module-top-level macro calls",
+  "type": "task",
+  "updated_at": "2026-05-10T10:50:26Z"
+}
