@@ -4,9 +4,12 @@
 //! This module is the bridge from the AST to the set-theoretic descriptors
 //! in `crate::types`. The design choices here, in case they need revisiting:
 //!
-//! - **No polymorphism (yet).** Functions like `fn id(x), do: x` get typed as
-//!   `(any) → any`. Proper parametric polymorphism is its own ticket
-//!   (fz-ul4.6); for now we accept the imprecision.
+//! - **Parametric polymorphism via per-call-site specialization.** Functions
+//!   like `fn id(x), do: x` get a wide whole-program arrow (e.g.
+//!   `(int|atom)→(int|atom)` when called with both kinds), but the AOT/JIT
+//!   pipelines re-type the body once per distinct call-site shape via
+//!   `specialize_return` and emit one codegen instance per shape. Whole-
+//!   program calls only — there's no surface-level type-variable syntax.
 //!
 //! - **Multi-clause function types are the intersection of their per-clause
 //!   arrow types.** Each clause is typed under an env where its parameter
@@ -41,6 +44,11 @@ pub struct Typer {
     /// Accumulator being built during the current iteration; promoted into
     /// `call_obs` at iteration end.
     call_obs_curr: HashMap<String, Vec<Descr>>,
+    /// Per-call-site arg-type tuples observed in the **final** iteration. Used
+    /// by the AOT/JIT specializer (fz-ul4.6) to enumerate distinct shapes a
+    /// polymorphic fn is invoked with.
+    pub call_shapes: HashMap<String, Vec<Vec<Descr>>>,
+    call_shapes_curr: HashMap<String, Vec<Vec<Descr>>>,
     /// Names of user-defined fns. Used to guard call-site observation so we
     /// don't accumulate obs for builtins (their arrows are pre-installed and
     /// shouldn't be narrowed).
@@ -56,6 +64,8 @@ impl Typer {
             errors: Vec::new(),
             call_obs: HashMap::new(),
             call_obs_curr: HashMap::new(),
+            call_shapes: HashMap::new(),
+            call_shapes_curr: HashMap::new(),
             user_fns: std::collections::HashSet::new(),
         };
         me.install_builtins();
@@ -137,6 +147,7 @@ impl Typer {
             let snapshot = self.globals.clone();
             let mut changed = false;
             self.call_obs_curr.clear();
+            self.call_shapes_curr.clear();
             for item in &prog.items {
                 if let Item::Fn(def) = &**item {
                     if def.is_macro { continue; }
@@ -159,6 +170,7 @@ impl Typer {
                 changed = true;
             }
             self.call_obs = std::mem::take(&mut self.call_obs_curr);
+            self.call_shapes = std::mem::take(&mut self.call_shapes_curr);
             if !changed { break; }
         }
     }
@@ -349,6 +361,9 @@ impl Typer {
                                 entry[i] = entry[i].union(t);
                             }
                         }
+                        self.call_shapes_curr.entry(name.clone())
+                            .or_default()
+                            .push(arg_ts.clone());
                     }
                 }
                 self.apply_arrow(&f, &arg_ts)
@@ -561,6 +576,45 @@ impl Typer {
         }
         result
     }
+}
+
+// ----------------------------------------------------------------------
+// Specializer support
+// ----------------------------------------------------------------------
+
+/// Re-type a fn's body assuming its parameters have the given Descrs (typically
+/// derived from a particular call-site LowerTy shape). Returns the union of
+/// all viable clauses' return Descrs. Clauses whose pattern doesn't intersect
+/// the requested shape are skipped (treated as not applicable for this
+/// instantiation).
+///
+/// This is the core of fz-ul4.6 per-shape specialization: the typer's
+/// whole-program arrow may be wide (`(int|atom)→(int|atom)` for an `id` fn
+/// called with both kinds), but each individual instantiation has a clean
+/// return type the codegen can consume.
+pub fn specialize_return(typer: &mut Typer, def: &FnDef, params: &[Descr]) -> Descr {
+    let mut ret = Descr::none();
+    let snapshot = typer.globals.clone();
+    for clause in &def.clauses {
+        if clause.params.len() != params.len() { continue; }
+        let mut env = snapshot.clone();
+        let mut viable = true;
+        for (i, p) in clause.params.iter().enumerate() {
+            let pt = pattern_type(p);
+            let narrowed = params[i].intersect(&pt);
+            if narrowed.is_empty() { viable = false; break; }
+            for (n, ty) in pattern_bindings(p, &narrowed) {
+                env.insert(n, ty);
+            }
+        }
+        if !viable { continue; }
+        if let Some(g) = &clause.guard {
+            let _ = typer.infer(&env, g);
+        }
+        let body_t = typer.infer(&env, &clause.body);
+        ret = ret.union(&body_t);
+    }
+    ret
 }
 
 // ----------------------------------------------------------------------

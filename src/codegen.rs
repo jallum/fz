@@ -752,32 +752,45 @@ impl<'a, 'b> LoweringCtx<'a, 'b> {
         if let Some(lv) = self.try_lower_builtin(&name, args, env)? {
             return Ok(lv);
         }
-        let sig = self
-            .callees
-            .get(&name)
-            .ok_or_else(|| LowerError::Internal(format!("unknown callee: {}", name)))?
-            .clone();
-        if sig.params.len() != args.len() {
+
+        // Lower args first so we can mangle the call shape and dispatch to
+        // the matching specialization (fz-ul4.6). For non-polymorphic fns
+        // the mangled symbol won't be in `callees` and we fall back to the
+        // user name.
+        let mut arg_lvs: Vec<LV> = Vec::with_capacity(args.len());
+        let mut arg_shape: Vec<LowerTy> = Vec::with_capacity(args.len());
+        for a in args {
+            let lv = self.lower_expr(a, env)?;
+            arg_shape.push(lv.ty());
+            arg_lvs.push(lv);
+        }
+
+        let mangled = crate::aot::mangle_call(&name, &arg_shape);
+        let (sym, sig) = if let Some(s) = self.callees.get(&mangled) {
+            (mangled, s.clone())
+        } else if let Some(s) = self.callees.get(&name) {
+            (name.clone(), s.clone())
+        } else {
+            return Err(LowerError::Internal(format!(
+                "unknown callee: {} (no specialization {} either)", name, mangled
+            )));
+        };
+
+        if sig.params.len() != arg_lvs.len() {
             return Err(LowerError::TypeMismatch(format!(
                 "call {}: arity {} vs {} args",
-                name,
+                sym,
                 sig.params.len(),
-                args.len()
+                arg_lvs.len()
             )));
         }
         let mut flat_args: Vec<Value> = Vec::new();
-        for (a, pty) in args.iter().zip(sig.params.iter()) {
-            let lv = self.lower_expr(a, env)?;
+        for (lv, pty) in arg_lvs.iter().zip(sig.params.iter()) {
             expect_assignable(pty, &lv.ty()).map_err(LowerError::TypeMismatch)?;
             lv.flatten(&mut flat_args);
         }
 
-        // Import the callee as a SigRef-only indirect call would require an
-        // address; instead we declare an external function via a unique
-        // UserExternalName. The actual symbol resolution happens at link
-        // time (.12.3) or via JIT module (.12.4). For .12.1 we build a
-        // FuncRef referring to a user-named external function.
-        let func_ref = self.import_callee(&name, &sig)?;
+        let func_ref = self.import_callee(&sym, &sig)?;
         let inst = self.builder.ins().call(func_ref, &flat_args);
         let results: Vec<Value> = self.builder.inst_results(inst).to_vec();
         let mut idx = 0;

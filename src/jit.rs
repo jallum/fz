@@ -23,7 +23,7 @@
 //! - Nil: 0 (placeholder)
 //! Tuples flatten across multiple slots.
 
-use crate::aot::{extract_simple_arrow, MonoFn};
+use crate::aot::{derive_lowerty, extract_simple_arrow, lowerty_to_descr, mangle_call, MonoFn};
 use crate::ast::*;
 use crate::codegen::{lower_fn, AtomInterner, FnSig, LowerError, LowerResult, LowerTy};
 use crate::eval::Interp;
@@ -61,7 +61,7 @@ struct Classified {
     interp_callable: HashMap<String, FnSig>,
 }
 
-fn classify(prog: &Program, typer: &Typer) -> Classified {
+fn classify(prog: &Program, typer: &mut Typer) -> Classified {
     let mut jit_eligible = Vec::new();
     let mut interp_callable: HashMap<String, FnSig> = HashMap::new();
 
@@ -71,24 +71,51 @@ fn classify(prog: &Program, typer: &Typer) -> Classified {
             continue;
         }
         let Some(arrow) = typer.globals.get(&def.name) else { continue };
-        let Some((params, ret)) = extract_simple_arrow(arrow) else { continue };
-        let sig = FnSig { params, ret };
 
-        // lower_fn must succeed for JIT eligibility (multi-clause + guards
-        // + tail-call self-recursion all work as of .12.5).
-        let mut probe_atoms = AtomInterner::default();
-        let mut probe_callees: HashMap<String, FnSig> = HashMap::new();
-        // Self in scope so probe doesn't trip on self-recursive calls;
-        // real lowering below uses full callee sigs.
-        probe_callees.insert(def.name.clone(), sig.clone());
-        if lower_fn(def, &sig, &probe_callees, &mut probe_atoms).is_ok() {
-            jit_eligible.push(MonoFn {
-                name: def.name.clone(),
-                sig,
-                def: def.clone(),
-            });
+        // Build a list of `(symbol, sig)` candidates for this def. For
+        // monomorphic fns (typer arrow extracts cleanly) it's a single entry
+        // sharing the user name. For polymorphic fns we enumerate distinct
+        // call-site shapes and re-type the body per shape (fz-ul4.6).
+        let is_monomorphic = extract_simple_arrow(arrow).is_some();
+        let mut candidates: Vec<(String, FnSig)> = Vec::new();
+        if let Some((params, ret)) = extract_simple_arrow(arrow) {
+            candidates.push((def.name.clone(), FnSig { params, ret }));
         } else {
-            interp_callable.insert(def.name.clone(), sig);
+            let mut seen: std::collections::HashSet<Vec<LowerTy>> = Default::default();
+            if let Some(call_args) = typer.call_shapes.get(&def.name).cloned() {
+                for args in call_args {
+                    let Some(shape): Option<Vec<LowerTy>> =
+                        args.iter().map(derive_lowerty).collect() else { continue };
+                    if !seen.insert(shape.clone()) { continue; }
+                    let params_descr: Vec<_> = shape.iter().map(lowerty_to_descr).collect();
+                    let ret_d = crate::typer::specialize_return(typer, def, &params_descr);
+                    let Some(ret_lt) = derive_lowerty(&ret_d) else { continue };
+                    let sig = FnSig { params: shape.clone(), ret: ret_lt };
+                    let sym = mangle_call(&def.name, &shape);
+                    candidates.push((sym, sig));
+                }
+            }
+        }
+
+        for (sym, sig) in candidates {
+            let mut probe_atoms = AtomInterner::default();
+            let mut probe_callees: HashMap<String, FnSig> = HashMap::new();
+            probe_callees.insert(sym.clone(), sig.clone());
+            if lower_fn(def, &sig, &probe_callees, &mut probe_atoms).is_ok() {
+                jit_eligible.push(MonoFn {
+                    name: sym,
+                    user_name: def.name.clone(),
+                    sig,
+                    def: def.clone(),
+                });
+            } else if is_monomorphic {
+                // The natural-arrow case where lower_fn fails (e.g. heap-typed
+                // body): keep the fn callable from JIT via a forward thunk.
+                interp_callable.insert(def.name.clone(), sig);
+            }
+            // Polymorphic shapes that fail to lower are silently skipped:
+            // there's no single FnSig they'd share for a forward thunk, and
+            // interp dispatches to them via Value (not Value::Jit).
         }
     }
 
@@ -271,7 +298,7 @@ pub fn run_str(src: &str) -> Result<(), JitError> {
         return Err(JitError(format!("type errors:\n  {}", typer.errors.join("\n  "))));
     }
 
-    let cls = classify(&prog, &typer);
+    let cls = classify(&prog, &mut typer);
 
     // Set up Interp (loads all fns; we override JIT-eligible ones with
     // Value::Jit after compile).
@@ -407,13 +434,19 @@ pub fn run_str(src: &str) -> Result<(), JitError> {
         .map_err(|e| JitError(format!("finalize: {}", e)))?;
 
     // Get reverse-thunk ptrs and bind into Interp as Value::Jit replacements.
+    // Only monomorphic fns (one specialization, mangled name == user name)
+    // can be bound directly as Value::Jit — polymorphic fns have multiple
+    // sigs under one user name and would need a runtime-type dispatcher,
+    // which we don't implement (interp dispatches polymorphic calls via the
+    // original AST clauses).
     for m in &cls.jit_eligible {
+        if m.name != m.user_name { continue; }
         let id = reverse_thunk_ids[&m.name];
         let ptr = module.get_finalized_function(id);
         interp.globals.bind(
-            &m.name,
+            &m.user_name,
             Value::Jit(Rc::new(crate::value::JitFn {
-                name: m.name.clone(),
+                name: m.user_name.clone(),
                 sig: m.sig.clone(),
                 fn_ptr: ptr as usize,
             })),
@@ -901,6 +934,37 @@ fn main() do
   print(classify(7))
 end
 "#;
+        run_capture(src).expect("jit run");
+    }
+
+    #[test]
+    fn jit_specializes_polymorphic_fn_per_call_shape() {
+        // `id` is called with both an int and an atom; classify must produce
+        // two MonoFns with mangled names so each call site dispatches to
+        // its specialization rather than falling back to interp.
+        let src = r#"
+fn id(x), do: x
+fn main() do
+  print(id(42))
+  print(id(:hello))
+end
+"#;
+        let toks = Lexer::new(src).tokenize().unwrap();
+        let prog = Parser::new(toks).parse_program().unwrap();
+        let mut typer = Typer::new();
+        typer.type_program(&prog);
+        let cls = classify(&prog, &mut typer);
+
+        let id_specs: Vec<_> = cls.jit_eligible.iter()
+            .filter(|m| m.user_name == "id")
+            .collect();
+        assert_eq!(id_specs.len(), 2, "expected 2 id specializations, got {:?}",
+            id_specs.iter().map(|m| (&m.name, &m.sig)).collect::<Vec<_>>());
+        let sigs: Vec<&Vec<LowerTy>> = id_specs.iter().map(|m| &m.sig.params).collect();
+        assert!(sigs.contains(&&vec![LowerTy::I64]), "missing I64 spec: {:?}", sigs);
+        assert!(sigs.contains(&&vec![LowerTy::Atom]), "missing Atom spec: {:?}", sigs);
+
+        // End-to-end: program also runs (calls dispatch correctly).
         run_capture(src).expect("jit run");
     }
 

@@ -91,14 +91,63 @@ pub fn derive_lowerty(d: &Descr) -> Option<LowerTy> {
 
 #[derive(Clone)]
 pub struct MonoFn {
+    /// Codegen symbol name. Equals `user_name` for non-polymorphic fns; for
+    /// polymorphic fns it's `user_name__<sig-mangle>`.
     pub name: String,
+    /// The user-facing fn name shared by all specializations of this def.
+    pub user_name: String,
     pub sig: FnSig,
     pub def: FnDef,
 }
 
+/// Mangle a callsite's (user_name, arg LowerTys) into a candidate codegen
+/// symbol name. Used both at specializer time (to assign symbols) and at
+/// call-site lowering time (to dispatch).
+pub fn mangle_call(user_name: &str, arg_shape: &[LowerTy]) -> String {
+    let mut s = String::from(user_name);
+    s.push_str("__");
+    for (i, lt) in arg_shape.iter().enumerate() {
+        if i > 0 { s.push('_'); }
+        mangle_lt(lt, &mut s);
+    }
+    s
+}
+
+fn mangle_lt(lt: &LowerTy, out: &mut String) {
+    match lt {
+        LowerTy::I64 => out.push_str("I64"),
+        LowerTy::F64 => out.push_str("F64"),
+        LowerTy::Bool => out.push_str("Bool"),
+        LowerTy::Atom => out.push_str("Atom"),
+        LowerTy::Nil => out.push_str("Nil"),
+        LowerTy::Tuple(ts) => {
+            out.push('T');
+            out.push_str(&ts.len().to_string());
+            for t in ts { out.push('_'); mangle_lt(t, out); }
+        }
+    }
+}
+
+/// Map a LowerTy back to the most-permissive Descr that lowers to it. Used
+/// by the specializer to bind params at a particular shape when retyping a
+/// polymorphic fn body.
+pub fn lowerty_to_descr(lt: &LowerTy) -> Descr {
+    match lt {
+        LowerTy::I64 => Descr::int(),
+        LowerTy::F64 => Descr::float(),
+        LowerTy::Bool => Descr::bool_t(),
+        LowerTy::Atom => Descr::atom_top(),
+        LowerTy::Nil => Descr::nil(),
+        LowerTy::Tuple(ts) => Descr::tuple_of(ts.iter().map(lowerty_to_descr).collect::<Vec<_>>()),
+    }
+}
+
 /// Walk every user fn and derive a LowerTy signature from the typer's
-/// inferred arrow type. Errors if any fn falls outside the in-scope subset.
-pub fn monomorphize(prog: &Program, typer: &Typer) -> Result<Vec<MonoFn>, Vec<String>> {
+/// inferred arrow type. For polymorphic fns (typer arrow doesn't reduce to
+/// a single LowerTy sig), enumerate distinct call-site shapes and emit one
+/// MonoFn per shape (fz-ul4.6). Errors if any fn falls outside the in-scope
+/// subset *and* has no usable specialization.
+pub fn monomorphize(prog: &Program, typer: &mut Typer) -> Result<Vec<MonoFn>, Vec<String>> {
     let mut out = Vec::new();
     let mut errs = Vec::new();
     for item in &prog.items {
@@ -106,28 +155,51 @@ pub fn monomorphize(prog: &Program, typer: &Typer) -> Result<Vec<MonoFn>, Vec<St
         if def.is_macro {
             continue;
         }
-        let arrow = match typer.globals.get(&def.name) {
+        let arrow = match typer.globals.get(&def.name).cloned() {
             Some(t) => t,
             None => {
                 errs.push(format!("{}: typer has no entry", def.name));
                 continue;
             }
         };
-        let (params, ret) = match extract_simple_arrow(arrow) {
-            Some(p) => p,
-            None => {
-                errs.push(format!(
-                    "{}: type {} is not a single monomorphic arrow in the .12 scalar+tuple subset",
-                    def.name, format_descr_short(arrow)
-                ));
-                continue;
+
+        if let Some((params, ret)) = extract_simple_arrow(&arrow) {
+            out.push(MonoFn {
+                name: def.name.clone(),
+                user_name: def.name.clone(),
+                sig: FnSig { params, ret },
+                def: def.clone(),
+            });
+            continue;
+        }
+
+        // Polymorphic: enumerate distinct call-site shapes.
+        let mut seen: std::collections::HashSet<Vec<LowerTy>> = Default::default();
+        let mut produced = 0usize;
+        if let Some(call_args) = typer.call_shapes.get(&def.name).cloned() {
+            for args in call_args {
+                let Some(shape): Option<Vec<LowerTy>> =
+                    args.iter().map(derive_lowerty).collect() else { continue };
+                if !seen.insert(shape.clone()) { continue; }
+                let params_descr: Vec<_> = shape.iter().map(lowerty_to_descr).collect();
+                let ret_d = crate::typer::specialize_return(typer, def, &params_descr);
+                let Some(ret_lt) = derive_lowerty(&ret_d) else { continue };
+                let sym = mangle_call(&def.name, &shape);
+                out.push(MonoFn {
+                    name: sym,
+                    user_name: def.name.clone(),
+                    sig: FnSig { params: shape, ret: ret_lt },
+                    def: def.clone(),
+                });
+                produced += 1;
             }
-        };
-        out.push(MonoFn {
-            name: def.name.clone(),
-            sig: FnSig { params, ret },
-            def: def.clone(),
-        });
+        }
+        if produced == 0 {
+            errs.push(format!(
+                "{}: type {} is not a single monomorphic arrow in the .12 scalar+tuple subset",
+                def.name, format_descr_short(&arrow)
+            ));
+        }
     }
     if !errs.is_empty() {
         return Err(errs);
@@ -228,7 +300,7 @@ pub fn build(src_path: &Path, out_path: &Path) -> Result<(), BuildError> {
             typer.errors.join("\n  ")
         )));
     }
-    let monos = monomorphize(&prog, &typer)
+    let monos = monomorphize(&prog, &mut typer)
         .map_err(|errs| BuildError(format!("not in .12 scope:\n  {}", errs.join("\n  "))))?;
 
     // Locate user main.
@@ -635,13 +707,45 @@ end
     }
 
     #[test]
+    fn end_to_end_aot_polymorphic_runs() {
+        if locate_runtime_staticlib().is_none() {
+            eprintln!("skip: libfz_runtime.a not present");
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("fz-aot-poly-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("poly.fz");
+        std::fs::write(
+            &src,
+            r#"
+fn id(x), do: x
+fn main() do
+  print(id(42))
+  print(id(:hello))
+  print(id(true))
+end
+"#,
+        )
+        .unwrap();
+        let bin = dir.join("poly");
+        build(&src, &bin).expect("build");
+
+        let out = Command::new(&bin).output().expect("run");
+        assert!(out.status.success(), "binary exit: {}", out.status);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(stdout.contains("42"), "stdout missing 42: {}", stdout);
+        assert!(stdout.contains(":hello"), "stdout missing :hello: {}", stdout);
+        assert!(stdout.contains("true"), "stdout missing true: {}", stdout);
+    }
+
+    #[test]
     fn rejects_heap_typed_fn_at_aot() {
         let src = "fn make() do [1, 2, 3] end\nfn main() do print(make()) end";
         let toks = Lexer::new(src).tokenize().unwrap();
         let prog = Parser::new(toks).parse_program().unwrap();
         let mut t = Typer::new();
         t.type_program(&prog);
-        let res = monomorphize(&prog, &t);
+        let res = monomorphize(&prog, &mut t);
         assert!(res.is_err());
     }
 }
