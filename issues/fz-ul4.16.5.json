@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-05-10T11:04:30Z",
   "created": "2026-05-10T10:58:01Z",
   "description": "Follow-up from fz-ul4.16.3. Today, an Item::MacroCall inside a defmodule body — e.g.\n\n  defmodule Constants do\n    make_const(:pi_ish, 314)\n  end\n\n— produces an Item::Fn with bare name (pi_ish), not qualified (Constants.pi_ish). This is because the pipeline runs flatten BEFORE expand_items: flatten sees the MacroCall, can't expand it (no interp loaded), and just hoists it to top-level.\n\n## Approach\n\nTwo real fixes:\n\n1. Reorder: parse -\u003e expand_items -\u003e flatten -\u003e expand_with. expand_items runs on un-flattened AST. load_program needs to handle pre-flatten Item::Module (recurse, bind fns under bare names) so the macros can be invoked.\n2. Or annotate Item::MacroCall with a parent_module path during parse / flatten, and have expand_items prefix produced fn names with that path before splicing.\n\nOption 1 is cleaner once load_program can do pre-flatten loading.\n\n## Tests\n\n- defmacro inside a module produces fns that resolve under Mod.\u003cname\u003e\n- Macro invocation outside a module (top-level) still produces bare-named fns\n- Test runner (.16.4) tests this when each test fixture is its own module\n",
   "id": "fz-ul4.16.5",
   "labels": [],
   "parent": "fz-ul4.16",
   "priority": 4,
-  "status": "open",
+  "status": "closed",
   "title": "Item-macros inside defmodule produce qualified fn names",
   "type": "task",
-  "updated_at": "2026-05-10T10:58:01Z"
+  "updated_at": "2026-05-10T11:04:30Z"
 }
