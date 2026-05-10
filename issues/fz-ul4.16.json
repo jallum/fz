@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-10T01:26:31Z",
+  "description": "Some way to write and run tests in fz itself. assert, group, run; probably cribbed from ExUnit's shape.",
+  "id": "fz-ul4.16",
+  "labels": [],
+  "parent": "fz-ul4",
+  "priority": 3,
+  "status": "open",
+  "title": "Test runner",
+  "type": "task",
+  "updated_at": "2026-05-10T01:26:31Z"
+}
