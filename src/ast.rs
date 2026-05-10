@@ -206,6 +206,17 @@ pub enum Item {
     /// Only valid inside a defmodule body; the resolver consumes these and
     /// they don't survive into the flattened Program.
     Alias { full_path: Vec<String>, as_name: String },
+    /// `import Mod` / `import Mod, only: [f: 1, g: 2]` /
+    /// `import Mod, except: [...]`. Only valid inside a defmodule body;
+    /// resolver-consumed.
+    Import {
+        path: Vec<String>,
+        /// Whitelist of (name, arity) pairs. None means "all fns in the
+        /// imported module". Mutually exclusive with `except`.
+        only: Option<Vec<(String, usize)>>,
+        /// Blacklist of (name, arity) pairs.
+        except: Option<Vec<(String, usize)>>,
+    },
 }
 
 #[derive(Debug, Clone)]

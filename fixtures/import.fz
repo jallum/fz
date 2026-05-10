@@ -1,0 +1,14 @@
+defmodule Math do
+  fn add(x, y), do: x + y
+  fn mul(x, y), do: x * y
+end
+
+defmodule User do
+  import Math, only: [add: 2]
+
+  fn calc(x, y), do: add(x, y)
+end
+
+fn main() do
+  print(User.calc(10, 32))
+end

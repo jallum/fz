@@ -28,13 +28,16 @@ pub fn rewrite_expr_top_level(e: &mut Expr) {
     let mut intro: HashSet<String> = HashSet::new();
     let no_paths: HashSet<String> = HashSet::new();
     let no_aliases: HashMap<String, String> = HashMap::new();
-    rewrite_expr(e, "", &no_siblings, &mut intro, &no_paths, &no_aliases);
+    let no_imports: HashMap<(String, usize), String> = HashMap::new();
+    rewrite_expr(e, "", &no_siblings, &mut intro, &no_paths, &no_aliases, &no_imports);
 }
 
 pub fn flatten_modules(prog: Program) -> Result<Program, String> {
     let module_paths = collect_module_paths(&prog);
+    let module_fns = collect_module_fns(&prog);
     let mut out: Vec<Rc<Item>> = Vec::new();
     let no_aliases: HashMap<String, String> = HashMap::new();
+    let no_imports: HashMap<(String, usize), String> = HashMap::new();
     for item in &prog.items {
         match &**item {
             Item::Fn(def) => {
@@ -43,17 +46,20 @@ pub fn flatten_modules(prog: Program) -> Result<Program, String> {
                 for clause in &mut new_def.clauses {
                     let mut intro = pattern_intro(&clause.params);
                     rewrite_expr(&mut clause.body, "", &no_siblings, &mut intro,
-                        &module_paths, &no_aliases);
+                        &module_paths, &no_aliases, &no_imports);
                     if let Some(g) = &mut clause.guard {
                         rewrite_expr(g, "", &no_siblings, &mut intro,
-                            &module_paths, &no_aliases);
+                            &module_paths, &no_aliases, &no_imports);
                     }
                 }
                 out.push(Rc::new(Item::Fn(new_def)));
             }
-            Item::Module(m) => flatten_module(m, "", &mut out, &module_paths)?,
+            Item::Module(m) => flatten_module(m, "", &mut out, &module_paths, &module_fns)?,
             Item::Alias { .. } => return Err(
                 "alias is only valid inside a defmodule body".into()
+            ),
+            Item::Import { .. } => return Err(
+                "import is only valid inside a defmodule body".into()
             ),
         }
     }
@@ -83,25 +89,76 @@ fn collect_paths_recursive(m: &ModuleDef, parent: &str, out: &mut HashSet<String
     }
 }
 
+/// Map from module-path → set of (fn_name, arity) pairs declared inside it.
+/// Used by `import Mod` (unfiltered) so we know which names to pull in.
+type ModuleFns = HashMap<String, HashSet<(String, usize)>>;
+
+fn collect_module_fns(prog: &Program) -> ModuleFns {
+    let mut out: ModuleFns = HashMap::new();
+    for item in &prog.items {
+        if let Item::Module(m) = &**item {
+            collect_module_fns_recursive(m, "", &mut out);
+        }
+    }
+    out
+}
+
+fn collect_module_fns_recursive(m: &ModuleDef, parent: &str, out: &mut ModuleFns) {
+    let path = if parent.is_empty() { m.name.clone() } else { format!("{}.{}", parent, m.name) };
+    out.entry(path.clone()).or_default();
+    for item in &m.items {
+        match &**item {
+            Item::Fn(def) => {
+                let arity = def.clauses.first().map(|c| c.params.len()).unwrap_or(0);
+                out.get_mut(&path).unwrap().insert((def.name.clone(), arity));
+            }
+            Item::Module(inner) => collect_module_fns_recursive(inner, &path, out),
+            _ => {}
+        }
+    }
+}
+
 fn flatten_module(
     m: &ModuleDef,
     parent_path: &str,
     out: &mut Vec<Rc<Item>>,
     module_paths: &HashSet<String>,
+    module_fns: &ModuleFns,
 ) -> Result<(), String> {
     let module_path = if parent_path.is_empty() {
         m.name.clone()
     } else {
         format!("{}.{}", parent_path, m.name)
     };
-    // Collect sibling fn/macro names + aliases declared in this module.
+    // Collect sibling fn/macro names + aliases + imports declared in this
+    // module. The import map keys on (name, arity) so different-arity calls
+    // can route to different imported modules without collision.
     let mut siblings: HashSet<String> = HashSet::new();
     let mut aliases: HashMap<String, String> = HashMap::new();
+    let mut imports: HashMap<(String, usize), String> = HashMap::new();
     for item in &m.items {
         match &**item {
             Item::Fn(def) => { siblings.insert(def.name.clone()); }
             Item::Alias { full_path, as_name } => {
                 aliases.insert(as_name.clone(), full_path.join("."));
+            }
+            Item::Import { path, only, except } => {
+                let path_s = path.join(".");
+                let target_fns = module_fns.get(&path_s).cloned().unwrap_or_default();
+                let pairs: Vec<(String, usize)> = if let Some(allow) = only {
+                    allow.clone()
+                } else if let Some(deny) = except {
+                    let deny_set: HashSet<(String, usize)> = deny.iter().cloned().collect();
+                    target_fns.iter()
+                        .filter(|p| !deny_set.contains(*p))
+                        .cloned()
+                        .collect()
+                } else {
+                    target_fns.iter().cloned().collect()
+                };
+                for (name, arity) in pairs {
+                    imports.insert((name, arity), path_s.clone());
+                }
             }
             Item::Module(_) => {}
         }
@@ -116,18 +173,18 @@ fn flatten_module(
                 for clause in &mut new_def.clauses {
                     let mut intro = pattern_intro(&clause.params);
                     rewrite_expr(&mut clause.body, &module_path, &siblings, &mut intro,
-                        module_paths, &aliases);
+                        module_paths, &aliases, &imports);
                     if let Some(g) = &mut clause.guard {
                         rewrite_expr(g, &module_path, &siblings, &mut intro,
-                            module_paths, &aliases);
+                            module_paths, &aliases, &imports);
                     }
                 }
                 out.push(Rc::new(Item::Fn(new_def)));
             }
             Item::Module(inner) => {
-                flatten_module(inner, &module_path, out, module_paths)?;
+                flatten_module(inner, &module_path, out, module_paths, module_fns)?;
             }
-            Item::Alias { .. } => {} // handled above; consumed by the resolver
+            Item::Alias { .. } | Item::Import { .. } => {} // consumed by the resolver
         }
     }
     Ok(())
@@ -161,6 +218,7 @@ fn rewrite_expr(
     intro: &mut HashSet<String>,
     module_paths: &HashSet<String>,
     aliases: &HashMap<String, String>,
+    imports: &HashMap<(String, usize), String>,
 ) {
     match e {
         // Bare ident — if it's a sibling fn name AND not locally bound, qualify it.
@@ -177,61 +235,72 @@ fn rewrite_expr(
         // `Call(Index(Index(Var("A"), Atom("B")), Atom("fn")), args)` —
         // we walk the chain to build the full dotted path.
         Expr::Call(callee, args) => {
+            // Cross-module qualified path first. (Aliases participate.)
             if let Some(q) = qualify_callee(callee, intro, module_path, module_paths, aliases) {
                 *callee = Box::new(Expr::Var(q));
+            } else if let Expr::Var(n) = &**callee {
+                // Bare-name call: sibling > import > unchanged.
+                // Sibling rewrite happens in the Var arm below; here we
+                // intercept *before* sibling fires so import can still win
+                // when the name isn't a sibling. Local intro shadows both.
+                if !intro.contains(n) && !siblings.contains(n) {
+                    if let Some(target) = imports.get(&(n.clone(), args.len())) {
+                        *callee = Box::new(Expr::Var(format!("{}.{}", target, n)));
+                    }
+                }
             }
-            rewrite_expr(callee, module_path, siblings, intro, module_paths, aliases);
-            for a in args { rewrite_expr(a, module_path, siblings, intro, module_paths, aliases); }
+            rewrite_expr(callee, module_path, siblings, intro, module_paths, aliases, imports);
+            for a in args { rewrite_expr(a, module_path, siblings, intro, module_paths, aliases, imports); }
         }
 
         // Compounds: recurse, treating Match/Lambda/Case/With as scope-introducing.
         Expr::List(xs, tail) => {
-            for x in xs { rewrite_expr(x, module_path, siblings, intro, module_paths, aliases); }
-            if let Some(t) = tail { rewrite_expr(t, module_path, siblings, intro, module_paths, aliases); }
+            for x in xs { rewrite_expr(x, module_path, siblings, intro, module_paths, aliases, imports); }
+            if let Some(t) = tail { rewrite_expr(t, module_path, siblings, intro, module_paths, aliases, imports); }
         }
         Expr::Tuple(xs) | Expr::VecLit(_, xs) | Expr::Block(xs) => {
-            for x in xs { rewrite_expr(x, module_path, siblings, intro, module_paths, aliases); }
+            for x in xs { rewrite_expr(x, module_path, siblings, intro, module_paths, aliases, imports); }
         }
-        Expr::Bitstring(fields) => for f in fields { rewrite_expr(&mut f.value, module_path, siblings, intro, module_paths, aliases); },
+        Expr::Bitstring(fields) => for f in fields { rewrite_expr(&mut f.value, module_path, siblings, intro, module_paths, aliases, imports); },
         Expr::Map(pairs) => for (k, v) in pairs {
-            rewrite_expr(k, module_path, siblings, intro, module_paths, aliases);
-            rewrite_expr(v, module_path, siblings, intro, module_paths, aliases);
+            rewrite_expr(k, module_path, siblings, intro, module_paths, aliases, imports);
+            rewrite_expr(v, module_path, siblings, intro, module_paths, aliases, imports);
         },
         Expr::MapUpdate(m, pairs) => {
-            rewrite_expr(m, module_path, siblings, intro, module_paths, aliases);
+            rewrite_expr(m, module_path, siblings, intro, module_paths, aliases, imports);
             for (k, v) in pairs {
-                rewrite_expr(k, module_path, siblings, intro, module_paths, aliases);
-                rewrite_expr(v, module_path, siblings, intro, module_paths, aliases);
+                rewrite_expr(k, module_path, siblings, intro, module_paths, aliases, imports);
+                rewrite_expr(v, module_path, siblings, intro, module_paths, aliases, imports);
             }
         }
         Expr::Index(o, i) => {
-            rewrite_expr(o, module_path, siblings, intro, module_paths, aliases);
-            rewrite_expr(i, module_path, siblings, intro, module_paths, aliases);
+            rewrite_expr(o, module_path, siblings, intro, module_paths, aliases, imports);
+            rewrite_expr(i, module_path, siblings, intro, module_paths, aliases, imports);
         }
-        Expr::Dot(o, _) => rewrite_expr(o, module_path, siblings, intro, module_paths, aliases),
+        Expr::Dot(o, _) => rewrite_expr(o, module_path, siblings, intro, module_paths, aliases, imports),
         Expr::BinOp(_, l, r) => {
-            rewrite_expr(l, module_path, siblings, intro, module_paths, aliases);
-            rewrite_expr(r, module_path, siblings, intro, module_paths, aliases);
+            rewrite_expr(l, module_path, siblings, intro, module_paths, aliases, imports);
+            rewrite_expr(r, module_path, siblings, intro, module_paths, aliases, imports);
         }
-        Expr::UnOp(_, x) => rewrite_expr(x, module_path, siblings, intro, module_paths, aliases),
+        Expr::UnOp(_, x) => rewrite_expr(x, module_path, siblings, intro, module_paths, aliases, imports),
         Expr::If(c, t, els) => {
-            rewrite_expr(c, module_path, siblings, intro, module_paths, aliases);
-            rewrite_expr(t, module_path, siblings, intro, module_paths, aliases);
-            if let Some(e) = els { rewrite_expr(e, module_path, siblings, intro, module_paths, aliases); }
+            rewrite_expr(c, module_path, siblings, intro, module_paths, aliases, imports);
+            rewrite_expr(t, module_path, siblings, intro, module_paths, aliases, imports);
+            if let Some(e) = els { rewrite_expr(e, module_path, siblings, intro, module_paths, aliases, imports); }
         }
         Expr::Case(scr, arms) => {
-            rewrite_expr(scr, module_path, siblings, intro, module_paths, aliases);
+            rewrite_expr(scr, module_path, siblings, intro, module_paths, aliases, imports);
             for arm in arms {
                 let mut nested = intro.clone();
                 collect_pattern_vars(&arm.pattern, &mut nested);
-                if let Some(g) = &mut arm.guard { rewrite_expr(g, module_path, siblings, &mut nested, module_paths, aliases); }
-                rewrite_expr(&mut arm.body, module_path, siblings, &mut nested, module_paths, aliases);
+                if let Some(g) = &mut arm.guard { rewrite_expr(g, module_path, siblings, &mut nested, module_paths, aliases, imports); }
+                rewrite_expr(&mut arm.body, module_path, siblings, &mut nested, module_paths, aliases, imports);
             }
         }
         Expr::Cond(pairs) => {
             for (c, b) in pairs {
-                rewrite_expr(c, module_path, siblings, intro, module_paths, aliases);
-                rewrite_expr(b, module_path, siblings, intro, module_paths, aliases);
+                rewrite_expr(c, module_path, siblings, intro, module_paths, aliases, imports);
+                rewrite_expr(b, module_path, siblings, intro, module_paths, aliases, imports);
             }
         }
         Expr::With(bindings, body, else_clauses) => {
@@ -239,35 +308,35 @@ fn rewrite_expr(
             for b in bindings {
                 match b {
                     WithBinding::Match(p, e) => {
-                        rewrite_expr(e, module_path, siblings, &mut nested, module_paths, aliases);
+                        rewrite_expr(e, module_path, siblings, &mut nested, module_paths, aliases, imports);
                         collect_pattern_vars(p, &mut nested);
                     }
-                    WithBinding::Bare(e) => rewrite_expr(e, module_path, siblings, &mut nested, module_paths, aliases),
+                    WithBinding::Bare(e) => rewrite_expr(e, module_path, siblings, &mut nested, module_paths, aliases, imports),
                 }
             }
-            rewrite_expr(body, module_path, siblings, &mut nested, module_paths, aliases);
+            rewrite_expr(body, module_path, siblings, &mut nested, module_paths, aliases, imports);
             for arm in else_clauses {
                 let mut a_intro = intro.clone();
                 collect_pattern_vars(&arm.pattern, &mut a_intro);
-                if let Some(g) = &mut arm.guard { rewrite_expr(g, module_path, siblings, &mut a_intro, module_paths, aliases); }
-                rewrite_expr(&mut arm.body, module_path, siblings, &mut a_intro, module_paths, aliases);
+                if let Some(g) = &mut arm.guard { rewrite_expr(g, module_path, siblings, &mut a_intro, module_paths, aliases, imports); }
+                rewrite_expr(&mut arm.body, module_path, siblings, &mut a_intro, module_paths, aliases, imports);
             }
         }
         Expr::Match(pat, rhs) => {
-            rewrite_expr(rhs, module_path, siblings, intro, module_paths, aliases);
+            rewrite_expr(rhs, module_path, siblings, intro, module_paths, aliases, imports);
             collect_pattern_vars(pat, intro);
         }
         Expr::Lambda(params, body) => {
             let mut nested = intro.clone();
             for p in params { collect_pattern_vars(p, &mut nested); }
-            rewrite_expr(body, module_path, siblings, &mut nested, module_paths, aliases);
+            rewrite_expr(body, module_path, siblings, &mut nested, module_paths, aliases, imports);
         }
 
         // Quote bodies are reified, not resolved — they get treated literally
         // by the macro pipeline. (.18.5 may revisit cross-module macro
         // resolution.) Unquote bodies ARE regular code — recurse.
         Expr::Quote(_) => {}
-        Expr::Unquote(inner) => rewrite_expr(inner, module_path, siblings, intro, module_paths, aliases),
+        Expr::Unquote(inner) => rewrite_expr(inner, module_path, siblings, intro, module_paths, aliases, imports),
 
         // Leaves.
         Expr::Int(_) | Expr::Float(_) | Expr::Str(_) | Expr::Atom(_)
@@ -550,6 +619,103 @@ end
             },
             other => panic!("got {:?}", other),
         }
+    }
+
+    #[test]
+    fn import_unfiltered_pulls_all_names() {
+        let p = flatten(r#"
+defmodule Math do
+  fn add(x, y), do: x + y
+  fn mul(x, y), do: x * y
+end
+defmodule User do
+  import Math
+  fn run(x, y), do: add(x, y)
+end
+"#);
+        let run = p.items.iter().find_map(|it| match &**it {
+            Item::Fn(d) if d.name == "User.run" => Some(d),
+            _ => None,
+        }).unwrap();
+        match &run.clauses[0].body {
+            Expr::Call(callee, _) => match &**callee {
+                Expr::Var(n) => assert_eq!(n, "Math.add"),
+                other => panic!("got {:?}", other),
+            },
+            other => panic!("got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn import_only_filters_names() {
+        let p = flatten(r#"
+defmodule Math do
+  fn add(x, y), do: x + y
+  fn mul(x, y), do: x * y
+end
+defmodule User do
+  import Math, only: [add: 2]
+  fn r1(x, y), do: add(x, y)
+  fn r2(x, y), do: mul(x, y)
+end
+"#);
+        // r1 calls Math.add, r2 calls bare mul (NOT imported).
+        let r1 = p.items.iter().find_map(|it| match &**it {
+            Item::Fn(d) if d.name == "User.r1" => Some(d),
+            _ => None,
+        }).unwrap();
+        match &r1.clauses[0].body {
+            Expr::Call(callee, _) => match &**callee {
+                Expr::Var(n) => assert_eq!(n, "Math.add"),
+                other => panic!("got {:?}", other),
+            },
+            _ => panic!(),
+        }
+        let r2 = p.items.iter().find_map(|it| match &**it {
+            Item::Fn(d) if d.name == "User.r2" => Some(d),
+            _ => None,
+        }).unwrap();
+        match &r2.clauses[0].body {
+            Expr::Call(callee, _) => match &**callee {
+                Expr::Var(n) => assert_eq!(n, "mul", "non-imported name stays bare"),
+                other => panic!("got {:?}", other),
+            },
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn local_fn_shadows_import() {
+        let p = flatten(r#"
+defmodule Math do
+  fn add(x, y), do: x + y
+end
+defmodule User do
+  import Math
+  fn add(x, y), do: x - y
+  fn use_local(), do: add(10, 4)
+end
+"#);
+        let use_local = p.items.iter().find_map(|it| match &**it {
+            Item::Fn(d) if d.name == "User.use_local" => Some(d),
+            _ => None,
+        }).unwrap();
+        match &use_local.clauses[0].body {
+            Expr::Call(callee, _) => match &**callee {
+                Expr::Var(n) => assert_eq!(n, "User.add", "local sibling wins over import"),
+                other => panic!("got {:?}", other),
+            },
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn import_outside_module_errors() {
+        let r = flatten_modules(parse(r#"
+import Some.Mod
+fn main(), do: nil
+"#));
+        assert!(r.is_err());
     }
 
     #[test]

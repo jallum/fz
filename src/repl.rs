@@ -149,7 +149,7 @@ fn load_items_filtered(interp: &Interp, items: &[std::rc::Rc<Item>], macros_only
     use std::rc::Rc;
     for item in items {
         match &**item {
-            Item::Module(_) | Item::Alias { .. } => continue, // flattened away upstream
+            Item::Module(_) | Item::Alias { .. } | Item::Import { .. } => continue, // flattened away upstream
             Item::Fn(def) => {
                 if macros_only != def.is_macro { continue; }
                 if def.is_macro {

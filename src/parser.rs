@@ -101,6 +101,11 @@ impl Parser {
                     let a = self.parse_alias()?;
                     items.push(Rc::new(a));
                 }
+                Tok::Import => {
+                    flush_fn_groups(&mut items, &mut order, &mut groups);
+                    let i = self.parse_import()?;
+                    items.push(Rc::new(i));
+                }
                 Tok::Fn | Tok::Defmacro => {
                     let (name, clause, is_macro) = self.parse_fn_clause()?;
                     if let Some(def) = groups.get_mut(&name) {
@@ -204,6 +209,75 @@ impl Parser {
             path.last().cloned().expect("path is non-empty")
         };
         Ok(Item::Alias { full_path: path, as_name })
+    }
+
+    /// `import Mod` | `import Mod, only: [f: 1, g: 2]` | `import Mod, except: [...]`.
+    fn parse_import(&mut self) -> PR<Item> {
+        self.expect(&Tok::Import, "`import`")?;
+        let mut path: Vec<String> = Vec::new();
+        match self.bump() {
+            Tok::Upper(n) => path.push(n),
+            other => return self.err(format!(
+                "expected uppercase module path after `import`, got {:?}", other
+            )),
+        }
+        while matches!(self.peek(), Tok::Dot) {
+            self.bump();
+            match self.bump() {
+                Tok::Upper(n) => path.push(n),
+                other => return self.err(format!(
+                    "expected uppercase segment after `.`, got {:?}", other
+                )),
+            }
+        }
+        let mut only: Option<Vec<(String, usize)>> = None;
+        let mut except: Option<Vec<(String, usize)>> = None;
+        // Optional `, only: [f: 1, g: 2]` or `, except: [...]`.
+        if matches!(self.peek(), Tok::Comma) {
+            // Lookahead must be `only:` or `except:`.
+            if let Tok::KwKey(s) = self.peek_at(1) {
+                if s == "only" || s == "except" {
+                    self.bump(); // ,
+                    let kind = match self.bump() {
+                        Tok::KwKey(k) => k,
+                        _ => unreachable!(),
+                    };
+                    let pairs = self.parse_arity_kw_list()?;
+                    if kind == "only" { only = Some(pairs); }
+                    else { except = Some(pairs); }
+                }
+            }
+        }
+        Ok(Item::Import { path, only, except })
+    }
+
+    /// Parse a keyword list of `[name: arity, name: arity]` for import filters.
+    fn parse_arity_kw_list(&mut self) -> PR<Vec<(String, usize)>> {
+        self.expect(&Tok::LBrack, "`[`")?;
+        let mut out: Vec<(String, usize)> = Vec::new();
+        self.skip_newlines();
+        if !matches!(self.peek(), Tok::RBrack) {
+            loop {
+                let name = match self.bump() {
+                    Tok::KwKey(k) => k,
+                    other => return self.err(format!(
+                        "expected name: in import filter list, got {:?}", other
+                    )),
+                };
+                let arity = match self.bump() {
+                    Tok::Int(n) if n >= 0 => n as usize,
+                    other => return self.err(format!(
+                        "expected non-negative arity after `{}:`, got {:?}", name, other
+                    )),
+                };
+                out.push((name, arity));
+                self.skip_newlines();
+                if !self.eat(&Tok::Comma) { break; }
+                self.skip_newlines();
+            }
+        }
+        self.expect(&Tok::RBrack, "`]`")?;
+        Ok(out)
     }
 
     fn parse_module(&mut self) -> PR<ModuleDef> {
