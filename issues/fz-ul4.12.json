@@ -8,13 +8,13 @@
     "fz-ul4.14"
   ],
   "created": "2026-05-10T01:26:31Z",
-  "description": "Lower typed AST to Cranelift IR and JIT. Start with monomorphic, scalar code. Tagged 64-bit values + dispatch on type tag for builtins.\n\nNeeds the typer first so we can specialize on types and skip dynamic checks.",
+  "description": "Lower typed AST to Cranelift IR. Two drivers share one lowering: in-process JIT and AOT-to-standalone-binary.\n\n## Scope (locked in 2026-05-09)\n\nIn-scope value types: ints, floats, bools, atoms, nil, tuples-of-scalars (recursively).\nIn-scope features: arithmetic, comparisons, boolean logic, if/case on scalar+tuple patterns, multi-clause + guards, direct calls, self-tail-call → loop, scalar builtins (print of scalars, etc.).\n\nAOT produces standalone binaries — no embedded interpreter. Unsupported features must fail at compile time.\nRuntime is a Rust staticlib crate, shared by JIT and AOT.\n\n## Approved deferrals\n\n- Heap types (strings, lists, maps, bitstrings, non-scalar tuples) — blocked on fz-ul4.11 GC.\n- Closures — later ticket.\n- with, list/map patterns in compiled code — blocked on heap types.\n- Cross-compilation — later.\n- Tier-up policy / JIT trigger — fz-ul4.13.\n\n## Carved into 5 sub-tickets\n\n- .12a Lowering core (typed AST → CLIF, no driver)\n- .12b Runtime staticlib (Value ABI, builtin C-ABI surface, atom table, panic)\n- .12c AOT driver (cranelift-object → linker → standalone binary)\n- .12d JIT driver (cranelift-jit, in-process, mixed jit/interp)\n- .12e Multi-clause + guards + tuple patterns + self-TCO, both backends",
   "id": "fz-ul4.12",
   "labels": [],
   "parent": "fz-ul4",
   "priority": 2,
   "status": "open",
-  "title": "Cranelift JIT backend (scalar)",
+  "title": "Cranelift codegen backend (JIT + AOT, scalar)",
   "type": "task",
-  "updated_at": "2026-05-10T01:26:31Z"
+  "updated_at": "2026-05-10T02:59:37Z"
 }
