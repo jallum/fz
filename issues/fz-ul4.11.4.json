@@ -13,8 +13,8 @@
   "labels": [],
   "parent": "fz-ul4.11",
   "priority": 3,
-  "status": "in_progress",
+  "status": "open",
   "title": "AST -\u003e fz-IR translator",
   "type": "task",
-  "updated_at": "2026-05-10T13:26:44Z"
+  "updated_at": "2026-05-10T13:38:17Z"
 }
