@@ -1,0 +1,95 @@
+mod ast;
+mod eval;
+mod lexer;
+mod parser;
+mod value;
+
+use eval::Interp;
+use lexer::Lexer;
+use parser::Parser;
+
+const SAMPLE: &str = r#"
+fn fact(0), do: 1
+fn fact(n) when n > 0, do: n * fact(n - 1)
+
+fn fib(0), do: 0
+fn fib(1), do: 1
+fn fib(n), do: fib(n - 1) + fib(n - 2)
+
+fn classify(0), do: :zero
+fn classify(n) when n > 0, do: :positive
+fn classify(_), do: :negative
+
+fn sum([]), do: 0
+fn sum([h | t]), do: h + sum(t)
+
+fn map(_, []), do: []
+fn map(f, [h | t]), do: [f(h) | map(f, t)]
+
+fn double(x), do: x * 2
+
+fn main() do
+  print(fact(10))
+  print(fib(20))
+  print(classify(-5))
+  print(classify(0))
+  print(classify(7))
+  print(sum([1, 2, 3, 4, 5]))
+  print(map(double, [10, 20, 30]))
+  print([1, 2, 3] |> sum())
+  print(~v[1.0, 2.0, 3.0, 4.0])
+  print(~v[1, 2, 3] |> vec_map(double))
+  print(~b[0xff, 0x00, 0xab])
+  print(~bits[1, 0, 1, 1, 0, 0, 1])
+  print(vec_reduce(~v[1, 2, 3, 4, 5], 0, fn (a, b) -> a + b))
+  print(~v[1, 2, 3, 4, 5] |> vec_reduce(0, fn (a, b) -> a + b))
+end
+"#;
+
+fn main() {
+    let (src, show_ast) = parse_args();
+
+    let toks = match Lexer::new(&src).tokenize() {
+        Ok(t) => t,
+        Err(e) => { eprintln!("{}", e); std::process::exit(1); }
+    };
+
+    let prog = match Parser::new(toks).parse_program() {
+        Ok(p) => p,
+        Err(e) => { eprintln!("{}", e); std::process::exit(1); }
+    };
+
+    if show_ast {
+        for item in &prog.items { println!("{:#?}", item); }
+        return;
+    }
+
+    let interp = Interp::new();
+    if let Err(e) = interp.load_program(&prog) {
+        eprintln!("load error: {}", e); std::process::exit(1);
+    }
+    if let Err(e) = interp.call_named("main", vec![]) {
+        eprintln!("runtime error: {}", e); std::process::exit(1);
+    }
+}
+
+fn parse_args() -> (String, bool) {
+    let mut show_ast = false;
+    let mut path: Option<String> = None;
+    for a in std::env::args().skip(1) {
+        match a.as_str() {
+            "--ast" => show_ast = true,
+            other => path = Some(other.to_string()),
+        }
+    }
+    let src = match path {
+        Some(p) => std::fs::read_to_string(p).expect("read source"),
+        None => SAMPLE.to_string(),
+    };
+    (src, show_ast)
+}
+
+#[allow(dead_code)]
+fn _force_use() {
+    let _ = ast::BinOp::Add;
+}

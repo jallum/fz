@@ -1,0 +1,16 @@
+[package]
+name = "fz"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# cranelift = "0.110"            # added when we wire up codegen
+# cranelift-jit = "0.110"
+# cranelift-module = "0.110"
+
+[profile.dev]
+opt-level = 0
+
+[profile.release]
+opt-level = 3
+lto = "thin"
