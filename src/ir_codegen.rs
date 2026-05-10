@@ -148,6 +148,7 @@ fn render_fz_value(bits: u64) -> String {
                 Some(HeapKind::List) => render_list(bits),
                 Some(HeapKind::Struct) => render_struct(bits),
                 Some(HeapKind::Bitstring) => render_bitstring(bits),
+                Some(HeapKind::Map) => render_map(bits),
                 _ => format!("#ptr<{:#x}>", bits),
             }
         }
@@ -185,6 +186,23 @@ fn render_struct(bits: u64) -> String {
             .collect()
     });
     format!("{{{}}}", parts.join(", "))
+}
+
+/// Render a heap Map as `%{k => v, ...}` in canonical sorted order.
+fn render_map(bits: u64) -> String {
+    use crate::fz_value::FzValue;
+    let p = FzValue(bits).unbox_ptr().unwrap();
+    let count = unsafe {
+        std::ptr::read((p as *const u8).add(16) as *const u64) as usize
+    };
+    let cursor = unsafe { (p as *const u8).add(24) as *const u64 };
+    let mut parts: Vec<String> = Vec::with_capacity(count);
+    for i in 0..count {
+        let k = unsafe { std::ptr::read(cursor.add(i * 2)) };
+        let v = unsafe { std::ptr::read(cursor.add(i * 2 + 1)) };
+        parts.push(format!("{} => {}", render_fz_value(k), render_fz_value(v)));
+    }
+    format!("%{{{}}}", parts.join(", "))
 }
 
 /// Render a heap Bitstring. For byte-aligned bitstrings, render bytes as
@@ -324,6 +342,126 @@ extern "C" fn fz_alloc_list_cons(head_bits: u64, tail_bits: u64) -> u64 {
 extern "C" fn fz_alloc_struct(schema_id: u32) -> u64 {
     let p = HEAP.with(|h| h.borrow_mut().alloc_struct(schema_id));
     p as u64
+}
+
+// ----- Map runtime fns -----
+//
+// Maps use a heap-backed sorted-array layout. Build-time semantics: codegen
+// emits begin -> push (per pair) -> finalize. MapUpdate emits clone(base) ->
+// push (per override) -> finalize. The thread-local builder accumulates
+// pairs as `(key_bits, val_bits)`; finalize sorts canonically (later writes
+// win on duplicate keys) and allocates one heap Map.
+//
+// Key total ordering for canonical layout: Int < Atom < Special < Ptr;
+// within each category, by raw bits (Int compares signed). Keys compare
+// equal iff their u64 bits are equal — pointer-equal heap keys for v1.
+
+thread_local! {
+    static MAP_BUILDER: std::cell::RefCell<Option<Vec<(u64, u64)>>> =
+        std::cell::RefCell::new(None);
+}
+
+fn fz_key_category(bits: u64) -> u8 {
+    match bits & 0b111 {
+        0b001 => 0,
+        0b010 => 1,
+        0b011 => 2,
+        0b000 => 3,
+        _ => 4,
+    }
+}
+
+fn fz_key_cmp(a: u64, b: u64) -> std::cmp::Ordering {
+    let ca = fz_key_category(a);
+    let cb = fz_key_category(b);
+    ca.cmp(&cb).then_with(|| {
+        if ca == 0 {
+            ((a as i64) >> 3).cmp(&((b as i64) >> 3))
+        } else {
+            a.cmp(&b)
+        }
+    })
+}
+
+extern "C" fn fz_map_begin() {
+    MAP_BUILDER.with(|b| *b.borrow_mut() = Some(Vec::new()));
+}
+
+extern "C" fn fz_map_clone(base_bits: u64) {
+    use crate::fz_value::{FzValue, HeapKind};
+    let mut entries: Vec<(u64, u64)> = Vec::new();
+    let p = FzValue(base_bits)
+        .unbox_ptr()
+        .expect("fz_map_clone base not a heap ptr");
+    let header = unsafe { &*p };
+    if HeapKind::from_u16(header.kind) != Some(HeapKind::Map) {
+        panic!("fz_map_clone base is not a Map");
+    }
+    let count =
+        unsafe { std::ptr::read((p as *const u8).add(16) as *const u64) as usize };
+    let mut cursor = unsafe { (p as *const u8).add(24) as *const u64 };
+    for _ in 0..count {
+        let k = unsafe { std::ptr::read(cursor) };
+        let v = unsafe { std::ptr::read(cursor.add(1)) };
+        cursor = unsafe { cursor.add(2) };
+        entries.push((k, v));
+    }
+    MAP_BUILDER.with(|b| *b.borrow_mut() = Some(entries));
+}
+
+extern "C" fn fz_map_push(key_bits: u64, val_bits: u64) {
+    MAP_BUILDER.with(|b| {
+        b.borrow_mut()
+            .as_mut()
+            .expect("fz_map_push without begin/clone")
+            .push((key_bits, val_bits));
+    });
+}
+
+extern "C" fn fz_map_finalize() -> u64 {
+    use crate::fz_value::FzValue;
+    let raw = MAP_BUILDER
+        .with(|b| b.borrow_mut().take())
+        .expect("fz_map_finalize without begin");
+    // Last write wins on duplicate keys: walk in order, dedupe-overwriting.
+    let mut by_key: Vec<(u64, u64)> = Vec::with_capacity(raw.len());
+    for (k, v) in raw {
+        if let Some(slot) = by_key.iter_mut().find(|(ek, _)| fz_key_cmp(*ek, k).is_eq())
+        {
+            slot.1 = v;
+        } else {
+            by_key.push((k, v));
+        }
+    }
+    by_key.sort_by(|a, b| fz_key_cmp(a.0, b.0));
+    let entries: Vec<(FzValue, FzValue)> =
+        by_key.into_iter().map(|(k, v)| (FzValue(k), FzValue(v))).collect();
+    let p = HEAP.with(|h| h.borrow_mut().alloc_map(&entries));
+    p as u64
+}
+
+extern "C" fn fz_map_get(map_bits: u64, key_bits: u64) -> u64 {
+    use crate::fz_value::{FzValue, HeapKind};
+    let p = FzValue(map_bits)
+        .unbox_ptr()
+        .expect("fz_map_get on non-ptr");
+    let header = unsafe { &*p };
+    if HeapKind::from_u16(header.kind) != Some(HeapKind::Map) {
+        panic!("fz_map_get on non-Map");
+    }
+    let count =
+        unsafe { std::ptr::read((p as *const u8).add(16) as *const u64) as usize };
+    let cursor = unsafe { (p as *const u8).add(24) as *const u64 };
+    // v1: linear scan. Sorted layout exists primarily so equality and
+    // rendering have a deterministic shape; binary search comes alongside
+    // a HAMT migration for large maps (separate ticket).
+    for i in 0..count {
+        let k = unsafe { std::ptr::read(cursor.add(i * 2)) };
+        if fz_key_cmp(k, key_bits).is_eq() {
+            return unsafe { std::ptr::read(cursor.add(i * 2 + 1)) };
+        }
+    }
+    FzValue::NIL.0
 }
 
 // ----- Bitstring runtime fns -----
@@ -769,6 +907,11 @@ pub fn compile(module: &Module) -> Result<CompiledModule, CodegenError> {
     builder.symbol("fz_bs_finalize", fz_bs_finalize as *const u8);
     builder.symbol("fz_bs_reader_init", fz_bs_reader_init as *const u8);
     builder.symbol("fz_bs_read_field", fz_bs_read_field as *const u8);
+    builder.symbol("fz_map_begin", fz_map_begin as *const u8);
+    builder.symbol("fz_map_clone", fz_map_clone as *const u8);
+    builder.symbol("fz_map_push", fz_map_push as *const u8);
+    builder.symbol("fz_map_finalize", fz_map_finalize as *const u8);
+    builder.symbol("fz_map_get", fz_map_get as *const u8);
     let mut jmod = JITModule::new(builder);
 
     // Declare runtime imports.
@@ -835,6 +978,26 @@ pub fn compile(module: &Module) -> Result<CompiledModule, CodegenError> {
     let bs_read_field_id = jmod
         .declare_function("fz_bs_read_field", Linkage::Import, &bs_read_field_sig)
         .map_err(|e| CodegenError(format!("declare bs_read_field: {}", e)))?;
+    let map_begin_sig = sig1(&[], &[]);
+    let map_begin_id = jmod
+        .declare_function("fz_map_begin", Linkage::Import, &map_begin_sig)
+        .map_err(|e| CodegenError(format!("declare map_begin: {}", e)))?;
+    let map_clone_sig = sig1(&[types::I64], &[]);
+    let map_clone_id = jmod
+        .declare_function("fz_map_clone", Linkage::Import, &map_clone_sig)
+        .map_err(|e| CodegenError(format!("declare map_clone: {}", e)))?;
+    let map_push_sig = sig1(&[types::I64, types::I64], &[]);
+    let map_push_id = jmod
+        .declare_function("fz_map_push", Linkage::Import, &map_push_sig)
+        .map_err(|e| CodegenError(format!("declare map_push: {}", e)))?;
+    let map_finalize_sig = sig1(&[], &[types::I64]);
+    let map_finalize_id = jmod
+        .declare_function("fz_map_finalize", Linkage::Import, &map_finalize_sig)
+        .map_err(|e| CodegenError(format!("declare map_finalize: {}", e)))?;
+    let map_get_sig = sig1(&[types::I64, types::I64], &[types::I64]);
+    let map_get_id = jmod
+        .declare_function("fz_map_get", Linkage::Import, &map_get_sig)
+        .map_err(|e| CodegenError(format!("declare map_get: {}", e)))?;
 
     // Per-fn signature: extern "C" fn(*mut u8, *mut u8) -> *mut u8.
     let fn_sig = sig1(&[types::I64, types::I64], &[types::I64]);
@@ -861,6 +1024,11 @@ pub fn compile(module: &Module) -> Result<CompiledModule, CodegenError> {
         bs_finalize_id,
         bs_reader_init_id,
         bs_read_field_id,
+        map_begin_id,
+        map_clone_id,
+        map_push_id,
+        map_finalize_id,
+        map_get_id,
     };
 
     // Register a heap Schema for every tuple arity used by MakeTuple, so the
@@ -971,6 +1139,11 @@ struct RuntimeRefs {
     bs_finalize_id: FuncId,
     bs_reader_init_id: FuncId,
     bs_read_field_id: FuncId,
+    map_begin_id: FuncId,
+    map_clone_id: FuncId,
+    map_push_id: FuncId,
+    map_finalize_id: FuncId,
+    map_get_id: FuncId,
 }
 
 fn compile_fn(
@@ -1536,11 +1709,41 @@ fn lower_prim(
             let cmp = b.ins().icmp(IntCC::Equal, bit_len_b, pos_b);
             bool_to_fz(b, cmp)
         }
-        Prim::MakeClosure(_, _)
-        | Prim::MakeMap(_)
-        | Prim::MapUpdate(_, _)
-        | Prim::MapGet(_, _)
-        | Prim::MakeVec(_, _) => {
+        Prim::MakeMap(entries) => {
+            let begin = jmod.declare_func_in_func(runtime.map_begin_id, b.func);
+            b.ins().call(begin, &[]);
+            let push = jmod.declare_func_in_func(runtime.map_push_id, b.func);
+            for (k, v) in entries {
+                let kv = *env.get(&k.0).expect("unbound makemap key");
+                let vv = *env.get(&v.0).expect("unbound makemap val");
+                b.ins().call(push, &[kv, vv]);
+            }
+            let fin = jmod.declare_func_in_func(runtime.map_finalize_id, b.func);
+            let inst = b.ins().call(fin, &[]);
+            b.inst_results(inst)[0]
+        }
+        Prim::MapUpdate(base, entries) => {
+            let bv = *env.get(&base.0).expect("unbound mapupdate base");
+            let cln = jmod.declare_func_in_func(runtime.map_clone_id, b.func);
+            b.ins().call(cln, &[bv]);
+            let push = jmod.declare_func_in_func(runtime.map_push_id, b.func);
+            for (k, v) in entries {
+                let kv = *env.get(&k.0).expect("unbound mapupdate key");
+                let vv = *env.get(&v.0).expect("unbound mapupdate val");
+                b.ins().call(push, &[kv, vv]);
+            }
+            let fin = jmod.declare_func_in_func(runtime.map_finalize_id, b.func);
+            let inst = b.ins().call(fin, &[]);
+            b.inst_results(inst)[0]
+        }
+        Prim::MapGet(m, k) => {
+            let mv = *env.get(&m.0).expect("unbound mapget map");
+            let kv = *env.get(&k.0).expect("unbound mapget key");
+            let fref = jmod.declare_func_in_func(runtime.map_get_id, b.func);
+            let inst = b.ins().call(fref, &[mv, kv]);
+            b.inst_results(inst)[0]
+        }
+        Prim::MakeClosure(_, _) | Prim::MakeVec(_, _) => {
             return Err(CodegenError(
                 "heap/aggregate prims land in later tickets".into(),
             ));
@@ -1942,6 +2145,159 @@ mod tests {
             captured,
             vec![":atom_1".to_string(), "true".to_string(), "false".to_string()]
         );
+    }
+
+    // ----- .11.13 map tests -----
+
+    #[test]
+    fn print_atom_keyed_map_renders_canonically() {
+        // fn main() do print(%{a: 1, b: 2}) end
+        // Atoms intern in encounter order: match_error=0, a=1, b=2.
+        // Sorted by atom id -> :atom_1 then :atom_2.
+        let main = fn_def(
+            "main",
+            vec![cl(
+                vec![],
+                Expr::Call(
+                    Box::new(Expr::Var("print".into())),
+                    vec![Expr::Map(vec![
+                        (Expr::Atom("a".into()), Expr::Int(1)),
+                        (Expr::Atom("b".into()), Expr::Int(2)),
+                    ])],
+                ),
+            )],
+        );
+        let m = lower(vec![main]);
+        let entry = m.fn_by_name("main").unwrap().id;
+        heap_reset_for_test();
+        let _ = test_capture_take();
+        let cm = compile(&m).unwrap();
+        let _ = cm.run(entry);
+        assert_eq!(
+            test_capture_take(),
+            vec!["%{:atom_1 => 1, :atom_2 => 2}".to_string()]
+        );
+    }
+
+    #[test]
+    fn map_get_returns_value_or_nil() {
+        // fn main(), do: %{a: 10, b: 20}[:a] + %{a: 10, b: 20}[:b]    -> 30
+        let main = fn_def(
+            "main",
+            vec![cl(
+                vec![],
+                Expr::BinOp(
+                    ABinOp::Add,
+                    Box::new(Expr::Index(
+                        Box::new(Expr::Map(vec![
+                            (Expr::Atom("a".into()), Expr::Int(10)),
+                            (Expr::Atom("b".into()), Expr::Int(20)),
+                        ])),
+                        Box::new(Expr::Atom("a".into())),
+                    )),
+                    Box::new(Expr::Index(
+                        Box::new(Expr::Map(vec![
+                            (Expr::Atom("a".into()), Expr::Int(10)),
+                            (Expr::Atom("b".into()), Expr::Int(20)),
+                        ])),
+                        Box::new(Expr::Atom("b".into())),
+                    )),
+                ),
+            )],
+        );
+        let m = lower(vec![main]);
+        let entry = m.fn_by_name("main").unwrap().id;
+        heap_reset_for_test();
+        let cm = compile(&m).unwrap();
+        assert_eq!(cm.run(entry), 30);
+    }
+
+    #[test]
+    fn map_update_returns_new_map_originals_unchanged() {
+        // fn main() do
+        //   m = %{a: 1, b: 2}
+        //   m2 = %{m | a: 99}
+        //   print(m)
+        //   print(m2)
+        // end
+        let main = fn_def(
+            "main",
+            vec![cl(
+                vec![],
+                Expr::Block(vec![
+                    Expr::Match(
+                        crate::ast::Pattern::Var("m".into()),
+                        Box::new(Expr::Map(vec![
+                            (Expr::Atom("a".into()), Expr::Int(1)),
+                            (Expr::Atom("b".into()), Expr::Int(2)),
+                        ])),
+                    ),
+                    Expr::Match(
+                        crate::ast::Pattern::Var("m2".into()),
+                        Box::new(Expr::MapUpdate(
+                            Box::new(Expr::Var("m".into())),
+                            vec![(Expr::Atom("a".into()), Expr::Int(99))],
+                        )),
+                    ),
+                    Expr::Call(
+                        Box::new(Expr::Var("print".into())),
+                        vec![Expr::Var("m".into())],
+                    ),
+                    Expr::Call(
+                        Box::new(Expr::Var("print".into())),
+                        vec![Expr::Var("m2".into())],
+                    ),
+                ]),
+            )],
+        );
+        let m = lower(vec![main]);
+        let entry = m.fn_by_name("main").unwrap().id;
+        heap_reset_for_test();
+        let _ = test_capture_take();
+        let cm = compile(&m).unwrap();
+        let _ = cm.run(entry);
+        assert_eq!(
+            test_capture_take(),
+            vec![
+                "%{:atom_1 => 1, :atom_2 => 2}".to_string(),
+                "%{:atom_1 => 99, :atom_2 => 2}".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn gc_traces_map_keys_and_values() {
+        // Build %{a => [1,2,3]}; that's 1 map (which holds 1 atom key + 1 list
+        // value) + 3 cons cells = 4 live. Drop root via empty gc roots ->
+        // tracer follows the map's value field into the list -> all 4 reclaim.
+        let main = fn_def(
+            "main",
+            vec![cl(
+                vec![],
+                Expr::Map(vec![(
+                    Expr::Atom("a".into()),
+                    Expr::List(
+                        vec![Expr::Int(1), Expr::Int(2), Expr::Int(3)],
+                        None,
+                    ),
+                )]),
+            )],
+        );
+        let m = lower(vec![main]);
+        let entry = m.fn_by_name("main").unwrap().id;
+        heap_reset_for_test();
+        let cm = compile(&m).unwrap();
+        let halt_bits = cm.run(entry) as u64;
+        assert_eq!(heap_live_count(), 4, "1 map + 3 cons cells");
+        // Rooted via the halt ptr: tracer must follow the map's value FzValue
+        // through to all three cons cells (otherwise we'd see cells reclaimed
+        // even with the map as a root).
+        let root = crate::fz_value::FzValue(halt_bits);
+        heap_gc(&[root]);
+        assert_eq!(heap_live_count(), 4, "list survives via map's value field");
+        // Drop the root: everything goes.
+        heap_gc(&[]);
+        assert_eq!(heap_live_count(), 0);
     }
 
     // ----- .11.12 bitstring tests -----

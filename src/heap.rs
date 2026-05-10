@@ -166,6 +166,36 @@ impl Heap {
         p
     }
 
+    /// Map layout: HeapHeader (16) + entry_count: u64 (8) + entries
+    /// [(key: FzValue (8), val: FzValue (8)); N]. Caller supplies a
+    /// canonically-sorted entry slice; this performs the heap copy.
+    pub fn alloc_map(&mut self, entries: &[(FzValue, FzValue)]) -> *mut HeapHeader {
+        let total = (16 + 8 + entries.len() * 16 + 15) & !15;
+        let p = self.alloc(total);
+        unsafe {
+            std::ptr::write(
+                p,
+                HeapHeader {
+                    kind: HeapKind::Map as u16,
+                    flags: 0,
+                    size_bytes: total as u32,
+                    schema_id: 0,
+                    _reserved: 0,
+                },
+            );
+            let count_p = (p as *mut u8).add(16) as *mut u64;
+            std::ptr::write(count_p, entries.len() as u64);
+            let mut cursor = (p as *mut u8).add(24) as *mut FzValue;
+            for (k, v) in entries {
+                std::ptr::write(cursor, *k);
+                cursor = cursor.add(1);
+                std::ptr::write(cursor, *v);
+                cursor = cursor.add(1);
+            }
+        }
+        p
+    }
+
     /// Bitstring layout: HeapHeader (16) + bit_len: u64 (8) + bytes (padded
     /// to 16). Caller supplies a fully-built byte buffer + bit_len; this
     /// performs the heap copy.
@@ -329,9 +359,19 @@ fn trace(v: FzValue, reg: &SchemaRegistry, marked: &mut HashSet<*mut HeapHeader>
             // Raw payloads: no FzValue children to trace.
         }
         Some(HeapKind::Map) => {
-            // Map heap layout lands in fz-ul4.11.13. Until then, no Map objects
-            // should exist on the heap; panic loudly if one is reached.
-            panic!("Map tracing pending fz-ul4.11.13");
+            // Map payload: count: u64 at offset 16, then (key, val) pairs at
+            // offset 24, 16 bytes each. Trace both key and val FzValues.
+            let count = unsafe {
+                std::ptr::read((p as *const u8).add(16) as *const u64) as usize
+            };
+            let mut cursor = unsafe { (p as *const u8).add(24) as *const FzValue };
+            for _ in 0..count {
+                let k = unsafe { std::ptr::read(cursor) };
+                let v = unsafe { std::ptr::read(cursor.add(1)) };
+                cursor = unsafe { cursor.add(2) };
+                trace(k, reg, marked);
+                trace(v, reg, marked);
+            }
         }
         None => {
             // FREE_KIND or unknown: object is not live, must not be reachable.
