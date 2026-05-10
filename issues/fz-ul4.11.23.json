@@ -11,9 +11,15 @@
   "id": "fz-ul4.11.23",
   "labels": [],
   "parent": "fz-ul4.11",
+  "comments": [
+    {
+      "text": "Re-blocked on fz-ul4.11.24.5 (typed schema selection) — VecF64 lowering should be type-driven from the start, not retrofitted onto the .11.14 syntactic heuristic. Authorized 2026-05-10 via .11.24 design.",
+      "timestamp": "2026-05-10T20:53:10Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "VecF64 storage and ~v[1.0, 2.0] sigil",
   "type": "task",
-  "updated_at": "2026-05-10T20:52:42Z"
+  "updated_at": "2026-05-10T20:53:10Z"
 }
