@@ -9,9 +9,15 @@
   "id": "fz-ul4.6",
   "labels": [],
   "parent": "fz-ul4",
+  "comments": [
+    {
+      "text": "Shipped in commit 8812d84 — per-call-shape specialization with mangled symbols. Test: jit::tests::jit_specializes_polymorphic_fn_per_call_shape.",
+      "timestamp": "2026-05-10T08:48:29Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "Parametric polymorphism",
   "type": "task",
-  "updated_at": "2026-05-10T01:26:31Z"
+  "updated_at": "2026-05-10T08:48:29Z"
 }
