@@ -907,11 +907,12 @@ end
     #[test]
     fn jit_runs_recursive_fn_via_interp_fallback() {
         // Self-recursive fn types as `(any, any) -> any` under the current
-        // typer (no call-site monomorphization yet — see ticket "typer:
-        // narrow self-recursive arrows from call-site"). It falls back to
-        // interpreter; this test just verifies the program produces correct
-        // output for a small input (100 won't overflow). End-to-end JIT TCO
-        // exercise lands when the typer ticket does.
+        // typer, so `count` falls back to interpreter even though codegen-
+        // level TCO is wired (see codegen::tests::lowers_tail_self_call_to_jump).
+        // When the typer ticket lands, raise N to 100_000 here to exercise
+        // JIT-TCO end-to-end.
+        // Ticket: project_typer_recursive_widening (memory). Restored test:
+        //   jit::tests::jit_tail_self_recursion_does_not_overflow.
         let src = r#"
 fn count(0, acc), do: acc
 fn count(n, acc), do: count(n - 1, acc + 1)

@@ -594,6 +594,11 @@ end
     }
 
 
+    // NOTE: end_to_end_aot_multi_clause_runs is deferred until the typer
+    // narrows var-bound params on recursive/multi-clause fns. See memory
+    // ticket: project_typer_recursive_widening. Source for the test is in
+    // commit 685612a^.
+
     #[test]
     fn rejects_heap_typed_fn_at_aot() {
         let src = "fn make() do [1, 2, 3] end\nfn main() do print(make()) end";
