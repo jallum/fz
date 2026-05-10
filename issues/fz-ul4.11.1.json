@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-ul4.11.2"
+  ],
   "created": "2026-05-10T13:00:16Z",
   "description": "First subticket of fz-ul4.11. Foundation types for the new runtime value representation.\n\n## Goal\n\nDefine FzValue (tagged u64), HeapHeader, HeapKind, and box-based allocator stubs. Standalone types with round-trip tests. NO GC, NO JIT integration yet (those land in .11.2 and .11.7+).\n\n## Decisions captured (do not relitigate)\n\n- Low-bit tags, NOT NaN-boxing. Fits Elixir-flavored / per-process-heap / shared-address-space design. Simpler GC integration; pointers are always low-bit-zero.\n- Tag scheme:\n    000 ptr to heap object (8-byte aligned)\n    001 small int (61-bit signed, 1-bit shift)\n    010 atom (61-bit interned id, payload \u003c\u003c 3)\n    011 special (nil / true / false / sentinels in payload bits)\n    1xx reserved (future: boxed float, etc.)\n- Region info lives in HeapHeader.flags, NOT in the tag. Saves tag bits.\n- Schemas are foundational from day one (see .11.2). Frames, tuples, future user records, continuations all use Struct{schema_id}. No per-fn trace helpers — schema-driven generic tracer.\n- Atoms stay tagged inline with 32-bit ids. Won't exhaust at fz scale; revisit only if needed.\n\n## Deliverables (new src/fz_value.rs)\n\n```rust\n#[repr(transparent)]\npub struct FzValue(u64);\n\nimpl FzValue {\n    pub const fn from_int(n: i64) -\u003e FzValue;\n    pub const fn from_atom_id(id: u32) -\u003e FzValue;\n    pub const NIL: FzValue;\n    pub const TRUE: FzValue;\n    pub const FALSE: FzValue;\n    pub fn from_ptr(p: *mut HeapHeader) -\u003e FzValue;\n    pub fn tag(self) -\u003e Tag;\n    pub fn unbox_int(self) -\u003e Option\u003ci64\u003e;\n    pub fn unbox_ptr(self) -\u003e Option\u003c*mut HeapHeader\u003e;\n    pub fn unbox_atom(self) -\u003e Option\u003cu32\u003e;\n}\n\n#[repr(C, align(16))]\npub struct HeapHeader {\n    pub kind: u16,         // HeapKind discriminant\n    pub flags: u16,        // GC mark bit, region tag, etc.\n    pub size_bytes: u32,   // total object size including header\n    pub schema_id: u32,    // 0 if not Struct; else index into SchemaRegistry\n    pub _reserved: u32,\n}\n\n#[repr(u16)]\npub enum HeapKind { Struct=0, List=1, Bitstring=2, VecI64=3, VecF64=4, VecU8=5, VecBit=6, Map=7 }\n```\n\nBox-based allocator stubs (Box::leak for v1; real allocator in .11.2):\n- alloc_struct(schema_id, payload_size) -\u003e *mut HeapHeader\n- alloc_list_cons(head: FzValue, tail: FzValue) -\u003e *mut HeapHeader\n- per-kind helpers as needed\n\n## Tests\n\n- Tag round-trip per Tag variant.\n- from_int(MAX) -\u003e unbox_int round-trips.\n- Atom id encode/decode.\n- size_of::\u003cHeapHeader\u003e() == 16.\n- Allocate List cons cell; verify header.kind == List, size_bytes == 32 (16 header + 16 payload).\n- FzValue::NIL / TRUE / FALSE distinguishable.\n\n## Out of scope\n\n- GC (.11.2)\n- Schema registry (.11.2)\n- JIT/AOT integration (.11.7-.11.9)\n- User-definable struct syntax (future epic)\n\n## Next\n\n.11.2 — schema registry + heap allocator + mark-sweep STW",
   "id": "fz-ul4.11.1",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Tagged FzValue + heap object header",
   "type": "task",
-  "updated_at": "2026-05-10T13:00:16Z"
+  "updated_at": "2026-05-10T13:05:54Z"
 }
