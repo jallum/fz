@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-ul4.18.2"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-ul4.18.4"
+  ],
   "created": "2026-05-10T10:26:41Z",
   "description": "Third subticket. Depends on .18.2.\n\n`alias A.B.C` registers C as a short nickname for A.B.C inside the current module body. `alias A.B.C, as: D` lets the user pick the nickname.\n\n## Scope\n\n- Parser: top-of-module `alias \u003cPath\u003e` and `alias \u003cPath\u003e, as: \u003cUpper\u003e` items.\n- AST: Item::Alias { full_path: Vec\u003cString\u003e, as_name: String } scoped per-module.\n- Resolution: maintain alias map per module; when resolving `Var(C)` (Upper) on the LHS of a Dot, expand to the full path.\n- Lexically scoped: an alias inside one module does not leak into siblings.\n\n## Tests\n\n- alias A.B.C; then C.f(1) calls A.B.C.f.\n- alias with :as keyword renames.\n- Two modules with non-overlapping aliases don't see each other's aliases.\n",
   "id": "fz-ul4.18.3",
