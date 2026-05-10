@@ -10,9 +10,15 @@
   "id": "fz-ul4.11.10",
   "labels": [],
   "parent": "fz-ul4.11",
+  "comments": [
+    {
+      "text": "Landing notes (2026-05-10): 3 of 4 specified tests landed (print-list, sum via head/tail, GC reclaim + GC keep counterpart). The 4th — `map(f, [h|t])` higher-order — deferred to fz-ul4.11.19 (Closures end-to-end via CPS), authorized at landing time. .11.19 blocked by .11.11 so closure schemas can ride on the general struct path.",
+      "timestamp": "2026-05-10T19:05:22Z"
+    }
+  ],
   "priority": 3,
   "status": "in_progress",
   "title": "Lists as first heap type, end-to-end via CPS",
   "type": "task",
-  "updated_at": "2026-05-10T18:38:01Z"
+  "updated_at": "2026-05-10T19:05:22Z"
 }
