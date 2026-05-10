@@ -4,14 +4,15 @@
   "blocks": [
     "fz-ul4.16.2"
   ],
+  "closed_at": "2026-05-10T10:51:25Z",
   "created": "2026-05-10T10:50:26Z",
   "description": "First subticket of the test runner arc. Parser sugar so that\n\n  f(args) do\n    \u003cbody\u003e\n  end\n\nparses as Expr::Call(f, [\u003cargs\u003e, \u003cbody-as-Block\u003e]) — the do-block becomes a trailing positional argument. Caller-side macros pull it out with their last param.\n\n## Scope\n\n- Parser: in postfix-call (Tok::LParen branch in parse_bp), after consuming `)`, if peek is Tok::Do, consume `do` ... `end` block and append the resulting Expr to the call's args.\n- Equivalent shorthand: `f(args), do: \u003cexpr\u003e` -\u003e append \u003cexpr\u003e as trailing arg.\n- Doesn't introduce paren-less calls (`test \"name\" do ... end` Elixir-style) — parens stay required for now.\n\n## Tests\n\n- Round-trip: `f(1, 2) do x end` parses identically to `f(1, 2, do_block_expr)`.\n- The do-block can hold a multi-stmt body.\n- Call without trailing do is unchanged.\n",
   "id": "fz-ul4.16.1",
   "labels": [],
   "parent": "fz-ul4.16",
   "priority": 3,
-  "status": "open",
+  "status": "closed",
   "title": "do-block as trailing call arg",
   "type": "task",
-  "updated_at": "2026-05-10T10:50:26Z"
+  "updated_at": "2026-05-10T10:51:25Z"
 }
