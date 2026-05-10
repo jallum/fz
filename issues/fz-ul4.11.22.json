@@ -10,9 +10,15 @@
   "id": "fz-ul4.11.22",
   "labels": [],
   "parent": "fz-ul4.11",
+  "comments": [
+    {
+      "text": "Re-blocked on fz-ul4.11.24.5 (typed schema selection) — vec_map/reduce JIT should land on top of type-driven element-kind selection so closure-arg type info flows through correctly. Authorized 2026-05-10 via .11.24 design.",
+      "timestamp": "2026-05-10T20:53:10Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "vec_map / vec_reduce via JIT (closure-taking builtins)",
   "type": "task",
-  "updated_at": "2026-05-10T20:52:42Z"
+  "updated_at": "2026-05-10T20:53:10Z"
 }
