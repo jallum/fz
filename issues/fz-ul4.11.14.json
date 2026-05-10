@@ -18,11 +18,15 @@
     {
       "text": "Authorized 2026-05-10: option (a) split. Land VecI64/VecU8/VecBit + sigil alloc + vec_get + GC-stable read here.\n\nDeferred to follow-ups (both filed):\n- fz-ul4.11.22 — vec_map/vec_reduce via JIT (needs runtime-\u003eJIT trampoline re-entry seam; nontrivial architectural addition)\n- fz-ul4.11.23 — VecF64 storage and ~v[1.0, 2.0] (blocked by .11.20 boxed floats)\n\nRemaining .11.14 scope after split: I64/U8/Bit literal alloc, render, vec_get, pinned-stable address GC test.",
       "timestamp": "2026-05-10T20:12:11Z"
+    },
+    {
+      "text": "Implementation notes:\n\n- VecKindIr bifurcated from ast::VecKind alias into its own enum (I64/F64/U8/Bit). lower_vec_lit picks I64 for Numeric (or errors with .11.23 reference if any element is Float), U8 for Bytes, Bit for Bits.\n- Heap layout per ticket: HeapHeader(16) + len:u32(4) + pad:u32(4) + raw_payload (16-rounded total). Single Heap::alloc_vec_raw helper; thin per-kind wrappers (alloc_vec_i64/u8/bit) write payload bytes after header. Heap::vec_len is a static reader.\n- Bit packing matches bitstr::BitWriter (MSB-first within each byte) so the storage is interchangeable with bitstrings.\n- BuiltinKind enum added in fz_ir as the typed view of BuiltinId; BuiltinTable derived from BuiltinKind::ALL so name-\u003eid mapping is single-sourced. Codegen dispatches Prim::Builtin by BuiltinKind, retiring the print-only  check.\n- vec_get wired as BuiltinKind::VecGet -\u003e fz_vec_get runtime fn (decodes per-kind, returns NIL on out-of-bounds).\n- Tests: 4 heap-layer (I64/U8/Bit alloc, GC address stability) + 7 ir_codegen (print I64/U8/Bit, VecF64 lowering gates with .11.23 pointer, vec_get hit, vec_get OOB-as-nil, GC-stable address via JIT halt root).\n\nDeferred (filed):\n- fz-ul4.11.22 — vec_map / vec_reduce via JIT (runtime-\u003eJIT trampoline re-entry).\n- fz-ul4.11.23 — VecF64 storage and ~v[1.0, 2.0] (blocked by .11.20).",
+      "timestamp": "2026-05-10T20:18:37Z"
     }
   ],
   "priority": 3,
   "status": "open",
   "title": "Vec types as heap types (unblocks .14 SIMD)",
   "type": "task",
-  "updated_at": "2026-05-10T20:12:11Z"
+  "updated_at": "2026-05-10T20:18:37Z"
 }
