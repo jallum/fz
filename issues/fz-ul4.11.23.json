@@ -2,7 +2,8 @@
   "assignee": "",
   "blocked_by": [
     "fz-ul4.11.14",
-    "fz-ul4.11.20"
+    "fz-ul4.11.20",
+    "fz-ul4.11.24.5"
   ],
   "blocks": [],
   "created": "2026-05-10T20:11:45Z",
@@ -14,5 +15,5 @@
   "status": "open",
   "title": "VecF64 storage and ~v[1.0, 2.0] sigil",
   "type": "task",
-  "updated_at": "2026-05-10T20:12:03Z"
+  "updated_at": "2026-05-10T20:52:42Z"
 }
