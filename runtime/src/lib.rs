@@ -1,0 +1,185 @@
+//! fz-ul4.12.2 — runtime staticlib for compiled fz code.
+//!
+//! Two surfaces:
+//!
+//! 1. **Rust API** (used by the compiler at codegen time): the shared atom
+//!    table — `intern(&str) -> u32` and `name_of(u32) -> Option<String>`.
+//!    Atom ids assigned here must match the ids the runtime resolves at
+//!    print time. For JIT (.12.4) that's automatic — same process. For AOT
+//!    (.12.3), the compiler emits a startup constructor that populates the
+//!    runtime's atom table with the names it interned at compile time.
+//!
+//! 2. **C-ABI builtins** (called from compiled fz code): monomorphic
+//!    per-LowerTy variants — `fz_print_i64`, `fz_print_f64`, `fz_print_bool`,
+//!    `fz_print_atom`, `fz_print_nil`. The compiler picks the right symbol
+//!    based on the static type of the argument. `fz_panic` aborts with a
+//!    formatted message (used for case no-match, division by zero in .12.5,
+//!    etc.).
+//!
+//! Out of scope per the .12 in-scope subset: anything that allocates on the
+//! heap (lists, maps, strings, bitstrings, vectors). The tagged 64-bit Value
+//! representation moves to fz-ul4.11 alongside the GC.
+
+use std::sync::Mutex;
+
+// ---------------------------------------------------------------------------
+// Atom table
+// ---------------------------------------------------------------------------
+
+struct AtomTable {
+    names: Vec<String>,
+}
+
+impl AtomTable {
+    const fn new() -> Self {
+        Self { names: Vec::new() }
+    }
+}
+
+static ATOMS: Mutex<AtomTable> = Mutex::new(AtomTable::new());
+
+/// Intern an atom name, returning a stable u32 id. Same name → same id for
+/// the lifetime of the process.
+///
+/// Linear-scan lookup — fine for this tier; .14 or beyond can swap in a
+/// hashmap if atom interning becomes a hotspot.
+pub fn intern(name: &str) -> u32 {
+    let mut t = ATOMS.lock().unwrap();
+    if let Some(idx) = t.names.iter().position(|n| n == name) {
+        return idx as u32;
+    }
+    let id = t.names.len() as u32;
+    t.names.push(name.to_string());
+    id
+}
+
+/// Resolve an atom id back to its name. Returns `None` if the id is unknown
+/// (which should never happen for ids minted via `intern`).
+pub fn name_of(id: u32) -> Option<String> {
+    let t = ATOMS.lock().unwrap();
+    t.names.get(id as usize).cloned()
+}
+
+/// Reset the atom table. Test-only — production code should never call this.
+#[doc(hidden)]
+pub fn _reset_atoms() {
+    let mut t = ATOMS.lock().unwrap();
+    t.names.clear();
+}
+
+// ---------------------------------------------------------------------------
+// C-ABI builtins called from compiled fz code
+// ---------------------------------------------------------------------------
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_print_i64(n: i64) {
+    println!("{}", n);
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_print_f64(x: f64) {
+    println!("{}", x);
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_print_bool(b: u8) {
+    println!("{}", b != 0);
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_print_atom(id: u32) {
+    match name_of(id) {
+        Some(n) => println!(":{}", n),
+        None => println!(":<atom#{}>", id),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_print_nil() {
+    println!("nil");
+}
+
+/// Aborts with `msg` printed to stderr. `msg_ptr`/`msg_len` describe a UTF-8
+/// byte slice; the compiler emits these from a string literal embedded in
+/// the binary. Used for case no-match, integer overflow guards (.12.5), etc.
+///
+/// # Safety
+/// `msg_ptr` must point to `msg_len` valid UTF-8 bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fz_panic(msg_ptr: *const u8, msg_len: usize) -> ! {
+    let bytes = unsafe { std::slice::from_raw_parts(msg_ptr, msg_len) };
+    let s = std::str::from_utf8(bytes).unwrap_or("<panic message: invalid utf-8>");
+    eprintln!("fz panic: {}", s);
+    std::process::abort();
+}
+
+/// Register a compile-time-interned atom at runtime startup. AOT-compiled
+/// binaries call this once per atom from a constructor before main() runs,
+/// so the runtime's id↔name mapping matches the compiler's. The compiler
+/// emits one call per atom in interning order; this asserts the id matches
+/// what the compiler chose, panicking if the table has been touched first.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fz_register_atom(
+    expected_id: u32,
+    name_ptr: *const u8,
+    name_len: usize,
+) {
+    let bytes = unsafe { std::slice::from_raw_parts(name_ptr, name_len) };
+    let name = std::str::from_utf8(bytes).expect("fz_register_atom: name not utf-8");
+    let id = intern(name);
+    if id != expected_id {
+        eprintln!(
+            "fz_register_atom: expected id {} for {:?}, got {} — atom table out of sync",
+            expected_id, name, id
+        );
+        std::process::abort();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    // Atom tests touch global state. Serialize them so they don't interfere.
+    static GUARD: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn intern_assigns_stable_ids() {
+        let _g = GUARD.lock().unwrap();
+        _reset_atoms();
+        let a = intern("alpha");
+        let b = intern("beta");
+        let a2 = intern("alpha");
+        assert_eq!(a, a2);
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn name_of_round_trips() {
+        let _g = GUARD.lock().unwrap();
+        _reset_atoms();
+        let id = intern("hello");
+        assert_eq!(name_of(id).as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn name_of_unknown_id_is_none() {
+        let _g = GUARD.lock().unwrap();
+        _reset_atoms();
+        assert!(name_of(99_999).is_none());
+    }
+
+    #[test]
+    fn register_atom_succeeds_when_id_matches() {
+        let _g = GUARD.lock().unwrap();
+        _reset_atoms();
+        let name = b"first";
+        unsafe { fz_register_atom(0, name.as_ptr(), name.len()) };
+        assert_eq!(name_of(0).as_deref(), Some("first"));
+    }
+}

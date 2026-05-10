@@ -190,7 +190,12 @@ dependencies = [
  "cranelift-codegen",
  "cranelift-frontend",
  "cranelift-module",
+ "fz-runtime",
 ]
+
+[[package]]
+name = "fz-runtime"
+version = "0.1.0"
 
 [[package]]
 name = "gimli"

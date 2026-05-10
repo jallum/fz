@@ -3,10 +3,14 @@ name = "fz"
 version = "0.1.0"
 edition = "2024"
 
+[workspace]
+members = ["runtime"]
+
 [dependencies]
 cranelift-codegen = "0.131"
 cranelift-frontend = "0.131"
 cranelift-module = "0.131"
+fz-runtime = { path = "runtime" }
 
 [profile.dev]
 opt-level = 0

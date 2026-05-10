@@ -159,25 +159,46 @@ impl LV {
     }
 }
 
-/// Atom intern table — atoms collected while lowering. .12.2 will replace
-/// this with a real shared atom table; for now each codegen run is self-
-/// contained.
+/// Atom interning is delegated to the shared `fz_runtime` atom table —
+/// compile-time and runtime see the same id↔name mapping. Codegen also
+/// records which atoms it has interned so the AOT driver (.12.3) can emit
+/// `fz_register_atom` calls in interning order at binary startup.
 #[derive(Default)]
 pub struct AtomInterner {
+    /// Names in interning order, indexed by id. Compile-time-only mirror of
+    /// what we've seen during lowering this compilation unit.
     pub names: Vec<String>,
-    map: HashMap<String, u32>,
+    seen: HashMap<String, u32>,
 }
 
 impl AtomInterner {
     pub fn intern(&mut self, name: &str) -> u32 {
-        if let Some(&id) = self.map.get(name) {
-            return id;
+        let id = fz_runtime::intern(name);
+        if !self.seen.contains_key(name) {
+            self.seen.insert(name.to_string(), id);
+            // Maintain `names` indexed by id, growing as needed. Different
+            // compilation units can see overlapping/skipping ids if the
+            // shared table was touched elsewhere; that's fine — the AOT
+            // driver only emits `fz_register_atom` for ids it has actually
+            // observed.
+            if (id as usize) >= self.names.len() {
+                self.names.resize(id as usize + 1, String::new());
+            }
+            self.names[id as usize] = name.to_string();
         }
-        let id = self.names.len() as u32;
-        self.names.push(name.to_string());
-        self.map.insert(name.to_string(), id);
         id
     }
+}
+
+/// Result of lowering a single function. The driver (.12.3 AOT / .12.4 JIT)
+/// uses the import tables to resolve `UserExternalName(ns, id)` references
+/// in the function back to real symbols:
+/// - namespace 0 = user functions; id is an index into `callee_imports`.
+/// - namespace 1 = runtime builtins; id is an index into `builtin_imports`.
+pub struct LowerResult {
+    pub func: Function,
+    pub callee_imports: Vec<String>,
+    pub builtin_imports: Vec<&'static str>,
 }
 
 /// Public API: lower a single-clause function with explicit signature info.
@@ -190,7 +211,7 @@ pub fn lower_fn(
     sig: &FnSig,
     callees: &HashMap<String, FnSig>,
     atoms: &mut AtomInterner,
-) -> Result<Function, LowerError> {
+) -> Result<LowerResult, LowerError> {
     if def.clauses.len() != 1 {
         return Err(LowerError::Unsupported(
             "multi-clause functions (lands in .12.5)".into(),
@@ -248,6 +269,7 @@ pub fn lower_fn(
         callees,
         atoms,
         callee_refs: HashMap::new(),
+        builtin_refs: HashMap::new(),
         case_result_ty: None,
     };
     let body_lv = ctx.lower_expr(&clause.body, &env)?;
@@ -257,8 +279,59 @@ pub fn lower_fn(
     body_lv.flatten(&mut ret_vals);
     ctx.builder.ins().return_(&ret_vals);
 
+    // Capture import tables in id order before finalize() consumes ctx.
+    let callee_imports = order_by_id(&ctx.callee_refs, &ctx.builder, /*ns=*/ 0);
+    let builtin_imports = order_by_id_static(&ctx.builtin_refs, &ctx.builder, /*ns=*/ 1);
+
     ctx.builder.finalize();
-    Ok(func)
+    Ok(LowerResult { func, callee_imports, builtin_imports })
+}
+
+fn order_by_id(
+    refs: &HashMap<String, cranelift_codegen::ir::FuncRef>,
+    builder: &FunctionBuilder<'_>,
+    ns: u32,
+) -> Vec<String> {
+    let mut out: Vec<(u32, String)> = refs
+        .iter()
+        .map(|(name, fr)| {
+            let id = user_id_of(builder, *fr, ns).expect("callee FuncRef must be user-named");
+            (id, name.clone())
+        })
+        .collect();
+    out.sort_by_key(|(id, _)| *id);
+    out.into_iter().map(|(_, n)| n).collect()
+}
+
+fn order_by_id_static(
+    refs: &HashMap<&'static str, cranelift_codegen::ir::FuncRef>,
+    builder: &FunctionBuilder<'_>,
+    ns: u32,
+) -> Vec<&'static str> {
+    let mut out: Vec<(u32, &'static str)> = refs
+        .iter()
+        .map(|(name, fr)| {
+            let id = user_id_of(builder, *fr, ns).expect("builtin FuncRef must be user-named");
+            (id, *name)
+        })
+        .collect();
+    out.sort_by_key(|(id, _)| *id);
+    out.into_iter().map(|(_, n)| n).collect()
+}
+
+fn user_id_of(
+    builder: &FunctionBuilder<'_>,
+    fr: cranelift_codegen::ir::FuncRef,
+    expect_ns: u32,
+) -> Option<u32> {
+    let ext = &builder.func.dfg.ext_funcs[fr];
+    match ext.name {
+        cranelift_codegen::ir::ExternalName::User(uref) => {
+            let u = &builder.func.params.user_named_funcs()[uref];
+            if u.namespace == expect_ns { Some(u.index) } else { None }
+        }
+        _ => None,
+    }
 }
 
 pub fn verify(func: &Function) -> Result<(), String> {
@@ -277,6 +350,11 @@ struct LoweringCtx<'a, 'b> {
     /// `Unsupported` error so the lowering surface is testable without
     /// a host Module — except for self-recursion via the same mechanism.
     callee_refs: HashMap<String, cranelift_codegen::ir::FuncRef>,
+    /// Imported FuncRefs for runtime builtins (fz_print_*, fz_panic, …).
+    /// Distinct from user-fn callees: emitted under namespace 1 so the host
+    /// Module (.12.3/.12.4) can resolve them to the runtime staticlib's
+    /// `extern "C"` symbols.
+    builtin_refs: HashMap<&'static str, cranelift_codegen::ir::FuncRef>,
     case_result_ty: Option<LowerTy>,
 }
 
@@ -666,6 +744,11 @@ impl<'a, 'b> LoweringCtx<'a, 'b> {
                 )));
             }
         };
+        // Builtins dispatch on argument type to the right runtime symbol;
+        // they aren't entries in `callees`.
+        if let Some(lv) = self.try_lower_builtin(&name, args, env)? {
+            return Ok(lv);
+        }
         let sig = self
             .callees
             .get(&name)
@@ -696,6 +779,89 @@ impl<'a, 'b> LoweringCtx<'a, 'b> {
         let results: Vec<Value> = self.builder.inst_results(inst).to_vec();
         let mut idx = 0;
         Ok(LV::unflatten(&sig.ret, &results, &mut idx))
+    }
+
+    fn try_lower_builtin(
+        &mut self,
+        name: &str,
+        args: &[Expr],
+        env: &HashMap<String, LV>,
+    ) -> Result<Option<LV>, LowerError> {
+        match name {
+            "print" => {
+                if args.len() != 1 {
+                    return Err(LowerError::TypeMismatch(format!(
+                        "print/1 called with {} args",
+                        args.len()
+                    )));
+                }
+                let arg = self.lower_expr(&args[0], env)?;
+                let (sym, sig) = match arg.ty() {
+                    LowerTy::I64 => (
+                        "fz_print_i64",
+                        FnSig { params: vec![LowerTy::I64], ret: LowerTy::Nil },
+                    ),
+                    LowerTy::F64 => (
+                        "fz_print_f64",
+                        FnSig { params: vec![LowerTy::F64], ret: LowerTy::Nil },
+                    ),
+                    LowerTy::Bool => (
+                        "fz_print_bool",
+                        FnSig { params: vec![LowerTy::Bool], ret: LowerTy::Nil },
+                    ),
+                    LowerTy::Atom => (
+                        "fz_print_atom",
+                        FnSig { params: vec![LowerTy::Atom], ret: LowerTy::Nil },
+                    ),
+                    LowerTy::Nil => (
+                        "fz_print_nil",
+                        FnSig { params: vec![], ret: LowerTy::Nil },
+                    ),
+                    LowerTy::Tuple(_) => {
+                        return Err(LowerError::Unsupported(
+                            "print of tuple — needs a runtime helper, lands in .12.5".into(),
+                        ));
+                    }
+                };
+                let fr = self.import_runtime(sym, &sig)?;
+                let mut flat_args = Vec::new();
+                if !matches!(arg.ty(), LowerTy::Nil) {
+                    arg.flatten(&mut flat_args);
+                }
+                let _ = self.builder.ins().call(fr, &flat_args);
+                let z = self.builder.ins().iconst(clt::I8, 0);
+                Ok(Some(LV::Scalar(LowerTy::Nil, z)))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn import_runtime(
+        &mut self,
+        sym: &'static str,
+        sig: &FnSig,
+    ) -> Result<cranelift_codegen::ir::FuncRef, LowerError> {
+        if let Some(fr) = self.builtin_refs.get(sym) {
+            return Ok(*fr);
+        }
+        let cl_sig = sig.to_cranelift(CallConv::SystemV);
+        let sig_ref = self.builder.import_signature(cl_sig);
+        // Namespace 1 is the runtime; the host Module maps id → runtime
+        // staticlib symbol via a fixed table (.12.3/.12.4).
+        let id = self.builtin_refs.len() as u32;
+        let user_name_ref = self
+            .builder
+            .func
+            .declare_imported_user_function(cranelift_codegen::ir::UserExternalName::new(1, id));
+        let ext_data = cranelift_codegen::ir::ExtFuncData {
+            name: cranelift_codegen::ir::ExternalName::user(user_name_ref),
+            signature: sig_ref,
+            colocated: false,
+            patchable: false,
+        };
+        let fr = self.builder.func.import_function(ext_data);
+        self.builtin_refs.insert(sym, fr);
+        Ok(fr)
     }
 
     fn import_callee(
@@ -875,9 +1041,9 @@ mod tests {
         let def = parse_one(src);
         let callees = HashMap::new();
         let mut atoms = AtomInterner::default();
-        let f = lower_fn(&def, &sig, &callees, &mut atoms).expect("lower");
-        verify(&f).expect("verify");
-        f
+        let r = lower_fn(&def, &sig, &callees, &mut atoms).expect("lower");
+        verify(&r.func).expect("verify");
+        r.func
     }
 
     fn ty_i64() -> LowerTy { LowerTy::I64 }
@@ -971,16 +1137,17 @@ mod tests {
             FnSig { params: vec![ty_i64()], ret: ty_i64() },
         );
         let mut atoms = AtomInterner::default();
-        let f = lower_fn(
+        let r = lower_fn(
             &def,
             &FnSig { params: vec![ty_i64()], ret: ty_i64() },
             &callees,
             &mut atoms,
         )
         .expect("lower");
-        verify(&f).expect("verify");
-        let s = f.display().to_string();
+        verify(&r.func).expect("verify");
+        let s = r.func.display().to_string();
         assert!(s.contains("call"));
+        assert_eq!(r.callee_imports, vec!["dbl".to_string()]);
     }
 
     #[test]
@@ -993,14 +1160,14 @@ mod tests {
             FnSig { params: vec![ty_i64()], ret: ty_i64() },
         );
         let mut atoms = AtomInterner::default();
-        let f = lower_fn(
+        let r = lower_fn(
             &def,
             &FnSig { params: vec![ty_i64()], ret: ty_i64() },
             &callees,
             &mut atoms,
         )
         .expect("lower");
-        verify(&f).expect("verify");
+        verify(&r.func).expect("verify");
     }
 
     #[test]
@@ -1032,6 +1199,97 @@ mod tests {
             &mut atoms,
         );
         assert!(matches!(res, Err(LowerError::Unsupported(_))));
+    }
+
+    #[test]
+    fn lowers_print_int_to_runtime_builtin() {
+        let def = parse_one("fn p(n) do print(n) end");
+        let mut atoms = AtomInterner::default();
+        let r = lower_fn(
+            &def,
+            &FnSig { params: vec![ty_i64()], ret: LowerTy::Nil },
+            &HashMap::new(),
+            &mut atoms,
+        )
+        .expect("lower");
+        verify(&r.func).expect("verify");
+        assert_eq!(r.builtin_imports, vec!["fz_print_i64"]);
+        assert!(r.callee_imports.is_empty());
+    }
+
+    #[test]
+    fn lowers_print_atom_to_runtime_builtin() {
+        let def = parse_one("fn p() do print(:hello) end");
+        let mut atoms = AtomInterner::default();
+        let r = lower_fn(
+            &def,
+            &FnSig { params: vec![], ret: LowerTy::Nil },
+            &HashMap::new(),
+            &mut atoms,
+        )
+        .expect("lower");
+        verify(&r.func).expect("verify");
+        assert_eq!(r.builtin_imports, vec!["fz_print_atom"]);
+        // Atom was interned in the shared runtime table.
+        assert!(atoms.names.iter().any(|n| n == "hello"));
+    }
+
+    #[test]
+    fn lowers_print_nil_with_zero_args() {
+        let def = parse_one("fn p() do print(nil) end");
+        let mut atoms = AtomInterner::default();
+        let r = lower_fn(
+            &def,
+            &FnSig { params: vec![], ret: LowerTy::Nil },
+            &HashMap::new(),
+            &mut atoms,
+        )
+        .expect("lower");
+        verify(&r.func).expect("verify");
+        assert_eq!(r.builtin_imports, vec!["fz_print_nil"]);
+    }
+
+    #[test]
+    fn rejects_print_of_tuple() {
+        let def = parse_one("fn p(t) do print(t) end");
+        let mut atoms = AtomInterner::default();
+        let res = lower_fn(
+            &def,
+            &FnSig {
+                params: vec![LowerTy::Tuple(vec![ty_i64(), ty_i64()])],
+                ret: LowerTy::Nil,
+            },
+            &HashMap::new(),
+            &mut atoms,
+        );
+        assert!(matches!(res, Err(LowerError::Unsupported(_))));
+    }
+
+    #[test]
+    fn shared_atom_table_assigns_consistent_ids() {
+        // Two lowerings interning the same atom name see the same id —
+        // because the table is shared across the process.
+        let def1 = parse_one("fn a() do :foo end");
+        let def2 = parse_one("fn b() do :foo end");
+        let mut atoms1 = AtomInterner::default();
+        let mut atoms2 = AtomInterner::default();
+        let _ = lower_fn(
+            &def1,
+            &FnSig { params: vec![], ret: ty_atom() },
+            &HashMap::new(),
+            &mut atoms1,
+        )
+        .unwrap();
+        let _ = lower_fn(
+            &def2,
+            &FnSig { params: vec![], ret: ty_atom() },
+            &HashMap::new(),
+            &mut atoms2,
+        )
+        .unwrap();
+        let id1 = fz_runtime::intern("foo");
+        let id2 = fz_runtime::intern("foo");
+        assert_eq!(id1, id2);
     }
 
     #[test]
