@@ -14,9 +14,15 @@
   "id": "fz-ul4.11.14",
   "labels": [],
   "parent": "fz-ul4.11",
+  "comments": [
+    {
+      "text": "Authorized 2026-05-10: option (a) split. Land VecI64/VecU8/VecBit + sigil alloc + vec_get + GC-stable read here.\n\nDeferred to follow-ups (both filed):\n- fz-ul4.11.22 — vec_map/vec_reduce via JIT (needs runtime-\u003eJIT trampoline re-entry seam; nontrivial architectural addition)\n- fz-ul4.11.23 — VecF64 storage and ~v[1.0, 2.0] (blocked by .11.20 boxed floats)\n\nRemaining .11.14 scope after split: I64/U8/Bit literal alloc, render, vec_get, pinned-stable address GC test.",
+      "timestamp": "2026-05-10T20:12:11Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "Vec types as heap types (unblocks .14 SIMD)",
   "type": "task",
-  "updated_at": "2026-05-10T20:12:03Z"
+  "updated_at": "2026-05-10T20:12:11Z"
 }
