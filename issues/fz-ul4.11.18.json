@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
     "fz-ul4.11.10"
@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-ul4.11",
   "priority": 3,
-  "status": "open",
+  "status": "in_progress",
   "title": "JIT scalar repr switches to FzValue (foundation for .11.10+)",
   "type": "task",
-  "updated_at": "2026-05-10T18:33:05Z"
+  "updated_at": "2026-05-10T18:33:08Z"
 }
