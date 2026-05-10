@@ -509,6 +509,12 @@ impl Typer {
                 let ret = self.infer(&env, body);
                 Descr::arrow(arg_ts, ret)
             }
+            // Macros: quote/unquote produce reified-AST values (tuples,
+            // atoms, lists). The typer doesn't try to track that shape
+            // statically — after .10.3 expansion runs they should be gone
+            // from the input anyway. Type as Descr::any() so the rest of
+            // the program types through.
+            Expr::Quote(_) | Expr::Unquote(_) => Descr::any(),
         }
     }
 

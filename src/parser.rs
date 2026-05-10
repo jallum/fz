@@ -402,6 +402,8 @@ impl Parser {
                 blk
             }
             Tok::Fn => self.parse_lambda()?,
+            Tok::Quote => self.parse_quote()?,
+            Tok::Unquote => self.parse_unquote()?,
             Tok::LBitstr => self.parse_bitstring_expr()?,
             Tok::Sigil(name) => {
                 let kind = match name.as_str() {
@@ -452,6 +454,40 @@ impl Parser {
             }
         }
         Ok(if exprs.len() == 1 { exprs.pop().unwrap() } else { Expr::Block(exprs) })
+    }
+
+    /// `quote do: <expr>` (one-line shorthand) or `quote do <stmts> end`.
+    fn parse_quote(&mut self) -> PR<Expr> {
+        self.expect(&Tok::Quote, "`quote`")?;
+        // `, do: <expr>` shorthand
+        if matches!(self.peek(), Tok::Comma) && matches!(self.peek_at(1), Tok::KwKey(s) if s == "do") {
+            self.bump(); // ,
+            self.bump(); // do:
+            let e = self.parse_expr()?;
+            return Ok(Expr::Quote(Box::new(e)));
+        }
+        // `do: <expr>` without leading comma
+        if matches!(self.peek(), Tok::KwKey(s) if s == "do") {
+            self.bump();
+            let e = self.parse_expr()?;
+            return Ok(Expr::Quote(Box::new(e)));
+        }
+        self.expect(&Tok::Do, "`do` or `do:` after `quote`")?;
+        self.skip_newlines();
+        let body = self.parse_block_until(&[Tok::End])?;
+        self.expect(&Tok::End, "`end`")?;
+        Ok(Expr::Quote(Box::new(body)))
+    }
+
+    /// `unquote(<expr>)`.
+    fn parse_unquote(&mut self) -> PR<Expr> {
+        self.expect(&Tok::Unquote, "`unquote`")?;
+        self.expect(&Tok::LParen, "`(` after `unquote`")?;
+        self.skip_newlines();
+        let e = self.parse_expr()?;
+        self.skip_newlines();
+        self.expect(&Tok::RParen, "`)`")?;
+        Ok(Expr::Unquote(Box::new(e)))
     }
 
     fn parse_if(&mut self) -> PR<Expr> {

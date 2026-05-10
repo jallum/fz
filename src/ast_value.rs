@@ -114,6 +114,13 @@ pub fn expr_to_value(e: &Expr) -> Result<Value, String> {
             ast_node("=", &[], Some(Value::List(Rc::new(vec![lhs, rv]))))
         }
 
+        Expr::Quote(_) | Expr::Unquote(_) => {
+            // Nested quotes — reachable in principle but the v1 expansion
+            // pass uses the eval-side reify_with_unquotes, not this fn,
+            // when an unquote needs splicing. Reject here so a stray
+            // top-level reify doesn't silently swallow either form.
+            return Err("ast_value: quote/unquote must be evaluated, not reified".into());
+        }
         Expr::Case(_, _) | Expr::Cond(_) | Expr::With(_, _, _)
         | Expr::Lambda(_, _) | Expr::Map(_) | Expr::MapUpdate(_, _)
         | Expr::Index(_, _) | Expr::Dot(_, _) | Expr::VecLit(_, _)
@@ -283,7 +290,7 @@ fn decode_if_kw(v: &Value) -> Result<(Expr, Option<Expr>), String> {
     Ok((t, e))
 }
 
-fn binop_atom(op: BinOp) -> &'static str {
+pub fn binop_atom(op: BinOp) -> &'static str {
     match op {
         BinOp::Add => "+", BinOp::Sub => "-", BinOp::Mul => "*", BinOp::Div => "/", BinOp::Rem => "rem",
         BinOp::Eq => "==", BinOp::Neq => "!=",
@@ -304,7 +311,7 @@ fn binop_from_atom(s: &str) -> Option<BinOp> {
     })
 }
 
-fn unop_atom(op: UnOp) -> &'static str {
+pub fn unop_atom(op: UnOp) -> &'static str {
     match op {
         UnOp::Neg => "neg", // distinct from binary "-" so the decoder can disambiguate by arity
         UnOp::Not => "not",

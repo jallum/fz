@@ -392,8 +392,170 @@ impl Interp {
                     env: env.clone(),
                 })))
             }
+            Expr::Quote(inner) => self.reify_with_unquotes(inner, env),
+            Expr::Unquote(_) => Err("unquote used outside `quote`".into()),
         }
     }
+
+    /// Walk an Expr like `ast_value::expr_to_value`, but when an
+    /// `Expr::Unquote(e)` is encountered, eval `e` in `env` and splice the
+    /// resulting Value into the reified output.
+    fn reify_with_unquotes(&self, e: &Expr, env: &Env) -> EvalResult {
+        use crate::ast_value::expr_to_value;
+        match e {
+            Expr::Unquote(inner) => self.eval(inner, env),
+
+            // Compound exprs: recurse so unquotes inside them get spliced.
+            Expr::List(xs, tail) => {
+                if tail.is_some() {
+                    return Err("quote: list cons-tail not yet supported".into());
+                }
+                let mut out = Vec::with_capacity(xs.len());
+                for x in xs { out.push(self.reify_with_unquotes(x, env)?); }
+                Ok(Value::List(Rc::new(out)))
+            }
+            Expr::Tuple(xs) => {
+                let mut out = Vec::with_capacity(xs.len());
+                for x in xs { out.push(self.reify_with_unquotes(x, env)?); }
+                if out.len() == 2 {
+                    Ok(Value::Tuple(Rc::new(out)))
+                } else {
+                    Ok(quoted_node("{}", Value::List(Rc::new(out))))
+                }
+            }
+            Expr::Call(callee, args) => {
+                let name = match &**callee {
+                    Expr::Var(n) => n.clone(),
+                    _ => return Err("quote: only direct named calls supported".into()),
+                };
+                let mut arg_vs = Vec::with_capacity(args.len());
+                for a in args { arg_vs.push(self.reify_with_unquotes(a, env)?); }
+                Ok(quoted_node(&name, Value::List(Rc::new(arg_vs))))
+            }
+            Expr::BinOp(op, l, r) => {
+                let lv = self.reify_with_unquotes(l, env)?;
+                let rv = self.reify_with_unquotes(r, env)?;
+                Ok(quoted_node(crate::ast_value::binop_atom(*op),
+                    Value::List(Rc::new(vec![lv, rv]))))
+            }
+            Expr::UnOp(op, x) => {
+                let xv = self.reify_with_unquotes(x, env)?;
+                Ok(quoted_node(crate::ast_value::unop_atom(*op),
+                    Value::List(Rc::new(vec![xv]))))
+            }
+            Expr::Block(xs) => {
+                let mut out = Vec::with_capacity(xs.len());
+                for x in xs { out.push(self.reify_with_unquotes(x, env)?); }
+                Ok(quoted_node("__block__", Value::List(Rc::new(out))))
+            }
+            Expr::If(c, t, els) => {
+                let cv = self.reify_with_unquotes(c, env)?;
+                let tv = self.reify_with_unquotes(t, env)?;
+                let mut kw = vec![tuple_kv("do", tv)];
+                if let Some(e) = els {
+                    kw.push(tuple_kv("else", self.reify_with_unquotes(e, env)?));
+                }
+                Ok(quoted_node("if", Value::List(Rc::new(vec![
+                    cv, Value::List(Rc::new(kw)),
+                ]))))
+            }
+
+            // Leaves with no possible unquote inside: defer to reifier.
+            _ => expr_to_value(e),
+        }
+    }
+}
+
+#[cfg(test)]
+mod quote_tests {
+    use super::*;
+    use crate::lexer::Lexer;
+    use crate::parser::Parser;
+
+    /// Eval `expr_src` (wrapped in a fn body, called from main) and return
+    /// the value it produced.
+    fn eval_in_main(expr_src: &str) -> Value {
+        let src = format!(
+            "fn _go() do {} end\nfn main() do _go() end",
+            expr_src
+        );
+        let toks = Lexer::new(&src).tokenize().expect("lex");
+        let prog = Parser::new(toks).parse_program().expect("parse");
+        let interp = Interp::new();
+        interp.load_program(&prog).expect("load");
+        // Evaluate _go directly so we get its return value, not main's nil.
+        interp.call_named("_go", vec![]).expect("eval")
+    }
+
+    #[test]
+    fn quote_literal_is_self() {
+        assert!(matches!(eval_in_main("quote do: 42"), Value::Int(42)));
+        assert!(matches!(eval_in_main("quote do: :ok"), Value::Atom(s) if &*s == "ok"));
+    }
+
+    #[test]
+    fn quote_var_is_3_tuple() {
+        let v = eval_in_main("quote do: foo");
+        let Value::Tuple(t) = &v else { panic!("expected tuple, got {}", v) };
+        assert_eq!(t.len(), 3);
+        assert!(matches!(&t[0], Value::Atom(s) if &**s == "foo"));
+    }
+
+    #[test]
+    fn quote_binop_reifies() {
+        let v = eval_in_main("quote do: 1 + 2");
+        let Value::Tuple(t) = &v else { panic!() };
+        assert!(matches!(&t[0], Value::Atom(s) if &**s == "+"));
+        let Value::List(args) = &t[2] else { panic!() };
+        assert_eq!(args.len(), 2);
+        assert!(matches!(&args[0], Value::Int(1)));
+        assert!(matches!(&args[1], Value::Int(2)));
+    }
+
+    #[test]
+    fn unquote_splices_value() {
+        // x = 5; quote do: 1 + unquote(x)  →  {:+, %{}, [1, 5]}
+        let v = eval_in_main("x = 5\nquote do: 1 + unquote(x)");
+        let Value::Tuple(t) = &v else { panic!() };
+        let Value::List(args) = &t[2] else { panic!() };
+        assert!(matches!(&args[0], Value::Int(1)));
+        assert!(matches!(&args[1], Value::Int(5)));
+    }
+
+    #[test]
+    fn unquote_in_call_args() {
+        let v = eval_in_main("y = :hello\nquote do: print(unquote(y), 1)");
+        let Value::Tuple(t) = &v else { panic!() };
+        assert!(matches!(&t[0], Value::Atom(s) if &**s == "print"));
+        let Value::List(args) = &t[2] else { panic!() };
+        assert!(matches!(&args[0], Value::Atom(s) if &**s == "hello"));
+        assert!(matches!(&args[1], Value::Int(1)));
+    }
+
+    #[test]
+    fn unquote_outside_quote_errors() {
+        let src = "fn main() do unquote(1) end";
+        let toks = Lexer::new(src).tokenize().unwrap();
+        let prog = Parser::new(toks).parse_program().unwrap();
+        let interp = Interp::new();
+        interp.load_program(&prog).unwrap();
+        let res = interp.call_named("main", vec![]);
+        assert!(res.is_err(), "expected unquote-outside-quote error, got {:?}", res);
+        assert!(res.as_ref().unwrap_err().contains("unquote"),
+            "expected message to mention unquote, got {:?}", res);
+    }
+}
+
+fn quoted_node(name: &str, args: Value) -> Value {
+    Value::Tuple(Rc::new(vec![
+        Value::Atom(Rc::from(name)),
+        Value::Map(Rc::new(crate::value::FzMap::new())),
+        args,
+    ]))
+}
+
+fn tuple_kv(key: &str, val: Value) -> Value {
+    Value::Tuple(Rc::new(vec![Value::Atom(Rc::from(key)), val]))
 }
 
 fn build_vec(kind: VecKind, vs: &[Value]) -> Result<FzVec, String> {

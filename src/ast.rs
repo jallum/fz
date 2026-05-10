@@ -52,6 +52,16 @@ pub enum Expr {
 
     // anonymous fn: fn (p1, p2) -> body  /  multi-clause via Case under the hood later
     Lambda(Vec<Pattern>, Box<Expr>),
+
+    // macro support (fz-ul4.10):
+    /// `quote do: <e>` / `quote do <e> end`. Eval reifies `e` to a Value,
+    /// recursing through inner Unquote nodes which evaluate their inner
+    /// expression and splice the resulting Value in place.
+    Quote(Box<Expr>),
+    /// `unquote(<e>)`. Only meaningful inside a Quote; outside, evaluation
+    /// errors. The macro expansion pass (.10.3) is also responsible for
+    /// rejecting any leftover Unquote nodes after expansion completes.
+    Unquote(Box<Expr>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
