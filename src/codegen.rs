@@ -206,16 +206,59 @@ pub fn lower_fn(
     callees: &HashMap<String, FnSig>,
     atoms: &mut AtomInterner,
 ) -> Result<LowerResult, LowerError> {
+    lower_fn_with(
+        def,
+        sig,
+        callees,
+        atoms,
+        &HashMap::new(),
+        &std::collections::HashSet::new(),
+    )
+}
+
+/// Lower a fn definition with extra context for higher-order specializations
+/// (fz-ul4.4.2).
+///
+/// - `param_bindings` maps AST param names that are β-reduced in this
+///   instance to the user fn they're bound to. These params have no runtime
+///   presence — they're absent from `sig.params` and are stripped from the
+///   per-clause pattern dispatch.
+/// - `user_fns` is the set of all user fn names; used by lower_call to
+///   recognize fn-by-name args at call sites.
+pub fn lower_fn_with(
+    def: &FnDef,
+    sig: &FnSig,
+    callees: &HashMap<String, FnSig>,
+    atoms: &mut AtomInterner,
+    param_bindings: &HashMap<String, String>,
+    user_fns: &std::collections::HashSet<String>,
+) -> Result<LowerResult, LowerError> {
     if def.clauses.is_empty() {
         return Err(LowerError::Internal(format!("{}: zero clauses", def.name)));
     }
+    // Determine which AST param positions are bound (β-reduced) in this
+    // specialization. A position is bound iff the clause's param at that
+    // position is Pattern::Var(name) with name ∈ param_bindings, and the
+    // same must hold for every clause (validated in specialize_def).
+    let bound_positions: Vec<bool> = (0..def.clauses[0].params.len()).map(|i| {
+        match &def.clauses[0].params[i] {
+            crate::ast::Pattern::Var(n) => param_bindings.contains_key(n),
+            _ => false,
+        }
+    }).collect();
+    let runtime_arity = bound_positions.iter().filter(|b| !**b).count();
     for c in &def.clauses {
-        if c.params.len() != sig.params.len() {
+        if c.params.len() != bound_positions.len() {
             return Err(LowerError::Internal(format!(
-                "{}: arity mismatch — sig has {}, clause has {}",
-                def.name,
-                sig.params.len(),
-                c.params.len()
+                "{}: clause arity {} differs from first clause {}",
+                def.name, c.params.len(), bound_positions.len(),
+            )));
+        }
+        if runtime_arity != sig.params.len() {
+            return Err(LowerError::Internal(format!(
+                "{}: runtime arity {} (= AST arity {} − {} bound) does not match sig arity {}",
+                def.name, runtime_arity, bound_positions.len(),
+                bound_positions.len() - runtime_arity, sig.params.len(),
             )));
         }
     }
@@ -250,12 +293,20 @@ pub fn lower_fn(
     // tail-position self-calls have a chance to add themselves as
     // predecessors. Sealing is done in lower_fn after lower_clauses returns.
 
-    // Build per-arg LVs from the TCO header's params.
+    // Build per-arg LVs from the TCO header's params, in the AST clause's
+    // param order. Bound positions get a sentinel `LV::Nil-like` value that
+    // the clause matcher will skip.
     let tco_params: Vec<Value> = builder.block_params(tco_hdr).to_vec();
     let mut idx = 0;
-    let mut arg_lvs: Vec<LV> = Vec::with_capacity(sig.params.len());
-    for pty in &sig.params {
-        arg_lvs.push(LV::unflatten(pty, &tco_params, &mut idx));
+    let mut arg_lvs: Vec<Option<LV>> = Vec::with_capacity(bound_positions.len());
+    let mut runtime_pty_iter = sig.params.iter();
+    for is_bound in &bound_positions {
+        if *is_bound {
+            arg_lvs.push(None);
+        } else {
+            let pty = runtime_pty_iter.next().expect("runtime arity matches sig");
+            arg_lvs.push(Some(LV::unflatten(pty, &tco_params, &mut idx)));
+        }
     }
 
     let mut ctx = LoweringCtx {
@@ -268,6 +319,9 @@ pub fn lower_fn(
         self_name: def.name.clone(),
         self_sig: sig.clone(),
         tco_hdr,
+        param_bindings: param_bindings.clone(),
+        user_fns: user_fns.clone(),
+        bound_positions: bound_positions.clone(),
     };
 
     ctx.lower_clauses(&def.clauses, &arg_lvs, &sig.ret)?;
@@ -359,6 +413,18 @@ struct LoweringCtx<'a, 'b> {
     /// TCO header block: a per-fn jump target whose block params shape
     /// matches `self_sig`. Tail self-calls evaluate new args and jump here.
     tco_hdr: cranelift_codegen::ir::Block,
+    /// Higher-order param bindings (fz-ul4.4.2). Maps a syntactic param
+    /// name to the user fn it's β-reduced to in this specialization. Calls
+    /// to a bound param are rewritten to direct calls to the bound fn.
+    /// Empty for non-HOF lowerings.
+    param_bindings: HashMap<String, String>,
+    /// All user fn names, used by `lower_call` to recognize fn-by-name args
+    /// at call sites and emit `CallSlot::UserFn(name)` slots for them.
+    user_fns: std::collections::HashSet<String>,
+    /// AST positions whose param is β-reduced and absent from the runtime
+    /// signature. Tail self-calls strip args at these positions when
+    /// jumping to `tco_hdr`.
+    bound_positions: Vec<bool>,
 }
 
 impl<'a, 'b> LoweringCtx<'a, 'b> {
@@ -747,28 +813,50 @@ impl<'a, 'b> LoweringCtx<'a, 'b> {
                 )));
             }
         };
+
+        // β-reduce: if `name` is a higher-order param bound to a concrete
+        // user fn in this specialization, rewrite the call target before
+        // dispatch (fz-ul4.4.2). The bound user fn becomes the new target
+        // and goes through normal mangling.
+        let name = self.param_bindings.get(&name).cloned().unwrap_or(name);
+
         // Builtins dispatch on argument type to the right runtime symbol;
         // they aren't entries in `callees`.
         if let Some(lv) = self.try_lower_builtin(&name, args, env)? {
             return Ok(lv);
         }
 
-        // Lower args first so we can mangle the call shape and dispatch to
-        // the matching specialization (fz-ul4.6). For non-polymorphic fns
-        // the mangled symbol won't be in `callees` and we fall back to the
-        // user name.
-        let mut arg_lvs: Vec<LV> = Vec::with_capacity(args.len());
-        let mut arg_shape: Vec<LowerTy> = Vec::with_capacity(args.len());
+        // Build call slots for mangling. An arg is a UserFn slot iff it's
+        // a syntactic Var that resolves to either a top-level fn (user_fns)
+        // or a HOF-bound param in the current specialization. Otherwise it's
+        // a runtime-lowered scalar/tuple slot.
+        let mut arg_lvs: Vec<LV> = Vec::new();
+        let mut slots: Vec<crate::aot::CallSlot> = Vec::with_capacity(args.len());
         for a in args {
+            if let Expr::Var(n) = a {
+                let resolved = self.param_bindings.get(n).cloned()
+                    .or_else(|| if self.user_fns.contains(n) { Some(n.clone()) } else { None });
+                if let Some(callee) = resolved {
+                    slots.push(crate::aot::CallSlot::UserFn(callee));
+                    continue;
+                }
+            }
             let lv = self.lower_expr(a, env)?;
-            arg_shape.push(lv.ty());
+            slots.push(crate::aot::CallSlot::Lower(lv.ty()));
             arg_lvs.push(lv);
         }
 
-        let mangled = crate::aot::mangle_call(&name, &arg_shape);
+        let mangled = crate::aot::mangle_call(&name, &slots);
         let (sym, sig) = if let Some(s) = self.callees.get(&mangled) {
             (mangled, s.clone())
         } else if let Some(s) = self.callees.get(&name) {
+            // Fallback path: non-specialized callee with all-runtime args.
+            // Reject if any slot was a UserFn (we have no fn-pointer ABI).
+            if slots.iter().any(|s| matches!(s, crate::aot::CallSlot::UserFn(_))) {
+                return Err(LowerError::Internal(format!(
+                    "no specialization {} for higher-order call to {}", mangled, name
+                )));
+            }
             (name.clone(), s.clone())
         } else {
             return Err(LowerError::Internal(format!(
@@ -1003,7 +1091,7 @@ impl<'a, 'b> LoweringCtx<'a, 'b> {
     fn lower_clauses(
         &mut self,
         clauses: &[FnClause],
-        args: &[LV],
+        args: &[Option<LV>],
         ret_ty: &LowerTy,
     ) -> Result<(), LowerError> {
         let n = clauses.len();
@@ -1020,10 +1108,13 @@ impl<'a, 'b> LoweringCtx<'a, 'b> {
             let body_blk = self.builder.create_block();
             let fail_blk = next_blks[i];
 
-            // Build pattern-match boolean across all param patterns.
+            // Build pattern-match boolean across all param patterns. Bound
+            // (β-reduced) positions are skipped: they have no runtime LV
+            // and their AST pattern is Pattern::Var, which trivially matches.
             let mut bindings: Vec<(String, LV)> = Vec::new();
             let mut acc: Option<Value> = None;
-            for (pat, lv) in clause.params.iter().zip(args.iter()) {
+            for (pat, slot) in clause.params.iter().zip(args.iter()) {
+                let Some(lv) = slot else { continue };
                 let cond = self.match_cond(pat, lv, &mut bindings)?;
                 if let MatchCond::OnValue(b) = cond {
                     acc = Some(match acc {
@@ -1148,16 +1239,39 @@ impl<'a, 'b> LoweringCtx<'a, 'b> {
         args: &[Expr],
         env: &HashMap<String, LV>,
     ) -> Result<(), LowerError> {
-        if args.len() != self.self_sig.params.len() {
+        // For HOF specializations, the AST args include β-reduced fn-args
+        // that aren't part of the runtime sig. Each of those must pass the
+        // same bound user fn unchanged (otherwise the tail call would be to
+        // a different specialization, which we can't jump to).
+        if args.len() != self.bound_positions.len() {
             return Err(LowerError::TypeMismatch(format!(
                 "tail self-call: arity {} vs {} args",
-                self.self_sig.params.len(),
-                args.len()
+                self.bound_positions.len(), args.len()
             )));
         }
         let mut flat: Vec<Value> = Vec::new();
         let param_tys = self.self_sig.params.clone();
-        for (a, pty) in args.iter().zip(param_tys.iter()) {
+        let mut runtime_pty_iter = param_tys.iter();
+        for (i, a) in args.iter().enumerate() {
+            if self.bound_positions[i] {
+                let Expr::Var(n) = a else {
+                    return Err(LowerError::Unsupported(
+                        "tail self-call passes non-Var as bound HOF arg".into()));
+                };
+                let bound_to = self.param_bindings.get(n).cloned().ok_or_else(|| {
+                    LowerError::Internal(format!(
+                        "tail self-call: arg {} not bound to a HOF callee", n))
+                })?;
+                // The same param must remain bound to the same callee; the
+                // mangled symbol is identical, so a TCO jump is valid.
+                let expected = self.param_bindings.get(n).cloned().unwrap_or_default();
+                if bound_to != expected {
+                    return Err(LowerError::Unsupported(
+                        "tail self-call rebinds HOF arg to a different fn".into()));
+                }
+                continue;
+            }
+            let pty = runtime_pty_iter.next().expect("runtime arity matches sig");
             let lv = self.lower_expr(a, env)?;
             expect_assignable(pty, &lv.ty()).map_err(LowerError::TypeMismatch)?;
             lv.flatten(&mut flat);

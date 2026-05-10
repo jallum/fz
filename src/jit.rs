@@ -62,67 +62,96 @@ struct Classified {
 }
 
 fn classify(prog: &Program, typer: &mut Typer) -> Classified {
-    let mut jit_eligible = Vec::new();
+    // Phase 1: enumerate candidates (mono + polymorphic + HOF closure).
+    let mut candidates: Vec<MonoFn> = Vec::new();
     let mut interp_callable: HashMap<String, FnSig> = HashMap::new();
+    let mut seen_syms: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut worklist: Vec<(String, Vec<crate::aot::CallSlot>)> = Vec::new();
 
     for item in &prog.items {
         let Item::Fn(def) = &**item else { continue };
-        if def.is_macro {
+        if def.is_macro { continue; }
+        let Some(arrow) = typer.globals.get(&def.name) else { continue };
+        if let Some((params, ret)) = extract_simple_arrow(arrow) {
+            let m = MonoFn {
+                name: def.name.clone(),
+                user_name: def.name.clone(),
+                sig: FnSig { params, ret },
+                def: def.clone(),
+                param_bindings: std::collections::HashMap::new(),
+            };
+            seen_syms.insert(m.name.clone());
+            candidates.push(m);
             continue;
         }
-        let Some(arrow) = typer.globals.get(&def.name) else { continue };
-
-        // Build a list of `(symbol, sig)` candidates for this def. For
-        // monomorphic fns (typer arrow extracts cleanly) it's a single entry
-        // sharing the user name. For polymorphic fns we enumerate distinct
-        // call-site shapes and re-type the body per shape (fz-ul4.6).
-        let is_monomorphic = extract_simple_arrow(arrow).is_some();
-        let mut candidates: Vec<(String, FnSig)> = Vec::new();
-        if let Some((params, ret)) = extract_simple_arrow(arrow) {
-            candidates.push((def.name.clone(), FnSig { params, ret }));
-        } else {
-            let mut seen: std::collections::HashSet<Vec<LowerTy>> = Default::default();
-            if let Some(call_args) = typer.call_shapes.get(&def.name).cloned() {
-                for args in call_args {
-                    let Some(shape): Option<Vec<LowerTy>> =
-                        args.iter().map(derive_lowerty).collect() else { continue };
-                    if !seen.insert(shape.clone()) { continue; }
-                    let params_descr: Vec<_> = shape.iter().map(lowerty_to_descr).collect();
-                    let ret_d = crate::typer::specialize_return(typer, def, &params_descr);
-                    let Some(ret_lt) = derive_lowerty(&ret_d) else { continue };
-                    let sig = FnSig { params: shape.clone(), ret: ret_lt };
-                    let sym = mangle_call(&def.name, &shape);
-                    candidates.push((sym, sig));
+        let mut shape_seen: std::collections::HashSet<Vec<crate::aot::CallSlot>> = Default::default();
+        let call_shapes = typer.call_shapes.get(&def.name).cloned().unwrap_or_default();
+        let call_fn_args = typer.call_fn_args.get(&def.name).cloned().unwrap_or_default();
+        for (site_idx, args) in call_shapes.iter().enumerate() {
+            let fn_args = call_fn_args.get(site_idx);
+            let Some(slots) = crate::aot::build_call_slots(args, fn_args.map(|v| &**v)) else { continue };
+            if !shape_seen.insert(slots.clone()) { continue; }
+            let Some(spec) = crate::aot::specialize_def(typer, def, &slots) else { continue };
+            if seen_syms.insert(spec.name.clone()) {
+                if !spec.param_bindings.is_empty() {
+                    let renv = crate::aot::runtime_env_for_spec(&spec.def, &spec.sig, &spec.param_bindings);
+                    worklist.extend(crate::aot::discover_implied_hof_specs(&spec.def, &renv, &spec.param_bindings));
                 }
+                candidates.push(spec);
             }
-        }
-
-        for (sym, sig) in candidates {
-            let mut probe_atoms = AtomInterner::default();
-            let mut probe_callees: HashMap<String, FnSig> = HashMap::new();
-            probe_callees.insert(sym.clone(), sig.clone());
-            if lower_fn(def, &sig, &probe_callees, &mut probe_atoms).is_ok() {
-                jit_eligible.push(MonoFn {
-                    name: sym,
-                    user_name: def.name.clone(),
-                    sig,
-                    def: def.clone(),
-                });
-            } else if is_monomorphic {
-                // The natural-arrow case where lower_fn fails (e.g. heap-typed
-                // body): keep the fn callable from JIT via a forward thunk.
-                interp_callable.insert(def.name.clone(), sig);
-            }
-            // Polymorphic shapes that fail to lower are silently skipped:
-            // there's no single FnSig they'd share for a forward thunk, and
-            // interp dispatches to them via Value (not Value::Jit).
         }
     }
 
-    // A fn that called another monomorphic fn whose body fails to lower is
-    // already filtered above (probe lowers without that callee in scope, so
-    // the probe will fail or unknown-callee error). Leaving the heuristic
-    // simple — refining belongs in .13 tier-up policy.
+    // Closure: each HOF candidate implies bound-callee specs.
+    while let Some((callee, slots)) = worklist.pop() {
+        let sym = crate::aot::mangle_call(&callee, &slots);
+        if seen_syms.contains(&sym) { continue; }
+        let Some(def) = crate::aot::find_def(prog, &callee) else { continue };
+        let Some(spec) = crate::aot::specialize_def(typer, def, &slots) else { continue };
+        seen_syms.insert(spec.name.clone());
+        if !spec.param_bindings.is_empty() {
+            let renv = crate::aot::runtime_env_for_spec(&spec.def, &spec.sig, &spec.param_bindings);
+            worklist.extend(crate::aot::discover_implied_hof_specs(&spec.def, &renv, &spec.param_bindings));
+        }
+        candidates.push(spec);
+    }
+
+    // Phase 2: build the full callee_sigs table and probe-lower each candidate.
+    let probe_user_fns: std::collections::HashSet<String> =
+        prog.items.iter().filter_map(|it| match &**it {
+            Item::Fn(d) if !d.is_macro => Some(d.name.clone()),
+            _ => None,
+        }).collect();
+    let mut all_sigs: HashMap<String, FnSig> = HashMap::new();
+    for m in &candidates {
+        all_sigs.insert(m.name.clone(), m.sig.clone());
+    }
+    // Also include monomorphic-arrow sigs of fns that aren't candidates so
+    // builtins / call-site fallbacks resolve.
+    for item in &prog.items {
+        let Item::Fn(def) = &**item else { continue };
+        if def.is_macro { continue; }
+        if let Some(arr) = typer.globals.get(&def.name) {
+            if let Some((p, r)) = extract_simple_arrow(arr) {
+                all_sigs.entry(def.name.clone()).or_insert(FnSig { params: p, ret: r });
+            }
+        }
+    }
+
+    let mut jit_eligible = Vec::new();
+    for m in candidates {
+        let mut probe_atoms = AtomInterner::default();
+        if crate::codegen::lower_fn_with(
+            &m.def, &m.sig, &all_sigs, &mut probe_atoms,
+            &m.param_bindings, &probe_user_fns,
+        ).is_ok() {
+            jit_eligible.push(m);
+        } else if m.name == m.user_name {
+            // Monomorphic fn whose body fails to lower (e.g. heap-typed): keep
+            // it callable from JIT via a forward thunk.
+            interp_callable.insert(m.user_name.clone(), m.sig);
+        }
+    }
 
     Classified { jit_eligible, interp_callable }
 }
@@ -388,10 +417,16 @@ pub fn run_str(src: &str) -> Result<(), JitError> {
         callee_sigs.insert(n.clone(), s.clone());
     }
 
+    let user_fns_set: std::collections::HashSet<String> = cls.jit_eligible.iter()
+        .map(|m| m.user_name.clone())
+        .chain(cls.interp_callable.keys().cloned())
+        .collect();
     let mut atoms = AtomInterner::default();
     for m in &cls.jit_eligible {
-        let r = lower_fn(&m.def, &m.sig, &callee_sigs, &mut atoms)
-            .map_err(|e: LowerError| JitError(format!("{}: {}", m.name, e)))?;
+        let r = crate::codegen::lower_fn_with(
+            &m.def, &m.sig, &callee_sigs, &mut atoms,
+            &m.param_bindings, &user_fns_set,
+        ).map_err(|e: LowerError| JitError(format!("{}: {}", m.name, e)))?;
         let LowerResult { mut func, callee_imports, builtin_imports } = r;
         rewrite_user_names(
             &mut func,
@@ -934,6 +969,45 @@ fn main() do
   print(classify(7))
 end
 "#;
+        run_capture(src).expect("jit run");
+    }
+
+    #[test]
+    fn jit_specializes_higher_order_fn_per_callee() {
+        // Higher-order specialization (fz-ul4.4.2). `apply2(f, x), do: f(x)`
+        // has a fn-typed param `f` that prevents direct JIT eligibility, but
+        // each call site passes a top-level user fn by name. The specializer
+        // emits one MonoFn per (callee, arg-shape) pair where calls to f are
+        // β-reduced to direct calls.
+        let src = r#"
+fn double(x), do: x * 2
+fn neg(x), do: 0 - x
+fn apply2(f, x), do: f(x)
+fn main() do
+  print(apply2(double, 21))
+  print(apply2(neg, 7))
+end
+"#;
+        let toks = Lexer::new(src).tokenize().unwrap();
+        let prog = Parser::new(toks).parse_program().unwrap();
+        let mut typer = Typer::new();
+        typer.type_program(&prog);
+        let cls = classify(&prog, &mut typer);
+
+        let apply2_specs: Vec<_> = cls.jit_eligible.iter()
+            .filter(|m| m.user_name == "apply2")
+            .collect();
+        assert_eq!(apply2_specs.len(), 2,
+            "expected 2 apply2 specializations, got {:?}",
+            apply2_specs.iter().map(|m| (&m.name, &m.sig.params)).collect::<Vec<_>>());
+        for m in &apply2_specs {
+            assert_eq!(m.sig.params, vec![LowerTy::I64], "fn-arg dropped from sig");
+            assert_eq!(m.sig.ret, LowerTy::I64);
+            assert_eq!(m.param_bindings.len(), 1, "f bound");
+            assert_eq!(m.param_bindings.get("f").map(String::as_str), Some(
+                if m.name.contains("double") { "double" } else { "neg" }
+            ));
+        }
         run_capture(src).expect("jit run");
     }
 

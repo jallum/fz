@@ -49,6 +49,15 @@ pub struct Typer {
     /// polymorphic fn is invoked with.
     pub call_shapes: HashMap<String, Vec<Vec<Descr>>>,
     call_shapes_curr: HashMap<String, Vec<Vec<Descr>>>,
+    /// Parallel to `call_shapes`: per arg position, `Some(name)` when the
+    /// caller passed a syntactic `Var(name)` referring to a known user fn,
+    /// else `None`. Drives higher-order specialization (fz-ul4.4.2): the
+    /// specializer can β-reduce fn-valued params to direct calls when the
+    /// caller passed a top-level fn by name. Indexed identically to
+    /// `call_shapes` (outer = callee name, middle = call-site index, inner
+    /// = arg position).
+    pub call_fn_args: HashMap<String, Vec<Vec<Option<String>>>>,
+    call_fn_args_curr: HashMap<String, Vec<Vec<Option<String>>>>,
     /// Names of user-defined fns. Used to guard call-site observation so we
     /// don't accumulate obs for builtins (their arrows are pre-installed and
     /// shouldn't be narrowed).
@@ -66,6 +75,8 @@ impl Typer {
             call_obs_curr: HashMap::new(),
             call_shapes: HashMap::new(),
             call_shapes_curr: HashMap::new(),
+            call_fn_args: HashMap::new(),
+            call_fn_args_curr: HashMap::new(),
             user_fns: std::collections::HashSet::new(),
         };
         me.install_builtins();
@@ -148,6 +159,7 @@ impl Typer {
             let mut changed = false;
             self.call_obs_curr.clear();
             self.call_shapes_curr.clear();
+            self.call_fn_args_curr.clear();
             for item in &prog.items {
                 if let Item::Fn(def) = &**item {
                     if def.is_macro { continue; }
@@ -171,6 +183,7 @@ impl Typer {
             }
             self.call_obs = std::mem::take(&mut self.call_obs_curr);
             self.call_shapes = std::mem::take(&mut self.call_shapes_curr);
+            self.call_fn_args = std::mem::take(&mut self.call_fn_args_curr);
             if !changed { break; }
         }
     }
@@ -352,7 +365,7 @@ impl Typer {
             Expr::Call(callee, args) => {
                 let f = self.infer(env, callee);
                 let arg_ts: Vec<Descr> = args.iter().map(|a| self.infer(env, a)).collect();
-                self.record_call_obs(callee, &arg_ts);
+                self.record_call_obs(callee, args, &arg_ts);
                 self.apply_arrow(&f, &arg_ts)
             }
             Expr::Dot(_, _) => Descr::any(),
@@ -366,7 +379,11 @@ impl Typer {
                         let f = self.infer(env, callee);
                         let mut all: Vec<Descr> = vec![lt];
                         for a in more { all.push(self.infer(env, a)); }
-                        self.record_call_obs(callee, &all);
+                        // Build synthetic arg-AST list: [l, ...more] for fn-arg origin tracking.
+                        let mut all_args: Vec<Expr> = Vec::with_capacity(more.len() + 1);
+                        all_args.push((**l).clone());
+                        all_args.extend(more.iter().cloned());
+                        self.record_call_obs(callee, &all_args, &all);
                         return self.apply_arrow(&f, &all);
                     }
                     let rt = self.infer(env, r);
@@ -496,9 +513,11 @@ impl Typer {
     }
 
     /// Record a call site against `callee` for the next iteration's
-    /// monomorphization passes. Both `call_obs` (per-arg union) and
-    /// `call_shapes` (raw per-call-site shape list) accumulate.
-    fn record_call_obs(&mut self, callee: &Expr, arg_ts: &[Descr]) {
+    /// monomorphization passes. Updates `call_obs` (per-arg union),
+    /// `call_shapes` (raw per-call-site shape list), and `call_fn_args`
+    /// (which arg slots syntactically point at a known user fn — drives
+    /// higher-order specialization in fz-ul4.4.2).
+    fn record_call_obs(&mut self, callee: &Expr, args: &[Expr], arg_ts: &[Descr]) {
         let Expr::Var(name) = callee else { return };
         if !self.user_fns.contains(name) { return; }
         let entry = self.call_obs_curr.entry(name.clone())
@@ -511,6 +530,13 @@ impl Typer {
         self.call_shapes_curr.entry(name.clone())
             .or_default()
             .push(arg_ts.to_vec());
+        let fn_args: Vec<Option<String>> = args.iter().map(|a| match a {
+            Expr::Var(n) if self.user_fns.contains(n) => Some(n.clone()),
+            _ => None,
+        }).collect();
+        self.call_fn_args_curr.entry(name.clone())
+            .or_default()
+            .push(fn_args);
     }
 
     fn binop_type(&mut self, op: BinOp, l: &Descr, r: &Descr) -> Descr {
@@ -554,6 +580,12 @@ impl Typer {
         if f.funcs.is_empty() {
             self.errors.push(format!("not callable: {}", f));
             return Descr::none();
+        }
+        // Top-arrow case: any conj that's `pos=[], neg=[]` represents "any
+        // function" (typically reached via `f: any` in HOF bodies before
+        // call-site narrowing). Calling such a thing returns `any`.
+        if f.funcs.iter().any(|c| c.pos.is_empty() && c.neg.is_empty()) {
+            return Descr::any();
         }
         let mut result = Descr::none();
         let mut matched_any = false;

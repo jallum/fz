@@ -92,23 +92,42 @@ pub fn derive_lowerty(d: &Descr) -> Option<LowerTy> {
 #[derive(Clone)]
 pub struct MonoFn {
     /// Codegen symbol name. Equals `user_name` for non-polymorphic fns; for
-    /// polymorphic fns it's `user_name__<sig-mangle>`.
+    /// polymorphic / higher-order specializations it's `user_name__<slot-mangle>`.
     pub name: String,
     /// The user-facing fn name shared by all specializations of this def.
     pub user_name: String,
     pub sig: FnSig,
     pub def: FnDef,
+    /// Higher-order param bindings (fz-ul4.4.2). Maps a param-name to the
+    /// concrete user fn it's β-reduced to in this specialization. Empty for
+    /// non-HOF specializations. The codegen drops these params from the
+    /// runtime signature and rewrites in-body calls to the param to direct
+    /// calls to the bound user fn.
+    pub param_bindings: std::collections::HashMap<String, String>,
 }
 
-/// Mangle a callsite's (user_name, arg LowerTys) into a candidate codegen
-/// symbol name. Used both at specializer time (to assign symbols) and at
-/// call-site lowering time (to dispatch).
-pub fn mangle_call(user_name: &str, arg_shape: &[LowerTy]) -> String {
+/// One arg position at a call site. Either a runtime-present scalar/tuple
+/// value (carries its LowerTy) or a higher-order binding to a top-level user
+/// fn (β-reduced at codegen time, no runtime presence).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum CallSlot {
+    Lower(LowerTy),
+    UserFn(String),
+}
+
+/// Mangle a callsite's (user_name, slots) into a candidate codegen symbol
+/// name. Used both at specializer time (to assign symbols) and at call-site
+/// lowering time (to dispatch). Backward-compatible with the LowerTy-only
+/// scheme: if every slot is `Lower`, the output matches the prior format.
+pub fn mangle_call(user_name: &str, slots: &[CallSlot]) -> String {
     let mut s = String::from(user_name);
     s.push_str("__");
-    for (i, lt) in arg_shape.iter().enumerate() {
+    for (i, slot) in slots.iter().enumerate() {
         if i > 0 { s.push('_'); }
-        mangle_lt(lt, &mut s);
+        match slot {
+            CallSlot::Lower(lt) => mangle_lt(lt, &mut s),
+            CallSlot::UserFn(n) => { s.push('F'); s.push_str(n); }
+        }
     }
     s
 }
@@ -126,6 +145,204 @@ fn mangle_lt(lt: &LowerTy, out: &mut String) {
             for t in ts { out.push('_'); mangle_lt(t, out); }
         }
     }
+}
+
+/// Build a slot list for a call site. Each arg position becomes either
+/// `Lower(lt)` (runtime scalar/tuple) or `UserFn(name)` (β-reducible HOF
+/// arg). Returns None when an arg is neither: that call site can't drive a
+/// specialization in the .12 subset.
+pub fn build_call_slots(
+    args: &[Descr],
+    fn_args: Option<&[Option<String>]>,
+) -> Option<Vec<CallSlot>> {
+    let mut slots = Vec::with_capacity(args.len());
+    for (i, arg) in args.iter().enumerate() {
+        if let Some(lt) = derive_lowerty(arg) {
+            slots.push(CallSlot::Lower(lt));
+            continue;
+        }
+        // Not a runtime-lowerable scalar — try HOF binding.
+        let bound = fn_args
+            .and_then(|fa| fa.get(i).cloned().flatten());
+        match bound {
+            Some(name) => slots.push(CallSlot::UserFn(name)),
+            None => return None,
+        }
+    }
+    Some(slots)
+}
+
+/// Walk a HOF specialization's body for syntactic calls to its β-reduced
+/// params. For each call, derive each arg's `CallSlot` from the spec's
+/// runtime env (a map of AST param name → LowerTy for non-bound positions
+/// plus the param_bindings for HOF positions). Returns a list of
+/// `(callee_user_name, slots)` pairs that the bound callees need to be
+/// specialized at.
+///
+/// Conservative: only handles the simple-and-common shapes — args that are
+/// scalar literals, runtime params (Var → LowerTy), bound HOF params
+/// (Var → UserFn), or self-calls of the bound callee with the same args.
+/// More complex arg expressions (binops, nested calls) yield None for that
+/// arg and the implied call is dropped.
+pub fn discover_implied_hof_specs(
+    def: &FnDef,
+    runtime_env: &std::collections::HashMap<String, LowerTy>,
+    param_bindings: &std::collections::HashMap<String, String>,
+) -> Vec<(String, Vec<CallSlot>)> {
+    let mut out = Vec::new();
+    for clause in &def.clauses {
+        walk_for_implied(&clause.body, runtime_env, param_bindings, &mut out);
+    }
+    out
+}
+
+fn walk_for_implied(
+    e: &Expr,
+    runtime_env: &std::collections::HashMap<String, LowerTy>,
+    param_bindings: &std::collections::HashMap<String, String>,
+    out: &mut Vec<(String, Vec<CallSlot>)>,
+) {
+    use crate::ast::Expr;
+    if let Expr::Call(callee, args) = e {
+        if let Expr::Var(pname) = &**callee {
+            if let Some(target) = param_bindings.get(pname) {
+                let mut slots: Option<Vec<CallSlot>> = Some(Vec::with_capacity(args.len()));
+                for a in args {
+                    let s = match a {
+                        Expr::Int(_) => Some(CallSlot::Lower(LowerTy::I64)),
+                        Expr::Float(_) => Some(CallSlot::Lower(LowerTy::F64)),
+                        Expr::Bool(_) => Some(CallSlot::Lower(LowerTy::Bool)),
+                        Expr::Atom(_) => Some(CallSlot::Lower(LowerTy::Atom)),
+                        Expr::Nil => Some(CallSlot::Lower(LowerTy::Nil)),
+                        Expr::Var(n) => {
+                            if let Some(callee) = param_bindings.get(n) {
+                                Some(CallSlot::UserFn(callee.clone()))
+                            } else {
+                                runtime_env.get(n).cloned().map(CallSlot::Lower)
+                            }
+                        }
+                        _ => None,
+                    };
+                    match s {
+                        Some(slot) => slots.as_mut().unwrap().push(slot),
+                        None => { slots = None; break; }
+                    }
+                }
+                if let Some(slots) = slots {
+                    out.push((target.clone(), slots));
+                }
+            }
+        }
+    }
+    // Recurse into subexpressions.
+    match e {
+        Expr::Call(c, args) => {
+            walk_for_implied(c, runtime_env, param_bindings, out);
+            for a in args { walk_for_implied(a, runtime_env, param_bindings, out); }
+        }
+        Expr::BinOp(_, l, r) => { walk_for_implied(l, runtime_env, param_bindings, out); walk_for_implied(r, runtime_env, param_bindings, out); }
+        Expr::UnOp(_, x) => walk_for_implied(x, runtime_env, param_bindings, out),
+        Expr::If(c, t, els) => {
+            walk_for_implied(c, runtime_env, param_bindings, out);
+            walk_for_implied(t, runtime_env, param_bindings, out);
+            if let Some(e2) = els { walk_for_implied(e2, runtime_env, param_bindings, out); }
+        }
+        Expr::Case(s, cls) => {
+            walk_for_implied(s, runtime_env, param_bindings, out);
+            for c in cls { walk_for_implied(&c.body, runtime_env, param_bindings, out); }
+        }
+        Expr::Block(es) => for e in es { walk_for_implied(e, runtime_env, param_bindings, out); },
+        Expr::Tuple(es) | Expr::List(es, _) => for e in es { walk_for_implied(e, runtime_env, param_bindings, out); },
+        _ => {}
+    }
+}
+
+/// Build a runtime env mapping AST param names → LowerTy for non-bound
+/// positions of a HOF spec. Used to derive implied callee specs.
+pub fn runtime_env_for_spec(
+    def: &FnDef,
+    sig: &FnSig,
+    param_bindings: &std::collections::HashMap<String, String>,
+) -> std::collections::HashMap<String, LowerTy> {
+    let mut env = std::collections::HashMap::new();
+    let first = match def.clauses.first() { Some(c) => c, None => return env };
+    let mut sig_iter = sig.params.iter();
+    for p in &first.params {
+        match p {
+            crate::ast::Pattern::Var(n) => {
+                if param_bindings.contains_key(n) { continue; }
+                if let Some(lt) = sig_iter.next() {
+                    env.insert(n.clone(), lt.clone());
+                }
+            }
+            _ => { sig_iter.next(); }
+        }
+    }
+    env
+}
+
+/// Find a fn def in the program by user name.
+pub fn find_def<'a>(prog: &'a Program, name: &str) -> Option<&'a FnDef> {
+    prog.items.iter().find_map(|i| match &**i {
+        Item::Fn(d) if d.name == name => Some(d),
+        _ => None,
+    })
+}
+
+/// Build a MonoFn for a call-site slot shape. Drops fn-bound positions from
+/// the runtime signature, populates `param_bindings` with the captured
+/// callees, and runs `specialize_return` under params that bind fn-typed
+/// slots to their concrete user-fn arrows. Returns None if the body can't
+/// type-check at this shape, the return doesn't lower, or any fn-bound
+/// param isn't a Pattern::Var (we only β-reduce simple param names).
+pub fn specialize_def(typer: &mut Typer, def: &FnDef, slots: &[CallSlot]) -> Option<MonoFn> {
+    let arity = def.clauses.first().map(|c| c.params.len()).unwrap_or(0);
+    if slots.len() != arity { return None; }
+
+    // Build per-param Descrs for retyping. Lower slots use lowerty_to_descr;
+    // UserFn slots use the bound fn's globals arrow type.
+    let mut params_descr: Vec<Descr> = Vec::with_capacity(arity);
+    for slot in slots {
+        match slot {
+            CallSlot::Lower(lt) => params_descr.push(lowerty_to_descr(lt)),
+            CallSlot::UserFn(callee) => {
+                let arr = typer.globals.get(callee).cloned()?;
+                params_descr.push(arr);
+            }
+        }
+    }
+
+    // Map β-reducible param names. Any clause that doesn't have a Pattern::Var
+    // at a UserFn-slot position can't be β-reduced — abort the specialization.
+    let mut param_bindings: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    for clause in &def.clauses {
+        if clause.params.len() != arity { return None; }
+        for (i, slot) in slots.iter().enumerate() {
+            if let CallSlot::UserFn(callee) = slot {
+                let crate::ast::Pattern::Var(pname) = &clause.params[i] else { return None };
+                match param_bindings.get(pname) {
+                    Some(existing) if existing != callee => return None,
+                    _ => { param_bindings.insert(pname.clone(), callee.clone()); }
+                }
+            }
+        }
+    }
+
+    let ret_d = crate::typer::specialize_return(typer, def, &params_descr);
+    let ret = derive_lowerty(&ret_d)?;
+    let runtime_params: Vec<LowerTy> = slots.iter().filter_map(|s| match s {
+        CallSlot::Lower(lt) => Some(lt.clone()),
+        CallSlot::UserFn(_) => None,
+    }).collect();
+    let sym = mangle_call(&def.name, slots);
+    Some(MonoFn {
+        name: sym,
+        user_name: def.name.clone(),
+        sig: FnSig { params: runtime_params, ret },
+        def: def.clone(),
+        param_bindings,
+    })
 }
 
 /// Map a LowerTy back to the most-permissive Descr that lowers to it. Used
@@ -169,41 +386,72 @@ pub fn monomorphize(prog: &Program, typer: &mut Typer) -> Result<Vec<MonoFn>, Ve
                 user_name: def.name.clone(),
                 sig: FnSig { params, ret },
                 def: def.clone(),
+                param_bindings: std::collections::HashMap::new(),
             });
             continue;
         }
 
-        // Polymorphic: enumerate distinct call-site shapes.
-        let mut seen: std::collections::HashSet<Vec<LowerTy>> = Default::default();
-        let mut produced = 0usize;
-        if let Some(call_args) = typer.call_shapes.get(&def.name).cloned() {
-            for args in call_args {
-                let Some(shape): Option<Vec<LowerTy>> =
-                    args.iter().map(derive_lowerty).collect() else { continue };
-                if !seen.insert(shape.clone()) { continue; }
-                let params_descr: Vec<_> = shape.iter().map(lowerty_to_descr).collect();
-                let ret_d = crate::typer::specialize_return(typer, def, &params_descr);
-                let Some(ret_lt) = derive_lowerty(&ret_d) else { continue };
-                let sym = mangle_call(&def.name, &shape);
-                out.push(MonoFn {
-                    name: sym,
-                    user_name: def.name.clone(),
-                    sig: FnSig { params: shape, ret: ret_lt },
-                    def: def.clone(),
-                });
-                produced += 1;
+        // Polymorphic / higher-order: enumerate distinct call-site slot shapes.
+        let mut seen: std::collections::HashSet<Vec<CallSlot>> = Default::default();
+        let call_shapes = typer.call_shapes.get(&def.name).cloned().unwrap_or_default();
+        let call_fn_args = typer.call_fn_args.get(&def.name).cloned().unwrap_or_default();
+        for (site_idx, args) in call_shapes.iter().enumerate() {
+            let fn_args = call_fn_args.get(site_idx);
+            let Some(slots) = build_call_slots(args, fn_args.map(|v| &**v)) else { continue };
+            if !seen.insert(slots.clone()) { continue; }
+            let Some(spec) = specialize_def(typer, def, &slots) else { continue };
+            out.push(spec);
+        }
+    }
+
+    // Closure under HOF call sites: each emitted HOF spec implies that its
+    // bound callees get specialized at the shapes the HOF body calls them
+    // with. Run *before* the per-fn coverage check so a user fn that's only
+    // ever invoked via a HOF arg (e.g. `apply2(double, ..)`) still yields a
+    // MonoFn for `double` here.
+    let mut sym_seen: std::collections::HashSet<String> =
+        out.iter().map(|m| m.name.clone()).collect();
+    let mut worklist: Vec<(String, Vec<CallSlot>)> = Vec::new();
+    for m in &out {
+        if m.param_bindings.is_empty() { continue; }
+        let renv = runtime_env_for_spec(&m.def, &m.sig, &m.param_bindings);
+        for pair in discover_implied_hof_specs(&m.def, &renv, &m.param_bindings) {
+            worklist.push(pair);
+        }
+    }
+    while let Some((callee, slots)) = worklist.pop() {
+        let sym = mangle_call(&callee, &slots);
+        if sym_seen.contains(&sym) { continue; }
+        let Some(def) = find_def(prog, &callee) else { continue };
+        let Some(spec) = specialize_def(typer, def, &slots) else { continue };
+        sym_seen.insert(sym);
+        if !spec.param_bindings.is_empty() {
+            let renv = runtime_env_for_spec(&spec.def, &spec.sig, &spec.param_bindings);
+            for pair in discover_implied_hof_specs(&spec.def, &renv, &spec.param_bindings) {
+                worklist.push(pair);
             }
         }
-        if produced == 0 {
-            errs.push(format!(
-                "{}: type {} is not a single monomorphic arrow in the .12 scalar+tuple subset",
-                def.name, format_descr_short(&arrow)
-            ));
-        }
+        out.push(spec);
+    }
+
+    // Now flag any user fn that produced zero MonoFns (no shape extracts and
+    // no HOF site needed it).
+    let covered: std::collections::HashSet<String> =
+        out.iter().map(|m| m.user_name.clone()).collect();
+    for item in &prog.items {
+        let Item::Fn(def) = &**item else { continue };
+        if def.is_macro { continue; }
+        if covered.contains(&def.name) { continue; }
+        let arrow = typer.globals.get(&def.name).cloned().unwrap_or_else(Descr::none);
+        errs.push(format!(
+            "{}: type {} is not a single monomorphic arrow in the .12 scalar+tuple subset",
+            def.name, format_descr_short(&arrow)
+        ));
     }
     if !errs.is_empty() {
         return Err(errs);
     }
+
     Ok(out)
 }
 
@@ -363,10 +611,15 @@ pub fn build(src_path: &Path, out_path: &Path) -> Result<(), BuildError> {
         .iter()
         .map(|m| (m.name.clone(), m.sig.clone()))
         .collect();
+    let user_fns_set: std::collections::HashSet<String> = monos.iter()
+        .map(|m| m.user_name.clone())
+        .collect();
     let mut atoms = AtomInterner::default();
     for m in &monos {
-        let r = lower_fn(&m.def, &m.sig, &callee_sigs, &mut atoms)
-            .map_err(|e: LowerError| BuildError(format!("{}: {}", m.name, e)))?;
+        let r = crate::codegen::lower_fn_with(
+            &m.def, &m.sig, &callee_sigs, &mut atoms,
+            &m.param_bindings, &user_fns_set,
+        ).map_err(|e: LowerError| BuildError(format!("{}: {}", m.name, e)))?;
         let LowerResult { mut func, callee_imports, builtin_imports } = r;
         rewrite_user_names(&mut func, &callee_imports, &builtin_imports, &user_ids, &runtime_ids)?;
         let mut ctx = Context::for_function(func);
@@ -736,6 +989,41 @@ end
         assert!(stdout.contains("42"), "stdout missing 42: {}", stdout);
         assert!(stdout.contains(":hello"), "stdout missing :hello: {}", stdout);
         assert!(stdout.contains("true"), "stdout missing true: {}", stdout);
+    }
+
+    #[test]
+    fn end_to_end_aot_higher_order_runs() {
+        if locate_runtime_staticlib().is_none() {
+            eprintln!("skip: libfz_runtime.a not present");
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("fz-aot-hof-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("hof.fz");
+        std::fs::write(
+            &src,
+            r#"
+fn double(x), do: x * 2
+fn neg(x), do: 0 - x
+fn apply2(f, x), do: f(x)
+fn compose(f, g, x), do: f(g(x))
+fn main() do
+  print(apply2(double, 21))
+  print(apply2(neg, 7))
+  print(compose(double, neg, 5))
+end
+"#,
+        )
+        .unwrap();
+        let bin = dir.join("hof");
+        build(&src, &bin).expect("build");
+
+        let out = Command::new(&bin).output().expect("run");
+        assert!(out.status.success(), "binary exit: {}", out.status);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(stdout.contains("42"), "stdout missing apply2(double,21)=42: {}", stdout);
+        assert!(stdout.contains("-7"), "stdout missing apply2(neg,7)=-7: {}", stdout);
+        assert!(stdout.contains("-10"), "stdout missing compose(double,neg,5)=-10: {}", stdout);
     }
 
     #[test]
