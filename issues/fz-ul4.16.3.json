@@ -6,14 +6,15 @@
   "blocks": [
     "fz-ul4.16.4"
   ],
+  "closed_at": "2026-05-10T10:58:35Z",
   "created": "2026-05-10T10:50:26Z",
   "description": "Third subticket. Depends on .16.2.\n\nThe expansion pass currently rewrites Expr nodes in fn bodies. To support `test \"name\" do ... end`, macros must be able to produce *items* — fn defs, item-level lists.\n\n## Scope\n\n- macros::expand_program (or a new expand_items pass) handles Item::MacroCall:\n  - reify each arg\n  - run the macro body via interp\n  - decode the returned Value back to either a single Item or a List of Items\n  - splice the result into the enclosing module's items in place of the original MacroCall\n- ast_value: extend value_to_expr (or add value_to_item) for the Item shapes that macros are likely to return — at minimum a reified fn def. Decode shape: {:fn, %{name: atom, ...}, [...]} or whatever convention we adopt.\n- Re-walk: post-splice, run the standard fn-body expansion over the new items.\n\n## Tests\n\n- Macro that returns a quoted fn definition; the expanded AST contains a real Item::Fn.\n- The defined fn is callable from the rest of the module.\n\n## Out of scope\n\n- Macros that produce defmodule/alias/import — file follow-up if needed.\n- Exposed @__test_metadata__-style attribute side effects (those wait for general @attribute support).\n",
   "id": "fz-ul4.16.3",
   "labels": [],
   "parent": "fz-ul4.16",
   "priority": 3,
-  "status": "open",
+  "status": "closed",
   "title": "Item-producing macros",
   "type": "task",
-  "updated_at": "2026-05-10T10:50:26Z"
+  "updated_at": "2026-05-10T10:58:35Z"
 }
