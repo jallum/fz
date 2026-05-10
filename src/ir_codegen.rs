@@ -988,35 +988,175 @@ extern "C" fn fz_cmp_le(a: u64, b: u64) -> u64 { cmp_to_fz(fz_to_f64(a) <= fz_to
 extern "C" fn fz_cmp_gt(a: u64, b: u64) -> u64 { cmp_to_fz(fz_to_f64(a) >  fz_to_f64(b)) }
 extern "C" fn fz_cmp_ge(a: u64, b: u64) -> u64 { cmp_to_fz(fz_to_f64(a) >= fz_to_f64(b)) }
 
-/// Eq/Neq for FzValues where at least one operand is Tag::Ptr. Float-aware:
-/// two boxed floats compare by value. Mixed-type Int vs Float returns false
-/// (no auto-promotion in equality, per ticket). Other heap kinds fall back
-/// to ptr-equality (proper structural eq lands in fz-ul4.11.21).
+/// Structural Eq for two Tag::Ptr FzValues. Both args MUST be Tag::Ptr —
+/// the JIT-side dispatch (`both_ptr` test) guarantees this, so the unwraps
+/// are infallible. Returns FzValue TRUE/FALSE bits.
+///
+/// Recursion: List/Struct/Map fields are themselves FzValues that may be
+/// scalars or other heap values, so the recursive call dispatches on the
+/// child's tag. For scalar children we can short-circuit on raw bit
+/// equality before calling back into this fn — `eq_fz` handles that.
 extern "C" fn fz_value_eq(a: u64, b: u64) -> u64 {
+    cmp_to_fz(eq_fz(a, b))
+}
+
+/// Internal recursive equality for FzValues of any tag. Scalars short-
+/// circuit on bit-eq; heap-typed pairs of the same kind recurse per kind.
+fn eq_fz(a: u64, b: u64) -> bool {
     use crate::fz_value::{FzValue, HeapKind, Tag};
+    if a == b { return true; } // covers all scalar same-tag cases + ptr-identity
     let av = FzValue(a);
     let bv = FzValue(b);
-    let same = match (av.tag(), bv.tag()) {
-        (Tag::Ptr, Tag::Ptr) => {
-            let ap = av.unbox_ptr().unwrap();
-            let bp = bv.unbox_ptr().unwrap();
-            let ak = unsafe { (*ap).kind };
-            let bk = unsafe { (*bp).kind };
-            match (HeapKind::from_u16(ak), HeapKind::from_u16(bk)) {
-                (Some(HeapKind::Float), Some(HeapKind::Float)) => {
-                    crate::heap::Heap::read_float(ap)
-                        == crate::heap::Heap::read_float(bp)
-                }
-                _ => ap == bp,
-            }
+    if !matches!((av.tag(), bv.tag()), (Tag::Ptr, Tag::Ptr)) {
+        // At least one side is a scalar with different bits -> inequal.
+        return false;
+    }
+    let ap = av.unbox_ptr().unwrap();
+    let bp = bv.unbox_ptr().unwrap();
+    if ap.is_null() || bp.is_null() {
+        return ap == bp;
+    }
+    let ah = unsafe { &*ap };
+    let bh = unsafe { &*bp };
+    if ah.kind != bh.kind {
+        return false;
+    }
+    match HeapKind::from_u16(ah.kind) {
+        Some(HeapKind::Float) => {
+            crate::heap::Heap::read_float(ap) == crate::heap::Heap::read_float(bp)
         }
-        // Mixed-tag Eq: bit-equal handles Int×Int, Atom×Atom, Special×Special.
-        // Any cross-tag pair (e.g. Int 1 vs Ptr to Float 1.0) is unequal:
-        // a is reachable here only if at least one tag is Ptr, so cross-tag
-        // is automatically false.
-        _ => a == b,
-    };
-    cmp_to_fz(same)
+        Some(HeapKind::List) => eq_list(ap, bp),
+        Some(HeapKind::Struct) => eq_struct(ap, bp, ah.schema_id, bh.schema_id),
+        Some(HeapKind::Bitstring) => eq_bitstring(ap, bp),
+        Some(HeapKind::Map) => eq_map(ap, bp),
+        // Closures + Vecs: ticket scope is List/Struct/Bitstring/Map only.
+        // Fall back to ptr-identity (already false here, since a != b).
+        _ => false,
+    }
+}
+
+fn eq_list(ap: *mut crate::fz_value::HeapHeader, bp: *mut crate::fz_value::HeapHeader) -> bool {
+    use crate::fz_value::{HeapKind, ListCons};
+    // Walk both chains in lockstep. NIL terminates both at the same step.
+    let mut a = ap as *const u8;
+    let mut b = bp as *const u8;
+    loop {
+        let ac = unsafe { &*(a as *const ListCons) };
+        let bc = unsafe { &*(b as *const ListCons) };
+        if !eq_fz(ac.head.0, bc.head.0) {
+            return false;
+        }
+        // Decide each tail: NIL => done; Ptr to List => recurse; else mismatch.
+        let at = ac.tail.0;
+        let bt = bc.tail.0;
+        if at == bt {
+            return true; // both NIL (same scalar bits) — common terminator
+        }
+        // If either tail is non-list, the chains diverge.
+        let av = crate::fz_value::FzValue(at);
+        let bv = crate::fz_value::FzValue(bt);
+        let (Some(anp), Some(bnp)) = (av.unbox_ptr(), bv.unbox_ptr()) else {
+            return false;
+        };
+        let ak = unsafe { (*anp).kind };
+        let bk = unsafe { (*bnp).kind };
+        if HeapKind::from_u16(ak) != Some(HeapKind::List)
+            || HeapKind::from_u16(bk) != Some(HeapKind::List)
+        {
+            return false;
+        }
+        a = anp as *const u8;
+        b = bnp as *const u8;
+    }
+}
+
+fn eq_struct(
+    ap: *mut crate::fz_value::HeapHeader,
+    bp: *mut crate::fz_value::HeapHeader,
+    a_schema: u32,
+    b_schema: u32,
+) -> bool {
+    if a_schema != b_schema {
+        return false;
+    }
+    // Schema in HEAP's per-thread registry tells us field count and offsets.
+    let n_fields = HEAP.with(|h| {
+        let heap = h.borrow();
+        let reg = heap.schemas_registry();
+        let registry = reg.borrow();
+        registry.get(a_schema).fields.len()
+    });
+    for i in 0..n_fields {
+        let off = (i * 8) as isize;
+        let av = unsafe {
+            std::ptr::read((ap as *const u8).offset(16 + off) as *const u64)
+        };
+        let bv = unsafe {
+            std::ptr::read((bp as *const u8).offset(16 + off) as *const u64)
+        };
+        if !eq_fz(av, bv) {
+            return false;
+        }
+    }
+    true
+}
+
+fn eq_bitstring(
+    ap: *mut crate::fz_value::HeapHeader,
+    bp: *mut crate::fz_value::HeapHeader,
+) -> bool {
+    let a_bits = unsafe { std::ptr::read((ap as *const u8).add(16) as *const u64) };
+    let b_bits = unsafe { std::ptr::read((bp as *const u8).add(16) as *const u64) };
+    if a_bits != b_bits {
+        return false;
+    }
+    let bit_len = a_bits as usize;
+    let full_bytes = bit_len / 8;
+    let trailing = bit_len % 8;
+    let a_pay = unsafe { (ap as *const u8).add(24) };
+    let b_pay = unsafe { (bp as *const u8).add(24) };
+    for i in 0..full_bytes {
+        if unsafe { *a_pay.add(i) != *b_pay.add(i) } {
+            return false;
+        }
+    }
+    if trailing > 0 {
+        let mask: u8 = 0xFFu8 << (8 - trailing);
+        let a_last = unsafe { *a_pay.add(full_bytes) } & mask;
+        let b_last = unsafe { *b_pay.add(full_bytes) } & mask;
+        if a_last != b_last {
+            return false;
+        }
+    }
+    true
+}
+
+fn eq_map(
+    ap: *mut crate::fz_value::HeapHeader,
+    bp: *mut crate::fz_value::HeapHeader,
+) -> bool {
+    let a_count = unsafe { std::ptr::read((ap as *const u8).add(16) as *const u64) } as usize;
+    let b_count = unsafe { std::ptr::read((bp as *const u8).add(16) as *const u64) } as usize;
+    if a_count != b_count {
+        return false;
+    }
+    // Both maps store entries in canonical sort order (.11.13), so a
+    // pairwise walk suffices — same key-position implies same key.
+    let a_cur = unsafe { (ap as *const u8).add(24) as *const u64 };
+    let b_cur = unsafe { (bp as *const u8).add(24) as *const u64 };
+    for i in 0..a_count {
+        let ak = unsafe { std::ptr::read(a_cur.add(i * 2)) };
+        let bk = unsafe { std::ptr::read(b_cur.add(i * 2)) };
+        if !eq_fz(ak, bk) {
+            return false;
+        }
+        let av = unsafe { std::ptr::read(a_cur.add(i * 2 + 1)) };
+        let bv = unsafe { std::ptr::read(b_cur.add(i * 2 + 1)) };
+        if !eq_fz(av, bv) {
+            return false;
+        }
+    }
+    true
 }
 
 // ----- Vec runtime fns -----
@@ -2138,16 +2278,17 @@ fn lower_prim(
                     })
                 }
                 BinOp::Eq | BinOp::Neq => {
-                    // If either operand is Tag::Ptr, dispatch to fz_value_eq
-                    // (float-aware, falls back to ptr-eq for other heap kinds).
-                    // Otherwise raw bit-eq is correct (Int/Atom/Special).
-                    let cond = either_ptr(b, av, bvv);
+                    // If both operands are Tag::Ptr, dispatch to fz_value_eq
+                    // (structural / float-aware). Otherwise raw bit-eq is
+                    // correct: same-tag scalars compare by bits; cross-tag
+                    // pairs (e.g. Ptr vs Int) bit-differ -> always false.
+                    let cond = both_ptr(b, av, bvv);
                     let fast_blk = b.create_block();
                     let slow_blk = b.create_block();
                     let join_blk = b.create_block();
                     b.append_block_param(join_blk, types::I64);
                     let no_args: Vec<BlockArg> = Vec::new();
-                    // either_ptr=true => slow path
+                    // both_ptr=true => slow path
                     b.ins().brif(cond, slow_blk, &no_args, fast_blk, &no_args);
 
                     b.switch_to_block(fast_blk);
@@ -2572,14 +2713,14 @@ where
     b.block_params(join_blk)[0]
 }
 
-/// True iff at least one operand is Tag::Ptr (low 3 bits = 000). Used by
-/// Eq/Neq to detect heap-typed operands and dispatch to fz_value_eq.
-fn either_ptr(b: &mut FunctionBuilder<'_>, av: ir::Value, bv: ir::Value) -> ir::Value {
-    let a_lo = b.ins().band_imm(av, 7);
-    let b_lo = b.ins().band_imm(bv, 7);
-    let a_is = b.ins().icmp_imm(IntCC::Equal, a_lo, 0);
-    let b_is = b.ins().icmp_imm(IntCC::Equal, b_lo, 0);
-    b.ins().bor(a_is, b_is)
+/// True iff BOTH operands are Tag::Ptr (low 3 bits = 000). Used by Eq/Neq
+/// to dispatch to fz_value_eq only when there's actually a heap value to
+/// inspect; (Ptr, Int) and other cross-tag pairs are correctly handled by
+/// raw bit-eq (always false: ptr bits never alias non-ptr tags).
+fn both_ptr(b: &mut FunctionBuilder<'_>, av: ir::Value, bv: ir::Value) -> ir::Value {
+    let or_ab = b.ins().bor(av, bv);
+    let lo = b.ins().band_imm(or_ab, 7);
+    b.ins().icmp_imm(IntCC::Equal, lo, 0)
 }
 
 /// Box a raw i64 into an FzValue-tagged int: `(n << 3) | TAG_INT`.
@@ -3985,6 +4126,170 @@ mod tests {
         // ...without the root, GC reclaims it.
         heap_gc(&[]);
         assert_eq!(heap_live_count(), 0);
+    }
+
+    // ----- .11.21 structural equality tests -----
+
+    /// Helper: build a main fn that returns the eq of two expressions.
+    fn eq_main(a: Expr, b: Expr) -> Vec<Rc<Item>> {
+        vec![fn_def(
+            "main",
+            vec![cl(
+                vec![],
+                Expr::BinOp(ABinOp::Eq, Box::new(a), Box::new(b)),
+            )],
+        )]
+    }
+
+    fn run_eq(items: Vec<Rc<Item>>) -> i64 {
+        let m = lower(items);
+        let entry = m.fn_by_name("main").unwrap().id;
+        heap_reset_for_test();
+        let cm = compile(&m).unwrap();
+        cm.run(entry)
+    }
+
+    #[test]
+    fn list_structural_eq_same_content_distinct_allocations() {
+        let l = || Expr::List(vec![Expr::Int(1), Expr::Int(2), Expr::Int(3)], None);
+        assert_eq!(run_eq(eq_main(l(), l())), 1);
+    }
+
+    #[test]
+    fn list_structural_eq_length_mismatch_is_false() {
+        assert_eq!(
+            run_eq(eq_main(
+                Expr::List(vec![Expr::Int(1), Expr::Int(2)], None),
+                Expr::List(vec![Expr::Int(1), Expr::Int(2), Expr::Int(3)], None),
+            )),
+            0
+        );
+    }
+
+    #[test]
+    fn tuple_structural_eq_same_arity_and_content() {
+        let t = || {
+            Expr::Tuple(vec![Expr::Int(1), Expr::Atom("ok".into())])
+        };
+        assert_eq!(run_eq(eq_main(t(), t())), 1);
+    }
+
+    #[test]
+    fn tuple_eq_different_arity_is_false() {
+        assert_eq!(
+            run_eq(eq_main(
+                Expr::Tuple(vec![Expr::Int(1), Expr::Int(2)]),
+                Expr::Tuple(vec![Expr::Int(1), Expr::Int(2), Expr::Int(3)]),
+            )),
+            0
+        );
+    }
+
+    #[test]
+    fn bitstring_structural_eq_byte_aligned() {
+        use crate::ast::{BitField, BitFieldSpec, BitType, Endian};
+        let bs = || {
+            Expr::Bitstring(
+                [1, 2, 3]
+                    .iter()
+                    .map(|n| BitField {
+                        value: Expr::Int(*n),
+                        spec: BitFieldSpec {
+                            ty: BitType::Integer,
+                            size: None,
+                            unit: None,
+                            endian: Endian::Big,
+                            signed: false,
+                        },
+                    })
+                    .collect(),
+            )
+        };
+        assert_eq!(run_eq(eq_main(bs(), bs())), 1);
+    }
+
+    #[test]
+    fn map_structural_eq_ignores_construction_order() {
+        // %{a: 1, b: 2} == %{b: 2, a: 1}  -> true (canonical sort)
+        let lhs = Expr::Map(vec![
+            (Expr::Atom("a".into()), Expr::Int(1)),
+            (Expr::Atom("b".into()), Expr::Int(2)),
+        ]);
+        let rhs = Expr::Map(vec![
+            (Expr::Atom("b".into()), Expr::Int(2)),
+            (Expr::Atom("a".into()), Expr::Int(1)),
+        ]);
+        assert_eq!(run_eq(eq_main(lhs, rhs)), 1);
+    }
+
+    #[test]
+    fn map_eq_different_value_is_false() {
+        let lhs = Expr::Map(vec![
+            (Expr::Atom("a".into()), Expr::Int(1)),
+            (Expr::Atom("b".into()), Expr::Int(2)),
+        ]);
+        let rhs = Expr::Map(vec![
+            (Expr::Atom("a".into()), Expr::Int(1)),
+            (Expr::Atom("b".into()), Expr::Int(3)),
+        ]);
+        assert_eq!(run_eq(eq_main(lhs, rhs)), 0);
+    }
+
+    #[test]
+    fn heterogeneous_kinds_compare_unequal() {
+        // [1, 2] == {1, 2} -> false (List vs Struct)
+        assert_eq!(
+            run_eq(eq_main(
+                Expr::List(vec![Expr::Int(1), Expr::Int(2)], None),
+                Expr::Tuple(vec![Expr::Int(1), Expr::Int(2)]),
+            )),
+            0
+        );
+    }
+
+    #[test]
+    fn nested_map_with_list_structural_eq() {
+        // %{x: [1, 2]} == %{x: [1, 2]}  -> true (recursion through map+list)
+        let m = || {
+            Expr::Map(vec![(
+                Expr::Atom("x".into()),
+                Expr::List(vec![Expr::Int(1), Expr::Int(2)], None),
+            )])
+        };
+        assert_eq!(run_eq(eq_main(m(), m())), 1);
+    }
+
+    #[test]
+    fn neq_inverts_structural_eq() {
+        // [1, 2] != [1, 2] -> false; [1, 2] != [1, 3] -> true
+        assert_eq!(
+            run_eq(vec![fn_def(
+                "main",
+                vec![cl(
+                    vec![],
+                    Expr::BinOp(
+                        ABinOp::Neq,
+                        Box::new(Expr::List(vec![Expr::Int(1), Expr::Int(2)], None)),
+                        Box::new(Expr::List(vec![Expr::Int(1), Expr::Int(2)], None)),
+                    ),
+                )],
+            )]),
+            0
+        );
+        assert_eq!(
+            run_eq(vec![fn_def(
+                "main",
+                vec![cl(
+                    vec![],
+                    Expr::BinOp(
+                        ABinOp::Neq,
+                        Box::new(Expr::List(vec![Expr::Int(1), Expr::Int(2)], None)),
+                        Box::new(Expr::List(vec![Expr::Int(1), Expr::Int(3)], None)),
+                    ),
+                )],
+            )]),
+            1
+        );
     }
 
     // ----- .11.20 boxed-float tests -----
