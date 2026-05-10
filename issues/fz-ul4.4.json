@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-ul4.3"
+  ],
   "blocks": [],
   "created": "2026-05-10T01:26:31Z",
   "description": "Walk the AST and synthesize a Descr for each expression. Bidirectional: synth mode for most, check mode where an expected type is known.\n\nScope: literals, vars (lookup in env), binops (with primitive overload resolution via intersection), if/else (union of branch types), case (union of clause body types under refined env), let/match.\n\nDefer: full polymorphism (start monomorphic), recursive type definitions.\n\nDeliverable: src/typer.rs with infer(env, expr) -\u003e Descr.",
