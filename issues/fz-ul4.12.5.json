@@ -10,9 +10,15 @@
   "id": "fz-ul4.12.5",
   "labels": [],
   "parent": "fz-ul4.12",
+  "comments": [
+    {
+      "text": "Shipped in commits 685612a (codegen) + 0a02092 (typer narrowing). All acceptance criteria met: fact/fib/classify/count(100k) run identically across interp/jit/aot.",
+      "timestamp": "2026-05-10T08:34:18Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Multi-clause + guards + tuple patterns + self-TCO (both backends)",
   "type": "task",
-  "updated_at": "2026-05-10T03:00:21Z"
+  "updated_at": "2026-05-10T08:34:18Z"
 }
