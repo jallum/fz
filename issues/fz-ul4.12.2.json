@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-ul4.12.3"
+  ],
   "created": "2026-05-10T02:59:53Z",
   "description": "Rust staticlib crate that both JIT and AOT link against. Defines the stable C-ABI boundary between compiled fz code and the runtime.\n\nScope:\n- Value representation at compiled-code boundaries: tagged 64-bit (NaN-box or tag-in-low-bits — decide in ticket). Scalars unboxed inside a function; boxed only when crossing into runtime/builtins or interpreter.\n- Atom table: interned strings, u32 ids, lookup + reverse-lookup for print.\n- Builtin C-ABI surface: print, arithmetic helpers if any, panic/abort with fz-formatted error.\n- No GC: heap allocation deferred to .11. Runtime panics if asked to allocate.\n\nOut: lists, maps, strings, bitstrings — all blocked on .11.\n\nVerification: standalone Rust tests calling the C-ABI surface directly.",
   "id": "fz-ul4.12.2",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Runtime staticlib + Value ABI",
   "type": "task",
-  "updated_at": "2026-05-10T02:59:53Z"
+  "updated_at": "2026-05-10T03:00:21Z"
 }

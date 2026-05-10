@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-ul4.12.2"
+  ],
   "blocks": [],
   "created": "2026-05-10T03:00:00Z",
   "description": "fz build foo.fz -o foo produces a standalone executable.\n\nPipeline:\n- Parse → type → lower (.12a) → cranelift-object → .o file → invoke system linker (or lld) with runtime staticlib (.12b) → executable.\n- Entry point: fz main() function, lifted to C main with int return.\n- Pre-codegen pass: walk typed AST, hard-error on any construct outside the .12 in-scope subset (heap types, closures, with, list/map patterns, etc.). Error must name the unsupported feature and source location.\n\nVerification: end-to-end test — sample .fz file with fact(10) → prints 3628800; binary runs on host without fz toolchain present.\n\nHost target only. Cross-compilation deferred.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "AOT driver: fz build → standalone binary",
   "type": "task",
-  "updated_at": "2026-05-10T03:00:00Z"
+  "updated_at": "2026-05-10T03:00:21Z"
 }
