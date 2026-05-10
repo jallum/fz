@@ -70,6 +70,14 @@ pub struct CompiledModule {
     /// Indexed by position in source Module.fns (not by FnId.0). No consumers
     /// yet; .11.24.4 / .11.24.5 / .11.24.6 / .11.24.7 plug it in.
     pub(crate) types: crate::ir_typer::ModuleTypes,
+    /// .11.24.6: diagnostics surface (unreachable arms, dead branches).
+    pub(crate) diagnostics: Vec<crate::ir_typer::Diagnostic>,
+}
+
+impl CompiledModule {
+    pub fn warnings(&self) -> &[crate::ir_typer::Diagnostic] {
+        &self.diagnostics
+    }
 }
 
 unsafe impl Send for CompiledModule {}
@@ -1845,7 +1853,14 @@ pub fn compile(module: &Module) -> Result<CompiledModule, CodegenError> {
         fn_ptrs.insert(*fz_fn_id, jmod.get_finalized_function(*func_id));
     }
 
-    Ok(CompiledModule { module: jmod, fn_ptrs, schemas, types: module_types })
+    let diagnostics = crate::ir_typer::collect_diagnostics(module, &module_types);
+    Ok(CompiledModule {
+        module: jmod,
+        fn_ptrs,
+        schemas,
+        types: module_types,
+        diagnostics,
+    })
 }
 
 fn sig1(params: &[ir::Type], rets: &[ir::Type]) -> Signature {

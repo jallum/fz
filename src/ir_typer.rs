@@ -192,27 +192,30 @@ fn narrow_for_if(
         Prim::BinOp(BinOp::Eq, a, b) => {
             let at = env.get(a).cloned().unwrap_or_else(Descr::any);
             let bt = env.get(b).cloned().unwrap_or_else(Descr::any);
-            // If either operand is a singleton literal, intersect the other
-            // with that literal type on the truthy branch.
+            // Truthy: intersect the non-singleton operand with the singleton.
+            // Falsy: subtract the singleton from the non-singleton operand
+            // (.24.6 brought this in; .24.3 had it scoped out).
             if is_singleton_lit(&at) {
                 then_env.insert(*b, bt.intersect(&at));
+                else_env.insert(*b, bt.diff(&at));
             }
             if is_singleton_lit(&bt) {
                 then_env.insert(*a, at.intersect(&bt));
+                else_env.insert(*a, at.diff(&bt));
             }
-            // Negative narrowing on the else branch via diff produces a
-            // tighter but more complex Descr (subtracts the singleton);
-            // skip until profiling shows it pays off (.24.3 out-of-scope).
         }
         Prim::BinOp(BinOp::Neq, a, b) => {
-            // Mirror of Eq: narrow on the else branch.
+            // Mirror of Eq: narrow on the else branch (truthy) and diff on
+            // then.
             let at = env.get(a).cloned().unwrap_or_else(Descr::any);
             let bt = env.get(b).cloned().unwrap_or_else(Descr::any);
             if is_singleton_lit(&at) {
                 else_env.insert(*b, bt.intersect(&at));
+                then_env.insert(*b, bt.diff(&at));
             }
             if is_singleton_lit(&bt) {
                 else_env.insert(*a, at.intersect(&bt));
+                then_env.insert(*a, at.diff(&bt));
             }
         }
         _ => {}
@@ -435,6 +438,75 @@ fn var_as_map_key(v: Var, env: &HashMap<Var, Descr>) -> Option<MapKey> {
 // Suppress unused imports under cfg(not(test)).
 #[allow(dead_code)]
 fn _suppress_block(_: &Block) {}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DiagKind {
+    UnreachableArm,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Diagnostic {
+    pub fn_name: String,
+    pub kind: DiagKind,
+    pub message: String,
+}
+
+/// .11.24.6: scan typer output for unreachable If branches. For each
+/// `Term::If(cond, then_b, else_b)`, re-run the branch narrowing under the
+/// terminator's pre-env. If either branch's narrowed operand is empty, that
+/// branch is unreachable.
+///
+/// Returns diagnostics in a stable order (sorted by fn position then block id).
+pub fn collect_diagnostics(module: &Module, types: &ModuleTypes) -> Vec<Diagnostic> {
+    let mut out: Vec<Diagnostic> = Vec::new();
+    for (i, f) in module.fns.iter().enumerate() {
+        let ft = &types[i];
+        let mut blocks_sorted: Vec<&crate::fz_ir::Block> = f.blocks.iter().collect();
+        blocks_sorted.sort_by_key(|b| b.id.0);
+        for b in blocks_sorted {
+            let Term::If(cond, then_b, else_b) = b.terminator else { continue };
+
+            // Reconstruct the env at the terminator: start from this block's
+            // entry env and replay the stmts.
+            let mut env = ft.block_envs.get(&b.id).cloned().unwrap_or_default();
+            for stmt in &b.stmts {
+                let Stmt::Let(v, prim) = stmt;
+                let t = type_prim(prim, &env, module);
+                env.insert(*v, t);
+            }
+
+            let (then_env, else_env) = narrow_for_if(&env, cond, &b.stmts);
+
+            // A branch is unreachable if any Var that changed in the narrowed
+            // env relative to pre-env is now empty. We compare values for the
+            // small set of keys touched by narrow_for_if (operands of the
+            // recognized predicates).
+            let check = |branch_env: &HashMap<crate::fz_ir::Var, Descr>, tag: &str, bb_id: crate::fz_ir::BlockId| -> Option<Diagnostic> {
+                let mut keys: Vec<crate::fz_ir::Var> = branch_env.keys().copied().collect();
+                keys.sort_by_key(|v| v.0);
+                for v in keys {
+                    let new_t = branch_env.get(&v).unwrap();
+                    let old_t = env.get(&v).cloned().unwrap_or_else(Descr::any);
+                    if !new_t.is_equiv(&old_t) && new_t.is_empty() && !old_t.is_empty() {
+                        return Some(Diagnostic {
+                            fn_name: f.name.clone(),
+                            kind: DiagKind::UnreachableArm,
+                            message: format!(
+                                "{}-branch of If in bb{}: narrowing v{} proved no \
+                                 inhabitants (unreachable arm at bb{})",
+                                tag, b.id.0, v.0, bb_id.0
+                            ),
+                        });
+                    }
+                }
+                None
+            };
+            if let Some(d) = check(&then_env, "then", then_b) { out.push(d); }
+            if let Some(d) = check(&else_env, "else", else_b) { out.push(d); }
+        }
+    }
+    out
+}
 
 /// .11.24.5: refine `MakeVec(I64, els)` to `MakeVec(F64, els)` when any
 /// element is typed Float. Errors on the "mixed Int and Float" case under
@@ -678,6 +750,83 @@ mod tests {
         let p00_t = mt[0].vars.get(&p00).cloned().unwrap();
         assert!(p00_t.is_equiv(&Descr::int_lit(7)),
             "outer.0.0 should be int_lit(7), got {}", p00_t);
+    }
+
+    // ---- .24.6 unreachable-arm diagnostics ----
+
+    #[test]
+    fn list_is_nil_on_int_var_flags_both_branches_unreachable() {
+        // entry():
+        //   five = 5
+        //   c = ListIsNil(five)    -- predicate over an int -> both branches empty
+        //   if c then then_b else else_b
+        // then_b: halt five    -- env[five] narrowed to int_lit(5) ∩ nil = empty
+        // else_b: halt five    -- env[five] narrowed to int_lit(5) ∩ list = empty
+        let mut b = FnBuilder::new(FnId(0), "f");
+        let entry = b.block(vec![]);
+        let five = b.let_(entry, Prim::Const(Const::Int(5)));
+        let c = b.let_(entry, Prim::ListIsNil(five));
+        let then_b = b.block(vec![]);
+        let else_b = b.block(vec![]);
+        b.set_terminator(entry, Term::If(c, then_b, else_b));
+        b.set_terminator(then_b, Term::Halt(five));
+        b.set_terminator(else_b, Term::Halt(five));
+        let m = build_module(vec![b.build()]);
+        let t = type_module(&m);
+        let diags = collect_diagnostics(&m, &t);
+        assert_eq!(diags.len(), 2, "expected two unreachable arms, got {:?}", diags);
+        assert!(diags.iter().all(|d| d.kind == DiagKind::UnreachableArm));
+    }
+
+    #[test]
+    fn happy_path_emits_no_warnings() {
+        // entry(): halt 42  -- single-block, no narrowing, no warnings.
+        let mut b = FnBuilder::new(FnId(0), "f");
+        let entry = b.block(vec![]);
+        let v = b.let_(entry, Prim::Const(Const::Int(42)));
+        b.set_terminator(entry, Term::Halt(v));
+        let m = build_module(vec![b.build()]);
+        let t = type_module(&m);
+        let diags = collect_diagnostics(&m, &t);
+        assert!(diags.is_empty(), "expected no warnings, got {:?}", diags);
+    }
+
+    #[test]
+    fn eq_then_eq_dup_clause_flags_second_arm_unreachable() {
+        // entry(x):
+        //   z = 0
+        //   c1 = (x == z)
+        //   if c1 then halt_b else next_check
+        // next_check:
+        //   z2 = 0
+        //   c2 = (x == z2)        -- x's env in next_check = any \ int_lit(0)
+        //   if c2 then dead_b else fallback
+        // dead_b: this is the unreachable second "fn f(0)" clause.
+        //         env[x] narrows to (any \ 0) ∩ 0 = empty.
+        let mut b = FnBuilder::new(FnId(0), "f");
+        let x = b.fresh_var();
+        let entry = b.block(vec![x]);
+        let z = b.let_(entry, Prim::Const(Const::Int(0)));
+        let c1 = b.let_(entry, Prim::BinOp(BinOp::Eq, x, z));
+        let halt_b = b.block(vec![]);
+        let next_check = b.block(vec![]);
+        b.set_terminator(entry, Term::If(c1, halt_b, next_check));
+        b.set_terminator(halt_b, Term::Halt(x));
+        let z2 = b.let_(next_check, Prim::Const(Const::Int(0)));
+        let c2 = b.let_(next_check, Prim::BinOp(BinOp::Eq, x, z2));
+        let dead_b = b.block(vec![]);
+        let fallback = b.block(vec![]);
+        b.set_terminator(next_check, Term::If(c2, dead_b, fallback));
+        b.set_terminator(dead_b, Term::Halt(x));
+        b.set_terminator(fallback, Term::Halt(x));
+
+        let m = build_module(vec![b.build()]);
+        let t = type_module(&m);
+        let diags = collect_diagnostics(&m, &t);
+        assert!(
+            diags.iter().any(|d| d.message.contains(&format!("bb{}", dead_b.0))),
+            "expected dead_b (bb{}) flagged, got {:?}", dead_b.0, diags
+        );
     }
 
     // ---- .24.5 vec kind refinement ----

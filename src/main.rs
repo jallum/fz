@@ -239,6 +239,9 @@ fn run_jit(args: &[String]) {
         eprintln!("{}", e);
         std::process::exit(1);
     });
+    for w in cm.warnings() {
+        eprintln!("warning: {}: {}", w.fn_name, w.message);
+    }
     let _ = cm.run(main_fn);
 }
 
