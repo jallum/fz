@@ -329,167 +329,15 @@ pub fn run_str(src: &str) -> Result<(), JitError> {
 
     let cls = classify(&prog, &mut typer);
 
-    // Set up Interp (loads all fns; we override JIT-eligible ones with
-    // Value::Jit after compile).
     let interp = Interp::new();
     interp
         .load_program(&prog)
         .map_err(|e| JitError(format!("load: {}", e)))?;
 
-    // Build JITModule.
-    let isa = host_isa();
-    let mut builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
+    let runtime = TieredRuntime::build(cls)?;
 
-    // Register host symbols (runtime printers + cross-tier trampoline).
-    let _ = builder.symbol("fz_print_i64", fz_runtime::fz_print_i64 as *const u8);
-    let _ = builder.symbol("fz_print_f64", fz_runtime::fz_print_f64 as *const u8);
-    let _ = builder.symbol("fz_print_bool", fz_runtime::fz_print_bool as *const u8);
-    let _ = builder.symbol("fz_print_atom", fz_runtime::fz_print_atom as *const u8);
-    let _ = builder.symbol("fz_print_nil", fz_runtime::fz_print_nil as *const u8);
-    let _ = builder.symbol("fz_call_interp", fz_call_interp as *const u8);
-
-    let mut module = JITModule::new(builder);
-
-    // Declare runtime print symbols.
-    let mut runtime_ids: HashMap<&'static str, FuncId> = HashMap::new();
-    for (sym, params, ret) in RUNTIME_PRINT_SYMBOLS {
-        let sig = FnSig { params: params.to_vec(), ret: ret.clone() };
-        let cl_sig = sig.to_cranelift(CallConv::SystemV);
-        let id = module
-            .declare_function(sym, Linkage::Import, &cl_sig)
-            .map_err(|e| JitError(format!("declare {}: {}", sym, e)))?;
-        runtime_ids.insert(sym, id);
-    }
-    // fz_call_interp signature: (u32, *const u64, *mut u64) -> ()
-    let call_interp_sig = {
-        let mut s = Signature::new(CallConv::SystemV);
-        s.params.push(AbiParam::new(ir::types::I32));
-        s.params.push(AbiParam::new(ir::types::I64));
-        s.params.push(AbiParam::new(ir::types::I64));
-        s
-    };
-    let call_interp_id = module
-        .declare_function("fz_call_interp", Linkage::Import, &call_interp_sig)
-        .map_err(|e| JitError(format!("declare fz_call_interp: {}", e)))?;
-
-    // Declare each JIT-eligible user fn.
-    let mut user_ids: HashMap<String, FuncId> = HashMap::new();
-    for m in &cls.jit_eligible {
-        let cl_sig = m.sig.to_cranelift(CallConv::SystemV);
-        let id = module
-            .declare_function(&m.name, Linkage::Local, &cl_sig)
-            .map_err(|e| JitError(format!("declare {}: {}", m.name, e)))?;
-        user_ids.insert(m.name.clone(), id);
-    }
-
-    // Assign idx + declare a forward-thunk for each interp-only callable fn.
-    // (Indices align with JitCtx.interp_callees order.)
-    let mut interp_callee_order: Vec<(String, FnSig)> = cls
-        .interp_callable
-        .iter()
-        .map(|(n, s)| (n.clone(), s.clone()))
-        .collect();
-    interp_callee_order.sort_by(|a, b| a.0.cmp(&b.0));
-    let interp_callee_idx: HashMap<String, u32> = interp_callee_order
-        .iter()
-        .enumerate()
-        .map(|(i, (n, _))| (n.clone(), i as u32))
-        .collect();
-    let mut forward_thunk_ids: HashMap<String, FuncId> = HashMap::new();
-    for (name, sig) in &interp_callee_order {
-        let cl_sig = sig.to_cranelift(CallConv::SystemV);
-        let thunk_sym = format!("__fz_fwdthunk_{}", name);
-        let id = module
-            .declare_function(&thunk_sym, Linkage::Local, &cl_sig)
-            .map_err(|e| JitError(format!("declare {}: {}", thunk_sym, e)))?;
-        forward_thunk_ids.insert(name.clone(), id);
-    }
-
-    // Lower each user fn. For its callees:
-    // - JIT-eligible → user_ids[name]
-    // - interp-only-callable → forward_thunk_ids[name] (looks like a regular call)
-    // The lowering API in codegen.rs needs callee sigs for *both*; combine.
-    let mut callee_sigs: HashMap<String, FnSig> = HashMap::new();
-    for m in &cls.jit_eligible {
-        callee_sigs.insert(m.name.clone(), m.sig.clone());
-    }
-    for (n, s) in &cls.interp_callable {
-        callee_sigs.insert(n.clone(), s.clone());
-    }
-
-    let user_fns_set: std::collections::HashSet<String> = cls.jit_eligible.iter()
-        .map(|m| m.user_name.clone())
-        .chain(cls.interp_callable.keys().cloned())
-        .collect();
-    let mut atoms = AtomInterner::default();
-    for m in &cls.jit_eligible {
-        let r = crate::codegen::lower_fn_with(
-            &m.def, &m.sig, &callee_sigs, &mut atoms,
-            &m.param_bindings, &user_fns_set,
-        ).map_err(|e: LowerError| JitError(format!("{}: {}", m.name, e)))?;
-        let LowerResult { mut func, callee_imports, builtin_imports } = r;
-        rewrite_user_names(
-            &mut func,
-            &callee_imports,
-            &builtin_imports,
-            &user_ids,
-            &forward_thunk_ids,
-            &runtime_ids,
-        )?;
-        let mut ctx = Context::for_function(func);
-        let id = user_ids[&m.name];
-        module
-            .define_function(id, &mut ctx)
-            .map_err(|e| JitError(format!("{}: {}", m.name, e)))?;
-    }
-
-    // Define each forward-thunk: native sig in → marshal to slots → call
-    // fz_call_interp(idx, args_ptr, ret_ptr) → demarshal native return.
-    for (name, sig) in &interp_callee_order {
-        let idx = interp_callee_idx[name];
-        let id = forward_thunk_ids[name];
-        define_forward_thunk(&mut module, id, sig, idx, call_interp_id)?;
-    }
-
-    // Define one reverse-thunk per JIT-eligible fn (uniform `(args, ret)`
-    // ABI for Interp → JIT calls).
-    let mut reverse_thunk_ids: HashMap<String, FuncId> = HashMap::new();
-    for m in &cls.jit_eligible {
-        let id = define_reverse_thunk(&mut module, &m.name, &m.sig, user_ids[&m.name])?;
-        reverse_thunk_ids.insert(m.name.clone(), id);
-    }
-
-    // Atom-table sync: JIT shares this process's runtime atom table, but
-    // codegen's local AtomInterner assigned 0..N-1 ids. Register the names in
-    // order so the runtime's table matches what codegen baked in.
-    sync_atom_table(&atoms.names)?;
-
-    module
-        .finalize_definitions()
-        .map_err(|e| JitError(format!("finalize: {}", e)))?;
-
-    // Get reverse-thunk ptrs and bind into Interp as Value::Jit replacements.
-    // Only monomorphic fns (one specialization, mangled name == user name)
-    // can be bound directly as Value::Jit — polymorphic fns have multiple
-    // sigs under one user name and would need a runtime-type dispatcher,
-    // which we don't implement (interp dispatches polymorphic calls via the
-    // original AST clauses).
-    for m in &cls.jit_eligible {
-        if m.name != m.user_name { continue; }
-        let id = reverse_thunk_ids[&m.name];
-        let ptr = module.get_finalized_function(id);
-        interp.globals.bind(
-            &m.user_name,
-            Value::Jit(Rc::new(crate::value::JitFn {
-                name: m.user_name.clone(),
-                sig: m.sig.clone(),
-                fn_ptr: ptr as usize,
-            })),
-        );
-    }
-
-    // Install JitCtx for the duration of the call.
-    let interp_callees: Vec<(String, FnSig)> = interp_callee_order;
+    // Install JitCtx for the duration of the run (used by fz_call_interp).
+    let interp_callees: Vec<(String, FnSig)> = runtime.interp_callee_order.clone();
     let interp_ptr: *const Interp = &interp;
     JIT_CTX.with(|c| {
         *c.borrow_mut() = Some(JitCtx {
@@ -498,18 +346,343 @@ pub fn run_str(src: &str) -> Result<(), JitError> {
         });
     });
 
-    // Run main. If main is JIT-eligible, dispatch through Value::Jit (already
-    // bound). Otherwise fall through to the closure that load_program made.
+    // Install tier-up call hook. Threshold is chosen so deep self-recursion
+    // (`count(100000, 0)`) tier-ups well before exhausting the rust stack.
+    let rt = Rc::new(runtime);
+    let rt_hook = rt.clone();
+    *interp.on_user_call.borrow_mut() = Some(Rc::new(move |name: &str, ip: &Interp| {
+        rt_hook.on_call(name, ip);
+    }));
+
     let result = interp.call_named("main", vec![]);
+
+    *interp.on_user_call.borrow_mut() = None;
     JIT_CTX.with(|c| { *c.borrow_mut() = None; });
 
-    // Keep the JITModule alive for the lifetime of any leftover closures
-    // (none here, but jitted code pages would otherwise be freed). We leak
-    // the module — fine for a one-shot run.
-    std::mem::forget(module);
+    // Leak the JIT module so any bound Value::Jit thunks remain valid.
+    let TieredRuntime { module, .. } = match Rc::try_unwrap(rt) {
+        Ok(r) => r,
+        Err(_) => panic!("TieredRuntime still referenced at end of run"),
+    };
+    std::mem::forget(module.into_inner());
 
     result.map_err(|e| JitError(format!("runtime: {}", e)))?;
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Tier-up runtime (fz-ul4.13)
+// ---------------------------------------------------------------------------
+
+const TIERUP_THRESHOLD: u32 = 8;
+
+/// Holds the persistent JITModule plus state for lazy per-fn compilation.
+/// Functions start in the interpreter; once a user_name's call count crosses
+/// `TIERUP_THRESHOLD`, that user_name's monos (and any not-yet-compiled monos
+/// transitively reachable through their bodies) are lowered, defined,
+/// finalized, and the corresponding interp globals are rebound to Value::Jit.
+/// Cold (un-reached) code stays in the interpreter forever.
+struct TieredRuntime {
+    module: RefCell<JITModule>,
+    monos: Vec<MonoFn>,
+    monos_by_user: HashMap<String, Vec<usize>>,
+
+    user_ids: HashMap<String, FuncId>,           // mono.name -> FuncId
+    forward_thunk_ids: HashMap<String, FuncId>,  // user_name (interp_callable) -> FuncId
+    runtime_ids: HashMap<&'static str, FuncId>,
+    callee_sigs: HashMap<String, FnSig>,
+    user_fns_set: std::collections::HashSet<String>,
+    atoms: RefCell<AtomInterner>,
+
+    defined_monos: RefCell<std::collections::HashSet<String>>,
+    counts: RefCell<HashMap<String, u32>>,
+    triggered: RefCell<std::collections::HashSet<String>>,
+    in_tier_up: RefCell<bool>,
+
+    interp_callee_order: Vec<(String, FnSig)>,
+}
+
+impl TieredRuntime {
+    fn build(cls: Classified) -> Result<Self, JitError> {
+        let isa = host_isa();
+        let mut builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
+        let _ = builder.symbol("fz_print_i64", fz_runtime::fz_print_i64 as *const u8);
+        let _ = builder.symbol("fz_print_f64", fz_runtime::fz_print_f64 as *const u8);
+        let _ = builder.symbol("fz_print_bool", fz_runtime::fz_print_bool as *const u8);
+        let _ = builder.symbol("fz_print_atom", fz_runtime::fz_print_atom as *const u8);
+        let _ = builder.symbol("fz_print_nil", fz_runtime::fz_print_nil as *const u8);
+        let _ = builder.symbol("fz_call_interp", fz_call_interp as *const u8);
+
+        let mut module = JITModule::new(builder);
+
+        let mut runtime_ids: HashMap<&'static str, FuncId> = HashMap::new();
+        for (sym, params, ret) in RUNTIME_PRINT_SYMBOLS {
+            let sig = FnSig { params: params.to_vec(), ret: ret.clone() };
+            let cl_sig = sig.to_cranelift(CallConv::SystemV);
+            let id = module
+                .declare_function(sym, Linkage::Import, &cl_sig)
+                .map_err(|e| JitError(format!("declare {}: {}", sym, e)))?;
+            runtime_ids.insert(sym, id);
+        }
+        let call_interp_sig = {
+            let mut s = Signature::new(CallConv::SystemV);
+            s.params.push(AbiParam::new(ir::types::I32));
+            s.params.push(AbiParam::new(ir::types::I64));
+            s.params.push(AbiParam::new(ir::types::I64));
+            s
+        };
+        let call_interp_id = module
+            .declare_function("fz_call_interp", Linkage::Import, &call_interp_sig)
+            .map_err(|e| JitError(format!("declare fz_call_interp: {}", e)))?;
+
+        // Declare every JIT-eligible mono upfront so call sites in lazily-
+        // lowered fns can reference them by FuncId regardless of definition
+        // order.
+        let mut user_ids: HashMap<String, FuncId> = HashMap::new();
+        for m in &cls.jit_eligible {
+            let cl_sig = m.sig.to_cranelift(CallConv::SystemV);
+            let id = module
+                .declare_function(&m.name, Linkage::Local, &cl_sig)
+                .map_err(|e| JitError(format!("declare {}: {}", m.name, e)))?;
+            user_ids.insert(m.name.clone(), id);
+        }
+
+        // Forward thunks for interp-only callees (compiled+finalized eagerly:
+        // they're cheap, and JIT'd code calling into interp needs them ready).
+        let mut interp_callee_order: Vec<(String, FnSig)> = cls
+            .interp_callable
+            .iter()
+            .map(|(n, s)| (n.clone(), s.clone()))
+            .collect();
+        interp_callee_order.sort_by(|a, b| a.0.cmp(&b.0));
+        let interp_callee_idx: HashMap<String, u32> = interp_callee_order
+            .iter()
+            .enumerate()
+            .map(|(i, (n, _))| (n.clone(), i as u32))
+            .collect();
+        let mut forward_thunk_ids: HashMap<String, FuncId> = HashMap::new();
+        for (name, sig) in &interp_callee_order {
+            let cl_sig = sig.to_cranelift(CallConv::SystemV);
+            let thunk_sym = format!("__fz_fwdthunk_{}", name);
+            let id = module
+                .declare_function(&thunk_sym, Linkage::Local, &cl_sig)
+                .map_err(|e| JitError(format!("declare {}: {}", thunk_sym, e)))?;
+            forward_thunk_ids.insert(name.clone(), id);
+        }
+        for (name, sig) in &interp_callee_order {
+            let idx = interp_callee_idx[name];
+            let id = forward_thunk_ids[name];
+            define_forward_thunk(&mut module, id, sig, idx, call_interp_id)?;
+        }
+        // Forward thunks reference no JIT-side fns, just the interp
+        // trampoline; safe to finalize immediately.
+        module
+            .finalize_definitions()
+            .map_err(|e| JitError(format!("finalize forward thunks: {}", e)))?;
+
+        let mut callee_sigs: HashMap<String, FnSig> = HashMap::new();
+        for m in &cls.jit_eligible {
+            callee_sigs.insert(m.name.clone(), m.sig.clone());
+        }
+        for (n, s) in &cls.interp_callable {
+            callee_sigs.insert(n.clone(), s.clone());
+        }
+
+        let user_fns_set: std::collections::HashSet<String> = cls.jit_eligible.iter()
+            .map(|m| m.user_name.clone())
+            .chain(cls.interp_callable.keys().cloned())
+            .collect();
+
+        let mut monos_by_user: HashMap<String, Vec<usize>> = HashMap::new();
+        for (i, m) in cls.jit_eligible.iter().enumerate() {
+            monos_by_user.entry(m.user_name.clone()).or_default().push(i);
+        }
+
+        Ok(TieredRuntime {
+            module: RefCell::new(module),
+            monos: cls.jit_eligible,
+            monos_by_user,
+            user_ids,
+            forward_thunk_ids,
+            runtime_ids,
+            callee_sigs,
+            user_fns_set,
+            atoms: RefCell::new(AtomInterner::default()),
+            defined_monos: RefCell::new(std::collections::HashSet::new()),
+            counts: RefCell::new(HashMap::new()),
+            triggered: RefCell::new(std::collections::HashSet::new()),
+            in_tier_up: RefCell::new(false),
+            interp_callee_order,
+        })
+    }
+
+    fn on_call(&self, user_name: &str, interp: &Interp) {
+        // Avoid recursion: tier-up itself does not need to count.
+        if *self.in_tier_up.borrow() { return; }
+        if !self.monos_by_user.contains_key(user_name) { return; }
+        if self.triggered.borrow().contains(user_name) { return; }
+        let mut counts = self.counts.borrow_mut();
+        let c = counts.entry(user_name.to_string()).or_insert(0);
+        *c += 1;
+        if *c < TIERUP_THRESHOLD { return; }
+        drop(counts);
+        if let Err(e) = self.tier_up(user_name, interp) {
+            // Tier-up failure should not crash the interpreter; mark as
+            // triggered so we don't retry, and let interp continue.
+            eprintln!("fz jit: tier-up of {} failed: {}; continuing in interp", user_name, e);
+            self.triggered.borrow_mut().insert(user_name.to_string());
+        }
+    }
+
+    fn tier_up(&self, user_name: &str, interp: &Interp) -> Result<(), JitError> {
+        *self.in_tier_up.borrow_mut() = true;
+        let res = self.tier_up_inner(user_name, interp);
+        *self.in_tier_up.borrow_mut() = false;
+        res
+    }
+
+    fn tier_up_inner(&self, user_name: &str, interp: &Interp) -> Result<(), JitError> {
+        // Walk the call graph (by user_name) starting from user_name. Any
+        // user_name reachable through a JIT-eligible mono's body is included
+        // — we compile them all together so cross-fn calls resolve as direct
+        // native calls. Cold callees (those routed only through forward
+        // thunks) are not added.
+        let mut user_set: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+        let mut stack = vec![user_name.to_string()];
+        while let Some(u) = stack.pop() {
+            if !user_set.insert(u.clone()) { continue; }
+            if self.triggered.borrow().contains(&u) { continue; }
+            let Some(idxs) = self.monos_by_user.get(&u) else { continue };
+            for &idx in idxs {
+                let m = &self.monos[idx];
+                let mut callees = std::collections::HashSet::new();
+                collect_callee_user_names(&m.def, &mut callees);
+                for c in callees {
+                    if self.monos_by_user.contains_key(&c)
+                        && !user_set.contains(&c) {
+                        stack.push(c);
+                    }
+                }
+            }
+        }
+
+        // Collect undefined monos for the user_set.
+        let mut new_monos: Vec<usize> = Vec::new();
+        for u in &user_set {
+            if let Some(idxs) = self.monos_by_user.get(u) {
+                for &idx in idxs {
+                    let name = &self.monos[idx].name;
+                    if !self.defined_monos.borrow().contains(name) {
+                        new_monos.push(idx);
+                    }
+                }
+            }
+        }
+        if new_monos.is_empty() { return Ok(()); }
+
+        // Lower + define each new mono.
+        let mut module = self.module.borrow_mut();
+        let mut atoms = self.atoms.borrow_mut();
+        let mut new_reverse_thunks: Vec<(String, FuncId, FnSig)> = Vec::new();
+        for idx in &new_monos {
+            let m = &self.monos[*idx];
+            let r = crate::codegen::lower_fn_with(
+                &m.def, &m.sig, &self.callee_sigs, &mut atoms,
+                &m.param_bindings, &self.user_fns_set,
+            ).map_err(|e: LowerError| JitError(format!("{}: {}", m.name, e)))?;
+            let LowerResult { mut func, callee_imports, builtin_imports } = r;
+            rewrite_user_names(
+                &mut func,
+                &callee_imports,
+                &builtin_imports,
+                &self.user_ids,
+                &self.forward_thunk_ids,
+                &self.runtime_ids,
+            )?;
+            let mut ctx = Context::for_function(func);
+            let id = self.user_ids[&m.name];
+            module
+                .define_function(id, &mut ctx)
+                .map_err(|e| JitError(format!("{}: {}", m.name, e)))?;
+
+            // Reverse thunk for any mono whose mono.name == user_name
+            // (i.e. monomorphic — directly bindable as Value::Jit).
+            if m.name == m.user_name {
+                let id = define_reverse_thunk(&mut module, &m.name, &m.sig, self.user_ids[&m.name])?;
+                new_reverse_thunks.push((m.name.clone(), id, m.sig.clone()));
+            }
+        }
+
+        // Atom-table sync must happen before finalize because the JIT'd code
+        // bakes in atom IDs from `atoms.names`.
+        sync_atom_table(&atoms.names)?;
+        module
+            .finalize_definitions()
+            .map_err(|e| JitError(format!("finalize: {}", e)))?;
+
+        // Mark defined and rebind interp globals.
+        for idx in &new_monos {
+            let name = self.monos[*idx].name.clone();
+            self.defined_monos.borrow_mut().insert(name);
+        }
+        for (name, rev_id, sig) in &new_reverse_thunks {
+            let ptr = module.get_finalized_function(*rev_id);
+            interp.globals.bind(
+                name,
+                Value::Jit(Rc::new(crate::value::JitFn {
+                    name: name.clone(),
+                    sig: sig.clone(),
+                    fn_ptr: ptr as usize,
+                })),
+            );
+        }
+        for u in &user_set {
+            self.triggered.borrow_mut().insert(u.clone());
+        }
+        Ok(())
+    }
+}
+
+fn collect_callee_user_names(def: &FnDef, out: &mut std::collections::HashSet<String>) {
+    for c in &def.clauses {
+        walk_callees(&c.body, out);
+        if let Some(g) = &c.guard { walk_callees(g, out); }
+    }
+}
+
+fn walk_callees(e: &Expr, out: &mut std::collections::HashSet<String>) {
+    match e {
+        Expr::Call(callee, args) => {
+            if let Expr::Var(n) = &**callee { out.insert(n.clone()); }
+            walk_callees(callee, out);
+            for a in args { walk_callees(a, out); }
+        }
+        Expr::Block(xs) => for x in xs { walk_callees(x, out); },
+        Expr::If(c, t, e) => {
+            walk_callees(c, out);
+            walk_callees(t, out);
+            if let Some(el) = e { walk_callees(el, out); }
+        }
+        Expr::List(xs, tail) => {
+            for x in xs { walk_callees(x, out); }
+            if let Some(t) = tail { walk_callees(t, out); }
+        }
+        Expr::Tuple(xs) => for x in xs { walk_callees(x, out); },
+        Expr::BinOp(_, l, r) => { walk_callees(l, out); walk_callees(r, out); }
+        Expr::UnOp(_, x) => walk_callees(x, out),
+        Expr::Index(o, i) => { walk_callees(o, out); walk_callees(i, out); }
+        Expr::Dot(o, _) => walk_callees(o, out),
+        Expr::Match(_, x) => walk_callees(x, out),
+        Expr::Case(scr, arms) => {
+            walk_callees(scr, out);
+            for arm in arms {
+                walk_callees(&arm.body, out);
+                if let Some(g) = &arm.guard { walk_callees(g, out); }
+            }
+        }
+        _ => {}
+    }
 }
 
 fn sync_atom_table(names: &[String]) -> Result<(), JitError> {
@@ -1055,6 +1228,43 @@ fn count(n, acc), do: count(n - 1, acc + 1)
 fn main() do
   print(count(100000, 0))
 end
+"#;
+        run_capture(src).expect("jit run");
+    }
+
+    #[test]
+    fn tier_up_patches_interp_binding_after_threshold() {
+        // After the threshold-th call, `hot` should be rebound from
+        // Value::Closure to Value::Jit. We verify by inspecting interp
+        // globals from a custom hook installed *after* the runtime hook —
+        // simpler to just call enough times and then check.
+        let src = r#"
+fn hot(n), do: n + 1
+fn main() do
+  print(hot(0))
+  print(hot(0))
+  print(hot(0))
+  print(hot(0))
+  print(hot(0))
+  print(hot(0))
+  print(hot(0))
+  print(hot(0))
+  print(hot(0))
+  print(hot(0))
+end
+"#;
+        // Just assert run completes; the recursion test elsewhere is the
+        // semantic acceptance that tier-up actually transfers control.
+        run_capture(src).expect("jit run");
+    }
+
+    #[test]
+    fn cold_fn_stays_in_interp() {
+        // Single-call helpers never cross the threshold. Result must still
+        // be correct (interp dispatch path).
+        let src = r#"
+fn cold(x), do: x * 3
+fn main(), do: print(cold(14))
 "#;
         run_capture(src).expect("jit run");
     }

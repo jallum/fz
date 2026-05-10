@@ -1,18 +1,26 @@
 use crate::ast::*;
 use crate::bitstr::*;
 use crate::value::*;
+use std::cell::RefCell;
 use std::rc::Rc;
 
 pub type EvalResult = Result<Value, String>;
 
+/// Hook invoked when a user-defined Closure is applied. Receives the user
+/// fn name and the Interp so it can patch globals (used by the JIT tier-up
+/// policy: count calls per user_name, JIT-compile when hot, rebind to
+/// Value::Jit).
+pub type CallHook = Rc<dyn Fn(&str, &Interp)>;
+
 pub struct Interp {
     pub globals: Env,
+    pub on_user_call: RefCell<Option<CallHook>>,
 }
 
 impl Interp {
     pub fn new() -> Self {
         let globals = Env::empty().child();
-        let me = Self { globals };
+        let me = Self { globals, on_user_call: RefCell::new(None) };
         me.install_builtins();
         me
     }
@@ -152,7 +160,13 @@ impl Interp {
                 let apply_cb = |c: &Value, a: Vec<Value>| self.apply(c, a);
                 (b.func)(&args, &apply_cb)
             }
-            Value::Closure(c) => self.dispatch_clauses(c, args),
+            Value::Closure(c) => {
+                if let Some(name) = &c.name {
+                    let hook = self.on_user_call.borrow().clone();
+                    if let Some(h) = hook { h(name, self); }
+                }
+                self.dispatch_clauses(c, args)
+            }
             Value::Jit(j) => crate::jit::call_jit(j, args),
             other => Err(format!("not callable: {}", other)),
         }
