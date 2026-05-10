@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-05-10T01:26:31Z",
@@ -8,8 +8,8 @@
   "labels": [],
   "parent": "fz-ul4",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Bitstring literals and patterns",
   "type": "task",
-  "updated_at": "2026-05-10T01:26:31Z"
+  "updated_at": "2026-05-10T02:12:44Z"
 }
