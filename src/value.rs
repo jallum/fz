@@ -30,6 +30,12 @@ pub enum Value {
     /// `(args_ptr: *const u64, ret_ptr: *mut u64)` ABI; the interpreter
     /// marshals Values into slot buffers and back. Set up by jit::run.
     Jit(Rc<JitFn>),
+    /// Polymorphic JIT'd function — multiple monomorphic specializations
+    /// share one user-name. At call time, the dispatcher inspects each
+    /// arg's runtime LowerTy shape and routes through the matching spec.
+    /// Falls back to `fallback` (the original Closure) if no spec matches
+    /// the runtime shape (rare — would mean an unobserved call shape).
+    JitPoly(Rc<JitPolyFn>),
 }
 
 pub struct JitFn {
@@ -37,6 +43,19 @@ pub struct JitFn {
     pub sig: crate::codegen::FnSig,
     /// Reverse-thunk pointer (transmute target: `unsafe extern "C" fn(*const u64, *mut u64)`).
     pub fn_ptr: usize,
+}
+
+pub struct JitPolyFn {
+    pub user_name: String,
+    /// Per-call-shape specializations. The dispatcher walks this list
+    /// and picks the first whose param shapes match the runtime args.
+    /// Order isn't significant for correctness (shapes are disjoint by
+    /// construction) but stable ordering helps debugging.
+    pub specs: Vec<Rc<JitFn>>,
+    /// Original AST closure to fall back to when no spec matches the
+    /// runtime arg shape (e.g. a user constructed an unusual value type
+    /// not observed at compile time).
+    pub fallback: Rc<Closure>,
 }
 
 #[derive(Clone)]
@@ -266,6 +285,7 @@ impl fmt::Display for Value {
                 c.clauses.first().map(|cl| cl.params.len()).unwrap_or(0)),
             Value::Builtin(b) => write!(f, "#builtin<{}/{}>", b.name, b.arity),
             Value::Jit(j) => write!(f, "#jit<{}/{}>", j.name, j.sig.params.len()),
+            Value::JitPoly(j) => write!(f, "#jit_poly<{}|{}>", j.user_name, j.specs.len()),
         }
     }
 }

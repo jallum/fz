@@ -213,6 +213,7 @@ impl Interp {
                 self.dispatch_clauses(c, args)
             }
             Value::Jit(j) => crate::jit::call_jit(j, args),
+            Value::JitPoly(p) => crate::jit::call_jit_poly(p, args),
             other => Err(format!("not callable: {}", other)),
         }
     }
