@@ -146,11 +146,44 @@ fn render_fz_value(bits: u64) -> String {
             let kind = unsafe { (*p).kind };
             match HeapKind::from_u16(kind) {
                 Some(HeapKind::List) => render_list(bits),
+                Some(HeapKind::Struct) => render_struct(bits),
                 _ => format!("#ptr<{:#x}>", bits),
             }
         }
         Tag::Reserved => format!("#reserved<{:#x}>", bits),
     }
+}
+
+/// Render a heap-typed Struct (currently only emitted for tuples). Reads the
+/// schema from HEAP's SchemaRegistry to determine field count — `size_bytes`
+/// is rounded up to 16 by the allocator and would over-count arity for odd
+/// arities. Each FzValue field renders inline; non-FzValue fields are
+/// elided for now (no callers emit them yet).
+fn render_struct(bits: u64) -> String {
+    use crate::fz_value::FzValue;
+    let v = FzValue(bits);
+    let p = v.unbox_ptr().unwrap();
+    let schema_id = unsafe { (*p).schema_id };
+    let parts: Vec<String> = HEAP.with(|h| {
+        let heap = h.borrow();
+        let reg = heap.schemas_registry();
+        let registry = reg.borrow();
+        let schema = registry.get(schema_id);
+        schema
+            .fields
+            .iter()
+            .filter(|f| matches!(f.kind, crate::heap::FieldKind::FzValue))
+            .map(|f| {
+                let field_bits = unsafe {
+                    std::ptr::read(
+                        (p as *const u8).add(16 + f.offset as usize) as *const u64,
+                    )
+                };
+                render_fz_value(field_bits)
+            })
+            .collect()
+    });
+    format!("{{{}}}", parts.join(", "))
 }
 
 fn render_list(bits: u64) -> String {
@@ -263,6 +296,15 @@ extern "C" fn fz_alloc_list_cons(head_bits: u64, tail_bits: u64) -> u64 {
     p as u64
 }
 
+/// Allocate a heap-typed Struct. `schema_id` must already be registered in
+/// the thread-local HEAP's SchemaRegistry. Returns the FzValue ptr-bits
+/// (heap-aligned, so tag = 000). Caller is responsible for writing field
+/// values into payload slots after allocation.
+extern "C" fn fz_alloc_struct(schema_id: u32) -> u64 {
+    let p = HEAP.with(|h| h.borrow_mut().alloc_struct(schema_id));
+    p as u64
+}
+
 extern "C" fn fz_alloc_frame(schema_id: u32, total_size: u32) -> *mut u8 {
     use std::alloc::{alloc_zeroed, Layout};
     // Round size up to a multiple of 16 to keep allocator happy and ensure
@@ -336,6 +378,7 @@ pub fn compile(module: &Module) -> Result<CompiledModule, CodegenError> {
     builder.symbol("fz_halt", fz_halt as *const u8);
     builder.symbol("fz_alloc_frame", fz_alloc_frame as *const u8);
     builder.symbol("fz_alloc_list_cons", fz_alloc_list_cons as *const u8);
+    builder.symbol("fz_alloc_struct", fz_alloc_struct as *const u8);
     let mut jmod = JITModule::new(builder);
 
     // Declare runtime imports.
@@ -355,6 +398,10 @@ pub fn compile(module: &Module) -> Result<CompiledModule, CodegenError> {
     let alloc_cons_id = jmod
         .declare_function("fz_alloc_list_cons", Linkage::Import, &alloc_cons_sig)
         .map_err(|e| CodegenError(format!("declare alloc_cons: {}", e)))?;
+    let alloc_struct_sig = sig1(&[types::I32], &[types::I64]);
+    let alloc_struct_id = jmod
+        .declare_function("fz_alloc_struct", Linkage::Import, &alloc_struct_sig)
+        .map_err(|e| CodegenError(format!("declare alloc_struct: {}", e)))?;
 
     // Per-fn signature: extern "C" fn(*mut u8, *mut u8) -> *mut u8.
     let fn_sig = sig1(&[types::I64, types::I64], &[types::I64]);
@@ -370,13 +417,60 @@ pub fn compile(module: &Module) -> Result<CompiledModule, CodegenError> {
     }
 
     let mut fbctx = FunctionBuilderContext::new();
-    let runtime = RuntimeRefs { print_id, halt_id, alloc_id, alloc_cons_id };
+    let runtime = RuntimeRefs {
+        print_id,
+        halt_id,
+        alloc_id,
+        alloc_cons_id,
+        alloc_struct_id,
+    };
+
+    // Register a heap Schema for every tuple arity used by MakeTuple, so the
+    // GC tracer can walk fields and so codegen can iconst the schema_id.
+    let mut tuple_arities: std::collections::HashSet<usize> =
+        std::collections::HashSet::new();
+    for f in &module.fns {
+        for blk in &f.blocks {
+            for stmt in &blk.stmts {
+                if let Stmt::Let(_, Prim::MakeTuple(args)) = stmt {
+                    tuple_arities.insert(args.len());
+                }
+            }
+        }
+    }
+    let mut tuple_schema_ids: HashMap<usize, u32> = HashMap::new();
+    HEAP.with(|h| {
+        let heap = h.borrow();
+        for &arity in &tuple_arities {
+            let s = Schema {
+                name: format!("Tuple{}", arity),
+                size: (arity * 8) as u32,
+                fields: (0..arity)
+                    .map(|i| FieldDescriptor {
+                        offset: (i * 8) as u32,
+                        kind: FieldKind::FzValue,
+                    })
+                    .collect(),
+            };
+            let id = heap.register_schema(s);
+            tuple_schema_ids.insert(arity, id);
+        }
+    });
 
     for f in &module.fns {
         let func_id = *fn_ids.get(&f.id.0).unwrap();
         let mut ctx = jmod.make_context();
         ctx.func.signature = fn_sig.clone();
-        compile_fn(&mut jmod, &mut ctx, &mut fbctx, &fn_ids, &runtime, &schemas, f)?;
+        compile_fn(
+            &mut jmod,
+            &mut ctx,
+            &mut fbctx,
+            &fn_ids,
+            &runtime,
+            &schemas,
+            &tuple_schema_ids,
+            f,
+        )?;
         let flags = settings::Flags::new(settings::builder());
         cranelift_codegen::verifier::verify_function(&ctx.func, &flags)
             .map_err(|e| CodegenError(format!("verify {}:\n{}\n--- IR ---\n{}", f.name, e, ctx.func.display())))?;
@@ -409,6 +503,7 @@ struct RuntimeRefs {
     halt_id: FuncId,
     alloc_id: FuncId,
     alloc_cons_id: FuncId,
+    alloc_struct_id: FuncId,
 }
 
 fn compile_fn(
@@ -418,6 +513,7 @@ fn compile_fn(
     fn_ids: &HashMap<u32, FuncId>,
     runtime: &RuntimeRefs,
     schemas: &[Schema],
+    tuple_schema_ids: &HashMap<usize, u32>,
     f: &crate::fz_ir::FnIr,
 ) -> Result<(), CodegenError> {
     let mut b = FunctionBuilder::new(&mut ctx.func, fbctx);
@@ -475,7 +571,7 @@ fn compile_fn(
 
         for stmt in &blk.stmts {
             let Stmt::Let(v, prim) = stmt;
-            let val = lower_prim(&mut b, jmod, runtime, &var_map, prim)?;
+            let val = lower_prim(&mut b, jmod, runtime, tuple_schema_ids, &var_map, prim)?;
             var_map.insert(v.0, val);
         }
 
@@ -695,6 +791,7 @@ fn lower_prim(
     b: &mut FunctionBuilder<'_>,
     jmod: &mut JITModule,
     runtime: &RuntimeRefs,
+    tuple_schema_ids: &HashMap<usize, u32>,
     env: &HashMap<u32, ir::Value>,
     prim: &Prim,
 ) -> Result<ir::Value, CodegenError> {
@@ -830,10 +927,47 @@ fn lower_prim(
             }
             acc
         }
-        Prim::AllocStruct(_, _)
-        | Prim::MakeTuple(_)
-        | Prim::TupleField(_, _)
-        | Prim::MakeClosure(_, _)
+        Prim::MakeTuple(elems) => {
+            let arity = elems.len();
+            let schema_id = *tuple_schema_ids.get(&arity).ok_or_else(|| {
+                CodegenError(format!(
+                    "tuple arity {} not pre-registered (compile() walk missed it?)",
+                    arity
+                ))
+            })?;
+            let fref = jmod.declare_func_in_func(runtime.alloc_struct_id, b.func);
+            let sid = b.ins().iconst(types::I32, schema_id as i64);
+            let inst = b.ins().call(fref, &[sid]);
+            let p = b.inst_results(inst)[0];
+            for (i, e) in elems.iter().enumerate() {
+                let ev = *env.get(&e.0).expect("unbound maketuple elem");
+                let off = HEADER_SIZE + (i as i32) * SLOT_BYTES;
+                b.ins().store(MemFlags::trusted(), ev, p, off);
+            }
+            p
+        }
+        Prim::TupleField(c, idx) => {
+            let cv = *env.get(&c.0).expect("unbound tuplefield cell");
+            let off = HEADER_SIZE + (*idx as i32) * SLOT_BYTES;
+            b.ins().load(types::I64, MemFlags::trusted(), cv, off)
+        }
+        Prim::AllocStruct(schema_id, fields) => {
+            // schema_id refers to a heap-registered Schema (caller's
+            // responsibility). Reused later by .11.13 maps / .11.19 closures /
+            // future user records. v1 has no in-tree caller — kept here so the
+            // path is exercised by ir_codegen's existing Prim coverage.
+            let fref = jmod.declare_func_in_func(runtime.alloc_struct_id, b.func);
+            let sid = b.ins().iconst(types::I32, *schema_id as i64);
+            let inst = b.ins().call(fref, &[sid]);
+            let p = b.inst_results(inst)[0];
+            for (i, fv) in fields.iter().enumerate() {
+                let v = *env.get(&fv.0).expect("unbound allocstruct field");
+                let off = HEADER_SIZE + (i as i32) * SLOT_BYTES;
+                b.ins().store(MemFlags::trusted(), v, p, off);
+            }
+            p
+        }
+        Prim::MakeClosure(_, _)
         | Prim::MakeMap(_)
         | Prim::MapUpdate(_, _)
         | Prim::MapGet(_, _)
@@ -1243,6 +1377,147 @@ mod tests {
             captured,
             vec![":atom_1".to_string(), "true".to_string(), "false".to_string()]
         );
+    }
+
+    // ----- .11.11 tuple tests -----
+
+    #[test]
+    fn print_tuple_pair_renders() {
+        // fn main() do print({1, 2}) end
+        let main = fn_def(
+            "main",
+            vec![cl(
+                vec![],
+                Expr::Call(
+                    Box::new(Expr::Var("print".into())),
+                    vec![Expr::Tuple(vec![Expr::Int(1), Expr::Int(2)])],
+                ),
+            )],
+        );
+        let m = lower(vec![main]);
+        let entry = m.fn_by_name("main").unwrap().id;
+        heap_reset_for_test();
+        let _ = test_capture_take();
+        let cm = compile(&m).unwrap();
+        let _ = cm.run(entry);
+        assert_eq!(test_capture_take(), vec!["{1, 2}".to_string()]);
+    }
+
+    #[test]
+    fn fst_snd_destructure_tuple() {
+        // fn fst({a, _}), do: a
+        // fn snd({_, b}), do: b
+        // fn main(),     do: fst({10, 20}) + snd({30, 40})    -> 10 + 40 = 50
+        let fst = fn_def(
+            "fst",
+            vec![cl(
+                vec![Pattern::Tuple(vec![
+                    Pattern::Var("a".into()),
+                    Pattern::Wildcard,
+                ])],
+                Expr::Var("a".into()),
+            )],
+        );
+        let snd = fn_def(
+            "snd",
+            vec![cl(
+                vec![Pattern::Tuple(vec![
+                    Pattern::Wildcard,
+                    Pattern::Var("b".into()),
+                ])],
+                Expr::Var("b".into()),
+            )],
+        );
+        let main = fn_def(
+            "main",
+            vec![cl(
+                vec![],
+                Expr::BinOp(
+                    ABinOp::Add,
+                    Box::new(Expr::Call(
+                        Box::new(Expr::Var("fst".into())),
+                        vec![Expr::Tuple(vec![Expr::Int(10), Expr::Int(20)])],
+                    )),
+                    Box::new(Expr::Call(
+                        Box::new(Expr::Var("snd".into())),
+                        vec![Expr::Tuple(vec![Expr::Int(30), Expr::Int(40)])],
+                    )),
+                ),
+            )],
+        );
+        let m = lower(vec![fst, snd, main]);
+        let entry = m.fn_by_name("main").unwrap().id;
+        heap_reset_for_test();
+        let cm = compile(&m).unwrap();
+        assert_eq!(cm.run(entry), 50);
+    }
+
+    #[test]
+    fn print_mixed_type_tuple() {
+        // fn main() do print({1, :ok, true}) end
+        let main = fn_def(
+            "main",
+            vec![cl(
+                vec![],
+                Expr::Call(
+                    Box::new(Expr::Var("print".into())),
+                    vec![Expr::Tuple(vec![
+                        Expr::Int(1),
+                        Expr::Atom("ok".into()),
+                        Expr::Bool(true),
+                    ])],
+                ),
+            )],
+        );
+        let m = lower(vec![main]);
+        let entry = m.fn_by_name("main").unwrap().id;
+        heap_reset_for_test();
+        let _ = test_capture_take();
+        let cm = compile(&m).unwrap();
+        let _ = cm.run(entry);
+        // "match_error" interns first → :ok is atom 1 → renders ":atom_1".
+        assert_eq!(
+            test_capture_take(),
+            vec!["{1, :atom_1, true}".to_string()]
+        );
+    }
+
+    #[test]
+    fn gc_traces_tuple_fields_freeing_pointed_objects_when_outer_dropped() {
+        // fn main(), do: {[1, 2, 3], 99}
+        // After run: 1 tuple + 3 cons cells = 4 live. Drop the halt root
+        // entirely (GC roots = []) -> all 4 reclaimed (tracer follows the
+        // tuple's FzValue field into the list).
+        let main = fn_def(
+            "main",
+            vec![cl(
+                vec![],
+                Expr::Tuple(vec![
+                    Expr::List(
+                        vec![Expr::Int(1), Expr::Int(2), Expr::Int(3)],
+                        None,
+                    ),
+                    Expr::Int(99),
+                ]),
+            )],
+        );
+        let m = lower(vec![main]);
+        let entry = m.fn_by_name("main").unwrap().id;
+        heap_reset_for_test();
+        let cm = compile(&m).unwrap();
+        let _ = cm.run(entry);
+        assert_eq!(heap_live_count(), 4, "1 tuple + 3 cons cells");
+        heap_gc(&[]);
+        assert_eq!(heap_live_count(), 0, "tuple + reachable list reclaimed");
+
+        // Sanity: with the tuple as a root, both tuple and list survive.
+        heap_reset_for_test();
+        let cm2 = compile(&m).unwrap();
+        let halt_bits = cm2.run(entry) as u64;
+        assert_eq!(heap_live_count(), 4);
+        let root = crate::fz_value::FzValue(halt_bits);
+        heap_gc(&[root]);
+        assert_eq!(heap_live_count(), 4, "tuple + traced list survive");
     }
 
     // ----- .11.10 list tests -----

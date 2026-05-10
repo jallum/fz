@@ -201,6 +201,19 @@ impl Heap {
         }
     }
 
+    /// Register a schema in this heap's registry, returning its id. Codegen
+    /// uses this to register tuple-arity / closure / record schemas at JIT
+    /// compile time so the tracer can walk their FzValue fields.
+    pub fn register_schema(&self, schema: Schema) -> u32 {
+        self.schemas.borrow_mut().register(schema)
+    }
+
+    /// Borrow the SchemaRegistry handle. Used by render paths that need to
+    /// know a struct's arity / field layout from its schema_id.
+    pub fn schemas_registry(&self) -> Rc<RefCell<SchemaRegistry>> {
+        self.schemas.clone()
+    }
+
     pub fn live_count(&self) -> usize {
         self.allocs.len()
     }
