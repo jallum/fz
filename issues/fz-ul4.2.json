@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-ul4.1"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-ul4.3"
+  ],
   "created": "2026-05-10T01:26:31Z",
   "description": "Implement the lattice operations on Descr. Union and intersection on bitmaps are bitwise; on structurals work componentwise on the DNF representation.\n\nNegation flips bitmap and complements structurals. Difference is intersection-with-negation.\n\nDeliverable: union/intersect/diff/neg fns + tests showing De Morgan and absorption laws hold.",
   "id": "fz-ul4.2",
