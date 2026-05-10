@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-ul4.11.24.3"
+  ],
   "blocks": [],
   "created": "2026-05-10T20:51:38Z",
   "description": "GOAL: When the typer proves both operands of an arithmetic / ordered-comparison BinOp are Int, ir_codegen emits the inline fast path WITHOUT the both_int test. Recovers the runtime overhead introduced by .11.20's tag-dispatched arithmetic for typed Int code.\n\n## Why this is atomic\n\nBefore: every BinOp::Add etc. emits 5 ops to test 'both Int' + a brif + a runtime helper call site that's branch-predicted but still occupies icache. After: typed-Int arithmetic is exactly the original .11.7 fast path (ai = sshr_imm 3; bi = sshr_imm 3; iadd; box_int). Mixed/Float code still pays the dispatch (correct). 337 existing tests stay green; new tests verify elision happens via inspecting compiled IR.\n\n## Deliverables\n\nsrc/ir_codegen.rs:\n- compile() retrieves `var_types` from .11.24.3's typer pass (already attached to CompiledModule / Module per .11.24.2's design).\n- compile_fn() threads var_types into lower_prim alongside env.\n- BinOp::Add/Sub/Mul/Div/Mod and Lt/Le/Gt/Ge: peek at operand vars' Descrs. If both Descr \u003c= int_top, skip emit_dispatch_binop; emit only the fast inline body. Else emit dispatch as today.\n- BinOp::Eq/Neq: similar — if both vars Descr \u003c= scalar_top (Int / Atom / Special; nothing heap-typed), skip the both_ptr test and emit only the icmp. (Optional polish; main gain is on arithmetic.)\n- Helper: `fn descr_is_int(d: \u0026Descr) -\u003e bool` central truth for 'this Var is provably Int.'\n\n## Tests\n\n- Compile `fn add(a, b), do: a + b` and verify the emitted Cranelift IR (via Function::display) does NOT contain a call to fz_arith_add (params widen to int_top through fn-shape; arithmetic is provably Int+Int). Use a Cranelift IR string-contains assertion.\n- Compile `fn mix(x), do: x + 2.0` and verify the slow path IS present (since x is Top).\n- Existing arithmetic tests in ir_codegen pass byte-for-byte (halt values unchanged).\n- Microbench (optional, separate test attribute): typed Int loop of 1M iterations vs same loop forced to take dispatch is at least 1.5x faster.\n\n## Out of scope\n\n- f64-fast-path (unboxed float arithmetic) when both operands are Float — needs separate ticket; this ticket only elides the dispatch on the int side.\n- Const-pool for boxed floats.\n\n## Dependencies\n\n- BLOCKED BY: fz-ul4.11.24.3.\n- BLOCKS: none directly. (Quality-of-implementation; functional correctness already in .11.20.)",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "ir_codegen consumer: arithmetic dispatch elision",
   "type": "task",
-  "updated_at": "2026-05-10T20:51:38Z"
+  "updated_at": "2026-05-10T20:52:42Z"
 }
