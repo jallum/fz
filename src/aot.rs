@@ -885,39 +885,34 @@ mod tests {
         assert_eq!(derive_lowerty(&d), None);
     }
 
+    /// Build `src` to `out_name`, run, and return stdout.
+    fn build_and_run(test_name: &str, file_name: &str, src: &str) -> String {
+        let (src_path, dir) = crate::test_support::write_fixture(test_name, file_name, src);
+        let bin = dir.join(file_name.trim_end_matches(".fz"));
+        build(&src_path, &bin).expect("build");
+        let out = Command::new(&bin).output().expect("run");
+        assert!(out.status.success(), "binary exit: {}", out.status);
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    }
+
+    fn assert_contains_all(stdout: &str, needles: &[&str]) {
+        for n in needles {
+            assert!(stdout.contains(n), "stdout missing {:?}:\n{}", n, stdout);
+        }
+    }
+
     #[test]
     fn end_to_end_aot_runs_binary() {
-        // Skip if libfz_runtime.a hasn't been built yet.
         if locate_runtime_staticlib().is_none() {
             eprintln!("skip: libfz_runtime.a not present");
             return;
         }
-
-        let dir = std::env::temp_dir().join(format!("fz-aot-test-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let src = dir.join("hello.fz");
-        std::fs::write(
-            &src,
-            r#"
-fn main() do
-  print(40 + 2)
-  print(:ok)
-  print(true)
-  print(nil)
-end
-"#,
-        )
-        .unwrap();
-        let bin = dir.join("hello");
-        build(&src, &bin).expect("build");
-
-        let out = Command::new(&bin).output().expect("run");
-        assert!(out.status.success(), "binary exit: {}", out.status);
-        let stdout = String::from_utf8_lossy(&out.stdout);
-        assert!(stdout.contains("42"), "stdout missing '42': {}", stdout);
-        assert!(stdout.contains(":ok"), "stdout missing ':ok': {}", stdout);
+        let stdout = build_and_run(
+            "aot-hello", "hello.fz",
+            include_str!("../fixtures/hello.fz"),
+        );
+        assert_contains_all(&stdout, &["42", ":ok"]);
     }
-
 
     #[test]
     fn end_to_end_aot_multi_clause_runs() {
@@ -925,38 +920,11 @@ end
             eprintln!("skip: libfz_runtime.a not present");
             return;
         }
-        let dir = std::env::temp_dir().join(format!("fz-aot-multi-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let src = dir.join("multi.fz");
-        std::fs::write(
-            &src,
-            r#"
-fn classify(0), do: :zero
-fn classify(n) when n > 0, do: :positive
-fn classify(_), do: :negative
-
-fn fact(0), do: 1
-fn fact(n), do: n * fact(n - 1)
-
-fn main() do
-  print(classify(0))
-  print(classify(7))
-  print(classify(-3))
-  print(fact(5))
-end
-"#,
-        )
-        .unwrap();
-        let bin = dir.join("multi");
-        build(&src, &bin).expect("build");
-
-        let out = Command::new(&bin).output().expect("run");
-        assert!(out.status.success(), "binary exit: {}", out.status);
-        let stdout = String::from_utf8_lossy(&out.stdout);
-        assert!(stdout.contains(":zero"), "stdout missing :zero: {}", stdout);
-        assert!(stdout.contains(":positive"), "stdout missing :positive: {}", stdout);
-        assert!(stdout.contains(":negative"), "stdout missing :negative: {}", stdout);
-        assert!(stdout.contains("120"), "stdout missing 120: {}", stdout);
+        let stdout = build_and_run(
+            "aot-multi", "multi_clause.fz",
+            include_str!("../fixtures/multi_clause.fz"),
+        );
+        assert_contains_all(&stdout, &[":zero", ":positive", ":negative", "120"]);
     }
 
     #[test]
@@ -965,30 +933,11 @@ end
             eprintln!("skip: libfz_runtime.a not present");
             return;
         }
-        let dir = std::env::temp_dir().join(format!("fz-aot-poly-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let src = dir.join("poly.fz");
-        std::fs::write(
-            &src,
-            r#"
-fn id(x), do: x
-fn main() do
-  print(id(42))
-  print(id(:hello))
-  print(id(true))
-end
-"#,
-        )
-        .unwrap();
-        let bin = dir.join("poly");
-        build(&src, &bin).expect("build");
-
-        let out = Command::new(&bin).output().expect("run");
-        assert!(out.status.success(), "binary exit: {}", out.status);
-        let stdout = String::from_utf8_lossy(&out.stdout);
-        assert!(stdout.contains("42"), "stdout missing 42: {}", stdout);
-        assert!(stdout.contains(":hello"), "stdout missing :hello: {}", stdout);
-        assert!(stdout.contains("true"), "stdout missing true: {}", stdout);
+        let stdout = build_and_run(
+            "aot-poly", "polymorphic.fz",
+            include_str!("../fixtures/polymorphic.fz"),
+        );
+        assert_contains_all(&stdout, &["42", ":hello", "true"]);
     }
 
     #[test]
@@ -997,33 +946,11 @@ end
             eprintln!("skip: libfz_runtime.a not present");
             return;
         }
-        let dir = std::env::temp_dir().join(format!("fz-aot-hof-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let src = dir.join("hof.fz");
-        std::fs::write(
-            &src,
-            r#"
-fn double(x), do: x * 2
-fn neg(x), do: 0 - x
-fn apply2(f, x), do: f(x)
-fn compose(f, g, x), do: f(g(x))
-fn main() do
-  print(apply2(double, 21))
-  print(apply2(neg, 7))
-  print(compose(double, neg, 5))
-end
-"#,
-        )
-        .unwrap();
-        let bin = dir.join("hof");
-        build(&src, &bin).expect("build");
-
-        let out = Command::new(&bin).output().expect("run");
-        assert!(out.status.success(), "binary exit: {}", out.status);
-        let stdout = String::from_utf8_lossy(&out.stdout);
-        assert!(stdout.contains("42"), "stdout missing apply2(double,21)=42: {}", stdout);
-        assert!(stdout.contains("-7"), "stdout missing apply2(neg,7)=-7: {}", stdout);
-        assert!(stdout.contains("-10"), "stdout missing compose(double,neg,5)=-10: {}", stdout);
+        let stdout = build_and_run(
+            "aot-hof", "higher_order.fz",
+            include_str!("../fixtures/higher_order.fz"),
+        );
+        assert_contains_all(&stdout, &["42", "-7", "-10"]);
     }
 
     #[test]

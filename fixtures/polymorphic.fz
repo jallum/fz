@@ -1,0 +1,7 @@
+fn id(x), do: x
+
+fn main() do
+  print(id(42))
+  print(id(:hello))
+  print(id(true))
+end

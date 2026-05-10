@@ -1100,71 +1100,33 @@ pub fn call_jit(j: &crate::value::JitFn, args: Vec<Value>) -> Result<Value, Stri
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn run_capture(src: &str) -> Result<(), JitError> {
-        run_str(src)
-    }
+    use crate::test_support::typed_program;
 
     #[test]
     fn jit_runs_pure_jit_program() {
-        // No interp callees needed.
-        let src = r#"
-fn main() do
-  print(40 + 2)
-  print(:ok)
-  print(true)
-  print(nil)
-end
-"#;
-        run_capture(src).expect("jit run");
+        run_str(include_str!("../fixtures/hello.fz")).expect("jit run");
     }
 
     #[test]
     fn jit_calls_jit_helper() {
-        let src = r#"
-fn add1(n) do n + 1 end
-fn main() do
-  print(add1(41))
-end
-"#;
-        run_capture(src).expect("jit run");
+        run_str(include_str!("../fixtures/add1.fz")).expect("jit run");
     }
 
     #[test]
     fn jit_lowers_multi_clause_directly() {
-        // Multi-clause is now JIT-eligible end-to-end, so the call from main
+        // Multi-clause is JIT-eligible end-to-end, so the call from main
         // is a direct call rather than going through fz_call_interp.
-        let src = r#"
-fn classify(0), do: :zero
-fn classify(_), do: :other
-fn main() do
-  print(classify(0))
-  print(classify(7))
-end
-"#;
-        run_capture(src).expect("jit run");
+        run_str(include_str!("../fixtures/classify_two_clause.fz")).expect("jit run");
     }
 
     #[test]
     fn jit_specializes_higher_order_fn_per_callee() {
-        // Higher-order specialization (fz-ul4.4.2). `apply2(f, x), do: f(x)`
-        // has a fn-typed param `f` that prevents direct JIT eligibility, but
-        // each call site passes a top-level user fn by name. The specializer
-        // emits one MonoFn per (callee, arg-shape) pair where calls to f are
-        // β-reduced to direct calls.
-        let src = r#"
-fn double(x), do: x * 2
-fn neg(x), do: 0 - x
-fn apply2(f, x), do: f(x)
-fn main() do
-  print(apply2(double, 21))
-  print(apply2(neg, 7))
-end
-"#;
-        let toks = Lexer::new(src).tokenize().unwrap();
-        let prog = Parser::new(toks).parse_program().unwrap();
-        let mut typer = Typer::new();
-        typer.type_program(&prog);
+        // fz-ul4.4.2: `apply2(f, x), do: f(x)` has a fn-typed param `f` that
+        // prevents direct JIT eligibility, but each call site passes a
+        // top-level user fn by name. classify must emit one MonoFn per
+        // (callee, arg-shape) with f β-reduced to a direct call.
+        let src = include_str!("../fixtures/apply2.fz");
+        let (prog, mut typer) = typed_program(src);
         let cls = classify(&prog, &mut typer);
 
         let apply2_specs: Vec<_> = cls.jit_eligible.iter()
@@ -1181,7 +1143,7 @@ end
                 if m.name.contains("double") { "double" } else { "neg" }
             ));
         }
-        run_capture(src).expect("jit run");
+        run_str(src).expect("jit run");
     }
 
     #[test]
@@ -1189,17 +1151,8 @@ end
         // `id` is called with both an int and an atom; classify must produce
         // two MonoFns with mangled names so each call site dispatches to
         // its specialization rather than falling back to interp.
-        let src = r#"
-fn id(x), do: x
-fn main() do
-  print(id(42))
-  print(id(:hello))
-end
-"#;
-        let toks = Lexer::new(src).tokenize().unwrap();
-        let prog = Parser::new(toks).parse_program().unwrap();
-        let mut typer = Typer::new();
-        typer.type_program(&prog);
+        let src = include_str!("../fixtures/id_int_atom.fz");
+        let (prog, mut typer) = typed_program(src);
         let cls = classify(&prog, &mut typer);
 
         let id_specs: Vec<_> = cls.jit_eligible.iter()
@@ -1211,8 +1164,7 @@ end
         assert!(sigs.contains(&&vec![LowerTy::I64]), "missing I64 spec: {:?}", sigs);
         assert!(sigs.contains(&&vec![LowerTy::Atom]), "missing Atom spec: {:?}", sigs);
 
-        // End-to-end: program also runs (calls dispatch correctly).
-        run_capture(src).expect("jit run");
+        run_str(src).expect("jit run");
     }
 
     #[test]
@@ -1220,63 +1172,30 @@ end
         // 100k tail-self-calls only complete because the JIT actually rewrites
         // them to jumps (codegen::tests::lowers_tail_self_call_to_jump). If
         // count types as `(any, any) -> any` it falls back to interp recursion
-        // and stack-overflows long before N. Acceptance criterion for the
-        // typer-recursive-widening ticket.
-        let src = r#"
-fn count(0, acc), do: acc
-fn count(n, acc), do: count(n - 1, acc + 1)
-fn main() do
-  print(count(100000, 0))
-end
-"#;
-        run_capture(src).expect("jit run");
+        // and stack-overflows long before N.
+        run_str(include_str!("../fixtures/tail_recursion.fz")).expect("jit run");
     }
 
     #[test]
     fn tier_up_patches_interp_binding_after_threshold() {
-        // After the threshold-th call, `hot` should be rebound from
-        // Value::Closure to Value::Jit. We verify by inspecting interp
-        // globals from a custom hook installed *after* the runtime hook —
-        // simpler to just call enough times and then check.
-        let src = r#"
-fn hot(n), do: n + 1
-fn main() do
-  print(hot(0))
-  print(hot(0))
-  print(hot(0))
-  print(hot(0))
-  print(hot(0))
-  print(hot(0))
-  print(hot(0))
-  print(hot(0))
-  print(hot(0))
-  print(hot(0))
-end
-"#;
-        // Just assert run completes; the recursion test elsewhere is the
-        // semantic acceptance that tier-up actually transfers control.
-        run_capture(src).expect("jit run");
+        // After the threshold-th call, `hot` is rebound from Value::Closure
+        // to Value::Jit. The recursion test is the semantic acceptance that
+        // tier-up actually transfers control.
+        run_str(include_str!("../fixtures/hot_fn.fz")).expect("jit run");
     }
 
     #[test]
     fn cold_fn_stays_in_interp() {
         // Single-call helpers never cross the threshold. Result must still
         // be correct (interp dispatch path).
-        let src = r#"
-fn cold(x), do: x * 3
-fn main(), do: print(cold(14))
-"#;
-        run_capture(src).expect("jit run");
+        run_str(include_str!("../fixtures/cold_fn.fz")).expect("jit run");
     }
 
     #[test]
     fn interp_only_main_calls_jit_helper_via_reverse_thunk() {
-        // `main` is multi-clause → interp-only. `inc` is JIT-eligible.
-        // When interp dispatches inc(41) it must route through Value::Jit.
-        let src = r#"
-fn inc(n) do n + 1 end
-fn main(), do: print(inc(41))
-"#;
-        run_capture(src).expect("jit run");
+        // Multi-clause-style `main, do: ...` is interp-only; the helper
+        // `inc` is JIT-eligible. When interp dispatches inc(41) under the
+        // tier-up policy it eventually routes through Value::Jit.
+        run_str(include_str!("../fixtures/interp_only_main.fz")).expect("jit run");
     }
 }

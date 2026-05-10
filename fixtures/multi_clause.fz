@@ -1,0 +1,13 @@
+fn classify(0), do: :zero
+fn classify(n) when n > 0, do: :positive
+fn classify(_), do: :negative
+
+fn fact(0), do: 1
+fn fact(n), do: n * fact(n - 1)
+
+fn main() do
+  print(classify(0))
+  print(classify(7))
+  print(classify(-3))
+  print(fact(5))
+end

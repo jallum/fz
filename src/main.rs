@@ -8,6 +8,8 @@ mod lexer;
 mod parser;
 mod repl;
 mod typer;
+#[cfg(test)]
+mod test_support;
 mod types;
 mod value;
 
