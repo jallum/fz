@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-ul4.11.9"
+  ],
   "blocks": [],
   "created": "2026-05-10T13:03:48Z",
   "description": "GOAL: Heap-allocated bitstrings preserving fz's existing match/construct semantics (see src/bitstr.rs and Pattern::Bitstring / Expr::Bitstring in src/ast.rs).\n\n## Decisions captured\n\n- Bitstring layout: HeapHeader (16) + bit_len:u64 (8) + bytes (variable, padded to 8 bytes). Total = 24 + ceil(bit_len/8) padded.\n- One allocation per bitstring; supports zero-copy slicing later via \"view\" objects (refcount-equivalent at object level via GC reachability — no separate refcount needed, GC handles dependent buffer lifetime naturally).\n- Bitstring matching reuses existing matcher logic (src/bitstr.rs); lowered to bit-extraction primitives in IR.\n- HeapKind::Bitstring tracer: raw payload, nothing to recurse into.\n\n## Deliverables\n\n- IR prims for bit extraction (read_int / read_float / read_binary / read_bits) and construction (bitstring_from_fields).\n- Codegen for `\u003c\u003c ... \u003e\u003e` builders (Expr::Bitstring -\u003e alloc + bit-pack).\n- Codegen for bitstring patterns (Pattern::Bitstring -\u003e bit-extract + bind).\n- HeapKind::Bitstring branch in .11.2 tracer (no inner FzValues to trace; it's raw bytes).\n\n## Tests\n\n- `~b[0xff, 0xab]` allocates and prints.\n- `\u003c\u003cn::8, rest::binary\u003e\u003e = \u003c\u003c...\u003e\u003e` matches.\n- Existing bitstring fixtures pass (build_packet / parse_packet from main.rs SAMPLE constant).\n- Variable-size fields (`\u003c\u003clen::8, data::binary-size(len)\u003e\u003e`).\n- GC traces bitstrings (allocates, drops, frees correctly).\n\n## Open\n\n- Zero-copy slicing — defer the \"view\" type to a follow-up. v1 always copies on slice if needed.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Bitstrings as heap type",
   "type": "task",
-  "updated_at": "2026-05-10T13:03:48Z"
+  "updated_at": "2026-05-10T13:05:54Z"
 }
