@@ -8,7 +8,9 @@
   "created": "2026-05-10T01:26:31Z",
   "description": "Castagna 2024 algorithm for set-theoretic polymorphism. Type variables, generalization, instantiation.\n\nProbably wants tallying / type connectives over variables. Big work item — defer until monomorphic typer is solid.",
   "id": "fz-ul4.6",
-  "labels": [],
+  "labels": [
+    "needs-reintegration"
+  ],
   "parent": "fz-ul4",
   "comments": [
     {
@@ -20,5 +22,5 @@
   "status": "closed",
   "title": "Parametric polymorphism",
   "type": "task",
-  "updated_at": "2026-05-10T08:48:29Z"
+  "updated_at": "2026-05-10T20:38:01Z"
 }
