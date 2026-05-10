@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-10T13:04:21Z",
+  "description": "GOAL: Optimize hot calls by fusing adjacent frames into one Cranelift fn — no allocation for fused calls. Performance-load-bearing for v1.\n\n## Decisions captured\n\n- IN SCOPE for v1, NOT deferred (user decision: \"i think we should inline\"). Naive frame-per-call is too slow for tight loops.\n- Operate on fz-IR BEFORE Cranelift lowering. Produces a \"merged\" fn whose body = caller body with callee body spliced where the call was.\n- Roots: across an inlined call boundary, GC must still find live values. Since the merged fn has one frame (or no frame, if locals are register-resident), the inliner must compute the combined frame schema correctly.\n- Static decision (NOT tier-up-driven). At codegen time we decide what to inline.\n\n## Deliverables (new src/ir_inline.rs or extend src/fz_ir.rs)\n\n- IR inliner pass over fz-IR Module.\n- Inlining heuristic. Start simple:\n  - Always inline leaf fns ≤ N IR stmts (N = 8? tune later).\n  - Inline a fn if it has only one callsite (and isn't recursive).\n  - More aggressive heuristics later.\n- Frame schema recomputation post-inline: combined live-set of caller + callee, deduped.\n- Don't inline across tier boundaries (interp-only fns) or across modules (reduces invalidation if fn changes — though for AOT this matters less).\n- Recursion: don't inline self-recursive directly; can do bounded unrolling separately.\n\n## Tests\n\n- After inlining, count(100000, 0) doesn't allocate per-call (tail-recursion + single merged frame — already handled by .11.8 tail-call frame reuse, but inlining the body further removes call overhead).\n- Hot loops show no per-iter allocation.\n- GC still finds correct roots in inlined code (allocate during a hot loop, GC, verify both inlined and non-inlined paths see live values).\n- Inliner doesn't introduce code bloat beyond a threshold (some sanity check).\n\n## Risks\n\n- Inliner correctness: must not violate liveness invariants or frame layouts.\n- Inliner too aggressive: code bloat -\u003e instruction cache pressure.\n\n## Open\n\n- Inline budget (max IR stmts to copy per call).\n- Per-fn opt-out attribute (e.g. @no_inline)?\n- Whole-program vs. per-fn inlining strategy.",
+  "id": "fz-ul4.11.15",
+  "labels": [],
+  "parent": "fz-ul4.11",
+  "priority": 3,
+  "status": "open",
+  "title": "Frame inliner (performance optimization)",
+  "type": "task",
+  "updated_at": "2026-05-10T13:04:21Z"
+}
