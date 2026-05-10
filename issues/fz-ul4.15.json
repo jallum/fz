@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-05-10T09:35:27Z",
   "created": "2026-05-10T01:26:31Z",
   "description": "Read-eval-print loop. Useful for exploring the language interactively as we build it. Reuses the interpreter directly.",
   "id": "fz-ul4.15",
   "labels": [],
   "parent": "fz-ul4",
   "priority": 3,
-  "status": "open",
+  "status": "closed",
   "title": "REPL",
   "type": "task",
-  "updated_at": "2026-05-10T01:26:31Z"
+  "updated_at": "2026-05-10T09:35:27Z"
 }
