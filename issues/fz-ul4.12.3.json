@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-ul4.12.1",
     "fz-ul4.12.2"
@@ -19,8 +19,8 @@
     }
   ],
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "AOT driver: fz build → standalone binary",
   "type": "task",
-  "updated_at": "2026-05-10T03:02:43Z"
+  "updated_at": "2026-05-10T03:17:04Z"
 }
