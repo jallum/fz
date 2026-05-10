@@ -9,9 +9,15 @@
   "id": "fz-ul4.11.20",
   "labels": [],
   "parent": "fz-ul4.11",
+  "comments": [
+    {
+      "text": "Implementation notes:\n\n- HeapKind::Float = 9 (Closure took 8 in .11.19; ticket-stated 8 superseded). Layout per ticket: HeapHeader(16) + f64(8) + pad(8) = 32 bytes. Tag::Ptr.\n- Heap::alloc_float + Heap::read_float helpers. Tracer arm collapsed Float into the existing raw-payload branch.\n- v1 const: Const::Float lowers to fz_alloc_float at runtime. Const-pool dedup deferred (no separate ticket — micro-optimization).\n- Arithmetic dispatch: inline both-int test '((a^1) | (b^1)) \u0026 7 == 0', brif to fast/slow blocks joining on a typed param. Single emit_dispatch_binop helper covers Add/Sub/Mul/Div/Mod and Lt/Le/Gt/Ge. Slow path: fz_arith_* / fz_cmp_* runtime fns, which promote Int-\u003ef64 then act on f64.\n- Eq/Neq dispatch: 'either-ptr' inline test; slow path goes through fz_value_eq, which is float-aware (read payload, value-compare) and falls back to ptr-eq for other heap kinds. Mixed-type Int/Float Eq returns false (no equality promotion, per ticket).\n- Print/1 now returns FzValue::NIL instead of raw 0; raw 0 aliases Tag::Ptr null and the new fz_halt deref'd it. Defensive null check also added in fz_halt.\n- Float bit fields: fz_bs_write_field uses fz_to_f64 to accept Int OR boxed Float values, encodes to f32/f64 bits with endian, writes via BitWriter. fz_bs_read_field reads bits, decodes per size, allocates fresh boxed Float, returns ptr-bits in the result tuple.\n- Tests: 9 in ir_codegen (halt round-trip via bits, print rendering, float arith promotes, mixed Int+Float arith promotes, mixed Eq does NOT promote, distinct boxed floats compare equal by value, ordered comparison via slow path, float bit field round-trip via bitstring construction, GC reclaims float when unrooted) + 2 in heap (alloc/read round-trip, GC unrooted).",
+      "timestamp": "2026-05-10T20:31:05Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "Boxed floats in the JIT",
   "type": "task",
-  "updated_at": "2026-05-10T20:12:03Z"
+  "updated_at": "2026-05-10T20:31:05Z"
 }
