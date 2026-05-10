@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-ul4.4"
+  ],
   "blocks": [],
   "created": "2026-05-10T01:26:31Z",
   "description": "Compile-time AST manipulation. quote turns code into AST values; unquote splices values back in. defmacro defines a function that runs at compile time and returns AST.\n\nNeeds:\n- AST values reified as fz values (so quote returns a real value)\n- Macro expansion pass between parse and type-check\n- Hygiene story (probably gensym-based, like Elixir)\n\nBig and depends on the typer being further along.",
