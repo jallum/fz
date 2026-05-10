@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-ul4.12"
+    "fz-ul4.12",
+    "fz-ul4.4.2"
   ],
   "blocks": [],
   "created": "2026-05-10T01:26:31Z",
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "Interpreter ↔ JIT tier-up policy",
   "type": "task",
-  "updated_at": "2026-05-10T01:26:31Z"
+  "updated_at": "2026-05-10T08:35:11Z"
 }
