@@ -6,6 +6,7 @@
     "fz-ul4.18.6"
   ],
   "blocks": [],
+  "closed_at": "2026-05-10T11:01:16Z",
   "created": "2026-05-10T01:26:31Z",
   "description": "Some way to write and run tests in fz itself. assert, group, run; probably cribbed from ExUnit's shape.",
   "id": "fz-ul4.16",
@@ -18,8 +19,8 @@
     }
   ],
   "priority": 3,
-  "status": "open",
+  "status": "closed",
   "title": "Test runner",
   "type": "task",
-  "updated_at": "2026-05-10T10:26:41Z"
+  "updated_at": "2026-05-10T11:01:16Z"
 }
