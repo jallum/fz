@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-ul4.11.9"
+  ],
   "blocks": [],
   "created": "2026-05-10T13:03:48Z",
   "description": "GOAL: Replace today's Rc\u003cFzMap\u003e linear-scan map with a heap-allocated sorted-array map.\n\n## Decisions captured\n\n- SORTED-ARRAY for v1 (NOT HAMT). Atomic ticket; HAMT can come later as a performance follow-up if profiling shows hot map access.\n- Layout: HeapKind::Map; payload = entry_count:u32 + padding + (key:FzValue, val:FzValue) pairs sorted by key (stable order via FzValue total ordering).\n- Builtins (already in interp): map_get / map_put / map_has / map_size. Wire to IR prims.\n- Persistent: map_put returns a NEW map; existing map untouched. Sorted-array means O(N) put for v1; acceptable for small maps.\n\n## Deliverables\n\n- IR prim or builtin for map ops: Prim::AllocMap, Prim::MapGet, Prim::MapPut, etc.\n- Codegen: alloc a new map from N (key, val) pairs sorted; map_put builds a new buffer.\n- HeapKind::Map tracer: walks entries, traces both key and val FzValues.\n\n## Tests\n\n- `%{a: 1, b: 2}` allocates and reads.\n- map_put returns a new map; original is unchanged (persistent).\n- GC traces both keys and values.\n- Equality between maps (deep) works correctly.\n\n## Out of scope\n\n- HAMT for large maps (P3 follow-up after performance measurement).\n- Map pattern matching syntax (Pattern::Map already exists; reuse via .11.4 lowering).",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Maps as heap type (sorted-array v1)",
   "type": "task",
-  "updated_at": "2026-05-10T13:03:48Z"
+  "updated_at": "2026-05-10T13:05:54Z"
 }
