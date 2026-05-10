@@ -322,10 +322,24 @@ fn render_list(bits: u64) -> String {
 
 thread_local! {
     pub static TEST_CAPTURE: std::cell::RefCell<Vec<String>> = std::cell::RefCell::new(Vec::new());
+    /// (.11.24.4) Per-fn Cranelift IR display text captured by compile()
+    /// after compile_fn but before define_function consumes the context.
+    /// Test-only; enable by calling `ir_text_record_enable()` before compile.
+    pub static IR_TEXT_RECORD: std::cell::RefCell<Option<Vec<(String, String)>>> = std::cell::RefCell::new(None);
 }
 
 pub fn test_capture_take() -> Vec<String> {
     TEST_CAPTURE.with(|c| std::mem::take(&mut *c.borrow_mut()))
+}
+
+#[cfg(test)]
+pub(crate) fn ir_text_record_enable() {
+    IR_TEXT_RECORD.with(|c| *c.borrow_mut() = Some(Vec::new()));
+}
+
+#[cfg(test)]
+pub(crate) fn ir_text_record_take() -> Vec<(String, String)> {
+    IR_TEXT_RECORD.with(|c| c.borrow_mut().take().unwrap_or_default())
 }
 
 /// Halt: receives an FzValue from the JIT, unboxes per-tag into a debug-friendly
@@ -1778,7 +1792,12 @@ pub fn compile(module: &Module) -> Result<CompiledModule, CodegenError> {
         }
     });
 
-    for f in &module.fns {
+    // .11.24.4: run the typer ahead of codegen so per-fn Var->Descr info is
+    // available during lowering (used for arithmetic dispatch elision when
+    // both operands are provably Int).
+    let module_types = crate::ir_typer::type_module(module);
+
+    for (fn_idx, f) in module.fns.iter().enumerate() {
         let func_id = *fn_ids.get(&f.id.0).unwrap();
         let mut ctx = jmod.make_context();
         ctx.func.signature = fn_sig.clone();
@@ -1791,7 +1810,13 @@ pub fn compile(module: &Module) -> Result<CompiledModule, CodegenError> {
             &schemas,
             &tuple_schema_ids,
             f,
+            &module_types[fn_idx],
         )?;
+        IR_TEXT_RECORD.with(|c| {
+            if let Some(v) = c.borrow_mut().as_mut() {
+                v.push((f.name.clone(), ctx.func.display().to_string()));
+            }
+        });
         let flags = settings::Flags::new(settings::builder());
         cranelift_codegen::verifier::verify_function(&ctx.func, &flags)
             .map_err(|e| CodegenError(format!("verify {}:\n{}\n--- IR ---\n{}", f.name, e, ctx.func.display())))?;
@@ -1808,8 +1833,7 @@ pub fn compile(module: &Module) -> Result<CompiledModule, CodegenError> {
         fn_ptrs.insert(*fz_fn_id, jmod.get_finalized_function(*func_id));
     }
 
-    let types = crate::ir_typer::type_module(module);
-    Ok(CompiledModule { module: jmod, fn_ptrs, schemas, types })
+    Ok(CompiledModule { module: jmod, fn_ptrs, schemas, types: module_types })
 }
 
 fn sig1(params: &[ir::Type], rets: &[ir::Type]) -> Signature {
@@ -1868,6 +1892,7 @@ fn compile_fn(
     schemas: &[Schema],
     tuple_schema_ids: &HashMap<usize, u32>,
     f: &crate::fz_ir::FnIr,
+    fn_types: &crate::ir_typer::FnTypes,
 ) -> Result<(), CodegenError> {
     let mut b = FunctionBuilder::new(&mut ctx.func, fbctx);
 
@@ -1924,7 +1949,7 @@ fn compile_fn(
 
         for stmt in &blk.stmts {
             let Stmt::Let(v, prim) = stmt;
-            let val = lower_prim(&mut b, jmod, runtime, tuple_schema_ids, &var_map, prim)?;
+            let val = lower_prim(&mut b, jmod, runtime, tuple_schema_ids, &var_map, fn_types, prim)?;
             var_map.insert(v.0, val);
         }
 
@@ -2226,12 +2251,23 @@ fn emit_tail_call_closure(
     b.ins().return_(&[callee_frame]);
 }
 
+/// True when `v`'s typer-inferred Descr is a subtype of `int_top` — the
+/// arithmetic dispatch elision pre-condition (.11.24.4).
+fn descr_is_int(fn_types: &crate::ir_typer::FnTypes, v: crate::fz_ir::Var) -> bool {
+    fn_types
+        .vars
+        .get(&v)
+        .map(|d| d.is_subtype(&crate::types::Descr::int()))
+        .unwrap_or(false)
+}
+
 fn lower_prim(
     b: &mut FunctionBuilder<'_>,
     jmod: &mut JITModule,
     runtime: &RuntimeRefs,
     tuple_schema_ids: &HashMap<usize, u32>,
     env: &HashMap<u32, ir::Value>,
+    fn_types: &crate::ir_typer::FnTypes,
     prim: &Prim,
 ) -> Result<ir::Value, CodegenError> {
     Ok(match prim {
@@ -2259,16 +2295,8 @@ fn lower_prim(
             let bvv = *env.get(&bv.0).expect("unbound binop b");
             match op {
                 BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
-                    let helper = match op {
-                        BinOp::Add => runtime.arith_add_id,
-                        BinOp::Sub => runtime.arith_sub_id,
-                        BinOp::Mul => runtime.arith_mul_id,
-                        BinOp::Div => runtime.arith_div_id,
-                        BinOp::Mod => runtime.arith_mod_id,
-                        _ => unreachable!(),
-                    };
                     let mop = *op;
-                    emit_dispatch_binop(b, jmod, helper, av, bvv, move |b, av, bv| {
+                    let fast = |b: &mut FunctionBuilder<'_>, av: ir::Value, bv: ir::Value| {
                         let ai = unbox_int(b, av);
                         let bi = unbox_int(b, bv);
                         let raw = match mop {
@@ -2280,7 +2308,22 @@ fn lower_prim(
                             _ => unreachable!(),
                         };
                         box_int(b, raw)
-                    })
+                    };
+                    // .11.24.4: when the typer proves both operands are Int,
+                    // skip the dispatch test and helper call site.
+                    if descr_is_int(fn_types, *a) && descr_is_int(fn_types, *bv) {
+                        fast(b, av, bvv)
+                    } else {
+                        let helper = match op {
+                            BinOp::Add => runtime.arith_add_id,
+                            BinOp::Sub => runtime.arith_sub_id,
+                            BinOp::Mul => runtime.arith_mul_id,
+                            BinOp::Div => runtime.arith_div_id,
+                            BinOp::Mod => runtime.arith_mod_id,
+                            _ => unreachable!(),
+                        };
+                        emit_dispatch_binop(b, jmod, helper, av, bvv, fast)
+                    }
                 }
                 BinOp::Eq | BinOp::Neq => {
                     // If both operands are Tag::Ptr, dispatch to fz_value_eq
@@ -2321,13 +2364,6 @@ fn lower_prim(
                     b.block_params(join_blk)[0]
                 }
                 BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
-                    let helper = match op {
-                        BinOp::Lt => runtime.cmp_lt_id,
-                        BinOp::Le => runtime.cmp_le_id,
-                        BinOp::Gt => runtime.cmp_gt_id,
-                        BinOp::Ge => runtime.cmp_ge_id,
-                        _ => unreachable!(),
-                    };
                     let cc = match op {
                         BinOp::Lt => IntCC::SignedLessThan,
                         BinOp::Le => IntCC::SignedLessThanOrEqual,
@@ -2335,12 +2371,24 @@ fn lower_prim(
                         BinOp::Ge => IntCC::SignedGreaterThanOrEqual,
                         _ => unreachable!(),
                     };
-                    emit_dispatch_binop(b, jmod, helper, av, bvv, move |b, av, bv| {
+                    let fast = move |b: &mut FunctionBuilder<'_>, av: ir::Value, bv: ir::Value| {
                         let ai = unbox_int(b, av);
                         let bi = unbox_int(b, bv);
                         let cmp = b.ins().icmp(cc, ai, bi);
                         bool_to_fz(b, cmp)
-                    })
+                    };
+                    if descr_is_int(fn_types, *a) && descr_is_int(fn_types, *bv) {
+                        fast(b, av, bvv)
+                    } else {
+                        let helper = match op {
+                            BinOp::Lt => runtime.cmp_lt_id,
+                            BinOp::Le => runtime.cmp_le_id,
+                            BinOp::Gt => runtime.cmp_gt_id,
+                            BinOp::Ge => runtime.cmp_ge_id,
+                            _ => unreachable!(),
+                        };
+                        emit_dispatch_binop(b, jmod, helper, av, bvv, fast)
+                    }
                 }
                 BinOp::And => {
                     let at = is_truthy(b, av);
@@ -4776,5 +4824,74 @@ mod tests {
         // Cap iterations in the trampoline guards us if frame-reuse is broken.
         let result = cm.run(entry);
         assert_eq!(result, 100_000);
+    }
+
+    // ---- fz-ul4.11.24.4: arithmetic dispatch elision ----
+
+    fn build_int_const_add_module() -> Module {
+        // main():
+        //   one = 1
+        //   two = 2
+        //   sum = one + two
+        //   halt sum
+        use crate::fz_ir::{FnBuilder, ModuleBuilder};
+        let mut b = FnBuilder::new(FnId(0), "main");
+        let entry = b.block(vec![]);
+        let one = b.let_(entry, Prim::Const(Const::Int(1)));
+        let two = b.let_(entry, Prim::Const(Const::Int(2)));
+        let sum = b.let_(entry, Prim::BinOp(BinOp::Add, one, two));
+        b.set_terminator(entry, Term::Halt(sum));
+        let mut mb = ModuleBuilder::new();
+        mb.add_fn(b.build());
+        mb.build()
+    }
+
+    fn build_top_param_add_module() -> Module {
+        // main(x):
+        //   one = 1
+        //   sum = x + one
+        //   halt sum
+        // x is a top-level entry param -> typer assigns Top, dispatch retained.
+        use crate::fz_ir::{FnBuilder, ModuleBuilder};
+        let mut b = FnBuilder::new(FnId(0), "main");
+        let x = b.fresh_var();
+        let entry = b.block(vec![x]);
+        let one = b.let_(entry, Prim::Const(Const::Int(1)));
+        let sum = b.let_(entry, Prim::BinOp(BinOp::Add, x, one));
+        b.set_terminator(entry, Term::Halt(sum));
+        let mut mb = ModuleBuilder::new();
+        mb.add_fn(b.build());
+        mb.build()
+    }
+
+    fn get_main_ir(m: &Module) -> String {
+        ir_text_record_enable();
+        let _ = compile(m).unwrap();
+        let ir = ir_text_record_take();
+        ir.into_iter()
+            .find(|(n, _)| n == "main")
+            .map(|(_, s)| s)
+            .expect("no main ir captured")
+    }
+
+    #[test]
+    fn arith_int_int_elides_dispatch() {
+        // Both operands are int-literal singletons -> subtype of int. Codegen
+        // emits the fast inline body only; no `brif` (the both_int test) and
+        // no call to the arith helper (dispatch absent).
+        let m = build_int_const_add_module();
+        let ir = get_main_ir(&m);
+        assert!(!ir.contains("brif"),
+            "elision should drop the both_int branch:\n{}", ir);
+    }
+
+    #[test]
+    fn arith_top_param_keeps_dispatch() {
+        // x is a fn-param at Top -> typer can't prove Int. Dispatch retained;
+        // `brif` from both_int is present.
+        let m = build_top_param_add_module();
+        let ir = get_main_ir(&m);
+        assert!(ir.contains("brif"),
+            "dispatch should be retained for Top operands:\n{}", ir);
     }
 }
