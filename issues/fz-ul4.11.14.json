@@ -1,7 +1,6 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-ul4.11.22",
     "fz-ul4.11.23",
     "fz-ul4.11.9"
   ],
@@ -18,5 +17,5 @@
   "status": "open",
   "title": "Vec types as heap types (unblocks .14 SIMD)",
   "type": "task",
-  "updated_at": "2026-05-10T20:11:50Z"
+  "updated_at": "2026-05-10T20:12:03Z"
 }
