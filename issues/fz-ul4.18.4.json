@@ -6,14 +6,15 @@
   "blocks": [
     "fz-ul4.18.5"
   ],
+  "closed_at": "2026-05-10T10:42:33Z",
   "created": "2026-05-10T10:26:41Z",
   "description": "Fourth subticket. Depends on .18.3.\n\n`import Mod` pulls Mod's fns/macros into the current module's local namespace. `import Mod, only: [f: 1, g: 2]` selective. `import Mod, except: [...]` symmetric.\n\n## Scope\n\n- Parser: top-of-module `import \u003cPath\u003e [, only: [...] | except: [...]]`.\n- AST: Item::Import { path, only/except }.\n- Resolution: extend per-module name-binding so `f(x)` inside the importing module resolves to `Mod.f` when imported.\n- Conflict rule: a local fn shadows imports; explicit `Mod.f` always wins.\n\n## Tests\n\n- Plain import of a single fn.\n- only:[] selective.\n- Local fn overrides import; ambiguous import errors.\n",
   "id": "fz-ul4.18.4",
   "labels": [],
   "parent": "fz-ul4.18",
   "priority": 3,
-  "status": "open",
+  "status": "closed",
   "title": "import",
   "type": "task",
-  "updated_at": "2026-05-10T10:26:41Z"
+  "updated_at": "2026-05-10T10:42:33Z"
 }
