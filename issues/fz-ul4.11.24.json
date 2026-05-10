@@ -7,9 +7,15 @@
   "id": "fz-ul4.11.24",
   "labels": [],
   "parent": "fz-ul4.11",
+  "comments": [
+    {
+      "text": "Labeled all 9 closed typing tickets with `needs-reintegration` so the orphan status is visible at the list level:\n\n- fz-ul4.1, .2, .3 — type descriptors / set ops / subtyping\n- fz-ul4.4, .5, .6 — local inference / pattern narrowing / parametric polymorphism\n- fz-ul4.4.1, .4.2, .4.3 — call-site / higher-order / pipe-operator observation\n\nThese remain closed (the work was completed against the pre-.11.9 backend), but the label flags that their outputs are not currently consumed by the live CPS pipeline. The label should be removed from each as the design produced by .11.24 wires the corresponding capability back in (or, if the .11.24 design supersedes a piece of legacy work, the ticket can be re-closed with a note rather than the label cleared).",
+      "timestamp": "2026-05-10T20:38:09Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "Reintegrate typer into CPS pipeline (deep analysis)",
   "type": "task",
-  "updated_at": "2026-05-10T20:36:43Z"
+  "updated_at": "2026-05-10T20:38:09Z"
 }
