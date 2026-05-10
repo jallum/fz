@@ -9,6 +9,7 @@ mod fz_ir;
 mod fz_value;
 mod heap;
 mod ir_interp;
+mod ir_liveness;
 mod ir_lower;
 mod lexer;
 mod macros;
