@@ -153,6 +153,7 @@ impl Interp {
                 (b.func)(&args, &apply_cb)
             }
             Value::Closure(c) => self.dispatch_clauses(c, args),
+            Value::Jit(j) => crate::jit::call_jit(j, args),
             other => Err(format!("not callable: {}", other)),
         }
     }

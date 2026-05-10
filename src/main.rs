@@ -1,5 +1,6 @@
 mod aot;
 mod ast;
+mod jit;
 mod bitstr;
 mod codegen;
 mod eval;
@@ -115,6 +116,10 @@ fn main() {
         run_build(&args[1..]);
         return;
     }
+    if args.first().map(String::as_str) == Some("run") {
+        run_jit(&args[1..]);
+        return;
+    }
 
     let (src, show_ast) = parse_args(&args);
 
@@ -170,6 +175,17 @@ fn run_build(args: &[String]) {
             .unwrap_or_else(|| "a.out".into())
     });
     if let Err(e) = aot::build(std::path::Path::new(&src), std::path::Path::new(&out)) {
+        eprintln!("{}", e);
+        std::process::exit(1);
+    }
+}
+
+fn run_jit(args: &[String]) {
+    let src = args.first().cloned().unwrap_or_else(|| {
+        eprintln!("fz run <src.fz>");
+        std::process::exit(2);
+    });
+    if let Err(e) = jit::run(std::path::Path::new(&src)) {
         eprintln!("{}", e);
         std::process::exit(1);
     }

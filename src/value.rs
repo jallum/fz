@@ -26,6 +26,17 @@ pub enum Value {
     Closure(Rc<Closure>),
     /// Built-in (host) function.
     Builtin(Rc<Builtin>),
+    /// JIT-compiled function. Holds a reverse-thunk pointer with the uniform
+    /// `(args_ptr: *const u64, ret_ptr: *mut u64)` ABI; the interpreter
+    /// marshals Values into slot buffers and back. Set up by jit::run.
+    Jit(Rc<JitFn>),
+}
+
+pub struct JitFn {
+    pub name: String,
+    pub sig: crate::codegen::FnSig,
+    /// Reverse-thunk pointer (transmute target: `unsafe extern "C" fn(*const u64, *mut u64)`).
+    pub fn_ptr: usize,
 }
 
 #[derive(Clone)]
@@ -254,6 +265,7 @@ impl fmt::Display for Value {
                 c.name.as_deref().unwrap_or("anon"),
                 c.clauses.first().map(|cl| cl.params.len()).unwrap_or(0)),
             Value::Builtin(b) => write!(f, "#builtin<{}/{}>", b.name, b.arity),
+            Value::Jit(j) => write!(f, "#jit<{}/{}>", j.name, j.sig.params.len()),
         }
     }
 }
