@@ -150,6 +150,7 @@ fn render_fz_value(bits: u64) -> String {
                 Some(HeapKind::Bitstring) => render_bitstring(bits),
                 Some(HeapKind::Map) => render_map(bits),
                 Some(HeapKind::Closure) => render_closure(bits),
+                Some(HeapKind::Float) => render_float(bits),
                 Some(HeapKind::VecI64) => render_vec_i64(bits),
                 Some(HeapKind::VecU8) => render_vec_u8(bits),
                 Some(HeapKind::VecBit) => render_vec_bit(bits),
@@ -227,6 +228,15 @@ fn render_bitstring(bits: u64) -> String {
         parts.push(format!("{}::{}", last, trailing_bits));
     }
     format!("<<{}>>", parts.join(", "))
+}
+
+/// Render a boxed float: whole numbers get an explicit `.0` suffix
+/// (`4.0`, not `4`); fractional values use Rust's default Display.
+fn render_float(bits: u64) -> String {
+    use crate::fz_value::FzValue;
+    let p = FzValue(bits).unbox_ptr().unwrap();
+    let f = crate::heap::Heap::read_float(p);
+    if f.is_finite() && f.fract() == 0.0 { format!("{:.1}", f) } else { format!("{}", f) }
 }
 
 fn render_vec_i64(bits: u64) -> String {
@@ -319,7 +329,7 @@ pub fn test_capture_take() -> Vec<String> {
 /// processes land (.11.16+); this preserves byte-for-byte halt values for
 /// existing scalar tests while not constraining heap-typed semantics later.
 extern "C" fn fz_halt(host_ctx: *mut u8, fz_bits: u64) {
-    use crate::fz_value::{FzValue, Tag};
+    use crate::fz_value::{FzValue, HeapKind, Tag};
     let v = FzValue(fz_bits);
     let i: i64 = match v.tag() {
         Tag::Int => v.unbox_int().unwrap(),
@@ -329,7 +339,22 @@ extern "C" fn fz_halt(host_ctx: *mut u8, fz_bits: u64) {
             else if v.is_false() { 0 }
             else { 0 } // nil
         }
-        Tag::Ptr | Tag::Reserved => fz_bits as i64,
+        Tag::Ptr => {
+            let p = v.unbox_ptr().unwrap();
+            // Null Ptr-tagged value (e.g. 0): nothing to read, return raw bits.
+            if p.is_null() {
+                fz_bits as i64
+            } else {
+                let kind = unsafe { (*p).kind };
+                // For boxed floats, halt returns the f64 bits so tests can
+                // round-trip via f64::from_bits. Other heap kinds: raw bits.
+                match HeapKind::from_u16(kind) {
+                    Some(HeapKind::Float) => crate::heap::Heap::read_float(p).to_bits() as i64,
+                    _ => fz_bits as i64,
+                }
+            }
+        }
+        Tag::Reserved => fz_bits as i64,
     };
     unsafe { (*(host_ctx as *mut HostCtx)).halt_value = i; }
 }
@@ -640,12 +665,21 @@ extern "C" fn fz_bs_write_field(
                 w.write_bytes(&bytes);
             }
             BitType::Float => {
-                // Floats not yet boxed in JIT (Tag::Reserved). Lands when
-                // float repr arrives — separate ticket.
-                panic!(
-                    "float bit field not supported in JIT yet (signed={}, value_bits={:#x})",
-                    signed_b, value_bits
-                );
+                use crate::bitstr::apply_endian_for_write;
+                let total = size.unwrap_or(64) * unit;
+                if total != 32 && total != 64 {
+                    panic!("float bit field size must be 32 or 64, got {}", total);
+                }
+                // Decode the FzValue: Int unboxes to i64 then casts to f64;
+                // boxed Float reads payload directly. Then bit-cast and write.
+                let f = fz_to_f64(value_bits);
+                let raw: u64 = if total == 32 {
+                    (f as f32).to_bits() as u64
+                } else {
+                    f.to_bits()
+                };
+                let raw = apply_endian_for_write(raw, total, endian);
+                w.write_bits(raw, total as usize);
             }
         }
     });
@@ -846,12 +880,29 @@ extern "C" fn fz_bs_read_field(
             let new_bs_bits = new_bs as u64;
             (new_bs_bits, needed_bits)
         }
-        BitType::Float | BitType::Utf8 | BitType::Utf16 | BitType::Utf32 => {
-            // Float: same restriction as on the construction side.
+        BitType::Float => {
+            let total = size.unwrap_or(64) * unit;
+            if total != 32 && total != 64 {
+                return fail();
+            }
+            let raw = match r.read_bits(total as usize) {
+                Some(v) => v,
+                None => return fail(),
+            };
+            let raw = apply_endian_for_read(raw, total, endian);
+            let f = if total == 32 {
+                f32::from_bits(raw as u32) as f64
+            } else {
+                f64::from_bits(raw)
+            };
+            let p = HEAP.with(|h| h.borrow_mut().alloc_float(f));
+            (p as u64, total as usize)
+        }
+        BitType::Utf8 | BitType::Utf16 | BitType::Utf32 => {
             // UTF: read uses crate::bitstr::decode_utf*; not exercised by
             // ticket tests, so panic to surface intent rather than partial.
             panic!(
-                "BitReadField for {:?} not yet wired in JIT (lands with float / UTF support)",
+                "BitReadField for {:?} not yet wired in JIT (lands with UTF support)",
                 ty
             );
         }
@@ -876,6 +927,96 @@ extern "C" fn fz_bs_read_field(
         std::ptr::write(base.add(16) as *mut u64, new_reader_p as u64);
     }
     result_p as u64
+}
+
+// ----- Float runtime fns -----
+//
+// Boxed f64s. v1 representation: HeapKind::Float, layout `HeapHeader (16) +
+// f64 (8) + pad (8)`. Tag::Ptr (low bits 000), so two distinct boxed floats
+// with the same value are NOT bit-equal — comparison ops dispatch through
+// fz_value_eq when at least one operand has Tag::Ptr.
+//
+// Arithmetic dispatch: codegen emits an inline both-int fast-path test
+// (`((a^1) | (b^1)) & 7 == 0`) and falls back to fz_arith_* runtime helpers
+// when either operand is non-Int. The slow path promotes Int→Float and
+// returns a fresh boxed float; mixed-type ops promote (e.g. `1 + 2.0` ==
+// `3.0`). Eq/Neq do NOT promote: `1 == 1.0` is false.
+
+extern "C" fn fz_alloc_float(bits: u64) -> u64 {
+    let f = f64::from_bits(bits);
+    let p = HEAP.with(|h| h.borrow_mut().alloc_float(f));
+    p as u64
+}
+
+/// Decode an FzValue (Int or boxed Float) into f64. Panics on other tags.
+fn fz_to_f64(bits: u64) -> f64 {
+    use crate::fz_value::{FzValue, HeapKind, Tag};
+    let v = FzValue(bits);
+    match v.tag() {
+        Tag::Int => v.unbox_int().unwrap() as f64,
+        Tag::Ptr => {
+            let p = v.unbox_ptr().unwrap();
+            let kind = unsafe { (*p).kind };
+            match HeapKind::from_u16(kind) {
+                Some(HeapKind::Float) => crate::heap::Heap::read_float(p),
+                _ => panic!("arithmetic on non-numeric heap kind {}", kind),
+            }
+        }
+        _ => panic!("arithmetic on non-numeric tag {:?}", v.tag()),
+    }
+}
+
+fn box_float(f: f64) -> u64 {
+    let p = HEAP.with(|h| h.borrow_mut().alloc_float(f));
+    p as u64
+}
+
+extern "C" fn fz_arith_add(a: u64, b: u64) -> u64 { box_float(fz_to_f64(a) + fz_to_f64(b)) }
+extern "C" fn fz_arith_sub(a: u64, b: u64) -> u64 { box_float(fz_to_f64(a) - fz_to_f64(b)) }
+extern "C" fn fz_arith_mul(a: u64, b: u64) -> u64 { box_float(fz_to_f64(a) * fz_to_f64(b)) }
+extern "C" fn fz_arith_div(a: u64, b: u64) -> u64 { box_float(fz_to_f64(a) / fz_to_f64(b)) }
+extern "C" fn fz_arith_mod(a: u64, b: u64) -> u64 { box_float(fz_to_f64(a) % fz_to_f64(b)) }
+
+/// Comparison helpers return FzValue TRUE/FALSE bits. Like the arithmetic
+/// helpers, these handle mixed-type operands by promoting Int→f64.
+fn cmp_to_fz(b: bool) -> u64 {
+    use crate::fz_value::FzValue;
+    if b { FzValue::TRUE.0 } else { FzValue::FALSE.0 }
+}
+extern "C" fn fz_cmp_lt(a: u64, b: u64) -> u64 { cmp_to_fz(fz_to_f64(a) <  fz_to_f64(b)) }
+extern "C" fn fz_cmp_le(a: u64, b: u64) -> u64 { cmp_to_fz(fz_to_f64(a) <= fz_to_f64(b)) }
+extern "C" fn fz_cmp_gt(a: u64, b: u64) -> u64 { cmp_to_fz(fz_to_f64(a) >  fz_to_f64(b)) }
+extern "C" fn fz_cmp_ge(a: u64, b: u64) -> u64 { cmp_to_fz(fz_to_f64(a) >= fz_to_f64(b)) }
+
+/// Eq/Neq for FzValues where at least one operand is Tag::Ptr. Float-aware:
+/// two boxed floats compare by value. Mixed-type Int vs Float returns false
+/// (no auto-promotion in equality, per ticket). Other heap kinds fall back
+/// to ptr-equality (proper structural eq lands in fz-ul4.11.21).
+extern "C" fn fz_value_eq(a: u64, b: u64) -> u64 {
+    use crate::fz_value::{FzValue, HeapKind, Tag};
+    let av = FzValue(a);
+    let bv = FzValue(b);
+    let same = match (av.tag(), bv.tag()) {
+        (Tag::Ptr, Tag::Ptr) => {
+            let ap = av.unbox_ptr().unwrap();
+            let bp = bv.unbox_ptr().unwrap();
+            let ak = unsafe { (*ap).kind };
+            let bk = unsafe { (*bp).kind };
+            match (HeapKind::from_u16(ak), HeapKind::from_u16(bk)) {
+                (Some(HeapKind::Float), Some(HeapKind::Float)) => {
+                    crate::heap::Heap::read_float(ap)
+                        == crate::heap::Heap::read_float(bp)
+                }
+                _ => ap == bp,
+            }
+        }
+        // Mixed-tag Eq: bit-equal handles Int×Int, Atom×Atom, Special×Special.
+        // Any cross-tag pair (e.g. Int 1 vs Ptr to Float 1.0) is unequal:
+        // a is reachable here only if at least one tag is Ptr, so cross-tag
+        // is automatically false.
+        _ => a == b,
+    };
+    cmp_to_fz(same)
 }
 
 // ----- Vec runtime fns -----
@@ -1189,6 +1330,17 @@ pub fn compile(module: &Module) -> Result<CompiledModule, CodegenError> {
     builder.symbol("fz_map_push", fz_map_push as *const u8);
     builder.symbol("fz_map_finalize", fz_map_finalize as *const u8);
     builder.symbol("fz_map_get", fz_map_get as *const u8);
+    builder.symbol("fz_alloc_float", fz_alloc_float as *const u8);
+    builder.symbol("fz_arith_add", fz_arith_add as *const u8);
+    builder.symbol("fz_arith_sub", fz_arith_sub as *const u8);
+    builder.symbol("fz_arith_mul", fz_arith_mul as *const u8);
+    builder.symbol("fz_arith_div", fz_arith_div as *const u8);
+    builder.symbol("fz_arith_mod", fz_arith_mod as *const u8);
+    builder.symbol("fz_cmp_lt", fz_cmp_lt as *const u8);
+    builder.symbol("fz_cmp_le", fz_cmp_le as *const u8);
+    builder.symbol("fz_cmp_gt", fz_cmp_gt as *const u8);
+    builder.symbol("fz_cmp_ge", fz_cmp_ge as *const u8);
+    builder.symbol("fz_value_eq", fz_value_eq as *const u8);
     builder.symbol("fz_vec_begin", fz_vec_begin as *const u8);
     builder.symbol("fz_vec_push", fz_vec_push as *const u8);
     builder.symbol("fz_vec_finalize", fz_vec_finalize as *const u8);
@@ -1285,6 +1437,41 @@ pub fn compile(module: &Module) -> Result<CompiledModule, CodegenError> {
     let map_get_id = jmod
         .declare_function("fz_map_get", Linkage::Import, &map_get_sig)
         .map_err(|e| CodegenError(format!("declare map_get: {}", e)))?;
+    let alloc_float_sig = sig1(&[types::I64], &[types::I64]);
+    let alloc_float_id = jmod
+        .declare_function("fz_alloc_float", Linkage::Import, &alloc_float_sig)
+        .map_err(|e| CodegenError(format!("declare alloc_float: {}", e)))?;
+    let arith_sig = sig1(&[types::I64, types::I64], &[types::I64]);
+    let arith_add_id = jmod
+        .declare_function("fz_arith_add", Linkage::Import, &arith_sig)
+        .map_err(|e| CodegenError(format!("declare arith_add: {}", e)))?;
+    let arith_sub_id = jmod
+        .declare_function("fz_arith_sub", Linkage::Import, &arith_sig)
+        .map_err(|e| CodegenError(format!("declare arith_sub: {}", e)))?;
+    let arith_mul_id = jmod
+        .declare_function("fz_arith_mul", Linkage::Import, &arith_sig)
+        .map_err(|e| CodegenError(format!("declare arith_mul: {}", e)))?;
+    let arith_div_id = jmod
+        .declare_function("fz_arith_div", Linkage::Import, &arith_sig)
+        .map_err(|e| CodegenError(format!("declare arith_div: {}", e)))?;
+    let arith_mod_id = jmod
+        .declare_function("fz_arith_mod", Linkage::Import, &arith_sig)
+        .map_err(|e| CodegenError(format!("declare arith_mod: {}", e)))?;
+    let cmp_lt_id = jmod
+        .declare_function("fz_cmp_lt", Linkage::Import, &arith_sig)
+        .map_err(|e| CodegenError(format!("declare cmp_lt: {}", e)))?;
+    let cmp_le_id = jmod
+        .declare_function("fz_cmp_le", Linkage::Import, &arith_sig)
+        .map_err(|e| CodegenError(format!("declare cmp_le: {}", e)))?;
+    let cmp_gt_id = jmod
+        .declare_function("fz_cmp_gt", Linkage::Import, &arith_sig)
+        .map_err(|e| CodegenError(format!("declare cmp_gt: {}", e)))?;
+    let cmp_ge_id = jmod
+        .declare_function("fz_cmp_ge", Linkage::Import, &arith_sig)
+        .map_err(|e| CodegenError(format!("declare cmp_ge: {}", e)))?;
+    let value_eq_id = jmod
+        .declare_function("fz_value_eq", Linkage::Import, &arith_sig)
+        .map_err(|e| CodegenError(format!("declare value_eq: {}", e)))?;
     let vec_begin_sig = sig1(&[types::I32], &[]);
     let vec_begin_id = jmod
         .declare_function("fz_vec_begin", Linkage::Import, &vec_begin_sig)
@@ -1366,6 +1553,17 @@ pub fn compile(module: &Module) -> Result<CompiledModule, CodegenError> {
         vec_push_id,
         vec_finalize_id,
         vec_get_id,
+        alloc_float_id,
+        arith_add_id,
+        arith_sub_id,
+        arith_mul_id,
+        arith_div_id,
+        arith_mod_id,
+        cmp_lt_id,
+        cmp_le_id,
+        cmp_gt_id,
+        cmp_ge_id,
+        value_eq_id,
     };
 
     // Register a heap Schema for every tuple arity used by MakeTuple, so the
@@ -1503,6 +1701,17 @@ struct RuntimeRefs {
     vec_push_id: FuncId,
     vec_finalize_id: FuncId,
     vec_get_id: FuncId,
+    alloc_float_id: FuncId,
+    arith_add_id: FuncId,
+    arith_sub_id: FuncId,
+    arith_mul_id: FuncId,
+    arith_div_id: FuncId,
+    arith_mod_id: FuncId,
+    cmp_lt_id: FuncId,
+    cmp_le_id: FuncId,
+    cmp_gt_id: FuncId,
+    cmp_ge_id: FuncId,
+    value_eq_id: FuncId,
 }
 
 fn compile_fn(
@@ -1887,8 +2096,17 @@ fn lower_prim(
             Const::False => b.ins().iconst(types::I64, FALSE_BITS),
             Const::Nil => b.ins().iconst(types::I64, NIL_BITS),
             Const::Atom(id) => b.ins().iconst(types::I64, ((*id as i64) << 3) | TAG_ATOM),
-            Const::Float(_) | Const::Str(_) => {
-                return Err(CodegenError("Float/Str codegen lands in .11.10+".into()));
+            Const::Float(f) => {
+                // Boxed float: emit fz_alloc_float(bits) at runtime. v1 keeps
+                // const-pool dedup for a future ticket — correct first.
+                let bits = f.to_bits() as i64;
+                let bv = b.ins().iconst(types::I64, bits);
+                let fref = jmod.declare_func_in_func(runtime.alloc_float_id, b.func);
+                let inst = b.ins().call(fref, &[bv]);
+                b.inst_results(inst)[0]
+            }
+            Const::Str(_) => {
+                return Err(CodegenError("Str codegen lands in a later ticket".into()));
             }
         },
         Prim::BinOp(op, a, bv) => {
@@ -1896,29 +2114,74 @@ fn lower_prim(
             let bvv = *env.get(&bv.0).expect("unbound binop b");
             match op {
                 BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
-                    let ai = unbox_int(b, av);
-                    let bi = unbox_int(b, bvv);
-                    let raw = match op {
-                        BinOp::Add => b.ins().iadd(ai, bi),
-                        BinOp::Sub => b.ins().isub(ai, bi),
-                        BinOp::Mul => b.ins().imul(ai, bi),
-                        BinOp::Div => b.ins().sdiv(ai, bi),
-                        BinOp::Mod => b.ins().srem(ai, bi),
+                    let helper = match op {
+                        BinOp::Add => runtime.arith_add_id,
+                        BinOp::Sub => runtime.arith_sub_id,
+                        BinOp::Mul => runtime.arith_mul_id,
+                        BinOp::Div => runtime.arith_div_id,
+                        BinOp::Mod => runtime.arith_mod_id,
                         _ => unreachable!(),
                     };
-                    box_int(b, raw)
+                    let mop = *op;
+                    emit_dispatch_binop(b, jmod, helper, av, bvv, move |b, av, bv| {
+                        let ai = unbox_int(b, av);
+                        let bi = unbox_int(b, bv);
+                        let raw = match mop {
+                            BinOp::Add => b.ins().iadd(ai, bi),
+                            BinOp::Sub => b.ins().isub(ai, bi),
+                            BinOp::Mul => b.ins().imul(ai, bi),
+                            BinOp::Div => b.ins().sdiv(ai, bi),
+                            BinOp::Mod => b.ins().srem(ai, bi),
+                            _ => unreachable!(),
+                        };
+                        box_int(b, raw)
+                    })
                 }
-                BinOp::Eq => {
-                    let cmp = b.ins().icmp(IntCC::Equal, av, bvv);
-                    bool_to_fz(b, cmp)
-                }
-                BinOp::Neq => {
-                    let cmp = b.ins().icmp(IntCC::NotEqual, av, bvv);
-                    bool_to_fz(b, cmp)
+                BinOp::Eq | BinOp::Neq => {
+                    // If either operand is Tag::Ptr, dispatch to fz_value_eq
+                    // (float-aware, falls back to ptr-eq for other heap kinds).
+                    // Otherwise raw bit-eq is correct (Int/Atom/Special).
+                    let cond = either_ptr(b, av, bvv);
+                    let fast_blk = b.create_block();
+                    let slow_blk = b.create_block();
+                    let join_blk = b.create_block();
+                    b.append_block_param(join_blk, types::I64);
+                    let no_args: Vec<BlockArg> = Vec::new();
+                    // either_ptr=true => slow path
+                    b.ins().brif(cond, slow_blk, &no_args, fast_blk, &no_args);
+
+                    b.switch_to_block(fast_blk);
+                    b.seal_block(fast_blk);
+                    let cc = if matches!(op, BinOp::Eq) { IntCC::Equal } else { IntCC::NotEqual };
+                    let cmp = b.ins().icmp(cc, av, bvv);
+                    let fast_v = bool_to_fz(b, cmp);
+                    b.ins().jump(join_blk, &[BlockArg::Value(fast_v)]);
+
+                    b.switch_to_block(slow_blk);
+                    b.seal_block(slow_blk);
+                    let fref = jmod.declare_func_in_func(runtime.value_eq_id, b.func);
+                    let inst = b.ins().call(fref, &[av, bvv]);
+                    let eq = b.inst_results(inst)[0];
+                    let slow_v = if matches!(op, BinOp::Eq) {
+                        eq
+                    } else {
+                        // Negate: TRUE_BITS xor (TRUE_BITS xor FALSE_BITS) = FALSE_BITS.
+                        b.ins().bxor_imm(eq, TRUE_BITS ^ FALSE_BITS)
+                    };
+                    b.ins().jump(join_blk, &[BlockArg::Value(slow_v)]);
+
+                    b.switch_to_block(join_blk);
+                    b.seal_block(join_blk);
+                    b.block_params(join_blk)[0]
                 }
                 BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
-                    let ai = unbox_int(b, av);
-                    let bi = unbox_int(b, bvv);
+                    let helper = match op {
+                        BinOp::Lt => runtime.cmp_lt_id,
+                        BinOp::Le => runtime.cmp_le_id,
+                        BinOp::Gt => runtime.cmp_gt_id,
+                        BinOp::Ge => runtime.cmp_ge_id,
+                        _ => unreachable!(),
+                    };
                     let cc = match op {
                         BinOp::Lt => IntCC::SignedLessThan,
                         BinOp::Le => IntCC::SignedLessThanOrEqual,
@@ -1926,8 +2189,12 @@ fn lower_prim(
                         BinOp::Ge => IntCC::SignedGreaterThanOrEqual,
                         _ => unreachable!(),
                     };
-                    let cmp = b.ins().icmp(cc, ai, bi);
-                    bool_to_fz(b, cmp)
+                    emit_dispatch_binop(b, jmod, helper, av, bvv, move |b, av, bv| {
+                        let ai = unbox_int(b, av);
+                        let bi = unbox_int(b, bv);
+                        let cmp = b.ins().icmp(cc, ai, bi);
+                        bool_to_fz(b, cmp)
+                    })
                 }
                 BinOp::And => {
                     let at = is_truthy(b, av);
@@ -1972,7 +2239,9 @@ fn lower_prim(
                     let av = *env.get(&args[0].0).expect("unbound print arg");
                     let fref = jmod.declare_func_in_func(runtime.print_id, b.func);
                     b.ins().call(fref, &[av]);
-                    b.ins().iconst(types::I64, 0)
+                    // print/1 returns FzValue::NIL — never raw 0 (which would
+                    // alias Tag::Ptr null and trip fz_halt's Ptr-deref path).
+                    b.ins().iconst(types::I64, NIL_BITS)
                 }
                 BuiltinKind::VecGet => {
                     if args.len() != 2 {
@@ -2251,6 +2520,66 @@ fn lower_prim(
 /// a raw i64 via arithmetic shift right.
 fn unbox_int(b: &mut FunctionBuilder<'_>, v: ir::Value) -> ir::Value {
     b.ins().sshr_imm(v, 3)
+}
+
+/// Emit `((a^1) | (b^1)) & 7 == 0` — true iff both operands are Tag::Int
+/// (low 3 bits = 001). Used by arithmetic / ordered comparisons to choose
+/// between the inline int fast-path and the boxed-float slow path.
+fn both_int(b: &mut FunctionBuilder<'_>, av: ir::Value, bv: ir::Value) -> ir::Value {
+    let xa = b.ins().bxor_imm(av, TAG_INT);
+    let xb = b.ins().bxor_imm(bv, TAG_INT);
+    let or_xab = b.ins().bor(xa, xb);
+    let lo = b.ins().band_imm(or_xab, 7);
+    b.ins().icmp_imm(IntCC::Equal, lo, 0)
+}
+
+/// Emit a tag-dispatched binary op: if both Tag::Int, run `fast`; else call
+/// `helper_id` (an extern "C" fn(u64, u64) -> u64). Returns the join-block
+/// param holding the resolved value.
+fn emit_dispatch_binop<F>(
+    b: &mut FunctionBuilder<'_>,
+    jmod: &mut JITModule,
+    helper_id: FuncId,
+    av: ir::Value,
+    bv: ir::Value,
+    fast: F,
+) -> ir::Value
+where
+    F: FnOnce(&mut FunctionBuilder<'_>, ir::Value, ir::Value) -> ir::Value,
+{
+    let cond = both_int(b, av, bv);
+    let fast_blk = b.create_block();
+    let slow_blk = b.create_block();
+    let join_blk = b.create_block();
+    b.append_block_param(join_blk, types::I64);
+    let no_args: Vec<BlockArg> = Vec::new();
+    b.ins().brif(cond, fast_blk, &no_args, slow_blk, &no_args);
+
+    b.switch_to_block(fast_blk);
+    b.seal_block(fast_blk);
+    let fast_v = fast(b, av, bv);
+    b.ins().jump(join_blk, &[BlockArg::Value(fast_v)]);
+
+    b.switch_to_block(slow_blk);
+    b.seal_block(slow_blk);
+    let fref = jmod.declare_func_in_func(helper_id, b.func);
+    let inst = b.ins().call(fref, &[av, bv]);
+    let slow_v = b.inst_results(inst)[0];
+    b.ins().jump(join_blk, &[BlockArg::Value(slow_v)]);
+
+    b.switch_to_block(join_blk);
+    b.seal_block(join_blk);
+    b.block_params(join_blk)[0]
+}
+
+/// True iff at least one operand is Tag::Ptr (low 3 bits = 000). Used by
+/// Eq/Neq to detect heap-typed operands and dispatch to fz_value_eq.
+fn either_ptr(b: &mut FunctionBuilder<'_>, av: ir::Value, bv: ir::Value) -> ir::Value {
+    let a_lo = b.ins().band_imm(av, 7);
+    let b_lo = b.ins().band_imm(bv, 7);
+    let a_is = b.ins().icmp_imm(IntCC::Equal, a_lo, 0);
+    let b_is = b.ins().icmp_imm(IntCC::Equal, b_lo, 0);
+    b.ins().bor(a_is, b_is)
 }
 
 /// Box a raw i64 into an FzValue-tagged int: `(n << 3) | TAG_INT`.
@@ -3656,6 +3985,213 @@ mod tests {
         // ...without the root, GC reclaims it.
         heap_gc(&[]);
         assert_eq!(heap_live_count(), 0);
+    }
+
+    // ----- .11.20 boxed-float tests -----
+
+    #[test]
+    fn float_const_halt_round_trips_via_bits() {
+        // fn main(), do: 3.14   — halt returns f64 bits.
+        let main = fn_def("main", vec![cl(vec![], Expr::Float(3.14))]);
+        let m = lower(vec![main]);
+        let entry = m.fn_by_name("main").unwrap().id;
+        heap_reset_for_test();
+        let cm = compile(&m).unwrap();
+        let halt = cm.run(entry);
+        assert_eq!(f64::from_bits(halt as u64), 3.14);
+    }
+
+    #[test]
+    fn print_float_renders_with_explicit_dot_zero() {
+        // fn main() do print(4.0); print(3.14) end
+        let main = fn_def(
+            "main",
+            vec![cl(
+                vec![],
+                Expr::Block(vec![
+                    Expr::Call(
+                        Box::new(Expr::Var("print".into())),
+                        vec![Expr::Float(4.0)],
+                    ),
+                    Expr::Call(
+                        Box::new(Expr::Var("print".into())),
+                        vec![Expr::Float(3.14)],
+                    ),
+                ]),
+            )],
+        );
+        let m = lower(vec![main]);
+        let entry = m.fn_by_name("main").unwrap().id;
+        heap_reset_for_test();
+        let _ = test_capture_take();
+        let cm = compile(&m).unwrap();
+        let _ = cm.run(entry);
+        assert_eq!(test_capture_take(), vec!["4.0".to_string(), "3.14".to_string()]);
+    }
+
+    #[test]
+    fn float_arithmetic_promotes_via_runtime_helper() {
+        // 1.5 + 2.5 == 4.0 -> true (halt = 1)
+        let main = fn_def(
+            "main",
+            vec![cl(
+                vec![],
+                Expr::BinOp(
+                    ABinOp::Eq,
+                    Box::new(Expr::BinOp(
+                        ABinOp::Add,
+                        Box::new(Expr::Float(1.5)),
+                        Box::new(Expr::Float(2.5)),
+                    )),
+                    Box::new(Expr::Float(4.0)),
+                ),
+            )],
+        );
+        let m = lower(vec![main]);
+        let entry = m.fn_by_name("main").unwrap().id;
+        heap_reset_for_test();
+        let cm = compile(&m).unwrap();
+        assert_eq!(cm.run(entry), 1); // TRUE halts as 1
+    }
+
+    #[test]
+    fn mixed_int_float_arithmetic_promotes() {
+        // 1 + 2.0 == 3.0 -> true. Mixed-tag arithmetic dispatches to slow path
+        // and promotes Int -> f64 before adding.
+        let main = fn_def(
+            "main",
+            vec![cl(
+                vec![],
+                Expr::BinOp(
+                    ABinOp::Eq,
+                    Box::new(Expr::BinOp(
+                        ABinOp::Add,
+                        Box::new(Expr::Int(1)),
+                        Box::new(Expr::Float(2.0)),
+                    )),
+                    Box::new(Expr::Float(3.0)),
+                ),
+            )],
+        );
+        let m = lower(vec![main]);
+        let entry = m.fn_by_name("main").unwrap().id;
+        heap_reset_for_test();
+        let cm = compile(&m).unwrap();
+        assert_eq!(cm.run(entry), 1);
+    }
+
+    #[test]
+    fn mixed_int_float_eq_does_not_promote() {
+        // 1 == 1.0 -> false (per ticket: Eq does NOT promote across reps).
+        let main = fn_def(
+            "main",
+            vec![cl(
+                vec![],
+                Expr::BinOp(
+                    ABinOp::Eq,
+                    Box::new(Expr::Int(1)),
+                    Box::new(Expr::Float(1.0)),
+                ),
+            )],
+        );
+        let m = lower(vec![main]);
+        let entry = m.fn_by_name("main").unwrap().id;
+        heap_reset_for_test();
+        let cm = compile(&m).unwrap();
+        assert_eq!(cm.run(entry), 0); // FALSE halts as 0
+    }
+
+    #[test]
+    fn distinct_boxed_floats_compare_equal_by_value() {
+        // Two separately allocated 1.5 floats are NOT ptr-equal but ARE
+        // value-equal — fz_value_eq must read payload, not just bits.
+        let main = fn_def(
+            "main",
+            vec![cl(
+                vec![],
+                Expr::BinOp(
+                    ABinOp::Eq,
+                    Box::new(Expr::Float(1.5)),
+                    Box::new(Expr::Float(1.5)),
+                ),
+            )],
+        );
+        let m = lower(vec![main]);
+        let entry = m.fn_by_name("main").unwrap().id;
+        heap_reset_for_test();
+        let cm = compile(&m).unwrap();
+        assert_eq!(cm.run(entry), 1);
+    }
+
+    #[test]
+    fn float_ordered_comparison_dispatches_through_helper() {
+        // 1.5 < 2.0 -> true.
+        let main = fn_def(
+            "main",
+            vec![cl(
+                vec![],
+                Expr::BinOp(
+                    ABinOp::Lt,
+                    Box::new(Expr::Float(1.5)),
+                    Box::new(Expr::Float(2.0)),
+                ),
+            )],
+        );
+        let m = lower(vec![main]);
+        let entry = m.fn_by_name("main").unwrap().id;
+        heap_reset_for_test();
+        let cm = compile(&m).unwrap();
+        assert_eq!(cm.run(entry), 1);
+    }
+
+    #[test]
+    fn float_bit_field_round_trips_via_bitstring() {
+        // <<3.14::float-64>> constructed and parsed back to 3.14.
+        use crate::ast::{BitField, BitFieldSpec, BitType, Endian};
+        let main = fn_def(
+            "main",
+            vec![cl(
+                vec![],
+                Expr::Bitstring(vec![BitField {
+                    value: Expr::Float(3.14),
+                    spec: BitFieldSpec {
+                        ty: BitType::Float,
+                        size: None,
+                        unit: None,
+                        endian: Endian::Big,
+                        signed: false,
+                    },
+                }]),
+            )],
+        );
+        let m = lower(vec![main]);
+        let entry = m.fn_by_name("main").unwrap().id;
+        heap_reset_for_test();
+        let cm = compile(&m).unwrap();
+        let halt = cm.run(entry) as u64;
+        // halt is the bitstring ptr. Read 8 bytes of payload, decode as f64 BE.
+        let p = crate::fz_value::FzValue(halt).unbox_ptr().unwrap();
+        let bytes = unsafe {
+            std::slice::from_raw_parts((p as *const u8).add(24), 8)
+        };
+        let mut buf = [0u8; 8];
+        buf.copy_from_slice(bytes);
+        let f = f64::from_bits(u64::from_be_bytes(buf));
+        assert_eq!(f, 3.14);
+    }
+
+    #[test]
+    fn allocate_float_drop_root_gc_reclaims() {
+        let main = fn_def("main", vec![cl(vec![], Expr::Float(2.71))]);
+        let m = lower(vec![main]);
+        let entry = m.fn_by_name("main").unwrap().id;
+        heap_reset_for_test();
+        let cm = compile(&m).unwrap();
+        let _ = cm.run(entry);
+        assert_eq!(heap_live_count(), 1);
+        heap_gc(&[]); // no roots
+        assert_eq!(heap_live_count(), 0);
+        assert_eq!(heap_freelist_len(), 1);
     }
 
     // ----- .11.14 vec tests -----

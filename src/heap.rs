@@ -304,6 +304,32 @@ impl Heap {
         p
     }
 
+    /// Boxed float layout: `HeapHeader (16) + f64 (8) + pad (8)` = 32 bytes.
+    /// Returned ptr is FzValue ptr-tagged (low 4 bits zero by alignment).
+    pub fn alloc_float(&mut self, value: f64) -> *mut HeapHeader {
+        let p = self.alloc(32);
+        unsafe {
+            std::ptr::write(
+                p,
+                HeapHeader {
+                    kind: HeapKind::Float as u16,
+                    flags: 0,
+                    size_bytes: 32,
+                    schema_id: 0,
+                    _reserved: 0,
+                },
+            );
+            std::ptr::write((p as *mut u8).add(16) as *mut f64, value);
+            std::ptr::write_bytes((p as *mut u8).add(24), 0, 8);
+        }
+        p
+    }
+
+    /// Read the f64 payload of a `HeapKind::Float` object.
+    pub fn read_float(p: *const HeapHeader) -> f64 {
+        unsafe { std::ptr::read((p as *const u8).add(16) as *const f64) }
+    }
+
     pub fn alloc_vec_i64(&mut self, elements: &[i64]) -> *mut HeapHeader {
         let p = self.alloc_vec_raw(HeapKind::VecI64, elements.len() as u32, elements.len() * 8);
         unsafe {
@@ -449,7 +475,8 @@ fn trace(v: FzValue, reg: &SchemaRegistry, marked: &mut HashSet<*mut HeapHeader>
         | Some(HeapKind::VecI64)
         | Some(HeapKind::VecF64)
         | Some(HeapKind::VecU8)
-        | Some(HeapKind::VecBit) => {
+        | Some(HeapKind::VecBit)
+        | Some(HeapKind::Float) => {
             // Raw payloads: no FzValue children to trace.
         }
         Some(HeapKind::Closure) => {
@@ -631,6 +658,28 @@ mod tests {
         h.gc(&[]);
         assert_eq!(h.live_count(), 0);
         assert_eq!(h.freelist_len(), 2);
+    }
+
+    #[test]
+    fn alloc_float_round_trips_payload() {
+        let reg = empty_registry();
+        let mut h = Heap::new(1024, reg);
+        let p = h.alloc_float(3.14);
+        unsafe {
+            assert_eq!((*p).kind, HeapKind::Float as u16);
+            assert_eq!((*p).size_bytes, 32);
+        }
+        assert_eq!(Heap::read_float(p), 3.14);
+    }
+
+    #[test]
+    fn gc_frees_float_when_unrooted() {
+        let reg = empty_registry();
+        let mut h = Heap::new(1024, reg);
+        let _p = h.alloc_float(2.71);
+        h.gc(&[]);
+        assert_eq!(h.live_count(), 0);
+        assert_eq!(h.freelist_len(), 1);
     }
 
     #[test]
