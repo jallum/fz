@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-10T01:26:31Z",
+  "description": "Lower typed AST to Cranelift IR and JIT. Start with monomorphic, scalar code. Tagged 64-bit values + dispatch on type tag for builtins.\n\nNeeds the typer first so we can specialize on types and skip dynamic checks.",
+  "id": "fz-ul4.12",
+  "labels": [],
+  "parent": "fz-ul4",
+  "priority": 2,
+  "status": "open",
+  "title": "Cranelift JIT backend (scalar)",
+  "type": "task",
+  "updated_at": "2026-05-10T01:26:31Z"
+}
