@@ -6,6 +6,7 @@ mod codegen;
 mod eval;
 mod lexer;
 mod parser;
+mod repl;
 mod typer;
 mod types;
 mod value;
@@ -118,6 +119,13 @@ fn main() {
     }
     if args.first().map(String::as_str) == Some("run") {
         run_jit(&args[1..]);
+        return;
+    }
+    if args.first().map(String::as_str) == Some("repl") {
+        if let Err(e) = repl::run() {
+            eprintln!("repl: {}", e);
+            std::process::exit(1);
+        }
         return;
     }
 

@@ -253,7 +253,19 @@ impl Parser {
 
     // --- expressions (Pratt) ---
 
-    fn parse_expr(&mut self) -> PR<Expr> { self.parse_bp(0) }
+    pub fn parse_expr(&mut self) -> PR<Expr> { self.parse_bp(0) }
+
+    /// REPL helper: parse a single expression and assert end-of-input.
+    /// Used by the REPL when the input doesn't start a fn definition.
+    pub fn parse_expr_eof(&mut self) -> PR<Expr> {
+        self.skip_newlines();
+        let e = self.parse_expr()?;
+        self.skip_newlines();
+        if !matches!(self.peek(), Tok::Eof) {
+            return self.err(format!("trailing tokens after expression: {:?}", self.peek()));
+        }
+        Ok(e)
+    }
 
     fn infix_bp(t: &Tok) -> Option<(u8, u8, BinOp)> {
         // (left, right, op). left < right => left-associative.
