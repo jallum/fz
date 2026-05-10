@@ -352,36 +352,28 @@ impl Typer {
             Expr::Call(callee, args) => {
                 let f = self.infer(env, callee);
                 let arg_ts: Vec<Descr> = args.iter().map(|a| self.infer(env, a)).collect();
-                if let Expr::Var(name) = &**callee {
-                    if self.user_fns.contains(name) {
-                        let entry = self.call_obs_curr.entry(name.clone())
-                            .or_insert_with(|| vec![Descr::none(); arg_ts.len()]);
-                        if entry.len() == arg_ts.len() {
-                            for (i, t) in arg_ts.iter().enumerate() {
-                                entry[i] = entry[i].union(t);
-                            }
-                        }
-                        self.call_shapes_curr.entry(name.clone())
-                            .or_default()
-                            .push(arg_ts.clone());
-                    }
-                }
+                self.record_call_obs(callee, &arg_ts);
                 self.apply_arrow(&f, &arg_ts)
             }
             Expr::Dot(_, _) => Descr::any(),
             Expr::BinOp(op, l, r) => {
-                let lt = self.infer(env, l);
-                let rt = self.infer(env, r);
                 if *op == BinOp::Pipe {
-                    // a |> f(args)  ≡  f(a, args)
+                    // a |> f(args)  ≡  f(a, args). Special-case before
+                    // inferring `r` so the inner Call doesn't separately
+                    // record a (wrong-arity) obs for `f`.
+                    let lt = self.infer(env, l);
                     if let Expr::Call(callee, more) = &**r {
                         let f = self.infer(env, callee);
                         let mut all: Vec<Descr> = vec![lt];
                         for a in more { all.push(self.infer(env, a)); }
+                        self.record_call_obs(callee, &all);
                         return self.apply_arrow(&f, &all);
                     }
+                    let rt = self.infer(env, r);
                     return self.apply_arrow(&rt, &[lt]);
                 }
+                let lt = self.infer(env, l);
+                let rt = self.infer(env, r);
                 self.binop_type(*op, &lt, &rt)
             }
             Expr::UnOp(op, x) => {
@@ -501,6 +493,24 @@ impl Typer {
                 Descr::arrow(arg_ts, ret)
             }
         }
+    }
+
+    /// Record a call site against `callee` for the next iteration's
+    /// monomorphization passes. Both `call_obs` (per-arg union) and
+    /// `call_shapes` (raw per-call-site shape list) accumulate.
+    fn record_call_obs(&mut self, callee: &Expr, arg_ts: &[Descr]) {
+        let Expr::Var(name) = callee else { return };
+        if !self.user_fns.contains(name) { return; }
+        let entry = self.call_obs_curr.entry(name.clone())
+            .or_insert_with(|| vec![Descr::none(); arg_ts.len()]);
+        if entry.len() == arg_ts.len() {
+            for (i, t) in arg_ts.iter().enumerate() {
+                entry[i] = entry[i].union(t);
+            }
+        }
+        self.call_shapes_curr.entry(name.clone())
+            .or_default()
+            .push(arg_ts.to_vec());
     }
 
     fn binop_type(&mut self, op: BinOp, l: &Descr, r: &Descr) -> Descr {
@@ -1129,6 +1139,26 @@ mod tests {
         let t = type_of(src, "fact");
         // The fn is non-trivial.
         assert!(!t.funcs.is_empty(), "fact got empty type: {}", t);
+    }
+
+    #[test]
+    fn pipe_call_site_drives_monomorphization() {
+        // When the only call to a user fn is via the pipe operator, the typer
+        // must still record the observation so the fn's var-bound params get
+        // narrowed to the call-site shape (otherwise they stay `any` and the
+        // fn falls out of JIT/AOT eligibility).
+        let src = r#"
+            fn double(x), do: x * 2
+            fn run(), do: 21 |> double()
+        "#;
+        let toks = Lexer::new(src).tokenize().expect("lex");
+        let prog = Parser::new(toks).parse_program().expect("parse");
+        let mut t = Typer::new();
+        t.type_program(&prog);
+        let obs = t.call_obs.get("double").expect("no obs for double");
+        assert_eq!(obs.len(), 1, "expected 1-arg obs, got {:?}", obs);
+        assert!(Descr::int_lit(21).is_subtype(&obs[0]),
+            "expected int_lit(21) ⊆ obs[0], got {}", obs[0]);
     }
 }
 
