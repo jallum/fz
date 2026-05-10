@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-ul4.11.14"
+    "fz-ul4.11.14",
+    "fz-ul4.11.24.5"
   ],
   "blocks": [],
   "created": "2026-05-10T20:11:29Z",
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "vec_map / vec_reduce via JIT (closure-taking builtins)",
   "type": "task",
-  "updated_at": "2026-05-10T20:12:03Z"
+  "updated_at": "2026-05-10T20:52:42Z"
 }
