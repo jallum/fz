@@ -19,6 +19,13 @@ pub struct Interp {
     /// the macro expansion pass; persists across REPL inputs so a macro
     /// defined on one line is callable from later inputs.
     pub macro_names: RefCell<std::collections::HashSet<String>>,
+    /// Per-invocation hygiene table set by the macro expander before
+    /// running a macro body. When `Some`, `reify_with_unquotes` renames
+    /// Var/Match-lhs names through this map (lazily filling in fresh
+    /// gensyms) so the caller's locals can't collide with the macro's.
+    /// `None` outside of macro expansion — quote then preserves names
+    /// literally.
+    pub gensym_table: RefCell<Option<std::collections::HashMap<String, String>>>,
 }
 
 impl Interp {
@@ -28,6 +35,7 @@ impl Interp {
             globals,
             on_user_call: RefCell::new(None),
             macro_names: RefCell::new(std::collections::HashSet::new()),
+            gensym_table: RefCell::new(None),
         };
         me.install_builtins();
         me
@@ -417,6 +425,21 @@ impl Interp {
         match e {
             Expr::Unquote(inner) => self.eval(inner, env),
 
+            // Vars hygiene-rename when a gensym table is active.
+            Expr::Var(name) => Ok(reified_var(self.hygiene_rename(name))),
+
+            // `lhs = rhs` — the lhs Var participates in hygiene the same way.
+            Expr::Match(pat, rhs) => {
+                use crate::ast::Pattern;
+                let lhs_name = match pat {
+                    Pattern::Var(n) => n.clone(),
+                    _ => return Err("quote: only Pattern::Var on lhs of `=` in v1".into()),
+                };
+                let lhs = reified_var(self.hygiene_rename(&lhs_name));
+                let rv = self.reify_with_unquotes(rhs, env)?;
+                Ok(quoted_node("=", Value::List(Rc::new(vec![lhs, rv]))))
+            }
+
             // Compound exprs: recurse so unquotes inside them get spliced.
             Expr::List(xs, tail) => {
                 if tail.is_some() {
@@ -556,6 +579,34 @@ mod quote_tests {
         assert!(res.as_ref().unwrap_err().contains("unquote"),
             "expected message to mention unquote, got {:?}", res);
     }
+}
+
+impl Interp {
+    /// If a hygiene table is active, return the gensym for `name`,
+    /// allocating one on first use. Otherwise return `name` unchanged.
+    fn hygiene_rename(&self, name: &str) -> String {
+        let mut tbl_ref = self.gensym_table.borrow_mut();
+        let Some(tbl) = tbl_ref.as_mut() else { return name.to_string() };
+        if let Some(g) = tbl.get(name) { return g.clone(); }
+        let id = next_gensym_id();
+        let fresh = format!("{}__hyg_{}", name, id);
+        tbl.insert(name.to_string(), fresh.clone());
+        fresh
+    }
+}
+
+fn next_gensym_id() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    COUNTER.fetch_add(1, Ordering::Relaxed)
+}
+
+fn reified_var(name: String) -> Value {
+    Value::Tuple(Rc::new(vec![
+        Value::Atom(Rc::from(name.as_str())),
+        Value::Map(Rc::new(crate::value::FzMap::new())),
+        Value::Atom(Rc::from("user")),
+    ]))
 }
 
 fn quoted_node(name: &str, args: Value) -> Value {

@@ -94,12 +94,22 @@ pub fn expand_expr(
                     .map(expr_to_value)
                     .collect::<Result<Vec<_>, _>>()
                     .map_err(|e| format!("macro {} arg reification: {}", name, e))?;
-                let ret = interp.call_named(name, arg_vs)
+                // Activate a fresh hygiene table for this invocation so any
+                // `quote` inside the macro body gensyms the vars it
+                // introduces. Save/restore so nested macro expansions get
+                // their own table — though in practice nesting only
+                // happens via re-expansion of the *result*, after we've
+                // already cleared the table.
+                let prev = interp.gensym_table.borrow_mut().take();
+                *interp.gensym_table.borrow_mut() =
+                    Some(std::collections::HashMap::new());
+                let ret_res = interp.call_named(name, arg_vs);
+                *interp.gensym_table.borrow_mut() = prev;
+                let ret = ret_res
                     .map_err(|e| format!("macro {} body: {}", name, e))?;
                 let new_e = value_to_expr(&ret)
                     .map_err(|e| format!("macro {} return decode: {}", name, e))?;
                 *e = new_e;
-                // Re-expand: the result might itself be another macro call.
                 return expand_expr(e, interp, macros, depth + 1);
             }
         }
@@ -297,6 +307,64 @@ fn main() do loop_m(0) end
         assert!(res.is_err(), "expected expansion error");
         assert!(res.unwrap_err().contains("expansion"),
             "expected message about expansion");
+    }
+
+    #[test]
+    fn hygiene_macro_local_does_not_shadow_caller() {
+        // Without hygiene, the macro's `t = 99` would clobber the
+        // caller's `t`. With hygiene, the macro's `t` becomes a fresh
+        // gensym so the caller's binding survives.
+        let src = r#"
+defmacro set_local() do
+  quote do: t = 99
+end
+fn main() do
+  t = 1
+  set_local()
+  t
+end
+"#;
+        let v = run(src);
+        assert!(matches!(v, crate::value::Value::Int(1)),
+            "expected caller's t (1) to survive, got {:?}", v);
+    }
+
+    #[test]
+    fn hygiene_unquoted_var_keeps_caller_name() {
+        // Vars spliced via unquote come from the caller's evaluation
+        // context — their VALUES, not their names — so hygiene doesn't
+        // affect them. Here unquote(x) splices the literal 7.
+        let src = r#"
+defmacro emit(x) do
+  quote do: unquote(x) + 1
+end
+fn main() do
+  x = 7
+  emit(x)
+end
+"#;
+        assert!(matches!(run(src), crate::value::Value::Int(8)));
+    }
+
+    #[test]
+    fn hygiene_consistent_within_one_invocation() {
+        // The same macro-introduced name used twice in the body must map
+        // to the SAME gensym, otherwise t = something; t + t breaks.
+        let src = r#"
+defmacro double_via_temp(x) do
+  quote do
+    t = unquote(x)
+    t + t
+  end
+end
+fn main() do
+  t = 100
+  double_via_temp(21)
+end
+"#;
+        // Macro returns Block([t__hyg_N = 21, t__hyg_N + t__hyg_N]) → 42.
+        // Caller's t stays at 100; macro's t__hyg_N is 21+21.
+        assert!(matches!(run(src), crate::value::Value::Int(42)));
     }
 
     #[test]
