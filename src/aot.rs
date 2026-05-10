@@ -594,10 +594,45 @@ end
     }
 
 
-    // NOTE: end_to_end_aot_multi_clause_runs is deferred until the typer
-    // narrows var-bound params on recursive/multi-clause fns. See memory
-    // ticket: project_typer_recursive_widening. Source for the test is in
-    // commit 685612a^.
+    #[test]
+    fn end_to_end_aot_multi_clause_runs() {
+        if locate_runtime_staticlib().is_none() {
+            eprintln!("skip: libfz_runtime.a not present");
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("fz-aot-multi-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("multi.fz");
+        std::fs::write(
+            &src,
+            r#"
+fn classify(0), do: :zero
+fn classify(n) when n > 0, do: :positive
+fn classify(_), do: :negative
+
+fn fact(0), do: 1
+fn fact(n), do: n * fact(n - 1)
+
+fn main() do
+  print(classify(0))
+  print(classify(7))
+  print(classify(-3))
+  print(fact(5))
+end
+"#,
+        )
+        .unwrap();
+        let bin = dir.join("multi");
+        build(&src, &bin).expect("build");
+
+        let out = Command::new(&bin).output().expect("run");
+        assert!(out.status.success(), "binary exit: {}", out.status);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(stdout.contains(":zero"), "stdout missing :zero: {}", stdout);
+        assert!(stdout.contains(":positive"), "stdout missing :positive: {}", stdout);
+        assert!(stdout.contains(":negative"), "stdout missing :negative: {}", stdout);
+        assert!(stdout.contains("120"), "stdout missing 120: {}", stdout);
+    }
 
     #[test]
     fn rejects_heap_typed_fn_at_aot() {

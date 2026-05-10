@@ -33,13 +33,31 @@ pub type TypeEnv = HashMap<String, Descr>;
 pub struct Typer {
     pub globals: TypeEnv,
     pub errors: Vec<String>,
+    /// Per-fn-name union of arg types observed at *every* call site, from the
+    /// previous fixed-point iteration. Used to monomorphize whole-program calls
+    /// (e.g. `count(int, int)` only ever called with ints, so its var-bound
+    /// parameters can be narrowed from `any` to `int`).
+    call_obs: HashMap<String, Vec<Descr>>,
+    /// Accumulator being built during the current iteration; promoted into
+    /// `call_obs` at iteration end.
+    call_obs_curr: HashMap<String, Vec<Descr>>,
+    /// Names of user-defined fns. Used to guard call-site observation so we
+    /// don't accumulate obs for builtins (their arrows are pre-installed and
+    /// shouldn't be narrowed).
+    user_fns: std::collections::HashSet<String>,
 }
 
 impl Default for Typer { fn default() -> Self { Self::new() } }
 
 impl Typer {
     pub fn new() -> Self {
-        let mut me = Self { globals: HashMap::new(), errors: Vec::new() };
+        let mut me = Self {
+            globals: HashMap::new(),
+            errors: Vec::new(),
+            call_obs: HashMap::new(),
+            call_obs_curr: HashMap::new(),
+            user_fns: std::collections::HashSet::new(),
+        };
         me.install_builtins();
         me
     }
@@ -109,6 +127,7 @@ impl Typer {
                     Descr::any(),
                 );
                 self.globals.insert(def.name.clone(), placeholder);
+                self.user_fns.insert(def.name.clone());
             }
         }
 
@@ -117,6 +136,7 @@ impl Typer {
         for iter in 0..max_iter {
             let snapshot = self.globals.clone();
             let mut changed = false;
+            self.call_obs_curr.clear();
             for item in &prog.items {
                 if let Item::Fn(def) = &**item {
                     if def.is_macro { continue; }
@@ -131,55 +151,121 @@ impl Typer {
                     }
                 }
             }
+            // Promote the just-collected observations for the next iteration.
+            // Detect changes in call_obs too so we don't terminate prematurely
+            // when observations have stabilized but bodies haven't been re-typed
+            // under them yet.
+            if self.call_obs != self.call_obs_curr {
+                changed = true;
+            }
+            self.call_obs = std::mem::take(&mut self.call_obs_curr);
             if !changed { break; }
         }
     }
 
     fn type_function(&mut self, def: &FnDef, snapshot: &TypeEnv) -> Descr {
         let arity = def.clauses.first().map(|c| c.params.len()).unwrap_or(0);
+
+        // -- Phase 1: compute per-clause narrowed_args, applying both
+        //    pattern-based subtraction and call-site observation narrowing.
+        //    Guarded clauses don't fully cover their pattern domain, so we
+        //    don't add their `combined` to `prior_inputs` (otherwise a
+        //    catch-all wildcard clause after a guarded one looks unreachable).
         let mut prior_inputs = Descr::none();
-        let mut clause_arrows: Vec<Descr> = Vec::new();
+        let mut all_narrowed: Vec<Option<Vec<Descr>>> = Vec::with_capacity(def.clauses.len());
 
         for clause in &def.clauses {
-            // Per-clause input rectangle
             let pat_types: Vec<Descr> = clause.params.iter().map(pattern_type).collect();
             let combined = Descr::tuple_of(pat_types.clone());
 
-            // Narrow against prior clauses' matched values
             let narrowed = combined.diff(&prior_inputs);
-            let narrowed_args = tuple_projections(&narrowed, arity);
-
-            // Track for next iteration's narrowing
-            prior_inputs = prior_inputs.union(&combined);
+            if clause.guard.is_none() {
+                prior_inputs = prior_inputs.union(&combined);
+            }
 
             if narrowed.is_empty() {
-                // This clause is unreachable given prior clauses. Skip: it
-                // contributes no new arrow.
+                all_narrowed.push(None);
                 continue;
             }
 
-            // Build clause env
-            let mut env = snapshot.clone();
-            for (i, p) in clause.params.iter().enumerate() {
-                for (name, ty) in pattern_bindings(p, &narrowed_args[i]) {
-                    env.insert(name, ty);
+            let mut narrowed_args = tuple_projections(&narrowed, arity);
+
+            // Apply previous-iteration call-site obs. If intersection would
+            // empty any arg (i.e. no observed call hits this clause), fall
+            // back to the unintersected args rather than killing the clause.
+            if let Some(obs) = self.call_obs.get(&def.name) {
+                if obs.len() == arity {
+                    let mut tentative: Vec<Descr> = (0..arity)
+                        .map(|i| narrowed_args[i].intersect(&obs[i])).collect();
+                    if tentative.iter().all(|a| !a.is_empty()) {
+                        narrowed_args = std::mem::take(&mut tentative);
+                    }
                 }
             }
-            // Guards refine truthiness — over-approximate as `any` for now
-            // (real guard refinement waits on numeric ranges / refinements).
-            // Body type:
-            let body_t = self.infer(&env, &clause.body);
+
+            all_narrowed.push(Some(narrowed_args));
+        }
+
+        // -- Phase 2: type non-self-recursive ("exit") clauses first under the
+        //    plain snapshot. Their union return type bounds what self-calls
+        //    can yield assuming the function terminates.
+        let mut clause_arrows: Vec<Descr> = Vec::with_capacity(def.clauses.len());
+        let mut deferred: Vec<usize> = Vec::new();
+        let mut exit_returns = Descr::none();
+
+        for (i, clause) in def.clauses.iter().enumerate() {
+            let Some(narrowed_args) = all_narrowed[i].clone() else { continue };
+            if expr_calls_self(&clause.body, &def.name)
+                || clause.guard.as_ref().is_some_and(|g| expr_calls_self(g, &def.name))
+            {
+                deferred.push(i);
+                continue;
+            }
+            let body_t = self.type_clause_body(snapshot, clause, &narrowed_args);
+            exit_returns = exit_returns.union(&body_t);
+            clause_arrows.push(Descr::arrow(narrowed_args, body_t));
+        }
+
+        // -- Phase 3: type self-recursive clauses under a snapshot in which
+        //    `self` is narrowed to (observed_args) → exit_returns. This is
+        //    sound assuming the function terminates: any concrete result a
+        //    self-call ultimately produces must come from an exit clause.
+        let self_narrowed: Option<Descr> = if !exit_returns.is_empty() {
+            self.call_obs.get(&def.name)
+                .filter(|obs| obs.len() == arity)
+                .map(|obs| Descr::arrow(obs.clone(), exit_returns.clone()))
+        } else { None };
+
+        for i in deferred {
+            let narrowed_args = all_narrowed[i].clone().expect("deferred clause was reachable");
+            let mut snap = snapshot.clone();
+            if let Some(sn) = &self_narrowed {
+                snap.insert(def.name.clone(), sn.clone());
+            }
+            let body_t = self.type_clause_body(&snap, &def.clauses[i], &narrowed_args);
             clause_arrows.push(Descr::arrow(narrowed_args, body_t));
         }
 
         if clause_arrows.is_empty() {
-            // No reachable clauses — function with no inhabitants.
             return Descr::arrow(
                 std::iter::repeat_n(Descr::none(), arity).collect::<Vec<_>>(),
                 Descr::none(),
             );
         }
         clause_arrows.iter().skip(1).fold(clause_arrows[0].clone(), |a, b| a.intersect(b))
+    }
+
+    fn type_clause_body(&mut self, snapshot: &TypeEnv, clause: &FnClause, narrowed_args: &[Descr]) -> Descr {
+        let mut env = snapshot.clone();
+        for (i, p) in clause.params.iter().enumerate() {
+            for (name, ty) in pattern_bindings(p, &narrowed_args[i]) {
+                env.insert(name, ty);
+            }
+        }
+        if let Some(g) = &clause.guard {
+            let _ = self.infer(&env, g);
+        }
+        self.infer(&env, &clause.body)
     }
 
     pub fn infer(&mut self, env: &TypeEnv, e: &Expr) -> Descr {
@@ -254,6 +340,17 @@ impl Typer {
             Expr::Call(callee, args) => {
                 let f = self.infer(env, callee);
                 let arg_ts: Vec<Descr> = args.iter().map(|a| self.infer(env, a)).collect();
+                if let Expr::Var(name) = &**callee {
+                    if self.user_fns.contains(name) {
+                        let entry = self.call_obs_curr.entry(name.clone())
+                            .or_insert_with(|| vec![Descr::none(); arg_ts.len()]);
+                        if entry.len() == arg_ts.len() {
+                            for (i, t) in arg_ts.iter().enumerate() {
+                                entry[i] = entry[i].union(t);
+                            }
+                        }
+                    }
+                }
                 self.apply_arrow(&f, &arg_ts)
             }
             Expr::Dot(_, _) => Descr::any(),
@@ -463,6 +560,52 @@ impl Typer {
             }
         }
         result
+    }
+}
+
+// ----------------------------------------------------------------------
+// AST walking helpers
+// ----------------------------------------------------------------------
+
+/// True if `e` syntactically contains a call to `name` (as `name(...)`).
+/// Used to decide whether a clause needs the self-narrowed snapshot pass.
+pub fn expr_calls_self(e: &Expr, name: &str) -> bool {
+    match e {
+        Expr::Call(callee, args) => {
+            if let Expr::Var(n) = &**callee {
+                if n == name { return true; }
+            }
+            expr_calls_self(callee, name) || args.iter().any(|a| expr_calls_self(a, name))
+        }
+        Expr::BinOp(_, l, r) => expr_calls_self(l, name) || expr_calls_self(r, name),
+        Expr::UnOp(_, x) => expr_calls_self(x, name),
+        Expr::If(c, t, els) => expr_calls_self(c, name)
+            || expr_calls_self(t, name)
+            || els.as_deref().is_some_and(|e| expr_calls_self(e, name)),
+        Expr::Case(s, cls) => expr_calls_self(s, name)
+            || cls.iter().any(|c| expr_calls_self(&c.body, name)
+                || c.guard.as_ref().is_some_and(|g| expr_calls_self(g, name))),
+        Expr::Cond(arms) => arms.iter().any(|(c, b)| expr_calls_self(c, name) || expr_calls_self(b, name)),
+        Expr::With(bindings, body, els) => {
+            bindings.iter().any(|b| match b {
+                WithBinding::Match(_, e) | WithBinding::Bare(e) => expr_calls_self(e, name),
+            }) || expr_calls_self(body, name)
+                || els.iter().any(|c| expr_calls_self(&c.body, name))
+        }
+        Expr::Match(_, rhs) => expr_calls_self(rhs, name),
+        Expr::Block(es) => es.iter().any(|e| expr_calls_self(e, name)),
+        Expr::Lambda(_, body) => expr_calls_self(body, name),
+        Expr::List(es, tail) => es.iter().any(|e| expr_calls_self(e, name))
+            || tail.as_deref().is_some_and(|e| expr_calls_self(e, name)),
+        Expr::Tuple(es) => es.iter().any(|e| expr_calls_self(e, name)),
+        Expr::VecLit(_, es) => es.iter().any(|e| expr_calls_self(e, name)),
+        Expr::Bitstring(fields) => fields.iter().any(|f| expr_calls_self(&f.value, name)),
+        Expr::Map(pairs) => pairs.iter().any(|(k, v)| expr_calls_self(k, name) || expr_calls_self(v, name)),
+        Expr::MapUpdate(b, pairs) => expr_calls_self(b, name)
+            || pairs.iter().any(|(k, v)| expr_calls_self(k, name) || expr_calls_self(v, name)),
+        Expr::Index(t, k) => expr_calls_self(t, name) || expr_calls_self(k, name),
+        Expr::Dot(e, _) => expr_calls_self(e, name),
+        _ => false,
     }
 }
 

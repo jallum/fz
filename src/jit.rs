@@ -905,19 +905,17 @@ end
     }
 
     #[test]
-    fn jit_runs_recursive_fn_via_interp_fallback() {
-        // Self-recursive fn types as `(any, any) -> any` under the current
-        // typer, so `count` falls back to interpreter even though codegen-
-        // level TCO is wired (see codegen::tests::lowers_tail_self_call_to_jump).
-        // When the typer ticket lands, raise N to 100_000 here to exercise
-        // JIT-TCO end-to-end.
-        // Ticket: project_typer_recursive_widening (memory). Restored test:
-        //   jit::tests::jit_tail_self_recursion_does_not_overflow.
+    fn jit_tail_self_recursion_does_not_overflow() {
+        // 100k tail-self-calls only complete because the JIT actually rewrites
+        // them to jumps (codegen::tests::lowers_tail_self_call_to_jump). If
+        // count types as `(any, any) -> any` it falls back to interp recursion
+        // and stack-overflows long before N. Acceptance criterion for the
+        // typer-recursive-widening ticket.
         let src = r#"
 fn count(0, acc), do: acc
 fn count(n, acc), do: count(n - 1, acc + 1)
 fn main() do
-  print(count(100, 0))
+  print(count(100000, 0))
 end
 "#;
         run_capture(src).expect("jit run");
