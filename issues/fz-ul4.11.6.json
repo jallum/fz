@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-ul4.11.17"
   ],
@@ -12,8 +12,8 @@
   "labels": [],
   "parent": "fz-ul4.11",
   "priority": 3,
-  "status": "open",
+  "status": "in_progress",
   "title": "Frame liveness analysis -\u003e emit frame schemas",
   "type": "task",
-  "updated_at": "2026-05-10T13:39:11Z"
+  "updated_at": "2026-05-10T14:59:40Z"
 }
