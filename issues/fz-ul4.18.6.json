@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-ul4.18.5"
+  ],
   "blocks": [],
   "created": "2026-05-10T10:26:41Z",
   "description": "Sixth subticket. Depends on .18.5.\n\nAdd @doc and @moduledoc syntax. Inert metadata in v1 — stored on the AST so the test runner (.16) can use @doc/@moduledoc strings as descriptions, and a future doc system can render them.\n\n## Scope\n\n- Lexer: `@` token (Tok::At). Bare `@name` followed by an expression at top of a module item / module body.\n- Parser:\n  - Inside a defmodule, `@moduledoc \"...\"` attaches a doc string to the module.\n  - Above a fn/defmacro, `@doc \"...\"` attaches a doc string to that item.\n- AST:\n  - ModuleDef gains `moduledoc: Option\u003cString\u003e`.\n  - FnDef gains `doc: Option\u003cString\u003e`.\n- Eval/codegen: ignore — metadata only.\n\n## Out of scope\n\n- Other attributes: @spec, @type, @callback, @impl. File followups if needed.\n- Custom @-attributes (Module.register_attribute style).\n\n## Tests\n\n- Parse a defmodule with @moduledoc and a fn with @doc; assert the strings land on the AST.\n- Existing programs without attributes still parse/run unchanged.\n",
