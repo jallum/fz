@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-ul4.18.4"
+  ],
   "blocks": [],
   "created": "2026-05-10T10:26:41Z",
   "description": "Fifth subticket. Depends on .18.4.\n\nA macro defined in Mod is callable as Mod.macro(x), or via import. The expander already dispatches macros by qualified name (since .18.1 stores macros as \"Mod.macro\" in interp.globals). What this subticket adds:\n\n## Scope\n\n- The macro's body executes in its defining module's namespace, not the caller's. Bare references to fns/macros inside the macro body should resolve against the macro's home module.\n- Concretely: when the macro body builds AST via quote, qualified-name rewriting must use the macro's defining module path, not the caller's.\n- Hygiene (.10.4) interaction: gensym table is per-invocation; module-aware references compose with that.\n\n## Tests\n\n- defmodule A do; defmacro m(x), do: quote do: B.f(unquote(x)) end. (Even though caller is in module C, B.f resolves to A's view of B — if C also has a B alias, it's irrelevant.)\n- Imported macro: import A; then m(x) expands as if A.m(x).\n- Macro that calls a sibling fn in its home module without qualifying.\n",
