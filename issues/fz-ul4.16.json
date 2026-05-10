@@ -9,6 +9,12 @@
   "id": "fz-ul4.16",
   "labels": [],
   "parent": "fz-ul4",
+  "comments": [
+    {
+      "text": "Depends on fz-ul4.10 (macros). The ExUnit shape — `test \"name\" do ... end` — is fundamentally a macro that expands to a fn def + registration call. Doing this without macros means hacking a new top-level item into the parser; doing it after macros makes `test` a defmacro that fits the language naturally.",
+      "timestamp": "2026-05-10T10:01:20Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "Test runner",
