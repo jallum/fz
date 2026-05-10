@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-10T20:50:24Z",
+  "description": "GOAL: Prepare the typer surface for IR-shaped reintegration. Keep the set-theoretic algebra (types.rs, 1388 LOC) and the pure helpers in typer.rs that the IR driver will reuse. Remove the AST-walking driver — its replacement is .11.24.2.\n\n## Why this is atomic\n\nToday typer.rs and types.rs build but no live caller imports them. After this ticket, the same files build (still no live caller — that arrives in .11.24.2), but the surface is pruned to exactly what the IR-shaped driver will consume. The repo stays green; cargo test still passes.\n\n## Deliverables\n\nsrc/typer.rs:\n- DELETE: `Typer` struct's AST-walking machinery (per_fn cache, env stack), `Typer::type_program`, `Typer::infer`, any private helpers that exist only to support those two. All authorized for removal by the .11.24 design comment.\n- KEEP: `pattern_type`, `pattern_bindings`, `tuple_projections`, `expr_to_map_key`, `pattern_to_map_key`, `map_field_lookup`, `refine_map_field`, `list_element_type`, `widen` (and all its private helpers `widen_*`), `specialize_return`, `expr_calls_self`.\n- Strip any `Value::Jit*` references in survivor helpers.\n\nsrc/types.rs:\n- No code changes. Algebra is pipeline-independent.\n\nsrc/jit.rs / src/aot.rs / src/test_support.rs (cfg-disabled):\n- No code changes. Stale references inside cfg(any()) bodies are not compiled and serve as historical record.\n\n## Tests\n\n- All existing tests in typer.rs's pure-helper test module continue to pass (pattern_type, pattern_bindings, widen, specialize_return, etc.).\n- AST-driver tests deleted alongside the driver. Authorized.\n- types.rs algebra tests untouched, still pass.\n\n## Out of scope\n\n- Any IR work — the IR-shaped driver is .11.24.2.\n- Any consumer wiring — those are .11.24.4 / .11.24.5 / .11.24.6 / .11.24.7.\n\n## Dependencies\n\n- BLOCKED BY: none.\n- BLOCKS: fz-ul4.11.24.2.",
+  "id": "fz-ul4.11.24.1",
+  "labels": [],
+  "parent": "fz-ul4.11.24",
+  "priority": 3,
+  "status": "open",
+  "title": "Salvage typer: keep algebra + pure helpers, remove AST-shaped driver",
+  "type": "task",
+  "updated_at": "2026-05-10T20:50:24Z"
+}
