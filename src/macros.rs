@@ -74,7 +74,7 @@ fn expand_item_list(
     let mut out: Vec<std::rc::Rc<Item>> = Vec::new();
     for item in items {
         match &*item {
-            Item::MacroCall { name, args } => {
+            Item::MacroCall { name, args, parent_module } => {
                 if !macros.contains(name) {
                     return Err(format!(
                         "item-level call `{}(...)` is not a defmacro", name));
@@ -89,8 +89,19 @@ fn expand_item_list(
                 let ret = interp.call_named(name, arg_vs);
                 *interp.gensym_table.borrow_mut() = prev;
                 let ret = ret.map_err(|e| format!("macro {} body: {}", name, e))?;
-                let items = value_to_items(&ret)
+                let mut items = value_to_items(&ret)
                     .map_err(|e| format!("macro {} return: {}", name, e))?;
+                // .16.5: when the macro was inside a defmodule body, the
+                // resolver stamped the parent path. Qualify spliced fn
+                // names so e.g. tests inside `defmodule MyTest do ...`
+                // land as `MyTest.test_xxx`.
+                if let Some(path) = parent_module {
+                    for it in &mut items {
+                        if let Item::Fn(def) = it {
+                            def.name = format!("{}.{}", path, def.name);
+                        }
+                    }
+                }
                 for it in items {
                     out.push(std::rc::Rc::new(it));
                 }
@@ -583,10 +594,26 @@ end
         assert!(matches!(run(src), crate::value::Value::Int(30)));
     }
 
-    // NOTE: item-macros INSIDE a defmodule body don't qualify their
-    // produced fn names with the parent module path in v1 — flatten
-    // runs before expand_items, so the spliced fns end up under bare
-    // names. Follow-up: fz-ul4.16.5.
+    #[test]
+    fn item_macro_inside_defmodule_qualifies_names() {
+        // .16.5: the resolver stamps the parent module path on the
+        // MacroCall so the splicer can prefix the spliced fn names.
+        let src = r#"
+defmacro make_const(name, value) do
+  {:fn_def, name, value}
+end
+
+defmodule Constants do
+  make_const(:pi_ish, 314)
+end
+
+fn main() do
+  Constants.pi_ish()
+end
+"#;
+        assert!(matches!(run(src), crate::value::Value::Int(314)),
+            "expected 314, got {:?}", run(src));
+    }
 
     #[test]
     fn no_macros_is_a_noop() {

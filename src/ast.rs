@@ -226,7 +226,13 @@ pub enum Item {
     /// .16.3's expansion pass replaces these with the items the macro
     /// returns (typically Item::Fn). Surviving instances at downstream
     /// stages are an error.
-    MacroCall { name: String, args: Vec<Expr> },
+    ///
+    /// `parent_module` is set by the resolver when the MacroCall was
+    /// nested inside a defmodule body — the spliced fn names are then
+    /// qualified under that path so tests written inside `defmodule
+    /// MyTest do ... end` land as `MyTest.test_xxx`. At top-level it's
+    /// `None`.
+    MacroCall { name: String, args: Vec<Expr>, parent_module: Option<String> },
 }
 
 #[derive(Debug, Clone)]

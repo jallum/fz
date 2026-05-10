@@ -53,7 +53,7 @@ end
 "#).tokenize().unwrap();
         let prog = Parser::new(toks).parse_program().unwrap();
         let mc = prog.items.iter().find_map(|it| match &**it {
-            Item::MacroCall { name, args } => Some((name.clone(), args.clone())),
+            Item::MacroCall { name, args, .. } => Some((name.clone(), args.clone())),
             _ => None,
         });
         let (name, args) = mc.expect("expected an Item::MacroCall");
@@ -254,7 +254,7 @@ impl Parser {
                         _ => return self.err(
                             "expected a macro call at item position"),
                     };
-                    items.push(Rc::new(Item::MacroCall { name, args }));
+                    items.push(Rc::new(Item::MacroCall { name, args, parent_module: None }));
                 }
                 _ => return self.err(format!(
                     "expected `fn`, `defmacro`, `defmodule`, `alias`, `import`, `@`, or a macro call, got {:?}",

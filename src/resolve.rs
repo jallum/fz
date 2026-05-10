@@ -61,10 +61,8 @@ pub fn flatten_modules(prog: Program) -> Result<Program, String> {
             Item::Import { .. } => return Err(
                 "import is only valid inside a defmodule body".into()
             ),
-            Item::MacroCall { name, args } => {
-                // Preserve as-is — expansion (.16.3) replaces with real
-                // items. Rewrite expression args so any cross-module
-                // references resolve before the macro sees them.
+            Item::MacroCall { name, args, parent_module: _ } => {
+                // Top-level MacroCall: parent_module = None.
                 let no_siblings: HashSet<String> = HashSet::new();
                 let mut new_args: Vec<Expr> = args.clone();
                 for a in &mut new_args {
@@ -72,7 +70,9 @@ pub fn flatten_modules(prog: Program) -> Result<Program, String> {
                     rewrite_expr(a, "", &no_siblings, &mut intro,
                         &module_paths, &no_aliases, &no_imports);
                 }
-                out.push(Rc::new(Item::MacroCall { name: name.clone(), args: new_args }));
+                out.push(Rc::new(Item::MacroCall {
+                    name: name.clone(), args: new_args, parent_module: None,
+                }));
             }
         }
     }
@@ -198,15 +198,19 @@ fn flatten_module(
                 flatten_module(inner, &module_path, out, module_paths, module_fns)?;
             }
             Item::Alias { .. } | Item::Import { .. } => {} // consumed by the resolver
-            Item::MacroCall { name, args } => {
+            Item::MacroCall { name, args, parent_module: _ } => {
                 let mut new_args: Vec<Expr> = args.clone();
                 for a in &mut new_args {
                     let mut intro: HashSet<String> = HashSet::new();
                     rewrite_expr(a, &module_path, &siblings, &mut intro,
                         module_paths, &aliases, &imports);
                 }
+                // Stamp parent_module so expand_items can qualify the
+                // spliced fn names under this module's path.
                 out.push(Rc::new(Item::MacroCall {
-                    name: name.clone(), args: new_args,
+                    name: name.clone(),
+                    args: new_args,
+                    parent_module: Some(module_path.clone()),
                 }));
             }
         }
