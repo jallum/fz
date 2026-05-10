@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-10T01:26:31Z",
+  "description": "%{key: val, other =\u003e expr} literal syntax + map patterns. Lexer already has %{ token. Need AST + parser + interpreter + descriptor.",
+  "id": "fz-ul4.9",
+  "labels": [],
+  "parent": "fz-ul4",
+  "priority": 2,
+  "status": "open",
+  "title": "Map literals and patterns",
+  "type": "task",
+  "updated_at": "2026-05-10T01:26:31Z"
+}
