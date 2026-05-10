@@ -38,6 +38,13 @@ use std::sync::Arc;
 const HEADER_SIZE: i32 = 16;
 const SLOT_BYTES: i32 = 8;
 
+// FzValue tag scheme (matches src/fz_value.rs).
+const TAG_INT: i64 = 0b001;
+const TAG_ATOM: i64 = 0b010;
+const NIL_BITS: i64 = 0b011;
+const TRUE_BITS: i64 = (1 << 3) | 0b011;
+const FALSE_BITS: i64 = (2 << 3) | 0b011;
+
 #[derive(Debug, Clone)]
 pub struct CodegenError(pub String);
 impl std::fmt::Display for CodegenError {
@@ -115,20 +122,57 @@ pub struct HostCtx {
 
 // ----- Runtime fns called from JIT'd code -----
 
-extern "C" fn fz_test_print_i64(n: i64) {
-    TEST_CAPTURE.with(|c| c.borrow_mut().push(n));
+/// JIT-side print: receives an FzValue (u64 bits in an i64 ABI slot), renders
+/// it, captures the rendering for tests.
+extern "C" fn fz_print_value(fz_bits: u64) {
+    let s = render_fz_value(fz_bits);
+    TEST_CAPTURE.with(|c| c.borrow_mut().push(s));
+}
+
+fn render_fz_value(bits: u64) -> String {
+    use crate::fz_value::{FzValue, Tag};
+    let v = FzValue(bits);
+    match v.tag() {
+        Tag::Int => v.unbox_int().unwrap().to_string(),
+        Tag::Atom => format!(":atom_{}", v.unbox_atom().unwrap()),
+        Tag::Special => {
+            if v.is_nil() { "nil".into() }
+            else if v.is_true() { "true".into() }
+            else if v.is_false() { "false".into() }
+            else { format!("#special<{:#x}>", bits) }
+        }
+        // Heap-typed values (lists, etc.) extend rendering in .11.10+.
+        Tag::Ptr => format!("#ptr<{:#x}>", bits),
+        Tag::Reserved => format!("#reserved<{:#x}>", bits),
+    }
 }
 
 thread_local! {
-    pub static TEST_CAPTURE: std::cell::RefCell<Vec<i64>> = std::cell::RefCell::new(Vec::new());
+    pub static TEST_CAPTURE: std::cell::RefCell<Vec<String>> = std::cell::RefCell::new(Vec::new());
 }
 
-pub fn test_capture_take() -> Vec<i64> {
+pub fn test_capture_take() -> Vec<String> {
     TEST_CAPTURE.with(|c| std::mem::take(&mut *c.borrow_mut()))
 }
 
-extern "C" fn fz_halt(host_ctx: *mut u8, value: i64) {
-    unsafe { (*(host_ctx as *mut HostCtx)).halt_value = value; }
+/// Halt: receives an FzValue from the JIT, unboxes per-tag into a debug-friendly
+/// i64 stored in HostCtx. Halt is a debugging seam slated for removal once
+/// processes land (.11.16+); this preserves byte-for-byte halt values for
+/// existing scalar tests while not constraining heap-typed semantics later.
+extern "C" fn fz_halt(host_ctx: *mut u8, fz_bits: u64) {
+    use crate::fz_value::{FzValue, Tag};
+    let v = FzValue(fz_bits);
+    let i: i64 = match v.tag() {
+        Tag::Int => v.unbox_int().unwrap(),
+        Tag::Atom => v.unbox_atom().unwrap() as i64,
+        Tag::Special => {
+            if v.is_true() { 1 }
+            else if v.is_false() { 0 }
+            else { 0 } // nil
+        }
+        Tag::Ptr | Tag::Reserved => fz_bits as i64,
+    };
+    unsafe { (*(host_ctx as *mut HostCtx)).halt_value = i; }
 }
 
 extern "C" fn fz_alloc_frame(schema_id: u32, total_size: u32) -> *mut u8 {
@@ -200,7 +244,7 @@ pub fn compile(module: &Module) -> Result<CompiledModule, CodegenError> {
 
     let isa = host_isa();
     let mut builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
-    builder.symbol("fz_test_print_i64", fz_test_print_i64 as *const u8);
+    builder.symbol("fz_print_value", fz_print_value as *const u8);
     builder.symbol("fz_halt", fz_halt as *const u8);
     builder.symbol("fz_alloc_frame", fz_alloc_frame as *const u8);
     let mut jmod = JITModule::new(builder);
@@ -208,7 +252,7 @@ pub fn compile(module: &Module) -> Result<CompiledModule, CodegenError> {
     // Declare runtime imports.
     let print_sig = sig1(&[types::I64], &[]);
     let print_id = jmod
-        .declare_function("fz_test_print_i64", Linkage::Import, &print_sig)
+        .declare_function("fz_print_value", Linkage::Import, &print_sig)
         .map_err(|e| CodegenError(format!("declare print: {}", e)))?;
     let halt_sig = sig1(&[types::I64, types::I64], &[]);
     let halt_id = jmod
@@ -355,7 +399,8 @@ fn compile_fn(
                 let t_b = *block_map.get(&t.0).unwrap();
                 let e_b = *block_map.get(&e.0).unwrap();
                 let no_args: Vec<BlockArg> = Vec::new();
-                b.ins().brif(cv, t_b, &no_args, e_b, &no_args);
+                let truthy = is_truthy(&mut b, cv);
+                b.ins().brif(truthy, t_b, &no_args, e_b, &no_args);
             }
             Term::Halt(v) => {
                 let val = *var_map.get(&v.0).expect("unbound halt val");
@@ -561,11 +606,11 @@ fn lower_prim(
 ) -> Result<ir::Value, CodegenError> {
     Ok(match prim {
         Prim::Const(c) => match c {
-            Const::Int(n) => b.ins().iconst(types::I64, *n),
-            Const::True => b.ins().iconst(types::I64, 1),
-            Const::False => b.ins().iconst(types::I64, 0),
-            Const::Nil => b.ins().iconst(types::I64, 0),
-            Const::Atom(id) => b.ins().iconst(types::I64, *id as i64),
+            Const::Int(n) => b.ins().iconst(types::I64, ((*n) << 3) | TAG_INT),
+            Const::True => b.ins().iconst(types::I64, TRUE_BITS),
+            Const::False => b.ins().iconst(types::I64, FALSE_BITS),
+            Const::Nil => b.ins().iconst(types::I64, NIL_BITS),
+            Const::Atom(id) => b.ins().iconst(types::I64, ((*id as i64) << 3) | TAG_ATOM),
             Const::Float(_) | Const::Str(_) => {
                 return Err(CodegenError("Float/Str codegen lands in .11.10+".into()));
             }
@@ -574,29 +619,67 @@ fn lower_prim(
             let av = *env.get(&a.0).expect("unbound binop a");
             let bvv = *env.get(&bv.0).expect("unbound binop b");
             match op {
-                BinOp::Add => b.ins().iadd(av, bvv),
-                BinOp::Sub => b.ins().isub(av, bvv),
-                BinOp::Mul => b.ins().imul(av, bvv),
-                BinOp::Div => b.ins().sdiv(av, bvv),
-                BinOp::Mod => b.ins().srem(av, bvv),
-                BinOp::Eq => { let v = b.ins().icmp(IntCC::Equal, av, bvv); bool_to_i64(b, v) }
-                BinOp::Neq => { let v = b.ins().icmp(IntCC::NotEqual, av, bvv); bool_to_i64(b, v) }
-                BinOp::Lt => { let v = b.ins().icmp(IntCC::SignedLessThan, av, bvv); bool_to_i64(b, v) }
-                BinOp::Le => { let v = b.ins().icmp(IntCC::SignedLessThanOrEqual, av, bvv); bool_to_i64(b, v) }
-                BinOp::Gt => { let v = b.ins().icmp(IntCC::SignedGreaterThan, av, bvv); bool_to_i64(b, v) }
-                BinOp::Ge => { let v = b.ins().icmp(IntCC::SignedGreaterThanOrEqual, av, bvv); bool_to_i64(b, v) }
-                BinOp::And => b.ins().band(av, bvv),
-                BinOp::Or => b.ins().bor(av, bvv),
+                BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
+                    let ai = unbox_int(b, av);
+                    let bi = unbox_int(b, bvv);
+                    let raw = match op {
+                        BinOp::Add => b.ins().iadd(ai, bi),
+                        BinOp::Sub => b.ins().isub(ai, bi),
+                        BinOp::Mul => b.ins().imul(ai, bi),
+                        BinOp::Div => b.ins().sdiv(ai, bi),
+                        BinOp::Mod => b.ins().srem(ai, bi),
+                        _ => unreachable!(),
+                    };
+                    box_int(b, raw)
+                }
+                BinOp::Eq => {
+                    let cmp = b.ins().icmp(IntCC::Equal, av, bvv);
+                    bool_to_fz(b, cmp)
+                }
+                BinOp::Neq => {
+                    let cmp = b.ins().icmp(IntCC::NotEqual, av, bvv);
+                    bool_to_fz(b, cmp)
+                }
+                BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
+                    let ai = unbox_int(b, av);
+                    let bi = unbox_int(b, bvv);
+                    let cc = match op {
+                        BinOp::Lt => IntCC::SignedLessThan,
+                        BinOp::Le => IntCC::SignedLessThanOrEqual,
+                        BinOp::Gt => IntCC::SignedGreaterThan,
+                        BinOp::Ge => IntCC::SignedGreaterThanOrEqual,
+                        _ => unreachable!(),
+                    };
+                    let cmp = b.ins().icmp(cc, ai, bi);
+                    bool_to_fz(b, cmp)
+                }
+                BinOp::And => {
+                    let at = is_truthy(b, av);
+                    let bt = is_truthy(b, bvv);
+                    let conj = b.ins().band(at, bt);
+                    bool_to_fz(b, conj)
+                }
+                BinOp::Or => {
+                    let at = is_truthy(b, av);
+                    let bt = is_truthy(b, bvv);
+                    let disj = b.ins().bor(at, bt);
+                    bool_to_fz(b, disj)
+                }
             }
         }
         Prim::UnOp(op, x) => {
             let xv = *env.get(&x.0).expect("unbound unop x");
             match op {
-                UnOp::Neg => b.ins().ineg(xv),
+                UnOp::Neg => {
+                    let xi = unbox_int(b, xv);
+                    let neg = b.ins().ineg(xi);
+                    box_int(b, neg)
+                }
                 UnOp::Not => {
-                    let zero = b.ins().iconst(types::I64, 0);
-                    let cmp = b.ins().icmp(IntCC::Equal, xv, zero);
-                    bool_to_i64(b, cmp)
+                    let truthy = is_truthy(b, xv);
+                    let zero = b.ins().iconst(types::I8, 0);
+                    let inv = b.ins().icmp(IntCC::Equal, truthy, zero);
+                    bool_to_fz(b, inv)
                 }
             }
         }
@@ -639,8 +722,32 @@ fn lower_prim(
     })
 }
 
-fn bool_to_i64(b: &mut FunctionBuilder<'_>, v: ir::Value) -> ir::Value {
-    b.ins().uextend(types::I64, v)
+/// Unbox an FzValue-tagged int (assumed Tag::Int — caller's responsibility) to
+/// a raw i64 via arithmetic shift right.
+fn unbox_int(b: &mut FunctionBuilder<'_>, v: ir::Value) -> ir::Value {
+    b.ins().sshr_imm(v, 3)
+}
+
+/// Box a raw i64 into an FzValue-tagged int: `(n << 3) | TAG_INT`.
+fn box_int(b: &mut FunctionBuilder<'_>, raw: ir::Value) -> ir::Value {
+    let shifted = b.ins().ishl_imm(raw, 3);
+    b.ins().bor_imm(shifted, TAG_INT)
+}
+
+/// Returns an i8 (0/1) indicating whether `v` is truthy: not nil and not false.
+fn is_truthy(b: &mut FunctionBuilder<'_>, v: ir::Value) -> ir::Value {
+    let nil_v = b.ins().iconst(types::I64, NIL_BITS);
+    let false_v = b.ins().iconst(types::I64, FALSE_BITS);
+    let not_nil = b.ins().icmp(IntCC::NotEqual, v, nil_v);
+    let not_false = b.ins().icmp(IntCC::NotEqual, v, false_v);
+    b.ins().band(not_nil, not_false)
+}
+
+/// Convert an i8 cranelift bool to FzValue::TRUE / FzValue::FALSE.
+fn bool_to_fz(b: &mut FunctionBuilder<'_>, v: ir::Value) -> ir::Value {
+    let true_v = b.ins().iconst(types::I64, TRUE_BITS);
+    let false_v = b.ins().iconst(types::I64, FALSE_BITS);
+    b.ins().select(v, true_v, false_v)
 }
 
 #[allow(dead_code)]
@@ -757,7 +864,7 @@ mod tests {
         let cm = compile(&m).unwrap();
         let _ = cm.run(entry);
         let captured = test_capture_take();
-        assert_eq!(captured, vec![42]);
+        assert_eq!(captured, vec!["42".to_string()]);
     }
 
     #[test]
@@ -960,6 +1067,80 @@ mod tests {
         let entry = m.fn_by_name("main").unwrap().id;
         let cm = compile(&m).unwrap();
         assert_eq!(cm.run(entry), 100_000);
+    }
+
+    #[test]
+    fn render_fz_value_dispatches_per_tag() {
+        use crate::fz_value::FzValue;
+        assert_eq!(render_fz_value(FzValue::from_int(42).0), "42");
+        assert_eq!(render_fz_value(FzValue::from_int(0).0), "0");
+        assert_eq!(render_fz_value(FzValue::from_int(-7).0), "-7");
+        assert_eq!(render_fz_value(FzValue::NIL.0), "nil");
+        assert_eq!(render_fz_value(FzValue::TRUE.0), "true");
+        assert_eq!(render_fz_value(FzValue::FALSE.0), "false");
+        assert_eq!(render_fz_value(FzValue::from_atom_id(3).0), ":atom_3");
+    }
+
+    #[test]
+    fn print_captures_atom_and_specials() {
+        // print(:ok); print(true); print(false)
+        let main = fn_def(
+            "main",
+            vec![cl(
+                vec![],
+                Expr::Block(vec![
+                    Expr::Call(
+                        Box::new(Expr::Var("print".into())),
+                        vec![Expr::Atom("ok".into())],
+                    ),
+                    Expr::Call(
+                        Box::new(Expr::Var("print".into())),
+                        vec![Expr::Bool(true)],
+                    ),
+                    Expr::Call(
+                        Box::new(Expr::Var("print".into())),
+                        vec![Expr::Bool(false)],
+                    ),
+                ]),
+            )],
+        );
+        let m = lower(vec![main]);
+        let entry = m.fn_by_name("main").unwrap().id;
+        let _ = test_capture_take();
+        let cm = compile(&m).unwrap();
+        let _ = cm.run(entry);
+        let captured = test_capture_take();
+        // Atom id depends on intern order; "match_error" interned first → 0,
+        // then "ok" → 1.
+        assert_eq!(
+            captured,
+            vec![":atom_1".to_string(), "true".to_string(), "false".to_string()]
+        );
+    }
+
+    #[test]
+    fn box_unbox_int_roundtrip_via_neg_neg() {
+        // -(-(n)) should equal n for any int the JIT can carry. Exercises
+        // box_int / unbox_int under load.
+        for &n in &[0i64, 1, -1, 42, -42, 1_000_000_000] {
+            let main = fn_def(
+                "main",
+                vec![cl(
+                    vec![],
+                    Expr::UnOp(
+                        crate::ast::UnOp::Neg,
+                        Box::new(Expr::UnOp(
+                            crate::ast::UnOp::Neg,
+                            Box::new(Expr::Int(n)),
+                        )),
+                    ),
+                )],
+            );
+            let m = lower(vec![main]);
+            let entry = m.fn_by_name("main").unwrap().id;
+            let cm = compile(&m).unwrap();
+            assert_eq!(cm.run(entry), n, "round-trip failed for {}", n);
+        }
     }
 
     #[test]
