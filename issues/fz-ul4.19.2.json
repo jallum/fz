@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-ul4.19.1"
+  ],
   "blocks": [],
   "created": "2026-05-10T13:04:50Z",
   "description": "GOAL: User-facing process primitives: spawn(fn) -\u003e pid, self() -\u003e pid, pid type.\n\n## Decisions captured\n\n- Pid is a struct (in line with the \"structs as foundational primitive\" decision from .11). Schema: { pid_id: u32 (RawBytes), generation: u32 (RawBytes) }. Generation distinguishes a reused pid id from a previous incarnation.\n- Could alternatively be a tagged inline value (carved from the special-tag space) — TBD by performance. Default: struct for now, optimize to inline later if needed.\n- spawn(fn) creates a new process, schedules it immediately, returns its pid synchronously. The new process starts at fn's entry frame.\n- self() returns the current process's pid via scheduler-side TLS or current-process pointer.\n\n## Deliverables\n\n- Pid struct schema registered in .11.2 SchemaRegistry.\n- Builtins: spawn/1, self/0. Wire to scheduler from .19.1.\n- IR prims if necessary, or just builtins.\n- spawn(fn): allocates initial frame for fn, calls Scheduler::spawn(frame), returns pid value.\n\n## Tests\n\n- spawn(fn () -\u003e 42 end) returns a pid; the spawned process runs.\n- self() inside a process returns its own pid.\n- spawn from a spawn — pids are unique.\n\n## Out of scope\n\n- send / receive (.19.3)\n- pid serialization for distribution (far future)",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "spawn / self / pid (pid as struct schema)",
   "type": "task",
-  "updated_at": "2026-05-10T13:04:50Z"
+  "updated_at": "2026-05-10T13:05:54Z"
 }
