@@ -8,11 +8,13 @@
   "created": "2026-05-10T01:26:31Z",
   "description": "Implement the core type representation following Castagna 2024 / Frisch-Castagna-Benzaken 2008 / Elixir's Module.Types.Descr.\n\nA descriptor is a bitmap of basic types (atom, int, float, bool, nil, str, vec_i64, vec_f64, vec_u8, vec_bit, ...) UNION a DNF over structural parts (tuple shapes, list-of-T, function arrows). Top is all bits set + universal structurals; bottom is empty bitmap + empty DNF.\n\nDeliverable: src/types.rs with Descr type, basic constructors, and a debug printer. No subtyping yet.\n\nReferences:\n- Castagna 2024, 'Programming with union, intersection, and negation types'\n- Frisch/Castagna/Benzaken 2008, 'Semantic subtyping'\n- Elixir's lib/elixir/lib/module/types/descr.ex\n- CDuce",
   "id": "fz-ul4.1",
-  "labels": [],
+  "labels": [
+    "needs-reintegration"
+  ],
   "parent": "fz-ul4",
   "priority": 1,
   "status": "closed",
   "title": "Type descriptor representation",
   "type": "task",
-  "updated_at": "2026-05-10T01:36:25Z"
+  "updated_at": "2026-05-10T20:38:01Z"
 }
