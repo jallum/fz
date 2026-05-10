@@ -5,6 +5,7 @@ mod jit;
 mod bitstr;
 mod codegen;
 mod eval;
+mod fz_value;
 mod lexer;
 mod macros;
 mod parser;
