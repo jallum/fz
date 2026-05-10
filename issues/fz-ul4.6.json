@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-ul4.5"
+  ],
   "blocks": [],
   "created": "2026-05-10T01:26:31Z",
   "description": "Castagna 2024 algorithm for set-theoretic polymorphism. Type variables, generalization, instantiation.\n\nProbably wants tallying / type connectives over variables. Big work item — defer until monomorphic typer is solid.",

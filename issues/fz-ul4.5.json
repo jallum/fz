@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-ul4.4"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-ul4.6"
+  ],
   "created": "2026-05-10T01:26:31Z",
   "description": "The killer feature. After matching pattern P against a value of type T:\n- the env gets bindings whose types reflect what the match constrains\n- subsequent clauses see the scrutinee with prior matched values subtracted (T \\\\ matched_so_far)\n\nMulti-clause functions get typed as the INTERSECTION of arrows, one per clause. fn fact(0)/1 ∩ fn fact(pos_int)/pos_int is the canonical case.\n\nGuard refinement (e.g. is_integer(x) and x \u003e 0 narrows x) goes here.\n\nDeliverable: pattern_to_type(p) -\u003e Descr for the matched values; envelope_after_match(env, p, t) -\u003e (env', remaining_t).",
   "id": "fz-ul4.5",
