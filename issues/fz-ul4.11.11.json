@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-ul4.11.9"
   ],
@@ -12,8 +12,8 @@
   "labels": [],
   "parent": "fz-ul4.11",
   "priority": 3,
-  "status": "open",
+  "status": "in_progress",
   "title": "Tuples as struct schema (heap-allocated)",
   "type": "task",
-  "updated_at": "2026-05-10T19:05:14Z"
+  "updated_at": "2026-05-10T19:08:38Z"
 }
