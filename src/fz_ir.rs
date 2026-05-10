@@ -116,6 +116,17 @@ pub enum Term {
         callee: FnId,
         args: Vec<Var>,
     },
+    /// Invoke a closure value (Var holding a Value::IrClosure). The closure's
+    /// captured slots are spliced ahead of `args` when entering the lambda's fn.
+    CallClosure {
+        closure: Var,
+        args: Vec<Var>,
+        continuation: Cont,
+    },
+    TailCallClosure {
+        closure: Var,
+        args: Vec<Var>,
+    },
     Return(Var),
     Halt(Var),
 }
@@ -399,6 +410,16 @@ impl fmt::Display for Term {
             ),
             Term::TailCall { callee, args } => {
                 write!(f, "tail_call {}([{}])", callee, fmt_var_list(args))
+            }
+            Term::CallClosure { closure, args, continuation } => write!(
+                f,
+                "call_closure {}([{}]) -> {}",
+                closure,
+                fmt_var_list(args),
+                continuation
+            ),
+            Term::TailCallClosure { closure, args } => {
+                write!(f, "tail_call_closure {}([{}])", closure, fmt_var_list(args))
             }
             Term::Return(v) => write!(f, "return {}", v),
             Term::Halt(v) => write!(f, "halt {}", v),

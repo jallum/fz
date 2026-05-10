@@ -13,7 +13,7 @@
 use crate::fz_ir::{
     BinOp, Const, FnId, Module, Prim, Stmt, Term, UnOp, Var,
 };
-use crate::value::{FzMap, Value};
+use crate::value::{FzMap, IrClosure, Value};
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -131,6 +131,33 @@ fn run(ctx: &InterpCtx, fn_id: FnId, args: Vec<Value>) -> Result<Value, String> 
             Term::TailCall { callee, args } => {
                 let arg_vals = collect_vals(&env, args)?;
                 return run(ctx, *callee, arg_vals);
+            }
+            Term::CallClosure { closure, args, continuation } => {
+                let cv = env_get(&env, *closure)?;
+                let (lam_fn, captured) = match cv {
+                    Value::IrClosure(c) => (FnId(c.fn_id), c.captured.clone()),
+                    other => return Err(format!("call_closure on non-closure {:?}", kind(&other))),
+                };
+                let mut call_args = captured;
+                call_args.extend(collect_vals(&env, args)?);
+                let result = run(ctx, lam_fn, call_args)?;
+                let cap_vals = collect_vals(&env, &continuation.captured)?;
+                let mut cont_args = vec![result];
+                cont_args.extend(cap_vals);
+                return run(ctx, continuation.fn_id, cont_args);
+            }
+            Term::TailCallClosure { closure, args } => {
+                let cv = env_get(&env, *closure)?;
+                let (lam_fn, captured) = match cv {
+                    Value::IrClosure(c) => (FnId(c.fn_id), c.captured.clone()),
+                    other => return Err(format!(
+                        "tail_call_closure on non-closure {:?}",
+                        kind(&other)
+                    )),
+                };
+                let mut call_args = captured;
+                call_args.extend(collect_vals(&env, args)?);
+                return run(ctx, lam_fn, call_args);
             }
             Term::Return(v) => {
                 return env
@@ -260,9 +287,12 @@ fn eval_prim(
                 None => Value::List(Rc::new(vs)),
             }
         }
-        Prim::MakeClosure(_, _) => {
-            // First-class closures require a Value::IrClosure variant; deferred.
-            return Err("MakeClosure: IR-level closure value not yet wired".into());
+        Prim::MakeClosure(fn_id, captured_vars) => {
+            let captured: Vec<Value> = captured_vars
+                .iter()
+                .map(|v| env_get(env, *v))
+                .collect::<Result<_, _>>()?;
+            Value::IrClosure(Rc::new(IrClosure { fn_id: fn_id.0, captured }))
         }
     })
 }
@@ -416,6 +446,7 @@ fn kind(v: &Value) -> &'static str {
         Value::Builtin(_) => "Builtin",
         Value::Jit(_) => "Jit",
         Value::JitPoly(_) => "JitPoly",
+        Value::IrClosure(_) => "IrClosure",
     }
 }
 
@@ -820,6 +851,75 @@ mod tests {
             Value::Atom(s) => assert_eq!(&*s, "ok"),
             other => panic!("got {:?}", super::kind(&other)),
         }
+    }
+
+    #[test]
+    fn interp_closure_construction() {
+        // fn mk(), do: fn(y) -> y + 1 end
+        // Result is a Value::IrClosure carrying the lambda's FnId + empty captured.
+        let f = fn_def(
+            "mk",
+            vec![cl(
+                vec![],
+                Expr::Lambda(
+                    vec![Pattern::Var("y".into())],
+                    Box::new(Expr::BinOp(
+                        ABinOp::Add,
+                        Box::new(Expr::Var("y".into())),
+                        Box::new(Expr::Int(1)),
+                    )),
+                ),
+            )],
+        );
+        let r = run_named(vec![f], "mk", vec![]).unwrap();
+        match r {
+            Value::IrClosure(c) => {
+                assert!(c.captured.is_empty());
+            }
+            other => panic!("expected IrClosure, got {:?}", super::kind(&other)),
+        }
+    }
+
+    #[test]
+    fn interp_closure_captures_and_invokes() {
+        // fn mk(x), do: fn(y) -> x + y end
+        // fn use(x, y), do: mk(x).(y)   ← lower as Block: f = mk(x); f(y)
+        let mk = fn_def(
+            "mk",
+            vec![cl(
+                vec![Pattern::Var("x".into())],
+                Expr::Lambda(
+                    vec![Pattern::Var("y".into())],
+                    Box::new(Expr::BinOp(
+                        ABinOp::Add,
+                        Box::new(Expr::Var("x".into())),
+                        Box::new(Expr::Var("y".into())),
+                    )),
+                ),
+            )],
+        );
+        // use(x, y) = let f = mk(x); f(y)
+        let use_fn = fn_def(
+            "use",
+            vec![cl(
+                vec![Pattern::Var("x".into()), Pattern::Var("y".into())],
+                Expr::Block(vec![
+                    Expr::Match(
+                        Pattern::Var("f".into()),
+                        Box::new(Expr::Call(
+                            Box::new(Expr::Var("mk".into())),
+                            vec![Expr::Var("x".into())],
+                        )),
+                    ),
+                    Expr::Call(
+                        Box::new(Expr::Var("f".into())),
+                        vec![Expr::Var("y".into())],
+                    ),
+                ]),
+            )],
+        );
+        let r = run_named(vec![mk, use_fn], "use", vec![Value::Int(10), Value::Int(32)]).unwrap();
+        assert!(matches!(r, Value::Int(42)), "got {:?}", super::kind(&r));
     }
 
     #[test]

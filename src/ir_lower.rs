@@ -452,6 +452,16 @@ fn lower_expr(ctx: &mut LowerCtx, e: &Expr, is_tail: bool) -> Result<Var, LowerE
                     ));
                 }
             };
+            // Local closure value? (Shadows fn lookup if a local of the same name exists.)
+            if let Some(local_var) = ctx.lookup(&callee_name) {
+                if is_tail {
+                    ctx.set_term(Term::TailCallClosure { closure: local_var, args: arg_vars });
+                    ctx.terminated = true;
+                    return Ok(Var(0));
+                } else {
+                    return cps_split_call_closure(ctx, local_var, arg_vars);
+                }
+            }
             // Builtin?
             if let Some(bid) = ctx.builtins.lookup(&callee_name) {
                 return Ok(ctx.let_(Prim::Builtin(bid, arg_vars)));
@@ -587,6 +597,41 @@ fn lower_lambda(
     ctx.env_order = saved_order;
 
     Ok(ctx.let_(Prim::MakeClosure(lam_id, captured_vars)))
+}
+
+fn cps_split_call_closure(
+    ctx: &mut LowerCtx,
+    closure_var: Var,
+    arg_vars: Vec<Var>,
+) -> Result<Var, LowerError> {
+    let captured = ctx.captured_snapshot();
+    let captured_vars: Vec<Var> = captured.iter().map(|(_, v)| *v).collect();
+    let cont_id = ctx.mb.fresh_fn_id();
+
+    ctx.set_term(Term::CallClosure {
+        closure: closure_var,
+        args: arg_vars,
+        continuation: Cont { fn_id: cont_id, captured: captured_vars.clone() },
+    });
+
+    let done = ctx.cur.take().unwrap().build();
+    ctx.mb.add_fn(done);
+
+    let mut kbuilder = FnBuilder::new(cont_id, format!("k_{}", cont_id.0));
+    let result_param = kbuilder.fresh_var();
+    let cap_params: Vec<Var> = captured.iter().map(|_| kbuilder.fresh_var()).collect();
+    let mut params = vec![result_param];
+    params.extend(cap_params.clone());
+    let entry = kbuilder.block(params);
+    ctx.cur = Some(kbuilder);
+    ctx.cur_block = Some(entry);
+
+    ctx.env.clear();
+    ctx.env_order.clear();
+    for ((name, _), nv) in captured.iter().zip(&cap_params) {
+        ctx.bind(name, *nv);
+    }
+    Ok(result_param)
 }
 
 fn cps_split_call(

@@ -350,6 +350,7 @@ impl Value {
             Value::Builtin(_) => "builtin",
             Value::Jit(_) => "jit-fn",
             Value::JitPoly(_) => "jit-poly-fn",
+            Value::IrClosure(_) => "ir-closure",
         }
     }
 }

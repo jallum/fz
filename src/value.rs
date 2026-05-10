@@ -36,6 +36,17 @@ pub enum Value {
     /// Falls back to `fallback` (the original Closure) if no spec matches
     /// the runtime shape (rare — would mean an unobserved call shape).
     JitPoly(Rc<JitPolyFn>),
+    /// IR-level closure: a Lambda lowered through fz-IR. Carries the IR FnId
+    /// (raw u32) of the lambda body and the captured environment slots. Only
+    /// used by the fz-IR interpreter (.11.5); the AST interp and JIT path
+    /// continue to use Value::Closure.
+    IrClosure(Rc<IrClosure>),
+}
+
+#[derive(Clone)]
+pub struct IrClosure {
+    pub fn_id: u32,
+    pub captured: Vec<Value>,
 }
 
 pub struct JitFn {
@@ -286,6 +297,9 @@ impl fmt::Display for Value {
             Value::Builtin(b) => write!(f, "#builtin<{}/{}>", b.name, b.arity),
             Value::Jit(j) => write!(f, "#jit<{}/{}>", j.name, j.sig.params.len()),
             Value::JitPoly(j) => write!(f, "#jit_poly<{}|{}>", j.user_name, j.specs.len()),
+            Value::IrClosure(c) => {
+                write!(f, "#ir_closure<fn{}/cap{}>", c.fn_id, c.captured.len())
+            }
         }
     }
 }
