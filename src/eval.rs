@@ -121,6 +121,20 @@ impl Interp {
                 Value::Map(m) => Ok(Value::Map(Rc::new(m.put(args[1].clone(), args[2].clone())))),
                 _ => Err("map_put(map, key, val)".into()),
             }),
+            ("assert", 1, |args, _| match &args[0] {
+                Value::Bool(true) => Ok(Value::Nil),
+                Value::Bool(false) => Err("assertion failed: expected true".into()),
+                Value::Nil => Err("assertion failed: nil is falsy".into()),
+                other => Err(format!("assert/1 expects bool, got {}", other)),
+            }),
+            ("assert_eq", 2, |args, _| {
+                if value_eq(&args[0], &args[1]) { Ok(Value::Nil) }
+                else { Err(format!("assertion failed: {} != {}", args[0], args[1])) }
+            }),
+            ("assert_neq", 2, |args, _| {
+                if !value_eq(&args[0], &args[1]) { Ok(Value::Nil) }
+                else { Err(format!("assertion failed: {} == {}", args[0], args[1])) }
+            }),
             ("vec_reduce", 3, |args, apply| {
                 // data-first: vec_reduce(vec, init, fn)
                 let v = match &args[0] { Value::Vec(v) => v, _ => return Err("vec_reduce(vec, init, fn)".into()) };

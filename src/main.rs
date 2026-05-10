@@ -10,6 +10,7 @@ mod macros;
 mod parser;
 mod repl;
 mod resolve;
+mod test_runner;
 mod typer;
 #[cfg(test)]
 mod test_support;
@@ -129,6 +130,17 @@ fn main() {
     if args.first().map(String::as_str) == Some("repl") {
         if let Err(e) = repl::run() {
             eprintln!("repl: {}", e);
+            std::process::exit(1);
+        }
+        return;
+    }
+    if args.first().map(String::as_str) == Some("test") {
+        let src = args.get(1).cloned().unwrap_or_else(|| {
+            eprintln!("fz test <path>");
+            std::process::exit(2);
+        });
+        if let Err(e) = test_runner::run(std::path::Path::new(&src)) {
+            eprintln!("{}", e);
             std::process::exit(1);
         }
         return;
