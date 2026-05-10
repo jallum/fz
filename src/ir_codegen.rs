@@ -66,6 +66,10 @@ pub struct CompiledModule {
     /// Per-fn frame schema (size, layout). Indexed by fz_fn_id (1:1 with
     /// schema_id).
     schemas: Vec<Schema>,
+    /// Per-fn Var -> Descr maps from fz-ul4.11.24.2's flow-insensitive typer.
+    /// Indexed by position in source Module.fns (not by FnId.0). No consumers
+    /// yet; .11.24.4 / .11.24.5 / .11.24.6 / .11.24.7 plug it in.
+    pub(crate) types: crate::ir_typer::ModuleTypes,
 }
 
 unsafe impl Send for CompiledModule {}
@@ -1804,7 +1808,8 @@ pub fn compile(module: &Module) -> Result<CompiledModule, CodegenError> {
         fn_ptrs.insert(*fz_fn_id, jmod.get_finalized_function(*func_id));
     }
 
-    Ok(CompiledModule { module: jmod, fn_ptrs, schemas })
+    let types = crate::ir_typer::type_module(module);
+    Ok(CompiledModule { module: jmod, fn_ptrs, schemas, types })
 }
 
 fn sig1(params: &[ir::Type], rets: &[ir::Type]) -> Signature {

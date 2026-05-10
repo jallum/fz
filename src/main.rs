@@ -9,6 +9,7 @@ mod ir_codegen;
 mod ir_interp;
 mod ir_liveness;
 mod ir_lower;
+mod ir_typer;
 mod lexer;
 mod macros;
 mod parser;
