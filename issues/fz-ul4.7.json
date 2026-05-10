@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-05-10T02:12:28Z",
   "created": "2026-05-10T01:26:31Z",
   "description": "Parse and evaluate Elixir's with:\n\n  with {:ok, a} \u003c- foo(),\n       {:ok, b} \u003c- bar(a) do\n    {:ok, b}\n  end\n\nEach binding pattern \u003c- expr; if a binding fails, the with returns the non-matching value (or runs an else clause). Critical for ergonomic ok/err tuple handling, which is fz's chosen error model.",
   "id": "fz-ul4.7",
   "labels": [],
   "parent": "fz-ul4",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Implement the with form",
   "type": "task",
-  "updated_at": "2026-05-10T02:09:30Z"
+  "updated_at": "2026-05-10T02:12:28Z"
 }
