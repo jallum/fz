@@ -4,14 +4,15 @@
     "fz-ul4.11.24.3"
   ],
   "blocks": [],
+  "closed_at": "2026-05-10T21:22:42Z",
   "created": "2026-05-10T20:52:15Z",
   "description": "GOAL: Wire types.rs's tuple_clause_empty / list_clause_empty / func_clause_empty / map_clause_empty into compile diagnostics. Detect case clauses, multi-clause fn arms, and pattern matches whose pattern intersects empty with the inferred input type — emit a warning so the user sees unreachable code at compile time.\n\n## Why this is atomic\n\nBefore: unreachable arms compile silently. After: a single .11.24.6 commit adds a 'warnings' surface to CompiledModule and detects the obvious cases via the existing DNF emptiness machinery. No runtime behavior change; existing tests pass byte-for-byte.\n\n## Deliverables\n\nsrc/ir_codegen.rs (or src/ir_typer.rs):\n- New `Diagnostic { fn_name: String, kind: DiagKind, message: String }` type.\n- `CompiledModule.warnings: Vec\u003cDiagnostic\u003e` field.\n- After typing, walk multi-clause fns (visible via Module's fn-name groupings) and per-fn block-pattern shapes; for each lowered clause, check if its pattern Descr intersected with the call-site Descr is empty. If empty, emit DiagKind::UnreachableArm.\n- Same for case-style chained Ifs (already in IR after lowering): check the predicate's narrowing in each branch against the env Descr.\n- Stable sort of diagnostics so output is deterministic.\n- New API `CompiledModule::warnings(\u0026self) -\u003e \u0026[Diagnostic]` and `fz run` prints them to stderr.\n\n## Tests\n\n- A clause `fn f(0), do: ...` followed by `fn f(0), do: ...` produces a warning on the second clause (pattern Descr int_lit(0) intersected with itself non-empty, but combined with negation of preceding clause is empty).\n- A fn whose param is typed Atom but has an Int-pattern clause: warning UnreachableArm.\n- Existing happy-path programs produce zero warnings.\n\n## Out of scope\n\n- Errors (vs warnings) for unreachable arms — choice of severity is policy; warnings are conservative.\n- Inhabitedness checks for return types.\n- Deep guard-condition narrowing (only direct predicates handled).\n\n## Dependencies\n\n- BLOCKED BY: fz-ul4.11.24.3.\n- BLOCKS: none.",
   "id": "fz-ul4.11.24.6",
   "labels": [],
   "parent": "fz-ul4.11.24",
   "priority": 3,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Exhaustiveness / dead-arm warnings via DNF emptiness",
   "type": "task",
-  "updated_at": "2026-05-10T21:19:32Z"
+  "updated_at": "2026-05-10T21:22:42Z"
 }
