@@ -10,9 +10,15 @@
   "id": "fz-ul4.12.2",
   "labels": [],
   "parent": "fz-ul4.12",
+  "comments": [
+    {
+      "text": "Scope reduction (approved 2026-05-09): tagged 64-bit Value layout deferred to .11 (recorded there). .12.2 keeps: shared atom table, monomorphic builtin C-ABI surface (fz_print_i64/f64/bool/atom/nil), panic helper, fz-runtime staticlib crate. The 'Value ABI at boundaries' is just the LowerTy→CLIF-type mapping from .12.1 — scalars at native types, tuples flattened; this is enough for the .12 in-scope subset.",
+      "timestamp": "2026-05-10T03:12:14Z"
+    }
+  ],
   "priority": 2,
   "status": "in_progress",
   "title": "Runtime staticlib + Value ABI",
   "type": "task",
-  "updated_at": "2026-05-10T03:11:09Z"
+  "updated_at": "2026-05-10T03:12:14Z"
 }
