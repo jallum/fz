@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-05-10T11:30:25Z",
   "created": "2026-05-10T09:31:33Z",
   "description": "Filed retroactively (origin: silent cut in fz-ul4.6, flagged 2026-05-10). See memory/project_polymorphic_interp_jit_dispatch.md.\n\nProblem: Value::Jit is only bound for monomorphic JIT'd fns. Polymorphic fns keep the AST closure in interp — correct but slow, and asymmetric: an interp-only caller invoking id(42) runs interp clauses instead of the matching JIT spec.\n\nApproach:\n1. Bind Value::JitPoly { user_name, specs: Vec\u003c(Vec\u003cLowerTy\u003e, JitFn)\u003e } for polymorphic JIT'd fns.\n2. Interp::apply for Value::JitPoly inspects each arg's runtime LowerTy shape and dispatches to the matching spec's reverse thunk.\n3. Fall back to AST clauses if no spec matches.\n\nDeps: none. Orthogonal cleanup. Heap support (fz-ul4.11) shrinks interp-only-caller set and reduces urgency.\n\nTests: program where an interp-only fn calls a polymorphic fn with multiple shapes; assert each call goes through the matching JIT spec.\n\nNotes: runtime LowerTy derivation already lives implicitly in value_to_slots — factor it out. Tuple derivation recurses. Keep AST-clause fallback as safety net.",
   "id": "fz-ul4.17",
   "labels": [],
   "parent": "fz-ul4",
   "priority": 3,
-  "status": "open",
+  "status": "closed",
   "title": "Polymorphic interp→JIT dispatcher",
   "type": "task",
-  "updated_at": "2026-05-10T09:31:33Z"
+  "updated_at": "2026-05-10T11:30:25Z"
 }
