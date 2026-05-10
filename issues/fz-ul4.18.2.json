@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-ul4.18.1"
+  ],
   "blocks": [],
   "created": "2026-05-10T10:26:41Z",
   "description": "Second subticket. Depends on .18.1.\n\nAllow defmodule inside defmodule, producing dotted names:\n\n  defmodule A do\n    defmodule B do\n      fn f(x), do: x\n    end\n  end\n\n  fn main() do A.B.f(42) end\n\n## Scope\n\n- Parser: defmodule body accepts a nested defmodule as an item.\n- AST: ModuleDef.items can include Item::Module recursively.\n- Resolution pass: track current module path as a Vec\u003cString\u003e; produce qualified names like \"A.B.f\".\n- Eval/load: same flat-env pattern as .18.1 — just longer names.\n\n## Tests\n\n- Single nested module callable from outside.\n- Sibling resolution inside the inner module.\n- Sibling resolution inside the outer module to one of its own fns NOT shadowed by inner module's same-named fn.\n",
