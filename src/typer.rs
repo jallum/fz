@@ -76,6 +76,17 @@ impl Typer {
         let any_arrow = Descr::arrow([Descr::any()], Descr::any());
         g.insert("vec_map".into(), Descr::arrow([any_vec.clone(), any_arrow.clone()], any_vec.clone()));
 
+        // map_get/2 :: (map, any) -> any
+        g.insert("map_get".into(), Descr::arrow(
+            [Descr::map_top(), Descr::any()],
+            Descr::any().union(&Descr::nil()),
+        ));
+        // map_put/3 :: (map, any, any) -> map
+        g.insert("map_put".into(), Descr::arrow(
+            [Descr::map_top(), Descr::any(), Descr::any()],
+            Descr::map_top(),
+        ));
+
         // vec_reduce/3 :: (vec, any, (any, any) -> any) -> any
         let any_arrow_2 = Descr::arrow([Descr::any(), Descr::any()], Descr::any());
         g.insert("vec_reduce".into(), Descr::arrow(
@@ -196,7 +207,41 @@ impl Typer {
                 let ts: Vec<Descr> = elems.iter().map(|e| self.infer(env, e)).collect();
                 Descr::tuple_of(ts)
             }
-            Expr::Map(_) => Descr::any(),
+            Expr::Map(pairs) => {
+                let mut fields: std::collections::BTreeMap<MapKey, Descr> = Default::default();
+                let mut all_static_keys = true;
+                for (k, v) in pairs {
+                    let vt = self.infer(env, v);
+                    match expr_to_map_key(k) {
+                        Some(mk) => { fields.insert(mk, vt); }
+                        None => { all_static_keys = false; }
+                    }
+                }
+                if all_static_keys {
+                    Descr::map_of(fields)
+                } else {
+                    Descr::map_top()
+                }
+            }
+            Expr::MapUpdate(base, pairs) => {
+                let mut bt = self.infer(env, base);
+                // For each updated field with a static key, refine that field's value type.
+                for (k, v) in pairs {
+                    let vt = self.infer(env, v);
+                    if let Some(mk) = expr_to_map_key(k) {
+                        bt = refine_map_field(&bt, &mk, &vt);
+                    }
+                }
+                bt
+            }
+            Expr::Index(target, key) => {
+                let tt = self.infer(env, target);
+                if let Some(mk) = expr_to_map_key(key) {
+                    map_field_lookup(&tt, &mk).unwrap_or_else(|| Descr::any().union(&Descr::nil()))
+                } else {
+                    Descr::any()
+                }
+            }
             Expr::VecLit(kind, _) => match kind {
                 VecKind::Numeric => Descr::vec_i64().union(&Descr::vec_f64()),
                 VecKind::Bytes   => Descr::vec_u8(),
@@ -445,7 +490,15 @@ pub fn pattern_type(p: &Pattern) -> Descr {
             Descr::list_of(elem)
         }
         Pattern::As(_, inner) => pattern_type(inner),
-        Pattern::Map(_) => Descr::any(),
+        Pattern::Map(pairs) => {
+            let mut fields = std::collections::BTreeMap::new();
+            for (kp, vp) in pairs {
+                if let Some(mk) = pattern_to_map_key(kp) {
+                    fields.insert(mk, pattern_type(vp));
+                }
+            }
+            if fields.is_empty() { Descr::map_top() } else { Descr::map_of(fields) }
+        }
         Pattern::Bitstring(_) => Descr::vec_u8().union(&Descr::vec_bit()),
     }
 }
@@ -485,6 +538,16 @@ fn extract(p: &Pattern, scrut: &Descr, out: &mut Vec<(String, Descr)>) {
                 extract(&f.value, &scrut_for_field, out);
             }
         }
+        Pattern::Map(pairs) => {
+            for (kp, vp) in pairs {
+                let val_t = if let Some(mk) = pattern_to_map_key(kp) {
+                    map_field_lookup(scrut, &mk).unwrap_or_else(Descr::any)
+                } else {
+                    Descr::any()
+                };
+                extract(vp, &val_t, out);
+            }
+        }
         _ => {} // literals, wildcard, etc., bind nothing.
     }
 }
@@ -505,6 +568,72 @@ pub fn tuple_projections(scrut: &Descr, arity: usize) -> Vec<Descr> {
     }
     if !found { return vec![Descr::any(); arity]; }
     comps
+}
+
+// ----------------------------------------------------------------------
+// Map helpers
+// ----------------------------------------------------------------------
+
+pub fn expr_to_map_key(e: &Expr) -> Option<MapKey> {
+    Some(match e {
+        Expr::Atom(a) => MapKey::Atom(a.clone()),
+        Expr::Int(n) => MapKey::Int(*n),
+        Expr::Str(s) => MapKey::Str(s.clone()),
+        Expr::Bool(b) => MapKey::Bool(*b),
+        Expr::Nil => MapKey::Nil,
+        _ => return None,
+    })
+}
+
+pub fn pattern_to_map_key(p: &Pattern) -> Option<MapKey> {
+    Some(match p {
+        Pattern::Atom(a) => MapKey::Atom(a.clone()),
+        Pattern::Int(n) => MapKey::Int(*n),
+        Pattern::Str(s) => MapKey::Str(s.clone()),
+        Pattern::Bool(b) => MapKey::Bool(*b),
+        Pattern::Nil => MapKey::Nil,
+        _ => return None,
+    })
+}
+
+/// Look up the value type for `key` across all positive map shapes in `d`.
+/// Returns `None` if `d` has no map shapes (call site decides the fallback).
+pub fn map_field_lookup(d: &Descr, key: &MapKey) -> Option<Descr> {
+    let mut found = false;
+    let mut acc = Descr::none();
+    for clause in &d.maps {
+        for sig in &clause.pos {
+            found = true;
+            // Open shape: if key is required, contribute its type; otherwise
+            // the key may or may not be present so contribute `any | nil`.
+            if let Some(t) = sig.fields.get(key) {
+                acc = acc.union(t);
+            } else {
+                acc = acc.union(&Descr::any()).union(&Descr::nil());
+            }
+        }
+        if clause.pos.is_empty() {
+            // Top map clause — any map, any key value.
+            acc = acc.union(&Descr::any()).union(&Descr::nil());
+            found = true;
+        }
+    }
+    if !found { None } else { Some(acc) }
+}
+
+/// Refine `d` by setting field `key` to value type `vt` in every positive map
+/// shape. Used by map update typing.
+pub fn refine_map_field(d: &Descr, key: &MapKey, vt: &Descr) -> Descr {
+    let mut out = d.clone();
+    for clause in &mut out.maps {
+        for sig in &mut clause.pos {
+            sig.fields.insert(key.clone(), vt.clone());
+        }
+        if clause.pos.is_empty() {
+            // Top map: can't refine without manufacturing a shape; skip.
+        }
+    }
+    out
 }
 
 /// Element type of a list-typed descriptor. Falls back to `any`.
@@ -535,7 +664,15 @@ pub fn widen(d: &Descr) -> Descr {
     out.tuples = out.tuples.into_iter().map(widen_tuple).collect();
     out.lists  = out.lists.into_iter().map(widen_list).collect();
     out.funcs  = out.funcs.into_iter().map(widen_func).collect();
+    out.maps   = out.maps.into_iter().map(widen_map).collect();
     out
+}
+fn widen_map_sig(s: MapSig) -> MapSig {
+    MapSig { fields: s.fields.into_iter().map(|(k, v)| (k, widen(&v))).collect() }
+}
+fn widen_map(c: Conj<MapSig>) -> Conj<MapSig> {
+    Conj { pos: c.pos.into_iter().map(widen_map_sig).collect(),
+           neg: c.neg.into_iter().map(widen_map_sig).collect() }
 }
 fn widen_tuple(c: Conj<TupleSig>) -> Conj<TupleSig> {
     Conj {
@@ -739,6 +876,52 @@ mod tests {
     }
 
     #[test]
+    fn map_literal_produces_open_shape() {
+        let src = r#"fn p(), do: %{name: "alice", age: 30}"#;
+        let t = type_of(src, "p");
+        let ret = (*t.funcs[0].pos[0].ret).clone();
+        // The function returns an open shape with both fields required.
+        let expected = Descr::map_of([
+            (MapKey::Atom("name".into()), Descr::str_lit("alice")),
+            (MapKey::Atom("age".into()), Descr::int_lit(30)),
+        ]);
+        assert!(ret.is_subtype(&expected) && expected.is_subtype(&ret),
+            "got {}, expected {}", ret, expected);
+    }
+
+    #[test]
+    fn map_pattern_extracts_field_type() {
+        // The pattern binds `n` to the value of the :name field; with a
+        // concrete literal map at the call site, the body can produce a
+        // precise return type.
+        let src = r#"
+            fn name(%{name: n}), do: n
+            fn run(), do: name(%{name: "alice"})
+        "#;
+        let t = type_of(src, "run");
+        let ret = (*t.funcs[0].pos[0].ret).clone();
+        // ret should be a supertype of "alice" — the pattern binding flows the
+        // field type through (over-approximated to `any` in current impl).
+        // We can't expect "alice" precisely without flow-sensitive call
+        // specialization, but we can expect `ret` not to be `none`.
+        assert!(!ret.is_empty(), "run() returned none: {}", ret);
+    }
+
+    #[test]
+    fn map_index_returns_field_type() {
+        let src = r#"
+            fn lookup() do
+              m = %{count: 7}
+              m[:count]
+            end
+        "#;
+        let t = type_of(src, "lookup");
+        let ret = (*t.funcs[0].pos[0].ret).clone();
+        // We know :count maps to int_lit(7).
+        assert!(Descr::int_lit(7).is_subtype(&ret), "ret was {}", ret);
+    }
+
+    #[test]
     fn recursion_terminates_via_widening() {
         let src = r#"
             fn fact(0), do: 1
@@ -751,3 +934,4 @@ mod tests {
         assert!(!t.funcs.is_empty(), "fact got empty type: {}", t);
     }
 }
+

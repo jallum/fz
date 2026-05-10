@@ -89,6 +89,14 @@ impl Interp {
                     FzVec::Bit(_) => Err("vec_map on bit vec not yet supported".into()),
                 }
             }),
+            ("map_get", 2, |args, _| match &args[0] {
+                Value::Map(m) => Ok(m.get(&args[1]).cloned().unwrap_or(Value::Nil)),
+                _ => Err("map_get(map, key)".into()),
+            }),
+            ("map_put", 3, |args, _| match &args[0] {
+                Value::Map(m) => Ok(Value::Map(Rc::new(m.put(args[1].clone(), args[2].clone())))),
+                _ => Err("map_put(map, key, val)".into()),
+            }),
             ("vec_reduce", 3, |args, apply| {
                 // data-first: vec_reduce(vec, init, fn)
                 let v = match &args[0] { Value::Vec(v) => v, _ => return Err("vec_reduce(vec, init, fn)".into()) };
@@ -199,7 +207,40 @@ impl Interp {
                 for x in xs { out.push(self.eval(x, env)?); }
                 Ok(Value::Tuple(Rc::new(out)))
             }
-            Expr::Map(_) => Err("maps not implemented".into()),
+            Expr::Map(pairs) => {
+                let mut m = FzMap::new();
+                for (k, v) in pairs {
+                    let kv = self.eval(k, env)?;
+                    let vv = self.eval(v, env)?;
+                    m = m.put(kv, vv);
+                }
+                Ok(Value::Map(Rc::new(m)))
+            }
+            Expr::MapUpdate(base, pairs) => {
+                let bv = self.eval(base, env)?;
+                let m = match bv {
+                    Value::Map(m) => m,
+                    other => return Err(format!("`%{{m | ...}}` requires a map, got {}", other)),
+                };
+                let mut out = (*m).clone();
+                for (k, v) in pairs {
+                    let kv = self.eval(k, env)?;
+                    if !out.has(&kv) {
+                        return Err(format!("update: key {} not present in map", kv));
+                    }
+                    let vv = self.eval(v, env)?;
+                    out = out.put(kv, vv);
+                }
+                Ok(Value::Map(Rc::new(out)))
+            }
+            Expr::Index(target, key) => {
+                let tv = self.eval(target, env)?;
+                let kv = self.eval(key, env)?;
+                match tv {
+                    Value::Map(m) => Ok(m.get(&kv).cloned().unwrap_or(Value::Nil)),
+                    other => Err(format!("index `[]` on non-map: {}", other)),
+                }
+            }
             Expr::VecLit(kind, elems) => {
                 let vs: Vec<Value> = elems.iter().map(|e| self.eval(e, env)).collect::<Result<_, _>>()?;
                 Ok(Value::Vec(build_vec(*kind, &vs)?))
@@ -433,17 +474,3 @@ fn eval_binop(op: BinOp, a: &Value, b: &Value) -> EvalResult {
     })
 }
 
-fn value_eq(a: &Value, b: &Value) -> bool {
-    use Value::*;
-    match (a, b) {
-        (Int(x), Int(y)) => x == y,
-        (Float(x), Float(y)) => x == y,
-        (Bool(x), Bool(y)) => x == y,
-        (Atom(x), Atom(y)) => x.as_ref() == y.as_ref(),
-        (Str(x), Str(y))   => x.as_ref() == y.as_ref(),
-        (Nil, Nil) => true,
-        (List(x), List(y)) => x.len() == y.len() && x.iter().zip(y.iter()).all(|(a,b)| value_eq(a,b)),
-        (Tuple(x), Tuple(y)) => x.len() == y.len() && x.iter().zip(y.iter()).all(|(a,b)| value_eq(a,b)),
-        _ => false,
-    }
-}

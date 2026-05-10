@@ -152,6 +152,26 @@ pub struct ListSig  { pub elem: Box<Descr> }
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct ArrowSig { pub args: Vec<Descr>, pub ret: Box<Descr> }
 
+/// Open-shape map type: "any map containing AT LEAST these literal keys with
+/// values of the corresponding types." Keys are concrete singleton values
+/// (atoms, ints, strs); arbitrary-keyed maps fall back to `map_top`.
+///
+/// Subtyping (open record): `s <: t` iff every field in `t` is in `s` with
+/// subtype value. More required keys = smaller set.
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct MapSig {
+    pub fields: std::collections::BTreeMap<MapKey, Descr>,
+}
+
+#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum MapKey {
+    Atom(String),
+    Int(i64),
+    Str(String),
+    Bool(bool),
+    Nil,
+}
+
 /// One conjunctive clause inside a DNF: `⋀ pos  ∧  ⋀ (¬neg)`.
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct Conj<T> {
@@ -184,6 +204,7 @@ pub struct Descr {
     pub tuples: Vec<Conj<TupleSig>>,
     pub lists:  Vec<Conj<ListSig>>,
     pub funcs:  Vec<Conj<ArrowSig>>,
+    pub maps:   Vec<Conj<MapSig>>,
 }
 
 impl Descr {
@@ -199,6 +220,7 @@ impl Descr {
             tuples: vec![Conj::top()],
             lists:  vec![Conj::top()],
             funcs:  vec![Conj::top()],
+            maps:   vec![Conj::top()],
         }
     }
 
@@ -212,6 +234,7 @@ impl Descr {
             tuples: Vec::new(),
             lists: Vec::new(),
             funcs: Vec::new(),
+            maps:  Vec::new(),
         }
     }
 
@@ -300,6 +323,21 @@ impl Descr {
         d
     }
 
+    /// Top of the map axis: any map.
+    pub fn map_top() -> Self {
+        let mut d = Self::none();
+        d.maps.push(Conj::top());
+        d
+    }
+
+    /// Open-shape map type with the given required (key, value-type) pairs.
+    pub fn map_of(fields: impl IntoIterator<Item = (MapKey, Descr)>) -> Self {
+        let sig = MapSig { fields: fields.into_iter().collect() };
+        let mut d = Self::none();
+        d.maps.push(Conj::pos_of(sig));
+        d
+    }
+
     // ---- recognizers ----
 
     pub fn looks_empty(&self) -> bool {
@@ -311,6 +349,7 @@ impl Descr {
             && self.tuples.is_empty()
             && self.lists.is_empty()
             && self.funcs.is_empty()
+            && self.maps.is_empty()
     }
 
     pub fn looks_full(&self) -> bool {
@@ -322,6 +361,7 @@ impl Descr {
             && is_dnf_top(&self.tuples)
             && is_dnf_top(&self.lists)
             && is_dnf_top(&self.funcs)
+            && is_dnf_top(&self.maps)
     }
 
     // ---- operations ----
@@ -336,6 +376,7 @@ impl Descr {
             tuples: dnf_union(&self.tuples, &other.tuples),
             lists:  dnf_union(&self.lists,  &other.lists),
             funcs:  dnf_union(&self.funcs,  &other.funcs),
+            maps:   dnf_union(&self.maps,   &other.maps),
         }
     }
 
@@ -349,6 +390,7 @@ impl Descr {
             tuples: dnf_intersect(&self.tuples, &other.tuples),
             lists:  dnf_intersect(&self.lists,  &other.lists),
             funcs:  dnf_intersect(&self.funcs,  &other.funcs),
+            maps:   dnf_intersect(&self.maps,   &other.maps),
         }
     }
 
@@ -362,6 +404,7 @@ impl Descr {
             tuples: dnf_neg(&self.tuples),
             lists:  dnf_neg(&self.lists),
             funcs:  dnf_neg(&self.funcs),
+            maps:   dnf_neg(&self.maps),
         }
     }
 
@@ -407,7 +450,8 @@ impl Descr {
             && self.strs.is_none()
             && self.tuples.iter().all(|c| tuple_clause_empty(c, memo))
             && self.lists.iter().all(|c| list_clause_empty(c, memo))
-            && self.funcs.iter().all(|c| func_clause_empty(c, memo));
+            && self.funcs.iter().all(|c| func_clause_empty(c, memo))
+            && self.maps.iter().all(|c| map_clause_empty(c, memo));
 
         memo.in_flight.remove(self);
         result
@@ -579,6 +623,61 @@ fn func_clause_empty(c: &Conj<ArrowSig>, memo: &mut Memo) -> bool {
 }
 
 // ----------------------------------------------------------------------
+// Map emptiness — open-shape rule
+// ----------------------------------------------------------------------
+//
+// An open-shape map type `MapSig{F: T}` represents the set of all maps
+// containing AT LEAST the listed keys with values of the listed types
+// (more keys with arbitrary values are allowed).
+//
+// A clause `⋀ pos ∧ ⋀ ¬neg`:
+//
+//   * Empty positives: any map. Negatives covering "any map" requires the
+//     union of negs to span the full map universe — impossible for any
+//     finite collection of open shapes (extra keys give wiggle room).
+//
+//   * Non-empty positives: merge into a single open shape `P` (union of
+//     required keys; intersect overlapping value types). `P` is empty if
+//     any required field has empty value type. Negative `Nj` subsumes `P`
+//     iff `Nj.fields ⊆ P.fields` (open subtype) AND for each shared key,
+//     `P.value(k) ⊆ Nj.value(k)`. Clause is empty iff some negative
+//     subsumes the merged positive.
+//
+//   * This is sound for the open-shape fragment we use; negatives that
+//     reference "this exact key set" semantics aren't expressible here
+//     (we'd need closed shapes for that).
+
+fn map_clause_empty(c: &Conj<MapSig>, memo: &mut Memo) -> bool {
+    if c.pos.is_empty() {
+        // Any-map universe ⊄ finite union of open shapes (extras always escape).
+        return false;
+    }
+    // Merge positives.
+    let mut merged: std::collections::BTreeMap<MapKey, Descr> = c.pos[0].fields.clone();
+    for p in &c.pos[1..] {
+        for (k, v) in &p.fields {
+            merged.entry(k.clone())
+                .and_modify(|e| *e = e.intersect(v))
+                .or_insert_with(|| v.clone());
+        }
+    }
+    // Empty if any required field is empty.
+    if merged.values().any(|v| v.is_empty_memo(memo)) {
+        return true;
+    }
+    // Negative subsumption.
+    for n in &c.neg {
+        let n_keys_subset = n.fields.keys().all(|k| merged.contains_key(k));
+        if !n_keys_subset { continue; }
+        let value_refines = n.fields.iter().all(|(k, nv)| {
+            merged.get(k).map(|pv| pv.diff(nv).is_empty_memo(memo)).unwrap_or(false)
+        });
+        if value_refines { return true; }
+    }
+    false
+}
+
+// ----------------------------------------------------------------------
 // BasicBits operations
 // ----------------------------------------------------------------------
 
@@ -662,6 +761,7 @@ impl fmt::Display for Descr {
         for c in &self.tuples { parts.push(format_tuple_clause(c)); }
         for c in &self.lists  { parts.push(format_list_clause(c)); }
         for c in &self.funcs  { parts.push(format_arrow_clause(c)); }
+        for c in &self.maps   { parts.push(format_map_clause(c)); }
 
         write!(f, "{}", parts.join(" | "))
     }
@@ -713,6 +813,24 @@ fn format_list(t: &ListSig)  -> String { format!("list({})", t.elem) }
 fn format_arrow(t: &ArrowSig) -> String {
     let args: Vec<String> = t.args.iter().map(|d| format!("{}", d)).collect();
     format!("({}) -> {}", args.join(", "), t.ret)
+}
+fn format_map_clause(c: &Conj<MapSig>) -> String {
+    let pos: Vec<String> = c.pos.iter().map(format_map).collect();
+    let neg: Vec<String> = c.neg.iter().map(|m| format!("¬{}", format_map(m))).collect();
+    join_clause(&pos, &neg, "map")
+}
+fn format_map(m: &MapSig) -> String {
+    let inner: Vec<String> = m.fields.iter().map(|(k, v)| format!("{}: {}", format_map_key(k), v)).collect();
+    format!("%{{{}}}", inner.join(", "))
+}
+fn format_map_key(k: &MapKey) -> String {
+    match k {
+        MapKey::Atom(a) => format!(":{}", a),
+        MapKey::Int(n) => format!("{}", n),
+        MapKey::Str(s) => format!("{:?}", s),
+        MapKey::Bool(b) => format!("{}", b),
+        MapKey::Nil => "nil".into(),
+    }
 }
 fn join_clause(pos: &[String], neg: &[String], top: &str) -> String {
     let all: Vec<String> = pos.iter().cloned().chain(neg.iter().cloned()).collect();
@@ -1203,6 +1321,51 @@ mod tests {
     fn display_int_singleton() {
         assert_eq!(Descr::int_lit(42).to_string(), "42");
         assert_eq!(Descr::int_lit(0).union(&Descr::int_lit(1)).to_string(), "0 | 1");
+    }
+
+    // ---- maps ----
+
+    fn ak(s: &str) -> MapKey { MapKey::Atom(s.into()) }
+
+    #[test]
+    fn map_top_and_constructor() {
+        assert_eq!(Descr::map_top().to_string(), "map");
+        let m = Descr::map_of([(ak("name"), Descr::str_t()), (ak("age"), Descr::int())]);
+        // BTreeMap orders by key, so :age comes before :name
+        assert_eq!(m.to_string(), "%{:age: int, :name: str}");
+    }
+
+    #[test]
+    fn map_subtype_open_record() {
+        // %{a: int, b: str} <: %{a: int}  (more required keys = smaller set)
+        let big = Descr::map_of([(ak("a"), Descr::int()), (ak("b"), Descr::str_t())]);
+        let small = Descr::map_of([(ak("a"), Descr::int())]);
+        assert!(big.is_subtype(&small));
+        assert!(!small.is_subtype(&big));
+    }
+
+    #[test]
+    fn map_subtype_value_covariance() {
+        // %{a: 0} <: %{a: int}
+        let narrow = Descr::map_of([(ak("a"), Descr::int_lit(0))]);
+        let wide = Descr::map_of([(ak("a"), Descr::int())]);
+        assert!(narrow.is_subtype(&wide));
+        assert!(!wide.is_subtype(&narrow));
+    }
+
+    #[test]
+    fn map_with_empty_value_is_empty() {
+        let bad = Descr::map_of([(ak("k"), Descr::int().intersect(&Descr::str_t()))]);
+        assert!(bad.is_empty());
+    }
+
+    #[test]
+    fn map_top_is_subtype_of_itself_only() {
+        let top = Descr::map_top();
+        assert!(top.is_subtype(&top));
+        let m = Descr::map_of([(ak("a"), Descr::int())]);
+        assert!(m.is_subtype(&top));
+        assert!(!top.is_subtype(&m), "map ⊄ %{{a: int}}");
     }
 
     #[test]

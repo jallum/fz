@@ -18,11 +18,38 @@ pub enum Value {
     /// expressions promote to `Value::Vec(FzVec::U8(...))` instead.
     /// Bits are packed MSB-first within each byte (network/big-endian layout).
     BitStr(Rc<BitString>),
+    /// Insertion-ordered map. Linear lookup is fine at the sizes maps are used
+    /// for in v0; we'll swap to a hashed representation when profiles say so.
+    Map(Rc<FzMap>),
     /// User-defined function: ordered clauses + captured environment.
     /// Multi-clause dispatch happens at call time.
     Closure(Rc<Closure>),
     /// Built-in (host) function.
     Builtin(Rc<Builtin>),
+}
+
+#[derive(Clone)]
+pub struct FzMap {
+    /// Insertion-ordered. Equality and `get` walk linearly using `value_eq`.
+    pub entries: Vec<(Value, Value)>,
+}
+
+impl FzMap {
+    pub fn new() -> Self { Self { entries: Vec::new() } }
+    pub fn get(&self, key: &Value) -> Option<&Value> {
+        self.entries.iter().find(|(k, _)| value_eq(k, key)).map(|(_, v)| v)
+    }
+    pub fn put(&self, key: Value, val: Value) -> Self {
+        let mut entries = self.entries.clone();
+        if let Some(slot) = entries.iter_mut().find(|(k, _)| value_eq(k, &key)) {
+            slot.1 = val;
+        } else {
+            entries.push((key, val));
+        }
+        FzMap { entries }
+    }
+    pub fn has(&self, key: &Value) -> bool { self.get(key).is_some() }
+    pub fn len(&self) -> usize { self.entries.len() }
 }
 
 #[derive(Clone)]
@@ -202,6 +229,17 @@ impl fmt::Display for Value {
                 }
                 write!(f, "]")
             }
+            Value::Map(m) => {
+                write!(f, "%{{")?;
+                for (i, (k, v)) in m.entries.iter().enumerate() {
+                    if i > 0 { write!(f, ", ")?; }
+                    match k {
+                        Value::Atom(a) => write!(f, "{}: {}", a, v)?,
+                        _ => write!(f, "{} => {}", k, v)?,
+                    }
+                }
+                write!(f, "}}")
+            }
             Value::BitStr(bs) => {
                 // Show as "<< b1, b2, ... :: N-bit total >>" — printable but
                 // not a valid surface form (we don't have a non-aligned literal).
@@ -217,6 +255,41 @@ impl fmt::Display for Value {
                 c.clauses.first().map(|cl| cl.params.len()).unwrap_or(0)),
             Value::Builtin(b) => write!(f, "#builtin<{}/{}>", b.name, b.arity),
         }
+    }
+}
+
+/// A pattern usable as a map key must reduce to a concrete value (atom, int,
+/// str, etc.). Variables and structural patterns are rejected — Elixir has the
+/// same restriction.
+fn pattern_to_value(p: &Pattern) -> Option<Value> {
+    Some(match p {
+        Pattern::Atom(a) => Value::Atom(Rc::from(a.as_str())),
+        Pattern::Int(n) => Value::Int(*n),
+        Pattern::Float(f) => Value::Float(*f),
+        Pattern::Str(s) => Value::Str(Rc::from(s.as_str())),
+        Pattern::Bool(b) => Value::Bool(*b),
+        Pattern::Nil => Value::Nil,
+        _ => return None,
+    })
+}
+
+/// Structural equality on values. NaN floats compare unequal (IEEE).
+pub fn value_eq(a: &Value, b: &Value) -> bool {
+    use Value::*;
+    match (a, b) {
+        (Int(x), Int(y)) => x == y,
+        (Float(x), Float(y)) => x == y,
+        (Bool(x), Bool(y)) => x == y,
+        (Atom(x), Atom(y)) => x.as_ref() == y.as_ref(),
+        (Str(x), Str(y))   => x.as_ref() == y.as_ref(),
+        (Nil, Nil) => true,
+        (List(x), List(y)) => x.len() == y.len() && x.iter().zip(y.iter()).all(|(a, b)| value_eq(a, b)),
+        (Tuple(x), Tuple(y)) => x.len() == y.len() && x.iter().zip(y.iter()).all(|(a, b)| value_eq(a, b)),
+        (Map(x), Map(y)) => {
+            x.entries.len() == y.entries.len()
+                && x.entries.iter().all(|(k, v)| matches!(y.get(k), Some(yv) if value_eq(v, yv)))
+        }
+        _ => false,
     }
 }
 
@@ -255,6 +328,21 @@ pub fn match_pattern(pat: &Pattern, v: &Value, env: &Env) -> bool {
         }
         (Pattern::Bitstring(fields), v) => {
             crate::bitstr::match_bitstring(fields, v, env)
+        }
+        (Pattern::Map(pairs), Value::Map(m)) => {
+            // Open match: every (key, val) pair must be present in m.
+            // Keys in patterns are constant exprs evaluated at match-build time;
+            // here Pattern keys are already concrete Patterns. We require each
+            // key pattern to be a literal we can evaluate without an env.
+            for (kp, vp) in pairs {
+                let key = match pattern_to_value(kp) {
+                    Some(k) => k,
+                    None => return false,
+                };
+                let Some(actual) = m.get(&key) else { return false };
+                if !match_pattern(vp, actual, env) { return false; }
+            }
+            true
         }
         _ => false,
     }

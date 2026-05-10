@@ -220,6 +220,33 @@ impl Parser {
                 self.expect(&Tok::RBrack, "`]`")?;
                 Pattern::List(elems, tail)
             }
+            Tok::PercentLBrace => {
+                self.bump();
+                let mut pairs: Vec<(Pattern, Pattern)> = Vec::new();
+                self.skip_newlines();
+                if !matches!(self.peek(), Tok::RBrace) {
+                    loop {
+                        // atom-key shorthand: `k: pat`
+                        let key = if let Tok::KwKey(_) = self.peek() {
+                            let Tok::KwKey(name) = self.bump() else { unreachable!() };
+                            Pattern::Atom(name)
+                        } else {
+                            let k = self.parse_pattern_atom()?;
+                            self.expect(&Tok::FatArrow, "`=>`")?;
+                            k
+                        };
+                        // For atom-shorthand the `:` was the delimiter; otherwise we
+                        // already consumed `=>`.
+                        let val = self.parse_pattern()?;
+                        pairs.push((key, val));
+                        self.skip_newlines();
+                        if !self.eat(&Tok::Comma) { break; }
+                        self.skip_newlines();
+                    }
+                }
+                self.expect(&Tok::RBrace, "`}`")?;
+                Pattern::Map(pairs)
+            }
             other => return self.err(format!("invalid pattern start {:?}", other)),
         })
     }
@@ -268,7 +295,18 @@ impl Parser {
                         Tok::Upper(n) => n,
                         other => return self.err(format!("expected name after `.`, got {:?}", other)),
                     };
-                    lhs = Expr::Dot(Box::new(lhs), name);
+                    // `m.k` desugars to `m[:k]` when looking up a map key. We
+                    // keep it as Dot in the AST and let the interpreter pick
+                    // the right behavior — but since we don't have records, do
+                    // it now: treat as Index on an atom.
+                    lhs = Expr::Index(Box::new(lhs), Box::new(Expr::Atom(name)));
+                    continue;
+                }
+                Tok::LBrack => {
+                    self.bump();
+                    let key = self.parse_expr()?;
+                    self.expect(&Tok::RBrack, "`]`")?;
+                    lhs = Expr::Index(Box::new(lhs), Box::new(key));
                     continue;
                 }
                 _ => {}
@@ -340,6 +378,7 @@ impl Parser {
                 self.expect(&Tok::RBrace, "`}`")?;
                 Expr::Tuple(elems)
             }
+            Tok::PercentLBrace => self.parse_map_expr()?,
             Tok::If => self.parse_if()?,
             Tok::Case => self.parse_case()?,
             Tok::With => self.parse_with()?,
@@ -597,6 +636,92 @@ impl Parser {
         Ok(Expr::With(bindings, Box::new(body), else_clauses))
     }
 
+    /// `%{ k: v, ... }`, `%{ k => v, ... }`, or `%{ base | k: v, ... }`.
+    /// Mixed `:` (atom-key shorthand) and `=>` are allowed in the same literal.
+    fn parse_map_expr(&mut self) -> PR<Expr> {
+        self.expect(&Tok::PercentLBrace, "`%{`")?;
+        self.skip_newlines();
+        // Detect update form by looking ahead for `|` before `}` at depth 0.
+        // Easiest: try parsing an expression; if next token is `|`, it's update.
+        let base = if !matches!(self.peek(), Tok::RBrace) {
+            // Tentative: parse the first key/expr. If we see `|`, base = that expr.
+            let first = self.parse_map_first_segment()?;
+            match first {
+                MapHead::Update(base) => Some(base),
+                MapHead::Pair(k, v) => {
+                    let mut pairs = vec![(k, v)];
+                    self.skip_newlines();
+                    if self.eat(&Tok::Comma) {
+                        self.skip_newlines();
+                        if !matches!(self.peek(), Tok::RBrace) {
+                            self.parse_map_pairs_into(&mut pairs)?;
+                        }
+                    }
+                    self.skip_newlines();
+                    self.expect(&Tok::RBrace, "`}`")?;
+                    return Ok(Expr::Map(pairs));
+                }
+            }
+        } else {
+            self.expect(&Tok::RBrace, "`}`")?;
+            return Ok(Expr::Map(vec![]));
+        };
+        // Update form: `%{ base | pairs }`
+        let base = base.unwrap();
+        self.skip_newlines();
+        let mut pairs: Vec<(Expr, Expr)> = Vec::new();
+        if !matches!(self.peek(), Tok::RBrace) {
+            self.parse_map_pairs_into(&mut pairs)?;
+        }
+        self.skip_newlines();
+        self.expect(&Tok::RBrace, "`}`")?;
+        Ok(Expr::MapUpdate(Box::new(base), pairs))
+    }
+
+    /// First segment of `%{...}`: either an `update | ...` head, a single
+    /// pair, or empty. Disambiguated by what follows the first sub-expression.
+    fn parse_map_first_segment(&mut self) -> PR<MapHead> {
+        // Atom-key shorthand at the head: `%{a: 1, ...}`
+        if let Tok::KwKey(_) = self.peek() {
+            let Tok::KwKey(name) = self.bump() else { unreachable!() };
+            let v = self.parse_expr()?;
+            return Ok(MapHead::Pair(Expr::Atom(name), v));
+        }
+        let first = self.parse_expr()?;
+        // Update?  `base | ...`
+        if matches!(self.peek(), Tok::Bar) {
+            self.bump();
+            return Ok(MapHead::Update(first));
+        }
+        if self.eat(&Tok::FatArrow) {
+            let v = self.parse_expr()?;
+            return Ok(MapHead::Pair(first, v));
+        }
+        self.err(format!("expected `=>` or `|` in map literal, got {:?}", self.peek()))
+    }
+
+    fn parse_map_pairs_into(&mut self, pairs: &mut Vec<(Expr, Expr)>) -> PR<()> {
+        loop {
+            self.skip_newlines();
+            // atom shorthand
+            if let Tok::KwKey(_) = self.peek() {
+                let Tok::KwKey(name) = self.bump() else { unreachable!() };
+                let v = self.parse_expr()?;
+                pairs.push((Expr::Atom(name), v));
+            } else {
+                let k = self.parse_expr()?;
+                if !self.eat(&Tok::FatArrow) {
+                    return self.err(format!("expected `=>` after map key, got {:?}", self.peek()));
+                }
+                let v = self.parse_expr()?;
+                pairs.push((k, v));
+            }
+            self.skip_newlines();
+            if !self.eat(&Tok::Comma) { break; }
+        }
+        Ok(())
+    }
+
     fn parse_lambda(&mut self) -> PR<Expr> {
         self.expect(&Tok::Fn, "`fn`")?;
         // `fn (p, ...) -> body` or `fn p -> body`
@@ -613,6 +738,11 @@ impl Parser {
     }
 }
 
+enum MapHead {
+    Pair(Expr, Expr),
+    Update(Expr),
+}
+
 /// LHS of `=` is a pattern; convert.
 fn expr_to_pattern(e: &Expr) -> PR<Pattern> {
     Ok(match e {
@@ -625,6 +755,11 @@ fn expr_to_pattern(e: &Expr) -> PR<Pattern> {
         Expr::Bool(b) => Pattern::Bool(*b),
         Expr::Nil => Pattern::Nil,
         Expr::Tuple(xs) => Pattern::Tuple(xs.iter().map(expr_to_pattern).collect::<PR<_>>()?),
+        Expr::Map(pairs) => Pattern::Map(
+            pairs.iter()
+                .map(|(k, v)| Ok::<_, ParseError>((expr_to_pattern(k)?, expr_to_pattern(v)?)))
+                .collect::<PR<_>>()?,
+        ),
         Expr::List(xs, tail) => Pattern::List(
             xs.iter().map(expr_to_pattern).collect::<PR<_>>()?,
             tail.as_deref().map(|e| expr_to_pattern(e).map(Box::new)).transpose()?,

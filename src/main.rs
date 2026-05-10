@@ -62,6 +62,26 @@ fn parse_packet(<<magic::8, ver::4, kind::4, len::16, payload::binary-size(len),
   {magic, ver, kind, len, payload, rest}
 end
 
+fn user_summary(%{name: n, age: a}) do
+  {n, a}
+end
+
+fn promote(u) do
+  %{u | age: u[:age] + 1}
+end
+
+fn maps_demo() do
+  alice = %{name: "alice", age: 30, city: "NYC"}
+  bob = %{:name => "bob", :age => 25}
+  print(user_summary(alice))
+  print(user_summary(bob))
+  print(promote(alice))
+  print(alice[:city])
+  print(alice[:missing])
+  print(map_get(alice, :name))
+  print(map_put(alice, :role, :admin))
+end
+
 fn main() do
   pkt = build_packet()
   print(pkt)
@@ -83,6 +103,7 @@ fn main() do
   print(~bits[1, 0, 1, 1, 0, 0, 1])
   print(vec_reduce(~v[1, 2, 3, 4, 5], 0, fn (a, b) -> a + b))
   print(~v[1, 2, 3, 4, 5] |> vec_reduce(0, fn (a, b) -> a + b))
+  maps_demo()
 end
 "#;
 

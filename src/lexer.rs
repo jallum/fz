@@ -41,6 +41,7 @@ pub enum Tok {
 
     Comma, Dot, Semi, Colon, ColonColon,
     Arrow,               // ->
+    FatArrow,            // =>
     LArrow,              // <-
     Pipe,                // |>
     Bar,                 // |  (cons / pattern alt)
@@ -280,6 +281,7 @@ impl<'a> Lexer<'a> {
             b'&' if self.peek(1) == Some(b'&') => { self.bump(); self.bump(); Tok::AndAnd }
             b'=' => match self.peek(1) {
                 Some(b'=') => { self.bump(); self.bump(); Tok::EqEq }
+                Some(b'>') => { self.bump(); self.bump(); Tok::FatArrow }
                 _ => { self.bump(); Tok::Eq }
             },
             b'!' => match self.peek(1) {

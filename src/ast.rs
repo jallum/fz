@@ -23,6 +23,10 @@ pub enum Expr {
     /// (an arbitrary expression) and a type/size/endian/signedness/unit spec.
     Bitstring(Vec<BitField<Expr>>),
     Map(Vec<(Expr, Expr)>),
+    /// %{m | k => v, ...} — functional update; each key must already exist.
+    MapUpdate(Box<Expr>, Vec<(Expr, Expr)>),
+    /// m[k] — bracket access; returns nil if key absent.
+    Index(Box<Expr>, Box<Expr>),
 
     // call: target(args...)  — target is an expr (usually Var or Dot)
     Call(Box<Expr>, Vec<Expr>),
