@@ -1,0 +1,18 @@
+defmodule Long do
+  defmodule Path do
+    fn greet(x), do: x + 1000
+  end
+end
+
+defmodule User do
+  alias Long.Path
+  alias Long.Path, as: LP
+
+  fn nick_name(x), do: Path.greet(x)
+  fn renamed(x), do: LP.greet(x)
+end
+
+fn main() do
+  print(User.nick_name(40))
+  print(User.renamed(41))
+end

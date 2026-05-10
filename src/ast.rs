@@ -202,6 +202,10 @@ pub struct FnDef {
 pub enum Item {
     Fn(FnDef),
     Module(ModuleDef),
+    /// `alias A.B.C` (as_name = "C") or `alias A.B.C, as: D` (as_name = "D").
+    /// Only valid inside a defmodule body; the resolver consumes these and
+    /// they don't survive into the flattened Program.
+    Alias { full_path: Vec<String>, as_name: String },
 }
 
 #[derive(Debug, Clone)]

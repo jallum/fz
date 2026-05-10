@@ -96,6 +96,11 @@ impl Parser {
                     let m = self.parse_module()?;
                     items.push(Rc::new(Item::Module(m)));
                 }
+                Tok::Alias => {
+                    flush_fn_groups(&mut items, &mut order, &mut groups);
+                    let a = self.parse_alias()?;
+                    items.push(Rc::new(a));
+                }
                 Tok::Fn | Tok::Defmacro => {
                     let (name, clause, is_macro) = self.parse_fn_clause()?;
                     if let Some(def) = groups.get_mut(&name) {
@@ -158,6 +163,47 @@ impl Parser {
             return self.err(format!("expected `do` or `, do:` after function head, got {:?}", self.peek()));
         };
         Ok((name, FnClause { params, guard, body }, is_macro))
+    }
+
+    /// `alias A.B.C` or `alias A.B.C, as: D`.
+    fn parse_alias(&mut self) -> PR<Item> {
+        self.expect(&Tok::Alias, "`alias`")?;
+        let mut path: Vec<String> = Vec::new();
+        match self.bump() {
+            Tok::Upper(n) => path.push(n),
+            other => return self.err(format!(
+                "expected uppercase module path after `alias`, got {:?}", other
+            )),
+        }
+        // Subsequent `.UpperName` segments. The lexer emits Dot + Upper,
+        // and Dot then dispatches into postfix in expressions; here we
+        // walk it token-by-token.
+        while matches!(self.peek(), Tok::Dot) {
+            self.bump();
+            match self.bump() {
+                Tok::Upper(n) => path.push(n),
+                other => return self.err(format!(
+                    "expected uppercase segment after `.` in alias path, got {:?}", other
+                )),
+            }
+        }
+        // Optional `, as: <Upper>` to override the nickname.
+        let as_name = if matches!(self.peek(), Tok::Comma)
+            && matches!(self.peek_at(1), Tok::KwKey(s) if s == "as")
+        {
+            self.bump(); // ,
+            self.bump(); // as:
+            match self.bump() {
+                Tok::Upper(n) => n,
+                other => return self.err(format!(
+                    "expected uppercase nickname after `as:`, got {:?}", other
+                )),
+            }
+        } else {
+            // Default: last segment.
+            path.last().cloned().expect("path is non-empty")
+        };
+        Ok(Item::Alias { full_path: path, as_name })
     }
 
     fn parse_module(&mut self) -> PR<ModuleDef> {

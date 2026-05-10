@@ -164,8 +164,8 @@ impl Interp {
                 // Modules should have been flattened by `resolve::flatten_modules`
                 // before reaching this point. If one slips through (e.g. a
                 // direct test caller), error loudly.
-                Item::Module(_) => return Err(
-                    "load_program: Item::Module reached interp; \
+                Item::Module(_) | Item::Alias { .. } => return Err(
+                    "load_program: pre-resolution Item reached interp; \
                      resolve::flatten_modules must run after parse".into()),
             }
         }
