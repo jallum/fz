@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-10T13:05:42Z",
+  "description": "GOAL: Inter-process messaging. send(pid, msg) and receive primitives. v1 is COPY-ONLY (the zero-copy fast path comes in .19.5).\n\n## Decisions captured\n\n- Each process owns a Vec\u003cFzValue\u003e mailbox (FIFO).\n- send(pid, msg) deep-copies msg into receiver's heap (walks the FzValue closure-of-reachability and reallocates in receiver's heap), then enqueues into receiver's mailbox.\n- receive blocks the current process until a matching message arrives. v1: receive returns the next message (no pattern selectivity; user does match at fz level).\n- When send delivers to a Blocked process, the scheduler marks it Ready.\n- Selective receive with pattern matching is a follow-up.\n- Receive with timeout is a follow-up.\n\n## Deliverables\n\n- src/runtime/mailbox.rs: VecDeque-backed mailbox, push_back from send, pop_front from receive.\n- Deep-copy walker: traverses FzValue closure, reallocs heap objects in target heap. Handles all HeapKinds (Struct, List, Bitstring, Vec*, Map). Cycles via mark-set during walk.\n- Builtins: send/2, receive/0 (and receive/1 for timeout if we want it for v1; defer).\n- Scheduler integration: send wakes Blocked receiver; receive yields if mailbox empty.\n\n## Tests\n\n- Spawn process B; A sends [1, 2, 3] to B; B receives and prints. Both processes' heaps see independent copies.\n- Send a tuple of mixed values.\n- Send a deeply nested structure (list of maps of bitstrings) — deep copy correctness.\n- Mailbox FIFO ordering preserved.\n- Receive blocks correctly (process state becomes Blocked).\n\n## Risks\n\n- Deep-copy must handle all heap kinds correctly, including cycles. Mitigation: explicit forwarding-pointer technique during copy (mark each src object with its dst pointer to handle cycles + sharing).\n- Performance: deep copy is the v1 cost; .19.5 fixes hot cases via transferable arenas.\n\n## Out of scope\n\n- Selective receive (follow-up)\n- Receive timeout (follow-up)\n- Zero-copy send fast path (.19.5)",
+  "id": "fz-ul4.19.3",
+  "labels": [],
+  "parent": "fz-ul4.19",
+  "priority": 3,
+  "status": "open",
+  "title": "Mailbox + send / receive (copy fallback)",
+  "type": "task",
+  "updated_at": "2026-05-10T13:05:42Z"
+}
