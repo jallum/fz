@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-ul4.11.9"
+  ],
   "blocks": [],
   "created": "2026-05-10T13:03:22Z",
   "description": "GOAL: Wire heap-allocated cons cells through the entire CPS pipeline. First heap type to actually run via JIT.\n\n## Decisions captured\n\n- List = HeapKind::List (NOT a Struct — special-cased for traversal hotness; head/tail loads are direct 8-byte reads at fixed offsets).\n- Cons cell layout: HeapHeader (16) + head:FzValue (8) + tail:FzValue (8) = 32 bytes total.\n- Builtins / IR prims (defined in .11.3 placeholder; populated here): cons / head / tail / is_nil. length is derived (or builtin).\n- Codegen: cons calls fz_alloc_list_cons; head/tail are 8-byte loads at offset 16/24.\n\n## Deliverables\n\n- IR translation for List exprs in src/ir_lower.rs (already covered in .11.4 — this ticket connects to runtime).\n- IR codegen for Prim::ListCons / ListHead / ListTail / ListIsNil.\n- Builtins wiring (interp side reuses existing FzVec / List logic; JIT side uses heap cons cells).\n- GC integration: cons cells found via header.kind == List; traced via list-special branch in .11.2 tracer.\n\n## Tests\n\n- `fn main() do print([1, 2, 3]) end` runs through JIT.\n- `fn sum([]): 0; fn sum([h | t]): h + sum(t); main: print(sum([1,2,3,4,5]))` -\u003e 15.\n- `fn map(_, []): []; fn map(f, [h|t]): [f(h) | map(f, t)]` (heap-allocated higher-order list traversal).\n- Allocate a list, drop reference, force GC, verify list freed.\n\n## Out of scope\n\n- Other heap types (.11.11-.11.14, separate tickets).",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Lists as first heap type, end-to-end via CPS",
   "type": "task",
-  "updated_at": "2026-05-10T13:03:22Z"
+  "updated_at": "2026-05-10T13:05:54Z"
 }
