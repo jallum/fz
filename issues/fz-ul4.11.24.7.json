@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-ul4.11.24.3"
+  ],
   "blocks": [],
   "created": "2026-05-10T20:52:36Z",
   "description": "GOAL: Port specialize_return from typer.rs (AST-shaped) to operate over fz_ir. Given a FnIr and per-parameter Descr inputs, return the inferred return-Descr. This is the kernel that .13 (interpreter \u003c-\u003e JIT tier-up) needs to make per-call-shape specialization decisions.\n\n## Why this is atomic\n\nBefore: specialize_return exists in typer.rs but operates on ast::FnDef. After: a new ir-shaped specialize_return runs the .11.24.3 typer on a FnIr with parameter Descrs widened/narrowed per call shape. Tests assert that specializing fact(0) yields int_lit(1) (or int_top, depending on widening), and specializing fact(_) yields int_top. The general typer pass continues to use param-Descr Top; specialization is opt-in via an explicit call site.\n\n## Deliverables\n\nsrc/ir_typer.rs:\n- `pub fn specialize_return(m: \u0026Module, fn_id: FnId, params: \u0026[Descr]) -\u003e Descr`.\n- Implementation: clone the per-block env machinery from .11.24.3, but seed the entry block's parameter Descrs from the `params` slice instead of widening to Top. Run flow-sensitive narrowing to fixpoint. Read the Descr at every Term::Return / Term::Halt site; union them.\n- Recursive call handling: when the body calls itself with narrowed args, fall back to Top to avoid divergence (existing widen mechanism in typer.rs already does this; reuse).\n- Public API surface for .13 tier-up: `CompiledModule::compile_specialized(\u0026self, fn_id, params)` — out of scope; stub returns existing CompiledModule for now.\n\n## Tests\n\n- specialize_return on `fn fact(0), do: 1 ; fn fact(n) when n \u003e 0, do: n * fact(n-1)` with params=[int_lit(0)] -\u003e int_lit(1).\n- Same fn with params=[int_top] -\u003e int_top.\n- specialize_return on `fn id(x), do: x` with params=[atom_lit('ok')] -\u003e atom_lit('ok').\n- Recursion termination: a self-recursive fn doesn't loop forever; widening kicks in.\n\n## Out of scope\n\n- Actual code specialization (.13 tier-up's job).\n- Polymorphic call-site observation across multi-call programs (.4.4.1 / .4.4.2 reintegration is a separate ticket if needed).\n\n## Dependencies\n\n- BLOCKED BY: fz-ul4.11.24.3.\n- BLOCKS: fz-ul4.19.5 (transferable arenas read return-Descr to gauge transferability).",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "specialize_return for IR (sets up tier-up)",
   "type": "task",
-  "updated_at": "2026-05-10T20:52:36Z"
+  "updated_at": "2026-05-10T20:52:42Z"
 }
