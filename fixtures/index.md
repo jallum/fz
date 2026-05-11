@@ -9,7 +9,7 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `alias.fz` | nested-module path aliasing — `alias Long.Path` and `alias Long.Path, as: LP` | jit |
 | `apply2.fz` | first-class fns — pass a fn into another fn and call it | jit, interp |
 | `attributes.fz` | @moduledoc / @doc attributes parse and the module still executes | jit |
-| `classify_two_clause.fz` | literal-vs-wildcard clause dispatch (`0` and `_`) | jit |
+| `classify_two_clause.fz` | literal-vs-wildcard clause dispatch (`0` and `_`) | jit, interp |
 | `cold_fn.fz` | minimal call site — one fn definition, one call, no scaffolding | jit, interp |
 | `concurrency_ping_pong.fz` | spawn + send + receive — parent blocks on receive, child sends 42, main returns 42 | jit |
 | `cross_module_macro.fz` | defmacro in one module, called from another via `import Helpers, only: [twice: 1]` | jit |
