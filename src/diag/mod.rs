@@ -13,9 +13,12 @@
 // rather than peppering #[allow] attributes per item.
 #![allow(dead_code)]
 
+pub mod codes;
+pub mod diagnostic;
 pub mod source_map;
 pub mod span;
 
+pub use diagnostic::{DiagCode, Diagnostic, Diagnostics, Severity, SpanLabel};
 pub use source_map::SourceMap;
 pub use span::{FileId, Span, SpanOrigin};
 

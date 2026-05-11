@@ -543,26 +543,23 @@ pub fn specialize_return(
     ret
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DiagKind {
-    UnreachableArm,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Diagnostic {
-    pub fn_name: String,
-    pub kind: DiagKind,
-    pub message: String,
-}
-
 /// .11.24.6: scan typer output for unreachable If branches. For each
 /// `Term::If(cond, then_b, else_b)`, re-run the branch narrowing under the
 /// terminator's pre-env. If either branch's narrowed operand is empty, that
 /// branch is unreachable.
 ///
 /// Returns diagnostics in a stable order (sorted by fn position then block id).
-pub fn collect_diagnostics(module: &Module, types: &ModuleTypes) -> Vec<Diagnostic> {
-    let mut out: Vec<Diagnostic> = Vec::new();
+/// Each diagnostic carries the offending block's terminator span (when
+/// recorded by ir_lower in `Module.source.term_span`); .20.8 will enrich
+/// the message with the set-theoretic type vocabulary.
+pub fn collect_diagnostics(
+    module: &Module,
+    types: &ModuleTypes,
+) -> crate::diag::Diagnostics {
+    use crate::diag::{Diagnostic, Diagnostics, Span};
+    use crate::diag::codes::TYPE_UNREACHABLE_ARM;
+
+    let mut out = Diagnostics::new();
     for (i, f) in module.fns.iter().enumerate() {
         let ft = &types[i];
         let mut blocks_sorted: Vec<&crate::fz_ir::Block> = f.blocks.iter().collect();
@@ -570,8 +567,7 @@ pub fn collect_diagnostics(module: &Module, types: &ModuleTypes) -> Vec<Diagnost
         for b in blocks_sorted {
             let Term::If(cond, then_b, else_b) = b.terminator else { continue };
 
-            // Reconstruct the env at the terminator: start from this block's
-            // entry env and replay the stmts.
+            // Reconstruct the env at the terminator.
             let mut env = ft.block_envs.get(&b.id).cloned().unwrap_or_default();
             for stmt in &b.stmts {
                 let Stmt::Let(v, prim) = stmt;
@@ -580,11 +576,11 @@ pub fn collect_diagnostics(module: &Module, types: &ModuleTypes) -> Vec<Diagnost
             }
 
             let (then_env, else_env) = narrow_for_if(&env, cond, &b.stmts);
+            let term_span = module.source.term_span
+                .get(&(f.id, b.id))
+                .copied()
+                .unwrap_or(Span::DUMMY);
 
-            // A branch is unreachable if any Var that changed in the narrowed
-            // env relative to pre-env is now empty. We compare values for the
-            // small set of keys touched by narrow_for_if (operands of the
-            // recognized predicates).
             let check = |branch_env: &HashMap<crate::fz_ir::Var, Descr>, tag: &str, bb_id: crate::fz_ir::BlockId| -> Option<Diagnostic> {
                 let mut keys: Vec<crate::fz_ir::Var> = branch_env.keys().copied().collect();
                 keys.sort_by_key(|v| v.0);
@@ -592,15 +588,20 @@ pub fn collect_diagnostics(module: &Module, types: &ModuleTypes) -> Vec<Diagnost
                     let new_t = branch_env.get(&v).unwrap();
                     let old_t = env.get(&v).cloned().unwrap_or_else(Descr::any);
                     if !new_t.is_equiv(&old_t) && new_t.is_empty() && !old_t.is_empty() {
-                        return Some(Diagnostic {
-                            fn_name: f.name.clone(),
-                            kind: DiagKind::UnreachableArm,
-                            message: format!(
-                                "{}-branch of If in bb{}: narrowing v{} proved no \
-                                 inhabitants (unreachable arm at bb{})",
-                                tag, b.id.0, v.0, bb_id.0
-                            ),
-                        });
+                        let var_name = module.source.var_name_of(v).unwrap_or("this value");
+                        let message = format!(
+                            "the {} branch is never reachable",
+                            tag,
+                        );
+                        let note = format!(
+                            "narrowing `{}` in this branch leaves no possible values \
+                             (unreachable arm at bb{})",
+                            var_name, bb_id.0,
+                        );
+                        let d = Diagnostic::warning(TYPE_UNREACHABLE_ARM, message, term_span)
+                            .with_label(format!("in fn `{}`", f.name))
+                            .with_note(note);
+                        return Some(d);
                     }
                 }
                 None
@@ -956,7 +957,7 @@ mod tests {
         let t = type_module(&m);
         let diags = collect_diagnostics(&m, &t);
         assert_eq!(diags.len(), 2, "expected two unreachable arms, got {:?}", diags);
-        assert!(diags.iter().all(|d| d.kind == DiagKind::UnreachableArm));
+        assert!(diags.iter().all(|d| d.code == crate::diag::codes::TYPE_UNREACHABLE_ARM));
     }
 
     #[test]
@@ -1004,8 +1005,11 @@ mod tests {
         let m = build_module(vec![b.build()]);
         let t = type_module(&m);
         let diags = collect_diagnostics(&m, &t);
+        // The dead-block id is mentioned in the diagnostic's notes (post-
+        // .20.5 the message is the headline; details live in notes).
+        let needle = format!("bb{}", dead_b.0);
         assert!(
-            diags.iter().any(|d| d.message.contains(&format!("bb{}", dead_b.0))),
+            diags.iter().any(|d| d.notes.iter().any(|n| n.contains(&needle))),
             "expected dead_b (bb{}) flagged, got {:?}", dead_b.0, diags
         );
     }

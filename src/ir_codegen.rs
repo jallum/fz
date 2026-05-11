@@ -70,12 +70,15 @@ pub struct CompiledModule {
     /// Indexed by position in source Module.fns (not by FnId.0). No consumers
     /// yet; .11.24.4 / .11.24.5 / .11.24.6 / .11.24.7 plug it in.
     pub(crate) types: crate::ir_typer::ModuleTypes,
-    /// .11.24.6: diagnostics surface (unreachable arms, dead branches).
-    pub(crate) diagnostics: Vec<crate::ir_typer::Diagnostic>,
+    /// .11.24.6 + .20.5: diagnostics surface (unreachable arms, dead
+    /// branches). Now structured via the central `diag::Diagnostic`
+    /// type so .20.6's renderer can consume the same shape every
+    /// pipeline stage emits.
+    pub(crate) diagnostics: crate::diag::Diagnostics,
 }
 
 impl CompiledModule {
-    pub fn warnings(&self) -> &[crate::ir_typer::Diagnostic] {
+    pub fn warnings(&self) -> &crate::diag::Diagnostics {
         &self.diagnostics
     }
 }

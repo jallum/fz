@@ -240,8 +240,13 @@ fn run_jit(args: &[String]) {
         eprintln!("{}", e);
         std::process::exit(1);
     });
-    for w in cm.warnings() {
-        eprintln!("warning: {}: {}", w.fn_name, w.message);
+    // Transitional warning rendering. The .20.6 renderer replaces this
+    // with snippet+caret output keyed on SourceMap.
+    for w in cm.warnings().iter() {
+        eprintln!("warning[{}]: {}", w.code, w.message);
+        for n in &w.notes {
+            eprintln!("  note: {}", n);
+        }
     }
     let _ = cm.run(main_fn);
 }
