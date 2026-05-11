@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-11T21:02:03Z",
+  "description": "fixtures/concurrency_ping_pong.fz spawns a child and calls receive(); main returns 42 but never prints it. The fixture passes the matrix (exit 0, no stdout) but proves less than its purpose claims — a regression that broke send/receive but still exited 0 would silently pass.\n\n## Fix\n\nAdd `print(receive())` (or capture return and print) so the fixture's success is observable in stdout. Re-bless fixtures/concurrency_ping_pong.expected to contain `42`.\n\n## Acceptance\n\n- fixture prints 42 on success\n- .expected captures it\n- matrix still green",
+  "id": "fz-ul4.26",
+  "labels": [],
+  "parent": "fz-ul4",
+  "priority": 3,
+  "status": "open",
+  "title": "concurrency_ping_pong.fz output is unobservable",
+  "type": "task",
+  "updated_at": "2026-05-11T21:02:03Z"
+}
