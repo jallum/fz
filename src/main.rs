@@ -231,12 +231,7 @@ fn run_jit(args: &[String]) {
         std::process::exit(1);
     }
     let module = ir_lower::lower_program(&prog).unwrap_or_else(|e| {
-        let d = diag::Diagnostic::error(
-            diag::codes::LOWER_UNSUPPORTED,
-            format!("{}", e),
-            diag::Span::DUMMY,
-        );
-        diag::render_one_to_stderr(&sm, &d);
+        diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         std::process::exit(1);
     });
     let main_fn = match module.fn_by_name("main") {

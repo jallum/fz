@@ -29,24 +29,47 @@ use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum LowerError {
-    Unsupported(String),
-    Unbound(String),
-    ArityMismatch { name: String, expected: usize, got: usize },
-    PostExpansionNode(String),
+    Unsupported { span: Span, what: String },
+    Unbound { span: Span, name: String },
+    ArityMismatch { span: Span, name: String, expected: usize, got: usize },
+    PostExpansionNode { span: Span, what: String },
+}
+
+impl LowerError {
+    pub fn to_diagnostic(&self) -> crate::diag::Diagnostic {
+        use crate::diag::{Diagnostic, codes};
+        match self {
+            LowerError::Unsupported { span, what } => Diagnostic::error(
+                codes::LOWER_UNSUPPORTED,
+                format!("unsupported: {}", what),
+                *span,
+            ),
+            LowerError::Unbound { span, name } => Diagnostic::error(
+                codes::LOWER_UNBOUND,
+                format!("unbound: {}", name),
+                *span,
+            ),
+            LowerError::ArityMismatch { span, name, expected, got } => Diagnostic::error(
+                codes::LOWER_ARITY_MISMATCH,
+                format!("arity mismatch for {}: expected {}, got {}", name, expected, got),
+                *span,
+            ),
+            LowerError::PostExpansionNode { span, what } => Diagnostic::error(
+                codes::LOWER_POST_EXPANSION_LEFTOVER,
+                format!("post-expansion node leaked: {}", what),
+                *span,
+            ),
+        }
+    }
 }
 
 impl std::fmt::Display for LowerError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            LowerError::Unsupported(s) => write!(f, "unsupported: {}", s),
-            LowerError::Unbound(n) => write!(f, "unbound: {}", n),
-            LowerError::ArityMismatch { name, expected, got } => {
-                write!(f, "arity mismatch for {}: expected {}, got {}", name, expected, got)
-            }
-            LowerError::PostExpansionNode(s) => write!(f, "post-expansion node leaked: {}", s),
-        }
+        f.write_str(&self.to_diagnostic().message)
     }
 }
+
+impl std::error::Error for LowerError {}
 
 /// Atom interner: maps atom names to stable u32 ids.
 #[derive(Default)]
@@ -271,18 +294,23 @@ pub fn lower_program_full(
                 let id = ctx.mb.fresh_fn_id();
                 ctx.fns.insert((fn_def.name.clone(), arity), id);
             }
-            Item::Module(_) => {
-                return Err(LowerError::Unsupported(
-                    "Item::Module should be flattened by resolve before lowering".into(),
-                ));
+            Item::Module(m) => {
+                return Err(LowerError::Unsupported {
+                    span: m.span,
+                    what: "Item::Module should be flattened by resolve before lowering".into(),
+                });
             }
-            Item::Alias { .. } | Item::Import { .. } => {
-                return Err(LowerError::Unsupported(
-                    "alias/import should be consumed by resolve before lowering".into(),
-                ));
+            Item::Alias { span, .. } | Item::Import { span, .. } => {
+                return Err(LowerError::Unsupported {
+                    span: *span,
+                    what: "alias/import should be consumed by resolve before lowering".into(),
+                });
             }
-            Item::MacroCall { name, .. } => {
-                return Err(LowerError::PostExpansionNode(format!("MacroCall({})", name)));
+            Item::MacroCall { name, span, .. } => {
+                return Err(LowerError::PostExpansionNode {
+                    span: *span,
+                    what: format!("MacroCall({})", name),
+                });
             }
         }
     }
@@ -352,7 +380,10 @@ fn lower_fn(ctx: &mut LowerCtx, fn_def: &FnDef) -> Result<(), LowerError> {
     let fn_id = *ctx
         .fns
         .get(&(fn_def.name.clone(), arity))
-        .ok_or_else(|| LowerError::Unbound(format!("fn {}/{}", fn_def.name, arity)))?;
+        .ok_or_else(|| LowerError::Unbound {
+            span: fn_def.name_span,
+            name: format!("fn {}/{}", fn_def.name, arity),
+        })?;
 
     let mut builder = FnBuilder::new(fn_id, fn_def.name.clone());
     // Mint param vars for the entry block.
@@ -396,7 +427,10 @@ fn lower_fn(ctx: &mut LowerCtx, fn_def: &FnDef) -> Result<(), LowerError> {
             ctx.name_var(*pv, "", pat.span);
         }
         if let Some(_g) = &clause.guard {
-            return Err(LowerError::Unsupported("guards (deferred)".into()));
+            return Err(LowerError::Unsupported {
+                span: clause.span,
+                what: "guards (deferred)".into(),
+            });
         }
         let result = lower_expr(ctx, &clause.body, /* is_tail */ true)?;
         if !ctx.terminated {
@@ -441,7 +475,10 @@ fn lower_multi_clause(
 
     for (i, clause) in fn_def.clauses.iter().enumerate() {
         if let Some(_g) = &clause.guard {
-            return Err(LowerError::Unsupported("guards (deferred)".into()));
+            return Err(LowerError::Unsupported {
+                span: clause.span,
+                what: "guards (deferred)".into(),
+            });
         }
         let next = try_blocks.get(i + 1).copied().unwrap_or(fail_block);
         ctx.cur_block = Some(try_blocks[i]);
@@ -488,7 +525,7 @@ fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -> Result<Va
             {
                 return Ok(ctx.let_(Prim::MakeClosure(fn_id, vec![])));
             }
-            Err(LowerError::Unbound(name.clone()))
+            Err(LowerError::Unbound { span: sp, name: name.clone() })
         }
 
         Expr::BinOp(op, a, b) => {
@@ -497,7 +534,7 @@ fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -> Result<Va
             let vb = lower_expr(ctx, b, false)?;
             let va = ctx.unpark(&park_a);
             ctx.unbind(&park_a);
-            let irop = lower_binop(*op)?;
+            let irop = lower_binop(*op, sp)?;
             Ok(ctx.let_at(Prim::BinOp(irop, va, vb), sp))
         }
         Expr::UnOp(op, x) => {
@@ -579,9 +616,10 @@ fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -> Result<Va
             let callee_name = match &target.node {
                 Expr::Var(n) => n.clone(),
                 _ => {
-                    return Err(LowerError::Unsupported(
-                        "Call target other than Var (deferred)".into(),
-                    ));
+                    return Err(LowerError::Unsupported {
+                        span: target.span,
+                        what: "Call target other than Var (deferred)".into(),
+                    });
                 }
             };
             // Local closure value? (Shadows fn lookup if a local of the same name exists.)
@@ -600,7 +638,10 @@ fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -> Result<Va
             }
             let arity = arg_vars.len();
             let callee = *ctx.fns.get(&(callee_name.clone(), arity)).ok_or_else(|| {
-                LowerError::Unbound(format!("fn {}/{}", callee_name, arity))
+                LowerError::Unbound {
+                    span: target.span,
+                    name: format!("fn {}/{}", callee_name, arity),
+                }
             })?;
             if is_tail {
                 ctx.set_term_at(Term::TailCall { callee, args: arg_vars }, sp);
@@ -622,9 +663,9 @@ fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -> Result<Va
         Expr::MapUpdate(base, entries) => lower_map_update(ctx, base, entries),
         Expr::Index(map, key) => lower_index(ctx, map, key),
         Expr::Bitstring(fields) => lower_bitstring_expr(ctx, fields),
-        Expr::VecLit(kind, els) => lower_vec_lit(ctx, *kind, els),
-        Expr::Quote(_) => Err(LowerError::PostExpansionNode("Quote".into())),
-        Expr::Unquote(_) => Err(LowerError::PostExpansionNode("Unquote".into())),
+        Expr::VecLit(kind, els) => lower_vec_lit(ctx, *kind, els, sp),
+        Expr::Quote(_) => Err(LowerError::PostExpansionNode { span: sp, what: "Quote".into() }),
+        Expr::Unquote(_) => Err(LowerError::PostExpansionNode { span: sp, what: "Unquote".into() }),
     }
     // Note: lower_if is implemented as a separate function below to keep the
     // var/block dance clean; the unreachable!() above is replaced via a
@@ -824,7 +865,7 @@ fn lower_seq(ctx: &mut LowerCtx, exprs: &[Spanned<Expr>]) -> Result<Vec<String>,
     Ok(parks)
 }
 
-fn lower_binop(op: AstBinOp) -> Result<BinOp, LowerError> {
+fn lower_binop(op: AstBinOp, span: Span) -> Result<BinOp, LowerError> {
     Ok(match op {
         AstBinOp::Add => BinOp::Add,
         AstBinOp::Sub => BinOp::Sub,
@@ -840,15 +881,17 @@ fn lower_binop(op: AstBinOp) -> Result<BinOp, LowerError> {
         AstBinOp::And => BinOp::And,
         AstBinOp::Or => BinOp::Or,
         AstBinOp::Pipe => {
-            return Err(LowerError::Unsupported(
-                "BinOp::Pipe should be desugared before lowering".into(),
-            ));
+            return Err(LowerError::Unsupported {
+                span,
+                what: "BinOp::Pipe should be desugared before lowering".into(),
+            });
         }
         AstBinOp::Cons => {
             // a | b — handled at construction sites (List with tail).
-            return Err(LowerError::Unsupported(
-                "BinOp::Cons should be desugared into List with tail".into(),
-            ));
+            return Err(LowerError::Unsupported {
+                span,
+                what: "BinOp::Cons should be desugared into List with tail".into(),
+            });
         }
     })
 }
@@ -923,7 +966,7 @@ fn lower_pattern_bind(
             // key (must be a literal expression-equivalent), call MapGet, ensure
             // result is non-nil (key present), then recurse into value pattern.
             for (key_pat, val_pat) in entries {
-                let key_var = lower_pattern_as_key_expr(ctx, &key_pat.node)?;
+                let key_var = lower_pattern_as_key_expr(ctx, key_pat)?;
                 let got = ctx.let_(Prim::MapGet(subject, key_var));
                 let nil_v = ctx.let_(Prim::Const(Const::Nil));
                 let is_nil = ctx.let_(Prim::BinOp(BinOp::Eq, got, nil_v));
@@ -944,7 +987,7 @@ fn lower_pattern_bind(
             let n = fields.len();
             for (i, field) in fields.iter().enumerate() {
                 let is_last = i + 1 == n;
-                let size_ir = lower_bit_size(ctx, &field.spec.size)?;
+                let size_ir = lower_bit_size(ctx, &field.spec.size, field.value.span)?;
                 let result = ctx.let_(Prim::BitReadField {
                     reader,
                     ty: field.spec.ty,
@@ -978,8 +1021,8 @@ fn lower_pattern_bind(
 
 /// Lower a Pattern that represents a map key. Map keys in patterns are
 /// constants (atoms, ints, strings, ...) — no var-binding allowed.
-fn lower_pattern_as_key_expr(ctx: &mut LowerCtx, p: &Pattern) -> Result<Var, LowerError> {
-    Ok(match p {
+fn lower_pattern_as_key_expr(ctx: &mut LowerCtx, sp: &Spanned<Pattern>) -> Result<Var, LowerError> {
+    Ok(match &sp.node {
         Pattern::Int(n) => ctx.let_(Prim::Const(Const::Int(*n))),
         Pattern::Float(x) => ctx.let_(Prim::Const(Const::Float(*x))),
         Pattern::Str(s) => ctx.let_(Prim::Const(Const::Str(s.clone()))),
@@ -991,10 +1034,13 @@ fn lower_pattern_as_key_expr(ctx: &mut LowerCtx, p: &Pattern) -> Result<Var, Low
         Pattern::Bool(false) => ctx.let_(Prim::Const(Const::False)),
         Pattern::Nil => ctx.let_(Prim::Const(Const::Nil)),
         other => {
-            return Err(LowerError::Unsupported(format!(
-                "map-pattern keys must be constants, got {:?}",
-                std::mem::discriminant(other)
-            )));
+            return Err(LowerError::Unsupported {
+                span: sp.span,
+                what: format!(
+                    "map-pattern keys must be constants, got {:?}",
+                    std::mem::discriminant(other)
+                ),
+            });
         }
     })
 }
@@ -1002,6 +1048,7 @@ fn lower_pattern_as_key_expr(ctx: &mut LowerCtx, p: &Pattern) -> Result<Var, Low
 fn lower_bit_size(
     ctx: &LowerCtx,
     size: &Option<AstBitSize>,
+    span: Span,
 ) -> Result<Option<BitSizeIr>, LowerError> {
     Ok(match size {
         None => None,
@@ -1009,7 +1056,10 @@ fn lower_bit_size(
         Some(AstBitSize::Var(name)) => {
             let v = ctx
                 .lookup(name)
-                .ok_or_else(|| LowerError::Unbound(format!("bit size var {}", name)))?;
+                .ok_or_else(|| LowerError::Unbound {
+                    span,
+                    name: format!("bit size var {}", name),
+                })?;
             Some(BitSizeIr::Var(v))
         }
     })
@@ -1092,6 +1142,7 @@ fn lower_vec_lit(
     ctx: &mut LowerCtx,
     kind: crate::ast::VecKind,
     els: &[Spanned<Expr>],
+    span: Span,
 ) -> Result<Var, LowerError> {
     use crate::ast::VecKind;
     use crate::fz_ir::VecKindIr;
@@ -1109,9 +1160,10 @@ fn lower_vec_lit(
             let has_float = els.iter().any(|e| matches!(&e.node, Expr::Float(_)));
             let has_int = els.iter().any(|e| matches!(&e.node, Expr::Int(_)));
             if has_float && has_int {
-                return Err(LowerError::Unsupported(
-                    "~v[..] mixes Int and Float literals; no auto-promotion (fz-ul4.11.24.5)".into(),
-                ));
+                return Err(LowerError::Unsupported {
+                    span,
+                    what: "~v[..] mixes Int and Float literals; no auto-promotion (fz-ul4.11.24.5)".into(),
+                });
             }
             if has_float { VecKindIr::F64 } else { VecKindIr::I64 }
         }
@@ -1140,7 +1192,7 @@ fn lower_bitstring_expr(
         ir_fields.push(BitFieldIr {
             value: ctx.unpark(vn),
             ty: f.spec.ty,
-            size: lower_bit_size(ctx, &f.spec.size)?,
+            size: lower_bit_size(ctx, &f.spec.size, f.value.span)?,
             endian: f.spec.endian,
             signed: f.spec.signed,
             unit: f.spec.unit,
@@ -1157,7 +1209,10 @@ fn lower_case(
     is_tail: bool,
 ) -> Result<Var, LowerError> {
     if clauses.is_empty() {
-        return Err(LowerError::Unsupported("case with no clauses".into()));
+        return Err(LowerError::Unsupported {
+            span: subject.span,
+            what: "case with no clauses".into(),
+        });
     }
     let sv = lower_expr(ctx, subject, false)?;
     let subject_park = ctx.park(sv);
@@ -1185,7 +1240,10 @@ fn lower_case(
 
     for (i, clause) in clauses.iter().enumerate() {
         if let Some(_g) = &clause.guard {
-            return Err(LowerError::Unsupported("case guard (deferred)".into()));
+            return Err(LowerError::Unsupported {
+                span: clause.span,
+                what: "case guard (deferred)".into(),
+            });
         }
         let next = try_blocks.get(i + 1).copied().unwrap_or(fail_block);
         ctx.cur_block = Some(try_blocks[i]);
@@ -1309,7 +1367,10 @@ fn lower_with(
             ctx.set_term(Term::Goto(try_blocks[0], vec![]));
             for (i, clause) in else_clauses.iter().enumerate() {
                 if let Some(_g) = &clause.guard {
-                    return Err(LowerError::Unsupported("with-else guard (deferred)".into()));
+                    return Err(LowerError::Unsupported {
+                        span: clause.span,
+                        what: "with-else guard (deferred)".into(),
+                    });
                 }
                 let next = try_blocks.get(i + 1).copied().unwrap_or(else_fail);
                 ctx.cur_block = Some(try_blocks[i]);
@@ -1514,19 +1575,30 @@ mod tests {
     #[test]
     fn unbound_var_returns_lower_error() {
         let err = lower_src_err("fn f(), do: missing");
-        assert!(matches!(err, LowerError::Unbound(_)));
+        assert!(matches!(err, LowerError::Unbound { .. }));
+    }
+
+    /// .21 step 3: lower errors carry a real Span of the offending node,
+    /// not Span::DUMMY.
+    #[test]
+    fn unbound_var_diag_has_real_span() {
+        let err = lower_src_err("fn f(), do: missing");
+        let d = err.to_diagnostic();
+        assert_ne!(d.primary.span, Span::DUMMY,
+            "lower diagnostic should carry the unbound Var's span");
+        assert_eq!(d.code, crate::diag::codes::LOWER_UNBOUND);
     }
 
     #[test]
     fn unbound_callee_returns_lower_error() {
         let err = lower_src_err("fn f(), do: nonesuch(1)");
-        assert!(matches!(err, LowerError::Unbound(_)));
+        assert!(matches!(err, LowerError::Unbound { .. }));
     }
 
     #[test]
     fn empty_case_returns_unsupported() {
         let err = lower_src_err("fn f() do case 1 do end end");
-        assert!(matches!(err, LowerError::Unsupported(_)));
+        assert!(matches!(err, LowerError::Unsupported { .. }));
     }
 
     #[test]
@@ -1625,7 +1697,7 @@ end
     fn quote_returns_post_expansion_node() {
         // Skip macro expansion to surface the leftover-quote error path.
         let err = lower_src_err("fn f(), do: quote do: 1");
-        assert!(matches!(err, LowerError::PostExpansionNode(_)));
+        assert!(matches!(err, LowerError::PostExpansionNode { .. }));
     }
 
     /// Span round-trip: AST nodes parsed by the parser carry non-DUMMY spans
