@@ -90,15 +90,26 @@ pub enum BuiltinKind {
     AssertEq = 2,
     AssertNeq = 3,
     VecGet = 4,
+    /// fz-ul4.19.2: spawn(closure) -> pid. Creates a new task at the
+    /// closure's entry fn and enqueues it. v1 restriction: closure must
+    /// have zero captures (no cross-heap arg passing yet — .19.3
+    /// territory). Pid returned as boxed Int for v1; struct-typed Pid
+    /// is a follow-up.
+    Spawn = 5,
+    /// fz-ul4.19.2: self() -> pid. Returns the current task's pid as a
+    /// boxed Int.
+    SelfPid = 6,
 }
 
 impl BuiltinKind {
-    pub const ALL: [BuiltinKind; 5] = [
+    pub const ALL: [BuiltinKind; 7] = [
         Self::Print,
         Self::Assert,
         Self::AssertEq,
         Self::AssertNeq,
         Self::VecGet,
+        Self::Spawn,
+        Self::SelfPid,
     ];
 
     pub fn name(self) -> &'static str {
@@ -108,6 +119,8 @@ impl BuiltinKind {
             Self::AssertEq => "assert_eq",
             Self::AssertNeq => "assert_neq",
             Self::VecGet => "vec_get",
+            Self::Spawn => "spawn",
+            Self::SelfPid => "self",
         }
     }
 

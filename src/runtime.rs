@@ -53,6 +53,39 @@ pub struct Runtime<'a> {
     workers: usize,
 }
 
+thread_local! {
+    /// Raw pointer to the Runtime currently driving `run_until_idle` on
+    /// this worker. Set during run_until_idle for the duration of each
+    /// task's quantum; reset to null after. fz_spawn (.19.2) reads this
+    /// to enqueue new tasks from JIT'd code.
+    ///
+    /// The pointer type is type-erased to `*mut ()` because Runtime
+    /// carries a lifetime; the consumer (fz_spawn) re-narrows it via
+    /// the publicly-exposed `spawn_via_current_runtime` helper that
+    /// transmutes back to `*mut Runtime<'_>`. Safe because the Runtime
+    /// outlives any FFI call: it owns the run_until_idle stack frame.
+    pub(crate) static CURRENT_RUNTIME: std::cell::Cell<*mut ()> =
+        const { std::cell::Cell::new(std::ptr::null_mut()) };
+}
+
+/// fz-ul4.19.2: called from fz_spawn (ir_codegen.rs FFI) to enqueue a new
+/// task. Reads CURRENT_RUNTIME, calls spawn() on it. Panics if no Runtime
+/// is currently installed (i.e., the JIT path is being driven via
+/// CompiledModule.run rather than Runtime::run_until_idle).
+pub fn spawn_via_current_runtime(fn_id: FnId) -> PidId {
+    let raw = CURRENT_RUNTIME.with(|c| c.get());
+    assert!(
+        !raw.is_null(),
+        "spawn() called outside Runtime::run_until_idle — no scheduler to spawn into"
+    );
+    // Safety: while CURRENT_RUNTIME is non-null, the Runtime stack frame
+    // is live (run_until_idle hasn't returned). We re-narrow with a
+    // synthetic 'static lifetime; the call returns before the borrow
+    // matters.
+    let rt = unsafe { &mut *(raw as *mut Runtime<'static>) };
+    rt.spawn(fn_id)
+}
+
 impl<'a> Runtime<'a> {
     /// Create a Runtime bound to `compiled`. `workers` configures the pool
     /// size; v1 only supports 1 (panics otherwise so the limitation is
@@ -104,6 +137,13 @@ impl<'a> Runtime<'a> {
     /// .19.3 adds receive). v1: no yield points, so this runs each task
     /// in turn until it halts.
     pub fn run_until_idle(&mut self) {
+        // fz-ul4.19.2: install Runtime in TLS so fz_spawn (.19.2) and
+        // future scheduler-bound FFI fns can reach back. Pointer is
+        // erased to *mut () because Runtime carries 'a; consumers
+        // re-narrow via spawn_via_current_runtime which transmutes the
+        // lifetime back. Safe: we restore the previous value on exit.
+        let self_ptr = self as *mut Runtime<'a> as *mut ();
+        let prev_rt = CURRENT_RUNTIME.with(|c| c.replace(self_ptr));
         while let Some(pid) = self.run_queue.pop_front() {
             let mut task = self
                 .tasks
@@ -132,6 +172,7 @@ impl<'a> Runtime<'a> {
             // halt_value / mailbox after the runtime drains.
             self.tasks.insert(pid, task);
         }
+        CURRENT_RUNTIME.with(|c| c.set(prev_rt));
     }
 
     /// Read-only access to a task (for tests / inspection).
@@ -233,5 +274,62 @@ mod tests {
         let m = lower_src(src);
         let compiled = compile(&m).unwrap();
         let _ = Runtime::new(&compiled, 2);
+    }
+
+    // ----- fz-ul4.19.2: spawn / self builtins -----
+
+    /// `self()` inside main returns the running task's pid (1 for the
+    /// first spawn).
+    #[test]
+    fn self_returns_task_pid() {
+        let src = "fn main(), do: self()";
+        let m = lower_src(src);
+        let entry = m.fn_by_name("main").unwrap().id;
+        let compiled = compile(&m).unwrap();
+        let mut rt = Runtime::new(&compiled, 1);
+        let pid = rt.spawn(entry);
+        rt.run_until_idle();
+        // halt_value is the boxed Int's i64 (we boxed pid as Int; halt
+        // returns the unboxed i64 for Int-tagged FzValues).
+        assert_eq!(rt.task(pid).unwrap().halt_value, pid as i64);
+    }
+
+    /// `spawn(fn() -> 42 end)` enqueues a child task; after run_until_idle
+    /// both tasks have halted and the child computed 42.
+    #[test]
+    fn spawn_enqueues_child_task() {
+        let src = r#"
+            fn child(), do: 42
+            fn main(), do: spawn(child)
+        "#;
+        let m = lower_src(src);
+        let entry = m.fn_by_name("main").unwrap().id;
+        let compiled = compile(&m).unwrap();
+        let mut rt = Runtime::new(&compiled, 1);
+        let main_pid = rt.spawn(entry);
+        rt.run_until_idle();
+        // Main halted with the child's pid (spawn returns pid as boxed
+        // Int; halt unboxes to i64). Child pid is main_pid + 1 = 2.
+        let expected_child_pid = main_pid + 1;
+        assert_eq!(rt.task(main_pid).unwrap().halt_value, expected_child_pid as i64);
+        // Child completed.
+        let child = rt
+            .task(expected_child_pid)
+            .expect("child task should exist after spawn");
+        assert_eq!(child.halt_value, 42);
+        assert_eq!(child.state, ProcessState::Exited);
+    }
+
+    /// spawn() called outside Runtime::run_until_idle panics with a clear
+    /// message rather than UB. We test the helper directly rather than
+    /// through JIT because extern "C" fn panics abort under the default
+    /// edition-2024 panic-abi.
+    #[test]
+    #[should_panic(expected = "spawn() called outside")]
+    fn spawn_outside_runtime_panics() {
+        // Ensure CURRENT_RUNTIME is null (no Runtime installed on this
+        // worker). Other tests may have installed it; reset for safety.
+        CURRENT_RUNTIME.with(|c| c.set(std::ptr::null_mut()));
+        let _ = spawn_via_current_runtime(crate::fz_ir::FnId(0));
     }
 }

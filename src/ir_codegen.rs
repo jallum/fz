@@ -1199,6 +1199,42 @@ extern "C" fn fz_alloc_float(bits: u64) -> u64 {
     p as u64
 }
 
+// ----- fz-ul4.19.2: scheduler-bound builtins (spawn / self) -----
+//
+// Both consume a Runtime installed in TLS by Runtime::run_until_idle.
+// Calling either outside the scheduler path panics with a clear message.
+
+/// fz_spawn(closure_bits) -> pid_bits. Extracts fn_id from the closure
+/// heap object and enqueues a new task at that fn. Returns the pid as a
+/// boxed FzValue Int (Pid-as-struct deferred to a follow-up).
+///
+/// v1 restriction: closure must have ZERO captures. Captured values
+/// would need to be copied into the new task's heap (.19.3 territory);
+/// for v1 spawn takes plain fn references (closures with no captures).
+extern "C" fn fz_spawn(closure_bits: u64) -> u64 {
+    use crate::fz_value::FzValue;
+    let cp = FzValue(closure_bits)
+        .unbox_ptr()
+        .expect("spawn: closure not a heap ptr");
+    let header = unsafe { &*cp };
+    let fn_id = crate::fz_ir::FnId(header.schema_id);
+    let captured_count = header.flags as usize;
+    assert!(
+        captured_count == 0,
+        "spawn/1 v1: closure with {} captures not yet supported; pass a plain fn reference",
+        captured_count
+    );
+    let pid = crate::runtime::spawn_via_current_runtime(fn_id);
+    FzValue::from_int(pid as i64).0
+}
+
+/// fz_self() -> pid_bits. Returns the currently-running task's pid as a
+/// boxed FzValue Int.
+extern "C" fn fz_self() -> u64 {
+    use crate::fz_value::FzValue;
+    FzValue::from_int(current_process().pid as i64).0
+}
+
 /// Decode an FzValue (Int or boxed Float) into f64. Panics on other tags.
 fn fz_to_f64(bits: u64) -> f64 {
     use crate::fz_value::{FzValue, HeapKind, Tag};
@@ -1735,6 +1771,8 @@ pub fn compile(module: &Module) -> Result<CompiledModule, CodegenError> {
     builder.symbol("fz_closure_arg", fz_closure_arg as *const u8);
     builder.symbol("fz_closure_invoke", fz_closure_invoke as *const u8);
     builder.symbol("fz_tail_closure", fz_tail_closure as *const u8);
+    builder.symbol("fz_spawn", fz_spawn as *const u8);
+    builder.symbol("fz_self", fz_self as *const u8);
     let mut jmod = JITModule::new(builder);
 
     // Declare runtime imports.
@@ -1896,6 +1934,14 @@ pub fn compile(module: &Module) -> Result<CompiledModule, CodegenError> {
     let tail_closure_id = jmod
         .declare_function("fz_tail_closure", Linkage::Import, &tail_closure_sig)
         .map_err(|e| CodegenError::new(format!("declare tail_closure: {}", e)))?;
+    let spawn_sig = sig1(&[types::I64], &[types::I64]);
+    let spawn_id = jmod
+        .declare_function("fz_spawn", Linkage::Import, &spawn_sig)
+        .map_err(|e| CodegenError::new(format!("declare spawn: {}", e)))?;
+    let self_sig = sig1(&[], &[types::I64]);
+    let self_id = jmod
+        .declare_function("fz_self", Linkage::Import, &self_sig)
+        .map_err(|e| CodegenError::new(format!("declare self: {}", e)))?;
 
     // Per-fn signature: extern "C" fn(*mut u8, *mut u8) -> *mut u8.
     let fn_sig = sig1(&[types::I64, types::I64], &[types::I64]);
@@ -1948,6 +1994,8 @@ pub fn compile(module: &Module) -> Result<CompiledModule, CodegenError> {
         cmp_gt_id,
         cmp_ge_id,
         value_eq_id,
+        spawn_id,
+        self_id,
     };
 
     // Register a heap Schema for every tuple arity used by MakeTuple, so the
@@ -2130,6 +2178,8 @@ struct RuntimeRefs {
     cmp_gt_id: FuncId,
     cmp_ge_id: FuncId,
     value_eq_id: FuncId,
+    spawn_id: FuncId,
+    self_id: FuncId,
 }
 
 fn compile_fn(
@@ -2700,6 +2750,23 @@ fn lower_prim(
                         "builtin {} not yet wired through JIT",
                         kind.name()
                     )));
+                }
+                BuiltinKind::Spawn => {
+                    if args.len() != 1 {
+                        return Err(CodegenError::new("spawn/1 expected"));
+                    }
+                    let cv = *env.get(&args[0].0).expect("unbound spawn closure");
+                    let fref = jmod.declare_func_in_func(runtime.spawn_id, b.func);
+                    let inst = b.ins().call(fref, &[cv]);
+                    b.inst_results(inst)[0]
+                }
+                BuiltinKind::SelfPid => {
+                    if !args.is_empty() {
+                        return Err(CodegenError::new("self/0 expected"));
+                    }
+                    let fref = jmod.declare_func_in_func(runtime.self_id, b.func);
+                    let inst = b.ins().call(fref, &[]);
+                    b.inst_results(inst)[0]
                 }
             }
         }

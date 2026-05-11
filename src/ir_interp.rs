@@ -493,6 +493,11 @@ fn run_builtin(name: &str, args: &[Value]) -> Result<Value, String> {
                 Err("assert_neq failed".into())
             }
         }
+        // fz-ul4.19.2: spawn/self are scheduler-bound builtins. The IR
+        // interpreter has no scheduler, so they error out at interp time;
+        // the JIT path implements them via the Runtime.
+        "spawn" => Err("spawn/1 requires the JIT runtime (not implemented in IR interp)".into()),
+        "self" => Err("self/0 requires the JIT runtime (not implemented in IR interp)".into()),
         other => Err(format!("unknown builtin {}", other)),
     }
 }

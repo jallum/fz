@@ -413,6 +413,8 @@ fn type_builtin(bid: BuiltinId) -> Descr {
         | Some(BuiltinKind::AssertEq)
         | Some(BuiltinKind::AssertNeq) => Descr::nil(),
         Some(BuiltinKind::VecGet) => Descr::int().union(&Descr::float()),
+        // fz-ul4.19.2: spawn/self both return a Pid (boxed Int for v1).
+        Some(BuiltinKind::Spawn) | Some(BuiltinKind::SelfPid) => Descr::int(),
         None => Descr::any(),
     }
 }
