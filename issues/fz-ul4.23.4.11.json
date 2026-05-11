@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-11T21:14:45Z",
+  "description": "Move fz_closure_{begin,push,finalize,arg,invoke} and fz_tail_closure.\n\n## Acceptance\n\n- cargo test green.",
+  "id": "fz-ul4.23.4.11",
+  "labels": [],
+  "parent": "fz-ul4.23.4",
+  "priority": 3,
+  "status": "open",
+  "title": "Extract closure FFI cluster (fz_closure_*, fz_tail_closure)",
+  "type": "task",
+  "updated_at": "2026-05-11T21:14:45Z"
+}
