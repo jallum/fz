@@ -2,7 +2,8 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [
-    "fz-ul4.23.3"
+    "fz-ul4.23.3",
+    "fz-ul4.23.4"
   ],
   "created": "2026-05-11T20:55:16Z",
   "description": "Phase 2 of fz-ul4.23. Free wins, no behavior change.\n\n## Deliverables\n\n- Delete src/codegen.rs, src/jit.rs, src/aot.rs, src/test_support.rs. All four are `#![cfg(any())]`-gated AND not mod-declared in main.rs — Cargo never sees them. Their preservation rationale (.11.9 cutover for intent verification) expired with .11.10-.11.14. Git history preserves them.\n- Decide fz build: either (a) remove the subcommand entirely until Phase 6 wires it up, or (b) keep it as a clear-error stub. Recommend (a) — fz-ul4.22 (closed by Phase 6) will reintroduce it properly.\n- Rename eval.rs to make its compile-time AST-evaluator role explicit. Candidates:\n  - rename Interp -\u003e AstEvaluator (or similar) inside eval.rs\n  - or move eval.rs into a submodule of macros.rs as macros::ast_eval\n  Decide based on whether REPL / test_runner are migrating off it (Phase 5) — if yes, the rename can be minimal; if no, full rename.\n\n## Acceptance\n\n- `cargo build` clean, `cargo test` green.\n- `fz build` either gone or honestly errors.\n- The word \"interp\" no longer appears in eval.rs at the type-name level (it's a compile-time evaluator, not the runtime interp).\n- No references to deleted files remain in comments / docs / tickets-as-memory.",
