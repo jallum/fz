@@ -2,9 +2,9 @@
 - Warnings are errors.
 - Tests must pass.
 - TDD is the norm.
-- We prove things work like we say they do.
+- Prove things work like you say they do.
 - Deferrals and omissions require authorization.
 - Tickets are memory; `bw --help`.
 - One ticket == one commit.
-- We research thoroughly, plan our work.
+- Research thoroughly, plan out work.
 - We are fearless when we can write out the plan in a DAG where all steps are atomic, testable units that build towards a final goal.
