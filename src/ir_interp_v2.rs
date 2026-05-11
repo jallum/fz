@@ -184,25 +184,43 @@ fn const_to_fz(c: &Const) -> FzValue {
         Const::Nil => FzValue::NIL,
         Const::True => FzValue::TRUE,
         Const::False => FzValue::FALSE,
-        Const::Float(_) | Const::Str(_) => FzValue::NIL, // .5.3 wires properly
+        Const::Float(f) => FzValue(crate::ir_runtime::fz_alloc_float(f.to_bits())),
+        // Str: no first-class heap kind yet (.11.x lowers strings to
+        // Bitstring at the AST level). Should never reach the interp as a
+        // raw Const::Str; if it does, surface honestly.
+        Const::Str(_) => FzValue::NIL,
     }
 }
 
 fn eval_binop(op: BinOp, a: FzValue, b: FzValue) -> Result<FzValue, String> {
-    match op {
-        BinOp::Add => {
-            // Both Int fast path (matches the JIT's inline path). Mixed-
-            // or boxed-float operands fall back to fz_arith_add to share
-            // semantics with the JIT exactly.
+    // Arithmetic: both-Int fast path matches the JIT's inline lowering;
+    // mixed or boxed-float operands fall back to the shared FFI helper so
+    // promotion semantics stay identical across paths.
+    macro_rules! int_arith {
+        ($op:tt, $ffi:path) => {
             match (a.unbox_int(), b.unbox_int()) {
-                (Some(x), Some(y)) => Ok(FzValue::from_int(x + y)),
-                _ => Ok(FzValue(crate::ir_runtime::fz_arith_add(a.0, b.0))),
+                (Some(x), Some(y)) => Ok(FzValue::from_int(x $op y)),
+                _ => Ok(FzValue($ffi(a.0, b.0))),
             }
+        };
+    }
+    match op {
+        BinOp::Add => int_arith!(+, crate::ir_runtime::fz_arith_add),
+        BinOp::Sub => int_arith!(-, crate::ir_runtime::fz_arith_sub),
+        BinOp::Mul => int_arith!(*, crate::ir_runtime::fz_arith_mul),
+        BinOp::Div => int_arith!(/, crate::ir_runtime::fz_arith_div),
+        BinOp::Mod => int_arith!(%, crate::ir_runtime::fz_arith_mod),
+        BinOp::Eq => Ok(FzValue(crate::ir_runtime::fz_value_eq(a.0, b.0))),
+        BinOp::Neq => {
+            let eq = FzValue(crate::ir_runtime::fz_value_eq(a.0, b.0));
+            Ok(if eq.is_true() { FzValue::FALSE } else { FzValue::TRUE })
         }
-        _ => Err(format!(
-            "interp .5.2: BinOp::{:?} not yet supported (lands in fz-ul4.23.5.3+)",
-            op
-        )),
+        BinOp::Lt => Ok(FzValue(crate::ir_runtime::fz_cmp_lt(a.0, b.0))),
+        BinOp::Le => Ok(FzValue(crate::ir_runtime::fz_cmp_le(a.0, b.0))),
+        BinOp::Gt => Ok(FzValue(crate::ir_runtime::fz_cmp_gt(a.0, b.0))),
+        BinOp::Ge => Ok(FzValue(crate::ir_runtime::fz_cmp_ge(a.0, b.0))),
+        BinOp::And => Ok(if !is_truthy(a) { a } else { b }),
+        BinOp::Or => Ok(if is_truthy(a) { a } else { b }),
     }
 }
 
@@ -221,6 +239,46 @@ fn run_builtin(
             }
             crate::ir_runtime::fz_print_value(args[0].0);
             Ok(FzValue::NIL)
+        }
+        BuiltinKind::Assert => {
+            if args.len() != 1 {
+                return Err(format!("assert/1 got {} args", args.len()));
+            }
+            if is_truthy(args[0]) {
+                Ok(FzValue::NIL)
+            } else {
+                Err("assertion failed".into())
+            }
+        }
+        BuiltinKind::AssertEq => {
+            if args.len() != 2 {
+                return Err(format!("assert_eq/2 got {} args", args.len()));
+            }
+            let eq = FzValue(crate::ir_runtime::fz_value_eq(args[0].0, args[1].0));
+            if eq.is_true() {
+                Ok(FzValue::NIL)
+            } else {
+                Err(format!(
+                    "assertion failed: assert_eq({}, {})",
+                    crate::fz_value::debug::render(args[0].0),
+                    crate::fz_value::debug::render(args[1].0),
+                ))
+            }
+        }
+        BuiltinKind::AssertNeq => {
+            if args.len() != 2 {
+                return Err(format!("assert_neq/2 got {} args", args.len()));
+            }
+            let eq = FzValue(crate::ir_runtime::fz_value_eq(args[0].0, args[1].0));
+            if eq.is_false() {
+                Ok(FzValue::NIL)
+            } else {
+                Err(format!(
+                    "assertion failed: assert_neq({}, {})",
+                    crate::fz_value::debug::render(args[0].0),
+                    crate::fz_value::debug::render(args[1].0),
+                ))
+            }
         }
         _ => Err(format!(
             "interp .5.2: builtin {:?} not yet supported (lands in later .5.x)",
