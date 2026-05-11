@@ -415,6 +415,59 @@ warning[type/unreachable-arm]: the then branch is never reachable
         assert!(out.contains("\x1b["), "ANSI escapes expected, got:\n{}", out);
     }
 
+    /// Golden-file fixtures: any directory under `fixtures/errors/` with
+    /// an `input.fz` + `expected.txt` pair drives the lex/parse stages
+    /// and compares the rendered diagnostic to the golden file. Fixtures
+    /// with only `input.fz` (no expected) are reserved for later tickets
+    /// and silently skipped.
+    #[test]
+    fn fixture_golden_outputs_match() {
+        use crate::lexer::Lexer;
+        use crate::parser::Parser;
+        use std::fs;
+        use std::path::Path;
+
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("fixtures").join("errors");
+        let mut compared = 0;
+        for entry in fs::read_dir(&root).expect("read fixtures/errors") {
+            let entry = entry.expect("entry");
+            let path = entry.path();
+            if !path.is_dir() { continue; }
+            let input_path = path.join("input.fz");
+            let expected_path = path.join("expected.txt");
+            if !expected_path.exists() || !input_path.exists() { continue; }
+
+            let src = fs::read_to_string(&input_path).expect("read input.fz");
+            let expected = fs::read_to_string(&expected_path).expect("read expected.txt");
+            let name = input_path.to_string_lossy().to_string();
+
+            // Strip CARGO_MANIFEST_DIR prefix so file paths in expected.txt
+            // match what `fz run` emits with a relative path. The fixture
+            // was captured with a workspace-relative path; we register
+            // the file under that same relative name.
+            let rel = name.strip_prefix(env!("CARGO_MANIFEST_DIR"))
+                .map(|s| s.trim_start_matches('/').to_string())
+                .unwrap_or(name.clone());
+
+            let mut sm = SourceMap::new();
+            let id = sm.add_file(rel.clone(), src.clone());
+            let lex = Lexer::with_file(&src, id).tokenize();
+            let actual = match lex {
+                Err(e) => render(&e.to_diagnostic(), &sm),
+                Ok(toks) => match Parser::new(toks).parse_program() {
+                    Err(e) => render(&e.to_diagnostic(), &sm),
+                    Ok(_) => panic!("fixture {} parsed successfully — expected an error", rel),
+                },
+            };
+            assert_eq!(actual.trim_end(), expected.trim_end(),
+                "fixture {} mismatch:\n--- actual ---\n{}\n--- expected ---\n{}",
+                rel, actual, expected);
+            compared += 1;
+        }
+        assert!(compared >= 1, "expected at least one fixture with expected.txt");
+    }
+
     #[test]
     fn emit_all_renders_each_with_blank_separator() {
         let src = "fn main(), do: 1\n";

@@ -90,9 +90,25 @@ pub struct LexError {
 
 impl fmt::Display for LexError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Transitional: no SourceMap available here. The .20.6 renderer
-        // turns LexError into a Diagnostic with proper location output.
+        // Plain-text fallback. The .20.6 renderer is the proper rendering
+        // path; `to_diagnostic` is what the driver calls.
         write!(f, "lex error: {}", self.msg)
+    }
+}
+
+impl LexError {
+    /// Promote a lex-time error into a structured Diagnostic. The headline
+    /// is the lexer's message; the primary span is the offending byte.
+    pub fn to_diagnostic(&self) -> crate::diag::Diagnostic {
+        // Most lex errors today come from `next_token`'s "unexpected
+        // character" path. Future lexer work can produce more specific
+        // codes (LEX_UNTERMINATED_STRING etc.) — for now everything
+        // maps to LEX_UNEXPECTED_CHAR.
+        crate::diag::Diagnostic::error(
+            crate::diag::codes::LEX_UNEXPECTED_CHAR,
+            self.msg.clone(),
+            self.span,
+        )
     }
 }
 

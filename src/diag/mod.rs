@@ -15,12 +15,14 @@
 
 pub mod codes;
 pub mod diagnostic;
+pub mod driver;
 pub mod render;
 pub mod source_map;
 pub mod span;
 pub mod style;
 
 pub use diagnostic::{DiagCode, Diagnostic, Diagnostics, Severity, SpanLabel};
+pub use driver::{render_one_to_stderr, render_to_stderr};
 pub use render::Renderer;
 pub use source_map::SourceMap;
 pub use span::{FileId, Span, SpanOrigin};

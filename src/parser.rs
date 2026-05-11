@@ -109,9 +109,23 @@ pub struct ParseError {
 
 impl std::fmt::Display for ParseError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // Transitional: no SourceMap available here. The .20.6 renderer
-        // turns ParseError into a Diagnostic with proper location output.
+        // Plain-text fallback. The .20.6 renderer is the proper rendering
+        // path; `to_diagnostic` is what the driver calls.
         write!(f, "parse error: {}", self.msg)
+    }
+}
+
+impl ParseError {
+    /// Promote a parse-time error into a structured Diagnostic. v1 maps
+    /// every parse error to `parse/expected-token`; later passes can
+    /// refine to specific codes (duplicate-doc, unknown-attribute, …)
+    /// at each call site once `self.err(..)` learns to pick codes.
+    pub fn to_diagnostic(&self) -> crate::diag::Diagnostic {
+        crate::diag::Diagnostic::error(
+            crate::diag::codes::PARSE_EXPECTED_TOKEN,
+            self.msg.clone(),
+            self.span,
+        )
     }
 }
 

@@ -197,10 +197,11 @@ fn run_build(_args: &[String]) {
 }
 
 fn run_jit(args: &[String]) {
-    // New CPS-based pipeline: lex -> parse -> resolve -> macro-expand ->
-    // ir_lower -> ir_codegen -> trampoline. Currently only handles programs
-    // within ir_codegen's scalar-frame scope; heap types fail at codegen
-    // until .11.10-.11.14.
+    // Single render path: every error from every stage goes through
+    // diag::render_to_stderr. Lex/parse errors come with proper spans;
+    // resolve / macro / lower / codegen errors are wrapped in a DUMMY-
+    // span Diagnostic for now (a future ticket carries spans through
+    // those stages too — they're rarer than user-visible lex/parse).
     let src_path = args.first().cloned().unwrap_or_else(|| {
         eprintln!("fz run <src.fz>");
         std::process::exit(2);
@@ -209,45 +210,61 @@ fn run_jit(args: &[String]) {
         eprintln!("read {}: {}", src_path, e);
         std::process::exit(1);
     });
-    let toks = Lexer::new(&src).tokenize().unwrap_or_else(|e| {
-        eprintln!("{}", e);
+
+    let mut sm = diag::SourceMap::new();
+    let file_id = sm.add_file(src_path.clone(), src.clone());
+
+    let toks = lexer::Lexer::with_file(&src, file_id).tokenize().unwrap_or_else(|e| {
+        diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         std::process::exit(1);
     });
     let prog = Parser::new(toks).parse_program().unwrap_or_else(|e| {
-        eprintln!("{}", e);
+        diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         std::process::exit(1);
     });
     let mut prog = resolve::flatten_modules(prog).unwrap_or_else(|e| {
-        eprintln!("module resolution: {}", e);
+        let d = diag::Diagnostic::error(diag::codes::RESOLVE_UNKNOWN_MODULE, e, diag::Span::DUMMY);
+        diag::render_one_to_stderr(&sm, &d);
         std::process::exit(1);
     });
     if let Err(e) = macros::expand_program(&mut prog) {
-        eprintln!("macro expansion: {}", e);
+        let d = diag::Diagnostic::error(diag::codes::MACRO_BODY_FAILED, e, diag::Span::DUMMY);
+        diag::render_one_to_stderr(&sm, &d);
         std::process::exit(1);
     }
     let module = ir_lower::lower_program(&prog).unwrap_or_else(|e| {
-        eprintln!("lower: {}", e);
+        let d = diag::Diagnostic::error(
+            diag::codes::LOWER_UNSUPPORTED,
+            format!("{}", e),
+            diag::Span::DUMMY,
+        );
+        diag::render_one_to_stderr(&sm, &d);
         std::process::exit(1);
     });
     let main_fn = match module.fn_by_name("main") {
         Some(f) => f.id,
         None => {
-            eprintln!("fz run: no main/0 fn found");
+            let d = diag::Diagnostic::error(
+                diag::codes::LOWER_UNBOUND,
+                "no `main/0` fn found",
+                diag::Span::DUMMY,
+            );
+            diag::render_one_to_stderr(&sm, &d);
             std::process::exit(1);
         }
     };
     let cm = ir_codegen::compile(&module).unwrap_or_else(|e| {
-        eprintln!("{}", e);
+        let d = diag::Diagnostic::error(
+            diag::codes::CODEGEN_SCHEMA_MISSING,
+            format!("{:?}", e),
+            diag::Span::DUMMY,
+        );
+        diag::render_one_to_stderr(&sm, &d);
         std::process::exit(1);
     });
-    // Transitional warning rendering. The .20.6 renderer replaces this
-    // with snippet+caret output keyed on SourceMap.
-    for w in cm.warnings().iter() {
-        eprintln!("warning[{}]: {}", w.code, w.message);
-        for n in &w.notes {
-            eprintln!("  note: {}", n);
-        }
-    }
+    // Typer-emitted warnings (unreachable arms, etc.) flow through the
+    // same renderer.
+    diag::render_to_stderr(&sm, cm.warnings());
     let _ = cm.run(main_fn);
 }
 
