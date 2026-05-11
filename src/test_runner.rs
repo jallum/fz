@@ -100,11 +100,15 @@ fn run_named(user_src: &str, user_name: &str) -> Result<(), TestRunError> {
             crate::diag::render_one_to_stderr(&sm, &e.to_diagnostic());
             TestRunError("parse".into())
         })?;
-    let prog = flatten_modules(prog)
-        .map_err(|e| TestRunError(format!("module: {}", e)))?;
+    let prog = flatten_modules(prog).map_err(|e| {
+        crate::diag::render_one_to_stderr(&sm, &e.to_diagnostic());
+        TestRunError("module".into())
+    })?;
     let mut prog = prog;
-    expand_program(&mut prog)
-        .map_err(|e| TestRunError(format!("macro: {}", e)))?;
+    expand_program(&mut prog).map_err(|e| {
+        crate::diag::render_one_to_stderr(&sm, &e.to_diagnostic());
+        TestRunError("macro".into())
+    })?;
 
     // Discover tests: post-expansion Item::Fn whose final segment starts
     // with "test_".

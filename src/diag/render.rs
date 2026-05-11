@@ -415,15 +415,43 @@ warning[type/unreachable-arm]: the then branch is never reachable
         assert!(out.contains("\x1b["), "ANSI escapes expected, got:\n{}", out);
     }
 
+    /// Drive a fixture through lex → parse → resolve → macros → lower
+    /// and return the rendered first-error diagnostic. Panics if the
+    /// pipeline completes without an error (the fixture must exercise
+    /// one of these stages).
+    fn run_pipeline_for_fixture(
+        src: &str, id: super::super::FileId, sm: &SourceMap, rel: &str,
+    ) -> String {
+        use crate::lexer::Lexer;
+        use crate::parser::Parser;
+        let toks = match Lexer::with_file(src, id).tokenize() {
+            Err(e) => return render(&e.to_diagnostic(), sm),
+            Ok(t) => t,
+        };
+        let prog = match Parser::new(toks).parse_program() {
+            Err(e) => return render(&e.to_diagnostic(), sm),
+            Ok(p) => p,
+        };
+        let mut prog = match crate::resolve::flatten_modules(prog) {
+            Err(e) => return render(&e.to_diagnostic(), sm),
+            Ok(p) => p,
+        };
+        if let Err(e) = crate::macros::expand_program(&mut prog) {
+            return render(&e.to_diagnostic(), sm);
+        }
+        if let Err(e) = crate::ir_lower::lower_program(&prog) {
+            return render(&e.to_diagnostic(), sm);
+        }
+        panic!("fixture {} completed pipeline successfully — expected an error", rel);
+    }
+
     /// Golden-file fixtures: any directory under `fixtures/errors/` with
-    /// an `input.fz` + `expected.txt` pair drives the lex/parse stages
+    /// an `input.fz` + `expected.txt` pair drives the pipeline
     /// and compares the rendered diagnostic to the golden file. Fixtures
     /// with only `input.fz` (no expected) are reserved for later tickets
     /// and silently skipped.
     #[test]
     fn fixture_golden_outputs_match() {
-        use crate::lexer::Lexer;
-        use crate::parser::Parser;
         use std::fs;
         use std::path::Path;
 
@@ -452,14 +480,13 @@ warning[type/unreachable-arm]: the then branch is never reachable
 
             let mut sm = SourceMap::new();
             let id = sm.add_file(rel.clone(), src.clone());
-            let lex = Lexer::with_file(&src, id).tokenize();
-            let actual = match lex {
-                Err(e) => render(&e.to_diagnostic(), &sm),
-                Ok(toks) => match Parser::new(toks).parse_program() {
-                    Err(e) => render(&e.to_diagnostic(), &sm),
-                    Ok(_) => panic!("fixture {} parsed successfully — expected an error", rel),
-                },
-            };
+            // Drive the full pipeline (lex → parse → resolve → macros →
+            // lower) and capture whichever stage's diagnostic the fixture
+            // is exercising. Codegen errors aren't covered here because
+            // most are backend-plumbing failures without a real source
+            // span; the verify/define paths that DO have spans are
+            // covered by integration tests, not goldens.
+            let actual = run_pipeline_for_fixture(&src, id, &sm, &rel);
             assert_eq!(actual.trim_end(), expected.trim_end(),
                 "fixture {} mismatch:\n--- actual ---\n{}\n--- expected ---\n{}",
                 rel, actual, expected);

@@ -1,0 +1,6 @@
+error[macro/not-a-defmacro]: item-level call `test(...)` is not a defmacro
+  --> fixtures/errors/macro-not-a-defmacro/input.fz:1:1
+   |
+ 1 | test(:foo) do
+   | ^^^^^^^^^^^^^
+   |
