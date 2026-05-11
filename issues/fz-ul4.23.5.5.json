@@ -6,14 +6,15 @@
   "blocks": [
     "fz-ul4.23.5.9"
   ],
+  "closed_at": "2026-05-11T21:49:24Z",
   "created": "2026-05-11T21:11:35Z",
   "description": "Add multi-clause fn dispatch with literal and wildcard patterns. Same dispatch semantics as the JIT (clause order, fall-through on no match).\n\n## Acceptance\n\n- `# paths: jit, interp` on classify_two_clause.fz.",
   "id": "fz-ul4.23.5.5",
   "labels": [],
   "parent": "fz-ul4.23.5",
   "priority": 3,
-  "status": "in_progress",
+  "status": "closed",
   "title": "ir_interp_v2: pattern dispatch (classify_two_clause.fz)",
   "type": "task",
-  "updated_at": "2026-05-11T21:49:16Z"
+  "updated_at": "2026-05-11T21:49:24Z"
 }
