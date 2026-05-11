@@ -564,181 +564,7 @@ pub fn compile(module: &Module) -> Result<CompiledModule, CodegenError> {
     builder.symbol("fz_receive_attempt", crate::ir_runtime::fz_receive_attempt as *const u8);
     let mut jmod = JITModule::new(builder);
 
-    // Declare runtime imports.
-    let print_sig = sig1(&[types::I64], &[]);
-    let print_id = jmod
-        .declare_function("fz_print_value", Linkage::Import, &print_sig)
-        .map_err(|e| CodegenError::new(format!("declare print: {}", e)))?;
-    let halt_sig = sig1(&[types::I64, types::I64], &[]);
-    let halt_id = jmod
-        .declare_function("fz_halt", Linkage::Import, &halt_sig)
-        .map_err(|e| CodegenError::new(format!("declare halt: {}", e)))?;
-    let alloc_sig = sig1(&[types::I32, types::I32], &[types::I64]);
-    let alloc_id = jmod
-        .declare_function("fz_alloc_frame", Linkage::Import, &alloc_sig)
-        .map_err(|e| CodegenError::new(format!("declare alloc: {}", e)))?;
-    let alloc_cons_sig = sig1(&[types::I64, types::I64], &[types::I64]);
-    let alloc_cons_id = jmod
-        .declare_function("fz_alloc_list_cons", Linkage::Import, &alloc_cons_sig)
-        .map_err(|e| CodegenError::new(format!("declare alloc_cons: {}", e)))?;
-    let alloc_struct_sig = sig1(&[types::I32], &[types::I64]);
-    let alloc_struct_id = jmod
-        .declare_function("fz_alloc_struct", Linkage::Import, &alloc_struct_sig)
-        .map_err(|e| CodegenError::new(format!("declare alloc_struct: {}", e)))?;
-    let bs_begin_sig = sig1(&[], &[]);
-    let bs_begin_id = jmod
-        .declare_function("fz_bs_begin", Linkage::Import, &bs_begin_sig)
-        .map_err(|e| CodegenError::new(format!("declare bs_begin: {}", e)))?;
-    let bs_write_sig = sig1(
-        &[
-            types::I64, // value bits
-            types::I32, // ty tag
-            types::I32, // size_present
-            types::I32, // size_value
-            types::I32, // unit
-            types::I32, // endian
-            types::I32, // signed
-        ],
-        &[],
-    );
-    let bs_write_id = jmod
-        .declare_function("fz_bs_write_field", Linkage::Import, &bs_write_sig)
-        .map_err(|e| CodegenError::new(format!("declare bs_write_field: {}", e)))?;
-    let bs_finalize_sig = sig1(&[], &[types::I64]);
-    let bs_finalize_id = jmod
-        .declare_function("fz_bs_finalize", Linkage::Import, &bs_finalize_sig)
-        .map_err(|e| CodegenError::new(format!("declare bs_finalize: {}", e)))?;
-    let bs_reader_init_sig = sig1(&[types::I64], &[types::I64]);
-    let bs_reader_init_id = jmod
-        .declare_function("fz_bs_reader_init", Linkage::Import, &bs_reader_init_sig)
-        .map_err(|e| CodegenError::new(format!("declare bs_reader_init: {}", e)))?;
-    let bs_read_field_sig = sig1(
-        &[
-            types::I64, // reader bits
-            types::I32, // ty tag
-            types::I32, // size_present
-            types::I32, // size_value
-            types::I32, // unit
-            types::I32, // endian
-            types::I32, // signed
-            types::I32, // is_last
-        ],
-        &[types::I64],
-    );
-    let bs_read_field_id = jmod
-        .declare_function("fz_bs_read_field", Linkage::Import, &bs_read_field_sig)
-        .map_err(|e| CodegenError::new(format!("declare bs_read_field: {}", e)))?;
-    let map_begin_sig = sig1(&[], &[]);
-    let map_begin_id = jmod
-        .declare_function("fz_map_begin", Linkage::Import, &map_begin_sig)
-        .map_err(|e| CodegenError::new(format!("declare map_begin: {}", e)))?;
-    let map_clone_sig = sig1(&[types::I64], &[]);
-    let map_clone_id = jmod
-        .declare_function("fz_map_clone", Linkage::Import, &map_clone_sig)
-        .map_err(|e| CodegenError::new(format!("declare map_clone: {}", e)))?;
-    let map_push_sig = sig1(&[types::I64, types::I64], &[]);
-    let map_push_id = jmod
-        .declare_function("fz_map_push", Linkage::Import, &map_push_sig)
-        .map_err(|e| CodegenError::new(format!("declare map_push: {}", e)))?;
-    let map_finalize_sig = sig1(&[], &[types::I64]);
-    let map_finalize_id = jmod
-        .declare_function("fz_map_finalize", Linkage::Import, &map_finalize_sig)
-        .map_err(|e| CodegenError::new(format!("declare map_finalize: {}", e)))?;
-    let map_get_sig = sig1(&[types::I64, types::I64], &[types::I64]);
-    let map_get_id = jmod
-        .declare_function("fz_map_get", Linkage::Import, &map_get_sig)
-        .map_err(|e| CodegenError::new(format!("declare map_get: {}", e)))?;
-    let alloc_float_sig = sig1(&[types::I64], &[types::I64]);
-    let alloc_float_id = jmod
-        .declare_function("fz_alloc_float", Linkage::Import, &alloc_float_sig)
-        .map_err(|e| CodegenError::new(format!("declare alloc_float: {}", e)))?;
-    let arith_sig = sig1(&[types::I64, types::I64], &[types::I64]);
-    let arith_add_id = jmod
-        .declare_function("fz_arith_add", Linkage::Import, &arith_sig)
-        .map_err(|e| CodegenError::new(format!("declare arith_add: {}", e)))?;
-    let arith_sub_id = jmod
-        .declare_function("fz_arith_sub", Linkage::Import, &arith_sig)
-        .map_err(|e| CodegenError::new(format!("declare arith_sub: {}", e)))?;
-    let arith_mul_id = jmod
-        .declare_function("fz_arith_mul", Linkage::Import, &arith_sig)
-        .map_err(|e| CodegenError::new(format!("declare arith_mul: {}", e)))?;
-    let arith_div_id = jmod
-        .declare_function("fz_arith_div", Linkage::Import, &arith_sig)
-        .map_err(|e| CodegenError::new(format!("declare arith_div: {}", e)))?;
-    let arith_mod_id = jmod
-        .declare_function("fz_arith_mod", Linkage::Import, &arith_sig)
-        .map_err(|e| CodegenError::new(format!("declare arith_mod: {}", e)))?;
-    let cmp_lt_id = jmod
-        .declare_function("fz_cmp_lt", Linkage::Import, &arith_sig)
-        .map_err(|e| CodegenError::new(format!("declare cmp_lt: {}", e)))?;
-    let cmp_le_id = jmod
-        .declare_function("fz_cmp_le", Linkage::Import, &arith_sig)
-        .map_err(|e| CodegenError::new(format!("declare cmp_le: {}", e)))?;
-    let cmp_gt_id = jmod
-        .declare_function("fz_cmp_gt", Linkage::Import, &arith_sig)
-        .map_err(|e| CodegenError::new(format!("declare cmp_gt: {}", e)))?;
-    let cmp_ge_id = jmod
-        .declare_function("fz_cmp_ge", Linkage::Import, &arith_sig)
-        .map_err(|e| CodegenError::new(format!("declare cmp_ge: {}", e)))?;
-    let value_eq_id = jmod
-        .declare_function("fz_value_eq", Linkage::Import, &arith_sig)
-        .map_err(|e| CodegenError::new(format!("declare value_eq: {}", e)))?;
-    let vec_begin_sig = sig1(&[types::I32], &[]);
-    let vec_begin_id = jmod
-        .declare_function("fz_vec_begin", Linkage::Import, &vec_begin_sig)
-        .map_err(|e| CodegenError::new(format!("declare vec_begin: {}", e)))?;
-    let vec_push_sig = sig1(&[types::I64], &[]);
-    let vec_push_id = jmod
-        .declare_function("fz_vec_push", Linkage::Import, &vec_push_sig)
-        .map_err(|e| CodegenError::new(format!("declare vec_push: {}", e)))?;
-    let vec_finalize_sig = sig1(&[], &[types::I64]);
-    let vec_finalize_id = jmod
-        .declare_function("fz_vec_finalize", Linkage::Import, &vec_finalize_sig)
-        .map_err(|e| CodegenError::new(format!("declare vec_finalize: {}", e)))?;
-    let vec_get_sig = sig1(&[types::I64, types::I64], &[types::I64]);
-    let vec_get_id = jmod
-        .declare_function("fz_vec_get", Linkage::Import, &vec_get_sig)
-        .map_err(|e| CodegenError::new(format!("declare vec_get: {}", e)))?;
-    let closure_begin_sig = sig1(&[types::I32], &[]);
-    let closure_begin_id = jmod
-        .declare_function("fz_closure_begin", Linkage::Import, &closure_begin_sig)
-        .map_err(|e| CodegenError::new(format!("declare closure_begin: {}", e)))?;
-    let closure_push_sig = sig1(&[types::I64], &[]);
-    let closure_push_id = jmod
-        .declare_function("fz_closure_push", Linkage::Import, &closure_push_sig)
-        .map_err(|e| CodegenError::new(format!("declare closure_push: {}", e)))?;
-    let closure_finalize_sig = sig1(&[], &[types::I64]);
-    let closure_finalize_id = jmod
-        .declare_function("fz_closure_finalize", Linkage::Import, &closure_finalize_sig)
-        .map_err(|e| CodegenError::new(format!("declare closure_finalize: {}", e)))?;
-    let closure_arg_sig = sig1(&[types::I64], &[]);
-    let closure_arg_id = jmod
-        .declare_function("fz_closure_arg", Linkage::Import, &closure_arg_sig)
-        .map_err(|e| CodegenError::new(format!("declare closure_arg: {}", e)))?;
-    let closure_invoke_sig = sig1(&[types::I64, types::I64], &[types::I64]);
-    let closure_invoke_id = jmod
-        .declare_function("fz_closure_invoke", Linkage::Import, &closure_invoke_sig)
-        .map_err(|e| CodegenError::new(format!("declare closure_invoke: {}", e)))?;
-    let tail_closure_sig = sig1(&[types::I64, types::I64], &[types::I64]);
-    let tail_closure_id = jmod
-        .declare_function("fz_tail_closure", Linkage::Import, &tail_closure_sig)
-        .map_err(|e| CodegenError::new(format!("declare tail_closure: {}", e)))?;
-    let spawn_sig = sig1(&[types::I64], &[types::I64]);
-    let spawn_id = jmod
-        .declare_function("fz_spawn", Linkage::Import, &spawn_sig)
-        .map_err(|e| CodegenError::new(format!("declare spawn: {}", e)))?;
-    let self_sig = sig1(&[], &[types::I64]);
-    let self_id = jmod
-        .declare_function("fz_self", Linkage::Import, &self_sig)
-        .map_err(|e| CodegenError::new(format!("declare self: {}", e)))?;
-    let send_sig = sig1(&[types::I64, types::I64], &[types::I64]);
-    let send_id = jmod
-        .declare_function("fz_send", Linkage::Import, &send_sig)
-        .map_err(|e| CodegenError::new(format!("declare send: {}", e)))?;
-    let receive_attempt_sig = sig1(&[types::I64], &[types::I64]);
-    let receive_attempt_id = jmod
-        .declare_function("fz_receive_attempt", Linkage::Import, &receive_attempt_sig)
-        .map_err(|e| CodegenError::new(format!("declare receive_attempt: {}", e)))?;
+    let runtime = declare_runtime_symbols(&mut jmod)?;
 
     // Per-fn signature: extern "C" fn(*mut u8, *mut u8) -> *mut u8.
     let fn_sig = sig1(&[types::I64, types::I64], &[types::I64]);
@@ -754,48 +580,6 @@ pub fn compile(module: &Module) -> Result<CompiledModule, CodegenError> {
     }
 
     let mut fbctx = FunctionBuilderContext::new();
-    let runtime = RuntimeRefs {
-        print_id,
-        halt_id,
-        alloc_id,
-        alloc_cons_id,
-        alloc_struct_id,
-        bs_begin_id,
-        bs_write_id,
-        bs_finalize_id,
-        bs_reader_init_id,
-        bs_read_field_id,
-        map_begin_id,
-        map_clone_id,
-        map_push_id,
-        map_finalize_id,
-        map_get_id,
-        closure_begin_id,
-        closure_push_id,
-        closure_finalize_id,
-        closure_arg_id,
-        closure_invoke_id,
-        tail_closure_id,
-        vec_begin_id,
-        vec_push_id,
-        vec_finalize_id,
-        vec_get_id,
-        alloc_float_id,
-        arith_add_id,
-        arith_sub_id,
-        arith_mul_id,
-        arith_div_id,
-        arith_mod_id,
-        cmp_lt_id,
-        cmp_le_id,
-        cmp_gt_id,
-        cmp_ge_id,
-        value_eq_id,
-        spawn_id,
-        self_id,
-        send_id,
-        receive_attempt_id,
-    };
 
     // Register a heap Schema for every tuple arity used by MakeTuple, so the
     // GC tracer can walk fields and so codegen can iconst the schema_id.
@@ -937,6 +721,154 @@ fn sig1(params: &[ir::Type], rets: &[ir::Type]) -> Signature {
     for p in params { s.params.push(AbiParam::new(*p)); }
     for r in rets { s.returns.push(AbiParam::new(*r)); }
     s
+}
+
+/// Declare every fz runtime FFI fn as an Import in the given Cranelift
+/// Module and return the resulting FuncIds packed into a RuntimeRefs.
+///
+/// Generic on `M: cranelift_module::Module` so the JIT (JITModule) and a
+/// future AOT driver (ObjectModule, fz-ul4.23.6) call the same fn — the
+/// declarations don't care whether the underlying symbol resolves via
+/// JIT-installed Rust fn pointers or via a linker-resolved staticlib.
+///
+/// This is the only place that knows the wire ABI of each runtime fn;
+/// changing one signature requires updating both the FFI body in
+/// ir_runtime.rs AND the matching entry here.
+fn declare_runtime_symbols<M: cranelift_module::Module>(
+    jmod: &mut M,
+) -> Result<RuntimeRefs, CodegenError> {
+    let mut decl = |name: &str, params: &[ir::Type], rets: &[ir::Type]| {
+        let sig = sig1(params, rets);
+        jmod.declare_function(name, Linkage::Import, &sig)
+            .map_err(|e| CodegenError::new(format!("declare {}: {}", name, e)))
+    };
+
+    let print_id = decl("fz_print_value", &[types::I64], &[])?;
+    let halt_id = decl("fz_halt", &[types::I64, types::I64], &[])?;
+    let alloc_id = decl("fz_alloc_frame", &[types::I32, types::I32], &[types::I64])?;
+    let alloc_cons_id = decl(
+        "fz_alloc_list_cons",
+        &[types::I64, types::I64],
+        &[types::I64],
+    )?;
+    let alloc_struct_id = decl("fz_alloc_struct", &[types::I32], &[types::I64])?;
+    let bs_begin_id = decl("fz_bs_begin", &[], &[])?;
+    let bs_write_id = decl(
+        "fz_bs_write_field",
+        &[
+            types::I64, // value bits
+            types::I32, // ty tag
+            types::I32, // size_present
+            types::I32, // size_value
+            types::I32, // unit
+            types::I32, // endian
+            types::I32, // signed
+        ],
+        &[],
+    )?;
+    let bs_finalize_id = decl("fz_bs_finalize", &[], &[types::I64])?;
+    let bs_reader_init_id = decl("fz_bs_reader_init", &[types::I64], &[types::I64])?;
+    let bs_read_field_id = decl(
+        "fz_bs_read_field",
+        &[
+            types::I64, // reader bits
+            types::I32, // ty tag
+            types::I32, // size_present
+            types::I32, // size_value
+            types::I32, // unit
+            types::I32, // endian
+            types::I32, // signed
+            types::I32, // is_last
+        ],
+        &[types::I64],
+    )?;
+    let map_begin_id = decl("fz_map_begin", &[], &[])?;
+    let map_clone_id = decl("fz_map_clone", &[types::I64], &[])?;
+    let map_push_id = decl("fz_map_push", &[types::I64, types::I64], &[])?;
+    let map_finalize_id = decl("fz_map_finalize", &[], &[types::I64])?;
+    let map_get_id = decl("fz_map_get", &[types::I64, types::I64], &[types::I64])?;
+    let alloc_float_id = decl("fz_alloc_float", &[types::I64], &[types::I64])?;
+
+    let arith_params: &[ir::Type] = &[types::I64, types::I64];
+    let arith_ret: &[ir::Type] = &[types::I64];
+    let arith_add_id = decl("fz_arith_add", arith_params, arith_ret)?;
+    let arith_sub_id = decl("fz_arith_sub", arith_params, arith_ret)?;
+    let arith_mul_id = decl("fz_arith_mul", arith_params, arith_ret)?;
+    let arith_div_id = decl("fz_arith_div", arith_params, arith_ret)?;
+    let arith_mod_id = decl("fz_arith_mod", arith_params, arith_ret)?;
+    let cmp_lt_id = decl("fz_cmp_lt", arith_params, arith_ret)?;
+    let cmp_le_id = decl("fz_cmp_le", arith_params, arith_ret)?;
+    let cmp_gt_id = decl("fz_cmp_gt", arith_params, arith_ret)?;
+    let cmp_ge_id = decl("fz_cmp_ge", arith_params, arith_ret)?;
+    let value_eq_id = decl("fz_value_eq", arith_params, arith_ret)?;
+
+    let vec_begin_id = decl("fz_vec_begin", &[types::I32], &[])?;
+    let vec_push_id = decl("fz_vec_push", &[types::I64], &[])?;
+    let vec_finalize_id = decl("fz_vec_finalize", &[], &[types::I64])?;
+    let vec_get_id = decl("fz_vec_get", &[types::I64, types::I64], &[types::I64])?;
+
+    let closure_begin_id = decl("fz_closure_begin", &[types::I32], &[])?;
+    let closure_push_id = decl("fz_closure_push", &[types::I64], &[])?;
+    let closure_finalize_id = decl("fz_closure_finalize", &[], &[types::I64])?;
+    let closure_arg_id = decl("fz_closure_arg", &[types::I64], &[])?;
+    let closure_invoke_id = decl(
+        "fz_closure_invoke",
+        &[types::I64, types::I64],
+        &[types::I64],
+    )?;
+    let tail_closure_id = decl(
+        "fz_tail_closure",
+        &[types::I64, types::I64],
+        &[types::I64],
+    )?;
+
+    let spawn_id = decl("fz_spawn", &[types::I64], &[types::I64])?;
+    let self_id = decl("fz_self", &[], &[types::I64])?;
+    let send_id = decl("fz_send", &[types::I64, types::I64], &[types::I64])?;
+    let receive_attempt_id = decl("fz_receive_attempt", &[types::I64], &[types::I64])?;
+
+    Ok(RuntimeRefs {
+        print_id,
+        halt_id,
+        alloc_id,
+        alloc_cons_id,
+        alloc_struct_id,
+        bs_begin_id,
+        bs_write_id,
+        bs_finalize_id,
+        bs_reader_init_id,
+        bs_read_field_id,
+        map_begin_id,
+        map_clone_id,
+        map_push_id,
+        map_finalize_id,
+        map_get_id,
+        alloc_float_id,
+        arith_add_id,
+        arith_sub_id,
+        arith_mul_id,
+        arith_div_id,
+        arith_mod_id,
+        cmp_lt_id,
+        cmp_le_id,
+        cmp_gt_id,
+        cmp_ge_id,
+        value_eq_id,
+        vec_begin_id,
+        vec_push_id,
+        vec_finalize_id,
+        vec_get_id,
+        closure_begin_id,
+        closure_push_id,
+        closure_finalize_id,
+        closure_arg_id,
+        closure_invoke_id,
+        tail_closure_id,
+        spawn_id,
+        self_id,
+        send_id,
+        receive_attempt_id,
+    })
 }
 
 #[derive(Clone, Copy)]
