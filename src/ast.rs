@@ -1,27 +1,37 @@
-use crate::diag::Span;
+use crate::diag::{Span, SpanOrigin};
 use std::rc::Rc;
 
 /// Wraps an AST node with the source span that produced it. Every Expr
 /// and Pattern reference in the AST is `Spanned<…>`; the outer enum
 /// values themselves are unwrapped so pattern matching stays clean.
+///
+/// `origin` defaults to `Source` for parser-produced nodes. The macro
+/// expansion pass walks decoded-Value subtrees and stamps
+/// `SpanOrigin::Expanded` so a downstream diagnostic can show "expanded
+/// from `<macro>` at <macro_call>".
 #[derive(Debug, Clone)]
 pub struct Spanned<T> {
     pub node: T,
     pub span: Span,
+    pub origin: SpanOrigin,
 }
 
 impl<T> Spanned<T> {
     pub fn new(node: T, span: Span) -> Self {
-        Self { node, span }
+        Self { node, span, origin: SpanOrigin::Source }
     }
 
-    /// Synthesize a Spanned with no source position. Used by tests, by
+    /// Synthesize a Spanned with no source position. Used by tests and by
     /// `value_to_expr` (which decodes runtime Values back to AST and has
-    /// no original span), and by transitional code paths during the .20
-    /// arc. The .20.3 ticket attaches `SpanOrigin::Expanded` lineage to
-    /// these at the call site of the macro that produced them.
+    /// no original span). The macro expander stamps `SpanOrigin::Expanded`
+    /// on these once it knows the call site.
     pub fn dummy(node: T) -> Self {
-        Self { node, span: Span::DUMMY }
+        Self { node, span: Span::DUMMY, origin: SpanOrigin::Source }
+    }
+
+    pub fn with_origin(mut self, origin: SpanOrigin) -> Self {
+        self.origin = origin;
+        self
     }
 }
 

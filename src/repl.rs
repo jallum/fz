@@ -154,6 +154,7 @@ fn load_items_filtered(interp: &Interp, items: &[std::rc::Rc<Item>], macros_only
                 if macros_only != def.is_macro { continue; }
                 if def.is_macro {
                     interp.macro_names.borrow_mut().insert(def.name.clone());
+                    interp.macro_def_spans.borrow_mut().insert(def.name.clone(), def.span);
                 }
                 // If a closure already exists under this name *and* the new
                 // clauses match arity, append. Otherwise replace. Matches

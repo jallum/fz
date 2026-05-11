@@ -228,7 +228,7 @@ fn decode_ast_node(head: &Value, tail: &Value) -> Result<Expr, String> {
                 return Err(format!("decode: `=` expects 2 args, got {}", args.len()));
             }
             let pat = match value_to_expr_inner(&args[0])? {
-                Expr::Var(n) => Spanned { node: Pattern::Var(n), span: Span::DUMMY },
+                Expr::Var(n) => Spanned::dummy(Pattern::Var(n)),
                 other => return Err(format!("decode: `=` lhs must be a var, got {:?}", other)),
             };
             let rhs = value_to_expr(&args[1])?;

@@ -12,6 +12,7 @@
 
 use crate::ast::*;
 use crate::ast_value::{expr_to_value, value_to_expr};
+use crate::diag::{Span, SpanOrigin};
 use crate::eval::Interp;
 use crate::value::Value;
 
@@ -74,7 +75,7 @@ fn expand_item_list(
     let mut out: Vec<std::rc::Rc<Item>> = Vec::new();
     for item in items {
         match &*item {
-            Item::MacroCall { name, name_span: _, args, parent_module, span: _ } => {
+            Item::MacroCall { name, name_span: _, args, parent_module, span } => {
                 if !macros.contains(name) {
                     return Err(format!(
                         "item-level call `{}(...)` is not a defmacro", name));
@@ -91,14 +92,27 @@ fn expand_item_list(
                 let ret = ret.map_err(|e| format!("macro {} body: {}", name, e))?;
                 let mut items = value_to_items(&ret)
                     .map_err(|e| format!("macro {} return: {}", name, e))?;
-                // .16.5: when the macro was inside a defmodule body, the
-                // resolver stamped the parent path. Qualify spliced fn
-                // names so e.g. tests inside `defmodule MyTest do ...`
-                // land as `MyTest.test_xxx`.
-                if let Some(path) = parent_module {
-                    for it in &mut items {
-                        if let Item::Fn(def) = it {
+                let call_span = *span;
+                let def_span = interp.macro_def_spans.borrow().get(name).copied();
+                for it in &mut items {
+                    if let Item::Fn(def) = it {
+                        if let Some(path) = parent_module {
+                            // .16.5: spliced fn lands under parent module.
                             def.name = format!("{}.{}", path, def.name);
+                        }
+                        // Stamp the macro call's span on the synthesized
+                        // fn's metadata + every node in every clause so
+                        // diagnostics can point at the user's invocation
+                        // and the macro's definition.
+                        def.name_span = call_span;
+                        def.span = call_span;
+                        for clause in &mut def.clauses {
+                            clause.span = call_span;
+                            for p in &mut clause.params { stamp_pattern(p, call_span, def_span); }
+                            stamp_expanded(&mut clause.body, call_span, def_span);
+                            if let Some(g) = &mut clause.guard {
+                                stamp_expanded(g, call_span, def_span);
+                            }
                         }
                     }
                 }
@@ -250,13 +264,16 @@ pub fn expand_expr(
                 *interp.gensym_table.borrow_mut() = prev;
                 let ret = ret_res
                     .map_err(|e| format!("macro {} body: {}", name, e))?;
-                let new_e = value_to_expr(&ret)
+                let mut new_e = value_to_expr(&ret)
                     .map_err(|e| format!("macro {} return decode: {}", name, e))?;
-                // Preserve the original call's span on the synthesized
-                // replacement. .20.3 will replace this with proper
-                // SpanOrigin::Expanded lineage.
-                let original_span = e.span;
-                *e = Spanned { node: new_e.node, span: original_span };
+                // The decoded tree is entirely DUMMY-spanned. Stamp every
+                // node with the call's span + Expanded lineage so any later
+                // diagnostic can point at the user's `Foo(args)` and show
+                // "expanded from `Foo`, defined at <file>:<line>:<col>".
+                let call_span = e.span;
+                let def_span = interp.macro_def_spans.borrow().get(name).copied();
+                stamp_expanded(&mut new_e, call_span, def_span);
+                *e = new_e;
                 return expand_expr(e, interp, macros, depth + 1);
             }
         }
@@ -341,6 +358,117 @@ pub fn expand_expr(
         Expr::Quote(_) | Expr::Unquote(_) => {}
     }
     Ok(())
+}
+
+/// Walk `e` and stamp every node with `SpanOrigin::Expanded { macro_call,
+/// definition }`. DUMMY spans are rewritten to `macro_call` so a diagnostic
+/// on a child of the expansion always points at the user's call site. Real
+/// (non-DUMMY) spans encountered inside the tree are preserved — that's
+/// the v2 case where Values carry their own spans through quote round-trip;
+/// in v1 every decoded node is DUMMY so nothing is preserved yet.
+fn stamp_expanded(e: &mut Spanned<Expr>, macro_call: Span, definition: Option<Span>) {
+    let origin = SpanOrigin::Expanded { macro_call, definition };
+    e.origin = origin;
+    if e.span.is_dummy() {
+        e.span = macro_call;
+    }
+    match &mut e.node {
+        Expr::Int(_) | Expr::Float(_) | Expr::Str(_) | Expr::Atom(_)
+        | Expr::Bool(_) | Expr::Nil | Expr::Var(_) => {}
+        Expr::List(xs, tail) => {
+            for x in xs { stamp_expanded(x, macro_call, definition); }
+            if let Some(t) = tail { stamp_expanded(t, macro_call, definition); }
+        }
+        Expr::Tuple(xs) | Expr::VecLit(_, xs) | Expr::Block(xs) => {
+            for x in xs { stamp_expanded(x, macro_call, definition); }
+        }
+        Expr::Bitstring(fields) => for f in fields { stamp_expanded(&mut f.value, macro_call, definition); },
+        Expr::Map(pairs) => for (k, v) in pairs {
+            stamp_expanded(k, macro_call, definition);
+            stamp_expanded(v, macro_call, definition);
+        },
+        Expr::MapUpdate(m, pairs) => {
+            stamp_expanded(m, macro_call, definition);
+            for (k, v) in pairs {
+                stamp_expanded(k, macro_call, definition);
+                stamp_expanded(v, macro_call, definition);
+            }
+        }
+        Expr::Index(o, i) => { stamp_expanded(o, macro_call, definition); stamp_expanded(i, macro_call, definition); }
+        Expr::Call(callee, args) => {
+            stamp_expanded(callee, macro_call, definition);
+            for a in args { stamp_expanded(a, macro_call, definition); }
+        }
+        Expr::Dot(o, _) => stamp_expanded(o, macro_call, definition),
+        Expr::BinOp(_, l, r) => { stamp_expanded(l, macro_call, definition); stamp_expanded(r, macro_call, definition); }
+        Expr::UnOp(_, x) => stamp_expanded(x, macro_call, definition),
+        Expr::If(c, t, els) => {
+            stamp_expanded(c, macro_call, definition);
+            stamp_expanded(t, macro_call, definition);
+            if let Some(e) = els { stamp_expanded(e, macro_call, definition); }
+        }
+        Expr::Case(scr, arms) => {
+            stamp_expanded(scr, macro_call, definition);
+            for arm in arms {
+                stamp_pattern(&mut arm.pattern, macro_call, definition);
+                stamp_expanded(&mut arm.body, macro_call, definition);
+                if let Some(g) = &mut arm.guard { stamp_expanded(g, macro_call, definition); }
+            }
+        }
+        Expr::Cond(pairs) => for (c, b) in pairs {
+            stamp_expanded(c, macro_call, definition);
+            stamp_expanded(b, macro_call, definition);
+        },
+        Expr::With(bindings, body, else_clauses) => {
+            for b in bindings {
+                match b {
+                    WithBinding::Match(p, ex) => {
+                        stamp_pattern(p, macro_call, definition);
+                        stamp_expanded(ex, macro_call, definition);
+                    }
+                    WithBinding::Bare(ex) => stamp_expanded(ex, macro_call, definition),
+                }
+            }
+            stamp_expanded(body, macro_call, definition);
+            for arm in else_clauses {
+                stamp_pattern(&mut arm.pattern, macro_call, definition);
+                stamp_expanded(&mut arm.body, macro_call, definition);
+                if let Some(g) = &mut arm.guard { stamp_expanded(g, macro_call, definition); }
+            }
+        }
+        Expr::Match(p, rhs) => {
+            stamp_pattern(p, macro_call, definition);
+            stamp_expanded(rhs, macro_call, definition);
+        }
+        Expr::Lambda(params, body) => {
+            for p in params { stamp_pattern(p, macro_call, definition); }
+            stamp_expanded(body, macro_call, definition);
+        }
+        Expr::Quote(inner) | Expr::Unquote(inner) => stamp_expanded(inner, macro_call, definition),
+    }
+}
+
+fn stamp_pattern(p: &mut Spanned<Pattern>, macro_call: Span, definition: Option<Span>) {
+    let origin = SpanOrigin::Expanded { macro_call, definition };
+    p.origin = origin;
+    if p.span.is_dummy() {
+        p.span = macro_call;
+    }
+    match &mut p.node {
+        Pattern::Wildcard | Pattern::Var(_) | Pattern::Int(_) | Pattern::Float(_)
+        | Pattern::Str(_) | Pattern::Atom(_) | Pattern::Bool(_) | Pattern::Nil => {}
+        Pattern::Tuple(xs) => for x in xs { stamp_pattern(x, macro_call, definition); },
+        Pattern::List(heads, tail) => {
+            for h in heads { stamp_pattern(h, macro_call, definition); }
+            if let Some(t) = tail { stamp_pattern(t, macro_call, definition); }
+        }
+        Pattern::Map(pairs) => for (k, v) in pairs {
+            stamp_pattern(k, macro_call, definition);
+            stamp_pattern(v, macro_call, definition);
+        },
+        Pattern::As(_, inner) => stamp_pattern(inner, macro_call, definition),
+        Pattern::Bitstring(fields) => for f in fields { stamp_pattern(&mut f.value, macro_call, definition); },
+    }
 }
 
 #[cfg(test)]
@@ -623,5 +751,200 @@ end
         interp.load_program(&prog).expect("load");
         let v = interp.call_named("main", vec![]).expect("eval");
         assert!(matches!(v, crate::value::Value::Int(3)));
+    }
+
+    // ----- .20.3: SpanOrigin lineage on expanded code -----
+
+    /// Source-only fn bodies retain `SpanOrigin::Source` after expansion.
+    /// (Sanity-checks the default — without this we couldn't trust any
+    /// of the Expanded checks below.)
+    #[test]
+    fn parser_nodes_have_source_origin() {
+        let src = "fn main(), do: 1 + 2";
+        let mut prog = parse(src);
+        expand_program(&mut prog).expect("expand");
+        let Item::Fn(def) = &*prog.items[0] else { panic!() };
+        let body = &def.clauses[0].body;
+        assert!(matches!(body.origin, crate::diag::SpanOrigin::Source));
+    }
+
+    /// After a macro expands, the synthesized body carries
+    /// `SpanOrigin::Expanded { macro_call: <call-site span> }`. The
+    /// `macro_call` span equals the body before expansion (the call
+    /// expression at the post-resolution AST).
+    #[test]
+    fn macro_expansion_stamps_expanded_origin() {
+        let src = r#"
+defmacro plus_one(x) do
+  quote do: unquote(x) + 1
+end
+fn main() do plus_one(41) end
+"#;
+        let mut prog = parse(src);
+
+        // Capture the macro call's span BEFORE expansion replaces it.
+        let call_span_before = {
+            let Item::Fn(def) = &*prog.items.iter().find_map(|it| match &**it {
+                Item::Fn(d) if d.name == "main" => Some(it.clone()),
+                _ => None,
+            }).unwrap() else { panic!() };
+            // main's body is the macro Call expression directly.
+            def.clauses[0].body.span
+        };
+
+        expand_program(&mut prog).expect("expand");
+
+        let Item::Fn(def) = &*prog.items.iter().find_map(|it| match &**it {
+            Item::Fn(d) if d.name == "main" => Some(it.clone()),
+            _ => None,
+        }).unwrap() else { panic!() };
+        let body = &def.clauses[0].body;
+        // The post-expansion body is `unquote_result + 1`. It must carry
+        // Expanded lineage pointing at the original call site, plus a
+        // definition span pointing at the defmacro declaration.
+        let (macro_call, definition) = match body.origin {
+            crate::diag::SpanOrigin::Expanded { macro_call, definition } => (macro_call, definition),
+            other => panic!("expected Expanded lineage, got {:?}", other),
+        };
+        assert_eq!(macro_call, call_span_before,
+            "macro_call should point at the user's plus_one(41) call");
+        // The defmacro plus_one(x) do … end declaration must be the source
+        // for `definition`.
+        let def_span = definition.expect("definition span should be populated");
+        let def_text = &src[def_span.start as usize..def_span.end as usize];
+        assert!(def_text.starts_with("defmacro plus_one"),
+            "definition span should slice the defmacro declaration, got {:?}", def_text);
+        // The body's own span should also point at the call site (since
+        // the decoded tree had DUMMY everywhere, we filled it in).
+        assert_eq!(body.span, call_span_before);
+    }
+
+    /// Children of an expanded tree inherit the same macro_call lineage.
+    /// (v1: every decoded node was DUMMY, so the walker stamps them all.)
+    #[test]
+    fn macro_expansion_lineage_reaches_children() {
+        let src = r#"
+defmacro plus_one(x) do
+  quote do: unquote(x) + 1
+end
+fn main() do plus_one(41) end
+"#;
+        let mut prog = parse(src);
+        expand_program(&mut prog).expect("expand");
+        let Item::Fn(def) = &*prog.items.iter().find_map(|it| match &**it {
+            Item::Fn(d) if d.name == "main" => Some(it.clone()),
+            _ => None,
+        }).unwrap() else { panic!() };
+        let body = &def.clauses[0].body;
+        // The body is BinOp(Add, lhs, rhs). Both operands should carry
+        // Expanded lineage.
+        let Expr::BinOp(_, lhs, rhs) = &body.node else {
+            panic!("expected BinOp, got {:?}", body.node);
+        };
+        assert!(matches!(lhs.origin, crate::diag::SpanOrigin::Expanded { .. }),
+                "lhs should carry Expanded lineage, got {:?}", lhs.origin);
+        assert!(matches!(rhs.origin, crate::diag::SpanOrigin::Expanded { .. }),
+                "rhs should carry Expanded lineage, got {:?}", rhs.origin);
+    }
+
+    /// Nested macros: when M2 expands into M1(unquote(x)) and M1 then
+    /// expands, the FINAL node's lineage points at... the OUTERMOST
+    /// user call site (M2(40)), per the design decision in the ticket.
+    /// (Each re-expansion stamps with its own call_span, overwriting the
+    /// previous Expanded marker. Since `expand_expr` recurses depth-first
+    /// after the rewrite, the OUTER expansion runs last and wins.)
+    #[test]
+    fn nested_macro_lineage_keeps_outermost_call_site() {
+        let src = r#"
+defmacro m1(x) do quote do: unquote(x) + 1 end
+defmacro m2(x) do quote do: m1(unquote(x)) end
+fn main() do m2(40) end
+"#;
+        let mut prog = parse(src);
+        let outer_call_span = {
+            let Item::Fn(def) = &*prog.items.iter().find_map(|it| match &**it {
+                Item::Fn(d) if d.name == "main" => Some(it.clone()),
+                _ => None,
+            }).unwrap() else { panic!() };
+            def.clauses[0].body.span
+        };
+        expand_program(&mut prog).expect("expand");
+        let Item::Fn(def) = &*prog.items.iter().find_map(|it| match &**it {
+            Item::Fn(d) if d.name == "main" => Some(it.clone()),
+            _ => None,
+        }).unwrap() else { panic!() };
+        let body = &def.clauses[0].body;
+        match body.origin {
+            crate::diag::SpanOrigin::Expanded { macro_call, .. } => {
+                assert_eq!(macro_call, outer_call_span,
+                    "outermost call site should win for nested macros");
+            }
+            other => panic!("expected Expanded lineage, got {:?}", other),
+        }
+    }
+
+    /// Item-macros that produce `:fn_def` tuples: the synthesized
+    /// `Item::Fn` body inherits the Expanded lineage of the
+    /// `Item::MacroCall` that produced it. `make_const(:answer, 42)`
+    /// splices an `answer/0` fn whose body should point at the
+    /// `make_const(...)` call site.
+    #[test]
+    fn item_macro_splice_body_carries_expanded_lineage() {
+        let src = r#"
+defmacro make_const(name, value) do
+  {:fn_def, name, value}
+end
+
+make_const(:answer, 42)
+
+fn main(), do: answer()
+"#;
+        let mut prog = parse(src);
+        // Find the original `make_const(...)` MacroCall's span before expansion.
+        let macro_call_span = prog.items.iter().find_map(|it| match &**it {
+            Item::MacroCall { name, span, .. } if name == "make_const" => Some(*span),
+            _ => None,
+        }).expect("make_const MacroCall pre-expansion");
+
+        expand_program(&mut prog).expect("expand");
+
+        let Item::Fn(answer) = &*prog.items.iter().find_map(|it| match &**it {
+            Item::Fn(d) if d.name == "answer" => Some(it.clone()),
+            _ => None,
+        }).expect("answer fn after expansion") else { panic!() };
+        let body = &answer.clauses[0].body;
+        match body.origin {
+            crate::diag::SpanOrigin::Expanded { macro_call, definition } => {
+                assert_eq!(macro_call, macro_call_span,
+                    "spliced fn's body should point at the make_const(...) call");
+                let def_span = definition.expect("definition span on item-macro splice");
+                let def_text = &src[def_span.start as usize..def_span.end as usize];
+                assert!(def_text.starts_with("defmacro make_const"),
+                    "definition span should slice the defmacro declaration");
+            }
+            other => panic!("expected Expanded origin, got {:?}", other),
+        }
+    }
+
+    /// Definition span is `None` if the macro isn't loaded via
+    /// `load_program` — sanity-checking the lookup fallback so that
+    /// an unknown macro doesn't crash, just yields a None definition.
+    /// (This case is reachable from the REPL when a macro is referenced
+    /// before its defining input has been processed; the typer/expander
+    /// errors out earlier today, but the lineage path stays safe.)
+    #[test]
+    fn missing_def_span_falls_back_to_none() {
+        use crate::diag::Span;
+        // Build a tree manually and stamp with no definition.
+        let mut e = Spanned::dummy(Expr::Int(42));
+        let call_span = Span::new(crate::diag::FileId(0), 10, 20);
+        super::stamp_expanded(&mut e, call_span, None);
+        match e.origin {
+            crate::diag::SpanOrigin::Expanded { macro_call, definition } => {
+                assert_eq!(macro_call, call_span);
+                assert_eq!(definition, None);
+            }
+            other => panic!("got {:?}", other),
+        }
     }
 }

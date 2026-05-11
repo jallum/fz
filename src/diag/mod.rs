@@ -17,7 +17,7 @@ pub mod source_map;
 pub mod span;
 
 pub use source_map::SourceMap;
-pub use span::{FileId, Span};
+pub use span::{FileId, Span, SpanOrigin};
 
 // Location / SourceFile are part of the .20.6 renderer's input surface;
 // no consumer references them yet, so the explicit re-exports stay out

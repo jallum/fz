@@ -19,6 +19,11 @@ pub struct Interp {
     /// the macro expansion pass; persists across REPL inputs so a macro
     /// defined on one line is callable from later inputs.
     pub macro_names: RefCell<std::collections::HashSet<String>>,
+    /// Spans of each defmacro's full definition (FnDef.span). Looked up
+    /// during expansion to populate `SpanOrigin::Expanded { definition }`
+    /// on synthesized nodes, so a diagnostic can render
+    /// "expanded from `Foo`, defined at <file>:<line>:<col>".
+    pub macro_def_spans: RefCell<std::collections::HashMap<String, crate::diag::Span>>,
     /// Per-invocation hygiene table set by the macro expander before
     /// running a macro body. When `Some`, `reify_with_unquotes` renames
     /// Var/Match-lhs names through this map (lazily filling in fresh
@@ -35,6 +40,7 @@ impl Interp {
             globals,
             on_user_call: RefCell::new(None),
             macro_names: RefCell::new(std::collections::HashSet::new()),
+            macro_def_spans: RefCell::new(std::collections::HashMap::new()),
             gensym_table: RefCell::new(None),
         };
         me.install_builtins();
@@ -165,6 +171,7 @@ impl Interp {
                 Item::Fn(def) => {
                     if def.is_macro {
                         self.macro_names.borrow_mut().insert(def.name.clone());
+                        self.macro_def_spans.borrow_mut().insert(def.name.clone(), def.span);
                     }
                     // Macros load alongside regular fns so the expansion pass
                     // can dispatch them by name through the same interp.

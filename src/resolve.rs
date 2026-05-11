@@ -723,4 +723,84 @@ end
         }).unwrap();
         assert_eq!(callee_name(&caller.clauses[0].body), "A.f");
     }
+
+    // ----- .20.3: span preservation through qualification -----
+
+    /// Sibling-fn rewriting (`f` → `M.f` inside module M) must NOT alter
+    /// the source span on the rewritten Var. The renamed reference still
+    /// occupies the same byte range in the user's source.
+    #[test]
+    fn sibling_rewrite_preserves_var_span() {
+        let src = "defmodule M do\n  fn f(x), do: x\n  fn g(x), do: f(x)\nend";
+        let pre = parse(src);
+
+        // Find the `f` inside `g`'s body BEFORE flattening.
+        let pre_span = {
+            let Item::Module(m) = &*pre.items[0] else { panic!() };
+            let Item::Fn(g) = &*m.items.iter().find_map(|it| match &**it {
+                Item::Fn(d) if d.name == "g" => Some(it.clone()),
+                _ => None,
+            }).unwrap() else { panic!() };
+            // body is Call(callee=Var("f"), [Var("x")])
+            let body = &g.clauses[0].body;
+            let Expr::Call(callee, _) = &body.node else { panic!() };
+            callee.span
+        };
+
+        let post = flatten_modules(pre).expect("flatten");
+        let g = post.items.iter().find_map(|it| match &**it {
+            Item::Fn(d) if d.name == "M.g" => Some(d),
+            _ => None,
+        }).unwrap();
+        // The bare `f` has been rewritten to `M.f`; the callee span should
+        // still point at the original `f` token in source.
+        let Expr::Call(callee, _) = &g.clauses[0].body.node else { panic!() };
+        match &callee.node {
+            Expr::Var(n) => assert_eq!(n, "M.f"),
+            other => panic!("expected Var('M.f'), got {:?}", other),
+        }
+        assert_eq!(callee.span, pre_span,
+            "callee span should be preserved through sibling rewrite");
+    }
+
+    /// Cross-module rewriting: `M.helper(x)` (parsed as `Index(Var(M),
+    /// Atom("helper"))`) becomes `Var("M.helper")`. The resulting Var's
+    /// span should still cover the original source `M.helper` region.
+    #[test]
+    fn cross_module_rewrite_preserves_call_span() {
+        let src = r#"
+defmodule M do
+  fn helper(x), do: x + 1
+end
+defmodule N do
+  fn use_it(), do: M.helper(7)
+end
+"#;
+        let pre = parse(src);
+        let pre_call_span = {
+            let n_mod = pre.items.iter().find_map(|it| match &**it {
+                Item::Module(m) if m.name == "N" => Some(m.clone()),
+                _ => None,
+            }).unwrap();
+            let Item::Fn(u) = &*n_mod.items.iter().find_map(|it| match &**it {
+                Item::Fn(d) if d.name == "use_it" => Some(it.clone()),
+                _ => None,
+            }).unwrap() else { panic!() };
+            let Expr::Call(callee, _) = &u.clauses[0].body.node else { panic!() };
+            callee.span
+        };
+
+        let post = flatten_modules(pre).expect("flatten");
+        let u = post.items.iter().find_map(|it| match &**it {
+            Item::Fn(d) if d.name == "N.use_it" => Some(d),
+            _ => None,
+        }).unwrap();
+        let Expr::Call(callee, _) = &u.clauses[0].body.node else { panic!() };
+        match &callee.node {
+            Expr::Var(n) => assert_eq!(n, "M.helper"),
+            other => panic!("expected Var('M.helper'), got {:?}", other),
+        }
+        assert_eq!(callee.span, pre_call_span,
+            "callee span should be preserved through cross-module rewrite");
+    }
 }

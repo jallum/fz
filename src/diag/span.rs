@@ -20,6 +20,29 @@ pub struct Span {
     pub end: u32,
 }
 
+/// Where an AST node's span came from. `Source` — the common case — means a
+/// real token in the user's source produced this node. `Expanded` records
+/// that the node was synthesized by a macro: `macro_call` is the span of
+/// the user's `Foo(args)` invocation, `definition` (when present) is the
+/// span of `defmacro Foo …` so a diagnostic can point at the macro itself.
+///
+/// The renderer (.20.6) consults this when drawing the trailer:
+///   = expanded from `<macro>` at file:line:col
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpanOrigin {
+    Source,
+    Expanded {
+        macro_call: Span,
+        definition: Option<Span>,
+    },
+}
+
+impl SpanOrigin {
+    pub const fn source() -> Self {
+        SpanOrigin::Source
+    }
+}
+
 impl Span {
     /// The "no source position available" sentinel. Used for AST/IR nodes
     /// synthesized after parsing (macro expansion, compiler-generated
