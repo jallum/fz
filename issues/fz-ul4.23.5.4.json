@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-ul4.23.5.2"
   ],
@@ -13,8 +13,8 @@
   "labels": [],
   "parent": "fz-ul4.23.5",
   "priority": 3,
-  "status": "open",
+  "status": "in_progress",
   "title": "ir_interp_v2: closures + higher-order (apply2.fz, higher_order.fz)",
   "type": "task",
-  "updated_at": "2026-05-11T21:11:39Z"
+  "updated_at": "2026-05-11T21:47:30Z"
 }
