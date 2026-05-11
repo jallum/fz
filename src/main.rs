@@ -20,6 +20,7 @@ mod macros;
 mod parser;
 mod repl;
 mod resolve;
+mod runtime;
 mod test_runner;
 mod typer;
 mod types;

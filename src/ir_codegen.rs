@@ -35,7 +35,7 @@ use cranelift_module::{FuncId, Linkage, Module as ClModule};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-const HEADER_SIZE: i32 = 16;
+pub(crate) const HEADER_SIZE: i32 = 16;
 const SLOT_BYTES: i32 = 8;
 
 // FzValue tag scheme (matches src/fz_value.rs).
@@ -146,6 +146,10 @@ impl CompiledModule {
             frame_sizes: self.frame_sizes.clone(),
             bs_tuple_arity1_schema: self.bs_tuple_arity1_schema,
             bs_tuple_arity3_schema: self.bs_tuple_arity3_schema,
+            pid: 0,
+            state: ProcessState::New,
+            next_frame: std::ptr::null_mut(),
+            mailbox: std::collections::VecDeque::new(),
         }
     }
 
@@ -173,6 +177,45 @@ impl CompiledModule {
         let result = self.run_internal(fn_id);
         CURRENT_PROCESS.with(|c| c.set(prev));
         result
+    }
+
+    /// Run one quantum for a Process. Resumes from `process.next_frame`
+    /// (which the caller — typically the Runtime in src/runtime.rs — must
+    /// have set to a fresh entry frame or the saved continuation from a
+    /// prior yield). The caller is responsible for CURRENT_PROCESS
+    /// install/uninstall; we just trampoline. On halt the trampoline
+    /// returns null; we write that back to process.next_frame so the
+    /// caller can observe completion.
+    pub(crate) fn run_quantum(&self, process: &mut Process) {
+        let mut cur = process.next_frame;
+        let mut iters: usize = 0;
+        let cap: usize = 10_000_000;
+        while !cur.is_null() {
+            iters += 1;
+            if iters > cap {
+                panic!("trampoline exceeded {} iterations", cap);
+            }
+            if process.heap.should_gc() {
+                let roots = crate::heap::collect_roots_from_frame_chain(
+                    cur as *mut crate::fz_value::HeapHeader,
+                    &self.schemas,
+                );
+                process.heap.gc(&roots);
+                process.heap.clear_should_gc_flag();
+            }
+            let header = cur as *const crate::fz_value::HeapHeader;
+            let schema_id = unsafe { (*header).schema_id };
+            let fn_ptr = self
+                .fn_ptrs
+                .get(&schema_id)
+                .copied()
+                .unwrap_or_else(|| panic!("no fn for schema_id {}", schema_id));
+            let f: extern "C" fn(*mut u8, *mut u8) -> *mut u8 =
+                unsafe { std::mem::transmute(fn_ptr) };
+            let ctx = CURRENT_PROCESS.with(|c| c.get()) as *mut u8;
+            cur = f(cur, ctx);
+        }
+        process.next_frame = cur;
     }
 
     fn run_internal(&self, fn_id: FnId) -> i64 {
@@ -248,6 +291,35 @@ pub struct Process {
     pub frame_sizes: Vec<u32>,
     pub bs_tuple_arity1_schema: Option<u32>,
     pub bs_tuple_arity3_schema: Option<u32>,
+    // fz-ul4.19.1 scheduler-level fields. Populated when a Process is
+    // owned by a Runtime; the standalone `make_process()` / `run_in` path
+    // leaves these at defaults.
+    pub pid: PidId,
+    pub state: ProcessState,
+    /// Current continuation pointer. While running, the trampoline holds
+    /// this in a local; on yield/halt boundaries the Runtime swaps state
+    /// here. v1 only writes this on halt (next_frame = null).
+    pub next_frame: *mut u8,
+    pub mailbox: std::collections::VecDeque<crate::fz_value::FzValue>,
+}
+
+/// Stable per-Process identifier assigned at spawn time. v1: simple u32
+/// counter; .19.5 may add a (node_id, generation) tuple. Pid is exposed
+/// to fz code via the Pid struct schema (.19.2 — separate ticket).
+pub type PidId = u32;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProcessState {
+    /// Default; created but not yet ever scheduled.
+    New,
+    /// Ready to run / in run_queue.
+    Ready,
+    /// Currently running on a worker (a worker has it installed in TLS).
+    Running,
+    /// Awaiting a message (.19.3); send wakes back to Ready.
+    Blocked,
+    /// Halted; halt_value is final.
+    Exited,
 }
 
 impl Process {
@@ -263,6 +335,10 @@ impl Process {
             frame_sizes: Vec::new(),
             bs_tuple_arity1_schema: None,
             bs_tuple_arity3_schema: None,
+            pid: 0,
+            state: ProcessState::New,
+            next_frame: std::ptr::null_mut(),
+            mailbox: std::collections::VecDeque::new(),
         }
     }
 }
@@ -1546,6 +1622,12 @@ extern "C" fn fz_tail_closure(closure_bits: u64, current_frame: *mut u8) -> *mut
         }
         frame
     }
+}
+
+/// Public wrapper around the internal frame allocator. Used by the
+/// Runtime in src/runtime.rs to spawn a task's entry frame.
+pub(crate) fn fz_alloc_frame_for_test(schema_id: u32, total_size: u32) -> *mut u8 {
+    fz_alloc_frame(schema_id, total_size)
 }
 
 extern "C" fn fz_alloc_frame(schema_id: u32, total_size: u32) -> *mut u8 {
