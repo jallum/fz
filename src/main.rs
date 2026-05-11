@@ -91,9 +91,126 @@ fn main() {
     run_jit_src(src, "<stdin>".into());
 }
 
-fn run_build(_args: &[String]) {
-    eprintln!("fz build: AOT path not yet implemented (tracked by fz-ul4.23.6).");
-    std::process::exit(2);
+/// `fz build <src.fz> -o <out>` — AOT compile + link into a native
+/// executable (fz-ul4.23.6.3).
+///
+/// Pipeline: lex/parse/resolve/macros/ir_lower (shared with `fz run`),
+/// then `ir_codegen::compile_aot` to emit object bytes including the
+/// per-program dispatch fn and a C-callable `main` that calls
+/// `fz_aot_run` (in the fz-runtime staticlib). Then `cc` links the
+/// object against libfz_runtime.a + libc into the requested output.
+///
+/// Single-task v1 — spawn/send/receive in AOT lands in fz-ul4.23.6.6.
+fn run_build(args: &[String]) {
+    let mut src_path: Option<String> = None;
+    let mut out_path: Option<String> = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "-o" => {
+                i += 1;
+                out_path = args.get(i).cloned();
+                if out_path.is_none() {
+                    eprintln!("fz build: -o expects a path");
+                    std::process::exit(2);
+                }
+            }
+            a if !a.starts_with('-') && src_path.is_none() => {
+                src_path = Some(a.to_string());
+            }
+            a => {
+                eprintln!("fz build: unknown arg `{}`", a);
+                std::process::exit(2);
+            }
+        }
+        i += 1;
+    }
+    let src_path = src_path.unwrap_or_else(|| {
+        eprintln!("fz build <src.fz> -o <out>");
+        std::process::exit(2);
+    });
+    let out_path = out_path.unwrap_or_else(|| {
+        eprintln!("fz build: -o <out> is required");
+        std::process::exit(2);
+    });
+    let src = std::fs::read_to_string(&src_path).unwrap_or_else(|e| {
+        eprintln!("read {}: {}", src_path, e);
+        std::process::exit(1);
+    });
+
+    let mut sm = diag::SourceMap::new();
+    let file_id = sm.add_file(src_path.clone(), src.clone());
+    let toks = lexer::Lexer::with_file(&src, file_id)
+        .tokenize()
+        .unwrap_or_else(|e| {
+            diag::render_one_to_stderr(&sm, &e.to_diagnostic());
+            std::process::exit(1);
+        });
+    let prog = Parser::new(toks).parse_program().unwrap_or_else(|e| {
+        diag::render_one_to_stderr(&sm, &e.to_diagnostic());
+        std::process::exit(1);
+    });
+    let mut prog = resolve::flatten_modules(prog).unwrap_or_else(|e| {
+        diag::render_one_to_stderr(&sm, &e.to_diagnostic());
+        std::process::exit(1);
+    });
+    if let Err(e) = macros::expand_program(&mut prog) {
+        diag::render_one_to_stderr(&sm, &e.to_diagnostic());
+        std::process::exit(1);
+    }
+    let module = ir_lower::lower_program(&prog).unwrap_or_else(|e| {
+        diag::render_one_to_stderr(&sm, &e.to_diagnostic());
+        std::process::exit(1);
+    });
+    let obj_name = std::path::Path::new(&src_path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("fz_program");
+    let artifact = ir_codegen::compile_aot(&module, obj_name).unwrap_or_else(|e| {
+        diag::render_one_to_stderr(&sm, &e.to_diagnostic());
+        std::process::exit(1);
+    });
+    if artifact.main_symbol.is_none() {
+        eprintln!("fz build: no `main/0` fn found; nothing to link.");
+        std::process::exit(1);
+    }
+    diag::render_to_stderr(&sm, &artifact.diagnostics);
+
+    // Write the object next to the output, then invoke cc.
+    let obj_temp = std::path::PathBuf::from(format!("{}.o", out_path));
+    std::fs::write(&obj_temp, &artifact.object).unwrap_or_else(|e| {
+        eprintln!("write object {}: {}", obj_temp.display(), e);
+        std::process::exit(1);
+    });
+
+    // Locate libfz_runtime.a. Cargo puts it in the same target/<profile>/
+    // directory as this binary. CARGO_MANIFEST_DIR + Cargo's debug/release
+    // convention isn't 100% reliable, so check both paths.
+    let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("fz"));
+    let target_dir = exe
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| std::path::PathBuf::from("target/debug"));
+
+    let mut cc = std::process::Command::new("cc");
+    cc.arg("-o")
+        .arg(&out_path)
+        .arg(&obj_temp)
+        .arg(format!("-L{}", target_dir.display()))
+        .arg("-lfz_runtime");
+    if cfg!(target_os = "macos") {
+        cc.arg("-Wl,-undefined,dynamic_lookup");
+    }
+    let status = cc.status().unwrap_or_else(|e| {
+        eprintln!("fz build: failed to invoke cc: {}", e);
+        std::process::exit(1);
+    });
+    if !status.success() {
+        eprintln!("fz build: cc exited {}", status);
+        std::process::exit(1);
+    }
+    // Drop the intermediate .o on success.
+    let _ = std::fs::remove_file(&obj_temp);
 }
 
 /// `fz interp <src.fz>` — run a program through the rebuilt IR interpreter

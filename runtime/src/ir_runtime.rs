@@ -23,6 +23,7 @@ use crate::process::current_process;
 
 // ===== Halt + print cluster (fz-ul4.23.4.13) =====
 
+#[unsafe(no_mangle)]
 pub extern "C" fn fz_print_value(fz_bits: u64) {
     let s = crate::fz_value::debug::render(fz_bits);
     // Always write to stdout so user-facing `fz run` / piped programs
@@ -54,6 +55,7 @@ pub fn test_capture_take() -> Vec<String> {
 /// the migration we ignore it in favor of current_process() — they point at
 /// the same Process, but using current_process() keeps the access pattern
 /// uniform with every other fz_* fn.
+#[unsafe(no_mangle)]
 pub extern "C" fn fz_halt(_ctx: *mut u8, fz_bits: u64) {
     use crate::fz_value::{FzValue, HeapKind, Tag};
     let v = FzValue(fz_bits);
@@ -99,6 +101,7 @@ pub extern "C" fn fz_halt(_ctx: *mut u8, fz_bits: u64) {
 /// v1 restriction: closure must have ZERO captures. Captured values
 /// would need to be copied into the new task's heap (.19.3 territory);
 /// for v1 spawn takes plain fn references (closures with no captures).
+#[unsafe(no_mangle)]
 pub extern "C" fn fz_spawn(closure_bits: u64) -> u64 {
     use crate::fz_value::FzValue;
     let cp = FzValue(closure_bits)
@@ -118,6 +121,7 @@ pub extern "C" fn fz_spawn(closure_bits: u64) -> u64 {
 
 /// fz_self() -> pid_bits. Returns the currently-running task's pid as a
 /// boxed FzValue Int.
+#[unsafe(no_mangle)]
 pub extern "C" fn fz_self() -> u64 {
     use crate::fz_value::FzValue;
     FzValue::from_int(current_process().pid as i64).0
@@ -135,6 +139,7 @@ pub extern "C" fn fz_self() -> u64 {
 /// - deep_copy_value supports List, Struct (tuple/closure/map structurally
 ///   covered), Bitstring, and scalars. Other HeapKinds panic with an
 ///   explicit message; follow-up tickets extend coverage.
+#[unsafe(no_mangle)]
 pub extern "C" fn fz_send(receiver_pid_bits: u64, msg_bits: u64) -> u64 {
     use crate::fz_value::FzValue;
     let receiver_pid = FzValue(receiver_pid_bits)
@@ -154,6 +159,7 @@ pub extern "C" fn fz_send(receiver_pid_bits: u64, msg_bits: u64) -> u64 {
 /// If the mailbox is empty: set the Process state to Blocked, return
 /// YIELD_PTR. The trampoline parks the task at the receive's frame; on
 /// resume (via send), this fn is called again and now finds the message.
+#[unsafe(no_mangle)]
 pub extern "C" fn fz_receive_attempt(cont_frame_ptr: *mut u8) -> *mut u8 {
     use crate::{process::ProcessState, scheduler_hooks::YIELD_PTR};
     let p = current_process();
@@ -186,10 +192,12 @@ pub extern "C" fn fz_receive_attempt(cont_frame_ptr: *mut u8) -> *mut u8 {
 // CLOSURE_BUILDER + CLOSURE_ARGS + FRAME_SIZES state lives on Process
 // fields (per fz-ul4.11.32).
 
+#[unsafe(no_mangle)]
 pub extern "C" fn fz_closure_begin(fn_id: u32) {
     current_process().closure_builder = Some((fn_id, Vec::new()));
 }
 
+#[unsafe(no_mangle)]
 pub extern "C" fn fz_closure_push(v: u64) {
     current_process()
         .closure_builder
@@ -199,6 +207,7 @@ pub extern "C" fn fz_closure_push(v: u64) {
         .push(v);
 }
 
+#[unsafe(no_mangle)]
 pub extern "C" fn fz_closure_finalize() -> u64 {
     use crate::fz_value::FzValue;
     let (fn_id, captured) = current_process()
@@ -210,6 +219,7 @@ pub extern "C" fn fz_closure_finalize() -> u64 {
     p as u64
 }
 
+#[unsafe(no_mangle)]
 pub extern "C" fn fz_closure_arg(v: u64) {
     current_process().closure_args.push(v);
 }
@@ -219,6 +229,7 @@ pub extern "C" fn fz_closure_arg(v: u64) {
 ///   frame[24..24+cap*8]   = closure.captured
 ///   frame[24+cap*8..]     = staged args (consumed from CLOSURE_ARGS)
 /// Returns the callee frame ptr for the trampoline to invoke next.
+#[unsafe(no_mangle)]
 pub extern "C" fn fz_closure_invoke(closure_bits: u64, cont_ptr: u64) -> *mut u8 {
     use crate::fz_value::FzValue;
     let cp = FzValue(closure_bits)
@@ -244,6 +255,7 @@ pub extern "C" fn fz_closure_invoke(closure_bits: u64, cont_ptr: u64) -> *mut u8
 /// Tail-call a closure. If the closure's fn_id matches the caller's frame
 /// schema_id, overwrite the caller's frame in place (cont_ptr stays).
 /// Otherwise allocate a fresh frame and copy the cont_ptr from the caller's.
+#[unsafe(no_mangle)]
 pub extern "C" fn fz_tail_closure(closure_bits: u64, current_frame: *mut u8) -> *mut u8 {
     use crate::fz_value::{FzValue, HeapHeader};
     let cp = FzValue(closure_bits)
@@ -296,6 +308,7 @@ pub enum VecBuild {
 }
 
 /// kind tag matches `HeapKind as u16`: VecI64=3, VecU8=5, VecBit=6.
+#[unsafe(no_mangle)]
 pub extern "C" fn fz_vec_begin(kind_tag: u32) {
     use crate::fz_value::HeapKind;
     let b = match HeapKind::from_u16(kind_tag as u16) {
@@ -308,6 +321,7 @@ pub extern "C" fn fz_vec_begin(kind_tag: u32) {
     current_process().vec_builder = Some(b);
 }
 
+#[unsafe(no_mangle)]
 pub extern "C" fn fz_vec_push(value_bits: u64) {
     use crate::fz_value::FzValue;
     let n = FzValue(value_bits)
@@ -324,6 +338,7 @@ pub extern "C" fn fz_vec_push(value_bits: u64) {
     }
 }
 
+#[unsafe(no_mangle)]
 pub extern "C" fn fz_vec_finalize() -> u64 {
     let b = current_process()
         .vec_builder
@@ -340,6 +355,7 @@ pub extern "C" fn fz_vec_finalize() -> u64 {
 
 /// vec_get(vec, index) -> element as FzValue Int (for I64/U8/Bit).
 /// Out-of-bounds returns FzValue::NIL (mirrors Map's missing-key behavior).
+#[unsafe(no_mangle)]
 pub extern "C" fn fz_vec_get(vec_bits: u64, index_bits: u64) -> u64 {
     use crate::fz_value::{FzValue, HeapKind};
     let p = FzValue(vec_bits)
@@ -373,6 +389,7 @@ pub extern "C" fn fz_vec_get(vec_bits: u64, index_bits: u64) -> u64 {
 
 // ===== Bitstring cluster (fz-ul4.23.4.9) =====
 
+#[unsafe(no_mangle)]
 pub extern "C" fn fz_bs_begin() {
     current_process().bs_builder = Some(crate::bitstr::BitWriter::new());
 }
@@ -382,6 +399,7 @@ pub extern "C" fn fz_bs_begin() {
 /// Utf16=5, Utf32=6. `size_present` distinguishes None (0) vs Some (1);
 /// `size_value` is in size-units (multiplied by `unit` internally).
 #[allow(clippy::too_many_arguments)]
+#[unsafe(no_mangle)]
 pub extern "C" fn fz_bs_write_field(
     value_bits: u64,
     ty_tag: u32,
@@ -496,6 +514,7 @@ pub extern "C" fn fz_bs_write_field(
     }
 }
 
+#[unsafe(no_mangle)]
 pub extern "C" fn fz_bs_finalize() -> u64 {
     let w = current_process()
         .bs_builder
@@ -533,6 +552,7 @@ fn decode_endian(e: u32) -> crate::bitstr::Endian {
 
 /// Allocate a 3-tuple reader `[bs_ptr, bit_len_int, pos_int]` for an input
 /// bitstring. Schema id is set by compile() into BS_TUPLE_ARITY3_SCHEMA.
+#[unsafe(no_mangle)]
 pub extern "C" fn fz_bs_reader_init(bs_bits: u64) -> u64 {
     use crate::fz_value::{FzValue, HeapKind, Tag};
     let v = FzValue(bs_bits);
@@ -560,6 +580,7 @@ pub extern "C" fn fz_bs_reader_init(bs_bits: u64) -> u64 {
 }
 
 #[allow(clippy::too_many_arguments)]
+#[unsafe(no_mangle)]
 pub extern "C" fn fz_bs_read_field(
     reader_bits: u64,
     ty_tag: u32,
@@ -741,10 +762,12 @@ fn fz_key_cmp(a: u64, b: u64) -> std::cmp::Ordering {
     })
 }
 
+#[unsafe(no_mangle)]
 pub extern "C" fn fz_map_begin() {
     current_process().map_builder = Some(Vec::new());
 }
 
+#[unsafe(no_mangle)]
 pub extern "C" fn fz_map_clone(base_bits: u64) {
     use crate::fz_value::{FzValue, HeapKind};
     let mut entries: Vec<(u64, u64)> = Vec::new();
@@ -767,6 +790,7 @@ pub extern "C" fn fz_map_clone(base_bits: u64) {
     current_process().map_builder = Some(entries);
 }
 
+#[unsafe(no_mangle)]
 pub extern "C" fn fz_map_push(key_bits: u64, val_bits: u64) {
     current_process()
         .map_builder
@@ -775,6 +799,7 @@ pub extern "C" fn fz_map_push(key_bits: u64, val_bits: u64) {
         .push((key_bits, val_bits));
 }
 
+#[unsafe(no_mangle)]
 pub extern "C" fn fz_map_finalize() -> u64 {
     use crate::fz_value::FzValue;
     let raw = current_process()
@@ -798,6 +823,7 @@ pub extern "C" fn fz_map_finalize() -> u64 {
     p as u64
 }
 
+#[unsafe(no_mangle)]
 pub extern "C" fn fz_map_get(map_bits: u64, key_bits: u64) -> u64 {
     use crate::fz_value::{FzValue, HeapKind};
     let p = FzValue(map_bits)
@@ -824,6 +850,7 @@ pub extern "C" fn fz_map_get(map_bits: u64, key_bits: u64) -> u64 {
 
 // ===== Alloc cluster (fz-ul4.23.4.7) =====
 
+#[unsafe(no_mangle)]
 pub extern "C" fn fz_alloc_list_cons(head_bits: u64, tail_bits: u64) -> u64 {
     use crate::fz_value::FzValue;
     let p = current_process()
@@ -838,11 +865,13 @@ pub extern "C" fn fz_alloc_list_cons(head_bits: u64, tail_bits: u64) -> u64 {
 /// the current Process's heap SchemaRegistry (shared with CompiledModule).
 /// Returns the FzValue ptr-bits (heap-aligned, so tag = 000). Caller is
 /// responsible for writing field values into payload slots after allocation.
+#[unsafe(no_mangle)]
 pub extern "C" fn fz_alloc_struct(schema_id: u32) -> u64 {
     let p = current_process().heap.alloc_struct(schema_id);
     p as u64
 }
 
+#[unsafe(no_mangle)]
 pub extern "C" fn fz_alloc_float(bits: u64) -> u64 {
     let f = f64::from_bits(bits);
     let p = current_process().heap.alloc_float(f);
@@ -851,6 +880,7 @@ pub extern "C" fn fz_alloc_float(bits: u64) -> u64 {
 
 /// Allocate a frame for fn `fn_id`, looking up its size in the current
 /// Process's frame_sizes table populated at make_process() time.
+#[unsafe(no_mangle)]
 pub extern "C" fn fz_alloc_frame_dyn(fn_id: u32) -> *mut u8 {
     let size = *current_process()
         .frame_sizes
@@ -866,6 +896,7 @@ pub fn fz_alloc_frame_for_test(schema_id: u32, total_size: u32) -> *mut u8 {
     fz_alloc_frame(schema_id, total_size)
 }
 
+#[unsafe(no_mangle)]
 pub extern "C" fn fz_alloc_frame(schema_id: u32, total_size: u32) -> *mut u8 {
     use std::alloc::{alloc_zeroed, Layout};
     // Round size up to a multiple of 16 to keep allocator happy and ensure
@@ -914,10 +945,15 @@ pub(crate) fn box_float(f: f64) -> u64 {
     p as u64
 }
 
+#[unsafe(no_mangle)]
 pub extern "C" fn fz_arith_add(a: u64, b: u64) -> u64 { box_float(fz_to_f64(a) + fz_to_f64(b)) }
+#[unsafe(no_mangle)]
 pub extern "C" fn fz_arith_sub(a: u64, b: u64) -> u64 { box_float(fz_to_f64(a) - fz_to_f64(b)) }
+#[unsafe(no_mangle)]
 pub extern "C" fn fz_arith_mul(a: u64, b: u64) -> u64 { box_float(fz_to_f64(a) * fz_to_f64(b)) }
+#[unsafe(no_mangle)]
 pub extern "C" fn fz_arith_div(a: u64, b: u64) -> u64 { box_float(fz_to_f64(a) / fz_to_f64(b)) }
+#[unsafe(no_mangle)]
 pub extern "C" fn fz_arith_mod(a: u64, b: u64) -> u64 { box_float(fz_to_f64(a) % fz_to_f64(b)) }
 
 /// Comparison helpers return FzValue TRUE/FALSE bits. Like the arithmetic
@@ -926,9 +962,13 @@ pub(crate) fn cmp_to_fz(b: bool) -> u64 {
     use crate::fz_value::FzValue;
     if b { FzValue::TRUE.0 } else { FzValue::FALSE.0 }
 }
+#[unsafe(no_mangle)]
 pub extern "C" fn fz_cmp_lt(a: u64, b: u64) -> u64 { cmp_to_fz(fz_to_f64(a) <  fz_to_f64(b)) }
+#[unsafe(no_mangle)]
 pub extern "C" fn fz_cmp_le(a: u64, b: u64) -> u64 { cmp_to_fz(fz_to_f64(a) <= fz_to_f64(b)) }
+#[unsafe(no_mangle)]
 pub extern "C" fn fz_cmp_gt(a: u64, b: u64) -> u64 { cmp_to_fz(fz_to_f64(a) >  fz_to_f64(b)) }
+#[unsafe(no_mangle)]
 pub extern "C" fn fz_cmp_ge(a: u64, b: u64) -> u64 { cmp_to_fz(fz_to_f64(a) >= fz_to_f64(b)) }
 
 /// Structural Eq for two Tag::Ptr FzValues. Both args MUST be Tag::Ptr —
@@ -939,6 +979,7 @@ pub extern "C" fn fz_cmp_ge(a: u64, b: u64) -> u64 { cmp_to_fz(fz_to_f64(a) >= f
 /// scalars or other heap values, so the recursive call dispatches on the
 /// child's tag. For scalar children we can short-circuit on raw bit
 /// equality before calling back into this fn — `eq_fz` handles that.
+#[unsafe(no_mangle)]
 pub extern "C" fn fz_value_eq(a: u64, b: u64) -> u64 {
     cmp_to_fz(eq_fz(a, b))
 }

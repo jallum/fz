@@ -484,9 +484,17 @@ pub(crate) const YIELD_PTR: u64 = 0x1;
 // ---------------------------------------------------------------------------
 
 fn host_isa() -> Arc<dyn cranelift_codegen::isa::TargetIsa> {
+    host_isa_with(false)
+}
+
+/// Build a host ISA. `pic = false` is right for the JIT (no relocations
+/// needed inside in-memory code). `pic = true` is required for AOT on
+/// macOS, where the linker rejects text relocations in regular
+/// executables.
+fn host_isa_with(pic: bool) -> Arc<dyn cranelift_codegen::isa::TargetIsa> {
     let mut flag_builder = settings::builder();
     flag_builder.set("opt_level", "speed").unwrap();
-    flag_builder.set("is_pic", "false").unwrap();
+    flag_builder.set("is_pic", if pic { "true" } else { "false" }).unwrap();
     flag_builder.set("use_colocated_libcalls", "false").unwrap();
     let isa_builder = cranelift_native::builder().expect("host ISA");
     isa_builder
@@ -603,7 +611,10 @@ pub struct AotBackend {
 
 impl AotBackend {
     pub fn new(name: &str) -> Self {
-        let isa = host_isa();
+        // AOT needs PIC for macOS — the linker rejects text relocations
+        // in regular executables. PIC on x86_64-linux / aarch64-linux is
+        // also conventional for distributable binaries.
+        let isa = host_isa_with(true);
         let builder = cranelift_object::ObjectBuilder::new(
             isa,
             name.to_string(),
@@ -763,6 +774,67 @@ pub fn compile_aot(module: &Module, obj_name: &str) -> Result<AotArtifact, Codeg
         backend.module_mut().clear_context(&mut ctx);
     }
 
+    // ----- Emit the per-program dispatch fn and C main (fz-ul4.23.6.3) -----
+    //
+    // fz_aot_run (in fz-runtime) is generic: it loops calling
+    // `dispatch(schema_id) → fn_ptr → call`. The dispatch is per-program
+    // because the set of fz_fn_<N> symbols varies per module. We emit it
+    // here as a Cranelift fn that switch-returns each fn's address via
+    // `func_addr`, plus a tiny `main` C entry that wires it up.
+    //
+    // Programs with no `main` skip these (the artifact's `main_symbol`
+    // will be None and `fz build` errors out gracefully).
+    let main_fz_id = module.fn_by_name("main").map(|f| f.id);
+    let c_main_symbol = if let Some(main_id) = main_fz_id {
+        let main_frame_size = schemas[main_id.0 as usize].size;
+
+        // Declare fz_aot_run as an Import.
+        let aot_run_sig = sig1(&[types::I32, types::I32, types::I64], &[types::I32]);
+        let aot_run_id = backend
+            .module_mut()
+            .declare_function("fz_aot_run", Linkage::Import, &aot_run_sig)
+            .map_err(|e| CodegenError::new(format!("declare fz_aot_run: {}", e)))?;
+
+        // Dispatch fn: (i32 schema_id) -> i64 fn_ptr.
+        let dispatch_sig = sig1(&[types::I32], &[types::I64]);
+        let dispatch_id = backend
+            .module_mut()
+            .declare_function("fz_aot_dispatch", Linkage::Local, &dispatch_sig)
+            .map_err(|e| CodegenError::new(format!("declare fz_aot_dispatch: {}", e)))?;
+        emit_aot_dispatch(
+            backend.module_mut(),
+            &mut fbctx,
+            dispatch_id,
+            &dispatch_sig,
+            &fn_ids,
+        )?;
+
+        // C main: (i32 argc, i64 argv) -> i32. Calls fz_aot_run with the
+        // program's main schema_id, frame size, and dispatch addr.
+        let mut c_main_sig = Signature::new(CallConv::SystemV);
+        c_main_sig.params.push(AbiParam::new(types::I32));
+        c_main_sig.params.push(AbiParam::new(types::I64));
+        c_main_sig.returns.push(AbiParam::new(types::I32));
+        let c_main_id = backend
+            .module_mut()
+            .declare_function("main", Linkage::Export, &c_main_sig)
+            .map_err(|e| CodegenError::new(format!("declare C main: {}", e)))?;
+        emit_aot_c_main(
+            backend.module_mut(),
+            &mut fbctx,
+            c_main_id,
+            &c_main_sig,
+            main_id.0,
+            main_frame_size,
+            dispatch_id,
+            aot_run_id,
+        )?;
+
+        Some("main".to_string())
+    } else {
+        None
+    };
+
     let AotBackend { omod } = backend;
     let product = omod.finish();
     let object = product
@@ -772,9 +844,135 @@ pub fn compile_aot(module: &Module, obj_name: &str) -> Result<AotArtifact, Codeg
     let diagnostics = crate::ir_typer::collect_diagnostics(module, &module_types);
     Ok(AotArtifact {
         object,
-        main_symbol,
+        // Surface the C-callable `main` (if we emitted one) — fz build
+        // (.6.3) uses this to know what the linker should pick as the
+        // entry. The fz user `main` is fz_fn_<id> and exists too, but
+        // the linker drives off C `main`.
+        main_symbol: c_main_symbol.or(main_symbol),
         diagnostics,
     })
+}
+
+/// Emit the per-program `fz_aot_dispatch(schema_id) -> fn_ptr` fn.
+/// switch-returns each fz_fn_<id>'s address via Cranelift's func_addr.
+/// Returns null for unknown ids (fz_aot_run treats null as a fatal AOT
+/// build error).
+fn emit_aot_dispatch<M: cranelift_module::Module>(
+    jmod: &mut M,
+    fbctx: &mut FunctionBuilderContext,
+    dispatch_id: FuncId,
+    dispatch_sig: &Signature,
+    fn_ids: &HashMap<u32, FuncId>,
+) -> Result<(), CodegenError> {
+    use cranelift_codegen::ir::condcodes::IntCC;
+    use cranelift_frontend::FunctionBuilder;
+
+    let mut ctx = jmod.make_context();
+    ctx.func.signature = dispatch_sig.clone();
+    {
+        let mut b = FunctionBuilder::new(&mut ctx.func, fbctx);
+        let entry = b.create_block();
+        b.append_block_params_for_function_params(entry);
+        b.switch_to_block(entry);
+        let id_param = b.block_params(entry)[0];
+
+        // Stable id order so the emitted CLIF is reproducible.
+        let mut ids_sorted: Vec<u32> = fn_ids.keys().copied().collect();
+        ids_sorted.sort();
+
+        let default_block = b.create_block();
+        let return_blocks: Vec<cranelift_codegen::ir::Block> = ids_sorted
+            .iter()
+            .map(|_| b.create_block())
+            .collect();
+
+        // Linear if/else chain. For a small fn count (~10s) this is fine;
+        // an n-arity jump table is a follow-up if AOT codegen ever does
+        // huge modules.
+        let mut cur_test = entry;
+        for (idx, sid) in ids_sorted.iter().enumerate() {
+            b.switch_to_block(cur_test);
+            let cond = b.ins().icmp_imm(IntCC::Equal, id_param, *sid as i64);
+            let next_test = if idx + 1 < ids_sorted.len() {
+                b.create_block()
+            } else {
+                default_block
+            };
+            b.ins().brif(cond, return_blocks[idx], &[], next_test, &[]);
+            cur_test = next_test;
+        }
+
+        // One-line block per fn returning its address.
+        for (sid, ret_blk) in ids_sorted.iter().zip(return_blocks.iter()) {
+            b.switch_to_block(*ret_blk);
+            let fref = jmod.declare_func_in_func(fn_ids[sid], b.func);
+            let addr = b.ins().func_addr(types::I64, fref);
+            b.ins().return_(&[addr]);
+        }
+
+        // Default: null. fz_aot_run aborts on null.
+        b.switch_to_block(default_block);
+        let z = b.ins().iconst(types::I64, 0);
+        b.ins().return_(&[z]);
+
+        b.seal_all_blocks();
+        b.finalize();
+    }
+    let flags = settings::Flags::new(settings::builder());
+    cranelift_codegen::verifier::verify_function(&ctx.func, &flags)
+        .map_err(|e| CodegenError::new(format!("verify fz_aot_dispatch: {}", e)))?;
+    jmod
+        .define_function(dispatch_id, &mut ctx)
+        .map_err(|e| CodegenError::new(format!("define fz_aot_dispatch: {}", e)))?;
+    jmod.clear_context(&mut ctx);
+    Ok(())
+}
+
+/// Emit the AOT C-callable main entry: pass the program's main schema_id,
+/// main frame size, and the dispatch fn's address to fz_aot_run, return
+/// its result. Linker uses this as the binary's entry point.
+#[allow(clippy::too_many_arguments)]
+fn emit_aot_c_main<M: cranelift_module::Module>(
+    jmod: &mut M,
+    fbctx: &mut FunctionBuilderContext,
+    c_main_id: FuncId,
+    c_main_sig: &Signature,
+    main_fz_id: u32,
+    main_frame_size: u32,
+    dispatch_id: FuncId,
+    aot_run_id: FuncId,
+) -> Result<(), CodegenError> {
+    use cranelift_frontend::FunctionBuilder;
+
+    let mut ctx = jmod.make_context();
+    ctx.func.signature = c_main_sig.clone();
+    {
+        let mut b = FunctionBuilder::new(&mut ctx.func, fbctx);
+        let entry = b.create_block();
+        b.append_block_params_for_function_params(entry);
+        b.switch_to_block(entry);
+
+        let main_id_v = b.ins().iconst(types::I32, main_fz_id as i64);
+        let frame_size_v = b.ins().iconst(types::I32, main_frame_size as i64);
+        let dispatch_fref = jmod.declare_func_in_func(dispatch_id, b.func);
+        let dispatch_addr = b.ins().func_addr(types::I64, dispatch_fref);
+
+        let aot_fref = jmod.declare_func_in_func(aot_run_id, b.func);
+        let call = b.ins().call(aot_fref, &[main_id_v, frame_size_v, dispatch_addr]);
+        let result = b.inst_results(call)[0];
+        b.ins().return_(&[result]);
+
+        b.seal_all_blocks();
+        b.finalize();
+    }
+    let flags = settings::Flags::new(settings::builder());
+    cranelift_codegen::verifier::verify_function(&ctx.func, &flags)
+        .map_err(|e| CodegenError::new(format!("verify C main: {}", e)))?;
+    jmod
+        .define_function(c_main_id, &mut ctx)
+        .map_err(|e| CodegenError::new(format!("define C main: {}", e)))?;
+    jmod.clear_context(&mut ctx);
+    Ok(())
 }
 
 pub fn compile(module: &Module) -> Result<CompiledModule, CodegenError> {
@@ -2178,15 +2376,11 @@ mod tests {
             !artifact.object.is_empty(),
             "AOT object should be non-empty"
         );
-        // Main symbol should be exported. Concrete name is fz_fn_<FnId>;
-        // the artifact records it so the linker shim (fz-ul4.23.6.2) can
-        // call it.
+        // Post-.6.3, compile_aot emits a C-callable `main` symbol that
+        // wraps fz_aot_run. The artifact's main_symbol surfaces that for
+        // the linker.
         let main_sym = artifact.main_symbol.expect("main_symbol set");
-        assert!(
-            main_sym.starts_with("fz_fn_"),
-            "unexpected main symbol: {}",
-            main_sym
-        );
+        assert_eq!(main_sym, "main", "expected C-callable main symbol");
         // Sanity: object-file magic bytes for the host target. ELF starts
         // with 0x7f 'E' 'L' 'F'; Mach-O starts with 0xfeedface/0xfeedfacf
         // (or their byte-swapped 64-bit variants).
