@@ -857,120 +857,7 @@ extern "C" fn fz_receive_attempt(cont_frame_ptr: *mut u8) -> *mut u8 {
 // VEC_BUILDER state lives on Process.vec_builder (per fz-ul4.11.32),
 // typed as Option<crate::ir_runtime::VecBuild>.
 
-// ----- Closure runtime fns -----
-//
-// Closures are heap objects (HeapKind::Closure) holding [...captured FzValues].
-// `header.schema_id` is repurposed to hold the IR fn id of the lambda body.
-// `header.flags` holds the captured count (u16). The trampoline never sees
-// closure headers — it dispatches off frame headers — so the schema_id reuse
-// is safe and avoids registering a per-fn closure schema.
-//
-// Construction is staged via TLS: begin(fn_id) -> push(v) ×n -> finalize().
-// Invocation is staged via TLS args: arg(v) ×n -> invoke(closure, cont_ptr)
-// returns the callee frame ptr. TailCallClosure uses the same staging plus a
-// frame-reuse path when the closure's fn shares the caller's schema (fn_id
-// equality).
-
-// CLOSURE_BUILDER + CLOSURE_ARGS + FRAME_SIZES state moved to Process fields
-// (per fz-ul4.11.32). frame_sizes is copied into Process at make_process()
-// time from CompiledModule's compile-time table.
-
-extern "C" fn fz_closure_begin(fn_id: u32) {
-    current_process().closure_builder = Some((fn_id, Vec::new()));
-}
-
-extern "C" fn fz_closure_push(v: u64) {
-    current_process()
-        .closure_builder
-        .as_mut()
-        .expect("fz_closure_push without begin")
-        .1
-        .push(v);
-}
-
-extern "C" fn fz_closure_finalize() -> u64 {
-    use crate::fz_value::FzValue;
-    let (fn_id, captured) = current_process()
-        .closure_builder
-        .take()
-        .expect("fz_closure_finalize without begin");
-    let cap_fz: Vec<FzValue> = captured.into_iter().map(FzValue).collect();
-    let p = current_process().heap.alloc_closure(fn_id, &cap_fz);
-    p as u64
-}
-
-extern "C" fn fz_closure_arg(v: u64) {
-    current_process().closure_args.push(v);
-}
-
-// fz_alloc_frame_dyn moved to ir_runtime.rs (.23.4.7).
-
-/// Build a callee frame for `closure` invocation:
-///   frame[16] = cont_ptr
-///   frame[24..24+cap*8]   = closure.captured
-///   frame[24+cap*8..]     = staged args (consumed from CLOSURE_ARGS)
-/// Returns the callee frame ptr for the trampoline to invoke next.
-extern "C" fn fz_closure_invoke(closure_bits: u64, cont_ptr: u64) -> *mut u8 {
-    use crate::fz_value::FzValue;
-    let cp = FzValue(closure_bits)
-        .unbox_ptr()
-        .expect("fz_closure_invoke: closure not a heap ptr");
-    let header = unsafe { &*cp };
-    let fn_id = header.schema_id;
-    let captured_count = header.flags as usize;
-    let frame = crate::ir_runtime::fz_alloc_frame_dyn(fn_id);
-    let args = std::mem::take(&mut current_process().closure_args);
-    unsafe {
-        std::ptr::write((frame as *mut u8).add(16) as *mut u64, cont_ptr);
-        let cap_src = (cp as *const u8).add(16) as *const u64;
-        let frame_slots = (frame as *mut u8).add(24) as *mut u64;
-        std::ptr::copy_nonoverlapping(cap_src, frame_slots, captured_count);
-        for (i, v) in args.iter().enumerate() {
-            std::ptr::write(frame_slots.add(captured_count + i), *v);
-        }
-    }
-    frame
-}
-
-/// Tail-call a closure. If the closure's fn_id matches the caller's frame
-/// schema_id, overwrite the caller's frame in place (cont_ptr stays).
-/// Otherwise allocate a fresh frame and copy the cont_ptr from the caller's.
-extern "C" fn fz_tail_closure(closure_bits: u64, current_frame: *mut u8) -> *mut u8 {
-    use crate::fz_value::{FzValue, HeapHeader};
-    let cp = FzValue(closure_bits)
-        .unbox_ptr()
-        .expect("fz_tail_closure: closure not a heap ptr");
-    let header = unsafe { &*cp };
-    let fn_id = header.schema_id;
-    let captured_count = header.flags as usize;
-    let cur_header = unsafe { &*(current_frame as *const HeapHeader) };
-    let cur_fn_id = cur_header.schema_id;
-    let args = std::mem::take(&mut current_process().closure_args);
-    let cap_src = unsafe { (cp as *const u8).add(16) as *const u64 };
-
-    if cur_fn_id == fn_id {
-        unsafe {
-            let frame_slots = current_frame.add(24) as *mut u64;
-            std::ptr::copy_nonoverlapping(cap_src, frame_slots, captured_count);
-            for (i, v) in args.iter().enumerate() {
-                std::ptr::write(frame_slots.add(captured_count + i), *v);
-            }
-        }
-        current_frame
-    } else {
-        let frame = crate::ir_runtime::fz_alloc_frame_dyn(fn_id);
-        unsafe {
-            let old_cont = std::ptr::read(current_frame.add(16) as *const u64);
-            std::ptr::write(frame.add(16) as *mut u64, old_cont);
-            let frame_slots = frame.add(24) as *mut u64;
-            std::ptr::copy_nonoverlapping(cap_src, frame_slots, captured_count);
-            for (i, v) in args.iter().enumerate() {
-                std::ptr::write(frame_slots.add(captured_count + i), *v);
-            }
-        }
-        frame
-    }
-}
+// Closure cluster moved to ir_runtime.rs (.23.4.11).
 
 // fz_alloc_frame + fz_alloc_frame_for_test moved to ir_runtime.rs (.23.4.7).
 
@@ -1050,12 +937,12 @@ pub fn compile(module: &Module) -> Result<CompiledModule, CodegenError> {
     builder.symbol("fz_vec_push", crate::ir_runtime::fz_vec_push as *const u8);
     builder.symbol("fz_vec_finalize", crate::ir_runtime::fz_vec_finalize as *const u8);
     builder.symbol("fz_vec_get", crate::ir_runtime::fz_vec_get as *const u8);
-    builder.symbol("fz_closure_begin", fz_closure_begin as *const u8);
-    builder.symbol("fz_closure_push", fz_closure_push as *const u8);
-    builder.symbol("fz_closure_finalize", fz_closure_finalize as *const u8);
-    builder.symbol("fz_closure_arg", fz_closure_arg as *const u8);
-    builder.symbol("fz_closure_invoke", fz_closure_invoke as *const u8);
-    builder.symbol("fz_tail_closure", fz_tail_closure as *const u8);
+    builder.symbol("fz_closure_begin", crate::ir_runtime::fz_closure_begin as *const u8);
+    builder.symbol("fz_closure_push", crate::ir_runtime::fz_closure_push as *const u8);
+    builder.symbol("fz_closure_finalize", crate::ir_runtime::fz_closure_finalize as *const u8);
+    builder.symbol("fz_closure_arg", crate::ir_runtime::fz_closure_arg as *const u8);
+    builder.symbol("fz_closure_invoke", crate::ir_runtime::fz_closure_invoke as *const u8);
+    builder.symbol("fz_tail_closure", crate::ir_runtime::fz_tail_closure as *const u8);
     builder.symbol("fz_spawn", fz_spawn as *const u8);
     builder.symbol("fz_self", fz_self as *const u8);
     builder.symbol("fz_send", fz_send as *const u8);
