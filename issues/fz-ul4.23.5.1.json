@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-11T21:11:34Z",
+  "description": "Plumbing-only ticket: add `fz interp \u003cpath\u003e` subcommand that prints \\\"interp path not yet wired\\\" and exits 75 (EX_TEMPFAIL). Extend tests/fixture_matrix.rs to accept `interp` in `# paths:`; when seen, invoke `fz interp \u003cpath\u003e` and tolerate exit 75 with a warning. This makes every subsequent ticket measurable by adding `interp` to a fixture's paths and watching the matrix go red, then green.\n\n## Acceptance\n\n- `fz interp fixtures/add1.fz` exits 75 with the placeholder message.\n- A test fixture (or env var) demonstrates `# paths: jit, interp` is parsed; interp warnings logged but matrix passes.\n- Phase 5.2+ children flip this to a real implementation by going from \\\"exit 75 + warn\\\" to \\\"exit 0 + stdout match\\\".",
+  "id": "fz-ul4.23.5.1",
+  "labels": [],
+  "parent": "fz-ul4.23.5",
+  "priority": 3,
+  "status": "open",
+  "title": "fz interp subcommand + matrix interp path (stub)",
+  "type": "task",
+  "updated_at": "2026-05-11T21:11:34Z"
+}
