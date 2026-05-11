@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-11T21:11:02Z",
+  "description": "The render_* helpers in ir_codegen.rs (used by fz_print_value and tests) belong with FzValue. Move into fz_value.rs (as a `pub mod debug`) or a sibling module.\n\n## Acceptance\n\n- cargo test green.\n- ir_codegen.rs has no `render_*` fns.",
+  "id": "fz-ul4.23.4.3",
+  "labels": [],
+  "parent": "fz-ul4.23.4",
+  "priority": 3,
+  "status": "open",
+  "title": "Extract value rendering (render_fz_value etc.) into fz_value debug module",
+  "type": "task",
+  "updated_at": "2026-05-11T21:11:02Z"
+}
