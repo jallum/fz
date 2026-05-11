@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-05-11T23:05:23Z",
   "created": "2026-05-11T21:02:03Z",
   "description": "fixtures/hello.fz exercises `print(:ok)` and `print(nil)`. Captured expected output (fz-ul4.23.1 bless):\n\n  42\n  :atom_1\n  true\n  []\n\n`:atom_1` should be `:ok` — the JIT's print path is rendering atoms via the synthetic `atom_N` name (likely an atom-interner display, not the source name lookup). `[]` should be `nil` — the print path is collapsing the nil tag into the empty-list representation.\n\n## Acceptance\n\n- `print(:ok)` outputs `:ok`\n- `print(nil)` outputs `nil` (or whichever spelling the user wants — needs a one-line decision; current behavior is \"empty list\" which is wrong for an atom-like nil)\n- fixtures/hello.expected re-blessed; matrix green\n\n## Where to look\n\nPrint is wired through ir_codegen's `print` builtin FFI into runtime / value display. Atom name resolution probably wants to consult the SAME atom table that the source uses; today print is using a synthetic name path.",
   "id": "fz-ul4.25",
   "labels": [],
   "parent": "fz-ul4",
   "priority": 3,
-  "status": "in_progress",
+  "status": "closed",
   "title": "print() renders atoms by interner id and nil as []",
   "type": "task",
-  "updated_at": "2026-05-11T22:50:50Z"
+  "updated_at": "2026-05-11T23:05:23Z"
 }
