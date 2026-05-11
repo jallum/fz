@@ -1,6 +1,7 @@
 {
   "assignee": "",
   "blocked_by": [
+    "fz-ul4.23.11",
     "fz-ul4.23.6.5"
   ],
   "blocks": [],
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "AOT concurrency: spawn/send/receive in linked binaries",
   "type": "task",
-  "updated_at": "2026-05-11T21:12:01Z"
+  "updated_at": "2026-05-11T22:25:05Z"
 }
