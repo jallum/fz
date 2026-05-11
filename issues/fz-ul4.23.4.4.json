@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-11T21:11:02Z",
+  "description": "The ~400-line block at the top of `compile()` that calls `builder.symbol(...)` and `jmod.declare_function(...)` for every FFI fn becomes a single `declare_runtime_symbols\u003cM: cranelift_module::Module\u003e(module: \u0026mut M) -\u003e RuntimeIds`. Generic on Module so the same call works for JITModule today and ObjectModule for AOT later.\n\n## Acceptance\n\n- cargo test green.\n- compile()'s top shrinks dramatically.\n- A new RuntimeIds struct holds the FuncIds for every FFI fn, threaded into compile_fn.",
+  "id": "fz-ul4.23.4.4",
+  "labels": [],
+  "parent": "fz-ul4.23.4",
+  "priority": 3,
+  "status": "open",
+  "title": "Extract runtime symbol declarations into declare_runtime_symbols()",
+  "type": "task",
+  "updated_at": "2026-05-11T21:11:02Z"
+}
