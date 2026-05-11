@@ -4,14 +4,15 @@
   "blocks": [
     "fz-ul4.11.25.7"
   ],
+  "closed_at": "2026-05-11T11:05:52Z",
   "created": "2026-05-11T10:56:11Z",
   "description": "Two small cleanups to the .20 diagnostic infrastructure that landed and then weren't picked up by any caller.\n\n## 1. Re-exports in src/diag/mod.rs\n\nThe current pub use block exposes types that nothing imports through the short path:\n\n- DiagCode, Severity, SpanLabel — main.rs / test_runner.rs reference them via the long form (diag::diagnostic::Foo) or via DiagCode constants. Decision: drop the re-exports; convert call sites to qualified paths where needed.\n- Renderer — purely internal to the diag module. Drop the re-export entirely.\n- ColorMode — also internal. Drop.\n\nKEEP the re-exports for Diagnostic, Diagnostics, SourceMap, Span, FileId, SpanOrigin — these are the load-bearing public API and have callers using the short form.\n\n## 2. Spanned::with_origin builder\n\nsrc/ast.rs:32. Builder added during .20.2 but never called — the macro expansion path stamps SpanOrigin via the stamp_expanded walkers (src/macros.rs) directly on the node, not through this builder. Delete the method.\n\nIf a future ticket finds it wants the builder pattern, it's trivial to reintroduce.\n\n## Deliverable\n\n- -6 warnings total (5 unused imports + 1 unused method).\n- One commit.",
   "id": "fz-ul4.11.25.5",
   "labels": [],
   "parent": "fz-ul4.11.25",
   "priority": 3,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Trim diag re-exports and drop Spanned::with_origin",
   "type": "task",
-  "updated_at": "2026-05-11T11:05:08Z"
+  "updated_at": "2026-05-11T11:05:52Z"
 }
