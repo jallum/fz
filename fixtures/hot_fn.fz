@@ -1,5 +1,5 @@
 # purpose: same call repeated — historical JIT tier-up trigger; today every call is JIT
-# paths:   jit
+# paths:   jit, interp
 
 fn hot(n), do: n + 1
 
