@@ -76,7 +76,18 @@ pub struct Heap {
     bump: usize,
     freelist: Vec<(usize, usize)>,
     allocs: Vec<usize>,
-    schemas: Rc<RefCell<SchemaRegistry>>,
+    pub(crate) schemas: Rc<RefCell<SchemaRegistry>>,
+    /// fz-ul4.11.31: soft over-threshold flag set by alloc_* when occupancy
+    /// crosses gc_threshold_bytes. Trampoline reads + clears at next tick.
+    /// AtomicBool because the libdispatch worker pool (fz-ul4.19.1) may
+    /// inspect this from a different thread than the one that set it
+    /// (though one task only runs on one worker at a time, the flag
+    /// itself is observed at scheduler boundaries).
+    over_threshold: std::sync::atomic::AtomicBool,
+    pub gc_threshold_bytes: usize,
+    /// Count of full mark-sweep GC runs (fz-ul4.11.31 instrumentation).
+    /// Tests assert `>= 1` to confirm a safepoint fired.
+    pub gc_run_count: u64,
 }
 
 impl Heap {
@@ -92,6 +103,26 @@ impl Heap {
             freelist: Vec::new(),
             allocs: Vec::new(),
             schemas,
+            over_threshold: std::sync::atomic::AtomicBool::new(false),
+            // Default: half the heap. Tunable per-Process post-.19.1.
+            gc_threshold_bytes: capacity / 2,
+            gc_run_count: 0,
+        }
+    }
+
+    pub fn should_gc(&self) -> bool {
+        self.over_threshold.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    pub fn clear_should_gc_flag(&self) {
+        self.over_threshold
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn note_alloc(&self) {
+        if self.bytes_used() >= self.gc_threshold_bytes {
+            self.over_threshold
+                .store(true, std::sync::atomic::Ordering::Relaxed);
         }
     }
 
@@ -109,6 +140,7 @@ impl Heap {
                     self.freelist.push((off + size, fsz - size));
                 }
                 self.allocs.push(off);
+                self.note_alloc();
                 return unsafe { self.base.add(off) as *mut HeapHeader };
             }
         }
@@ -121,6 +153,7 @@ impl Heap {
         let off = self.bump;
         self.bump += size;
         self.allocs.push(off);
+        self.note_alloc();
         unsafe { self.base.add(off) as *mut HeapHeader }
     }
 
@@ -412,13 +445,14 @@ impl Heap {
     }
 
     pub fn gc(&mut self, roots: &[FzValue]) {
-        let mut marked: HashSet<*mut HeapHeader> = HashSet::new();
+        let mut visitor = MarkVisitor { marked: HashSet::new() };
         {
             let registry = self.schemas.borrow();
             for r in roots {
-                trace(*r, &registry, &mut marked);
+                walk_heap(*r, &registry, &mut visitor);
             }
         }
+        let marked = visitor.marked;
         let mut new_allocs = Vec::with_capacity(self.allocs.len());
         for &off in &self.allocs {
             let p = unsafe { self.base.add(off) as *mut HeapHeader };
@@ -433,6 +467,7 @@ impl Heap {
             }
         }
         self.allocs = new_allocs;
+        self.gc_run_count += 1;
     }
 }
 
@@ -443,17 +478,56 @@ impl Drop for Heap {
     }
 }
 
-fn trace(v: FzValue, reg: &SchemaRegistry, marked: &mut HashSet<*mut HeapHeader>) {
+/// fz-ul4.11.31: Visitor protocol for heap traversal. GC mark, message
+/// deep-copy (.19.3), and arena-membership check (.19.5) all share this
+/// core. `visit` is called per UNIQUE object (the walker tracks revisits via
+/// `WalkDecision`); return `Recurse` to process children, `Skip` to suppress
+/// recursion (e.g. already-copied object in CopyVisitor), `Stop` to halt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WalkDecision {
+    Recurse,
+    Skip,
+    Stop,
+}
+
+pub trait HeapVisitor {
+    fn visit(&mut self, p: *mut HeapHeader, kind: HeapKind) -> WalkDecision;
+}
+
+/// Walk the heap object reachable from `root`, calling `visitor.visit(p,
+/// kind)` for each pointer encountered. Children are descended only when
+/// the visitor returns `Recurse`. Atom / int / nil / boxed scalar leaves
+/// (non-Ptr-tagged FzValues) skip the visit entirely.
+pub fn walk_heap<V: HeapVisitor>(root: FzValue, reg: &SchemaRegistry, visitor: &mut V) {
+    let _ = walk_inner(root, reg, visitor);
+}
+
+fn walk_inner<V: HeapVisitor>(
+    v: FzValue,
+    reg: &SchemaRegistry,
+    visitor: &mut V,
+) -> WalkDecision {
     let p = match v.unbox_ptr() {
         Some(p) => p,
-        None => return,
+        None => return WalkDecision::Skip,
     };
-    if !marked.insert(p) {
-        return;
-    }
     let h = unsafe { &*p };
-    match HeapKind::from_u16(h.kind) {
-        Some(HeapKind::Struct) => {
+    let kind = match HeapKind::from_u16(h.kind) {
+        Some(k) => k,
+        None => {
+            // FREE_KIND or unknown: must not be reachable from a live root.
+            panic!(
+                "walk_heap reached object with invalid HeapKind ({:#x}) at {:?}",
+                h.kind, p
+            );
+        }
+    };
+    let decision = visitor.visit(p, kind);
+    if decision != WalkDecision::Recurse {
+        return decision;
+    }
+    match kind {
+        HeapKind::Struct => {
             let schema = reg.get(h.schema_id);
             for f in &schema.fields {
                 if let FieldKind::FzValue = f.kind {
@@ -462,56 +536,118 @@ fn trace(v: FzValue, reg: &SchemaRegistry, marked: &mut HashSet<*mut HeapHeader>
                             (p as *mut u8).add(16).add(f.offset as usize) as *const FzValue,
                         )
                     };
-                    trace(child, reg, marked);
+                    if walk_inner(child, reg, visitor) == WalkDecision::Stop {
+                        return WalkDecision::Stop;
+                    }
                 }
             }
         }
-        Some(HeapKind::List) => {
+        HeapKind::List => {
             let cons = unsafe { &*(p as *mut ListCons) };
-            trace(cons.head, reg, marked);
-            trace(cons.tail, reg, marked);
+            if walk_inner(cons.head, reg, visitor) == WalkDecision::Stop {
+                return WalkDecision::Stop;
+            }
+            if walk_inner(cons.tail, reg, visitor) == WalkDecision::Stop {
+                return WalkDecision::Stop;
+            }
         }
-        Some(HeapKind::Bitstring)
-        | Some(HeapKind::VecI64)
-        | Some(HeapKind::VecF64)
-        | Some(HeapKind::VecU8)
-        | Some(HeapKind::VecBit)
-        | Some(HeapKind::Float) => {
-            // Raw payloads: no FzValue children to trace.
+        HeapKind::Bitstring
+        | HeapKind::VecI64
+        | HeapKind::VecF64
+        | HeapKind::VecU8
+        | HeapKind::VecBit
+        | HeapKind::Float => {
+            // Raw payloads: no FzValue children.
         }
-        Some(HeapKind::Closure) => {
-            // Captured FzValues at offset 16; count is stored in header.flags
-            // (u16, set by Heap::alloc_closure).
+        HeapKind::Closure => {
             let captured_count = h.flags as usize;
             let cursor = unsafe { (p as *const u8).add(16) as *const FzValue };
             for i in 0..captured_count {
                 let child = unsafe { std::ptr::read(cursor.add(i)) };
-                trace(child, reg, marked);
+                if walk_inner(child, reg, visitor) == WalkDecision::Stop {
+                    return WalkDecision::Stop;
+                }
             }
         }
-        Some(HeapKind::Map) => {
-            // Map payload: count: u64 at offset 16, then (key, val) pairs at
-            // offset 24, 16 bytes each. Trace both key and val FzValues.
+        HeapKind::Map => {
             let count = unsafe {
                 std::ptr::read((p as *const u8).add(16) as *const u64) as usize
             };
             let mut cursor = unsafe { (p as *const u8).add(24) as *const FzValue };
             for _ in 0..count {
                 let k = unsafe { std::ptr::read(cursor) };
-                let v = unsafe { std::ptr::read(cursor.add(1)) };
+                let val = unsafe { std::ptr::read(cursor.add(1)) };
                 cursor = unsafe { cursor.add(2) };
-                trace(k, reg, marked);
-                trace(v, reg, marked);
+                if walk_inner(k, reg, visitor) == WalkDecision::Stop {
+                    return WalkDecision::Stop;
+                }
+                if walk_inner(val, reg, visitor) == WalkDecision::Stop {
+                    return WalkDecision::Stop;
+                }
             }
         }
-        None => {
-            // FREE_KIND or unknown: object is not live, must not be reachable.
-            panic!(
-                "tracer reached object with invalid HeapKind ({:#x}) at {:?}",
-                h.kind, p
-            );
+    }
+    WalkDecision::Recurse
+}
+
+/// MarkVisitor: the GC mark phase. Inserts each visited pointer into the
+/// marked set; returns Recurse for fresh objects, Skip for repeats.
+struct MarkVisitor {
+    marked: HashSet<*mut HeapHeader>,
+}
+
+impl HeapVisitor for MarkVisitor {
+    fn visit(&mut self, p: *mut HeapHeader, _kind: HeapKind) -> WalkDecision {
+        if self.marked.insert(p) {
+            WalkDecision::Recurse
+        } else {
+            WalkDecision::Skip
         }
     }
+}
+
+/// fz-ul4.11.31: Walk a frame chain rooted at `cur` (raw *mut HeapHeader of
+/// the currently-running frame), emitting every FzValue slot found in any
+/// frame's schema. Frames link via cont_ptr at frame[16]; the first field
+/// (offset 0) is structural and skipped. Remaining fields are user-Var
+/// FzValues per the build_frame_schema invariant.
+///
+/// A frame's schema_id is the fn's FnId.0; the per-fn frame schemas live in
+/// CompiledModule. The caller passes the SchemaRegistry that maps those ids
+/// — for v1 the user-data and frame schemas share one registry (Heap's
+/// owned Rc); this could split in the future without changing this fn.
+pub fn collect_roots_from_frame_chain(
+    cur: *mut HeapHeader,
+    frame_schemas: &[Schema],
+) -> Vec<FzValue> {
+    let mut roots = Vec::new();
+    let mut visited: HashSet<*mut HeapHeader> = HashSet::new();
+    let mut p = cur;
+    while !p.is_null() {
+        if !visited.insert(p) {
+            // Defensive cycle guard. Frames don't structurally cycle, but a
+            // bug elsewhere shouldn't lock the walker.
+            break;
+        }
+        let h = unsafe { &*p };
+        let schema = match frame_schemas.get(h.schema_id as usize) {
+            Some(s) => s,
+            None => break,
+        };
+        // Field 0 = cont_ptr (chain link, handled below). Fields 1..N are
+        // user-Var FzValue slots.
+        for f in schema.fields.iter().skip(1) {
+            if let FieldKind::FzValue = f.kind {
+                let slot_addr = unsafe { (p as *const u8).add(16 + f.offset as usize) };
+                let bits = unsafe { std::ptr::read(slot_addr as *const u64) };
+                roots.push(FzValue(bits));
+            }
+        }
+        // Chain to next frame via cont_ptr at frame[16] (offset 0 of payload).
+        let next = unsafe { std::ptr::read((p as *const u8).add(16) as *const *mut HeapHeader) };
+        p = next;
+    }
+    roots
 }
 
 #[cfg(test)]

@@ -8,7 +8,11 @@ mod fz_value;
 mod heap;
 mod ir_codegen;
 mod ir_interp;
-mod ir_liveness;
+// ir_liveness removed (fz-ul4.11.31 subsumes .11.30): frame schemas are
+// uniformly `[cont_ptr, ...entry_params]` with every Var slot FzValue;
+// Cranelift handles temporary spills. The richer per-call liveness was
+// never wired into codegen and the .11.31 root walker reads the existing
+// schema directly. See fz-ul4.11.30 (subsumed).
 mod ir_lower;
 mod ir_typer;
 mod lexer;

@@ -192,6 +192,18 @@ impl CompiledModule {
             if iters > cap {
                 panic!("trampoline exceeded {} iterations", cap);
             }
+            // fz-ul4.11.31 GC SAFEPOINT: check if the current Process's heap
+            // wants a GC tick. If so, collect roots from the frame chain
+            // (cur backward via frame[16] cont_ptr) and run mark-sweep
+            // before dispatching the next fn.
+            if current_process().heap.should_gc() {
+                let roots = crate::heap::collect_roots_from_frame_chain(
+                    cur as *mut crate::fz_value::HeapHeader,
+                    &self.schemas,
+                );
+                current_process().heap.gc(&roots);
+                current_process().heap.clear_should_gc_flag();
+            }
             let header = cur as *const crate::fz_value::HeapHeader;
             let schema_id = unsafe { (*header).schema_id };
             let fn_ptr = self
@@ -2990,6 +3002,91 @@ mod tests {
         let _ = test_capture_take();
         let _ = compile(&m).unwrap().run(entry);
         test_capture_take()
+    }
+
+    // ----- fz-ul4.11.31: GC actually runs from JIT'd code -----
+
+    /// Frame-chain root walker: given a 1-frame chain (caller is null) with
+    /// a known-FzValue entry-param slot, the walker emits that slot.
+    #[test]
+    fn root_walker_emits_entry_param_fzvalues() {
+        use crate::fz_value::{FzValue, HeapHeader};
+        use crate::heap::{
+            collect_roots_from_frame_chain, FieldDescriptor, FieldKind, Schema,
+        };
+
+        // Build a schema for a fn with one entry param. Schema layout:
+        // [cont_ptr_slot, param_0_slot].
+        let schema = Schema {
+            name: "Frame_test_one_param".into(),
+            size: 16, // 2 slots × 8 bytes
+            fields: vec![
+                FieldDescriptor { offset: 0, kind: FieldKind::FzValue },
+                FieldDescriptor { offset: 8, kind: FieldKind::FzValue },
+            ],
+        };
+        let frame_schemas = vec![schema];
+
+        // Lay out a frame in raw memory: [header(16) | cont_ptr(8) | param(8)].
+        let mut buf: [u8; 32] = [0; 32];
+        unsafe {
+            let hp = buf.as_mut_ptr() as *mut HeapHeader;
+            *hp = HeapHeader {
+                kind: 0,
+                flags: 0,
+                size_bytes: 16,
+                schema_id: 0,
+                _reserved: 0,
+            };
+            // cont_ptr = null (top of chain)
+            std::ptr::write(buf.as_mut_ptr().add(16) as *mut *mut HeapHeader, std::ptr::null_mut());
+            // param[0] = boxed int 42
+            std::ptr::write(
+                buf.as_mut_ptr().add(24) as *mut u64,
+                FzValue::from_int(42).0,
+            );
+        }
+        let roots = collect_roots_from_frame_chain(
+            buf.as_mut_ptr() as *mut HeapHeader,
+            &frame_schemas,
+        );
+        assert_eq!(roots.len(), 1, "one user-Var entry param emitted");
+        assert_eq!(roots[0].unbox_int(), Some(42));
+    }
+
+    /// Hot-loop allocation: a tail-recursive counter that allocates one
+    /// list cons cell per iteration (live only until the next iteration).
+    /// Past the GC threshold, the safepoint should fire and reclaim.
+    #[test]
+    fn hot_loop_alloc_triggers_safepoint_gc() {
+        // Each iteration allocates a fresh 2-element list. Only the latest
+        // is reachable (head/tail are unused once recursion advances).
+        let src = r#"
+            fn loop(0, acc), do: acc
+            fn loop(n, acc), do: loop(n - 1, [n, n])
+            fn main(), do: loop(5000, [])
+        "#;
+        let m = lower_src(src);
+        let entry = m.fn_by_name("main").unwrap().id;
+        let compiled = compile(&m).unwrap();
+        let mut p = compiled.make_process();
+        // Lower the GC threshold so a small loop forces multiple ticks.
+        p.heap.gc_threshold_bytes = 4 * 1024;
+        let _result = compiled.run_in(entry, &mut p);
+        assert!(
+            p.heap.gc_run_count >= 1,
+            "expected >=1 GC tick under hot alloc loop, got {}",
+            p.heap.gc_run_count
+        );
+        // After 5000 iterations of 2-cell list allocations with only the
+        // latest reachable, live_count should be far less than the raw
+        // allocation count (which would otherwise have OOM'd the 64KiB
+        // heap long before completing).
+        assert!(
+            p.heap.live_count() < 100,
+            "expected GC to reclaim most allocations, live={}",
+            p.heap.live_count()
+        );
     }
 
     // ----- fz-ul4.11.32: per-Process state isolation -----
