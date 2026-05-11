@@ -1,149 +1,17 @@
-//! Pure helpers over `ast::Pattern` / `ast::Expr` that feed the set-theoretic
-//! algebra in `crate::types`. The AST-walking inference driver lived here until
-//! fz-ul4.11.24.1 — it was retired ahead of the IR-shaped reintegration arc
-//! (fz-ul4.11.24.2-.7). What survives is the shape-level glue: pattern → Descr,
-//! pattern bindings, projection helpers, map-key conversion, list/map field
-//! lookup, the widening operator for fixed-point termination, and the AST
-//! self-call predicate. None of these reach into pipeline state.
+//! Set-theoretic shape helpers consumed by `ir_typer`. The AST-walking
+//! inference driver was retired by fz-ul4.11.24.1; the AST-shaped pattern /
+//! expression orphans were pruned by fz-ul4.11.25.2. What survives:
 //!
-//! Post-.20.2: Expr/Pattern children are wrapped in `Spanned<…>`. Helpers
-//! continue to operate on bare `&Expr` / `&Pattern` — callers unwrap via
-//! `.node` access — to keep the call-site syntax light at the consumer
-//! end. Each recursive step here unwraps spanned children explicitly.
+//! - tuple / list projection helpers (used by IR pattern narrowing)
+//! - map field lookup / refinement
+//! - widening operator for fixed-point termination (used by
+//!   `ir_typer::specialize_return` per fz-ul4.11.24.7).
 
-use crate::ast::*;
 use crate::types::*;
 
 // ----------------------------------------------------------------------
-// AST walking helpers
+// Tuple / list projection helpers
 // ----------------------------------------------------------------------
-
-/// True if `e` syntactically contains a call to `name` (as `name(...)`).
-pub fn expr_calls_self(e: &Expr, name: &str) -> bool {
-    match e {
-        Expr::Call(callee, args) => {
-            if let Expr::Var(n) = &callee.node {
-                if n == name { return true; }
-            }
-            expr_calls_self(&callee.node, name) || args.iter().any(|a| expr_calls_self(&a.node, name))
-        }
-        Expr::BinOp(_, l, r) => expr_calls_self(&l.node, name) || expr_calls_self(&r.node, name),
-        Expr::UnOp(_, x) => expr_calls_self(&x.node, name),
-        Expr::If(c, t, els) => expr_calls_self(&c.node, name)
-            || expr_calls_self(&t.node, name)
-            || els.as_deref().is_some_and(|e| expr_calls_self(&e.node, name)),
-        Expr::Case(s, cls) => expr_calls_self(&s.node, name)
-            || cls.iter().any(|c| expr_calls_self(&c.body.node, name)
-                || c.guard.as_ref().is_some_and(|g| expr_calls_self(&g.node, name))),
-        Expr::Cond(arms) => arms.iter().any(|(c, b)| expr_calls_self(&c.node, name) || expr_calls_self(&b.node, name)),
-        Expr::With(bindings, body, els) => {
-            bindings.iter().any(|b| match b {
-                WithBinding::Match(_, e) | WithBinding::Bare(e) => expr_calls_self(&e.node, name),
-            }) || expr_calls_self(&body.node, name)
-                || els.iter().any(|c| expr_calls_self(&c.body.node, name))
-        }
-        Expr::Match(_, rhs) => expr_calls_self(&rhs.node, name),
-        Expr::Block(es) => es.iter().any(|e| expr_calls_self(&e.node, name)),
-        Expr::Lambda(_, body) => expr_calls_self(&body.node, name),
-        Expr::List(es, tail) => es.iter().any(|e| expr_calls_self(&e.node, name))
-            || tail.as_deref().is_some_and(|e| expr_calls_self(&e.node, name)),
-        Expr::Tuple(es) => es.iter().any(|e| expr_calls_self(&e.node, name)),
-        Expr::VecLit(_, es) => es.iter().any(|e| expr_calls_self(&e.node, name)),
-        Expr::Bitstring(fields) => fields.iter().any(|f| expr_calls_self(&f.value.node, name)),
-        Expr::Map(pairs) => pairs.iter().any(|(k, v)| expr_calls_self(&k.node, name) || expr_calls_self(&v.node, name)),
-        Expr::MapUpdate(b, pairs) => expr_calls_self(&b.node, name)
-            || pairs.iter().any(|(k, v)| expr_calls_self(&k.node, name) || expr_calls_self(&v.node, name)),
-        Expr::Index(t, k) => expr_calls_self(&t.node, name) || expr_calls_self(&k.node, name),
-        Expr::Dot(e, _) => expr_calls_self(&e.node, name),
-        _ => false,
-    }
-}
-
-// ----------------------------------------------------------------------
-// Patterns
-// ----------------------------------------------------------------------
-
-pub fn pattern_type(p: &Pattern) -> Descr {
-    match p {
-        Pattern::Wildcard => Descr::any(),
-        Pattern::Var(_) => Descr::any(),
-        Pattern::Int(n) => Descr::int_lit(*n),
-        Pattern::Float(f) => Descr::float_lit(*f),
-        Pattern::Str(s) => Descr::str_lit(s.clone()),
-        Pattern::Atom(a) => Descr::atom_lit(a.clone()),
-        Pattern::Bool(_) => Descr::bool_t(),
-        Pattern::Nil => Descr::nil(),
-        Pattern::Tuple(ps) => Descr::tuple_of(ps.iter().map(|p| pattern_type(&p.node)).collect::<Vec<_>>()),
-        Pattern::List(heads, _tail) => {
-            let elem = if heads.is_empty() {
-                Descr::any()
-            } else {
-                heads.iter().fold(Descr::none(), |acc, p| acc.union(&pattern_type(&p.node)))
-            };
-            Descr::list_of(elem)
-        }
-        Pattern::As(_, inner) => pattern_type(&inner.node),
-        Pattern::Map(pairs) => {
-            let mut fields = std::collections::BTreeMap::new();
-            for (kp, vp) in pairs {
-                if let Some(mk) = pattern_to_map_key(&kp.node) {
-                    fields.insert(mk, pattern_type(&vp.node));
-                }
-            }
-            if fields.is_empty() { Descr::map_top() } else { Descr::map_of(fields) }
-        }
-        Pattern::Bitstring(_) => Descr::vec_u8().union(&Descr::vec_bit()),
-    }
-}
-
-pub fn pattern_bindings(p: &Pattern, scrut: &Descr) -> Vec<(String, Descr)> {
-    let mut out = Vec::new();
-    extract(p, scrut, &mut out);
-    out
-}
-
-fn extract(p: &Pattern, scrut: &Descr, out: &mut Vec<(String, Descr)>) {
-    match p {
-        Pattern::Var(n) => out.push((n.clone(), scrut.clone())),
-        Pattern::As(n, inner) => {
-            out.push((n.clone(), scrut.clone()));
-            extract(&inner.node, scrut, out);
-        }
-        Pattern::Tuple(ps) => {
-            let comps = tuple_projections(scrut, ps.len());
-            for (i, p) in ps.iter().enumerate() {
-                extract(&p.node, &comps[i], out);
-            }
-        }
-        Pattern::List(heads, tail) => {
-            let elem = list_element_type(scrut);
-            for h in heads { extract(&h.node, &elem, out); }
-            if let Some(t) = tail { extract(&t.node, scrut, out); }
-        }
-        Pattern::Bitstring(fields) => {
-            for f in fields {
-                let scrut_for_field = match f.spec.ty {
-                    BitType::Integer | BitType::Utf8 | BitType::Utf16 | BitType::Utf32 => Descr::int(),
-                    BitType::Float => Descr::float(),
-                    BitType::Binary => Descr::vec_u8(),
-                    BitType::Bits => Descr::vec_u8().union(&Descr::vec_bit()),
-                };
-                extract(&f.value.node, &scrut_for_field, out);
-            }
-        }
-        Pattern::Map(pairs) => {
-            for (kp, vp) in pairs {
-                let val_t = if let Some(mk) = pattern_to_map_key(&kp.node) {
-                    map_field_lookup(scrut, &mk).unwrap_or_else(Descr::any)
-                } else {
-                    Descr::any()
-                };
-                extract(&vp.node, &val_t, out);
-            }
-        }
-        _ => {}
-    }
-}
 
 /// Project the i-th component of any positive tuple shape in `scrut` of the
 /// given arity, unioning across multiple shapes. Falls back to `any` when
@@ -166,28 +34,6 @@ pub fn tuple_projections(scrut: &Descr, arity: usize) -> Vec<Descr> {
 // ----------------------------------------------------------------------
 // Map helpers
 // ----------------------------------------------------------------------
-
-pub fn expr_to_map_key(e: &Expr) -> Option<MapKey> {
-    Some(match e {
-        Expr::Atom(a) => MapKey::Atom(a.clone()),
-        Expr::Int(n) => MapKey::Int(*n),
-        Expr::Str(s) => MapKey::Str(s.clone()),
-        Expr::Bool(b) => MapKey::Bool(*b),
-        Expr::Nil => MapKey::Nil,
-        _ => return None,
-    })
-}
-
-pub fn pattern_to_map_key(p: &Pattern) -> Option<MapKey> {
-    Some(match p {
-        Pattern::Atom(a) => MapKey::Atom(a.clone()),
-        Pattern::Int(n) => MapKey::Int(*n),
-        Pattern::Str(s) => MapKey::Str(s.clone()),
-        Pattern::Bool(b) => MapKey::Bool(*b),
-        Pattern::Nil => MapKey::Nil,
-        _ => return None,
-    })
-}
 
 /// Look up the value type for `key` across all positive map shapes in `d`.
 /// Returns `None` if `d` has no map shapes (call site decides the fallback).
