@@ -408,3 +408,181 @@ mod tests {
         assert_eq!((p as u64) & TAG_MASK, 0);
     }
 }
+
+/// Debug rendering of FzValues. Lifted out of ir_codegen.rs by
+/// fz-ul4.23.4.3 so that any execution path (JIT, future interp/AOT) can
+/// use the same rendering — values are uniformly tagged, regardless of
+/// what produced them. The single runtime dependency is the heap's
+/// schema registry on the current Process, accessed via
+/// `crate::ir_codegen::current_process()`.
+pub mod debug {
+    use super::{FzValue, HeapKind, ListCons, Tag};
+    use crate::ir_codegen::current_process;
+
+    pub fn render(bits: u64) -> String {
+        let v = FzValue(bits);
+        match v.tag() {
+            Tag::Int => v.unbox_int().unwrap().to_string(),
+            Tag::Atom => format!(":atom_{}", v.unbox_atom().unwrap()),
+            Tag::Special => {
+                if v.is_nil() { "[]".into() }
+                else if v.is_true() { "true".into() }
+                else if v.is_false() { "false".into() }
+                else { format!("#special<{:#x}>", bits) }
+            }
+            Tag::Ptr => {
+                let p = v.unbox_ptr().unwrap();
+                let kind = unsafe { (*p).kind };
+                match HeapKind::from_u16(kind) {
+                    Some(HeapKind::List) => render_list(bits),
+                    Some(HeapKind::Struct) => render_struct(bits),
+                    Some(HeapKind::Bitstring) => render_bitstring(bits),
+                    Some(HeapKind::Map) => render_map(bits),
+                    Some(HeapKind::Closure) => render_closure(bits),
+                    Some(HeapKind::Float) => render_float(bits),
+                    Some(HeapKind::VecI64) => render_vec_i64(bits),
+                    Some(HeapKind::VecU8) => render_vec_u8(bits),
+                    Some(HeapKind::VecBit) => render_vec_bit(bits),
+                    _ => format!("#ptr<{:#x}>", bits),
+                }
+            }
+            Tag::Reserved => format!("#reserved<{:#x}>", bits),
+        }
+    }
+
+    /// Render a heap-typed Struct (currently only emitted for tuples). Reads
+    /// the schema from the current Process's SchemaRegistry to determine
+    /// field count. Each FzValue field renders inline; non-FzValue fields
+    /// are elided (no callers emit them yet).
+    fn render_struct(bits: u64) -> String {
+        let v = FzValue(bits);
+        let p = v.unbox_ptr().unwrap();
+        let schema_id = unsafe { (*p).schema_id };
+        let parts: Vec<String> = {
+            let reg = current_process().heap.schemas_registry();
+            let registry = reg.borrow();
+            let schema = registry.get(schema_id);
+            schema
+                .fields
+                .iter()
+                .filter(|f| matches!(f.kind, crate::heap::FieldKind::FzValue))
+                .map(|f| {
+                    let field_bits = unsafe {
+                        std::ptr::read(
+                            (p as *const u8).add(16 + f.offset as usize) as *const u64,
+                        )
+                    };
+                    render(field_bits)
+                })
+                .collect()
+        };
+        format!("{{{}}}", parts.join(", "))
+    }
+
+    /// Render a heap Map as `%{k => v, ...}` in canonical sorted order.
+    fn render_map(bits: u64) -> String {
+        let p = FzValue(bits).unbox_ptr().unwrap();
+        let count = unsafe {
+            std::ptr::read((p as *const u8).add(16) as *const u64) as usize
+        };
+        let cursor = unsafe { (p as *const u8).add(24) as *const u64 };
+        let mut parts: Vec<String> = Vec::with_capacity(count);
+        for i in 0..count {
+            let k = unsafe { std::ptr::read(cursor.add(i * 2)) };
+            let v = unsafe { std::ptr::read(cursor.add(i * 2 + 1)) };
+            parts.push(format!("{} => {}", render(k), render(v)));
+        }
+        format!("%{{{}}}", parts.join(", "))
+    }
+
+    fn render_bitstring(bits: u64) -> String {
+        let p = FzValue(bits).unbox_ptr().unwrap();
+        let bit_len = unsafe { std::ptr::read((p as *const u8).add(16) as *const u64) } as usize;
+        let total_bytes = bit_len.div_ceil(8);
+        let bytes = unsafe { std::slice::from_raw_parts((p as *const u8).add(24), total_bytes) };
+        let full_bytes = bit_len / 8;
+        let trailing_bits = bit_len % 8;
+        let mut parts: Vec<String> = bytes[..full_bytes].iter().map(|b| b.to_string()).collect();
+        if trailing_bits > 0 {
+            let last = bytes[full_bytes] >> (8 - trailing_bits);
+            parts.push(format!("{}::{}", last, trailing_bits));
+        }
+        format!("<<{}>>", parts.join(", "))
+    }
+
+    fn render_float(bits: u64) -> String {
+        let p = FzValue(bits).unbox_ptr().unwrap();
+        let f = crate::heap::Heap::read_float(p);
+        if f.is_finite() && f.fract() == 0.0 { format!("{:.1}", f) } else { format!("{}", f) }
+    }
+
+    fn render_vec_i64(bits: u64) -> String {
+        let p = FzValue(bits).unbox_ptr().unwrap();
+        let len = crate::heap::Heap::vec_len(p) as usize;
+        let payload = unsafe { (p as *const u8).add(24) as *const i64 };
+        let parts: Vec<String> = (0..len)
+            .map(|i| unsafe { std::ptr::read(payload.add(i)) }.to_string())
+            .collect();
+        format!("~v[{}]", parts.join(", "))
+    }
+
+    fn render_vec_u8(bits: u64) -> String {
+        let p = FzValue(bits).unbox_ptr().unwrap();
+        let len = crate::heap::Heap::vec_len(p) as usize;
+        let payload = unsafe { (p as *const u8).add(24) };
+        let parts: Vec<String> = (0..len)
+            .map(|i| unsafe { *payload.add(i) }.to_string())
+            .collect();
+        format!("~b[{}]", parts.join(", "))
+    }
+
+    fn render_vec_bit(bits: u64) -> String {
+        let p = FzValue(bits).unbox_ptr().unwrap();
+        let len = crate::heap::Heap::vec_len(p) as usize;
+        let payload = unsafe { (p as *const u8).add(24) };
+        let parts: Vec<String> = (0..len)
+            .map(|i| {
+                let byte_idx = i / 8;
+                let bit_idx = 7 - (i % 8);
+                let byte = unsafe { *payload.add(byte_idx) };
+                ((byte >> bit_idx) & 1).to_string()
+            })
+            .collect();
+        format!("~bits[{}]", parts.join(", "))
+    }
+
+    fn render_closure(bits: u64) -> String {
+        let p = FzValue(bits).unbox_ptr().unwrap();
+        let header = unsafe { &*p };
+        format!("#fn<{}/{}>", header.schema_id, header.flags)
+    }
+
+    fn render_list(bits: u64) -> String {
+        let mut parts: Vec<String> = Vec::new();
+        let mut cur_bits = bits;
+        let mut tail_render: Option<String> = None;
+        loop {
+            let cv = FzValue(cur_bits);
+            if cv.is_nil() { break; }
+            let cp = match cv.unbox_ptr() {
+                Some(p) => p,
+                None => {
+                    tail_render = Some(render(cur_bits));
+                    break;
+                }
+            };
+            let ch = unsafe { &*cp };
+            if HeapKind::from_u16(ch.kind) != Some(HeapKind::List) {
+                tail_render = Some(render(cur_bits));
+                break;
+            }
+            let cons = unsafe { &*(cp as *const ListCons) };
+            parts.push(render(cons.head.0));
+            cur_bits = cons.tail.0;
+        }
+        match tail_render {
+            Some(t) => format!("[{} | {}]", parts.join(", "), t),
+            None => format!("[{}]", parts.join(", ")),
+        }
+    }
+}

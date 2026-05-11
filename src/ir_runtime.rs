@@ -24,7 +24,7 @@ use crate::ir_codegen::current_process;
 // ===== Halt + print cluster (fz-ul4.23.4.13) =====
 
 pub(crate) extern "C" fn fz_print_value(fz_bits: u64) {
-    let s = crate::ir_codegen::render_fz_value(fz_bits);
+    let s = crate::fz_value::debug::render(fz_bits);
     // Always write to stdout so user-facing `fz run` / piped programs
     // see output. Also capture into TEST_CAPTURE so unit tests that
     // assert on print output keep working (cargo's stdout capture

@@ -379,199 +379,8 @@ pub(crate) fn current_process() -> &'static mut Process {
     unsafe { &mut *p }
 }
 
-// ----- Runtime fns called from JIT'd code -----
-
-/// JIT-side print: receives an FzValue (u64 bits in an i64 ABI slot), renders
-/// it, captures the rendering for tests.
-// fz_print_value moved to ir_runtime.rs (.23.4.13). It still calls back
-// here into render_fz_value (and TEST_CAPTURE) — both move out to
-// fz_value::debug in fz-ul4.23.4.3.
-
-pub(crate) fn render_fz_value(bits: u64) -> String {
-    use crate::fz_value::{FzValue, HeapKind, Tag};
-    let v = FzValue(bits);
-    match v.tag() {
-        Tag::Int => v.unbox_int().unwrap().to_string(),
-        Tag::Atom => format!(":atom_{}", v.unbox_atom().unwrap()),
-        Tag::Special => {
-            if v.is_nil() { "[]".into() }
-            else if v.is_true() { "true".into() }
-            else if v.is_false() { "false".into() }
-            else { format!("#special<{:#x}>", bits) }
-        }
-        Tag::Ptr => {
-            let p = v.unbox_ptr().unwrap();
-            let kind = unsafe { (*p).kind };
-            match HeapKind::from_u16(kind) {
-                Some(HeapKind::List) => render_list(bits),
-                Some(HeapKind::Struct) => render_struct(bits),
-                Some(HeapKind::Bitstring) => render_bitstring(bits),
-                Some(HeapKind::Map) => render_map(bits),
-                Some(HeapKind::Closure) => render_closure(bits),
-                Some(HeapKind::Float) => render_float(bits),
-                Some(HeapKind::VecI64) => render_vec_i64(bits),
-                Some(HeapKind::VecU8) => render_vec_u8(bits),
-                Some(HeapKind::VecBit) => render_vec_bit(bits),
-                _ => format!("#ptr<{:#x}>", bits),
-            }
-        }
-        Tag::Reserved => format!("#reserved<{:#x}>", bits),
-    }
-}
-
-/// Render a heap-typed Struct (currently only emitted for tuples). Reads the
-/// schema from HEAP's SchemaRegistry to determine field count — `size_bytes`
-/// is rounded up to 16 by the allocator and would over-count arity for odd
-/// arities. Each FzValue field renders inline; non-FzValue fields are
-/// elided for now (no callers emit them yet).
-fn render_struct(bits: u64) -> String {
-    use crate::fz_value::FzValue;
-    let v = FzValue(bits);
-    let p = v.unbox_ptr().unwrap();
-    let schema_id = unsafe { (*p).schema_id };
-    let parts: Vec<String> = {
-        let reg = current_process().heap.schemas_registry();
-        let registry = reg.borrow();
-        let schema = registry.get(schema_id);
-        schema
-            .fields
-            .iter()
-            .filter(|f| matches!(f.kind, crate::heap::FieldKind::FzValue))
-            .map(|f| {
-                let field_bits = unsafe {
-                    std::ptr::read(
-                        (p as *const u8).add(16 + f.offset as usize) as *const u64,
-                    )
-                };
-                render_fz_value(field_bits)
-            })
-            .collect()
-    };
-    format!("{{{}}}", parts.join(", "))
-}
-
-/// Render a heap Map as `%{k => v, ...}` in canonical sorted order.
-fn render_map(bits: u64) -> String {
-    use crate::fz_value::FzValue;
-    let p = FzValue(bits).unbox_ptr().unwrap();
-    let count = unsafe {
-        std::ptr::read((p as *const u8).add(16) as *const u64) as usize
-    };
-    let cursor = unsafe { (p as *const u8).add(24) as *const u64 };
-    let mut parts: Vec<String> = Vec::with_capacity(count);
-    for i in 0..count {
-        let k = unsafe { std::ptr::read(cursor.add(i * 2)) };
-        let v = unsafe { std::ptr::read(cursor.add(i * 2 + 1)) };
-        parts.push(format!("{} => {}", render_fz_value(k), render_fz_value(v)));
-    }
-    format!("%{{{}}}", parts.join(", "))
-}
-
-/// Render a heap Bitstring. For byte-aligned bitstrings, render bytes as
-/// `<<a, b, c>>`. For sub-byte bit_len, append `::<bits>` to the partial
-/// byte's value. Mirrors the interp's display for tests.
-fn render_bitstring(bits: u64) -> String {
-    use crate::fz_value::FzValue;
-    let p = FzValue(bits).unbox_ptr().unwrap();
-    let bit_len = unsafe { std::ptr::read((p as *const u8).add(16) as *const u64) } as usize;
-    let total_bytes = bit_len.div_ceil(8);
-    let bytes = unsafe { std::slice::from_raw_parts((p as *const u8).add(24), total_bytes) };
-    let full_bytes = bit_len / 8;
-    let trailing_bits = bit_len % 8;
-    let mut parts: Vec<String> = bytes[..full_bytes].iter().map(|b| b.to_string()).collect();
-    if trailing_bits > 0 {
-        // Show the trailing partial byte right-shifted to its high bits.
-        let last = bytes[full_bytes] >> (8 - trailing_bits);
-        parts.push(format!("{}::{}", last, trailing_bits));
-    }
-    format!("<<{}>>", parts.join(", "))
-}
-
-/// Render a boxed float: whole numbers get an explicit `.0` suffix
-/// (`4.0`, not `4`); fractional values use Rust's default Display.
-fn render_float(bits: u64) -> String {
-    use crate::fz_value::FzValue;
-    let p = FzValue(bits).unbox_ptr().unwrap();
-    let f = crate::heap::Heap::read_float(p);
-    if f.is_finite() && f.fract() == 0.0 { format!("{:.1}", f) } else { format!("{}", f) }
-}
-
-fn render_vec_i64(bits: u64) -> String {
-    use crate::fz_value::FzValue;
-    let p = FzValue(bits).unbox_ptr().unwrap();
-    let len = crate::heap::Heap::vec_len(p) as usize;
-    let payload = unsafe { (p as *const u8).add(24) as *const i64 };
-    let parts: Vec<String> = (0..len)
-        .map(|i| unsafe { std::ptr::read(payload.add(i)) }.to_string())
-        .collect();
-    format!("~v[{}]", parts.join(", "))
-}
-
-fn render_vec_u8(bits: u64) -> String {
-    use crate::fz_value::FzValue;
-    let p = FzValue(bits).unbox_ptr().unwrap();
-    let len = crate::heap::Heap::vec_len(p) as usize;
-    let payload = unsafe { (p as *const u8).add(24) };
-    let parts: Vec<String> = (0..len)
-        .map(|i| unsafe { *payload.add(i) }.to_string())
-        .collect();
-    format!("~b[{}]", parts.join(", "))
-}
-
-fn render_vec_bit(bits: u64) -> String {
-    use crate::fz_value::FzValue;
-    let p = FzValue(bits).unbox_ptr().unwrap();
-    let len = crate::heap::Heap::vec_len(p) as usize;
-    let payload = unsafe { (p as *const u8).add(24) };
-    let parts: Vec<String> = (0..len)
-        .map(|i| {
-            let byte_idx = i / 8;
-            let bit_idx = 7 - (i % 8);
-            let byte = unsafe { *payload.add(byte_idx) };
-            ((byte >> bit_idx) & 1).to_string()
-        })
-        .collect();
-    format!("~bits[{}]", parts.join(", "))
-}
-
-/// Render a closure as `#fn<id/cap>` for debug. cap = captured count.
-fn render_closure(bits: u64) -> String {
-    use crate::fz_value::FzValue;
-    let p = FzValue(bits).unbox_ptr().unwrap();
-    let header = unsafe { &*p };
-    format!("#fn<{}/{}>", header.schema_id, header.flags)
-}
-
-fn render_list(bits: u64) -> String {
-    use crate::fz_value::{FzValue, HeapKind, ListCons};
-    let mut parts: Vec<String> = Vec::new();
-    let mut cur_bits = bits;
-    let mut tail_render: Option<String> = None;
-    loop {
-        let cv = FzValue(cur_bits);
-        if cv.is_nil() { break; }
-        let cp = match cv.unbox_ptr() {
-            Some(p) => p,
-            None => {
-                // improper tail (atom / int / etc.)
-                tail_render = Some(render_fz_value(cur_bits));
-                break;
-            }
-        };
-        let ch = unsafe { &*cp };
-        if HeapKind::from_u16(ch.kind) != Some(HeapKind::List) {
-            tail_render = Some(render_fz_value(cur_bits));
-            break;
-        }
-        let cons = unsafe { &*(cp as *const ListCons) };
-        parts.push(render_fz_value(cons.head.0));
-        cur_bits = cons.tail.0;
-    }
-    match tail_render {
-        Some(t) => format!("[{} | {}]", parts.join(", "), t),
-        None => format!("[{}]", parts.join(", ")),
-    }
-}
+// Runtime FFI fns called from JIT'd code now live in src/ir_runtime.rs.
+// Value rendering lives in crate::fz_value::debug (fz-ul4.23.4.3).
 
 thread_local! {
     pub static TEST_CAPTURE: std::cell::RefCell<Vec<String>> = std::cell::RefCell::new(Vec::new());
@@ -2546,13 +2355,13 @@ fn main(), do: count(100000, 0)
     #[test]
     fn render_fz_value_dispatches_per_tag() {
         use crate::fz_value::FzValue;
-        assert_eq!(render_fz_value(FzValue::from_int(42).0), "42");
-        assert_eq!(render_fz_value(FzValue::from_int(0).0), "0");
-        assert_eq!(render_fz_value(FzValue::from_int(-7).0), "-7");
-        assert_eq!(render_fz_value(FzValue::NIL.0), "[]");
-        assert_eq!(render_fz_value(FzValue::TRUE.0), "true");
-        assert_eq!(render_fz_value(FzValue::FALSE.0), "false");
-        assert_eq!(render_fz_value(FzValue::from_atom_id(3).0), ":atom_3");
+        assert_eq!(crate::fz_value::debug::render(FzValue::from_int(42).0), "42");
+        assert_eq!(crate::fz_value::debug::render(FzValue::from_int(0).0), "0");
+        assert_eq!(crate::fz_value::debug::render(FzValue::from_int(-7).0), "-7");
+        assert_eq!(crate::fz_value::debug::render(FzValue::NIL.0), "[]");
+        assert_eq!(crate::fz_value::debug::render(FzValue::TRUE.0), "true");
+        assert_eq!(crate::fz_value::debug::render(FzValue::FALSE.0), "false");
+        assert_eq!(crate::fz_value::debug::render(FzValue::from_atom_id(3).0), ":atom_3");
     }
 
     #[test]
