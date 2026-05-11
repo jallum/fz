@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-ul4.11.14"
+    "fz-ul4.11.14",
+    "fz-ul4.11.32"
   ],
   "blocks": [
     "fz-ul4.19.2"
@@ -15,5 +16,5 @@
   "status": "open",
   "title": "Process / scheduler infrastructure (process = continuation ptr)",
   "type": "task",
-  "updated_at": "2026-05-10T13:05:54Z"
+  "updated_at": "2026-05-11T07:30:06Z"
 }
