@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-ul4.11.25.2"
   ],
@@ -12,8 +12,8 @@
   "labels": [],
   "parent": "fz-ul4.11.25",
   "priority": 3,
-  "status": "open",
+  "status": "in_progress",
   "title": "Move test-only type helpers into mod tests; drop MapKey::Bool/Nil + from_raw",
   "type": "task",
-  "updated_at": "2026-05-11T10:56:32Z"
+  "updated_at": "2026-05-11T11:03:44Z"
 }
