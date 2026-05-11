@@ -20,7 +20,9 @@
 #![allow(dead_code)]
 
 use crate::ast::{BitType, Endian, Pattern};
+use crate::diag::Span;
 use crate::heap::Schema;
+use std::collections::HashMap;
 use std::fmt;
 
 /// Element-kind for a heap-allocated vector. The AST-level `VecKind` (Numeric
@@ -269,10 +271,58 @@ impl FnIr {
     }
 }
 
+/// Side-tables that map IR positions back to source spans. Populated by
+/// `ir_lower` as it goes; consumed by `ir_typer` / diagnostics renderers
+/// to point at the right source byte range for a given Var or Stmt.
+///
+/// The IR types themselves stay narrow (`Prim`, `Stmt`, `Term` carry no
+/// span fields). Spans live here so codegen-internal IR transformations
+/// don't have to thread spans through every constructor.
+#[derive(Debug, Default, Clone)]
+pub struct SourceInfo {
+    /// Indexed by `Var.0`: span of the source expression / pattern that
+    /// introduced this Var. `Span::DUMMY` for compiler-introduced temps
+    /// or any Var introduced before .20.4 hooks (e.g. ir_typer's
+    /// rewrite_vec_kinds may mint Vars during a pass).
+    pub var_span: Vec<Span>,
+    /// Indexed by `Var.0`: the source name that produced this Var, or
+    /// "" for compiler-introduced temps. Used by .20.8 to render
+    /// "`x` has type `int | atom`" instead of "v3 has type …".
+    pub var_name: Vec<String>,
+    /// Span per `(FnId, BlockId, stmt_idx)` for `Stmt::Let`. Sparse —
+    /// absent entries mean DUMMY. Populated by `ir_lower` per emitted
+    /// stmt; codegen-internal transformations may leave their stmts
+    /// unspanned, which is fine.
+    pub stmt_spans: HashMap<(FnId, BlockId), Vec<Span>>,
+    /// Span per `(FnId, BlockId)` for the block's terminator. Same
+    /// sparsity contract as `stmt_spans`.
+    pub term_span: HashMap<(FnId, BlockId), Span>,
+    /// Span of the source fn declaration. Indexed by `FnId.0`. Synthetic
+    /// continuations created by CPS-splitting an expression use the
+    /// originating Call's span (the user-visible position of the work
+    /// the continuation is doing).
+    pub fn_span: Vec<Span>,
+}
+
+impl SourceInfo {
+    pub fn var_name_of(&self, v: Var) -> Option<&str> {
+        self.var_name.get(v.0 as usize).map(|s| s.as_str()).filter(|s| !s.is_empty())
+    }
+
+    pub fn var_span_of(&self, v: Var) -> Span {
+        self.var_span.get(v.0 as usize).copied().unwrap_or(Span::DUMMY)
+    }
+
+    pub fn fn_span_of(&self, f: FnId) -> Span {
+        self.fn_span.get(f.0 as usize).copied().unwrap_or(Span::DUMMY)
+    }
+}
+
 #[derive(Debug, Default, Clone)]
 pub struct Module {
     pub fns: Vec<FnIr>,
     pub schemas: Vec<Schema>,
+    pub source: SourceInfo,
 }
 
 impl Module {
@@ -396,7 +446,11 @@ impl ModuleBuilder {
     }
 
     pub fn build(self) -> Module {
-        Module { fns: self.fns, schemas: self.schemas }
+        Module {
+            fns: self.fns,
+            schemas: self.schemas,
+            source: SourceInfo::default(),
+        }
     }
 }
 

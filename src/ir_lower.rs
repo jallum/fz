@@ -20,9 +20,10 @@ use crate::ast::{
     BinOp as AstBinOp, BitField as AstBitField, BitSize as AstBitSize, Expr, FnDef, Item,
     MatchClause, Pattern, Program, Spanned, UnOp as AstUnOp, WithBinding,
 };
+use crate::diag::Span;
 use crate::fz_ir::{
     BinOp, BitFieldIr, BitSizeIr, BlockId, BuiltinId, Const, Cont, FnBuilder, FnId, Module,
-    ModuleBuilder, Prim, Term, UnOp, Var,
+    ModuleBuilder, Prim, SourceInfo, Term, UnOp, Var,
 };
 use std::collections::HashMap;
 
@@ -108,6 +109,10 @@ pub struct LowerCtx {
     pub fns: FnMap,
     /// Currently-being-built fn.
     cur: Option<FnBuilder>,
+    /// FnId of the fn currently being built. Mirrors `cur` so methods that
+    /// record into `source` can key on `(FnId, …)` without unwrapping the
+    /// builder.
+    cur_fn_id: Option<FnId>,
     /// Currently-active block within `cur`.
     cur_block: Option<BlockId>,
     /// Locals env: source name -> IR Var.
@@ -118,6 +123,13 @@ pub struct LowerCtx {
     /// itself (TailCall, etc.). Caller should NOT overwrite with Return.
     terminated: bool,
     next_temp: u32,
+    /// Accumulating side-tables for source positions. Promoted into
+    /// `Module.source` at module-build time. Var spans/names indexed
+    /// by `(FnId, Var)`; stmt/term spans by their containing block.
+    var_meta: HashMap<(FnId, Var), (Span, String)>,
+    stmt_spans: HashMap<(FnId, BlockId), Vec<Span>>,
+    term_spans: HashMap<(FnId, BlockId), Span>,
+    fn_spans: HashMap<FnId, Span>,
 }
 
 impl LowerCtx {
@@ -128,11 +140,16 @@ impl LowerCtx {
             mb: ModuleBuilder::new(),
             fns: HashMap::new(),
             cur: None,
+            cur_fn_id: None,
             cur_block: None,
             env: HashMap::new(),
             env_order: Vec::new(),
             terminated: false,
             next_temp: 0,
+            var_meta: HashMap::new(),
+            stmt_spans: HashMap::new(),
+            term_spans: HashMap::new(),
+            fn_spans: HashMap::new(),
         }
     }
 
@@ -187,13 +204,46 @@ impl LowerCtx {
     }
 
     fn let_(&mut self, prim: Prim) -> Var {
+        self.let_at(prim, Span::DUMMY)
+    }
+
+    /// Emit `let v = prim` and record the source span the prim came from.
+    /// The resulting Var's metadata defaults to `(span, "")` — anonymous
+    /// temp. Callers that bind the Var to a source name follow up with
+    /// `name_var(v, name, name_span)`.
+    fn let_at(&mut self, prim: Prim, span: Span) -> Var {
         let blk = self.cur_block();
-        self.cur_mut().let_(blk, prim)
+        let fn_id = self.cur_fn_id.expect("no current fn");
+        let v = self.cur_mut().let_(blk, prim);
+        // Var defaults: capture span; name follow-up via name_var.
+        self.var_meta.insert((fn_id, v), (span, String::new()));
+        // Append stmt span aligned with the block's stmt index.
+        self.stmt_spans.entry((fn_id, blk)).or_default().push(span);
+        v
+    }
+
+    /// Attach a source name to an existing IR Var. Used when a pattern
+    /// binds a name — the Var existed before (came from a param or a
+    /// projection prim); we record the name + the pattern's span as
+    /// the var's defining-site info.
+    fn name_var(&mut self, v: Var, name: &str, span: Span) {
+        let fn_id = self.cur_fn_id.expect("no current fn");
+        let entry = self.var_meta.entry((fn_id, v)).or_insert((Span::DUMMY, String::new()));
+        if entry.0.is_dummy() { entry.0 = span; }
+        if entry.1.is_empty() { entry.1 = name.to_string(); }
     }
 
     fn set_term(&mut self, term: Term) {
+        self.set_term_at(term, Span::DUMMY);
+    }
+
+    fn set_term_at(&mut self, term: Term, span: Span) {
         let blk = self.cur_block();
+        let fn_id = self.cur_fn_id.expect("no current fn");
         self.cur_mut().set_terminator(blk, term);
+        if !span.is_dummy() {
+            self.term_spans.insert((fn_id, blk), span);
+        }
     }
 }
 
@@ -244,8 +294,53 @@ pub fn lower_program_full(
         }
     }
 
-    let module = ctx.mb.build();
+    // Take the module out first; `ctx.mb` is moved but `ctx` itself is
+    // still usable for source-info collection.
+    let mb = std::mem::take(&mut ctx.mb);
+    let mut module = mb.build();
+    module.source = build_source_info(&module, &ctx);
     Ok((module, ctx.atoms, ctx.builtins))
+}
+
+/// Collect the per-fn metadata accumulated on `ctx` into `Module.source`.
+/// Var spans/names indexed by Var.0; per-block stmt/term spans flow through
+/// unchanged; per-fn spans indexed by FnId.0.
+fn build_source_info(module: &Module, ctx: &LowerCtx) -> SourceInfo {
+    let max_fn_id = module.fns.iter().map(|f| f.id.0).max().unwrap_or(0);
+    let mut fn_span = vec![Span::DUMMY; (max_fn_id as usize) + 1];
+    for (fid, sp) in &ctx.fn_spans {
+        let idx = fid.0 as usize;
+        if idx < fn_span.len() {
+            fn_span[idx] = *sp;
+        }
+    }
+    // Var spans/names: pick the maximum Var across all fns. Each fn's
+    // Vars start at 0 and are local to that fn, so we record one global
+    // table indexed by Var.0 — when the same Var.0 exists in two fns it
+    // shares an entry, which is fine for the renderer (it'll always be
+    // looked up within the right fn's scope).
+    let max_var = ctx.var_meta.keys().map(|(_, v)| v.0).max().unwrap_or(0);
+    let n = (max_var as usize) + 1;
+    let mut var_span = vec![Span::DUMMY; n];
+    let mut var_name = vec![String::new(); n];
+    for ((_fid, v), (sp, name)) in &ctx.var_meta {
+        let idx = v.0 as usize;
+        if idx < n {
+            // Last write wins. Per-fn precision can come later if a
+            // consumer needs to disambiguate Var.0 across fns; today
+            // ir_typer's lookup is always paired with the FnId it's
+            // working on, so the conflict doesn't surface.
+            if var_span[idx].is_dummy() { var_span[idx] = *sp; }
+            if var_name[idx].is_empty() { var_name[idx] = name.clone(); }
+        }
+    }
+    SourceInfo {
+        var_span,
+        var_name,
+        stmt_spans: ctx.stmt_spans.clone(),
+        term_span: ctx.term_spans.clone(),
+        fn_span,
+    }
 }
 
 fn lower_fn(ctx: &mut LowerCtx, fn_def: &FnDef) -> Result<(), LowerError> {
@@ -264,9 +359,23 @@ fn lower_fn(ctx: &mut LowerCtx, fn_def: &FnDef) -> Result<(), LowerError> {
     let param_vars: Vec<Var> = (0..arity).map(|_| builder.fresh_var()).collect();
     let entry = builder.block(param_vars.clone());
     ctx.cur = Some(builder);
+    ctx.cur_fn_id = Some(fn_id);
+    ctx.fn_spans.insert(fn_id, fn_def.span);
     ctx.cur_block = Some(entry);
     ctx.env.clear();
     ctx.env_order.clear();
+
+    // Pre-record param var metadata. The pattern walker overwrites with
+    // the pattern's binding-site info if the pattern is `Var(n)`; here we
+    // default to the clause's first param-pattern span so even
+    // wildcard / tuple-destructured params have *some* source position.
+    for (i, pv) in param_vars.iter().enumerate() {
+        let pat_span = fn_def.clauses.first()
+            .and_then(|c| c.params.get(i))
+            .map(|p| p.span)
+            .unwrap_or(Span::DUMMY);
+        ctx.var_meta.insert((fn_id, *pv), (pat_span, String::new()));
+    }
 
     ctx.terminated = false;
     if fn_def.clauses.len() == 1 {
@@ -281,7 +390,10 @@ fn lower_fn(ctx: &mut LowerCtx, fn_def: &FnDef) -> Result<(), LowerError> {
         ctx.cur_block = Some(entry);
 
         for (pv, pat) in param_vars.iter().zip(&clause.params) {
-            lower_pattern_bind(ctx, *pv, &pat.node, fail_block)?;
+            lower_pattern_bind(ctx, *pv, pat, fail_block)?;
+            // Record the pattern's span on the param Var if not yet named
+            // by the pattern walker (e.g. tuple-destructured params).
+            ctx.name_var(*pv, "", pat.span);
         }
         if let Some(_g) = &clause.guard {
             return Err(LowerError::Unsupported("guards (deferred)".into()));
@@ -337,7 +449,7 @@ fn lower_multi_clause(
         ctx.env_order.clear();
         ctx.terminated = false;
         for (pv, pat) in param_vars.iter().zip(&clause.params) {
-            lower_pattern_bind(ctx, *pv, &pat.node, next)?;
+            lower_pattern_bind(ctx, *pv, pat, next)?;
         }
         let result = lower_expr(ctx, &clause.body, /* is_tail */ true)?;
         if !ctx.terminated {
@@ -349,17 +461,18 @@ fn lower_multi_clause(
 }
 
 fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -> Result<Var, LowerError> {
+    let sp = e.span;
     match &e.node {
-        Expr::Int(n) => Ok(ctx.let_(Prim::Const(Const::Int(*n)))),
-        Expr::Float(x) => Ok(ctx.let_(Prim::Const(Const::Float(*x)))),
-        Expr::Str(s) => Ok(ctx.let_(Prim::Const(Const::Str(s.clone())))),
+        Expr::Int(n) => Ok(ctx.let_at(Prim::Const(Const::Int(*n)), sp)),
+        Expr::Float(x) => Ok(ctx.let_at(Prim::Const(Const::Float(*x)), sp)),
+        Expr::Str(s) => Ok(ctx.let_at(Prim::Const(Const::Str(s.clone())), sp)),
         Expr::Atom(s) => {
             let id = ctx.atoms.intern(s);
-            Ok(ctx.let_(Prim::Const(Const::Atom(id))))
+            Ok(ctx.let_at(Prim::Const(Const::Atom(id)), sp))
         }
-        Expr::Bool(true) => Ok(ctx.let_(Prim::Const(Const::True))),
-        Expr::Bool(false) => Ok(ctx.let_(Prim::Const(Const::False))),
-        Expr::Nil => Ok(ctx.let_(Prim::Const(Const::Nil))),
+        Expr::Bool(true) => Ok(ctx.let_at(Prim::Const(Const::True), sp)),
+        Expr::Bool(false) => Ok(ctx.let_at(Prim::Const(Const::False), sp)),
+        Expr::Nil => Ok(ctx.let_at(Prim::Const(Const::Nil), sp)),
 
         Expr::Var(name) => {
             if let Some(v) = ctx.lookup(name) { return Ok(v); }
@@ -385,7 +498,7 @@ fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -> Result<Va
             let va = ctx.unpark(&park_a);
             ctx.unbind(&park_a);
             let irop = lower_binop(*op)?;
-            Ok(ctx.let_(Prim::BinOp(irop, va, vb)))
+            Ok(ctx.let_at(Prim::BinOp(irop, va, vb), sp))
         }
         Expr::UnOp(op, x) => {
             let v = lower_expr(ctx, x, false)?;
@@ -393,7 +506,7 @@ fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -> Result<Va
                 AstUnOp::Neg => UnOp::Neg,
                 AstUnOp::Not => UnOp::Not,
             };
-            Ok(ctx.let_(Prim::UnOp(irop, v)))
+            Ok(ctx.let_at(Prim::UnOp(irop, v), sp))
         }
 
         Expr::Block(exprs) => {
@@ -424,7 +537,7 @@ fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -> Result<Va
         Expr::Match(pat, expr) => {
             let v = lower_expr(ctx, expr, false)?;
             let fail_block = ctx.cur_mut().block(vec![]);
-            lower_pattern_bind(ctx, v, &pat.node, fail_block)?;
+            lower_pattern_bind(ctx, v, pat, fail_block)?;
             // After match, control is in current_block; result is the matched value.
             // Set fail block (only reached on dynamic mismatch).
             let saved = ctx.cur_block();
@@ -479,27 +592,27 @@ fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -> Result<Va
             // Local closure value? (Shadows fn lookup if a local of the same name exists.)
             if let Some(local_var) = ctx.lookup(&callee_name) {
                 if is_tail {
-                    ctx.set_term(Term::TailCallClosure { closure: local_var, args: arg_vars });
+                    ctx.set_term_at(Term::TailCallClosure { closure: local_var, args: arg_vars }, sp);
                     ctx.terminated = true;
                     return Ok(Var(0));
                 } else {
-                    return cps_split_call_closure(ctx, local_var, arg_vars);
+                    return cps_split_call_closure(ctx, local_var, arg_vars, sp);
                 }
             }
             // Builtin?
             if let Some(bid) = ctx.builtins.lookup(&callee_name) {
-                return Ok(ctx.let_(Prim::Builtin(bid, arg_vars)));
+                return Ok(ctx.let_at(Prim::Builtin(bid, arg_vars), sp));
             }
             let arity = arg_vars.len();
             let callee = *ctx.fns.get(&(callee_name.clone(), arity)).ok_or_else(|| {
                 LowerError::Unbound(format!("fn {}/{}", callee_name, arity))
             })?;
             if is_tail {
-                ctx.set_term(Term::TailCall { callee, args: arg_vars });
+                ctx.set_term_at(Term::TailCall { callee, args: arg_vars }, sp);
                 ctx.terminated = true;
                 Ok(Var(0))
             } else {
-                cps_split_call(ctx, callee, arg_vars)
+                cps_split_call(ctx, callee, arg_vars, sp)
             }
         }
 
@@ -605,7 +718,7 @@ fn lower_lambda(
 
     ctx.terminated = false;
     for (pv, pat) in lam_param_vars.iter().zip(params) {
-        lower_pattern_bind(ctx, *pv, &pat.node, fail_block)?;
+        lower_pattern_bind(ctx, *pv, pat, fail_block)?;
     }
     let result = lower_expr(ctx, body, true)?;
     if !ctx.terminated {
@@ -628,16 +741,17 @@ fn cps_split_call_closure(
     ctx: &mut LowerCtx,
     closure_var: Var,
     arg_vars: Vec<Var>,
+    call_span: Span,
 ) -> Result<Var, LowerError> {
     let captured = ctx.captured_snapshot();
     let captured_vars: Vec<Var> = captured.iter().map(|(_, v)| *v).collect();
     let cont_id = ctx.mb.fresh_fn_id();
 
-    ctx.set_term(Term::CallClosure {
+    ctx.set_term_at(Term::CallClosure {
         closure: closure_var,
         args: arg_vars,
         continuation: Cont { fn_id: cont_id, captured: captured_vars.clone() },
-    });
+    }, call_span);
 
     let done = ctx.cur.take().unwrap().build();
     ctx.mb.add_fn(done);
@@ -649,6 +763,10 @@ fn cps_split_call_closure(
     params.extend(cap_params.clone());
     let entry = kbuilder.block(params);
     ctx.cur = Some(kbuilder);
+    ctx.cur_fn_id = Some(cont_id);
+    ctx.fn_spans.insert(cont_id, call_span);
+    // Result-slot Var inherits the call's span (it's the value the call returns).
+    ctx.var_meta.insert((cont_id, result_param), (call_span, String::new()));
     ctx.cur_block = Some(entry);
 
     ctx.env.clear();
@@ -663,17 +781,18 @@ fn cps_split_call(
     ctx: &mut LowerCtx,
     callee: FnId,
     arg_vars: Vec<Var>,
+    call_span: Span,
 ) -> Result<Var, LowerError> {
     let captured = ctx.captured_snapshot();
     let captured_vars: Vec<Var> = captured.iter().map(|(_, v)| *v).collect();
     let cont_id = ctx.mb.fresh_fn_id();
 
     // Terminate current block with the call.
-    ctx.set_term(Term::Call {
+    ctx.set_term_at(Term::Call {
         callee,
         args: arg_vars,
         continuation: Cont { fn_id: cont_id, captured: captured_vars.clone() },
-    });
+    }, call_span);
 
     // Finalize current fn.
     let done = ctx.cur.take().unwrap().build();
@@ -687,6 +806,9 @@ fn cps_split_call(
     params.extend(cap_params.clone());
     let entry = kbuilder.block(params);
     ctx.cur = Some(kbuilder);
+    ctx.cur_fn_id = Some(cont_id);
+    ctx.fn_spans.insert(cont_id, call_span);
+    ctx.var_meta.insert((cont_id, result_param), (call_span, String::new()));
     ctx.cur_block = Some(entry);
 
     // Rebind env: each captured name -> its new param Var.
@@ -745,13 +867,17 @@ fn lower_binop(op: AstBinOp) -> Result<BinOp, LowerError> {
 fn lower_pattern_bind(
     ctx: &mut LowerCtx,
     subject: Var,
-    pat: &Pattern,
+    spat: &Spanned<Pattern>,
     fail_block: BlockId,
 ) -> Result<(), LowerError> {
-    match pat {
+    let pat_span = spat.span;
+    match &spat.node {
         Pattern::Wildcard => Ok(()),
         Pattern::Var(name) => {
             ctx.bind(name, subject);
+            // Record `subject`'s source name + binding-site span so
+            // diagnostics can render the user's identifier later.
+            ctx.name_var(subject, name, pat_span);
             Ok(())
         }
         Pattern::Int(n) => emit_eq_check(ctx, subject, Prim::Const(Const::Int(*n)), fail_block),
@@ -766,12 +892,13 @@ fn lower_pattern_bind(
         Pattern::Nil => emit_eq_check(ctx, subject, Prim::Const(Const::Nil), fail_block),
         Pattern::As(name, inner) => {
             ctx.bind(name, subject);
-            lower_pattern_bind(ctx, subject, &inner.node, fail_block)
+            ctx.name_var(subject, name, pat_span);
+            lower_pattern_bind(ctx, subject, inner, fail_block)
         }
         Pattern::Tuple(elems) => {
             for (i, elem_pat) in elems.iter().enumerate() {
                 let fv = ctx.let_(Prim::TupleField(subject, i as u32));
-                lower_pattern_bind(ctx, fv, &elem_pat.node, fail_block)?;
+                lower_pattern_bind(ctx, fv, elem_pat, fail_block)?;
             }
             Ok(())
         }
@@ -784,11 +911,11 @@ fn lower_pattern_bind(
                 ctx.cur_block = Some(cont_b);
                 let h = ctx.let_(Prim::ListHead(cur));
                 let t = ctx.let_(Prim::ListTail(cur));
-                lower_pattern_bind(ctx, h, &elem_pat.node, fail_block)?;
+                lower_pattern_bind(ctx, h, elem_pat, fail_block)?;
                 cur = t;
             }
             match tail {
-                Some(tail_pat) => lower_pattern_bind(ctx, cur, &tail_pat.node, fail_block),
+                Some(tail_pat) => lower_pattern_bind(ctx, cur, tail_pat, fail_block),
                 None => {
                     // Must end with nil.
                     let isnil = ctx.let_(Prim::ListIsNil(cur));
@@ -811,7 +938,7 @@ fn lower_pattern_bind(
                 let cont_b = ctx.cur_mut().block(vec![]);
                 ctx.set_term(Term::If(is_nil, fail_block, cont_b));
                 ctx.cur_block = Some(cont_b);
-                lower_pattern_bind(ctx, got, &val_pat.node, fail_block)?;
+                lower_pattern_bind(ctx, got, val_pat, fail_block)?;
             }
             Ok(())
         }
@@ -843,7 +970,7 @@ fn lower_pattern_bind(
                 let next_reader = ctx.let_(Prim::TupleField(result, 2));
                 // Park reader so any CPS-split inside the pattern keeps it.
                 let r_park = ctx.park(next_reader);
-                lower_pattern_bind(ctx, extracted, &field.value.node, fail_block)?;
+                lower_pattern_bind(ctx, extracted, &field.value, fail_block)?;
                 reader = ctx.unpark(&r_park);
                 ctx.unbind(&r_park);
             }
@@ -1076,7 +1203,7 @@ fn lower_case(
         let subj_v = ctx.unpark(&subject_park);
         // Re-park so subsequent clauses still see it.
         let inner_park = ctx.park(subj_v);
-        lower_pattern_bind(ctx, subj_v, &clause.pattern.node, next)?;
+        lower_pattern_bind(ctx, subj_v, &clause.pattern, next)?;
         ctx.unbind(&inner_park);
         let result = lower_expr(ctx, &clause.body, is_tail)?;
         if !ctx.terminated {
@@ -1197,7 +1324,7 @@ fn lower_with(
                 ctx.env = saved_env.clone();
                 ctx.env_order = saved_order.clone();
                 ctx.terminated = false;
-                lower_pattern_bind(ctx, with_fail_param, &clause.pattern.node, next)?;
+                lower_pattern_bind(ctx, with_fail_param, &clause.pattern, next)?;
                 let result = lower_expr(ctx, &clause.body, is_tail)?;
                 if !ctx.terminated {
                     ctx.set_term(Term::Goto(join_b, vec![result]));
@@ -1229,7 +1356,7 @@ fn lower_with(
                 ctx.cur_block = Some(saved_blk);
                 let v_resolved = ctx.unpark(&v_park);
                 ctx.unbind(&v_park);
-                lower_pattern_bind(ctx, v_resolved, &pat.node, mismatch_b)?;
+                lower_pattern_bind(ctx, v_resolved, pat, mismatch_b)?;
             }
         }
     }
@@ -1534,5 +1661,99 @@ end
         let Item::Fn(def) = &*prog.items[0] else { panic!("expected fn") };
         let name_text = &src[def.name_span.start as usize..def.name_span.end as usize];
         assert_eq!(name_text, "foobar");
+    }
+
+    // ----- .20.4: SourceInfo side-tables -----
+
+    /// Pattern-bound parameters record their name + binding span in
+    /// `Module.source`. The ticket's canonical test: lower a `double(x)`
+    /// function and verify the param's Var → "x", span → the `x` token.
+    #[test]
+    fn pattern_var_records_source_name_and_span() {
+        let src = "fn double(x), do: x * 2";
+        let toks = Lexer::new(src).tokenize().expect("lex");
+        let prog = Parser::new(toks).parse_program().expect("parse");
+        let m = lower_program(&prog).expect("lower");
+        let f = m.fn_by_name("double").unwrap();
+        let param = f.blocks[0].params[0];
+        assert_eq!(m.source.var_name_of(param), Some("x"));
+        let sp = m.source.var_span_of(param);
+        assert!(!sp.is_dummy());
+        let txt = &src[sp.start as usize..sp.end as usize];
+        assert_eq!(txt, "x");
+    }
+
+    /// Every top-level fn gets its source span recorded under
+    /// `fn_span[fn_id.0]`.
+    #[test]
+    fn fn_span_records_def_position() {
+        let src = "fn alpha(), do: 1\nfn beta(), do: 2";
+        let toks = Lexer::new(src).tokenize().expect("lex");
+        let prog = Parser::new(toks).parse_program().expect("parse");
+        let m = lower_program(&prog).expect("lower");
+        let beta = m.fn_by_name("beta").unwrap();
+        let sp = m.source.fn_span_of(beta.id);
+        let txt = &src[sp.start as usize..sp.end as usize];
+        assert!(txt.starts_with("fn beta"));
+    }
+
+    /// CPS continuations created when a non-tail Call splits use the
+    /// originating call expression's span as their `fn_span`, so a
+    /// diagnostic on the continuation can point at where the work
+    /// originated in source.
+    #[test]
+    fn continuation_fn_span_points_at_originating_call() {
+        // `callee(x) + 1` forces a non-tail Call -> CPS split.
+        let src = "fn callee(y), do: y\nfn caller(x), do: callee(x) + 1";
+        let toks = Lexer::new(src).tokenize().expect("lex");
+        let prog = Parser::new(toks).parse_program().expect("parse");
+        let m = lower_program(&prog).expect("lower");
+        let caller = m.fn_by_name("caller").unwrap();
+        // The continuation fn is the one whose name starts with "k_".
+        let k = m.fns.iter().find(|f| f.name.starts_with("k_"))
+            .expect("expected a continuation fn");
+        let cont_span = m.source.fn_span_of(k.id);
+        assert!(!cont_span.is_dummy());
+        // The originating call is `callee(x)` inside `caller`'s body.
+        // The continuation's fn_span must be inside caller's source range.
+        let caller_span = m.source.fn_span_of(caller.id);
+        assert!(cont_span.start >= caller_span.start && cont_span.end <= caller_span.end,
+            "continuation span {:?} should lie within caller's range {:?}",
+            cont_span, caller_span);
+        let txt = &src[cont_span.start as usize..cont_span.end as usize];
+        assert!(txt.contains("callee"),
+            "continuation span should cover the originating call, got {:?}", txt);
+    }
+
+    /// Compiler-introduced Vars (constants, tuple projections, etc.)
+    /// keep their source-expression span on `var_span` and an empty
+    /// name on `var_name`. .20.8's diagnostic renderer uses the empty-
+    /// name signal to render "this value" instead of "`<name>`".
+    #[test]
+    fn temp_var_records_span_and_empty_name() {
+        // `x + 1` produces a Const(1) Var whose source position is the
+        // literal `1` in the body.
+        let src = "fn add_one(x), do: x + 1";
+        let toks = Lexer::new(src).tokenize().expect("lex");
+        let prog = Parser::new(toks).parse_program().expect("parse");
+        let m = lower_program(&prog).expect("lower");
+        let f = m.fn_by_name("add_one").unwrap();
+        // Find a Var bound to `Const(Int(1))`.
+        let mut const1_var: Option<Var> = None;
+        for blk in &f.blocks {
+            for s in &blk.stmts {
+                let crate::fz_ir::Stmt::Let(v, prim) = s;
+                if matches!(prim, Prim::Const(Const::Int(1))) {
+                    const1_var = Some(*v);
+                }
+            }
+        }
+        let v = const1_var.expect("Const(1) Var");
+        // No source name on this temp.
+        assert_eq!(m.source.var_name_of(v), None);
+        // But its span points at the `1` literal.
+        let sp = m.source.var_span_of(v);
+        let txt = &src[sp.start as usize..sp.end as usize];
+        assert_eq!(txt, "1");
     }
 }

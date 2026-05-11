@@ -32,7 +32,6 @@
 //!   x = 1               -> {:=, %{}, [{:x,_,_}, 1]}
 
 use crate::ast::*;
-use crate::diag::Span;
 use crate::value::{FzMap, Value};
 use std::rc::Rc;
 
