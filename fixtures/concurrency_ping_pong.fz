@@ -1,4 +1,4 @@
-# purpose: spawn + send + receive — parent blocks on receive, child sends 42, main returns 42
+# purpose: spawn + send + receive — parent blocks on receive, prints the message
 # paths:   jit, interp, aot
 
 # fz-ul4.19 demonstration: parent + child processes with send/receive.
@@ -20,5 +20,5 @@ fn child(), do: send(1, 42)
 
 fn main() do
   spawn(child)
-  receive()
+  print(receive())
 end
