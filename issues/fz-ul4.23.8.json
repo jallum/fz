@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-11T21:07:31Z",
+  "description": "Phase 3 (fz-ul4.23.3) landed `--emit clif` only. Asm disassembly was deferred because it needs additional Cranelift wiring (set_disasm + capstone) and asm output is platform-dependent.\n\n## Deliverable\n\n- `fz dump --emit asm` produces post-regalloc machine code text.\n- `fz dump --emit both` produces CLIF then asm per fn.\n- Capstone (or whatever cranelift_codegen exposes) is wired in.\n\n## Acceptance\n\n- `fz dump --emit asm fixtures/add1.fz` prints x86_64 (or arm64) asm with fn banners.\n- Smoke test in fixture_matrix tests/.\n- Source-loc interleaving lands via fz-ul4.27 (sibling).",
+  "id": "fz-ul4.23.8",
+  "labels": [],
+  "parent": "fz-ul4.23",
+  "priority": 3,
+  "status": "open",
+  "title": "fz dump --emit asm — disassembled machine code",
+  "type": "task",
+  "updated_at": "2026-05-11T21:07:31Z"
+}
