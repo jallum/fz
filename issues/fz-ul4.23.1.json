@@ -1,6 +1,8 @@
 {
   "assignee": "Jason Allum",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-ul4.24"
+  ],
   "blocks": [
     "fz-ul4.23.5"
   ],
@@ -13,5 +15,5 @@
   "status": "in_progress",
   "title": "Fixture runner with sidecar .expected + index.md regen",
   "type": "task",
-  "updated_at": "2026-05-11T20:55:27Z"
+  "updated_at": "2026-05-11T20:58:50Z"
 }
