@@ -26,4 +26,4 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `polymorphic.fz` | parametric `id` exercised over int, atom, and bool | jit, interp |
 | `sample_tests.fz` | `test()` macro from the prelude — assert_eq / assert_neq / assert | jit |
 | `sample_tests_module.fz` | `test()` inside a defmodule body | jit |
-| `tail_recursion.fz` | 100k-deep self-recursion must TCO — exits cleanly with the accumulated count | jit |
+| `tail_recursion.fz` | 100k-deep self-recursion must TCO — exits cleanly with the accumulated count | jit, interp |

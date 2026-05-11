@@ -67,86 +67,112 @@ fn value_to_halt(v: FzValue) -> i64 {
     }
 }
 
-fn run_fn(module: &Module, fn_id: FnId, args: Vec<FzValue>) -> Result<FzValue, String> {
-    let fn_ir = module.fn_by_id(fn_id);
-    let mut env: HashMap<Var, FzValue> = HashMap::new();
-    let entry = fn_ir.block(fn_ir.entry);
-    if entry.params.len() != args.len() {
-        return Err(format!(
-            "fn {} expected {} args, got {}",
-            fn_ir.name,
-            entry.params.len(),
-            args.len()
-        ));
-    }
-    for (p, v) in entry.params.iter().zip(args) {
-        env.insert(*p, v);
-    }
-    let mut cur = fn_ir.entry;
-    loop {
-        let blk = fn_ir.block(cur);
-        for Stmt::Let(v, prim) in &blk.stmts {
-            let val = eval_prim(module, prim, &env)?;
-            env.insert(*v, val);
+/// Run an fz fn to completion. Tail calls reuse this stack frame (no Rust
+/// recursion) so deeply tail-recursive programs run in O(1) Rust stack —
+/// `tail_recursion.fz`'s 100k-deep count exits cleanly.
+///
+/// Non-tail calls (Term::Call, Term::CallClosure) still recurse into a
+/// fresh `run_fn`; that's correct for the language's semantics (the
+/// continuation runs AFTER the callee returns), and it's bounded by the
+/// program's actual call depth which is typically small.
+fn run_fn(module: &Module, mut fn_id: FnId, mut args: Vec<FzValue>) -> Result<FzValue, String> {
+    'tail: loop {
+        let fn_ir = module.fn_by_id(fn_id);
+        let mut env: HashMap<Var, FzValue> = HashMap::new();
+        let entry = fn_ir.block(fn_ir.entry);
+        if entry.params.len() != args.len() {
+            return Err(format!(
+                "fn {} expected {} args, got {}",
+                fn_ir.name,
+                entry.params.len(),
+                args.len()
+            ));
         }
-        match &blk.terminator {
-            Term::Goto(b, args) => {
-                let vals: Vec<FzValue> = args
-                    .iter()
-                    .map(|v| env_get(&env, *v))
-                    .collect::<Result<_, _>>()?;
-                let next = module.fn_by_id(fn_id).block(*b);
-                for (p, val) in next.params.iter().zip(vals) {
-                    env.insert(*p, val);
+        for (p, v) in entry.params.iter().zip(args.iter()) {
+            env.insert(*p, *v);
+        }
+        let mut cur = fn_ir.entry;
+        loop {
+            let blk = fn_ir.block(cur);
+            for Stmt::Let(v, prim) in &blk.stmts {
+                let val = eval_prim(module, prim, &env)?;
+                env.insert(*v, val);
+            }
+            match &blk.terminator {
+                Term::Goto(b, gargs) => {
+                    let vals: Vec<FzValue> = gargs
+                        .iter()
+                        .map(|v| env_get(&env, *v))
+                        .collect::<Result<_, _>>()?;
+                    let next = fn_ir.block(*b);
+                    for (p, val) in next.params.iter().zip(vals) {
+                        env.insert(*p, val);
+                    }
+                    cur = *b;
                 }
-                cur = *b;
-            }
-            Term::If(c, t, e) => {
-                let cv = env_get(&env, *c)?;
-                cur = if is_truthy(cv) { *t } else { *e };
-            }
-            Term::Call {
-                callee,
-                args,
-                continuation,
-            } => {
-                let arg_vals = collect(&env, args)?;
-                let result = run_fn(module, *callee, arg_vals)?;
-                let cap_vals = collect(&env, &continuation.captured)?;
-                let mut cont_args = vec![result];
-                cont_args.extend(cap_vals);
-                return run_fn(module, continuation.fn_id, cont_args);
-            }
-            Term::TailCall { callee, args } => {
-                let arg_vals = collect(&env, args)?;
-                return run_fn(module, *callee, arg_vals);
-            }
-            Term::Return(v) => return env_get(&env, *v),
-            Term::Halt(v) => return env_get(&env, *v),
-            Term::CallClosure {
-                closure,
-                args,
-                continuation,
-            } => {
-                let cl = env_get(&env, *closure)?;
-                let (lam_fn, mut call_args) = unpack_closure(cl)?;
-                call_args.extend(collect(&env, args)?);
-                let result = run_fn(module, lam_fn, call_args)?;
-                let cap_vals = collect(&env, &continuation.captured)?;
-                let mut cont_args = vec![result];
-                cont_args.extend(cap_vals);
-                return run_fn(module, continuation.fn_id, cont_args);
-            }
-            Term::TailCallClosure { closure, args } => {
-                let cl = env_get(&env, *closure)?;
-                let (lam_fn, mut call_args) = unpack_closure(cl)?;
-                call_args.extend(collect(&env, args)?);
-                return run_fn(module, lam_fn, call_args);
-            }
-            Term::Receive { .. } => {
-                return Err(
-                    "interp .5.2: receive not yet supported (fz-ul4.23.5.8)".into(),
-                );
+                Term::If(c, t, e) => {
+                    let cv = env_get(&env, *c)?;
+                    cur = if is_truthy(cv) { *t } else { *e };
+                }
+                Term::Call {
+                    callee,
+                    args: call_args,
+                    continuation,
+                } => {
+                    let arg_vals = collect(&env, call_args)?;
+                    let result = run_fn(module, *callee, arg_vals)?;
+                    let cap_vals = collect(&env, &continuation.captured)?;
+                    let mut cont_args = vec![result];
+                    cont_args.extend(cap_vals);
+                    // The continuation invocation is itself a tail
+                    // position — reuse this stack frame.
+                    fn_id = continuation.fn_id;
+                    args = cont_args;
+                    continue 'tail;
+                }
+                Term::TailCall {
+                    callee,
+                    args: call_args,
+                } => {
+                    let arg_vals = collect(&env, call_args)?;
+                    fn_id = *callee;
+                    args = arg_vals;
+                    continue 'tail;
+                }
+                Term::CallClosure {
+                    closure,
+                    args: call_args,
+                    continuation,
+                } => {
+                    let cl = env_get(&env, *closure)?;
+                    let (lam_fn, mut clos_args) = unpack_closure(cl)?;
+                    clos_args.extend(collect(&env, call_args)?);
+                    let result = run_fn(module, lam_fn, clos_args)?;
+                    let cap_vals = collect(&env, &continuation.captured)?;
+                    let mut cont_args = vec![result];
+                    cont_args.extend(cap_vals);
+                    fn_id = continuation.fn_id;
+                    args = cont_args;
+                    continue 'tail;
+                }
+                Term::TailCallClosure {
+                    closure,
+                    args: call_args,
+                } => {
+                    let cl = env_get(&env, *closure)?;
+                    let (lam_fn, mut clos_args) = unpack_closure(cl)?;
+                    clos_args.extend(collect(&env, call_args)?);
+                    fn_id = lam_fn;
+                    args = clos_args;
+                    continue 'tail;
+                }
+                Term::Return(v) => return env_get(&env, *v),
+                Term::Halt(v) => return env_get(&env, *v),
+                Term::Receive { .. } => {
+                    return Err(
+                        "interp .5.7: receive not yet supported (fz-ul4.23.5.8)".into(),
+                    );
+                }
             }
         }
     }
