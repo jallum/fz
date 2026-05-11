@@ -4,14 +4,15 @@
   "blocks": [
     "fz-ul4.19.8"
   ],
+  "closed_at": "2026-05-11T22:37:28Z",
   "created": "2026-05-11T20:21:53Z",
   "description": "GOAL: Either resurrect src/aot.rs (currently #![cfg(any())]-gated) or\nbuild a new AOT path on top of ir_codegen. AOT is the third execution\npath per the three-path parity requirement; today it's dark.\n\nDiscovered 2026-05-11 during the .19 concurrency arc that AOT support\nhad been deferred since fz-ul4.11.9 (\"legacy direct-style codegen\nretired; preserved verbatim for intent verification once ir_codegen\nreaches feature parity in .11.10-.11.14\"). The .11 arc reached feature\nparity; AOT resurrection was implied but never explicitly scheduled.\n\n## Two paths to evaluate\n\nA. Resurrect src/aot.rs. It was a .12-era direct-style codegen with no\n   GC, no closures, no heap types. To fit current fz it would need to\n   be rewritten on top of ir_codegen — at which point \"resurrect\" is a\n   misnomer; this is mostly building a new AOT.\n\nB. Build a new AOT driver on top of ir_codegen. Same Cranelift code as\n   the JIT, but emit a relocatable object instead of in-memory JIT.\n   Link with fz_runtime + libc + a startup constructor that initializes\n   the runtime (atom table, eventual Process/Runtime startup).\n\n## Architectural questions\n\n1. Does AOT support concurrency (spawn/send/receive)? If yes, the\n   compiled binary needs a Runtime baked in or linked in. The\n   fz_runtime staticlib is the natural home for this.\n\n2. What's main()? For a single-task program, AOT can run\n   `CompiledModule::run(main_entry)` equivalent at startup. For\n   multi-task (spawn), it needs a Runtime::new(...).spawn(main).\n   run_until_idle() entry path.\n\n3. Heap allocation: the JIT path's HEAP is per-Process via\n   CURRENT_PROCESS TLS. AOT inherits this directly if we link the same\n   runtime fns.\n\n## Out of scope for this ticket\n\nThe full AOT build pipeline (object emission, linking with cc, ELF/\nMach-O artifacts) is substantial. This ticket scopes the DECISION and\nthe minimum-viable path; implementation lands in sub-tickets.\n\n## Deliverables\n\n- Design doc: decide between (A) and (B). Likely (B).\n- Either: prototype a \"hello world\" AOT binary that runs `fn main(),\n  do: 42` and exits with code 42 (no concurrency yet); OR detailed\n  design notes for the AOT pipeline.\n- A test that the same fixture passes via the AOT path.\n\n## Dependencies\n\n- Blocks: fz-ul4.19.8 (three-path parity test runner needs all three\n  paths).\n\n## Acceptance\n\n- Either: a working AOT path that compiles + runs at least one\n  fixture; OR a design ticket detailing the AOT pipeline and sub-\n  tickets to build it.\n- One commit (or a tree of sub-commits if AOT is split into pieces).",
   "id": "fz-ul4.22",
   "labels": [],
   "parent": "fz-ul4",
   "priority": 3,
-  "status": "open",
+  "status": "closed",
   "title": "AOT path resurrection (foundational for three-path parity)",
   "type": "task",
-  "updated_at": "2026-05-11T20:21:59Z"
+  "updated_at": "2026-05-11T22:37:28Z"
 }
