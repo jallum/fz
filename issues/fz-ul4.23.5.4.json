@@ -7,14 +7,15 @@
     "fz-ul4.23.5.6",
     "fz-ul4.23.5.9"
   ],
+  "closed_at": "2026-05-11T21:49:09Z",
   "created": "2026-05-11T21:11:35Z",
   "description": "Add closure capture + invocation. Closure rep matches the JIT (heap-allocated, schema-tagged via SchemaRegistry).\n\n## Acceptance\n\n- `# paths: jit, interp` on apply2.fz, higher_order.fz, polymorphic.fz, id_int_atom.fz.\n- Matrix green via both paths.",
   "id": "fz-ul4.23.5.4",
   "labels": [],
   "parent": "fz-ul4.23.5",
   "priority": 3,
-  "status": "in_progress",
+  "status": "closed",
   "title": "ir_interp_v2: closures + higher-order (apply2.fz, higher_order.fz)",
   "type": "task",
-  "updated_at": "2026-05-11T21:47:30Z"
+  "updated_at": "2026-05-11T21:49:09Z"
 }
