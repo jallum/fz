@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-ul4.11.25.7"
+  ],
   "created": "2026-05-11T10:56:17Z",
   "description": "Grab-bag of small dead-code items, each independently trivial.\n\n- src/lexer.rs — verify Tok::Dot is never constructed (grep), delete the variant.\n- src/repl.rs — delete load_items (superseded by load_items_filtered per .20.3 macro_def_spans work).\n- src/test_runner.rs — add #[cfg(test)] to run_str. It is referenced only from src/test_runner.rs's own #[cfg(test)] mod tests block.\n- src/ir_codegen.rs:615 — drop unused imports Tag, Endian.\n- src/ir_codegen.rs:102 — remove unnecessary unsafe block: `let frame = unsafe { fz_alloc_frame(...) }`. The fn is safe; the wrap is redundant.\n\n## Deliverable\n\n- -6 warnings.\n- One commit. The items are small enough to bundle.",
   "id": "fz-ul4.11.25.6",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Sweeps: Tok::Dot, repl::load_items, run_str cfg(test), unused imports/unsafe",
   "type": "task",
-  "updated_at": "2026-05-11T10:56:17Z"
+  "updated_at": "2026-05-11T10:56:32Z"
 }
