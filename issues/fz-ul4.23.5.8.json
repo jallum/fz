@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-ul4.23.5.2"
+  ],
   "blocks": [],
   "created": "2026-05-11T21:11:36Z",
   "description": "Wire the interp into the same Runtime as the JIT. spawn/send/receive in interp call into runtime.rs FFI (spawn_via_current_runtime, send_via_current_runtime, fz_receive_attempt). Subsumes fz-ul4.19.8.\n\n## Acceptance\n\n- `# paths: jit, interp` on concurrency_ping_pong.fz.\n- fz-ul4.19.8 closes.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "ir_interp_v2: spawn/send/receive — concurrency_ping_pong.fz",
   "type": "task",
-  "updated_at": "2026-05-11T21:11:36Z"
+  "updated_at": "2026-05-11T21:11:38Z"
 }
