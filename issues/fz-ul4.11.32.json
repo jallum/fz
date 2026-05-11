@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
     "fz-ul4.19.1"
@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-ul4.11",
   "priority": 3,
-  "status": "open",
+  "status": "in_progress",
   "title": "Per-Process runtime context: thread ctx ptr through FFI (de-TLS)",
   "type": "task",
-  "updated_at": "2026-05-11T14:42:57Z"
+  "updated_at": "2026-05-11T14:43:06Z"
 }
