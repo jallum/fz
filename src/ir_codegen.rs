@@ -3089,6 +3089,32 @@ mod tests {
         );
     }
 
+    // ----- fz-ul4.19.6: atom-table policy (shared, mutex-protected) -----
+
+    /// Two Processes built from the SAME CompiledModule observe equal
+    /// atom ids for the same atom literal. Atoms are u32s baked into
+    /// compiled code; they're the same bytes regardless of which Process
+    /// runs the code. Confirms .19.6's "global shared singleton" policy
+    /// is the actual semantics today (per ir_lower::AtomTable being
+    /// CompiledModule-scoped).
+    #[test]
+    fn atom_identity_preserved_across_processes_from_same_module() {
+        // `:ok` halts as the atom's u32 id (well, the FzValue bits which
+        // encode (id << 3) | TAG_ATOM = 0b010). Run two Processes; the
+        // halt value must match because the atom id was assigned once
+        // at compile time.
+        let src = "fn main(), do: :ok";
+        let m = lower_src(src);
+        let compiled = compile(&m).unwrap();
+        let entry = m.fn_by_name("main").unwrap().id;
+
+        let mut pa = compiled.make_process();
+        let mut pb = compiled.make_process();
+        let ra = compiled.run_in(entry, &mut pa);
+        let rb = compiled.run_in(entry, &mut pb);
+        assert_eq!(ra, rb, "atom id stable across processes from the same module");
+    }
+
     // ----- fz-ul4.11.32: per-Process state isolation -----
 
     /// Two Processes built from the same CompiledModule run independent

@@ -72,6 +72,22 @@ impl std::fmt::Display for LowerError {
 impl std::error::Error for LowerError {}
 
 /// Atom interner: maps atom names to stable u32 ids.
+/// Per-CompiledModule atom table built during AST → IR lowering.
+///
+/// fz-ul4.19.6 policy (atom-table cross-process semantics):
+/// - Atom ids are assigned here, per Module. All Processes that run from
+///   the same CompiledModule see the same atom ids (atoms are embedded as
+///   u32 literals in compiled code; the ids ARE the atoms at runtime).
+/// - Two CompiledModules built from different source produce independent
+///   atom-id spaces. Cross-module sends (a hypothetical future feature)
+///   would require atom-id translation; not needed for v1.
+/// - The runtime atom table in `fz_runtime::intern` (a `Mutex<HashMap>`)
+///   is shared across all OS threads / workers (libdispatch model) but
+///   currently has no active consumers from `src/` — the legacy `jit.rs`
+///   call sites are `#![cfg(any())]`-gated. When a future feature reads
+///   atom names at runtime (e.g. `:atom_name` rendering past v1, or
+///   atom-to-string for distributed pids), `fz_runtime::intern` is already
+///   thread-safe for the libdispatch worker pool.
 #[derive(Default)]
 pub struct AtomTable {
     map: HashMap<String, u32>,
