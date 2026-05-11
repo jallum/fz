@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-ul4.20.1"
   ],
@@ -14,8 +14,8 @@
   "labels": [],
   "parent": "fz-ul4.20",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Diagnostic type, DiagCode taxonomy, Diagnostics accumulator",
   "type": "task",
-  "updated_at": "2026-05-11T06:30:59Z"
+  "updated_at": "2026-05-11T08:07:32Z"
 }
