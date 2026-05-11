@@ -1,5 +1,5 @@
 # purpose: smallest JIT round-trip — fn def + call + print
-# paths:   jit
+# paths:   jit, interp
 
 fn add1(n) do n + 1 end
 

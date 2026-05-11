@@ -8,6 +8,7 @@ mod fz_value;
 mod heap;
 mod ir_codegen;
 mod ir_interp;
+mod ir_interp_v2;
 mod ir_runtime;
 // ir_liveness removed (fz-ul4.11.31 subsumes .11.30): frame schemas are
 // uniformly `[cont_ptr, ...entry_params]` with every Var slot FzValue;
@@ -100,19 +101,59 @@ fn run_build(_args: &[String]) {
     std::process::exit(2);
 }
 
-/// `fz interp <src.fz>` — run a program through the rebuilt IR interpreter.
+/// `fz interp <src.fz>` — run a program through the rebuilt IR interpreter
+/// (ir_interp_v2). The interp walks fz_ir::Module directly using the same
+/// FzValue rep, heap, and runtime FFI as the JIT.
 ///
-/// fz-ul4.23.5.1 stub: the interp itself lands in fz-ul4.23.5.2+. Until
-/// then this exits with code 75 (EX_TEMPFAIL) so the fixture matrix can
-/// recognize "path declared but not yet wired" as a graceful skip rather
-/// than a failure. As individual interp atoms land, the relevant fixtures
-/// graduate from `# paths: jit` to `# paths: jit, interp`.
-fn run_interp(_args: &[String]) {
-    eprintln!(
-        "fz interp: rebuilt IR interpreter not yet wired \
-         (tracked by fz-ul4.23.5.2+ atoms)."
-    );
-    std::process::exit(75); // EX_TEMPFAIL
+/// Coverage grows feature-by-feature across fz-ul4.23.5.2 → .5.8. If the
+/// interp hits an IR construct it doesn't yet support, it returns a
+/// "not yet supported" error and exits 75 (EX_TEMPFAIL) so the fixture
+/// matrix logs the path as Deferred rather than failing.
+fn run_interp(args: &[String]) {
+    let path = args.first().cloned().unwrap_or_else(|| {
+        eprintln!("fz interp <src.fz>");
+        std::process::exit(2);
+    });
+    let src = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+        eprintln!("read {}: {}", path, e);
+        std::process::exit(1);
+    });
+    let mut sm = diag::SourceMap::new();
+    let file_id = sm.add_file(path.clone(), src.clone());
+    let toks = lexer::Lexer::with_file(&src, file_id)
+        .tokenize()
+        .unwrap_or_else(|e| {
+            diag::render_one_to_stderr(&sm, &e.to_diagnostic());
+            std::process::exit(1);
+        });
+    let prog = Parser::new(toks).parse_program().unwrap_or_else(|e| {
+        diag::render_one_to_stderr(&sm, &e.to_diagnostic());
+        std::process::exit(1);
+    });
+    let mut prog = resolve::flatten_modules(prog).unwrap_or_else(|e| {
+        diag::render_one_to_stderr(&sm, &e.to_diagnostic());
+        std::process::exit(1);
+    });
+    if let Err(e) = macros::expand_program(&mut prog) {
+        diag::render_one_to_stderr(&sm, &e.to_diagnostic());
+        std::process::exit(1);
+    }
+    let module = ir_lower::lower_program(&prog).unwrap_or_else(|e| {
+        diag::render_one_to_stderr(&sm, &e.to_diagnostic());
+        std::process::exit(1);
+    });
+    match ir_interp_v2::run_main(&module) {
+        Ok(_halt) => {}
+        Err(msg) => {
+            eprintln!("fz interp: {}", msg);
+            // Treat "not yet supported" errors as graceful Deferred so the
+            // matrix can roll out interp coverage incrementally.
+            if msg.contains("not yet supported") {
+                std::process::exit(75);
+            }
+            std::process::exit(1);
+        }
+    }
 }
 
 fn run_jit_from_path(args: &[String]) {

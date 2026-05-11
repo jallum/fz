@@ -253,22 +253,31 @@ fn fixture_index_up_to_date() {
     );
 }
 
-/// `fz interp` stub returns exit 75 (EX_TEMPFAIL) so the matrix can
-/// recognize "interp path declared but not yet wired" as a Deferred result
-/// rather than a failure. This atom (fz-ul4.23.5.1) is the plumbing;
-/// fz-ul4.23.5.2+ replace the stub with a real interpreter and graduate
-/// fixtures from `# paths: jit` to `# paths: jit, interp`.
+/// `fz interp` exits 75 (EX_TEMPFAIL) when the requested fixture exercises
+/// an IR construct the rebuilt interp doesn't yet support. The matrix
+/// treats exit 75 as "deferred path" and logs without failing — this lets
+/// us roll out interp coverage one fixture at a time.
+///
+/// A fixture that uses closures (apply2.fz) is currently deferred because
+/// closure invocation lands in fz-ul4.23.5.4. Once that ticket lands, this
+/// test will need a different fixture (or the assertion flips to Pass).
 #[test]
-fn fz_interp_stub_exits_75() {
+fn fz_interp_defers_unsupported_fixtures() {
     let out = Command::new(FZ_BIN)
-        .args(["interp", "fixtures/add1.fz"])
+        .args(["interp", "fixtures/apply2.fz"])
         .output()
         .expect("spawn fz interp");
-    assert_eq!(out.status.code(), Some(75), "fz interp stub should exit 75");
+    assert_eq!(
+        out.status.code(),
+        Some(75),
+        "fz interp on closure-using fixture should exit 75 (deferred), got status {:?}\nstderr:\n{}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("not yet wired"),
-        "expected stub message in stderr, got: {}",
+        stderr.contains("not yet supported"),
+        "expected 'not yet supported' message, got: {}",
         stderr
     );
 }
