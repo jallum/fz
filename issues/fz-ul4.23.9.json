@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-11T21:58:34Z",
+  "description": "Originally part of fz-ul4.23.5.10 scope (\\\"Migrate REPL + test_runner onto ir_interp\\\"). The test_runner migration landed there; REPL migration deferred to here because it needs design work the .5.10 atom isn't sized for.\n\n## Why a real REPL migration is non-trivial\n\nThe current REPL is a natural AST-level driver: each input either appends a fn definition to eval::Interp.globals or evaluates an expression against a persistent eval::Env (`repl_env = interp.globals.child()`). The test `binds_variable_across_inputs` (repl.rs:251) asserts that `x = 7` on one line and `x + 35` on the next produces `42` — fz's `=` is a pattern-match-bind that mutates the current frame, and the REPL relies on that frame persisting.\n\nir_interp has no native concept of a persistent cross-input env: each `run_fn` constructs its own Var → FzValue map indexed by IR Var ids, and Var ids are minted fresh per `ir_lower` pass.\n\n## Plausible designs\n\nA. Session as a single growing fn body. Each new input is appended as a fz statement; lower + re-run the whole accumulated fn each time. Variables persist naturally. Cost: previous prints re-fire each line.\n\nB. Name-keyed session env. Translate REPL variable bindings to a synthetic outer scope (`__repl_scope`), keyed by name. Each input is wrapped as a fn that reads/writes that scope through accessor builtins.\n\nC. Hybrid: keep the AST evaluator (eval::Interp) for the REPL since the REPL is inherently AST-level. Limit fz-ul4.23.5.10's framing to test_runner, the part that really benefits from IR-level parity.\n\nRecommend evaluating C — eval::Interp's runtime entry points (load_program, call_named, eval) are load-bearing for macro expansion anyway, so it's not going away. The \\\"AST evaluator is compile-time only\\\" framing in fz-ul4.23.2's commit is partially aspirational.\n\n## Acceptance\n\nWhichever design lands:\n- `fz repl`: type `1 + 1`, get `2`.\n- `fz repl`: type `x = 7` then `x + 35`, get `42`.\n- All five existing repl tests still pass (or the design ticket explicitly retires any of them with rationale).",
+  "id": "fz-ul4.23.9",
+  "labels": [],
+  "parent": "fz-ul4.23",
+  "priority": 3,
+  "status": "open",
+  "title": "Migrate REPL onto ir_interp (session-state design needed)",
+  "type": "task",
+  "updated_at": "2026-05-11T21:58:34Z"
+}
