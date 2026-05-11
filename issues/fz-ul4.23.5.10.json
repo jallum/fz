@@ -9,9 +9,15 @@
   "id": "fz-ul4.23.5.10",
   "labels": [],
   "parent": "fz-ul4.23.5",
+  "comments": [
+    {
+      "text": "Scope split: test_runner migration landed in this atom. REPL migration moved to fz-ul4.23.9 because it needs session-state design beyond what this atom holds. eval::Interp's runtime entry points (load_program, call_named, eval) stay — macros invoke user code at compile time and need them. The .23.2 framing of eval::Interp as 'compile-time only' was partially aspirational.",
+      "timestamp": "2026-05-11T21:58:35Z"
+    }
+  ],
   "priority": 3,
   "status": "in_progress",
   "title": "Migrate REPL + test_runner onto ir_interp",
   "type": "task",
-  "updated_at": "2026-05-11T21:56:12Z"
+  "updated_at": "2026-05-11T21:58:35Z"
 }
