@@ -477,6 +477,81 @@ mod tests {
     /// hold independent copies. Verified by sender-side heap growing
     /// from the list allocation plus receiver-side heap growing from
     /// the deep-copy of the same structure.
+    // ----- fz-ul4.19.4: per-process independent GC verification -----
+
+    /// Two tasks; one allocates heavily enough to trigger GC, the other
+    /// allocates one small list and doesn't trigger anything. After
+    /// run_until_idle, the heavy task has gc_run_count >= 1 and the lite
+    /// task has gc_run_count == 0. Confirms per-process GC isolation.
+    #[test]
+    fn heavy_task_gcs_independently_of_lite_task() {
+        let src = r#"
+            fn heavy_loop(0, acc), do: acc
+            fn heavy_loop(n, acc), do: heavy_loop(n - 1, [n, n])
+            fn heavy(), do: heavy_loop(2000, [])
+            fn lite(), do: [1, 2, 3]
+        "#;
+        let m = lower_src(src);
+        let compiled = compile(&m).unwrap();
+        let heavy_entry = m.fn_by_name("heavy").unwrap().id;
+        let lite_entry = m.fn_by_name("lite").unwrap().id;
+        let mut rt = Runtime::new(&compiled, 1);
+        let heavy_pid = rt.spawn(heavy_entry);
+        let lite_pid = rt.spawn(lite_entry);
+        // Lower the heavy task's GC threshold so the loop forces ticks.
+        rt.tasks
+            .get_mut(&heavy_pid)
+            .unwrap()
+            .heap
+            .gc_threshold_bytes = 4 * 1024;
+        rt.run_until_idle();
+        let heavy = rt.task(heavy_pid).unwrap();
+        let lite = rt.task(lite_pid).unwrap();
+        assert!(
+            heavy.heap.gc_run_count >= 1,
+            "heavy task should have triggered GC, got {}",
+            heavy.heap.gc_run_count
+        );
+        assert_eq!(
+            lite.heap.gc_run_count, 0,
+            "lite task should NOT have triggered GC (its heap untouched by heavy's GC)"
+        );
+        // Lite task's value survives — its small list is fully intact.
+        // (Verified indirectly by lite.state == Exited and live_count > 0.)
+        assert_eq!(lite.state, ProcessState::Exited);
+        assert!(lite.heap.live_count() >= 3, "lite's [1,2,3] survives");
+    }
+
+    /// Same-CompiledModule, two tasks with distinct heap thresholds: the
+    /// task with a lower threshold GCs more often than the other. Tests
+    /// that the threshold is genuinely per-process (Heap state) and not
+    /// a global.
+    #[test]
+    fn per_process_gc_threshold_is_independent() {
+        let src = r#"
+            fn build(0, acc), do: acc
+            fn build(n, acc), do: build(n - 1, [n, n, n])
+            fn main(), do: build(800, [])
+        "#;
+        let m = lower_src(src);
+        let compiled = compile(&m).unwrap();
+        let entry = m.fn_by_name("main").unwrap().id;
+        let mut rt = Runtime::new(&compiled, 1);
+        let tight_pid = rt.spawn(entry);
+        let loose_pid = rt.spawn(entry);
+        rt.tasks.get_mut(&tight_pid).unwrap().heap.gc_threshold_bytes = 2 * 1024;
+        rt.tasks.get_mut(&loose_pid).unwrap().heap.gc_threshold_bytes = 32 * 1024;
+        rt.run_until_idle();
+        let tight = rt.task(tight_pid).unwrap();
+        let loose = rt.task(loose_pid).unwrap();
+        assert!(
+            tight.heap.gc_run_count > loose.heap.gc_run_count,
+            "tighter threshold task should GC more often (tight={}, loose={})",
+            tight.heap.gc_run_count,
+            loose.heap.gc_run_count
+        );
+    }
+
     #[test]
     fn send_list_deep_copies_into_receiver_heap() {
         let src = r#"
