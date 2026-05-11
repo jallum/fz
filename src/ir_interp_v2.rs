@@ -21,10 +21,73 @@
 //!   .5.8 spawn/send/receive
 
 use std::collections::HashMap;
+use std::cell::{Cell, RefCell};
 
 use crate::fz_ir::{BinOp, BuiltinKind, Const, FnId, Module, Prim, Stmt, Term, Var};
 use crate::fz_value::FzValue;
 use crate::process::Process;
+
+// ===== Interp-internal scheduler (fz-ul4.23.5.8) =====
+//
+// The interp owns its own task registry separate from runtime.rs::Runtime
+// (which is wired into the JIT trampoline). They share the Process type,
+// the FzValue rep, and the heap — so messages and mailboxes are byte-
+// compatible between paths.
+//
+// Scheduling model: eager-synchronous. Builtin::Spawn runs the spawned
+// task to completion before returning (i.e. spawned tasks are
+// synchronous from the parent's perspective). Term::Receive pops from
+// the current task's mailbox; if empty, it errors — there is no
+// preemption / suspend-and-resume in the interp v1 since fz-IR doesn't
+// run on stackable continuations here.
+//
+// This matches concurrency_ping_pong.fz's semantics (parent spawns child
+// → child eagerly runs send(1, 42) → returns; parent's receive pops 42)
+// but does NOT match richer concurrency patterns where the child holds
+// internal state across receive points. fz-ul4.23.5.8.1 (follow-up)
+// tracks the proper green-thread scheduler.
+
+thread_local! {
+    static INTERP_TASKS: RefCell<HashMap<u32, Box<Process>>> =
+        RefCell::new(HashMap::new());
+    static INTERP_NEXT_PID: Cell<u32> = const { Cell::new(2) };
+    static INTERP_SCHEMAS: RefCell<Option<std::rc::Rc<std::cell::RefCell<crate::heap::SchemaRegistry>>>> =
+        const { RefCell::new(None) };
+}
+
+fn interp_register_task(pid: u32, process: Box<Process>) -> *mut Process {
+    INTERP_TASKS.with(|t| {
+        let mut tasks = t.borrow_mut();
+        tasks.insert(pid, process);
+        tasks.get_mut(&pid).map(|b| b.as_mut() as *mut Process).unwrap()
+    })
+}
+
+fn interp_next_pid() -> u32 {
+    INTERP_NEXT_PID.with(|n| {
+        let p = n.get();
+        n.set(p + 1);
+        p
+    })
+}
+
+fn interp_send(receiver_pid: u32, msg: FzValue) -> Result<(), String> {
+    INTERP_TASKS.with(|t| {
+        let mut tasks = t.borrow_mut();
+        match tasks.get_mut(&receiver_pid) {
+            Some(task) => {
+                task.mailbox.push_back(msg);
+                Ok(())
+            }
+            None => Err(format!("send: no task with pid {}", receiver_pid)),
+        }
+    })
+}
+
+fn interp_reset_state() {
+    INTERP_TASKS.with(|t| t.borrow_mut().clear());
+    INTERP_NEXT_PID.with(|n| n.set(2));
+}
 
 /// Run `module`'s `main` fn through the interpreter.
 ///
@@ -36,17 +99,37 @@ pub fn run_main(module: &Module) -> Result<i64, String> {
         .fn_by_name("main")
         .ok_or("no `main/0` fn found")?
         .id;
+    interp_reset_state();
     let user_schemas =
         std::rc::Rc::new(std::cell::RefCell::new(crate::heap::SchemaRegistry::new()));
-    let mut process = Process::new(user_schemas);
-    let ptr: *mut Process = &mut process;
-    let prev = crate::process::CURRENT_PROCESS.with(|c| c.replace(ptr));
+    INTERP_SCHEMAS.with(|s| *s.borrow_mut() = Some(user_schemas.clone()));
+    let mut main_process = Box::new(Process::new(user_schemas));
+    main_process.pid = 1;
+    let main_ptr = interp_register_task(1, main_process);
+    let prev = crate::process::CURRENT_PROCESS.with(|c| c.replace(main_ptr));
     let result = run_fn(module, main_id, Vec::new());
     crate::process::CURRENT_PROCESS.with(|c| c.set(prev));
+    INTERP_SCHEMAS.with(|s| *s.borrow_mut() = None);
     let r = result?;
-    // For `main`, the returned FzValue's int (or boxed-float bits) becomes
-    // the halt value, mirroring fz_halt's per-tag logic.
     Ok(value_to_halt(r))
+}
+
+/// Spawn a new task at `fn_id`, run it to completion synchronously, and
+/// return its pid. Matches the JIT's pid allocation convention (main=1,
+/// children get sequential pids starting at 2).
+fn interp_spawn(module: &Module, fn_id: FnId) -> Result<u32, String> {
+    let pid = interp_next_pid();
+    let user_schemas = INTERP_SCHEMAS
+        .with(|s| s.borrow().as_ref().cloned())
+        .ok_or("interp_spawn: no INTERP_SCHEMAS installed (call run_main first)")?;
+    let mut child = Box::new(Process::new(user_schemas));
+    child.pid = pid;
+    let child_ptr = interp_register_task(pid, child);
+    let prev = crate::process::CURRENT_PROCESS.with(|c| c.replace(child_ptr));
+    let result = run_fn(module, fn_id, Vec::new());
+    crate::process::CURRENT_PROCESS.with(|c| c.set(prev));
+    result?;
+    Ok(pid)
 }
 
 fn value_to_halt(v: FzValue) -> i64 {
@@ -168,10 +251,20 @@ fn run_fn(module: &Module, mut fn_id: FnId, mut args: Vec<FzValue>) -> Result<Fz
                 }
                 Term::Return(v) => return env_get(&env, *v),
                 Term::Halt(v) => return env_get(&env, *v),
-                Term::Receive { .. } => {
-                    return Err(
-                        "interp .5.7: receive not yet supported (fz-ul4.23.5.8)".into(),
-                    );
+                Term::Receive { continuation } => {
+                    let msg = crate::process::current_process()
+                        .mailbox
+                        .pop_front()
+                        .ok_or_else(|| {
+                            "interp: receive on empty mailbox (no preemption in v1 scheduler)"
+                                .to_string()
+                        })?;
+                    let cap_vals = collect(&env, &continuation.captured)?;
+                    let mut cont_args = vec![msg];
+                    cont_args.extend(cap_vals);
+                    fn_id = continuation.fn_id;
+                    args = cont_args;
+                    continue 'tail;
                 }
             }
         }
@@ -297,7 +390,7 @@ fn eval_binop(op: BinOp, a: FzValue, b: FzValue) -> Result<FzValue, String> {
 }
 
 fn run_builtin(
-    _module: &Module,
+    module: &Module,
     bid: crate::fz_ir::BuiltinId,
     args: &[FzValue],
 ) -> Result<FzValue, String> {
@@ -352,9 +445,42 @@ fn run_builtin(
                 ))
             }
         }
-        _ => Err(format!(
-            "interp .5.2: builtin {:?} not yet supported (lands in later .5.x)",
-            kind
-        )),
+        BuiltinKind::Spawn => {
+            if args.len() != 1 {
+                return Err(format!("spawn/1 got {} args", args.len()));
+            }
+            let (fn_id, captured) = unpack_closure(args[0])?;
+            if !captured.is_empty() {
+                return Err(format!(
+                    "interp spawn/1: closure with {} captures not yet supported \
+                     (v1 restriction matches the JIT, see fz-ul4.19.2)",
+                    captured.len()
+                ));
+            }
+            let pid = interp_spawn(module, fn_id)?;
+            Ok(FzValue::from_int(pid as i64))
+        }
+        BuiltinKind::SelfPid => {
+            Ok(FzValue::from_int(
+                crate::process::current_process().pid as i64,
+            ))
+        }
+        BuiltinKind::Send => {
+            if args.len() != 2 {
+                return Err(format!("send/2 got {} args", args.len()));
+            }
+            let receiver = args[0]
+                .unbox_int()
+                .ok_or_else(|| "send/2: pid must be Int".to_string())?
+                as u32;
+            interp_send(receiver, args[1])?;
+            Ok(args[1])
+        }
+        BuiltinKind::VecGet => {
+            if args.len() != 2 {
+                return Err(format!("vec_get/2 got {} args", args.len()));
+            }
+            Ok(FzValue(crate::ir_runtime::fz_vec_get(args[0].0, args[1].0)))
+        }
     }
 }

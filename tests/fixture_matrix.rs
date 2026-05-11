@@ -253,36 +253,6 @@ fn fixture_index_up_to_date() {
     );
 }
 
-/// `fz interp` exits 75 (EX_TEMPFAIL) when the requested fixture exercises
-/// an IR construct the rebuilt interp doesn't yet support. The matrix
-/// treats exit 75 as "deferred path" and logs without failing — this lets
-/// us roll out interp coverage one fixture at a time.
-///
-/// A fixture that uses spawn/send/receive (concurrency_ping_pong.fz) is
-/// currently deferred because concurrency in interp lands in
-/// fz-ul4.23.5.8. Once that ticket lands, this test will need a
-/// different fixture (or be retired).
-#[test]
-fn fz_interp_defers_unsupported_fixtures() {
-    let out = Command::new(FZ_BIN)
-        .args(["interp", "fixtures/concurrency_ping_pong.fz"])
-        .output()
-        .expect("spawn fz interp");
-    assert_eq!(
-        out.status.code(),
-        Some(75),
-        "fz interp on closure-using fixture should exit 75 (deferred), got status {:?}\nstderr:\n{}",
-        out.status,
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        stderr.contains("not yet supported"),
-        "expected 'not yet supported' message, got: {}",
-        stderr
-    );
-}
-
 /// `fz dump --emit clif` smoke test. Confirms the feedback-loop subcommand
 /// is wired and produces real CLIF for a baseline fixture.
 #[test]
