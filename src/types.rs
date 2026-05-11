@@ -45,9 +45,6 @@ impl BasicBits {
 
     pub const NONE: BasicBits = BasicBits(0);
     pub const ALL:  BasicBits = BasicBits((1 << 6) - 1);
-
-    pub const fn raw(self) -> u32 { self.0 }
-    pub const fn from_raw(b: u32) -> Self { BasicBits(b) }
     pub const fn contains_all(self, o: BasicBits) -> bool { (self.0 & o.0) == o.0 }
     pub const fn is_empty(self) -> bool { self.0 == 0 }
 }
@@ -168,8 +165,6 @@ pub enum MapKey {
     Atom(String),
     Int(i64),
     Str(String),
-    Bool(bool),
-    Nil,
 }
 
 /// One conjunctive clause inside a DNF: `⋀ pos  ∧  ⋀ (¬neg)`.
@@ -254,12 +249,6 @@ impl Descr {
 
     // ---- singletons (atoms / ints / floats / strs) ----
 
-    /// Every atom literal — the type usually called `atom`.
-    pub fn atom_top() -> Self {
-        let mut d = Self::none();
-        d.atoms = AtomSet::any();
-        d
-    }
     pub fn atom_lit(name: impl Into<String>) -> Self {
         let mut d = Self::none();
         d.atoms = AtomSet::lit(name.into());
@@ -289,11 +278,6 @@ impl Descr {
         d
     }
 
-    pub fn str_t() -> Self {
-        let mut d = Self::none();
-        d.strs = StrSet::any();
-        d
-    }
     pub fn str_lit(s: impl Into<String>) -> Self {
         let mut d = Self::none();
         d.strs = StrSet::lit(s.into());
@@ -888,8 +872,6 @@ fn format_map_key(k: &MapKey) -> String {
         MapKey::Atom(a) => format!(":{}", a),
         MapKey::Int(n) => format!("{}", n),
         MapKey::Str(s) => format!("{:?}", s),
-        MapKey::Bool(b) => format!("{}", b),
-        MapKey::Nil => "nil".into(),
     }
 }
 fn join_clause(pos: &[String], neg: &[String], top: &str) -> String {
@@ -904,6 +886,26 @@ fn join_clause(pos: &[String], neg: &[String], top: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Test-only conveniences. `atom_top` / `str_t` are useful for type-algebra
+    // tests that want "every atom" / "every string", but the live pipeline
+    // never asks for those tops directly — it always narrows. `raw` is a
+    // newtype probe used by axis-disjointness assertions.
+    impl Descr {
+        pub(super) fn atom_top() -> Self {
+            let mut d = Self::none();
+            d.atoms = AtomSet::any();
+            d
+        }
+        pub(super) fn str_t() -> Self {
+            let mut d = Self::none();
+            d.strs = StrSet::any();
+            d
+        }
+    }
+    impl BasicBits {
+        pub(super) const fn raw(self) -> u32 { self.0 }
+    }
 
     #[test]
     fn top_and_bottom_render() {
