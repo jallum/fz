@@ -3,7 +3,8 @@
   "blocked_by": [
     "fz-ul4.11.25.1",
     "fz-ul4.11.25.2",
-    "fz-ul4.11.25.3"
+    "fz-ul4.11.25.3",
+    "fz-ul4.11.25.4"
   ],
   "blocks": [],
   "created": "2026-05-11T10:56:26Z",
@@ -15,5 +16,5 @@
   "status": "open",
   "title": "Final annotations: #[allow(dead_code)] with reasons for specialize_return + retained AST fields",
   "type": "task",
-  "updated_at": "2026-05-11T10:56:31Z"
+  "updated_at": "2026-05-11T10:56:32Z"
 }
