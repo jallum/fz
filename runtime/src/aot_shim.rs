@@ -28,6 +28,11 @@ use crate::process::{Process, CURRENT_PROCESS};
 /// fatal AOT-build error (schema_id should always resolve).
 pub type DispatchFn = extern "C" fn(schema_id: u32) -> *const u8;
 
+/// Per-program frame-size lookup. AOT codegen emits this as a switch
+/// returning the frame size (in bytes) for each fz_fn_<schema_id>.
+/// Returning 0 is a fatal AOT-build error (every fn has a frame size).
+pub type FrameSizeFn = extern "C" fn(schema_id: u32) -> u32;
+
 /// AOT entry. Drives the same trampoline the JIT uses, but resolves fn
 /// pointers via the caller-supplied switch (AOT-emitted) rather than the
 /// JIT's in-memory HashMap.
@@ -40,10 +45,19 @@ pub extern "C" fn fz_aot_run(
     main_schema_id: u32,
     main_frame_size: u32,
     dispatch: DispatchFn,
+    frame_size: FrameSizeFn,
+    fn_count: u32,
 ) -> i32 {
     let user_schemas =
         std::rc::Rc::new(std::cell::RefCell::new(SchemaRegistry::new()));
     let mut process = Process::new(user_schemas);
+    // Populate Process.frame_sizes from the per-program lookup so
+    // fz_alloc_frame_dyn (closures + tail-call-closures) and any
+    // future task spawn can resolve frame sizes by schema_id. Indexed
+    // by schema_id; fns may be sparse — caller ensures fn_count is the
+    // max schema_id + 1. Unknown entries stay 0; fz_alloc_frame_dyn
+    // panics with a clear message in that case.
+    process.frame_sizes = (0..fn_count).map(|id| frame_size(id)).collect();
     let process_ptr: *mut Process = &mut process;
     let prev = CURRENT_PROCESS.with(|c| c.replace(process_ptr));
 
@@ -104,12 +118,18 @@ mod tests {
         }
     }
 
+    extern "C" fn mock_frame_size(_schema_id: u32) -> u32 {
+        24 // HeapHeader(16) + cont_ptr(8)
+    }
+
     #[test]
     fn fz_aot_run_drives_trampoline_and_returns_halt_value() {
         let exit_code = fz_aot_run(
             /*main_schema_id=*/ 42,
-            /*main_frame_size=*/ 24, // HeapHeader(16) + cont_ptr(8)
+            /*main_frame_size=*/ 24,
             mock_dispatch,
+            mock_frame_size,
+            /*fn_count=*/ 43,
         );
         assert_eq!(exit_code, 7);
     }
@@ -136,7 +156,7 @@ mod tests {
 
     #[test]
     fn fz_aot_run_dispatches_multiple_steps() {
-        let exit_code = fz_aot_run(1, 24, mock_two_step_dispatch);
+        let exit_code = fz_aot_run(1, 24, mock_two_step_dispatch, mock_frame_size, 3);
         assert_eq!(exit_code, 9);
     }
 }

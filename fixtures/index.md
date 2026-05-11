@@ -7,14 +7,14 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 |------|---------|-------|
 | `add1.fz` | smallest JIT round-trip — fn def + call + print | jit, interp, aot |
 | `alias.fz` | nested-module path aliasing — `alias Long.Path` and `alias Long.Path, as: LP` | jit, interp, aot |
-| `apply2.fz` | first-class fns — pass a fn into another fn and call it | jit, interp |
+| `apply2.fz` | first-class fns — pass a fn into another fn and call it | jit, interp, aot |
 | `attributes.fz` | @moduledoc / @doc attributes parse and the module still executes | jit, interp, aot |
 | `classify_two_clause.fz` | literal-vs-wildcard clause dispatch (`0` and `_`) | jit, interp, aot |
 | `cold_fn.fz` | minimal call site — one fn definition, one call, no scaffolding | jit, interp, aot |
 | `concurrency_ping_pong.fz` | spawn + send + receive — parent blocks on receive, child sends 42, main returns 42 | jit, interp |
 | `cross_module_macro.fz` | defmacro in one module, called from another via `import Helpers, only: [twice: 1]` | jit, interp, aot |
 | `hello.fz` | print each scalar shape — int, atom, bool, nil | jit, interp, aot |
-| `higher_order.fz` | higher-order patterns — apply2, compose | jit, interp |
+| `higher_order.fz` | higher-order patterns — apply2, compose | jit, interp, aot |
 | `hot_fn.fz` | same call repeated — historical JIT tier-up trigger; today every call is JIT | jit, interp, aot |
 | `id_int_atom.fz` | identity fn over int and atom — no type-driven specialization | jit, interp, aot |
 | `import.fz` | selective import — `import Math, only: [add: 2]` | jit, interp, aot |
