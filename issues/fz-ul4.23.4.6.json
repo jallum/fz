@@ -6,14 +6,15 @@
     "fz-ul4.23.4.5"
   ],
   "blocks": [],
+  "closed_at": "2026-05-11T21:40:37Z",
   "created": "2026-05-11T21:11:03Z",
   "description": "Define a thin Backend trait that the codegen core uses to pick a Module impl:\n\n  pub trait Backend {\n      type Module: cranelift_module::Module;\n      fn module(\u0026mut self) -\u003e \u0026mut Self::Module;\n      fn finalize(self) -\u003e Result\u003cCompiledArtifact, CodegenError\u003e;\n  }\n\nJIT impl: wraps JITModule, finalizes via `finalize_definitions` + `get_finalized_function`; produces an in-memory CompiledModule. compile() becomes `compile\u003cB: Backend\u003e(module: \u0026Module, backend: B) -\u003e Result\u003cB::Output, CodegenError\u003e`.\n\n## Acceptance\n\n- cargo test green.\n- A second Backend impl is just an empty shell now (no AOT yet) — but the JIT path runs through the trait, proving the abstraction is real.\n- compile_fn doesn't change after this; the wrapping was done in 4.5.",
   "id": "fz-ul4.23.4.6",
   "labels": [],
   "parent": "fz-ul4.23.4",
   "priority": 3,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Introduce a Backend trait — JIT picks JITModule",
   "type": "task",
-  "updated_at": "2026-05-11T21:38:58Z"
+  "updated_at": "2026-05-11T21:40:37Z"
 }
