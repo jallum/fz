@@ -590,6 +590,190 @@ impl Backend for JitBackend {
     }
 }
 
+/// AOT backend: wraps a cranelift_object ObjectModule. Drives the same
+/// codegen as the JIT (through the Backend trait + declare_runtime_symbols)
+/// but finalizes by emitting object-file bytes for a linker rather than
+/// resolving fn pointers in memory. fz-ul4.23.6.1.
+pub struct AotBackend {
+    omod: cranelift_object::ObjectModule,
+}
+
+impl AotBackend {
+    pub fn new(name: &str) -> Self {
+        let isa = host_isa();
+        let builder = cranelift_object::ObjectBuilder::new(
+            isa,
+            name.to_string(),
+            cranelift_module::default_libcall_names(),
+        )
+        .expect("ObjectBuilder::new");
+        Self {
+            omod: cranelift_object::ObjectModule::new(builder),
+        }
+    }
+}
+
+impl Backend for AotBackend {
+    type Module = cranelift_object::ObjectModule;
+    fn module_mut(&mut self) -> &mut cranelift_object::ObjectModule {
+        &mut self.omod
+    }
+}
+
+/// AOT artifact: per-module emitted object bytes plus enough metadata to
+/// drive linking. fz-ul4.23.6.3 (`fz build`) consumes this.
+pub struct AotArtifact {
+    /// Object-file bytes (ELF on Linux, Mach-O on macOS, COFF on Windows)
+    /// suitable for `cc` to link against fz_runtime + libc.
+    pub object: Vec<u8>,
+    /// `main` fn's symbol name as emitted in the object, or None if the
+    /// source had no `main/0`. The AOT driver uses this when generating
+    /// the startup shim's call site.
+    pub main_symbol: Option<String>,
+    pub diagnostics: crate::diag::Diagnostics,
+}
+
+/// Compile a module into a relocatable object via the AOT backend.
+///
+/// Mirrors `compile()` but stops short of any JIT-specific finalization;
+/// the returned AotArtifact wraps the object bytes ready for the linker.
+/// fz-ul4.23.6.1 deliverable.
+pub fn compile_aot(module: &Module, obj_name: &str) -> Result<AotArtifact, CodegenError> {
+    let max_id = module.fns.iter().map(|f| f.id.0).max().unwrap_or(0);
+    let placeholder = build_frame_schema("__placeholder", 0);
+    let mut schemas: Vec<Schema> = vec![placeholder; (max_id + 1) as usize];
+    for f in &module.fns {
+        let entry_block = f.blocks.iter().find(|b| b.id == f.entry).unwrap();
+        let n_params = entry_block.params.len();
+        schemas[f.id.0 as usize] = build_frame_schema(&f.name, n_params);
+    }
+
+    let mut backend = AotBackend::new(obj_name);
+    let runtime = declare_runtime_symbols(backend.module_mut())?;
+
+    let fn_sig = sig1(&[types::I64, types::I64], &[types::I64]);
+    let mut fn_ids: HashMap<u32, FuncId> = HashMap::new();
+    let mut main_symbol: Option<String> = None;
+    for f in &module.fns {
+        let name = format!("fz_fn_{}", f.id.0);
+        let id = backend
+            .module_mut()
+            .declare_function(&name, Linkage::Export, &fn_sig)
+            .map_err(|e| CodegenError::new(format!("declare {}: {}", name, e)))?;
+        fn_ids.insert(f.id.0, id);
+        if f.name == "main" {
+            main_symbol = Some(name);
+        }
+    }
+
+    let mut fbctx = FunctionBuilderContext::new();
+
+    // Same tuple/bs schema setup as compile(). Kept as a parallel block
+    // for the .6.1 wedge; later atoms may extract into a shared helper.
+    let mut tuple_arities: std::collections::HashSet<usize> =
+        std::collections::HashSet::new();
+    let mut has_bs_prim = false;
+    for f in &module.fns {
+        for blk in &f.blocks {
+            for stmt in &blk.stmts {
+                let Stmt::Let(_, prim) = stmt;
+                match prim {
+                    Prim::MakeTuple(args) => {
+                        tuple_arities.insert(args.len());
+                    }
+                    Prim::MakeBitstring(_)
+                    | Prim::BitReaderInit(_)
+                    | Prim::BitReadField { .. }
+                    | Prim::BitReaderDone(_) => {
+                        has_bs_prim = true;
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    if has_bs_prim {
+        tuple_arities.insert(1);
+        tuple_arities.insert(3);
+    }
+    let user_schemas = std::rc::Rc::new(std::cell::RefCell::new(
+        crate::heap::SchemaRegistry::new(),
+    ));
+    let mut tuple_schema_ids: HashMap<usize, u32> = HashMap::new();
+    {
+        let mut reg = user_schemas.borrow_mut();
+        for &arity in &tuple_arities {
+            let s = Schema {
+                name: format!("Tuple{}", arity),
+                size: (arity * 8) as u32,
+                fields: (0..arity)
+                    .map(|i| FieldDescriptor {
+                        offset: (i * 8) as u32,
+                        kind: FieldKind::FzValue,
+                    })
+                    .collect(),
+            };
+            let id = reg.register(s);
+            tuple_schema_ids.insert(arity, id);
+        }
+    }
+
+    let mut working = module.clone();
+    let pre_types = crate::ir_typer::type_module(&working);
+    crate::ir_typer::rewrite_vec_kinds(&mut working, &pre_types)
+        .map_err(CodegenError::new)?;
+    let module_types = crate::ir_typer::type_module(&working);
+    let module = &working;
+
+    for (fn_idx, f) in module.fns.iter().enumerate() {
+        let func_id = *fn_ids.get(&f.id.0).unwrap();
+        let mut ctx = backend.module_mut().make_context();
+        ctx.func.signature = fn_sig.clone();
+        compile_fn(
+            backend.module_mut(),
+            &mut ctx,
+            &mut fbctx,
+            &runtime,
+            &schemas,
+            &tuple_schema_ids,
+            f,
+            &module_types[fn_idx],
+        )?;
+        let fn_span = module.source.fn_span_of(f.id);
+        let flags = settings::Flags::new(settings::builder());
+        cranelift_codegen::verifier::verify_function(&ctx.func, &flags)
+            .map_err(|e| {
+                CodegenError::new(format!(
+                    "verify {}:\n{}\n--- IR ---\n{}",
+                    f.name,
+                    e,
+                    ctx.func.display()
+                ))
+                .with_span(fn_span)
+            })?;
+        backend
+            .module_mut()
+            .define_function(func_id, &mut ctx)
+            .map_err(|e| {
+                CodegenError::new(format!("define {}: {}", f.name, e)).with_span(fn_span)
+            })?;
+        backend.module_mut().clear_context(&mut ctx);
+    }
+
+    let AotBackend { omod } = backend;
+    let product = omod.finish();
+    let object = product
+        .emit()
+        .map_err(|e| CodegenError::new(format!("object emit: {}", e)))?;
+
+    let diagnostics = crate::ir_typer::collect_diagnostics(module, &module_types);
+    Ok(AotArtifact {
+        object,
+        main_symbol,
+        diagnostics,
+    })
+}
+
 pub fn compile(module: &Module) -> Result<CompiledModule, CodegenError> {
     // Compute per-fn schemas indexed by FnId.0 (cps_split inserts continuation
     // fns out of declaration order, so module.fns[i].id.0 != i in general).
@@ -1980,6 +2164,38 @@ mod tests {
         let toks = Lexer::new(src).tokenize().expect("lex");
         let prog = Parser::new(toks).parse_program().expect("parse");
         lower_program(&prog).expect("lower")
+    }
+
+    #[test]
+    fn aot_compile_produces_object_with_main_symbol() {
+        let src = "fn add1(n) do n + 1 end\nfn main() do print(add1(41)) end";
+        let m = lower_src(src);
+        let artifact = compile_aot(&m, "add1_smoke").expect("compile_aot");
+        assert!(
+            !artifact.object.is_empty(),
+            "AOT object should be non-empty"
+        );
+        // Main symbol should be exported. Concrete name is fz_fn_<FnId>;
+        // the artifact records it so the linker shim (fz-ul4.23.6.2) can
+        // call it.
+        let main_sym = artifact.main_symbol.expect("main_symbol set");
+        assert!(
+            main_sym.starts_with("fz_fn_"),
+            "unexpected main symbol: {}",
+            main_sym
+        );
+        // Sanity: object-file magic bytes for the host target. ELF starts
+        // with 0x7f 'E' 'L' 'F'; Mach-O starts with 0xfeedface/0xfeedfacf
+        // (or their byte-swapped 64-bit variants).
+        let magic_ok = matches!(
+            &artifact.object[..4],
+            [0x7f, b'E', b'L', b'F']
+                | [0xce, 0xfa, 0xed, 0xfe]
+                | [0xcf, 0xfa, 0xed, 0xfe]
+                | [0xfe, 0xed, 0xfa, 0xce]
+                | [0xfe, 0xed, 0xfa, 0xcf]
+        );
+        assert!(magic_ok, "unexpected object magic: {:02x?}", &artifact.object[..4]);
     }
 
     fn run_main(src: &str) -> i64 {
