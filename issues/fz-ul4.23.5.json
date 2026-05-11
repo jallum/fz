@@ -4,7 +4,9 @@
     "fz-ul4.23.1",
     "fz-ul4.23.4"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-ul4.23.6"
+  ],
   "created": "2026-05-11T20:55:17Z",
   "description": "Phase 5 of fz-ul4.23. Make the interpreter a real third path. Subsumes fz-ul4.19.8.\n\n## Today\n\nsrc/ir_interp.rs walks fz_ir::Module but uses value::Value (not FzValue), has no heap, and explicitly errors on spawn/receive. Declared in main.rs but no production consumer.\n\n## Target\n\n- Same input as JIT: fz_ir::Module.\n- Same value rep: FzValue from fz_value.rs.\n- Same heap: heap.rs allocators, per-Process via CURRENT_PROCESS TLS.\n- Same runtime FFI: spawn/send/receive call into runtime.rs the way the JIT does.\n- Wire up to the fixture matrix as the `interp` path. Concurrency fixtures must pass through interp.\n- Migrate REPL and test_runner off the AST evaluator (eval.rs) onto the real interp for runtime execution. AST evaluator stays for macro expansion only.\n\n## Acceptance\n\n- `# paths: interp, jit` works for every fixture currently jit-only that doesn't use a deferred feature.\n- concurrency_ping_pong.fz runs through interp without errors.\n- REPL and `fz test` use the IR interp for execution.\n- fz-ul4.19.8 closes.",
   "id": "fz-ul4.23.5",
