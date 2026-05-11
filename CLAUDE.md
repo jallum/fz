@@ -1,0 +1,7 @@
+- Elegance and simplicity are what we push for.
+- Warnings are errors.
+- Tests must pass.
+- TDD is the norm.
+- Deferrals and omissions require authorization.
+- Tickets are memory; `bw --help`.
+- We research thoroughly, plan our work.
