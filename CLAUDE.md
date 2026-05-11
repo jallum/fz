@@ -4,5 +4,6 @@
 - TDD is the norm.
 - Deferrals and omissions require authorization.
 - Tickets are memory; `bw --help`.
+- One ticket == one commit.
 - We research thoroughly, plan our work.
 - We are fearless when we can write out the plan in a DAG where all steps are atomic, testable units that build towards a final goal.
