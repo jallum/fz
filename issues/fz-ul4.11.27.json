@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-11T06:27:04Z",
+  "description": "GOAL: Inline across module boundaries.\n\nStatus when authored: speculative. Listed Open in original fz-ul4.11.15\n(\"Whole-program vs. per-fn inlining strategy\").\n\n## Why this is non-trivial\n\n  fz's module system flattens to one Module at ir_lower::lower_program time\n  (via resolve::flatten_modules in main.rs:167). So at IR time there IS no\n  module boundary — every fn lives in one Module. This means cross-module\n  inlining is ALREADY possible in fz-ul4.11.15.\n\n  HOWEVER: if/when fz gains separate compilation (per-file AOT artifacts,\n  cached IR, hot-reload of a single fn), cross-module inlining will\n  invalidate the consumer artifact when the producer fn changes. That's\n  what this ticket is for: a dependency-tracking mechanism so cached\n  consumer artifacts know which producer fns they've inlined.\n\n## Sketch\n\n  - Persist per-CompiledModule an `inlined_callees: HashMap\u003cFnId,\n    Vec\u003cCallerFnId\u003e\u003e` recording who inlined whom.\n  - On reload of a producer fn, invalidate consumer artifacts that inlined\n    its previous version.\n  - Likely requires content-hashing FnIrs.\n\n## When to start\n\n  Only after separate compilation / IR caching exists. No dep on .11.15\n  beyond .15 having landed.\n\n## Acceptance\n\n  - One commit referencing fz-ul4.11.26.",
+  "id": "fz-ul4.11.27",
+  "labels": [],
+  "parent": "fz-ul4.11",
+  "priority": 3,
+  "status": "open",
+  "title": "Cross-module inlining (cache invalidation)",
+  "type": "task",
+  "updated_at": "2026-05-11T06:27:04Z"
+}
