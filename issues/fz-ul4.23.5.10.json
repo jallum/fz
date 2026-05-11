@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-11T21:11:36Z",
+  "description": "src/repl.rs and src/test_runner.rs currently use eval::Interp (AST evaluator) for runtime execution. Switch them to the rebuilt ir_interp. The AST evaluator stays in place for macro expansion only (its permanent role).\n\n## Acceptance\n\n- REPL: `fz repl`, type `1 + 1`, get `2` via the IR path.\n- `fz test fixtures/sample_tests.fz` runs the same as today (4 tests, 0 failures), now via IR.\n- eval.rs::Interp loses its `apply` / `call_named` runtime entry points; only macro-expansion entry stays. The type rename promised by fz-ul4.23.2 lands here as a final cleanup (Interp → MacroEvaluator or similar).",
+  "id": "fz-ul4.23.5.10",
+  "labels": [],
+  "parent": "fz-ul4.23.5",
+  "priority": 3,
+  "status": "open",
+  "title": "Migrate REPL + test_runner onto ir_interp",
+  "type": "task",
+  "updated_at": "2026-05-11T21:11:36Z"
+}
