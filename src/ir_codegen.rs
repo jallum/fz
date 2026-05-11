@@ -45,16 +45,40 @@ const NIL_BITS: i64 = 0b011;
 const TRUE_BITS: i64 = (1 << 3) | 0b011;
 const FALSE_BITS: i64 = (2 << 3) | 0b011;
 
+/// Errors from `compile()`. Backend-plumbing failures (cranelift
+/// `declare_function` / `define_function` / `finalize_definitions`) carry
+/// `Span::DUMMY` because they're internal — no fz source position maps to
+/// "cranelift refused to declare a host function". The verify/define
+/// per-fn paths populate `span` from `module.source.fn_span_of(f.id)` so
+/// the diagnostic underlines the offending fn declaration.
 #[derive(Debug, Clone)]
-pub struct CodegenError(pub String);
+pub struct CodegenError {
+    pub message: String,
+    pub span: crate::diag::Span,
+}
+impl CodegenError {
+    pub fn new(message: impl Into<String>) -> Self {
+        Self { message: message.into(), span: crate::diag::Span::DUMMY }
+    }
+    pub fn with_span(mut self, span: crate::diag::Span) -> Self {
+        self.span = span; self
+    }
+    pub fn to_diagnostic(&self) -> crate::diag::Diagnostic {
+        crate::diag::Diagnostic::error(
+            crate::diag::codes::CODEGEN_SCHEMA_MISSING,
+            format!("codegen: {}", self.message),
+            self.span,
+        )
+    }
+}
 impl std::fmt::Display for CodegenError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "codegen: {}", self.0)
+        write!(f, "codegen: {}", self.message)
     }
 }
 impl std::error::Error for CodegenError {}
 impl From<String> for CodegenError {
-    fn from(s: String) -> Self { Self(s) }
+    fn from(s: String) -> Self { Self::new(s) }
 }
 
 /// Compiled module: persistent JITModule + per-fn ptr table + schemas. The
@@ -1529,27 +1553,27 @@ pub fn compile(module: &Module) -> Result<CompiledModule, CodegenError> {
     let print_sig = sig1(&[types::I64], &[]);
     let print_id = jmod
         .declare_function("fz_print_value", Linkage::Import, &print_sig)
-        .map_err(|e| CodegenError(format!("declare print: {}", e)))?;
+        .map_err(|e| CodegenError::new(format!("declare print: {}", e)))?;
     let halt_sig = sig1(&[types::I64, types::I64], &[]);
     let halt_id = jmod
         .declare_function("fz_halt", Linkage::Import, &halt_sig)
-        .map_err(|e| CodegenError(format!("declare halt: {}", e)))?;
+        .map_err(|e| CodegenError::new(format!("declare halt: {}", e)))?;
     let alloc_sig = sig1(&[types::I32, types::I32], &[types::I64]);
     let alloc_id = jmod
         .declare_function("fz_alloc_frame", Linkage::Import, &alloc_sig)
-        .map_err(|e| CodegenError(format!("declare alloc: {}", e)))?;
+        .map_err(|e| CodegenError::new(format!("declare alloc: {}", e)))?;
     let alloc_cons_sig = sig1(&[types::I64, types::I64], &[types::I64]);
     let alloc_cons_id = jmod
         .declare_function("fz_alloc_list_cons", Linkage::Import, &alloc_cons_sig)
-        .map_err(|e| CodegenError(format!("declare alloc_cons: {}", e)))?;
+        .map_err(|e| CodegenError::new(format!("declare alloc_cons: {}", e)))?;
     let alloc_struct_sig = sig1(&[types::I32], &[types::I64]);
     let alloc_struct_id = jmod
         .declare_function("fz_alloc_struct", Linkage::Import, &alloc_struct_sig)
-        .map_err(|e| CodegenError(format!("declare alloc_struct: {}", e)))?;
+        .map_err(|e| CodegenError::new(format!("declare alloc_struct: {}", e)))?;
     let bs_begin_sig = sig1(&[], &[]);
     let bs_begin_id = jmod
         .declare_function("fz_bs_begin", Linkage::Import, &bs_begin_sig)
-        .map_err(|e| CodegenError(format!("declare bs_begin: {}", e)))?;
+        .map_err(|e| CodegenError::new(format!("declare bs_begin: {}", e)))?;
     let bs_write_sig = sig1(
         &[
             types::I64, // value bits
@@ -1564,15 +1588,15 @@ pub fn compile(module: &Module) -> Result<CompiledModule, CodegenError> {
     );
     let bs_write_id = jmod
         .declare_function("fz_bs_write_field", Linkage::Import, &bs_write_sig)
-        .map_err(|e| CodegenError(format!("declare bs_write_field: {}", e)))?;
+        .map_err(|e| CodegenError::new(format!("declare bs_write_field: {}", e)))?;
     let bs_finalize_sig = sig1(&[], &[types::I64]);
     let bs_finalize_id = jmod
         .declare_function("fz_bs_finalize", Linkage::Import, &bs_finalize_sig)
-        .map_err(|e| CodegenError(format!("declare bs_finalize: {}", e)))?;
+        .map_err(|e| CodegenError::new(format!("declare bs_finalize: {}", e)))?;
     let bs_reader_init_sig = sig1(&[types::I64], &[types::I64]);
     let bs_reader_init_id = jmod
         .declare_function("fz_bs_reader_init", Linkage::Import, &bs_reader_init_sig)
-        .map_err(|e| CodegenError(format!("declare bs_reader_init: {}", e)))?;
+        .map_err(|e| CodegenError::new(format!("declare bs_reader_init: {}", e)))?;
     let bs_read_field_sig = sig1(
         &[
             types::I64, // reader bits
@@ -1588,102 +1612,102 @@ pub fn compile(module: &Module) -> Result<CompiledModule, CodegenError> {
     );
     let bs_read_field_id = jmod
         .declare_function("fz_bs_read_field", Linkage::Import, &bs_read_field_sig)
-        .map_err(|e| CodegenError(format!("declare bs_read_field: {}", e)))?;
+        .map_err(|e| CodegenError::new(format!("declare bs_read_field: {}", e)))?;
     let map_begin_sig = sig1(&[], &[]);
     let map_begin_id = jmod
         .declare_function("fz_map_begin", Linkage::Import, &map_begin_sig)
-        .map_err(|e| CodegenError(format!("declare map_begin: {}", e)))?;
+        .map_err(|e| CodegenError::new(format!("declare map_begin: {}", e)))?;
     let map_clone_sig = sig1(&[types::I64], &[]);
     let map_clone_id = jmod
         .declare_function("fz_map_clone", Linkage::Import, &map_clone_sig)
-        .map_err(|e| CodegenError(format!("declare map_clone: {}", e)))?;
+        .map_err(|e| CodegenError::new(format!("declare map_clone: {}", e)))?;
     let map_push_sig = sig1(&[types::I64, types::I64], &[]);
     let map_push_id = jmod
         .declare_function("fz_map_push", Linkage::Import, &map_push_sig)
-        .map_err(|e| CodegenError(format!("declare map_push: {}", e)))?;
+        .map_err(|e| CodegenError::new(format!("declare map_push: {}", e)))?;
     let map_finalize_sig = sig1(&[], &[types::I64]);
     let map_finalize_id = jmod
         .declare_function("fz_map_finalize", Linkage::Import, &map_finalize_sig)
-        .map_err(|e| CodegenError(format!("declare map_finalize: {}", e)))?;
+        .map_err(|e| CodegenError::new(format!("declare map_finalize: {}", e)))?;
     let map_get_sig = sig1(&[types::I64, types::I64], &[types::I64]);
     let map_get_id = jmod
         .declare_function("fz_map_get", Linkage::Import, &map_get_sig)
-        .map_err(|e| CodegenError(format!("declare map_get: {}", e)))?;
+        .map_err(|e| CodegenError::new(format!("declare map_get: {}", e)))?;
     let alloc_float_sig = sig1(&[types::I64], &[types::I64]);
     let alloc_float_id = jmod
         .declare_function("fz_alloc_float", Linkage::Import, &alloc_float_sig)
-        .map_err(|e| CodegenError(format!("declare alloc_float: {}", e)))?;
+        .map_err(|e| CodegenError::new(format!("declare alloc_float: {}", e)))?;
     let arith_sig = sig1(&[types::I64, types::I64], &[types::I64]);
     let arith_add_id = jmod
         .declare_function("fz_arith_add", Linkage::Import, &arith_sig)
-        .map_err(|e| CodegenError(format!("declare arith_add: {}", e)))?;
+        .map_err(|e| CodegenError::new(format!("declare arith_add: {}", e)))?;
     let arith_sub_id = jmod
         .declare_function("fz_arith_sub", Linkage::Import, &arith_sig)
-        .map_err(|e| CodegenError(format!("declare arith_sub: {}", e)))?;
+        .map_err(|e| CodegenError::new(format!("declare arith_sub: {}", e)))?;
     let arith_mul_id = jmod
         .declare_function("fz_arith_mul", Linkage::Import, &arith_sig)
-        .map_err(|e| CodegenError(format!("declare arith_mul: {}", e)))?;
+        .map_err(|e| CodegenError::new(format!("declare arith_mul: {}", e)))?;
     let arith_div_id = jmod
         .declare_function("fz_arith_div", Linkage::Import, &arith_sig)
-        .map_err(|e| CodegenError(format!("declare arith_div: {}", e)))?;
+        .map_err(|e| CodegenError::new(format!("declare arith_div: {}", e)))?;
     let arith_mod_id = jmod
         .declare_function("fz_arith_mod", Linkage::Import, &arith_sig)
-        .map_err(|e| CodegenError(format!("declare arith_mod: {}", e)))?;
+        .map_err(|e| CodegenError::new(format!("declare arith_mod: {}", e)))?;
     let cmp_lt_id = jmod
         .declare_function("fz_cmp_lt", Linkage::Import, &arith_sig)
-        .map_err(|e| CodegenError(format!("declare cmp_lt: {}", e)))?;
+        .map_err(|e| CodegenError::new(format!("declare cmp_lt: {}", e)))?;
     let cmp_le_id = jmod
         .declare_function("fz_cmp_le", Linkage::Import, &arith_sig)
-        .map_err(|e| CodegenError(format!("declare cmp_le: {}", e)))?;
+        .map_err(|e| CodegenError::new(format!("declare cmp_le: {}", e)))?;
     let cmp_gt_id = jmod
         .declare_function("fz_cmp_gt", Linkage::Import, &arith_sig)
-        .map_err(|e| CodegenError(format!("declare cmp_gt: {}", e)))?;
+        .map_err(|e| CodegenError::new(format!("declare cmp_gt: {}", e)))?;
     let cmp_ge_id = jmod
         .declare_function("fz_cmp_ge", Linkage::Import, &arith_sig)
-        .map_err(|e| CodegenError(format!("declare cmp_ge: {}", e)))?;
+        .map_err(|e| CodegenError::new(format!("declare cmp_ge: {}", e)))?;
     let value_eq_id = jmod
         .declare_function("fz_value_eq", Linkage::Import, &arith_sig)
-        .map_err(|e| CodegenError(format!("declare value_eq: {}", e)))?;
+        .map_err(|e| CodegenError::new(format!("declare value_eq: {}", e)))?;
     let vec_begin_sig = sig1(&[types::I32], &[]);
     let vec_begin_id = jmod
         .declare_function("fz_vec_begin", Linkage::Import, &vec_begin_sig)
-        .map_err(|e| CodegenError(format!("declare vec_begin: {}", e)))?;
+        .map_err(|e| CodegenError::new(format!("declare vec_begin: {}", e)))?;
     let vec_push_sig = sig1(&[types::I64], &[]);
     let vec_push_id = jmod
         .declare_function("fz_vec_push", Linkage::Import, &vec_push_sig)
-        .map_err(|e| CodegenError(format!("declare vec_push: {}", e)))?;
+        .map_err(|e| CodegenError::new(format!("declare vec_push: {}", e)))?;
     let vec_finalize_sig = sig1(&[], &[types::I64]);
     let vec_finalize_id = jmod
         .declare_function("fz_vec_finalize", Linkage::Import, &vec_finalize_sig)
-        .map_err(|e| CodegenError(format!("declare vec_finalize: {}", e)))?;
+        .map_err(|e| CodegenError::new(format!("declare vec_finalize: {}", e)))?;
     let vec_get_sig = sig1(&[types::I64, types::I64], &[types::I64]);
     let vec_get_id = jmod
         .declare_function("fz_vec_get", Linkage::Import, &vec_get_sig)
-        .map_err(|e| CodegenError(format!("declare vec_get: {}", e)))?;
+        .map_err(|e| CodegenError::new(format!("declare vec_get: {}", e)))?;
     let closure_begin_sig = sig1(&[types::I32], &[]);
     let closure_begin_id = jmod
         .declare_function("fz_closure_begin", Linkage::Import, &closure_begin_sig)
-        .map_err(|e| CodegenError(format!("declare closure_begin: {}", e)))?;
+        .map_err(|e| CodegenError::new(format!("declare closure_begin: {}", e)))?;
     let closure_push_sig = sig1(&[types::I64], &[]);
     let closure_push_id = jmod
         .declare_function("fz_closure_push", Linkage::Import, &closure_push_sig)
-        .map_err(|e| CodegenError(format!("declare closure_push: {}", e)))?;
+        .map_err(|e| CodegenError::new(format!("declare closure_push: {}", e)))?;
     let closure_finalize_sig = sig1(&[], &[types::I64]);
     let closure_finalize_id = jmod
         .declare_function("fz_closure_finalize", Linkage::Import, &closure_finalize_sig)
-        .map_err(|e| CodegenError(format!("declare closure_finalize: {}", e)))?;
+        .map_err(|e| CodegenError::new(format!("declare closure_finalize: {}", e)))?;
     let closure_arg_sig = sig1(&[types::I64], &[]);
     let closure_arg_id = jmod
         .declare_function("fz_closure_arg", Linkage::Import, &closure_arg_sig)
-        .map_err(|e| CodegenError(format!("declare closure_arg: {}", e)))?;
+        .map_err(|e| CodegenError::new(format!("declare closure_arg: {}", e)))?;
     let closure_invoke_sig = sig1(&[types::I64, types::I64], &[types::I64]);
     let closure_invoke_id = jmod
         .declare_function("fz_closure_invoke", Linkage::Import, &closure_invoke_sig)
-        .map_err(|e| CodegenError(format!("declare closure_invoke: {}", e)))?;
+        .map_err(|e| CodegenError::new(format!("declare closure_invoke: {}", e)))?;
     let tail_closure_sig = sig1(&[types::I64, types::I64], &[types::I64]);
     let tail_closure_id = jmod
         .declare_function("fz_tail_closure", Linkage::Import, &tail_closure_sig)
-        .map_err(|e| CodegenError(format!("declare tail_closure: {}", e)))?;
+        .map_err(|e| CodegenError::new(format!("declare tail_closure: {}", e)))?;
 
     // Per-fn signature: extern "C" fn(*mut u8, *mut u8) -> *mut u8.
     let fn_sig = sig1(&[types::I64, types::I64], &[types::I64]);
@@ -1694,7 +1718,7 @@ pub fn compile(module: &Module) -> Result<CompiledModule, CodegenError> {
         let name = format!("fz_fn_{}", f.id.0);
         let id = jmod
             .declare_function(&name, Linkage::Local, &fn_sig)
-            .map_err(|e| CodegenError(format!("declare {}: {}", name, e)))?;
+            .map_err(|e| CodegenError::new(format!("declare {}: {}", name, e)))?;
         fn_ids.insert(f.id.0, id);
     }
 
@@ -1816,7 +1840,7 @@ pub fn compile(module: &Module) -> Result<CompiledModule, CodegenError> {
     let mut working = module.clone();
     let pre_types = crate::ir_typer::type_module(&working);
     crate::ir_typer::rewrite_vec_kinds(&mut working, &pre_types)
-        .map_err(CodegenError)?;
+        .map_err(CodegenError::new)?;
     // Re-run after the rewrite so MakeVec result Descrs reflect the chosen
     // kind. Element Var Descrs are unaffected by the rewrite, but downstream
     // consumers may read the MakeVec result.
@@ -1842,16 +1866,17 @@ pub fn compile(module: &Module) -> Result<CompiledModule, CodegenError> {
                 v.push((f.name.clone(), ctx.func.display().to_string()));
             }
         });
+        let fn_span = module.source.fn_span_of(f.id);
         let flags = settings::Flags::new(settings::builder());
         cranelift_codegen::verifier::verify_function(&ctx.func, &flags)
-            .map_err(|e| CodegenError(format!("verify {}:\n{}\n--- IR ---\n{}", f.name, e, ctx.func.display())))?;
+            .map_err(|e| CodegenError::new(format!("verify {}:\n{}\n--- IR ---\n{}", f.name, e, ctx.func.display())).with_span(fn_span))?;
         jmod
             .define_function(func_id, &mut ctx)
-            .map_err(|e| CodegenError(format!("define {}: {}", f.name, e)))?;
+            .map_err(|e| CodegenError::new(format!("define {}: {}", f.name, e)).with_span(fn_span))?;
         jmod.clear_context(&mut ctx);
     }
 
-    jmod.finalize_definitions().map_err(|e| CodegenError(format!("finalize: {}", e)))?;
+    jmod.finalize_definitions().map_err(|e| CodegenError::new(format!("finalize: {}", e)))?;
 
     let mut fn_ptrs: HashMap<u32, *const u8> = HashMap::new();
     for (fz_fn_id, func_id) in &fn_ids {
@@ -2318,7 +2343,7 @@ fn lower_prim(
                 b.inst_results(inst)[0]
             }
             Const::Str(_) => {
-                return Err(CodegenError("Str codegen lands in a later ticket".into()));
+                return Err(CodegenError::new("Str codegen lands in a later ticket"));
             }
         },
         Prim::BinOp(op, a, bv) => {
@@ -2454,12 +2479,12 @@ fn lower_prim(
         Prim::Builtin(bid, args) => {
             use crate::fz_ir::BuiltinKind;
             let kind = BuiltinKind::from_id(*bid).ok_or_else(|| {
-                CodegenError(format!("unknown builtin id {}", bid.0))
+                CodegenError::new(format!("unknown builtin id {}", bid.0))
             })?;
             match kind {
                 BuiltinKind::Print => {
                     if args.len() != 1 {
-                        return Err(CodegenError("print/1 expected".into()));
+                        return Err(CodegenError::new("print/1 expected"));
                     }
                     let av = *env.get(&args[0].0).expect("unbound print arg");
                     let fref = jmod.declare_func_in_func(runtime.print_id, b.func);
@@ -2470,7 +2495,7 @@ fn lower_prim(
                 }
                 BuiltinKind::VecGet => {
                     if args.len() != 2 {
-                        return Err(CodegenError("vec_get/2 expected".into()));
+                        return Err(CodegenError::new("vec_get/2 expected"));
                     }
                     let vv = *env.get(&args[0].0).expect("unbound vec_get vec");
                     let iv = *env.get(&args[1].0).expect("unbound vec_get index");
@@ -2479,7 +2504,7 @@ fn lower_prim(
                     b.inst_results(inst)[0]
                 }
                 BuiltinKind::Assert | BuiltinKind::AssertEq | BuiltinKind::AssertNeq => {
-                    return Err(CodegenError(format!(
+                    return Err(CodegenError::new(format!(
                         "builtin {} not yet wired through JIT",
                         kind.name()
                     )));
@@ -2527,7 +2552,7 @@ fn lower_prim(
         Prim::MakeTuple(elems) => {
             let arity = elems.len();
             let schema_id = *tuple_schema_ids.get(&arity).ok_or_else(|| {
-                CodegenError(format!(
+                CodegenError::new(format!(
                     "tuple arity {} not pre-registered (compile() walk missed it?)",
                     arity
                 ))
@@ -2721,8 +2746,8 @@ fn lower_prim(
                 VecKindIr::U8 => HeapKind::VecU8 as i64,
                 VecKindIr::Bit => HeapKind::VecBit as i64,
                 VecKindIr::F64 => {
-                    return Err(CodegenError(
-                        "MakeVec(F64) deferred to fz-ul4.11.23".into(),
+                    return Err(CodegenError::new(
+                        "MakeVec(F64) deferred to fz-ul4.11.23",
                     ));
                 }
             };

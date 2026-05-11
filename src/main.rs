@@ -247,12 +247,7 @@ fn run_jit(args: &[String]) {
         }
     };
     let cm = ir_codegen::compile(&module).unwrap_or_else(|e| {
-        let d = diag::Diagnostic::error(
-            diag::codes::CODEGEN_SCHEMA_MISSING,
-            format!("{:?}", e),
-            diag::Span::DUMMY,
-        );
-        diag::render_one_to_stderr(&sm, &d);
+        diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         std::process::exit(1);
     });
     // Typer-emitted warnings (unreachable arms, etc.) flow through the
