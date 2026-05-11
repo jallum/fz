@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-11T20:55:16Z",
+  "description": "Phase 3 of fz-ul4.23. Real feedback loop for codegen iteration.\n\n## Surface\n\n- `fz dump \u003cfile.fz\u003e [--fn name] [--emit clif|asm|both]`\n- `fz run \u003cfile.fz\u003e --emit clif|asm` — run AND dump\n\n## Behavior\n\n- `--emit clif`: Cranelift's Function::display() output, one fn per section. Each instruction prefixed with `; @file:line:col` derived from SourceLoc, resolved through diag::SourceMap.\n- `--emit asm`: post-regalloc machine code via set_disasm(true) + capstone, same source-loc interleaving where Cranelift attaches locs.\n- `--emit both`: CLIF block followed by asm block per fn.\n- `--fn name` filters to one fn.\n\n## Implementation notes\n\n- Spans are already threaded through ir_codegen.rs (fz-ul4.21). Emission needs to call `func.set_srcloc(...)` with the span's offset; we can pack file_id+offset into a u32 SourceLoc and reverse it in the dumper.\n- Capstone is already a transitive dep of cranelift_codegen with `disas` feature; verify.\n\n## Out of scope\n\n- Golden-file CLIF/asm checks (too brittle; see epic non-goals).\n- IR text emit (`--emit ir`) — cheap follow-up if useful.\n\n## Acceptance\n\n- `fz dump --emit clif fixtures/add1.fz` prints source-annotated CLIF for every fn.\n- `fz dump --emit asm fixtures/add1.fz` prints disassembled machine code with source locs.\n- `fz run --emit clif fixtures/concurrency_ping_pong.fz` dumps CLIF then runs to completion.",
+  "id": "fz-ul4.23.3",
+  "labels": [],
+  "parent": "fz-ul4.23",
+  "priority": 2,
+  "status": "open",
+  "title": "fz dump --emit clif|asm with source annotations",
+  "type": "task",
+  "updated_at": "2026-05-11T20:55:16Z"
+}
