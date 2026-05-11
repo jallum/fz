@@ -508,6 +508,88 @@ fn build_frame_schema(name: &str, num_entry_params: usize) -> Schema {
     }
 }
 
+/// Abstraction over a Cranelift module backend. The compile pipeline
+/// drives codegen through `Self::Module`; the JIT impl wraps JITModule
+/// today, the AOT impl (fz-ul4.23.6) will wrap ObjectModule.
+///
+/// Keeping the trait this thin reflects honest reality: the bulk of
+/// codegen (declare_runtime_symbols, compile_fn, schema construction) is
+/// already Module-generic. The remaining JIT-specific knowledge —
+/// fn-pointer symbol binding and finalize-to-ptrs — is owned by the
+/// concrete backend and unpacked when compile() finalizes.
+pub trait Backend {
+    type Module: cranelift_module::Module;
+    fn module_mut(&mut self) -> &mut Self::Module;
+}
+
+/// JIT backend: wraps a JITModule pre-finalize. compile() constructs one,
+/// drives codegen through the Backend trait, then unpacks to call the
+/// JIT-specific finalize_definitions / get_finalized_function pair.
+pub struct JitBackend {
+    jmod: JITModule,
+}
+
+impl JitBackend {
+    fn new() -> Self {
+        let isa = host_isa();
+        let mut builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
+        // Bind every fz runtime FFI fn pointer. JIT-specific: the linker
+        // is in-process and resolves symbols by name → Rust fn pointer.
+        // AOT will skip this entire block (linker resolves against the
+        // fz_runtime staticlib instead).
+        builder.symbol("fz_print_value", crate::ir_runtime::fz_print_value as *const u8);
+        builder.symbol("fz_halt", crate::ir_runtime::fz_halt as *const u8);
+        builder.symbol("fz_alloc_frame", crate::ir_runtime::fz_alloc_frame as *const u8);
+        builder.symbol("fz_alloc_list_cons", crate::ir_runtime::fz_alloc_list_cons as *const u8);
+        builder.symbol("fz_alloc_struct", crate::ir_runtime::fz_alloc_struct as *const u8);
+        builder.symbol("fz_bs_begin", crate::ir_runtime::fz_bs_begin as *const u8);
+        builder.symbol("fz_bs_write_field", crate::ir_runtime::fz_bs_write_field as *const u8);
+        builder.symbol("fz_bs_finalize", crate::ir_runtime::fz_bs_finalize as *const u8);
+        builder.symbol("fz_bs_reader_init", crate::ir_runtime::fz_bs_reader_init as *const u8);
+        builder.symbol("fz_bs_read_field", crate::ir_runtime::fz_bs_read_field as *const u8);
+        builder.symbol("fz_map_begin", crate::ir_runtime::fz_map_begin as *const u8);
+        builder.symbol("fz_map_clone", crate::ir_runtime::fz_map_clone as *const u8);
+        builder.symbol("fz_map_push", crate::ir_runtime::fz_map_push as *const u8);
+        builder.symbol("fz_map_finalize", crate::ir_runtime::fz_map_finalize as *const u8);
+        builder.symbol("fz_map_get", crate::ir_runtime::fz_map_get as *const u8);
+        builder.symbol("fz_alloc_float", crate::ir_runtime::fz_alloc_float as *const u8);
+        builder.symbol("fz_arith_add", crate::ir_runtime::fz_arith_add as *const u8);
+        builder.symbol("fz_arith_sub", crate::ir_runtime::fz_arith_sub as *const u8);
+        builder.symbol("fz_arith_mul", crate::ir_runtime::fz_arith_mul as *const u8);
+        builder.symbol("fz_arith_div", crate::ir_runtime::fz_arith_div as *const u8);
+        builder.symbol("fz_arith_mod", crate::ir_runtime::fz_arith_mod as *const u8);
+        builder.symbol("fz_cmp_lt", crate::ir_runtime::fz_cmp_lt as *const u8);
+        builder.symbol("fz_cmp_le", crate::ir_runtime::fz_cmp_le as *const u8);
+        builder.symbol("fz_cmp_gt", crate::ir_runtime::fz_cmp_gt as *const u8);
+        builder.symbol("fz_cmp_ge", crate::ir_runtime::fz_cmp_ge as *const u8);
+        builder.symbol("fz_value_eq", crate::ir_runtime::fz_value_eq as *const u8);
+        builder.symbol("fz_vec_begin", crate::ir_runtime::fz_vec_begin as *const u8);
+        builder.symbol("fz_vec_push", crate::ir_runtime::fz_vec_push as *const u8);
+        builder.symbol("fz_vec_finalize", crate::ir_runtime::fz_vec_finalize as *const u8);
+        builder.symbol("fz_vec_get", crate::ir_runtime::fz_vec_get as *const u8);
+        builder.symbol("fz_closure_begin", crate::ir_runtime::fz_closure_begin as *const u8);
+        builder.symbol("fz_closure_push", crate::ir_runtime::fz_closure_push as *const u8);
+        builder.symbol("fz_closure_finalize", crate::ir_runtime::fz_closure_finalize as *const u8);
+        builder.symbol("fz_closure_arg", crate::ir_runtime::fz_closure_arg as *const u8);
+        builder.symbol("fz_closure_invoke", crate::ir_runtime::fz_closure_invoke as *const u8);
+        builder.symbol("fz_tail_closure", crate::ir_runtime::fz_tail_closure as *const u8);
+        builder.symbol("fz_spawn", crate::ir_runtime::fz_spawn as *const u8);
+        builder.symbol("fz_self", crate::ir_runtime::fz_self as *const u8);
+        builder.symbol("fz_send", crate::ir_runtime::fz_send as *const u8);
+        builder.symbol("fz_receive_attempt", crate::ir_runtime::fz_receive_attempt as *const u8);
+        Self {
+            jmod: JITModule::new(builder),
+        }
+    }
+}
+
+impl Backend for JitBackend {
+    type Module = JITModule;
+    fn module_mut(&mut self) -> &mut JITModule {
+        &mut self.jmod
+    }
+}
+
 pub fn compile(module: &Module) -> Result<CompiledModule, CodegenError> {
     // Compute per-fn schemas indexed by FnId.0 (cps_split inserts continuation
     // fns out of declaration order, so module.fns[i].id.0 != i in general).
@@ -520,51 +602,8 @@ pub fn compile(module: &Module) -> Result<CompiledModule, CodegenError> {
         schemas[f.id.0 as usize] = build_frame_schema(&f.name, n_params);
     }
 
-    let isa = host_isa();
-    let mut builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
-    builder.symbol("fz_print_value", crate::ir_runtime::fz_print_value as *const u8);
-    builder.symbol("fz_halt", crate::ir_runtime::fz_halt as *const u8);
-    builder.symbol("fz_alloc_frame", crate::ir_runtime::fz_alloc_frame as *const u8);
-    builder.symbol("fz_alloc_list_cons", crate::ir_runtime::fz_alloc_list_cons as *const u8);
-    builder.symbol("fz_alloc_struct", crate::ir_runtime::fz_alloc_struct as *const u8);
-    builder.symbol("fz_bs_begin", crate::ir_runtime::fz_bs_begin as *const u8);
-    builder.symbol("fz_bs_write_field", crate::ir_runtime::fz_bs_write_field as *const u8);
-    builder.symbol("fz_bs_finalize", crate::ir_runtime::fz_bs_finalize as *const u8);
-    builder.symbol("fz_bs_reader_init", crate::ir_runtime::fz_bs_reader_init as *const u8);
-    builder.symbol("fz_bs_read_field", crate::ir_runtime::fz_bs_read_field as *const u8);
-    builder.symbol("fz_map_begin", crate::ir_runtime::fz_map_begin as *const u8);
-    builder.symbol("fz_map_clone", crate::ir_runtime::fz_map_clone as *const u8);
-    builder.symbol("fz_map_push", crate::ir_runtime::fz_map_push as *const u8);
-    builder.symbol("fz_map_finalize", crate::ir_runtime::fz_map_finalize as *const u8);
-    builder.symbol("fz_map_get", crate::ir_runtime::fz_map_get as *const u8);
-    builder.symbol("fz_alloc_float", crate::ir_runtime::fz_alloc_float as *const u8);
-    builder.symbol("fz_arith_add", crate::ir_runtime::fz_arith_add as *const u8);
-    builder.symbol("fz_arith_sub", crate::ir_runtime::fz_arith_sub as *const u8);
-    builder.symbol("fz_arith_mul", crate::ir_runtime::fz_arith_mul as *const u8);
-    builder.symbol("fz_arith_div", crate::ir_runtime::fz_arith_div as *const u8);
-    builder.symbol("fz_arith_mod", crate::ir_runtime::fz_arith_mod as *const u8);
-    builder.symbol("fz_cmp_lt", crate::ir_runtime::fz_cmp_lt as *const u8);
-    builder.symbol("fz_cmp_le", crate::ir_runtime::fz_cmp_le as *const u8);
-    builder.symbol("fz_cmp_gt", crate::ir_runtime::fz_cmp_gt as *const u8);
-    builder.symbol("fz_cmp_ge", crate::ir_runtime::fz_cmp_ge as *const u8);
-    builder.symbol("fz_value_eq", crate::ir_runtime::fz_value_eq as *const u8);
-    builder.symbol("fz_vec_begin", crate::ir_runtime::fz_vec_begin as *const u8);
-    builder.symbol("fz_vec_push", crate::ir_runtime::fz_vec_push as *const u8);
-    builder.symbol("fz_vec_finalize", crate::ir_runtime::fz_vec_finalize as *const u8);
-    builder.symbol("fz_vec_get", crate::ir_runtime::fz_vec_get as *const u8);
-    builder.symbol("fz_closure_begin", crate::ir_runtime::fz_closure_begin as *const u8);
-    builder.symbol("fz_closure_push", crate::ir_runtime::fz_closure_push as *const u8);
-    builder.symbol("fz_closure_finalize", crate::ir_runtime::fz_closure_finalize as *const u8);
-    builder.symbol("fz_closure_arg", crate::ir_runtime::fz_closure_arg as *const u8);
-    builder.symbol("fz_closure_invoke", crate::ir_runtime::fz_closure_invoke as *const u8);
-    builder.symbol("fz_tail_closure", crate::ir_runtime::fz_tail_closure as *const u8);
-    builder.symbol("fz_spawn", crate::ir_runtime::fz_spawn as *const u8);
-    builder.symbol("fz_self", crate::ir_runtime::fz_self as *const u8);
-    builder.symbol("fz_send", crate::ir_runtime::fz_send as *const u8);
-    builder.symbol("fz_receive_attempt", crate::ir_runtime::fz_receive_attempt as *const u8);
-    let mut jmod = JITModule::new(builder);
-
-    let runtime = declare_runtime_symbols(&mut jmod)?;
+    let mut backend = JitBackend::new();
+    let runtime = declare_runtime_symbols(backend.module_mut())?;
 
     // Per-fn signature: extern "C" fn(*mut u8, *mut u8) -> *mut u8.
     let fn_sig = sig1(&[types::I64, types::I64], &[types::I64]);
@@ -573,7 +612,8 @@ pub fn compile(module: &Module) -> Result<CompiledModule, CodegenError> {
     let mut fn_ids: HashMap<u32, FuncId> = HashMap::new();
     for f in &module.fns {
         let name = format!("fz_fn_{}", f.id.0);
-        let id = jmod
+        let id = backend
+            .module_mut()
             .declare_function(&name, Linkage::Local, &fn_sig)
             .map_err(|e| CodegenError::new(format!("declare {}: {}", name, e)))?;
         fn_ids.insert(f.id.0, id);
@@ -668,10 +708,10 @@ pub fn compile(module: &Module) -> Result<CompiledModule, CodegenError> {
 
     for (fn_idx, f) in module.fns.iter().enumerate() {
         let func_id = *fn_ids.get(&f.id.0).unwrap();
-        let mut ctx = jmod.make_context();
+        let mut ctx = backend.module_mut().make_context();
         ctx.func.signature = fn_sig.clone();
         compile_fn(
-            &mut jmod,
+            backend.module_mut(),
             &mut ctx,
             &mut fbctx,
             &runtime,
@@ -689,12 +729,17 @@ pub fn compile(module: &Module) -> Result<CompiledModule, CodegenError> {
         let flags = settings::Flags::new(settings::builder());
         cranelift_codegen::verifier::verify_function(&ctx.func, &flags)
             .map_err(|e| CodegenError::new(format!("verify {}:\n{}\n--- IR ---\n{}", f.name, e, ctx.func.display())).with_span(fn_span))?;
-        jmod
+        backend
+            .module_mut()
             .define_function(func_id, &mut ctx)
             .map_err(|e| CodegenError::new(format!("define {}: {}", f.name, e)).with_span(fn_span))?;
-        jmod.clear_context(&mut ctx);
+        backend.module_mut().clear_context(&mut ctx);
     }
 
+    // JIT-specific finalize: unpack the Backend, finalize the JITModule,
+    // resolve fn pointers. AOT (fz-ul4.23.6) does NOT pass through here;
+    // it owns its own finalize path on ObjectModule.
+    let JitBackend { mut jmod } = backend;
     jmod.finalize_definitions().map_err(|e| CodegenError::new(format!("finalize: {}", e)))?;
 
     let mut fn_ptrs: HashMap<u32, *const u8> = HashMap::new();
