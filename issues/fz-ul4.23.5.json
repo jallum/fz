@@ -1,8 +1,7 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-ul4.23.1",
-    "fz-ul4.23.4"
+    "fz-ul4.23.1"
   ],
   "blocks": [
     "fz-ul4.23.6"
@@ -16,5 +15,5 @@
   "status": "open",
   "title": "Rebuild ir_interp on FzValue/heap/runtime substrate",
   "type": "task",
-  "updated_at": "2026-05-11T20:55:18Z"
+  "updated_at": "2026-05-11T21:10:42Z"
 }

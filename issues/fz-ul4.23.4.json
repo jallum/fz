@@ -4,7 +4,6 @@
     "fz-ul4.23.2"
   ],
   "blocks": [
-    "fz-ul4.23.5",
     "fz-ul4.23.6"
   ],
   "created": "2026-05-11T20:55:16Z",
@@ -16,5 +15,5 @@
   "status": "open",
   "title": "Factor ir_codegen into backend core + JIT driver",
   "type": "task",
-  "updated_at": "2026-05-11T20:55:18Z"
+  "updated_at": "2026-05-11T21:10:42Z"
 }
