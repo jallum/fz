@@ -417,15 +417,32 @@ mod tests {
 /// `crate::process::current_process()`.
 pub mod debug {
     use super::{FzValue, HeapKind, ListCons, Tag};
-    use crate::process::current_process;
+    use crate::process::{current_process, CURRENT_PROCESS};
+
+    /// Render an atom id as `:name` if the current Process has a name
+    /// for it; fall back to `:atom_N` otherwise. The fallback fires when
+    /// render is called without a Process installed (e.g. unit tests
+    /// poking the renderer directly) or when an id is outside the
+    /// module's table (defensive — shouldn't happen in practice).
+    fn render_atom(id: u32) -> String {
+        let proc_ptr = CURRENT_PROCESS.with(|c| c.get());
+        if proc_ptr.is_null() {
+            return format!(":atom_{}", id);
+        }
+        let names = unsafe { &(*proc_ptr).atom_names };
+        match names.get(id as usize) {
+            Some(name) if !name.is_empty() => format!(":{}", name),
+            _ => format!(":atom_{}", id),
+        }
+    }
 
     pub fn render(bits: u64) -> String {
         let v = FzValue(bits);
         match v.tag() {
             Tag::Int => v.unbox_int().unwrap().to_string(),
-            Tag::Atom => format!(":atom_{}", v.unbox_atom().unwrap()),
+            Tag::Atom => render_atom(v.unbox_atom().unwrap()),
             Tag::Special => {
-                if v.is_nil() { "[]".into() }
+                if v.is_nil() { "nil".into() }
                 else if v.is_true() { "true".into() }
                 else if v.is_false() { "false".into() }
                 else { format!("#special<{:#x}>", bits) }

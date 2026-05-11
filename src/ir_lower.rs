@@ -343,6 +343,7 @@ pub fn lower_program_full(
     let mb = std::mem::take(&mut ctx.mb);
     let mut module = mb.build();
     module.source = build_source_info(&module, &ctx);
+    module.atom_names = ctx.atoms.names();
     Ok((module, ctx.atoms, ctx.builtins))
 }
 

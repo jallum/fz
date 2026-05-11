@@ -28,6 +28,10 @@ pub struct Process {
     // Per-CompiledModule constants copied at make_process() time. See
     // fz-ul4.19.1 follow-up to move these behind an Rc<CompiledModuleConsts>.
     pub frame_sizes: Vec<u32>,
+    /// Atom names indexed by id. Populated at task-setup time from the
+    /// IR Module's atom_names. fz_value::debug::render reads this to
+    /// print `:source_name` instead of `:atom_N`. fz-ul4.25.
+    pub atom_names: Vec<String>,
     pub bs_tuple_arity1_schema: Option<u32>,
     pub bs_tuple_arity3_schema: Option<u32>,
     // fz-ul4.19.1 scheduler-level fields. Populated when a Process is
@@ -73,6 +77,7 @@ impl Process {
             closure_builder: None,
             closure_args: Vec::new(),
             frame_sizes: Vec::new(),
+            atom_names: Vec::new(),
             bs_tuple_arity1_schema: None,
             bs_tuple_arity3_schema: None,
             pid: 0,

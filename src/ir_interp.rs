@@ -105,6 +105,7 @@ pub fn run_main(module: &Module) -> Result<i64, String> {
     INTERP_SCHEMAS.with(|s| *s.borrow_mut() = Some(user_schemas.clone()));
     let mut main_process = Box::new(Process::new(user_schemas));
     main_process.pid = 1;
+    main_process.atom_names = module.atom_names.clone();
     let main_ptr = interp_register_task(1, main_process);
     let prev = fz_runtime::process::CURRENT_PROCESS.with(|c| c.replace(main_ptr));
     let result = run_fn(module, main_id, Vec::new());
@@ -127,6 +128,7 @@ pub fn run_test_fn(module: &Module, fn_id: FnId) -> Result<(), String> {
     INTERP_SCHEMAS.with(|s| *s.borrow_mut() = Some(user_schemas.clone()));
     let mut task = Box::new(Process::new(user_schemas));
     task.pid = 1;
+    task.atom_names = module.atom_names.clone();
     let task_ptr = interp_register_task(1, task);
     let prev = fz_runtime::process::CURRENT_PROCESS.with(|c| c.replace(task_ptr));
     let result = run_fn(module, fn_id, Vec::new());
@@ -145,6 +147,7 @@ fn interp_spawn(module: &Module, fn_id: FnId) -> Result<u32, String> {
         .ok_or("interp_spawn: no INTERP_SCHEMAS installed (call run_main first)")?;
     let mut child = Box::new(Process::new(user_schemas));
     child.pid = pid;
+    child.atom_names = module.atom_names.clone();
     let child_ptr = interp_register_task(pid, child);
     let prev = fz_runtime::process::CURRENT_PROCESS.with(|c| c.replace(child_ptr));
     let result = run_fn(module, fn_id, Vec::new());

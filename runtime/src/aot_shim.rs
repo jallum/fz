@@ -81,6 +81,13 @@ extern "C" fn aot_spawn_hook(fn_id: u32) -> u32 {
     let mut child = Box::new(Process::new(schemas));
     child.pid = pid;
     child.frame_sizes = (0..fn_count).map(|id| frame_size_fn(id)).collect();
+    // Children inherit the main task's atom names. Looking up the parent
+    // via CURRENT_PROCESS works because we're called synchronously from
+    // the parent's trampoline tick.
+    let parent_ptr = CURRENT_PROCESS.with(|c| c.get());
+    if !parent_ptr.is_null() {
+        child.atom_names = unsafe { (*parent_ptr).atom_names.clone() };
+    }
     let child_ptr = AOT_TASKS.with(|c| {
         let mut t = c.borrow_mut();
         t.insert(pid, child);
@@ -106,6 +113,44 @@ extern "C" fn aot_send_hook(receiver_pid: u32, msg_bits: u64) {
             }
         }
     });
+}
+
+/// Decode an atom-name blob emitted by AOT codegen into a Vec<String>.
+/// Format: a sequence of NUL-terminated UTF-8 names, terminated by a
+/// final empty entry (two consecutive NULs). Null pointer / empty blob
+/// yields an empty Vec.
+fn parse_atom_blob(blob: *const u8) -> Vec<String> {
+    let mut out = Vec::new();
+    if blob.is_null() {
+        return out;
+    }
+    let mut cur = blob;
+    loop {
+        // Determine the length of the current NUL-terminated string.
+        let mut len = 0usize;
+        loop {
+            let b = unsafe { *cur.add(len) };
+            if b == 0 {
+                break;
+            }
+            len += 1;
+            if len > 1_000_000 {
+                eprintln!("parse_atom_blob: name length exceeded sanity limit");
+                std::process::abort();
+            }
+        }
+        if len == 0 {
+            // Sentinel: empty entry terminates the walk.
+            break;
+        }
+        let bytes = unsafe { std::slice::from_raw_parts(cur, len) };
+        match std::str::from_utf8(bytes) {
+            Ok(s) => out.push(s.to_string()),
+            Err(_) => out.push(String::new()),
+        }
+        cur = unsafe { cur.add(len + 1) };
+    }
+    out
 }
 
 /// Drive the JIT-shaped trampoline against the currently-installed
@@ -168,6 +213,7 @@ pub extern "C" fn fz_aot_run(
     dispatch: DispatchFn,
     frame_size: FrameSizeFn,
     fn_count: u32,
+    atom_blob: *const u8,
 ) -> i32 {
     // Stash codegen-emitted lookups in TLS so the scheduler hooks can
     // reach them without threading args through Cranelift's FFI surface.
@@ -188,10 +234,16 @@ pub extern "C" fn fz_aot_run(
     crate::scheduler_hooks::install_spawn_hook(aot_spawn_hook);
     crate::scheduler_hooks::install_send_hook(aot_send_hook);
 
+    // Parse the atom blob — sequence of NUL-terminated names, double-NUL
+    // terminator — into a Vec<String>. Empty blob (null ptr) is fine for
+    // programs with no atoms.
+    let atom_names = parse_atom_blob(atom_blob);
+
     // Main process — register as pid 1.
     let mut main_process = Box::new(Process::new(user_schemas));
     main_process.pid = 1;
     main_process.frame_sizes = (0..fn_count).map(|id| frame_size(id)).collect();
+    main_process.atom_names = atom_names;
     let main_ptr = AOT_TASKS.with(|c| {
         let mut t = c.borrow_mut();
         t.insert(1, main_process);
@@ -253,6 +305,7 @@ mod tests {
             mock_dispatch,
             mock_frame_size,
             /*fn_count=*/ 43,
+            /*atom_blob=*/ std::ptr::null(),
         );
         // fz_aot_run returns 0 on clean completion; halt_value is
         // internal (matches JIT/interp's exit-code convention).
@@ -281,7 +334,28 @@ mod tests {
 
     #[test]
     fn fz_aot_run_dispatches_multiple_steps() {
-        let exit_code = fz_aot_run(1, 24, mock_two_step_dispatch, mock_frame_size, 3);
+        let exit_code = fz_aot_run(
+            1,
+            24,
+            mock_two_step_dispatch,
+            mock_frame_size,
+            3,
+            std::ptr::null(),
+        );
         assert_eq!(exit_code, 0);
+    }
+
+    #[test]
+    fn parse_atom_blob_walks_until_double_nul() {
+        // "ok\0err\0\0" - two atoms followed by sentinel.
+        let blob = b"ok\0err\0\0";
+        let names = parse_atom_blob(blob.as_ptr());
+        assert_eq!(names, vec!["ok".to_string(), "err".to_string()]);
+    }
+
+    #[test]
+    fn parse_atom_blob_null_pointer_returns_empty() {
+        let names = parse_atom_blob(std::ptr::null());
+        assert!(names.is_empty());
     }
 }

@@ -356,6 +356,12 @@ pub struct Module {
     pub fns: Vec<FnIr>,
     pub schemas: Vec<Schema>,
     pub source: SourceInfo,
+    /// Atom names indexed by id. `atom_names[id]` is the source spelling of
+    /// the atom interned at `Const::Atom(id)`. Populated by ir_lower from
+    /// its per-module AtomTable. Every runtime path (JIT, interp, AOT)
+    /// hands this to its Process so `fz_value::debug::render` can print
+    /// `:ok` instead of `:atom_1`. Closed by fz-ul4.25.
+    pub atom_names: Vec<String>,
 }
 
 impl Module {
@@ -483,6 +489,7 @@ impl ModuleBuilder {
             fns: self.fns,
             schemas: self.schemas,
             source: SourceInfo::default(),
+            atom_names: Vec::new(),
         }
     }
 }

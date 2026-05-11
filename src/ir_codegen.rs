@@ -31,7 +31,7 @@ use cranelift_codegen::settings::{self, Configurable};
 use cranelift_codegen::Context;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::{JITBuilder, JITModule};
-use cranelift_module::{FuncId, Linkage, Module as ClModule};
+use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module as ClModule};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -105,6 +105,10 @@ pub struct CompiledModule {
     /// in this module". Copied into Process at make_process() time.
     pub(crate) bs_tuple_arity1_schema: Option<u32>,
     pub(crate) bs_tuple_arity3_schema: Option<u32>,
+    /// Atom names indexed by id. Copied into each Process at
+    /// make_process() time so fz_value::debug::render can spell atoms
+    /// out as `:name` (fz-ul4.25).
+    pub(crate) atom_names: Vec<String>,
     /// Per-fn Var -> Descr maps from fz-ul4.11.24.2's flow-insensitive typer.
     /// Indexed by position in source Module.fns (not by FnId.0).
     pub(crate) types: crate::ir_typer::ModuleTypes,
@@ -144,6 +148,7 @@ impl CompiledModule {
             closure_builder: None,
             closure_args: Vec::new(),
             frame_sizes: self.frame_sizes.clone(),
+            atom_names: self.atom_names.clone(),
             bs_tuple_arity1_schema: self.bs_tuple_arity1_schema,
             bs_tuple_arity3_schema: self.bs_tuple_arity3_schema,
             pid: 0,
@@ -790,9 +795,20 @@ pub fn compile_aot(module: &Module, obj_name: &str) -> Result<AotArtifact, Codeg
 
         // Declare fz_aot_run as an Import. Signature:
         //   (main_schema_id: i32, main_frame_size: i32,
-        //    dispatch: i64, frame_size: i64, fn_count: i32) -> i32
+        //    dispatch: i64, frame_size: i64, fn_count: i32,
+        //    atom_blob: i64) -> i32
+        // The atom_blob is a pointer to a sequence of NUL-terminated atom
+        // names, followed by a final empty entry: "ok\0error\0\0". Empty
+        // blob is 0/null.
         let aot_run_sig = sig1(
-            &[types::I32, types::I32, types::I64, types::I64, types::I32],
+            &[
+                types::I32,
+                types::I32,
+                types::I64,
+                types::I64,
+                types::I32,
+                types::I64,
+            ],
             &[types::I32],
         );
         let aot_run_id = backend
@@ -833,6 +849,31 @@ pub fn compile_aot(module: &Module, obj_name: &str) -> Result<AotArtifact, Codeg
         )?;
         let fn_count: u32 = schemas.len() as u32;
 
+        // Atom-name blob: NUL-separated names + trailing NUL. fz_aot_run
+        // walks it into Process.atom_names so `:source_name` rendering
+        // works in AOT binaries the same as JIT/interp. fz-ul4.25.
+        let atom_blob_data: Option<DataId> = if module.atom_names.is_empty() {
+            None
+        } else {
+            let mut blob: Vec<u8> = Vec::new();
+            for name in &module.atom_names {
+                blob.extend_from_slice(name.as_bytes());
+                blob.push(0);
+            }
+            blob.push(0); // sentinel: empty entry terminates the walk
+            let id = backend
+                .module_mut()
+                .declare_data("fz_aot_atom_blob", Linkage::Local, false, false)
+                .map_err(|e| CodegenError::new(format!("declare atom blob: {}", e)))?;
+            let mut desc = DataDescription::new();
+            desc.define(blob.into_boxed_slice());
+            backend
+                .module_mut()
+                .define_data(id, &desc)
+                .map_err(|e| CodegenError::new(format!("define atom blob: {}", e)))?;
+            Some(id)
+        };
+
         // C main: (i32 argc, i64 argv) -> i32. Calls fz_aot_run with the
         // program's main schema_id, frame size, both dispatch addrs,
         // and fn_count.
@@ -854,6 +895,7 @@ pub fn compile_aot(module: &Module, obj_name: &str) -> Result<AotArtifact, Codeg
             dispatch_id,
             fsz_id,
             fn_count,
+            atom_blob_data,
             aot_run_id,
         )?;
 
@@ -970,6 +1012,7 @@ fn emit_aot_c_main<M: cranelift_module::Module>(
     dispatch_id: FuncId,
     fsz_id: FuncId,
     fn_count: u32,
+    atom_blob_data: Option<DataId>,
     aot_run_id: FuncId,
 ) -> Result<(), CodegenError> {
     use cranelift_frontend::FunctionBuilder;
@@ -989,11 +1032,25 @@ fn emit_aot_c_main<M: cranelift_module::Module>(
         let fsz_fref = jmod.declare_func_in_func(fsz_id, b.func);
         let fsz_addr = b.ins().func_addr(types::I64, fsz_fref);
         let fn_count_v = b.ins().iconst(types::I32, fn_count as i64);
+        let atom_blob_addr = match atom_blob_data {
+            Some(data_id) => {
+                let gv = jmod.declare_data_in_func(data_id, b.func);
+                b.ins().symbol_value(types::I64, gv)
+            }
+            None => b.ins().iconst(types::I64, 0),
+        };
 
         let aot_fref = jmod.declare_func_in_func(aot_run_id, b.func);
         let call = b.ins().call(
             aot_fref,
-            &[main_id_v, frame_size_v, dispatch_addr, fsz_addr, fn_count_v],
+            &[
+                main_id_v,
+                frame_size_v,
+                dispatch_addr,
+                fsz_addr,
+                fn_count_v,
+                atom_blob_addr,
+            ],
         );
         let result = b.inst_results(call)[0];
         b.ins().return_(&[result]);
@@ -1248,6 +1305,7 @@ pub fn compile(module: &Module) -> Result<CompiledModule, CodegenError> {
         schemas,
         user_schemas,
         frame_sizes,
+        atom_names: module.atom_names.clone(),
         bs_tuple_arity1_schema,
         bs_tuple_arity3_schema,
         types: module_types,
@@ -2763,9 +2821,13 @@ fn main(), do: count(100000, 0)
         assert_eq!(fz_runtime::fz_value::debug::render(FzValue::from_int(42).0), "42");
         assert_eq!(fz_runtime::fz_value::debug::render(FzValue::from_int(0).0), "0");
         assert_eq!(fz_runtime::fz_value::debug::render(FzValue::from_int(-7).0), "-7");
-        assert_eq!(fz_runtime::fz_value::debug::render(FzValue::NIL.0), "[]");
+        assert_eq!(fz_runtime::fz_value::debug::render(FzValue::NIL.0), "nil");
         assert_eq!(fz_runtime::fz_value::debug::render(FzValue::TRUE.0), "true");
         assert_eq!(fz_runtime::fz_value::debug::render(FzValue::FALSE.0), "false");
+        // Atom rendering needs a populated Process.atom_names; with an
+        // empty table render falls back to `:atom_N`. The full
+        // source-name path is verified end-to-end by the fixture matrix
+        // (hello.fz post fz-ul4.25 re-bless).
         assert_eq!(fz_runtime::fz_value::debug::render(FzValue::from_atom_id(3).0), ":atom_3");
     }
 
@@ -2773,7 +2835,7 @@ fn main(), do: count(100000, 0)
     fn print_captures_atom_and_specials() {
         assert_eq!(
             capture_main("fn main() do\n  print(:ok)\n  print(true)\n  print(false)\nend"),
-            vec![":atom_1", "true", "false"]
+            vec![":ok", "true", "false"]
         );
     }
 
@@ -2783,7 +2845,7 @@ fn main(), do: count(100000, 0)
     fn print_atom_keyed_map_renders_canonically() {
         assert_eq!(
             capture_main("fn main(), do: print(%{a: 1, b: 2})"),
-            vec!["%{:atom_1 => 1, :atom_2 => 2}"]
+            vec!["%{:a => 1, :b => 2}"]
         );
     }
 
@@ -2804,8 +2866,8 @@ fn main() do
 end
 "#),
             vec![
-                "%{:atom_1 => 1, :atom_2 => 2}",
-                "%{:atom_1 => 99, :atom_2 => 2}",
+                "%{:a => 1, :b => 2}",
+                "%{:a => 99, :b => 2}",
             ]
         );
     }
@@ -2884,7 +2946,7 @@ fn main(), do: fst({10, 20}) + snd({30, 40})
     fn print_mixed_type_tuple() {
         assert_eq!(
             capture_main("fn main(), do: print({1, :ok, true})"),
-            vec!["{1, :atom_1, true}"]
+            vec!["{1, :ok, true}"]
         );
     }
 
