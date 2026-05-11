@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-ul4.23.4"
+  ],
   "blocks": [],
   "created": "2026-05-11T20:55:17Z",
   "description": "Phase 6 of fz-ul4.23. Build the AOT path. Closes fz-ul4.22.\n\n## Deliverables\n\n- New aot driver consuming the backend core (Phase 4), picking ObjectModule.\n- Entry-point shim that initializes Runtime (atom table, Process startup) and calls main_entry.\n- Link with fz_runtime staticlib + libc; emit native executable.\n- `fz build \u003csrc.fz\u003e -o \u003cout\u003e` produces a runnable binary.\n- Wire up to the fixture matrix as the `aot` path.\n\n## Architectural decisions inherited from fz-ul4.22\n\n- AOT supports concurrency by linking the same runtime.rs / heap.rs the JIT uses.\n- main() is `Runtime::new(...).spawn(main).run_until_idle()`.\n- Per-Process heap inherited unchanged.\n\n## Acceptance\n\n- `fz build fixtures/add1.fz -o /tmp/add1 \u0026\u0026 /tmp/add1` exits 0 with the expected stdout.\n- `fz build fixtures/concurrency_ping_pong.fz -o /tmp/pp \u0026\u0026 /tmp/pp` works end-to-end.\n- All fixtures whose `# paths:` includes aot pass through the fixture matrix.\n- fz-ul4.22 closes.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "AOT driver on the factored Cranelift core",
   "type": "task",
-  "updated_at": "2026-05-11T20:55:17Z"
+  "updated_at": "2026-05-11T20:55:18Z"
 }

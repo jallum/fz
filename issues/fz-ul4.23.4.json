@@ -4,7 +4,8 @@
     "fz-ul4.23.2"
   ],
   "blocks": [
-    "fz-ul4.23.5"
+    "fz-ul4.23.5",
+    "fz-ul4.23.6"
   ],
   "created": "2026-05-11T20:55:16Z",
   "description": "Phase 4 of fz-ul4.23. Extract jit-agnostic Cranelift lowering from ir_codegen.rs into a backend core, parameterized on cranelift_module::Module. Prep for AOT (Phase 6) and a uniform --emit (Phase 3).\n\n## Deliverables\n\n- New module backend/ (or codegen_core.rs) with the IR→Cranelift lowering, generic over `M: cranelift_module::Module`.\n- ir_codegen.rs becomes the JIT driver: picks JITModule, finalizes, owns the Process/Runtime FFI symbol bindings.\n- All existing JIT tests pass unchanged.\n- Spans/SourceLoc plumbing lives in core so --emit works for any driver.\n\n## Non-goals\n\n- AOT driver itself (Phase 6).\n- Behavioral changes to codegen.\n\n## Acceptance\n\n- ir_codegen.rs shrinks substantially; the new core file contains the bulk of the codegen.\n- Test suite green, no perf regression on the JIT fixture matrix.\n- The shape supports a second driver (AOT) being added in ~200 lines.",
