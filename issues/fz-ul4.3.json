@@ -10,13 +10,11 @@
   "created": "2026-05-10T01:26:31Z",
   "description": "The kernel of semantic subtyping: T \u003c: U iff (T ∧ ¬U) is empty.\n\nImplement is_empty(d: Descr) recursively over structural parts with memoization (recursive types -\u003e coinductive treatment). This is the hard kernel — get this right and everything else falls out.\n\nDeliverable: is_empty + is_subtype + is_equiv functions; tests covering nontrivial cases like (int|atom) \u003c: (int|atom|float), (int \u0026 not(int)) is empty, structural subtyping on tuples and arrows.",
   "id": "fz-ul4.3",
-  "labels": [
-    "needs-reintegration"
-  ],
+  "labels": [],
   "parent": "fz-ul4",
   "priority": 1,
   "status": "closed",
   "title": "Subtyping via emptiness checking",
   "type": "task",
-  "updated_at": "2026-05-10T20:38:01Z"
+  "updated_at": "2026-05-11T06:14:26Z"
 }
