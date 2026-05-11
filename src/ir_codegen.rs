@@ -298,6 +298,18 @@ thread_local! {
     /// after compile_fn but before define_function consumes the context.
     /// Test-only; enable by calling `ir_text_record_enable()` before compile.
     pub static IR_TEXT_RECORD: std::cell::RefCell<Option<Vec<(String, String)>>> = std::cell::RefCell::new(None);
+    /// (fz-ul4.23.8) Per-fn machine-code disassembly captured by compile()
+    /// when set_disasm is on. Enable with `asm_record_enable()` before
+    /// compile; drain with `asm_record_take()` after.
+    pub static ASM_RECORD: std::cell::RefCell<Option<Vec<(String, String)>>> = std::cell::RefCell::new(None);
+}
+
+pub fn asm_record_enable() {
+    ASM_RECORD.with(|c| *c.borrow_mut() = Some(Vec::new()));
+}
+
+pub fn asm_record_take() -> Vec<(String, String)> {
+    ASM_RECORD.with(|c| c.borrow_mut().take().unwrap_or_default())
 }
 
 /// Drain the per-thread print-capture buffer. Tests in this file (and
@@ -1262,6 +1274,13 @@ pub fn compile(module: &Module) -> Result<CompiledModule, CodegenError> {
         let func_id = *fn_ids.get(&f.id.0).unwrap();
         let mut ctx = backend.module_mut().make_context();
         ctx.func.signature = fn_sig.clone();
+        // fz-ul4.23.8: opt in to asm capture when ASM_RECORD is active
+        // (set by `fz dump --emit asm`). want_disasm flows through
+        // ctx.compile() → isa.compile_function() → vcode.emit().
+        let want_asm = ASM_RECORD.with(|c| c.borrow().is_some());
+        if want_asm {
+            ctx.set_disasm(true);
+        }
         compile_fn(
             backend.module_mut(),
             &mut ctx,
@@ -1286,6 +1305,17 @@ pub fn compile(module: &Module) -> Result<CompiledModule, CodegenError> {
             .module_mut()
             .define_function(func_id, &mut ctx)
             .map_err(|e| CodegenError::new(format!("define {}: {}", f.name, e)).with_span(fn_span))?;
+        if want_asm {
+            if let Some(cc) = ctx.compiled_code() {
+                if let Some(vcode) = cc.vcode.as_ref() {
+                    ASM_RECORD.with(|c| {
+                        if let Some(v) = c.borrow_mut().as_mut() {
+                            v.push((f.name.clone(), vcode.clone()));
+                        }
+                    });
+                }
+            }
+        }
         backend.module_mut().clear_context(&mut ctx);
     }
 

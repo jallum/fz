@@ -341,6 +341,19 @@ fn fz_dump_emits_clif() {
     let s = String::from_utf8_lossy(&filtered.stdout);
     assert!(s.contains("; fn add1"));
     assert!(!s.contains("; fn main"), "filter leaked main: {}", s);
+
+    // fz-ul4.23.8: --emit asm produces machine-code dump via Cranelift's
+    // vcode disassembly. Don't pin specific instructions — they vary by
+    // host arch — but every supported target emits real assembly,
+    // including a block0 label and at least one inst per fn body.
+    let asm = Command::new(FZ_BIN)
+        .args(["dump", "fixtures/add1.fz", "--emit", "asm", "--fn", "add1"])
+        .output()
+        .expect("spawn fz dump --emit asm");
+    assert!(asm.status.success(), "fz dump --emit asm exited {}", asm.status);
+    let asm_out = String::from_utf8_lossy(&asm.stdout);
+    assert!(asm_out.contains("; fn add1"));
+    assert!(asm_out.contains("block0"), "expected block0 label in asm:\n{}", asm_out);
 }
 
 #[test]

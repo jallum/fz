@@ -280,13 +280,14 @@ fn run_jit_from_path(args: &[String]) {
     run_jit_src(src, src_path);
 }
 
-/// `fz dump <src.fz> [--emit clif] [--fn <name>]` — drive a source file
-/// through the full JIT pipeline up to (but not including) finalization,
-/// capture the per-fn Cranelift IR text, and print it to stdout. The
+/// `fz dump <src.fz> [--emit clif|asm|both] [--fn <name>]` — drive a
+/// source file through the full JIT pipeline up to (but not including)
+/// final fn-ptr resolution, capture per-fn Cranelift IR text and/or
+/// post-regalloc machine-code disassembly, and print to stdout. The
 /// program is NOT executed.
 ///
-/// Feedback-loop tooling per fz-ul4.23.3. Source-loc interleaving and
-/// `--emit asm` are tracked separately (fz-ul4.27, fz-ul4.28).
+/// Feedback-loop tooling: fz-ul4.23.3 (clif), fz-ul4.23.7 (srcloc),
+/// fz-ul4.23.8 (asm + --emit both).
 /// Decode Cranelift's `@<hex>` srcloc prefix on each CLIF instruction
 /// line into a `@file:line:col` source position. Encoding matches the
 /// `span_to_srcloc` in src/ir_codegen.rs (top 8 bits = file_id, low 24
@@ -360,12 +361,10 @@ fn run_dump(args: &[String]) {
         eprintln!("fz dump <src.fz> [--emit clif] [--fn <name>]");
         std::process::exit(2);
     });
-    if emit != "clif" {
-        eprintln!(
-            "fz dump: --emit `{}` not supported yet \
-             (only `clif` today; `asm` tracked by fz-ul4.28)",
-            emit
-        );
+    let emit_clif = matches!(emit.as_str(), "clif" | "both");
+    let emit_asm = matches!(emit.as_str(), "asm" | "both");
+    if !emit_clif && !emit_asm {
+        eprintln!("fz dump: --emit must be one of `clif`, `asm`, `both`");
         std::process::exit(2);
     }
     let src = std::fs::read_to_string(&path).unwrap_or_else(|e| {
@@ -373,19 +372,64 @@ fn run_dump(args: &[String]) {
         std::process::exit(1);
     });
 
-    ir_codegen::ir_text_record_enable();
+    if emit_clif {
+        ir_codegen::ir_text_record_enable();
+    }
+    if emit_asm {
+        ir_codegen::asm_record_enable();
+    }
     let compiled = compile_pipeline(src, path.clone());
-    let entries = ir_codegen::ir_text_record_take();
+    let clif_entries = if emit_clif {
+        ir_codegen::ir_text_record_take()
+    } else {
+        Vec::new()
+    };
+    let asm_entries = if emit_asm {
+        ir_codegen::asm_record_take()
+    } else {
+        Vec::new()
+    };
+
+    // Combine into a single fn-name → (clif?, asm?) map preserving order.
+    let mut order: Vec<String> = Vec::new();
+    let mut clif_map: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    let mut asm_map: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    for (name, text) in &clif_entries {
+        if !clif_map.contains_key(name) {
+            order.push(name.clone());
+        }
+        clif_map.insert(name.clone(), text.clone());
+    }
+    for (name, text) in &asm_entries {
+        if !clif_map.contains_key(name) && !asm_map.contains_key(name) {
+            order.push(name.clone());
+        }
+        asm_map.insert(name.clone(), text.clone());
+    }
 
     let mut printed = 0usize;
-    for (name, text) in &entries {
+    for name in &order {
         if let Some(filter) = &fn_filter {
             if name != filter {
                 continue;
             }
         }
         println!("; fn {}", name);
-        println!("{}", annotate_srclocs(text, &compiled.sm));
+        if emit_clif {
+            if let Some(text) = clif_map.get(name) {
+                println!("{}", annotate_srclocs(text, &compiled.sm));
+            }
+        }
+        if emit_asm {
+            if let Some(text) = asm_map.get(name) {
+                if emit_clif {
+                    println!("; ---- asm ----");
+                }
+                println!("{}", text);
+            }
+        }
         printed += 1;
     }
     if let Some(filter) = &fn_filter {
@@ -393,7 +437,7 @@ fn run_dump(args: &[String]) {
             eprintln!(
                 "fz dump: no fn named `{}` (available: {})",
                 filter,
-                entries.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>().join(", ")
+                order.join(", ")
             );
             std::process::exit(1);
         }
