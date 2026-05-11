@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-05-11T21:02:03Z",
@@ -8,8 +8,8 @@
   "labels": [],
   "parent": "fz-ul4",
   "priority": 3,
-  "status": "open",
+  "status": "in_progress",
   "title": "print() renders atoms by interner id and nil as []",
   "type": "task",
-  "updated_at": "2026-05-11T21:02:03Z"
+  "updated_at": "2026-05-11T22:50:50Z"
 }
