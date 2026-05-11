@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-05-11T08:55:32Z",
@@ -8,8 +8,8 @@
   "labels": [],
   "parent": "fz-ul4",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Per-stage error spans: thread Span through resolve/macros/lower/codegen errors",
   "type": "task",
-  "updated_at": "2026-05-11T08:55:32Z"
+  "updated_at": "2026-05-11T12:16:41Z"
 }
