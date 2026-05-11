@@ -1,5 +1,5 @@
 # purpose: spawn + send + receive — parent blocks on receive, child sends 42, main returns 42
-# paths:   jit, interp
+# paths:   jit, interp, aot
 
 # fz-ul4.19 demonstration: parent + child processes with send/receive.
 #

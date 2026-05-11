@@ -20,7 +20,7 @@
 //!   4. After `run_until_idle`, binary clears the hooks (so a later call
 //!      from outside a Runtime fails loudly).
 
-use std::cell::Cell;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Non-pointer trampoline sentinel: fz_receive_attempt returns this when
 /// the mailbox is empty so the JIT trampoline parks the task instead of
@@ -41,41 +41,54 @@ pub type SpawnHook = extern "C" fn(fn_id: u32) -> u32;
 /// handles the deep-copy into the receiver's heap and the wake-up.
 pub type SendHook = extern "C" fn(receiver_pid: u32, msg_bits: u64);
 
-thread_local! {
-    pub static SPAWN_HOOK: Cell<Option<SpawnHook>> = const { Cell::new(None) };
-    pub static SEND_HOOK: Cell<Option<SendHook>> = const { Cell::new(None) };
-}
+// Hook storage. AtomicUsize-backed globals instead of thread_local —
+// the thread_local form turned out to expose a subtle issue where the
+// `SPAWN_HOOK.with(...)` accessor in install / dispatch sites ended up
+// resolving to different TLS slots in AOT-linked binaries (multiple
+// `__ZN...SPAWN_HOOK..._tlv$init` symbols with different hashes), so
+// install would write into one and dispatch would read from another,
+// always-None. A regular static is single-threaded by construction
+// (v1 AOT/JIT runtime is single-worker per fz-ul4.19.1) and dodges
+// the TLS-instance issue entirely.
+static SPAWN_HOOK: AtomicUsize = AtomicUsize::new(0);
+static SEND_HOOK: AtomicUsize = AtomicUsize::new(0);
 
 pub fn install_spawn_hook(hook: SpawnHook) {
-    SPAWN_HOOK.with(|c| c.set(Some(hook)));
+    SPAWN_HOOK.store(hook as usize, Ordering::SeqCst);
 }
 
 pub fn clear_spawn_hook() {
-    SPAWN_HOOK.with(|c| c.set(None));
+    SPAWN_HOOK.store(0, Ordering::SeqCst);
 }
 
 pub fn install_send_hook(hook: SendHook) {
-    SEND_HOOK.with(|c| c.set(Some(hook)));
+    SEND_HOOK.store(hook as usize, Ordering::SeqCst);
 }
 
 pub fn clear_send_hook() {
-    SEND_HOOK.with(|c| c.set(None));
+    SEND_HOOK.store(0, Ordering::SeqCst);
 }
 
 pub(crate) fn dispatch_spawn(fn_id: u32) -> u32 {
-    SPAWN_HOOK
-        .with(|c| c.get())
-        .expect(
+    let raw = SPAWN_HOOK.load(Ordering::SeqCst);
+    if raw == 0 {
+        panic!(
             "fz_spawn called outside a Runtime — install_spawn_hook \
-             must be called before driving any task",
-        )(fn_id)
+             must be called before driving any task"
+        );
+    }
+    let hook: SpawnHook = unsafe { std::mem::transmute(raw) };
+    hook(fn_id)
 }
 
 pub(crate) fn dispatch_send(receiver_pid: u32, msg_bits: u64) {
-    SEND_HOOK
-        .with(|c| c.get())
-        .expect(
+    let raw = SEND_HOOK.load(Ordering::SeqCst);
+    if raw == 0 {
+        panic!(
             "fz_send called outside a Runtime — install_send_hook \
-             must be called before driving any task",
-        )(receiver_pid, msg_bits);
+             must be called before driving any task"
+        );
+    }
+    let hook: SendHook = unsafe { std::mem::transmute(raw) };
+    hook(receiver_pid, msg_bits);
 }

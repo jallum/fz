@@ -11,7 +11,7 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `attributes.fz` | @moduledoc / @doc attributes parse and the module still executes | jit, interp, aot |
 | `classify_two_clause.fz` | literal-vs-wildcard clause dispatch (`0` and `_`) | jit, interp, aot |
 | `cold_fn.fz` | minimal call site — one fn definition, one call, no scaffolding | jit, interp, aot |
-| `concurrency_ping_pong.fz` | spawn + send + receive — parent blocks on receive, child sends 42, main returns 42 | jit, interp |
+| `concurrency_ping_pong.fz` | spawn + send + receive — parent blocks on receive, child sends 42, main returns 42 | jit, interp, aot |
 | `cross_module_macro.fz` | defmacro in one module, called from another via `import Helpers, only: [twice: 1]` | jit, interp, aot |
 | `hello.fz` | print each scalar shape — int, atom, bool, nil | jit, interp, aot |
 | `higher_order.fz` | higher-order patterns — apply2, compose | jit, interp, aot |
