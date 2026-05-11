@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-ul4.23.4.4"
+  ],
   "created": "2026-05-11T21:14:44Z",
   "description": "Move fz_alloc_frame, fz_alloc_frame_dyn, fz_alloc_frame_for_test, fz_alloc_list_cons, fz_alloc_struct, fz_alloc_float from ir_codegen.rs to ir_runtime.rs.\n\n## Acceptance\n\n- cargo test green.\n- ir_codegen.rs no longer defines these fns.",
   "id": "fz-ul4.23.4.7",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Extract alloc FFI cluster (alloc_frame/list_cons/struct/float)",
   "type": "task",
-  "updated_at": "2026-05-11T21:14:44Z"
+  "updated_at": "2026-05-11T21:14:46Z"
 }
