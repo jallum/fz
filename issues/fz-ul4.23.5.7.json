@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-ul4.23.5.2"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-ul4.23.5.9"
+  ],
   "created": "2026-05-11T21:11:36Z",
   "description": "Trampoline through Term::TailCall without growing the Rust stack. 100k-deep self-recursion must complete.\n\n## Acceptance\n\n- `# paths: jit, interp` on tail_recursion.fz.",
   "id": "fz-ul4.23.5.7",
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "ir_interp_v2: tail recursion (tail_recursion.fz)",
   "type": "task",
-  "updated_at": "2026-05-11T21:11:38Z"
+  "updated_at": "2026-05-11T21:11:40Z"
 }
