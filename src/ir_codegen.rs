@@ -757,6 +757,7 @@ pub fn compile_aot(module: &Module, obj_name: &str) -> Result<AotArtifact, Codeg
             &tuple_schema_ids,
             f,
             &module_types[fn_idx],
+            &module.source,
         )?;
         let fn_span = module.source.fn_span_of(f.id);
         let flags = settings::Flags::new(settings::builder());
@@ -1270,6 +1271,7 @@ pub fn compile(module: &Module) -> Result<CompiledModule, CodegenError> {
             &tuple_schema_ids,
             f,
             &module_types[fn_idx],
+            &module.source,
         )?;
         IR_TEXT_RECORD.with(|c| {
             if let Some(v) = c.borrow_mut().as_mut() {
@@ -1512,6 +1514,18 @@ struct RuntimeRefs {
     receive_attempt_id: FuncId,
 }
 
+/// Pack a Span into a Cranelift SourceLoc (u32). 8 bits file_id + 24
+/// bits start offset. Dummy spans become SourceLoc::default() so they
+/// don't generate noise in the dump. fz-ul4.23.7.
+fn span_to_srcloc(s: crate::diag::Span) -> cranelift_codegen::ir::SourceLoc {
+    if s.is_dummy() {
+        return cranelift_codegen::ir::SourceLoc::default();
+    }
+    let file = (s.file.0 & 0xFF) << 24;
+    let offset = s.start & 0x00FF_FFFF;
+    cranelift_codegen::ir::SourceLoc::new(file | offset)
+}
+
 fn compile_fn<M: cranelift_module::Module>(
     jmod: &mut M,
     ctx: &mut Context,
@@ -1521,6 +1535,7 @@ fn compile_fn<M: cranelift_module::Module>(
     tuple_schema_ids: &HashMap<usize, u32>,
     f: &crate::fz_ir::FnIr,
     fn_types: &crate::ir_typer::FnTypes,
+    source: &crate::fz_ir::SourceInfo,
 ) -> Result<(), CodegenError> {
     let mut b = FunctionBuilder::new(&mut ctx.func, fbctx);
 
@@ -1575,11 +1590,29 @@ fn compile_fn<M: cranelift_module::Module>(
             }
         }
 
-        for stmt in &blk.stmts {
+        // Per-stmt source location: ir_lower records spans into
+        // SourceInfo.stmt_spans; encode each as a Cranelift SourceLoc so
+        // `fz dump --emit clif` can render `; @file:line:col` comments.
+        // fz-ul4.23.7.
+        let stmt_spans = source.stmt_spans.get(&(f.id, blk.id));
+        for (idx, stmt) in blk.stmts.iter().enumerate() {
+            let span = stmt_spans
+                .and_then(|v| v.get(idx))
+                .copied()
+                .unwrap_or(crate::diag::Span::DUMMY);
+            b.set_srcloc(span_to_srcloc(span));
             let Stmt::Let(v, prim) = stmt;
             let val = lower_prim(&mut b, jmod, runtime, tuple_schema_ids, &var_map, fn_types, prim)?;
             var_map.insert(v.0, val);
         }
+        // Terminator gets its own srcloc (often the same as the last
+        // stmt for Return blocks; distinct for Call/Goto).
+        let term_span = source
+            .term_span
+            .get(&(f.id, blk.id))
+            .copied()
+            .unwrap_or(crate::diag::Span::DUMMY);
+        b.set_srcloc(span_to_srcloc(term_span));
 
         match &blk.terminator {
             Term::Goto(target, args) => {

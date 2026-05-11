@@ -287,6 +287,45 @@ fn run_jit_from_path(args: &[String]) {
 ///
 /// Feedback-loop tooling per fz-ul4.23.3. Source-loc interleaving and
 /// `--emit asm` are tracked separately (fz-ul4.27, fz-ul4.28).
+/// Decode Cranelift's `@<hex>` srcloc prefix on each CLIF instruction
+/// line into a `@file:line:col` source position. Encoding matches the
+/// `span_to_srcloc` in src/ir_codegen.rs (top 8 bits = file_id, low 24
+/// bits = byte offset). Lines without a srcloc pass through unchanged.
+/// fz-ul4.23.7.
+fn annotate_srclocs(text: &str, sm: &diag::SourceMap) -> String {
+    let mut out = String::with_capacity(text.len() + 64);
+    for line in text.lines() {
+        // Cranelift formats srclocs as `@<hex>` at the start of an inst
+        // line (after leading whitespace). The line has shape
+        //   `<leading ws>@<hex>  <rest>` for stmts with srclocs, or
+        //   `<leading ws><rest>`        otherwise.
+        let trimmed = line.trim_start();
+        if let Some(rest) = trimmed.strip_prefix('@') {
+            let (hex_part, after) = rest.split_at(rest.find(' ').unwrap_or(rest.len()));
+            if let Ok(bits) = u32::from_str_radix(hex_part, 16) {
+                let file_id = diag::FileId(bits >> 24);
+                let offset = bits & 0x00FF_FFFF;
+                let span = diag::Span::new(file_id, offset, offset);
+                if (file_id.0 as usize) < sm.file_count() {
+                    let loc = sm.locate(span);
+                    let leading = &line[..line.len() - trimmed.len()];
+                    out.push_str(&format!(
+                        "{}@{:>4}:{:<3} {}\n",
+                        leading,
+                        loc.line,
+                        loc.col,
+                        after.trim_start()
+                    ));
+                    continue;
+                }
+            }
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
+}
+
 fn run_dump(args: &[String]) {
     let mut path: Option<String> = None;
     let mut fn_filter: Option<String> = None;
@@ -335,7 +374,7 @@ fn run_dump(args: &[String]) {
     });
 
     ir_codegen::ir_text_record_enable();
-    let _compiled = compile_pipeline(src, path.clone());
+    let compiled = compile_pipeline(src, path.clone());
     let entries = ir_codegen::ir_text_record_take();
 
     let mut printed = 0usize;
@@ -346,7 +385,7 @@ fn run_dump(args: &[String]) {
             }
         }
         println!("; fn {}", name);
-        println!("{}", text);
+        println!("{}", annotate_srclocs(text, &compiled.sm));
         printed += 1;
     }
     if let Some(filter) = &fn_filter {
@@ -371,6 +410,9 @@ fn run_dump(args: &[String]) {
 struct Compiled {
     cm: ir_codegen::CompiledModule,
     main_fn: Option<fz_ir::FnId>,
+    /// SourceMap surfaced so `fz dump` can resolve Cranelift's `@<hex>`
+    /// srclocs back to `file:line:col`. fz-ul4.23.7.
+    sm: diag::SourceMap,
 }
 
 fn compile_pipeline(src: String, source_name: String) -> Compiled {
@@ -403,7 +445,7 @@ fn compile_pipeline(src: String, source_name: String) -> Compiled {
         std::process::exit(1);
     });
     diag::render_to_stderr(&sm, cm.warnings());
-    Compiled { cm, main_fn }
+    Compiled { cm, main_fn, sm }
 }
 
 /// `fz run <path>` (and the no-argument stdin route) — compile, then drive
