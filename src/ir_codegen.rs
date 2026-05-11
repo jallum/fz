@@ -383,17 +383,11 @@ pub(crate) fn current_process() -> &'static mut Process {
 
 /// JIT-side print: receives an FzValue (u64 bits in an i64 ABI slot), renders
 /// it, captures the rendering for tests.
-extern "C" fn fz_print_value(fz_bits: u64) {
-    let s = render_fz_value(fz_bits);
-    // Always write to stdout so user-facing `fz run` / piped programs
-    // see output. Also capture into TEST_CAPTURE so unit tests that
-    // assert on print output keep working (cargo's stdout capture
-    // means the println below is invisible during `cargo test`).
-    println!("{}", s);
-    TEST_CAPTURE.with(|c| c.borrow_mut().push(s));
-}
+// fz_print_value moved to ir_runtime.rs (.23.4.13). It still calls back
+// here into render_fz_value (and TEST_CAPTURE) — both move out to
+// fz_value::debug in fz-ul4.23.4.3.
 
-fn render_fz_value(bits: u64) -> String {
+pub(crate) fn render_fz_value(bits: u64) -> String {
     use crate::fz_value::{FzValue, HeapKind, Tag};
     let v = FzValue(bits);
     match v.tag() {
@@ -614,36 +608,7 @@ pub fn ir_text_record_take() -> Vec<(String, String)> {
 /// the migration we ignore it in favor of current_process() — they point at
 /// the same Process, but using current_process() keeps the access pattern
 /// uniform with every other fz_* fn.
-extern "C" fn fz_halt(_ctx: *mut u8, fz_bits: u64) {
-    use crate::fz_value::{FzValue, HeapKind, Tag};
-    let v = FzValue(fz_bits);
-    let i: i64 = match v.tag() {
-        Tag::Int => v.unbox_int().unwrap(),
-        Tag::Atom => v.unbox_atom().unwrap() as i64,
-        Tag::Special => {
-            if v.is_true() { 1 }
-            else if v.is_false() { 0 }
-            else { 0 } // nil
-        }
-        Tag::Ptr => {
-            let p = v.unbox_ptr().unwrap();
-            // Null Ptr-tagged value (e.g. 0): nothing to read, return raw bits.
-            if p.is_null() {
-                fz_bits as i64
-            } else {
-                let kind = unsafe { (*p).kind };
-                // For boxed floats, halt returns the f64 bits so tests can
-                // round-trip via f64::from_bits. Other heap kinds: raw bits.
-                match HeapKind::from_u16(kind) {
-                    Some(HeapKind::Float) => crate::heap::Heap::read_float(p).to_bits() as i64,
-                    _ => fz_bits as i64,
-                }
-            }
-        }
-        Tag::Reserved => fz_bits as i64,
-    };
-    current_process().halt_value = i;
-}
+// fz_halt moved to ir_runtime.rs (.23.4.13).
 
 // ----- Heap (managed cons-cell allocator) -----
 //
@@ -842,8 +807,8 @@ pub fn compile(module: &Module) -> Result<CompiledModule, CodegenError> {
 
     let isa = host_isa();
     let mut builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
-    builder.symbol("fz_print_value", fz_print_value as *const u8);
-    builder.symbol("fz_halt", fz_halt as *const u8);
+    builder.symbol("fz_print_value", crate::ir_runtime::fz_print_value as *const u8);
+    builder.symbol("fz_halt", crate::ir_runtime::fz_halt as *const u8);
     builder.symbol("fz_alloc_frame", crate::ir_runtime::fz_alloc_frame as *const u8);
     builder.symbol("fz_alloc_list_cons", crate::ir_runtime::fz_alloc_list_cons as *const u8);
     builder.symbol("fz_alloc_struct", crate::ir_runtime::fz_alloc_struct as *const u8);
