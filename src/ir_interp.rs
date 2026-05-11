@@ -1,1210 +1,486 @@
-//! fz-IR tree-walking interpreter (debug oracle).
+//! fz-ul4.23.5.2 — IR interpreter on FzValue, heap, and runtime substrate.
 //!
-//! Validates fz-IR end-to-end without dragging Cranelift in. Walks the IR
-//! directly using the existing crate::value::Value as its runtime
-//! representation, so test assertions compare apples to apples.
+//! Walks a `fz_ir::Module` directly, just like the legacy ir_interp.rs, but
+//! uses the SAME value representation, heap, and runtime FFI as the JIT.
+//! Spawn/send/receive call into the same runtime.rs scheduler. Print
+//! renders through `crate::ir_runtime::fz_print_value`. Heap allocations
+//! go through the current Process's Heap.
 //!
-//! Trampoline-style: the top-level driver loops on Term::Goto / Term::If
-//! within a fn; on Term::Call it recursively runs the callee and then the
-//! continuation; Term::TailCall and Term::Return short-circuit out.
+//! Scope at .5.2: minimal for fixtures/add1.fz —
+//!   Const::{Int, Atom, Nil, True, False}
+//!   BinOp::Add  (Int + Int)
+//!   Prim::Builtin(Print, ...)
+//!   Term::{Call, Return, Halt}
+//!
+//! Subsequent atoms expand the surface fixture by fixture:
+//!   .5.3 scalars + print + other arith
+//!   .5.4 closures + higher-order
+//!   .5.5 pattern dispatch
+//!   .5.6 modules
+//!   .5.7 tail recursion (TCO)
+//!   .5.8 spawn/send/receive
 
-#![allow(dead_code)]
-
-use crate::ast::{BitType, Endian, VecKind};
-use crate::bitstr::{
-    apply_endian_for_read, decode_utf16, decode_utf32, decode_utf8, encode_utf16, encode_utf32,
-    encode_utf8, sign_extend, BitReader, BitWriter,
-};
-use crate::fz_ir::{
-    BinOp, BitFieldIr, BitSizeIr, Const, FnId, Module, Prim, Stmt, Term, UnOp, Var,
-};
-use crate::value::{BitVec, FzMap, FzVec, IrClosure, Value};
 use std::collections::HashMap;
-use std::rc::Rc;
+use std::cell::{Cell, RefCell};
 
-pub struct InterpCtx<'a> {
-    pub module: &'a Module,
-    /// id N -> name. Empty -> use synthetic "atom_N" names.
-    pub atoms: &'a [String],
-    /// id N -> name. Empty -> synthetic "builtin_N".
-    pub builtins: &'a [String],
+use crate::fz_ir::{BinOp, BuiltinKind, Const, FnId, Module, Prim, Stmt, Term, Var};
+use crate::fz_value::FzValue;
+use crate::process::Process;
+
+// ===== Interp-internal scheduler (fz-ul4.23.5.8) =====
+//
+// The interp owns its own task registry separate from runtime.rs::Runtime
+// (which is wired into the JIT trampoline). They share the Process type,
+// the FzValue rep, and the heap — so messages and mailboxes are byte-
+// compatible between paths.
+//
+// Scheduling model: eager-synchronous. Builtin::Spawn runs the spawned
+// task to completion before returning (i.e. spawned tasks are
+// synchronous from the parent's perspective). Term::Receive pops from
+// the current task's mailbox; if empty, it errors — there is no
+// preemption / suspend-and-resume in the interp v1 since fz-IR doesn't
+// run on stackable continuations here.
+//
+// This matches concurrency_ping_pong.fz's semantics (parent spawns child
+// → child eagerly runs send(1, 42) → returns; parent's receive pops 42)
+// but does NOT match richer concurrency patterns where the child holds
+// internal state across receive points. fz-ul4.23.5.8.1 (follow-up)
+// tracks the proper green-thread scheduler.
+
+thread_local! {
+    static INTERP_TASKS: RefCell<HashMap<u32, Box<Process>>> =
+        RefCell::new(HashMap::new());
+    static INTERP_NEXT_PID: Cell<u32> = const { Cell::new(2) };
+    static INTERP_SCHEMAS: RefCell<Option<std::rc::Rc<std::cell::RefCell<crate::heap::SchemaRegistry>>>> =
+        const { RefCell::new(None) };
 }
 
-pub fn run_fn(module: &Module, fn_id: FnId, args: Vec<Value>) -> Result<Value, String> {
-    run_fn_with(module, fn_id, args, &[], &[])
+fn interp_register_task(pid: u32, process: Box<Process>) -> *mut Process {
+    INTERP_TASKS.with(|t| {
+        let mut tasks = t.borrow_mut();
+        tasks.insert(pid, process);
+        tasks.get_mut(&pid).map(|b| b.as_mut() as *mut Process).unwrap()
+    })
 }
 
-pub fn run_fn_with(
-    module: &Module,
-    fn_id: FnId,
-    args: Vec<Value>,
-    atoms: &[String],
-    builtins: &[String],
-) -> Result<Value, String> {
-    let ctx = InterpCtx { module, atoms, builtins };
-    run(&ctx, fn_id, args)
+fn interp_next_pid() -> u32 {
+    INTERP_NEXT_PID.with(|n| {
+        let p = n.get();
+        n.set(p + 1);
+        p
+    })
 }
 
-fn atom_name(ctx: &InterpCtx, id: u32) -> Rc<str> {
-    if (id as usize) < ctx.atoms.len() {
-        Rc::from(ctx.atoms[id as usize].as_str())
-    } else {
-        Rc::from(format!("atom_{}", id).as_str())
-    }
-}
-
-fn builtin_name(ctx: &InterpCtx, id: u32) -> String {
-    if (id as usize) < ctx.builtins.len() {
-        ctx.builtins[id as usize].clone()
-    } else {
-        format!("builtin_{}", id)
-    }
-}
-
-fn run(ctx: &InterpCtx, fn_id: FnId, args: Vec<Value>) -> Result<Value, String> {
-    let fn_ir = ctx.module.fn_by_id(fn_id);
-    let mut env: HashMap<Var, Value> = HashMap::new();
-    let entry = fn_ir.block(fn_ir.entry);
-    if entry.params.len() != args.len() {
-        return Err(format!(
-            "fn {} expected {} args, got {}",
-            fn_ir.name,
-            entry.params.len(),
-            args.len()
-        ));
-    }
-    for (p, v) in entry.params.iter().zip(args) {
-        env.insert(*p, v);
-    }
-    let mut cur = fn_ir.entry;
-
-    loop {
-        let blk = fn_ir.block(cur);
-        for stmt in &blk.stmts {
-            let Stmt::Let(v, prim) = stmt;
-            let val = eval_prim(ctx, prim, &env)?;
-            env.insert(*v, val);
+fn interp_send(receiver_pid: u32, msg: FzValue) -> Result<(), String> {
+    INTERP_TASKS.with(|t| {
+        let mut tasks = t.borrow_mut();
+        match tasks.get_mut(&receiver_pid) {
+            Some(task) => {
+                task.mailbox.push_back(msg);
+                Ok(())
+            }
+            None => Err(format!("send: no task with pid {}", receiver_pid)),
         }
-        match &blk.terminator {
-            Term::Goto(b, args) => {
-                let new_vals: Vec<Value> = args
-                    .iter()
-                    .map(|v| {
-                        env.get(v)
-                            .cloned()
-                            .ok_or_else(|| format!("unbound var {} in Goto args", v.0))
-                    })
-                    .collect::<Result<_, _>>()?;
-                let next_blk = fn_ir.block(*b);
-                if next_blk.params.len() != new_vals.len() {
-                    return Err(format!(
-                        "Goto target {} expected {} params, got {}",
-                        b.0,
-                        next_blk.params.len(),
-                        new_vals.len()
-                    ));
-                }
-                for (p, val) in next_blk.params.iter().zip(new_vals) {
-                    env.insert(*p, val);
-                }
-                cur = *b;
-            }
-            Term::If(c, t, e) => {
-                let cv = env
-                    .get(c)
-                    .ok_or_else(|| format!("unbound condition var {}", c.0))?;
-                let truthy = is_truthy(cv);
-                let next = if truthy { *t } else { *e };
-                let next_blk = fn_ir.block(next);
-                if !next_blk.params.is_empty() {
-                    return Err(format!(
-                        "If branch target {} unexpectedly has {} params",
-                        next.0,
-                        next_blk.params.len()
-                    ));
-                }
-                cur = next;
-            }
-            Term::Call { callee, args, continuation } => {
-                let arg_vals = collect_vals(&env, args)?;
-                let result = run(ctx, *callee, arg_vals)?;
-                let cap_vals = collect_vals(&env, &continuation.captured)?;
-                let mut cont_args = vec![result];
-                cont_args.extend(cap_vals);
-                return run(ctx, continuation.fn_id, cont_args);
-            }
-            Term::TailCall { callee, args } => {
-                let arg_vals = collect_vals(&env, args)?;
-                return run(ctx, *callee, arg_vals);
-            }
-            Term::CallClosure { closure, args, continuation } => {
-                let cv = env_get(&env, *closure)?;
-                let (lam_fn, captured) = match cv {
-                    Value::IrClosure(c) => (FnId(c.fn_id), c.captured.clone()),
-                    other => return Err(format!("call_closure on non-closure {:?}", kind(&other))),
-                };
-                let mut call_args = captured;
-                call_args.extend(collect_vals(&env, args)?);
-                let result = run(ctx, lam_fn, call_args)?;
-                let cap_vals = collect_vals(&env, &continuation.captured)?;
-                let mut cont_args = vec![result];
-                cont_args.extend(cap_vals);
-                return run(ctx, continuation.fn_id, cont_args);
-            }
-            Term::TailCallClosure { closure, args } => {
-                let cv = env_get(&env, *closure)?;
-                let (lam_fn, captured) = match cv {
-                    Value::IrClosure(c) => (FnId(c.fn_id), c.captured.clone()),
-                    other => return Err(format!(
-                        "tail_call_closure on non-closure {:?}",
-                        kind(&other)
-                    )),
-                };
-                let mut call_args = captured;
-                call_args.extend(collect_vals(&env, args)?);
-                return run(ctx, lam_fn, call_args);
-            }
-            Term::Return(v) => {
-                return env
-                    .get(v)
-                    .cloned()
-                    .ok_or_else(|| format!("unbound return var {}", v.0));
-            }
-            Term::Halt(v) => {
-                return env
-                    .get(v)
-                    .cloned()
-                    .ok_or_else(|| format!("unbound halt var {}", v.0));
-            }
-            Term::Receive { .. } => {
-                // fz-ul4.19.3: receive requires the JIT runtime's scheduler;
-                // the IR interpreter has no equivalent.
-                return Err(
-                    "Term::Receive requires the JIT runtime (not implemented in IR interp)"
-                        .into(),
-                );
+    })
+}
+
+fn interp_reset_state() {
+    INTERP_TASKS.with(|t| t.borrow_mut().clear());
+    INTERP_NEXT_PID.with(|n| n.set(2));
+}
+
+/// Run `module`'s `main` fn through the interpreter.
+///
+/// Creates a fresh Process, installs it in CURRENT_PROCESS for the duration
+/// of the run (so runtime FFI fns like fz_print_value see a valid Process),
+/// drives main to completion, returns the Process's `halt_value`.
+pub fn run_main(module: &Module) -> Result<i64, String> {
+    let main_id = module
+        .fn_by_name("main")
+        .ok_or("no `main/0` fn found")?
+        .id;
+    interp_reset_state();
+    let user_schemas =
+        std::rc::Rc::new(std::cell::RefCell::new(crate::heap::SchemaRegistry::new()));
+    INTERP_SCHEMAS.with(|s| *s.borrow_mut() = Some(user_schemas.clone()));
+    let mut main_process = Box::new(Process::new(user_schemas));
+    main_process.pid = 1;
+    let main_ptr = interp_register_task(1, main_process);
+    let prev = crate::process::CURRENT_PROCESS.with(|c| c.replace(main_ptr));
+    let result = run_fn(module, main_id, Vec::new());
+    crate::process::CURRENT_PROCESS.with(|c| c.set(prev));
+    INTERP_SCHEMAS.with(|s| *s.borrow_mut() = None);
+    let r = result?;
+    Ok(value_to_halt(r))
+}
+
+/// Spawn a new task at `fn_id`, run it to completion synchronously, and
+/// return its pid. Matches the JIT's pid allocation convention (main=1,
+/// children get sequential pids starting at 2).
+fn interp_spawn(module: &Module, fn_id: FnId) -> Result<u32, String> {
+    let pid = interp_next_pid();
+    let user_schemas = INTERP_SCHEMAS
+        .with(|s| s.borrow().as_ref().cloned())
+        .ok_or("interp_spawn: no INTERP_SCHEMAS installed (call run_main first)")?;
+    let mut child = Box::new(Process::new(user_schemas));
+    child.pid = pid;
+    let child_ptr = interp_register_task(pid, child);
+    let prev = crate::process::CURRENT_PROCESS.with(|c| c.replace(child_ptr));
+    let result = run_fn(module, fn_id, Vec::new());
+    crate::process::CURRENT_PROCESS.with(|c| c.set(prev));
+    result?;
+    Ok(pid)
+}
+
+fn value_to_halt(v: FzValue) -> i64 {
+    use crate::fz_value::Tag;
+    match v.tag() {
+        Tag::Int => v.unbox_int().unwrap(),
+        Tag::Atom => v.unbox_atom().unwrap() as i64,
+        Tag::Special => {
+            if v.is_true() {
+                1
+            } else if v.is_false() {
+                0
+            } else {
+                0
             }
         }
+        Tag::Ptr | Tag::Reserved => v.0 as i64,
     }
 }
 
-fn collect_vals(env: &HashMap<Var, Value>, vars: &[Var]) -> Result<Vec<Value>, String> {
-    vars.iter()
-        .map(|v| env.get(v).cloned().ok_or_else(|| format!("unbound var {}", v.0)))
-        .collect()
+/// Run an fz fn to completion. Tail calls reuse this stack frame (no Rust
+/// recursion) so deeply tail-recursive programs run in O(1) Rust stack —
+/// `tail_recursion.fz`'s 100k-deep count exits cleanly.
+///
+/// Non-tail calls (Term::Call, Term::CallClosure) still recurse into a
+/// fresh `run_fn`; that's correct for the language's semantics (the
+/// continuation runs AFTER the callee returns), and it's bounded by the
+/// program's actual call depth which is typically small.
+fn run_fn(module: &Module, mut fn_id: FnId, mut args: Vec<FzValue>) -> Result<FzValue, String> {
+    'tail: loop {
+        let fn_ir = module.fn_by_id(fn_id);
+        let mut env: HashMap<Var, FzValue> = HashMap::new();
+        let entry = fn_ir.block(fn_ir.entry);
+        if entry.params.len() != args.len() {
+            return Err(format!(
+                "fn {} expected {} args, got {}",
+                fn_ir.name,
+                entry.params.len(),
+                args.len()
+            ));
+        }
+        for (p, v) in entry.params.iter().zip(args.iter()) {
+            env.insert(*p, *v);
+        }
+        let mut cur = fn_ir.entry;
+        loop {
+            let blk = fn_ir.block(cur);
+            for Stmt::Let(v, prim) in &blk.stmts {
+                let val = eval_prim(module, prim, &env)?;
+                env.insert(*v, val);
+            }
+            match &blk.terminator {
+                Term::Goto(b, gargs) => {
+                    let vals: Vec<FzValue> = gargs
+                        .iter()
+                        .map(|v| env_get(&env, *v))
+                        .collect::<Result<_, _>>()?;
+                    let next = fn_ir.block(*b);
+                    for (p, val) in next.params.iter().zip(vals) {
+                        env.insert(*p, val);
+                    }
+                    cur = *b;
+                }
+                Term::If(c, t, e) => {
+                    let cv = env_get(&env, *c)?;
+                    cur = if is_truthy(cv) { *t } else { *e };
+                }
+                Term::Call {
+                    callee,
+                    args: call_args,
+                    continuation,
+                } => {
+                    let arg_vals = collect(&env, call_args)?;
+                    let result = run_fn(module, *callee, arg_vals)?;
+                    let cap_vals = collect(&env, &continuation.captured)?;
+                    let mut cont_args = vec![result];
+                    cont_args.extend(cap_vals);
+                    // The continuation invocation is itself a tail
+                    // position — reuse this stack frame.
+                    fn_id = continuation.fn_id;
+                    args = cont_args;
+                    continue 'tail;
+                }
+                Term::TailCall {
+                    callee,
+                    args: call_args,
+                } => {
+                    let arg_vals = collect(&env, call_args)?;
+                    fn_id = *callee;
+                    args = arg_vals;
+                    continue 'tail;
+                }
+                Term::CallClosure {
+                    closure,
+                    args: call_args,
+                    continuation,
+                } => {
+                    let cl = env_get(&env, *closure)?;
+                    let (lam_fn, mut clos_args) = unpack_closure(cl)?;
+                    clos_args.extend(collect(&env, call_args)?);
+                    let result = run_fn(module, lam_fn, clos_args)?;
+                    let cap_vals = collect(&env, &continuation.captured)?;
+                    let mut cont_args = vec![result];
+                    cont_args.extend(cap_vals);
+                    fn_id = continuation.fn_id;
+                    args = cont_args;
+                    continue 'tail;
+                }
+                Term::TailCallClosure {
+                    closure,
+                    args: call_args,
+                } => {
+                    let cl = env_get(&env, *closure)?;
+                    let (lam_fn, mut clos_args) = unpack_closure(cl)?;
+                    clos_args.extend(collect(&env, call_args)?);
+                    fn_id = lam_fn;
+                    args = clos_args;
+                    continue 'tail;
+                }
+                Term::Return(v) => return env_get(&env, *v),
+                Term::Halt(v) => return env_get(&env, *v),
+                Term::Receive { continuation } => {
+                    let msg = crate::process::current_process()
+                        .mailbox
+                        .pop_front()
+                        .ok_or_else(|| {
+                            "interp: receive on empty mailbox (no preemption in v1 scheduler)"
+                                .to_string()
+                        })?;
+                    let cap_vals = collect(&env, &continuation.captured)?;
+                    let mut cont_args = vec![msg];
+                    cont_args.extend(cap_vals);
+                    fn_id = continuation.fn_id;
+                    args = cont_args;
+                    continue 'tail;
+                }
+            }
+        }
+    }
 }
 
-fn is_truthy(v: &Value) -> bool {
-    match v {
-        Value::Bool(b) => *b,
-        Value::Nil => false,
-        _ => true,
-    }
+fn collect(env: &HashMap<Var, FzValue>, vars: &[Var]) -> Result<Vec<FzValue>, String> {
+    vars.iter().map(|v| env_get(env, *v)).collect()
+}
+
+fn env_get(env: &HashMap<Var, FzValue>, v: Var) -> Result<FzValue, String> {
+    env.get(&v)
+        .copied()
+        .ok_or_else(|| format!("unbound Var({})", v.0))
+}
+
+fn is_truthy(v: FzValue) -> bool {
+    !(v.is_false() || v.is_nil())
 }
 
 fn eval_prim(
-    ctx: &InterpCtx,
+    module: &Module,
     prim: &Prim,
-    env: &HashMap<Var, Value>,
-) -> Result<Value, String> {
+    env: &HashMap<Var, FzValue>,
+) -> Result<FzValue, String> {
     Ok(match prim {
-        Prim::Const(c) => match c {
-            Const::Int(n) => Value::Int(*n),
-            Const::Float(x) => Value::Float(*x),
-            Const::Str(s) => Value::Str(Rc::from(s.as_str())),
-            Const::Atom(id) => Value::Atom(atom_name(ctx, *id)),
-            Const::Nil => Value::Nil,
-            Const::True => Value::Bool(true),
-            Const::False => Value::Bool(false),
-        },
+        Prim::Const(c) => const_to_fz(c),
         Prim::BinOp(op, a, b) => {
             let av = env_get(env, *a)?;
             let bv = env_get(env, *b)?;
-            eval_binop(*op, &av, &bv)?
-        }
-        Prim::UnOp(op, x) => {
-            let xv = env_get(env, *x)?;
-            match (op, &xv) {
-                (UnOp::Neg, Value::Int(n)) => Value::Int(-n),
-                (UnOp::Neg, Value::Float(f)) => Value::Float(-f),
-                (UnOp::Not, Value::Bool(b)) => Value::Bool(!b),
-                _ => return Err(format!("bad UnOp {:?} on {:?}", op, kind(&xv))),
-            }
-        }
-        Prim::AllocStruct(_, _) => {
-            return Err("AllocStruct: lowering to user-struct alloc lands in .11.7+".into());
+            eval_binop(*op, av, bv)?
         }
         Prim::Builtin(bid, args) => {
-            let arg_vals: Vec<Value> = args
-                .iter()
-                .map(|v| env_get(env, *v))
-                .collect::<Result<_, _>>()?;
-            let name = builtin_name(ctx, bid.0);
-            run_builtin(&name, &arg_vals)?
+            let arg_vals = collect(env, args)?;
+            run_builtin(module, *bid, &arg_vals)?
         }
-        Prim::ListCons(h, t) => {
-            let hv = env_get(env, *h)?;
-            let tv = env_get(env, *t)?;
-            list_cons(hv, tv)?
+        Prim::MakeClosure(fn_id, captured) => {
+            let cap_vals: Vec<FzValue> = collect(env, captured)?;
+            let p = crate::process::current_process()
+                .heap
+                .alloc_closure(fn_id.0, &cap_vals);
+            FzValue(p as u64)
         }
-        Prim::ListHead(l) => {
-            let lv = env_get(env, *l)?;
-            list_head(&lv)?
-        }
-        Prim::ListTail(l) => {
-            let lv = env_get(env, *l)?;
-            list_tail(&lv)?
-        }
-        Prim::ListIsNil(l) => {
-            let lv = env_get(env, *l)?;
-            Value::Bool(matches!(lv, Value::Nil) || matches!(&lv, Value::List(xs) if xs.is_empty()))
-        }
-        Prim::MakeTuple(args) => {
-            let vs: Vec<Value> = args
-                .iter()
-                .map(|v| env_get(env, *v))
-                .collect::<Result<_, _>>()?;
-            Value::Tuple(Rc::new(vs))
-        }
-        Prim::TupleField(v, i) => {
-            let tv = env_get(env, *v)?;
-            match tv {
-                Value::Tuple(xs) => xs
-                    .get(*i as usize)
-                    .cloned()
-                    .ok_or_else(|| format!("tuple_field {} out of range", i))?,
-                other => return Err(format!("tuple_field on non-tuple {:?}", kind(&other))),
-            }
-        }
-        Prim::MakeList(els, tail) => {
-            let mut vs: Vec<Value> = els
-                .iter()
-                .map(|v| env_get(env, *v))
-                .collect::<Result<_, _>>()?;
-            match tail {
-                Some(t) => {
-                    let tv = env_get(env, *t)?;
-                    let tail_vs = match tv {
-                        Value::Nil => vec![],
-                        Value::List(xs) => (*xs).clone(),
-                        other => {
-                            return Err(format!(
-                                "list tail must be List or Nil, got {:?}",
-                                kind(&other)
-                            ));
-                        }
-                    };
-                    vs.extend(tail_vs);
-                    Value::List(Rc::new(vs))
-                }
-                None => Value::List(Rc::new(vs)),
-            }
-        }
-        Prim::MakeClosure(fn_id, captured_vars) => {
-            let captured: Vec<Value> = captured_vars
-                .iter()
-                .map(|v| env_get(env, *v))
-                .collect::<Result<_, _>>()?;
-            Value::IrClosure(Rc::new(IrClosure { fn_id: fn_id.0, captured }))
-        }
-        Prim::MakeMap(entries) => {
-            let mut m = FzMap::new();
-            for (k, v) in entries {
-                let kv = env_get(env, *k)?;
-                let vv = env_get(env, *v)?;
-                m = m.put(kv, vv);
-            }
-            Value::Map(Rc::new(m))
-        }
-        Prim::MapUpdate(base, entries) => {
-            let bv = env_get(env, *base)?;
-            let mut m = match bv {
-                Value::Map(m) => (*m).clone(),
-                other => return Err(format!("map_update on non-map {:?}", kind(&other))),
-            };
-            for (k, v) in entries {
-                let kv = env_get(env, *k)?;
-                let vv = env_get(env, *v)?;
-                if !m.has(&kv) {
-                    return Err(format!("map_update: key not present"));
-                }
-                m = m.put(kv, vv);
-            }
-            Value::Map(Rc::new(m))
-        }
-        Prim::MapGet(m, k) => {
-            let mv = env_get(env, *m)?;
-            let kv = env_get(env, *k)?;
-            match mv {
-                Value::Map(m) => m.get(&kv).cloned().unwrap_or(Value::Nil),
-                other => return Err(format!("map_get on non-map {:?}", kind(&other))),
-            }
-        }
-        Prim::MakeVec(kind_ir, els) => {
-            use crate::ast::VecKind;
-            use crate::fz_ir::VecKindIr;
-            let vs: Vec<Value> = els.iter().map(|v| env_get(env, *v)).collect::<Result<_, _>>()?;
-            // ir_interp builds via ast::VecKind sigil; collapse the per-element
-            // bifurcation back to the AST-level shape.
-            let ast_kind = match kind_ir {
-                VecKindIr::I64 | VecKindIr::F64 => VecKind::Numeric,
-                VecKindIr::U8 => VecKind::Bytes,
-                VecKindIr::Bit => VecKind::Bits,
-            };
-            build_vec(ast_kind, vs)?
-        }
-        Prim::MakeBitstring(fields) => build_bitstring(env, fields)?,
-        Prim::BitReaderInit(v) => {
-            let sv = env_get(env, *v)?;
-            reader_init(&sv)?
-        }
-        Prim::BitReadField { reader, ty, size, endian, signed, unit, is_last } => {
-            let r = env_get(env, *reader)?;
-            let size_resolved = match resolve_size_ir(env, size)? {
-                Some(s) => Some(s),
-                None => default_size_for(*ty),
-            };
-            read_field(&r, *ty, size_resolved, resolved_unit_for(*ty, *unit), *endian, *signed, *is_last)
-        }
-        Prim::BitReaderDone(r) => {
-            let rv = env_get(env, *r)?;
-            Value::Bool(reader_pos(&rv)? == reader_bit_len(&rv)?)
+        _ => {
+            return Err(format!(
+                "interp .5.2: prim {:?} not yet supported (lands in fz-ul4.23.5.3+)",
+                std::mem::discriminant(prim)
+            ));
         }
     })
 }
 
-fn env_get(env: &HashMap<Var, Value>, v: Var) -> Result<Value, String> {
-    env.get(&v).cloned().ok_or_else(|| format!("unbound var {}", v.0))
+/// Read an interp-side closure value: the heap object's `schema_id` field
+/// is repurposed (per the JIT layout, fz-ul4.11.32) to hold the IR FnId of
+/// the lambda body, and `flags` holds the captured count. Returns the
+/// callee fn id plus a Vec of captured FzValues read from the payload.
+fn unpack_closure(v: FzValue) -> Result<(FnId, Vec<FzValue>), String> {
+    use crate::fz_value::HeapKind;
+    let p = v.unbox_ptr().ok_or_else(|| {
+        format!(
+            "call_closure on non-ptr value: {}",
+            crate::fz_value::debug::render(v.0)
+        )
+    })?;
+    let header = unsafe { &*p };
+    if HeapKind::from_u16(header.kind) != Some(HeapKind::Closure) {
+        return Err("call_closure on non-closure heap value".into());
+    }
+    let fn_id = FnId(header.schema_id);
+    let cap_count = header.flags as usize;
+    let payload = unsafe { (p as *const u8).add(16) as *const u64 };
+    let captured: Vec<FzValue> = (0..cap_count)
+        .map(|i| FzValue(unsafe { std::ptr::read(payload.add(i)) }))
+        .collect();
+    Ok((fn_id, captured))
 }
 
-fn list_cons(h: Value, t: Value) -> Result<Value, String> {
-    let mut xs = match t {
-        Value::Nil => Vec::new(),
-        Value::List(xs) => (*xs).clone(),
-        other => return Err(format!("cons tail must be List/Nil, got {:?}", kind(&other))),
-    };
-    xs.insert(0, h);
-    Ok(Value::List(Rc::new(xs)))
-}
-
-fn list_head(v: &Value) -> Result<Value, String> {
-    match v {
-        Value::List(xs) if !xs.is_empty() => Ok(xs[0].clone()),
-        _ => Err("head of empty/non-list".into()),
+fn const_to_fz(c: &Const) -> FzValue {
+    match c {
+        Const::Int(n) => FzValue::from_int(*n),
+        Const::Atom(id) => FzValue::from_atom_id(*id),
+        Const::Nil => FzValue::NIL,
+        Const::True => FzValue::TRUE,
+        Const::False => FzValue::FALSE,
+        Const::Float(f) => FzValue(crate::ir_runtime::fz_alloc_float(f.to_bits())),
+        // Str: no first-class heap kind yet (.11.x lowers strings to
+        // Bitstring at the AST level). Should never reach the interp as a
+        // raw Const::Str; if it does, surface honestly.
+        Const::Str(_) => FzValue::NIL,
     }
 }
 
-fn list_tail(v: &Value) -> Result<Value, String> {
-    match v {
-        Value::List(xs) if !xs.is_empty() => {
-            let rest: Vec<Value> = xs[1..].to_vec();
-            if rest.is_empty() {
-                Ok(Value::Nil)
-            } else {
-                Ok(Value::List(Rc::new(rest)))
+fn eval_binop(op: BinOp, a: FzValue, b: FzValue) -> Result<FzValue, String> {
+    // Arithmetic: both-Int fast path matches the JIT's inline lowering;
+    // mixed or boxed-float operands fall back to the shared FFI helper so
+    // promotion semantics stay identical across paths.
+    macro_rules! int_arith {
+        ($op:tt, $ffi:path) => {
+            match (a.unbox_int(), b.unbox_int()) {
+                (Some(x), Some(y)) => Ok(FzValue::from_int(x $op y)),
+                _ => Ok(FzValue($ffi(a.0, b.0))),
             }
-        }
-        _ => Err("tail of empty/non-list".into()),
-    }
-}
-
-fn eval_binop(op: BinOp, a: &Value, b: &Value) -> Result<Value, String> {
-    use Value::*;
-    Ok(match (op, a, b) {
-        (BinOp::Add, Int(x), Int(y)) => Int(x + y),
-        (BinOp::Sub, Int(x), Int(y)) => Int(x - y),
-        (BinOp::Mul, Int(x), Int(y)) => Int(x * y),
-        (BinOp::Div, Int(x), Int(y)) => {
-            if *y == 0 {
-                return Err("division by zero".into());
-            }
-            Int(x / y)
-        }
-        (BinOp::Mod, Int(x), Int(y)) => {
-            if *y == 0 {
-                return Err("mod by zero".into());
-            }
-            Int(x % y)
-        }
-        (BinOp::Add, Float(x), Float(y)) => Float(x + y),
-        (BinOp::Sub, Float(x), Float(y)) => Float(x - y),
-        (BinOp::Mul, Float(x), Float(y)) => Float(x * y),
-        (BinOp::Div, Float(x), Float(y)) => Float(x / y),
-        (BinOp::Eq, x, y) => Bool(value_eq(x, y)),
-        (BinOp::Neq, x, y) => Bool(!value_eq(x, y)),
-        (BinOp::Lt, Int(x), Int(y)) => Bool(x < y),
-        (BinOp::Le, Int(x), Int(y)) => Bool(x <= y),
-        (BinOp::Gt, Int(x), Int(y)) => Bool(x > y),
-        (BinOp::Ge, Int(x), Int(y)) => Bool(x >= y),
-        (BinOp::Lt, Float(x), Float(y)) => Bool(x < y),
-        (BinOp::Le, Float(x), Float(y)) => Bool(x <= y),
-        (BinOp::Gt, Float(x), Float(y)) => Bool(x > y),
-        (BinOp::Ge, Float(x), Float(y)) => Bool(x >= y),
-        (BinOp::And, Bool(x), Bool(y)) => Bool(*x && *y),
-        (BinOp::Or, Bool(x), Bool(y)) => Bool(*x || *y),
-        _ => return Err(format!("bad BinOp {:?} on ({:?}, {:?})", op, kind(a), kind(b))),
-    })
-}
-
-fn value_eq(a: &Value, b: &Value) -> bool {
-    use Value::*;
-    match (a, b) {
-        (Int(x), Int(y)) => x == y,
-        (Float(x), Float(y)) => x == y,
-        (Bool(x), Bool(y)) => x == y,
-        (Nil, Nil) => true,
-        (Atom(x), Atom(y)) => &**x == &**y,
-        (Str(x), Str(y)) => &**x == &**y,
-        (List(x), List(y)) => {
-            x.len() == y.len() && x.iter().zip(y.iter()).all(|(a, b)| value_eq(a, b))
-        }
-        (Tuple(x), Tuple(y)) => {
-            x.len() == y.len() && x.iter().zip(y.iter()).all(|(a, b)| value_eq(a, b))
-        }
-        _ => false,
-    }
-}
-
-fn run_builtin(name: &str, args: &[Value]) -> Result<Value, String> {
-    match name {
-        "print" => {
-            // No-op for tests; real print would write to stdout.
-            Ok(Value::Nil)
-        }
-        "assert" => {
-            if args.len() != 1 {
-                return Err("assert/1 expected 1 arg".into());
-            }
-            if is_truthy(&args[0]) {
-                Ok(Value::Atom(Rc::from("ok")))
-            } else {
-                Err("assert failed".into())
-            }
-        }
-        "assert_eq" => {
-            if args.len() != 2 {
-                return Err("assert_eq/2 expected 2 args".into());
-            }
-            if value_eq(&args[0], &args[1]) {
-                Ok(Value::Atom(Rc::from("ok")))
-            } else {
-                Err(format!("assert_eq failed: {:?} != {:?}", kind(&args[0]), kind(&args[1])))
-            }
-        }
-        "assert_neq" => {
-            if args.len() != 2 {
-                return Err("assert_neq/2 expected 2 args".into());
-            }
-            if !value_eq(&args[0], &args[1]) {
-                Ok(Value::Atom(Rc::from("ok")))
-            } else {
-                Err("assert_neq failed".into())
-            }
-        }
-        // fz-ul4.19.2: spawn/self are scheduler-bound builtins. The IR
-        // interpreter has no scheduler, so they error out at interp time;
-        // the JIT path implements them via the Runtime.
-        "spawn" => Err("spawn/1 requires the JIT runtime (not implemented in IR interp)".into()),
-        "self" => Err("self/0 requires the JIT runtime (not implemented in IR interp)".into()),
-        "send" => Err("send/2 requires the JIT runtime (not implemented in IR interp)".into()),
-        other => Err(format!("unknown builtin {}", other)),
-    }
-}
-
-fn kind(v: &Value) -> &'static str {
-    match v {
-        Value::Int(_) => "Int",
-        Value::Float(_) => "Float",
-        Value::Bool(_) => "Bool",
-        Value::Nil => "Nil",
-        Value::Atom(_) => "Atom",
-        Value::Str(_) => "Str",
-        Value::List(_) => "List",
-        Value::Tuple(_) => "Tuple",
-        Value::Vec(_) => "Vec",
-        Value::BitStr(_) => "BitStr",
-        Value::Map(_) => "Map",
-        Value::Closure(_) => "Closure",
-        Value::Builtin(_) => "Builtin",
-        Value::IrClosure(_) => "IrClosure",
-    }
-}
-
-// Silence unused-import warning when FzMap isn't referenced by any test.
-#[allow(dead_code)]
-fn _unused_fzmap_import(_: &FzMap) {}
-
-// ----------------------------------------------------------------------
-// Vec / Bitstring helpers
-// ----------------------------------------------------------------------
-
-fn build_vec(kind: VecKind, vs: Vec<Value>) -> Result<Value, String> {
-    match kind {
-        VecKind::Numeric => {
-            let all_int = vs.iter().all(|v| matches!(v, Value::Int(_)));
-            let any_float = vs.iter().any(|v| matches!(v, Value::Float(_)));
-            if any_float {
-                let xs: Vec<f64> = vs
-                    .iter()
-                    .map(|v| match v {
-                        Value::Float(x) => Ok(*x),
-                        Value::Int(n) => Ok(*n as f64),
-                        other => Err(format!("vec(numeric): expected number, got {:?}", kind_v(other))),
-                    })
-                    .collect::<Result<_, _>>()?;
-                Ok(Value::Vec(FzVec::F64(Rc::new(xs))))
-            } else if all_int {
-                let xs: Vec<i64> = vs.iter().map(|v| if let Value::Int(n) = v { *n } else { 0 }).collect();
-                Ok(Value::Vec(FzVec::I64(Rc::new(xs))))
-            } else {
-                Err("vec(numeric): expected ints or floats".into())
-            }
-        }
-        VecKind::Bytes => {
-            let xs: Vec<u8> = vs
-                .iter()
-                .map(|v| match v {
-                    Value::Int(n) if *n >= 0 && *n <= 255 => Ok(*n as u8),
-                    other => Err(format!("vec(bytes): expected 0..=255, got {:?}", kind_v(other))),
-                })
-                .collect::<Result<_, _>>()?;
-            Ok(Value::Vec(FzVec::U8(Rc::new(xs))))
-        }
-        VecKind::Bits => {
-            let xs: Vec<u8> = vs
-                .iter()
-                .map(|v| match v {
-                    Value::Int(n) if *n == 0 || *n == 1 => Ok(*n as u8),
-                    other => Err(format!("vec(bits): expected 0 or 1, got {:?}", kind_v(other))),
-                })
-                .collect::<Result<_, _>>()?;
-            Ok(Value::Vec(FzVec::Bit(Rc::new(BitVec::from_bits(&xs)))))
-        }
-    }
-}
-
-fn kind_v(v: &Value) -> &'static str { kind(v) }
-
-fn resolve_size_ir(env: &HashMap<Var, Value>, size: &Option<BitSizeIr>) -> Result<Option<u32>, String> {
-    match size {
-        Some(BitSizeIr::Literal(n)) => Ok(Some(*n)),
-        Some(BitSizeIr::Var(v)) => match env_get(env, *v)? {
-            Value::Int(n) if n >= 0 => Ok(Some(n as u32)),
-            other => Err(format!("bit size must be non-negative int, got {:?}", kind(&other))),
-        },
-        None => Ok(None),
-    }
-}
-
-fn default_size_for(ty: BitType) -> Option<u32> {
-    match ty {
-        BitType::Integer => Some(8),
-        BitType::Float => Some(64),
-        BitType::Binary | BitType::Bits => None,
-        BitType::Utf8 | BitType::Utf16 | BitType::Utf32 => None,
-    }
-}
-
-fn resolved_unit_for(ty: BitType, unit: Option<u32>) -> u32 {
-    if let Some(u) = unit { return u; }
-    match ty {
-        BitType::Integer | BitType::Float | BitType::Bits => 1,
-        BitType::Binary => 8,
-        BitType::Utf8 | BitType::Utf16 | BitType::Utf32 => 1,
-    }
-}
-
-fn build_bitstring(env: &HashMap<Var, Value>, fields: &[BitFieldIr]) -> Result<Value, String> {
-    let mut writer = BitWriter::new();
-    for f in fields {
-        let unit = resolved_unit_for(f.ty, f.unit);
-        let size = match resolve_size_ir(env, &f.size)? {
-            Some(s) => Some(s),
-            None => default_size_for(f.ty),
         };
-        let val = env_get(env, f.value)?;
-        encode_field_ir(&val, f.ty, size, unit, f.endian, f.signed, &mut writer)?;
     }
-    Ok(writer.finalize())
+    match op {
+        BinOp::Add => int_arith!(+, crate::ir_runtime::fz_arith_add),
+        BinOp::Sub => int_arith!(-, crate::ir_runtime::fz_arith_sub),
+        BinOp::Mul => int_arith!(*, crate::ir_runtime::fz_arith_mul),
+        BinOp::Div => int_arith!(/, crate::ir_runtime::fz_arith_div),
+        BinOp::Mod => int_arith!(%, crate::ir_runtime::fz_arith_mod),
+        BinOp::Eq => Ok(FzValue(crate::ir_runtime::fz_value_eq(a.0, b.0))),
+        BinOp::Neq => {
+            let eq = FzValue(crate::ir_runtime::fz_value_eq(a.0, b.0));
+            Ok(if eq.is_true() { FzValue::FALSE } else { FzValue::TRUE })
+        }
+        BinOp::Lt => Ok(FzValue(crate::ir_runtime::fz_cmp_lt(a.0, b.0))),
+        BinOp::Le => Ok(FzValue(crate::ir_runtime::fz_cmp_le(a.0, b.0))),
+        BinOp::Gt => Ok(FzValue(crate::ir_runtime::fz_cmp_gt(a.0, b.0))),
+        BinOp::Ge => Ok(FzValue(crate::ir_runtime::fz_cmp_ge(a.0, b.0))),
+        BinOp::And => Ok(if !is_truthy(a) { a } else { b }),
+        BinOp::Or => Ok(if is_truthy(a) { a } else { b }),
+    }
 }
 
-fn encode_field_ir(
-    value: &Value,
-    ty: BitType,
-    size: Option<u32>,
-    unit: u32,
-    endian: Endian,
-    _signed: bool,
-    writer: &mut BitWriter,
-) -> Result<(), String> {
-    match ty {
-        BitType::Integer => {
-            let n = match value {
-                Value::Int(n) => *n,
-                _ => return Err("integer bit field expects int".into()),
-            };
-            let total = size.unwrap_or(8) * unit;
-            if total > 64 { return Err(format!("integer field too wide: {}", total)); }
-            let masked = if total < 64 { (n as u64) & ((1u64 << total) - 1) } else { n as u64 };
-            let bswap = crate::bitstr::apply_endian_for_write(masked, total, endian);
-            writer.write_bits(bswap, total as usize);
-            Ok(())
-        }
-        BitType::Float => {
-            let f = match value {
-                Value::Float(f) => *f,
-                Value::Int(n) => *n as f64,
-                _ => return Err("float bit field expects number".into()),
-            };
-            let total = size.unwrap_or(64) * unit;
-            let bits = match total {
-                32 => (f as f32).to_bits() as u64,
-                64 => f.to_bits(),
-                _ => return Err(format!("float field size must be 32 or 64, got {}", total)),
-            };
-            let bswap = crate::bitstr::apply_endian_for_write(bits, total, endian);
-            writer.write_bits(bswap, total as usize);
-            Ok(())
-        }
-        BitType::Binary => {
-            let bytes = match value {
-                Value::Vec(FzVec::U8(b)) => b.clone(),
-                _ => return Err("binary bit field expects byte-vector".into()),
-            };
-            let total_bits = match size {
-                None => bytes.len() * 8,
-                Some(n) => (n * unit) as usize,
-            };
-            if total_bits > bytes.len() * 8 {
-                return Err(format!("binary field exceeds available bits"));
+fn run_builtin(
+    module: &Module,
+    bid: crate::fz_ir::BuiltinId,
+    args: &[FzValue],
+) -> Result<FzValue, String> {
+    let Some(kind) = BuiltinKind::from_id(bid) else {
+        return Err(format!("interp: unknown builtin id {}", bid.0));
+    };
+    match kind {
+        BuiltinKind::Print => {
+            if args.len() != 1 {
+                return Err(format!("print/1 got {} args", args.len()));
             }
-            if total_bits % 8 == 0 && writer.bit_len % 8 == 0 {
-                writer.bytes.extend_from_slice(&bytes[..total_bits / 8]);
-                writer.bit_len += total_bits;
+            crate::ir_runtime::fz_print_value(args[0].0);
+            Ok(FzValue::NIL)
+        }
+        BuiltinKind::Assert => {
+            if args.len() != 1 {
+                return Err(format!("assert/1 got {} args", args.len()));
+            }
+            if is_truthy(args[0]) {
+                Ok(FzValue::NIL)
             } else {
-                let mut r = BitReader { bytes: &bytes, bit_len: bytes.len() * 8, pos: 0 };
-                for _ in 0..total_bits {
-                    writer.append_bit(r.read_bit().unwrap());
-                }
-            }
-            Ok(())
-        }
-        BitType::Bits => {
-            let (bytes, bit_len): (Vec<u8>, usize) = match value {
-                Value::Vec(FzVec::U8(b)) => ((**b).clone(), b.len() * 8),
-                Value::BitStr(bs) => (bs.bytes.clone(), bs.bit_len),
-                _ => return Err("bits field expects bitstring".into()),
-            };
-            let total_bits = match size {
-                None => bit_len,
-                Some(n) => (n * unit) as usize,
-            };
-            if total_bits > bit_len { return Err("bits field exceeds available".into()); }
-            let mut r = BitReader { bytes: &bytes, bit_len, pos: 0 };
-            for _ in 0..total_bits {
-                writer.append_bit(r.read_bit().unwrap());
-            }
-            Ok(())
-        }
-        BitType::Utf8 => {
-            let cp = codepoint_v(value)?;
-            let bytes = encode_utf8(cp).ok_or_else(|| format!("invalid codepoint: {}", cp))?;
-            writer.write_bytes(&bytes);
-            Ok(())
-        }
-        BitType::Utf16 => {
-            let cp = codepoint_v(value)?;
-            let bytes = encode_utf16(cp, endian).ok_or_else(|| format!("invalid codepoint: {}", cp))?;
-            writer.write_bytes(&bytes);
-            Ok(())
-        }
-        BitType::Utf32 => {
-            let cp = codepoint_v(value)?;
-            let bytes = encode_utf32(cp, endian).ok_or_else(|| format!("invalid codepoint: {}", cp))?;
-            writer.write_bytes(&bytes);
-            Ok(())
-        }
-    }
-}
-
-fn codepoint_v(v: &Value) -> Result<u32, String> {
-    match v {
-        Value::Int(n) if *n >= 0 && *n <= 0x10ffff => Ok(*n as u32),
-        _ => Err("expected codepoint".into()),
-    }
-}
-
-// Reader is modelled as a Tuple([Vec(U8), Int(bit_len), Int(pos)]). Persistent —
-// each read produces a new reader value with the position advanced.
-
-fn reader_init(v: &Value) -> Result<Value, String> {
-    let (bytes, bit_len): (Rc<Vec<u8>>, usize) = match v {
-        Value::Vec(FzVec::U8(b)) => (b.clone(), b.len() * 8),
-        Value::BitStr(bs) => (Rc::new(bs.bytes.clone()), bs.bit_len),
-        other => return Err(format!("bit_reader_init on non-bitstring {:?}", kind(other))),
-    };
-    Ok(Value::Tuple(Rc::new(vec![
-        Value::Vec(FzVec::U8(bytes)),
-        Value::Int(bit_len as i64),
-        Value::Int(0),
-    ])))
-}
-
-fn reader_parts(v: &Value) -> Result<(Rc<Vec<u8>>, usize, usize), String> {
-    let xs = match v {
-        Value::Tuple(xs) => xs,
-        other => return Err(format!("expected reader, got {:?}", kind(other))),
-    };
-    if xs.len() != 3 {
-        return Err("reader tuple has wrong shape".into());
-    }
-    let bytes = match &xs[0] {
-        Value::Vec(FzVec::U8(b)) => b.clone(),
-        _ => return Err("reader bytes slot wrong".into()),
-    };
-    let bit_len = match &xs[1] { Value::Int(n) => *n as usize, _ => return Err("reader bit_len".into()) };
-    let pos = match &xs[2] { Value::Int(n) => *n as usize, _ => return Err("reader pos".into()) };
-    Ok((bytes, bit_len, pos))
-}
-
-fn reader_pos(v: &Value) -> Result<usize, String> { reader_parts(v).map(|(_, _, p)| p) }
-fn reader_bit_len(v: &Value) -> Result<usize, String> { reader_parts(v).map(|(_, b, _)| b) }
-
-fn make_reader(bytes: Rc<Vec<u8>>, bit_len: usize, pos: usize) -> Value {
-    Value::Tuple(Rc::new(vec![
-        Value::Vec(FzVec::U8(bytes)),
-        Value::Int(bit_len as i64),
-        Value::Int(pos as i64),
-    ]))
-}
-
-/// Read one field from the reader, returning Tuple([ok, extracted, new_reader])
-/// on success or Tuple([false]) on failure.
-fn read_field(
-    reader_val: &Value,
-    ty: BitType,
-    size: Option<u32>,
-    unit: u32,
-    endian: Endian,
-    signed: bool,
-    is_last: bool,
-) -> Value {
-    let (bytes, bit_len, pos) = match reader_parts(reader_val) {
-        Ok(p) => p,
-        Err(_) => return Value::Tuple(Rc::new(vec![Value::Bool(false)])),
-    };
-    let mut r = BitReader { bytes: &bytes, bit_len, pos };
-    let extracted: Value = match ty {
-        BitType::Integer => {
-            let total = size.unwrap_or(8) * unit;
-            if total > 64 { return Value::Tuple(Rc::new(vec![Value::Bool(false)])); }
-            let raw = match r.read_bits(total as usize) {
-                Some(v) => v,
-                None => return Value::Tuple(Rc::new(vec![Value::Bool(false)])),
-            };
-            let raw = apply_endian_for_read(raw, total, endian);
-            let n = if signed { sign_extend(raw, total) } else { raw as i64 };
-            Value::Int(n)
-        }
-        BitType::Float => {
-            let total = size.unwrap_or(64) * unit;
-            let raw = match r.read_bits(total as usize) {
-                Some(v) => v,
-                None => return Value::Tuple(Rc::new(vec![Value::Bool(false)])),
-            };
-            let raw = apply_endian_for_read(raw, total, endian);
-            let fv = match total {
-                32 => f32::from_bits(raw as u32) as f64,
-                64 => f64::from_bits(raw),
-                _ => return Value::Tuple(Rc::new(vec![Value::Bool(false)])),
-            };
-            Value::Float(fv)
-        }
-        BitType::Binary => {
-            let n_bits = match size {
-                None => {
-                    if !is_last { return Value::Tuple(Rc::new(vec![Value::Bool(false)])); }
-                    r.remaining()
-                }
-                Some(n) => (n * unit) as usize,
-            };
-            if n_bits % 8 != 0 { return Value::Tuple(Rc::new(vec![Value::Bool(false)])); }
-            match r.take_bits(n_bits) {
-                Some(v) => v,
-                None => return Value::Tuple(Rc::new(vec![Value::Bool(false)])),
+                Err("assertion failed".into())
             }
         }
-        BitType::Bits => {
-            let n_bits = match size {
-                None => {
-                    if !is_last { return Value::Tuple(Rc::new(vec![Value::Bool(false)])); }
-                    r.remaining()
-                }
-                Some(n) => (n * unit) as usize,
-            };
-            match r.take_bits(n_bits) {
-                Some(v) => v,
-                None => return Value::Tuple(Rc::new(vec![Value::Bool(false)])),
+        BuiltinKind::AssertEq => {
+            if args.len() != 2 {
+                return Err(format!("assert_eq/2 got {} args", args.len()));
+            }
+            let eq = FzValue(crate::ir_runtime::fz_value_eq(args[0].0, args[1].0));
+            if eq.is_true() {
+                Ok(FzValue::NIL)
+            } else {
+                Err(format!(
+                    "assertion failed: assert_eq({}, {})",
+                    crate::fz_value::debug::render(args[0].0),
+                    crate::fz_value::debug::render(args[1].0),
+                ))
             }
         }
-        BitType::Utf8 => match decode_utf8(&mut r) {
-            Some(c) => Value::Int(c as i64),
-            None => return Value::Tuple(Rc::new(vec![Value::Bool(false)])),
-        },
-        BitType::Utf16 => match decode_utf16(&mut r, endian) {
-            Some(c) => Value::Int(c as i64),
-            None => return Value::Tuple(Rc::new(vec![Value::Bool(false)])),
-        },
-        BitType::Utf32 => match decode_utf32(&mut r, endian) {
-            Some(c) => Value::Int(c as i64),
-            None => return Value::Tuple(Rc::new(vec![Value::Bool(false)])),
-        },
-    };
-    let new_pos = r.pos;
-    let new_reader = make_reader(bytes, bit_len, new_pos);
-    Value::Tuple(Rc::new(vec![Value::Bool(true), extracted, new_reader]))
-}
-
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::lexer::Lexer;
-    use crate::parser::Parser;
-    use std::rc::Rc;
-
-    fn lower_for_interp(src: &str) -> (Module, Vec<String>, Vec<String>) {
-        use crate::ir_lower::lower_program_full;
-        let toks = Lexer::new(src).tokenize().expect("lex");
-        let prog = Parser::new(toks).parse_program().expect("parse");
-        let (module, atoms, _builtins) = lower_program_full(&prog).expect("lower failed");
-        let builtins = vec![
-            "print".to_string(),
-            "assert".to_string(),
-            "assert_eq".to_string(),
-            "assert_neq".to_string(),
-        ];
-        (module, atoms.names(), builtins)
-    }
-
-    fn run_named(src: &str, name: &str, args: Vec<Value>) -> Result<Value, String> {
-        let (module, atoms, builtins) = lower_for_interp(src);
-        let f = module.fn_by_name(name).expect("fn not found");
-        run_fn_with(&module, f.id, args, &atoms, &builtins)
-    }
-
-    #[test]
-    fn interp_const_int() {
-        let r = run_named("fn f(), do: 42", "f", vec![]).unwrap();
-        assert!(matches!(r, Value::Int(42)));
-    }
-
-    #[test]
-    fn interp_identity() {
-        let r = run_named("fn id(x), do: x", "id", vec![Value::Int(7)]).unwrap();
-        assert!(matches!(r, Value::Int(7)));
-    }
-
-    #[test]
-    fn interp_binop_add() {
-        let r = run_named("fn add1(x), do: x + 1", "add1", vec![Value::Int(41)]).unwrap();
-        assert!(matches!(r, Value::Int(42)));
-    }
-
-    #[test]
-    fn interp_unop_neg() {
-        let r = run_named("fn n(x), do: -x", "n", vec![Value::Int(5)]).unwrap();
-        assert!(matches!(r, Value::Int(-5)));
-    }
-
-    #[test]
-    fn interp_if_then() {
-        let src = "fn pos(x), do: if x > 0, do: 1, else: -1";
-        let r = run_named(src, "pos", vec![Value::Int(5)]).unwrap();
-        assert!(matches!(r, Value::Int(1)));
-        let r = run_named(src, "pos", vec![Value::Int(-3)]).unwrap();
-        assert!(matches!(r, Value::Int(-1)));
-    }
-
-    #[test]
-    fn interp_block_returns_last() {
-        let r = run_named("fn b() do\n  1\n  2\n  3\nend", "b", vec![]).unwrap();
-        assert!(matches!(r, Value::Int(3)));
-    }
-
-    #[test]
-    fn interp_tuple_construction_and_field_projection() {
-        let t = Value::Tuple(Rc::new(vec![Value::Int(10), Value::Int(20)]));
-        let r = run_named("fn first({a, b}), do: a", "first", vec![t]).unwrap();
-        assert!(matches!(r, Value::Int(10)));
-    }
-
-    #[test]
-    fn interp_list_construction() {
-        let r = run_named("fn l(), do: [1, 2, 3]", "l", vec![]).unwrap();
-        match r {
-            Value::List(xs) => {
-                let xs = (*xs).clone();
-                assert_eq!(xs.len(), 3);
-                assert!(matches!(xs[0], Value::Int(1)));
-                assert!(matches!(xs[2], Value::Int(3)));
+        BuiltinKind::AssertNeq => {
+            if args.len() != 2 {
+                return Err(format!("assert_neq/2 got {} args", args.len()));
             }
-            other => panic!("expected list, got {:?}", super::kind(&other)),
-        }
-    }
-
-    #[test]
-    fn interp_list_head_tail_pattern() {
-        let lst = Value::List(Rc::new(vec![Value::Int(7), Value::Int(8)]));
-        let r = run_named("fn first_of([h | _]), do: h", "first_of", vec![lst]).unwrap();
-        assert!(matches!(r, Value::Int(7)));
-    }
-
-    #[test]
-    fn interp_multi_clause_factorial() {
-        let src = "fn fact(0), do: 1\nfn fact(n), do: n * fact(n - 1)";
-        let r = run_named(src, "fact", vec![Value::Int(5)]).unwrap();
-        assert!(matches!(r, Value::Int(120)), "got {:?}", super::kind(&r));
-    }
-
-    #[test]
-    fn interp_tail_call() {
-        let src = "fn caller(x), do: callee(x)\nfn callee(y), do: y + 1";
-        let r = run_named(src, "caller", vec![Value::Int(41)]).unwrap();
-        assert!(matches!(r, Value::Int(42)));
-    }
-
-    #[test]
-    fn interp_cps_split_call_in_binop() {
-        let src = "fn caller(x), do: callee(x) + 10\nfn callee(y), do: y * 2";
-        let r = run_named(src, "caller", vec![Value::Int(5)]).unwrap();
-        // callee(5) = 10; + 10 = 20.
-        assert!(matches!(r, Value::Int(20)), "got {:?}", super::kind(&r));
-    }
-
-    #[test]
-    fn interp_recursive_count_down() {
-        let src = "fn count(0), do: 0\nfn count(n), do: count(n - 1)";
-        let r = run_named(src, "count", vec![Value::Int(50)]).unwrap();
-        assert!(matches!(r, Value::Int(0)));
-    }
-
-    #[test]
-    fn interp_fib() {
-        let src = r#"
-fn fib(0), do: 0
-fn fib(1), do: 1
-fn fib(n), do: fib(n - 1) + fib(n - 2)
-"#;
-        let r = run_named(src, "fib", vec![Value::Int(10)]).unwrap();
-        assert!(matches!(r, Value::Int(55)), "got {:?}", super::kind(&r));
-    }
-
-    #[test]
-    fn interp_pattern_match_falls_through() {
-        let src = "fn classify(0), do: :zero\nfn classify(_), do: :other";
-        let r0 = run_named(src, "classify", vec![Value::Int(0)]).unwrap();
-        let r5 = run_named(src, "classify", vec![Value::Int(5)]).unwrap();
-        match (&r0, &r5) {
-            (Value::Atom(a), Value::Atom(b)) => {
-                assert_ne!(&**a, &**b, "two clauses should return distinct atoms");
-                assert_eq!(&**a, "zero");
-                assert_eq!(&**b, "other");
+            let eq = FzValue(crate::ir_runtime::fz_value_eq(args[0].0, args[1].0));
+            if eq.is_false() {
+                Ok(FzValue::NIL)
+            } else {
+                Err(format!(
+                    "assertion failed: assert_neq({}, {})",
+                    crate::fz_value::debug::render(args[0].0),
+                    crate::fz_value::debug::render(args[1].0),
+                ))
             }
-            _ => panic!("expected atoms, got {:?} / {:?}", super::kind(&r0), super::kind(&r5)),
         }
-    }
-
-    #[test]
-    fn interp_builtin_assert_eq_passes() {
-        let r = run_named("fn t(), do: assert_eq(1 + 1, 2)", "t", vec![]).unwrap();
-        match r {
-            Value::Atom(s) => assert_eq!(&*s, "ok"),
-            other => panic!("got {:?}", super::kind(&other)),
-        }
-    }
-
-    #[test]
-    fn interp_closure_construction() {
-        let r = run_named("fn mk(), do: fn(y) -> y + 1", "mk", vec![]).unwrap();
-        match r {
-            Value::IrClosure(c) => assert!(c.captured.is_empty()),
-            other => panic!("expected IrClosure, got {:?}", super::kind(&other)),
-        }
-    }
-
-    #[test]
-    fn interp_closure_captures_and_invokes() {
-        let src = r#"
-fn mk(x), do: fn(y) -> x + y
-fn use_it(x, y) do
-  f = mk(x)
-  f(y)
-end
-"#;
-        let r = run_named(src, "use_it", vec![Value::Int(10), Value::Int(32)]).unwrap();
-        assert!(matches!(r, Value::Int(42)), "got {:?}", super::kind(&r));
-    }
-
-    // ----- fz-ul4.11.17 coverage: VecLit / Map / MapUpdate / Index / Case / Cond / With / Bitstring -----
-
-    #[test]
-    fn interp_vec_numeric_int() {
-        let r = run_named("fn v(), do: ~v[1, 2, 3]", "v", vec![]).unwrap();
-        match r {
-            Value::Vec(super::FzVec::I64(xs)) => assert_eq!(&*xs, &[1, 2, 3]),
-            other => panic!("got {:?}", super::kind(&other)),
-        }
-    }
-
-    #[test]
-    fn interp_vec_bytes() {
-        let r = run_named("fn v(), do: ~b[255, 0]", "v", vec![]).unwrap();
-        match r {
-            Value::Vec(super::FzVec::U8(xs)) => assert_eq!(&*xs, &[255, 0]),
-            other => panic!("got {:?}", super::kind(&other)),
-        }
-    }
-
-    #[test]
-    fn interp_vec_bits() {
-        let r = run_named("fn v(), do: ~bits[1, 0, 1]", "v", vec![]).unwrap();
-        match r {
-            Value::Vec(super::FzVec::Bit(b)) => {
-                assert_eq!(b.len, 3);
-                assert_eq!(b.get(0), 1);
-                assert_eq!(b.get(1), 0);
-                assert_eq!(b.get(2), 1);
+        BuiltinKind::Spawn => {
+            if args.len() != 1 {
+                return Err(format!("spawn/1 got {} args", args.len()));
             }
-            other => panic!("got {:?}", super::kind(&other)),
-        }
-    }
-
-    #[test]
-    fn interp_map_construction_and_lookup() {
-        let r = run_named("fn m(), do: %{k: 7}[:k]", "m", vec![]).unwrap();
-        assert!(matches!(r, Value::Int(7)));
-    }
-
-    #[test]
-    fn interp_index_returns_nil_when_absent() {
-        let r = run_named("fn m(), do: %{k: 7}[:missing]", "m", vec![]).unwrap();
-        assert!(matches!(r, Value::Nil));
-    }
-
-    #[test]
-    fn interp_map_update() {
-        let r = run_named("fn u(), do: %{%{k: 1} | k: 2}[:k]", "u", vec![]).unwrap();
-        assert!(matches!(r, Value::Int(2)));
-    }
-
-    #[test]
-    fn interp_map_pattern_extracts_value() {
-        let mut entries = FzMap::new();
-        entries = entries.put(Value::Atom(Rc::from("name")), Value::Int(42));
-        let r = run_named("fn first(%{name: n}), do: n", "first", vec![Value::Map(Rc::new(entries))]).unwrap();
-        assert!(matches!(r, Value::Int(42)));
-    }
-
-    #[test]
-    fn interp_case_dispatch() {
-        let src = r#"
-fn c(x) do
-  case x do
-    0 -> :zero
-    _ -> :other
-  end
-end
-"#;
-        let r0 = run_named(src, "c", vec![Value::Int(0)]).unwrap();
-        let r5 = run_named(src, "c", vec![Value::Int(5)]).unwrap();
-        match (&r0, &r5) {
-            (Value::Atom(a), Value::Atom(b)) => {
-                assert_eq!(&**a, "zero");
-                assert_eq!(&**b, "other");
+            let (fn_id, captured) = unpack_closure(args[0])?;
+            if !captured.is_empty() {
+                return Err(format!(
+                    "interp spawn/1: closure with {} captures not yet supported \
+                     (v1 restriction matches the JIT, see fz-ul4.19.2)",
+                    captured.len()
+                ));
             }
-            _ => panic!("expected atoms"),
+            let pid = interp_spawn(module, fn_id)?;
+            Ok(FzValue::from_int(pid as i64))
         }
-    }
-
-    #[test]
-    fn interp_cond_first_truthy_wins() {
-        let src = r#"
-fn c(x) do
-  cond do
-    x > 0 -> :pos
-    true -> :nonpos
-  end
-end
-"#;
-        let r = run_named(src, "c", vec![Value::Int(10)]).unwrap();
-        if let Value::Atom(a) = r { assert_eq!(&*a, "pos"); } else { panic!(); }
-        let r = run_named(src, "c", vec![Value::Int(-1)]).unwrap();
-        if let Value::Atom(a) = r { assert_eq!(&*a, "nonpos"); } else { panic!(); }
-    }
-
-    #[test]
-    fn interp_with_success_threads_bindings() {
-        let r = run_named("fn w() do\n  with {:ok, a} <- {:ok, 41}, do: a + 1\nend", "w", vec![]).unwrap();
-        assert!(matches!(r, Value::Int(42)));
-    }
-
-    #[test]
-    fn interp_with_else_handles_failure() {
-        let src = r#"
-fn w() do
-  with {:ok, _} <- {:error, :boom} do
-    :unreached
-  else
-    {:error, m} -> {:handled, m}
-  end
-end
-"#;
-        let r = run_named(src, "w", vec![]).unwrap();
-        match r {
-            Value::Tuple(xs) => {
-                assert_eq!(xs.len(), 2);
-                if let Value::Atom(a) = &xs[0] { assert_eq!(&**a, "handled"); } else { panic!(); }
-                if let Value::Atom(a) = &xs[1] { assert_eq!(&**a, "boom"); } else { panic!(); }
+        BuiltinKind::SelfPid => {
+            Ok(FzValue::from_int(
+                crate::process::current_process().pid as i64,
+            ))
+        }
+        BuiltinKind::Send => {
+            if args.len() != 2 {
+                return Err(format!("send/2 got {} args", args.len()));
             }
-            other => panic!("got {:?}", super::kind(&other)),
+            let receiver = args[0]
+                .unbox_int()
+                .ok_or_else(|| "send/2: pid must be Int".to_string())?
+                as u32;
+            interp_send(receiver, args[1])?;
+            Ok(args[1])
         }
-    }
-
-    #[test]
-    fn interp_bitstring_round_trip_simple() {
-        let r = run_named("fn b(), do: <<0xA5>>", "b", vec![]).unwrap();
-        match r {
-            Value::Vec(super::FzVec::U8(b)) => assert_eq!(&*b, &[0xA5]),
-            other => panic!("got {:?}", super::kind(&other)),
+        BuiltinKind::VecGet => {
+            if args.len() != 2 {
+                return Err(format!("vec_get/2 got {} args", args.len()));
+            }
+            Ok(FzValue(crate::ir_runtime::fz_vec_get(args[0].0, args[1].0)))
         }
-    }
-
-    #[test]
-    fn interp_bitstring_pattern_extracts_int() {
-        let bs = Value::Vec(super::FzVec::U8(Rc::new(vec![10, 32])));
-        let r = run_named("fn parse(<<a, b>>), do: a + b", "parse", vec![bs]).unwrap();
-        assert!(matches!(r, Value::Int(42)));
-    }
-
-    #[test]
-    fn interp_bitstring_pattern_with_size_var() {
-        // <<3, "abc">> = [3, 'a', 'b', 'c']
-        let bs = Value::Vec(super::FzVec::U8(Rc::new(vec![3, b'a', b'b', b'c'])));
-        let r = run_named(
-            "fn parse(<<n, payload::binary-size(n)>>), do: payload",
-            "parse",
-            vec![bs],
-        ).unwrap();
-        match r {
-            Value::Vec(super::FzVec::U8(b)) => assert_eq!(&*b, &[b'a', b'b', b'c']),
-            other => panic!("got {:?}", super::kind(&other)),
-        }
-    }
-
-    #[test]
-    fn interp_builtin_assert_eq_fails() {
-        let err = run_named("fn t(), do: assert_eq(1, 2)", "t", vec![]).unwrap_err();
-        assert!(err.contains("assert_eq failed"));
     }
 }

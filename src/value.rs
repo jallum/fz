@@ -26,10 +26,13 @@ pub enum Value {
     Closure(Rc<Closure>),
     /// Built-in (host) function.
     Builtin(Rc<Builtin>),
-    /// IR-level closure: a Lambda lowered through fz-IR. Carries the IR FnId
-    /// (raw u32) of the lambda body and the captured environment slots. Only
-    /// used by the fz-IR interpreter (.11.5); the AST interp and JIT path
-    /// continue to use Value::Closure.
+    /// IR-level closure: a Lambda lowered through fz-IR. Vestigial — the
+    /// legacy fz-IR interpreter (built on Value) was retired in
+    /// fz-ul4.23.5.9 in favor of ir_interp on FzValue. Kept under
+    /// `#[allow(dead_code)]` for one cycle so ast_value's value-tagging
+    /// still compiles; remove once ast_value's IrClosure branch is also
+    /// gone.
+    #[allow(dead_code)]
     IrClosure(Rc<IrClosure>),
 }
 

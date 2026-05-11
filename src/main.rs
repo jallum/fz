@@ -8,7 +8,6 @@ mod fz_value;
 mod heap;
 mod ir_codegen;
 mod ir_interp;
-mod ir_interp_v2;
 mod ir_runtime;
 // ir_liveness removed (fz-ul4.11.31 subsumes .11.30): frame schemas are
 // uniformly `[cont_ptr, ...entry_params]` with every Var slot FzValue;
@@ -102,7 +101,7 @@ fn run_build(_args: &[String]) {
 }
 
 /// `fz interp <src.fz>` — run a program through the rebuilt IR interpreter
-/// (ir_interp_v2). The interp walks fz_ir::Module directly using the same
+/// (ir_interp). The interp walks fz_ir::Module directly using the same
 /// FzValue rep, heap, and runtime FFI as the JIT.
 ///
 /// Coverage grows feature-by-feature across fz-ul4.23.5.2 → .5.8. If the
@@ -142,7 +141,7 @@ fn run_interp(args: &[String]) {
         diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         std::process::exit(1);
     });
-    match ir_interp_v2::run_main(&module) {
+    match ir_interp::run_main(&module) {
         Ok(_halt) => {}
         Err(msg) => {
             eprintln!("fz interp: {}", msg);
