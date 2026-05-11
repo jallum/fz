@@ -4,7 +4,8 @@
     "fz-ul4.23.5.2"
   ],
   "blocks": [
-    "fz-ul4.23.5.6"
+    "fz-ul4.23.5.6",
+    "fz-ul4.23.5.9"
   ],
   "created": "2026-05-11T21:11:35Z",
   "description": "Add: Const::Atom, Const::Bool, Const::Nil, Const::Float, multiplication, subtraction. Print path renders FzValue identically to the JIT.\n\n## Acceptance\n\n- `# paths: jit, interp` on hello.fz, cold_fn.fz, interp_only_main.fz.\n- Matrix green via both paths for those fixtures.",
@@ -15,5 +16,5 @@
   "status": "open",
   "title": "ir_interp_v2: scalars + print suite (hello.fz, cold_fn.fz, interp_only_main.fz)",
   "type": "task",
-  "updated_at": "2026-05-11T21:11:37Z"
+  "updated_at": "2026-05-11T21:11:38Z"
 }
