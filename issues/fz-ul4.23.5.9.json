@@ -3,7 +3,8 @@
   "blocked_by": [
     "fz-ul4.23.5.3",
     "fz-ul4.23.5.4",
-    "fz-ul4.23.5.5"
+    "fz-ul4.23.5.5",
+    "fz-ul4.23.5.6"
   ],
   "blocks": [],
   "created": "2026-05-11T21:11:36Z",
@@ -15,5 +16,5 @@
   "status": "open",
   "title": "Delete legacy ir_interp.rs, rename ir_interp_v2 → ir_interp",
   "type": "task",
-  "updated_at": "2026-05-11T21:11:39Z"
+  "updated_at": "2026-05-11T21:11:40Z"
 }
