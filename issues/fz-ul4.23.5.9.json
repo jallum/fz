@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-ul4.23.5.3",
     "fz-ul4.23.5.4",
@@ -17,8 +17,8 @@
   "labels": [],
   "parent": "fz-ul4.23.5",
   "priority": 3,
-  "status": "open",
+  "status": "in_progress",
   "title": "Delete legacy ir_interp.rs, rename ir_interp_v2 → ir_interp",
   "type": "task",
-  "updated_at": "2026-05-11T21:11:40Z"
+  "updated_at": "2026-05-11T21:54:18Z"
 }
