@@ -156,12 +156,6 @@ impl Parser {
         if self.pos + 1 < self.toks.len() { self.pos += 1; }
         t
     }
-    /// Like bump, but also returns the span of the consumed token.
-    fn bump_with_span(&mut self) -> (Tok, Span) {
-        let span = self.toks[self.pos].span;
-        let t = self.bump();
-        (t, span)
-    }
     fn eat(&mut self, t: &Tok) -> bool {
         if std::mem::discriminant(self.peek()) == std::mem::discriminant(t) {
             self.bump(); true

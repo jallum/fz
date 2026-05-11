@@ -767,6 +767,66 @@ impl fmt::Display for Descr {
     }
 }
 
+impl Descr {
+    /// Render this type for user-facing diagnostic prose. Caps each
+    /// literal-set axis at 5 members + an ellipsis so a huge int-literal
+    /// union doesn't crowd a `= note:` line. The canonical `Display`
+    /// impl above stays exact (tests rely on it).
+    pub fn display_for_diag(&self) -> String {
+        const CAP: usize = 5;
+        if self.looks_full() { return "any".into(); }
+        if self.looks_empty() { return "none".into(); }
+
+        let mut parts: Vec<String> = Vec::new();
+
+        for (bit, name) in BASIC_NAMES {
+            if self.basic.contains_all(*bit) { parts.push((*name).to_string()); }
+        }
+
+        format_lit_set_capped(&mut parts, &self.ints,   "int",   CAP, |n| format!("{}", n));
+        format_lit_set_capped(&mut parts, &self.floats, "float", CAP, |f| format!("{}", f.get()));
+        format_lit_set_capped(&mut parts, &self.strs,   "str",   CAP, |s| format!("{:?}", s));
+        format_lit_set_capped(&mut parts, &self.atoms,  "atom",  CAP, |a| format!(":{}", a));
+
+        for c in &self.tuples { parts.push(format_tuple_clause(c)); }
+        for c in &self.lists  { parts.push(format_list_clause(c)); }
+        for c in &self.funcs  { parts.push(format_arrow_clause(c)); }
+        for c in &self.maps   { parts.push(format_map_clause(c)); }
+
+        parts.join(" | ")
+    }
+}
+
+fn format_lit_set_capped<T: Ord + Clone>(
+    parts: &mut Vec<String>,
+    s: &LiteralSet<T>,
+    top_name: &str,
+    cap: usize,
+    fmt_one: impl Fn(&T) -> String,
+) {
+    if s.is_none() { return; }
+    if s.cofinite {
+        if s.set.is_empty() {
+            parts.push(top_name.into());
+        } else {
+            let mut exc: Vec<String> = s.set.iter().take(cap).map(&fmt_one).collect();
+            if s.set.len() > cap {
+                exc.push(format!("… (+{} more)", s.set.len() - cap));
+            }
+            parts.push(format!("{} \\ {{{}}}", top_name, exc.join(", ")));
+        }
+    } else {
+        let mut iter = s.set.iter();
+        for v in iter.by_ref().take(cap) {
+            parts.push(fmt_one(v));
+        }
+        let rest = iter.count();
+        if rest > 0 {
+            parts.push(format!("… (+{} more)", rest));
+        }
+    }
+}
+
 impl fmt::Debug for Descr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { write!(f, "{}", self) }
 }
@@ -1384,5 +1444,51 @@ mod tests {
         // ALL covers exactly those bits and nothing else.
         let or_all = bits.iter().fold(0u32, |acc, b| acc | b.raw());
         assert_eq!(BasicBits::ALL.raw(), or_all);
+    }
+
+    // ----- .20.8: display_for_diag -----
+
+    #[test]
+    fn display_for_diag_caps_finite_literal_sets() {
+        // A literal-set with 10 distinct ints should render the first
+        // 5 plus an ellipsis "+5 more".
+        let mut d = Descr::none();
+        for i in 1..=10 {
+            d = d.union(&Descr::int_lit(i));
+        }
+        let s = d.display_for_diag();
+        // Exactly five comma-separated int values + an ellipsis.
+        let pipe_parts: Vec<&str> = s.split(" | ").collect();
+        assert!(pipe_parts.len() == 6, "expected 5 ints + ellipsis, got: {}", s);
+        assert!(s.contains("(+5 more)"), "expected ellipsis, got: {}", s);
+    }
+
+    #[test]
+    fn display_for_diag_handles_top_and_bottom() {
+        assert_eq!(Descr::any().display_for_diag(), "any");
+        assert_eq!(Descr::none().display_for_diag(), "none");
+    }
+
+    #[test]
+    fn display_for_diag_renders_union_of_basic_kinds() {
+        // int union atom — both are top kinds.
+        let d = Descr::int().union(&Descr::atom_top());
+        let s = d.display_for_diag();
+        assert!(s.contains("int"), "got {}", s);
+        assert!(s.contains("atom"), "got {}", s);
+        assert!(s.contains(" | "), "got {}", s);
+    }
+
+    #[test]
+    fn display_for_diag_short_set_renders_untruncated() {
+        // 3 atoms — under the cap, no ellipsis.
+        let d = Descr::atom_lit("a".to_string())
+            .union(&Descr::atom_lit("b".to_string()))
+            .union(&Descr::atom_lit("c".to_string()));
+        let s = d.display_for_diag();
+        assert!(!s.contains("more"), "should not truncate: {}", s);
+        assert!(s.contains(":a"));
+        assert!(s.contains(":b"));
+        assert!(s.contains(":c"));
     }
 }

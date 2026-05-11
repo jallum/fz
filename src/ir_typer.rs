@@ -588,19 +588,42 @@ pub fn collect_diagnostics(
                     let new_t = branch_env.get(&v).unwrap();
                     let old_t = env.get(&v).cloned().unwrap_or_else(Descr::any);
                     if !new_t.is_equiv(&old_t) && new_t.is_empty() && !old_t.is_empty() {
-                        let var_name = module.source.var_name_of(v).unwrap_or("this value");
-                        let message = format!(
-                            "the {} branch is never reachable",
-                            tag,
+                        // `.20.8`: render the source name (or "this value"
+                        // for compiler temps) and the *set-theoretic type*
+                        // the user's value had right before the failing
+                        // narrowing. The vocabulary comes from
+                        // `Descr::display_for_diag` — same algebra the
+                        // typer reasons in.
+                        let var_name = module.source.var_name_of(v);
+                        let label_subject = match var_name {
+                            Some(n) => format!("`{}`", n),
+                            None => "this value".to_string(),
+                        };
+                        let var_span = module.source.var_span_of(v);
+
+                        let message = format!("the {} branch is never reachable", tag);
+                        let type_note = format!(
+                            "{} here has type `{}`",
+                            label_subject,
+                            old_t.display_for_diag(),
                         );
-                        let note = format!(
-                            "narrowing `{}` in this branch leaves no possible values \
-                             (unreachable arm at bb{})",
-                            var_name, bb_id.0,
+                        let narrow_note = format!(
+                            "narrowing for this branch would need `{}`, but that intersection \
+                             is uninhabited (unreachable arm at bb{})",
+                            new_t.display_for_diag(),
+                            bb_id.0,
                         );
-                        let d = Diagnostic::warning(TYPE_UNREACHABLE_ARM, message, term_span)
+
+                        let mut d = Diagnostic::warning(TYPE_UNREACHABLE_ARM, message, term_span)
                             .with_label(format!("in fn `{}`", f.name))
-                            .with_note(note);
+                            .with_note(type_note)
+                            .with_note(narrow_note);
+                        // Point a secondary at the var's binding site
+                        // when we have it — gives the reader the source
+                        // line where the value entered scope.
+                        if !var_span.is_dummy() && var_span != term_span {
+                            d = d.with_secondary(var_span, format!("{} bound here", label_subject));
+                        }
                         return Some(d);
                     }
                 }
@@ -1083,5 +1106,49 @@ mod tests {
         // is a subtype of the result.
         assert!(Descr::int_lit(42).is_subtype(&got_t),
             "map[k] should include the bound value: {}", got_t);
+    }
+
+    // ----- .20.8: type-rendered diagnostic prose -----
+
+    /// The unreachable-arm diagnostic carries two notes: the type the
+    /// variable had at the branch, and the type the narrowing demanded.
+    /// Both are rendered through `Descr::display_for_diag`, so a user
+    /// reading the diagnostic sees set-theoretic vocabulary the typer
+    /// reasons in — not block ids and Var indices.
+    #[test]
+    fn unreachable_arm_diagnostic_includes_type_vocabulary() {
+        // Same shape as eq_then_eq_dup_clause_flags_second_arm_unreachable:
+        // a `fn f(0); fn f(0)` would dispatch the second clause unreachable.
+        let mut b = FnBuilder::new(FnId(0), "f");
+        let x = b.fresh_var();
+        let entry = b.block(vec![x]);
+        let z = b.let_(entry, Prim::Const(Const::Int(0)));
+        let c1 = b.let_(entry, Prim::BinOp(BinOp::Eq, x, z));
+        let halt_b = b.block(vec![]);
+        let next_check = b.block(vec![]);
+        b.set_terminator(entry, Term::If(c1, halt_b, next_check));
+        b.set_terminator(halt_b, Term::Halt(x));
+        let z2 = b.let_(next_check, Prim::Const(Const::Int(0)));
+        let c2 = b.let_(next_check, Prim::BinOp(BinOp::Eq, x, z2));
+        let dead_b = b.block(vec![]);
+        let fallback = b.block(vec![]);
+        b.set_terminator(next_check, Term::If(c2, dead_b, fallback));
+        b.set_terminator(dead_b, Term::Halt(x));
+        b.set_terminator(fallback, Term::Halt(x));
+
+        let m = build_module(vec![b.build()]);
+        let t = type_module(&m);
+        let diags = collect_diagnostics(&m, &t);
+        let d = diags.iter().next().expect("at least one diagnostic");
+        // First note: "type `…`" — rendered set-theoretic vocab.
+        let type_note = d.notes.iter().find(|n| n.contains("has type"))
+            .expect("expected a 'has type' note");
+        assert!(type_note.contains('`'),
+            "type note should backtick-quote the rendered type, got {:?}", type_note);
+        // Second note: the narrowing that's uninhabited.
+        let narrow_note = d.notes.iter().find(|n| n.contains("uninhabited"))
+            .expect("expected an 'uninhabited' note");
+        assert!(narrow_note.contains("would need"),
+            "narrow note should mention the would-need type, got {:?}", narrow_note);
     }
 }
