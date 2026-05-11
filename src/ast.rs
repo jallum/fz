@@ -28,11 +28,6 @@ impl<T> Spanned<T> {
     pub fn dummy(node: T) -> Self {
         Self { node, span: Span::DUMMY, origin: SpanOrigin::Source }
     }
-
-    pub fn with_origin(mut self, origin: SpanOrigin) -> Self {
-        self.origin = origin;
-        self
-    }
 }
 
 #[derive(Debug, Clone)]
