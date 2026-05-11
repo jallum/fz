@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-11T21:12:00Z",
+  "description": "The shim from 6.2 needs to bring the full Runtime online including scheduler and CURRENT_RUNTIME TLS. Once linked, fz spawn/send/receive should work in AOT identically to JIT.\n\n## Acceptance\n\n- `# paths: jit, interp, aot` on concurrency_ping_pong.fz; matrix green.\n- Closes fz-ul4.22.",
+  "id": "fz-ul4.23.6.6",
+  "labels": [],
+  "parent": "fz-ul4.23.6",
+  "priority": 3,
+  "status": "open",
+  "title": "AOT concurrency: spawn/send/receive in linked binaries",
+  "type": "task",
+  "updated_at": "2026-05-11T21:12:00Z"
+}
