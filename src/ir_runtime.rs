@@ -21,6 +21,121 @@
 
 use crate::ir_codegen::current_process;
 
+// ===== Map cluster (fz-ul4.23.4.8) =====
+//
+// Maps use a heap-backed sorted-array layout. Build-time semantics: codegen
+// emits begin -> push (per pair) -> finalize. MapUpdate emits clone(base) ->
+// push (per override) -> finalize. The thread-local builder accumulates
+// pairs as `(key_bits, val_bits)`; finalize sorts canonically (later writes
+// win on duplicate keys) and allocates one heap Map.
+//
+// Key total ordering for canonical layout: Int < Atom < Special < Ptr;
+// within each category, by raw bits (Int compares signed). Keys compare
+// equal iff their u64 bits are equal — pointer-equal heap keys for v1.
+
+fn fz_key_category(bits: u64) -> u8 {
+    match bits & 0b111 {
+        0b001 => 0,
+        0b010 => 1,
+        0b011 => 2,
+        0b000 => 3,
+        _ => 4,
+    }
+}
+
+fn fz_key_cmp(a: u64, b: u64) -> std::cmp::Ordering {
+    let ca = fz_key_category(a);
+    let cb = fz_key_category(b);
+    ca.cmp(&cb).then_with(|| {
+        if ca == 0 {
+            ((a as i64) >> 3).cmp(&((b as i64) >> 3))
+        } else {
+            a.cmp(&b)
+        }
+    })
+}
+
+pub(crate) extern "C" fn fz_map_begin() {
+    current_process().map_builder = Some(Vec::new());
+}
+
+pub(crate) extern "C" fn fz_map_clone(base_bits: u64) {
+    use crate::fz_value::{FzValue, HeapKind};
+    let mut entries: Vec<(u64, u64)> = Vec::new();
+    let p = FzValue(base_bits)
+        .unbox_ptr()
+        .expect("fz_map_clone base not a heap ptr");
+    let header = unsafe { &*p };
+    if HeapKind::from_u16(header.kind) != Some(HeapKind::Map) {
+        panic!("fz_map_clone base is not a Map");
+    }
+    let count =
+        unsafe { std::ptr::read((p as *const u8).add(16) as *const u64) as usize };
+    let mut cursor = unsafe { (p as *const u8).add(24) as *const u64 };
+    for _ in 0..count {
+        let k = unsafe { std::ptr::read(cursor) };
+        let v = unsafe { std::ptr::read(cursor.add(1)) };
+        cursor = unsafe { cursor.add(2) };
+        entries.push((k, v));
+    }
+    current_process().map_builder = Some(entries);
+}
+
+pub(crate) extern "C" fn fz_map_push(key_bits: u64, val_bits: u64) {
+    current_process()
+        .map_builder
+        .as_mut()
+        .expect("fz_map_push without begin/clone")
+        .push((key_bits, val_bits));
+}
+
+pub(crate) extern "C" fn fz_map_finalize() -> u64 {
+    use crate::fz_value::FzValue;
+    let raw = current_process()
+        .map_builder
+        .take()
+        .expect("fz_map_finalize without begin");
+    // Last write wins on duplicate keys: walk in order, dedupe-overwriting.
+    let mut by_key: Vec<(u64, u64)> = Vec::with_capacity(raw.len());
+    for (k, v) in raw {
+        if let Some(slot) = by_key.iter_mut().find(|(ek, _)| fz_key_cmp(*ek, k).is_eq())
+        {
+            slot.1 = v;
+        } else {
+            by_key.push((k, v));
+        }
+    }
+    by_key.sort_by(|a, b| fz_key_cmp(a.0, b.0));
+    let entries: Vec<(FzValue, FzValue)> =
+        by_key.into_iter().map(|(k, v)| (FzValue(k), FzValue(v))).collect();
+    let p = current_process().heap.alloc_map(&entries);
+    p as u64
+}
+
+pub(crate) extern "C" fn fz_map_get(map_bits: u64, key_bits: u64) -> u64 {
+    use crate::fz_value::{FzValue, HeapKind};
+    let p = FzValue(map_bits)
+        .unbox_ptr()
+        .expect("fz_map_get on non-ptr");
+    let header = unsafe { &*p };
+    if HeapKind::from_u16(header.kind) != Some(HeapKind::Map) {
+        panic!("fz_map_get on non-Map");
+    }
+    let count =
+        unsafe { std::ptr::read((p as *const u8).add(16) as *const u64) as usize };
+    let cursor = unsafe { (p as *const u8).add(24) as *const u64 };
+    // v1: linear scan. Sorted layout exists primarily so equality and
+    // rendering have a deterministic shape; binary search comes alongside
+    // a HAMT migration for large maps (separate ticket).
+    for i in 0..count {
+        let k = unsafe { std::ptr::read(cursor.add(i * 2)) };
+        if fz_key_cmp(k, key_bits).is_eq() {
+            return unsafe { std::ptr::read(cursor.add(i * 2 + 1)) };
+        }
+    }
+    FzValue::NIL.0
+}
+
 // ===== Alloc cluster (fz-ul4.23.4.7) =====
 
 pub(crate) extern "C" fn fz_alloc_list_cons(head_bits: u64, tail_bits: u64) -> u64 {
