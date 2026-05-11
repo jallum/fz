@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-11T21:11:58Z",
+  "description": "Add a second impl of the Backend trait introduced in fz-ul4.23.4.6 that wraps cranelift_object::ObjectModule. Produces a .o file on disk; no startup shim, no linker step yet.\n\n## Acceptance\n\n- A new test compiles fixtures/add1.fz via the AOT backend, emits /tmp/add1.o, and asserts `nm /tmp/add1.o` lists symbols for `add1` and `main`.\n- No `fz build` user surface yet — that comes in 6.3.",
+  "id": "fz-ul4.23.6.1",
+  "labels": [],
+  "parent": "fz-ul4.23.6",
+  "priority": 3,
+  "status": "open",
+  "title": "Add an AOT Backend impl using ObjectModule (no main, no link)",
+  "type": "task",
+  "updated_at": "2026-05-11T21:11:58Z"
+}
