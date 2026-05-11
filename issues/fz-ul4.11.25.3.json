@@ -4,14 +4,15 @@
   "blocks": [
     "fz-ul4.11.25.7"
   ],
+  "closed_at": "2026-05-11T11:03:44Z",
   "created": "2026-05-11T10:55:53Z",
   "description": "The Value::Jit and Value::JitPoly variants are constructed ONLY in src/jit.rs, which is gated #![cfg(any())] per the .11.9 cutover (verified — never compiled). The variants ARE matched in 4 live places:\n\n- src/eval.rs:222 — Value::Jit(_) | Value::JitPoly(_) =\u003e Err(...) error path\n- src/ast_value.rs:337-338 — kind_str returns \"jit-fn\" / \"jit-poly-fn\"\n- src/ir_interp.rs:515-516 — analogous variant-name printer\n- src/value.rs:300-301 — Display impl\n\nPlus the helper structs JitFn (src/value.rs:52) and JitPolyFn (src/value.rs:61).\n\n## Scope\n\n- Delete Value::Jit and Value::JitPoly variants.\n- Delete the 4 corresponding match arms (each match becomes exhaustive without them — confirm with cargo build).\n- Delete the JitFn and JitPolyFn structs (no callers outside of cfg-disabled jit.rs).\n- Leave the rest of value.rs intact: Value is still the live representation for Interp::call_named.\n\n## Verify before deletion\n\n- grep for JitFn / JitPolyFn outside of jit.rs / aot.rs / codegen.rs / test_support.rs (the cfg-disabled set) confirms zero live consumers.\n- cargo build clean after the change.\n- cargo test green.\n\n## Deliverable\n\n-7 warnings (2 variants + 2 fields fn_ptr/fallback + 1 method len + 2 struct-level not-used). One commit.",
   "id": "fz-ul4.11.25.3",
   "labels": [],
   "parent": "fz-ul4.11.25",
   "priority": 3,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Drop Value::Jit and Value::JitPoly variants + matched arms + helper structs",
   "type": "task",
-  "updated_at": "2026-05-11T11:01:29Z"
+  "updated_at": "2026-05-11T11:03:44Z"
 }
