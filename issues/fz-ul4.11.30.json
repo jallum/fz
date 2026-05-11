@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-11T06:27:04Z",
+  "description": "GOAL: Wire src/ir_liveness.rs into ir_codegen, or delete it.\n\nStatus when authored: discovered during fz-ul4.11.15 research (2026-05-11)\nthat ir_liveness::analyze_module is dead code — it's only called from its\nown tests. ir_codegen builds frame schemas independently from entry-block\nparam count (codegen.rs:1473-1480) and never reads FnIr.frame_schema_id.\n\n## Two paths to evaluate\n\n  A. Wire it in.\n     ir_liveness builds a richer schema: [cont_ptr, live_var_0, live_var_1,\n     ...] where the live set is the union of all Cont.captured across outgoing\n     Call/CallClosure terms. This would let ir_codegen put cross-call live\n     values directly in the frame instead of relying on Cranelift's\n     spill/reload. Potential perf win for fns with many call sites.\n\n  B. Delete it.\n     If we don't need the richer schema (Cranelift's regalloc handles it\n     fine), remove src/ir_liveness.rs entirely and the associated tests.\n     Less code to maintain.\n\n## Investigation needed\n\n  - Benchmark a few cont-heavy programs with current codegen vs a prototype\n    that respects liveness-frame schemas. If perf wins are meaningful, do\n    (A); else do (B).\n  - Note: this interacts with fz-ul4.11.15.5's inliner placement — inlining\n    runs BEFORE typer, which runs before any liveness-aware codegen. Fine\n    either way.\n\n## Acceptance\n\n  - One commit referencing fz-ul4.11.29.\n  - Either: ir_codegen consumes FnIr.frame_schema_id and tests verify\n    per-fn schemas contain live-var slots; OR: src/ir_liveness.rs is\n    deleted and the relevant tests are deleted/migrated.\n\n## References\n\n  - src/ir_liveness.rs (the dead-code module).\n  - src/ir_codegen.rs:1470-1480 (current entry-param-only schema builder).",
+  "id": "fz-ul4.11.30",
+  "labels": [],
+  "parent": "fz-ul4.11",
+  "priority": 3,
+  "status": "open",
+  "title": "Wire ir_liveness into codegen (or delete)",
+  "type": "task",
+  "updated_at": "2026-05-11T06:27:04Z"
+}
