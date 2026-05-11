@@ -19,6 +19,7 @@ mod ir_typer;
 mod lexer;
 mod macros;
 mod parser;
+mod process;
 mod repl;
 mod resolve;
 mod runtime;
