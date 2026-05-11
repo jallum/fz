@@ -21,6 +21,90 @@
 
 use crate::ir_codegen::current_process;
 
+// ===== Concurrency cluster (fz-ul4.23.4.12) =====
+
+/// fz-ul4.19.2: scheduler-bound builtins.
+///
+/// Both consume a Runtime installed in TLS by Runtime::run_until_idle.
+/// Calling either outside the scheduler path panics with a clear message.
+///
+/// fz_spawn(closure_bits) -> pid_bits. Extracts fn_id from the closure
+/// heap object and enqueues a new task at that fn. Returns the pid as a
+/// boxed FzValue Int (Pid-as-struct deferred to a follow-up).
+///
+/// v1 restriction: closure must have ZERO captures. Captured values
+/// would need to be copied into the new task's heap (.19.3 territory);
+/// for v1 spawn takes plain fn references (closures with no captures).
+pub(crate) extern "C" fn fz_spawn(closure_bits: u64) -> u64 {
+    use crate::fz_value::FzValue;
+    let cp = FzValue(closure_bits)
+        .unbox_ptr()
+        .expect("spawn: closure not a heap ptr");
+    let header = unsafe { &*cp };
+    let fn_id = crate::fz_ir::FnId(header.schema_id);
+    let captured_count = header.flags as usize;
+    assert!(
+        captured_count == 0,
+        "spawn/1 v1: closure with {} captures not yet supported; pass a plain fn reference",
+        captured_count
+    );
+    let pid = crate::runtime::spawn_via_current_runtime(fn_id);
+    FzValue::from_int(pid as i64).0
+}
+
+/// fz_self() -> pid_bits. Returns the currently-running task's pid as a
+/// boxed FzValue Int.
+pub(crate) extern "C" fn fz_self() -> u64 {
+    use crate::fz_value::FzValue;
+    FzValue::from_int(current_process().pid as i64).0
+}
+
+/// fz_send(receiver_pid_bits, msg_bits) -> msg_bits.
+///
+/// Deep-copies msg into the receiver's heap, enqueues into receiver's
+/// mailbox, transitions receiver from Blocked to Ready (and re-enqueues)
+/// if it was waiting.
+///
+/// v1 limitations:
+/// - Receiver must be a task currently in the Runtime's task registry
+///   (panics otherwise).
+/// - deep_copy_value supports List, Struct (tuple/closure/map structurally
+///   covered), Bitstring, and scalars. Other HeapKinds panic with an
+///   explicit message; follow-up tickets extend coverage.
+pub(crate) extern "C" fn fz_send(receiver_pid_bits: u64, msg_bits: u64) -> u64 {
+    use crate::fz_value::FzValue;
+    let receiver_pid = FzValue(receiver_pid_bits)
+        .unbox_int()
+        .expect("send: pid not Int") as crate::ir_codegen::PidId;
+    crate::runtime::send_via_current_runtime(receiver_pid, FzValue(msg_bits));
+    msg_bits
+}
+
+/// fz_receive_attempt(cont_frame_ptr) -> next_frame_ptr.
+///
+/// If the current Process has a pending message: pop it, deep-copy is NOT
+/// needed (message is already in this process's heap — send copied it on
+/// arrival), write the msg bits into cont_frame[24] (the cont's first
+/// param), return cont_frame_ptr so the trampoline dispatches it.
+///
+/// If the mailbox is empty: set the Process state to Blocked, return
+/// YIELD_PTR. The trampoline parks the task at the receive's frame; on
+/// resume (via send), this fn is called again and now finds the message.
+pub(crate) extern "C" fn fz_receive_attempt(cont_frame_ptr: *mut u8) -> *mut u8 {
+    use crate::ir_codegen::{ProcessState, YIELD_PTR};
+    let p = current_process();
+    if let Some(msg) = p.mailbox.pop_front() {
+        unsafe {
+            let result_slot = cont_frame_ptr.add(24) as *mut u64;
+            std::ptr::write(result_slot, msg.0);
+        }
+        cont_frame_ptr
+    } else {
+        p.state = ProcessState::Blocked;
+        YIELD_PTR as *mut u8
+    }
+}
+
 // ===== Closure cluster (fz-ul4.23.4.11) =====
 //
 // Closures are heap objects (HeapKind::Closure) holding [...captured FzValues].

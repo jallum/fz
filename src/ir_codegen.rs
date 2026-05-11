@@ -776,80 +776,15 @@ fn default_unit_for(ty: crate::ast::BitType) -> u32 {
 /// v1 restriction: closure must have ZERO captures. Captured values
 /// would need to be copied into the new task's heap (.19.3 territory);
 /// for v1 spawn takes plain fn references (closures with no captures).
-extern "C" fn fz_spawn(closure_bits: u64) -> u64 {
-    use crate::fz_value::FzValue;
-    let cp = FzValue(closure_bits)
-        .unbox_ptr()
-        .expect("spawn: closure not a heap ptr");
-    let header = unsafe { &*cp };
-    let fn_id = crate::fz_ir::FnId(header.schema_id);
-    let captured_count = header.flags as usize;
-    assert!(
-        captured_count == 0,
-        "spawn/1 v1: closure with {} captures not yet supported; pass a plain fn reference",
-        captured_count
-    );
-    let pid = crate::runtime::spawn_via_current_runtime(fn_id);
-    FzValue::from_int(pid as i64).0
-}
-
-/// fz_self() -> pid_bits. Returns the currently-running task's pid as a
-/// boxed FzValue Int.
-extern "C" fn fz_self() -> u64 {
-    use crate::fz_value::FzValue;
-    FzValue::from_int(current_process().pid as i64).0
-}
+// Concurrency cluster (fz_spawn/self/send/receive_attempt) moved to
+// ir_runtime.rs (.23.4.12). YIELD_PTR stays here — the trampoline at
+// run_internal/run_quantum (above) reads it directly.
 
 /// fz-ul4.19.3 YIELD_PTR: the trampoline recognizes this non-null return
 /// value as "task wants to suspend; resume at the same frame on next
 /// scheduling". 0x1 is not 16-aligned, so it can never be a real heap
 /// pointer.
 pub(crate) const YIELD_PTR: u64 = 0x1;
-
-/// fz_send(receiver_pid_bits, msg_bits) -> msg_bits.
-///
-/// Deep-copies msg into the receiver's heap, enqueues into receiver's
-/// mailbox, transitions receiver from Blocked to Ready (and re-enqueues)
-/// if it was waiting.
-///
-/// v1 limitations:
-/// - Receiver must be a task currently in the Runtime's task registry
-///   (panics otherwise).
-/// - deep_copy_value supports List, Struct (tuple/closure/map structurally
-///   covered), Bitstring, and scalars. Other HeapKinds panic with an
-///   explicit message; follow-up tickets extend coverage.
-extern "C" fn fz_send(receiver_pid_bits: u64, msg_bits: u64) -> u64 {
-    use crate::fz_value::FzValue;
-    let receiver_pid = FzValue(receiver_pid_bits)
-        .unbox_int()
-        .expect("send: pid not Int") as crate::ir_codegen::PidId;
-    crate::runtime::send_via_current_runtime(receiver_pid, FzValue(msg_bits));
-    msg_bits
-}
-
-/// fz_receive_attempt(cont_frame_ptr) -> next_frame_ptr.
-///
-/// If the current Process has a pending message: pop it, deep-copy is NOT
-/// needed (message is already in this process's heap — send copied it on
-/// arrival), write the msg bits into cont_frame[24] (the cont's first
-/// param), return cont_frame_ptr so the trampoline dispatches it.
-///
-/// If the mailbox is empty: set the Process state to Blocked, return
-/// YIELD_PTR. The trampoline parks the task at the receive's frame; on
-/// resume (via send), this fn is called again and now finds the message.
-extern "C" fn fz_receive_attempt(cont_frame_ptr: *mut u8) -> *mut u8 {
-    let p = current_process();
-    if let Some(msg) = p.mailbox.pop_front() {
-        unsafe {
-            let result_slot = cont_frame_ptr.add(24) as *mut u64;
-            std::ptr::write(result_slot, msg.0);
-        }
-        cont_frame_ptr
-    } else {
-        p.state = ProcessState::Blocked;
-        YIELD_PTR as *mut u8
-    }
-}
 
 // Arith / cmp / eq FFI cluster moved to src/ir_runtime.rs (fz-ul4.23.4.1).
 
@@ -943,10 +878,10 @@ pub fn compile(module: &Module) -> Result<CompiledModule, CodegenError> {
     builder.symbol("fz_closure_arg", crate::ir_runtime::fz_closure_arg as *const u8);
     builder.symbol("fz_closure_invoke", crate::ir_runtime::fz_closure_invoke as *const u8);
     builder.symbol("fz_tail_closure", crate::ir_runtime::fz_tail_closure as *const u8);
-    builder.symbol("fz_spawn", fz_spawn as *const u8);
-    builder.symbol("fz_self", fz_self as *const u8);
-    builder.symbol("fz_send", fz_send as *const u8);
-    builder.symbol("fz_receive_attempt", fz_receive_attempt as *const u8);
+    builder.symbol("fz_spawn", crate::ir_runtime::fz_spawn as *const u8);
+    builder.symbol("fz_self", crate::ir_runtime::fz_self as *const u8);
+    builder.symbol("fz_send", crate::ir_runtime::fz_send as *const u8);
+    builder.symbol("fz_receive_attempt", crate::ir_runtime::fz_receive_attempt as *const u8);
     let mut jmod = JITModule::new(builder);
 
     // Declare runtime imports.
