@@ -617,7 +617,10 @@ extern "C" fn fz_bs_write_field(
     let ty = decode_bit_type(ty_tag);
     let size = if size_present != 0 { Some(size_value) } else { None };
     let endian = decode_endian(endian_tag);
-    let signed_b = signed != 0;
+    // `signed` is irrelevant on write: two's-complement truncation produces
+    // the same bit pattern for signed and unsigned at fixed width. The flag
+    // is consumed on read (fz_bs_read_field) for sign extension.
+    let _ = signed;
     BS_BUILDER.with(|b| {
         let mut bopt = b.borrow_mut();
         let w = bopt
@@ -1828,7 +1831,6 @@ pub fn compile(module: &Module) -> Result<CompiledModule, CodegenError> {
             &mut jmod,
             &mut ctx,
             &mut fbctx,
-            &fn_ids,
             &runtime,
             &schemas,
             &tuple_schema_ids,
@@ -1917,7 +1919,6 @@ fn compile_fn(
     jmod: &mut JITModule,
     ctx: &mut Context,
     fbctx: &mut FunctionBuilderContext,
-    fn_ids: &HashMap<u32, FuncId>,
     runtime: &RuntimeRefs,
     schemas: &[Schema],
     tuple_schema_ids: &HashMap<usize, u32>,
