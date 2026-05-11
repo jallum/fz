@@ -39,6 +39,10 @@ fn main() {
             run_jit_from_path(&args[1..]);
             return;
         }
+        Some("dump") => {
+            run_dump(&args[1..]);
+            return;
+        }
         Some("repl") => {
             if let Err(e) = repl::run() {
                 eprintln!("repl: {}", e);
@@ -102,14 +106,100 @@ fn run_jit_from_path(args: &[String]) {
     run_jit_src(src, src_path);
 }
 
-/// Drive a source string through the full JIT pipeline (lex → parse →
-/// resolve → expand macros → ir_lower → ir_codegen → run main). Used by
-/// both `fz run <path>` and the no-argument stdin route.
+/// `fz dump <src.fz> [--emit clif] [--fn <name>]` — drive a source file
+/// through the full JIT pipeline up to (but not including) finalization,
+/// capture the per-fn Cranelift IR text, and print it to stdout. The
+/// program is NOT executed.
+///
+/// Feedback-loop tooling per fz-ul4.23.3. Source-loc interleaving and
+/// `--emit asm` are tracked separately (fz-ul4.27, fz-ul4.28).
+fn run_dump(args: &[String]) {
+    let mut path: Option<String> = None;
+    let mut fn_filter: Option<String> = None;
+    let mut emit = "clif".to_string();
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--emit" => {
+                i += 1;
+                emit = args.get(i).cloned().unwrap_or_else(|| {
+                    eprintln!("fz dump: --emit expects a value (clif)");
+                    std::process::exit(2);
+                });
+            }
+            "--fn" => {
+                i += 1;
+                fn_filter = args.get(i).cloned();
+                if fn_filter.is_none() {
+                    eprintln!("fz dump: --fn expects a name");
+                    std::process::exit(2);
+                }
+            }
+            a if !a.starts_with("--") && path.is_none() => path = Some(a.to_string()),
+            a => {
+                eprintln!("fz dump: unknown arg `{}`", a);
+                std::process::exit(2);
+            }
+        }
+        i += 1;
+    }
+    let path = path.unwrap_or_else(|| {
+        eprintln!("fz dump <src.fz> [--emit clif] [--fn <name>]");
+        std::process::exit(2);
+    });
+    if emit != "clif" {
+        eprintln!(
+            "fz dump: --emit `{}` not supported yet \
+             (only `clif` today; `asm` tracked by fz-ul4.28)",
+            emit
+        );
+        std::process::exit(2);
+    }
+    let src = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+        eprintln!("read {}: {}", path, e);
+        std::process::exit(1);
+    });
+
+    ir_codegen::ir_text_record_enable();
+    let _compiled = compile_pipeline(src, path.clone());
+    let entries = ir_codegen::ir_text_record_take();
+
+    let mut printed = 0usize;
+    for (name, text) in &entries {
+        if let Some(filter) = &fn_filter {
+            if name != filter {
+                continue;
+            }
+        }
+        println!("; fn {}", name);
+        println!("{}", text);
+        printed += 1;
+    }
+    if let Some(filter) = &fn_filter {
+        if printed == 0 {
+            eprintln!(
+                "fz dump: no fn named `{}` (available: {})",
+                filter,
+                entries.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>().join(", ")
+            );
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Drive a source string through the lex → parse → resolve → macros →
+/// ir_lower → ir_codegen stages. Returns the compiled module; callers
+/// either execute (`fz run`) or inspect (`fz dump`).
 ///
 /// Single render path: every error from every stage goes through
 /// diag::render_to_stderr. Lex / parse errors carry proper spans; later-
 /// stage errors carry the spans threaded in by fz-ul4.20 / .21.
-fn run_jit_src(src: String, source_name: String) {
+struct Compiled {
+    cm: ir_codegen::CompiledModule,
+    main_fn: Option<fz_ir::FnId>,
+}
+
+fn compile_pipeline(src: String, source_name: String) -> Compiled {
     let mut sm = diag::SourceMap::new();
     let file_id = sm.add_file(source_name, src.clone());
 
@@ -133,30 +223,31 @@ fn run_jit_src(src: String, source_name: String) {
         diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         std::process::exit(1);
     });
-    let main_fn = match module.fn_by_name("main") {
-        Some(f) => f.id,
-        None => {
-            let d = diag::Diagnostic::error(
-                diag::codes::LOWER_UNBOUND,
-                "no `main/0` fn found",
-                diag::Span::DUMMY,
-            );
-            diag::render_one_to_stderr(&sm, &d);
-            std::process::exit(1);
-        }
-    };
+    let main_fn = module.fn_by_name("main").map(|f| f.id);
     let cm = ir_codegen::compile(&module).unwrap_or_else(|e| {
         diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         std::process::exit(1);
     });
     diag::render_to_stderr(&sm, cm.warnings());
-    // Drive through the Runtime (fz-ul4.19.1) so concurrency-using
-    // programs work end-to-end. For a program that doesn't call
-    // spawn/send/receive this is functionally identical to the simpler
-    // `cm.run(main_fn)` path. For concurrent programs it's required —
-    // direct cm.run leaves CURRENT_RUNTIME null and any spawn() call
-    // would panic.
-    let mut rt = runtime::Runtime::new(&cm, 1);
+    Compiled { cm, main_fn }
+}
+
+/// `fz run <path>` (and the no-argument stdin route) — compile, then drive
+/// the program through the Runtime so concurrency-using fixtures work
+/// end-to-end.
+fn run_jit_src(src: String, source_name: String) {
+    let compiled = compile_pipeline(src, source_name);
+    let Some(main_fn) = compiled.main_fn else {
+        let sm = diag::SourceMap::new();
+        let d = diag::Diagnostic::error(
+            diag::codes::LOWER_UNBOUND,
+            "no `main/0` fn found",
+            diag::Span::DUMMY,
+        );
+        diag::render_one_to_stderr(&sm, &d);
+        std::process::exit(1);
+    };
+    let mut rt = runtime::Runtime::new(&compiled.cm, 1);
     let _main_pid = rt.spawn(main_fn);
     rt.run_until_idle();
 }

@@ -591,13 +591,17 @@ pub fn test_capture_take() -> Vec<String> {
     TEST_CAPTURE.with(|c| std::mem::take(&mut *c.borrow_mut()))
 }
 
-#[cfg(test)]
-pub(crate) fn ir_text_record_enable() {
+/// Begin recording per-fn Cranelift IR display text. Subsequent `compile()`
+/// calls on this thread will append `(fn_name, clif_text)` pairs to a TLS
+/// buffer; `ir_text_record_take` drains and returns them.
+///
+/// Used by `fz dump --emit clif` (fz-ul4.23.3) and by unit tests that need
+/// to assert on generated IR shape.
+pub fn ir_text_record_enable() {
     IR_TEXT_RECORD.with(|c| *c.borrow_mut() = Some(Vec::new()));
 }
 
-#[cfg(test)]
-pub(crate) fn ir_text_record_take() -> Vec<(String, String)> {
+pub fn ir_text_record_take() -> Vec<(String, String)> {
     IR_TEXT_RECORD.with(|c| c.borrow_mut().take().unwrap_or_default())
 }
 

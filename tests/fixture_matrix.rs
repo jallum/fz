@@ -219,6 +219,30 @@ fn fixture_index_up_to_date() {
     );
 }
 
+/// `fz dump --emit clif` smoke test. Confirms the feedback-loop subcommand
+/// is wired and produces real CLIF for a baseline fixture.
+#[test]
+fn fz_dump_emits_clif() {
+    let out = Command::new(FZ_BIN)
+        .args(["dump", "fixtures/add1.fz"])
+        .output()
+        .expect("spawn fz dump");
+    assert!(out.status.success(), "fz dump exited {}", out.status);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("; fn add1"), "missing add1 banner\n{}", stdout);
+    assert!(stdout.contains("; fn main"), "missing main banner\n{}", stdout);
+    assert!(stdout.contains("function "), "no Cranelift function header\n{}", stdout);
+
+    let filtered = Command::new(FZ_BIN)
+        .args(["dump", "fixtures/add1.fz", "--fn", "add1"])
+        .output()
+        .expect("spawn fz dump --fn");
+    assert!(filtered.status.success());
+    let s = String::from_utf8_lossy(&filtered.stdout);
+    assert!(s.contains("; fn add1"));
+    assert!(!s.contains("; fn main"), "filter leaked main: {}", s);
+}
+
 #[test]
 fn fixture_matrix() {
     let bless = std::env::var("BLESS").ok().as_deref() == Some("1");
