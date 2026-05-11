@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-11T21:07:31Z",
+  "description": "fz dump (fz-ul4.23.3) emits per-fn CLIF but without source-loc interleaving. The user-stated goal was \\\"annotated with source / line numbers\\\" so callers can map generated code back to fz source while iterating.\n\n## Deliverable\n\n- ir_codegen sets `SourceLoc` on every emitted instruction. Encode `Span` into u32 (file_id \u003c\u003c 24 | offset, or similar packing — Cranelift gives us 32 bits).\n- The dump pretty-printer interleaves `; @file:line:col` comments before instructions whose srcloc resolves through diag::SourceMap.\n- Multi-file source maps: dump output needs to know the SourceMap. Either pass the map to compile, or stamp file_ids deterministically.\n\n## Acceptance\n\n- `fz dump --emit clif fixtures/add1.fz` produces CLIF with source-loc comments.\n- The fz dump test asserts srcloc presence for at least one fn body inst.",
+  "id": "fz-ul4.23.7",
+  "labels": [],
+  "parent": "fz-ul4.23",
+  "priority": 3,
+  "status": "open",
+  "title": "Source-loc annotations in fz dump output",
+  "type": "task",
+  "updated_at": "2026-05-11T21:07:31Z"
+}
