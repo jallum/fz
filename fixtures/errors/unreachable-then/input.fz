@@ -1,0 +1,6 @@
+fn check(x) do
+  if x == 1, do: :one, else: :other
+end
+fn main() do
+  check(:atom)
+end
