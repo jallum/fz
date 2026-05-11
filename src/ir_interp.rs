@@ -3,7 +3,7 @@
 //! Walks a `fz_ir::Module` directly, just like the legacy ir_interp.rs, but
 //! uses the SAME value representation, heap, and runtime FFI as the JIT.
 //! Spawn/send/receive call into the same runtime.rs scheduler. Print
-//! renders through `crate::ir_runtime::fz_print_value`. Heap allocations
+//! renders through `fz_runtime::ir_runtime::fz_print_value`. Heap allocations
 //! go through the current Process's Heap.
 //!
 //! Scope at .5.2: minimal for fixtures/add1.fz —
@@ -24,8 +24,8 @@ use std::collections::HashMap;
 use std::cell::{Cell, RefCell};
 
 use crate::fz_ir::{BinOp, BuiltinKind, Const, FnId, Module, Prim, Stmt, Term, Var};
-use crate::fz_value::FzValue;
-use crate::process::Process;
+use fz_runtime::fz_value::FzValue;
+use fz_runtime::process::Process;
 
 // ===== Interp-internal scheduler (fz-ul4.23.5.8) =====
 //
@@ -51,7 +51,7 @@ thread_local! {
     static INTERP_TASKS: RefCell<HashMap<u32, Box<Process>>> =
         RefCell::new(HashMap::new());
     static INTERP_NEXT_PID: Cell<u32> = const { Cell::new(2) };
-    static INTERP_SCHEMAS: RefCell<Option<std::rc::Rc<std::cell::RefCell<crate::heap::SchemaRegistry>>>> =
+    static INTERP_SCHEMAS: RefCell<Option<std::rc::Rc<std::cell::RefCell<fz_runtime::heap::SchemaRegistry>>>> =
         const { RefCell::new(None) };
 }
 
@@ -101,14 +101,14 @@ pub fn run_main(module: &Module) -> Result<i64, String> {
         .id;
     interp_reset_state();
     let user_schemas =
-        std::rc::Rc::new(std::cell::RefCell::new(crate::heap::SchemaRegistry::new()));
+        std::rc::Rc::new(std::cell::RefCell::new(fz_runtime::heap::SchemaRegistry::new()));
     INTERP_SCHEMAS.with(|s| *s.borrow_mut() = Some(user_schemas.clone()));
     let mut main_process = Box::new(Process::new(user_schemas));
     main_process.pid = 1;
     let main_ptr = interp_register_task(1, main_process);
-    let prev = crate::process::CURRENT_PROCESS.with(|c| c.replace(main_ptr));
+    let prev = fz_runtime::process::CURRENT_PROCESS.with(|c| c.replace(main_ptr));
     let result = run_fn(module, main_id, Vec::new());
-    crate::process::CURRENT_PROCESS.with(|c| c.set(prev));
+    fz_runtime::process::CURRENT_PROCESS.with(|c| c.set(prev));
     INTERP_SCHEMAS.with(|s| *s.borrow_mut() = None);
     let r = result?;
     Ok(value_to_halt(r))
@@ -123,14 +123,14 @@ pub fn run_main(module: &Module) -> Result<i64, String> {
 pub fn run_test_fn(module: &Module, fn_id: FnId) -> Result<(), String> {
     interp_reset_state();
     let user_schemas =
-        std::rc::Rc::new(std::cell::RefCell::new(crate::heap::SchemaRegistry::new()));
+        std::rc::Rc::new(std::cell::RefCell::new(fz_runtime::heap::SchemaRegistry::new()));
     INTERP_SCHEMAS.with(|s| *s.borrow_mut() = Some(user_schemas.clone()));
     let mut task = Box::new(Process::new(user_schemas));
     task.pid = 1;
     let task_ptr = interp_register_task(1, task);
-    let prev = crate::process::CURRENT_PROCESS.with(|c| c.replace(task_ptr));
+    let prev = fz_runtime::process::CURRENT_PROCESS.with(|c| c.replace(task_ptr));
     let result = run_fn(module, fn_id, Vec::new());
-    crate::process::CURRENT_PROCESS.with(|c| c.set(prev));
+    fz_runtime::process::CURRENT_PROCESS.with(|c| c.set(prev));
     INTERP_SCHEMAS.with(|s| *s.borrow_mut() = None);
     result.map(|_| ())
 }
@@ -146,15 +146,15 @@ fn interp_spawn(module: &Module, fn_id: FnId) -> Result<u32, String> {
     let mut child = Box::new(Process::new(user_schemas));
     child.pid = pid;
     let child_ptr = interp_register_task(pid, child);
-    let prev = crate::process::CURRENT_PROCESS.with(|c| c.replace(child_ptr));
+    let prev = fz_runtime::process::CURRENT_PROCESS.with(|c| c.replace(child_ptr));
     let result = run_fn(module, fn_id, Vec::new());
-    crate::process::CURRENT_PROCESS.with(|c| c.set(prev));
+    fz_runtime::process::CURRENT_PROCESS.with(|c| c.set(prev));
     result?;
     Ok(pid)
 }
 
 fn value_to_halt(v: FzValue) -> i64 {
-    use crate::fz_value::Tag;
+    use fz_runtime::fz_value::Tag;
     match v.tag() {
         Tag::Int => v.unbox_int().unwrap(),
         Tag::Atom => v.unbox_atom().unwrap() as i64,
@@ -273,7 +273,7 @@ fn run_fn(module: &Module, mut fn_id: FnId, mut args: Vec<FzValue>) -> Result<Fz
                 Term::Return(v) => return env_get(&env, *v),
                 Term::Halt(v) => return env_get(&env, *v),
                 Term::Receive { continuation } => {
-                    let msg = crate::process::current_process()
+                    let msg = fz_runtime::process::current_process()
                         .mailbox
                         .pop_front()
                         .ok_or_else(|| {
@@ -324,7 +324,7 @@ fn eval_prim(
         }
         Prim::MakeClosure(fn_id, captured) => {
             let cap_vals: Vec<FzValue> = collect(env, captured)?;
-            let p = crate::process::current_process()
+            let p = fz_runtime::process::current_process()
                 .heap
                 .alloc_closure(fn_id.0, &cap_vals);
             FzValue(p as u64)
@@ -343,11 +343,11 @@ fn eval_prim(
 /// the lambda body, and `flags` holds the captured count. Returns the
 /// callee fn id plus a Vec of captured FzValues read from the payload.
 fn unpack_closure(v: FzValue) -> Result<(FnId, Vec<FzValue>), String> {
-    use crate::fz_value::HeapKind;
+    use fz_runtime::fz_value::HeapKind;
     let p = v.unbox_ptr().ok_or_else(|| {
         format!(
             "call_closure on non-ptr value: {}",
-            crate::fz_value::debug::render(v.0)
+            fz_runtime::fz_value::debug::render(v.0)
         )
     })?;
     let header = unsafe { &*p };
@@ -370,7 +370,7 @@ fn const_to_fz(c: &Const) -> FzValue {
         Const::Nil => FzValue::NIL,
         Const::True => FzValue::TRUE,
         Const::False => FzValue::FALSE,
-        Const::Float(f) => FzValue(crate::ir_runtime::fz_alloc_float(f.to_bits())),
+        Const::Float(f) => FzValue(fz_runtime::ir_runtime::fz_alloc_float(f.to_bits())),
         // Str: no first-class heap kind yet (.11.x lowers strings to
         // Bitstring at the AST level). Should never reach the interp as a
         // raw Const::Str; if it does, surface honestly.
@@ -391,20 +391,20 @@ fn eval_binop(op: BinOp, a: FzValue, b: FzValue) -> Result<FzValue, String> {
         };
     }
     match op {
-        BinOp::Add => int_arith!(+, crate::ir_runtime::fz_arith_add),
-        BinOp::Sub => int_arith!(-, crate::ir_runtime::fz_arith_sub),
-        BinOp::Mul => int_arith!(*, crate::ir_runtime::fz_arith_mul),
-        BinOp::Div => int_arith!(/, crate::ir_runtime::fz_arith_div),
-        BinOp::Mod => int_arith!(%, crate::ir_runtime::fz_arith_mod),
-        BinOp::Eq => Ok(FzValue(crate::ir_runtime::fz_value_eq(a.0, b.0))),
+        BinOp::Add => int_arith!(+, fz_runtime::ir_runtime::fz_arith_add),
+        BinOp::Sub => int_arith!(-, fz_runtime::ir_runtime::fz_arith_sub),
+        BinOp::Mul => int_arith!(*, fz_runtime::ir_runtime::fz_arith_mul),
+        BinOp::Div => int_arith!(/, fz_runtime::ir_runtime::fz_arith_div),
+        BinOp::Mod => int_arith!(%, fz_runtime::ir_runtime::fz_arith_mod),
+        BinOp::Eq => Ok(FzValue(fz_runtime::ir_runtime::fz_value_eq(a.0, b.0))),
         BinOp::Neq => {
-            let eq = FzValue(crate::ir_runtime::fz_value_eq(a.0, b.0));
+            let eq = FzValue(fz_runtime::ir_runtime::fz_value_eq(a.0, b.0));
             Ok(if eq.is_true() { FzValue::FALSE } else { FzValue::TRUE })
         }
-        BinOp::Lt => Ok(FzValue(crate::ir_runtime::fz_cmp_lt(a.0, b.0))),
-        BinOp::Le => Ok(FzValue(crate::ir_runtime::fz_cmp_le(a.0, b.0))),
-        BinOp::Gt => Ok(FzValue(crate::ir_runtime::fz_cmp_gt(a.0, b.0))),
-        BinOp::Ge => Ok(FzValue(crate::ir_runtime::fz_cmp_ge(a.0, b.0))),
+        BinOp::Lt => Ok(FzValue(fz_runtime::ir_runtime::fz_cmp_lt(a.0, b.0))),
+        BinOp::Le => Ok(FzValue(fz_runtime::ir_runtime::fz_cmp_le(a.0, b.0))),
+        BinOp::Gt => Ok(FzValue(fz_runtime::ir_runtime::fz_cmp_gt(a.0, b.0))),
+        BinOp::Ge => Ok(FzValue(fz_runtime::ir_runtime::fz_cmp_ge(a.0, b.0))),
         BinOp::And => Ok(if !is_truthy(a) { a } else { b }),
         BinOp::Or => Ok(if is_truthy(a) { a } else { b }),
     }
@@ -423,7 +423,7 @@ fn run_builtin(
             if args.len() != 1 {
                 return Err(format!("print/1 got {} args", args.len()));
             }
-            crate::ir_runtime::fz_print_value(args[0].0);
+            fz_runtime::ir_runtime::fz_print_value(args[0].0);
             Ok(FzValue::NIL)
         }
         BuiltinKind::Assert => {
@@ -440,14 +440,14 @@ fn run_builtin(
             if args.len() != 2 {
                 return Err(format!("assert_eq/2 got {} args", args.len()));
             }
-            let eq = FzValue(crate::ir_runtime::fz_value_eq(args[0].0, args[1].0));
+            let eq = FzValue(fz_runtime::ir_runtime::fz_value_eq(args[0].0, args[1].0));
             if eq.is_true() {
                 Ok(FzValue::NIL)
             } else {
                 Err(format!(
                     "assertion failed: assert_eq({}, {})",
-                    crate::fz_value::debug::render(args[0].0),
-                    crate::fz_value::debug::render(args[1].0),
+                    fz_runtime::fz_value::debug::render(args[0].0),
+                    fz_runtime::fz_value::debug::render(args[1].0),
                 ))
             }
         }
@@ -455,14 +455,14 @@ fn run_builtin(
             if args.len() != 2 {
                 return Err(format!("assert_neq/2 got {} args", args.len()));
             }
-            let eq = FzValue(crate::ir_runtime::fz_value_eq(args[0].0, args[1].0));
+            let eq = FzValue(fz_runtime::ir_runtime::fz_value_eq(args[0].0, args[1].0));
             if eq.is_false() {
                 Ok(FzValue::NIL)
             } else {
                 Err(format!(
                     "assertion failed: assert_neq({}, {})",
-                    crate::fz_value::debug::render(args[0].0),
-                    crate::fz_value::debug::render(args[1].0),
+                    fz_runtime::fz_value::debug::render(args[0].0),
+                    fz_runtime::fz_value::debug::render(args[1].0),
                 ))
             }
         }
@@ -483,7 +483,7 @@ fn run_builtin(
         }
         BuiltinKind::SelfPid => {
             Ok(FzValue::from_int(
-                crate::process::current_process().pid as i64,
+                fz_runtime::process::current_process().pid as i64,
             ))
         }
         BuiltinKind::Send => {
@@ -501,7 +501,7 @@ fn run_builtin(
             if args.len() != 2 {
                 return Err(format!("vec_get/2 got {} args", args.len()));
             }
-            Ok(FzValue(crate::ir_runtime::fz_vec_get(args[0].0, args[1].0)))
+            Ok(FzValue(fz_runtime::ir_runtime::fz_vec_get(args[0].0, args[1].0)))
         }
     }
 }

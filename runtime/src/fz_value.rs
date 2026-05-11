@@ -414,10 +414,10 @@ mod tests {
 /// use the same rendering — values are uniformly tagged, regardless of
 /// what produced them. The single runtime dependency is the heap's
 /// schema registry on the current Process, accessed via
-/// `crate::ir_codegen::current_process()`.
+/// `crate::process::current_process()`.
 pub mod debug {
     use super::{FzValue, HeapKind, ListCons, Tag};
-    use crate::ir_codegen::current_process;
+    use crate::process::current_process;
 
     pub fn render(bits: u64) -> String {
         let v = FzValue(bits);

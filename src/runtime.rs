@@ -35,11 +35,11 @@
 use std::collections::{HashMap, VecDeque};
 
 use crate::fz_ir::FnId;
-use crate::fz_value::FzValue;
+use fz_runtime::fz_value::FzValue;
 use crate::ir_codegen::{
     CompiledModule, PidId, Process, ProcessState, CURRENT_PROCESS, HEADER_SIZE,
 };
-use crate::ir_runtime::fz_alloc_frame_for_test;
+use fz_runtime::ir_runtime::fz_alloc_frame_for_test;
 
 /// Task scheduler bound to a single CompiledModule. v1 is single-worker /
 /// single-threaded — `run_until_idle` drives all spawned tasks to
@@ -67,6 +67,18 @@ thread_local! {
     /// outlives any FFI call: it owns the run_until_idle stack frame.
     pub(crate) static CURRENT_RUNTIME: std::cell::Cell<*mut ()> =
         const { std::cell::Cell::new(std::ptr::null_mut()) };
+}
+
+/// fz-ul4.23.10 scheduler-hook thunks. These are the extern "C" fns the
+/// runtime crate dispatches through when fz_spawn / fz_send fire from
+/// JIT'd code. They translate the raw-u32 hook ABI back into the
+/// FnId/PidId newtypes Runtime expects and call the existing impls.
+extern "C" fn spawn_hook_thunk(fn_id_raw: u32) -> u32 {
+    spawn_via_current_runtime(FnId(fn_id_raw))
+}
+
+extern "C" fn send_hook_thunk(receiver_pid: u32, msg_bits: u64) {
+    send_via_current_runtime(receiver_pid, FzValue(msg_bits));
 }
 
 /// fz-ul4.19.2: called from fz_spawn (ir_codegen.rs FFI) to enqueue a new
@@ -124,8 +136,8 @@ pub fn send_via_current_runtime(receiver_pid: PidId, msg: FzValue) {
         // the same heap. Since src and dst are the same heap, the
         // existing forwarding-pointer technique handles sharing.
         let mut forwarding: std::collections::HashMap<
-            *mut crate::fz_value::HeapHeader,
-            *mut crate::fz_value::HeapHeader,
+            *mut fz_runtime::fz_value::HeapHeader,
+            *mut fz_runtime::fz_value::HeapHeader,
         > = std::collections::HashMap::new();
         // SAFETY: split the &mut Process into &Heap (for read) and
         // &mut Heap (for write). The pointers are aliased but Rust's
@@ -134,10 +146,10 @@ pub fn send_via_current_runtime(receiver_pid: PidId, msg: FzValue) {
         // distinct raw-pointer reads from src vs &mut writes through
         // dst. Equivalent to running deep_copy on a clone of the heap,
         // which would be correct.
-        let heap_ptr: *mut crate::heap::Heap = &mut sender.heap as *mut _;
-        let src_heap: &crate::heap::Heap = unsafe { &*heap_ptr };
-        let dst_heap: &mut crate::heap::Heap = unsafe { &mut *heap_ptr };
-        let copied = crate::heap::deep_copy_value(msg, src_heap, dst_heap, &mut forwarding);
+        let heap_ptr: *mut fz_runtime::heap::Heap = &mut sender.heap as *mut _;
+        let src_heap: &fz_runtime::heap::Heap = unsafe { &*heap_ptr };
+        let dst_heap: &mut fz_runtime::heap::Heap = unsafe { &mut *heap_ptr };
+        let copied = fz_runtime::heap::deep_copy_value(msg, src_heap, dst_heap, &mut forwarding);
         sender.mailbox.push_back(copied);
         // No state transition needed: sender is Running.
         return;
@@ -147,10 +159,10 @@ pub fn send_via_current_runtime(receiver_pid: PidId, msg: FzValue) {
         .get_mut(&receiver_pid)
         .unwrap_or_else(|| panic!("send: receiver pid {} not in task registry", receiver_pid));
     let mut forwarding: std::collections::HashMap<
-        *mut crate::fz_value::HeapHeader,
-        *mut crate::fz_value::HeapHeader,
+        *mut fz_runtime::fz_value::HeapHeader,
+        *mut fz_runtime::fz_value::HeapHeader,
     > = std::collections::HashMap::new();
-    let copied = crate::heap::deep_copy_value(
+    let copied = fz_runtime::heap::deep_copy_value(
         msg,
         &sender.heap,
         &mut receiver.heap,
@@ -221,6 +233,12 @@ impl<'a> Runtime<'a> {
         // lifetime back. Safe: we restore the previous value on exit.
         let self_ptr = self as *mut Runtime<'a> as *mut ();
         let prev_rt = CURRENT_RUNTIME.with(|c| c.replace(self_ptr));
+        // fz-ul4.23.10: install scheduler hooks so fz_spawn / fz_send
+        // (now in the runtime crate) can dispatch back into this
+        // Runtime. The runtime crate can't see Runtime directly, so it
+        // calls through extern "C" fn pointers we register here.
+        fz_runtime::scheduler_hooks::install_spawn_hook(spawn_hook_thunk);
+        fz_runtime::scheduler_hooks::install_send_hook(send_hook_thunk);
         while let Some(pid) = self.run_queue.pop_front() {
             let mut task = self
                 .tasks
@@ -263,6 +281,8 @@ impl<'a> Runtime<'a> {
             self.tasks.insert(pid, task);
         }
         CURRENT_RUNTIME.with(|c| c.set(prev_rt));
+        fz_runtime::scheduler_hooks::clear_spawn_hook();
+        fz_runtime::scheduler_hooks::clear_send_hook();
     }
 
     /// Read-only access to a task (for tests / inspection).

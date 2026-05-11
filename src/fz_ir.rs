@@ -21,7 +21,7 @@
 
 use crate::ast::{BitType, Endian, Pattern};
 use crate::diag::Span;
-use crate::heap::Schema;
+use fz_runtime::heap::Schema;
 use std::collections::HashMap;
 use std::fmt;
 
@@ -807,7 +807,7 @@ mod tests {
 
     #[test]
     fn module_holds_schemas() {
-        use crate::heap::{FieldDescriptor, FieldKind};
+        use fz_runtime::heap::{FieldDescriptor, FieldKind};
         let mut mb = ModuleBuilder::new();
         let id = mb.add_schema(Schema {
             name: "Frame_identity".into(),

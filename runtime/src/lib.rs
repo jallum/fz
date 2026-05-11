@@ -1,24 +1,23 @@
-//! fz-ul4.12.2 — runtime staticlib for compiled fz code.
+//! fz-ul4.23.10 — runtime staticlib for fz code (JIT, interp, AOT).
 //!
-//! Two surfaces:
+//! Owns the per-task substrate that every execution path shares:
+//! FzValue tagged-pointer rep (`fz_value`), per-task heap (`heap`),
+//! Process struct + TLS (`process`), bit-level encoders (`bitstr`),
+//! and the JIT/AOT extern "C" FFI surface (`ir_runtime`). AOT-compiled
+//! binaries link against this crate as a staticlib; the fz binary
+//! links against it as an rlib.
 //!
-//! 1. **Rust API** (used by the compiler at codegen time): the shared atom
-//!    table — `intern(&str) -> u32` and `name_of(u32) -> Option<String>`.
-//!    Atom ids assigned here must match the ids the runtime resolves at
-//!    print time. For JIT (.12.4) that's automatic — same process. For AOT
-//!    (.12.3), the compiler emits a startup constructor that populates the
-//!    runtime's atom table with the names it interned at compile time.
-//!
-//! 2. **C-ABI builtins** (called from compiled fz code): monomorphic
-//!    per-LowerTy variants — `fz_print_i64`, `fz_print_f64`, `fz_print_bool`,
-//!    `fz_print_atom`, `fz_print_nil`. The compiler picks the right symbol
-//!    based on the static type of the argument. `fz_panic` aborts with a
-//!    formatted message (used for case no-match, division by zero in .12.5,
-//!    etc.).
-//!
-//! Out of scope per the .12 in-scope subset: anything that allocates on the
-//! heap (lists, maps, strings, bitstrings, vectors). The tagged 64-bit Value
-//! representation moves to fz-ul4.11 alongside the GC.
+//! Pre-23.10 history: this crate held only the atom table + `.12`-era
+//! print helpers. The substrate has been lifted out of the binary
+//! (src/*.rs → runtime/src/*.rs) so the linker can resolve every fz_*
+//! symbol from one place. Two surfaces:
+
+pub mod bitstr;
+pub mod fz_value;
+pub mod heap;
+pub mod ir_runtime;
+pub mod process;
+pub mod scheduler_hooks;
 
 use std::sync::Mutex;
 

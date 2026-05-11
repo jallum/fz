@@ -4,11 +4,8 @@ mod bitstr;
 mod diag;
 mod eval;
 mod fz_ir;
-mod fz_value;
-mod heap;
 mod ir_codegen;
 mod ir_interp;
-mod ir_runtime;
 // ir_liveness removed (fz-ul4.11.31 subsumes .11.30): frame schemas are
 // uniformly `[cont_ptr, ...entry_params]` with every Var slot FzValue;
 // Cranelift handles temporary spills. The richer per-call liveness was
@@ -19,7 +16,6 @@ mod ir_typer;
 mod lexer;
 mod macros;
 mod parser;
-mod process;
 mod repl;
 mod resolve;
 mod runtime;

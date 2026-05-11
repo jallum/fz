@@ -22,7 +22,7 @@
 #![allow(dead_code)]
 
 use crate::fz_ir::{BinOp, Const, FnId, Module, Prim, Stmt, Term, UnOp, Var};
-use crate::heap::{FieldDescriptor, FieldKind, Schema};
+use fz_runtime::heap::{FieldDescriptor, FieldKind, Schema};
 use cranelift_codegen::ir::{
     self, condcodes::IntCC, types, AbiParam, BlockArg, InstBuilder, MemFlags, Signature,
 };
@@ -94,7 +94,7 @@ pub struct CompiledModule {
     /// User-data SchemaRegistry (tuple, struct, list, map, closure, bitstring,
     /// vec, float). Lifted from TLS in fz-ul4.11.32. Each Process constructed
     /// via `make_process()` shares this registry through its Heap.
-    pub(crate) user_schemas: std::rc::Rc<std::cell::RefCell<crate::heap::SchemaRegistry>>,
+    pub(crate) user_schemas: std::rc::Rc<std::cell::RefCell<fz_runtime::heap::SchemaRegistry>>,
     /// Per-fn frame size (bytes), indexed by FnId.0. Consumed by
     /// `fz_alloc_frame_dyn` to allocate frames for fns whose id is known
     /// only dynamically (closure invocation). Copied into Process at
@@ -136,7 +136,7 @@ impl CompiledModule {
     /// concurrently (one worker at a time per Process; libdispatch model).
     pub fn make_process(&self) -> Process {
         Process {
-            heap: crate::heap::Heap::new(64 * 1024, std::rc::Rc::clone(&self.user_schemas)),
+            heap: fz_runtime::heap::Heap::new(64 * 1024, std::rc::Rc::clone(&self.user_schemas)),
             halt_value: 0,
             map_builder: None,
             bs_builder: None,
@@ -196,14 +196,14 @@ impl CompiledModule {
                 panic!("trampoline exceeded {} iterations", cap);
             }
             if process.heap.should_gc() {
-                let roots = crate::heap::collect_roots_from_frame_chain(
-                    cur as *mut crate::fz_value::HeapHeader,
+                let roots = fz_runtime::heap::collect_roots_from_frame_chain(
+                    cur as *mut fz_runtime::fz_value::HeapHeader,
                     &self.schemas,
                 );
                 process.heap.gc(&roots);
                 process.heap.clear_should_gc_flag();
             }
-            let header = cur as *const crate::fz_value::HeapHeader;
+            let header = cur as *const fz_runtime::fz_value::HeapHeader;
             let schema_id = unsafe { (*header).schema_id };
             let fn_ptr = self
                 .fn_ptrs
@@ -229,7 +229,7 @@ impl CompiledModule {
 
     fn run_internal(&self, fn_id: FnId) -> i64 {
         let entry_schema = &self.schemas[fn_id.0 as usize];
-        let frame = crate::ir_runtime::fz_alloc_frame(fn_id.0, entry_schema.size);
+        let frame = fz_runtime::ir_runtime::fz_alloc_frame(fn_id.0, entry_schema.size);
         // Continuation pointer = null (entry fn).
         unsafe {
             let cont_slot = frame.add(HEADER_SIZE as usize) as *mut *mut u8;
@@ -249,14 +249,14 @@ impl CompiledModule {
             // (cur backward via frame[16] cont_ptr) and run mark-sweep
             // before dispatching the next fn.
             if current_process().heap.should_gc() {
-                let roots = crate::heap::collect_roots_from_frame_chain(
-                    cur as *mut crate::fz_value::HeapHeader,
+                let roots = fz_runtime::heap::collect_roots_from_frame_chain(
+                    cur as *mut fz_runtime::fz_value::HeapHeader,
                     &self.schemas,
                 );
                 current_process().heap.gc(&roots);
                 current_process().heap.clear_should_gc_flag();
             }
-            let header = cur as *const crate::fz_value::HeapHeader;
+            let header = cur as *const fz_runtime::fz_value::HeapHeader;
             let schema_id = unsafe { (*header).schema_id };
             let fn_ptr = self
                 .fn_ptrs
@@ -280,24 +280,27 @@ impl CompiledModule {
 // Process, PidId, ProcessState, CURRENT_PROCESS, DEFAULT_PROCESS, and
 // current_process() moved to src/process.rs (fz-ul4.23.4.2). Re-exported
 // here for back-compat with downstream users (runtime.rs, ir_runtime.rs,
-// tests) while consumers migrate to `crate::process::*`.
-pub use crate::process::{
+// tests) while consumers migrate to `fz_runtime::process::*`.
+pub use fz_runtime::process::{
     current_process, PidId, Process, ProcessState, CURRENT_PROCESS, DEFAULT_PROCESS,
 };
 
 // Runtime FFI fns called from JIT'd code now live in src/ir_runtime.rs.
-// Value rendering lives in crate::fz_value::debug (fz-ul4.23.4.3).
+// Value rendering lives in fz_runtime::fz_value::debug (fz-ul4.23.4.3).
 
 thread_local! {
-    pub static TEST_CAPTURE: std::cell::RefCell<Vec<String>> = std::cell::RefCell::new(Vec::new());
     /// (.11.24.4) Per-fn Cranelift IR display text captured by compile()
     /// after compile_fn but before define_function consumes the context.
     /// Test-only; enable by calling `ir_text_record_enable()` before compile.
     pub static IR_TEXT_RECORD: std::cell::RefCell<Option<Vec<(String, String)>>> = std::cell::RefCell::new(None);
 }
 
+/// Drain the per-thread print-capture buffer. Tests in this file (and
+/// the fixture_matrix integration tests) call this to read what
+/// fz_print_value emitted during a compile/run. The actual storage lives
+/// in the runtime crate alongside fz_print_value (fz-ul4.23.10).
 pub fn test_capture_take() -> Vec<String> {
-    TEST_CAPTURE.with(|c| std::mem::take(&mut *c.borrow_mut()))
+    fz_runtime::ir_runtime::test_capture_take()
 }
 
 /// Begin recording per-fn Cranelift IR display text. Subsequent `compile()`
@@ -350,7 +353,7 @@ pub fn heap_freelist_len() -> usize {
     })
 }
 
-pub fn heap_gc(roots: &[crate::fz_value::FzValue]) {
+pub fn heap_gc(roots: &[fz_runtime::fz_value::FzValue]) {
     DEFAULT_PROCESS.with(|c| {
         if let Some(p) = c.borrow_mut().as_mut() {
             p.heap.gc(roots);
@@ -470,7 +473,7 @@ pub(crate) const YIELD_PTR: u64 = 0x1;
 
 // Vec cluster moved to ir_runtime.rs (.23.4.10).
 // VEC_BUILDER state lives on Process.vec_builder (per fz-ul4.11.32),
-// typed as Option<crate::ir_runtime::VecBuild>.
+// typed as Option<fz_runtime::ir_runtime::VecBuild>.
 
 // Closure cluster moved to ir_runtime.rs (.23.4.11).
 
@@ -537,46 +540,46 @@ impl JitBackend {
         // is in-process and resolves symbols by name → Rust fn pointer.
         // AOT will skip this entire block (linker resolves against the
         // fz_runtime staticlib instead).
-        builder.symbol("fz_print_value", crate::ir_runtime::fz_print_value as *const u8);
-        builder.symbol("fz_halt", crate::ir_runtime::fz_halt as *const u8);
-        builder.symbol("fz_alloc_frame", crate::ir_runtime::fz_alloc_frame as *const u8);
-        builder.symbol("fz_alloc_list_cons", crate::ir_runtime::fz_alloc_list_cons as *const u8);
-        builder.symbol("fz_alloc_struct", crate::ir_runtime::fz_alloc_struct as *const u8);
-        builder.symbol("fz_bs_begin", crate::ir_runtime::fz_bs_begin as *const u8);
-        builder.symbol("fz_bs_write_field", crate::ir_runtime::fz_bs_write_field as *const u8);
-        builder.symbol("fz_bs_finalize", crate::ir_runtime::fz_bs_finalize as *const u8);
-        builder.symbol("fz_bs_reader_init", crate::ir_runtime::fz_bs_reader_init as *const u8);
-        builder.symbol("fz_bs_read_field", crate::ir_runtime::fz_bs_read_field as *const u8);
-        builder.symbol("fz_map_begin", crate::ir_runtime::fz_map_begin as *const u8);
-        builder.symbol("fz_map_clone", crate::ir_runtime::fz_map_clone as *const u8);
-        builder.symbol("fz_map_push", crate::ir_runtime::fz_map_push as *const u8);
-        builder.symbol("fz_map_finalize", crate::ir_runtime::fz_map_finalize as *const u8);
-        builder.symbol("fz_map_get", crate::ir_runtime::fz_map_get as *const u8);
-        builder.symbol("fz_alloc_float", crate::ir_runtime::fz_alloc_float as *const u8);
-        builder.symbol("fz_arith_add", crate::ir_runtime::fz_arith_add as *const u8);
-        builder.symbol("fz_arith_sub", crate::ir_runtime::fz_arith_sub as *const u8);
-        builder.symbol("fz_arith_mul", crate::ir_runtime::fz_arith_mul as *const u8);
-        builder.symbol("fz_arith_div", crate::ir_runtime::fz_arith_div as *const u8);
-        builder.symbol("fz_arith_mod", crate::ir_runtime::fz_arith_mod as *const u8);
-        builder.symbol("fz_cmp_lt", crate::ir_runtime::fz_cmp_lt as *const u8);
-        builder.symbol("fz_cmp_le", crate::ir_runtime::fz_cmp_le as *const u8);
-        builder.symbol("fz_cmp_gt", crate::ir_runtime::fz_cmp_gt as *const u8);
-        builder.symbol("fz_cmp_ge", crate::ir_runtime::fz_cmp_ge as *const u8);
-        builder.symbol("fz_value_eq", crate::ir_runtime::fz_value_eq as *const u8);
-        builder.symbol("fz_vec_begin", crate::ir_runtime::fz_vec_begin as *const u8);
-        builder.symbol("fz_vec_push", crate::ir_runtime::fz_vec_push as *const u8);
-        builder.symbol("fz_vec_finalize", crate::ir_runtime::fz_vec_finalize as *const u8);
-        builder.symbol("fz_vec_get", crate::ir_runtime::fz_vec_get as *const u8);
-        builder.symbol("fz_closure_begin", crate::ir_runtime::fz_closure_begin as *const u8);
-        builder.symbol("fz_closure_push", crate::ir_runtime::fz_closure_push as *const u8);
-        builder.symbol("fz_closure_finalize", crate::ir_runtime::fz_closure_finalize as *const u8);
-        builder.symbol("fz_closure_arg", crate::ir_runtime::fz_closure_arg as *const u8);
-        builder.symbol("fz_closure_invoke", crate::ir_runtime::fz_closure_invoke as *const u8);
-        builder.symbol("fz_tail_closure", crate::ir_runtime::fz_tail_closure as *const u8);
-        builder.symbol("fz_spawn", crate::ir_runtime::fz_spawn as *const u8);
-        builder.symbol("fz_self", crate::ir_runtime::fz_self as *const u8);
-        builder.symbol("fz_send", crate::ir_runtime::fz_send as *const u8);
-        builder.symbol("fz_receive_attempt", crate::ir_runtime::fz_receive_attempt as *const u8);
+        builder.symbol("fz_print_value", fz_runtime::ir_runtime::fz_print_value as *const u8);
+        builder.symbol("fz_halt", fz_runtime::ir_runtime::fz_halt as *const u8);
+        builder.symbol("fz_alloc_frame", fz_runtime::ir_runtime::fz_alloc_frame as *const u8);
+        builder.symbol("fz_alloc_list_cons", fz_runtime::ir_runtime::fz_alloc_list_cons as *const u8);
+        builder.symbol("fz_alloc_struct", fz_runtime::ir_runtime::fz_alloc_struct as *const u8);
+        builder.symbol("fz_bs_begin", fz_runtime::ir_runtime::fz_bs_begin as *const u8);
+        builder.symbol("fz_bs_write_field", fz_runtime::ir_runtime::fz_bs_write_field as *const u8);
+        builder.symbol("fz_bs_finalize", fz_runtime::ir_runtime::fz_bs_finalize as *const u8);
+        builder.symbol("fz_bs_reader_init", fz_runtime::ir_runtime::fz_bs_reader_init as *const u8);
+        builder.symbol("fz_bs_read_field", fz_runtime::ir_runtime::fz_bs_read_field as *const u8);
+        builder.symbol("fz_map_begin", fz_runtime::ir_runtime::fz_map_begin as *const u8);
+        builder.symbol("fz_map_clone", fz_runtime::ir_runtime::fz_map_clone as *const u8);
+        builder.symbol("fz_map_push", fz_runtime::ir_runtime::fz_map_push as *const u8);
+        builder.symbol("fz_map_finalize", fz_runtime::ir_runtime::fz_map_finalize as *const u8);
+        builder.symbol("fz_map_get", fz_runtime::ir_runtime::fz_map_get as *const u8);
+        builder.symbol("fz_alloc_float", fz_runtime::ir_runtime::fz_alloc_float as *const u8);
+        builder.symbol("fz_arith_add", fz_runtime::ir_runtime::fz_arith_add as *const u8);
+        builder.symbol("fz_arith_sub", fz_runtime::ir_runtime::fz_arith_sub as *const u8);
+        builder.symbol("fz_arith_mul", fz_runtime::ir_runtime::fz_arith_mul as *const u8);
+        builder.symbol("fz_arith_div", fz_runtime::ir_runtime::fz_arith_div as *const u8);
+        builder.symbol("fz_arith_mod", fz_runtime::ir_runtime::fz_arith_mod as *const u8);
+        builder.symbol("fz_cmp_lt", fz_runtime::ir_runtime::fz_cmp_lt as *const u8);
+        builder.symbol("fz_cmp_le", fz_runtime::ir_runtime::fz_cmp_le as *const u8);
+        builder.symbol("fz_cmp_gt", fz_runtime::ir_runtime::fz_cmp_gt as *const u8);
+        builder.symbol("fz_cmp_ge", fz_runtime::ir_runtime::fz_cmp_ge as *const u8);
+        builder.symbol("fz_value_eq", fz_runtime::ir_runtime::fz_value_eq as *const u8);
+        builder.symbol("fz_vec_begin", fz_runtime::ir_runtime::fz_vec_begin as *const u8);
+        builder.symbol("fz_vec_push", fz_runtime::ir_runtime::fz_vec_push as *const u8);
+        builder.symbol("fz_vec_finalize", fz_runtime::ir_runtime::fz_vec_finalize as *const u8);
+        builder.symbol("fz_vec_get", fz_runtime::ir_runtime::fz_vec_get as *const u8);
+        builder.symbol("fz_closure_begin", fz_runtime::ir_runtime::fz_closure_begin as *const u8);
+        builder.symbol("fz_closure_push", fz_runtime::ir_runtime::fz_closure_push as *const u8);
+        builder.symbol("fz_closure_finalize", fz_runtime::ir_runtime::fz_closure_finalize as *const u8);
+        builder.symbol("fz_closure_arg", fz_runtime::ir_runtime::fz_closure_arg as *const u8);
+        builder.symbol("fz_closure_invoke", fz_runtime::ir_runtime::fz_closure_invoke as *const u8);
+        builder.symbol("fz_tail_closure", fz_runtime::ir_runtime::fz_tail_closure as *const u8);
+        builder.symbol("fz_spawn", fz_runtime::ir_runtime::fz_spawn as *const u8);
+        builder.symbol("fz_self", fz_runtime::ir_runtime::fz_self as *const u8);
+        builder.symbol("fz_send", fz_runtime::ir_runtime::fz_send as *const u8);
+        builder.symbol("fz_receive_attempt", fz_runtime::ir_runtime::fz_receive_attempt as *const u8);
         Self {
             jmod: JITModule::new(builder),
         }
@@ -697,7 +700,7 @@ pub fn compile_aot(module: &Module, obj_name: &str) -> Result<AotArtifact, Codeg
         tuple_arities.insert(3);
     }
     let user_schemas = std::rc::Rc::new(std::cell::RefCell::new(
-        crate::heap::SchemaRegistry::new(),
+        fz_runtime::heap::SchemaRegistry::new(),
     ));
     let mut tuple_schema_ids: HashMap<usize, u32> = HashMap::new();
     {
@@ -840,7 +843,7 @@ pub fn compile(module: &Module) -> Result<CompiledModule, CodegenError> {
     // map, closure, bitstring, vec, float schemas live here. Each Process
     // constructed via make_process() shares this registry through its Heap.
     let user_schemas = std::rc::Rc::new(std::cell::RefCell::new(
-        crate::heap::SchemaRegistry::new(),
+        fz_runtime::heap::SchemaRegistry::new(),
     ));
     let mut tuple_schema_ids: HashMap<usize, u32> = HashMap::new();
     {
@@ -2035,7 +2038,7 @@ fn lower_prim<M: cranelift_module::Module>(
         }
         Prim::MakeVec(kind, els) => {
             use crate::fz_ir::VecKindIr;
-            use crate::fz_value::HeapKind;
+            use fz_runtime::fz_value::HeapKind;
             let kind_tag = match kind {
                 VecKindIr::I64 => HeapKind::VecI64 as i64,
                 VecKindIr::U8 => HeapKind::VecU8 as i64,
@@ -2227,8 +2230,8 @@ mod tests {
     /// a known-FzValue entry-param slot, the walker emits that slot.
     #[test]
     fn root_walker_emits_entry_param_fzvalues() {
-        use crate::fz_value::{FzValue, HeapHeader};
-        use crate::heap::{
+        use fz_runtime::fz_value::{FzValue, HeapHeader};
+        use fz_runtime::heap::{
             collect_roots_from_frame_chain, FieldDescriptor, FieldKind, Schema,
         };
 
@@ -2453,14 +2456,14 @@ fn main(), do: count(100000, 0)
 
     #[test]
     fn render_fz_value_dispatches_per_tag() {
-        use crate::fz_value::FzValue;
-        assert_eq!(crate::fz_value::debug::render(FzValue::from_int(42).0), "42");
-        assert_eq!(crate::fz_value::debug::render(FzValue::from_int(0).0), "0");
-        assert_eq!(crate::fz_value::debug::render(FzValue::from_int(-7).0), "-7");
-        assert_eq!(crate::fz_value::debug::render(FzValue::NIL.0), "[]");
-        assert_eq!(crate::fz_value::debug::render(FzValue::TRUE.0), "true");
-        assert_eq!(crate::fz_value::debug::render(FzValue::FALSE.0), "false");
-        assert_eq!(crate::fz_value::debug::render(FzValue::from_atom_id(3).0), ":atom_3");
+        use fz_runtime::fz_value::FzValue;
+        assert_eq!(fz_runtime::fz_value::debug::render(FzValue::from_int(42).0), "42");
+        assert_eq!(fz_runtime::fz_value::debug::render(FzValue::from_int(0).0), "0");
+        assert_eq!(fz_runtime::fz_value::debug::render(FzValue::from_int(-7).0), "-7");
+        assert_eq!(fz_runtime::fz_value::debug::render(FzValue::NIL.0), "[]");
+        assert_eq!(fz_runtime::fz_value::debug::render(FzValue::TRUE.0), "true");
+        assert_eq!(fz_runtime::fz_value::debug::render(FzValue::FALSE.0), "false");
+        assert_eq!(fz_runtime::fz_value::debug::render(FzValue::from_atom_id(3).0), ":atom_3");
     }
 
     #[test]
@@ -2509,7 +2512,7 @@ end
         let (halt_bits, _m) = run_main_after_heap_reset("fn main(), do: %{a: [1, 2, 3]}");
         let halt_bits = halt_bits as u64;
         assert_eq!(heap_live_count(), 4, "1 map + 3 cons cells");
-        let root = crate::fz_value::FzValue(halt_bits);
+        let root = fz_runtime::fz_value::FzValue(halt_bits);
         heap_gc(&[root]);
         assert_eq!(heap_live_count(), 4, "list survives via map's value field");
         heap_gc(&[]);
@@ -2594,7 +2597,7 @@ fn main(), do: fst({10, 20}) + snd({30, 40})
         let (halt_bits, _m) = run_main_after_heap_reset(src);
         let halt_bits = halt_bits as u64;
         assert_eq!(heap_live_count(), 4);
-        let root = crate::fz_value::FzValue(halt_bits);
+        let root = fz_runtime::fz_value::FzValue(halt_bits);
         heap_gc(&[root]);
         assert_eq!(heap_live_count(), 4);
     }
@@ -2629,7 +2632,7 @@ fn main(), do: sum([1, 2, 3, 4, 5])
         let (halt_bits, _m) = run_main_after_heap_reset("fn main(), do: [7, 8, 9]");
         let halt_bits = halt_bits as u64;
         assert_eq!(heap_live_count(), 3);
-        let root = crate::fz_value::FzValue(halt_bits);
+        let root = fz_runtime::fz_value::FzValue(halt_bits);
         heap_gc(&[root]);
         assert_eq!(heap_live_count(), 3);
     }
@@ -2695,7 +2698,7 @@ fn make_adder(k), do: fn(x) -> x + k
 fn main(), do: make_adder(7)
 "#);
         assert_eq!(heap_live_count(), 1);
-        let root = crate::fz_value::FzValue(halt as u64);
+        let root = fz_runtime::fz_value::FzValue(halt as u64);
         heap_gc(&[root]);
         assert_eq!(heap_live_count(), 1);
         heap_gc(&[]);
@@ -2800,7 +2803,7 @@ fn main(), do: make_adder(7)
     fn float_bit_field_round_trips_via_bitstring() {
         let (halt, _m) = run_main_after_heap_reset("fn main(), do: <<3.14::float>>");
         let halt = halt as u64;
-        let p = crate::fz_value::FzValue(halt).unbox_ptr().unwrap();
+        let p = fz_runtime::fz_value::FzValue(halt).unbox_ptr().unwrap();
         let bytes = unsafe {
             std::slice::from_raw_parts((p as *const u8).add(24), 8)
         };
@@ -2866,13 +2869,13 @@ fn main(), do: make_adder(7)
         let (halt_bits, _m) = run_main_after_heap_reset("fn main(), do: ~v[100, 200, 300]");
         let halt_bits = halt_bits as u64;
         assert_eq!(heap_live_count(), 1);
-        let root = crate::fz_value::FzValue(halt_bits);
+        let root = fz_runtime::fz_value::FzValue(halt_bits);
         let p_before = root.unbox_ptr().unwrap();
         heap_gc(&[root]);
         assert_eq!(heap_live_count(), 1);
-        let p_after = crate::fz_value::FzValue(halt_bits).unbox_ptr().unwrap();
+        let p_after = fz_runtime::fz_value::FzValue(halt_bits).unbox_ptr().unwrap();
         assert_eq!(p_before, p_after);
-        assert_eq!(crate::heap::Heap::vec_len(p_after), 3);
+        assert_eq!(fz_runtime::heap::Heap::vec_len(p_after), 3);
         unsafe {
             let payload = (p_after as *const u8).add(24) as *const i64;
             assert_eq!(std::ptr::read(payload.add(2)), 300);
