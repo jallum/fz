@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-ul4.23.5.3"
+  ],
   "blocks": [],
   "created": "2026-05-11T21:11:35Z",
   "description": "Module-qualified call resolution at run time — same flattened-name lookup as the JIT (resolve.rs produces fully-qualified names; interp reads them).\n\n## Acceptance\n\n- `# paths: jit, interp` on modules.fz, alias.fz, nested_modules.fz, import.fz, attributes.fz.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "ir_interp_v2: modules + import + alias",
   "type": "task",
-  "updated_at": "2026-05-11T21:11:35Z"
+  "updated_at": "2026-05-11T21:11:37Z"
 }
