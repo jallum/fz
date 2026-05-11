@@ -66,6 +66,7 @@ pub fn run(path: &Path) -> Result<(), TestRunError> {
     run_named(&user_src, &path.display().to_string())
 }
 
+#[cfg(test)]
 pub fn run_str(user_src: &str) -> Result<(), TestRunError> {
     run_named(user_src, "<input>")
 }

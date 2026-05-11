@@ -315,7 +315,6 @@ pub fn expand_expr(
             expand_expr(callee, interp, macros, depth)?;
             for a in args { expand_expr(a, interp, macros, depth)?; }
         }
-        Expr::Dot(o, _) => expand_expr(o, interp, macros, depth)?,
         Expr::BinOp(_, l, r) => {
             expand_expr(l, interp, macros, depth)?;
             expand_expr(r, interp, macros, depth)?;
@@ -399,7 +398,6 @@ fn stamp_expanded(e: &mut Spanned<Expr>, macro_call: Span, definition: Option<Sp
             stamp_expanded(callee, macro_call, definition);
             for a in args { stamp_expanded(a, macro_call, definition); }
         }
-        Expr::Dot(o, _) => stamp_expanded(o, macro_call, definition),
         Expr::BinOp(_, l, r) => { stamp_expanded(l, macro_call, definition); stamp_expanded(r, macro_call, definition); }
         Expr::UnOp(_, x) => stamp_expanded(x, macro_call, definition),
         Expr::If(c, t, els) => {

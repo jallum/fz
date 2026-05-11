@@ -325,7 +325,6 @@ impl Interp {
                 for a in args { vs.push(self.eval(a, env)?); }
                 self.apply(&callee, vs)
             }
-            Expr::Dot(_, _) => Err("module access not implemented".into()),
             Expr::BinOp(op, l, r) => {
                 if *op == BinOp::Pipe {
                     let lv = self.eval(l, env)?;

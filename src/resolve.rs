@@ -290,7 +290,6 @@ fn rewrite_expr(
             rewrite_expr(o, module_path, siblings, intro, module_paths, aliases, imports);
             rewrite_expr(i, module_path, siblings, intro, module_paths, aliases, imports);
         }
-        Expr::Dot(o, _) => rewrite_expr(o, module_path, siblings, intro, module_paths, aliases, imports),
         Expr::BinOp(_, l, r) => {
             rewrite_expr(l, module_path, siblings, intro, module_paths, aliases, imports);
             rewrite_expr(r, module_path, siblings, intro, module_paths, aliases, imports);
@@ -368,10 +367,6 @@ fn qualify_callee(
                     _ => return None,
                 };
                 path.push(member);
-                cur = &target.node;
-            }
-            Expr::Dot(target, member) => {
-                path.push(member.clone());
                 cur = &target.node;
             }
             Expr::Var(m) if is_upper(m) && !intro.contains(m) => {

@@ -578,14 +578,9 @@ fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -> Result<Va
             // Resolve callee.
             let callee_name = match &target.node {
                 Expr::Var(n) => n.clone(),
-                Expr::Dot(_, _) => {
-                    return Err(LowerError::Unsupported(
-                        "Expr::Dot should be resolved before lowering".into(),
-                    ));
-                }
                 _ => {
                     return Err(LowerError::Unsupported(
-                        "Call target other than Var/Dot (deferred)".into(),
+                        "Call target other than Var (deferred)".into(),
                     ));
                 }
             };
@@ -628,9 +623,6 @@ fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -> Result<Va
         Expr::Index(map, key) => lower_index(ctx, map, key),
         Expr::Bitstring(fields) => lower_bitstring_expr(ctx, fields),
         Expr::VecLit(kind, els) => lower_vec_lit(ctx, *kind, els),
-        Expr::Dot(_, _) => Err(LowerError::Unsupported(
-            "Expr::Dot should be resolved before lowering".into(),
-        )),
         Expr::Quote(_) => Err(LowerError::PostExpansionNode("Quote".into())),
         Expr::Unquote(_) => Err(LowerError::PostExpansionNode("Unquote".into())),
     }

@@ -136,12 +136,6 @@ fn try_eval(src: &str, interp: &Interp, env: &Env) -> Outcome {
     }
 }
 
-fn load_items(interp: &Interp, items: &[std::rc::Rc<Item>]) -> Result<(), String> {
-    load_items_filtered(interp, items, false)?;
-    load_items_filtered(interp, items, true)?;
-    Ok(())
-}
-
 /// `which == true` loads only macros; `which == false` loads only non-macros.
 /// Splitting the two phases lets the REPL register macros before running
 /// expansion on fn bodies that may call them.
@@ -193,6 +187,12 @@ fn is_incomplete(e: &crate::parser::ParseError) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn load_items(interp: &Interp, items: &[std::rc::Rc<Item>]) -> Result<(), String> {
+        load_items_filtered(interp, items, false)?;
+        load_items_filtered(interp, items, true)?;
+        Ok(())
+    }
 
     /// Drive the same parse path as the REPL but capture eval results in a
     /// vec rather than printing.

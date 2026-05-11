@@ -118,7 +118,7 @@ pub fn expr_to_value(e: &Spanned<Expr>) -> Result<Value, String> {
         }
         Expr::Case(_, _) | Expr::Cond(_) | Expr::With(_, _, _)
         | Expr::Lambda(_, _) | Expr::Map(_) | Expr::MapUpdate(_, _)
-        | Expr::Index(_, _) | Expr::Dot(_, _) | Expr::VecLit(_, _)
+        | Expr::Index(_, _) | Expr::VecLit(_, _)
         | Expr::Bitstring(_) => {
             return Err(format!("quote: unsupported expr variant in v1: {:?}", e.node));
         }

@@ -58,10 +58,9 @@ pub enum Expr {
     /// m[k] — bracket access; returns nil if key absent.
     Index(Box<Spanned<Expr>>, Box<Spanned<Expr>>),
 
-    // call: target(args...)  — target is an expr (usually Var or Dot)
+    // call: target(args...)  — target is an expr (usually Var; module
+    // qualification is desugared to Index by the parser)
     Call(Box<Spanned<Expr>>, Vec<Spanned<Expr>>),
-    // qualified: Mod.fun  (lhs.name)
-    Dot(Box<Spanned<Expr>>, String),
 
     // operators
     BinOp(BinOp, Box<Spanned<Expr>>, Box<Spanned<Expr>>),

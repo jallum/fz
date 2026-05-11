@@ -99,7 +99,7 @@ impl CompiledModule {
     /// the final Term::Halt / Term::Return-with-null-cont.
     pub fn run(&self, fn_id: FnId) -> i64 {
         let entry_schema = &self.schemas[fn_id.0 as usize];
-        let frame = unsafe { fz_alloc_frame(fn_id.0, entry_schema.size) };
+        let frame = fz_alloc_frame(fn_id.0, entry_schema.size);
         // Continuation pointer = null (entry fn).
         unsafe {
             let cont_slot = frame.add(HEADER_SIZE as usize) as *mut *mut u8;
@@ -612,7 +612,7 @@ extern "C" fn fz_bs_write_field(
     endian_tag: u32,
     signed: u32,
 ) {
-    use crate::ast::{BitType, Endian};
+    use crate::ast::BitType;
     use crate::fz_value::{FzValue, HeapKind, Tag};
     let ty = decode_bit_type(ty_tag);
     let size = if size_present != 0 { Some(size_value) } else { None };
@@ -827,7 +827,7 @@ extern "C" fn fz_bs_read_field(
 ) -> u64 {
     use crate::ast::BitType;
     use crate::bitstr::{apply_endian_for_read, sign_extend};
-    use crate::fz_value::{FzValue, HeapKind, Tag};
+    use crate::fz_value::{FzValue, HeapKind};
     let ty = decode_bit_type(ty_tag);
     let size = if size_present != 0 { Some(size_value) } else { None };
     let endian = decode_endian(endian_tag);
