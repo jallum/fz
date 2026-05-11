@@ -27,7 +27,6 @@
 
 use crate::ast::Item;
 use crate::diag::SourceMap;
-use crate::eval::Interp;
 use crate::lexer::{Lexer, Tok, Token};
 use crate::macros::expand_program;
 use crate::parser::Parser;
@@ -129,17 +128,36 @@ fn run_named(user_src: &str, user_name: &str) -> Result<(), TestRunError> {
         return Ok(());
     }
 
-    let interp = Interp::new();
-    interp.load_program(&prog)
-        .map_err(|e| TestRunError(format!("load: {}", e)))?;
+    // Lower to fz-IR once; each test fn dispatches via ir_interp::run_fn.
+    // This is the fz-ul4.23.5.10 migration: runtime execution leaves the
+    // AST evaluator (eval::Interp, which stays only for macro expansion
+    // above) and runs on the same IR interpreter the fixture matrix uses.
+    let module = crate::ir_lower::lower_program(&prog).map_err(|e| {
+        crate::diag::render_one_to_stderr(&sm, &e.to_diagnostic());
+        TestRunError("lower".into())
+    })?;
+    // Map test name → FnId once.
+    let test_ids: Vec<(String, crate::fz_ir::FnId)> = tests
+        .iter()
+        .map(|name| {
+            module
+                .fn_by_name(name)
+                .map(|f| (name.clone(), f.id))
+                .ok_or_else(|| TestRunError(format!("test fn `{}` not in lowered module", name)))
+        })
+        .collect::<Result<_, _>>()?;
 
     let total = tests.len();
     let mut failed: Vec<(String, String)> = Vec::new();
     println!("Running {} test{}...", total, if total == 1 { "" } else { "s" });
     println!();
-    for name in &tests {
-        match interp.call_named(name, vec![]) {
-            Ok(_) => println!("  ok  {}", name),
+    for (name, fn_id) in &test_ids {
+        // Each test runs in a fresh Process so heap/mailbox state from
+        // one test doesn't leak into the next. ir_interp::run_main isn't
+        // quite right (it expects a `main` fn); we call the test fn
+        // directly through the IR interp on a temporary task.
+        match crate::ir_interp::run_test_fn(&module, *fn_id) {
+            Ok(()) => println!("  ok  {}", name),
             Err(msg) => {
                 println!("  FAIL  {}", name);
                 println!("        {}", msg);

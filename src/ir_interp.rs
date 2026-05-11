@@ -114,6 +114,27 @@ pub fn run_main(module: &Module) -> Result<i64, String> {
     Ok(value_to_halt(r))
 }
 
+/// Run a single test fn (no args) through the interp on a fresh Process.
+/// Used by `fz test` (src/test_runner.rs). Each test gets its own heap +
+/// mailbox so state can't leak between tests in the same module.
+///
+/// Returns Ok(()) if the test completes without an assertion failure;
+/// returns Err(msg) on any interp/runtime/assertion error.
+pub fn run_test_fn(module: &Module, fn_id: FnId) -> Result<(), String> {
+    interp_reset_state();
+    let user_schemas =
+        std::rc::Rc::new(std::cell::RefCell::new(crate::heap::SchemaRegistry::new()));
+    INTERP_SCHEMAS.with(|s| *s.borrow_mut() = Some(user_schemas.clone()));
+    let mut task = Box::new(Process::new(user_schemas));
+    task.pid = 1;
+    let task_ptr = interp_register_task(1, task);
+    let prev = crate::process::CURRENT_PROCESS.with(|c| c.replace(task_ptr));
+    let result = run_fn(module, fn_id, Vec::new());
+    crate::process::CURRENT_PROCESS.with(|c| c.set(prev));
+    INTERP_SCHEMAS.with(|s| *s.borrow_mut() = None);
+    result.map(|_| ())
+}
+
 /// Spawn a new task at `fn_id`, run it to completion synchronously, and
 /// return its pid. Matches the JIT's pid allocation convention (main=1,
 /// children get sequential pids starting at 2).
