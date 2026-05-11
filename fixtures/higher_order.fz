@@ -1,5 +1,5 @@
 # purpose: higher-order patterns — apply2, compose
-# paths:   jit
+# paths:   jit, interp
 
 fn double(x), do: x * 2
 fn neg(x), do: 0 - x

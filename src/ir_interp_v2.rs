@@ -123,11 +123,25 @@ fn run_fn(module: &Module, fn_id: FnId, args: Vec<FzValue>) -> Result<FzValue, S
             }
             Term::Return(v) => return env_get(&env, *v),
             Term::Halt(v) => return env_get(&env, *v),
-            Term::CallClosure { .. }
-            | Term::TailCallClosure { .. } => {
-                return Err(
-                    "interp .5.2: closure invocation not yet supported (fz-ul4.23.5.4)".into(),
-                );
+            Term::CallClosure {
+                closure,
+                args,
+                continuation,
+            } => {
+                let cl = env_get(&env, *closure)?;
+                let (lam_fn, mut call_args) = unpack_closure(cl)?;
+                call_args.extend(collect(&env, args)?);
+                let result = run_fn(module, lam_fn, call_args)?;
+                let cap_vals = collect(&env, &continuation.captured)?;
+                let mut cont_args = vec![result];
+                cont_args.extend(cap_vals);
+                return run_fn(module, continuation.fn_id, cont_args);
+            }
+            Term::TailCallClosure { closure, args } => {
+                let cl = env_get(&env, *closure)?;
+                let (lam_fn, mut call_args) = unpack_closure(cl)?;
+                call_args.extend(collect(&env, args)?);
+                return run_fn(module, lam_fn, call_args);
             }
             Term::Receive { .. } => {
                 return Err(
@@ -168,6 +182,13 @@ fn eval_prim(
             let arg_vals = collect(env, args)?;
             run_builtin(module, *bid, &arg_vals)?
         }
+        Prim::MakeClosure(fn_id, captured) => {
+            let cap_vals: Vec<FzValue> = collect(env, captured)?;
+            let p = crate::process::current_process()
+                .heap
+                .alloc_closure(fn_id.0, &cap_vals);
+            FzValue(p as u64)
+        }
         _ => {
             return Err(format!(
                 "interp .5.2: prim {:?} not yet supported (lands in fz-ul4.23.5.3+)",
@@ -175,6 +196,31 @@ fn eval_prim(
             ));
         }
     })
+}
+
+/// Read an interp-side closure value: the heap object's `schema_id` field
+/// is repurposed (per the JIT layout, fz-ul4.11.32) to hold the IR FnId of
+/// the lambda body, and `flags` holds the captured count. Returns the
+/// callee fn id plus a Vec of captured FzValues read from the payload.
+fn unpack_closure(v: FzValue) -> Result<(FnId, Vec<FzValue>), String> {
+    use crate::fz_value::HeapKind;
+    let p = v.unbox_ptr().ok_or_else(|| {
+        format!(
+            "call_closure on non-ptr value: {}",
+            crate::fz_value::debug::render(v.0)
+        )
+    })?;
+    let header = unsafe { &*p };
+    if HeapKind::from_u16(header.kind) != Some(HeapKind::Closure) {
+        return Err("call_closure on non-closure heap value".into());
+    }
+    let fn_id = FnId(header.schema_id);
+    let cap_count = header.flags as usize;
+    let payload = unsafe { (p as *const u8).add(16) as *const u64 };
+    let captured: Vec<FzValue> = (0..cap_count)
+        .map(|i| FzValue(unsafe { std::ptr::read(payload.add(i)) }))
+        .collect();
+    Ok((fn_id, captured))
 }
 
 fn const_to_fz(c: &Const) -> FzValue {

@@ -1,5 +1,5 @@
 # purpose: identity fn over int and atom — no type-driven specialization
-# paths:   jit
+# paths:   jit, interp
 
 fn id(x), do: x
 

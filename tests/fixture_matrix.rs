@@ -258,13 +258,14 @@ fn fixture_index_up_to_date() {
 /// treats exit 75 as "deferred path" and logs without failing — this lets
 /// us roll out interp coverage one fixture at a time.
 ///
-/// A fixture that uses closures (apply2.fz) is currently deferred because
-/// closure invocation lands in fz-ul4.23.5.4. Once that ticket lands, this
-/// test will need a different fixture (or the assertion flips to Pass).
+/// A fixture that uses spawn/send/receive (concurrency_ping_pong.fz) is
+/// currently deferred because concurrency in interp lands in
+/// fz-ul4.23.5.8. Once that ticket lands, this test will need a
+/// different fixture (or be retired).
 #[test]
 fn fz_interp_defers_unsupported_fixtures() {
     let out = Command::new(FZ_BIN)
-        .args(["interp", "fixtures/apply2.fz"])
+        .args(["interp", "fixtures/concurrency_ping_pong.fz"])
         .output()
         .expect("spawn fz interp");
     assert_eq!(
