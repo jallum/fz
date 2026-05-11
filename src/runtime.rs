@@ -477,6 +477,52 @@ mod tests {
     /// hold independent copies. Verified by sender-side heap growing
     /// from the list allocation plus receiver-side heap growing from
     /// the deep-copy of the same structure.
+    // ----- fz-ul4.19 demonstration via the JIT pipeline -----
+
+    /// End-to-end fixture test: load `fixtures/concurrency_ping_pong.fz`,
+    /// run it through the FULL JIT pipeline (lex → parse → resolve →
+    /// macros → ir_lower → ir_codegen → Runtime::run_until_idle), and
+    /// assert the parent's halt value matches the message the child sent.
+    ///
+    /// This is the JIT path's proof-of-life for concurrency. The
+    /// interpreter and AOT paths are pending (see memory note
+    /// "Three-path parity"); when they ship, the same fixture should
+    /// drive the same assertion through their pipelines.
+    #[test]
+    fn fixture_ping_pong_via_jit_runtime() {
+        let src = std::fs::read_to_string("fixtures/concurrency_ping_pong.fz")
+            .expect("failed to read fixtures/concurrency_ping_pong.fz");
+        // Pipeline: lex, parse, resolve (flatten modules), expand macros,
+        // ir_lower, ir_codegen, Runtime.
+        let toks = Lexer::new(&src).tokenize().expect("lex");
+        let prog = Parser::new(toks).parse_program().expect("parse");
+        let mut prog = crate::resolve::flatten_modules(prog).expect("resolve");
+        crate::macros::expand_program(&mut prog).expect("expand");
+        let m = crate::ir_lower::lower_program(&prog).expect("lower");
+        let entry = m.fn_by_name("main").expect("main fn").id;
+        let compiled = compile(&m).expect("codegen");
+
+        let mut rt = Runtime::new(&compiled, 1);
+        let main_pid = rt.spawn(entry);
+        assert_eq!(main_pid, 1, "main is the first spawn; fixture hard-codes 1 as parent's pid");
+        rt.run_until_idle();
+
+        // Parent received 42 from the child and returned it as main's
+        // halt value.
+        let main_task = rt.task(main_pid).expect("main task in registry");
+        assert_eq!(main_task.halt_value, 42, "parent halts with child's message");
+        assert_eq!(main_task.state, ProcessState::Exited);
+
+        // Child task: spawned by main, halted normally (send returns the
+        // message which it then halts on; but child's main body is `send`,
+        // so it halts with the message's value 42 too).
+        let child_task = rt
+            .task(2)
+            .expect("child task should exist at pid 2 (second spawn)");
+        assert_eq!(child_task.state, ProcessState::Exited);
+        assert_eq!(child_task.halt_value, 42);
+    }
+
     // ----- fz-ul4.19.4: per-process independent GC verification -----
 
     /// Two tasks; one allocates heavily enough to trigger GC, the other

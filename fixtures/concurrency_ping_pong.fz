@@ -1,0 +1,21 @@
+# fz-ul4.19 demonstration: parent + child processes with send/receive.
+#
+# Parent (pid=1) spawns a child task. Child sends an integer message to
+# pid=1 (the parent's pid is hard-coded for this demo because v1 spawn
+# restricts to closures with zero captures — passing parent's pid into
+# the child via a closure capture is a follow-up to fz-ul4.19.2; see
+# .19.2's body for the v1 restriction).
+#
+# Parent blocks on receive() until the child's message lands. Returns
+# the received value (42) as main's halt value.
+#
+# Exercised end-to-end through the JIT pipeline (lex → parse → resolve
+# → macros → ir_lower → ir_codegen → Runtime::run_until_idle) by the
+# unit test `fixture_ping_pong_via_jit_runtime` in src/runtime.rs.
+
+fn child(), do: send(1, 42)
+
+fn main() do
+  spawn(child)
+  receive()
+end
