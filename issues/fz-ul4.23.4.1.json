@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-11T21:11:01Z",
+  "description": "Move the pure FFI implementations (fz_alloc_*, fz_arith_*, fz_cmp_*, fz_value_eq, render_*, eq_*, etc.) from ir_codegen.rs to a new src/ir_runtime.rs. ir_codegen continues to reference them by name in symbol declarations; no semantic change.\n\n## Acceptance\n\n- cargo test green (419 unit tests + fixture matrix).\n- ir_codegen.rs shrinks by ~600 lines.\n- ir_runtime.rs holds the FFI; symbol-binding list in compile() updated to `crate::ir_runtime::fz_*`.",
+  "id": "fz-ul4.23.4.1",
+  "labels": [],
+  "parent": "fz-ul4.23.4",
+  "priority": 3,
+  "status": "open",
+  "title": "Extract runtime FFI fns from ir_codegen.rs into ir_runtime.rs",
+  "type": "task",
+  "updated_at": "2026-05-11T21:11:01Z"
+}
