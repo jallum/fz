@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-ul4.23.6.1"
+  ],
   "blocks": [],
   "created": "2026-05-11T21:11:59Z",
   "description": "Wire `fz build \u003csrc.fz\u003e -o \u003cout\u003e` end-to-end:\n\n  1. Use the AOT Backend (6.1) to emit a .o\n  2. Invoke `cc` to link the .o with libfz_runtime.a + the startup shim (6.2) into a native executable\n  3. Drop the .o\n\n## Acceptance\n\n- `fz build fixtures/add1.fz -o /tmp/add1 \u0026\u0026 /tmp/add1; echo exit=\\$?` prints `42` and `exit=0`.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "fz build: emit object + link with fz_runtime + shim → executable",
   "type": "task",
-  "updated_at": "2026-05-11T21:11:59Z"
+  "updated_at": "2026-05-11T21:12:00Z"
 }
