@@ -1,6 +1,7 @@
 {
   "assignee": "",
   "blocked_by": [
+    "fz-ul4.11.31",
     "fz-ul4.19.3"
   ],
   "blocks": [
@@ -15,5 +16,5 @@
   "status": "open",
   "title": "Per-process independent GC (verification)",
   "type": "task",
-  "updated_at": "2026-05-10T13:05:55Z"
+  "updated_at": "2026-05-11T07:30:06Z"
 }
