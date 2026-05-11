@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
     "fz-ul4.23.6.3"
@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-ul4.23.6",
   "priority": 3,
-  "status": "open",
+  "status": "in_progress",
   "title": "C startup shim: initialize Runtime, spawn fz main, run_until_idle",
   "type": "task",
-  "updated_at": "2026-05-11T21:12:00Z"
+  "updated_at": "2026-05-11T22:01:24Z"
 }
