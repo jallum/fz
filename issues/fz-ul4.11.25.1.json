@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-ul4.11.25.7"
+  ],
   "created": "2026-05-11T10:55:35Z",
   "description": "Two warnings in src/ir_codegen.rs that may signal real bugs rather than dead code. Investigate FIRST, before any deletions, so evidence isn't lost.\n\n## 1. signed_b unused at ir_codegen.rs:620\n\nIn fz_bs_write_field:\n```\nlet signed_b = signed != 0;  // computed, never used\n```\n\nThe READ path (fz_bs_read_field, line ~831) uses signed_b at line 886 for sign extension. The WRITE path silently ignores the signed flag.\n\nAction: verify whether writing a signed integer differs from writing an unsigned integer of the same width in our bitstring encoding. In two's-complement at the same width it shouldn't — the bit pattern is identical. If so, drop the binding with a one-line comment explaining why we don't branch. If signed encoding differs (e.g., we emit a sign bit at a different position), restore the missing handling.\n\n## 2. fn_ids dead parameter at ir_codegen.rs:1920\n\n```\nfn compile_fn(\n    jmod: \u0026mut JITModule,\n    ...\n    fn_ids: \u0026HashMap\u003cu32, FuncId\u003e,   // never read in body\n    ...\n```\n\nCheck git log on this signature. Likely the value moved into another struct (RuntimeRefs?) and the param was orphaned during a refactor. Either remove the parameter from the signature (and all callers), or restore its intended use site.\n\n## Deliverable\n\nOne small commit per investigation (or one combined commit if both turn out to be trivial drops). Net -2 warnings; possibly a code fix if the signed-write path is wrong.",
   "id": "fz-ul4.11.25.1",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Real-bug investigation: signed_b drop + fn_ids dead param in ir_codegen",
   "type": "task",
-  "updated_at": "2026-05-11T10:55:35Z"
+  "updated_at": "2026-05-11T10:56:31Z"
 }
