@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-11T21:11:35Z",
+  "description": "New src/ir_interp_v2.rs (will replace src/ir_interp.rs eventually). Walks fz_ir::Module. Uses FzValue for all values, calls into ir_runtime FFI fns for the cases where the JIT FFI is the cleanest semantics carrier (alloc, arith). Per-Process heap shared with the JIT via the same heap.rs.\n\nScope of THIS atom: enough to make add1.fz pass.\n\n  fn add1(n) do n + 1 end\n  fn main() do print(add1(41)) end\n\nNeeded primitives: Const::Int, BinOp::Add, Stmt::Call (user fn), Term::Return, Prim::Print, frame alloc (via existing fz_alloc_frame).\n\n## Acceptance\n\n- `fz interp fixtures/add1.fz` prints `42` and exits 0.\n- fixtures/add1.fz header updated to `# paths: jit, interp`.\n- Matrix green via both paths.",
+  "id": "fz-ul4.23.5.2",
+  "labels": [],
+  "parent": "fz-ul4.23.5",
+  "priority": 3,
+  "status": "open",
+  "title": "Skeleton IR interpreter on FzValue — pass add1.fz via interp",
+  "type": "task",
+  "updated_at": "2026-05-11T21:11:35Z"
+}
