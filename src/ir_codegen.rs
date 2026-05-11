@@ -82,7 +82,8 @@ impl From<String> for CodegenError {
 }
 
 /// Compiled module: persistent JITModule + per-fn ptr table + schemas. The
-/// host runs a fn via `compiled.run(fn_id)`.
+/// host runs a fn via `compiled.run(fn_id)` (constructs an internal default
+/// Process) or `compiled.run_in(fn_id, &mut Process)` (caller-owned Process).
 pub struct CompiledModule {
     module: JITModule,
     /// fz_fn_id -> compiled fn ptr.
@@ -90,14 +91,25 @@ pub struct CompiledModule {
     /// Per-fn frame schema (size, layout). Indexed by fz_fn_id (1:1 with
     /// schema_id).
     schemas: Vec<Schema>,
+    /// User-data SchemaRegistry (tuple, struct, list, map, closure, bitstring,
+    /// vec, float). Lifted from TLS in fz-ul4.11.32. Each Process constructed
+    /// via `make_process()` shares this registry through its Heap.
+    pub(crate) user_schemas: std::rc::Rc<std::cell::RefCell<crate::heap::SchemaRegistry>>,
+    /// Per-fn frame size (bytes), indexed by FnId.0. Consumed by
+    /// `fz_alloc_frame_dyn` to allocate frames for fns whose id is known
+    /// only dynamically (closure invocation). Copied into Process at
+    /// make_process() time.
+    pub(crate) frame_sizes: Vec<u32>,
+    /// Heap-registered schema ids for the bitstring reader/result tuples.
+    /// Set when any bitstring prim is present; None means "no bitstring prim
+    /// in this module". Copied into Process at make_process() time.
+    pub(crate) bs_tuple_arity1_schema: Option<u32>,
+    pub(crate) bs_tuple_arity3_schema: Option<u32>,
     /// Per-fn Var -> Descr maps from fz-ul4.11.24.2's flow-insensitive typer.
-    /// Indexed by position in source Module.fns (not by FnId.0). No consumers
-    /// yet; .11.24.4 / .11.24.5 / .11.24.6 / .11.24.7 plug it in.
+    /// Indexed by position in source Module.fns (not by FnId.0).
     pub(crate) types: crate::ir_typer::ModuleTypes,
     /// .11.24.6 + .20.5: diagnostics surface (unreachable arms, dead
-    /// branches). Now structured via the central `diag::Diagnostic`
-    /// type so .20.6's renderer can consume the same shape every
-    /// pipeline stage emits.
+    /// branches). Structured via the central `diag::Diagnostic` type.
     pub(crate) diagnostics: crate::diag::Diagnostics,
 }
 
@@ -118,10 +130,52 @@ impl CompiledModule {
         &self.schemas[fn_id.0 as usize]
     }
 
-    /// Run the trampoline with `fn_id` as the entry fn. The fn must take 0
-    /// entry params (the typical `main` shape). Returns the i64 written via
-    /// the final Term::Halt / Term::Return-with-null-cont.
+    /// Construct a fresh Process bound to this module's compile-time data
+    /// (SchemaRegistry, frame_sizes, bs_tuple_arity*_schema). Multiple
+    /// Processes can be made from the same CompiledModule and run
+    /// concurrently (one worker at a time per Process; libdispatch model).
+    pub fn make_process(&self) -> Process {
+        Process {
+            heap: crate::heap::Heap::new(64 * 1024, std::rc::Rc::clone(&self.user_schemas)),
+            halt_value: 0,
+            map_builder: None,
+            bs_builder: None,
+            vec_builder: None,
+            closure_builder: None,
+            closure_args: Vec::new(),
+            frame_sizes: self.frame_sizes.clone(),
+            bs_tuple_arity1_schema: self.bs_tuple_arity1_schema,
+            bs_tuple_arity3_schema: self.bs_tuple_arity3_schema,
+        }
+    }
+
+    /// Run the trampoline with `fn_id` as the entry fn, using a fresh Process
+    /// stashed in DEFAULT_PROCESS for post-run inspection (test helpers
+    /// `heap_live_count`, `heap_gc`, etc. read from DEFAULT_PROCESS).
     pub fn run(&self, fn_id: FnId) -> i64 {
+        DEFAULT_PROCESS.with(|c| *c.borrow_mut() = Some(self.make_process()));
+        let ptr = DEFAULT_PROCESS.with(|c| {
+            let mut b = c.borrow_mut();
+            b.as_mut().unwrap() as *mut Process
+        });
+        let prev = CURRENT_PROCESS.with(|c| c.replace(ptr));
+        let result = self.run_internal(fn_id);
+        CURRENT_PROCESS.with(|c| c.set(prev));
+        result
+    }
+
+    /// Run with a caller-owned Process. Tests that need to inspect Process
+    /// state after the run (or interleave runs of multiple Processes) use
+    /// this form.
+    pub fn run_in(&self, fn_id: FnId, process: &mut Process) -> i64 {
+        let ptr = process as *mut Process;
+        let prev = CURRENT_PROCESS.with(|c| c.replace(ptr));
+        let result = self.run_internal(fn_id);
+        CURRENT_PROCESS.with(|c| c.set(prev));
+        result
+    }
+
+    fn run_internal(&self, fn_id: FnId) -> i64 {
         let entry_schema = &self.schemas[fn_id.0 as usize];
         let frame = fz_alloc_frame(fn_id.0, entry_schema.size);
         // Continuation pointer = null (entry fn).
@@ -129,7 +183,6 @@ impl CompiledModule {
             let cont_slot = frame.add(HEADER_SIZE as usize) as *mut *mut u8;
             *cont_slot = std::ptr::null_mut();
         }
-        let mut host_ctx = HostCtx { halt_value: 0 };
         let mut cur = frame;
         // Cap iterations to detect infinite trampolines in tests.
         let mut iters: usize = 0;
@@ -148,15 +201,85 @@ impl CompiledModule {
                 .unwrap_or_else(|| panic!("no fn for schema_id {}", schema_id));
             let f: extern "C" fn(*mut u8, *mut u8) -> *mut u8 =
                 unsafe { std::mem::transmute(fn_ptr) };
-            cur = f(cur, &mut host_ctx as *mut HostCtx as *mut u8);
+            // Per-fn ABI takes ctx in slot 2; we pass the same *mut Process
+            // CURRENT_PROCESS points at. Runtime fns access via
+            // current_process(); the JIT'd code doesn't dereference it
+            // directly today, so passing it as the existing slot is
+            // sufficient.
+            let ctx = CURRENT_PROCESS.with(|c| c.get()) as *mut u8;
+            cur = f(cur, ctx);
         }
-        host_ctx.halt_value
+        current_process().halt_value
     }
 }
 
-#[repr(C)]
-pub struct HostCtx {
+/// Per-task runtime state. One Process per fz-level task; the worker thread
+/// installs `*mut Process` in `CURRENT_PROCESS` for the duration of a run,
+/// and FFI fns reach the running task's state via `current_process()`.
+///
+/// libdispatch-style: TLS records the currently-running task's pointer per
+/// worker; a task is owned by exactly one worker at a time (scheduler
+/// invariant, .19.1). FFI fns do not yield, so TLS is stable within any FFI
+/// call.
+pub struct Process {
+    pub heap: crate::heap::Heap,
     pub halt_value: i64,
+    // Transient builder state — per-task so two interleaved tasks can't
+    // corrupt one another's in-flight builders.
+    pub map_builder: Option<Vec<(u64, u64)>>,
+    pub bs_builder: Option<crate::bitstr::BitWriter>,
+    pub vec_builder: Option<VecBuild>,
+    pub closure_builder: Option<(u32, Vec<u64>)>,
+    pub closure_args: Vec<u64>,
+    // Per-CompiledModule constants copied at make_process() time. See
+    // fz-ul4.19.1 follow-up to move these behind an Rc<CompiledModuleConsts>.
+    pub frame_sizes: Vec<u32>,
+    pub bs_tuple_arity1_schema: Option<u32>,
+    pub bs_tuple_arity3_schema: Option<u32>,
+}
+
+impl Process {
+    pub fn new(schemas: std::rc::Rc<std::cell::RefCell<crate::heap::SchemaRegistry>>) -> Self {
+        Self {
+            heap: crate::heap::Heap::new(64 * 1024, schemas),
+            halt_value: 0,
+            map_builder: None,
+            bs_builder: None,
+            vec_builder: None,
+            closure_builder: None,
+            closure_args: Vec::new(),
+            frame_sizes: Vec::new(),
+            bs_tuple_arity1_schema: None,
+            bs_tuple_arity3_schema: None,
+        }
+    }
+}
+
+thread_local! {
+    /// Raw pointer to the Process currently being run by this worker (this
+    /// thread). Set by `run_in` for the duration of the run; cleared
+    /// afterwards. FFI fns called from JIT'd code read it via
+    /// `current_process()`.
+    pub(crate) static CURRENT_PROCESS: std::cell::Cell<*mut Process> =
+        const { std::cell::Cell::new(std::ptr::null_mut()) };
+    /// Backing storage for the convenience `compiled.run(fn_id)` path: a
+    /// Process is constructed, stashed here, and CURRENT_PROCESS points at
+    /// it. After the run, CURRENT_PROCESS is cleared but the Process remains
+    /// here so test helpers (heap_live_count, heap_gc, ...) can inspect.
+    /// Tests using the explicit `run_in(fn_id, &mut Process)` path own
+    /// their Process directly and don't use this slot.
+    pub(crate) static DEFAULT_PROCESS: std::cell::RefCell<Option<Process>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Access the currently-installed Process via the raw TLS pointer. Must only
+/// be called from FFI fns invoked synchronously inside `run_in`. The Process
+/// is owned by either the caller (run_in path) or by DEFAULT_PROCESS (run
+/// path); the pointer is valid for the duration of the run.
+pub(crate) fn current_process() -> &'static mut Process {
+    let p = CURRENT_PROCESS.with(|c| c.get());
+    assert!(!p.is_null(), "current_process(): no Process installed (running outside run_in?)");
+    unsafe { &mut *p }
 }
 
 // ----- Runtime fns called from JIT'd code -----
@@ -210,9 +333,8 @@ fn render_struct(bits: u64) -> String {
     let v = FzValue(bits);
     let p = v.unbox_ptr().unwrap();
     let schema_id = unsafe { (*p).schema_id };
-    let parts: Vec<String> = HEAP.with(|h| {
-        let heap = h.borrow();
-        let reg = heap.schemas_registry();
+    let parts: Vec<String> = {
+        let reg = current_process().heap.schemas_registry();
         let registry = reg.borrow();
         let schema = registry.get(schema_id);
         schema
@@ -228,7 +350,7 @@ fn render_struct(bits: u64) -> String {
                 render_fz_value(field_bits)
             })
             .collect()
-    });
+    };
     format!("{{{}}}", parts.join(", "))
 }
 
@@ -377,11 +499,16 @@ pub(crate) fn ir_text_record_take() -> Vec<(String, String)> {
     IR_TEXT_RECORD.with(|c| c.borrow_mut().take().unwrap_or_default())
 }
 
-/// Halt: receives an FzValue from the JIT, unboxes per-tag into a debug-friendly
-/// i64 stored in HostCtx. Halt is a debugging seam slated for removal once
-/// processes land (.11.16+); this preserves byte-for-byte halt values for
-/// existing scalar tests while not constraining heap-typed semantics later.
-extern "C" fn fz_halt(host_ctx: *mut u8, fz_bits: u64) {
+/// Halt: receives an FzValue from the JIT, unboxes per-tag into a
+/// debug-friendly i64 stored on the current Process's halt_value. Halt is a
+/// debugging seam; this preserves byte-for-byte halt values for existing
+/// scalar tests while not constraining heap-typed semantics later.
+///
+/// The second arg is the per-fn ABI's `ctx: *mut u8` (= *mut Process). For
+/// the migration we ignore it in favor of current_process() — they point at
+/// the same Process, but using current_process() keeps the access pattern
+/// uniform with every other fz_* fn.
+extern "C" fn fz_halt(_ctx: *mut u8, fz_bits: u64) {
     use crate::fz_value::{FzValue, HeapKind, Tag};
     let v = FzValue(fz_bits);
     let i: i64 = match v.tag() {
@@ -409,66 +536,58 @@ extern "C" fn fz_halt(host_ctx: *mut u8, fz_bits: u64) {
         }
         Tag::Reserved => fz_bits as i64,
     };
-    unsafe { (*(host_ctx as *mut HostCtx)).halt_value = i; }
+    current_process().halt_value = i;
 }
 
 // ----- Heap (managed cons-cell allocator) -----
 //
-// The JIT-side `fz_alloc_list_cons` routes through this thread-local heap so
-// the GC tracer in src/heap.rs can reclaim cons cells. Frames stay on the
-// system allocator for now (frames don't yet root-trace; that lands when the
-// frame inliner / process-context arrives in .11.15+).
+// The JIT-side `fz_alloc_list_cons` routes through the current Process's heap
+// so the GC tracer in src/heap.rs can reclaim cons cells. Frames stay on the
+// system allocator for now (frames don't yet root-trace; .11.31).
 
-thread_local! {
-    pub static HEAP: std::cell::RefCell<crate::heap::Heap> = std::cell::RefCell::new(
-        crate::heap::Heap::new(
-            64 * 1024,
-            std::rc::Rc::new(std::cell::RefCell::new(crate::heap::SchemaRegistry::new())),
-        )
-    );
-}
-
-/// Reset the per-thread heap. Call at the start of any test that needs a
-/// clean heap state (allocs / freelist / bump). Tests share threads via the
-/// cargo test runner's worker pool, so leftover state is otherwise sticky.
+/// Reset DEFAULT_PROCESS. Call at the start of any test that needs a clean
+/// heap. Tests share threads via the cargo test runner's worker pool, so
+/// leftover state is otherwise sticky.
 pub fn heap_reset_for_test() {
-    HEAP.with(|h| {
-        *h.borrow_mut() = crate::heap::Heap::new(
-            64 * 1024,
-            std::rc::Rc::new(std::cell::RefCell::new(crate::heap::SchemaRegistry::new())),
-        );
-    });
+    DEFAULT_PROCESS.with(|c| *c.borrow_mut() = None);
 }
 
 pub fn heap_live_count() -> usize {
-    HEAP.with(|h| h.borrow().live_count())
+    DEFAULT_PROCESS.with(|c| {
+        c.borrow().as_ref().map(|p| p.heap.live_count()).unwrap_or(0)
+    })
 }
 
 pub fn heap_freelist_len() -> usize {
-    HEAP.with(|h| h.borrow().freelist_len())
+    DEFAULT_PROCESS.with(|c| {
+        c.borrow().as_ref().map(|p| p.heap.freelist_len()).unwrap_or(0)
+    })
 }
 
 pub fn heap_gc(roots: &[crate::fz_value::FzValue]) {
-    HEAP.with(|h| h.borrow_mut().gc(roots));
+    DEFAULT_PROCESS.with(|c| {
+        if let Some(p) = c.borrow_mut().as_mut() {
+            p.heap.gc(roots);
+        }
+    });
 }
 
 extern "C" fn fz_alloc_list_cons(head_bits: u64, tail_bits: u64) -> u64 {
     use crate::fz_value::FzValue;
-    let p = HEAP.with(|h| {
-        h.borrow_mut()
-            .alloc_list_cons(FzValue(head_bits), FzValue(tail_bits))
-    });
+    let p = current_process()
+        .heap
+        .alloc_list_cons(FzValue(head_bits), FzValue(tail_bits));
     // Heap returns 16-byte-aligned pointers (low 4 bits zero), so the raw
     // pointer doubles as the FzValue ptr-tagged encoding (tag bits = 000).
     p as u64
 }
 
 /// Allocate a heap-typed Struct. `schema_id` must already be registered in
-/// the thread-local HEAP's SchemaRegistry. Returns the FzValue ptr-bits
-/// (heap-aligned, so tag = 000). Caller is responsible for writing field
-/// values into payload slots after allocation.
+/// the current Process's heap SchemaRegistry (shared with CompiledModule).
+/// Returns the FzValue ptr-bits (heap-aligned, so tag = 000). Caller is
+/// responsible for writing field values into payload slots after allocation.
 extern "C" fn fz_alloc_struct(schema_id: u32) -> u64 {
-    let p = HEAP.with(|h| h.borrow_mut().alloc_struct(schema_id));
+    let p = current_process().heap.alloc_struct(schema_id);
     p as u64
 }
 
@@ -484,10 +603,7 @@ extern "C" fn fz_alloc_struct(schema_id: u32) -> u64 {
 // within each category, by raw bits (Int compares signed). Keys compare
 // equal iff their u64 bits are equal — pointer-equal heap keys for v1.
 
-thread_local! {
-    static MAP_BUILDER: std::cell::RefCell<Option<Vec<(u64, u64)>>> =
-        std::cell::RefCell::new(None);
-}
+// MAP_BUILDER state moved to Process.map_builder (per fz-ul4.11.32).
 
 fn fz_key_category(bits: u64) -> u8 {
     match bits & 0b111 {
@@ -512,7 +628,7 @@ fn fz_key_cmp(a: u64, b: u64) -> std::cmp::Ordering {
 }
 
 extern "C" fn fz_map_begin() {
-    MAP_BUILDER.with(|b| *b.borrow_mut() = Some(Vec::new()));
+    current_process().map_builder = Some(Vec::new());
 }
 
 extern "C" fn fz_map_clone(base_bits: u64) {
@@ -534,22 +650,22 @@ extern "C" fn fz_map_clone(base_bits: u64) {
         cursor = unsafe { cursor.add(2) };
         entries.push((k, v));
     }
-    MAP_BUILDER.with(|b| *b.borrow_mut() = Some(entries));
+    current_process().map_builder = Some(entries);
 }
 
 extern "C" fn fz_map_push(key_bits: u64, val_bits: u64) {
-    MAP_BUILDER.with(|b| {
-        b.borrow_mut()
-            .as_mut()
-            .expect("fz_map_push without begin/clone")
-            .push((key_bits, val_bits));
-    });
+    current_process()
+        .map_builder
+        .as_mut()
+        .expect("fz_map_push without begin/clone")
+        .push((key_bits, val_bits));
 }
 
 extern "C" fn fz_map_finalize() -> u64 {
     use crate::fz_value::FzValue;
-    let raw = MAP_BUILDER
-        .with(|b| b.borrow_mut().take())
+    let raw = current_process()
+        .map_builder
+        .take()
         .expect("fz_map_finalize without begin");
     // Last write wins on duplicate keys: walk in order, dedupe-overwriting.
     let mut by_key: Vec<(u64, u64)> = Vec::with_capacity(raw.len());
@@ -564,7 +680,7 @@ extern "C" fn fz_map_finalize() -> u64 {
     by_key.sort_by(|a, b| fz_key_cmp(a.0, b.0));
     let entries: Vec<(FzValue, FzValue)> =
         by_key.into_iter().map(|(k, v)| (FzValue(k), FzValue(v))).collect();
-    let p = HEAP.with(|h| h.borrow_mut().alloc_map(&entries));
+    let p = current_process().heap.alloc_map(&entries);
     p as u64
 }
 
@@ -606,20 +722,12 @@ extern "C" fn fz_map_get(map_bits: u64, key_bits: u64) -> u64 {
 // `[false]` on failure. Tuple schema_ids for arities 1 and 3 are registered
 // at compile() time when any bitstring prim is present.
 
-thread_local! {
-    static BS_BUILDER: std::cell::RefCell<Option<crate::bitstr::BitWriter>> =
-        std::cell::RefCell::new(None);
-    /// Heap-registered schema ids for the bitstring reader/result tuples.
-    /// Set by compile() when any bitstring prim is present; consumed by the
-    /// runtime fns below. None means "no bitstring prim in this module".
-    static BS_TUPLE_ARITY3_SCHEMA: std::cell::Cell<Option<u32>> =
-        std::cell::Cell::new(None);
-    static BS_TUPLE_ARITY1_SCHEMA: std::cell::Cell<Option<u32>> =
-        std::cell::Cell::new(None);
-}
+// BS_BUILDER + BS_TUPLE_ARITY{1,3}_SCHEMA state moved to Process fields
+// (per fz-ul4.11.32). Tuple-arity schema ids are filled in at make_process()
+// time from CompiledModule's compile-time tables.
 
 extern "C" fn fz_bs_begin() {
-    BS_BUILDER.with(|b| *b.borrow_mut() = Some(crate::bitstr::BitWriter::new()));
+    current_process().bs_builder = Some(crate::bitstr::BitWriter::new());
 }
 
 /// Write one field into the active builder. Field-type tags match the order
@@ -645,9 +753,9 @@ extern "C" fn fz_bs_write_field(
     // the same bit pattern for signed and unsigned at fixed width. The flag
     // is consumed on read (fz_bs_read_field) for sign extension.
     let _ = signed;
-    BS_BUILDER.with(|b| {
-        let mut bopt = b.borrow_mut();
-        let w = bopt
+    {
+        let w = current_process()
+            .bs_builder
             .as_mut()
             .expect("fz_bs_write_field called without fz_bs_begin");
         match ty {
@@ -738,20 +846,18 @@ extern "C" fn fz_bs_write_field(
                 w.write_bits(raw, total as usize);
             }
         }
-    });
+    }
 }
 
 extern "C" fn fz_bs_finalize() -> u64 {
-    BS_BUILDER.with(|b| {
-        let w = b
-            .borrow_mut()
-            .take()
-            .expect("fz_bs_finalize without fz_bs_begin");
-        let bit_len = w.bit_len as u64;
-        let bytes = w.bytes;
-        let p = HEAP.with(|h| h.borrow_mut().alloc_bitstring(&bytes, bit_len));
-        p as u64
-    })
+    let w = current_process()
+        .bs_builder
+        .take()
+        .expect("fz_bs_finalize without fz_bs_begin");
+    let bit_len = w.bit_len as u64;
+    let bytes = w.bytes;
+    let p = current_process().heap.alloc_bitstring(&bytes, bit_len);
+    p as u64
 }
 
 fn decode_bit_type(t: u32) -> crate::ast::BitType {
@@ -824,10 +930,10 @@ extern "C" fn fz_bs_reader_init(bs_bits: u64) -> u64 {
         panic!("reader_init source is not a Bitstring");
     }
     let bit_len = unsafe { std::ptr::read((p as *const u8).add(16) as *const u64) } as i64;
-    let arity3 = BS_TUPLE_ARITY3_SCHEMA
-        .with(|c| c.get())
-        .expect("BS_TUPLE_ARITY3_SCHEMA not set");
-    let tuple_p = HEAP.with(|h| h.borrow_mut().alloc_struct(arity3));
+    let arity3 = current_process()
+        .bs_tuple_arity3_schema
+        .expect("bs_tuple_arity3_schema not set");
+    let tuple_p = current_process().heap.alloc_struct(arity3);
     unsafe {
         let base = (tuple_p as *mut u8).add(16);
         // [bs_ptr, bit_len_boxed, 0_boxed]
@@ -884,14 +990,14 @@ extern "C" fn fz_bs_read_field(
     let bytes = unsafe { std::slice::from_raw_parts(bytes_ptr, bit_len.div_ceil(8)) };
 
     // Failure path: alloc 1-tuple [false].
-    let arity1 = BS_TUPLE_ARITY1_SCHEMA
-        .with(|c| c.get())
-        .expect("BS_TUPLE_ARITY1_SCHEMA not set");
-    let arity3 = BS_TUPLE_ARITY3_SCHEMA
-        .with(|c| c.get())
-        .expect("BS_TUPLE_ARITY3_SCHEMA not set");
+    let arity1 = current_process()
+        .bs_tuple_arity1_schema
+        .expect("bs_tuple_arity1_schema not set");
+    let arity3 = current_process()
+        .bs_tuple_arity3_schema
+        .expect("bs_tuple_arity3_schema not set");
     let fail = || -> u64 {
-        let p = HEAP.with(|h| h.borrow_mut().alloc_struct(arity1));
+        let p = current_process().heap.alloc_struct(arity1);
         unsafe {
             let base = (p as *mut u8).add(16);
             std::ptr::write(base as *mut u64, FzValue::FALSE.0);
@@ -931,8 +1037,9 @@ extern "C" fn fz_bs_read_field(
                 w.append_bit(r.read_bit().unwrap());
             }
             sub_bytes.extend_from_slice(&w.bytes);
-            let new_bs = HEAP
-                .with(|h| h.borrow_mut().alloc_bitstring(&sub_bytes, needed_bits as u64));
+            let new_bs = current_process()
+                .heap
+                .alloc_bitstring(&sub_bytes, needed_bits as u64);
             let new_bs_bits = new_bs as u64;
             (new_bs_bits, needed_bits)
         }
@@ -951,7 +1058,7 @@ extern "C" fn fz_bs_read_field(
             } else {
                 f64::from_bits(raw)
             };
-            let p = HEAP.with(|h| h.borrow_mut().alloc_float(f));
+            let p = current_process().heap.alloc_float(f);
             (p as u64, total as usize)
         }
         BitType::Utf8 | BitType::Utf16 | BitType::Utf32 => {
@@ -966,7 +1073,7 @@ extern "C" fn fz_bs_read_field(
 
     // Allocate fresh reader tuple [bs_bits, bit_len_boxed, new_pos_boxed].
     let new_pos = (pos + consumed) as i64;
-    let new_reader_p = HEAP.with(|h| h.borrow_mut().alloc_struct(arity3));
+    let new_reader_p = current_process().heap.alloc_struct(arity3);
     unsafe {
         let base = (new_reader_p as *mut u8).add(16);
         std::ptr::write(base as *mut u64, bs_bits);
@@ -975,7 +1082,7 @@ extern "C" fn fz_bs_read_field(
     }
 
     // Allocate result tuple [true, extracted, new_reader].
-    let result_p = HEAP.with(|h| h.borrow_mut().alloc_struct(arity3));
+    let result_p = current_process().heap.alloc_struct(arity3);
     unsafe {
         let base = (result_p as *mut u8).add(16);
         std::ptr::write(base as *mut u64, FzValue::TRUE.0);
@@ -1000,7 +1107,7 @@ extern "C" fn fz_bs_read_field(
 
 extern "C" fn fz_alloc_float(bits: u64) -> u64 {
     let f = f64::from_bits(bits);
-    let p = HEAP.with(|h| h.borrow_mut().alloc_float(f));
+    let p = current_process().heap.alloc_float(f);
     p as u64
 }
 
@@ -1023,7 +1130,7 @@ fn fz_to_f64(bits: u64) -> f64 {
 }
 
 fn box_float(f: f64) -> u64 {
-    let p = HEAP.with(|h| h.borrow_mut().alloc_float(f));
+    let p = current_process().heap.alloc_float(f);
     p as u64
 }
 
@@ -1135,13 +1242,12 @@ fn eq_struct(
     if a_schema != b_schema {
         return false;
     }
-    // Schema in HEAP's per-thread registry tells us field count and offsets.
-    let n_fields = HEAP.with(|h| {
-        let heap = h.borrow();
-        let reg = heap.schemas_registry();
+    // Schema in current Process's heap registry tells us field count.
+    let n_fields = {
+        let reg = current_process().heap.schemas_registry();
         let registry = reg.borrow();
         registry.get(a_schema).fields.len()
-    });
+    };
     for i in 0..n_fields {
         let off = (i * 8) as isize;
         let av = unsafe {
@@ -1223,16 +1329,13 @@ fn eq_map(
 // (Bit packs at the end). VecF64 is gated behind .11.20/.11.23.
 
 #[derive(Debug)]
-enum VecBuild {
+pub enum VecBuild {
     I64(Vec<i64>),
     U8(Vec<u8>),
     Bit(Vec<bool>),
 }
 
-thread_local! {
-    static VEC_BUILDER: std::cell::RefCell<Option<VecBuild>> =
-        std::cell::RefCell::new(None);
-}
+// VEC_BUILDER state moved to Process.vec_builder (per fz-ul4.11.32).
 
 /// kind tag matches `HeapKind as u16`: VecI64=3, VecU8=5, VecBit=6.
 extern "C" fn fz_vec_begin(kind_tag: u32) {
@@ -1244,7 +1347,7 @@ extern "C" fn fz_vec_begin(kind_tag: u32) {
         Some(HeapKind::VecF64) => panic!("VecF64 deferred to fz-ul4.11.23"),
         _ => panic!("fz_vec_begin: invalid kind tag {}", kind_tag),
     };
-    VEC_BUILDER.with(|c| *c.borrow_mut() = Some(b));
+    current_process().vec_builder = Some(b);
 }
 
 extern "C" fn fz_vec_push(value_bits: u64) {
@@ -1252,28 +1355,28 @@ extern "C" fn fz_vec_push(value_bits: u64) {
     let n = FzValue(value_bits)
         .unbox_int()
         .expect("fz_vec_push: vec element not Int");
-    VEC_BUILDER.with(|c| {
-        let mut bo = c.borrow_mut();
-        match bo.as_mut().expect("fz_vec_push without begin") {
-            VecBuild::I64(v) => v.push(n),
-            VecBuild::U8(v) => v.push(n as u8),
-            VecBuild::Bit(v) => v.push(n != 0),
-        }
-    });
+    match current_process()
+        .vec_builder
+        .as_mut()
+        .expect("fz_vec_push without begin")
+    {
+        VecBuild::I64(v) => v.push(n),
+        VecBuild::U8(v) => v.push(n as u8),
+        VecBuild::Bit(v) => v.push(n != 0),
+    }
 }
 
 extern "C" fn fz_vec_finalize() -> u64 {
-    let b = VEC_BUILDER
-        .with(|c| c.borrow_mut().take())
+    let b = current_process()
+        .vec_builder
+        .take()
         .expect("fz_vec_finalize without begin");
-    let p = HEAP.with(|h| {
-        let mut heap = h.borrow_mut();
-        match b {
-            VecBuild::I64(v) => heap.alloc_vec_i64(&v),
-            VecBuild::U8(v) => heap.alloc_vec_u8(&v),
-            VecBuild::Bit(v) => heap.alloc_vec_bit(&v),
-        }
-    });
+    let heap = &mut current_process().heap;
+    let p = match b {
+        VecBuild::I64(v) => heap.alloc_vec_i64(&v),
+        VecBuild::U8(v) => heap.alloc_vec_u8(&v),
+        VecBuild::Bit(v) => heap.alloc_vec_bit(&v),
+    };
     p as u64
 }
 
@@ -1324,54 +1427,45 @@ extern "C" fn fz_vec_get(vec_bits: u64, index_bits: u64) -> u64 {
 // frame-reuse path when the closure's fn shares the caller's schema (fn_id
 // equality).
 
-thread_local! {
-    static CLOSURE_BUILDER: std::cell::RefCell<Option<(u32, Vec<u64>)>> =
-        std::cell::RefCell::new(None);
-    static CLOSURE_ARGS: std::cell::RefCell<Vec<u64>> =
-        std::cell::RefCell::new(Vec::new());
-    /// Per-fn frame size (bytes), indexed by FnId.0. Populated at compile()
-    /// time; consumed by `fz_alloc_frame_dyn` to allocate frames for fns
-    /// whose id is known only dynamically (closure invocation).
-    static FRAME_SIZES: std::cell::RefCell<Vec<u32>> =
-        std::cell::RefCell::new(Vec::new());
-}
+// CLOSURE_BUILDER + CLOSURE_ARGS + FRAME_SIZES state moved to Process fields
+// (per fz-ul4.11.32). frame_sizes is copied into Process at make_process()
+// time from CompiledModule's compile-time table.
 
 extern "C" fn fz_closure_begin(fn_id: u32) {
-    CLOSURE_BUILDER.with(|b| *b.borrow_mut() = Some((fn_id, Vec::new())));
+    current_process().closure_builder = Some((fn_id, Vec::new()));
 }
 
 extern "C" fn fz_closure_push(v: u64) {
-    CLOSURE_BUILDER.with(|b| {
-        b.borrow_mut()
-            .as_mut()
-            .expect("fz_closure_push without begin")
-            .1
-            .push(v);
-    });
+    current_process()
+        .closure_builder
+        .as_mut()
+        .expect("fz_closure_push without begin")
+        .1
+        .push(v);
 }
 
 extern "C" fn fz_closure_finalize() -> u64 {
     use crate::fz_value::FzValue;
-    let (fn_id, captured) = CLOSURE_BUILDER
-        .with(|b| b.borrow_mut().take())
+    let (fn_id, captured) = current_process()
+        .closure_builder
+        .take()
         .expect("fz_closure_finalize without begin");
     let cap_fz: Vec<FzValue> = captured.into_iter().map(FzValue).collect();
-    let p = HEAP.with(|h| h.borrow_mut().alloc_closure(fn_id, &cap_fz));
+    let p = current_process().heap.alloc_closure(fn_id, &cap_fz);
     p as u64
 }
 
 extern "C" fn fz_closure_arg(v: u64) {
-    CLOSURE_ARGS.with(|a| a.borrow_mut().push(v));
+    current_process().closure_args.push(v);
 }
 
-/// Allocate a frame for fn `fn_id`, looking up its size in the per-thread
-/// FRAME_SIZES table populated at compile() time.
+/// Allocate a frame for fn `fn_id`, looking up its size in the current
+/// Process's frame_sizes table populated at make_process() time.
 extern "C" fn fz_alloc_frame_dyn(fn_id: u32) -> *mut u8 {
-    let size = FRAME_SIZES.with(|t| {
-        let v = t.borrow();
-        *v.get(fn_id as usize)
-            .unwrap_or_else(|| panic!("FRAME_SIZES has no entry for fn_id {}", fn_id))
-    });
+    let size = *current_process()
+        .frame_sizes
+        .get(fn_id as usize)
+        .unwrap_or_else(|| panic!("frame_sizes has no entry for fn_id {}", fn_id));
     fz_alloc_frame(fn_id, size)
 }
 
@@ -1389,7 +1483,7 @@ extern "C" fn fz_closure_invoke(closure_bits: u64, cont_ptr: u64) -> *mut u8 {
     let fn_id = header.schema_id;
     let captured_count = header.flags as usize;
     let frame = fz_alloc_frame_dyn(fn_id);
-    let args = CLOSURE_ARGS.with(|a| std::mem::take(&mut *a.borrow_mut()));
+    let args = std::mem::take(&mut current_process().closure_args);
     unsafe {
         std::ptr::write((frame as *mut u8).add(16) as *mut u64, cont_ptr);
         let cap_src = (cp as *const u8).add(16) as *const u64;
@@ -1415,7 +1509,7 @@ extern "C" fn fz_tail_closure(closure_bits: u64, current_frame: *mut u8) -> *mut
     let captured_count = header.flags as usize;
     let cur_header = unsafe { &*(current_frame as *const HeapHeader) };
     let cur_fn_id = cur_header.schema_id;
-    let args = CLOSURE_ARGS.with(|a| std::mem::take(&mut *a.borrow_mut()));
+    let args = std::mem::take(&mut current_process().closure_args);
     let cap_src = unsafe { (cp as *const u8).add(16) as *const u64 };
 
     if cur_fn_id == fn_id {
@@ -1793,9 +1887,15 @@ pub fn compile(module: &Module) -> Result<CompiledModule, CodegenError> {
         tuple_arities.insert(1);
         tuple_arities.insert(3);
     }
+    // Build the per-CompiledModule SchemaRegistry. Tuple, struct, list,
+    // map, closure, bitstring, vec, float schemas live here. Each Process
+    // constructed via make_process() shares this registry through its Heap.
+    let user_schemas = std::rc::Rc::new(std::cell::RefCell::new(
+        crate::heap::SchemaRegistry::new(),
+    ));
     let mut tuple_schema_ids: HashMap<usize, u32> = HashMap::new();
-    HEAP.with(|h| {
-        let heap = h.borrow();
+    {
+        let mut reg = user_schemas.borrow_mut();
         for &arity in &tuple_arities {
             let s = Schema {
                 name: format!("Tuple{}", arity),
@@ -1807,28 +1907,22 @@ pub fn compile(module: &Module) -> Result<CompiledModule, CodegenError> {
                     })
                     .collect(),
             };
-            let id = heap.register_schema(s);
+            let id = reg.register(s);
             tuple_schema_ids.insert(arity, id);
         }
-    });
-    if has_bs_prim {
-        let id1 = *tuple_schema_ids.get(&1).expect("arity-1 schema registered");
-        let id3 = *tuple_schema_ids.get(&3).expect("arity-3 schema registered");
-        BS_TUPLE_ARITY1_SCHEMA.with(|c| c.set(Some(id1)));
-        BS_TUPLE_ARITY3_SCHEMA.with(|c| c.set(Some(id3)));
     }
+    let (bs_tuple_arity1_schema, bs_tuple_arity3_schema) = if has_bs_prim {
+        (
+            Some(*tuple_schema_ids.get(&1).expect("arity-1 schema registered")),
+            Some(*tuple_schema_ids.get(&3).expect("arity-3 schema registered")),
+        )
+    } else {
+        (None, None)
+    };
 
-    // Populate per-fn frame sizes for `fz_alloc_frame_dyn`. Closure dispatch
-    // looks up the callee fn's frame size by fn_id at runtime; the table is
-    // indexed by FnId.0 so it parallels `schemas`.
-    FRAME_SIZES.with(|t| {
-        let mut v = t.borrow_mut();
-        v.clear();
-        v.resize(schemas.len(), 0);
-        for (i, s) in schemas.iter().enumerate() {
-            v[i] = s.size;
-        }
-    });
+    // Per-fn frame sizes for `fz_alloc_frame_dyn`. Indexed by FnId.0
+    // (parallel to `schemas`). Copied into Process at make_process() time.
+    let frame_sizes: Vec<u32> = schemas.iter().map(|s| s.size).collect();
 
     // .11.24.4: run the typer ahead of codegen so per-fn Var->Descr info is
     // available during lowering (used for arithmetic dispatch elision when
@@ -1888,6 +1982,10 @@ pub fn compile(module: &Module) -> Result<CompiledModule, CodegenError> {
         module: jmod,
         fn_ptrs,
         schemas,
+        user_schemas,
+        frame_sizes,
+        bs_tuple_arity1_schema,
+        bs_tuple_arity3_schema,
         types: module_types,
         diagnostics,
     })
@@ -2892,6 +2990,49 @@ mod tests {
         let _ = test_capture_take();
         let _ = compile(&m).unwrap().run(entry);
         test_capture_take()
+    }
+
+    // ----- fz-ul4.11.32: per-Process state isolation -----
+
+    /// Two Processes built from the same CompiledModule run independent
+    /// programs that each construct a map. PRE-MIGRATION (when MAP_BUILDER
+    /// was a shared TLS slot) the second `run_in` would inherit or corrupt
+    /// the first's in-flight builder state. Post-migration, each Process
+    /// owns its own builder fields and the two runs are fully independent.
+    #[test]
+    fn two_processes_run_independent_map_builds() {
+        // Both programs use distinct keys + values so a corruption would
+        // show up as a wrong halt value (halt reads tag bits of the map
+        // pointer; we observe by reading specific entries via fz-level
+        // map syntax).
+        let src_a = "fn main(), do: %{1 => 10, 2 => 20}[1]";
+        let src_b = "fn main(), do: %{3 => 30, 4 => 40}[3]";
+
+        let ma = lower_src(src_a);
+        let mb = lower_src(src_b);
+        let ca = compile(&ma).unwrap();
+        let cb = compile(&mb).unwrap();
+        let entry_a = ma.fn_by_name("main").unwrap().id;
+        let entry_b = mb.fn_by_name("main").unwrap().id;
+
+        let mut pa = ca.make_process();
+        let mut pb = cb.make_process();
+
+        // Run a, then b, then a again (interleaved) — each should see only
+        // its own state. If MAP_BUILDER were shared TLS, the second run
+        // would either panic on stale state or compute the wrong value.
+        let ra = ca.run_in(entry_a, &mut pa);
+        let rb = cb.run_in(entry_b, &mut pb);
+        let ra2 = ca.run_in(entry_a, &mut pa);
+
+        assert_eq!(ra, 10, "process a's first run returns map[1] = 10");
+        assert_eq!(rb, 30, "process b's run returns map[3] = 30");
+        assert_eq!(ra2, 10, "process a's second run returns 10 (independent of b)");
+
+        // Each Process accumulated its own heap allocations. The map
+        // alloc lives on the Process's heap.
+        assert!(pa.heap.live_count() > 0, "process a has live heap allocs");
+        assert!(pb.heap.live_count() > 0, "process b has live heap allocs");
     }
 
     // ----- simple scalar / arithmetic tests -----
