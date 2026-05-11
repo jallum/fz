@@ -2,7 +2,8 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [
-    "fz-ul4.11.25.4"
+    "fz-ul4.11.25.4",
+    "fz-ul4.11.25.7"
   ],
   "created": "2026-05-11T10:55:43Z",
   "description": "Delete the 6 AST-shaped helpers in src/typer.rs that have no live consumer:\n\n- expr_calls_self\n- pattern_type\n- pattern_bindings\n- extract\n- expr_to_map_key\n- pattern_to_map_key\n\n## Do NOT delete the widen* family\n\nwiden / widen_map / widen_map_sig / widen_tuple / widen_list / widen_func ARE used: src/ir_typer.rs:519 calls crate::typer::widen from specialize_return. The \"never used\" warnings on widen* are transitive — they fire only because specialize_return itself shows as dead. Once .11.25.7 annotates specialize_return with #[allow(dead_code)], the widen* warnings clear automatically.\n\nKeep widen* exactly as-is. Step 7 handles the cascade.\n\n## Side effect for Step 4 (MapKey::Bool / MapKey::Nil)\n\nexpr_to_map_key and pattern_to_map_key are the ONLY constructors of MapKey::Bool and MapKey::Nil. After this step lands, those variants have zero constructors — which is what fz-ul4.11.25.4 relies on.\n\n## Deliverable\n\n- 6 functions deleted.\n- Net -6 warnings (the widen* warnings clear in .11.25.7).\n- cargo test passes.\n- typer.rs shrinks but does not disappear; mod typer stays in main.rs.",
