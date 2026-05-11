@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-11T21:11:02Z",
+  "description": "compile_fn currently takes \u0026mut JITModule. Change to \u003cM: cranelift_module::Module\u003e. The body should already be Module-agnostic; this is mostly a signature change plus generic call sites.\n\n## Acceptance\n\n- cargo test green.\n- compile_fn signature shows the generic bound.\n- No new behavior.",
+  "id": "fz-ul4.23.4.5",
+  "labels": [],
+  "parent": "fz-ul4.23.4",
+  "priority": 3,
+  "status": "open",
+  "title": "Parameterize compile_fn on M: cranelift_module::Module",
+  "type": "task",
+  "updated_at": "2026-05-11T21:11:02Z"
+}
