@@ -12,17 +12,104 @@
 
 use crate::ast::*;
 use crate::ast_value::{expr_to_value, value_to_expr};
-use crate::diag::{Span, SpanOrigin};
+use crate::diag::{Diagnostic, Span, SpanOrigin, codes};
 use crate::eval::Interp;
 use crate::value::Value;
 
 const MAX_EXPANSION_DEPTH: usize = 200;
 
+/// Errors produced by the macro expansion pass. Every variant that
+/// corresponds to a user-visible failure carries the macro call's
+/// `call_span` plus an optional `def_span` (the `defmacro` declaration);
+/// the renderer emits "expanded from `<macro>` at …" trailers from these.
+#[derive(Debug, Clone)]
+pub enum MacroError {
+    /// Item-level call to a name that isn't a `defmacro`.
+    NotADefmacro { name: String, call_span: Span },
+    /// One of the macro's arguments couldn't be reified to a Value.
+    ArgReification { name: String, call_span: Span, def_span: Option<Span>, inner: String },
+    /// The macro body itself errored at runtime.
+    BodyFailed { name: String, call_span: Span, def_span: Option<Span>, inner: String },
+    /// The macro returned a Value that couldn't be decoded back to AST.
+    ReturnDecode { name: String, call_span: Span, def_span: Option<Span>, inner: String },
+    /// Runaway expansion (exceeded `MAX_EXPANSION_DEPTH`).
+    ExpansionLoop { span: Span, max_depth: usize },
+    /// `expand_with` saw a pre-resolution Item (Module/Alias/Import/MacroCall).
+    /// This is a compiler-internal invariant violation, not user error.
+    PostResolutionLeftover { span: Span },
+    /// Setting up the scratch interp before expansion failed. No span
+    /// available — this is rare and signals an issue earlier in the pipe.
+    LoadFailed { inner: String },
+}
+
+impl MacroError {
+    pub fn to_diagnostic(&self) -> Diagnostic {
+        match self {
+            Self::NotADefmacro { name, call_span } => Diagnostic::error(
+                codes::MACRO_NOT_A_DEFMACRO,
+                format!("item-level call `{}(...)` is not a defmacro", name),
+                *call_span,
+            ),
+            Self::ArgReification { name, call_span, def_span, inner } => {
+                let mut d = Diagnostic::error(
+                    codes::MACRO_ARG_REIFICATION_FAILED,
+                    format!("macro `{}` argument reification failed: {}", name, inner),
+                    *call_span,
+                );
+                if let Some(ds) = def_span { d = d.with_secondary(*ds, "macro defined here"); }
+                d
+            }
+            Self::BodyFailed { name, call_span, def_span, inner } => {
+                let mut d = Diagnostic::error(
+                    codes::MACRO_BODY_FAILED,
+                    format!("macro `{}` body failed: {}", name, inner),
+                    *call_span,
+                );
+                if let Some(ds) = def_span { d = d.with_secondary(*ds, "macro defined here"); }
+                d
+            }
+            Self::ReturnDecode { name, call_span, def_span, inner } => {
+                let mut d = Diagnostic::error(
+                    codes::MACRO_RETURN_DECODE_FAILED,
+                    format!("macro `{}` return decode failed: {}", name, inner),
+                    *call_span,
+                );
+                if let Some(ds) = def_span { d = d.with_secondary(*ds, "macro defined here"); }
+                d
+            }
+            Self::ExpansionLoop { span, max_depth } => Diagnostic::error(
+                codes::MACRO_EXPANSION_LOOP,
+                format!("macro expansion exceeded {} levels (likely a runaway macro)", max_depth),
+                *span,
+            ),
+            Self::PostResolutionLeftover { span } => Diagnostic::error(
+                codes::INTERNAL_POST_RESOLUTION_LEFTOVER,
+                "expand_with: pre-resolution Item reached macro expander; \
+                 resolve::flatten_modules must run first",
+                *span,
+            ),
+            Self::LoadFailed { inner } => Diagnostic::error(
+                codes::MACRO_BODY_FAILED,
+                format!("macro expansion setup failed: {}", inner),
+                Span::DUMMY,
+            ),
+        }
+    }
+}
+
+impl std::fmt::Display for MacroError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.to_diagnostic().message)
+    }
+}
+
+impl std::error::Error for MacroError {}
+
 /// Expand all macro calls in `prog` in place. Builds a scratch interp from
 /// the program (so macros can call other macros and regular fns), then
 /// expands every non-macro fn body. Macro bodies themselves are left
 /// untouched — they're meta-code, not subject to expansion.
-pub fn expand_program(prog: &mut Program) -> Result<(), String> {
+pub fn expand_program(prog: &mut Program) -> Result<(), Box<MacroError>> {
     // Always run the item-level pass first (it doesn't need the macros set
     // since collect_macros walks both Item::Fn and the resulting Item::Fn
     // post-splice). After items are spliced, run expression-level expansion.
@@ -32,7 +119,8 @@ pub fn expand_program(prog: &mut Program) -> Result<(), String> {
     }
 
     let interp = Interp::new();
-    interp.load_program(prog)?;
+    interp.load_program(prog)
+        .map_err(|e| Box::new(MacroError::LoadFailed { inner: e }))?;
 
     // Item-level expansion: replace Item::MacroCall with whatever items
     // the macro returns. Expanded items are appended to a fresh vec; the
@@ -62,7 +150,7 @@ fn expand_items(
     prog: &mut Program,
     interp: &Interp,
     macros: &std::collections::HashSet<String>,
-) -> Result<(), String> {
+) -> Result<(), Box<MacroError>> {
     prog.items = expand_item_list(prog.items.clone(), interp, macros)?;
     Ok(())
 }
@@ -71,29 +159,36 @@ fn expand_item_list(
     items: Vec<std::rc::Rc<Item>>,
     interp: &Interp,
     macros: &std::collections::HashSet<String>,
-) -> Result<Vec<std::rc::Rc<Item>>, String> {
+) -> Result<Vec<std::rc::Rc<Item>>, Box<MacroError>> {
     let mut out: Vec<std::rc::Rc<Item>> = Vec::new();
     for item in items {
         match &*item {
             Item::MacroCall { name, name_span: _, args, parent_module, span } => {
+                let call_span = *span;
+                let def_span = interp.macro_def_spans.borrow().get(name).copied();
                 if !macros.contains(name) {
-                    return Err(format!(
-                        "item-level call `{}(...)` is not a defmacro", name));
+                    return Err(Box::new(MacroError::NotADefmacro {
+                        name: name.clone(), call_span,
+                    }));
                 }
                 let arg_vs = args.iter()
                     .map(expr_to_value)
                     .collect::<Result<Vec<_>, _>>()
-                    .map_err(|e| format!("macro {} arg reification: {}", name, e))?;
+                    .map_err(|e| Box::new(MacroError::ArgReification {
+                        name: name.clone(), call_span, def_span, inner: e,
+                    }))?;
                 let prev = interp.gensym_table.borrow_mut().take();
                 *interp.gensym_table.borrow_mut() =
                     Some(std::collections::HashMap::new());
                 let ret = interp.call_named(name, arg_vs);
                 *interp.gensym_table.borrow_mut() = prev;
-                let ret = ret.map_err(|e| format!("macro {} body: {}", name, e))?;
+                let ret = ret.map_err(|e| Box::new(MacroError::BodyFailed {
+                    name: name.clone(), call_span, def_span, inner: e,
+                }))?;
                 let mut items = value_to_items(&ret)
-                    .map_err(|e| format!("macro {} return: {}", name, e))?;
-                let call_span = *span;
-                let def_span = interp.macro_def_spans.borrow().get(name).copied();
+                    .map_err(|e| Box::new(MacroError::ReturnDecode {
+                        name: name.clone(), call_span, def_span, inner: e,
+                    }))?;
                 for it in &mut items {
                     if let Item::Fn(def) = it {
                         if let Some(path) = parent_module {
@@ -192,7 +287,7 @@ pub fn expand_with(
     prog: &mut Program,
     interp: &Interp,
     macros: &std::collections::HashSet<String>,
-) -> Result<(), String> {
+) -> Result<(), Box<MacroError>> {
     if macros.is_empty() { return Ok(()); }
     for item in &mut prog.items {
         // We Rc::make_mut to get an exclusive ref. At this point in the
@@ -208,9 +303,11 @@ pub fn expand_with(
                     }
                 }
             }
-            Item::Module(_) | Item::Alias { .. } | Item::Import { .. } | Item::MacroCall { .. } => return Err(
-                "expand_with: pre-resolution Item reached macro expander; \
-                 resolve::flatten_modules must run first".into()),
+            Item::Module(m) =>
+                return Err(Box::new(MacroError::PostResolutionLeftover { span: m.span })),
+            Item::Alias { span, .. } | Item::Import { span, .. }
+            | Item::MacroCall { span, .. } =>
+                return Err(Box::new(MacroError::PostResolutionLeftover { span: *span })),
         }
     }
     Ok(())
@@ -240,12 +337,11 @@ pub fn expand_expr(
     interp: &Interp,
     macros: &std::collections::HashSet<String>,
     depth: usize,
-) -> Result<(), String> {
+) -> Result<(), Box<MacroError>> {
     if depth > MAX_EXPANSION_DEPTH {
-        return Err(format!(
-            "macro expansion exceeded {} levels (likely a runaway macro)",
-            MAX_EXPANSION_DEPTH
-        ));
+        return Err(Box::new(MacroError::ExpansionLoop {
+            span: e.span, max_depth: MAX_EXPANSION_DEPTH,
+        }));
     }
 
     // Macro calls are handled BEFORE recursing into args — the macro
@@ -253,25 +349,30 @@ pub fn expand_expr(
     if let Expr::Call(callee, args) = &mut e.node {
         if let Expr::Var(name) = &callee.node {
             if macros.contains(name) {
+                let call_span = e.span;
+                let def_span = interp.macro_def_spans.borrow().get(name).copied();
                 let arg_vs = args.iter()
                     .map(expr_to_value)
                     .collect::<Result<Vec<_>, _>>()
-                    .map_err(|e| format!("macro {} arg reification: {}", name, e))?;
+                    .map_err(|inner| Box::new(MacroError::ArgReification {
+                        name: name.clone(), call_span, def_span, inner,
+                    }))?;
                 let prev = interp.gensym_table.borrow_mut().take();
                 *interp.gensym_table.borrow_mut() =
                     Some(std::collections::HashMap::new());
                 let ret_res = interp.call_named(name, arg_vs);
                 *interp.gensym_table.borrow_mut() = prev;
-                let ret = ret_res
-                    .map_err(|e| format!("macro {} body: {}", name, e))?;
+                let ret = ret_res.map_err(|inner| Box::new(MacroError::BodyFailed {
+                    name: name.clone(), call_span, def_span, inner,
+                }))?;
                 let mut new_e = value_to_expr(&ret)
-                    .map_err(|e| format!("macro {} return decode: {}", name, e))?;
+                    .map_err(|inner| Box::new(MacroError::ReturnDecode {
+                        name: name.clone(), call_span, def_span, inner,
+                    }))?;
                 // The decoded tree is entirely DUMMY-spanned. Stamp every
                 // node with the call's span + Expanded lineage so any later
                 // diagnostic can point at the user's `Foo(args)` and show
                 // "expanded from `Foo`, defined at <file>:<line>:<col>".
-                let call_span = e.span;
-                let def_span = interp.macro_def_spans.borrow().get(name).copied();
                 stamp_expanded(&mut new_e, call_span, def_span);
                 *e = new_e;
                 return expand_expr(e, interp, macros, depth + 1);
@@ -574,8 +675,8 @@ fn main() do loop_m(0) end
         let mut prog = parse(src);
         let res = expand_program(&mut prog);
         assert!(res.is_err(), "expected expansion error");
-        assert!(res.unwrap_err().contains("expansion"),
-            "expected message about expansion");
+        assert!(matches!(*res.unwrap_err(), MacroError::ExpansionLoop { .. }),
+            "expected ExpansionLoop variant");
     }
 
     #[test]
@@ -921,6 +1022,54 @@ fn main(), do: answer()
                     "definition span should slice the defmacro declaration");
             }
             other => panic!("expected Expanded origin, got {:?}", other),
+        }
+    }
+
+    // ----- .21 step 2: MacroError carries a real call-site Span -----
+
+    /// A runaway macro produces an `ExpansionLoop` whose Span points at
+    /// the offending expression (the recursive `loop_m(...)` node), not
+    /// `Span::DUMMY`. The renderer relies on this to underline source.
+    #[test]
+    fn expansion_loop_diag_has_real_span() {
+        let src = r#"
+defmacro loop_m(x) do
+  quote do: loop_m(unquote(x))
+end
+fn main() do loop_m(0) end
+"#;
+        let mut prog = parse(src);
+        let err = expand_program(&mut prog).unwrap_err();
+        let d = err.to_diagnostic();
+        assert_ne!(d.primary.span, Span::DUMMY,
+            "ExpansionLoop should carry a real span");
+        assert_eq!(d.code, codes::MACRO_EXPANSION_LOOP);
+    }
+
+    /// A body-failure carries both the call-site span (primary) and the
+    /// defmacro span (secondary), so the renderer can show both locations.
+    #[test]
+    fn body_failed_diag_has_call_and_def_spans() {
+        // Macro body that calls a non-existent function: the body errors at
+        // runtime, surfacing as MacroError::BodyFailed.
+        let src = r#"
+defmacro bad() do
+  no_such_function()
+end
+fn main() do bad() end
+"#;
+        let mut prog = parse(src);
+        let err = expand_program(&mut prog).unwrap_err();
+        match *err {
+            MacroError::BodyFailed { call_span, def_span, .. } => {
+                assert_ne!(call_span, Span::DUMMY,
+                    "BodyFailed should carry a real call_span");
+                let ds = def_span.expect("def_span should be populated");
+                let def_text = &src[ds.start as usize..ds.end as usize];
+                assert!(def_text.starts_with("defmacro bad"),
+                    "def_span should slice the defmacro decl, got {:?}", def_text);
+            }
+            other => panic!("expected BodyFailed, got {:?}", other),
         }
     }
 
