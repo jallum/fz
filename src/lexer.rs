@@ -1,5 +1,7 @@
 use std::fmt;
 
+use crate::diag::{FileId, Span};
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Tok {
     // literals
@@ -71,33 +73,39 @@ impl fmt::Display for Tok {
 #[derive(Debug, Clone)]
 pub struct Token {
     pub tok: Tok,
-    pub line: u32,
-    pub col: u32,
+    pub span: Span,
 }
 
 pub struct Lexer<'a> {
     src: &'a [u8],
     pos: usize,
-    line: u32,
-    col: u32,
+    file: FileId,
 }
 
 #[derive(Debug)]
 pub struct LexError {
     pub msg: String,
-    pub line: u32,
-    pub col: u32,
+    pub span: Span,
 }
 
 impl fmt::Display for LexError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "lex error at {}:{}: {}", self.line, self.col, self.msg)
+        // Transitional: no SourceMap available here. The .20.6 renderer
+        // turns LexError into a Diagnostic with proper location output.
+        write!(f, "lex error: {}", self.msg)
     }
 }
 
 impl<'a> Lexer<'a> {
+    /// Lex with the default FileId(0). Suitable for the single-source path
+    /// (`fz run <file>`). Multi-file paths (test_runner concatenating a
+    /// prelude with user source) use `with_file`.
     pub fn new(src: &'a str) -> Self {
-        Self { src: src.as_bytes(), pos: 0, line: 1, col: 1 }
+        Self::with_file(src, FileId(0))
+    }
+
+    pub fn with_file(src: &'a str, file: FileId) -> Self {
+        Self { src: src.as_bytes(), pos: 0, file }
     }
 
     fn peek(&self, off: usize) -> Option<u8> {
@@ -107,8 +115,11 @@ impl<'a> Lexer<'a> {
     fn bump(&mut self) -> Option<u8> {
         let c = self.peek(0)?;
         self.pos += 1;
-        if c == b'\n' { self.line += 1; self.col = 1; } else { self.col += 1; }
         Some(c)
+    }
+
+    fn span_from(&self, start: usize) -> Span {
+        Span::new(self.file, start as u32, self.pos as u32)
     }
 
     fn eat_while(&mut self, mut pred: impl FnMut(u8) -> bool) {
@@ -204,7 +215,12 @@ impl<'a> Lexer<'a> {
     }
 
     fn err(&self, msg: String) -> LexError {
-        LexError { msg, line: self.line, col: self.col }
+        // Caller's bump has typically already consumed the offending byte,
+        // so back up by one to underline the character itself rather than
+        // the position after it. At EOF (`pos == src.len()`), span is empty.
+        let end = self.pos as u32;
+        let start = if self.pos == 0 { 0 } else { end.saturating_sub(1) };
+        LexError { msg, span: Span::new(self.file, start, end) }
     }
 
     fn keyword_or_ident(name: String) -> Tok {
@@ -238,10 +254,9 @@ impl<'a> Lexer<'a> {
 
     pub fn next_token(&mut self) -> Result<Token, LexError> {
         self.skip_trivia();
-        let line = self.line;
-        let col = self.col;
+        let start = self.pos;
         let Some(c) = self.peek(0) else {
-            return Ok(Token { tok: Tok::Eof, line, col });
+            return Ok(Token { tok: Tok::Eof, span: self.span_from(start) });
         };
 
         let tok = match c {
@@ -333,7 +348,7 @@ impl<'a> Lexer<'a> {
             }
         };
 
-        Ok(Token { tok, line, col })
+        Ok(Token { tok, span: self.span_from(start) })
     }
 
     pub fn tokenize(mut self) -> Result<Vec<Token>, LexError> {
@@ -344,5 +359,70 @@ impl<'a> Lexer<'a> {
             out.push(t);
             if done { return Ok(out); }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::diag::SourceMap;
+
+    #[test]
+    fn tokens_carry_accurate_byte_spans() {
+        let src = "fn foo(x), do: x + 1";
+        let toks = Lexer::new(src).tokenize().expect("lex");
+        // Every non-Eof token's span text matches the lexeme we expect.
+        for t in &toks {
+            let slice = &src[t.span.start as usize..t.span.end as usize];
+            match &t.tok {
+                Tok::Fn => assert_eq!(slice, "fn"),
+                Tok::Ident(n) if n == "foo" => assert_eq!(slice, "foo"),
+                Tok::Ident(n) if n == "x" => assert_eq!(slice, "x"),
+                Tok::Int(1) => assert_eq!(slice, "1"),
+                Tok::Plus => assert_eq!(slice, "+"),
+                Tok::KwKey(k) if k == "do" => assert_eq!(slice, "do:"),
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn locate_resolves_to_correct_line() {
+        let src = "fn a(), do: 1\nfn b(), do: 2\n";
+        let mut sm = SourceMap::new();
+        let f = sm.add_file("t.fz", src);
+        let toks = Lexer::with_file(src, f).tokenize().expect("lex");
+        // Find the `b` ident; verify it locates to line 2.
+        let b = toks
+            .iter()
+            .find(|t| matches!(&t.tok, Tok::Ident(n) if n == "b"))
+            .expect("found b");
+        let loc = sm.locate(b.span);
+        assert_eq!(loc.line, 2);
+        assert_eq!(loc.col, 4);
+    }
+
+    #[test]
+    fn multi_file_spans_keep_their_file_id() {
+        let mut sm = SourceMap::new();
+        let a = sm.add_file("a.fz", "fn foo()");
+        let b = sm.add_file("b.fz", "fn bar()");
+        let toks_a = Lexer::with_file("fn foo()", a).tokenize().unwrap();
+        let toks_b = Lexer::with_file("fn bar()", b).tokenize().unwrap();
+        let foo = toks_a.iter().find(|t| matches!(&t.tok, Tok::Ident(n) if n == "foo")).unwrap();
+        let bar = toks_b.iter().find(|t| matches!(&t.tok, Tok::Ident(n) if n == "bar")).unwrap();
+        assert_eq!(foo.span.file, a);
+        assert_eq!(bar.span.file, b);
+        assert_eq!(sm.span_text(foo.span), "foo");
+        assert_eq!(sm.span_text(bar.span), "bar");
+    }
+
+    #[test]
+    fn lex_error_carries_span_at_offending_byte() {
+        let src = "fn `";
+        let err = Lexer::new(src).tokenize().expect_err("should fail");
+        // Backtick is at offset 3; err span points at it (or just after).
+        assert!(err.span.start <= 3 && err.span.end >= 3, "span={:?}", err.span);
+        assert_eq!(err.span.file, FileId(0));
     }
 }

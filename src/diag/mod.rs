@@ -1,0 +1,20 @@
+//! Diagnostic infrastructure (fz-ul4.20 arc).
+//!
+//! `span` and `source_map` are the .20.1 foundations: byte-offset Spans
+//! keyed by FileId, plus a SourceMap that owns the files and resolves
+//! display location on demand.
+//!
+//! Later children of .20 add the Diagnostic type (.20.5) and the renderer
+//! (.20.6) into this module.
+
+// API surface here is consumed progressively by .20.2-.20.8. Some methods
+// (Span::merge, SourceMap::locate, span_text) have no non-test caller in
+// the live pipeline yet; suppress the dead-code noise at module scope
+// rather than peppering #[allow] attributes per item.
+#![allow(dead_code)]
+
+pub mod source_map;
+pub mod span;
+
+pub use source_map::{Location, SourceFile, SourceMap};
+pub use span::{FileId, Span};

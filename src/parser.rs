@@ -108,13 +108,14 @@ fn flush_fn_groups(
 #[derive(Debug)]
 pub struct ParseError {
     pub msg: String,
-    pub line: u32,
-    pub col: u32,
+    pub span: crate::diag::Span,
 }
 
 impl std::fmt::Display for ParseError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "parse error at {}:{}: {}", self.line, self.col, self.msg)
+        // Transitional: no SourceMap available here. The .20.6 renderer
+        // turns ParseError into a Diagnostic with proper location output.
+        write!(f, "parse error: {}", self.msg)
     }
 }
 
@@ -134,13 +135,11 @@ impl Parser {
     fn peek_at(&self, off: usize) -> &Tok {
         self.toks.get(self.pos + off).map(|t| &t.tok).unwrap_or(&Tok::Eof)
     }
-    fn line_col(&self) -> (u32, u32) {
-        let t = &self.toks[self.pos];
-        (t.line, t.col)
+    fn cur_span(&self) -> crate::diag::Span {
+        self.toks[self.pos].span
     }
     fn err<T>(&self, msg: impl Into<String>) -> PR<T> {
-        let (line, col) = self.line_col();
-        Err(ParseError { msg: msg.into(), line, col })
+        Err(ParseError { msg: msg.into(), span: self.cur_span() })
     }
     fn bump(&mut self) -> Tok {
         let t = self.toks[self.pos].tok.clone();
@@ -1162,7 +1161,7 @@ fn expr_to_pattern(e: &Expr) -> PR<Pattern> {
         ),
         _ => return Err(ParseError {
             msg: format!("expression cannot be used as pattern: {:?}", e),
-            line: 0, col: 0,
+            span: crate::diag::Span::DUMMY,
         }),
     })
 }

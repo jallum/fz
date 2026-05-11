@@ -26,8 +26,9 @@
 //! on failure; the runner catches the error.
 
 use crate::ast::Item;
+use crate::diag::SourceMap;
 use crate::eval::Interp;
-use crate::lexer::Lexer;
+use crate::lexer::{Lexer, Tok, Token};
 use crate::macros::expand_program;
 use crate::parser::Parser;
 use crate::resolve::flatten_modules;
@@ -48,18 +49,44 @@ impl std::fmt::Display for TestRunError {
 }
 impl std::error::Error for TestRunError {}
 
+/// Concatenate two token streams, dropping the prelude's trailing Eof so
+/// the parser sees one stream. The user stream's Eof is kept as the real
+/// terminator.
+fn splice_token_streams(mut prelude: Vec<Token>, user: Vec<Token>) -> Vec<Token> {
+    while matches!(prelude.last().map(|t| &t.tok), Some(Tok::Eof)) {
+        prelude.pop();
+    }
+    prelude.extend(user);
+    prelude
+}
+
 pub fn run(path: &Path) -> Result<(), TestRunError> {
     let user_src = std::fs::read_to_string(path)
         .map_err(|e| TestRunError(format!("reading {}: {}", path.display(), e)))?;
-    run_str(&user_src)
+    run_named(&user_src, &path.display().to_string())
 }
 
 pub fn run_str(user_src: &str) -> Result<(), TestRunError> {
-    let combined = format!("{}\n{}", PRELUDE, user_src);
-    let toks = Lexer::new(&combined)
+    run_named(user_src, "<input>")
+}
+
+fn run_named(user_src: &str, user_name: &str) -> Result<(), TestRunError> {
+    // Lex prelude and user source separately into their own FileIds. Token
+    // spans then point at the *real* offsets in their respective files, so
+    // later stages render user-facing locations against the user's file
+    // (not against a synthetic prelude+user concat). Eofs are filtered
+    // between streams so the parser sees one continuous list.
+    let mut sm = SourceMap::new();
+    let prelude_id = sm.add_file("<prelude>", PRELUDE);
+    let user_id = sm.add_file(user_name, user_src);
+    let prelude_toks = Lexer::with_file(PRELUDE, prelude_id)
         .tokenize().map_err(|e| TestRunError(format!("{}", e)))?;
+    let user_toks = Lexer::with_file(user_src, user_id)
+        .tokenize().map_err(|e| TestRunError(format!("{}", e)))?;
+    let toks = splice_token_streams(prelude_toks, user_toks);
     let prog = Parser::new(toks)
         .parse_program().map_err(|e| TestRunError(format!("{}", e)))?;
+    let _ = sm; // SourceMap is the future home for renderer wiring (.20.7).
     let prog = flatten_modules(prog)
         .map_err(|e| TestRunError(format!("module: {}", e)))?;
     let mut prog = prog;
