@@ -4,14 +4,15 @@
   "blocks": [
     "fz-ul4.23.4.4"
   ],
+  "closed_at": "2026-05-11T21:28:51Z",
   "created": "2026-05-11T21:14:46Z",
   "description": "Move fz_halt and fz_print_value. fz_print_value depends on the render_* fns — keep them in ir_codegen.rs for now (their move is fz-ul4.23.4.3) and reach back via crate::ir_codegen::render_fz_value, etc.\n\nAfter fz-ul4.23.4.3 lands, this ticket's reach-back gets retargeted to fz_value::debug.\n\n## Acceptance\n\n- cargo test green.",
   "id": "fz-ul4.23.4.13",
   "labels": [],
   "parent": "fz-ul4.23.4",
   "priority": 3,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Extract halt + print FFI (fz_halt, fz_print_value)",
   "type": "task",
-  "updated_at": "2026-05-11T21:27:42Z"
+  "updated_at": "2026-05-11T21:28:51Z"
 }
