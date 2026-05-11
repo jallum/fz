@@ -130,7 +130,8 @@ fn type_fn(f: &FnIr, m: &Module) -> FnTypes {
                 | Term::CallClosure { .. }
                 | Term::TailCallClosure { .. }
                 | Term::Return(_)
-                | Term::Halt(_) => {
+                | Term::Halt(_)
+                | Term::Receive { .. } => {
                     // Inter-fn flow goes through separate FnIr continuations;
                     // intra-fn flow stops here.
                 }
@@ -415,6 +416,8 @@ fn type_builtin(bid: BuiltinId) -> Descr {
         Some(BuiltinKind::VecGet) => Descr::int().union(&Descr::float()),
         // fz-ul4.19.2: spawn/self both return a Pid (boxed Int for v1).
         Some(BuiltinKind::Spawn) | Some(BuiltinKind::SelfPid) => Descr::int(),
+        // fz-ul4.19.3: send returns the original message (any type).
+        Some(BuiltinKind::Send) => Descr::any(),
         None => Descr::any(),
     }
 }

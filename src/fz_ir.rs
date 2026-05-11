@@ -99,10 +99,14 @@ pub enum BuiltinKind {
     /// fz-ul4.19.2: self() -> pid. Returns the current task's pid as a
     /// boxed Int.
     SelfPid = 6,
+    /// fz-ul4.19.3: send(pid, msg) -> msg. Deep-copies msg into receiver's
+    /// heap, enqueues into receiver's mailbox, wakes receiver if Blocked.
+    /// Returns the original msg (sender side) so the caller can chain.
+    Send = 7,
 }
 
 impl BuiltinKind {
-    pub const ALL: [BuiltinKind; 7] = [
+    pub const ALL: [BuiltinKind; 8] = [
         Self::Print,
         Self::Assert,
         Self::AssertEq,
@@ -110,6 +114,7 @@ impl BuiltinKind {
         Self::VecGet,
         Self::Spawn,
         Self::SelfPid,
+        Self::Send,
     ];
 
     pub fn name(self) -> &'static str {
@@ -121,6 +126,7 @@ impl BuiltinKind {
             Self::VecGet => "vec_get",
             Self::Spawn => "spawn",
             Self::SelfPid => "self",
+            Self::Send => "send",
         }
     }
 
@@ -258,6 +264,20 @@ pub enum Term {
     },
     Return(Var),
     Halt(Var),
+    /// fz-ul4.19.3: receive next mailbox message; fire continuation with it
+    /// when one is available. If the mailbox is empty at the point of
+    /// Receive, the running task suspends (state = Blocked); the scheduler
+    /// resumes the task when a `send` delivers a message. On resume the
+    /// trampoline re-enters this same Term — fz_receive_attempt re-checks
+    /// the mailbox, now finds the message, and fires the continuation.
+    ///
+    /// The continuation receives one argument (the message) followed by
+    /// the captured Vars — exactly like Term::Call's continuation. No
+    /// `callee` field because receive has no source-language callee; it's
+    /// a scheduler-mediated rendezvous point.
+    Receive {
+        continuation: Cont,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -636,6 +656,7 @@ impl fmt::Display for Term {
             }
             Term::Return(v) => write!(f, "return {}", v),
             Term::Halt(v) => write!(f, "halt {}", v),
+            Term::Receive { continuation } => write!(f, "receive -> {}", continuation),
         }
     }
 }

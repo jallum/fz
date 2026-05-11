@@ -606,6 +606,174 @@ impl HeapVisitor for MarkVisitor {
     }
 }
 
+/// fz-ul4.19.3: Deep-copy `src` from `src_heap` into `dst_heap`,
+/// returning the FzValue that points into the destination. Shares of the
+/// same source object are preserved in the destination via a forwarding
+/// map (caller-supplied so multiple `deep_copy_value` calls during a
+/// single send can share state for nested message construction).
+///
+/// v1 HeapKind coverage:
+///   - List, Struct (covers tuples + closures by HeapKind classification),
+///     Bitstring, Float, Map: supported.
+///   - VecI64 / VecF64 / VecU8 / VecBit: supported (raw payload copy).
+///   - Closure: supported via Struct-style FzValue captured-slot walk.
+///
+/// Scalar leaves (Int, Atom, Special) pass through unchanged.
+pub fn deep_copy_value(
+    src: FzValue,
+    src_heap: &Heap,
+    dst_heap: &mut Heap,
+    forwarding: &mut std::collections::HashMap<*mut HeapHeader, *mut HeapHeader>,
+) -> FzValue {
+    let sp = match src.unbox_ptr() {
+        Some(p) => p,
+        None => return src, // non-Ptr scalar
+    };
+    if sp.is_null() {
+        return src;
+    }
+    if let Some(&dp) = forwarding.get(&sp) {
+        return FzValue(dp as u64);
+    }
+    let h = unsafe { &*sp };
+    let kind = HeapKind::from_u16(h.kind)
+        .unwrap_or_else(|| panic!("deep_copy: invalid HeapKind {:#x} at {:?}", h.kind, sp));
+    // Allocate the destination object up-front per-kind. Some kinds
+    // (List, Struct, Map, Closure) need a placeholder so we can record
+    // forwarding before recursing into children.
+    let dp: *mut HeapHeader = match kind {
+        HeapKind::List => {
+            // Placeholder cons; head/tail are filled below.
+            dst_heap.alloc_list_cons(FzValue::NIL, FzValue::NIL)
+        }
+        HeapKind::Struct => dst_heap.alloc_struct(h.schema_id),
+        HeapKind::Float => {
+            // Raw payload, no children; copy and short-circuit.
+            let f = Heap::read_float(sp);
+            let new_p = dst_heap.alloc_float(f);
+            forwarding.insert(sp, new_p);
+            return FzValue(new_p as u64);
+        }
+        HeapKind::Bitstring => {
+            let bit_len = unsafe { std::ptr::read((sp as *const u8).add(16) as *const u64) };
+            let bytes_len = (bit_len as usize).div_ceil(8);
+            let bytes =
+                unsafe { std::slice::from_raw_parts((sp as *const u8).add(24), bytes_len) };
+            let new_p = dst_heap.alloc_bitstring(bytes, bit_len);
+            forwarding.insert(sp, new_p);
+            return FzValue(new_p as u64);
+        }
+        HeapKind::Map => {
+            // Collect (k, v) pairs from src, deep-copy each, then alloc
+            // a Map in dst with the copied entries.
+            let count = unsafe { std::ptr::read((sp as *const u8).add(16) as *const u64) } as usize;
+            let cursor = unsafe { (sp as *const u8).add(24) as *const u64 };
+            let mut copied_entries: Vec<(FzValue, FzValue)> = Vec::with_capacity(count);
+            // Pre-register a placeholder forwarding so cycles don't loop;
+            // we don't actually have the dst ptr yet so use null as a
+            // sentinel. (Cycles through Maps require mutation, which fz
+            // doesn't have today; this is just defensive.)
+            let placeholder = std::ptr::null_mut();
+            forwarding.insert(sp, placeholder);
+            for i in 0..count {
+                let k_bits = unsafe { std::ptr::read(cursor.add(i * 2)) };
+                let v_bits = unsafe { std::ptr::read(cursor.add(i * 2 + 1)) };
+                let nk = deep_copy_value(FzValue(k_bits), src_heap, dst_heap, forwarding);
+                let nv = deep_copy_value(FzValue(v_bits), src_heap, dst_heap, forwarding);
+                copied_entries.push((nk, nv));
+            }
+            let new_p = dst_heap.alloc_map(&copied_entries);
+            forwarding.insert(sp, new_p);
+            return FzValue(new_p as u64);
+        }
+        HeapKind::Closure => {
+            // Captured FzValues at offset 16; count is in header.flags.
+            let captured_count = h.flags as usize;
+            let cursor = unsafe { (sp as *const u8).add(16) as *const FzValue };
+            let mut copied: Vec<FzValue> = Vec::with_capacity(captured_count);
+            // Defensive placeholder for cycles.
+            forwarding.insert(sp, std::ptr::null_mut());
+            for i in 0..captured_count {
+                let child = unsafe { std::ptr::read(cursor.add(i)) };
+                let nc = deep_copy_value(child, src_heap, dst_heap, forwarding);
+                copied.push(nc);
+            }
+            let new_p = dst_heap.alloc_closure(h.schema_id, &copied);
+            forwarding.insert(sp, new_p);
+            return FzValue(new_p as u64);
+        }
+        HeapKind::VecI64 => {
+            let len = Heap::vec_len(sp) as usize;
+            let payload = unsafe { (sp as *const u8).add(24) as *const i64 };
+            let v: Vec<i64> = (0..len).map(|i| unsafe { std::ptr::read(payload.add(i)) }).collect();
+            let new_p = dst_heap.alloc_vec_i64(&v);
+            forwarding.insert(sp, new_p);
+            return FzValue(new_p as u64);
+        }
+        HeapKind::VecU8 => {
+            let len = Heap::vec_len(sp) as usize;
+            let payload = unsafe { (sp as *const u8).add(24) };
+            let v: Vec<u8> = (0..len).map(|i| unsafe { *payload.add(i) }).collect();
+            let new_p = dst_heap.alloc_vec_u8(&v);
+            forwarding.insert(sp, new_p);
+            return FzValue(new_p as u64);
+        }
+        HeapKind::VecBit => {
+            let len = Heap::vec_len(sp) as usize;
+            let payload = unsafe { (sp as *const u8).add(24) };
+            let v: Vec<bool> = (0..len)
+                .map(|i| {
+                    let byte_idx = i / 8;
+                    let bit_idx = 7 - (i % 8);
+                    let byte = unsafe { *payload.add(byte_idx) };
+                    ((byte >> bit_idx) & 1) == 1
+                })
+                .collect();
+            let new_p = dst_heap.alloc_vec_bit(&v);
+            forwarding.insert(sp, new_p);
+            return FzValue(new_p as u64);
+        }
+        HeapKind::VecF64 => {
+            panic!("deep_copy_value: HeapKind::VecF64 not yet supported (see fz-ul4.11.23)");
+        }
+    };
+    forwarding.insert(sp, dp);
+    // Recurse into fields, writing copied children into dst slots.
+    match kind {
+        HeapKind::List => {
+            let cons = unsafe { &*(sp as *const ListCons) };
+            let new_head = deep_copy_value(cons.head, src_heap, dst_heap, forwarding);
+            let new_tail = deep_copy_value(cons.tail, src_heap, dst_heap, forwarding);
+            unsafe {
+                let cd = dp as *mut ListCons;
+                (*cd).head = new_head;
+                (*cd).tail = new_tail;
+            }
+        }
+        HeapKind::Struct => {
+            let registry = src_heap.schemas.borrow();
+            let schema = registry.get(h.schema_id);
+            for f in &schema.fields {
+                if let FieldKind::FzValue = f.kind {
+                    let off = 16 + f.offset as usize;
+                    let child = unsafe {
+                        std::ptr::read((sp as *const u8).add(off) as *const FzValue)
+                    };
+                    let copied = deep_copy_value(child, src_heap, dst_heap, forwarding);
+                    unsafe {
+                        std::ptr::write(
+                            (dp as *mut u8).add(off) as *mut FzValue,
+                            copied,
+                        );
+                    }
+                }
+            }
+        }
+        _ => unreachable!("scalar-only kinds returned early"),
+    }
+    FzValue(dp as u64)
+}
+
 /// fz-ul4.11.31: Walk a frame chain rooted at `cur` (raw *mut HeapHeader of
 /// the currently-running frame), emitting every FzValue slot found in any
 /// frame's schema. Frames link via cont_ptr at frame[16]; the first field

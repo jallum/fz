@@ -648,6 +648,25 @@ fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -> Result<Va
                     return cps_split_call_closure(ctx, local_var, arg_vars, sp);
                 }
             }
+            // fz-ul4.19.3: `receive(...)` is a Term, not a Prim — it's a
+            // scheduler-mediated yield point. After CPS-style splitting,
+            // it has the same continuation shape as Term::Call but no
+            // callee fn.
+            if callee_name == "receive" {
+                if !arg_vars.is_empty() {
+                    return Err(LowerError::Unsupported {
+                        span: sp,
+                        what: format!("receive/{} not supported (use receive/0)", arg_vars.len()),
+                    });
+                }
+                if is_tail {
+                    // Tail receive: the received message becomes the fn's
+                    // return value. Lower as receive into a synthetic
+                    // continuation that just Returns its arg.
+                    return cps_split_receive(ctx, sp, /* tail */ true);
+                }
+                return cps_split_receive(ctx, sp, /* tail */ false);
+            }
             // Builtin?
             if let Some(bid) = ctx.builtins.lookup(&callee_name) {
                 return Ok(ctx.let_at(Prim::Builtin(bid, arg_vars), sp));
@@ -822,6 +841,69 @@ fn cps_split_call_closure(
     ctx.env_order.clear();
     for ((name, _), nv) in captured.iter().zip(&cap_params) {
         ctx.bind(name, *nv);
+    }
+    Ok(result_param)
+}
+
+/// fz-ul4.19.3: lower a source-level `receive()` into Term::Receive,
+/// mirroring cps_split_call's continuation-building. The continuation
+/// receives one arg (the message) plus captured Vars.
+///
+/// For tail position (the source `receive()` is the last expression in a
+/// fn), the cont synthesizes `Return(msg)` so the message becomes the
+/// fn's return value. Otherwise the cont becomes a normal continuation
+/// that's resumed with the message bound to a Var.
+fn cps_split_receive(
+    ctx: &mut LowerCtx,
+    call_span: Span,
+    is_tail: bool,
+) -> Result<Var, LowerError> {
+    let captured = ctx.captured_snapshot();
+    let captured_vars: Vec<Var> = captured.iter().map(|(_, v)| *v).collect();
+    let cont_id = ctx.mb.fresh_fn_id();
+
+    // Terminate current block with Term::Receive.
+    ctx.set_term_at(
+        Term::Receive {
+            continuation: Cont {
+                fn_id: cont_id,
+                captured: captured_vars.clone(),
+            },
+        },
+        call_span,
+    );
+
+    // Finalize current fn.
+    let done = ctx.cur.take().unwrap().build();
+    ctx.mb.add_fn(done);
+
+    // Build the continuation fn. Same shape as cps_split_call's cont:
+    // entry params = [result_param, captured...].
+    let mut kbuilder = FnBuilder::new(cont_id, format!("k_receive_{}", cont_id.0));
+    let result_param = kbuilder.fresh_var();
+    let cap_params: Vec<Var> = captured.iter().map(|_| kbuilder.fresh_var()).collect();
+    let mut params = vec![result_param];
+    params.extend(cap_params.clone());
+    let entry = kbuilder.block(params);
+    ctx.cur = Some(kbuilder);
+    ctx.cur_fn_id = Some(cont_id);
+    ctx.fn_spans.insert(cont_id, call_span);
+    ctx.var_meta
+        .insert((cont_id, result_param), (call_span, String::new()));
+    ctx.cur_block = Some(entry);
+
+    // Rebind env: each captured name -> its new param Var.
+    ctx.env.clear();
+    ctx.env_order.clear();
+    for ((name, _), nv) in captured.iter().zip(&cap_params) {
+        ctx.bind(name, *nv);
+    }
+    if is_tail {
+        // Tail receive: synthesize `Return(msg)` immediately. The cont
+        // fn IS the post-receive fn for the parent; in tail position we
+        // just return the message.
+        ctx.set_term_at(Term::Return(result_param), call_span);
+        ctx.terminated = true;
     }
     Ok(result_param)
 }

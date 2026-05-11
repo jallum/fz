@@ -213,7 +213,16 @@ impl CompiledModule {
             let f: extern "C" fn(*mut u8, *mut u8) -> *mut u8 =
                 unsafe { std::mem::transmute(fn_ptr) };
             let ctx = CURRENT_PROCESS.with(|c| c.get()) as *mut u8;
-            cur = f(cur, ctx);
+            let next = f(cur, ctx);
+            // fz-ul4.19.3 yield sentinel: receive on empty mailbox sets
+            // process.state = Blocked and returns YIELD_PTR. Save the
+            // CURRENT frame (cur) as the resume point; the trampoline
+            // will re-enter fz_receive_attempt when the task is woken.
+            if next as u64 == YIELD_PTR {
+                process.next_frame = cur;
+                return;
+            }
+            cur = next;
         }
         process.next_frame = cur;
     }
@@ -1235,6 +1244,57 @@ extern "C" fn fz_self() -> u64 {
     FzValue::from_int(current_process().pid as i64).0
 }
 
+/// fz-ul4.19.3 YIELD_PTR: the trampoline recognizes this non-null return
+/// value as "task wants to suspend; resume at the same frame on next
+/// scheduling". 0x1 is not 16-aligned, so it can never be a real heap
+/// pointer.
+pub(crate) const YIELD_PTR: u64 = 0x1;
+
+/// fz_send(receiver_pid_bits, msg_bits) -> msg_bits.
+///
+/// Deep-copies msg into the receiver's heap, enqueues into receiver's
+/// mailbox, transitions receiver from Blocked to Ready (and re-enqueues)
+/// if it was waiting.
+///
+/// v1 limitations:
+/// - Receiver must be a task currently in the Runtime's task registry
+///   (panics otherwise).
+/// - deep_copy_value supports List, Struct (tuple/closure/map structurally
+///   covered), Bitstring, and scalars. Other HeapKinds panic with an
+///   explicit message; follow-up tickets extend coverage.
+extern "C" fn fz_send(receiver_pid_bits: u64, msg_bits: u64) -> u64 {
+    use crate::fz_value::FzValue;
+    let receiver_pid = FzValue(receiver_pid_bits)
+        .unbox_int()
+        .expect("send: pid not Int") as crate::ir_codegen::PidId;
+    crate::runtime::send_via_current_runtime(receiver_pid, FzValue(msg_bits));
+    msg_bits
+}
+
+/// fz_receive_attempt(cont_frame_ptr) -> next_frame_ptr.
+///
+/// If the current Process has a pending message: pop it, deep-copy is NOT
+/// needed (message is already in this process's heap — send copied it on
+/// arrival), write the msg bits into cont_frame[24] (the cont's first
+/// param), return cont_frame_ptr so the trampoline dispatches it.
+///
+/// If the mailbox is empty: set the Process state to Blocked, return
+/// YIELD_PTR. The trampoline parks the task at the receive's frame; on
+/// resume (via send), this fn is called again and now finds the message.
+extern "C" fn fz_receive_attempt(cont_frame_ptr: *mut u8) -> *mut u8 {
+    let p = current_process();
+    if let Some(msg) = p.mailbox.pop_front() {
+        unsafe {
+            let result_slot = cont_frame_ptr.add(24) as *mut u64;
+            std::ptr::write(result_slot, msg.0);
+        }
+        cont_frame_ptr
+    } else {
+        p.state = ProcessState::Blocked;
+        YIELD_PTR as *mut u8
+    }
+}
+
 /// Decode an FzValue (Int or boxed Float) into f64. Panics on other tags.
 fn fz_to_f64(bits: u64) -> f64 {
     use crate::fz_value::{FzValue, HeapKind, Tag};
@@ -1773,6 +1833,8 @@ pub fn compile(module: &Module) -> Result<CompiledModule, CodegenError> {
     builder.symbol("fz_tail_closure", fz_tail_closure as *const u8);
     builder.symbol("fz_spawn", fz_spawn as *const u8);
     builder.symbol("fz_self", fz_self as *const u8);
+    builder.symbol("fz_send", fz_send as *const u8);
+    builder.symbol("fz_receive_attempt", fz_receive_attempt as *const u8);
     let mut jmod = JITModule::new(builder);
 
     // Declare runtime imports.
@@ -1942,6 +2004,14 @@ pub fn compile(module: &Module) -> Result<CompiledModule, CodegenError> {
     let self_id = jmod
         .declare_function("fz_self", Linkage::Import, &self_sig)
         .map_err(|e| CodegenError::new(format!("declare self: {}", e)))?;
+    let send_sig = sig1(&[types::I64, types::I64], &[types::I64]);
+    let send_id = jmod
+        .declare_function("fz_send", Linkage::Import, &send_sig)
+        .map_err(|e| CodegenError::new(format!("declare send: {}", e)))?;
+    let receive_attempt_sig = sig1(&[types::I64], &[types::I64]);
+    let receive_attempt_id = jmod
+        .declare_function("fz_receive_attempt", Linkage::Import, &receive_attempt_sig)
+        .map_err(|e| CodegenError::new(format!("declare receive_attempt: {}", e)))?;
 
     // Per-fn signature: extern "C" fn(*mut u8, *mut u8) -> *mut u8.
     let fn_sig = sig1(&[types::I64, types::I64], &[types::I64]);
@@ -1996,6 +2066,8 @@ pub fn compile(module: &Module) -> Result<CompiledModule, CodegenError> {
         value_eq_id,
         spawn_id,
         self_id,
+        send_id,
+        receive_attempt_id,
     };
 
     // Register a heap Schema for every tuple arity used by MakeTuple, so the
@@ -2180,6 +2252,8 @@ struct RuntimeRefs {
     value_eq_id: FuncId,
     spawn_id: FuncId,
     self_id: FuncId,
+    send_id: FuncId,
+    receive_attempt_id: FuncId,
 }
 
 fn compile_fn(
@@ -2347,6 +2421,22 @@ fn compile_fn(
                     .collect();
                 emit_tail_call_closure(&mut b, jmod, runtime, frame_ptr, cl_val, &arg_vals);
             }
+            Term::Receive { continuation } => {
+                let cap_vals: Vec<ir::Value> = continuation
+                    .captured
+                    .iter()
+                    .map(|v| *var_map.get(&v.0).expect("unbound receive cont capture"))
+                    .collect();
+                emit_receive(
+                    &mut b,
+                    jmod,
+                    runtime,
+                    schemas,
+                    frame_ptr,
+                    continuation.fn_id.0,
+                    &cap_vals,
+                );
+            }
         }
     }
 
@@ -2448,6 +2538,54 @@ fn emit_call(
     }
 
     b.ins().return_(&[callee_frame]);
+}
+
+/// Term::Receive (fz-ul4.19.3). Allocate the continuation frame (just like
+/// Term::Call does for its cont) and hand it to fz_receive_attempt, which
+/// either pops a message and writes it into the cont's result slot
+/// (returning the cont frame, which the trampoline dispatches), or sets the
+/// current Process's state to Blocked and returns YIELD_PTR. The yield
+/// sentinel is `0x1` — never a valid heap-aligned pointer; the trampoline
+/// recognizes it and parks the task.
+fn emit_receive(
+    b: &mut FunctionBuilder<'_>,
+    jmod: &mut JITModule,
+    runtime: &RuntimeRefs,
+    schemas: &[Schema],
+    frame_ptr: ir::Value,
+    cont_fn_id: u32,
+    captured: &[ir::Value],
+) {
+    let alloc_fref = jmod.declare_func_in_func(runtime.alloc_id, b.func);
+
+    // Read my cont_ptr from current frame[16] (becomes the cont frame's
+    // cont_ptr — same shape as Term::Call).
+    let my_cont = b.ins().load(types::I64, MemFlags::trusted(), frame_ptr, HEADER_SIZE);
+
+    let cont_schema = &schemas[cont_fn_id as usize];
+    let sid = b.ins().iconst(types::I32, cont_fn_id as i64);
+    let sz = b.ins().iconst(types::I32, cont_schema.size as i64);
+    let inst = b.ins().call(alloc_fref, &[sid, sz]);
+    let cf = b.inst_results(inst)[0];
+    // Slot 0 (offset 16): cont_ptr.
+    b.ins().store(MemFlags::trusted(), my_cont, cf, HEADER_SIZE);
+    // Slot 1 (offset 24) is the result slot the message will land in;
+    // fz_receive_attempt writes it on a hit.
+    // Slots 2..: captured vars.
+    for (i, cv) in captured.iter().enumerate() {
+        let off = HEADER_SIZE + SLOT_BYTES * (2 + i as i32);
+        b.ins().store(MemFlags::trusted(), *cv, cf, off);
+    }
+
+    // Call fz_receive_attempt(cont_frame). Returns cont_frame on hit,
+    // YIELD_PTR (0x1) on empty mailbox.
+    let recv_fref = jmod.declare_func_in_func(runtime.receive_attempt_id, b.func);
+    let recv_inst = b.ins().call(recv_fref, &[cf]);
+    let result = b.inst_results(recv_inst)[0];
+    // Return whatever fz_receive_attempt returned. The trampoline
+    // interprets 0x1 as yield; any other non-null ptr is the next frame
+    // to dispatch.
+    b.ins().return_(&[result]);
 }
 
 /// Term::TailCall: if callee shares schema with caller, overwrite caller's
@@ -2766,6 +2904,16 @@ fn lower_prim(
                     }
                     let fref = jmod.declare_func_in_func(runtime.self_id, b.func);
                     let inst = b.ins().call(fref, &[]);
+                    b.inst_results(inst)[0]
+                }
+                BuiltinKind::Send => {
+                    if args.len() != 2 {
+                        return Err(CodegenError::new("send/2 expected"));
+                    }
+                    let pv = *env.get(&args[0].0).expect("unbound send pid");
+                    let mv = *env.get(&args[1].0).expect("unbound send msg");
+                    let fref = jmod.declare_func_in_func(runtime.send_id, b.func);
+                    let inst = b.ins().call(fref, &[pv, mv]);
                     b.inst_results(inst)[0]
                 }
             }

@@ -176,6 +176,14 @@ fn run(ctx: &InterpCtx, fn_id: FnId, args: Vec<Value>) -> Result<Value, String> 
                     .cloned()
                     .ok_or_else(|| format!("unbound halt var {}", v.0));
             }
+            Term::Receive { .. } => {
+                // fz-ul4.19.3: receive requires the JIT runtime's scheduler;
+                // the IR interpreter has no equivalent.
+                return Err(
+                    "Term::Receive requires the JIT runtime (not implemented in IR interp)"
+                        .into(),
+                );
+            }
         }
     }
 }
@@ -498,6 +506,7 @@ fn run_builtin(name: &str, args: &[Value]) -> Result<Value, String> {
         // the JIT path implements them via the Runtime.
         "spawn" => Err("spawn/1 requires the JIT runtime (not implemented in IR interp)".into()),
         "self" => Err("self/0 requires the JIT runtime (not implemented in IR interp)".into()),
+        "send" => Err("send/2 requires the JIT runtime (not implemented in IR interp)".into()),
         other => Err(format!("unknown builtin {}", other)),
     }
 }
