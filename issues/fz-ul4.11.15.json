@@ -10,7 +10,7 @@
   "labels": [],
   "parent": "fz-ul4.11",
   "priority": 3,
-  "status": "in_progress",
+  "status": "open",
   "title": "Frame inliner (performance optimization)",
   "type": "task",
   "updated_at": "2026-05-11T06:26:43Z"
