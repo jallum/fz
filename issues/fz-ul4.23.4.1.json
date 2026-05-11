@@ -4,14 +4,15 @@
   "blocks": [
     "fz-ul4.23.4.4"
   ],
+  "closed_at": "2026-05-11T21:17:26Z",
   "created": "2026-05-11T21:11:01Z",
   "description": "First extraction wedge. Move the simplest, most self-contained FFI cluster from ir_codegen.rs to a new src/ir_runtime.rs:\n\n  - fz_arith_{add,sub,mul,div,mod}\n  - fz_cmp_{lt,le,gt,ge}\n  - fz_value_eq\n  - Helpers: fz_to_f64, box_float, cmp_to_fz, eq_fz, eq_list,\n    eq_struct, eq_bitstring, eq_map, fz_key_category, fz_key_cmp\n\nThese have minimal cross-coupling to the rest of ir_codegen (no render_*, no Process scheduler fields beyond what's already pub or pub(crate)).\n\nir_codegen continues to reference them via `crate::ir_runtime::fz_*` in the symbol-binding list. No semantic change.\n\nOther FFI clusters land in sibling tickets (alloc, map, bs, vec, closure, spawn/send/receive, print, halt).\n\n## Acceptance\n\n- cargo test green.\n- ir_codegen.rs no longer defines these fns.\n- src/ir_runtime.rs exists and is mod-declared in main.rs.",
   "id": "fz-ul4.23.4.1",
   "labels": [],
   "parent": "fz-ul4.23.4",
   "priority": 3,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Extract arith/cmp/eq FFI cluster from ir_codegen.rs",
   "type": "task",
-  "updated_at": "2026-05-11T21:14:51Z"
+  "updated_at": "2026-05-11T21:17:26Z"
 }
