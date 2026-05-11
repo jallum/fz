@@ -4,14 +4,15 @@
   "blocks": [
     "fz-ul4.23.6.6"
   ],
+  "closed_at": "2026-05-11T22:29:10Z",
   "created": "2026-05-11T22:22:28Z",
   "description": "Discovered while landing fz-ul4.23.6.3. AOT-compiled binaries hit \\\"frame_sizes has no entry for fn_id N\\\" when running fixtures that call fz_alloc_frame_dyn — closures and tail-call-closures. The JIT path populates Process.frame_sizes from CompiledModule at make_process() time; the AOT shim's fz_aot_run does not.\n\nWorking in AOT today: add1, hello, cold_fn, tail_recursion, polymorphic.\nFailing: apply2, higher_order (and any other closure-heavy fixture).\n\n## Fix\n\nTwo viable approaches:\n\nA. Emit a per-program `fz_aot_frame_sizes()` extern fn that returns a static array of (fn_id, size) pairs. fz_aot_run copies them into Process.frame_sizes after Process::new.\n\nB. Emit the frame_sizes table as a global static const in the object, with a known symbol fz_aot_frame_sizes_data. fz_aot_run reads it at startup.\n\n(A) keeps the artifact API simple (one more fn-pointer arg to fz_aot_run); (B) keeps codegen simpler but requires emitting global data via cranelift_object::ObjectModule.\n\n## Acceptance\n\n- apply2.fz / higher_order.fz built via `fz build` runs cleanly and matches JIT/interp output.\n- A test_aot_closure unit test in src/ir_codegen.rs or in tests/ proves it.",
   "id": "fz-ul4.23.11",
   "labels": [],
   "parent": "fz-ul4.23",
   "priority": 3,
-  "status": "in_progress",
+  "status": "closed",
   "title": "AOT: populate Process.frame_sizes (closures via fz_alloc_frame_dyn)",
   "type": "task",
-  "updated_at": "2026-05-11T22:25:05Z"
+  "updated_at": "2026-05-11T22:29:10Z"
 }
