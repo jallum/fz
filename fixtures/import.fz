@@ -1,5 +1,5 @@
 # purpose: selective import — `import Math, only: [add: 2]`
-# paths:   jit, interp
+# paths:   jit, interp, aot
 
 defmodule Math do
   fn add(x, y), do: x + y
