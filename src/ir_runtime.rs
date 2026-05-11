@@ -21,6 +21,342 @@
 
 use crate::ir_codegen::current_process;
 
+// ===== Bitstring cluster (fz-ul4.23.4.9) =====
+
+pub(crate) extern "C" fn fz_bs_begin() {
+    current_process().bs_builder = Some(crate::bitstr::BitWriter::new());
+}
+
+/// Write one field into the active builder. Field-type tags match the order
+/// in `crate::ast::BitType`: Integer=0, Float=1, Binary=2, Bits=3, Utf8=4,
+/// Utf16=5, Utf32=6. `size_present` distinguishes None (0) vs Some (1);
+/// `size_value` is in size-units (multiplied by `unit` internally).
+#[allow(clippy::too_many_arguments)]
+pub(crate) extern "C" fn fz_bs_write_field(
+    value_bits: u64,
+    ty_tag: u32,
+    size_present: u32,
+    size_value: u32,
+    unit: u32,
+    endian_tag: u32,
+    signed: u32,
+) {
+    use crate::ast::BitType;
+    use crate::fz_value::{FzValue, HeapKind, Tag};
+    let ty = decode_bit_type(ty_tag);
+    let size = if size_present != 0 { Some(size_value) } else { None };
+    let endian = decode_endian(endian_tag);
+    // `signed` is irrelevant on write: two's-complement truncation produces
+    // the same bit pattern for signed and unsigned at fixed width. The flag
+    // is consumed on read (fz_bs_read_field) for sign extension.
+    let _ = signed;
+    {
+        let w = current_process()
+            .bs_builder
+            .as_mut()
+            .expect("fz_bs_write_field called without fz_bs_begin");
+        match ty {
+            BitType::Integer => {
+                let n = FzValue(value_bits)
+                    .unbox_int()
+                    .expect("integer bit field expects boxed int");
+                let total = size.unwrap_or(8) * unit;
+                assert!(total <= 64, "integer field too wide: {}", total);
+                let masked = if total < 64 {
+                    (n as u64) & ((1u64 << total) - 1)
+                } else {
+                    n as u64
+                };
+                let bswap = crate::bitstr::apply_endian_for_write(masked, total, endian);
+                w.write_bits(bswap, total as usize);
+            }
+            BitType::Binary | BitType::Bits => {
+                // Source must be a heap Bitstring (Vec(U8) lands in .11.14;
+                // until then both Binary and Bits read from a Bitstring).
+                let v = FzValue(value_bits);
+                let p = match v.tag() {
+                    Tag::Ptr => v.unbox_ptr().expect("binary field: bad ptr"),
+                    _ => panic!("binary/bits bit field expects heap bitstring"),
+                };
+                let header = unsafe { &*p };
+                if HeapKind::from_u16(header.kind) != Some(HeapKind::Bitstring) {
+                    panic!("binary/bits bit field source is not a Bitstring");
+                }
+                let src_bit_len = unsafe {
+                    std::ptr::read((p as *const u8).add(16) as *const u64)
+                } as usize;
+                let src_bytes_ptr = unsafe { (p as *const u8).add(24) };
+                let needed_bits = match (ty, size) {
+                    (BitType::Binary, None) => src_bit_len,
+                    (BitType::Binary, Some(n)) => (n * unit) as usize,
+                    (BitType::Bits, None) => src_bit_len,
+                    (BitType::Bits, Some(n)) => (n * unit) as usize,
+                    _ => unreachable!(),
+                };
+                assert!(needed_bits <= src_bit_len, "binary/bits field exceeds source");
+                let src_bytes = unsafe {
+                    std::slice::from_raw_parts(src_bytes_ptr, src_bit_len.div_ceil(8))
+                };
+                if needed_bits % 8 == 0 && w.bit_len % 8 == 0 {
+                    w.bytes.extend_from_slice(&src_bytes[..needed_bits / 8]);
+                    w.bit_len += needed_bits;
+                } else {
+                    let mut r = crate::bitstr::BitReader {
+                        bytes: src_bytes,
+                        bit_len: src_bit_len,
+                        pos: 0,
+                    };
+                    for _ in 0..needed_bits {
+                        w.append_bit(r.read_bit().unwrap());
+                    }
+                }
+            }
+            BitType::Utf8 | BitType::Utf16 | BitType::Utf32 => {
+                let cp = FzValue(value_bits)
+                    .unbox_int()
+                    .expect("utf field expects integer codepoint")
+                    as u32;
+                let bytes = match ty {
+                    BitType::Utf8 => crate::bitstr::encode_utf8(cp),
+                    BitType::Utf16 => crate::bitstr::encode_utf16(cp, endian),
+                    BitType::Utf32 => crate::bitstr::encode_utf32(cp, endian),
+                    _ => unreachable!(),
+                };
+                let bytes = bytes.expect("invalid codepoint");
+                w.write_bytes(&bytes);
+            }
+            BitType::Float => {
+                use crate::bitstr::apply_endian_for_write;
+                let total = size.unwrap_or(64) * unit;
+                if total != 32 && total != 64 {
+                    panic!("float bit field size must be 32 or 64, got {}", total);
+                }
+                // Decode the FzValue: Int unboxes to i64 then casts to f64;
+                // boxed Float reads payload directly. Then bit-cast and write.
+                let f = fz_to_f64(value_bits);
+                let raw: u64 = if total == 32 {
+                    (f as f32).to_bits() as u64
+                } else {
+                    f.to_bits()
+                };
+                let raw = apply_endian_for_write(raw, total, endian);
+                w.write_bits(raw, total as usize);
+            }
+        }
+    }
+}
+
+pub(crate) extern "C" fn fz_bs_finalize() -> u64 {
+    let w = current_process()
+        .bs_builder
+        .take()
+        .expect("fz_bs_finalize without fz_bs_begin");
+    let bit_len = w.bit_len as u64;
+    let bytes = w.bytes;
+    let p = current_process().heap.alloc_bitstring(&bytes, bit_len);
+    p as u64
+}
+
+fn decode_bit_type(t: u32) -> crate::ast::BitType {
+    use crate::ast::BitType;
+    match t {
+        0 => BitType::Integer,
+        1 => BitType::Float,
+        2 => BitType::Binary,
+        3 => BitType::Bits,
+        4 => BitType::Utf8,
+        5 => BitType::Utf16,
+        6 => BitType::Utf32,
+        _ => panic!("unknown bit type tag {}", t),
+    }
+}
+
+fn decode_endian(e: u32) -> crate::ast::Endian {
+    use crate::ast::Endian;
+    match e {
+        0 => Endian::Big,
+        1 => Endian::Little,
+        2 => Endian::Native,
+        _ => panic!("unknown endian tag {}", e),
+    }
+}
+
+/// Allocate a 3-tuple reader `[bs_ptr, bit_len_int, pos_int]` for an input
+/// bitstring. Schema id is set by compile() into BS_TUPLE_ARITY3_SCHEMA.
+pub(crate) extern "C" fn fz_bs_reader_init(bs_bits: u64) -> u64 {
+    use crate::fz_value::{FzValue, HeapKind, Tag};
+    let v = FzValue(bs_bits);
+    let p = match v.tag() {
+        Tag::Ptr => v.unbox_ptr().expect("reader_init: bad ptr"),
+        _ => panic!("reader_init expects heap value"),
+    };
+    let header = unsafe { &*p };
+    if HeapKind::from_u16(header.kind) != Some(HeapKind::Bitstring) {
+        panic!("reader_init source is not a Bitstring");
+    }
+    let bit_len = unsafe { std::ptr::read((p as *const u8).add(16) as *const u64) } as i64;
+    let arity3 = current_process()
+        .bs_tuple_arity3_schema
+        .expect("bs_tuple_arity3_schema not set");
+    let tuple_p = current_process().heap.alloc_struct(arity3);
+    unsafe {
+        let base = (tuple_p as *mut u8).add(16);
+        // [bs_ptr, bit_len_boxed, 0_boxed]
+        std::ptr::write(base as *mut u64, bs_bits);
+        std::ptr::write(base.add(8) as *mut u64, ((bit_len as u64) << 3) | 0b001);
+        std::ptr::write(base.add(16) as *mut u64, ((0i64 as u64) << 3) | 0b001);
+    }
+    tuple_p as u64
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) extern "C" fn fz_bs_read_field(
+    reader_bits: u64,
+    ty_tag: u32,
+    size_present: u32,
+    size_value: u32,
+    unit: u32,
+    endian_tag: u32,
+    signed: u32,
+    is_last: u32,
+) -> u64 {
+    use crate::ast::BitType;
+    use crate::bitstr::{apply_endian_for_read, sign_extend};
+    use crate::fz_value::{FzValue, HeapKind};
+    let ty = decode_bit_type(ty_tag);
+    let size = if size_present != 0 { Some(size_value) } else { None };
+    let endian = decode_endian(endian_tag);
+    let signed_b = signed != 0;
+    let is_last_b = is_last != 0;
+
+    // Decode reader tuple.
+    let v = FzValue(reader_bits);
+    let rp = v.unbox_ptr().expect("read_field: reader is not a ptr");
+    let bs_bits = unsafe { std::ptr::read((rp as *const u8).add(16) as *const u64) };
+    let bit_len = (FzValue(unsafe {
+        std::ptr::read((rp as *const u8).add(24) as *const u64)
+    }))
+    .unbox_int()
+    .unwrap() as usize;
+    let pos = (FzValue(unsafe {
+        std::ptr::read((rp as *const u8).add(32) as *const u64)
+    }))
+    .unbox_int()
+    .unwrap() as usize;
+
+    // Bytes pointer from bs.
+    let bs_v = FzValue(bs_bits);
+    let bsp = bs_v.unbox_ptr().expect("read_field: reader bs not a ptr");
+    let bs_header = unsafe { &*bsp };
+    if HeapKind::from_u16(bs_header.kind) != Some(HeapKind::Bitstring) {
+        panic!("read_field reader bs is not a Bitstring");
+    }
+    let bytes_ptr = unsafe { (bsp as *const u8).add(24) };
+    let bytes = unsafe { std::slice::from_raw_parts(bytes_ptr, bit_len.div_ceil(8)) };
+
+    // Failure path: alloc 1-tuple [false].
+    let arity1 = current_process()
+        .bs_tuple_arity1_schema
+        .expect("bs_tuple_arity1_schema not set");
+    let arity3 = current_process()
+        .bs_tuple_arity3_schema
+        .expect("bs_tuple_arity3_schema not set");
+    let fail = || -> u64 {
+        let p = current_process().heap.alloc_struct(arity1);
+        unsafe {
+            let base = (p as *mut u8).add(16);
+            std::ptr::write(base as *mut u64, FzValue::FALSE.0);
+        }
+        p as u64
+    };
+
+    let mut r = crate::bitstr::BitReader { bytes, bit_len, pos };
+
+    let (extracted_bits, consumed) = match ty {
+        BitType::Integer => {
+            let total = size.unwrap_or(8) * unit;
+            if total > 64 { return fail(); }
+            let raw = match r.read_bits(total as usize) {
+                Some(v) => v,
+                None => return fail(),
+            };
+            let raw = apply_endian_for_read(raw, total, endian);
+            let n: i64 = if signed_b { sign_extend(raw, total) } else { raw as i64 };
+            (FzValue::from_int(n).0, total as usize)
+        }
+        BitType::Binary | BitType::Bits => {
+            let needed_bits = match (ty, size, is_last_b) {
+                (BitType::Binary, None, true) | (BitType::Bits, None, true) => bit_len - pos,
+                (BitType::Binary, None, false) => return fail(), // size required
+                (BitType::Bits, None, false) => return fail(),
+                (BitType::Binary, Some(n), _) => (n * unit) as usize,
+                (BitType::Bits, Some(n), _) => (n * unit) as usize,
+                _ => unreachable!(),
+            };
+            if pos + needed_bits > bit_len { return fail(); }
+            // Build a fresh Bitstring from the slice. Always copy for v1
+            // (zero-copy slicing deferred — see ticket "Open").
+            let mut sub_bytes = Vec::with_capacity(needed_bits.div_ceil(8));
+            let mut w = crate::bitstr::BitWriter::new();
+            for _ in 0..needed_bits {
+                w.append_bit(r.read_bit().unwrap());
+            }
+            sub_bytes.extend_from_slice(&w.bytes);
+            let new_bs = current_process()
+                .heap
+                .alloc_bitstring(&sub_bytes, needed_bits as u64);
+            let new_bs_bits = new_bs as u64;
+            (new_bs_bits, needed_bits)
+        }
+        BitType::Float => {
+            let total = size.unwrap_or(64) * unit;
+            if total != 32 && total != 64 {
+                return fail();
+            }
+            let raw = match r.read_bits(total as usize) {
+                Some(v) => v,
+                None => return fail(),
+            };
+            let raw = apply_endian_for_read(raw, total, endian);
+            let f = if total == 32 {
+                f32::from_bits(raw as u32) as f64
+            } else {
+                f64::from_bits(raw)
+            };
+            let p = current_process().heap.alloc_float(f);
+            (p as u64, total as usize)
+        }
+        BitType::Utf8 | BitType::Utf16 | BitType::Utf32 => {
+            // UTF: read uses crate::bitstr::decode_utf*; not exercised by
+            // ticket tests, so panic to surface intent rather than partial.
+            panic!(
+                "BitReadField for {:?} not yet wired in JIT (lands with UTF support)",
+                ty
+            );
+        }
+    };
+
+    // Allocate fresh reader tuple [bs_bits, bit_len_boxed, new_pos_boxed].
+    let new_pos = (pos + consumed) as i64;
+    let new_reader_p = current_process().heap.alloc_struct(arity3);
+    unsafe {
+        let base = (new_reader_p as *mut u8).add(16);
+        std::ptr::write(base as *mut u64, bs_bits);
+        std::ptr::write(base.add(8) as *mut u64, ((bit_len as u64) << 3) | 0b001);
+        std::ptr::write(base.add(16) as *mut u64, ((new_pos as u64) << 3) | 0b001);
+    }
+
+    // Allocate result tuple [true, extracted, new_reader].
+    let result_p = current_process().heap.alloc_struct(arity3);
+    unsafe {
+        let base = (result_p as *mut u8).add(16);
+        std::ptr::write(base as *mut u64, FzValue::TRUE.0);
+        std::ptr::write(base.add(8) as *mut u64, extracted_bits);
+        std::ptr::write(base.add(16) as *mut u64, new_reader_p as u64);
+    }
+    result_p as u64
+}
+
 // ===== Map cluster (fz-ul4.23.4.8) =====
 //
 // Maps use a heap-backed sorted-array layout. Build-time semantics: codegen
