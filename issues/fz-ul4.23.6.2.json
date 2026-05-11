@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-11T21:11:59Z",
+  "description": "Static-link a small Rust (or C) shim into AOT binaries that does what main.rs does today for `fz run`:\n\n  1. Build a Runtime around the compiled module\n  2. Spawn the fz `main` fn as the first process\n  3. Drive run_until_idle()\n  4. Exit with the Process halt_value\n\nLives in the existing fz-runtime crate (or a new fz-aot-runtime). Exposed as a C-symbol entry point so the linker can pick it up.\n\n## Acceptance\n\n- The shim compiles standalone.\n- Unit test in the runtime crate proves it can be linked and dispatched.",
+  "id": "fz-ul4.23.6.2",
+  "labels": [],
+  "parent": "fz-ul4.23.6",
+  "priority": 3,
+  "status": "open",
+  "title": "C startup shim: initialize Runtime, spawn fz main, run_until_idle",
+  "type": "task",
+  "updated_at": "2026-05-11T21:11:59Z"
+}
