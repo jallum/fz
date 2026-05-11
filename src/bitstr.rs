@@ -139,7 +139,7 @@ fn encode_bits(value: &Value, size: Option<u32>, unit: u32, writer: &mut BitWrit
 // Pattern matching (Pattern::Bitstring against a Value)
 // ----------------------------------------------------------------------
 
-pub fn match_bitstring(fields: &[BitField<Pattern>], value: &Value, env: &Env) -> bool {
+pub fn match_bitstring(fields: &[BitField<crate::ast::Spanned<Pattern>>], value: &Value, env: &Env) -> bool {
     let Some(mut reader) = BitReader::from_value(value) else { return false; };
     for (i, f) in fields.iter().enumerate() {
         let unit = f.spec.resolved_unit();
@@ -193,7 +193,7 @@ pub fn match_bitstring(fields: &[BitField<Pattern>], value: &Value, env: &Env) -
             BitType::Utf16 => match decode_utf16(&mut reader, f.spec.endian) { Some(c) => Value::Int(c as i64), None => return false },
             BitType::Utf32 => match decode_utf32(&mut reader, f.spec.endian) { Some(c) => Value::Int(c as i64), None => return false },
         };
-        if !match_pattern(&f.value, &extracted, env) { return false; }
+        if !match_pattern(&f.value.node, &extracted, env) { return false; }
     }
     reader.remaining() == 0
 }

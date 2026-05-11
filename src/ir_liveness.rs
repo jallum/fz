@@ -81,37 +81,21 @@ pub fn frame_offset_of_var(f: &FnIr, v: Var) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::{BinOp, Expr, FnClause, FnDef, Item, Pattern, Program};
     use crate::ir_lower::lower_program;
-    use std::rc::Rc;
+    use crate::lexer::Lexer;
+    use crate::parser::Parser;
 
-    fn fn_def(name: &str, clauses: Vec<FnClause>) -> Rc<Item> {
-        Rc::new(Item::Fn(FnDef {
-            name: name.into(),
-            clauses,
-            is_macro: false,
-            doc: None,
-        }))
-    }
-
-    fn cl(params: Vec<Pattern>, body: Expr) -> FnClause {
-        FnClause { params, guard: None, body }
-    }
-
-    fn lower_and_analyze(items: Vec<Rc<Item>>) -> Module {
-        let mut m = lower_program(&Program { items }).unwrap();
+    fn lower_and_analyze(src: &str) -> Module {
+        let toks = Lexer::new(src).tokenize().expect("lex");
+        let prog = Parser::new(toks).parse_program().expect("parse");
+        let mut m = lower_program(&prog).expect("lower");
         analyze_module(&mut m);
         m
     }
 
     #[test]
     fn simple_fn_has_only_continuation_slot() {
-        // fn f(x), do: x   — no calls, schema size = 8 (just cont ptr).
-        let f = fn_def(
-            "f",
-            vec![cl(vec![Pattern::Var("x".into())], Expr::Var("x".into()))],
-        );
-        let m = lower_and_analyze(vec![f]);
+        let m = lower_and_analyze("fn f(x), do: x");
         let f_ir = m.fn_by_name("f").unwrap();
         let s = &m.schemas[f_ir.frame_schema_id as usize];
         assert_eq!(s.fields.len(), 1, "expected only cont ptr slot");
@@ -121,23 +105,10 @@ mod tests {
 
     #[test]
     fn tail_call_only_fn_has_no_frame_growth() {
-        // fn caller(x), do: callee(x)        — tail call, no frame growth.
-        // fn callee(y), do: y                — no calls.
-        let caller = fn_def(
-            "caller",
-            vec![cl(
-                vec![Pattern::Var("x".into())],
-                Expr::Call(
-                    Box::new(Expr::Var("callee".into())),
-                    vec![Expr::Var("x".into())],
-                ),
-            )],
-        );
-        let callee = fn_def(
-            "callee",
-            vec![cl(vec![Pattern::Var("y".into())], Expr::Var("y".into()))],
-        );
-        let m = lower_and_analyze(vec![caller, callee]);
+        let m = lower_and_analyze(r#"
+fn caller(x), do: callee(x)
+fn callee(y), do: y
+"#);
         let caller_ir = m.fn_by_name("caller").unwrap();
         let s = &m.schemas[caller_ir.frame_schema_id as usize];
         assert_eq!(s.fields.len(), 1, "tail-only caller frame should be cont ptr only");
@@ -145,29 +116,12 @@ mod tests {
 
     #[test]
     fn non_tail_call_records_live_var_in_frame() {
-        // fn caller(x), do: callee(x) + 1   — `x` is captured in continuation.
-        let caller = fn_def(
-            "caller",
-            vec![cl(
-                vec![Pattern::Var("x".into())],
-                Expr::BinOp(
-                    BinOp::Add,
-                    Box::new(Expr::Call(
-                        Box::new(Expr::Var("callee".into())),
-                        vec![Expr::Var("x".into())],
-                    )),
-                    Box::new(Expr::Int(1)),
-                ),
-            )],
-        );
-        let callee = fn_def(
-            "callee",
-            vec![cl(vec![Pattern::Var("y".into())], Expr::Var("y".into()))],
-        );
-        let m = lower_and_analyze(vec![caller, callee]);
+        let m = lower_and_analyze(r#"
+fn caller(x), do: callee(x) + 1
+fn callee(y), do: y
+"#);
         let caller_ir = m.fn_by_name("caller").unwrap();
         let s = &m.schemas[caller_ir.frame_schema_id as usize];
-        // cont ptr + at least one live var (the param x captured in continuation).
         assert!(s.fields.len() >= 2, "expected captured var in caller frame, got {} fields", s.fields.len());
         assert_eq!(s.size as usize, s.fields.len() * 8);
         for (i, fd) in s.fields.iter().enumerate() {
@@ -178,30 +132,10 @@ mod tests {
 
     #[test]
     fn recursive_fn_records_live_locals_in_frame() {
-        // fn fact(0), do: 1
-        // fn fact(n), do: n * fact(n - 1)    — `n` lives across the call.
-        let f = fn_def(
-            "fact",
-            vec![
-                cl(vec![Pattern::Int(0)], Expr::Int(1)),
-                cl(
-                    vec![Pattern::Var("n".into())],
-                    Expr::BinOp(
-                        BinOp::Mul,
-                        Box::new(Expr::Var("n".into())),
-                        Box::new(Expr::Call(
-                            Box::new(Expr::Var("fact".into())),
-                            vec![Expr::BinOp(
-                                BinOp::Sub,
-                                Box::new(Expr::Var("n".into())),
-                                Box::new(Expr::Int(1)),
-                            )],
-                        )),
-                    ),
-                ),
-            ],
-        );
-        let m = lower_and_analyze(vec![f]);
+        let m = lower_and_analyze(r#"
+fn fact(0), do: 1
+fn fact(n), do: n * fact(n - 1)
+"#);
         let f_ir = m.fn_by_name("fact").unwrap();
         let s = &m.schemas[f_ir.frame_schema_id as usize];
         assert!(s.fields.len() >= 2, "fact frame should hold n across the recursive call");
@@ -209,15 +143,7 @@ mod tests {
 
     #[test]
     fn every_fn_in_module_gets_a_schema() {
-        let f = fn_def(
-            "f",
-            vec![cl(vec![Pattern::Var("x".into())], Expr::Var("x".into()))],
-        );
-        let g = fn_def(
-            "g",
-            vec![cl(vec![], Expr::Int(1))],
-        );
-        let m = lower_and_analyze(vec![f, g]);
+        let m = lower_and_analyze("fn f(x), do: x\nfn g(), do: 1");
         for fn_ir in &m.fns {
             assert!((fn_ir.frame_schema_id as usize) < m.schemas.len());
         }
@@ -226,29 +152,14 @@ mod tests {
 
     #[test]
     fn frame_offset_of_var_returns_slot_offset() {
-        let caller = fn_def(
-            "caller",
-            vec![cl(
-                vec![Pattern::Var("x".into())],
-                Expr::BinOp(
-                    BinOp::Add,
-                    Box::new(Expr::Call(
-                        Box::new(Expr::Var("callee".into())),
-                        vec![Expr::Var("x".into())],
-                    )),
-                    Box::new(Expr::Int(1)),
-                ),
-            )],
-        );
-        let callee = fn_def(
-            "callee",
-            vec![cl(vec![Pattern::Var("y".into())], Expr::Var("y".into()))],
-        );
-        let m = lower_and_analyze(vec![caller, callee]);
+        let m = lower_and_analyze(r#"
+fn caller(x), do: callee(x) + 1
+fn callee(y), do: y
+"#);
         let caller_ir = m.fn_by_name("caller").unwrap();
         let live = collect_live_across_calls(caller_ir);
         assert!(!live.is_empty());
         let off = frame_offset_of_var(caller_ir, live[0]).unwrap();
-        assert_eq!(off, 8); // first live slot, after the cont ptr.
+        assert_eq!(off, 8);
     }
 }

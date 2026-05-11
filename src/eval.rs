@@ -227,7 +227,7 @@ impl Interp {
             let frame = c.env.child();
             let mut all_match = true;
             for (p, v) in clause.params.iter().zip(args.iter()) {
-                if !match_pattern(p, v, &frame) { all_match = false; break; }
+                if !match_pattern(&p.node, v, &frame) { all_match = false; break; }
             }
             if !all_match { continue; }
             if let Some(g) = &clause.guard {
@@ -244,8 +244,8 @@ impl Interp {
         ))
     }
 
-    pub fn eval(&self, e: &Expr, env: &Env) -> EvalResult {
-        match e {
+    pub fn eval(&self, e: &Spanned<Expr>, env: &Env) -> EvalResult {
+        match &e.node {
             Expr::Int(n)     => Ok(Value::Int(*n)),
             Expr::Float(f)   => Ok(Value::Float(*f)),
             Expr::Str(s)     => Ok(Value::Str(Rc::from(s.as_str()))),
@@ -318,7 +318,6 @@ impl Interp {
                 Ok(writer.finalize())
             }
             Expr::Call(f, args) => {
-                // Pipe lowering happens in BinOp; here we just have direct calls.
                 let callee = self.eval(f, env)?;
                 let mut vs = Vec::with_capacity(args.len());
                 for a in args { vs.push(self.eval(a, env)?); }
@@ -327,10 +326,8 @@ impl Interp {
             Expr::Dot(_, _) => Err("module access not implemented".into()),
             Expr::BinOp(op, l, r) => {
                 if *op == BinOp::Pipe {
-                    // a |> f(args)  ==  f(a, args)
-                    // a |> f         ==  f(a)
                     let lv = self.eval(l, env)?;
-                    return match &**r {
+                    return match &r.node {
                         Expr::Call(callee, args) => {
                             let cv = self.eval(callee, env)?;
                             let mut vs = Vec::with_capacity(args.len() + 1);
@@ -379,7 +376,7 @@ impl Interp {
                 let sv = self.eval(scrut, env)?;
                 for cl in clauses {
                     let frame = env.child();
-                    if !match_pattern(&cl.pattern, &sv, &frame) { continue; }
+                    if !match_pattern(&cl.pattern.node, &sv, &frame) { continue; }
                     if let Some(g) = &cl.guard {
                         let gv = self.eval(g, &frame)?;
                         if !is_truthy(&gv) { continue; }
@@ -395,11 +392,10 @@ impl Interp {
                     match b {
                         WithBinding::Match(pat, e) => {
                             let v = self.eval(e, &frame)?;
-                            if !match_pattern(pat, &v, &frame) {
-                                // Failed match: try else clauses, fall back to value itself
+                            if !match_pattern(&pat.node, &v, &frame) {
                                 for cl in else_clauses {
                                     let f2 = frame.child();
-                                    if !match_pattern(&cl.pattern, &v, &f2) { continue; }
+                                    if !match_pattern(&cl.pattern.node, &v, &f2) { continue; }
                                     if let Some(g) = &cl.guard {
                                         let gv = self.eval(g, &f2)?;
                                         if !is_truthy(&gv) { continue; }
@@ -419,7 +415,7 @@ impl Interp {
             }
             Expr::Match(pat, rhs) => {
                 let v = self.eval(rhs, env)?;
-                if !match_pattern(pat, &v, env) {
+                if !match_pattern(&pat.node, &v, env) {
                     return Err(format!("match failed: {}", v));
                 }
                 Ok(v)
@@ -437,6 +433,7 @@ impl Interp {
                         params: params.clone(),
                         guard: None,
                         body: (**body).clone(),
+                        span: e.span,
                     }],
                     env: env.clone(),
                 })))
@@ -449,18 +446,16 @@ impl Interp {
     /// Walk an Expr like `ast_value::expr_to_value`, but when an
     /// `Expr::Unquote(e)` is encountered, eval `e` in `env` and splice the
     /// resulting Value into the reified output.
-    fn reify_with_unquotes(&self, e: &Expr, env: &Env) -> EvalResult {
+    fn reify_with_unquotes(&self, e: &Spanned<Expr>, env: &Env) -> EvalResult {
         use crate::ast_value::expr_to_value;
-        match e {
+        match &e.node {
             Expr::Unquote(inner) => self.eval(inner, env),
 
-            // Vars hygiene-rename when a gensym table is active.
             Expr::Var(name) => Ok(reified_var(self.hygiene_rename(name))),
 
-            // `lhs = rhs` — the lhs Var participates in hygiene the same way.
             Expr::Match(pat, rhs) => {
                 use crate::ast::Pattern;
-                let lhs_name = match pat {
+                let lhs_name = match &pat.node {
                     Pattern::Var(n) => n.clone(),
                     _ => return Err("quote: only Pattern::Var on lhs of `=` in v1".into()),
                 };
@@ -488,7 +483,7 @@ impl Interp {
                 }
             }
             Expr::Call(callee, args) => {
-                let name = match &**callee {
+                let name = match &callee.node {
                     Expr::Var(n) => n.clone(),
                     _ => return Err("quote: only direct named calls supported".into()),
                 };

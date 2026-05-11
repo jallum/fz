@@ -14,6 +14,11 @@
 //! (Case/Cond/With/Lambda/Maps/Bitstrings/VecLits/cons-tail List/general
 //! Pattern) get filed as follow-up if .10.3 needs them.
 //!
+//! Span policy (post-.20.2): `expr_to_value` ignores spans (Values are
+//! span-less runtime data). `value_to_expr` produces `Span::DUMMY` on
+//! every decoded node — `.20.3` is responsible for stamping
+//! `SpanOrigin::Expanded` lineage at the macro call site.
+//!
 //! Examples:
 //!   42                  -> Value::Int(42)
 //!   :ok                 -> Value::Atom("ok")
@@ -27,17 +32,16 @@
 //!   x = 1               -> {:=, %{}, [{:x,_,_}, 1]}
 
 use crate::ast::*;
+use crate::diag::Span;
 use crate::value::{FzMap, Value};
 use std::rc::Rc;
 
-/// Context atom attached to vars introduced by the user (vs gensymed by a
-/// macro, once .10.4 lands). The exact value isn't observable yet; .10.4
-/// will distinguish gensymed vars by overriding it.
 const USER_CTX: &str = "user";
 
-/// Reify an `Expr` to a `Value`. Errors on constructs outside the v1 subset.
-pub fn expr_to_value(e: &Expr) -> Result<Value, String> {
-    Ok(match e {
+/// Reify a Spanned<Expr> to a Value. Spans are dropped — Values are runtime
+/// data and carry no syntax position.
+pub fn expr_to_value(e: &Spanned<Expr>) -> Result<Value, String> {
+    Ok(match &e.node {
         Expr::Int(n)   => Value::Int(*n),
         Expr::Float(f) => Value::Float(*f),
         Expr::Bool(b)  => Value::Bool(*b),
@@ -64,7 +68,7 @@ pub fn expr_to_value(e: &Expr) -> Result<Value, String> {
         }
 
         Expr::Call(callee, args) => {
-            let name = match &**callee {
+            let name = match &callee.node {
                 Expr::Var(n) => n.clone(),
                 _ => return Err("quote: only direct named calls supported in v1".into()),
             };
@@ -91,7 +95,6 @@ pub fn expr_to_value(e: &Expr) -> Result<Value, String> {
         Expr::If(c, t, els) => {
             let cv = expr_to_value(c)?;
             let tv = expr_to_value(t)?;
-            // Keyword list: [{:do, t}, {:else, e}] (else absent if None).
             let mut kw = vec![kv("do", tv)];
             if let Some(e) = els {
                 kw.push(kv("else", expr_to_value(e)?));
@@ -103,10 +106,7 @@ pub fn expr_to_value(e: &Expr) -> Result<Value, String> {
         }
 
         Expr::Match(pat, rhs) => {
-            // v1: only Pattern::Var supported. Other patterns require a
-            // separate pattern reifier — file follow-up under .10.3 if
-            // expansion turns out to need them.
-            let lhs = match pat {
+            let lhs = match &pat.node {
                 Pattern::Var(n) => ast_node(n, &[], Some(atom(USER_CTX))),
                 _ => return Err("quote: only Pattern::Var on lhs of `=` in v1".into()),
             };
@@ -115,23 +115,25 @@ pub fn expr_to_value(e: &Expr) -> Result<Value, String> {
         }
 
         Expr::Quote(_) | Expr::Unquote(_) => {
-            // Nested quotes — reachable in principle but the v1 expansion
-            // pass uses the eval-side reify_with_unquotes, not this fn,
-            // when an unquote needs splicing. Reject here so a stray
-            // top-level reify doesn't silently swallow either form.
             return Err("ast_value: quote/unquote must be evaluated, not reified".into());
         }
         Expr::Case(_, _) | Expr::Cond(_) | Expr::With(_, _, _)
         | Expr::Lambda(_, _) | Expr::Map(_) | Expr::MapUpdate(_, _)
         | Expr::Index(_, _) | Expr::Dot(_, _) | Expr::VecLit(_, _)
         | Expr::Bitstring(_) => {
-            return Err(format!("quote: unsupported expr variant in v1: {:?}", e));
+            return Err(format!("quote: unsupported expr variant in v1: {:?}", e.node));
         }
     })
 }
 
-/// Decode a reified `Value` back to an `Expr`. Inverse of `expr_to_value`.
-pub fn value_to_expr(v: &Value) -> Result<Expr, String> {
+/// Decode a reified Value back to a Spanned<Expr>. Every node has
+/// `span = Span::DUMMY` — the caller (.20.3) is responsible for stamping
+/// `SpanOrigin::Expanded` lineage at the macro call site.
+pub fn value_to_expr(v: &Value) -> Result<Spanned<Expr>, String> {
+    Ok(Spanned::dummy(value_to_expr_inner(v)?))
+}
+
+fn value_to_expr_inner(v: &Value) -> Result<Expr, String> {
     match v {
         Value::Int(n)    => Ok(Expr::Int(*n)),
         Value::Float(f)  => Ok(Expr::Float(*f)),
@@ -141,7 +143,6 @@ pub fn value_to_expr(v: &Value) -> Result<Expr, String> {
         Value::Str(s)    => Ok(Expr::Str(s.to_string())),
 
         Value::List(xs) => {
-            // Plain list literal — decode each element.
             let exprs = xs.iter()
                 .map(value_to_expr)
                 .collect::<Result<Vec<_>, _>>()?;
@@ -149,7 +150,6 @@ pub fn value_to_expr(v: &Value) -> Result<Expr, String> {
         }
 
         Value::Tuple(elems) if elems.len() == 2 => {
-            // Real 2-tuple — element-wise decode.
             Ok(Expr::Tuple(vec![
                 value_to_expr(&elems[0])?,
                 value_to_expr(&elems[1])?,
@@ -174,8 +174,6 @@ pub fn value_to_expr(v: &Value) -> Result<Expr, String> {
 
 fn atom(s: &str) -> Value { Value::Atom(Rc::from(s)) }
 
-/// Build an AST 3-tuple `{name, meta, args_or_ctx}`. `meta` is an empty map
-/// in v1; .10.2 may attach line/col.
 fn ast_node(name: &str, _meta: &[(String, Value)], args_or_ctx: Option<Value>) -> Value {
     let args = args_or_ctx.unwrap_or(atom(USER_CTX));
     Value::Tuple(Rc::new(vec![
@@ -189,31 +187,26 @@ fn kv(key: &str, val: Value) -> Value {
     Value::Tuple(Rc::new(vec![atom(key), val]))
 }
 
-fn reify_each(xs: &[Expr]) -> Result<Vec<Value>, String> {
+fn reify_each(xs: &[Spanned<Expr>]) -> Result<Vec<Value>, String> {
     xs.iter().map(expr_to_value).collect()
 }
 
-/// Decode an AST 3-tuple given its `head` (the name atom) and `tail` (args
-/// list, OR a context atom for vars).
 fn decode_ast_node(head: &Value, tail: &Value) -> Result<Expr, String> {
     let name: &str = match head {
         Value::Atom(s) => s,
         _ => return Err("decode: AST node head must be an atom".into()),
     };
 
-    // Var: tail is an atom (the context).
     if let Value::Atom(_) = tail {
         return Ok(Expr::Var(name.to_string()));
     }
 
-    // Otherwise tail must be a list of args.
     let args = match tail {
         Value::List(xs) => xs.clone(),
         _ => return Err(format!("decode: AST node {:?} expected list args, got {:?}", name, tail.kind())),
     };
 
     match name {
-        // Wrapped tuple of arity != 2.
         "{}" => {
             let elems = args.iter().map(value_to_expr).collect::<Result<Vec<_>, _>>()?;
             Ok(Expr::Tuple(elems))
@@ -234,16 +227,14 @@ fn decode_ast_node(head: &Value, tail: &Value) -> Result<Expr, String> {
             if args.len() != 2 {
                 return Err(format!("decode: `=` expects 2 args, got {}", args.len()));
             }
-            // LHS must be a Var-shaped 3-tuple.
-            let pat = match value_to_expr(&args[0])? {
-                Expr::Var(n) => Pattern::Var(n),
+            let pat = match value_to_expr_inner(&args[0])? {
+                Expr::Var(n) => Spanned { node: Pattern::Var(n), span: Span::DUMMY },
                 other => return Err(format!("decode: `=` lhs must be a var, got {:?}", other)),
             };
             let rhs = value_to_expr(&args[1])?;
             Ok(Expr::Match(pat, Box::new(rhs)))
         }
         _ => {
-            // Operators: try BinOp/UnOp before falling back to Call.
             if let Some(b) = binop_from_atom(name) {
                 if args.len() == 2 {
                     return Ok(Expr::BinOp(
@@ -256,21 +247,22 @@ fn decode_ast_node(head: &Value, tail: &Value) -> Result<Expr, String> {
             if let Some(u) = unop_from_atom(name, args.len()) {
                 return Ok(Expr::UnOp(u, Box::new(value_to_expr(&args[0])?)));
             }
-            // Named call.
             let arg_exprs = args.iter().map(value_to_expr).collect::<Result<Vec<_>, _>>()?;
-            Ok(Expr::Call(Box::new(Expr::Var(name.to_string())), arg_exprs))
+            Ok(Expr::Call(
+                Box::new(Spanned::dummy(Expr::Var(name.to_string()))),
+                arg_exprs,
+            ))
         }
     }
 }
 
-/// Pull `t`/`e` out of an `if` keyword list `[{:do, t}, {:else, e}]`.
-fn decode_if_kw(v: &Value) -> Result<(Expr, Option<Expr>), String> {
+fn decode_if_kw(v: &Value) -> Result<(Spanned<Expr>, Option<Spanned<Expr>>), String> {
     let entries = match v {
         Value::List(xs) => xs.clone(),
         _ => return Err("decode: `if` second arg must be a keyword list".into()),
     };
-    let mut t: Option<Expr> = None;
-    let mut e: Option<Expr> = None;
+    let mut t: Option<Spanned<Expr>> = None;
+    let mut e: Option<Spanned<Expr>> = None;
     for entry in entries.iter() {
         let pair = match entry {
             Value::Tuple(p) if p.len() == 2 => p,
@@ -313,15 +305,11 @@ fn binop_from_atom(s: &str) -> Option<BinOp> {
 
 pub fn unop_atom(op: UnOp) -> &'static str {
     match op {
-        UnOp::Neg => "neg", // distinct from binary "-" so the decoder can disambiguate by arity
+        UnOp::Neg => "neg",
         UnOp::Not => "not",
     }
 }
 
-/// `-` is overloaded between BinOp::Sub and UnOp::Neg. The decoder
-/// disambiguates by arg count: 2 args = sub, 1 arg = neg. We never emit
-/// `:-` from `expr_to_value` for unary; we use `:neg` to keep the wire
-/// shape unambiguous, matching the comment on `unop_atom`.
 fn unop_from_atom(s: &str, arity: usize) -> Option<UnOp> {
     if arity != 1 { return None; }
     match s {
@@ -331,7 +319,6 @@ fn unop_from_atom(s: &str, arity: usize) -> Option<UnOp> {
     }
 }
 
-// Helper for nicer error messages on Value.
 impl Value {
     fn kind(&self) -> &'static str {
         match self {
@@ -365,24 +352,19 @@ mod tests {
     use crate::lexer::Lexer;
     use crate::parser::Parser;
 
-    /// Parse a fz expression (wrapped in a fn body so the parser is happy)
-    /// and pull out the first body expr.
-    fn parse_expr(src: &str) -> Expr {
+    fn parse_expr(src: &str) -> Spanned<Expr> {
         let wrapped = format!("fn _t() do {} end", src);
         let toks = Lexer::new(&wrapped).tokenize().unwrap();
         let prog = Parser::new(toks).parse_program().unwrap();
         match &*prog.items[0] {
-            Item::Fn(d) => match &d.clauses[0].body {
+            Item::Fn(d) => match &d.clauses[0].body.node {
                 Expr::Block(xs) => xs[0].clone(),
-                other => other.clone(),
+                _ => d.clauses[0].body.clone(),
             }
             Item::Module(_) | Item::Alias { .. } | Item::Import { .. } | Item::MacroCall { .. } => panic!("test fixture should be a fn"),
         }
     }
 
-    /// Round-trip an expression: reify → decode → check shape. We don't
-    /// PartialEq Expr (Float has no Eq), so we re-reify the decoded form
-    /// and compare those Values.
     fn round_trip(src: &str) {
         let e = parse_expr(src);
         let v1 = expr_to_value(&e).expect("reify");
@@ -393,8 +375,6 @@ mod tests {
             src, debug_value(&v1), debug_value(&v2));
     }
 
-    /// Structural equality of two Values, sufficient for round-trip
-    /// comparisons (no closures/jits/refs in reified ASTs).
     fn value_struct_eq(a: &Value, b: &Value) -> bool {
         use Value::*;
         match (a, b) {
@@ -431,21 +411,26 @@ mod tests {
     #[test] fn binop_eq()       { round_trip("a == b"); }
     #[test]
     fn unop_not() {
-        let e = Expr::UnOp(UnOp::Not, Box::new(Expr::Bool(true)));
+        let e = Spanned::dummy(Expr::UnOp(UnOp::Not, Box::new(Spanned::dummy(Expr::Bool(true)))));
         let v = expr_to_value(&e).unwrap();
         let e2 = value_to_expr(&v).unwrap();
-        assert!(matches!(e2, Expr::UnOp(UnOp::Not, _)));
+        assert!(matches!(e2.node, Expr::UnOp(UnOp::Not, _)));
     }
     #[test] fn call()           { round_trip("foo(1, 2)"); }
     #[test] fn nested_call()    { round_trip("foo(bar(x), 2 + 3)"); }
     #[test]
     fn block() {
-        // Build directly — the parser folds top-level multi-stmt fn bodies
-        // into a Block, but our parse_expr helper unwraps to the first stmt.
-        let e = Expr::Block(vec![
-            Expr::Match(Pattern::Var("x".into()), Box::new(Expr::Int(1))),
-            Expr::BinOp(BinOp::Add, Box::new(Expr::Var("x".into())), Box::new(Expr::Int(2))),
-        ]);
+        let e = Spanned::dummy(Expr::Block(vec![
+            Spanned::dummy(Expr::Match(
+                Spanned::dummy(Pattern::Var("x".into())),
+                Box::new(Spanned::dummy(Expr::Int(1))),
+            )),
+            Spanned::dummy(Expr::BinOp(
+                BinOp::Add,
+                Box::new(Spanned::dummy(Expr::Var("x".into()))),
+                Box::new(Spanned::dummy(Expr::Int(2))),
+            )),
+        ]));
         let v = expr_to_value(&e).unwrap();
         let e2 = value_to_expr(&v).unwrap();
         assert!(value_struct_eq(&v, &expr_to_value(&e2).unwrap()));
@@ -454,15 +439,15 @@ mod tests {
     #[test] fn match_var()      { round_trip("x = 42"); }
     #[test]
     fn unop_neg() {
-        let e = Expr::UnOp(UnOp::Neg, Box::new(Expr::Int(5)));
+        let e = Spanned::dummy(Expr::UnOp(UnOp::Neg, Box::new(Spanned::dummy(Expr::Int(5)))));
         let v = expr_to_value(&e).unwrap();
         let e2 = value_to_expr(&v).unwrap();
-        assert!(matches!(e2, Expr::UnOp(UnOp::Neg, _)));
+        assert!(matches!(e2.node, Expr::UnOp(UnOp::Neg, _)));
     }
 
     #[test]
     fn unsupported_expr_errors_cleanly() {
-        let e = Expr::Lambda(vec![], Box::new(Expr::Int(0)));
+        let e = Spanned::dummy(Expr::Lambda(vec![], Box::new(Spanned::dummy(Expr::Int(0)))));
         assert!(expr_to_value(&e).is_err());
     }
 
@@ -490,12 +475,18 @@ mod tests {
 
     #[test]
     fn three_tuple_literal_is_wrapped() {
-        // `{1, 2, 3}` reifies as `{:"{}", %{}, [1, 2, 3]}` so the decoder
-        // can tell it apart from an AST 3-tuple.
         let e = parse_expr("{1, 2, 3}");
         let v = expr_to_value(&e).unwrap();
         let Value::Tuple(t) = &v else { panic!() };
         assert_eq!(t.len(), 3);
         assert!(matches!(&t[0], Value::Atom(s) if &**s == "{}"));
+    }
+
+    #[test]
+    fn decoded_nodes_carry_dummy_span() {
+        let e = parse_expr("foo(1)");
+        let v = expr_to_value(&e).unwrap();
+        let e2 = value_to_expr(&v).unwrap();
+        assert!(e2.span.is_dummy(), "value_to_expr must produce DUMMY-spanned nodes");
     }
 }

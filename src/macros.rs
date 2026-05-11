@@ -74,7 +74,7 @@ fn expand_item_list(
     let mut out: Vec<std::rc::Rc<Item>> = Vec::new();
     for item in items {
         match &*item {
-            Item::MacroCall { name, args, parent_module } => {
+            Item::MacroCall { name, name_span: _, args, parent_module, span: _ } => {
                 if !macros.contains(name) {
                     return Err(format!(
                         "item-level call `{}(...)` is not a defmacro", name));
@@ -110,8 +110,10 @@ fn expand_item_list(
                 let new_items = expand_item_list(m.items.clone(), interp, macros)?;
                 out.push(std::rc::Rc::new(Item::Module(ModuleDef {
                     name: m.name.clone(),
+                    name_span: m.name_span,
                     items: new_items,
                     moduledoc: m.moduledoc.clone(),
+                    span: m.span,
                 })));
             }
             _ => out.push(item.clone()),
@@ -143,11 +145,14 @@ pub fn value_to_items(v: &Value) -> Result<Vec<Item>, String> {
                         _ => return Err(":fn_def expects an atom name".into()),
                     };
                     let body = value_to_expr(&t[2])?;
+                    let span = crate::diag::Span::DUMMY;
                     Ok(vec![Item::Fn(FnDef {
                         name,
-                        clauses: vec![FnClause { params: vec![], guard: None, body }],
+                        name_span: span,
+                        clauses: vec![FnClause { params: vec![], guard: None, body, span }],
                         is_macro: false,
                         doc: None,
+                        span,
                     })])
                 }
                 other => Err(format!("unknown item tag :{}", other)),
@@ -217,7 +222,7 @@ pub fn collect_macros(prog: &Program) -> std::collections::HashSet<String> {
 }
 
 pub fn expand_expr(
-    e: &mut Expr,
+    e: &mut Spanned<Expr>,
     interp: &Interp,
     macros: &std::collections::HashSet<String>,
     depth: usize,
@@ -231,19 +236,13 @@ pub fn expand_expr(
 
     // Macro calls are handled BEFORE recursing into args — the macro
     // receives args quoted, not expanded.
-    if let Expr::Call(callee, args) = e {
-        if let Expr::Var(name) = &**callee {
+    if let Expr::Call(callee, args) = &mut e.node {
+        if let Expr::Var(name) = &callee.node {
             if macros.contains(name) {
                 let arg_vs = args.iter()
                     .map(expr_to_value)
                     .collect::<Result<Vec<_>, _>>()
                     .map_err(|e| format!("macro {} arg reification: {}", name, e))?;
-                // Activate a fresh hygiene table for this invocation so any
-                // `quote` inside the macro body gensyms the vars it
-                // introduces. Save/restore so nested macro expansions get
-                // their own table — though in practice nesting only
-                // happens via re-expansion of the *result*, after we've
-                // already cleared the table.
                 let prev = interp.gensym_table.borrow_mut().take();
                 *interp.gensym_table.borrow_mut() =
                     Some(std::collections::HashMap::new());
@@ -253,15 +252,18 @@ pub fn expand_expr(
                     .map_err(|e| format!("macro {} body: {}", name, e))?;
                 let new_e = value_to_expr(&ret)
                     .map_err(|e| format!("macro {} return decode: {}", name, e))?;
-                *e = new_e;
+                // Preserve the original call's span on the synthesized
+                // replacement. .20.3 will replace this with proper
+                // SpanOrigin::Expanded lineage.
+                let original_span = e.span;
+                *e = Spanned { node: new_e.node, span: original_span };
                 return expand_expr(e, interp, macros, depth + 1);
             }
         }
     }
 
     // Default: recurse into children.
-    match e {
-        // Leaves.
+    match &mut e.node {
         Expr::Int(_) | Expr::Float(_) | Expr::Str(_) | Expr::Atom(_)
         | Expr::Bool(_) | Expr::Nil | Expr::Var(_) => {}
 
@@ -336,10 +338,6 @@ pub fn expand_expr(
         Expr::Match(_, rhs) => expand_expr(rhs, interp, macros, depth)?,
         Expr::Lambda(_, body) => expand_expr(body, interp, macros, depth)?,
 
-        // Quote bodies are reified, not expanded — they live in the
-        // meta-language, not the object language. Unquote bodies are
-        // similarly left alone for v1 (a follow-up could expand them so
-        // unquote(some_macro_call(x)) works).
         Expr::Quote(_) | Expr::Unquote(_) => {}
     }
     Ok(())

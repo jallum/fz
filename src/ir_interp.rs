@@ -857,29 +857,14 @@ fn read_field(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::{BinOp as ABinOp, Expr, FnClause, FnDef, Item, Pattern, Program, UnOp as AUnOp};
-    use crate::ir_lower::{lower_program, AtomTable, BuiltinTable};
+    use crate::lexer::Lexer;
+    use crate::parser::Parser;
     use std::rc::Rc;
 
-    fn fn_def(name: &str, clauses: Vec<FnClause>) -> Rc<Item> {
-        Rc::new(Item::Fn(FnDef {
-            name: name.into(),
-            clauses,
-            is_macro: false,
-            doc: None,
-        }))
-    }
-
-    fn cl(params: Vec<Pattern>, body: Expr) -> FnClause {
-        FnClause { params, guard: None, body }
-    }
-
-    /// Lower a program and return (module, atom_names, builtin_names) ready
-    /// for the IR interp. The atom table after lowering has every interned
-    /// atom; the builtin table is the v1 stable set seeded by the lowerer.
-    fn lower_for_interp(items: Vec<Rc<Item>>) -> (Module, Vec<String>, Vec<String>) {
+    fn lower_for_interp(src: &str) -> (Module, Vec<String>, Vec<String>) {
         use crate::ir_lower::lower_program_full;
-        let prog = Program { items };
+        let toks = Lexer::new(src).tokenize().expect("lex");
+        let prog = Parser::new(toks).parse_program().expect("parse");
         let (module, atoms, _builtins) = lower_program_full(&prog).expect("lower failed");
         let builtins = vec![
             "print".to_string(),
@@ -887,129 +872,64 @@ mod tests {
             "assert_eq".to_string(),
             "assert_neq".to_string(),
         ];
-        let _ = AtomTable::default();
-        let _ = BuiltinTable::new();
         (module, atoms.names(), builtins)
     }
 
-    fn run_named(items: Vec<Rc<Item>>, name: &str, args: Vec<Value>) -> Result<Value, String> {
-        let (module, atoms, builtins) = lower_for_interp(items);
+    fn run_named(src: &str, name: &str, args: Vec<Value>) -> Result<Value, String> {
+        let (module, atoms, builtins) = lower_for_interp(src);
         let f = module.fn_by_name(name).expect("fn not found");
         run_fn_with(&module, f.id, args, &atoms, &builtins)
     }
 
     #[test]
     fn interp_const_int() {
-        let f = fn_def("f", vec![cl(vec![], Expr::Int(42))]);
-        let r = run_named(vec![f], "f", vec![]).unwrap();
+        let r = run_named("fn f(), do: 42", "f", vec![]).unwrap();
         assert!(matches!(r, Value::Int(42)));
     }
 
     #[test]
     fn interp_identity() {
-        let f = fn_def(
-            "id",
-            vec![cl(vec![Pattern::Var("x".into())], Expr::Var("x".into()))],
-        );
-        let r = run_named(vec![f], "id", vec![Value::Int(7)]).unwrap();
+        let r = run_named("fn id(x), do: x", "id", vec![Value::Int(7)]).unwrap();
         assert!(matches!(r, Value::Int(7)));
     }
 
     #[test]
     fn interp_binop_add() {
-        let f = fn_def(
-            "add1",
-            vec![cl(
-                vec![Pattern::Var("x".into())],
-                Expr::BinOp(
-                    ABinOp::Add,
-                    Box::new(Expr::Var("x".into())),
-                    Box::new(Expr::Int(1)),
-                ),
-            )],
-        );
-        let r = run_named(vec![f], "add1", vec![Value::Int(41)]).unwrap();
+        let r = run_named("fn add1(x), do: x + 1", "add1", vec![Value::Int(41)]).unwrap();
         assert!(matches!(r, Value::Int(42)));
     }
 
     #[test]
     fn interp_unop_neg() {
-        let f = fn_def(
-            "n",
-            vec![cl(
-                vec![Pattern::Var("x".into())],
-                Expr::UnOp(AUnOp::Neg, Box::new(Expr::Var("x".into()))),
-            )],
-        );
-        let r = run_named(vec![f], "n", vec![Value::Int(5)]).unwrap();
+        let r = run_named("fn n(x), do: -x", "n", vec![Value::Int(5)]).unwrap();
         assert!(matches!(r, Value::Int(-5)));
     }
 
     #[test]
     fn interp_if_then() {
-        // fn pos(x), do: if x > 0, do: 1, else: -1
-        let f = fn_def(
-            "pos",
-            vec![cl(
-                vec![Pattern::Var("x".into())],
-                Expr::If(
-                    Box::new(Expr::BinOp(
-                        ABinOp::Gt,
-                        Box::new(Expr::Var("x".into())),
-                        Box::new(Expr::Int(0)),
-                    )),
-                    Box::new(Expr::Int(1)),
-                    Some(Box::new(Expr::UnOp(AUnOp::Neg, Box::new(Expr::Int(1))))),
-                ),
-            )],
-        );
-        let r = run_named(vec![f.clone()], "pos", vec![Value::Int(5)]).unwrap();
+        let src = "fn pos(x), do: if x > 0, do: 1, else: -1";
+        let r = run_named(src, "pos", vec![Value::Int(5)]).unwrap();
         assert!(matches!(r, Value::Int(1)));
-        let r = run_named(vec![f], "pos", vec![Value::Int(-3)]).unwrap();
+        let r = run_named(src, "pos", vec![Value::Int(-3)]).unwrap();
         assert!(matches!(r, Value::Int(-1)));
     }
 
     #[test]
     fn interp_block_returns_last() {
-        let f = fn_def(
-            "b",
-            vec![cl(
-                vec![],
-                Expr::Block(vec![Expr::Int(1), Expr::Int(2), Expr::Int(3)]),
-            )],
-        );
-        let r = run_named(vec![f], "b", vec![]).unwrap();
+        let r = run_named("fn b() do\n  1\n  2\n  3\nend", "b", vec![]).unwrap();
         assert!(matches!(r, Value::Int(3)));
     }
 
     #[test]
     fn interp_tuple_construction_and_field_projection() {
-        // fn first({a, b}), do: a
-        let f = fn_def(
-            "first",
-            vec![cl(
-                vec![Pattern::Tuple(vec![
-                    Pattern::Var("a".into()),
-                    Pattern::Var("b".into()),
-                ])],
-                Expr::Var("a".into()),
-            )],
-        );
         let t = Value::Tuple(Rc::new(vec![Value::Int(10), Value::Int(20)]));
-        let r = run_named(vec![f], "first", vec![t]).unwrap();
+        let r = run_named("fn first({a, b}), do: a", "first", vec![t]).unwrap();
         assert!(matches!(r, Value::Int(10)));
     }
 
     #[test]
     fn interp_list_construction() {
-        let f = fn_def(
-            "l",
-            vec![cl(
-                vec![],
-                Expr::List(vec![Expr::Int(1), Expr::Int(2), Expr::Int(3)], None),
-            )],
-        );
-        let r = run_named(vec![f], "l", vec![]).unwrap();
+        let r = run_named("fn l(), do: [1, 2, 3]", "l", vec![]).unwrap();
         match r {
             Value::List(xs) => {
                 let xs = (*xs).clone();
@@ -1023,192 +943,56 @@ mod tests {
 
     #[test]
     fn interp_list_head_tail_pattern() {
-        // fn first_of([h | _]), do: h
-        let f = fn_def(
-            "first_of",
-            vec![cl(
-                vec![Pattern::List(
-                    vec![Pattern::Var("h".into())],
-                    Some(Box::new(Pattern::Wildcard)),
-                )],
-                Expr::Var("h".into()),
-            )],
-        );
         let lst = Value::List(Rc::new(vec![Value::Int(7), Value::Int(8)]));
-        let r = run_named(vec![f], "first_of", vec![lst]).unwrap();
+        let r = run_named("fn first_of([h | _]), do: h", "first_of", vec![lst]).unwrap();
         assert!(matches!(r, Value::Int(7)));
     }
 
     #[test]
     fn interp_multi_clause_factorial() {
-        // fn fact(0), do: 1
-        // fn fact(n), do: n * fact(n - 1)
-        let f = fn_def(
-            "fact",
-            vec![
-                cl(vec![Pattern::Int(0)], Expr::Int(1)),
-                cl(
-                    vec![Pattern::Var("n".into())],
-                    Expr::BinOp(
-                        ABinOp::Mul,
-                        Box::new(Expr::Var("n".into())),
-                        Box::new(Expr::Call(
-                            Box::new(Expr::Var("fact".into())),
-                            vec![Expr::BinOp(
-                                ABinOp::Sub,
-                                Box::new(Expr::Var("n".into())),
-                                Box::new(Expr::Int(1)),
-                            )],
-                        )),
-                    ),
-                ),
-            ],
-        );
-        let r = run_named(vec![f], "fact", vec![Value::Int(5)]).unwrap();
+        let src = "fn fact(0), do: 1\nfn fact(n), do: n * fact(n - 1)";
+        let r = run_named(src, "fact", vec![Value::Int(5)]).unwrap();
         assert!(matches!(r, Value::Int(120)), "got {:?}", super::kind(&r));
     }
 
     #[test]
     fn interp_tail_call() {
-        // fn caller(x), do: callee(x)
-        // fn callee(y), do: y + 1
-        let caller = fn_def(
-            "caller",
-            vec![cl(
-                vec![Pattern::Var("x".into())],
-                Expr::Call(
-                    Box::new(Expr::Var("callee".into())),
-                    vec![Expr::Var("x".into())],
-                ),
-            )],
-        );
-        let callee = fn_def(
-            "callee",
-            vec![cl(
-                vec![Pattern::Var("y".into())],
-                Expr::BinOp(
-                    ABinOp::Add,
-                    Box::new(Expr::Var("y".into())),
-                    Box::new(Expr::Int(1)),
-                ),
-            )],
-        );
-        let r = run_named(vec![caller, callee], "caller", vec![Value::Int(41)]).unwrap();
+        let src = "fn caller(x), do: callee(x)\nfn callee(y), do: y + 1";
+        let r = run_named(src, "caller", vec![Value::Int(41)]).unwrap();
         assert!(matches!(r, Value::Int(42)));
     }
 
     #[test]
     fn interp_cps_split_call_in_binop() {
-        // fn caller(x), do: callee(x) + 10
-        // fn callee(y), do: y * 2
-        let caller = fn_def(
-            "caller",
-            vec![cl(
-                vec![Pattern::Var("x".into())],
-                Expr::BinOp(
-                    ABinOp::Add,
-                    Box::new(Expr::Call(
-                        Box::new(Expr::Var("callee".into())),
-                        vec![Expr::Var("x".into())],
-                    )),
-                    Box::new(Expr::Int(10)),
-                ),
-            )],
-        );
-        let callee = fn_def(
-            "callee",
-            vec![cl(
-                vec![Pattern::Var("y".into())],
-                Expr::BinOp(
-                    ABinOp::Mul,
-                    Box::new(Expr::Var("y".into())),
-                    Box::new(Expr::Int(2)),
-                ),
-            )],
-        );
-        let r = run_named(vec![caller, callee], "caller", vec![Value::Int(5)]).unwrap();
+        let src = "fn caller(x), do: callee(x) + 10\nfn callee(y), do: y * 2";
+        let r = run_named(src, "caller", vec![Value::Int(5)]).unwrap();
         // callee(5) = 10; + 10 = 20.
         assert!(matches!(r, Value::Int(20)), "got {:?}", super::kind(&r));
     }
 
     #[test]
     fn interp_recursive_count_down() {
-        // fn count(0), do: 0
-        // fn count(n), do: count(n - 1)
-        let f = fn_def(
-            "count",
-            vec![
-                cl(vec![Pattern::Int(0)], Expr::Int(0)),
-                cl(
-                    vec![Pattern::Var("n".into())],
-                    Expr::Call(
-                        Box::new(Expr::Var("count".into())),
-                        vec![Expr::BinOp(
-                            ABinOp::Sub,
-                            Box::new(Expr::Var("n".into())),
-                            Box::new(Expr::Int(1)),
-                        )],
-                    ),
-                ),
-            ],
-        );
-        let r = run_named(vec![f], "count", vec![Value::Int(50)]).unwrap();
+        let src = "fn count(0), do: 0\nfn count(n), do: count(n - 1)";
+        let r = run_named(src, "count", vec![Value::Int(50)]).unwrap();
         assert!(matches!(r, Value::Int(0)));
     }
 
     #[test]
     fn interp_fib() {
-        // fn fib(0), do: 0
-        // fn fib(1), do: 1
-        // fn fib(n), do: fib(n - 1) + fib(n - 2)
-        let f = fn_def(
-            "fib",
-            vec![
-                cl(vec![Pattern::Int(0)], Expr::Int(0)),
-                cl(vec![Pattern::Int(1)], Expr::Int(1)),
-                cl(
-                    vec![Pattern::Var("n".into())],
-                    Expr::BinOp(
-                        ABinOp::Add,
-                        Box::new(Expr::Call(
-                            Box::new(Expr::Var("fib".into())),
-                            vec![Expr::BinOp(
-                                ABinOp::Sub,
-                                Box::new(Expr::Var("n".into())),
-                                Box::new(Expr::Int(1)),
-                            )],
-                        )),
-                        Box::new(Expr::Call(
-                            Box::new(Expr::Var("fib".into())),
-                            vec![Expr::BinOp(
-                                ABinOp::Sub,
-                                Box::new(Expr::Var("n".into())),
-                                Box::new(Expr::Int(2)),
-                            )],
-                        )),
-                    ),
-                ),
-            ],
-        );
-        let r = run_named(vec![f], "fib", vec![Value::Int(10)]).unwrap();
+        let src = r#"
+fn fib(0), do: 0
+fn fib(1), do: 1
+fn fib(n), do: fib(n - 1) + fib(n - 2)
+"#;
+        let r = run_named(src, "fib", vec![Value::Int(10)]).unwrap();
         assert!(matches!(r, Value::Int(55)), "got {:?}", super::kind(&r));
     }
 
     #[test]
     fn interp_pattern_match_falls_through() {
-        // fn classify(0), do: :zero
-        // fn classify(_), do: :other
-        let f = fn_def(
-            "classify",
-            vec![
-                cl(vec![Pattern::Int(0)], Expr::Atom("zero".into())),
-                cl(vec![Pattern::Wildcard], Expr::Atom("other".into())),
-            ],
-        );
-        // Atom ids are interned in lowering order: function_clause first
-        // (the multi-clause fail-block atom), then "zero", then "other".
-        let r0 = run_named(vec![f.clone()], "classify", vec![Value::Int(0)]).unwrap();
-        let r5 = run_named(vec![f], "classify", vec![Value::Int(5)]).unwrap();
+        let src = "fn classify(0), do: :zero\nfn classify(_), do: :other";
+        let r0 = run_named(src, "classify", vec![Value::Int(0)]).unwrap();
+        let r5 = run_named(src, "classify", vec![Value::Int(5)]).unwrap();
         match (&r0, &r5) {
             (Value::Atom(a), Value::Atom(b)) => {
                 assert_ne!(&**a, &**b, "two clauses should return distinct atoms");
@@ -1221,25 +1005,7 @@ mod tests {
 
     #[test]
     fn interp_builtin_assert_eq_passes() {
-        // fn t(), do: assert_eq(1 + 1, 2)
-        let f = fn_def(
-            "t",
-            vec![cl(
-                vec![],
-                Expr::Call(
-                    Box::new(Expr::Var("assert_eq".into())),
-                    vec![
-                        Expr::BinOp(
-                            ABinOp::Add,
-                            Box::new(Expr::Int(1)),
-                            Box::new(Expr::Int(1)),
-                        ),
-                        Expr::Int(2),
-                    ],
-                ),
-            )],
-        );
-        let r = run_named(vec![f], "t", vec![]).unwrap();
+        let r = run_named("fn t(), do: assert_eq(1 + 1, 2)", "t", vec![]).unwrap();
         match r {
             Value::Atom(s) => assert_eq!(&*s, "ok"),
             other => panic!("got {:?}", super::kind(&other)),
@@ -1248,70 +1014,23 @@ mod tests {
 
     #[test]
     fn interp_closure_construction() {
-        // fn mk(), do: fn(y) -> y + 1 end
-        // Result is a Value::IrClosure carrying the lambda's FnId + empty captured.
-        let f = fn_def(
-            "mk",
-            vec![cl(
-                vec![],
-                Expr::Lambda(
-                    vec![Pattern::Var("y".into())],
-                    Box::new(Expr::BinOp(
-                        ABinOp::Add,
-                        Box::new(Expr::Var("y".into())),
-                        Box::new(Expr::Int(1)),
-                    )),
-                ),
-            )],
-        );
-        let r = run_named(vec![f], "mk", vec![]).unwrap();
+        let r = run_named("fn mk(), do: fn(y) -> y + 1", "mk", vec![]).unwrap();
         match r {
-            Value::IrClosure(c) => {
-                assert!(c.captured.is_empty());
-            }
+            Value::IrClosure(c) => assert!(c.captured.is_empty()),
             other => panic!("expected IrClosure, got {:?}", super::kind(&other)),
         }
     }
 
     #[test]
     fn interp_closure_captures_and_invokes() {
-        // fn mk(x), do: fn(y) -> x + y end
-        // fn use(x, y), do: mk(x).(y)   ← lower as Block: f = mk(x); f(y)
-        let mk = fn_def(
-            "mk",
-            vec![cl(
-                vec![Pattern::Var("x".into())],
-                Expr::Lambda(
-                    vec![Pattern::Var("y".into())],
-                    Box::new(Expr::BinOp(
-                        ABinOp::Add,
-                        Box::new(Expr::Var("x".into())),
-                        Box::new(Expr::Var("y".into())),
-                    )),
-                ),
-            )],
-        );
-        // use(x, y) = let f = mk(x); f(y)
-        let use_fn = fn_def(
-            "use",
-            vec![cl(
-                vec![Pattern::Var("x".into()), Pattern::Var("y".into())],
-                Expr::Block(vec![
-                    Expr::Match(
-                        Pattern::Var("f".into()),
-                        Box::new(Expr::Call(
-                            Box::new(Expr::Var("mk".into())),
-                            vec![Expr::Var("x".into())],
-                        )),
-                    ),
-                    Expr::Call(
-                        Box::new(Expr::Var("f".into())),
-                        vec![Expr::Var("y".into())],
-                    ),
-                ]),
-            )],
-        );
-        let r = run_named(vec![mk, use_fn], "use", vec![Value::Int(10), Value::Int(32)]).unwrap();
+        let src = r#"
+fn mk(x), do: fn(y) -> x + y
+fn use_it(x, y) do
+  f = mk(x)
+  f(y)
+end
+"#;
+        let r = run_named(src, "use_it", vec![Value::Int(10), Value::Int(32)]).unwrap();
         assert!(matches!(r, Value::Int(42)), "got {:?}", super::kind(&r));
     }
 
@@ -1319,15 +1038,7 @@ mod tests {
 
     #[test]
     fn interp_vec_numeric_int() {
-        use crate::ast::VecKind;
-        let f = fn_def(
-            "v",
-            vec![cl(
-                vec![],
-                Expr::VecLit(VecKind::Numeric, vec![Expr::Int(1), Expr::Int(2), Expr::Int(3)]),
-            )],
-        );
-        let r = run_named(vec![f], "v", vec![]).unwrap();
+        let r = run_named("fn v(), do: ~v[1, 2, 3]", "v", vec![]).unwrap();
         match r {
             Value::Vec(super::FzVec::I64(xs)) => assert_eq!(&*xs, &[1, 2, 3]),
             other => panic!("got {:?}", super::kind(&other)),
@@ -1336,15 +1047,7 @@ mod tests {
 
     #[test]
     fn interp_vec_bytes() {
-        use crate::ast::VecKind;
-        let f = fn_def(
-            "v",
-            vec![cl(
-                vec![],
-                Expr::VecLit(VecKind::Bytes, vec![Expr::Int(255), Expr::Int(0)]),
-            )],
-        );
-        let r = run_named(vec![f], "v", vec![]).unwrap();
+        let r = run_named("fn v(), do: ~b[255, 0]", "v", vec![]).unwrap();
         match r {
             Value::Vec(super::FzVec::U8(xs)) => assert_eq!(&*xs, &[255, 0]),
             other => panic!("got {:?}", super::kind(&other)),
@@ -1353,15 +1056,7 @@ mod tests {
 
     #[test]
     fn interp_vec_bits() {
-        use crate::ast::VecKind;
-        let f = fn_def(
-            "v",
-            vec![cl(
-                vec![],
-                Expr::VecLit(VecKind::Bits, vec![Expr::Int(1), Expr::Int(0), Expr::Int(1)]),
-            )],
-        );
-        let r = run_named(vec![f], "v", vec![]).unwrap();
+        let r = run_named("fn v(), do: ~bits[1, 0, 1]", "v", vec![]).unwrap();
         match r {
             Value::Vec(super::FzVec::Bit(b)) => {
                 assert_eq!(b.len, 3);
@@ -1375,102 +1070,42 @@ mod tests {
 
     #[test]
     fn interp_map_construction_and_lookup() {
-        // fn m(), do: %{:k => 7}[:k]
-        let f = fn_def(
-            "m",
-            vec![cl(
-                vec![],
-                Expr::Index(
-                    Box::new(Expr::Map(vec![(Expr::Atom("k".into()), Expr::Int(7))])),
-                    Box::new(Expr::Atom("k".into())),
-                ),
-            )],
-        );
-        let r = run_named(vec![f], "m", vec![]).unwrap();
+        let r = run_named("fn m(), do: %{k: 7}[:k]", "m", vec![]).unwrap();
         assert!(matches!(r, Value::Int(7)));
     }
 
     #[test]
     fn interp_index_returns_nil_when_absent() {
-        let f = fn_def(
-            "m",
-            vec![cl(
-                vec![],
-                Expr::Index(
-                    Box::new(Expr::Map(vec![(Expr::Atom("k".into()), Expr::Int(7))])),
-                    Box::new(Expr::Atom("missing".into())),
-                ),
-            )],
-        );
-        let r = run_named(vec![f], "m", vec![]).unwrap();
+        let r = run_named("fn m(), do: %{k: 7}[:missing]", "m", vec![]).unwrap();
         assert!(matches!(r, Value::Nil));
     }
 
     #[test]
     fn interp_map_update() {
-        // fn u(), do: %{ %{:k => 1} | :k => 2 }[:k]
-        let f = fn_def(
-            "u",
-            vec![cl(
-                vec![],
-                Expr::Index(
-                    Box::new(Expr::MapUpdate(
-                        Box::new(Expr::Map(vec![(Expr::Atom("k".into()), Expr::Int(1))])),
-                        vec![(Expr::Atom("k".into()), Expr::Int(2))],
-                    )),
-                    Box::new(Expr::Atom("k".into())),
-                ),
-            )],
-        );
-        let r = run_named(vec![f], "u", vec![]).unwrap();
+        let r = run_named("fn u(), do: %{%{k: 1} | k: 2}[:k]", "u", vec![]).unwrap();
         assert!(matches!(r, Value::Int(2)));
     }
 
     #[test]
     fn interp_map_pattern_extracts_value() {
-        // fn first(%{:name => n}), do: n
-        let f = fn_def(
-            "first",
-            vec![cl(
-                vec![Pattern::Map(vec![(
-                    Pattern::Atom("name".into()),
-                    Pattern::Var("n".into()),
-                )])],
-                Expr::Var("n".into()),
-            )],
-        );
         let mut entries = FzMap::new();
         entries = entries.put(Value::Atom(Rc::from("name")), Value::Int(42));
-        let r = run_named(vec![f], "first", vec![Value::Map(Rc::new(entries))]).unwrap();
+        let r = run_named("fn first(%{name: n}), do: n", "first", vec![Value::Map(Rc::new(entries))]).unwrap();
         assert!(matches!(r, Value::Int(42)));
     }
 
     #[test]
     fn interp_case_dispatch() {
-        // fn c(x), do: case x do 0 -> :zero; _ -> :other end
-        let f = fn_def(
-            "c",
-            vec![cl(
-                vec![Pattern::Var("x".into())],
-                Expr::Case(
-                    Box::new(Expr::Var("x".into())),
-                    vec![
-                        crate::ast::MatchClause {
-                            pattern: Pattern::Int(0),
-                            guard: None,
-                            body: Expr::Atom("zero".into()),
-                        },
-                        crate::ast::MatchClause {
-                            pattern: Pattern::Wildcard,
-                            guard: None,
-                            body: Expr::Atom("other".into()),
-                        },
-                    ],
-                ),
-            )],
-        );
-        let r0 = run_named(vec![f.clone()], "c", vec![Value::Int(0)]).unwrap();
-        let r5 = run_named(vec![f], "c", vec![Value::Int(5)]).unwrap();
+        let src = r#"
+fn c(x) do
+  case x do
+    0 -> :zero
+    _ -> :other
+  end
+end
+"#;
+        let r0 = run_named(src, "c", vec![Value::Int(0)]).unwrap();
+        let r5 = run_named(src, "c", vec![Value::Int(5)]).unwrap();
         match (&r0, &r5) {
             (Value::Atom(a), Value::Atom(b)) => {
                 assert_eq!(&**a, "zero");
@@ -1482,82 +1117,38 @@ mod tests {
 
     #[test]
     fn interp_cond_first_truthy_wins() {
-        // fn c(x), do: cond do x > 0 -> :pos; true -> :nonpos end
-        let f = fn_def(
-            "c",
-            vec![cl(
-                vec![Pattern::Var("x".into())],
-                Expr::Cond(vec![
-                    (
-                        Expr::BinOp(
-                            ABinOp::Gt,
-                            Box::new(Expr::Var("x".into())),
-                            Box::new(Expr::Int(0)),
-                        ),
-                        Expr::Atom("pos".into()),
-                    ),
-                    (Expr::Bool(true), Expr::Atom("nonpos".into())),
-                ]),
-            )],
-        );
-        let r = run_named(vec![f.clone()], "c", vec![Value::Int(10)]).unwrap();
+        let src = r#"
+fn c(x) do
+  cond do
+    x > 0 -> :pos
+    true -> :nonpos
+  end
+end
+"#;
+        let r = run_named(src, "c", vec![Value::Int(10)]).unwrap();
         if let Value::Atom(a) = r { assert_eq!(&*a, "pos"); } else { panic!(); }
-        let r = run_named(vec![f], "c", vec![Value::Int(-1)]).unwrap();
+        let r = run_named(src, "c", vec![Value::Int(-1)]).unwrap();
         if let Value::Atom(a) = r { assert_eq!(&*a, "nonpos"); } else { panic!(); }
     }
 
     #[test]
     fn interp_with_success_threads_bindings() {
-        // fn w(), do: with {:ok, a} <- {:ok, 41} do a + 1 end
-        let f = fn_def(
-            "w",
-            vec![cl(
-                vec![],
-                Expr::With(
-                    vec![crate::ast::WithBinding::Match(
-                        Pattern::Tuple(vec![Pattern::Atom("ok".into()), Pattern::Var("a".into())]),
-                        Expr::Tuple(vec![Expr::Atom("ok".into()), Expr::Int(41)]),
-                    )],
-                    Box::new(Expr::BinOp(
-                        ABinOp::Add,
-                        Box::new(Expr::Var("a".into())),
-                        Box::new(Expr::Int(1)),
-                    )),
-                    vec![],
-                ),
-            )],
-        );
-        let r = run_named(vec![f], "w", vec![]).unwrap();
+        let r = run_named("fn w() do\n  with {:ok, a} <- {:ok, 41}, do: a + 1\nend", "w", vec![]).unwrap();
         assert!(matches!(r, Value::Int(42)));
     }
 
     #[test]
     fn interp_with_else_handles_failure() {
-        // fn w(), do:
-        //   with {:ok, _} <- {:error, :boom} do :unreached
-        //   else {:error, m} -> {:handled, m} end
-        let f = fn_def(
-            "w",
-            vec![cl(
-                vec![],
-                Expr::With(
-                    vec![crate::ast::WithBinding::Match(
-                        Pattern::Tuple(vec![Pattern::Atom("ok".into()), Pattern::Wildcard]),
-                        Expr::Tuple(vec![Expr::Atom("error".into()), Expr::Atom("boom".into())]),
-                    )],
-                    Box::new(Expr::Atom("unreached".into())),
-                    vec![crate::ast::MatchClause {
-                        pattern: Pattern::Tuple(vec![
-                            Pattern::Atom("error".into()),
-                            Pattern::Var("m".into()),
-                        ]),
-                        guard: None,
-                        body: Expr::Tuple(vec![Expr::Atom("handled".into()), Expr::Var("m".into())]),
-                    }],
-                ),
-            )],
-        );
-        let r = run_named(vec![f], "w", vec![]).unwrap();
+        let src = r#"
+fn w() do
+  with {:ok, _} <- {:error, :boom} do
+    :unreached
+  else
+    {:error, m} -> {:handled, m}
+  end
+end
+"#;
+        let r = run_named(src, "w", vec![]).unwrap();
         match r {
             Value::Tuple(xs) => {
                 assert_eq!(xs.len(), 2);
@@ -1570,19 +1161,7 @@ mod tests {
 
     #[test]
     fn interp_bitstring_round_trip_simple() {
-        use crate::ast::{BitField, BitFieldSpec};
-        // fn b(), do: <<0xA5::8>>
-        let f = fn_def(
-            "b",
-            vec![cl(
-                vec![],
-                Expr::Bitstring(vec![BitField {
-                    value: Expr::Int(0xA5),
-                    spec: BitFieldSpec::default(),
-                }]),
-            )],
-        );
-        let r = run_named(vec![f], "b", vec![]).unwrap();
+        let r = run_named("fn b(), do: <<0xA5>>", "b", vec![]).unwrap();
         match r {
             Value::Vec(super::FzVec::U8(b)) => assert_eq!(&*b, &[0xA5]),
             other => panic!("got {:?}", super::kind(&other)),
@@ -1591,60 +1170,20 @@ mod tests {
 
     #[test]
     fn interp_bitstring_pattern_extracts_int() {
-        use crate::ast::{BitField, BitFieldSpec};
-        // fn parse(<<a::8, b::8>>), do: a + b
-        let f = fn_def(
-            "parse",
-            vec![cl(
-                vec![Pattern::Bitstring(vec![
-                    BitField {
-                        value: Pattern::Var("a".into()),
-                        spec: BitFieldSpec::default(),
-                    },
-                    BitField {
-                        value: Pattern::Var("b".into()),
-                        spec: BitFieldSpec::default(),
-                    },
-                ])],
-                Expr::BinOp(
-                    ABinOp::Add,
-                    Box::new(Expr::Var("a".into())),
-                    Box::new(Expr::Var("b".into())),
-                ),
-            )],
-        );
         let bs = Value::Vec(super::FzVec::U8(Rc::new(vec![10, 32])));
-        let r = run_named(vec![f], "parse", vec![bs]).unwrap();
+        let r = run_named("fn parse(<<a, b>>), do: a + b", "parse", vec![bs]).unwrap();
         assert!(matches!(r, Value::Int(42)));
     }
 
     #[test]
     fn interp_bitstring_pattern_with_size_var() {
-        use crate::ast::{BitField, BitFieldSpec, BitSize, BitType};
-        // fn parse(<<n::8, payload::binary-size(n)>>), do: payload
-        let bin_spec = BitFieldSpec {
-            ty: BitType::Binary,
-            size: Some(BitSize::Var("n".into())),
-            endian: crate::ast::Endian::Big,
-            signed: false,
-            unit: None,
-        };
-        let f = fn_def(
-            "parse",
-            vec![cl(
-                vec![Pattern::Bitstring(vec![
-                    BitField {
-                        value: Pattern::Var("n".into()),
-                        spec: BitFieldSpec::default(),
-                    },
-                    BitField { value: Pattern::Var("payload".into()), spec: bin_spec },
-                ])],
-                Expr::Var("payload".into()),
-            )],
-        );
         // <<3, "abc">> = [3, 'a', 'b', 'c']
         let bs = Value::Vec(super::FzVec::U8(Rc::new(vec![3, b'a', b'b', b'c'])));
-        let r = run_named(vec![f], "parse", vec![bs]).unwrap();
+        let r = run_named(
+            "fn parse(<<n, payload::binary-size(n)>>), do: payload",
+            "parse",
+            vec![bs],
+        ).unwrap();
         match r {
             Value::Vec(super::FzVec::U8(b)) => assert_eq!(&*b, &[b'a', b'b', b'c']),
             other => panic!("got {:?}", super::kind(&other)),
@@ -1653,17 +1192,7 @@ mod tests {
 
     #[test]
     fn interp_builtin_assert_eq_fails() {
-        let f = fn_def(
-            "t",
-            vec![cl(
-                vec![],
-                Expr::Call(
-                    Box::new(Expr::Var("assert_eq".into())),
-                    vec![Expr::Int(1), Expr::Int(2)],
-                ),
-            )],
-        );
-        let err = run_named(vec![f], "t", vec![]).unwrap_err();
+        let err = run_named("fn t(), do: assert_eq(1, 2)", "t", vec![]).unwrap_err();
         assert!(err.contains("assert_eq failed"));
     }
 }

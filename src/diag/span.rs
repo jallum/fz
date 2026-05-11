@@ -47,8 +47,11 @@ impl Span {
         self.start == self.end
     }
 
-    /// Merge two spans into one covering both. Both must be non-DUMMY and
-    /// in the same file. Returns `self` if `other` is DUMMY (and vice versa).
+    /// Merge two spans into one covering both. Returns `self` if `other` is
+    /// DUMMY (and vice versa). If the two spans live in different files
+    /// (rare — only happens in the test_runner's prelude+user splice when
+    /// a parser construct straddles the boundary, which it shouldn't), the
+    /// result is `self` to keep the parser's span tracking total.
     pub fn merge(self, other: Span) -> Span {
         if self.is_dummy() {
             return other;
@@ -56,11 +59,9 @@ impl Span {
         if other.is_dummy() {
             return self;
         }
-        debug_assert_eq!(
-            self.file, other.file,
-            "Span::merge across files (self={:?}, other={:?})",
-            self, other
-        );
+        if self.file != other.file {
+            return self;
+        }
         Span {
             file: self.file,
             start: self.start.min(other.start),

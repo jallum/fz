@@ -6,19 +6,10 @@
 //! lookup, the widening operator for fixed-point termination, and the AST
 //! self-call predicate. None of these reach into pipeline state.
 //!
-//! Design choices preserved from the original driver, in case they need
-//! revisiting when the IR-shaped driver lands:
-//!
-//! - **Pattern types are over-approximated** when a scrutinee is a union of
-//!   tuple/list shapes (`pattern_bindings` falls back to `any` for a variable
-//!   bound under a union scrutinee). Single-shape scrutinees give precise
-//!   per-component types.
-//!
-//! - **Widening at K=3** is the termination guard for fixed-point inference
-//!   over recursive functions — singleton-type lattices have infinite
-//!   ascending chains, so growing literal-set axes (ints/floats/strs) widen
-//!   to their tops once iteration depth crosses the threshold. The `widen`
-//!   function applies it; callers decide when.
+//! Post-.20.2: Expr/Pattern children are wrapped in `Spanned<…>`. Helpers
+//! continue to operate on bare `&Expr` / `&Pattern` — callers unwrap via
+//! `.node` access — to keep the call-site syntax light at the consumer
+//! end. Each recursive step here unwraps spanned children explicitly.
 
 use crate::ast::*;
 use crate::types::*;
@@ -28,44 +19,42 @@ use crate::types::*;
 // ----------------------------------------------------------------------
 
 /// True if `e` syntactically contains a call to `name` (as `name(...)`).
-/// Used by the inference driver to decide whether a clause needs the
-/// self-narrowed snapshot pass.
 pub fn expr_calls_self(e: &Expr, name: &str) -> bool {
     match e {
         Expr::Call(callee, args) => {
-            if let Expr::Var(n) = &**callee {
+            if let Expr::Var(n) = &callee.node {
                 if n == name { return true; }
             }
-            expr_calls_self(callee, name) || args.iter().any(|a| expr_calls_self(a, name))
+            expr_calls_self(&callee.node, name) || args.iter().any(|a| expr_calls_self(&a.node, name))
         }
-        Expr::BinOp(_, l, r) => expr_calls_self(l, name) || expr_calls_self(r, name),
-        Expr::UnOp(_, x) => expr_calls_self(x, name),
-        Expr::If(c, t, els) => expr_calls_self(c, name)
-            || expr_calls_self(t, name)
-            || els.as_deref().is_some_and(|e| expr_calls_self(e, name)),
-        Expr::Case(s, cls) => expr_calls_self(s, name)
-            || cls.iter().any(|c| expr_calls_self(&c.body, name)
-                || c.guard.as_ref().is_some_and(|g| expr_calls_self(g, name))),
-        Expr::Cond(arms) => arms.iter().any(|(c, b)| expr_calls_self(c, name) || expr_calls_self(b, name)),
+        Expr::BinOp(_, l, r) => expr_calls_self(&l.node, name) || expr_calls_self(&r.node, name),
+        Expr::UnOp(_, x) => expr_calls_self(&x.node, name),
+        Expr::If(c, t, els) => expr_calls_self(&c.node, name)
+            || expr_calls_self(&t.node, name)
+            || els.as_deref().is_some_and(|e| expr_calls_self(&e.node, name)),
+        Expr::Case(s, cls) => expr_calls_self(&s.node, name)
+            || cls.iter().any(|c| expr_calls_self(&c.body.node, name)
+                || c.guard.as_ref().is_some_and(|g| expr_calls_self(&g.node, name))),
+        Expr::Cond(arms) => arms.iter().any(|(c, b)| expr_calls_self(&c.node, name) || expr_calls_self(&b.node, name)),
         Expr::With(bindings, body, els) => {
             bindings.iter().any(|b| match b {
-                WithBinding::Match(_, e) | WithBinding::Bare(e) => expr_calls_self(e, name),
-            }) || expr_calls_self(body, name)
-                || els.iter().any(|c| expr_calls_self(&c.body, name))
+                WithBinding::Match(_, e) | WithBinding::Bare(e) => expr_calls_self(&e.node, name),
+            }) || expr_calls_self(&body.node, name)
+                || els.iter().any(|c| expr_calls_self(&c.body.node, name))
         }
-        Expr::Match(_, rhs) => expr_calls_self(rhs, name),
-        Expr::Block(es) => es.iter().any(|e| expr_calls_self(e, name)),
-        Expr::Lambda(_, body) => expr_calls_self(body, name),
-        Expr::List(es, tail) => es.iter().any(|e| expr_calls_self(e, name))
-            || tail.as_deref().is_some_and(|e| expr_calls_self(e, name)),
-        Expr::Tuple(es) => es.iter().any(|e| expr_calls_self(e, name)),
-        Expr::VecLit(_, es) => es.iter().any(|e| expr_calls_self(e, name)),
-        Expr::Bitstring(fields) => fields.iter().any(|f| expr_calls_self(&f.value, name)),
-        Expr::Map(pairs) => pairs.iter().any(|(k, v)| expr_calls_self(k, name) || expr_calls_self(v, name)),
-        Expr::MapUpdate(b, pairs) => expr_calls_self(b, name)
-            || pairs.iter().any(|(k, v)| expr_calls_self(k, name) || expr_calls_self(v, name)),
-        Expr::Index(t, k) => expr_calls_self(t, name) || expr_calls_self(k, name),
-        Expr::Dot(e, _) => expr_calls_self(e, name),
+        Expr::Match(_, rhs) => expr_calls_self(&rhs.node, name),
+        Expr::Block(es) => es.iter().any(|e| expr_calls_self(&e.node, name)),
+        Expr::Lambda(_, body) => expr_calls_self(&body.node, name),
+        Expr::List(es, tail) => es.iter().any(|e| expr_calls_self(&e.node, name))
+            || tail.as_deref().is_some_and(|e| expr_calls_self(&e.node, name)),
+        Expr::Tuple(es) => es.iter().any(|e| expr_calls_self(&e.node, name)),
+        Expr::VecLit(_, es) => es.iter().any(|e| expr_calls_self(&e.node, name)),
+        Expr::Bitstring(fields) => fields.iter().any(|f| expr_calls_self(&f.value.node, name)),
+        Expr::Map(pairs) => pairs.iter().any(|(k, v)| expr_calls_self(&k.node, name) || expr_calls_self(&v.node, name)),
+        Expr::MapUpdate(b, pairs) => expr_calls_self(&b.node, name)
+            || pairs.iter().any(|(k, v)| expr_calls_self(&k.node, name) || expr_calls_self(&v.node, name)),
+        Expr::Index(t, k) => expr_calls_self(&t.node, name) || expr_calls_self(&k.node, name),
+        Expr::Dot(e, _) => expr_calls_self(&e.node, name),
         _ => false,
     }
 }
@@ -84,21 +73,21 @@ pub fn pattern_type(p: &Pattern) -> Descr {
         Pattern::Atom(a) => Descr::atom_lit(a.clone()),
         Pattern::Bool(_) => Descr::bool_t(),
         Pattern::Nil => Descr::nil(),
-        Pattern::Tuple(ps) => Descr::tuple_of(ps.iter().map(pattern_type).collect::<Vec<_>>()),
+        Pattern::Tuple(ps) => Descr::tuple_of(ps.iter().map(|p| pattern_type(&p.node)).collect::<Vec<_>>()),
         Pattern::List(heads, _tail) => {
             let elem = if heads.is_empty() {
                 Descr::any()
             } else {
-                heads.iter().fold(Descr::none(), |acc, p| acc.union(&pattern_type(p)))
+                heads.iter().fold(Descr::none(), |acc, p| acc.union(&pattern_type(&p.node)))
             };
             Descr::list_of(elem)
         }
-        Pattern::As(_, inner) => pattern_type(inner),
+        Pattern::As(_, inner) => pattern_type(&inner.node),
         Pattern::Map(pairs) => {
             let mut fields = std::collections::BTreeMap::new();
             for (kp, vp) in pairs {
-                if let Some(mk) = pattern_to_map_key(kp) {
-                    fields.insert(mk, pattern_type(vp));
+                if let Some(mk) = pattern_to_map_key(&kp.node) {
+                    fields.insert(mk, pattern_type(&vp.node));
                 }
             }
             if fields.is_empty() { Descr::map_top() } else { Descr::map_of(fields) }
@@ -118,18 +107,18 @@ fn extract(p: &Pattern, scrut: &Descr, out: &mut Vec<(String, Descr)>) {
         Pattern::Var(n) => out.push((n.clone(), scrut.clone())),
         Pattern::As(n, inner) => {
             out.push((n.clone(), scrut.clone()));
-            extract(inner, scrut, out);
+            extract(&inner.node, scrut, out);
         }
         Pattern::Tuple(ps) => {
             let comps = tuple_projections(scrut, ps.len());
             for (i, p) in ps.iter().enumerate() {
-                extract(p, &comps[i], out);
+                extract(&p.node, &comps[i], out);
             }
         }
         Pattern::List(heads, tail) => {
             let elem = list_element_type(scrut);
-            for h in heads { extract(h, &elem, out); }
-            if let Some(t) = tail { extract(t, scrut, out); }
+            for h in heads { extract(&h.node, &elem, out); }
+            if let Some(t) = tail { extract(&t.node, scrut, out); }
         }
         Pattern::Bitstring(fields) => {
             for f in fields {
@@ -139,20 +128,20 @@ fn extract(p: &Pattern, scrut: &Descr, out: &mut Vec<(String, Descr)>) {
                     BitType::Binary => Descr::vec_u8(),
                     BitType::Bits => Descr::vec_u8().union(&Descr::vec_bit()),
                 };
-                extract(&f.value, &scrut_for_field, out);
+                extract(&f.value.node, &scrut_for_field, out);
             }
         }
         Pattern::Map(pairs) => {
             for (kp, vp) in pairs {
-                let val_t = if let Some(mk) = pattern_to_map_key(kp) {
+                let val_t = if let Some(mk) = pattern_to_map_key(&kp.node) {
                     map_field_lookup(scrut, &mk).unwrap_or_else(Descr::any)
                 } else {
                     Descr::any()
                 };
-                extract(vp, &val_t, out);
+                extract(&vp.node, &val_t, out);
             }
         }
-        _ => {} // literals, wildcard, etc., bind nothing.
+        _ => {}
     }
 }
 
@@ -208,8 +197,6 @@ pub fn map_field_lookup(d: &Descr, key: &MapKey) -> Option<Descr> {
     for clause in &d.maps {
         for sig in &clause.pos {
             found = true;
-            // Open shape: if key is required, contribute its type; otherwise
-            // the key may or may not be present so contribute `any | nil`.
             if let Some(t) = sig.fields.get(key) {
                 acc = acc.union(t);
             } else {
@@ -217,7 +204,6 @@ pub fn map_field_lookup(d: &Descr, key: &MapKey) -> Option<Descr> {
             }
         }
         if clause.pos.is_empty() {
-            // Top map clause — any map, any key value.
             acc = acc.union(&Descr::any()).union(&Descr::nil());
             found = true;
         }
@@ -225,22 +211,16 @@ pub fn map_field_lookup(d: &Descr, key: &MapKey) -> Option<Descr> {
     if !found { None } else { Some(acc) }
 }
 
-/// Refine `d` by setting field `key` to value type `vt` in every positive map
-/// shape. Used by map update typing.
 pub fn refine_map_field(d: &Descr, key: &MapKey, vt: &Descr) -> Descr {
     let mut out = d.clone();
     for clause in &mut out.maps {
         for sig in &mut clause.pos {
             sig.fields.insert(key.clone(), vt.clone());
         }
-        if clause.pos.is_empty() {
-            // Top map: can't refine without manufacturing a shape; skip.
-        }
     }
     out
 }
 
-/// Element type of a list-typed descriptor. Falls back to `any`.
 pub fn list_element_type(scrut: &Descr) -> Descr {
     let mut elem = Descr::none();
     let mut found = false;
@@ -257,9 +237,6 @@ pub fn list_element_type(scrut: &Descr) -> Descr {
 // Widening (for fixed-point termination)
 // ----------------------------------------------------------------------
 
-/// Widen any growing literal-set axes to their tops. Recursively applied to
-/// structural element types so arrow returns / list elements / tuple
-/// components also widen.
 pub fn widen(d: &Descr) -> Descr {
     let mut out = d.clone();
     if !out.ints.is_none() && !out.ints.is_any() { out.ints = IntSet::any(); }

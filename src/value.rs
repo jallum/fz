@@ -355,40 +355,36 @@ pub fn match_pattern(pat: &Pattern, v: &Value, env: &Env) -> bool {
         (Pattern::Bool(a), Value::Bool(b)) => a == b,
         (Pattern::Nil, Value::Nil) => true,
         (Pattern::Tuple(ps), Value::Tuple(xs)) => {
-            ps.len() == xs.len() && ps.iter().zip(xs.iter()).all(|(p, v)| match_pattern(p, v, env))
+            ps.len() == xs.len() && ps.iter().zip(xs.iter()).all(|(p, v)| match_pattern(&p.node, v, env))
         }
         (Pattern::List(heads, tail), Value::List(xs)) => {
             if let Some(tail_pat) = tail {
                 if xs.len() < heads.len() { return false; }
                 for (p, v) in heads.iter().zip(xs.iter()) {
-                    if !match_pattern(p, v, env) { return false; }
+                    if !match_pattern(&p.node, v, env) { return false; }
                 }
                 let rest: Vec<Value> = xs[heads.len()..].to_vec();
-                match_pattern(tail_pat, &Value::List(Rc::new(rest)), env)
+                match_pattern(&tail_pat.node, &Value::List(Rc::new(rest)), env)
             } else {
                 if heads.len() != xs.len() { return false; }
-                heads.iter().zip(xs.iter()).all(|(p, v)| match_pattern(p, v, env))
+                heads.iter().zip(xs.iter()).all(|(p, v)| match_pattern(&p.node, v, env))
             }
         }
         (Pattern::As(name, inner), v) => {
             env.bind(name, v.clone());
-            match_pattern(inner, v, env)
+            match_pattern(&inner.node, v, env)
         }
         (Pattern::Bitstring(fields), v) => {
             crate::bitstr::match_bitstring(fields, v, env)
         }
         (Pattern::Map(pairs), Value::Map(m)) => {
-            // Open match: every (key, val) pair must be present in m.
-            // Keys in patterns are constant exprs evaluated at match-build time;
-            // here Pattern keys are already concrete Patterns. We require each
-            // key pattern to be a literal we can evaluate without an env.
             for (kp, vp) in pairs {
-                let key = match pattern_to_value(kp) {
+                let key = match pattern_to_value(&kp.node) {
                     Some(k) => k,
                     None => return false,
                 };
                 let Some(actual) = m.get(&key) else { return false };
-                if !match_pattern(vp, actual, env) { return false; }
+                if !match_pattern(&vp.node, actual, env) { return false; }
             }
             true
         }

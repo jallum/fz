@@ -2829,319 +2829,116 @@ fn bool_to_fz(b: &mut FunctionBuilder<'_>, v: ir::Value) -> ir::Value {
 fn _kp(_: &Var) {}
 
 #[cfg(test)]
+#[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::{BinOp as ABinOp, Expr, FnClause, FnDef, Item, Pattern, Program};
     use crate::ir_lower::lower_program;
-    use std::rc::Rc;
+    use crate::lexer::Lexer;
+    use crate::parser::Parser;
 
-    fn fn_def(name: &str, clauses: Vec<FnClause>) -> Rc<Item> {
-        Rc::new(Item::Fn(FnDef {
-            name: name.into(),
-            clauses,
-            is_macro: false,
-            doc: None,
-        }))
+    fn lower_src(src: &str) -> Module {
+        let toks = Lexer::new(src).tokenize().expect("lex");
+        let prog = Parser::new(toks).parse_program().expect("parse");
+        lower_program(&prog).expect("lower")
     }
 
-    fn cl(params: Vec<Pattern>, body: Expr) -> FnClause {
-        FnClause { params, guard: None, body }
+    fn run_main(src: &str) -> i64 {
+        let m = lower_src(src);
+        let entry = m.fn_by_name("main").unwrap().id;
+        compile(&m).unwrap().run(entry)
     }
 
-    fn lower(items: Vec<Rc<Item>>) -> Module {
-        lower_program(&Program { items }).unwrap()
+    fn run_main_after_heap_reset(src: &str) -> (i64, Module) {
+        let m = lower_src(src);
+        let entry = m.fn_by_name("main").unwrap().id;
+        heap_reset_for_test();
+        let r = compile(&m).unwrap().run(entry);
+        (r, m)
     }
+
+    fn capture_main(src: &str) -> Vec<String> {
+        let m = lower_src(src);
+        let entry = m.fn_by_name("main").unwrap().id;
+        heap_reset_for_test();
+        let _ = test_capture_take();
+        let _ = compile(&m).unwrap().run(entry);
+        test_capture_take()
+    }
+
+    // ----- simple scalar / arithmetic tests -----
 
     #[test]
     fn const_int_runs_and_halts_with_value() {
-        let m = lower(vec![fn_def("main", vec![cl(vec![], Expr::Int(42))])]);
-        let entry = m.fn_by_name("main").unwrap().id;
-        let cm = compile(&m).unwrap();
-        assert_eq!(cm.run(entry), 42);
+        assert_eq!(run_main("fn main() do 42 end"), 42);
     }
 
     #[test]
     fn binop_int_addition_runs() {
-        let m = lower(vec![fn_def(
-            "main",
-            vec![cl(
-                vec![],
-                Expr::BinOp(ABinOp::Add, Box::new(Expr::Int(40)), Box::new(Expr::Int(2))),
-            )],
-        )]);
-        let entry = m.fn_by_name("main").unwrap().id;
-        let cm = compile(&m).unwrap();
-        assert_eq!(cm.run(entry), 42);
+        assert_eq!(run_main("fn main(), do: 40 + 2"), 42);
     }
 
     #[test]
     fn binop_chain_runs() {
-        let m = lower(vec![fn_def(
-            "main",
-            vec![cl(
-                vec![],
-                Expr::BinOp(
-                    ABinOp::Mul,
-                    Box::new(Expr::BinOp(
-                        ABinOp::Add,
-                        Box::new(Expr::Int(1)),
-                        Box::new(Expr::Int(2)),
-                    )),
-                    Box::new(Expr::Int(7)),
-                ),
-            )],
-        )]);
-        let entry = m.fn_by_name("main").unwrap().id;
-        let cm = compile(&m).unwrap();
-        assert_eq!(cm.run(entry), 21);
+        assert_eq!(run_main("fn main(), do: (1 + 2) * 7"), 21);
     }
 
     #[test]
     fn if_then_else_runs() {
-        let m = lower(vec![fn_def(
-            "main",
-            vec![cl(
-                vec![],
-                Expr::If(
-                    Box::new(Expr::BinOp(
-                        ABinOp::Lt,
-                        Box::new(Expr::Int(1)),
-                        Box::new(Expr::Int(2)),
-                    )),
-                    Box::new(Expr::Int(100)),
-                    Some(Box::new(Expr::Int(200))),
-                ),
-            )],
-        )]);
-        let entry = m.fn_by_name("main").unwrap().id;
-        let cm = compile(&m).unwrap();
-        assert_eq!(cm.run(entry), 100);
+        assert_eq!(run_main("fn main(), do: if 1 < 2, do: 100, else: 200"), 100);
     }
 
     #[test]
     fn print_builtin_routes_through_runtime() {
-        let m = lower(vec![fn_def(
-            "main",
-            vec![cl(
-                vec![],
-                Expr::Call(
-                    Box::new(Expr::Var("print".into())),
-                    vec![Expr::BinOp(
-                        ABinOp::Add,
-                        Box::new(Expr::Int(40)),
-                        Box::new(Expr::Int(2)),
-                    )],
-                ),
-            )],
-        )]);
-        let entry = m.fn_by_name("main").unwrap().id;
-        let _ = test_capture_take();
-        let cm = compile(&m).unwrap();
-        let _ = cm.run(entry);
-        let captured = test_capture_take();
-        assert_eq!(captured, vec!["42".to_string()]);
+        assert_eq!(capture_main("fn main(), do: print(40 + 2)"), vec!["42"]);
     }
 
     #[test]
     fn unop_neg_runs() {
-        let m = lower(vec![fn_def(
-            "main",
-            vec![cl(
-                vec![],
-                Expr::UnOp(crate::ast::UnOp::Neg, Box::new(Expr::Int(7))),
-            )],
-        )]);
-        let entry = m.fn_by_name("main").unwrap().id;
-        let cm = compile(&m).unwrap();
-        assert_eq!(cm.run(entry), -7);
+        assert_eq!(run_main("fn main(), do: -7"), -7);
     }
 
     #[test]
     fn atom_const_returns_atom_id() {
-        let m = lower(vec![fn_def(
-            "main",
-            vec![cl(vec![], Expr::Atom("ok".into()))],
-        )]);
-        let entry = m.fn_by_name("main").unwrap().id;
-        let cm = compile(&m).unwrap();
-        assert_eq!(cm.run(entry), 1); // "match_error" interned first.
+        assert_eq!(run_main("fn main(), do: :ok"), 1); // match_error interns first.
     }
 
     // ----- .11.8 frame-allocation tests -----
 
     #[test]
     fn add1_via_call_returns_42() {
-        // fn add1(n), do: n + 1
-        // fn main(), do: add1(41)
-        let add1 = fn_def(
-            "add1",
-            vec![cl(
-                vec![Pattern::Var("n".into())],
-                Expr::BinOp(ABinOp::Add, Box::new(Expr::Var("n".into())), Box::new(Expr::Int(1))),
-            )],
-        );
-        let main = fn_def(
-            "main",
-            vec![cl(
-                vec![],
-                Expr::Call(Box::new(Expr::Var("add1".into())), vec![Expr::Int(41)]),
-            )],
-        );
-        let m = lower(vec![add1, main]);
-        let entry = m.fn_by_name("main").unwrap().id;
-        let cm = compile(&m).unwrap();
-        assert_eq!(cm.run(entry), 42);
+        assert_eq!(run_main("fn add1(n), do: n + 1\nfn main(), do: add1(41)"), 42);
     }
 
     #[test]
     fn binop_with_inner_nontail_call() {
-        // fn add1(n), do: n + 1
-        // fn main(), do: add1(40) + 2     — Call to add1 is NON-tail.
-        let add1 = fn_def(
-            "add1",
-            vec![cl(
-                vec![Pattern::Var("n".into())],
-                Expr::BinOp(ABinOp::Add, Box::new(Expr::Var("n".into())), Box::new(Expr::Int(1))),
-            )],
-        );
-        let main = fn_def(
-            "main",
-            vec![cl(
-                vec![],
-                Expr::BinOp(
-                    ABinOp::Add,
-                    Box::new(Expr::Call(Box::new(Expr::Var("add1".into())), vec![Expr::Int(40)])),
-                    Box::new(Expr::Int(2)),
-                ),
-            )],
-        );
-        let m = lower(vec![add1, main]);
-        let entry = m.fn_by_name("main").unwrap().id;
-        let cm = compile(&m).unwrap();
-        assert_eq!(cm.run(entry), 43);
+        assert_eq!(run_main("fn add1(n), do: n + 1\nfn main(), do: add1(40) + 2"), 43);
     }
 
     #[test]
     fn fact_5_smaller_repro() {
-        // Smaller version of fact: just fact(5) = 120.
-        let fact = fn_def(
-            "fact",
-            vec![
-                cl(vec![Pattern::Int(0)], Expr::Int(1)),
-                cl(
-                    vec![Pattern::Var("n".into())],
-                    Expr::BinOp(
-                        ABinOp::Mul,
-                        Box::new(Expr::Var("n".into())),
-                        Box::new(Expr::Call(
-                            Box::new(Expr::Var("fact".into())),
-                            vec![Expr::BinOp(
-                                ABinOp::Sub,
-                                Box::new(Expr::Var("n".into())),
-                                Box::new(Expr::Int(1)),
-                            )],
-                        )),
-                    ),
-                ),
-            ],
-        );
-        let main = fn_def(
-            "main",
-            vec![cl(
-                vec![],
-                Expr::Call(Box::new(Expr::Var("fact".into())), vec![Expr::Int(5)]),
-            )],
-        );
-        let m = lower(vec![fact, main]);
-        let entry = m.fn_by_name("main").unwrap().id;
-        let cm = compile(&m).unwrap();
-        assert_eq!(cm.run(entry), 120);
+        assert_eq!(run_main(r#"
+fn fact(0), do: 1
+fn fact(n), do: n * fact(n - 1)
+fn main(), do: fact(5)
+"#), 120);
     }
 
     #[test]
     fn fact_10_runs_via_recursion_and_continuation_chain() {
-        // fn fact(0), do: 1
-        // fn fact(n), do: n * fact(n - 1)
-        // fn main(), do: fact(10)
-        let fact = fn_def(
-            "fact",
-            vec![
-                cl(vec![Pattern::Int(0)], Expr::Int(1)),
-                cl(
-                    vec![Pattern::Var("n".into())],
-                    Expr::BinOp(
-                        ABinOp::Mul,
-                        Box::new(Expr::Var("n".into())),
-                        Box::new(Expr::Call(
-                            Box::new(Expr::Var("fact".into())),
-                            vec![Expr::BinOp(
-                                ABinOp::Sub,
-                                Box::new(Expr::Var("n".into())),
-                                Box::new(Expr::Int(1)),
-                            )],
-                        )),
-                    ),
-                ),
-            ],
-        );
-        let main = fn_def(
-            "main",
-            vec![cl(
-                vec![],
-                Expr::Call(Box::new(Expr::Var("fact".into())), vec![Expr::Int(10)]),
-            )],
-        );
-        let m = lower(vec![fact, main]);
-        let entry = m.fn_by_name("main").unwrap().id;
-        let cm = compile(&m).unwrap();
-        assert_eq!(cm.run(entry), 3628800);
+        assert_eq!(run_main(r#"
+fn fact(0), do: 1
+fn fact(n), do: n * fact(n - 1)
+fn main(), do: fact(10)
+"#), 3628800);
     }
 
     #[test]
     fn count_100k_stays_bounded_via_tail_call_frame_reuse() {
-        // fn count(0, acc), do: acc
-        // fn count(n, acc), do: count(n - 1, acc + 1)    — tail call
-        let count = fn_def(
-            "count",
-            vec![
-                cl(
-                    vec![Pattern::Int(0), Pattern::Var("acc".into())],
-                    Expr::Var("acc".into()),
-                ),
-                cl(
-                    vec![Pattern::Var("n".into()), Pattern::Var("acc".into())],
-                    Expr::Call(
-                        Box::new(Expr::Var("count".into())),
-                        vec![
-                            Expr::BinOp(
-                                ABinOp::Sub,
-                                Box::new(Expr::Var("n".into())),
-                                Box::new(Expr::Int(1)),
-                            ),
-                            Expr::BinOp(
-                                ABinOp::Add,
-                                Box::new(Expr::Var("acc".into())),
-                                Box::new(Expr::Int(1)),
-                            ),
-                        ],
-                    ),
-                ),
-            ],
-        );
-        let main = fn_def(
-            "main",
-            vec![cl(
-                vec![],
-                Expr::Call(
-                    Box::new(Expr::Var("count".into())),
-                    vec![Expr::Int(100_000), Expr::Int(0)],
-                ),
-            )],
-        );
-        let m = lower(vec![count, main]);
-        let entry = m.fn_by_name("main").unwrap().id;
-        let cm = compile(&m).unwrap();
-        assert_eq!(cm.run(entry), 100_000);
+        assert_eq!(run_main(r#"
+fn count(0, acc), do: acc
+fn count(n, acc), do: count(n - 1, acc + 1)
+fn main(), do: count(100000, 0)
+"#), 100_000);
     }
 
     #[test]
@@ -3158,38 +2955,9 @@ mod tests {
 
     #[test]
     fn print_captures_atom_and_specials() {
-        // print(:ok); print(true); print(false)
-        let main = fn_def(
-            "main",
-            vec![cl(
-                vec![],
-                Expr::Block(vec![
-                    Expr::Call(
-                        Box::new(Expr::Var("print".into())),
-                        vec![Expr::Atom("ok".into())],
-                    ),
-                    Expr::Call(
-                        Box::new(Expr::Var("print".into())),
-                        vec![Expr::Bool(true)],
-                    ),
-                    Expr::Call(
-                        Box::new(Expr::Var("print".into())),
-                        vec![Expr::Bool(false)],
-                    ),
-                ]),
-            )],
-        );
-        let m = lower(vec![main]);
-        let entry = m.fn_by_name("main").unwrap().id;
-        let _ = test_capture_take();
-        let cm = compile(&m).unwrap();
-        let _ = cm.run(entry);
-        let captured = test_capture_take();
-        // Atom id depends on intern order; "match_error" interned first → 0,
-        // then "ok" → 1.
         assert_eq!(
-            captured,
-            vec![":atom_1".to_string(), "true".to_string(), "false".to_string()]
+            capture_main("fn main() do\n  print(:ok)\n  print(true)\n  print(false)\nend"),
+            vec![":atom_1", "true", "false"]
         );
     }
 
@@ -3197,151 +2965,43 @@ mod tests {
 
     #[test]
     fn print_atom_keyed_map_renders_canonically() {
-        // fn main() do print(%{a: 1, b: 2}) end
-        // Atoms intern in encounter order: match_error=0, a=1, b=2.
-        // Sorted by atom id -> :atom_1 then :atom_2.
-        let main = fn_def(
-            "main",
-            vec![cl(
-                vec![],
-                Expr::Call(
-                    Box::new(Expr::Var("print".into())),
-                    vec![Expr::Map(vec![
-                        (Expr::Atom("a".into()), Expr::Int(1)),
-                        (Expr::Atom("b".into()), Expr::Int(2)),
-                    ])],
-                ),
-            )],
-        );
-        let m = lower(vec![main]);
-        let entry = m.fn_by_name("main").unwrap().id;
-        heap_reset_for_test();
-        let _ = test_capture_take();
-        let cm = compile(&m).unwrap();
-        let _ = cm.run(entry);
         assert_eq!(
-            test_capture_take(),
-            vec!["%{:atom_1 => 1, :atom_2 => 2}".to_string()]
+            capture_main("fn main(), do: print(%{a: 1, b: 2})"),
+            vec!["%{:atom_1 => 1, :atom_2 => 2}"]
         );
     }
 
     #[test]
     fn map_get_returns_value_or_nil() {
-        // fn main(), do: %{a: 10, b: 20}[:a] + %{a: 10, b: 20}[:b]    -> 30
-        let main = fn_def(
-            "main",
-            vec![cl(
-                vec![],
-                Expr::BinOp(
-                    ABinOp::Add,
-                    Box::new(Expr::Index(
-                        Box::new(Expr::Map(vec![
-                            (Expr::Atom("a".into()), Expr::Int(10)),
-                            (Expr::Atom("b".into()), Expr::Int(20)),
-                        ])),
-                        Box::new(Expr::Atom("a".into())),
-                    )),
-                    Box::new(Expr::Index(
-                        Box::new(Expr::Map(vec![
-                            (Expr::Atom("a".into()), Expr::Int(10)),
-                            (Expr::Atom("b".into()), Expr::Int(20)),
-                        ])),
-                        Box::new(Expr::Atom("b".into())),
-                    )),
-                ),
-            )],
-        );
-        let m = lower(vec![main]);
-        let entry = m.fn_by_name("main").unwrap().id;
-        heap_reset_for_test();
-        let cm = compile(&m).unwrap();
-        assert_eq!(cm.run(entry), 30);
+        assert_eq!(run_main("fn main(), do: %{a: 10, b: 20}[:a] + %{a: 10, b: 20}[:b]"), 30);
     }
 
     #[test]
     fn map_update_returns_new_map_originals_unchanged() {
-        // fn main() do
-        //   m = %{a: 1, b: 2}
-        //   m2 = %{m | a: 99}
-        //   print(m)
-        //   print(m2)
-        // end
-        let main = fn_def(
-            "main",
-            vec![cl(
-                vec![],
-                Expr::Block(vec![
-                    Expr::Match(
-                        crate::ast::Pattern::Var("m".into()),
-                        Box::new(Expr::Map(vec![
-                            (Expr::Atom("a".into()), Expr::Int(1)),
-                            (Expr::Atom("b".into()), Expr::Int(2)),
-                        ])),
-                    ),
-                    Expr::Match(
-                        crate::ast::Pattern::Var("m2".into()),
-                        Box::new(Expr::MapUpdate(
-                            Box::new(Expr::Var("m".into())),
-                            vec![(Expr::Atom("a".into()), Expr::Int(99))],
-                        )),
-                    ),
-                    Expr::Call(
-                        Box::new(Expr::Var("print".into())),
-                        vec![Expr::Var("m".into())],
-                    ),
-                    Expr::Call(
-                        Box::new(Expr::Var("print".into())),
-                        vec![Expr::Var("m2".into())],
-                    ),
-                ]),
-            )],
-        );
-        let m = lower(vec![main]);
-        let entry = m.fn_by_name("main").unwrap().id;
-        heap_reset_for_test();
-        let _ = test_capture_take();
-        let cm = compile(&m).unwrap();
-        let _ = cm.run(entry);
         assert_eq!(
-            test_capture_take(),
+            capture_main(r#"
+fn main() do
+  m = %{a: 1, b: 2}
+  m2 = %{m | a: 99}
+  print(m)
+  print(m2)
+end
+"#),
             vec![
-                "%{:atom_1 => 1, :atom_2 => 2}".to_string(),
-                "%{:atom_1 => 99, :atom_2 => 2}".to_string(),
+                "%{:atom_1 => 1, :atom_2 => 2}",
+                "%{:atom_1 => 99, :atom_2 => 2}",
             ]
         );
     }
 
     #[test]
     fn gc_traces_map_keys_and_values() {
-        // Build %{a => [1,2,3]}; that's 1 map (which holds 1 atom key + 1 list
-        // value) + 3 cons cells = 4 live. Drop root via empty gc roots ->
-        // tracer follows the map's value field into the list -> all 4 reclaim.
-        let main = fn_def(
-            "main",
-            vec![cl(
-                vec![],
-                Expr::Map(vec![(
-                    Expr::Atom("a".into()),
-                    Expr::List(
-                        vec![Expr::Int(1), Expr::Int(2), Expr::Int(3)],
-                        None,
-                    ),
-                )]),
-            )],
-        );
-        let m = lower(vec![main]);
-        let entry = m.fn_by_name("main").unwrap().id;
-        heap_reset_for_test();
-        let cm = compile(&m).unwrap();
-        let halt_bits = cm.run(entry) as u64;
+        let (halt_bits, _m) = run_main_after_heap_reset("fn main(), do: %{a: [1, 2, 3]}");
+        let halt_bits = halt_bits as u64;
         assert_eq!(heap_live_count(), 4, "1 map + 3 cons cells");
-        // Rooted via the halt ptr: tracer must follow the map's value FzValue
-        // through to all three cons cells (otherwise we'd see cells reclaimed
-        // even with the map as a root).
         let root = crate::fz_value::FzValue(halt_bits);
         heap_gc(&[root]);
         assert_eq!(heap_live_count(), 4, "list survives via map's value field");
-        // Drop the root: everything goes.
         heap_gc(&[]);
         assert_eq!(heap_live_count(), 0);
     }
@@ -3350,301 +3010,39 @@ mod tests {
 
     #[test]
     fn print_bitstring_literal_via_jit() {
-        // fn main() do print(<<0xff::8, 0xab::8>>) end
-        let main = fn_def(
-            "main",
-            vec![cl(
-                vec![],
-                Expr::Call(
-                    Box::new(Expr::Var("print".into())),
-                    vec![Expr::Bitstring(vec![
-                        crate::ast::BitField {
-                            value: Expr::Int(0xff),
-                            spec: crate::ast::BitFieldSpec {
-                                ty: crate::ast::BitType::Integer,
-                                size: Some(crate::ast::BitSize::Literal(8)),
-                                endian: crate::ast::Endian::Big,
-                                signed: false,
-                                unit: None,
-                            },
-                        },
-                        crate::ast::BitField {
-                            value: Expr::Int(0xab),
-                            spec: crate::ast::BitFieldSpec {
-                                ty: crate::ast::BitType::Integer,
-                                size: Some(crate::ast::BitSize::Literal(8)),
-                                endian: crate::ast::Endian::Big,
-                                signed: false,
-                                unit: None,
-                            },
-                        },
-                    ])],
-                ),
-            )],
+        assert_eq!(
+            capture_main("fn main(), do: print(<<0xff, 0xab>>)"),
+            vec!["<<255, 171>>"]
         );
-        let m = lower(vec![main]);
-        let entry = m.fn_by_name("main").unwrap().id;
-        heap_reset_for_test();
-        let _ = test_capture_take();
-        let cm = compile(&m).unwrap();
-        let _ = cm.run(entry);
-        assert_eq!(test_capture_take(), vec!["<<255, 171>>".to_string()]);
     }
 
     #[test]
     fn match_simple_header_and_rest() {
-        // fn parse(<<n::8, rest::binary>>), do: {n, rest}
-        // fn main(), do: parse(<<0xa5::8, 0x01::8, 0x02::8>>)   -> {165, <<1, 2>>}
-        let parse = fn_def(
-            "parse",
-            vec![cl(
-                vec![Pattern::Bitstring(vec![
-                    crate::ast::BitField {
-                            value: Pattern::Var("n".into()),
-                            spec: crate::ast::BitFieldSpec {
-                                ty: crate::ast::BitType::Integer,
-                                size: Some(crate::ast::BitSize::Literal(8)),
-                                endian: crate::ast::Endian::Big,
-                                signed: false,
-                                unit: None,
-                            },
-                        },
-                    crate::ast::BitField {
-                            value: Pattern::Var("rest".into()),
-                            spec: crate::ast::BitFieldSpec {
-                                ty: crate::ast::BitType::Binary,
-                                size: None,
-                                endian: crate::ast::Endian::Big,
-                                signed: false,
-                                unit: None,
-                            },
-                        },
-                ])],
-                Expr::Tuple(vec![Expr::Var("n".into()), Expr::Var("rest".into())]),
-            )],
+        assert_eq!(
+            capture_main(r#"
+fn parse(<<n, rest::binary>>), do: {n, rest}
+fn main(), do: print(parse(<<0xa5, 0x01, 0x02>>))
+"#),
+            vec!["{165, <<1, 2>>}"]
         );
-        let main = fn_def(
-            "main",
-            vec![cl(
-                vec![],
-                Expr::Call(
-                    Box::new(Expr::Var("parse".into())),
-                    vec![Expr::Bitstring(vec![
-                        crate::ast::BitField {
-                            value: Expr::Int(0xa5),
-                            spec: crate::ast::BitFieldSpec {
-                                ty: crate::ast::BitType::Integer,
-                                size: Some(crate::ast::BitSize::Literal(8)),
-                                endian: crate::ast::Endian::Big,
-                                signed: false,
-                                unit: None,
-                            },
-                        },
-                        crate::ast::BitField {
-                            value: Expr::Int(0x01),
-                            spec: crate::ast::BitFieldSpec {
-                                ty: crate::ast::BitType::Integer,
-                                size: Some(crate::ast::BitSize::Literal(8)),
-                                endian: crate::ast::Endian::Big,
-                                signed: false,
-                                unit: None,
-                            },
-                        },
-                        crate::ast::BitField {
-                            value: Expr::Int(0x02),
-                            spec: crate::ast::BitFieldSpec {
-                                ty: crate::ast::BitType::Integer,
-                                size: Some(crate::ast::BitSize::Literal(8)),
-                                endian: crate::ast::Endian::Big,
-                                signed: false,
-                                unit: None,
-                            },
-                        },
-                    ])],
-                ),
-            )],
-        );
-        // Wrap the result in a print so we can assert on the rendering.
-        let main_print = fn_def(
-            "main",
-            vec![cl(
-                vec![],
-                Expr::Call(
-                    Box::new(Expr::Var("print".into())),
-                    vec![Expr::Call(
-                        Box::new(Expr::Var("parse".into())),
-                        vec![Expr::Bitstring(vec![
-                            crate::ast::BitField {
-                            value: Expr::Int(0xa5),
-                            spec: crate::ast::BitFieldSpec {
-                                ty: crate::ast::BitType::Integer,
-                                size: Some(crate::ast::BitSize::Literal(8)),
-                                endian: crate::ast::Endian::Big,
-                                signed: false,
-                                unit: None,
-                            },
-                        },
-                            crate::ast::BitField {
-                            value: Expr::Int(0x01),
-                            spec: crate::ast::BitFieldSpec {
-                                ty: crate::ast::BitType::Integer,
-                                size: Some(crate::ast::BitSize::Literal(8)),
-                                endian: crate::ast::Endian::Big,
-                                signed: false,
-                                unit: None,
-                            },
-                        },
-                            crate::ast::BitField {
-                            value: Expr::Int(0x02),
-                            spec: crate::ast::BitFieldSpec {
-                                ty: crate::ast::BitType::Integer,
-                                size: Some(crate::ast::BitSize::Literal(8)),
-                                endian: crate::ast::Endian::Big,
-                                signed: false,
-                                unit: None,
-                            },
-                        },
-                        ])],
-                    )],
-                ),
-            )],
-        );
-        let _ = main; // keep above as a reference; main_print is the runner.
-        let m = lower(vec![parse, main_print]);
-        let entry = m.fn_by_name("main").unwrap().id;
-        heap_reset_for_test();
-        let _ = test_capture_take();
-        let cm = compile(&m).unwrap();
-        let _ = cm.run(entry);
-        assert_eq!(test_capture_take(), vec!["{165, <<1, 2>>}".to_string()]);
     }
 
     #[test]
     fn match_variable_size_payload_via_size_var() {
-        // fn parse(<<len::8, payload::binary-size(len), rest::binary>>) do
-        //   {len, payload, rest}
-        // end
-        // fn main() do
-        //   print(parse(<<3::8, 0x01::8, 0x02::8, 0x03::8, 0xff::8>>))
-        // end
-        let parse = fn_def(
-            "parse",
-            vec![cl(
-                vec![Pattern::Bitstring(vec![
-                    crate::ast::BitField {
-                            value: Pattern::Var("len".into()),
-                            spec: crate::ast::BitFieldSpec {
-                                ty: crate::ast::BitType::Integer,
-                                size: Some(crate::ast::BitSize::Literal(8)),
-                                endian: crate::ast::Endian::Big,
-                                signed: false,
-                                unit: None,
-                            },
-                        },
-                    crate::ast::BitField {
-                            value: Pattern::Var("payload".into()),
-                            spec: crate::ast::BitFieldSpec {
-                                ty: crate::ast::BitType::Binary,
-                                size: Some(crate::ast::BitSize::Var("len".into())),
-                                endian: crate::ast::Endian::Big,
-                                signed: false,
-                                unit: None,
-                            },
-                        },
-                    crate::ast::BitField {
-                            value: Pattern::Var("rest".into()),
-                            spec: crate::ast::BitFieldSpec {
-                                ty: crate::ast::BitType::Binary,
-                                size: None,
-                                endian: crate::ast::Endian::Big,
-                                signed: false,
-                                unit: None,
-                            },
-                        },
-                ])],
-                Expr::Tuple(vec![
-                    Expr::Var("len".into()),
-                    Expr::Var("payload".into()),
-                    Expr::Var("rest".into()),
-                ]),
-            )],
-        );
-        let mk_byte = |v: i64| crate::ast::BitField {
-                            value: Expr::Int(v),
-                            spec: crate::ast::BitFieldSpec {
-                                ty: crate::ast::BitType::Integer,
-                                size: Some(crate::ast::BitSize::Literal(8)),
-                                endian: crate::ast::Endian::Big,
-                                signed: false,
-                                unit: None,
-                            },
-                        };
-        let main = fn_def(
-            "main",
-            vec![cl(
-                vec![],
-                Expr::Call(
-                    Box::new(Expr::Var("print".into())),
-                    vec![Expr::Call(
-                        Box::new(Expr::Var("parse".into())),
-                        vec![Expr::Bitstring(vec![
-                            mk_byte(3),
-                            mk_byte(1),
-                            mk_byte(2),
-                            mk_byte(3),
-                            mk_byte(0xff),
-                        ])],
-                    )],
-                ),
-            )],
-        );
-        let m = lower(vec![parse, main]);
-        let entry = m.fn_by_name("main").unwrap().id;
-        heap_reset_for_test();
-        let _ = test_capture_take();
-        let cm = compile(&m).unwrap();
-        let _ = cm.run(entry);
         assert_eq!(
-            test_capture_take(),
-            vec!["{3, <<1, 2, 3>>, <<255>>}".to_string()]
+            capture_main(r#"
+fn parse(<<len, payload::binary-size(len), rest::binary>>) do
+  {len, payload, rest}
+end
+fn main(), do: print(parse(<<3, 0x01, 0x02, 0x03, 0xff>>))
+"#),
+            vec!["{3, <<1, 2, 3>>, <<255>>}"]
         );
     }
 
     #[test]
     fn gc_reclaims_bitstring_when_unrooted() {
-        let main = fn_def(
-            "main",
-            vec![cl(
-                vec![],
-                Expr::Bitstring(vec![
-                    crate::ast::BitField {
-                            value: Expr::Int(0xde),
-                            spec: crate::ast::BitFieldSpec {
-                                ty: crate::ast::BitType::Integer,
-                                size: Some(crate::ast::BitSize::Literal(8)),
-                                endian: crate::ast::Endian::Big,
-                                signed: false,
-                                unit: None,
-                            },
-                        },
-                    crate::ast::BitField {
-                            value: Expr::Int(0xad),
-                            spec: crate::ast::BitFieldSpec {
-                                ty: crate::ast::BitType::Integer,
-                                size: Some(crate::ast::BitSize::Literal(8)),
-                                endian: crate::ast::Endian::Big,
-                                signed: false,
-                                unit: None,
-                            },
-                        },
-                ]),
-            )],
-        );
-        let m = lower(vec![main]);
-        let entry = m.fn_by_name("main").unwrap().id;
-        heap_reset_for_test();
-        let cm = compile(&m).unwrap();
-        let _ = cm.run(entry);
+        let _ = run_main_after_heap_reset("fn main(), do: <<0xde, 0xad>>");
         assert_eq!(heap_live_count(), 1, "single bitstring alive");
         heap_gc(&[]);
         assert_eq!(heap_live_count(), 0, "bitstring reclaimed");
@@ -3654,907 +3052,244 @@ mod tests {
 
     #[test]
     fn print_tuple_pair_renders() {
-        // fn main() do print({1, 2}) end
-        let main = fn_def(
-            "main",
-            vec![cl(
-                vec![],
-                Expr::Call(
-                    Box::new(Expr::Var("print".into())),
-                    vec![Expr::Tuple(vec![Expr::Int(1), Expr::Int(2)])],
-                ),
-            )],
-        );
-        let m = lower(vec![main]);
-        let entry = m.fn_by_name("main").unwrap().id;
-        heap_reset_for_test();
-        let _ = test_capture_take();
-        let cm = compile(&m).unwrap();
-        let _ = cm.run(entry);
-        assert_eq!(test_capture_take(), vec!["{1, 2}".to_string()]);
+        assert_eq!(capture_main("fn main(), do: print({1, 2})"), vec!["{1, 2}"]);
     }
 
     #[test]
     fn fst_snd_destructure_tuple() {
-        // fn fst({a, _}), do: a
-        // fn snd({_, b}), do: b
-        // fn main(),     do: fst({10, 20}) + snd({30, 40})    -> 10 + 40 = 50
-        let fst = fn_def(
-            "fst",
-            vec![cl(
-                vec![Pattern::Tuple(vec![
-                    Pattern::Var("a".into()),
-                    Pattern::Wildcard,
-                ])],
-                Expr::Var("a".into()),
-            )],
-        );
-        let snd = fn_def(
-            "snd",
-            vec![cl(
-                vec![Pattern::Tuple(vec![
-                    Pattern::Wildcard,
-                    Pattern::Var("b".into()),
-                ])],
-                Expr::Var("b".into()),
-            )],
-        );
-        let main = fn_def(
-            "main",
-            vec![cl(
-                vec![],
-                Expr::BinOp(
-                    ABinOp::Add,
-                    Box::new(Expr::Call(
-                        Box::new(Expr::Var("fst".into())),
-                        vec![Expr::Tuple(vec![Expr::Int(10), Expr::Int(20)])],
-                    )),
-                    Box::new(Expr::Call(
-                        Box::new(Expr::Var("snd".into())),
-                        vec![Expr::Tuple(vec![Expr::Int(30), Expr::Int(40)])],
-                    )),
-                ),
-            )],
-        );
-        let m = lower(vec![fst, snd, main]);
-        let entry = m.fn_by_name("main").unwrap().id;
-        heap_reset_for_test();
-        let cm = compile(&m).unwrap();
-        assert_eq!(cm.run(entry), 50);
+        assert_eq!(run_main(r#"
+fn fst({a, _}), do: a
+fn snd({_, b}), do: b
+fn main(), do: fst({10, 20}) + snd({30, 40})
+"#), 50);
     }
 
     #[test]
     fn print_mixed_type_tuple() {
-        // fn main() do print({1, :ok, true}) end
-        let main = fn_def(
-            "main",
-            vec![cl(
-                vec![],
-                Expr::Call(
-                    Box::new(Expr::Var("print".into())),
-                    vec![Expr::Tuple(vec![
-                        Expr::Int(1),
-                        Expr::Atom("ok".into()),
-                        Expr::Bool(true),
-                    ])],
-                ),
-            )],
-        );
-        let m = lower(vec![main]);
-        let entry = m.fn_by_name("main").unwrap().id;
-        heap_reset_for_test();
-        let _ = test_capture_take();
-        let cm = compile(&m).unwrap();
-        let _ = cm.run(entry);
-        // "match_error" interns first → :ok is atom 1 → renders ":atom_1".
         assert_eq!(
-            test_capture_take(),
-            vec!["{1, :atom_1, true}".to_string()]
+            capture_main("fn main(), do: print({1, :ok, true})"),
+            vec!["{1, :atom_1, true}"]
         );
     }
 
     #[test]
     fn gc_traces_tuple_fields_freeing_pointed_objects_when_outer_dropped() {
-        // fn main(), do: {[1, 2, 3], 99}
-        // After run: 1 tuple + 3 cons cells = 4 live. Drop the halt root
-        // entirely (GC roots = []) -> all 4 reclaimed (tracer follows the
-        // tuple's FzValue field into the list).
-        let main = fn_def(
-            "main",
-            vec![cl(
-                vec![],
-                Expr::Tuple(vec![
-                    Expr::List(
-                        vec![Expr::Int(1), Expr::Int(2), Expr::Int(3)],
-                        None,
-                    ),
-                    Expr::Int(99),
-                ]),
-            )],
-        );
-        let m = lower(vec![main]);
-        let entry = m.fn_by_name("main").unwrap().id;
-        heap_reset_for_test();
-        let cm = compile(&m).unwrap();
-        let _ = cm.run(entry);
+        let src = "fn main(), do: {[1, 2, 3], 99}";
+        let (_halt, _m) = run_main_after_heap_reset(src);
         assert_eq!(heap_live_count(), 4, "1 tuple + 3 cons cells");
         heap_gc(&[]);
-        assert_eq!(heap_live_count(), 0, "tuple + reachable list reclaimed");
+        assert_eq!(heap_live_count(), 0);
 
-        // Sanity: with the tuple as a root, both tuple and list survive.
-        heap_reset_for_test();
-        let cm2 = compile(&m).unwrap();
-        let halt_bits = cm2.run(entry) as u64;
+        // Same shape with the tuple as a root: everything survives.
+        let (halt_bits, _m) = run_main_after_heap_reset(src);
+        let halt_bits = halt_bits as u64;
         assert_eq!(heap_live_count(), 4);
         let root = crate::fz_value::FzValue(halt_bits);
         heap_gc(&[root]);
-        assert_eq!(heap_live_count(), 4, "tuple + traced list survive");
+        assert_eq!(heap_live_count(), 4);
     }
 
     // ----- .11.10 list tests -----
 
     #[test]
     fn print_list_literal_renders_via_jit() {
-        // fn main() do print([1, 2, 3]) end
-        let main = fn_def(
-            "main",
-            vec![cl(
-                vec![],
-                Expr::Call(
-                    Box::new(Expr::Var("print".into())),
-                    vec![Expr::List(
-                        vec![Expr::Int(1), Expr::Int(2), Expr::Int(3)],
-                        None,
-                    )],
-                ),
-            )],
-        );
-        let m = lower(vec![main]);
-        let entry = m.fn_by_name("main").unwrap().id;
-        heap_reset_for_test();
-        let _ = test_capture_take();
-        let cm = compile(&m).unwrap();
-        let _ = cm.run(entry);
-        assert_eq!(test_capture_take(), vec!["[1, 2, 3]".to_string()]);
+        assert_eq!(capture_main("fn main(), do: print([1, 2, 3])"), vec!["[1, 2, 3]"]);
     }
 
     #[test]
     fn sum_list_via_head_tail_recursion() {
-        // fn sum([]),     do: 0
-        // fn sum([h | t]), do: h + sum(t)
-        // fn main(),      do: sum([1, 2, 3, 4, 5])    -> 15
-        let sum = fn_def(
-            "sum",
-            vec![
-                cl(vec![Pattern::List(vec![], None)], Expr::Int(0)),
-                cl(
-                    vec![Pattern::List(
-                        vec![Pattern::Var("h".into())],
-                        Some(Box::new(Pattern::Var("t".into()))),
-                    )],
-                    Expr::BinOp(
-                        ABinOp::Add,
-                        Box::new(Expr::Var("h".into())),
-                        Box::new(Expr::Call(
-                            Box::new(Expr::Var("sum".into())),
-                            vec![Expr::Var("t".into())],
-                        )),
-                    ),
-                ),
-            ],
-        );
-        let main = fn_def(
-            "main",
-            vec![cl(
-                vec![],
-                Expr::Call(
-                    Box::new(Expr::Var("sum".into())),
-                    vec![Expr::List(
-                        vec![
-                            Expr::Int(1),
-                            Expr::Int(2),
-                            Expr::Int(3),
-                            Expr::Int(4),
-                            Expr::Int(5),
-                        ],
-                        None,
-                    )],
-                ),
-            )],
-        );
-        let m = lower(vec![sum, main]);
-        let entry = m.fn_by_name("main").unwrap().id;
-        heap_reset_for_test();
-        let cm = compile(&m).unwrap();
-        assert_eq!(cm.run(entry), 15);
+        assert_eq!(run_main(r#"
+fn sum([]), do: 0
+fn sum([h | t]), do: h + sum(t)
+fn main(), do: sum([1, 2, 3, 4, 5])
+"#), 15);
     }
 
     #[test]
     fn allocate_list_drop_root_gc_reclaims() {
-        // fn main(), do: [1, 2, 3]   — three cons cells allocated, halt returns
-        // the head ptr. We then drop our reference to that ptr and call gc with
-        // empty roots; freelist should grow by 3 (or live_count drop by 3).
-        let main = fn_def(
-            "main",
-            vec![cl(
-                vec![],
-                Expr::List(
-                    vec![Expr::Int(1), Expr::Int(2), Expr::Int(3)],
-                    None,
-                ),
-            )],
-        );
-        let m = lower(vec![main]);
-        let entry = m.fn_by_name("main").unwrap().id;
-        heap_reset_for_test();
-        let cm = compile(&m).unwrap();
-        let halt = cm.run(entry);
-        assert_eq!(heap_live_count(), 3, "expected 3 cons cells alive after run");
-        // halt holds the FzValue ptr-bits of the head cons. Drop our local
-        // by simply not passing it as a root.
-        drop(halt);
+        let (_halt, _m) = run_main_after_heap_reset("fn main(), do: [1, 2, 3]");
+        assert_eq!(heap_live_count(), 3);
         heap_gc(&[]);
-        assert_eq!(heap_live_count(), 0, "expected all cons cells reclaimed");
-        assert_eq!(heap_freelist_len(), 3, "expected 3 freelist entries");
+        assert_eq!(heap_live_count(), 0);
+        assert_eq!(heap_freelist_len(), 3);
     }
 
     #[test]
     fn allocate_list_keep_root_gc_preserves() {
-        // Same shape as above, but pass the halt ptr as a root — list survives.
-        let main = fn_def(
-            "main",
-            vec![cl(
-                vec![],
-                Expr::List(
-                    vec![Expr::Int(7), Expr::Int(8), Expr::Int(9)],
-                    None,
-                ),
-            )],
-        );
-        let m = lower(vec![main]);
-        let entry = m.fn_by_name("main").unwrap().id;
-        heap_reset_for_test();
-        let cm = compile(&m).unwrap();
-        let halt_bits = cm.run(entry) as u64;
+        let (halt_bits, _m) = run_main_after_heap_reset("fn main(), do: [7, 8, 9]");
+        let halt_bits = halt_bits as u64;
         assert_eq!(heap_live_count(), 3);
         let root = crate::fz_value::FzValue(halt_bits);
         heap_gc(&[root]);
-        assert_eq!(heap_live_count(), 3, "list rooted via halt ptr should survive GC");
+        assert_eq!(heap_live_count(), 3);
     }
 
     #[test]
     fn box_unbox_int_roundtrip_via_neg_neg() {
-        // -(-(n)) should equal n for any int the JIT can carry. Exercises
-        // box_int / unbox_int under load.
-        for &n in &[0i64, 1, -1, 42, -42, 1_000_000_000] {
-            let main = fn_def(
-                "main",
-                vec![cl(
-                    vec![],
-                    Expr::UnOp(
-                        crate::ast::UnOp::Neg,
-                        Box::new(Expr::UnOp(
-                            crate::ast::UnOp::Neg,
-                            Box::new(Expr::Int(n)),
-                        )),
-                    ),
-                )],
-            );
-            let m = lower(vec![main]);
-            let entry = m.fn_by_name("main").unwrap().id;
-            let cm = compile(&m).unwrap();
-            assert_eq!(cm.run(entry), n, "round-trip failed for {}", n);
+        for n in &[0i64, 1, -1, 42, -42, 1_000_000_000] {
+            let src = format!("fn main(), do: -(-({}))", n);
+            assert_eq!(run_main(&src), *n, "round-trip failed for {}", n);
         }
     }
 
     #[test]
     fn mutual_recursion_even_odd_small_n() {
-        // fn even(0), do: true
-        // fn even(n), do: odd(n - 1)
-        // fn odd(0), do: false
-        // fn odd(n), do: even(n - 1)
-        let even = fn_def(
-            "even",
-            vec![
-                cl(vec![Pattern::Int(0)], Expr::Bool(true)),
-                cl(
-                    vec![Pattern::Var("n".into())],
-                    Expr::Call(
-                        Box::new(Expr::Var("odd".into())),
-                        vec![Expr::BinOp(
-                            ABinOp::Sub,
-                            Box::new(Expr::Var("n".into())),
-                            Box::new(Expr::Int(1)),
-                        )],
-                    ),
-                ),
-            ],
-        );
-        let odd = fn_def(
-            "odd",
-            vec![
-                cl(vec![Pattern::Int(0)], Expr::Bool(false)),
-                cl(
-                    vec![Pattern::Var("n".into())],
-                    Expr::Call(
-                        Box::new(Expr::Var("even".into())),
-                        vec![Expr::BinOp(
-                            ABinOp::Sub,
-                            Box::new(Expr::Var("n".into())),
-                            Box::new(Expr::Int(1)),
-                        )],
-                    ),
-                ),
-            ],
-        );
-        let main = fn_def(
-            "main",
-            vec![cl(
-                vec![],
-                Expr::Call(Box::new(Expr::Var("even".into())), vec![Expr::Int(10)]),
-            )],
-        );
-        let m = lower(vec![even, odd, main]);
-        let entry = m.fn_by_name("main").unwrap().id;
-        let cm = compile(&m).unwrap();
-        assert_eq!(cm.run(entry), 1); // true
+        assert_eq!(run_main(r#"
+fn even(0), do: true
+fn even(n), do: odd(n - 1)
+fn odd(0), do: false
+fn odd(n), do: even(n - 1)
+fn main(), do: even(10)
+"#), 1);
     }
 
     // ----- .11.19 closure tests -----
 
     #[test]
     fn apply_simple_closure_no_captures() {
-        // fn double(x), do: x*2
-        // fn apply(f, n), do: f(n)
-        // fn main(), do: apply(double, 21)
-        let double = fn_def(
-            "double",
-            vec![cl(
-                vec![Pattern::Var("x".into())],
-                Expr::BinOp(
-                    ABinOp::Mul,
-                    Box::new(Expr::Var("x".into())),
-                    Box::new(Expr::Int(2)),
-                ),
-            )],
-        );
-        let apply = fn_def(
-            "apply",
-            vec![cl(
-                vec![Pattern::Var("f".into()), Pattern::Var("n".into())],
-                Expr::Call(Box::new(Expr::Var("f".into())), vec![Expr::Var("n".into())]),
-            )],
-        );
-        let main = fn_def(
-            "main",
-            vec![cl(
-                vec![],
-                Expr::Call(
-                    Box::new(Expr::Var("apply".into())),
-                    vec![Expr::Var("double".into()), Expr::Int(21)],
-                ),
-            )],
-        );
-        let m = lower(vec![double, apply, main]);
-        let entry = m.fn_by_name("main").unwrap().id;
-        heap_reset_for_test();
-        let cm = compile(&m).unwrap();
-        assert_eq!(cm.run(entry), 42);
+        assert_eq!(run_main(r#"
+fn double(x), do: x * 2
+fn apply_f(f, n), do: f(n)
+fn main(), do: apply_f(double, 21)
+"#), 42);
     }
 
     #[test]
     fn closure_captures_local_value() {
-        // fn make_adder(k), do: fn(x) -> x + k end
-        // fn main(), do: (make_adder(10))(5)
-        let make_adder = fn_def(
-            "make_adder",
-            vec![cl(
-                vec![Pattern::Var("k".into())],
-                Expr::Lambda(
-                    vec![Pattern::Var("x".into())],
-                    Box::new(Expr::BinOp(
-                        ABinOp::Add,
-                        Box::new(Expr::Var("x".into())),
-                        Box::new(Expr::Var("k".into())),
-                    )),
-                ),
-            )],
-        );
-        // main: let f = make_adder(10) in f(5)
-        let main = fn_def(
-            "main",
-            vec![cl(
-                vec![],
-                Expr::Block(vec![
-                    Expr::Match(
-                        Pattern::Var("f".into()),
-                        Box::new(Expr::Call(
-                            Box::new(Expr::Var("make_adder".into())),
-                            vec![Expr::Int(10)],
-                        )),
-                    ),
-                    Expr::Call(
-                        Box::new(Expr::Var("f".into())),
-                        vec![Expr::Int(5)],
-                    ),
-                ]),
-            )],
-        );
-        let m = lower(vec![make_adder, main]);
-        let entry = m.fn_by_name("main").unwrap().id;
-        heap_reset_for_test();
-        let cm = compile(&m).unwrap();
-        assert_eq!(cm.run(entry), 15);
+        assert_eq!(run_main(r#"
+fn make_adder(k), do: fn(x) -> x + k
+fn main() do
+  f = make_adder(10)
+  f(5)
+end
+"#), 15);
     }
 
     #[test]
     fn map_higher_order_renders_doubled_list() {
-        // fn double(x), do: x*2
-        // fn map(_, []), do: []
-        // fn map(f, [h|t]), do: [f(h) | map(f, t)]
-        // fn main(), do: print(map(double, [1, 2, 3]))
-        let double = fn_def(
-            "double",
-            vec![cl(
-                vec![Pattern::Var("x".into())],
-                Expr::BinOp(
-                    ABinOp::Mul,
-                    Box::new(Expr::Var("x".into())),
-                    Box::new(Expr::Int(2)),
-                ),
-            )],
+        assert_eq!(
+            capture_main(r#"
+fn double(x), do: x * 2
+fn map_l(_, []), do: []
+fn map_l(f, [h | t]), do: [f(h) | map_l(f, t)]
+fn main(), do: print(map_l(double, [1, 2, 3]))
+"#),
+            vec!["[2, 4, 6]"]
         );
-        let map = fn_def(
-            "map",
-            vec![
-                cl(
-                    vec![Pattern::Wildcard, Pattern::List(vec![], None)],
-                    Expr::List(vec![], None),
-                ),
-                cl(
-                    vec![
-                        Pattern::Var("f".into()),
-                        Pattern::List(
-                            vec![Pattern::Var("h".into())],
-                            Some(Box::new(Pattern::Var("t".into()))),
-                        ),
-                    ],
-                    Expr::List(
-                        vec![Expr::Call(
-                            Box::new(Expr::Var("f".into())),
-                            vec![Expr::Var("h".into())],
-                        )],
-                        Some(Box::new(Expr::Call(
-                            Box::new(Expr::Var("map".into())),
-                            vec![Expr::Var("f".into()), Expr::Var("t".into())],
-                        ))),
-                    ),
-                ),
-            ],
-        );
-        let main = fn_def(
-            "main",
-            vec![cl(
-                vec![],
-                Expr::Call(
-                    Box::new(Expr::Var("print".into())),
-                    vec![Expr::Call(
-                        Box::new(Expr::Var("map".into())),
-                        vec![
-                            Expr::Var("double".into()),
-                            Expr::List(
-                                vec![Expr::Int(1), Expr::Int(2), Expr::Int(3)],
-                                None,
-                            ),
-                        ],
-                    )],
-                ),
-            )],
-        );
-        let m = lower(vec![double, map, main]);
-        let entry = m.fn_by_name("main").unwrap().id;
-        heap_reset_for_test();
-        let _ = test_capture_take();
-        let cm = compile(&m).unwrap();
-        let _ = cm.run(entry);
-        let captured = test_capture_take();
-        assert_eq!(captured, vec!["[2, 4, 6]".to_string()]);
     }
 
     #[test]
     fn gc_traces_closure_captured_via_jit() {
-        // fn make_adder(k), do: fn(x) -> x + k end
-        // fn main(), do: make_adder(7)
-        // After run: heap holds 1 closure with 1 captured int. Drop root,
-        // GC reclaims everything (closure was the only heap object since
-        // the captured value is an unboxed FzValue Int).
-        let make_adder = fn_def(
-            "make_adder",
-            vec![cl(
-                vec![Pattern::Var("k".into())],
-                Expr::Lambda(
-                    vec![Pattern::Var("x".into())],
-                    Box::new(Expr::BinOp(
-                        ABinOp::Add,
-                        Box::new(Expr::Var("x".into())),
-                        Box::new(Expr::Var("k".into())),
-                    )),
-                ),
-            )],
-        );
-        let main = fn_def(
-            "main",
-            vec![cl(
-                vec![],
-                Expr::Call(
-                    Box::new(Expr::Var("make_adder".into())),
-                    vec![Expr::Int(7)],
-                ),
-            )],
-        );
-        let m = lower(vec![make_adder, main]);
-        let entry = m.fn_by_name("main").unwrap().id;
-        heap_reset_for_test();
-        let cm = compile(&m).unwrap();
-        let halt = cm.run(entry);
-        // Closure object on the heap.
+        let (halt, _m) = run_main_after_heap_reset(r#"
+fn make_adder(k), do: fn(x) -> x + k
+fn main(), do: make_adder(7)
+"#);
         assert_eq!(heap_live_count(), 1);
-        // Holding halt as a root keeps it alive...
         let root = crate::fz_value::FzValue(halt as u64);
         heap_gc(&[root]);
         assert_eq!(heap_live_count(), 1);
-        // ...without the root, GC reclaims it.
         heap_gc(&[]);
         assert_eq!(heap_live_count(), 0);
     }
 
     // ----- .11.21 structural equality tests -----
 
-    /// Helper: build a main fn that returns the eq of two expressions.
-    fn eq_main(a: Expr, b: Expr) -> Vec<Rc<Item>> {
-        vec![fn_def(
-            "main",
-            vec![cl(
-                vec![],
-                Expr::BinOp(ABinOp::Eq, Box::new(a), Box::new(b)),
-            )],
-        )]
-    }
-
-    fn run_eq(items: Vec<Rc<Item>>) -> i64 {
-        let m = lower(items);
-        let entry = m.fn_by_name("main").unwrap().id;
-        heap_reset_for_test();
-        let cm = compile(&m).unwrap();
-        cm.run(entry)
-    }
-
     #[test]
     fn list_structural_eq_same_content_distinct_allocations() {
-        let l = || Expr::List(vec![Expr::Int(1), Expr::Int(2), Expr::Int(3)], None);
-        assert_eq!(run_eq(eq_main(l(), l())), 1);
+        assert_eq!(run_main("fn main(), do: [1, 2, 3] == [1, 2, 3]"), 1);
     }
 
     #[test]
     fn list_structural_eq_length_mismatch_is_false() {
-        assert_eq!(
-            run_eq(eq_main(
-                Expr::List(vec![Expr::Int(1), Expr::Int(2)], None),
-                Expr::List(vec![Expr::Int(1), Expr::Int(2), Expr::Int(3)], None),
-            )),
-            0
-        );
+        assert_eq!(run_main("fn main(), do: [1, 2] == [1, 2, 3]"), 0);
     }
 
     #[test]
     fn tuple_structural_eq_same_arity_and_content() {
-        let t = || {
-            Expr::Tuple(vec![Expr::Int(1), Expr::Atom("ok".into())])
-        };
-        assert_eq!(run_eq(eq_main(t(), t())), 1);
+        assert_eq!(run_main("fn main(), do: {1, :ok} == {1, :ok}"), 1);
     }
 
     #[test]
     fn tuple_eq_different_arity_is_false() {
-        assert_eq!(
-            run_eq(eq_main(
-                Expr::Tuple(vec![Expr::Int(1), Expr::Int(2)]),
-                Expr::Tuple(vec![Expr::Int(1), Expr::Int(2), Expr::Int(3)]),
-            )),
-            0
-        );
+        assert_eq!(run_main("fn main(), do: {1, 2} == {1, 2, 3}"), 0);
     }
 
     #[test]
     fn bitstring_structural_eq_byte_aligned() {
-        use crate::ast::{BitField, BitFieldSpec, BitType, Endian};
-        let bs = || {
-            Expr::Bitstring(
-                [1, 2, 3]
-                    .iter()
-                    .map(|n| BitField {
-                        value: Expr::Int(*n),
-                        spec: BitFieldSpec {
-                            ty: BitType::Integer,
-                            size: None,
-                            unit: None,
-                            endian: Endian::Big,
-                            signed: false,
-                        },
-                    })
-                    .collect(),
-            )
-        };
-        assert_eq!(run_eq(eq_main(bs(), bs())), 1);
+        assert_eq!(run_main("fn main(), do: <<1, 2, 3>> == <<1, 2, 3>>"), 1);
     }
 
     #[test]
     fn map_structural_eq_ignores_construction_order() {
-        // %{a: 1, b: 2} == %{b: 2, a: 1}  -> true (canonical sort)
-        let lhs = Expr::Map(vec![
-            (Expr::Atom("a".into()), Expr::Int(1)),
-            (Expr::Atom("b".into()), Expr::Int(2)),
-        ]);
-        let rhs = Expr::Map(vec![
-            (Expr::Atom("b".into()), Expr::Int(2)),
-            (Expr::Atom("a".into()), Expr::Int(1)),
-        ]);
-        assert_eq!(run_eq(eq_main(lhs, rhs)), 1);
+        assert_eq!(run_main("fn main(), do: %{a: 1, b: 2} == %{b: 2, a: 1}"), 1);
     }
 
     #[test]
     fn map_eq_different_value_is_false() {
-        let lhs = Expr::Map(vec![
-            (Expr::Atom("a".into()), Expr::Int(1)),
-            (Expr::Atom("b".into()), Expr::Int(2)),
-        ]);
-        let rhs = Expr::Map(vec![
-            (Expr::Atom("a".into()), Expr::Int(1)),
-            (Expr::Atom("b".into()), Expr::Int(3)),
-        ]);
-        assert_eq!(run_eq(eq_main(lhs, rhs)), 0);
+        assert_eq!(run_main("fn main(), do: %{a: 1, b: 2} == %{a: 1, b: 3}"), 0);
     }
 
     #[test]
     fn heterogeneous_kinds_compare_unequal() {
-        // [1, 2] == {1, 2} -> false (List vs Struct)
-        assert_eq!(
-            run_eq(eq_main(
-                Expr::List(vec![Expr::Int(1), Expr::Int(2)], None),
-                Expr::Tuple(vec![Expr::Int(1), Expr::Int(2)]),
-            )),
-            0
-        );
+        assert_eq!(run_main("fn main(), do: [1, 2] == {1, 2}"), 0);
     }
 
     #[test]
     fn nested_map_with_list_structural_eq() {
-        // %{x: [1, 2]} == %{x: [1, 2]}  -> true (recursion through map+list)
-        let m = || {
-            Expr::Map(vec![(
-                Expr::Atom("x".into()),
-                Expr::List(vec![Expr::Int(1), Expr::Int(2)], None),
-            )])
-        };
-        assert_eq!(run_eq(eq_main(m(), m())), 1);
+        assert_eq!(run_main("fn main(), do: %{x: [1, 2]} == %{x: [1, 2]}"), 1);
     }
 
     #[test]
     fn neq_inverts_structural_eq() {
-        // [1, 2] != [1, 2] -> false; [1, 2] != [1, 3] -> true
-        assert_eq!(
-            run_eq(vec![fn_def(
-                "main",
-                vec![cl(
-                    vec![],
-                    Expr::BinOp(
-                        ABinOp::Neq,
-                        Box::new(Expr::List(vec![Expr::Int(1), Expr::Int(2)], None)),
-                        Box::new(Expr::List(vec![Expr::Int(1), Expr::Int(2)], None)),
-                    ),
-                )],
-            )]),
-            0
-        );
-        assert_eq!(
-            run_eq(vec![fn_def(
-                "main",
-                vec![cl(
-                    vec![],
-                    Expr::BinOp(
-                        ABinOp::Neq,
-                        Box::new(Expr::List(vec![Expr::Int(1), Expr::Int(2)], None)),
-                        Box::new(Expr::List(vec![Expr::Int(1), Expr::Int(3)], None)),
-                    ),
-                )],
-            )]),
-            1
-        );
+        assert_eq!(run_main("fn main(), do: [1, 2] != [1, 2]"), 0);
+        assert_eq!(run_main("fn main(), do: [1, 2] != [1, 3]"), 1);
     }
 
     // ----- .11.20 boxed-float tests -----
 
     #[test]
     fn float_const_halt_round_trips_via_bits() {
-        // fn main(), do: 3.14   — halt returns f64 bits.
-        let main = fn_def("main", vec![cl(vec![], Expr::Float(3.14))]);
-        let m = lower(vec![main]);
-        let entry = m.fn_by_name("main").unwrap().id;
-        heap_reset_for_test();
-        let cm = compile(&m).unwrap();
-        let halt = cm.run(entry);
+        let (halt, _m) = run_main_after_heap_reset("fn main(), do: 3.14");
         assert_eq!(f64::from_bits(halt as u64), 3.14);
     }
 
     #[test]
     fn print_float_renders_with_explicit_dot_zero() {
-        // fn main() do print(4.0); print(3.14) end
-        let main = fn_def(
-            "main",
-            vec![cl(
-                vec![],
-                Expr::Block(vec![
-                    Expr::Call(
-                        Box::new(Expr::Var("print".into())),
-                        vec![Expr::Float(4.0)],
-                    ),
-                    Expr::Call(
-                        Box::new(Expr::Var("print".into())),
-                        vec![Expr::Float(3.14)],
-                    ),
-                ]),
-            )],
+        assert_eq!(
+            capture_main("fn main() do\n  print(4.0)\n  print(3.14)\nend"),
+            vec!["4.0", "3.14"]
         );
-        let m = lower(vec![main]);
-        let entry = m.fn_by_name("main").unwrap().id;
-        heap_reset_for_test();
-        let _ = test_capture_take();
-        let cm = compile(&m).unwrap();
-        let _ = cm.run(entry);
-        assert_eq!(test_capture_take(), vec!["4.0".to_string(), "3.14".to_string()]);
     }
 
     #[test]
     fn float_arithmetic_promotes_via_runtime_helper() {
-        // 1.5 + 2.5 == 4.0 -> true (halt = 1)
-        let main = fn_def(
-            "main",
-            vec![cl(
-                vec![],
-                Expr::BinOp(
-                    ABinOp::Eq,
-                    Box::new(Expr::BinOp(
-                        ABinOp::Add,
-                        Box::new(Expr::Float(1.5)),
-                        Box::new(Expr::Float(2.5)),
-                    )),
-                    Box::new(Expr::Float(4.0)),
-                ),
-            )],
-        );
-        let m = lower(vec![main]);
-        let entry = m.fn_by_name("main").unwrap().id;
-        heap_reset_for_test();
-        let cm = compile(&m).unwrap();
-        assert_eq!(cm.run(entry), 1); // TRUE halts as 1
+        assert_eq!(run_main("fn main(), do: 1.5 + 2.5 == 4.0"), 1);
     }
 
     #[test]
     fn mixed_int_float_arithmetic_promotes() {
-        // 1 + 2.0 == 3.0 -> true. Mixed-tag arithmetic dispatches to slow path
-        // and promotes Int -> f64 before adding.
-        let main = fn_def(
-            "main",
-            vec![cl(
-                vec![],
-                Expr::BinOp(
-                    ABinOp::Eq,
-                    Box::new(Expr::BinOp(
-                        ABinOp::Add,
-                        Box::new(Expr::Int(1)),
-                        Box::new(Expr::Float(2.0)),
-                    )),
-                    Box::new(Expr::Float(3.0)),
-                ),
-            )],
-        );
-        let m = lower(vec![main]);
-        let entry = m.fn_by_name("main").unwrap().id;
-        heap_reset_for_test();
-        let cm = compile(&m).unwrap();
-        assert_eq!(cm.run(entry), 1);
+        assert_eq!(run_main("fn main(), do: 1 + 2.0 == 3.0"), 1);
     }
 
     #[test]
     fn mixed_int_float_eq_does_not_promote() {
-        // 1 == 1.0 -> false (per ticket: Eq does NOT promote across reps).
-        let main = fn_def(
-            "main",
-            vec![cl(
-                vec![],
-                Expr::BinOp(
-                    ABinOp::Eq,
-                    Box::new(Expr::Int(1)),
-                    Box::new(Expr::Float(1.0)),
-                ),
-            )],
-        );
-        let m = lower(vec![main]);
-        let entry = m.fn_by_name("main").unwrap().id;
-        heap_reset_for_test();
-        let cm = compile(&m).unwrap();
-        assert_eq!(cm.run(entry), 0); // FALSE halts as 0
+        assert_eq!(run_main("fn main(), do: 1 == 1.0"), 0);
     }
 
     #[test]
     fn distinct_boxed_floats_compare_equal_by_value() {
-        // Two separately allocated 1.5 floats are NOT ptr-equal but ARE
-        // value-equal — fz_value_eq must read payload, not just bits.
-        let main = fn_def(
-            "main",
-            vec![cl(
-                vec![],
-                Expr::BinOp(
-                    ABinOp::Eq,
-                    Box::new(Expr::Float(1.5)),
-                    Box::new(Expr::Float(1.5)),
-                ),
-            )],
-        );
-        let m = lower(vec![main]);
-        let entry = m.fn_by_name("main").unwrap().id;
-        heap_reset_for_test();
-        let cm = compile(&m).unwrap();
-        assert_eq!(cm.run(entry), 1);
+        assert_eq!(run_main("fn main(), do: 1.5 == 1.5"), 1);
     }
 
     #[test]
     fn float_ordered_comparison_dispatches_through_helper() {
-        // 1.5 < 2.0 -> true.
-        let main = fn_def(
-            "main",
-            vec![cl(
-                vec![],
-                Expr::BinOp(
-                    ABinOp::Lt,
-                    Box::new(Expr::Float(1.5)),
-                    Box::new(Expr::Float(2.0)),
-                ),
-            )],
-        );
-        let m = lower(vec![main]);
-        let entry = m.fn_by_name("main").unwrap().id;
-        heap_reset_for_test();
-        let cm = compile(&m).unwrap();
-        assert_eq!(cm.run(entry), 1);
+        assert_eq!(run_main("fn main(), do: 1.5 < 2.0"), 1);
     }
 
     #[test]
     fn float_bit_field_round_trips_via_bitstring() {
-        // <<3.14::float-64>> constructed and parsed back to 3.14.
-        use crate::ast::{BitField, BitFieldSpec, BitType, Endian};
-        let main = fn_def(
-            "main",
-            vec![cl(
-                vec![],
-                Expr::Bitstring(vec![BitField {
-                    value: Expr::Float(3.14),
-                    spec: BitFieldSpec {
-                        ty: BitType::Float,
-                        size: None,
-                        unit: None,
-                        endian: Endian::Big,
-                        signed: false,
-                    },
-                }]),
-            )],
-        );
-        let m = lower(vec![main]);
-        let entry = m.fn_by_name("main").unwrap().id;
-        heap_reset_for_test();
-        let cm = compile(&m).unwrap();
-        let halt = cm.run(entry) as u64;
-        // halt is the bitstring ptr. Read 8 bytes of payload, decode as f64 BE.
+        let (halt, _m) = run_main_after_heap_reset("fn main(), do: <<3.14::float>>");
+        let halt = halt as u64;
         let p = crate::fz_value::FzValue(halt).unbox_ptr().unwrap();
         let bytes = unsafe {
             std::slice::from_raw_parts((p as *const u8).add(24), 8)
@@ -4567,14 +3302,9 @@ mod tests {
 
     #[test]
     fn allocate_float_drop_root_gc_reclaims() {
-        let main = fn_def("main", vec![cl(vec![], Expr::Float(2.71))]);
-        let m = lower(vec![main]);
-        let entry = m.fn_by_name("main").unwrap().id;
-        heap_reset_for_test();
-        let cm = compile(&m).unwrap();
-        let _ = cm.run(entry);
+        let (_halt, _m) = run_main_after_heap_reset("fn main(), do: 2.71");
         assert_eq!(heap_live_count(), 1);
-        heap_gc(&[]); // no roots
+        heap_gc(&[]);
         assert_eq!(heap_live_count(), 0);
         assert_eq!(heap_freelist_len(), 1);
     }
@@ -4583,184 +3313,53 @@ mod tests {
 
     #[test]
     fn print_vec_i64_renders_via_jit() {
-        // fn main() do print(~v[1, 2, 3]) end
-        let main = fn_def(
-            "main",
-            vec![cl(
-                vec![],
-                Expr::Call(
-                    Box::new(Expr::Var("print".into())),
-                    vec![Expr::VecLit(
-                        crate::ast::VecKind::Numeric,
-                        vec![Expr::Int(1), Expr::Int(2), Expr::Int(3)],
-                    )],
-                ),
-            )],
-        );
-        let m = lower(vec![main]);
-        let entry = m.fn_by_name("main").unwrap().id;
-        heap_reset_for_test();
-        let _ = test_capture_take();
-        let cm = compile(&m).unwrap();
-        let _ = cm.run(entry);
-        assert_eq!(test_capture_take(), vec!["~v[1, 2, 3]".to_string()]);
+        assert_eq!(capture_main("fn main(), do: print(~v[1, 2, 3])"), vec!["~v[1, 2, 3]"]);
     }
 
     #[test]
     fn print_vec_u8_renders_via_jit() {
-        let main = fn_def(
-            "main",
-            vec![cl(
-                vec![],
-                Expr::Call(
-                    Box::new(Expr::Var("print".into())),
-                    vec![Expr::VecLit(
-                        crate::ast::VecKind::Bytes,
-                        vec![Expr::Int(0xff), Expr::Int(0xab)],
-                    )],
-                ),
-            )],
-        );
-        let m = lower(vec![main]);
-        let entry = m.fn_by_name("main").unwrap().id;
-        heap_reset_for_test();
-        let _ = test_capture_take();
-        let cm = compile(&m).unwrap();
-        let _ = cm.run(entry);
-        assert_eq!(test_capture_take(), vec!["~b[255, 171]".to_string()]);
+        assert_eq!(capture_main("fn main(), do: print(~b[0xff, 0xab])"), vec!["~b[255, 171]"]);
     }
 
     #[test]
     fn print_vec_bit_renders_via_jit() {
-        let main = fn_def(
-            "main",
-            vec![cl(
-                vec![],
-                Expr::Call(
-                    Box::new(Expr::Var("print".into())),
-                    vec![Expr::VecLit(
-                        crate::ast::VecKind::Bits,
-                        vec![Expr::Int(1), Expr::Int(0), Expr::Int(1), Expr::Int(1)],
-                    )],
-                ),
-            )],
+        assert_eq!(
+            capture_main("fn main(), do: print(~bits[1, 0, 1, 1])"),
+            vec!["~bits[1, 0, 1, 1]"]
         );
-        let m = lower(vec![main]);
-        let entry = m.fn_by_name("main").unwrap().id;
-        heap_reset_for_test();
-        let _ = test_capture_take();
-        let cm = compile(&m).unwrap();
-        let _ = cm.run(entry);
-        assert_eq!(test_capture_take(), vec!["~bits[1, 0, 1, 1]".to_string()]);
     }
 
     #[test]
     fn vec_f64_codegen_blocks_with_pointer_to_followup_ticket() {
-        // ~v[1.0, 2.0] now lowers to MakeVec(F64, ..) per fz-ul4.11.24.5
-        // (the kind bifurcation moved from lower-time-error to a typed
-        // selection). The codegen-side VecF64 storage still gates at
-        // fz-ul4.11.23 — this test enforces the gate sits there.
-        let main = fn_def(
-            "main",
-            vec![cl(
-                vec![],
-                Expr::VecLit(
-                    crate::ast::VecKind::Numeric,
-                    vec![Expr::Float(1.0), Expr::Float(2.0)],
-                ),
-            )],
-        );
-        let m = lower_program(&Program { items: vec![main] })
-            .expect("lower should now succeed under .24.5");
+        // ~v[1.0, 2.0] lowers fine post-.24.5 but codegen still gates VecF64 at .11.23.
+        let m = lower_src("fn main(), do: ~v[1.0, 2.0]");
         let err = match compile(&m) {
             Ok(_) => panic!("VecF64 codegen should be gated"),
             Err(e) => e,
         };
         let msg = format!("{:?}", err);
-        assert!(
-            msg.contains("11.23"),
-            "expected ticket reference in error, got: {}",
-            msg
-        );
+        assert!(msg.contains("11.23"), "expected ticket reference: {}", msg);
     }
 
     #[test]
     fn vec_get_returns_indexed_element() {
-        // fn main(), do: vec_get(~v[10, 20, 30], 1)
-        let main = fn_def(
-            "main",
-            vec![cl(
-                vec![],
-                Expr::Call(
-                    Box::new(Expr::Var("vec_get".into())),
-                    vec![
-                        Expr::VecLit(
-                            crate::ast::VecKind::Numeric,
-                            vec![Expr::Int(10), Expr::Int(20), Expr::Int(30)],
-                        ),
-                        Expr::Int(1),
-                    ],
-                ),
-            )],
-        );
-        let m = lower(vec![main]);
-        let entry = m.fn_by_name("main").unwrap().id;
-        heap_reset_for_test();
-        let cm = compile(&m).unwrap();
-        assert_eq!(cm.run(entry), 20);
+        assert_eq!(run_main("fn main(), do: vec_get(~v[10, 20, 30], 1)"), 20);
     }
 
     #[test]
     fn vec_get_out_of_bounds_returns_nil() {
-        // vec_get(~v[1, 2], 10) -> nil (halt unboxes to 0).
-        let main = fn_def(
-            "main",
-            vec![cl(
-                vec![],
-                Expr::Call(
-                    Box::new(Expr::Var("vec_get".into())),
-                    vec![
-                        Expr::VecLit(
-                            crate::ast::VecKind::Numeric,
-                            vec![Expr::Int(1), Expr::Int(2)],
-                        ),
-                        Expr::Int(10),
-                    ],
-                ),
-            )],
-        );
-        let m = lower(vec![main]);
-        let entry = m.fn_by_name("main").unwrap().id;
-        heap_reset_for_test();
-        let cm = compile(&m).unwrap();
-        assert_eq!(cm.run(entry), 0); // nil halts as 0
+        assert_eq!(run_main("fn main(), do: vec_get(~v[1, 2], 10)"), 0);
     }
 
     #[test]
     fn vec_address_stable_across_gc_via_jit() {
-        // Allocate a vec via JIT, GC with halt-ptr as root, read element back.
-        // Proves the non-moving collector preserves vec payloads.
-        let main = fn_def(
-            "main",
-            vec![cl(
-                vec![],
-                Expr::VecLit(
-                    crate::ast::VecKind::Numeric,
-                    vec![Expr::Int(100), Expr::Int(200), Expr::Int(300)],
-                ),
-            )],
-        );
-        let m = lower(vec![main]);
-        let entry = m.fn_by_name("main").unwrap().id;
-        heap_reset_for_test();
-        let cm = compile(&m).unwrap();
-        let halt_bits = cm.run(entry) as u64;
+        let (halt_bits, _m) = run_main_after_heap_reset("fn main(), do: ~v[100, 200, 300]");
+        let halt_bits = halt_bits as u64;
         assert_eq!(heap_live_count(), 1);
         let root = crate::fz_value::FzValue(halt_bits);
         let p_before = root.unbox_ptr().unwrap();
         heap_gc(&[root]);
-        assert_eq!(heap_live_count(), 1, "vec rooted via halt should survive GC");
-        // Address stable + payload still readable.
+        assert_eq!(heap_live_count(), 1);
         let p_after = crate::fz_value::FzValue(halt_bits).unbox_ptr().unwrap();
         assert_eq!(p_before, p_after);
         assert_eq!(crate::heap::Heap::vec_len(p_after), 3);
@@ -4772,100 +3371,23 @@ mod tests {
 
     #[test]
     fn tail_call_closure_reuses_frame_via_count_loop() {
-        // fn count(0, acc), do: acc
-        // fn count(n, acc), do: count(n - 1, acc + 1)
-        // fn main(), do: count_via_closure(100_000, 0)
-        // We invoke `count` indirectly via a closure value to exercise the
-        // TailCallClosure frame-reuse path. Use a small wrapper:
-        // fn run(f, n, acc), do: f(n, acc)   — TailCallClosure
-        // fn main(), do: run(count, 100_000, 0)
-        // Closure is fz-shape; TailCallClosure inside `run` invokes count.
-        // Then count tail-recurses via Term::TailCall (not closure), but the
-        // initial closure dispatch into count exercises the closure entry path.
-        // To stress *closure* tail-reuse specifically, count_loop itself
-        // becomes a closure that re-invokes itself by binding to a local:
-        //
-        //   fn count_loop(n, acc) when n == 0, do: acc
-        //   fn count_loop(n, acc), do: count_loop(n - 1, acc + 1)
-        //   fn main(), do: count_loop(100_000, 0)
-        //
-        // To force closure-tail-call: introduce
-        //   fn run(f, n, acc) when n == 0, do: acc
-        //   fn run(f, n, acc), do: run(f, n - 1, acc + 1)
-        //   fn main(), do: run(some_unused_fn, 100_000, 0)
-        // But we want the tail recursion target to be the closure itself.
-        //
-        // Cleanest: use a recursive closure pattern via top-level fn taking
-        // a closure parameter that calls itself. Below: `loop_with(f, n, acc)`
-        // invokes `f(f, n, acc)` so the closure can recurse via its own
-        // first arg — this routes through TailCallClosure each iteration.
-        let loop_with = fn_def(
-            "loop_with",
-            vec![
-                cl(
-                    vec![
-                        Pattern::Var("f".into()),
-                        Pattern::Int(0),
-                        Pattern::Var("acc".into()),
-                    ],
-                    Expr::Var("acc".into()),
-                ),
-                cl(
-                    vec![
-                        Pattern::Var("f".into()),
-                        Pattern::Var("n".into()),
-                        Pattern::Var("acc".into()),
-                    ],
-                    Expr::Call(
-                        Box::new(Expr::Var("f".into())),
-                        vec![
-                            Expr::Var("f".into()),
-                            Expr::BinOp(
-                                ABinOp::Sub,
-                                Box::new(Expr::Var("n".into())),
-                                Box::new(Expr::Int(1)),
-                            ),
-                            Expr::BinOp(
-                                ABinOp::Add,
-                                Box::new(Expr::Var("acc".into())),
-                                Box::new(Expr::Int(1)),
-                            ),
-                        ],
-                    ),
-                ),
-            ],
-        );
-        let main = fn_def(
-            "main",
-            vec![cl(
-                vec![],
-                Expr::Call(
-                    Box::new(Expr::Var("loop_with".into())),
-                    vec![
-                        Expr::Var("loop_with".into()),
-                        Expr::Int(100_000),
-                        Expr::Int(0),
-                    ],
-                ),
-            )],
-        );
-        let m = lower(vec![loop_with, main]);
-        let entry = m.fn_by_name("main").unwrap().id;
-        heap_reset_for_test();
-        let cm = compile(&m).unwrap();
-        // Cap iterations in the trampoline guards us if frame-reuse is broken.
-        let result = cm.run(entry);
-        assert_eq!(result, 100_000);
+        // Self-applying closure to force TailCallClosure on every iteration.
+        assert_eq!(run_main(r#"
+fn loop_with(f, 0, acc), do: acc
+fn loop_with(f, n, acc), do: f(f, n - 1, acc + 1)
+fn main(), do: loop_with(loop_with, 100000, 0)
+"#), 100_000);
     }
 
     // ---- fz-ul4.11.24.4: arithmetic dispatch elision ----
+    //
+    // These two tests synthesize IR directly via FnBuilder rather than
+    // going through source: they exercise codegen with an entry-block
+    // parameter at Top (impossible from a top-level fn declared in fz
+    // source) so the typer is forced to retain dispatch. Keeping them
+    // hand-built is the cleanest expression of the assertion.
 
     fn build_int_const_add_module() -> Module {
-        // main():
-        //   one = 1
-        //   two = 2
-        //   sum = one + two
-        //   halt sum
         use crate::fz_ir::{FnBuilder, ModuleBuilder};
         let mut b = FnBuilder::new(FnId(0), "main");
         let entry = b.block(vec![]);
@@ -4879,11 +3401,6 @@ mod tests {
     }
 
     fn build_top_param_add_module() -> Module {
-        // main(x):
-        //   one = 1
-        //   sum = x + one
-        //   halt sum
-        // x is a top-level entry param -> typer assigns Top, dispatch retained.
         use crate::fz_ir::{FnBuilder, ModuleBuilder};
         let mut b = FnBuilder::new(FnId(0), "main");
         let x = b.fresh_var();
@@ -4908,9 +3425,6 @@ mod tests {
 
     #[test]
     fn arith_int_int_elides_dispatch() {
-        // Both operands are int-literal singletons -> subtype of int. Codegen
-        // emits the fast inline body only; no `brif` (the both_int test) and
-        // no call to the arith helper (dispatch absent).
         let m = build_int_const_add_module();
         let ir = get_main_ir(&m);
         assert!(!ir.contains("brif"),
@@ -4919,8 +3433,6 @@ mod tests {
 
     #[test]
     fn arith_top_param_keeps_dispatch() {
-        // x is a fn-param at Top -> typer can't prove Int. Dispatch retained;
-        // `brif` from both_int is present.
         let m = build_top_param_add_module();
         let ir = get_main_ir(&m);
         assert!(ir.contains("brif"),

@@ -18,7 +18,7 @@
 
 use crate::ast::{
     BinOp as AstBinOp, BitField as AstBitField, BitSize as AstBitSize, Expr, FnDef, Item,
-    MatchClause, Pattern, Program, UnOp as AstUnOp, WithBinding,
+    MatchClause, Pattern, Program, Spanned, UnOp as AstUnOp, WithBinding,
 };
 use crate::fz_ir::{
     BinOp, BitFieldIr, BitSizeIr, BlockId, BuiltinId, Const, Cont, FnBuilder, FnId, Module,
@@ -281,7 +281,7 @@ fn lower_fn(ctx: &mut LowerCtx, fn_def: &FnDef) -> Result<(), LowerError> {
         ctx.cur_block = Some(entry);
 
         for (pv, pat) in param_vars.iter().zip(&clause.params) {
-            lower_pattern_bind(ctx, *pv, pat, fail_block)?;
+            lower_pattern_bind(ctx, *pv, &pat.node, fail_block)?;
         }
         if let Some(_g) = &clause.guard {
             return Err(LowerError::Unsupported("guards (deferred)".into()));
@@ -337,7 +337,7 @@ fn lower_multi_clause(
         ctx.env_order.clear();
         ctx.terminated = false;
         for (pv, pat) in param_vars.iter().zip(&clause.params) {
-            lower_pattern_bind(ctx, *pv, pat, next)?;
+            lower_pattern_bind(ctx, *pv, &pat.node, next)?;
         }
         let result = lower_expr(ctx, &clause.body, /* is_tail */ true)?;
         if !ctx.terminated {
@@ -348,8 +348,8 @@ fn lower_multi_clause(
     Ok(())
 }
 
-fn lower_expr(ctx: &mut LowerCtx, e: &Expr, is_tail: bool) -> Result<Var, LowerError> {
-    match e {
+fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -> Result<Var, LowerError> {
+    match &e.node {
         Expr::Int(n) => Ok(ctx.let_(Prim::Const(Const::Int(*n)))),
         Expr::Float(x) => Ok(ctx.let_(Prim::Const(Const::Float(*x)))),
         Expr::Str(s) => Ok(ctx.let_(Prim::Const(Const::Str(s.clone())))),
@@ -423,10 +423,8 @@ fn lower_expr(ctx: &mut LowerCtx, e: &Expr, is_tail: bool) -> Result<Var, LowerE
 
         Expr::Match(pat, expr) => {
             let v = lower_expr(ctx, expr, false)?;
-            // Match-expr in expr position binds vars and evaluates to the
-            // matched value; on failure -> halt :match_error.
             let fail_block = ctx.cur_mut().block(vec![]);
-            lower_pattern_bind(ctx, v, pat, fail_block)?;
+            lower_pattern_bind(ctx, v, &pat.node, fail_block)?;
             // After match, control is in current_block; result is the matched value.
             // Set fail block (only reached on dynamic mismatch).
             let saved = ctx.cur_block();
@@ -465,7 +463,7 @@ fn lower_expr(ctx: &mut LowerCtx, e: &Expr, is_tail: bool) -> Result<Var, LowerE
             let arg_vars: Vec<Var> = parks.iter().map(|n| ctx.unpark(n)).collect();
             for n in &parks { ctx.unbind(n); }
             // Resolve callee.
-            let callee_name = match target.as_ref() {
+            let callee_name = match &target.node {
                 Expr::Var(n) => n.clone(),
                 Expr::Dot(_, _) => {
                     return Err(LowerError::Unsupported(
@@ -530,9 +528,9 @@ fn lower_expr(ctx: &mut LowerCtx, e: &Expr, is_tail: bool) -> Result<Var, LowerE
 
 fn lower_if(
     ctx: &mut LowerCtx,
-    cond: &Expr,
-    then_e: &Expr,
-    else_opt: &Option<Box<Expr>>,
+    cond: &Spanned<Expr>,
+    then_e: &Spanned<Expr>,
+    else_opt: &Option<Box<Spanned<Expr>>>,
     is_tail: bool,
 ) -> Result<Var, LowerError> {
     let cv = lower_expr(ctx, cond, false)?;
@@ -567,8 +565,8 @@ fn lower_if(
 
 fn lower_lambda(
     ctx: &mut LowerCtx,
-    params: &[Pattern],
-    body: &Expr,
+    params: &[Spanned<Pattern>],
+    body: &Spanned<Expr>,
 ) -> Result<Var, LowerError> {
     // Capture all in-scope locals.
     let captured = ctx.captured_snapshot();
@@ -607,7 +605,7 @@ fn lower_lambda(
 
     ctx.terminated = false;
     for (pv, pat) in lam_param_vars.iter().zip(params) {
-        lower_pattern_bind(ctx, *pv, pat, fail_block)?;
+        lower_pattern_bind(ctx, *pv, &pat.node, fail_block)?;
     }
     let result = lower_expr(ctx, body, true)?;
     if !ctx.terminated {
@@ -703,7 +701,7 @@ fn cps_split_call(
 /// Lower a sequence of subexpressions, parking each result in env so that any
 /// CPS-split triggered by a later element rebinds the earlier results into the
 /// continuation. Caller unparks/unbinds.
-fn lower_seq(ctx: &mut LowerCtx, exprs: &[Expr]) -> Result<Vec<String>, LowerError> {
+fn lower_seq(ctx: &mut LowerCtx, exprs: &[Spanned<Expr>]) -> Result<Vec<String>, LowerError> {
     let mut parks = Vec::with_capacity(exprs.len());
     for e in exprs {
         let v = lower_expr(ctx, e, false)?;
@@ -768,18 +766,16 @@ fn lower_pattern_bind(
         Pattern::Nil => emit_eq_check(ctx, subject, Prim::Const(Const::Nil), fail_block),
         Pattern::As(name, inner) => {
             ctx.bind(name, subject);
-            lower_pattern_bind(ctx, subject, inner, fail_block)
+            lower_pattern_bind(ctx, subject, &inner.node, fail_block)
         }
         Pattern::Tuple(elems) => {
-            // Project field i; recurse.
             for (i, elem_pat) in elems.iter().enumerate() {
                 let fv = ctx.let_(Prim::TupleField(subject, i as u32));
-                lower_pattern_bind(ctx, fv, elem_pat, fail_block)?;
+                lower_pattern_bind(ctx, fv, &elem_pat.node, fail_block)?;
             }
             Ok(())
         }
         Pattern::List(elems, tail) => {
-            // Walk: for each elem, check is_nil(cur) is false, take head/tail.
             let mut cur = subject;
             for elem_pat in elems {
                 let isnil = ctx.let_(Prim::ListIsNil(cur));
@@ -788,11 +784,11 @@ fn lower_pattern_bind(
                 ctx.cur_block = Some(cont_b);
                 let h = ctx.let_(Prim::ListHead(cur));
                 let t = ctx.let_(Prim::ListTail(cur));
-                lower_pattern_bind(ctx, h, elem_pat, fail_block)?;
+                lower_pattern_bind(ctx, h, &elem_pat.node, fail_block)?;
                 cur = t;
             }
             match tail {
-                Some(tail_pat) => lower_pattern_bind(ctx, cur, tail_pat, fail_block),
+                Some(tail_pat) => lower_pattern_bind(ctx, cur, &tail_pat.node, fail_block),
                 None => {
                     // Must end with nil.
                     let isnil = ctx.let_(Prim::ListIsNil(cur));
@@ -808,15 +804,14 @@ fn lower_pattern_bind(
             // key (must be a literal expression-equivalent), call MapGet, ensure
             // result is non-nil (key present), then recurse into value pattern.
             for (key_pat, val_pat) in entries {
-                let key_var = lower_pattern_as_key_expr(ctx, key_pat)?;
+                let key_var = lower_pattern_as_key_expr(ctx, &key_pat.node)?;
                 let got = ctx.let_(Prim::MapGet(subject, key_var));
-                // MapGet returns nil if absent; check it is not nil.
                 let nil_v = ctx.let_(Prim::Const(Const::Nil));
                 let is_nil = ctx.let_(Prim::BinOp(BinOp::Eq, got, nil_v));
                 let cont_b = ctx.cur_mut().block(vec![]);
                 ctx.set_term(Term::If(is_nil, fail_block, cont_b));
                 ctx.cur_block = Some(cont_b);
-                lower_pattern_bind(ctx, got, val_pat, fail_block)?;
+                lower_pattern_bind(ctx, got, &val_pat.node, fail_block)?;
             }
             Ok(())
         }
@@ -848,7 +843,7 @@ fn lower_pattern_bind(
                 let next_reader = ctx.let_(Prim::TupleField(result, 2));
                 // Park reader so any CPS-split inside the pattern keeps it.
                 let r_park = ctx.park(next_reader);
-                lower_pattern_bind(ctx, extracted, &field.value, fail_block)?;
+                lower_pattern_bind(ctx, extracted, &field.value.node, fail_block)?;
                 reader = ctx.unpark(&r_park);
                 ctx.unbind(&r_park);
             }
@@ -919,7 +914,7 @@ fn emit_eq_check(
 // Expression lowerings added in fz-ul4.11.17
 // ----------------------------------------------------------------------
 
-fn lower_map(ctx: &mut LowerCtx, entries: &[(Expr, Expr)]) -> Result<Var, LowerError> {
+fn lower_map(ctx: &mut LowerCtx, entries: &[(Spanned<Expr>, Spanned<Expr>)]) -> Result<Var, LowerError> {
     let mut key_parks = Vec::with_capacity(entries.len());
     let mut val_parks = Vec::with_capacity(entries.len());
     for (k, v) in entries {
@@ -940,8 +935,8 @@ fn lower_map(ctx: &mut LowerCtx, entries: &[(Expr, Expr)]) -> Result<Var, LowerE
 
 fn lower_map_update(
     ctx: &mut LowerCtx,
-    base: &Expr,
-    entries: &[(Expr, Expr)],
+    base: &Spanned<Expr>,
+    entries: &[(Spanned<Expr>, Spanned<Expr>)],
 ) -> Result<Var, LowerError> {
     let bv = lower_expr(ctx, base, false)?;
     let base_park = ctx.park(bv);
@@ -965,7 +960,7 @@ fn lower_map_update(
     Ok(ctx.let_(Prim::MapUpdate(base_v, pairs)))
 }
 
-fn lower_index(ctx: &mut LowerCtx, m: &Expr, k: &Expr) -> Result<Var, LowerError> {
+fn lower_index(ctx: &mut LowerCtx, m: &Spanned<Expr>, k: &Spanned<Expr>) -> Result<Var, LowerError> {
     let mv = lower_expr(ctx, m, false)?;
     let m_park = ctx.park(mv);
     let kv = lower_expr(ctx, k, false)?;
@@ -977,7 +972,7 @@ fn lower_index(ctx: &mut LowerCtx, m: &Expr, k: &Expr) -> Result<Var, LowerError
 fn lower_vec_lit(
     ctx: &mut LowerCtx,
     kind: crate::ast::VecKind,
-    els: &[Expr],
+    els: &[Spanned<Expr>],
 ) -> Result<Var, LowerError> {
     use crate::ast::VecKind;
     use crate::fz_ir::VecKindIr;
@@ -992,8 +987,8 @@ fn lower_vec_lit(
     // when the floats arrive via variables instead of literals.
     let ir_kind = match kind {
         VecKind::Numeric => {
-            let has_float = els.iter().any(|e| matches!(e, Expr::Float(_)));
-            let has_int = els.iter().any(|e| matches!(e, Expr::Int(_)));
+            let has_float = els.iter().any(|e| matches!(&e.node, Expr::Float(_)));
+            let has_int = els.iter().any(|e| matches!(&e.node, Expr::Int(_)));
             if has_float && has_int {
                 return Err(LowerError::Unsupported(
                     "~v[..] mixes Int and Float literals; no auto-promotion (fz-ul4.11.24.5)".into(),
@@ -1012,7 +1007,7 @@ fn lower_vec_lit(
 
 fn lower_bitstring_expr(
     ctx: &mut LowerCtx,
-    fields: &[AstBitField<Expr>],
+    fields: &[AstBitField<Spanned<Expr>>],
 ) -> Result<Var, LowerError> {
     // Lower each field's value expression, parking results so any CPS-split in
     // a later field's value still rebinds earlier ones.
@@ -1038,7 +1033,7 @@ fn lower_bitstring_expr(
 
 fn lower_case(
     ctx: &mut LowerCtx,
-    subject: &Expr,
+    subject: &Spanned<Expr>,
     clauses: &[MatchClause],
     is_tail: bool,
 ) -> Result<Var, LowerError> {
@@ -1081,7 +1076,7 @@ fn lower_case(
         let subj_v = ctx.unpark(&subject_park);
         // Re-park so subsequent clauses still see it.
         let inner_park = ctx.park(subj_v);
-        lower_pattern_bind(ctx, subj_v, &clause.pattern, next)?;
+        lower_pattern_bind(ctx, subj_v, &clause.pattern.node, next)?;
         ctx.unbind(&inner_park);
         let result = lower_expr(ctx, &clause.body, is_tail)?;
         if !ctx.terminated {
@@ -1098,7 +1093,7 @@ fn lower_case(
 
 fn lower_cond(
     ctx: &mut LowerCtx,
-    arms: &[(Expr, Expr)],
+    arms: &[(Spanned<Expr>, Spanned<Expr>)],
     is_tail: bool,
 ) -> Result<Var, LowerError> {
     // cond is right-associative: each arm is a fresh test/body; on test false,
@@ -1152,7 +1147,7 @@ fn lower_cond(
 fn lower_with(
     ctx: &mut LowerCtx,
     bindings: &[WithBinding],
-    body: &Expr,
+    body: &Spanned<Expr>,
     else_clauses: &[MatchClause],
     is_tail: bool,
 ) -> Result<Var, LowerError> {
@@ -1202,7 +1197,7 @@ fn lower_with(
                 ctx.env = saved_env.clone();
                 ctx.env_order = saved_order.clone();
                 ctx.terminated = false;
-                lower_pattern_bind(ctx, with_fail_param, &clause.pattern, next)?;
+                lower_pattern_bind(ctx, with_fail_param, &clause.pattern.node, next)?;
                 let result = lower_expr(ctx, &clause.body, is_tail)?;
                 if !ctx.terminated {
                     ctx.set_term(Term::Goto(join_b, vec![result]));
@@ -1234,7 +1229,7 @@ fn lower_with(
                 ctx.cur_block = Some(saved_blk);
                 let v_resolved = ctx.unpark(&v_park);
                 ctx.unbind(&v_park);
-                lower_pattern_bind(ctx, v_resolved, pat, mismatch_b)?;
+                lower_pattern_bind(ctx, v_resolved, &pat.node, mismatch_b)?;
             }
         }
     }
@@ -1250,34 +1245,28 @@ fn lower_with(
     Ok(join_param)
 }
 
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::{BinOp, Expr, FnClause, FnDef, Item, Pattern, Program, UnOp};
-    use std::rc::Rc;
+    use crate::lexer::Lexer;
+    use crate::parser::Parser;
 
-    fn fn_def(name: &str, clauses: Vec<FnClause>) -> Rc<Item> {
-        Rc::new(Item::Fn(FnDef {
-            name: name.into(),
-            clauses,
-            is_macro: false,
-            doc: None,
-        }))
-    }
-
-    fn cl(params: Vec<Pattern>, body: Expr) -> FnClause {
-        FnClause { params, guard: None, body }
-    }
-
-    fn lower_one(items: Vec<Rc<Item>>) -> Module {
-        let prog = Program { items };
+    fn lower_src(src: &str) -> Module {
+        let toks = Lexer::new(src).tokenize().expect("lex");
+        let prog = Parser::new(toks).parse_program().expect("parse");
         lower_program(&prog).expect("lower failed")
+    }
+
+    fn lower_src_err(src: &str) -> LowerError {
+        let toks = Lexer::new(src).tokenize().expect("lex");
+        let prog = Parser::new(toks).parse_program().expect("parse");
+        lower_program(&prog).expect_err("expected lower error")
     }
 
     #[test]
     fn lower_const_int_returns_in_entry_block() {
-        let f = fn_def("f", vec![cl(vec![], Expr::Int(42))]);
-        let m = lower_one(vec![f]);
+        let m = lower_src("fn f() do 42 end");
         let s = format!("{}", m);
         assert!(s.contains("const(42)"), "{}", s);
         assert!(s.contains("return v"), "{}", s);
@@ -1285,31 +1274,14 @@ mod tests {
 
     #[test]
     fn lower_var_lookup() {
-        // fn id(x), do: x
-        let f = fn_def(
-            "id",
-            vec![cl(vec![Pattern::Var("x".into())], Expr::Var("x".into()))],
-        );
-        let m = lower_one(vec![f]);
+        let m = lower_src("fn id(x), do: x");
         let s = format!("{}", m);
         assert!(s.contains("return v0"), "got:\n{}", s);
     }
 
     #[test]
     fn lower_binop_add() {
-        // fn add1(x), do: x + 1
-        let f = fn_def(
-            "add1",
-            vec![cl(
-                vec![Pattern::Var("x".into())],
-                Expr::BinOp(
-                    BinOp::Add,
-                    Box::new(Expr::Var("x".into())),
-                    Box::new(Expr::Int(1)),
-                ),
-            )],
-        );
-        let m = lower_one(vec![f]);
+        let m = lower_src("fn add1(x), do: x + 1");
         let s = format!("{}", m);
         assert!(s.contains("const(1)"), "{}", s);
         assert!(s.contains(" + "), "{}", s);
@@ -1317,90 +1289,31 @@ mod tests {
 
     #[test]
     fn lower_unop_neg() {
-        let f = fn_def(
-            "neg",
-            vec![cl(
-                vec![Pattern::Var("x".into())],
-                Expr::UnOp(UnOp::Neg, Box::new(Expr::Var("x".into()))),
-            )],
-        );
-        let m = lower_one(vec![f]);
+        let m = lower_src("fn neg(x), do: -x");
         let s = format!("{}", m);
         assert!(s.contains("- v0"));
     }
 
     #[test]
     fn lower_tail_call_uses_tail_call() {
-        // fn caller(x), do: callee(x)
-        // fn callee(y), do: y
-        let caller = fn_def(
-            "caller",
-            vec![cl(
-                vec![Pattern::Var("x".into())],
-                Expr::Call(
-                    Box::new(Expr::Var("callee".into())),
-                    vec![Expr::Var("x".into())],
-                ),
-            )],
-        );
-        let callee = fn_def(
-            "callee",
-            vec![cl(vec![Pattern::Var("y".into())], Expr::Var("y".into()))],
-        );
-        let m = lower_one(vec![caller, callee]);
+        let m = lower_src("fn caller(x), do: callee(x)\nfn callee(y), do: y");
         let s = format!("{}", m);
         assert!(s.contains("tail_call"), "got:\n{}", s);
     }
 
     #[test]
     fn lower_nontail_call_splits_into_continuation() {
-        // fn caller(x), do: callee(x) + 1
-        let caller = fn_def(
-            "caller",
-            vec![cl(
-                vec![Pattern::Var("x".into())],
-                Expr::BinOp(
-                    BinOp::Add,
-                    Box::new(Expr::Call(
-                        Box::new(Expr::Var("callee".into())),
-                        vec![Expr::Var("x".into())],
-                    )),
-                    Box::new(Expr::Int(1)),
-                ),
-            )],
-        );
-        let callee = fn_def(
-            "callee",
-            vec![cl(vec![Pattern::Var("y".into())], Expr::Var("y".into()))],
-        );
-        let m = lower_one(vec![caller, callee]);
+        let m = lower_src("fn caller(x), do: callee(x) + 1\nfn callee(y), do: y");
         let s = format!("{}", m);
         assert!(s.contains("call fn1"), "expected explicit call, got:\n{}", s);
         assert!(s.contains("cont(fn"), "expected continuation, got:\n{}", s);
-        // continuation fn must exist
         assert!(s.contains("k_2") || s.contains("k_3") || s.contains("lambda_") || s.matches("fn ").count() >= 3,
                 "expected continuation fn, got:\n{}", s);
     }
 
     #[test]
     fn lower_if_uses_join_block() {
-        // fn pos(x), do: if x > 0, do: 1, else: -1
-        let f = fn_def(
-            "pos",
-            vec![cl(
-                vec![Pattern::Var("x".into())],
-                Expr::If(
-                    Box::new(Expr::BinOp(
-                        BinOp::Gt,
-                        Box::new(Expr::Var("x".into())),
-                        Box::new(Expr::Int(0)),
-                    )),
-                    Box::new(Expr::Int(1)),
-                    Some(Box::new(Expr::UnOp(UnOp::Neg, Box::new(Expr::Int(1))))),
-                ),
-            )],
-        );
-        let m = lower_one(vec![f]);
+        let m = lower_src("fn pos(x), do: if x > 0, do: 1, else: -1");
         let s = format!("{}", m);
         assert!(s.contains("if v"), "expected If terminator: {}", s);
         assert!(s.contains("goto bb"), "expected Goto to join: {}", s);
@@ -1408,29 +1321,17 @@ mod tests {
 
     #[test]
     fn lower_block_evaluates_last_expr() {
-        let f = fn_def(
-            "b",
-            vec![cl(
-                vec![],
-                Expr::Block(vec![Expr::Int(1), Expr::Int(2), Expr::Int(3)]),
-            )],
-        );
-        let m = lower_one(vec![f]);
+        let m = lower_src("fn b() do\n  1\n  2\n  3\nend");
         let s = format!("{}", m);
         assert!(s.contains("const(1)"), "{}", s);
         assert!(s.contains("const(2)"), "{}", s);
         assert!(s.contains("const(3)"), "{}", s);
-        // Returns the last expression — its var is whichever fresh_var produced const(3).
         assert!(s.contains("return v"), "{}", s);
     }
 
     #[test]
     fn lower_list_makes_list_prim() {
-        let f = fn_def(
-            "l",
-            vec![cl(vec![], Expr::List(vec![Expr::Int(1), Expr::Int(2)], None))],
-        );
-        let m = lower_one(vec![f]);
+        let m = lower_src("fn l(), do: [1, 2]");
         let s = format!("{}", m);
         assert!(s.contains("list(["), "{}", s);
         assert!(!s.contains("list([] |"), "no-tail list shouldn't have | sep: {}", s);
@@ -1438,43 +1339,21 @@ mod tests {
 
     #[test]
     fn lower_list_with_tail() {
-        let f = fn_def(
-            "l",
-            vec![cl(
-                vec![Pattern::Var("t".into())],
-                Expr::List(vec![Expr::Int(1)], Some(Box::new(Expr::Var("t".into())))),
-            )],
-        );
-        let m = lower_one(vec![f]);
+        let m = lower_src("fn l(t), do: [1 | t]");
         let s = format!("{}", m);
         assert!(s.contains("] | v0)"), "expected list with v0 (param t) tail: {}", s);
     }
 
     #[test]
     fn lower_tuple_makes_tuple_prim() {
-        let f = fn_def(
-            "t",
-            vec![cl(vec![], Expr::Tuple(vec![Expr::Int(1), Expr::Atom("ok".into())]))],
-        );
-        let m = lower_one(vec![f]);
+        let m = lower_src("fn t(), do: {1, :ok}");
         let s = format!("{}", m);
         assert!(s.contains("tuple(["), "{}", s);
     }
 
     #[test]
     fn lower_tuple_pattern_projects_fields() {
-        // fn first({a, b}), do: a
-        let f = fn_def(
-            "first",
-            vec![cl(
-                vec![Pattern::Tuple(vec![
-                    Pattern::Var("a".into()),
-                    Pattern::Var("b".into()),
-                ])],
-                Expr::Var("a".into()),
-            )],
-        );
-        let m = lower_one(vec![f]);
+        let m = lower_src("fn first({a, b}), do: a");
         let s = format!("{}", m);
         assert!(s.contains("tuple_field(v0, 0)"), "got:\n{}", s);
         assert!(s.contains("tuple_field(v0, 1)"), "got:\n{}", s);
@@ -1482,75 +1361,24 @@ mod tests {
 
     #[test]
     fn lower_match_expr_binds_var() {
-        // fn m(p), do: (x = p; x)  — Block of [Match, Var]
-        let f = fn_def(
-            "m",
-            vec![cl(
-                vec![Pattern::Var("p".into())],
-                Expr::Block(vec![
-                    Expr::Match(Pattern::Var("x".into()), Box::new(Expr::Var("p".into()))),
-                    Expr::Var("x".into()),
-                ]),
-            )],
-        );
-        let m = lower_one(vec![f]);
+        let m = lower_src("fn m(p) do\n  x = p\n  x\nend");
         let s = format!("{}", m);
         assert!(s.contains("return v0"), "got:\n{}", s);
     }
 
     #[test]
     fn multi_clause_dispatch_emits_try_blocks() {
-        // fn fact(0), do: 1
-        // fn fact(n), do: n * fact(n - 1)
-        let f = fn_def(
-            "fact",
-            vec![
-                cl(vec![Pattern::Int(0)], Expr::Int(1)),
-                cl(
-                    vec![Pattern::Var("n".into())],
-                    Expr::BinOp(
-                        BinOp::Mul,
-                        Box::new(Expr::Var("n".into())),
-                        Box::new(Expr::Call(
-                            Box::new(Expr::Var("fact".into())),
-                            vec![Expr::BinOp(
-                                BinOp::Sub,
-                                Box::new(Expr::Var("n".into())),
-                                Box::new(Expr::Int(1)),
-                            )],
-                        )),
-                    ),
-                ),
-            ],
-        );
-        let m = lower_one(vec![f]);
+        let m = lower_src("fn fact(0), do: 1\nfn fact(n), do: n * fact(n - 1)");
         let s = format!("{}", m);
-        // Entry Goto's first try block; first try tests == 0; on fail, Goto next try.
         assert!(s.contains("goto bb"), "got:\n{}", s);
         assert!(s.contains("if v"), "expected pattern test If: {}", s);
-        // Fail-fallthrough block: halt with an interned atom (rendered as :atom_N).
         assert!(s.contains("halt v"), "expected halt in fail block:\n{}", s);
         assert!(s.contains(":atom_"), "expected interned atom in fail block:\n{}", s);
     }
 
     #[test]
     fn lower_lambda_creates_separate_fn_and_closure() {
-        // fn mk(x), do: fn(y) -> x + y end
-        let f = fn_def(
-            "mk",
-            vec![cl(
-                vec![Pattern::Var("x".into())],
-                Expr::Lambda(
-                    vec![Pattern::Var("y".into())],
-                    Box::new(Expr::BinOp(
-                        BinOp::Add,
-                        Box::new(Expr::Var("x".into())),
-                        Box::new(Expr::Var("y".into())),
-                    )),
-                ),
-            )],
-        );
-        let m = lower_one(vec![f]);
+        let m = lower_src("fn mk(x), do: fn(y) -> x + y");
         let s = format!("{}", m);
         assert!(s.contains("closure(fn"), "expected closure prim, got:\n{}", s);
         assert!(s.contains("lambda_"), "expected lambda fn name: {}", s);
@@ -1559,169 +1387,74 @@ mod tests {
 
     #[test]
     fn builtin_call_lowers_to_builtin_prim() {
-        let f = fn_def(
-            "p",
-            vec![cl(
-                vec![],
-                Expr::Call(
-                    Box::new(Expr::Var("print".into())),
-                    vec![Expr::Int(1)],
-                ),
-            )],
-        );
-        let m = lower_one(vec![f]);
+        let m = lower_src("fn p(), do: print(1)");
         let s = format!("{}", m);
         assert!(s.contains("builtin#0("), "got:\n{}", s);
     }
 
     #[test]
     fn unbound_var_returns_lower_error() {
-        let f = fn_def("f", vec![cl(vec![], Expr::Var("missing".into()))]);
-        let prog = Program { items: vec![f] };
-        let err = lower_program(&prog).unwrap_err();
+        let err = lower_src_err("fn f(), do: missing");
         assert!(matches!(err, LowerError::Unbound(_)));
     }
 
     #[test]
     fn unbound_callee_returns_lower_error() {
-        let f = fn_def(
-            "f",
-            vec![cl(
-                vec![],
-                Expr::Call(
-                    Box::new(Expr::Var("nonesuch".into())),
-                    vec![Expr::Int(1)],
-                ),
-            )],
-        );
-        let prog = Program { items: vec![f] };
-        let err = lower_program(&prog).unwrap_err();
+        let err = lower_src_err("fn f(), do: nonesuch(1)");
         assert!(matches!(err, LowerError::Unbound(_)));
     }
 
     #[test]
     fn empty_case_returns_unsupported() {
-        let f = fn_def(
-            "f",
-            vec![cl(
-                vec![],
-                Expr::Case(Box::new(Expr::Int(1)), vec![]),
-            )],
-        );
-        let prog = Program { items: vec![f] };
-        let err = lower_program(&prog).unwrap_err();
+        let err = lower_src_err("fn f() do case 1 do end end");
         assert!(matches!(err, LowerError::Unsupported(_)));
     }
 
     #[test]
     fn vec_lit_lowers_to_make_vec() {
-        use crate::ast::VecKind;
-        let f = fn_def(
-            "v",
-            vec![cl(
-                vec![],
-                Expr::VecLit(VecKind::Numeric, vec![Expr::Int(1), Expr::Int(2), Expr::Int(3)]),
-            )],
-        );
-        let m = lower_one(vec![f]);
+        let m = lower_src("fn v(), do: ~v[1, 2, 3]");
         let s = format!("{}", m);
         assert!(s.contains("vec(i64, ["), "got:\n{}", s);
     }
 
     #[test]
     fn map_lowers_to_make_map() {
-        let f = fn_def(
-            "m",
-            vec![cl(
-                vec![],
-                Expr::Map(vec![(Expr::Atom("k".into()), Expr::Int(1))]),
-            )],
-        );
-        let m = lower_one(vec![f]);
+        let m = lower_src("fn m(), do: %{k: 1}");
         let s = format!("{}", m);
         assert!(s.contains("map({"), "got:\n{}", s);
     }
 
     #[test]
     fn map_update_lowers() {
-        let f = fn_def(
-            "u",
-            vec![cl(
-                vec![Pattern::Var("m".into())],
-                Expr::MapUpdate(
-                    Box::new(Expr::Var("m".into())),
-                    vec![(Expr::Atom("k".into()), Expr::Int(2))],
-                ),
-            )],
-        );
-        let m = lower_one(vec![f]);
+        let m = lower_src("fn u(m), do: %{m | k: 2}");
         let s = format!("{}", m);
         assert!(s.contains("map_update("), "got:\n{}", s);
     }
 
     #[test]
     fn index_lowers_to_map_get() {
-        let f = fn_def(
-            "g",
-            vec![cl(
-                vec![Pattern::Var("m".into())],
-                Expr::Index(
-                    Box::new(Expr::Var("m".into())),
-                    Box::new(Expr::Atom("k".into())),
-                ),
-            )],
-        );
-        let m = lower_one(vec![f]);
+        let m = lower_src("fn g(m), do: m[:k]");
         let s = format!("{}", m);
         assert!(s.contains("map_get("), "got:\n{}", s);
     }
 
     #[test]
     fn bitstring_expr_lowers() {
-        use crate::ast::{BitField, BitFieldSpec};
-        let f = fn_def(
-            "b",
-            vec![cl(
-                vec![],
-                Expr::Bitstring(vec![BitField {
-                    value: Expr::Int(0xA5),
-                    spec: BitFieldSpec::default(),
-                }]),
-            )],
-        );
-        let m = lower_one(vec![f]);
+        let m = lower_src("fn b(), do: << 0xA5 >>");
         let s = format!("{}", m);
         assert!(s.contains("bitstring(["), "got:\n{}", s);
     }
 
     #[test]
     fn case_lowers_to_try_chain() {
-        // case x do
-        //   0 -> :zero
-        //   _ -> :other
-        // end
-        let f = fn_def(
-            "c",
-            vec![cl(
-                vec![Pattern::Var("x".into())],
-                Expr::Case(
-                    Box::new(Expr::Var("x".into())),
-                    vec![
-                        crate::ast::MatchClause {
-                            pattern: Pattern::Int(0),
-                            guard: None,
-                            body: Expr::Atom("zero".into()),
-                        },
-                        crate::ast::MatchClause {
-                            pattern: Pattern::Wildcard,
-                            guard: None,
-                            body: Expr::Atom("other".into()),
-                        },
-                    ],
-                ),
-            )],
-        );
-        let m = lower_one(vec![f]);
+        let m = lower_src(r#"
+fn c(x) do
+  case x do
+    0 -> :zero
+    _ -> :other
+  end
+end
+"#);
         let s = format!("{}", m);
         assert!(s.contains("if v"), "expected if for pattern check: {}", s);
         assert!(s.contains("goto bb"), "expected goto for fallthrough: {}", s);
@@ -1729,87 +1462,40 @@ mod tests {
 
     #[test]
     fn cond_lowers() {
-        // cond do
-        //   x > 0 -> :pos
-        //   true  -> :nonpos
-        // end
-        let f = fn_def(
-            "c",
-            vec![cl(
-                vec![Pattern::Var("x".into())],
-                Expr::Cond(vec![
-                    (
-                        Expr::BinOp(
-                            BinOp::Gt,
-                            Box::new(Expr::Var("x".into())),
-                            Box::new(Expr::Int(0)),
-                        ),
-                        Expr::Atom("pos".into()),
-                    ),
-                    (Expr::Bool(true), Expr::Atom("nonpos".into())),
-                ]),
-            )],
-        );
-        let m = lower_one(vec![f]);
+        // cond is parsed; lowering should emit If terminators.
+        let m = lower_src(r#"
+fn c(x) do
+  cond do
+    x > 0 -> :pos
+    true -> :nonpos
+  end
+end
+"#);
         let s = format!("{}", m);
         assert!(s.contains("if v"), "got:\n{}", s);
     }
 
     #[test]
     fn with_simple_lowers() {
-        // with {:ok, a} <- {:ok, 1} do a end
-        let f = fn_def(
-            "w",
-            vec![cl(
-                vec![],
-                Expr::With(
-                    vec![crate::ast::WithBinding::Match(
-                        Pattern::Tuple(vec![Pattern::Atom("ok".into()), Pattern::Var("a".into())]),
-                        Expr::Tuple(vec![Expr::Atom("ok".into()), Expr::Int(1)]),
-                    )],
-                    Box::new(Expr::Var("a".into())),
-                    vec![],
-                ),
-            )],
-        );
-        let m = lower_one(vec![f]);
+        let m = lower_src(r#"
+fn w() do
+  with {:ok, a} <- {:ok, 1}, do: a
+end
+"#);
         let s = format!("{}", m);
         assert!(s.contains("tuple_field"), "expected pattern projection: {}", s);
     }
 
     #[test]
     fn map_pattern_uses_map_get_check() {
-        // fn first(%{name: n}), do: n
-        let f = fn_def(
-            "first",
-            vec![cl(
-                vec![Pattern::Map(vec![(
-                    Pattern::Atom("name".into()),
-                    Pattern::Var("n".into()),
-                )])],
-                Expr::Var("n".into()),
-            )],
-        );
-        let m = lower_one(vec![f]);
+        let m = lower_src("fn first(%{name: n}), do: n");
         let s = format!("{}", m);
         assert!(s.contains("map_get("), "got:\n{}", s);
     }
 
     #[test]
     fn bitstring_pattern_lowers_to_per_field_reads() {
-        use crate::ast::{BitField, BitFieldSpec};
-        // fn p(<<x::8>>), do: x
-        let f = fn_def(
-            "p",
-            vec![cl(
-                vec![Pattern::Bitstring(vec![BitField {
-                    value: Pattern::Var("x".into()),
-                    spec: BitFieldSpec::default(),
-                }])],
-                Expr::Var("x".into()),
-            )],
-        );
-        let m = lower_one(vec![f]);
+        let m = lower_src("fn p(<<x::8>>), do: x");
         let s = format!("{}", m);
         assert!(s.contains("bit_reader_init("), "got:\n{}", s);
         assert!(s.contains("bit_read_field("), "got:\n{}", s);
@@ -1818,12 +1504,35 @@ mod tests {
 
     #[test]
     fn quote_returns_post_expansion_node() {
-        let f = fn_def(
-            "f",
-            vec![cl(vec![], Expr::Quote(Box::new(Expr::Int(1))))],
-        );
-        let prog = Program { items: vec![f] };
-        let err = lower_program(&prog).unwrap_err();
+        // Skip macro expansion to surface the leftover-quote error path.
+        let err = lower_src_err("fn f(), do: quote do: 1");
         assert!(matches!(err, LowerError::PostExpansionNode(_)));
+    }
+
+    /// Span round-trip: AST nodes parsed by the parser carry non-DUMMY spans
+    /// that slice back to their source lexemes.
+    #[test]
+    fn parser_attaches_real_spans_to_expressions() {
+        let src = "fn ident(x), do: x + 1";
+        let toks = Lexer::new(src).tokenize().expect("lex");
+        let prog = Parser::new(toks).parse_program().expect("parse");
+        let Item::Fn(def) = &*prog.items[0] else { panic!("expected fn") };
+        // The body `x + 1` is a BinOp; its span should be non-DUMMY and
+        // slice to the operator-bracketed substring.
+        let body = &def.clauses[0].body;
+        assert!(!body.span.is_dummy());
+        let lexeme = &src[body.span.start as usize..body.span.end as usize];
+        assert!(lexeme.contains('+'), "body span should cover the binop expression, got {:?}", lexeme);
+    }
+
+    /// FnDef.name_span pinpoints the source name token (not the whole def).
+    #[test]
+    fn parser_records_fn_name_span() {
+        let src = "fn foobar(), do: 0";
+        let toks = Lexer::new(src).tokenize().expect("lex");
+        let prog = Parser::new(toks).parse_program().expect("parse");
+        let Item::Fn(def) = &*prog.items[0] else { panic!("expected fn") };
+        let name_text = &src[def.name_span.start as usize..def.name_span.end as usize];
+        assert_eq!(name_text, "foobar");
     }
 }

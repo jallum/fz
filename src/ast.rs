@@ -1,4 +1,29 @@
+use crate::diag::Span;
 use std::rc::Rc;
+
+/// Wraps an AST node with the source span that produced it. Every Expr
+/// and Pattern reference in the AST is `Spanned<…>`; the outer enum
+/// values themselves are unwrapped so pattern matching stays clean.
+#[derive(Debug, Clone)]
+pub struct Spanned<T> {
+    pub node: T,
+    pub span: Span,
+}
+
+impl<T> Spanned<T> {
+    pub fn new(node: T, span: Span) -> Self {
+        Self { node, span }
+    }
+
+    /// Synthesize a Spanned with no source position. Used by tests, by
+    /// `value_to_expr` (which decodes runtime Values back to AST and has
+    /// no original span), and by transitional code paths during the .20
+    /// arc. The .20.3 ticket attaches `SpanOrigin::Expanded` lineage to
+    /// these at the call site of the macro that produced them.
+    pub fn dummy(node: T) -> Self {
+        Self { node, span: Span::DUMMY }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub enum Expr {
@@ -14,54 +39,54 @@ pub enum Expr {
     Var(String),
 
     // collections
-    List(Vec<Expr>, Option<Box<Expr>>),  // [a, b, c | tail]
-    Tuple(Vec<Expr>),
+    List(Vec<Spanned<Expr>>, Option<Box<Spanned<Expr>>>),  // [a, b, c | tail]
+    Tuple(Vec<Spanned<Expr>>),
     /// Vector literal: monotyped contiguous storage; sigil determines element kind.
     /// `~v[1, 2, 3]` -> kind Numeric (I64/F64 inferred), `~b[0xff]` -> Bytes, `~bits[1,0,1]` -> Bits.
-    VecLit(VecKind, Vec<Expr>),
+    VecLit(VecKind, Vec<Spanned<Expr>>),
     /// Bitstring literal: `<< field, field, ... >>` where each field carries a value
     /// (an arbitrary expression) and a type/size/endian/signedness/unit spec.
-    Bitstring(Vec<BitField<Expr>>),
-    Map(Vec<(Expr, Expr)>),
+    Bitstring(Vec<BitField<Spanned<Expr>>>),
+    Map(Vec<(Spanned<Expr>, Spanned<Expr>)>),
     /// %{m | k => v, ...} — functional update; each key must already exist.
-    MapUpdate(Box<Expr>, Vec<(Expr, Expr)>),
+    MapUpdate(Box<Spanned<Expr>>, Vec<(Spanned<Expr>, Spanned<Expr>)>),
     /// m[k] — bracket access; returns nil if key absent.
-    Index(Box<Expr>, Box<Expr>),
+    Index(Box<Spanned<Expr>>, Box<Spanned<Expr>>),
 
     // call: target(args...)  — target is an expr (usually Var or Dot)
-    Call(Box<Expr>, Vec<Expr>),
+    Call(Box<Spanned<Expr>>, Vec<Spanned<Expr>>),
     // qualified: Mod.fun  (lhs.name)
-    Dot(Box<Expr>, String),
+    Dot(Box<Spanned<Expr>>, String),
 
     // operators
-    BinOp(BinOp, Box<Expr>, Box<Expr>),
-    UnOp(UnOp, Box<Expr>),
+    BinOp(BinOp, Box<Spanned<Expr>>, Box<Spanned<Expr>>),
+    UnOp(UnOp, Box<Spanned<Expr>>),
 
     // control flow
-    If(Box<Expr>, Box<Expr>, Option<Box<Expr>>),
-    Case(Box<Expr>, Vec<MatchClause>),
-    Cond(Vec<(Expr, Expr)>),
-    With(Vec<WithBinding>, Box<Expr>, Vec<MatchClause>),
+    If(Box<Spanned<Expr>>, Box<Spanned<Expr>>, Option<Box<Spanned<Expr>>>),
+    Case(Box<Spanned<Expr>>, Vec<MatchClause>),
+    Cond(Vec<(Spanned<Expr>, Spanned<Expr>)>),
+    With(Vec<WithBinding>, Box<Spanned<Expr>>, Vec<MatchClause>),
 
     // bindings
     // pattern = expr (rebinds names; immutable, just shadows)
-    Match(Pattern, Box<Expr>),
+    Match(Spanned<Pattern>, Box<Spanned<Expr>>),
 
     // sequence of expressions; result is the last
-    Block(Vec<Expr>),
+    Block(Vec<Spanned<Expr>>),
 
     // anonymous fn: fn (p1, p2) -> body  /  multi-clause via Case under the hood later
-    Lambda(Vec<Pattern>, Box<Expr>),
+    Lambda(Vec<Spanned<Pattern>>, Box<Spanned<Expr>>),
 
     // macro support (fz-ul4.10):
     /// `quote do: <e>` / `quote do <e> end`. Eval reifies `e` to a Value,
     /// recursing through inner Unquote nodes which evaluate their inner
     /// expression and splice the resulting Value in place.
-    Quote(Box<Expr>),
+    Quote(Box<Spanned<Expr>>),
     /// `unquote(<e>)`. Only meaningful inside a Quote; outside, evaluation
     /// errors. The macro expansion pass (.10.3) is also responsible for
     /// rejecting any leftover Unquote nodes after expansion completes.
-    Unquote(Box<Expr>),
+    Unquote(Box<Spanned<Expr>>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,17 +110,19 @@ pub enum UnOp { Neg, Not }
 
 #[derive(Debug, Clone)]
 pub struct MatchClause {
-    pub pattern: Pattern,
-    pub guard: Option<Expr>,
-    pub body: Expr,
+    pub pattern: Spanned<Pattern>,
+    pub guard: Option<Spanned<Expr>>,
+    pub body: Spanned<Expr>,
+    /// Span of the whole clause: `pattern when guard -> body`.
+    pub span: Span,
 }
 
 #[derive(Debug, Clone)]
 pub enum WithBinding {
     /// pattern <- expr
-    Match(Pattern, Expr),
+    Match(Spanned<Pattern>, Spanned<Expr>),
     /// arbitrary expression in the with-chain (rare)
-    Bare(Expr),
+    Bare(Spanned<Expr>),
 }
 
 #[derive(Debug, Clone)]
@@ -108,16 +135,16 @@ pub enum Pattern {
     Atom(String),
     Bool(bool),
     Nil,
-    Tuple(Vec<Pattern>),
-    List(Vec<Pattern>, Option<Box<Pattern>>), // [a, b | rest]
-    Map(Vec<(Pattern, Pattern)>),
+    Tuple(Vec<Spanned<Pattern>>),
+    List(Vec<Spanned<Pattern>>, Option<Box<Spanned<Pattern>>>), // [a, b | rest]
+    Map(Vec<(Spanned<Pattern>, Spanned<Pattern>)>),
     /// pinned/literal pattern — `^name` would go here (deferred)
     /// As-pattern: name = pattern (Elixir lets you write it both ways)
-    As(String, Box<Pattern>),
+    As(String, Box<Spanned<Pattern>>),
     /// Bitstring pattern: `<< field, field, ... >>`. Each field's `value` is a
     /// Pattern (binds variables or matches a literal); the spec governs how
     /// many bits to consume and how to interpret them.
-    Bitstring(Vec<BitField<Pattern>>),
+    Bitstring(Vec<BitField<Spanned<Pattern>>>),
 }
 
 // ----------------------------------------------------------------------
@@ -186,19 +213,26 @@ pub enum Endian { Big, Little, Native }
 
 #[derive(Debug, Clone)]
 pub struct FnClause {
-    pub params: Vec<Pattern>,
-    pub guard: Option<Expr>,
-    pub body: Expr,
+    pub params: Vec<Spanned<Pattern>>,
+    pub guard: Option<Spanned<Expr>>,
+    pub body: Spanned<Expr>,
+    /// Span of the whole clause: from the `fn`/`defmacro` keyword through
+    /// the body's last token.
+    pub span: Span,
 }
 
 #[derive(Debug, Clone)]
 pub struct FnDef {
     pub name: String,
+    /// Span of just the name token. Useful for "redefinition" diagnostics.
+    pub name_span: Span,
     pub clauses: Vec<FnClause>,
     pub is_macro: bool,
     /// `@doc "..."` attached above the first clause of this fn. Inert
     /// in v1 — stored for future doc tooling and the test runner (.16).
     pub doc: Option<String>,
+    /// Span covering all clauses (and `@doc` if present).
+    pub span: Span,
 }
 
 #[derive(Debug, Clone)]
@@ -208,7 +242,7 @@ pub enum Item {
     /// `alias A.B.C` (as_name = "C") or `alias A.B.C, as: D` (as_name = "D").
     /// Only valid inside a defmodule body; the resolver consumes these and
     /// they don't survive into the flattened Program.
-    Alias { full_path: Vec<String>, as_name: String },
+    Alias { full_path: Vec<String>, as_name: String, span: Span },
     /// `import Mod` / `import Mod, only: [f: 1, g: 2]` /
     /// `import Mod, except: [...]`. Only valid inside a defmodule body;
     /// resolver-consumed.
@@ -219,6 +253,7 @@ pub enum Item {
         only: Option<Vec<(String, usize)>>,
         /// Blacklist of (name, arity) pairs.
         except: Option<Vec<(String, usize)>>,
+        span: Span,
     },
     /// A macro invocation at item-position (top of program or top of a
     /// defmodule body): `test("name") do <body> end` parses as
@@ -232,18 +267,26 @@ pub enum Item {
     /// qualified under that path so tests written inside `defmodule
     /// MyTest do ... end` land as `MyTest.test_xxx`. At top-level it's
     /// `None`.
-    MacroCall { name: String, args: Vec<Expr>, parent_module: Option<String> },
+    MacroCall {
+        name: String,
+        name_span: Span,
+        args: Vec<Spanned<Expr>>,
+        parent_module: Option<String>,
+        span: Span,
+    },
 }
 
 #[derive(Debug, Clone)]
 pub struct ModuleDef {
     pub name: String,
+    pub name_span: Span,
     /// In .18.1 the body holds only Item::Fn (incl. defmacro). Nested
     /// modules join in .18.2 (recursive Item::Module here).
     pub items: Vec<Rc<Item>>,
     /// `@moduledoc "..."` attached at the top of the module body.
     /// Inert in v1.
     pub moduledoc: Option<String>,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone)]
