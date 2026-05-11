@@ -512,8 +512,6 @@ fn kind(v: &Value) -> &'static str {
         Value::Map(_) => "Map",
         Value::Closure(_) => "Closure",
         Value::Builtin(_) => "Builtin",
-        Value::Jit(_) => "Jit",
-        Value::JitPoly(_) => "JitPoly",
         Value::IrClosure(_) => "IrClosure",
     }
 }

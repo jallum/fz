@@ -26,16 +26,6 @@ pub enum Value {
     Closure(Rc<Closure>),
     /// Built-in (host) function.
     Builtin(Rc<Builtin>),
-    /// JIT-compiled function. Holds a reverse-thunk pointer with the uniform
-    /// `(args_ptr: *const u64, ret_ptr: *mut u64)` ABI; the interpreter
-    /// marshals Values into slot buffers and back. Set up by jit::run.
-    Jit(Rc<JitFn>),
-    /// Polymorphic JIT'd function — multiple monomorphic specializations
-    /// share one user-name. At call time, the dispatcher inspects each
-    /// arg's runtime LowerTy shape and routes through the matching spec.
-    /// Falls back to `fallback` (the original Closure) if no spec matches
-    /// the runtime shape (rare — would mean an unobserved call shape).
-    JitPoly(Rc<JitPolyFn>),
     /// IR-level closure: a Lambda lowered through fz-IR. Carries the IR FnId
     /// (raw u32) of the lambda body and the captured environment slots. Only
     /// used by the fz-IR interpreter (.11.5); the AST interp and JIT path
@@ -47,28 +37,6 @@ pub enum Value {
 pub struct IrClosure {
     pub fn_id: u32,
     pub captured: Vec<Value>,
-}
-
-pub struct JitFn {
-    pub name: String,
-    /// Reverse-thunk pointer (transmute target: `unsafe extern "C" fn(*const u64, *mut u64)`).
-    /// Empty / never populated under the .11.9 cutover; stays declared so the
-    /// Value::Jit variant compiles. Wired up again as ir_codegen reaches
-    /// feature parity in .11.10-.11.14.
-    pub fn_ptr: usize,
-}
-
-pub struct JitPolyFn {
-    pub user_name: String,
-    /// Per-call-shape specializations. The dispatcher walks this list
-    /// and picks the first whose param shapes match the runtime args.
-    /// Order isn't significant for correctness (shapes are disjoint by
-    /// construction) but stable ordering helps debugging.
-    pub specs: Vec<Rc<JitFn>>,
-    /// Original AST closure to fall back to when no spec matches the
-    /// runtime arg shape (e.g. a user constructed an unusual value type
-    /// not observed at compile time).
-    pub fallback: Rc<Closure>,
 }
 
 #[derive(Clone)]
@@ -92,21 +60,12 @@ impl FzMap {
         FzMap { entries }
     }
     pub fn has(&self, key: &Value) -> bool { self.get(key).is_some() }
-    pub fn len(&self) -> usize { self.entries.len() }
 }
 
 #[derive(Clone)]
 pub struct BitString {
     pub bytes: Vec<u8>,    // MSB-first packed
     pub bit_len: usize,
-}
-
-impl BitString {
-    pub fn empty() -> Self { Self { bytes: Vec::new(), bit_len: 0 } }
-    pub fn from_bytes(b: Vec<u8>) -> Self {
-        let n = b.len();
-        Self { bytes: b, bit_len: n * 8 }
-    }
 }
 
 /// Monotyped contiguous storage. The point of this type: SIMD-friendly,
@@ -155,14 +114,6 @@ impl FzVec {
             FzVec::U8(v)  => Value::Int(*v.get(i)? as i64),
             FzVec::Bit(v) => if i < v.len { Value::Int(v.get(i) as i64) } else { return None; },
         })
-    }
-    pub fn kind_str(&self) -> &'static str {
-        match self {
-            FzVec::I64(_) => "i64",
-            FzVec::F64(_) => "f64",
-            FzVec::U8(_)  => "u8",
-            FzVec::Bit(_) => "bit",
-        }
     }
 }
 
@@ -297,8 +248,6 @@ impl fmt::Display for Value {
                 c.name.as_deref().unwrap_or("anon"),
                 c.clauses.first().map(|cl| cl.params.len()).unwrap_or(0)),
             Value::Builtin(b) => write!(f, "#builtin<{}/{}>", b.name, b.arity),
-            Value::Jit(j) => write!(f, "#jit<{}>", j.name),
-            Value::JitPoly(j) => write!(f, "#jit_poly<{}|{}>", j.user_name, j.specs.len()),
             Value::IrClosure(c) => {
                 write!(f, "#ir_closure<fn{}/cap{}>", c.fn_id, c.captured.len())
             }

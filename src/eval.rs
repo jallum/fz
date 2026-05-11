@@ -219,11 +219,6 @@ impl Interp {
                 }
                 self.dispatch_clauses(c, args)
             }
-            Value::Jit(_) | Value::JitPoly(_) => Err(
-                "JIT call path is being rewired through ir_codegen (fz-ul4.11.9 cutover); \
-                 reinstate alongside heap-type support in .11.10-.11.14"
-                    .into(),
-            ),
             other => Err(format!("not callable: {}", other)),
         }
     }

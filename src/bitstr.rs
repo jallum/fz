@@ -304,11 +304,6 @@ impl<'a> BitReader<'a> {
         }
         Some(w.finalize())
     }
-
-    pub fn take_rest(&mut self) -> Value {
-        let n = self.remaining();
-        self.take_bits(n).expect("remaining bits available")
-    }
 }
 
 // ----------------------------------------------------------------------
