@@ -1,2 +1,5 @@
+# purpose: minimal call site — one fn definition, one call, no scaffolding
+# paths:   jit
+
 fn cold(x), do: x * 3
 fn main(), do: print(cold(14))

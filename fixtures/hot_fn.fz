@@ -1,3 +1,6 @@
+# purpose: same call repeated — historical JIT tier-up trigger; today every call is JIT
+# paths:   jit
+
 fn hot(n), do: n + 1
 
 fn main() do

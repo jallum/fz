@@ -1,3 +1,6 @@
+# purpose: nested-module path aliasing — `alias Long.Path` and `alias Long.Path, as: LP`
+# paths:   jit
+
 defmodule Long do
   defmodule Path do
     fn greet(x), do: x + 1000

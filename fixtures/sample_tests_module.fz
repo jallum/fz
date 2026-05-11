@@ -1,3 +1,7 @@
+# purpose: `test()` inside a defmodule body
+# kind:    test
+# paths:   jit
+
 defmodule MathTest do
   fn helper(x), do: x * 2
 

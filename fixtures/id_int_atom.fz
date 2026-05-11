@@ -1,3 +1,6 @@
+# purpose: identity fn over int and atom — no type-driven specialization
+# paths:   jit
+
 fn id(x), do: x
 
 fn main() do

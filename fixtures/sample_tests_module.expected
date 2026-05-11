@@ -1,0 +1,8 @@
+Running 4 tests...
+
+  ok  AtomTest.test_eq
+  ok  AtomTest.test_neq
+  ok  MathTest.test_arithmetic
+  ok  MathTest.test_helper
+
+4 tests, 0 failures

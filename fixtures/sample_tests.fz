@@ -1,3 +1,7 @@
+# purpose: `test()` macro from the prelude — assert_eq / assert_neq / assert
+# kind:    test
+# paths:   jit
+
 test(:test_addition) do
   assert_eq(1 + 1, 2)
   assert_eq(40 + 2, 42)

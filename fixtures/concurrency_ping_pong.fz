@@ -1,3 +1,6 @@
+# purpose: spawn + send + receive — parent blocks on receive, child sends 42, main returns 42
+# paths:   jit
+
 # fz-ul4.19 demonstration: parent + child processes with send/receive.
 #
 # Parent (pid=1) spawns a child task. Child sends an integer message to

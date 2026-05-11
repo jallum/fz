@@ -1,3 +1,6 @@
+# purpose: print each scalar shape — int, atom, bool, nil
+# paths:   jit
+
 fn main() do
   print(40 + 2)
   print(:ok)

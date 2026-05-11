@@ -1,2 +1,5 @@
+# purpose: tiny module with a single helper and a main — historical interp-tier-0 smoke test
+# paths:   jit
+
 fn inc(n) do n + 1 end
 fn main(), do: print(inc(41))

@@ -1,3 +1,6 @@
+# purpose: parametric `id` exercised over int, atom, and bool
+# paths:   jit
+
 fn id(x), do: x
 
 fn main() do

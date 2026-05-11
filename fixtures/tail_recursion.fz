@@ -1,3 +1,6 @@
+# purpose: 100k-deep self-recursion must TCO — exits cleanly with the accumulated count
+# paths:   jit
+
 fn count(0, acc), do: acc
 fn count(n, acc), do: count(n - 1, acc + 1)
 

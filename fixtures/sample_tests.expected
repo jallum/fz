@@ -1,0 +1,8 @@
+Running 4 tests...
+
+  ok  test_addition
+  ok  test_atoms_compare
+  ok  test_calls_helper
+  ok  test_truthiness
+
+4 tests, 0 failures

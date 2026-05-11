@@ -1,3 +1,6 @@
+# purpose: selective import — `import Math, only: [add: 2]`
+# paths:   jit
+
 defmodule Math do
   fn add(x, y), do: x + y
   fn mul(x, y), do: x * y

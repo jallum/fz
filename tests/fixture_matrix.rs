@@ -1,0 +1,266 @@
+//! fz-ul4.23.1 — fixture matrix.
+//!
+//! Walks `fixtures/*.fz`, parses the header comments at the top of each
+//! file, and runs every fixture through each declared path. stdout is
+//! compared against a sidecar `<name>.expected` (empty if the sidecar
+//! is absent). Exit code must be 0.
+//!
+//! Header grammar (lines must precede the first non-comment line):
+//!
+//!     # purpose: one-line statement of what this fixture proves
+//!     # paths:   comma-separated list of backends (`jit`, eventually `interp`, `aot`)
+//!     # kind:    `run` (default if `fn main` present) or `test`
+//!
+//! Empty `paths:` is a flagged deferral — the runner skips, but the
+//! fixture must include a `# defer:` line so the gap is named.
+//!
+//! Workflow: re-run with `BLESS=1 cargo test fixture_matrix` to rewrite
+//! `.expected` files from current stdout. On failure (non-bless) the
+//! actual stdout is dropped at `<name>.output` for diffing.
+
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+const FZ_BIN: &str = env!("CARGO_BIN_EXE_fz");
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    Run,
+    Test,
+}
+
+#[derive(Debug)]
+struct Header {
+    purpose: String,
+    paths: Vec<String>,
+    kind: Kind,
+    defer: Option<String>,
+}
+
+fn parse_header(src: &str) -> Result<Header, String> {
+    let mut purpose: Option<String> = None;
+    let mut paths: Option<Vec<String>> = None;
+    let mut kind: Option<Kind> = None;
+    let mut defer: Option<String> = None;
+    for line in src.lines() {
+        let t = line.trim_start();
+        if t.is_empty() {
+            continue;
+        }
+        let Some(rest) = t.strip_prefix('#') else {
+            break;
+        };
+        let rest = rest.trim_start();
+        let parse_kv = |key: &str| rest.strip_prefix(key).map(|v| v.trim().to_string());
+        if let Some(v) = parse_kv("purpose:") {
+            purpose = Some(v);
+        } else if let Some(v) = parse_kv("paths:") {
+            paths = Some(
+                v.split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty() && s != "none")
+                    .collect(),
+            );
+        } else if let Some(v) = parse_kv("kind:") {
+            kind = Some(match v.as_str() {
+                "run" => Kind::Run,
+                "test" => Kind::Test,
+                other => return Err(format!("unknown kind: {}", other)),
+            });
+        } else if let Some(v) = parse_kv("defer:") {
+            defer = Some(v);
+        }
+    }
+    let purpose = purpose.ok_or("missing `# purpose:` header")?;
+    let paths = paths.ok_or("missing `# paths:` header")?;
+    let kind = kind.unwrap_or_else(|| {
+        if has_main(src) {
+            Kind::Run
+        } else {
+            Kind::Test
+        }
+    });
+    if paths.is_empty() && defer.is_none() {
+        return Err("empty `# paths:` without a `# defer:` rationale".into());
+    }
+    Ok(Header {
+        purpose,
+        paths,
+        kind,
+        defer,
+    })
+}
+
+fn has_main(src: &str) -> bool {
+    src.lines()
+        .filter(|l| !l.trim_start().starts_with('#'))
+        .any(|l| l.contains("fn main(") || l.contains("fn main "))
+}
+
+fn discover() -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = fs::read_dir("fixtures")
+        .expect("fixtures/ should exist")
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("fz"))
+        .collect();
+    out.sort();
+    out
+}
+
+fn run_path(fixture: &Path, header: &Header, path: &str) -> Result<String, String> {
+    if path != "jit" {
+        return Err(format!(
+            "path '{}' not wired in Phase 1 (only `jit` supported today)",
+            path
+        ));
+    }
+    let subcmd = match header.kind {
+        Kind::Run => "run",
+        Kind::Test => "test",
+    };
+    let out = Command::new(FZ_BIN)
+        .arg(subcmd)
+        .arg(fixture)
+        .output()
+        .map_err(|e| format!("spawn fz: {}", e))?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        return Err(format!("exit {}: {}", out.status, stderr.trim_end()));
+    }
+    String::from_utf8(out.stdout).map_err(|e| format!("stdout utf8: {}", e))
+}
+
+fn normalize(s: &str) -> String {
+    if s.is_empty() || s.ends_with('\n') {
+        s.to_string()
+    } else {
+        format!("{}\n", s)
+    }
+}
+
+fn check(fixture: &Path, header: &Header, path: &str, bless: bool) -> Result<(), String> {
+    let actual = run_path(fixture, header, path)?;
+    let actual = normalize(&actual);
+    let expected_path = fixture.with_extension("expected");
+    let expected = fs::read_to_string(&expected_path).unwrap_or_default();
+    let expected = normalize(&expected);
+    if actual == expected {
+        // Clean up any stale .output from a prior failure.
+        let _ = fs::remove_file(fixture.with_extension("output"));
+        return Ok(());
+    }
+    if bless {
+        if actual.is_empty() {
+            let _ = fs::remove_file(&expected_path);
+        } else {
+            fs::write(&expected_path, &actual)
+                .map_err(|e| format!("bless write: {}", e))?;
+        }
+        return Ok(());
+    }
+    let output_path = fixture.with_extension("output");
+    let _ = fs::write(&output_path, &actual);
+    Err(format!(
+        "stdout mismatch for {} via {}; wrote {}\n--- expected\n{}--- actual\n{}",
+        fixture.display(),
+        path,
+        output_path.display(),
+        expected,
+        actual
+    ))
+}
+
+/// Regenerate `fixtures/index.md` from headers and assert it matches the
+/// checked-in file. `BLESS=1` rewrites the index in place.
+#[test]
+fn fixture_index_up_to_date() {
+    let bless = std::env::var("BLESS").ok().as_deref() == Some("1");
+    let mut rows: Vec<(String, String, String)> = Vec::new();
+    for f in discover() {
+        let src = fs::read_to_string(&f).expect("read");
+        let header = match parse_header(&src) {
+            Ok(h) => h,
+            Err(_) => continue,
+        };
+        let name = f.file_name().unwrap().to_string_lossy().into_owned();
+        let paths = if header.paths.is_empty() {
+            match header.defer.as_deref() {
+                Some(d) => format!("_(deferred: {})_", d),
+                None => "_(deferred)_".into(),
+            }
+        } else {
+            header.paths.join(", ")
+        };
+        rows.push((name, header.purpose, paths));
+    }
+    let mut out = String::new();
+    out.push_str("# Fixture index\n\n");
+    out.push_str("Regenerated from header comments by `cargo test fixture_index_up_to_date`.\n");
+    out.push_str("Run with `BLESS=1` to rewrite after editing fixtures.\n\n");
+    out.push_str("| file | purpose | paths |\n");
+    out.push_str("|------|---------|-------|\n");
+    for (name, purpose, paths) in &rows {
+        out.push_str(&format!("| `{}` | {} | {} |\n", name, purpose, paths));
+    }
+    let index_path = PathBuf::from("fixtures/index.md");
+    let current = fs::read_to_string(&index_path).unwrap_or_default();
+    if current == out {
+        return;
+    }
+    if bless {
+        fs::write(&index_path, &out).expect("bless index write");
+        return;
+    }
+    panic!(
+        "fixtures/index.md is out of date. Re-run with `BLESS=1 cargo test fixture_index_up_to_date`.\n\n--- expected\n{}\n--- actual\n{}",
+        out, current
+    );
+}
+
+#[test]
+fn fixture_matrix() {
+    let bless = std::env::var("BLESS").ok().as_deref() == Some("1");
+    let mut failures: Vec<String> = Vec::new();
+    let mut deferred: Vec<(PathBuf, String, String)> = Vec::new();
+    let fixtures = discover();
+    assert!(!fixtures.is_empty(), "no fixtures discovered");
+    for f in fixtures {
+        let src = match fs::read_to_string(&f) {
+            Ok(s) => s,
+            Err(e) => {
+                failures.push(format!("{}: read: {}", f.display(), e));
+                continue;
+            }
+        };
+        let header = match parse_header(&src) {
+            Ok(h) => h,
+            Err(e) => {
+                failures.push(format!("{}: header: {}", f.display(), e));
+                continue;
+            }
+        };
+        if header.paths.is_empty() {
+            deferred.push((f, header.purpose.clone(), header.defer.unwrap_or_default()));
+            continue;
+        }
+        for path in &header.paths {
+            if let Err(e) = check(&f, &header, path, bless) {
+                failures.push(e);
+            }
+        }
+    }
+    if !deferred.is_empty() {
+        eprintln!("deferred fixtures (no paths wired yet):");
+        for (f, purpose, why) in &deferred {
+            eprintln!("  {}: {}\n    defer: {}", f.display(), purpose, why);
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} fixture failure(s):\n\n{}",
+        failures.len(),
+        failures.join("\n\n")
+    );
+}

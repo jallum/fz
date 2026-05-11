@@ -1,3 +1,6 @@
+# purpose: defmacro in one module, called from another via `import Helpers, only: [twice: 1]`
+# paths:   jit
+
 defmodule Helpers do
   fn double(x), do: x * 2
 

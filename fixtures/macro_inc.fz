@@ -1,3 +1,6 @@
+# purpose: defmacro + quote/unquote round-trip — two macros, one nested in the other
+# paths:   jit
+
 defmacro inc(x) do
   quote do: unquote(x) + 1
 end

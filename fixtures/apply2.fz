@@ -1,3 +1,6 @@
+# purpose: first-class fns — pass a fn into another fn and call it
+# paths:   jit
+
 fn double(x), do: x * 2
 fn neg(x), do: 0 - x
 fn apply2(f, x), do: f(x)

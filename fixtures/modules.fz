@@ -1,3 +1,6 @@
+# purpose: cross-module qualified calls — `M.double`, `M.quad`, `N.helper`
+# paths:   jit
+
 defmodule M do
   fn double(x), do: x * 2
   fn quad(x), do: double(double(x))
