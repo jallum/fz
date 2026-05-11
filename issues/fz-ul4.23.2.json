@@ -10,9 +10,15 @@
   "id": "fz-ul4.23.2",
   "labels": [],
   "parent": "fz-ul4.23",
+  "comments": [
+    {
+      "text": "Rename of eval.rs::Interp deferred to fz-ul4.23.5 (Phase 5). Doing it now would mis-signal the role: today Interp serves both as compile-time macro evaluator (permanent) and as runtime evaluator for REPL/test_runner (transitional). Once Phase 5 migrates REPL/test_runner onto the real IR interp, eval.rs becomes purely compile-time and the rename becomes unambiguous. Phase 2 instead adds a module-level doc comment naming both roles and the transition.",
+      "timestamp": "2026-05-11T21:03:47Z"
+    }
+  ],
   "priority": 2,
   "status": "in_progress",
   "title": "Mechanical cleanup: delete orphans, decide fz build, rename eval.rs",
   "type": "task",
-  "updated_at": "2026-05-11T21:02:25Z"
+  "updated_at": "2026-05-11T21:03:47Z"
 }
