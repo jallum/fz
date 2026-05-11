@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-ul4.11.25.2"
+  ],
   "blocks": [],
   "created": "2026-05-11T10:56:02Z",
   "description": "Three surgeries in src/types.rs that together close ~5 warnings and shrink the type-API surface.\n\n## 1. Move test utilities into #[cfg(test)] mod tests\n\nThese three associated fns warn as dead-code because their ONLY consumers are inside src/types.rs's #[cfg(test)] mod tests block (~30+ call sites across union/intersection/subtype tests):\n\n- BasicBits::raw (src/types.rs:49)\n- Descr::atom_top (src/types.rs:258)\n- Descr::str_t (src/types.rs:292)\n\nDon't gate them with #[cfg(test)] — that leaves production-shaped methods on the type with a cfg attribute, which is a smell. Instead, move them into mod tests as free helper fns:\n\n```rust\n#[cfg(test)]\nmod tests {\n    use super::*;\n\n    fn atom_top() -\u003e Descr { /* existing body */ }\n    fn str_t() -\u003e Descr { /* existing body */ }\n    fn raw(b: BasicBits) -\u003e u32 { b.0 }\n    // ...\n}\n```\n\nTest call sites change from `Descr::atom_top()` to `atom_top()` and from `b.raw()` to `raw(b)`. Mechanical rewrite; cargo test verifies.\n\n## 2. Delete BasicBits::from_raw\n\nZero callers anywhere (confirmed by grep). Pure dead code.\n\n## 3. Drop MapKey::Bool and MapKey::Nil\n\nAfter fz-ul4.11.25.2 deletes expr_to_map_key and pattern_to_map_key (the only constructors), these variants are unreachable. Delete them along with their two arms in format_map_key (src/types.rs:891-892).\n\nBlocked by: fz-ul4.11.25.2 (must run after the typer orphan deletion).\n\n## Deliverable\n\n- API surface of Descr / BasicBits shrinks to what the live pipeline uses.\n- Test conveniences are visibly test-scoped.\n- Net -5 warnings.\n- One commit.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Move test-only type helpers into mod tests; drop MapKey::Bool/Nil + from_raw",
   "type": "task",
-  "updated_at": "2026-05-11T10:56:02Z"
+  "updated_at": "2026-05-11T10:56:31Z"
 }
