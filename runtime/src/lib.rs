@@ -12,6 +12,7 @@
 //! (src/*.rs → runtime/src/*.rs) so the linker can resolve every fz_*
 //! symbol from one place. Two surfaces:
 
+pub mod aot_shim;
 pub mod bitstr;
 pub mod fz_value;
 pub mod heap;
