@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-11T21:11:36Z",
+  "description": "The old src/ir_interp.rs (built on value::Value, no production consumers) is now superseded by src/ir_interp_v2.rs. Delete it; rename the new one.\n\n## Acceptance\n\n- src/ir_interp.rs is the FzValue-based interp.\n- No file named ir_interp_v2.rs.\n- cargo test green; matrix green.",
+  "id": "fz-ul4.23.5.9",
+  "labels": [],
+  "parent": "fz-ul4.23.5",
+  "priority": 3,
+  "status": "open",
+  "title": "Delete legacy ir_interp.rs, rename ir_interp_v2 → ir_interp",
+  "type": "task",
+  "updated_at": "2026-05-11T21:11:36Z"
+}
