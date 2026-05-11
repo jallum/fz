@@ -4,14 +4,15 @@
   "blocks": [
     "fz-ul4.23.4.4"
   ],
+  "closed_at": "2026-05-11T21:20:37Z",
   "created": "2026-05-11T21:14:44Z",
   "description": "Move fz_map_{begin,clone,push,finalize,get} and key-ordering helpers (fz_key_category, fz_key_cmp — note these may also be referenced by 4.1.eq cluster; if so they stay there and only the map fns move).\n\n## Acceptance\n\n- cargo test green.\n- ir_codegen.rs no longer defines map FFI fns.",
   "id": "fz-ul4.23.4.8",
   "labels": [],
   "parent": "fz-ul4.23.4",
   "priority": 3,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Extract map FFI cluster (fz_map_*, fz_key_*)",
   "type": "task",
-  "updated_at": "2026-05-11T21:19:42Z"
+  "updated_at": "2026-05-11T21:20:37Z"
 }
