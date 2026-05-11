@@ -7,9 +7,15 @@
   "id": "fz-ul4.11.25",
   "labels": [],
   "parent": "fz-ul4.11",
+  "comments": [
+    {
+      "text": "SCOPE UPDATE — type-rendering wire-up moved.\n\nSection 3 of this ticket originally proposed wiring `Descr: Display` (and its `format_*` helpers in `src/types.rs`) into diagnostic messages, or deleting them as cruft. After investigation (2026-05-11) that work has been relocated to **fz-ul4.20.8**, which is part of the new fz-ul4.20 diagnostic-infrastructure arc. The printers are no longer cruft — they're load-bearing for type-driven warning messages once spans flow through the pipeline.\n\nWhat remains in .11.25 scope:\n1. `src/typer.rs` orphan helpers (12 warnings, 300 lines) — pure helpers no consumer references. Delete or migrate into `types.rs` if reusable.\n2. `src/value.rs` carcass — `Value::Jit`/`JitPoly`, dead BitString/FzVec methods.\n3. Smaller leftovers: `Expr::Dot`/`Cond` variants never constructed (`src/ast.rs`); unused locals/imports in `src/ir_codegen.rs`; one warning each in `src/repl.rs` / `src/bitstr.rs`.\n\nThe remaining `dnf_neg` / `merge_clauses` / `neg_clause` / `is_dnf_top` helpers in `types.rs:712-744` are staged for a future `Descr::diff` operation; **keep them**, add a one-line `#[allow(dead_code)]` with a comment pointing at the future ticket, and reduce the warning count via that path. Do NOT delete them.",
+      "timestamp": "2026-05-11T06:31:09Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "Post-.11.24 cleanup: prune typer/value/types dead code",
   "type": "task",
-  "updated_at": "2026-05-11T06:14:52Z"
+  "updated_at": "2026-05-11T06:31:09Z"
 }
