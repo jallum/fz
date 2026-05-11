@@ -7,14 +7,16 @@
   "blocks": [
     "fz-ul4.19.5"
   ],
+  "closed_at": "2026-05-11T19:29:18Z",
+  "close_reason": "Per-process GC isolation verified in 09e26ae. Heavy task GCs without disturbing lite task; per-Heap thresholds work independently. 418 tests green.",
   "created": "2026-05-10T13:05:42Z",
   "description": "GOAL: Verify that GC operates independently per-process. Each process's heap GCs when ITS allocator hits threshold; other processes keep running. Verification-heavy ticket — the design from .11.2 + .19.1 already gives us this; this ticket exercises and documents it.\n\n## Decisions captured\n\n- Per-process heap = bounded GC pause (GC time proportional to that process's heap size, not the whole system).\n- Cooperative scheduling makes this trivial: a process can only GC at a safepoint where its roots are crawlable; cooperative yields ARE safepoints.\n- Other processes keep running (their continuations stay valid; only the GC'd process pauses).\n\n## Deliverables\n\n- Trigger policy: per-heap allocation threshold (e.g. 75% full -\u003e mark-sweep at next safepoint).\n- Integration with .19.1 scheduler: after a process's continuation step, check its heap; if over threshold, run gc(roots from current frame chain) before re-scheduling.\n- Documentation / tests demonstrating bounded-pause semantics.\n\n## Tests\n\n- Two processes; one allocates heavily, other does cheap work. The heavy process triggers GC; the cheap one keeps making progress.\n- Single-process degenerate case still works.\n- Heap fragmentation handled correctly under GC.\n\n## Risks\n\n- Cross-process pointers SHOULD NOT EXIST (deep-copy in .19.3 prevents them). If they ever do (e.g. via a bug), one process's GC could free another's data. Add an invariant assertion: a heap pointer in process A's frame never points into process B's heap.\n- Transferable arenas (.19.5) are the only sanctioned cross-process pointer mechanism; their ownership transfer protocol must be robust.\n\n## Out of scope\n\n- Generational nursery (follow-up)\n- Concurrent GC (follow-up)",
   "id": "fz-ul4.19.4",
   "labels": [],
   "parent": "fz-ul4.19",
   "priority": 3,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Per-process independent GC (verification)",
   "type": "task",
-  "updated_at": "2026-05-11T19:28:20Z"
+  "updated_at": "2026-05-11T19:29:18Z"
 }
