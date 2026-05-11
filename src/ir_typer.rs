@@ -454,6 +454,7 @@ fn _suppress_block(_: &Block) {}
 /// Termination: capped at K=4 fixpoint iterations; values are widened past
 /// K=3 via `crate::typer::widen` so singleton-growing recursive paths still
 /// converge.
+#[allow(dead_code, reason = "tier-up hook; consumed by fz-ul4.19.5 per .24.7")]
 pub fn specialize_return(
     m: &Module,
     fn_id: crate::fz_ir::FnId,

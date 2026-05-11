@@ -118,6 +118,7 @@ pub struct MatchClause {
     pub guard: Option<Spanned<Expr>>,
     pub body: Spanned<Expr>,
     /// Span of the whole clause: `pattern when guard -> body`.
+    #[allow(dead_code, reason = "consumed by fz-ul4.21 (lower error spans)")]
     pub span: Span,
 }
 
@@ -234,6 +235,7 @@ pub struct FnDef {
     pub is_macro: bool,
     /// `@doc "..."` attached above the first clause of this fn. Inert
     /// in v1 — stored for future doc tooling and the test runner (.16).
+    #[allow(dead_code, reason = "consumed by fz-ul4.18.7 (@doc surface)")]
     pub doc: Option<String>,
     /// Span covering all clauses (and `@doc` if present).
     pub span: Span,
@@ -246,7 +248,12 @@ pub enum Item {
     /// `alias A.B.C` (as_name = "C") or `alias A.B.C, as: D` (as_name = "D").
     /// Only valid inside a defmodule body; the resolver consumes these and
     /// they don't survive into the flattened Program.
-    Alias { full_path: Vec<String>, as_name: String, span: Span },
+    Alias {
+        full_path: Vec<String>,
+        as_name: String,
+        #[allow(dead_code, reason = "consumed by fz-ul4.21 (resolve error spans)")]
+        span: Span,
+    },
     /// `import Mod` / `import Mod, only: [f: 1, g: 2]` /
     /// `import Mod, except: [...]`. Only valid inside a defmodule body;
     /// resolver-consumed.
@@ -257,6 +264,7 @@ pub enum Item {
         only: Option<Vec<(String, usize)>>,
         /// Blacklist of (name, arity) pairs.
         except: Option<Vec<(String, usize)>>,
+        #[allow(dead_code, reason = "consumed by fz-ul4.21 (resolve error spans)")]
         span: Span,
     },
     /// A macro invocation at item-position (top of program or top of a
