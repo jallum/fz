@@ -223,8 +223,7 @@ fn run_jit(args: &[String]) {
         std::process::exit(1);
     });
     let mut prog = resolve::flatten_modules(prog).unwrap_or_else(|e| {
-        let d = diag::Diagnostic::error(diag::codes::RESOLVE_UNKNOWN_MODULE, e, diag::Span::DUMMY);
-        diag::render_one_to_stderr(&sm, &d);
+        diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         std::process::exit(1);
     });
     if let Err(e) = macros::expand_program(&mut prog) {

@@ -22,8 +22,43 @@
 //! diagnostic source for "this call resolves to …".
 
 use crate::ast::*;
+use crate::diag::{Diagnostic, Span, codes};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
+
+/// Errors produced by `flatten_modules`. Each variant carries the source
+/// `Span` of the offending AST node so the driver can render an underlined
+/// diagnostic instead of a DUMMY-span headline. See fz-ul4.21.
+#[derive(Debug, Clone)]
+pub enum ResolveError {
+    AliasOutsideModule { span: Span },
+    ImportOutsideModule { span: Span },
+}
+
+impl ResolveError {
+    pub fn to_diagnostic(&self) -> Diagnostic {
+        match *self {
+            Self::AliasOutsideModule { span } => Diagnostic::error(
+                codes::RESOLVE_ALIAS_OUTSIDE_MODULE,
+                "alias is only valid inside a defmodule body",
+                span,
+            ),
+            Self::ImportOutsideModule { span } => Diagnostic::error(
+                codes::RESOLVE_IMPORT_OUTSIDE_MODULE,
+                "import is only valid inside a defmodule body",
+                span,
+            ),
+        }
+    }
+}
+
+impl std::fmt::Display for ResolveError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.to_diagnostic().message)
+    }
+}
+
+impl std::error::Error for ResolveError {}
 
 /// REPL helper: rewrite cross-module `Mod.fn(args)` calls in a single
 /// expression. No sibling-fn rewriting (the REPL has no enclosing
@@ -37,7 +72,7 @@ pub fn rewrite_expr_top_level(e: &mut Spanned<Expr>) {
     rewrite_expr(e, "", &no_siblings, &mut intro, &no_paths, &no_aliases, &no_imports);
 }
 
-pub fn flatten_modules(prog: Program) -> Result<Program, String> {
+pub fn flatten_modules(prog: Program) -> Result<Program, ResolveError> {
     let module_paths = collect_module_paths(&prog);
     let module_fns = collect_module_fns(&prog);
     let mut out: Vec<Rc<Item>> = Vec::new();
@@ -60,11 +95,11 @@ pub fn flatten_modules(prog: Program) -> Result<Program, String> {
                 out.push(Rc::new(Item::Fn(new_def)));
             }
             Item::Module(m) => flatten_module(m, "", &mut out, &module_paths, &module_fns)?,
-            Item::Alias { .. } => return Err(
-                "alias is only valid inside a defmodule body".into()
+            Item::Alias { span, .. } => return Err(
+                ResolveError::AliasOutsideModule { span: *span }
             ),
-            Item::Import { .. } => return Err(
-                "import is only valid inside a defmodule body".into()
+            Item::Import { span, .. } => return Err(
+                ResolveError::ImportOutsideModule { span: *span }
             ),
             Item::MacroCall { name, name_span, args, parent_module: _, span } => {
                 let no_siblings: HashSet<String> = HashSet::new();
@@ -140,7 +175,7 @@ fn flatten_module(
     out: &mut Vec<Rc<Item>>,
     module_paths: &HashSet<String>,
     module_fns: &ModuleFns,
-) -> Result<(), String> {
+) -> Result<(), ResolveError> {
     let module_path = if parent_path.is_empty() {
         m.name.clone()
     } else {
@@ -645,6 +680,32 @@ alias Some.Mod
 fn main(), do: nil
 "#));
         assert!(r.is_err());
+    }
+
+    /// .21 step 1: resolve errors now carry a real Span pointing at the
+    /// offending item, not `Span::DUMMY`. The renderer relies on this to
+    /// underline the source location.
+    #[test]
+    fn alias_outside_module_diag_has_real_span() {
+        let err = flatten_modules(parse(r#"
+alias Some.Mod
+fn main(), do: nil
+"#)).unwrap_err();
+        let d = err.to_diagnostic();
+        assert_ne!(d.primary.span, Span::DUMMY,
+            "resolve diagnostic should carry the offending item's span");
+        assert_eq!(d.code, codes::RESOLVE_ALIAS_OUTSIDE_MODULE);
+    }
+
+    #[test]
+    fn import_outside_module_diag_has_real_span() {
+        let err = flatten_modules(parse(r#"
+import Some.Mod
+fn main(), do: nil
+"#)).unwrap_err();
+        let d = err.to_diagnostic();
+        assert_ne!(d.primary.span, Span::DUMMY);
+        assert_eq!(d.code, codes::RESOLVE_IMPORT_OUTSIDE_MODULE);
     }
 
     #[test]
