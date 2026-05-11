@@ -4,10 +4,9 @@
 //! can link against the same FFI surface without dragging the JIT module
 //! along.
 //!
-//! This file holds the **arith / cmp / eq** cluster (fz-ul4.23.4.1).
-//! Other clusters land in sibling tickets:
-//!
-//!   .7  alloc   (fz_alloc_frame, fz_alloc_list_cons, fz_alloc_struct, fz_alloc_float)
+//! This file holds the **arith / cmp / eq** cluster (fz-ul4.23.4.1)
+//! and the **alloc** cluster (fz-ul4.23.4.7). Other clusters land in
+//! sibling tickets:
 //!   .8  map     (fz_map_*, fz_key_*)
 //!   .9  bitstring (fz_bs_*, decode_*/encode_* bit helpers)
 //!   .10 vec     (fz_vec_*)
@@ -21,6 +20,75 @@
 //! without updating the matching `declare_function` signatures.
 
 use crate::ir_codegen::current_process;
+
+// ===== Alloc cluster (fz-ul4.23.4.7) =====
+
+pub(crate) extern "C" fn fz_alloc_list_cons(head_bits: u64, tail_bits: u64) -> u64 {
+    use crate::fz_value::FzValue;
+    let p = current_process()
+        .heap
+        .alloc_list_cons(FzValue(head_bits), FzValue(tail_bits));
+    // Heap returns 16-byte-aligned pointers (low 4 bits zero), so the raw
+    // pointer doubles as the FzValue ptr-tagged encoding (tag bits = 000).
+    p as u64
+}
+
+/// Allocate a heap-typed Struct. `schema_id` must already be registered in
+/// the current Process's heap SchemaRegistry (shared with CompiledModule).
+/// Returns the FzValue ptr-bits (heap-aligned, so tag = 000). Caller is
+/// responsible for writing field values into payload slots after allocation.
+pub(crate) extern "C" fn fz_alloc_struct(schema_id: u32) -> u64 {
+    let p = current_process().heap.alloc_struct(schema_id);
+    p as u64
+}
+
+pub(crate) extern "C" fn fz_alloc_float(bits: u64) -> u64 {
+    let f = f64::from_bits(bits);
+    let p = current_process().heap.alloc_float(f);
+    p as u64
+}
+
+/// Allocate a frame for fn `fn_id`, looking up its size in the current
+/// Process's frame_sizes table populated at make_process() time.
+pub(crate) extern "C" fn fz_alloc_frame_dyn(fn_id: u32) -> *mut u8 {
+    let size = *current_process()
+        .frame_sizes
+        .get(fn_id as usize)
+        .unwrap_or_else(|| panic!("frame_sizes has no entry for fn_id {}", fn_id));
+    fz_alloc_frame(fn_id, size)
+}
+
+/// Public wrapper around the internal frame allocator. Used by the
+/// Runtime in src/runtime.rs to spawn a task's entry frame and by
+/// ir_codegen for the synchronous run path.
+pub(crate) fn fz_alloc_frame_for_test(schema_id: u32, total_size: u32) -> *mut u8 {
+    fz_alloc_frame(schema_id, total_size)
+}
+
+pub(crate) extern "C" fn fz_alloc_frame(schema_id: u32, total_size: u32) -> *mut u8 {
+    use std::alloc::{alloc_zeroed, Layout};
+    // Round size up to a multiple of 16 to keep allocator happy and ensure
+    // the resulting block aligns whatever follows.
+    let rounded = ((total_size as usize) + 15) & !15;
+    let layout = Layout::from_size_align(rounded, 16).expect("bad frame layout");
+    let p = unsafe { alloc_zeroed(layout) };
+    if p.is_null() {
+        std::alloc::handle_alloc_error(layout);
+    }
+    unsafe {
+        let hp = p as *mut crate::fz_value::HeapHeader;
+        (*hp) = crate::fz_value::HeapHeader {
+            kind: 0, // Struct
+            flags: 0,
+            size_bytes: total_size,
+            schema_id,
+            _reserved: 0,
+        };
+    }
+    p
+}
+
+// ===== Arith / cmp / eq cluster (fz-ul4.23.4.1) =====
 
 /// Decode an FzValue (Int or boxed Float) into f64. Panics on other tags.
 pub(crate) fn fz_to_f64(bits: u64) -> f64 {

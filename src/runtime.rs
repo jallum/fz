@@ -37,9 +37,9 @@ use std::collections::{HashMap, VecDeque};
 use crate::fz_ir::FnId;
 use crate::fz_value::FzValue;
 use crate::ir_codegen::{
-    fz_alloc_frame_for_test, CompiledModule, PidId, Process, ProcessState, CURRENT_PROCESS,
-    HEADER_SIZE,
+    CompiledModule, PidId, Process, ProcessState, CURRENT_PROCESS, HEADER_SIZE,
 };
+use crate::ir_runtime::fz_alloc_frame_for_test;
 
 /// Task scheduler bound to a single CompiledModule. v1 is single-worker /
 /// single-threaded — `run_until_idle` drives all spawned tasks to

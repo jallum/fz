@@ -229,7 +229,7 @@ impl CompiledModule {
 
     fn run_internal(&self, fn_id: FnId) -> i64 {
         let entry_schema = &self.schemas[fn_id.0 as usize];
-        let frame = fz_alloc_frame(fn_id.0, entry_schema.size);
+        let frame = crate::ir_runtime::fz_alloc_frame(fn_id.0, entry_schema.size);
         // Continuation pointer = null (entry fn).
         unsafe {
             let cont_slot = frame.add(HEADER_SIZE as usize) as *mut *mut u8;
@@ -678,24 +678,7 @@ pub fn heap_gc(roots: &[crate::fz_value::FzValue]) {
     });
 }
 
-extern "C" fn fz_alloc_list_cons(head_bits: u64, tail_bits: u64) -> u64 {
-    use crate::fz_value::FzValue;
-    let p = current_process()
-        .heap
-        .alloc_list_cons(FzValue(head_bits), FzValue(tail_bits));
-    // Heap returns 16-byte-aligned pointers (low 4 bits zero), so the raw
-    // pointer doubles as the FzValue ptr-tagged encoding (tag bits = 000).
-    p as u64
-}
-
-/// Allocate a heap-typed Struct. `schema_id` must already be registered in
-/// the current Process's heap SchemaRegistry (shared with CompiledModule).
-/// Returns the FzValue ptr-bits (heap-aligned, so tag = 000). Caller is
-/// responsible for writing field values into payload slots after allocation.
-extern "C" fn fz_alloc_struct(schema_id: u32) -> u64 {
-    let p = current_process().heap.alloc_struct(schema_id);
-    p as u64
-}
+// fz_alloc_list_cons and fz_alloc_struct moved to ir_runtime.rs (.23.4.7).
 
 // ----- Map runtime fns -----
 //
@@ -1211,11 +1194,7 @@ extern "C" fn fz_bs_read_field(
 // returns a fresh boxed float; mixed-type ops promote (e.g. `1 + 2.0` ==
 // `3.0`). Eq/Neq do NOT promote: `1 == 1.0` is false.
 
-extern "C" fn fz_alloc_float(bits: u64) -> u64 {
-    let f = f64::from_bits(bits);
-    let p = current_process().heap.alloc_float(f);
-    p as u64
-}
+// fz_alloc_float moved to ir_runtime.rs (.23.4.7).
 
 // ----- fz-ul4.19.2: scheduler-bound builtins (spawn / self) -----
 //
@@ -1444,15 +1423,7 @@ extern "C" fn fz_closure_arg(v: u64) {
     current_process().closure_args.push(v);
 }
 
-/// Allocate a frame for fn `fn_id`, looking up its size in the current
-/// Process's frame_sizes table populated at make_process() time.
-extern "C" fn fz_alloc_frame_dyn(fn_id: u32) -> *mut u8 {
-    let size = *current_process()
-        .frame_sizes
-        .get(fn_id as usize)
-        .unwrap_or_else(|| panic!("frame_sizes has no entry for fn_id {}", fn_id));
-    fz_alloc_frame(fn_id, size)
-}
+// fz_alloc_frame_dyn moved to ir_runtime.rs (.23.4.7).
 
 /// Build a callee frame for `closure` invocation:
 ///   frame[16] = cont_ptr
@@ -1467,7 +1438,7 @@ extern "C" fn fz_closure_invoke(closure_bits: u64, cont_ptr: u64) -> *mut u8 {
     let header = unsafe { &*cp };
     let fn_id = header.schema_id;
     let captured_count = header.flags as usize;
-    let frame = fz_alloc_frame_dyn(fn_id);
+    let frame = crate::ir_runtime::fz_alloc_frame_dyn(fn_id);
     let args = std::mem::take(&mut current_process().closure_args);
     unsafe {
         std::ptr::write((frame as *mut u8).add(16) as *mut u64, cont_ptr);
@@ -1507,7 +1478,7 @@ extern "C" fn fz_tail_closure(closure_bits: u64, current_frame: *mut u8) -> *mut
         }
         current_frame
     } else {
-        let frame = fz_alloc_frame_dyn(fn_id);
+        let frame = crate::ir_runtime::fz_alloc_frame_dyn(fn_id);
         unsafe {
             let old_cont = std::ptr::read(current_frame.add(16) as *const u64);
             std::ptr::write(frame.add(16) as *mut u64, old_cont);
@@ -1521,34 +1492,7 @@ extern "C" fn fz_tail_closure(closure_bits: u64, current_frame: *mut u8) -> *mut
     }
 }
 
-/// Public wrapper around the internal frame allocator. Used by the
-/// Runtime in src/runtime.rs to spawn a task's entry frame.
-pub(crate) fn fz_alloc_frame_for_test(schema_id: u32, total_size: u32) -> *mut u8 {
-    fz_alloc_frame(schema_id, total_size)
-}
-
-extern "C" fn fz_alloc_frame(schema_id: u32, total_size: u32) -> *mut u8 {
-    use std::alloc::{alloc_zeroed, Layout};
-    // Round size up to a multiple of 16 to keep allocator happy and ensure
-    // the resulting block aligns whatever follows.
-    let rounded = ((total_size as usize) + 15) & !15;
-    let layout = Layout::from_size_align(rounded, 16).expect("bad frame layout");
-    let p = unsafe { alloc_zeroed(layout) };
-    if p.is_null() {
-        std::alloc::handle_alloc_error(layout);
-    }
-    unsafe {
-        let hp = p as *mut crate::fz_value::HeapHeader;
-        (*hp) = crate::fz_value::HeapHeader {
-            kind: 0, // Struct
-            flags: 0,
-            size_bytes: total_size,
-            schema_id,
-            _reserved: 0,
-        };
-    }
-    p
-}
+// fz_alloc_frame + fz_alloc_frame_for_test moved to ir_runtime.rs (.23.4.7).
 
 // ---------------------------------------------------------------------------
 // Compiler
@@ -1598,9 +1542,9 @@ pub fn compile(module: &Module) -> Result<CompiledModule, CodegenError> {
     let mut builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
     builder.symbol("fz_print_value", fz_print_value as *const u8);
     builder.symbol("fz_halt", fz_halt as *const u8);
-    builder.symbol("fz_alloc_frame", fz_alloc_frame as *const u8);
-    builder.symbol("fz_alloc_list_cons", fz_alloc_list_cons as *const u8);
-    builder.symbol("fz_alloc_struct", fz_alloc_struct as *const u8);
+    builder.symbol("fz_alloc_frame", crate::ir_runtime::fz_alloc_frame as *const u8);
+    builder.symbol("fz_alloc_list_cons", crate::ir_runtime::fz_alloc_list_cons as *const u8);
+    builder.symbol("fz_alloc_struct", crate::ir_runtime::fz_alloc_struct as *const u8);
     builder.symbol("fz_bs_begin", fz_bs_begin as *const u8);
     builder.symbol("fz_bs_write_field", fz_bs_write_field as *const u8);
     builder.symbol("fz_bs_finalize", fz_bs_finalize as *const u8);
@@ -1611,7 +1555,7 @@ pub fn compile(module: &Module) -> Result<CompiledModule, CodegenError> {
     builder.symbol("fz_map_push", fz_map_push as *const u8);
     builder.symbol("fz_map_finalize", fz_map_finalize as *const u8);
     builder.symbol("fz_map_get", fz_map_get as *const u8);
-    builder.symbol("fz_alloc_float", fz_alloc_float as *const u8);
+    builder.symbol("fz_alloc_float", crate::ir_runtime::fz_alloc_float as *const u8);
     builder.symbol("fz_arith_add", crate::ir_runtime::fz_arith_add as *const u8);
     builder.symbol("fz_arith_sub", crate::ir_runtime::fz_arith_sub as *const u8);
     builder.symbol("fz_arith_mul", crate::ir_runtime::fz_arith_mul as *const u8);
