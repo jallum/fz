@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-ul4.23.6.3"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-ul4.23.6.5"
+  ],
   "created": "2026-05-11T21:11:59Z",
   "description": "tests/fixture_matrix.rs: when `# paths:` includes `aot`, invoke `fz build` for the fixture, run the produced executable, and compare stdout to .expected.\n\n## Acceptance\n\n- add1.fz header: `# paths: jit, interp, aot`.\n- Matrix runs all three paths green for add1.fz.",
   "id": "fz-ul4.23.6.4",
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "Wire aot path in fixture_matrix",
   "type": "task",
-  "updated_at": "2026-05-11T21:12:00Z"
+  "updated_at": "2026-05-11T21:12:01Z"
 }

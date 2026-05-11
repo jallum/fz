@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-ul4.23.6.4"
+  ],
   "blocks": [],
   "created": "2026-05-11T21:11:59Z",
   "description": "Add `aot` to `# paths:` for every fixture whose semantics don't depend on concurrency. As each one passes, leave it pinned in the index.\n\n## Acceptance\n\n- All non-concurrent fixtures are `# paths: jit, interp, aot`.\n- Concurrency-using fixtures still pending fz-ul4.23.6.6.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "AOT three-path graduation: roll out aot to every scalar fixture",
   "type": "task",
-  "updated_at": "2026-05-11T21:11:59Z"
+  "updated_at": "2026-05-11T21:12:01Z"
 }
