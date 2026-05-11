@@ -118,7 +118,6 @@ pub struct MatchClause {
     pub guard: Option<Spanned<Expr>>,
     pub body: Spanned<Expr>,
     /// Span of the whole clause: `pattern when guard -> body`.
-    #[allow(dead_code, reason = "consumed by fz-ul4.21 (lower error spans)")]
     pub span: Span,
 }
 
@@ -251,7 +250,6 @@ pub enum Item {
     Alias {
         full_path: Vec<String>,
         as_name: String,
-        #[allow(dead_code, reason = "consumed by fz-ul4.21 (resolve error spans)")]
         span: Span,
     },
     /// `import Mod` / `import Mod, only: [f: 1, g: 2]` /
@@ -264,7 +262,6 @@ pub enum Item {
         only: Option<Vec<(String, usize)>>,
         /// Blacklist of (name, arity) pairs.
         except: Option<Vec<(String, usize)>>,
-        #[allow(dead_code, reason = "consumed by fz-ul4.21 (resolve error spans)")]
         span: Span,
     },
     /// A macro invocation at item-position (top of program or top of a
