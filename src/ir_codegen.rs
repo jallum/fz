@@ -385,6 +385,11 @@ pub(crate) fn current_process() -> &'static mut Process {
 /// it, captures the rendering for tests.
 extern "C" fn fz_print_value(fz_bits: u64) {
     let s = render_fz_value(fz_bits);
+    // Always write to stdout so user-facing `fz run` / piped programs
+    // see output. Also capture into TEST_CAPTURE so unit tests that
+    // assert on print output keep working (cargo's stdout capture
+    // means the println below is invisible during `cargo test`).
+    println!("{}", s);
     TEST_CAPTURE.with(|c| c.borrow_mut().push(s));
 }
 
