@@ -9,14 +9,15 @@
     "fz-ul4.11.25.6"
   ],
   "blocks": [],
+  "closed_at": "2026-05-11T11:10:59Z",
   "created": "2026-05-11T10:56:26Z",
   "description": "Final pass that closes out the .11.25 epic. By this point all deletions and moves are done; the remaining warnings are on items intentionally retained for downstream tickets. Annotate each with #[allow(dead_code, reason = \"...\")] pointing at its consumer ticket.\n\n## Annotations\n\n- src/ir_typer.rs:457 — specialize_return:\n  ```\n  #[allow(dead_code, reason = \"tier-up hook; consumed by fz-ul4.19.5 per .24.7\")]\n  ```\n  This cascades: widen, widen_map, widen_map_sig, widen_tuple, widen_list, widen_func in src/typer.rs become transitively reachable via specialize_return, so their warnings auto-clear.\n\n- src/ast.rs:127 — MatchClause.span:\n  ```\n  #[allow(dead_code, reason = \"consumed by fz-ul4.21 (lower error spans)\")]\n  ```\n\n- src/ast.rs:255 — Item::Alias.span:\n  ```\n  #[allow(dead_code, reason = \"consumed by fz-ul4.21 (resolve error spans)\")]\n  ```\n\n- src/ast.rs:266 — Item::Import.span:\n  ```\n  #[allow(dead_code, reason = \"consumed by fz-ul4.21 (resolve error spans)\")]\n  ```\n\n- src/ast.rs:243 — FnDef.doc:\n  ```\n  #[allow(dead_code, reason = \"consumed by fz-ul4.18.7 (@doc surface)\")]\n  ```\n\n## Acceptance\n\n- cargo build clean: 0 warnings.\n- cargo test green.\n- Close fz-ul4.11.25 via bw.\n\nBlocked by: all of .11.25.1 through .11.25.6.",
   "id": "fz-ul4.11.25.7",
   "labels": [],
   "parent": "fz-ul4.11.25",
   "priority": 3,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Final annotations: #[allow(dead_code)] with reasons for specialize_return + retained AST fields",
   "type": "task",
-  "updated_at": "2026-05-11T11:09:56Z"
+  "updated_at": "2026-05-11T11:10:59Z"
 }
