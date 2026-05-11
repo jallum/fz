@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-ul4.20.2"
   ],
@@ -13,8 +13,8 @@
   "labels": [],
   "parent": "fz-ul4.20",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "ir_lower: Var-\u003esource_name, per-Stmt/Term spans, per-fn spans",
   "type": "task",
-  "updated_at": "2026-05-11T06:30:59Z"
+  "updated_at": "2026-05-11T07:59:08Z"
 }
