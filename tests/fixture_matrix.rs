@@ -109,27 +109,48 @@ fn discover() -> Vec<PathBuf> {
     out
 }
 
-fn run_path(fixture: &Path, header: &Header, path: &str) -> Result<String, String> {
-    if path != "jit" {
-        return Err(format!(
-            "path '{}' not wired in Phase 1 (only `jit` supported today)",
-            path
-        ));
-    }
-    let subcmd = match header.kind {
-        Kind::Run => "run",
-        Kind::Test => "test",
+/// Outcome of running a fixture through a single path.
+enum RunOutcome {
+    /// Process exited 0 with this stdout.
+    Ok(String),
+    /// Process exited 75 (EX_TEMPFAIL): the path is declared by the fixture
+    /// but not yet wired (e.g. `fz interp` stub before fz-ul4.23.5.2). The
+    /// matrix logs but does not fail.
+    Deferred(String),
+    /// Anything else — real failure.
+    Failed(String),
+}
+
+fn run_path(fixture: &Path, header: &Header, path: &str) -> RunOutcome {
+    let subcmd = match (path, header.kind) {
+        ("jit", Kind::Run) => "run",
+        ("jit", Kind::Test) => "test",
+        ("interp", _) => "interp",
+        ("aot", _) => {
+            return RunOutcome::Failed(format!(
+                "path '{}' not yet wired (fz-ul4.23.6)",
+                path
+            ));
+        }
+        _ => {
+            return RunOutcome::Failed(format!("unknown path `{}`", path));
+        }
     };
-    let out = Command::new(FZ_BIN)
-        .arg(subcmd)
-        .arg(fixture)
-        .output()
-        .map_err(|e| format!("spawn fz: {}", e))?;
-    if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        return Err(format!("exit {}: {}", out.status, stderr.trim_end()));
+    let out = match Command::new(FZ_BIN).arg(subcmd).arg(fixture).output() {
+        Ok(o) => o,
+        Err(e) => return RunOutcome::Failed(format!("spawn fz: {}", e)),
+    };
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    if let Some(75) = out.status.code() {
+        return RunOutcome::Deferred(stderr.trim_end().to_string());
     }
-    String::from_utf8(out.stdout).map_err(|e| format!("stdout utf8: {}", e))
+    if !out.status.success() {
+        return RunOutcome::Failed(format!("exit {}: {}", out.status, stderr.trim_end()));
+    }
+    match String::from_utf8(out.stdout) {
+        Ok(s) => RunOutcome::Ok(s),
+        Err(e) => RunOutcome::Failed(format!("stdout utf8: {}", e)),
+    }
 }
 
 fn normalize(s: &str) -> String {
@@ -140,8 +161,22 @@ fn normalize(s: &str) -> String {
     }
 }
 
-fn check(fixture: &Path, header: &Header, path: &str, bless: bool) -> Result<(), String> {
-    let actual = run_path(fixture, header, path)?;
+enum CheckOutcome {
+    /// Real pass against the .expected sidecar.
+    Pass,
+    /// Path is declared but not yet wired (subcommand returned exit 75).
+    /// Surfaced in the test output but doesn't fail.
+    Deferred(String),
+    /// Mismatch or fatal error.
+    Fail(String),
+}
+
+fn check(fixture: &Path, header: &Header, path: &str, bless: bool) -> CheckOutcome {
+    let actual = match run_path(fixture, header, path) {
+        RunOutcome::Ok(s) => s,
+        RunOutcome::Deferred(msg) => return CheckOutcome::Deferred(msg),
+        RunOutcome::Failed(e) => return CheckOutcome::Fail(e),
+    };
     let actual = normalize(&actual);
     let expected_path = fixture.with_extension("expected");
     let expected = fs::read_to_string(&expected_path).unwrap_or_default();
@@ -149,20 +184,19 @@ fn check(fixture: &Path, header: &Header, path: &str, bless: bool) -> Result<(),
     if actual == expected {
         // Clean up any stale .output from a prior failure.
         let _ = fs::remove_file(fixture.with_extension("output"));
-        return Ok(());
+        return CheckOutcome::Pass;
     }
     if bless {
         if actual.is_empty() {
             let _ = fs::remove_file(&expected_path);
-        } else {
-            fs::write(&expected_path, &actual)
-                .map_err(|e| format!("bless write: {}", e))?;
+        } else if let Err(e) = fs::write(&expected_path, &actual) {
+            return CheckOutcome::Fail(format!("bless write: {}", e));
         }
-        return Ok(());
+        return CheckOutcome::Pass;
     }
     let output_path = fixture.with_extension("output");
     let _ = fs::write(&output_path, &actual);
-    Err(format!(
+    CheckOutcome::Fail(format!(
         "stdout mismatch for {} via {}; wrote {}\n--- expected\n{}--- actual\n{}",
         fixture.display(),
         path,
@@ -219,6 +253,26 @@ fn fixture_index_up_to_date() {
     );
 }
 
+/// `fz interp` stub returns exit 75 (EX_TEMPFAIL) so the matrix can
+/// recognize "interp path declared but not yet wired" as a Deferred result
+/// rather than a failure. This atom (fz-ul4.23.5.1) is the plumbing;
+/// fz-ul4.23.5.2+ replace the stub with a real interpreter and graduate
+/// fixtures from `# paths: jit` to `# paths: jit, interp`.
+#[test]
+fn fz_interp_stub_exits_75() {
+    let out = Command::new(FZ_BIN)
+        .args(["interp", "fixtures/add1.fz"])
+        .output()
+        .expect("spawn fz interp");
+    assert_eq!(out.status.code(), Some(75), "fz interp stub should exit 75");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("not yet wired"),
+        "expected stub message in stderr, got: {}",
+        stderr
+    );
+}
+
 /// `fz dump --emit clif` smoke test. Confirms the feedback-loop subcommand
 /// is wired and produces real CLIF for a baseline fixture.
 #[test]
@@ -247,7 +301,8 @@ fn fz_dump_emits_clif() {
 fn fixture_matrix() {
     let bless = std::env::var("BLESS").ok().as_deref() == Some("1");
     let mut failures: Vec<String> = Vec::new();
-    let mut deferred: Vec<(PathBuf, String, String)> = Vec::new();
+    let mut deferred_paths: Vec<(PathBuf, String, String)> = Vec::new();
+    let mut deferred_fixtures: Vec<(PathBuf, String, String)> = Vec::new();
     let fixtures = discover();
     assert!(!fixtures.is_empty(), "no fixtures discovered");
     for f in fixtures {
@@ -266,19 +321,33 @@ fn fixture_matrix() {
             }
         };
         if header.paths.is_empty() {
-            deferred.push((f, header.purpose.clone(), header.defer.unwrap_or_default()));
+            deferred_fixtures.push((
+                f,
+                header.purpose.clone(),
+                header.defer.unwrap_or_default(),
+            ));
             continue;
         }
         for path in &header.paths {
-            if let Err(e) = check(&f, &header, path, bless) {
-                failures.push(e);
+            match check(&f, &header, path, bless) {
+                CheckOutcome::Pass => {}
+                CheckOutcome::Deferred(msg) => {
+                    deferred_paths.push((f.clone(), path.clone(), msg));
+                }
+                CheckOutcome::Fail(e) => failures.push(e),
             }
         }
     }
-    if !deferred.is_empty() {
+    if !deferred_fixtures.is_empty() {
         eprintln!("deferred fixtures (no paths wired yet):");
-        for (f, purpose, why) in &deferred {
+        for (f, purpose, why) in &deferred_fixtures {
             eprintln!("  {}: {}\n    defer: {}", f.display(), purpose, why);
+        }
+    }
+    if !deferred_paths.is_empty() {
+        eprintln!("deferred paths (declared but stub):");
+        for (f, path, msg) in &deferred_paths {
+            eprintln!("  {} via {}: {}", f.display(), path, msg);
         }
     }
     assert!(

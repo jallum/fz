@@ -45,6 +45,10 @@ fn main() {
             run_dump(&args[1..]);
             return;
         }
+        Some("interp") => {
+            run_interp(&args[1..]);
+            return;
+        }
         Some("repl") => {
             if let Err(e) = repl::run() {
                 eprintln!("repl: {}", e);
@@ -94,6 +98,21 @@ fn main() {
 fn run_build(_args: &[String]) {
     eprintln!("fz build: AOT path not yet implemented (tracked by fz-ul4.23.6).");
     std::process::exit(2);
+}
+
+/// `fz interp <src.fz>` — run a program through the rebuilt IR interpreter.
+///
+/// fz-ul4.23.5.1 stub: the interp itself lands in fz-ul4.23.5.2+. Until
+/// then this exits with code 75 (EX_TEMPFAIL) so the fixture matrix can
+/// recognize "path declared but not yet wired" as a graceful skip rather
+/// than a failure. As individual interp atoms land, the relevant fixtures
+/// graduate from `# paths: jit` to `# paths: jit, interp`.
+fn run_interp(_args: &[String]) {
+    eprintln!(
+        "fz interp: rebuilt IR interpreter not yet wired \
+         (tracked by fz-ul4.23.5.2+ atoms)."
+    );
+    std::process::exit(75); // EX_TEMPFAIL
 }
 
 fn run_jit_from_path(args: &[String]) {
