@@ -4,14 +4,15 @@
   "blocks": [
     "fz-ul4.23.4.4"
   ],
+  "closed_at": "2026-05-11T21:24:00Z",
   "created": "2026-05-11T21:14:45Z",
   "description": "Move fz_bs_{begin,write_field,finalize,reader_init,read_field} plus helpers (decode_bit_type, decode_endian, encode_bit_type, encode_endian, default_unit_for).\n\n## Acceptance\n\n- cargo test green.",
   "id": "fz-ul4.23.4.9",
   "labels": [],
   "parent": "fz-ul4.23.4",
   "priority": 3,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Extract bitstring FFI cluster (fz_bs_*)",
   "type": "task",
-  "updated_at": "2026-05-11T21:20:43Z"
+  "updated_at": "2026-05-11T21:24:00Z"
 }
