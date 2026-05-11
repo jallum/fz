@@ -2,6 +2,7 @@
 - Warnings are errors.
 - Tests must pass.
 - TDD is the norm.
+- We prove things work like we say they do.
 - Deferrals and omissions require authorization.
 - Tickets are memory; `bw --help`.
 - One ticket == one commit.
