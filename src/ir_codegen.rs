@@ -915,8 +915,8 @@ struct RuntimeRefs {
     receive_attempt_id: FuncId,
 }
 
-fn compile_fn(
-    jmod: &mut JITModule,
+fn compile_fn<M: cranelift_module::Module>(
+    jmod: &mut M,
     ctx: &mut Context,
     fbctx: &mut FunctionBuilderContext,
     runtime: &RuntimeRefs,
@@ -1110,9 +1110,9 @@ fn compile_fn(
 /// Term::Return: load my cont_ptr from frame[16]. If null, halt.
 /// Otherwise write `val` to cont_frame[24] (continuation's "result" slot —
 /// always entry param 0) and return cont_ptr.
-fn emit_return(
+fn emit_return<M: cranelift_module::Module>(
     b: &mut FunctionBuilder<'_>,
-    jmod: &mut JITModule,
+    jmod: &mut M,
     runtime: &RuntimeRefs,
     frame_ptr: ir::Value,
     host_ctx: ir::Value,
@@ -1146,9 +1146,9 @@ fn emit_return(
 /// Term::Call: allocate continuation frame + callee frame. Continuation
 /// frame = [my_cont_ptr, result_placeholder, ...captured]. Callee frame =
 /// [cont_frame_ptr, ...args]. Return callee frame ptr.
-fn emit_call(
+fn emit_call<M: cranelift_module::Module>(
     b: &mut FunctionBuilder<'_>,
-    jmod: &mut JITModule,
+    jmod: &mut M,
     runtime: &RuntimeRefs,
     schemas: &[Schema],
     frame_ptr: ir::Value,
@@ -1206,9 +1206,9 @@ fn emit_call(
 /// current Process's state to Blocked and returns YIELD_PTR. The yield
 /// sentinel is `0x1` — never a valid heap-aligned pointer; the trampoline
 /// recognizes it and parks the task.
-fn emit_receive(
+fn emit_receive<M: cranelift_module::Module>(
     b: &mut FunctionBuilder<'_>,
-    jmod: &mut JITModule,
+    jmod: &mut M,
     runtime: &RuntimeRefs,
     schemas: &[Schema],
     frame_ptr: ir::Value,
@@ -1250,9 +1250,9 @@ fn emit_receive(
 /// Term::TailCall: if callee shares schema with caller, overwrite caller's
 /// frame in place. Otherwise allocate a new frame. Either way, cont_ptr is
 /// preserved (the parent's continuation).
-fn emit_tail_call(
+fn emit_tail_call<M: cranelift_module::Module>(
     b: &mut FunctionBuilder<'_>,
-    jmod: &mut JITModule,
+    jmod: &mut M,
     runtime: &RuntimeRefs,
     schemas: &[Schema],
     self_id: u32,
@@ -1289,9 +1289,9 @@ fn emit_tail_call(
 /// Term::CallClosure: build the continuation frame the same way as Term::Call,
 /// stage args via fz_closure_arg(), then call fz_closure_invoke(closure,
 /// cont_frame_ptr) which returns the callee frame ptr.
-fn emit_call_closure(
+fn emit_call_closure<M: cranelift_module::Module>(
     b: &mut FunctionBuilder<'_>,
-    jmod: &mut JITModule,
+    jmod: &mut M,
     runtime: &RuntimeRefs,
     schemas: &[Schema],
     frame_ptr: ir::Value,
@@ -1328,9 +1328,9 @@ fn emit_call_closure(
 
 /// Term::TailCallClosure: stage args, then call fz_tail_closure(closure,
 /// current_frame). Runtime fn handles same-fn-id frame reuse vs. fresh alloc.
-fn emit_tail_call_closure(
+fn emit_tail_call_closure<M: cranelift_module::Module>(
     b: &mut FunctionBuilder<'_>,
-    jmod: &mut JITModule,
+    jmod: &mut M,
     runtime: &RuntimeRefs,
     frame_ptr: ir::Value,
     closure_val: ir::Value,
@@ -1356,9 +1356,9 @@ fn descr_is_int(fn_types: &crate::ir_typer::FnTypes, v: crate::fz_ir::Var) -> bo
         .unwrap_or(false)
 }
 
-fn lower_prim(
+fn lower_prim<M: cranelift_module::Module>(
     b: &mut FunctionBuilder<'_>,
-    jmod: &mut JITModule,
+    jmod: &mut M,
     runtime: &RuntimeRefs,
     tuple_schema_ids: &HashMap<usize, u32>,
     env: &HashMap<u32, ir::Value>,
@@ -1852,9 +1852,9 @@ fn both_int(b: &mut FunctionBuilder<'_>, av: ir::Value, bv: ir::Value) -> ir::Va
 /// Emit a tag-dispatched binary op: if both Tag::Int, run `fast`; else call
 /// `helper_id` (an extern "C" fn(u64, u64) -> u64). Returns the join-block
 /// param holding the resolved value.
-fn emit_dispatch_binop<F>(
+fn emit_dispatch_binop<M: cranelift_module::Module, F>(
     b: &mut FunctionBuilder<'_>,
-    jmod: &mut JITModule,
+    jmod: &mut M,
     helper_id: FuncId,
     av: ir::Value,
     bv: ir::Value,
