@@ -21,6 +21,96 @@
 
 use crate::ir_codegen::current_process;
 
+// ===== Vec cluster (fz-ul4.23.4.10) =====
+//
+// Vecs are heap objects with raw element-payload (no FzValues inside).
+// Construction stages elements in TLS via begin(kind) -> push(v) ×n ->
+// finalize(); per-kind decoding happens at push (for U8/Bit) or finalize
+// (Bit packs at the end). VecF64 is gated behind .11.20/.11.23.
+
+#[derive(Debug)]
+pub enum VecBuild {
+    I64(Vec<i64>),
+    U8(Vec<u8>),
+    Bit(Vec<bool>),
+}
+
+/// kind tag matches `HeapKind as u16`: VecI64=3, VecU8=5, VecBit=6.
+pub(crate) extern "C" fn fz_vec_begin(kind_tag: u32) {
+    use crate::fz_value::HeapKind;
+    let b = match HeapKind::from_u16(kind_tag as u16) {
+        Some(HeapKind::VecI64) => VecBuild::I64(Vec::new()),
+        Some(HeapKind::VecU8) => VecBuild::U8(Vec::new()),
+        Some(HeapKind::VecBit) => VecBuild::Bit(Vec::new()),
+        Some(HeapKind::VecF64) => panic!("VecF64 deferred to fz-ul4.11.23"),
+        _ => panic!("fz_vec_begin: invalid kind tag {}", kind_tag),
+    };
+    current_process().vec_builder = Some(b);
+}
+
+pub(crate) extern "C" fn fz_vec_push(value_bits: u64) {
+    use crate::fz_value::FzValue;
+    let n = FzValue(value_bits)
+        .unbox_int()
+        .expect("fz_vec_push: vec element not Int");
+    match current_process()
+        .vec_builder
+        .as_mut()
+        .expect("fz_vec_push without begin")
+    {
+        VecBuild::I64(v) => v.push(n),
+        VecBuild::U8(v) => v.push(n as u8),
+        VecBuild::Bit(v) => v.push(n != 0),
+    }
+}
+
+pub(crate) extern "C" fn fz_vec_finalize() -> u64 {
+    let b = current_process()
+        .vec_builder
+        .take()
+        .expect("fz_vec_finalize without begin");
+    let heap = &mut current_process().heap;
+    let p = match b {
+        VecBuild::I64(v) => heap.alloc_vec_i64(&v),
+        VecBuild::U8(v) => heap.alloc_vec_u8(&v),
+        VecBuild::Bit(v) => heap.alloc_vec_bit(&v),
+    };
+    p as u64
+}
+
+/// vec_get(vec, index) -> element as FzValue Int (for I64/U8/Bit).
+/// Out-of-bounds returns FzValue::NIL (mirrors Map's missing-key behavior).
+pub(crate) extern "C" fn fz_vec_get(vec_bits: u64, index_bits: u64) -> u64 {
+    use crate::fz_value::{FzValue, HeapKind};
+    let p = FzValue(vec_bits)
+        .unbox_ptr()
+        .expect("fz_vec_get: vec not a heap ptr");
+    let header = unsafe { &*p };
+    let i = FzValue(index_bits)
+        .unbox_int()
+        .expect("fz_vec_get: index not Int") as usize;
+    let len = crate::heap::Heap::vec_len(p) as usize;
+    if i >= len {
+        return FzValue::NIL.0;
+    }
+    let payload = unsafe { (p as *const u8).add(24) };
+    let n: i64 = match HeapKind::from_u16(header.kind) {
+        Some(HeapKind::VecI64) => unsafe {
+            std::ptr::read((payload as *const i64).add(i))
+        },
+        Some(HeapKind::VecU8) => unsafe { *payload.add(i) as i64 },
+        Some(HeapKind::VecBit) => {
+            let byte_idx = i / 8;
+            let bit_idx = 7 - (i % 8);
+            let byte = unsafe { *payload.add(byte_idx) };
+            ((byte >> bit_idx) & 1) as i64
+        }
+        Some(HeapKind::VecF64) => panic!("VecF64 deferred to fz-ul4.11.23"),
+        _ => panic!("fz_vec_get on non-vec heap kind"),
+    };
+    FzValue::from_int(n).0
+}
+
 // ===== Bitstring cluster (fz-ul4.23.4.9) =====
 
 pub(crate) extern "C" fn fz_bs_begin() {
