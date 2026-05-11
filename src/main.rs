@@ -25,11 +25,6 @@ mod test_runner;
 mod typer;
 mod types;
 mod value;
-// fz-ul4.11.9 cutover: legacy direct-style codegen modules retired. The
-// source files (codegen.rs / jit.rs / aot.rs / test_support.rs) are
-// preserved verbatim with a top-level `#![cfg(any())]` so test intent can
-// be re-verified once ir_codegen reaches feature parity in .11.10-.11.14.
-
 use parser::Parser;
 use std::io::{IsTerminal, Read};
 
@@ -91,11 +86,7 @@ fn main() {
 }
 
 fn run_build(_args: &[String]) {
-    eprintln!(
-        "fz build: AOT path is being rewired through ir_codegen \
-         (fz-ul4.11.9 cutover); reinstated alongside heap-type support \
-         in .11.10-.11.14"
-    );
+    eprintln!("fz build: AOT path not yet implemented (tracked by fz-ul4.23.6).");
     std::process::exit(2);
 }
 

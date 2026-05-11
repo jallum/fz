@@ -1,3 +1,20 @@
+//! AST-walking evaluator. Dual role today:
+//!
+//!   1. Compile-time macro expansion (macros.rs runs defmacro bodies through
+//!      `Interp` to produce expanded AST fragments). This role is permanent.
+//!   2. Runtime execution for the REPL (`repl.rs`) and the test runner
+//!      (`test_runner.rs`). This role is transitional — fz-ul4.23.5 migrates
+//!      both off this evaluator and onto the real fz-IR interpreter
+//!      (ir_interp rebuilt on FzValue/heap/runtime per fz-ul4.23). After
+//!      that, this module is purely compile-time infrastructure and the
+//!      `Interp` type should be renamed to make that explicit (deferred to
+//!      fz-ul4.23.5 because renaming today would mis-signal the runtime
+//!      role still in play).
+//!
+//! The `CallHook` field is a vestige of the retired direct-style JIT tier-up
+//! policy (fz-ul4.11.9); ir_codegen does not use it. Kept dormant for now;
+//! removable once the test suite is audited for any remaining consumers.
+
 use crate::ast::*;
 use crate::bitstr::*;
 use crate::value::*;
@@ -6,10 +23,9 @@ use std::rc::Rc;
 
 pub type EvalResult = Result<Value, String>;
 
-/// Hook invoked when a user-defined Closure is applied. Receives the user
-/// fn name and the Interp so it can patch globals (used by the JIT tier-up
-/// policy: count calls per user_name, JIT-compile when hot, rebind to
-/// Value::Jit).
+/// Vestigial hook from the retired direct-style JIT tier-up policy (.11.9).
+/// ir_codegen's tier policy is structural (always JIT), so this hook is
+/// never installed in production paths today.
 pub type CallHook = Rc<dyn Fn(&str, &Interp)>;
 
 pub struct Interp {
