@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-ul4.23.5.9"
   ],
@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-ul4.23.5",
   "priority": 3,
-  "status": "open",
+  "status": "in_progress",
   "title": "Migrate REPL + test_runner onto ir_interp",
   "type": "task",
-  "updated_at": "2026-05-11T21:11:40Z"
+  "updated_at": "2026-05-11T21:56:12Z"
 }
