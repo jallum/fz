@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-ul4.23.5.2"
   ],
@@ -12,8 +12,8 @@
   "labels": [],
   "parent": "fz-ul4.23.5",
   "priority": 3,
-  "status": "open",
+  "status": "in_progress",
   "title": "ir_interp_v2: spawn/send/receive — concurrency_ping_pong.fz",
   "type": "task",
-  "updated_at": "2026-05-11T21:11:40Z"
+  "updated_at": "2026-05-11T21:52:14Z"
 }
