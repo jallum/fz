@@ -3,9 +3,7 @@
   "blocked_by": [
     "fz-ul4.29.1"
   ],
-  "blocks": [
-    "fz-ul4.29.3"
-  ],
+  "blocks": [],
   "created": "2026-05-12T12:02:54Z",
   "description": "Introduce an internal `SpecId(u32)` newtype. Convert eight `FnId.0`-keyed codegen structures to `SpecId.0`-indexed. Build the `(FnId, SpecKey) → SpecId` lookup map. Re-run the typer/codegen pipeline so each SpecId has its own Schema, Signature, FuncId, frame_size, parking_reachable membership, and natively_callable membership.\n\nThis atom is the structural keying change ONLY. Each fn produces exactly one SpecId (its any-key spec, identical to today's lub-narrowed FnTypes). No narrow specialization is consumed yet — call sites all resolve to the callee's any-key SpecId. CLIF output is byte-identical to the pre-atom baseline.\n\nThe follow-up atom (.29.2.1) enables narrow-spec consumption at call sites; that's where new compiled bodies appear and CLIF diffs land.\n\n## Concretely\n\nEight structures convert:\n- `schemas: Vec\u003cSchema\u003e` → SpecId-indexed\n- `fn_sigs: Vec\u003cSignature\u003e` → SpecId-indexed\n- `fn_ids: HashMap\u003cu32, FuncId\u003e` → `Vec\u003cFuncId\u003e` SpecId-indexed (or `HashMap\u003cSpecId, FuncId\u003e` if churn)\n- `fn_ptrs: HashMap\u003cu32, *const u8\u003e` → similar\n- `frame_sizes: Vec\u003cu32\u003e` → SpecId-indexed\n- `return_descrs: Vec\u003cDescr\u003e` → SpecId-indexed\n- `parking_reachable: HashSet\u003cFnId\u003e` → `HashSet\u003cSpecId\u003e`\n- `natively_callable: HashSet\u003cFnId\u003e` → `HashSet\u003cSpecId\u003e`\n\nPlus one lookup: `HashMap\u003c(FnId, SpecKey), SpecId\u003e` resolved at call sites.\n\n## SpecId ↔ schema_id\n\nThe runtime side keys on `schema_id` (opaque u32). SpecId.0 maps directly to schema_id; SpecIds are dense from 0 so the runtime's `(0..fn_count).map(frame_size_fn)` loop still works without API change.\n\n## Acceptance\n\n- SpecId(u32) defined and plumbed through `compile_with_backend`.\n- Eight structures converted; no FnId.0 indexing in codegen except at the callsite-resolution boundary (which under this atom always resolves to the any-key SpecId).\n- `cargo test --release` matrix green.\n- CLIF byte-identical to pre-atom baseline (verified by `diff -r` across all fixtures).\n\n## Blocked by\n\nfz-ul4.29.1.\n\n## Blocks\n\nfz-ul4.29.2.1 (narrow-spec consumption).",
   "id": "fz-ul4.29.2",
@@ -15,5 +13,5 @@
   "status": "in_progress",
   "title": ".29.2: SpecId indirection + per-spec codegen",
   "type": "task",
-  "updated_at": "2026-05-12T12:12:57Z"
+  "updated_at": "2026-05-12T12:13:12Z"
 }
