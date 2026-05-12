@@ -4,7 +4,9 @@
     "fz-ul4.31.1",
     "fz-ul4.31.2"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-ul4.31.4"
+  ],
   "created": "2026-05-12T19:49:47Z",
   "description": "Add `@type name :: \u003ctype-expr\u003e` declarations and a module-level ModuleTypeEnv mapping name → Descr.\n\n## Syntax\n\n```\ndefmodule Foo do\n  @type id :: integer\n  @type pair :: {id, id}\n  @type list_of_id :: [id]\n\n  @spec lookup(id) :: id | nil\n  fn lookup(x) do ... end\nend\n```\n\n## Mechanics\n\n1. Parser: `@type Name :: \u003ctype-expr\u003e` becomes Attribute::TypeAlias(TypeAliasDecl { name, body_tokens }) attached to ModuleDef.attrs (.31.2 enables this).\n2. Pre-typer pass: collect all @type attrs from a ModuleDef into ModuleTypeEnv: HashMap\u003cString, Descr\u003e. Resolve named refs via .31.1's parser, threading the env through for lookup.\n3. Cycle detection: a → b → a should error with a clean diagnostic (use .20.5 DiagCode taxonomy).\n4. Forward references allowed within a module: collect all names first, then resolve bodies (two-phase).\n\n## Where it lives\n\n- src/ir_lower.rs or a new src/type_env.rs: builds ModuleTypeEnv from ModuleDef.attrs before ir_typer runs\n- The env flows into the typer? Or only into validation (.31.5)? Decision: only into validation. The typer infers from real Descrs; @type aliases are user-facing names, not part of inference. ModuleTypeEnv is consulted only when parsing user-written @spec bodies and @type bodies.\n\n## Tests\n\n- Simple alias: @type id :: integer; @spec foo(id) :: id parses and resolves\n- Alias-of-alias: @type a :: integer; @type b :: a; resolves transitively\n- Cycle: @type a :: b; @type b :: a; errors with cycle diagnostic\n- Undefined: @spec foo(undefined_name) :: integer errors with unknown-type diagnostic\n- Shadowing: @type integer :: float would shadow a builtin — pick a rule (probably reject) and test it\n\n## Out of scope\n\n- Parameterized aliases (@type result(t) :: ...) — deferred\n- Cross-module aliases (Mod.SomeType) — deferred",
   "id": "fz-ul4.31.3",
