@@ -524,14 +524,23 @@ fn host_isa_with(pic: bool) -> Arc<dyn cranelift_codegen::isa::TargetIsa> {
         .expect("isa finish")
 }
 
-/// Build a [cont_ptr, ...entry_params] schema for a fn. All FzValue slots.
-fn build_frame_schema(name: &str, num_entry_params: usize) -> Schema {
-    let n_fields = 1 + num_entry_params;
+/// Build a [cont_ptr, ...entry_params] frame schema. The cont_ptr slot is
+/// always `FzValue`; the param slots are described by `param_kinds`. All
+/// slots are currently 8 bytes regardless of kind; VR.3.2+ flips storage to
+/// raw f64 / raw i64 for the typed kinds. .5.1 (this ticket) is pure
+/// FieldKind plumbing — every caller still passes `FzValue` for every
+/// param, so behavior is unchanged.
+fn build_frame_schema(name: &str, param_kinds: &[FieldKind]) -> Schema {
+    let n_fields = 1 + param_kinds.len();
     let mut fields = Vec::with_capacity(n_fields);
-    for i in 0..n_fields {
+    fields.push(FieldDescriptor {
+        offset: 0,
+        kind: FieldKind::FzValue,
+    });
+    for (i, k) in param_kinds.iter().enumerate() {
         fields.push(FieldDescriptor {
-            offset: (i * SLOT_BYTES as usize) as u32,
-            kind: FieldKind::FzValue,
+            offset: ((i + 1) * SLOT_BYTES as usize) as u32,
+            kind: k.clone(),
         });
     }
     Schema {
@@ -896,12 +905,15 @@ pub fn compile_with_backend<B: Backend>(
     // Per-fn schemas indexed by FnId.0 (cps_split inserts continuation fns
     // out of declaration order, so module.fns[i].id.0 != i in general).
     let max_id = module.fns.iter().map(|f| f.id.0).max().unwrap_or(0);
-    let placeholder = build_frame_schema("__placeholder", 0);
+    let placeholder = build_frame_schema("__placeholder", &[]);
     let mut schemas: Vec<Schema> = vec![placeholder; (max_id + 1) as usize];
     for f in &module.fns {
         let entry_block = f.blocks.iter().find(|b| b.id == f.entry).unwrap();
-        let n_params = entry_block.params.len();
-        schemas[f.id.0 as usize] = build_frame_schema(&f.name, n_params);
+        // .5.1: pass FzValue for every param. .5.2/.5.3 will consult
+        // FnTypes here to mark int/float params as RawBytes(8).
+        let param_kinds: Vec<FieldKind> =
+            entry_block.params.iter().map(|_| FieldKind::FzValue).collect();
+        schemas[f.id.0 as usize] = build_frame_schema(&f.name, &param_kinds);
     }
 
     let runtime = declare_runtime_symbols(backend.module_mut())?;
