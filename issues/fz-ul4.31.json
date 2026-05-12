@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-12T19:49:20Z",
+  "description": "Add Elixir-style `@spec` and `@type` declarations. Declared specs are an **upper bound** on the typer's inferred specs (option 1 / success-typing semantics): validation passes iff `inferred ⊆ declared`. Narrower inferred is fine (user is hiding info deliberately); disjoint or wider is an error.\n\nBuilds on:\n- fz-ul4.18.6 (closed): @doc/@moduledoc, generic @name parser scaffold, FnDef.doc field\n- fz-ul4.29 epic: per-callsite typer specialization producing ModuleTypes.specs\n- fz-ul4.20.5/.20.8: diagnostic taxonomy + Descr Display\n\n## Children DAG\n\n.31.1 ──┬─► .31.2 ──┬─► .31.3 ──┐\n        │           │            ├─► .31.4 ──► .31.5 ──► .31.6\n        │           └────────────┘\n        └─► .31.3\n\n(fz-ul4.29.10 also blocks .31.5)\n\n- .31.1: Type-expression parser → Descr (pure)\n- .31.2: Generalize FnDef/ModuleDef attribute representation\n- .31.3: @type aliases + module type environment\n- .31.4: @spec parser + AST attachment\n- .31.5: Validation pass (inferred ⊆ declared) — depends on .29.10\n- .31.6: REPL ?\u003cname\u003e + three-path parity golden test\n\n## Out of scope (explicitly deferred — separate epics)\n\n- @callback / @impl (protocols/behaviours)\n- @opaque types\n- Parameterized type aliases: @type result(t) :: {:ok, t} | :error\n- Persisting declared specs in the module artifact for cross-module checking\n- Declared specs narrowing codegen specialization (option 3 — we chose option 1: declared is check only, not codegen input)",
+  "id": "fz-ul4.31",
+  "labels": [],
+  "parent": "fz-ul4",
+  "priority": 2,
+  "status": "open",
+  "title": "[EPIC] @spec / @type declarations",
+  "type": "task",
+  "updated_at": "2026-05-12T19:49:20Z"
+}
