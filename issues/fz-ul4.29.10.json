@@ -4,9 +4,7 @@
     "fz-ul4.29.11",
     "fz-ul4.29.12"
   ],
-  "blocks": [
-    "fz-ul4.31.5"
-  ],
+  "blocks": [],
   "created": "2026-05-12T19:49:12Z",
   "description": "Stop registering any-key specs for fns that don't need them. Trivial-given-.29.11 (subsumption dispatch): once `resolve` finds the narrowest covering spec rather than falling back to a hard-coded any-key SpecId, the any-key for a purely-direct fn is just dead weight in spec_registry — the next-widest registered narrow spec naturally takes over for any callsite query the typer didn't anticipate exactly.\n\n## Detection rule\n\nA fn needs an any-key iff one of:\n- it appears as the FnId in a `Prim::MakeClosure` (closure / Spawn dispatch lands on the any-key landing pad — until .32 introduces typed closure stubs), OR\n- it has no direct caller of any kind (no `Term::Call.callee`, `Term::TailCall.callee`, or `Cont.fn_id` reference). Entry point like `main`, or an orphan — no narrow specs would be registered, so the any-key is the only symbol covering it.\n\nFns that are purely directly called get no any-key.\n\n## Effect on add1.fz\n\nToday (post-.29.11, pre-.29.10): two symbols emitted (`add1` any-key, `add1_s1` narrow i64→i64). The any-key is unreachable but emitted.\nAfter .29.10: one symbol emitted (`add1` narrow i64→i64). Any-key never registered.\n\n## Scope\n\n- New helper `classify_any_key_emission(module) -\u003e HashSet\u003cFnId\u003e` (already drafted in the previous attempt — port forward).\n- src/ir_codegen.rs: condition the `register_any_key_at` loop on the classification result. Sentinel padding in `SpecRegistry::register_any_key_at` handles the skipped slots automatically.\n- src/ir_codegen.rs: the existing `spec_fnidx[sid].is_none()` skip in every emission loop already does the right thing for sentinel slots.\n- Update `SpecRegistry::any_key()` panic message — callers should never reach it for a purely-direct fn.\n- Update stale doc comment at src/ir_typer.rs:62 (the .29.1 \"specs populated but not yet consumed\" claim is false post-.29.2/.29.7).\n\n## Why this depends on .29.11\n\nWithout subsumption dispatch, `resolve_callee_sid`'s `unwrap_or(callee.0)` falls back to the any-key SpecId whenever exact-match misses. For recursive fns (fact, count), this fallback fires routinely because typer/codegen disagree on callsite Descr representation. Suppressing the any-key without .29.11 in place causes crashes in real programs.\n\n## Tests\n\n- fixtures/add1.fz: exactly one symbol emitted for add1 (verify via fz dump --emit clif, fz-ul4.23.3)\n- A fn referenced via MakeClosure: any-key still registered\n- A fn used both directly and as MakeClosure target: any-key still registered (indirect-use forces it)\n- A purely direct-called fn: no any-key\n- A fn used only as Cont.fn_id (continuation): no any-key (Cont is direct)\n- fact_5, count_100k, closure fixtures: unchanged behavior (regression)\n\n## Out of scope\n\n- Cross-module indirect-use analysis (single-module today)\n- Eliminating closure any-keys via typed stubs — that's .32",
   "id": "fz-ul4.29.10",
@@ -16,5 +14,5 @@
   "status": "open",
   "title": "On-demand any-key spec registration (trivial-given-.29.11)",
   "type": "task",
-  "updated_at": "2026-05-12T22:42:37Z"
+  "updated_at": "2026-05-12T22:42:38Z"
 }

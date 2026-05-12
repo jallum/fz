@@ -1,7 +1,6 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-ul4.29.10",
     "fz-ul4.31.4"
   ],
   "blocks": [
@@ -16,5 +15,5 @@
   "status": "open",
   "title": "Validation pass: inferred ⊆ declared",
   "type": "task",
-  "updated_at": "2026-05-12T19:50:24Z"
+  "updated_at": "2026-05-12T22:42:38Z"
 }
