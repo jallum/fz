@@ -7,14 +7,15 @@
   "blocks": [
     "fz-ul4.27.5.4"
   ],
+  "closed_at": "2026-05-12T02:07:18Z",
   "created": "2026-05-12T01:35:38Z",
   "description": "Second sliver of VR.3: typed INT entry-frame slots end-to-end. Mirrors VR.3.1's float pattern.\n\n## Why this is atomic\n\nSame chicken-and-egg as .5.1: schema-kind and storage-format must flip together to keep GC parity. Int slots store raw i64 (no tag bits, no shift) and SSA values flow raw through arithmetic, with boundary box-up via `box_int` (shl 3 | 1).\n\n## Adds\n\n- Per-fn schema build: `descr_is_int(entry_param) → FieldKind::RawBytes(8)`.\n- Entry-frame param load for int slots: `load.i64` raw (storage already raw, no shift needed).\n- Per-fn `raw_int_vars: HashSet\u003cVar\u003e` mirroring .5.1's `raw_float_vars`.\n- `as_tagged` helper (introduced in .5.1) extended: if var is in `raw_int_vars`, emit `box_int` (shl 3 | 1).\n- lower_prim int fast paths (BinOp::{Add,Sub,Mul,Div,Mod,Lt,Le,Gt,Ge,Eq,Neq} with both operands `descr_is_int`):\n  - Skip `unbox_int` when operand is in `raw_int_vars`.\n  - Result raw → insert into `raw_int_vars`, skip `box_int`.\n\n## Kills\n\n- `unbox_int(av)` per-op call when av is already raw.\n- `box_int(raw)` per-op call when the result Var will be consumed by another typed-int op.\n- The `(n \u003c\u003c 3) | TAG_INT` boundary materialization for int entry params on every read — collapsed to one shl at the boundary.\n\n## Acceptance\n\n- Extend fixture `vr1_int_arith.fz` (or new sibling `vr3_int_args.fz`) with a fn `fn sum3(a, b, c) do a + b + c end` (or annotated equivalent if ir_typer needs help). CLIF asserts no `sshr_imm` or `ishl_imm 3` between back-to-back arith ops on a/b/c.\n- Matrix green.\n\n## Depends on\n\n- fz-ul4.27.5.1 (introduces the `as_tagged` helper + `raw_*_vars` env infrastructure).\n\n## UNBLOCKS\n\n- fz-ul4.27.5.3 (continuations need both raw kinds working in entry frames first)",
   "id": "fz-ul4.27.5.3",
   "labels": [],
   "parent": "fz-ul4.27.5",
   "priority": 3,
-  "status": "in_progress",
+  "status": "closed",
   "title": "VR.3.3: typed INT entry-frame slots end-to-end",
   "type": "task",
-  "updated_at": "2026-05-12T02:02:48Z"
+  "updated_at": "2026-05-12T02:07:18Z"
 }
