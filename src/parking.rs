@@ -127,12 +127,17 @@ pub fn natively_callable(m: &Module, parking: &HashSet<FnId>) -> HashSet<FnId> {
                 Term::Call { callee, continuation, .. } => {
                     set.contains(callee) && set.contains(&continuation.fn_id)
                 }
-                // TailCall is excluded — native TCO via `return_call`
-                // bypasses the GC safepoint that the trampoline normally
-                // provides. A separate ticket will add explicit safepoint
-                // checks at return_call sites; until then keep tail-
-                // recursive fns on the uniform path.
-                Term::TailCall { .. } => false,
+                // fz-ul4.27.11 — TailCall is admitted when the callee is
+                // also in the set (TCO via Cranelift `return_call` between
+                // matching `tail`-conv sigs). The GC-safepoint concern is
+                // handled by a type-aware shrink in `ir_codegen::compile`:
+                // native TailCall args must be non-heap, which prevents
+                // the body from ever allocating a heap pointer that the
+                // GC can't reach (no roots means no GC pressure means no
+                // need for a per-return_call safepoint). A future ticket
+                // lifts the non-heap-args restriction by emitting stack
+                // maps so the GC can find roots inside Cranelift frames.
+                Term::TailCall { callee, .. } => set.contains(callee),
                 Term::CallClosure { .. }
                 | Term::TailCallClosure { .. }
                 | Term::Receive { .. } => false,

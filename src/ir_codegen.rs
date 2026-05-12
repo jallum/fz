@@ -1123,59 +1123,74 @@ pub fn compile_with_backend<B: Backend>(
         .union(&crate::types::Descr::nil())
         .union(&crate::types::Descr::bool_t());
     let is_non_heap_descr = |d: &crate::types::Descr| d.is_subtype(&non_heap);
+    // Single combined fixed point. Each iter re-enforces every invariant
+    // so cascading removals don't leave an inconsistent set:
+    //   (a) Term::Call's callee + cont both native, captures non-heap.
+    //   (b) Term::TailCall's callee native, args non-heap.
+    //   (c) Cont validity: if f is used as cont in some Term::Call, the
+    //       caller's callee at that site must be native (so the site
+    //       picks the native-chain branch) and captures non-heap.
     loop {
         let mut to_remove: Vec<crate::fz_ir::FnId> = Vec::new();
+        // (a) and (b): body invariants.
         for (fn_idx, f) in module.fns.iter().enumerate() {
-            for b in &f.blocks {
-                let Term::Call { continuation, .. } = &b.terminator else { continue; };
-                if !natively_callable.contains(&continuation.fn_id) { continue; }
-                if !natively_callable.contains(&crate::fz_ir::FnId(f.id.0)) {
-                    // Caller already uniform — this site stores captures
-                    // into a heap frame regardless, so it's safe. But we
-                    // ALSO use the native-chain path when both callee
-                    // and cont are native and the caller is uniform; in
-                    // that case we still route captures through native
-                    // stack slots. Apply the check at this site.
-                }
-                // Captures travel through Cranelift slots only when the
-                // callee is also native (the cont-frame fallback path
-                // writes them into heap-traced slots). If callee is
-                // non-native at this site, no chain happens here, so
-                // no constraint on this cont from this site.
-                let callee_id = match &b.terminator {
-                    Term::Call { callee, .. } => *callee,
-                    _ => continue,
-                };
-                if !natively_callable.contains(&callee_id) { continue; }
-                let ft = &module_types[fn_idx];
-                let unsafe_cap = continuation.captured.iter().any(|cv| {
-                    let d = ft.vars.get(cv).cloned()
-                        .unwrap_or_else(crate::types::Descr::any);
-                    !is_non_heap_descr(&d)
-                });
-                if unsafe_cap {
-                    to_remove.push(continuation.fn_id);
-                }
-            }
-        }
-        if to_remove.is_empty() { break; }
-        for id in to_remove { natively_callable.remove(&id); }
-    }
-    // After shrinking conts, re-tighten the body invariant: a fn in the
-    // set must still satisfy "every Term::Call's callee+cont are in the
-    // set". Re-run the parking.rs fixed point shape inline.
-    loop {
-        let mut to_remove: Vec<crate::fz_ir::FnId> = Vec::new();
-        for f in &module.fns {
             if !natively_callable.contains(&f.id) { continue; }
+            let ft = &module_types[fn_idx];
             let body_ok = f.blocks.iter().all(|b| match &b.terminator {
+                Term::Return(_) | Term::Halt(_)
+                | Term::Goto(_, _) | Term::If(_, _, _) => true,
                 Term::Call { callee, continuation, .. } => {
                     natively_callable.contains(callee)
                         && natively_callable.contains(&continuation.fn_id)
+                        && continuation.captured.iter().all(|cv| {
+                            let d = ft.vars.get(cv).cloned()
+                                .unwrap_or_else(crate::types::Descr::any);
+                            is_non_heap_descr(&d)
+                        })
                 }
-                _ => true, // other terminators were checked in parking.rs
+                Term::TailCall { callee, args } => {
+                    natively_callable.contains(callee)
+                        && args.iter().all(|av| {
+                            let d = ft.vars.get(av).cloned()
+                                .unwrap_or_else(crate::types::Descr::any);
+                            is_non_heap_descr(&d)
+                        })
+                }
+                _ => false,
             });
             if !body_ok { to_remove.push(f.id); }
+        }
+        // (c) Cont validity. parking.rs enforced this structurally for
+        // the initial set, but type-aware (b) removals can invalidate it
+        // here — when a Term::Call's callee leaves the set, the cont
+        // can no longer be invoked via the native chain and must drop
+        // out too.
+        for f in &module.fns {
+            if !natively_callable.contains(&f.id) { continue; }
+            if to_remove.contains(&f.id) { continue; }
+            let mut cont_unsafe = false;
+            'outer: for (cidx, caller) in module.fns.iter().enumerate() {
+                for b in &caller.blocks {
+                    let Term::Call { callee, continuation, .. } = &b.terminator
+                        else { continue; };
+                    if continuation.fn_id != f.id { continue; }
+                    if !natively_callable.contains(callee) {
+                        cont_unsafe = true;
+                        break 'outer;
+                    }
+                    let cft = &module_types[cidx];
+                    let unsafe_cap = continuation.captured.iter().any(|cv| {
+                        let d = cft.vars.get(cv).cloned()
+                            .unwrap_or_else(crate::types::Descr::any);
+                        !is_non_heap_descr(&d)
+                    });
+                    if unsafe_cap {
+                        cont_unsafe = true;
+                        break 'outer;
+                    }
+                }
+            }
+            if cont_unsafe { to_remove.push(f.id); }
         }
         if to_remove.is_empty() { break; }
         for id in to_remove { natively_callable.remove(&id); }
