@@ -6,14 +6,15 @@
   "blocks": [
     "fz-ul4.29.7"
   ],
+  "closed_at": "2026-05-12T12:20:43Z",
   "created": "2026-05-12T12:02:54Z",
   "description": "Introduce `SpecId(u32)` newtype and `SpecRegistry` struct. Build the registry in `compile_with_backend` with one any-key SpecId per FnIr. Store on CompiledMetadata. No structural conversion of the eight FnId.0-keyed structures yet — that comes in .29.2.1 along with narrow-spec consumption, because those two changes require each other (structural conversion only matters once multiple specs exist; narrow consumption only works once the structures support multiple specs).\n\nThis atom is pure infrastructure: types, registry, no behavior change.\n\n## Concretely\n\n- `SpecId(u32)` in src/fz_ir.rs with `Ord` so it's a clean Vec-index key.\n- `SpecRegistry` in src/ir_codegen.rs:\n  - `keys: Vec\u003c(FnId, Vec\u003cDescr\u003e)\u003e` indexed by SpecId.0.\n  - `lookup: HashMap\u003c(FnId, Vec\u003cDescr\u003e), SpecId\u003e` for both directions.\n  - `register`, `resolve`, `any_key`, `len`, `iter` accessors.\n- Build in `compile_with_backend` after `module_types`: one any-key SpecId per FnIr, with the SpecId.0 == FnId.0 invariant asserted.\n- Add `spec_registry: SpecRegistry` to `CompiledMetadata`.\n\n## Acceptance\n\n- SpecRegistry built in the pipeline with one SpecId per fn (any-key).\n- `cargo test --release` matrix green.\n- CLIF byte-identical to pre-atom baseline (verified by `diff -r`).\n- `SpecRegistry` API carries `#[allow(dead_code)]` only on accessors that .29.2.1 hasn't reached yet.\n\n## Blocked by\n\nfz-ul4.29.1.\n\n## Blocks\n\nfz-ul4.29.2.1 (structural conversion + narrow-spec consumption).",
   "id": "fz-ul4.29.2",
   "labels": [],
   "parent": "fz-ul4.29",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": ".29.2: SpecId indirection + per-spec codegen",
   "type": "task",
-  "updated_at": "2026-05-12T12:17:17Z"
+  "updated_at": "2026-05-12T12:20:43Z"
 }
