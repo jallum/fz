@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-ul4.27.5.2"
+  ],
   "created": "2026-05-12T01:40:39Z",
   "description": "ir_typer currently leaves every entry-block param at `Descr::any` (see comment at src/ir_typer.rs:58 — \"Top until .24.7 narrows via call-site obs\"). This is the hidden prerequisite that gates VR.3.2, VR.3.3, and the VR.2 Kills follow-up (fz-ul4.27.9): every `descr_is_*` check at the param-read site is permanently false today, so the typed-slot fast paths can't fire.\n\nThis ticket adds whole-module flow: for every direct Call / TailCall site, propagate the caller's known arg Descrs into the callee's entry-param Descrs. Iterate to fixed point. Closure calls (opaque vtable) keep `any` — a separate eventual ticket can specialise on captured-fn identity.\n\n## Adds\n\n- `type_module` becomes a fixed-point loop instead of a one-shot `map`:\n  - Initial pass: each fn typed in isolation as today, entry params at `any`.\n  - Iteration: collect all (callee_id, arg_descrs) tuples from Call / TailCall terminators across the module. For each callee, union the arg descrs across all call sites into the entry-param Descr. If any callee's entry param widened/narrowed, re-type that fn.\n  - Loop until no entry-param Descr changes.\n- Helper `module_call_sites(m: \u0026Module, types: \u0026ModuleTypes)` collecting the (callee, arg_descrs) tuples — must run AFTER each per-fn type pass so the caller's arg Descrs are themselves narrowed.\n- Fns never called (main, or any fn called only via closures) keep entry params at `any`.\n- Tests in `mod tests` for ir_typer asserting:\n  - `fn id(x), do: x` called as `id(1)` → x narrows to `Descr::int_lit(1)` (or `int` once we union across multiple call sites).\n  - Recursive fn: `fn fact(n), do: if n == 0 do 1 else n * fact(n - 1)` narrows n to `int` after one full iteration.\n  - Two callers with different types: `id(1)` + `id(:ok)` → x widens to `int | atom`.\n\n## Kills\n\n- The line at src/ir_typer.rs:58 commenting \"Top until .24.7 narrows via call-site obs\" — its hypothesis is now reality.\n- Anywhere ir_typer assumes entry params are perpetually `any`.\n\n## Acceptance\n\n- Above unit tests green.\n- Module test: a fn `fn dist(x, y), do: x * x + y * y` called as `dist(1.5, 2.5)` types x and y as `float`, and the existing `descr_is_float` fast path in lower_prim fires (verifiable via `fz dump --emit clif --fn dist`).\n- Full test suite green — entries that previously assumed `any` may now narrow further; any test that depended on permanently-`any` entry params needs to be updated (expected impact: minimal, since today nothing leans on that assumption usefully).\n\n## Blocks\n\n- fz-ul4.27.5.2 (VR.3.2 float entry-frame slots)\n- fz-ul4.27.5.3 (VR.3.3 int entry-frame slots)\n- fz-ul4.27.9 (VR.2 Kills)",
   "id": "fz-ul4.27.10",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "ir_typer: call-site narrowing for fn entry params",
   "type": "task",
-  "updated_at": "2026-05-12T01:40:39Z"
+  "updated_at": "2026-05-12T01:40:44Z"
 }
