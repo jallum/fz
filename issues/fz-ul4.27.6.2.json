@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-12T02:25:59Z",
+  "description": "The largest atom in the VR.4 decomp. For non-parking fns:\n\n- Cranelift fn signature reflects entry-param Descrs: `extern \"C\" fn callee(arg0: i64, arg1: f64, ..., cont_ptr: *mut u8, host_ctx: *mut u8) -\u003e ResultRepr` (exact shape TBD: cont_ptr may be redundant once .6.3 lands).\n- Term::Call / TailCall to a non-parking callee emits a native Cranelift `call` inst with the args passed by register, not by frame slots.\n- Callee's entry block reads from its block params (Cranelift fn params), not from frame slot loads.\n- The result returns via register; the caller picks it up directly.\n\nParking-reachable callees keep the existing uniform-frame ABI: caller still allocates a frame and writes slots; trampoline still dispatches them. The two ABIs coexist while VR.4 lands.\n\n## Adds\n\n- Per-fn `Signature` computed from FnTypes (mirrors fz-ul4.27.5.2/3 entry-frame slot kinds for the param ABI types).\n- Bifurcated emit_call: native call inst for non-parking callees; existing frame-based path for parking-reachable callees.\n- Bifurcated compile_fn entry: native param load (block_params[0..N]) for non-parking fns; existing entry-frame load for parking-reachable fns.\n- Return ABI: non-parking fns return their result via register; parking-reachable continue to write into cont frame's slot 1.\n\n## Kills\n\n- fz_alloc_frame calls at Term::Call sites whose callee is non-parking. Replaced by Cranelift native call.\n- Entry-frame load boilerplate at the top of non-parking fns. Replaced by direct block_param consumption.\n- The \"every fz_fn_\u003cN\u003e has the uniform signature\" invariant — bifurcated based on parking-reachability.\n\n## Acceptance\n\n- The dist / sum3 fixtures (non-parking) lower with no `fz_alloc_frame` at their call sites.\n- concurrency_ping_pong (parking) still works — heap frames + trampoline still drive its scheduling.\n- Matrix green, full test suite green.\n\n## Depends on\n\n- fz-ul4.27.6.1 (parking-reachability analysis)\n\n## Blocks\n\n- fz-ul4.27.6.3 (inline continuations / native cont calls)",
+  "id": "fz-ul4.27.6.2",
+  "labels": [],
+  "parent": "fz-ul4.27.6",
+  "priority": 3,
+  "status": "open",
+  "title": "VR.4.2: typed sigs + native direct calls for non-parking fns",
+  "type": "task",
+  "updated_at": "2026-05-12T02:25:59Z"
+}
