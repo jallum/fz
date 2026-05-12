@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-12T12:02:39Z",
+  "description": "Replace `ModuleTypes = Vec\u003cFnTypes\u003e` (positional, one slot per FnIr) with a per-callsite-keyed structure: each `(FnId, input-Descr-tuple)` pair gets its own `FnTypes`. The typer's fixed point runs over (fn, key) pairs.\n\n## Scope\n\n- `ModuleTypes` re-keying.\n- `idx_of: HashMap\u003cFnId, usize\u003e` → `HashMap\u003c(FnId, SpecKey), SpecId\u003e` (or staging structure pending .29.2's SpecId introduction).\n- Re-shape the typer's fixed point in `type_module` to iterate over (fn, key) pairs. For each Call site, look up callee's FnTypes for the actual arg-Descr tuple; if missing, instantiate it.\n- Recursion convergence: seed recursive instances at `any`-return; re-run `type_fn(callee, \u0026input_descrs)`; iterate to fixed point on the (fn, key) graph.\n\n## Out of scope\n\n- Codegen consumption — drivers (`compile_with_backend`) continue to pick the any-key for every FnId in this atom. Cranelift output stays bitwise identical.\n- SpecId integer assignment, internal Vec re-keying, multi-Schema emission — all .29.2.\n\n## Acceptance\n\n- Typer fixed point produces `FnTypes` per (FnId, key) pair internally.\n- Existing typer unit tests pass unchanged (they index the any-key result).\n- `cargo test --release` matrix green.\n- CLIF byte-for-byte identical to pre-atom baseline (no codegen change yet — verify by diffing dumped CLIF on the fixture corpus).",
+  "id": "fz-ul4.29.1",
+  "labels": [],
+  "parent": "fz-ul4.29",
+  "priority": 2,
+  "status": "open",
+  "title": ".29.1: Re-key ModuleTypes to (FnId, input-key)",
+  "type": "task",
+  "updated_at": "2026-05-12T12:02:39Z"
+}
