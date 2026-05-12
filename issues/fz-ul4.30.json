@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-05-12T20:59:46Z",
   "created": "2026-05-12T18:48:14Z",
   "description": "Every JIT-emitted function (uniform and native, including typer specs) carries\ntwo pieces of dead emission in its CLIF:\n\n1. **Stray `v2 = iconst.i64 0` at the top of every entry block** — never\n   referenced; persists in both uniform and native ABI fns.\n\n2. **A dead `block1` halt epilogue** with the shape:\n\n       block1:\n           v_n = iconst.i64 2     ; tagged atom 0 (TAG_ATOM = 0b010)\n           call fz_halt(host_ctx, v_n)\n           return v_n             ; returns 2 from a (i64,i64)-\u003ei64 tail fn\n\n   The block is unreachable (no predecessor), but Cranelift retains it through\n   codegen.\n\n   Suspicious side-finding: in `k_2_s4` (typed continuation spec) the block1's\n   `call fn0(v1, v9)` passes 2 args even though that fn0's declared signature\n   is `(i64) system_v` (1 arg). The Cranelift verifier evidently doesn't reject\n   signature-mismatched calls in unreachable blocks. Confirm whether this is\n   benign (DCE drops it pre-codegen) or whether the malformed call survives in\n   machine code.\n\nReproduce:\n\n    cargo run --release -- dump --emit clif --fn add1 fixtures/add1.fz\n\n## Up-front investigation (do before filing implementation atoms)\n\n- [ ] Locate the emission site. Candidates: `compile_fn` (src/ir_codegen.rs\n      around line 2018-2070), `emit_return` (~2528), or a FunctionBuilder\n      default. Confirm whether the iconst-0 and the halt block are produced by\n      the same path or two unrelated ones.\n- [ ] Determine whether the block1 halt is a vestige of an earlier\n      trampoline/halt design (pre-.27/.29) or whether some current code path\n      genuinely creates it as a fallback that DCE always prunes in practice.\n- [ ] Confirm via objdump/disassembly whether the dead block survives into\n      machine code or Cranelift's later passes drop it. If it's purely a CLIF\n      artifact, the cleanup is cosmetic; if it's in the binary, this is a\n      size/icache concern.\n- [ ] Decide scope: pure CLIF hygiene (delete the emission) vs. a real\n      correctness gap exposed by the k_2_s4 sig mismatch.\n\n## Acceptance\n\n- All four target fns in `fz dump --emit clif fixtures/add1.fz` lose the\n  `v2 = iconst.i64 0` and the trailing `block1`.\n- No regressions in any fixture (`expect_clif_contains` / `expect_clif_excludes`\n  still pass; new excludes added for `add1.fz`).\n- Investigation findings recorded in this ticket before implementation atoms\n  are filed (per CLAUDE.md: no hidden surprises).",
   "id": "fz-ul4.30",
   "labels": [],
   "parent": "fz-ul4",
   "priority": 3,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Remove dead block1 halt epilogue and stray entry-block iconst from compiled fns",
   "type": "task",
-  "updated_at": "2026-05-12T20:56:50Z"
+  "updated_at": "2026-05-12T20:59:46Z"
 }
