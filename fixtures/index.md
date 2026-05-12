@@ -9,6 +9,7 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `alias.fz` | nested-module path aliasing — `alias Long.Path` and `alias Long.Path, as: LP` | jit, interp, aot |
 | `apply2.fz` | first-class fns — pass a fn into another fn and call it | jit, interp, aot |
 | `attributes.fz` | @moduledoc / @doc attributes parse and the module still executes | jit, interp, aot |
+| `callsite_narrowing_dist.fz` | fz-ul4.27.10 — call-site arg narrowing flows caller arg types into callee entry params | jit, interp, aot |
 | `classify_two_clause.fz` | literal-vs-wildcard clause dispatch (`0` and `_`) | jit, interp, aot |
 | `cold_fn.fz` | minimal call site — one fn definition, one call, no scaffolding | jit, interp, aot |
 | `concurrency_ping_pong.fz` | spawn + send + receive — parent blocks on receive, prints the message | jit, interp, aot |

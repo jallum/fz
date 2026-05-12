@@ -29,8 +29,8 @@
 //! `ir_codegen::compile()` continues to populate `CompiledModule.types`.
 
 use crate::fz_ir::{
-    BinOp, Block, BlockId, BuiltinId, BuiltinKind, Const, FnIr, Module, Prim, Stmt, Term, UnOp,
-    Var, VecKindIr,
+    BinOp, Block, BlockId, BuiltinId, BuiltinKind, Const, FnId, FnIr, Module, Prim, Stmt, Term,
+    UnOp, Var, VecKindIr,
 };
 use crate::types::{Descr, MapKey};
 use std::collections::HashMap;
@@ -47,22 +47,126 @@ pub struct FnTypes {
 
 pub type ModuleTypes = Vec<FnTypes>;
 
+/// Type a whole module. Iterates type_fn to a fixed point, propagating
+/// call-site arg Descrs into callee entry-param Descrs after each pass.
+/// fz-ul4.27.10: replaces the previous one-shot `map`. Fns with no direct
+/// caller (main, closure-only targets) keep entry params at `any`.
 pub fn type_module(m: &Module) -> ModuleTypes {
-    m.fns.iter().map(|f| type_fn(f, m)).collect()
+    // Initial pass: every fn typed with `any` entry params.
+    let mut types: ModuleTypes =
+        m.fns.iter().map(|f| type_fn(f, m, None)).collect();
+
+    // Fn-id → index into the `m.fns` / `types` vectors (cps_split inserts
+    // continuation fns out of declaration order).
+    let mut idx_of: HashMap<FnId, usize> = HashMap::new();
+    for (i, f) in m.fns.iter().enumerate() {
+        idx_of.insert(f.id, i);
+    }
+
+    // Soundness: a fn packed into a closure (`Prim::MakeClosure`) may be
+    // invoked through `Term::CallClosure` / `Term::TailCallClosure`, whose
+    // callee identity is opaque to this analysis. Narrowing such a fn's
+    // entry params based only on the direct-call sites we can see would
+    // over-narrow (e.g. typing a recursive worker as `int_lit(100000)`
+    // because its only direct caller passes that literal, while its
+    // own recursive closure-mediated calls — which decrement the value —
+    // are invisible). Mark these fns and skip them.
+    let mut closure_reachable: std::collections::HashSet<FnId> =
+        std::collections::HashSet::new();
+    for f in &m.fns {
+        for b in &f.blocks {
+            for stmt in &b.stmts {
+                let Stmt::Let(_, prim) = stmt;
+                if let Prim::MakeClosure(fid, _) = prim {
+                    closure_reachable.insert(*fid);
+                }
+            }
+        }
+    }
+
+    loop {
+        // Aggregate per-callee entry-param Descrs as the union over all
+        // direct (Call / TailCall) call sites.
+        let mut narrowed: HashMap<FnId, Vec<Descr>> = HashMap::new();
+        for (i, f) in m.fns.iter().enumerate() {
+            let ft = &types[i];
+            for b in &f.blocks {
+                // Reconstruct env at the terminator.
+                let mut env = ft.block_envs.get(&b.id).cloned().unwrap_or_default();
+                for stmt in &b.stmts {
+                    let Stmt::Let(v, prim) = stmt;
+                    env.insert(*v, type_prim(prim, &env, m));
+                }
+                let (callee, args) = match &b.terminator {
+                    Term::Call { callee, args, .. } => (*callee, args),
+                    Term::TailCall { callee, args } => (*callee, args),
+                    _ => continue,
+                };
+                let Some(&j) = idx_of.get(&callee) else { continue };
+                let callee_fn = &m.fns[j];
+                let n_params = callee_fn.block(callee_fn.entry).params.len();
+                let slot = narrowed
+                    .entry(callee)
+                    .or_insert_with(|| vec![Descr::none(); n_params]);
+                for (k, av) in args.iter().enumerate() {
+                    if let Some(p) = slot.get_mut(k) {
+                        let at = env.get(av).cloned().unwrap_or_else(Descr::any);
+                        *p = p.union(&at);
+                    }
+                }
+            }
+        }
+
+        // Apply narrowed entry-param Descrs and retype any fn that changed.
+        let mut changed = false;
+        for (i, f) in m.fns.iter().enumerate() {
+            if closure_reachable.contains(&f.id) {
+                continue; // see closure-reachability note above
+            }
+            let entry_block = f.block(f.entry);
+            let current: Vec<Descr> = entry_block
+                .params
+                .iter()
+                .map(|p| types[i].vars.get(p).cloned().unwrap_or_else(Descr::any))
+                .collect();
+            let next: Vec<Descr> = match narrowed.get(&f.id) {
+                Some(v) => v.clone(),
+                None => continue, // no direct caller — leave entry params alone
+            };
+            if next.iter().zip(current.iter()).any(|(n, c)| !n.is_equiv(c)) {
+                types[i] = type_fn(f, m, Some(&next));
+                changed = true;
+            }
+        }
+
+        if !changed {
+            break;
+        }
+    }
+
+    types
 }
 
-fn type_fn(f: &FnIr, m: &Module) -> FnTypes {
+fn type_fn(f: &FnIr, m: &Module, entry_param_types: Option<&[Descr]>) -> FnTypes {
     let mut vars: HashMap<Var, Descr> = HashMap::new();
     let mut block_envs: HashMap<BlockId, HashMap<Var, Descr>> = HashMap::new();
 
-    // Entry block: params are Top until .24.7 narrows via call-site obs.
+    // Entry block: params come from the caller-narrowed `entry_param_types`
+    // when provided (fz-ul4.27.10 module-level fixed point), or default to
+    // `any` for the initial pass, fns with no direct caller (main,
+    // closure-only targets), and fns that are closure-reachable (whose
+    // caller set isn't bounded by the direct-call sites we can see).
     // Non-entry blocks: empty env, populated by goto/if predecessors.
     for b in &f.blocks {
         let mut env = HashMap::new();
         if b.id == f.entry {
-            for &p in &b.params {
-                env.insert(p, Descr::any());
-                vars.insert(p, Descr::any());
+            for (i, &p) in b.params.iter().enumerate() {
+                let t = entry_param_types
+                    .and_then(|ts| ts.get(i))
+                    .cloned()
+                    .unwrap_or_else(Descr::any);
+                env.insert(p, t.clone());
+                vars.insert(p, t);
             }
         }
         block_envs.insert(b.id, env);
@@ -1228,5 +1332,85 @@ mod tests {
             .expect("expected an 'uninhabited' note");
         assert!(narrow_note.contains("would need"),
             "narrow note should mention the would-need type, got {:?}", narrow_note);
+    }
+
+    // ---- fz-ul4.27.10: call-site arg narrowing into entry params ----
+
+    #[test]
+    fn entry_param_narrows_to_caller_arg_type() {
+        // callee: fn id(x), do: return x
+        let mut cb = FnBuilder::new(FnId(0), "id");
+        let x = cb.fresh_var();
+        let centry = cb.block(vec![x]);
+        cb.set_terminator(centry, Term::Return(x));
+
+        // caller: fn main, do: TailCall id(42)
+        let mut mb = FnBuilder::new(FnId(1), "main");
+        let mentry = mb.block(vec![]);
+        let v = mb.let_(mentry, Prim::Const(Const::Int(42)));
+        mb.set_terminator(mentry, Term::TailCall { callee: FnId(0), args: vec![v] });
+
+        let m = build_module(vec![cb.build(), mb.build()]);
+        let mt = type_module(&m);
+        // `id`'s entry param x should narrow to int_lit(42).
+        let xt = mt[0].vars.get(&x).cloned().unwrap();
+        assert!(xt.is_equiv(&Descr::int_lit(42)),
+            "x should narrow to int_lit(42), got {}", xt);
+    }
+
+    #[test]
+    fn entry_param_unions_across_multiple_callers() {
+        // callee: fn id(x), do: return x
+        let mut cb = FnBuilder::new(FnId(0), "id");
+        let x = cb.fresh_var();
+        let centry = cb.block(vec![x]);
+        cb.set_terminator(centry, Term::Return(x));
+
+        // caller1: TailCall id(1)
+        let mut a = FnBuilder::new(FnId(1), "a");
+        let aentry = a.block(vec![]);
+        let one = a.let_(aentry, Prim::Const(Const::Int(1)));
+        a.set_terminator(aentry, Term::TailCall { callee: FnId(0), args: vec![one] });
+
+        // caller2: TailCall id(:atom7)
+        let mut bb = FnBuilder::new(FnId(2), "b");
+        let bentry = bb.block(vec![]);
+        let ok = bb.let_(bentry, Prim::Const(Const::Atom(7)));
+        bb.set_terminator(bentry, Term::TailCall { callee: FnId(0), args: vec![ok] });
+
+        let m = build_module(vec![cb.build(), a.build(), bb.build()]);
+        let mt = type_module(&m);
+        let xt = mt[0].vars.get(&x).cloned().unwrap();
+        // x should accept both int_lit(1) and the atom — the union.
+        assert!(Descr::int_lit(1).is_subtype(&xt),
+            "x should accept int_lit(1), got {}", xt);
+        // Cross-axis: the atom side should be present too. Probe via
+        // intersection — the int axis alone should NOT cover all of xt.
+        assert!(!xt.is_subtype(&Descr::int()),
+            "x should also include atom side, got {}", xt);
+    }
+
+    #[test]
+    fn closure_reachable_fn_keeps_any_entry_params() {
+        // fn worker(n), do: return n — packed into a closure by main, so
+        // its entry param must stay `any` even though one direct caller
+        // (main, via MakeClosure-then-Call) might be visible.
+        let mut wb = FnBuilder::new(FnId(0), "worker");
+        let n = wb.fresh_var();
+        let wentry = wb.block(vec![n]);
+        wb.set_terminator(wentry, Term::Return(n));
+
+        // fn main, do: let cl = MakeClosure(worker, []); halt cl
+        let mut mb = FnBuilder::new(FnId(1), "main");
+        let mentry = mb.block(vec![]);
+        let cl = mb.let_(mentry, Prim::MakeClosure(FnId(0), vec![]));
+        mb.set_terminator(mentry, Term::Halt(cl));
+
+        let m = build_module(vec![wb.build(), mb.build()]);
+        let mt = type_module(&m);
+        let nt = mt[0].vars.get(&n).cloned().unwrap();
+        // worker is closure-reachable → entry param stays at `any`.
+        assert!(nt.is_equiv(&Descr::any()),
+            "worker's n must stay at any (closure-reachable), got {}", nt);
     }
 }
