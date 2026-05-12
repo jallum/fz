@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-05-12T18:50:38Z",
   "created": "2026-05-11T08:55:42Z",
   "description": "Lightweight follow-up to fz-ul4.18.6 (Module attributes). The parser captures `@doc \"...\"` strings into `FnDef.doc` (and analogous for `@moduledoc`), but no consumer reads them — `cargo build` reports `field doc is never read` on `FnDef` (src/ast.rs:243).\n\n## Options for the consumer\n\n1. **REPL `?fn_name`** — query the loaded program for an item's `doc` and print it. Mirrors Elixir's `h fn`.\n2. **`fz doc \u003cpath\u003e`** — extract all `@doc` / `@moduledoc` to stdout as plain text or markdown.\n3. **Hover via diag::Renderer** — out of scope; LSP territory.\n\nRecommend (1) as v1 — minimal surface, no new subcommand, immediately useful in REPL workflows.\n\n## Tests\n\n- `defmodule M do @doc \"adds two\" fn add(a, b), do: a + b end` then in REPL `?M.add` prints \"adds two\".\n- `@moduledoc \"the M module\"` on a module then `?M` prints it.\n- Missing doc → \"no documentation\".\n\n## Deliverable\n\n- One commit. `FnDef.doc` field is read; warning disappears.\n- If decision is \"don't ship a consumer yet\", close this ticket with rationale and apply `#[allow(dead_code, reason=\"reserved for fz-ul4.18.7 follow-up\")]` instead.\n\n## Out of scope\n\n- LSP / hover.\n- Markdown rendering of doc strings.\n- Cross-module doc indexing.",
   "id": "fz-ul4.18.7",
   "labels": [],
   "parent": "fz-ul4.18",
   "priority": 4,
-  "status": "open",
+  "status": "closed",
   "title": "Surface FnDef.doc / @doc attribute (consumer)",
   "type": "task",
-  "updated_at": "2026-05-11T08:55:42Z"
+  "updated_at": "2026-05-12T18:50:38Z"
 }
