@@ -536,18 +536,67 @@ fn build_frame_schema(name: &str, num_entry_params: usize) -> Schema {
     }
 }
 
-/// Abstraction over a Cranelift module backend. The compile pipeline
-/// drives codegen through `Self::Module`; the JIT impl wraps JITModule
-/// today, the AOT impl (fz-ul4.23.6) will wrap ObjectModule.
+/// Abstraction over a Cranelift module backend. <code>compile_with_backend</code>
+/// drives the whole shared pipeline through this trait; JIT and AOT pick
+/// what's specific to them (linkage, metadata-carrier emission, finalize).
 ///
-/// Keeping the trait this thin reflects honest reality: the bulk of
-/// codegen (declare_runtime_symbols, compile_fn, schema construction) is
-/// already Module-generic. The remaining JIT-specific knowledge —
-/// fn-pointer symbol binding and finalize-to-ptrs — is owned by the
-/// concrete backend and unpacked when compile() finalizes.
+/// fz-ul4.23.12 unification: where the trait used to expose only
+/// `module_mut` and the surrounding pipeline was duplicated in
+/// `compile()` and `compile_aot()`, the surrounding pipeline is now
+/// shared and the trait owns every legitimate point of variation —
+/// fn linkage, per-program metadata emission, and the finalize step
+/// that materializes the backend's Output.
 pub trait Backend {
     type Module: cranelift_module::Module;
+    /// Whatever the backend hands the user after compilation finishes.
+    /// JIT returns a `CompiledModule` (in-memory, runnable); AOT returns
+    /// an `AotArtifact` (object bytes + linker metadata).
+    type Output;
+
     fn module_mut(&mut self) -> &mut Self::Module;
+
+    /// Linkage applied to user `fz_fn_<id>` declarations. JIT keeps them
+    /// `Local` (only resolved in-process). AOT exports them so the linker
+    /// can see them when assembling the final binary.
+    fn fn_linkage(&self) -> Linkage;
+
+    /// Emit per-program metadata carriers (dispatch fn, frame-size fn,
+    /// atom-name blob, C `main` shim). The JIT impl is a no-op — the same
+    /// data lives in `CompiledModule`'s Rust HashMaps and the runtime
+    /// reads them directly. AOT emits Cranelift data + fns so the linker
+    /// + `fz_aot_run` can resolve them at runtime.
+    fn emit_metadata_carriers(
+        &mut self,
+        fbctx: &mut FunctionBuilderContext,
+        meta: &CompiledMetadata,
+    ) -> Result<(), CodegenError>;
+
+    /// Finalize the backend into its Output. JIT finalizes the JITModule
+    /// and resolves fn pointers. AOT emits the object-file bytes.
+    fn finalize(self, meta: CompiledMetadata) -> Result<Self::Output, CodegenError>;
+}
+
+/// Everything `compile_with_backend` collects during the shared pipeline,
+/// handed to the backend's `emit_metadata_carriers` and `finalize`.
+///
+/// The fz user `Module` (post type-rewrite) is intentionally NOT here —
+/// backends only need the codegen metadata at finalize time. They've
+/// already seen the module while declaring fns and compiling bodies.
+pub struct CompiledMetadata {
+    pub fn_ids: HashMap<u32, FuncId>,
+    pub schemas: Vec<Schema>,
+    pub user_schemas: std::rc::Rc<std::cell::RefCell<fz_runtime::heap::SchemaRegistry>>,
+    pub frame_sizes: Vec<u32>,
+    pub atom_names: Vec<String>,
+    pub bs_tuple_arity1_schema: Option<u32>,
+    pub bs_tuple_arity3_schema: Option<u32>,
+    pub types: crate::ir_typer::ModuleTypes,
+    pub diagnostics: crate::diag::Diagnostics,
+    /// FnId of fz user `main`, if present. AOT needs it to wire the C
+    /// `main` shim; JIT keeps it as a convenience for the run path.
+    pub main_fn_id: Option<FnId>,
+    /// Main fn's frame size (looked up from `schemas`). Convenience.
+    pub main_frame_size: Option<u32>,
 }
 
 /// JIT backend: wraps a JITModule pre-finalize. compile() constructs one,
@@ -613,8 +662,47 @@ impl JitBackend {
 
 impl Backend for JitBackend {
     type Module = JITModule;
+    type Output = CompiledModule;
+
     fn module_mut(&mut self) -> &mut JITModule {
         &mut self.jmod
+    }
+
+    fn fn_linkage(&self) -> Linkage {
+        Linkage::Local
+    }
+
+    fn emit_metadata_carriers(
+        &mut self,
+        _fbctx: &mut FunctionBuilderContext,
+        _meta: &CompiledMetadata,
+    ) -> Result<(), CodegenError> {
+        // No-op: JIT carries per-program metadata (fn_ptrs, frame_sizes,
+        // atom_names) in the returned CompiledModule's Rust HashMaps.
+        // The runtime reads them directly. No Cranelift carriers needed.
+        Ok(())
+    }
+
+    fn finalize(self, meta: CompiledMetadata) -> Result<CompiledModule, CodegenError> {
+        let JitBackend { mut jmod } = self;
+        jmod.finalize_definitions()
+            .map_err(|e| CodegenError::new(format!("finalize: {}", e)))?;
+        let mut fn_ptrs: HashMap<u32, *const u8> = HashMap::new();
+        for (fz_fn_id, func_id) in &meta.fn_ids {
+            fn_ptrs.insert(*fz_fn_id, jmod.get_finalized_function(*func_id));
+        }
+        Ok(CompiledModule {
+            module: jmod,
+            fn_ptrs,
+            schemas: meta.schemas,
+            user_schemas: meta.user_schemas,
+            frame_sizes: meta.frame_sizes,
+            atom_names: meta.atom_names,
+            bs_tuple_arity1_schema: meta.bs_tuple_arity1_schema,
+            bs_tuple_arity3_schema: meta.bs_tuple_arity3_schema,
+            types: meta.types,
+            diagnostics: meta.diagnostics,
+        })
     }
 }
 
@@ -646,8 +734,133 @@ impl AotBackend {
 
 impl Backend for AotBackend {
     type Module = cranelift_object::ObjectModule;
+    type Output = AotArtifact;
+
     fn module_mut(&mut self) -> &mut cranelift_object::ObjectModule {
         &mut self.omod
+    }
+
+    fn fn_linkage(&self) -> Linkage {
+        Linkage::Export
+    }
+
+    fn emit_metadata_carriers(
+        &mut self,
+        fbctx: &mut FunctionBuilderContext,
+        meta: &CompiledMetadata,
+    ) -> Result<(), CodegenError> {
+        // No `main`/0 in the source → nothing to drive at startup, so we
+        // skip the dispatch/main shim entirely. `fz build` errors gracefully
+        // on this artifact via its main_symbol check.
+        let Some(main_fn_id) = meta.main_fn_id else {
+            return Ok(());
+        };
+        let main_frame_size = meta
+            .main_frame_size
+            .expect("main_frame_size set whenever main_fn_id is");
+
+        let aot_run_sig = sig1(
+            &[
+                types::I32,
+                types::I32,
+                types::I64,
+                types::I64,
+                types::I32,
+                types::I64,
+            ],
+            &[types::I32],
+        );
+        let aot_run_id = self
+            .omod
+            .declare_function("fz_aot_run", Linkage::Import, &aot_run_sig)
+            .map_err(|e| CodegenError::new(format!("declare fz_aot_run: {}", e)))?;
+
+        let dispatch_sig = sig1(&[types::I32], &[types::I64]);
+        let dispatch_id = self
+            .omod
+            .declare_function("fz_aot_dispatch", Linkage::Local, &dispatch_sig)
+            .map_err(|e| CodegenError::new(format!("declare fz_aot_dispatch: {}", e)))?;
+        emit_aot_dispatch(
+            &mut self.omod,
+            fbctx,
+            dispatch_id,
+            &dispatch_sig,
+            &meta.fn_ids,
+        )?;
+
+        let fsz_sig = sig1(&[types::I32], &[types::I32]);
+        let fsz_id = self
+            .omod
+            .declare_function("fz_aot_frame_size", Linkage::Local, &fsz_sig)
+            .map_err(|e| CodegenError::new(format!("declare fz_aot_frame_size: {}", e)))?;
+        emit_aot_frame_size(&mut self.omod, fbctx, fsz_id, &fsz_sig, &meta.schemas)?;
+        let fn_count: u32 = meta.schemas.len() as u32;
+
+        let atom_blob_data: Option<DataId> = if meta.atom_names.is_empty() {
+            None
+        } else {
+            let mut blob: Vec<u8> = Vec::new();
+            for name in &meta.atom_names {
+                blob.extend_from_slice(name.as_bytes());
+                blob.push(0);
+            }
+            blob.push(0);
+            let id = self
+                .omod
+                .declare_data("fz_aot_atom_blob", Linkage::Local, false, false)
+                .map_err(|e| CodegenError::new(format!("declare atom blob: {}", e)))?;
+            let mut desc = DataDescription::new();
+            desc.define(blob.into_boxed_slice());
+            self.omod
+                .define_data(id, &desc)
+                .map_err(|e| CodegenError::new(format!("define atom blob: {}", e)))?;
+            Some(id)
+        };
+
+        let mut c_main_sig = Signature::new(CallConv::SystemV);
+        c_main_sig.params.push(AbiParam::new(types::I32));
+        c_main_sig.params.push(AbiParam::new(types::I64));
+        c_main_sig.returns.push(AbiParam::new(types::I32));
+        let c_main_id = self
+            .omod
+            .declare_function("main", Linkage::Export, &c_main_sig)
+            .map_err(|e| CodegenError::new(format!("declare C main: {}", e)))?;
+        emit_aot_c_main(
+            &mut self.omod,
+            fbctx,
+            c_main_id,
+            &c_main_sig,
+            main_fn_id.0,
+            main_frame_size,
+            dispatch_id,
+            fsz_id,
+            fn_count,
+            atom_blob_data,
+            aot_run_id,
+        )?;
+        Ok(())
+    }
+
+    fn finalize(self, meta: CompiledMetadata) -> Result<AotArtifact, CodegenError> {
+        let AotBackend { omod } = self;
+        let product = omod.finish();
+        let object = product
+            .emit()
+            .map_err(|e| CodegenError::new(format!("object emit: {}", e)))?;
+        // For programs with a fz `main`, the C-callable `main` shim is the
+        // linker's entry point. Without a fz main, no shim was emitted and
+        // we surface the underlying fz_fn_<id> name so `fz build` can
+        // error cleanly.
+        let main_symbol = if meta.main_fn_id.is_some() {
+            Some("main".to_string())
+        } else {
+            None
+        };
+        Ok(AotArtifact {
+            object,
+            main_symbol,
+            diagnostics: meta.diagnostics,
+        })
     }
 }
 
@@ -664,12 +877,19 @@ pub struct AotArtifact {
     pub diagnostics: crate::diag::Diagnostics,
 }
 
-/// Compile a module into a relocatable object via the AOT backend.
+/// Drive the shared compile pipeline through any Backend impl. JIT and
+/// AOT both route through here; the backend's hooks pick the legit
+/// variation points (linkage, per-program metadata carriers, finalize).
 ///
-/// Mirrors `compile()` but stops short of any JIT-specific finalization;
-/// the returned AotArtifact wraps the object bytes ready for the linker.
-/// fz-ul4.23.6.1 deliverable.
-pub fn compile_aot(module: &Module, obj_name: &str) -> Result<AotArtifact, CodegenError> {
+/// fz-ul4.23.12. Before this, `compile()` and `compile_aot()` duplicated
+/// ~90% of the pipeline side by side. Now they're each ~5-line wrappers
+/// constructing a backend and calling here.
+pub fn compile_with_backend<B: Backend>(
+    module: &Module,
+    mut backend: B,
+) -> Result<B::Output, CodegenError> {
+    // Per-fn schemas indexed by FnId.0 (cps_split inserts continuation fns
+    // out of declaration order, so module.fns[i].id.0 != i in general).
     let max_id = module.fns.iter().map(|f| f.id.0).max().unwrap_or(0);
     let placeholder = build_frame_schema("__placeholder", 0);
     let mut schemas: Vec<Schema> = vec![placeholder; (max_id + 1) as usize];
@@ -679,28 +899,30 @@ pub fn compile_aot(module: &Module, obj_name: &str) -> Result<AotArtifact, Codeg
         schemas[f.id.0 as usize] = build_frame_schema(&f.name, n_params);
     }
 
-    let mut backend = AotBackend::new(obj_name);
     let runtime = declare_runtime_symbols(backend.module_mut())?;
 
+    // Per-fn signature: uniform `extern "C" fn(*mut u8, *mut u8) -> *mut u8`
+    // until VR.4 makes it per-fn.
     let fn_sig = sig1(&[types::I64, types::I64], &[types::I64]);
+
+    let linkage = backend.fn_linkage();
     let mut fn_ids: HashMap<u32, FuncId> = HashMap::new();
-    let mut main_symbol: Option<String> = None;
     for f in &module.fns {
         let name = format!("fz_fn_{}", f.id.0);
         let id = backend
             .module_mut()
-            .declare_function(&name, Linkage::Export, &fn_sig)
+            .declare_function(&name, linkage, &fn_sig)
             .map_err(|e| CodegenError::new(format!("declare {}: {}", name, e)))?;
         fn_ids.insert(f.id.0, id);
-        if f.name == "main" {
-            main_symbol = Some(name);
-        }
     }
 
     let mut fbctx = FunctionBuilderContext::new();
 
-    // Same tuple/bs schema setup as compile(). Kept as a parallel block
-    // for the .6.1 wedge; later atoms may extract into a shared helper.
+    // Register a heap Schema for every tuple arity used by MakeTuple, so the
+    // GC tracer can walk fields and so codegen can iconst the schema_id.
+    // Also detect any bitstring prim so we can pre-register arity-1 / arity-3
+    // schemas used by the reader / result tuples even if no MakeTuple uses
+    // those arities directly.
     let mut tuple_arities: std::collections::HashSet<usize> =
         std::collections::HashSet::new();
     let mut has_bs_prim = false;
@@ -748,7 +970,21 @@ pub fn compile_aot(module: &Module, obj_name: &str) -> Result<AotArtifact, Codeg
             tuple_schema_ids.insert(arity, id);
         }
     }
+    let (bs_tuple_arity1_schema, bs_tuple_arity3_schema) = if has_bs_prim {
+        (
+            Some(*tuple_schema_ids.get(&1).expect("arity-1 schema registered")),
+            Some(*tuple_schema_ids.get(&3).expect("arity-3 schema registered")),
+        )
+    } else {
+        (None, None)
+    };
 
+    // Per-fn frame sizes for `fz_alloc_frame_dyn`. Indexed by FnId.0.
+    let frame_sizes: Vec<u32> = schemas.iter().map(|s| s.size).collect();
+
+    // Run the typer ahead of codegen so per-fn Var->Descr info is
+    // available during lowering. .11.24.5 clones first so the typed-schema
+    // rewrite can swap MakeVec(I64) → MakeVec(F64) where elements are Float.
     let mut working = module.clone();
     let pre_types = crate::ir_typer::type_module(&working);
     crate::ir_typer::rewrite_vec_kinds(&mut working, &pre_types)
@@ -760,6 +996,12 @@ pub fn compile_aot(module: &Module, obj_name: &str) -> Result<AotArtifact, Codeg
         let func_id = *fn_ids.get(&f.id.0).unwrap();
         let mut ctx = backend.module_mut().make_context();
         ctx.func.signature = fn_sig.clone();
+        // fz-ul4.23.8: opt in to asm capture when ASM_RECORD is active.
+        // Cheap to set; the TLS slot is None in normal runs.
+        let want_asm = ASM_RECORD.with(|c| c.borrow().is_some());
+        if want_asm {
+            ctx.set_disasm(true);
+        }
         compile_fn(
             backend.module_mut(),
             &mut ctx,
@@ -771,169 +1013,76 @@ pub fn compile_aot(module: &Module, obj_name: &str) -> Result<AotArtifact, Codeg
             &module_types[fn_idx],
             &module.source,
         )?;
+        IR_TEXT_RECORD.with(|c| {
+            if let Some(v) = c.borrow_mut().as_mut() {
+                v.push((f.name.clone(), ctx.func.display().to_string()));
+            }
+        });
         let fn_span = module.source.fn_span_of(f.id);
         let flags = settings::Flags::new(settings::builder());
-        cranelift_codegen::verifier::verify_function(&ctx.func, &flags)
-            .map_err(|e| {
-                CodegenError::new(format!(
-                    "verify {}:\n{}\n--- IR ---\n{}",
-                    f.name,
-                    e,
-                    ctx.func.display()
-                ))
-                .with_span(fn_span)
-            })?;
+        cranelift_codegen::verifier::verify_function(&ctx.func, &flags).map_err(|e| {
+            CodegenError::new(format!(
+                "verify {}:\n{}\n--- IR ---\n{}",
+                f.name,
+                e,
+                ctx.func.display()
+            ))
+            .with_span(fn_span)
+        })?;
         backend
             .module_mut()
             .define_function(func_id, &mut ctx)
             .map_err(|e| {
                 CodegenError::new(format!("define {}: {}", f.name, e)).with_span(fn_span)
             })?;
+        if want_asm {
+            if let Some(cc) = ctx.compiled_code() {
+                if let Some(vcode) = cc.vcode.as_ref() {
+                    ASM_RECORD.with(|c| {
+                        if let Some(v) = c.borrow_mut().as_mut() {
+                            v.push((f.name.clone(), vcode.clone()));
+                        }
+                    });
+                }
+            }
+        }
         backend.module_mut().clear_context(&mut ctx);
     }
 
-    // ----- Emit the per-program dispatch fn and C main (fz-ul4.23.6.3) -----
-    //
-    // fz_aot_run (in fz-runtime) is generic: it loops calling
-    // `dispatch(schema_id) → fn_ptr → call`. The dispatch is per-program
-    // because the set of fz_fn_<N> symbols varies per module. We emit it
-    // here as a Cranelift fn that switch-returns each fn's address via
-    // `func_addr`, plus a tiny `main` C entry that wires it up.
-    //
-    // Programs with no `main` skip these (the artifact's `main_symbol`
-    // will be None and `fz build` errors out gracefully).
-    let main_fz_id = module.fn_by_name("main").map(|f| f.id);
-    let c_main_symbol = if let Some(main_id) = main_fz_id {
-        let main_frame_size = schemas[main_id.0 as usize].size;
-
-        // Declare fz_aot_run as an Import. Signature:
-        //   (main_schema_id: i32, main_frame_size: i32,
-        //    dispatch: i64, frame_size: i64, fn_count: i32,
-        //    atom_blob: i64) -> i32
-        // The atom_blob is a pointer to a sequence of NUL-terminated atom
-        // names, followed by a final empty entry: "ok\0error\0\0". Empty
-        // blob is 0/null.
-        let aot_run_sig = sig1(
-            &[
-                types::I32,
-                types::I32,
-                types::I64,
-                types::I64,
-                types::I32,
-                types::I64,
-            ],
-            &[types::I32],
-        );
-        let aot_run_id = backend
-            .module_mut()
-            .declare_function("fz_aot_run", Linkage::Import, &aot_run_sig)
-            .map_err(|e| CodegenError::new(format!("declare fz_aot_run: {}", e)))?;
-
-        // Dispatch fn: (i32 schema_id) -> i64 fn_ptr.
-        let dispatch_sig = sig1(&[types::I32], &[types::I64]);
-        let dispatch_id = backend
-            .module_mut()
-            .declare_function("fz_aot_dispatch", Linkage::Local, &dispatch_sig)
-            .map_err(|e| CodegenError::new(format!("declare fz_aot_dispatch: {}", e)))?;
-        emit_aot_dispatch(
-            backend.module_mut(),
-            &mut fbctx,
-            dispatch_id,
-            &dispatch_sig,
-            &fn_ids,
-        )?;
-
-        // Frame-size dispatch: (i32 schema_id) -> i32 frame_size. Used by
-        // fz_aot_run to populate Process.frame_sizes for fz_alloc_frame_dyn
-        // (closures + tail-call-closures + spawn's child entry frame).
-        // fz-ul4.23.11 introduced this; before, AOT closure programs
-        // panicked at runtime on the empty frame_sizes table.
-        let fsz_sig = sig1(&[types::I32], &[types::I32]);
-        let fsz_id = backend
-            .module_mut()
-            .declare_function("fz_aot_frame_size", Linkage::Local, &fsz_sig)
-            .map_err(|e| CodegenError::new(format!("declare fz_aot_frame_size: {}", e)))?;
-        emit_aot_frame_size(
-            backend.module_mut(),
-            &mut fbctx,
-            fsz_id,
-            &fsz_sig,
-            &schemas,
-        )?;
-        let fn_count: u32 = schemas.len() as u32;
-
-        // Atom-name blob: NUL-separated names + trailing NUL. fz_aot_run
-        // walks it into Process.atom_names so `:source_name` rendering
-        // works in AOT binaries the same as JIT/interp. fz-ul4.25.
-        let atom_blob_data: Option<DataId> = if module.atom_names.is_empty() {
-            None
-        } else {
-            let mut blob: Vec<u8> = Vec::new();
-            for name in &module.atom_names {
-                blob.extend_from_slice(name.as_bytes());
-                blob.push(0);
-            }
-            blob.push(0); // sentinel: empty entry terminates the walk
-            let id = backend
-                .module_mut()
-                .declare_data("fz_aot_atom_blob", Linkage::Local, false, false)
-                .map_err(|e| CodegenError::new(format!("declare atom blob: {}", e)))?;
-            let mut desc = DataDescription::new();
-            desc.define(blob.into_boxed_slice());
-            backend
-                .module_mut()
-                .define_data(id, &desc)
-                .map_err(|e| CodegenError::new(format!("define atom blob: {}", e)))?;
-            Some(id)
-        };
-
-        // C main: (i32 argc, i64 argv) -> i32. Calls fz_aot_run with the
-        // program's main schema_id, frame size, both dispatch addrs,
-        // and fn_count.
-        let mut c_main_sig = Signature::new(CallConv::SystemV);
-        c_main_sig.params.push(AbiParam::new(types::I32));
-        c_main_sig.params.push(AbiParam::new(types::I64));
-        c_main_sig.returns.push(AbiParam::new(types::I32));
-        let c_main_id = backend
-            .module_mut()
-            .declare_function("main", Linkage::Export, &c_main_sig)
-            .map_err(|e| CodegenError::new(format!("declare C main: {}", e)))?;
-        emit_aot_c_main(
-            backend.module_mut(),
-            &mut fbctx,
-            c_main_id,
-            &c_main_sig,
-            main_id.0,
-            main_frame_size,
-            dispatch_id,
-            fsz_id,
-            fn_count,
-            atom_blob_data,
-            aot_run_id,
-        )?;
-
-        Some("main".to_string())
-    } else {
-        None
-    };
-
-    let AotBackend { omod } = backend;
-    let product = omod.finish();
-    let object = product
-        .emit()
-        .map_err(|e| CodegenError::new(format!("object emit: {}", e)))?;
+    let main_fn_id = module.fn_by_name("main").map(|f| f.id);
+    let main_frame_size = main_fn_id.map(|id| schemas[id.0 as usize].size);
 
     let diagnostics = crate::ir_typer::collect_diagnostics(module, &module_types);
-    Ok(AotArtifact {
-        object,
-        // Surface the C-callable `main` (if we emitted one) — fz build
-        // (.6.3) uses this to know what the linker should pick as the
-        // entry. The fz user `main` is fz_fn_<id> and exists too, but
-        // the linker drives off C `main`.
-        main_symbol: c_main_symbol.or(main_symbol),
+    let metadata = CompiledMetadata {
+        fn_ids,
+        schemas,
+        user_schemas,
+        frame_sizes,
+        atom_names: module.atom_names.clone(),
+        bs_tuple_arity1_schema,
+        bs_tuple_arity3_schema,
+        types: module_types,
         diagnostics,
-    })
+        main_fn_id,
+        main_frame_size,
+    };
+
+    // Backend-specific metadata carriers (no-op for JIT; dispatch + main
+    // shim + atom blob for AOT) emit before finalize so any data /
+    // function declarations land in the same Module that finalize hands
+    // off.
+    backend.emit_metadata_carriers(&mut fbctx, &metadata)?;
+    backend.finalize(metadata)
 }
+
+pub fn compile(module: &Module) -> Result<CompiledModule, CodegenError> {
+    compile_with_backend(module, JitBackend::new())
+}
+
+pub fn compile_aot(module: &Module, obj_name: &str) -> Result<AotArtifact, CodegenError> {
+    compile_with_backend(module, AotBackend::new(obj_name))
+}
+
 
 /// Emit the per-program `fz_aot_dispatch(schema_id) -> fn_ptr` fn.
 /// switch-returns each fz_fn_<id>'s address via Cranelift's func_addr.
@@ -1154,196 +1303,6 @@ fn emit_aot_frame_size<M: cranelift_module::Module>(
     Ok(())
 }
 
-pub fn compile(module: &Module) -> Result<CompiledModule, CodegenError> {
-    // Compute per-fn schemas indexed by FnId.0 (cps_split inserts continuation
-    // fns out of declaration order, so module.fns[i].id.0 != i in general).
-    let max_id = module.fns.iter().map(|f| f.id.0).max().unwrap_or(0);
-    let placeholder = build_frame_schema("__placeholder", 0);
-    let mut schemas: Vec<Schema> = vec![placeholder; (max_id + 1) as usize];
-    for f in &module.fns {
-        let entry_block = f.blocks.iter().find(|b| b.id == f.entry).unwrap();
-        let n_params = entry_block.params.len();
-        schemas[f.id.0 as usize] = build_frame_schema(&f.name, n_params);
-    }
-
-    let mut backend = JitBackend::new();
-    let runtime = declare_runtime_symbols(backend.module_mut())?;
-
-    // Per-fn signature: extern "C" fn(*mut u8, *mut u8) -> *mut u8.
-    let fn_sig = sig1(&[types::I64, types::I64], &[types::I64]);
-
-    // Declare every fn first so call sites can reference each other.
-    let mut fn_ids: HashMap<u32, FuncId> = HashMap::new();
-    for f in &module.fns {
-        let name = format!("fz_fn_{}", f.id.0);
-        let id = backend
-            .module_mut()
-            .declare_function(&name, Linkage::Local, &fn_sig)
-            .map_err(|e| CodegenError::new(format!("declare {}: {}", name, e)))?;
-        fn_ids.insert(f.id.0, id);
-    }
-
-    let mut fbctx = FunctionBuilderContext::new();
-
-    // Register a heap Schema for every tuple arity used by MakeTuple, so the
-    // GC tracer can walk fields and so codegen can iconst the schema_id.
-    // Also detect any bitstring prim so we can pre-register arity-1 / arity-3
-    // schemas used by the reader / result tuples even if no MakeTuple uses
-    // those arities directly.
-    let mut tuple_arities: std::collections::HashSet<usize> =
-        std::collections::HashSet::new();
-    let mut has_bs_prim = false;
-    for f in &module.fns {
-        for blk in &f.blocks {
-            for stmt in &blk.stmts {
-                let Stmt::Let(_, prim) = stmt;
-                match prim {
-                    Prim::MakeTuple(args) => {
-                        tuple_arities.insert(args.len());
-                    }
-                    Prim::MakeBitstring(_)
-                    | Prim::BitReaderInit(_)
-                    | Prim::BitReadField { .. }
-                    | Prim::BitReaderDone(_) => {
-                        has_bs_prim = true;
-                    }
-                    _ => {}
-                }
-            }
-        }
-    }
-    if has_bs_prim {
-        tuple_arities.insert(1);
-        tuple_arities.insert(3);
-    }
-    // Build the per-CompiledModule SchemaRegistry. Tuple, struct, list,
-    // map, closure, bitstring, vec, float schemas live here. Each Process
-    // constructed via make_process() shares this registry through its Heap.
-    let user_schemas = std::rc::Rc::new(std::cell::RefCell::new(
-        fz_runtime::heap::SchemaRegistry::new(),
-    ));
-    let mut tuple_schema_ids: HashMap<usize, u32> = HashMap::new();
-    {
-        let mut reg = user_schemas.borrow_mut();
-        for &arity in &tuple_arities {
-            let s = Schema {
-                name: format!("Tuple{}", arity),
-                size: (arity * 8) as u32,
-                fields: (0..arity)
-                    .map(|i| FieldDescriptor {
-                        offset: (i * 8) as u32,
-                        kind: FieldKind::FzValue,
-                    })
-                    .collect(),
-            };
-            let id = reg.register(s);
-            tuple_schema_ids.insert(arity, id);
-        }
-    }
-    let (bs_tuple_arity1_schema, bs_tuple_arity3_schema) = if has_bs_prim {
-        (
-            Some(*tuple_schema_ids.get(&1).expect("arity-1 schema registered")),
-            Some(*tuple_schema_ids.get(&3).expect("arity-3 schema registered")),
-        )
-    } else {
-        (None, None)
-    };
-
-    // Per-fn frame sizes for `fz_alloc_frame_dyn`. Indexed by FnId.0
-    // (parallel to `schemas`). Copied into Process at make_process() time.
-    let frame_sizes: Vec<u32> = schemas.iter().map(|s| s.size).collect();
-
-    // .11.24.4: run the typer ahead of codegen so per-fn Var->Descr info is
-    // available during lowering (used for arithmetic dispatch elision when
-    // both operands are provably Int).
-    //
-    // .11.24.5: clone module so the typed-schema refinement pass can rewrite
-    // MakeVec(I64, ..) to MakeVec(F64, ..) when elements are typed Float.
-    // Mixed Int+Float without an explicit coercion rule errors here.
-    let mut working = module.clone();
-    let pre_types = crate::ir_typer::type_module(&working);
-    crate::ir_typer::rewrite_vec_kinds(&mut working, &pre_types)
-        .map_err(CodegenError::new)?;
-    // Re-run after the rewrite so MakeVec result Descrs reflect the chosen
-    // kind. Element Var Descrs are unaffected by the rewrite, but downstream
-    // consumers may read the MakeVec result.
-    let module_types = crate::ir_typer::type_module(&working);
-    let module = &working;
-
-    for (fn_idx, f) in module.fns.iter().enumerate() {
-        let func_id = *fn_ids.get(&f.id.0).unwrap();
-        let mut ctx = backend.module_mut().make_context();
-        ctx.func.signature = fn_sig.clone();
-        // fz-ul4.23.8: opt in to asm capture when ASM_RECORD is active
-        // (set by `fz dump --emit asm`). want_disasm flows through
-        // ctx.compile() → isa.compile_function() → vcode.emit().
-        let want_asm = ASM_RECORD.with(|c| c.borrow().is_some());
-        if want_asm {
-            ctx.set_disasm(true);
-        }
-        compile_fn(
-            backend.module_mut(),
-            &mut ctx,
-            &mut fbctx,
-            &runtime,
-            &schemas,
-            &tuple_schema_ids,
-            f,
-            &module_types[fn_idx],
-            &module.source,
-        )?;
-        IR_TEXT_RECORD.with(|c| {
-            if let Some(v) = c.borrow_mut().as_mut() {
-                v.push((f.name.clone(), ctx.func.display().to_string()));
-            }
-        });
-        let fn_span = module.source.fn_span_of(f.id);
-        let flags = settings::Flags::new(settings::builder());
-        cranelift_codegen::verifier::verify_function(&ctx.func, &flags)
-            .map_err(|e| CodegenError::new(format!("verify {}:\n{}\n--- IR ---\n{}", f.name, e, ctx.func.display())).with_span(fn_span))?;
-        backend
-            .module_mut()
-            .define_function(func_id, &mut ctx)
-            .map_err(|e| CodegenError::new(format!("define {}: {}", f.name, e)).with_span(fn_span))?;
-        if want_asm {
-            if let Some(cc) = ctx.compiled_code() {
-                if let Some(vcode) = cc.vcode.as_ref() {
-                    ASM_RECORD.with(|c| {
-                        if let Some(v) = c.borrow_mut().as_mut() {
-                            v.push((f.name.clone(), vcode.clone()));
-                        }
-                    });
-                }
-            }
-        }
-        backend.module_mut().clear_context(&mut ctx);
-    }
-
-    // JIT-specific finalize: unpack the Backend, finalize the JITModule,
-    // resolve fn pointers. AOT (fz-ul4.23.6) does NOT pass through here;
-    // it owns its own finalize path on ObjectModule.
-    let JitBackend { mut jmod } = backend;
-    jmod.finalize_definitions().map_err(|e| CodegenError::new(format!("finalize: {}", e)))?;
-
-    let mut fn_ptrs: HashMap<u32, *const u8> = HashMap::new();
-    for (fz_fn_id, func_id) in &fn_ids {
-        fn_ptrs.insert(*fz_fn_id, jmod.get_finalized_function(*func_id));
-    }
-
-    let diagnostics = crate::ir_typer::collect_diagnostics(module, &module_types);
-    Ok(CompiledModule {
-        module: jmod,
-        fn_ptrs,
-        schemas,
-        user_schemas,
-        frame_sizes,
-        atom_names: module.atom_names.clone(),
-        bs_tuple_arity1_schema,
-        bs_tuple_arity3_schema,
-        types: module_types,
-        diagnostics,
-    })
-}
 
 fn sig1(params: &[ir::Type], rets: &[ir::Type]) -> Signature {
     let mut s = Signature::new(CallConv::SystemV);
