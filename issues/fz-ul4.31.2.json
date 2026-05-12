@@ -4,7 +4,8 @@
     "fz-ul4.31.1"
   ],
   "blocks": [
-    "fz-ul4.31.3"
+    "fz-ul4.31.3",
+    "fz-ul4.31.4"
   ],
   "created": "2026-05-12T19:49:39Z",
   "description": "Replace FnDef.doc: Option\u003cString\u003e and ModuleDef.moduledoc: Option\u003cString\u003e with a uniform `attrs: Vec\u003cAttribute\u003e` carrier.\n\n## Why now\n\n.31.4 needs to attach @spec to fns. .31.3 needs to attach @type to modules. The existing single-string `doc` field doesn't generalize. Migrating once now avoids churning every consumer twice.\n\n## Changes\n\n### src/ast.rs\n\n```\npub enum Attribute {\n    Doc(String),\n    ModuleDoc(String),\n    Spec(SpecDecl),        // populated by .31.4\n    TypeAlias(TypeAliasDecl),  // populated by .31.3\n}\n\npub struct FnDef {\n    // remove: doc: Option\u003cString\u003e\n    pub attrs: Vec\u003cAttribute\u003e,\n    // ...\n}\n\npub struct ModuleDef {\n    // remove: moduledoc: Option\u003cString\u003e\n    pub attrs: Vec\u003cAttribute\u003e,\n    // ...\n}\n```\n\n### src/parser.rs\n\n- parse_attribute() returns Attribute, not (String, String)\n- The current @doc-and-only-@doc whitelist (line ~222) widens to recognize the four kinds\n- Spec/TypeAlias bodies are parsed via .31.1; for this ticket, accept only Doc/ModuleDoc and reject Spec/TypeAlias with \"not yet implemented\" — .31.3 and .31.4 enable them\n\n### Consumers to migrate\n\n- src/repl.rs: `?\u003cname\u003e` lookup uses fn.doc; switch to scanning fn.attrs for Attribute::Doc\n- Test runner (.16): uses doc strings as test descriptions; same pattern\n\n## Tests\n\n- Existing @doc/@moduledoc parser tests pass with the new representation\n- REPL `?\u003cname\u003e` golden tests for docs unchanged\n- A fn with multiple @doc lines errors (or concatenates — match current behavior)\n- Spec/TypeAlias attribute bodies error with a clear \"not yet implemented in this build\" diag",

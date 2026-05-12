@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-ul4.31.2"
+  ],
   "blocks": [],
   "created": "2026-05-12T19:49:57Z",
   "description": "Parse `@spec name(T1, T2, ...) :: R` declarations and attach them to the following fn/defmacro in the AST.\n\n## Syntax\n\n```\n@spec add1(integer) :: integer\nfn add1(n) do n + 1 end\n\n@spec lookup(id, [id]) :: id | nil\nfn lookup(x, xs) do ... end\n```\n\n## Mechanics\n\n1. Parser: `@spec` recognized in the attribute position above a fn/defmacro. Body parsed as `Name ( TypeExprList ) :: TypeExpr` using .31.1.\n2. AST: produces Attribute::Spec(SpecDecl { name, params: Vec\u003cDescr\u003e, result: Descr }) attached to FnDef.attrs via .31.2.\n3. Resolution: type names in the spec body resolve against the enclosing module's ModuleTypeEnv (.31.3).\n4. Parse-time arity check: SpecDecl.params.len() must equal the following fn's parameter count. Name in the @spec must match the following fn's name. Errors raised at parse time with clean diagnostics.\n5. Multiple @spec on one fn: pick a rule. Probably reject for v1 (later: a fn can have multiple specs forming a union — defer). Document the choice.\n\n## Tests\n\n- Valid: @spec add1(integer) :: integer above fn add1(n) parses, AST carries SpecDecl\n- Arity mismatch: @spec add1(integer, integer) :: integer above fn add1(n) errors\n- Name mismatch: @spec other(integer) :: integer above fn add1(n) errors\n- Unknown type name: @spec add1(unknown) :: integer errors (via .31.3 resolution)\n- Spec without following fn: errors\n- Multiple @spec on one fn: errors with a clear message\n\n## Out of scope\n\n- Multi-clause specs (union of arrows) — deferred\n- @callback (for protocols) — separate epic\n- Validation against inferred types — that is .31.5",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "@spec parser + AST attachment",
   "type": "task",
-  "updated_at": "2026-05-12T19:49:57Z"
+  "updated_at": "2026-05-12T19:50:23Z"
 }
