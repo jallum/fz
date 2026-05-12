@@ -4,14 +4,15 @@
   "blocks": [
     "fz-ul4.27.5.2"
   ],
+  "closed_at": "2026-05-12T01:37:57Z",
   "created": "2026-05-12T01:34:21Z",
   "description": "Pure FieldKind plumbing through `build_frame_schema` and the per-fn schema build site. No FnTypes consultation here — every param slot ships as `FieldKind::FzValue`. Zero behavior change.\n\n## Why this is the atomic shape\n\nThe original ticket draft had `build_frame_schema` consult FnTypes here and mark int/float param slots as `RawBytes(8)`. But the GC tracer (kind-aware in heap.rs) SKIPS `RawBytes` slots — and storage at this stage is still tagged FzValue. A typed-float slot holding a Tag::Ptr to a boxed float would silently leak the boxed float on GC. So the schema-kind flip and the storage-format flip must move together — which is exactly what .5.2 and .5.3 do per-kind.\n\nThis ticket is the substrate they share: the API surface (`build_frame_schema(name, \u0026[FieldKind])`) without the kind-selection logic.\n\n## Adds\n\n- `build_frame_schema(name: \u0026str, param_kinds: \u0026[FieldKind])` — per-slot kind selection at construction time.\n- Per-fn schema-build site passes a `Vec\u003cFieldKind\u003e` of `FzValue` for every param.\n\n## Kills\n\n- The `(name: \u0026str, num_entry_params: usize)` signature of `build_frame_schema`.\n\n## Acceptance\n\n- `cargo test` + fixture matrix green — no behavior change.\n- New API ready for .5.2/.5.3 to plug FnTypes-derived kinds into the same call site.\n\n## Out of scope\n\n- FnTypes consultation → .5.2 (float) and .5.3 (int).\n- GC tracer correctness when typed slots actually go raw → covered atomically per-kind by .5.2/.5.3.",
   "id": "fz-ul4.27.5.1",
   "labels": [],
   "parent": "fz-ul4.27.5",
   "priority": 3,
-  "status": "in_progress",
+  "status": "closed",
   "title": "VR.3.1: typed slot kinds (schemas-only infrastructure)",
   "type": "task",
-  "updated_at": "2026-05-12T01:37:47Z"
+  "updated_at": "2026-05-12T01:37:57Z"
 }
