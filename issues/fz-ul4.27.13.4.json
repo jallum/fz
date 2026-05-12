@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-12T19:20:51Z",
+  "description": "Term::Call / Term::TailCall native branches (ir_codegen.rs:2244+, 2336+) replace `native_args = arg_vals.clone()` with per-arg coerce against `fn_sigs[callee_sid].params[i]`. Closure stubs (.29.5) at line ~2787 also coerce per their target callee sig.\n\nCaller's `Const::Int(n)` lowering may produce a raw `iconst.i64 n` when the receiving param is raw int (peephole; not load-bearing — Cranelift folds the tag-then-untag at codegen, but raw is cleaner).",
+  "id": "fz-ul4.27.13.4",
+  "labels": [],
+  "parent": "fz-ul4.27.13",
+  "priority": 3,
+  "status": "open",
+  "title": "VR.4 follow-up STEP.4: Direct call sites use coerce helper",
+  "type": "task",
+  "updated_at": "2026-05-12T19:20:51Z"
+}
