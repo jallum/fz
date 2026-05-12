@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-12T13:44:26Z",
+  "description": "Follow-up to fz-ul4.29.5. Today `parking.rs:113` excludes\n`used_as_closure_target` fns from `natively_callable` because the\nold runtime helper `fz_closure_invoke` produced a uniform-ABI callee\nframe — the body had to consume that frame, so it stayed uniform.\n\nWith .29.5's stub design, the stub IS the ABI adapter. A stub can\nload captures from the closure object kind-aware, marshal them into\nnative ABI registers / params, and synchronously call (or `return_call`\nfor tail) a native body. The closure-target body becomes free to use\nthe native ABI like any directly-called native fn.\n\n## Scope\n\n- Drop the `used_as_closure_target` exclusion at `parking.rs:113`.\n- Stub generation: when the resolved narrow spec is native, emit a\n  direct `call` / `return_call` rather than allocating + returning a\n  frame. The stub then returns the native body's tagged FzValue\n  return through the cont (uniform caller) or directly (native caller).\n- Add fixture: closure target with a body that benefits from native\n  ABI (e.g., int-int arithmetic recursive helper invoked through a\n  closure). Acceptance: `expect_clif_excludes: fz_alloc_frame_dyn`\n  for the stub.\n\n## Why deferred from .29.5\n\n.29.5 already collapses three concerns. Adding the native-eligibility\nlift mixes a perf optimization into a correctness-and-shape rework.\nSeparation keeps the .29.5 commit reviewable.\n\n## Blocked by\n\nfz-ul4.29.5.",
+  "id": "fz-ul4.29.8",
+  "labels": [],
+  "parent": "fz-ul4.29",
+  "priority": 3,
+  "status": "open",
+  "title": ".29.5.1: Lift closure-target native-eligibility",
+  "type": "task",
+  "updated_at": "2026-05-12T13:44:26Z"
+}
