@@ -76,6 +76,8 @@ pub fn flatten_modules(prog: Program) -> Result<Program, ResolveError> {
     let module_paths = collect_module_paths(&prog);
     let module_fns = collect_module_fns(&prog);
     let mut out: Vec<Rc<Item>> = Vec::new();
+    let mut module_docs: HashMap<String, String> = HashMap::new();
+    collect_module_docs(&prog, &mut module_docs);
     let no_aliases: HashMap<String, String> = HashMap::new();
     let no_imports: HashMap<(String, usize), String> = HashMap::new();
     for item in &prog.items {
@@ -119,7 +121,27 @@ pub fn flatten_modules(prog: Program) -> Result<Program, ResolveError> {
             }
         }
     }
-    Ok(Program { items: out })
+    Ok(Program { items: out, module_docs })
+}
+
+fn collect_module_docs(prog: &Program, out: &mut HashMap<String, String>) {
+    for item in &prog.items {
+        if let Item::Module(m) = &**item {
+            collect_module_docs_recursive(m, "", out);
+        }
+    }
+}
+
+fn collect_module_docs_recursive(m: &ModuleDef, parent: &str, out: &mut HashMap<String, String>) {
+    let path = if parent.is_empty() { m.name.clone() } else { format!("{}.{}", parent, m.name) };
+    if let Some(d) = &m.moduledoc {
+        out.insert(path.clone(), d.clone());
+    }
+    for item in &m.items {
+        if let Item::Module(inner) = &**item {
+            collect_module_docs_recursive(inner, &path, out);
+        }
+    }
 }
 
 fn collect_module_paths(prog: &Program) -> HashSet<String> {

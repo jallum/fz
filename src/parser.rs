@@ -189,7 +189,7 @@ impl Parser {
         if moduledoc.is_some() {
             return self.err("@moduledoc only valid inside a defmodule body".to_string());
         }
-        Ok(Program { items })
+        Ok(Program { items, module_docs: Default::default() })
     }
 
     fn parse_items_until(&mut self, terminators: &[Tok]) -> PR<(Vec<Rc<Item>>, Option<String>)> {

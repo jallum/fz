@@ -124,6 +124,9 @@ pub struct Closure {
     pub name: Option<String>,
     pub clauses: Vec<FnClause>,
     pub env: Env,
+    /// `@doc "..."` attached to this fn at definition. `None` for
+    /// lambdas and undocumented top-level fns. Surfaces in REPL `?name`.
+    pub doc: Option<String>,
 }
 
 pub struct Builtin {

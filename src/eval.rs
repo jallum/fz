@@ -47,6 +47,9 @@ pub struct Interp {
     /// `None` outside of macro expansion — quote then preserves names
     /// literally.
     pub gensym_table: RefCell<Option<std::collections::HashMap<String, String>>>,
+    /// Qualified-module-path → `@moduledoc` text. Populated by
+    /// `load_program` (and the REPL load path) so `?M` can find the doc.
+    pub module_docs: RefCell<std::collections::HashMap<String, String>>,
 }
 
 impl Interp {
@@ -58,6 +61,7 @@ impl Interp {
             macro_names: RefCell::new(std::collections::HashSet::new()),
             macro_def_spans: RefCell::new(std::collections::HashMap::new()),
             gensym_table: RefCell::new(None),
+            module_docs: RefCell::new(std::collections::HashMap::new()),
         };
         me.install_builtins();
         me
@@ -178,6 +182,12 @@ impl Interp {
     }
 
     pub fn load_program(&self, prog: &Program) -> Result<(), String> {
+        // Merge any moduledocs flatten_modules captured. Later loads
+        // overwrite earlier ones for the same path (REPL re-defining a
+        // module replaces its @moduledoc).
+        for (path, doc) in &prog.module_docs {
+            self.module_docs.borrow_mut().insert(path.clone(), doc.clone());
+        }
         // Two-pass-ish: bind names first so clauses can be mutually recursive,
         // but since each FnDef is a single Closure value capturing self.globals,
         // a single pass works as long as the closure looks up names lazily
@@ -195,6 +205,7 @@ impl Interp {
                         name: Some(def.name.clone()),
                         clauses: def.clauses.clone(),
                         env: self.globals.clone(),
+                        doc: def.doc.clone(),
                     }));
                     self.globals.bind(&def.name, closure);
                 }
@@ -453,6 +464,7 @@ impl Interp {
                         span: e.span,
                     }],
                     env: env.clone(),
+                    doc: None,
                 })))
             }
             Expr::Quote(inner) => self.reify_with_unquotes(inner, env),

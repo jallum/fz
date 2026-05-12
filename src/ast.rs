@@ -232,9 +232,8 @@ pub struct FnDef {
     pub name_span: Span,
     pub clauses: Vec<FnClause>,
     pub is_macro: bool,
-    /// `@doc "..."` attached above the first clause of this fn. Inert
-    /// in v1 — stored for future doc tooling and the test runner (.16).
-    #[allow(dead_code, reason = "consumed by fz-ul4.18.7 (@doc surface)")]
+    /// `@doc "..."` attached above the first clause of this fn. Surfaces
+    /// in the REPL via `?<name>`.
     pub doc: Option<String>,
     /// Span covering all clauses (and `@doc` if present).
     pub span: Span,
@@ -298,7 +297,11 @@ pub struct ModuleDef {
     pub span: Span,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Program {
     pub items: Vec<Rc<Item>>,
+    /// Qualified-module-path → `@moduledoc "..."` text. Populated by
+    /// `resolve::flatten_modules` (the only stage that still sees
+    /// `ModuleDef`s). Used by the REPL's `?M` query.
+    pub module_docs: std::collections::HashMap<String, String>,
 }

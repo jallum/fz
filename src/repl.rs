@@ -43,6 +43,14 @@ pub fn run() -> io::Result<()> {
         let trimmed = line.trim();
         if buf.is_empty() && (trimmed == ":q" || trimmed == ":quit") { break; }
         if buf.is_empty() && trimmed.is_empty() { continue; }
+        // `?name` — print @doc / @moduledoc for the given name. Mirrors
+        // Elixir's `h fn`. Only fires at top level (empty buf) since it
+        // isn't valid fz syntax.
+        if buf.is_empty() && trimmed.starts_with('?') {
+            let q = trimmed[1..].trim();
+            println!("{}", lookup_doc(&interp, q));
+            continue;
+        }
 
         if !buf.is_empty() { buf.push('\n'); }
         buf.push_str(&line);
@@ -92,6 +100,9 @@ fn try_eval(src: &str, interp: &Interp, env: &Env) -> Outcome {
                     Ok(p) => p,
                     Err(e) => return Outcome::Err(format!("module: {}", e)),
                 };
+                for (path, doc) in &prog.module_docs {
+                    interp.module_docs.borrow_mut().insert(path.clone(), doc.clone());
+                }
                 // Two-phase: load macros first (so they're callable during
                 // expansion), expand fn bodies, then load the expanded fns.
                 // Loading macros early also accumulates macro_names across
@@ -156,6 +167,7 @@ fn load_items_filtered(interp: &Interp, items: &[std::rc::Rc<Item>], macros_only
                 // sequence builds up a multi-clause fn.
                 let existing = interp.globals.lookup(&def.name);
                 let mut clauses = def.clauses.clone();
+                let mut doc = def.doc.clone();
                 if let Some(Value::Closure(c)) = existing {
                     let same_arity = c.clauses.first().map(|cl| cl.params.len())
                         == clauses.first().map(|cl| cl.params.len());
@@ -163,18 +175,40 @@ fn load_items_filtered(interp: &Interp, items: &[std::rc::Rc<Item>], macros_only
                         let mut combined = c.clauses.clone();
                         combined.append(&mut clauses);
                         clauses = combined;
+                        // Preserve prior doc if the new def didn't carry one.
+                        if doc.is_none() { doc = c.doc.clone(); }
                     }
                 }
                 let closure = Value::Closure(Rc::new(crate::value::Closure {
                     name: Some(def.name.clone()),
                     clauses,
                     env: interp.globals.clone(),
+                    doc,
                 }));
                 interp.globals.bind(&def.name, closure);
             }
         }
     }
     Ok(())
+}
+
+/// Resolve a `?<name>` REPL query against loaded fns and modules. Tries
+/// fns first (so `?M.add` finds the closure), then falls back to a
+/// moduledoc lookup (so `?M` finds the module).
+fn lookup_doc(interp: &Interp, name: &str) -> String {
+    if name.is_empty() {
+        return "usage: ?<fn-or-module-name>".to_string();
+    }
+    if let Some(Value::Closure(c)) = interp.globals.lookup(name) {
+        return match &c.doc {
+            Some(d) => d.clone(),
+            None => format!("{}: no documentation", name),
+        };
+    }
+    if let Some(d) = interp.module_docs.borrow().get(name) {
+        return d.clone();
+    }
+    format!("{}: not found", name)
 }
 
 /// Heuristic: did the parser run off the end mid-construct? Those errors all
@@ -278,6 +312,61 @@ mod tests {
         // produces a load result. drive() pushes Ok(Nil) on fn load.
         let last = r.last().unwrap();
         assert!(matches!(last, Ok(Value::Int(42))), "got {:?}", last);
+    }
+
+    /// Drive a full program (lex → parse → flatten → load) and return the
+    /// interp so doc-lookup tests can inspect post-load state. Mirrors what
+    /// the REPL does for an item-level input, but in one shot.
+    fn load(src: &str) -> Interp {
+        let interp = Interp::new();
+        let toks = Lexer::new(src).tokenize().expect("lex");
+        let prog = Parser::new(toks).parse_program().expect("parse");
+        let prog = crate::resolve::flatten_modules(prog).expect("resolve");
+        for (path, doc) in &prog.module_docs {
+            interp.module_docs.borrow_mut().insert(path.clone(), doc.clone());
+        }
+        load_items(&interp, &prog.items).expect("load");
+        interp
+    }
+
+    #[test]
+    fn doc_query_finds_module_fn_doc() {
+        let interp = load(r#"
+defmodule M do
+  @doc "adds two"
+  fn add(a, b), do: a + b
+end
+"#);
+        assert_eq!(lookup_doc(&interp, "M.add"), "adds two");
+    }
+
+    #[test]
+    fn doc_query_finds_moduledoc() {
+        let interp = load(r#"
+defmodule M do
+  @moduledoc "the M module"
+  fn add(a, b), do: a + b
+end
+"#);
+        assert_eq!(lookup_doc(&interp, "M"), "the M module");
+    }
+
+    #[test]
+    fn doc_query_missing_doc_reports_so() {
+        let interp = load("fn plain(x), do: x");
+        assert_eq!(lookup_doc(&interp, "plain"), "plain: no documentation");
+    }
+
+    #[test]
+    fn doc_query_unknown_name_reports_not_found() {
+        let interp = load("fn plain(x), do: x");
+        assert_eq!(lookup_doc(&interp, "nope"), "nope: not found");
+    }
+
+    #[test]
+    fn doc_query_empty_shows_usage() {
+        let interp = Interp::new();
+        assert!(lookup_doc(&interp, "").starts_with("usage:"));
     }
 
     #[test]
