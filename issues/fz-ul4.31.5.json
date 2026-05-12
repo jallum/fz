@@ -6,6 +6,7 @@
   "blocks": [
     "fz-ul4.31.6"
   ],
+  "closed_at": "2026-05-12T23:04:31Z",
   "created": "2026-05-12T19:50:08Z",
   "description": "After ir_typer::type_module() populates ModuleTypes.specs, validate each declared @spec against the inferred specs for that fn. Option 1 semantics: declared is an **upper bound** on inferred.\n\n## Semantics\n\nFor a fn `foo` with declared @spec `params: Vec\u003cDescr\u003e, result: Descr`:\n\nFor each registered SpecId (sid, ft) in SpecRegistry where ft is for foo:\n  inferred_arrow = (ft's param Descrs, ft's return Descr)\n  declared_arrow = (declared.params, declared.result)\n  \n  // option 1 check: every inferred input is a subset of the declared input,\n  //                 and the inferred output is a subset of the declared output\n  if NOT (inferred.params[i] ⊆ declared.params[i] for all i)\n     OR NOT (inferred.result ⊆ declared.result):\n       emit diagnostic (use .20.5 taxonomy, .20.8 Descr Display)\n\nNarrower inferred is OK (success-typing). Disjoint or wider is an error.\n\n## Depends on fz-ul4.29.10\n\nCritical: without on-demand any-key registration, every fn has an any-key spec with `Descr::any()` inputs. A user-declared narrow `@spec foo(integer) :: integer` would then *always* fail the check against the any-key (Descr::any() ⊄ integer). The on-demand change ensures the any-key only exists for fns that genuinely need it (closure/spawn/receive targets), and in that case the conflict with a narrow @spec is a real error worth surfacing.\n\n## Where it lives\n\nsrc/ir_codegen.rs (or a new src/spec_check.rs called from there): runs after type_module() returns, before per-spec compile_fn loop at line 1432.\n\n## Tests\n\n- Declared @spec exactly matches inferred: OK\n- Declared @spec is wider than inferred (success-typing): OK, no warning by default\n- Declared @spec is narrower than inferred (user lied about inputs they accept): error\n- Declared @spec input is disjoint from inferred (e.g. declared :: float, inferred :: integer): error\n- Declared @spec result is narrower than inferred: error\n- A fn with @spec foo(integer) :: integer that's also a closure target: error (any-key with Descr::any() conflicts with declared integer input) — confirms .29.10 interaction\n- A purely-direct fn with narrow @spec and matching narrow inferred: OK, no any-key in the picture\n\n## Diagnostic shape\n\nUse .20.8's Descr Display:\n\n```\nerror: @spec violation for fn add1/1\n   spec: integer -\u003e integer\n   inferred: float -\u003e float  (from callsite at foo.fz:42)\n   note: declared spec must be a superset of inferred behavior\n```",
   "id": "fz-ul4.31.5",
@@ -18,8 +19,8 @@
     }
   ],
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "Validation pass: inferred ⊆ declared",
   "type": "task",
-  "updated_at": "2026-05-12T22:42:50Z"
+  "updated_at": "2026-05-12T23:04:31Z"
 }
