@@ -7,9 +7,15 @@
   "id": "fz-ul4.27.5.4.1",
   "labels": [],
   "parent": "fz-ul4.27.5.4",
+  "comments": [
+    {
+      "text": "Closed as superseded by fz-ul4.29. The multi-callsite agreement problem that motivated this ticket is an artifact of the single-FnTypes-per-fn model. Under per-callsite specialization (fz-ul4.29), each cont is itself per-callsite-specialized; the cont's slot 0 kind equals the callee's specialized return kind by definition, with no agreement check needed. No work shipped from this ticket lands; the infrastructure I drafted (final_return_kinds fixed point, emit_return signature split) was reverted in full and is explicitly NOT carried forward — .29 makes it unnecessary.",
+      "timestamp": "2026-05-12T12:03:54Z"
+    }
+  ],
   "priority": 3,
   "status": "in_progress",
   "title": "VR.3.4 follow-up: typed result slot in continuation frames",
   "type": "task",
-  "updated_at": "2026-05-12T10:31:02Z"
+  "updated_at": "2026-05-12T12:03:54Z"
 }
