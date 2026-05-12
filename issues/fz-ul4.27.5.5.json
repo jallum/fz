@@ -11,7 +11,7 @@
   "parent": "fz-ul4.27.5",
   "priority": 3,
   "status": "open",
-  "title": "VR.3.4: typed slots in closure heap payloads",
+  "title": "VR.3.5: typed slots in closure heap payloads",
   "type": "task",
-  "updated_at": "2026-05-12T01:36:22Z"
+  "updated_at": "2026-05-12T01:36:48Z"
 }
