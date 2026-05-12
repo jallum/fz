@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-12T23:36:45Z",
+  "description": "Make spawn's fz_spawn_thunk wrapper dispatch through the typed closure stub baked at the spawn callsite.\n\n## What\n\n`src/ir_lower.rs:710-724` wraps `Builtin(Spawn, [closure_arg])` in `MakeClosure(fz_spawn_thunk, [arg])`. Post-.29.12.2, that MakeClosure resolves to a typed SpecId of fz_spawn_thunk specialized for the wrapped closure's Descr. Post-.29.12.3, that stub dispatches to the typed body.\n\nThis ticket: verify the existing path Just Works after .29.12.2/.3 land, OR fix anywhere fz_spawn_thunk lowering still presumes any-key. Specifically:\n- Confirm fz_spawn_thunk's body (`TailCallClosure(c, [])`) gets typed through the closure ABI.\n- Confirm fz_spawn runtime helper (`runtime/src/ir_runtime.rs:97-108`) passes the typed closure bits through scheduler_hooks::dispatch_spawn unchanged.\n\nIf something presumes any-key (e.g., a hardcoded SpecId.0 == FnId.0 lookup for fz_spawn_thunk), fix it.\n\n## Tests (TDD)\n\n- Spawn a closure that closes over typed data. Verify spawned task runs the narrow body (counter/printf fingerprint).\n- Existing spawn tests stay green.\n\n## Risk\n\nThis may turn out to be a no-op (typed closure dispatch transparently covers it). If so, close with a comment documenting the verification.",
+  "id": "fz-ul4.29.12.4",
+  "labels": [],
+  "parent": "fz-ul4.29.12",
+  "priority": 2,
+  "status": "open",
+  "title": "Spawn ABI dispatches via typed stub",
+  "type": "task",
+  "updated_at": "2026-05-12T23:36:45Z"
+}
