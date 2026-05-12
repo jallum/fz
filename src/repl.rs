@@ -167,7 +167,7 @@ fn load_items_filtered(interp: &Interp, items: &[std::rc::Rc<Item>], macros_only
                 // sequence builds up a multi-clause fn.
                 let existing = interp.globals.lookup(&def.name);
                 let mut clauses = def.clauses.clone();
-                let mut doc = def.doc.clone();
+                let mut doc = def.doc().map(String::from);
                 if let Some(Value::Closure(c)) = existing {
                     let same_arity = c.clauses.first().map(|cl| cl.params.len())
                         == clauses.first().map(|cl| cl.params.len());

@@ -221,7 +221,7 @@ fn expand_item_list(
                     name: m.name.clone(),
                     name_span: m.name_span,
                     items: new_items,
-                    moduledoc: m.moduledoc.clone(),
+                    attrs: m.attrs.clone(),
                     span: m.span,
                 })));
             }
@@ -260,7 +260,7 @@ pub fn value_to_items(v: &Value) -> Result<Vec<Item>, String> {
                         name_span: span,
                         clauses: vec![FnClause { params: vec![], guard: None, body, span }],
                         is_macro: false,
-                        doc: None,
+                        attrs: Vec::new(),
                         span,
                     })])
                 }

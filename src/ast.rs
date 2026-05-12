@@ -225,6 +225,19 @@ pub struct FnClause {
     pub span: Span,
 }
 
+/// fz-ul4.31.2 — uniform attribute carrier on FnDef / ModuleDef.
+/// Replaces the prior `doc: Option<String>` / `moduledoc: Option<String>`
+/// fields with a list of typed attribute variants. .31.3 adds
+/// `TypeAlias`, .31.4 adds `Spec` — extending this enum doesn't churn
+/// callers that already consume via `attrs: Vec<Attribute>`.
+#[derive(Debug, Clone)]
+pub enum Attribute {
+    /// `@doc "..."` attached above a fn/defmacro.
+    Doc(String),
+    /// `@moduledoc "..."` at the top of a module body.
+    ModuleDoc(String),
+}
+
 #[derive(Debug, Clone)]
 pub struct FnDef {
     pub name: String,
@@ -232,11 +245,22 @@ pub struct FnDef {
     pub name_span: Span,
     pub clauses: Vec<FnClause>,
     pub is_macro: bool,
-    /// `@doc "..."` attached above the first clause of this fn. Surfaces
-    /// in the REPL via `?<name>`.
-    pub doc: Option<String>,
-    /// Span covering all clauses (and `@doc` if present).
+    /// Attributes attached above the first clause of this fn. The REPL
+    /// surfaces `Attribute::Doc` via `?<name>`. Empty when no `@…`
+    /// preceded the fn.
+    pub attrs: Vec<Attribute>,
+    /// Span covering all clauses (and any `@…` if present).
     pub span: Span,
+}
+
+impl FnDef {
+    /// Returns the first `@doc` string attached to this fn, if any.
+    pub fn doc(&self) -> Option<&str> {
+        self.attrs.iter().find_map(|a| match a {
+            Attribute::Doc(s) => Some(s.as_str()),
+            _ => None,
+        })
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -291,10 +315,21 @@ pub struct ModuleDef {
     /// In .18.1 the body holds only Item::Fn (incl. defmacro). Nested
     /// modules join in .18.2 (recursive Item::Module here).
     pub items: Vec<Rc<Item>>,
-    /// `@moduledoc "..."` attached at the top of the module body.
-    /// Inert in v1.
-    pub moduledoc: Option<String>,
+    /// Attributes attached at the top of the module body. The resolver
+    /// surfaces `Attribute::ModuleDoc` into `Program.moduledocs` keyed by
+    /// the module's qualified path.
+    pub attrs: Vec<Attribute>,
     pub span: Span,
+}
+
+impl ModuleDef {
+    /// Returns the first `@moduledoc` string attached to this module, if any.
+    pub fn moduledoc(&self) -> Option<&str> {
+        self.attrs.iter().find_map(|a| match a {
+            Attribute::ModuleDoc(s) => Some(s.as_str()),
+            _ => None,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Default)]

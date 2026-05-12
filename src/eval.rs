@@ -205,7 +205,7 @@ impl Interp {
                         name: Some(def.name.clone()),
                         clauses: def.clauses.clone(),
                         env: self.globals.clone(),
-                        doc: def.doc.clone(),
+                        doc: def.doc().map(String::from),
                     }));
                     self.globals.bind(&def.name, closure);
                 }

@@ -185,43 +185,44 @@ impl Parser {
     // --- entry ---
 
     pub fn parse_program(&mut self) -> PR<Program> {
-        let (items, moduledoc) = self.parse_items_until(&[Tok::Eof])?;
-        if moduledoc.is_some() {
+        let (items, top_attrs) = self.parse_items_until(&[Tok::Eof])?;
+        if top_attrs.iter().any(|a| matches!(a, Attribute::ModuleDoc(_))) {
             return self.err("@moduledoc only valid inside a defmodule body".to_string());
         }
         Ok(Program { items, module_docs: Default::default() })
     }
 
-    fn parse_items_until(&mut self, terminators: &[Tok]) -> PR<(Vec<Rc<Item>>, Option<String>)> {
+    fn parse_items_until(&mut self, terminators: &[Tok]) -> PR<(Vec<Rc<Item>>, Vec<Attribute>)> {
         let mut items: Vec<Rc<Item>> = Vec::new();
         let mut order: Vec<String> = Vec::new();
         let mut groups: std::collections::HashMap<String, FnDef> =
             std::collections::HashMap::new();
-        let mut moduledoc: Option<String> = None;
-        let mut pending_doc: Option<String> = None;
+        // fz-ul4.31.2 — `moduledoc_attr` and `pending_fn_attrs` accumulate
+        // structured `Attribute`s. The single-string `doc`/`moduledoc`
+        // model is gone; .31.3/.31.4 extend the Attribute enum.
+        let mut moduledoc_attr: Option<Attribute> = None;
+        let mut pending_fn_attrs: Vec<Attribute> = Vec::new();
 
         self.skip_newlines();
         while !self.peek_in(terminators) {
             match self.peek() {
                 Tok::At => {
-                    let (attr, val) = self.parse_attribute()?;
-                    match attr.as_str() {
-                        "moduledoc" => {
-                            if moduledoc.is_some() {
+                    let attr = self.parse_attribute()?;
+                    match &attr {
+                        Attribute::ModuleDoc(_) => {
+                            if moduledoc_attr.is_some() {
                                 return self.err("duplicate @moduledoc".to_string());
                             }
-                            moduledoc = Some(val);
+                            moduledoc_attr = Some(attr);
                         }
-                        "doc" => {
-                            if pending_doc.is_some() {
+                        Attribute::Doc(_) => {
+                            if pending_fn_attrs.iter().any(
+                                |a| matches!(a, Attribute::Doc(_)))
+                            {
                                 return self.err("duplicate @doc before fn".to_string());
                             }
-                            pending_doc = Some(val);
+                            pending_fn_attrs.push(attr);
                         }
-                        other => return self.err(format!(
-                            "unknown attribute `@{}` (only @doc and @moduledoc supported)",
-                            other
-                        )),
                     }
                 }
                 Tok::Defmodule => {
@@ -250,7 +251,7 @@ impl Parser {
                         def.span = def.span.merge(clause.span);
                         def.clauses.push(clause);
                     } else {
-                        let doc = pending_doc.take();
+                        let attrs = std::mem::take(&mut pending_fn_attrs);
                         let clause_span = clause.span;
                         order.push(name.clone());
                         groups.insert(name.clone(), FnDef {
@@ -258,7 +259,7 @@ impl Parser {
                             name_span,
                             clauses: vec![clause],
                             is_macro,
-                            doc,
+                            attrs,
                             span: start.merge(clause_span),
                         });
                     }
@@ -293,14 +294,17 @@ impl Parser {
             self.skip_newlines();
         }
         flush_fn_groups(&mut items, &mut order, &mut groups);
-        if pending_doc.is_some() {
+        if !pending_fn_attrs.is_empty() {
             return self.err("@doc not followed by a fn or defmacro".to_string());
         }
-        Ok((items, moduledoc))
+        let module_attrs: Vec<Attribute> = moduledoc_attr.into_iter().collect();
+        Ok((items, module_attrs))
     }
 
-    /// `@<ident> <string>`. v1 only supports string-valued attributes.
-    fn parse_attribute(&mut self) -> PR<(String, String)> {
+    /// `@<ident> <string>`. Recognizes `@doc` and `@moduledoc`; rejects
+    /// unknown attribute names. fz-ul4.31.3 / .31.4 extend the
+    /// `Attribute` enum (and this fn) for `@type` and `@spec`.
+    fn parse_attribute(&mut self) -> PR<Attribute> {
         self.expect(&Tok::At, "`@`")?;
         let name = match self.bump() {
             Tok::Ident(n) => n,
@@ -308,13 +312,25 @@ impl Parser {
                 "expected attribute name after `@`, got {:?}", other
             )),
         };
-        let value = match self.bump() {
-            Tok::Str(s) => s,
-            other => return self.err(format!(
-                "expected string value after `@{}`, got {:?}", name, other
+        match name.as_str() {
+            "doc" | "moduledoc" => {
+                let value = match self.bump() {
+                    Tok::Str(s) => s,
+                    other => return self.err(format!(
+                        "expected string value after `@{}`, got {:?}", name, other
+                    )),
+                };
+                if name == "doc" {
+                    Ok(Attribute::Doc(value))
+                } else {
+                    Ok(Attribute::ModuleDoc(value))
+                }
+            }
+            other => self.err(format!(
+                "unknown attribute `@{}` (only @doc and @moduledoc supported)",
+                other
             )),
-        };
-        Ok((name, value))
+        }
     }
 
     fn peek_in(&self, terminators: &[Tok]) -> bool {
@@ -476,9 +492,9 @@ impl Parser {
         };
         self.expect(&Tok::Do, "`do`")?;
         self.skip_newlines();
-        let (items, moduledoc) = self.parse_items_until(&[Tok::End])?;
+        let (items, attrs) = self.parse_items_until(&[Tok::End])?;
         self.expect(&Tok::End, "`end`")?;
-        Ok(ModuleDef { name, name_span, items, moduledoc, span: self.finish(start) })
+        Ok(ModuleDef { name, name_span, items, attrs, span: self.finish(start) })
     }
 
     // --- patterns ---

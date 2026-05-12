@@ -134,8 +134,8 @@ fn collect_module_docs(prog: &Program, out: &mut HashMap<String, String>) {
 
 fn collect_module_docs_recursive(m: &ModuleDef, parent: &str, out: &mut HashMap<String, String>) {
     let path = if parent.is_empty() { m.name.clone() } else { format!("{}.{}", parent, m.name) };
-    if let Some(d) = &m.moduledoc {
-        out.insert(path.clone(), d.clone());
+    if let Some(d) = m.moduledoc() {
+        out.insert(path.clone(), d.to_string());
     }
     for item in &m.items {
         if let Item::Module(inner) = &**item {
@@ -743,11 +743,11 @@ end
         let m = prog.items.iter().find_map(|it| match &**it {
             Item::Module(m) => Some(m), _ => None,
         }).unwrap();
-        assert_eq!(m.moduledoc.as_deref(), Some("Greets people."));
+        assert_eq!(m.moduledoc(), Some("Greets people."));
         let hi = m.items.iter().find_map(|it| match &**it {
             Item::Fn(d) if d.name == "hi" => Some(d), _ => None,
         }).unwrap();
-        assert_eq!(hi.doc.as_deref(), Some("Says hi."));
+        assert_eq!(hi.doc(), Some("Says hi."));
     }
 
     #[test]
@@ -778,7 +778,7 @@ end
             Item::Fn(d) if d.name == "M.d" => Some(d),
             _ => None,
         }).unwrap();
-        assert_eq!(d.doc.as_deref(), Some("doubles"));
+        assert_eq!(d.doc(), Some("doubles"));
     }
 
     #[test]
