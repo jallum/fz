@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-12T10:04:45Z",
+  "description": "Native fns currently have no frame at all — captures and locals live in Cranelift virtual registers/stack slots that the GC tracer doesn't see. This is benign today because native fns are leaf-bodied (no allocations escape across calls) but breaks the moment native bodies acquire allocating Prims that survive a Call (e.g. ListCons of a result captured across a sub-call). Wire Cranelift's stack-map emission at safepoints and teach the GC tracer to read stack maps for native-frame fns.",
+  "id": "fz-ul4.27.12",
+  "labels": [],
+  "parent": "fz-ul4.27",
+  "priority": 3,
+  "status": "open",
+  "title": "VR.6 follow-up: Cranelift stack-map emission + GC integration",
+  "type": "task",
+  "updated_at": "2026-05-12T10:04:45Z"
+}
