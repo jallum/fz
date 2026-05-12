@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-12T01:35:57Z",
+  "description": "Third sliver of VR.3: typed raw slots in continuation frames (CPS-split intermediate fns), not just the user-declared fn's entry frame.\n\n## Why\n\nAfter .5.1 and .5.2 land, RAW values flow through SSA inside a single block — but at block-boundary terminators (Goto, If, Call), the values are box-tagged via `as_tagged` to land in a FzValue slot in the next block's / continuation's entry frame. The next continuation then unboxes again. .5.3 keeps raw bytes RAW across the boundary: continuation entry frames also get typed slots.\n\n## Adds\n\n- cps_split (in `src/cps.rs` or wherever the continuation generator lives) propagates FnTypes-derived slot kinds to the continuation fn's entry frame, not just FzValue.\n- Per-fn schema build (already kind-aware from .5.1/.5.2) sees the new continuation fns and produces matching schemas.\n- Tail-call / Call-via-trampoline arg-store sites: route through a `store_into_slot(var, slot_kind)` helper. If src is raw and slot is raw same-kind → store raw. If src is raw and slot is FzValue → `as_tagged` then store. If src is tagged and slot is raw → unbox then store. If src is tagged and slot is tagged → store as-is.\n- Continuation entry-load picks up the typed slots automatically (the entry-frame load code from .5.1/.5.2 already handles per-slot kinds).\n\n## Kills\n\n- The `as_tagged` call at terminator-arg-build time for vars whose destination slot is raw-same-kind — eliminated by the typed-store dispatch.\n\n## Acceptance\n\n- New fixture exercising a multi-block fn body (e.g. an if-arm both branches producing a typed-float result) where the merge point's continuation receives raw f64; CLIF asserts no `fz_alloc_float` at the producer side and no `load.f64 ptr+16` at the consumer side.\n- Matrix green.\n\n## Depends on\n\n- fz-ul4.27.5.1\n- fz-ul4.27.5.2\n\n## UNBLOCKS\n\n- fz-ul4.27.5.4 (closures)",
+  "id": "fz-ul4.27.5.4",
+  "labels": [],
+  "parent": "fz-ul4.27.5",
+  "priority": 3,
+  "status": "open",
+  "title": "VR.3.3: typed raw slots in continuation frames",
+  "type": "task",
+  "updated_at": "2026-05-12T01:35:57Z"
+}
