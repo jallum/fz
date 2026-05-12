@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-12T19:49:31Z",
+  "description": "Pure function lowering fz type syntax into a Descr (set-theoretic type lattice from src/types.rs).\n\n## Signature\n\n```\npub fn parse_type_expr(tokens: \u0026[Token], type_env: \u0026ModuleTypeEnv) -\u003e Result\u003cDescr, Diag\u003e\n```\n\n(type_env hookup lands in .31.3; for this ticket pass an empty env.)\n\n## Grammar\n\n- Scalars: `nil`, `bool`, `integer`, `float`, `binary`, `atom`\n- Atom literal: `:foo`\n- Integer/float literals: `42`, `3.14` (singleton Descrs)\n- List: `[T]`\n- Tuple: `{T, U, V}`\n- Map (open): `%{required(K) =\u003e V, optional(K2) =\u003e V2}` — pick a syntax; minimum: `%{}` for any map\n- Function: `(A, B) -\u003e R` (zero-arg: `() -\u003e R`)\n- Union: `T | U` (right-associative or left, document)\n- Top: `_` or `any` (Descr::any())\n- Named ref: bare identifier (resolved against type_env)\n\n## Tests\n\n- Each grammar form parses to expected Descr (use Descr equality)\n- Union precedence: `integer | float | nil` parses as a single 3-way union\n- Function arity: `() -\u003e integer`, `(integer) -\u003e integer`, `(integer, float) -\u003e binary`\n- Errors: malformed type, unknown name (when type_env is empty: defer that error to .31.3? or error here?), trailing tokens\n- Round-trip with types.rs Descr Display where lossless\n\n## Out of scope\n\n- Parameterized aliases like `result(t)` — deferred\n- Opaque types — deferred\n- Integration with the main expression parser — separate concern; this is a standalone module-level function",
+  "id": "fz-ul4.31.1",
+  "labels": [],
+  "parent": "fz-ul4.31",
+  "priority": 2,
+  "status": "open",
+  "title": "Type-expression parser → Descr",
+  "type": "task",
+  "updated_at": "2026-05-12T19:49:31Z"
+}
