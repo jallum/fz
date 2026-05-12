@@ -7,14 +7,15 @@
     "fz-ul4.27.6.2.4",
     "fz-ul4.27.6.2.5"
   ],
+  "closed_at": "2026-05-12T02:54:28Z",
   "created": "2026-05-12T02:36:33Z",
   "description": "For natively_callable fns: entry block_params take the typed sig params directly (no frame_ptr load); emit_return uses native return_(\u0026[val]) with kind-aware tag/unbox. For uniform fns: existing path unchanged. Call sites still use the uniform fz_alloc_frame path (callers haven't migrated yet) — so this commit is only safe if natively_callable is gated to empty until .6.2.4.",
   "id": "fz-ul4.27.6.2.3",
   "labels": [],
   "parent": "fz-ul4.27.6.2",
   "priority": 3,
-  "status": "in_progress",
+  "status": "closed",
   "title": "VR.4.2.3: bifurcated compile_fn entry block + emit_return",
   "type": "task",
-  "updated_at": "2026-05-12T02:41:30Z"
+  "updated_at": "2026-05-12T02:54:28Z"
 }
