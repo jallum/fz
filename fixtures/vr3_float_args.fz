@@ -1,22 +1,17 @@
-# purpose: VR.3.2 — typed float entry-frame slots flow raw f64 across multiple ops in one block
+# purpose: VR.4 + VR.3.2 + .27.13 — narrow-spec float entry params arrive in F64 registers; fmul/fadd fire raw
 # paths:   jit, interp, aot
-# expect_clif_contains: dist: load.f64
+# expect_clif_contains: dist: block0(v0: f64, v1: f64, v2: i64)
 # expect_clif_contains: dist: fmul
 # expect_clif_contains: dist: fadd
-# expect_clif_excludes: dist: load.f64 notrap aligned v2+16
-# expect_clif_excludes: dist: load.f64 notrap aligned v3+16
+# expect_clif_excludes: dist: load.f64
 
 # fz-ul4.27.10 call-site narrowing types x, y as float (caller passes
-# 1.5, 2.5). fz-ul4.27.5.2 makes the entry-frame schema mark those slots
-# as FieldKind::RawF64 — the slot stores raw f64 bytes, not a tagged
-# ptr to a boxed-float heap object.
-#
-# Inside `dist`, codegen loads x and y as raw f64 directly from the
-# frame (`load.f64 v0+24` / `load.f64 v0+32`). The two `*` and the
-# `+` then fire on raw f64 (no `load.f64 v_x+16` heap-payload deref
-# that would be present if the slot held a tagged ptr). The result is
-# boxed exactly once at the terminator, where the continuation needs a
-# tagged FzValue for its FzValue-kind result slot.
+# 1.5, 2.5). Under .27.13 the narrow `dist_s3` spec promotes those param
+# slots to F64 in the Cranelift signature; entry block_params carry f64
+# directly, no frame slot is involved, and no `load.f64` is emitted
+# anywhere in the body. fmul/fadd fire on the raw register values; the
+# return rides back as f64 to the (also-narrowed) cont. Caller's
+# `f64const 1.5` / `f64const 2.5` flow straight to the call.
 fn dist(x, y) do
   x * x + y * y
 end

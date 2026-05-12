@@ -34,7 +34,7 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `vr1_int_arith.fz` | VR.1 — int-literal arithmetic elides the tag-check fast/slow path | jit, interp, aot |
 | `vr2_float_arith.fz` | VR.2 — float-literal arithmetic + comparisons emit native fadd/fcmp, no dispatch | jit, interp, aot |
 | `vr3_4_typed_capture.fz` | VR.3.4 / VR.4.3 — typed captures survive cont handoffs via native chain | jit, interp, aot |
-| `vr3_float_args.fz` | VR.3.2 — typed float entry-frame slots flow raw f64 across multiple ops in one block | jit, interp, aot |
+| `vr3_float_args.fz` | VR.4 + VR.3.2 + .27.13 — narrow-spec float entry params arrive in F64 registers; fmul/fadd fire raw | jit, interp, aot |
 | `vr3_int_args.fz` | VR.3.3 / VR.4.2.3 — typed int args flow through native ABI | jit, interp, aot |
 | `vr4_2_native_call.fz` | VR.4.2 — leaf-bodied helper goes through the native ABI | jit, interp, aot |
 | `vr5a_cross_kind_eq.fz` | VR.5a — cross-kind `==` folds to constant + emits type/dead-binop lint | jit, interp, aot |
