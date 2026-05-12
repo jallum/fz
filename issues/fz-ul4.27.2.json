@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-ul4.27.1"
+  ],
   "blocks": [],
   "created": "2026-05-12T00:23:29Z",
   "description": "First wedge of the value-rep arc. lower_prim for BinOp::Add consults fn_types[var] for both operands. When both are statically `int`, emit a direct `iadd`; skip the tag-check fast/slow path entirely. Same for Sub/Mul/Div/Mod on int-int operands.\n\nFrame layout stays tagged at this atom — slot 3 is still a tagged FzValue. Unbox / rebox happens only at op boundaries inside the fn body. Isolates the change to lower_prim; frame schemas, ABIs, GC tracer all untouched.\n\n## Adds\n\n  - lower_prim::lower_binop_int_int (or similar) emitting direct Cranelift arithmetic when both operand Descrs are Int.\n  - VR.0 fixture asserting `fn add1: iadd` + `excludes icmp_imm`.\n\n## Kills\n\n  - The bxor_imm/icmp_imm/brif tag-check fast/slow path scaffolding emitted in lower_prim for Add/Sub/Mul/Div/Mod when both operands are typed int.\n  - Reduced caller pressure on `fz_arith_*` FFI (still keep symbols alive — caller set narrows; full deletion is VR.2's job).\n\n## Acceptance\n\n  - `fz dump --emit clif fixtures/add1.fz` contains exactly one `iadd` with no surrounding tag check (VR.0 assertion).\n  - Matrix stdout parity preserved across all paths.\n  - At least one fixture using VR.0 keys.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "VR.1: int+int unboxed arithmetic",
   "type": "task",
-  "updated_at": "2026-05-12T00:23:29Z"
+  "updated_at": "2026-05-12T00:23:31Z"
 }
