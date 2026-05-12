@@ -29,3 +29,4 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `sample_tests_module.fz` | `test()` inside a defmodule body | jit |
 | `tail_recursion.fz` | 100k-deep self-recursion must TCO — exits cleanly with the accumulated count | jit, interp, aot |
 | `vr1_int_arith.fz` | VR.1 — int-literal arithmetic elides the tag-check fast/slow path | jit, interp, aot |
+| `vr2_float_arith.fz` | VR.2 — float-literal arithmetic + comparisons emit native fadd/fcmp, no dispatch | jit, interp, aot |

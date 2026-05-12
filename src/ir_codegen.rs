@@ -24,7 +24,7 @@
 use crate::fz_ir::{BinOp, Const, FnId, Module, Prim, Stmt, Term, UnOp, Var};
 use fz_runtime::heap::{FieldDescriptor, FieldKind, Schema};
 use cranelift_codegen::ir::{
-    self, condcodes::IntCC, types, AbiParam, BlockArg, InstBuilder, MemFlags, Signature,
+    self, condcodes::{FloatCC, IntCC}, types, AbiParam, BlockArg, InstBuilder, MemFlags, Signature,
 };
 use cranelift_codegen::isa::CallConv;
 use cranelift_codegen::settings::{self, Configurable};
@@ -460,7 +460,12 @@ fn default_unit_for(ty: crate::ast::BitType) -> u32 {
 // (`((a^1) | (b^1)) & 7 == 0`) and falls back to fz_arith_* runtime helpers
 // when either operand is non-Int. The slow path promotes Int→Float and
 // returns a fresh boxed float; mixed-type ops promote (e.g. `1 + 2.0` ==
-// `3.0`). Eq/Neq do NOT promote: `1 == 1.0` is false.
+// `3.0`). VR.2 (fz-ul4.27.3) added typed float-float fast paths in front
+// of the dispatch: when ir_typer proves both operands Float, codegen
+// inlines native fadd/fsub/fmul/fdiv and fcmp without going through the
+// helper. Deleting the dispatch fallback entirely is deferred — too many
+// callers (e.g. `fn add1(n) do n + 1 end`) still leave operands at `any`.
+// Eq/Neq do NOT promote: `1 == 1.0` is false.
 
 // fz_alloc_float moved to ir_runtime.rs (.23.4.7).
 
@@ -1975,6 +1980,16 @@ fn descr_is_int(fn_types: &crate::ir_typer::FnTypes, v: crate::fz_ir::Var) -> bo
         .unwrap_or(false)
 }
 
+/// True when `v`'s typer-inferred Descr is a subtype of `float` — the
+/// float-arithmetic dispatch elision pre-condition (fz-ul4.27.3).
+fn descr_is_float(fn_types: &crate::ir_typer::FnTypes, v: crate::fz_ir::Var) -> bool {
+    fn_types
+        .vars
+        .get(&v)
+        .map(|d| d.is_subtype(&crate::types::Descr::float()))
+        .unwrap_or(false)
+}
+
 fn lower_prim<M: cranelift_module::Module>(
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
@@ -2010,7 +2025,7 @@ fn lower_prim<M: cranelift_module::Module>(
             match op {
                 BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
                     let mop = *op;
-                    let fast = |b: &mut FunctionBuilder<'_>, av: ir::Value, bv: ir::Value| {
+                    let fast_int = |b: &mut FunctionBuilder<'_>, av: ir::Value, bv: ir::Value| {
                         let ai = unbox_int(b, av);
                         let bi = unbox_int(b, bv);
                         let raw = match mop {
@@ -2023,10 +2038,24 @@ fn lower_prim<M: cranelift_module::Module>(
                         };
                         box_int(b, raw)
                     };
-                    // .11.24.4: when the typer proves both operands are Int,
-                    // skip the dispatch test and helper call site.
                     if descr_is_int(fn_types, *a) && descr_is_int(fn_types, *bv) {
-                        fast(b, av, bvv)
+                        // .11.24.4: both Int → native iadd/isub/imul/sdiv/srem.
+                        fast_int(b, av, bvv)
+                    } else if descr_is_float(fn_types, *a) && descr_is_float(fn_types, *bv)
+                        && !matches!(mop, BinOp::Mod)
+                    {
+                        // VR.2: both Float → native fadd/fsub/fmul/fdiv on the
+                        // boxed-float payloads, then re-box.
+                        let af = unbox_float(b, av);
+                        let bf = unbox_float(b, bvv);
+                        let raw_f = match mop {
+                            BinOp::Add => b.ins().fadd(af, bf),
+                            BinOp::Sub => b.ins().fsub(af, bf),
+                            BinOp::Mul => b.ins().fmul(af, bf),
+                            BinOp::Div => b.ins().fdiv(af, bf),
+                            _ => unreachable!(),
+                        };
+                        box_float_native(b, jmod, runtime, raw_f)
                     } else {
                         let helper = match op {
                             BinOp::Add => runtime.arith_add_id,
@@ -2036,7 +2065,7 @@ fn lower_prim<M: cranelift_module::Module>(
                             BinOp::Mod => runtime.arith_mod_id,
                             _ => unreachable!(),
                         };
-                        emit_dispatch_binop(b, jmod, helper, av, bvv, fast)
+                        emit_dispatch_binop(b, jmod, helper, av, bvv, fast_int)
                     }
                 }
                 BinOp::Eq | BinOp::Neq => {
@@ -2078,21 +2107,35 @@ fn lower_prim<M: cranelift_module::Module>(
                     b.block_params(join_blk)[0]
                 }
                 BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
-                    let cc = match op {
+                    let icc = match op {
                         BinOp::Lt => IntCC::SignedLessThan,
                         BinOp::Le => IntCC::SignedLessThanOrEqual,
                         BinOp::Gt => IntCC::SignedGreaterThan,
                         BinOp::Ge => IntCC::SignedGreaterThanOrEqual,
                         _ => unreachable!(),
                     };
-                    let fast = move |b: &mut FunctionBuilder<'_>, av: ir::Value, bv: ir::Value| {
+                    let fast_int = move |b: &mut FunctionBuilder<'_>, av: ir::Value, bv: ir::Value| {
                         let ai = unbox_int(b, av);
                         let bi = unbox_int(b, bv);
-                        let cmp = b.ins().icmp(cc, ai, bi);
+                        let cmp = b.ins().icmp(icc, ai, bi);
                         bool_to_fz(b, cmp)
                     };
                     if descr_is_int(fn_types, *a) && descr_is_int(fn_types, *bv) {
-                        fast(b, av, bvv)
+                        fast_int(b, av, bvv)
+                    } else if descr_is_float(fn_types, *a) && descr_is_float(fn_types, *bv) {
+                        // VR.2: typed float-float comparison → native fcmp,
+                        // no dispatch, no helper call.
+                        let fcc = match op {
+                            BinOp::Lt => FloatCC::LessThan,
+                            BinOp::Le => FloatCC::LessThanOrEqual,
+                            BinOp::Gt => FloatCC::GreaterThan,
+                            BinOp::Ge => FloatCC::GreaterThanOrEqual,
+                            _ => unreachable!(),
+                        };
+                        let af = unbox_float(b, av);
+                        let bf = unbox_float(b, bvv);
+                        let cmp = b.ins().fcmp(fcc, af, bf);
+                        bool_to_fz(b, cmp)
                     } else {
                         let helper = match op {
                             BinOp::Lt => runtime.cmp_lt_id,
@@ -2101,7 +2144,7 @@ fn lower_prim<M: cranelift_module::Module>(
                             BinOp::Ge => runtime.cmp_ge_id,
                             _ => unreachable!(),
                         };
-                        emit_dispatch_binop(b, jmod, helper, av, bvv, fast)
+                        emit_dispatch_binop(b, jmod, helper, av, bvv, fast_int)
                     }
                 }
                 BinOp::And => {
@@ -2521,6 +2564,30 @@ fn both_ptr(b: &mut FunctionBuilder<'_>, av: ir::Value, bv: ir::Value) -> ir::Va
 fn box_int(b: &mut FunctionBuilder<'_>, raw: ir::Value) -> ir::Value {
     let shifted = b.ins().ishl_imm(raw, 3);
     b.ins().bor_imm(shifted, TAG_INT)
+}
+
+/// Load the f64 payload of a boxed-float FzValue. The boxed-float heap
+/// layout is `HeapHeader (16 bytes) + f64 payload (8 bytes)`; the tagged
+/// FzValue's bits are the heap ptr (Tag::Ptr has tag bits 000). Caller
+/// must already have proven Tag::Ptr+HeapKind::Float via the typer
+/// (descr_is_float). fz-ul4.27.3.
+fn unbox_float(b: &mut FunctionBuilder<'_>, v: ir::Value) -> ir::Value {
+    b.ins().load(types::F64, MemFlags::trusted(), v, 16)
+}
+
+/// Heap-allocate a fresh boxed float from a raw f64 and return its
+/// FzValue ptr-bits. Bitcasts the f64 to i64 (the wire form fz_alloc_float
+/// expects) and calls fz_alloc_float. fz-ul4.27.3.
+fn box_float_native<M: cranelift_module::Module>(
+    b: &mut FunctionBuilder<'_>,
+    jmod: &mut M,
+    runtime: &RuntimeRefs,
+    f: ir::Value,
+) -> ir::Value {
+    let bits = b.ins().bitcast(types::I64, ir::MemFlags::new(), f);
+    let fref = jmod.declare_func_in_func(runtime.alloc_float_id, b.func);
+    let inst = b.ins().call(fref, &[bits]);
+    b.inst_results(inst)[0]
 }
 
 /// Returns an i8 (0/1) indicating whether `v` is truthy: not nil and not false.

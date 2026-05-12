@@ -1,0 +1,19 @@
+# purpose: VR.2 — float-literal arithmetic + comparisons emit native fadd/fcmp, no dispatch
+# paths:   jit, interp, aot
+# expect_clif_contains: main: fadd
+# expect_clif_contains: main: fsub
+# expect_clif_contains: main: fmul
+# expect_clif_contains: main: fcmp lt
+# expect_clif_excludes: main: fz_arith_add
+# expect_clif_excludes: main: fz_cmp_lt
+
+# Both operands of each op are Float literals → ir_typer narrows to float
+# → lower_prim's descr_is_float branch fires → native fadd/fsub/fmul +
+# fcmp. The boxing still goes through fz_alloc_float (raw f64 round-trips
+# through the heap) until VR.3 puts f64 slots directly in the frame.
+fn main() do
+  print(1.5 + 2.5)
+  print(10.0 - 3.0)
+  print(2.5 * 4.0)
+  print(1.0 < 2.0)
+end
