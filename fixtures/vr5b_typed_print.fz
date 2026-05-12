@@ -1,0 +1,28 @@
+# purpose: VR.5b — print dispatches to typed FFI when the arg Descr narrows
+# paths:   jit, interp, aot
+# expect_clif_excludes: int_main: fz_print_value
+# expect_clif_excludes: float_main: fz_print_value
+
+# Before fz-ul4.27.7, every `print(x)` went through `fz_print_value(boxed)`
+# — for typed args this required tagging up the raw value before the call.
+# After .5b, lower_prim's Print branch checks `descr_is_int` /
+# `descr_is_float` and routes to `fz_print_i64` (i64) / `fz_print_f64`
+# (f64) directly, skipping the box. The typed helpers render identically
+# to fz_print_value's render() output (4.0 stays "4.0", not "4") and
+# push to TEST_CAPTURE so cargo-test assertions keep working through
+# either entry point.
+#
+# Polymorphic prints (arg type `any`) still route through fz_print_value
+# — VR.5b doesn't lose the fallback; it just adds two fast paths.
+fn int_main() do
+  print(42)
+end
+
+fn float_main() do
+  print(1.5 + 2.5)
+end
+
+fn main() do
+  int_main()
+  float_main()
+end

@@ -71,32 +71,50 @@ pub fn _reset_atoms() {
 // C-ABI builtins called from compiled fz code
 // ---------------------------------------------------------------------------
 
+// fz-ul4.27.7 (VR.5b): typed print helpers. The JIT routes Prim::Builtin::Print
+// to these directly when ir_typer narrows the arg, skipping the boxing
+// round-trip through `fz_print_value`. Rendering matches `fz_value::debug::render`
+// for the corresponding tag — same byte-for-byte output as the polymorphic
+// path. Each helper also pushes to `TEST_CAPTURE` so cargo-test assertions
+// work the same way regardless of which entry point the JIT picked.
+
+fn emit_print_line(s: String) {
+    println!("{}", s);
+    crate::ir_runtime::TEST_CAPTURE.with(|c| c.borrow_mut().push(s));
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_print_i64(n: i64) {
-    println!("{}", n);
+    emit_print_line(n.to_string());
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_print_f64(x: f64) {
-    println!("{}", x);
+    let s = if x.is_finite() && x.fract() == 0.0 {
+        format!("{:.1}", x)
+    } else {
+        format!("{}", x)
+    };
+    emit_print_line(s);
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_print_bool(b: u8) {
-    println!("{}", b != 0);
+    emit_print_line(if b != 0 { "true".to_string() } else { "false".to_string() });
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_print_atom(id: u32) {
-    match name_of(id) {
-        Some(n) => println!(":{}", n),
-        None => println!(":<atom#{}>", id),
-    }
+    let s = match name_of(id) {
+        Some(n) => format!(":{}", n),
+        None => format!(":<atom#{}>", id),
+    };
+    emit_print_line(s);
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_print_nil() {
-    println!("nil");
+    emit_print_line("nil".to_string());
 }
 
 /// Aborts with `msg` printed to stderr. `msg_ptr`/`msg_len` describe a UTF-8

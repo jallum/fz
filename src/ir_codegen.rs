@@ -629,6 +629,13 @@ impl JitBackend {
         // AOT will skip this entire block (linker resolves against the
         // fz_runtime staticlib instead).
         builder.symbol("fz_print_value", fz_runtime::ir_runtime::fz_print_value as *const u8);
+        // fz-ul4.27.7 (VR.5b): typed print helpers — JIT routes here when
+        // the arg Descr is monomorphic, skipping the boxing round-trip.
+        builder.symbol("fz_print_i64",  fz_runtime::fz_print_i64  as *const u8);
+        builder.symbol("fz_print_f64",  fz_runtime::fz_print_f64  as *const u8);
+        builder.symbol("fz_print_bool", fz_runtime::fz_print_bool as *const u8);
+        builder.symbol("fz_print_atom", fz_runtime::fz_print_atom as *const u8);
+        builder.symbol("fz_print_nil",  fz_runtime::fz_print_nil  as *const u8);
         builder.symbol("fz_halt", fz_runtime::ir_runtime::fz_halt as *const u8);
         builder.symbol("fz_alloc_frame", fz_runtime::ir_runtime::fz_alloc_frame as *const u8);
         builder.symbol("fz_alloc_list_cons", fz_runtime::ir_runtime::fz_alloc_list_cons as *const u8);
@@ -1369,6 +1376,11 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
     };
 
     let print_id = decl("fz_print_value", &[types::I64], &[])?;
+    let print_i64_id  = decl("fz_print_i64",  &[types::I64], &[])?;
+    let print_f64_id  = decl("fz_print_f64",  &[types::F64], &[])?;
+    let print_bool_id = decl("fz_print_bool", &[types::I8],  &[])?;
+    let print_atom_id = decl("fz_print_atom", &[types::I32], &[])?;
+    let print_nil_id  = decl("fz_print_nil",  &[],           &[])?;
     let halt_id = decl("fz_halt", &[types::I64, types::I64], &[])?;
     let alloc_id = decl("fz_alloc_frame", &[types::I32, types::I32], &[types::I64])?;
     let alloc_cons_id = decl(
@@ -1454,6 +1466,11 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
 
     Ok(RuntimeRefs {
         print_id,
+        print_i64_id,
+        print_f64_id,
+        print_bool_id,
+        print_atom_id,
+        print_nil_id,
         halt_id,
         alloc_id,
         alloc_cons_id,
@@ -1499,6 +1516,11 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
 #[derive(Clone, Copy)]
 struct RuntimeRefs {
     print_id: FuncId,
+    print_i64_id: FuncId,
+    print_f64_id: FuncId,
+    print_bool_id: FuncId,
+    print_atom_id: FuncId,
+    print_nil_id: FuncId,
     halt_id: FuncId,
     alloc_id: FuncId,
     alloc_cons_id: FuncId,
@@ -2447,9 +2469,23 @@ fn lower_prim<M: cranelift_module::Module>(
                     if args.len() != 1 {
                         return Err(CodegenError::new("print/1 expected"));
                     }
-                    let av = tagged_get(env, raw_f64_vars, raw_int_vars, b, jmod, runtime, args[0].0);
-                    let fref = jmod.declare_func_in_func(runtime.print_id, b.func);
-                    b.ins().call(fref, &[av]);
+                    // VR.5b (fz-ul4.27.7): dispatch on the arg's Descr to a
+                    // typed print FFI when monomorphic. Saves the boxing
+                    // round-trip that the polymorphic fz_print_value needs.
+                    let a = args[0];
+                    if descr_is_int(fn_types, a) {
+                        let n = as_raw_i64(env, raw_int_vars, b, a.0);
+                        let fref = jmod.declare_func_in_func(runtime.print_i64_id, b.func);
+                        b.ins().call(fref, &[n]);
+                    } else if descr_is_float(fn_types, a) {
+                        let f = as_raw_f64(env, raw_f64_vars, b, a.0);
+                        let fref = jmod.declare_func_in_func(runtime.print_f64_id, b.func);
+                        b.ins().call(fref, &[f]);
+                    } else {
+                        let av = tagged_get(env, raw_f64_vars, raw_int_vars, b, jmod, runtime, a.0);
+                        let fref = jmod.declare_func_in_func(runtime.print_id, b.func);
+                        b.ins().call(fref, &[av]);
+                    }
                     // print/1 returns FzValue::NIL — never raw 0 (which would
                     // alias Tag::Ptr null and trip fz_halt's Ptr-deref path).
                     b.ins().iconst(types::I64, NIL_BITS)
