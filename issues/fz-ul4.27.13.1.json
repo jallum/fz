@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-ul4.27.13.2"
+  ],
   "created": "2026-05-12T19:20:50Z",
   "description": "Drop the underscores on `_ft` / `_return_descr` in build_fn_signature. Read `ft.vars[entry.params[i]]` per native param; emit raw f64 for float-only Descrs, raw i64 for int-only Descrs, tagged i64 otherwise. Same for the return based on `return_descr`. Delete the deferral comment at ir_codegen.rs:587-592.\n\nUnit test on `build_fn_signature` alone (no codegen): construct a tiny module with `fn f(n: int) = n + 1` proven monomorphic; assert the produced Cranelift signature has `(raw_i64, i64) -\u003e raw_i64` (or in Cranelift terms, AbiParam types I64 with no special markers but driven by the Descr path). Float case asserts AbiParam(F64) for the first param.\n\nThis step is a no-op for codegen — only the sig changes. STEP.2 wires the entry block to match.",
   "id": "fz-ul4.27.13.1",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "VR.4 follow-up STEP.1: Descr-driven build_fn_signature",
   "type": "task",
-  "updated_at": "2026-05-12T19:20:50Z"
+  "updated_at": "2026-05-12T19:20:54Z"
 }
