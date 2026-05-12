@@ -6,14 +6,15 @@
   "blocks": [
     "fz-ul4.27.5"
   ],
+  "closed_at": "2026-05-12T01:18:46Z",
   "created": "2026-05-12T00:23:29Z",
   "description": "Extend VR.1's pattern to float-float arithmetic, comparisons (Lt/Le/Gt/Ge), and bool ops. Each follows the same shape: ir_typer proves operand kinds → direct Cranelift op; otherwise existing tagged path.\n\n## Adds\n\n  - Per-op typed dispatch in lower_prim for float arithmetic (fadd/fsub/fmul/fdiv), comparisons (icmp/fcmp), boolean and/or short-circuiting on known-bool operands.\n  - Fixtures asserting the typed lowering for each op family.\n\n## Kills\n\n  - All remaining JIT-side call sites to `fz_arith_add` / `fz_arith_sub` / `fz_arith_mul` / `fz_arith_div` / `fz_arith_mod`.\n  - All `fz_cmp_lt` / `fz_cmp_le` / `fz_cmp_gt` / `fz_cmp_ge` call sites.\n  - The FFI symbols themselves in runtime/src/ir_runtime.rs (now genuinely unreachable from JIT'd code).\n  - Their entries in declare_runtime_symbols + the symbol-binding list.\n  - Helpers `fz_to_f64` and `cmp_to_fz` (no remaining callers).\n  - `box_float` narrowed to heap-insertion path only (called from VR.5b's print boundary and from Const::Float lowering, if those don't go away first).\n\n## Acceptance\n\n  - Every scalar-monomorphic op site in the fixture matrix lowers without a tag-check fast/slow path (VR.0 assertions).\n  - cargo build clean with all the fz_arith_* / fz_cmp_* symbols deleted.\n  - Matrix stdout green.",
   "id": "fz-ul4.27.3",
   "labels": [],
   "parent": "fz-ul4.27",
   "priority": 3,
-  "status": "in_progress",
+  "status": "closed",
   "title": "VR.2: remaining scalar ops (float, cmp, bool)",
   "type": "task",
-  "updated_at": "2026-05-12T00:43:09Z"
+  "updated_at": "2026-05-12T01:18:46Z"
 }
