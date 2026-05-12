@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-ul4.29.12.2"
+  ],
   "created": "2026-05-12T23:36:19Z",
   "description": "Replace `fz_alloc_frame(cont.fn_id.0, ...)` with `fz_alloc_frame(resolved_sid, schemas[sid].size)` at every emit-site that materializes a continuation frame.\n\n## What\n\n(a) Add helper `compute_cont_slot0_descr(terminator, fn_types, module) -\u003e Descr` that mirrors `src/ir_typer.rs:190-215` exactly:\n  - `Term::Call { callee, args }`: resolve the callee's specialized return by joining over its `Return` terminators under that callsite's `FnTypes`.\n  - `Term::CallClosure` / `Term::Receive`: `Descr::any()`.\n\n(b) At every cont-frame alloc site in `src/ir_codegen.rs`, build the lookup key as `[slot0_descr, ...captured_descrs]` and resolve via `spec_registry.resolve(cont.fn_id, \u0026key)`. Panic loudly on miss (same .29.11 discipline as `resolve_callee_sid`).\n\n(c) Use resolved SpecId for both `fz_alloc_frame` (size lookup) AND for the schema_id field written into the frame header.\n\n## Why\n\nTrampoline already dispatches by `header.schema_id` indexing `fn_ptrs`. Today indirect-dispatch hardcodes `cont.fn_id.0` (the any-key SpecId by invariant). Switching to a resolved SpecId is the prerequisite for typed dispatch on continuations.\n\n## Tests (TDD)\n\n1. Unit test for `compute_cont_slot0_descr`: small IR fixture, assert the helper output matches the typer's `callsite_keys[cont.fn_id]` slot 0 for each terminator kind.\n2. Integration: a program with a Cont whose typer-registered narrow spec differs from its any-key spec. Verify (a) trampoline dispatches to the narrow body's `fn_ptrs[sid]`, (b) parity across interp/JIT/AOT.\n\n## Invariants preserved\n\n- Any-key still registered for every fn pre-.29.12.6, so subsumption resolve is the safety net if slot-0 logic drifts.\n- One ticket == one commit. No warnings, all tests pass.",
   "id": "fz-ul4.29.12.1",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Cont-frame alloc uses resolved SpecId",
   "type": "task",
-  "updated_at": "2026-05-12T23:36:19Z"
+  "updated_at": "2026-05-12T23:37:07Z"
 }
