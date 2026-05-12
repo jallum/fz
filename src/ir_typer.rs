@@ -29,8 +29,8 @@
 //! `ir_codegen::compile()` continues to populate `CompiledModule.types`.
 
 use crate::fz_ir::{
-    BinOp, Block, BlockId, BuiltinId, BuiltinKind, Const, FnId, FnIr, Module, Prim, Stmt, Term,
-    UnOp, Var, VecKindIr,
+    BinOp, Block, BlockId, BuiltinId, BuiltinKind, Const, Cont, FnId, FnIr, Module, Prim, Stmt,
+    Term, UnOp, Var, VecKindIr,
 };
 use crate::types::{Descr, MapKey};
 use std::collections::HashMap;
@@ -1014,6 +1014,101 @@ pub fn rewrite_vec_kinds(
 }
 
 // ----------------------------------------------------------------------
+// fz-ul4.29.12.1 — Cont input-Descr key helpers
+// ----------------------------------------------------------------------
+
+/// Reconstruct the per-Var env at the *terminator* of `block` under
+/// `caller_ft`. Starts from `caller_ft.block_envs[block.id]` (which
+/// already incorporates if-narrowing from predecessor blocks) and
+/// folds in each Let by re-applying `type_prim`. This mirrors the
+/// typer's own propagation pass at `type_module`'s `callsite_keys`
+/// site (`ir_typer.rs:142-145`).
+fn env_at_terminator(
+    caller_ft: &FnTypes,
+    block: &Block,
+    module: &Module,
+) -> HashMap<Var, Descr> {
+    let mut env = caller_ft
+        .block_envs
+        .get(&block.id)
+        .cloned()
+        .unwrap_or_default();
+    for stmt in &block.stmts {
+        let Stmt::Let(v, prim) = stmt;
+        let t = type_prim(prim, &env, module);
+        env.insert(*v, t);
+    }
+    env
+}
+
+/// fz-ul4.29.12.1 — slot-0 Descr for a Cont's input-Descr key at the
+/// call-site whose terminator is `block.terminator`. Mirrors the
+/// typer's logic at `ir_typer.rs:190-215`:
+///
+///   * `Term::Call`: callee's specialized return Descr under this
+///     call-site's arg Descrs (joined over the callee's `Return`
+///     terminators using `module_types.specs[(callee, arg_descrs)]`).
+///   * `Term::CallClosure` / `Term::Receive`: callee/sender is
+///     opaque, so slot 0 stays `Descr::any()`.
+///   * Anything else: not a Cont-producing terminator, returns `any`.
+pub fn cont_slot0_descr(
+    block: &Block,
+    caller_ft: &FnTypes,
+    module: &Module,
+    module_types: &ModuleTypes,
+) -> Descr {
+    let Term::Call { callee, args, .. } = &block.terminator else {
+        return Descr::any();
+    };
+    let env = env_at_terminator(caller_ft, block, module);
+    let arg_descrs: Vec<Descr> = args
+        .iter()
+        .map(|av| env.get(av).cloned().unwrap_or_else(Descr::any))
+        .collect();
+    let Some(callee_ft) = module_types.specs.get(&(*callee, arg_descrs)) else {
+        return Descr::any();
+    };
+    let callee_fn = module.fn_by_id(*callee);
+    let mut joined: Option<Descr> = None;
+    for cb in &callee_fn.blocks {
+        if let Term::Return(rv) = &cb.terminator {
+            let d = callee_ft.vars.get(rv).cloned().unwrap_or_else(Descr::any);
+            joined = Some(match joined {
+                Some(p) => p.union(&d),
+                None => d,
+            });
+        }
+    }
+    joined.unwrap_or_else(Descr::any)
+}
+
+/// fz-ul4.29.12.1 — build the full Cont input-Descr key at a call-site:
+/// `[slot0, ...captured_descrs]`, padded with `any` to the cont fn's
+/// entry-block arity. Mirrors the typer's key construction at
+/// `ir_typer.rs:233-240` exactly.
+pub fn cont_input_key(
+    block: &Block,
+    continuation: &Cont,
+    caller_ft: &FnTypes,
+    module: &Module,
+    module_types: &ModuleTypes,
+) -> Vec<Descr> {
+    let cont_fn = module.fn_by_id(continuation.fn_id);
+    let n_params = cont_fn.block(cont_fn.entry).params.len();
+    let mut key: Vec<Descr> = vec![Descr::any(); n_params];
+    if !key.is_empty() {
+        key[0] = cont_slot0_descr(block, caller_ft, module, module_types);
+    }
+    let env = env_at_terminator(caller_ft, block, module);
+    for (k, cv) in continuation.captured.iter().enumerate() {
+        if let Some(p) = key.get_mut(k + 1) {
+            *p = env.get(cv).cloned().unwrap_or_else(Descr::any);
+        }
+    }
+    key
+}
+
+// ----------------------------------------------------------------------
 // Tests
 // ----------------------------------------------------------------------
 
@@ -1683,5 +1778,115 @@ mod tests {
         let id_x = mt[0].vars.get(&x).cloned().unwrap();
         assert!(id_x.is_subtype(&Descr::int()),
             "id's x must be narrowed to int via callsite, got {}", id_x);
+    }
+
+    // ---- fz-ul4.29.12.1 helper tests ----
+
+    fn pipeline(src: &str) -> (Module, ModuleTypes) {
+        let toks = crate::lexer::Lexer::new(src).tokenize().expect("lex");
+        let prog = crate::parser::Parser::new(toks).parse_program().expect("parse");
+        let prog = crate::resolve::flatten_modules(prog).expect("flatten");
+        let ir = crate::ir_lower::lower_program(&prog).expect("lower");
+        let mt = type_module(&ir);
+        (ir, mt)
+    }
+
+    /// Helper output for a Call-site Cont must match a key the typer
+    /// registered in `module_types.specs` under `cont.fn_id`. This is
+    /// the load-bearing invariant for fz-ul4.29.12.1's SpecRegistry
+    /// resolve: if it ever fails, the resolve will panic.
+    #[test]
+    fn cont_input_key_matches_a_registered_spec_for_call() {
+        let (m, mt) = pipeline(r#"
+fn id(x), do: x
+fn main() do
+  y = id(7)
+  print(y)
+end
+"#);
+        // Find the main fn, locate the Call site, and check the
+        // helper's output appears in `mt.specs` for the cont's fn_id.
+        let main = m.fns.iter().find(|f| f.name == "main").unwrap();
+        let caller_ft = mt.specs.get(&(main.id, vec![])).unwrap();
+        let mut found_any = false;
+        for blk in &main.blocks {
+            if let Term::Call { continuation, .. } = &blk.terminator {
+                let key = cont_input_key(blk, continuation, caller_ft, &m, &mt);
+                assert!(
+                    mt.specs.contains_key(&(continuation.fn_id, key.clone())),
+                    "helper key {:?} for cont fn_id {:?} not in specs; \
+                     registered keys for this cont: {:?}",
+                    key,
+                    continuation.fn_id,
+                    mt.specs.iter()
+                        .filter(|((f, _), _)| *f == continuation.fn_id)
+                        .map(|((_, k), _)| k.clone())
+                        .collect::<Vec<_>>(),
+                );
+                found_any = true;
+            }
+        }
+        assert!(found_any, "test premise: main should contain a Call with a Cont");
+    }
+
+    /// Direct-Call slot 0 reflects the callee's narrowed return Descr,
+    /// not `any` — confirms .29.12.1 actually drives narrow Cont SpecId
+    /// resolution at call-sites where the typer has specialized the
+    /// callee.
+    #[test]
+    fn cont_slot0_narrows_to_callee_return_for_direct_call() {
+        let (m, mt) = pipeline(r#"
+fn add1(n), do: n + 1
+fn main(), do: print(add1(40) + 2)
+"#);
+        let main = m.fns.iter().find(|f| f.name == "main").unwrap();
+        let main_ft = mt.specs.get(&(main.id, vec![])).unwrap();
+        let mut narrow_found = false;
+        for blk in &main.blocks {
+            if let Term::Call { .. } = &blk.terminator {
+                let s0 = cont_slot0_descr(blk, main_ft, &m, &mt);
+                // add1's typer-specialized return for arg int_lit(40) is
+                // a strict subtype of `int` — and crucially narrower than
+                // `any`.
+                assert!(!s0.is_equiv(&Descr::any()),
+                    "slot 0 must narrow below any when callee is specialized, got {}", s0);
+                assert!(s0.is_subtype(&Descr::int()),
+                    "slot 0 should be int-typed, got {}", s0);
+                narrow_found = true;
+            }
+        }
+        assert!(narrow_found, "test premise: main should have a direct Call");
+    }
+
+    /// Helper's slot 0 for CallClosure / Receive is `Descr::any()` per
+    /// the typer's opaque-callee rule.
+    #[test]
+    fn cont_slot0_is_any_for_call_closure() {
+        let (m, mt) = pipeline(r#"
+fn apply(f, x) do
+  r = f(x)
+  r + 1
+end
+fn main() do
+  inc = fn (n) -> n + 1
+  z = apply(inc, 3)
+  print(z)
+end
+"#);
+        let apply_fn = m.fns.iter().find(|f| f.name == "apply").unwrap();
+        let caller_ft = mt.specs.iter()
+            .find(|((id, _), _)| *id == apply_fn.id)
+            .map(|((_, _), ft)| ft)
+            .expect("apply should have at least one spec");
+        let mut saw_cc = false;
+        for blk in &apply_fn.blocks {
+            if matches!(&blk.terminator, Term::CallClosure { .. }) {
+                let s0 = cont_slot0_descr(blk, caller_ft, &m, &mt);
+                assert!(s0.is_equiv(&Descr::any()),
+                    "CallClosure slot 0 must be `any`, got {}", s0);
+                saw_cc = true;
+            }
+        }
+        assert!(saw_cc, "test premise: apply should have a CallClosure");
     }
 }

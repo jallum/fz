@@ -638,9 +638,8 @@ fn build_param_reprs(
 /// `f64`, RawInt/Tagged → `i64`); the return derives from `return_descr`
 /// the same way. `host_ctx` is always `i64`.
 fn build_fn_signature(
-    f: &crate::fz_ir::FnIr,
-    ft: &crate::ir_typer::FnTypes,
-    return_descr: &crate::types::Descr,
+    param_reprs: &[ArgRepr],
+    ret_repr: ArgRepr,
     is_native: bool,
 ) -> Signature {
     if !is_native {
@@ -654,12 +653,10 @@ fn build_fn_signature(
     // tail calls can lower to `return_call` (which the SystemV ABI does
     // not permit). Without TCO, count_100k_stays_bounded blows the stack.
     let mut sig = Signature::new(CallConv::Tail);
-    let param_reprs = build_param_reprs(f, ft);
-    for r in &param_reprs {
+    for r in param_reprs {
         sig.params.push(AbiParam::new(r.cl_type()));
     }
     sig.params.push(AbiParam::new(types::I64)); // host_ctx
-    let ret_repr = ArgRepr::from_descr(return_descr);
     sig.returns.push(AbiParam::new(ret_repr.cl_type()));
     sig
 }
@@ -1251,6 +1248,16 @@ pub fn compile_with_backend<B: Backend>(
     // narrowing is .29.5.1's follow-up).
     let mut closure_shapes: std::collections::BTreeMap<(FnId, usize), ()>
         = std::collections::BTreeMap::new();
+    // fz-ul4.29.12.1: collect Cont-target fns. Every fn referenced from
+    // a Cont (anywhere in the module) must have entry-param 0 (its
+    // "result" slot when invoked as a continuation) accept Tagged
+    // FzValue, because callee-side `emit_return` writes Tagged into the
+    // cont frame's slot 1 with no per-cont coercion. Narrow specs of
+    // such fns force slot 0 = FzValue / param_repr Tagged to preserve
+    // the ABI contract; the body still unboxes internally per its
+    // narrow Descr. See ABI note at `emit_return` (.29.12.1).
+    let mut cont_target_fns: std::collections::HashSet<FnId> =
+        std::collections::HashSet::new();
     for f in &module.fns {
         for blk in &f.blocks {
             for stmt in &blk.stmts {
@@ -1258,6 +1265,15 @@ pub fn compile_with_backend<B: Backend>(
                 if let Prim::MakeClosure(callee_fn_id, captures) = prim {
                     closure_shapes.insert((*callee_fn_id, captures.len()), ());
                 }
+            }
+            let cont = match &blk.terminator {
+                Term::Call { continuation, .. } => Some(continuation),
+                Term::CallClosure { continuation, .. } => Some(continuation),
+                Term::Receive { continuation } => Some(continuation),
+                _ => None,
+            };
+            if let Some(c) = cont {
+                cont_target_fns.insert(c.fn_id);
             }
         }
     }
@@ -1344,6 +1360,14 @@ pub fn compile_with_backend<B: Backend>(
             } else if d.is_subtype(&crate::types::Descr::int()) {
                 kinds[j] = FieldKind::RawI64;
             }
+        }
+        // fz-ul4.29.12.1: force entry-param 0 of cont-target fns back to
+        // FzValue. `emit_return` writes Tagged into cont slot 1 with no
+        // per-cont coercion; if this spec is reached as a cont, slot 1
+        // must accept Tagged. Body still unboxes internally per its
+        // narrow Descr.
+        if !kinds.is_empty() && cont_target_fns.contains(&f.id) {
+            kinds[0] = FieldKind::FzValue;
         }
         schemas.push(build_frame_schema(&f.name, &kinds));
     }
@@ -1541,10 +1565,21 @@ pub fn compile_with_backend<B: Backend>(
     // empty params + Tagged return; they're never declared.
     let param_reprs: Vec<Vec<ArgRepr>> = (0..spec_count)
         .map(|sid| match spec_fnidx[sid] {
-            Some(idx) => build_param_reprs(
-                &module.fns[idx],
-                spec_fn_types[sid].expect("non-sentinel spec must have FnTypes"),
-            ),
+            Some(idx) => {
+                let f = &module.fns[idx];
+                let mut reprs = build_param_reprs(
+                    f,
+                    spec_fn_types[sid].expect("non-sentinel spec must have FnTypes"),
+                );
+                // fz-ul4.29.12.1: cont-target fns must read entry-param 0
+                // as Tagged — `emit_return` writes Tagged with no per-cont
+                // coercion (schemas[sid].fields[1] is forced FzValue
+                // upstream for the same reason).
+                if !reprs.is_empty() && cont_target_fns.contains(&f.id) {
+                    reprs[0] = ArgRepr::Tagged;
+                }
+                reprs
+            }
             None => Vec::new(),
         })
         .collect();
@@ -1562,9 +1597,8 @@ pub fn compile_with_backend<B: Backend>(
                 let f = &module.fns[idx];
                 let is_native = natively_callable.contains(&f.id);
                 build_fn_signature(
-                    f,
-                    spec_fn_types[sid].expect("non-sentinel spec must have FnTypes"),
-                    &return_descrs[sid],
+                    &param_reprs[sid],
+                    return_reprs[sid],
                     is_native,
                 )
             }
@@ -1655,6 +1689,8 @@ pub fn compile_with_backend<B: Backend>(
             &fn_ids,
             &param_reprs,
             &return_reprs,
+            &working,
+            &module_types,
         )?;
         // Any-key SpecId.0 == FnId.0 (invariant); use the bare fn name so
         // tests / `fz dump --emit clif` can refer to functions by source
@@ -2201,6 +2237,8 @@ fn compile_fn<M: cranelift_module::Module>(
     fn_ids: &HashMap<u32, FuncId>,
     param_reprs: &[Vec<ArgRepr>],
     return_reprs: &[ArgRepr],
+    module: &crate::fz_ir::Module,
+    module_types: &crate::ir_typer::ModuleTypes,
 ) -> Result<(), CodegenError> {
     let is_native = natively_callable.contains(&f.id);
     let callee_is_native = |id: u32| natively_callable.contains(&crate::fz_ir::FnId(id));
@@ -2208,6 +2246,31 @@ fn compile_fn<M: cranelift_module::Module>(
     // exists; otherwise fall back to the callee's any-key SpecId.0 (== the
     // callee's FnId.0 by invariant). Caller's `fn_types` carries the arg
     // Descrs at this callsite.
+    // fz-ul4.29.12.1: resolve a Cont at this caller-block to its
+    // narrow SpecId.0 via the typer's input-Descr key. The typer
+    // registers a spec for every reachable Cont site (see
+    // `ir_typer.rs:184-242` / `cont_input_key`); subsumption resolve
+    // in SpecRegistry falls back to a covering super-spec (any-key
+    // at minimum) when no exact match exists. Panic on miss for the
+    // same .29.11 discipline as `resolve_callee_sid` below.
+    let resolve_cont_sid = |blk: &crate::fz_ir::Block,
+                            continuation: &crate::fz_ir::Cont| -> u32 {
+        let key = crate::ir_typer::cont_input_key(
+            blk, continuation, fn_types, module, module_types,
+        );
+        spec_registry
+            .resolve(continuation.fn_id, &key)
+            .map(|s| s.0)
+            .unwrap_or_else(|| panic!(
+                ".29.12.1: no covering spec for Cont FnId({}) with key {:?}; \
+                 registered keys for this cont: {:?}",
+                continuation.fn_id.0,
+                key,
+                spec_registry.iter()
+                    .filter(|(_, fid, _)| *fid == continuation.fn_id)
+                    .map(|(s, _, k)| (s.0, k.to_vec()))
+                    .collect::<Vec<_>>()))
+    };
     let resolve_callee_sid = |callee: crate::fz_ir::FnId,
                               args: &[crate::fz_ir::Var]| -> u32 {
         let descrs: Vec<crate::types::Descr> = args
@@ -2545,13 +2608,13 @@ fn compile_fn<M: cranelift_module::Module>(
                     .iter()
                     .map(|v| *var_map.get(&v.0).expect("unbound captured val"))
                     .collect();
-                // fz-ul4.29.7: resolve callee → narrow SpecId.0 (falls back
-                // to any-key == callee.0). Continuation stays any-key
-                // (its SpecId.0 == continuation.fn_id.0 by invariant);
-                // narrowing cont specs is gated on .29.4 lifting the
-                // typer's slot-0 pin.
+                // fz-ul4.29.7: resolve callee → narrow SpecId.0 (falls
+                // back to any-key == callee.0 via subsumption).
+                // fz-ul4.29.12.1: resolve the Cont to its narrow
+                // SpecId.0 too (typer registers one per Cont site;
+                // any-key is the subsumption backstop).
                 let callee_sid = resolve_callee_sid(*callee, args);
-                let cont_sid = continuation.fn_id.0;
+                let cont_sid = resolve_cont_sid(blk, continuation);
                 if callee_is_native(callee.0) {
                     // fz-ul4.27.13 — coerce each arg from its current var
                     // repr to the callee's param_repr. Result rides back
@@ -2580,40 +2643,55 @@ fn compile_fn<M: cranelift_module::Module>(
                     if callee_is_native(continuation.fn_id.0) {
                         // fz-ul4.27.6.3 — both callee AND cont are native.
                         // Chain natively: feed result + captures + host_ctx
-                        // into the cont fn synchronously. Cont is any-key →
-                        // all param_reprs Tagged; retag any raw captures.
+                        // into the cont fn synchronously. fz-ul4.29.12.1:
+                        // cont params use this cont's `param_reprs` (still
+                        // Tagged for slot 0 — entry-param-0 of cont-target
+                        // fns is forced Tagged — but captures may be raw
+                        // per the cont's narrow spec).
                         let cont_fid = *fn_ids
                             .get(&cont_sid)
                             .expect("cont fn_id missing");
                         let cont_fref = jmod.declare_func_in_func(cont_fid, b.func);
+                        let cont_param_reprs = &param_reprs[cont_sid as usize];
+                        let cont_ret_repr = return_reprs[cont_sid as usize];
                         let mut cont_args: Vec<ir::Value> =
                             Vec::with_capacity(cap_vals.len() + 2);
-                        cont_args.push(result_tagged);
+                        // slot 0 = result. cont's param_repr[0] is forced
+                        // Tagged; result_tagged is already Tagged.
+                        cont_args.push(coerce_to(
+                            &mut b, jmod, &runtime,
+                            result_tagged, ArgRepr::Tagged, cont_param_reprs[0],
+                        ));
                         for (i, cv) in continuation.captured.iter().enumerate() {
                             let from = var_repr(cv.0, &raw_int_vars, &raw_f64_vars);
                             cont_args.push(coerce_to(
-                                &mut b, jmod, &runtime, cap_vals[i], from, ArgRepr::Tagged,
+                                &mut b, jmod, &runtime,
+                                cap_vals[i], from, cont_param_reprs[i + 1],
                             ));
                         }
                         cont_args.push(host_ctx);
                         let cont_call = b.ins().call(cont_fref, &cont_args);
                         let final_result = b.inst_results(cont_call)[0];
                         if is_native {
-                            // Cont is any-key (Tagged return). My return
-                            // may be narrower — coerce.
+                            // Coerce cont's return repr to my return repr.
                             let my_ret = return_reprs[this_spec_id as usize];
                             let coerced = coerce_to(
-                                &mut b, jmod, &runtime, final_result, ArgRepr::Tagged, my_ret,
+                                &mut b, jmod, &runtime, final_result, cont_ret_repr, my_ret,
                             );
                             b.ins().return_(&[coerced]);
                         } else {
+                            // emit_return expects Tagged val.
+                            let val_tagged = coerce_to(
+                                &mut b, jmod, &runtime,
+                                final_result, cont_ret_repr, ArgRepr::Tagged,
+                            );
                             emit_return(
                                 &mut b,
                                 jmod,
                                 runtime,
                                 frame_ptr,
                                 host_ctx,
-                                final_result,
+                                val_tagged,
                             );
                         }
                     } else {
@@ -2632,25 +2710,23 @@ fn compile_fn<M: cranelift_module::Module>(
                             HEADER_SIZE,
                         );
                         b.ins().store(MemFlags::trusted(), my_cont, cf, HEADER_SIZE);
-                        b.ins().store(
-                            MemFlags::trusted(),
-                            result_tagged,
-                            cf,
-                            HEADER_SIZE + SLOT_BYTES,
+                        // fz-ul4.29.12.1: result + captures are written
+                        // into the cont's typed entry slots. `store_args
+                        // _into_callee_frame` reads `cont_schema` per
+                        // slot kind, so we just feed tagged inputs and
+                        // it unboxes as needed.
+                        let mut payload: Vec<ir::Value> = Vec::with_capacity(
+                            continuation.captured.len() + 1,
                         );
-                        // store_args_into_callee_frame expects tagged
-                        // inputs and unboxes per slot kind. Retag captures.
-                        let cap_vals_tagged: Vec<ir::Value> = continuation
-                            .captured
-                            .iter()
-                            .zip(cap_vals.iter())
-                            .map(|(cv, val)| {
-                                let from = var_repr(cv.0, &raw_int_vars, &raw_f64_vars);
-                                coerce_to(&mut b, jmod, &runtime, *val, from, ArgRepr::Tagged)
-                            })
-                            .collect();
+                        payload.push(result_tagged);
+                        for (cv, val) in continuation.captured.iter().zip(cap_vals.iter()) {
+                            let from = var_repr(cv.0, &raw_int_vars, &raw_f64_vars);
+                            payload.push(coerce_to(
+                                &mut b, jmod, &runtime, *val, from, ArgRepr::Tagged,
+                            ));
+                        }
                         store_args_into_callee_frame(
-                            &mut b, cont_schema, cf, &cap_vals_tagged, 2,
+                            &mut b, cont_schema, cf, &payload, 1,
                         );
                         b.ins().return_(&[cf]);
                     }
@@ -2775,7 +2851,9 @@ fn compile_fn<M: cranelift_module::Module>(
                 // Build cont frame (same as today's emit_call_closure prefix).
                 let alloc_fref = jmod.declare_func_in_func(runtime.alloc_id, b.func);
                 let my_cont = b.ins().load(types::I64, MemFlags::trusted(), frame_ptr, HEADER_SIZE);
-                let cont_sid = continuation.fn_id.0;
+                // fz-ul4.29.12.1: resolve cont to its narrow SpecId.0.
+                // Slot 0 is `any` for CallClosure (opaque callee).
+                let cont_sid = resolve_cont_sid(blk, continuation);
                 let cont_schema = &schemas[cont_sid as usize];
                 let cs = b.ins().iconst(types::I32, cont_sid as i64);
                 let cz = b.ins().iconst(types::I32, cont_schema.size as i64);
@@ -2850,13 +2928,16 @@ fn compile_fn<M: cranelift_module::Module>(
                     .iter()
                     .map(|v| *var_map.get(&v.0).expect("unbound receive cont capture"))
                     .collect();
+                // fz-ul4.29.12.1: cont's narrow SpecId.0 (slot 0 = `any`
+                // for Receive — sender / message type is opaque).
+                let cont_sid = resolve_cont_sid(blk, continuation);
                 emit_receive(
                     &mut b,
                     jmod,
                     runtime,
                     schemas,
                     frame_ptr,
-                    continuation.fn_id.0,
+                    cont_sid,
                     &cap_vals,
                 );
             }
@@ -5017,7 +5098,8 @@ fn main(), do: loop_with(loop_with, 100000, 0)
         let mt = crate::ir_typer::type_module(&m);
         let add_idx = m.fns.iter().position(|f| f.name == "add").unwrap();
         let rd = join_return_descrs(&m.fns[add_idx], &mt[add_idx]);
-        let sig = build_fn_signature(&m.fns[add_idx], &mt[add_idx], &rd, false);
+        let prs = build_param_reprs(&m.fns[add_idx], &mt[add_idx]);
+        let sig = build_fn_signature(&prs, ArgRepr::from_descr(&rd), false);
         assert_eq!(sig.params.len(), 2);
         assert_eq!(sig.returns.len(), 1);
         assert_eq!(sig.params[0].value_type, types::I64);
@@ -5034,7 +5116,8 @@ fn main(), do: loop_with(loop_with, 100000, 0)
         let mt = crate::ir_typer::type_module(&m);
         let add_idx = m.fns.iter().position(|f| f.name == "add").unwrap();
         let rd = join_return_descrs(&m.fns[add_idx], &mt[add_idx]);
-        let sig = build_fn_signature(&m.fns[add_idx], &mt[add_idx], &rd, true);
+        let prs = build_param_reprs(&m.fns[add_idx], &mt[add_idx]);
+        let sig = build_fn_signature(&prs, ArgRepr::from_descr(&rd), true);
         // 2 entry params + host_ctx.
         assert_eq!(sig.params.len(), 3);
         assert_eq!(sig.returns.len(), 1);
@@ -5056,7 +5139,8 @@ fn main(), do: loop_with(loop_with, 100000, 0)
         let mt = crate::ir_typer::type_module(&m);
         let dist_idx = m.fns.iter().position(|f| f.name == "dist").unwrap();
         let rd = join_return_descrs(&m.fns[dist_idx], &mt[dist_idx]);
-        let sig = build_fn_signature(&m.fns[dist_idx], &mt[dist_idx], &rd, true);
+        let prs = build_param_reprs(&m.fns[dist_idx], &mt[dist_idx]);
+        let sig = build_fn_signature(&prs, ArgRepr::from_descr(&rd), true);
         // 2 entry params + host_ctx.
         assert_eq!(sig.params.len(), 3);
         assert_eq!(sig.params[0].value_type, types::F64);
