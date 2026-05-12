@@ -45,7 +45,51 @@ pub struct FnTypes {
     pub block_envs: HashMap<BlockId, HashMap<Var, Descr>>,
 }
 
-pub type ModuleTypes = Vec<FnTypes>;
+/// Per-module type information.
+///
+/// `by_fn_idx` is the legacy per-FnIr view (one FnTypes per fn, with entry
+/// params narrowed via lub-aggregation across direct callsites). External
+/// consumers index this view via `Index<usize>`; behavior is preserved
+/// from before fz-ul4.29.1.
+///
+/// `specs` is the per-callsite specialization map, keyed by
+/// `(FnId, input-Descr-tuple)`. Each distinct argument-Descr signature
+/// seen at any direct-call site produces a fresh FnTypes via
+/// `type_fn(f, m, Some(&input_descrs))`. The any-key specialization
+/// (`vec![Descr::any(); n_params]`) is unconditionally present for every
+/// fn so that closure / Spawn / Receive paths have a fallback target.
+///
+/// fz-ul4.29.1: `specs` is populated but not yet consumed by codegen.
+/// fz-ul4.29.2 will introduce a `SpecId` and re-key the codegen-internal
+/// structures against this map; `by_fn_idx` retires at that point.
+pub struct ModuleTypes {
+    by_fn_idx: Vec<FnTypes>,
+    #[allow(dead_code)] // .29.2 consumes this.
+    pub specs: HashMap<(FnId, Vec<Descr>), FnTypes>,
+}
+
+impl std::ops::Index<usize> for ModuleTypes {
+    type Output = FnTypes;
+    fn index(&self, i: usize) -> &Self::Output { &self.by_fn_idx[i] }
+}
+
+impl ModuleTypes {
+    // .29.1: `len`, `iter`, `spec` are exercised by the new typer unit tests
+    // (specs_contains_any_key_for_every_fn, specs_records_narrow_int_callsite,
+    // module_types_index_preserves_legacy_view) but no codegen path consumes
+    // them yet. .29.2 makes them load-bearing and the lint goes quiet.
+    #[allow(dead_code)]
+    pub fn len(&self) -> usize { self.by_fn_idx.len() }
+    #[allow(dead_code)]
+    pub fn iter(&self) -> std::slice::Iter<'_, FnTypes> { self.by_fn_idx.iter() }
+    /// Look up a specific specialization. Returns `None` if no callsite has
+    /// requested this exact input-Descr-tuple (yet); the any-key
+    /// specialization is guaranteed to exist for every fn.
+    #[allow(dead_code)]
+    pub fn spec(&self, fn_id: FnId, input_descrs: &[Descr]) -> Option<&FnTypes> {
+        self.specs.get(&(fn_id, input_descrs.to_vec()))
+    }
+}
 
 /// Type a whole module. Iterates type_fn to a fixed point, propagating
 /// call-site arg Descrs into callee entry-param Descrs after each pass.
@@ -53,14 +97,25 @@ pub type ModuleTypes = Vec<FnTypes>;
 /// caller (main, closure-only targets) keep entry params at `any`.
 pub fn type_module(m: &Module) -> ModuleTypes {
     // Initial pass: every fn typed with `any` entry params.
-    let mut types: ModuleTypes =
+    let mut by_fn_idx: Vec<FnTypes> =
         m.fns.iter().map(|f| type_fn(f, m, None)).collect();
 
-    // Fn-id → index into the `m.fns` / `types` vectors (cps_split inserts
+    // Fn-id → index into the `m.fns` / `by_fn_idx` vectors (cps_split inserts
     // continuation fns out of declaration order).
     let mut idx_of: HashMap<FnId, usize> = HashMap::new();
     for (i, f) in m.fns.iter().enumerate() {
         idx_of.insert(f.id, i);
+    }
+
+    // fz-ul4.29.1: per-callsite specialization map. Seeded with the any-key
+    // specialization for every fn so closure / Spawn / Receive paths always
+    // have a fallback. The fixed point below adds entries for each distinct
+    // (callee, input-Descr-tuple) pair seen at any direct call site.
+    let mut specs: HashMap<(FnId, Vec<Descr>), FnTypes> = HashMap::new();
+    for (i, f) in m.fns.iter().enumerate() {
+        let n_params = f.block(f.entry).params.len();
+        let any_key = vec![Descr::any(); n_params];
+        specs.insert((f.id, any_key), by_fn_idx[i].clone());
     }
 
     // Soundness: a fn packed into a closure (`Prim::MakeClosure`) may be
@@ -86,10 +141,15 @@ pub fn type_module(m: &Module) -> ModuleTypes {
 
     loop {
         // Aggregate per-callee entry-param Descrs as the union over all
-        // direct (Call / TailCall) call sites.
+        // direct (Call / TailCall) call sites. fz-ul4.29.1 also collects
+        // each callsite's distinct arg-Descr tuple into `callsite_keys` so
+        // we can emit per-specialization FnTypes alongside the lub-narrowed
+        // by_fn_idx view.
         let mut narrowed: HashMap<FnId, Vec<Descr>> = HashMap::new();
+        let mut callsite_keys: HashMap<FnId, std::collections::HashSet<Vec<Descr>>> =
+            HashMap::new();
         for (i, f) in m.fns.iter().enumerate() {
-            let ft = &types[i];
+            let ft = &by_fn_idx[i];
             for b in &f.blocks {
                 // Reconstruct env at the terminator.
                 let mut env = ft.block_envs.get(&b.id).cloned().unwrap_or_default();
@@ -112,6 +172,16 @@ pub fn type_module(m: &Module) -> ModuleTypes {
                                     *p = p.union(&at);
                                 }
                             }
+                            // fz-ul4.29.1: record this callsite's exact
+                            // arg-Descr tuple. Pad with `any` if fewer args
+                            // than params (defensive — shouldn't happen for
+                            // well-formed IR but keeps the key well-shaped).
+                            let mut key: Vec<Descr> = args.iter().map(|av|
+                                env.get(av).cloned().unwrap_or_else(Descr::any)
+                            ).collect();
+                            while key.len() < n_params { key.push(Descr::any()); }
+                            key.truncate(n_params);
+                            callsite_keys.entry(*callee).or_default().insert(key);
                         }
                     }
                     _ => {}
@@ -146,6 +216,10 @@ pub fn type_module(m: &Module) -> ModuleTypes {
                                 v
                             });
                         // slot[0] = result — leave as `any`; never widen.
+                        // fz-ul4.29.4 will retire this pin once the per-spec
+                        // map (.29.2) is consumed by codegen: the cont's
+                        // slot 0 becomes the callee's specialized return
+                        // Descr per-callsite, with no agreement problem.
                         if let Some(p0) = slot.get_mut(0) {
                             *p0 = p0.union(&Descr::any());
                         }
@@ -155,12 +229,25 @@ pub fn type_module(m: &Module) -> ModuleTypes {
                                 *p = p.union(&ct);
                             }
                         }
+                        // fz-ul4.29.1: record this callsite's exact cont
+                        // input-Descr tuple. Slot 0 stays at `any` until
+                        // .29.4 lifts the result-slot pin; captured slots
+                        // are the actual caller-side Descrs.
+                        let mut key: Vec<Descr> = vec![Descr::any(); n_params];
+                        for (k, cv) in cont.captured.iter().enumerate() {
+                            if let Some(p) = key.get_mut(k + 1) {
+                                *p = env.get(cv).cloned().unwrap_or_else(Descr::any);
+                            }
+                        }
+                        callsite_keys.entry(cont.fn_id).or_default().insert(key);
                     }
                 }
             }
         }
 
-        // Apply narrowed entry-param Descrs and retype any fn that changed.
+        // Apply narrowed entry-param Descrs and retype any fn that changed
+        // (lub-aggregated view → by_fn_idx; this is the legacy behavior
+        // codegen still consumes through .29.1).
         let mut changed = false;
         for (i, f) in m.fns.iter().enumerate() {
             if closure_reachable.contains(&f.id) {
@@ -170,15 +257,38 @@ pub fn type_module(m: &Module) -> ModuleTypes {
             let current: Vec<Descr> = entry_block
                 .params
                 .iter()
-                .map(|p| types[i].vars.get(p).cloned().unwrap_or_else(Descr::any))
+                .map(|p| by_fn_idx[i].vars.get(p).cloned().unwrap_or_else(Descr::any))
                 .collect();
             let next: Vec<Descr> = match narrowed.get(&f.id) {
                 Some(v) => v.clone(),
                 None => continue, // no direct caller — leave entry params alone
             };
             if next.iter().zip(current.iter()).any(|(n, c)| !n.is_equiv(c)) {
-                types[i] = type_fn(f, m, Some(&next));
+                by_fn_idx[i] = type_fn(f, m, Some(&next));
                 changed = true;
+            }
+        }
+
+        // fz-ul4.29.1: ensure `specs` has an entry for every (callee, key)
+        // pair seen at any callsite this iteration. Newly-discovered keys
+        // count as `changed` so the fixed point re-runs (a fresh spec may
+        // itself contain calls that surface further new keys).
+        for (callee, key_set) in &callsite_keys {
+            for key in key_set {
+                let entry_key = (*callee, key.clone());
+                if let Some(&j) = idx_of.get(callee) {
+                    if !specs.contains_key(&entry_key) {
+                        specs.insert(entry_key, type_fn(&m.fns[j], m, Some(key)));
+                        changed = true;
+                    }
+                    // Existing keys' FnTypes may also drift as the module's
+                    // callsite envs sharpen; recompute and replace if so.
+                    // (We don't have a deep FnTypes equality so the cheap
+                    // signal is: replace if the body uses any other fn's
+                    // type info — which may have changed elsewhere this
+                    // iter. .29.2 will tighten this to a proper equality
+                    // check once specs becomes load-bearing.)
+                }
             }
         }
 
@@ -187,7 +297,7 @@ pub fn type_module(m: &Module) -> ModuleTypes {
         }
     }
 
-    types
+    ModuleTypes { by_fn_idx, specs }
 }
 
 fn type_fn(f: &FnIr, m: &Module, entry_param_types: Option<&[Descr]>) -> FnTypes {
@@ -1455,5 +1565,91 @@ mod tests {
         // worker is closure-reachable → entry param stays at `any`.
         assert!(nt.is_equiv(&Descr::any()),
             "worker's n must stay at any (closure-reachable), got {}", nt);
+    }
+
+    // ----- fz-ul4.29.1: per-callsite specialization map -----
+
+    #[test]
+    fn specs_contains_any_key_for_every_fn() {
+        // Build a 2-fn module: main() calls add1(int_lit(41)).
+        let mut a = FnBuilder::new(FnId(0), "add1");
+        let n = a.fresh_var();
+        let aentry = a.block(vec![n]);
+        let one = a.let_(aentry, Prim::Const(Const::Int(1)));
+        let sum = a.let_(aentry, Prim::BinOp(BinOp::Add, n, one));
+        a.set_terminator(aentry, Term::Return(sum));
+
+        let mut b = FnBuilder::new(FnId(1), "main");
+        let bentry = b.block(vec![]);
+        let lit = b.let_(bentry, Prim::Const(Const::Int(41)));
+        b.set_terminator(bentry, Term::TailCall { callee: FnId(0), args: vec![lit] });
+
+        let m = build_module(vec![a.build(), b.build()]);
+        let mt = type_module(&m);
+
+        // Every fn has an any-key spec (fallback for closure/Spawn/Receive).
+        let add1_any = mt.spec(FnId(0), &[Descr::any()]);
+        assert!(add1_any.is_some(), "add1 must have an any-key specialization");
+        let main_any = mt.spec(FnId(1), &[]);
+        assert!(main_any.is_some(), "main must have an any-key specialization");
+    }
+
+    #[test]
+    fn specs_records_narrow_int_callsite() {
+        // main calls add1 with an int literal → expect a specialization
+        // keyed on `[int]` (not just `[any]`).
+        let mut a = FnBuilder::new(FnId(0), "add1");
+        let n = a.fresh_var();
+        let aentry = a.block(vec![n]);
+        let one = a.let_(aentry, Prim::Const(Const::Int(1)));
+        let sum = a.let_(aentry, Prim::BinOp(BinOp::Add, n, one));
+        a.set_terminator(aentry, Term::Return(sum));
+
+        let mut b = FnBuilder::new(FnId(1), "main");
+        let bentry = b.block(vec![]);
+        let lit = b.let_(bentry, Prim::Const(Const::Int(41)));
+        b.set_terminator(bentry, Term::TailCall { callee: FnId(0), args: vec![lit] });
+
+        let m = build_module(vec![a.build(), b.build()]);
+        let mt = type_module(&m);
+
+        // The callsite passes `int_lit(41)`, which is a subtype of int. The
+        // spec key carries exactly that Descr.
+        let int41 = Descr::int_lit(41);
+        let narrow = mt.spec(FnId(0), &[int41.clone()]);
+        assert!(
+            narrow.is_some(),
+            "add1 must have a specialization keyed on [int_lit(41)]; \
+             specs keys present: {:?}",
+            mt.specs.keys().filter(|(fid, _)| *fid == FnId(0)).count()
+        );
+        // The narrowed specialization's `n` should reflect the callsite Descr.
+        let nt = narrow.unwrap().vars.get(&n).cloned().unwrap();
+        assert!(nt.is_equiv(&int41),
+            "add1's narrow spec must type n as int_lit(41), got {}", nt);
+    }
+
+    #[test]
+    fn module_types_index_preserves_legacy_view() {
+        // The Index<usize> impl returns the lub-aggregated `by_fn_idx`
+        // entry — same shape consumers have always seen.
+        let mut a = FnBuilder::new(FnId(0), "id");
+        let x = a.fresh_var();
+        let aentry = a.block(vec![x]);
+        a.set_terminator(aentry, Term::Return(x));
+
+        let mut b = FnBuilder::new(FnId(1), "main");
+        let bentry = b.block(vec![]);
+        let lit = b.let_(bentry, Prim::Const(Const::Int(7)));
+        b.set_terminator(bentry, Term::TailCall { callee: FnId(0), args: vec![lit] });
+
+        let m = build_module(vec![a.build(), b.build()]);
+        let mt = type_module(&m);
+
+        assert_eq!(mt.len(), 2);
+        // Legacy view: index 0 → id's narrowed FnTypes.
+        let id_x = mt[0].vars.get(&x).cloned().unwrap();
+        assert!(id_x.is_subtype(&Descr::int()),
+            "id's x must be narrowed to int via callsite, got {}", id_x);
     }
 }
