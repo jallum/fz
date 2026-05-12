@@ -720,6 +720,36 @@ impl SpecRegistry {
         id
     }
 
+    /// Register an any-key spec so that its SpecId.0 equals `fn_id.0`.
+    /// Pads with dead sentinel slots for any intervening missing FnIds
+    /// (cps_split may have produced sparse FnId.0 values when fns get
+    /// dropped or reordered). Sentinel slots are filled with the same
+    /// (fn_id, key) so `iter()` is well-shaped — they're never reached
+    /// because their fn_id doesn't appear in the module. Callers must
+    /// register any-keys in FnId.0 order.
+    pub fn register_any_key_at(
+        &mut self,
+        fn_id: FnId,
+        input_descrs: Vec<crate::types::Descr>,
+    ) -> SpecId {
+        let target = fn_id.0 as usize;
+        while self.keys.len() < target {
+            // Sentinel: tag with the slot's FnId so iter() reports a
+            // self-consistent (SpecId, FnId, key) tuple; this slot's
+            // FnId doesn't exist in the module, so the slot is dead.
+            let sentinel_fn = FnId(self.keys.len() as u32);
+            let sentinel_key = (sentinel_fn, Vec::new());
+            self.keys.push(sentinel_key);
+            // No `lookup` entry — the slot is unreachable from resolve().
+        }
+        let id = SpecId(self.keys.len() as u32);
+        debug_assert_eq!(id.0, fn_id.0);
+        let key = (fn_id, input_descrs);
+        self.keys.push(key.clone());
+        self.lookup.insert(key, id);
+        id
+    }
+
     /// Look up the SpecId for `(fn_id, input_descrs)`, or `None` if none
     /// is registered. .29.2.1 makes this load-bearing for narrow-spec
     /// callsite resolution.
@@ -1035,23 +1065,6 @@ pub fn compile_with_backend<B: Backend>(
     module: &Module,
     mut backend: B,
 ) -> Result<B::Output, CodegenError> {
-    // Per-fn schemas indexed by FnId.0 (cps_split inserts continuation fns
-    // out of declaration order, so module.fns[i].id.0 != i in general).
-    let max_id = module.fns.iter().map(|f| f.id.0).max().unwrap_or(0);
-
-    let placeholder = build_frame_schema("__placeholder", &[]);
-    let mut schemas: Vec<Schema> = vec![placeholder; (max_id + 1) as usize];
-    for f in &module.fns {
-        let entry_block = f.blocks.iter().find(|b| b.id == f.entry).unwrap();
-        // .5.2: schemas computed before the typer rewrite at line 1024
-        // would see the un-narrowed types. Defer the kind decision: ship
-        // all-FzValue here, then refine in-place after the typer pass
-        // below.
-        let param_kinds: Vec<FieldKind> =
-            entry_block.params.iter().map(|_| FieldKind::FzValue).collect();
-        schemas[f.id.0 as usize] = build_frame_schema(&f.name, &param_kinds);
-    }
-
     let runtime = declare_runtime_symbols(backend.module_mut())?;
 
     let mut fbctx = FunctionBuilderContext::new();
@@ -1117,8 +1130,7 @@ pub fn compile_with_backend<B: Backend>(
         (None, None)
     };
 
-    // Per-fn frame sizes for `fz_alloc_frame_dyn`. Indexed by FnId.0.
-    let frame_sizes: Vec<u32> = schemas.iter().map(|s| s.size).collect();
+    // frame_sizes is computed after `schemas` is built (post-spec_registry).
 
     // Run the typer ahead of codegen so per-fn Var->Descr info is
     // available during lowering. .11.24.5 clones first so the typed-schema
@@ -1130,38 +1142,95 @@ pub fn compile_with_backend<B: Backend>(
     let module_types = crate::ir_typer::type_module(&working);
     let module = &working;
 
-    // fz-ul4.29.2 — Build the SpecRegistry. One SpecId per FnIr for now
-    // (the any-key spec); fz-ul4.29.2.1 registers additional narrow specs
-    // sourced from `module_types.specs`. The SpecId.0 == FnId.0 invariant
-    // holds here so every downstream Vec/HashMap that used to index by
-    // FnId.0 continues to land on the same slot — bit-identical CLIF.
+    // fz-ul4.29.2.1 — Build the SpecRegistry.
+    //
+    // Register any-keys first, in FnId.0 order — this preserves the
+    // invariant `any-key SpecId.0 == FnId.0` so closure / Spawn / Receive
+    // paths (and any other "use any-key" path) can keep using fn_id.0
+    // directly as a schema_id / Cranelift func key. Narrow specs from
+    // `module_types.specs` get SpecIds ≥ n_fns appended afterwards.
     let mut spec_registry = SpecRegistry::new();
-    for f in &module.fns {
+    let mut fns_by_fnid: Vec<&crate::fz_ir::FnIr> = module.fns.iter().collect();
+    fns_by_fnid.sort_by_key(|f| f.id.0);
+    for f in &fns_by_fnid {
         let n_params = f.block(f.entry).params.len();
         let any_key = vec![crate::types::Descr::any(); n_params];
-        let sid = spec_registry.register(f.id, any_key);
-        debug_assert_eq!(sid.0, f.id.0,
-            "fz-ul4.29.2 invariant: SpecId.0 must equal FnId.0 while only \
-             any-key specs are registered (any-keys must be registered in \
-             FnId order before any narrow keys land in .29.2.1)");
+        let sid = spec_registry.register_any_key_at(f.id, any_key);
+        debug_assert_eq!(sid.0, f.id.0);
+    }
+    // Append narrow specs in a deterministic order (FnId.0, then descr-tuple
+    // bytes) so CLIF emission is reproducible across runs.
+    let mut narrow_keys: Vec<(FnId, Vec<crate::types::Descr>)> = module_types
+        .specs
+        .keys()
+        .filter(|(fid, key)| {
+            let n_params = module.fns.iter()
+                .find(|f| f.id == *fid)
+                .map(|f| f.block(f.entry).params.len())
+                .unwrap_or(0);
+            // Filter the any-keys (already registered).
+            !(key.len() == n_params
+                && key.iter().all(|d| d.is_equiv(&crate::types::Descr::any())))
+        })
+        .cloned()
+        .collect();
+    narrow_keys.sort_by(|a, b| {
+        a.0.0.cmp(&b.0.0).then_with(|| format!("{:?}", a.1).cmp(&format!("{:?}", b.1)))
+    });
+    for (fid, key) in narrow_keys {
+        spec_registry.register(fid, key);
     }
 
-    // fz-ul4.27.5.2/3: refine entry-frame slot kinds. Float entry params
-    // → RawF64; int entry params → RawI64. Both flip storage to raw bytes
-    // and let codegen skip the per-op unbox/rebox round trip.
-    for (i, f) in module.fns.iter().enumerate() {
-        let entry_block = f.blocks.iter().find(|b| b.id == f.entry).unwrap();
-        let ft = &module_types[i];
-        let sch = &mut schemas[f.id.0 as usize];
+    let spec_count = spec_registry.len();
+    let spec_keys: Vec<(FnId, Vec<crate::types::Descr>)> =
+        spec_registry.iter().map(|(_, fid, key)| (fid, key.to_vec())).collect();
+    // SpecId.0 -> module.fns index (None when the SpecId is a sentinel
+    // slot for a missing FnId.0 — cps_split sparsity).
+    let mut idx_of: HashMap<FnId, usize> = HashMap::new();
+    for (i, f) in module.fns.iter().enumerate() { idx_of.insert(f.id, i); }
+    let spec_fnidx: Vec<Option<usize>> = spec_keys.iter()
+        .map(|(fid, _)| idx_of.get(fid).copied())
+        .collect();
+    // Per-spec FnTypes ref. `None` for sentinel slots; otherwise the
+    // FnTypes registered for this (FnId, descr-tuple) in module_types.specs.
+    let spec_fn_types: Vec<Option<&crate::ir_typer::FnTypes>> = spec_keys.iter()
+        .enumerate()
+        .map(|(sid, (fid, key))| {
+            if spec_fnidx[sid].is_none() { return None; }
+            module_types.specs.get(&(*fid, key.clone()))
+        })
+        .collect();
+
+    // Rebuild schemas: one entry per SpecId, refined entry-param kinds
+    // from THAT spec's FnTypes. The any-key SpecId for FnId K lands at
+    // index K (invariant) so any code path that uses fn_id.0 as a
+    // schema_id continues to hit the right schema. Sentinel SpecIds
+    // (missing-FnId slots) get a zero-field placeholder schema; they're
+    // never reached at runtime.
+    let mut schemas: Vec<Schema> = Vec::with_capacity(spec_count);
+    for sid in 0..spec_count {
+        let Some(idx) = spec_fnidx[sid] else {
+            schemas.push(build_frame_schema("__sentinel", &[]));
+            continue;
+        };
+        let f = &module.fns[idx];
+        let ft = spec_fn_types[sid].expect("non-sentinel spec must have FnTypes");
+        let entry_block = f.block(f.entry);
+        let mut kinds: Vec<FieldKind> = entry_block.params.iter().map(|_| FieldKind::FzValue).collect();
         for (j, p) in entry_block.params.iter().enumerate() {
             let d = ft.vars.get(p).cloned().unwrap_or_else(crate::types::Descr::any);
             if d.is_subtype(&crate::types::Descr::float()) {
-                sch.fields[j + 1].kind = FieldKind::RawF64;
+                kinds[j] = FieldKind::RawF64;
             } else if d.is_subtype(&crate::types::Descr::int()) {
-                sch.fields[j + 1].kind = FieldKind::RawI64;
+                kinds[j] = FieldKind::RawI64;
             }
         }
+        schemas.push(build_frame_schema(&f.name, &kinds));
     }
+
+    // Per-spec frame sizes (consumed by `fz_alloc_frame_dyn` and the AOT
+    // frame-size dispatch fn). Indexed by SpecId.0.
+    let frame_sizes: Vec<u32> = schemas.iter().map(|s| s.size).collect();
 
     // fz-ul4.27.6.2.1 — Parking + native-callability analyses. Stored in
     // metadata; consumed at declare-time below (.6.2.2) for per-fn sigs
@@ -1263,47 +1332,67 @@ pub fn compile_with_backend<B: Backend>(
         if to_remove.is_empty() { break; }
         for id in to_remove { natively_callable.remove(&id); }
     }
-    let return_descrs: Vec<crate::types::Descr> = module
-        .fns
-        .iter()
-        .enumerate()
-        .map(|(i, f)| join_return_descrs(f, &module_types[i]))
-        .collect();
-
-    // fz-ul4.27.6.2.2/.3 — Per-fn Cranelift Signature. Built here so the
-    // declare-function loop below can stamp each fn with the right ABI.
-    // For natively_callable fns, the typed-arity native sig; uniform
-    // `(i64, i64) -> i64` for everyone else.
-    let fn_sigs: Vec<Signature> = module
-        .fns
-        .iter()
-        .enumerate()
-        .map(|(i, f)| {
-            let is_native = natively_callable.contains(&f.id);
-            build_fn_signature(f, &module_types[i], &return_descrs[i], is_native)
+    // Per-spec return Descrs (each spec's `Term::Return` join under its
+    // own typed view). Indexed by SpecId.0; sentinel slots get `any`.
+    let return_descrs: Vec<crate::types::Descr> = (0..spec_count)
+        .map(|sid| match spec_fnidx[sid] {
+            Some(idx) => join_return_descrs(
+                &module.fns[idx],
+                spec_fn_types[sid].expect("non-sentinel spec must have FnTypes"),
+            ),
+            None => crate::types::Descr::any(),
         })
         .collect();
 
-    // fz-ul4.27.6.2.2 — declare each fn with its computed (per-fn) sig.
-    // Moved here from earlier in compile() so the typer + analyses have
-    // run first.
+    // fz-ul4.27.6.2.2/.3 — Per-spec Cranelift Signature. Native fns get
+    // typed-arity i64s + host_ctx; uniform fns get (i64, i64) -> i64.
+    // Sentinel slots get the uniform sig — they're never declared.
+    let fn_sigs: Vec<Signature> = (0..spec_count)
+        .map(|sid| match spec_fnidx[sid] {
+            Some(idx) => {
+                let f = &module.fns[idx];
+                let is_native = natively_callable.contains(&f.id);
+                build_fn_signature(
+                    f,
+                    spec_fn_types[sid].expect("non-sentinel spec must have FnTypes"),
+                    &return_descrs[sid],
+                    is_native,
+                )
+            }
+            None => {
+                let mut sig = Signature::new(CallConv::SystemV);
+                sig.params.push(AbiParam::new(types::I64));
+                sig.params.push(AbiParam::new(types::I64));
+                sig.returns.push(AbiParam::new(types::I64));
+                sig
+            }
+        })
+        .collect();
+
+    // Declare one Cranelift function per real SpecId, named
+    // `fz_fn_{spec_id.0}`. Sentinel slots are skipped — no module
+    // declaration is made. Any-key SpecId.0 == FnId.0 so the existing
+    // closure / Spawn / Receive paths (which iconst fn_id.0 as the
+    // schema_id) keep landing on the right entry.
     let linkage = backend.fn_linkage();
     let mut fn_ids: HashMap<u32, FuncId> = HashMap::new();
-    for (i, f) in module.fns.iter().enumerate() {
-        let name = format!("fz_fn_{}", f.id.0);
+    for sid in 0..spec_count {
+        if spec_fnidx[sid].is_none() { continue; }
+        let name = format!("fz_fn_{}", sid);
         let id = backend
             .module_mut()
-            .declare_function(&name, linkage, &fn_sigs[i])
+            .declare_function(&name, linkage, &fn_sigs[sid])
             .map_err(|e| CodegenError::new(format!("declare {}: {}", name, e)))?;
-        fn_ids.insert(f.id.0, id);
+        fn_ids.insert(sid as u32, id);
     }
 
-    for (fn_idx, f) in module.fns.iter().enumerate() {
-        let func_id = *fn_ids.get(&f.id.0).unwrap();
+    for sid in 0..spec_count {
+        let Some(idx) = spec_fnidx[sid] else { continue; };
+        let f = &module.fns[idx];
+        let ft = spec_fn_types[sid].expect("non-sentinel spec must have FnTypes");
+        let func_id = *fn_ids.get(&(sid as u32)).unwrap();
         let mut ctx = backend.module_mut().make_context();
-        ctx.func.signature = fn_sigs[fn_idx].clone();
-        // fz-ul4.23.8: opt in to asm capture when ASM_RECORD is active.
-        // Cheap to set; the TLS slot is None in normal runs.
+        ctx.func.signature = fn_sigs[sid].clone();
         let want_asm = ASM_RECORD.with(|c| c.borrow().is_some());
         if want_asm {
             ctx.set_disasm(true);
@@ -1316,14 +1405,24 @@ pub fn compile_with_backend<B: Backend>(
             &schemas,
             &tuple_schema_ids,
             f,
-            &module_types[fn_idx],
+            ft,
+            sid as u32,
+            &spec_registry,
             &module.source,
             &natively_callable,
             &fn_ids,
         )?;
+        // Any-key SpecId.0 == FnId.0 (invariant); use the bare fn name so
+        // tests / `fz dump --emit clif` can refer to functions by source
+        // name. Narrow specs append `_s{sid}` to keep names distinct.
+        let display_name = if (sid as u32) == f.id.0 {
+            f.name.clone()
+        } else {
+            format!("{}_s{}", f.name, sid)
+        };
         IR_TEXT_RECORD.with(|c| {
             if let Some(v) = c.borrow_mut().as_mut() {
-                v.push((f.name.clone(), ctx.func.display().to_string()));
+                v.push((display_name.clone(), ctx.func.display().to_string()));
             }
         });
         let fn_span = module.source.fn_span_of(f.id);
@@ -1331,7 +1430,7 @@ pub fn compile_with_backend<B: Backend>(
         cranelift_codegen::verifier::verify_function(&ctx.func, &flags).map_err(|e| {
             CodegenError::new(format!(
                 "verify {}:\n{}\n--- IR ---\n{}",
-                f.name,
+                display_name,
                 e,
                 ctx.func.display()
             ))
@@ -1341,14 +1440,14 @@ pub fn compile_with_backend<B: Backend>(
             .module_mut()
             .define_function(func_id, &mut ctx)
             .map_err(|e| {
-                CodegenError::new(format!("define {}: {}", f.name, e)).with_span(fn_span)
+                CodegenError::new(format!("define {}: {}", display_name, e)).with_span(fn_span)
             })?;
         if want_asm {
             if let Some(cc) = ctx.compiled_code() {
                 if let Some(vcode) = cc.vcode.as_ref() {
                     ASM_RECORD.with(|c| {
                         if let Some(v) = c.borrow_mut().as_mut() {
-                            v.push((f.name.clone(), vcode.clone()));
+                            v.push((display_name.clone(), vcode.clone()));
                         }
                     });
                 }
@@ -1834,12 +1933,29 @@ fn compile_fn<M: cranelift_module::Module>(
     tuple_schema_ids: &HashMap<usize, u32>,
     f: &crate::fz_ir::FnIr,
     fn_types: &crate::ir_typer::FnTypes,
+    this_spec_id: u32,
+    spec_registry: &SpecRegistry,
     source: &crate::fz_ir::SourceInfo,
     natively_callable: &std::collections::HashSet<crate::fz_ir::FnId>,
     fn_ids: &HashMap<u32, FuncId>,
 ) -> Result<(), CodegenError> {
     let is_native = natively_callable.contains(&f.id);
     let callee_is_native = |id: u32| natively_callable.contains(&crate::fz_ir::FnId(id));
+    // Resolve a direct callsite to its narrow SpecId.0 if a matching spec
+    // exists; otherwise fall back to the callee's any-key SpecId.0 (== the
+    // callee's FnId.0 by invariant). Caller's `fn_types` carries the arg
+    // Descrs at this callsite.
+    let resolve_callee_sid = |callee: crate::fz_ir::FnId,
+                              args: &[crate::fz_ir::Var]| -> u32 {
+        let descrs: Vec<crate::types::Descr> = args
+            .iter()
+            .map(|av| fn_types.vars.get(av).cloned().unwrap_or_else(crate::types::Descr::any))
+            .collect();
+        spec_registry
+            .resolve(callee, &descrs)
+            .map(|s| s.0)
+            .unwrap_or(callee.0)
+    };
     let mut b = FunctionBuilder::new(&mut ctx.func, fbctx);
 
     let mut block_map: HashMap<u32, ir::Block> = HashMap::new();
@@ -1878,7 +1994,7 @@ fn compile_fn<M: cranelift_module::Module>(
         std::collections::HashSet::new();
     let mut raw_int_vars: std::collections::HashSet<u32> =
         std::collections::HashSet::new();
-    let my_schema = &schemas[f.id.0 as usize];
+    let my_schema = &schemas[this_spec_id as usize];
 
     // (frame_ptr, host_ctx) — for native fns, frame_ptr is a never-read
     // placeholder iconst(0). Uniform fns load both from entry block_params.
@@ -2076,8 +2192,15 @@ fn compile_fn<M: cranelift_module::Module>(
                     .iter()
                     .map(|v| *var_map.get(&v.0).expect("unbound captured val"))
                     .collect();
+                // fz-ul4.29.7: resolve callee → narrow SpecId.0 (falls back
+                // to any-key == callee.0). Continuation stays any-key
+                // (its SpecId.0 == continuation.fn_id.0 by invariant);
+                // narrowing cont specs is gated on .29.4 lifting the
+                // typer's slot-0 pin.
+                let callee_sid = resolve_callee_sid(*callee, args);
+                let cont_sid = continuation.fn_id.0;
                 if callee_is_native(callee.0) {
-                    let callee_fid = *fn_ids.get(&callee.0).expect("callee fn_id missing");
+                    let callee_fid = *fn_ids.get(&callee_sid).expect("callee fn_id missing");
                     let callee_fref = jmod.declare_func_in_func(callee_fid, b.func);
                     let mut native_args: Vec<ir::Value> = arg_vals.clone();
                     native_args.push(host_ctx);
@@ -2087,10 +2210,9 @@ fn compile_fn<M: cranelift_module::Module>(
                     if callee_is_native(continuation.fn_id.0) {
                         // fz-ul4.27.6.3 — both callee AND cont are native.
                         // Chain natively: feed result + captures + host_ctx
-                        // into the cont fn synchronously. No cont frame
-                        // allocation; the trampoline never sees this step.
+                        // into the cont fn synchronously.
                         let cont_fid = *fn_ids
-                            .get(&continuation.fn_id.0)
+                            .get(&cont_sid)
                             .expect("cont fn_id missing");
                         let cont_fref = jmod.declare_func_in_func(cont_fid, b.func);
                         let mut cont_args: Vec<ir::Value> =
@@ -2103,9 +2225,6 @@ fn compile_fn<M: cranelift_module::Module>(
                         if is_native {
                             b.ins().return_(&[final_result]);
                         } else {
-                            // Uniform caller: propagate final_result into
-                            // MY cont's slot 1 and hand my cont frame to
-                            // the trampoline. Same shape as emit_return.
                             emit_return(
                                 &mut b,
                                 jmod,
@@ -2116,17 +2235,11 @@ fn compile_fn<M: cranelift_module::Module>(
                             );
                         }
                     } else {
-                        // fz-ul4.27.6.2.3 — native callee but uniform cont:
-                        // bridge result into cont frame, hand cont frame to
-                        // trampoline so it dispatches the (uniform) cont.
-                        // Caller is uniform here (native fns whose Call has
-                        // a non-native cont would have been excluded by the
-                        // natively_callable fixed point).
-                        let cont_schema = &schemas[continuation.fn_id.0 as usize];
+                        let cont_schema = &schemas[cont_sid as usize];
                         let alloc_fref =
                             jmod.declare_func_in_func(runtime.alloc_id, b.func);
                         let sid =
-                            b.ins().iconst(types::I32, continuation.fn_id.0 as i64);
+                            b.ins().iconst(types::I32, cont_sid as i64);
                         let sz = b.ins().iconst(types::I32, cont_schema.size as i64);
                         let alloc_call = b.ins().call(alloc_fref, &[sid, sz]);
                         let cf = b.inst_results(alloc_call)[0];
@@ -2155,9 +2268,9 @@ fn compile_fn<M: cranelift_module::Module>(
                         runtime,
                         schemas,
                         frame_ptr,
-                        callee.0,
+                        callee_sid,
                         &arg_vals,
-                        Some((continuation.fn_id.0, &cap_vals)),
+                        Some((cont_sid, &cap_vals)),
                     );
                 }
             }
@@ -2166,6 +2279,7 @@ fn compile_fn<M: cranelift_module::Module>(
                     .iter()
                     .map(|v| *var_map.get(&v.0).expect("unbound tailcall arg"))
                     .collect();
+                let callee_sid = resolve_callee_sid(*callee, args);
                 if callee_is_native(callee.0) {
                     // fz-ul4.27.6.2.3 — TailCall to a native callee.
                     //
@@ -2178,7 +2292,7 @@ fn compile_fn<M: cranelift_module::Module>(
                     // result into MY cont's slot 1 (a FzValue slot — cont
                     // result params stay `any` in the typer) and hand my
                     // cont's frame ptr to the trampoline.
-                    let callee_fid = *fn_ids.get(&callee.0).expect("callee fn_id missing");
+                    let callee_fid = *fn_ids.get(&callee_sid).expect("callee fn_id missing");
                     let callee_fref = jmod.declare_func_in_func(callee_fid, b.func);
                     let mut native_args: Vec<ir::Value> = arg_vals.clone();
                     native_args.push(host_ctx);
@@ -2232,9 +2346,9 @@ fn compile_fn<M: cranelift_module::Module>(
                         jmod,
                         runtime,
                         schemas,
-                        f.id.0,
+                        this_spec_id,
                         frame_ptr,
-                        callee.0,
+                        callee_sid,
                         &arg_vals,
                     );
                 }

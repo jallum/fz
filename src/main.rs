@@ -413,7 +413,12 @@ fn run_dump(args: &[String]) {
     let mut printed = 0usize;
     for name in &order {
         if let Some(filter) = &fn_filter {
-            if name != filter {
+            // fz-ul4.29.7: narrow specs print as `<fn>_s<spec_id>`; match
+            // both the bare name and any `<name>_s*` variants when the
+            // user filters on `<name>`.
+            let suffix_match = name.starts_with(filter.as_str())
+                && name[filter.len()..].starts_with("_s");
+            if name != filter && !suffix_match {
                 continue;
             }
         }
