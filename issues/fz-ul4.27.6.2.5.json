@@ -1,6 +1,7 @@
 {
   "assignee": "",
   "blocked_by": [
+    "fz-ul4.27.6.2.3",
     "fz-ul4.27.6.2.4"
   ],
   "blocks": [],
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "VR.4.2.5: fixture + matrix proving native call lowering",
   "type": "task",
-  "updated_at": "2026-05-12T02:36:43Z"
+  "updated_at": "2026-05-12T02:41:30Z"
 }
