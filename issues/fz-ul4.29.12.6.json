@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-12T23:37:02Z",
+  "description": "Stop registering any-key specs for fns whose every reachable callsite — direct or indirect — has typed coverage.\n\n## What\n\nAfter .29.12.1 / .3 / .4 / .5, every cont, closure, spawn, and receive dispatch resolves to a narrow SpecId. The any-key fallback becomes dead weight for any fn whose call graph is fully typed.\n\n- In `src/ir_typer.rs` (the fixed-point loop), skip registering an any-key for fn F when F's `callsite_keys` set is non-empty AND covers F's reachable shapes.\n- Define \"reachable shapes\" precisely: union of (a) direct callsite keys, (b) cont-Cont keys with the right slot-0 source, (c) closure MakeClosure-resolved keys.\n- An \"entry-point-like\" fn (no caller — e.g., `main`, top-level driver) still needs an any-key.\n\n## Why\n\nThis is the .29.10 payoff. The transitive any-key cascade that blocked .29.10 disappears because indirect targets no longer need any-keys to cover the all-any case.\n\n## Tests (TDD)\n\n- The map_l/k_3 case from .29.10's investigation: assert `map_l` no longer has an any-key in `ModuleTypes.specs`.\n- `main` still has an any-key.\n- Full test suite + parity tests stay green.\n\n## Out of scope\n\n- Cross-module fns whose call graph isn't visible (defer to a separate cross-module concern).",
+  "id": "fz-ul4.29.12.6",
+  "labels": [],
+  "parent": "fz-ul4.29.12",
+  "priority": 3,
+  "status": "open",
+  "title": "Drop unnecessary any-key registrations",
+  "type": "task",
+  "updated_at": "2026-05-12T23:37:02Z"
+}
