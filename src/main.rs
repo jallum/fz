@@ -13,6 +13,7 @@ mod ir_interp;
 // schema directly. See fz-ul4.11.30 (subsumed).
 mod ir_lower;
 mod ir_typer;
+mod parking;
 mod lexer;
 mod macros;
 mod parser;
