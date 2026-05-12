@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-ul4.27.10"
   ],
@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-ul4.27",
   "priority": 3,
-  "status": "open",
+  "status": "in_progress",
   "title": "VR.2 Kills: delete fz_arith_*/fz_cmp_* + dispatch fallback",
   "type": "task",
-  "updated_at": "2026-05-12T01:40:44Z"
+  "updated_at": "2026-05-12T10:24:46Z"
 }
