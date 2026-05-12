@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-12T02:14:34Z",
+  "description": "Follow-up split out of fz-ul4.27.5.4. The captured-slot half of VR.3.4 shipped, but the continuation's slot 0 (the \"result\" slot the callee writes via emit_return) stays FzValue. Making it raw requires a multi-callsite analysis the single-FnTypes-per-fn model doesn't support today.\n\n## Why it can't trivially be raw\n\nEach continuation has its own schema. A given callee may be referenced from multiple Call sites, each with a DIFFERENT cont fn and therefore potentially different result-slot kinds. emit_return is in the callee — it can't statically know which cont schema applies at runtime. So a uniform tagged FzValue at the result slot is the only sound choice today.\n\n## Possible paths\n\n1. Pin per-callee return kind across all call sites: walk the module, for each callee, intersect the result-slot kinds expected by every cont reached via that callee. If all conts agree (e.g. all expect RawF64), set the callee's \"return kind\" to that and have emit_return store raw bytes; force every cont's slot 0 to match. If they disagree, fall back to FzValue. Requires ModuleTypes-level book-keeping.\n\n2. Encode the cont's result-slot kind in the cont frame header (a runtime tag): emit_return reads it and dispatches. Adds a per-return branch.\n\n3. Per-fn calling-convention specialisation (overlaps with VR.4 / fz-ul4.27.6): if a fn has a typed return, give it a per-fn ABI that returns the raw value directly. Continuations adapt at the call boundary.\n\n## Acceptance\n\n- Result slot of continuations whose callees have a single typed return type lowers to raw f64 / raw i64.\n- The dist fixture's callsite (dist → print's continuation) emits a single raw f64 write at emit_return; no fz_alloc_float at the return boundary.\n- Matrix green.\n\n## Blocks\n\n- Nothing in the .27.5.* chain — the captured-slot half (.5.4 main) is sufficient for VR.3.5 (closures). This ticket is a quality-of-implementation polish that can land anytime after VR.4.",
+  "id": "fz-ul4.27.5.4.1",
+  "labels": [],
+  "parent": "fz-ul4.27.5.4",
+  "priority": 3,
+  "status": "open",
+  "title": "VR.3.4 follow-up: typed result slot in continuation frames",
+  "type": "task",
+  "updated_at": "2026-05-12T02:14:34Z"
+}
