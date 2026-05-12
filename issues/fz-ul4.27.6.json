@@ -4,7 +4,6 @@
     "fz-ul4.27.5"
   ],
   "blocks": [
-    "fz-ul4.27.7",
     "fz-ul4.27.8"
   ],
   "created": "2026-05-12T00:23:30Z",
@@ -16,5 +15,5 @@
   "status": "open",
   "title": "VR.4: per-fn native ABI for direct calls",
   "type": "task",
-  "updated_at": "2026-05-12T00:23:33Z"
+  "updated_at": "2026-05-12T02:18:04Z"
 }
