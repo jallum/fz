@@ -457,15 +457,13 @@ fn default_unit_for(ty: crate::ast::BitType) -> u32 {
 // fz_value_eq when at least one operand has Tag::Ptr.
 //
 // Arithmetic dispatch: codegen emits an inline both-int fast-path test
-// (`((a^1) | (b^1)) & 7 == 0`) and falls back to fz_arith_* runtime helpers
-// when either operand is non-Int. The slow path promotes Int→Float and
-// returns a fresh boxed float; mixed-type ops promote (e.g. `1 + 2.0` ==
-// `3.0`). VR.2 (fz-ul4.27.3) added typed float-float fast paths in front
-// of the dispatch: when ir_typer proves both operands Float, codegen
-// inlines native fadd/fsub/fmul/fdiv and fcmp without going through the
-// helper. Deleting the dispatch fallback entirely is deferred — too many
-// callers (e.g. `fn add1(n) do n + 1 end`) still leave operands at `any`.
-// Eq/Neq do NOT promote: `1 == 1.0` is false.
+// (`((a^1) | (b^1)) & 7 == 0`); when at least one operand is non-Int the
+// slow arm promotes both to f64 via fz_promote_f64 and emits native
+// fadd/fsub/fmul/fdiv (or fz_fmod for `%`, since Cranelift has no frem),
+// then boxes via fz_alloc_float. fz-ul4.27.9 inlined the slow path —
+// previously a call to fz_arith_*. Typed float-float fast paths
+// (.27.3) and typed int-int fast paths (.27.5.3) sit in front of the
+// dispatch entirely. Eq/Neq do NOT promote: `1 == 1.0` is false.
 
 // fz_alloc_float moved to ir_runtime.rs (.23.4.7).
 
@@ -725,15 +723,8 @@ impl JitBackend {
         builder.symbol("fz_map_finalize", fz_runtime::ir_runtime::fz_map_finalize as *const u8);
         builder.symbol("fz_map_get", fz_runtime::ir_runtime::fz_map_get as *const u8);
         builder.symbol("fz_alloc_float", fz_runtime::ir_runtime::fz_alloc_float as *const u8);
-        builder.symbol("fz_arith_add", fz_runtime::ir_runtime::fz_arith_add as *const u8);
-        builder.symbol("fz_arith_sub", fz_runtime::ir_runtime::fz_arith_sub as *const u8);
-        builder.symbol("fz_arith_mul", fz_runtime::ir_runtime::fz_arith_mul as *const u8);
-        builder.symbol("fz_arith_div", fz_runtime::ir_runtime::fz_arith_div as *const u8);
-        builder.symbol("fz_arith_mod", fz_runtime::ir_runtime::fz_arith_mod as *const u8);
-        builder.symbol("fz_cmp_lt", fz_runtime::ir_runtime::fz_cmp_lt as *const u8);
-        builder.symbol("fz_cmp_le", fz_runtime::ir_runtime::fz_cmp_le as *const u8);
-        builder.symbol("fz_cmp_gt", fz_runtime::ir_runtime::fz_cmp_gt as *const u8);
-        builder.symbol("fz_cmp_ge", fz_runtime::ir_runtime::fz_cmp_ge as *const u8);
+        builder.symbol("fz_promote_f64", fz_runtime::ir_runtime::fz_promote_f64 as *const u8);
+        builder.symbol("fz_fmod", fz_runtime::ir_runtime::fz_fmod as *const u8);
         builder.symbol("fz_value_eq", fz_runtime::ir_runtime::fz_value_eq as *const u8);
         builder.symbol("fz_vec_begin", fz_runtime::ir_runtime::fz_vec_begin as *const u8);
         builder.symbol("fz_vec_push", fz_runtime::ir_runtime::fz_vec_push as *const u8);
@@ -1627,15 +1618,12 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
 
     let arith_params: &[ir::Type] = &[types::I64, types::I64];
     let arith_ret: &[ir::Type] = &[types::I64];
-    let arith_add_id = decl("fz_arith_add", arith_params, arith_ret)?;
-    let arith_sub_id = decl("fz_arith_sub", arith_params, arith_ret)?;
-    let arith_mul_id = decl("fz_arith_mul", arith_params, arith_ret)?;
-    let arith_div_id = decl("fz_arith_div", arith_params, arith_ret)?;
-    let arith_mod_id = decl("fz_arith_mod", arith_params, arith_ret)?;
-    let cmp_lt_id = decl("fz_cmp_lt", arith_params, arith_ret)?;
-    let cmp_le_id = decl("fz_cmp_le", arith_params, arith_ret)?;
-    let cmp_gt_id = decl("fz_cmp_gt", arith_params, arith_ret)?;
-    let cmp_ge_id = decl("fz_cmp_ge", arith_params, arith_ret)?;
+    // fz-ul4.27.9: mixed-type arith/cmp slow paths are now inlined in JIT.
+    // `fz_promote_f64` does the tag-aware Int|Float→f64 conversion (with the
+    // same panic-on-non-numeric semantics the old fz_arith_* helpers had);
+    // `fz_fmod` covers float remainder (Cranelift has no frem opcode).
+    let promote_f64_id = decl("fz_promote_f64", &[types::I64], &[types::F64])?;
+    let fmod_id = decl("fz_fmod", &[types::F64, types::F64], &[types::F64])?;
     let value_eq_id = decl("fz_value_eq", arith_params, arith_ret)?;
 
     let vec_begin_id = decl("fz_vec_begin", &[types::I32], &[])?;
@@ -1685,15 +1673,8 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         map_finalize_id,
         map_get_id,
         alloc_float_id,
-        arith_add_id,
-        arith_sub_id,
-        arith_mul_id,
-        arith_div_id,
-        arith_mod_id,
-        cmp_lt_id,
-        cmp_le_id,
-        cmp_gt_id,
-        cmp_ge_id,
+        promote_f64_id,
+        fmod_id,
         value_eq_id,
         vec_begin_id,
         vec_push_id,
@@ -1745,15 +1726,8 @@ struct RuntimeRefs {
     vec_finalize_id: FuncId,
     vec_get_id: FuncId,
     alloc_float_id: FuncId,
-    arith_add_id: FuncId,
-    arith_sub_id: FuncId,
-    arith_mul_id: FuncId,
-    arith_div_id: FuncId,
-    arith_mod_id: FuncId,
-    cmp_lt_id: FuncId,
-    cmp_le_id: FuncId,
-    cmp_gt_id: FuncId,
-    cmp_ge_id: FuncId,
+    promote_f64_id: FuncId,
+    fmod_id: FuncId,
     value_eq_id: FuncId,
     spawn_id: FuncId,
     self_id: FuncId,
@@ -2683,15 +2657,36 @@ fn lower_prim<M: cranelift_module::Module>(
                         };
                         box_int(b, raw)
                     };
-                    let helper = match op {
-                        BinOp::Add => runtime.arith_add_id,
-                        BinOp::Sub => runtime.arith_sub_id,
-                        BinOp::Mul => runtime.arith_mul_id,
-                        BinOp::Div => runtime.arith_div_id,
-                        BinOp::Mod => runtime.arith_mod_id,
-                        _ => unreachable!(),
+                    // fz-ul4.27.9: inlined float-arith slow path. Pre-resolve
+                    // the FuncRefs the slow closure may call (jmod can't be
+                    // captured into the closure). Promote both operands via
+                    // fz_promote_f64, run the op natively (frem → fz_fmod
+                    // since Cranelift has no native opcode), box via
+                    // fz_alloc_float.
+                    let pfref = jmod.declare_func_in_func(runtime.promote_f64_id, b.func);
+                    let aref  = jmod.declare_func_in_func(runtime.alloc_float_id, b.func);
+                    let fmodref = jmod.declare_func_in_func(runtime.fmod_id, b.func);
+                    let slow_arith = move |b: &mut FunctionBuilder<'_>, av: ir::Value, bv: ir::Value| {
+                        let i0 = b.ins().call(pfref, &[av]);
+                        let af = b.inst_results(i0)[0];
+                        let i1 = b.ins().call(pfref, &[bv]);
+                        let bf = b.inst_results(i1)[0];
+                        let raw_f = match mop {
+                            BinOp::Add => b.ins().fadd(af, bf),
+                            BinOp::Sub => b.ins().fsub(af, bf),
+                            BinOp::Mul => b.ins().fmul(af, bf),
+                            BinOp::Div => b.ins().fdiv(af, bf),
+                            BinOp::Mod => {
+                                let inst = b.ins().call(fmodref, &[af, bf]);
+                                b.inst_results(inst)[0]
+                            }
+                            _ => unreachable!(),
+                        };
+                        let bits = b.ins().bitcast(types::I64, ir::MemFlags::new(), raw_f);
+                        let inst = b.ins().call(aref, &[bits]);
+                        b.inst_results(inst)[0]
                     };
-                    emit_dispatch_binop(b, jmod, helper, av, bvv, fast_int)
+                    emit_dispatch_binop(b, av, bvv, fast_int, slow_arith)
                 }
                 BinOp::Eq | BinOp::Neq => {
                     // VR.5a + .5.2.
@@ -2797,14 +2792,25 @@ fn lower_prim<M: cranelift_module::Module>(
                         let cmp = b.ins().icmp(icc, ai, bi);
                         bool_to_fz(b, cmp)
                     };
-                    let helper = match op {
-                        BinOp::Lt => runtime.cmp_lt_id,
-                        BinOp::Le => runtime.cmp_le_id,
-                        BinOp::Gt => runtime.cmp_gt_id,
-                        BinOp::Ge => runtime.cmp_ge_id,
+                    // fz-ul4.27.9: inlined float-cmp slow path. Promote both
+                    // operands to f64 and emit native fcmp.
+                    let pfref = jmod.declare_func_in_func(runtime.promote_f64_id, b.func);
+                    let fcc = match op {
+                        BinOp::Lt => FloatCC::LessThan,
+                        BinOp::Le => FloatCC::LessThanOrEqual,
+                        BinOp::Gt => FloatCC::GreaterThan,
+                        BinOp::Ge => FloatCC::GreaterThanOrEqual,
                         _ => unreachable!(),
                     };
-                    emit_dispatch_binop(b, jmod, helper, av, bvv, fast_int)
+                    let slow_cmp = move |b: &mut FunctionBuilder<'_>, av: ir::Value, bv: ir::Value| {
+                        let i0 = b.ins().call(pfref, &[av]);
+                        let af = b.inst_results(i0)[0];
+                        let i1 = b.ins().call(pfref, &[bv]);
+                        let bf = b.inst_results(i1)[0];
+                        let cmp = b.ins().fcmp(fcc, af, bf);
+                        bool_to_fz(b, cmp)
+                    };
+                    emit_dispatch_binop(b, av, bvv, fast_int, slow_cmp)
                 }
                 BinOp::And => {
                     let av = tag_a!();
@@ -3250,19 +3256,19 @@ fn both_int(b: &mut FunctionBuilder<'_>, av: ir::Value, bv: ir::Value) -> ir::Va
     b.ins().icmp_imm(IntCC::Equal, lo, 0)
 }
 
-/// Emit a tag-dispatched binary op: if both Tag::Int, run `fast`; else call
-/// `helper_id` (an extern "C" fn(u64, u64) -> u64). Returns the join-block
-/// param holding the resolved value.
-fn emit_dispatch_binop<M: cranelift_module::Module, F>(
+/// Emit a tag-dispatched binary op: if both Tag::Int, run `fast`; else run
+/// `slow`. fz-ul4.27.9: the slow arm is now caller-emitted (was a runtime
+/// helper call), so promote+fadd+box (or promote+fcmp) lowers inline.
+fn emit_dispatch_binop<F, S>(
     b: &mut FunctionBuilder<'_>,
-    jmod: &mut M,
-    helper_id: FuncId,
     av: ir::Value,
     bv: ir::Value,
     fast: F,
+    slow: S,
 ) -> ir::Value
 where
     F: FnOnce(&mut FunctionBuilder<'_>, ir::Value, ir::Value) -> ir::Value,
+    S: FnOnce(&mut FunctionBuilder<'_>, ir::Value, ir::Value) -> ir::Value,
 {
     let cond = both_int(b, av, bv);
     let fast_blk = b.create_block();
@@ -3279,9 +3285,7 @@ where
 
     b.switch_to_block(slow_blk);
     b.seal_block(slow_blk);
-    let fref = jmod.declare_func_in_func(helper_id, b.func);
-    let inst = b.ins().call(fref, &[av, bv]);
-    let slow_v = b.inst_results(inst)[0];
+    let slow_v = slow(b, av, bv);
     b.ins().jump(join_blk, &[BlockArg::Value(slow_v)]);
 
     b.switch_to_block(join_blk);

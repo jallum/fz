@@ -383,31 +383,36 @@ fn const_to_fz(c: &Const) -> FzValue {
 
 fn eval_binop(op: BinOp, a: FzValue, b: FzValue) -> Result<FzValue, String> {
     // Arithmetic: both-Int fast path matches the JIT's inline lowering;
-    // mixed or boxed-float operands fall back to the shared FFI helper so
-    // promotion semantics stay identical across paths.
+    // mixed or boxed-float operands promote both to f64 and box. fz-ul4.27.9
+    // dropped the per-op fz_arith_* helpers; promotion goes through the
+    // shared fz_promote_f64 conversion, same as the JIT slow path.
+    use fz_runtime::ir_runtime::{box_float, cmp_to_fz, fz_promote_f64};
     macro_rules! int_arith {
-        ($op:tt, $ffi:path) => {
+        ($op:tt) => {
             match (a.unbox_int(), b.unbox_int()) {
                 (Some(x), Some(y)) => Ok(FzValue::from_int(x $op y)),
-                _ => Ok(FzValue($ffi(a.0, b.0))),
+                _ => Ok(FzValue(box_float(fz_promote_f64(a.0) $op fz_promote_f64(b.0)))),
             }
         };
     }
+    macro_rules! float_cmp {
+        ($op:tt) => { Ok(FzValue(cmp_to_fz(fz_promote_f64(a.0) $op fz_promote_f64(b.0)))) };
+    }
     match op {
-        BinOp::Add => int_arith!(+, fz_runtime::ir_runtime::fz_arith_add),
-        BinOp::Sub => int_arith!(-, fz_runtime::ir_runtime::fz_arith_sub),
-        BinOp::Mul => int_arith!(*, fz_runtime::ir_runtime::fz_arith_mul),
-        BinOp::Div => int_arith!(/, fz_runtime::ir_runtime::fz_arith_div),
-        BinOp::Mod => int_arith!(%, fz_runtime::ir_runtime::fz_arith_mod),
+        BinOp::Add => int_arith!(+),
+        BinOp::Sub => int_arith!(-),
+        BinOp::Mul => int_arith!(*),
+        BinOp::Div => int_arith!(/),
+        BinOp::Mod => int_arith!(%),
         BinOp::Eq => Ok(FzValue(fz_runtime::ir_runtime::fz_value_eq(a.0, b.0))),
         BinOp::Neq => {
             let eq = FzValue(fz_runtime::ir_runtime::fz_value_eq(a.0, b.0));
             Ok(if eq.is_true() { FzValue::FALSE } else { FzValue::TRUE })
         }
-        BinOp::Lt => Ok(FzValue(fz_runtime::ir_runtime::fz_cmp_lt(a.0, b.0))),
-        BinOp::Le => Ok(FzValue(fz_runtime::ir_runtime::fz_cmp_le(a.0, b.0))),
-        BinOp::Gt => Ok(FzValue(fz_runtime::ir_runtime::fz_cmp_gt(a.0, b.0))),
-        BinOp::Ge => Ok(FzValue(fz_runtime::ir_runtime::fz_cmp_ge(a.0, b.0))),
+        BinOp::Lt => float_cmp!(<),
+        BinOp::Le => float_cmp!(<=),
+        BinOp::Gt => float_cmp!(>),
+        BinOp::Ge => float_cmp!(>=),
         BinOp::And => Ok(if !is_truthy(a) { a } else { b }),
         BinOp::Or => Ok(if is_truthy(a) { a } else { b }),
     }

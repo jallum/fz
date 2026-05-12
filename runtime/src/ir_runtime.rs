@@ -923,7 +923,7 @@ pub extern "C" fn fz_alloc_frame(schema_id: u32, total_size: u32) -> *mut u8 {
 // ===== Arith / cmp / eq cluster (fz-ul4.23.4.1) =====
 
 /// Decode an FzValue (Int or boxed Float) into f64. Panics on other tags.
-pub(crate) fn fz_to_f64(bits: u64) -> f64 {
+pub fn fz_to_f64(bits: u64) -> f64 {
     use crate::fz_value::{FzValue, HeapKind, Tag};
     let v = FzValue(bits);
     match v.tag() {
@@ -940,36 +940,29 @@ pub(crate) fn fz_to_f64(bits: u64) -> f64 {
     }
 }
 
-pub(crate) fn box_float(f: f64) -> u64 {
+pub fn box_float(f: f64) -> u64 {
     let p = current_process().heap.alloc_float(f);
     p as u64
 }
 
+/// Tag-promotion helper for the JIT's mixed-type arithmetic slow path.
+/// fz-ul4.27.9: replaced the per-op fz_arith_* / fz_cmp_* helpers — JIT now
+/// promotes both operands here, then emits native Cranelift fadd/fcmp/etc
+/// inline and (for arith) boxes the result via fz_alloc_float.
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_arith_add(a: u64, b: u64) -> u64 { box_float(fz_to_f64(a) + fz_to_f64(b)) }
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_arith_sub(a: u64, b: u64) -> u64 { box_float(fz_to_f64(a) - fz_to_f64(b)) }
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_arith_mul(a: u64, b: u64) -> u64 { box_float(fz_to_f64(a) * fz_to_f64(b)) }
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_arith_div(a: u64, b: u64) -> u64 { box_float(fz_to_f64(a) / fz_to_f64(b)) }
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_arith_mod(a: u64, b: u64) -> u64 { box_float(fz_to_f64(a) % fz_to_f64(b)) }
+pub extern "C" fn fz_promote_f64(bits: u64) -> f64 { fz_to_f64(bits) }
 
-/// Comparison helpers return FzValue TRUE/FALSE bits. Like the arithmetic
-/// helpers, these handle mixed-type operands by promoting Int→f64.
-pub(crate) fn cmp_to_fz(b: bool) -> u64 {
+/// f64 remainder (fmod-style: truncated, sign of dividend). Cranelift has no
+/// frem opcode, so the JIT's float-mod slow path calls out here.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_fmod(a: f64, b: f64) -> f64 { a % b }
+
+/// Convert a Rust bool into FzValue TRUE/FALSE bits. Used by the interpreter
+/// for cmp results; the JIT emits the equivalent inline.
+pub fn cmp_to_fz(b: bool) -> u64 {
     use crate::fz_value::FzValue;
     if b { FzValue::TRUE.0 } else { FzValue::FALSE.0 }
 }
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_cmp_lt(a: u64, b: u64) -> u64 { cmp_to_fz(fz_to_f64(a) <  fz_to_f64(b)) }
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_cmp_le(a: u64, b: u64) -> u64 { cmp_to_fz(fz_to_f64(a) <= fz_to_f64(b)) }
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_cmp_gt(a: u64, b: u64) -> u64 { cmp_to_fz(fz_to_f64(a) >  fz_to_f64(b)) }
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_cmp_ge(a: u64, b: u64) -> u64 { cmp_to_fz(fz_to_f64(a) >= fz_to_f64(b)) }
 
 /// Structural Eq for two Tag::Ptr FzValues. Both args MUST be Tag::Ptr —
 /// the JIT-side dispatch (`both_ptr` test) guarantees this, so the unwraps
