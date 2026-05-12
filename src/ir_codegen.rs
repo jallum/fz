@@ -1896,8 +1896,19 @@ fn compile_fn<M: cranelift_module::Module>(
                 let val = *var_map.get(&v.0).expect("unbound halt val");
                 let halt_fref = jmod.declare_func_in_func(runtime.halt_id, b.func);
                 b.ins().call(halt_fref, &[host_ctx, val]);
-                let null = b.ins().iconst(types::I64, 0);
-                b.ins().return_(&[null]);
+                if is_native {
+                    // fz-ul4.27.6.4 — native fn: propagate halt val back
+                    // up the chain via the native return register. The
+                    // outermost uniform caller's emit_return will re-call
+                    // fz_halt with this val (idempotent: same value), so
+                    // halt_value stays correct even when the chain halts
+                    // before control returns to the trampoline.
+                    b.ins().return_(&[val]);
+                } else {
+                    // Uniform fn: trampoline sentinel is null.
+                    let null = b.ins().iconst(types::I64, 0);
+                    b.ins().return_(&[null]);
+                }
             }
             Term::Return(v) => {
                 let val = *var_map.get(&v.0).expect("unbound return val");
