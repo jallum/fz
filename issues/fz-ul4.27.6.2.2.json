@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-ul4.27.6.2.1"
   ],
@@ -12,8 +12,8 @@
   "labels": [],
   "parent": "fz-ul4.27.6.2",
   "priority": 3,
-  "status": "open",
+  "status": "in_progress",
   "title": "VR.4.2.2: per-fn typed Signature builder",
   "type": "task",
-  "updated_at": "2026-05-12T02:36:43Z"
+  "updated_at": "2026-05-12T02:38:14Z"
 }
