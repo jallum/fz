@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-12T00:23:30Z",
+  "description": "Until this atom, every fz_fn_\u003cid\u003e has signature `extern \"C\" fn(*mut u8, *mut u8) -\u003e *mut u8` — the uniform trampoline ABI. After VR.3 the frame slots are typed but the call boundary still goes through the frame.\n\nDirect calls to monomorphic fns (Term::Call with statically-resolved callee and typed args) now use a native ABI matching the callee's typed signature: `extern \"C\" fn add1(n: i64) -\u003e i64`. Result returns via register; no frame allocation per direct call.\n\nIndirect calls (Term::CallClosure, polymorphic dispatch through a Var) keep the uniform trampoline ABI. Closure invocation pays the boxing cost at the invoke site, not at every value op inside the callee.\n\n## Adds\n\n  - Per-fn Signature computation in compile()/compile_aot() based on the fn's typed entry-block params.\n  - emit_call / emit_tail_call pick between native call (direct, monomorphic) and trampoline (indirect, polymorphic).\n  - fn_sig in declare-functions loop becomes per-fn instead of one fixed signature for all.\n  - Fixtures asserting direct calls don't allocate a frame.\n\n## Kills\n\n  - Frame-load-at-entry boilerplate: `load.i64 frame_ptr+24`, ..., `frame_ptr+24+8*N` at the top of every fn lowering. Direct-call fns now receive args via registers.\n  - Frame-allocate-at-call boilerplate at Term::Call sites: `fz_alloc_frame_dyn(callee_id)` + slot writes. Direct-call sites use native Cranelift `call` insts with typed args.\n  - The \"every fz_fn_\u003cN\u003e has identical extern signature\" assumption in fn_sig construction.\n  - fz_alloc_frame_dyn calls from direct-call sites. The fn itself survives — still needed for CallClosure where callee isn't statically known.\n\n## Acceptance\n\n  - Direct calls between monomorphic fns in the fixture matrix don't allocate a heap frame (VR.0 assertion: no `fz_alloc_frame` symbol reference in the direct-call site's CLIF).\n  - Matrix green.\n  - cargo test green; heap_live_count for non-concurrent fixtures drops materially (record baseline before, diff after).",
+  "id": "fz-ul4.27.6",
+  "labels": [],
+  "parent": "fz-ul4.27",
+  "priority": 3,
+  "status": "open",
+  "title": "VR.4: per-fn native ABI for direct calls",
+  "type": "task",
+  "updated_at": "2026-05-12T00:23:30Z"
+}
