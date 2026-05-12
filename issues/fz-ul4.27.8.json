@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-ul4.27.6"
+    "fz-ul4.27.6",
+    "fz-ul4.27.6.4"
   ],
   "blocks": [],
   "created": "2026-05-12T00:23:30Z",
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "VR.6: stack-allocate non-parking frames + return_call TCO",
   "type": "task",
-  "updated_at": "2026-05-12T00:23:33Z"
+  "updated_at": "2026-05-12T02:26:01Z"
 }
