@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-ul4.27.6.2.3"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-ul4.27.6.2.5"
+  ],
   "created": "2026-05-12T02:36:34Z",
   "description": "Term::Call/TailCall to a natively_callable callee: emit native Cranelift call with kind-aware arg passing; bridge result into the cont frame (Call) or my own cont frame (TailCall from uniform caller). Now natively_callable can actually be non-empty.",
   "id": "fz-ul4.27.6.2.4",
