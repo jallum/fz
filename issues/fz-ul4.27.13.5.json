@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-ul4.27.13.4"
   ],
@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-ul4.27.13",
   "priority": 3,
-  "status": "open",
+  "status": "in_progress",
   "title": "VR.4 follow-up STEP.5: Fixture-matrix bless",
   "type": "task",
-  "updated_at": "2026-05-12T19:20:55Z"
+  "updated_at": "2026-05-12T20:52:47Z"
 }
