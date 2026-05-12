@@ -747,8 +747,12 @@ pub struct CompiledMetadata {
 pub struct SpecRegistry {
     /// keys[spec_id.0 as usize] = (callee, input_descrs).
     keys: Vec<(FnId, Vec<crate::types::Descr>)>,
-    /// (callee, input_descrs) → SpecId.
+    /// (callee, input_descrs) → SpecId. Exact-match fast path for `resolve`.
     lookup: HashMap<(FnId, Vec<crate::types::Descr>), SpecId>,
+    /// fz-ul4.29.11 — per-FnId list of registered SpecIds, used by the
+    /// subsumption fallback in `resolve`. Excludes sentinel slots inserted
+    /// by `register_any_key_at`'s padding (those have no real registration).
+    by_fn: HashMap<FnId, Vec<SpecId>>,
 }
 
 impl SpecRegistry {
@@ -763,6 +767,7 @@ impl SpecRegistry {
         let id = SpecId(self.keys.len() as u32);
         self.keys.push(key.clone());
         self.lookup.insert(key, id);
+        self.by_fn.entry(fn_id).or_default().push(id);
         id
     }
 
@@ -793,15 +798,71 @@ impl SpecRegistry {
         let key = (fn_id, input_descrs);
         self.keys.push(key.clone());
         self.lookup.insert(key, id);
+        self.by_fn.entry(fn_id).or_default().push(id);
         id
     }
 
-    /// Look up the SpecId for `(fn_id, input_descrs)`, or `None` if none
-    /// is registered. .29.2.1 makes this load-bearing for narrow-spec
-    /// callsite resolution.
-    #[allow(dead_code)]
+    /// Look up the SpecId for `(fn_id, input_descrs)`, or `None` if no
+    /// covering spec is registered.
+    ///
+    /// fz-ul4.29.11 — two-tier dispatch:
+    ///   1. **Fast path**: exact-match HashMap lookup. Typer and codegen
+    ///      often produce identical Descrs for the same callsite; this
+    ///      path covers that common case in O(1).
+    ///   2. **Slow path**: subsumption search over per-FnId specs. A
+    ///      registered spec covers a query iff `query[i] ⊆ key[i]` for
+    ///      every element (the spec's body was compiled assuming inputs
+    ///      of type `key`, so a narrower query is safe to dispatch to it).
+    ///      Among covering candidates, picks the subtype-minimal one —
+    ///      the most-specialized safe dispatch. Deterministic SpecId
+    ///      tiebreak when candidates are subtype-incomparable.
+    ///
+    /// Best-match specialization quality (typer registering tight-enough
+    /// specs at every callsite) is a separate concern — different ticket.
     pub fn resolve(&self, fn_id: FnId, input_descrs: &[crate::types::Descr]) -> Option<SpecId> {
-        self.lookup.get(&(fn_id, input_descrs.to_vec())).copied()
+        // Fast path.
+        if let Some(&id) = self.lookup.get(&(fn_id, input_descrs.to_vec())) {
+            return Some(id);
+        }
+        // Slow path: subsumption search.
+        let sids = self.by_fn.get(&fn_id)?;
+        let arity = input_descrs.len();
+        let mut covers: Vec<SpecId> = sids.iter().copied()
+            .filter(|sid| {
+                let key = &self.keys[sid.0 as usize].1;
+                key.len() == arity
+                    && input_descrs.iter().zip(key.iter())
+                        .all(|(q, k)| q.is_subtype(k))
+            })
+            .collect();
+        if covers.is_empty() { return None; }
+        // Pick subtype-minimal: a candidate is "minimal" if no other
+        // candidate is a strict subtype of it on every axis. Tiebreak by
+        // lowest SpecId so the choice is deterministic across runs.
+        let key_of = |sid: SpecId| -> &Vec<crate::types::Descr> {
+            &self.keys[sid.0 as usize].1
+        };
+        let strictly_subsumed_by_other = |sid: SpecId, others: &[SpecId]| -> bool {
+            let k = key_of(sid);
+            others.iter().any(|&other| {
+                if other == sid { return false; }
+                let ok = key_of(other);
+                if ok.len() != k.len() { return false; }
+                let all_le = ok.iter().zip(k.iter())
+                    .all(|(o, kk)| o.is_subtype(kk));
+                let any_strict = ok.iter().zip(k.iter())
+                    .any(|(o, kk)| !kk.is_subtype(o));
+                all_le && any_strict
+            })
+        };
+        covers.sort_by_key(|s| s.0);
+        for sid in &covers {
+            if !strictly_subsumed_by_other(*sid, &covers) {
+                return Some(*sid);
+            }
+        }
+        // Mutually subtype-equivalent set — pick lowest SpecId.
+        covers.into_iter().min_by_key(|s| s.0)
     }
 
     /// Look up a fn's any-key SpecId (the conservative fallback used by
@@ -1442,10 +1503,15 @@ pub fn compile_with_backend<B: Backend>(
                         .iter()
                         .map(|av| ft.vars.get(av).cloned().unwrap_or_else(crate::types::Descr::any))
                         .collect();
-                    let callee_sid = spec_registry
+                    // fz-ul4.29.11: subsumption-based lookup; any-key (when
+                    // registered, which is always pre-.29.10) is the
+                    // universal supertype and always covers if nothing
+                    // narrower does.
+                    let Some(callee_sid_v) = spec_registry
                         .resolve(*callee, &arg_descrs)
                         .map(|s| s.0)
-                        .unwrap_or(callee.0) as usize;
+                    else { continue; };
+                    let callee_sid = callee_sid_v as usize;
                     let Some(callee_d) = return_descrs[callee_sid].clone() else { continue; };
                     let new_d = match &return_descrs[sid] {
                         Some(prev) => prev.union(&callee_d),
@@ -2148,10 +2214,23 @@ fn compile_fn<M: cranelift_module::Module>(
             .iter()
             .map(|av| fn_types.vars.get(av).cloned().unwrap_or_else(crate::types::Descr::any))
             .collect();
+        // fz-ul4.29.11: subsumption-based lookup. If nothing covers, this
+        // is a real consistency error — the typer should have registered
+        // a covering spec (any-key at minimum). Panic loudly so the gap
+        // surfaces during development instead of crashing later with a
+        // sentinel schema lookup.
         spec_registry
             .resolve(callee, &descrs)
             .map(|s| s.0)
-            .unwrap_or(callee.0)
+            .unwrap_or_else(|| panic!(
+                ".29.11: no covering spec for FnId({}) with arg Descrs {:?}; \
+                 registered specs for this fn: {:?}",
+                callee.0,
+                descrs,
+                spec_registry.iter()
+                    .filter(|(_, fid, _)| *fid == callee)
+                    .map(|(s, _, k)| (s.0, k.to_vec()))
+                    .collect::<Vec<_>>()))
     };
     let mut b = FunctionBuilder::new(&mut ctx.func, fbctx);
 
@@ -5028,19 +5107,101 @@ fn main(), do: loop_with(loop_with, 100000, 0)
 
     #[test]
     fn spec_registry_distinct_narrow_keys() {
-        // .29.2.1 will exercise this for real; verify the registry itself
-        // distinguishes narrow keys today.
+        // The registry distinguishes narrow keys via the exact-match
+        // fast path. Subsumption fallback is exercised below.
         let mut reg = SpecRegistry::new();
         let fid = FnId(0);
-        let any1 = vec![crate::types::Descr::any()];
         let int1 = vec![crate::types::Descr::int()];
-        let sid_any = reg.register(fid, any1.clone());
+        let float1 = vec![crate::types::Descr::float()];
         let sid_int = reg.register(fid, int1.clone());
-        assert_ne!(sid_any, sid_int, "any-key and int-key must be distinct SpecIds");
-        assert_eq!(reg.resolve(fid, &any1), Some(sid_any));
+        let sid_float = reg.register(fid, float1.clone());
+        assert_ne!(sid_int, sid_float, "int-key and float-key must be distinct SpecIds");
+        // Exact-match fast path returns identity.
         assert_eq!(reg.resolve(fid, &int1), Some(sid_int));
-        // Unregistered keys resolve to None.
-        let other = vec![crate::types::Descr::float()];
-        assert_eq!(reg.resolve(fid, &other), None);
+        assert_eq!(reg.resolve(fid, &float1), Some(sid_float));
+        // No covering spec for atom under the registered set → None.
+        let atom1 = vec![crate::types::Descr::atom_top()];
+        assert_eq!(reg.resolve(fid, &atom1), None);
+    }
+
+    // ----- fz-ul4.29.11: subsumption-based callsite dispatch -----
+
+    #[test]
+    fn resolve_subsumes_narrower_query_to_wider_registered_spec() {
+        // Only [int] registered; query [int_lit(4)] should subsume to it.
+        let mut reg = SpecRegistry::new();
+        let fid = FnId(0);
+        let int_spec = reg.register(fid, vec![crate::types::Descr::int()]);
+        let q = vec![crate::types::Descr::int_lit(4)];
+        assert_eq!(reg.resolve(fid, &q), Some(int_spec));
+    }
+
+    #[test]
+    fn resolve_picks_narrowest_among_multiple_supertype_matches() {
+        // Both [int] and [any] cover [int_lit(4)]. [int] is narrower; pick it.
+        let mut reg = SpecRegistry::new();
+        let fid = FnId(0);
+        let any_spec = reg.register(fid, vec![crate::types::Descr::any()]);
+        let int_spec = reg.register(fid, vec![crate::types::Descr::int()]);
+        let q = vec![crate::types::Descr::int_lit(4)];
+        let resolved = reg.resolve(fid, &q);
+        assert_eq!(resolved, Some(int_spec),
+            "should pick narrower [int] over wider [any]; got {:?}, any={:?}, int={:?}",
+            resolved, any_spec, int_spec);
+    }
+
+    #[test]
+    fn resolve_returns_none_when_nothing_covers() {
+        // [float] registered; query [int_lit(4)] is not a subtype → None.
+        let mut reg = SpecRegistry::new();
+        let fid = FnId(0);
+        reg.register(fid, vec![crate::types::Descr::float()]);
+        let q = vec![crate::types::Descr::int_lit(4)];
+        assert_eq!(reg.resolve(fid, &q), None,
+            "int_lit(4) is not a subtype of float; no covering spec");
+    }
+
+    #[test]
+    fn resolve_subtype_incomparable_picks_lowest_specid() {
+        // [int, any] (sid A) and [any, atom] (sid B). Query [int_lit(4), :foo]
+        // is covered by both; neither key is a subtype of the other on every
+        // axis. Deterministic tiebreak picks the lowest SpecId.
+        let mut reg = SpecRegistry::new();
+        let fid = FnId(0);
+        let int = crate::types::Descr::int();
+        let any = crate::types::Descr::any();
+        let atom = crate::types::Descr::atom_top();
+        let sid_a = reg.register(fid, vec![int.clone(), any.clone()]);
+        let sid_b = reg.register(fid, vec![any.clone(), atom.clone()]);
+        let q = vec![
+            crate::types::Descr::int_lit(4),
+            crate::types::Descr::atom_lit(":foo"),
+        ];
+        let resolved = reg.resolve(fid, &q).expect("a covering spec exists");
+        assert_eq!(resolved, sid_a,
+            "subtype-incomparable matches: lowest SpecId wins; got {:?}, a={:?}, b={:?}",
+            resolved, sid_a, sid_b);
+    }
+
+    #[test]
+    fn resolve_exact_match_takes_fast_path() {
+        // Exact-match registration resolves to the same SpecId — verifies
+        // the O(1) fast path still works alongside subsumption fallback.
+        let mut reg = SpecRegistry::new();
+        let fid = FnId(0);
+        let key = vec![crate::types::Descr::int(), crate::types::Descr::float()];
+        let sid = reg.register(fid, key.clone());
+        assert_eq!(reg.resolve(fid, &key), Some(sid));
+    }
+
+    #[test]
+    fn resolve_per_fn_isolation() {
+        // Specs for one fn must not subsume queries for a different fn.
+        let mut reg = SpecRegistry::new();
+        let _sid0 = reg.register(FnId(0), vec![crate::types::Descr::any()]);
+        // No spec registered for FnId(1) — even though FnId(0) has an
+        // any-key, it shouldn't cover queries to FnId(1).
+        let q = vec![crate::types::Descr::int()];
+        assert_eq!(reg.resolve(FnId(1), &q), None);
     }
 }
