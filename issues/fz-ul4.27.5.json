@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-ul4.27.3"
+  ],
   "blocks": [],
   "created": "2026-05-12T00:23:30Z",
   "description": "Frame schemas grow per-slot type tags: each slot declares whether it's an FzValue (8 bytes, pointer-bearing for the GC tracer) or a raw scalar (i64, f64, i32, etc.). Frame size is the sum of slot sizes, not n_fields * 8. Codegen emits typed load/store ops instead of always load.i64.\n\nClosure payloads get the same treatment: a closure that captures {a: int, b: float, c: atom} heap-allocates typed slots, not three FzValues. No analysis needed — closure captures are explicit, immutable, and known at construction. Just read each Var's typed bytes out of the constructing frame and write them into the closure payload.\n\nThe GC tracer already consults frame schemas; it now skips non-FzValue slots instead of treating every slot as a potential pointer.\n\nMost invasive atom: compile_fn needs per-Var machine types from ir_typer; call boundaries must agree on slot types; the GC's frame walker reads the new layout.\n\n## Adds\n\n  - Per-slot type tag on Schema::fields (heap.rs's FieldDescriptor already has `kind: FieldKind` — extend the enum or add a width).\n  - build_frame_schema consults ir_typer's per-Var Descr; emits typed slots.\n  - compile_fn emits typed load/store for entry-frame param reads and continuation captures.\n  - Closure construction (fz_closure_finalize + lower_prim's MakeClosure handling) writes typed bytes to closure heap payload.\n  - Fixtures asserting \"no unbox-shift-rebox round trip between adjacent ops on the same var.\"\n\n## Kills\n\n  - `(i * SLOT_BYTES) as i32` uniform-8-byte slot arithmetic in compile_fn's entry-frame loading and emit_call's arg setup.\n  - build_frame_schema's all-FieldKind::FzValue field construction — replaced by per-Var typed slot construction.\n  - HEADER_SIZE + (n_fields as u32) * SLOT_BYTES uniform frame-size formula.\n  - In fz_runtime::heap's frame tracer (collect_roots_from_frame_chain): the assumption that every payload slot at offset 16+8N is a potential GC pointer. Now driven by the schema's per-slot kind.\n  - The corresponding assumption inside fz_closure_finalize / fz_closure_invoke that each captured slot is 8 bytes of FzValue. Captures are now sized by their Descr.\n\n## Acceptance\n\n  - Frame schemas declare native slot types per Var.\n  - Closure payloads use typed slots — a closure capturing one int + one float is a 16-byte payload (header) + 4 + 8 = 28 bytes, not 16 + 16.\n  - Arith fixtures show no unbox-into-i64-then-shift-back sequences between back-to-back typed ops.\n  - GC fixtures still green (parity proves the typed tracer still finds all roots).\n  - Matrix green.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "VR.3: per-slot frame layout (frames + closure payloads)",
   "type": "task",
-  "updated_at": "2026-05-12T00:23:30Z"
+  "updated_at": "2026-05-12T00:23:32Z"
 }
