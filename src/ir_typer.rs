@@ -118,26 +118,13 @@ pub fn type_module(m: &Module) -> ModuleTypes {
         specs.insert((f.id, any_key), by_fn_idx[i].clone());
     }
 
-    // Soundness: a fn packed into a closure (`Prim::MakeClosure`) may be
-    // invoked through `Term::CallClosure` / `Term::TailCallClosure`, whose
-    // callee identity is opaque to this analysis. Narrowing such a fn's
-    // entry params based only on the direct-call sites we can see would
-    // over-narrow (e.g. typing a recursive worker as `int_lit(100000)`
-    // because its only direct caller passes that literal, while its
-    // own recursive closure-mediated calls — which decrement the value —
-    // are invisible). Mark these fns and skip them.
-    let mut closure_reachable: std::collections::HashSet<FnId> =
-        std::collections::HashSet::new();
-    for f in &m.fns {
-        for b in &f.blocks {
-            for stmt in &b.stmts {
-                let Stmt::Let(_, prim) = stmt;
-                if let Prim::MakeClosure(fid, _) = prim {
-                    closure_reachable.insert(*fid);
-                }
-            }
-        }
-    }
+    // fz-ul4.29.3: closure-reachable fns no longer skip narrowing —
+    // dynamic-dispatch sites (CallClosure, Spawn, Receive) route through
+    // the any-key specialization, which type_module unconditionally
+    // registers above (line 117) by capturing the initial all-any pass.
+    // The direct-call lub-narrowing recorded in `by_fn_idx` is safe to
+    // apply: it reflects what's true at direct callsites and isn't read
+    // by the closure-invoke path.
 
     loop {
         // Aggregate per-callee entry-param Descrs as the union over all
@@ -250,9 +237,6 @@ pub fn type_module(m: &Module) -> ModuleTypes {
         // codegen still consumes through .29.1).
         let mut changed = false;
         for (i, f) in m.fns.iter().enumerate() {
-            if closure_reachable.contains(&f.id) {
-                continue; // see closure-reachability note above
-            }
             let entry_block = f.block(f.entry);
             let current: Vec<Descr> = entry_block
                 .params
