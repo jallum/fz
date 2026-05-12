@@ -1,0 +1,23 @@
+# purpose: VR.3.4 — typed entry params survive continuation handoffs as raw bytes
+# paths:   jit, interp, aot
+# expect_clif_contains: k_3: load.i64 notrap aligned v0+32
+# expect_clif_excludes: k_3: load.f64 notrap aligned v0+32
+
+# `use_x(x)` takes a typed-int param x (narrowed from main's int-lit
+# call site). Inside use_x, `double(x) + x` requires x to live across
+# the call to double — x is captured into the continuation k_3. Before
+# fz-ul4.27.5.4, k_3's captured slot was FieldKind::FzValue (the caller
+# stored tagged FzValue, the cont read tagged FzValue). After .5.4,
+# ir_typer propagates use_x's typed entry param into k_3's entry
+# params [1..], the schema makes k_3's slot 2 (offset 32) RawI64, and
+# emit_call's captured-slot store unboxes x at the boundary so the
+# slot holds its raw int payload.
+#
+# The fixture pins the load: `load.i64 v0+32` is the raw read at k_3's
+# entry. `load.f64 v0+32` would mean we mistakenly marked the slot
+# RawF64 — assert it's not there.
+fn double(x) do x * 2 end
+fn use_x(x) do print(double(x) + x) end
+fn main() do
+  use_x(7)
+end

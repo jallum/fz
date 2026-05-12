@@ -1906,11 +1906,10 @@ fn emit_call<M: cranelift_module::Module>(
             b.ins().store(MemFlags::trusted(), my_cont, cf, HEADER_SIZE);
             // Slot 1 (offset 24) is the continuation's "result" param —
             // left uninitialized; will be filled by callee's Term::Return.
-            // Slots 2..K+2: captured vars in declaration order.
-            for (i, cv) in captured.iter().enumerate() {
-                let off = HEADER_SIZE + SLOT_BYTES * (2 + i as i32);
-                b.ins().store(MemFlags::trusted(), *cv, cf, off);
-            }
+            // Slots 2..K+2: captured vars in declaration order. .5.4:
+            // kind-aware store so a typed-int / typed-float captured slot
+            // gets its raw payload, not a tagged FzValue.
+            store_args_into_callee_frame(b, cont_schema, cf, captured, 2);
             cf
         }
         None => my_cont,
@@ -2000,11 +1999,8 @@ fn emit_receive<M: cranelift_module::Module>(
     b.ins().store(MemFlags::trusted(), my_cont, cf, HEADER_SIZE);
     // Slot 1 (offset 24) is the result slot the message will land in;
     // fz_receive_attempt writes it on a hit.
-    // Slots 2..: captured vars.
-    for (i, cv) in captured.iter().enumerate() {
-        let off = HEADER_SIZE + SLOT_BYTES * (2 + i as i32);
-        b.ins().store(MemFlags::trusted(), *cv, cf, off);
-    }
+    // Slots 2..: captured vars — kind-aware (fz-ul4.27.5.4).
+    store_args_into_callee_frame(b, cont_schema, cf, captured, 2);
 
     // Call fz_receive_attempt(cont_frame). Returns cont_frame on hit,
     // YIELD_PTR (0x1) on empty mailbox.
@@ -2074,10 +2070,8 @@ fn emit_call_closure<M: cranelift_module::Module>(
     let call_inst = b.ins().call(alloc_fref, &[sid, sz]);
     let cf = b.inst_results(call_inst)[0];
     b.ins().store(MemFlags::trusted(), my_cont, cf, HEADER_SIZE);
-    for (i, cv) in captured.iter().enumerate() {
-        let off = HEADER_SIZE + SLOT_BYTES * (2 + i as i32);
-        b.ins().store(MemFlags::trusted(), *cv, cf, off);
-    }
+    // .5.4: kind-aware captured-slot store.
+    store_args_into_callee_frame(b, cont_schema, cf, captured, 2);
 
     // Stage args, then invoke.
     let arg_fref = jmod.declare_func_in_func(runtime.closure_arg_id, b.func);

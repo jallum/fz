@@ -97,21 +97,64 @@ pub fn type_module(m: &Module) -> ModuleTypes {
                     let Stmt::Let(v, prim) = stmt;
                     env.insert(*v, type_prim(prim, &env, m));
                 }
-                let (callee, args) = match &b.terminator {
-                    Term::Call { callee, args, .. } => (*callee, args),
-                    Term::TailCall { callee, args } => (*callee, args),
-                    _ => continue,
+                // Propagate to the callee for direct calls (Call / TailCall).
+                match &b.terminator {
+                    Term::Call { callee, args, .. } | Term::TailCall { callee, args } => {
+                        if let Some(&j) = idx_of.get(callee) {
+                            let callee_fn = &m.fns[j];
+                            let n_params = callee_fn.block(callee_fn.entry).params.len();
+                            let slot = narrowed
+                                .entry(*callee)
+                                .or_insert_with(|| vec![Descr::none(); n_params]);
+                            for (k, av) in args.iter().enumerate() {
+                                if let Some(p) = slot.get_mut(k) {
+                                    let at = env.get(av).cloned().unwrap_or_else(Descr::any);
+                                    *p = p.union(&at);
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+
+                // fz-ul4.27.5.4: propagate to continuations for Call /
+                // CallClosure / Receive. Continuation entry params are
+                // `[result_var, ...captured_vars]`. We narrow positions
+                // [1..] from the caller's captured Descrs at this site.
+                // Position 0 (the result slot) is filled at runtime by
+                // the callee's return — we leave that at `any` for now;
+                // letting it go raw requires every caller of a given
+                // callee to agree on the kind, which the existing
+                // single-FnTypes-per-fn model doesn't support yet.
+                let cont = match &b.terminator {
+                    Term::Call { continuation, .. } => Some(continuation),
+                    Term::CallClosure { continuation, .. } => Some(continuation),
+                    Term::Receive { continuation } => Some(continuation),
+                    _ => None,
                 };
-                let Some(&j) = idx_of.get(&callee) else { continue };
-                let callee_fn = &m.fns[j];
-                let n_params = callee_fn.block(callee_fn.entry).params.len();
-                let slot = narrowed
-                    .entry(callee)
-                    .or_insert_with(|| vec![Descr::none(); n_params]);
-                for (k, av) in args.iter().enumerate() {
-                    if let Some(p) = slot.get_mut(k) {
-                        let at = env.get(av).cloned().unwrap_or_else(Descr::any);
-                        *p = p.union(&at);
+                if let Some(cont) = cont {
+                    if let Some(&j) = idx_of.get(&cont.fn_id) {
+                        let cont_fn = &m.fns[j];
+                        let n_params = cont_fn.block(cont_fn.entry).params.len();
+                        let slot = narrowed
+                            .entry(cont.fn_id)
+                            .or_insert_with(|| {
+                                // Pre-seed slot 0 with `any` so the union
+                                // below doesn't pin it at `none`.
+                                let mut v = vec![Descr::none(); n_params];
+                                if !v.is_empty() { v[0] = Descr::any(); }
+                                v
+                            });
+                        // slot[0] = result — leave as `any`; never widen.
+                        if let Some(p0) = slot.get_mut(0) {
+                            *p0 = p0.union(&Descr::any());
+                        }
+                        for (k, cv) in cont.captured.iter().enumerate() {
+                            if let Some(p) = slot.get_mut(k + 1) {
+                                let ct = env.get(cv).cloned().unwrap_or_else(Descr::any);
+                                *p = p.union(&ct);
+                            }
+                        }
                     }
                 }
             }
