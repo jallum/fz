@@ -6,14 +6,15 @@
   "blocks": [
     "fz-ul4.27.13.4"
   ],
+  "closed_at": "2026-05-12T20:52:47Z",
   "created": "2026-05-12T19:20:51Z",
   "description": "Generalize the tag-up loop at ir_codegen.rs:2182-2197 (currently unconditionally boxes raw vars used by the terminator) to a coerce pass keyed on the receiver's expected repr per slot:\n  - Return: this fn's return AbiParam type\n  - TailCall: callee sig's per-arg AbiParam types\n  - Call: callee sig's per-arg AbiParam types (cont-result repr stays tagged into any-key cont)\n  - Goto: keep block_param at tagged i64 (chosen for elegance over per-pred re-type negotiation)\n  - Halt: tagged i64 (runtime fz_halt sig unchanged)\n\nUnified helper: given Var, current repr, target AbiParam type → emit tag/untag and return new ir::Value. Replaces duplicate logic at terminator and call-site arg forwarding.",
   "id": "fz-ul4.27.13.3",
   "labels": [],
   "parent": "fz-ul4.27.13",
   "priority": 3,
-  "status": "open",
+  "status": "closed",
   "title": "VR.4 follow-up STEP.3: Terminator-coerce pass",
   "type": "task",
-  "updated_at": "2026-05-12T19:20:55Z"
+  "updated_at": "2026-05-12T20:52:47Z"
 }
