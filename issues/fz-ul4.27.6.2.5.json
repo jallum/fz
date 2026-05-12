@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-12T02:36:34Z",
+  "description": "fixtures/vr4_2_native_call.fz: main calls a pure helper. expect_clif_excludes a fz_alloc_frame for the helper at the call site; expect_clif_includes a direct funcref call. Run full matrix; all baseline tests still green.",
+  "id": "fz-ul4.27.6.2.5",
+  "labels": [],
+  "parent": "fz-ul4.27.6.2",
+  "priority": 3,
+  "status": "open",
+  "title": "VR.4.2.5: fixture + matrix proving native call lowering",
+  "type": "task",
+  "updated_at": "2026-05-12T02:36:34Z"
+}
