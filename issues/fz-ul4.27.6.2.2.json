@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-ul4.27.6.2.1"
+  ],
   "blocks": [],
   "created": "2026-05-12T02:36:33Z",
   "description": "Build a Cranelift Signature for each fn: typed (arg_types... + host_ctx -\u003e ret_ty) for natively_callable fns, uniform (i64,i64)-\u003ei64 otherwise. Defer declare_function until after typer + analyses. Wired but not yet used at call sites — declare each fn with its computed sig; compile_fn entry / emit_return still use uniform path for now (bifurcation lands in .6.2.3-4).",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "VR.4.2.2: per-fn typed Signature builder",
   "type": "task",
-  "updated_at": "2026-05-12T02:36:33Z"
+  "updated_at": "2026-05-12T02:36:42Z"
 }

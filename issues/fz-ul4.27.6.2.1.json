@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-ul4.27.6.2.2"
+  ],
   "created": "2026-05-12T02:36:33Z",
   "description": "Wire the new analyses through compile() so they reach compile_fn / emit_call / emit_return as data, even before behavior diverges. No ABI change. Asserts natively_callable.is_empty() (no fns native-callable yet) AND tracks return Descr per fn. Clears the dead-code warnings on parking_reachable + natively_callable. Sets up the data plumbing for .6.2.2-.6.2.5.",
   "id": "fz-ul4.27.6.2.1",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "VR.4.2.1: plumb parking + natively_callable + return Descr analyses into codegen",
   "type": "task",
-  "updated_at": "2026-05-12T02:36:33Z"
+  "updated_at": "2026-05-12T02:36:42Z"
 }
