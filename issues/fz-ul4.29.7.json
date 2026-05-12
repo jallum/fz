@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-12T12:13:11Z",
+  "description": "Enable codegen to consume the narrow specializations the typer recorded in `module_types.specs`. Each Term::Call / Term::TailCall site resolves to the SpecId matching its actual arg-Descr tuple; falls back to the any-key SpecId when no narrow spec exists. New compiled bodies appear per narrowed (FnId, input-key) pair.\n\nThis is where the per-callsite specialization optimization actually fires. CLIF diffs land here.\n\n## Scope\n\n- For every non-any-key spec in `module_types.specs`, register a new SpecId.\n- Generate a Schema, Signature, FuncId, frame_size for each new SpecId.\n- Compile each new SpecId's body via `compile_fn(spec_id, \u0026module_types.spec(fn_id, \u0026input_descrs))`.\n- At each Term::Call / Term::TailCall, look up `(callee_fn_id, callsite_arg_descrs) → SpecId`. Emit the call against that SpecId's FuncId.\n- Continuations: similar — `(cont_fn_id, [callee_return_descr, ...captured_descrs]) → SpecId`.\n\n## Expected wins\n\nFns like `fact`, `add`, and other recursive int → int / float → float patterns get monomorphic compiled bodies; their cont frames disappear from typed flows (the cont specializations are also narrowed, slot 0 carries the callee's specialized return Descr — which is now narrow, not `any`).\n\n## Acceptance\n\n- Non-any-key SpecIds compiled and reachable from at least one Term::Call site.\n- Fixture matrix green.\n- CLIF diffs visible on typed-flow fixtures (fact, dist, add); spot-check that narrowed bodies emit fewer `fz_alloc_float` / cont-frame allocations.\n\n## Blocked by\n\nfz-ul4.29.2.",
+  "id": "fz-ul4.29.7",
+  "labels": [],
+  "parent": "fz-ul4.29",
+  "priority": 2,
+  "status": "open",
+  "title": ".29.2.1: Per-callsite narrow-spec consumption",
+  "type": "task",
+  "updated_at": "2026-05-12T12:13:11Z"
+}
