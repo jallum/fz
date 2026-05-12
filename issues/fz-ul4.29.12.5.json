@@ -4,7 +4,9 @@
     "fz-ul4.29.12.1",
     "fz-ul4.29.12.3"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-ul4.29.12.6"
+  ],
   "created": "2026-05-12T23:36:53Z",
   "description": "Receive's cont-frame alloc uses a typer-resolved SpecId, mirroring .29.12.1's pattern.\n\n## What\n\nIn `emit_receive` (`src/ir_codegen.rs:3009-3044`), the cont frame is allocated for `cont.fn_id`'s any-key today. Replace with resolved SpecId:\n- Build key as `[Descr::any(), ...captured_descrs]` (slot 0 = any per the typer's `Term::Receive` handling at `src/ir_typer.rs:214`).\n- `resolved_sid = spec_registry.resolve(cont.fn_id, \u0026key).unwrap_or_else(|| panic!(...))`.\n- `fz_alloc_frame(resolved_sid, schemas[resolved_sid].size)`.\n\n## Why\n\nReceive's continuation is opaque on the result side (mailbox value type isn't statically known per recv), but the captured-vars side IS specialized. The cont's narrow spec — keyed by `[any, captured_descrs...]` — should be the dispatch target. Same pattern as .29.12.1 for direct calls.\n\n## Tests (TDD)\n\n- A receive inside a fn with typed captures resolves to a cont SpecId whose body is the typer's narrow specialization.\n- Existing receive tests stay green.\n- Three-path parity.\n\n## Note\n\nThis may overlap with .29.12.1 if that ticket's helper already covers Term::Receive. If so, this ticket reduces to verification + integration test.",
   "id": "fz-ul4.29.12.5",
