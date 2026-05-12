@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-ul4.27.5.1"
+  ],
   "blocks": [
     "fz-ul4.27.5.3"
   ],
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "VR.3.2: typed FLOAT entry-frame slots end-to-end",
   "type": "task",
-  "updated_at": "2026-05-12T01:36:47Z"
+  "updated_at": "2026-05-12T01:36:48Z"
 }
