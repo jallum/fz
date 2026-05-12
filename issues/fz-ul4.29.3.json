@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-ul4.29.2"
+  ],
   "blocks": [],
   "created": "2026-05-12T12:03:05Z",
   "description": "Dynamic-dispatch boundaries route through the `any`-key specialization. At these sites the static caller is opaque, so we can't pick a specialization based on arg Descrs — fall back to the conservative any-key body, which behaves exactly as today's single-FnTypes-per-fn compilation does.\n\n## Boundaries this covers\n\n- `Prim::MakeClosure` — the closure value carries no static caller binding.\n- `Term::CallClosure` / `Term::TailCallClosure` — dispatch is via fn-ptr at runtime.\n- `Term::Receive` / fz_send — message arrives deep-copied, no static type.\n- Anything else where the caller is statically opaque.\n\n## What changes\n\n- ir_typer's `closure_reachable` skip becomes \"use any-key for this fn\" instead of \"skip narrowing entirely.\" Removes one workaround.\n- The any-key specialization of every closure-reachable fn is unconditionally instantiated (it's the fallback target).\n- Direct-call sites continue to use narrowed specializations from .29.2.\n\n## What stays\n\n- Closure heap payload kind plumbing (still tagged FzValue at the boundary by default).\n- The runtime closure-invoke path's blind 8-byte copy works because the any-key callee's slots are FzValue.\n\n## Acceptance\n\n- Closure / Spawn / Receive paths use the any-key specialization, not skipped narrowing.\n- `closure_reachable` set still computed (used to decide which fns need an any-key emitted as fallback) but no longer drives a `continue` in the typer.\n- Fixture matrix green; closure fixtures unchanged in CLIF.\n- Spawn / message-passing fixtures unchanged in CLIF.\n\n## Blocked by\n\nfz-ul4.29.2.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": ".29.3: Closure/Spawn/Receive any-key fallback",
   "type": "task",
-  "updated_at": "2026-05-12T12:03:05Z"
+  "updated_at": "2026-05-12T12:03:26Z"
 }
