@@ -241,6 +241,29 @@ pub enum Attribute {
     /// after all aliases in a module are collected, so forward
     /// references resolve and cycles are detectable.
     TypeAlias(TypeAliasDecl),
+    /// fz-ul4.31.4 — `@spec name(T1, T2) :: R` declaration attached
+    /// above a fn/defmacro. Per-parameter and result type-expression
+    /// bodies are stored as raw tokens; `SpecDecl::resolve` lowers them
+    /// to Descrs against the enclosing module's `ModuleTypeEnv`.
+    Spec(SpecDecl),
+}
+
+#[derive(Debug, Clone)]
+pub struct SpecDecl {
+    pub name: String,
+    /// Span of the fn-name token in the `@spec` header. Used by .31.5
+    /// diagnostics; unread at parse time.
+    #[allow(dead_code)]
+    pub name_span: Span,
+    /// Per-parameter type-expression body tokens. `param_body_tokens.len()`
+    /// gives the declared arity (used for parse-time arity-vs-fn checks).
+    pub param_body_tokens: Vec<Vec<crate::lexer::Token>>,
+    /// Result type-expression body tokens.
+    pub result_body_tokens: Vec<crate::lexer::Token>,
+    /// Span of the whole `@spec ... :: ...` declaration. Used by .31.5
+    /// diagnostics.
+    #[allow(dead_code)]
+    pub span: Span,
 }
 
 #[derive(Debug, Clone)]

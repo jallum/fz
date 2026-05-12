@@ -230,6 +230,19 @@ impl Parser {
                             }
                             pending_fn_attrs.push(attr);
                         }
+                        Attribute::Spec(_) => {
+                            // fz-ul4.31.4 — one @spec per fn for v1.
+                            // Multi-clause specs (union of arrows) are
+                            // a deliberate followup.
+                            if pending_fn_attrs.iter().any(
+                                |a| matches!(a, Attribute::Spec(_)))
+                            {
+                                return self.err(
+                                    "multiple @spec declarations for one fn \
+                                     (v1 allows at most one)".to_string());
+                            }
+                            pending_fn_attrs.push(attr);
+                        }
                         Attribute::TypeAlias(_) => {
                             // fz-ul4.31.3 — @type belongs to the
                             // enclosing module's attrs alongside
@@ -266,6 +279,26 @@ impl Parser {
                         def.clauses.push(clause);
                     } else {
                         let attrs = std::mem::take(&mut pending_fn_attrs);
+                        // fz-ul4.31.4 — @spec name + arity must match
+                        // the following fn's first clause.
+                        for a in &attrs {
+                            if let Attribute::Spec(s) = a {
+                                if s.name != name {
+                                    return self.err(format!(
+                                        "@spec name `{}` doesn't match \
+                                         following fn `{}`",
+                                        s.name, name));
+                                }
+                                if s.param_body_tokens.len() != clause.params.len() {
+                                    return self.err(format!(
+                                        "@spec arity {} doesn't match fn \
+                                         `{}/{}`",
+                                        s.param_body_tokens.len(),
+                                        name,
+                                        clause.params.len()));
+                                }
+                            }
+                        }
                         let clause_span = clause.span;
                         order.push(name.clone());
                         groups.insert(name.clone(), FnDef {
@@ -309,7 +342,13 @@ impl Parser {
         }
         flush_fn_groups(&mut items, &mut order, &mut groups);
         if !pending_fn_attrs.is_empty() {
-            return self.err("@doc not followed by a fn or defmacro".to_string());
+            let kind = match &pending_fn_attrs[0] {
+                Attribute::Doc(_) => "@doc",
+                Attribute::Spec(_) => "@spec",
+                _ => "attribute",
+            };
+            return self.err(format!(
+                "{} not followed by a fn or defmacro", kind));
         }
         let mut module_attrs: Vec<Attribute> = moduledoc_attr.into_iter().collect();
         module_attrs.extend(module_aliases);
@@ -344,6 +383,53 @@ impl Parser {
                     Ok(Attribute::ModuleDoc(value))
                 }
             }
+            "spec" => {
+                // fz-ul4.31.4: `@spec name(T1, T2) :: R`. Bodies stored
+                // as raw tokens; `SpecDecl::resolve` lowers them to
+                // Descrs against the module's ModuleTypeEnv in .31.5.
+                let start = self.cur_span();
+                let name_span = self.cur_span();
+                let spec_name = match self.bump() {
+                    Tok::Ident(n) => n,
+                    other => return self.err(format!(
+                        "expected fn name after `@spec`, got {:?}", other
+                    )),
+                };
+                self.expect(&Tok::LParen, "`(`")?;
+                let mut param_body_tokens: Vec<Vec<Token>> = Vec::new();
+                if !matches!(self.peek(), Tok::RParen) {
+                    loop {
+                        let toks = self.collect_until_comma_or_rparen();
+                        if toks.is_empty() {
+                            return self.err(
+                                "expected type expression in @spec param list"
+                                    .to_string());
+                        }
+                        param_body_tokens.push(toks);
+                        if matches!(self.peek(), Tok::Comma) {
+                            self.bump();
+                            continue;
+                        }
+                        break;
+                    }
+                }
+                self.expect(&Tok::RParen, "`)`")?;
+                self.expect(&Tok::ColonColon, "`::`")?;
+                let result_body_tokens = self.collect_type_body_tokens();
+                if result_body_tokens.is_empty() {
+                    return self.err(
+                        "expected result type expression after `::` in @spec"
+                            .to_string());
+                }
+                let end_span = self.cur_span();
+                Ok(Attribute::Spec(SpecDecl {
+                    name: spec_name,
+                    name_span,
+                    param_body_tokens,
+                    result_body_tokens,
+                    span: start.merge(end_span),
+                }))
+            }
             "type" => {
                 // fz-ul4.31.3: `@type Name :: <type-expr>`. Body parsed
                 // later via `type_expr::build_module_type_env` so forward
@@ -372,6 +458,37 @@ impl Parser {
                 other
             )),
         }
+    }
+
+    /// fz-ul4.31.4 — Collect one type-expression body inside an
+    /// `@spec`'s param list. Stops at a top-level comma or `)`. Stops
+    /// early on newline / eof to surface malformed input rather than
+    /// running past the spec.
+    fn collect_until_comma_or_rparen(&mut self) -> Vec<Token> {
+        let mut out: Vec<Token> = Vec::new();
+        let mut depth: i32 = 0;
+        loop {
+            match self.peek() {
+                Tok::Comma | Tok::RParen if depth == 0 => break,
+                Tok::Eof | Tok::Newline => break,
+                Tok::LParen | Tok::LBrack | Tok::LBrace => {
+                    depth += 1;
+                    out.push(self.toks[self.pos].clone());
+                    self.pos += 1;
+                }
+                Tok::RParen | Tok::RBrack | Tok::RBrace => {
+                    depth -= 1;
+                    out.push(self.toks[self.pos].clone());
+                    self.pos += 1;
+                    if depth < 0 { break; }
+                }
+                _ => {
+                    out.push(self.toks[self.pos].clone());
+                    self.pos += 1;
+                }
+            }
+        }
+        out
     }
 
     /// fz-ul4.31.3 — Consume the type-expression body tokens for an

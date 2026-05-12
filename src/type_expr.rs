@@ -52,6 +52,32 @@ impl std::fmt::Display for TypeExprError {
     }
 }
 
+/// fz-ul4.31.4 — Resolved form of a `SpecDecl` after type-expression
+/// lookup. Produced by `resolve_spec_decl` given a `ModuleTypeEnv`.
+#[derive(Debug, Clone)]
+pub struct ResolvedSpec {
+    pub params: Vec<Descr>,
+    pub result: Descr,
+}
+
+/// fz-ul4.31.4 — Lower a `SpecDecl`'s body tokens into concrete Descrs
+/// against the module's type env. Surfaces unknown-name errors from
+/// `parse_type_expr` directly. Caller is responsible for arity / name
+/// validation against the target fn (the parser already enforces this
+/// at parse time).
+pub fn resolve_spec_decl(
+    decl: &crate::ast::SpecDecl,
+    env: &ModuleTypeEnv,
+) -> Result<ResolvedSpec, TypeExprError> {
+    let mut params = Vec::with_capacity(decl.param_body_tokens.len());
+    for body in &decl.param_body_tokens {
+        let (d, _consumed) = parse_type_expr(body, env)?;
+        params.push(d);
+    }
+    let (result, _consumed) = parse_type_expr(&decl.result_body_tokens, env)?;
+    Ok(ResolvedSpec { params, result })
+}
+
 /// fz-ul4.31.3 — Build a `ModuleTypeEnv` from a module's `@type`
 /// attributes. Resolves each alias body via `parse_type_expr`, threading
 /// a partial env that grows as aliases are resolved. Forward references

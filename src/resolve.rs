@@ -781,6 +781,160 @@ end
         assert!(pair.is_equiv(&expected));
     }
 
+    // ----- fz-ul4.31.4: @spec parser + AST attachment -----
+
+    #[test]
+    fn spec_attribute_parses_and_attaches_to_fn() {
+        let prog = parse(r#"
+defmodule M do
+  @spec add1(integer) :: integer
+  fn add1(n), do: n + 1
+end
+"#);
+        let m = prog.items.iter().find_map(|it| match &**it {
+            Item::Module(m) => Some(m), _ => None,
+        }).unwrap();
+        let add1 = m.items.iter().find_map(|it| match &**it {
+            Item::Fn(d) if d.name == "add1" => Some(d), _ => None,
+        }).unwrap();
+        let spec = add1.attrs.iter().find_map(|a| match a {
+            Attribute::Spec(s) => Some(s), _ => None,
+        }).expect("@spec attached to fn");
+        assert_eq!(spec.name, "add1");
+        assert_eq!(spec.param_body_tokens.len(), 1);
+        // Resolve and verify Descrs.
+        let env = crate::type_expr::ModuleTypeEnv::new();
+        let resolved = crate::type_expr::resolve_spec_decl(spec, &env).unwrap();
+        assert!(resolved.params[0].is_equiv(&crate::types::Descr::int()));
+        assert!(resolved.result.is_equiv(&crate::types::Descr::int()));
+    }
+
+    #[test]
+    fn spec_zero_arity_parses() {
+        let prog = parse(r#"
+defmodule M do
+  @spec one() :: integer
+  fn one(), do: 1
+end
+"#);
+        let m = prog.items.iter().find_map(|it| match &**it {
+            Item::Module(m) => Some(m), _ => None,
+        }).unwrap();
+        let one = m.items.iter().find_map(|it| match &**it {
+            Item::Fn(d) if d.name == "one" => Some(d), _ => None,
+        }).unwrap();
+        let spec = one.attrs.iter().find_map(|a| match a {
+            Attribute::Spec(s) => Some(s), _ => None,
+        }).expect("@spec attached to zero-arity fn");
+        assert_eq!(spec.param_body_tokens.len(), 0);
+    }
+
+    #[test]
+    fn spec_arity_mismatch_errors_at_parse_time() {
+        let toks = crate::lexer::Lexer::new(
+            "defmodule M do\n\
+              @spec add1(integer, integer) :: integer\n\
+              fn add1(n), do: n + 1\n\
+            end\n"
+        ).tokenize().unwrap();
+        let r = Parser::new(toks).parse_program();
+        assert!(r.is_err(), "arity mismatch must error");
+        let msg = format!("{:?}", r.unwrap_err());
+        assert!(msg.contains("arity"), "expected arity diag, got: {}", msg);
+    }
+
+    #[test]
+    fn spec_name_mismatch_errors_at_parse_time() {
+        let toks = crate::lexer::Lexer::new(
+            "defmodule M do\n\
+              @spec other(integer) :: integer\n\
+              fn add1(n), do: n + 1\n\
+            end\n"
+        ).tokenize().unwrap();
+        let r = Parser::new(toks).parse_program();
+        assert!(r.is_err(), "name mismatch must error");
+        let msg = format!("{:?}", r.unwrap_err());
+        assert!(msg.contains("doesn't match"),
+            "expected name-mismatch diag, got: {}", msg);
+    }
+
+    #[test]
+    fn spec_without_following_fn_errors() {
+        // @spec at the end of a module with no fn following it.
+        let toks = crate::lexer::Lexer::new(
+            "defmodule M do\n\
+              @spec lonely(integer) :: integer\n\
+            end\n"
+        ).tokenize().unwrap();
+        let r = Parser::new(toks).parse_program();
+        assert!(r.is_err(), "spec without fn must error");
+    }
+
+    #[test]
+    fn multiple_spec_on_one_fn_errors() {
+        let toks = crate::lexer::Lexer::new(
+            "defmodule M do\n\
+              @spec add1(integer) :: integer\n\
+              @spec add1(float) :: float\n\
+              fn add1(n), do: n + 1\n\
+            end\n"
+        ).tokenize().unwrap();
+        let r = Parser::new(toks).parse_program();
+        assert!(r.is_err(), "duplicate @spec must error");
+        let msg = format!("{:?}", r.unwrap_err());
+        assert!(msg.contains("multiple"),
+            "expected multiple-spec diag, got: {}", msg);
+    }
+
+    #[test]
+    fn spec_unknown_type_errors_at_resolve_time() {
+        let prog = parse(r#"
+defmodule M do
+  @spec add1(unknown_thing) :: integer
+  fn add1(n), do: n + 1
+end
+"#);
+        let m = prog.items.iter().find_map(|it| match &**it {
+            Item::Module(m) => Some(m), _ => None,
+        }).unwrap();
+        let add1 = m.items.iter().find_map(|it| match &**it {
+            Item::Fn(d) if d.name == "add1" => Some(d), _ => None,
+        }).unwrap();
+        let spec = add1.attrs.iter().find_map(|a| match a {
+            Attribute::Spec(s) => Some(s), _ => None,
+        }).expect("@spec parsed");
+        let env = crate::type_expr::build_module_type_env(&m.attrs).unwrap();
+        let r = crate::type_expr::resolve_spec_decl(spec, &env);
+        assert!(r.is_err(), "unknown type must error on resolve");
+        let e = r.unwrap_err();
+        assert!(e.msg.contains("unknown type name"),
+            "expected unknown-name diag, got: {}", e.msg);
+    }
+
+    #[test]
+    fn spec_resolves_against_module_type_env() {
+        let prog = parse(r#"
+defmodule M do
+  @type id :: integer
+  @spec lookup(id) :: id
+  fn lookup(x), do: x
+end
+"#);
+        let m = prog.items.iter().find_map(|it| match &**it {
+            Item::Module(m) => Some(m), _ => None,
+        }).unwrap();
+        let lookup = m.items.iter().find_map(|it| match &**it {
+            Item::Fn(d) if d.name == "lookup" => Some(d), _ => None,
+        }).unwrap();
+        let spec = lookup.attrs.iter().find_map(|a| match a {
+            Attribute::Spec(s) => Some(s), _ => None,
+        }).expect("@spec parsed");
+        let env = crate::type_expr::build_module_type_env(&m.attrs).unwrap();
+        let resolved = crate::type_expr::resolve_spec_decl(spec, &env).unwrap();
+        assert!(resolved.params[0].is_equiv(&crate::types::Descr::int()));
+        assert!(resolved.result.is_equiv(&crate::types::Descr::int()));
+    }
+
     #[test]
     fn type_alias_at_top_level_errors() {
         let toks = crate::lexer::Lexer::new("@type id :: integer\nfn main(), do: nil")
