@@ -45,24 +45,43 @@ use std::collections::HashSet;
 /// the job of .6.3 (native continuation invocation).
 pub fn natively_callable(m: &Module, parking: &HashSet<FnId>) -> HashSet<FnId> {
     let mut used_as_cont: HashSet<FnId> = HashSet::new();
+    let mut used_as_closure_target: HashSet<FnId> = HashSet::new();
+    let mut directly_called: HashSet<FnId> = HashSet::new();
     for f in &m.fns {
         for b in &f.blocks {
             match &b.terminator {
-                Term::Call { continuation, .. }
-                | Term::CallClosure { continuation, .. }
+                Term::Call { callee, continuation, .. } => {
+                    used_as_cont.insert(continuation.fn_id);
+                    directly_called.insert(*callee);
+                }
+                Term::TailCall { callee, .. } => {
+                    directly_called.insert(*callee);
+                }
+                Term::CallClosure { continuation, .. }
                 | Term::Receive { continuation } => {
                     used_as_cont.insert(continuation.fn_id);
                 }
                 _ => {}
             }
+            for stmt in &b.stmts {
+                let Stmt::Let(_, prim) = stmt;
+                if let Prim::MakeClosure(fid, _) = prim {
+                    used_as_closure_target.insert(*fid);
+                }
+            }
         }
     }
     let main_id = m.fns.iter().find(|f| f.name == "main").map(|f| f.id);
 
-    fn body_only_tail_or_return(f: &crate::fz_ir::FnIr) -> bool {
-        f.blocks.iter().all(|b| !matches!(
+    fn body_only_leaf(f: &crate::fz_ir::FnIr) -> bool {
+        // Leaf body: only Return / Halt / Goto / If. Excluding TailCall
+        // is intentional in .6.2.3 — `return_call` interactions with the
+        // GC safepoint and with mutual-recursion TCO are deep enough to
+        // warrant a follow-up. Native non-leaf callees rejoin in a later
+        // ticket once those interactions are designed.
+        f.blocks.iter().all(|b| matches!(
             b.terminator,
-            Term::Call { .. } | Term::CallClosure { .. } | Term::Receive { .. }
+            Term::Return(_) | Term::Halt(_) | Term::Goto(_, _) | Term::If(_, _, _)
         ))
     }
 
@@ -70,8 +89,15 @@ pub fn natively_callable(m: &Module, parking: &HashSet<FnId>) -> HashSet<FnId> {
     for f in &m.fns {
         if parking.contains(&f.id) { continue; }
         if used_as_cont.contains(&f.id) { continue; }
+        if used_as_closure_target.contains(&f.id) { continue; }
         if Some(f.id) == main_id { continue; }
-        if !body_only_tail_or_return(f) { continue; }
+        if !body_only_leaf(f) { continue; }
+        // Only fns reached by some Term::Call / Term::TailCall in the IR
+        // can be reliably invoked through the bifurcated native path.
+        // A fn that's never directly called from user IR may still be
+        // dispatched by the runtime (e.g. test harness `rt.spawn(fid)`)
+        // and that path uses the uniform ABI unconditionally.
+        if !directly_called.contains(&f.id) { continue; }
         set.insert(f.id);
     }
     set
@@ -303,6 +329,32 @@ mod tests {
         let parking = parking_reachable(&m);
         let nc = natively_callable(&m, &parking);
         assert!(!nc.contains(&FnId(0)));
+    }
+
+    #[test]
+    fn natively_callable_excludes_native_fn_tailcalling_uniform_fn() {
+        // f (no Term::Call, otherwise eligible) TailCalls g; g has Receive
+        // (parking, non-native). f must be evicted by the fixed-point.
+        let mut g = FnBuilder::new(FnId(0), "g");
+        let g_entry = g.block(vec![]);
+        g.set_terminator(g_entry, Term::Receive {
+            continuation: Cont { fn_id: FnId(2), captured: vec![] },
+        });
+
+        let mut f = FnBuilder::new(FnId(1), "f");
+        let f_entry = f.block(vec![]);
+        f.set_terminator(f_entry, Term::TailCall { callee: FnId(0), args: vec![] });
+
+        let k = make_fn(2, "k");
+        let m = build(vec![g.build(), f.build(), k]);
+        let parking = parking_reachable(&m);
+        let nc = natively_callable(&m, &parking);
+        // f isn't parking in the parking sense (it just forwards), but
+        // it's still parking-reachable because parking_reachable's fixed
+        // point promotes callers. So check explicitly that f is excluded
+        // from natively_callable for either reason.
+        assert!(!nc.contains(&FnId(1)),
+            "f TailCalls non-native g and must not be native");
     }
 
     #[test]

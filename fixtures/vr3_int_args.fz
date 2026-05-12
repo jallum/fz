@@ -1,18 +1,24 @@
-# purpose: VR.3.3 — typed int entry-frame slots flow raw i64 across multiple ops in one block
+# purpose: VR.3.3 / VR.4.2.3 — typed int args flow through native ABI
 # paths:   jit, interp, aot
-# expect_clif_contains: sum3: load.i64
+# expect_clif_excludes: sum3: load.i64
 # expect_clif_contains: sum3: iadd
-# expect_clif_excludes: sum3: sshr_imm v2, 3
-# expect_clif_excludes: sum3: sshr_imm v3, 3
-# expect_clif_excludes: sum3: sshr_imm v4, 3
+# expect_clif_contains: sum3: tail
+# expect_clif_excludes: sum3: fz_alloc_frame
 
 # fz-ul4.27.10 call-site narrowing types a, b, c as int (caller passes
-# int literals). fz-ul4.27.5.3 marks those entry-frame slots as
-# FieldKind::RawI64 — the slot stores the raw int payload, not the
-# tagged `(n << 3) | TAG_INT` form. Codegen loads raw i64 directly and
-# the BinOp::Add int fast path emits a single `iadd` per op with no
-# per-op sshr/ishl round trip on a/b/c. The result is tagged exactly
-# once at the boundary where the continuation needs an FzValue.
+# int literals). Under VR.3.3 alone the entry-frame slots were marked
+# FieldKind::RawI64 and codegen loaded raw i64 directly, skipping the
+# per-op sshr round trip.
+#
+# Under VR.4.2.3 sum3 itself becomes natively-callable (body-leaf, not
+# a continuation, not main, reached by direct Term::Call from main).
+# The entry frame disappears entirely — args arrive via block params
+# on the typed `(i64, i64, i64, i64) -> i64 tail` native sig, the body
+# sshrs each tagged arg once, then iadds. The wins are:
+#   * no `load.i64` (no entry frame at all)
+#   * no `fz_alloc_frame` at the caller's call site (the previous frame
+#     allocation was the dominant per-call overhead)
+#   * `tail` calling convention enables future return_call TCO
 fn sum3(a, b, c) do
   a + b + c
 end

@@ -33,7 +33,7 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `vr2_float_arith.fz` | VR.2 — float-literal arithmetic + comparisons emit native fadd/fcmp, no dispatch | jit, interp, aot |
 | `vr3_4_typed_capture.fz` | VR.3.4 — typed entry params survive continuation handoffs as raw bytes | jit, interp, aot |
 | `vr3_float_args.fz` | VR.3.2 — typed float entry-frame slots flow raw f64 across multiple ops in one block | jit, interp, aot |
-| `vr3_int_args.fz` | VR.3.3 — typed int entry-frame slots flow raw i64 across multiple ops in one block | jit, interp, aot |
+| `vr3_int_args.fz` | VR.3.3 / VR.4.2.3 — typed int args flow through native ABI | jit, interp, aot |
 | `vr5a_cross_kind_eq.fz` | VR.5a — cross-kind `==` folds to constant + emits type/dead-binop lint | jit, interp, aot |
 | `vr5a_typed_eq.fz` | VR.5a — int-int / atom-atom equality lowers to a single icmp, no fz_value_eq dispatch | jit, interp, aot |
 | `vr5b_typed_print.fz` | VR.5b — print dispatches to typed FFI when the arg Descr narrows | jit, interp, aot |

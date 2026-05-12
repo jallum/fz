@@ -582,48 +582,41 @@ fn join_return_descrs(
 /// fz-ul4.27.6.2.2 — Per-fn Cranelift Signature.
 ///
 /// `is_native = false` → uniform `(frame_ptr: i64, host_ctx: i64) -> i64`,
-/// matching the body shape produced by the current `compile_fn` (frame
-/// slots for entry params, emit_return writing into the cont frame and
-/// returning the cont frame ptr to the trampoline).
+/// matching the body shape produced by `compile_fn` for trampoline-driven
+/// fns: frame slots for entry params, emit_return writes into the cont
+/// frame and returns the cont frame ptr to the trampoline.
 ///
-/// `is_native = true` → typed signature reflecting the fn's entry-param
-/// Descrs and return Descr: `(arg_types..., host_ctx: i64) -> ret_ty`.
-/// Floats map to `f64`; everything else to `i64` (tagged FzValue payload).
-/// Consumers (.6.2.3 onward) must compile the body to match: read params
-/// from block-params, emit_return as a native `return_(&[val])`.
-///
-/// In .6.2.2 every fn is built with `is_native = false`. The native branch
-/// is reachable only via unit tests.
+/// `is_native = true` → typed-arity signature reflecting the fn's entry
+/// params + `host_ctx` + return: `(i64, i64, ..., i64) -> i64`. In .6.2.3
+/// every native param/return is a tagged FzValue (i64), so this signature
+/// only differs from the uniform one in ARITY — the first N i64s are
+/// fz-arg slots, the last is host_ctx, and the return is the tagged
+/// FzValue (not a frame_ptr). Promoting typed params (`f64` for float,
+/// raw `i64` for int) is a follow-up so it can be paired with the
+/// pre-terminator tag pass surgery it requires.
 fn build_fn_signature(
     f: &crate::fz_ir::FnIr,
-    ft: &crate::ir_typer::FnTypes,
-    return_descr: &crate::types::Descr,
+    _ft: &crate::ir_typer::FnTypes,
+    _return_descr: &crate::types::Descr,
     is_native: bool,
 ) -> Signature {
-    let mut sig = Signature::new(CallConv::SystemV);
     if !is_native {
+        let mut sig = Signature::new(CallConv::SystemV);
         sig.params.push(AbiParam::new(types::I64)); // frame_ptr
         sig.params.push(AbiParam::new(types::I64)); // host_ctx
         sig.returns.push(AbiParam::new(types::I64)); // next frame_ptr
         return sig;
     }
+    // Native fns use the `Tail` calling convention so that recursive
+    // tail calls can lower to `return_call` (which the SystemV ABI does
+    // not permit). Without TCO, count_100k_stays_bounded blows the stack.
+    let mut sig = Signature::new(CallConv::Tail);
     let entry = f.blocks.iter().find(|b| b.id == f.entry).unwrap();
-    for p in &entry.params {
-        let d = ft.vars.get(p).cloned().unwrap_or_else(crate::types::Descr::any);
-        let t = if d.is_subtype(&crate::types::Descr::float()) {
-            types::F64
-        } else {
-            types::I64
-        };
-        sig.params.push(AbiParam::new(t));
+    for _ in &entry.params {
+        sig.params.push(AbiParam::new(types::I64));
     }
     sig.params.push(AbiParam::new(types::I64)); // host_ctx
-    let rt = if return_descr.is_subtype(&crate::types::Descr::float()) {
-        types::F64
-    } else {
-        types::I64
-    };
-    sig.returns.push(AbiParam::new(rt));
+    sig.returns.push(AbiParam::new(types::I64)); // tagged FzValue
     sig
 }
 
@@ -1115,18 +1108,18 @@ pub fn compile_with_backend<B: Backend>(
         .map(|(i, f)| join_return_descrs(f, &module_types[i]))
         .collect();
 
-    // fz-ul4.27.6.2.2 — Per-fn Cranelift Signature. Built here so the
+    // fz-ul4.27.6.2.2/.3 — Per-fn Cranelift Signature. Built here so the
     // declare-function loop below can stamp each fn with the right ABI.
-    // GATE: for .6.2.2 we force `is_native = false` everywhere — every fn
-    // still gets the uniform `(i64, i64) -> i64` sig. The native branch
-    // is exercised by unit tests on `build_fn_signature`. .6.2.3 wires
-    // compile_fn's body to the native ABI and flips this gate to consult
-    // `natively_callable`.
+    // For natively_callable fns, the typed-arity native sig; uniform
+    // `(i64, i64) -> i64` for everyone else.
     let fn_sigs: Vec<Signature> = module
         .fns
         .iter()
         .enumerate()
-        .map(|(i, f)| build_fn_signature(f, &module_types[i], &return_descrs[i], false))
+        .map(|(i, f)| {
+            let is_native = natively_callable.contains(&f.id);
+            build_fn_signature(f, &module_types[i], &return_descrs[i], is_native)
+        })
         .collect();
 
     // fz-ul4.27.6.2.2 — declare each fn with its computed (per-fn) sig.
@@ -1163,6 +1156,8 @@ pub fn compile_with_backend<B: Backend>(
             f,
             &module_types[fn_idx],
             &module.source,
+            &natively_callable,
+            &fn_ids,
         )?;
         IR_TEXT_RECORD.with(|c| {
             if let Some(v) = c.borrow_mut().as_mut() {
@@ -1694,7 +1689,11 @@ fn compile_fn<M: cranelift_module::Module>(
     f: &crate::fz_ir::FnIr,
     fn_types: &crate::ir_typer::FnTypes,
     source: &crate::fz_ir::SourceInfo,
+    natively_callable: &std::collections::HashSet<crate::fz_ir::FnId>,
+    fn_ids: &HashMap<u32, FuncId>,
 ) -> Result<(), CodegenError> {
+    let is_native = natively_callable.contains(&f.id);
+    let callee_is_native = |id: u32| natively_callable.contains(&crate::fz_ir::FnId(id));
     let mut b = FunctionBuilder::new(&mut ctx.func, fbctx);
 
     let mut block_map: HashMap<u32, ir::Block> = HashMap::new();
@@ -1703,8 +1702,19 @@ fn compile_fn<M: cranelift_module::Module>(
         block_map.insert(blk.id.0, cl_blk);
     }
     let entry_cl = *block_map.get(&f.entry.0).unwrap();
-    b.append_block_param(entry_cl, types::I64); // frame_ptr
-    b.append_block_param(entry_cl, types::I64); // host_ctx
+    let entry_blk = f.blocks.iter().find(|b| b.id == f.entry).unwrap();
+    if is_native {
+        // fz-ul4.27.6.2.3 — native fn entry: one i64 block_param per fz
+        // arg + a trailing host_ctx i64. No frame_ptr; native fns run
+        // synchronously inside their caller and never visit the trampoline.
+        for _ in &entry_blk.params {
+            b.append_block_param(entry_cl, types::I64);
+        }
+        b.append_block_param(entry_cl, types::I64); // host_ctx
+    } else {
+        b.append_block_param(entry_cl, types::I64); // frame_ptr
+        b.append_block_param(entry_cl, types::I64); // host_ctx
+    }
 
     for blk in &f.blocks {
         if blk.id == f.entry { continue; }
@@ -1717,38 +1727,53 @@ fn compile_fn<M: cranelift_module::Module>(
     b.switch_to_block(entry_cl);
     b.seal_block(entry_cl);
 
-    let frame_ptr = b.block_params(entry_cl)[0];
-    let host_ctx = b.block_params(entry_cl)[1];
-
-    // Load entry params from frame slots [1..N+1] (offsets 24, 32, ...).
-    // fz-ul4.27.5.2/3: RawF64 slots load as raw f64 and join `raw_f64_vars`;
-    // RawI64 slots load as raw i64 (unshifted int payload) and join
-    // `raw_int_vars`. Everything else loads as a tagged FzValue i64.
     let mut var_map: HashMap<u32, ir::Value> = HashMap::new();
     let mut raw_f64_vars: std::collections::HashSet<u32> =
         std::collections::HashSet::new();
     let mut raw_int_vars: std::collections::HashSet<u32> =
         std::collections::HashSet::new();
-    let entry_blk = f.blocks.iter().find(|b| b.id == f.entry).unwrap();
     let my_schema = &schemas[f.id.0 as usize];
-    for (i, p) in entry_blk.params.iter().enumerate() {
-        let off = HEADER_SIZE + ((i as i32 + 1) * SLOT_BYTES);
-        let slot_kind = &my_schema.fields[i + 1].kind;
-        let val = match slot_kind {
-            FieldKind::RawF64 => {
-                let f = b.ins().load(types::F64, MemFlags::trusted(), frame_ptr, off);
-                raw_f64_vars.insert(p.0);
-                f
-            }
-            FieldKind::RawI64 => {
-                let n = b.ins().load(types::I64, MemFlags::trusted(), frame_ptr, off);
-                raw_int_vars.insert(p.0);
-                n
-            }
-            _ => b.ins().load(types::I64, MemFlags::trusted(), frame_ptr, off),
-        };
-        var_map.insert(p.0, val);
-    }
+
+    // (frame_ptr, host_ctx) — for native fns, frame_ptr is a never-read
+    // placeholder iconst(0). Uniform fns load both from entry block_params.
+    let (frame_ptr, host_ctx) = if is_native {
+        let params: Vec<ir::Value> = b.block_params(entry_cl).to_vec();
+        for (i, p) in entry_blk.params.iter().enumerate() {
+            // Native ABI passes every fz arg as tagged FzValue (i64) in
+            // .6.2.3; raw promotion is a follow-up. No raw_*_vars entry.
+            var_map.insert(p.0, params[i]);
+        }
+        let host_ctx = params[entry_blk.params.len()];
+        let frame_ptr = b.ins().iconst(types::I64, 0);
+        (frame_ptr, host_ctx)
+    } else {
+        let frame_ptr = b.block_params(entry_cl)[0];
+        let host_ctx = b.block_params(entry_cl)[1];
+
+        // Load entry params from frame slots [1..N+1] (offsets 24, 32, ...).
+        // fz-ul4.27.5.2/3: RawF64 slots load as raw f64 and join `raw_f64_vars`;
+        // RawI64 slots load as raw i64 (unshifted int payload) and join
+        // `raw_int_vars`. Everything else loads as a tagged FzValue i64.
+        for (i, p) in entry_blk.params.iter().enumerate() {
+            let off = HEADER_SIZE + ((i as i32 + 1) * SLOT_BYTES);
+            let slot_kind = &my_schema.fields[i + 1].kind;
+            let val = match slot_kind {
+                FieldKind::RawF64 => {
+                    let f = b.ins().load(types::F64, MemFlags::trusted(), frame_ptr, off);
+                    raw_f64_vars.insert(p.0);
+                    f
+                }
+                FieldKind::RawI64 => {
+                    let n = b.ins().load(types::I64, MemFlags::trusted(), frame_ptr, off);
+                    raw_int_vars.insert(p.0);
+                    n
+                }
+                _ => b.ins().load(types::I64, MemFlags::trusted(), frame_ptr, off),
+            };
+            var_map.insert(p.0, val);
+        }
+        (frame_ptr, host_ctx)
+    };
 
     // Walk blocks in declared order with entry first.
     let mut order: Vec<&crate::fz_ir::Block> = Vec::with_capacity(f.blocks.len());
@@ -1876,7 +1901,13 @@ fn compile_fn<M: cranelift_module::Module>(
             }
             Term::Return(v) => {
                 let val = *var_map.get(&v.0).expect("unbound return val");
-                emit_return(&mut b, jmod, runtime, frame_ptr, host_ctx, val);
+                if is_native {
+                    // fz-ul4.27.6.2.3 — native fn: tagged val goes back by
+                    // register; no cont frame to write into.
+                    b.ins().return_(&[val]);
+                } else {
+                    emit_return(&mut b, jmod, runtime, frame_ptr, host_ctx, val);
+                }
             }
             Term::Call { callee, args, continuation } => {
                 let arg_vals: Vec<ir::Value> = args
@@ -1888,32 +1919,137 @@ fn compile_fn<M: cranelift_module::Module>(
                     .iter()
                     .map(|v| *var_map.get(&v.0).expect("unbound captured val"))
                     .collect();
-                emit_call(
-                    &mut b,
-                    jmod,
-                    runtime,
-                    schemas,
-                    frame_ptr,
-                    callee.0,
-                    &arg_vals,
-                    Some((continuation.fn_id.0, &cap_vals)),
-                );
+                if callee_is_native(callee.0) {
+                    // fz-ul4.27.6.2.3 — native callee: invoke synchronously,
+                    // then bridge result into cont frame and hand the cont
+                    // frame ptr to the trampoline.
+                    //
+                    // Caller is always uniform here: native fns can't have
+                    // Term::Call (excluded by natively_callable).
+                    let callee_fid = *fn_ids.get(&callee.0).expect("callee fn_id missing");
+                    let callee_fref = jmod.declare_func_in_func(callee_fid, b.func);
+                    let mut native_args: Vec<ir::Value> = arg_vals.clone();
+                    native_args.push(host_ctx);
+                    let call_inst = b.ins().call(callee_fref, &native_args);
+                    let result = b.inst_results(call_inst)[0];
+
+                    // Build cont frame: [my_cont, result, ...captures].
+                    let cont_schema = &schemas[continuation.fn_id.0 as usize];
+                    let alloc_fref = jmod.declare_func_in_func(runtime.alloc_id, b.func);
+                    let sid =
+                        b.ins().iconst(types::I32, continuation.fn_id.0 as i64);
+                    let sz = b.ins().iconst(types::I32, cont_schema.size as i64);
+                    let alloc_call = b.ins().call(alloc_fref, &[sid, sz]);
+                    let cf = b.inst_results(alloc_call)[0];
+                    let my_cont = b.ins().load(
+                        types::I64,
+                        MemFlags::trusted(),
+                        frame_ptr,
+                        HEADER_SIZE,
+                    );
+                    b.ins().store(MemFlags::trusted(), my_cont, cf, HEADER_SIZE);
+                    // Slot 1 (the result) is FzValue by construction — the
+                    // typer keeps cont entry_param[0] at `any` (see
+                    // ir_typer cont narrowing), so the schema refinement
+                    // never types this slot raw. Store tagged i64 directly.
+                    b.ins().store(
+                        MemFlags::trusted(),
+                        result,
+                        cf,
+                        HEADER_SIZE + SLOT_BYTES,
+                    );
+                    store_args_into_callee_frame(&mut b, cont_schema, cf, &cap_vals, 2);
+                    b.ins().return_(&[cf]);
+                } else {
+                    emit_call(
+                        &mut b,
+                        jmod,
+                        runtime,
+                        schemas,
+                        frame_ptr,
+                        callee.0,
+                        &arg_vals,
+                        Some((continuation.fn_id.0, &cap_vals)),
+                    );
+                }
             }
             Term::TailCall { callee, args } => {
                 let arg_vals: Vec<ir::Value> = args
                     .iter()
                     .map(|v| *var_map.get(&v.0).expect("unbound tailcall arg"))
                     .collect();
-                emit_tail_call(
-                    &mut b,
-                    jmod,
-                    runtime,
-                    schemas,
-                    f.id.0,
-                    frame_ptr,
-                    callee.0,
-                    &arg_vals,
-                );
+                if callee_is_native(callee.0) {
+                    // fz-ul4.27.6.2.3 — TailCall to a native callee.
+                    //
+                    // Native caller (is_native): synchronously call, then
+                    // native-return the result via register. The natively_
+                    // callable fixed-point guarantees the callee is also
+                    // native, so its sig matches our forwarded args.
+                    //
+                    // Uniform caller: synchronously call, then write the
+                    // result into MY cont's slot 1 (a FzValue slot — cont
+                    // result params stay `any` in the typer) and hand my
+                    // cont's frame ptr to the trampoline.
+                    let callee_fid = *fn_ids.get(&callee.0).expect("callee fn_id missing");
+                    let callee_fref = jmod.declare_func_in_func(callee_fid, b.func);
+                    let mut native_args: Vec<ir::Value> = arg_vals.clone();
+                    native_args.push(host_ctx);
+                    if is_native {
+                        // Native-to-native TailCall: use return_call so
+                        // recursive tail calls reuse the same stack frame
+                        // (TCO). Without this, count_100k blows the stack.
+                        b.ins().return_call(callee_fref, &native_args);
+                    } else {
+                        let call_inst = b.ins().call(callee_fref, &native_args);
+                        let result = b.inst_results(call_inst)[0];
+                        let my_cont = b.ins().load(
+                            types::I64,
+                            MemFlags::trusted(),
+                            frame_ptr,
+                            HEADER_SIZE,
+                        );
+                        // Halt path: my_cont may be null on the top frame.
+                        let zero = b.ins().iconst(types::I64, 0);
+                        let is_null = b.ins().icmp(IntCC::Equal, my_cont, zero);
+                        let halt_blk = b.create_block();
+                        let invoke_blk = b.create_block();
+                        let no_args: Vec<BlockArg> = Vec::new();
+                        b.ins().brif(
+                            is_null,
+                            halt_blk,
+                            &no_args,
+                            invoke_blk,
+                            &no_args,
+                        );
+                        b.switch_to_block(halt_blk);
+                        b.seal_block(halt_blk);
+                        let halt_fref =
+                            jmod.declare_func_in_func(runtime.halt_id, b.func);
+                        b.ins().call(halt_fref, &[host_ctx, result]);
+                        let null = b.ins().iconst(types::I64, 0);
+                        b.ins().return_(&[null]);
+                        b.switch_to_block(invoke_blk);
+                        b.seal_block(invoke_blk);
+                        b.ins().store(
+                            MemFlags::trusted(),
+                            result,
+                            my_cont,
+                            HEADER_SIZE + SLOT_BYTES,
+                        );
+                        b.ins().return_(&[my_cont]);
+                    }
+                } else {
+                    emit_tail_call(
+                        &mut b,
+                        jmod,
+                        runtime,
+                        schemas,
+                        f.id.0,
+                        frame_ptr,
+                        callee.0,
+                        &arg_vals,
+                    );
+                }
             }
             Term::CallClosure { closure, args, continuation } => {
                 let cl_val = *var_map.get(&closure.0).expect("unbound callclosure closure");
@@ -3912,7 +4048,12 @@ fn main(), do: loop_with(loop_with, 100000, 0)
     }
 
     #[test]
-    fn signature_native_float_param_is_f64() {
+    fn signature_native_arity_matches_entry_params_plus_host_ctx() {
+        // .6.2.3 simplification: native sig is always
+        // `(i64, i64, ..., i64) -> i64` — only the ARITY tracks the fn's
+        // entry params + host_ctx. Typed param promotion (f64 / raw i64)
+        // is a follow-up so it can be paired with the pre-terminator tag
+        // pass changes it requires.
         let m = lower_src(
             "fn dist(x, y) do x * x + y * y end\nfn main() do print(dist(1.5, 2.5)) end",
         );
@@ -3920,13 +4061,11 @@ fn main(), do: loop_with(loop_with, 100000, 0)
         let dist_idx = m.fns.iter().position(|f| f.name == "dist").unwrap();
         let rd = join_return_descrs(&m.fns[dist_idx], &mt[dist_idx]);
         let sig = build_fn_signature(&m.fns[dist_idx], &mt[dist_idx], &rd, true);
-        // 2 entry params (typed f64) + host_ctx (i64).
+        // 2 entry params + host_ctx.
         assert_eq!(sig.params.len(), 3);
-        assert_eq!(sig.params[0].value_type, types::F64,
-            "dist(x: float, ...) — x should map to f64 in native sig");
-        assert_eq!(sig.params[1].value_type, types::F64);
-        assert_eq!(sig.params[2].value_type, types::I64); // host_ctx
-        assert_eq!(sig.returns[0].value_type, types::F64,
-            "dist returns float — sig should reflect that");
+        assert_eq!(sig.params[0].value_type, types::I64);
+        assert_eq!(sig.params[1].value_type, types::I64);
+        assert_eq!(sig.params[2].value_type, types::I64);
+        assert_eq!(sig.returns[0].value_type, types::I64);
     }
 }
