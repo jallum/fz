@@ -1990,6 +1990,40 @@ fn descr_is_float(fn_types: &crate::ir_typer::FnTypes, v: crate::fz_ir::Var) -> 
         .unwrap_or(false)
 }
 
+/// True when `v`'s typer-inferred Descr is a subtype of `atom_top`.
+/// VR.5a: atom-monomorphic Eq/Neq lowers to a single icmp because two
+/// FzValues with the same atom-id share the same bit pattern.
+fn descr_is_atom(fn_types: &crate::ir_typer::FnTypes, v: crate::fz_ir::Var) -> bool {
+    fn_types
+        .vars
+        .get(&v)
+        .map(|d| d.is_subtype(&crate::types::Descr::atom_top()))
+        .unwrap_or(false)
+}
+
+/// True when `v` is statically nil-or-bool. Both occupy disjoint, fixed bit
+/// patterns inside the tagged FzValue, so equality on them is bit-eq.
+fn descr_is_nil_or_bool(fn_types: &crate::ir_typer::FnTypes, v: crate::fz_ir::Var) -> bool {
+    fn_types
+        .vars
+        .get(&v)
+        .map(|d| {
+            let nb = crate::types::Descr::nil().union(&crate::types::Descr::bool_t());
+            d.is_subtype(&nb)
+        })
+        .unwrap_or(false)
+}
+
+/// True when the two operands' types have empty intersection — Eq folds to
+/// false, Neq folds to true. VR.5a powers both the lowering shortcut and
+/// the `type/dead-binop` diagnostic.
+fn descrs_disjoint(fn_types: &crate::ir_typer::FnTypes, a: crate::fz_ir::Var, b: crate::fz_ir::Var) -> bool {
+    match (fn_types.vars.get(&a), fn_types.vars.get(&b)) {
+        (Some(da), Some(db)) => da.intersect(db).looks_empty(),
+        _ => false,
+    }
+}
+
 fn lower_prim<M: cranelift_module::Module>(
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
@@ -2069,42 +2103,70 @@ fn lower_prim<M: cranelift_module::Module>(
                     }
                 }
                 BinOp::Eq | BinOp::Neq => {
-                    // If both operands are Tag::Ptr, dispatch to fz_value_eq
-                    // (structural / float-aware). Otherwise raw bit-eq is
-                    // correct: same-tag scalars compare by bits; cross-tag
-                    // pairs (e.g. Ptr vs Int) bit-differ -> always false.
-                    let cond = both_ptr(b, av, bvv);
-                    let fast_blk = b.create_block();
-                    let slow_blk = b.create_block();
-                    let join_blk = b.create_block();
-                    b.append_block_param(join_blk, types::I64);
-                    let no_args: Vec<BlockArg> = Vec::new();
-                    // both_ptr=true => slow path
-                    b.ins().brif(cond, slow_blk, &no_args, fast_blk, &no_args);
+                    // VR.5a (fz-ul4.27.4): type-directed equality.
+                    //
+                    //   1. Kind-disjoint operands fold to a constant — Eq=>FALSE,
+                    //      Neq=>TRUE. ir_typer also surfaces a type/dead-binop
+                    //      diagnostic for the same site.
+                    //   2. Same-kind scalar (int / atom / nil|bool) → one icmp:
+                    //      tagged FzValues for a given scalar kind compare by
+                    //      bit equality.
+                    //   3. Both-float → unbox both payloads, native fcmp eq.
+                    //      Two distinct boxed floats with the same value have
+                    //      different ptr bits, so the scalar bit-eq path would
+                    //      be wrong here.
+                    //   4. Anything else → the original both_ptr dispatch
+                    //      through fz_value_eq.
+                    let is_eq = matches!(op, BinOp::Eq);
+                    let int_cc = if is_eq { IntCC::Equal } else { IntCC::NotEqual };
+                    let f_cc = if is_eq { FloatCC::Equal } else { FloatCC::NotEqual };
 
-                    b.switch_to_block(fast_blk);
-                    b.seal_block(fast_blk);
-                    let cc = if matches!(op, BinOp::Eq) { IntCC::Equal } else { IntCC::NotEqual };
-                    let cmp = b.ins().icmp(cc, av, bvv);
-                    let fast_v = bool_to_fz(b, cmp);
-                    b.ins().jump(join_blk, &[BlockArg::Value(fast_v)]);
-
-                    b.switch_to_block(slow_blk);
-                    b.seal_block(slow_blk);
-                    let fref = jmod.declare_func_in_func(runtime.value_eq_id, b.func);
-                    let inst = b.ins().call(fref, &[av, bvv]);
-                    let eq = b.inst_results(inst)[0];
-                    let slow_v = if matches!(op, BinOp::Eq) {
-                        eq
+                    if descrs_disjoint(fn_types, *a, *bv) {
+                        let bits = if is_eq { FALSE_BITS } else { TRUE_BITS };
+                        b.ins().iconst(types::I64, bits)
+                    } else if (descr_is_int(fn_types, *a)   && descr_is_int(fn_types, *bv))
+                           || (descr_is_atom(fn_types, *a)  && descr_is_atom(fn_types, *bv))
+                           || (descr_is_nil_or_bool(fn_types, *a) && descr_is_nil_or_bool(fn_types, *bv))
+                    {
+                        let cmp = b.ins().icmp(int_cc, av, bvv);
+                        bool_to_fz(b, cmp)
+                    } else if descr_is_float(fn_types, *a) && descr_is_float(fn_types, *bv) {
+                        let af = unbox_float(b, av);
+                        let bf = unbox_float(b, bvv);
+                        let cmp = b.ins().fcmp(f_cc, af, bf);
+                        bool_to_fz(b, cmp)
                     } else {
-                        // Negate: TRUE_BITS xor (TRUE_BITS xor FALSE_BITS) = FALSE_BITS.
-                        b.ins().bxor_imm(eq, TRUE_BITS ^ FALSE_BITS)
-                    };
-                    b.ins().jump(join_blk, &[BlockArg::Value(slow_v)]);
+                        // Original dispatch (unchanged): both_ptr=true -> slow.
+                        let cond = both_ptr(b, av, bvv);
+                        let fast_blk = b.create_block();
+                        let slow_blk = b.create_block();
+                        let join_blk = b.create_block();
+                        b.append_block_param(join_blk, types::I64);
+                        let no_args: Vec<BlockArg> = Vec::new();
+                        b.ins().brif(cond, slow_blk, &no_args, fast_blk, &no_args);
 
-                    b.switch_to_block(join_blk);
-                    b.seal_block(join_blk);
-                    b.block_params(join_blk)[0]
+                        b.switch_to_block(fast_blk);
+                        b.seal_block(fast_blk);
+                        let cmp = b.ins().icmp(int_cc, av, bvv);
+                        let fast_v = bool_to_fz(b, cmp);
+                        b.ins().jump(join_blk, &[BlockArg::Value(fast_v)]);
+
+                        b.switch_to_block(slow_blk);
+                        b.seal_block(slow_blk);
+                        let fref = jmod.declare_func_in_func(runtime.value_eq_id, b.func);
+                        let inst = b.ins().call(fref, &[av, bvv]);
+                        let eq = b.inst_results(inst)[0];
+                        let slow_v = if is_eq {
+                            eq
+                        } else {
+                            b.ins().bxor_imm(eq, TRUE_BITS ^ FALSE_BITS)
+                        };
+                        b.ins().jump(join_blk, &[BlockArg::Value(slow_v)]);
+
+                        b.switch_to_block(join_blk);
+                        b.seal_block(join_blk);
+                        b.block_params(join_blk)[0]
+                    }
                 }
                 BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
                     let icc = match op {

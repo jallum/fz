@@ -563,7 +563,7 @@ pub fn collect_diagnostics(
     types: &ModuleTypes,
 ) -> crate::diag::Diagnostics {
     use crate::diag::{Diagnostic, Diagnostics, Span};
-    use crate::diag::codes::TYPE_UNREACHABLE_ARM;
+    use crate::diag::codes::{TYPE_UNREACHABLE_ARM, TYPE_DEAD_BINOP};
 
     let mut out = Diagnostics::new();
     for (i, f) in module.fns.iter().enumerate() {
@@ -639,7 +639,79 @@ pub fn collect_diagnostics(
             if let Some(d) = check(&else_env, "else", else_b) { out.push(d); }
         }
     }
+
+    // VR.5a (fz-ul4.27.4): flag kind-disjoint equality / inequality. We walk
+    // each Let stmt, rebuild the env up to that stmt, and report a
+    // type/dead-binop diagnostic when `intersect(t_a, t_b)` is empty. The
+    // codegen-side fold (Eq -> FALSE, Neq -> TRUE) is unaffected by the
+    // diagnostic; the user just gets a warning that the comparison can never
+    // hold.
+    for (i, f) in module.fns.iter().enumerate() {
+        let ft = &types[i];
+        let mut blocks_sorted: Vec<&crate::fz_ir::Block> = f.blocks.iter().collect();
+        blocks_sorted.sort_by_key(|b| b.id.0);
+        for b in blocks_sorted {
+            let mut env = ft.block_envs.get(&b.id).cloned().unwrap_or_default();
+            let spans = module.source.stmt_spans.get(&(f.id, b.id));
+            for (sidx, stmt) in b.stmts.iter().enumerate() {
+                let Stmt::Let(v, prim) = stmt;
+                if let Prim::BinOp(op, lhs, rhs) = prim {
+                    if matches!(op, BinOp::Eq | BinOp::Neq) {
+                        let ta = env.get(lhs).cloned().unwrap_or_else(Descr::any);
+                        let tb = env.get(rhs).cloned().unwrap_or_else(Descr::any);
+                        // Lint only on cross-kind disjointness (int vs atom,
+                        // float vs nil, etc.). Within a single axis, two
+                        // disjoint literal sets (e.g. `1 == 2`) still fold to
+                        // false at codegen but are not surprising to the
+                        // reader, so we keep them silent.
+                        let cross_kind = !ta.is_empty() && !tb.is_empty()
+                            && !axes_overlap(&ta, &tb);
+                        if cross_kind {
+                            let span = spans
+                                .and_then(|s| s.get(sidx).copied())
+                                .unwrap_or(Span::DUMMY);
+                            let constant = if matches!(op, BinOp::Eq) { "false" } else { "true" };
+                            let opname = if matches!(op, BinOp::Eq) { "==" } else { "!=" };
+                            let message = format!(
+                                "`{}` is always {}: operand types do not overlap",
+                                opname, constant,
+                            );
+                            let note = format!(
+                                "left has type `{}`; right has type `{}`",
+                                ta.display_for_diag(),
+                                tb.display_for_diag(),
+                            );
+                            let d = Diagnostic::warning(TYPE_DEAD_BINOP, message, span)
+                                .with_label(format!("in fn `{}`", f.name))
+                                .with_note(note);
+                            out.push(d);
+                        }
+                    }
+                }
+                let t = type_prim(prim, &env, module);
+                env.insert(*v, t);
+            }
+        }
+    }
+
     out
+}
+
+/// True iff `a` and `b` have at least one axis (basic-kind bit, atoms,
+/// ints, floats, strs, tuples, lists, funcs, maps) on which both are
+/// non-empty. Used by the VR.5a `type/dead-binop` lint to distinguish
+/// "different kinds" (worth surfacing) from "same kind, narrowed to
+/// disjoint literals" (silent fold).
+fn axes_overlap(a: &Descr, b: &Descr) -> bool {
+    !a.basic.intersect(b.basic).is_empty()
+        || (!a.atoms.is_none()  && !b.atoms.is_none())
+        || (!a.ints.is_none()   && !b.ints.is_none())
+        || (!a.floats.is_none() && !b.floats.is_none())
+        || (!a.strs.is_none()   && !b.strs.is_none())
+        || (!a.tuples.is_empty() && !b.tuples.is_empty())
+        || (!a.lists.is_empty()  && !b.lists.is_empty())
+        || (!a.funcs.is_empty()  && !b.funcs.is_empty())
+        || (!a.maps.is_empty()   && !b.maps.is_empty())
 }
 
 /// .11.24.5: refine `MakeVec(I64, els)` to `MakeVec(F64, els)` when any

@@ -242,6 +242,14 @@ impl Descr {
     }
     pub fn nil()     -> Self { Self::from_basic(BasicBits::NIL) }
     pub fn bool_t()  -> Self { Self::from_basic(BasicBits::BOOL) }
+    /// All atom literals (no other axis). Used by VR.5a (typed equality) to
+    /// recognise atom-monomorphic operands and lower `==` to a single icmp
+    /// without going through fz_value_eq.
+    pub fn atom_top() -> Self {
+        let mut d = Self::none();
+        d.atoms = AtomSet::any();
+        d
+    }
     pub fn vec_i64() -> Self { Self::from_basic(BasicBits::VEC_I64) }
     pub fn vec_f64() -> Self { Self::from_basic(BasicBits::VEC_F64) }
     pub fn vec_u8()  -> Self { Self::from_basic(BasicBits::VEC_U8) }
@@ -887,16 +895,12 @@ fn join_clause(pos: &[String], neg: &[String], top: &str) -> String {
 mod tests {
     use super::*;
 
-    // Test-only conveniences. `atom_top` / `str_t` are useful for type-algebra
-    // tests that want "every atom" / "every string", but the live pipeline
-    // never asks for those tops directly — it always narrows. `raw` is a
-    // newtype probe used by axis-disjointness assertions.
+    // Test-only conveniences. `str_t` is useful for type-algebra
+    // tests that want "every string"; the live pipeline never asks
+    // for that top directly — it always narrows. `raw` is a newtype
+    // probe used by axis-disjointness assertions. (`atom_top` was
+    // promoted to a public Descr constructor by VR.5a.)
     impl Descr {
-        pub(super) fn atom_top() -> Self {
-            let mut d = Self::none();
-            d.atoms = AtomSet::any();
-            d
-        }
         pub(super) fn str_t() -> Self {
             let mut d = Self::none();
             d.strs = StrSet::any();
