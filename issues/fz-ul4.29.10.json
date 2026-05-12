@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-12T19:49:12Z",
+  "description": "Today every fn unconditionally gets a SpecId.0 == FnId.0 any-key spec keyed on `vec![Descr::any(); arity]`, alongside any narrow specs from observed callsites. The any-key is the uniform dispatch target for indirect callers: closures, spawn, receive. For fns that are never indirectly dispatched (the common case — see fixtures/add1.fz where main only direct-calls add1), the any-key is dead code in AOT output.\n\nFlip the default from emit-then-DCE to emit-on-demand: register the any-key spec iff the fn appears in any non-call position in the IR.\n\n## Detection rule\n\nAfter ir_lower, walk module.fns building `indirectly_used: HashSet\u003cFnId\u003e` from these IR shapes:\n\n- FnRef / fn-as-value (assignment, arg passing)\n- MakeClosure capturing this fn\n- Spawn(fn_id, ...)\n- Receive handler installation\n\nThen in the typer's spec-registration logic:\n\n```\nfor each fn:\n    register narrow specs from observed callsites   (existing .29 behavior)\n    if fn_id ∈ indirectly_used:\n        register any-key spec                       (new — conditional)\n```\n\n## Effect on add1.fz\n\nToday: two symbols emitted (`add1` any-key, `add1_s1` narrow i64→i64).\nAfter: one symbol emitted (`add1` narrow i64→i64). Any-key never exists.\n\n## Effect on fns used both directly and indirectly\n\nA fn that's both direct-called and closure-captured still gets both: narrow specs for the direct callsites plus the any-key for indirect dispatch. Rule is additive, not exclusive.\n\n## Scope\n\n- src/ir_lower.rs or src/ir_typer.rs: indirect-use detection pass (one IR walk, no fixpoint)\n- src/ir_typer.rs: condition any-key registration on the result\n- src/ir_codegen.rs: verify no consumer assumes any-key always exists; conservative-fallback paths (line ~759) need to handle absence gracefully or be reachable only when fn ∈ indirectly_used\n- Update stale comment at src/ir_typer.rs:62 (the .29.1 doc still says \"specs populated but not yet consumed\" — false since .29.2 / .29.7 landed)\n\n## Tests\n\n- fixtures/add1.fz emits exactly one symbol; verify via fz dump --emit clif (fz-ul4.23.3)\n- A fn passed as a closure value emits both narrow + any-key\n- A fn used as Spawn target gets an any-key\n- A purely direct-called fn has no any-key in the SpecRegistry\n- Existing closure/spawn/receive tests still pass\n\n## Out of scope\n\n- Cross-module indirect-use analysis (today this is single-module; if cross-module FnRef becomes a thing, revisit)\n- Eliminating narrow specs that aren't reached (separate DCE concern)",
+  "id": "fz-ul4.29.10",
+  "labels": [],
+  "parent": "fz-ul4.29",
+  "priority": 2,
+  "status": "open",
+  "title": "On-demand any-key spec registration",
+  "type": "task",
+  "updated_at": "2026-05-12T19:49:12Z"
+}
