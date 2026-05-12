@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-ul4.27.10"
+  ],
   "blocks": [],
   "created": "2026-05-12T01:18:25Z",
   "description": "Follow-up split out of fz-ul4.27.3 once it became clear the Kills are blocked on ir_typer monomorphism.\n\n## Why this is a separate ticket\n\nThe .27.3 Adds (float-float fast paths via descr_is_float) landed cleanly. The Kills require zero call sites to fz_arith_*/fz_cmp_*, but ir_typer leaves un-annotated fn arguments at `any`. ~18 baseline ir_codegen tests of the shape `fn add1(n) do n + 1 end` still emit the dispatch fallback. Killing the helpers panics those tests at compile.\n\n## Kills (verbatim from .27.3, deferred)\n\n- fz_arith_add / sub / mul / div / mod JIT call sites\n- fz_cmp_lt / le / gt / ge JIT call sites\n- The extern \"C\" symbols themselves in runtime/src/ir_runtime.rs\n- declare_runtime_symbols entries + builder.symbol() binds\n- emit_dispatch_binop helper + both_int helper\n- box_float in ir_runtime.rs (the standalone helper, not heap.alloc_float)\n\n## Path forward (pick one when this is started)\n\n1. ir_typer fn-arg narrowing: infer arg types from call sites or body usage so `n + 1` narrows n to int. May overlap with VR.4 (typed ABI).\n2. Migrate the ~18 baseline tests to typed forms or replace with fixtures.\n3. Wait for VR.3 (per-slot frame layout) + VR.4 (typed ABI) — both force monomorphism naturally; the helpers fall out as collateral kill.\n\n## Acceptance\n\n- Zero references to fz_arith_* / fz_cmp_* in src/ and runtime/.\n- cargo test + fixture matrix green.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "VR.2 Kills: delete fz_arith_*/fz_cmp_* + dispatch fallback",
   "type": "task",
-  "updated_at": "2026-05-12T01:18:25Z"
+  "updated_at": "2026-05-12T01:40:44Z"
 }
