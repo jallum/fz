@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-ul4.29.7"
+  ],
   "blocks": [
     "fz-ul4.29.4"
   ],
@@ -13,5 +15,5 @@
   "status": "open",
   "title": ".29.3: Closure/Spawn/Receive any-key fallback",
   "type": "task",
-  "updated_at": "2026-05-12T12:13:12Z"
+  "updated_at": "2026-05-12T12:13:20Z"
 }
