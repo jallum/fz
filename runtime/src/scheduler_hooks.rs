@@ -31,10 +31,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 /// — in this crate — need it.)
 pub const YIELD_PTR: u64 = 0x1;
 
-/// fz_spawn FFI signature on the binary side: takes a raw fn_id, returns
-/// the new pid as raw u32. (FnId / PidId are u32 newtypes in the binary;
-/// the runtime crate uses raw u32 to keep the type out of its surface.)
-pub type SpawnHook = extern "C" fn(fn_id: u32) -> u32;
+/// fz_spawn FFI signature on the binary side. fz-ul4.29.5: takes the
+/// closure_bits (FzValue ptr) and returns the new pid. The hook handles
+/// deep-copy of the closure into the new task's heap, dispatch via the
+/// closure's stub_fp to materialize the initial frame, and enqueue.
+pub type SpawnHook = extern "C" fn(closure_bits: u64) -> u32;
 
 /// fz_send FFI signature on the binary side: takes receiver pid and the
 /// message's raw FzValue bits. The binary's send_via_current_runtime
@@ -69,7 +70,7 @@ pub fn clear_send_hook() {
     SEND_HOOK.store(0, Ordering::SeqCst);
 }
 
-pub(crate) fn dispatch_spawn(fn_id: u32) -> u32 {
+pub(crate) fn dispatch_spawn(closure_bits: u64) -> u32 {
     let raw = SPAWN_HOOK.load(Ordering::SeqCst);
     if raw == 0 {
         panic!(
@@ -78,7 +79,7 @@ pub(crate) fn dispatch_spawn(fn_id: u32) -> u32 {
         );
     }
     let hook: SpawnHook = unsafe { std::mem::transmute(raw) };
-    hook(fn_id)
+    hook(closure_bits)
 }
 
 pub(crate) fn dispatch_send(receiver_pid: u32, msg_bits: u64) {

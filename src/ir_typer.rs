@@ -296,7 +296,7 @@ pub fn type_module(m: &Module) -> ModuleTypes {
     ModuleTypes { by_fn_idx, specs }
 }
 
-fn type_fn(f: &FnIr, m: &Module, entry_param_types: Option<&[Descr]>) -> FnTypes {
+pub fn type_fn(f: &FnIr, m: &Module, entry_param_types: Option<&[Descr]>) -> FnTypes {
     let mut vars: HashMap<Var, Descr> = HashMap::new();
     let mut block_envs: HashMap<BlockId, HashMap<Var, Descr>> = HashMap::new();
 

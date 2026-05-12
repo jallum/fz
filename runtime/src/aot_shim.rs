@@ -61,7 +61,7 @@ thread_local! {
         const { RefCell::new(None) };
 }
 
-extern "C" fn aot_spawn_hook(fn_id: u32) -> u32 {
+extern "C" fn aot_spawn_hook(closure_bits: u64) -> u32 {
     let pid = AOT_NEXT_PID.with(|c| {
         let p = c.get();
         c.set(p + 1);
@@ -81,25 +81,75 @@ extern "C" fn aot_spawn_hook(fn_id: u32) -> u32 {
     let mut child = Box::new(Process::new(schemas));
     child.pid = pid;
     child.frame_sizes = (0..fn_count).map(|id| frame_size_fn(id)).collect();
-    // Children inherit the main task's atom names. Looking up the parent
-    // via CURRENT_PROCESS works because we're called synchronously from
-    // the parent's trampoline tick.
     let parent_ptr = CURRENT_PROCESS.with(|c| c.get());
-    if !parent_ptr.is_null() {
-        child.atom_names = unsafe { (*parent_ptr).atom_names.clone() };
-    }
+    assert!(!parent_ptr.is_null(), "aot_spawn_hook: no parent process");
+    let parent = unsafe { &*parent_ptr };
+    child.atom_names = parent.atom_names.clone();
+
+    // fz-ul4.29.5: deep-copy the closure from parent's heap into child's
+    // heap, then invoke its stub_fp to materialize the initial frame.
+    let mut forwarding = std::collections::HashMap::new();
+    let copied = crate::heap::deep_copy_value(
+        FzValue(closure_bits),
+        &parent.heap,
+        &mut child.heap,
+        &mut forwarding,
+    );
+    let copied_ptr = copied
+        .unbox_ptr()
+        .expect("aot_spawn_hook: closure must be a heap ptr");
+    let stub_fp_raw = unsafe {
+        std::ptr::read((copied_ptr as *mut u8).add(16) as *const u64)
+    };
+    assert!(stub_fp_raw != 0, "aot_spawn_hook: stub_fp is null");
+
     let child_ptr = AOT_TASKS.with(|c| {
         let mut t = c.borrow_mut();
         t.insert(pid, child);
         t.get_mut(&pid).map(|b| b.as_mut() as *mut Process).unwrap()
     });
 
-    let entry_frame_size = frame_size_fn(fn_id);
     let prev = CURRENT_PROCESS.with(|c| c.replace(child_ptr));
-    drive_trampoline(fn_id, entry_frame_size, dispatch);
+    type SpawnStub = extern "C" fn(*mut u8, u64, *mut u8) -> *mut u8;
+    let stub: SpawnStub = unsafe { std::mem::transmute(stub_fp_raw as *const u8) };
+    let initial_frame = stub(copied_ptr as *mut u8, 0, child_ptr as *mut u8);
+    drive_trampoline_from(initial_frame, dispatch);
     CURRENT_PROCESS.with(|c| c.set(prev));
 
     pid
+}
+
+/// Drive the trampoline starting from a pre-built frame (used by the
+/// .29.5 stub-based spawn path).
+fn drive_trampoline_from(start: *mut u8, dispatch: DispatchFn) {
+    let mut cur = start;
+    let mut iters: usize = 0;
+    let cap: usize = 10_000_000;
+    while !cur.is_null() {
+        iters += 1;
+        if iters > cap {
+            eprintln!("drive_trampoline_from: exceeded {} iterations", cap);
+            std::process::abort();
+        }
+        let header = cur as *const HeapHeader;
+        let schema_id = unsafe { (*header).schema_id };
+        let fn_ptr = dispatch(schema_id);
+        if fn_ptr.is_null() {
+            eprintln!("drive_trampoline_from: dispatch returned null for schema_id {}", schema_id);
+            std::process::abort();
+        }
+        let f: extern "C" fn(*mut u8, *mut u8) -> *mut u8 =
+            unsafe { std::mem::transmute(fn_ptr) };
+        let ctx = CURRENT_PROCESS.with(|c| c.get()) as *mut u8;
+        cur = f(cur, ctx);
+        if cur as u64 == crate::scheduler_hooks::YIELD_PTR {
+            eprintln!(
+                "drive_trampoline_from: receive on empty mailbox in AOT \
+                 (v1 has no preempt-and-resume)"
+            );
+            std::process::abort();
+        }
+    }
 }
 
 extern "C" fn aot_send_hook(receiver_pid: u32, msg_bits: u64) {

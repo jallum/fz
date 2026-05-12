@@ -11,6 +11,7 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `attributes.fz` | @moduledoc / @doc attributes parse and the module still executes | jit, interp, aot |
 | `callsite_narrowing_dist.fz` | fz-ul4.27.10 — call-site arg narrowing flows caller arg types into callee entry params | jit, interp, aot |
 | `classify_two_clause.fz` | literal-vs-wildcard clause dispatch (`0` and `_`) | jit, interp, aot |
+| `closure_typed_captures.fz` | fz-ul4.29.5 — closure dispatched via call_indirect through stub_fp | jit, interp, aot |
 | `cold_fn.fz` | minimal call site — one fn definition, one call, no scaffolding | jit, interp, aot |
 | `concurrency_ping_pong.fz` | spawn + send + receive — parent blocks on receive, prints the message | jit, interp, aot |
 | `cross_module_macro.fz` | defmacro in one module, called from another via `import Helpers, only: [twice: 1]` | jit, interp, aot |
@@ -28,6 +29,7 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `polymorphic.fz` | parametric `id` exercised over int, atom, and bool | jit, interp, aot |
 | `sample_tests.fz` | `test()` macro from the prelude — assert_eq / assert_neq / assert | jit |
 | `sample_tests_module.fz` | `test()` inside a defmodule body | jit |
+| `spawn_with_captures.fz` | fz-ul4.29.5 — spawn-with-captures lift (was forbidden v1) | jit, interp, aot |
 | `tail_recursion.fz` | 100k-deep self-recursion must TCO — exits cleanly with the accumulated count | jit, interp, aot |
 | `vr1_int_arith.fz` | VR.1 — int-literal arithmetic elides the tag-check fast/slow path | jit, interp, aot |
 | `vr2_float_arith.fz` | VR.2 — float-literal arithmetic + comparisons emit native fadd/fcmp, no dispatch | jit, interp, aot |

@@ -140,7 +140,7 @@ pub fn run_test_fn(module: &Module, fn_id: FnId) -> Result<(), String> {
 /// Spawn a new task at `fn_id`, run it to completion synchronously, and
 /// return its pid. Matches the JIT's pid allocation convention (main=1,
 /// children get sequential pids starting at 2).
-fn interp_spawn(module: &Module, fn_id: FnId) -> Result<u32, String> {
+fn interp_spawn(module: &Module, fn_id: FnId, args: Vec<FzValue>) -> Result<u32, String> {
     let pid = interp_next_pid();
     let user_schemas = INTERP_SCHEMAS
         .with(|s| s.borrow().as_ref().cloned())
@@ -150,7 +150,7 @@ fn interp_spawn(module: &Module, fn_id: FnId) -> Result<u32, String> {
     child.atom_names = module.atom_names.clone();
     let child_ptr = interp_register_task(pid, child);
     let prev = fz_runtime::process::CURRENT_PROCESS.with(|c| c.replace(child_ptr));
-    let result = run_fn(module, fn_id, Vec::new());
+    let result = run_fn(module, fn_id, args);
     fz_runtime::process::CURRENT_PROCESS.with(|c| c.set(prev));
     result?;
     Ok(pid)
@@ -326,10 +326,22 @@ fn eval_prim(
             run_builtin(module, *bid, &arg_vals)?
         }
         Prim::MakeClosure(fn_id, captured) => {
+            // fz-ul4.29.5: new closure layout — header (16) + stub_fp (8) +
+            // captures. The interp has no compiled stub for the closure;
+            // it dispatches via the body fn id stored in header._reserved
+            // (callee_fn_id). stub_fp is left null and never read by the
+            // interp's CallClosure / TailCallClosure / spawn paths.
             let cap_vals: Vec<FzValue> = collect(env, captured)?;
             let p = fz_runtime::process::current_process()
                 .heap
-                .alloc_closure(fn_id.0, &cap_vals);
+                .alloc_closure(fn_id.0, cap_vals.len());
+            unsafe {
+                std::ptr::write((p as *mut u8).add(16) as *mut u64, 0); // stub_fp = null
+                let cursor = (p as *mut u8).add(24) as *mut FzValue;
+                for (i, cv) in cap_vals.iter().enumerate() {
+                    std::ptr::write(cursor.add(i), *cv);
+                }
+            }
             FzValue(p as u64)
         }
         _ => {
@@ -341,10 +353,9 @@ fn eval_prim(
     })
 }
 
-/// Read an interp-side closure value: the heap object's `schema_id` field
-/// is repurposed (per the JIT layout, fz-ul4.11.32) to hold the IR FnId of
-/// the lambda body, and `flags` holds the captured count. Returns the
-/// callee fn id plus a Vec of captured FzValues read from the payload.
+/// Read an interp-side closure value. fz-ul4.29.5 layout:
+///   header (16) + stub_fp (8) + captured: [FzValue; n] (offset 24+)
+///   header._reserved = callee FnId; header.flags = captured count.
 fn unpack_closure(v: FzValue) -> Result<(FnId, Vec<FzValue>), String> {
     use fz_runtime::fz_value::HeapKind;
     let p = v.unbox_ptr().ok_or_else(|| {
@@ -357,9 +368,9 @@ fn unpack_closure(v: FzValue) -> Result<(FnId, Vec<FzValue>), String> {
     if HeapKind::from_u16(header.kind) != Some(HeapKind::Closure) {
         return Err("call_closure on non-closure heap value".into());
     }
-    let fn_id = FnId(header.schema_id);
+    let fn_id = FnId(header._reserved);
     let cap_count = header.flags as usize;
-    let payload = unsafe { (p as *const u8).add(16) as *const u64 };
+    let payload = unsafe { (p as *const u8).add(24) as *const u64 };
     let captured: Vec<FzValue> = (0..cap_count)
         .map(|i| FzValue(unsafe { std::ptr::read(payload.add(i)) }))
         .collect();
@@ -475,18 +486,22 @@ fn run_builtin(
             }
         }
         BuiltinKind::Spawn => {
+            // fz-ul4.29.5: lifted zero-captures restriction. Spawn deep-
+            // copies the closure (captures included) into the new task's
+            // heap; the body fn is invoked with the captures as its entry
+            // params (a spawned closure has zero call args, so the entry
+            // params are exactly the captures).
             if args.len() != 1 {
                 return Err(format!("spawn/1 got {} args", args.len()));
             }
             let (fn_id, captured) = unpack_closure(args[0])?;
-            if !captured.is_empty() {
-                return Err(format!(
-                    "interp spawn/1: closure with {} captures not yet supported \
-                     (v1 restriction matches the JIT, see fz-ul4.19.2)",
-                    captured.len()
-                ));
-            }
-            let pid = interp_spawn(module, fn_id)?;
+            // Deep-copy the captured values into the child's heap is
+            // implicit: interp runs every task on the same heap (single
+            // shared SchemaRegistry, single Process model under the test
+            // harness). For correctness of cross-heap semantics under
+            // multi-task interp execution see .19's design — v1 interp
+            // uses a single heap, so captures are already there.
+            let pid = interp_spawn(module, fn_id, captured)?;
             Ok(FzValue::from_int(pid as i64))
         }
         BuiltinKind::SelfPid => {

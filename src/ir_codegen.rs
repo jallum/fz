@@ -145,8 +145,6 @@ impl CompiledModule {
             map_builder: None,
             bs_builder: None,
             vec_builder: None,
-            closure_builder: None,
-            closure_args: Vec::new(),
             frame_sizes: self.frame_sizes.clone(),
             atom_names: self.atom_names.clone(),
             bs_tuple_arity1_schema: self.bs_tuple_arity1_schema,
@@ -821,12 +819,7 @@ impl JitBackend {
         builder.symbol("fz_vec_push", fz_runtime::ir_runtime::fz_vec_push as *const u8);
         builder.symbol("fz_vec_finalize", fz_runtime::ir_runtime::fz_vec_finalize as *const u8);
         builder.symbol("fz_vec_get", fz_runtime::ir_runtime::fz_vec_get as *const u8);
-        builder.symbol("fz_closure_begin", fz_runtime::ir_runtime::fz_closure_begin as *const u8);
-        builder.symbol("fz_closure_push", fz_runtime::ir_runtime::fz_closure_push as *const u8);
-        builder.symbol("fz_closure_finalize", fz_runtime::ir_runtime::fz_closure_finalize as *const u8);
-        builder.symbol("fz_closure_arg", fz_runtime::ir_runtime::fz_closure_arg as *const u8);
-        builder.symbol("fz_closure_invoke", fz_runtime::ir_runtime::fz_closure_invoke as *const u8);
-        builder.symbol("fz_tail_closure", fz_runtime::ir_runtime::fz_tail_closure as *const u8);
+        builder.symbol("fz_alloc_closure", fz_runtime::ir_runtime::fz_alloc_closure as *const u8);
         builder.symbol("fz_spawn", fz_runtime::ir_runtime::fz_spawn as *const u8);
         builder.symbol("fz_self", fz_runtime::ir_runtime::fz_self as *const u8);
         builder.symbol("fz_send", fz_runtime::ir_runtime::fz_send as *const u8);
@@ -1142,6 +1135,24 @@ pub fn compile_with_backend<B: Backend>(
     let module_types = crate::ir_typer::type_module(&working);
     let module = &working;
 
+    // fz-ul4.29.5: collect closure shapes. Each Prim::MakeClosure site
+    // produces a shape keyed by (callee FnId, capture count). The stub
+    // generated for this shape dispatches the callee's any-key spec
+    // (closure-target bodies stay any-key in v1; per-spec closure-target
+    // narrowing is .29.5.1's follow-up).
+    let mut closure_shapes: std::collections::BTreeMap<(FnId, usize), ()>
+        = std::collections::BTreeMap::new();
+    for f in &module.fns {
+        for blk in &f.blocks {
+            for stmt in &blk.stmts {
+                let Stmt::Let(_, prim) = stmt;
+                if let Prim::MakeClosure(callee_fn_id, captures) = prim {
+                    closure_shapes.insert((*callee_fn_id, captures.len()), ());
+                }
+            }
+        }
+    }
+
     // fz-ul4.29.2.1 — Build the SpecRegistry.
     //
     // Register any-keys first, in FnId.0 order — this preserves the
@@ -1386,6 +1397,38 @@ pub fn compile_with_backend<B: Backend>(
         fn_ids.insert(sid as u32, id);
     }
 
+    // fz-ul4.29.5: declare one stub function per (callee FnId, capture
+    // count) shape. The stub adapts from the closure-call ABI
+    // (closure_ptr, args..., cont_ptr, host_ctx) into the callee any-key
+    // spec's entry-frame layout. Stored in the closure heap object's
+    // payload offset 16 and called via call_indirect.
+    let mut stub_fn_ids: std::collections::BTreeMap<(FnId, usize), FuncId>
+        = std::collections::BTreeMap::new();
+    let mut stub_sigs: std::collections::BTreeMap<(FnId, usize), Signature>
+        = std::collections::BTreeMap::new();
+    for ((callee_fn_id, n_caps), _) in &closure_shapes {
+        let callee = module.fns.iter()
+            .find(|f| f.id == *callee_fn_id)
+            .expect("MakeClosure target FnId not in module");
+        let n_callee_params = callee.block(callee.entry).params.len();
+        let n_call_args = n_callee_params.saturating_sub(*n_caps);
+        let mut sig = Signature::new(CallConv::SystemV);
+        sig.params.push(AbiParam::new(types::I64));         // closure_ptr
+        for _ in 0..n_call_args {
+            sig.params.push(AbiParam::new(types::I64));     // arg_j (tagged)
+        }
+        sig.params.push(AbiParam::new(types::I64));         // cont_ptr
+        sig.params.push(AbiParam::new(types::I64));         // host_ctx
+        sig.returns.push(AbiParam::new(types::I64));        // -> callee frame ptr
+        let name = format!("fz_stub_{}_{}", callee.name, n_caps);
+        let id = backend
+            .module_mut()
+            .declare_function(&name, Linkage::Local, &sig)
+            .map_err(|e| CodegenError::new(format!("declare {}: {}", name, e)))?;
+        stub_fn_ids.insert((*callee_fn_id, *n_caps), id);
+        stub_sigs.insert((*callee_fn_id, *n_caps), sig);
+    }
+
     for sid in 0..spec_count {
         let Some(idx) = spec_fnidx[sid] else { continue; };
         let f = &module.fns[idx];
@@ -1404,6 +1447,7 @@ pub fn compile_with_backend<B: Backend>(
             &runtime,
             &schemas,
             &tuple_schema_ids,
+            &stub_fn_ids,
             f,
             ft,
             sid as u32,
@@ -1454,6 +1498,43 @@ pub fn compile_with_backend<B: Backend>(
             }
         }
         backend.module_mut().clear_context(&mut ctx);
+    }
+
+    // fz-ul4.29.5: compile each closure stub. Stub dispatches to the
+    // callee's any-key spec (its any-key SpecId.0 == FnId.0 by invariant).
+    for ((callee_fn_id, n_caps), stub_func_id) in &stub_fn_ids {
+        let callee = module.fns.iter()
+            .find(|f| f.id == *callee_fn_id)
+            .expect("stub callee FnId in module");
+        let n_callee_params = callee.block(callee.entry).params.len();
+        let callee_sid = callee_fn_id.0; // any-key invariant
+        let callee_func_id = *fn_ids
+            .get(&callee_sid)
+            .expect("callee any-key spec has a FuncId");
+        let callee_schema = &schemas[callee_sid as usize];
+        let callee_frame_size = callee_schema.size;
+        let callee_is_native_abi = natively_callable.contains(callee_fn_id);
+        let stub_sig = stub_sigs
+            .get(&(*callee_fn_id, *n_caps))
+            .expect("stub sig registered")
+            .clone();
+        let stub_name = format!("fz_stub_{}_{}", callee.name, n_caps);
+        compile_closure_stub(
+            backend.module_mut(),
+            &mut fbctx,
+            &runtime,
+            *stub_func_id,
+            stub_sig,
+            callee_func_id,
+            &fn_sigs[callee_sid as usize],
+            callee_schema,
+            callee_frame_size,
+            callee_sid,
+            *n_caps,
+            n_callee_params - *n_caps,
+            callee_is_native_abi,
+            &stub_name,
+        )?;
     }
 
     let main_fn_id = module.fn_by_name("main").map(|f| f.id);
@@ -1808,21 +1889,8 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
     let vec_finalize_id = decl("fz_vec_finalize", &[], &[types::I64])?;
     let vec_get_id = decl("fz_vec_get", &[types::I64, types::I64], &[types::I64])?;
 
-    let closure_begin_id = decl("fz_closure_begin", &[types::I32], &[])?;
-    let closure_push_id = decl("fz_closure_push", &[types::I64], &[])?;
-    let closure_finalize_id = decl("fz_closure_finalize", &[], &[types::I64])?;
-    let closure_arg_id = decl("fz_closure_arg", &[types::I64], &[])?;
-    let closure_invoke_id = decl(
-        "fz_closure_invoke",
-        &[types::I64, types::I64],
-        &[types::I64],
-    )?;
-    let tail_closure_id = decl(
-        "fz_tail_closure",
-        &[types::I64, types::I64],
-        &[types::I64],
-    )?;
-
+    let alloc_closure_id =
+        decl("fz_alloc_closure", &[types::I32, types::I32], &[types::I64])?;
     let spawn_id = decl("fz_spawn", &[types::I64], &[types::I64])?;
     let self_id = decl("fz_self", &[], &[types::I64])?;
     let send_id = decl("fz_send", &[types::I64, types::I64], &[types::I64])?;
@@ -1857,12 +1925,7 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         vec_push_id,
         vec_finalize_id,
         vec_get_id,
-        closure_begin_id,
-        closure_push_id,
-        closure_finalize_id,
-        closure_arg_id,
-        closure_invoke_id,
-        tail_closure_id,
+        alloc_closure_id,
         spawn_id,
         self_id,
         send_id,
@@ -1892,12 +1955,6 @@ struct RuntimeRefs {
     map_push_id: FuncId,
     map_finalize_id: FuncId,
     map_get_id: FuncId,
-    closure_begin_id: FuncId,
-    closure_push_id: FuncId,
-    closure_finalize_id: FuncId,
-    closure_arg_id: FuncId,
-    closure_invoke_id: FuncId,
-    tail_closure_id: FuncId,
     vec_begin_id: FuncId,
     vec_push_id: FuncId,
     vec_finalize_id: FuncId,
@@ -1906,6 +1963,7 @@ struct RuntimeRefs {
     promote_f64_id: FuncId,
     fmod_id: FuncId,
     value_eq_id: FuncId,
+    alloc_closure_id: FuncId,
     spawn_id: FuncId,
     self_id: FuncId,
     send_id: FuncId,
@@ -1931,6 +1989,7 @@ fn compile_fn<M: cranelift_module::Module>(
     runtime: &RuntimeRefs,
     schemas: &[Schema],
     tuple_schema_ids: &HashMap<usize, u32>,
+    stub_fn_ids: &std::collections::BTreeMap<(FnId, usize), FuncId>,
     f: &crate::fz_ir::FnIr,
     fn_types: &crate::ir_typer::FnTypes,
     this_spec_id: u32,
@@ -2068,7 +2127,7 @@ fn compile_fn<M: cranelift_module::Module>(
                 .unwrap_or(crate::diag::Span::DUMMY);
             b.set_srcloc(span_to_srcloc(span));
             let Stmt::Let(v, prim) = stmt;
-            let out = lower_prim(&mut b, jmod, runtime, tuple_schema_ids, &var_map, &raw_f64_vars, &raw_int_vars, fn_types, prim)?;
+            let out = lower_prim(&mut b, jmod, runtime, tuple_schema_ids, stub_fn_ids, &var_map, &raw_f64_vars, &raw_int_vars, fn_types, prim)?;
             let val = out.value();
             if out.is_raw_f64() {
                 raw_f64_vars.insert(v.0);
@@ -2354,6 +2413,9 @@ fn compile_fn<M: cranelift_module::Module>(
                 }
             }
             Term::CallClosure { closure, args, continuation } => {
+                // fz-ul4.29.5: load stub_fp from closure_ptr+16, build a
+                // cont frame, then call_indirect through stub_fp. The stub
+                // adapts the call into the callee's entry-frame layout.
                 let cl_val = *var_map.get(&closure.0).expect("unbound callclosure closure");
                 let arg_vals: Vec<ir::Value> = args
                     .iter()
@@ -2364,25 +2426,77 @@ fn compile_fn<M: cranelift_module::Module>(
                     .iter()
                     .map(|v| *var_map.get(&v.0).expect("unbound captured val"))
                     .collect();
-                emit_call_closure(
-                    &mut b,
-                    jmod,
-                    runtime,
-                    schemas,
-                    frame_ptr,
+                // Build cont frame (same as today's emit_call_closure prefix).
+                let alloc_fref = jmod.declare_func_in_func(runtime.alloc_id, b.func);
+                let my_cont = b.ins().load(types::I64, MemFlags::trusted(), frame_ptr, HEADER_SIZE);
+                let cont_sid = continuation.fn_id.0;
+                let cont_schema = &schemas[cont_sid as usize];
+                let cs = b.ins().iconst(types::I32, cont_sid as i64);
+                let cz = b.ins().iconst(types::I32, cont_schema.size as i64);
+                let cf_inst = b.ins().call(alloc_fref, &[cs, cz]);
+                let cf = b.inst_results(cf_inst)[0];
+                b.ins().store(MemFlags::trusted(), my_cont, cf, HEADER_SIZE);
+                store_args_into_callee_frame(&mut b, cont_schema, cf, &cap_vals, 2);
+                // Load stub_fp from closure payload offset 0 (heap offset 16).
+                let stub_fp = b.ins().load(
+                    types::I64,
+                    MemFlags::trusted(),
                     cl_val,
-                    &arg_vals,
-                    continuation.fn_id.0,
-                    &cap_vals,
+                    HEADER_SIZE,
                 );
+                // Build the stub signature on the fly (CallConv::SystemV,
+                // params: closure_ptr + n_args + cont_ptr + host_ctx; returns i64).
+                let mut sig = Signature::new(CallConv::SystemV);
+                sig.params.push(AbiParam::new(types::I64));
+                for _ in &arg_vals {
+                    sig.params.push(AbiParam::new(types::I64));
+                }
+                sig.params.push(AbiParam::new(types::I64));
+                sig.params.push(AbiParam::new(types::I64));
+                sig.returns.push(AbiParam::new(types::I64));
+                let sig_ref = b.func.import_signature(sig);
+                let mut indirect_args: Vec<ir::Value> = Vec::with_capacity(arg_vals.len() + 3);
+                indirect_args.push(cl_val);
+                for v in &arg_vals { indirect_args.push(*v); }
+                indirect_args.push(cf);
+                indirect_args.push(host_ctx);
+                let call_inst = b.ins().call_indirect(sig_ref, stub_fp, &indirect_args);
+                let callee_frame = b.inst_results(call_inst)[0];
+                b.ins().return_(&[callee_frame]);
             }
             Term::TailCallClosure { closure, args } => {
+                // fz-ul4.29.5: load stub_fp, call_indirect with my own cont
+                // (preserve tail-call semantics). The stub builds the
+                // callee frame using my cont and returns it for dispatch.
                 let cl_val = *var_map.get(&closure.0).expect("unbound tailcallclosure closure");
                 let arg_vals: Vec<ir::Value> = args
                     .iter()
                     .map(|v| *var_map.get(&v.0).expect("unbound tailcallclosure arg"))
                     .collect();
-                emit_tail_call_closure(&mut b, jmod, runtime, frame_ptr, cl_val, &arg_vals);
+                let my_cont = b.ins().load(types::I64, MemFlags::trusted(), frame_ptr, HEADER_SIZE);
+                let stub_fp = b.ins().load(
+                    types::I64,
+                    MemFlags::trusted(),
+                    cl_val,
+                    HEADER_SIZE,
+                );
+                let mut sig = Signature::new(CallConv::SystemV);
+                sig.params.push(AbiParam::new(types::I64));
+                for _ in &arg_vals {
+                    sig.params.push(AbiParam::new(types::I64));
+                }
+                sig.params.push(AbiParam::new(types::I64));
+                sig.params.push(AbiParam::new(types::I64));
+                sig.returns.push(AbiParam::new(types::I64));
+                let sig_ref = b.func.import_signature(sig);
+                let mut indirect_args: Vec<ir::Value> = Vec::with_capacity(arg_vals.len() + 3);
+                indirect_args.push(cl_val);
+                for v in &arg_vals { indirect_args.push(*v); }
+                indirect_args.push(my_cont);
+                indirect_args.push(host_ctx);
+                let call_inst = b.ins().call_indirect(sig_ref, stub_fp, &indirect_args);
+                let callee_frame = b.inst_results(call_inst)[0];
+                b.ins().return_(&[callee_frame]);
             }
             Term::Receive { continuation } => {
                 let cap_vals: Vec<ir::Value> = continuation
@@ -2616,62 +2730,141 @@ fn emit_tail_call<M: cranelift_module::Module>(
     }
 }
 
-/// Term::CallClosure: build the continuation frame the same way as Term::Call,
-/// stage args via fz_closure_arg(), then call fz_closure_invoke(closure,
-/// cont_frame_ptr) which returns the callee frame ptr.
-fn emit_call_closure<M: cranelift_module::Module>(
-    b: &mut FunctionBuilder<'_>,
+// fz-ul4.29.5: emit_call_closure / emit_tail_call_closure deleted.
+// Term::CallClosure / TailCallClosure lower directly inline (load stub_fp
+// from closure heap object, call_indirect through it). The closure cluster
+// helpers (fz_closure_begin / push / finalize / arg / invoke / tail) are
+// gone from the runtime; their work happens at compile time in stubs.
+
+/// fz-ul4.29.5: compile a closure stub. The stub is the adapter that
+/// the closure heap object's `stub_fp` points at. When CallClosure (or
+/// fz_spawn for the initial frame) invokes it, the stub:
+///   1. Allocates the callee's entry frame (sized to the narrow spec).
+///   2. Writes cont_ptr into slot 0 (offset 16).
+///   3. Reads each capture as tagged FzValue from `closure_ptr + 24 + 8*k`
+///      and stores it kind-aware into the callee frame's capture entry slot.
+///   4. Writes each call arg into its entry slot, kind-aware.
+///   5. Returns the callee frame for the trampoline.
+///
+/// Closure-target bodies stay uniform-ABI in v1 (parking.rs:113 excludes
+/// `used_as_closure_target` fns from `natively_callable`). The native-
+/// callee branch is gated on .29.8 lifting that exclusion; for now we
+/// always go through the uniform frame-alloc path.
+#[allow(clippy::too_many_arguments)]
+fn compile_closure_stub<M: cranelift_module::Module>(
     jmod: &mut M,
+    fbctx: &mut FunctionBuilderContext,
     runtime: &RuntimeRefs,
-    schemas: &[Schema],
-    frame_ptr: ir::Value,
-    closure_val: ir::Value,
-    args: &[ir::Value],
-    cont_fn_id: u32,
-    captured: &[ir::Value],
-) {
-    let alloc_fref = jmod.declare_func_in_func(runtime.alloc_id, b.func);
-    let my_cont = b.ins().load(types::I64, MemFlags::trusted(), frame_ptr, HEADER_SIZE);
+    stub_func_id: FuncId,
+    stub_sig: Signature,
+    _callee_func_id: FuncId,
+    _callee_sig: &Signature,
+    callee_schema: &Schema,
+    callee_frame_size: u32,
+    callee_sid: u32,
+    n_caps: usize,
+    n_args: usize,
+    callee_is_native_abi: bool,
+    stub_name: &str,
+) -> Result<(), CodegenError> {
+    assert!(!callee_is_native_abi,
+        "fz-ul4.29.5: native-ABI closure-target bodies require .29.8 (\
+         used_as_closure_target exclusion lifted); got {}", stub_name);
 
-    // Build continuation frame: [my_cont, result_placeholder, ...captured].
-    let cont_schema = &schemas[cont_fn_id as usize];
-    let sid = b.ins().iconst(types::I32, cont_fn_id as i64);
-    let sz = b.ins().iconst(types::I32, cont_schema.size as i64);
-    let call_inst = b.ins().call(alloc_fref, &[sid, sz]);
-    let cf = b.inst_results(call_inst)[0];
-    b.ins().store(MemFlags::trusted(), my_cont, cf, HEADER_SIZE);
-    // .5.4: kind-aware captured-slot store.
-    store_args_into_callee_frame(b, cont_schema, cf, captured, 2);
+    let mut ctx = jmod.make_context();
+    ctx.func.signature = stub_sig;
+    {
+        let mut b = FunctionBuilder::new(&mut ctx.func, fbctx);
+        let entry = b.create_block();
+        b.append_block_params_for_function_params(entry);
+        b.switch_to_block(entry);
+        b.seal_block(entry);
 
-    // Stage args, then invoke.
-    let arg_fref = jmod.declare_func_in_func(runtime.closure_arg_id, b.func);
-    for av in args {
-        b.ins().call(arg_fref, &[*av]);
+        let params: Vec<ir::Value> = b.block_params(entry).to_vec();
+        // Layout: [closure_ptr, arg_0..arg_{n_args-1}, cont_ptr, host_ctx]
+        let closure_ptr = params[0];
+        let arg_vals: Vec<ir::Value> = (0..n_args).map(|j| params[1 + j]).collect();
+        let cont_ptr = params[1 + n_args];
+        let _host_ctx = params[1 + n_args + 1];
+
+        // Allocate callee frame.
+        let alloc_fref = jmod.declare_func_in_func(runtime.alloc_id, b.func);
+        let sid_v = b.ins().iconst(types::I32, callee_sid as i64);
+        let sz_v = b.ins().iconst(types::I32, callee_frame_size as i64);
+        let alloc_inst = b.ins().call(alloc_fref, &[sid_v, sz_v]);
+        let callee_frame = b.inst_results(alloc_inst)[0];
+
+        // Slot 0: cont_ptr (offset 16).
+        b.ins().store(MemFlags::trusted(), cont_ptr, callee_frame, HEADER_SIZE);
+
+        // Slots 1..n_caps+1: captures. Read tagged FzValue from closure
+        // payload (offset 24 + 8*k) and store kind-aware into the callee
+        // frame's entry slot (offset 24 + 8*k). Slot kinds come from the
+        // callee narrow spec's Schema: fields[1+k].
+        for k in 0..n_caps {
+            let cap_off = HEADER_SIZE + SLOT_BYTES + (k as i32) * SLOT_BYTES; // 24 + 8*k
+            let tagged = b
+                .ins()
+                .load(types::I64, MemFlags::trusted(), closure_ptr, cap_off);
+            let slot_kind = &callee_schema.fields[k + 1].kind;
+            let slot_off = HEADER_SIZE + (k as i32 + 1) * SLOT_BYTES; // 24 + 8*k (same)
+            match slot_kind {
+                FieldKind::RawF64 => {
+                    let f = unbox_float(&mut b, tagged);
+                    b.ins().store(MemFlags::trusted(), f, callee_frame, slot_off);
+                }
+                FieldKind::RawI64 => {
+                    let n = unbox_int(&mut b, tagged);
+                    b.ins().store(MemFlags::trusted(), n, callee_frame, slot_off);
+                }
+                _ => {
+                    b.ins().store(MemFlags::trusted(), tagged, callee_frame, slot_off);
+                }
+            }
+        }
+
+        // Slots n_caps+1..n_caps+n_args+1: call args. Tagged FzValue → typed.
+        for j in 0..n_args {
+            let arg_v = arg_vals[j];
+            let slot_idx = n_caps + j + 1;
+            let slot_off = HEADER_SIZE + (slot_idx as i32) * SLOT_BYTES;
+            let slot_kind = &callee_schema.fields[slot_idx].kind;
+            match slot_kind {
+                FieldKind::RawF64 => {
+                    let f = unbox_float(&mut b, arg_v);
+                    b.ins().store(MemFlags::trusted(), f, callee_frame, slot_off);
+                }
+                FieldKind::RawI64 => {
+                    let n = unbox_int(&mut b, arg_v);
+                    b.ins().store(MemFlags::trusted(), n, callee_frame, slot_off);
+                }
+                _ => {
+                    b.ins().store(MemFlags::trusted(), arg_v, callee_frame, slot_off);
+                }
+            }
+        }
+
+        b.ins().return_(&[callee_frame]);
+        b.finalize();
     }
-    let invoke_fref = jmod.declare_func_in_func(runtime.closure_invoke_id, b.func);
-    let inv = b.ins().call(invoke_fref, &[closure_val, cf]);
-    let callee_frame = b.inst_results(inv)[0];
-    b.ins().return_(&[callee_frame]);
-}
-
-/// Term::TailCallClosure: stage args, then call fz_tail_closure(closure,
-/// current_frame). Runtime fn handles same-fn-id frame reuse vs. fresh alloc.
-fn emit_tail_call_closure<M: cranelift_module::Module>(
-    b: &mut FunctionBuilder<'_>,
-    jmod: &mut M,
-    runtime: &RuntimeRefs,
-    frame_ptr: ir::Value,
-    closure_val: ir::Value,
-    args: &[ir::Value],
-) {
-    let arg_fref = jmod.declare_func_in_func(runtime.closure_arg_id, b.func);
-    for av in args {
-        b.ins().call(arg_fref, &[*av]);
-    }
-    let tail_fref = jmod.declare_func_in_func(runtime.tail_closure_id, b.func);
-    let inv = b.ins().call(tail_fref, &[closure_val, frame_ptr]);
-    let callee_frame = b.inst_results(inv)[0];
-    b.ins().return_(&[callee_frame]);
+    let flags = settings::Flags::new(settings::builder());
+    cranelift_codegen::verifier::verify_function(&ctx.func, &flags).map_err(|e| {
+        CodegenError::new(format!(
+            "verify {}:\n{}\n--- IR ---\n{}",
+            stub_name,
+            e,
+            ctx.func.display()
+        ))
+    })?;
+    IR_TEXT_RECORD.with(|c| {
+        if let Some(v) = c.borrow_mut().as_mut() {
+            v.push((stub_name.to_string(), ctx.func.display().to_string()));
+        }
+    });
+    jmod.define_function(stub_func_id, &mut ctx)
+        .map_err(|e| CodegenError::new(format!("define {}: {}", stub_name, e)))?;
+    jmod.clear_context(&mut ctx);
+    Ok(())
 }
 
 /// True when `v`'s typer-inferred Descr is a subtype of `int_top` — the
@@ -2754,6 +2947,7 @@ fn lower_prim<M: cranelift_module::Module>(
     jmod: &mut M,
     runtime: &RuntimeRefs,
     tuple_schema_ids: &HashMap<usize, u32>,
+    stub_fn_ids: &std::collections::BTreeMap<(FnId, usize), FuncId>,
     env: &HashMap<u32, ir::Value>,
     raw_f64_vars: &std::collections::HashSet<u32>,
     raw_int_vars: &std::collections::HashSet<u32>,
@@ -3330,17 +3524,38 @@ fn lower_prim<M: cranelift_module::Module>(
             b.inst_results(inst)[0]
         }
         Prim::MakeClosure(fn_id, captured) => {
-            let begin = jmod.declare_func_in_func(runtime.closure_begin_id, b.func);
-            let id_val = b.ins().iconst(types::I32, fn_id.0 as i64);
-            b.ins().call(begin, &[id_val]);
-            let push = jmod.declare_func_in_func(runtime.closure_push_id, b.func);
-            for cv in captured {
-                let v = tagged_get(env, raw_f64_vars, raw_int_vars, b, jmod, runtime, cv.0);
-                b.ins().call(push, &[v]);
+            // fz-ul4.29.5: alloc closure heap object via fz_alloc_closure;
+            // store stub_fp at payload offset 16; write captures (tagged)
+            // at offsets 24+i*8. Captures are always tagged FzValue in
+            // the closure payload regardless of the callee's typed entry
+            // slots — the stub handles tagged→raw conversion at invoke
+            // time.
+            let n_caps = captured.len();
+            let stub_func_id = stub_fn_ids
+                .get(&(*fn_id, n_caps))
+                .copied()
+                .ok_or_else(|| {
+                    CodegenError::new(format!(
+                        "fz-ul4.29.5: no stub registered for (FnId({}), {} captures)",
+                        fn_id.0, n_caps
+                    ))
+                })?;
+            let alloc_fref = jmod.declare_func_in_func(runtime.alloc_closure_id, b.func);
+            let fid_v = b.ins().iconst(types::I32, fn_id.0 as i64);
+            let nc_v = b.ins().iconst(types::I32, n_caps as i64);
+            let inst = b.ins().call(alloc_fref, &[fid_v, nc_v]);
+            let cl_ptr = b.inst_results(inst)[0];
+            // stub_fp at offset 16.
+            let stub_fref = jmod.declare_func_in_func(stub_func_id, b.func);
+            let stub_addr = b.ins().func_addr(types::I64, stub_fref);
+            b.ins().store(MemFlags::trusted(), stub_addr, cl_ptr, HEADER_SIZE);
+            // Captures at offsets 24+i*8 (always tagged FzValue).
+            for (i, cv) in captured.iter().enumerate() {
+                let tagged = tagged_get(env, raw_f64_vars, raw_int_vars, b, jmod, runtime, cv.0);
+                let off = HEADER_SIZE + SLOT_BYTES + (i as i32) * SLOT_BYTES;
+                b.ins().store(MemFlags::trusted(), tagged, cl_ptr, off);
             }
-            let fin = jmod.declare_func_in_func(runtime.closure_finalize_id, b.func);
-            let inst = b.ins().call(fin, &[]);
-            b.inst_results(inst)[0]
+            cl_ptr
         }
         Prim::MakeVec(kind, els) => {
             use crate::fz_ir::VecKindIr;

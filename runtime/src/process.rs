@@ -23,8 +23,10 @@ pub struct Process {
     pub map_builder: Option<Vec<(u64, u64)>>,
     pub bs_builder: Option<crate::bitstr::BitWriter>,
     pub vec_builder: Option<crate::ir_runtime::VecBuild>,
-    pub closure_builder: Option<(u32, Vec<u64>)>,
-    pub closure_args: Vec<u64>,
+    // fz-ul4.29.5: closure_builder / closure_args fields removed. Closure
+    // construction is inlined at codegen (alloc + stub_fp + kind-aware
+    // capture writes); closure invocation is a direct call_indirect
+    // through stub_fp, no arg staging needed.
     // Per-CompiledModule constants copied at make_process() time. See
     // fz-ul4.19.1 follow-up to move these behind an Rc<CompiledModuleConsts>.
     pub frame_sizes: Vec<u32>,
@@ -74,8 +76,6 @@ impl Process {
             map_builder: None,
             bs_builder: None,
             vec_builder: None,
-            closure_builder: None,
-            closure_args: Vec::new(),
             frame_sizes: Vec::new(),
             atom_names: Vec::new(),
             bs_tuple_arity1_schema: None,

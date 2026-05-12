@@ -278,42 +278,39 @@ impl Heap {
         p
     }
 
-    /// Closure layout: `HeapHeader (16) + captured: [FzValue; n]`.
-    /// `header.kind = HeapKind::Closure`. `header.schema_id` is repurposed
-    /// to hold the IR fn id of the lambda body — the trampoline never sees
-    /// closure headers (closures are values inside frames, not frames),
-    /// so reusing schema_id is safe and skips a per-fn closure schema
-    /// registration. Captured count is recoverable as
-    /// `(size_bytes - 16) / 8`.
-    pub fn alloc_closure(&mut self, fn_id: u32, captured: &[FzValue]) -> *mut HeapHeader {
-        let total = (16 + captured.len() * 8 + 15) & !15;
-        assert!(captured.len() <= u16::MAX as usize, "closure captured count overflow");
+    /// Closure layout (fz-ul4.29.5):
+    ///   `HeapHeader (16) + stub_fp (8) + captures: [FzValue; n] (+pad)`
+    ///
+    /// Header fields (closure-specific use):
+    ///   - `flags` = captured count (same as pre-.29.5)
+    ///   - `schema_id` = 0 (no registered Schema; layout is uniform — flags
+    ///     gives the count, all capture slots are tagged FzValue)
+    ///   - `_reserved` = callee body FnId, used by ir_interp's closure
+    ///     dispatch and (in principle) by introspection. fz_spawn no
+    ///     longer reads this — it dispatches via stub_fp at offset 16.
+    ///
+    /// Caller writes `stub_fp` at payload offset 0 (heap offset 16) and
+    /// captures at payload offsets 8..(8+n*8) (heap offsets 24+). Captures
+    /// are always tagged FzValue regardless of the callee's typed entry-
+    /// slot kinds; the stub does the tagged→raw conversion when writing
+    /// the callee frame.
+    pub fn alloc_closure(&mut self, callee_fn_id: u32, captured_count: usize) -> *mut HeapHeader {
+        assert!(captured_count <= u16::MAX as usize, "closure captured count overflow");
+        let payload = 8 + captured_count * 8;
+        let total = (16 + payload + 15) & !15;
         let p = self.alloc(total);
         unsafe {
             std::ptr::write(
                 p,
                 HeapHeader {
                     kind: HeapKind::Closure as u16,
-                    flags: captured.len() as u16,
+                    flags: captured_count as u16,
                     size_bytes: total as u32,
-                    schema_id: fn_id,
-                    _reserved: 0,
+                    schema_id: 0,
+                    _reserved: callee_fn_id,
                 },
             );
-            let mut cursor = (p as *mut u8).add(16) as *mut FzValue;
-            for v in captured {
-                std::ptr::write(cursor, *v);
-                cursor = cursor.add(1);
-            }
-            // Zero any trailing 16-alignment padding so renders stay clean.
-            let used = 16 + captured.len() * 8;
-            if used < total {
-                std::ptr::write_bytes(
-                    (p as *mut u8).add(used),
-                    0,
-                    total - used,
-                );
-            }
+            std::ptr::write_bytes((p as *mut u8).add(16), 0, total - 16);
         }
         p
     }
@@ -574,8 +571,11 @@ fn walk_inner<V: HeapVisitor>(
             // Raw payloads: no FzValue children.
         }
         HeapKind::Closure => {
+            // fz-ul4.29.5: payload is `stub_fp (8) + captured: [FzValue;n]`.
+            // stub_fp is a code pointer (not heap-resident), skip it. Trace
+            // each captured FzValue as today's blind walk did.
             let captured_count = h.flags as usize;
-            let cursor = unsafe { (p as *const u8).add(16) as *const FzValue };
+            let cursor = unsafe { (p as *const u8).add(24) as *const FzValue };
             for i in 0..captured_count {
                 let child = unsafe { std::ptr::read(cursor.add(i)) };
                 if walk_inner(child, reg, visitor) == WalkDecision::Stop {
@@ -701,19 +701,24 @@ pub fn deep_copy_value(
             return FzValue(new_p as u64);
         }
         HeapKind::Closure => {
-            // Captured FzValues at offset 16; count is in header.flags.
+            // fz-ul4.29.5: stub_fp at offset 16, captures (FzValue) at
+            // offset 24+. Copy stub_fp as raw bytes (it's a code pointer,
+            // valid across heaps); deep-copy each captured FzValue.
             let captured_count = h.flags as usize;
-            let cursor = unsafe { (sp as *const u8).add(16) as *const FzValue };
-            let mut copied: Vec<FzValue> = Vec::with_capacity(captured_count);
-            // Defensive placeholder for cycles.
-            forwarding.insert(sp, std::ptr::null_mut());
-            for i in 0..captured_count {
-                let child = unsafe { std::ptr::read(cursor.add(i)) };
-                let nc = deep_copy_value(child, src_heap, dst_heap, forwarding);
-                copied.push(nc);
-            }
-            let new_p = dst_heap.alloc_closure(h.schema_id, &copied);
+            let new_p = dst_heap.alloc_closure(h._reserved, captured_count);
             forwarding.insert(sp, new_p);
+            // Copy stub_fp (raw 8 bytes).
+            unsafe {
+                let fp = std::ptr::read((sp as *const u8).add(16) as *const u64);
+                std::ptr::write((new_p as *mut u8).add(16) as *mut u64, fp);
+            }
+            let src_cursor = unsafe { (sp as *const u8).add(24) as *const FzValue };
+            let dst_cursor = unsafe { (new_p as *mut u8).add(24) as *mut FzValue };
+            for i in 0..captured_count {
+                let child = unsafe { std::ptr::read(src_cursor.add(i)) };
+                let nc = deep_copy_value(child, src_heap, dst_heap, forwarding);
+                unsafe { std::ptr::write(dst_cursor.add(i), nc); }
+            }
             return FzValue(new_p as u64);
         }
         HeapKind::VecI64 => {
@@ -1078,12 +1083,21 @@ mod tests {
 
     #[test]
     fn gc_traces_closure_captured() {
+        // fz-ul4.29.5: closure layout: header (16) + stub_fp (8) + N
+        // FzValue captures. The walker reads flags as captured_count and
+        // traces captures at offset 24+i*8.
         let reg = empty_registry();
         let mut h = Heap::new(1024, reg);
-        // captured[0] = leaf list cell. If closure is the only root, leaf
-        // must survive GC.
         let leaf = h.alloc_list_cons(FzValue::from_int(7), FzValue::NIL);
-        let cl = h.alloc_closure(42, &[FzValue::from_ptr(leaf)]);
+        let cl = h.alloc_closure(/* callee_fn_id */ 42, /* captured_count */ 1);
+        unsafe {
+            // stub_fp = 0 (test doesn't dispatch), cap0 = leaf ptr.
+            std::ptr::write((cl as *mut u8).add(16) as *mut u64, 0);
+            std::ptr::write(
+                (cl as *mut u8).add(24) as *mut FzValue,
+                FzValue::from_ptr(leaf),
+            );
+        }
         h.gc(&[FzValue::from_ptr(cl)]);
         assert_eq!(h.live_count(), 2);
     }
@@ -1093,7 +1107,7 @@ mod tests {
         let reg = empty_registry();
         let mut h = Heap::new(1024, reg);
         let leaf = h.alloc_list_cons(FzValue::from_int(7), FzValue::NIL);
-        let _cl = h.alloc_closure(42, &[FzValue::from_ptr(leaf)]);
+        let _cl = h.alloc_closure(42, 1);
         h.gc(&[]);
         assert_eq!(h.live_count(), 0);
         assert_eq!(h.freelist_len(), 2);

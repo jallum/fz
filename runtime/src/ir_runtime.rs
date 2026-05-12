@@ -94,28 +94,18 @@ pub extern "C" fn fz_halt(_ctx: *mut u8, fz_bits: u64) {
 /// Both consume a Runtime installed in TLS by Runtime::run_until_idle.
 /// Calling either outside the scheduler path panics with a clear message.
 ///
-/// fz_spawn(closure_bits) -> pid_bits. Extracts fn_id from the closure
-/// heap object and enqueues a new task at that fn. Returns the pid as a
-/// boxed FzValue Int (Pid-as-struct deferred to a follow-up).
-///
-/// v1 restriction: closure must have ZERO captures. Captured values
-/// would need to be copied into the new task's heap (.19.3 territory);
-/// for v1 spawn takes plain fn references (closures with no captures).
+/// fz_spawn(closure_bits) -> pid_bits. fz-ul4.29.5 lift: dispatches the
+/// closure (with any number of captures) to the scheduler hook. The hook
+/// deep-copies the closure into the new task's heap, materializes the
+/// initial frame via the closure's stub_fp, and enqueues. Returns the
+/// new pid as a boxed FzValue Int.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_spawn(closure_bits: u64) -> u64 {
     use crate::fz_value::FzValue;
-    let cp = FzValue(closure_bits)
+    let _cp = FzValue(closure_bits)
         .unbox_ptr()
         .expect("spawn: closure not a heap ptr");
-    let header = unsafe { &*cp };
-    let fn_id_raw: u32 = header.schema_id;
-    let captured_count = header.flags as usize;
-    assert!(
-        captured_count == 0,
-        "spawn/1 v1: closure with {} captures not yet supported; pass a plain fn reference",
-        captured_count
-    );
-    let pid = crate::scheduler_hooks::dispatch_spawn(fn_id_raw);
+    let pid = crate::scheduler_hooks::dispatch_spawn(closure_bits);
     FzValue::from_int(pid as i64).0
 }
 
@@ -177,120 +167,19 @@ pub extern "C" fn fz_receive_attempt(cont_frame_ptr: *mut u8) -> *mut u8 {
 
 // ===== Closure cluster (fz-ul4.23.4.11) =====
 //
-// Closures are heap objects (HeapKind::Closure) holding [...captured FzValues].
-// `header.schema_id` is repurposed to hold the IR fn id of the lambda body.
-// `header.flags` holds the captured count (u16). The trampoline never sees
-// closure headers — it dispatches off frame headers — so the schema_id reuse
-// is safe and avoids registering a per-fn closure schema.
-//
-// Construction is staged via TLS: begin(fn_id) -> push(v) ×n -> finalize().
-// Invocation is staged via TLS args: arg(v) ×n -> invoke(closure, cont_ptr)
-// returns the callee frame ptr. TailCallClosure uses the same staging plus a
-// frame-reuse path when the closure's fn shares the caller's schema (fn_id
-// equality).
-//
-// CLOSURE_BUILDER + CLOSURE_ARGS + FRAME_SIZES state lives on Process
-// fields (per fz-ul4.11.32).
+// fz-ul4.29.5: closures are (stub_fp, captures...) pairs. Every closure
+// invocation is a call_indirect through stub_fp inlined at the call site;
+// MakeClosure inlines heap-alloc + stub_fp store + capture writes. The
+// only runtime helper left in the closure cluster is the allocator below.
 
+/// Allocate a closure heap object with `captured_count` capture slots.
+/// Caller writes stub_fp at offset 16 and captures at offset 24+.
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_closure_begin(fn_id: u32) {
-    current_process().closure_builder = Some((fn_id, Vec::new()));
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_closure_push(v: u64) {
-    current_process()
-        .closure_builder
-        .as_mut()
-        .expect("fz_closure_push without begin")
-        .1
-        .push(v);
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_closure_finalize() -> u64 {
-    use crate::fz_value::FzValue;
-    let (fn_id, captured) = current_process()
-        .closure_builder
-        .take()
-        .expect("fz_closure_finalize without begin");
-    let cap_fz: Vec<FzValue> = captured.into_iter().map(FzValue).collect();
-    let p = current_process().heap.alloc_closure(fn_id, &cap_fz);
+pub extern "C" fn fz_alloc_closure(callee_fn_id: u32, captured_count: u32) -> u64 {
+    let p = current_process()
+        .heap
+        .alloc_closure(callee_fn_id, captured_count as usize);
     p as u64
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_closure_arg(v: u64) {
-    current_process().closure_args.push(v);
-}
-
-/// Build a callee frame for `closure` invocation:
-///   frame[16] = cont_ptr
-///   frame[24..24+cap*8]   = closure.captured
-///   frame[24+cap*8..]     = staged args (consumed from CLOSURE_ARGS)
-/// Returns the callee frame ptr for the trampoline to invoke next.
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_closure_invoke(closure_bits: u64, cont_ptr: u64) -> *mut u8 {
-    use crate::fz_value::FzValue;
-    let cp = FzValue(closure_bits)
-        .unbox_ptr()
-        .expect("fz_closure_invoke: closure not a heap ptr");
-    let header = unsafe { &*cp };
-    let fn_id = header.schema_id;
-    let captured_count = header.flags as usize;
-    let frame = fz_alloc_frame_dyn(fn_id);
-    let args = std::mem::take(&mut current_process().closure_args);
-    unsafe {
-        std::ptr::write((frame as *mut u8).add(16) as *mut u64, cont_ptr);
-        let cap_src = (cp as *const u8).add(16) as *const u64;
-        let frame_slots = (frame as *mut u8).add(24) as *mut u64;
-        std::ptr::copy_nonoverlapping(cap_src, frame_slots, captured_count);
-        for (i, v) in args.iter().enumerate() {
-            std::ptr::write(frame_slots.add(captured_count + i), *v);
-        }
-    }
-    frame
-}
-
-/// Tail-call a closure. If the closure's fn_id matches the caller's frame
-/// schema_id, overwrite the caller's frame in place (cont_ptr stays).
-/// Otherwise allocate a fresh frame and copy the cont_ptr from the caller's.
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_tail_closure(closure_bits: u64, current_frame: *mut u8) -> *mut u8 {
-    use crate::fz_value::{FzValue, HeapHeader};
-    let cp = FzValue(closure_bits)
-        .unbox_ptr()
-        .expect("fz_tail_closure: closure not a heap ptr");
-    let header = unsafe { &*cp };
-    let fn_id = header.schema_id;
-    let captured_count = header.flags as usize;
-    let cur_header = unsafe { &*(current_frame as *const HeapHeader) };
-    let cur_fn_id = cur_header.schema_id;
-    let args = std::mem::take(&mut current_process().closure_args);
-    let cap_src = unsafe { (cp as *const u8).add(16) as *const u64 };
-
-    if cur_fn_id == fn_id {
-        unsafe {
-            let frame_slots = current_frame.add(24) as *mut u64;
-            std::ptr::copy_nonoverlapping(cap_src, frame_slots, captured_count);
-            for (i, v) in args.iter().enumerate() {
-                std::ptr::write(frame_slots.add(captured_count + i), *v);
-            }
-        }
-        current_frame
-    } else {
-        let frame = fz_alloc_frame_dyn(fn_id);
-        unsafe {
-            let old_cont = std::ptr::read(current_frame.add(16) as *const u64);
-            std::ptr::write(frame.add(16) as *mut u64, old_cont);
-            let frame_slots = frame.add(24) as *mut u64;
-            std::ptr::copy_nonoverlapping(cap_src, frame_slots, captured_count);
-            for (i, v) in args.iter().enumerate() {
-                std::ptr::write(frame_slots.add(captured_count + i), *v);
-            }
-        }
-        frame
-    }
 }
 
 // ===== Vec cluster (fz-ul4.23.4.10) =====

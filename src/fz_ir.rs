@@ -65,7 +65,7 @@ pub struct BitFieldPatIr {
     pub unit: Option<u32>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct FnId(pub u32);
 
 /// Per-callsite specialization identifier. fz-ul4.29.2.

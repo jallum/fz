@@ -73,28 +73,37 @@ thread_local! {
 /// runtime crate dispatches through when fz_spawn / fz_send fire from
 /// JIT'd code. They translate the raw-u32 hook ABI back into the
 /// FnId/PidId newtypes Runtime expects and call the existing impls.
-extern "C" fn spawn_hook_thunk(fn_id_raw: u32) -> u32 {
-    spawn_via_current_runtime(FnId(fn_id_raw))
+extern "C" fn spawn_hook_thunk(closure_bits: u64) -> u32 {
+    spawn_closure_via_current_runtime(closure_bits)
 }
 
 extern "C" fn send_hook_thunk(receiver_pid: u32, msg_bits: u64) {
     send_via_current_runtime(receiver_pid, FzValue(msg_bits));
 }
 
-/// fz-ul4.19.2: called from fz_spawn (ir_codegen.rs FFI) to enqueue a new
-/// task. Reads CURRENT_RUNTIME, calls spawn() on it. Panics if no Runtime
-/// is currently installed (i.e., the JIT path is being driven via
-/// CompiledModule.run rather than Runtime::run_until_idle).
+/// fz-ul4.29.5: called from fz_spawn (runtime FFI) to enqueue a new task
+/// from a closure. Deep-copies the closure into the new task's heap and
+/// invokes its stub_fp to materialize the initial frame. Panics outside
+/// a running Runtime.
+pub fn spawn_closure_via_current_runtime(closure_bits: u64) -> PidId {
+    let raw = CURRENT_RUNTIME.with(|c| c.get());
+    assert!(
+        !raw.is_null(),
+        "spawn() called outside Runtime::run_until_idle — no scheduler to spawn into"
+    );
+    let rt = unsafe { &mut *(raw as *mut Runtime<'static>) };
+    rt.spawn_closure(closure_bits)
+}
+
+/// Pre-.29.5 API kept for runtime-internal tests that don't have a closure
+/// value in hand (they construct frames directly). Real user code routes
+/// through `fz_spawn(closure_bits)` → `spawn_closure`.
 pub fn spawn_via_current_runtime(fn_id: FnId) -> PidId {
     let raw = CURRENT_RUNTIME.with(|c| c.get());
     assert!(
         !raw.is_null(),
         "spawn() called outside Runtime::run_until_idle — no scheduler to spawn into"
     );
-    // Safety: while CURRENT_RUNTIME is non-null, the Runtime stack frame
-    // is live (run_until_idle hasn't returned). We re-narrow with a
-    // synthetic 'static lifetime; the call returns before the borrow
-    // matters.
     let rt = unsafe { &mut *(raw as *mut Runtime<'static>) };
     rt.spawn(fn_id)
 }
@@ -218,6 +227,66 @@ impl<'a> Runtime<'a> {
         }
         process.next_frame = frame;
         self.tasks.insert(pid, Box::new(process));
+        self.run_queue.push_back(pid);
+        pid
+    }
+
+    /// fz-ul4.29.5: spawn a task from a closure value owned by the
+    /// currently-running process. Deep-copies the closure into the new
+    /// task's heap, then invokes the closure's stub_fp with cont_ptr=null
+    /// and no args to materialize the initial frame.
+    pub fn spawn_closure(&mut self, closure_bits: u64) -> PidId {
+        use fz_runtime::fz_value::FzValue;
+        use fz_runtime::process::CURRENT_PROCESS;
+
+        let pid = self.next_pid;
+        self.next_pid += 1;
+        let mut process = self.compiled.make_process();
+        process.pid = pid;
+        process.state = ProcessState::Ready;
+
+        // Deep-copy the closure from sender's heap into the new task's heap.
+        let sender_ptr = CURRENT_PROCESS.with(|c| c.get());
+        assert!(!sender_ptr.is_null(), "spawn_closure: no current_process");
+        let sender = unsafe { &*sender_ptr };
+        let mut forwarding: std::collections::HashMap<
+            *mut fz_runtime::fz_value::HeapHeader,
+            *mut fz_runtime::fz_value::HeapHeader,
+        > = std::collections::HashMap::new();
+        let copied = fz_runtime::heap::deep_copy_value(
+            FzValue(closure_bits),
+            &sender.heap,
+            &mut process.heap,
+            &mut forwarding,
+        );
+        let copied_ptr = copied
+            .unbox_ptr()
+            .expect("spawn_closure: closure must be a heap ptr");
+
+        // Stub_fp lives at payload offset 16 (first slot of the closure's
+        // payload, RawBytes(8) per the closure shape Schema).
+        let stub_fp_raw = unsafe {
+            std::ptr::read((copied_ptr as *mut u8).add(HEADER_SIZE as usize) as *const u64)
+        };
+        assert!(stub_fp_raw != 0, "spawn_closure: stub_fp is null");
+
+        // Install the new process as CURRENT_PROCESS for the stub's heap
+        // operations (it will fz_alloc_frame_dyn into THIS process's heap).
+        let process_box = Box::new(process);
+        let process_ptr = Box::into_raw(process_box);
+        let prev = CURRENT_PROCESS.with(|c| c.replace(process_ptr));
+        type SpawnStub = extern "C" fn(*mut u8, u64, *mut u8) -> *mut u8;
+        let stub: SpawnStub = unsafe { std::mem::transmute(stub_fp_raw as *const u8) };
+        let initial_frame = stub(
+            copied_ptr as *mut u8,
+            /* cont_ptr = null */ 0,
+            process_ptr as *mut u8,
+        );
+        CURRENT_PROCESS.with(|c| c.set(prev));
+        let mut process = unsafe { Box::from_raw(process_ptr) };
+        process.next_frame = initial_frame;
+
+        self.tasks.insert(pid, process);
         self.run_queue.push_back(pid);
         pid
     }
