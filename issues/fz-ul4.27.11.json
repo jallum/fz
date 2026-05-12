@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-05-12T10:20:14Z",
   "created": "2026-05-12T10:04:45Z",
   "description": "Allow Term::TailCall in natively_callable bodies (currently excluded). Requires inserting an explicit GC safepoint check before return_call so a hot recursive loop yields to the GC at a reasonable cadence — the trampoline used to provide this implicitly via per-iteration dispatch. Also requires picking the calling convention carefully so mutual-recursion between native fns with different arities still TCOs.",
   "id": "fz-ul4.27.11",
   "labels": [],
   "parent": "fz-ul4.27",
   "priority": 3,
-  "status": "in_progress",
+  "status": "closed",
   "title": "VR.6 follow-up: safepoint-aware native TailCall for non-parking recursion",
   "type": "task",
-  "updated_at": "2026-05-12T10:10:44Z"
+  "updated_at": "2026-05-12T10:20:14Z"
 }
