@@ -1,6 +1,7 @@
 {
   "assignee": "",
   "blocked_by": [
+    "fz-ul4.27.10",
     "fz-ul4.27.5.2"
   ],
   "blocks": [
@@ -15,5 +16,5 @@
   "status": "open",
   "title": "VR.3.3: typed INT entry-frame slots end-to-end",
   "type": "task",
-  "updated_at": "2026-05-12T01:36:47Z"
+  "updated_at": "2026-05-12T01:40:44Z"
 }
