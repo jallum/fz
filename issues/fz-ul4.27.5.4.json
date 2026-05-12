@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-ul4.27.5.3"
   ],
@@ -12,8 +12,8 @@
   "labels": [],
   "parent": "fz-ul4.27.5",
   "priority": 3,
-  "status": "open",
+  "status": "in_progress",
   "title": "VR.3.4: typed raw slots in continuation frames",
   "type": "task",
-  "updated_at": "2026-05-12T01:36:48Z"
+  "updated_at": "2026-05-12T02:08:44Z"
 }
