@@ -32,6 +32,8 @@ pub const PARSE_MACRO_CALL_SHAPE: DiagCode = DiagCode("parse/macro-call-shape");
 pub const RESOLVE_ALIAS_OUTSIDE_MODULE: DiagCode = DiagCode("resolve/alias-outside-module");
 pub const RESOLVE_IMPORT_OUTSIDE_MODULE: DiagCode = DiagCode("resolve/import-outside-module");
 pub const RESOLVE_UNKNOWN_MODULE: DiagCode = DiagCode("resolve/unknown-module");
+pub const RESOLVE_TYPE_ALIAS: DiagCode = DiagCode("resolve/type-alias");
+pub const SPEC_VIOLATION: DiagCode = DiagCode("spec/violation");
 
 // ----- macro expansion -----
 
@@ -87,6 +89,7 @@ mod tests {
             LEX_UNEXPECTED_CHAR, LEX_UNTERMINATED_STRING,
             PARSE_EXPECTED_TOKEN, PARSE_UNEXPECTED_TOKEN,
             RESOLVE_ALIAS_OUTSIDE_MODULE, RESOLVE_IMPORT_OUTSIDE_MODULE,
+            RESOLVE_TYPE_ALIAS, SPEC_VIOLATION,
             MACRO_NOT_A_DEFMACRO, MACRO_EXPANSION_LOOP,
             LOWER_UNSUPPORTED, LOWER_UNBOUND,
             TYPE_UNREACHABLE_ARM, TYPE_EMPTY_NARROWING,

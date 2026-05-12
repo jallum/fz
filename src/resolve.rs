@@ -33,20 +33,28 @@ use std::rc::Rc;
 pub enum ResolveError {
     AliasOutsideModule { span: Span },
     ImportOutsideModule { span: Span },
+    /// fz-ul4.31.5 — Failure to build a module's `@type` env (duplicate
+    /// alias, cycle, or unknown name in an alias body).
+    TypeAliasError { msg: String, span: Span },
 }
 
 impl ResolveError {
     pub fn to_diagnostic(&self) -> Diagnostic {
-        match *self {
+        match self {
             Self::AliasOutsideModule { span } => Diagnostic::error(
                 codes::RESOLVE_ALIAS_OUTSIDE_MODULE,
                 "alias is only valid inside a defmodule body",
-                span,
+                *span,
             ),
             Self::ImportOutsideModule { span } => Diagnostic::error(
                 codes::RESOLVE_IMPORT_OUTSIDE_MODULE,
                 "import is only valid inside a defmodule body",
-                span,
+                *span,
+            ),
+            Self::TypeAliasError { msg, span } => Diagnostic::error(
+                codes::RESOLVE_TYPE_ALIAS,
+                msg.clone(),
+                *span,
             ),
         }
     }
@@ -78,6 +86,13 @@ pub fn flatten_modules(prog: Program) -> Result<Program, ResolveError> {
     let mut out: Vec<Rc<Item>> = Vec::new();
     let mut module_docs: HashMap<String, String> = HashMap::new();
     collect_module_docs(&prog, &mut module_docs);
+    // fz-ul4.31.5 — build per-module `@type` envs. Top-level (key "")
+    // gets the empty env so top-level fns with @spec resolve against
+    // builtins only.
+    let mut module_type_envs: HashMap<String, crate::type_expr::ModuleTypeEnv>
+        = HashMap::new();
+    module_type_envs.insert(String::new(), crate::type_expr::ModuleTypeEnv::new());
+    collect_module_type_envs(&prog, "", &mut module_type_envs)?;
     let no_aliases: HashMap<String, String> = HashMap::new();
     let no_imports: HashMap<(String, usize), String> = HashMap::new();
     for item in &prog.items {
@@ -121,7 +136,45 @@ pub fn flatten_modules(prog: Program) -> Result<Program, ResolveError> {
             }
         }
     }
-    Ok(Program { items: out, module_docs })
+    Ok(Program { items: out, module_docs, module_type_envs })
+}
+
+/// fz-ul4.31.5 — Walk every ModuleDef in `prog` (recursively into
+/// nested modules) and build its `@type` env. Errors from
+/// `build_module_type_env` (duplicate alias, cycle, unknown ref)
+/// surface as `ResolveError::TypeAliasError`.
+fn collect_module_type_envs(
+    prog: &Program,
+    parent: &str,
+    out: &mut HashMap<String, crate::type_expr::ModuleTypeEnv>,
+) -> Result<(), ResolveError> {
+    for item in &prog.items {
+        if let Item::Module(m) = &**item {
+            collect_module_type_envs_recursive(m, parent, out)?;
+        }
+    }
+    Ok(())
+}
+
+fn collect_module_type_envs_recursive(
+    m: &ModuleDef,
+    parent: &str,
+    out: &mut HashMap<String, crate::type_expr::ModuleTypeEnv>,
+) -> Result<(), ResolveError> {
+    let path = if parent.is_empty() { m.name.clone() }
+               else { format!("{}.{}", parent, m.name) };
+    let env = crate::type_expr::build_module_type_env(&m.attrs)
+        .map_err(|e| ResolveError::TypeAliasError {
+            msg: format!("module `{}`: {}", path, e.msg),
+            span: e.span,
+        })?;
+    out.insert(path.clone(), env);
+    for item in &m.items {
+        if let Item::Module(inner) = &**item {
+            collect_module_type_envs_recursive(inner, &path, out)?;
+        }
+    }
+    Ok(())
 }
 
 fn collect_module_docs(prog: &Program, out: &mut HashMap<String, String>) {

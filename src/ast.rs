@@ -378,4 +378,12 @@ pub struct Program {
     /// `resolve::flatten_modules` (the only stage that still sees
     /// `ModuleDef`s). Used by the REPL's `?M` query.
     pub module_docs: std::collections::HashMap<String, String>,
+    /// fz-ul4.31.5 — Qualified-module-path → resolved `@type` aliases
+    /// for that module. Built by `resolve::flatten_modules` (which is
+    /// where the original `ModuleDef.attrs` are still visible). Used by
+    /// `spec_check::validate_specs` to resolve `@spec` bodies against
+    /// the right env. Top-level fns (outside any defmodule) use the
+    /// empty env stored under "".
+    #[allow(dead_code)] // .31.6 wires validate_specs into the drivers.
+    pub module_type_envs: std::collections::HashMap<String, crate::type_expr::ModuleTypeEnv>,
 }

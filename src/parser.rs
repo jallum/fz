@@ -195,7 +195,8 @@ impl Parser {
                 _ => {}
             }
         }
-        Ok(Program { items, module_docs: Default::default() })
+        Ok(Program { items, module_docs: Default::default(),
+                     module_type_envs: Default::default() })
     }
 
     fn parse_items_until(&mut self, terminators: &[Tok]) -> PR<(Vec<Rc<Item>>, Vec<Attribute>)> {

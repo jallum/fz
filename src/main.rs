@@ -20,6 +20,7 @@ mod parser;
 mod repl;
 mod resolve;
 mod runtime;
+mod spec_check;
 mod test_runner;
 mod type_expr;
 mod typer;
