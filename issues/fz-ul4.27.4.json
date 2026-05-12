@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-12T00:23:29Z",
+  "description": "Equality is statically resolvable in three cases at codegen time:\n\n  1. Same monomorphic kind: native compare. int == int → icmp eq on i64. atom == atom → u32 eq. float == float → feq after read_float. bool, nil similarly.\n  2. Empty intersection (e.g. int == atom): typer's intersect(t_a, t_b) returns Descr::NONE. Folds to iconst.i8 0. Surface as a lint via ir_typer::collect_diagnostics — \"always-false comparison\" is usually a mistake.\n  3. Non-empty intersection, multiple kinds: minimal dispatch bounded by the intersection (one tag check + native compare per overlapping kind), not the full fz_value_eq walk.\n\nCovers Eq, Neq, and assert_eq / assert_neq builtins that route through fz_value_eq today. fz_value_eq stays as the polymorphic fallback for genuine `any` equality.\n\n## Adds\n\n  - lower_prim::lower_eq dispatch on operand Descr intersection (the three cases above).\n  - ir_typer::collect_diagnostics gains an `always_false_comparison` lint when intersect == NONE.\n  - Fixtures: int-eq lowers to one icmp; kind-disjoint lowers to false constant + warning; matrix green.\n\n## Kills\n\n  - The \"always call fz_value_eq for any Eq/Neq\" path in lower_prim.\n  - fz_value_eq's call site in JIT-emitted comparison code — the FFI fn itself survives for `any`-eq fallback and is still reachable from eq_list/eq_struct/eq_bitstring/eq_map recursive paths.\n  - The top-of-eq_fz scalar tag dispatch on operand kinds (Int/Atom/Bool/Nil tag checks at function entry). After VR.5a the JIT no longer reaches the scalar arms — they only survive because the heap-kind dispatch below them recurses through eq_fz for child slots. Audit and delete unreachable arms; flatten what remains.\n\n## Acceptance\n\n  - int-eq and atom-eq fixtures lower to a single Cranelift icmp (VR.0 assertions).\n  - Kind-disjoint fixtures lower to iconst.i8 0 with a warning diagnostic visible in `cargo run`'s output.\n  - Matrix green.",
+  "id": "fz-ul4.27.4",
+  "labels": [],
+  "parent": "fz-ul4.27",
+  "priority": 3,
+  "status": "open",
+  "title": "VR.5a: typed equality / inequality",
+  "type": "task",
+  "updated_at": "2026-05-12T00:23:29Z"
+}
