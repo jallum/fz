@@ -2155,8 +2155,40 @@ fn compile_fn<M: cranelift_module::Module>(
     };
     let mut b = FunctionBuilder::new(&mut ctx.func, fbctx);
 
+    // fz-ul4.30 — reachability filter. `ir_lower` emits an unconditional
+    // `fail_block` per fn (Halt with :function_clause atom) for clauses
+    // whose patterns fail at runtime, and similar match-fail blocks for
+    // `cond` / lambda bodies. Single-clause fns with bare-var params
+    // never Goto their fail_block, leaving it as dead CLIF. Worse, the
+    // dead Halt's `return` was previously typed `i64` regardless of the
+    // fn's sig — under .27.13's per-Descr return type this trips the
+    // Cranelift verifier (f64 sig vs i64 return). Skip emitting those
+    // blocks entirely.
+    let reachable_fz_blocks: std::collections::HashSet<u32> = {
+        let mut reach: std::collections::HashSet<u32> = std::collections::HashSet::new();
+        let mut stack: Vec<u32> = vec![f.entry.0];
+        while let Some(bid) = stack.pop() {
+            if !reach.insert(bid) { continue; }
+            let blk = match f.blocks.iter().find(|b| b.id.0 == bid) {
+                Some(b) => b,
+                None => continue,
+            };
+            match &blk.terminator {
+                Term::Goto(t, _) => stack.push(t.0),
+                Term::If(_, t, e) => { stack.push(t.0); stack.push(e.0); }
+                // Return / TailCall / Halt / Call / CallClosure /
+                // TailCallClosure / Receive don't pass control to other
+                // fz_ir blocks within this fn; codegen lowers them into
+                // Cranelift sub-blocks owned by the lowering site itself.
+                _ => {}
+            }
+        }
+        reach
+    };
+
     let mut block_map: HashMap<u32, ir::Block> = HashMap::new();
     for blk in &f.blocks {
+        if !reachable_fz_blocks.contains(&blk.id.0) { continue; }
         let cl_blk = b.create_block();
         block_map.insert(blk.id.0, cl_blk);
     }
@@ -2180,6 +2212,7 @@ fn compile_fn<M: cranelift_module::Module>(
 
     for blk in &f.blocks {
         if blk.id == f.entry { continue; }
+        if !reachable_fz_blocks.contains(&blk.id.0) { continue; }
         let cl_blk = *block_map.get(&blk.id.0).unwrap();
         for _ in &blk.params {
             b.append_block_param(cl_blk, types::I64);
@@ -2246,12 +2279,15 @@ fn compile_fn<M: cranelift_module::Module>(
         (frame_ptr, host_ctx)
     };
 
-    // Walk blocks in declared order with entry first.
+    // Walk blocks in declared order with entry first. Unreachable
+    // fz_ir blocks (fz-ul4.30) are filtered out — they have no
+    // Cranelift counterpart.
     let mut order: Vec<&crate::fz_ir::Block> = Vec::with_capacity(f.blocks.len());
     if let Some(eb) = f.blocks.iter().find(|b| b.id == f.entry) {
         order.push(eb);
     }
     for blk in &f.blocks {
+        if !reachable_fz_blocks.contains(&blk.id.0) { continue; }
         if blk.id != f.entry { order.push(blk); }
     }
 
@@ -2749,6 +2785,7 @@ fn compile_fn<M: cranelift_module::Module>(
     }
 
     for blk in &f.blocks {
+        if !reachable_fz_blocks.contains(&blk.id.0) { continue; }
         let cl_blk = *block_map.get(&blk.id.0).unwrap();
         if blk.id != f.entry { b.seal_block(cl_blk); }
     }
