@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-05-12T18:48:14Z",
@@ -8,8 +8,8 @@
   "labels": [],
   "parent": "fz-ul4",
   "priority": 3,
-  "status": "open",
+  "status": "in_progress",
   "title": "Remove dead block1 halt epilogue and stray entry-block iconst from compiled fns",
   "type": "task",
-  "updated_at": "2026-05-12T18:48:14Z"
+  "updated_at": "2026-05-12T20:56:50Z"
 }
