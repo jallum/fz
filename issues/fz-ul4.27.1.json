@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-ul4.27"
+  ],
   "blocks": [],
   "created": "2026-05-12T00:23:29Z",
   "description": "Pre-work for the value-rep arc. Subsequent atoms produce no stdout change — they change HOW code is generated. The matrix must be able to assert on dump output so each atom can prove itself observably.\n\n## Surface\n\n```\n# expect_clif_contains: fn add1: iadd\n# expect_clif_excludes: fn add1: icmp_imm\n```\n\nPer-fn substring assertions over `fz dump --emit clif`. Header-key gated in fixture header. BLESS=1 appends observed CLIF substrings to expectations.\n\n## Adds\n\n  - tests/fixture_matrix.rs: parse expect_clif_* keys, shell `fz dump --emit clif --fn \u003cname\u003e`, assert substring matches.\n  - One demo fixture using the new keys to anchor the contract.\n\n## Kills\n\n  Nothing. Pure additive — gated by header keys, no fixture without them is affected.\n\n## Acceptance\n\n  - A fixture declaring `expect_clif_contains: iadd` + `expect_clif_excludes: icmp_imm` passes when the dump matches and fails when it doesn't.\n  - BLESS=1 round-trips: re-running with BLESS appends observed substrings; subsequent runs without BLESS pass.\n  - All existing fixtures still green.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "VR.0: fixture-matrix CLIF assertion extension",
   "type": "task",
-  "updated_at": "2026-05-12T00:23:29Z"
+  "updated_at": "2026-05-12T00:23:31Z"
 }
