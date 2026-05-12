@@ -751,6 +751,45 @@ end
     }
 
     #[test]
+    fn type_alias_attribute_parses_with_module() {
+        // .31.3 — `@type` inside a defmodule attaches a TypeAlias to
+        // the module's attrs. The body tokens are captured for later
+        // resolution by `type_expr::build_module_type_env`.
+        let prog = parse(r#"
+defmodule M do
+  @type id :: integer
+  @type pair :: {id, id}
+  fn one(), do: 1
+end
+"#);
+        let m = prog.items.iter().find_map(|it| match &**it {
+            Item::Module(m) => Some(m), _ => None,
+        }).unwrap();
+        let aliases: Vec<&str> = m.attrs.iter().filter_map(|a| match a {
+            Attribute::TypeAlias(d) => Some(d.name.as_str()),
+            _ => None,
+        }).collect();
+        assert_eq!(aliases, vec!["id", "pair"]);
+        // Build env and verify resolution end-to-end.
+        let env = crate::type_expr::build_module_type_env(&m.attrs).unwrap();
+        assert!(env.get("id").unwrap().is_equiv(&crate::types::Descr::int()));
+        let pair = env.get("pair").unwrap();
+        let expected = crate::types::Descr::tuple_of([
+            crate::types::Descr::int(),
+            crate::types::Descr::int(),
+        ]);
+        assert!(pair.is_equiv(&expected));
+    }
+
+    #[test]
+    fn type_alias_at_top_level_errors() {
+        let toks = crate::lexer::Lexer::new("@type id :: integer\nfn main(), do: nil")
+            .tokenize().unwrap();
+        let r = Parser::new(toks).parse_program();
+        assert!(r.is_err(), "@type at top level must error; got {:?}", r);
+    }
+
+    #[test]
     fn unknown_attribute_errors() {
         let toks = crate::lexer::Lexer::new("@bogus \"x\"\nfn main(), do: nil")
             .tokenize().unwrap();

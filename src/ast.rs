@@ -227,15 +227,31 @@ pub struct FnClause {
 
 /// fz-ul4.31.2 — uniform attribute carrier on FnDef / ModuleDef.
 /// Replaces the prior `doc: Option<String>` / `moduledoc: Option<String>`
-/// fields with a list of typed attribute variants. .31.3 adds
-/// `TypeAlias`, .31.4 adds `Spec` — extending this enum doesn't churn
-/// callers that already consume via `attrs: Vec<Attribute>`.
+/// fields with a list of typed attribute variants. .31.4 adds `Spec` —
+/// extending this enum doesn't churn callers that already consume via
+/// `attrs: Vec<Attribute>`.
 #[derive(Debug, Clone)]
 pub enum Attribute {
     /// `@doc "..."` attached above a fn/defmacro.
     Doc(String),
     /// `@moduledoc "..."` at the top of a module body.
     ModuleDoc(String),
+    /// fz-ul4.31.3 — `@type Name :: <type-expr>`. The body is stored as
+    /// raw tokens and parsed via `type_expr::build_module_type_env`
+    /// after all aliases in a module are collected, so forward
+    /// references resolve and cycles are detectable.
+    TypeAlias(TypeAliasDecl),
+}
+
+#[derive(Debug, Clone)]
+pub struct TypeAliasDecl {
+    pub name: String,
+    pub name_span: Span,
+    /// Raw type-expression tokens for the body, terminated by but not
+    /// including the trailing newline / eof / end.
+    pub body_tokens: Vec<crate::lexer::Token>,
+    /// Span of the whole `@type ... :: ...` declaration.
+    pub span: Span,
 }
 
 #[derive(Debug, Clone)]

@@ -52,6 +52,106 @@ impl std::fmt::Display for TypeExprError {
     }
 }
 
+/// fz-ul4.31.3 — Build a `ModuleTypeEnv` from a module's `@type`
+/// attributes. Resolves each alias body via `parse_type_expr`, threading
+/// a partial env that grows as aliases are resolved. Forward references
+/// inside the same module are supported (the resolver does a fixed-point
+/// pass); cycles are detected and reported.
+///
+/// `attrs` is expected to be a `ModuleDef.attrs` (or `Program`-level
+/// equivalent). Non-TypeAlias attributes are ignored. Duplicate alias
+/// names within `attrs` are an error.
+pub fn build_module_type_env(
+    attrs: &[crate::ast::Attribute],
+) -> Result<ModuleTypeEnv, TypeExprError> {
+    use crate::ast::Attribute;
+    // Collect aliases keyed by name; reject duplicates.
+    let mut pending: HashMap<String, &crate::ast::TypeAliasDecl> = HashMap::new();
+    let mut order: Vec<String> = Vec::new();
+    for a in attrs {
+        if let Attribute::TypeAlias(decl) = a {
+            if pending.contains_key(&decl.name) {
+                return Err(TypeExprError {
+                    msg: format!("duplicate @type alias `{}`", decl.name),
+                    span: decl.name_span,
+                });
+            }
+            order.push(decl.name.clone());
+            pending.insert(decl.name.clone(), decl);
+        }
+    }
+    if pending.is_empty() {
+        return Ok(ModuleTypeEnv::new());
+    }
+    let mut env: ModuleTypeEnv = ModuleTypeEnv::new();
+    // Fixed-point resolve: keep walking until no progress.
+    loop {
+        let mut progressed = false;
+        for name in &order {
+            if env.contains_key(name) { continue; }
+            let decl = pending[name];
+            match parse_type_expr(&decl.body_tokens, &env) {
+                Ok((d, _consumed)) => {
+                    env.insert(name.clone(), d);
+                    progressed = true;
+                }
+                Err(_) => {
+                    // Body references a name not yet in env. Try again
+                    // next iteration after other aliases resolve.
+                }
+            }
+        }
+        if !progressed { break; }
+    }
+    // Anything still pending is a cycle or references an unknown name.
+    // Re-parse one unresolved body to surface the underlying error.
+    if env.len() < pending.len() {
+        for name in &order {
+            if env.contains_key(name) { continue; }
+            let decl = pending[name];
+            // Distinguish cycle from unknown-name by checking whether
+            // the body references another unresolved alias.
+            let body_refs = referenced_names(&decl.body_tokens);
+            let mut cycle_partner: Option<&str> = None;
+            for r in &body_refs {
+                if pending.contains_key(r) && !env.contains_key(r) {
+                    cycle_partner = Some(r.as_str());
+                    break;
+                }
+            }
+            if let Some(partner) = cycle_partner {
+                return Err(TypeExprError {
+                    msg: format!(
+                        "type-alias cycle: `{}` and `{}` depend on each other",
+                        name, partner
+                    ),
+                    span: decl.span,
+                });
+            }
+            // No cycle partner — surface the original parse error.
+            match parse_type_expr(&decl.body_tokens, &env) {
+                Ok(_) => unreachable!("env did not grow; this should not parse OK"),
+                Err(e) => return Err(e),
+            }
+        }
+    }
+    Ok(env)
+}
+
+/// Scan `tokens` and return the user-visible names referenced (any
+/// Ident / Upper that isn't a built-in scalar). Used by
+/// `build_module_type_env` to detect cycles vs unknown-name errors.
+fn referenced_names(tokens: &[crate::lexer::Token]) -> Vec<String> {
+    use crate::lexer::Tok;
+    tokens.iter().filter_map(|t| match &t.tok {
+        Tok::Ident(n) | Tok::Upper(n) => match n.as_str() {
+            "nil" | "bool" | "integer" | "float" | "binary" | "atom" | "any" => None,
+            _ => Some(n.clone()),
+        },
+        _ => None,
+    }).collect()
+}
+
 /// Parse one type expression from `tokens` starting at index 0.
 /// Returns the lowered `Descr` and the number of tokens consumed.
 ///
@@ -470,6 +570,126 @@ mod tests {
     fn primary_position_rejects_bar() {
         // `| integer` is malformed — `|` is a binary operator.
         assert!(parse_one("| integer").is_err());
+    }
+
+    // ----- fz-ul4.31.3: build_module_type_env -----
+
+    fn type_alias_attr(name: &str, body_src: &str) -> crate::ast::Attribute {
+        use crate::ast::{Attribute, TypeAliasDecl};
+        use crate::diag::Span;
+        let toks = Lexer::new(body_src).tokenize().expect("lex body");
+        // Drop trailing Eof to match parser behavior.
+        let body_tokens: Vec<_> = toks.into_iter()
+            .filter(|t| !matches!(t.tok, Tok::Eof))
+            .collect();
+        Attribute::TypeAlias(TypeAliasDecl {
+            name: name.to_string(),
+            name_span: Span::DUMMY,
+            body_tokens,
+            span: Span::DUMMY,
+        })
+    }
+
+    #[test]
+    fn build_env_resolves_simple_alias() {
+        let attrs = vec![type_alias_attr("id", "integer")];
+        let env = build_module_type_env(&attrs).unwrap();
+        assert!(env.get("id").unwrap().is_equiv(&Descr::int()));
+    }
+
+    #[test]
+    fn build_env_resolves_alias_of_alias_in_either_order() {
+        // Declare in forward order: a refs b, b is plain.
+        let attrs = vec![
+            type_alias_attr("a", "b"),
+            type_alias_attr("b", "integer"),
+        ];
+        let env = build_module_type_env(&attrs).unwrap();
+        assert!(env.get("a").unwrap().is_equiv(&Descr::int()));
+        assert!(env.get("b").unwrap().is_equiv(&Descr::int()));
+    }
+
+    #[test]
+    fn build_env_resolves_composite_alias() {
+        // pair := {id, id}; id := integer.
+        let attrs = vec![
+            type_alias_attr("pair", "{id, id}"),
+            type_alias_attr("id", "integer"),
+        ];
+        let env = build_module_type_env(&attrs).unwrap();
+        let expected = Descr::tuple_of([Descr::int(), Descr::int()]);
+        assert!(env.get("pair").unwrap().is_equiv(&expected));
+    }
+
+    #[test]
+    fn build_env_detects_simple_cycle() {
+        let attrs = vec![
+            type_alias_attr("a", "b"),
+            type_alias_attr("b", "a"),
+        ];
+        let err = build_module_type_env(&attrs).unwrap_err();
+        assert!(err.msg.contains("cycle"), "expected cycle diag, got: {}", err.msg);
+    }
+
+    #[test]
+    fn build_env_detects_three_way_cycle() {
+        let attrs = vec![
+            type_alias_attr("a", "b"),
+            type_alias_attr("b", "c"),
+            type_alias_attr("c", "a"),
+        ];
+        let err = build_module_type_env(&attrs).unwrap_err();
+        assert!(err.msg.contains("cycle"), "expected cycle diag, got: {}", err.msg);
+    }
+
+    #[test]
+    fn build_env_rejects_unknown_reference() {
+        let attrs = vec![type_alias_attr("foo", "nonesuch")];
+        let err = build_module_type_env(&attrs).unwrap_err();
+        assert!(err.msg.contains("unknown type name"),
+            "expected unknown-name diag, got: {}", err.msg);
+    }
+
+    #[test]
+    fn build_env_rejects_duplicate_alias() {
+        let attrs = vec![
+            type_alias_attr("id", "integer"),
+            type_alias_attr("id", "float"),
+        ];
+        let err = build_module_type_env(&attrs).unwrap_err();
+        assert!(err.msg.contains("duplicate"),
+            "expected duplicate diag, got: {}", err.msg);
+    }
+
+    #[test]
+    fn build_env_ignores_non_type_alias_attributes() {
+        use crate::ast::Attribute;
+        let attrs = vec![
+            Attribute::ModuleDoc("hello".to_string()),
+            type_alias_attr("id", "integer"),
+            Attribute::Doc("a doc".to_string()),
+        ];
+        let env = build_module_type_env(&attrs).unwrap();
+        assert_eq!(env.len(), 1);
+        assert!(env.get("id").unwrap().is_equiv(&Descr::int()));
+    }
+
+    #[test]
+    fn build_env_empty_for_module_without_aliases() {
+        let attrs: Vec<crate::ast::Attribute> = vec![];
+        let env = build_module_type_env(&attrs).unwrap();
+        assert!(env.is_empty());
+    }
+
+    #[test]
+    fn build_env_resolves_arrow_using_alias() {
+        let attrs = vec![
+            type_alias_attr("id", "integer"),
+            type_alias_attr("idfn", "(id) -> id"),
+        ];
+        let env = build_module_type_env(&attrs).unwrap();
+        let expected = Descr::arrow([Descr::int()], Descr::int());
+        assert!(env.get("idfn").unwrap().is_equiv(&expected));
     }
 
     #[test]

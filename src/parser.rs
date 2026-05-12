@@ -186,8 +186,14 @@ impl Parser {
 
     pub fn parse_program(&mut self) -> PR<Program> {
         let (items, top_attrs) = self.parse_items_until(&[Tok::Eof])?;
-        if top_attrs.iter().any(|a| matches!(a, Attribute::ModuleDoc(_))) {
-            return self.err("@moduledoc only valid inside a defmodule body".to_string());
+        for a in &top_attrs {
+            match a {
+                Attribute::ModuleDoc(_) => return self.err(
+                    "@moduledoc only valid inside a defmodule body".to_string()),
+                Attribute::TypeAlias(_) => return self.err(
+                    "@type only valid inside a defmodule body".to_string()),
+                _ => {}
+            }
         }
         Ok(Program { items, module_docs: Default::default() })
     }
@@ -201,6 +207,7 @@ impl Parser {
         // structured `Attribute`s. The single-string `doc`/`moduledoc`
         // model is gone; .31.3/.31.4 extend the Attribute enum.
         let mut moduledoc_attr: Option<Attribute> = None;
+        let mut module_aliases: Vec<Attribute> = Vec::new();
         let mut pending_fn_attrs: Vec<Attribute> = Vec::new();
 
         self.skip_newlines();
@@ -222,6 +229,13 @@ impl Parser {
                                 return self.err("duplicate @doc before fn".to_string());
                             }
                             pending_fn_attrs.push(attr);
+                        }
+                        Attribute::TypeAlias(_) => {
+                            // fz-ul4.31.3 — @type belongs to the
+                            // enclosing module's attrs alongside
+                            // @moduledoc (module-level scope, not a
+                            // pending-for-fn decoration).
+                            module_aliases.push(attr);
                         }
                     }
                 }
@@ -297,7 +311,8 @@ impl Parser {
         if !pending_fn_attrs.is_empty() {
             return self.err("@doc not followed by a fn or defmacro".to_string());
         }
-        let module_attrs: Vec<Attribute> = moduledoc_attr.into_iter().collect();
+        let mut module_attrs: Vec<Attribute> = moduledoc_attr.into_iter().collect();
+        module_attrs.extend(module_aliases);
         Ok((items, module_attrs))
     }
 
@@ -308,6 +323,9 @@ impl Parser {
         self.expect(&Tok::At, "`@`")?;
         let name = match self.bump() {
             Tok::Ident(n) => n,
+            // `type` is a reserved keyword token from the lexer (.18.6
+            // era), so allow it here for `@type` to lex.
+            Tok::Type => "type".to_string(),
             other => return self.err(format!(
                 "expected attribute name after `@`, got {:?}", other
             )),
@@ -326,11 +344,66 @@ impl Parser {
                     Ok(Attribute::ModuleDoc(value))
                 }
             }
+            "type" => {
+                // fz-ul4.31.3: `@type Name :: <type-expr>`. Body parsed
+                // later via `type_expr::build_module_type_env` so forward
+                // references between aliases in the same module resolve.
+                let start = self.cur_span();
+                let alias_name_span = self.cur_span();
+                let alias_name = match self.bump() {
+                    Tok::Upper(n) | Tok::Ident(n) => n,
+                    other => return self.err(format!(
+                        "expected type-alias name after `@type`, got {:?}", other
+                    )),
+                };
+                self.expect(&Tok::ColonColon, "`::`")?;
+                // Collect tokens until a top-level newline / eof / end.
+                let body_tokens = self.collect_type_body_tokens();
+                let end_span = self.cur_span();
+                Ok(Attribute::TypeAlias(TypeAliasDecl {
+                    name: alias_name,
+                    name_span: alias_name_span,
+                    body_tokens,
+                    span: start.merge(end_span),
+                }))
+            }
             other => self.err(format!(
-                "unknown attribute `@{}` (only @doc and @moduledoc supported)",
+                "unknown attribute `@{}` (only @doc, @moduledoc, @type supported)",
                 other
             )),
         }
+    }
+
+    /// fz-ul4.31.3 — Consume the type-expression body tokens for an
+    /// `@type` or `@spec` attribute. Stops at the first top-level
+    /// newline / eof / module-end. Brackets, braces, and parens are
+    /// balanced so a multi-line type body could in principle span lines
+    /// inside brackets, but in v1 we only emit single-line bodies.
+    fn collect_type_body_tokens(&mut self) -> Vec<Token> {
+        let mut out: Vec<Token> = Vec::new();
+        let mut depth: i32 = 0;
+        loop {
+            match self.peek() {
+                Tok::Eof | Tok::End => break,
+                Tok::Newline if depth == 0 => break,
+                Tok::LParen | Tok::LBrack | Tok::LBrace => {
+                    depth += 1;
+                    out.push(self.toks[self.pos].clone());
+                    self.pos += 1;
+                }
+                Tok::RParen | Tok::RBrack | Tok::RBrace => {
+                    depth -= 1;
+                    out.push(self.toks[self.pos].clone());
+                    self.pos += 1;
+                    if depth < 0 { break; }
+                }
+                _ => {
+                    out.push(self.toks[self.pos].clone());
+                    self.pos += 1;
+                }
+            }
+        }
+        out
     }
 
     fn peek_in(&self, terminators: &[Tok]) -> bool {
