@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-ul4.27.2"
   ],
@@ -12,8 +12,8 @@
   "labels": [],
   "parent": "fz-ul4.27",
   "priority": 3,
-  "status": "open",
+  "status": "in_progress",
   "title": "VR.2: remaining scalar ops (float, cmp, bool)",
   "type": "task",
-  "updated_at": "2026-05-12T00:23:32Z"
+  "updated_at": "2026-05-12T00:43:09Z"
 }
