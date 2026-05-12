@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-ul4.29.4"
+  ],
   "blocks": [],
   "created": "2026-05-12T12:03:44Z",
   "description": "Standalone follow-up: the runtime's `fz_closure_invoke` / `fz_tail_closure` currently `copy_nonoverlapping` captured slots blindly as 8-byte FzValues into the callee frame. If the callee has typed slots (RawI64/RawF64) but the closure payload stores tagged values (or vice versa), the copy lands wrong bits — silent GC corruption.\n\n## Why this is its own ticket\n\nThis is independent of the typer rework. Even with the .29 arc's any-key closure fallback, if a closure target's any-key specialization happens to have typed slots (e.g., via .29.5 narrowing), the runtime copy must convert per-slot kind. Today's blind 8-byte copy is correct ONLY because closure-reachable fns ship with all-FzValue slots (the old workaround). Once .29.3 lifts that, this code is one specialization away from being unsafe.\n\nBrings forward fz-ul4.27.5.6 part B.\n\n## Scope\n\n- Add per-slot kind metadata to closure heap objects (alongside captured_count).\n- `fz_closure_push` and friends generate kind-tagged push records.\n- `fz_closure_invoke` and `fz_tail_closure` consult both the closure payload's per-slot kinds AND the callee schema's slot kinds; convert at copy time (tagged ↔ raw int / raw f64).\n\n## Acceptance\n\n- A fixture with a closure capturing one int + one float, invoked via `f.(args)`, lowers with both captures stored raw (RawI64 + RawF64).\n- GC tracer parity verified (closure's per-slot kind tags drive trace decisions).\n- Fixture matrix green.\n\n## Supersedes\n\nfz-ul4.27.5.6 part B — that ticket is closed when this lands.\n\n## Blocked by\n\nfz-ul4.29.4.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": ".29.6: Runtime closure-invoke kind-aware copy",
   "type": "task",
-  "updated_at": "2026-05-12T12:03:44Z"
+  "updated_at": "2026-05-12T12:03:45Z"
 }
