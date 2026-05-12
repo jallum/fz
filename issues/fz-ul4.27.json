@@ -3,9 +3,7 @@
   "blocked_by": [
     "fz-ul4.23.12"
   ],
-  "blocks": [
-    "fz-ul4.27.1"
-  ],
+  "blocks": [],
   "created": "2026-05-12T00:23:28Z",
   "description": "Type-directed unboxing of fz's compiled path. Tags persist only at boundaries where they earn their keep (print/inspect, heterogeneous heap interiors, genuine `any`); everywhere else — arithmetic, comparisons, equality, frame slots, closure payloads, call boundaries — values are native machine types and operations are one instruction.\n\nFull design + DAG + per-atom killset is at /Users/j5n/Workspace/plan.html.\n\n## Goal\n\n`n + 1` where ir_typer proves both operands are `int` compiles to one `iadd`. Today it compiles to 9 instructions + a branch + a dead fallback block. Multiply across every op site and call boundary — this is the largest perf gap between what fz emits and what a strongly-typed compiler emits.\n\nJIT and AOT share the same backend. Same compile_fn, same emitted machine code, same per-fn metadata. They differ only in WHEN compilation fires (lazy vs eager) and WHERE the bytes land (RAM vs object file).\n\n## Prerequisite\n\nfz-ul4.23.12 (unify compile() and compile_aot() through Backend trait). The VR atoms land on the shared compile_fn after that unification; otherwise every atom has to be applied to two pipelines.\n\n## Atoms (in dependency order)\n\n  VR.0  — fixture-matrix CLIF assertion extension\n  VR.1  — int+int unboxed arithmetic\n  VR.2  — remaining scalar ops (float, cmp, bool)         } siblings, same pattern\n  VR.5a — typed equality (kind-monomorphic / disjoint /\n          narrow-overlap)                                  } siblings, same pattern\n  VR.3  — per-slot frame layout (incl closure payloads)\n  VR.4  — per-fn native ABI for direct calls\n  VR.5b — boundary box-up at print/inspect call sites    } terminal siblings\n  VR.6  — stack-allocate non-parking call frames         } terminal siblings\n          (unlocks return_call TCO)\n\n## Three-path-parity reframe\n\nPost-23.12 the matrix's `jit, aot` columns are tautologically the same generated code. Either keep three columns as INVOCATION paths (lazy compile / interp / build+link) or collapse to two (compiled / interp). Recommended as a follow-up after 23.12.\n\n## Net code impact\n\nRoughly half of every atom's gross addition is offset by code it makes dead. Through VR.5b: ~1,650 added / ~1,440 killed = +210 net. Through VR.6: +310 net. The discipline: each atom's acceptance must explicitly list what becomes unreachable AND delete it. \"New fast path wired up; old slow path still live\" is not done.\n\n## Decision points\n\n  - After 23.12: revisit scope if unification reveals issues.\n  - After VR.2 + VR.5a: op-level untag is the bulk of the visible perf win; stop here if frame-layout work isn't worth it.\n  - Before VR.6: file as sibling epic if parking-reachability grows beyond the current sketch.\n\n## What this arc does NOT do\n\n  - No speculation, no deopt, no inline caches — strong types make them unnecessary.\n  - No tiered compilation (interp is the cold tier; compiled is the warm/hot).\n  - No heap layout changes (this is about how scalars travel between ops, not heap-resident data).",
   "id": "fz-ul4.27",
@@ -15,5 +13,5 @@
   "status": "in_progress",
   "title": "[EPIC] Type-directed value representation",
   "type": "task",
-  "updated_at": "2026-05-12T00:30:54Z"
+  "updated_at": "2026-05-12T00:31:31Z"
 }
