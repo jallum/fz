@@ -4,14 +4,15 @@
   "blocks": [
     "fz-ul4.27.6.2"
   ],
+  "closed_at": "2026-05-12T02:27:24Z",
   "created": "2026-05-12T02:25:32Z",
   "description": "Substrate for VR.4: classify each fn as either parking-reachable (transitively reaches `Term::Receive` or calls a closure / closure-reachable target) or non-parking. Direct callers of non-parking fns can later switch to a native typed ABI (.6.2+) while parking-reachable fns keep the heap-frame ABI (parking requires heap-resident state for the scheduler to suspend/resume).\n\n## Algorithm\n\n  parking_reachable := { f : f.body contains Term::Receive }\n  // closure invocations are opaque — conservatively treat reachable.\n  union closure_reachable_callees(m)\n  fixed-point: parking_reachable += { f : f's body has Term::Call/TailCall/CallClosure/TailCallClosure to anything already in parking_reachable }\n\nOne pass usually converges; iterate to be safe.\n\n## Adds\n\n- `ir_typer::parking_reachable(m: \u0026Module) -\u003e HashSet\u003cFnId\u003e` or a new `src/parking.rs` module. Returns the set.\n- Unit tests: a `receive_loop` fn is in the set; a pure helper fn is not; a fn that calls `receive_loop` directly is in the set; a fn that builds a closure pointing at `receive_loop` puts both in the set; a fn that calls a closure (any closure) is in the set.\n\n## Kills\n\n- Nothing yet — this is pure utility.\n\n## Acceptance\n\n- The analysis returns a sound over-approximation: every fn that can possibly park is in the set. False positives are acceptable (a fn that's marked parking-reachable but never actually parks pays a small perf cost — heap frame allocation — but is correct).\n- cargo test green.\n\n## Blocks\n\n- fz-ul4.27.6.2 (typed sigs + native direct calls)",
   "id": "fz-ul4.27.6.1",
   "labels": [],
   "parent": "fz-ul4.27.6",
   "priority": 3,
-  "status": "in_progress",
+  "status": "closed",
   "title": "VR.4.1: parking-reachability analysis",
   "type": "task",
-  "updated_at": "2026-05-12T02:26:10Z"
+  "updated_at": "2026-05-12T02:27:24Z"
 }
