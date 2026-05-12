@@ -2757,7 +2757,7 @@ fn compile_closure_stub<M: cranelift_module::Module>(
     runtime: &RuntimeRefs,
     stub_func_id: FuncId,
     stub_sig: Signature,
-    _callee_func_id: FuncId,
+    callee_func_id: FuncId,
     _callee_sig: &Signature,
     callee_schema: &Schema,
     callee_frame_size: u32,
@@ -2767,10 +2767,6 @@ fn compile_closure_stub<M: cranelift_module::Module>(
     callee_is_native_abi: bool,
     stub_name: &str,
 ) -> Result<(), CodegenError> {
-    assert!(!callee_is_native_abi,
-        "fz-ul4.29.5: native-ABI closure-target bodies require .29.8 (\
-         used_as_closure_target exclusion lifted); got {}", stub_name);
-
     let mut ctx = jmod.make_context();
     ctx.func.signature = stub_sig;
     {
@@ -2785,7 +2781,63 @@ fn compile_closure_stub<M: cranelift_module::Module>(
         let closure_ptr = params[0];
         let arg_vals: Vec<ir::Value> = (0..n_args).map(|j| params[1 + j]).collect();
         let cont_ptr = params[1 + n_args];
-        let _host_ctx = params[1 + n_args + 1];
+        let host_ctx = params[1 + n_args + 1];
+
+        if callee_is_native_abi {
+            // fz-ul4.29.8 — closure-target body uses the typed native ABI.
+            // The stub IS the adapter: load captures from the closure heap
+            // object as tagged FzValues, forward call args (also tagged at
+            // the CallClosure site by the indirect-call sig), call the
+            // native body, then route the tagged result through cont_ptr.
+            //
+            // Native fn sig is `(entry_param_0, ..., entry_param_{n-1},
+            // host_ctx) -> i64` with every param/return as tagged FzValue
+            // (build_fn_signature, .6.2.3), so no kind-aware unboxing is
+            // needed here — the body unboxes internally per its narrowing.
+            let callee_fref = jmod.declare_func_in_func(callee_func_id, b.func);
+            let mut native_args: Vec<ir::Value> =
+                Vec::with_capacity(n_caps + n_args + 1);
+            for k in 0..n_caps {
+                let cap_off = HEADER_SIZE + SLOT_BYTES + (k as i32) * SLOT_BYTES;
+                let v = b
+                    .ins()
+                    .load(types::I64, MemFlags::trusted(), closure_ptr, cap_off);
+                native_args.push(v);
+            }
+            for v in &arg_vals { native_args.push(*v); }
+            native_args.push(host_ctx);
+            let call_inst = b.ins().call(callee_fref, &native_args);
+            let result = b.inst_results(call_inst)[0];
+
+            // Mirror emit_return: if cont_ptr is null (top-frame
+            // TailCallClosure from main), halt; otherwise write the result
+            // into the cont's first entry-param slot (offset 24) and hand
+            // cont_ptr to the trampoline for dispatch.
+            let zero = b.ins().iconst(types::I64, 0);
+            let is_null = b.ins().icmp(IntCC::Equal, cont_ptr, zero);
+            let halt_blk = b.create_block();
+            let invoke_blk = b.create_block();
+            let no_args: Vec<BlockArg> = Vec::new();
+            b.ins().brif(is_null, halt_blk, &no_args, invoke_blk, &no_args);
+
+            b.switch_to_block(halt_blk);
+            b.seal_block(halt_blk);
+            let halt_fref = jmod.declare_func_in_func(runtime.halt_id, b.func);
+            b.ins().call(halt_fref, &[host_ctx, result]);
+            let null = b.ins().iconst(types::I64, 0);
+            b.ins().return_(&[null]);
+
+            b.switch_to_block(invoke_blk);
+            b.seal_block(invoke_blk);
+            b.ins().store(
+                MemFlags::trusted(),
+                result,
+                cont_ptr,
+                HEADER_SIZE + SLOT_BYTES,
+            );
+            b.ins().return_(&[cont_ptr]);
+            b.finalize();
+        } else {
 
         // Allocate callee frame.
         let alloc_fref = jmod.declare_func_in_func(runtime.alloc_id, b.func);
@@ -2846,6 +2898,7 @@ fn compile_closure_stub<M: cranelift_module::Module>(
 
         b.ins().return_(&[callee_frame]);
         b.finalize();
+        }
     }
     let flags = settings::Flags::new(settings::builder());
     cranelift_codegen::verifier::verify_function(&ctx.func, &flags).map_err(|e| {

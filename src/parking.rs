@@ -43,6 +43,13 @@ use std::collections::HashSet;
 /// terminators are restricted to TailCall/Return/Halt/Goto/If can return
 /// their result directly as a native value. Lifting this restriction is
 /// the job of .6.3 (native continuation invocation).
+///
+/// fz-ul4.29.8 — closure-target fns are no longer excluded from this set.
+/// The per-closure-shape stub generated in .29.5 acts as an ABI adapter:
+/// it loads captures from the closure heap object, marshals them with the
+/// call args into the native callee's typed signature, and routes the
+/// callee's tagged-FzValue return through the cont (or halts on a null
+/// cont when invoked at the top of a task).
 pub fn natively_callable(m: &Module, parking: &HashSet<FnId>) -> HashSet<FnId> {
     use std::collections::HashMap;
     let mut used_as_cont: HashSet<FnId> = HashSet::new();
@@ -103,14 +110,19 @@ pub fn natively_callable(m: &Module, parking: &HashSet<FnId>) -> HashSet<FnId> {
     // set only if every terminator in its body lowers natively given
     // the current set (Term::Call's callee + cont, Term::TailCall's
     // callee — all must be in the set).
+    // fz-ul4.29.8 — closure targets are now reachable as native: the stub
+    // (per .29.5) acts as the ABI adapter, loading captures kind-aware from
+    // the closure object and invoking the native body directly. The
+    // exclusion that previously kept closure targets uniform is lifted.
     let reachable_as_native = |id: &FnId| {
-        directly_called.contains(id) || used_as_cont.contains(id)
+        directly_called.contains(id)
+            || used_as_cont.contains(id)
+            || used_as_closure_target.contains(id)
     };
 
     let mut set: HashSet<FnId> = HashSet::new();
     for f in &m.fns {
         if parking.contains(&f.id) { continue; }
-        if used_as_closure_target.contains(&f.id) { continue; }
         if cont_blocked.contains(&f.id) { continue; }
         if Some(f.id) == main_id { continue; }
         if !reachable_as_native(&f.id) { continue; }
