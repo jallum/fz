@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-ul4.27.13.1"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-ul4.27.13.3"
+  ],
   "created": "2026-05-12T19:20:51Z",
   "description": "compile_fn's is_native branch (ir_codegen.rs:2027-2069) consults the sig (or same ft/return_descr inputs) when appending block_params and populating var_map. Block_params get F64 type for float-only Descrs, I64 otherwise; raw_int_vars / raw_f64_vars get populated to match. Delete the deferral comment at ir_codegen.rs:2063-2065.\n\nTest: narrow int spec's entry block carries `block0(v0: i64, v1: i64)` AND the body's first use of v0 in an iadd uses v0 directly (no `sshr_imm v0, 3`). Float case: `block0(v0: f64, v1: i64)`.",
   "id": "fz-ul4.27.13.2",
