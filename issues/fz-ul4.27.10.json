@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
     "fz-ul4.27.5.2",
@@ -12,8 +12,8 @@
   "labels": [],
   "parent": "fz-ul4.27",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "ir_typer: call-site narrowing for fn entry params",
   "type": "task",
-  "updated_at": "2026-05-12T01:40:44Z"
+  "updated_at": "2026-05-12T01:40:48Z"
 }
