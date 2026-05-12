@@ -575,6 +575,56 @@ fn join_return_descrs(
     joined.unwrap_or_else(crate::types::Descr::any)
 }
 
+/// fz-ul4.27.13 — How a fz arg/return rides the Cranelift ABI for a native
+/// fn. `Tagged` is the default FzValue i64 (low 3 bits = tag); `RawInt` is
+/// an unshifted int payload as i64; `RawF64` is a raw f64.
+///
+/// Per-spec param/return reprs are derived from `ir_typer`'s Descrs:
+/// float-only → `RawF64`, int-only → `RawInt`, else `Tagged`. `build_fn_
+/// signature` picks the AbiParam type from the repr; `compile_fn` populates
+/// `raw_*_vars` to match; call sites coerce at the seam.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ArgRepr {
+    Tagged,
+    RawInt,
+    RawF64,
+}
+
+impl ArgRepr {
+    fn from_descr(d: &crate::types::Descr) -> ArgRepr {
+        if d.is_subtype(&crate::types::Descr::float()) {
+            ArgRepr::RawF64
+        } else if d.is_subtype(&crate::types::Descr::int()) {
+            ArgRepr::RawInt
+        } else {
+            ArgRepr::Tagged
+        }
+    }
+    fn cl_type(&self) -> types::Type {
+        match self {
+            ArgRepr::RawF64 => types::F64,
+            _ => types::I64,
+        }
+    }
+}
+
+/// Per-spec entry-param ArgReprs. Length matches the spec's entry block's
+/// param count.
+fn build_param_reprs(
+    f: &crate::fz_ir::FnIr,
+    ft: &crate::ir_typer::FnTypes,
+) -> Vec<ArgRepr> {
+    let entry = f.blocks.iter().find(|b| b.id == f.entry).unwrap();
+    entry
+        .params
+        .iter()
+        .map(|p| {
+            let d = ft.vars.get(p).cloned().unwrap_or_else(crate::types::Descr::any);
+            ArgRepr::from_descr(&d)
+        })
+        .collect()
+}
+
 /// fz-ul4.27.6.2.2 — Per-fn Cranelift Signature.
 ///
 /// `is_native = false` → uniform `(frame_ptr: i64, host_ctx: i64) -> i64`,
@@ -583,17 +633,14 @@ fn join_return_descrs(
 /// frame and returns the cont frame ptr to the trampoline.
 ///
 /// `is_native = true` → typed-arity signature reflecting the fn's entry
-/// params + `host_ctx` + return: `(i64, i64, ..., i64) -> i64`. In .6.2.3
-/// every native param/return is a tagged FzValue (i64), so this signature
-/// only differs from the uniform one in ARITY — the first N i64s are
-/// fz-arg slots, the last is host_ctx, and the return is the tagged
-/// FzValue (not a frame_ptr). Promoting typed params (`f64` for float,
-/// raw `i64` for int) is a follow-up so it can be paired with the
-/// pre-terminator tag pass surgery it requires.
+/// params + `host_ctx` + return. fz-ul4.27.13 promotes per-Descr typing:
+/// each entry param's AbiParam type derives from its `ArgRepr` (RawF64 →
+/// `f64`, RawInt/Tagged → `i64`); the return derives from `return_descr`
+/// the same way. `host_ctx` is always `i64`.
 fn build_fn_signature(
     f: &crate::fz_ir::FnIr,
-    _ft: &crate::ir_typer::FnTypes,
-    _return_descr: &crate::types::Descr,
+    ft: &crate::ir_typer::FnTypes,
+    return_descr: &crate::types::Descr,
     is_native: bool,
 ) -> Signature {
     if !is_native {
@@ -607,12 +654,13 @@ fn build_fn_signature(
     // tail calls can lower to `return_call` (which the SystemV ABI does
     // not permit). Without TCO, count_100k_stays_bounded blows the stack.
     let mut sig = Signature::new(CallConv::Tail);
-    let entry = f.blocks.iter().find(|b| b.id == f.entry).unwrap();
-    for _ in &entry.params {
-        sig.params.push(AbiParam::new(types::I64));
+    let param_reprs = build_param_reprs(f, ft);
+    for r in &param_reprs {
+        sig.params.push(AbiParam::new(r.cl_type()));
     }
     sig.params.push(AbiParam::new(types::I64)); // host_ctx
-    sig.returns.push(AbiParam::new(types::I64)); // tagged FzValue
+    let ret_repr = ArgRepr::from_descr(return_descr);
+    sig.returns.push(AbiParam::new(ret_repr.cl_type()));
     sig
 }
 
@@ -1344,15 +1392,99 @@ pub fn compile_with_backend<B: Backend>(
         for id in to_remove { natively_callable.remove(&id); }
     }
     // Per-spec return Descrs (each spec's `Term::Return` join under its
-    // own typed view). Indexed by SpecId.0; sentinel slots get `any`.
-    let return_descrs: Vec<crate::types::Descr> = (0..spec_count)
+    // own typed view) — extended in fz-ul4.27.13 to propagate through
+    // `Term::TailCall` so a fn whose only exit is a tail call inherits
+    // the callee's return Descr instead of defaulting to `any`. Without
+    // this, a chain like `fn run(n), do twice(n)` (which lowers to a
+    // single tail call to `double`) would report `any` and force a
+    // tagged-FzValue boundary at the caller, undoing the .27.13 unbox
+    // win at every macro-style hop.
+    //
+    // Iterate to fixpoint: each pass folds in TailCall callees' current
+    // return Descrs through `spec_registry` resolution. Indexed by
+    // SpecId.0; sentinel slots get `any`.
+    // Seed: per-spec join of Term::Return val Descrs (None == no
+    // Term::Return yet). Sentinel slots seed to `any` (never reached).
+    let mut return_descrs: Vec<Option<crate::types::Descr>> = (0..spec_count)
         .map(|sid| match spec_fnidx[sid] {
-            Some(idx) => join_return_descrs(
+            Some(idx) => {
+                let f = &module.fns[idx];
+                let ft = spec_fn_types[sid].expect("non-sentinel spec must have FnTypes");
+                let mut joined: Option<crate::types::Descr> = None;
+                for blk in &f.blocks {
+                    if let Term::Return(v) = &blk.terminator {
+                        let d = ft.vars.get(v).cloned().unwrap_or_else(crate::types::Descr::any);
+                        joined = Some(match joined { Some(p) => p.union(&d), None => d });
+                    }
+                }
+                joined
+            }
+            None => Some(crate::types::Descr::any()),
+        })
+        .collect();
+    // Use semantic mutual-subtype check for fixpoint termination: the
+    // DNF Descr representation isn't canonical, so `prev.union(callee_d)`
+    // can produce a structurally-different but semantically-equal value
+    // (e.g. for recursive fns where callee_sid == sid and the value is
+    // already its own fixpoint). Cap iterations as a belt-and-braces
+    // bound — spec_count is small and the lattice has bounded height
+    // for fz's first-order Descrs.
+    let max_iters = spec_count.saturating_mul(spec_count).saturating_add(8);
+    for _ in 0..max_iters {
+        let mut changed = false;
+        for sid in 0..spec_count {
+            let Some(idx) = spec_fnidx[sid] else { continue; };
+            let f = &module.fns[idx];
+            let ft = spec_fn_types[sid].expect("non-sentinel spec must have FnTypes");
+            for blk in &f.blocks {
+                if let Term::TailCall { callee, args } = &blk.terminator {
+                    let arg_descrs: Vec<crate::types::Descr> = args
+                        .iter()
+                        .map(|av| ft.vars.get(av).cloned().unwrap_or_else(crate::types::Descr::any))
+                        .collect();
+                    let callee_sid = spec_registry
+                        .resolve(*callee, &arg_descrs)
+                        .map(|s| s.0)
+                        .unwrap_or(callee.0) as usize;
+                    let Some(callee_d) = return_descrs[callee_sid].clone() else { continue; };
+                    let new_d = match &return_descrs[sid] {
+                        Some(prev) => prev.union(&callee_d),
+                        None => callee_d,
+                    };
+                    let prev_eq_new = match &return_descrs[sid] {
+                        Some(prev) => prev.is_subtype(&new_d) && new_d.is_subtype(prev),
+                        None => false,
+                    };
+                    if !prev_eq_new {
+                        return_descrs[sid] = Some(new_d);
+                        changed = true;
+                    }
+                }
+            }
+        }
+        if !changed { break; }
+    }
+    let return_descrs: Vec<crate::types::Descr> = return_descrs
+        .into_iter()
+        .map(|opt| opt.unwrap_or_else(crate::types::Descr::any))
+        .collect();
+
+    // fz-ul4.27.13 — Per-spec entry-param ArgReprs + return ArgRepr.
+    // Drives both `build_fn_signature` (AbiParam types) and call-site
+    // coerce (raw int / raw f64 vs tagged FzValue). Sentinel slots get
+    // empty params + Tagged return; they're never declared.
+    let param_reprs: Vec<Vec<ArgRepr>> = (0..spec_count)
+        .map(|sid| match spec_fnidx[sid] {
+            Some(idx) => build_param_reprs(
                 &module.fns[idx],
                 spec_fn_types[sid].expect("non-sentinel spec must have FnTypes"),
             ),
-            None => crate::types::Descr::any(),
+            None => Vec::new(),
         })
+        .collect();
+    let return_reprs: Vec<ArgRepr> = return_descrs
+        .iter()
+        .map(ArgRepr::from_descr)
         .collect();
 
     // fz-ul4.27.6.2.2/.3 — Per-spec Cranelift Signature. Native fns get
@@ -1455,6 +1587,8 @@ pub fn compile_with_backend<B: Backend>(
             &module.source,
             &natively_callable,
             &fn_ids,
+            &param_reprs,
+            &return_reprs,
         )?;
         // Any-key SpecId.0 == FnId.0 (invariant); use the bare fn name so
         // tests / `fz dump --emit clif` can refer to functions by source
@@ -1534,6 +1668,8 @@ pub fn compile_with_backend<B: Backend>(
             n_callee_params - *n_caps,
             callee_is_native_abi,
             &stub_name,
+            &param_reprs[callee_sid as usize],
+            return_reprs[callee_sid as usize],
         )?;
     }
 
@@ -1997,6 +2133,8 @@ fn compile_fn<M: cranelift_module::Module>(
     source: &crate::fz_ir::SourceInfo,
     natively_callable: &std::collections::HashSet<crate::fz_ir::FnId>,
     fn_ids: &HashMap<u32, FuncId>,
+    param_reprs: &[Vec<ArgRepr>],
+    return_reprs: &[ArgRepr],
 ) -> Result<(), CodegenError> {
     let is_native = natively_callable.contains(&f.id);
     let callee_is_native = |id: u32| natively_callable.contains(&crate::fz_ir::FnId(id));
@@ -2025,11 +2163,14 @@ fn compile_fn<M: cranelift_module::Module>(
     let entry_cl = *block_map.get(&f.entry.0).unwrap();
     let entry_blk = f.blocks.iter().find(|b| b.id == f.entry).unwrap();
     if is_native {
-        // fz-ul4.27.6.2.3 — native fn entry: one i64 block_param per fz
-        // arg + a trailing host_ctx i64. No frame_ptr; native fns run
-        // synchronously inside their caller and never visit the trampoline.
-        for _ in &entry_blk.params {
-            b.append_block_param(entry_cl, types::I64);
+        // fz-ul4.27.6.2.3 / .27.13 — native fn entry: one block_param per
+        // fz arg whose type matches my param_reprs[i] (F64 for raw float,
+        // I64 for raw int or tagged), plus a trailing host_ctx i64. No
+        // frame_ptr; native fns run synchronously inside their caller and
+        // never visit the trampoline.
+        let my_param_reprs = &param_reprs[this_spec_id as usize];
+        for r in my_param_reprs {
+            b.append_block_param(entry_cl, r.cl_type());
         }
         b.append_block_param(entry_cl, types::I64); // host_ctx
     } else {
@@ -2058,10 +2199,19 @@ fn compile_fn<M: cranelift_module::Module>(
     // (frame_ptr, host_ctx) — for native fns, frame_ptr is a never-read
     // placeholder iconst(0). Uniform fns load both from entry block_params.
     let (frame_ptr, host_ctx) = if is_native {
+        // fz-ul4.27.13 — Native entry params arrive in the repr declared
+        // by my param_reprs (Cranelift type already matches; just record
+        // the raw-vs-tagged classification so the body can elide
+        // shift-then-shift round-trips and op lowerings see the raw
+        // value directly).
         let params: Vec<ir::Value> = b.block_params(entry_cl).to_vec();
+        let my_param_reprs = &param_reprs[this_spec_id as usize];
         for (i, p) in entry_blk.params.iter().enumerate() {
-            // Native ABI passes every fz arg as tagged FzValue (i64) in
-            // .6.2.3; raw promotion is a follow-up. No raw_*_vars entry.
+            match my_param_reprs[i] {
+                ArgRepr::RawInt => { raw_int_vars.insert(p.0); }
+                ArgRepr::RawF64 => { raw_f64_vars.insert(p.0); }
+                ArgRepr::Tagged => {}
+            }
             var_map.insert(p.0, params[i]);
         }
         let host_ctx = params[entry_blk.params.len()];
@@ -2179,21 +2329,36 @@ fn compile_fn<M: cranelift_module::Module>(
                 note(&continuation.captured, &mut used_by_term);
             }
         }
-        let to_tag_f: Vec<u32> = raw_f64_vars
-            .iter().copied().filter(|rv| used_by_term.contains(rv)).collect();
-        for rv in to_tag_f {
-            let raw = *var_map.get(&rv).expect("raw f64 var dropped from env");
-            let boxed = box_float_native(&mut b, jmod, &runtime, raw);
-            var_map.insert(rv, boxed);
-            raw_f64_vars.remove(&rv);
-        }
-        let to_tag_i: Vec<u32> = raw_int_vars
-            .iter().copied().filter(|rv| used_by_term.contains(rv)).collect();
-        for rv in to_tag_i {
-            let raw = *var_map.get(&rv).expect("raw i64 var dropped from env");
-            let boxed = box_int(&mut b, raw);
-            var_map.insert(rv, boxed);
-            raw_int_vars.remove(&rv);
+        // fz-ul4.27.13 — Pre-terminator retag pass. Terminators that expect
+        // tagged FzValue inputs across the board (Goto/If/Halt/CallClosure/
+        // TailCallClosure/Receive, plus uniform Call/TailCall/Return) get
+        // their used-by-term raw vars promoted here. Native Call/TailCall/
+        // Return handle their own per-slot coerce inline at the branch
+        // below, against the callee's `param_reprs` or this fn's own
+        // `return_reprs` — skip the blanket retag for those.
+        let needs_blanket_retag = match &blk.terminator {
+            Term::Return(_) => !is_native,
+            Term::Call { callee, .. } => !callee_is_native(callee.0),
+            Term::TailCall { callee, .. } => !callee_is_native(callee.0),
+            _ => true,
+        };
+        if needs_blanket_retag {
+            let to_tag_f: Vec<u32> = raw_f64_vars
+                .iter().copied().filter(|rv| used_by_term.contains(rv)).collect();
+            for rv in to_tag_f {
+                let raw = *var_map.get(&rv).expect("raw f64 var dropped from env");
+                let boxed = box_float_native(&mut b, jmod, &runtime, raw);
+                var_map.insert(rv, boxed);
+                raw_f64_vars.remove(&rv);
+            }
+            let to_tag_i: Vec<u32> = raw_int_vars
+                .iter().copied().filter(|rv| used_by_term.contains(rv)).collect();
+            for rv in to_tag_i {
+                let raw = *var_map.get(&rv).expect("raw i64 var dropped from env");
+                let boxed = box_int(&mut b, raw);
+                var_map.insert(rv, boxed);
+                raw_int_vars.remove(&rv);
+            }
         }
 
         match &blk.terminator {
@@ -2224,7 +2389,21 @@ fn compile_fn<M: cranelift_module::Module>(
                     // fz_halt with this val (idempotent: same value), so
                     // halt_value stays correct even when the chain halts
                     // before control returns to the trampoline.
-                    b.ins().return_(&[val]);
+                    //
+                    // fz-ul4.27.13: dead-code halts (e.g. unreachable
+                    // function_clause / match_error fail blocks) still
+                    // need a typed return value — fz_halt is no-return at
+                    // runtime but Cranelift's verifier doesn't model that.
+                    // Emit a typed dummy when my return_repr is RawF64;
+                    // for RawInt/Tagged the tagged i64 `val` is fine
+                    // (caller would interpret it as the halt-propagated
+                    // value if the unreachable path were ever taken).
+                    let my_ret = return_reprs[this_spec_id as usize];
+                    let ret_val = match my_ret {
+                        ArgRepr::RawF64 => b.ins().f64const(0.0),
+                        _ => val,
+                    };
+                    b.ins().return_(&[ret_val]);
                 } else {
                     // Uniform fn: trampoline sentinel is null.
                     let null = b.ins().iconst(types::I64, 0);
@@ -2234,18 +2413,18 @@ fn compile_fn<M: cranelift_module::Module>(
             Term::Return(v) => {
                 let val = *var_map.get(&v.0).expect("unbound return val");
                 if is_native {
-                    // fz-ul4.27.6.2.3 — native fn: tagged val goes back by
-                    // register; no cont frame to write into.
-                    b.ins().return_(&[val]);
+                    // fz-ul4.27.6.2.3 / .27.13 — native fn: val rides the
+                    // return register in this fn's return_repr (raw f64 /
+                    // raw i64 / tagged FzValue).
+                    let from = var_repr(v.0, &raw_int_vars, &raw_f64_vars);
+                    let to = return_reprs[this_spec_id as usize];
+                    let coerced = coerce_to(&mut b, jmod, &runtime, val, from, to);
+                    b.ins().return_(&[coerced]);
                 } else {
                     emit_return(&mut b, jmod, runtime, frame_ptr, host_ctx, val);
                 }
             }
             Term::Call { callee, args, continuation } => {
-                let arg_vals: Vec<ir::Value> = args
-                    .iter()
-                    .map(|v| *var_map.get(&v.0).expect("unbound call arg"))
-                    .collect();
                 let cap_vals: Vec<ir::Value> = continuation
                     .captured
                     .iter()
@@ -2259,30 +2438,59 @@ fn compile_fn<M: cranelift_module::Module>(
                 let callee_sid = resolve_callee_sid(*callee, args);
                 let cont_sid = continuation.fn_id.0;
                 if callee_is_native(callee.0) {
+                    // fz-ul4.27.13 — coerce each arg from its current var
+                    // repr to the callee's param_repr. Result rides back
+                    // in the callee's return_repr; we then coerce it to
+                    // Tagged for the cont (cont is the any-key spec by
+                    // invariant — all-Tagged param_reprs, FzValue cont
+                    // frame slot 1).
+                    let callee_param_reprs = &param_reprs[callee_sid as usize];
+                    let callee_ret_repr = return_reprs[callee_sid as usize];
                     let callee_fid = *fn_ids.get(&callee_sid).expect("callee fn_id missing");
                     let callee_fref = jmod.declare_func_in_func(callee_fid, b.func);
-                    let mut native_args: Vec<ir::Value> = arg_vals.clone();
+                    let mut native_args: Vec<ir::Value> = Vec::with_capacity(args.len() + 1);
+                    for (i, av) in args.iter().enumerate() {
+                        let raw_val = *var_map.get(&av.0).expect("unbound call arg");
+                        let from = var_repr(av.0, &raw_int_vars, &raw_f64_vars);
+                        let to = callee_param_reprs[i];
+                        native_args.push(coerce_to(&mut b, jmod, &runtime, raw_val, from, to));
+                    }
                     native_args.push(host_ctx);
                     let call_inst = b.ins().call(callee_fref, &native_args);
                     let result = b.inst_results(call_inst)[0];
+                    let result_tagged = coerce_to(
+                        &mut b, jmod, &runtime, result, callee_ret_repr, ArgRepr::Tagged,
+                    );
 
                     if callee_is_native(continuation.fn_id.0) {
                         // fz-ul4.27.6.3 — both callee AND cont are native.
                         // Chain natively: feed result + captures + host_ctx
-                        // into the cont fn synchronously.
+                        // into the cont fn synchronously. Cont is any-key →
+                        // all param_reprs Tagged; retag any raw captures.
                         let cont_fid = *fn_ids
                             .get(&cont_sid)
                             .expect("cont fn_id missing");
                         let cont_fref = jmod.declare_func_in_func(cont_fid, b.func);
                         let mut cont_args: Vec<ir::Value> =
                             Vec::with_capacity(cap_vals.len() + 2);
-                        cont_args.push(result);
-                        for cv in &cap_vals { cont_args.push(*cv); }
+                        cont_args.push(result_tagged);
+                        for (i, cv) in continuation.captured.iter().enumerate() {
+                            let from = var_repr(cv.0, &raw_int_vars, &raw_f64_vars);
+                            cont_args.push(coerce_to(
+                                &mut b, jmod, &runtime, cap_vals[i], from, ArgRepr::Tagged,
+                            ));
+                        }
                         cont_args.push(host_ctx);
                         let cont_call = b.ins().call(cont_fref, &cont_args);
                         let final_result = b.inst_results(cont_call)[0];
                         if is_native {
-                            b.ins().return_(&[final_result]);
+                            // Cont is any-key (Tagged return). My return
+                            // may be narrower — coerce.
+                            let my_ret = return_reprs[this_spec_id as usize];
+                            let coerced = coerce_to(
+                                &mut b, jmod, &runtime, final_result, ArgRepr::Tagged, my_ret,
+                            );
+                            b.ins().return_(&[coerced]);
                         } else {
                             emit_return(
                                 &mut b,
@@ -2311,16 +2519,31 @@ fn compile_fn<M: cranelift_module::Module>(
                         b.ins().store(MemFlags::trusted(), my_cont, cf, HEADER_SIZE);
                         b.ins().store(
                             MemFlags::trusted(),
-                            result,
+                            result_tagged,
                             cf,
                             HEADER_SIZE + SLOT_BYTES,
                         );
+                        // store_args_into_callee_frame expects tagged
+                        // inputs and unboxes per slot kind. Retag captures.
+                        let cap_vals_tagged: Vec<ir::Value> = continuation
+                            .captured
+                            .iter()
+                            .zip(cap_vals.iter())
+                            .map(|(cv, val)| {
+                                let from = var_repr(cv.0, &raw_int_vars, &raw_f64_vars);
+                                coerce_to(&mut b, jmod, &runtime, *val, from, ArgRepr::Tagged)
+                            })
+                            .collect();
                         store_args_into_callee_frame(
-                            &mut b, cont_schema, cf, &cap_vals, 2,
+                            &mut b, cont_schema, cf, &cap_vals_tagged, 2,
                         );
                         b.ins().return_(&[cf]);
                     }
                 } else {
+                    let arg_vals: Vec<ir::Value> = args
+                        .iter()
+                        .map(|v| *var_map.get(&v.0).expect("unbound call arg"))
+                        .collect();
                     emit_call(
                         &mut b,
                         jmod,
@@ -2334,26 +2557,24 @@ fn compile_fn<M: cranelift_module::Module>(
                 }
             }
             Term::TailCall { callee, args } => {
-                let arg_vals: Vec<ir::Value> = args
-                    .iter()
-                    .map(|v| *var_map.get(&v.0).expect("unbound tailcall arg"))
-                    .collect();
                 let callee_sid = resolve_callee_sid(*callee, args);
                 if callee_is_native(callee.0) {
-                    // fz-ul4.27.6.2.3 — TailCall to a native callee.
-                    //
-                    // Native caller (is_native): synchronously call, then
-                    // native-return the result via register. The natively_
-                    // callable fixed-point guarantees the callee is also
-                    // native, so its sig matches our forwarded args.
-                    //
-                    // Uniform caller: synchronously call, then write the
-                    // result into MY cont's slot 1 (a FzValue slot — cont
-                    // result params stay `any` in the typer) and hand my
-                    // cont's frame ptr to the trampoline.
+                    // fz-ul4.27.6.2.3 / .27.13 — TailCall to a native callee.
+                    // Coerce each arg from its current var repr to the
+                    // callee's param_repr. The natively_callable fixed point
+                    // guarantees callee's return_repr matches mine, so
+                    // return_call is ABI-compatible without further coerce.
+                    let callee_param_reprs = &param_reprs[callee_sid as usize];
+                    let callee_ret_repr = return_reprs[callee_sid as usize];
                     let callee_fid = *fn_ids.get(&callee_sid).expect("callee fn_id missing");
                     let callee_fref = jmod.declare_func_in_func(callee_fid, b.func);
-                    let mut native_args: Vec<ir::Value> = arg_vals.clone();
+                    let mut native_args: Vec<ir::Value> = Vec::with_capacity(args.len() + 1);
+                    for (i, av) in args.iter().enumerate() {
+                        let raw_val = *var_map.get(&av.0).expect("unbound tailcall arg");
+                        let from = var_repr(av.0, &raw_int_vars, &raw_f64_vars);
+                        let to = callee_param_reprs[i];
+                        native_args.push(coerce_to(&mut b, jmod, &runtime, raw_val, from, to));
+                    }
                     native_args.push(host_ctx);
                     if is_native {
                         // Native-to-native TailCall: use return_call so
@@ -2361,8 +2582,14 @@ fn compile_fn<M: cranelift_module::Module>(
                         // (TCO). Without this, count_100k blows the stack.
                         b.ins().return_call(callee_fref, &native_args);
                     } else {
+                        // Uniform caller: synchronous call, then write result
+                        // into MY cont's slot 1 (FzValue — cont result param
+                        // stays `any` in the typer). Coerce result to Tagged.
                         let call_inst = b.ins().call(callee_fref, &native_args);
                         let result = b.inst_results(call_inst)[0];
+                        let result_tagged = coerce_to(
+                            &mut b, jmod, &runtime, result, callee_ret_repr, ArgRepr::Tagged,
+                        );
                         let my_cont = b.ins().load(
                             types::I64,
                             MemFlags::trusted(),
@@ -2386,20 +2613,24 @@ fn compile_fn<M: cranelift_module::Module>(
                         b.seal_block(halt_blk);
                         let halt_fref =
                             jmod.declare_func_in_func(runtime.halt_id, b.func);
-                        b.ins().call(halt_fref, &[host_ctx, result]);
+                        b.ins().call(halt_fref, &[host_ctx, result_tagged]);
                         let null = b.ins().iconst(types::I64, 0);
                         b.ins().return_(&[null]);
                         b.switch_to_block(invoke_blk);
                         b.seal_block(invoke_blk);
                         b.ins().store(
                             MemFlags::trusted(),
-                            result,
+                            result_tagged,
                             my_cont,
                             HEADER_SIZE + SLOT_BYTES,
                         );
                         b.ins().return_(&[my_cont]);
                     }
                 } else {
+                    let arg_vals: Vec<ir::Value> = args
+                        .iter()
+                        .map(|v| *var_map.get(&v.0).expect("unbound tailcall arg"))
+                        .collect();
                     emit_tail_call(
                         &mut b,
                         jmod,
@@ -2766,6 +2997,8 @@ fn compile_closure_stub<M: cranelift_module::Module>(
     n_args: usize,
     callee_is_native_abi: bool,
     stub_name: &str,
+    callee_param_reprs: &[ArgRepr],
+    callee_ret_repr: ArgRepr,
 ) -> Result<(), CodegenError> {
     let mut ctx = jmod.make_context();
     ctx.func.signature = stub_sig;
@@ -2784,30 +3017,41 @@ fn compile_closure_stub<M: cranelift_module::Module>(
         let host_ctx = params[1 + n_args + 1];
 
         if callee_is_native_abi {
-            // fz-ul4.29.8 — closure-target body uses the typed native ABI.
-            // The stub IS the adapter: load captures from the closure heap
-            // object as tagged FzValues, forward call args (also tagged at
-            // the CallClosure site by the indirect-call sig), call the
-            // native body, then route the tagged result through cont_ptr.
-            //
-            // Native fn sig is `(entry_param_0, ..., entry_param_{n-1},
-            // host_ctx) -> i64` with every param/return as tagged FzValue
-            // (build_fn_signature, .6.2.3), so no kind-aware unboxing is
-            // needed here — the body unboxes internally per its narrowing.
+            // fz-ul4.29.8 / .27.13 — closure-target body uses the typed
+            // native ABI. The stub IS the adapter:
+            //   - load captures from the closure heap object as TAGGED
+            //     FzValues (.29.5 stores them tagged regardless of slot
+            //     kind), then coerce each to the callee's param_repr;
+            //   - the indirect-call sig hands args in tagged i64 — coerce
+            //     each to the callee's param_repr;
+            //   - call the native body; result rides back in callee's
+            //     return_repr — coerce to Tagged before storing into the
+            //     cont's FzValue slot 1 or handing to fz_halt.
             let callee_fref = jmod.declare_func_in_func(callee_func_id, b.func);
             let mut native_args: Vec<ir::Value> =
                 Vec::with_capacity(n_caps + n_args + 1);
             for k in 0..n_caps {
                 let cap_off = HEADER_SIZE + SLOT_BYTES + (k as i32) * SLOT_BYTES;
-                let v = b
+                let tagged = b
                     .ins()
                     .load(types::I64, MemFlags::trusted(), closure_ptr, cap_off);
-                native_args.push(v);
+                let coerced = coerce_to(
+                    &mut b, jmod, runtime, tagged, ArgRepr::Tagged, callee_param_reprs[k],
+                );
+                native_args.push(coerced);
             }
-            for v in &arg_vals { native_args.push(*v); }
+            for (j, v) in arg_vals.iter().enumerate() {
+                let coerced = coerce_to(
+                    &mut b, jmod, runtime, *v, ArgRepr::Tagged, callee_param_reprs[n_caps + j],
+                );
+                native_args.push(coerced);
+            }
             native_args.push(host_ctx);
             let call_inst = b.ins().call(callee_fref, &native_args);
             let result = b.inst_results(call_inst)[0];
+            let result_tagged = coerce_to(
+                &mut b, jmod, runtime, result, callee_ret_repr, ArgRepr::Tagged,
+            );
 
             // Mirror emit_return: if cont_ptr is null (top-frame
             // TailCallClosure from main), halt; otherwise write the result
@@ -2823,7 +3067,7 @@ fn compile_closure_stub<M: cranelift_module::Module>(
             b.switch_to_block(halt_blk);
             b.seal_block(halt_blk);
             let halt_fref = jmod.declare_func_in_func(runtime.halt_id, b.func);
-            b.ins().call(halt_fref, &[host_ctx, result]);
+            b.ins().call(halt_fref, &[host_ctx, result_tagged]);
             let null = b.ins().iconst(types::I64, 0);
             b.ins().return_(&[null]);
 
@@ -2831,7 +3075,7 @@ fn compile_closure_stub<M: cranelift_module::Module>(
             b.seal_block(invoke_blk);
             b.ins().store(
                 MemFlags::trusted(),
-                result,
+                result_tagged,
                 cont_ptr,
                 HEADER_SIZE + SLOT_BYTES,
             );
@@ -3769,6 +4013,43 @@ fn box_int(b: &mut FunctionBuilder<'_>, raw: ir::Value) -> ir::Value {
     b.ins().bor_imm(shifted, TAG_INT)
 }
 
+/// fz-ul4.27.13 — Classify a Var's current Cranelift-side repr based on the
+/// `raw_*_vars` membership sets maintained by `compile_fn`.
+fn var_repr(
+    v: u32,
+    raw_int_vars: &std::collections::HashSet<u32>,
+    raw_f64_vars: &std::collections::HashSet<u32>,
+) -> ArgRepr {
+    if raw_f64_vars.contains(&v) {
+        ArgRepr::RawF64
+    } else if raw_int_vars.contains(&v) {
+        ArgRepr::RawInt
+    } else {
+        ArgRepr::Tagged
+    }
+}
+
+/// fz-ul4.27.13 — Coerce a Cranelift value between ArgReprs. `RawInt` ↔
+/// `RawF64` direct conversion is intentionally unsupported (no Descr admits
+/// both; if it surfaces, the typer or call-site narrowing is wrong).
+fn coerce_to<M: cranelift_module::Module>(
+    b: &mut FunctionBuilder<'_>,
+    jmod: &mut M,
+    runtime: &RuntimeRefs,
+    val: ir::Value,
+    from: ArgRepr,
+    to: ArgRepr,
+) -> ir::Value {
+    if from == to { return val; }
+    match (from, to) {
+        (ArgRepr::Tagged, ArgRepr::RawInt) => unbox_int(b, val),
+        (ArgRepr::Tagged, ArgRepr::RawF64) => unbox_float(b, val),
+        (ArgRepr::RawInt, ArgRepr::Tagged) => box_int(b, val),
+        (ArgRepr::RawF64, ArgRepr::Tagged) => box_float_native(b, jmod, runtime, val),
+        (a, c) => panic!("coerce_to: unsupported {:?} → {:?}", a, c),
+    }
+}
+
 /// Load the f64 payload of a boxed-float FzValue. The boxed-float heap
 /// layout is `HeapHeader (16 bytes) + f64 payload (8 bytes)`; the tagged
 /// FzValue's bits are the heap ptr (Tag::Ptr has tag bits 000). Caller
@@ -4649,11 +4930,10 @@ fn main(), do: loop_with(loop_with, 100000, 0)
 
     #[test]
     fn signature_native_arity_matches_entry_params_plus_host_ctx() {
-        // .6.2.3 simplification: native sig is always
-        // `(i64, i64, ..., i64) -> i64` — only the ARITY tracks the fn's
-        // entry params + host_ctx. Typed param promotion (f64 / raw i64)
-        // is a follow-up so it can be paired with the pre-terminator tag
-        // pass changes it requires.
+        // .27.13: native sig is per-Descr typed. For `dist(x, y)` called
+        // with `dist(1.5, 2.5)`, call-site narrowing types `x` and `y` as
+        // float-only → AbiParam(f64). `host_ctx` stays i64. Return joins
+        // every Term::Return val Descr; here that's float-only → f64.
         let m = lower_src(
             "fn dist(x, y) do x * x + y * y end\nfn main() do print(dist(1.5, 2.5)) end",
         );
@@ -4663,10 +4943,10 @@ fn main(), do: loop_with(loop_with, 100000, 0)
         let sig = build_fn_signature(&m.fns[dist_idx], &mt[dist_idx], &rd, true);
         // 2 entry params + host_ctx.
         assert_eq!(sig.params.len(), 3);
-        assert_eq!(sig.params[0].value_type, types::I64);
-        assert_eq!(sig.params[1].value_type, types::I64);
+        assert_eq!(sig.params[0].value_type, types::F64);
+        assert_eq!(sig.params[1].value_type, types::F64);
         assert_eq!(sig.params[2].value_type, types::I64);
-        assert_eq!(sig.returns[0].value_type, types::I64);
+        assert_eq!(sig.returns[0].value_type, types::F64);
     }
 
     // ----- fz-ul4.29.2: SpecRegistry infrastructure -----
