@@ -9,9 +9,15 @@
   "id": "fz-ul4.29.11",
   "labels": [],
   "parent": "fz-ul4.29",
+  "comments": [
+    {
+      "text": "Two-tier lookup: try exact HashMap match first (the common case — typer and codegen often DO produce identical Descrs for the same callsite, and we shouldn't pay the subsumption cost when they do). On miss, fall back to subsumption search over the per-FnId spec list.\n\nStructure:\n- Keep `HashMap\u003c(FnId, Vec\u003cDescr\u003e), SpecId\u003e` as a fast-path hit cache.\n- Add `per_fn: HashMap\u003cFnId, Vec\u003cSpecId\u003e\u003e` (or sorted-by-narrowness) for the subsumption fallback.\n- `resolve` returns the HashMap hit if present; otherwise scans the per-fn list under subsumption.\n\nThis preserves today's O(1) cost on the hit path and only pays O(n_specs_for_fn) on the miss path — which is exactly the path the silent any-key fallback used to absorb.",
+      "timestamp": "2026-05-12T22:22:49Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Subtype-based callsite dispatch in spec_registry",
   "type": "task",
-  "updated_at": "2026-05-12T22:13:02Z"
+  "updated_at": "2026-05-12T22:22:49Z"
 }
