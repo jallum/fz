@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-12T00:23:31Z",
+  "description": "Code that's already unreachable by current callers but hasn't been pruned. Uncovered while reading the codebase through the value-rep arc's lens; deletable today, independent of the arc.\n\n## Targets\n\n  - runtime/src/lib.rs's `ATOMS` Mutex\u003cAtomTable\u003e, `intern()`, `name_of()` — comments in src/ir_lower.rs already note \"no active consumers from src/\". Atom rendering now flows through Process.atom_names (fz-ul4.25). ~50 lines.\n\n  - `fz_register_atom` in runtime/src/lib.rs — designed for a .12-era AOT plan that never landed; current AOT (fz-ul4.23.6) uses fz_aot_atom_blob. ~20 lines.\n\n  - `fz_print_i64`, `fz_print_f64`, `fz_print_bool`, `fz_print_atom`, `fz_print_nil` in runtime/src/lib.rs — .12-era specialized print helpers; current path uses polymorphic fz_print_value. ~40 lines.\n\n    CAVEAT: if VR.5b lands flavor B (JIT picks typed print FFI per Descr), these get RESURRECTED instead. Hold these until VR.5b's flavor is decided; delete or revive accordingly.\n\n  - Value::IrClosure variant in src/value.rs — already #[allow(dead_code)] since fz-ul4.23.5.9; survives only because ast_value's reify path matches on it. Sweep when that branch goes too; flag for follow-up.\n\n## Acceptance\n\n  - All ~110 lines deleted (or, for the print helpers, deletion + VR.5b flavor recorded).\n  - cargo test green; no warnings.\n  - One commit; can be cherry-picked independently of the value-rep epic.\n\n## Note\n\nDepends on VR.5b's flavor decision for the print helpers. Either:\n  - Land freebie cleanup first, delete the print helpers, accept that VR.5b takes flavor A (pessimistic box-up).\n  - Land VR.5b first with flavor B (resurrected typed prints), then freebie cleanup skips those four symbols.",
+  "id": "fz-ul4.28",
+  "labels": [],
+  "parent": "fz-ul4",
+  "priority": 3,
+  "status": "open",
+  "title": "Freebie cleanup uncovered by value-rep lens",
+  "type": "task",
+  "updated_at": "2026-05-12T00:23:31Z"
+}
