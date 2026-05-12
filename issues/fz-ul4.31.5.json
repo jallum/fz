@@ -11,9 +11,15 @@
   "id": "fz-ul4.31.5",
   "labels": [],
   "parent": "fz-ul4.31",
+  "comments": [
+    {
+      "text": "Update from .29.10 investigation: any-keys are typer-internal fallback constructs, not user-facing claims. Validation must SKIP any-key entries when comparing declared @spec against registered specs — only narrow specs participate.\n\nRationale: a user-written `@spec foo(integer) :: integer` is a claim about typed input domains. The any-key spec (key = [Descr::any(); arity]) represents \"what if all args are unknown\" — a degenerate state useful inside the typer / for closure / spawn / receive landing pads, but not something the user is declaring against. Comparing declared against any-key would produce a category-error rejection.\n\nImplementation: when iterating registered specs for a fn in the validation pass, filter out the entry where key == vec![Descr::any(); arity]. Compare against narrow specs only.\n\nThis replaces the previous dependency on .29.10 (which is now blocked on the larger typed-dispatch effort .29.12).",
+      "timestamp": "2026-05-12T22:42:50Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "Validation pass: inferred ⊆ declared",
   "type": "task",
-  "updated_at": "2026-05-12T22:42:38Z"
+  "updated_at": "2026-05-12T22:42:50Z"
 }
