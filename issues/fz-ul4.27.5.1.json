@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-12T01:34:21Z",
+  "description": "Infrastructure-only first slice of VR.3. Adds the typed-slot vocabulary to schemas without changing how codegen reads/writes them. Storage format stays tagged FzValue at every slot; GC tracer behavior is unchanged (typed-int/float slots still hold tagged ptrs, so tracing them is correct-but-redundant).\n\nThe win lands in .5.2/.5.3/.5.4/.5.5; this ticket is the substrate they share.\n\n## Adds\n\n- `build_frame_schema` takes a `Vec\u003cFieldKind\u003e` instead of `(name, num_entry_params)` — per-slot kind selection at construction time.\n- Per-fn schema-build site (currently `schemas[f.id.0] = build_frame_schema(...)`) consults FnTypes to compute slot kinds for entry-frame params: `RawBytes(8)` for `int` / `float` Descrs, `FzValue` otherwise.\n- Schema kind plumbed end-to-end so .5.2+ can read it.\n\n## Kills\n\n- The `(name: \u0026str, num_entry_params: usize)` signature of `build_frame_schema`.\n- The uniform-FzValue assumption baked into that function.\n\n## Acceptance\n\n- Existing tests + fixture matrix green (no behavior change yet).\n- Schemas for fixtures with float/int entry params expose `RawBytes(8)` slots (verified via a unit test that builds a fn with annotated args).\n- No CLIF deltas in `cargo run -- dump`.\n\n## Blocks\n\n- fz-ul4.27.5.2 (raw f64 storage), fz-ul4.27.5.3 (raw i64 storage)",
+  "id": "fz-ul4.27.5.1",
+  "labels": [],
+  "parent": "fz-ul4.27.5",
+  "priority": 3,
+  "status": "open",
+  "title": "VR.3.1: typed slot kinds (schemas-only infrastructure)",
+  "type": "task",
+  "updated_at": "2026-05-12T01:34:21Z"
+}
