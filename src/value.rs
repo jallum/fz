@@ -127,6 +127,11 @@ pub struct Closure {
     /// `@doc "..."` attached to this fn at definition. `None` for
     /// lambdas and undocumented top-level fns. Surfaces in REPL `?name`.
     pub doc: Option<String>,
+    /// fz-ul4.31.6 — pre-formatted `@spec` for REPL `?name`. `None`
+    /// when no `@spec` was declared or when resolution of the spec body
+    /// against the module's `@type` env failed at load time (validation
+    /// would surface that as a `spec/violation` diagnostic).
+    pub spec_text: Option<String>,
 }
 
 pub struct Builtin {

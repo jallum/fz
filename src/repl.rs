@@ -11,7 +11,7 @@
 //!
 //! `:quit` / `:q` / Ctrl-D exits.
 
-use crate::ast::Item;
+use crate::ast::{Item, Program};
 use crate::eval::Interp;
 use crate::lexer::Lexer;
 use crate::parser::Parser;
@@ -107,14 +107,14 @@ fn try_eval(src: &str, interp: &Interp, env: &Env) -> Outcome {
                 // expansion), expand fn bodies, then load the expanded fns.
                 // Loading macros early also accumulates macro_names across
                 // REPL batches.
-                if let Err(e) = load_items_filtered(interp, &prog.items, /*macros=*/ true) {
+                if let Err(e) = load_items_filtered(interp, &prog, /*macros=*/ true) {
                     return Outcome::Err(format!("load macros: {}", e));
                 }
                 let live = interp.macro_names.borrow().clone();
                 if let Err(e) = crate::macros::expand_with(&mut prog, interp, &live) {
                     return Outcome::Err(format!("macro: {}", e));
                 }
-                if let Err(e) = load_items_filtered(interp, &prog.items, /*macros=*/ false) {
+                if let Err(e) = load_items_filtered(interp, &prog, /*macros=*/ false) {
                     return Outcome::Err(format!("load fns: {}", e));
                 }
                 return Outcome::Ok;
@@ -150,9 +150,9 @@ fn try_eval(src: &str, interp: &Interp, env: &Env) -> Outcome {
 /// `which == true` loads only macros; `which == false` loads only non-macros.
 /// Splitting the two phases lets the REPL register macros before running
 /// expansion on fn bodies that may call them.
-fn load_items_filtered(interp: &Interp, items: &[std::rc::Rc<Item>], macros_only: bool) -> Result<(), String> {
+fn load_items_filtered(interp: &Interp, prog: &Program, macros_only: bool) -> Result<(), String> {
     use std::rc::Rc;
-    for item in items {
+    for item in &prog.items {
         match &**item {
             Item::Module(_) | Item::Alias { .. } | Item::Import { .. } | Item::MacroCall { .. } => continue, // flattened away upstream
             Item::Fn(def) => {
@@ -168,6 +168,7 @@ fn load_items_filtered(interp: &Interp, items: &[std::rc::Rc<Item>], macros_only
                 let existing = interp.globals.lookup(&def.name);
                 let mut clauses = def.clauses.clone();
                 let mut doc = def.doc().map(String::from);
+                let mut spec_text = crate::eval::format_spec_text(def, prog);
                 if let Some(Value::Closure(c)) = existing {
                     let same_arity = c.clauses.first().map(|cl| cl.params.len())
                         == clauses.first().map(|cl| cl.params.len());
@@ -175,8 +176,9 @@ fn load_items_filtered(interp: &Interp, items: &[std::rc::Rc<Item>], macros_only
                         let mut combined = c.clauses.clone();
                         combined.append(&mut clauses);
                         clauses = combined;
-                        // Preserve prior doc if the new def didn't carry one.
+                        // Preserve prior doc / spec_text if the new def didn't carry one.
                         if doc.is_none() { doc = c.doc.clone(); }
+                        if spec_text.is_none() { spec_text = c.spec_text.clone(); }
                     }
                 }
                 let closure = Value::Closure(Rc::new(crate::value::Closure {
@@ -184,6 +186,7 @@ fn load_items_filtered(interp: &Interp, items: &[std::rc::Rc<Item>], macros_only
                     clauses,
                     env: interp.globals.clone(),
                     doc,
+                    spec_text,
                 }));
                 interp.globals.bind(&def.name, closure);
             }
@@ -195,15 +198,28 @@ fn load_items_filtered(interp: &Interp, items: &[std::rc::Rc<Item>], macros_only
 /// Resolve a `?<name>` REPL query against loaded fns and modules. Tries
 /// fns first (so `?M.add` finds the closure), then falls back to a
 /// moduledoc lookup (so `?M` finds the module).
+///
+/// fz-ul4.31.6 — renders `@spec` declaration alongside the `@doc` text
+/// when both are present.
 fn lookup_doc(interp: &Interp, name: &str) -> String {
     if name.is_empty() {
         return "usage: ?<fn-or-module-name>".to_string();
     }
     if let Some(Value::Closure(c)) = interp.globals.lookup(name) {
-        return match &c.doc {
-            Some(d) => d.clone(),
-            None => format!("{}: no documentation", name),
-        };
+        let mut out = String::new();
+        if let Some(s) = &c.spec_text {
+            out.push_str("@spec: ");
+            out.push_str(s);
+        }
+        if let Some(d) = &c.doc {
+            if !out.is_empty() { out.push('\n'); }
+            out.push_str("@doc:  ");
+            out.push_str(d);
+        }
+        if out.is_empty() {
+            return format!("{}: no documentation", name);
+        }
+        return out;
     }
     if let Some(d) = interp.module_docs.borrow().get(name) {
         return d.clone();
@@ -222,9 +238,9 @@ fn is_incomplete(e: &crate::parser::ParseError) -> bool {
 mod tests {
     use super::*;
 
-    fn load_items(interp: &Interp, items: &[std::rc::Rc<Item>]) -> Result<(), String> {
-        load_items_filtered(interp, items, false)?;
-        load_items_filtered(interp, items, true)?;
+    fn load_program_test(interp: &Interp, prog: &Program) -> Result<(), String> {
+        load_items_filtered(interp, prog, false)?;
+        load_items_filtered(interp, prog, true)?;
         Ok(())
     }
 
@@ -252,7 +268,7 @@ mod tests {
                 let mut p = Parser::new(toks);
                 match p.parse_program() {
                     Ok(prog) => {
-                        load_items(&interp, &prog.items).unwrap();
+                        load_program_test(&interp, &prog).unwrap();
                         out.push(Ok(Value::Nil));
                         buf.clear();
                     }
@@ -325,7 +341,7 @@ mod tests {
         for (path, doc) in &prog.module_docs {
             interp.module_docs.borrow_mut().insert(path.clone(), doc.clone());
         }
-        load_items(&interp, &prog.items).expect("load");
+        load_program_test(&interp, &prog).expect("load");
         interp
     }
 
@@ -337,7 +353,7 @@ defmodule M do
   fn add(a, b), do: a + b
 end
 "#);
-        assert_eq!(lookup_doc(&interp, "M.add"), "adds two");
+        assert_eq!(lookup_doc(&interp, "M.add"), "@doc:  adds two");
     }
 
     #[test]
@@ -349,6 +365,40 @@ defmodule M do
 end
 "#);
         assert_eq!(lookup_doc(&interp, "M"), "the M module");
+    }
+
+    #[test]
+    fn doc_query_surfaces_spec_when_declared() {
+        // .31.6 — `?<name>` renders @spec alongside @doc when both are
+        // declared.
+        let interp = load(r#"
+defmodule M do
+  @doc "adds one"
+  @spec add1(integer) :: integer
+  fn add1(n), do: n + 1
+end
+"#);
+        let out = lookup_doc(&interp, "M.add1");
+        assert!(out.contains("@spec"), "should render @spec line; got: {}", out);
+        assert!(out.contains("@doc"), "should render @doc line; got: {}", out);
+        // Descr Display renders integer as `int` (the lattice's name).
+        assert!(out.contains("(int) -> int"),
+            "should render declared Descrs; got: {}", out);
+    }
+
+    #[test]
+    fn doc_query_surfaces_spec_without_doc() {
+        // .31.6 — @spec alone still surfaces in `?<name>`.
+        let interp = load(r#"
+defmodule M do
+  @spec add1(integer) :: integer
+  fn add1(n), do: n + 1
+end
+"#);
+        let out = lookup_doc(&interp, "M.add1");
+        assert!(out.contains("@spec"), "should render @spec line; got: {}", out);
+        assert!(!out.contains("no documentation"),
+            "@spec alone counts as documentation; got: {}", out);
     }
 
     #[test]

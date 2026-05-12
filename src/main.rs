@@ -29,6 +29,26 @@ mod value;
 use parser::Parser;
 use std::io::{IsTerminal, Read};
 
+/// fz-ul4.31.6 — Run `@spec` validation against the lowered IR. Prints
+/// every diagnostic and exits non-zero if any are errors. Called by
+/// the `run` / `jit` / `aot` drivers immediately after `lower_program`
+/// so all three paths produce identical accept/reject verdicts.
+fn validate_specs_or_exit(
+    prog: &ast::Program,
+    module: &fz_ir::Module,
+    sm: &diag::SourceMap,
+) {
+    let mt = ir_typer::type_module(module);
+    let diags = spec_check::validate_specs(prog, module, &mt);
+    let has_error = diags.iter().any(|d| d.severity == diag::Severity::Error);
+    for d in &diags {
+        diag::render_one_to_stderr(sm, d);
+    }
+    if has_error {
+        std::process::exit(1);
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
@@ -165,6 +185,7 @@ fn run_build(args: &[String]) {
         diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         std::process::exit(1);
     });
+    validate_specs_or_exit(&prog, &module, &sm);
     let obj_name = std::path::Path::new(&src_path)
         .file_stem()
         .and_then(|s| s.to_str())
@@ -257,6 +278,7 @@ fn run_interp(args: &[String]) {
         diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         std::process::exit(1);
     });
+    validate_specs_or_exit(&prog, &module, &sm);
     match ir_interp::run_main(&module) {
         Ok(_halt) => {}
         Err(msg) => {
@@ -491,6 +513,7 @@ fn compile_pipeline(src: String, source_name: String) -> Compiled {
         diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         std::process::exit(1);
     });
+    validate_specs_or_exit(&prog, &module, &sm);
     let main_fn = module.fn_by_name("main").map(|f| f.id);
     let cm = ir_codegen::compile(&module).unwrap_or_else(|e| {
         diag::render_one_to_stderr(&sm, &e.to_diagnostic());

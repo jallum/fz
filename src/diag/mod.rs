@@ -21,7 +21,7 @@ pub mod source_map;
 pub mod span;
 pub mod style;
 
-pub use diagnostic::{Diagnostic, Diagnostics};
+pub use diagnostic::{Diagnostic, Diagnostics, Severity};
 pub use driver::{render_one_to_stderr, render_to_stderr};
 pub use source_map::SourceMap;
 pub use span::{FileId, Span, SpanOrigin};

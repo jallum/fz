@@ -23,6 +23,27 @@ use std::rc::Rc;
 
 pub type EvalResult = Result<Value, String>;
 
+/// fz-ul4.31.6 — Resolve and pretty-print a fn's `@spec` for REPL
+/// `?<name>` surfacing. Returns `None` when the fn has no `@spec` OR
+/// when the spec body fails to resolve (the validation pass surfaces
+/// that as a `spec/violation` diagnostic; the REPL renderer just skips
+/// the spec line).
+pub fn format_spec_text(def: &FnDef, prog: &Program) -> Option<String> {
+    let spec = def.attrs.iter().find_map(|a| match a {
+        Attribute::Spec(s) => Some(s),
+        _ => None,
+    })?;
+    let module_path: String = match def.name.rfind('.') {
+        Some(i) => def.name[..i].to_string(),
+        None => String::new(),
+    };
+    let empty = crate::type_expr::ModuleTypeEnv::new();
+    let env = prog.module_type_envs.get(&module_path).unwrap_or(&empty);
+    let resolved = crate::type_expr::resolve_spec_decl(spec, env).ok()?;
+    let params: Vec<String> = resolved.params.iter().map(|d| format!("{}", d)).collect();
+    Some(format!("({}) -> {}", params.join(", "), resolved.result))
+}
+
 /// Vestigial hook from the retired direct-style JIT tier-up policy (.11.9).
 /// ir_codegen's tier policy is structural (always JIT), so this hook is
 /// never installed in production paths today.
@@ -201,11 +222,13 @@ impl Interp {
                     }
                     // Macros load alongside regular fns so the expansion pass
                     // can dispatch them by name through the same interp.
+                    let spec_text = format_spec_text(def, prog);
                     let closure = Value::Closure(Rc::new(Closure {
                         name: Some(def.name.clone()),
                         clauses: def.clauses.clone(),
                         env: self.globals.clone(),
                         doc: def.doc().map(String::from),
+                        spec_text,
                     }));
                     self.globals.bind(&def.name, closure);
                 }
@@ -465,6 +488,7 @@ impl Interp {
                     }],
                     env: env.clone(),
                     doc: None,
+                    spec_text: None,
                 })))
             }
             Expr::Quote(inner) => self.reify_with_unquotes(inner, env),
