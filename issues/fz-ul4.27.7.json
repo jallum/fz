@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-ul4.27.6"
+  ],
   "blocks": [],
   "created": "2026-05-12T00:23:30Z",
   "description": "fz_print_value (and future inspect) stays tagged-FzValue at its ABI — inherently polymorphic. After VR.3+VR.4 their typed callers must convert their arg into FzValue before the call.\n\nTwo flavors to decide between BEFORE landing:\n\n  A. PESSIMISTIC: box-up at the call site, fz_print_value unboxes internally to pick a renderer.\n     `print(n)` for `n: int` becomes shift-left-3 | tag-int | call fz_print_value.\n     fz_print_value already handles all tags + heap kinds.\n     ~100 LOC; keeps fz_print_value as the single entry point.\n\n  B. OPTIMISTIC: JIT picks a typed print FFI based on ir_typer's Descr.\n     `print(n)` for `n: int` becomes `call fz_print_i64(n)` — no boxing round trip.\n     fz_print_value remains as the `any`-typed fallback.\n     ~150 LOC; resurrects the .12-era fz_print_i64 / fz_print_f64 / fz_print_bool / fz_print_atom / fz_print_nil helpers in runtime/src/lib.rs (currently dead — see freebie cleanup).\n\nPessimistic is simpler. Optimistic is faster and dovetails with the freebie cleanup (those helpers either get resurrected here or get deleted in the cleanup ticket; can't be both).\n\nLand flavor B unless there's a reason not to.\n\n## Adds (flavor B)\n\n  - lower_prim or builtin-call lowering picks fz_print_\u003ckind\u003e when arg Descr narrows; falls back to box-up + fz_print_value otherwise.\n  - Restore + revive (don't just un-delete) the typed print FFI symbols in runtime/src/lib.rs — they had .12-era assumptions baked in; refresh to match the current FzValue rep.\n  - Fixtures exercising each typed print path.\n\n## Kills\n\n  - The \"always box up everything before print\" assumption.\n  - For flavor B specifically: blocks the freebie cleanup from deleting the typed print helpers. They live here instead.\n\n## Acceptance\n\n  - print(n) for n: int doesn't allocate (no fz_alloc_float or boxing for ints).\n  - print(:ok) lowers to a single typed call (no boxing).\n  - Polymorphic print sites (arg type any) still work via fz_print_value.\n  - Matrix green; hello.fz expected output unchanged.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "VR.5b: boundary box-up at print/inspect call sites",
   "type": "task",
-  "updated_at": "2026-05-12T00:23:30Z"
+  "updated_at": "2026-05-12T00:23:33Z"
 }
