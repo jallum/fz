@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-05-12T02:14:34Z",
@@ -8,8 +8,8 @@
   "labels": [],
   "parent": "fz-ul4.27.5.4",
   "priority": 3,
-  "status": "open",
+  "status": "in_progress",
   "title": "VR.3.4 follow-up: typed result slot in continuation frames",
   "type": "task",
-  "updated_at": "2026-05-12T02:14:34Z"
+  "updated_at": "2026-05-12T10:31:02Z"
 }
