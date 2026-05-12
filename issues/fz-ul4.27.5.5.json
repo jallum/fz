@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-ul4.27.5.4"
+  ],
   "blocks": [],
   "created": "2026-05-12T01:36:13Z",
   "description": "Final sliver of VR.3: typed slots in closure heap payloads.\n\n## Why\n\nA closure capturing one int + one float is currently a fixed 3-slot FzValue payload (closure arity + 2 captures = 3 * 8 bytes inside the heap object, all tagged). After .5.4 it's a payload sized by the captures' Descrs: i64 raw slot for int + f64 raw slot for float (still 16 bytes here because both happen to be 8-wide, but the storage is raw — the win is per-op, not per-byte).\n\nCaptures are EXPLICIT (the IrClosure variant in fz_ir spells out the captured Vars) and IMMUTABLE (closure payloads never mutate after construction), so no escape analysis is needed. Build-time we know exactly what types flow into each slot.\n\n## Adds\n\n- `fz_closure_finalize` (runtime) accepts per-slot kinds + writes typed bytes — extends the existing fz_closure_begin/push API or replaces it with a typed variant.\n- lower_prim MakeClosure / closure-construction: emits per-capture typed pushes using the FnTypes-derived kinds.\n- `fz_closure_invoke` / closure-arg unpack: reads typed slots, producing raw values in the callee fn's entry frame slots (which are already raw post-.5.1/.5.2).\n\n## Kills\n\n- `(n_captures as u32) * SLOT_BYTES` uniform-payload-size assumption in fz_closure_begin.\n- The \"each captured slot is one FzValue\" assumption inside the closure-payload GC tracer (already kind-aware in heap.rs if we declare a Schema for closure payloads — verify the closure path uses one).\n\n## Acceptance\n\n- Fixture: a closure capturing one int + one float, invoked across a tail call. CLIF asserts the closure-construction site doesn't go through `box_int` / `fz_alloc_float` for the captures (the raw bytes go straight in).\n- GC fixtures still green (typed closure-payload tracer skips raw slots).\n- Matrix green.\n\n## Depends on\n\n- fz-ul4.27.5.3 (continuations).\n\n## Note re VR.4\n\nVR.4 (per-fn native ABI for direct calls — fz-ul4.27.6) overlaps the closure-invoke path: a closure ultimately calls a closed-over fn. If VR.4 lands first the invocation goes through a typed ABI naturally. Either ordering works; this ticket can land before VR.4 with the existing uniform `extern \"C\" fn(*mut u8, *mut u8) -\u003e *mut u8` calling convention, doing per-slot typed read on the callee side.\n\n## UNBLOCKS\n\n- fz-ul4.27.5 (parent VR.3) closes once this lands",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "VR.3.4: typed slots in closure heap payloads",
   "type": "task",
-  "updated_at": "2026-05-12T01:36:13Z"
+  "updated_at": "2026-05-12T01:36:22Z"
 }
