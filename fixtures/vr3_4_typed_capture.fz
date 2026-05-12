@@ -1,21 +1,23 @@
-# purpose: VR.3.4 — typed entry params survive continuation handoffs as raw bytes
+# purpose: VR.3.4 / VR.4.3 — typed captures survive cont handoffs via native chain
 # paths:   jit, interp, aot
-# expect_clif_contains: k_3: load.i64 notrap aligned v0+32
-# expect_clif_excludes: k_3: load.f64 notrap aligned v0+32
+# expect_clif_excludes: k_3: fz_alloc_frame
+# expect_clif_contains: k_3: tail
 
 # `use_x(x)` takes a typed-int param x (narrowed from main's int-lit
 # call site). Inside use_x, `double(x) + x` requires x to live across
-# the call to double — x is captured into the continuation k_3. Before
-# fz-ul4.27.5.4, k_3's captured slot was FieldKind::FzValue (the caller
-# stored tagged FzValue, the cont read tagged FzValue). After .5.4,
-# ir_typer propagates use_x's typed entry param into k_3's entry
-# params [1..], the schema makes k_3's slot 2 (offset 32) RawI64, and
-# emit_call's captured-slot store unboxes x at the boundary so the
-# slot holds its raw int payload.
+# the call to double — x is captured into the continuation k_3.
 #
-# The fixture pins the load: `load.i64 v0+32` is the raw read at k_3's
-# entry. `load.f64 v0+32` would mean we mistakenly marked the slot
-# RawF64 — assert it's not there.
+# Under VR.3.4 alone the captured slot was a raw-int frame slot:
+# emit_call stored x's raw payload into k_3's slot 2 (offset 32) and
+# k_3's entry loaded back from that slot with `load.i64 v0+32`.
+#
+# Under VR.4.3 the call chain (double + k_3) is native-callable end to
+# end: both leaf, both reached only at native Term::Call sites. use_x's
+# emit_call emits a native chain — call double → call k_3 with
+# (result, captured_x, host_ctx) — and k_3 itself is declared with the
+# `tail` calling convention, taking captured_x as a typed block param.
+# Captures no longer live in a heap frame at all, so `fz_alloc_frame`
+# for k_3's frame is gone entirely.
 fn double(x) do x * 2 end
 fn use_x(x) do print(double(x) + x) end
 fn main() do

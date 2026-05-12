@@ -1920,12 +1920,6 @@ fn compile_fn<M: cranelift_module::Module>(
                     .map(|v| *var_map.get(&v.0).expect("unbound captured val"))
                     .collect();
                 if callee_is_native(callee.0) {
-                    // fz-ul4.27.6.2.3 — native callee: invoke synchronously,
-                    // then bridge result into cont frame and hand the cont
-                    // frame ptr to the trampoline.
-                    //
-                    // Caller is always uniform here: native fns can't have
-                    // Term::Call (excluded by natively_callable).
                     let callee_fid = *fn_ids.get(&callee.0).expect("callee fn_id missing");
                     let callee_fref = jmod.declare_func_in_func(callee_fid, b.func);
                     let mut native_args: Vec<ir::Value> = arg_vals.clone();
@@ -1933,33 +1927,70 @@ fn compile_fn<M: cranelift_module::Module>(
                     let call_inst = b.ins().call(callee_fref, &native_args);
                     let result = b.inst_results(call_inst)[0];
 
-                    // Build cont frame: [my_cont, result, ...captures].
-                    let cont_schema = &schemas[continuation.fn_id.0 as usize];
-                    let alloc_fref = jmod.declare_func_in_func(runtime.alloc_id, b.func);
-                    let sid =
-                        b.ins().iconst(types::I32, continuation.fn_id.0 as i64);
-                    let sz = b.ins().iconst(types::I32, cont_schema.size as i64);
-                    let alloc_call = b.ins().call(alloc_fref, &[sid, sz]);
-                    let cf = b.inst_results(alloc_call)[0];
-                    let my_cont = b.ins().load(
-                        types::I64,
-                        MemFlags::trusted(),
-                        frame_ptr,
-                        HEADER_SIZE,
-                    );
-                    b.ins().store(MemFlags::trusted(), my_cont, cf, HEADER_SIZE);
-                    // Slot 1 (the result) is FzValue by construction — the
-                    // typer keeps cont entry_param[0] at `any` (see
-                    // ir_typer cont narrowing), so the schema refinement
-                    // never types this slot raw. Store tagged i64 directly.
-                    b.ins().store(
-                        MemFlags::trusted(),
-                        result,
-                        cf,
-                        HEADER_SIZE + SLOT_BYTES,
-                    );
-                    store_args_into_callee_frame(&mut b, cont_schema, cf, &cap_vals, 2);
-                    b.ins().return_(&[cf]);
+                    if callee_is_native(continuation.fn_id.0) {
+                        // fz-ul4.27.6.3 — both callee AND cont are native.
+                        // Chain natively: feed result + captures + host_ctx
+                        // into the cont fn synchronously. No cont frame
+                        // allocation; the trampoline never sees this step.
+                        let cont_fid = *fn_ids
+                            .get(&continuation.fn_id.0)
+                            .expect("cont fn_id missing");
+                        let cont_fref = jmod.declare_func_in_func(cont_fid, b.func);
+                        let mut cont_args: Vec<ir::Value> =
+                            Vec::with_capacity(cap_vals.len() + 2);
+                        cont_args.push(result);
+                        for cv in &cap_vals { cont_args.push(*cv); }
+                        cont_args.push(host_ctx);
+                        let cont_call = b.ins().call(cont_fref, &cont_args);
+                        let final_result = b.inst_results(cont_call)[0];
+                        if is_native {
+                            b.ins().return_(&[final_result]);
+                        } else {
+                            // Uniform caller: propagate final_result into
+                            // MY cont's slot 1 and hand my cont frame to
+                            // the trampoline. Same shape as emit_return.
+                            emit_return(
+                                &mut b,
+                                jmod,
+                                runtime,
+                                frame_ptr,
+                                host_ctx,
+                                final_result,
+                            );
+                        }
+                    } else {
+                        // fz-ul4.27.6.2.3 — native callee but uniform cont:
+                        // bridge result into cont frame, hand cont frame to
+                        // trampoline so it dispatches the (uniform) cont.
+                        // Caller is uniform here (native fns whose Call has
+                        // a non-native cont would have been excluded by the
+                        // natively_callable fixed point).
+                        let cont_schema = &schemas[continuation.fn_id.0 as usize];
+                        let alloc_fref =
+                            jmod.declare_func_in_func(runtime.alloc_id, b.func);
+                        let sid =
+                            b.ins().iconst(types::I32, continuation.fn_id.0 as i64);
+                        let sz = b.ins().iconst(types::I32, cont_schema.size as i64);
+                        let alloc_call = b.ins().call(alloc_fref, &[sid, sz]);
+                        let cf = b.inst_results(alloc_call)[0];
+                        let my_cont = b.ins().load(
+                            types::I64,
+                            MemFlags::trusted(),
+                            frame_ptr,
+                            HEADER_SIZE,
+                        );
+                        b.ins().store(MemFlags::trusted(), my_cont, cf, HEADER_SIZE);
+                        b.ins().store(
+                            MemFlags::trusted(),
+                            result,
+                            cf,
+                            HEADER_SIZE + SLOT_BYTES,
+                        );
+                        store_args_into_callee_frame(
+                            &mut b, cont_schema, cf, &cap_vals, 2,
+                        );
+                        b.ins().return_(&[cf]);
+                    }
                 } else {
                     emit_call(
                         &mut b,

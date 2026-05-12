@@ -31,7 +31,7 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `tail_recursion.fz` | 100k-deep self-recursion must TCO — exits cleanly with the accumulated count | jit, interp, aot |
 | `vr1_int_arith.fz` | VR.1 — int-literal arithmetic elides the tag-check fast/slow path | jit, interp, aot |
 | `vr2_float_arith.fz` | VR.2 — float-literal arithmetic + comparisons emit native fadd/fcmp, no dispatch | jit, interp, aot |
-| `vr3_4_typed_capture.fz` | VR.3.4 — typed entry params survive continuation handoffs as raw bytes | jit, interp, aot |
+| `vr3_4_typed_capture.fz` | VR.3.4 / VR.4.3 — typed captures survive cont handoffs via native chain | jit, interp, aot |
 | `vr3_float_args.fz` | VR.3.2 — typed float entry-frame slots flow raw f64 across multiple ops in one block | jit, interp, aot |
 | `vr3_int_args.fz` | VR.3.3 / VR.4.2.3 — typed int args flow through native ABI | jit, interp, aot |
 | `vr4_2_native_call.fz` | VR.4.2 — leaf-bodied helper goes through the native ABI | jit, interp, aot |

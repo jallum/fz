@@ -44,15 +44,30 @@ use std::collections::HashSet;
 /// their result directly as a native value. Lifting this restriction is
 /// the job of .6.3 (native continuation invocation).
 pub fn natively_callable(m: &Module, parking: &HashSet<FnId>) -> HashSet<FnId> {
+    use std::collections::HashMap;
     let mut used_as_cont: HashSet<FnId> = HashSet::new();
     let mut used_as_closure_target: HashSet<FnId> = HashSet::new();
     let mut directly_called: HashSet<FnId> = HashSet::new();
+    // A cont can only be invoked natively from a Term::Call where the
+    // callee is also native (the chain in .6.3's emit_call). If a cont
+    // is used at a Term::CallClosure or Term::Receive site, it gets
+    // dispatched by the trampoline via the uniform ABI, so it must stay
+    // uniform. `cont_blocked` records these forbidden conts.
+    let mut cont_blocked: HashSet<FnId> = HashSet::new();
+    // For each fn used as a Term::Call cont, the callees of those call
+    // sites. The cont can be native only if every such callee is native
+    // (so every call site picks the native-chain emit_call path).
+    let mut cont_call_users: HashMap<FnId, Vec<FnId>> = HashMap::new();
     for f in &m.fns {
         for b in &f.blocks {
             match &b.terminator {
                 Term::Call { callee, continuation, .. } => {
                     used_as_cont.insert(continuation.fn_id);
                     directly_called.insert(*callee);
+                    cont_call_users
+                        .entry(continuation.fn_id)
+                        .or_default()
+                        .push(*callee);
                 }
                 Term::TailCall { callee, .. } => {
                     directly_called.insert(*callee);
@@ -60,6 +75,7 @@ pub fn natively_callable(m: &Module, parking: &HashSet<FnId>) -> HashSet<FnId> {
                 Term::CallClosure { continuation, .. }
                 | Term::Receive { continuation } => {
                     used_as_cont.insert(continuation.fn_id);
+                    cont_blocked.insert(continuation.fn_id);
                 }
                 _ => {}
             }
@@ -73,33 +89,71 @@ pub fn natively_callable(m: &Module, parking: &HashSet<FnId>) -> HashSet<FnId> {
     }
     let main_id = m.fns.iter().find(|f| f.name == "main").map(|f| f.id);
 
-    fn body_only_leaf(f: &crate::fz_ir::FnIr) -> bool {
-        // Leaf body: only Return / Halt / Goto / If. Excluding TailCall
-        // is intentional in .6.2.3 — `return_call` interactions with the
-        // GC safepoint and with mutual-recursion TCO are deep enough to
-        // warrant a follow-up. Native non-leaf callees rejoin in a later
-        // ticket once those interactions are designed.
-        f.blocks.iter().all(|b| matches!(
-            b.terminator,
-            Term::Return(_) | Term::Halt(_) | Term::Goto(_, _) | Term::If(_, _, _)
-        ))
-    }
+    // fz-ul4.27.6.3 — Continuations are now invoked natively when both
+    // sides agree, so being used as a cont no longer excludes a fn from
+    // the native set. A reachability gate replaces that exclusion:
+    //
+    //   reachable_as_native(f) iff f is directly called OR used as a
+    //   continuation OR a recursive direct/tail caller of one. Anything
+    //   else may still be invoked through the uniform ABI by the runtime
+    //   (e.g. `rt.spawn(fid)` in tests) and so must stay uniform.
+    //
+    // Starting candidates: every non-base-excluded fn with the right
+    // reachability. We then shrink to a fixed point: a fn stays in the
+    // set only if every terminator in its body lowers natively given
+    // the current set (Term::Call's callee + cont, Term::TailCall's
+    // callee — all must be in the set).
+    let reachable_as_native = |id: &FnId| {
+        directly_called.contains(id) || used_as_cont.contains(id)
+    };
 
-    let mut set = HashSet::new();
+    let mut set: HashSet<FnId> = HashSet::new();
     for f in &m.fns {
         if parking.contains(&f.id) { continue; }
-        if used_as_cont.contains(&f.id) { continue; }
         if used_as_closure_target.contains(&f.id) { continue; }
+        if cont_blocked.contains(&f.id) { continue; }
         if Some(f.id) == main_id { continue; }
-        if !body_only_leaf(f) { continue; }
-        // Only fns reached by some Term::Call / Term::TailCall in the IR
-        // can be reliably invoked through the bifurcated native path.
-        // A fn that's never directly called from user IR may still be
-        // dispatched by the runtime (e.g. test harness `rt.spawn(fid)`)
-        // and that path uses the uniform ABI unconditionally.
-        if !directly_called.contains(&f.id) { continue; }
+        if !reachable_as_native(&f.id) { continue; }
         set.insert(f.id);
     }
+
+    loop {
+        let mut to_remove: Vec<FnId> = Vec::new();
+        for f in &m.fns {
+            if !set.contains(&f.id) { continue; }
+            let body_ok = f.blocks.iter().all(|b| match &b.terminator {
+                Term::Return(_) | Term::Halt(_)
+                | Term::Goto(_, _) | Term::If(_, _, _) => true,
+                Term::Call { callee, continuation, .. } => {
+                    set.contains(callee) && set.contains(&continuation.fn_id)
+                }
+                // TailCall is excluded — native TCO via `return_call`
+                // bypasses the GC safepoint that the trampoline normally
+                // provides. A separate ticket will add explicit safepoint
+                // checks at return_call sites; until then keep tail-
+                // recursive fns on the uniform path.
+                Term::TailCall { .. } => false,
+                Term::CallClosure { .. }
+                | Term::TailCallClosure { .. }
+                | Term::Receive { .. } => false,
+            });
+            // A cont must only be reachable from native Term::Call sites.
+            // If any of its Term::Call callers has a callee that's not in
+            // the set, that call site won't take the native-chain branch
+            // — the cont would then be dispatched uniformly by the
+            // trampoline, and the trampoline can't drive a native sig.
+            let cont_users_ok = match cont_call_users.get(&f.id) {
+                None => true,
+                Some(users) => users.iter().all(|c| set.contains(c)),
+            };
+            if !body_ok || !cont_users_ok {
+                to_remove.push(f.id);
+            }
+        }
+        if to_remove.is_empty() { break; }
+        for id in to_remove { set.remove(&id); }
+    }
+
     set
 }
 
@@ -301,9 +355,10 @@ mod tests {
     }
 
     #[test]
-    fn natively_callable_excludes_continuations() {
-        // f Term::Calls helper with k as cont. k is the cont and must stay
-        // on uniform ABI even though it has no parking or Term::Call.
+    fn natively_callable_includes_continuations_when_chain_is_native() {
+        // f Term::Calls helper with k as cont. Both helper and k are
+        // leaf bodies; with .6.3 we native-chain across the call so all
+        // three (f, helper, k) end up in the set.
         let mut f = FnBuilder::new(FnId(0), "f");
         let entry = f.block(vec![]);
         f.set_terminator(entry, Term::Call {
@@ -313,12 +368,17 @@ mod tests {
         });
         let helper = make_fn(1, "helper");
         let k = make_fn(2, "k");
-        let m = build(vec![f.build(), helper, k]);
+        // f needs to be reachable as a native call target for the
+        // reachability gate to admit it. Wrap with an outer caller.
+        let mut outer = FnBuilder::new(FnId(3), "outer");
+        let o_entry = outer.block(vec![]);
+        outer.set_terminator(o_entry, Term::TailCall { callee: FnId(0), args: vec![] });
+        let m = build(vec![f.build(), helper, k, outer.build()]);
         let parking = parking_reachable(&m);
         let nc = natively_callable(&m, &parking);
-        assert!(!nc.contains(&FnId(2)), "k is used as a continuation");
-        assert!(nc.contains(&FnId(1)), "helper is not a cont and can be native");
-        assert!(!nc.contains(&FnId(0)), "f has Term::Call exits");
+        assert!(nc.contains(&FnId(1)), "helper is leaf-bodied and direct-called");
+        assert!(nc.contains(&FnId(2)), "k is leaf-bodied and used-as-cont");
+        assert!(nc.contains(&FnId(0)), "f Term::Call with both callee+cont native");
     }
 
     #[test]
