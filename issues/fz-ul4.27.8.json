@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-ul4.27.6"
+  ],
   "blocks": [],
   "created": "2026-05-12T00:23:30Z",
   "description": "Today every call allocates a heap frame via fz_alloc_frame regardless of whether the fn could ever park on receive. Reason: a parked task's state has to be heap-resident so the scheduler can switch tasks without owning the C stack.\n\nMost fns never park. Static analysis on the call graph: a fn is parking-reachable iff it transitively calls receive. The closure converges in one pass.\n\nParking-reachable fns: heap frame, as today. Everything else: native stack frame, GC tracer reads stack maps emitted by Cranelift instead of walking heap-frame chains.\n\nClosures don't enter the analysis. They hold captures by value at construction; the constructing frame is free to die. Indirect-call sites (CallClosure) conservatively assume the callee is parking-reachable unless the typer narrows the closure's fn_id to a single known fn.\n\n## Bonus\n\nOnce frames are typed (VR.3) and call frames are native (VR.6), Cranelift's `return_call` instruction becomes available for tail-call optimization between fns with matching signatures. Today fz does TCO via trampoline-with-frame-reuse (heap traffic per iteration); return_call is the standard \"JMP + reuse caller's stack slot\" approach.\n\n## Adds\n\n  - parking_reachability analysis pass (call-graph closure starting from receive).\n  - compile_fn: emit native stack-allocated frame setup for non-parking fns.\n  - GC: Cranelift stack-map emission at safepoints; tracer reads stack maps for native-frame fns.\n  - lower_tail_call: emit return_call for matching signatures; fall back to trampoline-with-frame-reuse for indirect/closure tail calls.\n\n## Kills\n\n  - fz_alloc_frame calls for non-parking-reachable fns. Replaced by Cranelift native stack frames.\n  - The trampoline's central dispatch loop (CompiledModule::run_internal's `while !cur.is_null()`) — shrinks to entry point + parking-resume only.\n  - The heap-chain-walking portion of collect_roots_from_frame_chain for stack-resident frames; replaced by Cranelift stack maps.\n  - The current trampoline-with-frame-reuse TCO emit logic in Term::TailCall lowering (kept only for indirect tail calls).\n\n## Acceptance\n\n  - concurrency_ping_pong still works (parking-reachable fns get heap frames; scheduler still parks them).\n  - Non-concurrent fixtures don't allocate per-call (heap_live_count delta == 0 across body executions).\n  - Tail-recursive fixtures use return_call where the typer narrows; trampoline path covered by closure-tail-call tests.\n  - Matrix green.\n\n## Decision gate\n\nThis atom can be deferred / split into its own epic if the parking-reachability analysis grows beyond what this sketch imagines.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "VR.6: stack-allocate non-parking frames + return_call TCO",
   "type": "task",
-  "updated_at": "2026-05-12T00:23:30Z"
+  "updated_at": "2026-05-12T00:23:33Z"
 }
