@@ -13,6 +13,7 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `cold_fn.fz` | minimal call site — one fn definition, one call, no scaffolding | jit, interp, aot |
 | `concurrency_ping_pong.fz` | spawn + send + receive — parent blocks on receive, prints the message | jit, interp, aot |
 | `cross_module_macro.fz` | defmacro in one module, called from another via `import Helpers, only: [twice: 1]` | jit, interp, aot |
+| `expect_clif_demo.fz` | demonstrate expect_clif_contains / expect_clif_excludes header keys (fz-ul4.27.1) | jit, interp, aot |
 | `hello.fz` | print each scalar shape — int, atom, bool, nil | jit, interp, aot |
 | `higher_order.fz` | higher-order patterns — apply2, compose | jit, interp, aot |
 | `hot_fn.fz` | same call repeated — historical JIT tier-up trigger; today every call is JIT | jit, interp, aot |

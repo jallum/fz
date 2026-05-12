@@ -36,6 +36,14 @@ struct Header {
     paths: Vec<String>,
     kind: Kind,
     defer: Option<String>,
+    /// Per-fn CLIF substring assertions from `# expect_clif_contains: <fn>: <substr>`
+    /// header keys. Each entry: (fn_name, substr_that_must_appear). Asserted by
+    /// shelling `fz dump --emit clif --fn <name>` and grepping the stdout.
+    /// fz-ul4.27.1 (VR.0).
+    expect_clif_contains: Vec<(String, String)>,
+    /// Same shape as `expect_clif_contains` but the substring must NOT appear.
+    /// Useful for proving a tag-check fast/slow path got elided.
+    expect_clif_excludes: Vec<(String, String)>,
 }
 
 fn parse_header(src: &str) -> Result<Header, String> {
@@ -43,6 +51,8 @@ fn parse_header(src: &str) -> Result<Header, String> {
     let mut paths: Option<Vec<String>> = None;
     let mut kind: Option<Kind> = None;
     let mut defer: Option<String> = None;
+    let mut expect_clif_contains: Vec<(String, String)> = Vec::new();
+    let mut expect_clif_excludes: Vec<(String, String)> = Vec::new();
     for line in src.lines() {
         let t = line.trim_start();
         if t.is_empty() {
@@ -70,6 +80,10 @@ fn parse_header(src: &str) -> Result<Header, String> {
             });
         } else if let Some(v) = parse_kv("defer:") {
             defer = Some(v);
+        } else if let Some(v) = parse_kv("expect_clif_contains:") {
+            expect_clif_contains.push(parse_fn_substr(&v)?);
+        } else if let Some(v) = parse_kv("expect_clif_excludes:") {
+            expect_clif_excludes.push(parse_fn_substr(&v)?);
         }
     }
     let purpose = purpose.ok_or("missing `# purpose:` header")?;
@@ -89,7 +103,28 @@ fn parse_header(src: &str) -> Result<Header, String> {
         paths,
         kind,
         defer,
+        expect_clif_contains,
+        expect_clif_excludes,
     })
+}
+
+/// Parse a `<fn>: <substr>` value from an `expect_clif_*` header line. The
+/// fn name is the prefix up to the first `:`; the rest (trimmed) is the
+/// substring. CLIF text contains colons too — so we split on the FIRST
+/// colon only.
+fn parse_fn_substr(v: &str) -> Result<(String, String), String> {
+    let (fn_name, rest) = v
+        .split_once(':')
+        .ok_or_else(|| format!("expect_clif_*: expected `<fn>: <substr>`, got `{}`", v))?;
+    let fn_name = fn_name.trim().to_string();
+    let substr = rest.trim().to_string();
+    if fn_name.is_empty() || substr.is_empty() {
+        return Err(format!(
+            "expect_clif_*: both fn name and substring must be non-empty, got `{}`",
+            v
+        ));
+    }
+    Ok((fn_name, substr))
 }
 
 fn has_main(src: &str) -> bool {
@@ -356,6 +391,83 @@ fn fz_dump_emits_clif() {
     assert!(asm_out.contains("block0"), "expected block0 label in asm:\n{}", asm_out);
 }
 
+/// Shell `fz dump --emit clif --fn <name>` and check each fn's
+/// per-fixture expect_clif_contains / expect_clif_excludes assertion.
+/// Returns all failure messages in one vec so a fixture surfaces every
+/// mismatch in one pass instead of bailing on the first.
+fn check_clif_assertions(fixture: &Path, header: &Header) -> Result<(), Vec<String>> {
+    use std::collections::HashSet;
+    let mut fns: HashSet<&str> = HashSet::new();
+    for (f, _) in &header.expect_clif_contains {
+        fns.insert(f.as_str());
+    }
+    for (f, _) in &header.expect_clif_excludes {
+        fns.insert(f.as_str());
+    }
+    let mut dumps: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for fn_name in fns {
+        let out = match Command::new(FZ_BIN)
+            .args(["dump", "--emit", "clif", "--fn"])
+            .arg(fn_name)
+            .arg(fixture)
+            .output()
+        {
+            Ok(o) => o,
+            Err(e) => {
+                return Err(vec![format!(
+                    "{}: spawn fz dump for fn `{}`: {}",
+                    fixture.display(),
+                    fn_name,
+                    e
+                )]);
+            }
+        };
+        if !out.status.success() {
+            return Err(vec![format!(
+                "{}: fz dump --fn {} exited {}: {}",
+                fixture.display(),
+                fn_name,
+                out.status,
+                String::from_utf8_lossy(&out.stderr).trim_end(),
+            )]);
+        }
+        dumps.insert(
+            fn_name.to_string(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+        );
+    }
+    let mut failures = Vec::new();
+    for (fn_name, substr) in &header.expect_clif_contains {
+        let dump = dumps.get(fn_name.as_str()).expect("dump captured above");
+        if !dump.contains(substr.as_str()) {
+            failures.push(format!(
+                "{}: expect_clif_contains failed — fn `{}` does not contain `{}`:\n{}",
+                fixture.display(),
+                fn_name,
+                substr,
+                dump
+            ));
+        }
+    }
+    for (fn_name, substr) in &header.expect_clif_excludes {
+        let dump = dumps.get(fn_name.as_str()).expect("dump captured above");
+        if dump.contains(substr.as_str()) {
+            failures.push(format!(
+                "{}: expect_clif_excludes failed — fn `{}` unexpectedly contains `{}`:\n{}",
+                fixture.display(),
+                fn_name,
+                substr,
+                dump
+            ));
+        }
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures)
+    }
+}
+
 #[test]
 fn fixture_matrix() {
     let bless = std::env::var("BLESS").ok().as_deref() == Some("1");
@@ -394,6 +506,17 @@ fn fixture_matrix() {
                     deferred_paths.push((f.clone(), path.clone(), msg));
                 }
                 CheckOutcome::Fail(e) => failures.push(e),
+            }
+        }
+        // CLIF-substring assertions (fz-ul4.27.1). Independent of the
+        // path loop: the assertion is about generated code, which is
+        // the same across compiled paths.
+        if !header.expect_clif_contains.is_empty() || !header.expect_clif_excludes.is_empty()
+        {
+            if let Err(msgs) = check_clif_assertions(&f, &header) {
+                for msg in msgs {
+                    failures.push(msg);
+                }
             }
         }
     }
