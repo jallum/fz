@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-ul4.27.5.3"
+  ],
   "created": "2026-05-12T01:35:26Z",
   "description": "First atomic sliver of VR.3 (fz-ul4.27.5): typed FLOAT entry-frame slots end-to-end.\n\n## Why this is atomic\n\nSchema-kind and storage-format must move together: if the schema declares a slot as RawBytes but storage still holds tagged FzValue bits, the GC tracer (already kind-aware in heap.rs) will skip a real pointer → silent corruption. So one slot's worth of plumbing — schema decl + raw load/store + boundary box-up — is the smallest atom that keeps GC parity.\n\n## Adds\n\n- `build_frame_schema(name, kinds: \u0026[FieldKind])` — per-slot kinds, replacing the uniform-FzValue current shape.\n- Per-fn schema build site consults `FnTypes`: `descr_is_float(entry_param) → FieldKind::RawBytes(8)`.\n- Entry-frame param load: float slots use `load.f64` raw; int and other kinds keep `load.i64` tagged.\n- Per-fn `raw_float_vars: HashSet\u003cVar\u003e` tracking which SSA values currently hold raw f64.\n- `as_tagged(b, jmod, runtime, var_map, raw_float_vars, var)` helper that returns a guaranteed-tagged i64, boxing on the fly via `fz_alloc_float` if the var is raw.\n- lower_prim float fast paths read from `raw_float_vars` (skip unbox_float when source is already raw); result f64 is inserted into raw_float_vars.\n- Every boundary that exits per-fn SSA routes its arg through `as_tagged`: Term::Halt, Term::Return, Term::Goto block-args, Term::Call args + captured vals, Term::CallClosure / TailCallClosure + captured, Term::Receive captures, and the FzValue-slot stores inside `print` / builtin lowering.\n\n## Kills\n\n- `box_float_native(... fadd_result)` per-op call in BinOp::{Add,Sub,Mul,Div} float fast path — replaced by inserting the raw f64 into `raw_float_vars`.\n- `unbox_float(av)` per-op call when `av` is already raw (in raw_float_vars).\n\n## Acceptance\n\n- New fixture `vr3_float_args.fz` exercising a fn with float parameters; CLIF asserts:\n  - No `fz_alloc_float` between back-to-back float-arith ops on the parameter chain.\n  - No `load.f64 v_x+16` (heap-payload deref) for the raw entry-param vars.\n- Matrix green.\n- GC fixtures still green (parking-reachable closures with float captures still trace correctly because closure captures stay FzValue here — closure work is .5.4).\n\n## Out of scope (filed as siblings)\n\n- Raw INT entry-frame slots → fz-ul4.27.5.2.\n- Raw continuation captures (CPS frames between blocks of one fn → cont fns) → fz-ul4.27.5.3.\n- Typed closure payloads → fz-ul4.27.5.4.\n\n## UNBLOCKS\n\n- fz-ul4.27.5.2 (int entry-frame slots — shares the `as_tagged` helper)",
   "id": "fz-ul4.27.5.2",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "VR.3.1: typed FLOAT entry-frame slots end-to-end",
   "type": "task",
-  "updated_at": "2026-05-12T01:35:26Z"
+  "updated_at": "2026-05-12T01:36:22Z"
 }
