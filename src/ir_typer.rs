@@ -174,20 +174,44 @@ pub fn type_module(m: &Module) -> ModuleTypes {
                     _ => {}
                 }
 
-                // fz-ul4.27.5.4: propagate to continuations for Call /
-                // CallClosure / Receive. Continuation entry params are
-                // `[result_var, ...captured_vars]`. We narrow positions
-                // [1..] from the caller's captured Descrs at this site.
-                // Position 0 (the result slot) is filled at runtime by
-                // the callee's return — we leave that at `any` for now;
-                // letting it go raw requires every caller of a given
-                // callee to agree on the kind, which the existing
-                // single-FnTypes-per-fn model doesn't support yet.
+                // fz-ul4.27.5.4 / .29.4: propagate to continuations for
+                // Call / CallClosure / Receive. Continuation entry params
+                // are `[result_var, ...captured_vars]`. Slot 0 (the
+                // result) is the callee's return Descr at this callsite —
+                // for Term::Call we resolve it via `specs.get((callee,
+                // arg_descrs))`; for CallClosure / Receive the callee /
+                // sender is opaque so slot 0 stays `any`.
                 let cont = match &b.terminator {
                     Term::Call { continuation, .. } => Some(continuation),
                     Term::CallClosure { continuation, .. } => Some(continuation),
                     Term::Receive { continuation } => Some(continuation),
                     _ => None,
+                };
+                let slot0_descr: Descr = match &b.terminator {
+                    Term::Call { callee, args, .. } => {
+                        let arg_descrs: Vec<Descr> = args.iter().map(|av|
+                            env.get(av).cloned().unwrap_or_else(Descr::any)
+                        ).collect();
+                        let callee_key = (*callee, arg_descrs);
+                        if let Some(callee_ft) = specs.get(&callee_key) {
+                            if let Some(&j) = idx_of.get(callee) {
+                                let callee_fn = &m.fns[j];
+                                let mut joined: Option<Descr> = None;
+                                for cb in &callee_fn.blocks {
+                                    if let Term::Return(rv) = &cb.terminator {
+                                        let d = callee_ft.vars.get(rv).cloned()
+                                            .unwrap_or_else(Descr::any);
+                                        joined = Some(match joined {
+                                            Some(p) => p.union(&d),
+                                            None => d,
+                                        });
+                                    }
+                                }
+                                joined.unwrap_or_else(Descr::any)
+                            } else { Descr::any() }
+                        } else { Descr::any() }
+                    }
+                    _ => Descr::any(),
                 };
                 if let Some(cont) = cont {
                     if let Some(&j) = idx_of.get(&cont.fn_id) {
@@ -195,20 +219,9 @@ pub fn type_module(m: &Module) -> ModuleTypes {
                         let n_params = cont_fn.block(cont_fn.entry).params.len();
                         let slot = narrowed
                             .entry(cont.fn_id)
-                            .or_insert_with(|| {
-                                // Pre-seed slot 0 with `any` so the union
-                                // below doesn't pin it at `none`.
-                                let mut v = vec![Descr::none(); n_params];
-                                if !v.is_empty() { v[0] = Descr::any(); }
-                                v
-                            });
-                        // slot[0] = result — leave as `any`; never widen.
-                        // fz-ul4.29.4 will retire this pin once the per-spec
-                        // map (.29.2) is consumed by codegen: the cont's
-                        // slot 0 becomes the callee's specialized return
-                        // Descr per-callsite, with no agreement problem.
+                            .or_insert_with(|| vec![Descr::none(); n_params]);
                         if let Some(p0) = slot.get_mut(0) {
-                            *p0 = p0.union(&Descr::any());
+                            *p0 = p0.union(&slot0_descr);
                         }
                         for (k, cv) in cont.captured.iter().enumerate() {
                             if let Some(p) = slot.get_mut(k + 1) {
@@ -216,11 +229,10 @@ pub fn type_module(m: &Module) -> ModuleTypes {
                                 *p = p.union(&ct);
                             }
                         }
-                        // fz-ul4.29.1: record this callsite's exact cont
-                        // input-Descr tuple. Slot 0 stays at `any` until
-                        // .29.4 lifts the result-slot pin; captured slots
-                        // are the actual caller-side Descrs.
+                        // Record this callsite's exact cont input-Descr
+                        // tuple with slot 0 = callee's specialized return.
                         let mut key: Vec<Descr> = vec![Descr::any(); n_params];
+                        if !key.is_empty() { key[0] = slot0_descr.clone(); }
                         for (k, cv) in cont.captured.iter().enumerate() {
                             if let Some(p) = key.get_mut(k + 1) {
                                 *p = env.get(cv).cloned().unwrap_or_else(Descr::any);
@@ -1528,16 +1540,22 @@ mod tests {
     }
 
     #[test]
-    fn closure_reachable_fn_keeps_any_entry_params() {
-        // fn worker(n), do: return n — packed into a closure by main, so
-        // its entry param must stay `any` even though one direct caller
-        // (main, via MakeClosure-then-Call) might be visible.
+    fn closure_target_with_no_direct_callers_keeps_any_entry_params() {
+        // fn worker(n), do: return n — packed into a closure by main but
+        // never reached via a direct Term::Call/TailCall. With no visible
+        // direct caller, the lub view (by_fn_idx) leaves the entry param
+        // at the initial all-any. The any-key spec in `specs` (which is
+        // what closure-invoke dispatches into) is also `any` — same view.
+        //
+        // fz-ul4.29.3 removed the typer's old `closure_reachable` skip;
+        // for closure targets that DO have direct callers, by_fn_idx now
+        // gets narrowed by the visible callers (a different test would
+        // exercise that), while the any-key spec remains all-any.
         let mut wb = FnBuilder::new(FnId(0), "worker");
         let n = wb.fresh_var();
         let wentry = wb.block(vec![n]);
         wb.set_terminator(wentry, Term::Return(n));
 
-        // fn main, do: let cl = MakeClosure(worker, []); halt cl
         let mut mb = FnBuilder::new(FnId(1), "main");
         let mentry = mb.block(vec![]);
         let cl = mb.let_(mentry, Prim::MakeClosure(FnId(0), vec![]));
@@ -1546,9 +1564,39 @@ mod tests {
         let m = build_module(vec![wb.build(), mb.build()]);
         let mt = type_module(&m);
         let nt = mt[0].vars.get(&n).cloned().unwrap();
-        // worker is closure-reachable → entry param stays at `any`.
         assert!(nt.is_equiv(&Descr::any()),
-            "worker's n must stay at any (closure-reachable), got {}", nt);
+            "worker's n must stay at any (no direct callers), got {}", nt);
+    }
+
+    #[test]
+    fn closure_target_with_direct_caller_narrows_by_fn_idx_but_any_key_stays_any() {
+        // fz-ul4.29.3 regression guard: a fn that's BOTH a closure target
+        // AND called directly with a typed arg gets its by_fn_idx narrowed
+        // by the visible direct caller; the any-key spec (what the closure
+        // path dispatches into) remains all-any.
+        let mut wb = FnBuilder::new(FnId(0), "worker");
+        let n = wb.fresh_var();
+        let wentry = wb.block(vec![n]);
+        wb.set_terminator(wentry, Term::Return(n));
+
+        let mut mb = FnBuilder::new(FnId(1), "main");
+        let mentry = mb.block(vec![]);
+        let _cl = mb.let_(mentry, Prim::MakeClosure(FnId(0), vec![]));
+        let lit = mb.let_(mentry, Prim::Const(Const::Int(42)));
+        mb.set_terminator(mentry, Term::TailCall { callee: FnId(0), args: vec![lit] });
+
+        let m = build_module(vec![wb.build(), mb.build()]);
+        let mt = type_module(&m);
+        // by_fn_idx for worker: n narrowed to the direct caller's int.
+        let nt = mt[0].vars.get(&n).cloned().unwrap();
+        assert!(nt.is_subtype(&Descr::int()),
+            "worker's n in by_fn_idx must narrow to int (visible caller), got {}", nt);
+        // any-key spec stays at all-any (closure-invoke fallback).
+        let any_spec = mt.spec(FnId(0), &[Descr::any()])
+            .expect("any-key spec exists");
+        let any_n = any_spec.vars.get(&n).cloned().unwrap();
+        assert!(any_n.is_equiv(&Descr::any()),
+            "worker's any-key spec keeps n at any, got {}", any_n);
     }
 
     // ----- fz-ul4.29.1: per-callsite specialization map -----
