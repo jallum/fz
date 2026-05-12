@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
     "fz-ul4.29.8"
@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-ul4.29",
   "priority": 3,
-  "status": "open",
+  "status": "in_progress",
   "title": "Wrap spawn-target closures in fz_spawn_thunk",
   "type": "task",
-  "updated_at": "2026-05-12T16:46:38Z"
+  "updated_at": "2026-05-12T16:46:41Z"
 }
