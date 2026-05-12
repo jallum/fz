@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-12T19:20:51Z",
+  "description": "Re-bless CLIF expectations for every fixture where a narrow spec exists with non-`any` arg Descrs or return Descr. Expected diff:\n  - removed `sshr_imm v, 3` at narrow spec entry uses of typed params\n  - removed `ishl_imm 3 ; bor_imm 1` at narrow spec returns when return Descr is int-only\n  - caller emits `iconst N` (raw) instead of `iconst (N\u003c\u003c3)|1` (tagged) when feeding raw-int params\n  - one residual `box_int` survives at the narrow-callee → any-key-cont seam (documented; eliminated by the cont follow-up)\n\nJIT + AOT identical (same compile_fn). Interp unaffected.\n\nAcceptance for add1.fz: `add1_s3` body is `iadd_imm v0, 1 ; \u003ccoerce-for-cont\u003e ; return`; main passes `iconst 41` to add1_s3 (not `iconst 329`).",
+  "id": "fz-ul4.27.13.5",
+  "labels": [],
+  "parent": "fz-ul4.27.13",
+  "priority": 3,
+  "status": "open",
+  "title": "VR.4 follow-up STEP.5: Fixture-matrix bless",
+  "type": "task",
+  "updated_at": "2026-05-12T19:20:51Z"
+}
