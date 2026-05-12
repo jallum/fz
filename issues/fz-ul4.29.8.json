@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-ul4.29.5",
     "fz-ul4.29.9"
@@ -11,8 +11,8 @@
   "labels": [],
   "parent": "fz-ul4.29",
   "priority": 3,
-  "status": "open",
+  "status": "in_progress",
   "title": ".29.5.1: Lift closure-target native-eligibility",
   "type": "task",
-  "updated_at": "2026-05-12T16:46:29Z"
+  "updated_at": "2026-05-12T16:49:52Z"
 }
