@@ -20,9 +20,62 @@
 //!
 //! Closure calls and closure packing are both conservative — neither
 //! direction lets us trace the actual callee, so we widen.
+//!
+//! Companion analysis (fz-ul4.27.6.2): `natively_callable` identifies the
+//! subset of fns that can use the typed native-Cranelift ABI rather than
+//! the uniform `(frame_ptr, host_ctx) -> frame_ptr` trampoline ABI. A fn
+//! qualifies iff (a) it is not parking-reachable, (b) it is never used as
+//! a continuation (continuations are dispatched by the trampoline which
+//! requires the uniform ABI), and (c) it is not the program entry `main`
+//! (driven by aot_shim / runtime through the trampoline). Native-call
+//! sites to such fns skip `fz_alloc_frame` for the callee and pass args
+//! by register.
 
 use crate::fz_ir::{FnId, Module, Prim, Stmt, Term};
 use std::collections::HashSet;
+
+/// Returns the subset of fns that can be invoked with a typed native ABI.
+/// See module-level docs for the qualification rules.
+///
+/// For .6.2 we additionally require the fn body to have no `Term::Call` /
+/// `Term::CallClosure` exits — those require dispatching to a separate cont
+/// after the callee returns, which forces a heap-frame ABI. Only fns whose
+/// terminators are restricted to TailCall/Return/Halt/Goto/If can return
+/// their result directly as a native value. Lifting this restriction is
+/// the job of .6.3 (native continuation invocation).
+pub fn natively_callable(m: &Module, parking: &HashSet<FnId>) -> HashSet<FnId> {
+    let mut used_as_cont: HashSet<FnId> = HashSet::new();
+    for f in &m.fns {
+        for b in &f.blocks {
+            match &b.terminator {
+                Term::Call { continuation, .. }
+                | Term::CallClosure { continuation, .. }
+                | Term::Receive { continuation } => {
+                    used_as_cont.insert(continuation.fn_id);
+                }
+                _ => {}
+            }
+        }
+    }
+    let main_id = m.fns.iter().find(|f| f.name == "main").map(|f| f.id);
+
+    fn body_only_tail_or_return(f: &crate::fz_ir::FnIr) -> bool {
+        f.blocks.iter().all(|b| !matches!(
+            b.terminator,
+            Term::Call { .. } | Term::CallClosure { .. } | Term::Receive { .. }
+        ))
+    }
+
+    let mut set = HashSet::new();
+    for f in &m.fns {
+        if parking.contains(&f.id) { continue; }
+        if used_as_cont.contains(&f.id) { continue; }
+        if Some(f.id) == main_id { continue; }
+        if !body_only_tail_or_return(f) { continue; }
+        set.insert(f.id);
+    }
+    set
+}
 
 /// Returns the set of fn ids that are parking-reachable in `m`.
 pub fn parking_reachable(m: &Module) -> HashSet<FnId> {
@@ -179,5 +232,95 @@ mod tests {
         let m = build(vec![b.build(), t.build()]);
         let s = parking_reachable(&m);
         assert!(s.contains(&FnId(0)));
+    }
+
+    // --- natively_callable tests (fz-ul4.27.6.2) ---
+
+    fn make_fn(id: u32, name: &str) -> crate::fz_ir::FnIr {
+        // A trivial Return-only fn: `fn name(x) do x end`.
+        let mut b = FnBuilder::new(FnId(id), name);
+        let v = b.fresh_var();
+        let entry = b.block(vec![v]);
+        b.set_terminator(entry, Term::Return(v));
+        b.build()
+    }
+
+    #[test]
+    fn natively_callable_includes_pure_helper() {
+        // main calls helper via TailCall; helper is a plain Return-only fn.
+        let mut main_b = FnBuilder::new(FnId(0), "main");
+        let m_entry = main_b.block(vec![]);
+        main_b.set_terminator(m_entry, Term::TailCall { callee: FnId(1), args: vec![] });
+
+        let helper = make_fn(1, "helper");
+        let m = build(vec![main_b.build(), helper]);
+        let parking = parking_reachable(&m);
+        let nc = natively_callable(&m, &parking);
+        assert!(nc.contains(&FnId(1)), "helper should be natively-callable");
+        assert!(!nc.contains(&FnId(0)), "main is never natively-callable");
+    }
+
+    #[test]
+    fn natively_callable_excludes_parking_fns() {
+        let mut rx = FnBuilder::new(FnId(0), "rx");
+        let entry = rx.block(vec![]);
+        rx.set_terminator(entry, Term::Receive {
+            continuation: Cont { fn_id: FnId(1), captured: vec![] },
+        });
+        let k = make_fn(1, "k");
+        let m = build(vec![rx.build(), k]);
+        let parking = parking_reachable(&m);
+        let nc = natively_callable(&m, &parking);
+        assert!(!nc.contains(&FnId(0)), "rx is parking, not natively-callable");
+    }
+
+    #[test]
+    fn natively_callable_excludes_continuations() {
+        // f Term::Calls helper with k as cont. k is the cont and must stay
+        // on uniform ABI even though it has no parking or Term::Call.
+        let mut f = FnBuilder::new(FnId(0), "f");
+        let entry = f.block(vec![]);
+        f.set_terminator(entry, Term::Call {
+            callee: FnId(1),
+            args: vec![],
+            continuation: Cont { fn_id: FnId(2), captured: vec![] },
+        });
+        let helper = make_fn(1, "helper");
+        let k = make_fn(2, "k");
+        let m = build(vec![f.build(), helper, k]);
+        let parking = parking_reachable(&m);
+        let nc = natively_callable(&m, &parking);
+        assert!(!nc.contains(&FnId(2)), "k is used as a continuation");
+        assert!(nc.contains(&FnId(1)), "helper is not a cont and can be native");
+        assert!(!nc.contains(&FnId(0)), "f has Term::Call exits");
+    }
+
+    #[test]
+    fn natively_callable_excludes_main() {
+        // main with only Return — still excluded because it's main.
+        let helper = make_fn(0, "main");
+        let m = build(vec![helper]);
+        let parking = parking_reachable(&m);
+        let nc = natively_callable(&m, &parking);
+        assert!(!nc.contains(&FnId(0)));
+    }
+
+    #[test]
+    fn natively_callable_excludes_fn_with_term_call() {
+        // A non-cont, non-parking fn that has Term::Call cannot be native
+        // in .6.2 (cont dispatch needs uniform ABI). Lifted in .6.3.
+        let mut f = FnBuilder::new(FnId(0), "f");
+        let entry = f.block(vec![]);
+        f.set_terminator(entry, Term::Call {
+            callee: FnId(1),
+            args: vec![],
+            continuation: Cont { fn_id: FnId(2), captured: vec![] },
+        });
+        let helper = make_fn(1, "helper");
+        let k = make_fn(2, "k");
+        let m = build(vec![f.build(), helper, k]);
+        let parking = parking_reachable(&m);
+        let nc = natively_callable(&m, &parking);
+        assert!(!nc.contains(&FnId(0)), "f has Term::Call, not native-eligible");
     }
 }

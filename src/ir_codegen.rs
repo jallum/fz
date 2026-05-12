@@ -557,6 +557,28 @@ fn build_frame_schema(name: &str, param_kinds: &[FieldKind]) -> Schema {
 /// fz-ul4.23.12 unification: where the trait used to expose only
 /// `module_mut` and the surrounding pipeline was duplicated in
 /// `compile()` and `compile_aot()`, the surrounding pipeline is now
+/// fz-ul4.27.6.2.1 — Join the Descrs of every `Term::Return` operand in a
+/// fn's blocks. For a fn whose only exits are TailCall / Halt / Goto / If
+/// (no Return), the result is `any`. .6.2.2 consumes this to build per-fn
+/// typed Signatures: an int-only return becomes `i64`, a float-only return
+/// becomes `f64`, anything else stays `i64` (tagged FzValue).
+fn join_return_descrs(
+    f: &crate::fz_ir::FnIr,
+    ft: &crate::ir_typer::FnTypes,
+) -> crate::types::Descr {
+    let mut joined: Option<crate::types::Descr> = None;
+    for b in &f.blocks {
+        if let Term::Return(v) = &b.terminator {
+            let d = ft.vars.get(v).cloned().unwrap_or_else(crate::types::Descr::any);
+            joined = Some(match joined {
+                Some(prev) => prev.union(&d),
+                None => d,
+            });
+        }
+    }
+    joined.unwrap_or_else(crate::types::Descr::any)
+}
+
 /// shared and the trait owns every legitimate point of variation —
 /// fn linkage, per-program metadata emission, and the finalize step
 /// that materializes the backend's Output.
@@ -611,6 +633,17 @@ pub struct CompiledMetadata {
     pub main_fn_id: Option<FnId>,
     /// Main fn's frame size (looked up from `schemas`). Convenience.
     pub main_frame_size: Option<u32>,
+    /// fz-ul4.27.6.2.1 — Fns that may suspend (Receive / closure ops / any
+    /// fn transitively calling such). Used by .6.2.4 to decide ABI per fn.
+    pub parking_reachable: std::collections::HashSet<FnId>,
+    /// fz-ul4.27.6.2.1 — Fns eligible for typed native-call ABI in .6.2.
+    /// See `parking::natively_callable` for qualification rules.
+    pub natively_callable: std::collections::HashSet<FnId>,
+    /// fz-ul4.27.6.2.1 — Per-fn join of all `Term::Return` operand Descrs.
+    /// For fns with no Term::Return (only Halt / TailCall) this is `any`,
+    /// which is the conservative default for .6.2.2's Signature builder.
+    /// Indexed by FnId.0.
+    pub return_descrs: Vec<crate::types::Descr>,
 }
 
 /// JIT backend: wraps a JITModule pre-finalize. compile() constructs one,
@@ -1096,6 +1129,19 @@ pub fn compile_with_backend<B: Backend>(
     let main_fn_id = module.fn_by_name("main").map(|f| f.id);
     let main_frame_size = main_fn_id.map(|id| schemas[id.0 as usize].size);
 
+    // fz-ul4.27.6.2.1 — Compute parking-reachability + native-callability
+    // + per-fn return Descrs. No behavior change here; these flow into the
+    // returned metadata so .6.2.2 can build per-fn Signatures from them.
+    let parking_reachable = crate::parking::parking_reachable(module);
+    let natively_callable =
+        crate::parking::natively_callable(module, &parking_reachable);
+    let return_descrs: Vec<crate::types::Descr> = module
+        .fns
+        .iter()
+        .enumerate()
+        .map(|(i, f)| join_return_descrs(f, &module_types[i]))
+        .collect();
+
     let diagnostics = crate::ir_typer::collect_diagnostics(module, &module_types);
     let metadata = CompiledMetadata {
         fn_ids,
@@ -1107,6 +1153,9 @@ pub fn compile_with_backend<B: Backend>(
         bs_tuple_arity3_schema,
         types: module_types,
         diagnostics,
+        parking_reachable,
+        natively_callable,
+        return_descrs,
         main_fn_id,
         main_frame_size,
     };
