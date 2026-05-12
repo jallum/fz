@@ -21,6 +21,7 @@ mod repl;
 mod resolve;
 mod runtime;
 mod test_runner;
+mod type_expr;
 mod typer;
 mod types;
 mod value;

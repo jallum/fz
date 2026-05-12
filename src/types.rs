@@ -275,6 +275,17 @@ impl Descr {
         d
     }
 
+    /// Top of the string/binary axis. Promoted from test-only in
+    /// fz-ul4.31.1 to let the type-expression parser lower `binary` to
+    /// the correct Descr. (`dead_code` allowed: production consumers
+    /// land in .31.4 when @spec wires it in.)
+    #[allow(dead_code)]
+    pub fn str_t() -> Self {
+        let mut d = Self::none();
+        d.strs = StrSet::any();
+        d
+    }
+
     pub fn float() -> Self {
         let mut d = Self::none();
         d.floats = FloatSet::any();
@@ -895,18 +906,7 @@ fn join_clause(pos: &[String], neg: &[String], top: &str) -> String {
 mod tests {
     use super::*;
 
-    // Test-only conveniences. `str_t` is useful for type-algebra
-    // tests that want "every string"; the live pipeline never asks
-    // for that top directly — it always narrows. `raw` is a newtype
-    // probe used by axis-disjointness assertions. (`atom_top` was
-    // promoted to a public Descr constructor by VR.5a.)
-    impl Descr {
-        pub(super) fn str_t() -> Self {
-            let mut d = Self::none();
-            d.strs = StrSet::any();
-            d
-        }
-    }
+    // (`str_t` was promoted to a public Descr constructor by fz-ul4.31.1.)
     impl BasicBits {
         pub(super) const fn raw(self) -> u32 { self.0 }
     }
