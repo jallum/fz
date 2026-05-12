@@ -23,7 +23,15 @@ pub const FREE_KIND: u16 = 0xFFFF;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FieldKind {
+    /// Tagged FzValue bits. GC tracer follows this slot.
     FzValue,
+    /// 8 bytes of raw f64 payload. GC tracer skips this slot. Introduced by
+    /// fz-ul4.27.5.2 to let typed-float entry-frame params live as raw f64
+    /// instead of as a tagged ptr to a heap-resident boxed float.
+    RawF64,
+    /// Generic raw bytes — width in bytes. GC tracer skips this slot. Used
+    /// by miscellaneous non-frame schemas (bitstrings, etc.) and reserved
+    /// for VR.3.3 (raw i64 entry-param slots).
     RawBytes(u32),
 }
 

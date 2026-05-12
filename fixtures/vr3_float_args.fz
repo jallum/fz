@@ -1,0 +1,26 @@
+# purpose: VR.3.2 — typed float entry-frame slots flow raw f64 across multiple ops in one block
+# paths:   jit, interp, aot
+# expect_clif_contains: dist: load.f64
+# expect_clif_contains: dist: fmul
+# expect_clif_contains: dist: fadd
+# expect_clif_excludes: dist: load.f64 notrap aligned v2+16
+# expect_clif_excludes: dist: load.f64 notrap aligned v3+16
+
+# fz-ul4.27.10 call-site narrowing types x, y as float (caller passes
+# 1.5, 2.5). fz-ul4.27.5.2 makes the entry-frame schema mark those slots
+# as FieldKind::RawF64 — the slot stores raw f64 bytes, not a tagged
+# ptr to a boxed-float heap object.
+#
+# Inside `dist`, codegen loads x and y as raw f64 directly from the
+# frame (`load.f64 v0+24` / `load.f64 v0+32`). The two `*` and the
+# `+` then fire on raw f64 (no `load.f64 v_x+16` heap-payload deref
+# that would be present if the slot held a tagged ptr). The result is
+# boxed exactly once at the terminator, where the continuation needs a
+# tagged FzValue for its FzValue-kind result slot.
+fn dist(x, y) do
+  x * x + y * y
+end
+
+fn main() do
+  print(dist(1.5, 2.5))
+end
