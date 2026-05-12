@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-12T02:26:00Z",
+  "description": "With .6.3 in place, the trampoline only dispatches at: program entry, parking-reachable callee returns, closure-invoke returns, and resume-after-park. The general \"while !cur.is_null() { cur = jit(cur) }\" dispatch loop shrinks to a thin entry + resume.\n\n## Adds\n\n- run_internal's dispatch loop short-circuits: when entered with a non-parking fn, run it to completion (it returns the program's final value via the native call chain) and stop. Only re-enter the loop for parking events.\n- Halt path: a non-parking fn's chain reaches Term::Halt; the chain returns the halt value up the native stack; run_internal records it.\n\n## Kills\n\n- The central trampoline dispatch loop's per-call iteration for non-parking call chains (the bulk of trampoline traffic in non-concurrent programs).\n- Per-tick scheduler ticks for non-parking paths.\n\n## Acceptance\n\n- Matrix green.\n- Non-concurrent fixtures execute without entering the trampoline loop body (loop fires once for entry, exits when halt is reached).\n- concurrency_ping_pong still works (parking-reachable paths keep using the loop).\n\n## Depends on\n\n- fz-ul4.27.6.3\n\n## Blocks\n\n- fz-ul4.27.8 (VR.6: stack frames + return_call TCO)",
+  "id": "fz-ul4.27.6.4",
+  "labels": [],
+  "parent": "fz-ul4.27.6",
+  "priority": 3,
+  "status": "open",
+  "title": "VR.4.4: trampoline retirement for non-parking paths",
+  "type": "task",
+  "updated_at": "2026-05-12T02:26:00Z"
+}
