@@ -29,6 +29,12 @@ pub enum FieldKind {
     /// fz-ul4.27.5.2 to let typed-float entry-frame params live as raw f64
     /// instead of as a tagged ptr to a heap-resident boxed float.
     RawF64,
+    /// 8 bytes of raw i64 — an int payload with the tag/shift stripped.
+    /// GC tracer skips this slot. Introduced by fz-ul4.27.5.3 so typed-int
+    /// entry-frame params can live as raw i64 instead of the tagged
+    /// `(n << 3) | TAG_INT` form, letting arithmetic ops skip the
+    /// per-op sshr/ishl round trip.
+    RawI64,
     /// Generic raw bytes — width in bytes. GC tracer skips this slot. Used
     /// by miscellaneous non-frame schemas (bitstrings, etc.) and reserved
     /// for VR.3.3 (raw i64 entry-param slots).

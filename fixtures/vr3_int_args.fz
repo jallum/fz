@@ -1,0 +1,22 @@
+# purpose: VR.3.3 — typed int entry-frame slots flow raw i64 across multiple ops in one block
+# paths:   jit, interp, aot
+# expect_clif_contains: sum3: load.i64
+# expect_clif_contains: sum3: iadd
+# expect_clif_excludes: sum3: sshr_imm v2, 3
+# expect_clif_excludes: sum3: sshr_imm v3, 3
+# expect_clif_excludes: sum3: sshr_imm v4, 3
+
+# fz-ul4.27.10 call-site narrowing types a, b, c as int (caller passes
+# int literals). fz-ul4.27.5.3 marks those entry-frame slots as
+# FieldKind::RawI64 — the slot stores the raw int payload, not the
+# tagged `(n << 3) | TAG_INT` form. Codegen loads raw i64 directly and
+# the BinOp::Add int fast path emits a single `iadd` per op with no
+# per-op sshr/ishl round trip on a/b/c. The result is tagged exactly
+# once at the boundary where the continuation needs an FzValue.
+fn sum3(a, b, c) do
+  a + b + c
+end
+
+fn main() do
+  print(sum3(40, 1, 1))
+end
