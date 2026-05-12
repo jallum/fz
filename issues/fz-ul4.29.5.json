@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-ul4.29.4"
+  ],
   "blocks": [],
   "created": "2026-05-12T12:03:44Z",
   "description": "Standalone follow-up after the .29 arc closes. Where the set of fns reachable via a given CallClosure / TailCallClosure is statically bounded (small or singleton), specialize the closure target(s) against the actual callsite arg Descrs. Subsumes fz-ul4.27.5.6 part A (originally framed as \"closure-callsite narrowing in ir_typer\").\n\n## Why deferred from the arc\n\nThe .29 arc collapses the closure-reachable skip into a clean any-key fallback (.29.3). That's correct and sufficient for shipping. Tightening the fallback to monomorphic specialization where flow analysis can bound the callee set is a strict optimization on top of correct behavior.\n\n## Approach\n\nFlow analysis on closure values: track which fns each `Prim::MakeClosure` constructs, propagate through bindings, and at each `Term::CallClosure` site collect the reachable target set. When the set is singleton, treat the callsite as if it were a direct Call against that fn (specialize accordingly). When bounded but plural, optionally instantiate multiple specializations and dispatch. When unbounded, stay with the any-key fallback.\n\n## Supersedes\n\nfz-ul4.27.5.6 part A — that ticket is closed when this lands.\n\n## Blocked by\n\nfz-ul4.29.4.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": ".29.5: Closure-callsite flow analysis",
   "type": "task",
-  "updated_at": "2026-05-12T12:03:44Z"
+  "updated_at": "2026-05-12T12:03:45Z"
 }
