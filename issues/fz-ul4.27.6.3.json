@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-ul4.27.6.2"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-ul4.27.6.4"
+  ],
   "created": "2026-05-12T02:25:59Z",
   "description": "After fz-ul4.27.6.2, a non-parking Term::Call has the callee running natively and returning a result via register. Today the caller still does the old trampoline dance: allocate a cont frame, write captures, return the callee frame ptr so the trampoline can dispatch the cont fn next.\n\nThis ticket replaces that with: after the native callee call returns, emit a native call to the cont fn with (result, captured...). The cont fn also runs natively (per .6.2's signature change) and returns its own result, which the caller in turn returns to its own caller.\n\nResult: an entire chain of direct calls + continuations compiles to a sequence of native calls. The trampoline only dispatches at: program entry, parking-reachable callee returns, closure-invoke returns, and resume-after-park.\n\n## Adds\n\n- emit_call (non-parking branch): after the native callee call, emit a native call to the continuation fn with (result, captured...). Returns the cont's return value.\n- Term::Halt at the top of a non-parking chain now propagates naturally up through the native call stack to the trampoline's entry point.\n\n## Kills\n\n- The cont-frame allocation + return-the-frame-ptr pattern for non-parking call sites.\n- The \"return cont_frame to trampoline\" tail in the non-parking branch of emit_call.\n\n## Acceptance\n\n- dist/sum3-style fixtures compile to a single native call chain with no cont-frame allocation.\n- Matrix green; concurrency fixtures still work.\n\n## Depends on\n\n- fz-ul4.27.6.2\n\n## Blocks\n\n- fz-ul4.27.6.4 (trampoline retirement)",
   "id": "fz-ul4.27.6.3",
