@@ -169,6 +169,11 @@ pub struct LowerCtx {
     stmt_spans: HashMap<(FnId, BlockId), Vec<Span>>,
     term_spans: HashMap<(FnId, BlockId), Span>,
     fn_spans: HashMap<FnId, Span>,
+    /// fz-ul4.29.9 — synthesized `fz_spawn_thunk(c)` fn; lazily built on
+    /// the first `spawn(x)` lowering. Cached so subsequent spawns reuse
+    /// the same FnId and produce a single `MakeClosure(thunk, [x])`
+    /// shape in stub generation.
+    spawn_thunk_id: Option<FnId>,
 }
 
 impl LowerCtx {
@@ -189,7 +194,39 @@ impl LowerCtx {
             stmt_spans: HashMap::new(),
             term_spans: HashMap::new(),
             fn_spans: HashMap::new(),
+            spawn_thunk_id: None,
         }
+    }
+
+    /// fz-ul4.29.9 — return the FnId of the program-wide `fz_spawn_thunk`,
+    /// synthesizing it on first request. Body: a single block taking one
+    /// param `c`, terminated by `TailCallClosure(c, [])`. The thunk is
+    /// added to the module immediately so downstream passes (typer,
+    /// codegen) see it like any other fn.
+    ///
+    /// Inserted because `Runtime::spawn_closure` invokes the spawn-
+    /// target's stub synchronously to materialize an initial frame —
+    /// running a native-ABI body there would execute it inside the
+    /// parent's quantum (see fz-ul4.29.8's design). The thunk is itself
+    /// parking-reachable (TailCallClosure) so it stays uniform-ABI, and
+    /// its stub produces a frame for the trampoline to dispatch in the
+    /// child's quantum. The wrapped user closure can then take either
+    /// the uniform or native path safely.
+    fn ensure_spawn_thunk(&mut self) -> FnId {
+        if let Some(id) = self.spawn_thunk_id {
+            return id;
+        }
+        let id = self.mb.fresh_fn_id();
+        let mut tb = FnBuilder::new(id, "fz_spawn_thunk".to_string());
+        let c = tb.fresh_var();
+        let entry = tb.block(vec![c]);
+        tb.set_terminator(entry, Term::TailCallClosure { closure: c, args: vec![] });
+        let built = tb.build();
+        // Save/restore current builder context: synthesis can happen mid-
+        // expression lowering inside another fn.
+        self.mb.add_fn(built);
+        self.spawn_thunk_id = Some(id);
+        id
     }
 
     /// Park a temporary in env under a fresh "_tN" name so it survives any
@@ -670,6 +707,21 @@ fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -> Result<Va
             }
             // Builtin?
             if let Some(bid) = ctx.builtins.lookup(&callee_name) {
+                // fz-ul4.29.9 — wrap the spawn arg in `fz_spawn_thunk` so
+                // the spawn-time stub invocation never executes the
+                // user's closure body synchronously. Wrapping is
+                // unconditional on Spawn calls: the only operand is a
+                // closure value (the existing bare-fn-name adapter at
+                // src/ir_lower.rs already lifts plain fn names into
+                // MakeClosure(target, [])).
+                if bid == crate::fz_ir::BuiltinKind::Spawn.id() && arg_vars.len() == 1 {
+                    let thunk_id = ctx.ensure_spawn_thunk();
+                    let wrapper = ctx.let_at(
+                        Prim::MakeClosure(thunk_id, vec![arg_vars[0]]),
+                        sp,
+                    );
+                    return Ok(ctx.let_at(Prim::Builtin(bid, vec![wrapper]), sp));
+                }
                 return Ok(ctx.let_at(Prim::Builtin(bid, arg_vars), sp));
             }
             let arity = arg_vars.len();
@@ -1669,6 +1721,37 @@ mod tests {
         let m = lower_src("fn p(), do: print(1)");
         let s = format!("{}", m);
         assert!(s.contains("builtin#0("), "got:\n{}", s);
+    }
+
+    /// fz-ul4.29.9 — a `spawn(x)` call lowers to `MakeClosure(fz_spawn_thunk, [x])`
+    /// followed by `Builtin(Spawn, [wrapper])`. The synthesized thunk fn
+    /// appears in the module alongside the user fns.
+    #[test]
+    fn spawn_callsite_is_wrapped_in_fz_spawn_thunk() {
+        let m = lower_src("fn child(), do: 0\nfn p() do spawn(child) end");
+        assert!(
+            m.fns.iter().any(|f| f.name == "fz_spawn_thunk"),
+            "expected fz_spawn_thunk in module fns; got: {:?}",
+            m.fns.iter().map(|f| &f.name).collect::<Vec<_>>()
+        );
+        let thunk_id = m.fns.iter().find(|f| f.name == "fz_spawn_thunk").unwrap().id;
+        // p's body should contain `MakeClosure(thunk_id, [<child-closure>])`
+        // followed by `Builtin(Spawn, [<wrapper>])`. Render and grep.
+        let s = format!("{}", m);
+        let needle = format!("closure(fn{}", thunk_id.0);
+        assert!(s.contains(&needle),
+            "expected wrapper `{}` in lowered IR:\n{}", needle, s);
+    }
+
+    /// fz-ul4.29.9 — a program with no `spawn` should not synthesize
+    /// `fz_spawn_thunk` (lazy synthesis, zero overhead).
+    #[test]
+    fn no_spawn_means_no_thunk_fn() {
+        let m = lower_src("fn p(), do: 0");
+        assert!(
+            !m.fns.iter().any(|f| f.name == "fz_spawn_thunk"),
+            "expected no fz_spawn_thunk for spawn-free program"
+        );
     }
 
     #[test]
