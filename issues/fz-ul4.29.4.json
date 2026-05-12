@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-12T12:03:19Z",
+  "description": "Delete the workarounds that exist because of the old single-FnTypes-per-fn model. Verify the heap-safe-captures cascade still terminates correctly over the expanded specialization set. Update the typer's unit tests.\n\n## Kills\n\n- src/ir_typer.rs ~148-151 — \"leave cont slot 0 at `any`\" pin (with `Descr::any()` union). Under specialization, the cont's slot 0 is the callee's specialized return Descr, naturally.\n- src/ir_typer.rs ~166-168 — `closure_reachable.contains(\u0026f.id) { continue; }` skip. Replaced in .29.3 with any-key fallback; the bare `continue` is now dead.\n- Any lingering callsite of `final_return_kinds`-style infrastructure (the .27.5.4.1 work that was reverted and never landed).\n\n## Verify\n\n- The heap-safe-captures cascade at src/ir_codegen.rs ~1112-1187 still terminates. Inputs are now per-specialization Descrs (tighter); the cascade should fire less aggressively, but still soundly downgrade conts with heap-typed captures. Add a test if natural coverage doesn't exercise it.\n\n## Tests\n\n- 13 unit tests in src/ir_typer.rs that index `mt[fn_idx].vars` need updating to either reference the any-key specialization explicitly or use a test helper.\n\n## Acceptance\n\n- The two workaround sites are gone (verified by grep).\n- The heap-safe cascade has at least one test exercising it under per-specialization typing.\n- All typer unit tests pass against the new keyed structure.\n- Full fixture matrix green.\n- `cargo build --release` clean (warnings-as-errors).\n\n## Blocked by\n\nfz-ul4.29.3.",
+  "id": "fz-ul4.29.4",
+  "labels": [],
+  "parent": "fz-ul4.29",
+  "priority": 2,
+  "status": "open",
+  "title": ".29.4: Kill workarounds, update tests",
+  "type": "task",
+  "updated_at": "2026-05-12T12:03:19Z"
+}
