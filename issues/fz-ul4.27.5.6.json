@@ -7,9 +7,15 @@
   "id": "fz-ul4.27.5.6",
   "labels": [],
   "parent": "fz-ul4.27.5",
+  "comments": [
+    {
+      "text": "Split into fz-ul4.29.5 (part A: closure-callsite flow analysis, in ir_typer) and fz-ul4.29.6 (part B: runtime closure-invoke kind-aware copy). The work in this parent ticket is fully tracked by those two.",
+      "timestamp": "2026-05-12T12:03:55Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "VR.3.5 follow-up: typed slots in closure heap payloads",
   "type": "task",
-  "updated_at": "2026-05-12T02:17:07Z"
+  "updated_at": "2026-05-12T12:03:55Z"
 }
