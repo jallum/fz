@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-05-12T12:03:55Z",
   "created": "2026-05-12T02:17:07Z",
   "description": "Originally framed as VR.3.5 (typed slots in closure heap payloads). On entering the work, two pieces emerged as co-dependent:\n\n1. **Lift the closure-reachability guard in ir_typer.** fz-ul4.27.10's narrowing skips any fn that appears in a `Prim::MakeClosure` — soundly, because closure call sites are opaque to the analysis. Without lifting this guard, closure-callable fns keep `any` entry params and schema build keeps their slots FieldKind::FzValue. There is nothing to type at the closure payload until call-site narrowing reaches through closures.\n\n2. **Runtime closure-invoke surgery.** `fz_closure_invoke` / `fz_tail_closure` currently `copy_nonoverlapping` the captured slots blindly (8 bytes each) into the callee frame's slots [24..24+cap*8]. If the callee's entry slots are typed (RawI64/RawF64) and the closure payload still stores tagged FzValue, the copy would land tagged bits in a raw slot — silent GC corruption. The runtime needs to read each captured slot per its kind and convert into the callee slot's kind.\n\n## Approach (pick one when this starts)\n\nA. **Closure-callsite narrowing in ir_typer.** Track which fns each `Prim::MakeClosure` targets and which `Term::CallClosure` sites can reach them (via a flow analysis on closure values). When a callee's entire reachable-via-closure caller set is bounded, narrow entry params. Then closures aren't a special case — they get the same narrowing as direct calls. Lifts the guard.\n\nB. **Closure-payload kind plumbing in runtime.** Add per-slot kind metadata to closure heap objects (alongside captured_count). Generate kind-tagged push helpers in fz_closure_push (or one variadic typed-push that takes a kind byte). Make fz_closure_invoke / fz_tail_closure consult the closure's slot kinds AND the callee's slot kinds (from the callee's Schema in the registry) to convert at copy time.\n\nC. **Merge with VR.4.** VR.4 (per-fn native ABI for direct calls) could subsume this: a closure becomes a fn ptr + captures, all passed through the fn's typed ABI. No special closure-invoke runtime path. Largest scope but eliminates the special-case.\n\n## Why deferred from .5.5\n\nWithout (1), all closure-reachable fns ship with FzValue entry params — the runtime's blind 8-byte copy is correct, just leaves the win on the table. Doing only (2) would defensively make the runtime kind-aware but with no behavior change.\n\nUser authorized the defer to keep the arc moving onto VR.4 / VR.5b / VR.6 (fz-ul4.27.5 parent is now ready to close).\n\n## Acceptance\n\n- A fixture exercising a closure capturing one int + one float, invoked via `f.(args)`, lowers with both captures stored raw (RawI64 + RawF64 in the closure payload).\n- GC tracer parity verified (closure's per-slot kind tags drive trace decisions).\n- Matrix green.\n\n## Blocks\n\n- Nothing in the .27.5.* chain — VR.3 (fz-ul4.27.5) closes with this filed as the remaining piece.",
   "id": "fz-ul4.27.5.6",
@@ -14,7 +15,7 @@
     }
   ],
   "priority": 3,
-  "status": "open",
+  "status": "closed",
   "title": "VR.3.5 follow-up: typed slots in closure heap payloads",
   "type": "task",
   "updated_at": "2026-05-12T12:03:55Z"
