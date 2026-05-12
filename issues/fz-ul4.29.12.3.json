@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-ul4.29.12.2"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-ul4.29.12.4"
+  ],
   "created": "2026-05-12T23:36:37Z",
   "description": "Make each typed closure stub allocate the callee body's frame keyed by ITS SpecId (not the any-key FnId.0).\n\n## What\n\nIn `compile_closure_stub` (called from `src/ir_codegen.rs:1722`), the call:\n  `callee_sid = callee_fn_id.0; // any-key invariant`\nbecomes:\n  `callee_sid = self_sid; // the stub's own SpecId from .29.12.2 keying`\n\n- The stub coerces captures using `param_reprs[self_sid][0..n_caps]`.\n- The stub coerces args using `param_reprs[self_sid][n_caps..]`.\n- The stub allocates `schemas[self_sid]` and writes `header.schema_id = self_sid`.\n- The stub returns the frame to the trampoline, which dispatches via `fn_ptrs[self_sid]`.\n\n## Why\n\nThis is the actual typed dispatch. After .29.12.2 we have per-SpecId stubs; this ticket makes each stub point at its narrow body.\n\n## Tests (TDD)\n\n- Closure that closes over an int and gets called with int args dispatches to a narrow body that the typer specialized. Assert via fingerprint (e.g., printed int_lit narrowing visible in output, or a counter increment that only the narrow body performs).\n- Three-path parity (interp/JIT/AOT).",
   "id": "fz-ul4.29.12.3",
