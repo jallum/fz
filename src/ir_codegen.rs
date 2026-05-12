@@ -21,7 +21,7 @@
 
 #![allow(dead_code)]
 
-use crate::fz_ir::{BinOp, Const, FnId, Module, Prim, Stmt, Term, UnOp, Var};
+use crate::fz_ir::{BinOp, Const, FnId, Module, Prim, SpecId, Stmt, Term, UnOp, Var};
 use fz_runtime::heap::{FieldDescriptor, FieldKind, Schema};
 use cranelift_codegen::ir::{
     self, condcodes::{FloatCC, IntCC}, types, AbiParam, BlockArg, InstBuilder, MemFlags, Signature,
@@ -683,6 +683,67 @@ pub struct CompiledMetadata {
     /// which is the conservative default for .6.2.2's Signature builder.
     /// Indexed by FnId.0.
     pub return_descrs: Vec<crate::types::Descr>,
+    /// fz-ul4.29.2 — (FnId, input-Descr-tuple) ↔ SpecId mapping.
+    /// Resolves callsite callees to their compiled spec. fz-ul4.29.2.1
+    /// makes this load-bearing for narrow-spec consumption and converts
+    /// the eight FnId.0-keyed fields above to SpecId.0 in concert.
+    pub spec_registry: SpecRegistry,
+}
+
+/// fz-ul4.29.2 — Two-way mapping between (FnId, input-Descr-tuple) and
+/// SpecId. Each compiled body has one entry; SpecIds are dense from 0.
+///
+/// In .29.2 every FnIr has exactly one SpecId (its any-key spec), so
+/// `SpecId.0 == FnId.0` is an invariant — preserves bit-identical CLIF
+/// vs. the pre-atom baseline. fz-ul4.29.2.1 admits multiple SpecIds per
+/// FnId for narrow specs, at which point the invariant relaxes.
+#[derive(Clone, Default)]
+pub struct SpecRegistry {
+    /// keys[spec_id.0 as usize] = (callee, input_descrs).
+    keys: Vec<(FnId, Vec<crate::types::Descr>)>,
+    /// (callee, input_descrs) → SpecId.
+    lookup: HashMap<(FnId, Vec<crate::types::Descr>), SpecId>,
+}
+
+impl SpecRegistry {
+    pub fn new() -> Self { Self::default() }
+
+    /// Register a `(fn_id, input_descrs)` pair; return its SpecId. If
+    /// already registered, returns the existing SpecId without
+    /// duplicating.
+    pub fn register(&mut self, fn_id: FnId, input_descrs: Vec<crate::types::Descr>) -> SpecId {
+        let key = (fn_id, input_descrs);
+        if let Some(&id) = self.lookup.get(&key) { return id; }
+        let id = SpecId(self.keys.len() as u32);
+        self.keys.push(key.clone());
+        self.lookup.insert(key, id);
+        id
+    }
+
+    /// Look up the SpecId for `(fn_id, input_descrs)`, or `None` if none
+    /// is registered. .29.2.1 makes this load-bearing for narrow-spec
+    /// callsite resolution.
+    #[allow(dead_code)]
+    pub fn resolve(&self, fn_id: FnId, input_descrs: &[crate::types::Descr]) -> Option<SpecId> {
+        self.lookup.get(&(fn_id, input_descrs.to_vec())).copied()
+    }
+
+    /// Look up a fn's any-key SpecId (the conservative fallback used by
+    /// closure / Spawn / Receive paths, and by every callsite under
+    /// .29.2 until .29.2.1 enables narrow consumption).
+    pub fn any_key(&self, fn_id: FnId, n_params: usize) -> SpecId {
+        let key = vec![crate::types::Descr::any(); n_params];
+        *self.lookup.get(&(fn_id, key))
+            .expect("any-key spec must always be registered for every fn")
+    }
+
+    pub fn len(&self) -> usize { self.keys.len() }
+
+    /// Iterate all `(SpecId, &FnId, &input_descrs)` entries in SpecId
+    /// order. Used by the codegen pipeline to walk every compiled body.
+    pub fn iter(&self) -> impl Iterator<Item = (SpecId, FnId, &[crate::types::Descr])> {
+        self.keys.iter().enumerate().map(|(i, (f, d))| (SpecId(i as u32), *f, d.as_slice()))
+    }
 }
 
 /// JIT backend: wraps a JITModule pre-finalize. compile() constructs one,
@@ -1069,6 +1130,22 @@ pub fn compile_with_backend<B: Backend>(
     let module_types = crate::ir_typer::type_module(&working);
     let module = &working;
 
+    // fz-ul4.29.2 — Build the SpecRegistry. One SpecId per FnIr for now
+    // (the any-key spec); fz-ul4.29.2.1 registers additional narrow specs
+    // sourced from `module_types.specs`. The SpecId.0 == FnId.0 invariant
+    // holds here so every downstream Vec/HashMap that used to index by
+    // FnId.0 continues to land on the same slot — bit-identical CLIF.
+    let mut spec_registry = SpecRegistry::new();
+    for f in &module.fns {
+        let n_params = f.block(f.entry).params.len();
+        let any_key = vec![crate::types::Descr::any(); n_params];
+        let sid = spec_registry.register(f.id, any_key);
+        debug_assert_eq!(sid.0, f.id.0,
+            "fz-ul4.29.2 invariant: SpecId.0 must equal FnId.0 while only \
+             any-key specs are registered (any-keys must be registered in \
+             FnId order before any narrow keys land in .29.2.1)");
+    }
+
     // fz-ul4.27.5.2/3: refine entry-frame slot kinds. Float entry params
     // → RawF64; int entry params → RawI64. Both flip storage to raw bytes
     // and let codegen skip the per-op unbox/rebox round trip.
@@ -1299,6 +1376,7 @@ pub fn compile_with_backend<B: Backend>(
         return_descrs,
         main_fn_id,
         main_frame_size,
+        spec_registry,
     };
 
     // Backend-specific metadata carriers (no-op for JIT; dispatch + main
@@ -4207,5 +4285,63 @@ fn main(), do: loop_with(loop_with, 100000, 0)
         assert_eq!(sig.params[1].value_type, types::I64);
         assert_eq!(sig.params[2].value_type, types::I64);
         assert_eq!(sig.returns[0].value_type, types::I64);
+    }
+
+    // ----- fz-ul4.29.2: SpecRegistry infrastructure -----
+
+    #[test]
+    fn spec_registry_registers_any_key_per_fn_with_spec_id_eq_fn_id() {
+        // Two-fn module. After compile(), spec_registry holds one any-key
+        // spec per fn; the SpecId.0 == FnId.0 invariant is asserted at
+        // build time (debug_assert in compile_with_backend).
+        let m = lower_src(
+            "fn add(a, b) do a + b end\nfn main() do print(add(1, 2)) end"
+        );
+        let compiled = compile(&m).unwrap();
+        // Drive a run to ensure the pipeline ran the registry construction
+        // path; the assertion lives in compile_with_backend.
+        let _ = compiled.run(m.fn_by_name("main").unwrap().id);
+    }
+
+    #[test]
+    fn spec_registry_any_key_lookup() {
+        // Use the registry directly to verify register/resolve/any_key
+        // contracts. Doesn't go through compile().
+        let mut reg = SpecRegistry::new();
+        let fid = FnId(0);
+        let any_key_2 = vec![crate::types::Descr::any(); 2];
+        let sid = reg.register(fid, any_key_2.clone());
+        assert_eq!(sid.0, 0, "first registration gets SpecId(0)");
+        // Re-registering the same key returns the same SpecId.
+        let sid2 = reg.register(fid, any_key_2.clone());
+        assert_eq!(sid, sid2);
+        // Resolve roundtrips.
+        let resolved = reg.resolve(fid, &any_key_2);
+        assert_eq!(resolved, Some(sid));
+        // any_key helper.
+        let via_any = reg.any_key(fid, 2);
+        assert_eq!(via_any, sid);
+        // A different fn gets a different SpecId.
+        let other_sid = reg.register(FnId(1), vec![crate::types::Descr::any(); 0]);
+        assert_eq!(other_sid.0, 1);
+        assert_eq!(reg.len(), 2);
+    }
+
+    #[test]
+    fn spec_registry_distinct_narrow_keys() {
+        // .29.2.1 will exercise this for real; verify the registry itself
+        // distinguishes narrow keys today.
+        let mut reg = SpecRegistry::new();
+        let fid = FnId(0);
+        let any1 = vec![crate::types::Descr::any()];
+        let int1 = vec![crate::types::Descr::int()];
+        let sid_any = reg.register(fid, any1.clone());
+        let sid_int = reg.register(fid, int1.clone());
+        assert_ne!(sid_any, sid_int, "any-key and int-key must be distinct SpecIds");
+        assert_eq!(reg.resolve(fid, &any1), Some(sid_any));
+        assert_eq!(reg.resolve(fid, &int1), Some(sid_int));
+        // Unregistered keys resolve to None.
+        let other = vec![crate::types::Descr::float()];
+        assert_eq!(reg.resolve(fid, &other), None);
     }
 }

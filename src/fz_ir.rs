@@ -68,6 +68,19 @@ pub struct BitFieldPatIr {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FnId(pub u32);
 
+/// Per-callsite specialization identifier. fz-ul4.29.2.
+///
+/// One `SpecId` corresponds to one compiled body — a specific `(FnId,
+/// input-Descr-tuple)` pairing. Today each fn has exactly one SpecId
+/// (its any-key spec); fz-ul4.29.2.1 enables multiple SpecIds per FnId
+/// when call sites request narrow specializations.
+///
+/// SpecId.0 doubles as the runtime's `schema_id` (frame header field),
+/// so the runtime contract — schema_ids are dense u32 from 0..count —
+/// is preserved as the codegen layer grows multiple specs per FnIr.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct SpecId(pub u32);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct BlockId(pub u32);
 
