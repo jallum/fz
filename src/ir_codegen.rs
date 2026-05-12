@@ -579,6 +579,54 @@ fn join_return_descrs(
     joined.unwrap_or_else(crate::types::Descr::any)
 }
 
+/// fz-ul4.27.6.2.2 — Per-fn Cranelift Signature.
+///
+/// `is_native = false` → uniform `(frame_ptr: i64, host_ctx: i64) -> i64`,
+/// matching the body shape produced by the current `compile_fn` (frame
+/// slots for entry params, emit_return writing into the cont frame and
+/// returning the cont frame ptr to the trampoline).
+///
+/// `is_native = true` → typed signature reflecting the fn's entry-param
+/// Descrs and return Descr: `(arg_types..., host_ctx: i64) -> ret_ty`.
+/// Floats map to `f64`; everything else to `i64` (tagged FzValue payload).
+/// Consumers (.6.2.3 onward) must compile the body to match: read params
+/// from block-params, emit_return as a native `return_(&[val])`.
+///
+/// In .6.2.2 every fn is built with `is_native = false`. The native branch
+/// is reachable only via unit tests.
+fn build_fn_signature(
+    f: &crate::fz_ir::FnIr,
+    ft: &crate::ir_typer::FnTypes,
+    return_descr: &crate::types::Descr,
+    is_native: bool,
+) -> Signature {
+    let mut sig = Signature::new(CallConv::SystemV);
+    if !is_native {
+        sig.params.push(AbiParam::new(types::I64)); // frame_ptr
+        sig.params.push(AbiParam::new(types::I64)); // host_ctx
+        sig.returns.push(AbiParam::new(types::I64)); // next frame_ptr
+        return sig;
+    }
+    let entry = f.blocks.iter().find(|b| b.id == f.entry).unwrap();
+    for p in &entry.params {
+        let d = ft.vars.get(p).cloned().unwrap_or_else(crate::types::Descr::any);
+        let t = if d.is_subtype(&crate::types::Descr::float()) {
+            types::F64
+        } else {
+            types::I64
+        };
+        sig.params.push(AbiParam::new(t));
+    }
+    sig.params.push(AbiParam::new(types::I64)); // host_ctx
+    let rt = if return_descr.is_subtype(&crate::types::Descr::float()) {
+        types::F64
+    } else {
+        types::I64
+    };
+    sig.returns.push(AbiParam::new(rt));
+    sig
+}
+
 /// shared and the trait owns every legitimate point of variation —
 /// fn linkage, per-program metadata emission, and the finalize step
 /// that materializes the backend's Output.
@@ -961,21 +1009,6 @@ pub fn compile_with_backend<B: Backend>(
 
     let runtime = declare_runtime_symbols(backend.module_mut())?;
 
-    // Per-fn signature: uniform `extern "C" fn(*mut u8, *mut u8) -> *mut u8`
-    // until VR.4 makes it per-fn.
-    let fn_sig = sig1(&[types::I64, types::I64], &[types::I64]);
-
-    let linkage = backend.fn_linkage();
-    let mut fn_ids: HashMap<u32, FuncId> = HashMap::new();
-    for f in &module.fns {
-        let name = format!("fz_fn_{}", f.id.0);
-        let id = backend
-            .module_mut()
-            .declare_function(&name, linkage, &fn_sig)
-            .map_err(|e| CodegenError::new(format!("declare {}: {}", name, e)))?;
-        fn_ids.insert(f.id.0, id);
-    }
-
     let mut fbctx = FunctionBuilderContext::new();
 
     // Register a heap Schema for every tuple arity used by MakeTuple, so the
@@ -1069,10 +1102,51 @@ pub fn compile_with_backend<B: Backend>(
         }
     }
 
+    // fz-ul4.27.6.2.1 — Parking + native-callability analyses. Stored in
+    // metadata; consumed at declare-time below (.6.2.2) for per-fn sigs
+    // and at compile_fn / emit_call (.6.2.3-4) for ABI bifurcation.
+    let parking_reachable = crate::parking::parking_reachable(module);
+    let natively_callable =
+        crate::parking::natively_callable(module, &parking_reachable);
+    let return_descrs: Vec<crate::types::Descr> = module
+        .fns
+        .iter()
+        .enumerate()
+        .map(|(i, f)| join_return_descrs(f, &module_types[i]))
+        .collect();
+
+    // fz-ul4.27.6.2.2 — Per-fn Cranelift Signature. Built here so the
+    // declare-function loop below can stamp each fn with the right ABI.
+    // GATE: for .6.2.2 we force `is_native = false` everywhere — every fn
+    // still gets the uniform `(i64, i64) -> i64` sig. The native branch
+    // is exercised by unit tests on `build_fn_signature`. .6.2.3 wires
+    // compile_fn's body to the native ABI and flips this gate to consult
+    // `natively_callable`.
+    let fn_sigs: Vec<Signature> = module
+        .fns
+        .iter()
+        .enumerate()
+        .map(|(i, f)| build_fn_signature(f, &module_types[i], &return_descrs[i], false))
+        .collect();
+
+    // fz-ul4.27.6.2.2 — declare each fn with its computed (per-fn) sig.
+    // Moved here from earlier in compile() so the typer + analyses have
+    // run first.
+    let linkage = backend.fn_linkage();
+    let mut fn_ids: HashMap<u32, FuncId> = HashMap::new();
+    for (i, f) in module.fns.iter().enumerate() {
+        let name = format!("fz_fn_{}", f.id.0);
+        let id = backend
+            .module_mut()
+            .declare_function(&name, linkage, &fn_sigs[i])
+            .map_err(|e| CodegenError::new(format!("declare {}: {}", name, e)))?;
+        fn_ids.insert(f.id.0, id);
+    }
+
     for (fn_idx, f) in module.fns.iter().enumerate() {
         let func_id = *fn_ids.get(&f.id.0).unwrap();
         let mut ctx = backend.module_mut().make_context();
-        ctx.func.signature = fn_sig.clone();
+        ctx.func.signature = fn_sigs[fn_idx].clone();
         // fz-ul4.23.8: opt in to asm capture when ASM_RECORD is active.
         // Cheap to set; the TLS slot is None in normal runs.
         let want_asm = ASM_RECORD.with(|c| c.borrow().is_some());
@@ -1128,19 +1202,6 @@ pub fn compile_with_backend<B: Backend>(
 
     let main_fn_id = module.fn_by_name("main").map(|f| f.id);
     let main_frame_size = main_fn_id.map(|id| schemas[id.0 as usize].size);
-
-    // fz-ul4.27.6.2.1 — Compute parking-reachability + native-callability
-    // + per-fn return Descrs. No behavior change here; these flow into the
-    // returned metadata so .6.2.2 can build per-fn Signatures from them.
-    let parking_reachable = crate::parking::parking_reachable(module);
-    let natively_callable =
-        crate::parking::natively_callable(module, &parking_reachable);
-    let return_descrs: Vec<crate::types::Descr> = module
-        .fns
-        .iter()
-        .enumerate()
-        .map(|(i, f)| join_return_descrs(f, &module_types[i]))
-        .collect();
 
     let diagnostics = crate::ir_typer::collect_diagnostics(module, &module_types);
     let metadata = CompiledMetadata {
@@ -3810,5 +3871,62 @@ fn main(), do: loop_with(loop_with, 100000, 0)
         let ir = get_main_ir(&m);
         assert!(ir.contains("brif"),
             "dispatch should be retained for Top operands:\n{}", ir);
+    }
+
+    // --- fz-ul4.27.6.2.2 — build_fn_signature ---
+
+    #[test]
+    fn signature_uniform_when_not_native() {
+        // `fn add(a, b) do a + b end` lowered, typed, then asked for a
+        // uniform sig. Should be `(i64, i64) -> i64` regardless of param
+        // Descrs.
+        let m = lower_src("fn add(a, b) do a + b end\nfn main() do print(add(1, 2)) end");
+        let mt = crate::ir_typer::type_module(&m);
+        let add_idx = m.fns.iter().position(|f| f.name == "add").unwrap();
+        let rd = join_return_descrs(&m.fns[add_idx], &mt[add_idx]);
+        let sig = build_fn_signature(&m.fns[add_idx], &mt[add_idx], &rd, false);
+        assert_eq!(sig.params.len(), 2);
+        assert_eq!(sig.returns.len(), 1);
+        assert_eq!(sig.params[0].value_type, types::I64);
+        assert_eq!(sig.params[1].value_type, types::I64);
+        assert_eq!(sig.returns[0].value_type, types::I64);
+    }
+
+    #[test]
+    fn signature_native_uses_typed_params_and_host_ctx() {
+        // Same `add` fn, this time the typer has narrowed entry params to
+        // int via call-site narrowing. Native sig should be
+        // `(i64, i64, host_ctx: i64) -> i64`.
+        let m = lower_src("fn add(a, b) do a + b end\nfn main() do print(add(1, 2)) end");
+        let mt = crate::ir_typer::type_module(&m);
+        let add_idx = m.fns.iter().position(|f| f.name == "add").unwrap();
+        let rd = join_return_descrs(&m.fns[add_idx], &mt[add_idx]);
+        let sig = build_fn_signature(&m.fns[add_idx], &mt[add_idx], &rd, true);
+        // 2 entry params + host_ctx.
+        assert_eq!(sig.params.len(), 3);
+        assert_eq!(sig.returns.len(), 1);
+        // host_ctx is always i64.
+        assert_eq!(sig.params.last().unwrap().value_type, types::I64);
+        // Return is i64 (tagged or raw-int — both ride i64 register).
+        assert_eq!(sig.returns[0].value_type, types::I64);
+    }
+
+    #[test]
+    fn signature_native_float_param_is_f64() {
+        let m = lower_src(
+            "fn dist(x, y) do x * x + y * y end\nfn main() do print(dist(1.5, 2.5)) end",
+        );
+        let mt = crate::ir_typer::type_module(&m);
+        let dist_idx = m.fns.iter().position(|f| f.name == "dist").unwrap();
+        let rd = join_return_descrs(&m.fns[dist_idx], &mt[dist_idx]);
+        let sig = build_fn_signature(&m.fns[dist_idx], &mt[dist_idx], &rd, true);
+        // 2 entry params (typed f64) + host_ctx (i64).
+        assert_eq!(sig.params.len(), 3);
+        assert_eq!(sig.params[0].value_type, types::F64,
+            "dist(x: float, ...) — x should map to f64 in native sig");
+        assert_eq!(sig.params[1].value_type, types::F64);
+        assert_eq!(sig.params[2].value_type, types::I64); // host_ctx
+        assert_eq!(sig.returns[0].value_type, types::F64,
+            "dist returns float — sig should reflect that");
     }
 }
