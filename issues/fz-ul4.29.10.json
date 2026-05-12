@@ -10,9 +10,15 @@
   "id": "fz-ul4.29.10",
   "labels": [],
   "parent": "fz-ul4.29",
+  "comments": [
+    {
+      "text": "Investigation update: .29.10 is NOT trivial-given-.29.11. The cont-dispatch trampoline hardcodes any-key SpecIds (cont.fn_id.0), and compiling any-key bodies under all-any types makes calls that need their callees' any-keys too — the transitive closure of 'needs any-key' walks every reachable fn through indirect-dispatch chains.\n\nThe clean fix is typed indirect dispatch (.29.12): closures, spawn, receive, and continuations dispatch through typed stubs / cont-frame SpecIds rather than uniform any-key. Once that lands, .29.10 becomes truly trivial.\n\nRemoved dependency from .31.5 — that ticket now handles the any-key concern by simply skipping any-key entries in validation (any-key is typer-internal, not user-declared).",
+      "timestamp": "2026-05-12T22:42:50Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "On-demand any-key spec registration (trivial-given-.29.11)",
   "type": "task",
-  "updated_at": "2026-05-12T22:42:38Z"
+  "updated_at": "2026-05-12T22:42:50Z"
 }
