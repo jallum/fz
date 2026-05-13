@@ -9,4 +9,4 @@
 - Research thoroughly, plan out work.
 - We are fearless when we can write out the plan in a DAG where all steps are atomic, testable units that build towards a final goal.
 - No hidden surprises. All investigation required must be done up-front, so that there are no surprises as we work.
-- Refrain from time-based estimations.
+- Refrain from time-based estimations. I worry about time.

@@ -1480,6 +1480,30 @@ pub fn compile_with_backend<B: Backend>(
     let parking_reachable = crate::parking::parking_reachable(module);
     let mut natively_callable =
         crate::parking::natively_callable(module, &parking_reachable);
+
+    // fz-cps.1.2 (fz-siu.1.2): the set of fns used as continuations.
+    // A cont fn has sig `(result:i64, self:i64) tail` per
+    // docs/cps-in-clif.md §2.1 — no host_ctx, no trailing cont param.
+    // Its body reads captures from `self+24, +32, ...` rather than
+    // from typed entry params, and its "next k" is one of its captures.
+    let cont_fns: std::collections::HashSet<crate::fz_ir::FnId> = {
+        use crate::fz_ir::Term;
+        let mut s = std::collections::HashSet::new();
+        for f in &module.fns {
+            for b in &f.blocks {
+                match &b.terminator {
+                    Term::Call { continuation, .. }
+                    | Term::CallClosure { continuation, .. }
+                    | Term::Receive { continuation } => {
+                        s.insert(continuation.fn_id);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        s
+    };
+    let _ = &cont_fns; // fz-cps.1.2: consumed by sig builder + entry harness in next step.
     // fz-ul4.27.6.4 follow-up: heap-safe captures.
     //
     // A native cont chain routes the caller's captured vars through
