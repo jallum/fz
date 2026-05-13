@@ -311,55 +311,6 @@ impl CompiledModule {
         current_process().halt_value
     }
 
-    #[allow(dead_code)]
-    fn _legacy_trampoline(&self, fn_id: FnId) -> i64 {
-        let entry_schema = &self.schemas[fn_id.0 as usize];
-        let frame = fz_runtime::ir_runtime::fz_alloc_frame(fn_id.0, entry_schema.size);
-        // Continuation pointer = null (entry fn).
-        unsafe {
-            let cont_slot = frame.add(HEADER_SIZE as usize) as *mut *mut u8;
-            *cont_slot = std::ptr::null_mut();
-        }
-        let mut cur = frame;
-        // Cap iterations to detect infinite trampolines in tests.
-        let mut iters: usize = 0;
-        let cap: usize = 10_000_000;
-        while !cur.is_null() {
-            iters += 1;
-            if iters > cap {
-                panic!("trampoline exceeded {} iterations", cap);
-            }
-            // fz-ul4.11.31 GC SAFEPOINT: check if the current Process's heap
-            // wants a GC tick. If so, collect roots from the frame chain
-            // (cur backward via frame[16] cont_ptr) and run mark-sweep
-            // before dispatching the next fn.
-            if current_process().heap.should_gc() {
-                let roots = fz_runtime::heap::collect_roots_from_frame_chain(
-                    cur as *mut fz_runtime::fz_value::HeapHeader,
-                    &self.schemas,
-                );
-                current_process().heap.gc(&roots);
-                current_process().heap.clear_should_gc_flag();
-            }
-            let header = cur as *const fz_runtime::fz_value::HeapHeader;
-            let schema_id = unsafe { (*header).schema_id };
-            let fn_ptr = self
-                .fn_ptrs
-                .get(&schema_id)
-                .copied()
-                .unwrap_or_else(|| panic!("no fn for schema_id {}", schema_id));
-            let f: extern "C" fn(*mut u8, *mut u8) -> *mut u8 =
-                unsafe { std::mem::transmute(fn_ptr) };
-            // Per-fn ABI takes ctx in slot 2; we pass the same *mut Process
-            // CURRENT_PROCESS points at. Runtime fns access via
-            // current_process(); the JIT'd code doesn't dereference it
-            // directly today, so passing it as the existing slot is
-            // sufficient.
-            let ctx = CURRENT_PROCESS.with(|c| c.get()) as *mut u8;
-            cur = f(cur, ctx);
-        }
-        current_process().halt_value
-    }
 }
 
 // Process, PidId, ProcessState, CURRENT_PROCESS, DEFAULT_PROCESS, and
@@ -436,26 +387,6 @@ pub fn ir_text_record_take() -> Vec<(String, String)> {
 /// leftover state is otherwise sticky.
 pub fn heap_reset_for_test() {
     DEFAULT_PROCESS.with(|c| *c.borrow_mut() = None);
-}
-
-pub fn heap_live_count() -> usize {
-    DEFAULT_PROCESS.with(|c| {
-        c.borrow().as_ref().map(|p| p.heap.live_count()).unwrap_or(0)
-    })
-}
-
-pub fn heap_freelist_len() -> usize {
-    DEFAULT_PROCESS.with(|c| {
-        c.borrow().as_ref().map(|p| p.heap.freelist_len()).unwrap_or(0)
-    })
-}
-
-pub fn heap_gc(roots: &[fz_runtime::fz_value::FzValue]) {
-    DEFAULT_PROCESS.with(|c| {
-        if let Some(p) = c.borrow_mut().as_mut() {
-            p.heap.gc(roots);
-        }
-    });
 }
 
 // fz_alloc_list_cons and fz_alloc_struct moved to ir_runtime.rs (.23.4.7).
@@ -5603,99 +5534,6 @@ mod tests {
         test_capture_take()
     }
 
-    // ----- fz-ul4.11.31: GC actually runs from JIT'd code -----
-
-    /// Frame-chain root walker: given a 1-frame chain (caller is null) with
-    /// a known-FzValue entry-param slot, the walker emits that slot.
-    #[test]
-    fn root_walker_emits_entry_param_fzvalues() {
-        use fz_runtime::fz_value::{FzValue, HeapHeader};
-        use fz_runtime::heap::{
-            collect_roots_from_frame_chain, FieldDescriptor, FieldKind, Schema,
-        };
-
-        // Build a schema for a fn with one entry param. Schema layout:
-        // [cont_ptr_slot, param_0_slot].
-        let schema = Schema {
-            name: "Frame_test_one_param".into(),
-            size: 16, // 2 slots × 8 bytes
-            fields: vec![
-                FieldDescriptor { offset: 0, kind: FieldKind::FzValue },
-                FieldDescriptor { offset: 8, kind: FieldKind::FzValue },
-            ],
-        };
-        let frame_schemas = vec![schema];
-
-        // Lay out a frame in raw memory: [header(16) | cont_ptr(8) | param(8)].
-        let mut buf: [u8; 32] = [0; 32];
-        unsafe {
-            let hp = buf.as_mut_ptr() as *mut HeapHeader;
-            *hp = HeapHeader {
-                kind: 0,
-                flags: 0,
-                size_bytes: 16,
-                schema_id: 0,
-                _reserved: 0,
-            };
-            // cont_ptr = null (top of chain)
-            std::ptr::write(buf.as_mut_ptr().add(16) as *mut *mut HeapHeader, std::ptr::null_mut());
-            // param[0] = boxed int 42
-            std::ptr::write(
-                buf.as_mut_ptr().add(24) as *mut u64,
-                FzValue::from_int(42).0,
-            );
-        }
-        let roots = collect_roots_from_frame_chain(
-            buf.as_mut_ptr() as *mut HeapHeader,
-            &frame_schemas,
-        );
-        assert_eq!(roots.len(), 1, "one user-Var entry param emitted");
-        assert_eq!(roots[0].unbox_int(), Some(42));
-    }
-
-    /// Hot-loop allocation: a tail-recursive counter that allocates one
-    /// list cons cell per iteration (live only until the next iteration).
-    /// Past the GC threshold, the safepoint should fire and reclaim.
-    ///
-    /// fz-cps.1.12 — IGNORED pending the new GC model. Under cps-in-clif
-    /// (§7) GC fires only at park-time and roots are sourced from
-    /// `process.parked_cont`, not from a stack/frame walk. The trampoline-
-    /// boundary safepoint this test exercised no longer exists; the
-    /// follow-on GC tickets (fz-siu.7+ for Cheney from parked_cont) will
-    /// rewrite the loop-alloc invariant in terms of the new model.
-    #[ignore = "fz-cps.1.12: GC root tracker tied to trampoline; superseded by §7 Cheney-from-parked_cont"]
-    #[test]
-    fn hot_loop_alloc_triggers_safepoint_gc() {
-        // Each iteration allocates a fresh 2-element list. Only the latest
-        // is reachable (head/tail are unused once recursion advances).
-        let src = r#"
-            fn loop(0, acc), do: acc
-            fn loop(n, acc), do: loop(n - 1, [n, n])
-            fn main(), do: loop(5000, [])
-        "#;
-        let m = lower_src(src);
-        let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(&m).unwrap();
-        let mut p = compiled.make_process();
-        // Lower the GC threshold so a small loop forces multiple ticks.
-        p.heap.gc_threshold_bytes = 4 * 1024;
-        let _result = compiled.run_in(entry, &mut p);
-        assert!(
-            p.heap.gc_run_count >= 1,
-            "expected >=1 GC tick under hot alloc loop, got {}",
-            p.heap.gc_run_count
-        );
-        // After 5000 iterations of 2-cell list allocations with only the
-        // latest reachable, live_count should be far less than the raw
-        // allocation count (which would otherwise have OOM'd the 64KiB
-        // heap long before completing).
-        assert!(
-            p.heap.live_count() < 100,
-            "expected GC to reclaim most allocations, live={}",
-            p.heap.live_count()
-        );
-    }
-
     // ----- fz-ul4.19.6: atom-table policy (shared, mutex-protected) -----
 
     /// Two Processes built from the SAME CompiledModule observe equal
@@ -5898,18 +5736,6 @@ end
         );
     }
 
-    #[test]
-    fn gc_traces_map_keys_and_values() {
-        let (halt_bits, _m) = run_main_after_heap_reset("fn main(), do: %{a: [1, 2, 3]}");
-        let halt_bits = halt_bits as u64;
-        assert_eq!(heap_live_count(), 4, "1 map + 3 cons cells");
-        let root = fz_runtime::fz_value::FzValue(halt_bits);
-        heap_gc(&[root]);
-        assert_eq!(heap_live_count(), 4, "list survives via map's value field");
-        heap_gc(&[]);
-        assert_eq!(heap_live_count(), 0);
-    }
-
     // ----- .11.12 bitstring tests -----
 
     #[test]
@@ -5944,14 +5770,6 @@ fn main(), do: print(parse(<<3, 0x01, 0x02, 0x03, 0xff>>))
         );
     }
 
-    #[test]
-    fn gc_reclaims_bitstring_when_unrooted() {
-        let _ = run_main_after_heap_reset("fn main(), do: <<0xde, 0xad>>");
-        assert_eq!(heap_live_count(), 1, "single bitstring alive");
-        heap_gc(&[]);
-        assert_eq!(heap_live_count(), 0, "bitstring reclaimed");
-    }
-
     // ----- .11.11 tuple tests -----
 
     #[test]
@@ -5976,23 +5794,6 @@ fn main(), do: fst({10, 20}) + snd({30, 40})
         );
     }
 
-    #[test]
-    fn gc_traces_tuple_fields_freeing_pointed_objects_when_outer_dropped() {
-        let src = "fn main(), do: {[1, 2, 3], 99}";
-        let (_halt, _m) = run_main_after_heap_reset(src);
-        assert_eq!(heap_live_count(), 4, "1 tuple + 3 cons cells");
-        heap_gc(&[]);
-        assert_eq!(heap_live_count(), 0);
-
-        // Same shape with the tuple as a root: everything survives.
-        let (halt_bits, _m) = run_main_after_heap_reset(src);
-        let halt_bits = halt_bits as u64;
-        assert_eq!(heap_live_count(), 4);
-        let root = fz_runtime::fz_value::FzValue(halt_bits);
-        heap_gc(&[root]);
-        assert_eq!(heap_live_count(), 4);
-    }
-
     // ----- .11.10 list tests -----
 
     #[test]
@@ -6007,25 +5808,6 @@ fn sum([]), do: 0
 fn sum([h | t]), do: h + sum(t)
 fn main(), do: sum([1, 2, 3, 4, 5])
 "#), 15);
-    }
-
-    #[test]
-    fn allocate_list_drop_root_gc_reclaims() {
-        let (_halt, _m) = run_main_after_heap_reset("fn main(), do: [1, 2, 3]");
-        assert_eq!(heap_live_count(), 3);
-        heap_gc(&[]);
-        assert_eq!(heap_live_count(), 0);
-        assert_eq!(heap_freelist_len(), 3);
-    }
-
-    #[test]
-    fn allocate_list_keep_root_gc_preserves() {
-        let (halt_bits, _m) = run_main_after_heap_reset("fn main(), do: [7, 8, 9]");
-        let halt_bits = halt_bits as u64;
-        assert_eq!(heap_live_count(), 3);
-        let root = fz_runtime::fz_value::FzValue(halt_bits);
-        heap_gc(&[root]);
-        assert_eq!(heap_live_count(), 3);
     }
 
     #[test]
@@ -6080,20 +5862,6 @@ fn main(), do: print(map_l(double, [1, 2, 3]))
 "#),
             vec!["[2, 4, 6]"]
         );
-    }
-
-    #[test]
-    fn gc_traces_closure_captured_via_jit() {
-        let (halt, _m) = run_main_after_heap_reset(r#"
-fn make_adder(k), do: fn(x) -> x + k
-fn main(), do: make_adder(7)
-"#);
-        assert_eq!(heap_live_count(), 1);
-        let root = fz_runtime::fz_value::FzValue(halt as u64);
-        heap_gc(&[root]);
-        assert_eq!(heap_live_count(), 1);
-        heap_gc(&[]);
-        assert_eq!(heap_live_count(), 0);
     }
 
     // ----- .11.21 structural equality tests -----
@@ -6204,15 +5972,6 @@ fn main(), do: make_adder(7)
         assert_eq!(f, 3.14);
     }
 
-    #[test]
-    fn allocate_float_drop_root_gc_reclaims() {
-        let (_halt, _m) = run_main_after_heap_reset("fn main(), do: 2.71");
-        assert_eq!(heap_live_count(), 1);
-        heap_gc(&[]);
-        assert_eq!(heap_live_count(), 0);
-        assert_eq!(heap_freelist_len(), 1);
-    }
-
     // ----- .11.14 vec tests -----
 
     #[test]
@@ -6253,24 +6012,6 @@ fn main(), do: make_adder(7)
     #[test]
     fn vec_get_out_of_bounds_returns_nil() {
         assert_eq!(run_main("fn main(), do: vec_get(~v[1, 2], 10)"), 0);
-    }
-
-    #[test]
-    fn vec_address_stable_across_gc_via_jit() {
-        let (halt_bits, _m) = run_main_after_heap_reset("fn main(), do: ~v[100, 200, 300]");
-        let halt_bits = halt_bits as u64;
-        assert_eq!(heap_live_count(), 1);
-        let root = fz_runtime::fz_value::FzValue(halt_bits);
-        let p_before = root.unbox_ptr().unwrap();
-        heap_gc(&[root]);
-        assert_eq!(heap_live_count(), 1);
-        let p_after = fz_runtime::fz_value::FzValue(halt_bits).unbox_ptr().unwrap();
-        assert_eq!(p_before, p_after);
-        assert_eq!(fz_runtime::heap::Heap::vec_len(p_after), 3);
-        unsafe {
-            let payload = (p_after as *const u8).add(24) as *const i64;
-            assert_eq!(std::ptr::read(payload.add(2)), 300);
-        }
     }
 
     #[test]

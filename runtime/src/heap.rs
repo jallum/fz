@@ -793,50 +793,6 @@ pub fn deep_copy_value(
     FzValue(dp as u64)
 }
 
-/// fz-ul4.11.31: Walk a frame chain rooted at `cur` (raw *mut HeapHeader of
-/// the currently-running frame), emitting every FzValue slot found in any
-/// frame's schema. Frames link via cont_ptr at frame[16]; the first field
-/// (offset 0) is structural and skipped. Remaining fields are user-Var
-/// FzValues per the build_frame_schema invariant.
-///
-/// A frame's schema_id is the fn's FnId.0; the per-fn frame schemas live in
-/// CompiledModule. The caller passes the SchemaRegistry that maps those ids
-/// — for v1 the user-data and frame schemas share one registry (Heap's
-/// owned Rc); this could split in the future without changing this fn.
-pub fn collect_roots_from_frame_chain(
-    cur: *mut HeapHeader,
-    frame_schemas: &[Schema],
-) -> Vec<FzValue> {
-    let mut roots = Vec::new();
-    let mut visited: HashSet<*mut HeapHeader> = HashSet::new();
-    let mut p = cur;
-    while !p.is_null() {
-        if !visited.insert(p) {
-            // Defensive cycle guard. Frames don't structurally cycle, but a
-            // bug elsewhere shouldn't lock the walker.
-            break;
-        }
-        let h = unsafe { &*p };
-        let schema = match frame_schemas.get(h.schema_id as usize) {
-            Some(s) => s,
-            None => break,
-        };
-        // Field 0 = cont_ptr (chain link, handled below). Fields 1..N are
-        // user-Var FzValue slots.
-        for f in schema.fields.iter().skip(1) {
-            if let FieldKind::FzValue = f.kind {
-                let slot_addr = unsafe { (p as *const u8).add(16 + f.offset as usize) };
-                let bits = unsafe { std::ptr::read(slot_addr as *const u64) };
-                roots.push(FzValue(bits));
-            }
-        }
-        // Chain to next frame via cont_ptr at frame[16] (offset 0 of payload).
-        let next = unsafe { std::ptr::read((p as *const u8).add(16) as *const *mut HeapHeader) };
-        p = next;
-    }
-    roots
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
