@@ -421,6 +421,86 @@ pub fn type_module(m: &Module) -> ModuleTypes {
                 let Some(&idx) = idx_of.get(fid) else { continue; };
                 let f = &m.fns[idx];
                 let _ = key; // entry param Descrs already baked into ft.block_envs
+
+                // fz-ul4.29.10.3 — escape analysis. A closure-var (one
+                // with fn_constants set) is "resolvable" iff every use
+                // is at a safe slot: closure operand of CallClosure /
+                // TailCallClosure (resolves via fn_constants and is
+                // rewritten by `rewrite_known_target_closures`), or arg
+                // slot of `Term::Call` / `Term::TailCall` to a known
+                // callee (propagates fn_constants into the callee's
+                // entry param). Anything else is an escape. Resolvable
+                // vars' originating MakeClosure skips registering F's
+                // any-key below — that's what lets .29.12.6 drop it.
+                let closure_vars: std::collections::HashSet<Var> =
+                    ft.fn_constants.keys().copied().collect();
+                let mut resolvable = closure_vars.clone();
+                let mut buf: Vec<Var> = Vec::new();
+                for b in &f.blocks {
+                    for stmt in &b.stmts {
+                        let Stmt::Let(_, prim) = stmt;
+                        buf.clear();
+                        prim_var_uses(prim, &mut buf);
+                        for v in &buf {
+                            if closure_vars.contains(v) { resolvable.remove(v); }
+                        }
+                    }
+                    match &b.terminator {
+                        Term::Goto(_, args) => {
+                            for a in args {
+                                if closure_vars.contains(a) { resolvable.remove(a); }
+                            }
+                        }
+                        Term::If(cond, _, _) => {
+                            if closure_vars.contains(cond) { resolvable.remove(cond); }
+                        }
+                        Term::Return(v) | Term::Halt(v) => {
+                            if closure_vars.contains(v) { resolvable.remove(v); }
+                        }
+                        Term::Call { callee, args, continuation } => {
+                            let receiver_known = idx_of.contains_key(callee);
+                            if !receiver_known {
+                                for a in args {
+                                    if closure_vars.contains(a) { resolvable.remove(a); }
+                                }
+                            }
+                            for cv in &continuation.captured {
+                                if closure_vars.contains(cv) { resolvable.remove(cv); }
+                            }
+                        }
+                        Term::TailCall { callee, args } => {
+                            let receiver_known = idx_of.contains_key(callee);
+                            if !receiver_known {
+                                for a in args {
+                                    if closure_vars.contains(a) { resolvable.remove(a); }
+                                }
+                            }
+                        }
+                        Term::CallClosure { args, continuation, .. } => {
+                            // closure slot is safe; args slots ARE
+                            // escapes (lambda-body propagation is out
+                            // of scope — closure args don't pick up
+                            // fn_constants in the lambda's spec).
+                            for a in args {
+                                if closure_vars.contains(a) { resolvable.remove(a); }
+                            }
+                            for cv in &continuation.captured {
+                                if closure_vars.contains(cv) { resolvable.remove(cv); }
+                            }
+                        }
+                        Term::TailCallClosure { args, .. } => {
+                            for a in args {
+                                if closure_vars.contains(a) { resolvable.remove(a); }
+                            }
+                        }
+                        Term::Receive { continuation } => {
+                            for cv in &continuation.captured {
+                                if closure_vars.contains(cv) { resolvable.remove(cv); }
+                            }
+                        }
+                    }
+                }
+
                 for b in &f.blocks {
                     let mut env = ft.block_envs.get(&b.id).cloned().unwrap_or_default();
                     for stmt in &b.stmts {
@@ -501,9 +581,16 @@ pub fn type_module(m: &Module) -> ModuleTypes {
                         }
                     }
                     // MakeClosure: capture Descrs + [any; n_args].
+                    // fz-ul4.29.10.3 — skip when the closure-var is
+                    // "resolvable" (escape analysis above), since the
+                    // IR rewrite turns its CallClosure consumers into
+                    // direct Calls that register narrow specs.
                     for stmt in &b.stmts {
-                        let Stmt::Let(_, prim) = stmt;
+                        let Stmt::Let(v, prim) = stmt;
                         if let Prim::MakeClosure(lam_fn_id, captured) = prim {
+                            if captured.is_empty() && resolvable.contains(v) {
+                                continue;
+                            }
                             if let Some(&j) = idx_of.get(lam_fn_id) {
                                 let n_params = m.fns[j].block(m.fns[j].entry).params.len();
                                 let mut q: Vec<Descr> = vec![Descr::any(); n_params];
@@ -560,6 +647,100 @@ pub fn type_module(m: &Module) -> ModuleTypes {
     }
 
     ModuleTypes { by_fn_idx, specs }
+}
+
+/// fz-ul4.29.10.3 — every Var referenced by `prim` (read-side; the
+/// Let-bound LHS is not included). Used by escape analysis: any Var
+/// appearing in a Prim position is an escape, since no Prim has a
+/// "safe" slot — Prims build new values that consume their operands.
+fn prim_var_uses(prim: &Prim, out: &mut Vec<Var>) {
+    use crate::fz_ir::BitSizeIr;
+    match prim {
+        Prim::Const(_) => {}
+        Prim::BinOp(_, a, b) => { out.push(*a); out.push(*b); }
+        Prim::UnOp(_, a) => { out.push(*a); }
+        Prim::AllocStruct(_, args)
+        | Prim::Builtin(_, args)
+        | Prim::MakeTuple(args)
+        | Prim::MakeVec(_, args) => { out.extend(args.iter().copied()); }
+        Prim::ListCons(h, t) => { out.push(*h); out.push(*t); }
+        Prim::ListHead(v) | Prim::ListTail(v) | Prim::ListIsNil(v)
+        | Prim::TupleField(v, _) | Prim::BitReaderInit(v)
+        | Prim::BitReaderDone(v) => { out.push(*v); }
+        Prim::MakeList(els, tail) => {
+            out.extend(els.iter().copied());
+            if let Some(t) = tail { out.push(*t); }
+        }
+        Prim::MakeClosure(_, captured) => { out.extend(captured.iter().copied()); }
+        Prim::MakeMap(entries) => {
+            for (k, v) in entries { out.push(*k); out.push(*v); }
+        }
+        Prim::MapUpdate(base, entries) => {
+            out.push(*base);
+            for (k, v) in entries { out.push(*k); out.push(*v); }
+        }
+        Prim::MapGet(m, k) => { out.push(*m); out.push(*k); }
+        Prim::MakeBitstring(fields) => {
+            for f in fields {
+                out.push(f.value);
+                if let Some(BitSizeIr::Var(v)) = &f.size { out.push(*v); }
+            }
+        }
+        Prim::BitReadField { reader, size, .. } => {
+            out.push(*reader);
+            if let Some(BitSizeIr::Var(v)) = size { out.push(*v); }
+        }
+    }
+}
+
+/// fz-ul4.29.10.3 — rewrite `Term::CallClosure(v, args, cont)` →
+/// `Term::Call(F, args, cont)` (and `TailCallClosure` → `TailCall`)
+/// when `types.specs[..].fn_constants[v] = F` agrees across every spec
+/// of the enclosing FnIr that has an opinion on `v`. Disagreement
+/// (different specs of the same fn body see different FnIds for the
+/// same Var) leaves the terminator untouched — safe fallback.
+///
+/// Module mutation only; callers re-run `type_module` afterwards to
+/// refresh `ModuleTypes` against the rewritten IR (so the typed-spec
+/// landscape reflects direct dispatch and `.29.12.6` can drop dead
+/// any-keys).
+pub fn rewrite_known_target_closures(module: &mut Module, types: &ModuleTypes) {
+    let mut unified: HashMap<FnId, HashMap<Var, Option<FnId>>> = HashMap::new();
+    for ((fid, _), ft) in &types.specs {
+        let entry = unified.entry(*fid).or_default();
+        for (v, fnid) in &ft.fn_constants {
+            match entry.get(v).copied() {
+                None => { entry.insert(*v, Some(*fnid)); }
+                Some(Some(prev)) if prev == *fnid => {}
+                Some(_) => { entry.insert(*v, None); }
+            }
+        }
+    }
+    for f in &mut module.fns {
+        let Some(map) = unified.get(&f.id) else { continue; };
+        for b in &mut f.blocks {
+            let new_term = match &b.terminator {
+                Term::CallClosure { closure, args, continuation } => {
+                    if let Some(Some(target)) = map.get(closure).copied() {
+                        Some(Term::Call {
+                            callee: target,
+                            args: args.clone(),
+                            continuation: continuation.clone(),
+                        })
+                    } else { None }
+                }
+                Term::TailCallClosure { closure, args } => {
+                    if let Some(Some(target)) = map.get(closure).copied() {
+                        Some(Term::TailCall { callee: target, args: args.clone() })
+                    } else { None }
+                }
+                _ => None,
+            };
+            if let Some(nt) = new_term {
+                b.terminator = nt;
+            }
+        }
+    }
 }
 
 pub fn type_fn(f: &FnIr, m: &Module, entry_param_types: Option<&[Descr]>) -> FnTypes {
@@ -1945,11 +2126,13 @@ mod tests {
     }
 
     #[test]
-    fn closure_target_with_direct_caller_narrows_by_fn_idx_but_any_key_stays_any() {
-        // fz-ul4.29.3 regression guard: a fn that's BOTH a closure target
-        // AND called directly with a typed arg gets its by_fn_idx narrowed
-        // by the visible direct caller; the any-key spec (what the closure
-        // path dispatches into) remains all-any.
+    fn closure_target_with_direct_caller_narrows_by_fn_idx_and_drops_unused_any_key() {
+        // fz-ul4.29.3 / .29.10.3: a fn that's both a MakeClosure target
+        // and called directly with a typed arg gets its by_fn_idx
+        // narrowed by the visible direct caller. Post-.29.10.3, the
+        // unused closure-bound `_cl` is detected as fully resolvable
+        // (no invocation), the MakeClosure any-key registration is
+        // suppressed, and .29.12.6 drops worker's any-key.
         let mut wb = FnBuilder::new(FnId(0), "worker");
         let n = wb.fresh_var();
         let wentry = wb.block(vec![n]);
@@ -1967,12 +2150,12 @@ mod tests {
         let nt = mt[0].vars.get(&n).cloned().unwrap();
         assert!(nt.is_subtype(&Descr::int()),
             "worker's n in by_fn_idx must narrow to int (visible caller), got {}", nt);
-        // any-key spec stays at all-any (closure-invoke fallback).
-        let any_spec = mt.spec(FnId(0), &[Descr::any()])
-            .expect("any-key spec exists");
-        let any_n = any_spec.vars.get(&n).cloned().unwrap();
-        assert!(any_n.is_equiv(&Descr::any()),
-            "worker's any-key spec keeps n at any, got {}", any_n);
+        // any-key dropped: no callsite (direct or indirect) queries
+        // worker with [any].
+        assert!(mt.spec(FnId(0), &[Descr::any()]).is_none(),
+            "worker's any-key must be dropped — only narrow [int_lit(42)] callsite exists; \
+             specs: {:?}",
+            mt.specs.keys().filter(|(fid, _)| *fid == FnId(0)).collect::<Vec<_>>());
     }
 
     // ----- fz-ul4.29.1: per-callsite specialization map -----
@@ -2146,17 +2329,17 @@ fn main(), do: print(add1(40) + 2)
         assert!(narrow_found, "test premise: main should have a direct Call");
     }
 
-    /// fz-ul4.29.12.6 / .29.10 — when a top-level fn is passed as a
-    /// closure value (`apply2(double, …)`), `ir_lower` synthesizes
-    /// `MakeClosure(double, [])`. With no captures and unknown args,
-    /// the resolved closure-stub key is `[any]` — equal to `double`'s
-    /// any-key. That key IS present in the queried set, so `double`'s
-    /// any-key is correctly kept. The cascade is still broken in spirit
-    /// (the body now resolves through typed stubs at every other site),
-    /// but this particular fn-as-value pattern needs the any-key. A
-    /// future flow analysis (separate ticket) can narrow it further.
+    /// fz-ul4.29.10 — when a top-level fn is passed as a closure value
+    /// (`apply2(double, …)`), `ir_lower` synthesizes
+    /// `MakeClosure(double, [])`. .29.10.1 propagates `fn_constants[f]
+    /// = double` into apply2's spec; .29.10.2 registers double's narrow
+    /// spec for the typed arg from apply2's CallClosure; .29.10.3
+    /// suppresses the MakeClosure-side any-key registration (because
+    /// main's closure-var is fully resolvable) and rewrites apply2's
+    /// `CallClosure` into a direct `Call(double, …)`. Net result:
+    /// double's any-key is dropped.
     #[test]
-    fn higher_order_callee_keeps_any_key_for_fn_as_value() {
+    fn higher_order_callee_drops_any_key_for_fn_as_value() {
         let (m, mt) = pipeline(r#"
 fn double(x), do: x * 2
 fn apply2(f, x), do: f(x)
@@ -2166,8 +2349,10 @@ end
 "#);
         let double = m.fns.iter().find(|f| f.name == "double").unwrap();
         let any_key: Vec<Descr> = vec![Descr::any(); 1];
-        assert!(mt.specs.contains_key(&(double.id, any_key)),
-            "fn-as-value MakeClosure registers double's any-key (no captures, args = any)");
+        assert!(!mt.specs.contains_key(&(double.id, any_key)),
+            "expected double's any-key to be dropped post-.29.10.3; \
+             registered specs for double: {:?}",
+            mt.specs.keys().filter(|(fid, _)| *fid == double.id).collect::<Vec<_>>());
     }
 
 /// fz-ul4.29.12.6 — a fn whose every IR callsite has typed coverage
@@ -2464,6 +2649,74 @@ end
     }
 
     // ---- fz-ul4.29.10.2 — narrow F-spec from known-target CallClosure ----
+
+    // ---- fz-ul4.29.10.3 — IR rewrite of known-target closures ----
+
+    /// `rewrite_known_target_closures` replaces `Term::CallClosure(v, …)`
+    /// with `Term::Call(F, …)` when every spec of the enclosing FnIr
+    /// agrees that `fn_constants[v] = F`.
+    #[test]
+    fn closure_call_rewritten_to_direct_call() {
+        let (mut m, mt) = pipeline(r#"
+fn double(x), do: x * 2
+fn apply_plus1(f, x) do
+  r = f(x)
+  r + 1
+end
+fn main() do
+  print(apply_plus1(double, 21))
+end
+"#);
+        rewrite_known_target_closures(&mut m, &mt);
+        let apply2 = m.fns.iter().find(|f| f.name == "apply_plus1").unwrap();
+        let double_id = m.fns.iter().find(|f| f.name == "double").unwrap().id;
+        let mut saw_direct = false;
+        for b in &apply2.blocks {
+            match &b.terminator {
+                Term::Call { callee, .. } if *callee == double_id => {
+                    saw_direct = true;
+                }
+                Term::CallClosure { .. } | Term::TailCallClosure { .. } => {
+                    panic!("apply2 body still contains a closure-call after rewrite");
+                }
+                _ => {}
+            }
+        }
+        assert!(saw_direct,
+            "expected at least one direct Call(double, …) in apply2's body");
+    }
+
+    /// Same rewrite for `Term::TailCallClosure → Term::TailCall`.
+    #[test]
+    fn tailcall_closure_variant_rewritten() {
+        let (mut m, mt) = pipeline(r#"
+fn double(x), do: x * 2
+fn apply2(f, x), do: f(x)
+fn main() do
+  apply2(double, 21)
+end
+"#);
+        rewrite_known_target_closures(&mut m, &mt);
+        let apply2 = m.fns.iter().find(|f| f.name == "apply2").unwrap();
+        let double_id = m.fns.iter().find(|f| f.name == "double").unwrap().id;
+        let mut saw_direct = false;
+        for b in &apply2.blocks {
+            match &b.terminator {
+                Term::TailCall { callee, .. } if *callee == double_id => {
+                    saw_direct = true;
+                }
+                Term::Call { callee, .. } if *callee == double_id => {
+                    saw_direct = true;
+                }
+                Term::CallClosure { .. } | Term::TailCallClosure { .. } => {
+                    panic!("apply2 body still contains a closure-call after rewrite");
+                }
+                _ => {}
+            }
+        }
+        assert!(saw_direct,
+            "expected apply2 body to dispatch directly to double after rewrite");
+    }
 
     /// `apply2(double, 21)` — apply2's body has `CallClosure(f, [x])`.
     /// With `fn_constants[f] = double` propagated from main, the typer's

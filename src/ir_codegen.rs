@@ -1238,6 +1238,12 @@ pub fn compile_with_backend<B: Backend>(
     let pre_types = crate::ir_typer::type_module(&working);
     crate::ir_typer::rewrite_vec_kinds(&mut working, &pre_types)
         .map_err(CodegenError::new)?;
+    // fz-ul4.29.10.3 — lower known-target CallClosure / TailCallClosure
+    // to direct Call / TailCall. After this, the final type_module sees
+    // direct dispatch where the closure-stub used to live, and
+    // .29.12.6's any-key drop logic can remove the now-dead any-key.
+    let mid_types = crate::ir_typer::type_module(&working);
+    crate::ir_typer::rewrite_known_target_closures(&mut working, &mid_types);
     let module_types = crate::ir_typer::type_module(&working);
     let module = &working;
 
@@ -1378,17 +1384,28 @@ pub fn compile_with_backend<B: Backend>(
                                 .unwrap_or_else(crate::types::Descr::any);
                         }
                     }
+                    // fz-ul4.29.10.3 — when the lambda's any-key was
+                    // dropped (closure-var is fully resolved via
+                    // fn_constants and the IR rewrite turned every
+                    // invocation into a direct Call), no covering spec
+                    // exists for `[any; n_params]`. The closure header
+                    // still needs `stub_fp`, but the stub is unreachable
+                    // — falling back to any registered narrow SpecId is
+                    // safe because nothing dispatches through it.
                     let cl_sid = spec_registry
                         .resolve(*lam_fn_id, &key)
                         .map(|s| s.0)
+                        .or_else(|| spec_registry.iter()
+                            .find(|(s, fid, _)|
+                                *fid == *lam_fn_id
+                                && spec_fnidx[s.0 as usize].is_some())
+                            .map(|(s, _, _)| s.0))
                         .unwrap_or_else(|| panic!(
-                            ".29.12.2: no covering spec for closure target \
-                             FnId({}) with key {:?}; registered keys: {:?}",
+                            ".29.12.2: no live spec for closure target \
+                             FnId({}); registered keys: {:?}",
                             lam_fn_id.0,
-                            key,
                             spec_registry.iter()
-                                .filter(|(_, fid, _)| *fid == *lam_fn_id)
-                                .map(|(s, _, k)| (s.0, k.to_vec()))
+                                .map(|(s, fid, k)| (s.0, fid.0, k.to_vec()))
                                 .collect::<Vec<_>>()));
                     closure_shapes.insert(cl_sid, captured.len());
                 }
@@ -4116,13 +4133,21 @@ fn lower_prim<M: cranelift_module::Module>(
                         .unwrap_or_else(crate::types::Descr::any);
                 }
             }
+            // fz-ul4.29.10.3 — fall back to any registered SpecId for
+            // the lambda when the any-key was dropped (closure unreachable
+            // post-rewrite). The stub field is required by the closure
+            // header layout but nothing dispatches through it in the
+            // unreachable case.
             let cl_sid = spec_registry
                 .resolve(*fn_id, &key)
                 .map(|s| s.0)
+                .or_else(|| spec_registry.iter()
+                    .find(|(s, fid, _)|
+                        *fid == *fn_id && stub_fn_ids.contains_key(&s.0))
+                    .map(|(s, _, _)| s.0))
                 .ok_or_else(|| CodegenError::new(format!(
-                    ".29.12.2: no covering spec for closure target \
-                     FnId({}) with key {:?}",
-                    fn_id.0, key)))?;
+                    ".29.12.2: no live spec for closure target FnId({})",
+                    fn_id.0)))?;
             let stub_func_id = stub_fn_ids
                 .get(&cl_sid)
                 .copied()
