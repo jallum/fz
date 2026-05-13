@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-13T04:08:49Z",
+  "description": "Epic tracker for the CPS-in-clif execution model.\n\nSpec: docs/cps-in-clif.md (single source of truth).\n\nChildren:\n- ABI/codegen arm: fz-cps.1 .. fz-cps.6\n- GC/runtime arm:  fz-cps.GC.1 .. fz-cps.GC.6\n\nAcceptance:\n- All children closed.\n- The four §8 fixtures (tail_recursion, higher_order, closure_typed_captures, concurrency_ping_pong) pass on JIT, interpreter, and AOT.\n\nNon-goals (see §11): generational GC, preemption, multi-cont, off-heap binaries, stack-allocated conts.",
+  "id": "fz-siu",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "fz-cps epic: CPS-in-clif execution model",
+  "type": "task",
+  "updated_at": "2026-05-13T04:08:49Z"
+}
