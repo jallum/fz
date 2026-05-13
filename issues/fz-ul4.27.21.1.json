@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-13T23:20:20Z",
+  "description": "Coordinated three-site change so caller, callee, and entry-harness agree on a typed cont sig per spec.\n\nTouch src/ir_codegen.rs:\n\n1. build_fn_signature (≈line 760): cont fn branch currently hardcodes `(i64 [Tagged], i64) tail` and ignores param_reprs (`let _ = param_reprs;`). Replace with:\n     sig.params.push(AbiParam::new(param_reprs[0].cl_type()));   // typed result\n     sig.params.push(AbiParam::new(types::I64));                   // self (ptr stays i64)\n\n2. compile_fn cont-fn entry harness (≈line 2940): currently does\n     let coerced = coerce_to(.., params[0], ArgRepr::Tagged, my_param_reprs[0]);\n   The cont's Cranelift param IS now in my_param_reprs[0]'s repr, so:\n     drop the coerce; var_map.insert(result_param.0, params[0]);\n   raw_int_vars / raw_f64_vars insertion still gates on my_param_reprs[0].\n\n3. Term::Return native branch (≈line 3243): currently coerces val to Tagged unconditionally and emits sig `(i64 [Tagged], i64) tail`. Replace with:\n     let val_typed = coerce_to(.., val, from, my_return_repr);\n     let mut sig = Signature::new(CallConv::Tail);\n     sig.params.push(AbiParam::new(my_return_repr.cl_type()));\n     sig.params.push(AbiParam::new(types::I64));\n     sig.returns.push(AbiParam::new(types::I64));\n     ... return_call_indirect with val_typed\n   (my_return_repr is already computed as return_reprs[this_spec_id as usize].)\n\nThe wide-cont set (uniform_cont_reachable + closure_target_fns) already forces those specs' param_reprs[0] to Tagged. Narrow conts get param_reprs[0] = RawInt / RawF64 from the typer's existing build_param_reprs path. No new analysis needed.\n\nHalt-cont compatibility: fz_halt_cont_body's sig stays (i64 [Tagged], i64) tail. main and any fn whose cont is halt-cont has return_repr = Tagged (typer-enforced because the cont's param_reprs[0] is Tagged, so this fn's return repr unifies to Tagged). Coercion to Tagged at Term::Return falls out naturally.\n\nAcceptance:\n- add1.fz add1_s2 dump: between `v3 = iadd v0, v2` and `return_call_indirect`, NO ishl_imm/bor_imm pair. The raw 42 flows directly.\n- add1.fz k_2_s3 dump: between block0 entry and `call fn0(v0)`, NO sshr_imm. v0 (the RawInt result) flows directly to print.\n- cargo test --workspace green.\n- All four §8 fixtures pass jit / interp / aot.",
+  "id": "fz-ul4.27.21.1",
+  "labels": [],
+  "parent": "fz-ul4.27.21",
+  "priority": 2,
+  "status": "open",
+  "title": "fz-cps-narrow.1: result-param type narrowing at cont seam",
+  "type": "task",
+  "updated_at": "2026-05-13T23:20:20Z"
+}
