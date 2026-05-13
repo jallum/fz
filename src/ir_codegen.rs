@@ -237,6 +237,24 @@ impl CompiledModule {
     /// returns null; we write that back to process.next_frame so the
     /// caller can observe completion.
     pub(crate) fn run_quantum(&self, process: &mut Process) {
+        /// Park-time GC trigger (cps-in-clif §7). Called at every
+        /// shim-return boundary. Reads `process.heap.should_gc()`; if set,
+        /// invokes `gc()` with `parked_cont` as the sole root (per §6.4 /
+        /// §7), then clears the pressure flag. The .7 stub gc() just
+        /// bumps `gc_run_count`; Cheney lands in fz-siu.8.
+        fn park_time_gc(process: &mut Process) {
+            if !process.heap.should_gc() {
+                return;
+            }
+            let roots: &[fz_runtime::fz_value::FzValue] = if process.parked_cont.is_null() {
+                &[]
+            } else {
+                &[fz_runtime::fz_value::FzValue(process.parked_cont as u64)]
+            };
+            process.heap.gc(roots);
+            process.heap.clear_should_gc_flag();
+        }
+
         // fz-cps.1.11 — wakeup path: if the task has a parked_cont and
         // a message waiting, dispatch via the SystemV→Tail-CC
         // fz_resume_park shim. The shim cross-CC calls the cont closure
@@ -253,6 +271,7 @@ impl CompiledModule {
                 };
                 let _ = f(msg.0, cont_ptr as u64);
                 process.next_frame = std::ptr::null_mut();
+                park_time_gc(process);
                 return;
             }
         }
@@ -269,6 +288,7 @@ impl CompiledModule {
             };
             let _ = f(fp as u64);
             process.next_frame = std::ptr::null_mut();
+            park_time_gc(process);
             return;
         }
         // fz-cps.1.11 — fresh task entry: a closure was queued by
@@ -285,6 +305,7 @@ impl CompiledModule {
             };
             let _ = f(cl_ptr as u64);
             process.next_frame = std::ptr::null_mut();
+            park_time_gc(process);
             return;
         }
         // fz-cps.5 — the trampoline loop is unreachable. All fz fns are

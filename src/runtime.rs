@@ -631,4 +631,31 @@ mod tests {
         // list was returned via receive). Confirm task halted cleanly.
         assert!(task.heap.live_count() >= 6, "expected both src+dst lists in heap");
     }
+
+    /// fz-siu.7.3: park-time GC hook fires when allocation pressure
+    /// crosses gc_threshold_bytes. With the threshold lowered below the
+    /// fixture's allocation footprint, run_until_idle must trigger gc()
+    /// (stub in .7 — just bumps gc_run_count) at the post-dispatch park
+    /// point. Real Cheney body lands in fz-siu.8.
+    #[test]
+    fn park_time_gc_fires_when_pressure_set() {
+        // [1,2,3] allocates three 32-byte cons cells = 96 bytes.
+        let src = "fn main(), do: [1, 2, 3]";
+        let m = lower_src(src);
+        let entry = m.fn_by_name("main").unwrap().id;
+        let compiled = compile(&m).unwrap();
+        let mut rt = Runtime::new(&compiled, 1);
+        let pid = rt.spawn(entry);
+        // Lower threshold below the alloc footprint so the flag trips.
+        rt.tasks.get_mut(&pid).unwrap().heap.gc_threshold_bytes = 64;
+        rt.run_until_idle();
+        let task = rt.task(pid).unwrap();
+        assert_eq!(task.state, ProcessState::Exited);
+        assert!(
+            task.heap.gc_run_count >= 1,
+            "park-time hook should have fired GC, got {}",
+            task.heap.gc_run_count
+        );
+        assert!(!task.heap.should_gc(), "flag should be cleared after gc()");
+    }
 }
