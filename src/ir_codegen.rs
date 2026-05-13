@@ -3261,54 +3261,16 @@ fn compile_fn<M: cranelift_module::Module>(
                     let result = b.inst_results(call_inst)[0];
 
                     if cl_ptr_opt.is_some() {
-                        // Chain already unwound via halt-cont; just return
-                        // whatever the chain propagated.
-                        if is_native {
-                            let _ = (return_reprs[this_spec_id as usize], callee_ret_repr, result);
-                            let zero = b.ins().iconst(types::I64, 0);
-                            b.ins().return_(&[zero]);
-                        } else {
-                            let null = b.ins().iconst(types::I64, 0);
-                            b.ins().return_(&[null]);
-                        }
-                    } else if false {
-                        // (dead branch retained as anchor for the legacy
-                        // "synchronous cont call" path that's been replaced
-                        // by the cont-closure-passed-to-callee model.)
-                        let final_result = result;
-                        let cont_ret_repr = return_reprs[cont_sid as usize];
-                        if is_native {
-                            let _ = (return_reprs[this_spec_id as usize], cont_ret_repr);
-                            b.ins().return_(&[final_result]);
-                        } else {
-                            // emit_return / emit_halt expect Tagged val.
-                            let val_tagged = coerce_to(
-                                &mut b, jmod, &runtime,
-                                final_result, cont_ret_repr, ArgRepr::Tagged,
-                            );
-                            if cont_ptr_known_null {
-                                // fz-ul4.27.18: never-a-cont-target fn; halt-only.
-                                emit_halt_and_return_null(
-                                    &mut b, jmod, runtime,
-                                    host_ctx.expect(
-                                        "emit_halt_and_return_null needs host_ctx \
-                                         in a uniform fn",
-                                    ),
-                                    val_tagged,
-                                );
-                            } else {
-                                emit_return(
-                                    &mut b,
-                                    jmod,
-                                    runtime,
-                                    frame_ptr,
-                                    host_ctx.expect(
-                                        "emit_return needs host_ctx in a uniform fn",
-                                    ),
-                                    val_tagged,
-                                );
-                            }
-                        }
+                        // fz-cps.1.2 — chained-native path. The callee's
+                        // Term::Return already indirect-called the cont
+                        // closure; the chain unwound via halt-cont's
+                        // regular return. `result` is the chain's final
+                        // value (informationally — actual program state
+                        // is in process.halt_value). Just return a
+                        // sentinel that matches the caller's sig.
+                        let _ = (return_reprs[this_spec_id as usize], callee_ret_repr, result);
+                        let zero = b.ins().iconst(types::I64, 0);
+                        b.ins().return_(&[zero]);
                     } else {
                         let cont_schema = &schemas[cont_sid as usize];
                         let alloc_fref =
