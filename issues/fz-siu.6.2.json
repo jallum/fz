@@ -6,14 +6,15 @@
   "blocks": [
     "fz-siu.6.3"
   ],
+  "closed_at": "2026-05-13T22:48:22Z",
   "created": "2026-05-13T22:34:27Z",
   "description": "Rewire AOT scheduler hooks (aot_spawn_hook, aot_send_hook) to use the new cps-in-clif spawn/receive model — fz_spawn_entry dispatch for spawned closures, parked_cont + fz_resume_park for receive resumption.\n\nThe eager-sync model has to either survive the new shim shape (each child task runs through fz_spawn_entry instead of the old stub-based dispatch) or grow into a real run_quantum-style scheduler. Pick whichever fits AOT's no-libdispatch constraints.\n\nTouch:\n- runtime/src/aot_shim.rs: spawn_hook calls fz_spawn_entry against the child's closure ptr (SystemV→Tail-CC). The child runs synchronously to halt or park. On park (parked_cont set + mailbox empty), abort or run a scheduler loop that pumps tasks from AOT_TASKS until all halt.\n\nAcceptance: §8.4 concurrency_ping_pong passes on AOT path.",
   "id": "fz-siu.6.2",
   "labels": [],
   "parent": "fz-siu.6",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "fz-cps.6.2: AOT concurrency hooks for cps-in-clif",
   "type": "task",
-  "updated_at": "2026-05-13T22:41:42Z"
+  "updated_at": "2026-05-13T22:48:22Z"
 }
