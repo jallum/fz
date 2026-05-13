@@ -4,14 +4,15 @@
     "fz-ul4.27.15.1"
   ],
   "blocks": [],
+  "closed_at": "2026-05-13T02:30:29Z",
   "created": "2026-05-13T02:26:50Z",
   "description": "## What\n\nIn `src/ir_codegen.rs:3629-3637`, change `Const::Float` from \"always heap-alloc via fz_alloc_float, return tagged ptr\" to \"emit `f64const(f)` raw when the var's Descr is float-monomorphic; only heap-alloc when a Tagged consumer demands it.\"\n\nCurrent:\n```rust\nConst::Float(f) =\u003e {\n    let bits = f.to_bits() as i64;\n    let bv = b.ins().iconst(types::I64, bits);\n    let fref = jmod.declare_func_in_func(runtime.alloc_float_id, b.func);\n    let inst = b.ins().call(fref, \u0026[bv]);\n    b.inst_results(inst)[0]\n}\n```\n\nProposed:\n```rust\nConst::Float(f) =\u003e {\n    let d = fn_types.vars.get(\u0026dest_var).cloned().unwrap_or_else(Descr::any);\n    if d.is_subtype(\u0026Descr::float()) {\n        return Ok(LowerOut::RawF64(b.ins().f64const(*f)));\n    }\n    // Tagged fallback: heap-alloc as today.\n    let bits = f.to_bits() as i64;\n    let bv = b.ins().iconst(types::I64, bits);\n    let fref = jmod.declare_func_in_func(runtime.alloc_float_id, b.func);\n    let inst = b.ins().call(fref, \u0026[bv]);\n    b.inst_results(inst)[0]\n}\n```\n\nThe `dest_var` plumbing lands in .27.15.1; this ticket reuses it.\n\nTagged consumers retag via `tagged_get` → `box_float_native` → which already heap-allocs. Same cost as today for those; raw consumers (float arithmetic, RawF64 slots, fz_print_f64) skip the heap alloc entirely.\n\n## Tests (TDD)\n\n1. **Float-literal fixture** — pick one of the existing float fixtures (dist? vr4 family?) and assert the CLIF has `f64const` directly with no preceding `call fn_alloc_float`. Identify a clean candidate during research.\n2. **Tagged-consumer behavioural** — a float passed to print/inspect or stored in an `any` slot; verify output unchanged.\n3. **Behaviour** — float fixtures still produce correct output.\n\n## Acceptance\n\n- `cargo test` green, no warnings.\n- For at least one float-monomorphic fixture: no `fz_alloc_float` call for literal floats consumed raw.\n- Tagged consumers (polymorphic print, struct fields typed `any`) still get a heap-allocated FzValue via `box_float_native`.\n\n## Risks / verification done\n\n- `box_float_native` (line 4385) is the existing heap-alloc path; `tagged_get` routes raw_f64_vars through it. Symmetric to int.\n- Existing float fixtures (vr_int_float_mix etc.) exercise both raw and tagged float paths; their tests are the regression net.\n\n## Blocks / unblocks\n\n- Depends on `.27.15.1` (for the `dest_var` plumbing).\n- Out of scope: bucket-3 prims (TupleField producing floats, ListHead, etc.).",
   "id": "fz-ul4.27.15.2",
   "labels": [],
   "parent": "fz-ul4.27.15",
   "priority": 3,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Const::Float emits RawF64 when consumer Descr is float",
   "type": "task",
-  "updated_at": "2026-05-13T02:28:47Z"
+  "updated_at": "2026-05-13T02:30:29Z"
 }
