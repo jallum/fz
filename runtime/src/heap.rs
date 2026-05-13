@@ -569,7 +569,21 @@ impl Heap {
                 &schemas,
             )
         };
-        let size_class = pick_size_class(live_bytes.saturating_mul(2));
+        // §6.5 hysteresis: growth is eager (size up the moment live + slack
+        // exceeds the current class), but shrink waits for two consecutive
+        // low-live (<25%) cycles. The streak counter is updated post-Cheney
+        // below; here we read it.
+        let live_after_slack = live_bytes.saturating_mul(2);
+        let want_class = pick_size_class(live_after_slack);
+        let prev_class = self.size_class;
+        let size_class = if want_class > prev_class {
+            want_class
+        } else if self.low_live_streak >= 2 && prev_class > 0 {
+            prev_class - 1
+        } else {
+            prev_class
+        };
+        let consumed_streak = size_class < prev_class;
         let to_size = SIZE_TABLE[size_class as usize];
         let to_start = Self::alloc_block(to_size);
         let to_end = unsafe { to_start.add(to_size) };
@@ -624,10 +638,14 @@ impl Heap {
         // Reset gc_threshold to half the new block. Per-test overrides
         // are sticky across cycles only if the test reasserts them.
         self.gc_threshold_bytes = to_size / 2;
-        // §6.5 shrink hysteresis bookkeeping — consumed by .11. A "low live"
-        // pass is one where surviving bytes fall below 25% of block_size.
-        let live_bytes = unsafe { free.offset_from(to_start) } as usize;
-        if live_bytes * 4 < self.block_size {
+        // §6.5 shrink hysteresis bookkeeping. A "low live" pass is one
+        // where surviving bytes fall below 25% of the just-installed block.
+        // When the streak we observed at gc-entry was consumed to shrink,
+        // reset to 0 — otherwise we'd cascade-shrink on every cycle.
+        let live_bytes_postgc = unsafe { free.offset_from(to_start) } as usize;
+        if consumed_streak {
+            self.low_live_streak = 0;
+        } else if live_bytes_postgc * 4 < to_size {
             self.low_live_streak = self.low_live_streak.saturating_add(1);
         } else {
             self.low_live_streak = 0;
@@ -1309,6 +1327,73 @@ mod tests {
             // Drop the root so next iteration starts fresh.
             let _ = root; // reachable until here
         }
+    }
+
+    /// Acceptance (fz-siu.11 / §6.5): a spike-then-settle workload ends
+    /// with a smaller heap than peak. After building a large chain
+    /// (size_class climbs), we drop it and gc with a tiny working set
+    /// repeatedly. Hysteresis demotes size_class one step per pair of
+    /// low-live cycles until it bottoms out.
+    #[test]
+    fn shrink_hysteresis_settles_below_peak() {
+        let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
+        // Spike: build a large rooted chain (push size_class up).
+        let mut tail = FzValue::NIL;
+        for i in 0..2048 {
+            let cell = h.alloc_list_cons(FzValue::from_int(i), tail);
+            tail = FzValue::from_ptr(cell);
+        }
+        let head = tail.unbox_ptr().unwrap();
+        let mut root = head as *mut u8;
+        h.gc(&mut root);
+        let peak_class = h.size_class;
+        assert!(peak_class >= 4, "spike should drive size_class up; got {}", peak_class);
+
+        // Settle: shrink the working set to one cell, gc repeatedly.
+        // Hysteresis requires two consecutive low-live cycles per shrink
+        // step, so 2 × peak_class iterations is a safe upper bound.
+        let lone_cell = h.alloc_list_cons(FzValue::from_int(42), FzValue::NIL);
+        let mut root = lone_cell as *mut u8;
+        for _ in 0..(peak_class as usize * 2 + 4) {
+            h.gc(&mut root);
+        }
+        assert!(
+            h.size_class < peak_class,
+            "size_class did not shrink: peak={}, settled={}",
+            peak_class, h.size_class
+        );
+        assert!(
+            h.block_size < SIZE_TABLE[peak_class as usize],
+            "block_size did not shrink: peak={}, settled={}",
+            SIZE_TABLE[peak_class as usize], h.block_size
+        );
+    }
+
+    /// Hysteresis defers shrink: one low-live cycle alone must NOT
+    /// demote size_class — only two consecutive cycles do. Guards
+    /// against thrashing from a single dip.
+    #[test]
+    fn one_low_live_cycle_does_not_shrink() {
+        let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
+        // Climb to a non-zero class.
+        let mut tail = FzValue::NIL;
+        for i in 0..512 {
+            let c = h.alloc_list_cons(FzValue::from_int(i), tail);
+            tail = FzValue::from_ptr(c);
+        }
+        let head = tail.unbox_ptr().unwrap();
+        let mut root = head as *mut u8;
+        h.gc(&mut root);
+        let class_after_spike = h.size_class;
+        assert!(class_after_spike >= 2);
+
+        // One gc with small live set: streak goes from 0 → 1. No shrink.
+        let small = h.alloc_list_cons(FzValue::from_int(1), FzValue::NIL);
+        let mut root = small as *mut u8;
+        h.gc(&mut root);
+        assert_eq!(h.size_class, class_after_spike,
+            "single low-live cycle must not shrink");
+        assert_eq!(h.low_live_streak, 1);
     }
 
     /// Acceptance: ≥10 GC cycles with the same small live working set
