@@ -1560,6 +1560,31 @@ pub fn compile_with_backend<B: Backend>(
         s
     };
     let _ = &cont_fns; // fz-cps.1.2: consumed by sig builder + entry harness in next step.
+
+    // fz-cps.1.2 — set of fns appearing as a MakeClosure target. Per
+    // docs/cps-in-clif.md §2.1 these get sig `(args..., self:i64, cont:i64)
+    // tail` and their body loads captures from `self+24+8*i`. Disjoint
+    // from cont_fns by construction (conts are anonymous continuations
+    // synthesized by the lowerer; MakeClosure targets are user lambdas
+    // or top-level fns passed as values). If overlap occurs in some
+    // future fz-IR, cont-fn shape wins (Receive parking would otherwise
+    // misread the result slot).
+    let closure_target_fns: std::collections::HashSet<crate::fz_ir::FnId> = {
+        use crate::fz_ir::{Prim, Stmt};
+        let mut s = std::collections::HashSet::new();
+        for f in &module.fns {
+            for b in &f.blocks {
+                for stmt in &b.stmts {
+                    let Stmt::Let(_, prim) = stmt;
+                    if let Prim::MakeClosure(fid, _) = prim {
+                        s.insert(*fid);
+                    }
+                }
+            }
+        }
+        s
+    };
+    let _ = &closure_target_fns;
     // fz-ul4.27.6.4 follow-up: heap-safe captures.
     //
     // A native cont chain routes the caller's captured vars through
