@@ -4,14 +4,15 @@
   "blocks": [
     "fz-ul4.29.10"
   ],
+  "closed_at": "2026-05-13T00:27:04Z",
   "created": "2026-05-12T22:42:34Z",
   "description": "Replace uniform-ABI any-key dispatch for indirect targets (closures, spawn, receive, continuations) with per-typed-shape dispatch.\n\n## Why\n\nClosures, Spawn targets, Receive handlers, and Continuations all dispatch through their callee's any-key SpecId today — the trampoline / closure stub / scheduler only knows the FnId, not which specific spec to invoke. This forces every fn reachable via these paths to keep an any-key, AND any fn called from inside an any-key body needs ITS callees' any-keys too (since the any-key body types everything as `any`).\n\nConcretely (from .29.10 investigation):\n- map_l is direct-called only; in principle no any-key needed.\n- But map_l's body has a closure call whose continuation k_3 is referenced via Cont — k_3 must keep its any-key for trampoline dispatch.\n- k_3's any-key body, compiled under all-any, calls map_l with [any, any].\n- Without map_l's any-key, that call has no covering spec.\n- The transitive closure of \"needs any-key\" walks every reachable fn, defeating .29.10's optimization.\n\n## The fix\n\nMake indirect dispatch type-aware:\n\n- **Closures**: closure heap object stores stub_fp keyed by (FnId, capture_types, arg_types, ret_type). MakeClosure picks the typed stub matching the lambda's arrow Descr. CallClosure dispatches through it with the typed signature.\n- **Spawn**: spawn-thunk dispatches through the typed closure ABI.\n- **Receive**: receiver fn dispatched through a typed cont stub.\n- **Continuations**: cont frame stores a SpecId (not just an FnId). Trampoline reads the SpecId, dispatches to that exact compiled spec.\n\nOnce dispatch is typed, no indirect-target needs an any-key (typed stubs cover all the live cases). The optimization in .29.10 becomes truly trivial: any-keys only needed for entry-point-like fns with no caller.\n\n## Scope\n\n- Closure heap layout: add typed stub_fp(s).\n- Cont frame layout: add SpecId field.\n- Trampoline + scheduler hooks: read SpecId from cont frame; dispatch via it.\n- MakeClosure / emit_call / emit_call_closure / receive / spawn lowering: pick the typed stub matching the dispatch shape.\n- ir_codegen closure_shapes: expand key from (FnId, capture_count) to (FnId, capture_types, arity, ret_kind).\n\nSubstantial refactor — likely its own epic with multiple subtickets. File children as the work decomposes.\n\n## Out of scope\n\n- AOT vs JIT differences in closure ABI: handled inside the same lowering path.\n- Cross-module dispatch (deferred to a separate cross-module concern).\n\n## UNBLOCKS\n\n- fz-ul4.29.10 (any-key on-demand): becomes trivial once indirect dispatch is typed.",
   "id": "fz-ul4.29.12",
   "labels": [],
   "parent": "fz-ul4.29",
   "priority": 3,
-  "status": "open",
+  "status": "closed",
   "title": "Typed dispatch for closures, spawn, receive, continuations",
   "type": "task",
-  "updated_at": "2026-05-12T22:42:37Z"
+  "updated_at": "2026-05-13T00:27:04Z"
 }
