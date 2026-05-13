@@ -485,6 +485,30 @@ fn add1_has_no_int_box_or_unbox_anywhere() {
     );
 }
 
+/// fz-ul4.27.16 — native fns must not emit a dead `iconst.i64 0` for a
+/// frame_ptr placeholder. Before .27.16, every native fn's entry began
+/// with a never-read `iconst.i64 0` so the rest of `compile_fn` could
+/// reference `frame_ptr` uniformly. Now `frame_ptr` is `Option<ir::Value>`
+/// and downstream consumers `.expect()` it — native fns emit nothing.
+#[test]
+fn native_fns_have_no_dead_frame_ptr_placeholder() {
+    // add1_s2 is native; it has no use for frame_ptr. Asserting that its
+    // body contains no `iconst.i64 0` is a strict check because add1 has
+    // no other reason to materialize zero.
+    let out = Command::new(FZ_BIN)
+        .args(["dump", "fixtures/add1.fz", "--emit", "clif", "--fn", "add1"])
+        .output()
+        .expect("spawn fz dump");
+    assert!(out.status.success(), "fz dump exited {}", out.status);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("; fn add1"), "missing add1 banner:\n{}", stdout);
+    assert!(
+        !stdout.contains("iconst.i64 0"),
+        "add1_s2 still emits a dead `iconst.i64 0` (frame_ptr placeholder):\n{}",
+        stdout,
+    );
+}
+
 /// Shell `fz dump --emit clif --fn <name>` and check each fn's
 /// per-fixture expect_clif_contains / expect_clif_excludes assertion.
 /// Returns all failure messages in one vec so a fixture surfaces every

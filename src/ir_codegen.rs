@@ -2528,9 +2528,13 @@ fn compile_fn<M: cranelift_module::Module>(
         std::collections::HashSet::new();
     let my_schema = &schemas[this_spec_id as usize];
 
-    // (frame_ptr, host_ctx) — for native fns, frame_ptr is a never-read
-    // placeholder iconst(0). Uniform fns load both from entry block_params.
-    let (frame_ptr, host_ctx) = if is_native {
+    // (frame_ptr, host_ctx) — uniform fns get both from entry block_params;
+    // native fns have no frame and no frame_ptr (None). fz-ul4.27.16: the
+    // 9 downstream consumer sites are each gated on `is_native` or on a
+    // terminator type that natively_callable excludes from native fns,
+    // so unwrapping the Option below is invariant-safe. Any future code
+    // path that violates this surfaces immediately as a panic at codegen.
+    let (frame_ptr, host_ctx): (Option<ir::Value>, ir::Value) = if is_native {
         // fz-ul4.27.13 — Native entry params arrive in the repr declared
         // by my param_reprs (Cranelift type already matches; just record
         // the raw-vs-tagged classification so the body can elide
@@ -2547,8 +2551,7 @@ fn compile_fn<M: cranelift_module::Module>(
             var_map.insert(p.0, params[i]);
         }
         let host_ctx = params[entry_blk.params.len()];
-        let frame_ptr = b.ins().iconst(types::I64, 0);
-        (frame_ptr, host_ctx)
+        (None, host_ctx)
     } else {
         let frame_ptr = b.block_params(entry_cl)[0];
         let host_ctx = b.block_params(entry_cl)[1];
@@ -2575,7 +2578,7 @@ fn compile_fn<M: cranelift_module::Module>(
             };
             var_map.insert(p.0, val);
         }
-        (frame_ptr, host_ctx)
+        (Some(frame_ptr), host_ctx)
     };
 
     // Walk blocks in declared order with entry first. Unreachable
@@ -2862,7 +2865,10 @@ fn compile_fn<M: cranelift_module::Module>(
                         let my_cont = b.ins().load(
                             types::I64,
                             MemFlags::trusted(),
-                            frame_ptr,
+                            frame_ptr.expect(
+                                "Term::Call uniform-cont write-back reached from \
+                                 native-fn body — natively_callable invariant violated",
+                            ),
                             HEADER_SIZE,
                         );
                         b.ins().store(MemFlags::trusted(), my_cont, cf, HEADER_SIZE);
@@ -2943,7 +2949,10 @@ fn compile_fn<M: cranelift_module::Module>(
                         let my_cont = b.ins().load(
                             types::I64,
                             MemFlags::trusted(),
-                            frame_ptr,
+                            frame_ptr.expect(
+                                "Term::TailCall uniform-caller writeback reached from \
+                                 native-fn body — natively_callable invariant violated",
+                            ),
                             HEADER_SIZE,
                         );
                         // Halt path: my_cont may be null on the top frame.
@@ -3009,7 +3018,14 @@ fn compile_fn<M: cranelift_module::Module>(
                     .collect();
                 // Build cont frame (same as today's emit_call_closure prefix).
                 let alloc_fref = jmod.declare_func_in_func(runtime.alloc_id, b.func);
-                let my_cont = b.ins().load(types::I64, MemFlags::trusted(), frame_ptr, HEADER_SIZE);
+                let my_cont = b.ins().load(
+                    types::I64, MemFlags::trusted(),
+                    frame_ptr.expect(
+                        "Term::CallClosure reached from native-fn body — \
+                         natively_callable invariant violated",
+                    ),
+                    HEADER_SIZE,
+                );
                 // fz-ul4.29.12.1: resolve cont to its narrow SpecId.0.
                 // Slot 0 is `any` for CallClosure (opaque callee).
                 let cont_sid = resolve_cont_sid(blk, continuation);
@@ -3056,7 +3072,14 @@ fn compile_fn<M: cranelift_module::Module>(
                     .iter()
                     .map(|v| *var_map.get(&v.0).expect("unbound tailcallclosure arg"))
                     .collect();
-                let my_cont = b.ins().load(types::I64, MemFlags::trusted(), frame_ptr, HEADER_SIZE);
+                let my_cont = b.ins().load(
+                    types::I64, MemFlags::trusted(),
+                    frame_ptr.expect(
+                        "Term::TailCallClosure reached from native-fn body — \
+                         natively_callable invariant violated",
+                    ),
+                    HEADER_SIZE,
+                );
                 let stub_fp = b.ins().load(
                     types::I64,
                     MemFlags::trusted(),
@@ -3115,14 +3138,23 @@ fn compile_fn<M: cranelift_module::Module>(
 /// Term::Return: load my cont_ptr from frame[16]. If null, halt.
 /// Otherwise write `val` to cont_frame[24] (continuation's "result" slot —
 /// always entry param 0) and return cont_ptr.
+///
+/// fz-ul4.27.16: `frame_ptr` is `Option` because native fns don't have
+/// a frame; the natively_callable invariant guarantees this helper is
+/// never reached from a native fn body. Unwrapping with `.expect()`
+/// turns any future invariant break into a loud panic at codegen time
+/// rather than a silent load-from-zero.
 fn emit_return<M: cranelift_module::Module>(
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
     runtime: &RuntimeRefs,
-    frame_ptr: ir::Value,
+    frame_ptr: Option<ir::Value>,
     host_ctx: ir::Value,
     val: ir::Value,
 ) {
+    let frame_ptr = frame_ptr.expect(
+        "emit_return reached from native-fn body — natively_callable invariant violated",
+    );
     let cont_ptr = b.ins().load(types::I64, MemFlags::trusted(), frame_ptr, HEADER_SIZE);
     let zero = b.ins().iconst(types::I64, 0);
     let is_null = b.ins().icmp(IntCC::Equal, cont_ptr, zero);
@@ -3156,11 +3188,14 @@ fn emit_call<M: cranelift_module::Module>(
     jmod: &mut M,
     runtime: &RuntimeRefs,
     schemas: &[Schema],
-    frame_ptr: ir::Value,
+    frame_ptr: Option<ir::Value>,
     callee_id: u32,
     args: &[ir::Value],
     cont: Option<(u32, &[ir::Value])>,
 ) {
+    let frame_ptr = frame_ptr.expect(
+        "emit_call reached from native-fn body — natively_callable invariant violated",
+    );
     let alloc_fref = jmod.declare_func_in_func(runtime.alloc_id, b.func);
 
     // Read my cont_ptr from current frame[16] — this becomes the cont frame's cont_ptr.
@@ -3251,10 +3286,13 @@ fn emit_receive<M: cranelift_module::Module>(
     jmod: &mut M,
     runtime: &RuntimeRefs,
     schemas: &[Schema],
-    frame_ptr: ir::Value,
+    frame_ptr: Option<ir::Value>,
     cont_fn_id: u32,
     captured: &[ir::Value],
 ) {
+    let frame_ptr = frame_ptr.expect(
+        "emit_receive reached from native-fn body — natively_callable invariant violated",
+    );
     let alloc_fref = jmod.declare_func_in_func(runtime.alloc_id, b.func);
 
     // Read my cont_ptr from current frame[16] (becomes the cont frame's
@@ -3293,10 +3331,13 @@ fn emit_tail_call<M: cranelift_module::Module>(
     runtime: &RuntimeRefs,
     schemas: &[Schema],
     self_id: u32,
-    frame_ptr: ir::Value,
+    frame_ptr: Option<ir::Value>,
     callee_id: u32,
     args: &[ir::Value],
 ) {
+    let frame_ptr = frame_ptr.expect(
+        "emit_tail_call reached from native-fn body — natively_callable invariant violated",
+    );
     let callee_schema = &schemas[callee_id as usize];
 
     if self_id == callee_id {
