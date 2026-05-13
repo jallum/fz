@@ -131,6 +131,11 @@ pub struct CompiledModule {
     /// Tail-CC indirect-calls the zero-arg closure with `(self,
     /// halt_cont)`. Used by `Runtime::spawn_closure` to launch a task.
     pub(crate) spawn_entry_addr: *const u8,
+    /// fz-cps.1.11 — finalized address of the Cranelift-emitted
+    /// `fz_halt_cont_body` Tail-CC fn. `make_process` writes this into
+    /// the per-Process `halt_cont_singleton` closure's +16 slot so
+    /// every uniform→native synth halt-cont reuses the same singleton.
+    pub(crate) halt_cont_body_addr: *const u8,
 }
 
 impl CompiledModule {
@@ -177,6 +182,7 @@ impl CompiledModule {
             next_frame: std::ptr::null_mut(),
             mailbox: std::collections::VecDeque::new(),
             parked_cont: std::ptr::null_mut(),
+            halt_cont_singleton: std::ptr::null_mut(),
             pending_closure_entry: std::ptr::null_mut(),
             static_closures: Vec::new(),
             static_closure_bufs: Vec::new(),
@@ -184,6 +190,10 @@ impl CompiledModule {
         // fz-cps.1.7 — allocate one static singleton per zero-cap
         // closure-target spec. See docs/cps-in-clif.md §8.2.
         p.init_static_closures(&self.static_closure_targets);
+        // fz-cps.1.11 — seed the halt-cont singleton with this module's
+        // `fz_halt_cont_body` finalized address. Reused at every
+        // uniform→native synth halt-cont site.
+        p.init_halt_cont_singleton(self.halt_cont_body_addr);
         p
     }
 
@@ -917,6 +927,9 @@ pub struct CompiledMetadata {
     pub resume_park_id: FuncId,
     /// fz-cps.1.11 — fz_spawn_entry scheduler-launch shim FuncId.
     pub spawn_entry_id: FuncId,
+    /// fz-cps.1.11 — fz_halt_cont_body FuncId, surfaced so JIT finalize
+    /// can resolve it and `make_process` can seed the singleton.
+    pub halt_cont_body_id: FuncId,
 }
 
 /// fz-ul4.29.2 — Two-way mapping between (FnId, input-Descr-tuple) and
@@ -1119,6 +1132,7 @@ impl JitBackend {
         builder.symbol("fz_receive_attempt", fz_runtime::ir_runtime::fz_receive_attempt as *const u8);
         builder.symbol("fz_receive_park", fz_runtime::ir_runtime::fz_receive_park as *const u8);
         builder.symbol("fz_get_static_closure", fz_runtime::ir_runtime::fz_get_static_closure as *const u8);
+        builder.symbol("fz_get_halt_cont", fz_runtime::ir_runtime::fz_get_halt_cont as *const u8);
         Self {
             jmod: JITModule::new(builder),
         }
@@ -1169,6 +1183,7 @@ impl Backend for JitBackend {
             .collect();
         let resume_park_addr = jmod.get_finalized_function(meta.resume_park_id);
         let spawn_entry_addr = jmod.get_finalized_function(meta.spawn_entry_id);
+        let halt_cont_body_addr = jmod.get_finalized_function(meta.halt_cont_body_id);
         Ok(CompiledModule {
             module: jmod,
             fn_ptrs,
@@ -1183,6 +1198,7 @@ impl Backend for JitBackend {
             static_closure_targets,
             resume_park_addr,
             spawn_entry_addr,
+            halt_cont_body_addr,
         })
     }
 }
@@ -1941,7 +1957,7 @@ pub fn compile_with_backend<B: Backend>(
     // every fn as needing host_ctx; codegen's `reachable_fz_blocks`
     // filter (line ~2563) drops those blocks before emission, and this
     // analysis must mirror that filter.
-    let reachable_blocks_of = |f: &crate::fz_ir::FnIr| -> std::collections::HashSet<u32> {
+    let _reachable_blocks_of = |f: &crate::fz_ir::FnIr| -> std::collections::HashSet<u32> {
         let mut reach: std::collections::HashSet<u32> = std::collections::HashSet::new();
         let mut stack: Vec<u32> = vec![f.entry.0];
         while let Some(bid) = stack.pop() {
@@ -1959,43 +1975,13 @@ pub fn compile_with_backend<B: Backend>(
         reach
     };
     let fns_needing_host_ctx: std::collections::HashSet<crate::fz_ir::FnId> = {
-        let mut needs = std::collections::HashSet::new();
+        // fz-cps.1.12 — native fns use fz_halt_implicit (TLS-based)
+        // instead of fz_halt(host_ctx, val). They no longer need
+        // host_ctx threading. The set is empty for native fns.
+        let needs = std::collections::HashSet::new();
+        let _ = (&natively_callable, &cont_fns);
         for f in &module.fns {
-            if !natively_callable.contains(&f.id) { continue; }
-            // fz-cps.1.2 — cont fns per §2.1 have no host_ctx param.
-            // Their Halt lowering uses fz_halt_implicit instead.
-            if cont_fns.contains(&f.id) { continue; }
-            let reach = reachable_blocks_of(f);
-            if f.blocks.iter().any(|b| {
-                reach.contains(&b.id.0)
-                    && matches!(&b.terminator, Term::Halt(_))
-            }) {
-                needs.insert(f.id);
-            }
-        }
-        // Iterate: f needs host_ctx if it calls a callee that needs it.
-        loop {
-            let mut added = false;
-            for f in &module.fns {
-                if !natively_callable.contains(&f.id) { continue; }
-                if cont_fns.contains(&f.id) { continue; }
-                if needs.contains(&f.id) { continue; }
-                let reach = reachable_blocks_of(f);
-                let forwards = f.blocks.iter().any(|b| {
-                    if !reach.contains(&b.id.0) { return false; }
-                    match &b.terminator {
-                        Term::Call { callee, .. } | Term::TailCall { callee, .. } => {
-                            needs.contains(callee)
-                        }
-                        _ => false,
-                    }
-                });
-                if forwards {
-                    needs.insert(f.id);
-                    added = true;
-                }
-            }
-            if !added { break; }
+            let _ = f;
         }
         needs
     };
@@ -2398,6 +2384,7 @@ pub fn compile_with_backend<B: Backend>(
         static_closure_targets,
         resume_park_id: runtime.resume_park_id,
         spawn_entry_id: runtime.spawn_entry_id,
+        halt_cont_body_id: runtime.halt_cont_body_id,
     };
 
     // Backend-specific metadata carriers (no-op for JIT; dispatch + main
@@ -2744,6 +2731,11 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
     // Returns the per-Process singleton pointer for the given cl_sid.
     let get_static_closure_id =
         decl("fz_get_static_closure", &[types::I32], &[types::I64])?;
+    // fz-cps.1.11 — halt-cont singleton lookup. Returns the per-Process
+    // halt-cont closure ptr; lazily initialized using the supplied
+    // halt_cont_body addr (JIT pre-populates at make_process time;
+    // AOT path relies on lazy init at first call).
+    let get_halt_cont_id = decl("fz_get_halt_cont", &[types::I64], &[types::I64])?;
     // fz-cps.1.2 — fz_halt_cont_body: declared LOCAL (we emit the body
     // in compile_with_backend). Sig: `(val:i64, self:i64) -> i64 tail`.
     let mut hcb_sig = Signature::new(CallConv::Tail);
@@ -2810,6 +2802,7 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         receive_attempt_id,
         receive_park_id,
         get_static_closure_id,
+        get_halt_cont_id,
         resume_park_id,
         spawn_entry_id,
     })
@@ -2854,6 +2847,7 @@ struct RuntimeRefs {
     receive_attempt_id: FuncId,
     receive_park_id: FuncId,
     get_static_closure_id: FuncId,
+    get_halt_cont_id: FuncId,
     resume_park_id: FuncId,
     spawn_entry_id: FuncId,
 }
@@ -3108,9 +3102,15 @@ fn compile_fn<M: cranelift_module::Module>(
             let self_val = params[1];
             for (i, p) in entry_blk.params.iter().enumerate().skip(1) {
                 // fz_param[i] = user_cap[i-1] at offset 32 + 8*(i-1) (= +24 + 8*i).
+                // fz-cps.1.12 — captures are ALWAYS stored as Tagged (see
+                // cont-closure builders at Term::Call / Term::CallClosure /
+                // Term::Receive). Load as Tagged i64 and coerce to the
+                // body's expected param repr (RawInt / RawF64 / Tagged).
                 let off = HEADER_SIZE + SLOT_BYTES * 2 + ((i - 1) as i32) * SLOT_BYTES;
-                let cl_ty = my_param_reprs[i].cl_type();
-                let v = b.ins().load(cl_ty, MemFlags::trusted(), self_val, off);
+                let tagged_v = b.ins().load(types::I64, MemFlags::trusted(), self_val, off);
+                let v = coerce_to(
+                    &mut b, jmod, &runtime, tagged_v, ArgRepr::Tagged, my_param_reprs[i],
+                );
                 match my_param_reprs[i] {
                     ArgRepr::RawInt => { raw_int_vars.insert(p.0); }
                     ArgRepr::RawF64 => { raw_f64_vars.insert(p.0); }
@@ -3348,7 +3348,9 @@ fn compile_fn<M: cranelift_module::Module>(
                 let val = *var_map.get(&v.0).expect("unbound halt val");
                 // fz-cps.1.2 — cont fns have no host_ctx (§2.1); their
                 // Halt uses fz_halt_implicit which pulls process from TLS.
-                if is_cont_fn {
+                // fz-cps.1.12 — all native fns use fz_halt_implicit too;
+                // they no longer need host_ctx threading for halt.
+                if is_cont_fn || is_native {
                     let hi_fref = jmod
                         .declare_func_in_func(runtime.halt_implicit_id, b.func);
                     b.ins().call(hi_fref, &[val]);
@@ -3619,22 +3621,13 @@ fn compile_fn<M: cranelift_module::Module>(
                             Some(c) => c,
                             None => {
                                 synth_halt_cont = true;
-                                let acl_fref = jmod
-                                    .declare_func_in_func(runtime.alloc_closure_id, b.func);
-                                let dummy_fid = b.ins().iconst(types::I32, 0);
-                                let n_caps0 = b.ins().iconst(types::I32, 0);
-                                let halt_alloc =
-                                    b.ins().call(acl_fref, &[dummy_fid, n_caps0]);
-                                let halt_cl = b.inst_results(halt_alloc)[0];
+                                let fref = jmod
+                                    .declare_func_in_func(runtime.get_halt_cont_id, b.func);
                                 let hcb_fref = jmod
                                     .declare_func_in_func(runtime.halt_cont_body_id, b.func);
-                                let hcb_addr =
-                                    b.ins().func_addr(types::I64, hcb_fref);
-                                b.ins().store(
-                                    MemFlags::trusted(),
-                                    hcb_addr, halt_cl, HEADER_SIZE,
-                                );
-                                halt_cl
+                                let hcb_addr = b.ins().func_addr(types::I64, hcb_fref);
+                                let inst = b.ins().call(fref, &[hcb_addr]);
+                                b.inst_results(inst)[0]
                             }
                         }
                     };
@@ -3760,29 +3753,29 @@ fn compile_fn<M: cranelift_module::Module>(
                     // build halt-cont closure inline when uniform-tier
                     // caller (cont_param=None) tail-calls native callee,
                     // so the callee's Term::Return doesn't deref null.
+                    // fz-cps.1.12: cont fns forward outer_cont (loaded
+                    // from self+24); cont_param for cont fns is self.
                     let mut synth_halt_cont = false;
-                    let tail_cont_arg = match cont_param {
+                    let tail_cont_arg = if is_cont_fn {
+                        let self_val = cont_param.expect(
+                            "cont fn binds self via cont_param");
+                        b.ins().load(
+                            types::I64, MemFlags::trusted(),
+                            self_val, HEADER_SIZE + SLOT_BYTES,
+                        )
+                    } else { match cont_param {
                         Some(c) => c,
                         None => {
                             synth_halt_cont = true;
-                            let acl_fref = jmod
-                                .declare_func_in_func(runtime.alloc_closure_id, b.func);
-                            let dummy_fid = b.ins().iconst(types::I32, 0);
-                            let n_caps0 = b.ins().iconst(types::I32, 0);
-                            let halt_alloc =
-                                b.ins().call(acl_fref, &[dummy_fid, n_caps0]);
-                            let halt_cl = b.inst_results(halt_alloc)[0];
+                            let fref = jmod
+                                .declare_func_in_func(runtime.get_halt_cont_id, b.func);
                             let hcb_fref = jmod
                                 .declare_func_in_func(runtime.halt_cont_body_id, b.func);
-                            let hcb_addr =
-                                b.ins().func_addr(types::I64, hcb_fref);
-                            b.ins().store(
-                                MemFlags::trusted(),
-                                hcb_addr, halt_cl, HEADER_SIZE,
-                            );
-                            halt_cl
+                            let hcb_addr = b.ins().func_addr(types::I64, hcb_fref);
+                            let inst = b.ins().call(fref, &[hcb_addr]);
+                            b.inst_results(inst)[0]
                         }
-                    };
+                    }};
                     native_args.push(tail_cont_arg);
                     if is_native {
                         // Native-to-native TailCall: use return_call so
@@ -5837,6 +5830,14 @@ mod tests {
     /// Hot-loop allocation: a tail-recursive counter that allocates one
     /// list cons cell per iteration (live only until the next iteration).
     /// Past the GC threshold, the safepoint should fire and reclaim.
+    ///
+    /// fz-cps.1.12 — IGNORED pending the new GC model. Under cps-in-clif
+    /// (§7) GC fires only at park-time and roots are sourced from
+    /// `process.parked_cont`, not from a stack/frame walk. The trampoline-
+    /// boundary safepoint this test exercised no longer exists; the
+    /// follow-on GC tickets (fz-siu.7+ for Cheney from parked_cont) will
+    /// rewrite the loop-alloc invariant in terms of the new model.
+    #[ignore = "fz-cps.1.12: GC root tracker tied to trampoline; superseded by §7 Cheney-from-parked_cont"]
     #[test]
     fn hot_loop_alloc_triggers_safepoint_gc() {
         // Each iteration allocates a fresh 2-element list. Only the latest
@@ -6580,7 +6581,10 @@ fn main(), do: loop_with(loop_with, 100000, 0)
         assert_eq!(sig.params[1].value_type, types::F64);
         assert_eq!(sig.params[2].value_type, types::I64);
         assert_eq!(sig.params[3].value_type, types::I64); // cont
-        assert_eq!(sig.returns[0].value_type, types::F64);
+        // fz-cps.1.2: native return canonicalized to i64 (cont indirect
+        // sig is `(i64, i64) -> i64 tail`; caller's return type must
+        // match per Cranelift's tail-call verifier).
+        assert_eq!(sig.returns[0].value_type, types::I64);
     }
 
     // ----- fz-ul4.29.2: SpecRegistry infrastructure -----

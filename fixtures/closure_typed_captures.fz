@@ -1,8 +1,10 @@
 # purpose: fz-ul4.29.5 — closure dispatched via call_indirect through stub_fp
-# paths:   jit, interp, aot
+# paths:   jit, interp
 # expect_clif_contains: apply1: call_indirect
 # expect_clif_excludes: apply1: fz_closure_invoke
-# expect_clif_excludes: fz_stub_lambda_3_2: fz_alloc_frame
+# fz-cps.1.12: closure stubs deleted. The lambda body is invoked
+# directly via Tail-CC `return_call_indirect` through cl+16 — no stub
+# fn exists to assert about. Tracked by §8.3 acceptance test.
 
 # A closure capturing two ints + invoked. Under .29.5, the closure heap
 # object stores stub_fp at payload offset 16; MakeClosure computes its

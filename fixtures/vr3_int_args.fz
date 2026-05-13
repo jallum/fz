@@ -1,6 +1,9 @@
 # purpose: VR.3.3 / VR.4.2.3 — typed int args flow through native ABI
 # paths:   jit, interp, aot
-# expect_clif_excludes: sum3: load.i64
+# fz-cps.1.12: load.i64 in sum3 is now from `Term::Return`'s indirect-call
+# (load cont+16) per docs/cps-in-clif.md §2.1. The pre-cps assertion that
+# sum3 has zero loads is obsolete; the body's lack of entry-frame loads
+# is the new invariant. Keeping iadd/tail/fz_alloc_frame-excluded checks.
 # expect_clif_contains: sum3: iadd
 # expect_clif_contains: sum3: tail
 # expect_clif_excludes: sum3: fz_alloc_frame

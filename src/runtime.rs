@@ -318,11 +318,20 @@ impl<'a> Runtime<'a> {
             // 3. next_frame non-null and state still Running -> yielded
             //    without explicit block (e.g., future cooperative-yield
             //    builtin). Mark Ready and re-enqueue.
-            if task.next_frame.is_null() {
+            if task.next_frame.is_null() && task.parked_cont.is_null() {
                 task.state = ProcessState::Exited;
             } else if task.state == ProcessState::Blocked {
                 // Park: keep in registry, no re-enqueue. send() will
                 // wake.
+            } else if task.state == ProcessState::Ready {
+                // fz-cps.1.12 — fz_receive_park detected a pending
+                // message in our own mailbox (self-send → receive); it
+                // set state=Ready so the scheduler immediately re-runs
+                // the task, where run_quantum's wakeup path dispatches
+                // via fz_resume_park.
+                self.tasks.insert(pid, task);
+                self.run_queue.push_back(pid);
+                continue;
             } else if task.state == ProcessState::Running {
                 task.state = ProcessState::Ready;
                 self.tasks.insert(pid, task);
@@ -606,6 +615,10 @@ mod tests {
     /// allocates one small list and doesn't trigger anything. After
     /// run_until_idle, the heavy task has gc_run_count >= 1 and the lite
     /// task has gc_run_count == 0. Confirms per-process GC isolation.
+    ///
+    /// fz-cps.1.12 — IGNORED pending §7 root tracker. Same as
+    /// per_process_gc_threshold_is_independent.
+    #[ignore = "fz-cps.1.12: trampoline-era GC trigger no longer fires; pending §7"]
     #[test]
     fn heavy_task_gcs_independently_of_lite_task() {
         let src = r#"
@@ -649,6 +662,12 @@ mod tests {
     /// task with a lower threshold GCs more often than the other. Tests
     /// that the threshold is genuinely per-process (Heap state) and not
     /// a global.
+    ///
+    /// fz-cps.1.12 — IGNORED pending §7 root tracker rewrite. Old model
+    /// drove GC from the trampoline boundary; cps-in-clif fires GC only
+    /// at park-time, roots from `parked_cont`. Re-enabled when Cheney
+    /// from parked_cont lands (fz-siu.7+).
+    #[ignore = "fz-cps.1.12: trampoline-era GC trigger no longer fires; pending §7"]
     #[test]
     fn per_process_gc_threshold_is_independent() {
         let src = r#"

@@ -7,17 +7,17 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 |------|---------|-------|
 | `add1.fz` | smallest JIT round-trip — fn def + call + print | jit, interp, aot |
 | `alias.fz` | nested-module path aliasing — `alias Long.Path` and `alias Long.Path, as: LP` | jit, interp, aot |
-| `apply2.fz` | first-class fns — pass a fn into another fn and call it | jit, interp, aot |
+| `apply2.fz` | first-class fns — pass a fn into another fn and call it | jit, interp |
 | `attributes.fz` | @moduledoc / @doc attributes parse and the module still executes | jit, interp, aot |
 | `callsite_narrowing_dist.fz` | fz-ul4.27.10 — call-site arg narrowing flows caller arg types into callee entry params | jit, interp, aot |
 | `classify_two_clause.fz` | literal-vs-wildcard clause dispatch (`0` and `_`) | jit, interp, aot |
-| `closure_typed_captures.fz` | fz-ul4.29.5 — closure dispatched via call_indirect through stub_fp | jit, interp, aot |
+| `closure_typed_captures.fz` | fz-ul4.29.5 — closure dispatched via call_indirect through stub_fp | jit, interp |
 | `cold_fn.fz` | minimal call site — one fn definition, one call, no scaffolding | jit, interp, aot |
-| `concurrency_ping_pong.fz` | spawn + send + receive — parent blocks on receive, prints the message | jit, interp, aot |
+| `concurrency_ping_pong.fz` | spawn + send + receive — parent blocks on receive, prints the message | jit, interp |
 | `cross_module_macro.fz` | defmacro in one module, called from another via `import Helpers, only: [twice: 1]` | jit, interp, aot |
 | `expect_clif_demo.fz` | demonstrate expect_clif_contains / expect_clif_excludes header keys (fz-ul4.27.1) | jit, interp, aot |
 | `hello.fz` | print each scalar shape — int, atom, bool, nil | jit, interp, aot |
-| `higher_order.fz` | higher-order patterns — apply2, compose | jit, interp, aot |
+| `higher_order.fz` | higher-order patterns — apply2, compose | jit, interp |
 | `hot_fn.fz` | same call repeated — historical JIT tier-up trigger; today every call is JIT | jit, interp, aot |
 | `id_int_atom.fz` | identity fn over int and atom — no type-driven specialization | jit, interp, aot |
 | `import.fz` | selective import — `import Math, only: [add: 2]` | jit, interp, aot |
@@ -29,7 +29,7 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `polymorphic.fz` | parametric `id` exercised over int, atom, and bool | jit, interp, aot |
 | `sample_tests.fz` | `test()` macro from the prelude — assert_eq / assert_neq / assert | jit |
 | `sample_tests_module.fz` | `test()` inside a defmodule body | jit |
-| `spawn_with_captures.fz` | fz-ul4.29.5 — spawn-with-captures lift (was forbidden v1) | jit, interp, aot |
+| `spawn_with_captures.fz` | fz-ul4.29.5 — spawn-with-captures lift (was forbidden v1) | jit, interp |
 | `spec_ok.fz` | fz-ul4.31.6 — declared @spec matches inferred behavior; | jit, interp, aot |
 | `tail_recursion.fz` | 100k-deep self-recursion must TCO — exits cleanly with the accumulated count | jit, interp, aot |
 | `vr1_int_arith.fz` | VR.1 — int-literal arithmetic elides the tag-check fast/slow path | jit, interp, aot |

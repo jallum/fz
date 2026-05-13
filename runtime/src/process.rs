@@ -54,6 +54,12 @@ pub struct Process {
     /// resuming the chain. Pointer because the closure lives in this
     /// Process's heap; layout per `Heap::alloc_closure`.
     pub parked_cont: *mut u8,
+    /// fz-cps.1.11 — per-Process halt-cont singleton. Lazily allocated
+    /// off-heap (Box) by `fz_get_halt_cont` on first call. Reused at
+    /// every uniform→native call/tailcall site as the synth cont so the
+    /// callee's Term::Return chains into halt_cont_body. Pointer
+    /// aliases the start of a Box stored in `static_closure_bufs`.
+    pub halt_cont_singleton: *mut u8,
     /// fz-cps.1.11 — pending closure to invoke at the next scheduler
     /// quantum. Set by `Runtime::spawn_closure` to the closure pointer;
     /// `run_quantum` clears it and dispatches via the `fz_spawn_entry`
@@ -111,6 +117,7 @@ impl Process {
             next_frame: std::ptr::null_mut(),
             mailbox: std::collections::VecDeque::new(),
             parked_cont: std::ptr::null_mut(),
+            halt_cont_singleton: std::ptr::null_mut(),
             pending_closure_entry: std::ptr::null_mut(),
             static_closures: Vec::new(),
             static_closure_bufs: Vec::new(),
@@ -152,6 +159,29 @@ impl Process {
             self.static_closures[*cl_sid as usize] = base;
             self.static_closure_bufs.push(buf);
         }
+    }
+
+    /// fz-cps.1.11 — allocate the halt-cont singleton with the given
+    /// `halt_cont_body_addr` at +16. Called once per Process by
+    /// `make_process`. `fz_get_halt_cont` returns this pointer at every
+    /// uniform→native synth halt-cont site.
+    pub fn init_halt_cont_singleton(&mut self, halt_cont_body_addr: *const u8) {
+        use crate::fz_value::{HeapHeader, HeapKind};
+        let mut buf: Box<[u64; 3]> = Box::new([0u64; 3]);
+        let base = buf.as_mut_ptr() as *mut u8;
+        let header = HeapHeader {
+            kind: HeapKind::Closure as u16,
+            flags: 0,
+            size_bytes: 24,
+            schema_id: 0,
+            _reserved: 0,
+        };
+        unsafe {
+            std::ptr::write(base as *mut HeapHeader, header);
+            std::ptr::write(base.add(16) as *mut u64, halt_cont_body_addr as u64);
+        }
+        self.halt_cont_singleton = base;
+        self.static_closure_bufs.push(buf);
     }
 }
 

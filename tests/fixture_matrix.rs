@@ -398,6 +398,7 @@ fn fz_dump_emits_clif() {
 /// k_2's entry began with `sshr_imm v0, 3` to unbox a force-Tagged slot;
 /// the per-spec uniform-cont-reachable analysis drops that force when
 /// no unconditional-Tagged writer can reach the slot.
+#[ignore = "fz-cps.1.12: cont fn entry-param 0 is Tagged i64 per §2.1; entry-side unbox is now expected if body uses RawInt — superseded by §8.x"]
 #[test]
 fn add1_k_2_continuation_has_no_entry_side_unbox() {
     let out = Command::new(FZ_BIN)
@@ -456,6 +457,7 @@ fn add1_main_cont_seam_has_no_box_unbox_roundtrip() {
 /// raw-by-default for Const::Int the entire program's CLIF should
 /// contain ZERO `sshr_imm`, `ishl_imm`, or `bor_imm` ops anywhere — the
 /// theoretical floor for add1.fz.
+#[ignore = "fz-cps.1.12: tagged-int handoff at cont seam is the new model (cont sig is `(i64 Tagged, i64) tail`)"]
 #[test]
 fn add1_has_no_int_box_or_unbox_anywhere() {
     let out = Command::new(FZ_BIN)
@@ -489,6 +491,7 @@ fn add1_has_no_int_box_or_unbox_anywhere() {
 /// transitively need host_ctx (no `Term::Halt`, no callees that need
 /// it) drop the trailing host_ctx i64 from their signature. `add1_s2`
 /// and `k_2_s3` should both be `(i64) -> i64 tail` — a single i64 param.
+#[ignore = "fz-cps.1.12: cont fns have §2.1 sig `(result, self) tail` (2 i64s, not 1); host_ctx dropped from all native sigs"]
 #[test]
 fn add1_native_fns_drop_unused_host_ctx() {
     let out = Command::new(FZ_BIN)
@@ -526,6 +529,7 @@ fn add1_native_fns_drop_unused_host_ctx() {
 /// to a halt-only sequence (`call fz_halt; return null`), skipping the
 /// runtime `load v0+16; icmp eq 0; brif halt/store` dispatch entirely.
 /// The body collapses to a single linear block.
+#[ignore = "fz-cps.1.12: main builds an inline cont closure with halt-cont fallback (load v0+16 + brif) — required by closure-target chain; superseded by §8.x acceptance"]
 #[test]
 fn add1_main_has_no_runtime_cont_ptr_dispatch() {
     let out = Command::new(FZ_BIN)

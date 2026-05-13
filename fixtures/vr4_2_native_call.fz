@@ -2,7 +2,8 @@
 # paths:   jit, interp, aot
 # expect_clif_contains: square: tail
 # expect_clif_excludes: square: fz_alloc_frame
-# expect_clif_excludes: square: load.i64
+# fz-cps.1.12: load.i64 in square is now Term::Return's indirect-call
+# (load cont+16) per docs/cps-in-clif.md §2.1.
 # expect_clif_excludes: main: fz_alloc_frame fn0:0
 
 # fz-ul4.27.6.2 — `square` qualifies for the typed-arity native ABI:

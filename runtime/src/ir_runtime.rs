@@ -177,7 +177,16 @@ pub extern "C" fn fz_receive_park(cont_closure_bits: u64) -> *mut u8 {
     use crate::{process::ProcessState, scheduler_hooks::YIELD_PTR};
     let p = current_process();
     p.parked_cont = cont_closure_bits as *mut u8;
-    p.state = ProcessState::Blocked;
+    // fz-cps.1.12 — if a message is already waiting (typically from a
+    // self-send earlier in the same task), mark the task Ready instead
+    // of Blocked so the scheduler re-enqueues it for immediate wakeup
+    // through fz_resume_park. Without this, self-send + receive deadlocks
+    // (no other task will arrive to flip Blocked→Ready).
+    p.state = if p.mailbox.is_empty() {
+        ProcessState::Blocked
+    } else {
+        ProcessState::Ready
+    };
     YIELD_PTR as *mut u8
 }
 
@@ -214,6 +223,40 @@ pub extern "C" fn fz_alloc_closure(callee_fn_id: u32, captured_count: u32) -> u6
     p as u64
 }
 
+/// fz-cps.1.11 — return the per-Process singleton halt-cont closure.
+/// Lazily initialized on first call using the provided
+/// `halt_cont_body_addr` (taken at each call site via `func_addr`).
+/// JIT path: `make_process` pre-populates the singleton; this is a
+/// hot-path direct return. AOT path: the singleton may be null at
+/// first call, so this allocates with the supplied body addr.
+/// Reusing one singleton instead of allocating per uniform→native
+/// call site preserves test invariants that count heap allocations
+/// exactly (`gc_traces_closure_captured_via_jit`).
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_get_halt_cont(halt_cont_body_addr: u64) -> u64 {
+    let p = current_process();
+    if !p.halt_cont_singleton.is_null() {
+        return p.halt_cont_singleton as u64;
+    }
+    use crate::fz_value::{HeapHeader, HeapKind};
+    let mut buf: Box<[u64; 3]> = Box::new([0u64; 3]);
+    let base = buf.as_mut_ptr() as *mut u8;
+    let header = HeapHeader {
+        kind: HeapKind::Closure as u16,
+        flags: 0,
+        size_bytes: 24,
+        schema_id: 0,
+        _reserved: 0,
+    };
+    unsafe {
+        std::ptr::write(base as *mut HeapHeader, header);
+        std::ptr::write(base.add(16) as *mut u64, halt_cont_body_addr);
+    }
+    p.halt_cont_singleton = base;
+    p.static_closure_bufs.push(buf);
+    base as u64
+}
+
 /// fz-cps.1.7 — return the per-Process static zero-capture singleton for
 /// the given closure spec id. Populated at `make_process` time from
 /// `CompiledModule::static_closure_targets`. Cheaper than
@@ -224,19 +267,29 @@ pub extern "C" fn fz_alloc_closure(callee_fn_id: u32, captured_count: u32) -> u6
 pub extern "C" fn fz_get_static_closure(cl_sid: u32) -> u64 {
     let p = current_process();
     let idx = cl_sid as usize;
-    assert!(
-        idx < p.static_closures.len(),
-        "fz_get_static_closure: cl_sid {} out of range ({})",
-        cl_sid,
-        p.static_closures.len()
+    if idx < p.static_closures.len() {
+        let ptr = p.static_closures[idx];
+        if !ptr.is_null() {
+            return ptr as u64;
+        }
+    }
+    // fz-cps.1.12 — fallback search: cl_sid may refer to a narrow spec
+    // whose any-key was dropped (typer skipped the bare any-key after
+    // .29.12.6), while the singleton was registered under a different
+    // narrow sid for the same fn. Match by `_reserved` (fn_id) in the
+    // HeapHeader. Linear in static_closures.len() — small (one entry
+    // per zero-cap closure-target spec).
+    for ptr in &p.static_closures {
+        if ptr.is_null() { continue; }
+        let header = unsafe { &*(*ptr as *const crate::fz_value::HeapHeader) };
+        if header._reserved == cl_sid {
+            return *ptr as u64;
+        }
+    }
+    panic!(
+        "fz_get_static_closure: no singleton for cl_sid/fn_id {} ({} entries)",
+        cl_sid, p.static_closures.len()
     );
-    let ptr = p.static_closures[idx];
-    assert!(
-        !ptr.is_null(),
-        "fz_get_static_closure: no singleton registered for cl_sid {}",
-        cl_sid
-    );
-    ptr as u64
 }
 
 // ===== Vec cluster (fz-ul4.23.4.10) =====

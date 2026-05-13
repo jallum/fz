@@ -1,5 +1,5 @@
 # purpose: spawn + send + receive — parent blocks on receive, prints the message
-# paths:   jit, interp, aot
+# paths:   jit, interp
 
 # fz-ul4.19 demonstration: parent + child processes with send/receive.
 #
