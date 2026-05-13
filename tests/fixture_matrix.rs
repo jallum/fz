@@ -415,6 +415,40 @@ fn add1_k_2_continuation_has_no_entry_side_unbox() {
     );
 }
 
+/// fz-ul4.27.14.2 — for `fixtures/add1.fz`, the seam between the
+/// native callee `add1` and the native cont `k_2` must carry the raw
+/// int directly. Before .27.14.2 the native-chain branch in codegen
+/// coerced `result → Tagged → cont_param_reprs[0]`; with .27.14.1 also
+/// in place the destination became RawInt, leaving a redundant
+/// box-then-unbox round-trip (`ishl_imm`/`bor_imm`/`sshr_imm`) at the
+/// seam. .27.14.2 skips the Tagged intermediate so `main`'s body has
+/// no shift/OR instructions between the two calls.
+#[test]
+fn add1_main_cont_seam_has_no_box_unbox_roundtrip() {
+    let out = Command::new(FZ_BIN)
+        .args(["dump", "fixtures/add1.fz", "--emit", "clif", "--fn", "main"])
+        .output()
+        .expect("spawn fz dump");
+    assert!(out.status.success(), "fz dump exited {}", out.status);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("; fn main"), "missing main banner:\n{}", stdout);
+    // The native chain's cont seam should be two adjacent direct calls
+    // with no boxing instructions between them. We pin this by asserting
+    // `main` contains no `ishl_imm` (the box op) and no `bor_imm` (the
+    // tag-set op). The leading `sshr_imm v2, 3` that unboxes the int
+    // literal 41 is a separate concern (const lowering), out of scope.
+    assert!(
+        !stdout.contains("ishl_imm"),
+        "main still boxes a value at the cont seam under .27.14.2:\n{}",
+        stdout,
+    );
+    assert!(
+        !stdout.contains("bor_imm"),
+        "main still tag-sets at the cont seam under .27.14.2:\n{}",
+        stdout,
+    );
+}
+
 /// Shell `fz dump --emit clif --fn <name>` and check each fn's
 /// per-fixture expect_clif_contains / expect_clif_excludes assertion.
 /// Returns all failure messages in one vec so a fixture surfaces every

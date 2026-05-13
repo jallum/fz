@@ -2793,18 +2793,19 @@ fn compile_fn<M: cranelift_module::Module>(
                     native_args.push(host_ctx);
                     let call_inst = b.ins().call(callee_fref, &native_args);
                     let result = b.inst_results(call_inst)[0];
-                    let result_tagged = coerce_to(
-                        &mut b, jmod, &runtime, result, callee_ret_repr, ArgRepr::Tagged,
-                    );
 
                     if callee_is_native(continuation.fn_id.0) {
                         // fz-ul4.27.6.3 — both callee AND cont are native.
                         // Chain natively: feed result + captures + host_ctx
-                        // into the cont fn synchronously. fz-ul4.29.12.1:
-                        // cont params use this cont's `param_reprs` (still
-                        // Tagged for slot 0 — entry-param-0 of cont-target
-                        // fns is forced Tagged — but captures may be raw
-                        // per the cont's narrow spec).
+                        // into the cont fn synchronously. fz-ul4.27.14.2:
+                        // coerce the callee's raw result directly into the
+                        // cont's slot-0 repr — no Tagged intermediate. When
+                        // the cont's slot 0 is still force-Tagged (because
+                        // it's uniform-cont-reachable, .27.14.1), this is
+                        // equivalent to the prior `result → Tagged → Tagged`
+                        // shape (one box op). When the cont's slot 0 is
+                        // typed (the native-chain-only case), it's a no-op
+                        // if the reprs already match.
                         let cont_fid = *fn_ids
                             .get(&cont_sid)
                             .expect("cont fn_id missing");
@@ -2813,11 +2814,9 @@ fn compile_fn<M: cranelift_module::Module>(
                         let cont_ret_repr = return_reprs[cont_sid as usize];
                         let mut cont_args: Vec<ir::Value> =
                             Vec::with_capacity(cap_vals.len() + 2);
-                        // slot 0 = result. cont's param_repr[0] is forced
-                        // Tagged; result_tagged is already Tagged.
                         cont_args.push(coerce_to(
                             &mut b, jmod, &runtime,
-                            result_tagged, ArgRepr::Tagged, cont_param_reprs[0],
+                            result, callee_ret_repr, cont_param_reprs[0],
                         ));
                         for (i, cv) in continuation.captured.iter().enumerate() {
                             let from = var_repr(cv.0, &raw_int_vars, &raw_f64_vars);
@@ -2870,8 +2869,11 @@ fn compile_fn<M: cranelift_module::Module>(
                         // fz-ul4.29.12.1: result + captures are written
                         // into the cont's typed entry slots. `store_args
                         // _into_callee_frame` reads `cont_schema` per
-                        // slot kind, so we just feed tagged inputs and
-                        // it unboxes as needed.
+                        // slot kind and unboxes from Tagged as needed.
+                        let result_tagged = coerce_to(
+                            &mut b, jmod, &runtime,
+                            result, callee_ret_repr, ArgRepr::Tagged,
+                        );
                         let mut payload: Vec<ir::Value> = Vec::with_capacity(
                             continuation.captured.len() + 1,
                         );
