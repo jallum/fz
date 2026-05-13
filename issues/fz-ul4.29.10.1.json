@@ -4,14 +4,15 @@
   "blocks": [
     "fz-ul4.29.10.2"
   ],
+  "closed_at": "2026-05-13T00:42:51Z",
   "created": "2026-05-13T00:38:53Z",
   "description": "Add a side-channel `fn_constants: HashMap\u003cVar, FnId\u003e` to `FnTypes` and populate it during the typer's per-spec walk.\n\n## Scope\n\n- `src/ir_typer.rs`: `FnTypes` gets `pub fn_constants: HashMap\u003cVar, FnId\u003e`.\n- Populate from `Stmt::Let(v, Prim::MakeClosure(F, []))` — ONLY when captures vector is empty. Non-empty captures = real closure, not fn-as-value.\n- At direct callsites (`Term::Call`/`Term::TailCall`) inside the per-spec walk: for each arg `a` with `fn_constants[a] = F`, contribute `fn_constants[param] = F` into the callee's per-spec FnTypes (when the callee's spec under that key already exists or is registered this iteration).\n- Tests live alongside existing typer tests.\n\n## Tests (TDD — write first, then implement)\n\n- `fn_constant_from_makeclosure_zero_captures`: `let f = double` (synthesized as `MakeClosure(double, [])`) → `fn_constants[f] = double.id`.\n- `fn_constant_not_set_for_captures`: `MakeClosure(F, [c1])` → no entry.\n- `fn_constant_propagates_via_direct_call`: `apply2(double, 21)` → in apply2's specialized FnTypes, `fn_constants[f_param] = double.id`.\n- `fn_constant_propagates_through_let_alias`: `let g = f` in callee → propagates.\n\n## Out of scope\n\n- CallClosure → Call rewrite (deferred to .29.10.3).\n- Skipping any-key registration (.29.10.2).",
   "id": "fz-ul4.29.10.1",
   "labels": [],
   "parent": "fz-ul4.29.10",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Typer side-channel fn_constants per spec",
   "type": "task",
-  "updated_at": "2026-05-13T00:39:18Z"
+  "updated_at": "2026-05-13T00:42:51Z"
 }
