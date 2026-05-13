@@ -330,6 +330,150 @@ pub fn type_module(m: &Module) -> ModuleTypes {
         }
 
         if !changed {
+            // fz-ul4.29.12.6 — drop dead any-keys. A fn's any-key body
+            // is dead iff *no* compiled spec's body anywhere in the
+            // module queries that fn with `[any; n_params]`. Walk every
+            // registered spec's body (under its own per-spec env) and
+            // collect the callee queries it would emit. If a spec's
+            // body queries F with `[any; n]`, F's any-key is reachable
+            // and must stay. Otherwise drop.
+            //
+            // This is stricter than relying on the LUB-aggregated
+            // `callsite_keys`: earlier fixed-point iterations may have
+            // registered narrow specs whose bodies, when compiled,
+            // query callees with `[any; n]` even though the converged
+            // LUB walk doesn't surface those queries. Walking specs
+            // directly catches them.
+            let mut queried: HashMap<FnId, std::collections::HashSet<Vec<Descr>>> =
+                HashMap::new();
+            for ((fid, key), ft) in &specs {
+                let Some(&idx) = idx_of.get(fid) else { continue; };
+                let f = &m.fns[idx];
+                let _ = key; // entry param Descrs already baked into ft.block_envs
+                for b in &f.blocks {
+                    let mut env = ft.block_envs.get(&b.id).cloned().unwrap_or_default();
+                    for stmt in &b.stmts {
+                        let Stmt::Let(v, prim) = stmt;
+                        env.insert(*v, type_prim(prim, &env, m));
+                    }
+                    let (callee_id, callee_args): (Option<FnId>, &[Var]) = match &b.terminator {
+                        Term::Call { callee, args, .. } => (Some(*callee), args.as_slice()),
+                        Term::TailCall { callee, args } => (Some(*callee), args.as_slice()),
+                        _ => (None, &[]),
+                    };
+                    if let Some(callee) = callee_id {
+                        if let Some(&j) = idx_of.get(&callee) {
+                            let n_params = m.fns[j].block(m.fns[j].entry).params.len();
+                            let mut q: Vec<Descr> = callee_args.iter().map(|av|
+                                env.get(av).cloned().unwrap_or_else(Descr::any)
+                            ).collect();
+                            while q.len() < n_params { q.push(Descr::any()); }
+                            queried.entry(callee).or_default().insert(q);
+                        }
+                    }
+                    // Cont sites mirror `cont_input_key` shape.
+                    let cont = match &b.terminator {
+                        Term::Call { continuation, .. } => Some(continuation),
+                        Term::CallClosure { continuation, .. } => Some(continuation),
+                        Term::Receive { continuation } => Some(continuation),
+                        _ => None,
+                    };
+                    let slot0 = match &b.terminator {
+                        Term::Call { callee, args, .. } => {
+                            let arg_descrs: Vec<Descr> = args.iter().map(|av|
+                                env.get(av).cloned().unwrap_or_else(Descr::any)
+                            ).collect();
+                            specs.get(&(*callee, arg_descrs))
+                                .map(|cft| {
+                                    let Some(&j) = idx_of.get(callee) else {
+                                        return Descr::any();
+                                    };
+                                    let callee_fn = &m.fns[j];
+                                    let mut joined: Option<Descr> = None;
+                                    for cb in &callee_fn.blocks {
+                                        if let Term::Return(rv) = &cb.terminator {
+                                            let d = cft.vars.get(rv).cloned()
+                                                .unwrap_or_else(Descr::any);
+                                            joined = Some(match joined {
+                                                Some(p) => p.union(&d),
+                                                None => d,
+                                            });
+                                        }
+                                    }
+                                    joined.unwrap_or_else(Descr::any)
+                                })
+                                .unwrap_or_else(Descr::any)
+                        }
+                        _ => Descr::any(),
+                    };
+                    if let Some(c) = cont {
+                        if let Some(&j) = idx_of.get(&c.fn_id) {
+                            let n_params = m.fns[j].block(m.fns[j].entry).params.len();
+                            let mut q: Vec<Descr> = vec![Descr::any(); n_params];
+                            if !q.is_empty() { q[0] = slot0; }
+                            for (k, cv) in c.captured.iter().enumerate() {
+                                if let Some(p) = q.get_mut(k + 1) {
+                                    *p = env.get(cv).cloned().unwrap_or_else(Descr::any);
+                                }
+                            }
+                            queried.entry(c.fn_id).or_default().insert(q);
+                        }
+                    }
+                    // MakeClosure: capture Descrs + [any; n_args].
+                    for stmt in &b.stmts {
+                        let Stmt::Let(_, prim) = stmt;
+                        if let Prim::MakeClosure(lam_fn_id, captured) = prim {
+                            if let Some(&j) = idx_of.get(lam_fn_id) {
+                                let n_params = m.fns[j].block(m.fns[j].entry).params.len();
+                                let mut q: Vec<Descr> = vec![Descr::any(); n_params];
+                                for (i, cv) in captured.iter().enumerate() {
+                                    if let Some(p) = q.get_mut(i) {
+                                        *p = env.get(cv).cloned().unwrap_or_else(Descr::any);
+                                    }
+                                }
+                                queried.entry(*lam_fn_id).or_default().insert(q);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // fz-ul4.29.12.6 — drop dead any-keys. A fn's any-key body
+            // is dead iff every IR callsite of that fn queries with a
+            // strictly-narrower-than-any input-Descr tuple. We detect
+            // this by inspecting `queried`:
+            //   * `callsite_keys[F]` is empty → F has no IR caller →
+            //     F is entry-point-like (main, top-level driver, or
+            //     a Runtime::spawn target). The runtime's
+            //     `schema_for(F)` / `run_internal(F)` paths still
+            //     index `schemas[F.0]` directly, so the any-key must
+            //     stay.
+            //   * `[any; n_params(F)]` ∈ callsite_keys[F] → at least
+            //     one callsite genuinely needs the any-key body
+            //     (typically a Cont/CallClosure/Receive site whose
+            //     slot 0 = `any` AND captures are all `any`). Keep.
+            //   * Otherwise the any-key is dead: every callsite has
+            //     typed coverage post-.29.12.1-5. Drop.
+            //
+            // The drop saves the any-key body's compilation (codegen
+            // skips sentinel SpecIds in the per-spec compile loop) and
+            // its slot in `module_types.specs`. The SpecRegistry slot
+            // at FnId.0 becomes a sentinel pad — only the per-spec
+            // path that goes through `spec_registry.resolve` is used
+            // for non-entry fns, and `resolve` never returns sentinel
+            // SpecIds.
+            for f in &m.fns {
+                let n_params = f.block(f.entry).params.len();
+                let any_key: Vec<Descr> = vec![Descr::any(); n_params];
+                let keys = queried.get(&f.id);
+                let has_callers = keys.map(|s| !s.is_empty()).unwrap_or(false);
+                let any_in_callsites = keys
+                    .map(|s| s.contains(&any_key))
+                    .unwrap_or(false);
+                if has_callers && !any_in_callsites {
+                    specs.remove(&(f.id, any_key));
+                }
+            }
             break;
         }
     }
@@ -1738,8 +1882,11 @@ mod tests {
     // ----- fz-ul4.29.1: per-callsite specialization map -----
 
     #[test]
-    fn specs_contains_any_key_for_every_fn() {
-        // Build a 2-fn module: main() calls add1(int_lit(41)).
+    fn entry_points_keep_any_key_callees_with_typed_callsites_drop() {
+        // fz-ul4.29.12.6 — any-keys are pruned when every callsite has
+        // typed coverage. `main` is entry-point-like (no IR caller) and
+        // keeps its any-key. `add1` is only called from main with
+        // `[int_lit(41)]`; its any-key body is dead → dropped.
         let mut a = FnBuilder::new(FnId(0), "add1");
         let n = a.fresh_var();
         let aentry = a.block(vec![n]);
@@ -1755,11 +1902,15 @@ mod tests {
         let m = build_module(vec![a.build(), b.build()]);
         let mt = type_module(&m);
 
-        // Every fn has an any-key spec (fallback for closure/Spawn/Receive).
-        let add1_any = mt.spec(FnId(0), &[Descr::any()]);
-        assert!(add1_any.is_some(), "add1 must have an any-key specialization");
         let main_any = mt.spec(FnId(1), &[]);
-        assert!(main_any.is_some(), "main must have an any-key specialization");
+        assert!(main_any.is_some(), "main (entry-point) must keep its any-key");
+
+        let add1_any = mt.spec(FnId(0), &[Descr::any()]);
+        assert!(add1_any.is_none(),
+            "add1's any-key is dead (only caller passes int_lit(41)) → dropped");
+        let add1_narrow = mt.spec(FnId(0), &[Descr::int_lit(41)]);
+        assert!(add1_narrow.is_some(),
+            "add1 must have its narrow callsite-driven spec");
     }
 
     #[test]
@@ -1897,6 +2048,63 @@ fn main(), do: print(add1(40) + 2)
             }
         }
         assert!(narrow_found, "test premise: main should have a direct Call");
+    }
+
+    /// fz-ul4.29.12.6 / .29.10 — when a top-level fn is passed as a
+    /// closure value (`apply2(double, …)`), `ir_lower` synthesizes
+    /// `MakeClosure(double, [])`. With no captures and unknown args,
+    /// the resolved closure-stub key is `[any]` — equal to `double`'s
+    /// any-key. That key IS present in the queried set, so `double`'s
+    /// any-key is correctly kept. The cascade is still broken in spirit
+    /// (the body now resolves through typed stubs at every other site),
+    /// but this particular fn-as-value pattern needs the any-key. A
+    /// future flow analysis (separate ticket) can narrow it further.
+    #[test]
+    fn higher_order_callee_keeps_any_key_for_fn_as_value() {
+        let (m, mt) = pipeline(r#"
+fn double(x), do: x * 2
+fn apply2(f, x), do: f(x)
+fn main() do
+  print(apply2(double, 21))
+end
+"#);
+        let double = m.fns.iter().find(|f| f.name == "double").unwrap();
+        let any_key: Vec<Descr> = vec![Descr::any(); 1];
+        assert!(mt.specs.contains_key(&(double.id, any_key)),
+            "fn-as-value MakeClosure registers double's any-key (no captures, args = any)");
+    }
+
+/// fz-ul4.29.12.6 — a fn whose every IR callsite has typed coverage
+    /// should NOT have its any-key spec registered in `module_types.specs`.
+    /// `add` here is only called directly with `[int_lit(1), int_lit(2)]`;
+    /// no callsite queries with `[any, any]`, so the any-key body is dead.
+    #[test]
+    fn fn_with_only_typed_callsites_drops_any_key() {
+        let (m, mt) = pipeline(r#"
+fn add(a, b), do: a + b
+fn main(), do: print(add(1, 2))
+"#);
+        let add = m.fns.iter().find(|f| f.name == "add").unwrap();
+        let any_key: Vec<Descr> = vec![Descr::any(); 2];
+        assert!(!mt.specs.contains_key(&(add.id, any_key.clone())),
+            "expected add's any-key to be dropped (no [any, any] callsite); \
+             registered specs for add: {:?}",
+            mt.specs.keys().filter(|(fid, _)| *fid == add.id).collect::<Vec<_>>());
+    }
+
+    /// fz-ul4.29.12.6 — an entry-point-like fn (no IR caller) must keep
+    /// its any-key. `main` here has zero callsites in the module; the
+    /// runtime `Runtime::spawn(main_fn_id)` path queries via FnId.0 →
+    /// SpecId.0, so dropping main's any-key would break runtime entry.
+    #[test]
+    fn entry_point_fn_keeps_any_key() {
+        let (m, mt) = pipeline(r#"
+fn main(), do: print(42)
+"#);
+        let main = m.fns.iter().find(|f| f.name == "main").unwrap();
+        let any_key: Vec<Descr> = vec![Descr::any(); 0];
+        assert!(mt.specs.contains_key(&(main.id, any_key)),
+            "main must keep its any-key (entry-point)");
     }
 
     /// fz-ul4.29.12.5 — a `Term::Receive` cont with a typed capture must

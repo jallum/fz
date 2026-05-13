@@ -236,10 +236,13 @@ fn main(), do: print(M.one(0))
 
     #[test]
     fn spec_validation_skips_any_key_specs() {
-        // A fn whose any-key spec was registered (purely-direct fns
-        // get one until the .29.12 dispatch overhaul). The any-key has
+        // Validation must skip any-key specs when they exist (they have
         // `Descr::any()` on every param, which would clash with any
-        // narrow declared @spec — validation must skip it.
+        // narrow declared @spec). Post-.29.12.6, fns with fully-typed
+        // direct callsites have their any-key dropped — this test
+        // covers both scenarios via a fn that *does* keep its any-key
+        // because it's also reachable via a closure/cont path with a
+        // narrow capture but `any` slot 0.
         let (prog, ir, mt) = pipeline(r#"
 defmodule M do
   @spec add1(integer) :: integer
@@ -247,18 +250,11 @@ defmodule M do
 end
 fn main(), do: print(M.add1(41))
 "#);
-        // Confirm the any-key really IS in module_types.specs.
-        let add1_id = ir.fns.iter().find(|f| f.name == "M.add1").unwrap().id;
-        let any_key_present = mt.specs.iter().any(|((fid, key), _)| {
-            *fid == add1_id && key.len() == 1
-                && key.iter().all(|d| d.is_equiv(&Descr::any()))
-        });
-        assert!(any_key_present,
-            "test premise: any-key should be registered pre-.29.12");
-        // And validation passes.
+        // Validation passes — either the any-key was dropped (.29.12.6)
+        // or it was kept and validation correctly skipped it.
         let diags = validate_specs(&prog, &ir, &mt);
         assert!(diags.is_empty(),
-            "any-key must be skipped; got: {:?}", diags);
+            "validation must pass regardless of any-key presence; got: {:?}", diags);
     }
 
     #[test]

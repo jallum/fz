@@ -1278,6 +1278,14 @@ pub fn compile_with_backend<B: Backend>(
     for f in &fns_by_fnid {
         let n_params = f.block(f.entry).params.len();
         let any_key = vec![crate::types::Descr::any(); n_params];
+        // fz-ul4.29.12.6 — skip registering F's any-key when the typer
+        // dropped it (every callsite of F has typed coverage). The next
+        // registration via `register_any_key_at` pads slot F.0 with a
+        // sentinel automatically, preserving the `SpecId.0 == FnId.0`
+        // invariant for the surviving any-keys.
+        if !module_types.specs.contains_key(&(f.id, any_key.clone())) {
+            continue;
+        }
         let sid = spec_registry.register_any_key_at(f.id, any_key);
         debug_assert_eq!(sid.0, f.id.0);
     }
@@ -1311,11 +1319,24 @@ pub fn compile_with_backend<B: Backend>(
     // slot for a missing FnId.0 — cps_split sparsity).
     let mut idx_of: HashMap<FnId, usize> = HashMap::new();
     for (i, f) in module.fns.iter().enumerate() { idx_of.insert(f.id, i); }
+    // fz-ul4.29.12.6 — treat slots whose typer FnTypes is absent as
+    // sentinels too. Three cases collapse here:
+    //   * cps_split sparsity: FnId not in module → `idx_of.get` = None.
+    //   * Pre-existing sentinel slot (empty-key padding) for a missing
+    //     FnId.0 → no entry in `module_types.specs` either.
+    //   * Dropped any-key (.29.12.6): FnId exists in module but its
+    //     any-key body was pruned by the typer → no entry in
+    //     `module_types.specs`. Codegen must skip compilation for the
+    //     slot; no consumer can index into it because `resolve` only
+    //     returns SpecIds with a real registration.
     let spec_fnidx: Vec<Option<usize>> = spec_keys.iter()
-        .map(|(fid, _)| idx_of.get(fid).copied())
+        .map(|(fid, key)| {
+            if !module_types.specs.contains_key(&(*fid, key.clone())) {
+                return None;
+            }
+            idx_of.get(fid).copied()
+        })
         .collect();
-    // Per-spec FnTypes ref. `None` for sentinel slots; otherwise the
-    // FnTypes registered for this (FnId, descr-tuple) in module_types.specs.
     let spec_fn_types: Vec<Option<&crate::ir_typer::FnTypes>> = spec_keys.iter()
         .enumerate()
         .map(|(sid, (fid, key))| {
