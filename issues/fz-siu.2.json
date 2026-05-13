@@ -12,9 +12,15 @@
   "id": "fz-siu.2",
   "labels": [],
   "parent": "fz-siu",
+  "comments": [
+    {
+      "text": "-",
+      "timestamp": "2026-05-13T21:34:04Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "fz-cps.2: halt continuation singleton",
   "type": "task",
-  "updated_at": "2026-05-13T04:09:33Z"
+  "updated_at": "2026-05-13T21:34:04Z"
 }
