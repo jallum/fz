@@ -607,6 +607,62 @@ fn native_fns_have_no_dead_frame_ptr_placeholder() {
     );
 }
 
+/// fz-siu.1.2 acceptance per docs/cps-in-clif.md §8.1.
+/// tail_recursion.fz's `count` fn must compile as the native-tier
+/// Tail-CC body whose recursive case ends in `return_call %count(...)`
+/// with zero `fz_alloc_*` calls. Base case ends in
+/// `load.i64 ...+16` followed by `return_call_indirect ...`.
+#[test]
+fn tail_recursion_count_matches_cps_in_clif_section_8_1() {
+    let out = Command::new(FZ_BIN)
+        .args(["dump", "fixtures/tail_recursion.fz", "--emit", "clif", "--fn", "count"])
+        .output()
+        .expect("spawn fz dump");
+    assert!(out.status.success(), "fz dump exited {}", out.status);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    // Find the count_s2 (any-key spec) banner and slice to the next banner.
+    let start = stdout
+        .find("; fn count_s2")
+        .unwrap_or_else(|| panic!("missing count_s2 banner:\n{}", stdout));
+    let rest = &stdout[start..];
+    let end = rest[1..]
+        .find("; fn ")
+        .map(|i| i + 1)
+        .unwrap_or(rest.len());
+    let body = &rest[..end];
+
+    // §8.1: signature `function %count(i64, i64, i64) -> i64 tail`.
+    assert!(
+        body.contains("(i64, i64, i64) -> i64 tail"),
+        "count_s2 sig must be (i64,i64,i64)->i64 tail; got:\n{}",
+        body,
+    );
+
+    // §8.1 block_rec: recursive case ends in `return_call %count(...)`
+    // with no allocator calls in the body.
+    assert!(
+        body.contains("return_call "),
+        "count_s2 must end recursive case in return_call:\n{}",
+        body,
+    );
+    // No alloc helpers — neither fz_alloc_frame nor fz_alloc_closure.
+    for helper in &["fz_alloc_frame", "fz_alloc_closure", "fz_alloc_struct"] {
+        assert!(
+            !body.contains(helper),
+            "count_s2 contains `{}` — §8.1 requires zero allocs:\n{}",
+            helper, body,
+        );
+    }
+
+    // §8.1 block_done: load.i64 v_k+16; return_call_indirect.
+    assert!(
+        body.contains("return_call_indirect"),
+        "count_s2 base case must indirect-call cont via return_call_indirect:\n{}",
+        body,
+    );
+}
+
 /// Shell `fz dump --emit clif --fn <name>` and check each fn's
 /// per-fixture expect_clif_contains / expect_clif_excludes assertion.
 /// Returns all failure messages in one vec so a fixture surfaces every
