@@ -29,6 +29,46 @@ use std::rc::Rc;
 /// Distinct from all valid `HeapKind` discriminants (0..=9).
 pub const FORWARDED_KIND: u16 = 0xFFFE;
 
+/// Preset block sizes (bytes). Fibonacci-shape at the low end (§6.3) then
+/// geometric tail (~×1.2, ceiling-rounded to 16 alignment). Cheney picks the
+/// smallest entry that fits `live_bytes + slack`.
+///
+/// 32 entries covers ~6 MiB — heaps larger than the tail clamp to the last
+/// class (`pick_size_class` never panics).
+pub const SIZE_TABLE: [usize; 32] = build_size_table();
+
+const fn build_size_table() -> [usize; 32] {
+    let mut t = [0usize; 32];
+    let prefix: [usize; 12] = [
+        1024, 1536, 2560, 4096, 6656, 10752,
+        17408, 28160, 45568, 73728, 119296, 192768,
+    ];
+    let mut i = 0;
+    while i < 12 {
+        t[i] = prefix[i];
+        i += 1;
+    }
+    while i < 32 {
+        // next ≈ ceil(prev * 1.2) then aligned up to 16. Integer-only:
+        //   ceil(prev * 6 / 5) = (prev * 6 + 4) / 5.
+        let raw = (t[i - 1] * 6 + 4) / 5;
+        t[i] = (raw + 15) & !15;
+        i += 1;
+    }
+    t
+}
+
+/// Smallest size_class whose `SIZE_TABLE[class]` ≥ `bytes`. Clamps to the
+/// last index for inputs that exceed the tail (§6.3) — never panics.
+pub fn pick_size_class(bytes: usize) -> u8 {
+    for (idx, &size) in SIZE_TABLE.iter().enumerate() {
+        if size >= bytes {
+            return idx as u8;
+        }
+    }
+    (SIZE_TABLE.len() - 1) as u8
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FieldKind {
     /// Tagged FzValue bits. GC tracer follows this slot.
@@ -514,8 +554,23 @@ impl Heap {
             from_ranges.push((p, unsafe { p.add(sz) }));
         }
 
-        // Fresh to-space block; same size for .8 (size-class picker in .9).
-        let to_size = self.block_size;
+        // Pre-pass: compute reachable bytes from the root (cycles tracked
+        // via HashSet). Determines the to-space size_class per §6.3 / §6.4
+        // — smallest class fitting `live_bytes + slack` where slack is
+        // live_bytes itself (target ~50% post-gc occupancy). Null root
+        // shrinks to the minimum class.
+        let live_bytes = if root_slot.is_null() {
+            0
+        } else {
+            let schemas = self.schemas.borrow();
+            count_live_bytes_from(
+                *root_slot as *mut HeapHeader,
+                &from_ranges,
+                &schemas,
+            )
+        };
+        let size_class = pick_size_class(live_bytes.saturating_mul(2));
+        let to_size = SIZE_TABLE[size_class as usize];
         let to_start = Self::alloc_block(to_size);
         let to_end = unsafe { to_start.add(to_size) };
         let mut free = to_start;
@@ -563,8 +618,12 @@ impl Heap {
         self.bump_top = free;
         self.block_end = to_end;
         self.block_size = to_size;
+        self.size_class = size_class;
         self.alloc_count = live_count;
         self.gc_run_count += 1;
+        // Reset gc_threshold to half the new block. Per-test overrides
+        // are sticky across cycles only if the test reasserts them.
+        self.gc_threshold_bytes = to_size / 2;
         // §6.5 shrink hysteresis bookkeeping — consumed by .11. A "low live"
         // pass is one where surviving bytes fall below 25% of block_size.
         let live_bytes = unsafe { free.offset_from(to_start) } as usize;
@@ -574,6 +633,82 @@ impl Heap {
             self.low_live_streak = 0;
         }
     }
+}
+
+/// Pre-pass for §6.4: sum `size_bytes` over every from-space object
+/// reachable from `root`. Used by gc() to pick the to-space size_class
+/// before allocating. Tracks visited pointers in a HashSet so cycles
+/// terminate cleanly.
+fn count_live_bytes_from(
+    root: *mut HeapHeader,
+    from_ranges: &[(*mut u8, *mut u8)],
+    schemas: &SchemaRegistry,
+) -> usize {
+    use std::collections::HashSet;
+    let mut visited: HashSet<*mut HeapHeader> = HashSet::new();
+    let mut stack: Vec<*mut HeapHeader> = vec![root];
+    let mut total = 0usize;
+    while let Some(p) = stack.pop() {
+        if !visited.insert(p) {
+            continue;
+        }
+        let h = unsafe { &*p };
+        total += h.size_bytes as usize;
+        let kind = HeapKind::from_u16(h.kind).unwrap_or_else(|| {
+            panic!("count_live_bytes_from: invalid HeapKind {:#x}", h.kind)
+        });
+        let push = |slot: *const FzValue, stack: &mut Vec<*mut HeapHeader>| {
+            let v = unsafe { std::ptr::read(slot) };
+            if let Some(cp) = v.unbox_ptr() {
+                if !cp.is_null() && ptr_in_from_space(cp as *mut u8, from_ranges) {
+                    stack.push(cp);
+                }
+            }
+        };
+        match kind {
+            HeapKind::Struct => {
+                let schema = schemas.get(h.schema_id);
+                for f in &schema.fields {
+                    if let FieldKind::FzValue = f.kind {
+                        let slot = unsafe {
+                            (p as *const u8).add(16).add(f.offset as usize) as *const FzValue
+                        };
+                        push(slot, &mut stack);
+                    }
+                }
+            }
+            HeapKind::List => {
+                let head = unsafe { (p as *const u8).add(16) as *const FzValue };
+                let tail = unsafe { (p as *const u8).add(24) as *const FzValue };
+                push(head, &mut stack);
+                push(tail, &mut stack);
+            }
+            HeapKind::Closure => {
+                let count = h.flags as usize;
+                for i in 0..count {
+                    let slot = unsafe {
+                        (p as *const u8).add(24).add(i * 8) as *const FzValue
+                    };
+                    push(slot, &mut stack);
+                }
+            }
+            HeapKind::Map => {
+                let count = unsafe {
+                    std::ptr::read((p as *const u8).add(16) as *const u64) as usize
+                };
+                for i in 0..count {
+                    let k = unsafe { (p as *const u8).add(24).add(i * 16) as *const FzValue };
+                    let v = unsafe { (p as *const u8).add(24).add(i * 16 + 8) as *const FzValue };
+                    push(k, &mut stack);
+                    push(v, &mut stack);
+                }
+            }
+            HeapKind::Bitstring | HeapKind::Float
+            | HeapKind::VecI64 | HeapKind::VecF64
+            | HeapKind::VecU8 | HeapKind::VecBit => {}
+        }
+    }
+    total
 }
 
 /// Copy a single from-space object to `*free` and install a forwarding
@@ -1100,6 +1235,80 @@ mod tests {
         let new_cons = root as *mut ListCons;
         let head = unsafe { (*new_cons).head };
         assert_eq!(head.unbox_int(), Some(7));
+    }
+
+    #[test]
+    fn size_table_first_entry_is_1k() {
+        assert_eq!(SIZE_TABLE[0], 1024);
+    }
+
+    #[test]
+    fn size_table_is_monotonic_and_16_aligned() {
+        for i in 1..SIZE_TABLE.len() {
+            assert!(SIZE_TABLE[i] > SIZE_TABLE[i - 1],
+                "non-monotonic at {}: {} <= {}",
+                i, SIZE_TABLE[i], SIZE_TABLE[i - 1]);
+            assert_eq!(SIZE_TABLE[i] % 16, 0,
+                "entry {} ({}) not 16-aligned", i, SIZE_TABLE[i]);
+        }
+    }
+
+    #[test]
+    fn size_table_tail_is_geometric_ish() {
+        // Tail entries grow ~×1.2 (after the Fibonacci low end). Sample
+        // index 20 → 21: ratio in [1.18, 1.23].
+        let ratio = SIZE_TABLE[21] as f64 / SIZE_TABLE[20] as f64;
+        assert!(ratio > 1.18 && ratio < 1.23,
+            "tail ratio out of expected range: {}", ratio);
+    }
+
+    #[test]
+    fn pick_size_class_smallest_fit() {
+        assert_eq!(pick_size_class(0), 0);
+        assert_eq!(pick_size_class(1024), 0);
+        assert_eq!(pick_size_class(1025), 1);
+        assert_eq!(pick_size_class(SIZE_TABLE[5]), 5);
+        assert_eq!(pick_size_class(SIZE_TABLE[5] + 1), 6);
+    }
+
+    #[test]
+    fn pick_size_class_clamps_on_tail_no_panic() {
+        // Far past the last entry — must clamp, not panic.
+        let class = pick_size_class(usize::MAX);
+        assert_eq!(class as usize, SIZE_TABLE.len() - 1);
+    }
+
+    /// Acceptance: under increasing load, gc picks ascending size_class
+    /// values. Build progressively longer rooted chains; each gc tracks
+    /// to a higher class as live_bytes grows past each SIZE_TABLE step.
+    #[test]
+    fn gc_picks_ascending_size_class_as_live_grows() {
+        let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
+        let mut last_class: i32 = -1;
+        // Build chains of growing length and gc each time. Working set
+        // doubles each iteration to ensure size_class climbs.
+        for power in 6..=12 {
+            let len = 1usize << power; // 64, 128, ..., 4096 cells
+            // Build a chain of `len` cons cells, rooted at head.
+            let mut tail = FzValue::NIL;
+            for i in 0..len {
+                let cell = h.alloc_list_cons(FzValue::from_int(i as i64), tail);
+                tail = FzValue::from_ptr(cell);
+            }
+            let head = tail.unbox_ptr().unwrap();
+            let mut root = head as *mut u8;
+            h.gc(&mut root);
+            let live_bytes = len * 32;
+            let expected_min = pick_size_class(live_bytes); // without slack
+            assert!(h.size_class >= expected_min,
+                "size_class {} should fit live_bytes {}", h.size_class, live_bytes);
+            assert!((h.size_class as i32) > last_class || last_class < 0,
+                "size_class did not climb: prev={}, now={}",
+                last_class, h.size_class);
+            last_class = h.size_class as i32;
+            // Drop the root so next iteration starts fresh.
+            let _ = root; // reachable until here
+        }
     }
 
     /// Acceptance: ≥10 GC cycles with the same small live working set

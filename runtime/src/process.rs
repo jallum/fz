@@ -107,7 +107,11 @@ impl Process {
     #[allow(dead_code)]
     pub fn new(schemas: std::rc::Rc<std::cell::RefCell<crate::heap::SchemaRegistry>>) -> Self {
         Self {
-            heap: crate::heap::Heap::new(64 * 1024, schemas),
+            // §6.3: initial size on spawn = SIZE_TABLE[0] (1 KiB). Cheney
+            // promotes to a higher size_class on first GC if the working
+            // set demands it; shrink hysteresis (§6.5 / fz-siu.11) brings
+            // it back down for short-lived spikes.
+            heap: crate::heap::Heap::new(crate::heap::SIZE_TABLE[0], schemas),
             halt_value: 0,
             map_builder: None,
             bs_builder: None,
