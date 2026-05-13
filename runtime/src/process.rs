@@ -54,6 +54,12 @@ pub struct Process {
     /// resuming the chain. Pointer because the closure lives in this
     /// Process's heap; layout per `Heap::alloc_closure`.
     pub parked_cont: *mut u8,
+    /// fz-cps.1.11 — pending closure to invoke at the next scheduler
+    /// quantum. Set by `Runtime::spawn_closure` to the closure pointer;
+    /// `run_quantum` clears it and dispatches via the `fz_spawn_entry`
+    /// SystemV→Tail-CC shim. Null means "no pending entry" (either
+    /// trampoline-driven uniform main or already-resumed task).
+    pub pending_closure_entry: *mut u8,
     /// fz-cps.1.7 — per-Process static zero-capture closure singletons.
     /// Indexed by lambda spec id (cl_sid). Null entries indicate "no
     /// singleton registered for this cl_sid." Each non-null entry points
@@ -105,6 +111,7 @@ impl Process {
             next_frame: std::ptr::null_mut(),
             mailbox: std::collections::VecDeque::new(),
             parked_cont: std::ptr::null_mut(),
+            pending_closure_entry: std::ptr::null_mut(),
             static_closures: Vec::new(),
             static_closure_bufs: Vec::new(),
         }

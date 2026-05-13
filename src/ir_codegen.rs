@@ -121,6 +121,16 @@ pub struct CompiledModule {
     /// per entry and registers it at `Process.static_closures[cl_sid]`.
     /// See docs/cps-in-clif.md §8.2.
     pub(crate) static_closure_targets: Vec<(u32, u32, *const u8)>,
+    /// fz-cps.1.11 — finalized address of the SystemV scheduler shim
+    /// `fz_resume_park(msg, parked_cont) -> i64`. The scheduler calls
+    /// this via Rust FFI when a Blocked task wakes; the shim loads
+    /// `parked_cont+16` and Tail-CC indirect-calls the cont body.
+    pub(crate) resume_park_addr: *const u8,
+    /// fz-cps.1.11 — finalized address of the SystemV scheduler shim
+    /// `fz_spawn_entry(closure) -> i64`. Allocates a halt-cont and
+    /// Tail-CC indirect-calls the zero-arg closure with `(self,
+    /// halt_cont)`. Used by `Runtime::spawn_closure` to launch a task.
+    pub(crate) spawn_entry_addr: *const u8,
 }
 
 impl CompiledModule {
@@ -167,6 +177,7 @@ impl CompiledModule {
             next_frame: std::ptr::null_mut(),
             mailbox: std::collections::VecDeque::new(),
             parked_cont: std::ptr::null_mut(),
+            pending_closure_entry: std::ptr::null_mut(),
             static_closures: Vec::new(),
             static_closure_bufs: Vec::new(),
         };
@@ -210,6 +221,41 @@ impl CompiledModule {
     /// returns null; we write that back to process.next_frame so the
     /// caller can observe completion.
     pub(crate) fn run_quantum(&self, process: &mut Process) {
+        // fz-cps.1.11 — wakeup path: if the task has a parked_cont and
+        // a message waiting, dispatch via the SystemV→Tail-CC
+        // fz_resume_park shim. The shim cross-CC calls the cont closure
+        // (`load parked_cont+16; call_indirect Tail (msg, parked_cont)`).
+        // The cont chain runs synchronously to halt; halt_value is set
+        // before fz_resume_park returns.
+        if !process.parked_cont.is_null() {
+            if let Some(msg) = process.mailbox.pop_front() {
+                let cont_ptr = process.parked_cont;
+                process.parked_cont = std::ptr::null_mut();
+                type ResumePark = extern "C" fn(u64, u64) -> i64;
+                let f: ResumePark = unsafe {
+                    std::mem::transmute(self.resume_park_addr)
+                };
+                let _ = f(msg.0, cont_ptr as u64);
+                process.next_frame = std::ptr::null_mut();
+                return;
+            }
+        }
+        // fz-cps.1.11 — fresh task entry: a closure was queued by
+        // `Runtime::spawn_closure`. Dispatch via fz_spawn_entry (the
+        // SystemV→Tail-CC launch shim). The closure body runs to halt
+        // or Receive synchronously; on Receive it sets parked_cont and
+        // the next quantum's wakeup path picks it up.
+        if !process.pending_closure_entry.is_null() {
+            let cl_ptr = process.pending_closure_entry;
+            process.pending_closure_entry = std::ptr::null_mut();
+            type SpawnEntry = extern "C" fn(u64) -> i64;
+            let f: SpawnEntry = unsafe {
+                std::mem::transmute(self.spawn_entry_addr)
+            };
+            let _ = f(cl_ptr as u64);
+            process.next_frame = std::ptr::null_mut();
+            return;
+        }
         let mut cur = process.next_frame;
         let mut iters: usize = 0;
         let cap: usize = 10_000_000;
@@ -867,6 +913,10 @@ pub struct CompiledMetadata {
     /// the same list as a startup-init data table (fz-cps.1.7 AOT path is
     /// out of scope until aot rebuilds; see ticket notes).
     pub static_closure_targets: Vec<(u32, u32, FuncId)>,
+    /// fz-cps.1.11 — fz_resume_park scheduler-wakeup shim FuncId.
+    pub resume_park_id: FuncId,
+    /// fz-cps.1.11 — fz_spawn_entry scheduler-launch shim FuncId.
+    pub spawn_entry_id: FuncId,
 }
 
 /// fz-ul4.29.2 — Two-way mapping between (FnId, input-Descr-tuple) and
@@ -1117,6 +1167,8 @@ impl Backend for JitBackend {
                 (*cl_sid, *fn_id, ptr)
             })
             .collect();
+        let resume_park_addr = jmod.get_finalized_function(meta.resume_park_id);
+        let spawn_entry_addr = jmod.get_finalized_function(meta.spawn_entry_id);
         Ok(CompiledModule {
             module: jmod,
             fn_ptrs,
@@ -1129,6 +1181,8 @@ impl Backend for JitBackend {
             types: meta.types,
             diagnostics: meta.diagnostics,
             static_closure_targets,
+            resume_park_addr,
+            spawn_entry_addr,
         })
     }
 }
@@ -1318,6 +1372,100 @@ pub fn compile_with_backend<B: Backend>(
     let runtime = declare_runtime_symbols(backend.module_mut())?;
 
     let mut fbctx = FunctionBuilderContext::new();
+
+    // fz-cps.1.11 — emit fz_spawn_entry. SystemV scheduler-callable shim
+    // that invokes a zero-arg closure with a fresh halt-cont. Used by
+    // `Runtime::spawn_closure` to launch the new task's first fn via
+    // the closure-target sig `(self, cont) tail`. The closure body
+    // tail-chains into a halt-cont; halt sets process.halt_value.
+    // Sig: `(closure:i64) -> i64 system_v`.
+    {
+        let mut ctx = backend.module_mut().make_context();
+        let mut sig = Signature::new(CallConv::SystemV);
+        sig.params.push(AbiParam::new(types::I64));
+        sig.returns.push(AbiParam::new(types::I64));
+        ctx.func.signature = sig;
+        {
+            let mut b = FunctionBuilder::new(&mut ctx.func, &mut fbctx);
+            let entry = b.create_block();
+            b.append_block_params_for_function_params(entry);
+            b.switch_to_block(entry);
+            b.seal_block(entry);
+            let closure = b.block_params(entry)[0];
+            // Allocate halt-cont closure (zero captures).
+            let acl_fref = backend
+                .module_mut()
+                .declare_func_in_func(runtime.alloc_closure_id, b.func);
+            let dummy_fid = b.ins().iconst(types::I32, 0);
+            let n_caps0 = b.ins().iconst(types::I32, 0);
+            let halt_alloc = b.ins().call(acl_fref, &[dummy_fid, n_caps0]);
+            let halt_cl = b.inst_results(halt_alloc)[0];
+            let hcb_fref = backend
+                .module_mut()
+                .declare_func_in_func(runtime.halt_cont_body_id, b.func);
+            let hcb_addr = b.ins().func_addr(types::I64, hcb_fref);
+            b.ins().store(MemFlags::trusted(), hcb_addr, halt_cl, HEADER_SIZE);
+            // Load closure body addr at +16 and invoke as
+            // closure-target sig `(self, cont) tail` (zero user args).
+            let code = b.ins().load(
+                types::I64, MemFlags::trusted(), closure, HEADER_SIZE,
+            );
+            let mut closure_sig = Signature::new(CallConv::Tail);
+            closure_sig.params.push(AbiParam::new(types::I64)); // self
+            closure_sig.params.push(AbiParam::new(types::I64)); // cont
+            closure_sig.returns.push(AbiParam::new(types::I64));
+            let sig_ref = b.func.import_signature(closure_sig);
+            let inst = b.ins().call_indirect(sig_ref, code, &[closure, halt_cl]);
+            let r = b.inst_results(inst)[0];
+            b.ins().return_(&[r]);
+            b.finalize();
+        }
+        backend
+            .module_mut()
+            .define_function(runtime.spawn_entry_id, &mut ctx)
+            .map_err(|e| CodegenError::new(format!("define fz_spawn_entry: {}", e)))?;
+        backend.module_mut().clear_context(&mut ctx);
+    }
+
+    // fz-cps.1.11 — emit fz_resume_park. SystemV scheduler-callable shim
+    // that wakes a parked task: `load parked_cont+16; call_indirect Tail
+    // sig_cont (msg, parked_cont); return result`. The runtime invokes
+    // this when a Blocked task transitions to Ready (a message has
+    // arrived). Sig: `(msg:i64, parked_cont:i64) -> i64 system_v`.
+    {
+        let mut ctx = backend.module_mut().make_context();
+        let mut sig = Signature::new(CallConv::SystemV);
+        sig.params.push(AbiParam::new(types::I64));
+        sig.params.push(AbiParam::new(types::I64));
+        sig.returns.push(AbiParam::new(types::I64));
+        ctx.func.signature = sig;
+        {
+            let mut b = FunctionBuilder::new(&mut ctx.func, &mut fbctx);
+            let entry = b.create_block();
+            b.append_block_params_for_function_params(entry);
+            b.switch_to_block(entry);
+            b.seal_block(entry);
+            let msg = b.block_params(entry)[0];
+            let cont = b.block_params(entry)[1];
+            let code = b.ins().load(
+                types::I64, MemFlags::trusted(), cont, HEADER_SIZE,
+            );
+            let mut cont_sig = Signature::new(CallConv::Tail);
+            cont_sig.params.push(AbiParam::new(types::I64));
+            cont_sig.params.push(AbiParam::new(types::I64));
+            cont_sig.returns.push(AbiParam::new(types::I64));
+            let sig_ref = b.func.import_signature(cont_sig);
+            let inst = b.ins().call_indirect(sig_ref, code, &[msg, cont]);
+            let r = b.inst_results(inst)[0];
+            b.ins().return_(&[r]);
+            b.finalize();
+        }
+        backend
+            .module_mut()
+            .define_function(runtime.resume_park_id, &mut ctx)
+            .map_err(|e| CodegenError::new(format!("define fz_resume_park: {}", e)))?;
+        backend.module_mut().clear_context(&mut ctx);
+    }
 
     // fz-cps.1.2 — emit fz_halt_cont_body. This is the singleton-style
     // cont body that every Term::Halt / top-level Term::Return chain
@@ -2248,6 +2396,8 @@ pub fn compile_with_backend<B: Backend>(
         main_frame_size,
         spec_registry,
         static_closure_targets,
+        resume_park_id: runtime.resume_park_id,
+        spawn_entry_id: runtime.spawn_entry_id,
     };
 
     // Backend-specific metadata carriers (no-op for JIT; dispatch + main
@@ -2603,6 +2753,24 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
     let halt_cont_body_id = jmod
         .declare_function("fz_halt_cont_body", Linkage::Local, &hcb_sig)
         .map_err(|e| CodegenError::new(format!("declare fz_halt_cont_body: {}", e)))?;
+    // fz-cps.1.11 — fz_resume_park: SystemV entry the scheduler calls on
+    // wakeup. Body emitted in compile_with_backend; signature `(msg:i64,
+    // cont:i64) -> i64 system_v` matches Rust's extern "C" shape for FFI.
+    let mut rp_sig = Signature::new(CallConv::SystemV);
+    rp_sig.params.push(AbiParam::new(types::I64));
+    rp_sig.params.push(AbiParam::new(types::I64));
+    rp_sig.returns.push(AbiParam::new(types::I64));
+    let resume_park_id = jmod
+        .declare_function("fz_resume_park", Linkage::Local, &rp_sig)
+        .map_err(|e| CodegenError::new(format!("declare fz_resume_park: {}", e)))?;
+    // fz-cps.1.11 — fz_spawn_entry: SystemV entry the scheduler calls to
+    // launch a new task's zero-arg closure. Sig: `(closure:i64) -> i64`.
+    let mut se_sig = Signature::new(CallConv::SystemV);
+    se_sig.params.push(AbiParam::new(types::I64));
+    se_sig.returns.push(AbiParam::new(types::I64));
+    let spawn_entry_id = jmod
+        .declare_function("fz_spawn_entry", Linkage::Local, &se_sig)
+        .map_err(|e| CodegenError::new(format!("declare fz_spawn_entry: {}", e)))?;
 
     Ok(RuntimeRefs {
         print_id,
@@ -2642,6 +2810,8 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         receive_attempt_id,
         receive_park_id,
         get_static_closure_id,
+        resume_park_id,
+        spawn_entry_id,
     })
 }
 
@@ -2684,6 +2854,8 @@ struct RuntimeRefs {
     receive_attempt_id: FuncId,
     receive_park_id: FuncId,
     get_static_closure_id: FuncId,
+    resume_park_id: FuncId,
+    spawn_entry_id: FuncId,
 }
 
 /// Pack a Span into a Cranelift SourceLoc (u32). 8 bits file_id + 24

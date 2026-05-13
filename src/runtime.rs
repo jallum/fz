@@ -263,30 +263,15 @@ impl<'a> Runtime<'a> {
             .unbox_ptr()
             .expect("spawn_closure: closure must be a heap ptr");
 
-        // Stub_fp lives at payload offset 16 (first slot of the closure's
-        // payload, RawBytes(8) per the closure shape Schema).
-        let stub_fp_raw = unsafe {
-            std::ptr::read((copied_ptr as *mut u8).add(HEADER_SIZE as usize) as *const u64)
-        };
-        assert!(stub_fp_raw != 0, "spawn_closure: stub_fp is null");
-
-        // Install the new process as CURRENT_PROCESS for the stub's heap
-        // operations (it will fz_alloc_frame_dyn into THIS process's heap).
-        let process_box = Box::new(process);
-        let process_ptr = Box::into_raw(process_box);
-        let prev = CURRENT_PROCESS.with(|c| c.replace(process_ptr));
-        type SpawnStub = extern "C" fn(*mut u8, u64, *mut u8) -> *mut u8;
-        let stub: SpawnStub = unsafe { std::mem::transmute(stub_fp_raw as *const u8) };
-        let initial_frame = stub(
-            copied_ptr as *mut u8,
-            /* cont_ptr = null */ 0,
-            process_ptr as *mut u8,
-        );
-        CURRENT_PROCESS.with(|c| c.set(prev));
-        let mut process = unsafe { Box::from_raw(process_ptr) };
-        process.next_frame = initial_frame;
-
-        self.tasks.insert(pid, process);
+        // fz-cps.1.11 — store the closure ptr as a pending entry; the
+        // scheduler's run_quantum dispatches it via fz_spawn_entry on
+        // the next quantum. Insert into the task registry before
+        // queueing so that cross-task send() during the new task's run
+        // can find this pid.
+        process.parked_cont = std::ptr::null_mut();
+        process.next_frame = std::ptr::null_mut();
+        process.pending_closure_entry = copied_ptr as *mut u8;
+        self.tasks.insert(pid, Box::new(process));
         self.run_queue.push_back(pid);
         pid
     }
