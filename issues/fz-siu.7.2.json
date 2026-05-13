@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-13T21:51:32Z",
+  "description": "Rewrite runtime/src/heap.rs Heap struct to §6.1 shape:\n\n  struct Heap {\n      block_start: *mut u8,\n      bump_top:    *mut u8,\n      block_end:   *mut u8,\n      size_class:  u8,\n      low_live_streak: u8,\n      pressure: AtomicBool,\n      pub schemas: Rc\u003cRefCell\u003cSchemaRegistry\u003e\u003e,\n      pub gc_run_count: u64,\n      alloc_count: u64,  // since-last-gc; backs live_count()\n  }\n\n- alloc(size) is bump only: bump_top.add(size); if \u003e block_end -\u003e note_alloc_pressure (set flag) AND allocate a fresh larger block, abandoning the old (memory-leak grow). Real Cheney lands in fz-siu.8.\n- note_alloc_pressure also fires when bump_top crosses gc_threshold_bytes (kept for back-compat with .19.6 per-process threshold setter; final removal in .8/.9).\n- Drop: free block_start (and any abandoned blocks tracked in a side Vec).\n- gc(\u0026mut self) -\u003e stub; just increments gc_run_count.\n- live_count() -\u003e alloc_count (since last gc). freelist_len() -\u003e 0 (no freelist).\n- bytes_used() = bump_top.offset_from(block_start).\n- Initial size: SIZE_TABLE[0]=1 KiB per §6.3 wired (the smaller initial enforces grow-path coverage; growth via bump-overflow).\n- alloc_* (struct/list_cons/map/bitstring/closure/float/vec_*) unchanged in interface, just go through new alloc().\n\nAcceptance: build green; all non-mark-sweep tests pass; growth path covered by an existing fixture (e.g. list-heavy test runs without OOM).",
+  "id": "fz-siu.7.2",
+  "labels": [],
+  "parent": "fz-siu.7",
+  "priority": 2,
+  "status": "open",
+  "title": "fz-cps.GC.1.2: Heap struct = bump-only per §6.1",
+  "type": "task",
+  "updated_at": "2026-05-13T21:51:32Z"
+}
