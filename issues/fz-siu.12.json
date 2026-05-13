@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-13T04:09:27Z",
+  "description": "Spec: docs/cps-in-clif.md §6 (knob surface), §11 (non-goals: knob bodies).\n\nWork:\n- spawn_opt(closure, opts) API at IR and runtime level.\n- opts is a struct with min_heap_size: Option\u003cu8\u003e and reserved fields.\n- Only min_heap_size is wired in v1; rest are accepted but ignored.\n\nAcceptance: API exists; existing spawn(closure) desugars to spawn_opt(closure, Default::default()).",
+  "id": "fz-siu.12",
+  "labels": [],
+  "parent": "fz-siu",
+  "priority": 3,
+  "status": "open",
+  "title": "fz-cps.GC.6: spawn-options skeleton",
+  "type": "task",
+  "updated_at": "2026-05-13T04:09:27Z"
+}
