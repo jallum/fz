@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-ul4.29.12.1",
     "fz-ul4.29.12.3"
@@ -13,8 +13,8 @@
   "labels": [],
   "parent": "fz-ul4.29.12",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Receive ABI uses resolved SpecId for cont frame",
   "type": "task",
-  "updated_at": "2026-05-12T23:37:08Z"
+  "updated_at": "2026-05-13T00:05:38Z"
 }
