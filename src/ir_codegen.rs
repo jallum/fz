@@ -1569,22 +1569,36 @@ pub fn compile_with_backend<B: Backend>(
     // or top-level fns passed as values). If overlap occurs in some
     // future fz-IR, cont-fn shape wins (Receive parking would otherwise
     // misread the result slot).
-    let closure_target_fns: std::collections::HashSet<crate::fz_ir::FnId> = {
+    let (closure_target_fns, closure_n_captures): (
+        std::collections::HashSet<crate::fz_ir::FnId>,
+        std::collections::HashMap<crate::fz_ir::FnId, usize>,
+    ) = {
         use crate::fz_ir::{Prim, Stmt};
-        let mut s = std::collections::HashSet::new();
+        let mut targets = std::collections::HashSet::new();
+        let mut counts: std::collections::HashMap<crate::fz_ir::FnId, usize>
+            = std::collections::HashMap::new();
         for f in &module.fns {
             for b in &f.blocks {
                 for stmt in &b.stmts {
                     let Stmt::Let(_, prim) = stmt;
-                    if let Prim::MakeClosure(fid, _) = prim {
-                        s.insert(*fid);
+                    if let Prim::MakeClosure(fid, captured) = prim {
+                        targets.insert(*fid);
+                        // A lambda's n_captures is fixed at definition;
+                        // every MakeClosure of the same FnId must agree.
+                        let n = captured.len();
+                        if let Some(prev) = counts.get(fid) {
+                            debug_assert_eq!(*prev, n,
+                                "MakeClosure n_captures mismatch for fn {}: \
+                                 {} vs {}", fid.0, prev, n);
+                        }
+                        counts.insert(*fid, n);
                     }
                 }
             }
         }
-        s
+        (targets, counts)
     };
-    let _ = &closure_target_fns;
+    let _ = (&closure_target_fns, &closure_n_captures);
     // fz-ul4.27.6.4 follow-up: heap-safe captures.
     //
     // A native cont chain routes the caller's captured vars through
