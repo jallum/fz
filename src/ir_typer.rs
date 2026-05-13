@@ -244,6 +244,47 @@ pub fn type_module(m: &Module) -> ModuleTypes {
             }
         }
 
+        // fz-ul4.29.12.2 — per-spec MakeClosure walk. For every
+        // registered caller spec, inspect its MakeClosure prims under
+        // that spec's per-Var Descrs and record a narrow lambda key
+        // `[capture_descrs..., any, any, ...]`. Walking per-spec (not
+        // the lub-aggregated `by_fn_idx`) keeps distinct caller specs
+        // with different capture-Descrs from collapsing into one
+        // unioned key — codegen relies on this granularity to key
+        // typed closure stubs by lambda SpecId.
+        //
+        // The fixed point converges naturally: narrow caller specs
+        // appear in `specs` only after their callsite_keys round-trip
+        // through this loop, so successive iterations widen the set of
+        // visible MakeClosure-capture views until stable.
+        let spec_snapshot: Vec<(FnId, Vec<Descr>)> = specs.keys().cloned().collect();
+        for (caller_fn_id, caller_key) in &spec_snapshot {
+            let Some(&caller_idx) = idx_of.get(caller_fn_id) else { continue; };
+            let caller_fn = &m.fns[caller_idx];
+            let Some(caller_ft) = specs.get(&(*caller_fn_id, caller_key.clone())) else { continue; };
+            for b in &caller_fn.blocks {
+                let mut env = caller_ft.block_envs.get(&b.id).cloned().unwrap_or_default();
+                for stmt in &b.stmts {
+                    let Stmt::Let(v, prim) = stmt;
+                    if let Prim::MakeClosure(lam_fn_id, captured) = prim {
+                        if let Some(&j) = idx_of.get(lam_fn_id) {
+                            let lam = &m.fns[j];
+                            let n_params = lam.block(lam.entry).params.len();
+                            let mut k: Vec<Descr> = vec![Descr::any(); n_params];
+                            for (i, cv) in captured.iter().enumerate() {
+                                if let Some(slot) = k.get_mut(i) {
+                                    *slot = env.get(cv).cloned()
+                                        .unwrap_or_else(Descr::any);
+                                }
+                            }
+                            callsite_keys.entry(*lam_fn_id).or_default().insert(k);
+                        }
+                    }
+                    env.insert(*v, type_prim(prim, &env, m));
+                }
+            }
+        }
+
         // Apply narrowed entry-param Descrs and retype any fn that changed
         // (lub-aggregated view → by_fn_idx; this is the legacy behavior
         // codegen still consumes through .29.1).
@@ -1856,6 +1897,49 @@ fn main(), do: print(add1(40) + 2)
             }
         }
         assert!(narrow_found, "test premise: main should have a direct Call");
+    }
+
+    /// fz-ul4.29.12.2 — two MakeClosure sites of the same lambda with
+    /// different capture Descrs must register two distinct narrow specs
+    /// for the lambda. Codegen keys typed closure stubs off these
+    /// SpecIds, so this is the load-bearing precondition for typed
+    /// closure dispatch.
+    #[test]
+    fn make_closure_with_distinct_captures_registers_distinct_specs() {
+        // Two top-level fns each return a closure that captures a
+        // value of a different type. Both target the *same* lambda
+        // (well, two different lambdas — adjust below). To force "same
+        // lambda, different captures", we use a curried-style helper.
+        let (m, mt) = pipeline(r#"
+fn add_to(x), do: fn (y) -> x + y
+fn main() do
+  f = add_to(7)
+  g = add_to(3.5)
+  print(f(1))
+  print(g(2.0))
+end
+"#);
+        // Find the lambda FnId — it's the one fn whose name starts
+        // with "lambda_".
+        let lam = m.fns.iter()
+            .find(|f| f.name.starts_with("lambda_"))
+            .expect("expected a lambda fn");
+        let registered_keys: Vec<&Vec<Descr>> = mt.specs.iter()
+            .filter(|((fid, _), _)| *fid == lam.id)
+            .map(|((_, k), _)| k)
+            .collect();
+        // Expect: any-key + at least two distinct narrow keys (one per
+        // distinct capture Descr — int_lit(7) vs float_lit(3.5)).
+        assert!(registered_keys.len() >= 3,
+            "expected ≥3 specs for the lambda (any-key + 2 narrow), got {}: {:?}",
+            registered_keys.len(), registered_keys);
+        let narrow: Vec<&Vec<Descr>> = registered_keys.iter()
+            .filter(|k| !k.iter().all(|d| d.is_equiv(&Descr::any())))
+            .copied()
+            .collect();
+        assert!(narrow.len() >= 2,
+            "expected ≥2 narrow specs for the lambda, got {}: {:?}",
+            narrow.len(), narrow);
     }
 
     /// Helper's slot 0 for CallClosure / Receive is `Descr::any()` per

@@ -1241,13 +1241,6 @@ pub fn compile_with_backend<B: Backend>(
     let module_types = crate::ir_typer::type_module(&working);
     let module = &working;
 
-    // fz-ul4.29.5: collect closure shapes. Each Prim::MakeClosure site
-    // produces a shape keyed by (callee FnId, capture count). The stub
-    // generated for this shape dispatches the callee's any-key spec
-    // (closure-target bodies stay any-key in v1; per-spec closure-target
-    // narrowing is .29.5.1's follow-up).
-    let mut closure_shapes: std::collections::BTreeMap<(FnId, usize), ()>
-        = std::collections::BTreeMap::new();
     // fz-ul4.29.12.1: collect Cont-target fns. Every fn referenced from
     // a Cont (anywhere in the module) must have entry-param 0 (its
     // "result" slot when invoked as a continuation) accept Tagged
@@ -1260,12 +1253,6 @@ pub fn compile_with_backend<B: Backend>(
         std::collections::HashSet::new();
     for f in &module.fns {
         for blk in &f.blocks {
-            for stmt in &blk.stmts {
-                let Stmt::Let(_, prim) = stmt;
-                if let Prim::MakeClosure(callee_fn_id, captures) = prim {
-                    closure_shapes.insert((*callee_fn_id, captures.len()), ());
-                }
-            }
             let cont = match &blk.terminator {
                 Term::Call { continuation, .. } => Some(continuation),
                 Term::CallClosure { continuation, .. } => Some(continuation),
@@ -1336,6 +1323,57 @@ pub fn compile_with_backend<B: Backend>(
             module_types.specs.get(&(*fid, key.clone()))
         })
         .collect();
+
+    // fz-ul4.29.12.2 — collect typed closure shapes keyed by the
+    // lambda's resolved narrow SpecId. Each `Prim::MakeClosure` site
+    // is inspected per *caller* spec (so closures built in different
+    // caller specializations with different capture Descrs produce
+    // distinct lambda SpecIds → distinct stubs). The key fed to
+    // `spec_registry.resolve` is `[capture_descrs..., any, ...]` —
+    // padded to the lambda's full arity. The .29.12.2 typer change
+    // (in `ir_typer::type_module`'s fixed-point loop) registers a
+    // narrow spec for every MakeClosure's capture-Descr tuple, so
+    // exact-match resolve succeeds; the any-key remains a subsumption
+    // backstop. Value = capture count (== `captured.len()`); needed
+    // to split entry params into `[captures..., args...]` at stub
+    // declaration / invocation.
+    let mut closure_shapes: std::collections::BTreeMap<u32, usize>
+        = std::collections::BTreeMap::new();
+    for sid in 0..spec_count {
+        let Some(idx) = spec_fnidx[sid] else { continue; };
+        let f = &module.fns[idx];
+        let Some(ft) = spec_fn_types[sid] else { continue; };
+        for blk in &f.blocks {
+            for stmt in &blk.stmts {
+                let Stmt::Let(_, prim) = stmt;
+                if let Prim::MakeClosure(lam_fn_id, captured) = prim {
+                    let lam = module.fn_by_id(*lam_fn_id);
+                    let n_params = lam.block(lam.entry).params.len();
+                    let mut key: Vec<crate::types::Descr> =
+                        vec![crate::types::Descr::any(); n_params];
+                    for (k, cv) in captured.iter().enumerate() {
+                        if let Some(slot) = key.get_mut(k) {
+                            *slot = ft.vars.get(cv).cloned()
+                                .unwrap_or_else(crate::types::Descr::any);
+                        }
+                    }
+                    let cl_sid = spec_registry
+                        .resolve(*lam_fn_id, &key)
+                        .map(|s| s.0)
+                        .unwrap_or_else(|| panic!(
+                            ".29.12.2: no covering spec for closure target \
+                             FnId({}) with key {:?}; registered keys: {:?}",
+                            lam_fn_id.0,
+                            key,
+                            spec_registry.iter()
+                                .filter(|(_, fid, _)| *fid == *lam_fn_id)
+                                .map(|(s, _, k)| (s.0, k.to_vec()))
+                                .collect::<Vec<_>>()));
+                    closure_shapes.insert(cl_sid, captured.len());
+                }
+            }
+        }
+    }
 
     // Rebuild schemas: one entry per SpecId, refined entry-param kinds
     // from THAT spec's FnTypes. The any-key SpecId for FnId K lands at
@@ -1634,13 +1672,18 @@ pub fn compile_with_backend<B: Backend>(
     // (closure_ptr, args..., cont_ptr, host_ctx) into the callee any-key
     // spec's entry-frame layout. Stored in the closure heap object's
     // payload offset 16 and called via call_indirect.
-    let mut stub_fn_ids: std::collections::BTreeMap<(FnId, usize), FuncId>
+    // fz-ul4.29.12.2 — stubs keyed by the lambda's narrow SpecId.0.
+    // The stub body itself still dispatches to the callee's any-key
+    // in this ticket; .29.12.3 makes each stub dispatch to its own
+    // narrow SpecId.
+    let mut stub_fn_ids: std::collections::BTreeMap<u32, FuncId>
         = std::collections::BTreeMap::new();
-    let mut stub_sigs: std::collections::BTreeMap<(FnId, usize), Signature>
+    let mut stub_sigs: std::collections::BTreeMap<u32, Signature>
         = std::collections::BTreeMap::new();
-    for ((callee_fn_id, n_caps), _) in &closure_shapes {
+    for (cl_sid, n_caps) in &closure_shapes {
+        let lam_fn_id = spec_keys[*cl_sid as usize].0;
         let callee = module.fns.iter()
-            .find(|f| f.id == *callee_fn_id)
+            .find(|f| f.id == lam_fn_id)
             .expect("MakeClosure target FnId not in module");
         let n_callee_params = callee.block(callee.entry).params.len();
         let n_call_args = n_callee_params.saturating_sub(*n_caps);
@@ -1652,13 +1695,16 @@ pub fn compile_with_backend<B: Backend>(
         sig.params.push(AbiParam::new(types::I64));         // cont_ptr
         sig.params.push(AbiParam::new(types::I64));         // host_ctx
         sig.returns.push(AbiParam::new(types::I64));        // -> callee frame ptr
-        let name = format!("fz_stub_{}_{}", callee.name, n_caps);
+        // Stub name includes the SpecId so duplicate (FnId, n_caps)
+        // entries with different capture-Descr specs get unique
+        // symbol names.
+        let name = format!("fz_stub_{}_{}_s{}", callee.name, n_caps, cl_sid);
         let id = backend
             .module_mut()
             .declare_function(&name, Linkage::Local, &sig)
             .map_err(|e| CodegenError::new(format!("declare {}: {}", name, e)))?;
-        stub_fn_ids.insert((*callee_fn_id, *n_caps), id);
-        stub_sigs.insert((*callee_fn_id, *n_caps), sig);
+        stub_fn_ids.insert(*cl_sid, id);
+        stub_sigs.insert(*cl_sid, sig);
     }
 
     for sid in 0..spec_count {
@@ -1736,25 +1782,29 @@ pub fn compile_with_backend<B: Backend>(
         backend.module_mut().clear_context(&mut ctx);
     }
 
-    // fz-ul4.29.5: compile each closure stub. Stub dispatches to the
-    // callee's any-key spec (its any-key SpecId.0 == FnId.0 by invariant).
-    for ((callee_fn_id, n_caps), stub_func_id) in &stub_fn_ids {
+    // fz-ul4.29.5: compile each closure stub. fz-ul4.29.12.2: stubs are
+    // keyed by the lambda's SpecId.0; the body still dispatches to the
+    // callee's any-key (the body switches to typed dispatch in .29.12.3).
+    for (cl_sid, stub_func_id) in &stub_fn_ids {
+        let lam_fn_id = spec_keys[*cl_sid as usize].0;
+        let n_caps = closure_shapes[cl_sid];
         let callee = module.fns.iter()
-            .find(|f| f.id == *callee_fn_id)
+            .find(|f| f.id == lam_fn_id)
             .expect("stub callee FnId in module");
         let n_callee_params = callee.block(callee.entry).params.len();
-        let callee_sid = callee_fn_id.0; // any-key invariant
+        let callee_sid = lam_fn_id.0; // any-key invariant — body stays
+                                       // any-key in .29.12.2.
         let callee_func_id = *fn_ids
             .get(&callee_sid)
             .expect("callee any-key spec has a FuncId");
         let callee_schema = &schemas[callee_sid as usize];
         let callee_frame_size = callee_schema.size;
-        let callee_is_native_abi = natively_callable.contains(callee_fn_id);
+        let callee_is_native_abi = natively_callable.contains(&lam_fn_id);
         let stub_sig = stub_sigs
-            .get(&(*callee_fn_id, *n_caps))
+            .get(cl_sid)
             .expect("stub sig registered")
             .clone();
-        let stub_name = format!("fz_stub_{}_{}", callee.name, n_caps);
+        let stub_name = format!("fz_stub_{}_{}_s{}", callee.name, n_caps, cl_sid);
         compile_closure_stub(
             backend.module_mut(),
             &mut fbctx,
@@ -1766,8 +1816,8 @@ pub fn compile_with_backend<B: Backend>(
             callee_schema,
             callee_frame_size,
             callee_sid,
-            *n_caps,
-            n_callee_params - *n_caps,
+            n_caps,
+            n_callee_params - n_caps,
             callee_is_native_abi,
             &stub_name,
             &param_reprs[callee_sid as usize],
@@ -2227,7 +2277,7 @@ fn compile_fn<M: cranelift_module::Module>(
     runtime: &RuntimeRefs,
     schemas: &[Schema],
     tuple_schema_ids: &HashMap<usize, u32>,
-    stub_fn_ids: &std::collections::BTreeMap<(FnId, usize), FuncId>,
+    stub_fn_ids: &std::collections::BTreeMap<u32, FuncId>,
     f: &crate::fz_ir::FnIr,
     fn_types: &crate::ir_typer::FnTypes,
     this_spec_id: u32,
@@ -2455,7 +2505,7 @@ fn compile_fn<M: cranelift_module::Module>(
                 .unwrap_or(crate::diag::Span::DUMMY);
             b.set_srcloc(span_to_srcloc(span));
             let Stmt::Let(v, prim) = stmt;
-            let out = lower_prim(&mut b, jmod, runtime, tuple_schema_ids, stub_fn_ids, &var_map, &raw_f64_vars, &raw_int_vars, fn_types, prim)?;
+            let out = lower_prim(&mut b, jmod, runtime, tuple_schema_ids, stub_fn_ids, &var_map, &raw_f64_vars, &raw_int_vars, fn_types, spec_registry, module, prim)?;
             let val = out.value();
             if out.is_raw_f64() {
                 raw_f64_vars.insert(v.0);
@@ -3441,11 +3491,13 @@ fn lower_prim<M: cranelift_module::Module>(
     jmod: &mut M,
     runtime: &RuntimeRefs,
     tuple_schema_ids: &HashMap<usize, u32>,
-    stub_fn_ids: &std::collections::BTreeMap<(FnId, usize), FuncId>,
+    stub_fn_ids: &std::collections::BTreeMap<u32, FuncId>,
     env: &HashMap<u32, ir::Value>,
     raw_f64_vars: &std::collections::HashSet<u32>,
     raw_int_vars: &std::collections::HashSet<u32>,
     fn_types: &crate::ir_typer::FnTypes,
+    spec_registry: &SpecRegistry,
+    module: &crate::fz_ir::Module,
     prim: &Prim,
 ) -> Result<LowerOut, CodegenError> {
     // Helper: every consumer site below that wants a tagged FzValue uses
@@ -4023,15 +4075,36 @@ fn lower_prim<M: cranelift_module::Module>(
             // at offsets 24+i*8. Captures are always tagged FzValue in
             // the closure payload regardless of the callee's typed entry
             // slots — the stub handles tagged→raw conversion at invoke
-            // time.
+            // time. fz-ul4.29.12.2: resolve this MakeClosure's narrow
+            // SpecId via the lambda's full input-Descr key (captures
+            // from caller's `fn_types`, args = `any`); pick the typed
+            // stub keyed by that SpecId.
             let n_caps = captured.len();
+            let lam = module.fn_by_id(*fn_id);
+            let n_params = lam.block(lam.entry).params.len();
+            let mut key: Vec<crate::types::Descr> =
+                vec![crate::types::Descr::any(); n_params];
+            for (k, cv) in captured.iter().enumerate() {
+                if let Some(slot) = key.get_mut(k) {
+                    *slot = fn_types.vars.get(cv).cloned()
+                        .unwrap_or_else(crate::types::Descr::any);
+                }
+            }
+            let cl_sid = spec_registry
+                .resolve(*fn_id, &key)
+                .map(|s| s.0)
+                .ok_or_else(|| CodegenError::new(format!(
+                    ".29.12.2: no covering spec for closure target \
+                     FnId({}) with key {:?}",
+                    fn_id.0, key)))?;
             let stub_func_id = stub_fn_ids
-                .get(&(*fn_id, n_caps))
+                .get(&cl_sid)
                 .copied()
                 .ok_or_else(|| {
                     CodegenError::new(format!(
-                        "fz-ul4.29.5: no stub registered for (FnId({}), {} captures)",
-                        fn_id.0, n_caps
+                        "fz-ul4.29.12.2: no stub registered for SpecId({}) \
+                         (FnId({}), {} captures)",
+                        cl_sid, fn_id.0, n_caps
                     ))
                 })?;
             let alloc_fref = jmod.declare_func_in_func(runtime.alloc_closure_id, b.func);
