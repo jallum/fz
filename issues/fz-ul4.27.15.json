@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-05-13T02:30:29Z",
   "created": "2026-05-13T02:26:17Z",
   "description": "Today's codegen convention: prims default to producing Tagged FzValue and consumers unbox per their needs (`as_raw_i64` etc.). This was right when raw kinds didn't exist; after the .27 arc it's backwards. The typer knows each var's Descr; the prim should produce the form that matches.\n\n## Motivation — add1.fz still has gratuitous box/unbox\n\nEven after .27.14 (cont-boundary cleanup), main and add1's CLIF show:\n\n```\nv2 = iconst.i64 329          ; tagged 41 (= 41\u003c\u003c3|1)\nv3 = sshr_imm v2, 3          ; unbox to 41\nv4 = call fn0(v3, v1)        ; add1_s2 wants raw — was raw, then tagged, now raw again\n```\n\nand inside add1_s2:\n\n```\nv3 = iconst.i64 9            ; tagged 1\nv4 = sshr_imm v3, 3          ; unbox to 1\nv5 = iadd v0, v4\n```\n\n`Const::Int(n)` at `src/ir_codegen.rs:3624` unconditionally emits `iconst((n\u003c\u003c3)|TAG_INT)`. Every int-arithmetic and RawInt-slot consumer then unboxes via `as_raw_i64`. The same shape applies to `Const::Float(f)` (line 3629) which `fz_alloc_float`s every literal — every float consumer immediately `unbox_float`s.\n\nFor add1.fz under raw-by-default, the floor is **zero box/unbox ops anywhere** (since `print/1` already dispatches to `fz_print_i64(raw)` when the Descr is int — line 3905).\n\n## Why this is just plumbing now\n\n- `tagged_get` (line 4292) already exists and already handles `raw_int_vars` / `raw_f64_vars` via `box_int` / `box_float_native`.\n- Every stmt-level Tagged-expecting consumer (BinOp slow path, all `Prim::Builtin` arms, `ListCons`, `TupleField`, `MakeStruct`, etc.) already routes through `tagged_get`.\n- Direct `env.get` access is confined to `tagged_get` / `as_raw_i64` / `as_raw_f64` themselves (verified by grep).\n\nSo flipping a const producer from Tagged to Raw is sound today; the consumer machinery is already symmetric. The Tagged producers stayed Tagged purely by historical inertia.\n\n## DAG\n\n- **.27.15.1** Const::Int emits RawI64 directly when the var's Descr is int-monomorphic. The literal `iconst N` (raw) replaces `iconst (N\u003c\u003c3)|TAG_INT`. Tagged consumers retag via `tagged_get` / `box_int` — same op count for them, zero ops for raw consumers.\n- **.27.15.2** Const::Float emits RawF64 directly via `f64const(f)`. Eliminates the per-literal `fz_alloc_float` heap call when the const is consumed raw. Tagged consumers heap-alloc on demand via `box_float_native` (same op count for them).\n\n## Out of scope (follow-up if/when motivated)\n\n- Generalize to other bucket-3 prims (TupleField, ListHead/Tail, BinOp slow-path results, etc.) that *could* return raw when their slot/Descr matches. Each is its own audit; not blocked by .15.1/.15.2 and probably worth separate tickets per-prim-family.\n\n## Acceptance (epic)\n\n- `cargo test` green, no warnings.\n- add1.fz CLIF: zero `ishl_imm`/`bor_imm`/`sshr_imm` ops in `main`, `add1_s2`, or `k_2_s3` (boxing of the Nil-bits literal is not boxing — it's the value's tag).\n- No regression in spec-parity, fixture matrix, or existing CLIF goldens.",
   "id": "fz-ul4.27.15",
   "labels": [],
   "parent": "fz-ul4.27",
   "priority": 3,
-  "status": "open",
+  "status": "closed",
   "title": "[EPIC] Raw-by-default for monomorphic int/float prims",
   "type": "task",
-  "updated_at": "2026-05-13T02:26:17Z"
+  "updated_at": "2026-05-13T02:30:29Z"
 }
