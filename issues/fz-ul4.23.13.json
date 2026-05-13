@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-05-13T00:38:42Z",
   "created": "2026-05-13T00:38:32Z",
   "description": "Cranelift's native CLIF writer reserves a wide left gutter for the @\u003chex\u003e srcloc column. Lines with srclocs sit at col 0; lines without are padded out past the gutter (~32 cols), so block headers and constant-folded ops splay right while annotated insts hug the margin. The fz dump --emit clif output inherits this and is hard to read.\n\nRewrite the post-processing pass (annotate_srclocs -\u003e format_clif in src/main.rs) to:\n- strip Cranelift's gutter,\n- re-indent: function header / closing brace / block headers at col 0; sig/fn decls and instructions at col 4,\n- decode the @\u003chex\u003e prefix into @line:col,\n- fold the srcloc into a single trailing comment aligned to a fixed body column, merging any existing Cranelift const-prop hint (; vN = K) into the same comment block.\n\n## Acceptance\n\n- fz dump --emit clif fixtures/add1.fz visually clean.\n- fz_dump_emits_clif and expect_clif_demo.fz fixture check updated to match new srcloc syntax (; @L:).\n- cargo test green.\n- One commit.",
   "id": "fz-ul4.23.13",
   "labels": [],
   "parent": "fz-ul4.23",
   "priority": 3,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Readable fz dump CLIF layout",
   "type": "task",
-  "updated_at": "2026-05-13T00:38:34Z"
+  "updated_at": "2026-05-13T00:38:42Z"
 }
