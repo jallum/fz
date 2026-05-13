@@ -6,14 +6,15 @@
   "blocks": [
     "fz-ul4.29.12.3"
   ],
+  "closed_at": "2026-05-13T00:02:20Z",
   "created": "2026-05-12T23:36:29Z",
   "description": "Widen `closure_shapes` from `(FnId, capture_count)` to `SpecId`. Generate one typed stub per SpecId reachable from a MakeClosure callsite. MakeClosure resolves the SpecId from `[capture_descrs ++ arg_descrs_from_arrow]` and bakes the typed stub_fp into the closure heap object.\n\n## What\n\n- Replace `closure_shapes: BTreeMap\u003c(FnId, usize), ()\u003e` with `closure_shapes: BTreeMap\u003cSpecId, ()\u003e` in `src/ir_codegen.rs:1247-1263`.\n- At each `Prim::MakeClosure` site during the collection pass, resolve the SpecId via `spec_registry.resolve(lam_fn_id, \u0026[capture_descrs..., arg_descrs_from_arrow...])`. Arrow Descrs come from the typer's view of the closure value at this point. Panic loudly on miss.\n- Update `stub_fn_ids` keying and `stub_sigs` keying to `SpecId`.\n- At MakeClosure lowering (interp/JIT/AOT), pick `stub_fp = stub_fn_ids[resolved_sid]` instead of `(fn_id, captures.len())`.\n\n## Why\n\nA SpecId already fully pins `(FnId, capture types, arg types, ret type, frame schema)` since the lambda's entry params are `[captures..., args...]` by construction (`src/ir_lower.rs:819`). One stub per SpecId is sufficient; no extra capture-kind disambiguation needed.\n\nThis ticket only *keys* the stubs by SpecId — the stub body still dispatches to any-key (.29.12.3 makes that typed).\n\n## Tests (TDD)\n\n- Two MakeClosure sites of the same lambda with different capture Descrs → two distinct SpecIds → two distinct stub fps in the produced heap closures.\n- Existing closure tests stay green.\n\n## Out of scope\n\n- Stub body changes (next ticket: .29.12.3).",
   "id": "fz-ul4.29.12.2",
   "labels": [],
   "parent": "fz-ul4.29.12",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Typed closure stubs keyed by SpecId",
   "type": "task",
-  "updated_at": "2026-05-12T23:54:51Z"
+  "updated_at": "2026-05-13T00:02:20Z"
 }
