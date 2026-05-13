@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
     "fz-ul4.27.20"
@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-ul4.27",
   "priority": 3,
-  "status": "open",
+  "status": "in_progress",
   "title": "Trim unused host_ctx from native fn signatures",
   "type": "task",
-  "updated_at": "2026-05-13T02:54:50Z"
+  "updated_at": "2026-05-13T02:54:55Z"
 }
