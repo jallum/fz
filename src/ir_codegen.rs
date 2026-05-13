@@ -3602,25 +3602,52 @@ fn compile_fn<M: cranelift_module::Module>(
                         None
                     };
                     // cont arg passed to the callee: cl_ptr for native cont,
-                    // else cont_param fallback (uniform-cont path).
+                    // else cont_param fallback (uniform-cont path). fz-cps.1.11:
+                    // when the cont-fn is uniform (rare; really only main's
+                    // halt-style cont after the parking-reachable lift) and
+                    // we have no cont_param, build a halt-cont closure inline
+                    // so the callee's Term::Return doesn't load through null+16.
+                    // synth_halt_cont tracks the latter: the callee chains
+                    // all the way into the halt-cont body, so the caller
+                    // must NOT execute its uniform-cont write-back after
+                    // the call (that would double-halt with the wrong value).
+                    let mut synth_halt_cont = false;
                     let cont_arg = if let Some(cl_ptr) = cl_ptr_opt {
                         cl_ptr
                     } else {
                         match cont_param {
                             Some(c) => c,
-                            None => b.ins().iconst(types::I64, 0),
+                            None => {
+                                synth_halt_cont = true;
+                                let acl_fref = jmod
+                                    .declare_func_in_func(runtime.alloc_closure_id, b.func);
+                                let dummy_fid = b.ins().iconst(types::I32, 0);
+                                let n_caps0 = b.ins().iconst(types::I32, 0);
+                                let halt_alloc =
+                                    b.ins().call(acl_fref, &[dummy_fid, n_caps0]);
+                                let halt_cl = b.inst_results(halt_alloc)[0];
+                                let hcb_fref = jmod
+                                    .declare_func_in_func(runtime.halt_cont_body_id, b.func);
+                                let hcb_addr =
+                                    b.ins().func_addr(types::I64, hcb_fref);
+                                b.ins().store(
+                                    MemFlags::trusted(),
+                                    hcb_addr, halt_cl, HEADER_SIZE,
+                                );
+                                halt_cl
+                            }
                         }
                     };
                     native_args.push(cont_arg);
 
-                    if cl_ptr_opt.is_some() && is_native {
+                    if (cl_ptr_opt.is_some() || synth_halt_cont) && is_native {
                         // fz-cps.1.8 — native→native chained call uses
                         // return_call (TCO via Tail-CC). The callee's
                         // Term::Return tail-chains into the cont closure
                         // we built above. Matches §8.2 target clif.
                         let _ = (return_reprs[this_spec_id as usize], callee_ret_repr);
                         b.ins().return_call(callee_fref, &native_args);
-                    } else if cl_ptr_opt.is_some() {
+                    } else if cl_ptr_opt.is_some() || synth_halt_cont {
                         // Uniform caller → native callee (chained). Can't
                         // return_call across CC; synchronous call then
                         // return the chain-final value (halt_value already
@@ -3729,10 +3756,32 @@ fn compile_fn<M: cranelift_module::Module>(
                         let inst = b.ins().call(fref, &[sid_v]);
                         native_args.push(b.inst_results(inst)[0]);
                     }
-                    // fz-cps.1.a: trailing cont arg per §2.1.
+                    // fz-cps.1.a: trailing cont arg per §2.1. fz-cps.1.11:
+                    // build halt-cont closure inline when uniform-tier
+                    // caller (cont_param=None) tail-calls native callee,
+                    // so the callee's Term::Return doesn't deref null.
+                    let mut synth_halt_cont = false;
                     let tail_cont_arg = match cont_param {
                         Some(c) => c,
-                        None => b.ins().iconst(types::I64, 0),
+                        None => {
+                            synth_halt_cont = true;
+                            let acl_fref = jmod
+                                .declare_func_in_func(runtime.alloc_closure_id, b.func);
+                            let dummy_fid = b.ins().iconst(types::I32, 0);
+                            let n_caps0 = b.ins().iconst(types::I32, 0);
+                            let halt_alloc =
+                                b.ins().call(acl_fref, &[dummy_fid, n_caps0]);
+                            let halt_cl = b.inst_results(halt_alloc)[0];
+                            let hcb_fref = jmod
+                                .declare_func_in_func(runtime.halt_cont_body_id, b.func);
+                            let hcb_addr =
+                                b.ins().func_addr(types::I64, hcb_fref);
+                            b.ins().store(
+                                MemFlags::trusted(),
+                                hcb_addr, halt_cl, HEADER_SIZE,
+                            );
+                            halt_cl
+                        }
                     };
                     native_args.push(tail_cont_arg);
                     if is_native {
@@ -3740,6 +3789,15 @@ fn compile_fn<M: cranelift_module::Module>(
                         // recursive tail calls reuse the same stack frame
                         // (TCO). Without this, count_100k blows the stack.
                         b.ins().return_call(callee_fref, &native_args);
+                    } else if synth_halt_cont {
+                        // fz-cps.1.11 — uniform caller + native callee
+                        // with synthesized halt-cont: callee's chain runs
+                        // all the way through halt_cont_body. Caller must
+                        // NOT do post-call uniform write-back (would
+                        // double-halt with the wrong value).
+                        let _ = b.ins().call(callee_fref, &native_args);
+                        let zero = b.ins().iconst(types::I64, 0);
+                        b.ins().return_(&[zero]);
                     } else {
                         // Uniform caller: synchronous call, then write result
                         // into MY cont's slot 1 (FzValue — cont result param
