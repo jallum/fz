@@ -1899,6 +1899,62 @@ fn main(), do: print(add1(40) + 2)
         assert!(narrow_found, "test premise: main should have a direct Call");
     }
 
+    /// fz-ul4.29.12.5 — a `Term::Receive` cont with a typed capture must
+    /// have a narrow spec registered (slot 0 = `any` per the opaque-
+    /// sender rule, slot 1+ narrowed from the caller's env). .29.12.1's
+    /// `emit_receive` resolves through subsumption against this spec to
+    /// pick a narrow cont SpecId for `fz_alloc_frame`; this test pins
+    /// the typer precondition.
+    #[test]
+    fn receive_cont_with_typed_capture_gets_narrow_spec() {
+        let (m, mt) = pipeline(r#"
+fn waiter(tag) do
+  m = receive()
+  print(m)
+  tag
+end
+fn main() do
+  waiter(7)
+end
+"#);
+        // The receive's cont fn is synthesized by ir_lower's CPS split.
+        // Find any cont fn referenced from a Term::Receive in waiter.
+        let waiter = m.fns.iter().find(|f| f.name == "waiter").unwrap();
+        let mut cont_fn_ids: Vec<FnId> = Vec::new();
+        for b in &waiter.blocks {
+            if let Term::Receive { continuation } = &b.terminator {
+                cont_fn_ids.push(continuation.fn_id);
+            }
+        }
+        assert!(!cont_fn_ids.is_empty(), "test premise: waiter has a Receive");
+        // At least one of those cont fns has a narrow spec where slot 1
+        // (= the captured `tag`) is `int_lit(7)` (typed via the call
+        // `waiter(7)`).
+        let mut any_narrow = false;
+        for cont_id in cont_fn_ids {
+            for ((fid, key), _) in &mt.specs {
+                if *fid != cont_id { continue; }
+                if key.is_empty() { continue; }
+                // slot 0 must be `any` (receive opaque).
+                if !key[0].is_equiv(&Descr::any()) { continue; }
+                // slot 1+ must include at least one int-typed entry
+                // (the propagated `tag` capture).
+                if key.iter().skip(1).any(|d| d.is_subtype(&Descr::int())
+                    && !d.is_equiv(&Descr::any())) {
+                    any_narrow = true;
+                }
+            }
+        }
+        assert!(any_narrow,
+            "expected ≥1 narrow Receive-cont spec with typed capture; \
+             specs for cont fns: {:?}",
+            mt.specs.iter()
+                .filter(|((fid, _), _)| m.fns.iter().any(|f|
+                    f.id == *fid && f.name.contains("waiter")))
+                .map(|((fid, k), _)| (*fid, k.clone()))
+                .collect::<Vec<_>>());
+    }
+
     /// fz-ul4.29.12.4 — spawn-with-captures registers a narrow spec for
     /// `fz_spawn_thunk` keyed by the spawned closure's Descr. .29.12.2's
     /// typed-stub keying then routes spawn dispatch through that narrow
