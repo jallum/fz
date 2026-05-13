@@ -1782,9 +1782,13 @@ pub fn compile_with_backend<B: Backend>(
         backend.module_mut().clear_context(&mut ctx);
     }
 
-    // fz-ul4.29.5: compile each closure stub. fz-ul4.29.12.2: stubs are
-    // keyed by the lambda's SpecId.0; the body still dispatches to the
-    // callee's any-key (the body switches to typed dispatch in .29.12.3).
+    // fz-ul4.29.5: compile each closure stub. fz-ul4.29.12.2/3: stubs
+    // are keyed by the lambda's narrow SpecId.0 and dispatch to *that*
+    // SpecId's compiled body — captures coerced via the spec's
+    // `param_reprs[0..n_caps]`, args via `param_reprs[n_caps..]`,
+    // frame sized to `schemas[spec_id]`, header.schema_id = spec_id.
+    // The trampoline picks `fn_ptrs[spec_id]` and dispatches the
+    // narrow body.
     for (cl_sid, stub_func_id) in &stub_fn_ids {
         let lam_fn_id = spec_keys[*cl_sid as usize].0;
         let n_caps = closure_shapes[cl_sid];
@@ -1792,11 +1796,12 @@ pub fn compile_with_backend<B: Backend>(
             .find(|f| f.id == lam_fn_id)
             .expect("stub callee FnId in module");
         let n_callee_params = callee.block(callee.entry).params.len();
-        let callee_sid = lam_fn_id.0; // any-key invariant — body stays
-                                       // any-key in .29.12.2.
+        let callee_sid = *cl_sid; // fz-ul4.29.12.3 — dispatch to this
+                                  // stub's narrow SpecId, not the
+                                  // lambda's any-key.
         let callee_func_id = *fn_ids
             .get(&callee_sid)
-            .expect("callee any-key spec has a FuncId");
+            .expect("callee narrow spec has a FuncId");
         let callee_schema = &schemas[callee_sid as usize];
         let callee_frame_size = callee_schema.size;
         let callee_is_native_abi = natively_callable.contains(&lam_fn_id);
