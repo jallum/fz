@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-siu.1.7"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-siu.1.9"
+  ],
   "created": "2026-05-13T18:00:05Z",
   "description": "Spec: docs/cps-in-clif.md §2.1 — every fn used as a closure target gets sig `(args..., self: i64, cont: i64) tail`, with no exceptions for direct-called targets. §8.2 / §8.3 target clif require this shape uniformly.\n\nWork:\n- Remove `closure_only = targets - direct_called` filter in src/ir_codegen.rs (~line 1620). All `Prim::MakeClosure` targets adopt closure-target sig.\n- For each fn `f` that is BOTH direct-called AND a MakeClosure target: rewrite Term::Call/TailCall sites whose callee is `f` to use the closure-target ABI. Two viable approaches:\n  (a) IR-level rewrite: convert direct Term::Call to Term::CallClosure(static_singleton_of_f, args). Requires fz-siu.1.7 landed.\n  (b) Codegen-level: at the direct call site, build closure pointer inline (load static singleton via fz-siu.1.7 lookup), `return_call_indirect` through it instead of `return_call` to fn body.\n- Either way: every callee of a closure-target fn now passes `self`.\n- Delete `compile_closure_stub` and all per-shape stub generation. Closure callees load their captures from `self+24+8*i` directly; no adapter needed.\n- Drop the per-shape stub function declarations from RuntimeRefs / module symbols.\n\nAcceptance:\n- `compile_closure_stub` deleted; no SystemV stubs in generated module.\n- Unit test asserting no `fz_closure_stub_*` symbols in any compiled module's defined-fn list.\n- Sanity: `add1.fz / tail_recursion.fz / vr3_float_args.fz` still pass.\n\nNote: this ticket alone leaves `Term::CallClosure` lowering broken on native path (no stub for call_indirect to land on). Must land together with fz-siu.1.8 as a single commit, OR keep an inline closure-target-style emission helper inside Term::CallClosure lowering itself.",
   "id": "fz-siu.1.8",

@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-siu.1.8"
+  ],
   "blocks": [],
   "created": "2026-05-13T18:00:18Z",
   "description": "Spec: docs/cps-in-clif.md §8.2 compose / §8.3 apply1 — `Term::CallClosure` lowers to `v_code = load f+16; return_call_indirect sig, v_code(args..., f, k)`. No stub.\n\nWork:\n- In src/ir_codegen.rs at the native-path terminator dispatch (currently panics with \"Term::CallClosure reached from native-fn body — natively_callable invariant violated\" near line 3683/3727):\n  - Term::CallClosure: factor cont-closure construction from uniform path (line ~3578), build cont closure with synthetic outer_cont + Tagged user captures, then `return_call_indirect Tail` with sig `(args..., self, cont) i64 -\u003e i64 tail` through `load cl+16`. Pass cl as self, cf as cont.\n  - Term::TailCallClosure: same shape but pass the caller's own cont (from `cont_param` SSA or, for entry of a closure-target shape, the explicit cont param). No new cont closure built.\n- Update uniform-path Term::CallClosure (line 3578) to also emit the Tail-CC return_call_indirect path. Uniform fns themselves are SystemV — they cannot `return_call` Tail-CC. Either:\n  (a) defer uniform-path rewrite to fz-siu.1.10 (parking-reachable promotion); for now uniform fns retain a temporary helper or assert \"this fn must be native after 1.10\".\n  (b) emit a tail-trampoline: uniform fn builds cont closure, then runtime helper `fz_dispatch_closure` does the Tail-CC dispatch and the uniform fn returns its YIELD sentinel.\n- Admit `Term::CallClosure { continuation, .. }` to body_ok in `parking::natively_callable` and ir_codegen's type-aware shrink when continuation.fn_id is in set. Admit `Term::TailCallClosure` unconditionally. Receive admission deferred to fz-siu.1.11.\n- Drop `cont_blocked` entries for CallClosure sites in `parking::natively_callable`. CallClosure conts are now native.\n\nAcceptance:\n- `higher_order.fz` prints `-10` end-to-end.\n- `closure_typed_captures.fz` prints `42` end-to-end.\n- Existing §8.1 + §8.4 regression tests stay green.\n- Re-enable (un-#[ignore]) `higher_order_compose_matches_cps_in_clif_section_8_2` and `closure_typed_captures_matches_cps_in_clif_section_8_3` in tests/fixture_matrix.rs.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "fz-cps.1.9: native-path Term::CallClosure / TailCallClosure",
   "type": "task",
-  "updated_at": "2026-05-13T18:00:18Z"
+  "updated_at": "2026-05-13T18:00:57Z"
 }
