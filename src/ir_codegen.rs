@@ -1576,6 +1576,43 @@ pub fn compile_with_backend<B: Backend>(
             &natively_callable,
         );
 
+    // fz-ul4.27.18 — per-FnId set: fns invoked from any fz IR site
+    // (as a direct callee, a continuation, or a closure target).
+    // A fn NOT in this set has no fz IR caller and can only enter via
+    // the trampoline entry (which writes null into the frame's slot 0).
+    // For such a fn, cont_ptr is statically null at runtime; emit_return
+    // can specialize to a halt-only path, skipping the runtime
+    // `load v0+16; icmp eq 0; brif` dispatch entirely.
+    let mut ir_referenced_fns: std::collections::HashSet<crate::fz_ir::FnId> =
+        std::collections::HashSet::new();
+    for f in &module.fns {
+        for blk in &f.blocks {
+            match &blk.terminator {
+                Term::Call { callee, continuation, .. } => {
+                    ir_referenced_fns.insert(*callee);
+                    ir_referenced_fns.insert(continuation.fn_id);
+                }
+                Term::TailCall { callee, .. } => {
+                    ir_referenced_fns.insert(*callee);
+                }
+                Term::CallClosure { continuation, .. }
+                | Term::Receive { continuation } => {
+                    ir_referenced_fns.insert(continuation.fn_id);
+                }
+                _ => {}
+            }
+            for stmt in &blk.stmts {
+                let Stmt::Let(_, prim) = stmt;
+                if let Prim::MakeClosure(fid, _) = prim {
+                    ir_referenced_fns.insert(*fid);
+                }
+            }
+        }
+    }
+    // Rebind for the existing parameter name threading. The contained
+    // fns are exactly the "never specializable as halt-only" set.
+    let cont_target_fns = ir_referenced_fns;
+
     // Rebuild schemas: one entry per SpecId, refined entry-param kinds
     // from THAT spec's FnTypes. The any-key SpecId for FnId K lands at
     // index K (invariant) so any code path that uses fn_id.0 as a
@@ -1834,6 +1871,7 @@ pub fn compile_with_backend<B: Backend>(
             &spec_registry,
             &module.source,
             &natively_callable,
+            &cont_target_fns,
             &fn_ids,
             &param_reprs,
             &return_reprs,
@@ -2391,6 +2429,7 @@ fn compile_fn<M: cranelift_module::Module>(
     spec_registry: &SpecRegistry,
     source: &crate::fz_ir::SourceInfo,
     natively_callable: &std::collections::HashSet<crate::fz_ir::FnId>,
+    cont_target_fns: &std::collections::HashSet<crate::fz_ir::FnId>,
     fn_ids: &HashMap<u32, FuncId>,
     param_reprs: &[Vec<ArgRepr>],
     return_reprs: &[ArgRepr],
@@ -2398,6 +2437,14 @@ fn compile_fn<M: cranelift_module::Module>(
     module_types: &crate::ir_typer::ModuleTypes,
 ) -> Result<(), CodegenError> {
     let is_native = natively_callable.contains(&f.id);
+    // fz-ul4.27.18: when this fn is never invoked from any fz IR site
+    // (not a direct callee, not a continuation, not a closure target),
+    // it can only enter via the trampoline entry, which writes null
+    // into the frame's slot 0. cont_ptr is therefore statically null at
+    // runtime; emit_return can elide the load/icmp/brif dispatch and
+    // emit a halt-only path. The `cont_target_fns` parameter is the
+    // upstream set of "ever referenced from fz IR" FnIds.
+    let cont_ptr_known_null = !cont_target_fns.contains(&f.id);
     let callee_is_native = |id: u32| natively_callable.contains(&crate::fz_ir::FnId(id));
     // Resolve a direct callsite to its narrow SpecId.0 if a matching spec
     // exists; otherwise fall back to the callee's any-key SpecId.0 (== the
@@ -2758,6 +2805,10 @@ fn compile_fn<M: cranelift_module::Module>(
                     let to = return_reprs[this_spec_id as usize];
                     let coerced = coerce_to(&mut b, jmod, &runtime, val, from, to);
                     b.ins().return_(&[coerced]);
+                } else if cont_ptr_known_null {
+                    // fz-ul4.27.18: this fn is never a cont target; cont_ptr
+                    // is statically null. Skip the load/icmp/brif dispatch.
+                    emit_halt_and_return_null(&mut b, jmod, runtime, host_ctx, val);
                 } else {
                     emit_return(&mut b, jmod, runtime, frame_ptr, host_ctx, val);
                 }
@@ -2839,19 +2890,26 @@ fn compile_fn<M: cranelift_module::Module>(
                             );
                             b.ins().return_(&[coerced]);
                         } else {
-                            // emit_return expects Tagged val.
+                            // emit_return / emit_halt expect Tagged val.
                             let val_tagged = coerce_to(
                                 &mut b, jmod, &runtime,
                                 final_result, cont_ret_repr, ArgRepr::Tagged,
                             );
-                            emit_return(
-                                &mut b,
-                                jmod,
-                                runtime,
-                                frame_ptr,
-                                host_ctx,
-                                val_tagged,
-                            );
+                            if cont_ptr_known_null {
+                                // fz-ul4.27.18: never-a-cont-target fn; halt-only.
+                                emit_halt_and_return_null(
+                                    &mut b, jmod, runtime, host_ctx, val_tagged,
+                                );
+                            } else {
+                                emit_return(
+                                    &mut b,
+                                    jmod,
+                                    runtime,
+                                    frame_ptr,
+                                    host_ctx,
+                                    val_tagged,
+                                );
+                            }
                         }
                     } else {
                         let cont_schema = &schemas[cont_sid as usize];
@@ -3181,6 +3239,27 @@ fn emit_return<M: cranelift_module::Module>(
     let result_off = HEADER_SIZE + SLOT_BYTES;
     b.ins().store(MemFlags::trusted(), val, cont_ptr, result_off);
     b.ins().return_(&[cont_ptr]);
+}
+
+/// fz-ul4.27.18 — specialized emit_return for fns whose cont_ptr is
+/// statically known to be null at runtime (i.e. fns that are never a
+/// cont target anywhere in the module — they can only be invoked as
+/// the trampoline entry, which writes null into slot 0). Skip the
+/// `load v0+16; icmp eq 0; brif` dispatch and the dead invoke-branch
+/// entirely; just `call fz_halt(host_ctx, val); return null`.
+///
+/// Takes no `frame_ptr` because none is read.
+fn emit_halt_and_return_null<M: cranelift_module::Module>(
+    b: &mut FunctionBuilder<'_>,
+    jmod: &mut M,
+    runtime: &RuntimeRefs,
+    host_ctx: ir::Value,
+    val: ir::Value,
+) {
+    let halt_fref = jmod.declare_func_in_func(runtime.halt_id, b.func);
+    b.ins().call(halt_fref, &[host_ctx, val]);
+    let null = b.ins().iconst(types::I64, 0);
+    b.ins().return_(&[null]);
 }
 
 /// Term::Call: allocate continuation frame + callee frame. Continuation

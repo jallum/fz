@@ -485,6 +485,42 @@ fn add1_has_no_int_box_or_unbox_anywhere() {
     );
 }
 
+/// fz-ul4.27.18 — for `fixtures/add1.fz`, `main` is never invoked from
+/// any fz IR site (not a direct callee, not a continuation, not a
+/// closure target). It can only enter via the trampoline entry, which
+/// writes null into slot 0. So `main`'s emit_return paths specialize
+/// to a halt-only sequence (`call fz_halt; return null`), skipping the
+/// runtime `load v0+16; icmp eq 0; brif halt/store` dispatch entirely.
+/// The body collapses to a single linear block.
+#[test]
+fn add1_main_has_no_runtime_cont_ptr_dispatch() {
+    let out = Command::new(FZ_BIN)
+        .args(["dump", "fixtures/add1.fz", "--emit", "clif", "--fn", "main"])
+        .output()
+        .expect("spawn fz dump");
+    assert!(out.status.success(), "fz dump exited {}", out.status);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    for op in &["load.i64 notrap aligned v0+16", "icmp eq", "brif"] {
+        assert!(
+            !stdout.contains(op),
+            "main still emits `{}` — cont_ptr dispatch should be elided \
+             under .27.18:\n{}",
+            op,
+            stdout,
+        );
+    }
+    // Only one block — no halt/invoke split.
+    let block_count = stdout.matches("block").count();
+    // The block param syntax `block0(v0: i64, v1: i64):` contains "block"
+    // once. No `block1:` / `block2:` labels expected.
+    assert!(
+        !stdout.contains("block1:") && !stdout.contains("block2:"),
+        "main should be a single linear block under .27.18; got {} occurrences \
+         of `block`:\n{}",
+        block_count, stdout,
+    );
+}
+
 /// fz-ul4.27.17 — `emit_return`'s halt-branch reuses the same `iconst.i64 0`
 /// it materialized for the null-compare, instead of emitting a duplicate
 /// inside the halt block. For fixtures/add1.fz's `main`, the body has
