@@ -69,6 +69,103 @@ pub fn pick_size_class(bytes: usize) -> u8 {
     (SIZE_TABLE.len() - 1) as u8
 }
 
+/// Per-thread block pool (§6.6). One free list per size_class. Spawn /
+/// grow / gc pull from here; Heap::drop and gc()'s old-block release
+/// return blocks here. Avoids per-spawn `malloc`/`free` churn under
+/// heavy spawn pressure. Single-threaded for v1 (worker pool = 1, per
+/// fz-ul4.19.1); the multi-worker follow-up will switch to either
+/// per-worker pools or a Mutex-guarded shared pool.
+struct BlockPool {
+    free_lists: [Vec<*mut u8>; SIZE_TABLE.len()],
+}
+
+impl BlockPool {
+    const fn new() -> Self {
+        // Const init: 32 empty Vecs. `[Vec::new(); N]` doesn't const-init
+        // because Vec is not Copy; use a manual array build.
+        Self { free_lists: [const { Vec::new() }; SIZE_TABLE.len()] }
+    }
+
+    fn alloc(&mut self, size_class: u8) -> *mut u8 {
+        let idx = size_class as usize;
+        let size = SIZE_TABLE[idx];
+        if let Some(p) = self.free_lists[idx].pop() {
+            // Recycled blocks: zero before returning. Cheney + Heap::new
+            // expect zero pages.
+            unsafe { std::ptr::write_bytes(p, 0, size); }
+            return p;
+        }
+        let layout = Layout::from_size_align(size, 16).expect("bad block layout");
+        let p = unsafe { alloc_zeroed(layout) };
+        assert!(!p.is_null(), "block pool: malloc failed");
+        p
+    }
+
+    fn free(&mut self, p: *mut u8, size_class: u8) {
+        // Free lists grow unbounded in v1. A real-world deployment would
+        // cap each list (e.g., 4 entries) and `dealloc` the overflow.
+        // For now we accept the worst-case memory footprint to keep the
+        // pool deterministic.
+        self.free_lists[size_class as usize].push(p);
+    }
+}
+
+impl Drop for BlockPool {
+    fn drop(&mut self) {
+        // At thread exit (or test teardown), free any cached blocks.
+        for (idx, list) in self.free_lists.iter_mut().enumerate() {
+            let size = SIZE_TABLE[idx];
+            let layout = Layout::from_size_align(size, 16).expect("bad block layout");
+            for p in list.drain(..) {
+                unsafe { dealloc(p, layout); }
+            }
+        }
+    }
+}
+
+thread_local! {
+    static BLOCK_POOL: RefCell<BlockPool> = const { RefCell::new(BlockPool::new()) };
+}
+
+fn pool_alloc(size_class: u8) -> *mut u8 {
+    BLOCK_POOL.with(|p| p.borrow_mut().alloc(size_class))
+}
+
+/// Returns a block to the pool. If the TLS pool has already been dropped
+/// (thread teardown ordering), falls back to a direct `dealloc` — the
+/// block leaks nothing, just bypasses the cache.
+fn pool_free(p: *mut u8, size_class: u8) {
+    let result = BLOCK_POOL.try_with(|pool| pool.borrow_mut().free(p, size_class));
+    if result.is_err() {
+        let size = SIZE_TABLE[size_class as usize];
+        let layout = Layout::from_size_align(size, 16).expect("bad block layout");
+        unsafe { dealloc(p, layout); }
+    }
+}
+
+/// Test-only: drains every cached block in the per-thread pool back to
+/// `dealloc`. Used to assert pool occupancy in acceptance tests; not
+/// called from the runtime hot path.
+#[cfg(test)]
+pub fn pool_drain_for_test() {
+    BLOCK_POOL.with(|pool| {
+        let mut pool = pool.borrow_mut();
+        for (idx, list) in pool.free_lists.iter_mut().enumerate() {
+            let size = SIZE_TABLE[idx];
+            let layout = Layout::from_size_align(size, 16).expect("bad block layout");
+            for p in list.drain(..) {
+                unsafe { dealloc(p, layout); }
+            }
+        }
+    });
+}
+
+/// Test-only: total cached blocks across all size classes.
+#[cfg(test)]
+pub fn pool_total_cached_blocks() -> usize {
+    BLOCK_POOL.with(|pool| pool.borrow().free_lists.iter().map(|l| l.len()).sum())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FieldKind {
     /// Tagged FzValue bits. GC tracer follows this slot.
@@ -143,9 +240,10 @@ pub struct Heap {
     /// Counter for shrink hysteresis (§6.5): bumps when a GC reports
     /// live < 25% of current block size; resets otherwise.
     pub low_live_streak: u8,
-    /// Old blocks abandoned by `grow`. `Drop` frees them. Cheney (.8)
-    /// replaces this leak path with a fresh-block copy.
-    abandoned_blocks: Vec<(*mut u8, usize)>,
+    /// Old blocks abandoned by `grow`. Each carries its size_class so
+    /// `Drop` / gc() can return it to the pool (§6.6). Cheney (.8)
+    /// frees the entire list at every collection.
+    abandoned_blocks: Vec<(*mut u8, u8)>,
     pub(crate) schemas: Rc<RefCell<SchemaRegistry>>,
     /// Park-time GC flag. Set by `note_alloc_pressure` when occupancy
     /// crosses `gc_threshold_bytes`; cleared by the scheduler after `gc()`.
@@ -165,31 +263,25 @@ pub struct Heap {
 impl Heap {
     pub fn new(capacity: usize, schemas: Rc<RefCell<SchemaRegistry>>) -> Self {
         assert!(capacity > 0 && capacity % 16 == 0, "capacity must be 16-aligned");
-        let block_start = Self::alloc_block(capacity);
+        let size_class = pick_size_class(capacity);
+        let block_size = SIZE_TABLE[size_class as usize];
+        let block_start = pool_alloc(size_class);
         Self {
             block_start,
             bump_top: block_start,
-            block_end: unsafe { block_start.add(capacity) },
-            block_size: capacity,
-            size_class: 0,
+            block_end: unsafe { block_start.add(block_size) },
+            block_size,
+            size_class,
             low_live_streak: 0,
             abandoned_blocks: Vec::new(),
             schemas,
             pressure: std::sync::atomic::AtomicBool::new(false),
             // Default: half the block. Tunable per-Process for tests that
             // want to force the park-time GC hook to fire.
-            gc_threshold_bytes: capacity / 2,
+            gc_threshold_bytes: block_size / 2,
             gc_run_count: 0,
             alloc_count: 0,
         }
-    }
-
-    fn alloc_block(size: usize) -> *mut u8 {
-        assert!(size > 0 && size % 16 == 0, "block size must be 16-aligned");
-        let layout = Layout::from_size_align(size, 16).expect("bad heap layout");
-        let p = unsafe { alloc_zeroed(layout) };
-        assert!(!p.is_null(), "heap block allocation failed");
-        p
     }
 
     pub fn should_gc(&self) -> bool {
@@ -209,27 +301,28 @@ impl Heap {
     }
 
     /// Bump-only allocator. Rounds `size` up to 16 and advances `bump_top`.
-    /// On overflow, abandons the current block and allocates a fresh one
-    /// twice the size (the .8 Cheney collector replaces this leak path
-    /// with a copying GC). Caller initializes the `HeapHeader` at the
-    /// returned pointer.
+    /// On overflow, abandons the current block and allocates a fresh
+    /// pool-backed block at the next size_class. The next park-time
+    /// Cheney recycles the whole abandoned chain.
     pub fn alloc(&mut self, size: usize) -> *mut HeapHeader {
         let size = (size + 15) & !15;
         assert!(size >= 16, "alloc must include at least the 16-byte header");
         let new_top = unsafe { self.bump_top.add(size) };
         if new_top > self.block_end {
-            // Grow: abandon current block, allocate a fresh one at least
-            // 2× the current size or large enough to fit `size`, whichever
-            // is larger.
-            let next_size = std::cmp::max(self.block_size * 2, size.next_power_of_two().max(1024));
-            // Round up to 16-align.
-            let next_size = (next_size + 15) & !15;
-            self.abandoned_blocks.push((self.block_start, self.block_size));
-            let new_block = Self::alloc_block(next_size);
+            // Grow: pick the smallest size_class > current that also fits
+            // `size`. Allocate via the pool; abandon the current block
+            // for Cheney/Drop to return.
+            let want_for_alloc = pick_size_class(size);
+            let bumped = self.size_class.saturating_add(1).min((SIZE_TABLE.len() - 1) as u8);
+            let new_class = want_for_alloc.max(bumped);
+            let new_size = SIZE_TABLE[new_class as usize];
+            self.abandoned_blocks.push((self.block_start, self.size_class));
+            let new_block = pool_alloc(new_class);
             self.block_start = new_block;
             self.bump_top = new_block;
-            self.block_end = unsafe { new_block.add(next_size) };
-            self.block_size = next_size;
+            self.block_end = unsafe { new_block.add(new_size) };
+            self.block_size = new_size;
+            self.size_class = new_class;
         }
         let p = self.bump_top;
         self.bump_top = unsafe { self.bump_top.add(size) };
@@ -528,7 +621,10 @@ impl Heap {
     /// Tracks total memory footprint, not "logically live" data.
     pub fn bytes_used(&self) -> usize {
         let current = unsafe { self.bump_top.offset_from(self.block_start) } as usize;
-        let abandoned: usize = self.abandoned_blocks.iter().map(|(_, s)| *s).sum();
+        let abandoned: usize = self.abandoned_blocks
+            .iter()
+            .map(|(_, sc)| SIZE_TABLE[*sc as usize])
+            .sum();
         current + abandoned
     }
 
@@ -539,10 +635,10 @@ impl Heap {
     /// if it was null on entry — nothing to trace, just recycle blocks).
     ///
     /// Algorithm: standard Cheney two-finger BFS. Allocate a to-space block
-    /// of the current `block_size` (size-class adjustment lands in .9 / .11),
-    /// copy the root, then scan to-space objects breadth-first, forwarding
-    /// each from-space child pointer to its newly-copied address. Off-heap
-    /// pointers (static-closure / halt-cont singletons) are detected by an
+    /// at the chosen size_class (§6.3 / §6.5 picker), copy the root, then
+    /// scan to-space objects breadth-first, forwarding each from-space
+    /// child pointer to its newly-copied address. Off-heap pointers
+    /// (static-closure / halt-cont singletons) are detected by an
     /// in-from-space range check and left untouched.
     pub fn gc(&mut self, root_slot: &mut *mut u8) {
         // Snapshot from-space ranges before we allocate to-space.
@@ -550,8 +646,8 @@ impl Heap {
             1 + self.abandoned_blocks.len(),
         );
         from_ranges.push((self.block_start, self.block_end));
-        for &(p, sz) in &self.abandoned_blocks {
-            from_ranges.push((p, unsafe { p.add(sz) }));
+        for &(p, sc) in &self.abandoned_blocks {
+            from_ranges.push((p, unsafe { p.add(SIZE_TABLE[sc as usize]) }));
         }
 
         // Pre-pass: compute reachable bytes from the root (cycles tracked
@@ -585,7 +681,7 @@ impl Heap {
         };
         let consumed_streak = size_class < prev_class;
         let to_size = SIZE_TABLE[size_class as usize];
-        let to_start = Self::alloc_block(to_size);
+        let to_start = pool_alloc(size_class);
         let to_end = unsafe { to_start.add(to_size) };
         let mut free = to_start;
         let mut live_count: u64 = 0;
@@ -617,14 +713,10 @@ impl Heap {
             }
         }
 
-        // Free old from-space (current + abandoned).
-        let cur_layout = Layout::from_size_align(self.block_size, 16)
-            .expect("bad heap layout");
-        unsafe { dealloc(self.block_start, cur_layout); }
-        for (p, sz) in self.abandoned_blocks.drain(..) {
-            let layout = Layout::from_size_align(sz, 16)
-                .expect("bad abandoned-block layout");
-            unsafe { dealloc(p, layout); }
+        // Return old from-space (current + abandoned) to the pool (§6.6).
+        pool_free(self.block_start, self.size_class);
+        for (p, sc) in self.abandoned_blocks.drain(..) {
+            pool_free(p, sc);
         }
 
         // Install to-space as the new current block.
@@ -879,11 +971,11 @@ fn count_objects_in_range(start: *mut u8, end: *mut u8) -> usize {
 
 impl Drop for Heap {
     fn drop(&mut self) {
-        let layout = Layout::from_size_align(self.block_size, 16).expect("bad heap layout");
-        unsafe { dealloc(self.block_start, layout) };
-        for (p, size) in self.abandoned_blocks.drain(..) {
-            let layout = Layout::from_size_align(size, 16).expect("bad abandoned-block layout");
-            unsafe { dealloc(p, layout) };
+        // Return blocks to the pool (§6.6) instead of free'ing. Next
+        // spawn pulls from the same class — no per-spawn malloc.
+        pool_free(self.block_start, self.size_class);
+        for (p, sc) in self.abandoned_blocks.drain(..) {
+            pool_free(p, sc);
         }
     }
 }
@@ -1156,22 +1248,24 @@ mod tests {
         }
     }
 
-    /// Bump overflow triggers a grow: old block is abandoned (not freed
-    /// until Drop), new block holds further allocations. `bytes_used`
-    /// covers both. Cheney (.8) replaces this leak path.
+    /// Bump overflow triggers a grow at the next size_class. Old block is
+    /// abandoned; new block holds further allocations. `bytes_used`
+    /// covers both. The next gc() returns both blocks to the pool.
     #[test]
-    fn alloc_grows_block_on_overflow() {
-        // 64-byte initial block: two 32-byte cons cells fit; third forces grow.
-        let mut h = Heap::new(64, empty_registry());
-        let _a = h.alloc_list_cons(FzValue::NIL, FzValue::NIL);
-        let _b = h.alloc_list_cons(FzValue::NIL, FzValue::NIL);
+    fn alloc_grows_to_next_size_class_on_overflow() {
+        let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
+        // SIZE_TABLE[0] = 1024 bytes → 32 cons cells fit exactly. Allocate
+        // 40 to force grow.
         let initial_block = h.block_start;
-        let initial_size = h.block_size;
-        let _c = h.alloc_list_cons(FzValue::NIL, FzValue::NIL);
+        let initial_class = h.size_class;
+        for _ in 0..40 {
+            let _ = h.alloc_list_cons(FzValue::NIL, FzValue::NIL);
+        }
         assert_ne!(h.block_start, initial_block, "grow must move block_start");
-        assert!(h.block_size >= initial_size * 2, "grow doubles at minimum");
-        assert_eq!(h.abandoned_blocks.len(), 1);
-        assert_eq!(h.live_count(), 3);
+        assert!(h.size_class > initial_class, "grow must bump size_class");
+        assert_eq!(h.block_size, SIZE_TABLE[h.size_class as usize]);
+        assert!(h.abandoned_blocks.len() >= 1);
+        assert_eq!(h.live_count(), 40);
     }
 
     /// `should_gc` flips once `bytes_used` crosses `gc_threshold_bytes`;
@@ -1253,6 +1347,36 @@ mod tests {
         let new_cons = root as *mut ListCons;
         let head = unsafe { (*new_cons).head };
         assert_eq!(head.unbox_int(), Some(7));
+    }
+
+    /// Acceptance (fz-siu.10 / §6.6): spawn under load shows no per-spawn
+    /// malloc after warm-up. After dropping a Heap, its block goes to the
+    /// pool; the next Heap::new of the same size_class pulls from the
+    /// pool, no malloc required. Repeating spawn+drop with a fixed pool
+    /// occupancy proves the cache is doing its job.
+    #[test]
+    fn pool_caches_blocks_across_heap_drops() {
+        pool_drain_for_test();
+        assert_eq!(pool_total_cached_blocks(), 0, "test starts with empty pool");
+
+        // Warm-up: create + drop one Heap. Drop returns the block.
+        {
+            let _h = Heap::new(SIZE_TABLE[0], empty_registry());
+        }
+        assert_eq!(pool_total_cached_blocks(), 1, "first drop fills the pool");
+
+        // Subsequent spawn-equivalents (Heap::new + drop) must not increase
+        // the pool occupancy — they pull from the cache, return the same
+        // block. The acceptance "no per-spawn malloc": occupancy stays at
+        // 1 across N create+drop cycles.
+        for _ in 0..50 {
+            let _h = Heap::new(SIZE_TABLE[0], empty_registry());
+            assert_eq!(pool_total_cached_blocks(), 0, "alloc drained the cache");
+            // _h dropped here → returns the block to the pool.
+        }
+        assert_eq!(pool_total_cached_blocks(), 1, "pool stayed at 1 cached block");
+
+        pool_drain_for_test();
     }
 
     #[test]
