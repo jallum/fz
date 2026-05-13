@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-13T04:09:12Z",
+  "description": "Spec: docs/cps-in-clif.md §2.3 (discipline), §8 (acceptance fixtures).\n\nWork:\n- Confirm interpreter (src/ir_interp.rs) executes each §8 fixture with the new IR shape.\n- Confirm AOT (runtime/src/aot_shim.rs) entry path matches §5.\n- Run each §8 fixture through jit, interp, aot and compare expected outputs.\n\nAcceptance: each fixture's .expected matches across all three paths.",
+  "id": "fz-siu.6",
+  "labels": [],
+  "parent": "fz-siu",
+  "priority": 2,
+  "status": "open",
+  "title": "fz-cps.6: three-path parity audit",
+  "type": "task",
+  "updated_at": "2026-05-13T04:09:12Z"
+}
