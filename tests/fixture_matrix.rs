@@ -663,6 +663,76 @@ fn tail_recursion_count_matches_cps_in_clif_section_8_1() {
     );
 }
 
+/// fz-siu.1.2 acceptance per docs/cps-in-clif.md §8.2.
+/// higher_order.fz's `compose` fn must compile to: native Tail CC sig
+/// `(i64, i64, i64, i64) -> i64 tail` (f, g, x, k); body builds the
+/// inner cont closure via `fz_alloc_closure` exactly once, stores
+/// `func_addr` + outer-cont + captures, then `return_call_indirect`
+/// through `g+16` with `(x, g, kg)`. No `fz_closure_invoke` runtime
+/// helper referenced.
+#[test]
+#[ignore = "fz-siu.1.2 follow-on: CallClosure cutover not yet landed"]
+fn higher_order_compose_matches_cps_in_clif_section_8_2() {
+    let out = Command::new(FZ_BIN)
+        .args(["dump", "fixtures/higher_order.fz", "--emit", "clif", "--fn", "compose"])
+        .output()
+        .expect("spawn fz dump");
+    assert!(out.status.success(), "fz dump exited {}", out.status);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let start = stdout.find("; fn compose").expect("missing compose banner");
+    let rest = &stdout[start..];
+    let end = rest[1..].find("; fn ").map(|i| i + 1).unwrap_or(rest.len());
+    let body = &rest[..end];
+
+    assert!(body.contains("(i64, i64, i64, i64) -> i64 tail"),
+        "compose sig must be (f,g,x,k) tail; got:\n{}", body);
+    assert_eq!(body.matches("fz_alloc_closure").count(), 1,
+        "compose must call fz_alloc_closure exactly once (kg closure):\n{}", body);
+    assert!(body.contains("return_call_indirect"),
+        "compose must end in return_call_indirect through g+16:\n{}", body);
+    assert!(!body.contains("fz_closure_invoke"),
+        "compose must not reference fz_closure_invoke runtime helper:\n{}", body);
+}
+
+/// fz-siu.1.2 acceptance per docs/cps-in-clif.md §8.3.
+/// closure_typed_captures.fz's `add_to(x,y) = fn(z) -> x+y+z` returns
+/// the lambda. `add_to` must call `fz_alloc_closure` exactly once (the
+/// lambda escape); the lambda body must call `fz_alloc_*` zero times.
+#[test]
+#[ignore = "fz-siu.1.2 follow-on: lambda escape via Return + closure body cutover"]
+fn closure_typed_captures_matches_cps_in_clif_section_8_3() {
+    let out = Command::new(FZ_BIN)
+        .args(["dump", "fixtures/closure_typed_captures.fz", "--emit", "clif"])
+        .output()
+        .expect("spawn fz dump");
+    assert!(out.status.success(), "fz dump exited {}", out.status);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    let add_to_start = stdout.find("; fn add_to").expect("missing add_to banner");
+    let add_to_rest = &stdout[add_to_start..];
+    let add_to_end = add_to_rest[1..].find("; fn ").map(|i| i + 1).unwrap_or(add_to_rest.len());
+    let add_to_body = &add_to_rest[..add_to_end];
+    assert_eq!(add_to_body.matches("fz_alloc_closure").count(), 1,
+        "add_to must alloc the lambda closure exactly once:\n{}", add_to_body);
+}
+
+/// fz-siu.1.2 acceptance per docs/cps-in-clif.md §8.4.
+/// concurrency_ping_pong.fz's `main` must end its receive site in a
+/// tail call to `fz_receive_park` (the cont closure passed by value)
+/// per §4. No parking-frame schema lookups.
+#[test]
+#[ignore = "fz-siu.1.2 follow-on: Receive cutover + fz_receive_park runtime fn"]
+fn concurrency_ping_pong_matches_cps_in_clif_section_8_4() {
+    let out = Command::new(FZ_BIN)
+        .args(["dump", "fixtures/concurrency_ping_pong.fz", "--emit", "clif", "--fn", "main"])
+        .output()
+        .expect("spawn fz dump");
+    assert!(out.status.success(), "fz dump exited {}", out.status);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("fz_receive_park"),
+        "main must invoke fz_receive_park per §8.4:\n{}", stdout);
+}
+
 /// Shell `fz dump --emit clif --fn <name>` and check each fn's
 /// per-fixture expect_clif_contains / expect_clif_excludes assertion.
 /// Returns all failure messages in one vec so a fixture surfaces every
