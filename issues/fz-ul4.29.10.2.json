@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-ul4.29.10.1"
   ],
@@ -12,8 +12,8 @@
   "labels": [],
   "parent": "fz-ul4.29.10",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "Typer registers narrow F-spec from known-target CallClosure",
   "type": "task",
-  "updated_at": "2026-05-13T00:39:13Z"
+  "updated_at": "2026-05-13T00:42:59Z"
 }
