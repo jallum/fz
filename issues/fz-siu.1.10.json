@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-siu.1.9"
+  ],
   "blocks": [],
   "created": "2026-05-13T18:00:28Z",
   "description": "Spec: docs/cps-in-clif.md §2 — every fz fn is Tail-CC. No uniform ABI remains.\n\nWork:\n- In src/parking.rs::natively_callable: drop the `parking-reachable → exclude` constraint. Reachability becomes the only gate — fns reachable from main (directly or via cont/closure-target) qualify.\n- Admit `Term::Receive { continuation }` to body_ok when continuation.fn_id is in set. Drop cont_blocked entirely.\n- Match in ir_codegen.rs type-aware shrink (line ~1591 / ~1665).\n- compile_fn: drop the uniform branch entirely. Every fn gets the Tail-CC entry harness.\n- Delete `build_fn_signature`'s `if !is_native` branch.\n- Remove frame_ptr threading, host_ctx threading, frame_sizes table population per fn (table still used by trampoline until fz-siu.1.13).\n- Delete trampoline dispatch for fns that no longer have a uniform body. Trampoline (`run_quantum`) retained as a thin runtime stub until fz-siu.1.13.\n\nAcceptance:\n- Generated module contains zero SystemV-CC fz fns (excluding fz_main_entry / fz_resume_park shims from fz-siu.1.11).\n- §8.1 full target clif for tail_recursion.fz matches: `function %count(i64,i64,i64) tail` exactly.\n- All existing fixtures still produce correct output.\n- `compile_uniform_path` / per-fn frame layouts deleted from ir_codegen.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "fz-cps.1.10: promote all fns to Tail-CC; delete uniform",
   "type": "task",
-  "updated_at": "2026-05-13T18:00:28Z"
+  "updated_at": "2026-05-13T18:00:57Z"
 }
