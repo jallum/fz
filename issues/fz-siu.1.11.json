@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-13T18:00:38Z",
+  "description": "Spec: docs/cps-in-clif.md §4 (Receive park/resume), §5 (Spawn entry).\n\nWork:\n- `fz_main_entry(initial_fn_ptr: *const c_void, halt_cont: *mut u8)` — SystemV entry callable from Rust scheduler. Implementation: a Cranelift fn declared at module-init time with SystemV CC that performs `return_call_indirect` into the initial fn with Tail-CC sig `(halt_cont) tail`. (For non-zero-arg entry fns, scheduler provides args; main is zero-arg by spec.)\n- `fz_resume_park(msg: u64, parked_cont: *mut u8)` — SystemV entry. Loads `parked_cont+16`, `return_call_indirect Tail sig_cont (msg, parked_cont)`. Cranelift fn registered at module-init.\n- Runtime/scheduler in runtime/src/runtime.rs:\n  - `Runtime::spawn(closure)` deep-copies closure into new Process's heap, allocates halt-cont singleton in process heap, calls `fz_main_entry(closure.code, halt_cont)`.\n  - On `state = Blocked` + message arrival, scheduler dequeues message, sets state = Running, calls `fz_resume_park(msg, parked_cont)`.\n- Delete the trampoline `run_quantum` dispatch loop. `next_frame` field can stay as a vestigial sentinel or be removed; cleanup is fz-siu.1.13.\n\nAcceptance:\n- `concurrency_ping_pong.fz` runs end-to-end.\n- §8.4 target clif for main matches: `main(i64) tail` with `fz_receive_park(v_k1)` return_call.\n- `Runtime::spawn` no longer references frame_sizes for new tasks.\n- Re-enable `concurrency_ping_pong_matches_cps_in_clif_section_8_4` full structural check (current GREEN test asserts only a subset).",
+  "id": "fz-siu.1.11",
+  "labels": [],
+  "parent": "fz-siu.1",
+  "priority": 2,
+  "status": "open",
+  "title": "fz-cps.1.11: fz_main_entry + fz_resume_park SystemV shims",
+  "type": "task",
+  "updated_at": "2026-05-13T18:00:38Z"
+}
