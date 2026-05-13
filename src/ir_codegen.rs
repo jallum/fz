@@ -131,6 +131,11 @@ pub struct CompiledModule {
     /// Tail-CC indirect-calls the zero-arg closure with `(self,
     /// halt_cont)`. Used by `Runtime::spawn_closure` to launch a task.
     pub(crate) spawn_entry_addr: *const u8,
+    /// fz-cps.5 — finalized address of the SystemV scheduler shim
+    /// `fz_main_entry(main_fp) -> i64`. Allocates a halt-cont and
+    /// Tail-CC indirect-calls main with `(halt_cont)`. Used by
+    /// `Runtime::spawn(fn_id)` / `CompiledModule::run_internal`.
+    pub(crate) main_entry_addr: *const u8,
     /// fz-cps.1.11 — finalized address of the Cranelift-emitted
     /// `fz_halt_cont_body` Tail-CC fn. `make_process` writes this into
     /// the per-Process `halt_cont_singleton` closure's +16 slot so
@@ -184,6 +189,7 @@ impl CompiledModule {
             parked_cont: std::ptr::null_mut(),
             halt_cont_singleton: std::ptr::null_mut(),
             pending_closure_entry: std::ptr::null_mut(),
+            pending_main_entry: std::ptr::null_mut(),
             static_closures: Vec::new(),
             static_closure_bufs: Vec::new(),
         };
@@ -250,6 +256,21 @@ impl CompiledModule {
                 return;
             }
         }
+        // fz-cps.5 — fresh main-style task entry: a fn ptr was queued
+        // by `Runtime::spawn(fn_id)` or `run_internal`. Dispatch via
+        // fz_main_entry (SystemV→Tail-CC). The fn body runs to halt
+        // or Receive synchronously.
+        if !process.pending_main_entry.is_null() {
+            let fp = process.pending_main_entry;
+            process.pending_main_entry = std::ptr::null_mut();
+            type MainEntry = extern "C" fn(u64) -> i64;
+            let f: MainEntry = unsafe {
+                std::mem::transmute(self.main_entry_addr)
+            };
+            let _ = f(fp as u64);
+            process.next_frame = std::ptr::null_mut();
+            return;
+        }
         // fz-cps.1.11 — fresh task entry: a closure was queued by
         // `Runtime::spawn_closure`. Dispatch via fz_spawn_entry (the
         // SystemV→Tail-CC launch shim). The closure body runs to halt
@@ -266,47 +287,32 @@ impl CompiledModule {
             process.next_frame = std::ptr::null_mut();
             return;
         }
-        let mut cur = process.next_frame;
-        let mut iters: usize = 0;
-        let cap: usize = 10_000_000;
-        while !cur.is_null() {
-            iters += 1;
-            if iters > cap {
-                panic!("trampoline exceeded {} iterations", cap);
-            }
-            if process.heap.should_gc() {
-                let roots = fz_runtime::heap::collect_roots_from_frame_chain(
-                    cur as *mut fz_runtime::fz_value::HeapHeader,
-                    &self.schemas,
-                );
-                process.heap.gc(&roots);
-                process.heap.clear_should_gc_flag();
-            }
-            let header = cur as *const fz_runtime::fz_value::HeapHeader;
-            let schema_id = unsafe { (*header).schema_id };
-            let fn_ptr = self
-                .fn_ptrs
-                .get(&schema_id)
-                .copied()
-                .unwrap_or_else(|| panic!("no fn for schema_id {}", schema_id));
-            let f: extern "C" fn(*mut u8, *mut u8) -> *mut u8 =
-                unsafe { std::mem::transmute(fn_ptr) };
-            let ctx = CURRENT_PROCESS.with(|c| c.get()) as *mut u8;
-            let next = f(cur, ctx);
-            // fz-ul4.19.3 yield sentinel: receive on empty mailbox sets
-            // process.state = Blocked and returns YIELD_PTR. Save the
-            // CURRENT frame (cur) as the resume point; the trampoline
-            // will re-enter fz_receive_attempt when the task is woken.
-            if next as u64 == YIELD_PTR {
-                process.next_frame = cur;
-                return;
-            }
-            cur = next;
-        }
-        process.next_frame = cur;
+        // fz-cps.5 — the trampoline loop is unreachable. All fz fns are
+        // Tail-CC; dispatch flows through the three SystemV shims above
+        // (parked_cont resume, pending_main_entry, pending_closure_entry).
+        // No uniform fns exist, so no frame-by-frame dispatch is needed.
+        process.next_frame = std::ptr::null_mut();
     }
 
     fn run_internal(&self, fn_id: FnId) -> i64 {
+        // fz-cps.5 — every fz fn is Tail-CC, including main. Dispatch
+        // via the fz_main_entry SystemV→Tail-CC shim (alloc halt-cont,
+        // `call_indirect Tail (halt_cont)`). The chain runs synchronously
+        // through halt_cont_body which sets `process.halt_value`.
+        // No trampoline iterations; no entry frame.
+        let fp = self
+            .fn_ptrs
+            .get(&fn_id.0)
+            .copied()
+            .unwrap_or_else(|| panic!("no fn ptr for entry {}", fn_id.0));
+        type MainEntry = extern "C" fn(u64) -> i64;
+        let f: MainEntry = unsafe { std::mem::transmute(self.main_entry_addr) };
+        let _ = f(fp as u64);
+        current_process().halt_value
+    }
+
+    #[allow(dead_code)]
+    fn _legacy_trampoline(&self, fn_id: FnId) -> i64 {
         let entry_schema = &self.schemas[fn_id.0 as usize];
         let frame = fz_runtime::ir_runtime::fz_alloc_frame(fn_id.0, entry_schema.size);
         // Continuation pointer = null (entry fn).
@@ -927,6 +933,8 @@ pub struct CompiledMetadata {
     pub resume_park_id: FuncId,
     /// fz-cps.1.11 — fz_spawn_entry scheduler-launch shim FuncId.
     pub spawn_entry_id: FuncId,
+    /// fz-cps.5 — fz_main_entry scheduler-launch shim FuncId.
+    pub main_entry_id: FuncId,
     /// fz-cps.1.11 — fz_halt_cont_body FuncId, surfaced so JIT finalize
     /// can resolve it and `make_process` can seed the singleton.
     pub halt_cont_body_id: FuncId,
@@ -1183,6 +1191,7 @@ impl Backend for JitBackend {
             .collect();
         let resume_park_addr = jmod.get_finalized_function(meta.resume_park_id);
         let spawn_entry_addr = jmod.get_finalized_function(meta.spawn_entry_id);
+        let main_entry_addr = jmod.get_finalized_function(meta.main_entry_id);
         let halt_cont_body_addr = jmod.get_finalized_function(meta.halt_cont_body_id);
         Ok(CompiledModule {
             module: jmod,
@@ -1198,6 +1207,7 @@ impl Backend for JitBackend {
             static_closure_targets,
             resume_park_addr,
             spawn_entry_addr,
+            main_entry_addr,
             halt_cont_body_addr,
         })
     }
@@ -1389,6 +1399,51 @@ pub fn compile_with_backend<B: Backend>(
 
     let mut fbctx = FunctionBuilderContext::new();
 
+    // fz-cps.5 — emit fz_main_entry. SystemV scheduler-callable shim
+    // that launches the user's main fn via the closure-target sig.
+    // Sig: `(main_fn_addr:i64) -> i64 system_v`.
+    // Body: get halt-cont singleton, `call_indirect Tail (halt_cont)`
+    // against main's sig `(cont:i64) -> i64 tail`. Uses the off-heap
+    // singleton to keep heap arena allocations from the launch path
+    // (preserves test invariants that count per-fixture heap allocs).
+    {
+        let mut ctx = backend.module_mut().make_context();
+        let mut sig = Signature::new(CallConv::SystemV);
+        sig.params.push(AbiParam::new(types::I64));
+        sig.returns.push(AbiParam::new(types::I64));
+        ctx.func.signature = sig;
+        {
+            let mut b = FunctionBuilder::new(&mut ctx.func, &mut fbctx);
+            let entry = b.create_block();
+            b.append_block_params_for_function_params(entry);
+            b.switch_to_block(entry);
+            b.seal_block(entry);
+            let main_fp = b.block_params(entry)[0];
+            let ghc_fref = backend
+                .module_mut()
+                .declare_func_in_func(runtime.get_halt_cont_id, b.func);
+            let hcb_fref = backend
+                .module_mut()
+                .declare_func_in_func(runtime.halt_cont_body_id, b.func);
+            let hcb_addr = b.ins().func_addr(types::I64, hcb_fref);
+            let halt_inst = b.ins().call(ghc_fref, &[hcb_addr]);
+            let halt_cl = b.inst_results(halt_inst)[0];
+            let mut main_sig = Signature::new(CallConv::Tail);
+            main_sig.params.push(AbiParam::new(types::I64));
+            main_sig.returns.push(AbiParam::new(types::I64));
+            let sig_ref = b.func.import_signature(main_sig);
+            let inst = b.ins().call_indirect(sig_ref, main_fp, &[halt_cl]);
+            let r = b.inst_results(inst)[0];
+            b.ins().return_(&[r]);
+            b.finalize();
+        }
+        backend
+            .module_mut()
+            .define_function(runtime.main_entry_id, &mut ctx)
+            .map_err(|e| CodegenError::new(format!("define fz_main_entry: {}", e)))?;
+        backend.module_mut().clear_context(&mut ctx);
+    }
+
     // fz-cps.1.11 — emit fz_spawn_entry. SystemV scheduler-callable shim
     // that invokes a zero-arg closure with a fresh halt-cont. Used by
     // `Runtime::spawn_closure` to launch the new task's first fn via
@@ -1408,19 +1463,18 @@ pub fn compile_with_backend<B: Backend>(
             b.switch_to_block(entry);
             b.seal_block(entry);
             let closure = b.block_params(entry)[0];
-            // Allocate halt-cont closure (zero captures).
-            let acl_fref = backend
+            // fz-cps.5 — reuse the per-Process halt-cont singleton
+            // (off-heap) instead of allocating a fresh closure per
+            // spawned task. Keeps heap_live_count invariants stable.
+            let ghc_fref = backend
                 .module_mut()
-                .declare_func_in_func(runtime.alloc_closure_id, b.func);
-            let dummy_fid = b.ins().iconst(types::I32, 0);
-            let n_caps0 = b.ins().iconst(types::I32, 0);
-            let halt_alloc = b.ins().call(acl_fref, &[dummy_fid, n_caps0]);
-            let halt_cl = b.inst_results(halt_alloc)[0];
+                .declare_func_in_func(runtime.get_halt_cont_id, b.func);
             let hcb_fref = backend
                 .module_mut()
                 .declare_func_in_func(runtime.halt_cont_body_id, b.func);
             let hcb_addr = b.ins().func_addr(types::I64, hcb_fref);
-            b.ins().store(MemFlags::trusted(), hcb_addr, halt_cl, HEADER_SIZE);
+            let halt_inst = b.ins().call(ghc_fref, &[hcb_addr]);
+            let halt_cl = b.inst_results(halt_inst)[0];
             // Load closure body addr at +16 and invoke as
             // closure-target sig `(self, cont) tail` (zero user args).
             let code = b.ins().load(
@@ -2349,6 +2403,7 @@ pub fn compile_with_backend<B: Backend>(
         static_closure_targets,
         resume_park_id: runtime.resume_park_id,
         spawn_entry_id: runtime.spawn_entry_id,
+        main_entry_id: runtime.main_entry_id,
         halt_cont_body_id: runtime.halt_cont_body_id,
     };
 
@@ -2728,6 +2783,14 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
     let spawn_entry_id = jmod
         .declare_function("fz_spawn_entry", Linkage::Local, &se_sig)
         .map_err(|e| CodegenError::new(format!("declare fz_spawn_entry: {}", e)))?;
+    // fz-cps.5 — fz_main_entry: SystemV entry the scheduler calls to launch
+    // a fresh task at a known main fn. Sig: `(main_fp:i64) -> i64`.
+    let mut me_sig = Signature::new(CallConv::SystemV);
+    me_sig.params.push(AbiParam::new(types::I64));
+    me_sig.returns.push(AbiParam::new(types::I64));
+    let main_entry_id = jmod
+        .declare_function("fz_main_entry", Linkage::Local, &me_sig)
+        .map_err(|e| CodegenError::new(format!("declare fz_main_entry: {}", e)))?;
 
     Ok(RuntimeRefs {
         print_id,
@@ -2770,6 +2833,7 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         get_halt_cont_id,
         resume_park_id,
         spawn_entry_id,
+        main_entry_id,
     })
 }
 
@@ -2815,6 +2879,7 @@ struct RuntimeRefs {
     get_halt_cont_id: FuncId,
     resume_park_id: FuncId,
     spawn_entry_id: FuncId,
+    main_entry_id: FuncId,
 }
 
 /// Pack a Span into a Cranelift SourceLoc (u32). 8 bits file_id + 24

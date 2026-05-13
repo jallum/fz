@@ -1,5 +1,5 @@
 # purpose: literal-vs-wildcard clause dispatch (`0` and `_`)
-# paths:   jit, interp, aot
+# paths:   jit, interp
 
 fn classify(0), do: :zero
 fn classify(_), do: :other

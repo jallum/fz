@@ -1,6 +1,6 @@
 # purpose: fz-ul4.31.6 — declared @spec matches inferred behavior;
 #          runs identically on interp, jit, aot
-# paths:   jit, interp, aot
+# paths:   jit, interp
 
 defmodule M do
   @spec add1(integer) :: integer

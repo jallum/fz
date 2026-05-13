@@ -66,6 +66,10 @@ pub struct Process {
     /// SystemV→Tail-CC shim. Null means "no pending entry" (either
     /// trampoline-driven uniform main or already-resumed task).
     pub pending_closure_entry: *mut u8,
+    /// fz-cps.5 — pending main-style entry fn ptr. Set by
+    /// `Runtime::spawn(fn_id)`; the scheduler's `run_quantum`
+    /// dispatches via the SystemV→Tail-CC `fz_main_entry` shim.
+    pub pending_main_entry: *mut u8,
     /// fz-cps.1.7 — per-Process static zero-capture closure singletons.
     /// Indexed by lambda spec id (cl_sid). Null entries indicate "no
     /// singleton registered for this cl_sid." Each non-null entry points
@@ -119,6 +123,7 @@ impl Process {
             parked_cont: std::ptr::null_mut(),
             halt_cont_singleton: std::ptr::null_mut(),
             pending_closure_entry: std::ptr::null_mut(),
+            pending_main_entry: std::ptr::null_mut(),
             static_closures: Vec::new(),
             static_closure_bufs: Vec::new(),
         }

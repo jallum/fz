@@ -122,16 +122,14 @@ pub fn natively_callable(m: &Module, parking: &HashSet<FnId>) -> HashSet<FnId> {
             || used_as_closure_target.contains(id)
     };
 
-    // fz-cps.1.8 — parking-reachable exclusion lifted; closure ops are
-    // body_ok now. main stays uniform — it is the scheduler-dispatch
-    // entry point that the trampoline drives via SystemV. fz-siu.1.11
-    // can promote main to native once a fz_main_entry SystemV→Tail-CC
-    // shim is wired.
+    // fz-cps.5 — main is admitted to natively_callable. The scheduler
+    // calls into it via the SystemV→Tail-CC `fz_main_entry` shim.
+    // Parking-reachable exclusion is fully lifted; cont_blocked is
+    // empty (closure ops are body_ok per fz-cps.1.8).
+    let _ = (&parking, &cont_blocked);
     let mut set: HashSet<FnId> = HashSet::new();
     for f in &m.fns {
-        let _ = (&parking, &cont_blocked);
-        if Some(f.id) == main_id { continue; }
-        if !reachable_as_native(&f.id) { continue; }
+        if !reachable_as_native(&f.id) && Some(f.id) != main_id { continue; }
         set.insert(f.id);
     }
 
@@ -365,7 +363,9 @@ mod tests {
         let parking = parking_reachable(&m);
         let nc = natively_callable(&m, &parking);
         assert!(nc.contains(&FnId(1)), "helper should be natively-callable");
-        assert!(!nc.contains(&FnId(0)), "main is never natively-callable");
+        // fz-cps.5: main is now native — scheduler dispatches via
+        // fz_main_entry SystemV→Tail-CC shim.
+        assert!(nc.contains(&FnId(0)), "main is native post-fz-cps.5");
     }
 
     #[test]
@@ -409,14 +409,15 @@ mod tests {
         assert!(nc.contains(&FnId(0)), "f Term::Call with both callee+cont native");
     }
 
+    /// fz-cps.5 — main is now admitted to natively_callable. The
+    /// scheduler dispatches via the SystemV→Tail-CC fz_main_entry shim.
     #[test]
-    fn natively_callable_excludes_main() {
-        // main with only Return — still excluded because it's main.
+    fn natively_callable_includes_main() {
         let helper = make_fn(0, "main");
         let m = build(vec![helper]);
         let parking = parking_reachable(&m);
         let nc = natively_callable(&m, &parking);
-        assert!(!nc.contains(&FnId(0)));
+        assert!(nc.contains(&FnId(0)));
     }
 
     #[test]

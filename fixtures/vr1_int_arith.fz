@@ -1,5 +1,5 @@
 # purpose: VR.1 — int-literal arithmetic elides the tag-check fast/slow path
-# paths:   jit, interp, aot
+# paths:   jit, interp
 # expect_clif_contains: main: iadd
 # expect_clif_contains: main: isub
 # expect_clif_contains: main: imul

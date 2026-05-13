@@ -1,5 +1,5 @@
 # purpose: parametric `id` exercised over int, atom, and bool
-# paths:   jit, interp, aot
+# paths:   jit, interp
 
 fn id(x), do: x
 

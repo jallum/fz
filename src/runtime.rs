@@ -37,9 +37,8 @@ use std::collections::{HashMap, VecDeque};
 use crate::fz_ir::FnId;
 use fz_runtime::fz_value::FzValue;
 use crate::ir_codegen::{
-    CompiledModule, PidId, Process, ProcessState, CURRENT_PROCESS, HEADER_SIZE,
+    CompiledModule, PidId, Process, ProcessState, CURRENT_PROCESS,
 };
-use fz_runtime::ir_runtime::fz_alloc_frame_for_test;
 
 /// Task scheduler bound to a single CompiledModule. v1 is single-worker /
 /// single-threaded — `run_until_idle` drives all spawned tasks to
@@ -211,21 +210,19 @@ impl<'a> Runtime<'a> {
     /// fresh pid. The task is enqueued immediately; `run_until_idle()`
     /// will drive it.
     pub fn spawn(&mut self, fn_id: FnId) -> PidId {
+        // fz-cps.5 — every fn is Tail-CC, including main. Stash the fn
+        // ptr as a pending entry; the scheduler dispatches it via
+        // `fz_main_entry` on the next quantum.
         let pid = self.next_pid;
         self.next_pid += 1;
         let mut process = self.compiled.make_process();
         process.pid = pid;
         process.state = ProcessState::Ready;
-        // Allocate the entry frame eagerly; the trampoline will resume
-        // from process.next_frame.
-        let entry_schema = self.compiled.schema_for(fn_id);
-        let frame = fz_alloc_frame_for_test(fn_id.0, entry_schema.size);
-        unsafe {
-            // cont_ptr = null (top of stack; halt exits the trampoline)
-            let cont_slot = frame.add(HEADER_SIZE as usize) as *mut *mut u8;
-            *cont_slot = std::ptr::null_mut();
-        }
-        process.next_frame = frame;
+        let fp = self
+            .compiled
+            .fn_ptr(fn_id)
+            .unwrap_or_else(|| panic!("no fn ptr for entry {}", fn_id.0));
+        process.pending_main_entry = fp as *mut u8;
         self.tasks.insert(pid, Box::new(process));
         self.run_queue.push_back(pid);
         pid

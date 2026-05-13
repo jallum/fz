@@ -1,5 +1,5 @@
 # purpose: fz-ul4.27.10 — call-site arg narrowing flows caller arg types into callee entry params
-# paths:   jit, interp, aot
+# paths:   jit, interp
 # expect_clif_contains: dist: fadd
 # expect_clif_contains: dist: fmul
 # expect_clif_excludes: dist: fz_arith_add

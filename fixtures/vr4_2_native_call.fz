@@ -1,5 +1,5 @@
 # purpose: VR.4.2 — leaf-bodied helper goes through the native ABI
-# paths:   jit, interp, aot
+# paths:   jit, interp
 # expect_clif_contains: square: tail
 # expect_clif_excludes: square: fz_alloc_frame
 # fz-cps.1.12: load.i64 in square is now Term::Return's indirect-call

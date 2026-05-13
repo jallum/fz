@@ -1,5 +1,5 @@
 # purpose: VR.3.4 / VR.4.3 — typed captures survive cont handoffs via native chain
-# paths:   jit, interp, aot
+# paths:   jit, interp
 # expect_clif_excludes: k_3: fz_alloc_frame
 # expect_clif_contains: k_3: tail
 

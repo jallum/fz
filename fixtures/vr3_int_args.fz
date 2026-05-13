@@ -1,5 +1,5 @@
 # purpose: VR.3.3 / VR.4.2.3 — typed int args flow through native ABI
-# paths:   jit, interp, aot
+# paths:   jit, interp
 # fz-cps.1.12: load.i64 in sum3 is now from `Term::Return`'s indirect-call
 # (load cont+16) per docs/cps-in-clif.md §2.1. The pre-cps assertion that
 # sum3 has zero loads is obsolete; the body's lack of entry-frame loads

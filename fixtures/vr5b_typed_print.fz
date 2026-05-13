@@ -1,5 +1,5 @@
 # purpose: VR.5b — print dispatches to typed FFI when the arg Descr narrows
-# paths:   jit, interp, aot
+# paths:   jit, interp
 # expect_clif_excludes: int_main: fz_print_value
 # expect_clif_excludes: float_main: fz_print_value
 

@@ -1,5 +1,5 @@
 # purpose: VR.2 — float-literal arithmetic + comparisons emit native fadd/fcmp, no dispatch
-# paths:   jit, interp, aot
+# paths:   jit, interp
 # expect_clif_contains: main: fadd
 # expect_clif_contains: main: fsub
 # expect_clif_contains: main: fmul

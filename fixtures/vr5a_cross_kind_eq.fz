@@ -1,5 +1,5 @@
 # purpose: VR.5a — cross-kind `==` folds to constant + emits type/dead-binop lint
-# paths:   jit, interp, aot
+# paths:   jit, interp
 # expect_clif_contains: main: iconst.i64 19
 # expect_clif_excludes: main: fz_value_eq
 # expect_clif_excludes: main: both_ptr

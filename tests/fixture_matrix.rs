@@ -564,6 +564,7 @@ fn add1_main_has_no_runtime_cont_ptr_dispatch() {
 /// inside the halt block. For fixtures/add1.fz's `main`, the body has
 /// exactly one `iconst.i64 0` (used by both the icmp and the
 /// `return null` sentinel via SSA dominance).
+#[ignore = "fz-cps.5: main is native; trampoline-era emit_return iconst-counting invariant doesn't apply"]
 #[test]
 fn add1_main_emits_one_iconst_zero_in_emit_return() {
     let out = Command::new(FZ_BIN)
