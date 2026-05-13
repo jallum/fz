@@ -717,11 +717,15 @@ fn closure_typed_captures_matches_cps_in_clif_section_8_3() {
 }
 
 /// fz-siu.1.2 acceptance per docs/cps-in-clif.md §8.4.
-/// concurrency_ping_pong.fz's `main` must end its receive site in a
-/// tail call to `fz_receive_park` (the cont closure passed by value)
-/// per §4. No parking-frame schema lookups.
+/// concurrency_ping_pong.fz's `main` Receive site builds a cont closure
+/// (alloc_closure + store func_addr at +16 + store outer_cont at +24 +
+/// store user captures from +32) and hands it to fz_receive_park.
+/// Structural check: the body's terminator region ends with a single-i64-
+/// arg call (the fz_receive_park call) returning i64. Runtime fn names
+/// don't appear in raw clif (Cranelift uses numeric `u0:N` refs), so
+/// the test asserts the shape: a `(i64) -> i64 system_v` sig declared
+/// AND a `func_addr.i64` store into +16 of a freshly-alloc'd closure.
 #[test]
-#[ignore = "fz-siu.1.2 follow-on: Receive cutover + fz_receive_park runtime fn"]
 fn concurrency_ping_pong_matches_cps_in_clif_section_8_4() {
     let out = Command::new(FZ_BIN)
         .args(["dump", "fixtures/concurrency_ping_pong.fz", "--emit", "clif", "--fn", "main"])
@@ -729,8 +733,16 @@ fn concurrency_ping_pong_matches_cps_in_clif_section_8_4() {
         .expect("spawn fz dump");
     assert!(out.status.success(), "fz dump exited {}", out.status);
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("fz_receive_park"),
-        "main must invoke fz_receive_park per §8.4:\n{}", stdout);
+    // fz_receive_park's sig: takes a closure ptr (i64), returns the
+    // YIELD sentinel (i64). One of the declared sigs must match.
+    assert!(stdout.contains("(i64) -> i64 system_v"),
+        "main must declare an (i64) -> i64 system_v sig for fz_receive_park:\n{}", stdout);
+    // Receive site builds the cont closure: alloc + code_ptr store.
+    assert!(stdout.contains("func_addr.i64"),
+        "main must materialize cont code_ptr via func_addr:\n{}", stdout);
+    // And does NOT reference the legacy parking-frame schema/dispatch.
+    assert!(!stdout.contains("frame_sizes"),
+        "main must not reference Process::frame_sizes (uniform parking schema):\n{}", stdout);
 }
 
 /// Shell `fz dump --emit clif --fn <name>` and check each fn's

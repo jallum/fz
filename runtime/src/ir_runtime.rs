@@ -162,6 +162,25 @@ pub extern "C" fn fz_send(receiver_pid_bits: u64, msg_bits: u64) -> u64 {
 /// If the mailbox is empty: set the Process state to Blocked, return
 /// YIELD_PTR. The trampoline parks the task at the receive's frame; on
 /// resume (via send), this fn is called again and now finds the message.
+/// fz-cps.1.2 — `Term::Receive` cutover entry per docs/cps-in-clif.md §4.
+/// Caller has already built the cont closure (with outer_cont at +24,
+/// user captures from +32, and code_ptr at +16). This fn stashes the
+/// closure in `Process::parked_cont`, sets state Blocked, and returns
+/// the YIELD sentinel so the trampoline parks the task.
+///
+/// On message arrival the scheduler dispatches the parked_cont via the
+/// Cranelift-emitted `fz_resume_park` thunk (load parked_cont+16;
+/// call_indirect (msg, parked_cont)). The msg is the cont's first
+/// param (Tagged FzValue); `self` is the cont closure ptr itself.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_receive_park(cont_closure_bits: u64) -> *mut u8 {
+    use crate::{process::ProcessState, scheduler_hooks::YIELD_PTR};
+    let p = current_process();
+    p.parked_cont = cont_closure_bits as *mut u8;
+    p.state = ProcessState::Blocked;
+    YIELD_PTR as *mut u8
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_receive_attempt(cont_frame_ptr: *mut u8) -> *mut u8 {
     use crate::{process::ProcessState, scheduler_hooks::YIELD_PTR};

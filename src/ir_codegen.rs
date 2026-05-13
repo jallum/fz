@@ -153,6 +153,7 @@ impl CompiledModule {
             state: ProcessState::New,
             next_frame: std::ptr::null_mut(),
             mailbox: std::collections::VecDeque::new(),
+            parked_cont: std::ptr::null_mut(),
         }
     }
 
@@ -1032,6 +1033,7 @@ impl JitBackend {
         builder.symbol("fz_self", fz_runtime::ir_runtime::fz_self as *const u8);
         builder.symbol("fz_send", fz_runtime::ir_runtime::fz_send as *const u8);
         builder.symbol("fz_receive_attempt", fz_runtime::ir_runtime::fz_receive_attempt as *const u8);
+        builder.symbol("fz_receive_park", fz_runtime::ir_runtime::fz_receive_park as *const u8);
         Self {
             jmod: JITModule::new(builder),
         }
@@ -2487,6 +2489,9 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
     let self_id = decl("fz_self", &[], &[types::I64])?;
     let send_id = decl("fz_send", &[types::I64, types::I64], &[types::I64])?;
     let receive_attempt_id = decl("fz_receive_attempt", &[types::I64], &[types::I64])?;
+    // fz-cps.1.2 — receive cutover. Takes a cont closure ptr (i64),
+    // stashes in Process::parked_cont, returns YIELD sentinel.
+    let receive_park_id = decl("fz_receive_park", &[types::I64], &[types::I64])?;
     // fz-cps.1.2 — fz_halt_cont_body: declared LOCAL (we emit the body
     // in compile_with_backend). Sig: `(val:i64, self:i64) -> i64 tail`.
     let mut hcb_sig = Signature::new(CallConv::Tail);
@@ -2533,6 +2538,7 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         self_id,
         send_id,
         receive_attempt_id,
+        receive_park_id,
     })
 }
 
@@ -2573,6 +2579,7 @@ struct RuntimeRefs {
     self_id: FuncId,
     send_id: FuncId,
     receive_attempt_id: FuncId,
+    receive_park_id: FuncId,
 }
 
 /// Pack a Span into a Cranelift SourceLoc (u32). 8 bits file_id + 24
@@ -3548,23 +3555,104 @@ fn compile_fn<M: cranelift_module::Module>(
                 b.ins().return_(&[callee_frame]);
             }
             Term::Receive { continuation } => {
+                // fz-cps.1.2 Receive cutover per docs/cps-in-clif.md §4.
+                // Build the cont closure (kind=Closure, code_ptr at +16,
+                // synthetic outer_cont at +24, user captures from +32),
+                // hand it to fz_receive_park which stashes the closure
+                // in Process::parked_cont and returns YIELD sentinel.
+                // On message arrival the scheduler will dispatch the
+                // parked cont via a Cranelift thunk (fz-cps.1.2 follow-on).
                 let cap_vals: Vec<ir::Value> = continuation
                     .captured
                     .iter()
                     .map(|v| *var_map.get(&v.0).expect("unbound receive cont capture"))
                     .collect();
-                // fz-ul4.29.12.1: cont's narrow SpecId.0 (slot 0 = `any`
-                // for Receive — sender / message type is opaque).
                 let cont_sid = resolve_cont_sid(blk, continuation);
-                emit_receive(
-                    &mut b,
-                    jmod,
-                    runtime,
-                    schemas,
-                    frame_ptr,
-                    cont_sid,
-                    &cap_vals,
+                let cont_fid = *fn_ids.get(&cont_sid).expect("cont fn_id missing");
+                let cont_fref = jmod.declare_func_in_func(cont_fid, b.func);
+                let cont_param_reprs = &param_reprs[cont_sid as usize];
+
+                let acl_fref = jmod
+                    .declare_func_in_func(runtime.alloc_closure_id, b.func);
+                let cl_fid_v = b.ins().iconst(types::I32, cont_sid as i64);
+                // +1 slot for synthetic outer_cont at +24; user captures
+                // start at +32.
+                let n_caps_v = b.ins().iconst(
+                    types::I32, (continuation.captured.len() + 1) as i64,
                 );
+                let cl_inst = b.ins().call(acl_fref, &[cl_fid_v, n_caps_v]);
+                let cl_ptr = b.inst_results(cl_inst)[0];
+                let cont_code_addr = b.ins().func_addr(types::I64, cont_fref);
+                b.ins().store(
+                    MemFlags::trusted(),
+                    cont_code_addr, cl_ptr, HEADER_SIZE,
+                );
+                // outer_cont at +24 (synthetic). Native caller has
+                // cont_param; uniform caller loads frame_ptr+16 with
+                // null-fallback to a halt-cont closure inline.
+                let my_outer_cont = match cont_param {
+                    Some(c) => c,
+                    None => {
+                        let from_slot = b.ins().load(
+                            types::I64, MemFlags::trusted(),
+                            frame_ptr.expect(
+                                "uniform Receive caller must have frame_ptr"),
+                            HEADER_SIZE,
+                        );
+                        let zero = b.ins().iconst(types::I64, 0);
+                        let is_null = b.ins().icmp(IntCC::Equal, from_slot, zero);
+                        let alloc_blk = b.create_block();
+                        let join_blk = b.create_block();
+                        b.append_block_param(join_blk, types::I64);
+                        b.ins().brif(is_null, alloc_blk, &[][..], join_blk,
+                            &[BlockArg::Value(from_slot)]);
+                        b.switch_to_block(alloc_blk);
+                        b.seal_block(alloc_blk);
+                        let dummy_fid = b.ins().iconst(types::I32, 0);
+                        let n_caps0 = b.ins().iconst(types::I32, 0);
+                        let halt_alloc = b.ins().call(acl_fref, &[dummy_fid, n_caps0]);
+                        let halt_cl = b.inst_results(halt_alloc)[0];
+                        let hcb_fref = jmod
+                            .declare_func_in_func(runtime.halt_cont_body_id, b.func);
+                        let hcb_addr = b.ins().func_addr(types::I64, hcb_fref);
+                        b.ins().store(
+                            MemFlags::trusted(),
+                            hcb_addr, halt_cl, HEADER_SIZE,
+                        );
+                        b.ins().jump(join_blk, &[BlockArg::Value(halt_cl)]);
+                        b.switch_to_block(join_blk);
+                        b.seal_block(join_blk);
+                        b.block_params(join_blk)[0]
+                    }
+                };
+                b.ins().store(
+                    MemFlags::trusted(),
+                    my_outer_cont, cl_ptr, HEADER_SIZE + SLOT_BYTES,
+                );
+                // User captures at +32+8i, stored as Tagged.
+                for (i, cv) in continuation.captured.iter().enumerate() {
+                    let from = var_repr(cv.0, &raw_int_vars, &raw_f64_vars);
+                    let v = coerce_to(
+                        &mut b, jmod, &runtime, cap_vals[i], from, ArgRepr::Tagged,
+                    );
+                    let off = HEADER_SIZE + SLOT_BYTES * 2 + (i as i32) * SLOT_BYTES;
+                    b.ins().store(MemFlags::trusted(), v, cl_ptr, off);
+                }
+                let _ = cont_param_reprs; // re-read by cont fn entry harness.
+
+                // fz_receive_park(cl_ptr) — stash + yield.
+                let park_fref = jmod.declare_func_in_func(runtime.receive_park_id, b.func);
+                let park_inst = b.ins().call(park_fref, &[cl_ptr]);
+                let yield_sentinel = b.inst_results(park_inst)[0];
+                if is_native {
+                    // Native body returns i64 (canonical); the yield
+                    // sentinel propagates back to the scheduler.
+                    b.ins().return_(&[yield_sentinel]);
+                } else {
+                    // Uniform body returns next_frame ptr (here, YIELD
+                    // sentinel — trampoline parks the task).
+                    b.ins().return_(&[yield_sentinel]);
+                }
             }
         }
     }

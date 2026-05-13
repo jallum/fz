@@ -46,6 +46,14 @@ pub struct Process {
     /// here. v1 only writes this on halt (next_frame = null).
     pub next_frame: *mut u8,
     pub mailbox: std::collections::VecDeque<crate::fz_value::FzValue>,
+    /// fz-cps.1.2 — `Term::Receive` cutover per docs/cps-in-clif.md §4.
+    /// When a task parks on `Receive`, `fz_receive_park` stashes the
+    /// cont closure pointer here and sets `state = Blocked`. On message
+    /// arrival the scheduler invokes a Cranelift thunk that
+    /// `load parked_cont+16; call_indirect (msg, parked_cont)` —
+    /// resuming the chain. Pointer because the closure lives in this
+    /// Process's heap; layout per `Heap::alloc_closure`.
+    pub parked_cont: *mut u8,
 }
 
 /// Stable per-Process identifier assigned at spawn time. v1: simple u32
@@ -84,6 +92,7 @@ impl Process {
             state: ProcessState::New,
             next_frame: std::ptr::null_mut(),
             mailbox: std::collections::VecDeque::new(),
+            parked_cont: std::ptr::null_mut(),
         }
     }
 }
