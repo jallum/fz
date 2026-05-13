@@ -4,14 +4,15 @@
     "fz-siu.7"
   ],
   "blocks": [],
+  "closed_at": "2026-05-13T22:19:52Z",
   "created": "2026-05-13T04:09:26Z",
   "description": "Spec: docs/cps-in-clif.md §6.6.\n\nWork:\n- Per-size-class free list.\n- Spawn pulls, GC returns.\n- Falls back to malloc when empty.\n\nAcceptance: spawn under load shows no per-spawn malloc after warm-up.",
   "id": "fz-siu.10",
   "labels": [],
   "parent": "fz-siu",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "fz-cps.GC.4: size-classed block pool",
   "type": "task",
-  "updated_at": "2026-05-13T22:16:05Z"
+  "updated_at": "2026-05-13T22:19:52Z"
 }
