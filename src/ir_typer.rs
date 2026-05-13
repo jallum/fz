@@ -43,6 +43,12 @@ pub struct FnTypes {
     pub vars: HashMap<Var, Descr>,
     /// Entry env per block, with branch narrowing applied at If terminators.
     pub block_envs: HashMap<BlockId, HashMap<Var, Descr>>,
+    /// fz-ul4.29.10.1 — side-channel: vars known to hold a specific
+    /// top-level fn identity (zero-capture `MakeClosure(F, [])` only).
+    /// Used by `.29.10.2`/`.3` to register narrow specs and rewrite
+    /// known-target `CallClosure → Call`. `Descr` deliberately carries
+    /// no FnId identity; this map lives alongside it.
+    pub fn_constants: HashMap<Var, FnId>,
 }
 
 /// Per-module type information.
@@ -135,6 +141,13 @@ pub fn type_module(m: &Module) -> ModuleTypes {
         let mut narrowed: HashMap<FnId, Vec<Descr>> = HashMap::new();
         let mut callsite_keys: HashMap<FnId, std::collections::HashSet<Vec<Descr>>> =
             HashMap::new();
+        // fz-ul4.29.10.1 — per (callee, key), the unified per-arg
+        // fn-constant view across all observed direct callsites:
+        // Some(F) iff every observing caller passes the same F in that
+        // slot, None if absent or conflicting. Applied to the callee's
+        // spec FnTypes when the spec is created below.
+        let mut callsite_fn_consts: HashMap<(FnId, Vec<Descr>), Vec<Option<FnId>>> =
+            HashMap::new();
         for (i, f) in m.fns.iter().enumerate() {
             let ft = &by_fn_idx[i];
             for b in &f.blocks {
@@ -168,7 +181,25 @@ pub fn type_module(m: &Module) -> ModuleTypes {
                             ).collect();
                             while key.len() < n_params { key.push(Descr::any()); }
                             key.truncate(n_params);
-                            callsite_keys.entry(*callee).or_default().insert(key);
+                            callsite_keys.entry(*callee).or_default().insert(key.clone());
+                            // fz-ul4.29.10.1 — collect per-arg fn-constants
+                            // from the caller's body view; unify across
+                            // multiple callsites sharing this key.
+                            let mut per_arg: Vec<Option<FnId>> = args.iter().map(|av|
+                                ft.fn_constants.get(av).copied()
+                            ).collect();
+                            while per_arg.len() < n_params { per_arg.push(None); }
+                            per_arg.truncate(n_params);
+                            let entry_key = (*callee, key);
+                            match callsite_fn_consts.get(&entry_key) {
+                                None => { callsite_fn_consts.insert(entry_key, per_arg); }
+                                Some(prev) => {
+                                    let merged: Vec<Option<FnId>> = prev.iter().zip(per_arg.iter())
+                                        .map(|(a, b)| if a == b { *a } else { None })
+                                        .collect();
+                                    callsite_fn_consts.insert(entry_key, merged);
+                                }
+                            }
                         }
                     }
                     _ => {}
@@ -315,7 +346,19 @@ pub fn type_module(m: &Module) -> ModuleTypes {
                 let entry_key = (*callee, key.clone());
                 if let Some(&j) = idx_of.get(callee) {
                     if !specs.contains_key(&entry_key) {
-                        specs.insert(entry_key, type_fn(&m.fns[j], m, Some(key)));
+                        let mut ft = type_fn(&m.fns[j], m, Some(key));
+                        // fz-ul4.29.10.1 — overlay propagated entry-param
+                        // fn-constants from the caller side.
+                        if let Some(arg_consts) = callsite_fn_consts.get(&entry_key) {
+                            let entry = m.fns[j].entry;
+                            let entry_params = &m.fns[j].block(entry).params;
+                            for (slot, p) in entry_params.iter().enumerate() {
+                                if let Some(Some(fid)) = arg_consts.get(slot) {
+                                    ft.fn_constants.insert(*p, *fid);
+                                }
+                            }
+                        }
+                        specs.insert(entry_key, ft);
                         changed = true;
                     }
                     // Existing keys' FnTypes may also drift as the module's
@@ -579,7 +622,22 @@ pub fn type_fn(f: &FnIr, m: &Module, entry_param_types: Option<&[Descr]>) -> FnT
         if !changed { break; }
     }
 
-    FnTypes { vars, block_envs }
+    // fz-ul4.29.10.1 — populate fn_constants from zero-capture
+    // `MakeClosure(F, [])` Let-bindings. Single forward pass; SSA
+    // means each Var is bound at one site.
+    let mut fn_constants: HashMap<Var, FnId> = HashMap::new();
+    for b in &f.blocks {
+        for stmt in &b.stmts {
+            let Stmt::Let(v, prim) = stmt;
+            if let Prim::MakeClosure(fid, captured) = prim {
+                if captured.is_empty() {
+                    fn_constants.insert(*v, *fid);
+                }
+            }
+        }
+    }
+
+    FnTypes { vars, block_envs, fn_constants }
 }
 
 /// Union `delta` into `block_envs[target]`. Returns true if anything changed.
@@ -2262,5 +2320,108 @@ end
             }
         }
         assert!(saw_cc, "test premise: apply should have a CallClosure");
+    }
+
+    // ---- fz-ul4.29.10.1 — fn_constants side-channel ----
+
+    /// A zero-capture `MakeClosure(F, [])` (synthesized by ir_lower when
+    /// a bare top-level fn name is used as a value) populates
+    /// `fn_constants[v] = F` on the Let-bound var.
+    #[test]
+    fn fn_constant_from_makeclosure_zero_captures() {
+        let (m, mt) = pipeline(r#"
+fn double(x), do: x * 2
+fn apply2(f, x), do: f(x)
+fn main() do
+  print(apply2(double, 21))
+end
+"#);
+        let main = m.fns.iter().find(|f| f.name == "main").unwrap();
+        let double = m.fns.iter().find(|f| f.name == "double").unwrap();
+        // Find the Var bound to MakeClosure(double, []) in main.
+        let mut closure_var: Option<Var> = None;
+        for b in &main.blocks {
+            for stmt in &b.stmts {
+                let Stmt::Let(v, prim) = stmt;
+                if let Prim::MakeClosure(fid, captured) = prim {
+                    if *fid == double.id && captured.is_empty() {
+                        closure_var = Some(*v);
+                    }
+                }
+            }
+        }
+        let v = closure_var.expect("test premise: main has MakeClosure(double, [])");
+        let main_ft = mt.specs.iter()
+            .find(|((id, _), _)| *id == main.id)
+            .map(|(_, ft)| ft)
+            .expect("main spec exists");
+        assert_eq!(main_ft.fn_constants.get(&v).copied(), Some(double.id),
+            "zero-capture MakeClosure should populate fn_constants");
+    }
+
+    /// A `MakeClosure` with captures is a real closure value, not a
+    /// fn-as-value. No `fn_constants` entry.
+    #[test]
+    fn fn_constant_not_set_for_captures() {
+        let (m, mt) = pipeline(r#"
+fn main() do
+  k = 7
+  f = fn (n) -> n + k
+  print(f(3))
+end
+"#);
+        let main = m.fns.iter().find(|f| f.name == "main").unwrap();
+        let main_ft = mt.specs.iter()
+            .find(|((id, _), _)| *id == main.id)
+            .map(|(_, ft)| ft)
+            .expect("main spec exists");
+        // Find the Var bound to the MakeClosure (the synthesized lambda
+        // has captures of [k]).
+        let mut closure_var: Option<Var> = None;
+        for b in &main.blocks {
+            for stmt in &b.stmts {
+                let Stmt::Let(v, prim) = stmt;
+                if let Prim::MakeClosure(_, captured) = prim {
+                    if !captured.is_empty() { closure_var = Some(*v); }
+                }
+            }
+        }
+        let v = closure_var.expect("test premise: a captured-MakeClosure in main");
+        assert!(main_ft.fn_constants.get(&v).is_none(),
+            "MakeClosure with captures must NOT set fn_constants");
+    }
+
+    /// `apply2(double, 21)` — in apply2's specialized FnTypes, the
+    /// `f` entry param has `fn_constants[f_param] = double.id`,
+    /// propagated from main's callsite.
+    #[test]
+    fn fn_constant_propagates_via_direct_call() {
+        let (m, mt) = pipeline(r#"
+fn double(x), do: x * 2
+fn apply2(f, x), do: f(x)
+fn main() do
+  print(apply2(double, 21))
+end
+"#);
+        let apply2 = m.fns.iter().find(|f| f.name == "apply2").unwrap();
+        let double = m.fns.iter().find(|f| f.name == "double").unwrap();
+        let apply2_entry = apply2.block(apply2.entry);
+        let f_param = apply2_entry.params[0]; // first param is `f`
+        // Look at every spec of apply2 — at least one must carry the
+        // propagated fn_constant.
+        let mut saw_propagation = false;
+        for ((fid, _), ft) in &mt.specs {
+            if *fid != apply2.id { continue; }
+            if ft.fn_constants.get(&f_param).copied() == Some(double.id) {
+                saw_propagation = true;
+            }
+        }
+        assert!(saw_propagation,
+            "expected apply2's spec to carry fn_constants[f] = double; \
+             specs for apply2: {:?}",
+            mt.specs.iter()
+                .filter(|((fid, _), _)| *fid == apply2.id)
+                .map(|((_, k), ft)| (k.clone(), ft.fn_constants.clone()))
+                .collect::<Vec<_>>());
     }
 }
