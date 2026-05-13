@@ -712,6 +712,7 @@ fn build_fn_signature(
     is_native: bool,
     needs_host_ctx: bool,
     is_cont_fn: bool,
+    closure_target_n_caps: Option<usize>,
 ) -> Signature {
     if !is_native {
         // Uniform fns always include host_ctx — the trampoline ABI is
@@ -732,14 +733,20 @@ fn build_fn_signature(
     let mut sig = Signature::new(CallConv::Tail);
     if is_cont_fn {
         // fz-cps.1.2 cont fn sig per §2.1: `(result:i64, self:i64) tail`.
-        // No host_ctx (cont-fn Halt uses fz_halt_implicit instead).
-        // The result type is canonicalized to i64 (Tagged) because cont
-        // indirect-call sites use a single uniform sig.
         sig.params.push(AbiParam::new(types::I64));               // result (Tagged)
         sig.params.push(AbiParam::new(types::I64));               // self (closure ptr)
-        let _ = param_reprs; // result repr canonicalized; per-capture reprs
-                             // are still consulted by the entry harness for
-                             // load typing.
+        let _ = param_reprs;
+    } else if let Some(n_caps) = closure_target_n_caps {
+        // fz-cps.1.2 closure-target fn sig per §2.1:
+        // `(args..., self:i64, cont:i64) tail`. Captures (param_reprs[0..n_caps])
+        // are NOT Cranelift params — body loads them from self+24+8*i.
+        // Args are param_reprs[n_caps..].
+        for r in &param_reprs[n_caps..] {
+            sig.params.push(AbiParam::new(r.cl_type()));
+        }
+        sig.params.push(AbiParam::new(types::I64));               // self
+        sig.params.push(AbiParam::new(types::I64));               // cont
+        let _ = needs_host_ctx;
     } else {
         for r in param_reprs {
             sig.params.push(AbiParam::new(r.cl_type()));
@@ -1573,18 +1580,23 @@ pub fn compile_with_backend<B: Backend>(
         std::collections::HashSet<crate::fz_ir::FnId>,
         std::collections::HashMap<crate::fz_ir::FnId, usize>,
     ) = {
-        use crate::fz_ir::{Prim, Stmt};
+        use crate::fz_ir::{Prim, Stmt, Term};
         let mut targets = std::collections::HashSet::new();
         let mut counts: std::collections::HashMap<crate::fz_ir::FnId, usize>
             = std::collections::HashMap::new();
+        let mut direct_called = std::collections::HashSet::new();
         for f in &module.fns {
             for b in &f.blocks {
+                match &b.terminator {
+                    Term::Call { callee, .. } | Term::TailCall { callee, .. } => {
+                        direct_called.insert(*callee);
+                    }
+                    _ => {}
+                }
                 for stmt in &b.stmts {
                     let Stmt::Let(_, prim) = stmt;
                     if let Prim::MakeClosure(fid, captured) = prim {
                         targets.insert(*fid);
-                        // A lambda's n_captures is fixed at definition;
-                        // every MakeClosure of the same FnId must agree.
                         let n = captured.len();
                         if let Some(prev) = counts.get(fid) {
                             debug_assert_eq!(*prev, n,
@@ -1596,7 +1608,25 @@ pub fn compile_with_backend<B: Backend>(
                 }
             }
         }
-        (targets, counts)
+        // fz-cps.1.2: a fn that is BOTH a closure target AND direct-called
+        // can't safely use the closure-target sig (`(args, self, cont)`)
+        // because direct callers don't have a closure value to pass as
+        // self. Type narrowing in particular converts CallClosure into a
+        // direct Term::Call when the closure target is statically known
+        // (e.g., compose_s14 calling double directly). For now, exclude
+        // such fns from the closure-target shape — they keep the regular
+        // native sig `(args, cont)` and call sites still use the closure
+        // stub adapter when invoked via Term::CallClosure.
+        let closure_only: std::collections::HashSet<_> = targets
+            .iter()
+            .copied()
+            .filter(|fid| !direct_called.contains(fid))
+            .collect();
+        let counts: std::collections::HashMap<_, _> = counts
+            .into_iter()
+            .filter(|(fid, _)| closure_only.contains(fid))
+            .collect();
+        (closure_only, counts)
     };
     let _ = (&closure_target_fns, &closure_n_captures);
     // fz-ul4.27.6.4 follow-up: heap-safe captures.
@@ -1972,6 +2002,12 @@ pub fn compile_with_backend<B: Backend>(
                     is_native,
                     needs_host_ctx,
                     cont_fns.contains(&f.id),
+                    // fz-cps.1.2: closure-target fn shape gated on
+                    // native (uniform closure targets still go through
+                    // the existing stub adapter).
+                    if is_native {
+                        closure_n_captures.get(&f.id).copied()
+                    } else { None },
                 )
             }
             None => {
@@ -2068,6 +2104,7 @@ pub fn compile_with_backend<B: Backend>(
             &natively_callable,
             &cont_target_fns,
             &cont_fns,
+            &closure_n_captures,
             &fns_needing_host_ctx,
             &fn_ids,
             &param_reprs,
@@ -2142,6 +2179,10 @@ pub fn compile_with_backend<B: Backend>(
         let callee_schema = &schemas[callee_sid as usize];
         let callee_frame_size = callee_schema.size;
         let callee_is_native_abi = natively_callable.contains(&lam_fn_id);
+        // fz-cps.1.2: callee uses closure-target sig if it's in
+        // closure_target_fns (= MakeClosure target ∧ not direct-called).
+        let callee_is_closure_target_shape =
+            callee_is_native_abi && closure_target_fns.contains(&lam_fn_id);
         let stub_sig = stub_sigs
             .get(cl_sid)
             .expect("stub sig registered")
@@ -2163,6 +2204,7 @@ pub fn compile_with_backend<B: Backend>(
             n_callee_params - n_caps,
             callee_is_native_abi,
             callee_needs_host_ctx,
+            callee_is_closure_target_shape,
             &stub_name,
             &param_reprs[callee_sid as usize],
             return_reprs[callee_sid as usize],
@@ -2649,6 +2691,7 @@ fn compile_fn<M: cranelift_module::Module>(
     natively_callable: &std::collections::HashSet<crate::fz_ir::FnId>,
     cont_target_fns: &std::collections::HashSet<crate::fz_ir::FnId>,
     cont_fns: &std::collections::HashSet<crate::fz_ir::FnId>,
+    closure_n_captures: &std::collections::HashMap<crate::fz_ir::FnId, usize>,
     fns_needing_host_ctx: &std::collections::HashSet<crate::fz_ir::FnId>,
     fn_ids: &HashMap<u32, FuncId>,
     param_reprs: &[Vec<ArgRepr>],
@@ -2658,6 +2701,14 @@ fn compile_fn<M: cranelift_module::Module>(
 ) -> Result<(), CodegenError> {
     let is_native = natively_callable.contains(&f.id);
     let is_cont_fn = cont_fns.contains(&f.id);
+    // fz-cps.1.2 — closure-target fn shape per §2.1: `(args..., self,
+    // cont) tail`. Only takes effect for native fns; uniform fns still
+    // go through the closure-stub adapter for now.
+    let closure_target_n_caps: Option<usize> = if is_native && !is_cont_fn {
+        closure_n_captures.get(&f.id).copied()
+    } else {
+        None
+    };
     // fz-ul4.27.18: when this fn is never invoked from any fz IR site
     // (not a direct callee, not a continuation, not a closure target),
     // it can only enter via the trampoline entry, which writes null
@@ -2770,21 +2821,25 @@ fn compile_fn<M: cranelift_module::Module>(
         let my_param_reprs = &param_reprs[this_spec_id as usize];
         if is_cont_fn {
             // fz-cps.1.2 cont fn entry per §2.1: `(result:i64, self:i64) tail`.
-            // Result is canonicalized to i64 (Tagged); the body coerces to
-            // its actual repr at the entry harness.
             b.append_block_param(entry_cl, types::I64); // result (Tagged)
             b.append_block_param(entry_cl, types::I64); // self
-            let _ = my_param_reprs; // result canonical; captures load
-                                    // kind-aware in the harness body.
+            let _ = my_param_reprs;
+        } else if let Some(n_caps) = closure_target_n_caps {
+            // fz-cps.1.2 closure-target fn entry per §2.1:
+            // `(args..., self:i64, cont:i64) tail`. n_args = total - n_caps.
+            let n_args = my_param_reprs.len().saturating_sub(n_caps);
+            for r in &my_param_reprs[..n_args] {
+                b.append_block_param(entry_cl, r.cl_type());
+            }
+            b.append_block_param(entry_cl, types::I64); // self
+            b.append_block_param(entry_cl, types::I64); // cont
         } else {
             for r in my_param_reprs {
                 b.append_block_param(entry_cl, r.cl_type());
             }
-            // fz-ul4.27.19: only append host_ctx when this fn actually needs it.
             if fns_needing_host_ctx.contains(&f.id) {
                 b.append_block_param(entry_cl, types::I64);              // host_ctx
             }
-            // fz-cps.1.a (fz-siu.1.1): trailing cont:i64 per §2.1.
             b.append_block_param(entry_cl, types::I64);                  // cont
         }
     } else {
@@ -2873,9 +2928,44 @@ fn compile_fn<M: cranelift_module::Module>(
             } else {
                 None
             };
-            // cont_param for cont fns = self (used by Return/Halt to fetch
-            // outer_cont from self+24 and invoke it).
             (None, host_ctx, Some(self_val))
+        } else if let Some(n_caps) = closure_target_n_caps {
+            // fz-cps.1.2 closure-target fn entry harness per §2.1.
+            // fz_params order (set by ir_lower / closure stub convention):
+            //   fz_params[0..n_caps]            = captures      → load self+24+8*k
+            //   fz_params[n_caps..n_caps+n_args] = args         → Cranelift params[0..n_args]
+            // Cranelift sig: `(args..., self, cont) tail`.
+            //   params[0..n_args]  = args
+            //   params[n_args]     = self  (closure ptr)
+            //   params[n_args+1]   = cont  (cont SSA)
+            let n_args = entry_blk.params.len().saturating_sub(n_caps);
+            let self_val = params[n_args];
+            let cont_val = params[n_args + 1];
+            // Captures: fz_params[0..n_caps] ← load from self+24+8*k.
+            for (k, p) in entry_blk.params.iter().enumerate().take(n_caps) {
+                let off = HEADER_SIZE + SLOT_BYTES + (k as i32) * SLOT_BYTES;
+                let cl_ty = my_param_reprs[k].cl_type();
+                let v = b.ins().load(cl_ty, MemFlags::trusted(), self_val, off);
+                match my_param_reprs[k] {
+                    ArgRepr::RawInt => { raw_int_vars.insert(p.0); }
+                    ArgRepr::RawF64 => { raw_f64_vars.insert(p.0); }
+                    ArgRepr::Tagged => {}
+                }
+                var_map.insert(p.0, v);
+            }
+            // Args: fz_params[n_caps..] ← Cranelift params[0..n_args].
+            for (j, p) in entry_blk.params.iter().enumerate().skip(n_caps) {
+                let cl_idx = j - n_caps;
+                let repr = my_param_reprs[j];
+                match repr {
+                    ArgRepr::RawInt => { raw_int_vars.insert(p.0); }
+                    ArgRepr::RawF64 => { raw_f64_vars.insert(p.0); }
+                    ArgRepr::Tagged => {}
+                }
+                var_map.insert(p.0, params[cl_idx]);
+            }
+            let _ = self_val;
+            (None, None, Some(cont_val))
         } else {
             for (i, p) in entry_blk.params.iter().enumerate() {
                 match my_param_reprs[i] {
@@ -3499,26 +3589,74 @@ fn compile_fn<M: cranelift_module::Module>(
                     .iter()
                     .map(|v| *var_map.get(&v.0).expect("unbound captured val"))
                     .collect();
-                // Build cont frame (same as today's emit_call_closure prefix).
-                let alloc_fref = jmod.declare_func_in_func(runtime.alloc_id, b.func);
-                let my_cont = b.ins().load(
-                    types::I64, MemFlags::trusted(),
-                    frame_ptr.expect(
-                        "Term::CallClosure reached from native-fn body — \
-                         natively_callable invariant violated",
-                    ),
-                    HEADER_SIZE,
-                );
-                // fz-ul4.29.12.1: resolve cont to its narrow SpecId.0.
-                // Slot 0 is `any` for CallClosure (opaque callee).
+                // fz-cps.1.2: build cont CLOSURE (not cont frame) per
+                // §2.2. The closure-target callee's body indirect-calls
+                // through cont+16 on Return, so the cont must be a
+                // valid heap closure (code_ptr@+16, outer_cont@+24,
+                // user captures from +32).
                 let cont_sid = resolve_cont_sid(blk, continuation);
-                let cont_schema = &schemas[cont_sid as usize];
-                let cs = b.ins().iconst(types::I32, cont_sid as i64);
-                let cz = b.ins().iconst(types::I32, cont_schema.size as i64);
-                let cf_inst = b.ins().call(alloc_fref, &[cs, cz]);
-                let cf = b.inst_results(cf_inst)[0];
-                b.ins().store(MemFlags::trusted(), my_cont, cf, HEADER_SIZE);
-                store_args_into_callee_frame(&mut b, cont_schema, cf, &cap_vals, 2);
+                let cont_fid = *fn_ids.get(&cont_sid).expect("cont fn_id missing");
+                let cont_fref = jmod.declare_func_in_func(cont_fid, b.func);
+                let acl_fref = jmod
+                    .declare_func_in_func(runtime.alloc_closure_id, b.func);
+                let cl_fid_v = b.ins().iconst(types::I32, cont_sid as i64);
+                let n_caps_v = b.ins().iconst(
+                    types::I32, (continuation.captured.len() + 1) as i64,
+                );
+                let cl_inst = b.ins().call(acl_fref, &[cl_fid_v, n_caps_v]);
+                let cf = b.inst_results(cl_inst)[0];
+                let cont_code_addr = b.ins().func_addr(types::I64, cont_fref);
+                b.ins().store(MemFlags::trusted(), cont_code_addr, cf, HEADER_SIZE);
+                // outer_cont at +24. Uniform caller loads frame_ptr+16
+                // with null-fallback to halt-cont closure inline.
+                let my_outer_cont = match cont_param {
+                    Some(c) => c,
+                    None => {
+                        let from_slot = b.ins().load(
+                            types::I64, MemFlags::trusted(),
+                            frame_ptr.expect(
+                                "uniform CallClosure must have frame_ptr"),
+                            HEADER_SIZE,
+                        );
+                        let zero = b.ins().iconst(types::I64, 0);
+                        let is_null = b.ins().icmp(IntCC::Equal, from_slot, zero);
+                        let alloc_blk = b.create_block();
+                        let join_blk = b.create_block();
+                        b.append_block_param(join_blk, types::I64);
+                        b.ins().brif(is_null, alloc_blk, &[][..], join_blk,
+                            &[BlockArg::Value(from_slot)]);
+                        b.switch_to_block(alloc_blk);
+                        b.seal_block(alloc_blk);
+                        let dummy_fid = b.ins().iconst(types::I32, 0);
+                        let n_caps0 = b.ins().iconst(types::I32, 0);
+                        let halt_alloc = b.ins().call(acl_fref, &[dummy_fid, n_caps0]);
+                        let halt_cl = b.inst_results(halt_alloc)[0];
+                        let hcb_fref = jmod
+                            .declare_func_in_func(runtime.halt_cont_body_id, b.func);
+                        let hcb_addr = b.ins().func_addr(types::I64, hcb_fref);
+                        b.ins().store(
+                            MemFlags::trusted(),
+                            hcb_addr, halt_cl, HEADER_SIZE,
+                        );
+                        b.ins().jump(join_blk, &[BlockArg::Value(halt_cl)]);
+                        b.switch_to_block(join_blk);
+                        b.seal_block(join_blk);
+                        b.block_params(join_blk)[0]
+                    }
+                };
+                b.ins().store(MemFlags::trusted(), my_outer_cont, cf,
+                    HEADER_SIZE + SLOT_BYTES);
+                // User captures at +32+8*i, Tagged.
+                for (i, cv) in continuation.captured.iter().enumerate() {
+                    let from = var_repr(cv.0, &raw_int_vars, &raw_f64_vars);
+                    let v = coerce_to(
+                        &mut b, jmod, &runtime, cap_vals[i], from, ArgRepr::Tagged,
+                    );
+                    let off = HEADER_SIZE + SLOT_BYTES * 2 + (i as i32) * SLOT_BYTES;
+                    b.ins().store(MemFlags::trusted(), v, cf, off);
+                }
+                let _ = cont_param; // captures wired into cont closure.
+                let _ = continuation; // remainder of capture/cont metadata done.
                 // Load stub_fp from closure payload offset 0 (heap offset 16).
                 let stub_fp = b.ins().load(
                     types::I64,
@@ -3988,6 +4126,7 @@ fn compile_closure_stub<M: cranelift_module::Module>(
     n_args: usize,
     callee_is_native_abi: bool,
     callee_needs_host_ctx: bool,
+    callee_is_closure_target_shape: bool,
     stub_name: &str,
     callee_param_reprs: &[ArgRepr],
     callee_ret_repr: ArgRepr,
@@ -4019,35 +4158,46 @@ fn compile_closure_stub<M: cranelift_module::Module>(
             //   - call the native body; result rides back in callee's
             //     return_repr — coerce to Tagged before storing into the
             //     cont's FzValue slot 1 or handing to fz_halt.
+            // Callee sig depends on whether it was admitted as a
+            // closure-target shape (`(args, self, cont) tail`) or the
+            // regular native shape (`(captures, args, [host_ctx], cont) tail`).
+            // The stub here is built when the callee is native, but
+            // closure-target-only fns get the new shape; closure-targets
+            // that are ALSO direct-called keep the regular shape.
+            // Distinguish by inspecting the callee's actual sig length
+            // vs n_caps + n_args + needs_host_ctx + 1.
             let callee_fref = jmod.declare_func_in_func(callee_func_id, b.func);
-            let mut native_args: Vec<ir::Value> =
-                Vec::with_capacity(n_caps + n_args + 1);
-            for k in 0..n_caps {
-                let cap_off = HEADER_SIZE + SLOT_BYTES + (k as i32) * SLOT_BYTES;
-                let tagged = b
-                    .ins()
-                    .load(types::I64, MemFlags::trusted(), closure_ptr, cap_off);
-                let coerced = coerce_to(
-                    &mut b, jmod, runtime, tagged, ArgRepr::Tagged, callee_param_reprs[k],
-                );
-                native_args.push(coerced);
+            let mut native_args: Vec<ir::Value> = Vec::new();
+            // fz-cps.1.2: branch on callee's actual sig shape. Closure-
+            // target callees have `(args, self, cont) tail`; non-closure-
+            // target native callees still have the legacy
+            // `(captures-as-args, [host_ctx], cont) tail` shape.
+            if callee_is_closure_target_shape {
+                // Closure-target shape: args + self + cont.
+                for (j, v) in arg_vals.iter().enumerate() {
+                    let coerced = coerce_to(
+                        &mut b, jmod, runtime, *v, ArgRepr::Tagged,
+                        callee_param_reprs[n_caps + j],
+                    );
+                    native_args.push(coerced);
+                }
+                native_args.push(closure_ptr);
+                native_args.push(cont_ptr);
+                let _ = callee_needs_host_ctx;
+            } else {
+                // Legacy shape: (args, [host_ctx], cont). 0 captures.
+                for (j, v) in arg_vals.iter().enumerate() {
+                    let coerced = coerce_to(
+                        &mut b, jmod, runtime, *v, ArgRepr::Tagged,
+                        callee_param_reprs[j],
+                    );
+                    native_args.push(coerced);
+                }
+                if callee_needs_host_ctx {
+                    native_args.push(host_ctx);
+                }
+                native_args.push(cont_ptr);
             }
-            for (j, v) in arg_vals.iter().enumerate() {
-                let coerced = coerce_to(
-                    &mut b, jmod, runtime, *v, ArgRepr::Tagged, callee_param_reprs[n_caps + j],
-                );
-                native_args.push(coerced);
-            }
-            // fz-ul4.27.19: forward host_ctx only if the callee's
-            // trimmed sig still expects it.
-            if callee_needs_host_ctx {
-                native_args.push(host_ctx);
-            }
-            // fz-cps.1.a (fz-siu.1.1): trailing cont arg per §2.1. The
-            // stub forwards `cont_ptr` (loaded from caller's frame slot
-            // 0) as the cont SSA value. Callee body ignores it in .1.1;
-            // .1.2 makes Return invoke through `cont+16`.
-            native_args.push(cont_ptr);
             let call_inst = b.ins().call(callee_fref, &native_args);
             let result = b.inst_results(call_inst)[0];
             let result_tagged = coerce_to(
@@ -5967,7 +6117,7 @@ fn main(), do: loop_with(loop_with, 100000, 0)
         let add_idx = m.fns.iter().position(|f| f.name == "add").unwrap();
         let rd = join_return_descrs(&m.fns[add_idx], &mt[add_idx]);
         let prs = build_param_reprs(&m.fns[add_idx], &mt[add_idx]);
-        let sig = build_fn_signature(&prs, ArgRepr::from_descr(&rd), false, true, false);
+        let sig = build_fn_signature(&prs, ArgRepr::from_descr(&rd), false, true, false, None);
         assert_eq!(sig.params.len(), 2);
         assert_eq!(sig.returns.len(), 1);
         assert_eq!(sig.params[0].value_type, types::I64);
@@ -5986,7 +6136,7 @@ fn main(), do: loop_with(loop_with, 100000, 0)
         let add_idx = m.fns.iter().position(|f| f.name == "add").unwrap();
         let rd = join_return_descrs(&m.fns[add_idx], &mt[add_idx]);
         let prs = build_param_reprs(&m.fns[add_idx], &mt[add_idx]);
-        let sig = build_fn_signature(&prs, ArgRepr::from_descr(&rd), true, true, false);
+        let sig = build_fn_signature(&prs, ArgRepr::from_descr(&rd), true, true, false, None);
         // 2 entry params + host_ctx + cont.
         assert_eq!(sig.params.len(), 4);
         assert_eq!(sig.returns.len(), 1);
@@ -6012,7 +6162,7 @@ fn main(), do: loop_with(loop_with, 100000, 0)
         let dist_idx = m.fns.iter().position(|f| f.name == "dist").unwrap();
         let rd = join_return_descrs(&m.fns[dist_idx], &mt[dist_idx]);
         let prs = build_param_reprs(&m.fns[dist_idx], &mt[dist_idx]);
-        let sig = build_fn_signature(&prs, ArgRepr::from_descr(&rd), true, true, false);
+        let sig = build_fn_signature(&prs, ArgRepr::from_descr(&rd), true, true, false, None);
         // 2 entry params + host_ctx + cont.
         assert_eq!(sig.params.len(), 4);
         assert_eq!(sig.params[0].value_type, types::F64);
