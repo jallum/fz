@@ -1,5 +1,5 @@
 # purpose: fz-ul4.29.5 — closure dispatched via call_indirect through stub_fp
-# paths:   jit, interp
+# paths:   jit, interp, aot
 # expect_clif_contains: apply1: call_indirect
 # expect_clif_excludes: apply1: fz_closure_invoke
 # fz-cps.1.12: closure stubs deleted. The lambda body is invoked
