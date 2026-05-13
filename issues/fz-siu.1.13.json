@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-siu.1.12"
+  ],
   "blocks": [],
   "created": "2026-05-13T18:00:53Z",
   "description": "Spec: After the cutover, all uniform-path machinery is dead code.\n\nWork:\n- Delete from src/ir_codegen.rs: any `compile_uniform_path`, frame_ptr threading, host_ctx threading no longer referenced.\n- Delete from runtime/src/runtime.rs: `run_quantum`, trampoline dispatch loop, `next_frame` field.\n- Delete from runtime/src/process.rs: `next_frame`, `frame_sizes` if no remaining consumer.\n- Delete from runtime/src/ir_runtime.rs: any FFI helpers only used by trampoline (fz_alloc_frame may stay if still used by something else; check).\n- Delete any per-fn-shape sig-construction code that handles a non-Tail CC.\n- Audit imports / dead-code warnings.\n\nAcceptance:\n- `cargo build --workspace` clean, zero warnings.\n- Full test suite still green.\n- `git grep \"run_quantum\\|next_frame\\|compile_uniform_path\"` returns nothing.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "fz-cps.1.13: delete dead uniform-path machinery",
   "type": "task",
-  "updated_at": "2026-05-13T18:00:53Z"
+  "updated_at": "2026-05-13T18:00:57Z"
 }

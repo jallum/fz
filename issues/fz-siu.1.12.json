@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-siu.1.11"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-siu.1.13"
+  ],
   "created": "2026-05-13T18:00:45Z",
   "description": "Spec: CLAUDE.md — \"Tests must pass.\" Closing the fz-siu.1 cutover requires the full suite to be green after intermediate deferred-checks period.\n\nWork:\n- Run `cargo test --workspace` and fix all failures introduced during the .1.7-.1.11 chain.\n- Run `cargo build --workspace --release` and fix all warnings (CLAUDE.md: warnings are errors).\n- Re-enable any `#[ignore]`'d acceptance tests in tests/fixture_matrix.rs not already re-enabled by .1.9 / .1.11.\n- Add disassembly-equality tests for §8.2 and §8.3 target clif (parallel to §8.1's `tail_recursion_count_matches_cps_in_clif_section_8_1`).\n- Update memory: remove or supersede `project_fz_siu_deferred_checks` (regime ends here).\n- Confirm sanity fixtures still pass: add1, tail_recursion, vr3_float_args, higher_order, closure_typed_captures, concurrency_ping_pong.\n\nAcceptance:\n- Zero failing tests across workspace.\n- Zero warnings in release build.\n- All four §8.x target clif acceptance tests GREEN.\n- Memory file `project_fz_siu_deferred_checks.md` removed.",
   "id": "fz-siu.1.12",
