@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-siu.1.3"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-siu.1.5"
+  ],
   "created": "2026-05-13T09:26:57Z",
   "description": "Spec: docs/cps-in-clif.md §2.1, §8.2 compose, §8.3 add_to.\n\nWork:\n- Term::Call { fn, args, cont: Cont{fn_id, captured} }:\n    1. v_k1 = call fz_alloc_closure(N_captures)\n    2. store func_addr(cont_fn) at v_k1+16\n    3. store captured[i] at v_k1+24+8i\n    4. return_call %fn(args..., v_k1)\n- Term::CallClosure: same, but for v_f indirect: v_code=load f+16; return_call_indirect(args..., f, v_k1).\n- Cont fn bodies are compiled with sig_cont shape (result:i64, self:i64) tail.\n\nAcceptance:\n- §8.2 compose target clif shape matches.\n- §8.3 add_to lambda escape: lambda_z body has zero allocs; add_to has one fz_alloc_closure.\n- closure_typed_captures fixture passes.",
   "id": "fz-siu.1.4",
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "fz-cps.1.d: Call/CallClosure build cont inline",
   "type": "task",
-  "updated_at": "2026-05-13T09:27:21Z"
+  "updated_at": "2026-05-13T09:27:22Z"
 }

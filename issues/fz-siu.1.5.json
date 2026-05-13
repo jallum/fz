@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-siu.1.4"
+  ],
   "blocks": [],
   "created": "2026-05-13T09:27:05Z",
   "description": "Spec: docs/cps-in-clif.md §2.1, §8.1 full target.\n\nWork:\n- build_fn_signature: remove the `if !is_native` branch; all fns get Tail CC + typed params + cont last.\n- compile_fn: entry block binds typed SSA params directly (no frame-slot loads, no frame_ptr).\n- Remove emit_return-into-cont-frame path (replaced by .1.b).\n- compile_uniform_path / parking_frame seeding adjusted to construct an initial cont closure for the entry call instead of seeding slot-0.\n\nAcceptance:\n- §8.1 full target for tail_recursion.fz: `function %count(i64,i64,i64) tail` with zero frame slot loads.\n- No SystemV-CC fz fns remain in clif dump.\n- Full suite still green (uniform-path scaffolding remains in runtime for now; deletion is fz-siu.5).",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "fz-cps.1.e: delete uniform branch — all fns native-tier",
   "type": "task",
-  "updated_at": "2026-05-13T09:27:05Z"
+  "updated_at": "2026-05-13T09:27:22Z"
 }
