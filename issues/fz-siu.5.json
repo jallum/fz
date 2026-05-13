@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-siu.1",
     "fz-siu.2",
@@ -15,8 +15,8 @@
   "labels": [],
   "parent": "fz-siu",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "fz-cps.5: delete uniform-path machinery",
   "type": "task",
-  "updated_at": "2026-05-13T04:09:33Z"
+  "updated_at": "2026-05-13T21:34:33Z"
 }
