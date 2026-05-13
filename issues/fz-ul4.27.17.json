@@ -11,5 +11,5 @@
   "status": "open",
   "title": "Dedup iconst.i64 0 in emit_return halt branch",
   "type": "task",
-  "updated_at": "2026-05-13T02:44:01Z"
+  "updated_at": "2026-05-13T02:44:05Z"
 }
