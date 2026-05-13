@@ -239,19 +239,13 @@ impl CompiledModule {
     pub(crate) fn run_quantum(&self, process: &mut Process) {
         /// Park-time GC trigger (cps-in-clif §7). Called at every
         /// shim-return boundary. Reads `process.heap.should_gc()`; if set,
-        /// invokes `gc()` with `parked_cont` as the sole root (per §6.4 /
-        /// §7), then clears the pressure flag. The .7 stub gc() just
-        /// bumps `gc_run_count`; Cheney lands in fz-siu.8.
+        /// invokes Cheney with `parked_cont` as the sole root (§6.4 / §7).
+        /// `gc()` may rewrite `parked_cont` to its to-space copy.
         fn park_time_gc(process: &mut Process) {
             if !process.heap.should_gc() {
                 return;
             }
-            let roots: &[fz_runtime::fz_value::FzValue] = if process.parked_cont.is_null() {
-                &[]
-            } else {
-                &[fz_runtime::fz_value::FzValue(process.parked_cont as u64)]
-            };
-            process.heap.gc(roots);
+            process.heap.gc(&mut process.parked_cont);
             process.heap.clear_should_gc_flag();
         }
 

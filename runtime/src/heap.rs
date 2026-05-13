@@ -1,15 +1,21 @@
-//! Per-process bump arena (cps-in-clif §6.1).
+//! Per-process bump arena with Cheney GC (cps-in-clif §6.1, §6.4, §7).
 //!
 //! One block per `Process`. Allocation is pure bump: `bump_top += size`. When
 //! `bump_top` would cross `block_end`, we allocate a fresh (larger) block and
-//! park the old one in `abandoned_blocks` for `Drop` to free — a leak path
-//! that the .8 Cheney collector replaces with a copying GC rooted at
-//! `process.parked_cont`.
+//! park the old one in `abandoned_blocks`. At the next park-time GC, the
+//! collector copies everything reachable from the root (process.parked_cont)
+//! into a fresh to-space block; the old current block and all abandoned
+//! blocks are then freed.
 //!
 //! GC is *not* synchronous on allocation. `note_alloc_pressure` sets a flag
 //! when occupancy crosses `gc_threshold_bytes`; the scheduler reads the flag
-//! at park-time (next quantum boundary) and calls `gc()` — currently a stub
-//! that increments `gc_run_count`. Real Cheney body lands in fz-siu.8.
+//! at park-time (next quantum boundary) and calls `gc()`. Cheney runs with a
+//! single root by design (§7): all SSA values are gone (Cranelift's Tail CC
+//! popped them), so `process.parked_cont` is the only fz-side reference into
+//! the arena.
+//!
+//! Forwarding marker: a copied from-space object's `HeapHeader` is overwritten
+//! with `kind = FORWARDED_KIND` and the to-space pointer at offset 8.
 
 #![allow(dead_code)]
 
@@ -17,6 +23,11 @@ use crate::fz_value::{FzValue, HeapHeader, HeapKind, ListCons};
 use std::alloc::{Layout, alloc_zeroed, dealloc};
 use std::cell::RefCell;
 use std::rc::Rc;
+
+/// Sentinel `HeapHeader.kind` for an already-copied (forwarded) from-space
+/// object. The new pointer is stored at offset 8 of the from-header.
+/// Distinct from all valid `HeapKind` discriminants (0..=9).
+pub const FORWARDED_KIND: u16 = 0xFFFE;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FieldKind {
@@ -481,12 +492,236 @@ impl Heap {
         current + abandoned
     }
 
-    /// Park-time GC. Stub in fz-siu.7: just increments `gc_run_count`.
-    /// Real body — Cheney copy from `process.parked_cont` per §6.4 —
-    /// lands in fz-siu.8. `roots` is the planned root set; ignored here.
-    pub fn gc(&mut self, _roots: &[FzValue]) {
+    /// Park-time Cheney GC (§6.4). Single-root by design: §7 establishes
+    /// that the only fz-side reference into the arena at park-time is the
+    /// process's `parked_cont`. The caller passes that field by mutable
+    /// pointer; on return it is updated to the to-space copy (or left null
+    /// if it was null on entry — nothing to trace, just recycle blocks).
+    ///
+    /// Algorithm: standard Cheney two-finger BFS. Allocate a to-space block
+    /// of the current `block_size` (size-class adjustment lands in .9 / .11),
+    /// copy the root, then scan to-space objects breadth-first, forwarding
+    /// each from-space child pointer to its newly-copied address. Off-heap
+    /// pointers (static-closure / halt-cont singletons) are detected by an
+    /// in-from-space range check and left untouched.
+    pub fn gc(&mut self, root_slot: &mut *mut u8) {
+        // Snapshot from-space ranges before we allocate to-space.
+        let mut from_ranges: Vec<(*mut u8, *mut u8)> = Vec::with_capacity(
+            1 + self.abandoned_blocks.len(),
+        );
+        from_ranges.push((self.block_start, self.block_end));
+        for &(p, sz) in &self.abandoned_blocks {
+            from_ranges.push((p, unsafe { p.add(sz) }));
+        }
+
+        // Fresh to-space block; same size for .8 (size-class picker in .9).
+        let to_size = self.block_size;
+        let to_start = Self::alloc_block(to_size);
+        let to_end = unsafe { to_start.add(to_size) };
+        let mut free = to_start;
+        let mut live_count: u64 = 0;
+
+        if !root_slot.is_null() {
+            let new_root = cheney_forward(
+                *root_slot as *mut HeapHeader,
+                &from_ranges,
+                &mut free,
+                to_end,
+            );
+            *root_slot = new_root as *mut u8;
+            live_count += 1;
+
+            // Scan loop: process to-space objects breadth-first.
+            let schemas = self.schemas.borrow();
+            let mut scan = to_start;
+            while scan < free {
+                let h = scan as *mut HeapHeader;
+                let obj_size = unsafe { (*h).size_bytes as usize };
+                let before_trace = free;
+                cheney_trace_children(h, &from_ranges, &mut free, to_end, &schemas);
+                // Every child that triggered a copy contributes one live obj.
+                let added = unsafe { free.offset_from(before_trace) } as usize;
+                if added > 0 {
+                    live_count += count_objects_in_range(before_trace, free) as u64;
+                }
+                scan = unsafe { scan.add(obj_size) };
+            }
+        }
+
+        // Free old from-space (current + abandoned).
+        let cur_layout = Layout::from_size_align(self.block_size, 16)
+            .expect("bad heap layout");
+        unsafe { dealloc(self.block_start, cur_layout); }
+        for (p, sz) in self.abandoned_blocks.drain(..) {
+            let layout = Layout::from_size_align(sz, 16)
+                .expect("bad abandoned-block layout");
+            unsafe { dealloc(p, layout); }
+        }
+
+        // Install to-space as the new current block.
+        self.block_start = to_start;
+        self.bump_top = free;
+        self.block_end = to_end;
+        self.block_size = to_size;
+        self.alloc_count = live_count;
         self.gc_run_count += 1;
+        // §6.5 shrink hysteresis bookkeeping — consumed by .11. A "low live"
+        // pass is one where surviving bytes fall below 25% of block_size.
+        let live_bytes = unsafe { free.offset_from(to_start) } as usize;
+        if live_bytes * 4 < self.block_size {
+            self.low_live_streak = self.low_live_streak.saturating_add(1);
+        } else {
+            self.low_live_streak = 0;
+        }
     }
+}
+
+/// Copy a single from-space object to `*free` and install a forwarding
+/// pointer in the from-header. If the from-header already has
+/// `FORWARDED_KIND`, returns the existing forwarded pointer instead.
+/// Caller must ensure `p` is in from-space (per `ptr_in_from_space`).
+fn cheney_forward(
+    p: *mut HeapHeader,
+    _from_ranges: &[(*mut u8, *mut u8)],
+    free: &mut *mut u8,
+    to_end: *mut u8,
+) -> *mut HeapHeader {
+    let h = unsafe { &*p };
+    if h.kind == FORWARDED_KIND {
+        // Forwarding pointer was written at offset 8 (replacing schema_id +
+        // _reserved). Read it back.
+        let fwd = unsafe {
+            std::ptr::read((p as *const u8).add(8) as *const u64)
+        };
+        return fwd as *mut HeapHeader;
+    }
+    let size = h.size_bytes as usize;
+    let dst = *free;
+    let new_top = unsafe { dst.add(size) };
+    assert!(new_top <= to_end, "Cheney: to-space exhausted");
+    // Copy the whole object verbatim.
+    unsafe { std::ptr::copy_nonoverlapping(p as *const u8, dst, size); }
+    *free = new_top;
+    // Install forwarding marker in from-header.
+    unsafe {
+        std::ptr::write(p as *mut u16, FORWARDED_KIND);
+        std::ptr::write((p as *mut u8).add(8) as *mut u64, dst as u64);
+    }
+    dst as *mut HeapHeader
+}
+
+/// Trace every FzValue child of a to-space object, forwarding each
+/// from-space pointer it contains. Off-heap (static-closure / halt-cont)
+/// pointers are detected by range and left untouched.
+fn cheney_trace_children(
+    obj: *mut HeapHeader,
+    from_ranges: &[(*mut u8, *mut u8)],
+    free: &mut *mut u8,
+    to_end: *mut u8,
+    schemas: &SchemaRegistry,
+) {
+    let kind = HeapKind::from_u16(unsafe { (*obj).kind })
+        .unwrap_or_else(|| panic!(
+            "Cheney scan: invalid HeapKind {:#x}",
+            unsafe { (*obj).kind },
+        ));
+    match kind {
+        HeapKind::Struct => {
+            let schema_id = unsafe { (*obj).schema_id };
+            let schema = schemas.get(schema_id);
+            for f in &schema.fields {
+                if let FieldKind::FzValue = f.kind {
+                    let slot = unsafe {
+                        (obj as *mut u8).add(16).add(f.offset as usize) as *mut FzValue
+                    };
+                    forward_field(slot, from_ranges, free, to_end);
+                }
+            }
+        }
+        HeapKind::List => {
+            let head_slot = unsafe { (obj as *mut u8).add(16) as *mut FzValue };
+            let tail_slot = unsafe { (obj as *mut u8).add(24) as *mut FzValue };
+            forward_field(head_slot, from_ranges, free, to_end);
+            forward_field(tail_slot, from_ranges, free, to_end);
+        }
+        HeapKind::Closure => {
+            // Layout: stub_fp (8) at offset 16 — a code pointer, skip.
+            // Captures at offset 24+i*8 — FzValue each. `flags` is count.
+            let count = unsafe { (*obj).flags } as usize;
+            for i in 0..count {
+                let slot = unsafe {
+                    (obj as *mut u8).add(24).add(i * 8) as *mut FzValue
+                };
+                forward_field(slot, from_ranges, free, to_end);
+            }
+        }
+        HeapKind::Map => {
+            let count = unsafe {
+                std::ptr::read((obj as *const u8).add(16) as *const u64) as usize
+            };
+            for i in 0..count {
+                let key_slot = unsafe {
+                    (obj as *mut u8).add(24).add(i * 16) as *mut FzValue
+                };
+                let val_slot = unsafe {
+                    (obj as *mut u8).add(24).add(i * 16 + 8) as *mut FzValue
+                };
+                forward_field(key_slot, from_ranges, free, to_end);
+                forward_field(val_slot, from_ranges, free, to_end);
+            }
+        }
+        HeapKind::Bitstring
+        | HeapKind::Float
+        | HeapKind::VecI64
+        | HeapKind::VecF64
+        | HeapKind::VecU8
+        | HeapKind::VecBit => {
+            // Raw payload, no FzValue children.
+        }
+    }
+}
+
+/// For one FzValue slot in a to-space object: if it holds a Ptr-tagged
+/// pointer into from-space, copy the target (or follow an existing
+/// forwarding) and rewrite the slot. Off-heap and scalar values pass through.
+fn forward_field(
+    slot: *mut FzValue,
+    from_ranges: &[(*mut u8, *mut u8)],
+    free: &mut *mut u8,
+    to_end: *mut u8,
+) {
+    let v = unsafe { std::ptr::read(slot) };
+    let p = match v.unbox_ptr() {
+        Some(p) => p,
+        None => return, // scalar / nil
+    };
+    if p.is_null() {
+        return;
+    }
+    if !ptr_in_from_space(p as *mut u8, from_ranges) {
+        return; // off-heap singleton (static closure / halt cont)
+    }
+    let new = cheney_forward(p, from_ranges, free, to_end);
+    unsafe { std::ptr::write(slot, FzValue::from_ptr(new)); }
+}
+
+fn ptr_in_from_space(p: *mut u8, from_ranges: &[(*mut u8, *mut u8)]) -> bool {
+    from_ranges.iter().any(|&(start, end)| p >= start && p < end)
+}
+
+/// Count objects in a contiguous to-space range by walking 16-byte-header
+/// records. Used to update `alloc_count` post-trace.
+fn count_objects_in_range(start: *mut u8, end: *mut u8) -> usize {
+    let mut p = start;
+    let mut n = 0;
+    while p < end {
+        let h = p as *mut HeapHeader;
+        let size = unsafe { (*h).size_bytes as usize };
+        debug_assert!(size > 0 && size % 16 == 0);
+        p = unsafe { p.add(size) };
+        n += 1;
+    }
+    n
 }
 
 impl Drop for Heap {
@@ -802,17 +1037,126 @@ mod tests {
         assert!(!h.should_gc());
     }
 
-    /// `gc()` is a stub in fz-siu.7: increments the counter, no reclaim.
-    /// Cheney body lands in .8.
+    /// With a null root, Cheney recycles the arena: from-space is freed,
+    /// to-space is a fresh empty block, live_count goes to zero.
     #[test]
-    fn gc_stub_only_bumps_counter() {
+    fn gc_with_null_root_recycles_arena() {
         let mut h = Heap::new(1024, empty_registry());
         let _ = h.alloc_list_cons(FzValue::NIL, FzValue::NIL);
-        assert_eq!(h.gc_run_count, 0);
-        h.gc(&[]);
+        let _ = h.alloc_list_cons(FzValue::NIL, FzValue::NIL);
+        assert_eq!(h.live_count(), 2);
+        let mut root: *mut u8 = std::ptr::null_mut();
+        h.gc(&mut root);
         assert_eq!(h.gc_run_count, 1);
-        // Stub doesn't reclaim: live_count and bytes_used unchanged.
-        assert_eq!(h.live_count(), 1);
-        assert_eq!(h.bytes_used(), 32);
+        assert_eq!(h.live_count(), 0, "no root → nothing copied");
+        assert_eq!(h.bytes_used(), 0, "to-space is empty");
+        assert!(root.is_null());
+    }
+
+    /// A rooted list survives Cheney: every cell is copied to to-space,
+    /// the root pointer is rewritten to the new head, and from-space is
+    /// freed. Live count matches the chain length.
+    #[test]
+    fn gc_copies_rooted_list_and_rewrites_root() {
+        let mut h = Heap::new(1024, empty_registry());
+        // Build [1, 2, 3] — head ptr is n1.
+        let n3 = h.alloc_list_cons(FzValue::from_int(3), FzValue::NIL);
+        let n2 = h.alloc_list_cons(FzValue::from_int(2), FzValue::from_ptr(n3));
+        let n1 = h.alloc_list_cons(FzValue::from_int(1), FzValue::from_ptr(n2));
+        let mut root = n1 as *mut u8;
+        let old_n1 = n1 as usize;
+        h.gc(&mut root);
+        assert_ne!(root as usize, old_n1, "root should be rewritten to to-space");
+        assert_eq!(h.live_count(), 3, "all three cells copied");
+        // Walk the new list and verify integers match.
+        let mut cur = root as *mut ListCons;
+        let mut sum = 0i64;
+        let mut count = 0;
+        while !cur.is_null() {
+            let h = unsafe { &(*cur).header };
+            if h.kind != HeapKind::List as u16 { break; }
+            let head = unsafe { (*cur).head };
+            sum += head.unbox_int().unwrap();
+            count += 1;
+            cur = unsafe { (*cur).tail }.unbox_ptr().unwrap_or(std::ptr::null_mut())
+                as *mut ListCons;
+        }
+        assert_eq!(count, 3);
+        assert_eq!(sum, 6);
+    }
+
+    /// Cheney drops unreachable objects: a cell allocated alongside the
+    /// root chain but not pointed to by it is discarded. live_count
+    /// shrinks to the chain length.
+    #[test]
+    fn gc_drops_unreachable_objects() {
+        let mut h = Heap::new(1024, empty_registry());
+        let _orphan = h.alloc_list_cons(FzValue::from_int(99), FzValue::NIL);
+        let kept = h.alloc_list_cons(FzValue::from_int(7), FzValue::NIL);
+        assert_eq!(h.live_count(), 2);
+        let mut root = kept as *mut u8;
+        h.gc(&mut root);
+        assert_eq!(h.live_count(), 1, "orphan dropped, kept survives");
+        let new_cons = root as *mut ListCons;
+        let head = unsafe { (*new_cons).head };
+        assert_eq!(head.unbox_int(), Some(7));
+    }
+
+    /// Acceptance: ≥10 GC cycles with the same small live working set
+    /// keep the arena bounded. Block size may grow once to fit per-cycle
+    /// garbage but does not increase without bound; no abandoned blocks
+    /// remain post-GC; live_count stays at the rooted chain length.
+    /// (§6.4 / fz-siu.8 acceptance.)
+    #[test]
+    fn gc_keeps_arena_bounded_across_many_cycles() {
+        let mut h = Heap::new(1024, empty_registry());
+        // Rooted [1, 2, 3] — the live working set across every cycle.
+        let n3 = h.alloc_list_cons(FzValue::from_int(3), FzValue::NIL);
+        let n2 = h.alloc_list_cons(FzValue::from_int(2), FzValue::from_ptr(n3));
+        let n1 = h.alloc_list_cons(FzValue::from_int(1), FzValue::from_ptr(n2));
+        let mut root = n1 as *mut u8;
+        for _ in 0..15 {
+            // Per-cycle garbage that overflows the 1 KiB initial block,
+            // forcing grow → abandon → reclaim at next gc().
+            for _ in 0..100 {
+                let _ = h.alloc_list_cons(FzValue::NIL, FzValue::NIL);
+            }
+            h.gc(&mut root);
+            // Post-gc invariants.
+            assert_eq!(h.live_count(), 3, "rooted chain survives");
+            assert_eq!(h.abandoned_blocks.len(), 0, "abandoned blocks reclaimed");
+        }
+        // After the working-set-fits-in-block point, block_size stays put.
+        // Generous upper bound: 32× initial guards against runaway growth.
+        assert!(
+            h.block_size <= 1024 * 32,
+            "block_size grew unboundedly: {}",
+            h.block_size
+        );
+    }
+
+    /// Cycle (a.0 = b, b.0 = a) doesn't loop the collector: forwarding
+    /// pointers in from-space short-circuit revisits.
+    #[test]
+    fn gc_handles_cycle_via_forwarding() {
+        let reg = empty_registry();
+        let pair_id = reg.borrow_mut().register(Schema {
+            name: "Pair".into(),
+            size: 16,
+            fields: vec![
+                FieldDescriptor { offset: 0, kind: FieldKind::FzValue },
+                FieldDescriptor { offset: 8, kind: FieldKind::FzValue },
+            ],
+        });
+        let mut h = Heap::new(1024, reg.clone());
+        let a = h.alloc_struct(pair_id);
+        let b = h.alloc_struct(pair_id);
+        h.write_field(a, 0, FzValue::from_ptr(b));
+        h.write_field(a, 8, FzValue::NIL);
+        h.write_field(b, 0, FzValue::from_ptr(a));
+        h.write_field(b, 8, FzValue::NIL);
+        let mut root = a as *mut u8;
+        h.gc(&mut root);
+        assert_eq!(h.live_count(), 2);
     }
 }
