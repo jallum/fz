@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-13T09:26:54Z",
+  "description": "Spec: docs/cps-in-clif.md §2.1, §8.1 block_rec.\n\nWork:\n- Term::TailCall { fn, args }: return_call %fn(args..., k) — forward current cont SSA.\n- Term::TailCallClosure { f, args }: v_code = load f+16; return_call_indirect sig_closure_N(args..., f, k).\n\nAcceptance:\n- count block_rec matches §8.1 target: zero fz_alloc_* in body, ends in return_call %count(v_n1, v_acc1, v_k).\n- tail_recursion fixture runs 100k iterations, prints 100000, RSS flat.",
+  "id": "fz-siu.1.3",
+  "labels": [],
+  "parent": "fz-siu.1",
+  "priority": 2,
+  "status": "open",
+  "title": "fz-cps.1.c: TailCall/TailCallClosure forward cont",
+  "type": "task",
+  "updated_at": "2026-05-13T09:26:54Z"
+}
