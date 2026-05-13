@@ -4,14 +4,15 @@
     "fz-siu.6.2"
   ],
   "blocks": [],
+  "closed_at": "2026-05-13T22:49:22Z",
   "created": "2026-05-13T22:34:27Z",
   "description": "Add aot to # paths: in fixtures/{tail_recursion.fz, higher_order.fz, closure_typed_captures.fz, concurrency_ping_pong.fz}. Re-enable any AOT-specific expect_* checks that were dropped during the cps-in-clif cutover.\n\nAlso confirm src/ir_interp.rs handles the new IR shape correctly (it has been running these fixtures via the interp path through the cutover — likely no work needed).\n\nAcceptance: cargo test --workspace runs each §8 fixture through jit / interp / aot with matching .expected output.",
   "id": "fz-siu.6.3",
   "labels": [],
   "parent": "fz-siu.6",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "fz-cps.6.3: enable aot in §8 fixture paths + audit",
   "type": "task",
-  "updated_at": "2026-05-13T22:48:22Z"
+  "updated_at": "2026-05-13T22:49:22Z"
 }
