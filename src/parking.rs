@@ -60,7 +60,7 @@ pub fn natively_callable(m: &Module, parking: &HashSet<FnId>) -> HashSet<FnId> {
     // is used at a Term::CallClosure or Term::Receive site, it gets
     // dispatched by the trampoline via the uniform ABI, so it must stay
     // uniform. `cont_blocked` records these forbidden conts.
-    let mut cont_blocked: HashSet<FnId> = HashSet::new();
+    let cont_blocked: HashSet<FnId> = HashSet::new();
     // For each fn used as a Term::Call cont, the callees of those call
     // sites. The cont can be native only if every such callee is native
     // (so every call site picks the native-chain emit_call path).
@@ -79,10 +79,12 @@ pub fn natively_callable(m: &Module, parking: &HashSet<FnId>) -> HashSet<FnId> {
                 Term::TailCall { callee, .. } => {
                     directly_called.insert(*callee);
                 }
+                // fz-cps.1.8: closures are heap-resident with body_addr@+16
+                // (closure-target sig Tail). Their conts can be native —
+                // no longer cont_blocked.
                 Term::CallClosure { continuation, .. }
                 | Term::Receive { continuation } => {
                     used_as_cont.insert(continuation.fn_id);
-                    cont_blocked.insert(continuation.fn_id);
                 }
                 _ => {}
             }
@@ -122,8 +124,12 @@ pub fn natively_callable(m: &Module, parking: &HashSet<FnId>) -> HashSet<FnId> {
 
     let mut set: HashSet<FnId> = HashSet::new();
     for f in &m.fns {
-        if parking.contains(&f.id) { continue; }
-        if cont_blocked.contains(&f.id) { continue; }
+        // fz-cps.1.8 — parking-reachable exclusion lifted. After this
+        // commit closure ops are admitted body_ok, so parking-reachable
+        // fns can be Tail-CC. The remaining uniform fn is `main` (its
+        // SystemV entry remains for scheduler dispatch until the
+        // fz_main_entry shim lands in fz-siu.1.11).
+        let _ = (&parking, &cont_blocked);
         if Some(f.id) == main_id { continue; }
         if !reachable_as_native(&f.id) { continue; }
         set.insert(f.id);
@@ -150,9 +156,14 @@ pub fn natively_callable(m: &Module, parking: &HashSet<FnId>) -> HashSet<FnId> {
                 // lifts the non-heap-args restriction by emitting stack
                 // maps so the GC can find roots inside Cranelift frames.
                 Term::TailCall { callee, .. } => set.contains(callee),
-                Term::CallClosure { .. }
-                | Term::TailCallClosure { .. }
-                | Term::Receive { .. } => false,
+                // fz-cps.1.8 — closures are Tail-CC indirect-call sites
+                // through cl+16. Closure-target body sigs are uniform
+                // i64/Tagged (§8.2), so the indirect call always matches
+                // regardless of the closure's concrete cl_sid. Admit when
+                // the cont (if any) is also native.
+                Term::CallClosure { continuation, .. } => set.contains(&continuation.fn_id),
+                Term::TailCallClosure { .. } => true,
+                Term::Receive { continuation } => set.contains(&continuation.fn_id),
             });
             // A cont must only be reachable from native Term::Call sites.
             // If any of its Term::Call callers has a callee that's not in

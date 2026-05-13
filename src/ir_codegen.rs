@@ -1648,25 +1648,29 @@ pub fn compile_with_backend<B: Backend>(
                 }
             }
         }
-        // fz-cps.1.2: a fn that is BOTH a closure target AND direct-called
-        // can't safely use the closure-target sig (`(args, self, cont)`)
-        // because direct callers don't have a closure value to pass as
-        // self. Type narrowing in particular converts CallClosure into a
-        // direct Term::Call when the closure target is statically known
-        // (e.g., compose_s14 calling double directly). For now, exclude
-        // such fns from the closure-target shape — they keep the regular
-        // native sig `(args, cont)` and call sites still use the closure
-        // stub adapter when invoked via Term::CallClosure.
-        let closure_only: std::collections::HashSet<_> = targets
-            .iter()
-            .copied()
-            .filter(|fid| !direct_called.contains(fid))
-            .collect();
-        let counts: std::collections::HashMap<_, _> = counts
-            .into_iter()
-            .filter(|(fid, _)| closure_only.contains(fid))
-            .collect();
-        (closure_only, counts)
+        // fz-cps.1.8: closure-target sig is universal. Every MakeClosure
+        // target gets `(args..., self, cont) tail` regardless of whether
+        // it is also direct-called. Direct callers load the
+        // per-Process static singleton (registered in fz-siu.1.7) and
+        // pass it as `self`. See docs/cps-in-clif.md §8.2 acceptance:
+        // both indirect calls lower to `return_call_indirect` against
+        // this sig.
+        //
+        // Invariant: a closure-target fn that is ALSO direct-called must
+        // have zero captures — direct callers have no captures to bind.
+        // Asserted below.
+        for fid in &targets {
+            if direct_called.contains(fid) {
+                debug_assert_eq!(
+                    counts[fid], 0,
+                    "fz-siu.1.8: fn {} is both direct-called and a non-zero-cap \
+                     closure target — direct callers can't supply captures",
+                    fid.0,
+                );
+            }
+        }
+        let _ = direct_called;
+        (targets, counts)
     };
     let _ = (&closure_target_fns, &closure_n_captures);
     // fz-ul4.27.6.4 follow-up: heap-safe captures.
@@ -1721,7 +1725,17 @@ pub fn compile_with_backend<B: Backend>(
                     let _ = ft;
                     natively_callable.contains(callee)
                 }
-                _ => false,
+                // fz-cps.1.8 — closure-call terminators admitted; bodies
+                // are Tail-CC at cl+16 with closure-target sig. Cont (if
+                // any) must also be native so the cont-return chain is
+                // unbroken.
+                Term::CallClosure { continuation, .. } => {
+                    natively_callable.contains(&continuation.fn_id)
+                }
+                Term::TailCallClosure { .. } => true,
+                Term::Receive { continuation } => {
+                    natively_callable.contains(&continuation.fn_id)
+                }
             });
             if !body_ok { to_remove.push(f.id); }
         }
@@ -2017,6 +2031,19 @@ pub fn compile_with_backend<B: Backend>(
                 {
                     reprs[0] = ArgRepr::Tagged;
                 }
+                // fz-cps.1.8 — closure-target spec bodies use ALL-Tagged
+                // param_reprs so the indirect call sig at every
+                // Term::CallClosure / TailCallClosure site matches the
+                // body (closure-target sig `(args:i64.., self:i64,
+                // cont:i64) tail` per docs/cps-in-clif.md §8.2 target).
+                // Raw int / raw f64 specialization is dropped for these
+                // specs — they trade arg-passing speed for a uniform
+                // closure ABI.
+                if closure_target_fns.contains(&f.id) {
+                    for r in reprs.iter_mut() {
+                        *r = ArgRepr::Tagged;
+                    }
+                }
                 reprs
             }
             None => Vec::new(),
@@ -2025,6 +2052,18 @@ pub fn compile_with_backend<B: Backend>(
     let return_reprs: Vec<ArgRepr> = return_descrs
         .iter()
         .map(ArgRepr::from_descr)
+        .collect();
+    // fz-cps.1.8 — closure-target spec bodies return Tagged i64, matching
+    // the closure-target sig in §8.2's target clif. Raw f64 / raw i64
+    // returns are dropped for these specs — uniform return repr at
+    // indirect-call sites.
+    let return_reprs: Vec<ArgRepr> = return_reprs
+        .into_iter()
+        .enumerate()
+        .map(|(sid, r)| match spec_fnidx[sid] {
+            Some(idx) if closure_target_fns.contains(&module.fns[idx].id) => ArgRepr::Tagged,
+            _ => r,
+        })
         .collect();
 
     // fz-ul4.27.6.2.2/.3 — Per-spec Cranelift Signature. Native fns get
@@ -2077,45 +2116,15 @@ pub fn compile_with_backend<B: Backend>(
         fn_ids.insert(sid as u32, id);
     }
 
-    // fz-ul4.29.5: declare one stub function per (callee FnId, capture
-    // count) shape. The stub adapts from the closure-call ABI
-    // (closure_ptr, args..., cont_ptr, host_ctx) into the callee any-key
-    // spec's entry-frame layout. Stored in the closure heap object's
-    // payload offset 16 and called via call_indirect.
-    // fz-ul4.29.12.2 — stubs keyed by the lambda's narrow SpecId.0.
-    // The stub body itself still dispatches to the callee's any-key
-    // in this ticket; .29.12.3 makes each stub dispatch to its own
-    // narrow SpecId.
-    let mut stub_fn_ids: std::collections::BTreeMap<u32, FuncId>
+    // fz-cps.1.8 — closure stubs deleted. Closure invocation is now a
+    // direct Tail-CC return_call_indirect through cl+16 against the
+    // body's closure-target sig `(args..., self, cont) tail` (§8.2).
+    // MakeClosure stores body_func_addr at +16; the body's entry harness
+    // loads its captures from self+24+8*i. fz_stub_fn_ids is retained as
+    // an empty BTreeMap so compile_fn's signature stays unchanged for
+    // this commit; fz-siu.1.13 will drop the parameter.
+    let stub_fn_ids: std::collections::BTreeMap<u32, FuncId>
         = std::collections::BTreeMap::new();
-    let mut stub_sigs: std::collections::BTreeMap<u32, Signature>
-        = std::collections::BTreeMap::new();
-    for (cl_sid, n_caps) in &closure_shapes {
-        let lam_fn_id = spec_keys[*cl_sid as usize].0;
-        let callee = module.fns.iter()
-            .find(|f| f.id == lam_fn_id)
-            .expect("MakeClosure target FnId not in module");
-        let n_callee_params = callee.block(callee.entry).params.len();
-        let n_call_args = n_callee_params.saturating_sub(*n_caps);
-        let mut sig = Signature::new(CallConv::SystemV);
-        sig.params.push(AbiParam::new(types::I64));         // closure_ptr
-        for _ in 0..n_call_args {
-            sig.params.push(AbiParam::new(types::I64));     // arg_j (tagged)
-        }
-        sig.params.push(AbiParam::new(types::I64));         // cont_ptr
-        sig.params.push(AbiParam::new(types::I64));         // host_ctx
-        sig.returns.push(AbiParam::new(types::I64));        // -> callee frame ptr
-        // Stub name includes the SpecId so duplicate (FnId, n_caps)
-        // entries with different capture-Descr specs get unique
-        // symbol names.
-        let name = format!("fz_stub_{}_{}_s{}", callee.name, n_caps, cl_sid);
-        let id = backend
-            .module_mut()
-            .declare_function(&name, Linkage::Local, &sig)
-            .map_err(|e| CodegenError::new(format!("declare {}: {}", name, e)))?;
-        stub_fn_ids.insert(*cl_sid, id);
-        stub_sigs.insert(*cl_sid, sig);
-    }
 
     for sid in 0..spec_count {
         let Some(idx) = spec_fnidx[sid] else { continue; };
@@ -2196,77 +2205,28 @@ pub fn compile_with_backend<B: Backend>(
         backend.module_mut().clear_context(&mut ctx);
     }
 
-    // fz-ul4.29.5: compile each closure stub. fz-ul4.29.12.2/3: stubs
-    // are keyed by the lambda's narrow SpecId.0 and dispatch to *that*
-    // SpecId's compiled body — captures coerced via the spec's
-    // `param_reprs[0..n_caps]`, args via `param_reprs[n_caps..]`,
-    // frame sized to `schemas[spec_id]`, header.schema_id = spec_id.
-    // The trampoline picks `fn_ptrs[spec_id]` and dispatches the
-    // narrow body.
-    for (cl_sid, stub_func_id) in &stub_fn_ids {
-        let lam_fn_id = spec_keys[*cl_sid as usize].0;
-        let n_caps = closure_shapes[cl_sid];
-        let callee = module.fns.iter()
-            .find(|f| f.id == lam_fn_id)
-            .expect("stub callee FnId in module");
-        let n_callee_params = callee.block(callee.entry).params.len();
-        let callee_sid = *cl_sid; // fz-ul4.29.12.3 — dispatch to this
-                                  // stub's narrow SpecId, not the
-                                  // lambda's any-key.
-        let callee_func_id = *fn_ids
-            .get(&callee_sid)
-            .expect("callee narrow spec has a FuncId");
-        let callee_schema = &schemas[callee_sid as usize];
-        let callee_frame_size = callee_schema.size;
-        let callee_is_native_abi = natively_callable.contains(&lam_fn_id);
-        // fz-cps.1.2: callee uses closure-target sig if it's in
-        // closure_target_fns (= MakeClosure target ∧ not direct-called).
-        let callee_is_closure_target_shape =
-            callee_is_native_abi && closure_target_fns.contains(&lam_fn_id);
-        let stub_sig = stub_sigs
-            .get(cl_sid)
-            .expect("stub sig registered")
-            .clone();
-        let stub_name = format!("fz_stub_{}_{}_s{}", callee.name, n_caps, cl_sid);
-        let callee_needs_host_ctx = fns_needing_host_ctx.contains(&lam_fn_id);
-        compile_closure_stub(
-            backend.module_mut(),
-            &mut fbctx,
-            &runtime,
-            *stub_func_id,
-            stub_sig,
-            callee_func_id,
-            &fn_sigs[callee_sid as usize],
-            callee_schema,
-            callee_frame_size,
-            callee_sid,
-            n_caps,
-            n_callee_params - n_caps,
-            callee_is_native_abi,
-            callee_needs_host_ctx,
-            callee_is_closure_target_shape,
-            &stub_name,
-            &param_reprs[callee_sid as usize],
-            return_reprs[callee_sid as usize],
-        )?;
-    }
+    // fz-cps.1.8 — stub compilation loop deleted alongside stub
+    // registration. compile_closure_stub itself is dead code until
+    // fz-siu.1.13 cleanup; left in place to avoid a noisy delete in this
+    // commit.
 
     let main_fn_id = module.fn_by_name("main").map(|f| f.id);
     let main_frame_size = main_fn_id.map(|id| schemas[id.0 as usize].size);
 
-    // fz-cps.1.7 — collect zero-capture closure-target specs. Each is a
-    // candidate for a per-Process static singleton (docs/cps-in-clif.md
-    // §8.2: "Module-init region produces double/neg static closures
-    // exactly once"). The backend's finalize resolves stub_func_id to a
-    // code address; make_process allocates the off-heap singleton.
+    // fz-cps.1.7 — collect zero-capture closure-target specs for static
+    // singletons. fz-cps.1.8 — code_ptr is the body's func_addr directly
+    // (closure-target sig `(args, self, cont) tail`), not a SystemV stub.
+    // The singleton acts both as `self` for direct callers (zero-cap
+    // bodies ignore self) and as the closure handed to MakeClosure(fid,
+    // []) sites. See docs/cps-in-clif.md §8.2.
     let static_closure_targets: Vec<(u32, u32, FuncId)> = closure_shapes
         .iter()
         .filter(|(_, n_caps)| **n_caps == 0)
         .map(|(cl_sid, _)| {
             let fn_id = spec_keys[*cl_sid as usize].0;
-            let stub_fid = *stub_fn_ids.get(cl_sid)
-                .expect("zero-cap closure shape must have a stub registered");
-            (*cl_sid, fn_id.0, stub_fid)
+            let body_fid = *fn_ids.get(cl_sid)
+                .expect("zero-cap closure spec must have a body FuncId");
+            (*cl_sid, fn_id.0, body_fid)
         })
         .collect();
 
@@ -3111,7 +3071,7 @@ fn compile_fn<M: cranelift_module::Module>(
                 .unwrap_or(crate::diag::Span::DUMMY);
             b.set_srcloc(span_to_srcloc(span));
             let Stmt::Let(v, prim) = stmt;
-            let out = lower_prim(&mut b, jmod, runtime, tuple_schema_ids, stub_fn_ids, &var_map, &raw_f64_vars, &raw_int_vars, fn_types, spec_registry, module, prim, *v)?;
+            let out = lower_prim(&mut b, jmod, runtime, tuple_schema_ids, stub_fn_ids, &var_map, &raw_f64_vars, &raw_int_vars, fn_types, spec_registry, module, fn_ids, prim, *v)?;
             let val = out.value();
             if out.is_raw_f64() {
                 raw_f64_vars.insert(v.0);
@@ -3355,6 +3315,20 @@ fn compile_fn<M: cranelift_module::Module>(
                              by the forward-transitive analysis",
                         ));
                     }
+                    // fz-cps.1.8 — if the callee is a closure-target fn,
+                    // its sig is `(args..., self, cont) tail`. Direct
+                    // callers load the per-Process static singleton and
+                    // pass it as `self`. The zero-cap invariant (asserted
+                    // at closure_target_fns build) means the body ignores
+                    // self at runtime, so a singleton with no captures is
+                    // valid for any direct-call site.
+                    if closure_n_captures.contains_key(callee) {
+                        let fref = jmod.declare_func_in_func(
+                            runtime.get_static_closure_id, b.func);
+                        let sid_v = b.ins().iconst(types::I32, callee.0 as i64);
+                        let inst = b.ins().call(fref, &[sid_v]);
+                        native_args.push(b.inst_results(inst)[0]);
+                    }
                     // fz-cps.1.a: trailing cont arg per §2.1. Native
                     // caller forwards its cont SSA; uniform caller passes
                     // fz-cps.1.2 — chained-native cutover. Build the cont
@@ -3384,8 +3358,18 @@ fn compile_fn<M: cranelift_module::Module>(
                             MemFlags::trusted(),
                             cont_code_addr, cl_ptr, HEADER_SIZE,
                         );
-                        // outer_cont at +24.
-                        let my_outer_cont = match cont_param {
+                        // outer_cont at +24. fz-cps.1.8 — cont fns
+                        // forward their own outer_cont (loaded from
+                        // self+24); non-cont native fns use cont_param;
+                        // uniform fns load from frame_ptr+16.
+                        let my_outer_cont = if is_cont_fn {
+                            let self_val = cont_param.expect(
+                                "cont fn binds self via cont_param");
+                            b.ins().load(
+                                types::I64, MemFlags::trusted(),
+                                self_val, HEADER_SIZE + SLOT_BYTES,
+                            )
+                        } else { match cont_param {
                             Some(c) => c,
                             None => {
                                 let from_slot = b.ins().load(
@@ -3424,7 +3408,7 @@ fn compile_fn<M: cranelift_module::Module>(
                                 b.seal_block(join_blk);
                                 b.block_params(join_blk)[0]
                             }
-                        };
+                        }};
                         b.ins().store(
                             MemFlags::trusted(),
                             my_outer_cont, cl_ptr, HEADER_SIZE + SLOT_BYTES,
@@ -3456,21 +3440,27 @@ fn compile_fn<M: cranelift_module::Module>(
                         }
                     };
                     native_args.push(cont_arg);
-                    let call_inst = b.ins().call(callee_fref, &native_args);
-                    let result = b.inst_results(call_inst)[0];
 
-                    if cl_ptr_opt.is_some() {
-                        // fz-cps.1.2 — chained-native path. The callee's
-                        // Term::Return already indirect-called the cont
-                        // closure; the chain unwound via halt-cont's
-                        // regular return. `result` is the chain's final
-                        // value (informationally — actual program state
-                        // is in process.halt_value). Just return a
-                        // sentinel that matches the caller's sig.
+                    if cl_ptr_opt.is_some() && is_native {
+                        // fz-cps.1.8 — native→native chained call uses
+                        // return_call (TCO via Tail-CC). The callee's
+                        // Term::Return tail-chains into the cont closure
+                        // we built above. Matches §8.2 target clif.
+                        let _ = (return_reprs[this_spec_id as usize], callee_ret_repr);
+                        b.ins().return_call(callee_fref, &native_args);
+                    } else if cl_ptr_opt.is_some() {
+                        // Uniform caller → native callee (chained). Can't
+                        // return_call across CC; synchronous call then
+                        // return the chain-final value (halt_value already
+                        // set by the time we get here).
+                        let call_inst = b.ins().call(callee_fref, &native_args);
+                        let result = b.inst_results(call_inst)[0];
                         let _ = (return_reprs[this_spec_id as usize], callee_ret_repr, result);
                         let zero = b.ins().iconst(types::I64, 0);
                         b.ins().return_(&[zero]);
                     } else {
+                        let call_inst = b.ins().call(callee_fref, &native_args);
+                        let result = b.inst_results(call_inst)[0];
                         let cont_schema = &schemas[cont_sid as usize];
                         let alloc_fref =
                             jmod.declare_func_in_func(runtime.alloc_id, b.func);
@@ -3555,6 +3545,17 @@ fn compile_fn<M: cranelift_module::Module>(
                         native_args.push(host_ctx.expect(
                             "TailCall callee needs host_ctx; this fn must also have it",
                         ));
+                    }
+                    // fz-cps.1.8 — TailCall to a closure-target fn: insert
+                    // static singleton as `self` before cont. Mirror of
+                    // the Term::Call path; same zero-cap invariant lets
+                    // any singleton serve as self (body ignores it).
+                    if closure_n_captures.contains_key(callee) {
+                        let fref = jmod.declare_func_in_func(
+                            runtime.get_static_closure_id, b.func);
+                        let sid_v = b.ins().iconst(types::I32, callee.0 as i64);
+                        let inst = b.ins().call(fref, &[sid_v]);
+                        native_args.push(b.inst_results(inst)[0]);
                     }
                     // fz-cps.1.a: trailing cont arg per §2.1.
                     let tail_cont_arg = match cont_param {
@@ -3670,9 +3671,17 @@ fn compile_fn<M: cranelift_module::Module>(
                 let cf = b.inst_results(cl_inst)[0];
                 let cont_code_addr = b.ins().func_addr(types::I64, cont_fref);
                 b.ins().store(MemFlags::trusted(), cont_code_addr, cf, HEADER_SIZE);
-                // outer_cont at +24. Uniform caller loads frame_ptr+16
-                // with null-fallback to halt-cont closure inline.
-                let my_outer_cont = match cont_param {
+                // outer_cont at +24. fz-cps.1.8 — cont fns forward their
+                // own outer_cont; non-cont native use cont_param; uniform
+                // loads frame_ptr+16 with halt-cont fallback.
+                let my_outer_cont = if is_cont_fn {
+                    let self_val = cont_param.expect(
+                        "cont fn binds self via cont_param");
+                    b.ins().load(
+                        types::I64, MemFlags::trusted(),
+                        self_val, HEADER_SIZE + SLOT_BYTES,
+                    )
+                } else { match cont_param {
                     Some(c) => c,
                     None => {
                         let from_slot = b.ins().load(
@@ -3706,7 +3715,7 @@ fn compile_fn<M: cranelift_module::Module>(
                         b.seal_block(join_blk);
                         b.block_params(join_blk)[0]
                     }
-                };
+                }};
                 b.ins().store(MemFlags::trusted(), my_outer_cont, cf,
                     HEADER_SIZE + SLOT_BYTES);
                 // User captures at +32+8*i, Tagged.
@@ -3720,79 +3729,103 @@ fn compile_fn<M: cranelift_module::Module>(
                 }
                 let _ = cont_param; // captures wired into cont closure.
                 let _ = continuation; // remainder of capture/cont metadata done.
-                // Load stub_fp from closure payload offset 0 (heap offset 16).
-                let stub_fp = b.ins().load(
+                // fz-cps.1.8 — load body's func_addr from cl+16 and Tail-CC
+                // indirect-call with closure-target sig `(args..., self,
+                // cont) -> i64 tail`. All-Tagged params. Native callers
+                // use return_call_indirect (TCO); uniform callers use
+                // call_indirect Tail (cross-CC) and return result.
+                let body_fp = b.ins().load(
                     types::I64,
                     MemFlags::trusted(),
                     cl_val,
                     HEADER_SIZE,
                 );
-                // Build the stub signature on the fly (CallConv::SystemV,
-                // params: closure_ptr + n_args + cont_ptr + host_ctx; returns i64).
-                let mut sig = Signature::new(CallConv::SystemV);
-                sig.params.push(AbiParam::new(types::I64));
+                let mut sig = Signature::new(CallConv::Tail);
                 for _ in &arg_vals {
                     sig.params.push(AbiParam::new(types::I64));
                 }
-                sig.params.push(AbiParam::new(types::I64));
-                sig.params.push(AbiParam::new(types::I64));
+                sig.params.push(AbiParam::new(types::I64)); // self
+                sig.params.push(AbiParam::new(types::I64)); // cont
                 sig.returns.push(AbiParam::new(types::I64));
                 let sig_ref = b.func.import_signature(sig);
-                let mut indirect_args: Vec<ir::Value> = Vec::with_capacity(arg_vals.len() + 3);
+                let mut indirect_args: Vec<ir::Value> =
+                    Vec::with_capacity(arg_vals.len() + 2);
+                for (i, v) in arg_vals.iter().enumerate() {
+                    let from = var_repr(args[i].0, &raw_int_vars, &raw_f64_vars);
+                    indirect_args.push(coerce_to(
+                        &mut b, jmod, &runtime, *v, from, ArgRepr::Tagged,
+                    ));
+                }
                 indirect_args.push(cl_val);
-                for v in &arg_vals { indirect_args.push(*v); }
                 indirect_args.push(cf);
-                indirect_args.push(host_ctx.expect(
-                    "Term::CallClosure reached from native-fn body — \
-                     natively_callable invariant violated",
-                ));
-                let call_inst = b.ins().call_indirect(sig_ref, stub_fp, &indirect_args);
-                let callee_frame = b.inst_results(call_inst)[0];
-                b.ins().return_(&[callee_frame]);
+                let _ = host_ctx; // no host_ctx in closure-target sig
+                if is_native {
+                    b.ins().return_call_indirect(sig_ref, body_fp, &indirect_args);
+                } else {
+                    let call_inst = b.ins().call_indirect(sig_ref, body_fp, &indirect_args);
+                    let result = b.inst_results(call_inst)[0];
+                    b.ins().return_(&[result]);
+                }
             }
             Term::TailCallClosure { closure, args } => {
-                // fz-ul4.29.5: load stub_fp, call_indirect with my own cont
-                // (preserve tail-call semantics). The stub builds the
-                // callee frame using my cont and returns it for dispatch.
+                // fz-cps.1.8 — Tail-CC indirect-call through cl+16 with
+                // the caller's own cont (TCO via return_call_indirect).
+                // Closure-target sig `(args..., self, cont) -> i64 tail`.
+                // For cont fns, the forwarded cont is outer_cont from
+                // self+24. For non-cont native fns, cont_param is the
+                // cont SSA. Uniform callers load from frame_ptr+16.
                 let cl_val = *var_map.get(&closure.0).expect("unbound tailcallclosure closure");
                 let arg_vals: Vec<ir::Value> = args
                     .iter()
                     .map(|v| *var_map.get(&v.0).expect("unbound tailcallclosure arg"))
                     .collect();
-                let my_cont = b.ins().load(
-                    types::I64, MemFlags::trusted(),
-                    frame_ptr.expect(
-                        "Term::TailCallClosure reached from native-fn body — \
-                         natively_callable invariant violated",
+                let my_cont = if is_cont_fn {
+                    let self_val = cont_param.expect("cont fn binds self via cont_param");
+                    b.ins().load(
+                        types::I64, MemFlags::trusted(),
+                        self_val, HEADER_SIZE + SLOT_BYTES,
+                    )
+                } else { match cont_param {
+                    Some(c) => c,
+                    None => b.ins().load(
+                        types::I64, MemFlags::trusted(),
+                        frame_ptr.expect(
+                            "uniform TailCallClosure must have frame_ptr"),
+                        HEADER_SIZE,
                     ),
-                    HEADER_SIZE,
-                );
-                let stub_fp = b.ins().load(
+                }};
+                let body_fp = b.ins().load(
                     types::I64,
                     MemFlags::trusted(),
                     cl_val,
                     HEADER_SIZE,
                 );
-                let mut sig = Signature::new(CallConv::SystemV);
-                sig.params.push(AbiParam::new(types::I64));
+                let mut sig = Signature::new(CallConv::Tail);
                 for _ in &arg_vals {
                     sig.params.push(AbiParam::new(types::I64));
                 }
-                sig.params.push(AbiParam::new(types::I64));
-                sig.params.push(AbiParam::new(types::I64));
+                sig.params.push(AbiParam::new(types::I64)); // self
+                sig.params.push(AbiParam::new(types::I64)); // cont
                 sig.returns.push(AbiParam::new(types::I64));
                 let sig_ref = b.func.import_signature(sig);
-                let mut indirect_args: Vec<ir::Value> = Vec::with_capacity(arg_vals.len() + 3);
+                let mut indirect_args: Vec<ir::Value> =
+                    Vec::with_capacity(arg_vals.len() + 2);
+                for (i, v) in arg_vals.iter().enumerate() {
+                    let from = var_repr(args[i].0, &raw_int_vars, &raw_f64_vars);
+                    indirect_args.push(coerce_to(
+                        &mut b, jmod, &runtime, *v, from, ArgRepr::Tagged,
+                    ));
+                }
                 indirect_args.push(cl_val);
-                for v in &arg_vals { indirect_args.push(*v); }
                 indirect_args.push(my_cont);
-                indirect_args.push(host_ctx.expect(
-                    "Term::TailCallClosure reached from native-fn body — \
-                     natively_callable invariant violated",
-                ));
-                let call_inst = b.ins().call_indirect(sig_ref, stub_fp, &indirect_args);
-                let callee_frame = b.inst_results(call_inst)[0];
-                b.ins().return_(&[callee_frame]);
+                let _ = host_ctx;
+                if is_native {
+                    b.ins().return_call_indirect(sig_ref, body_fp, &indirect_args);
+                } else {
+                    let call_inst = b.ins().call_indirect(sig_ref, body_fp, &indirect_args);
+                    let result = b.inst_results(call_inst)[0];
+                    b.ins().return_(&[result]);
+                }
             }
             Term::Receive { continuation } => {
                 // fz-cps.1.2 Receive cutover per docs/cps-in-clif.md §4.
@@ -3830,7 +3863,15 @@ fn compile_fn<M: cranelift_module::Module>(
                 // outer_cont at +24 (synthetic). Native caller has
                 // cont_param; uniform caller loads frame_ptr+16 with
                 // null-fallback to a halt-cont closure inline.
-                let my_outer_cont = match cont_param {
+                // fz-cps.1.8 — cont fns load outer_cont from self+24.
+                let my_outer_cont = if is_cont_fn {
+                    let self_val = cont_param.expect(
+                        "cont fn binds self via cont_param");
+                    b.ins().load(
+                        types::I64, MemFlags::trusted(),
+                        self_val, HEADER_SIZE + SLOT_BYTES,
+                    )
+                } else { match cont_param {
                     Some(c) => c,
                     None => {
                         let from_slot = b.ins().load(
@@ -3864,7 +3905,7 @@ fn compile_fn<M: cranelift_module::Module>(
                         b.seal_block(join_blk);
                         b.block_params(join_blk)[0]
                     }
-                };
+                }};
                 b.ins().store(
                     MemFlags::trusted(),
                     my_outer_cont, cl_ptr, HEADER_SIZE + SLOT_BYTES,
@@ -4465,6 +4506,7 @@ fn lower_prim<M: cranelift_module::Module>(
     fn_types: &crate::ir_typer::FnTypes,
     spec_registry: &SpecRegistry,
     module: &crate::fz_ir::Module,
+    fn_ids: &HashMap<u32, FuncId>,
     prim: &Prim,
     dest_var: crate::fz_ir::Var,
 ) -> Result<LowerOut, CodegenError> {
@@ -5095,50 +5137,47 @@ fn lower_prim<M: cranelift_module::Module>(
             // post-rewrite). The stub field is required by the closure
             // header layout but nothing dispatches through it in the
             // unreachable case.
+            let _ = stub_fn_ids;
             let cl_sid = spec_registry
                 .resolve(*fn_id, &key)
                 .map(|s| s.0)
                 .or_else(|| spec_registry.iter()
                     .find(|(s, fid, _)|
-                        *fid == *fn_id && stub_fn_ids.contains_key(&s.0))
+                        *fid == *fn_id && fn_ids.contains_key(&s.0))
                     .map(|(s, _, _)| s.0))
                 .ok_or_else(|| CodegenError::new(format!(
                     ".29.12.2: no live spec for closure target FnId({})",
                     fn_id.0)))?;
-            let stub_func_id = stub_fn_ids
-                .get(&cl_sid)
-                .copied()
-                .ok_or_else(|| {
-                    CodegenError::new(format!(
-                        "fz-ul4.29.12.2: no stub registered for SpecId({}) \
-                         (FnId({}), {} captures)",
-                        cl_sid, fn_id.0, n_caps
-                    ))
-                })?;
             // fz-cps.1.7 — zero-capture MakeClosure: look up the
-            // per-Process static singleton instead of allocating one
-            // closure per call site. The singleton is preallocated at
-            // `make_process` time with its stub_fp written at +16, so
-            // the lookup returns a ready-to-call closure pointer.
-            // docs/cps-in-clif.md §8.2.
+            // per-Process static singleton instead of allocating per call
+            // site. fz-cps.1.8 — singleton's +16 holds the body's
+            // func_addr (closure-target sig). docs/cps-in-clif.md §8.2.
             if captured.is_empty() {
-                let _ = stub_func_id; // referenced by the singleton's stub_fp slot at make_process time
                 let fref = jmod.declare_func_in_func(
                     runtime.get_static_closure_id, b.func);
                 let sid_v = b.ins().iconst(types::I32, cl_sid as i64);
                 let inst = b.ins().call(fref, &[sid_v]);
                 return Ok(LowerOut::Tagged(b.inst_results(inst)[0]));
             }
+            // fz-cps.1.8 — non-zero captures: alloc closure heap object,
+            // write body's func_addr at +16 (no stub), captures at +24+i*8.
+            // The body has closure-target sig `(args..., self, cont) tail`
+            // and loads captures from `self+24+i*8` in its entry harness.
+            let body_func_id = *fn_ids.get(&cl_sid).ok_or_else(|| {
+                CodegenError::new(format!(
+                    "fz-cps.1.8: no body FuncId for closure SpecId({}) \
+                     (FnId({}), {} captures)",
+                    cl_sid, fn_id.0, n_caps
+                ))
+            })?;
             let alloc_fref = jmod.declare_func_in_func(runtime.alloc_closure_id, b.func);
             let fid_v = b.ins().iconst(types::I32, fn_id.0 as i64);
             let nc_v = b.ins().iconst(types::I32, n_caps as i64);
             let inst = b.ins().call(alloc_fref, &[fid_v, nc_v]);
             let cl_ptr = b.inst_results(inst)[0];
-            // stub_fp at offset 16.
-            let stub_fref = jmod.declare_func_in_func(stub_func_id, b.func);
-            let stub_addr = b.ins().func_addr(types::I64, stub_fref);
-            b.ins().store(MemFlags::trusted(), stub_addr, cl_ptr, HEADER_SIZE);
-            // Captures at offsets 24+i*8 (always tagged FzValue).
+            let body_fref = jmod.declare_func_in_func(body_func_id, b.func);
+            let body_addr = b.ins().func_addr(types::I64, body_fref);
+            b.ins().store(MemFlags::trusted(), body_addr, cl_ptr, HEADER_SIZE);
             for (i, cv) in captured.iter().enumerate() {
                 let tagged = tagged_get(env, raw_f64_vars, raw_int_vars, b, jmod, runtime, cv.0);
                 let off = HEADER_SIZE + SLOT_BYTES + (i as i32) * SLOT_BYTES;
