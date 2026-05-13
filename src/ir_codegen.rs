@@ -2741,13 +2741,15 @@ fn compile_fn<M: cranelift_module::Module>(
         if is_cont_fn {
             // fz-cps.1.2 cont fn entry harness per §2.1:
             //   params[0] = result        → fz_param[0]
-            //   params[1] = self          → loaded captures
+            //   params[1] = self          → closure ptr
             //   params[2] = host_ctx?     → conditional
-            // Captures (fz_param[1..]) load from self+24, +32, ...
-            // Repr per `my_param_reprs[1+i]` determines the Cranelift
-            // load type (F64 vs I64) and the raw-vs-tagged classification.
-            // Storage was done by the caller in the matching repr —
-            // see chained-native sub-path in Term::Call.
+            // Closure layout (§2.2 + cps cutover):
+            //   self+16 : code_ptr
+            //   self+24 : outer_cont       (synthetic; not in fz_param)
+            //   self+32 : user_cap[0]      → fz_param[1]
+            //   self+40 : user_cap[1]      → fz_param[2]
+            //   ...
+            // The cont's "next k" is the synthetic outer_cont at +24.
             let result_param = &entry_blk.params[0];
             match my_param_reprs[0] {
                 ArgRepr::RawInt => { raw_int_vars.insert(result_param.0); }
@@ -2757,8 +2759,8 @@ fn compile_fn<M: cranelift_module::Module>(
             var_map.insert(result_param.0, params[0]);
             let self_val = params[1];
             for (i, p) in entry_blk.params.iter().enumerate().skip(1) {
-                let cap_idx = i - 1; // 0-based capture index
-                let off = HEADER_SIZE + SLOT_BYTES + (cap_idx as i32) * SLOT_BYTES;
+                // fz_param[i] = user_cap[i-1] at offset 32 + 8*(i-1) (= +24 + 8*i).
+                let off = HEADER_SIZE + SLOT_BYTES * 2 + ((i - 1) as i32) * SLOT_BYTES;
                 let cl_ty = my_param_reprs[i].cl_type();
                 let v = b.ins().load(cl_ty, MemFlags::trusted(), self_val, off);
                 match my_param_reprs[i] {
@@ -2773,8 +2775,9 @@ fn compile_fn<M: cranelift_module::Module>(
             } else {
                 None
             };
-            // Cont fns have no `cont` parameter (§2.1).
-            (None, host_ctx, None)
+            // cont_param for cont fns = self (used by Return/Halt to fetch
+            // outer_cont from self+24 and invoke it).
+            (None, host_ctx, Some(self_val))
         } else {
             for (i, p) in entry_blk.params.iter().enumerate() {
                 match my_param_reprs[i] {
@@ -3097,8 +3100,11 @@ fn compile_fn<M: cranelift_module::Module>(
                         let alloc_fref =
                             jmod.declare_func_in_func(runtime.alloc_id, b.func);
                         let cl_fid_v = b.ins().iconst(types::I32, cont_sid as i64);
+                        // Closure layout has +1 capture slot reserved for
+                        // the synthetic outer_cont at +24. User captures
+                        // start at +32.
                         let n_caps_v = b.ins().iconst(
-                            types::I32, continuation.captured.len() as i64,
+                            types::I32, (continuation.captured.len() + 1) as i64,
                         );
                         let cl_inst = b.ins().call(alloc_fref, &[cl_fid_v, n_caps_v]);
                         let cl_ptr = b.inst_results(cl_inst)[0];
@@ -3109,16 +3115,32 @@ fn compile_fn<M: cranelift_module::Module>(
                             MemFlags::trusted(),
                             cont_code_addr, cl_ptr, HEADER_SIZE,
                         );
-                        // Captures stored in the cont's expected per-capture
-                        // repr (param_reprs[1+i]) so the cont fn entry loader
-                        // can read directly without coerce.
+                        // Synthetic outer_cont at +24 = my own cont (the
+                        // cont fn invokes this when it Returns/Halts).
+                        // For native callers, this is cont_param SSA; for
+                        // uniform callers, load from frame_ptr+16.
+                        let my_outer_cont = match cont_param {
+                            Some(c) => c,
+                            None => b.ins().load(
+                                types::I64, MemFlags::trusted(),
+                                frame_ptr.expect(
+                                    "uniform caller building cont closure \
+                                     must have frame_ptr"),
+                                HEADER_SIZE,
+                            ),
+                        };
+                        b.ins().store(
+                            MemFlags::trusted(),
+                            my_outer_cont, cl_ptr, HEADER_SIZE + SLOT_BYTES,
+                        );
+                        // User captures start at +32 (+24 + SLOT_BYTES).
                         for (i, cv) in continuation.captured.iter().enumerate() {
                             let from = var_repr(cv.0, &raw_int_vars, &raw_f64_vars);
                             let to = cont_param_reprs[i + 1];
                             let v = coerce_to(
                                 &mut b, jmod, &runtime, cap_vals[i], from, to,
                             );
-                            let off = HEADER_SIZE + SLOT_BYTES
+                            let off = HEADER_SIZE + SLOT_BYTES * 2
                                 + (i as i32) * SLOT_BYTES;
                             b.ins().store(MemFlags::trusted(), v, cl_ptr, off);
                         }
