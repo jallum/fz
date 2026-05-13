@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-13T02:44:01Z",
+  "description": "## What\n\n`emit_return` (src/ir_codegen.rs:3122) emits two `iconst.i64 0` instructions in the halt-path branch:\n- Line ~3137: `let zero = b.ins().iconst(types::I64, 0);` for the icmp_eq comparison.\n- Line ~3140: `let null = b.ins().iconst(types::I64, 0);` for the `return_(\u0026[null])` sentinel.\n\nThese materialize the same constant (`0_i64`) twice; Cranelift's CSE dedups in the final machine code but the pre-optimization CLIF dump shows both. For fixtures/add1.fz's `main`, you can see `v6 = iconst.i64 0` and `v8 = iconst.i64 0` in the dump — same value, two definitions.\n\nHoist the zero into a single materialization before the brif and reuse the same value at both sites.\n\n## Tests (TDD)\n\n1. CLIF assertion on fixtures/add1.fz: `main`'s body should contain exactly **one** `iconst.i64 0` (the one used by both the icmp and the halt-branch return). Use `stdout.matches(\"iconst.i64 0\").count() == 1`.\n2. Behavioural: `cargo run -- run fixtures/add1.fz` still prints 42.\n\n## Acceptance\n\n- `cargo test` green, no warnings.\n- `main` CLIF for add1.fz has exactly one `iconst.i64 0`.\n\n## Risks\n\nTiny. The two iconsts are local to `emit_return`'s halt-branch logic; SSA dominance allows reuse without restructuring.",
+  "id": "fz-ul4.27.17",
+  "labels": [],
+  "parent": "fz-ul4.27",
+  "priority": 3,
+  "status": "open",
+  "title": "Dedup iconst.i64 0 in emit_return halt branch",
+  "type": "task",
+  "updated_at": "2026-05-13T02:44:01Z"
+}
