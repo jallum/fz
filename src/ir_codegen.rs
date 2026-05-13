@@ -2612,7 +2612,7 @@ fn compile_fn<M: cranelift_module::Module>(
                 .unwrap_or(crate::diag::Span::DUMMY);
             b.set_srcloc(span_to_srcloc(span));
             let Stmt::Let(v, prim) = stmt;
-            let out = lower_prim(&mut b, jmod, runtime, tuple_schema_ids, stub_fn_ids, &var_map, &raw_f64_vars, &raw_int_vars, fn_types, spec_registry, module, prim)?;
+            let out = lower_prim(&mut b, jmod, runtime, tuple_schema_ids, stub_fn_ids, &var_map, &raw_f64_vars, &raw_int_vars, fn_types, spec_registry, module, prim, *v)?;
             let val = out.value();
             if out.is_raw_f64() {
                 raw_f64_vars.insert(v.0);
@@ -3608,6 +3608,7 @@ fn lower_prim<M: cranelift_module::Module>(
     spec_registry: &SpecRegistry,
     module: &crate::fz_ir::Module,
     prim: &Prim,
+    dest_var: crate::fz_ir::Var,
 ) -> Result<LowerOut, CodegenError> {
     // Helper: every consumer site below that wants a tagged FzValue uses
     // this. Sites that want a raw f64 (float fast paths only) call
@@ -3621,7 +3622,24 @@ fn lower_prim<M: cranelift_module::Module>(
     // bottom of the function.
     let v: ir::Value = match prim {
         Prim::Const(c) => match c {
-            Const::Int(n) => b.ins().iconst(types::I64, ((*n) << 3) | TAG_INT),
+            // fz-ul4.27.15.1: emit the raw payload when the consumer's
+            // Descr is int-monomorphic. Tagged consumers retag via
+            // `tagged_get` (= `box_int`) at their use site — same op
+            // count as today's per-use unbox, just inverted. The wrapper
+            // at the bottom of the match would otherwise wrap a tagged
+            // `iconst((n<<3)|TAG_INT)` and every int-arithmetic /
+            // RawInt-slot consumer would unbox via `as_raw_i64`.
+            Const::Int(n) => {
+                let d = fn_types
+                    .vars
+                    .get(&dest_var)
+                    .cloned()
+                    .unwrap_or_else(crate::types::Descr::any);
+                if d.is_subtype(&crate::types::Descr::int()) {
+                    return Ok(LowerOut::RawI64(b.ins().iconst(types::I64, *n)));
+                }
+                b.ins().iconst(types::I64, ((*n) << 3) | TAG_INT)
+            }
             Const::True => b.ins().iconst(types::I64, TRUE_BITS),
             Const::False => b.ins().iconst(types::I64, FALSE_BITS),
             Const::Nil => b.ins().iconst(types::I64, NIL_BITS),

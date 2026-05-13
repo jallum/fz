@@ -435,8 +435,7 @@ fn add1_main_cont_seam_has_no_box_unbox_roundtrip() {
     // The native chain's cont seam should be two adjacent direct calls
     // with no boxing instructions between them. We pin this by asserting
     // `main` contains no `ishl_imm` (the box op) and no `bor_imm` (the
-    // tag-set op). The leading `sshr_imm v2, 3` that unboxes the int
-    // literal 41 is a separate concern (const lowering), out of scope.
+    // tag-set op).
     assert!(
         !stdout.contains("ishl_imm"),
         "main still boxes a value at the cont seam under .27.14.2:\n{}",
@@ -445,6 +444,43 @@ fn add1_main_cont_seam_has_no_box_unbox_roundtrip() {
     assert!(
         !stdout.contains("bor_imm"),
         "main still tag-sets at the cont seam under .27.14.2:\n{}",
+        stdout,
+    );
+}
+
+/// fz-ul4.27.15.1 — `Const::Int(n)` consumed by an int-monomorphic var
+/// should emit `iconst.i64 n` raw, not `iconst((n<<3)|1)` tagged that a
+/// downstream `sshr_imm` immediately unboxes. For `fixtures/add1.fz`,
+/// both literals (`41` in main, `1` in add1's body) flow into raw
+/// consumers (a RawInt slot and a typed int BinOp respectively). With
+/// raw-by-default for Const::Int the entire program's CLIF should
+/// contain ZERO `sshr_imm`, `ishl_imm`, or `bor_imm` ops anywhere — the
+/// theoretical floor for add1.fz.
+#[test]
+fn add1_has_no_int_box_or_unbox_anywhere() {
+    let out = Command::new(FZ_BIN)
+        .args(["dump", "fixtures/add1.fz", "--emit", "clif"])
+        .output()
+        .expect("spawn fz dump");
+    assert!(out.status.success(), "fz dump exited {}", out.status);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    for op in &["sshr_imm", "ishl_imm", "bor_imm"] {
+        assert!(
+            !stdout.contains(op),
+            "add1.fz CLIF contains `{}` — int literals should be raw-by-default:\n{}",
+            op,
+            stdout,
+        );
+    }
+    // Sanity: the literal `41` should appear as a raw iconst, not tagged 329.
+    assert!(
+        stdout.contains("iconst.i64 41"),
+        "expected raw `iconst.i64 41` for the literal 41:\n{}",
+        stdout,
+    );
+    assert!(
+        !stdout.contains("iconst.i64 329"),
+        "unexpected tagged-int literal 329 (= 41<<3|1):\n{}",
         stdout,
     );
 }
