@@ -4,14 +4,15 @@
   "blocks": [
     "fz-siu.7.2"
   ],
+  "closed_at": "2026-05-13T21:56:01Z",
   "created": "2026-05-13T21:51:21Z",
   "description": "Delete mark-sweep-era unit tests + dead trampoline GC paths to clear the surface for the bump-only Heap rewrite.\n\nTouch:\n- src/ir_codegen.rs: delete _legacy_trampoline (#[allow(dead_code)]), delete heap_gc/heap_live_count/heap_freelist_len test helpers (only callers are mark-sweep-era tests being deleted).\n- src/ir_codegen.rs: delete tests gc_traces_map_keys_and_values, gc_reclaims_bitstring_when_unrooted, gc_traces_tuple_fields_freeing_pointed_objects_when_outer_dropped, allocate_list_drop_root_gc_reclaims, allocate_list_keep_root_gc_preserves, gc_traces_closure_captured_via_jit, allocate_float_drop_root_gc_reclaims, vec_address_stable_across_gc_via_jit. These encode user-driven mark-sweep semantics that §6.4 (Cheney at park-time) makes invisible.\n- src/ir_codegen.rs: delete already-ignored hot_loop_alloc_triggers_safepoint_gc, per_process_gc_threshold_is_independent (in runtime.rs too), heavy_task_gcs_independently_of_lite_task — these encode trampoline-era GC trigger semantics.\n- runtime/src/heap.rs: delete collect_roots_from_frame_chain (only called from _legacy_trampoline) and MarkVisitor (only called from gc body about to be deleted).\n- src/runtime.rs / src/ir_codegen.rs: rewrite remaining live_count() \u003e 0 sanity asserts to bytes_used() \u003e 0.\n\nAcceptance: full suite green; no references to removed names.",
   "id": "fz-siu.7.1",
   "labels": [],
   "parent": "fz-siu.7",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "fz-cps.GC.1.1: remove mark-sweep-era test surface",
   "type": "task",
-  "updated_at": "2026-05-13T21:51:41Z"
+  "updated_at": "2026-05-13T21:56:01Z"
 }
