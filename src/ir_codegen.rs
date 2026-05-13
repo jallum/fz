@@ -709,8 +709,13 @@ fn build_fn_signature(
     param_reprs: &[ArgRepr],
     ret_repr: ArgRepr,
     is_native: bool,
+    needs_host_ctx: bool,
 ) -> Signature {
     if !is_native {
+        // Uniform fns always include host_ctx — the trampoline ABI is
+        // fixed at `(frame_ptr, host_ctx) -> i64`; `needs_host_ctx` is
+        // ignored here. (Trimming uniform sigs would require an
+        // entry-harness refactor; tracked under .27.20.)
         let mut sig = Signature::new(CallConv::SystemV);
         sig.params.push(AbiParam::new(types::I64)); // frame_ptr
         sig.params.push(AbiParam::new(types::I64)); // host_ctx
@@ -720,11 +725,15 @@ fn build_fn_signature(
     // Native fns use the `Tail` calling convention so that recursive
     // tail calls can lower to `return_call` (which the SystemV ABI does
     // not permit). Without TCO, count_100k_stays_bounded blows the stack.
+    // fz-ul4.27.19: append host_ctx only when this fn (or some callee
+    // it forwards into) actually consumes it.
     let mut sig = Signature::new(CallConv::Tail);
     for r in param_reprs {
         sig.params.push(AbiParam::new(r.cl_type()));
     }
-    sig.params.push(AbiParam::new(types::I64)); // host_ctx
+    if needs_host_ctx {
+        sig.params.push(AbiParam::new(types::I64)); // host_ctx
+    }
     sig.returns.push(AbiParam::new(ret_repr.cl_type()));
     sig
 }
@@ -1576,6 +1585,75 @@ pub fn compile_with_backend<B: Backend>(
             &natively_callable,
         );
 
+    // fz-ul4.27.19 — per-FnId set: native fns that transitively need
+    // host_ctx. A native fn needs host_ctx iff its body has Term::Halt
+    // (calls fz_halt(host_ctx, val)) OR it calls another native fn that
+    // needs host_ctx (forwarding). Native fns NOT in this set get a
+    // trimmed sig without the trailing host_ctx i64 param; their callers
+    // skip pushing host_ctx at the call site. Uniform fns always include
+    // host_ctx (the trampoline ABI is fixed).
+    //
+    // Only *reachable* blocks count. ir_lower emits an unconditional
+    // fail_block per fn with `Term::Halt(:function_clause)` that's dead
+    // for single-clause bare-var fns. Including it would falsely seed
+    // every fn as needing host_ctx; codegen's `reachable_fz_blocks`
+    // filter (line ~2563) drops those blocks before emission, and this
+    // analysis must mirror that filter.
+    let reachable_blocks_of = |f: &crate::fz_ir::FnIr| -> std::collections::HashSet<u32> {
+        let mut reach: std::collections::HashSet<u32> = std::collections::HashSet::new();
+        let mut stack: Vec<u32> = vec![f.entry.0];
+        while let Some(bid) = stack.pop() {
+            if !reach.insert(bid) { continue; }
+            let blk = match f.blocks.iter().find(|b| b.id.0 == bid) {
+                Some(b) => b,
+                None => continue,
+            };
+            match &blk.terminator {
+                Term::Goto(t, _) => stack.push(t.0),
+                Term::If(_, t, e) => { stack.push(t.0); stack.push(e.0); }
+                _ => {}
+            }
+        }
+        reach
+    };
+    let fns_needing_host_ctx: std::collections::HashSet<crate::fz_ir::FnId> = {
+        let mut needs = std::collections::HashSet::new();
+        for f in &module.fns {
+            if !natively_callable.contains(&f.id) { continue; }
+            let reach = reachable_blocks_of(f);
+            if f.blocks.iter().any(|b| {
+                reach.contains(&b.id.0)
+                    && matches!(&b.terminator, Term::Halt(_))
+            }) {
+                needs.insert(f.id);
+            }
+        }
+        // Iterate: f needs host_ctx if it calls a callee that needs it.
+        loop {
+            let mut added = false;
+            for f in &module.fns {
+                if !natively_callable.contains(&f.id) { continue; }
+                if needs.contains(&f.id) { continue; }
+                let reach = reachable_blocks_of(f);
+                let forwards = f.blocks.iter().any(|b| {
+                    if !reach.contains(&b.id.0) { return false; }
+                    match &b.terminator {
+                        Term::Call { callee, .. } | Term::TailCall { callee, .. } => {
+                            needs.contains(callee)
+                        }
+                        _ => false,
+                    }
+                });
+                if forwards {
+                    needs.insert(f.id);
+                    added = true;
+                }
+            }
+            if !added { break; }
+        }
+        needs
+    };
+
     // fz-ul4.27.18 — per-FnId set: fns invoked from any fz IR site
     // (as a direct callee, a continuation, or a closure target).
     // A fn NOT in this set has no fz IR caller and can only enter via
@@ -1773,10 +1851,12 @@ pub fn compile_with_backend<B: Backend>(
             Some(idx) => {
                 let f = &module.fns[idx];
                 let is_native = natively_callable.contains(&f.id);
+                let needs_host_ctx = fns_needing_host_ctx.contains(&f.id);
                 build_fn_signature(
                     &param_reprs[sid],
                     return_reprs[sid],
                     is_native,
+                    needs_host_ctx,
                 )
             }
             None => {
@@ -1872,6 +1952,7 @@ pub fn compile_with_backend<B: Backend>(
             &module.source,
             &natively_callable,
             &cont_target_fns,
+            &fns_needing_host_ctx,
             &fn_ids,
             &param_reprs,
             &return_reprs,
@@ -1950,6 +2031,7 @@ pub fn compile_with_backend<B: Backend>(
             .expect("stub sig registered")
             .clone();
         let stub_name = format!("fz_stub_{}_{}_s{}", callee.name, n_caps, cl_sid);
+        let callee_needs_host_ctx = fns_needing_host_ctx.contains(&lam_fn_id);
         compile_closure_stub(
             backend.module_mut(),
             &mut fbctx,
@@ -1964,6 +2046,7 @@ pub fn compile_with_backend<B: Backend>(
             n_caps,
             n_callee_params - n_caps,
             callee_is_native_abi,
+            callee_needs_host_ctx,
             &stub_name,
             &param_reprs[callee_sid as usize],
             return_reprs[callee_sid as usize],
@@ -2430,6 +2513,7 @@ fn compile_fn<M: cranelift_module::Module>(
     source: &crate::fz_ir::SourceInfo,
     natively_callable: &std::collections::HashSet<crate::fz_ir::FnId>,
     cont_target_fns: &std::collections::HashSet<crate::fz_ir::FnId>,
+    fns_needing_host_ctx: &std::collections::HashSet<crate::fz_ir::FnId>,
     fn_ids: &HashMap<u32, FuncId>,
     param_reprs: &[Vec<ArgRepr>],
     return_reprs: &[ArgRepr],
@@ -2550,7 +2634,10 @@ fn compile_fn<M: cranelift_module::Module>(
         for r in my_param_reprs {
             b.append_block_param(entry_cl, r.cl_type());
         }
-        b.append_block_param(entry_cl, types::I64); // host_ctx
+        // fz-ul4.27.19: only append host_ctx when this fn actually needs it.
+        if fns_needing_host_ctx.contains(&f.id) {
+            b.append_block_param(entry_cl, types::I64); // host_ctx
+        }
     } else {
         b.append_block_param(entry_cl, types::I64); // frame_ptr
         b.append_block_param(entry_cl, types::I64); // host_ctx
@@ -2581,7 +2668,11 @@ fn compile_fn<M: cranelift_module::Module>(
     // terminator type that natively_callable excludes from native fns,
     // so unwrapping the Option below is invariant-safe. Any future code
     // path that violates this surfaces immediately as a panic at codegen.
-    let (frame_ptr, host_ctx): (Option<ir::Value>, ir::Value) = if is_native {
+    // fz-ul4.27.19: host_ctx is `Option<ir::Value>` — None for native fns
+    // whose sig dropped it (per `fns_needing_host_ctx`). Use sites that
+    // forward or call fz_halt unwrap with `.expect(...)`; the analysis
+    // guarantees those paths only fire when host_ctx was kept.
+    let (frame_ptr, host_ctx): (Option<ir::Value>, Option<ir::Value>) = if is_native {
         // fz-ul4.27.13 — Native entry params arrive in the repr declared
         // by my param_reprs (Cranelift type already matches; just record
         // the raw-vs-tagged classification so the body can elide
@@ -2597,7 +2688,11 @@ fn compile_fn<M: cranelift_module::Module>(
             }
             var_map.insert(p.0, params[i]);
         }
-        let host_ctx = params[entry_blk.params.len()];
+        let host_ctx = if fns_needing_host_ctx.contains(&f.id) {
+            Some(params[entry_blk.params.len()])
+        } else {
+            None
+        };
         (None, host_ctx)
     } else {
         let frame_ptr = b.block_params(entry_cl)[0];
@@ -2625,7 +2720,7 @@ fn compile_fn<M: cranelift_module::Module>(
             };
             var_map.insert(p.0, val);
         }
-        (Some(frame_ptr), host_ctx)
+        (Some(frame_ptr), Some(host_ctx))
     };
 
     // Walk blocks in declared order with entry first. Unreachable
@@ -2766,7 +2861,11 @@ fn compile_fn<M: cranelift_module::Module>(
             Term::Halt(v) => {
                 let val = *var_map.get(&v.0).expect("unbound halt val");
                 let halt_fref = jmod.declare_func_in_func(runtime.halt_id, b.func);
-                b.ins().call(halt_fref, &[host_ctx, val]);
+                let hctx = host_ctx.expect(
+                    "Term::Halt needs host_ctx but fns_needing_host_ctx \
+                     analysis dropped it — invariant violated",
+                );
+                b.ins().call(halt_fref, &[hctx, val]);
                 if is_native {
                     // fz-ul4.27.6.4 — native fn: propagate halt val back
                     // up the chain via the native return register. The
@@ -2808,9 +2907,23 @@ fn compile_fn<M: cranelift_module::Module>(
                 } else if cont_ptr_known_null {
                     // fz-ul4.27.18: this fn is never a cont target; cont_ptr
                     // is statically null. Skip the load/icmp/brif dispatch.
-                    emit_halt_and_return_null(&mut b, jmod, runtime, host_ctx, val);
+                    emit_halt_and_return_null(
+                        &mut b, jmod, runtime,
+                        host_ctx.expect(
+                            "emit_halt_and_return_null needs host_ctx in a \
+                             uniform fn (Term::Return uniform path)",
+                        ),
+                        val,
+                    );
                 } else {
-                    emit_return(&mut b, jmod, runtime, frame_ptr, host_ctx, val);
+                    emit_return(
+                        &mut b, jmod, runtime,
+                        frame_ptr,
+                        host_ctx.expect(
+                            "emit_return needs host_ctx in a uniform fn",
+                        ),
+                        val,
+                    );
                 }
             }
             Term::Call { callee, args, continuation } => {
@@ -2844,7 +2957,14 @@ fn compile_fn<M: cranelift_module::Module>(
                         let to = callee_param_reprs[i];
                         native_args.push(coerce_to(&mut b, jmod, &runtime, raw_val, from, to));
                     }
-                    native_args.push(host_ctx);
+                    // fz-ul4.27.19: push host_ctx only when the callee's
+                    // trimmed sig still includes it.
+                    if fns_needing_host_ctx.contains(callee) {
+                        native_args.push(host_ctx.expect(
+                            "callee needs host_ctx; this fn must also have it \
+                             by the forward-transitive analysis",
+                        ));
+                    }
                     let call_inst = b.ins().call(callee_fref, &native_args);
                     let result = b.inst_results(call_inst)[0];
 
@@ -2879,7 +2999,13 @@ fn compile_fn<M: cranelift_module::Module>(
                                 cap_vals[i], from, cont_param_reprs[i + 1],
                             ));
                         }
-                        cont_args.push(host_ctx);
+                        // fz-ul4.27.19: cont's trimmed sig may or may not
+                        // include host_ctx; mirror the analysis.
+                        if fns_needing_host_ctx.contains(&continuation.fn_id) {
+                            cont_args.push(host_ctx.expect(
+                                "cont needs host_ctx; this fn must also have it",
+                            ));
+                        }
                         let cont_call = b.ins().call(cont_fref, &cont_args);
                         let final_result = b.inst_results(cont_call)[0];
                         if is_native {
@@ -2898,7 +3024,12 @@ fn compile_fn<M: cranelift_module::Module>(
                             if cont_ptr_known_null {
                                 // fz-ul4.27.18: never-a-cont-target fn; halt-only.
                                 emit_halt_and_return_null(
-                                    &mut b, jmod, runtime, host_ctx, val_tagged,
+                                    &mut b, jmod, runtime,
+                                    host_ctx.expect(
+                                        "emit_halt_and_return_null needs host_ctx \
+                                         in a uniform fn",
+                                    ),
+                                    val_tagged,
                                 );
                             } else {
                                 emit_return(
@@ -2906,7 +3037,9 @@ fn compile_fn<M: cranelift_module::Module>(
                                     jmod,
                                     runtime,
                                     frame_ptr,
-                                    host_ctx,
+                                    host_ctx.expect(
+                                        "emit_return needs host_ctx in a uniform fn",
+                                    ),
                                     val_tagged,
                                 );
                             }
@@ -2989,7 +3122,14 @@ fn compile_fn<M: cranelift_module::Module>(
                         let to = callee_param_reprs[i];
                         native_args.push(coerce_to(&mut b, jmod, &runtime, raw_val, from, to));
                     }
-                    native_args.push(host_ctx);
+                    // fz-ul4.27.19: forward host_ctx only when the callee
+                    // needs it. The transitive analysis guarantees this fn
+                    // has host_ctx if its callee does.
+                    if fns_needing_host_ctx.contains(callee) {
+                        native_args.push(host_ctx.expect(
+                            "TailCall callee needs host_ctx; this fn must also have it",
+                        ));
+                    }
                     if is_native {
                         // Native-to-native TailCall: use return_call so
                         // recursive tail calls reuse the same stack frame
@@ -3030,7 +3170,13 @@ fn compile_fn<M: cranelift_module::Module>(
                         b.seal_block(halt_blk);
                         let halt_fref =
                             jmod.declare_func_in_func(runtime.halt_id, b.func);
-                        b.ins().call(halt_fref, &[host_ctx, result_tagged]);
+                        b.ins().call(halt_fref, &[
+                            host_ctx.expect(
+                                "TailCall uniform-caller halt branch needs \
+                                 host_ctx — uniform fns always have it",
+                            ),
+                            result_tagged,
+                        ]);
                         let null = b.ins().iconst(types::I64, 0);
                         b.ins().return_(&[null]);
                         b.switch_to_block(invoke_blk);
@@ -3116,7 +3262,10 @@ fn compile_fn<M: cranelift_module::Module>(
                 indirect_args.push(cl_val);
                 for v in &arg_vals { indirect_args.push(*v); }
                 indirect_args.push(cf);
-                indirect_args.push(host_ctx);
+                indirect_args.push(host_ctx.expect(
+                    "Term::CallClosure reached from native-fn body — \
+                     natively_callable invariant violated",
+                ));
                 let call_inst = b.ins().call_indirect(sig_ref, stub_fp, &indirect_args);
                 let callee_frame = b.inst_results(call_inst)[0];
                 b.ins().return_(&[callee_frame]);
@@ -3157,7 +3306,10 @@ fn compile_fn<M: cranelift_module::Module>(
                 indirect_args.push(cl_val);
                 for v in &arg_vals { indirect_args.push(*v); }
                 indirect_args.push(my_cont);
-                indirect_args.push(host_ctx);
+                indirect_args.push(host_ctx.expect(
+                    "Term::TailCallClosure reached from native-fn body — \
+                     natively_callable invariant violated",
+                ));
                 let call_inst = b.ins().call_indirect(sig_ref, stub_fp, &indirect_args);
                 let callee_frame = b.inst_results(call_inst)[0];
                 b.ins().return_(&[callee_frame]);
@@ -3475,6 +3627,7 @@ fn compile_closure_stub<M: cranelift_module::Module>(
     n_caps: usize,
     n_args: usize,
     callee_is_native_abi: bool,
+    callee_needs_host_ctx: bool,
     stub_name: &str,
     callee_param_reprs: &[ArgRepr],
     callee_ret_repr: ArgRepr,
@@ -3525,7 +3678,11 @@ fn compile_closure_stub<M: cranelift_module::Module>(
                 );
                 native_args.push(coerced);
             }
-            native_args.push(host_ctx);
+            // fz-ul4.27.19: forward host_ctx only if the callee's
+            // trimmed sig still expects it.
+            if callee_needs_host_ctx {
+                native_args.push(host_ctx);
+            }
             let call_inst = b.ins().call(callee_fref, &native_args);
             let result = b.inst_results(call_inst)[0];
             let result_tagged = coerce_to(
@@ -5445,7 +5602,7 @@ fn main(), do: loop_with(loop_with, 100000, 0)
         let add_idx = m.fns.iter().position(|f| f.name == "add").unwrap();
         let rd = join_return_descrs(&m.fns[add_idx], &mt[add_idx]);
         let prs = build_param_reprs(&m.fns[add_idx], &mt[add_idx]);
-        let sig = build_fn_signature(&prs, ArgRepr::from_descr(&rd), false);
+        let sig = build_fn_signature(&prs, ArgRepr::from_descr(&rd), false, true);
         assert_eq!(sig.params.len(), 2);
         assert_eq!(sig.returns.len(), 1);
         assert_eq!(sig.params[0].value_type, types::I64);
@@ -5463,7 +5620,7 @@ fn main(), do: loop_with(loop_with, 100000, 0)
         let add_idx = m.fns.iter().position(|f| f.name == "add").unwrap();
         let rd = join_return_descrs(&m.fns[add_idx], &mt[add_idx]);
         let prs = build_param_reprs(&m.fns[add_idx], &mt[add_idx]);
-        let sig = build_fn_signature(&prs, ArgRepr::from_descr(&rd), true);
+        let sig = build_fn_signature(&prs, ArgRepr::from_descr(&rd), true, true);
         // 2 entry params + host_ctx.
         assert_eq!(sig.params.len(), 3);
         assert_eq!(sig.returns.len(), 1);
@@ -5486,7 +5643,7 @@ fn main(), do: loop_with(loop_with, 100000, 0)
         let dist_idx = m.fns.iter().position(|f| f.name == "dist").unwrap();
         let rd = join_return_descrs(&m.fns[dist_idx], &mt[dist_idx]);
         let prs = build_param_reprs(&m.fns[dist_idx], &mt[dist_idx]);
-        let sig = build_fn_signature(&prs, ArgRepr::from_descr(&rd), true);
+        let sig = build_fn_signature(&prs, ArgRepr::from_descr(&rd), true, true);
         // 2 entry params + host_ctx.
         assert_eq!(sig.params.len(), 3);
         assert_eq!(sig.params[0].value_type, types::F64);

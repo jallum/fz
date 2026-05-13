@@ -485,6 +485,32 @@ fn add1_has_no_int_box_or_unbox_anywhere() {
     );
 }
 
+/// fz-ul4.27.19 — for `fixtures/add1.fz`, native fns that don't
+/// transitively need host_ctx (no `Term::Halt`, no callees that need
+/// it) drop the trailing host_ctx i64 from their signature. `add1_s2`
+/// and `k_2_s3` should both be `(i64) -> i64 tail` — a single i64 param.
+#[test]
+fn add1_native_fns_drop_unused_host_ctx() {
+    let out = Command::new(FZ_BIN)
+        .args(["dump", "fixtures/add1.fz", "--emit", "clif"])
+        .output()
+        .expect("spawn fz dump");
+    assert!(out.status.success(), "fz dump exited {}", out.status);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    for fn_name in &["add1_s2", "k_2_s3"] {
+        let body_start = stdout
+            .find(&format!("; fn {}", fn_name))
+            .unwrap_or_else(|| panic!("missing `{}` banner:\n{}", fn_name, stdout));
+        let body = &stdout[body_start..];
+        let block0_line = body.lines().find(|l| l.contains("block0(")).unwrap_or("");
+        assert!(
+            block0_line.contains("block0(v0: i64):"),
+            "{} should have a single-param entry block, got `{}`:\n{}",
+            fn_name, block0_line, stdout,
+        );
+    }
+}
+
 /// fz-ul4.27.18 — for `fixtures/add1.fz`, `main` is never invoked from
 /// any fz IR site (not a direct callee, not a continuation, not a
 /// closure target). It can only enter via the trampoline entry, which

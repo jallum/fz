@@ -1,6 +1,6 @@
 # purpose: VR.4 + VR.3.2 + .27.13 — narrow-spec float entry params arrive in F64 registers; fmul/fadd fire raw
 # paths:   jit, interp, aot
-# expect_clif_contains: dist: block0(v0: f64, v1: f64, v2: i64)
+# expect_clif_contains: dist: block0(v0: f64, v1: f64)
 # expect_clif_contains: dist: fmul
 # expect_clif_contains: dist: fadd
 # expect_clif_excludes: dist: load.f64
