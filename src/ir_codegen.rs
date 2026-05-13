@@ -3645,8 +3645,23 @@ fn lower_prim<M: cranelift_module::Module>(
             Const::Nil => b.ins().iconst(types::I64, NIL_BITS),
             Const::Atom(id) => b.ins().iconst(types::I64, ((*id as i64) << 3) | TAG_ATOM),
             Const::Float(f) => {
-                // Boxed float: emit fz_alloc_float(bits) at runtime. v1 keeps
-                // const-pool dedup for a future ticket — correct first.
+                // fz-ul4.27.15.2: emit a raw `f64const` when the consumer
+                // is float-monomorphic. Tagged consumers heap-alloc via
+                // `tagged_get` → `box_float_native` on demand. Skipping
+                // the per-literal `fz_alloc_float` call when the literal
+                // is consumed raw eliminates a runtime heap allocation
+                // for every float literal that flows into float-arith,
+                // a RawF64 slot, or `fz_print_f64`.
+                let d = fn_types
+                    .vars
+                    .get(&dest_var)
+                    .cloned()
+                    .unwrap_or_else(crate::types::Descr::any);
+                if d.is_subtype(&crate::types::Descr::float()) {
+                    return Ok(LowerOut::RawF64(b.ins().f64const(*f)));
+                }
+                // Tagged fallback: heap-alloc as before. v1 keeps const-pool
+                // dedup for a future ticket — correct first.
                 let bits = f.to_bits() as i64;
                 let bv = b.ins().iconst(types::I64, bits);
                 let fref = jmod.declare_func_in_func(runtime.alloc_float_id, b.func);
