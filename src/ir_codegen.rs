@@ -3156,6 +3156,10 @@ fn emit_return<M: cranelift_module::Module>(
         "emit_return reached from native-fn body — natively_callable invariant violated",
     );
     let cont_ptr = b.ins().load(types::I64, MemFlags::trusted(), frame_ptr, HEADER_SIZE);
+    // fz-ul4.27.17: one `iconst.i64 0` materialized in the entry block
+    // serves both the null-compare and the halt-branch return sentinel.
+    // SSA dominance lets the halt block reuse it; previously we emitted
+    // a duplicate iconst inside the halt block.
     let zero = b.ins().iconst(types::I64, 0);
     let is_null = b.ins().icmp(IntCC::Equal, cont_ptr, zero);
 
@@ -3164,13 +3168,12 @@ fn emit_return<M: cranelift_module::Module>(
     let no_args: Vec<BlockArg> = Vec::new();
     b.ins().brif(is_null, halt_blk, &no_args, invoke_blk, &no_args);
 
-    // halt: fz_halt(host_ctx, val); return null.
+    // halt: fz_halt(host_ctx, val); return null (reusing `zero`).
     b.switch_to_block(halt_blk);
     b.seal_block(halt_blk);
     let halt_fref = jmod.declare_func_in_func(runtime.halt_id, b.func);
     b.ins().call(halt_fref, &[host_ctx, val]);
-    let null = b.ins().iconst(types::I64, 0);
-    b.ins().return_(&[null]);
+    b.ins().return_(&[zero]);
 
     // invoke: write val to cont[24], return cont_ptr.
     b.switch_to_block(invoke_blk);

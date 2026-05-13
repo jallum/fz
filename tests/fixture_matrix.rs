@@ -485,6 +485,28 @@ fn add1_has_no_int_box_or_unbox_anywhere() {
     );
 }
 
+/// fz-ul4.27.17 — `emit_return`'s halt-branch reuses the same `iconst.i64 0`
+/// it materialized for the null-compare, instead of emitting a duplicate
+/// inside the halt block. For fixtures/add1.fz's `main`, the body has
+/// exactly one `iconst.i64 0` (used by both the icmp and the
+/// `return null` sentinel via SSA dominance).
+#[test]
+fn add1_main_emits_one_iconst_zero_in_emit_return() {
+    let out = Command::new(FZ_BIN)
+        .args(["dump", "fixtures/add1.fz", "--emit", "clif", "--fn", "main"])
+        .output()
+        .expect("spawn fz dump");
+    assert!(out.status.success(), "fz dump exited {}", out.status);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let count = stdout.matches("iconst.i64 0").count();
+    assert_eq!(
+        count, 1,
+        "main should emit exactly one `iconst.i64 0` (shared between \
+         emit_return's null-compare and halt-branch return); got {}:\n{}",
+        count, stdout,
+    );
+}
+
 /// fz-ul4.27.16 — native fns must not emit a dead `iconst.i64 0` for a
 /// frame_ptr placeholder. Before .27.16, every native fn's entry began
 /// with a never-read `iconst.i64 0` so the rest of `compile_fn` could
