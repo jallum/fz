@@ -4,14 +4,15 @@
   "blocks": [
     "fz-siu.1.2"
   ],
+  "closed_at": "2026-05-13T09:34:44Z",
   "created": "2026-05-13T09:26:48Z",
   "description": "Spec: docs/cps-in-clif.md §2.1.\n\nWork:\n- build_fn_signature native branch: append `cont: i64` as last param (replacing trailing host_ctx position semantically; host_ctx still passed if needs_host_ctx, but cont is now the slot the new ABI mandates).\n- Entry harness binds the cont SSA value.\n- Cont is passed through but not yet consumed by Return/Halt/Call lowering (those follow in .1.b–.1.d).\n\nAcceptance:\n- Native-tier fn (e.g. count_s3) signature in clif dump is `(... , i64) tail` with the trailing i64 being cont.\n- Full suite green (behavior unchanged: cont threaded but unused).",
   "id": "fz-siu.1.1",
   "labels": [],
   "parent": "fz-siu.1",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "fz-cps.1.a: cont as last native-sig param",
   "type": "task",
-  "updated_at": "2026-05-13T09:27:21Z"
+  "updated_at": "2026-05-13T09:34:44Z"
 }
