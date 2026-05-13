@@ -749,7 +749,16 @@ fn build_fn_signature(
         // fz-cps.1.a — trailing cont:i64 per §2.1.
         sig.params.push(AbiParam::new(types::I64));               // cont
     }
-    sig.returns.push(AbiParam::new(ret_repr.cl_type()));
+    if is_native {
+        // fz-cps.1.2: native fn return canonicalized to i64. Term::Return
+        // is now `return_call_indirect sig(i64, i64) -> i64 tail`; the
+        // caller's return type must match the target's per Cranelift's
+        // tail-call verifier. Coercion happens at the return site.
+        let _ = ret_repr;
+        sig.returns.push(AbiParam::new(types::I64));
+    } else {
+        sig.returns.push(AbiParam::new(ret_repr.cl_type()));
+    }
     sig
 }
 
@@ -1260,6 +1269,40 @@ pub fn compile_with_backend<B: Backend>(
     let runtime = declare_runtime_symbols(backend.module_mut())?;
 
     let mut fbctx = FunctionBuilderContext::new();
+
+    // fz-cps.1.2 — emit fz_halt_cont_body. This is the singleton-style
+    // cont body that every Term::Halt / top-level Term::Return chain
+    // eventually invokes via return_call_indirect through its closure's
+    // +16 code_ptr. Sig: `(val:i64, self:i64) -> i64 tail`.
+    // Body: `call fz_halt_implicit(val); return iconst.i64 0`.
+    {
+        let mut ctx = backend.module_mut().make_context();
+        let mut hcb_sig = Signature::new(CallConv::Tail);
+        hcb_sig.params.push(AbiParam::new(types::I64));
+        hcb_sig.params.push(AbiParam::new(types::I64));
+        hcb_sig.returns.push(AbiParam::new(types::I64));
+        ctx.func.signature = hcb_sig;
+        {
+            let mut b = FunctionBuilder::new(&mut ctx.func, &mut fbctx);
+            let entry = b.create_block();
+            b.append_block_params_for_function_params(entry);
+            b.switch_to_block(entry);
+            b.seal_block(entry);
+            let val = b.block_params(entry)[0];
+            let hi_fref = backend
+                .module_mut()
+                .declare_func_in_func(runtime.halt_implicit_id, b.func);
+            b.ins().call(hi_fref, &[val]);
+            let zero = b.ins().iconst(types::I64, 0);
+            b.ins().return_(&[zero]);
+            b.finalize();
+        }
+        backend
+            .module_mut()
+            .define_function(runtime.halt_cont_body_id, &mut ctx)
+            .map_err(|e| CodegenError::new(format!("define fz_halt_cont_body: {}", e)))?;
+        backend.module_mut().clear_context(&mut ctx);
+    }
 
     // Register a heap Schema for every tuple arity used by MakeTuple, so the
     // GC tracer can walk fields and so codegen can iconst the schema_id.
@@ -2458,6 +2501,15 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
     let self_id = decl("fz_self", &[], &[types::I64])?;
     let send_id = decl("fz_send", &[types::I64, types::I64], &[types::I64])?;
     let receive_attempt_id = decl("fz_receive_attempt", &[types::I64], &[types::I64])?;
+    // fz-cps.1.2 — fz_halt_cont_body: declared LOCAL (we emit the body
+    // in compile_with_backend). Sig: `(val:i64, self:i64) -> i64 tail`.
+    let mut hcb_sig = Signature::new(CallConv::Tail);
+    hcb_sig.params.push(AbiParam::new(types::I64));
+    hcb_sig.params.push(AbiParam::new(types::I64));
+    hcb_sig.returns.push(AbiParam::new(types::I64));
+    let halt_cont_body_id = jmod
+        .declare_function("fz_halt_cont_body", Linkage::Local, &hcb_sig)
+        .map_err(|e| CodegenError::new(format!("declare fz_halt_cont_body: {}", e)))?;
 
     Ok(RuntimeRefs {
         print_id,
@@ -2468,6 +2520,7 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         print_nil_id,
         halt_id,
         halt_implicit_id,
+        halt_cont_body_id,
         alloc_id,
         alloc_cons_id,
         alloc_struct_id,
@@ -2507,6 +2560,7 @@ struct RuntimeRefs {
     print_nil_id: FuncId,
     halt_id: FuncId,
     halt_implicit_id: FuncId,
+    halt_cont_body_id: FuncId,
     alloc_id: FuncId,
     alloc_cons_id: FuncId,
     alloc_struct_id: FuncId,
@@ -3005,12 +3059,15 @@ fn compile_fn<M: cranelift_module::Module>(
                     // for RawInt/Tagged the tagged i64 `val` is fine
                     // (caller would interpret it as the halt-propagated
                     // value if the unreachable path were ever taken).
-                    let my_ret = return_reprs[this_spec_id as usize];
-                    let ret_val = match my_ret {
-                        ArgRepr::RawF64 => b.ins().f64const(0.0),
-                        _ => val,
-                    };
-                    b.ins().return_(&[ret_val]);
+                    // fz-cps.1.2: native return canonicalized to i64.
+                    // val here is whatever repr the body produced; coerce
+                    // to a tagged i64 sentinel (fz_halt already set
+                    // process.halt_value, so the actual returned bits
+                    // are unobservable — but the type must match the sig).
+                    let _ = return_reprs[this_spec_id as usize];
+                    let zero = b.ins().iconst(types::I64, 0);
+                    b.ins().return_(&[zero]);
+                    let _ = val;
                 } else {
                     // Uniform fn: trampoline sentinel is null.
                     let null = b.ins().iconst(types::I64, 0);
@@ -3020,18 +3077,38 @@ fn compile_fn<M: cranelift_module::Module>(
             Term::Return(v) => {
                 let val = *var_map.get(&v.0).expect("unbound return val");
                 if is_native {
-                    // fz-cps.1.2 — placeholder for native Term::Return.
-                    // The full cutover lowers Return to
-                    // `load cont+16; return_call_indirect sig(val, cont)`
-                    // per docs/cps-in-clif.md §2.1, but this requires a
-                    // halt-cont singleton so top-level conts have a
-                    // valid outer_cont (load null+16 segfaults). Halt-
-                    // cont singleton infra lands in a follow-on commit;
-                    // until then, native Return stays synchronous.
+                    // fz-cps.1.2 — native Term::Return per docs/cps-in-clif.md
+                    // §2.1: `load cont+16; return_call_indirect sig(val, cont)`.
+                    // Cont fns fetch outer_cont from `self+24`; non-cont fns
+                    // use their cont_param SSA. Sig is canonical
+                    // `(i64, i64) -> i64 tail`.
                     let from = var_repr(v.0, &raw_int_vars, &raw_f64_vars);
-                    let to = return_reprs[this_spec_id as usize];
-                    let coerced = coerce_to(&mut b, jmod, &runtime, val, from, to);
-                    b.ins().return_(&[coerced]);
+                    let val_tagged = coerce_to(
+                        &mut b, jmod, &runtime, val, from, ArgRepr::Tagged,
+                    );
+                    let cont_val = if is_cont_fn {
+                        let self_val = cont_param.expect(
+                            "cont fn binds self via cont_param");
+                        b.ins().load(
+                            types::I64, MemFlags::trusted(),
+                            self_val, HEADER_SIZE + SLOT_BYTES,
+                        )
+                    } else {
+                        cont_param.expect(
+                            "non-cont native fn has cont_param")
+                    };
+                    let code = b.ins().load(
+                        types::I64, MemFlags::trusted(),
+                        cont_val, HEADER_SIZE,
+                    );
+                    let mut sig = Signature::new(CallConv::Tail);
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(types::I64));
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let sigref = b.import_signature(sig);
+                    b.ins().return_call_indirect(
+                        sigref, code, &[val_tagged, cont_val],
+                    );
                 } else if cont_ptr_known_null {
                     // fz-ul4.27.18: this fn is never a cont target; cont_ptr
                     // is statically null. Skip the load/icmp/brif dispatch.
@@ -3095,105 +3172,128 @@ fn compile_fn<M: cranelift_module::Module>(
                     }
                     // fz-cps.1.a: trailing cont arg per §2.1. Native
                     // caller forwards its cont SSA; uniform caller passes
-                    // null (callee body doesn't consume cont until .1.2).
-                    let cont_arg = match cont_param {
-                        Some(c) => c,
-                        None => b.ins().iconst(types::I64, 0),
-                    };
-                    native_args.push(cont_arg);
-                    let call_inst = b.ins().call(callee_fref, &native_args);
-                    let result = b.inst_results(call_inst)[0];
-
-                    if callee_is_native(continuation.fn_id.0) {
-                        // fz-cps.1.2 — cont rep cutover. Build a cont
-                        // closure (§2.2 layout) and invoke the cont as
-                        // `(result, closure [, host_ctx])` per §2.1.
-                        // The cont fn's body loads captures from
-                        // self+24+8*i.
+                    // fz-cps.1.2 — chained-native cutover. Build the cont
+                    // closure BEFORE the callee call so the callee's
+                    // Term::Return can indirect-call through it (§2.1).
+                    // The closure's user captures must be stored before
+                    // the call too, since the cont body loads them on
+                    // entry. After the callee call, the chain unwinds
+                    // via halt-cont's regular return; the caller body
+                    // just returns whatever propagated.
+                    let cont_is_native = callee_is_native(continuation.fn_id.0);
+                    let cl_ptr_opt: Option<ir::Value> = if cont_is_native {
                         let cont_fid = *fn_ids
                             .get(&cont_sid)
                             .expect("cont fn_id missing");
                         let cont_fref = jmod.declare_func_in_func(cont_fid, b.func);
-                        let cont_param_reprs = &param_reprs[cont_sid as usize];
-                        let cont_ret_repr = return_reprs[cont_sid as usize];
-
-                        // Allocate the cont closure: HeapHeader(16) +
-                        // code_ptr(8) + captures(8*N). The runtime's
-                        // alloc_closure stores HeapHeader{kind=Closure,
-                        // _reserved=callee_fn_id}; we overwrite code_ptr
-                        // at +16 with the cont fn's address.
-                        let alloc_fref =
-                            jmod.declare_func_in_func(runtime.alloc_id, b.func);
+                        let acl_fref =
+                            jmod.declare_func_in_func(runtime.alloc_closure_id, b.func);
                         let cl_fid_v = b.ins().iconst(types::I32, cont_sid as i64);
-                        // Closure layout has +1 capture slot reserved for
-                        // the synthetic outer_cont at +24. User captures
-                        // start at +32.
                         let n_caps_v = b.ins().iconst(
                             types::I32, (continuation.captured.len() + 1) as i64,
                         );
-                        let cl_inst = b.ins().call(alloc_fref, &[cl_fid_v, n_caps_v]);
+                        let cl_inst = b.ins().call(acl_fref, &[cl_fid_v, n_caps_v]);
                         let cl_ptr = b.inst_results(cl_inst)[0];
-                        let cont_code_addr = b
-                            .ins()
-                            .func_addr(types::I64, cont_fref);
+                        let cont_code_addr = b.ins().func_addr(types::I64, cont_fref);
                         b.ins().store(
                             MemFlags::trusted(),
                             cont_code_addr, cl_ptr, HEADER_SIZE,
                         );
-                        // Synthetic outer_cont at +24 = my own cont (the
-                        // cont fn invokes this when it Returns/Halts).
-                        // For native callers, this is cont_param SSA; for
-                        // uniform callers, load from frame_ptr+16.
+                        // outer_cont at +24.
                         let my_outer_cont = match cont_param {
                             Some(c) => c,
-                            None => b.ins().load(
-                                types::I64, MemFlags::trusted(),
-                                frame_ptr.expect(
-                                    "uniform caller building cont closure \
-                                     must have frame_ptr"),
-                                HEADER_SIZE,
-                            ),
+                            None => {
+                                let from_slot = b.ins().load(
+                                    types::I64, MemFlags::trusted(),
+                                    frame_ptr.expect(
+                                        "uniform caller building cont closure \
+                                         must have frame_ptr"),
+                                    HEADER_SIZE,
+                                );
+                                let zero = b.ins().iconst(types::I64, 0);
+                                let is_null = b.ins().icmp(IntCC::Equal, from_slot, zero);
+                                let alloc_blk = b.create_block();
+                                let join_blk = b.create_block();
+                                b.append_block_param(join_blk, types::I64);
+                                b.ins().brif(is_null, alloc_blk, &[][..], join_blk,
+                                    &[BlockArg::Value(from_slot)]);
+                                b.switch_to_block(alloc_blk);
+                                b.seal_block(alloc_blk);
+                                let acl_fref2 = jmod
+                                    .declare_func_in_func(runtime.alloc_closure_id, b.func);
+                                let dummy_fid = b.ins().iconst(types::I32, 0);
+                                let n_caps0 = b.ins().iconst(types::I32, 0);
+                                let halt_alloc =
+                                    b.ins().call(acl_fref2, &[dummy_fid, n_caps0]);
+                                let halt_cl = b.inst_results(halt_alloc)[0];
+                                let hcb_fref = jmod
+                                    .declare_func_in_func(runtime.halt_cont_body_id, b.func);
+                                let hcb_addr =
+                                    b.ins().func_addr(types::I64, hcb_fref);
+                                b.ins().store(
+                                    MemFlags::trusted(),
+                                    hcb_addr, halt_cl, HEADER_SIZE,
+                                );
+                                b.ins().jump(join_blk, &[BlockArg::Value(halt_cl)]);
+                                b.switch_to_block(join_blk);
+                                b.seal_block(join_blk);
+                                b.block_params(join_blk)[0]
+                            }
                         };
                         b.ins().store(
                             MemFlags::trusted(),
                             my_outer_cont, cl_ptr, HEADER_SIZE + SLOT_BYTES,
                         );
-                        // User captures start at +32 (+24 + SLOT_BYTES).
+                        // User captures at +32+8i. Stored as Tagged; cont
+                        // entry harness re-coerces to per-capture repr.
                         for (i, cv) in continuation.captured.iter().enumerate() {
                             let from = var_repr(cv.0, &raw_int_vars, &raw_f64_vars);
-                            let to = cont_param_reprs[i + 1];
                             let v = coerce_to(
-                                &mut b, jmod, &runtime, cap_vals[i], from, to,
+                                &mut b, jmod, &runtime, cap_vals[i], from, ArgRepr::Tagged,
                             );
                             let off = HEADER_SIZE + SLOT_BYTES * 2
                                 + (i as i32) * SLOT_BYTES;
                             b.ins().store(MemFlags::trusted(), v, cl_ptr, off);
                         }
+                        let _ = cont_fref;
+                        Some(cl_ptr)
+                    } else {
+                        None
+                    };
+                    // cont arg passed to the callee: cl_ptr for native cont,
+                    // else cont_param fallback (uniform-cont path).
+                    let cont_arg = if let Some(cl_ptr) = cl_ptr_opt {
+                        cl_ptr
+                    } else {
+                        match cont_param {
+                            Some(c) => c,
+                            None => b.ins().iconst(types::I64, 0),
+                        }
+                    };
+                    native_args.push(cont_arg);
+                    let call_inst = b.ins().call(callee_fref, &native_args);
+                    let result = b.inst_results(call_inst)[0];
 
-                        // fz-cps.1.2 — cont fn sig is canonicalized to
-                        // (i64 result-tagged, i64 self). Coerce result
-                        // to Tagged regardless of its native repr; the
-                        // cont fn body re-coerces from Tagged to its
-                        // own param_repr at the entry harness.
-                        let mut cont_args: Vec<ir::Value> =
-                            Vec::with_capacity(2);
-                        cont_args.push(coerce_to(
-                            &mut b, jmod, &runtime,
-                            result, callee_ret_repr, ArgRepr::Tagged,
-                        ));
-                        cont_args.push(cl_ptr);
-                        let _ = cont_param_reprs; // canonicalization makes
-                                                  // these unused at the call;
-                                                  // re-read by cont fn entry.
-                        let cont_call = b.ins().call(cont_fref, &cont_args);
-                        let final_result = b.inst_results(cont_call)[0];
+                    if cl_ptr_opt.is_some() {
+                        // Chain already unwound via halt-cont; just return
+                        // whatever the chain propagated.
                         if is_native {
-                            // Coerce cont's return repr to my return repr.
-                            let my_ret = return_reprs[this_spec_id as usize];
-                            let coerced = coerce_to(
-                                &mut b, jmod, &runtime, final_result, cont_ret_repr, my_ret,
-                            );
-                            b.ins().return_(&[coerced]);
+                            let _ = (return_reprs[this_spec_id as usize], callee_ret_repr, result);
+                            let zero = b.ins().iconst(types::I64, 0);
+                            b.ins().return_(&[zero]);
+                        } else {
+                            let null = b.ins().iconst(types::I64, 0);
+                            b.ins().return_(&[null]);
+                        }
+                    } else if false {
+                        // (dead branch retained as anchor for the legacy
+                        // "synchronous cont call" path that's been replaced
+                        // by the cont-closure-passed-to-callee model.)
+                        let final_result = result;
+                        let cont_ret_repr = return_reprs[cont_sid as usize];
+                        if is_native {
+                            let _ = (return_reprs[this_spec_id as usize], cont_ret_repr);
+                            b.ins().return_(&[final_result]);
                         } else {
                             // emit_return / emit_halt expect Tagged val.
                             let val_tagged = coerce_to(
