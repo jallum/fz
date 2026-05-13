@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
     "fz-siu.10",
@@ -11,8 +11,8 @@
   "labels": [],
   "parent": "fz-siu",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "fz-cps.GC.1: per-process arena + park-time GC trigger",
   "type": "task",
-  "updated_at": "2026-05-13T04:09:33Z"
+  "updated_at": "2026-05-13T21:51:00Z"
 }
