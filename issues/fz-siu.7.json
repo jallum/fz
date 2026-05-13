@@ -5,14 +5,15 @@
     "fz-siu.10",
     "fz-siu.8"
   ],
+  "closed_at": "2026-05-13T22:01:11Z",
   "created": "2026-05-13T04:09:26Z",
   "description": "Spec: docs/cps-in-clif.md §6.1, §6.2, §7.\n\nWork:\n- Replace mark-sweep allocator with a Heap struct holding { block_start, bump_top, block_end, size_class, low_live_streak }.\n- Allocation is bump only; note_alloc_pressure sets a flag.\n- Scheduler checks the flag at park-time and invokes gc(process) (stub OK; real body in GC.2).\n\nAcceptance: existing tests pass with new allocator backing fz_alloc_closure / fz_alloc_list_cons / etc.",
   "id": "fz-siu.7",
   "labels": [],
   "parent": "fz-siu",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "fz-cps.GC.1: per-process arena + park-time GC trigger",
   "type": "task",
-  "updated_at": "2026-05-13T21:51:00Z"
+  "updated_at": "2026-05-13T22:01:11Z"
 }
