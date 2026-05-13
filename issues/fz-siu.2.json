@@ -7,6 +7,7 @@
     "fz-siu.3",
     "fz-siu.5"
   ],
+  "closed_at": "2026-05-13T21:34:04Z",
   "created": "2026-05-13T04:09:11Z",
   "description": "Spec: docs/cps-in-clif.md §2.4.\n\nWork: module-init emits one static @halt_stub closure per compiled module (zero captures; code points to a small stub that calls fz_task_exit and traps). Lowering uses `global_value @halt_stub` everywhere the initial k of a spawned task is needed.\n\nAcceptance: any compiled module exports exactly one @halt_stub; spawned tasks halt by tail-calling it.",
   "id": "fz-siu.2",
@@ -19,7 +20,7 @@
     }
   ],
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "fz-cps.2: halt continuation singleton",
   "type": "task",
   "updated_at": "2026-05-13T21:34:04Z"
