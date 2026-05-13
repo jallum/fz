@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-13T23:20:20Z",
+  "description": "Add fixture-matrix expect_clif_excludes assertions that lock in the typed cont seam.\n\nTouch:\n- fixtures/add1.fz: add\n    # expect_clif_excludes: add1_s2: ishl_imm\n    # expect_clif_excludes: add1_s2: bor_imm\n    # expect_clif_excludes: k_2_s3: sshr_imm\n  (Names may shift after .1 / .2; cross-check actual generated names via `fz dump --emit clif`.)\n- fixtures/tail_recursion.fz: acceptance per docs/cps-in-clif.md §8.1 — count's recursive case has zero alloc; verify the *cont seam* is also clean (count's Term::Return ends in tail call without retag).\n- fixtures/higher_order.fz: assertions per §8.2 — compose's cont (k_5_s15) captures typed where the typer narrowed (f's slot is ptr-typed, x's slot may stay Tagged or narrow).\n\nBless any new clif assertions via the matrix's BLESS=1 path.\n\nAcceptance:\n- cargo test --workspace green with new assertions enforced.\n- fz dump --emit clif on the §8 fixtures matches the new shape.",
+  "id": "fz-ul4.27.21.3",
+  "labels": [],
+  "parent": "fz-ul4.27.21",
+  "priority": 2,
+  "status": "open",
+  "title": "fz-cps-narrow.3: CLIF-shape acceptance assertions",
+  "type": "task",
+  "updated_at": "2026-05-13T23:20:20Z"
+}
