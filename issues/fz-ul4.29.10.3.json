@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-13T00:39:09Z",
+  "description": "Walk every spec body post-typer and rewrite `Term::CallClosure(v, args, cont)` → `Term::Call(F, args, cont)` (and `TailCallClosure` → `TailCall`) when `fn_constants[v] = F`.\n\nDepends on .29.10.1 (fn_constants), .29.10.2 (narrow spec registration).\n\n## Scope\n\n- New helper in `src/ir_rewrite.rs` (or extend an existing module): `pub fn rewrite_known_target_closures(module: \u0026mut Module, types: \u0026ModuleTypes)`.\n- Per-spec walk: clone-rebuild block terminators where the closure var has a known FnId.\n- Driver wires the pass after `type_module` and before codegen. All three execution paths share the lowered IR, so a single rewrite covers interp/JIT/AOT (three-path parity).\n\n## Tests (TDD)\n\n- `closure_call_rewritten_to_direct_call`: assert apply2's specialized body has `Term::Call(double, …)`, no `Term::CallClosure`.\n- `tailcall_closure_variant_rewritten`: same for `TailCallClosure`.\n- `flip_higher_order_callee_test`: rename `higher_order_callee_keeps_any_key_for_fn_as_value` → `_drops_any_key`, assert the any-key is now ABSENT.\n- Full suite + spec-parity fixtures stay green.\n\n## Out of scope\n\n- Multi-target rewrite (when fn_constants would be a Set\u003cFnId\u003e) — separate ticket.",
+  "id": "fz-ul4.29.10.3",
+  "labels": [],
+  "parent": "fz-ul4.29.10",
+  "priority": 2,
+  "status": "open",
+  "title": "IR rewrite known-target CallClosure to direct Call",
+  "type": "task",
+  "updated_at": "2026-05-13T00:39:09Z"
+}
