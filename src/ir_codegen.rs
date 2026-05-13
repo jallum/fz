@@ -729,19 +729,27 @@ fn build_fn_signature(
     // fz-ul4.27.19: append host_ctx only when this fn (or some callee
     // it forwards into) actually consumes it.
     let mut sig = Signature::new(CallConv::Tail);
-    for r in param_reprs {
-        sig.params.push(AbiParam::new(r.cl_type()));
-    }
-    if needs_host_ctx {
-        sig.params.push(AbiParam::new(types::I64)); // host_ctx
-    }
-    // fz-cps.1.a (fz-siu.1.1): every fz fn gains a trailing `cont: i64`
-    // parameter per docs/cps-in-clif.md §2.1 — EXCEPT cont fns, which
-    // per §2.1 have shape `(result, self) tail` (no separate k; their
-    // "next k" lives in their captures). fz-cps.1.2 carves out the
-    // cont-fn exception.
-    if !is_cont_fn {
-        sig.params.push(AbiParam::new(types::I64)); // cont
+    if is_cont_fn {
+        // fz-cps.1.2 — cont fn sig per docs/cps-in-clif.md §2.1:
+        // `(result, self [, host_ctx]) tail`. Captures live in the
+        // closure object (self+24, +32, ...); they are NOT Cranelift
+        // params. The "next k" is one of those captures. host_ctx is
+        // retained transitionally for cont fns that contain Term::Halt
+        // (Halt's halt-cont-singleton replacement lands in fz-siu.1.6).
+        sig.params.push(AbiParam::new(param_reprs[0].cl_type())); // result
+        sig.params.push(AbiParam::new(types::I64));               // self (closure ptr)
+        if needs_host_ctx {
+            sig.params.push(AbiParam::new(types::I64));           // host_ctx
+        }
+    } else {
+        for r in param_reprs {
+            sig.params.push(AbiParam::new(r.cl_type()));
+        }
+        if needs_host_ctx {
+            sig.params.push(AbiParam::new(types::I64));           // host_ctx
+        }
+        // fz-cps.1.a — trailing cont:i64 per §2.1.
+        sig.params.push(AbiParam::new(types::I64));               // cont
     }
     sig.returns.push(AbiParam::new(ret_repr.cl_type()));
     sig
@@ -2668,17 +2676,24 @@ fn compile_fn<M: cranelift_module::Module>(
         // frame_ptr; native fns run synchronously inside their caller and
         // never visit the trampoline.
         let my_param_reprs = &param_reprs[this_spec_id as usize];
-        for r in my_param_reprs {
-            b.append_block_param(entry_cl, r.cl_type());
-        }
-        // fz-ul4.27.19: only append host_ctx when this fn actually needs it.
-        if fns_needing_host_ctx.contains(&f.id) {
-            b.append_block_param(entry_cl, types::I64); // host_ctx
-        }
-        // fz-cps.1.a (fz-siu.1.1): trailing cont:i64 per §2.1, except
-        // cont fns whose §2.1 shape is `(result, self)` (no cont param).
-        if !is_cont_fn {
-            b.append_block_param(entry_cl, types::I64); // cont
+        if is_cont_fn {
+            // fz-cps.1.2 cont fn entry per §2.1: (result, self [, host_ctx]).
+            // Only the result is a Cranelift param; captures load from self+24.
+            b.append_block_param(entry_cl, my_param_reprs[0].cl_type()); // result
+            b.append_block_param(entry_cl, types::I64);                  // self
+            if fns_needing_host_ctx.contains(&f.id) {
+                b.append_block_param(entry_cl, types::I64);              // host_ctx
+            }
+        } else {
+            for r in my_param_reprs {
+                b.append_block_param(entry_cl, r.cl_type());
+            }
+            // fz-ul4.27.19: only append host_ctx when this fn actually needs it.
+            if fns_needing_host_ctx.contains(&f.id) {
+                b.append_block_param(entry_cl, types::I64);              // host_ctx
+            }
+            // fz-cps.1.a (fz-siu.1.1): trailing cont:i64 per §2.1.
+            b.append_block_param(entry_cl, types::I64);                  // cont
         }
     } else {
         b.append_block_param(entry_cl, types::I64); // frame_ptr
@@ -2721,31 +2736,62 @@ fn compile_fn<M: cranelift_module::Module>(
         Option<ir::Value>,
         Option<ir::Value>,
     ) = if is_native {
-        // fz-ul4.27.13 — Native entry params arrive in the repr declared
-        // by my param_reprs (Cranelift type already matches; just record
-        // the raw-vs-tagged classification so the body can elide
-        // shift-then-shift round-trips and op lowerings see the raw
-        // value directly).
         let params: Vec<ir::Value> = b.block_params(entry_cl).to_vec();
         let my_param_reprs = &param_reprs[this_spec_id as usize];
-        for (i, p) in entry_blk.params.iter().enumerate() {
-            match my_param_reprs[i] {
-                ArgRepr::RawInt => { raw_int_vars.insert(p.0); }
-                ArgRepr::RawF64 => { raw_f64_vars.insert(p.0); }
+        if is_cont_fn {
+            // fz-cps.1.2 cont fn entry harness per §2.1:
+            //   params[0] = result        → fz_param[0]
+            //   params[1] = self          → loaded captures
+            //   params[2] = host_ctx?     → conditional
+            // Captures (fz_param[1..]) load from self+24, +32, ...
+            // Repr per `my_param_reprs[1+i]` determines the Cranelift
+            // load type (F64 vs I64) and the raw-vs-tagged classification.
+            // Storage was done by the caller in the matching repr —
+            // see chained-native sub-path in Term::Call.
+            let result_param = &entry_blk.params[0];
+            match my_param_reprs[0] {
+                ArgRepr::RawInt => { raw_int_vars.insert(result_param.0); }
+                ArgRepr::RawF64 => { raw_f64_vars.insert(result_param.0); }
                 ArgRepr::Tagged => {}
             }
-            var_map.insert(p.0, params[i]);
-        }
-        let host_ctx_idx = entry_blk.params.len();
-        let (host_ctx, cont_idx) = if fns_needing_host_ctx.contains(&f.id) {
-            (Some(params[host_ctx_idx]), host_ctx_idx + 1)
+            var_map.insert(result_param.0, params[0]);
+            let self_val = params[1];
+            for (i, p) in entry_blk.params.iter().enumerate().skip(1) {
+                let cap_idx = i - 1; // 0-based capture index
+                let off = HEADER_SIZE + SLOT_BYTES + (cap_idx as i32) * SLOT_BYTES;
+                let cl_ty = my_param_reprs[i].cl_type();
+                let v = b.ins().load(cl_ty, MemFlags::trusted(), self_val, off);
+                match my_param_reprs[i] {
+                    ArgRepr::RawInt => { raw_int_vars.insert(p.0); }
+                    ArgRepr::RawF64 => { raw_f64_vars.insert(p.0); }
+                    ArgRepr::Tagged => {}
+                }
+                var_map.insert(p.0, v);
+            }
+            let host_ctx = if fns_needing_host_ctx.contains(&f.id) {
+                Some(params[2])
+            } else {
+                None
+            };
+            // Cont fns have no `cont` parameter (§2.1).
+            (None, host_ctx, None)
         } else {
-            (None, host_ctx_idx)
-        };
-        // fz-cps.1.2: cont fns have no cont parameter (§2.1: shape is
-        // `(result, self)`); their "next k" is one of their captures.
-        let cont_param = if is_cont_fn { None } else { Some(params[cont_idx]) };
-        (None, host_ctx, cont_param)
+            for (i, p) in entry_blk.params.iter().enumerate() {
+                match my_param_reprs[i] {
+                    ArgRepr::RawInt => { raw_int_vars.insert(p.0); }
+                    ArgRepr::RawF64 => { raw_f64_vars.insert(p.0); }
+                    ArgRepr::Tagged => {}
+                }
+                var_map.insert(p.0, params[i]);
+            }
+            let host_ctx_idx = entry_blk.params.len();
+            let (host_ctx, cont_idx) = if fns_needing_host_ctx.contains(&f.id) {
+                (Some(params[host_ctx_idx]), host_ctx_idx + 1)
+            } else {
+                (None, host_ctx_idx)
+            };
+            (None, host_ctx, Some(params[cont_idx]))
+        }
     } else {
         let frame_ptr = b.block_params(entry_cl)[0];
         let host_ctx = b.block_params(entry_cl)[1];
@@ -3031,46 +3077,64 @@ fn compile_fn<M: cranelift_module::Module>(
                     let result = b.inst_results(call_inst)[0];
 
                     if callee_is_native(continuation.fn_id.0) {
-                        // fz-ul4.27.6.3 — both callee AND cont are native.
-                        // Chain natively: feed result + captures + host_ctx
-                        // into the cont fn synchronously. fz-ul4.27.14.2:
-                        // coerce the callee's raw result directly into the
-                        // cont's slot-0 repr — no Tagged intermediate. When
-                        // the cont's slot 0 is still force-Tagged (because
-                        // it's uniform-cont-reachable, .27.14.1), this is
-                        // equivalent to the prior `result → Tagged → Tagged`
-                        // shape (one box op). When the cont's slot 0 is
-                        // typed (the native-chain-only case), it's a no-op
-                        // if the reprs already match.
+                        // fz-cps.1.2 — cont rep cutover. Build a cont
+                        // closure (§2.2 layout) and invoke the cont as
+                        // `(result, closure [, host_ctx])` per §2.1.
+                        // The cont fn's body loads captures from
+                        // self+24+8*i.
                         let cont_fid = *fn_ids
                             .get(&cont_sid)
                             .expect("cont fn_id missing");
                         let cont_fref = jmod.declare_func_in_func(cont_fid, b.func);
                         let cont_param_reprs = &param_reprs[cont_sid as usize];
                         let cont_ret_repr = return_reprs[cont_sid as usize];
+
+                        // Allocate the cont closure: HeapHeader(16) +
+                        // code_ptr(8) + captures(8*N). The runtime's
+                        // alloc_closure stores HeapHeader{kind=Closure,
+                        // _reserved=callee_fn_id}; we overwrite code_ptr
+                        // at +16 with the cont fn's address.
+                        let alloc_fref =
+                            jmod.declare_func_in_func(runtime.alloc_id, b.func);
+                        let cl_fid_v = b.ins().iconst(types::I32, cont_sid as i64);
+                        let n_caps_v = b.ins().iconst(
+                            types::I32, continuation.captured.len() as i64,
+                        );
+                        let cl_inst = b.ins().call(alloc_fref, &[cl_fid_v, n_caps_v]);
+                        let cl_ptr = b.inst_results(cl_inst)[0];
+                        let cont_code_addr = b
+                            .ins()
+                            .func_addr(types::I64, cont_fref);
+                        b.ins().store(
+                            MemFlags::trusted(),
+                            cont_code_addr, cl_ptr, HEADER_SIZE,
+                        );
+                        // Captures stored in the cont's expected per-capture
+                        // repr (param_reprs[1+i]) so the cont fn entry loader
+                        // can read directly without coerce.
+                        for (i, cv) in continuation.captured.iter().enumerate() {
+                            let from = var_repr(cv.0, &raw_int_vars, &raw_f64_vars);
+                            let to = cont_param_reprs[i + 1];
+                            let v = coerce_to(
+                                &mut b, jmod, &runtime, cap_vals[i], from, to,
+                            );
+                            let off = HEADER_SIZE + SLOT_BYTES
+                                + (i as i32) * SLOT_BYTES;
+                            b.ins().store(MemFlags::trusted(), v, cl_ptr, off);
+                        }
+
                         let mut cont_args: Vec<ir::Value> =
-                            Vec::with_capacity(cap_vals.len() + 2);
+                            Vec::with_capacity(3);
                         cont_args.push(coerce_to(
                             &mut b, jmod, &runtime,
                             result, callee_ret_repr, cont_param_reprs[0],
                         ));
-                        for (i, cv) in continuation.captured.iter().enumerate() {
-                            let from = var_repr(cv.0, &raw_int_vars, &raw_f64_vars);
-                            cont_args.push(coerce_to(
-                                &mut b, jmod, &runtime,
-                                cap_vals[i], from, cont_param_reprs[i + 1],
-                            ));
-                        }
-                        // fz-ul4.27.19: cont's trimmed sig may or may not
-                        // include host_ctx; mirror the analysis.
+                        cont_args.push(cl_ptr);
                         if fns_needing_host_ctx.contains(&continuation.fn_id) {
                             cont_args.push(host_ctx.expect(
                                 "cont needs host_ctx; this fn must also have it",
                             ));
                         }
-                        // fz-cps.1.2: cont fns have no trailing cont arg
-                        // per §2.1; their next-k is one of their captures.
-                        // Suppress the push that .1.1 introduced for this site.
                         let cont_call = b.ins().call(cont_fref, &cont_args);
                         let final_result = b.inst_results(cont_call)[0];
                         if is_native {
