@@ -998,6 +998,7 @@ impl JitBackend {
         builder.symbol("fz_print_atom", fz_runtime::fz_print_atom as *const u8);
         builder.symbol("fz_print_nil",  fz_runtime::fz_print_nil  as *const u8);
         builder.symbol("fz_halt", fz_runtime::ir_runtime::fz_halt as *const u8);
+        builder.symbol("fz_halt_implicit", fz_runtime::ir_runtime::fz_halt_implicit as *const u8);
         builder.symbol("fz_alloc_frame", fz_runtime::ir_runtime::fz_alloc_frame as *const u8);
         builder.symbol("fz_alloc_list_cons", fz_runtime::ir_runtime::fz_alloc_list_cons as *const u8);
         builder.symbol("fz_alloc_struct", fz_runtime::ir_runtime::fz_alloc_struct as *const u8);
@@ -1661,6 +1662,9 @@ pub fn compile_with_backend<B: Backend>(
         let mut needs = std::collections::HashSet::new();
         for f in &module.fns {
             if !natively_callable.contains(&f.id) { continue; }
+            // fz-cps.1.2 — cont fns per §2.1 have no host_ctx param.
+            // Their Halt lowering uses fz_halt_implicit instead.
+            if cont_fns.contains(&f.id) { continue; }
             let reach = reachable_blocks_of(f);
             if f.blocks.iter().any(|b| {
                 reach.contains(&b.id.0)
@@ -1674,6 +1678,7 @@ pub fn compile_with_backend<B: Backend>(
             let mut added = false;
             for f in &module.fns {
                 if !natively_callable.contains(&f.id) { continue; }
+                if cont_fns.contains(&f.id) { continue; }
                 if needs.contains(&f.id) { continue; }
                 let reach = reachable_blocks_of(f);
                 let forwards = f.blocks.iter().any(|b| {
@@ -2389,6 +2394,7 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
     let print_atom_id = decl("fz_print_atom", &[types::I32], &[])?;
     let print_nil_id  = decl("fz_print_nil",  &[],           &[])?;
     let halt_id = decl("fz_halt", &[types::I64, types::I64], &[])?;
+    let halt_implicit_id = decl("fz_halt_implicit", &[types::I64], &[])?;
     let alloc_id = decl("fz_alloc_frame", &[types::I32, types::I32], &[types::I64])?;
     let alloc_cons_id = decl(
         "fz_alloc_list_cons",
@@ -2463,6 +2469,7 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         print_atom_id,
         print_nil_id,
         halt_id,
+        halt_implicit_id,
         alloc_id,
         alloc_cons_id,
         alloc_struct_id,
@@ -2501,6 +2508,7 @@ struct RuntimeRefs {
     print_atom_id: FuncId,
     print_nil_id: FuncId,
     halt_id: FuncId,
+    halt_implicit_id: FuncId,
     alloc_id: FuncId,
     alloc_cons_id: FuncId,
     alloc_struct_id: FuncId,
@@ -2963,12 +2971,20 @@ fn compile_fn<M: cranelift_module::Module>(
             }
             Term::Halt(v) => {
                 let val = *var_map.get(&v.0).expect("unbound halt val");
-                let halt_fref = jmod.declare_func_in_func(runtime.halt_id, b.func);
-                let hctx = host_ctx.expect(
-                    "Term::Halt needs host_ctx but fns_needing_host_ctx \
-                     analysis dropped it — invariant violated",
-                );
-                b.ins().call(halt_fref, &[hctx, val]);
+                // fz-cps.1.2 — cont fns have no host_ctx (§2.1); their
+                // Halt uses fz_halt_implicit which pulls process from TLS.
+                if is_cont_fn {
+                    let hi_fref = jmod
+                        .declare_func_in_func(runtime.halt_implicit_id, b.func);
+                    b.ins().call(hi_fref, &[val]);
+                } else {
+                    let halt_fref = jmod.declare_func_in_func(runtime.halt_id, b.func);
+                    let hctx = host_ctx.expect(
+                        "Term::Halt needs host_ctx but fns_needing_host_ctx \
+                         analysis dropped it — invariant violated",
+                    );
+                    b.ins().call(halt_fref, &[hctx, val]);
+                }
                 if is_native {
                     // fz-ul4.27.6.4 — native fn: propagate halt val back
                     // up the chain via the native return register. The

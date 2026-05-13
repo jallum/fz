@@ -55,6 +55,19 @@ pub fn test_capture_take() -> Vec<String> {
 /// the migration we ignore it in favor of current_process() — they point at
 /// the same Process, but using current_process() keeps the access pattern
 /// uniform with every other fz_* fn.
+/// fz-cps.1.2 — `fz_halt` variant that doesn't take a host_ctx parameter.
+/// Cont fns per docs/cps-in-clif.md §2.1 have sig `(result, self) tail`
+/// with no host_ctx, so when their IR contains `Term::Halt(v)` they
+/// invoke this version which pulls the current process from TLS.
+///
+/// Currently a one-liner wrapper around `fz_halt`; once the trampoline
+/// goes away and uniform fns get rewritten, `fz_halt` itself may
+/// migrate to this signature.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_halt_implicit(fz_bits: u64) {
+    fz_halt(std::ptr::null_mut(), fz_bits);
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_halt(_ctx: *mut u8, fz_bits: u64) {
     use crate::fz_value::{FzValue, HeapKind, Tag};
