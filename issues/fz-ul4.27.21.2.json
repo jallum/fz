@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-ul4.27.21.1"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-ul4.27.21.3"
+  ],
   "created": "2026-05-13T23:20:20Z",
   "description": "Cont closures store captures as Tagged today (forcing tag-on-store + untag-on-load round-trips even when the capture's type is statically known). Match the lambda-closure path: store captures in their typed repr.\n\nTouch src/ir_codegen.rs:\n\n1. Term::Call cont-closure builder (≈line 3439): currently\n     let from = var_repr(cv.0, \u0026raw_int_vars, \u0026raw_f64_vars);\n     let v = coerce_to(.., cap_vals[i], from, ArgRepr::Tagged);\n   Replace ArgRepr::Tagged with param_reprs[cont_sid as usize][i + 1] (capture index i is fz_param i+1 since fz_param[0] is the result).\n\n2. Term::CallClosure cont-closure builder (≈line 3792): same change.\n\n3. Term::Receive cont-closure builder (search for the Receive site): same change. Receive's cont has param_reprs[0] = Tagged (forced) but param_reprs[1..] (captures) can be typed.\n\n4. compile_fn cont-fn entry harness capture load (≈line 2956): currently\n     let off = HEADER_SIZE + SLOT_BYTES * 2 + ((i - 1) as i32) * SLOT_BYTES;\n     let tagged_v = b.ins().load(types::I64, MemFlags::trusted(), self_val, off);\n     let v = coerce_to(.., tagged_v, ArgRepr::Tagged, my_param_reprs[i]);\n   Replace with a typed load:\n     let cl_ty = my_param_reprs[i].cl_type();\n     let v = b.ins().load(cl_ty, MemFlags::trusted(), self_val, off);\n     (no coerce — the producer stored in my_param_reprs[i]'s repr per .1)\n\nLambda (closure-target) capture path already does typed load (line ≈2986) — this aligns cont fns with the same convention.\n\nAcceptance:\n- A fixture where a cont captures a typed int (e.g. a chained add) shows the capture stored and loaded WITHOUT tag/untag.\n- cargo test --workspace green.\n- §8 fixtures pass on all three paths.",
   "id": "fz-ul4.27.21.2",
