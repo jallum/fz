@@ -122,13 +122,13 @@ pub fn natively_callable(m: &Module, parking: &HashSet<FnId>) -> HashSet<FnId> {
             || used_as_closure_target.contains(id)
     };
 
+    // fz-cps.1.8 — parking-reachable exclusion lifted; closure ops are
+    // body_ok now. main stays uniform — it is the scheduler-dispatch
+    // entry point that the trampoline drives via SystemV. fz-siu.1.11
+    // can promote main to native once a fz_main_entry SystemV→Tail-CC
+    // shim is wired.
     let mut set: HashSet<FnId> = HashSet::new();
     for f in &m.fns {
-        // fz-cps.1.8 — parking-reachable exclusion lifted. After this
-        // commit closure ops are admitted body_ok, so parking-reachable
-        // fns can be Tail-CC. The remaining uniform fn is `main` (its
-        // SystemV entry remains for scheduler dispatch until the
-        // fz_main_entry shim lands in fz-siu.1.11).
         let _ = (&parking, &cont_blocked);
         if Some(f.id) == main_id { continue; }
         if !reachable_as_native(&f.id) { continue; }
