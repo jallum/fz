@@ -4,14 +4,15 @@
   "blocks": [
     "fz-ul4.27.15.2"
   ],
+  "closed_at": "2026-05-13T02:28:43Z",
   "created": "2026-05-13T02:26:34Z",
   "description": "## What\n\nIn `src/ir_codegen.rs:3623-3624`, change:\n\n```rust\nConst::Int(n) =\u003e b.ins().iconst(types::I64, ((*n) \u003c\u003c 3) | TAG_INT),\n```\n\n(which falls through to `LowerOut::Tagged(_)` at the bottom of `lower_prim`'s match), to consult the var's Descr and emit raw when monomorphic-int:\n\n```rust\nConst::Int(n) =\u003e {\n    let d = fn_types.vars.get(\u0026dest_var).cloned().unwrap_or_else(Descr::any);\n    if d.is_subtype(\u0026Descr::int()) {\n        return Ok(LowerOut::RawI64(b.ins().iconst(types::I64, *n)));\n    }\n    b.ins().iconst(types::I64, ((*n) \u003c\u003c 3) | TAG_INT)\n}\n```\n\nThe `dest_var` plumbing: `lower_prim` doesn't currently receive the destination `Var` (the `v` in `Stmt::Let(v, prim)`). The call site at `src/ir_codegen.rs:2615` has `v` in scope. Two shapes:\n(a) Thread `Option\u003cVar\u003e` through `lower_prim`'s sig (also lets future arms specialize on dest Descr without re-plumbing).\n(b) Look up the prim's \"produced Descr\" via a helper that walks the Prim shape (mirroring the typer's `infer_prim`). Heavier; not justified for one arm.\n\nPick (a). Adjust `lower_prim`'s sig and the one call site.\n\n## Tests (TDD)\n\n1. **CLIF assertion on add1.fz** — extend `add1_main_cont_seam_has_no_box_unbox_roundtrip` (or add a new test) to assert `main` contains `iconst.i64 41` and does NOT contain `iconst.i64 329` or `sshr_imm v2, 3` for the literal.\n2. **CLIF assertion on add1_s2** — assert `add1_s2` contains `iconst.i64 1` and does NOT contain `iconst.i64 9` or `sshr_imm v3, 3` for the literal `1`.\n3. **Tagged-consumer behavioural** — fixture (or existing) where an int literal flows into a Tagged consumer (e.g. a list cons, a struct field of type `any`). Verify output unchanged.\n4. **Behaviour** — `cargo run -- run fixtures/add1.fz` still prints `42`.\n\n## Acceptance\n\n- `cargo test` green, no warnings.\n- add1.fz CLIF for `main`: no shift/OR ops in or around the `call fn0`/`call fn1` seam (locks in the .27.14.2 win) AND no shift/OR for the literal `41`.\n- add1.fz CLIF for `add1_s2`: no shift/OR for the literal `1`.\n\n## Risks / verification done\n\n- `tagged_get` (line 4292) handles `raw_int_vars` by emitting `box_int` — symmetric to `as_raw_i64`'s unbox path.\n- All stmt-level Tagged-expecting prim arms in `lower_prim` already route reads through `tagged_get` (verified by grep: only `tagged_get`, `as_raw_i64`, `as_raw_f64` access `env` directly).\n- The pre-terminator retag pass (line 2680-2696) already retags raw vars used by Tagged-expecting terminators. Const::Int producing raw won't break Halt / uniform Return / CallClosure / etc.\n\n## Out of scope\n\nConst::Float raw-by-default — .27.15.2.\nOther bucket-3 prims (TupleField etc.) — follow-up tickets.",
   "id": "fz-ul4.27.15.1",
   "labels": [],
   "parent": "fz-ul4.27.15",
   "priority": 3,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Const::Int emits RawI64 when consumer Descr is int",
   "type": "task",
-  "updated_at": "2026-05-13T02:26:54Z"
+  "updated_at": "2026-05-13T02:28:43Z"
 }
