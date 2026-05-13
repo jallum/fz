@@ -313,6 +313,34 @@ pub fn type_module(m: &Module) -> ModuleTypes {
                     }
                     env.insert(*v, type_prim(prim, &env, m));
                 }
+                // fz-ul4.29.10.2 — per-spec CallClosure / TailCallClosure
+                // with a known target via `fn_constants` registers the
+                // lambda's narrow spec for typed args. This mirrors what
+                // a direct `Term::Call` does in the main aggregation
+                // loop, but requires per-spec fn_constants visibility
+                // (the lub-aggregated `by_fn_idx` doesn't carry the
+                // propagated entry-param fn_constants).
+                let (closure_var, call_args): (Option<Var>, &[Var]) = match &b.terminator {
+                    Term::CallClosure { closure, args, .. }
+                    | Term::TailCallClosure { closure, args } => {
+                        (Some(*closure), args.as_slice())
+                    }
+                    _ => (None, &[]),
+                };
+                if let (Some(cv), call_args) = (closure_var, call_args) {
+                    if let Some(&target_fn) = caller_ft.fn_constants.get(&cv) {
+                        if let Some(&j) = idx_of.get(&target_fn) {
+                            let target = &m.fns[j];
+                            let n_params = target.block(target.entry).params.len();
+                            let mut key: Vec<Descr> = call_args.iter().map(|av|
+                                env.get(av).cloned().unwrap_or_else(Descr::any)
+                            ).collect();
+                            while key.len() < n_params { key.push(Descr::any()); }
+                            key.truncate(n_params);
+                            callsite_keys.entry(target_fn).or_default().insert(key);
+                        }
+                    }
+                }
             }
         }
 
@@ -399,9 +427,19 @@ pub fn type_module(m: &Module) -> ModuleTypes {
                         let Stmt::Let(v, prim) = stmt;
                         env.insert(*v, type_prim(prim, &env, m));
                     }
+                    // fz-ul4.29.10.2 — known-target CallClosure /
+                    // TailCallClosure registers the lambda's narrow spec
+                    // exactly like a direct call.
                     let (callee_id, callee_args): (Option<FnId>, &[Var]) = match &b.terminator {
                         Term::Call { callee, args, .. } => (Some(*callee), args.as_slice()),
                         Term::TailCall { callee, args } => (Some(*callee), args.as_slice()),
+                        Term::CallClosure { closure, args, .. }
+                        | Term::TailCallClosure { closure, args } => {
+                            match ft.fn_constants.get(closure).copied() {
+                                Some(f) => (Some(f), args.as_slice()),
+                                None => (None, &[]),
+                            }
+                        }
                         _ => (None, &[]),
                     };
                     if let Some(callee) = callee_id {
@@ -2422,6 +2460,42 @@ end
             mt.specs.iter()
                 .filter(|((fid, _), _)| *fid == apply2.id)
                 .map(|((_, k), ft)| (k.clone(), ft.fn_constants.clone()))
+                .collect::<Vec<_>>());
+    }
+
+    // ---- fz-ul4.29.10.2 — narrow F-spec from known-target CallClosure ----
+
+    /// `apply2(double, 21)` — apply2's body has `CallClosure(f, [x])`.
+    /// With `fn_constants[f] = double` propagated from main, the typer's
+    /// queried-set walk should register `(double, [int_lit(21)])` as a
+    /// narrow spec for double — alongside its any-key (which .29.10.3
+    /// will drop). This guarantees a narrow spec exists for the IR
+    /// rewrite to dispatch into.
+    #[test]
+    fn callclosure_with_fn_constant_registers_narrow_spec() {
+        let (m, mt) = pipeline(r#"
+fn double(x), do: x * 2
+fn apply2(f, x), do: f(x)
+fn main() do
+  print(apply2(double, 21))
+end
+"#);
+        let double = m.fns.iter().find(|f| f.name == "double").unwrap();
+        let mut saw_narrow = false;
+        for ((fid, key), _) in &mt.specs {
+            if *fid != double.id { continue; }
+            if key.len() != 1 { continue; }
+            if !key[0].is_equiv(&Descr::any()) && key[0].is_subtype(&Descr::int()) {
+                saw_narrow = true;
+            }
+        }
+        assert!(saw_narrow,
+            "expected a narrow int-typed spec for double from \
+             apply2's CallClosure with fn_constants[f] = double; \
+             registered specs for double: {:?}",
+            mt.specs.iter()
+                .filter(|((fid, _), _)| *fid == double.id)
+                .map(|((_, k), _)| k.clone())
                 .collect::<Vec<_>>());
     }
 }
