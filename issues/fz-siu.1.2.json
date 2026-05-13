@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-siu.1.1"
+  ],
   "blocks": [],
   "created": "2026-05-13T09:26:51Z",
   "description": "Spec: docs/cps-in-clif.md §2.1, §8.1 block_done.\n\nWork:\n- Term::Return v: load k+16; return_call_indirect sig_cont (v, k).\n- Term::Halt v: same against halt-cont (placeholder address until fz-siu.2; for now reuse k since spawn seeds k=halt).\n\nAcceptance:\n- count fn block_done matches §8.1: two-op load + return_call_indirect.\n- tail_recursion + add1 fixtures still produce correct output.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "fz-cps.1.b: Return/Halt invoke cont SSA",
   "type": "task",
-  "updated_at": "2026-05-13T09:26:51Z"
+  "updated_at": "2026-05-13T09:27:21Z"
 }
