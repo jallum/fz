@@ -710,6 +710,7 @@ fn build_fn_signature(
     ret_repr: ArgRepr,
     is_native: bool,
     needs_host_ctx: bool,
+    is_cont_fn: bool,
 ) -> Signature {
     if !is_native {
         // Uniform fns always include host_ctx — the trampoline ABI is
@@ -735,10 +736,13 @@ fn build_fn_signature(
         sig.params.push(AbiParam::new(types::I64)); // host_ctx
     }
     // fz-cps.1.a (fz-siu.1.1): every fz fn gains a trailing `cont: i64`
-    // parameter per docs/cps-in-clif.md §2.1. In .1.1 the cont is
-    // threaded through but not yet consumed; .1.2 wires Return/Halt
-    // against it, .1.3 forwards it across TailCall.
-    sig.params.push(AbiParam::new(types::I64)); // cont
+    // parameter per docs/cps-in-clif.md §2.1 — EXCEPT cont fns, which
+    // per §2.1 have shape `(result, self) tail` (no separate k; their
+    // "next k" lives in their captures). fz-cps.1.2 carves out the
+    // cont-fn exception.
+    if !is_cont_fn {
+        sig.params.push(AbiParam::new(types::I64)); // cont
+    }
     sig.returns.push(AbiParam::new(ret_repr.cl_type()));
     sig
 }
@@ -1886,6 +1890,7 @@ pub fn compile_with_backend<B: Backend>(
                     return_reprs[sid],
                     is_native,
                     needs_host_ctx,
+                    cont_fns.contains(&f.id),
                 )
             }
             None => {
@@ -1981,6 +1986,7 @@ pub fn compile_with_backend<B: Backend>(
             &module.source,
             &natively_callable,
             &cont_target_fns,
+            &cont_fns,
             &fns_needing_host_ctx,
             &fn_ids,
             &param_reprs,
@@ -2542,6 +2548,7 @@ fn compile_fn<M: cranelift_module::Module>(
     source: &crate::fz_ir::SourceInfo,
     natively_callable: &std::collections::HashSet<crate::fz_ir::FnId>,
     cont_target_fns: &std::collections::HashSet<crate::fz_ir::FnId>,
+    cont_fns: &std::collections::HashSet<crate::fz_ir::FnId>,
     fns_needing_host_ctx: &std::collections::HashSet<crate::fz_ir::FnId>,
     fn_ids: &HashMap<u32, FuncId>,
     param_reprs: &[Vec<ArgRepr>],
@@ -2550,6 +2557,7 @@ fn compile_fn<M: cranelift_module::Module>(
     module_types: &crate::ir_typer::ModuleTypes,
 ) -> Result<(), CodegenError> {
     let is_native = natively_callable.contains(&f.id);
+    let is_cont_fn = cont_fns.contains(&f.id);
     // fz-ul4.27.18: when this fn is never invoked from any fz IR site
     // (not a direct callee, not a continuation, not a closure target),
     // it can only enter via the trampoline entry, which writes null
@@ -2667,8 +2675,11 @@ fn compile_fn<M: cranelift_module::Module>(
         if fns_needing_host_ctx.contains(&f.id) {
             b.append_block_param(entry_cl, types::I64); // host_ctx
         }
-        // fz-cps.1.a (fz-siu.1.1): trailing cont:i64 per §2.1.
-        b.append_block_param(entry_cl, types::I64); // cont
+        // fz-cps.1.a (fz-siu.1.1): trailing cont:i64 per §2.1, except
+        // cont fns whose §2.1 shape is `(result, self)` (no cont param).
+        if !is_cont_fn {
+            b.append_block_param(entry_cl, types::I64); // cont
+        }
     } else {
         b.append_block_param(entry_cl, types::I64); // frame_ptr
         b.append_block_param(entry_cl, types::I64); // host_ctx
@@ -2731,7 +2742,9 @@ fn compile_fn<M: cranelift_module::Module>(
         } else {
             (None, host_ctx_idx)
         };
-        let cont_param = Some(params[cont_idx]);
+        // fz-cps.1.2: cont fns have no cont parameter (§2.1: shape is
+        // `(result, self)`); their "next k" is one of their captures.
+        let cont_param = if is_cont_fn { None } else { Some(params[cont_idx]) };
         (None, host_ctx, cont_param)
     } else {
         let frame_ptr = b.block_params(entry_cl)[0];
@@ -3055,12 +3068,9 @@ fn compile_fn<M: cranelift_module::Module>(
                                 "cont needs host_ctx; this fn must also have it",
                             ));
                         }
-                        // fz-cps.1.a: chained-native cont also gains trailing cont arg.
-                        let cont_cont_arg = match cont_param {
-                            Some(c) => c,
-                            None => b.ins().iconst(types::I64, 0),
-                        };
-                        cont_args.push(cont_cont_arg);
+                        // fz-cps.1.2: cont fns have no trailing cont arg
+                        // per §2.1; their next-k is one of their captures.
+                        // Suppress the push that .1.1 introduced for this site.
                         let cont_call = b.ins().call(cont_fref, &cont_args);
                         let final_result = b.inst_results(cont_call)[0];
                         if is_native {
@@ -5668,7 +5678,7 @@ fn main(), do: loop_with(loop_with, 100000, 0)
         let add_idx = m.fns.iter().position(|f| f.name == "add").unwrap();
         let rd = join_return_descrs(&m.fns[add_idx], &mt[add_idx]);
         let prs = build_param_reprs(&m.fns[add_idx], &mt[add_idx]);
-        let sig = build_fn_signature(&prs, ArgRepr::from_descr(&rd), false, true);
+        let sig = build_fn_signature(&prs, ArgRepr::from_descr(&rd), false, true, false);
         assert_eq!(sig.params.len(), 2);
         assert_eq!(sig.returns.len(), 1);
         assert_eq!(sig.params[0].value_type, types::I64);
@@ -5687,7 +5697,7 @@ fn main(), do: loop_with(loop_with, 100000, 0)
         let add_idx = m.fns.iter().position(|f| f.name == "add").unwrap();
         let rd = join_return_descrs(&m.fns[add_idx], &mt[add_idx]);
         let prs = build_param_reprs(&m.fns[add_idx], &mt[add_idx]);
-        let sig = build_fn_signature(&prs, ArgRepr::from_descr(&rd), true, true);
+        let sig = build_fn_signature(&prs, ArgRepr::from_descr(&rd), true, true, false);
         // 2 entry params + host_ctx + cont.
         assert_eq!(sig.params.len(), 4);
         assert_eq!(sig.returns.len(), 1);
@@ -5713,7 +5723,7 @@ fn main(), do: loop_with(loop_with, 100000, 0)
         let dist_idx = m.fns.iter().position(|f| f.name == "dist").unwrap();
         let rd = join_return_descrs(&m.fns[dist_idx], &mt[dist_idx]);
         let prs = build_param_reprs(&m.fns[dist_idx], &mt[dist_idx]);
-        let sig = build_fn_signature(&prs, ArgRepr::from_descr(&rd), true, true);
+        let sig = build_fn_signature(&prs, ArgRepr::from_descr(&rd), true, true, false);
         // 2 entry params + host_ctx + cont.
         assert_eq!(sig.params.len(), 4);
         assert_eq!(sig.params[0].value_type, types::F64);

@@ -497,19 +497,24 @@ fn add1_native_fns_drop_unused_host_ctx() {
         .expect("spawn fz dump");
     assert!(out.status.success(), "fz dump exited {}", out.status);
     let stdout = String::from_utf8_lossy(&out.stdout);
-    // fz-cps.1.a (fz-siu.1.1): native sigs now end in a trailing cont:i64
-    // param per docs/cps-in-clif.md §2.1. add1_s2 / k_2_s3 still drop
-    // host_ctx (no transitive need) so their entry block is one int + cont.
-    for fn_name in &["add1_s2", "k_2_s3"] {
+    // fz-cps.1.a (fz-siu.1.1) + fz-cps.1.2: native sigs end in
+    // a trailing cont:i64 param per docs/cps-in-clif.md §2.1, EXCEPT
+    // cont fns whose §2.1 shape is `(result, self)` (no separate k).
+    // add1_s2 is a regular native fn: `(n:i64, cont:i64)`.
+    // k_2_s3 is a cont fn: `(result:i64)` — no host_ctx (.27.19),
+    // no cont (§2.1 cont-fn shape).
+    let expect = [("add1_s2", "block0(v0: i64, v1: i64):"),
+                  ("k_2_s3", "block0(v0: i64):")];
+    for (fn_name, want) in &expect {
         let body_start = stdout
             .find(&format!("; fn {}", fn_name))
             .unwrap_or_else(|| panic!("missing `{}` banner:\n{}", fn_name, stdout));
         let body = &stdout[body_start..];
         let block0_line = body.lines().find(|l| l.contains("block0(")).unwrap_or("");
         assert!(
-            block0_line.contains("block0(v0: i64, v1: i64):"),
-            "{} should have entry block `(v0: i64, v1: i64)` (arg + cont), got `{}`:\n{}",
-            fn_name, block0_line, stdout,
+            block0_line.contains(want),
+            "{} should have entry block `{}`, got `{}`:\n{}",
+            fn_name, want, block0_line, stdout,
         );
     }
 }
@@ -563,17 +568,17 @@ fn add1_main_emits_one_iconst_zero_in_emit_return() {
         .expect("spawn fz dump");
     assert!(out.status.success(), "fz dump exited {}", out.status);
     let stdout = String::from_utf8_lossy(&out.stdout);
-    // fz-cps.1.a (fz-siu.1.1): main is uniform and passes a literal null
-    // cont arg (one `iconst.i64 0`) at each native callsite. add1 fixture
-    // has two: the native callee `add1` and the chained-native cont `k_2`.
-    // Plus the one zero emit_halt_and_return_null returns as the trampoline
-    // sentinel. Total: 3.
+    // fz-cps.1.a (.1.1) + fz-cps.1.2: main is uniform and passes a
+    // literal null cont arg at native non-cont callsites. add1 fixture's
+    // chained-native sub-path calls add1 (regular native → +1 zero) and
+    // k_2 (cont fn → no cont arg per §2.1). Plus the one zero
+    // emit_halt_and_return_null returns. Total: 2.
     let count = stdout.matches("iconst.i64 0").count();
     assert_eq!(
-        count, 3,
-        "main should emit exactly three `iconst.i64 0` (two cont args per \
-         fz-cps.1.a + one halt-and-return-null sentinel per .27.18); got \
-         {}:\n{}",
+        count, 2,
+        "main should emit exactly two `iconst.i64 0` (one cont arg for \
+         add1 per fz-cps.1.a + one halt-and-return-null sentinel per \
+         .27.18); got {}:\n{}",
         count, stdout,
     );
 }
