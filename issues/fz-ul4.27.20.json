@@ -9,9 +9,15 @@
   "id": "fz-ul4.27.20",
   "labels": [],
   "parent": "fz-ul4.27",
+  "comments": [
+    {
+      "text": "Investigated and partially implemented. The scope-expanded findings:\n\nThe codegen + run_internal pieces are straightforward (~150 lines): lift the parking exclusion, force SystemV CallConv for entry-native main, emit fz_halt(host_ctx, val_tagged) before return_, and branch run_internal to dispatch directly via `extern \"C\" fn(*mut u8) -\u003e i64`.\n\nThe blocker: `runtime.rs::Runtime::spawn(fn_id)` (line 215+) treats *any* fn_id as a uniform task body — allocates a frame for it, sets process.next_frame, and trampolines via run_quantum. Tests like `spawn_after_idle_resumes_progress` spawn `main` as a task. With main promoted to entry-native, the trampoline transmutes the SystemV-conv fn_ptr as the uniform `(*mut u8, *mut u8) -\u003e *mut u8` sig — the call returns the typed result (e.g. `42` raw int = 0x2A) which run_quantum interprets as the next frame_ptr → misaligned-pointer crash.\n\nFix would require ONE of:\n1. Emit two entry points for entry-native main: a SystemV native one (for run_internal direct dispatch) AND a uniform shim (allocates frame, calls native, returns null). Doubles the entry footprint and complicates symbol naming.\n2. Update Runtime::spawn to know about natively_callable / fn return reprs and dispatch native fns differently. Touches the scheduler structurally.\n3. Forbid spawn() on entry-native fns. Breaks tests that spawn main; would require those tests to migrate to a different harness.\n\nDeferring. The dead `v0: i64` in `main`'s `block0(v0: i64, v1: i64):` is structural cost of the uniform-fn ABI; Cranelift's optimizer should eliminate the unused arg register in the final machine code, but the pre-opt CLIF dump will continue to show it. The remaining work surfaces only as a single dead block_param in the CLIF dump — bounded cosmetic, zero behavioural impact.\n\nRe-open if/when the runtime-spawn-aware refactor is independently motivated.",
+      "timestamp": "2026-05-13T03:15:27Z"
+    }
+  ],
   "priority": 3,
   "status": "in_progress",
   "title": "Make main native — bypass trampoline for the entry fn",
   "type": "task",
-  "updated_at": "2026-05-13T03:05:28Z"
+  "updated_at": "2026-05-13T03:15:27Z"
 }
