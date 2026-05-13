@@ -1,6 +1,8 @@
 {
   "assignee": "Jason Allum",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-ul4.27.21.4"
+  ],
   "blocks": [
     "fz-ul4.27.21.2"
   ],
@@ -13,5 +15,5 @@
   "status": "in_progress",
   "title": "fz-cps-narrow.1: result-param type narrowing at cont seam",
   "type": "task",
-  "updated_at": "2026-05-13T23:21:10Z"
+  "updated_at": "2026-05-13T23:54:44Z"
 }
