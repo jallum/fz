@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-siu.5"
+    "fz-siu.5",
+    "fz-siu.8"
   ],
   "blocks": [],
   "created": "2026-05-13T04:09:12Z",
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "fz-cps.6: three-path parity audit",
   "type": "task",
-  "updated_at": "2026-05-13T04:09:33Z"
+  "updated_at": "2026-05-13T04:09:34Z"
 }

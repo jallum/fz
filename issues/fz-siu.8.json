@@ -4,6 +4,7 @@
     "fz-siu.7"
   ],
   "blocks": [
+    "fz-siu.6",
     "fz-siu.9"
   ],
   "created": "2026-05-13T04:09:26Z",
@@ -15,5 +16,5 @@
   "status": "open",
   "title": "fz-cps.GC.2: Cheney copy from parked_cont",
   "type": "task",
-  "updated_at": "2026-05-13T04:09:33Z"
+  "updated_at": "2026-05-13T04:09:34Z"
 }
