@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
     "fz-siu.7.2"
@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-siu.7",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "fz-cps.GC.1.1: remove mark-sweep-era test surface",
   "type": "task",
-  "updated_at": "2026-05-13T21:51:32Z"
+  "updated_at": "2026-05-13T21:51:41Z"
 }
