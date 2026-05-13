@@ -734,6 +734,11 @@ fn build_fn_signature(
     if needs_host_ctx {
         sig.params.push(AbiParam::new(types::I64)); // host_ctx
     }
+    // fz-cps.1.a (fz-siu.1.1): every fz fn gains a trailing `cont: i64`
+    // parameter per docs/cps-in-clif.md §2.1. In .1.1 the cont is
+    // threaded through but not yet consumed; .1.2 wires Return/Halt
+    // against it, .1.3 forwards it across TailCall.
+    sig.params.push(AbiParam::new(types::I64)); // cont
     sig.returns.push(AbiParam::new(ret_repr.cl_type()));
     sig
 }
@@ -2638,6 +2643,8 @@ fn compile_fn<M: cranelift_module::Module>(
         if fns_needing_host_ctx.contains(&f.id) {
             b.append_block_param(entry_cl, types::I64); // host_ctx
         }
+        // fz-cps.1.a (fz-siu.1.1): trailing cont:i64 per §2.1.
+        b.append_block_param(entry_cl, types::I64); // cont
     } else {
         b.append_block_param(entry_cl, types::I64); // frame_ptr
         b.append_block_param(entry_cl, types::I64); // host_ctx
@@ -2672,7 +2679,13 @@ fn compile_fn<M: cranelift_module::Module>(
     // whose sig dropped it (per `fns_needing_host_ctx`). Use sites that
     // forward or call fz_halt unwrap with `.expect(...)`; the analysis
     // guarantees those paths only fire when host_ctx was kept.
-    let (frame_ptr, host_ctx): (Option<ir::Value>, Option<ir::Value>) = if is_native {
+    // fz-cps.1.a (fz-siu.1.1): `cont_param` is the trailing i64 in the
+    // native-tier signature. Threaded but unused in .1.1; .1.2+ consume it.
+    let (frame_ptr, host_ctx, cont_param): (
+        Option<ir::Value>,
+        Option<ir::Value>,
+        Option<ir::Value>,
+    ) = if is_native {
         // fz-ul4.27.13 — Native entry params arrive in the repr declared
         // by my param_reprs (Cranelift type already matches; just record
         // the raw-vs-tagged classification so the body can elide
@@ -2688,12 +2701,14 @@ fn compile_fn<M: cranelift_module::Module>(
             }
             var_map.insert(p.0, params[i]);
         }
-        let host_ctx = if fns_needing_host_ctx.contains(&f.id) {
-            Some(params[entry_blk.params.len()])
+        let host_ctx_idx = entry_blk.params.len();
+        let (host_ctx, cont_idx) = if fns_needing_host_ctx.contains(&f.id) {
+            (Some(params[host_ctx_idx]), host_ctx_idx + 1)
         } else {
-            None
+            (None, host_ctx_idx)
         };
-        (None, host_ctx)
+        let cont_param = Some(params[cont_idx]);
+        (None, host_ctx, cont_param)
     } else {
         let frame_ptr = b.block_params(entry_cl)[0];
         let host_ctx = b.block_params(entry_cl)[1];
@@ -2720,7 +2735,9 @@ fn compile_fn<M: cranelift_module::Module>(
             };
             var_map.insert(p.0, val);
         }
-        (Some(frame_ptr), Some(host_ctx))
+        // fz-cps.1.a: uniform fns do not yet have a cont SSA value; the
+        // cont still lives in slot 0 of `frame_ptr` until fz-siu.1.5.
+        (Some(frame_ptr), Some(host_ctx), None)
     };
 
     // Walk blocks in declared order with entry first. Unreachable
@@ -2965,6 +2982,14 @@ fn compile_fn<M: cranelift_module::Module>(
                              by the forward-transitive analysis",
                         ));
                     }
+                    // fz-cps.1.a: trailing cont arg per §2.1. Native
+                    // caller forwards its cont SSA; uniform caller passes
+                    // null (callee body doesn't consume cont until .1.2).
+                    let cont_arg = match cont_param {
+                        Some(c) => c,
+                        None => b.ins().iconst(types::I64, 0),
+                    };
+                    native_args.push(cont_arg);
                     let call_inst = b.ins().call(callee_fref, &native_args);
                     let result = b.inst_results(call_inst)[0];
 
@@ -3006,6 +3031,12 @@ fn compile_fn<M: cranelift_module::Module>(
                                 "cont needs host_ctx; this fn must also have it",
                             ));
                         }
+                        // fz-cps.1.a: chained-native cont also gains trailing cont arg.
+                        let cont_cont_arg = match cont_param {
+                            Some(c) => c,
+                            None => b.ins().iconst(types::I64, 0),
+                        };
+                        cont_args.push(cont_cont_arg);
                         let cont_call = b.ins().call(cont_fref, &cont_args);
                         let final_result = b.inst_results(cont_call)[0];
                         if is_native {
@@ -3130,6 +3161,12 @@ fn compile_fn<M: cranelift_module::Module>(
                             "TailCall callee needs host_ctx; this fn must also have it",
                         ));
                     }
+                    // fz-cps.1.a: trailing cont arg per §2.1.
+                    let tail_cont_arg = match cont_param {
+                        Some(c) => c,
+                        None => b.ins().iconst(types::I64, 0),
+                    };
+                    native_args.push(tail_cont_arg);
                     if is_native {
                         // Native-to-native TailCall: use return_call so
                         // recursive tail calls reuse the same stack frame
@@ -3683,6 +3720,11 @@ fn compile_closure_stub<M: cranelift_module::Module>(
             if callee_needs_host_ctx {
                 native_args.push(host_ctx);
             }
+            // fz-cps.1.a (fz-siu.1.1): trailing cont arg per §2.1. The
+            // stub forwards `cont_ptr` (loaded from caller's frame slot
+            // 0) as the cont SSA value. Callee body ignores it in .1.1;
+            // .1.2 makes Return invoke through `cont+16`.
+            native_args.push(cont_ptr);
             let call_inst = b.ins().call(callee_fref, &native_args);
             let result = b.inst_results(call_inst)[0];
             let result_tagged = coerce_to(
@@ -5614,18 +5656,21 @@ fn main(), do: loop_with(loop_with, 100000, 0)
     fn signature_native_uses_typed_params_and_host_ctx() {
         // Same `add` fn, this time the typer has narrowed entry params to
         // int via call-site narrowing. Native sig should be
-        // `(i64, i64, host_ctx: i64) -> i64`.
+        // `(i64, i64, host_ctx: i64, cont: i64) -> i64`.
+        // fz-cps.1.a (fz-siu.1.1): trailing cont:i64 per §2.1.
         let m = lower_src("fn add(a, b) do a + b end\nfn main() do print(add(1, 2)) end");
         let mt = crate::ir_typer::type_module(&m);
         let add_idx = m.fns.iter().position(|f| f.name == "add").unwrap();
         let rd = join_return_descrs(&m.fns[add_idx], &mt[add_idx]);
         let prs = build_param_reprs(&m.fns[add_idx], &mt[add_idx]);
         let sig = build_fn_signature(&prs, ArgRepr::from_descr(&rd), true, true);
-        // 2 entry params + host_ctx.
-        assert_eq!(sig.params.len(), 3);
+        // 2 entry params + host_ctx + cont.
+        assert_eq!(sig.params.len(), 4);
         assert_eq!(sig.returns.len(), 1);
-        // host_ctx is always i64.
+        // Trailing cont is i64.
         assert_eq!(sig.params.last().unwrap().value_type, types::I64);
+        // host_ctx (second-to-last) is i64.
+        assert_eq!(sig.params[sig.params.len() - 2].value_type, types::I64);
         // Return is i64 (tagged or raw-int — both ride i64 register).
         assert_eq!(sig.returns[0].value_type, types::I64);
     }
@@ -5636,6 +5681,7 @@ fn main(), do: loop_with(loop_with, 100000, 0)
         // with `dist(1.5, 2.5)`, call-site narrowing types `x` and `y` as
         // float-only → AbiParam(f64). `host_ctx` stays i64. Return joins
         // every Term::Return val Descr; here that's float-only → f64.
+        // fz-cps.1.a (fz-siu.1.1): trailing cont:i64 per §2.1.
         let m = lower_src(
             "fn dist(x, y) do x * x + y * y end\nfn main() do print(dist(1.5, 2.5)) end",
         );
@@ -5644,11 +5690,12 @@ fn main(), do: loop_with(loop_with, 100000, 0)
         let rd = join_return_descrs(&m.fns[dist_idx], &mt[dist_idx]);
         let prs = build_param_reprs(&m.fns[dist_idx], &mt[dist_idx]);
         let sig = build_fn_signature(&prs, ArgRepr::from_descr(&rd), true, true);
-        // 2 entry params + host_ctx.
-        assert_eq!(sig.params.len(), 3);
+        // 2 entry params + host_ctx + cont.
+        assert_eq!(sig.params.len(), 4);
         assert_eq!(sig.params[0].value_type, types::F64);
         assert_eq!(sig.params[1].value_type, types::F64);
         assert_eq!(sig.params[2].value_type, types::I64);
+        assert_eq!(sig.params[3].value_type, types::I64); // cont
         assert_eq!(sig.returns[0].value_type, types::F64);
     }
 

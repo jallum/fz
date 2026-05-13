@@ -497,6 +497,9 @@ fn add1_native_fns_drop_unused_host_ctx() {
         .expect("spawn fz dump");
     assert!(out.status.success(), "fz dump exited {}", out.status);
     let stdout = String::from_utf8_lossy(&out.stdout);
+    // fz-cps.1.a (fz-siu.1.1): native sigs now end in a trailing cont:i64
+    // param per docs/cps-in-clif.md §2.1. add1_s2 / k_2_s3 still drop
+    // host_ctx (no transitive need) so their entry block is one int + cont.
     for fn_name in &["add1_s2", "k_2_s3"] {
         let body_start = stdout
             .find(&format!("; fn {}", fn_name))
@@ -504,8 +507,8 @@ fn add1_native_fns_drop_unused_host_ctx() {
         let body = &stdout[body_start..];
         let block0_line = body.lines().find(|l| l.contains("block0(")).unwrap_or("");
         assert!(
-            block0_line.contains("block0(v0: i64):"),
-            "{} should have a single-param entry block, got `{}`:\n{}",
+            block0_line.contains("block0(v0: i64, v1: i64):"),
+            "{} should have entry block `(v0: i64, v1: i64)` (arg + cont), got `{}`:\n{}",
             fn_name, block0_line, stdout,
         );
     }
@@ -560,11 +563,17 @@ fn add1_main_emits_one_iconst_zero_in_emit_return() {
         .expect("spawn fz dump");
     assert!(out.status.success(), "fz dump exited {}", out.status);
     let stdout = String::from_utf8_lossy(&out.stdout);
+    // fz-cps.1.a (fz-siu.1.1): main is uniform and passes a literal null
+    // cont arg (one `iconst.i64 0`) at each native callsite. add1 fixture
+    // has two: the native callee `add1` and the chained-native cont `k_2`.
+    // Plus the one zero emit_halt_and_return_null returns as the trampoline
+    // sentinel. Total: 3.
     let count = stdout.matches("iconst.i64 0").count();
     assert_eq!(
-        count, 1,
-        "main should emit exactly one `iconst.i64 0` (shared between \
-         emit_return's null-compare and halt-branch return); got {}:\n{}",
+        count, 3,
+        "main should emit exactly three `iconst.i64 0` (two cont args per \
+         fz-cps.1.a + one halt-and-return-null sentinel per .27.18); got \
+         {}:\n{}",
         count, stdout,
     );
 }
