@@ -11,9 +11,15 @@
   "id": "fz-siu.1.8",
   "labels": [],
   "parent": "fz-siu.1",
+  "comments": [
+    {
+      "text": "-",
+      "timestamp": "2026-05-13T18:48:30Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "fz-cps.1.8: closure-target sig universal; delete stub",
   "type": "task",
-  "updated_at": "2026-05-13T18:00:57Z"
+  "updated_at": "2026-05-13T18:48:30Z"
 }
