@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-13T04:09:26Z",
+  "description": "Spec: docs/cps-in-clif.md §6.4, §7.\n\nWork:\n- Implement cheney_copy with forwarding pointers in from-space HeapHeader.\n- Trace starts at process.parked_cont.\n- Old block freed via pool. Heap reset to new block.\n\nAcceptance: long-running test that allocates ≥10 cycles of escaping closures completes; RSS stable.",
+  "id": "fz-siu.8",
+  "labels": [],
+  "parent": "fz-siu",
+  "priority": 2,
+  "status": "open",
+  "title": "fz-cps.GC.2: Cheney copy from parked_cont",
+  "type": "task",
+  "updated_at": "2026-05-13T04:09:26Z"
+}
