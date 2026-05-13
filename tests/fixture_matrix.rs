@@ -391,6 +391,30 @@ fn fz_dump_emits_clif() {
     assert!(asm_out.contains("block0"), "expected block0 label in asm:\n{}", asm_out);
 }
 
+/// fz-ul4.27.14.1 — for `fixtures/add1.fz`, the print continuation
+/// `k_2` is reached only via the native chain (callee `add1` is native,
+/// cont `k_2` is native). Its entry-param 0 should therefore be RawInt,
+/// loaded directly from the frame without a tag-strip. Before .27.14.1
+/// k_2's entry began with `sshr_imm v0, 3` to unbox a force-Tagged slot;
+/// the per-spec uniform-cont-reachable analysis drops that force when
+/// no unconditional-Tagged writer can reach the slot.
+#[test]
+fn add1_k_2_continuation_has_no_entry_side_unbox() {
+    let out = Command::new(FZ_BIN)
+        .args(["dump", "fixtures/add1.fz", "--emit", "clif", "--fn", "k_2"])
+        .output()
+        .expect("spawn fz dump");
+    assert!(out.status.success(), "fz dump exited {}", out.status);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("; fn k_2"), "missing k_2 banner:\n{}", stdout);
+    assert!(
+        !stdout.contains("sshr_imm v0"),
+        "k_2 still unboxes its entry-param 0; slot must be RawInt under \
+         .27.14.1:\n{}",
+        stdout,
+    );
+}
+
 /// Shell `fz dump --emit clif --fn <name>` and check each fn's
 /// per-fixture expect_clif_contains / expect_clif_excludes assertion.
 /// Returns all failure messages in one vec so a fixture surfaces every
