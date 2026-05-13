@@ -9,9 +9,15 @@
   "id": "fz-siu.1.6",
   "labels": [],
   "parent": "fz-siu.1",
+  "comments": [
+    {
+      "text": "-",
+      "timestamp": "2026-05-13T21:26:40Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "fz-cps.1.f: scheduler entry uses cont-param ABI",
   "type": "task",
-  "updated_at": "2026-05-13T09:27:22Z"
+  "updated_at": "2026-05-13T21:26:40Z"
 }
