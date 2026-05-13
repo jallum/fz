@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-siu.7"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-siu.9"
+  ],
   "created": "2026-05-13T04:09:26Z",
   "description": "Spec: docs/cps-in-clif.md §6.4, §7.\n\nWork:\n- Implement cheney_copy with forwarding pointers in from-space HeapHeader.\n- Trace starts at process.parked_cont.\n- Old block freed via pool. Heap reset to new block.\n\nAcceptance: long-running test that allocates ≥10 cycles of escaping closures completes; RSS stable.",
   "id": "fz-siu.8",
