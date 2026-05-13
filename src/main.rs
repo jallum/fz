@@ -313,41 +313,76 @@ fn run_jit_from_path(args: &[String]) {
 ///
 /// Feedback-loop tooling: fz-ul4.23.3 (clif), fz-ul4.23.7 (srcloc),
 /// fz-ul4.23.8 (asm + --emit both).
-/// Decode Cranelift's `@<hex>` srcloc prefix on each CLIF instruction
-/// line into a `@file:line:col` source position. Encoding matches the
-/// `span_to_srcloc` in src/ir_codegen.rs (top 8 bits = file_id, low 24
-/// bits = byte offset). Lines without a srcloc pass through unchanged.
-/// fz-ul4.23.7.
-fn annotate_srclocs(text: &str, sm: &diag::SourceMap) -> String {
+/// Re-emit a Cranelift IR dump in our own layout. Cranelift reserves a
+/// wide left gutter for `@<hex>` srclocs, which leaves unannotated lines
+/// pushed far right and annotated lines pinned at col 0 — the mismatch
+/// is hard to read. We strip the gutter, re-indent from scratch, decode
+/// the srcloc to `@line:col`, and fold it into a trailing comment on
+/// each inst. Srcloc encoding (top 8 bits = file_id, low 24 bits =
+/// byte offset) matches `span_to_srcloc` in src/ir_codegen.rs.
+fn format_clif(text: &str, sm: &diag::SourceMap) -> String {
+    const BODY_WIDTH: usize = 40;
     let mut out = String::with_capacity(text.len() + 64);
     for line in text.lines() {
-        // Cranelift formats srclocs as `@<hex>` at the start of an inst
-        // line (after leading whitespace). The line has shape
-        //   `<leading ws>@<hex>  <rest>` for stmts with srclocs, or
-        //   `<leading ws><rest>`        otherwise.
         let trimmed = line.trim_start();
-        if let Some(rest) = trimmed.strip_prefix('@') {
-            let (hex_part, after) = rest.split_at(rest.find(' ').unwrap_or(rest.len()));
-            if let Ok(bits) = u32::from_str_radix(hex_part, 16) {
-                let file_id = diag::FileId(bits >> 24);
-                let offset = bits & 0x00FF_FFFF;
-                let span = diag::Span::new(file_id, offset, offset);
-                if (file_id.0 as usize) < sm.file_count() {
-                    let loc = sm.locate(span);
-                    let leading = &line[..line.len() - trimmed.len()];
-                    out.push_str(&format!(
-                        "{}@{:>4}:{:<3} {}\n",
-                        leading,
-                        loc.line,
-                        loc.col,
-                        after.trim_start()
-                    ));
-                    continue;
-                }
-            }
+        if trimmed.is_empty() {
+            out.push('\n');
+            continue;
         }
-        out.push_str(line);
-        out.push('\n');
+
+        // Peel an optional `@<hex>` srcloc prefix off the front.
+        let (srcloc, rest) = if let Some(after_at) = trimmed.strip_prefix('@') {
+            let (hex, tail) = after_at.split_at(after_at.find(' ').unwrap_or(after_at.len()));
+            match u32::from_str_radix(hex, 16) {
+                Ok(bits) => {
+                    let file_id = diag::FileId(bits >> 24);
+                    let offset = bits & 0x00FF_FFFF;
+                    if (file_id.0 as usize) < sm.file_count() {
+                        let loc = sm.locate(diag::Span::new(file_id, offset, offset));
+                        (Some(format!("{}:{}", loc.line, loc.col)), tail.trim_start())
+                    } else {
+                        (None, trimmed)
+                    }
+                }
+                Err(_) => (None, trimmed),
+            }
+        } else {
+            (None, trimmed)
+        };
+
+        // Classify and pick indent. Function header and closing brace at
+        // col 0; block headers at col 0 within the function; everything
+        // else (sig/fn/gv decls, instructions) at col 4.
+        let is_top = rest.starts_with("function ") || rest == "}";
+        let is_block_header = rest.starts_with("block") && rest.trim_end().ends_with(':');
+        let indent = if is_top || is_block_header { "" } else { "    " };
+
+        if let Some(loc) = srcloc {
+            // Merge srcloc into any existing `; ...` const-prop hint so we
+            // end up with one comment block: `<body>  ; @L:C  <hint>`.
+            let (body, hint) = match rest.find(';') {
+                Some(idx) => {
+                    let (b, h) = rest.split_at(idx);
+                    (b.trim_end(), h.trim_start_matches(';').trim())
+                }
+                None => (rest, ""),
+            };
+            let body_line = format!("{}{}", indent, body);
+            let pad = BODY_WIDTH.saturating_sub(body_line.len());
+            out.push_str(&body_line);
+            for _ in 0..pad.max(1) {
+                out.push(' ');
+            }
+            if hint.is_empty() {
+                out.push_str(&format!("; @{}\n", loc));
+            } else {
+                out.push_str(&format!("; @{}  {}\n", loc, hint));
+            }
+        } else {
+            out.push_str(indent);
+            out.push_str(rest);
+            out.push('\n');
+        }
     }
     out
 }
@@ -449,7 +484,7 @@ fn run_dump(args: &[String]) {
         println!("; fn {}", name);
         if emit_clif {
             if let Some(text) = clif_map.get(name) {
-                println!("{}", annotate_srclocs(text, &compiled.sm));
+                println!("{}", format_clif(text, &compiled.sm));
             }
         }
         if emit_asm {

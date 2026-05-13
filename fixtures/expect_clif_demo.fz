@@ -1,7 +1,7 @@
 # purpose: demonstrate expect_clif_contains / expect_clif_excludes header keys (fz-ul4.27.1)
 # paths:   jit, interp, aot
 # expect_clif_contains: add1: iadd
-# expect_clif_contains: add1: @   7
+# expect_clif_contains: add1: ; @7:
 # expect_clif_excludes: add1: this_substring_never_appears_in_clif_xyzzy
 
 fn add1(n) do n + 1 end

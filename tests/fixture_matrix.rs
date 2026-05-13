@@ -363,7 +363,7 @@ fn fz_dump_emits_clif() {
     // to file:line:col. add1.fz's `n + 1` lives at line 4; expect at
     // least one annotated line pointing at it.
     assert!(
-        stdout.contains("@   4:"),
+        stdout.contains("; @4:"),
         "expected line-4 srcloc annotations in dump\n{}",
         stdout
     );
