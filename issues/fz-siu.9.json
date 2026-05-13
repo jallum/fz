@@ -7,14 +7,15 @@
     "fz-siu.11",
     "fz-siu.12"
   ],
+  "closed_at": "2026-05-13T22:13:41Z",
   "created": "2026-05-13T04:09:26Z",
   "description": "Spec: docs/cps-in-clif.md §6.3.\n\nWork:\n- SIZE_TABLE constant per §6.3.\n- pick_size_class(words) -\u003e u8 chooses smallest class that fits live + slack.\n- Geometric tail rule: next = round(prev * 1.2) past index 11.\n\nAcceptance: GC under load picks ascending classes as live data grows; never panics on the tail.",
   "id": "fz-siu.9",
   "labels": [],
   "parent": "fz-siu",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "fz-cps.GC.3: size table + pick_size_class",
   "type": "task",
-  "updated_at": "2026-05-13T22:11:05Z"
+  "updated_at": "2026-05-13T22:13:41Z"
 }
