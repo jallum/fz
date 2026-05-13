@@ -54,6 +54,18 @@ pub struct Process {
     /// resuming the chain. Pointer because the closure lives in this
     /// Process's heap; layout per `Heap::alloc_closure`.
     pub parked_cont: *mut u8,
+    /// fz-cps.1.7 — per-Process static zero-capture closure singletons.
+    /// Indexed by lambda spec id (cl_sid). Null entries indicate "no
+    /// singleton registered for this cl_sid." Each non-null entry points
+    /// to a 24-byte off-heap buffer owned by `static_closure_bufs`
+    /// (HeapHeader + code_ptr, zero captures). Off-heap so the per-process
+    /// GC arena does not own them — singletons live for the Process's
+    /// lifetime. See docs/cps-in-clif.md §8.2.
+    pub static_closures: Vec<*mut u8>,
+    /// fz-cps.1.7 — backing storage for `static_closures`. One Box per
+    /// registered singleton. The raw pointer in `static_closures` aliases
+    /// the start of the corresponding Box. Drop frees the boxes.
+    pub static_closure_bufs: Vec<Box<[u64; 3]>>,
 }
 
 /// Stable per-Process identifier assigned at spawn time. v1: simple u32
@@ -93,6 +105,45 @@ impl Process {
             next_frame: std::ptr::null_mut(),
             mailbox: std::collections::VecDeque::new(),
             parked_cont: std::ptr::null_mut(),
+            static_closures: Vec::new(),
+            static_closure_bufs: Vec::new(),
+        }
+    }
+
+    /// fz-cps.1.7 — populate the static closure singleton table. Each
+    /// target `(cl_sid, fn_id, code_ptr)` allocates one 24-byte off-heap
+    /// closure object (HeapHeader + code_ptr, zero captures) and registers
+    /// its pointer at `static_closures[cl_sid as usize]`. Idempotent only
+    /// in the sense that re-calling with the same targets re-allocates;
+    /// callers (`CompiledModule::make_process`) call this exactly once
+    /// per Process at construction time.
+    pub fn init_static_closures(
+        &mut self,
+        targets: &[(u32 /* cl_sid */, u32 /* fn_id */, *const u8 /* code_ptr */)],
+    ) {
+        use crate::fz_value::{HeapHeader, HeapKind};
+        // Size table by max cl_sid encountered.
+        let max = targets.iter().map(|(s, _, _)| *s).max().unwrap_or(0) as usize;
+        if self.static_closures.len() < max + 1 {
+            self.static_closures.resize(max + 1, std::ptr::null_mut());
+        }
+        for (cl_sid, fn_id, code_ptr) in targets {
+            // 24 bytes (HeapHeader 16 + code_ptr 8) with 8-byte alignment.
+            let mut buf: Box<[u64; 3]> = Box::new([0u64; 3]);
+            let base = buf.as_mut_ptr() as *mut u8;
+            let header = HeapHeader {
+                kind: HeapKind::Closure as u16,
+                flags: 0, // zero captures
+                size_bytes: 24,
+                schema_id: 0,
+                _reserved: *fn_id,
+            };
+            unsafe {
+                std::ptr::write(base as *mut HeapHeader, header);
+                std::ptr::write(base.add(16) as *mut u64, *code_ptr as u64);
+            }
+            self.static_closures[*cl_sid as usize] = base;
+            self.static_closure_bufs.push(buf);
         }
     }
 }

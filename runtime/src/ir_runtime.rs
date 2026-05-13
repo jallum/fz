@@ -214,6 +214,31 @@ pub extern "C" fn fz_alloc_closure(callee_fn_id: u32, captured_count: u32) -> u6
     p as u64
 }
 
+/// fz-cps.1.7 — return the per-Process static zero-capture singleton for
+/// the given closure spec id. Populated at `make_process` time from
+/// `CompiledModule::static_closure_targets`. Cheaper than
+/// `fz_alloc_closure(fid, 0)` + stub_fp store at every `Prim::MakeClosure(fid, [])`
+/// site. See docs/cps-in-clif.md §8.2 acceptance: "Module-init region produces
+/// double/neg static closures exactly once."
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_get_static_closure(cl_sid: u32) -> u64 {
+    let p = current_process();
+    let idx = cl_sid as usize;
+    assert!(
+        idx < p.static_closures.len(),
+        "fz_get_static_closure: cl_sid {} out of range ({})",
+        cl_sid,
+        p.static_closures.len()
+    );
+    let ptr = p.static_closures[idx];
+    assert!(
+        !ptr.is_null(),
+        "fz_get_static_closure: no singleton registered for cl_sid {}",
+        cl_sid
+    );
+    ptr as u64
+}
+
 // ===== Vec cluster (fz-ul4.23.4.10) =====
 //
 // Vecs are heap objects with raw element-payload (no FzValues inside).

@@ -115,6 +115,12 @@ pub struct CompiledModule {
     /// .11.24.6 + .20.5: diagnostics surface (unreachable arms, dead
     /// branches). Structured via the central `diag::Diagnostic` type.
     pub(crate) diagnostics: crate::diag::Diagnostics,
+    /// fz-cps.1.7 — zero-capture closure-target spec singletons resolved
+    /// to code addresses at JIT-finalize time. `(cl_sid, fn_id, code_ptr)`
+    /// per entry. `make_process` allocates one 24-byte off-heap closure
+    /// per entry and registers it at `Process.static_closures[cl_sid]`.
+    /// See docs/cps-in-clif.md §8.2.
+    pub(crate) static_closure_targets: Vec<(u32, u32, *const u8)>,
 }
 
 impl CompiledModule {
@@ -130,6 +136,13 @@ impl CompiledModule {
         self.fn_ptrs.get(&fn_id.0).copied()
     }
 
+    /// fz-cps.1.7 — registered zero-capture closure-target specs. Each
+    /// entry corresponds to one Process-level static singleton allocated
+    /// at `make_process` time. See docs/cps-in-clif.md §8.2.
+    pub fn static_closure_targets(&self) -> &[(u32, u32, *const u8)] {
+        &self.static_closure_targets
+    }
+
     pub fn schema_for(&self, fn_id: FnId) -> &Schema {
         &self.schemas[fn_id.0 as usize]
     }
@@ -139,7 +152,7 @@ impl CompiledModule {
     /// Processes can be made from the same CompiledModule and run
     /// concurrently (one worker at a time per Process; libdispatch model).
     pub fn make_process(&self) -> Process {
-        Process {
+        let mut p = Process {
             heap: fz_runtime::heap::Heap::new(64 * 1024, std::rc::Rc::clone(&self.user_schemas)),
             halt_value: 0,
             map_builder: None,
@@ -154,7 +167,13 @@ impl CompiledModule {
             next_frame: std::ptr::null_mut(),
             mailbox: std::collections::VecDeque::new(),
             parked_cont: std::ptr::null_mut(),
-        }
+            static_closures: Vec::new(),
+            static_closure_bufs: Vec::new(),
+        };
+        // fz-cps.1.7 — allocate one static singleton per zero-cap
+        // closure-target spec. See docs/cps-in-clif.md §8.2.
+        p.init_static_closures(&self.static_closure_targets);
+        p
     }
 
     /// Run the trampoline with `fn_id` as the entry fn, using a fresh Process
@@ -840,6 +859,14 @@ pub struct CompiledMetadata {
     /// makes this load-bearing for narrow-spec consumption and converts
     /// the eight FnId.0-keyed fields above to SpecId.0 in concert.
     pub spec_registry: SpecRegistry,
+    /// fz-cps.1.7 — zero-capture closure-target specs.
+    /// `(cl_sid, fn_id, stub_func_id)` per entry. JIT finalize resolves
+    /// stub_func_id to a code address; the resulting
+    /// `CompiledModule.static_closure_targets` is consumed by
+    /// `make_process` to populate `Process.static_closures`. AOT carries
+    /// the same list as a startup-init data table (fz-cps.1.7 AOT path is
+    /// out of scope until aot rebuilds; see ticket notes).
+    pub static_closure_targets: Vec<(u32, u32, FuncId)>,
 }
 
 /// fz-ul4.29.2 — Two-way mapping between (FnId, input-Descr-tuple) and
@@ -1041,6 +1068,7 @@ impl JitBackend {
         builder.symbol("fz_send", fz_runtime::ir_runtime::fz_send as *const u8);
         builder.symbol("fz_receive_attempt", fz_runtime::ir_runtime::fz_receive_attempt as *const u8);
         builder.symbol("fz_receive_park", fz_runtime::ir_runtime::fz_receive_park as *const u8);
+        builder.symbol("fz_get_static_closure", fz_runtime::ir_runtime::fz_get_static_closure as *const u8);
         Self {
             jmod: JITModule::new(builder),
         }
@@ -1078,6 +1106,17 @@ impl Backend for JitBackend {
         for (fz_fn_id, func_id) in &meta.fn_ids {
             fn_ptrs.insert(*fz_fn_id, jmod.get_finalized_function(*func_id));
         }
+        // fz-cps.1.7 — resolve each zero-cap closure-target stub_func_id
+        // to its finalized code address. `make_process` writes these into
+        // the off-heap singleton's `code_ptr` slot at +16.
+        let static_closure_targets: Vec<(u32, u32, *const u8)> = meta
+            .static_closure_targets
+            .iter()
+            .map(|(cl_sid, fn_id, stub_fid)| {
+                let ptr = jmod.get_finalized_function(*stub_fid);
+                (*cl_sid, *fn_id, ptr)
+            })
+            .collect();
         Ok(CompiledModule {
             module: jmod,
             fn_ptrs,
@@ -1089,6 +1128,7 @@ impl Backend for JitBackend {
             bs_tuple_arity3_schema: meta.bs_tuple_arity3_schema,
             types: meta.types,
             diagnostics: meta.diagnostics,
+            static_closure_targets,
         })
     }
 }
@@ -2214,6 +2254,22 @@ pub fn compile_with_backend<B: Backend>(
     let main_fn_id = module.fn_by_name("main").map(|f| f.id);
     let main_frame_size = main_fn_id.map(|id| schemas[id.0 as usize].size);
 
+    // fz-cps.1.7 — collect zero-capture closure-target specs. Each is a
+    // candidate for a per-Process static singleton (docs/cps-in-clif.md
+    // §8.2: "Module-init region produces double/neg static closures
+    // exactly once"). The backend's finalize resolves stub_func_id to a
+    // code address; make_process allocates the off-heap singleton.
+    let static_closure_targets: Vec<(u32, u32, FuncId)> = closure_shapes
+        .iter()
+        .filter(|(_, n_caps)| **n_caps == 0)
+        .map(|(cl_sid, _)| {
+            let fn_id = spec_keys[*cl_sid as usize].0;
+            let stub_fid = *stub_fn_ids.get(cl_sid)
+                .expect("zero-cap closure shape must have a stub registered");
+            (*cl_sid, fn_id.0, stub_fid)
+        })
+        .collect();
+
     let diagnostics = crate::ir_typer::collect_diagnostics(module, &module_types);
     let metadata = CompiledMetadata {
         fn_ids,
@@ -2231,6 +2287,7 @@ pub fn compile_with_backend<B: Backend>(
         main_fn_id,
         main_frame_size,
         spec_registry,
+        static_closure_targets,
     };
 
     // Backend-specific metadata carriers (no-op for JIT; dispatch + main
@@ -2573,6 +2630,10 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
     // fz-cps.1.2 — receive cutover. Takes a cont closure ptr (i64),
     // stashes in Process::parked_cont, returns YIELD sentinel.
     let receive_park_id = decl("fz_receive_park", &[types::I64], &[types::I64])?;
+    // fz-cps.1.7 — static zero-capture closure singleton lookup.
+    // Returns the per-Process singleton pointer for the given cl_sid.
+    let get_static_closure_id =
+        decl("fz_get_static_closure", &[types::I32], &[types::I64])?;
     // fz-cps.1.2 — fz_halt_cont_body: declared LOCAL (we emit the body
     // in compile_with_backend). Sig: `(val:i64, self:i64) -> i64 tail`.
     let mut hcb_sig = Signature::new(CallConv::Tail);
@@ -2620,6 +2681,7 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         send_id,
         receive_attempt_id,
         receive_park_id,
+        get_static_closure_id,
     })
 }
 
@@ -2661,6 +2723,7 @@ struct RuntimeRefs {
     send_id: FuncId,
     receive_attempt_id: FuncId,
     receive_park_id: FuncId,
+    get_static_closure_id: FuncId,
 }
 
 /// Pack a Span into a Cranelift SourceLoc (u32). 8 bits file_id + 24
@@ -5052,6 +5115,20 @@ fn lower_prim<M: cranelift_module::Module>(
                         cl_sid, fn_id.0, n_caps
                     ))
                 })?;
+            // fz-cps.1.7 — zero-capture MakeClosure: look up the
+            // per-Process static singleton instead of allocating one
+            // closure per call site. The singleton is preallocated at
+            // `make_process` time with its stub_fp written at +16, so
+            // the lookup returns a ready-to-call closure pointer.
+            // docs/cps-in-clif.md §8.2.
+            if captured.is_empty() {
+                let _ = stub_func_id; // referenced by the singleton's stub_fp slot at make_process time
+                let fref = jmod.declare_func_in_func(
+                    runtime.get_static_closure_id, b.func);
+                let sid_v = b.ins().iconst(types::I32, cl_sid as i64);
+                let inst = b.ins().call(fref, &[sid_v]);
+                return Ok(LowerOut::Tagged(b.inst_results(inst)[0]));
+            }
             let alloc_fref = jmod.declare_func_in_func(runtime.alloc_closure_id, b.func);
             let fid_v = b.ins().iconst(types::I32, fn_id.0 as i64);
             let nc_v = b.ins().iconst(types::I32, n_caps as i64);
@@ -5320,6 +5397,71 @@ mod tests {
         let toks = Lexer::new(src).tokenize().expect("lex");
         let prog = Parser::new(toks).parse_program().expect("parse");
         lower_program(&prog).expect("lower")
+    }
+
+    /// fz-cps.1.7 — every zero-capture `MakeClosure(f, [])` target gets
+    /// one entry in `static_closure_targets`. Multiple `MakeClosure(f, [])`
+    /// sites for the same `f` share a single entry (cl_sid keyed). At
+    /// runtime `make_process` allocates one Box per entry; two
+    /// `fz_get_static_closure(cl_sid)` calls in the same Process return
+    /// pointer-identical results. See docs/cps-in-clif.md §8.2.
+    #[test]
+    fn static_closure_targets_registered_for_zero_cap_make_closure() {
+        // `f` and `g` each appear as a zero-cap closure target via
+        // `apply(f, 1)` / `apply(g, 2)` — partial-eval / typer wraps the
+        // top-level fns in `MakeClosure(_, [])` at the call site.
+        let src = "fn f(x), do: x + 1\n\
+                   fn g(x), do: x * 2\n\
+                   fn apply(h, x), do: h(x)\n\
+                   fn main() do\n\
+                     print(apply(f, 1))\n\
+                     print(apply(g, 2))\n\
+                   end";
+        let m = lower_src(src);
+        let compiled = compile(&m).expect("compile");
+        let targets = compiled.static_closure_targets();
+        // At minimum, `f` and `g` are registered.
+        assert!(
+            targets.len() >= 2,
+            "expected ≥2 static closure targets (f, g); got {}: {:?}",
+            targets.len(),
+            targets.iter().map(|(s, f, _)| (s, f)).collect::<Vec<_>>(),
+        );
+        // Distinct cl_sids and distinct code addresses.
+        let mut cl_sids: Vec<u32> = targets.iter().map(|(s, _, _)| *s).collect();
+        cl_sids.sort();
+        cl_sids.dedup();
+        assert_eq!(
+            cl_sids.len(),
+            targets.len(),
+            "cl_sids must be unique across static_closure_targets entries"
+        );
+        for (_, _, ptr) in targets {
+            assert!(!ptr.is_null(), "static-closure stub_fp must be a resolved address");
+        }
+    }
+
+    /// fz-cps.1.7 — `make_process` populates `Process.static_closures` from
+    /// the compiled module's targets, and `fz_get_static_closure(cl_sid)`
+    /// returns the singleton's pointer. Two lookups return the same
+    /// pointer (singleton identity).
+    #[test]
+    fn static_closure_lookup_returns_singleton_pointer() {
+        let src = "fn f(x), do: x + 1\n\
+                   fn apply(h, x), do: h(x)\n\
+                   fn main() do print(apply(f, 1)) end";
+        let m = lower_src(src);
+        let compiled = compile(&m).expect("compile");
+        let targets = compiled.static_closure_targets();
+        let (cl_sid, _, _) = *targets.first().expect("at least one static closure target");
+        let mut p = compiled.make_process();
+        let prev = fz_runtime::process::CURRENT_PROCESS
+            .with(|c| c.replace(&mut p as *mut Process));
+        let a = fz_runtime::ir_runtime::fz_get_static_closure(cl_sid);
+        let b = fz_runtime::ir_runtime::fz_get_static_closure(cl_sid);
+        fz_runtime::process::CURRENT_PROCESS.with(|c| c.set(prev));
+        assert_eq!(a, b, "static-closure lookup must return the same pointer");
+        assert_ne!(a, 0, "static-closure lookup must return non-null");
     }
 
     #[test]
