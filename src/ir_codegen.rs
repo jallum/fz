@@ -1213,7 +1213,7 @@ impl Backend for AotBackend {
         // in compile_with_backend. Three FFI fns from fz-runtime do the
         // Process setup, static-closure registration, and run-main+teardown.
         let setup_sig = sig1(
-            &[types::I64, types::I32, types::I64],
+            &[types::I64, types::I32, types::I64, types::I64, types::I64],
             &[types::I64],
         );
         let setup_id = self
@@ -1280,6 +1280,8 @@ impl Backend for AotBackend {
             meta.fn_ids[&main_fn_id.0],
             meta.main_entry_id,
             meta.halt_cont_body_id,
+            meta.spawn_entry_id,
+            meta.resume_park_id,
             &meta.static_closure_targets,
             atom_blob_data,
             atom_blob_len,
@@ -2380,6 +2382,8 @@ fn emit_aot_c_main<M: cranelift_module::Module>(
     main_fz_func_id: FuncId,
     main_entry_id: FuncId,
     halt_cont_body_id: FuncId,
+    spawn_entry_id: FuncId,
+    resume_park_id: FuncId,
     static_closure_targets: &[(u32, u32, FuncId)],
     atom_blob_data: Option<DataId>,
     atom_blob_len: u32,
@@ -2412,14 +2416,18 @@ fn emit_aot_c_main<M: cranelift_module::Module>(
         let hcb_addr = b.ins().func_addr(types::I64, hcb_fref);
         let me_fref = jmod.declare_func_in_func(main_entry_id, b.func);
         let me_addr = b.ins().func_addr(types::I64, me_fref);
+        let se_fref = jmod.declare_func_in_func(spawn_entry_id, b.func);
+        let se_addr = b.ins().func_addr(types::I64, se_fref);
+        let rp_fref = jmod.declare_func_in_func(resume_park_id, b.func);
+        let rp_addr = b.ins().func_addr(types::I64, rp_fref);
         let main_fref = jmod.declare_func_in_func(main_fz_func_id, b.func);
         let main_fp = b.ins().func_addr(types::I64, main_fref);
 
-        // proc = fz_aot_setup(atom_blob, atom_blob_len, halt_cont_body_addr)
+        // proc = fz_aot_setup(atom_blob, atom_blob_len, hcb_addr, se_addr, rp_addr)
         let setup_fref = jmod.declare_func_in_func(setup_id, b.func);
         let setup_call = b.ins().call(
             setup_fref,
-            &[atom_blob_addr, atom_blob_len_v, hcb_addr],
+            &[atom_blob_addr, atom_blob_len_v, hcb_addr, se_addr, rp_addr],
         );
         let proc_v = b.inst_results(setup_call)[0];
 
