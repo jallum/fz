@@ -12,9 +12,15 @@
   "id": "fz-siu.1.2",
   "labels": [],
   "parent": "fz-siu.1",
+  "comments": [
+    {
+      "text": "-",
+      "timestamp": "2026-05-13T21:26:40Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "fz-cps.1.b: Return/Halt invoke cont SSA",
   "type": "task",
-  "updated_at": "2026-05-13T18:00:57Z"
+  "updated_at": "2026-05-13T21:26:40Z"
 }
