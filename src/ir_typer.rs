@@ -1899,6 +1899,32 @@ fn main(), do: print(add1(40) + 2)
         assert!(narrow_found, "test premise: main should have a direct Call");
     }
 
+    /// fz-ul4.29.12.4 — spawn-with-captures registers a narrow spec for
+    /// `fz_spawn_thunk` keyed by the spawned closure's Descr. .29.12.2's
+    /// typed-stub keying then routes spawn dispatch through that narrow
+    /// stub (verified by the spawn_with_captures fixture across jit /
+    /// interp / aot). This test asserts the typer prerequisite.
+    #[test]
+    fn spawn_with_captures_registers_narrow_fz_spawn_thunk_spec() {
+        let (m, mt) = pipeline(r#"
+fn parent(tag) do
+  spawn(fn () -> send(1, tag))
+  receive()
+end
+fn main() do
+  print(parent(99))
+end
+"#);
+        let thunk = m.fns.iter().find(|f| f.name == "fz_spawn_thunk").unwrap();
+        let narrow: Vec<&Vec<Descr>> = mt.specs.iter()
+            .filter(|((fid, _), _)| *fid == thunk.id)
+            .map(|((_, k), _)| k)
+            .filter(|k| !k.iter().all(|d| d.is_equiv(&Descr::any())))
+            .collect();
+        assert!(!narrow.is_empty(),
+            "expected ≥1 narrow fz_spawn_thunk spec, got 0 (only any-key)");
+    }
+
     /// fz-ul4.29.12.2 — two MakeClosure sites of the same lambda with
     /// different capture Descrs must register two distinct narrow specs
     /// for the lambda. Codegen keys typed closure stubs off these
