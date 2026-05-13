@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-13T01:58:00Z",
+  "description": "## What\n\nIn the native-chain branch at `src/ir_codegen.rs:2730-2789`, today's flow is:\n\n```rust\nlet result = b.inst_results(call_inst)[0];                       // raw, in callee_ret_repr\nlet result_tagged = coerce_to(result, callee_ret_repr, Tagged);  // \u003c-- gratuitous box\n...\ncont_args.push(coerce_to(result_tagged, Tagged, cont_param_reprs[0]));  // Tagged -\u003e cont_repr\n```\n\nUnder .27.14.1, when `cont_param_reprs[0]` is no longer forced Tagged, this round-trips: `Raw -\u003e Tagged -\u003e Raw` (or `Raw -\u003e Tagged -\u003e Tagged` for true Tagged conts — unchanged behavior).\n\nChange to:\n```rust\ncont_args.push(coerce_to(result, callee_ret_repr, cont_param_reprs[0]));\n```\n\nDrop the standalone `result_tagged` materialization in this branch (the `if is_native { ... } else { emit_return(... val_tagged) }` post-cont-call path at line 2768-2789 still needs its own `final_result -\u003e Tagged` coerce — leave that one untouched; `emit_return` write still goes through cont's slot 1 which may be uniform-cont-reachable).\n\n## Why this is its own ticket\n\n.27.14.1 lifts the destination repr; this ticket cleans up the local intermediate. Splitting keeps each commit independently testable and rollback-safe:\n- Without .27.14.1, this change is a no-op (`cont_param_reprs[0]` is still Tagged, `coerce(result, callee_ret_repr, Tagged)` is identical work to today).\n- Without .27.14.2, .27.14.1 introduces a tiny pessimization (an extra box+unbox round-trip at one site) — still correct.\n\n## Tests (TDD)\n\n1. **CLIF golden** for `fixtures/add1.fz`: assert `main`'s CLIF contains exactly one call to add1_s2 followed directly by a call to k_2_s3 with no `ishl_imm/bor_imm` between them.\n2. **CLIF golden** for `k_2_s3`: assert no `sshr_imm v0, 3` at entry — block0 receives raw i64 and passes directly to print.\n3. **Behavioural**: existing add1.fz test still prints `42`.\n4. **No regression** on the dist/float fixtures.\n\n## Acceptance\n\n- `cargo test` green, no warnings.\n- add1.fz CLIF matches the target shape from the parent epic (no ishl/bor/sshr at the cont boundary).\n- Spec-parity matrix still green.\n\n## Risks / verification done\n\n- The `else` arm at line 2775-2789 (uniform-caller after native cont-chain) still coerces `final_result` to Tagged before `emit_return` — preserved.\n- The Tagged-pinned path (when slot 0 IS uniform-cont-reachable) still works: `coerce_to(result, callee_ret_repr, Tagged)` is exactly the prior shape.\n- Captures (line 2758-2764) already use per-slot `coerce_to` — no change needed.",
+  "id": "fz-ul4.27.14.2",
+  "labels": [],
+  "parent": "fz-ul4.27.14",
+  "priority": 3,
+  "status": "open",
+  "title": "Native-chain branch: skip Tagged intermediate at cont seam",
+  "type": "task",
+  "updated_at": "2026-05-13T01:58:00Z"
+}
