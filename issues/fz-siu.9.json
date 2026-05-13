@@ -4,7 +4,8 @@
     "fz-siu.8"
   ],
   "blocks": [
-    "fz-siu.11"
+    "fz-siu.11",
+    "fz-siu.12"
   ],
   "created": "2026-05-13T04:09:26Z",
   "description": "Spec: docs/cps-in-clif.md §6.3.\n\nWork:\n- SIZE_TABLE constant per §6.3.\n- pick_size_class(words) -\u003e u8 chooses smallest class that fits live + slack.\n- Geometric tail rule: next = round(prev * 1.2) past index 11.\n\nAcceptance: GC under load picks ascending classes as live data grows; never panics on the tail.",
