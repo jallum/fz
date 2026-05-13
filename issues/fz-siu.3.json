@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-13T04:09:11Z",
+  "description": "Spec: docs/cps-in-clif.md §5.\n\nWork:\n- Runtime::spawn(closure) pulls a fresh arena block, initializes Process, deep-copies the closure into the new heap, and enqueues an entry that tail-calls `closure.code(closure, @halt_stub)`.\n- Remove Process::next_frame seeding.\n- Remove the trampoline-driven entry path for spawned tasks.\n\nAcceptance: §8.4 spawn portion compiles and runs; spawned tasks no longer hold a next_frame field.",
+  "id": "fz-siu.3",
+  "labels": [],
+  "parent": "fz-siu",
+  "priority": 2,
+  "status": "open",
+  "title": "fz-cps.3: Runtime::spawn rewrite",
+  "type": "task",
+  "updated_at": "2026-05-13T04:09:11Z"
+}
