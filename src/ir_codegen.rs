@@ -730,17 +730,15 @@ fn build_fn_signature(
     // it forwards into) actually consumes it.
     let mut sig = Signature::new(CallConv::Tail);
     if is_cont_fn {
-        // fz-cps.1.2 — cont fn sig per docs/cps-in-clif.md §2.1:
-        // `(result, self [, host_ctx]) tail`. Captures live in the
-        // closure object (self+24, +32, ...); they are NOT Cranelift
-        // params. The "next k" is one of those captures. host_ctx is
-        // retained transitionally for cont fns that contain Term::Halt
-        // (Halt's halt-cont-singleton replacement lands in fz-siu.1.6).
-        sig.params.push(AbiParam::new(param_reprs[0].cl_type())); // result
+        // fz-cps.1.2 cont fn sig per §2.1: `(result:i64, self:i64) tail`.
+        // No host_ctx (cont-fn Halt uses fz_halt_implicit instead).
+        // The result type is canonicalized to i64 (Tagged) because cont
+        // indirect-call sites use a single uniform sig.
+        sig.params.push(AbiParam::new(types::I64));               // result (Tagged)
         sig.params.push(AbiParam::new(types::I64));               // self (closure ptr)
-        if needs_host_ctx {
-            sig.params.push(AbiParam::new(types::I64));           // host_ctx
-        }
+        let _ = param_reprs; // result repr canonicalized; per-capture reprs
+                             // are still consulted by the entry harness for
+                             // load typing.
     } else {
         for r in param_reprs {
             sig.params.push(AbiParam::new(r.cl_type()));
@@ -2685,13 +2683,13 @@ fn compile_fn<M: cranelift_module::Module>(
         // never visit the trampoline.
         let my_param_reprs = &param_reprs[this_spec_id as usize];
         if is_cont_fn {
-            // fz-cps.1.2 cont fn entry per §2.1: (result, self [, host_ctx]).
-            // Only the result is a Cranelift param; captures load from self+24.
-            b.append_block_param(entry_cl, my_param_reprs[0].cl_type()); // result
-            b.append_block_param(entry_cl, types::I64);                  // self
-            if fns_needing_host_ctx.contains(&f.id) {
-                b.append_block_param(entry_cl, types::I64);              // host_ctx
-            }
+            // fz-cps.1.2 cont fn entry per §2.1: `(result:i64, self:i64) tail`.
+            // Result is canonicalized to i64 (Tagged); the body coerces to
+            // its actual repr at the entry harness.
+            b.append_block_param(entry_cl, types::I64); // result (Tagged)
+            b.append_block_param(entry_cl, types::I64); // self
+            let _ = my_param_reprs; // result canonical; captures load
+                                    // kind-aware in the harness body.
         } else {
             for r in my_param_reprs {
                 b.append_block_param(entry_cl, r.cl_type());
@@ -2759,12 +2757,18 @@ fn compile_fn<M: cranelift_module::Module>(
             //   ...
             // The cont's "next k" is the synthetic outer_cont at +24.
             let result_param = &entry_blk.params[0];
+            // fz-cps.1.2: cont sig is canonicalized to (i64 Tagged, i64).
+            // Coerce from Tagged to my_param_reprs[0] so the body sees the
+            // value in the repr it expects (RawF64/RawInt/Tagged).
+            let coerced = coerce_to(
+                &mut b, jmod, &runtime, params[0], ArgRepr::Tagged, my_param_reprs[0],
+            );
             match my_param_reprs[0] {
                 ArgRepr::RawInt => { raw_int_vars.insert(result_param.0); }
                 ArgRepr::RawF64 => { raw_f64_vars.insert(result_param.0); }
                 ArgRepr::Tagged => {}
             }
-            var_map.insert(result_param.0, params[0]);
+            var_map.insert(result_param.0, coerced);
             let self_val = params[1];
             for (i, p) in entry_blk.params.iter().enumerate().skip(1) {
                 // fz_param[i] = user_cap[i-1] at offset 32 + 8*(i-1) (= +24 + 8*i).
@@ -3016,9 +3020,14 @@ fn compile_fn<M: cranelift_module::Module>(
             Term::Return(v) => {
                 let val = *var_map.get(&v.0).expect("unbound return val");
                 if is_native {
-                    // fz-ul4.27.6.2.3 / .27.13 — native fn: val rides the
-                    // return register in this fn's return_repr (raw f64 /
-                    // raw i64 / tagged FzValue).
+                    // fz-cps.1.2 — placeholder for native Term::Return.
+                    // The full cutover lowers Return to
+                    // `load cont+16; return_call_indirect sig(val, cont)`
+                    // per docs/cps-in-clif.md §2.1, but this requires a
+                    // halt-cont singleton so top-level conts have a
+                    // valid outer_cont (load null+16 segfaults). Halt-
+                    // cont singleton infra lands in a follow-on commit;
+                    // until then, native Return stays synchronous.
                     let from = var_repr(v.0, &raw_int_vars, &raw_f64_vars);
                     let to = return_reprs[this_spec_id as usize];
                     let coerced = coerce_to(&mut b, jmod, &runtime, val, from, to);
@@ -3161,18 +3170,21 @@ fn compile_fn<M: cranelift_module::Module>(
                             b.ins().store(MemFlags::trusted(), v, cl_ptr, off);
                         }
 
+                        // fz-cps.1.2 — cont fn sig is canonicalized to
+                        // (i64 result-tagged, i64 self). Coerce result
+                        // to Tagged regardless of its native repr; the
+                        // cont fn body re-coerces from Tagged to its
+                        // own param_repr at the entry harness.
                         let mut cont_args: Vec<ir::Value> =
-                            Vec::with_capacity(3);
+                            Vec::with_capacity(2);
                         cont_args.push(coerce_to(
                             &mut b, jmod, &runtime,
-                            result, callee_ret_repr, cont_param_reprs[0],
+                            result, callee_ret_repr, ArgRepr::Tagged,
                         ));
                         cont_args.push(cl_ptr);
-                        if fns_needing_host_ctx.contains(&continuation.fn_id) {
-                            cont_args.push(host_ctx.expect(
-                                "cont needs host_ctx; this fn must also have it",
-                            ));
-                        }
+                        let _ = cont_param_reprs; // canonicalization makes
+                                                  // these unused at the call;
+                                                  // re-read by cont fn entry.
                         let cont_call = b.ins().call(cont_fref, &cont_args);
                         let final_result = b.inst_results(cont_call)[0];
                         if is_native {
