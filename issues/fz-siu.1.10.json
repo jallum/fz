@@ -11,9 +11,15 @@
   "id": "fz-siu.1.10",
   "labels": [],
   "parent": "fz-siu.1",
+  "comments": [
+    {
+      "text": "-",
+      "timestamp": "2026-05-13T19:23:05Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "fz-cps.1.10: promote all fns to Tail-CC; delete uniform",
   "type": "task",
-  "updated_at": "2026-05-13T18:00:57Z"
+  "updated_at": "2026-05-13T19:23:05Z"
 }
