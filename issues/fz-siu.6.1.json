@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-siu.6.2"
+  ],
   "created": "2026-05-13T22:34:27Z",
   "description": "Rewrite the AOT entry path (runtime/src/aot_shim.rs + src/ir_codegen.rs emit_aot_c_main) to use the cps-in-clif model for non-concurrent fixtures.\n\nTouch:\n- runtime/src/aot_shim.rs: drop drive_trampoline, drive_trampoline_from, the dispatch_fn / frame_size_fn / atom_blob signature of fz_aot_run. New fz_aot_run signature takes (main_fp, main_entry_addr, halt_cont_body_addr, static_closure_table_ptr, static_closure_table_len, atom_blob, atom_blob_len) and: (a) creates Process, (b) initializes halt_cont_singleton, (c) initializes static_closures, (d) calls main_entry(main_fp) (SystemV→Tail-CC), (e) returns halt_value.\n- src/ir_codegen.rs: rewrite emit_aot_c_main / emit_metadata_carriers to gather func_addr of fz_main_entry / fz_halt_cont_body / main_fn / each static closure body, emit them as args to fz_aot_run. Replace dispatch + frame_size fns with a static closure table (embedded as code that the C main passes by pointer + length).\n- AOT codegen for fz_aot_static_closures: emit a data section or per-program init code that calls into runtime to populate Process.static_closures with (cl_sid, fn_id, body_func_addr) for each entry.\n\nAcceptance: §8.1 tail_recursion, §8.2 higher_order, §8.3 closure_typed_captures pass on AOT path with same expected output as JIT and interp.",
   "id": "fz-siu.6.1",
