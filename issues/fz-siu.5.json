@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-13T04:09:12Z",
+  "description": "Spec: docs/cps-in-clif.md §1 (premise), §10 (open questions resolved), removal tally throughout.\n\nRemoval-only commit family:\n- frame_ptr ABI param (src/ir_codegen.rs signature building).\n- Frame slot 0 (cont_ptr) load/store in every Call lowering.\n- Trampoline loop CompiledModule::run_quantum (src/ir_codegen.rs:195-260).\n- Per-fn frame schema for non-parking fns; Process::frame_sizes; fz_alloc_frame for non-parking paths.\n- Native-vs-uniform branching in emit_call / emit_tail_call.\n- Slot-0 force-Tagged pass (fz-ul4.27.14.1, src/ir_codegen.rs:1580+).\n- Native-chain Tagged seam (fz-ul4.27.14.2, src/ir_codegen.rs:2974-2982).\n- Closure stub_fp indirection (fz-ul4.29.5).\n- cont_blocked set in src/parking.rs.\n- fz-ul4.27.16 (no-frame_ptr-in-native-fn invariant) — vacuous after removal.\n- fz-ul4.27.20 (make main native) — subsumed.\n\nAcceptance: all four §8 fixtures pass; full existing test suite passes; grep for removed names returns empty.",
+  "id": "fz-siu.5",
+  "labels": [],
+  "parent": "fz-siu",
+  "priority": 2,
+  "status": "open",
+  "title": "fz-cps.5: delete uniform-path machinery",
+  "type": "task",
+  "updated_at": "2026-05-13T04:09:12Z"
+}
