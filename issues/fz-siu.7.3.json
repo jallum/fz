@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-siu.7.2"
+  ],
   "blocks": [],
   "created": "2026-05-13T21:51:38Z",
   "description": "After each of the three SystemV-shim dispatches in run_quantum (parked_cont resume, pending_main_entry, pending_closure_entry), check process.heap.should_gc(); if set, call process.heap.gc() (stub) and clear the flag. Roots come from process.parked_cont per §7 (consumed by .8's Cheney body, not by the stub).\n\nTouch:\n- src/ir_codegen.rs run_quantum (~line 239): three insertion points, one per dispatch.\n\nAcceptance: with a synthetic test that allocs past gc_threshold, gc_run_count \u003e= 1 after run_until_idle. (Update one of the previously-ignored GC trigger tests to assert this against the new model, or file a new minimal fixture-driven test.)",
