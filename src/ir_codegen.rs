@@ -1575,11 +1575,9 @@ pub fn compile_with_backend<B: Backend>(
     // site has heap-safe captures. A cont removed by this pass cascades
     // through the fixed point — its callers may no longer satisfy the
     // chain's "every Term::Call cont is native" invariant.
-    let non_heap = crate::types::Descr::int()
-        .union(&crate::types::Descr::atom_top())
-        .union(&crate::types::Descr::nil())
-        .union(&crate::types::Descr::bool_t());
-    let is_non_heap_descr = |d: &crate::types::Descr| d.is_subtype(&non_heap);
+    // fz-cps.1.2: `non_heap` / `is_non_heap_descr` removed with the
+    // type-aware shrink — see (a) below. The descriptor types stay in
+    // crate::types for other callers.
     // Single combined fixed point. Each iter re-enforces every invariant
     // so cascading removals don't leave an inconsistent set:
     //   (a) Term::Call's callee + cont both native, captures non-heap.
@@ -1597,51 +1595,39 @@ pub fn compile_with_backend<B: Backend>(
                 Term::Return(_) | Term::Halt(_)
                 | Term::Goto(_, _) | Term::If(_, _, _) => true,
                 Term::Call { callee, continuation, .. } => {
+                    // fz-cps.1.2: non-heap-args restriction lifted. The
+                    // cont chain no longer routes args through Cranelift
+                    // register slots invisible to the GC tracer — every
+                    // cont is now a heap-allocated closure (§2.2), and
+                    // the GC roots come from `process.parked_cont` (§7)
+                    // not from a stack walk. _ft retained for type
+                    // queries by future passes.
+                    let _ = ft;
                     natively_callable.contains(callee)
                         && natively_callable.contains(&continuation.fn_id)
-                        && continuation.captured.iter().all(|cv| {
-                            let d = ft.vars.get(cv).cloned()
-                                .unwrap_or_else(crate::types::Descr::any);
-                            is_non_heap_descr(&d)
-                        })
                 }
-                Term::TailCall { callee, args } => {
+                Term::TailCall { callee, .. } => {
+                    let _ = ft;
                     natively_callable.contains(callee)
-                        && args.iter().all(|av| {
-                            let d = ft.vars.get(av).cloned()
-                                .unwrap_or_else(crate::types::Descr::any);
-                            is_non_heap_descr(&d)
-                        })
                 }
                 _ => false,
             });
             if !body_ok { to_remove.push(f.id); }
         }
-        // (c) Cont validity. parking.rs enforced this structurally for
-        // the initial set, but type-aware (b) removals can invalidate it
-        // here — when a Term::Call's callee leaves the set, the cont
-        // can no longer be invoked via the native chain and must drop
-        // out too.
+        // (c) Cont validity: cont must reach via a native Term::Call site.
+        // fz-cps.1.2: capture heap-safety is no longer required (see
+        // explanation in (a) above). The structural check remains: the
+        // caller's callee at every cont reach site must still be native.
         for f in &module.fns {
             if !natively_callable.contains(&f.id) { continue; }
             if to_remove.contains(&f.id) { continue; }
             let mut cont_unsafe = false;
-            'outer: for (cidx, caller) in module.fns.iter().enumerate() {
+            'outer: for caller in module.fns.iter() {
                 for b in &caller.blocks {
                     let Term::Call { callee, continuation, .. } = &b.terminator
                         else { continue; };
                     if continuation.fn_id != f.id { continue; }
                     if !natively_callable.contains(callee) {
-                        cont_unsafe = true;
-                        break 'outer;
-                    }
-                    let cft = &module_types[cidx];
-                    let unsafe_cap = continuation.captured.iter().any(|cv| {
-                        let d = cft.vars.get(cv).cloned()
-                            .unwrap_or_else(crate::types::Descr::any);
-                        !is_non_heap_descr(&d)
-                    });
-                    if unsafe_cap {
                         cont_unsafe = true;
                         break 'outer;
                     }
