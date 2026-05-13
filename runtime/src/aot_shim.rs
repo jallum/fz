@@ -1,174 +1,45 @@
-//! Runtime entry point for AOT-compiled fz binaries (fz-ul4.23.6.2).
+//! Runtime entry point for AOT-compiled fz binaries (fz-siu.6.1).
 //!
-//! AOT codegen emits a per-program `main` (C-callable) that calls
-//! `fz_aot_run` with three things:
+//! AOT codegen emits a C-callable `main` that drives the cps-in-clif
+//! execution model:
 //!
-//!   1. `main_schema_id` — the IR FnId of fz's main fn, also used as the
-//!      schema_id stamped into the entry frame header.
-//!   2. `main_frame_size` — bytes to allocate for main's frame.
-//!   3. `dispatch_fn` — a per-program fn that takes a schema_id and
-//!      returns the address of the corresponding fz_fn_<N>. AOT codegen
-//!      emits this as a switch over every fn id in the module.
+//!   1. `proc = fz_aot_setup(atom_blob, atom_blob_len, halt_cont_body_addr)`
+//!   2. for each static closure target:
+//!         `fz_aot_register_static_closure(proc, cl_sid, fn_id, code_addr)`
+//!   3. `exit = fz_aot_run_main(proc, main_fp, main_entry_addr)`
+//!   4. `return exit`
 //!
-//! `fz_aot_run` sets up a Process, installs CURRENT_PROCESS, runs the
-//! standard trampoline (same shape as JIT's `CompiledModule::run_internal`),
-//! and returns the Process's `halt_value` so the C startup ends with the
-//! right exit code.
+//! `fz_main_entry`, `fz_halt_cont_body`, and the Tail-CC `fz_fn_<id>`
+//! bodies are emitted as Local symbols in the same object — the C main
+//! resolves them via `func_addr` and passes them by raw pointer. No
+//! per-program dispatch / frame-size shim, no trampoline.
 //!
-//! Concurrency (fz-ul4.23.6.6): an eager-synchronous scheduler mirrors
-//! the interp's model from fz-ul4.23.5.8. Builtin::Spawn runs the child
-//! task to completion synchronously before returning the pid. Term::Send
-//! pushes into the receiver's mailbox via the AOT task registry. Doesn't
-//! support patterns that need preempt-and-resume across receive points;
-//! a real green-thread scheduler is a follow-up.
+//! Concurrency (spawn / send / receive) is wired in fz-siu.6.2 — the
+//! non-concurrent §8 fixtures only need this skeleton.
 
-use crate::fz_value::{FzValue, HeapHeader};
 use crate::heap::SchemaRegistry;
-use crate::ir_runtime::fz_alloc_frame;
 use crate::process::{Process, CURRENT_PROCESS};
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-/// Per-program fn-pointer lookup. AOT codegen emits this as a switch
-/// returning each fz_fn_<schema_id>'s address. Returning null is a
-/// fatal AOT-build error (schema_id should always resolve).
-pub type DispatchFn = extern "C" fn(schema_id: u32) -> *const u8;
-
-/// Per-program frame-size lookup. AOT codegen emits this as a switch
-/// returning the frame size (in bytes) for each fz_fn_<schema_id>.
-/// Returning 0 is a fatal AOT-build error (every fn has a frame size).
-pub type FrameSizeFn = extern "C" fn(schema_id: u32) -> u32;
-
-// ----- AOT scheduler state (fz-ul4.23.6.6) -----
+// ----- AOT scheduler state -----
 //
-// Eager-sync model from fz-ul4.23.5.8 — spawn runs the child to
-// completion before returning; send pushes into the receiver's mailbox;
-// receive on an empty mailbox panics (no preempt-and-resume v1).
-//
-// The dispatch + frame-size fns are AOT-codegen-emitted per-program;
-// the scheduler needs them at spawn time to drive the child's
-// trampoline. Stashed in TLS by fz_aot_run.
+// AOT_TASKS / AOT_SCHEMAS / AOT_NEXT_PID exist to support the spawn / send
+// hooks reinstated in fz-siu.6.2. For .6.1 they are populated for the main
+// process only; the hooks themselves are wired in the follow-up.
 
 thread_local! {
-    static AOT_DISPATCH: Cell<Option<DispatchFn>> = const { Cell::new(None) };
-    static AOT_FRAME_SIZE_FN: Cell<Option<FrameSizeFn>> = const { Cell::new(None) };
-    static AOT_FN_COUNT: Cell<u32> = const { Cell::new(0) };
-    static AOT_NEXT_PID: Cell<u32> = const { Cell::new(2) };
+    static AOT_NEXT_PID: std::cell::Cell<u32> = const { std::cell::Cell::new(2) };
     static AOT_TASKS: RefCell<HashMap<u32, Box<Process>>> =
         RefCell::new(HashMap::new());
     static AOT_SCHEMAS: RefCell<Option<Rc<RefCell<SchemaRegistry>>>> =
         const { RefCell::new(None) };
 }
 
-extern "C" fn aot_spawn_hook(closure_bits: u64) -> u32 {
-    let pid = AOT_NEXT_PID.with(|c| {
-        let p = c.get();
-        c.set(p + 1);
-        p
-    });
-    let dispatch = AOT_DISPATCH
-        .with(|c| c.get())
-        .expect("aot_spawn_hook: AOT_DISPATCH not set");
-    let frame_size_fn = AOT_FRAME_SIZE_FN
-        .with(|c| c.get())
-        .expect("aot_spawn_hook: AOT_FRAME_SIZE_FN not set");
-    let fn_count = AOT_FN_COUNT.with(|c| c.get());
-    let schemas = AOT_SCHEMAS
-        .with(|c| c.borrow().as_ref().cloned())
-        .expect("aot_spawn_hook: AOT_SCHEMAS not set");
-
-    let mut child = Box::new(Process::new(schemas));
-    child.pid = pid;
-    child.frame_sizes = (0..fn_count).map(|id| frame_size_fn(id)).collect();
-    let parent_ptr = CURRENT_PROCESS.with(|c| c.get());
-    assert!(!parent_ptr.is_null(), "aot_spawn_hook: no parent process");
-    let parent = unsafe { &*parent_ptr };
-    child.atom_names = parent.atom_names.clone();
-
-    // fz-ul4.29.5: deep-copy the closure from parent's heap into child's
-    // heap, then invoke its stub_fp to materialize the initial frame.
-    let mut forwarding = std::collections::HashMap::new();
-    let copied = crate::heap::deep_copy_value(
-        FzValue(closure_bits),
-        &parent.heap,
-        &mut child.heap,
-        &mut forwarding,
-    );
-    let copied_ptr = copied
-        .unbox_ptr()
-        .expect("aot_spawn_hook: closure must be a heap ptr");
-    let stub_fp_raw = unsafe {
-        std::ptr::read((copied_ptr as *mut u8).add(16) as *const u64)
-    };
-    assert!(stub_fp_raw != 0, "aot_spawn_hook: stub_fp is null");
-
-    let child_ptr = AOT_TASKS.with(|c| {
-        let mut t = c.borrow_mut();
-        t.insert(pid, child);
-        t.get_mut(&pid).map(|b| b.as_mut() as *mut Process).unwrap()
-    });
-
-    let prev = CURRENT_PROCESS.with(|c| c.replace(child_ptr));
-    type SpawnStub = extern "C" fn(*mut u8, u64, *mut u8) -> *mut u8;
-    let stub: SpawnStub = unsafe { std::mem::transmute(stub_fp_raw as *const u8) };
-    let initial_frame = stub(copied_ptr as *mut u8, 0, child_ptr as *mut u8);
-    drive_trampoline_from(initial_frame, dispatch);
-    CURRENT_PROCESS.with(|c| c.set(prev));
-
-    pid
-}
-
-/// Drive the trampoline starting from a pre-built frame (used by the
-/// .29.5 stub-based spawn path).
-fn drive_trampoline_from(start: *mut u8, dispatch: DispatchFn) {
-    let mut cur = start;
-    let mut iters: usize = 0;
-    let cap: usize = 10_000_000;
-    while !cur.is_null() {
-        iters += 1;
-        if iters > cap {
-            eprintln!("drive_trampoline_from: exceeded {} iterations", cap);
-            std::process::abort();
-        }
-        let header = cur as *const HeapHeader;
-        let schema_id = unsafe { (*header).schema_id };
-        let fn_ptr = dispatch(schema_id);
-        if fn_ptr.is_null() {
-            eprintln!("drive_trampoline_from: dispatch returned null for schema_id {}", schema_id);
-            std::process::abort();
-        }
-        let f: extern "C" fn(*mut u8, *mut u8) -> *mut u8 =
-            unsafe { std::mem::transmute(fn_ptr) };
-        let ctx = CURRENT_PROCESS.with(|c| c.get()) as *mut u8;
-        cur = f(cur, ctx);
-        if cur as u64 == crate::scheduler_hooks::YIELD_PTR {
-            eprintln!(
-                "drive_trampoline_from: receive on empty mailbox in AOT \
-                 (v1 has no preempt-and-resume)"
-            );
-            std::process::abort();
-        }
-    }
-}
-
-extern "C" fn aot_send_hook(receiver_pid: u32, msg_bits: u64) {
-    AOT_TASKS.with(|c| {
-        let mut t = c.borrow_mut();
-        match t.get_mut(&receiver_pid) {
-            Some(task) => task.mailbox.push_back(FzValue(msg_bits)),
-            None => {
-                eprintln!("aot_send: no task with pid {}", receiver_pid);
-                std::process::abort();
-            }
-        }
-    });
-}
-
-/// Decode an atom-name blob emitted by AOT codegen into a Vec<String>.
-/// Format: a sequence of NUL-terminated UTF-8 names, terminated by a
-/// final empty entry (two consecutive NULs). Null pointer / empty blob
-/// yields an empty Vec.
+/// Decode an atom-name blob emitted by AOT codegen into a `Vec<String>`.
+/// Format: NUL-terminated UTF-8 names, double-NUL terminator. Null
+/// pointer / empty blob yields an empty Vec.
 fn parse_atom_blob(blob: *const u8) -> Vec<String> {
     let mut out = Vec::new();
     if blob.is_null() {
@@ -176,7 +47,6 @@ fn parse_atom_blob(blob: *const u8) -> Vec<String> {
     }
     let mut cur = blob;
     loop {
-        // Determine the length of the current NUL-terminated string.
         let mut len = 0usize;
         loop {
             let b = unsafe { *cur.add(len) };
@@ -190,7 +60,6 @@ fn parse_atom_blob(blob: *const u8) -> Vec<String> {
             }
         }
         if len == 0 {
-            // Sentinel: empty entry terminates the walk.
             break;
         }
         let bytes = unsafe { std::slice::from_raw_parts(cur, len) };
@@ -203,124 +72,79 @@ fn parse_atom_blob(blob: *const u8) -> Vec<String> {
     out
 }
 
-/// Drive the JIT-shaped trampoline against the currently-installed
-/// CURRENT_PROCESS, using the per-program dispatch fn to resolve
-/// schema_id → fn_ptr. Returns when the running task halts
-/// (next_frame becomes null).
-fn drive_trampoline(entry_schema_id: u32, entry_frame_size: u32, dispatch: DispatchFn) {
-    let frame = fz_alloc_frame(entry_schema_id, entry_frame_size);
-    unsafe {
-        let cont_slot = frame.add(16) as *mut *mut u8;
-        *cont_slot = std::ptr::null_mut();
-    }
-    let mut cur = frame;
-    let mut iters: usize = 0;
-    let cap: usize = 10_000_000;
-    while !cur.is_null() {
-        iters += 1;
-        if iters > cap {
-            eprintln!("drive_trampoline: exceeded {} iterations", cap);
-            std::process::abort();
-        }
-        let header = cur as *const HeapHeader;
-        let schema_id = unsafe { (*header).schema_id };
-        let fn_ptr = dispatch(schema_id);
-        if fn_ptr.is_null() {
-            eprintln!("drive_trampoline: dispatch returned null for schema_id {}", schema_id);
-            std::process::abort();
-        }
-        let f: extern "C" fn(*mut u8, *mut u8) -> *mut u8 =
-            unsafe { std::mem::transmute(fn_ptr) };
-        let ctx = CURRENT_PROCESS.with(|c| c.get()) as *mut u8;
-        cur = f(cur, ctx);
-        // The eager-sync model doesn't yield: send runs before parent's
-        // receive (because spawn ran the child synchronously), so the
-        // parent's receive finds a message and continues. fz_receive_attempt
-        // on empty would return YIELD_PTR (0x1) — we'd loop forever
-        // dispatching that. Detect and abort.
-        if cur as u64 == crate::scheduler_hooks::YIELD_PTR {
-            eprintln!(
-                "drive_trampoline: receive on empty mailbox in AOT \
-                 (v1 has no preempt-and-resume; spawn must enqueue \
-                 a message before any later receive)"
-            );
-            std::process::abort();
-        }
-    }
-}
-
-/// AOT entry. Drives the same trampoline the JIT uses, but resolves fn
-/// pointers via the caller-supplied switch (AOT-emitted) rather than the
-/// JIT's in-memory HashMap.
-///
-/// Returns the Process's halt_value cast to i32 — suitable as the C
-/// program's exit code. Callers can `std::process::exit(halt as i32)`
-/// or just return from main.
+/// AOT setup: create the main Process, install it as CURRENT_PROCESS,
+/// initialize the halt-cont singleton, parse the atom blob. Returns the
+/// process pointer for subsequent register/run calls. `atom_blob` may be
+/// null (program has no atom literals); `atom_blob_len` is currently
+/// advisory — parsing terminates on the double-NUL sentinel.
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_aot_run(
-    main_schema_id: u32,
-    main_frame_size: u32,
-    dispatch: DispatchFn,
-    frame_size: FrameSizeFn,
-    fn_count: u32,
+pub extern "C" fn fz_aot_setup(
     atom_blob: *const u8,
-) -> i32 {
-    // Stash codegen-emitted lookups in TLS so the scheduler hooks can
-    // reach them without threading args through Cranelift's FFI surface.
-    AOT_DISPATCH.with(|c| c.set(Some(dispatch)));
-    AOT_FRAME_SIZE_FN.with(|c| c.set(Some(frame_size)));
-    AOT_FN_COUNT.with(|c| c.set(fn_count));
+    _atom_blob_len: u32,
+    halt_cont_body_addr: *const u8,
+) -> *mut Process {
     AOT_NEXT_PID.with(|c| c.set(2));
     AOT_TASKS.with(|c| c.borrow_mut().clear());
 
-    // Shared SchemaRegistry across main + every spawned child, matching
-    // the interp's model (heap pointers passed via messages reference
-    // schemas that must resolve in both heaps).
-    let user_schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
-    AOT_SCHEMAS.with(|s| *s.borrow_mut() = Some(user_schemas.clone()));
+    let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
+    AOT_SCHEMAS.with(|s| *s.borrow_mut() = Some(schemas.clone()));
 
-    // Install scheduler hooks so fz_spawn / fz_send (in this crate's
-    // ir_runtime) dispatch back to the AOT eager-sync handlers.
-    crate::scheduler_hooks::install_spawn_hook(aot_spawn_hook);
-    crate::scheduler_hooks::install_send_hook(aot_send_hook);
+    let mut proc_box = Box::new(Process::new(schemas));
+    proc_box.pid = 1;
+    proc_box.atom_names = parse_atom_blob(atom_blob);
+    proc_box.init_halt_cont_singleton(halt_cont_body_addr);
 
-    // Parse the atom blob — sequence of NUL-terminated names, double-NUL
-    // terminator — into a Vec<String>. Empty blob (null ptr) is fine for
-    // programs with no atoms.
-    let atom_names = parse_atom_blob(atom_blob);
-
-    // Main process — register as pid 1.
-    let mut main_process = Box::new(Process::new(user_schemas));
-    main_process.pid = 1;
-    main_process.frame_sizes = (0..fn_count).map(|id| frame_size(id)).collect();
-    main_process.atom_names = atom_names;
-    let main_ptr = AOT_TASKS.with(|c| {
+    let proc_ptr = AOT_TASKS.with(|c| {
         let mut t = c.borrow_mut();
-        t.insert(1, main_process);
+        t.insert(1, proc_box);
         t.get_mut(&1).map(|b| b.as_mut() as *mut Process).unwrap()
     });
-    let prev = CURRENT_PROCESS.with(|c| c.replace(main_ptr));
+    CURRENT_PROCESS.with(|c| c.set(proc_ptr));
+    proc_ptr
+}
 
-    drive_trampoline(main_schema_id, main_frame_size, dispatch);
+/// Register one static closure target. AOT codegen emits one call per
+/// `MakeClosure` with zero captures. `code_addr` is the body fn's
+/// address (Cranelift `func_addr` of the fz_fn_<body_id>).
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_aot_register_static_closure(
+    proc: *mut Process,
+    cl_sid: u32,
+    fn_id: u32,
+    code_addr: *const u8,
+) {
+    assert!(!proc.is_null(), "fz_aot_register_static_closure: null process");
+    let process = unsafe { &mut *proc };
+    process.init_static_closures(&[(cl_sid, fn_id, code_addr)]);
+}
 
-    // halt_value is the IR-level main return — we don't propagate it
-    // as the C process exit code (JIT and interp drive the same way:
-    // halt_value is internal, the wrapping process exits 0 on success).
-    // A future fz convention may wire `Halt n` to a non-zero exit but
-    // that's a separate ticket.
-    let _halt = unsafe { (*main_ptr).halt_value };
-    CURRENT_PROCESS.with(|c| c.set(prev));
+/// Run main via the SystemV→Tail-CC `fz_main_entry` shim and tear down
+/// the AOT scheduler state. Returns 0 on clean completion (matches the
+/// JIT/interp convention of treating halt_value as internal).
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_aot_run_main(
+    proc: *mut Process,
+    main_fp: *const u8,
+    main_entry_addr: *const u8,
+) -> i32 {
+    assert!(!proc.is_null(), "fz_aot_run_main: null process");
+    assert!(!main_fp.is_null(), "fz_aot_run_main: null main_fp");
+    assert!(!main_entry_addr.is_null(), "fz_aot_run_main: null main_entry_addr");
 
-    // Clean up scheduler state so a second fz_aot_run call (in tests or
-    // future embedded scenarios) starts fresh.
-    crate::scheduler_hooks::clear_spawn_hook();
-    crate::scheduler_hooks::clear_send_hook();
-    AOT_DISPATCH.with(|c| c.set(None));
-    AOT_FRAME_SIZE_FN.with(|c| c.set(None));
-    AOT_FN_COUNT.with(|c| c.set(0));
+    // fz_main_entry is the SystemV→Tail-CC launch shim. It allocates the
+    // halt-cont closure (via fz_get_halt_cont) and `call_indirect Tail`s
+    // into main. Runs to halt synchronously; halt_value is set by
+    // fz_halt_cont_body before return.
+    type MainEntry = extern "C" fn(u64) -> i64;
+    let f: MainEntry = unsafe { std::mem::transmute(main_entry_addr) };
+    let _ = f(main_fp as u64);
+
+    let _halt = unsafe { (*proc).halt_value };
+
+    // Teardown.
+    CURRENT_PROCESS.with(|c| c.set(std::ptr::null_mut()));
     AOT_TASKS.with(|c| c.borrow_mut().clear());
     AOT_SCHEMAS.with(|s| *s.borrow_mut() = None);
-
     0
 }
 
@@ -328,76 +152,8 @@ pub extern "C" fn fz_aot_run(
 mod tests {
     use super::*;
 
-    // Mock "program": one fz_fn that immediately halts by storing 7 in
-    // the current Process's halt_value and returning null. Mirrors what
-    // a real fz Term::Halt lowers to (via fz_halt FFI).
-    extern "C" fn mock_main_fn(_frame: *mut u8, _ctx: *mut u8) -> *mut u8 {
-        crate::process::current_process().halt_value = 7;
-        std::ptr::null_mut()
-    }
-
-    extern "C" fn mock_dispatch(schema_id: u32) -> *const u8 {
-        match schema_id {
-            42 => mock_main_fn as *const u8,
-            _ => std::ptr::null(),
-        }
-    }
-
-    extern "C" fn mock_frame_size(_schema_id: u32) -> u32 {
-        24 // HeapHeader(16) + cont_ptr(8)
-    }
-
-    #[test]
-    fn fz_aot_run_drives_trampoline_to_completion() {
-        let exit_code = fz_aot_run(
-            /*main_schema_id=*/ 42,
-            /*main_frame_size=*/ 24,
-            mock_dispatch,
-            mock_frame_size,
-            /*fn_count=*/ 43,
-            /*atom_blob=*/ std::ptr::null(),
-        );
-        // fz_aot_run returns 0 on clean completion; halt_value is
-        // internal (matches JIT/interp's exit-code convention).
-        assert_eq!(exit_code, 0);
-    }
-
-    extern "C" fn mock_two_step_fn(frame: *mut u8, _ctx: *mut u8) -> *mut u8 {
-        // First call: bump halt_value to 1, hand control back via a fresh
-        // frame with a different schema_id. Second call: halt with 9.
-        // (We reuse the frame across calls — the trampoline doesn't
-        // dictate frame lifetimes; the program does.)
-        let header = frame as *mut HeapHeader;
-        let cur_id = unsafe { (*header).schema_id };
-        if cur_id == 1 {
-            unsafe { (*header).schema_id = 2 };
-            frame
-        } else {
-            crate::process::current_process().halt_value = 9;
-            std::ptr::null_mut()
-        }
-    }
-
-    extern "C" fn mock_two_step_dispatch(_schema_id: u32) -> *const u8 {
-        mock_two_step_fn as *const u8
-    }
-
-    #[test]
-    fn fz_aot_run_dispatches_multiple_steps() {
-        let exit_code = fz_aot_run(
-            1,
-            24,
-            mock_two_step_dispatch,
-            mock_frame_size,
-            3,
-            std::ptr::null(),
-        );
-        assert_eq!(exit_code, 0);
-    }
-
     #[test]
     fn parse_atom_blob_walks_until_double_nul() {
-        // "ok\0err\0\0" - two atoms followed by sentinel.
         let blob = b"ok\0err\0\0";
         let names = parse_atom_blob(blob.as_ptr());
         assert_eq!(names, vec!["ok".to_string(), "err".to_string()]);

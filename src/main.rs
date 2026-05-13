@@ -120,7 +120,7 @@ fn main() {
 /// Pipeline: lex/parse/resolve/macros/ir_lower (shared with `fz run`),
 /// then `ir_codegen::compile_aot` to emit object bytes including the
 /// per-program dispatch fn and a C-callable `main` that calls
-/// `fz_aot_run` (in the fz-runtime staticlib). Then `cc` links the
+/// `fz_aot_run_main` (in the fz-runtime staticlib). Then `cc` links the
 /// object against libfz_runtime.a + libc into the requested output.
 ///
 /// Single-task v1 — spawn/send/receive in AOT lands in fz-ul4.23.6.6.

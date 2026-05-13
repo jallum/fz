@@ -818,7 +818,7 @@ pub trait Backend {
     /// atom-name blob, C `main` shim). The JIT impl is a no-op — the same
     /// data lives in `CompiledModule`'s Rust HashMaps and the runtime
     /// reads them directly. AOT emits Cranelift data + fns so the linker
-    /// + `fz_aot_run` can resolve them at runtime.
+    /// + `fz_aot_run_main` can resolve them at runtime.
     fn emit_metadata_carriers(
         &mut self,
         fbctx: &mut FunctionBuilderContext,
@@ -1202,73 +1202,67 @@ impl Backend for AotBackend {
         fbctx: &mut FunctionBuilderContext,
         meta: &CompiledMetadata,
     ) -> Result<(), CodegenError> {
-        // No `main`/0 in the source → nothing to drive at startup, so we
-        // skip the dispatch/main shim entirely. `fz build` errors gracefully
-        // on this artifact via its main_symbol check.
+        // No `main`/0 in the source → nothing to drive at startup. `fz build`
+        // errors gracefully on this artifact via its main_symbol check.
         let Some(main_fn_id) = meta.main_fn_id else {
             return Ok(());
         };
-        let main_frame_size = meta
-            .main_frame_size
-            .expect("main_frame_size set whenever main_fn_id is");
 
-        let aot_run_sig = sig1(
-            &[
-                types::I32,
-                types::I32,
-                types::I64,
-                types::I64,
-                types::I32,
-                types::I64,
-            ],
+        // fz-siu.6.1: AOT C-main is a thin driver around the cps-in-clif
+        // SystemV→Tail-CC shims (fz_main_entry / fz_halt_cont_body) emitted
+        // in compile_with_backend. Three FFI fns from fz-runtime do the
+        // Process setup, static-closure registration, and run-main+teardown.
+        let setup_sig = sig1(
+            &[types::I64, types::I32, types::I64],
+            &[types::I64],
+        );
+        let setup_id = self
+            .omod
+            .declare_function("fz_aot_setup", Linkage::Import, &setup_sig)
+            .map_err(|e| CodegenError::new(format!("declare fz_aot_setup: {}", e)))?;
+
+        let reg_sig = sig1(
+            &[types::I64, types::I32, types::I32, types::I64],
+            &[],
+        );
+        let reg_id = self
+            .omod
+            .declare_function("fz_aot_register_static_closure", Linkage::Import, &reg_sig)
+            .map_err(|e| CodegenError::new(
+                format!("declare fz_aot_register_static_closure: {}", e),
+            ))?;
+
+        let run_sig = sig1(
+            &[types::I64, types::I64, types::I64],
             &[types::I32],
         );
-        let aot_run_id = self
+        let run_id = self
             .omod
-            .declare_function("fz_aot_run", Linkage::Import, &aot_run_sig)
-            .map_err(|e| CodegenError::new(format!("declare fz_aot_run: {}", e)))?;
+            .declare_function("fz_aot_run_main", Linkage::Import, &run_sig)
+            .map_err(|e| CodegenError::new(format!("declare fz_aot_run_main: {}", e)))?;
 
-        let dispatch_sig = sig1(&[types::I32], &[types::I64]);
-        let dispatch_id = self
-            .omod
-            .declare_function("fz_aot_dispatch", Linkage::Local, &dispatch_sig)
-            .map_err(|e| CodegenError::new(format!("declare fz_aot_dispatch: {}", e)))?;
-        emit_aot_dispatch(
-            &mut self.omod,
-            fbctx,
-            dispatch_id,
-            &dispatch_sig,
-            &meta.fn_ids,
-        )?;
-
-        let fsz_sig = sig1(&[types::I32], &[types::I32]);
-        let fsz_id = self
-            .omod
-            .declare_function("fz_aot_frame_size", Linkage::Local, &fsz_sig)
-            .map_err(|e| CodegenError::new(format!("declare fz_aot_frame_size: {}", e)))?;
-        emit_aot_frame_size(&mut self.omod, fbctx, fsz_id, &fsz_sig, &meta.schemas)?;
-        let fn_count: u32 = meta.schemas.len() as u32;
-
-        let atom_blob_data: Option<DataId> = if meta.atom_names.is_empty() {
-            None
-        } else {
-            let mut blob: Vec<u8> = Vec::new();
-            for name in &meta.atom_names {
-                blob.extend_from_slice(name.as_bytes());
+        let (atom_blob_data, atom_blob_len): (Option<DataId>, u32) =
+            if meta.atom_names.is_empty() {
+                (None, 0)
+            } else {
+                let mut blob: Vec<u8> = Vec::new();
+                for name in &meta.atom_names {
+                    blob.extend_from_slice(name.as_bytes());
+                    blob.push(0);
+                }
                 blob.push(0);
-            }
-            blob.push(0);
-            let id = self
-                .omod
-                .declare_data("fz_aot_atom_blob", Linkage::Local, false, false)
-                .map_err(|e| CodegenError::new(format!("declare atom blob: {}", e)))?;
-            let mut desc = DataDescription::new();
-            desc.define(blob.into_boxed_slice());
-            self.omod
-                .define_data(id, &desc)
-                .map_err(|e| CodegenError::new(format!("define atom blob: {}", e)))?;
-            Some(id)
-        };
+                let len = blob.len() as u32;
+                let id = self
+                    .omod
+                    .declare_data("fz_aot_atom_blob", Linkage::Local, false, false)
+                    .map_err(|e| CodegenError::new(format!("declare atom blob: {}", e)))?;
+                let mut desc = DataDescription::new();
+                desc.define(blob.into_boxed_slice());
+                self.omod
+                    .define_data(id, &desc)
+                    .map_err(|e| CodegenError::new(format!("define atom blob: {}", e)))?;
+                (Some(id), len)
+            };
 
         let mut c_main_sig = Signature::new(CallConv::SystemV);
         c_main_sig.params.push(AbiParam::new(types::I32));
@@ -1283,13 +1277,15 @@ impl Backend for AotBackend {
             fbctx,
             c_main_id,
             &c_main_sig,
-            main_fn_id.0,
-            main_frame_size,
-            dispatch_id,
-            fsz_id,
-            fn_count,
+            meta.fn_ids[&main_fn_id.0],
+            meta.main_entry_id,
+            meta.halt_cont_body_id,
+            &meta.static_closure_targets,
             atom_blob_data,
-            aot_run_id,
+            atom_blob_len,
+            setup_id,
+            reg_id,
+            run_id,
         )?;
         Ok(())
     }
@@ -2370,98 +2366,26 @@ pub fn compile_aot(module: &Module, obj_name: &str) -> Result<AotArtifact, Codeg
 }
 
 
-/// Emit the per-program `fz_aot_dispatch(schema_id) -> fn_ptr` fn.
-/// switch-returns each fz_fn_<id>'s address via Cranelift's func_addr.
-/// Returns null for unknown ids (fz_aot_run treats null as a fatal AOT
-/// build error).
-fn emit_aot_dispatch<M: cranelift_module::Module>(
-    jmod: &mut M,
-    fbctx: &mut FunctionBuilderContext,
-    dispatch_id: FuncId,
-    dispatch_sig: &Signature,
-    fn_ids: &HashMap<u32, FuncId>,
-) -> Result<(), CodegenError> {
-    use cranelift_codegen::ir::condcodes::IntCC;
-    use cranelift_frontend::FunctionBuilder;
-
-    let mut ctx = jmod.make_context();
-    ctx.func.signature = dispatch_sig.clone();
-    {
-        let mut b = FunctionBuilder::new(&mut ctx.func, fbctx);
-        let entry = b.create_block();
-        b.append_block_params_for_function_params(entry);
-        b.switch_to_block(entry);
-        let id_param = b.block_params(entry)[0];
-
-        // Stable id order so the emitted CLIF is reproducible.
-        let mut ids_sorted: Vec<u32> = fn_ids.keys().copied().collect();
-        ids_sorted.sort();
-
-        let default_block = b.create_block();
-        let return_blocks: Vec<cranelift_codegen::ir::Block> = ids_sorted
-            .iter()
-            .map(|_| b.create_block())
-            .collect();
-
-        // Linear if/else chain. For a small fn count (~10s) this is fine;
-        // an n-arity jump table is a follow-up if AOT codegen ever does
-        // huge modules.
-        let mut cur_test = entry;
-        for (idx, sid) in ids_sorted.iter().enumerate() {
-            b.switch_to_block(cur_test);
-            let cond = b.ins().icmp_imm(IntCC::Equal, id_param, *sid as i64);
-            let next_test = if idx + 1 < ids_sorted.len() {
-                b.create_block()
-            } else {
-                default_block
-            };
-            b.ins().brif(cond, return_blocks[idx], &[], next_test, &[]);
-            cur_test = next_test;
-        }
-
-        // One-line block per fn returning its address.
-        for (sid, ret_blk) in ids_sorted.iter().zip(return_blocks.iter()) {
-            b.switch_to_block(*ret_blk);
-            let fref = jmod.declare_func_in_func(fn_ids[sid], b.func);
-            let addr = b.ins().func_addr(types::I64, fref);
-            b.ins().return_(&[addr]);
-        }
-
-        // Default: null. fz_aot_run aborts on null.
-        b.switch_to_block(default_block);
-        let z = b.ins().iconst(types::I64, 0);
-        b.ins().return_(&[z]);
-
-        b.seal_all_blocks();
-        b.finalize();
-    }
-    let flags = settings::Flags::new(settings::builder());
-    cranelift_codegen::verifier::verify_function(&ctx.func, &flags)
-        .map_err(|e| CodegenError::new(format!("verify fz_aot_dispatch: {}", e)))?;
-    jmod
-        .define_function(dispatch_id, &mut ctx)
-        .map_err(|e| CodegenError::new(format!("define fz_aot_dispatch: {}", e)))?;
-    jmod.clear_context(&mut ctx);
-    Ok(())
-}
-
-/// Emit the AOT C-callable main entry: pass the program's main schema_id,
-/// main frame size, dispatch + frame-size fn addresses, and fn count to
-/// fz_aot_run, return its result. Linker uses this as the binary's
-/// entry point.
+/// Emit the AOT C-callable main entry (fz-siu.6.1). Drives the cps-in-clif
+/// startup: `fz_aot_setup` → per-closure `fz_aot_register_static_closure`
+/// → `fz_aot_run_main`. The shim addresses (fz_main_entry,
+/// fz_halt_cont_body) are taken via Cranelift `func_addr` against the
+/// Local symbols emitted by compile_with_backend.
 #[allow(clippy::too_many_arguments)]
 fn emit_aot_c_main<M: cranelift_module::Module>(
     jmod: &mut M,
     fbctx: &mut FunctionBuilderContext,
     c_main_id: FuncId,
     c_main_sig: &Signature,
-    main_fz_id: u32,
-    main_frame_size: u32,
-    dispatch_id: FuncId,
-    fsz_id: FuncId,
-    fn_count: u32,
+    main_fz_func_id: FuncId,
+    main_entry_id: FuncId,
+    halt_cont_body_id: FuncId,
+    static_closure_targets: &[(u32, u32, FuncId)],
     atom_blob_data: Option<DataId>,
-    aot_run_id: FuncId,
+    atom_blob_len: u32,
+    setup_id: FuncId,
+    reg_id: FuncId,
+    run_id: FuncId,
 ) -> Result<(), CodegenError> {
     use cranelift_frontend::FunctionBuilder;
 
@@ -2473,13 +2397,7 @@ fn emit_aot_c_main<M: cranelift_module::Module>(
         b.append_block_params_for_function_params(entry);
         b.switch_to_block(entry);
 
-        let main_id_v = b.ins().iconst(types::I32, main_fz_id as i64);
-        let frame_size_v = b.ins().iconst(types::I32, main_frame_size as i64);
-        let dispatch_fref = jmod.declare_func_in_func(dispatch_id, b.func);
-        let dispatch_addr = b.ins().func_addr(types::I64, dispatch_fref);
-        let fsz_fref = jmod.declare_func_in_func(fsz_id, b.func);
-        let fsz_addr = b.ins().func_addr(types::I64, fsz_fref);
-        let fn_count_v = b.ins().iconst(types::I32, fn_count as i64);
+        // Atom blob: symbol address + byte length.
         let atom_blob_addr = match atom_blob_data {
             Some(data_id) => {
                 let gv = jmod.declare_data_in_func(data_id, b.func);
@@ -2487,20 +2405,38 @@ fn emit_aot_c_main<M: cranelift_module::Module>(
             }
             None => b.ins().iconst(types::I64, 0),
         };
+        let atom_blob_len_v = b.ins().iconst(types::I32, atom_blob_len as i64);
 
-        let aot_fref = jmod.declare_func_in_func(aot_run_id, b.func);
-        let call = b.ins().call(
-            aot_fref,
-            &[
-                main_id_v,
-                frame_size_v,
-                dispatch_addr,
-                fsz_addr,
-                fn_count_v,
-                atom_blob_addr,
-            ],
+        // Shim addresses (Local symbols in this object).
+        let hcb_fref = jmod.declare_func_in_func(halt_cont_body_id, b.func);
+        let hcb_addr = b.ins().func_addr(types::I64, hcb_fref);
+        let me_fref = jmod.declare_func_in_func(main_entry_id, b.func);
+        let me_addr = b.ins().func_addr(types::I64, me_fref);
+        let main_fref = jmod.declare_func_in_func(main_fz_func_id, b.func);
+        let main_fp = b.ins().func_addr(types::I64, main_fref);
+
+        // proc = fz_aot_setup(atom_blob, atom_blob_len, halt_cont_body_addr)
+        let setup_fref = jmod.declare_func_in_func(setup_id, b.func);
+        let setup_call = b.ins().call(
+            setup_fref,
+            &[atom_blob_addr, atom_blob_len_v, hcb_addr],
         );
-        let result = b.inst_results(call)[0];
+        let proc_v = b.inst_results(setup_call)[0];
+
+        // Register each static closure target.
+        for (cl_sid, fn_id, body_func_id) in static_closure_targets {
+            let cl_sid_v = b.ins().iconst(types::I32, *cl_sid as i64);
+            let fn_id_v = b.ins().iconst(types::I32, *fn_id as i64);
+            let body_fref = jmod.declare_func_in_func(*body_func_id, b.func);
+            let body_addr = b.ins().func_addr(types::I64, body_fref);
+            let reg_fref = jmod.declare_func_in_func(reg_id, b.func);
+            b.ins().call(reg_fref, &[proc_v, cl_sid_v, fn_id_v, body_addr]);
+        }
+
+        // exit = fz_aot_run_main(proc, main_fp, main_entry_addr)
+        let run_fref = jmod.declare_func_in_func(run_id, b.func);
+        let run_call = b.ins().call(run_fref, &[proc_v, main_fp, me_addr]);
+        let result = b.inst_results(run_call)[0];
         b.ins().return_(&[result]);
 
         b.seal_all_blocks();
@@ -2512,79 +2448,6 @@ fn emit_aot_c_main<M: cranelift_module::Module>(
     jmod
         .define_function(c_main_id, &mut ctx)
         .map_err(|e| CodegenError::new(format!("define C main: {}", e)))?;
-    jmod.clear_context(&mut ctx);
-    Ok(())
-}
-
-/// Emit the per-program `fz_aot_frame_size(schema_id) -> u32` fn. Mirrors
-/// the dispatch fn's brif-chain shape; returns 0 for unknown ids (which
-/// signals a sparse / out-of-range schema_id — fz_alloc_frame_dyn handles
-/// the panic message).
-fn emit_aot_frame_size<M: cranelift_module::Module>(
-    jmod: &mut M,
-    fbctx: &mut FunctionBuilderContext,
-    fsz_id: FuncId,
-    fsz_sig: &Signature,
-    schemas: &[Schema],
-) -> Result<(), CodegenError> {
-    use cranelift_codegen::ir::condcodes::IntCC;
-    use cranelift_frontend::FunctionBuilder;
-
-    let mut ctx = jmod.make_context();
-    ctx.func.signature = fsz_sig.clone();
-    {
-        let mut b = FunctionBuilder::new(&mut ctx.func, fbctx);
-        let entry = b.create_block();
-        b.append_block_params_for_function_params(entry);
-        b.switch_to_block(entry);
-        let id_param = b.block_params(entry)[0];
-
-        // schemas is indexed by schema_id (== FnId.0). Build one return
-        // block per known schema id, plus a default-zero block. Skip
-        // placeholder schemas (size 0 isn't meaningful) — they end up
-        // hitting the default block anyway.
-        let default_block = b.create_block();
-        let known: Vec<(u32, u32)> = schemas
-            .iter()
-            .enumerate()
-            .map(|(i, s)| (i as u32, s.size))
-            .filter(|(_, sz)| *sz > 0)
-            .collect();
-        let return_blocks: Vec<cranelift_codegen::ir::Block> =
-            known.iter().map(|_| b.create_block()).collect();
-
-        let mut cur_test = entry;
-        for (idx, (sid, _)) in known.iter().enumerate() {
-            b.switch_to_block(cur_test);
-            let cond = b.ins().icmp_imm(IntCC::Equal, id_param, *sid as i64);
-            let next_test = if idx + 1 < known.len() {
-                b.create_block()
-            } else {
-                default_block
-            };
-            b.ins().brif(cond, return_blocks[idx], &[], next_test, &[]);
-            cur_test = next_test;
-        }
-
-        for ((_, size), ret_blk) in known.iter().zip(return_blocks.iter()) {
-            b.switch_to_block(*ret_blk);
-            let v = b.ins().iconst(types::I32, *size as i64);
-            b.ins().return_(&[v]);
-        }
-
-        b.switch_to_block(default_block);
-        let z = b.ins().iconst(types::I32, 0);
-        b.ins().return_(&[z]);
-
-        b.seal_all_blocks();
-        b.finalize();
-    }
-    let flags = settings::Flags::new(settings::builder());
-    cranelift_codegen::verifier::verify_function(&ctx.func, &flags)
-        .map_err(|e| CodegenError::new(format!("verify fz_aot_frame_size: {}", e)))?;
-    jmod
-        .define_function(fsz_id, &mut ctx)
-        .map_err(|e| CodegenError::new(format!("define fz_aot_frame_size: {}", e)))?;
     jmod.clear_context(&mut ctx);
     Ok(())
 }
@@ -5508,7 +5371,7 @@ mod tests {
             "AOT object should be non-empty"
         );
         // Post-.6.3, compile_aot emits a C-callable `main` symbol that
-        // wraps fz_aot_run. The artifact's main_symbol surfaces that for
+        // wraps fz_aot_run_main. The artifact's main_symbol surfaces that for
         // the linker.
         let main_sym = artifact.main_symbol.expect("main_symbol set");
         assert_eq!(main_sym, "main", "expected C-callable main symbol");
