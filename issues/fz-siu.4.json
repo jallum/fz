@@ -6,6 +6,7 @@
   "blocks": [
     "fz-siu.5"
   ],
+  "closed_at": "2026-05-13T21:34:18Z",
   "created": "2026-05-13T04:09:12Z",
   "description": "Spec: docs/cps-in-clif.md §4.\n\nWork:\n- Term::Receive lowers to `return_call %fz_receive_park(cont)` where cont is the current fn's cont parameter (or a freshly built closure if captures differ).\n- fz_receive_park stores cont into Process::parked_cont, sets state to Blocked, returns to scheduler.\n- On wake, scheduler tail-calls `parked_cont.code(msg, parked_cont)`.\n\nAcceptance: §8.4 target clif; ping_pong fixture round-trips end-to-end via this path.",
   "id": "fz-siu.4",
@@ -18,7 +19,7 @@
     }
   ],
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "fz-cps.4: Receive rewrite",
   "type": "task",
   "updated_at": "2026-05-13T21:34:18Z"
