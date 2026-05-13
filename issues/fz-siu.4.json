@@ -11,9 +11,15 @@
   "id": "fz-siu.4",
   "labels": [],
   "parent": "fz-siu",
+  "comments": [
+    {
+      "text": "-",
+      "timestamp": "2026-05-13T21:34:18Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "fz-cps.4: Receive rewrite",
   "type": "task",
-  "updated_at": "2026-05-13T04:09:33Z"
+  "updated_at": "2026-05-13T21:34:18Z"
 }
