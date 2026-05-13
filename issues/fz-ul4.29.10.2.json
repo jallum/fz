@@ -6,14 +6,15 @@
   "blocks": [
     "fz-ul4.29.10.3"
   ],
+  "closed_at": "2026-05-13T00:50:07Z",
   "created": "2026-05-13T00:39:05Z",
   "description": "At `Term::CallClosure(v, args, cont)` and `Term::TailCallClosure(v, args)` inside the typer's queried-set walk, when `fn_constants[v] = F` is known: register `(F, typed_args)` in the queried-set just like a direct call. This adds F's narrow spec for the typed args.\n\n## Why split off the suppression\n\nThe original scope also suppressed F's any-key registration from the originating MakeClosure. Investigation during execution surfaced that suppression alone breaks codegen: typed closure stubs (.29.12.3) dispatch through F's any-key at the runtime closure header until the IR rewrite (.29.10.3) replaces CallClosure with a direct Call. Suppression and rewrite must land together. Moved to .29.10.3.\n\n## Scope\n\n- `src/ir_typer.rs` queried-set walk (the direct-call query loop): extend the `callee_id` match arm to include `Term::CallClosure { closure, .. }` and `Term::TailCallClosure { closure, .. }` when `ft.fn_constants[closure]` is set.\n- No suppression yet; the originating MakeClosure still registers F's any-key.\n- New helper `prim_var_uses(prim, \u0026mut buf)` (used in .29.10.3 for the escape analysis).\n\n## Tests\n\n- `callclosure_with_fn_constant_registers_narrow_spec`: apply2(double, 21) → queried-set for double contains [int_lit(21)] (so a narrow spec exists alongside the any-key).\n- Full suite + parity fixtures stay green (any-key still registered, codegen unchanged).",
   "id": "fz-ul4.29.10.2",
   "labels": [],
   "parent": "fz-ul4.29.10",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "Typer registers narrow F-spec from known-target CallClosure",
   "type": "task",
-  "updated_at": "2026-05-13T00:46:57Z"
+  "updated_at": "2026-05-13T00:50:07Z"
 }
