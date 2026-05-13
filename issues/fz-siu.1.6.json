@@ -4,6 +4,7 @@
     "fz-siu.1.5"
   ],
   "blocks": [],
+  "closed_at": "2026-05-13T21:26:40Z",
   "created": "2026-05-13T09:27:10Z",
   "description": "Spec: docs/cps-in-clif.md §2.4, §5.\n\nWork:\n- run_quantum / Runtime::spawn: invoke entry fn with a placeholder halt-cont closure (real singleton lands in fz-siu.2).\n- Halt-cont closure: 0 captures; code_ptr points at runtime `fz_task_exit` thunk.\n- Process::next_frame, schema-driven dispatch, slot-0 cont seeding: untouched here (deleted in fz-siu.5).\n\nAcceptance:\n- All four §8 fixtures (tail_recursion, higher_order, closure_typed_captures, concurrency_ping_pong) produce expected output.\n- Full `cargo test` green.\n- fz-siu.1 epic closes.",
   "id": "fz-siu.1.6",
@@ -16,7 +17,7 @@
     }
   ],
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "fz-cps.1.f: scheduler entry uses cont-param ABI",
   "type": "task",
   "updated_at": "2026-05-13T21:26:40Z"
