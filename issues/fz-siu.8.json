@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-siu.7"
   ],
@@ -13,8 +13,8 @@
   "labels": [],
   "parent": "fz-siu",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "fz-cps.GC.2: Cheney copy from parked_cont",
   "type": "task",
-  "updated_at": "2026-05-13T04:09:34Z"
+  "updated_at": "2026-05-13T22:06:15Z"
 }
