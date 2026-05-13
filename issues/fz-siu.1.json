@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-siu.2"
+  ],
   "created": "2026-05-13T04:09:11Z",
   "description": "Spec: docs/cps-in-clif.md §2 (Model), §2.1 (Function shapes), §2.2 (Closure layout), §2.3 (Discipline).\n\nWork:\n- Every fz fn signature gains `cont: i64` as last parameter.\n- Term::Call / Term::TailCall / Term::CallClosure / Term::TailCallClosure lower to `return_call` (known callee) or `return_call_indirect` (closure target).\n- Continuation closures allocated via existing `fz_alloc_closure`.\n- Cont invocation: `v_code = load k+16; return_call_indirect sig_cont, v_code(result, k)`.\n\nAcceptance: §8.1 target clif for tail_recursion.fz — `%count` `block_rec` is `return_call %count` with zero `fz_alloc_*`.",
   "id": "fz-siu.1",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "fz-cps.1: cont-param ABI",
   "type": "task",
-  "updated_at": "2026-05-13T04:09:11Z"
+  "updated_at": "2026-05-13T04:09:32Z"
 }
