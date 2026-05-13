@@ -6,14 +6,15 @@
   "blocks": [
     "fz-siu.1.8"
   ],
+  "closed_at": "2026-05-13T18:46:45Z",
   "created": "2026-05-13T17:59:54Z",
   "description": "Spec: docs/cps-in-clif.md §8.2 — top-level fns wrapped at module init into static zero-capture closures.\n\nWork:\n- At module-compile time, for every fn `f` used anywhere as a `Prim::MakeClosure(f, [])` target (zero-capture only at this ticket; non-empty captures stay dynamic), allocate one closure singleton at module-init time and expose its address as a Cranelift global value `@static_closure_\u003cfid\u003e`.\n- Allocation path: extend `runtime/src/ir_runtime.rs` with `fz_alloc_static_closure(fid: u32, code_ptr: u64) -\u003e *mut u8` or reuse `fz_alloc_closure(fid, 0)` from a module-init hook.\n- Codegen: replace `Prim::MakeClosure(fid, [])` lowering with a global_value load of the singleton; non-zero capture path unchanged.\n- Module init shape: a per-module `init_static_closures(process)` runtime hook called by `make_process`/scheduler-spawn before first dispatch; populates a `Vec\u003c*mut u8\u003e` keyed by fid → singleton address. Cranelift codegen emits `iconst.i64 \u003cptr\u003e` for the singleton at use sites (resolved at JIT time, not via global_value, since process-local heap addresses aren't known until init).\n  - Alternative: emit a `call %fz_get_static_closure(fid)` at each use site that looks up the per-process singleton. Slower but avoids ptr-baking.\n  - Pick whichever is cleaner; document in ticket comments.\n\nAcceptance:\n- New unit test: `static_zero_capture_closure_singleton_reused` — same MakeClosure target accessed twice produces identical pointer.\n- `higher_order.fz` clif disassembly: `double`/`neg` MakeClosure sites lower to a single load/lookup, not `fz_alloc_closure(_, 0)`.\n- §8.2 module-init region produces exactly one static closure per zero-capture target.",
   "id": "fz-siu.1.7",
   "labels": [],
   "parent": "fz-siu.1",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "fz-cps.1.7: static zero-capture closure singletons",
   "type": "task",
-  "updated_at": "2026-05-13T18:00:57Z"
+  "updated_at": "2026-05-13T18:46:45Z"
 }
