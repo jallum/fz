@@ -1,25 +1,22 @@
-//! Heap with mark-sweep GC and schema-driven generic tracer.
+//! Per-process bump arena (cps-in-clif §6.1).
 //!
-//! Single contiguous 16-aligned region (raw alloc/dealloc; non-moving).
-//! Live allocations tracked in `allocs` — sweep filters them and pushes freed
-//! ranges to `freelist`. Free blocks have `kind = FREE_KIND` written into the
-//! header for debug visibility (and to make a future linear-walk sweep easy).
+//! One block per `Process`. Allocation is pure bump: `bump_top += size`. When
+//! `bump_top` would cross `block_end`, we allocate a fresh (larger) block and
+//! park the old one in `abandoned_blocks` for `Drop` to free — a leak path
+//! that the .8 Cheney collector replaces with a copying GC rooted at
+//! `process.parked_cont`.
 //!
-//! Roots come from explicit `gc(roots: &[FzValue])`. Real root sets land with
-//! CPS codegen in fz-ul4.11.9.
+//! GC is *not* synchronous on allocation. `note_alloc_pressure` sets a flag
+//! when occupancy crosses `gc_threshold_bytes`; the scheduler reads the flag
+//! at park-time (next quantum boundary) and calls `gc()` — currently a stub
+//! that increments `gc_run_count`. Real Cheney body lands in fz-siu.8.
 
 #![allow(dead_code)]
 
 use crate::fz_value::{FzValue, HeapHeader, HeapKind, ListCons};
 use std::alloc::{Layout, alloc_zeroed, dealloc};
 use std::cell::RefCell;
-use std::collections::HashSet;
 use std::rc::Rc;
-
-/// Sentinel kind written into freed objects' headers. Outside HeapKind's valid
-/// range (0..=7). Used for debug visibility and to support a future linear-walk
-/// sweep variant.
-pub const FREE_KIND: u16 = 0xFFFF;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FieldKind {
@@ -85,90 +82,109 @@ impl Default for SchemaRegistry {
 }
 
 pub struct Heap {
-    base: *mut u8,
-    capacity: usize,
-    bump: usize,
-    freelist: Vec<(usize, usize)>,
-    allocs: Vec<usize>,
+    block_start: *mut u8,
+    bump_top: *mut u8,
+    block_end: *mut u8,
+    block_size: usize,
+    /// Index into SIZE_TABLE (§6.3, wired in fz-siu.9). Tracked here so
+    /// shrink hysteresis (§6.5) can read/adjust it without growing the API.
+    pub size_class: u8,
+    /// Counter for shrink hysteresis (§6.5): bumps when a GC reports
+    /// live < 25% of current block size; resets otherwise.
+    pub low_live_streak: u8,
+    /// Old blocks abandoned by `grow`. `Drop` frees them. Cheney (.8)
+    /// replaces this leak path with a fresh-block copy.
+    abandoned_blocks: Vec<(*mut u8, usize)>,
     pub(crate) schemas: Rc<RefCell<SchemaRegistry>>,
-    /// fz-ul4.11.31: soft over-threshold flag set by alloc_* when occupancy
-    /// crosses gc_threshold_bytes. Trampoline reads + clears at next tick.
-    /// AtomicBool because the libdispatch worker pool (fz-ul4.19.1) may
-    /// inspect this from a different thread than the one that set it
-    /// (though one task only runs on one worker at a time, the flag
-    /// itself is observed at scheduler boundaries).
-    over_threshold: std::sync::atomic::AtomicBool,
+    /// Park-time GC flag. Set by `note_alloc_pressure` when occupancy
+    /// crosses `gc_threshold_bytes`; cleared by the scheduler after `gc()`.
+    /// AtomicBool: the libdispatch worker pool may observe this from a
+    /// thread other than the one that set it (one task per worker at a
+    /// time, but the flag is read at scheduler boundaries).
+    pressure: std::sync::atomic::AtomicBool,
     pub gc_threshold_bytes: usize,
-    /// Count of full mark-sweep GC runs (fz-ul4.11.31 instrumentation).
-    /// Tests assert `>= 1` to confirm a safepoint fired.
+    /// Count of GC invocations. Stub in fz-siu.7; real body lands in .8.
     pub gc_run_count: u64,
+    /// Total allocations made since last successful GC. Backs `live_count()`
+    /// — under bump-only with no reclaim, every alloc since-start is "live".
+    /// .8 resets this on each Cheney pass to the surviving-object count.
+    alloc_count: u64,
 }
 
 impl Heap {
     pub fn new(capacity: usize, schemas: Rc<RefCell<SchemaRegistry>>) -> Self {
         assert!(capacity > 0 && capacity % 16 == 0, "capacity must be 16-aligned");
-        let layout = Layout::from_size_align(capacity, 16).expect("bad heap layout");
-        let base = unsafe { alloc_zeroed(layout) };
-        assert!(!base.is_null(), "heap allocation failed");
+        let block_start = Self::alloc_block(capacity);
         Self {
-            base,
-            capacity,
-            bump: 0,
-            freelist: Vec::new(),
-            allocs: Vec::new(),
+            block_start,
+            bump_top: block_start,
+            block_end: unsafe { block_start.add(capacity) },
+            block_size: capacity,
+            size_class: 0,
+            low_live_streak: 0,
+            abandoned_blocks: Vec::new(),
             schemas,
-            over_threshold: std::sync::atomic::AtomicBool::new(false),
-            // Default: half the heap. Tunable per-Process post-.19.1.
+            pressure: std::sync::atomic::AtomicBool::new(false),
+            // Default: half the block. Tunable per-Process for tests that
+            // want to force the park-time GC hook to fire.
             gc_threshold_bytes: capacity / 2,
             gc_run_count: 0,
+            alloc_count: 0,
         }
     }
 
+    fn alloc_block(size: usize) -> *mut u8 {
+        assert!(size > 0 && size % 16 == 0, "block size must be 16-aligned");
+        let layout = Layout::from_size_align(size, 16).expect("bad heap layout");
+        let p = unsafe { alloc_zeroed(layout) };
+        assert!(!p.is_null(), "heap block allocation failed");
+        p
+    }
+
     pub fn should_gc(&self) -> bool {
-        self.over_threshold.load(std::sync::atomic::Ordering::Relaxed)
+        self.pressure.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     pub fn clear_should_gc_flag(&self) {
-        self.over_threshold
+        self.pressure
             .store(false, std::sync::atomic::Ordering::Relaxed);
     }
 
-    fn note_alloc(&self) {
+    fn note_alloc_pressure(&self) {
         if self.bytes_used() >= self.gc_threshold_bytes {
-            self.over_threshold
+            self.pressure
                 .store(true, std::sync::atomic::Ordering::Relaxed);
         }
     }
 
-    /// Allocate `size` bytes, rounded up to 16. Returns a pointer suitable for
-    /// writing a HeapHeader. Caller must initialize the header.
+    /// Bump-only allocator. Rounds `size` up to 16 and advances `bump_top`.
+    /// On overflow, abandons the current block and allocates a fresh one
+    /// twice the size (the .8 Cheney collector replaces this leak path
+    /// with a copying GC). Caller initializes the `HeapHeader` at the
+    /// returned pointer.
     pub fn alloc(&mut self, size: usize) -> *mut HeapHeader {
         let size = (size + 15) & !15;
         assert!(size >= 16, "alloc must include at least the 16-byte header");
-        // First-fit on freelist.
-        for i in 0..self.freelist.len() {
-            let (off, fsz) = self.freelist[i];
-            if fsz >= size {
-                self.freelist.remove(i);
-                if fsz > size {
-                    self.freelist.push((off + size, fsz - size));
-                }
-                self.allocs.push(off);
-                self.note_alloc();
-                return unsafe { self.base.add(off) as *mut HeapHeader };
-            }
+        let new_top = unsafe { self.bump_top.add(size) };
+        if new_top > self.block_end {
+            // Grow: abandon current block, allocate a fresh one at least
+            // 2× the current size or large enough to fit `size`, whichever
+            // is larger.
+            let next_size = std::cmp::max(self.block_size * 2, size.next_power_of_two().max(1024));
+            // Round up to 16-align.
+            let next_size = (next_size + 15) & !15;
+            self.abandoned_blocks.push((self.block_start, self.block_size));
+            let new_block = Self::alloc_block(next_size);
+            self.block_start = new_block;
+            self.bump_top = new_block;
+            self.block_end = unsafe { new_block.add(next_size) };
+            self.block_size = next_size;
         }
-        if self.bump + size > self.capacity {
-            panic!(
-                "out of heap (capacity={}, bump={}, requested={})",
-                self.capacity, self.bump, size
-            );
-        }
-        let off = self.bump;
-        self.bump += size;
-        self.allocs.push(off);
-        self.note_alloc();
-        unsafe { self.base.add(off) as *mut HeapHeader }
+        let p = self.bump_top;
+        self.bump_top = unsafe { self.bump_top.add(size) };
+        self.alloc_count += 1;
+        self.note_alloc_pressure();
+        p as *mut HeapHeader
     }
 
     pub fn alloc_struct(&mut self, schema_id: u32) -> *mut HeapHeader {
@@ -443,179 +459,43 @@ impl Heap {
         self.schemas.clone()
     }
 
+    /// Total allocations made on this heap (since last GC). Under the
+    /// fz-siu.7 stub GC, all allocations remain "live" because nothing is
+    /// reclaimed. .8's Cheney pass resets this to the surviving-object
+    /// count after each copy.
     pub fn live_count(&self) -> usize {
-        self.allocs.len()
+        self.alloc_count as usize
     }
 
+    /// Always zero under bump-only. Retained for back-compat with tests
+    /// asserting freelist invariants; .8 / .9 may remove entirely.
     pub fn freelist_len(&self) -> usize {
-        self.freelist.len()
+        0
     }
 
+    /// Bytes consumed across the current block + every abandoned block.
+    /// Tracks total memory footprint, not "logically live" data.
     pub fn bytes_used(&self) -> usize {
-        self.bump - self.freelist.iter().map(|(_, s)| *s).sum::<usize>()
+        let current = unsafe { self.bump_top.offset_from(self.block_start) } as usize;
+        let abandoned: usize = self.abandoned_blocks.iter().map(|(_, s)| *s).sum();
+        current + abandoned
     }
 
-    pub fn gc(&mut self, roots: &[FzValue]) {
-        let mut visitor = MarkVisitor { marked: HashSet::new() };
-        {
-            let registry = self.schemas.borrow();
-            for r in roots {
-                walk_heap(*r, &registry, &mut visitor);
-            }
-        }
-        let marked = visitor.marked;
-        let mut new_allocs = Vec::with_capacity(self.allocs.len());
-        for &off in &self.allocs {
-            let p = unsafe { self.base.add(off) as *mut HeapHeader };
-            if marked.contains(&p) {
-                new_allocs.push(off);
-            } else {
-                let size = unsafe { (*p).size_bytes as usize };
-                unsafe {
-                    (*p).kind = FREE_KIND;
-                }
-                self.freelist.push((off, size));
-            }
-        }
-        self.allocs = new_allocs;
+    /// Park-time GC. Stub in fz-siu.7: just increments `gc_run_count`.
+    /// Real body — Cheney copy from `process.parked_cont` per §6.4 —
+    /// lands in fz-siu.8. `roots` is the planned root set; ignored here.
+    pub fn gc(&mut self, _roots: &[FzValue]) {
         self.gc_run_count += 1;
     }
 }
 
 impl Drop for Heap {
     fn drop(&mut self) {
-        let layout = Layout::from_size_align(self.capacity, 16).expect("bad heap layout");
-        unsafe { dealloc(self.base, layout) };
-    }
-}
-
-/// fz-ul4.11.31: Visitor protocol for heap traversal. GC mark, message
-/// deep-copy (.19.3), and arena-membership check (.19.5) all share this
-/// core. `visit` is called per UNIQUE object (the walker tracks revisits via
-/// `WalkDecision`); return `Recurse` to process children, `Skip` to suppress
-/// recursion (e.g. already-copied object in CopyVisitor), `Stop` to halt.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WalkDecision {
-    Recurse,
-    Skip,
-    Stop,
-}
-
-pub trait HeapVisitor {
-    fn visit(&mut self, p: *mut HeapHeader, kind: HeapKind) -> WalkDecision;
-}
-
-/// Walk the heap object reachable from `root`, calling `visitor.visit(p,
-/// kind)` for each pointer encountered. Children are descended only when
-/// the visitor returns `Recurse`. Atom / int / nil / boxed scalar leaves
-/// (non-Ptr-tagged FzValues) skip the visit entirely.
-pub fn walk_heap<V: HeapVisitor>(root: FzValue, reg: &SchemaRegistry, visitor: &mut V) {
-    let _ = walk_inner(root, reg, visitor);
-}
-
-fn walk_inner<V: HeapVisitor>(
-    v: FzValue,
-    reg: &SchemaRegistry,
-    visitor: &mut V,
-) -> WalkDecision {
-    let p = match v.unbox_ptr() {
-        Some(p) => p,
-        None => return WalkDecision::Skip,
-    };
-    let h = unsafe { &*p };
-    let kind = match HeapKind::from_u16(h.kind) {
-        Some(k) => k,
-        None => {
-            // FREE_KIND or unknown: must not be reachable from a live root.
-            panic!(
-                "walk_heap reached object with invalid HeapKind ({:#x}) at {:?}",
-                h.kind, p
-            );
-        }
-    };
-    let decision = visitor.visit(p, kind);
-    if decision != WalkDecision::Recurse {
-        return decision;
-    }
-    match kind {
-        HeapKind::Struct => {
-            let schema = reg.get(h.schema_id);
-            for f in &schema.fields {
-                if let FieldKind::FzValue = f.kind {
-                    let child = unsafe {
-                        std::ptr::read(
-                            (p as *mut u8).add(16).add(f.offset as usize) as *const FzValue,
-                        )
-                    };
-                    if walk_inner(child, reg, visitor) == WalkDecision::Stop {
-                        return WalkDecision::Stop;
-                    }
-                }
-            }
-        }
-        HeapKind::List => {
-            let cons = unsafe { &*(p as *mut ListCons) };
-            if walk_inner(cons.head, reg, visitor) == WalkDecision::Stop {
-                return WalkDecision::Stop;
-            }
-            if walk_inner(cons.tail, reg, visitor) == WalkDecision::Stop {
-                return WalkDecision::Stop;
-            }
-        }
-        HeapKind::Bitstring
-        | HeapKind::VecI64
-        | HeapKind::VecF64
-        | HeapKind::VecU8
-        | HeapKind::VecBit
-        | HeapKind::Float => {
-            // Raw payloads: no FzValue children.
-        }
-        HeapKind::Closure => {
-            // fz-ul4.29.5: payload is `stub_fp (8) + captured: [FzValue;n]`.
-            // stub_fp is a code pointer (not heap-resident), skip it. Trace
-            // each captured FzValue as today's blind walk did.
-            let captured_count = h.flags as usize;
-            let cursor = unsafe { (p as *const u8).add(24) as *const FzValue };
-            for i in 0..captured_count {
-                let child = unsafe { std::ptr::read(cursor.add(i)) };
-                if walk_inner(child, reg, visitor) == WalkDecision::Stop {
-                    return WalkDecision::Stop;
-                }
-            }
-        }
-        HeapKind::Map => {
-            let count = unsafe {
-                std::ptr::read((p as *const u8).add(16) as *const u64) as usize
-            };
-            let mut cursor = unsafe { (p as *const u8).add(24) as *const FzValue };
-            for _ in 0..count {
-                let k = unsafe { std::ptr::read(cursor) };
-                let val = unsafe { std::ptr::read(cursor.add(1)) };
-                cursor = unsafe { cursor.add(2) };
-                if walk_inner(k, reg, visitor) == WalkDecision::Stop {
-                    return WalkDecision::Stop;
-                }
-                if walk_inner(val, reg, visitor) == WalkDecision::Stop {
-                    return WalkDecision::Stop;
-                }
-            }
-        }
-    }
-    WalkDecision::Recurse
-}
-
-/// MarkVisitor: the GC mark phase. Inserts each visited pointer into the
-/// marked set; returns Recurse for fresh objects, Skip for repeats.
-struct MarkVisitor {
-    marked: HashSet<*mut HeapHeader>,
-}
-
-impl HeapVisitor for MarkVisitor {
-    fn visit(&mut self, p: *mut HeapHeader, _kind: HeapKind) -> WalkDecision {
-        if self.marked.insert(p) {
-            WalkDecision::Recurse
-        } else {
-            WalkDecision::Skip
+        let layout = Layout::from_size_align(self.block_size, 16).expect("bad heap layout");
+        unsafe { dealloc(self.block_start, layout) };
+        for (p, size) in self.abandoned_blocks.drain(..) {
+            let layout = Layout::from_size_align(size, 16).expect("bad abandoned-block layout");
+            unsafe { dealloc(p, layout) };
         }
     }
 }
@@ -802,22 +682,18 @@ mod tests {
         Rc::new(RefCell::new(SchemaRegistry::new()))
     }
 
-    fn pair_schema() -> Schema {
-        Schema {
+    #[test]
+    fn schema_registry_register_and_get() {
+        let mut reg = SchemaRegistry::new();
+        let id_a = reg.register(Schema { name: "A".into(), size: 0, fields: vec![] });
+        let id_b = reg.register(Schema {
             name: "Pair".into(),
             size: 16,
             fields: vec![
                 FieldDescriptor { offset: 0, kind: FieldKind::FzValue },
                 FieldDescriptor { offset: 8, kind: FieldKind::FzValue },
             ],
-        }
-    }
-
-    #[test]
-    fn schema_registry_register_and_get() {
-        let mut reg = SchemaRegistry::new();
-        let id_a = reg.register(Schema { name: "A".into(), size: 0, fields: vec![] });
-        let id_b = reg.register(pair_schema());
+        });
         assert_eq!(id_a, 0);
         assert_eq!(id_b, 1);
         assert_eq!(reg.get(id_a).name, "A");
@@ -826,8 +702,7 @@ mod tests {
 
     #[test]
     fn alloc_bumps_and_tracks() {
-        let reg = empty_registry();
-        let mut h = Heap::new(1024, reg);
+        let mut h = Heap::new(1024, empty_registry());
         let p = h.alloc_list_cons(FzValue::from_int(1), FzValue::NIL);
         assert!(!p.is_null());
         assert_eq!(h.live_count(), 1);
@@ -835,114 +710,8 @@ mod tests {
     }
 
     #[test]
-    fn gc_keeps_rooted_object() {
-        let reg = empty_registry();
-        let mut h = Heap::new(1024, reg);
-        let p = h.alloc_list_cons(FzValue::from_int(7), FzValue::NIL);
-        let v = FzValue::from_ptr(p);
-        h.gc(&[v]);
-        assert_eq!(h.live_count(), 1);
-        assert_eq!(h.freelist_len(), 0);
-    }
-
-    #[test]
-    fn gc_frees_unrooted_object() {
-        let reg = empty_registry();
-        let mut h = Heap::new(1024, reg);
-        let _p = h.alloc_list_cons(FzValue::from_int(7), FzValue::NIL);
-        h.gc(&[]);
-        assert_eq!(h.live_count(), 0);
-        assert_eq!(h.freelist_len(), 1);
-    }
-
-    #[test]
-    fn gc_traces_through_cons_chain() {
-        let reg = empty_registry();
-        let mut h = Heap::new(1024, reg);
-        // [1, 2, 3]
-        let n3 = h.alloc_list_cons(FzValue::from_int(3), FzValue::NIL);
-        let n2 = h.alloc_list_cons(FzValue::from_int(2), FzValue::from_ptr(n3));
-        let n1 = h.alloc_list_cons(FzValue::from_int(1), FzValue::from_ptr(n2));
-        h.gc(&[FzValue::from_ptr(n1)]);
-        assert_eq!(h.live_count(), 3);
-        assert_eq!(h.freelist_len(), 0);
-    }
-
-    #[test]
-    fn gc_frees_dropped_tail() {
-        let reg = empty_registry();
-        let mut h = Heap::new(1024, reg);
-        let n3 = h.alloc_list_cons(FzValue::from_int(3), FzValue::NIL);
-        let n2 = h.alloc_list_cons(FzValue::from_int(2), FzValue::from_ptr(n3));
-        let _n1 = h.alloc_list_cons(FzValue::from_int(1), FzValue::from_ptr(n2));
-        // Root only n2 → n1 should be freed; n2 and n3 retained.
-        h.gc(&[FzValue::from_ptr(n2)]);
-        assert_eq!(h.live_count(), 2);
-        assert_eq!(h.freelist_len(), 1);
-    }
-
-    #[test]
-    fn gc_traces_through_struct_fields() {
-        let reg = empty_registry();
-        let pair_id = reg.borrow_mut().register(pair_schema());
-        let mut h = Heap::new(1024, reg.clone());
-
-        let leaf = h.alloc_list_cons(FzValue::from_int(99), FzValue::NIL);
-        let parent = h.alloc_struct(pair_id);
-        h.write_field(parent, 0, FzValue::from_ptr(leaf));
-        h.write_field(parent, 8, FzValue::NIL);
-
-        h.gc(&[FzValue::from_ptr(parent)]);
-        assert_eq!(h.live_count(), 2);
-    }
-
-    #[test]
-    fn gc_frees_struct_and_unique_child_when_root_lost() {
-        let reg = empty_registry();
-        let pair_id = reg.borrow_mut().register(pair_schema());
-        let mut h = Heap::new(1024, reg.clone());
-
-        let leaf = h.alloc_list_cons(FzValue::from_int(99), FzValue::NIL);
-        let parent = h.alloc_struct(pair_id);
-        h.write_field(parent, 0, FzValue::from_ptr(leaf));
-        h.write_field(parent, 8, FzValue::NIL);
-
-        h.gc(&[]);
-        assert_eq!(h.live_count(), 0);
-        assert_eq!(h.freelist_len(), 2);
-    }
-
-    #[test]
-    fn gc_handles_cycle() {
-        let reg = empty_registry();
-        let pair_id = reg.borrow_mut().register(pair_schema());
-        let mut h = Heap::new(1024, reg.clone());
-
-        let a = h.alloc_struct(pair_id);
-        let b = h.alloc_struct(pair_id);
-        // a.0 = b, b.0 = a (cycle)
-        h.write_field(a, 0, FzValue::from_ptr(b));
-        h.write_field(a, 8, FzValue::NIL);
-        h.write_field(b, 0, FzValue::from_ptr(a));
-        h.write_field(b, 8, FzValue::NIL);
-
-        // Either root keeps both alive.
-        h.gc(&[FzValue::from_ptr(a)]);
-        assert_eq!(h.live_count(), 2);
-
-        h.gc(&[FzValue::from_ptr(b)]);
-        assert_eq!(h.live_count(), 2);
-
-        // No roots → both freed despite cycle.
-        h.gc(&[]);
-        assert_eq!(h.live_count(), 0);
-        assert_eq!(h.freelist_len(), 2);
-    }
-
-    #[test]
     fn alloc_float_round_trips_payload() {
-        let reg = empty_registry();
-        let mut h = Heap::new(1024, reg);
+        let mut h = Heap::new(1024, empty_registry());
         let p = h.alloc_float(3.14);
         unsafe {
             assert_eq!((*p).kind, HeapKind::Float as u16);
@@ -952,23 +721,10 @@ mod tests {
     }
 
     #[test]
-    fn gc_frees_float_when_unrooted() {
-        let reg = empty_registry();
-        let mut h = Heap::new(1024, reg);
-        let _p = h.alloc_float(2.71);
-        h.gc(&[]);
-        assert_eq!(h.live_count(), 0);
-        assert_eq!(h.freelist_len(), 1);
-    }
-
-    #[test]
     fn alloc_vec_i64_writes_header_len_and_payload() {
-        let reg = empty_registry();
-        let mut h = Heap::new(1024, reg);
+        let mut h = Heap::new(1024, empty_registry());
         let p = h.alloc_vec_i64(&[10, 20, 30]);
-        unsafe {
-            assert_eq!((*p).kind, HeapKind::VecI64 as u16);
-        }
+        unsafe { assert_eq!((*p).kind, HeapKind::VecI64 as u16); }
         assert_eq!(Heap::vec_len(p), 3);
         unsafe {
             let payload = (p as *const u8).add(24) as *const i64;
@@ -980,8 +736,7 @@ mod tests {
 
     #[test]
     fn alloc_vec_u8_packs_bytes() {
-        let reg = empty_registry();
-        let mut h = Heap::new(1024, reg);
+        let mut h = Heap::new(1024, empty_registry());
         let p = h.alloc_vec_u8(&[0xff, 0xab, 0x12]);
         assert_eq!(Heap::vec_len(p), 3);
         unsafe {
@@ -994,11 +749,8 @@ mod tests {
 
     #[test]
     fn alloc_vec_bit_packs_msb_first() {
-        let reg = empty_registry();
-        let mut h = Heap::new(1024, reg);
-        // 1 0 1 1 0 0 1 _ -> 0b1011_0010 = 0xB2 (high 7 bits) + low bit pad 0
-        // Per MSB-first packing: bit0 -> high bit. So 1,0,1,1,0,0,1 = 1011001x
-        // -> 0xB2 (= 0b10110010, the trailing zero is unused in 7-bit slice).
+        let mut h = Heap::new(1024, empty_registry());
+        // 1,0,1,1,0,0,1 = high bits 0b1011001x -> 0xB2 (trailing bit unset).
         let p = h.alloc_vec_bit(&[true, false, true, true, false, false, true]);
         assert_eq!(Heap::vec_len(p), 7);
         unsafe {
@@ -1008,110 +760,59 @@ mod tests {
     }
 
     #[test]
-    fn gc_frees_vec_i64_when_unrooted() {
-        let reg = empty_registry();
-        let mut h = Heap::new(1024, reg);
-        let _v = h.alloc_vec_i64(&[1, 2, 3]);
-        h.gc(&[]);
-        assert_eq!(h.live_count(), 0);
-        assert_eq!(h.freelist_len(), 1);
-    }
-
-    #[test]
-    fn gc_keeps_vec_address_stable_when_rooted() {
-        // Non-moving GC: a rooted vec keeps its exact address across a GC.
-        // Critical for SIMD codegen which holds payload pointers.
-        let reg = empty_registry();
-        let mut h = Heap::new(1024, reg);
-        let p_before = h.alloc_vec_i64(&[100, 200, 300]);
-        let root = FzValue::from_ptr(p_before);
-        h.gc(&[root]);
-        // After GC: root still alive at same address; payload still readable.
-        assert_eq!(h.live_count(), 1);
-        let p_after = root.unbox_ptr().unwrap();
-        assert_eq!(p_before, p_after, "non-moving GC must preserve addresses");
-        assert_eq!(Heap::vec_len(p_after), 3);
-        unsafe {
-            let payload = (p_after as *const u8).add(24) as *const i64;
-            assert_eq!(std::ptr::read(payload.add(1)), 200);
-        }
-    }
-
-    #[test]
-    fn gc_traces_closure_captured() {
-        // fz-ul4.29.5: closure layout: header (16) + stub_fp (8) + N
-        // FzValue captures. The walker reads flags as captured_count and
-        // traces captures at offset 24+i*8.
-        let reg = empty_registry();
-        let mut h = Heap::new(1024, reg);
-        let leaf = h.alloc_list_cons(FzValue::from_int(7), FzValue::NIL);
-        let cl = h.alloc_closure(/* callee_fn_id */ 42, /* captured_count */ 1);
-        unsafe {
-            // stub_fp = 0 (test doesn't dispatch), cap0 = leaf ptr.
-            std::ptr::write((cl as *mut u8).add(16) as *mut u64, 0);
-            std::ptr::write(
-                (cl as *mut u8).add(24) as *mut FzValue,
-                FzValue::from_ptr(leaf),
-            );
-        }
-        h.gc(&[FzValue::from_ptr(cl)]);
-        assert_eq!(h.live_count(), 2);
-    }
-
-    #[test]
-    fn gc_frees_closure_when_unrooted() {
-        let reg = empty_registry();
-        let mut h = Heap::new(1024, reg);
-        let leaf = h.alloc_list_cons(FzValue::from_int(7), FzValue::NIL);
-        let _cl = h.alloc_closure(42, 1);
-        h.gc(&[]);
-        assert_eq!(h.live_count(), 0);
-        assert_eq!(h.freelist_len(), 2);
-    }
-
-    #[test]
-    fn alloc_reuses_freelist() {
-        let reg = empty_registry();
-        let mut h = Heap::new(1024, reg);
-        let _a = h.alloc_list_cons(FzValue::NIL, FzValue::NIL);
-        let bump_after_first = h.bump;
-        h.gc(&[]);
-        assert_eq!(h.freelist_len(), 1);
-        let _b = h.alloc_list_cons(FzValue::NIL, FzValue::NIL);
-        // Second alloc should reuse the freelist slot, not bump further.
-        assert_eq!(h.bump, bump_after_first);
-        assert_eq!(h.freelist_len(), 0);
-    }
-
-    #[test]
-    fn freed_object_kind_is_free_sentinel() {
-        let reg = empty_registry();
-        let mut h = Heap::new(1024, reg);
-        let p = h.alloc_list_cons(FzValue::NIL, FzValue::NIL);
-        h.gc(&[]);
-        unsafe {
-            assert_eq!((*p).kind, FREE_KIND);
-        }
-    }
-
-    #[test]
     fn heap_pointers_are_16_aligned() {
-        let reg = empty_registry();
-        let mut h = Heap::new(1024, reg);
+        let mut h = Heap::new(1024, empty_registry());
         for _ in 0..10 {
             let p = h.alloc_list_cons(FzValue::NIL, FzValue::NIL);
             assert_eq!((p as usize) & 15, 0);
         }
     }
 
+    /// Bump overflow triggers a grow: old block is abandoned (not freed
+    /// until Drop), new block holds further allocations. `bytes_used`
+    /// covers both. Cheney (.8) replaces this leak path.
     #[test]
-    #[should_panic(expected = "out of heap")]
-    fn alloc_panics_when_oom() {
-        let reg = empty_registry();
-        let mut h = Heap::new(64, reg);
-        // Each cons is 32 bytes; 64 capacity → 2 fit, third should OOM.
+    fn alloc_grows_block_on_overflow() {
+        // 64-byte initial block: two 32-byte cons cells fit; third forces grow.
+        let mut h = Heap::new(64, empty_registry());
+        let _a = h.alloc_list_cons(FzValue::NIL, FzValue::NIL);
+        let _b = h.alloc_list_cons(FzValue::NIL, FzValue::NIL);
+        let initial_block = h.block_start;
+        let initial_size = h.block_size;
+        let _c = h.alloc_list_cons(FzValue::NIL, FzValue::NIL);
+        assert_ne!(h.block_start, initial_block, "grow must move block_start");
+        assert!(h.block_size >= initial_size * 2, "grow doubles at minimum");
+        assert_eq!(h.abandoned_blocks.len(), 1);
+        assert_eq!(h.live_count(), 3);
+    }
+
+    /// `should_gc` flips once `bytes_used` crosses `gc_threshold_bytes`;
+    /// `clear_should_gc_flag` resets it. The flag is independent of `gc()`
+    /// itself — the scheduler reads it at park-time.
+    #[test]
+    fn pressure_flag_set_when_threshold_crossed() {
+        let mut h = Heap::new(1024, empty_registry());
+        h.gc_threshold_bytes = 64; // two cons cells.
+        assert!(!h.should_gc());
         let _ = h.alloc_list_cons(FzValue::NIL, FzValue::NIL);
+        assert!(!h.should_gc(), "1 cell at 32 bytes — under 64");
         let _ = h.alloc_list_cons(FzValue::NIL, FzValue::NIL);
+        assert!(h.should_gc(), "2 cells at 64 bytes — at threshold");
+        h.clear_should_gc_flag();
+        assert!(!h.should_gc());
+    }
+
+    /// `gc()` is a stub in fz-siu.7: increments the counter, no reclaim.
+    /// Cheney body lands in .8.
+    #[test]
+    fn gc_stub_only_bumps_counter() {
+        let mut h = Heap::new(1024, empty_registry());
         let _ = h.alloc_list_cons(FzValue::NIL, FzValue::NIL);
+        assert_eq!(h.gc_run_count, 0);
+        h.gc(&[]);
+        assert_eq!(h.gc_run_count, 1);
+        // Stub doesn't reclaim: live_count and bytes_used unchanged.
+        assert_eq!(h.live_count(), 1);
+        assert_eq!(h.bytes_used(), 32);
     }
 }
