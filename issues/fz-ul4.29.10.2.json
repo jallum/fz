@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-ul4.29.10.1"
+  ],
   "blocks": [],
   "created": "2026-05-13T00:39:05Z",
   "description": "At `Term::CallClosure(v, args, cont)` inside the queried-set walk, when `fn_constants[v] = F` is known:\n- Register `(F, typed_args)` in the queried-set just like a direct call would.\n- Skip registering F's any-key from the originating MakeClosure when the closure value's only sinks are resolvable CallClosure sites (i.e., every CallClosure on this var has `fn_constants[v]` populated).\n\nDepends on .29.10.1 (fn_constants must exist).\n\n## Scope\n\n- `src/ir_typer.rs` queried-set walk (around the MakeClosure handling at line 422-437 and cont-site handling): branch on fn_constants for CallClosure/TailCallClosure.\n- The MakeClosure-registration site stays, but is gated: when MakeClosure is `(F, [])` AND every CallClosure consumer of that var has fn_constants known to F, omit the `(F, [any...])` query.\n- The \"every consumer resolvable\" check is local to the body — walk uses of var v; if all CallClosure/TailCallClosure uses resolve via fn_constants and there are no other uses (Return, store-into-tuple, etc.), the closure value never escapes and the any-key is safe to skip.\n\n## Tests (TDD)\n\n- `callclosure_with_fn_constant_registers_narrow_spec`: in `apply2(double, 21)`, the queried-set for double contains `[int_lit(21)]`.\n- `makeclosure_anykey_skipped_when_closure_doesnt_escape`: same fixture — `(double, [any])` NOT in queried set, so .29.12.6's drop logic removes double's any-key.\n- `makeclosure_anykey_kept_when_closure_escapes`: if the closure value is returned or stored into a tuple, the any-key MUST stay registered (we can't see all consumers).\n- Three-path parity: regression-pin against the .29.12 fixture set.\n\n## Out of scope\n\n- IR rewrite (.29.10.3). At this stage codegen still goes through the closure stub, which now dispatches to F's narrow spec rather than F's any-key — that's still correct, just goes through one more indirection.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Typer registers narrow F-spec from known-target CallClosure",
   "type": "task",
-  "updated_at": "2026-05-13T00:39:05Z"
+  "updated_at": "2026-05-13T00:39:12Z"
 }
