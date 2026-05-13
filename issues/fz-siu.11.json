@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-siu.9"
+  ],
   "blocks": [],
   "created": "2026-05-13T04:09:27Z",
   "description": "Spec: docs/cps-in-clif.md §6.5.\n\nWork:\n- Heap::low_live_streak: u8.\n- Increment when live \u003c 25% of current size; reset otherwise.\n- At streak 2, downshift size_class next GC.\n\nAcceptance: test that spikes-then-settles ends with smaller heap than peak.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "fz-cps.GC.5: shrink hysteresis",
   "type": "task",
-  "updated_at": "2026-05-13T04:09:27Z"
+  "updated_at": "2026-05-13T04:09:34Z"
 }
