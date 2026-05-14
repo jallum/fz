@@ -11,7 +11,7 @@
   "parent": "fz-ul4.27.22",
   "priority": 2,
   "status": "open",
-  "title": "fz-ul4.27.22.5: typed halt-cont per program",
+  "title": "fz-cps-closure.5: typed halt-cont per program",
   "type": "task",
   "updated_at": "2026-05-14T02:24:39Z"
 }
