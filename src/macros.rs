@@ -27,11 +27,26 @@ pub enum MacroError {
     /// Item-level call to a name that isn't a `defmacro`.
     NotADefmacro { name: String, call_span: Span },
     /// One of the macro's arguments couldn't be reified to a Value.
-    ArgReification { name: String, call_span: Span, def_span: Option<Span>, inner: String },
+    ArgReification {
+        name: String,
+        call_span: Span,
+        def_span: Option<Span>,
+        inner: String,
+    },
     /// The macro body itself errored at runtime.
-    BodyFailed { name: String, call_span: Span, def_span: Option<Span>, inner: String },
+    BodyFailed {
+        name: String,
+        call_span: Span,
+        def_span: Option<Span>,
+        inner: String,
+    },
     /// The macro returned a Value that couldn't be decoded back to AST.
-    ReturnDecode { name: String, call_span: Span, def_span: Option<Span>, inner: String },
+    ReturnDecode {
+        name: String,
+        call_span: Span,
+        def_span: Option<Span>,
+        inner: String,
+    },
     /// Runaway expansion (exceeded `MAX_EXPANSION_DEPTH`).
     ExpansionLoop { span: Span, max_depth: usize },
     /// `expand_with` saw a pre-resolution Item (Module/Alias/Import/MacroCall).
@@ -50,36 +65,60 @@ impl MacroError {
                 format!("item-level call `{}(...)` is not a defmacro", name),
                 *call_span,
             ),
-            Self::ArgReification { name, call_span, def_span, inner } => {
+            Self::ArgReification {
+                name,
+                call_span,
+                def_span,
+                inner,
+            } => {
                 let mut d = Diagnostic::error(
                     codes::MACRO_ARG_REIFICATION_FAILED,
                     format!("macro `{}` argument reification failed: {}", name, inner),
                     *call_span,
                 );
-                if let Some(ds) = def_span { d = d.with_secondary(*ds, "macro defined here"); }
+                if let Some(ds) = def_span {
+                    d = d.with_secondary(*ds, "macro defined here");
+                }
                 d
             }
-            Self::BodyFailed { name, call_span, def_span, inner } => {
+            Self::BodyFailed {
+                name,
+                call_span,
+                def_span,
+                inner,
+            } => {
                 let mut d = Diagnostic::error(
                     codes::MACRO_BODY_FAILED,
                     format!("macro `{}` body failed: {}", name, inner),
                     *call_span,
                 );
-                if let Some(ds) = def_span { d = d.with_secondary(*ds, "macro defined here"); }
+                if let Some(ds) = def_span {
+                    d = d.with_secondary(*ds, "macro defined here");
+                }
                 d
             }
-            Self::ReturnDecode { name, call_span, def_span, inner } => {
+            Self::ReturnDecode {
+                name,
+                call_span,
+                def_span,
+                inner,
+            } => {
                 let mut d = Diagnostic::error(
                     codes::MACRO_RETURN_DECODE_FAILED,
                     format!("macro `{}` return decode failed: {}", name, inner),
                     *call_span,
                 );
-                if let Some(ds) = def_span { d = d.with_secondary(*ds, "macro defined here"); }
+                if let Some(ds) = def_span {
+                    d = d.with_secondary(*ds, "macro defined here");
+                }
                 d
             }
             Self::ExpansionLoop { span, max_depth } => Diagnostic::error(
                 codes::MACRO_EXPANSION_LOOP,
-                format!("macro expansion exceeded {} levels (likely a runaway macro)", max_depth),
+                format!(
+                    "macro expansion exceeded {} levels (likely a runaway macro)",
+                    max_depth
+                ),
                 *span,
             ),
             Self::PostResolutionLeftover { span } => Diagnostic::error(
@@ -119,7 +158,8 @@ pub fn expand_program(prog: &mut Program) -> Result<(), Box<MacroError>> {
     }
 
     let interp = Interp::new();
-    interp.load_program(prog)
+    interp
+        .load_program(prog)
         .map_err(|e| Box::new(MacroError::LoadFailed { inner: e }))?;
 
     // Item-level expansion: replace Item::MacroCall with whatever items
@@ -163,32 +203,53 @@ fn expand_item_list(
     let mut out: Vec<std::rc::Rc<Item>> = Vec::new();
     for item in items {
         match &*item {
-            Item::MacroCall { name, name_span: _, args, parent_module, span } => {
+            Item::MacroCall {
+                name,
+                name_span: _,
+                args,
+                parent_module,
+                span,
+            } => {
                 let call_span = *span;
                 let def_span = interp.macro_def_spans.borrow().get(name).copied();
                 if !macros.contains(name) {
                     return Err(Box::new(MacroError::NotADefmacro {
-                        name: name.clone(), call_span,
+                        name: name.clone(),
+                        call_span,
                     }));
                 }
-                let arg_vs = args.iter()
+                let arg_vs = args
+                    .iter()
                     .map(expr_to_value)
                     .collect::<Result<Vec<_>, _>>()
-                    .map_err(|e| Box::new(MacroError::ArgReification {
-                        name: name.clone(), call_span, def_span, inner: e,
-                    }))?;
+                    .map_err(|e| {
+                        Box::new(MacroError::ArgReification {
+                            name: name.clone(),
+                            call_span,
+                            def_span,
+                            inner: e,
+                        })
+                    })?;
                 let prev = interp.gensym_table.borrow_mut().take();
-                *interp.gensym_table.borrow_mut() =
-                    Some(std::collections::HashMap::new());
+                *interp.gensym_table.borrow_mut() = Some(std::collections::HashMap::new());
                 let ret = interp.call_named(name, arg_vs);
                 *interp.gensym_table.borrow_mut() = prev;
-                let ret = ret.map_err(|e| Box::new(MacroError::BodyFailed {
-                    name: name.clone(), call_span, def_span, inner: e,
-                }))?;
-                let mut items = value_to_items(&ret)
-                    .map_err(|e| Box::new(MacroError::ReturnDecode {
-                        name: name.clone(), call_span, def_span, inner: e,
-                    }))?;
+                let ret = ret.map_err(|e| {
+                    Box::new(MacroError::BodyFailed {
+                        name: name.clone(),
+                        call_span,
+                        def_span,
+                        inner: e,
+                    })
+                })?;
+                let mut items = value_to_items(&ret).map_err(|e| {
+                    Box::new(MacroError::ReturnDecode {
+                        name: name.clone(),
+                        call_span,
+                        def_span,
+                        inner: e,
+                    })
+                })?;
                 for it in &mut items {
                     if let Item::Fn(def) = it {
                         if let Some(path) = parent_module {
@@ -203,7 +264,9 @@ fn expand_item_list(
                         def.span = call_span;
                         for clause in &mut def.clauses {
                             clause.span = call_span;
-                            for p in &mut clause.params { stamp_pattern(p, call_span, def_span); }
+                            for p in &mut clause.params {
+                                stamp_pattern(p, call_span, def_span);
+                            }
                             stamp_expanded(&mut clause.body, call_span, def_span);
                             if let Some(g) = &mut clause.guard {
                                 stamp_expanded(g, call_span, def_span);
@@ -258,7 +321,12 @@ pub fn value_to_items(v: &Value) -> Result<Vec<Item>, String> {
                     Ok(vec![Item::Fn(FnDef {
                         name,
                         name_span: span,
-                        clauses: vec![FnClause { params: vec![], guard: None, body, span }],
+                        clauses: vec![FnClause {
+                            params: vec![],
+                            guard: None,
+                            body,
+                            span,
+                        }],
                         is_macro: false,
                         attrs: Vec::new(),
                         span,
@@ -288,14 +356,18 @@ pub fn expand_with(
     interp: &Interp,
     macros: &std::collections::HashSet<String>,
 ) -> Result<(), Box<MacroError>> {
-    if macros.is_empty() { return Ok(()); }
+    if macros.is_empty() {
+        return Ok(());
+    }
     for item in &mut prog.items {
         // We Rc::make_mut to get an exclusive ref. At this point in the
         // pipeline the program has just been parsed and isn't shared.
         let item_mut = std::rc::Rc::make_mut(item);
         match item_mut {
             Item::Fn(def) => {
-                if def.is_macro { continue; }
+                if def.is_macro {
+                    continue;
+                }
                 for clause in &mut def.clauses {
                     expand_expr(&mut clause.body, interp, macros, 0)?;
                     if let Some(g) = &mut clause.guard {
@@ -303,11 +375,14 @@ pub fn expand_with(
                     }
                 }
             }
-            Item::Module(m) =>
-                return Err(Box::new(MacroError::PostResolutionLeftover { span: m.span })),
-            Item::Alias { span, .. } | Item::Import { span, .. }
-            | Item::MacroCall { span, .. } =>
-                return Err(Box::new(MacroError::PostResolutionLeftover { span: *span })),
+            Item::Module(m) => {
+                return Err(Box::new(MacroError::PostResolutionLeftover {
+                    span: m.span,
+                }));
+            }
+            Item::Alias { span, .. } | Item::Import { span, .. } | Item::MacroCall { span, .. } => {
+                return Err(Box::new(MacroError::PostResolutionLeftover { span: *span }));
+            }
         }
     }
     Ok(())
@@ -321,7 +396,9 @@ pub fn collect_macros(prog: &Program) -> std::collections::HashSet<String> {
     for item in &prog.items {
         match &**item {
             Item::Fn(def) => {
-                if def.is_macro { out.insert(def.name.clone()); }
+                if def.is_macro {
+                    out.insert(def.name.clone());
+                }
             }
             Item::Module(_) | Item::Alias { .. } | Item::Import { .. } | Item::MacroCall { .. } => {
                 // Pre-flatten programs may still hit this path in tests;
@@ -340,7 +417,8 @@ pub fn expand_expr(
 ) -> Result<(), Box<MacroError>> {
     if depth > MAX_EXPANSION_DEPTH {
         return Err(Box::new(MacroError::ExpansionLoop {
-            span: e.span, max_depth: MAX_EXPANSION_DEPTH,
+            span: e.span,
+            max_depth: MAX_EXPANSION_DEPTH,
         }));
     }
 
@@ -351,24 +429,38 @@ pub fn expand_expr(
             if macros.contains(name) {
                 let call_span = e.span;
                 let def_span = interp.macro_def_spans.borrow().get(name).copied();
-                let arg_vs = args.iter()
+                let arg_vs = args
+                    .iter()
                     .map(expr_to_value)
                     .collect::<Result<Vec<_>, _>>()
-                    .map_err(|inner| Box::new(MacroError::ArgReification {
-                        name: name.clone(), call_span, def_span, inner,
-                    }))?;
+                    .map_err(|inner| {
+                        Box::new(MacroError::ArgReification {
+                            name: name.clone(),
+                            call_span,
+                            def_span,
+                            inner,
+                        })
+                    })?;
                 let prev = interp.gensym_table.borrow_mut().take();
-                *interp.gensym_table.borrow_mut() =
-                    Some(std::collections::HashMap::new());
+                *interp.gensym_table.borrow_mut() = Some(std::collections::HashMap::new());
                 let ret_res = interp.call_named(name, arg_vs);
                 *interp.gensym_table.borrow_mut() = prev;
-                let ret = ret_res.map_err(|inner| Box::new(MacroError::BodyFailed {
-                    name: name.clone(), call_span, def_span, inner,
-                }))?;
-                let mut new_e = value_to_expr(&ret)
-                    .map_err(|inner| Box::new(MacroError::ReturnDecode {
-                        name: name.clone(), call_span, def_span, inner,
-                    }))?;
+                let ret = ret_res.map_err(|inner| {
+                    Box::new(MacroError::BodyFailed {
+                        name: name.clone(),
+                        call_span,
+                        def_span,
+                        inner,
+                    })
+                })?;
+                let mut new_e = value_to_expr(&ret).map_err(|inner| {
+                    Box::new(MacroError::ReturnDecode {
+                        name: name.clone(),
+                        call_span,
+                        def_span,
+                        inner,
+                    })
+                })?;
                 // The decoded tree is entirely DUMMY-spanned. Stamp every
                 // node with the call's span + Expanded lineage so any later
                 // diagnostic can point at the user's `Foo(args)` and show
@@ -382,18 +474,31 @@ pub fn expand_expr(
 
     // Default: recurse into children.
     match &mut e.node {
-        Expr::Int(_) | Expr::Float(_) | Expr::Str(_) | Expr::Atom(_)
-        | Expr::Bool(_) | Expr::Nil | Expr::Var(_) => {}
+        Expr::Int(_)
+        | Expr::Float(_)
+        | Expr::Str(_)
+        | Expr::Atom(_)
+        | Expr::Bool(_)
+        | Expr::Nil
+        | Expr::Var(_) => {}
 
         Expr::List(xs, tail) => {
-            for x in xs { expand_expr(x, interp, macros, depth)?; }
-            if let Some(t) = tail { expand_expr(t, interp, macros, depth)?; }
+            for x in xs {
+                expand_expr(x, interp, macros, depth)?;
+            }
+            if let Some(t) = tail {
+                expand_expr(t, interp, macros, depth)?;
+            }
         }
         Expr::Tuple(xs) | Expr::VecLit(_, xs) | Expr::Block(xs) => {
-            for x in xs { expand_expr(x, interp, macros, depth)?; }
+            for x in xs {
+                expand_expr(x, interp, macros, depth)?;
+            }
         }
         Expr::Bitstring(fields) => {
-            for f in fields { expand_expr(&mut f.value, interp, macros, depth)?; }
+            for f in fields {
+                expand_expr(&mut f.value, interp, macros, depth)?;
+            }
         }
         Expr::Map(pairs) => {
             for (k, v) in pairs {
@@ -414,7 +519,9 @@ pub fn expand_expr(
         }
         Expr::Call(callee, args) => {
             expand_expr(callee, interp, macros, depth)?;
-            for a in args { expand_expr(a, interp, macros, depth)?; }
+            for a in args {
+                expand_expr(a, interp, macros, depth)?;
+            }
         }
         Expr::BinOp(_, l, r) => {
             expand_expr(l, interp, macros, depth)?;
@@ -424,13 +531,17 @@ pub fn expand_expr(
         Expr::If(c, t, els) => {
             expand_expr(c, interp, macros, depth)?;
             expand_expr(t, interp, macros, depth)?;
-            if let Some(e) = els { expand_expr(e, interp, macros, depth)?; }
+            if let Some(e) = els {
+                expand_expr(e, interp, macros, depth)?;
+            }
         }
         Expr::Case(scr, arms) => {
             expand_expr(scr, interp, macros, depth)?;
             for arm in arms {
                 expand_expr(&mut arm.body, interp, macros, depth)?;
-                if let Some(g) = &mut arm.guard { expand_expr(g, interp, macros, depth)?; }
+                if let Some(g) = &mut arm.guard {
+                    expand_expr(g, interp, macros, depth)?;
+                }
             }
         }
         Expr::Cond(pairs) => {
@@ -449,7 +560,9 @@ pub fn expand_expr(
             expand_expr(body, interp, macros, depth)?;
             for arm in else_clauses {
                 expand_expr(&mut arm.body, interp, macros, depth)?;
-                if let Some(g) = &mut arm.guard { expand_expr(g, interp, macros, depth)?; }
+                if let Some(g) = &mut arm.guard {
+                    expand_expr(g, interp, macros, depth)?;
+                }
             }
         }
         Expr::Match(_, rhs) => expand_expr(rhs, interp, macros, depth)?,
@@ -467,26 +580,46 @@ pub fn expand_expr(
 /// the v2 case where Values carry their own spans through quote round-trip;
 /// in v1 every decoded node is DUMMY so nothing is preserved yet.
 fn stamp_expanded(e: &mut Spanned<Expr>, macro_call: Span, definition: Option<Span>) {
-    let origin = SpanOrigin::Expanded { macro_call, definition };
+    let origin = SpanOrigin::Expanded {
+        macro_call,
+        definition,
+    };
     e.origin = origin;
     if e.span.is_dummy() {
         e.span = macro_call;
     }
     match &mut e.node {
-        Expr::Int(_) | Expr::Float(_) | Expr::Str(_) | Expr::Atom(_)
-        | Expr::Bool(_) | Expr::Nil | Expr::Var(_) => {}
+        Expr::Int(_)
+        | Expr::Float(_)
+        | Expr::Str(_)
+        | Expr::Atom(_)
+        | Expr::Bool(_)
+        | Expr::Nil
+        | Expr::Var(_) => {}
         Expr::List(xs, tail) => {
-            for x in xs { stamp_expanded(x, macro_call, definition); }
-            if let Some(t) = tail { stamp_expanded(t, macro_call, definition); }
+            for x in xs {
+                stamp_expanded(x, macro_call, definition);
+            }
+            if let Some(t) = tail {
+                stamp_expanded(t, macro_call, definition);
+            }
         }
         Expr::Tuple(xs) | Expr::VecLit(_, xs) | Expr::Block(xs) => {
-            for x in xs { stamp_expanded(x, macro_call, definition); }
+            for x in xs {
+                stamp_expanded(x, macro_call, definition);
+            }
         }
-        Expr::Bitstring(fields) => for f in fields { stamp_expanded(&mut f.value, macro_call, definition); },
-        Expr::Map(pairs) => for (k, v) in pairs {
-            stamp_expanded(k, macro_call, definition);
-            stamp_expanded(v, macro_call, definition);
-        },
+        Expr::Bitstring(fields) => {
+            for f in fields {
+                stamp_expanded(&mut f.value, macro_call, definition);
+            }
+        }
+        Expr::Map(pairs) => {
+            for (k, v) in pairs {
+                stamp_expanded(k, macro_call, definition);
+                stamp_expanded(v, macro_call, definition);
+            }
+        }
         Expr::MapUpdate(m, pairs) => {
             stamp_expanded(m, macro_call, definition);
             for (k, v) in pairs {
@@ -494,30 +627,44 @@ fn stamp_expanded(e: &mut Spanned<Expr>, macro_call: Span, definition: Option<Sp
                 stamp_expanded(v, macro_call, definition);
             }
         }
-        Expr::Index(o, i) => { stamp_expanded(o, macro_call, definition); stamp_expanded(i, macro_call, definition); }
+        Expr::Index(o, i) => {
+            stamp_expanded(o, macro_call, definition);
+            stamp_expanded(i, macro_call, definition);
+        }
         Expr::Call(callee, args) => {
             stamp_expanded(callee, macro_call, definition);
-            for a in args { stamp_expanded(a, macro_call, definition); }
+            for a in args {
+                stamp_expanded(a, macro_call, definition);
+            }
         }
-        Expr::BinOp(_, l, r) => { stamp_expanded(l, macro_call, definition); stamp_expanded(r, macro_call, definition); }
+        Expr::BinOp(_, l, r) => {
+            stamp_expanded(l, macro_call, definition);
+            stamp_expanded(r, macro_call, definition);
+        }
         Expr::UnOp(_, x) => stamp_expanded(x, macro_call, definition),
         Expr::If(c, t, els) => {
             stamp_expanded(c, macro_call, definition);
             stamp_expanded(t, macro_call, definition);
-            if let Some(e) = els { stamp_expanded(e, macro_call, definition); }
+            if let Some(e) = els {
+                stamp_expanded(e, macro_call, definition);
+            }
         }
         Expr::Case(scr, arms) => {
             stamp_expanded(scr, macro_call, definition);
             for arm in arms {
                 stamp_pattern(&mut arm.pattern, macro_call, definition);
                 stamp_expanded(&mut arm.body, macro_call, definition);
-                if let Some(g) = &mut arm.guard { stamp_expanded(g, macro_call, definition); }
+                if let Some(g) = &mut arm.guard {
+                    stamp_expanded(g, macro_call, definition);
+                }
             }
         }
-        Expr::Cond(pairs) => for (c, b) in pairs {
-            stamp_expanded(c, macro_call, definition);
-            stamp_expanded(b, macro_call, definition);
-        },
+        Expr::Cond(pairs) => {
+            for (c, b) in pairs {
+                stamp_expanded(c, macro_call, definition);
+                stamp_expanded(b, macro_call, definition);
+            }
+        }
         Expr::With(bindings, body, else_clauses) => {
             for b in bindings {
                 match b {
@@ -532,7 +679,9 @@ fn stamp_expanded(e: &mut Spanned<Expr>, macro_call: Span, definition: Option<Sp
             for arm in else_clauses {
                 stamp_pattern(&mut arm.pattern, macro_call, definition);
                 stamp_expanded(&mut arm.body, macro_call, definition);
-                if let Some(g) = &mut arm.guard { stamp_expanded(g, macro_call, definition); }
+                if let Some(g) = &mut arm.guard {
+                    stamp_expanded(g, macro_call, definition);
+                }
             }
         }
         Expr::Match(p, rhs) => {
@@ -540,7 +689,9 @@ fn stamp_expanded(e: &mut Spanned<Expr>, macro_call: Span, definition: Option<Sp
             stamp_expanded(rhs, macro_call, definition);
         }
         Expr::Lambda(params, body) => {
-            for p in params { stamp_pattern(p, macro_call, definition); }
+            for p in params {
+                stamp_pattern(p, macro_call, definition);
+            }
             stamp_expanded(body, macro_call, definition);
         }
         Expr::Quote(inner) | Expr::Unquote(inner) => stamp_expanded(inner, macro_call, definition),
@@ -548,25 +699,48 @@ fn stamp_expanded(e: &mut Spanned<Expr>, macro_call: Span, definition: Option<Sp
 }
 
 fn stamp_pattern(p: &mut Spanned<Pattern>, macro_call: Span, definition: Option<Span>) {
-    let origin = SpanOrigin::Expanded { macro_call, definition };
+    let origin = SpanOrigin::Expanded {
+        macro_call,
+        definition,
+    };
     p.origin = origin;
     if p.span.is_dummy() {
         p.span = macro_call;
     }
     match &mut p.node {
-        Pattern::Wildcard | Pattern::Var(_) | Pattern::Int(_) | Pattern::Float(_)
-        | Pattern::Str(_) | Pattern::Atom(_) | Pattern::Bool(_) | Pattern::Nil => {}
-        Pattern::Tuple(xs) => for x in xs { stamp_pattern(x, macro_call, definition); },
-        Pattern::List(heads, tail) => {
-            for h in heads { stamp_pattern(h, macro_call, definition); }
-            if let Some(t) = tail { stamp_pattern(t, macro_call, definition); }
+        Pattern::Wildcard
+        | Pattern::Var(_)
+        | Pattern::Int(_)
+        | Pattern::Float(_)
+        | Pattern::Str(_)
+        | Pattern::Atom(_)
+        | Pattern::Bool(_)
+        | Pattern::Nil => {}
+        Pattern::Tuple(xs) => {
+            for x in xs {
+                stamp_pattern(x, macro_call, definition);
+            }
         }
-        Pattern::Map(pairs) => for (k, v) in pairs {
-            stamp_pattern(k, macro_call, definition);
-            stamp_pattern(v, macro_call, definition);
-        },
+        Pattern::List(heads, tail) => {
+            for h in heads {
+                stamp_pattern(h, macro_call, definition);
+            }
+            if let Some(t) = tail {
+                stamp_pattern(t, macro_call, definition);
+            }
+        }
+        Pattern::Map(pairs) => {
+            for (k, v) in pairs {
+                stamp_pattern(k, macro_call, definition);
+                stamp_pattern(v, macro_call, definition);
+            }
+        }
         Pattern::As(_, inner) => stamp_pattern(inner, macro_call, definition),
-        Pattern::Bitstring(fields) => for f in fields { stamp_pattern(&mut f.value, macro_call, definition); },
+        Pattern::Bitstring(fields) => {
+            for f in fields {
+                stamp_pattern(&mut f.value, macro_call, definition);
+            }
+        }
     }
 }
 
@@ -675,8 +849,10 @@ fn main() do loop_m(0) end
         let mut prog = parse(src);
         let res = expand_program(&mut prog);
         assert!(res.is_err(), "expected expansion error");
-        assert!(matches!(*res.unwrap_err(), MacroError::ExpansionLoop { .. }),
-            "expected ExpansionLoop variant");
+        assert!(
+            matches!(*res.unwrap_err(), MacroError::ExpansionLoop { .. }),
+            "expected ExpansionLoop variant"
+        );
     }
 
     #[test]
@@ -695,8 +871,11 @@ fn main() do
 end
 "#;
         let v = run(src);
-        assert!(matches!(v, crate::value::Value::Int(1)),
-            "expected caller's t (1) to survive, got {:?}", v);
+        assert!(
+            matches!(v, crate::value::Value::Int(1)),
+            "expected caller's t (1) to survive, got {:?}",
+            v
+        );
     }
 
     #[test]
@@ -757,8 +936,11 @@ fn main() do User.run() end
 "#;
         // M.bump expands at compile time into M.helper(7) (a fully
         // qualified call), so the result is 107.
-        assert!(matches!(run(src), crate::value::Value::Int(107)),
-            "expected 107, got {:?}", run(src));
+        assert!(
+            matches!(run(src), crate::value::Value::Int(107)),
+            "expected 107, got {:?}",
+            run(src)
+        );
     }
 
     #[test]
@@ -795,8 +977,11 @@ fn main() do
   answer()
 end
 "#;
-        assert!(matches!(run(src), crate::value::Value::Int(42)),
-            "expected 42, got {:?}", run(src));
+        assert!(
+            matches!(run(src), crate::value::Value::Int(42)),
+            "expected 42, got {:?}",
+            run(src)
+        );
     }
 
     #[test]
@@ -836,8 +1021,11 @@ fn main() do
   Constants.pi_ish()
 end
 "#;
-        assert!(matches!(run(src), crate::value::Value::Int(314)),
-            "expected 314, got {:?}", run(src));
+        assert!(
+            matches!(run(src), crate::value::Value::Int(314)),
+            "expected 314, got {:?}",
+            run(src)
+        );
     }
 
     #[test]
@@ -862,7 +1050,9 @@ end
         let src = "fn main(), do: 1 + 2";
         let mut prog = parse(src);
         expand_program(&mut prog).expect("expand");
-        let Item::Fn(def) = &*prog.items[0] else { panic!() };
+        let Item::Fn(def) = &*prog.items[0] else {
+            panic!()
+        };
         let body = &def.clauses[0].body;
         assert!(matches!(body.origin, crate::diag::SpanOrigin::Source));
     }
@@ -883,36 +1073,58 @@ fn main() do plus_one(41) end
 
         // Capture the macro call's span BEFORE expansion replaces it.
         let call_span_before = {
-            let Item::Fn(def) = &*prog.items.iter().find_map(|it| match &**it {
-                Item::Fn(d) if d.name == "main" => Some(it.clone()),
-                _ => None,
-            }).unwrap() else { panic!() };
+            let Item::Fn(def) = &*prog
+                .items
+                .iter()
+                .find_map(|it| match &**it {
+                    Item::Fn(d) if d.name == "main" => Some(it.clone()),
+                    _ => None,
+                })
+                .unwrap()
+            else {
+                panic!()
+            };
             // main's body is the macro Call expression directly.
             def.clauses[0].body.span
         };
 
         expand_program(&mut prog).expect("expand");
 
-        let Item::Fn(def) = &*prog.items.iter().find_map(|it| match &**it {
-            Item::Fn(d) if d.name == "main" => Some(it.clone()),
-            _ => None,
-        }).unwrap() else { panic!() };
+        let Item::Fn(def) = &*prog
+            .items
+            .iter()
+            .find_map(|it| match &**it {
+                Item::Fn(d) if d.name == "main" => Some(it.clone()),
+                _ => None,
+            })
+            .unwrap()
+        else {
+            panic!()
+        };
         let body = &def.clauses[0].body;
         // The post-expansion body is `unquote_result + 1`. It must carry
         // Expanded lineage pointing at the original call site, plus a
         // definition span pointing at the defmacro declaration.
         let (macro_call, definition) = match body.origin {
-            crate::diag::SpanOrigin::Expanded { macro_call, definition } => (macro_call, definition),
+            crate::diag::SpanOrigin::Expanded {
+                macro_call,
+                definition,
+            } => (macro_call, definition),
             other => panic!("expected Expanded lineage, got {:?}", other),
         };
-        assert_eq!(macro_call, call_span_before,
-            "macro_call should point at the user's plus_one(41) call");
+        assert_eq!(
+            macro_call, call_span_before,
+            "macro_call should point at the user's plus_one(41) call"
+        );
         // The defmacro plus_one(x) do … end declaration must be the source
         // for `definition`.
         let def_span = definition.expect("definition span should be populated");
         let def_text = &src[def_span.start as usize..def_span.end as usize];
-        assert!(def_text.starts_with("defmacro plus_one"),
-            "definition span should slice the defmacro declaration, got {:?}", def_text);
+        assert!(
+            def_text.starts_with("defmacro plus_one"),
+            "definition span should slice the defmacro declaration, got {:?}",
+            def_text
+        );
         // The body's own span should also point at the call site (since
         // the decoded tree had DUMMY everywhere, we filled it in).
         assert_eq!(body.span, call_span_before);
@@ -930,20 +1142,33 @@ fn main() do plus_one(41) end
 "#;
         let mut prog = parse(src);
         expand_program(&mut prog).expect("expand");
-        let Item::Fn(def) = &*prog.items.iter().find_map(|it| match &**it {
-            Item::Fn(d) if d.name == "main" => Some(it.clone()),
-            _ => None,
-        }).unwrap() else { panic!() };
+        let Item::Fn(def) = &*prog
+            .items
+            .iter()
+            .find_map(|it| match &**it {
+                Item::Fn(d) if d.name == "main" => Some(it.clone()),
+                _ => None,
+            })
+            .unwrap()
+        else {
+            panic!()
+        };
         let body = &def.clauses[0].body;
         // The body is BinOp(Add, lhs, rhs). Both operands should carry
         // Expanded lineage.
         let Expr::BinOp(_, lhs, rhs) = &body.node else {
             panic!("expected BinOp, got {:?}", body.node);
         };
-        assert!(matches!(lhs.origin, crate::diag::SpanOrigin::Expanded { .. }),
-                "lhs should carry Expanded lineage, got {:?}", lhs.origin);
-        assert!(matches!(rhs.origin, crate::diag::SpanOrigin::Expanded { .. }),
-                "rhs should carry Expanded lineage, got {:?}", rhs.origin);
+        assert!(
+            matches!(lhs.origin, crate::diag::SpanOrigin::Expanded { .. }),
+            "lhs should carry Expanded lineage, got {:?}",
+            lhs.origin
+        );
+        assert!(
+            matches!(rhs.origin, crate::diag::SpanOrigin::Expanded { .. }),
+            "rhs should carry Expanded lineage, got {:?}",
+            rhs.origin
+        );
     }
 
     /// Nested macros: when M2 expands into M1(unquote(x)) and M1 then
@@ -961,22 +1186,38 @@ fn main() do m2(40) end
 "#;
         let mut prog = parse(src);
         let outer_call_span = {
-            let Item::Fn(def) = &*prog.items.iter().find_map(|it| match &**it {
-                Item::Fn(d) if d.name == "main" => Some(it.clone()),
-                _ => None,
-            }).unwrap() else { panic!() };
+            let Item::Fn(def) = &*prog
+                .items
+                .iter()
+                .find_map(|it| match &**it {
+                    Item::Fn(d) if d.name == "main" => Some(it.clone()),
+                    _ => None,
+                })
+                .unwrap()
+            else {
+                panic!()
+            };
             def.clauses[0].body.span
         };
         expand_program(&mut prog).expect("expand");
-        let Item::Fn(def) = &*prog.items.iter().find_map(|it| match &**it {
-            Item::Fn(d) if d.name == "main" => Some(it.clone()),
-            _ => None,
-        }).unwrap() else { panic!() };
+        let Item::Fn(def) = &*prog
+            .items
+            .iter()
+            .find_map(|it| match &**it {
+                Item::Fn(d) if d.name == "main" => Some(it.clone()),
+                _ => None,
+            })
+            .unwrap()
+        else {
+            panic!()
+        };
         let body = &def.clauses[0].body;
         match body.origin {
             crate::diag::SpanOrigin::Expanded { macro_call, .. } => {
-                assert_eq!(macro_call, outer_call_span,
-                    "outermost call site should win for nested macros");
+                assert_eq!(
+                    macro_call, outer_call_span,
+                    "outermost call site should win for nested macros"
+                );
             }
             other => panic!("expected Expanded lineage, got {:?}", other),
         }
@@ -1000,26 +1241,44 @@ fn main(), do: answer()
 "#;
         let mut prog = parse(src);
         // Find the original `make_const(...)` MacroCall's span before expansion.
-        let macro_call_span = prog.items.iter().find_map(|it| match &**it {
-            Item::MacroCall { name, span, .. } if name == "make_const" => Some(*span),
-            _ => None,
-        }).expect("make_const MacroCall pre-expansion");
+        let macro_call_span = prog
+            .items
+            .iter()
+            .find_map(|it| match &**it {
+                Item::MacroCall { name, span, .. } if name == "make_const" => Some(*span),
+                _ => None,
+            })
+            .expect("make_const MacroCall pre-expansion");
 
         expand_program(&mut prog).expect("expand");
 
-        let Item::Fn(answer) = &*prog.items.iter().find_map(|it| match &**it {
-            Item::Fn(d) if d.name == "answer" => Some(it.clone()),
-            _ => None,
-        }).expect("answer fn after expansion") else { panic!() };
+        let Item::Fn(answer) = &*prog
+            .items
+            .iter()
+            .find_map(|it| match &**it {
+                Item::Fn(d) if d.name == "answer" => Some(it.clone()),
+                _ => None,
+            })
+            .expect("answer fn after expansion")
+        else {
+            panic!()
+        };
         let body = &answer.clauses[0].body;
         match body.origin {
-            crate::diag::SpanOrigin::Expanded { macro_call, definition } => {
-                assert_eq!(macro_call, macro_call_span,
-                    "spliced fn's body should point at the make_const(...) call");
+            crate::diag::SpanOrigin::Expanded {
+                macro_call,
+                definition,
+            } => {
+                assert_eq!(
+                    macro_call, macro_call_span,
+                    "spliced fn's body should point at the make_const(...) call"
+                );
                 let def_span = definition.expect("definition span on item-macro splice");
                 let def_text = &src[def_span.start as usize..def_span.end as usize];
-                assert!(def_text.starts_with("defmacro make_const"),
-                    "definition span should slice the defmacro declaration");
+                assert!(
+                    def_text.starts_with("defmacro make_const"),
+                    "definition span should slice the defmacro declaration"
+                );
             }
             other => panic!("expected Expanded origin, got {:?}", other),
         }
@@ -1041,8 +1300,11 @@ fn main() do loop_m(0) end
         let mut prog = parse(src);
         let err = expand_program(&mut prog).unwrap_err();
         let d = err.to_diagnostic();
-        assert_ne!(d.primary.span, Span::DUMMY,
-            "ExpansionLoop should carry a real span");
+        assert_ne!(
+            d.primary.span,
+            Span::DUMMY,
+            "ExpansionLoop should carry a real span"
+        );
         assert_eq!(d.code, codes::MACRO_EXPANSION_LOOP);
     }
 
@@ -1061,13 +1323,23 @@ fn main() do bad() end
         let mut prog = parse(src);
         let err = expand_program(&mut prog).unwrap_err();
         match *err {
-            MacroError::BodyFailed { call_span, def_span, .. } => {
-                assert_ne!(call_span, Span::DUMMY,
-                    "BodyFailed should carry a real call_span");
+            MacroError::BodyFailed {
+                call_span,
+                def_span,
+                ..
+            } => {
+                assert_ne!(
+                    call_span,
+                    Span::DUMMY,
+                    "BodyFailed should carry a real call_span"
+                );
                 let ds = def_span.expect("def_span should be populated");
                 let def_text = &src[ds.start as usize..ds.end as usize];
-                assert!(def_text.starts_with("defmacro bad"),
-                    "def_span should slice the defmacro decl, got {:?}", def_text);
+                assert!(
+                    def_text.starts_with("defmacro bad"),
+                    "def_span should slice the defmacro decl, got {:?}",
+                    def_text
+                );
             }
             other => panic!("expected BodyFailed, got {:?}", other),
         }
@@ -1087,7 +1359,10 @@ fn main() do bad() end
         let call_span = Span::new(crate::diag::FileId(0), 10, 20);
         super::stamp_expanded(&mut e, call_span, None);
         match e.origin {
-            crate::diag::SpanOrigin::Expanded { macro_call, definition } => {
+            crate::diag::SpanOrigin::Expanded {
+                macro_call,
+                definition,
+            } => {
                 assert_eq!(macro_call, call_span);
                 assert_eq!(definition, None);
             }

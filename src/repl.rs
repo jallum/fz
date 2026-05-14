@@ -38,11 +38,18 @@ pub fn run() -> io::Result<()> {
         let line = match lines.next() {
             Some(Ok(l)) => l,
             Some(Err(e)) => return Err(e),
-            None => { println!(); break; }
+            None => {
+                println!();
+                break;
+            }
         };
         let trimmed = line.trim();
-        if buf.is_empty() && (trimmed == ":q" || trimmed == ":quit") { break; }
-        if buf.is_empty() && trimmed.is_empty() { continue; }
+        if buf.is_empty() && (trimmed == ":q" || trimmed == ":quit") {
+            break;
+        }
+        if buf.is_empty() && trimmed.is_empty() {
+            continue;
+        }
         // `?name` — print @doc / @moduledoc for the given name. Mirrors
         // Elixir's `h fn`. Only fires at top level (empty buf) since it
         // isn't valid fz syntax.
@@ -52,7 +59,9 @@ pub fn run() -> io::Result<()> {
             continue;
         }
 
-        if !buf.is_empty() { buf.push('\n'); }
+        if !buf.is_empty() {
+            buf.push('\n');
+        }
         buf.push_str(&line);
 
         match try_eval(&buf, &interp, &repl_env) {
@@ -83,13 +92,16 @@ fn try_eval(src: &str, interp: &Interp, env: &Env) -> Outcome {
     // Try as a fn definition (top-level). If the first non-newline token isn't
     // `fn` or `defmacro`, the program-parse will fail immediately; we then try
     // expression parsing.
-    let starts_with_fn = toks.iter()
+    let starts_with_fn = toks
+        .iter()
         .map(|t| &t.tok)
         .find(|t| !matches!(t, crate::lexer::Tok::Newline | crate::lexer::Tok::Semi))
-        .map(|t| matches!(t,
-            crate::lexer::Tok::Fn
-            | crate::lexer::Tok::Defmacro
-            | crate::lexer::Tok::Defmodule))
+        .map(|t| {
+            matches!(
+                t,
+                crate::lexer::Tok::Fn | crate::lexer::Tok::Defmacro | crate::lexer::Tok::Defmodule
+            )
+        })
         .unwrap_or(false);
 
     if starts_with_fn {
@@ -101,7 +113,10 @@ fn try_eval(src: &str, interp: &Interp, env: &Env) -> Outcome {
                     Err(e) => return Outcome::Err(format!("module: {}", e)),
                 };
                 for (path, doc) in &prog.module_docs {
-                    interp.module_docs.borrow_mut().insert(path.clone(), doc.clone());
+                    interp
+                        .module_docs
+                        .borrow_mut()
+                        .insert(path.clone(), doc.clone());
                 }
                 // Two-phase: load macros first (so they're callable during
                 // expansion), expand fn bodies, then load the expanded fns.
@@ -120,7 +135,9 @@ fn try_eval(src: &str, interp: &Interp, env: &Env) -> Outcome {
                 return Outcome::Ok;
             }
             Err(e) => {
-                if is_incomplete(&e) { return Outcome::Incomplete; }
+                if is_incomplete(&e) {
+                    return Outcome::Incomplete;
+                }
                 return Outcome::Err(format!("{}", e));
             }
         }
@@ -136,13 +153,19 @@ fn try_eval(src: &str, interp: &Interp, env: &Env) -> Outcome {
             }
             match interp.eval(&e, env) {
                 Ok(Value::Nil) => Outcome::Ok,
-                Ok(v) => { println!("{}", v); Outcome::Ok }
+                Ok(v) => {
+                    println!("{}", v);
+                    Outcome::Ok
+                }
                 Err(msg) => Outcome::Err(msg),
             }
         }
         Err(e) => {
-            if is_incomplete(&e) { Outcome::Incomplete }
-            else { Outcome::Err(format!("{}", e)) }
+            if is_incomplete(&e) {
+                Outcome::Incomplete
+            } else {
+                Outcome::Err(format!("{}", e))
+            }
         }
     }
 }
@@ -154,12 +177,19 @@ fn load_items_filtered(interp: &Interp, prog: &Program, macros_only: bool) -> Re
     use std::rc::Rc;
     for item in &prog.items {
         match &**item {
-            Item::Module(_) | Item::Alias { .. } | Item::Import { .. } | Item::MacroCall { .. } => continue, // flattened away upstream
+            Item::Module(_) | Item::Alias { .. } | Item::Import { .. } | Item::MacroCall { .. } => {
+                continue;
+            } // flattened away upstream
             Item::Fn(def) => {
-                if macros_only != def.is_macro { continue; }
+                if macros_only != def.is_macro {
+                    continue;
+                }
                 if def.is_macro {
                     interp.macro_names.borrow_mut().insert(def.name.clone());
-                    interp.macro_def_spans.borrow_mut().insert(def.name.clone(), def.span);
+                    interp
+                        .macro_def_spans
+                        .borrow_mut()
+                        .insert(def.name.clone(), def.span);
                 }
                 // If a closure already exists under this name *and* the new
                 // clauses match arity, append. Otherwise replace. Matches
@@ -177,8 +207,12 @@ fn load_items_filtered(interp: &Interp, prog: &Program, macros_only: bool) -> Re
                         combined.append(&mut clauses);
                         clauses = combined;
                         // Preserve prior doc / spec_text if the new def didn't carry one.
-                        if doc.is_none() { doc = c.doc.clone(); }
-                        if spec_text.is_none() { spec_text = c.spec_text.clone(); }
+                        if doc.is_none() {
+                            doc = c.doc.clone();
+                        }
+                        if spec_text.is_none() {
+                            spec_text = c.spec_text.clone();
+                        }
                     }
                 }
                 let closure = Value::Closure(Rc::new(crate::value::Closure {
@@ -212,7 +246,9 @@ fn lookup_doc(interp: &Interp, name: &str) -> String {
             out.push_str(s);
         }
         if let Some(d) = &c.doc {
-            if !out.is_empty() { out.push('\n'); }
+            if !out.is_empty() {
+                out.push('\n');
+            }
             out.push_str("@doc:  ");
             out.push_str(d);
         }
@@ -252,14 +288,22 @@ mod tests {
         let mut buf = String::new();
         let mut out: Vec<Result<Value, String>> = Vec::new();
         for line in lines {
-            if !buf.is_empty() { buf.push('\n'); }
+            if !buf.is_empty() {
+                buf.push('\n');
+            }
             buf.push_str(line);
 
             let toks = match Lexer::new(&buf).tokenize() {
                 Ok(t) => t,
-                Err(e) => { out.push(Err(format!("{}", e))); buf.clear(); continue; }
+                Err(e) => {
+                    out.push(Err(format!("{}", e)));
+                    buf.clear();
+                    continue;
+                }
             };
-            let starts_with_fn = toks.iter().map(|t| &t.tok)
+            let starts_with_fn = toks
+                .iter()
+                .map(|t| &t.tok)
                 .find(|t| !matches!(t, crate::lexer::Tok::Newline | crate::lexer::Tok::Semi))
                 .map(|t| matches!(t, crate::lexer::Tok::Fn | crate::lexer::Tok::Defmacro))
                 .unwrap_or(false);
@@ -273,7 +317,10 @@ mod tests {
                         buf.clear();
                     }
                     Err(e) if is_incomplete(&e) => {} // keep buffering
-                    Err(e) => { out.push(Err(format!("{}", e))); buf.clear(); }
+                    Err(e) => {
+                        out.push(Err(format!("{}", e)));
+                        buf.clear();
+                    }
                 }
                 continue;
             }
@@ -284,7 +331,10 @@ mod tests {
                     buf.clear();
                 }
                 Err(e) if is_incomplete(&e) => {}
-                Err(e) => { out.push(Err(format!("{}", e))); buf.clear(); }
+                Err(e) => {
+                    out.push(Err(format!("{}", e)));
+                    buf.clear();
+                }
             }
         }
         out
@@ -311,8 +361,11 @@ mod tests {
             "fn fact(n), do: n * fact(n - 1)",
             "fact(6)",
         ]);
-        assert!(matches!(r[2], Ok(Value::Int(720))),
-            "expected 720, got {:?}", r[2]);
+        assert!(
+            matches!(r[2], Ok(Value::Int(720))),
+            "expected 720, got {:?}",
+            r[2]
+        );
     }
 
     #[test]
@@ -339,7 +392,10 @@ mod tests {
         let prog = Parser::new(toks).parse_program().expect("parse");
         let prog = crate::resolve::flatten_modules(prog).expect("resolve");
         for (path, doc) in &prog.module_docs {
-            interp.module_docs.borrow_mut().insert(path.clone(), doc.clone());
+            interp
+                .module_docs
+                .borrow_mut()
+                .insert(path.clone(), doc.clone());
         }
         load_program_test(&interp, &prog).expect("load");
         interp
@@ -347,23 +403,27 @@ mod tests {
 
     #[test]
     fn doc_query_finds_module_fn_doc() {
-        let interp = load(r#"
+        let interp = load(
+            r#"
 defmodule M do
   @doc "adds two"
   fn add(a, b), do: a + b
 end
-"#);
+"#,
+        );
         assert_eq!(lookup_doc(&interp, "M.add"), "@doc:  adds two");
     }
 
     #[test]
     fn doc_query_finds_moduledoc() {
-        let interp = load(r#"
+        let interp = load(
+            r#"
 defmodule M do
   @moduledoc "the M module"
   fn add(a, b), do: a + b
 end
-"#);
+"#,
+        );
         assert_eq!(lookup_doc(&interp, "M"), "the M module");
     }
 
@@ -371,34 +431,56 @@ end
     fn doc_query_surfaces_spec_when_declared() {
         // .31.6 — `?<name>` renders @spec alongside @doc when both are
         // declared.
-        let interp = load(r#"
+        let interp = load(
+            r#"
 defmodule M do
   @doc "adds one"
   @spec add1(integer) :: integer
   fn add1(n), do: n + 1
 end
-"#);
+"#,
+        );
         let out = lookup_doc(&interp, "M.add1");
-        assert!(out.contains("@spec"), "should render @spec line; got: {}", out);
-        assert!(out.contains("@doc"), "should render @doc line; got: {}", out);
+        assert!(
+            out.contains("@spec"),
+            "should render @spec line; got: {}",
+            out
+        );
+        assert!(
+            out.contains("@doc"),
+            "should render @doc line; got: {}",
+            out
+        );
         // Descr Display renders integer as `int` (the lattice's name).
-        assert!(out.contains("(int) -> int"),
-            "should render declared Descrs; got: {}", out);
+        assert!(
+            out.contains("(int) -> int"),
+            "should render declared Descrs; got: {}",
+            out
+        );
     }
 
     #[test]
     fn doc_query_surfaces_spec_without_doc() {
         // .31.6 — @spec alone still surfaces in `?<name>`.
-        let interp = load(r#"
+        let interp = load(
+            r#"
 defmodule M do
   @spec add1(integer) :: integer
   fn add1(n), do: n + 1
 end
-"#);
+"#,
+        );
         let out = lookup_doc(&interp, "M.add1");
-        assert!(out.contains("@spec"), "should render @spec line; got: {}", out);
-        assert!(!out.contains("no documentation"),
-            "@spec alone counts as documentation; got: {}", out);
+        assert!(
+            out.contains("@spec"),
+            "should render @spec line; got: {}",
+            out
+        );
+        assert!(
+            !out.contains("no documentation"),
+            "@spec alone counts as documentation; got: {}",
+            out
+        );
     }
 
     #[test]
@@ -421,11 +503,7 @@ end
 
     #[test]
     fn redefines_fn_with_different_arity() {
-        let r = drive(&[
-            "fn f(x), do: x + 1",
-            "fn f(x, y), do: x + y",
-            "f(10, 20)",
-        ]);
+        let r = drive(&["fn f(x), do: x + 1", "fn f(x, y), do: x + y", "f(10, 20)"]);
         // Different arity → replace, not append. f/2 should resolve.
         assert!(matches!(r[2], Ok(Value::Int(30))), "got {:?}", r[2]);
     }

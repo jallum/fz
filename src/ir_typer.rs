@@ -58,7 +58,9 @@ fn build_call_graph(
     for f in &m.fns {
         let n = f.block(f.entry).params.len();
         let any_key = vec![Descr::any(); n];
-        let Some(ft) = specs.get(&(f.id, any_key)) else { continue; };
+        let Some(ft) = specs.get(&(f.id, any_key)) else {
+            continue;
+        };
         let edges = g.entry(f.id).or_default();
         for b in &f.blocks {
             for stmt in &b.stmts {
@@ -68,14 +70,22 @@ fn build_call_graph(
                 }
             }
             match &b.terminator {
-                Term::Call { callee, continuation, .. } => {
+                Term::Call {
+                    callee,
+                    continuation,
+                    ..
+                } => {
                     edges.insert(*callee);
                     edges.insert(continuation.fn_id);
                 }
                 Term::TailCall { callee, .. } => {
                     edges.insert(*callee);
                 }
-                Term::CallClosure { closure, continuation, .. } => {
+                Term::CallClosure {
+                    closure,
+                    continuation,
+                    ..
+                } => {
                     if let Some(&target) = ft.fn_constants.get(closure) {
                         edges.insert(target);
                     }
@@ -136,7 +146,9 @@ fn tarjan_scc(graph: &HashMap<FnId, HashSet<FnId>>) -> Vec<Vec<FnId>> {
                 let w = s.stack.pop().unwrap();
                 s.on_stack.remove(&w);
                 comp.push(w);
-                if w == v { break; }
+                if w == v {
+                    break;
+                }
             }
             s.sccs.push(comp);
         }
@@ -222,7 +234,9 @@ impl ModuleTypes {
         // Walk the specs map for any key consisting entirely of `any`.
         // Cheap: spec count is small (~n_fns).
         for ((fid, key), ft) in &self.specs {
-            if *fid != fn_id { continue; }
+            if *fid != fn_id {
+                continue;
+            }
             if key.iter().all(|d| d.is_equiv(&Descr::any())) {
                 return Some(ft);
             }
@@ -238,7 +252,9 @@ impl ModuleTypes {
     pub fn any_spec_for(&self, fn_id: FnId) -> Option<&FnTypes> {
         let mut best: Option<(String, &FnTypes)> = None;
         for ((fid, key), ft) in &self.specs {
-            if *fid != fn_id { continue; }
+            if *fid != fn_id {
+                continue;
+            }
             let ks = format!("{:?}", key);
             match &best {
                 None => best = Some((ks, ft)),
@@ -350,10 +366,11 @@ fn opaque_consumer_arities(
     specs: &HashMap<(FnId, Vec<Descr>), FnTypes>,
 ) -> std::collections::HashSet<usize> {
     let mut arities = std::collections::HashSet::new();
-    let idx_of: HashMap<FnId, usize> = m.fns.iter().enumerate()
-        .map(|(i, f)| (f.id, i)).collect();
+    let idx_of: HashMap<FnId, usize> = m.fns.iter().enumerate().map(|(i, f)| (f.id, i)).collect();
     for ((fid, _key), ft) in specs {
-        let Some(&i) = idx_of.get(fid) else { continue; };
+        let Some(&i) = idx_of.get(fid) else {
+            continue;
+        };
         let f = &m.fns[i];
         for b in &f.blocks {
             // Terminator-level opaque dispatch.
@@ -401,7 +418,10 @@ pub fn type_module(m: &Module) -> ModuleTypes {
         let specs = type_module_pass(m, &prev_returns);
         let effective_returns = compute_effective_returns(m, &specs, &prev_returns);
         if effective_returns == prev_returns {
-            return ModuleTypes { specs, effective_returns };
+            return ModuleTypes {
+                specs,
+                effective_returns,
+            };
         }
         prev_returns = effective_returns;
     }
@@ -410,7 +430,10 @@ pub fn type_module(m: &Module) -> ModuleTypes {
     // every fixture we've seen.
     let specs = type_module_pass(m, &prev_returns);
     let effective_returns = compute_effective_returns(m, &specs, &prev_returns);
-    ModuleTypes { specs, effective_returns }
+    ModuleTypes {
+        specs,
+        effective_returns,
+    }
 }
 
 fn type_module_pass(
@@ -440,7 +463,9 @@ fn type_module_pass(
     sccs.reverse(); // caller-first
     let mut scc_of: HashMap<FnId, usize> = HashMap::new();
     for (i, scc) in sccs.iter().enumerate() {
-        for fid in scc { scc_of.insert(*fid, i); }
+        for fid in scc {
+            scc_of.insert(*fid, i);
+        }
     }
 
     // fz-vw4.2: pending is seeded ONLY from entry_seeds (reachability
@@ -454,8 +479,7 @@ fn type_module_pass(
     }
     // Callsite fn-constants accumulated across walks (unified across
     // multiple callsites sharing the same (callee, key)).
-    let mut callsite_fn_consts: HashMap<(FnId, Vec<Descr>), Vec<Option<FnId>>> =
-        HashMap::new();
+    let mut callsite_fn_consts: HashMap<(FnId, Vec<Descr>), Vec<Option<FnId>>> = HashMap::new();
     // LUB-narrowed entry-param Descrs per fn — built up across all
     // direct callsites for the legacy by_fn_idx view.
 
@@ -472,11 +496,15 @@ fn type_module_pass(
                     }
                 }
             }
-            if to_process.is_empty() { break; }
+            if to_process.is_empty() {
+                break;
+            }
             // Process each (fn, key) — register spec if new, walk body,
             // emit pending entries for discovered callsite keys.
             for (fid, key) in to_process {
-                let Some(&j) = idx_of.get(&fid) else { continue; };
+                let Some(&j) = idx_of.get(&fid) else {
+                    continue;
+                };
                 let entry_key = (fid, key.clone());
                 if !specs.contains_key(&entry_key) {
                     let mut ft = type_fn(&m.fns[j], m, Some(&key));
@@ -495,9 +523,15 @@ fn type_module_pass(
                 // borrow so we can mutate `specs` / `pending` inside.
                 let caller_ft = specs.get(&entry_key).cloned().unwrap();
                 walk_spec_for_discovery(
-                    &m.fns[j], &caller_ft, m, &specs, prev_returns,
-                    &scc_set, iter >= WIDEN_AT,
-                    &mut pending, &mut callsite_fn_consts,
+                    &m.fns[j],
+                    &caller_ft,
+                    m,
+                    &specs,
+                    prev_returns,
+                    &scc_set,
+                    iter >= WIDEN_AT,
+                    &mut pending,
+                    &mut callsite_fn_consts,
                 );
             }
         }
@@ -517,7 +551,8 @@ fn type_module_pass(
     // HashSet (duplicates collapse).
     for _ in 0..64 {
         // Drain pending → register new specs.
-        let to_process: Vec<(FnId, Vec<Descr>)> = pending.iter_mut()
+        let to_process: Vec<(FnId, Vec<Descr>)> = pending
+            .iter_mut()
             .flat_map(|(fid, keys)| {
                 let v: Vec<Vec<Descr>> = keys.drain().collect();
                 v.into_iter().map(move |k| (*fid, k))
@@ -525,7 +560,9 @@ fn type_module_pass(
             .collect();
         let drained_anything = !to_process.is_empty();
         for (fid, key) in to_process {
-            let Some(&j) = idx_of.get(&fid) else { continue; };
+            let Some(&j) = idx_of.get(&fid) else {
+                continue;
+            };
             let entry_key = (fid, key.clone());
             if !specs.contains_key(&entry_key) {
                 let mut ft = type_fn(&m.fns[j], m, Some(&key));
@@ -545,13 +582,21 @@ fn type_module_pass(
         // Re-walk every registered spec to find new pending keys.
         let snapshot: Vec<(FnId, Vec<Descr>)> = specs.keys().cloned().collect();
         for (fid, key) in &snapshot {
-            let Some(&j) = idx_of.get(fid) else { continue; };
+            let Some(&j) = idx_of.get(fid) else {
+                continue;
+            };
             let entry_key = (*fid, key.clone());
             let caller_ft = specs.get(&entry_key).cloned().unwrap();
             walk_spec_for_discovery(
-                &m.fns[j], &caller_ft, m, &specs, prev_returns,
-                &std::collections::HashSet::new(), false,
-                &mut pending, &mut callsite_fn_consts,
+                &m.fns[j],
+                &caller_ft,
+                m,
+                &specs,
+                prev_returns,
+                &std::collections::HashSet::new(),
+                false,
+                &mut pending,
+                &mut callsite_fn_consts,
             );
         }
 
@@ -575,7 +620,9 @@ fn type_module_pass(
         let opaque_arities = opaque_consumer_arities(m, &specs);
         let snapshot: Vec<(FnId, Vec<Descr>)> = specs.keys().cloned().collect();
         for (fid, key) in &snapshot {
-            let Some(&j) = idx_of.get(fid) else { continue; };
+            let Some(&j) = idx_of.get(fid) else {
+                continue;
+            };
             let entry_key = (*fid, key.clone());
             let caller_ft = specs.get(&entry_key).cloned().unwrap();
             let f = &m.fns[j];
@@ -611,7 +658,8 @@ fn type_module_pass(
         // Drain pending → register new specs (no further walking
         // beyond MakeClosure sweep; direct callsites of these new
         // any-key bodies will be discovered when we loop).
-        let to_process: Vec<(FnId, Vec<Descr>)> = pending.iter_mut()
+        let to_process: Vec<(FnId, Vec<Descr>)> = pending
+            .iter_mut()
             .flat_map(|(fid, keys)| {
                 let v: Vec<Vec<Descr>> = keys.drain().collect();
                 v.into_iter().map(move |k| (*fid, k))
@@ -619,7 +667,9 @@ fn type_module_pass(
             .collect();
         let drained_anything = !to_process.is_empty();
         for (fid, key) in to_process {
-            let Some(&j) = idx_of.get(&fid) else { continue; };
+            let Some(&j) = idx_of.get(&fid) else {
+                continue;
+            };
             let entry_key = (fid, key.clone());
             if !specs.contains_key(&entry_key) {
                 let mut ft = type_fn(&m.fns[j], m, Some(&key));
@@ -642,24 +692,37 @@ fn type_module_pass(
         for _ in 0..16 {
             let snapshot: Vec<(FnId, Vec<Descr>)> = specs.keys().cloned().collect();
             for (fid, key) in &snapshot {
-                let Some(&j) = idx_of.get(fid) else { continue; };
+                let Some(&j) = idx_of.get(fid) else {
+                    continue;
+                };
                 let entry_key = (*fid, key.clone());
                 let caller_ft = specs.get(&entry_key).cloned().unwrap();
                 walk_spec_for_discovery(
-                    &m.fns[j], &caller_ft, m, &specs, prev_returns,
-                    &std::collections::HashSet::new(), false,
-                    &mut pending, &mut callsite_fn_consts,
+                    &m.fns[j],
+                    &caller_ft,
+                    m,
+                    &specs,
+                    prev_returns,
+                    &std::collections::HashSet::new(),
+                    false,
+                    &mut pending,
+                    &mut callsite_fn_consts,
                 );
             }
-            let to_process: Vec<(FnId, Vec<Descr>)> = pending.iter_mut()
+            let to_process: Vec<(FnId, Vec<Descr>)> = pending
+                .iter_mut()
                 .flat_map(|(fid, keys)| {
                     let v: Vec<Vec<Descr>> = keys.drain().collect();
                     v.into_iter().map(move |k| (*fid, k))
                 })
                 .collect();
-            if to_process.is_empty() { break; }
+            if to_process.is_empty() {
+                break;
+            }
             for (fid, key) in to_process {
-                let Some(&j) = idx_of.get(&fid) else { continue; };
+                let Some(&j) = idx_of.get(&fid) else {
+                    continue;
+                };
                 let entry_key = (fid, key.clone());
                 if !specs.contains_key(&entry_key) {
                     let mut ft = type_fn(&m.fns[j], m, Some(&key));
@@ -677,7 +740,9 @@ fn type_module_pass(
             }
         }
 
-        if !drained_anything { break; }
+        if !drained_anything {
+            break;
+        }
     }
 
     specs
@@ -712,8 +777,12 @@ fn walk_spec_for_discovery(
     callsite_fn_consts: &mut HashMap<(FnId, Vec<Descr>), Vec<Option<FnId>>>,
 ) {
     // Build idx_of locally to find each callee's entry-param arity.
-    let idx_of: HashMap<FnId, usize> = m.fns.iter().enumerate()
-        .map(|(i, fn_ir)| (fn_ir.id, i)).collect();
+    let idx_of: HashMap<FnId, usize> = m
+        .fns
+        .iter()
+        .enumerate()
+        .map(|(i, fn_ir)| (fn_ir.id, i))
+        .collect();
 
     let maybe_widen = |k: Vec<Descr>, callee: FnId| -> Vec<Descr> {
         if widen_now && caller_scc.contains(&callee) {
@@ -723,10 +792,9 @@ fn walk_spec_for_discovery(
         }
     };
 
-    let push_key = |
-        pending: &mut HashMap<FnId, std::collections::HashSet<Vec<Descr>>>,
-        callee: FnId, key: Vec<Descr>,
-    | {
+    let push_key = |pending: &mut HashMap<FnId, std::collections::HashSet<Vec<Descr>>>,
+                    callee: FnId,
+                    key: Vec<Descr>| {
         if !specs.contains_key(&(callee, key.clone())) {
             pending.entry(callee).or_default().insert(key);
         }
@@ -749,23 +817,33 @@ fn walk_spec_for_discovery(
                 if let Some(&j) = idx_of.get(callee) {
                     let callee_fn = &m.fns[j];
                     let n_params = callee_fn.block(callee_fn.entry).params.len();
-                    let mut key: Vec<Descr> = args.iter().map(|av|
-                        env.get(av).cloned().unwrap_or_else(Descr::any)
-                    ).collect();
-                    while key.len() < n_params { key.push(Descr::any()); }
+                    let mut key: Vec<Descr> = args
+                        .iter()
+                        .map(|av| env.get(av).cloned().unwrap_or_else(Descr::any))
+                        .collect();
+                    while key.len() < n_params {
+                        key.push(Descr::any());
+                    }
                     key.truncate(n_params);
                     let key = maybe_widen(key, *callee);
                     // fn_constants propagation.
-                    let mut per_arg: Vec<Option<FnId>> = args.iter().map(|av|
-                        caller_ft.fn_constants.get(av).copied()
-                    ).collect();
-                    while per_arg.len() < n_params { per_arg.push(None); }
+                    let mut per_arg: Vec<Option<FnId>> = args
+                        .iter()
+                        .map(|av| caller_ft.fn_constants.get(av).copied())
+                        .collect();
+                    while per_arg.len() < n_params {
+                        per_arg.push(None);
+                    }
                     per_arg.truncate(n_params);
                     let entry_key = (*callee, key.clone());
                     match callsite_fn_consts.get(&entry_key) {
-                        None => { callsite_fn_consts.insert(entry_key.clone(), per_arg); }
+                        None => {
+                            callsite_fn_consts.insert(entry_key.clone(), per_arg);
+                        }
                         Some(prev) => {
-                            let merged: Vec<Option<FnId>> = prev.iter().zip(per_arg.iter())
+                            let merged: Vec<Option<FnId>> = prev
+                                .iter()
+                                .zip(per_arg.iter())
                                 .map(|(a, b)| if a == b { *a } else { None })
                                 .collect();
                             callsite_fn_consts.insert(entry_key.clone(), merged);
@@ -784,8 +862,9 @@ fn walk_spec_for_discovery(
         // covers all MakeClosure-typed closures (including non-zero capture)
         // by inspecting the closure Var's own Descr.
         let (closure_var, closure_args): (Option<Var>, &[Var]) = match &b.terminator {
-            Term::CallClosure { closure, args, .. }
-            | Term::TailCallClosure { closure, args } => (Some(*closure), args.as_slice()),
+            Term::CallClosure { closure, args, .. } | Term::TailCallClosure { closure, args } => {
+                (Some(*closure), args.as_slice())
+            }
             _ => (None, &[]),
         };
         if let Some(cv) = closure_var {
@@ -794,10 +873,13 @@ fn walk_spec_for_discovery(
                 if let Some(&j) = idx_of.get(&target_fn) {
                     let target = &m.fns[j];
                     let n_params = target.block(target.entry).params.len();
-                    let mut key: Vec<Descr> = closure_args.iter().map(|av|
-                        env.get(av).cloned().unwrap_or_else(Descr::any)
-                    ).collect();
-                    while key.len() < n_params { key.push(Descr::any()); }
+                    let mut key: Vec<Descr> = closure_args
+                        .iter()
+                        .map(|av| env.get(av).cloned().unwrap_or_else(Descr::any))
+                        .collect();
+                    while key.len() < n_params {
+                        key.push(Descr::any());
+                    }
                     key.truncate(n_params);
                     let key = maybe_widen(key, target_fn);
                     push_key(pending, target_fn, key);
@@ -806,19 +888,28 @@ fn walk_spec_for_discovery(
             // (b) closure_lit path — narrow per (fn_id, captures + args).
             // Fires for every pos closure_lit clause in cv's Descr.
             if let Some(cv_descr) = env.get(&cv).cloned() {
-                let arg_descrs: Vec<Descr> = closure_args.iter().map(|av|
-                    env.get(av).cloned().unwrap_or_else(Descr::any)
-                ).collect();
+                let arg_descrs: Vec<Descr> = closure_args
+                    .iter()
+                    .map(|av| env.get(av).cloned().unwrap_or_else(Descr::any))
+                    .collect();
                 for clause in &cv_descr.funcs {
-                    if !clause.neg.is_empty() { continue; }
+                    if !clause.neg.is_empty() {
+                        continue;
+                    }
                     for sig in &clause.pos {
-                        let Some(lit) = &sig.lit else { continue; };
-                        let Some(&j) = idx_of.get(&lit.fn_id) else { continue; };
+                        let Some(lit) = &sig.lit else {
+                            continue;
+                        };
+                        let Some(&j) = idx_of.get(&lit.fn_id) else {
+                            continue;
+                        };
                         let target = &m.fns[j];
                         let n_params = target.block(target.entry).params.len();
                         let mut key: Vec<Descr> = lit.captures.clone();
                         key.extend(arg_descrs.iter().cloned());
-                        while key.len() < n_params { key.push(Descr::any()); }
+                        while key.len() < n_params {
+                            key.push(Descr::any());
+                        }
                         key.truncate(n_params);
                         let key = maybe_widen(key, lit.fn_id);
                         push_key(pending, lit.fn_id, key);
@@ -850,9 +941,10 @@ fn walk_spec_for_discovery(
         };
         let slot0_descr: Option<Descr> = match &b.terminator {
             Term::Call { callee, args, .. } => {
-                let arg_descrs: Vec<Descr> = args.iter().map(|av|
-                    env.get(av).cloned().unwrap_or_else(Descr::any)
-                ).collect();
+                let arg_descrs: Vec<Descr> = args
+                    .iter()
+                    .map(|av| env.get(av).cloned().unwrap_or_else(Descr::any))
+                    .collect();
                 let callee_key = (*callee, arg_descrs);
                 if !specs.contains_key(&callee_key) {
                     None
@@ -866,10 +958,13 @@ fn walk_spec_for_discovery(
                 if let Some(&target) = caller_ft.fn_constants.get(closure) {
                     let target_fn = m.fn_by_id(target);
                     let n_params = target_fn.block(target_fn.entry).params.len();
-                    let mut arg_descrs: Vec<Descr> = args.iter().map(|av|
-                        env.get(av).cloned().unwrap_or_else(Descr::any)
-                    ).collect();
-                    while arg_descrs.len() < n_params { arg_descrs.push(Descr::any()); }
+                    let mut arg_descrs: Vec<Descr> = args
+                        .iter()
+                        .map(|av| env.get(av).cloned().unwrap_or_else(Descr::any))
+                        .collect();
+                    while arg_descrs.len() < n_params {
+                        arg_descrs.push(Descr::any());
+                    }
                     arg_descrs.truncate(n_params);
                     let callee_key = (target, arg_descrs);
                     if !specs.contains_key(&callee_key) {
@@ -883,9 +978,10 @@ fn walk_spec_for_discovery(
                     // (singleton or union of singletons), look up each
                     // resolved body's return at the matching (captures + args)
                     // key. Falls back to any() for unresolved arrows.
-                    let arg_descrs: Vec<Descr> = args.iter().map(|av|
-                        env.get(av).cloned().unwrap_or_else(Descr::any)
-                    ).collect();
+                    let arg_descrs: Vec<Descr> = args
+                        .iter()
+                        .map(|av| env.get(av).cloned().unwrap_or_else(Descr::any))
+                        .collect();
                     resolve_closure_return(cv_descr, effective_returns, &arg_descrs)
                 } else {
                     Some(Descr::any())
@@ -899,7 +995,9 @@ fn walk_spec_for_discovery(
                 let cont_fn = &m.fns[j];
                 let n_params = cont_fn.block(cont_fn.entry).params.len();
                 let mut key: Vec<Descr> = vec![Descr::any(); n_params];
-                if !key.is_empty() { key[0] = slot0; }
+                if !key.is_empty() {
+                    key[0] = slot0;
+                }
                 for (k, cvv) in cont.captured.iter().enumerate() {
                     if let Some(p) = key.get_mut(k + 1) {
                         *p = env.get(cvv).cloned().unwrap_or_else(Descr::any);
@@ -925,9 +1023,13 @@ fn walk_spec_for_discovery(
                 }
                 let entry_key = (cont.fn_id, key.clone());
                 match callsite_fn_consts.get(&entry_key) {
-                    None => { callsite_fn_consts.insert(entry_key.clone(), per_param); }
+                    None => {
+                        callsite_fn_consts.insert(entry_key.clone(), per_param);
+                    }
                     Some(prev) => {
-                        let merged: Vec<Option<FnId>> = prev.iter().zip(per_param.iter())
+                        let merged: Vec<Option<FnId>> = prev
+                            .iter()
+                            .zip(per_param.iter())
                             .map(|(a, b)| if a == b { *a } else { None })
                             .collect();
                         callsite_fn_consts.insert(entry_key.clone(), merged);
@@ -938,7 +1040,6 @@ fn walk_spec_for_discovery(
         }
     }
 }
-
 
 /// fz-ul4.29.10.3 — rewrite `Term::CallClosure(v, args, cont)` →
 /// `Term::Call(F, args, cont)` (and `TailCallClosure` → `TailCall`)
@@ -957,29 +1058,46 @@ pub fn rewrite_known_target_closures(module: &mut Module, types: &ModuleTypes) {
         let entry = unified.entry(*fid).or_default();
         for (v, fnid) in &ft.fn_constants {
             match entry.get(v).copied() {
-                None => { entry.insert(*v, Some(*fnid)); }
+                None => {
+                    entry.insert(*v, Some(*fnid));
+                }
                 Some(Some(prev)) if prev == *fnid => {}
-                Some(_) => { entry.insert(*v, None); }
+                Some(_) => {
+                    entry.insert(*v, None);
+                }
             }
         }
     }
     for f in &mut module.fns {
-        let Some(map) = unified.get(&f.id) else { continue; };
+        let Some(map) = unified.get(&f.id) else {
+            continue;
+        };
         for b in &mut f.blocks {
             let new_term = match &b.terminator {
-                Term::CallClosure { closure, args, continuation } => {
+                Term::CallClosure {
+                    closure,
+                    args,
+                    continuation,
+                } => {
                     if let Some(Some(target)) = map.get(closure).copied() {
                         Some(Term::Call {
                             callee: target,
                             args: args.clone(),
                             continuation: continuation.clone(),
                         })
-                    } else { None }
+                    } else {
+                        None
+                    }
                 }
                 Term::TailCallClosure { closure, args } => {
                     if let Some(Some(target)) = map.get(closure).copied() {
-                        Some(Term::TailCall { callee: target, args: args.clone() })
-                    } else { None }
+                        Some(Term::TailCall {
+                            callee: target,
+                            args: args.clone(),
+                        })
+                    } else {
+                        None
+                    }
                 }
                 _ => None,
             };
@@ -1058,7 +1176,10 @@ pub fn type_fn(f: &FnIr, m: &Module, entry_param_types: Option<&[Descr]>) -> FnT
                     // predecessors (handled via merge_into's union, but we
                     // also need to mirror in vars).
                     for (i, &p) in target_b.params.iter().enumerate() {
-                        let from_env = block_envs[target].get(&p).cloned().unwrap_or_else(Descr::none);
+                        let from_env = block_envs[target]
+                            .get(&p)
+                            .cloned()
+                            .unwrap_or_else(Descr::none);
                         let prev = vars.get(&p).cloned().unwrap_or_else(Descr::none);
                         if !from_env.is_equiv(&prev) {
                             vars.insert(p, from_env);
@@ -1069,8 +1190,12 @@ pub fn type_fn(f: &FnIr, m: &Module, entry_param_types: Option<&[Descr]>) -> FnT
                 }
                 Term::If(cond, then_b, else_b) => {
                     let (then_env, else_env) = narrow_for_if(&env, *cond, &b.stmts);
-                    if merge_into(&mut block_envs, *then_b, &then_env) { changed = true; }
-                    if merge_into(&mut block_envs, *else_b, &else_env) { changed = true; }
+                    if merge_into(&mut block_envs, *then_b, &then_env) {
+                        changed = true;
+                    }
+                    if merge_into(&mut block_envs, *else_b, &else_env) {
+                        changed = true;
+                    }
                 }
                 Term::Call { .. }
                 | Term::TailCall { .. }
@@ -1085,7 +1210,9 @@ pub fn type_fn(f: &FnIr, m: &Module, entry_param_types: Option<&[Descr]>) -> FnT
             }
         }
 
-        if !changed { break; }
+        if !changed {
+            break;
+        }
     }
 
     // fz-ul4.29.10.1 — populate fn_constants from zero-capture
@@ -1103,7 +1230,11 @@ pub fn type_fn(f: &FnIr, m: &Module, entry_param_types: Option<&[Descr]>) -> FnT
         }
     }
 
-    FnTypes { vars, block_envs, fn_constants }
+    FnTypes {
+        vars,
+        block_envs,
+        fn_constants,
+    }
 }
 
 /// Union `delta` into `block_envs[target]`. Returns true if anything changed.
@@ -1230,7 +1361,10 @@ fn type_prim(prim: &Prim, env: &HashMap<Var, Descr>, m: &Module) -> Descr {
             }
             if (*i as usize) < max_arity {
                 let comps = crate::typer::tuple_projections(&vt, max_arity);
-                comps.into_iter().nth(*i as usize).unwrap_or_else(Descr::any)
+                comps
+                    .into_iter()
+                    .nth(*i as usize)
+                    .unwrap_or_else(Descr::any)
             } else {
                 Descr::any()
             }
@@ -1238,7 +1372,9 @@ fn type_prim(prim: &Prim, env: &HashMap<Var, Descr>, m: &Module) -> Descr {
 
         Prim::MakeList(els, tail) => {
             let mut elem = Descr::none();
-            for v in els { elem = elem.union(&lookup(env, *v)); }
+            for v in els {
+                elem = elem.union(&lookup(env, *v));
+            }
             if let Some(t) = tail {
                 let tt = lookup(env, *t);
                 elem = elem.union(&crate::typer::list_element_type(&tt));
@@ -1265,8 +1401,13 @@ fn type_prim(prim: &Prim, env: &HashMap<Var, Descr>, m: &Module) -> Descr {
             for (k, v) in entries {
                 let vt = lookup(env, *v);
                 match var_as_map_key(*k, env) {
-                    Some(mk) => { fields.insert(mk, vt); }
-                    None => { all_static = false; break; }
+                    Some(mk) => {
+                        fields.insert(mk, vt);
+                    }
+                    None => {
+                        all_static = false;
+                        break;
+                    }
                 }
             }
             if all_static && !entries.is_empty() {
@@ -1317,7 +1458,8 @@ fn type_prim(prim: &Prim, env: &HashMap<Var, Descr>, m: &Module) -> Descr {
             let arity = entry.params.len();
             let n_caps = captured.len();
             let n_args = arity.saturating_sub(n_caps);
-            let capture_descrs: Vec<Descr> = captured.iter()
+            let capture_descrs: Vec<Descr> = captured
+                .iter()
                 .map(|cv| env.get(cv).cloned().unwrap_or_else(Descr::any))
                 .collect();
             Descr::closure_lit(*fn_id, capture_descrs, n_args)
@@ -1374,17 +1516,21 @@ fn numeric_result(a: &Descr, b: &Descr) -> Descr {
     let float = Descr::float();
     let both_int = a.is_subtype(&int) && b.is_subtype(&int);
     let both_float = a.is_subtype(&float) && b.is_subtype(&float);
-    if both_int { int }
-    else if both_float { float }
-    else { int.union(&float) }
+    if both_int {
+        int
+    } else if both_float {
+        float
+    } else {
+        int.union(&float)
+    }
 }
 
 fn type_builtin(bid: BuiltinId) -> Descr {
     match BuiltinKind::from_id(bid) {
         Some(BuiltinKind::Print) => Descr::nil(),
-        Some(BuiltinKind::Assert)
-        | Some(BuiltinKind::AssertEq)
-        | Some(BuiltinKind::AssertNeq) => Descr::nil(),
+        Some(BuiltinKind::Assert) | Some(BuiltinKind::AssertEq) | Some(BuiltinKind::AssertNeq) => {
+            Descr::nil()
+        }
         Some(BuiltinKind::VecGet) => Descr::int().union(&Descr::float()),
         // fz-ul4.19.2: spawn/self both return a Pid (boxed Int for v1).
         Some(BuiltinKind::Spawn) | Some(BuiltinKind::SelfPid) => Descr::int(),
@@ -1432,11 +1578,7 @@ fn _suppress_block(_: &Block) {}
 /// K=3 via `crate::typer::widen` so singleton-growing recursive paths still
 /// converge.
 #[allow(dead_code, reason = "tier-up hook; consumed by fz-ul4.19.5 per .24.7")]
-pub fn specialize_return(
-    m: &Module,
-    fn_id: crate::fz_ir::FnId,
-    params: &[Descr],
-) -> Descr {
+pub fn specialize_return(m: &Module, fn_id: crate::fz_ir::FnId, params: &[Descr]) -> Descr {
     use crate::fz_ir::Stmt;
     let f = m.fn_by_id(fn_id);
 
@@ -1485,8 +1627,12 @@ pub fn specialize_return(
                 }
                 Term::If(cond, then_b, else_b) => {
                     let (then_env, else_env) = narrow_for_if(&env, *cond, &b.stmts);
-                    if merge_into(&mut block_envs, *then_b, &then_env) { changed = true; }
-                    if merge_into(&mut block_envs, *else_b, &else_env) { changed = true; }
+                    if merge_into(&mut block_envs, *then_b, &then_env) {
+                        changed = true;
+                    }
+                    if merge_into(&mut block_envs, *else_b, &else_env) {
+                        changed = true;
+                    }
                 }
                 _ => {}
             }
@@ -1498,7 +1644,9 @@ pub fn specialize_return(
                 }
             }
         }
-        if !changed { break; }
+        if !changed {
+            break;
+        }
     }
 
     // Collect union of Descrs at every local Return/Halt site.
@@ -1532,10 +1680,14 @@ pub fn specialize_return(
 /// named `"match_error"`, and the terminator Halts that Var.
 fn is_synthetic_match_error_block(f: &FnIr, bid: BlockId) -> bool {
     let b = f.block(bid);
-    let Term::Halt(halt_var) = &b.terminator else { return false; };
+    let Term::Halt(halt_var) = &b.terminator else {
+        return false;
+    };
     for stmt in &b.stmts {
         let Stmt::Let(v, prim) = stmt;
-        if v != halt_var { continue; }
+        if v != halt_var {
+            continue;
+        }
         // The atom Const for match_error carries an interned atom ID,
         // not a string. We can't compare names without an atom table.
         // Use a weaker but sufficient check: the block is a 1-stmt
@@ -1591,7 +1743,9 @@ fn emit_unreachable(
     // dropped this branch — that's the source-level view of the value.
     let mut joined_old = Descr::none();
     for (vv, ot, _) in dead_records {
-        if *vv == *v { joined_old = joined_old.union(ot); }
+        if *vv == *v {
+            joined_old = joined_old.union(ot);
+        }
     }
     let var_name = module.source.var_name_of(*v);
     let label_subject = match var_name {
@@ -1631,12 +1785,9 @@ fn emit_unreachable(
 /// Each diagnostic carries the offending block's terminator span (when
 /// recorded by ir_lower in `Module.source.term_span`); .20.8 will enrich
 /// the message with the set-theoretic type vocabulary.
-pub fn collect_diagnostics(
-    module: &Module,
-    types: &ModuleTypes,
-) -> crate::diag::Diagnostics {
-    use crate::diag::{Diagnostic, Diagnostics, Span};
+pub fn collect_diagnostics(module: &Module, types: &ModuleTypes) -> crate::diag::Diagnostics {
     use crate::diag::codes::TYPE_DEAD_BINOP;
+    use crate::diag::{Diagnostic, Diagnostics, Span};
 
     let mut out = Diagnostics::new();
 
@@ -1664,7 +1815,9 @@ pub fn collect_diagnostics(
     // codegen only compiles reachable fns.
     let mut adhoc_specs: HashMap<crate::fz_ir::FnId, FnTypes> = HashMap::new();
     for f in &module.fns {
-        if specs_by_fn.contains_key(&f.id) { continue; }
+        if specs_by_fn.contains_key(&f.id) {
+            continue;
+        }
         let n_params = f.block(f.entry).params.len();
         let any_key: Vec<Descr> = vec![Descr::any(); n_params];
         let ft = type_fn(f, module, Some(&any_key));
@@ -1675,16 +1828,24 @@ pub fn collect_diagnostics(
     let mut fns_sorted: Vec<&crate::fz_ir::FnIr> = module.fns.iter().collect();
     fns_sorted.sort_by_key(|f| f.id.0);
     for f in fns_sorted {
-        let Some(keys) = specs_by_fn.get(&f.id) else { continue };
+        let Some(keys) = specs_by_fn.get(&f.id) else {
+            continue;
+        };
         let total_specs = keys.len();
-        if total_specs == 0 { continue; }
+        if total_specs == 0 {
+            continue;
+        }
 
         let mut blocks_sorted: Vec<&crate::fz_ir::Block> = f.blocks.iter().collect();
         blocks_sorted.sort_by_key(|b| b.id.0);
         for b in blocks_sorted {
-            let Term::If(cond, then_b, else_b) = b.terminator else { continue };
+            let Term::If(cond, then_b, else_b) = b.terminator else {
+                continue;
+            };
 
-            let term_span = module.source.term_span
+            let term_span = module
+                .source
+                .term_span
                 .get(&(f.id, b.id))
                 .copied()
                 .unwrap_or(Span::DUMMY);
@@ -1695,7 +1856,9 @@ pub fn collect_diagnostics(
             let mut dead_then: Vec<(crate::fz_ir::Var, Descr, Descr)> = Vec::new();
             let mut dead_else: Vec<(crate::fz_ir::Var, Descr, Descr)> = Vec::new();
             for key in keys {
-                let ft = types.specs.get(&(f.id, key.clone()))
+                let ft = types
+                    .specs
+                    .get(&(f.id, key.clone()))
                     .or_else(|| adhoc_specs.get(&f.id))
                     .unwrap();
                 let mut env = ft.block_envs.get(&b.id).cloned().unwrap_or_default();
@@ -1705,8 +1868,12 @@ pub fn collect_diagnostics(
                     env.insert(*v, t);
                 }
                 let (then_env, else_env) = narrow_for_if(&env, cond, &b.stmts);
-                if let Some(d) = find_emptied_var(&env, &then_env) { dead_then.push(d); }
-                if let Some(d) = find_emptied_var(&env, &else_env) { dead_else.push(d); }
+                if let Some(d) = find_emptied_var(&env, &then_env) {
+                    dead_then.push(d);
+                }
+                if let Some(d) = find_emptied_var(&env, &else_env) {
+                    dead_else.push(d);
+                }
             }
 
             // Emit only when EVERY spec found the branch dead AND
@@ -1762,13 +1929,17 @@ pub fn collect_diagnostics(
                         // disjoint literal sets (e.g. `1 == 2`) still fold to
                         // false at codegen but are not surprising to the
                         // reader, so we keep them silent.
-                        let cross_kind = !ta.is_empty() && !tb.is_empty()
-                            && !axes_overlap(&ta, &tb);
+                        let cross_kind =
+                            !ta.is_empty() && !tb.is_empty() && !axes_overlap(&ta, &tb);
                         if cross_kind {
                             let span = spans
                                 .and_then(|s| s.get(sidx).copied())
                                 .unwrap_or(Span::DUMMY);
-                            let constant = if matches!(op, BinOp::Eq) { "false" } else { "true" };
+                            let constant = if matches!(op, BinOp::Eq) {
+                                "false"
+                            } else {
+                                "true"
+                            };
                             let opname = if matches!(op, BinOp::Eq) { "==" } else { "!=" };
                             let message = format!(
                                 "`{}` is always {}: operand types do not overlap",
@@ -1802,14 +1973,14 @@ pub fn collect_diagnostics(
 /// disjoint literals" (silent fold).
 fn axes_overlap(a: &Descr, b: &Descr) -> bool {
     !a.basic.intersect(b.basic).is_empty()
-        || (!a.atoms.is_none()  && !b.atoms.is_none())
-        || (!a.ints.is_none()   && !b.ints.is_none())
+        || (!a.atoms.is_none() && !b.atoms.is_none())
+        || (!a.ints.is_none() && !b.ints.is_none())
         || (!a.floats.is_none() && !b.floats.is_none())
-        || (!a.strs.is_none()   && !b.strs.is_none())
+        || (!a.strs.is_none() && !b.strs.is_none())
         || (!a.tuples.is_empty() && !b.tuples.is_empty())
-        || (!a.lists.is_empty()  && !b.lists.is_empty())
-        || (!a.funcs.is_empty()  && !b.funcs.is_empty())
-        || (!a.maps.is_empty()   && !b.maps.is_empty())
+        || (!a.lists.is_empty() && !b.lists.is_empty())
+        || (!a.funcs.is_empty() && !b.funcs.is_empty())
+        || (!a.maps.is_empty() && !b.maps.is_empty())
 }
 
 /// .11.24.5: refine `MakeVec(I64, els)` to `MakeVec(F64, els)` when any
@@ -1818,17 +1989,16 @@ fn axes_overlap(a: &Descr, b: &Descr) -> bool {
 ///
 /// Operates in-place on `module`. Caller supplies a typer output that was
 /// produced from the same module shape (run `type_module(module)` first).
-pub fn rewrite_vec_kinds(
-    module: &mut Module,
-    types: &ModuleTypes,
-) -> Result<(), String> {
+pub fn rewrite_vec_kinds(module: &mut Module, types: &ModuleTypes) -> Result<(), String> {
     use crate::fz_ir::Stmt;
     // fz-pky.2 — for each fn, use the registered spec if any, else
     // type ad-hoc under all-any. This pass runs as a pre-codegen
     // diagnostic; even unreachable fns need their MakeVec kinds
     // validated (the error is "you wrote a mixed-element vec," not
     // "this code runs.")
-    let fn_types: HashMap<FnId, FnTypes> = module.fns.iter()
+    let fn_types: HashMap<FnId, FnTypes> = module
+        .fns
+        .iter()
         .map(|f| {
             let ft = match types.any_spec_for(f.id) {
                 Some(ft) => ft.clone(),
@@ -1842,7 +2012,9 @@ pub fn rewrite_vec_kinds(
         })
         .collect();
     for f in module.fns.iter_mut() {
-        let Some(ft) = fn_types.get(&f.id) else { continue; };
+        let Some(ft) = fn_types.get(&f.id) else {
+            continue;
+        };
         let vars = &ft.vars;
         for blk in &mut f.blocks {
             for stmt in &mut blk.stmts {
@@ -1887,11 +2059,7 @@ pub fn rewrite_vec_kinds(
 /// folds in each Let by re-applying `type_prim`. This mirrors the
 /// typer's own propagation pass at `type_module`'s `callsite_keys`
 /// site (`ir_typer.rs:142-145`).
-fn env_at_terminator(
-    caller_ft: &FnTypes,
-    block: &Block,
-    module: &Module,
-) -> HashMap<Var, Descr> {
+fn env_at_terminator(caller_ft: &FnTypes, block: &Block, module: &Module) -> HashMap<Var, Descr> {
     let mut env = caller_ft
         .block_envs
         .get(&block.id)
@@ -2045,14 +2213,18 @@ pub fn compute_effective_returns(
     for key in specs.keys() {
         ret.insert(key.clone(), InferredReturn::Unknown);
     }
-    let idx_of: HashMap<FnId, usize> = module.fns.iter().enumerate()
-        .map(|(i, f)| (f.id, i)).collect();
-    let lookup = |ret: &HashMap<(FnId, Vec<Descr>), InferredReturn>,
-                  key: &(FnId, Vec<Descr>)| -> Descr {
-        ret.get(key)
-            .map(|ir| ir.as_contribution())
-            .unwrap_or_else(Descr::none)
-    };
+    let idx_of: HashMap<FnId, usize> = module
+        .fns
+        .iter()
+        .enumerate()
+        .map(|(i, f)| (f.id, i))
+        .collect();
+    let lookup =
+        |ret: &HashMap<(FnId, Vec<Descr>), InferredReturn>, key: &(FnId, Vec<Descr>)| -> Descr {
+            ret.get(key)
+                .map(|ir| ir.as_contribution())
+                .unwrap_or_else(Descr::none)
+        };
 
     // Helper: cont_input_key matching the registered spec. Uses
     // `prev_returns` (the outer-iter LFP cache) for slot 0 — the same
@@ -2061,12 +2233,10 @@ pub fn compute_effective_returns(
     // specs. fz-3zx: cycle-cut effective_return_descr is gone; missing
     // entries in prev_returns fall back to Descr::any (the Receive /
     // opaque-CallClosure default).
-    let cont_key_at = |
-        b: &Block,
-        cont: &crate::fz_ir::Cont,
-        ft: &FnTypes,
-    | -> Vec<Descr> {
-        let Some(_) = idx_of.get(&cont.fn_id) else { return vec![]; };
+    let cont_key_at = |b: &Block, cont: &crate::fz_ir::Cont, ft: &FnTypes| -> Vec<Descr> {
+        let Some(_) = idx_of.get(&cont.fn_id) else {
+            return vec![];
+        };
         let cont_fn = module.fn_by_id(cont.fn_id);
         let n_params = cont_fn.block(cont_fn.entry).params.len();
         let mut key: Vec<Descr> = vec![Descr::any(); n_params];
@@ -2074,28 +2244,40 @@ pub fn compute_effective_returns(
         let env = env_at_terminator(ft, b, module);
         let slot0 = match &b.terminator {
             Term::Call { callee, args, .. } => {
-                let arg_descrs: Vec<Descr> = args.iter()
+                let arg_descrs: Vec<Descr> = args
+                    .iter()
                     .map(|av| env.get(av).cloned().unwrap_or_else(Descr::any))
                     .collect();
-                prev_returns.get(&(*callee, arg_descrs)).cloned().unwrap_or_else(Descr::any)
+                prev_returns
+                    .get(&(*callee, arg_descrs))
+                    .cloned()
+                    .unwrap_or_else(Descr::any)
             }
             Term::CallClosure { closure, args, .. } => {
                 if let Some(&target) = ft.fn_constants.get(closure) {
                     let target_fn = module.fn_by_id(target);
                     let np = target_fn.block(target_fn.entry).params.len();
-                    let mut ad: Vec<Descr> = args.iter()
+                    let mut ad: Vec<Descr> = args
+                        .iter()
                         .map(|av| env.get(av).cloned().unwrap_or_else(Descr::any))
                         .collect();
-                    while ad.len() < np { ad.push(Descr::any()); }
+                    while ad.len() < np {
+                        ad.push(Descr::any());
+                    }
                     ad.truncate(np);
-                    prev_returns.get(&(target, ad)).cloned().unwrap_or_else(Descr::any)
+                    prev_returns
+                        .get(&(target, ad))
+                        .cloned()
+                        .unwrap_or_else(Descr::any)
                 } else {
                     Descr::any()
                 }
             }
             _ => Descr::any(),
         };
-        if !key.is_empty() { key[0] = slot0; }
+        if !key.is_empty() {
+            key[0] = slot0;
+        }
         for (k, cv) in cont.captured.iter().enumerate() {
             if let Some(p) = key.get_mut(k + 1) {
                 *p = env.get(cv).cloned().unwrap_or_else(Descr::any);
@@ -2110,8 +2292,12 @@ pub fn compute_effective_returns(
         let mut changed = false;
         for spec_key in specs.keys() {
             let (fid, _) = spec_key;
-            let Some(&j) = idx_of.get(fid) else { continue; };
-            let Some(ft) = specs.get(spec_key) else { continue; };
+            let Some(&j) = idx_of.get(fid) else {
+                continue;
+            };
+            let Some(ft) = specs.get(spec_key) else {
+                continue;
+            };
             let f = &module.fns[j];
 
             let mut joined = Descr::none();
@@ -2122,7 +2308,8 @@ pub fn compute_effective_returns(
                         joined = joined.union(&d);
                     }
                     Term::TailCall { callee, args } => {
-                        let arg_descrs: Vec<Descr> = args.iter()
+                        let arg_descrs: Vec<Descr> = args
+                            .iter()
                             .map(|av| ft.vars.get(av).cloned().unwrap_or_else(Descr::any))
                             .collect();
                         joined = joined.union(&lookup(&ret, &(*callee, arg_descrs)));
@@ -2131,10 +2318,13 @@ pub fn compute_effective_returns(
                         if let Some(&target) = ft.fn_constants.get(closure) {
                             let target_fn = module.fn_by_id(target);
                             let np = target_fn.block(target_fn.entry).params.len();
-                            let mut ad: Vec<Descr> = args.iter()
+                            let mut ad: Vec<Descr> = args
+                                .iter()
                                 .map(|av| ft.vars.get(av).cloned().unwrap_or_else(Descr::any))
                                 .collect();
-                            while ad.len() < np { ad.push(Descr::any()); }
+                            while ad.len() < np {
+                                ad.push(Descr::any());
+                            }
                             ad.truncate(np);
                             joined = joined.union(&lookup(&ret, &(target, ad)));
                         } else if let Some(cv_descr) = ft.vars.get(closure) {
@@ -2147,20 +2337,25 @@ pub fn compute_effective_returns(
                             let mut acc = Descr::none();
                             'clauses: for c in &cv_descr.funcs {
                                 if !c.neg.is_empty() || c.pos.is_empty() {
-                                    all_lit = false; break 'clauses;
+                                    all_lit = false;
+                                    break 'clauses;
                                 }
                                 for sig in &c.pos {
                                     let Some(lit) = &sig.lit else {
-                                        all_lit = false; break 'clauses;
+                                        all_lit = false;
+                                        break 'clauses;
                                     };
                                     let target_fn = module.fn_by_id(lit.fn_id);
                                     let np = target_fn.block(target_fn.entry).params.len();
                                     let mut full_key: Vec<Descr> = lit.captures.clone();
                                     for av in args.iter() {
-                                        full_key.push(ft.vars.get(av).cloned()
-                                            .unwrap_or_else(Descr::any));
+                                        full_key.push(
+                                            ft.vars.get(av).cloned().unwrap_or_else(Descr::any),
+                                        );
                                     }
-                                    while full_key.len() < np { full_key.push(Descr::any()); }
+                                    while full_key.len() < np {
+                                        full_key.push(Descr::any());
+                                    }
                                     full_key.truncate(np);
                                     acc = acc.union(&lookup(&ret, &(lit.fn_id, full_key)));
                                 }
@@ -2202,26 +2397,36 @@ pub fn compute_effective_returns(
                 changed = true;
             }
         }
-        if !changed { break; }
+        if !changed {
+            break;
+        }
     }
 
     // Post-convergence assertion: every registered spec must be Known.
     // An Unknown leftover means the LFP body never visited this key —
     // a non-convergence bug, not an honest "no values" answer.
     for (k, v) in &ret {
-        debug_assert!(matches!(v, InferredReturn::Known(_)),
+        debug_assert!(
+            matches!(v, InferredReturn::Known(_)),
             "compute_effective_returns: spec {:?} left Unknown after \
-             LFP convergence — non-convergence bug", k);
+             LFP convergence — non-convergence bug",
+            k
+        );
     }
 
     // Strip the Known shell for downstream consumers. The
     // Unknown-to-Descr coercion via as_contribution() yields none(),
     // matching the invariant we just asserted under release builds.
     ret.into_iter()
-        .map(|(k, v)| (k, match v {
-            InferredReturn::Known(d) => d,
-            InferredReturn::Unknown => Descr::none(),
-        }))
+        .map(|(k, v)| {
+            (
+                k,
+                match v {
+                    InferredReturn::Known(d) => d,
+                    InferredReturn::Unknown => Descr::none(),
+                },
+            )
+        })
         .collect()
 }
 
@@ -2280,7 +2485,9 @@ pub fn pretty_module_types(m: &Module, t: &ModuleTypes) -> String {
 
     let mut keys: Vec<&(FnId, Vec<Descr>)> = t.specs.keys().collect();
     keys.sort_by(|a, b| {
-        a.0.0.cmp(&b.0.0).then_with(|| descrs_str(&a.1).cmp(&descrs_str(&b.1)))
+        a.0.0
+            .cmp(&b.0.0)
+            .then_with(|| descrs_str(&a.1).cmp(&descrs_str(&b.1)))
     });
 
     let mut out = String::new();
@@ -2291,13 +2498,13 @@ pub fn pretty_module_types(m: &Module, t: &ModuleTypes) -> String {
         let entry = f.block(f.entry);
         let arity = entry.params.len();
 
-        out.push_str(&format!(
-            "; spec {}({}) #fn={}\n",
-            f.name, arity, fid.0
-        ));
+        out.push_str(&format!("; spec {}({}) #fn={}\n", f.name, arity, fid.0));
         out.push_str(&format!(";   key:    {}\n", descrs_str(key)));
 
-        let ret = t.effective_returns.get(spec_key).cloned()
+        let ret = t
+            .effective_returns
+            .get(spec_key)
+            .cloned()
             .unwrap_or_else(Descr::any);
         out.push_str(&format!(";   return: {}\n", ret));
 
@@ -2306,12 +2513,7 @@ pub fn pretty_module_types(m: &Module, t: &ModuleTypes) -> String {
             fcs.sort_by_key(|(v, _)| v.0);
             out.push_str(";   fn_constants:\n");
             for (v, fc) in fcs {
-                out.push_str(&format!(
-                    ";     Var({}) = {}#{}\n",
-                    v.0,
-                    fn_name(*fc),
-                    fc.0
-                ));
+                out.push_str(&format!(";     Var({}) = {}#{}\n", v.0, fn_name(*fc), fc.0));
             }
         }
 
@@ -2361,7 +2563,11 @@ pub fn pretty_module_types(m: &Module, t: &ModuleTypes) -> String {
                         descrs_str(&arg_descrs)
                     ));
                 }
-                Term::Call { callee, args, continuation } => {
+                Term::Call {
+                    callee,
+                    args,
+                    continuation,
+                } => {
                     let arg_descrs: Vec<Descr> = args
                         .iter()
                         .map(|av| ft.vars.get(av).cloned().unwrap_or_else(Descr::any))
@@ -2391,12 +2597,13 @@ pub fn pretty_module_types(m: &Module, t: &ModuleTypes) -> String {
                         continuation.fn_id.0,
                         cap_vars.join(", ")
                     ));
-                    out.push_str(&format!(
-                        ";              cont_key={}\n",
-                        descrs_str(&ck)
-                    ));
+                    out.push_str(&format!(";              cont_key={}\n", descrs_str(&ck)));
                 }
-                Term::CallClosure { closure, args, continuation } => {
+                Term::CallClosure {
+                    closure,
+                    args,
+                    continuation,
+                } => {
                     let arg_vars: Vec<String> =
                         args.iter().map(|v| format!("Var({})", v.0)).collect();
                     let cap_vars: Vec<String> = continuation
@@ -2423,10 +2630,7 @@ pub fn pretty_module_types(m: &Module, t: &ModuleTypes) -> String {
                         continuation.fn_id.0,
                         cap_vars.join(", ")
                     ));
-                    out.push_str(&format!(
-                        ";              cont_key={}\n",
-                        descrs_str(&ck)
-                    ));
+                    out.push_str(&format!(";              cont_key={}\n", descrs_str(&ck)));
                 }
                 Term::TailCallClosure { closure, args } => {
                     let arg_vars: Vec<String> =
@@ -2458,10 +2662,7 @@ pub fn pretty_module_types(m: &Module, t: &ModuleTypes) -> String {
                         continuation.fn_id.0,
                         cap_vars.join(", ")
                     ));
-                    out.push_str(&format!(
-                        ";              cont_key={}\n",
-                        descrs_str(&ck)
-                    ));
+                    out.push_str(&format!(";              cont_key={}\n", descrs_str(&ck)));
                 }
                 Term::Goto(target, args) => {
                     let arg_vars: Vec<String> =
@@ -2497,7 +2698,9 @@ mod tests {
 
     fn build_module(fns: Vec<crate::fz_ir::FnIr>) -> Module {
         let mut mb = ModuleBuilder::new();
-        for f in fns { mb.add_fn(f); }
+        for f in fns {
+            mb.add_fn(f);
+        }
         mb.build()
     }
 
@@ -2526,7 +2729,13 @@ mod tests {
         b.set_terminator(entry, Term::Halt(v));
         let m = build_module(vec![b.build()]);
         let mt = type_module(&m);
-        assert!(fn_view(&m, &mt, 0).vars.get(&v).unwrap().is_equiv(&Descr::int_lit(42)));
+        assert!(
+            fn_view(&m, &mt, 0)
+                .vars
+                .get(&v)
+                .unwrap()
+                .is_equiv(&Descr::int_lit(42))
+        );
     }
 
     #[test]
@@ -2540,8 +2749,11 @@ mod tests {
         let m = build_module(vec![b.build()]);
         let mt = type_module(&m);
         let sum_t = fn_view(&m, &mt, 0).vars.get(&sum).cloned().unwrap();
-        assert!(sum_t.is_equiv(&Descr::int().union(&Descr::float())),
-            "got {}", sum_t);
+        assert!(
+            sum_t.is_equiv(&Descr::int().union(&Descr::float())),
+            "got {}",
+            sum_t
+        );
     }
 
     #[test]
@@ -2599,8 +2811,11 @@ mod tests {
         let m = build_module(vec![b.build()]);
         let mt = type_module(&m);
         let f0_t = fn_view(&m, &mt, 0).vars.get(&f0).cloned().unwrap();
-        assert!(f0_t.is_subtype(&Descr::int_lit(1)) && Descr::int_lit(1).is_subtype(&f0_t),
-            "field 0 should be int_lit(1), got {}", f0_t);
+        assert!(
+            f0_t.is_subtype(&Descr::int_lit(1)) && Descr::int_lit(1).is_subtype(&f0_t),
+            "field 0 should be int_lit(1), got {}",
+            f0_t
+        );
     }
 
     #[test]
@@ -2643,15 +2858,21 @@ mod tests {
         let ft = fn_view(&m, &mt, 0);
         let then_env = ft.block_envs.get(&then_b).unwrap();
         let l_then = then_env.get(&l).cloned().unwrap();
-        assert!(l_then.is_subtype(&Descr::nil()) && Descr::nil().is_subtype(&l_then),
-            "l in then-branch should be nil: {}", l_then);
+        assert!(
+            l_then.is_subtype(&Descr::nil()) && Descr::nil().is_subtype(&l_then),
+            "l in then-branch should be nil: {}",
+            l_then
+        );
 
         // In else_b's entry env, l should be narrowed to list_top (no nil).
         let else_env = ft.block_envs.get(&else_b).unwrap();
         let l_else = else_env.get(&l).cloned().unwrap();
         // Subtype of list_of(any) (loosely: at least the list portion).
-        assert!(l_else.is_subtype(&Descr::list_of(Descr::any())),
-            "l in else-branch should be list-shaped: {}", l_else);
+        assert!(
+            l_else.is_subtype(&Descr::list_of(Descr::any())),
+            "l in else-branch should be list-shaped: {}",
+            l_else
+        );
     }
 
     #[test]
@@ -2676,8 +2897,11 @@ mod tests {
         let ft = fn_view(&m, &mt, 0);
         let then_env = ft.block_envs.get(&then_b).unwrap();
         let x_then = then_env.get(&x).cloned().unwrap();
-        assert!(x_then.is_subtype(&Descr::int_lit(0)) && Descr::int_lit(0).is_subtype(&x_then),
-            "x in then-branch should be int_lit(0): {}", x_then);
+        assert!(
+            x_then.is_subtype(&Descr::int_lit(0)) && Descr::int_lit(0).is_subtype(&x_then),
+            "x in then-branch should be int_lit(0): {}",
+            x_then
+        );
     }
 
     #[test]
@@ -2697,8 +2921,11 @@ mod tests {
         let m = build_module(vec![b.build()]);
         let mt = type_module(&m);
         let p00_t = fn_view(&m, &mt, 0).vars.get(&p00).cloned().unwrap();
-        assert!(p00_t.is_equiv(&Descr::int_lit(7)),
-            "outer.0.0 should be int_lit(7), got {}", p00_t);
+        assert!(
+            p00_t.is_equiv(&Descr::int_lit(7)),
+            "outer.0.0 should be int_lit(7), got {}",
+            p00_t
+        );
     }
 
     // ---- .24.7 specialize_return ----
@@ -2753,7 +2980,11 @@ mod tests {
         // atom_lit("a2") from env. So union includes both arms in this
         // construction. Assert the truthy result is present at minimum.
         let zero_d = Descr::atom_lit("a1");
-        assert!(zero_d.is_subtype(&r0), "expected :zero in return, got {}", r0);
+        assert!(
+            zero_d.is_subtype(&r0),
+            "expected :zero in return, got {}",
+            r0
+        );
     }
 
     #[test]
@@ -2800,8 +3031,17 @@ mod tests {
         let m = build_module(vec![b.build()]);
         let t = type_module(&m);
         let diags = collect_diagnostics(&m, &t);
-        assert_eq!(diags.len(), 2, "expected two unreachable arms, got {:?}", diags);
-        assert!(diags.iter().all(|d| d.code == crate::diag::codes::TYPE_UNREACHABLE_ARM));
+        assert_eq!(
+            diags.len(),
+            2,
+            "expected two unreachable arms, got {:?}",
+            diags
+        );
+        assert!(
+            diags
+                .iter()
+                .all(|d| d.code == crate::diag::codes::TYPE_UNREACHABLE_ARM)
+        );
     }
 
     #[test]
@@ -2853,8 +3093,12 @@ mod tests {
         // .20.5 the message is the headline; details live in notes).
         let needle = format!("bb{}", dead_b.0);
         assert!(
-            diags.iter().any(|d| d.notes.iter().any(|n| n.contains(&needle))),
-            "expected dead_b (bb{}) flagged, got {:?}", dead_b.0, diags
+            diags
+                .iter()
+                .any(|d| d.notes.iter().any(|n| n.contains(&needle))),
+            "expected dead_b (bb{}) flagged, got {:?}",
+            dead_b.0,
+            diags
         );
     }
 
@@ -2907,7 +3151,11 @@ mod tests {
         let mut m = build_module(vec![b.build()]);
         let t = type_module(&m);
         let err = rewrite_vec_kinds(&mut m, &t).expect_err("expected mixed error");
-        assert!(err.contains("11.24.5"), "expected ticket reference, got: {}", err);
+        assert!(
+            err.contains("11.24.5"),
+            "expected ticket reference, got: {}",
+            err
+        );
     }
 
     #[test]
@@ -2925,8 +3173,11 @@ mod tests {
         // The map_field_lookup contributes int_lit(42); plus the implicit "may be absent"
         // it can also be any|nil for open-shape semantics. We assert the int_lit(42)
         // is a subtype of the result.
-        assert!(Descr::int_lit(42).is_subtype(&got_t),
-            "map[k] should include the bound value: {}", got_t);
+        assert!(
+            Descr::int_lit(42).is_subtype(&got_t),
+            "map[k] should include the bound value: {}",
+            got_t
+        );
     }
 
     // ----- .20.8: type-rendered diagnostic prose -----
@@ -2962,15 +3213,27 @@ mod tests {
         let diags = collect_diagnostics(&m, &t);
         let d = diags.iter().next().expect("at least one diagnostic");
         // First note: "type `…`" — rendered set-theoretic vocab.
-        let type_note = d.notes.iter().find(|n| n.contains("has type"))
+        let type_note = d
+            .notes
+            .iter()
+            .find(|n| n.contains("has type"))
             .expect("expected a 'has type' note");
-        assert!(type_note.contains('`'),
-            "type note should backtick-quote the rendered type, got {:?}", type_note);
+        assert!(
+            type_note.contains('`'),
+            "type note should backtick-quote the rendered type, got {:?}",
+            type_note
+        );
         // Second note: the narrowing that's uninhabited.
-        let narrow_note = d.notes.iter().find(|n| n.contains("uninhabited"))
+        let narrow_note = d
+            .notes
+            .iter()
+            .find(|n| n.contains("uninhabited"))
             .expect("expected an 'uninhabited' note");
-        assert!(narrow_note.contains("would need"),
-            "narrow note should mention the would-need type, got {:?}", narrow_note);
+        assert!(
+            narrow_note.contains("would need"),
+            "narrow note should mention the would-need type, got {:?}",
+            narrow_note
+        );
     }
 
     // ---- fz-ul4.27.10: call-site arg narrowing into entry params ----
@@ -2987,14 +3250,23 @@ mod tests {
         let mut mb = FnBuilder::new(FnId(1), "main");
         let mentry = mb.block(vec![]);
         let v = mb.let_(mentry, Prim::Const(Const::Int(42)));
-        mb.set_terminator(mentry, Term::TailCall { callee: FnId(0), args: vec![v] });
+        mb.set_terminator(
+            mentry,
+            Term::TailCall {
+                callee: FnId(0),
+                args: vec![v],
+            },
+        );
 
         let m = build_module(vec![cb.build(), mb.build()]);
         let mt = type_module(&m);
         // `id`'s entry param x should narrow to int_lit(42).
         let xt = fn_view(&m, &mt, 0).vars.get(&x).cloned().unwrap();
-        assert!(xt.is_equiv(&Descr::int_lit(42)),
-            "x should narrow to int_lit(42), got {}", xt);
+        assert!(
+            xt.is_equiv(&Descr::int_lit(42)),
+            "x should narrow to int_lit(42), got {}",
+            xt
+        );
     }
 
     #[test]
@@ -3009,24 +3281,42 @@ mod tests {
         let mut a = FnBuilder::new(FnId(1), "a");
         let aentry = a.block(vec![]);
         let one = a.let_(aentry, Prim::Const(Const::Int(1)));
-        a.set_terminator(aentry, Term::TailCall { callee: FnId(0), args: vec![one] });
+        a.set_terminator(
+            aentry,
+            Term::TailCall {
+                callee: FnId(0),
+                args: vec![one],
+            },
+        );
 
         // caller2: TailCall id(:atom7)
         let mut bb = FnBuilder::new(FnId(2), "b");
         let bentry = bb.block(vec![]);
         let ok = bb.let_(bentry, Prim::Const(Const::Atom(7)));
-        bb.set_terminator(bentry, Term::TailCall { callee: FnId(0), args: vec![ok] });
+        bb.set_terminator(
+            bentry,
+            Term::TailCall {
+                callee: FnId(0),
+                args: vec![ok],
+            },
+        );
 
         let m = build_module(vec![cb.build(), a.build(), bb.build()]);
         let mt = type_module(&m);
         let xt = fn_view(&m, &mt, 0).vars.get(&x).cloned().unwrap();
         // x should accept both int_lit(1) and the atom — the union.
-        assert!(Descr::int_lit(1).is_subtype(&xt),
-            "x should accept int_lit(1), got {}", xt);
+        assert!(
+            Descr::int_lit(1).is_subtype(&xt),
+            "x should accept int_lit(1), got {}",
+            xt
+        );
         // Cross-axis: the atom side should be present too. Probe via
         // intersection — the int axis alone should NOT cover all of xt.
-        assert!(!xt.is_subtype(&Descr::int()),
-            "x should also include atom side, got {}", xt);
+        assert!(
+            !xt.is_subtype(&Descr::int()),
+            "x should also include atom side, got {}",
+            xt
+        );
     }
 
     #[test]
@@ -3054,8 +3344,11 @@ mod tests {
         let m = build_module(vec![wb.build(), mb.build()]);
         let mt = type_module(&m);
         let nt = fn_view(&m, &mt, 0).vars.get(&n).cloned().unwrap();
-        assert!(nt.is_equiv(&Descr::any()),
-            "worker's n must stay at any (no direct callers), got {}", nt);
+        assert!(
+            nt.is_equiv(&Descr::any()),
+            "worker's n must stay at any (no direct callers), got {}",
+            nt
+        );
     }
 
     #[test]
@@ -3075,20 +3368,34 @@ mod tests {
         let mentry = mb.block(vec![]);
         let _cl = mb.let_(mentry, Prim::MakeClosure(FnId(0), vec![]));
         let lit = mb.let_(mentry, Prim::Const(Const::Int(42)));
-        mb.set_terminator(mentry, Term::TailCall { callee: FnId(0), args: vec![lit] });
+        mb.set_terminator(
+            mentry,
+            Term::TailCall {
+                callee: FnId(0),
+                args: vec![lit],
+            },
+        );
 
         let m = build_module(vec![wb.build(), mb.build()]);
         let mt = type_module(&m);
         // by_fn_idx for worker: n narrowed to the direct caller's int.
         let nt = fn_view(&m, &mt, 0).vars.get(&n).cloned().unwrap();
-        assert!(nt.is_subtype(&Descr::int()),
-            "worker's n in by_fn_idx must narrow to int (visible caller), got {}", nt);
+        assert!(
+            nt.is_subtype(&Descr::int()),
+            "worker's n in by_fn_idx must narrow to int (visible caller), got {}",
+            nt
+        );
         // any-key dropped: no callsite (direct or indirect) queries
         // worker with [any].
-        assert!(mt.spec(FnId(0), &[Descr::any()]).is_none(),
+        assert!(
+            mt.spec(FnId(0), &[Descr::any()]).is_none(),
             "worker's any-key must be dropped — only narrow [int_lit(42)] callsite exists; \
              specs: {:?}",
-            mt.specs.keys().filter(|(fid, _)| *fid == FnId(0)).collect::<Vec<_>>());
+            mt.specs
+                .keys()
+                .filter(|(fid, _)| *fid == FnId(0))
+                .collect::<Vec<_>>()
+        );
     }
 
     // ----- fz-ul4.29.1: per-callsite specialization map -----
@@ -3109,20 +3416,33 @@ mod tests {
         let mut b = FnBuilder::new(FnId(1), "main");
         let bentry = b.block(vec![]);
         let lit = b.let_(bentry, Prim::Const(Const::Int(41)));
-        b.set_terminator(bentry, Term::TailCall { callee: FnId(0), args: vec![lit] });
+        b.set_terminator(
+            bentry,
+            Term::TailCall {
+                callee: FnId(0),
+                args: vec![lit],
+            },
+        );
 
         let m = build_module(vec![a.build(), b.build()]);
         let mt = type_module(&m);
 
         let main_any = mt.spec(FnId(1), &[]);
-        assert!(main_any.is_some(), "main (entry-point) must keep its any-key");
+        assert!(
+            main_any.is_some(),
+            "main (entry-point) must keep its any-key"
+        );
 
         let add1_any = mt.spec(FnId(0), &[Descr::any()]);
-        assert!(add1_any.is_none(),
-            "add1's any-key is dead (only caller passes int_lit(41)) → dropped");
+        assert!(
+            add1_any.is_none(),
+            "add1's any-key is dead (only caller passes int_lit(41)) → dropped"
+        );
         let add1_narrow = mt.spec(FnId(0), &[Descr::int_lit(41)]);
-        assert!(add1_narrow.is_some(),
-            "add1 must have its narrow callsite-driven spec");
+        assert!(
+            add1_narrow.is_some(),
+            "add1 must have its narrow callsite-driven spec"
+        );
     }
 
     #[test]
@@ -3139,7 +3459,13 @@ mod tests {
         let mut b = FnBuilder::new(FnId(1), "main");
         let bentry = b.block(vec![]);
         let lit = b.let_(bentry, Prim::Const(Const::Int(41)));
-        b.set_terminator(bentry, Term::TailCall { callee: FnId(0), args: vec![lit] });
+        b.set_terminator(
+            bentry,
+            Term::TailCall {
+                callee: FnId(0),
+                args: vec![lit],
+            },
+        );
 
         let m = build_module(vec![a.build(), b.build()]);
         let mt = type_module(&m);
@@ -3156,8 +3482,11 @@ mod tests {
         );
         // The narrowed specialization's `n` should reflect the callsite Descr.
         let nt = narrow.unwrap().vars.get(&n).cloned().unwrap();
-        assert!(nt.is_equiv(&int41),
-            "add1's narrow spec must type n as int_lit(41), got {}", nt);
+        assert!(
+            nt.is_equiv(&int41),
+            "add1's narrow spec must type n as int_lit(41), got {}",
+            nt
+        );
     }
 
     #[test]
@@ -3172,7 +3501,13 @@ mod tests {
         let mut b = FnBuilder::new(FnId(1), "main");
         let bentry = b.block(vec![]);
         let lit = b.let_(bentry, Prim::Const(Const::Int(7)));
-        b.set_terminator(bentry, Term::TailCall { callee: FnId(0), args: vec![lit] });
+        b.set_terminator(
+            bentry,
+            Term::TailCall {
+                callee: FnId(0),
+                args: vec![lit],
+            },
+        );
 
         let m = build_module(vec![a.build(), b.build()]);
         let mt = type_module(&m);
@@ -3180,15 +3515,20 @@ mod tests {
         assert_eq!(mt.specs.len(), 2);
         // Legacy view: index 0 → id's narrowed FnTypes.
         let id_x = fn_view(&m, &mt, 0).vars.get(&x).cloned().unwrap();
-        assert!(id_x.is_subtype(&Descr::int()),
-            "id's x must be narrowed to int via callsite, got {}", id_x);
+        assert!(
+            id_x.is_subtype(&Descr::int()),
+            "id's x must be narrowed to int via callsite, got {}",
+            id_x
+        );
     }
 
     // ---- fz-ul4.29.12.1 helper tests ----
 
     fn pipeline(src: &str) -> (Module, ModuleTypes) {
         let toks = crate::lexer::Lexer::new(src).tokenize().expect("lex");
-        let prog = crate::parser::Parser::new(toks).parse_program().expect("parse");
+        let prog = crate::parser::Parser::new(toks)
+            .parse_program()
+            .expect("parse");
         let prog = crate::resolve::flatten_modules(prog).expect("flatten");
         let ir = crate::ir_lower::lower_program(&prog).expect("lower");
         let mt = type_module(&ir);
@@ -3200,28 +3540,39 @@ mod tests {
     /// — NOT just the base case (0) which is what cycle-cut would give.
     #[test]
     fn effective_return_lfp_for_recursive_sum() {
-        let (m, mt) = pipeline(r#"
+        let (m, mt) = pipeline(
+            r#"
 fn sum([]), do: 0
 fn sum([h | t]), do: h + sum(t)
 fn main(), do: print(sum([1, 2, 3, 4, 5]))
-"#);
+"#,
+        );
         let returns = mt.effective_returns.clone();
         let sum_fn = m.fns.iter().find(|f| f.name == "sum").unwrap();
         // At least one of sum's specs has a non-trivial return.
-        let any_int = returns.iter().any(|((fid, _), d)| {
-            *fid == sum_fn.id && d.is_subtype(&Descr::int()) && !d.is_empty()
-        });
-        assert!(any_int,
+        let any_int = returns
+            .iter()
+            .any(|((fid, _), d)| *fid == sum_fn.id && d.is_subtype(&Descr::int()) && !d.is_empty());
+        assert!(
+            any_int,
             "expected at least one sum spec with return ⊆ int, got: {:?}",
-            returns.iter().filter(|((fid, _), _)| *fid == sum_fn.id)
-                .collect::<Vec<_>>());
+            returns
+                .iter()
+                .filter(|((fid, _), _)| *fid == sum_fn.id)
+                .collect::<Vec<_>>()
+        );
         // CRUCIAL: no spec should claim return = singleton 0 (the
         // base case alone). That would mean cycle-cut leaked through.
         for ((fid, _), d) in &returns {
-            if *fid != sum_fn.id { continue; }
-            assert!(!d.is_equiv(&Descr::int_lit(0)),
+            if *fid != sum_fn.id {
+                continue;
+            }
+            assert!(
+                !d.is_equiv(&Descr::int_lit(0)),
                 "sum spec return must NOT be just int_lit(0); LFP should \
-                 lift recursive contribution. Got: {}", d);
+                 lift recursive contribution. Got: {}",
+                d
+            );
         }
     }
 
@@ -3232,13 +3583,18 @@ fn main(), do: print(sum([1, 2, 3, 4, 5]))
     /// fixture's closure targets.
     #[test]
     fn opaque_consumer_arities_empty_when_no_opaque_dispatch() {
-        let (m, mt) = pipeline(r#"
+        let (m, mt) = pipeline(
+            r#"
 fn add1(n), do: n + 1
 fn main(), do: print(add1(40) + 2)
-"#);
+"#,
+        );
         let arities = opaque_consumer_arities(&m, &mt.specs);
-        assert!(arities.is_empty(),
-            "expected no opaque consumers (only direct calls), got {:?}", arities);
+        assert!(
+            arities.is_empty(),
+            "expected no opaque consumers (only direct calls), got {:?}",
+            arities
+        );
     }
 
     /// fz-vw4.5a — when a closure flows through Receive (message from
@@ -3263,24 +3619,49 @@ fn main(), do: print(add1(40) + 2)
         let f = k_recv.fresh_var();
         let kre = k_recv.block(vec![f]);
         let seven = k_recv.let_(kre, Prim::Const(Const::Int(7)));
-        k_recv.set_terminator(kre, Term::TailCallClosure { closure: f, args: vec![seven] });
+        k_recv.set_terminator(
+            kre,
+            Term::TailCallClosure {
+                closure: f,
+                args: vec![seven],
+            },
+        );
 
         let mut disp = FnBuilder::new(FnId(2), "dispatcher");
         let de = disp.block(vec![]);
-        disp.set_terminator(de, Term::Receive {
-            continuation: crate::fz_ir::Cont { fn_id: FnId(1), captured: vec![] },
-        });
+        disp.set_terminator(
+            de,
+            Term::Receive {
+                continuation: crate::fz_ir::Cont {
+                    fn_id: FnId(1),
+                    captured: vec![],
+                },
+            },
+        );
 
         let mut main_b = FnBuilder::new(FnId(3), "main");
         let me = main_b.block(vec![]);
-        main_b.set_terminator(me, Term::TailCall { callee: FnId(2), args: vec![] });
+        main_b.set_terminator(
+            me,
+            Term::TailCall {
+                callee: FnId(2),
+                args: vec![],
+            },
+        );
 
-        let m = build_module(vec![lam.build(), k_recv.build(), disp.build(), main_b.build()]);
+        let m = build_module(vec![
+            lam.build(),
+            k_recv.build(),
+            disp.build(),
+            main_b.build(),
+        ]);
         let mt = type_module(&m);
         let arities = opaque_consumer_arities(&m, &mt.specs);
-        assert!(arities.contains(&1),
+        assert!(
+            arities.contains(&1),
             "expected arity-1 opaque consumer from receive-dispatched closure, got {:?}",
-            arities);
+            arities
+        );
     }
 
     /// Helper output for a Call-site Cont must match a key the typer
@@ -3289,13 +3670,15 @@ fn main(), do: print(add1(40) + 2)
     /// resolve: if it ever fails, the resolve will panic.
     #[test]
     fn cont_input_key_matches_a_registered_spec_for_call() {
-        let (m, mt) = pipeline(r#"
+        let (m, mt) = pipeline(
+            r#"
 fn id(x), do: x
 fn main() do
   y = id(7)
   print(y)
 end
-"#);
+"#,
+        );
         // Find the main fn, locate the Call site, and check the
         // helper's output appears in `mt.specs` for the cont's fn_id.
         let main = m.fns.iter().find(|f| f.name == "main").unwrap();
@@ -3310,7 +3693,8 @@ end
                      registered keys for this cont: {:?}",
                     key,
                     continuation.fn_id,
-                    mt.specs.iter()
+                    mt.specs
+                        .iter()
                         .filter(|((f, _), _)| *f == continuation.fn_id)
                         .map(|((_, k), _)| k.clone())
                         .collect::<Vec<_>>(),
@@ -3318,7 +3702,10 @@ end
                 found_any = true;
             }
         }
-        assert!(found_any, "test premise: main should contain a Call with a Cont");
+        assert!(
+            found_any,
+            "test premise: main should contain a Call with a Cont"
+        );
     }
 
     /// Direct-Call slot 0 reflects the callee's narrowed return Descr,
@@ -3327,10 +3714,12 @@ end
     /// callee.
     #[test]
     fn cont_slot0_narrows_to_callee_return_for_direct_call() {
-        let (m, mt) = pipeline(r#"
+        let (m, mt) = pipeline(
+            r#"
 fn add1(n), do: n + 1
 fn main(), do: print(add1(40) + 2)
-"#);
+"#,
+        );
         let main = m.fns.iter().find(|f| f.name == "main").unwrap();
         let main_ft = mt.specs.get(&(main.id, vec![])).unwrap();
         let mut narrow_found = false;
@@ -3340,10 +3729,16 @@ fn main(), do: print(add1(40) + 2)
                 // add1's typer-specialized return for arg int_lit(40) is
                 // a strict subtype of `int` — and crucially narrower than
                 // `any`.
-                assert!(!s0.is_equiv(&Descr::any()),
-                    "slot 0 must narrow below any when callee is specialized, got {}", s0);
-                assert!(s0.is_subtype(&Descr::int()),
-                    "slot 0 should be int-typed, got {}", s0);
+                assert!(
+                    !s0.is_equiv(&Descr::any()),
+                    "slot 0 must narrow below any when callee is specialized, got {}",
+                    s0
+                );
+                assert!(
+                    s0.is_subtype(&Descr::int()),
+                    "slot 0 should be int-typed, got {}",
+                    s0
+                );
                 narrow_found = true;
             }
         }
@@ -3361,37 +3756,51 @@ fn main(), do: print(add1(40) + 2)
     /// double's any-key is dropped.
     #[test]
     fn higher_order_callee_drops_any_key_for_fn_as_value() {
-        let (m, mt) = pipeline(r#"
+        let (m, mt) = pipeline(
+            r#"
 fn double(x), do: x * 2
 fn apply2(f, x), do: f(x)
 fn main() do
   print(apply2(double, 21))
 end
-"#);
+"#,
+        );
         let double = m.fns.iter().find(|f| f.name == "double").unwrap();
         let any_key: Vec<Descr> = vec![Descr::any(); 1];
-        assert!(!mt.specs.contains_key(&(double.id, any_key)),
+        assert!(
+            !mt.specs.contains_key(&(double.id, any_key)),
             "expected double's any-key to be dropped post-.29.10.3; \
              registered specs for double: {:?}",
-            mt.specs.keys().filter(|(fid, _)| *fid == double.id).collect::<Vec<_>>());
+            mt.specs
+                .keys()
+                .filter(|(fid, _)| *fid == double.id)
+                .collect::<Vec<_>>()
+        );
     }
 
-/// fz-ul4.29.12.6 — a fn whose every IR callsite has typed coverage
+    /// fz-ul4.29.12.6 — a fn whose every IR callsite has typed coverage
     /// should NOT have its any-key spec registered in `module_types.specs`.
     /// `add` here is only called directly with `[int_lit(1), int_lit(2)]`;
     /// no callsite queries with `[any, any]`, so the any-key body is dead.
     #[test]
     fn fn_with_only_typed_callsites_drops_any_key() {
-        let (m, mt) = pipeline(r#"
+        let (m, mt) = pipeline(
+            r#"
 fn add(a, b), do: a + b
 fn main(), do: print(add(1, 2))
-"#);
+"#,
+        );
         let add = m.fns.iter().find(|f| f.name == "add").unwrap();
         let any_key: Vec<Descr> = vec![Descr::any(); 2];
-        assert!(!mt.specs.contains_key(&(add.id, any_key.clone())),
+        assert!(
+            !mt.specs.contains_key(&(add.id, any_key.clone())),
             "expected add's any-key to be dropped (no [any, any] callsite); \
              registered specs for add: {:?}",
-            mt.specs.keys().filter(|(fid, _)| *fid == add.id).collect::<Vec<_>>());
+            mt.specs
+                .keys()
+                .filter(|(fid, _)| *fid == add.id)
+                .collect::<Vec<_>>()
+        );
     }
 
     /// fz-ul4.29.12.6 — an entry-point-like fn (no IR caller) must keep
@@ -3400,13 +3809,17 @@ fn main(), do: print(add(1, 2))
     /// SpecId.0, so dropping main's any-key would break runtime entry.
     #[test]
     fn entry_point_fn_keeps_any_key() {
-        let (m, mt) = pipeline(r#"
+        let (m, mt) = pipeline(
+            r#"
 fn main(), do: print(42)
-"#);
+"#,
+        );
         let main = m.fns.iter().find(|f| f.name == "main").unwrap();
         let any_key: Vec<Descr> = vec![Descr::any(); 0];
-        assert!(mt.specs.contains_key(&(main.id, any_key)),
-            "main must keep its any-key (entry-point)");
+        assert!(
+            mt.specs.contains_key(&(main.id, any_key)),
+            "main must keep its any-key (entry-point)"
+        );
     }
 
     /// fz-ul4.29.12.5 — a `Term::Receive` cont with a typed capture must
@@ -3417,7 +3830,8 @@ fn main(), do: print(42)
     /// the typer precondition.
     #[test]
     fn receive_cont_with_typed_capture_gets_narrow_spec() {
-        let (m, mt) = pipeline(r#"
+        let (m, mt) = pipeline(
+            r#"
 fn waiter(tag) do
   m = receive()
   print(m)
@@ -3426,7 +3840,8 @@ end
 fn main() do
   waiter(7)
 end
-"#);
+"#,
+        );
         // The receive's cont fn is synthesized by ir_lower's CPS split.
         // Find any cont fn referenced from a Term::Receive in waiter.
         let waiter = m.fns.iter().find(|f| f.name == "waiter").unwrap();
@@ -3436,33 +3851,50 @@ end
                 cont_fn_ids.push(continuation.fn_id);
             }
         }
-        assert!(!cont_fn_ids.is_empty(), "test premise: waiter has a Receive");
+        assert!(
+            !cont_fn_ids.is_empty(),
+            "test premise: waiter has a Receive"
+        );
         // At least one of those cont fns has a narrow spec where slot 1
         // (= the captured `tag`) is `int_lit(7)` (typed via the call
         // `waiter(7)`).
         let mut any_narrow = false;
         for cont_id in cont_fn_ids {
             for ((fid, key), _) in &mt.specs {
-                if *fid != cont_id { continue; }
-                if key.is_empty() { continue; }
+                if *fid != cont_id {
+                    continue;
+                }
+                if key.is_empty() {
+                    continue;
+                }
                 // slot 0 must be `any` (receive opaque).
-                if !key[0].is_equiv(&Descr::any()) { continue; }
+                if !key[0].is_equiv(&Descr::any()) {
+                    continue;
+                }
                 // slot 1+ must include at least one int-typed entry
                 // (the propagated `tag` capture).
-                if key.iter().skip(1).any(|d| d.is_subtype(&Descr::int())
-                    && !d.is_equiv(&Descr::any())) {
+                if key
+                    .iter()
+                    .skip(1)
+                    .any(|d| d.is_subtype(&Descr::int()) && !d.is_equiv(&Descr::any()))
+                {
                     any_narrow = true;
                 }
             }
         }
-        assert!(any_narrow,
+        assert!(
+            any_narrow,
             "expected ≥1 narrow Receive-cont spec with typed capture; \
              specs for cont fns: {:?}",
-            mt.specs.iter()
-                .filter(|((fid, _), _)| m.fns.iter().any(|f|
-                    f.id == *fid && f.name.contains("waiter")))
+            mt.specs
+                .iter()
+                .filter(|((fid, _), _)| m
+                    .fns
+                    .iter()
+                    .any(|f| f.id == *fid && f.name.contains("waiter")))
                 .map(|((fid, k), _)| (*fid, k.clone()))
-                .collect::<Vec<_>>());
+                .collect::<Vec<_>>()
+        );
     }
 
     /// fz-ul4.29.12.4 — spawn-with-captures registers a narrow spec for
@@ -3472,7 +3904,8 @@ end
     /// interp / aot). This test asserts the typer prerequisite.
     #[test]
     fn spawn_with_captures_registers_narrow_fz_spawn_thunk_spec() {
-        let (m, mt) = pipeline(r#"
+        let (m, mt) = pipeline(
+            r#"
 fn parent(tag) do
   spawn(fn () -> send(1, tag))
   receive()
@@ -3480,15 +3913,20 @@ end
 fn main() do
   print(parent(99))
 end
-"#);
+"#,
+        );
         let thunk = m.fns.iter().find(|f| f.name == "fz_spawn_thunk").unwrap();
-        let narrow: Vec<&Vec<Descr>> = mt.specs.iter()
+        let narrow: Vec<&Vec<Descr>> = mt
+            .specs
+            .iter()
             .filter(|((fid, _), _)| *fid == thunk.id)
             .map(|((_, k), _)| k)
             .filter(|k| !k.iter().all(|d| d.is_equiv(&Descr::any())))
             .collect();
-        assert!(!narrow.is_empty(),
-            "expected ≥1 narrow fz_spawn_thunk spec, got 0 (only any-key)");
+        assert!(
+            !narrow.is_empty(),
+            "expected ≥1 narrow fz_spawn_thunk spec, got 0 (only any-key)"
+        );
     }
 
     /// fz-ul4.29.12.2 — two MakeClosure sites of the same lambda with
@@ -3502,7 +3940,8 @@ end
         // value of a different type. Both target the *same* lambda
         // (well, two different lambdas — adjust below). To force "same
         // lambda, different captures", we use a curried-style helper.
-        let (m, mt) = pipeline(r#"
+        let (m, mt) = pipeline(
+            r#"
 fn add_to(x), do: fn (y) -> x + y
 fn main() do
   f = add_to(7)
@@ -3510,13 +3949,18 @@ fn main() do
   print(f(1))
   print(g(2.0))
 end
-"#);
+"#,
+        );
         // Find the lambda FnId — it's the one fn whose name starts
         // with "lambda_".
-        let lam = m.fns.iter()
+        let lam = m
+            .fns
+            .iter()
             .find(|f| f.name.starts_with("lambda_"))
             .expect("expected a lambda fn");
-        let registered_keys: Vec<&Vec<Descr>> = mt.specs.iter()
+        let registered_keys: Vec<&Vec<Descr>> = mt
+            .specs
+            .iter()
             .filter(|((fid, _), _)| *fid == lam.id)
             .map(|((_, k), _)| k)
             .collect();
@@ -3524,20 +3968,25 @@ end
         // every fn — it's only present when reachability demands. The
         // two narrow specs (one per distinct capture Descr) are what
         // codegen actually keys off; that's what this test guards.
-        let narrow: Vec<&Vec<Descr>> = registered_keys.iter()
+        let narrow: Vec<&Vec<Descr>> = registered_keys
+            .iter()
             .filter(|k| !k.iter().all(|d| d.is_equiv(&Descr::any())))
             .copied()
             .collect();
-        assert!(narrow.len() >= 2,
+        assert!(
+            narrow.len() >= 2,
             "expected ≥2 narrow specs for the lambda, got {}: {:?}",
-            narrow.len(), narrow);
+            narrow.len(),
+            narrow
+        );
     }
 
     /// Helper's slot 0 for CallClosure / Receive is `Descr::any()` per
     /// the typer's opaque-callee rule.
     #[test]
     fn cont_slot0_is_any_for_call_closure() {
-        let (m, mt) = pipeline(r#"
+        let (m, mt) = pipeline(
+            r#"
 fn apply(f, x) do
   r = f(x)
   r + 1
@@ -3547,9 +3996,12 @@ fn main() do
   z = apply(inc, 3)
   print(z)
 end
-"#);
+"#,
+        );
         let apply_fn = m.fns.iter().find(|f| f.name == "apply").unwrap();
-        let caller_ft = mt.specs.iter()
+        let caller_ft = mt
+            .specs
+            .iter()
             .find(|((id, _), _)| *id == apply_fn.id)
             .map(|((_, _), ft)| ft)
             .expect("apply should have at least one spec");
@@ -3557,8 +4009,11 @@ end
         for blk in &apply_fn.blocks {
             if matches!(&blk.terminator, Term::CallClosure { .. }) {
                 let s0 = cont_slot0_descr(blk, caller_ft, &m, &mt);
-                assert!(s0.is_equiv(&Descr::any()),
-                    "CallClosure slot 0 must be `any`, got {}", s0);
+                assert!(
+                    s0.is_equiv(&Descr::any()),
+                    "CallClosure slot 0 must be `any`, got {}",
+                    s0
+                );
                 saw_cc = true;
             }
         }
@@ -3572,13 +4027,15 @@ end
     /// `fn_constants[v] = F` on the Let-bound var.
     #[test]
     fn fn_constant_from_makeclosure_zero_captures() {
-        let (m, mt) = pipeline(r#"
+        let (m, mt) = pipeline(
+            r#"
 fn double(x), do: x * 2
 fn apply2(f, x), do: f(x)
 fn main() do
   print(apply2(double, 21))
 end
-"#);
+"#,
+        );
         let main = m.fns.iter().find(|f| f.name == "main").unwrap();
         let double = m.fns.iter().find(|f| f.name == "double").unwrap();
         // Find the Var bound to MakeClosure(double, []) in main.
@@ -3594,27 +4051,36 @@ end
             }
         }
         let v = closure_var.expect("test premise: main has MakeClosure(double, [])");
-        let main_ft = mt.specs.iter()
+        let main_ft = mt
+            .specs
+            .iter()
             .find(|((id, _), _)| *id == main.id)
             .map(|(_, ft)| ft)
             .expect("main spec exists");
-        assert_eq!(main_ft.fn_constants.get(&v).copied(), Some(double.id),
-            "zero-capture MakeClosure should populate fn_constants");
+        assert_eq!(
+            main_ft.fn_constants.get(&v).copied(),
+            Some(double.id),
+            "zero-capture MakeClosure should populate fn_constants"
+        );
     }
 
     /// A `MakeClosure` with captures is a real closure value, not a
     /// fn-as-value. No `fn_constants` entry.
     #[test]
     fn fn_constant_not_set_for_captures() {
-        let (m, mt) = pipeline(r#"
+        let (m, mt) = pipeline(
+            r#"
 fn main() do
   k = 7
   f = fn (n) -> n + k
   print(f(3))
 end
-"#);
+"#,
+        );
         let main = m.fns.iter().find(|f| f.name == "main").unwrap();
-        let main_ft = mt.specs.iter()
+        let main_ft = mt
+            .specs
+            .iter()
             .find(|((id, _), _)| *id == main.id)
             .map(|(_, ft)| ft)
             .expect("main spec exists");
@@ -3625,13 +4091,17 @@ end
             for stmt in &b.stmts {
                 let Stmt::Let(v, prim) = stmt;
                 if let Prim::MakeClosure(_, captured) = prim {
-                    if !captured.is_empty() { closure_var = Some(*v); }
+                    if !captured.is_empty() {
+                        closure_var = Some(*v);
+                    }
                 }
             }
         }
         let v = closure_var.expect("test premise: a captured-MakeClosure in main");
-        assert!(main_ft.fn_constants.get(&v).is_none(),
-            "MakeClosure with captures must NOT set fn_constants");
+        assert!(
+            main_ft.fn_constants.get(&v).is_none(),
+            "MakeClosure with captures must NOT set fn_constants"
+        );
     }
 
     /// `apply2(double, 21)` — in apply2's specialized FnTypes, the
@@ -3639,13 +4109,15 @@ end
     /// propagated from main's callsite.
     #[test]
     fn fn_constant_propagates_via_direct_call() {
-        let (m, mt) = pipeline(r#"
+        let (m, mt) = pipeline(
+            r#"
 fn double(x), do: x * 2
 fn apply2(f, x), do: f(x)
 fn main() do
   print(apply2(double, 21))
 end
-"#);
+"#,
+        );
         let apply2 = m.fns.iter().find(|f| f.name == "apply2").unwrap();
         let double = m.fns.iter().find(|f| f.name == "double").unwrap();
         let apply2_entry = apply2.block(apply2.entry);
@@ -3654,18 +4126,23 @@ end
         // propagated fn_constant.
         let mut saw_propagation = false;
         for ((fid, _), ft) in &mt.specs {
-            if *fid != apply2.id { continue; }
+            if *fid != apply2.id {
+                continue;
+            }
             if ft.fn_constants.get(&f_param).copied() == Some(double.id) {
                 saw_propagation = true;
             }
         }
-        assert!(saw_propagation,
+        assert!(
+            saw_propagation,
             "expected apply2's spec to carry fn_constants[f] = double; \
              specs for apply2: {:?}",
-            mt.specs.iter()
+            mt.specs
+                .iter()
                 .filter(|((fid, _), _)| *fid == apply2.id)
                 .map(|((_, k), ft)| (k.clone(), ft.fn_constants.clone()))
-                .collect::<Vec<_>>());
+                .collect::<Vec<_>>()
+        );
     }
 
     // ---- fz-ul4.29.10.2 — narrow F-spec from known-target CallClosure ----
@@ -3677,7 +4154,8 @@ end
     /// agrees that `fn_constants[v] = F`.
     #[test]
     fn closure_call_rewritten_to_direct_call() {
-        let (mut m, mt) = pipeline(r#"
+        let (mut m, mt) = pipeline(
+            r#"
 fn double(x), do: x * 2
 fn apply_plus1(f, x) do
   r = f(x)
@@ -3686,7 +4164,8 @@ end
 fn main() do
   print(apply_plus1(double, 21))
 end
-"#);
+"#,
+        );
         rewrite_known_target_closures(&mut m, &mt);
         let apply2 = m.fns.iter().find(|f| f.name == "apply_plus1").unwrap();
         let double_id = m.fns.iter().find(|f| f.name == "double").unwrap().id;
@@ -3702,20 +4181,24 @@ end
                 _ => {}
             }
         }
-        assert!(saw_direct,
-            "expected at least one direct Call(double, …) in apply2's body");
+        assert!(
+            saw_direct,
+            "expected at least one direct Call(double, …) in apply2's body"
+        );
     }
 
     /// Same rewrite for `Term::TailCallClosure → Term::TailCall`.
     #[test]
     fn tailcall_closure_variant_rewritten() {
-        let (mut m, mt) = pipeline(r#"
+        let (mut m, mt) = pipeline(
+            r#"
 fn double(x), do: x * 2
 fn apply2(f, x), do: f(x)
 fn main() do
   apply2(double, 21)
 end
-"#);
+"#,
+        );
         rewrite_known_target_closures(&mut m, &mt);
         let apply2 = m.fns.iter().find(|f| f.name == "apply2").unwrap();
         let double_id = m.fns.iter().find(|f| f.name == "double").unwrap().id;
@@ -3734,8 +4217,10 @@ end
                 _ => {}
             }
         }
-        assert!(saw_direct,
-            "expected apply2 body to dispatch directly to double after rewrite");
+        assert!(
+            saw_direct,
+            "expected apply2 body to dispatch directly to double after rewrite"
+        );
     }
 
     /// `apply2(double, 21)` — apply2's body has `CallClosure(f, [x])`.
@@ -3746,35 +4231,46 @@ end
     /// rewrite to dispatch into.
     #[test]
     fn callclosure_with_fn_constant_registers_narrow_spec() {
-        let (m, mt) = pipeline(r#"
+        let (m, mt) = pipeline(
+            r#"
 fn double(x), do: x * 2
 fn apply2(f, x), do: f(x)
 fn main() do
   print(apply2(double, 21))
 end
-"#);
+"#,
+        );
         let double = m.fns.iter().find(|f| f.name == "double").unwrap();
         let mut saw_narrow = false;
         for ((fid, key), _) in &mt.specs {
-            if *fid != double.id { continue; }
-            if key.len() != 1 { continue; }
+            if *fid != double.id {
+                continue;
+            }
+            if key.len() != 1 {
+                continue;
+            }
             if !key[0].is_equiv(&Descr::any()) && key[0].is_subtype(&Descr::int()) {
                 saw_narrow = true;
             }
         }
-        assert!(saw_narrow,
+        assert!(
+            saw_narrow,
             "expected a narrow int-typed spec for double from \
              apply2's CallClosure with fn_constants[f] = double; \
              registered specs for double: {:?}",
-            mt.specs.iter()
+            mt.specs
+                .iter()
                 .filter(|((fid, _), _)| *fid == double.id)
                 .map(|((_, k), _)| k.clone())
-                .collect::<Vec<_>>());
+                .collect::<Vec<_>>()
+        );
     }
 
     // ---- fz-ul4.27.22.9 resolve_closure_return tests ----
 
-    fn fid(n: u32) -> FnId { FnId(n) }
+    fn fid(n: u32) -> FnId {
+        FnId(n)
+    }
 
     #[test]
     fn resolve_closure_return_singleton_lookup_hits() {
@@ -3800,14 +4296,13 @@ end
     fn resolve_closure_return_singleton_with_captures() {
         // closure_lit(F=8, [int_lit(10), int_lit(20)]) — captures + arg form
         // the full body key.
-        let descr = Descr::closure_lit(
-            fid(8),
-            vec![Descr::int_lit(10), Descr::int_lit(20)],
-            1,
-        );
+        let descr = Descr::closure_lit(fid(8), vec![Descr::int_lit(10), Descr::int_lit(20)], 1);
         let mut er: HashMap<(FnId, Vec<Descr>), Descr> = HashMap::new();
         er.insert(
-            (fid(8), vec![Descr::int_lit(10), Descr::int_lit(20), Descr::int_lit(12)]),
+            (
+                fid(8),
+                vec![Descr::int_lit(10), Descr::int_lit(20), Descr::int_lit(12)],
+            ),
             Descr::int_lit(42),
         );
         let r = resolve_closure_return(&descr, &er, &[Descr::int_lit(12)]);

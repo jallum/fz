@@ -46,11 +46,12 @@ impl<'a> Renderer<'a> {
 
     pub fn with_color(mut self, mode: ColorMode) -> Self {
         self.color = mode;
-        self.use_color = mode.use_color(true) && match mode {
-            ColorMode::Auto => style::use_color_for_stderr(ColorMode::Auto),
-            ColorMode::Always => true,
-            ColorMode::Never => false,
-        };
+        self.use_color = mode.use_color(true)
+            && match mode {
+                ColorMode::Auto => style::use_color_for_stderr(ColorMode::Auto),
+                ColorMode::Always => true,
+                ColorMode::Never => false,
+            };
         self
     }
 
@@ -130,9 +131,16 @@ impl<'a> Renderer<'a> {
             Severity::Help => ("help", style::GREEN),
         };
         if self.use_color {
-            writeln!(out, "{bold}{c}{l}{reset}{bold}[{code}]:{reset} {msg}",
-                bold = style::BOLD, c = color, l = label, reset = style::RESET,
-                code = d.code, msg = d.message)
+            writeln!(
+                out,
+                "{bold}{c}{l}{reset}{bold}[{code}]:{reset} {msg}",
+                bold = style::BOLD,
+                c = color,
+                l = label,
+                reset = style::RESET,
+                code = d.code,
+                msg = d.message
+            )
         } else {
             writeln!(out, "{}[{}]: {}", label, d.code, d.message)
         }
@@ -176,17 +184,32 @@ impl<'a> Renderer<'a> {
         // Source line itself.
         writeln!(out, "{:>pad$} |", "", pad = gutter)?;
         if self.use_color {
-            writeln!(out, "{n:>pad$} | {line}", n = loc.line, pad = gutter, line = expanded_line)?;
+            writeln!(
+                out,
+                "{n:>pad$} | {line}",
+                n = loc.line,
+                pad = gutter,
+                line = expanded_line
+            )?;
         } else {
-            writeln!(out, "{n:>pad$} | {line}", n = loc.line, pad = gutter, line = expanded_line)?;
+            writeln!(
+                out,
+                "{n:>pad$} | {line}",
+                n = loc.line,
+                pad = gutter,
+                line = expanded_line
+            )?;
         }
 
         // Underline. Compute start/end column in expanded coords.
         let local_start = (sl.span.start.saturating_sub(loc.line_start)) as usize;
         // If span spans into next lines, clamp to end of current line.
-        let local_end_byte = std::cmp::min(sl.span.end, loc.line_end) as usize - loc.line_start as usize;
+        let local_end_byte =
+            std::cmp::min(sl.span.end, loc.line_end) as usize - loc.line_start as usize;
         let start_col = byte_to_col.get(local_start).copied().unwrap_or(0);
-        let end_col = byte_to_col.get(local_end_byte).copied()
+        let end_col = byte_to_col
+            .get(local_end_byte)
+            .copied()
             .unwrap_or(expanded_line.chars().count());
         let pad_before = " ".repeat(start_col);
         let underline_len = std::cmp::max(1, end_col.saturating_sub(start_col));
@@ -201,21 +224,39 @@ impl<'a> Renderer<'a> {
         };
 
         if sl.label.is_empty() {
-            writeln!(out, "{:>pad$} | {pre}{underline}{post}",
-                "", pad = gutter, pre = color_pre, underline = format!("{}{}", pad_before, underline),
-                post = color_post)?;
-        } else {
-            writeln!(out, "{:>pad$} | {pre}{underline}{post} {label}",
-                "", pad = gutter, pre = color_pre,
+            writeln!(
+                out,
+                "{:>pad$} | {pre}{underline}{post}",
+                "",
+                pad = gutter,
+                pre = color_pre,
                 underline = format!("{}{}", pad_before, underline),
-                post = color_post, label = sl.label)?;
+                post = color_post
+            )?;
+        } else {
+            writeln!(
+                out,
+                "{:>pad$} | {pre}{underline}{post} {label}",
+                "",
+                pad = gutter,
+                pre = color_pre,
+                underline = format!("{}{}", pad_before, underline),
+                post = color_post,
+                label = sl.label
+            )?;
         }
         // Closing rule line.
         writeln!(out, "{:>pad$} |", "", pad = gutter)?;
         Ok(())
     }
 
-    fn trailer(&self, kind: &str, text: &str, gutter: usize, out: &mut impl Write) -> io::Result<()> {
+    fn trailer(
+        &self,
+        kind: &str,
+        text: &str,
+        gutter: usize,
+        out: &mut impl Write,
+    ) -> io::Result<()> {
         let (color_pre, color_post) = if self.use_color {
             let c = match kind {
                 "note" => style::CYAN,
@@ -226,28 +267,52 @@ impl<'a> Renderer<'a> {
         } else {
             (String::new(), String::new())
         };
-        writeln!(out, "{:>pad$} = {pre}{kind}{post}: {text}",
-            "", pad = gutter,
-            pre = color_pre, kind = kind, post = color_post, text = text)
+        writeln!(
+            out,
+            "{:>pad$} = {pre}{kind}{post}: {text}",
+            "",
+            pad = gutter,
+            pre = color_pre,
+            kind = kind,
+            post = color_post,
+            text = text
+        )
     }
 
     fn expanded_trailer(&self, span: Span, gutter: usize, out: &mut impl Write) -> io::Result<()> {
         if span.is_dummy() {
-            writeln!(out, "{:>pad$} = expanded from <generated>", "", pad = gutter)
+            writeln!(
+                out,
+                "{:>pad$} = expanded from <generated>",
+                "",
+                pad = gutter
+            )
         } else {
             let loc = self.sm.locate(span);
             let file = &self.sm.file(loc.file).name;
-            writeln!(out, "{empty:>pad$} = expanded from {file}:{line}:{col}",
-                empty = "", pad = gutter, file = file, line = loc.line, col = loc.col)
+            writeln!(
+                out,
+                "{empty:>pad$} = expanded from {file}:{line}:{col}",
+                empty = "",
+                pad = gutter,
+                file = file,
+                line = loc.line,
+                col = loc.col
+            )
         }
     }
 }
 
 fn line_digit_count(n: u32) -> usize {
-    if n == 0 { return 1; }
+    if n == 0 {
+        return 1;
+    }
     let mut k = 0u32;
     let mut v = n;
-    while v > 0 { v /= 10; k += 1; }
+    while v > 0 {
+        v /= 10;
+        k += 1;
+    }
     k as usize
 }
 
@@ -294,7 +359,10 @@ mod tests {
 
     fn render(diag: &Diagnostic, sm: &SourceMap) -> String {
         let mut buf: Vec<u8> = Vec::new();
-        Renderer::new(sm).with_color_disabled().emit(diag, &mut buf).unwrap();
+        Renderer::new(sm)
+            .with_color_disabled()
+            .emit(diag, &mut buf)
+            .unwrap();
         String::from_utf8(buf).unwrap()
     }
 
@@ -304,8 +372,12 @@ mod tests {
         let (sm, f) = rebuild(src);
         // Underline the `x == 1` part.
         let span = Span::new(f, 18, 24);
-        let d = Diagnostic::warning(TYPE_UNREACHABLE_ARM, "the then branch is never reachable", span)
-            .with_label("in fn `main`");
+        let d = Diagnostic::warning(
+            TYPE_UNREACHABLE_ARM,
+            "the then branch is never reachable",
+            span,
+        )
+        .with_label("in fn `main`");
         let out = render(&d, &sm);
         let expected = "\
 warning[type/unreachable-arm]: the then branch is never reachable
@@ -370,8 +442,11 @@ warning[type/unreachable-arm]: the then branch is never reachable
         let d = Diagnostic::error(TYPE_UNREACHABLE_ARM, "expanded code failed", primary)
             .with_expanded_from(call_span);
         let out = render(&d, &sm);
-        assert!(out.contains("= expanded from input.fz:1:1"),
-            "got:\n{}", out);
+        assert!(
+            out.contains("= expanded from input.fz:1:1"),
+            "got:\n{}",
+            out
+        );
     }
 
     #[test]
@@ -400,7 +475,10 @@ warning[type/unreachable-arm]: the then branch is never reachable
         let (sm, f) = rebuild(src);
         let d = Diagnostic::error(LEX_UNEXPECTED_CHAR, "x", Span::new(f, 0, 1));
         let out = render(&d, &sm);
-        assert!(!out.contains("\x1b["), "no ANSI escapes when color disabled");
+        assert!(
+            !out.contains("\x1b["),
+            "no ANSI escapes when color disabled"
+        );
     }
 
     #[test]
@@ -412,7 +490,11 @@ warning[type/unreachable-arm]: the then branch is never reachable
         let d = Diagnostic::error(LEX_UNEXPECTED_CHAR, "x", Span::new(f, 0, 1));
         r.emit(&d, &mut buf).unwrap();
         let out = String::from_utf8(buf).unwrap();
-        assert!(out.contains("\x1b["), "ANSI escapes expected, got:\n{}", out);
+        assert!(
+            out.contains("\x1b["),
+            "ANSI escapes expected, got:\n{}",
+            out
+        );
     }
 
     /// Drive a fixture through lex → parse → resolve → macros → lower
@@ -420,7 +502,10 @@ warning[type/unreachable-arm]: the then branch is never reachable
     /// pipeline completes without an error (the fixture must exercise
     /// one of these stages).
     fn run_pipeline_for_fixture(
-        src: &str, id: super::super::FileId, sm: &SourceMap, rel: &str,
+        src: &str,
+        id: super::super::FileId,
+        sm: &SourceMap,
+        rel: &str,
     ) -> String {
         use crate::lexer::Lexer;
         use crate::parser::Parser;
@@ -442,7 +527,10 @@ warning[type/unreachable-arm]: the then branch is never reachable
         if let Err(e) = crate::ir_lower::lower_program(&prog) {
             return render(&e.to_diagnostic(), sm);
         }
-        panic!("fixture {} completed pipeline successfully — expected an error", rel);
+        panic!(
+            "fixture {} completed pipeline successfully — expected an error",
+            rel
+        );
     }
 
     /// Golden-file fixtures: any directory under `fixtures/errors/` with
@@ -456,15 +544,20 @@ warning[type/unreachable-arm]: the then branch is never reachable
         use std::path::Path;
 
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("fixtures").join("errors");
+            .join("fixtures")
+            .join("errors");
         let mut compared = 0;
         for entry in fs::read_dir(&root).expect("read fixtures/errors") {
             let entry = entry.expect("entry");
             let path = entry.path();
-            if !path.is_dir() { continue; }
+            if !path.is_dir() {
+                continue;
+            }
             let input_path = path.join("input.fz");
             let expected_path = path.join("expected.txt");
-            if !expected_path.exists() || !input_path.exists() { continue; }
+            if !expected_path.exists() || !input_path.exists() {
+                continue;
+            }
 
             let src = fs::read_to_string(&input_path).expect("read input.fz");
             let expected = fs::read_to_string(&expected_path).expect("read expected.txt");
@@ -474,7 +567,8 @@ warning[type/unreachable-arm]: the then branch is never reachable
             // match what `fz run` emits with a relative path. The fixture
             // was captured with a workspace-relative path; we register
             // the file under that same relative name.
-            let rel = name.strip_prefix(env!("CARGO_MANIFEST_DIR"))
+            let rel = name
+                .strip_prefix(env!("CARGO_MANIFEST_DIR"))
                 .map(|s| s.trim_start_matches('/').to_string())
                 .unwrap_or(name.clone());
 
@@ -487,12 +581,20 @@ warning[type/unreachable-arm]: the then branch is never reachable
             // span; the verify/define paths that DO have spans are
             // covered by integration tests, not goldens.
             let actual = run_pipeline_for_fixture(&src, id, &sm, &rel);
-            assert_eq!(actual.trim_end(), expected.trim_end(),
+            assert_eq!(
+                actual.trim_end(),
+                expected.trim_end(),
                 "fixture {} mismatch:\n--- actual ---\n{}\n--- expected ---\n{}",
-                rel, actual, expected);
+                rel,
+                actual,
+                expected
+            );
             compared += 1;
         }
-        assert!(compared >= 1, "expected at least one fixture with expected.txt");
+        assert!(
+            compared >= 1,
+            "expected at least one fixture with expected.txt"
+        );
     }
 
     #[test]
@@ -500,15 +602,30 @@ warning[type/unreachable-arm]: the then branch is never reachable
         let src = "fn main(), do: 1\n";
         let (sm, f) = rebuild(src);
         let mut ds = Diagnostics::new();
-        ds.push(Diagnostic::warning(TYPE_UNREACHABLE_ARM, "first", Span::new(f, 0, 2)));
-        ds.push(Diagnostic::warning(TYPE_UNREACHABLE_ARM, "second", Span::new(f, 3, 7)));
+        ds.push(Diagnostic::warning(
+            TYPE_UNREACHABLE_ARM,
+            "first",
+            Span::new(f, 0, 2),
+        ));
+        ds.push(Diagnostic::warning(
+            TYPE_UNREACHABLE_ARM,
+            "second",
+            Span::new(f, 3, 7),
+        ));
         let mut buf: Vec<u8> = Vec::new();
-        Renderer::new(&sm).with_color_disabled().emit_all(&ds, &mut buf).unwrap();
+        Renderer::new(&sm)
+            .with_color_disabled()
+            .emit_all(&ds, &mut buf)
+            .unwrap();
         let out = String::from_utf8(buf).unwrap();
         assert!(out.contains("first"));
         assert!(out.contains("second"));
         // Two diagnostics → trailing blank between them.
         let n_blank_pairs = out.matches("\n\n").count();
-        assert!(n_blank_pairs >= 2, "expected blank-line separators, got:\n{}", out);
+        assert!(
+            n_blank_pairs >= 2,
+            "expected blank-line separators, got:\n{}",
+            out
+        );
     }
 }

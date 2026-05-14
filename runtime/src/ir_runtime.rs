@@ -92,9 +92,13 @@ pub extern "C" fn fz_halt(_ctx: *mut u8, fz_bits: u64) {
         Tag::Int => v.unbox_int().unwrap(),
         Tag::Atom => v.unbox_atom().unwrap() as i64,
         Tag::Special => {
-            if v.is_true() { 1 }
-            else if v.is_false() { 0 }
-            else { 0 } // nil
+            if v.is_true() {
+                1
+            } else if v.is_false() {
+                0
+            } else {
+                0
+            } // nil
         }
         Tag::Ptr => {
             let p = v.unbox_ptr().unwrap();
@@ -235,14 +239,12 @@ pub extern "C" fn fz_receive_attempt(cont_frame_ptr: *mut u8) -> *mut u8 {
 /// `flags` so `fz_spawn_entry` and `fz_resume_park` can pick the matching
 /// halt-cont singleton at task launch.
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_alloc_closure(
-    callee_fn_id: u32,
-    captured_count: u32,
-    halt_kind: u32,
-) -> u64 {
-    let p = current_process()
-        .heap
-        .alloc_closure(callee_fn_id, captured_count as usize, halt_kind as u16);
+pub extern "C" fn fz_alloc_closure(callee_fn_id: u32, captured_count: u32, halt_kind: u32) -> u64 {
+    let p = current_process().heap.alloc_closure(
+        callee_fn_id,
+        captured_count as usize,
+        halt_kind as u16,
+    );
     p as u64
 }
 
@@ -308,7 +310,9 @@ pub extern "C" fn fz_get_static_closure(cl_sid: u32) -> u64 {
     // HeapHeader. Linear in static_closures.len() — small (one entry
     // per zero-cap closure-target spec).
     for ptr in &p.static_closures {
-        if ptr.is_null() { continue; }
+        if ptr.is_null() {
+            continue;
+        }
         let header = unsafe { &*(*ptr as *const crate::fz_value::HeapHeader) };
         if header._reserved == cl_sid {
             return *ptr as u64;
@@ -316,7 +320,8 @@ pub extern "C" fn fz_get_static_closure(cl_sid: u32) -> u64 {
     }
     panic!(
         "fz_get_static_closure: no singleton for cl_sid/fn_id {} ({} entries)",
-        cl_sid, p.static_closures.len()
+        cl_sid,
+        p.static_closures.len()
     );
 }
 
@@ -398,9 +403,7 @@ pub extern "C" fn fz_vec_get(vec_bits: u64, index_bits: u64) -> u64 {
     }
     let payload = unsafe { (p as *const u8).add(24) };
     let n: i64 = match HeapKind::from_u16(header.kind) {
-        Some(HeapKind::VecI64) => unsafe {
-            std::ptr::read((payload as *const i64).add(i))
-        },
+        Some(HeapKind::VecI64) => unsafe { std::ptr::read((payload as *const i64).add(i)) },
         Some(HeapKind::VecU8) => unsafe { *payload.add(i) as i64 },
         Some(HeapKind::VecBit) => {
             let byte_idx = i / 8;
@@ -439,7 +442,11 @@ pub extern "C" fn fz_bs_write_field(
     use crate::bitstr::BitType;
     use crate::fz_value::{FzValue, HeapKind, Tag};
     let ty = decode_bit_type(ty_tag);
-    let size = if size_present != 0 { Some(size_value) } else { None };
+    let size = if size_present != 0 {
+        Some(size_value)
+    } else {
+        None
+    };
     let endian = decode_endian(endian_tag);
     // `signed` is irrelevant on write: two's-complement truncation produces
     // the same bit pattern for signed and unsigned at fixed width. The flag
@@ -477,9 +484,8 @@ pub extern "C" fn fz_bs_write_field(
                 if HeapKind::from_u16(header.kind) != Some(HeapKind::Bitstring) {
                     panic!("binary/bits bit field source is not a Bitstring");
                 }
-                let src_bit_len = unsafe {
-                    std::ptr::read((p as *const u8).add(16) as *const u64)
-                } as usize;
+                let src_bit_len =
+                    unsafe { std::ptr::read((p as *const u8).add(16) as *const u64) } as usize;
                 let src_bytes_ptr = unsafe { (p as *const u8).add(24) };
                 let needed_bits = match (ty, size) {
                     (BitType::Binary, None) => src_bit_len,
@@ -488,10 +494,12 @@ pub extern "C" fn fz_bs_write_field(
                     (BitType::Bits, Some(n)) => (n * unit) as usize,
                     _ => unreachable!(),
                 };
-                assert!(needed_bits <= src_bit_len, "binary/bits field exceeds source");
-                let src_bytes = unsafe {
-                    std::slice::from_raw_parts(src_bytes_ptr, src_bit_len.div_ceil(8))
-                };
+                assert!(
+                    needed_bits <= src_bit_len,
+                    "binary/bits field exceeds source"
+                );
+                let src_bytes =
+                    unsafe { std::slice::from_raw_parts(src_bytes_ptr, src_bit_len.div_ceil(8)) };
                 if needed_bits % 8 == 0 && w.bit_len % 8 == 0 {
                     w.bytes.extend_from_slice(&src_bytes[..needed_bits / 8]);
                     w.bit_len += needed_bits;
@@ -509,8 +517,7 @@ pub extern "C" fn fz_bs_write_field(
             BitType::Utf8 | BitType::Utf16 | BitType::Utf32 => {
                 let cp = FzValue(value_bits)
                     .unbox_int()
-                    .expect("utf field expects integer codepoint")
-                    as u32;
+                    .expect("utf field expects integer codepoint") as u32;
                 let bytes = match ty {
                     BitType::Utf8 => crate::bitstr::encode_utf8(cp),
                     BitType::Utf16 => crate::bitstr::encode_utf16(cp, endian),
@@ -622,7 +629,11 @@ pub extern "C" fn fz_bs_read_field(
     use crate::bitstr::{apply_endian_for_read, sign_extend};
     use crate::fz_value::{FzValue, HeapKind};
     let ty = decode_bit_type(ty_tag);
-    let size = if size_present != 0 { Some(size_value) } else { None };
+    let size = if size_present != 0 {
+        Some(size_value)
+    } else {
+        None
+    };
     let endian = decode_endian(endian_tag);
     let signed_b = signed != 0;
     let is_last_b = is_last != 0;
@@ -631,16 +642,12 @@ pub extern "C" fn fz_bs_read_field(
     let v = FzValue(reader_bits);
     let rp = v.unbox_ptr().expect("read_field: reader is not a ptr");
     let bs_bits = unsafe { std::ptr::read((rp as *const u8).add(16) as *const u64) };
-    let bit_len = (FzValue(unsafe {
-        std::ptr::read((rp as *const u8).add(24) as *const u64)
-    }))
-    .unbox_int()
-    .unwrap() as usize;
-    let pos = (FzValue(unsafe {
-        std::ptr::read((rp as *const u8).add(32) as *const u64)
-    }))
-    .unbox_int()
-    .unwrap() as usize;
+    let bit_len = (FzValue(unsafe { std::ptr::read((rp as *const u8).add(24) as *const u64) }))
+        .unbox_int()
+        .unwrap() as usize;
+    let pos = (FzValue(unsafe { std::ptr::read((rp as *const u8).add(32) as *const u64) }))
+        .unbox_int()
+        .unwrap() as usize;
 
     // Bytes pointer from bs.
     let bs_v = FzValue(bs_bits);
@@ -668,18 +675,28 @@ pub extern "C" fn fz_bs_read_field(
         p as u64
     };
 
-    let mut r = crate::bitstr::BitReader { bytes, bit_len, pos };
+    let mut r = crate::bitstr::BitReader {
+        bytes,
+        bit_len,
+        pos,
+    };
 
     let (extracted_bits, consumed) = match ty {
         BitType::Integer => {
             let total = size.unwrap_or(8) * unit;
-            if total > 64 { return fail(); }
+            if total > 64 {
+                return fail();
+            }
             let raw = match r.read_bits(total as usize) {
                 Some(v) => v,
                 None => return fail(),
             };
             let raw = apply_endian_for_read(raw, total, endian);
-            let n: i64 = if signed_b { sign_extend(raw, total) } else { raw as i64 };
+            let n: i64 = if signed_b {
+                sign_extend(raw, total)
+            } else {
+                raw as i64
+            };
             (FzValue::from_int(n).0, total as usize)
         }
         BitType::Binary | BitType::Bits => {
@@ -691,7 +708,9 @@ pub extern "C" fn fz_bs_read_field(
                 (BitType::Bits, Some(n), _) => (n * unit) as usize,
                 _ => unreachable!(),
             };
-            if pos + needed_bits > bit_len { return fail(); }
+            if pos + needed_bits > bit_len {
+                return fail();
+            }
             // Build a fresh Bitstring from the slice. Always copy for v1
             // (zero-copy slicing deferred — see ticket "Open").
             let mut sub_bytes = Vec::with_capacity(needed_bits.div_ceil(8));
@@ -805,8 +824,7 @@ pub extern "C" fn fz_map_clone(base_bits: u64) {
     if HeapKind::from_u16(header.kind) != Some(HeapKind::Map) {
         panic!("fz_map_clone base is not a Map");
     }
-    let count =
-        unsafe { std::ptr::read((p as *const u8).add(16) as *const u64) as usize };
+    let count = unsafe { std::ptr::read((p as *const u8).add(16) as *const u64) as usize };
     let mut cursor = unsafe { (p as *const u8).add(24) as *const u64 };
     for _ in 0..count {
         let k = unsafe { std::ptr::read(cursor) };
@@ -836,16 +854,17 @@ pub extern "C" fn fz_map_finalize() -> u64 {
     // Last write wins on duplicate keys: walk in order, dedupe-overwriting.
     let mut by_key: Vec<(u64, u64)> = Vec::with_capacity(raw.len());
     for (k, v) in raw {
-        if let Some(slot) = by_key.iter_mut().find(|(ek, _)| fz_key_cmp(*ek, k).is_eq())
-        {
+        if let Some(slot) = by_key.iter_mut().find(|(ek, _)| fz_key_cmp(*ek, k).is_eq()) {
             slot.1 = v;
         } else {
             by_key.push((k, v));
         }
     }
     by_key.sort_by(|a, b| fz_key_cmp(a.0, b.0));
-    let entries: Vec<(FzValue, FzValue)> =
-        by_key.into_iter().map(|(k, v)| (FzValue(k), FzValue(v))).collect();
+    let entries: Vec<(FzValue, FzValue)> = by_key
+        .into_iter()
+        .map(|(k, v)| (FzValue(k), FzValue(v)))
+        .collect();
     let p = current_process().heap.alloc_map(&entries);
     p as u64
 }
@@ -860,8 +879,7 @@ pub extern "C" fn fz_map_get(map_bits: u64, key_bits: u64) -> u64 {
     if HeapKind::from_u16(header.kind) != Some(HeapKind::Map) {
         panic!("fz_map_get on non-Map");
     }
-    let count =
-        unsafe { std::ptr::read((p as *const u8).add(16) as *const u64) as usize };
+    let count = unsafe { std::ptr::read((p as *const u8).add(16) as *const u64) as usize };
     let cursor = unsafe { (p as *const u8).add(24) as *const u64 };
     // v1: linear scan. Sorted layout exists primarily so equality and
     // rendering have a deterministic shape; binary search comes alongside
@@ -925,7 +943,7 @@ pub fn fz_alloc_frame_for_test(schema_id: u32, total_size: u32) -> *mut u8 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_alloc_frame(schema_id: u32, total_size: u32) -> *mut u8 {
-    use std::alloc::{alloc_zeroed, Layout};
+    use std::alloc::{Layout, alloc_zeroed};
     // Round size up to a multiple of 16 to keep allocator happy and ensure
     // the resulting block aligns whatever follows.
     let rounded = ((total_size as usize) + 15) & !15;
@@ -977,12 +995,16 @@ pub fn box_float(f: f64) -> u64 {
 /// promotes both operands here, then emits native Cranelift fadd/fcmp/etc
 /// inline and (for arith) boxes the result via fz_alloc_float.
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_promote_f64(bits: u64) -> f64 { fz_to_f64(bits) }
+pub extern "C" fn fz_promote_f64(bits: u64) -> f64 {
+    fz_to_f64(bits)
+}
 
 /// f64 remainder (fmod-style: truncated, sign of dividend). Cranelift has no
 /// frem opcode, so the JIT's float-mod slow path calls out here.
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_fmod(a: f64, b: f64) -> f64 { a % b }
+pub extern "C" fn fz_fmod(a: f64, b: f64) -> f64 {
+    a % b
+}
 
 /// Convert a Rust bool into FzValue TRUE/FALSE bits. Used by the interpreter
 /// for cmp results; the JIT emits the equivalent inline.
@@ -1008,7 +1030,9 @@ pub extern "C" fn fz_value_eq(a: u64, b: u64) -> u64 {
 /// circuit on bit-eq; heap-typed pairs of the same kind recurse per kind.
 fn eq_fz(a: u64, b: u64) -> bool {
     use crate::fz_value::{FzValue, HeapKind, Tag};
-    if a == b { return true; } // covers all scalar same-tag cases + ptr-identity
+    if a == b {
+        return true;
+    } // covers all scalar same-tag cases + ptr-identity
     let av = FzValue(a);
     let bv = FzValue(b);
     if !matches!((av.tag(), bv.tag()), (Tag::Ptr, Tag::Ptr)) {
@@ -1091,12 +1115,8 @@ fn eq_struct(
     };
     for i in 0..n_fields {
         let off = (i * 8) as isize;
-        let av = unsafe {
-            std::ptr::read((ap as *const u8).offset(16 + off) as *const u64)
-        };
-        let bv = unsafe {
-            std::ptr::read((bp as *const u8).offset(16 + off) as *const u64)
-        };
+        let av = unsafe { std::ptr::read((ap as *const u8).offset(16 + off) as *const u64) };
+        let bv = unsafe { std::ptr::read((bp as *const u8).offset(16 + off) as *const u64) };
         if !eq_fz(av, bv) {
             return false;
         }
@@ -1134,10 +1154,7 @@ fn eq_bitstring(
     true
 }
 
-fn eq_map(
-    ap: *mut crate::fz_value::HeapHeader,
-    bp: *mut crate::fz_value::HeapHeader,
-) -> bool {
+fn eq_map(ap: *mut crate::fz_value::HeapHeader, bp: *mut crate::fz_value::HeapHeader) -> bool {
     let a_count = unsafe { std::ptr::read((ap as *const u8).add(16) as *const u64) } as usize;
     let b_count = unsafe { std::ptr::read((bp as *const u8).add(16) as *const u64) } as usize;
     if a_count != b_count {

@@ -151,10 +151,10 @@ impl Process {
     pub fn init_static_closures(
         &mut self,
         targets: &[(
-            u32, /* cl_sid */
-            u32, /* fn_id */
+            u32,       /* cl_sid */
+            u32,       /* fn_id */
             *const u8, /* code_ptr */
-            u32, /* halt_kind */
+            u32,       /* halt_kind */
         )],
     ) {
         use crate::fz_value::{HeapHeader, HeapKind};
@@ -193,7 +193,9 @@ impl Process {
     pub fn init_halt_cont_singletons(&mut self, body_addrs: [*const u8; 3]) {
         use crate::fz_value::{HeapHeader, HeapKind};
         for (slot, addr) in body_addrs.iter().enumerate() {
-            if addr.is_null() { continue; }
+            if addr.is_null() {
+                continue;
+            }
             let mut buf: Box<[u64; 3]> = Box::new([0u64; 3]);
             let base = buf.as_mut_ptr() as *mut u8;
             let header = HeapHeader {
@@ -236,6 +238,9 @@ thread_local! {
 /// path); the pointer is valid for the duration of the run.
 pub fn current_process() -> &'static mut Process {
     let p = CURRENT_PROCESS.with(|c| c.get());
-    assert!(!p.is_null(), "current_process(): no Process installed (running outside run_in?)");
+    assert!(
+        !p.is_null(),
+        "current_process(): no Process installed (running outside run_in?)"
+    );
     unsafe { &mut *p }
 }

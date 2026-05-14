@@ -93,10 +93,7 @@ impl SourceMap {
             Err(i) => i - 1, // i is the insertion point; previous start is our line
         };
         let line_start = starts[idx];
-        let line_end = starts
-            .get(idx + 1)
-            .copied()
-            .unwrap_or(f.bytes.len() as u32);
+        let line_end = starts.get(idx + 1).copied().unwrap_or(f.bytes.len() as u32);
         // Trim trailing '\n' from the snippet range so the renderer doesn't
         // draw an empty next-line. `line_end` here points at the '\n' itself
         // (or EOF). The renderer will read line_start..line_end inclusive of
@@ -180,7 +177,10 @@ mod tests {
         let loc = sm.locate(Span::new(f, 8, 13));
         assert_eq!(loc.line, 3);
         assert_eq!(loc.col, 1);
-        assert_eq!(&sm.file(f).bytes[loc.line_start as usize..loc.line_end as usize], "three");
+        assert_eq!(
+            &sm.file(f).bytes[loc.line_start as usize..loc.line_end as usize],
+            "three"
+        );
     }
 
     #[test]

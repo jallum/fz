@@ -40,8 +40,7 @@ pub const SIZE_TABLE: [usize; 32] = build_size_table();
 const fn build_size_table() -> [usize; 32] {
     let mut t = [0usize; 32];
     let prefix: [usize; 12] = [
-        1024, 1536, 2560, 4096, 6656, 10752,
-        17408, 28160, 45568, 73728, 119296, 192768,
+        1024, 1536, 2560, 4096, 6656, 10752, 17408, 28160, 45568, 73728, 119296, 192768,
     ];
     let mut i = 0;
     while i < 12 {
@@ -83,7 +82,9 @@ impl BlockPool {
     const fn new() -> Self {
         // Const init: 32 empty Vecs. `[Vec::new(); N]` doesn't const-init
         // because Vec is not Copy; use a manual array build.
-        Self { free_lists: [const { Vec::new() }; SIZE_TABLE.len()] }
+        Self {
+            free_lists: [const { Vec::new() }; SIZE_TABLE.len()],
+        }
     }
 
     fn alloc(&mut self, size_class: u8) -> *mut u8 {
@@ -92,7 +93,9 @@ impl BlockPool {
         if let Some(p) = self.free_lists[idx].pop() {
             // Recycled blocks: zero before returning. Cheney + Heap::new
             // expect zero pages.
-            unsafe { std::ptr::write_bytes(p, 0, size); }
+            unsafe {
+                std::ptr::write_bytes(p, 0, size);
+            }
             return p;
         }
         let layout = Layout::from_size_align(size, 16).expect("bad block layout");
@@ -117,7 +120,9 @@ impl Drop for BlockPool {
             let size = SIZE_TABLE[idx];
             let layout = Layout::from_size_align(size, 16).expect("bad block layout");
             for p in list.drain(..) {
-                unsafe { dealloc(p, layout); }
+                unsafe {
+                    dealloc(p, layout);
+                }
             }
         }
     }
@@ -139,7 +144,9 @@ fn pool_free(p: *mut u8, size_class: u8) {
     if result.is_err() {
         let size = SIZE_TABLE[size_class as usize];
         let layout = Layout::from_size_align(size, 16).expect("bad block layout");
-        unsafe { dealloc(p, layout); }
+        unsafe {
+            dealloc(p, layout);
+        }
     }
 }
 
@@ -154,7 +161,9 @@ pub fn pool_drain_for_test() {
             let size = SIZE_TABLE[idx];
             let layout = Layout::from_size_align(size, 16).expect("bad block layout");
             for p in list.drain(..) {
-                unsafe { dealloc(p, layout); }
+                unsafe {
+                    dealloc(p, layout);
+                }
             }
         }
     });
@@ -205,7 +214,9 @@ pub struct SchemaRegistry {
 
 impl SchemaRegistry {
     pub fn new() -> Self {
-        Self { schemas: Vec::new() }
+        Self {
+            schemas: Vec::new(),
+        }
     }
 
     pub fn register(&mut self, schema: Schema) -> u32 {
@@ -262,7 +273,10 @@ pub struct Heap {
 
 impl Heap {
     pub fn new(capacity: usize, schemas: Rc<RefCell<SchemaRegistry>>) -> Self {
-        assert!(capacity > 0 && capacity % 16 == 0, "capacity must be 16-aligned");
+        assert!(
+            capacity > 0 && capacity % 16 == 0,
+            "capacity must be 16-aligned"
+        );
         let size_class = pick_size_class(capacity);
         let block_size = SIZE_TABLE[size_class as usize];
         let block_start = pool_alloc(size_class);
@@ -313,10 +327,14 @@ impl Heap {
             // `size`. Allocate via the pool; abandon the current block
             // for Cheney/Drop to return.
             let want_for_alloc = pick_size_class(size);
-            let bumped = self.size_class.saturating_add(1).min((SIZE_TABLE.len() - 1) as u8);
+            let bumped = self
+                .size_class
+                .saturating_add(1)
+                .min((SIZE_TABLE.len() - 1) as u8);
             let new_class = want_for_alloc.max(bumped);
             let new_size = SIZE_TABLE[new_class as usize];
-            self.abandoned_blocks.push((self.block_start, self.size_class));
+            self.abandoned_blocks
+                .push((self.block_start, self.size_class));
             let new_block = pool_alloc(new_class);
             self.block_start = new_block;
             self.bump_top = new_block;
@@ -428,11 +446,7 @@ impl Heap {
             // Zero the trailing padding so renders / debug aren't garbage.
             let pad_start = 24 + bytes.len();
             if pad_start < total {
-                std::ptr::write_bytes(
-                    (p as *mut u8).add(pad_start),
-                    0,
-                    total - pad_start,
-                );
+                std::ptr::write_bytes((p as *mut u8).add(pad_start), 0, total - pad_start);
             }
         }
         p
@@ -460,8 +474,10 @@ impl Heap {
         captured_count: usize,
         halt_kind: u16,
     ) -> *mut HeapHeader {
-        assert!(captured_count <= crate::fz_value::CLOSURE_FLAGS_CAPTURED_MASK as usize,
-            "closure captured count overflow");
+        assert!(
+            captured_count <= crate::fz_value::CLOSURE_FLAGS_CAPTURED_MASK as usize,
+            "closure captured count overflow"
+        );
         let payload = 8 + captured_count * 8;
         let total = (16 + payload + 15) & !15;
         let p = self.alloc(total);
@@ -486,12 +502,7 @@ impl Heap {
     /// raw data so SIMD codegen can address it uniformly. Returns the
     /// header pointer with header + len written; payload is zeroed and the
     /// caller writes element bytes directly at offset 24.
-    fn alloc_vec_raw(
-        &mut self,
-        kind: HeapKind,
-        len: u32,
-        payload_bytes: usize,
-    ) -> *mut HeapHeader {
+    fn alloc_vec_raw(&mut self, kind: HeapKind, len: u32, payload_bytes: usize) -> *mut HeapHeader {
         let total = (24 + payload_bytes + 15) & !15;
         let p = self.alloc(total);
         unsafe {
@@ -627,7 +638,8 @@ impl Heap {
     /// Tracks total memory footprint, not "logically live" data.
     pub fn bytes_used(&self) -> usize {
         let current = unsafe { self.bump_top.offset_from(self.block_start) } as usize;
-        let abandoned: usize = self.abandoned_blocks
+        let abandoned: usize = self
+            .abandoned_blocks
             .iter()
             .map(|(_, sc)| SIZE_TABLE[*sc as usize])
             .sum();
@@ -648,9 +660,8 @@ impl Heap {
     /// in-from-space range check and left untouched.
     pub fn gc(&mut self, root_slot: &mut *mut u8) {
         // Snapshot from-space ranges before we allocate to-space.
-        let mut from_ranges: Vec<(*mut u8, *mut u8)> = Vec::with_capacity(
-            1 + self.abandoned_blocks.len(),
-        );
+        let mut from_ranges: Vec<(*mut u8, *mut u8)> =
+            Vec::with_capacity(1 + self.abandoned_blocks.len());
         from_ranges.push((self.block_start, self.block_end));
         for &(p, sc) in &self.abandoned_blocks {
             from_ranges.push((p, unsafe { p.add(SIZE_TABLE[sc as usize]) }));
@@ -665,11 +676,7 @@ impl Heap {
             0
         } else {
             let schemas = self.schemas.borrow();
-            count_live_bytes_from(
-                *root_slot as *mut HeapHeader,
-                &from_ranges,
-                &schemas,
-            )
+            count_live_bytes_from(*root_slot as *mut HeapHeader, &from_ranges, &schemas)
         };
         // §6.5 hysteresis: growth is eager (size up the moment live + slack
         // exceeds the current class), but shrink waits for two consecutive
@@ -770,9 +777,8 @@ fn count_live_bytes_from(
         }
         let h = unsafe { &*p };
         total += h.size_bytes as usize;
-        let kind = HeapKind::from_u16(h.kind).unwrap_or_else(|| {
-            panic!("count_live_bytes_from: invalid HeapKind {:#x}", h.kind)
-        });
+        let kind = HeapKind::from_u16(h.kind)
+            .unwrap_or_else(|| panic!("count_live_bytes_from: invalid HeapKind {:#x}", h.kind));
         let push = |slot: *const FzValue, stack: &mut Vec<*mut HeapHeader>| {
             let v = unsafe { std::ptr::read(slot) };
             if let Some(cp) = v.unbox_ptr() {
@@ -802,16 +808,13 @@ fn count_live_bytes_from(
             HeapKind::Closure => {
                 let count = crate::fz_value::closure_flags_captured(h.flags) as usize;
                 for i in 0..count {
-                    let slot = unsafe {
-                        (p as *const u8).add(24).add(i * 8) as *const FzValue
-                    };
+                    let slot = unsafe { (p as *const u8).add(24).add(i * 8) as *const FzValue };
                     push(slot, &mut stack);
                 }
             }
             HeapKind::Map => {
-                let count = unsafe {
-                    std::ptr::read((p as *const u8).add(16) as *const u64) as usize
-                };
+                let count =
+                    unsafe { std::ptr::read((p as *const u8).add(16) as *const u64) as usize };
                 for i in 0..count {
                     let k = unsafe { (p as *const u8).add(24).add(i * 16) as *const FzValue };
                     let v = unsafe { (p as *const u8).add(24).add(i * 16 + 8) as *const FzValue };
@@ -819,9 +822,12 @@ fn count_live_bytes_from(
                     push(v, &mut stack);
                 }
             }
-            HeapKind::Bitstring | HeapKind::Float
-            | HeapKind::VecI64 | HeapKind::VecF64
-            | HeapKind::VecU8 | HeapKind::VecBit => {}
+            HeapKind::Bitstring
+            | HeapKind::Float
+            | HeapKind::VecI64
+            | HeapKind::VecF64
+            | HeapKind::VecU8
+            | HeapKind::VecBit => {}
         }
     }
     total
@@ -841,9 +847,7 @@ fn cheney_forward(
     if h.kind == FORWARDED_KIND {
         // Forwarding pointer was written at offset 8 (replacing schema_id +
         // _reserved). Read it back.
-        let fwd = unsafe {
-            std::ptr::read((p as *const u8).add(8) as *const u64)
-        };
+        let fwd = unsafe { std::ptr::read((p as *const u8).add(8) as *const u64) };
         return fwd as *mut HeapHeader;
     }
     let size = h.size_bytes as usize;
@@ -851,7 +855,9 @@ fn cheney_forward(
     let new_top = unsafe { dst.add(size) };
     assert!(new_top <= to_end, "Cheney: to-space exhausted");
     // Copy the whole object verbatim.
-    unsafe { std::ptr::copy_nonoverlapping(p as *const u8, dst, size); }
+    unsafe {
+        std::ptr::copy_nonoverlapping(p as *const u8, dst, size);
+    }
     *free = new_top;
     // Install forwarding marker in from-header.
     unsafe {
@@ -871,20 +877,19 @@ fn cheney_trace_children(
     to_end: *mut u8,
     schemas: &SchemaRegistry,
 ) {
-    let kind = HeapKind::from_u16(unsafe { (*obj).kind })
-        .unwrap_or_else(|| panic!(
-            "Cheney scan: invalid HeapKind {:#x}",
-            unsafe { (*obj).kind },
-        ));
+    let kind = HeapKind::from_u16(unsafe { (*obj).kind }).unwrap_or_else(|| {
+        panic!("Cheney scan: invalid HeapKind {:#x}", unsafe {
+            (*obj).kind
+        },)
+    });
     match kind {
         HeapKind::Struct => {
             let schema_id = unsafe { (*obj).schema_id };
             let schema = schemas.get(schema_id);
             for f in &schema.fields {
                 if let FieldKind::FzValue = f.kind {
-                    let slot = unsafe {
-                        (obj as *mut u8).add(16).add(f.offset as usize) as *mut FzValue
-                    };
+                    let slot =
+                        unsafe { (obj as *mut u8).add(16).add(f.offset as usize) as *mut FzValue };
                     forward_field(slot, from_ranges, free, to_end);
                 }
             }
@@ -899,26 +904,18 @@ fn cheney_trace_children(
             // Layout: stub_fp (8) at offset 16 — a code pointer, skip.
             // Captures at offset 24+i*8 — FzValue each. `flags` low 14 bits
             // are the captured count; high 2 bits are halt_kind (fz-22.6).
-            let count = crate::fz_value::closure_flags_captured(
-                unsafe { (*obj).flags }) as usize;
+            let count = crate::fz_value::closure_flags_captured(unsafe { (*obj).flags }) as usize;
             for i in 0..count {
-                let slot = unsafe {
-                    (obj as *mut u8).add(24).add(i * 8) as *mut FzValue
-                };
+                let slot = unsafe { (obj as *mut u8).add(24).add(i * 8) as *mut FzValue };
                 forward_field(slot, from_ranges, free, to_end);
             }
         }
         HeapKind::Map => {
-            let count = unsafe {
-                std::ptr::read((obj as *const u8).add(16) as *const u64) as usize
-            };
+            let count =
+                unsafe { std::ptr::read((obj as *const u8).add(16) as *const u64) as usize };
             for i in 0..count {
-                let key_slot = unsafe {
-                    (obj as *mut u8).add(24).add(i * 16) as *mut FzValue
-                };
-                let val_slot = unsafe {
-                    (obj as *mut u8).add(24).add(i * 16 + 8) as *mut FzValue
-                };
+                let key_slot = unsafe { (obj as *mut u8).add(24).add(i * 16) as *mut FzValue };
+                let val_slot = unsafe { (obj as *mut u8).add(24).add(i * 16 + 8) as *mut FzValue };
                 forward_field(key_slot, from_ranges, free, to_end);
                 forward_field(val_slot, from_ranges, free, to_end);
             }
@@ -955,11 +952,15 @@ fn forward_field(
         return; // off-heap singleton (static closure / halt cont)
     }
     let new = cheney_forward(p, from_ranges, free, to_end);
-    unsafe { std::ptr::write(slot, FzValue::from_ptr(new)); }
+    unsafe {
+        std::ptr::write(slot, FzValue::from_ptr(new));
+    }
 }
 
 fn ptr_in_from_space(p: *mut u8, from_ranges: &[(*mut u8, *mut u8)]) -> bool {
-    from_ranges.iter().any(|&(start, end)| p >= start && p < end)
+    from_ranges
+        .iter()
+        .any(|&(start, end)| p >= start && p < end)
 }
 
 /// Count objects in a contiguous to-space range by walking 16-byte-header
@@ -1039,8 +1040,7 @@ pub fn deep_copy_value(
         HeapKind::Bitstring => {
             let bit_len = unsafe { std::ptr::read((sp as *const u8).add(16) as *const u64) };
             let bytes_len = (bit_len as usize).div_ceil(8);
-            let bytes =
-                unsafe { std::slice::from_raw_parts((sp as *const u8).add(24), bytes_len) };
+            let bytes = unsafe { std::slice::from_raw_parts((sp as *const u8).add(24), bytes_len) };
             let new_p = dst_heap.alloc_bitstring(bytes, bit_len);
             forwarding.insert(sp, new_p);
             return FzValue(new_p as u64);
@@ -1086,14 +1086,18 @@ pub fn deep_copy_value(
             for i in 0..captured_count {
                 let child = unsafe { std::ptr::read(src_cursor.add(i)) };
                 let nc = deep_copy_value(child, src_heap, dst_heap, forwarding);
-                unsafe { std::ptr::write(dst_cursor.add(i), nc); }
+                unsafe {
+                    std::ptr::write(dst_cursor.add(i), nc);
+                }
             }
             return FzValue(new_p as u64);
         }
         HeapKind::VecI64 => {
             let len = Heap::vec_len(sp) as usize;
             let payload = unsafe { (sp as *const u8).add(24) as *const i64 };
-            let v: Vec<i64> = (0..len).map(|i| unsafe { std::ptr::read(payload.add(i)) }).collect();
+            let v: Vec<i64> = (0..len)
+                .map(|i| unsafe { std::ptr::read(payload.add(i)) })
+                .collect();
             let new_p = dst_heap.alloc_vec_i64(&v);
             forwarding.insert(sp, new_p);
             return FzValue(new_p as u64);
@@ -1144,15 +1148,11 @@ pub fn deep_copy_value(
             for f in &schema.fields {
                 if let FieldKind::FzValue = f.kind {
                     let off = 16 + f.offset as usize;
-                    let child = unsafe {
-                        std::ptr::read((sp as *const u8).add(off) as *const FzValue)
-                    };
+                    let child =
+                        unsafe { std::ptr::read((sp as *const u8).add(off) as *const FzValue) };
                     let copied = deep_copy_value(child, src_heap, dst_heap, forwarding);
                     unsafe {
-                        std::ptr::write(
-                            (dp as *mut u8).add(off) as *mut FzValue,
-                            copied,
-                        );
+                        std::ptr::write((dp as *mut u8).add(off) as *mut FzValue, copied);
                     }
                 }
             }
@@ -1174,13 +1174,23 @@ mod tests {
     #[test]
     fn schema_registry_register_and_get() {
         let mut reg = SchemaRegistry::new();
-        let id_a = reg.register(Schema { name: "A".into(), size: 0, fields: vec![] });
+        let id_a = reg.register(Schema {
+            name: "A".into(),
+            size: 0,
+            fields: vec![],
+        });
         let id_b = reg.register(Schema {
             name: "Pair".into(),
             size: 16,
             fields: vec![
-                FieldDescriptor { offset: 0, kind: FieldKind::FzValue },
-                FieldDescriptor { offset: 8, kind: FieldKind::FzValue },
+                FieldDescriptor {
+                    offset: 0,
+                    kind: FieldKind::FzValue,
+                },
+                FieldDescriptor {
+                    offset: 8,
+                    kind: FieldKind::FzValue,
+                },
             ],
         });
         assert_eq!(id_a, 0);
@@ -1213,7 +1223,9 @@ mod tests {
     fn alloc_vec_i64_writes_header_len_and_payload() {
         let mut h = Heap::new(1024, empty_registry());
         let p = h.alloc_vec_i64(&[10, 20, 30]);
-        unsafe { assert_eq!((*p).kind, HeapKind::VecI64 as u16); }
+        unsafe {
+            assert_eq!((*p).kind, HeapKind::VecI64 as u16);
+        }
         assert_eq!(Heap::vec_len(p), 3);
         unsafe {
             let payload = (p as *const u8).add(24) as *const i64;
@@ -1322,7 +1334,10 @@ mod tests {
         let mut root = n1 as *mut u8;
         let old_n1 = n1 as usize;
         h.gc(&mut root);
-        assert_ne!(root as usize, old_n1, "root should be rewritten to to-space");
+        assert_ne!(
+            root as usize, old_n1,
+            "root should be rewritten to to-space"
+        );
         assert_eq!(h.live_count(), 3, "all three cells copied");
         // Walk the new list and verify integers match.
         let mut cur = root as *mut ListCons;
@@ -1330,12 +1345,15 @@ mod tests {
         let mut count = 0;
         while !cur.is_null() {
             let h = unsafe { &(*cur).header };
-            if h.kind != HeapKind::List as u16 { break; }
+            if h.kind != HeapKind::List as u16 {
+                break;
+            }
             let head = unsafe { (*cur).head };
             sum += head.unbox_int().unwrap();
             count += 1;
-            cur = unsafe { (*cur).tail }.unbox_ptr().unwrap_or(std::ptr::null_mut())
-                as *mut ListCons;
+            cur = unsafe { (*cur).tail }
+                .unbox_ptr()
+                .unwrap_or(std::ptr::null_mut()) as *mut ListCons;
         }
         assert_eq!(count, 3);
         assert_eq!(sum, 6);
@@ -1383,7 +1401,11 @@ mod tests {
             assert_eq!(pool_total_cached_blocks(), 0, "alloc drained the cache");
             // _h dropped here → returns the block to the pool.
         }
-        assert_eq!(pool_total_cached_blocks(), 1, "pool stayed at 1 cached block");
+        assert_eq!(
+            pool_total_cached_blocks(),
+            1,
+            "pool stayed at 1 cached block"
+        );
 
         pool_drain_for_test();
     }
@@ -1396,11 +1418,20 @@ mod tests {
     #[test]
     fn size_table_is_monotonic_and_16_aligned() {
         for i in 1..SIZE_TABLE.len() {
-            assert!(SIZE_TABLE[i] > SIZE_TABLE[i - 1],
+            assert!(
+                SIZE_TABLE[i] > SIZE_TABLE[i - 1],
                 "non-monotonic at {}: {} <= {}",
-                i, SIZE_TABLE[i], SIZE_TABLE[i - 1]);
-            assert_eq!(SIZE_TABLE[i] % 16, 0,
-                "entry {} ({}) not 16-aligned", i, SIZE_TABLE[i]);
+                i,
+                SIZE_TABLE[i],
+                SIZE_TABLE[i - 1]
+            );
+            assert_eq!(
+                SIZE_TABLE[i] % 16,
+                0,
+                "entry {} ({}) not 16-aligned",
+                i,
+                SIZE_TABLE[i]
+            );
         }
     }
 
@@ -1409,8 +1440,11 @@ mod tests {
         // Tail entries grow ~×1.2 (after the Fibonacci low end). Sample
         // index 20 → 21: ratio in [1.18, 1.23].
         let ratio = SIZE_TABLE[21] as f64 / SIZE_TABLE[20] as f64;
-        assert!(ratio > 1.18 && ratio < 1.23,
-            "tail ratio out of expected range: {}", ratio);
+        assert!(
+            ratio > 1.18 && ratio < 1.23,
+            "tail ratio out of expected range: {}",
+            ratio
+        );
     }
 
     #[test]
@@ -1451,11 +1485,18 @@ mod tests {
             h.gc(&mut root);
             let live_bytes = len * 32;
             let expected_min = pick_size_class(live_bytes); // without slack
-            assert!(h.size_class >= expected_min,
-                "size_class {} should fit live_bytes {}", h.size_class, live_bytes);
-            assert!((h.size_class as i32) > last_class || last_class < 0,
+            assert!(
+                h.size_class >= expected_min,
+                "size_class {} should fit live_bytes {}",
+                h.size_class,
+                live_bytes
+            );
+            assert!(
+                (h.size_class as i32) > last_class || last_class < 0,
                 "size_class did not climb: prev={}, now={}",
-                last_class, h.size_class);
+                last_class,
+                h.size_class
+            );
             last_class = h.size_class as i32;
             // Drop the root so next iteration starts fresh.
             let _ = root; // reachable until here
@@ -1480,7 +1521,11 @@ mod tests {
         let mut root = head as *mut u8;
         h.gc(&mut root);
         let peak_class = h.size_class;
-        assert!(peak_class >= 4, "spike should drive size_class up; got {}", peak_class);
+        assert!(
+            peak_class >= 4,
+            "spike should drive size_class up; got {}",
+            peak_class
+        );
 
         // Settle: shrink the working set to one cell, gc repeatedly.
         // Hysteresis requires two consecutive low-live cycles per shrink
@@ -1493,12 +1538,14 @@ mod tests {
         assert!(
             h.size_class < peak_class,
             "size_class did not shrink: peak={}, settled={}",
-            peak_class, h.size_class
+            peak_class,
+            h.size_class
         );
         assert!(
             h.block_size < SIZE_TABLE[peak_class as usize],
             "block_size did not shrink: peak={}, settled={}",
-            SIZE_TABLE[peak_class as usize], h.block_size
+            SIZE_TABLE[peak_class as usize],
+            h.block_size
         );
     }
 
@@ -1524,8 +1571,10 @@ mod tests {
         let small = h.alloc_list_cons(FzValue::from_int(1), FzValue::NIL);
         let mut root = small as *mut u8;
         h.gc(&mut root);
-        assert_eq!(h.size_class, class_after_spike,
-            "single low-live cycle must not shrink");
+        assert_eq!(
+            h.size_class, class_after_spike,
+            "single low-live cycle must not shrink"
+        );
         assert_eq!(h.low_live_streak, 1);
     }
 
@@ -1571,8 +1620,14 @@ mod tests {
             name: "Pair".into(),
             size: 16,
             fields: vec![
-                FieldDescriptor { offset: 0, kind: FieldKind::FzValue },
-                FieldDescriptor { offset: 8, kind: FieldKind::FzValue },
+                FieldDescriptor {
+                    offset: 0,
+                    kind: FieldKind::FzValue,
+                },
+                FieldDescriptor {
+                    offset: 8,
+                    kind: FieldKind::FzValue,
+                },
             ],
         });
         let mut h = Heap::new(1024, reg.clone());

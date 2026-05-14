@@ -88,13 +88,7 @@ fn parse_header(src: &str) -> Result<Header, String> {
     }
     let purpose = purpose.ok_or("missing `# purpose:` header")?;
     let paths = paths.ok_or("missing `# paths:` header")?;
-    let kind = kind.unwrap_or_else(|| {
-        if has_main(src) {
-            Kind::Run
-        } else {
-            Kind::Test
-        }
-    });
+    let kind = kind.unwrap_or_else(|| if has_main(src) { Kind::Run } else { Kind::Test });
     if paths.is_empty() && defer.is_none() {
         return Err("empty `# paths:` without a `# defer:` rationale".into());
     }
@@ -194,7 +188,10 @@ fn run_aot_path(fixture: &Path, header: &Header) -> RunOutcome {
             "kind: test fixtures don't yet run via aot (`fz test` is jit-only)".into(),
         );
     }
-    let stem = fixture.file_stem().and_then(|s| s.to_str()).unwrap_or("fz_fixture");
+    let stem = fixture
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("fz_fixture");
     let out_path = std::env::temp_dir().join(format!("fz_matrix_{}", stem));
     // Build.
     let build = match Command::new(FZ_BIN)
@@ -212,9 +209,7 @@ fn run_aot_path(fixture: &Path, header: &Header) -> RunOutcome {
         // Common failure today: closure-using fixtures abort at runtime
         // for frame_sizes (fz-ul4.23.11). Surface as Deferred so the
         // matrix doesn't fail until the follow-up lands.
-        if build_stderr.contains("frame_sizes")
-            || build_stderr.contains("not yet supported")
-        {
+        if build_stderr.contains("frame_sizes") || build_stderr.contains("not yet supported") {
             return RunOutcome::Deferred(build_stderr.trim_end().to_string());
         }
         return RunOutcome::Failed(format!(
@@ -356,9 +351,21 @@ fn fz_dump_emits_clif() {
         .expect("spawn fz dump");
     assert!(out.status.success(), "fz dump exited {}", out.status);
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("; fn add1"), "missing add1 banner\n{}", stdout);
-    assert!(stdout.contains("; fn main"), "missing main banner\n{}", stdout);
-    assert!(stdout.contains("function "), "no Cranelift function header\n{}", stdout);
+    assert!(
+        stdout.contains("; fn add1"),
+        "missing add1 banner\n{}",
+        stdout
+    );
+    assert!(
+        stdout.contains("; fn main"),
+        "missing main banner\n{}",
+        stdout
+    );
+    assert!(
+        stdout.contains("function "),
+        "no Cranelift function header\n{}",
+        stdout
+    );
     // fz-ul4.23.7: srcloc annotations on body instructions resolve back
     // to file:line:col. add1.fz's `n + 1` lives at line 7; expect at
     // least one annotated line pointing at it.
@@ -385,10 +392,18 @@ fn fz_dump_emits_clif() {
         .args(["dump", "fixtures/add1.fz", "--emit", "asm", "--fn", "add1"])
         .output()
         .expect("spawn fz dump --emit asm");
-    assert!(asm.status.success(), "fz dump --emit asm exited {}", asm.status);
+    assert!(
+        asm.status.success(),
+        "fz dump --emit asm exited {}",
+        asm.status
+    );
     let asm_out = String::from_utf8_lossy(&asm.stdout);
     assert!(asm_out.contains("; fn add1"));
-    assert!(asm_out.contains("block0"), "expected block0 label in asm:\n{}", asm_out);
+    assert!(
+        asm_out.contains("block0"),
+        "expected block0 label in asm:\n{}",
+        asm_out
+    );
 }
 
 /// fz-ul4.27.14.1 — for `fixtures/add1.fz`, the print continuation
@@ -407,7 +422,11 @@ fn add1_k_2_continuation_has_no_entry_side_unbox() {
         .expect("spawn fz dump");
     assert!(out.status.success(), "fz dump exited {}", out.status);
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("; fn k_2"), "missing k_2 banner:\n{}", stdout);
+    assert!(
+        stdout.contains("; fn k_2"),
+        "missing k_2 banner:\n{}",
+        stdout
+    );
     assert!(
         !stdout.contains("sshr_imm v0"),
         "k_2 still unboxes its entry-param 0; slot must be RawInt under \
@@ -432,7 +451,11 @@ fn add1_main_cont_seam_has_no_box_unbox_roundtrip() {
         .expect("spawn fz dump");
     assert!(out.status.success(), "fz dump exited {}", out.status);
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("; fn main"), "missing main banner:\n{}", stdout);
+    assert!(
+        stdout.contains("; fn main"),
+        "missing main banner:\n{}",
+        stdout
+    );
     // The native chain's cont seam should be two adjacent direct calls
     // with no boxing instructions between them. We pin this by asserting
     // `main` contains no `ishl_imm` (the box op) and no `bor_imm` (the
@@ -506,8 +529,10 @@ fn add1_native_fns_drop_unused_host_ctx() {
     // add1_s2 is a regular native fn: `(n:i64, cont:i64)`.
     // k_2_s3 is a cont fn: `(result:i64)` — no host_ctx (.27.19),
     // no cont (§2.1 cont-fn shape).
-    let expect = [("add1_s2", "block0(v0: i64, v1: i64):"),
-                  ("k_2_s3", "block0(v0: i64):")];
+    let expect = [
+        ("add1_s2", "block0(v0: i64, v1: i64):"),
+        ("k_2_s3", "block0(v0: i64):"),
+    ];
     for (fn_name, want) in &expect {
         let body_start = stdout
             .find(&format!("; fn {}", fn_name))
@@ -517,7 +542,10 @@ fn add1_native_fns_drop_unused_host_ctx() {
         assert!(
             block0_line.contains(want),
             "{} should have entry block `{}`, got `{}`:\n{}",
-            fn_name, want, block0_line, stdout,
+            fn_name,
+            want,
+            block0_line,
+            stdout,
         );
     }
 }
@@ -555,7 +583,8 @@ fn add1_main_has_no_runtime_cont_ptr_dispatch() {
         !stdout.contains("block1:") && !stdout.contains("block2:"),
         "main should be a single linear block under .27.18; got {} occurrences \
          of `block`:\n{}",
-        block_count, stdout,
+        block_count,
+        stdout,
     );
 }
 
@@ -604,7 +633,11 @@ fn native_fns_have_no_dead_frame_ptr_placeholder() {
         .expect("spawn fz dump");
     assert!(out.status.success(), "fz dump exited {}", out.status);
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("; fn add1"), "missing add1 banner:\n{}", stdout);
+    assert!(
+        stdout.contains("; fn add1"),
+        "missing add1 banner:\n{}",
+        stdout
+    );
     assert!(
         !stdout.contains("iconst.i64 0"),
         "add1_s2 still emits a dead `iconst.i64 0` (frame_ptr placeholder):\n{}",
@@ -620,7 +653,14 @@ fn native_fns_have_no_dead_frame_ptr_placeholder() {
 #[test]
 fn tail_recursion_count_matches_cps_in_clif_section_8_1() {
     let out = Command::new(FZ_BIN)
-        .args(["dump", "fixtures/tail_recursion.fz", "--emit", "clif", "--fn", "count"])
+        .args([
+            "dump",
+            "fixtures/tail_recursion.fz",
+            "--emit",
+            "clif",
+            "--fn",
+            "count",
+        ])
         .output()
         .expect("spawn fz dump");
     assert!(out.status.success(), "fz dump exited {}", out.status);
@@ -634,10 +674,7 @@ fn tail_recursion_count_matches_cps_in_clif_section_8_1() {
         .find("; fn count_s")
         .unwrap_or_else(|| panic!("missing count_s* banner:\n{}", stdout));
     let rest = &stdout[start..];
-    let end = rest[1..]
-        .find("; fn ")
-        .map(|i| i + 1)
-        .unwrap_or(rest.len());
+    let end = rest[1..].find("; fn ").map(|i| i + 1).unwrap_or(rest.len());
     let body = &rest[..end];
 
     // §8.1: signature `function %count(i64, i64, i64) -> i64 tail`.
@@ -659,7 +696,8 @@ fn tail_recursion_count_matches_cps_in_clif_section_8_1() {
         assert!(
             !body.contains(helper),
             "count_s2 contains `{}` — §8.1 requires zero allocs:\n{}",
-            helper, body,
+            helper,
+            body,
         );
     }
 
@@ -681,7 +719,14 @@ fn tail_recursion_count_matches_cps_in_clif_section_8_1() {
 #[test]
 fn higher_order_compose_matches_cps_in_clif_section_8_2() {
     let out = Command::new(FZ_BIN)
-        .args(["dump", "fixtures/higher_order.fz", "--emit", "clif", "--fn", "compose"])
+        .args([
+            "dump",
+            "fixtures/higher_order.fz",
+            "--emit",
+            "clif",
+            "--fn",
+            "compose",
+        ])
         .output()
         .expect("spawn fz dump");
     assert!(out.status.success(), "fz dump exited {}", out.status);
@@ -691,8 +736,11 @@ fn higher_order_compose_matches_cps_in_clif_section_8_2() {
     let end = rest[1..].find("; fn ").map(|i| i + 1).unwrap_or(rest.len());
     let body = &rest[..end];
 
-    assert!(body.contains("(i64, i64, i64, i64) -> i64 tail"),
-        "compose sig must be (f,g,x,k) tail; got:\n{}", body);
+    assert!(
+        body.contains("(i64, i64, i64, i64) -> i64 tail"),
+        "compose sig must be (f,g,x,k) tail; got:\n{}",
+        body
+    );
     // fz-cps.1.8 — cont closure construction: one func_addr stored at
     // +16. Cranelift CLIF dumps don't carry runtime-symbol names (refs
     // are `u0:N`), so we structurally count the func_addr→+16 store
@@ -701,16 +749,25 @@ fn higher_order_compose_matches_cps_in_clif_section_8_2() {
         .lines()
         .filter(|l| l.contains("func_addr.i64") || l.contains("+16"))
         .count();
-    assert!(func_addr_to_16 >= 2,
-        "compose must store at least one func_addr at +16 (kg code_ptr):\n{}", body);
+    assert!(
+        func_addr_to_16 >= 2,
+        "compose must store at least one func_addr at +16 (kg code_ptr):\n{}",
+        body
+    );
     // fz-cps.1.8 — accept either `return_call_indirect` (§8.2 ideal: g is
     // opaque) or `return_call` (typer narrows g→known callee, emits
     // direct call to closure-target body). Both honor the
     // every-fz→fz-transfer-is-a-tail-call discipline of §2.3.
-    assert!(body.contains("return_call_indirect") || body.contains("return_call "),
-        "compose must end in a Tail-CC return_call (direct or indirect):\n{}", body);
-    assert!(!body.contains("fz_closure_invoke"),
-        "compose must not reference fz_closure_invoke runtime helper:\n{}", body);
+    assert!(
+        body.contains("return_call_indirect") || body.contains("return_call "),
+        "compose must end in a Tail-CC return_call (direct or indirect):\n{}",
+        body
+    );
+    assert!(
+        !body.contains("fz_closure_invoke"),
+        "compose must not reference fz_closure_invoke runtime helper:\n{}",
+        body
+    );
 }
 
 /// fz-siu.1.2 acceptance per docs/cps-in-clif.md §8.3.
@@ -720,7 +777,12 @@ fn higher_order_compose_matches_cps_in_clif_section_8_2() {
 #[test]
 fn closure_typed_captures_matches_cps_in_clif_section_8_3() {
     let out = Command::new(FZ_BIN)
-        .args(["dump", "fixtures/closure_typed_captures.fz", "--emit", "clif"])
+        .args([
+            "dump",
+            "fixtures/closure_typed_captures.fz",
+            "--emit",
+            "clif",
+        ])
         .output()
         .expect("spawn fz dump");
     assert!(out.status.success(), "fz dump exited {}", out.status);
@@ -728,15 +790,24 @@ fn closure_typed_captures_matches_cps_in_clif_section_8_3() {
 
     let add_to_start = stdout.find("; fn add_to").expect("missing add_to banner");
     let add_to_rest = &stdout[add_to_start..];
-    let add_to_end = add_to_rest[1..].find("; fn ").map(|i| i + 1).unwrap_or(add_to_rest.len());
+    let add_to_end = add_to_rest[1..]
+        .find("; fn ")
+        .map(|i| i + 1)
+        .unwrap_or(add_to_rest.len());
     let add_to_body = &add_to_rest[..add_to_end];
     // fz-cps.1.8 — Cranelift CLIF dumps don't carry runtime-symbol
     // names; assert structural shape: a `func_addr.i64` materialized
     // (lambda body addr) and stored at +16 (closure code_ptr slot).
-    assert!(add_to_body.contains("func_addr.i64"),
-        "add_to must materialize the lambda's code_ptr via func_addr:\n{}", add_to_body);
-    assert!(add_to_body.contains("+16"),
-        "add_to must store the lambda's code_ptr at +16:\n{}", add_to_body);
+    assert!(
+        add_to_body.contains("func_addr.i64"),
+        "add_to must materialize the lambda's code_ptr via func_addr:\n{}",
+        add_to_body
+    );
+    assert!(
+        add_to_body.contains("+16"),
+        "add_to must store the lambda's code_ptr at +16:\n{}",
+        add_to_body
+    );
     // Lambda's body should compute x+y+z and tail-return through cont.
     let lam_start = stdout.find("; fn ").expect("module not empty");
     let _ = lam_start;
@@ -754,21 +825,37 @@ fn closure_typed_captures_matches_cps_in_clif_section_8_3() {
 #[test]
 fn concurrency_ping_pong_matches_cps_in_clif_section_8_4() {
     let out = Command::new(FZ_BIN)
-        .args(["dump", "fixtures/concurrency_ping_pong.fz", "--emit", "clif", "--fn", "main"])
+        .args([
+            "dump",
+            "fixtures/concurrency_ping_pong.fz",
+            "--emit",
+            "clif",
+            "--fn",
+            "main",
+        ])
         .output()
         .expect("spawn fz dump");
     assert!(out.status.success(), "fz dump exited {}", out.status);
     let stdout = String::from_utf8_lossy(&out.stdout);
     // fz_receive_park's sig: takes a closure ptr (i64), returns the
     // YIELD sentinel (i64). One of the declared sigs must match.
-    assert!(stdout.contains("(i64) -> i64 system_v"),
-        "main must declare an (i64) -> i64 system_v sig for fz_receive_park:\n{}", stdout);
+    assert!(
+        stdout.contains("(i64) -> i64 system_v"),
+        "main must declare an (i64) -> i64 system_v sig for fz_receive_park:\n{}",
+        stdout
+    );
     // Receive site builds the cont closure: alloc + code_ptr store.
-    assert!(stdout.contains("func_addr.i64"),
-        "main must materialize cont code_ptr via func_addr:\n{}", stdout);
+    assert!(
+        stdout.contains("func_addr.i64"),
+        "main must materialize cont code_ptr via func_addr:\n{}",
+        stdout
+    );
     // And does NOT reference the legacy parking-frame schema/dispatch.
-    assert!(!stdout.contains("frame_sizes"),
-        "main must not reference Process::frame_sizes (uniform parking schema):\n{}", stdout);
+    assert!(
+        !stdout.contains("frame_sizes"),
+        "main must not reference Process::frame_sizes (uniform parking schema):\n{}",
+        stdout
+    );
 }
 
 /// Shell `fz dump --emit clif --fn <name>` and check each fn's
@@ -872,11 +959,7 @@ fn fixture_matrix() {
             }
         };
         if header.paths.is_empty() {
-            deferred_fixtures.push((
-                f,
-                header.purpose.clone(),
-                header.defer.unwrap_or_default(),
-            ));
+            deferred_fixtures.push((f, header.purpose.clone(), header.defer.unwrap_or_default()));
             continue;
         }
         for path in &header.paths {
@@ -891,8 +974,7 @@ fn fixture_matrix() {
         // CLIF-substring assertions (fz-ul4.27.1). Independent of the
         // path loop: the assertion is about generated code, which is
         // the same across compiled paths.
-        if !header.expect_clif_contains.is_empty() || !header.expect_clif_excludes.is_empty()
-        {
+        if !header.expect_clif_contains.is_empty() || !header.expect_clif_excludes.is_empty() {
             if let Err(msgs) = check_clif_assertions(&f, &header) {
                 for msg in msgs {
                     failures.push(msg);
@@ -989,9 +1071,7 @@ fn golden_clif() {
 
         if bless {
             fs::write(&golden_path, &actual)
-                .unwrap_or_else(|e| panic!(
-                    "bless write {}: {}", golden_path.display(), e,
-                ));
+                .unwrap_or_else(|e| panic!("bless write {}: {}", golden_path.display(), e,));
             continue;
         }
 
@@ -1088,9 +1168,7 @@ fn golden_specs() {
 
         if bless {
             fs::write(&golden_path, &actual)
-                .unwrap_or_else(|e| panic!(
-                    "bless write {}: {}", golden_path.display(), e,
-                ));
+                .unwrap_or_else(|e| panic!("bless write {}: {}", golden_path.display(), e,));
             continue;
         }
 

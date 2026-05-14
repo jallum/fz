@@ -13,9 +13,9 @@ mod ir_interp;
 // schema directly. See fz-ul4.11.30 (subsumed).
 mod ir_lower;
 mod ir_typer;
-mod parking;
 mod lexer;
 mod macros;
+mod parking;
 mod parser;
 mod repl;
 mod resolve;
@@ -33,11 +33,7 @@ use std::io::{IsTerminal, Read};
 /// every diagnostic and exits non-zero if any are errors. Called by
 /// the `run` / `jit` / `aot` drivers immediately after `lower_program`
 /// so all three paths produce identical accept/reject verdicts.
-fn validate_specs_or_exit(
-    prog: &ast::Program,
-    module: &fz_ir::Module,
-    sm: &diag::SourceMap,
-) {
+fn validate_specs_or_exit(prog: &ast::Program, module: &fz_ir::Module, sm: &diag::SourceMap) {
     let mt = ir_typer::type_module(module);
     let diags = spec_check::validate_specs(prog, module, &mt);
     let has_error = diags.iter().any(|d| d.severity == diag::Severity::Error);
@@ -355,7 +351,11 @@ fn format_clif(text: &str, sm: &diag::SourceMap) -> String {
         // else (sig/fn/gv decls, instructions) at col 4.
         let is_top = rest.starts_with("function ") || rest == "}";
         let is_block_header = rest.starts_with("block") && rest.trim_end().ends_with(':');
-        let indent = if is_top || is_block_header { "" } else { "    " };
+        let indent = if is_top || is_block_header {
+            ""
+        } else {
+            "    "
+        };
 
         if let Some(loc) = srcloc {
             // Merge srcloc into any existing `; ...` const-prop hint so we
@@ -462,10 +462,8 @@ fn run_dump(args: &[String]) {
 
     // Combine into a single fn-name → (clif?, asm?) map preserving order.
     let mut order: Vec<String> = Vec::new();
-    let mut clif_map: std::collections::HashMap<String, String> =
-        std::collections::HashMap::new();
-    let mut asm_map: std::collections::HashMap<String, String> =
-        std::collections::HashMap::new();
+    let mut clif_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut asm_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     for (name, text) in &clif_entries {
         if !clif_map.contains_key(name) {
             order.push(name.clone());
@@ -485,8 +483,8 @@ fn run_dump(args: &[String]) {
             // fz-ul4.29.7: narrow specs print as `<fn>_s<spec_id>`; match
             // both the bare name and any `<name>_s*` variants when the
             // user filters on `<name>`.
-            let suffix_match = name.starts_with(filter.as_str())
-                && name[filter.len()..].starts_with("_s");
+            let suffix_match =
+                name.starts_with(filter.as_str()) && name[filter.len()..].starts_with("_s");
             if name != filter && !suffix_match {
                 continue;
             }
@@ -540,10 +538,12 @@ struct Compiled {
 fn dump_specs_pipeline(src: String, source_name: String) -> String {
     let mut sm = diag::SourceMap::new();
     let file_id = sm.add_file(source_name, src.clone());
-    let toks = lexer::Lexer::with_file(&src, file_id).tokenize().unwrap_or_else(|e| {
-        diag::render_one_to_stderr(&sm, &e.to_diagnostic());
-        std::process::exit(1);
-    });
+    let toks = lexer::Lexer::with_file(&src, file_id)
+        .tokenize()
+        .unwrap_or_else(|e| {
+            diag::render_one_to_stderr(&sm, &e.to_diagnostic());
+            std::process::exit(1);
+        });
     let prog = Parser::new(toks).parse_program().unwrap_or_else(|e| {
         diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         std::process::exit(1);
@@ -569,10 +569,12 @@ fn compile_pipeline(src: String, source_name: String) -> Compiled {
     let mut sm = diag::SourceMap::new();
     let file_id = sm.add_file(source_name, src.clone());
 
-    let toks = lexer::Lexer::with_file(&src, file_id).tokenize().unwrap_or_else(|e| {
-        diag::render_one_to_stderr(&sm, &e.to_diagnostic());
-        std::process::exit(1);
-    });
+    let toks = lexer::Lexer::with_file(&src, file_id)
+        .tokenize()
+        .unwrap_or_else(|e| {
+            diag::render_one_to_stderr(&sm, &e.to_diagnostic());
+            std::process::exit(1);
+        });
     let prog = Parser::new(toks).parse_program().unwrap_or_else(|e| {
         diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         std::process::exit(1);

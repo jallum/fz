@@ -37,11 +37,17 @@ pub struct SpanLabel {
 
 impl SpanLabel {
     pub fn new(span: Span, label: impl Into<String>) -> Self {
-        Self { span, label: label.into() }
+        Self {
+            span,
+            label: label.into(),
+        }
     }
 
     pub fn bare(span: Span) -> Self {
-        Self { span, label: String::new() }
+        Self {
+            span,
+            label: String::new(),
+        }
     }
 }
 

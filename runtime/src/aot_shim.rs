@@ -25,7 +25,7 @@
 
 use crate::fz_value::FzValue;
 use crate::heap::SchemaRegistry;
-use crate::process::{Process, CURRENT_PROCESS};
+use crate::process::{CURRENT_PROCESS, Process};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -111,7 +111,9 @@ pub extern "C" fn fz_aot_setup(
     AOT_SPAWN_ENTRY.with(|c| c.set(spawn_entry_addr));
     AOT_RESUME_PARK.with(|c| c.set(resume_park_addr));
     let body_addrs: [*const u8; 3] = [
-        halt_cont_body_tagged, halt_cont_body_i64, halt_cont_body_f64,
+        halt_cont_body_tagged,
+        halt_cont_body_i64,
+        halt_cont_body_f64,
     ];
     AOT_HALT_CONT_BODIES.with(|c| c.set(body_addrs));
 
@@ -149,7 +151,10 @@ pub extern "C" fn fz_aot_register_static_closure(
     code_addr: *const u8,
     halt_kind: u32,
 ) {
-    assert!(!proc.is_null(), "fz_aot_register_static_closure: null process");
+    assert!(
+        !proc.is_null(),
+        "fz_aot_register_static_closure: null process"
+    );
     let process = unsafe { &mut *proc };
     process.init_static_closures(&[(cl_sid, fn_id, code_addr, halt_kind)]);
 }
@@ -203,7 +208,10 @@ extern "C" fn aot_spawn_hook(closure_bits: u64) -> u32 {
     // Dispatch via fz_spawn_entry under the child's CURRENT_PROCESS.
     let prev = CURRENT_PROCESS.with(|c| c.replace(child_ptr));
     let spawn_entry_addr = AOT_SPAWN_ENTRY.with(|c| c.get());
-    assert!(!spawn_entry_addr.is_null(), "aot_spawn_hook: spawn_entry not set");
+    assert!(
+        !spawn_entry_addr.is_null(),
+        "aot_spawn_hook: spawn_entry not set"
+    );
     type SpawnEntry = extern "C" fn(u64) -> i64;
     let f: SpawnEntry = unsafe { std::mem::transmute(spawn_entry_addr) };
     let _ = f(copied_ptr as u64);
@@ -274,7 +282,10 @@ pub extern "C" fn fz_aot_run_main(
 ) -> i32 {
     assert!(!proc.is_null(), "fz_aot_run_main: null process");
     assert!(!main_fp.is_null(), "fz_aot_run_main: null main_fp");
-    assert!(!main_entry_addr.is_null(), "fz_aot_run_main: null main_entry_addr");
+    assert!(
+        !main_entry_addr.is_null(),
+        "fz_aot_run_main: null main_entry_addr"
+    );
 
     // fz-ul4.27.22.3 — pick the Tagged halt-cont for AOT main. AOT
     // doesn't carry per-FnId halt-kind metadata at runtime; main's

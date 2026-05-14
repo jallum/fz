@@ -74,7 +74,8 @@ pub const RUNTIME_BUILTIN_ERROR: DiagCode = DiagCode("runtime/builtin-error");
 
 // ----- internal (compiler invariants) -----
 
-pub const INTERNAL_POST_RESOLUTION_LEFTOVER: DiagCode = DiagCode("internal/post-resolution-leftover");
+pub const INTERNAL_POST_RESOLUTION_LEFTOVER: DiagCode =
+    DiagCode("internal/post-resolution-leftover");
 pub const INTERNAL_POST_EXPANSION_LEFTOVER: DiagCode = DiagCode("internal/post-expansion-leftover");
 
 #[cfg(test)]
@@ -86,13 +87,20 @@ mod tests {
     #[test]
     fn all_codes_follow_stage_slash_kind_format() {
         let codes: &[DiagCode] = &[
-            LEX_UNEXPECTED_CHAR, LEX_UNTERMINATED_STRING,
-            PARSE_EXPECTED_TOKEN, PARSE_UNEXPECTED_TOKEN,
-            RESOLVE_ALIAS_OUTSIDE_MODULE, RESOLVE_IMPORT_OUTSIDE_MODULE,
-            RESOLVE_TYPE_ALIAS, SPEC_VIOLATION,
-            MACRO_NOT_A_DEFMACRO, MACRO_EXPANSION_LOOP,
-            LOWER_UNSUPPORTED, LOWER_UNBOUND,
-            TYPE_UNREACHABLE_ARM, TYPE_EMPTY_NARROWING,
+            LEX_UNEXPECTED_CHAR,
+            LEX_UNTERMINATED_STRING,
+            PARSE_EXPECTED_TOKEN,
+            PARSE_UNEXPECTED_TOKEN,
+            RESOLVE_ALIAS_OUTSIDE_MODULE,
+            RESOLVE_IMPORT_OUTSIDE_MODULE,
+            RESOLVE_TYPE_ALIAS,
+            SPEC_VIOLATION,
+            MACRO_NOT_A_DEFMACRO,
+            MACRO_EXPANSION_LOOP,
+            LOWER_UNSUPPORTED,
+            LOWER_UNBOUND,
+            TYPE_UNREACHABLE_ARM,
+            TYPE_EMPTY_NARROWING,
             CODEGEN_SCHEMA_MISSING,
             RUNTIME_ASSERTION_FAILED,
             INTERNAL_POST_RESOLUTION_LEFTOVER,
@@ -100,11 +108,17 @@ mod tests {
         for c in codes {
             let parts: Vec<_> = c.0.split('/').collect();
             assert_eq!(parts.len(), 2, "code {} must be stage/kind", c.0);
-            assert!(!parts[0].is_empty() && !parts[1].is_empty(),
-                "both halves of {} must be non-empty", c.0);
+            assert!(
+                !parts[0].is_empty() && !parts[1].is_empty(),
+                "both halves of {} must be non-empty",
+                c.0
+            );
             // Kebab-case after the slash.
-            assert!(parts[1].chars().all(|c| c.is_ascii_lowercase() || c == '-'),
-                "kind half of {} should be kebab-case", c.0);
+            assert!(
+                parts[1].chars().all(|c| c.is_ascii_lowercase() || c == '-'),
+                "kind half of {} should be kebab-case",
+                c.0
+            );
         }
     }
 }

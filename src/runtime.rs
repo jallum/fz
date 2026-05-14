@@ -35,10 +35,8 @@
 use std::collections::{HashMap, VecDeque};
 
 use crate::fz_ir::FnId;
+use crate::ir_codegen::{CURRENT_PROCESS, CompiledModule, PidId, Process, ProcessState};
 use fz_runtime::fz_value::FzValue;
-use crate::ir_codegen::{
-    CompiledModule, PidId, Process, ProcessState, CURRENT_PROCESS,
-};
 
 /// Task scheduler bound to a single CompiledModule. v1 is single-worker /
 /// single-threaded — `run_until_idle` drives all spawned tasks to
@@ -170,12 +168,8 @@ pub fn send_via_current_runtime(receiver_pid: PidId, msg: FzValue) {
         *mut fz_runtime::fz_value::HeapHeader,
         *mut fz_runtime::fz_value::HeapHeader,
     > = std::collections::HashMap::new();
-    let copied = fz_runtime::heap::deep_copy_value(
-        msg,
-        &sender.heap,
-        &mut receiver.heap,
-        &mut forwarding,
-    );
+    let copied =
+        fz_runtime::heap::deep_copy_value(msg, &sender.heap, &mut receiver.heap, &mut forwarding);
     receiver.mailbox.push_back(copied);
     if receiver.state == ProcessState::Blocked {
         receiver.state = ProcessState::Ready;
@@ -482,7 +476,10 @@ mod tests {
         // Main halted with the child's pid (spawn returns pid as boxed
         // Int; halt unboxes to i64). Child pid is main_pid + 1 = 2.
         let expected_child_pid = main_pid + 1;
-        assert_eq!(rt.task(main_pid).unwrap().halt_value, expected_child_pid as i64);
+        assert_eq!(
+            rt.task(main_pid).unwrap().halt_value,
+            expected_child_pid as i64
+        );
         // Child completed.
         let child = rt
             .task(expected_child_pid)
@@ -585,7 +582,10 @@ mod tests {
 
         let mut rt = Runtime::new(&compiled, 1);
         let main_pid = rt.spawn(entry);
-        assert_eq!(main_pid, 1, "main is the first spawn; fixture hard-codes 1 as parent's pid");
+        assert_eq!(
+            main_pid, 1,
+            "main is the first spawn; fixture hard-codes 1 as parent's pid"
+        );
         rt.run_until_idle();
 
         // Parent received 42, printed it, and halts on print's return
@@ -594,7 +594,10 @@ mod tests {
         // the receive-and-halt-with-42 path is verified by capture below
         // (TEST_CAPTURE has "42") and by the matrix's .expected file.
         let main_task = rt.task(main_pid).expect("main task in registry");
-        assert_eq!(main_task.halt_value, 0, "parent halts with print(receive())'s nil return");
+        assert_eq!(
+            main_task.halt_value, 0,
+            "parent halts with print(receive())'s nil return"
+        );
         assert_eq!(main_task.state, ProcessState::Exited);
 
         // Child task: spawned by main, halted normally (send returns the
@@ -630,7 +633,10 @@ mod tests {
         assert_eq!(task.state, ProcessState::Exited);
         // The halt value is the head of the returned list (since the
         // list was returned via receive). Confirm task halted cleanly.
-        assert!(task.heap.live_count() >= 6, "expected both src+dst lists in heap");
+        assert!(
+            task.heap.live_count() >= 6,
+            "expected both src+dst lists in heap"
+        );
     }
 
     /// fz-siu.7.3: park-time GC hook fires when allocation pressure

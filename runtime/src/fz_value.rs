@@ -9,7 +9,7 @@
 
 #![allow(dead_code)]
 
-use std::alloc::{alloc, Layout};
+use std::alloc::{Layout, alloc};
 use std::ptr;
 
 const TAG_BITS: u64 = 3;
@@ -189,12 +189,17 @@ pub const CLOSURE_FLAGS_HALT_KIND_SHIFT: u16 = 14;
 
 #[inline]
 pub fn closure_flags_pack(captured_count: u16, halt_kind: u16) -> u16 {
-    debug_assert!(captured_count <= CLOSURE_FLAGS_CAPTURED_MASK,
-        "closure captured count {} exceeds 14-bit capacity", captured_count);
-    debug_assert!(halt_kind <= 0b11,
-        "closure halt_kind {} out of range", halt_kind);
-    (captured_count & CLOSURE_FLAGS_CAPTURED_MASK)
-        | (halt_kind << CLOSURE_FLAGS_HALT_KIND_SHIFT)
+    debug_assert!(
+        captured_count <= CLOSURE_FLAGS_CAPTURED_MASK,
+        "closure captured count {} exceeds 14-bit capacity",
+        captured_count
+    );
+    debug_assert!(
+        halt_kind <= 0b11,
+        "closure halt_kind {} out of range",
+        halt_kind
+    );
+    (captured_count & CLOSURE_FLAGS_CAPTURED_MASK) | (halt_kind << CLOSURE_FLAGS_HALT_KIND_SHIFT)
 }
 
 #[inline]
@@ -445,7 +450,7 @@ mod tests {
 /// `crate::process::current_process()`.
 pub mod debug {
     use super::{FzValue, HeapKind, ListCons, Tag};
-    use crate::process::{current_process, CURRENT_PROCESS};
+    use crate::process::{CURRENT_PROCESS, current_process};
 
     /// Render an atom id as `:name` if the current Process has a name
     /// for it; fall back to `:atom_N` otherwise. The fallback fires when
@@ -470,10 +475,15 @@ pub mod debug {
             Tag::Int => v.unbox_int().unwrap().to_string(),
             Tag::Atom => render_atom(v.unbox_atom().unwrap()),
             Tag::Special => {
-                if v.is_nil() { "nil".into() }
-                else if v.is_true() { "true".into() }
-                else if v.is_false() { "false".into() }
-                else { format!("#special<{:#x}>", bits) }
+                if v.is_nil() {
+                    "nil".into()
+                } else if v.is_true() {
+                    "true".into()
+                } else if v.is_false() {
+                    "false".into()
+                } else {
+                    format!("#special<{:#x}>", bits)
+                }
             }
             Tag::Ptr => {
                 let p = v.unbox_ptr().unwrap();
@@ -513,9 +523,7 @@ pub mod debug {
                 .filter(|f| matches!(f.kind, crate::heap::FieldKind::FzValue))
                 .map(|f| {
                     let field_bits = unsafe {
-                        std::ptr::read(
-                            (p as *const u8).add(16 + f.offset as usize) as *const u64,
-                        )
+                        std::ptr::read((p as *const u8).add(16 + f.offset as usize) as *const u64)
                     };
                     render(field_bits)
                 })
@@ -527,9 +535,7 @@ pub mod debug {
     /// Render a heap Map as `%{k => v, ...}` in canonical sorted order.
     fn render_map(bits: u64) -> String {
         let p = FzValue(bits).unbox_ptr().unwrap();
-        let count = unsafe {
-            std::ptr::read((p as *const u8).add(16) as *const u64) as usize
-        };
+        let count = unsafe { std::ptr::read((p as *const u8).add(16) as *const u64) as usize };
         let cursor = unsafe { (p as *const u8).add(24) as *const u64 };
         let mut parts: Vec<String> = Vec::with_capacity(count);
         for i in 0..count {
@@ -558,7 +564,11 @@ pub mod debug {
     fn render_float(bits: u64) -> String {
         let p = FzValue(bits).unbox_ptr().unwrap();
         let f = crate::heap::Heap::read_float(p);
-        if f.is_finite() && f.fract() == 0.0 { format!("{:.1}", f) } else { format!("{}", f) }
+        if f.is_finite() && f.fract() == 0.0 {
+            format!("{:.1}", f)
+        } else {
+            format!("{}", f)
+        }
     }
 
     fn render_vec_i64(bits: u64) -> String {
@@ -608,7 +618,9 @@ pub mod debug {
         let mut tail_render: Option<String> = None;
         loop {
             let cv = FzValue(cur_bits);
-            if cv.is_nil() { break; }
+            if cv.is_nil() {
+                break;
+            }
             let cp = match cv.unbox_ptr() {
                 Some(p) => p,
                 None => {

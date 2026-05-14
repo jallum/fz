@@ -84,21 +84,22 @@ fn run_named(user_src: &str, user_name: &str) -> Result<(), TestRunError> {
     // TestRunError strings — wiring spans through resolve / macros for
     // test output is a future ticket.
     let prelude_toks = Lexer::with_file(PRELUDE, prelude_id)
-        .tokenize().map_err(|e| {
+        .tokenize()
+        .map_err(|e| {
             crate::diag::render_one_to_stderr(&sm, &e.to_diagnostic());
             TestRunError("lex".into())
         })?;
     let user_toks = Lexer::with_file(user_src, user_id)
-        .tokenize().map_err(|e| {
+        .tokenize()
+        .map_err(|e| {
             crate::diag::render_one_to_stderr(&sm, &e.to_diagnostic());
             TestRunError("lex".into())
         })?;
     let toks = splice_token_streams(prelude_toks, user_toks);
-    let prog = Parser::new(toks)
-        .parse_program().map_err(|e| {
-            crate::diag::render_one_to_stderr(&sm, &e.to_diagnostic());
-            TestRunError("parse".into())
-        })?;
+    let prog = Parser::new(toks).parse_program().map_err(|e| {
+        crate::diag::render_one_to_stderr(&sm, &e.to_diagnostic());
+        TestRunError("parse".into())
+    })?;
     let prog = flatten_modules(prog).map_err(|e| {
         crate::diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         TestRunError("module".into())
@@ -114,7 +115,9 @@ fn run_named(user_src: &str, user_name: &str) -> Result<(), TestRunError> {
     let mut tests: Vec<String> = Vec::new();
     for item in &prog.items {
         if let Item::Fn(def) = &**item {
-            if def.is_macro { continue; }
+            if def.is_macro {
+                continue;
+            }
             let last = def.name.rsplit('.').next().unwrap_or(&def.name);
             if last.starts_with("test_") && def.clauses.iter().all(|c| c.params.is_empty()) {
                 tests.push(def.name.clone());
@@ -149,7 +152,11 @@ fn run_named(user_src: &str, user_name: &str) -> Result<(), TestRunError> {
 
     let total = tests.len();
     let mut failed: Vec<(String, String)> = Vec::new();
-    println!("Running {} test{}...", total, if total == 1 { "" } else { "s" });
+    println!(
+        "Running {} test{}...",
+        total,
+        if total == 1 { "" } else { "s" }
+    );
     println!();
     for (name, fn_id) in &test_ids {
         // Each test runs in a fresh Process so heap/mailbox state from
@@ -166,9 +173,13 @@ fn run_named(user_src: &str, user_name: &str) -> Result<(), TestRunError> {
         }
     }
     println!();
-    println!("{} test{}, {} failure{}",
-        total, if total == 1 { "" } else { "s" },
-        failed.len(), if failed.len() == 1 { "" } else { "s" });
+    println!(
+        "{} test{}, {} failure{}",
+        total,
+        if total == 1 { "" } else { "s" },
+        failed.len(),
+        if failed.len() == 1 { "" } else { "s" }
+    );
 
     if !failed.is_empty() {
         return Err(TestRunError(format!("{} failing test(s)", failed.len())));

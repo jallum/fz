@@ -68,7 +68,11 @@ pub fn natively_callable(m: &Module, parking: &HashSet<FnId>) -> HashSet<FnId> {
     for f in &m.fns {
         for b in &f.blocks {
             match &b.terminator {
-                Term::Call { callee, continuation, .. } => {
+                Term::Call {
+                    callee,
+                    continuation,
+                    ..
+                } => {
                     used_as_cont.insert(continuation.fn_id);
                     directly_called.insert(*callee);
                     cont_call_users
@@ -82,8 +86,7 @@ pub fn natively_callable(m: &Module, parking: &HashSet<FnId>) -> HashSet<FnId> {
                 // fz-cps.1.8: closures are heap-resident with body_addr@+16
                 // (closure-target sig Tail). Their conts can be native —
                 // no longer cont_blocked.
-                Term::CallClosure { continuation, .. }
-                | Term::Receive { continuation } => {
+                Term::CallClosure { continuation, .. } | Term::Receive { continuation } => {
                     used_as_cont.insert(continuation.fn_id);
                 }
                 _ => {}
@@ -129,20 +132,25 @@ pub fn natively_callable(m: &Module, parking: &HashSet<FnId>) -> HashSet<FnId> {
     let _ = (&parking, &cont_blocked);
     let mut set: HashSet<FnId> = HashSet::new();
     for f in &m.fns {
-        if !reachable_as_native(&f.id) && Some(f.id) != main_id { continue; }
+        if !reachable_as_native(&f.id) && Some(f.id) != main_id {
+            continue;
+        }
         set.insert(f.id);
     }
 
     loop {
         let mut to_remove: Vec<FnId> = Vec::new();
         for f in &m.fns {
-            if !set.contains(&f.id) { continue; }
+            if !set.contains(&f.id) {
+                continue;
+            }
             let body_ok = f.blocks.iter().all(|b| match &b.terminator {
-                Term::Return(_) | Term::Halt(_)
-                | Term::Goto(_, _) | Term::If(_, _, _) => true,
-                Term::Call { callee, continuation, .. } => {
-                    set.contains(callee) && set.contains(&continuation.fn_id)
-                }
+                Term::Return(_) | Term::Halt(_) | Term::Goto(_, _) | Term::If(_, _, _) => true,
+                Term::Call {
+                    callee,
+                    continuation,
+                    ..
+                } => set.contains(callee) && set.contains(&continuation.fn_id),
                 // fz-ul4.27.11 — TailCall is admitted when the callee is
                 // also in the set (TCO via Cranelift `return_call` between
                 // matching `tail`-conv sigs). The GC-safepoint concern is
@@ -176,8 +184,12 @@ pub fn natively_callable(m: &Module, parking: &HashSet<FnId>) -> HashSet<FnId> {
                 to_remove.push(f.id);
             }
         }
-        if to_remove.is_empty() { break; }
-        for id in to_remove { set.remove(&id); }
+        if to_remove.is_empty() {
+            break;
+        }
+        for id in to_remove {
+            set.remove(&id);
+        }
     }
 
     set
@@ -192,11 +204,10 @@ pub fn parking_reachable(m: &Module) -> HashSet<FnId> {
     for f in &m.fns {
         let mut seed = false;
         for b in &f.blocks {
-            if matches!(b.terminator,
-                Term::Receive { .. }
-                | Term::CallClosure { .. }
-                | Term::TailCallClosure { .. })
-            {
+            if matches!(
+                b.terminator,
+                Term::Receive { .. } | Term::CallClosure { .. } | Term::TailCallClosure { .. }
+            ) {
                 seed = true;
                 break;
             }
@@ -207,9 +218,13 @@ pub fn parking_reachable(m: &Module) -> HashSet<FnId> {
                     break;
                 }
             }
-            if seed { break; }
+            if seed {
+                break;
+            }
         }
-        if seed { set.insert(f.id); }
+        if seed {
+            set.insert(f.id);
+        }
     }
 
     // Iterate: a fn becomes reachable if it directly calls (Call / TailCall)
@@ -218,11 +233,11 @@ pub fn parking_reachable(m: &Module) -> HashSet<FnId> {
     loop {
         let mut changed = false;
         for f in &m.fns {
-            if set.contains(&f.id) { continue; }
+            if set.contains(&f.id) {
+                continue;
+            }
             let calls_reachable = f.blocks.iter().any(|b| match &b.terminator {
-                Term::Call { callee, .. } | Term::TailCall { callee, .. } => {
-                    set.contains(callee)
-                }
+                Term::Call { callee, .. } | Term::TailCall { callee, .. } => set.contains(callee),
                 _ => false,
             });
             if calls_reachable {
@@ -230,7 +245,9 @@ pub fn parking_reachable(m: &Module) -> HashSet<FnId> {
                 changed = true;
             }
         }
-        if !changed { break; }
+        if !changed {
+            break;
+        }
     }
 
     set
@@ -243,7 +260,9 @@ mod tests {
 
     fn build(fns: Vec<crate::fz_ir::FnIr>) -> Module {
         let mut mb = ModuleBuilder::new();
-        for f in fns { mb.add_fn(f); }
+        for f in fns {
+            mb.add_fn(f);
+        }
         mb.build()
     }
 
@@ -257,9 +276,15 @@ mod tests {
     fn fn_with_receive_is_parking_reachable() {
         let mut b = FnBuilder::new(FnId(0), "rx");
         let entry = b.block(vec![]);
-        b.set_terminator(entry, Term::Receive {
-            continuation: Cont { fn_id: FnId(0), captured: vec![] },
-        });
+        b.set_terminator(
+            entry,
+            Term::Receive {
+                continuation: Cont {
+                    fn_id: FnId(0),
+                    captured: vec![],
+                },
+            },
+        );
         let m = build(vec![b.build()]);
         let s = parking_reachable(&m);
         assert!(s.contains(&FnId(0)));
@@ -281,13 +306,25 @@ mod tests {
         // f calls g; g has Receive. Both should end up in the set.
         let mut g = FnBuilder::new(FnId(0), "g");
         let g_entry = g.block(vec![]);
-        g.set_terminator(g_entry, Term::Receive {
-            continuation: Cont { fn_id: FnId(2), captured: vec![] },
-        });
+        g.set_terminator(
+            g_entry,
+            Term::Receive {
+                continuation: Cont {
+                    fn_id: FnId(2),
+                    captured: vec![],
+                },
+            },
+        );
 
         let mut f = FnBuilder::new(FnId(1), "f");
         let f_entry = f.block(vec![]);
-        f.set_terminator(f_entry, Term::TailCall { callee: FnId(0), args: vec![] });
+        f.set_terminator(
+            f_entry,
+            Term::TailCall {
+                callee: FnId(0),
+                args: vec![],
+            },
+        );
 
         // Dummy cont to satisfy structural shape.
         let mut k = FnBuilder::new(FnId(2), "k");
@@ -297,12 +334,21 @@ mod tests {
 
         let m = build(vec![g.build(), f.build(), k.build()]);
         let s = parking_reachable(&m);
-        assert!(s.contains(&FnId(0)), "g (has Receive) should be parking-reachable");
-        assert!(s.contains(&FnId(1)), "f (calls g) should be parking-reachable");
+        assert!(
+            s.contains(&FnId(0)),
+            "g (has Receive) should be parking-reachable"
+        );
+        assert!(
+            s.contains(&FnId(1)),
+            "f (calls g) should be parking-reachable"
+        );
         // k is the continuation but contains no receive itself — it gets
         // dispatched by the scheduler, so it's not in the parking set.
         // (Continuations are independent fns; reachability is per-fn.)
-        assert!(!s.contains(&FnId(2)), "k (no receive) should not be parking-reachable");
+        assert!(
+            !s.contains(&FnId(2)),
+            "k (no receive) should not be parking-reachable"
+        );
     }
 
     #[test]
@@ -330,7 +376,13 @@ mod tests {
         let mut b = FnBuilder::new(FnId(0), "invoker");
         let entry = b.block(vec![]);
         let cl = b.let_(entry, Prim::MakeClosure(FnId(1), vec![]));
-        b.set_terminator(entry, Term::TailCallClosure { closure: cl, args: vec![] });
+        b.set_terminator(
+            entry,
+            Term::TailCallClosure {
+                closure: cl,
+                args: vec![],
+            },
+        );
         let mut t = FnBuilder::new(FnId(1), "target");
         let v = empty_cont(&mut t);
         let t_entry = t.block(vec![v]);
@@ -356,7 +408,13 @@ mod tests {
         // main calls helper via TailCall; helper is a plain Return-only fn.
         let mut main_b = FnBuilder::new(FnId(0), "main");
         let m_entry = main_b.block(vec![]);
-        main_b.set_terminator(m_entry, Term::TailCall { callee: FnId(1), args: vec![] });
+        main_b.set_terminator(
+            m_entry,
+            Term::TailCall {
+                callee: FnId(1),
+                args: vec![],
+            },
+        );
 
         let helper = make_fn(1, "helper");
         let m = build(vec![main_b.build(), helper]);
@@ -372,14 +430,23 @@ mod tests {
     fn natively_callable_excludes_parking_fns() {
         let mut rx = FnBuilder::new(FnId(0), "rx");
         let entry = rx.block(vec![]);
-        rx.set_terminator(entry, Term::Receive {
-            continuation: Cont { fn_id: FnId(1), captured: vec![] },
-        });
+        rx.set_terminator(
+            entry,
+            Term::Receive {
+                continuation: Cont {
+                    fn_id: FnId(1),
+                    captured: vec![],
+                },
+            },
+        );
         let k = make_fn(1, "k");
         let m = build(vec![rx.build(), k]);
         let parking = parking_reachable(&m);
         let nc = natively_callable(&m, &parking);
-        assert!(!nc.contains(&FnId(0)), "rx is parking, not natively-callable");
+        assert!(
+            !nc.contains(&FnId(0)),
+            "rx is parking, not natively-callable"
+        );
     }
 
     #[test]
@@ -389,24 +456,42 @@ mod tests {
         // three (f, helper, k) end up in the set.
         let mut f = FnBuilder::new(FnId(0), "f");
         let entry = f.block(vec![]);
-        f.set_terminator(entry, Term::Call {
-            callee: FnId(1),
-            args: vec![],
-            continuation: Cont { fn_id: FnId(2), captured: vec![] },
-        });
+        f.set_terminator(
+            entry,
+            Term::Call {
+                callee: FnId(1),
+                args: vec![],
+                continuation: Cont {
+                    fn_id: FnId(2),
+                    captured: vec![],
+                },
+            },
+        );
         let helper = make_fn(1, "helper");
         let k = make_fn(2, "k");
         // f needs to be reachable as a native call target for the
         // reachability gate to admit it. Wrap with an outer caller.
         let mut outer = FnBuilder::new(FnId(3), "outer");
         let o_entry = outer.block(vec![]);
-        outer.set_terminator(o_entry, Term::TailCall { callee: FnId(0), args: vec![] });
+        outer.set_terminator(
+            o_entry,
+            Term::TailCall {
+                callee: FnId(0),
+                args: vec![],
+            },
+        );
         let m = build(vec![f.build(), helper, k, outer.build()]);
         let parking = parking_reachable(&m);
         let nc = natively_callable(&m, &parking);
-        assert!(nc.contains(&FnId(1)), "helper is leaf-bodied and direct-called");
+        assert!(
+            nc.contains(&FnId(1)),
+            "helper is leaf-bodied and direct-called"
+        );
         assert!(nc.contains(&FnId(2)), "k is leaf-bodied and used-as-cont");
-        assert!(nc.contains(&FnId(0)), "f Term::Call with both callee+cont native");
+        assert!(
+            nc.contains(&FnId(0)),
+            "f Term::Call with both callee+cont native"
+        );
     }
 
     /// fz-cps.5 — main is now admitted to natively_callable. The
@@ -426,13 +511,25 @@ mod tests {
         // (parking, non-native). f must be evicted by the fixed-point.
         let mut g = FnBuilder::new(FnId(0), "g");
         let g_entry = g.block(vec![]);
-        g.set_terminator(g_entry, Term::Receive {
-            continuation: Cont { fn_id: FnId(2), captured: vec![] },
-        });
+        g.set_terminator(
+            g_entry,
+            Term::Receive {
+                continuation: Cont {
+                    fn_id: FnId(2),
+                    captured: vec![],
+                },
+            },
+        );
 
         let mut f = FnBuilder::new(FnId(1), "f");
         let f_entry = f.block(vec![]);
-        f.set_terminator(f_entry, Term::TailCall { callee: FnId(0), args: vec![] });
+        f.set_terminator(
+            f_entry,
+            Term::TailCall {
+                callee: FnId(0),
+                args: vec![],
+            },
+        );
 
         let k = make_fn(2, "k");
         let m = build(vec![g.build(), f.build(), k]);
@@ -442,8 +539,10 @@ mod tests {
         // it's still parking-reachable because parking_reachable's fixed
         // point promotes callers. So check explicitly that f is excluded
         // from natively_callable for either reason.
-        assert!(!nc.contains(&FnId(1)),
-            "f TailCalls non-native g and must not be native");
+        assert!(
+            !nc.contains(&FnId(1)),
+            "f TailCalls non-native g and must not be native"
+        );
     }
 
     #[test]
@@ -452,16 +551,25 @@ mod tests {
         // in .6.2 (cont dispatch needs uniform ABI). Lifted in .6.3.
         let mut f = FnBuilder::new(FnId(0), "f");
         let entry = f.block(vec![]);
-        f.set_terminator(entry, Term::Call {
-            callee: FnId(1),
-            args: vec![],
-            continuation: Cont { fn_id: FnId(2), captured: vec![] },
-        });
+        f.set_terminator(
+            entry,
+            Term::Call {
+                callee: FnId(1),
+                args: vec![],
+                continuation: Cont {
+                    fn_id: FnId(2),
+                    captured: vec![],
+                },
+            },
+        );
         let helper = make_fn(1, "helper");
         let k = make_fn(2, "k");
         let m = build(vec![f.build(), helper, k]);
         let parking = parking_reachable(&m);
         let nc = natively_callable(&m, &parking);
-        assert!(!nc.contains(&FnId(0)), "f has Term::Call, not native-eligible");
+        assert!(
+            !nc.contains(&FnId(0)),
+            "f has Term::Call, not native-eligible"
+        );
     }
 }

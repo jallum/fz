@@ -100,7 +100,11 @@ pub extern "C" fn fz_print_f64(x: f64) {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_print_bool(b: u8) {
-    emit_print_line(if b != 0 { "true".to_string() } else { "false".to_string() });
+    emit_print_line(if b != 0 {
+        "true".to_string()
+    } else {
+        "false".to_string()
+    });
 }
 
 #[unsafe(no_mangle)]
@@ -137,11 +141,7 @@ pub unsafe extern "C" fn fz_panic(msg_ptr: *const u8, msg_len: usize) -> ! {
 /// emits one call per atom in interning order; this asserts the id matches
 /// what the compiler chose, panicking if the table has been touched first.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn fz_register_atom(
-    expected_id: u32,
-    name_ptr: *const u8,
-    name_len: usize,
-) {
+pub unsafe extern "C" fn fz_register_atom(expected_id: u32, name_ptr: *const u8, name_len: usize) {
     let bytes = unsafe { std::slice::from_raw_parts(name_ptr, name_len) };
     let name = std::str::from_utf8(bytes).expect("fz_register_atom: name not utf-8");
     let id = intern(name);

@@ -20,8 +20,8 @@
 //!   .5.7 tail recursion (TCO)
 //!   .5.8 spawn/send/receive
 
-use std::collections::HashMap;
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 
 use crate::fz_ir::{BinOp, BuiltinKind, Const, FnId, Module, Prim, Stmt, Term, Var};
 use fz_runtime::fz_value::FzValue;
@@ -59,7 +59,10 @@ fn interp_register_task(pid: u32, process: Box<Process>) -> *mut Process {
     INTERP_TASKS.with(|t| {
         let mut tasks = t.borrow_mut();
         tasks.insert(pid, process);
-        tasks.get_mut(&pid).map(|b| b.as_mut() as *mut Process).unwrap()
+        tasks
+            .get_mut(&pid)
+            .map(|b| b.as_mut() as *mut Process)
+            .unwrap()
     })
 }
 
@@ -95,13 +98,11 @@ fn interp_reset_state() {
 /// of the run (so runtime FFI fns like fz_print_value see a valid Process),
 /// drives main to completion, returns the Process's `halt_value`.
 pub fn run_main(module: &Module) -> Result<i64, String> {
-    let main_id = module
-        .fn_by_name("main")
-        .ok_or("no `main/0` fn found")?
-        .id;
+    let main_id = module.fn_by_name("main").ok_or("no `main/0` fn found")?.id;
     interp_reset_state();
-    let user_schemas =
-        std::rc::Rc::new(std::cell::RefCell::new(fz_runtime::heap::SchemaRegistry::new()));
+    let user_schemas = std::rc::Rc::new(std::cell::RefCell::new(
+        fz_runtime::heap::SchemaRegistry::new(),
+    ));
     INTERP_SCHEMAS.with(|s| *s.borrow_mut() = Some(user_schemas.clone()));
     let mut main_process = Box::new(Process::new(user_schemas));
     main_process.pid = 1;
@@ -123,8 +124,9 @@ pub fn run_main(module: &Module) -> Result<i64, String> {
 /// returns Err(msg) on any interp/runtime/assertion error.
 pub fn run_test_fn(module: &Module, fn_id: FnId) -> Result<(), String> {
     interp_reset_state();
-    let user_schemas =
-        std::rc::Rc::new(std::cell::RefCell::new(fz_runtime::heap::SchemaRegistry::new()));
+    let user_schemas = std::rc::Rc::new(std::cell::RefCell::new(
+        fz_runtime::heap::SchemaRegistry::new(),
+    ));
     INTERP_SCHEMAS.with(|s| *s.borrow_mut() = Some(user_schemas.clone()));
     let mut task = Box::new(Process::new(user_schemas));
     task.pid = 1;
@@ -309,11 +311,7 @@ fn is_truthy(v: FzValue) -> bool {
     !(v.is_false() || v.is_nil())
 }
 
-fn eval_prim(
-    module: &Module,
-    prim: &Prim,
-    env: &HashMap<Var, FzValue>,
-) -> Result<FzValue, String> {
+fn eval_prim(module: &Module, prim: &Prim, env: &HashMap<Var, FzValue>) -> Result<FzValue, String> {
     Ok(match prim {
         Prim::Const(c) => const_to_fz(c),
         Prim::BinOp(op, a, b) => {
@@ -332,9 +330,11 @@ fn eval_prim(
             // (callee_fn_id). stub_fp is left null and never read by the
             // interp's CallClosure / TailCallClosure / spawn paths.
             let cap_vals: Vec<FzValue> = collect(env, captured)?;
-            let p = fz_runtime::process::current_process()
-                .heap
-                .alloc_closure(fn_id.0, cap_vals.len(), 0);
+            let p = fz_runtime::process::current_process().heap.alloc_closure(
+                fn_id.0,
+                cap_vals.len(),
+                0,
+            );
             unsafe {
                 std::ptr::write((p as *mut u8).add(16) as *mut u64, 0); // stub_fp = null
                 let cursor = (p as *mut u8).add(24) as *mut FzValue;
@@ -418,7 +418,11 @@ fn eval_binop(op: BinOp, a: FzValue, b: FzValue) -> Result<FzValue, String> {
         BinOp::Eq => Ok(FzValue(fz_runtime::ir_runtime::fz_value_eq(a.0, b.0))),
         BinOp::Neq => {
             let eq = FzValue(fz_runtime::ir_runtime::fz_value_eq(a.0, b.0));
-            Ok(if eq.is_true() { FzValue::FALSE } else { FzValue::TRUE })
+            Ok(if eq.is_true() {
+                FzValue::FALSE
+            } else {
+                FzValue::TRUE
+            })
         }
         BinOp::Lt => float_cmp!(<),
         BinOp::Le => float_cmp!(<=),
@@ -504,11 +508,9 @@ fn run_builtin(
             let pid = interp_spawn(module, fn_id, captured)?;
             Ok(FzValue::from_int(pid as i64))
         }
-        BuiltinKind::SelfPid => {
-            Ok(FzValue::from_int(
-                fz_runtime::process::current_process().pid as i64,
-            ))
-        }
+        BuiltinKind::SelfPid => Ok(FzValue::from_int(
+            fz_runtime::process::current_process().pid as i64,
+        )),
         BuiltinKind::Send => {
             if args.len() != 2 {
                 return Err(format!("send/2 got {} args", args.len()));
@@ -524,7 +526,9 @@ fn run_builtin(
             if args.len() != 2 {
                 return Err(format!("vec_get/2 got {} args", args.len()));
             }
-            Ok(FzValue(fz_runtime::ir_runtime::fz_vec_get(args[0].0, args[1].0)))
+            Ok(FzValue(fz_runtime::ir_runtime::fz_vec_get(
+                args[0].0, args[1].0,
+            )))
         }
     }
 }

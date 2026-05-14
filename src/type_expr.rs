@@ -28,7 +28,7 @@
 //! Bare `42` and `3.14` are singleton literals.
 
 #![allow(dead_code)] // fz-ul4.31.4 wires this into the parser; tests
-                     // exercise the API directly until then.
+// exercise the API directly until then.
 
 use std::collections::HashMap;
 
@@ -114,7 +114,9 @@ pub fn build_module_type_env(
     loop {
         let mut progressed = false;
         for name in &order {
-            if env.contains_key(name) { continue; }
+            if env.contains_key(name) {
+                continue;
+            }
             let decl = pending[name];
             match parse_type_expr(&decl.body_tokens, &env) {
                 Ok((d, _consumed)) => {
@@ -127,13 +129,17 @@ pub fn build_module_type_env(
                 }
             }
         }
-        if !progressed { break; }
+        if !progressed {
+            break;
+        }
     }
     // Anything still pending is a cycle or references an unknown name.
     // Re-parse one unresolved body to surface the underlying error.
     if env.len() < pending.len() {
         for name in &order {
-            if env.contains_key(name) { continue; }
+            if env.contains_key(name) {
+                continue;
+            }
             let decl = pending[name];
             // Distinguish cycle from unknown-name by checking whether
             // the body references another unresolved alias.
@@ -169,13 +175,16 @@ pub fn build_module_type_env(
 /// `build_module_type_env` to detect cycles vs unknown-name errors.
 fn referenced_names(tokens: &[crate::lexer::Token]) -> Vec<String> {
     use crate::lexer::Tok;
-    tokens.iter().filter_map(|t| match &t.tok {
-        Tok::Ident(n) | Tok::Upper(n) => match n.as_str() {
-            "nil" | "bool" | "integer" | "float" | "binary" | "atom" | "any" => None,
-            _ => Some(n.clone()),
-        },
-        _ => None,
-    }).collect()
+    tokens
+        .iter()
+        .filter_map(|t| match &t.tok {
+            Tok::Ident(n) | Tok::Upper(n) => match n.as_str() {
+                "nil" | "bool" | "integer" | "float" | "binary" | "atom" | "any" => None,
+                _ => Some(n.clone()),
+            },
+            _ => None,
+        })
+        .collect()
 }
 
 /// Parse one type expression from `tokens` starting at index 0.
@@ -188,7 +197,11 @@ pub fn parse_type_expr(
     tokens: &[Token],
     env: &ModuleTypeEnv,
 ) -> Result<(Descr, usize), TypeExprError> {
-    let mut p = TypeExprParser { tokens, pos: 0, env };
+    let mut p = TypeExprParser {
+        tokens,
+        pos: 0,
+        env,
+    };
     let d = p.parse_union()?;
     Ok((d, p.pos))
 }
@@ -201,7 +214,10 @@ struct TypeExprParser<'a> {
 
 impl<'a> TypeExprParser<'a> {
     fn peek(&self) -> &Tok {
-        self.tokens.get(self.pos).map(|t| &t.tok).unwrap_or(&Tok::Eof)
+        self.tokens
+            .get(self.pos)
+            .map(|t| &t.tok)
+            .unwrap_or(&Tok::Eof)
     }
 
     fn peek_span(&self) -> Span {
@@ -217,7 +233,10 @@ impl<'a> TypeExprParser<'a> {
     }
 
     fn err(&self, msg: impl Into<String>) -> TypeExprError {
-        TypeExprError { msg: msg.into(), span: self.peek_span() }
+        TypeExprError {
+            msg: msg.into(),
+            span: self.peek_span(),
+        }
     }
 
     fn expect(&mut self, want: &Tok, ctx: &str) -> Result<(), TypeExprError> {
@@ -283,10 +302,7 @@ impl<'a> TypeExprParser<'a> {
                 self.bump();
                 self.lookup_named(&name)
             }
-            other => Err(self.err(format!(
-                "expected a type expression, got {}",
-                other
-            ))),
+            other => Err(self.err(format!("expected a type expression, got {}", other))),
         }
     }
 
@@ -340,7 +356,7 @@ impl<'a> TypeExprParser<'a> {
         } else {
             Err(self.err(
                 "parenthesized type with multiple elements must be \
-                 followed by `->` (use `{T, U}` for tuple types)"
+                 followed by `->` (use `{T, U}` for tuple types)",
             ))
         }
     }
@@ -405,7 +421,11 @@ mod tests {
     #[test]
     fn atom_literal_parses_to_singleton() {
         assert!(parse_one(":ok").unwrap().is_equiv(&Descr::atom_lit("ok")));
-        assert!(parse_one(":error").unwrap().is_equiv(&Descr::atom_lit("error")));
+        assert!(
+            parse_one(":error")
+                .unwrap()
+                .is_equiv(&Descr::atom_lit("error"))
+        );
     }
 
     #[test]
@@ -441,11 +461,7 @@ mod tests {
     #[test]
     fn tuple_three_elements_with_literal() {
         let d = parse_one("{:ok, integer, integer}").unwrap();
-        let expected = Descr::tuple_of([
-            Descr::atom_lit("ok"),
-            Descr::int(),
-            Descr::int(),
-        ]);
+        let expected = Descr::tuple_of([Descr::atom_lit("ok"), Descr::int(), Descr::int()]);
         assert!(d.is_equiv(&expected));
     }
 
@@ -491,7 +507,11 @@ mod tests {
     #[test]
     fn paren_multi_without_arrow_errors() {
         let r = parse_one("(integer, float)");
-        assert!(r.is_err(), "multi-element paren without `->` must error; got {:?}", r);
+        assert!(
+            r.is_err(),
+            "multi-element paren without `->` must error; got {:?}",
+            r
+        );
     }
 
     #[test]
@@ -522,9 +542,7 @@ mod tests {
     #[test]
     fn nested_tuple_inside_list() {
         let d = parse_one("[{:ok, integer}]").unwrap();
-        let expected = Descr::list_of(
-            Descr::tuple_of([Descr::atom_lit("ok"), Descr::int()]),
-        );
+        let expected = Descr::list_of(Descr::tuple_of([Descr::atom_lit("ok"), Descr::int()]));
         assert!(d.is_equiv(&expected));
     }
 
@@ -567,8 +585,10 @@ mod tests {
         let mut env = ModuleTypeEnv::new();
         env.insert("integer".to_string(), Descr::float());
         let d = parse_one_with("integer", &env).unwrap();
-        assert!(d.is_equiv(&Descr::int()),
-            "builtin `integer` must resolve to int regardless of env shadow");
+        assert!(
+            d.is_equiv(&Descr::int()),
+            "builtin `integer` must resolve to int regardless of env shadow"
+        );
     }
 
     #[test]
@@ -605,7 +625,8 @@ mod tests {
         use crate::diag::Span;
         let toks = Lexer::new(body_src).tokenize().expect("lex body");
         // Drop trailing Eof to match parser behavior.
-        let body_tokens: Vec<_> = toks.into_iter()
+        let body_tokens: Vec<_> = toks
+            .into_iter()
             .filter(|t| !matches!(t.tok, Tok::Eof))
             .collect();
         Attribute::TypeAlias(TypeAliasDecl {
@@ -626,10 +647,7 @@ mod tests {
     #[test]
     fn build_env_resolves_alias_of_alias_in_either_order() {
         // Declare in forward order: a refs b, b is plain.
-        let attrs = vec![
-            type_alias_attr("a", "b"),
-            type_alias_attr("b", "integer"),
-        ];
+        let attrs = vec![type_alias_attr("a", "b"), type_alias_attr("b", "integer")];
         let env = build_module_type_env(&attrs).unwrap();
         assert!(env.get("a").unwrap().is_equiv(&Descr::int()));
         assert!(env.get("b").unwrap().is_equiv(&Descr::int()));
@@ -649,12 +667,13 @@ mod tests {
 
     #[test]
     fn build_env_detects_simple_cycle() {
-        let attrs = vec![
-            type_alias_attr("a", "b"),
-            type_alias_attr("b", "a"),
-        ];
+        let attrs = vec![type_alias_attr("a", "b"), type_alias_attr("b", "a")];
         let err = build_module_type_env(&attrs).unwrap_err();
-        assert!(err.msg.contains("cycle"), "expected cycle diag, got: {}", err.msg);
+        assert!(
+            err.msg.contains("cycle"),
+            "expected cycle diag, got: {}",
+            err.msg
+        );
     }
 
     #[test]
@@ -665,15 +684,22 @@ mod tests {
             type_alias_attr("c", "a"),
         ];
         let err = build_module_type_env(&attrs).unwrap_err();
-        assert!(err.msg.contains("cycle"), "expected cycle diag, got: {}", err.msg);
+        assert!(
+            err.msg.contains("cycle"),
+            "expected cycle diag, got: {}",
+            err.msg
+        );
     }
 
     #[test]
     fn build_env_rejects_unknown_reference() {
         let attrs = vec![type_alias_attr("foo", "nonesuch")];
         let err = build_module_type_env(&attrs).unwrap_err();
-        assert!(err.msg.contains("unknown type name"),
-            "expected unknown-name diag, got: {}", err.msg);
+        assert!(
+            err.msg.contains("unknown type name"),
+            "expected unknown-name diag, got: {}",
+            err.msg
+        );
     }
 
     #[test]
@@ -683,8 +709,11 @@ mod tests {
             type_alias_attr("id", "float"),
         ];
         let err = build_module_type_env(&attrs).unwrap_err();
-        assert!(err.msg.contains("duplicate"),
-            "expected duplicate diag, got: {}", err.msg);
+        assert!(
+            err.msg.contains("duplicate"),
+            "expected duplicate diag, got: {}",
+            err.msg
+        );
     }
 
     #[test]

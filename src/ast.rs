@@ -18,7 +18,11 @@ pub struct Spanned<T> {
 
 impl<T> Spanned<T> {
     pub fn new(node: T, span: Span) -> Self {
-        Self { node, span, origin: SpanOrigin::Source }
+        Self {
+            node,
+            span,
+            origin: SpanOrigin::Source,
+        }
     }
 
     /// Synthesize a Spanned with no source position. Used by tests and by
@@ -26,7 +30,11 @@ impl<T> Spanned<T> {
     /// no original span). The macro expander stamps `SpanOrigin::Expanded`
     /// on these once it knows the call site.
     pub fn dummy(node: T) -> Self {
-        Self { node, span: Span::DUMMY, origin: SpanOrigin::Source }
+        Self {
+            node,
+            span: Span::DUMMY,
+            origin: SpanOrigin::Source,
+        }
     }
 }
 
@@ -44,7 +52,7 @@ pub enum Expr {
     Var(String),
 
     // collections
-    List(Vec<Spanned<Expr>>, Option<Box<Spanned<Expr>>>),  // [a, b, c | tail]
+    List(Vec<Spanned<Expr>>, Option<Box<Spanned<Expr>>>), // [a, b, c | tail]
     Tuple(Vec<Spanned<Expr>>),
     /// Vector literal: monotyped contiguous storage; sigil determines element kind.
     /// `~v[1, 2, 3]` -> kind Numeric (I64/F64 inferred), `~b[0xff]` -> Bytes, `~bits[1,0,1]` -> Bits.
@@ -67,7 +75,11 @@ pub enum Expr {
     UnOp(UnOp, Box<Spanned<Expr>>),
 
     // control flow
-    If(Box<Spanned<Expr>>, Box<Spanned<Expr>>, Option<Box<Spanned<Expr>>>),
+    If(
+        Box<Spanned<Expr>>,
+        Box<Spanned<Expr>>,
+        Option<Box<Spanned<Expr>>>,
+    ),
     Case(Box<Spanned<Expr>>, Vec<MatchClause>),
     Cond(Vec<(Spanned<Expr>, Spanned<Expr>)>),
     With(Vec<WithBinding>, Box<Spanned<Expr>>, Vec<MatchClause>),
@@ -95,22 +107,35 @@ pub enum Expr {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VecKind {
-    Numeric,  // ~v  — I64 or F64 inferred from elements
-    Bytes,    // ~b  — Vec(U8)
-    Bits,     // ~bits — packed Vec(Bit)
+    Numeric, // ~v  — I64 or F64 inferred from elements
+    Bytes,   // ~b  — Vec(U8)
+    Bits,    // ~bits — packed Vec(Bit)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinOp {
-    Add, Sub, Mul, Div, Rem,
-    Eq, Neq, Lt, LtEq, Gt, GtEq,
-    And, Or,
-    Pipe,        // |>
-    Cons,        // |  (head | tail)
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Rem,
+    Eq,
+    Neq,
+    Lt,
+    LtEq,
+    Gt,
+    GtEq,
+    And,
+    Or,
+    Pipe, // |>
+    Cons, // |  (head | tail)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum UnOp { Neg, Not }
+pub enum UnOp {
+    Neg,
+    Not,
+}
 
 #[derive(Debug, Clone)]
 pub struct MatchClause {
@@ -172,7 +197,13 @@ pub struct BitFieldSpec {
 
 impl Default for BitFieldSpec {
     fn default() -> Self {
-        Self { ty: BitType::Integer, size: None, endian: Endian::Big, signed: false, unit: None }
+        Self {
+            ty: BitType::Integer,
+            size: None,
+            endian: Endian::Big,
+            signed: false,
+            unit: None,
+        }
     }
 }
 
@@ -180,12 +211,14 @@ impl BitFieldSpec {
     /// Resolve the unit (bits per element) for this spec, applying type-default
     /// when no explicit unit was provided.
     pub fn resolved_unit(&self) -> u32 {
-        if let Some(u) = self.unit { return u; }
+        if let Some(u) = self.unit {
+            return u;
+        }
         match self.ty {
             BitType::Integer => 1,
-            BitType::Float   => 1,
-            BitType::Binary  => 8,
-            BitType::Bits    => 1,
+            BitType::Float => 1,
+            BitType::Binary => 8,
+            BitType::Bits => 1,
             BitType::Utf8 | BitType::Utf16 | BitType::Utf32 => 1,
         }
     }
@@ -202,7 +235,15 @@ impl BitFieldSpec {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BitType { Integer, Float, Binary, Bits, Utf8, Utf16, Utf32 }
+pub enum BitType {
+    Integer,
+    Float,
+    Binary,
+    Bits,
+    Utf8,
+    Utf16,
+    Utf32,
+}
 
 #[derive(Debug, Clone)]
 pub enum BitSize {
@@ -213,7 +254,11 @@ pub enum BitSize {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Endian { Big, Little, Native }
+pub enum Endian {
+    Big,
+    Little,
+    Native,
+}
 
 #[derive(Debug, Clone)]
 pub struct FnClause {

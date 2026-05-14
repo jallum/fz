@@ -37,33 +37,37 @@ fn run_with_args(args: &[&std::ffi::OsStr]) -> std::process::Output {
 #[test]
 fn interp_rejects_spec_violation() {
     let p = write_temp_fz("interp");
-    let out = run_with_args(&[
-        std::ffi::OsStr::new("interp"),
-        p.as_os_str(),
-    ]);
-    assert!(!out.status.success(),
+    let out = run_with_args(&[std::ffi::OsStr::new("interp"), p.as_os_str()]);
+    assert!(
+        !out.status.success(),
         "interp must reject @spec violation; stdout={:?} stderr={:?}",
         String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("spec/violation") || stderr.contains("@spec violation"),
-        "expected spec/violation diag from interp; stderr={}", stderr);
+    assert!(
+        stderr.contains("spec/violation") || stderr.contains("@spec violation"),
+        "expected spec/violation diag from interp; stderr={}",
+        stderr
+    );
 }
 
 #[test]
 fn jit_rejects_spec_violation() {
     let p = write_temp_fz("jit");
-    let out = run_with_args(&[
-        std::ffi::OsStr::new("run"),
-        p.as_os_str(),
-    ]);
-    assert!(!out.status.success(),
+    let out = run_with_args(&[std::ffi::OsStr::new("run"), p.as_os_str()]);
+    assert!(
+        !out.status.success(),
         "jit must reject @spec violation; stdout={:?} stderr={:?}",
         String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("spec/violation") || stderr.contains("@spec violation"),
-        "expected spec/violation diag from jit; stderr={}", stderr);
+    assert!(
+        stderr.contains("spec/violation") || stderr.contains("@spec violation"),
+        "expected spec/violation diag from jit; stderr={}",
+        stderr
+    );
 }
 
 #[test]
@@ -77,11 +81,16 @@ fn aot_rejects_spec_violation() {
         std::ffi::OsStr::new("-o"),
         out_bin.as_os_str(),
     ]);
-    assert!(!out.status.success(),
+    assert!(
+        !out.status.success(),
         "aot must reject @spec violation; stdout={:?} stderr={:?}",
         String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("spec/violation") || stderr.contains("@spec violation"),
-        "expected spec/violation diag from aot; stderr={}", stderr);
+    assert!(
+        stderr.contains("spec/violation") || stderr.contains("@spec violation"),
+        "expected spec/violation diag from aot; stderr={}",
+        stderr
+    );
 }

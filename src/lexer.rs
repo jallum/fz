@@ -15,8 +15,8 @@ pub enum Tok {
 
     // identifiers / keys
     Ident(String),
-    Upper(String),       // Capitalized: module / type names
-    KwKey(String),       // `name:` shorthand for keyword-list key (incl. `do:`)
+    Upper(String), // Capitalized: module / type names
+    KwKey(String), // `name:` shorthand for keyword-list key (incl. `do:`)
 
     // keywords
     Fn,
@@ -37,28 +37,46 @@ pub enum Tok {
     Type,
 
     // punctuation
-    LParen, RParen,
-    LBrack, RBrack,
-    LBrace, RBrace,
-    LBitstr, RBitstr,    // << and >>
-    PercentLBrace,       // %{   (map literal)
-    Sigil(String),       // ~name (followed by a delimiter token like LBrack)
+    LParen,
+    RParen,
+    LBrack,
+    RBrack,
+    LBrace,
+    RBrace,
+    LBitstr,
+    RBitstr,       // << and >>
+    PercentLBrace, // %{   (map literal)
+    Sigil(String), // ~name (followed by a delimiter token like LBrack)
 
-    Comma, Dot, Semi, Colon, ColonColon,
-    Arrow,               // ->
-    FatArrow,            // =>
-    LArrow,              // <-
-    Pipe,                // |>
-    Bar,                 // |  (cons / pattern alt)
+    Comma,
+    Dot,
+    Semi,
+    Colon,
+    ColonColon,
+    Arrow,    // ->
+    FatArrow, // =>
+    LArrow,   // <-
+    Pipe,     // |>
+    Bar,      // |  (cons / pattern alt)
     Underscore,
 
     // operators
-    Eq,                  // =
-    EqEq, NotEq,
-    Lt, LtEq, Gt, GtEq,
-    Plus, Minus, Star, Slash, Percent,
-    Bang, AndAnd, OrOr,
-    At,                  // @ — for module attributes (@doc, @moduledoc)
+    Eq, // =
+    EqEq,
+    NotEq,
+    Lt,
+    LtEq,
+    Gt,
+    GtEq,
+    Plus,
+    Minus,
+    Star,
+    Slash,
+    Percent,
+    Bang,
+    AndAnd,
+    OrOr,
+    At, // @ — for module attributes (@doc, @moduledoc)
 
     Newline,
     Eof,
@@ -121,7 +139,11 @@ impl<'a> Lexer<'a> {
     }
 
     pub fn with_file(src: &'a str, file: FileId) -> Self {
-        Self { src: src.as_bytes(), pos: 0, file }
+        Self {
+            src: src.as_bytes(),
+            pos: 0,
+            file,
+        }
     }
 
     fn peek(&self, off: usize) -> Option<u8> {
@@ -140,28 +162,42 @@ impl<'a> Lexer<'a> {
 
     fn eat_while(&mut self, mut pred: impl FnMut(u8) -> bool) {
         while let Some(c) = self.peek(0) {
-            if pred(c) { self.bump(); } else { break; }
+            if pred(c) {
+                self.bump();
+            } else {
+                break;
+            }
         }
     }
 
     fn skip_trivia(&mut self) {
         loop {
             match self.peek(0) {
-                Some(b' ') | Some(b'\t') | Some(b'\r') => { self.bump(); }
-                Some(b'#') => { self.eat_while(|c| c != b'\n'); }
+                Some(b' ') | Some(b'\t') | Some(b'\r') => {
+                    self.bump();
+                }
+                Some(b'#') => {
+                    self.eat_while(|c| c != b'\n');
+                }
                 _ => break,
             }
         }
     }
 
-    fn ident_start(c: u8) -> bool { c.is_ascii_alphabetic() || c == b'_' }
-    fn ident_cont(c: u8) -> bool { c.is_ascii_alphanumeric() || c == b'_' || c == b'?' || c == b'!' }
+    fn ident_start(c: u8) -> bool {
+        c.is_ascii_alphabetic() || c == b'_'
+    }
+    fn ident_cont(c: u8) -> bool {
+        c.is_ascii_alphanumeric() || c == b'_' || c == b'?' || c == b'!'
+    }
 
     fn read_ident(&mut self) -> String {
         let start = self.pos;
         self.bump();
         self.eat_while(Self::ident_cont);
-        std::str::from_utf8(&self.src[start..self.pos]).unwrap().to_string()
+        std::str::from_utf8(&self.src[start..self.pos])
+            .unwrap()
+            .to_string()
     }
 
     fn read_number(&mut self) -> Result<Tok, LexError> {
@@ -169,25 +205,46 @@ impl<'a> Lexer<'a> {
         if self.peek(0) == Some(b'0') {
             match self.peek(1) {
                 Some(b'x') | Some(b'X') => {
-                    self.bump(); self.bump();
+                    self.bump();
+                    self.bump();
                     let s = self.pos;
                     self.eat_while(|c| c.is_ascii_hexdigit() || c == b'_');
-                    let raw: String = std::str::from_utf8(&self.src[s..self.pos]).unwrap().chars().filter(|c| *c != '_').collect();
-                    return i64::from_str_radix(&raw, 16).map(Tok::Int).map_err(|e| self.err(e.to_string()));
+                    let raw: String = std::str::from_utf8(&self.src[s..self.pos])
+                        .unwrap()
+                        .chars()
+                        .filter(|c| *c != '_')
+                        .collect();
+                    return i64::from_str_radix(&raw, 16)
+                        .map(Tok::Int)
+                        .map_err(|e| self.err(e.to_string()));
                 }
                 Some(b'b') | Some(b'B') => {
-                    self.bump(); self.bump();
+                    self.bump();
+                    self.bump();
                     let s = self.pos;
                     self.eat_while(|c| c == b'0' || c == b'1' || c == b'_');
-                    let raw: String = std::str::from_utf8(&self.src[s..self.pos]).unwrap().chars().filter(|c| *c != '_').collect();
-                    return i64::from_str_radix(&raw, 2).map(Tok::Int).map_err(|e| self.err(e.to_string()));
+                    let raw: String = std::str::from_utf8(&self.src[s..self.pos])
+                        .unwrap()
+                        .chars()
+                        .filter(|c| *c != '_')
+                        .collect();
+                    return i64::from_str_radix(&raw, 2)
+                        .map(Tok::Int)
+                        .map_err(|e| self.err(e.to_string()));
                 }
                 Some(b'o') | Some(b'O') => {
-                    self.bump(); self.bump();
+                    self.bump();
+                    self.bump();
                     let s = self.pos;
                     self.eat_while(|c| (b'0'..=b'7').contains(&c) || c == b'_');
-                    let raw: String = std::str::from_utf8(&self.src[s..self.pos]).unwrap().chars().filter(|c| *c != '_').collect();
-                    return i64::from_str_radix(&raw, 8).map(Tok::Int).map_err(|e| self.err(e.to_string()));
+                    let raw: String = std::str::from_utf8(&self.src[s..self.pos])
+                        .unwrap()
+                        .chars()
+                        .filter(|c| *c != '_')
+                        .collect();
+                    return i64::from_str_radix(&raw, 8)
+                        .map(Tok::Int)
+                        .map_err(|e| self.err(e.to_string()));
                 }
                 _ => {}
             }
@@ -203,9 +260,15 @@ impl<'a> Lexer<'a> {
         let raw = std::str::from_utf8(&self.src[start..self.pos]).unwrap();
         let cleaned: String = raw.chars().filter(|c| *c != '_').collect();
         if is_float {
-            cleaned.parse::<f64>().map(Tok::Float).map_err(|e| self.err(e.to_string()))
+            cleaned
+                .parse::<f64>()
+                .map(Tok::Float)
+                .map_err(|e| self.err(e.to_string()))
         } else {
-            cleaned.parse::<i64>().map(Tok::Int).map_err(|e| self.err(e.to_string()))
+            cleaned
+                .parse::<i64>()
+                .map(Tok::Int)
+                .map_err(|e| self.err(e.to_string()))
         }
     }
 
@@ -235,8 +298,15 @@ impl<'a> Lexer<'a> {
         // so back up by one to underline the character itself rather than
         // the position after it. At EOF (`pos == src.len()`), span is empty.
         let end = self.pos as u32;
-        let start = if self.pos == 0 { 0 } else { end.saturating_sub(1) };
-        LexError { msg, span: Span::new(self.file, start, end) }
+        let start = if self.pos == 0 {
+            0
+        } else {
+            end.saturating_sub(1)
+        };
+        LexError {
+            msg,
+            span: Span::new(self.file, start, end),
+        }
     }
 
     fn keyword_or_ident(name: String) -> Tok {
@@ -263,7 +333,11 @@ impl<'a> Lexer<'a> {
             "_" => Tok::Underscore,
             _ => {
                 let first = name.as_bytes()[0];
-                if first.is_ascii_uppercase() { Tok::Upper(name) } else { Tok::Ident(name) }
+                if first.is_ascii_uppercase() {
+                    Tok::Upper(name)
+                } else {
+                    Tok::Ident(name)
+                }
             }
         }
     }
@@ -272,24 +346,67 @@ impl<'a> Lexer<'a> {
         self.skip_trivia();
         let start = self.pos;
         let Some(c) = self.peek(0) else {
-            return Ok(Token { tok: Tok::Eof, span: self.span_from(start) });
+            return Ok(Token {
+                tok: Tok::Eof,
+                span: self.span_from(start),
+            });
         };
 
         let tok = match c {
-            b'\n' => { self.bump(); Tok::Newline }
-            b'(' => { self.bump(); Tok::LParen }
-            b')' => { self.bump(); Tok::RParen }
-            b'[' => { self.bump(); Tok::LBrack }
-            b']' => { self.bump(); Tok::RBrack }
-            b'{' => { self.bump(); Tok::LBrace }
-            b'}' => { self.bump(); Tok::RBrace }
-            b',' => { self.bump(); Tok::Comma }
-            b'.' => { self.bump(); Tok::Dot }
-            b';' => { self.bump(); Tok::Semi }
-            b'@' => { self.bump(); Tok::At }
+            b'\n' => {
+                self.bump();
+                Tok::Newline
+            }
+            b'(' => {
+                self.bump();
+                Tok::LParen
+            }
+            b')' => {
+                self.bump();
+                Tok::RParen
+            }
+            b'[' => {
+                self.bump();
+                Tok::LBrack
+            }
+            b']' => {
+                self.bump();
+                Tok::RBrack
+            }
+            b'{' => {
+                self.bump();
+                Tok::LBrace
+            }
+            b'}' => {
+                self.bump();
+                Tok::RBrace
+            }
+            b',' => {
+                self.bump();
+                Tok::Comma
+            }
+            b'.' => {
+                self.bump();
+                Tok::Dot
+            }
+            b';' => {
+                self.bump();
+                Tok::Semi
+            }
+            b'@' => {
+                self.bump();
+                Tok::At
+            }
 
-            b'%' if self.peek(1) == Some(b'{') => { self.bump(); self.bump(); Tok::PercentLBrace }
-            b'%' => { self.bump(); Tok::Percent }
+            b'%' if self.peek(1) == Some(b'{') => {
+                self.bump();
+                self.bump();
+                Tok::PercentLBrace
+            }
+            b'%' => {
+                self.bump();
+                Tok::Percent
+            }
 
             b'~' if self.peek(1).is_some_and(|c| c.is_ascii_lowercase()) => {
                 self.bump(); // ~
@@ -298,41 +415,120 @@ impl<'a> Lexer<'a> {
             }
 
             b'<' => match self.peek(1) {
-                Some(b'<') => { self.bump(); self.bump(); Tok::LBitstr }
-                Some(b'-') => { self.bump(); self.bump(); Tok::LArrow }
-                Some(b'=') => { self.bump(); self.bump(); Tok::LtEq }
-                _ => { self.bump(); Tok::Lt }
+                Some(b'<') => {
+                    self.bump();
+                    self.bump();
+                    Tok::LBitstr
+                }
+                Some(b'-') => {
+                    self.bump();
+                    self.bump();
+                    Tok::LArrow
+                }
+                Some(b'=') => {
+                    self.bump();
+                    self.bump();
+                    Tok::LtEq
+                }
+                _ => {
+                    self.bump();
+                    Tok::Lt
+                }
             },
             b'>' => match self.peek(1) {
-                Some(b'>') => { self.bump(); self.bump(); Tok::RBitstr }
-                Some(b'=') => { self.bump(); self.bump(); Tok::GtEq }
-                _ => { self.bump(); Tok::Gt }
+                Some(b'>') => {
+                    self.bump();
+                    self.bump();
+                    Tok::RBitstr
+                }
+                Some(b'=') => {
+                    self.bump();
+                    self.bump();
+                    Tok::GtEq
+                }
+                _ => {
+                    self.bump();
+                    Tok::Gt
+                }
             },
             b'-' => match self.peek(1) {
-                Some(b'>') => { self.bump(); self.bump(); Tok::Arrow }
-                _ => { self.bump(); Tok::Minus }
+                Some(b'>') => {
+                    self.bump();
+                    self.bump();
+                    Tok::Arrow
+                }
+                _ => {
+                    self.bump();
+                    Tok::Minus
+                }
             },
             b'|' => match self.peek(1) {
-                Some(b'>') => { self.bump(); self.bump(); Tok::Pipe }
-                Some(b'|') => { self.bump(); self.bump(); Tok::OrOr }
-                _ => { self.bump(); Tok::Bar }
+                Some(b'>') => {
+                    self.bump();
+                    self.bump();
+                    Tok::Pipe
+                }
+                Some(b'|') => {
+                    self.bump();
+                    self.bump();
+                    Tok::OrOr
+                }
+                _ => {
+                    self.bump();
+                    Tok::Bar
+                }
             },
-            b'&' if self.peek(1) == Some(b'&') => { self.bump(); self.bump(); Tok::AndAnd }
+            b'&' if self.peek(1) == Some(b'&') => {
+                self.bump();
+                self.bump();
+                Tok::AndAnd
+            }
             b'=' => match self.peek(1) {
-                Some(b'=') => { self.bump(); self.bump(); Tok::EqEq }
-                Some(b'>') => { self.bump(); self.bump(); Tok::FatArrow }
-                _ => { self.bump(); Tok::Eq }
+                Some(b'=') => {
+                    self.bump();
+                    self.bump();
+                    Tok::EqEq
+                }
+                Some(b'>') => {
+                    self.bump();
+                    self.bump();
+                    Tok::FatArrow
+                }
+                _ => {
+                    self.bump();
+                    Tok::Eq
+                }
             },
             b'!' => match self.peek(1) {
-                Some(b'=') => { self.bump(); self.bump(); Tok::NotEq }
-                _ => { self.bump(); Tok::Bang }
+                Some(b'=') => {
+                    self.bump();
+                    self.bump();
+                    Tok::NotEq
+                }
+                _ => {
+                    self.bump();
+                    Tok::Bang
+                }
             },
-            b'+' => { self.bump(); Tok::Plus }
-            b'*' => { self.bump(); Tok::Star }
-            b'/' => { self.bump(); Tok::Slash }
+            b'+' => {
+                self.bump();
+                Tok::Plus
+            }
+            b'*' => {
+                self.bump();
+                Tok::Star
+            }
+            b'/' => {
+                self.bump();
+                Tok::Slash
+            }
 
             b':' => match self.peek(1) {
-                Some(b':') => { self.bump(); self.bump(); Tok::ColonColon }
+                Some(b':') => {
+                    self.bump();
+                    self.bump();
+                    Tok::ColonColon
+                }
                 Some(c2) if Self::ident_start(c2) => {
                     self.bump(); // consume :
                     let name = self.read_ident();
@@ -340,10 +536,15 @@ impl<'a> Lexer<'a> {
                 }
                 Some(b'"') => {
                     self.bump();
-                    let Tok::Str(s) = self.read_string()? else { unreachable!() };
+                    let Tok::Str(s) = self.read_string()? else {
+                        unreachable!()
+                    };
                     Tok::Atom(s)
                 }
-                _ => { self.bump(); Tok::Colon }
+                _ => {
+                    self.bump();
+                    Tok::Colon
+                }
             },
 
             b'"' => self.read_string()?,
@@ -364,7 +565,10 @@ impl<'a> Lexer<'a> {
             }
         };
 
-        Ok(Token { tok, span: self.span_from(start) })
+        Ok(Token {
+            tok,
+            span: self.span_from(start),
+        })
     }
 
     pub fn tokenize(mut self) -> Result<Vec<Token>, LexError> {
@@ -373,7 +577,9 @@ impl<'a> Lexer<'a> {
             let t = self.next_token()?;
             let done = matches!(t.tok, Tok::Eof);
             out.push(t);
-            if done { return Ok(out); }
+            if done {
+                return Ok(out);
+            }
         }
     }
 }
@@ -425,8 +631,14 @@ mod tests {
         let b = sm.add_file("b.fz", "fn bar()");
         let toks_a = Lexer::with_file("fn foo()", a).tokenize().unwrap();
         let toks_b = Lexer::with_file("fn bar()", b).tokenize().unwrap();
-        let foo = toks_a.iter().find(|t| matches!(&t.tok, Tok::Ident(n) if n == "foo")).unwrap();
-        let bar = toks_b.iter().find(|t| matches!(&t.tok, Tok::Ident(n) if n == "bar")).unwrap();
+        let foo = toks_a
+            .iter()
+            .find(|t| matches!(&t.tok, Tok::Ident(n) if n == "foo"))
+            .unwrap();
+        let bar = toks_b
+            .iter()
+            .find(|t| matches!(&t.tok, Tok::Ident(n) if n == "bar"))
+            .unwrap();
         assert_eq!(foo.span.file, a);
         assert_eq!(bar.span.file, b);
         assert_eq!(sm.span_text(foo.span), "foo");
@@ -438,7 +650,11 @@ mod tests {
         let src = "fn `";
         let err = Lexer::new(src).tokenize().expect_err("should fail");
         // Backtick is at offset 3; err span points at it (or just after).
-        assert!(err.span.start <= 3 && err.span.end >= 3, "span={:?}", err.span);
+        assert!(
+            err.span.start <= 3 && err.span.end >= 3,
+            "span={:?}",
+            err.span
+        );
         assert_eq!(err.span.file, FileId(0));
     }
 }

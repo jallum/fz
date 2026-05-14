@@ -76,11 +76,17 @@ mod tests {
     fn no_color_forces_off_even_on_tty() {
         // SAFETY: env mutation in tests is dicey; we save and restore.
         let prev = std::env::var_os("NO_COLOR");
-        unsafe { std::env::set_var("NO_COLOR", "1"); }
+        unsafe {
+            std::env::set_var("NO_COLOR", "1");
+        }
         let result = ColorMode::Auto.use_color(true);
         match prev {
-            Some(v) => unsafe { std::env::set_var("NO_COLOR", v); },
-            None => unsafe { std::env::remove_var("NO_COLOR"); },
+            Some(v) => unsafe {
+                std::env::set_var("NO_COLOR", v);
+            },
+            None => unsafe {
+                std::env::remove_var("NO_COLOR");
+            },
         }
         assert!(!result, "NO_COLOR should force Auto off");
     }

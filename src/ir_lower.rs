@@ -29,10 +29,24 @@ use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum LowerError {
-    Unsupported { span: Span, what: String },
-    Unbound { span: Span, name: String },
-    ArityMismatch { span: Span, name: String, expected: usize, got: usize },
-    PostExpansionNode { span: Span, what: String },
+    Unsupported {
+        span: Span,
+        what: String,
+    },
+    Unbound {
+        span: Span,
+        name: String,
+    },
+    ArityMismatch {
+        span: Span,
+        name: String,
+        expected: usize,
+        got: usize,
+    },
+    PostExpansionNode {
+        span: Span,
+        what: String,
+    },
 }
 
 impl LowerError {
@@ -44,14 +58,20 @@ impl LowerError {
                 format!("unsupported: {}", what),
                 *span,
             ),
-            LowerError::Unbound { span, name } => Diagnostic::error(
-                codes::LOWER_UNBOUND,
-                format!("unbound: {}", name),
-                *span,
-            ),
-            LowerError::ArityMismatch { span, name, expected, got } => Diagnostic::error(
+            LowerError::Unbound { span, name } => {
+                Diagnostic::error(codes::LOWER_UNBOUND, format!("unbound: {}", name), *span)
+            }
+            LowerError::ArityMismatch {
+                span,
+                name,
+                expected,
+                got,
+            } => Diagnostic::error(
                 codes::LOWER_ARITY_MISMATCH,
-                format!("arity mismatch for {}: expected {}, got {}", name, expected, got),
+                format!(
+                    "arity mismatch for {}: expected {}, got {}",
+                    name, expected, got
+                ),
                 *span,
             ),
             LowerError::PostExpansionNode { span, what } => Diagnostic::error(
@@ -121,7 +141,9 @@ pub struct BuiltinTable {
 impl BuiltinTable {
     pub fn new() -> Self {
         use crate::fz_ir::BuiltinKind;
-        let mut t = Self { map: HashMap::new() };
+        let mut t = Self {
+            map: HashMap::new(),
+        };
         for k in BuiltinKind::ALL {
             t.map.insert(k.name().into(), k.id());
         }
@@ -220,7 +242,13 @@ impl LowerCtx {
         let mut tb = FnBuilder::new(id, "fz_spawn_thunk".to_string());
         let c = tb.fresh_var();
         let entry = tb.block(vec![c]);
-        tb.set_terminator(entry, Term::TailCallClosure { closure: c, args: vec![] });
+        tb.set_terminator(
+            entry,
+            Term::TailCallClosure {
+                closure: c,
+                args: vec![],
+            },
+        );
         let built = tb.build();
         // Save/restore current builder context: synthesis can happen mid-
         // expression lowering inside another fn.
@@ -304,9 +332,16 @@ impl LowerCtx {
     /// the var's defining-site info.
     fn name_var(&mut self, v: Var, name: &str, span: Span) {
         let fn_id = self.cur_fn_id.expect("no current fn");
-        let entry = self.var_meta.entry((fn_id, v)).or_insert((Span::DUMMY, String::new()));
-        if entry.0.is_dummy() { entry.0 = span; }
-        if entry.1.is_empty() { entry.1 = name.to_string(); }
+        let entry = self
+            .var_meta
+            .entry((fn_id, v))
+            .or_insert((Span::DUMMY, String::new()));
+        if entry.0.is_dummy() {
+            entry.0 = span;
+        }
+        if entry.1.is_empty() {
+            entry.1 = name.to_string();
+        }
     }
 
     fn set_term(&mut self, term: Term) {
@@ -334,9 +369,7 @@ pub fn lower_program(prog: &Program) -> Result<Module, LowerError> {
     Ok(m)
 }
 
-pub fn lower_program_full(
-    prog: &Program,
-) -> Result<(Module, AtomTable, BuiltinTable), LowerError> {
+pub fn lower_program_full(prog: &Program) -> Result<(Module, AtomTable, BuiltinTable), LowerError> {
     let mut ctx = LowerCtx::new();
 
     // First pass: assign FnIds to every top-level FnDef.
@@ -412,8 +445,12 @@ fn build_source_info(module: &Module, ctx: &LowerCtx) -> SourceInfo {
             // consumer needs to disambiguate Var.0 across fns; today
             // ir_typer's lookup is always paired with the FnId it's
             // working on, so the conflict doesn't surface.
-            if var_span[idx].is_dummy() { var_span[idx] = *sp; }
-            if var_name[idx].is_empty() { var_name[idx] = name.clone(); }
+            if var_span[idx].is_dummy() {
+                var_span[idx] = *sp;
+            }
+            if var_name[idx].is_empty() {
+                var_name[idx] = name.clone();
+            }
         }
     }
     SourceInfo {
@@ -455,7 +492,9 @@ fn lower_fn(ctx: &mut LowerCtx, fn_def: &FnDef) -> Result<(), LowerError> {
     // default to the clause's first param-pattern span so even
     // wildcard / tuple-destructured params have *some* source position.
     for (i, pv) in param_vars.iter().enumerate() {
-        let pat_span = fn_def.clauses.first()
+        let pat_span = fn_def
+            .clauses
+            .first()
             .and_then(|c| c.params.get(i))
             .map(|p| p.span)
             .unwrap_or(Span::DUMMY);
@@ -525,7 +564,8 @@ fn lower_multi_clause(
     ctx.set_term(Term::Halt(v));
 
     // Entry -> first try block.
-    ctx.cur_mut().set_terminator(entry, Term::Goto(try_blocks[0], vec![]));
+    ctx.cur_mut()
+        .set_terminator(entry, Term::Goto(try_blocks[0], vec![]));
 
     for (i, clause) in fn_def.clauses.iter().enumerate() {
         if let Some(_g) = &clause.guard {
@@ -566,7 +606,9 @@ fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -> Result<Va
         Expr::Nil => Ok(ctx.let_at(Prim::Const(Const::Nil), sp)),
 
         Expr::Var(name) => {
-            if let Some(v) = ctx.lookup(name) { return Ok(v); }
+            if let Some(v) = ctx.lookup(name) {
+                return Ok(v);
+            }
             // Fall back: bare top-level fn name used as a value -> 0-captured
             // closure pointing at the fn's IR id. Picks the first matching
             // arity if the source has multiple (fz currently has no syntax
@@ -579,7 +621,10 @@ fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -> Result<Va
             {
                 return Ok(ctx.let_(Prim::MakeClosure(fn_id, vec![])));
             }
-            Err(LowerError::Unbound { span: sp, name: name.clone() })
+            Err(LowerError::Unbound {
+                span: sp,
+                name: name.clone(),
+            })
         }
 
         Expr::BinOp(op, a, b) => {
@@ -650,14 +695,20 @@ fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -> Result<Va
             };
             let vs: Vec<Var> = parks.iter().map(|n| ctx.unpark(n)).collect();
             let tail_v = tail_park.as_ref().map(|n| ctx.unpark(n));
-            for n in &parks { ctx.unbind(n); }
-            if let Some(n) = &tail_park { ctx.unbind(n); }
+            for n in &parks {
+                ctx.unbind(n);
+            }
+            if let Some(n) = &tail_park {
+                ctx.unbind(n);
+            }
             Ok(ctx.let_(Prim::MakeList(vs, tail_v)))
         }
         Expr::Tuple(elems) => {
             let parks = lower_seq(ctx, elems)?;
             let vs: Vec<Var> = parks.iter().map(|n| ctx.unpark(n)).collect();
-            for n in &parks { ctx.unbind(n); }
+            for n in &parks {
+                ctx.unbind(n);
+            }
             Ok(ctx.let_(Prim::MakeTuple(vs)))
         }
 
@@ -665,7 +716,9 @@ fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -> Result<Va
             // Lower arg exprs first; park each so they survive subsequent splits.
             let parks = lower_seq(ctx, args)?;
             let arg_vars: Vec<Var> = parks.iter().map(|n| ctx.unpark(n)).collect();
-            for n in &parks { ctx.unbind(n); }
+            for n in &parks {
+                ctx.unbind(n);
+            }
             // Resolve callee.
             let callee_name = match &target.node {
                 Expr::Var(n) => n.clone(),
@@ -679,7 +732,13 @@ fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -> Result<Va
             // Local closure value? (Shadows fn lookup if a local of the same name exists.)
             if let Some(local_var) = ctx.lookup(&callee_name) {
                 if is_tail {
-                    ctx.set_term_at(Term::TailCallClosure { closure: local_var, args: arg_vars }, sp);
+                    ctx.set_term_at(
+                        Term::TailCallClosure {
+                            closure: local_var,
+                            args: arg_vars,
+                        },
+                        sp,
+                    );
                     ctx.terminated = true;
                     return Ok(Var(0));
                 } else {
@@ -716,23 +775,27 @@ fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -> Result<Va
                 // MakeClosure(target, [])).
                 if bid == crate::fz_ir::BuiltinKind::Spawn.id() && arg_vars.len() == 1 {
                     let thunk_id = ctx.ensure_spawn_thunk();
-                    let wrapper = ctx.let_at(
-                        Prim::MakeClosure(thunk_id, vec![arg_vars[0]]),
-                        sp,
-                    );
+                    let wrapper = ctx.let_at(Prim::MakeClosure(thunk_id, vec![arg_vars[0]]), sp);
                     return Ok(ctx.let_at(Prim::Builtin(bid, vec![wrapper]), sp));
                 }
                 return Ok(ctx.let_at(Prim::Builtin(bid, arg_vars), sp));
             }
             let arity = arg_vars.len();
-            let callee = *ctx.fns.get(&(callee_name.clone(), arity)).ok_or_else(|| {
-                LowerError::Unbound {
-                    span: target.span,
-                    name: format!("fn {}/{}", callee_name, arity),
-                }
-            })?;
+            let callee =
+                *ctx.fns
+                    .get(&(callee_name.clone(), arity))
+                    .ok_or_else(|| LowerError::Unbound {
+                        span: target.span,
+                        name: format!("fn {}/{}", callee_name, arity),
+                    })?;
             if is_tail {
-                ctx.set_term_at(Term::TailCall { callee, args: arg_vars }, sp);
+                ctx.set_term_at(
+                    Term::TailCall {
+                        callee,
+                        args: arg_vars,
+                    },
+                    sp,
+                );
                 ctx.terminated = true;
                 Ok(Var(0))
             } else {
@@ -752,8 +815,14 @@ fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -> Result<Va
         Expr::Index(map, key) => lower_index(ctx, map, key),
         Expr::Bitstring(fields) => lower_bitstring_expr(ctx, fields),
         Expr::VecLit(kind, els) => lower_vec_lit(ctx, *kind, els, sp),
-        Expr::Quote(_) => Err(LowerError::PostExpansionNode { span: sp, what: "Quote".into() }),
-        Expr::Unquote(_) => Err(LowerError::PostExpansionNode { span: sp, what: "Unquote".into() }),
+        Expr::Quote(_) => Err(LowerError::PostExpansionNode {
+            span: sp,
+            what: "Quote".into(),
+        }),
+        Expr::Unquote(_) => Err(LowerError::PostExpansionNode {
+            span: sp,
+            what: "Unquote".into(),
+        }),
     }
     // Note: lower_if is implemented as a separate function below to keep the
     // var/block dance clean; the unreachable!() above is replaced via a
@@ -868,11 +937,17 @@ fn cps_split_call_closure(
     let captured_vars: Vec<Var> = captured.iter().map(|(_, v)| *v).collect();
     let cont_id = ctx.mb.fresh_fn_id();
 
-    ctx.set_term_at(Term::CallClosure {
-        closure: closure_var,
-        args: arg_vars,
-        continuation: Cont { fn_id: cont_id, captured: captured_vars.clone() },
-    }, call_span);
+    ctx.set_term_at(
+        Term::CallClosure {
+            closure: closure_var,
+            args: arg_vars,
+            continuation: Cont {
+                fn_id: cont_id,
+                captured: captured_vars.clone(),
+            },
+        },
+        call_span,
+    );
 
     let done = ctx.cur.take().unwrap().build();
     ctx.mb.add_fn(done);
@@ -887,7 +962,8 @@ fn cps_split_call_closure(
     ctx.cur_fn_id = Some(cont_id);
     ctx.fn_spans.insert(cont_id, call_span);
     // Result-slot Var inherits the call's span (it's the value the call returns).
-    ctx.var_meta.insert((cont_id, result_param), (call_span, String::new()));
+    ctx.var_meta
+        .insert((cont_id, result_param), (call_span, String::new()));
     ctx.cur_block = Some(entry);
 
     ctx.env.clear();
@@ -972,11 +1048,17 @@ fn cps_split_call(
     let cont_id = ctx.mb.fresh_fn_id();
 
     // Terminate current block with the call.
-    ctx.set_term_at(Term::Call {
-        callee,
-        args: arg_vars,
-        continuation: Cont { fn_id: cont_id, captured: captured_vars.clone() },
-    }, call_span);
+    ctx.set_term_at(
+        Term::Call {
+            callee,
+            args: arg_vars,
+            continuation: Cont {
+                fn_id: cont_id,
+                captured: captured_vars.clone(),
+            },
+        },
+        call_span,
+    );
 
     // Finalize current fn.
     let done = ctx.cur.take().unwrap().build();
@@ -992,7 +1074,8 @@ fn cps_split_call(
     ctx.cur = Some(kbuilder);
     ctx.cur_fn_id = Some(cont_id);
     ctx.fn_spans.insert(cont_id, call_span);
-    ctx.var_meta.insert((cont_id, result_param), (call_span, String::new()));
+    ctx.var_meta
+        .insert((cont_id, result_param), (call_span, String::new()));
     ctx.cur_block = Some(entry);
 
     // Rebind env: each captured name -> its new param Var.
@@ -1068,7 +1151,9 @@ fn lower_pattern_bind(
         }
         Pattern::Int(n) => emit_eq_check(ctx, subject, Prim::Const(Const::Int(*n)), fail_block),
         Pattern::Float(x) => emit_eq_check(ctx, subject, Prim::Const(Const::Float(*x)), fail_block),
-        Pattern::Str(s) => emit_eq_check(ctx, subject, Prim::Const(Const::Str(s.clone())), fail_block),
+        Pattern::Str(s) => {
+            emit_eq_check(ctx, subject, Prim::Const(Const::Str(s.clone())), fail_block)
+        }
         Pattern::Atom(s) => {
             let id = ctx.atoms.intern(s);
             emit_eq_check(ctx, subject, Prim::Const(Const::Atom(id)), fail_block)
@@ -1205,12 +1290,10 @@ fn lower_bit_size(
         None => None,
         Some(AstBitSize::Literal(n)) => Some(BitSizeIr::Literal(*n)),
         Some(AstBitSize::Var(name)) => {
-            let v = ctx
-                .lookup(name)
-                .ok_or_else(|| LowerError::Unbound {
-                    span,
-                    name: format!("bit size var {}", name),
-                })?;
+            let v = ctx.lookup(name).ok_or_else(|| LowerError::Unbound {
+                span,
+                name: format!("bit size var {}", name),
+            })?;
             Some(BitSizeIr::Var(v))
         }
     })
@@ -1234,7 +1317,10 @@ fn emit_eq_check(
 // Expression lowerings added in fz-ul4.11.17
 // ----------------------------------------------------------------------
 
-fn lower_map(ctx: &mut LowerCtx, entries: &[(Spanned<Expr>, Spanned<Expr>)]) -> Result<Var, LowerError> {
+fn lower_map(
+    ctx: &mut LowerCtx,
+    entries: &[(Spanned<Expr>, Spanned<Expr>)],
+) -> Result<Var, LowerError> {
     let mut key_parks = Vec::with_capacity(entries.len());
     let mut val_parks = Vec::with_capacity(entries.len());
     for (k, v) in entries {
@@ -1248,8 +1334,12 @@ fn lower_map(ctx: &mut LowerCtx, entries: &[(Spanned<Expr>, Spanned<Expr>)]) -> 
         .zip(val_parks.iter())
         .map(|(kn, vn)| (ctx.unpark(kn), ctx.unpark(vn)))
         .collect();
-    for n in &key_parks { ctx.unbind(n); }
-    for n in &val_parks { ctx.unbind(n); }
+    for n in &key_parks {
+        ctx.unbind(n);
+    }
+    for n in &val_parks {
+        ctx.unbind(n);
+    }
     Ok(ctx.let_(Prim::MakeMap(pairs)))
 }
 
@@ -1275,12 +1365,20 @@ fn lower_map_update(
         .map(|(kn, vn)| (ctx.unpark(kn), ctx.unpark(vn)))
         .collect();
     ctx.unbind(&base_park);
-    for n in &key_parks { ctx.unbind(n); }
-    for n in &val_parks { ctx.unbind(n); }
+    for n in &key_parks {
+        ctx.unbind(n);
+    }
+    for n in &val_parks {
+        ctx.unbind(n);
+    }
     Ok(ctx.let_(Prim::MapUpdate(base_v, pairs)))
 }
 
-fn lower_index(ctx: &mut LowerCtx, m: &Spanned<Expr>, k: &Spanned<Expr>) -> Result<Var, LowerError> {
+fn lower_index(
+    ctx: &mut LowerCtx,
+    m: &Spanned<Expr>,
+    k: &Spanned<Expr>,
+) -> Result<Var, LowerError> {
     let mv = lower_expr(ctx, m, false)?;
     let m_park = ctx.park(mv);
     let kv = lower_expr(ctx, k, false)?;
@@ -1313,17 +1411,24 @@ fn lower_vec_lit(
             if has_float && has_int {
                 return Err(LowerError::Unsupported {
                     span,
-                    what: "~v[..] mixes Int and Float literals; no auto-promotion (fz-ul4.11.24.5)".into(),
+                    what: "~v[..] mixes Int and Float literals; no auto-promotion (fz-ul4.11.24.5)"
+                        .into(),
                 });
             }
-            if has_float { VecKindIr::F64 } else { VecKindIr::I64 }
+            if has_float {
+                VecKindIr::F64
+            } else {
+                VecKindIr::I64
+            }
         }
         VecKind::Bytes => VecKindIr::U8,
         VecKind::Bits => VecKindIr::Bit,
     };
     let parks = lower_seq(ctx, els)?;
     let vs: Vec<Var> = parks.iter().map(|n| ctx.unpark(n)).collect();
-    for n in &parks { ctx.unbind(n); }
+    for n in &parks {
+        ctx.unbind(n);
+    }
     Ok(ctx.let_(Prim::MakeVec(ir_kind, vs)))
 }
 
@@ -1349,7 +1454,9 @@ fn lower_bitstring_expr(
             unit: f.spec.unit,
         });
     }
-    for n in &value_parks { ctx.unbind(n); }
+    for n in &value_parks {
+        ctx.unbind(n);
+    }
     Ok(ctx.let_(Prim::MakeBitstring(ir_fields)))
 }
 
@@ -1369,8 +1476,9 @@ fn lower_case(
     let subject_park = ctx.park(sv);
 
     // Allocate try blocks + fail block + join block.
-    let try_blocks: Vec<BlockId> =
-        (0..clauses.len()).map(|_| ctx.cur_mut().block(vec![])).collect();
+    let try_blocks: Vec<BlockId> = (0..clauses.len())
+        .map(|_| ctx.cur_mut().block(vec![]))
+        .collect();
     let fail_block = ctx.cur_mut().block(vec![]);
     let join_param = ctx.cur_mut().fresh_var();
     let join_b = ctx.cur_mut().block(vec![join_param]);
@@ -1436,8 +1544,9 @@ fn lower_cond(
 
     let join_param = ctx.cur_mut().fresh_var();
     let join_b = ctx.cur_mut().block(vec![join_param]);
-    let arm_test_blocks: Vec<BlockId> =
-        (0..arms.len()).map(|_| ctx.cur_mut().block(vec![])).collect();
+    let arm_test_blocks: Vec<BlockId> = (0..arms.len())
+        .map(|_| ctx.cur_mut().block(vec![]))
+        .collect();
     let fail_block = ctx.cur_mut().block(vec![]);
     let saved_blk = ctx.cur_block();
     ctx.cur_block = Some(fail_block);
@@ -1506,8 +1615,9 @@ fn lower_with(
             ctx.set_term(Term::Halt(v));
         } else {
             // Build try blocks + fail.
-            let try_blocks: Vec<BlockId> =
-                (0..else_clauses.len()).map(|_| ctx.cur_mut().block(vec![])).collect();
+            let try_blocks: Vec<BlockId> = (0..else_clauses.len())
+                .map(|_| ctx.cur_mut().block(vec![]))
+                .collect();
             let else_fail = ctx.cur_mut().block(vec![]);
             let saved_b2 = ctx.cur_block();
             ctx.cur_block = Some(else_fail);
@@ -1576,7 +1686,6 @@ fn lower_with(
     Ok(join_param)
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1636,10 +1745,20 @@ mod tests {
     fn lower_nontail_call_splits_into_continuation() {
         let m = lower_src("fn caller(x), do: callee(x) + 1\nfn callee(y), do: y");
         let s = format!("{}", m);
-        assert!(s.contains("call fn1"), "expected explicit call, got:\n{}", s);
+        assert!(
+            s.contains("call fn1"),
+            "expected explicit call, got:\n{}",
+            s
+        );
         assert!(s.contains("cont(fn"), "expected continuation, got:\n{}", s);
-        assert!(s.contains("k_2") || s.contains("k_3") || s.contains("lambda_") || s.matches("fn ").count() >= 3,
-                "expected continuation fn, got:\n{}", s);
+        assert!(
+            s.contains("k_2")
+                || s.contains("k_3")
+                || s.contains("lambda_")
+                || s.matches("fn ").count() >= 3,
+            "expected continuation fn, got:\n{}",
+            s
+        );
     }
 
     #[test]
@@ -1665,14 +1784,22 @@ mod tests {
         let m = lower_src("fn l(), do: [1, 2]");
         let s = format!("{}", m);
         assert!(s.contains("list(["), "{}", s);
-        assert!(!s.contains("list([] |"), "no-tail list shouldn't have | sep: {}", s);
+        assert!(
+            !s.contains("list([] |"),
+            "no-tail list shouldn't have | sep: {}",
+            s
+        );
     }
 
     #[test]
     fn lower_list_with_tail() {
         let m = lower_src("fn l(t), do: [1 | t]");
         let s = format!("{}", m);
-        assert!(s.contains("] | v0)"), "expected list with v0 (param t) tail: {}", s);
+        assert!(
+            s.contains("] | v0)"),
+            "expected list with v0 (param t) tail: {}",
+            s
+        );
     }
 
     #[test]
@@ -1704,14 +1831,22 @@ mod tests {
         assert!(s.contains("goto bb"), "got:\n{}", s);
         assert!(s.contains("if v"), "expected pattern test If: {}", s);
         assert!(s.contains("halt v"), "expected halt in fail block:\n{}", s);
-        assert!(s.contains(":atom_"), "expected interned atom in fail block:\n{}", s);
+        assert!(
+            s.contains(":atom_"),
+            "expected interned atom in fail block:\n{}",
+            s
+        );
     }
 
     #[test]
     fn lower_lambda_creates_separate_fn_and_closure() {
         let m = lower_src("fn mk(x), do: fn(y) -> x + y");
         let s = format!("{}", m);
-        assert!(s.contains("closure(fn"), "expected closure prim, got:\n{}", s);
+        assert!(
+            s.contains("closure(fn"),
+            "expected closure prim, got:\n{}",
+            s
+        );
         assert!(s.contains("lambda_"), "expected lambda fn name: {}", s);
         assert_eq!(m.fns.len(), 2);
     }
@@ -1734,13 +1869,22 @@ mod tests {
             "expected fz_spawn_thunk in module fns; got: {:?}",
             m.fns.iter().map(|f| &f.name).collect::<Vec<_>>()
         );
-        let thunk_id = m.fns.iter().find(|f| f.name == "fz_spawn_thunk").unwrap().id;
+        let thunk_id = m
+            .fns
+            .iter()
+            .find(|f| f.name == "fz_spawn_thunk")
+            .unwrap()
+            .id;
         // p's body should contain `MakeClosure(thunk_id, [<child-closure>])`
         // followed by `Builtin(Spawn, [<wrapper>])`. Render and grep.
         let s = format!("{}", m);
         let needle = format!("closure(fn{}", thunk_id.0);
-        assert!(s.contains(&needle),
-            "expected wrapper `{}` in lowered IR:\n{}", needle, s);
+        assert!(
+            s.contains(&needle),
+            "expected wrapper `{}` in lowered IR:\n{}",
+            needle,
+            s
+        );
     }
 
     /// fz-ul4.29.9 — a program with no `spawn` should not synthesize
@@ -1766,8 +1910,11 @@ mod tests {
     fn unbound_var_diag_has_real_span() {
         let err = lower_src_err("fn f(), do: missing");
         let d = err.to_diagnostic();
-        assert_ne!(d.primary.span, Span::DUMMY,
-            "lower diagnostic should carry the unbound Var's span");
+        assert_ne!(
+            d.primary.span,
+            Span::DUMMY,
+            "lower diagnostic should carry the unbound Var's span"
+        );
         assert_eq!(d.code, crate::diag::codes::LOWER_UNBOUND);
     }
 
@@ -1820,43 +1967,57 @@ mod tests {
 
     #[test]
     fn case_lowers_to_try_chain() {
-        let m = lower_src(r#"
+        let m = lower_src(
+            r#"
 fn c(x) do
   case x do
     0 -> :zero
     _ -> :other
   end
 end
-"#);
+"#,
+        );
         let s = format!("{}", m);
         assert!(s.contains("if v"), "expected if for pattern check: {}", s);
-        assert!(s.contains("goto bb"), "expected goto for fallthrough: {}", s);
+        assert!(
+            s.contains("goto bb"),
+            "expected goto for fallthrough: {}",
+            s
+        );
     }
 
     #[test]
     fn cond_lowers() {
         // cond is parsed; lowering should emit If terminators.
-        let m = lower_src(r#"
+        let m = lower_src(
+            r#"
 fn c(x) do
   cond do
     x > 0 -> :pos
     true -> :nonpos
   end
 end
-"#);
+"#,
+        );
         let s = format!("{}", m);
         assert!(s.contains("if v"), "got:\n{}", s);
     }
 
     #[test]
     fn with_simple_lowers() {
-        let m = lower_src(r#"
+        let m = lower_src(
+            r#"
 fn w() do
   with {:ok, a} <- {:ok, 1}, do: a
 end
-"#);
+"#,
+        );
         let s = format!("{}", m);
-        assert!(s.contains("tuple_field"), "expected pattern projection: {}", s);
+        assert!(
+            s.contains("tuple_field"),
+            "expected pattern projection: {}",
+            s
+        );
     }
 
     #[test]
@@ -1889,13 +2050,19 @@ end
         let src = "fn ident(x), do: x + 1";
         let toks = Lexer::new(src).tokenize().expect("lex");
         let prog = Parser::new(toks).parse_program().expect("parse");
-        let Item::Fn(def) = &*prog.items[0] else { panic!("expected fn") };
+        let Item::Fn(def) = &*prog.items[0] else {
+            panic!("expected fn")
+        };
         // The body `x + 1` is a BinOp; its span should be non-DUMMY and
         // slice to the operator-bracketed substring.
         let body = &def.clauses[0].body;
         assert!(!body.span.is_dummy());
         let lexeme = &src[body.span.start as usize..body.span.end as usize];
-        assert!(lexeme.contains('+'), "body span should cover the binop expression, got {:?}", lexeme);
+        assert!(
+            lexeme.contains('+'),
+            "body span should cover the binop expression, got {:?}",
+            lexeme
+        );
     }
 
     /// FnDef.name_span pinpoints the source name token (not the whole def).
@@ -1904,7 +2071,9 @@ end
         let src = "fn foobar(), do: 0";
         let toks = Lexer::new(src).tokenize().expect("lex");
         let prog = Parser::new(toks).parse_program().expect("parse");
-        let Item::Fn(def) = &*prog.items[0] else { panic!("expected fn") };
+        let Item::Fn(def) = &*prog.items[0] else {
+            panic!("expected fn")
+        };
         let name_text = &src[def.name_span.start as usize..def.name_span.end as usize];
         assert_eq!(name_text, "foobar");
     }
@@ -1956,19 +2125,28 @@ end
         let m = lower_program(&prog).expect("lower");
         let caller = m.fn_by_name("caller").unwrap();
         // The continuation fn is the one whose name starts with "k_".
-        let k = m.fns.iter().find(|f| f.name.starts_with("k_"))
+        let k = m
+            .fns
+            .iter()
+            .find(|f| f.name.starts_with("k_"))
             .expect("expected a continuation fn");
         let cont_span = m.source.fn_span_of(k.id);
         assert!(!cont_span.is_dummy());
         // The originating call is `callee(x)` inside `caller`'s body.
         // The continuation's fn_span must be inside caller's source range.
         let caller_span = m.source.fn_span_of(caller.id);
-        assert!(cont_span.start >= caller_span.start && cont_span.end <= caller_span.end,
+        assert!(
+            cont_span.start >= caller_span.start && cont_span.end <= caller_span.end,
             "continuation span {:?} should lie within caller's range {:?}",
-            cont_span, caller_span);
+            cont_span,
+            caller_span
+        );
         let txt = &src[cont_span.start as usize..cont_span.end as usize];
-        assert!(txt.contains("callee"),
-            "continuation span should cover the originating call, got {:?}", txt);
+        assert!(
+            txt.contains("callee"),
+            "continuation span should cover the originating call, got {:?}",
+            txt
+        );
     }
 
     /// Compiler-introduced Vars (constants, tuple projections, etc.)

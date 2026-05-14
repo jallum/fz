@@ -25,19 +25,28 @@ pub fn tuple_projections(scrut: &Descr, arity: usize) -> Vec<Descr> {
         // Intersect same-arity pos sigs within this clause.
         let mut clause_comps: Option<Vec<Descr>> = None;
         for sig in &clause.pos {
-            if sig.elems.len() != arity { continue; }
+            if sig.elems.len() != arity {
+                continue;
+            }
             clause_comps = Some(match clause_comps {
                 None => sig.elems.clone(),
-                Some(prev) => prev.iter().zip(sig.elems.iter())
-                    .map(|(p, s)| p.intersect(s)).collect(),
+                Some(prev) => prev
+                    .iter()
+                    .zip(sig.elems.iter())
+                    .map(|(p, s)| p.intersect(s))
+                    .collect(),
             });
         }
         if let Some(cs) = clause_comps {
-            for i in 0..arity { comps[i] = comps[i].union(&cs[i]); }
+            for i in 0..arity {
+                comps[i] = comps[i].union(&cs[i]);
+            }
             found = true;
         }
     }
-    if !found { return vec![Descr::any(); arity]; }
+    if !found {
+        return vec![Descr::any(); arity];
+    }
     comps
 }
 
@@ -125,32 +134,66 @@ pub fn list_element_type(scrut: &Descr) -> Descr {
 
 pub fn widen(d: &Descr) -> Descr {
     let mut out = d.clone();
-    if !out.ints.is_none() && !out.ints.is_any() { out.ints = IntSet::any(); }
-    if !out.floats.is_none() && !out.floats.is_any() { out.floats = FloatSet::any(); }
-    if !out.strs.is_none() && !out.strs.is_any() { out.strs = StrSet::any(); }
+    if !out.ints.is_none() && !out.ints.is_any() {
+        out.ints = IntSet::any();
+    }
+    if !out.floats.is_none() && !out.floats.is_any() {
+        out.floats = FloatSet::any();
+    }
+    if !out.strs.is_none() && !out.strs.is_any() {
+        out.strs = StrSet::any();
+    }
     out.tuples = out.tuples.into_iter().map(widen_tuple).collect();
-    out.lists  = out.lists.into_iter().map(widen_list).collect();
-    out.funcs  = out.funcs.into_iter().map(widen_func).collect();
-    out.maps   = out.maps.into_iter().map(widen_map).collect();
+    out.lists = out.lists.into_iter().map(widen_list).collect();
+    out.funcs = out.funcs.into_iter().map(widen_func).collect();
+    out.maps = out.maps.into_iter().map(widen_map).collect();
     out
 }
 fn widen_map_sig(s: MapSig) -> MapSig {
-    MapSig { fields: s.fields.into_iter().map(|(k, v)| (k, widen(&v))).collect() }
+    MapSig {
+        fields: s.fields.into_iter().map(|(k, v)| (k, widen(&v))).collect(),
+    }
 }
 fn widen_map(c: Conj<MapSig>) -> Conj<MapSig> {
-    Conj { pos: c.pos.into_iter().map(widen_map_sig).collect(),
-           neg: c.neg.into_iter().map(widen_map_sig).collect() }
+    Conj {
+        pos: c.pos.into_iter().map(widen_map_sig).collect(),
+        neg: c.neg.into_iter().map(widen_map_sig).collect(),
+    }
 }
 fn widen_tuple(c: Conj<TupleSig>) -> Conj<TupleSig> {
     Conj {
-        pos: c.pos.into_iter().map(|s| TupleSig { elems: s.elems.iter().map(widen).collect() }).collect(),
-        neg: c.neg.into_iter().map(|s| TupleSig { elems: s.elems.iter().map(widen).collect() }).collect(),
+        pos: c
+            .pos
+            .into_iter()
+            .map(|s| TupleSig {
+                elems: s.elems.iter().map(widen).collect(),
+            })
+            .collect(),
+        neg: c
+            .neg
+            .into_iter()
+            .map(|s| TupleSig {
+                elems: s.elems.iter().map(widen).collect(),
+            })
+            .collect(),
     }
 }
 fn widen_list(c: Conj<ListSig>) -> Conj<ListSig> {
     Conj {
-        pos: c.pos.into_iter().map(|s| ListSig { elem: Box::new(widen(&s.elem)) }).collect(),
-        neg: c.neg.into_iter().map(|s| ListSig { elem: Box::new(widen(&s.elem)) }).collect(),
+        pos: c
+            .pos
+            .into_iter()
+            .map(|s| ListSig {
+                elem: Box::new(widen(&s.elem)),
+            })
+            .collect(),
+        neg: c
+            .neg
+            .into_iter()
+            .map(|s| ListSig {
+                elem: Box::new(widen(&s.elem)),
+            })
+            .collect(),
     }
 }
 fn widen_func(c: Conj<ArrowSig>) -> Conj<ArrowSig> {
@@ -166,6 +209,8 @@ fn widen_func(c: Conj<ArrowSig>) -> Conj<ArrowSig> {
             captures: l.captures.iter().map(widen).collect(),
         }),
     };
-    Conj { pos: c.pos.into_iter().map(widen_sig).collect(),
-           neg: c.neg.into_iter().map(widen_sig).collect() }
+    Conj {
+        pos: c.pos.into_iter().map(widen_sig).collect(),
+        neg: c.neg.into_iter().map(widen_sig).collect(),
+    }
 }

@@ -313,7 +313,10 @@ pub struct FnIr {
 
 impl FnIr {
     pub fn block(&self, id: BlockId) -> &Block {
-        self.blocks.iter().find(|b| b.id == id).expect("unknown block")
+        self.blocks
+            .iter()
+            .find(|b| b.id == id)
+            .expect("unknown block")
     }
 }
 
@@ -352,15 +355,24 @@ pub struct SourceInfo {
 
 impl SourceInfo {
     pub fn var_name_of(&self, v: Var) -> Option<&str> {
-        self.var_name.get(v.0 as usize).map(|s| s.as_str()).filter(|s| !s.is_empty())
+        self.var_name
+            .get(v.0 as usize)
+            .map(|s| s.as_str())
+            .filter(|s| !s.is_empty())
     }
 
     pub fn var_span_of(&self, v: Var) -> Span {
-        self.var_span.get(v.0 as usize).copied().unwrap_or(Span::DUMMY)
+        self.var_span
+            .get(v.0 as usize)
+            .copied()
+            .unwrap_or(Span::DUMMY)
     }
 
     pub fn fn_span_of(&self, f: FnId) -> Span {
-        self.fn_span.get(f.0 as usize).copied().unwrap_or(Span::DUMMY)
+        self.fn_span
+            .get(f.0 as usize)
+            .copied()
+            .unwrap_or(Span::DUMMY)
     }
 }
 
@@ -478,7 +490,11 @@ pub struct ModuleBuilder {
 
 impl ModuleBuilder {
     pub fn new() -> Self {
-        Self { next_fn: 0, fns: Vec::new(), schemas: Vec::new() }
+        Self {
+            next_fn: 0,
+            fns: Vec::new(),
+            schemas: Vec::new(),
+        }
     }
 
     pub fn fresh_fn_id(&mut self) -> FnId {
@@ -579,7 +595,10 @@ impl fmt::Display for UnOp {
 }
 
 fn fmt_var_list(vars: &[Var]) -> String {
-    vars.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(", ")
+    vars.iter()
+        .map(|v| v.to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 impl fmt::Display for Prim {
@@ -645,7 +664,12 @@ impl fmt::Display for Prim {
 
 impl fmt::Display for Cont {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "cont({}, captured=[{}])", self.fn_id, fmt_var_list(&self.captured))
+        write!(
+            f,
+            "cont({}, captured=[{}])",
+            self.fn_id,
+            fmt_var_list(&self.captured)
+        )
     }
 }
 
@@ -654,7 +678,11 @@ impl fmt::Display for Term {
         match self {
             Term::Goto(b, args) => write!(f, "goto {}({})", b, fmt_var_list(args)),
             Term::If(c, t, e) => write!(f, "if {} then {} else {}", c, t, e),
-            Term::Call { callee, args, continuation } => write!(
+            Term::Call {
+                callee,
+                args,
+                continuation,
+            } => write!(
                 f,
                 "call {}([{}]) -> {}",
                 callee,
@@ -664,7 +692,11 @@ impl fmt::Display for Term {
             Term::TailCall { callee, args } => {
                 write!(f, "tail_call {}([{}])", callee, fmt_var_list(args))
             }
-            Term::CallClosure { closure, args, continuation } => write!(
+            Term::CallClosure {
+                closure,
+                args,
+                continuation,
+            } => write!(
                 f,
                 "call_closure {}([{}]) -> {}",
                 closure,
@@ -832,7 +864,10 @@ mod tests {
         let id = mb.add_schema(Schema {
             name: "Frame_identity".into(),
             size: 16,
-            fields: vec![FieldDescriptor { offset: 0, kind: FieldKind::FzValue }],
+            fields: vec![FieldDescriptor {
+                offset: 0,
+                kind: FieldKind::FzValue,
+            }],
         });
         assert_eq!(id, 0);
         let m = mb.build();
@@ -889,7 +924,10 @@ mod tests {
             Term::Call {
                 callee: FnId(0),
                 args: vec![x],
-                continuation: Cont { fn_id: FnId(7), captured: vec![x] },
+                continuation: Cont {
+                    fn_id: FnId(7),
+                    captured: vec![x],
+                },
             },
         );
         let fn_ir = b.build();
@@ -902,7 +940,13 @@ mod tests {
         let mut b = FnBuilder::new(FnId(4), "tc");
         let x = b.fresh_var();
         let entry = b.block(vec![x]);
-        b.set_terminator(entry, Term::TailCall { callee: FnId(0), args: vec![x] });
+        b.set_terminator(
+            entry,
+            Term::TailCall {
+                callee: FnId(0),
+                args: vec![x],
+            },
+        );
         let fn_ir = b.build();
         let s = format!("{}", fn_ir);
         assert!(s.contains("tail_call fn0([v0])"));

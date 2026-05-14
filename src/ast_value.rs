@@ -41,12 +41,12 @@ const USER_CTX: &str = "user";
 /// data and carry no syntax position.
 pub fn expr_to_value(e: &Spanned<Expr>) -> Result<Value, String> {
     Ok(match &e.node {
-        Expr::Int(n)   => Value::Int(*n),
+        Expr::Int(n) => Value::Int(*n),
         Expr::Float(f) => Value::Float(*f),
-        Expr::Bool(b)  => Value::Bool(*b),
-        Expr::Nil      => Value::Nil,
-        Expr::Atom(s)  => Value::Atom(Rc::from(s.as_str())),
-        Expr::Str(s)   => Value::Str(Rc::from(s.as_str())),
+        Expr::Bool(b) => Value::Bool(*b),
+        Expr::Nil => Value::Nil,
+        Expr::Atom(s) => Value::Atom(Rc::from(s.as_str())),
+        Expr::Str(s) => Value::Str(Rc::from(s.as_str())),
 
         Expr::Var(name) => ast_node(name, &[], Some(atom(USER_CTX))),
 
@@ -78,7 +78,11 @@ pub fn expr_to_value(e: &Spanned<Expr>) -> Result<Value, String> {
         Expr::BinOp(op, l, r) => {
             let lv = expr_to_value(l)?;
             let rv = expr_to_value(r)?;
-            ast_node(binop_atom(*op), &[], Some(Value::List(Rc::new(vec![lv, rv]))))
+            ast_node(
+                binop_atom(*op),
+                &[],
+                Some(Value::List(Rc::new(vec![lv, rv]))),
+            )
         }
 
         Expr::UnOp(op, x) => {
@@ -98,10 +102,11 @@ pub fn expr_to_value(e: &Spanned<Expr>) -> Result<Value, String> {
             if let Some(e) = els {
                 kw.push(kv("else", expr_to_value(e)?));
             }
-            ast_node("if", &[], Some(Value::List(Rc::new(vec![
-                cv,
-                Value::List(Rc::new(kw)),
-            ]))))
+            ast_node(
+                "if",
+                &[],
+                Some(Value::List(Rc::new(vec![cv, Value::List(Rc::new(kw))]))),
+            )
         }
 
         Expr::Match(pat, rhs) => {
@@ -116,11 +121,19 @@ pub fn expr_to_value(e: &Spanned<Expr>) -> Result<Value, String> {
         Expr::Quote(_) | Expr::Unquote(_) => {
             return Err("ast_value: quote/unquote must be evaluated, not reified".into());
         }
-        Expr::Case(_, _) | Expr::Cond(_) | Expr::With(_, _, _)
-        | Expr::Lambda(_, _) | Expr::Map(_) | Expr::MapUpdate(_, _)
-        | Expr::Index(_, _) | Expr::VecLit(_, _)
+        Expr::Case(_, _)
+        | Expr::Cond(_)
+        | Expr::With(_, _, _)
+        | Expr::Lambda(_, _)
+        | Expr::Map(_)
+        | Expr::MapUpdate(_, _)
+        | Expr::Index(_, _)
+        | Expr::VecLit(_, _)
         | Expr::Bitstring(_) => {
-            return Err(format!("quote: unsupported expr variant in v1: {:?}", e.node));
+            return Err(format!(
+                "quote: unsupported expr variant in v1: {:?}",
+                e.node
+            ));
         }
     })
 }
@@ -134,26 +147,25 @@ pub fn value_to_expr(v: &Value) -> Result<Spanned<Expr>, String> {
 
 fn value_to_expr_inner(v: &Value) -> Result<Expr, String> {
     match v {
-        Value::Int(n)    => Ok(Expr::Int(*n)),
-        Value::Float(f)  => Ok(Expr::Float(*f)),
-        Value::Bool(b)   => Ok(Expr::Bool(*b)),
-        Value::Nil       => Ok(Expr::Nil),
-        Value::Atom(s)   => Ok(Expr::Atom(s.to_string())),
-        Value::Str(s)    => Ok(Expr::Str(s.to_string())),
+        Value::Int(n) => Ok(Expr::Int(*n)),
+        Value::Float(f) => Ok(Expr::Float(*f)),
+        Value::Bool(b) => Ok(Expr::Bool(*b)),
+        Value::Nil => Ok(Expr::Nil),
+        Value::Atom(s) => Ok(Expr::Atom(s.to_string())),
+        Value::Str(s) => Ok(Expr::Str(s.to_string())),
 
         Value::List(xs) => {
-            let exprs = xs.iter()
+            let exprs = xs
+                .iter()
                 .map(value_to_expr)
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(Expr::List(exprs, None))
         }
 
-        Value::Tuple(elems) if elems.len() == 2 => {
-            Ok(Expr::Tuple(vec![
-                value_to_expr(&elems[0])?,
-                value_to_expr(&elems[1])?,
-            ]))
-        }
+        Value::Tuple(elems) if elems.len() == 2 => Ok(Expr::Tuple(vec![
+            value_to_expr(&elems[0])?,
+            value_to_expr(&elems[1])?,
+        ])),
 
         Value::Tuple(elems) if elems.len() == 3 => decode_ast_node(&elems[0], &elems[2]),
 
@@ -171,7 +183,9 @@ fn value_to_expr_inner(v: &Value) -> Result<Expr, String> {
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn atom(s: &str) -> Value { Value::Atom(Rc::from(s)) }
+fn atom(s: &str) -> Value {
+    Value::Atom(Rc::from(s))
+}
 
 fn ast_node(name: &str, _meta: &[(String, Value)], args_or_ctx: Option<Value>) -> Value {
     let args = args_or_ctx.unwrap_or(atom(USER_CTX));
@@ -202,16 +216,28 @@ fn decode_ast_node(head: &Value, tail: &Value) -> Result<Expr, String> {
 
     let args = match tail {
         Value::List(xs) => xs.clone(),
-        _ => return Err(format!("decode: AST node {:?} expected list args, got {:?}", name, tail.kind())),
+        _ => {
+            return Err(format!(
+                "decode: AST node {:?} expected list args, got {:?}",
+                name,
+                tail.kind()
+            ));
+        }
     };
 
     match name {
         "{}" => {
-            let elems = args.iter().map(value_to_expr).collect::<Result<Vec<_>, _>>()?;
+            let elems = args
+                .iter()
+                .map(value_to_expr)
+                .collect::<Result<Vec<_>, _>>()?;
             Ok(Expr::Tuple(elems))
         }
         "__block__" => {
-            let exprs = args.iter().map(value_to_expr).collect::<Result<Vec<_>, _>>()?;
+            let exprs = args
+                .iter()
+                .map(value_to_expr)
+                .collect::<Result<Vec<_>, _>>()?;
             Ok(Expr::Block(exprs))
         }
         "if" => {
@@ -246,7 +272,10 @@ fn decode_ast_node(head: &Value, tail: &Value) -> Result<Expr, String> {
             if let Some(u) = unop_from_atom(name, args.len()) {
                 return Ok(Expr::UnOp(u, Box::new(value_to_expr(&args[0])?)));
             }
-            let arg_exprs = args.iter().map(value_to_expr).collect::<Result<Vec<_>, _>>()?;
+            let arg_exprs = args
+                .iter()
+                .map(value_to_expr)
+                .collect::<Result<Vec<_>, _>>()?;
             Ok(Expr::Call(
                 Box::new(Spanned::dummy(Expr::Var(name.to_string()))),
                 arg_exprs,
@@ -283,21 +312,41 @@ fn decode_if_kw(v: &Value) -> Result<(Spanned<Expr>, Option<Spanned<Expr>>), Str
 
 pub fn binop_atom(op: BinOp) -> &'static str {
     match op {
-        BinOp::Add => "+", BinOp::Sub => "-", BinOp::Mul => "*", BinOp::Div => "/", BinOp::Rem => "rem",
-        BinOp::Eq => "==", BinOp::Neq => "!=",
-        BinOp::Lt => "<", BinOp::LtEq => "<=", BinOp::Gt => ">", BinOp::GtEq => ">=",
-        BinOp::And => "and", BinOp::Or => "or",
-        BinOp::Pipe => "|>", BinOp::Cons => "|",
+        BinOp::Add => "+",
+        BinOp::Sub => "-",
+        BinOp::Mul => "*",
+        BinOp::Div => "/",
+        BinOp::Rem => "rem",
+        BinOp::Eq => "==",
+        BinOp::Neq => "!=",
+        BinOp::Lt => "<",
+        BinOp::LtEq => "<=",
+        BinOp::Gt => ">",
+        BinOp::GtEq => ">=",
+        BinOp::And => "and",
+        BinOp::Or => "or",
+        BinOp::Pipe => "|>",
+        BinOp::Cons => "|",
     }
 }
 
 fn binop_from_atom(s: &str) -> Option<BinOp> {
     Some(match s {
-        "+" => BinOp::Add, "-" => BinOp::Sub, "*" => BinOp::Mul, "/" => BinOp::Div, "rem" => BinOp::Rem,
-        "==" => BinOp::Eq, "!=" => BinOp::Neq,
-        "<" => BinOp::Lt, "<=" => BinOp::LtEq, ">" => BinOp::Gt, ">=" => BinOp::GtEq,
-        "and" => BinOp::And, "or" => BinOp::Or,
-        "|>" => BinOp::Pipe, "|" => BinOp::Cons,
+        "+" => BinOp::Add,
+        "-" => BinOp::Sub,
+        "*" => BinOp::Mul,
+        "/" => BinOp::Div,
+        "rem" => BinOp::Rem,
+        "==" => BinOp::Eq,
+        "!=" => BinOp::Neq,
+        "<" => BinOp::Lt,
+        "<=" => BinOp::LtEq,
+        ">" => BinOp::Gt,
+        ">=" => BinOp::GtEq,
+        "and" => BinOp::And,
+        "or" => BinOp::Or,
+        "|>" => BinOp::Pipe,
+        "|" => BinOp::Cons,
         _ => return None,
     })
 }
@@ -310,7 +359,9 @@ pub fn unop_atom(op: UnOp) -> &'static str {
 }
 
 fn unop_from_atom(s: &str, arity: usize) -> Option<UnOp> {
-    if arity != 1 { return None; }
+    if arity != 1 {
+        return None;
+    }
     match s {
         "neg" => Some(UnOp::Neg),
         "not" => Some(UnOp::Not),
@@ -357,8 +408,10 @@ mod tests {
             Item::Fn(d) => match &d.clauses[0].body.node {
                 Expr::Block(xs) => xs[0].clone(),
                 _ => d.clauses[0].body.clone(),
+            },
+            Item::Module(_) | Item::Alias { .. } | Item::Import { .. } | Item::MacroCall { .. } => {
+                panic!("test fixture should be a fn")
             }
-            Item::Module(_) | Item::Alias { .. } | Item::Import { .. } | Item::MacroCall { .. } => panic!("test fixture should be a fn"),
         }
     }
 
@@ -367,9 +420,13 @@ mod tests {
         let v1 = expr_to_value(&e).expect("reify");
         let e2 = value_to_expr(&v1).expect("decode");
         let v2 = expr_to_value(&e2).expect("reify²");
-        assert!(value_struct_eq(&v1, &v2),
+        assert!(
+            value_struct_eq(&v1, &v2),
             "round-trip mismatch for {:?}:\n  v1 = {:?}\n  v2 = {:?}",
-            src, debug_value(&v1), debug_value(&v2));
+            src,
+            debug_value(&v1),
+            debug_value(&v2)
+        );
     }
 
     fn value_struct_eq(a: &Value, b: &Value) -> bool {
@@ -381,40 +438,95 @@ mod tests {
             (Atom(x), Atom(y)) => &**x == &**y,
             (Str(x), Str(y)) => &**x == &**y,
             (Nil, Nil) => true,
-            (List(x), List(y)) => x.len() == y.len()
-                && x.iter().zip(y.iter()).all(|(a, b)| value_struct_eq(a, b)),
-            (Tuple(x), Tuple(y)) => x.len() == y.len()
-                && x.iter().zip(y.iter()).all(|(a, b)| value_struct_eq(a, b)),
-            (Map(x), Map(y)) => x.entries.len() == y.entries.len()
-                && x.entries.iter().zip(y.entries.iter()).all(|((k1, v1), (k2, v2))|
-                    value_struct_eq(k1, k2) && value_struct_eq(v1, v2)),
+            (List(x), List(y)) => {
+                x.len() == y.len() && x.iter().zip(y.iter()).all(|(a, b)| value_struct_eq(a, b))
+            }
+            (Tuple(x), Tuple(y)) => {
+                x.len() == y.len() && x.iter().zip(y.iter()).all(|(a, b)| value_struct_eq(a, b))
+            }
+            (Map(x), Map(y)) => {
+                x.entries.len() == y.entries.len()
+                    && x.entries
+                        .iter()
+                        .zip(y.entries.iter())
+                        .all(|((k1, v1), (k2, v2))| {
+                            value_struct_eq(k1, k2) && value_struct_eq(v1, v2)
+                        })
+            }
             _ => false,
         }
     }
 
-    fn debug_value(v: &Value) -> String { format!("{}", v) }
+    fn debug_value(v: &Value) -> String {
+        format!("{}", v)
+    }
 
-    #[test] fn literal_int()    { round_trip("42"); }
-    #[test] fn literal_float()  { round_trip("3.14"); }
-    #[test] fn literal_bool()   { round_trip("true"); }
-    #[test] fn literal_nil()    { round_trip("nil"); }
-    #[test] fn literal_atom()   { round_trip(":ok"); }
-    #[test] fn literal_string() { round_trip("\"hello\""); }
-    #[test] fn var()            { round_trip("x"); }
-    #[test] fn list()           { round_trip("[1, 2, 3]"); }
-    #[test] fn tuple_2()        { round_trip("{1, 2}"); }
-    #[test] fn tuple_3()        { round_trip("{1, 2, 3}"); }
-    #[test] fn binop_add()      { round_trip("1 + 2"); }
-    #[test] fn binop_eq()       { round_trip("a == b"); }
+    #[test]
+    fn literal_int() {
+        round_trip("42");
+    }
+    #[test]
+    fn literal_float() {
+        round_trip("3.14");
+    }
+    #[test]
+    fn literal_bool() {
+        round_trip("true");
+    }
+    #[test]
+    fn literal_nil() {
+        round_trip("nil");
+    }
+    #[test]
+    fn literal_atom() {
+        round_trip(":ok");
+    }
+    #[test]
+    fn literal_string() {
+        round_trip("\"hello\"");
+    }
+    #[test]
+    fn var() {
+        round_trip("x");
+    }
+    #[test]
+    fn list() {
+        round_trip("[1, 2, 3]");
+    }
+    #[test]
+    fn tuple_2() {
+        round_trip("{1, 2}");
+    }
+    #[test]
+    fn tuple_3() {
+        round_trip("{1, 2, 3}");
+    }
+    #[test]
+    fn binop_add() {
+        round_trip("1 + 2");
+    }
+    #[test]
+    fn binop_eq() {
+        round_trip("a == b");
+    }
     #[test]
     fn unop_not() {
-        let e = Spanned::dummy(Expr::UnOp(UnOp::Not, Box::new(Spanned::dummy(Expr::Bool(true)))));
+        let e = Spanned::dummy(Expr::UnOp(
+            UnOp::Not,
+            Box::new(Spanned::dummy(Expr::Bool(true))),
+        ));
         let v = expr_to_value(&e).unwrap();
         let e2 = value_to_expr(&v).unwrap();
         assert!(matches!(e2.node, Expr::UnOp(UnOp::Not, _)));
     }
-    #[test] fn call()           { round_trip("foo(1, 2)"); }
-    #[test] fn nested_call()    { round_trip("foo(bar(x), 2 + 3)"); }
+    #[test]
+    fn call() {
+        round_trip("foo(1, 2)");
+    }
+    #[test]
+    fn nested_call() {
+        round_trip("foo(bar(x), 2 + 3)");
+    }
     #[test]
     fn block() {
         let e = Spanned::dummy(Expr::Block(vec![
@@ -432,11 +544,20 @@ mod tests {
         let e2 = value_to_expr(&v).unwrap();
         assert!(value_struct_eq(&v, &expr_to_value(&e2).unwrap()));
     }
-    #[test] fn if_with_else()   { round_trip("if true, do: 1, else: 2"); }
-    #[test] fn match_var()      { round_trip("x = 42"); }
+    #[test]
+    fn if_with_else() {
+        round_trip("if true, do: 1, else: 2");
+    }
+    #[test]
+    fn match_var() {
+        round_trip("x = 42");
+    }
     #[test]
     fn unop_neg() {
-        let e = Spanned::dummy(Expr::UnOp(UnOp::Neg, Box::new(Spanned::dummy(Expr::Int(5)))));
+        let e = Spanned::dummy(Expr::UnOp(
+            UnOp::Neg,
+            Box::new(Spanned::dummy(Expr::Int(5))),
+        ));
         let v = expr_to_value(&e).unwrap();
         let e2 = value_to_expr(&v).unwrap();
         assert!(matches!(e2.node, Expr::UnOp(UnOp::Neg, _)));
@@ -452,7 +573,9 @@ mod tests {
     fn shape_of_var_is_3_tuple() {
         let e = parse_expr("foo");
         let v = expr_to_value(&e).unwrap();
-        let Value::Tuple(t) = &v else { panic!("expected tuple, got {:?}", debug_value(&v)) };
+        let Value::Tuple(t) = &v else {
+            panic!("expected tuple, got {:?}", debug_value(&v))
+        };
         assert_eq!(t.len(), 3);
         assert!(matches!(&t[0], Value::Atom(s) if &**s == "foo"));
         assert!(matches!(&t[1], Value::Map(_)));
@@ -463,10 +586,14 @@ mod tests {
     fn shape_of_binop_is_3_tuple_with_args_list() {
         let e = parse_expr("1 + 2");
         let v = expr_to_value(&e).unwrap();
-        let Value::Tuple(t) = &v else { panic!("expected tuple") };
+        let Value::Tuple(t) = &v else {
+            panic!("expected tuple")
+        };
         assert_eq!(t.len(), 3);
         assert!(matches!(&t[0], Value::Atom(s) if &**s == "+"));
-        let Value::List(args) = &t[2] else { panic!("expected list args") };
+        let Value::List(args) = &t[2] else {
+            panic!("expected list args")
+        };
         assert_eq!(args.len(), 2);
     }
 
@@ -484,6 +611,9 @@ mod tests {
         let e = parse_expr("foo(1)");
         let v = expr_to_value(&e).unwrap();
         let e2 = value_to_expr(&v).unwrap();
-        assert!(e2.span.is_dummy(), "value_to_expr must produce DUMMY-spanned nodes");
+        assert!(
+            e2.span.is_dummy(),
+            "value_to_expr must produce DUMMY-spanned nodes"
+        );
     }
 }

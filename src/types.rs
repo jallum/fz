@@ -36,17 +36,21 @@ pub struct BasicBits(u32);
 impl BasicBits {
     // Kinds without value-level distinctions (or where we choose not to track
     // them). int/float/str/atom moved into their own LiteralSet axes.
-    pub const NIL:     BasicBits = BasicBits(1 << 0);
-    pub const BOOL:    BasicBits = BasicBits(1 << 1);
+    pub const NIL: BasicBits = BasicBits(1 << 0);
+    pub const BOOL: BasicBits = BasicBits(1 << 1);
     pub const VEC_I64: BasicBits = BasicBits(1 << 2);
     pub const VEC_F64: BasicBits = BasicBits(1 << 3);
-    pub const VEC_U8:  BasicBits = BasicBits(1 << 4);
+    pub const VEC_U8: BasicBits = BasicBits(1 << 4);
     pub const VEC_BIT: BasicBits = BasicBits(1 << 5);
 
     pub const NONE: BasicBits = BasicBits(0);
-    pub const ALL:  BasicBits = BasicBits((1 << 6) - 1);
-    pub const fn contains_all(self, o: BasicBits) -> bool { (self.0 & o.0) == o.0 }
-    pub const fn is_empty(self) -> bool { self.0 == 0 }
+    pub const ALL: BasicBits = BasicBits((1 << 6) - 1);
+    pub const fn contains_all(self, o: BasicBits) -> bool {
+        (self.0 & o.0) == o.0
+    }
+    pub const fn is_empty(self) -> bool {
+        self.0 == 0
+    }
 }
 
 impl fmt::Debug for BasicBits {
@@ -56,11 +60,11 @@ impl fmt::Debug for BasicBits {
 }
 
 const BASIC_NAMES: &[(BasicBits, &str)] = &[
-    (BasicBits::NIL,     "nil"),
-    (BasicBits::BOOL,    "bool"),
+    (BasicBits::NIL, "nil"),
+    (BasicBits::BOOL, "bool"),
     (BasicBits::VEC_I64, "vec(i64)"),
     (BasicBits::VEC_F64, "vec(f64)"),
-    (BasicBits::VEC_U8,  "vec(u8)"),
+    (BasicBits::VEC_U8, "vec(u8)"),
     (BasicBits::VEC_BIT, "vec(bit)"),
 ];
 
@@ -81,41 +85,86 @@ pub struct LiteralSet<T: Ord + Clone> {
 }
 
 impl<T: Ord + Clone> LiteralSet<T> {
-    pub fn none() -> Self { Self { set: BTreeSet::new(), cofinite: false } }
-    pub fn any()  -> Self { Self { set: BTreeSet::new(), cofinite: true } }
-    pub fn lit(v: T) -> Self {
-        let mut s = BTreeSet::new(); s.insert(v);
-        Self { set: s, cofinite: false }
+    pub fn none() -> Self {
+        Self {
+            set: BTreeSet::new(),
+            cofinite: false,
+        }
     }
-    pub fn is_none(&self) -> bool { !self.cofinite && self.set.is_empty() }
-    pub fn is_any(&self)  -> bool {  self.cofinite && self.set.is_empty() }
+    pub fn any() -> Self {
+        Self {
+            set: BTreeSet::new(),
+            cofinite: true,
+        }
+    }
+    pub fn lit(v: T) -> Self {
+        let mut s = BTreeSet::new();
+        s.insert(v);
+        Self {
+            set: s,
+            cofinite: false,
+        }
+    }
+    pub fn is_none(&self) -> bool {
+        !self.cofinite && self.set.is_empty()
+    }
+    pub fn is_any(&self) -> bool {
+        self.cofinite && self.set.is_empty()
+    }
 
     pub fn union(&self, o: &Self) -> Self {
         let (a, b) = (&self.set, &o.set);
         match (self.cofinite, o.cofinite) {
-            (false, false) => Self { set: a | b, cofinite: false },
-            (false, true)  => Self { set: b - a, cofinite: true },
-            (true, false)  => Self { set: a - b, cofinite: true },
-            (true, true)   => Self { set: a & b, cofinite: true },
+            (false, false) => Self {
+                set: a | b,
+                cofinite: false,
+            },
+            (false, true) => Self {
+                set: b - a,
+                cofinite: true,
+            },
+            (true, false) => Self {
+                set: a - b,
+                cofinite: true,
+            },
+            (true, true) => Self {
+                set: a & b,
+                cofinite: true,
+            },
         }
     }
     pub fn intersect(&self, o: &Self) -> Self {
         let (a, b) = (&self.set, &o.set);
         match (self.cofinite, o.cofinite) {
-            (false, false) => Self { set: a & b, cofinite: false },
-            (false, true)  => Self { set: a - b, cofinite: false },
-            (true, false)  => Self { set: b - a, cofinite: false },
-            (true, true)   => Self { set: a | b, cofinite: true },
+            (false, false) => Self {
+                set: a & b,
+                cofinite: false,
+            },
+            (false, true) => Self {
+                set: a - b,
+                cofinite: false,
+            },
+            (true, false) => Self {
+                set: b - a,
+                cofinite: false,
+            },
+            (true, true) => Self {
+                set: a | b,
+                cofinite: true,
+            },
         }
     }
     pub fn neg(&self) -> Self {
-        Self { set: self.set.clone(), cofinite: !self.cofinite }
+        Self {
+            set: self.set.clone(),
+            cofinite: !self.cofinite,
+        }
     }
 }
 
-pub type AtomSet  = LiteralSet<String>;
-pub type IntSet   = LiteralSet<i64>;
-pub type StrSet   = LiteralSet<String>;
+pub type AtomSet = LiteralSet<String>;
+pub type IntSet = LiteralSet<i64>;
+pub type StrSet = LiteralSet<String>;
 pub type FloatSet = LiteralSet<F64Bits>;
 
 /// Bit-pattern wrapper around a non-NaN `f64` so we can put floats in
@@ -130,10 +179,14 @@ impl F64Bits {
         assert!(!f.is_nan(), "F64Bits literal types do not support NaN");
         Self(f.to_bits())
     }
-    pub fn get(self) -> f64 { f64::from_bits(self.0) }
+    pub fn get(self) -> f64 {
+        f64::from_bits(self.0)
+    }
 }
 impl fmt::Debug for F64Bits {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { write!(f, "{}", self.get()) }
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.get())
+    }
 }
 
 // ----------------------------------------------------------------------
@@ -141,10 +194,14 @@ impl fmt::Debug for F64Bits {
 // ----------------------------------------------------------------------
 
 #[derive(Clone, PartialEq, Eq, Hash)]
-pub struct TupleSig { pub elems: Vec<Descr> }
+pub struct TupleSig {
+    pub elems: Vec<Descr>,
+}
 
 #[derive(Clone, PartialEq, Eq, Hash)]
-pub struct ListSig  { pub elem: Box<Descr> }
+pub struct ListSig {
+    pub elem: Box<Descr>,
+}
 
 /// fz-ul4.27.22.8 — closure-literal tag attached to an arrow clause.
 /// When `ArrowSig::lit = Some(ClosureLit { fn_id, captures })`, the clause
@@ -202,10 +259,20 @@ pub struct Conj<T> {
 impl<T> Conj<T> {
     /// The "true" clause — empty conjunction. As a singleton DNF it represents
     /// the saturated kind (every tuple, every list, every function).
-    pub const fn top() -> Self { Self { pos: Vec::new(), neg: Vec::new() } }
+    pub const fn top() -> Self {
+        Self {
+            pos: Vec::new(),
+            neg: Vec::new(),
+        }
+    }
 }
 impl<T: Clone> Conj<T> {
-    pub fn pos_of(t: T) -> Self { Self { pos: vec![t], neg: vec![] } }
+    pub fn pos_of(t: T) -> Self {
+        Self {
+            pos: vec![t],
+            neg: vec![],
+        }
+    }
 }
 
 // ----------------------------------------------------------------------
@@ -222,9 +289,9 @@ pub struct Descr {
     /// DNF over tuple shapes. Empty Vec = no tuples ("false"); a single
     /// `Conj::top()` clause = every tuple ("true").
     pub tuples: Vec<Conj<TupleSig>>,
-    pub lists:  Vec<Conj<ListSig>>,
-    pub funcs:  Vec<Conj<ArrowSig>>,
-    pub maps:   Vec<Conj<MapSig>>,
+    pub lists: Vec<Conj<ListSig>>,
+    pub funcs: Vec<Conj<ArrowSig>>,
+    pub maps: Vec<Conj<MapSig>>,
 }
 
 impl Descr {
@@ -234,13 +301,13 @@ impl Descr {
         Descr {
             basic: BasicBits::ALL,
             atoms: AtomSet::any(),
-            ints:  IntSet::any(),
+            ints: IntSet::any(),
             floats: FloatSet::any(),
-            strs:  StrSet::any(),
+            strs: StrSet::any(),
             tuples: vec![Conj::top()],
-            lists:  vec![Conj::top()],
-            funcs:  vec![Conj::top()],
-            maps:   vec![Conj::top()],
+            lists: vec![Conj::top()],
+            funcs: vec![Conj::top()],
+            maps: vec![Conj::top()],
         }
     }
 
@@ -248,13 +315,13 @@ impl Descr {
         Descr {
             basic: BasicBits::NONE,
             atoms: AtomSet::none(),
-            ints:  IntSet::none(),
+            ints: IntSet::none(),
             floats: FloatSet::none(),
-            strs:  StrSet::none(),
+            strs: StrSet::none(),
             tuples: Vec::new(),
             lists: Vec::new(),
             funcs: Vec::new(),
-            maps:  Vec::new(),
+            maps: Vec::new(),
         }
     }
 
@@ -265,8 +332,12 @@ impl Descr {
         d.basic = b;
         d
     }
-    pub fn nil()     -> Self { Self::from_basic(BasicBits::NIL) }
-    pub fn bool_t()  -> Self { Self::from_basic(BasicBits::BOOL) }
+    pub fn nil() -> Self {
+        Self::from_basic(BasicBits::NIL)
+    }
+    pub fn bool_t() -> Self {
+        Self::from_basic(BasicBits::BOOL)
+    }
     /// All atom literals (no other axis). Used by VR.5a (typed equality) to
     /// recognise atom-monomorphic operands and lower `==` to a single icmp
     /// without going through fz_value_eq.
@@ -275,10 +346,18 @@ impl Descr {
         d.atoms = AtomSet::any();
         d
     }
-    pub fn vec_i64() -> Self { Self::from_basic(BasicBits::VEC_I64) }
-    pub fn vec_f64() -> Self { Self::from_basic(BasicBits::VEC_F64) }
-    pub fn vec_u8()  -> Self { Self::from_basic(BasicBits::VEC_U8) }
-    pub fn vec_bit() -> Self { Self::from_basic(BasicBits::VEC_BIT) }
+    pub fn vec_i64() -> Self {
+        Self::from_basic(BasicBits::VEC_I64)
+    }
+    pub fn vec_f64() -> Self {
+        Self::from_basic(BasicBits::VEC_F64)
+    }
+    pub fn vec_u8() -> Self {
+        Self::from_basic(BasicBits::VEC_U8)
+    }
+    pub fn vec_bit() -> Self {
+        Self::from_basic(BasicBits::VEC_BIT)
+    }
 
     // ---- singletons (atoms / ints / floats / strs) ----
 
@@ -331,14 +410,18 @@ impl Descr {
     // ---- structurals (single positive clause each — composition lands in fz-ul4.2) ----
 
     pub fn tuple_of(elems: impl IntoIterator<Item = Descr>) -> Self {
-        let sig = TupleSig { elems: elems.into_iter().collect() };
+        let sig = TupleSig {
+            elems: elems.into_iter().collect(),
+        };
         let mut d = Self::none();
         d.tuples.push(Conj::pos_of(sig));
         d
     }
 
     pub fn list_of(elem: Descr) -> Self {
-        let sig = ListSig { elem: Box::new(elem) };
+        let sig = ListSig {
+            elem: Box::new(elem),
+        };
         let mut d = Self::none();
         d.lists.push(Conj::pos_of(sig));
         d
@@ -363,11 +446,7 @@ impl Descr {
     /// looking up `fn_id`'s spec at the matching key (see 22.9's
     /// `resolve_closure_return`).
     #[allow(dead_code)] // Used by unit tests now; production callers land in fz-ul4.27.22.10.
-    pub fn closure_lit(
-        fn_id: crate::fz_ir::FnId,
-        captures: Vec<Descr>,
-        n_args: usize,
-    ) -> Self {
+    pub fn closure_lit(fn_id: crate::fz_ir::FnId, captures: Vec<Descr>, n_args: usize) -> Self {
         let sig = ArrowSig {
             args: vec![Descr::any(); n_args],
             ret: Box::new(Descr::any()),
@@ -385,9 +464,13 @@ impl Descr {
     /// specialization can take the singleton-fast path.
     #[allow(dead_code)] // Used by unit tests now; production callers land in fz-ul4.27.22.10/11.
     pub fn as_closure_lit(&self) -> Option<&ClosureLit> {
-        if self.funcs.len() != 1 { return None; }
+        if self.funcs.len() != 1 {
+            return None;
+        }
         let c = &self.funcs[0];
-        if !c.neg.is_empty() || c.pos.len() != 1 { return None; }
+        if !c.neg.is_empty() || c.pos.len() != 1 {
+            return None;
+        }
         c.pos[0].lit.as_ref()
     }
 
@@ -400,7 +483,9 @@ impl Descr {
 
     /// Open-shape map type with the given required (key, value-type) pairs.
     pub fn map_of(fields: impl IntoIterator<Item = (MapKey, Descr)>) -> Self {
-        let sig = MapSig { fields: fields.into_iter().collect() };
+        let sig = MapSig {
+            fields: fields.into_iter().collect(),
+        };
         let mut d = Self::none();
         d.maps.push(Conj::pos_of(sig));
         d
@@ -461,22 +546,34 @@ impl Descr {
 
     pub fn union(&self, other: &Descr) -> Descr {
         let tuples = dnf_union(&self.tuples, &other.tuples);
-        let lists  = dnf_union(&self.lists,  &other.lists);
-        let funcs  = dnf_union(&self.funcs,  &other.funcs);
-        let maps   = dnf_union(&self.maps,   &other.maps);
+        let lists = dnf_union(&self.lists, &other.lists);
+        let funcs = dnf_union(&self.funcs, &other.funcs);
+        let maps = dnf_union(&self.maps, &other.maps);
         // fz-et8 — drop semantically-subsumed clauses. Sound by absorption
         // (`A ⊆ B ⇒ A ∨ B = B`). Per-axis: a single-clause Descr on the
         // same axis is the witness Descr for subsumption.
-        let tuples = subsumption_dedup(tuples, |c| Descr { tuples: vec![c.clone()], ..Descr::none() });
-        let lists  = subsumption_dedup(lists,  |c| Descr { lists:  vec![c.clone()], ..Descr::none() });
-        let funcs  = subsumption_dedup(funcs,  |c| Descr { funcs:  vec![c.clone()], ..Descr::none() });
-        let maps   = subsumption_dedup(maps,   |c| Descr { maps:   vec![c.clone()], ..Descr::none() });
+        let tuples = subsumption_dedup(tuples, |c| Descr {
+            tuples: vec![c.clone()],
+            ..Descr::none()
+        });
+        let lists = subsumption_dedup(lists, |c| Descr {
+            lists: vec![c.clone()],
+            ..Descr::none()
+        });
+        let funcs = subsumption_dedup(funcs, |c| Descr {
+            funcs: vec![c.clone()],
+            ..Descr::none()
+        });
+        let maps = subsumption_dedup(maps, |c| Descr {
+            maps: vec![c.clone()],
+            ..Descr::none()
+        });
         Descr {
             basic: self.basic.union(other.basic),
             atoms: self.atoms.union(&other.atoms),
-            ints:  self.ints.union(&other.ints),
+            ints: self.ints.union(&other.ints),
             floats: self.floats.union(&other.floats),
-            strs:  self.strs.union(&other.strs),
+            strs: self.strs.union(&other.strs),
             tuples,
             lists,
             funcs,
@@ -488,13 +585,13 @@ impl Descr {
         Descr {
             basic: self.basic.intersect(other.basic),
             atoms: self.atoms.intersect(&other.atoms),
-            ints:  self.ints.intersect(&other.ints),
+            ints: self.ints.intersect(&other.ints),
             floats: self.floats.intersect(&other.floats),
-            strs:  self.strs.intersect(&other.strs),
+            strs: self.strs.intersect(&other.strs),
             tuples: dnf_intersect(&self.tuples, &other.tuples),
-            lists:  dnf_intersect(&self.lists,  &other.lists),
-            funcs:  dnf_intersect(&self.funcs,  &other.funcs),
-            maps:   dnf_intersect(&self.maps,   &other.maps),
+            lists: dnf_intersect(&self.lists, &other.lists),
+            funcs: dnf_intersect(&self.funcs, &other.funcs),
+            maps: dnf_intersect(&self.maps, &other.maps),
         }
     }
 
@@ -502,17 +599,19 @@ impl Descr {
         Descr {
             basic: self.basic.neg(),
             atoms: self.atoms.neg(),
-            ints:  self.ints.neg(),
+            ints: self.ints.neg(),
             floats: self.floats.neg(),
-            strs:  self.strs.neg(),
+            strs: self.strs.neg(),
             tuples: dnf_neg(&self.tuples),
-            lists:  dnf_neg(&self.lists),
-            funcs:  dnf_neg(&self.funcs),
-            maps:   dnf_neg(&self.maps),
+            lists: dnf_neg(&self.lists),
+            funcs: dnf_neg(&self.funcs),
+            maps: dnf_neg(&self.maps),
         }
     }
 
-    pub fn diff(&self, other: &Descr) -> Descr { self.intersect(&other.neg()) }
+    pub fn diff(&self, other: &Descr) -> Descr {
+        self.intersect(&other.neg())
+    }
 
     // ----------------------------------------------------------------
     // Semantic emptiness / subtyping
@@ -613,7 +712,9 @@ fn tuple_clause_empty(c: &Conj<TupleSig>, memo: &mut Memo) -> bool {
     }
     // Negatives at this arity contribute; other arities don't intersect the
     // rectangle and are vacuously satisfied.
-    let negs: Vec<Vec<Descr>> = c.neg.iter()
+    let negs: Vec<Vec<Descr>> = c
+        .neg
+        .iter()
         .filter(|n| n.elems.len() == arity)
         .map(|n| n.elems.clone())
         .collect();
@@ -659,7 +760,9 @@ fn list_clause_empty(c: &Conj<ListSig>, memo: &mut Memo) -> bool {
         Descr::any() // implicit positive: list(any)
     } else {
         let mut t = (*c.pos[0].elem).clone();
-        for p in &c.pos[1..] { t = t.intersect(&p.elem); }
+        for p in &c.pos[1..] {
+            t = t.intersect(&p.elem);
+        }
         t
     };
     if c.neg.is_empty() {
@@ -701,11 +804,17 @@ fn func_clause_empty(c: &Conj<ArrowSig>, memo: &mut Memo) -> bool {
     {
         let pos_lits: Vec<&ClosureLit> = p.iter().filter_map(|s| s.lit.as_ref()).collect();
         for i in 0..pos_lits.len() {
-            for j in (i+1)..pos_lits.len() {
-                if pos_lits[i].fn_id != pos_lits[j].fn_id { return true; }
-                if pos_lits[i].captures.len() != pos_lits[j].captures.len() { return true; }
+            for j in (i + 1)..pos_lits.len() {
+                if pos_lits[i].fn_id != pos_lits[j].fn_id {
+                    return true;
+                }
+                if pos_lits[i].captures.len() != pos_lits[j].captures.len() {
+                    return true;
+                }
                 for (a, b) in pos_lits[i].captures.iter().zip(&pos_lits[j].captures) {
-                    if a.intersect(b).is_empty_memo(memo) { return true; }
+                    if a.intersect(b).is_empty_memo(memo) {
+                        return true;
+                    }
                 }
             }
         }
@@ -722,18 +831,31 @@ fn func_clause_empty(c: &Conj<ArrowSig>, memo: &mut Memo) -> bool {
     //     clause via lit reasoning; defer to the structural check on
     //     the lit-free part below.
     'next_neg_lit: for negj in n {
-        let Some(neg_lit) = &negj.lit else { continue; };
+        let Some(neg_lit) = &negj.lit else {
+            continue;
+        };
         let mut found_matching_pos = false;
         for posi in p {
-            let Some(pos_lit) = &posi.lit else { continue; };
-            if pos_lit.fn_id != neg_lit.fn_id { continue; }
-            if pos_lit.captures.len() != neg_lit.captures.len() { continue; }
+            let Some(pos_lit) = &posi.lit else {
+                continue;
+            };
+            if pos_lit.fn_id != neg_lit.fn_id {
+                continue;
+            }
+            if pos_lit.captures.len() != neg_lit.captures.len() {
+                continue;
+            }
             found_matching_pos = true;
             // pos captures must elementwise ⊇ neg captures (i.e., neg
             // ⊆ pos in capture space). diff(neg, pos) empty per axis.
-            let all_subset = pos_lit.captures.iter().zip(&neg_lit.captures)
+            let all_subset = pos_lit
+                .captures
+                .iter()
+                .zip(&neg_lit.captures)
                 .all(|(pc, nc)| nc.diff(pc).is_empty_memo(memo));
-            if all_subset { return true; }
+            if all_subset {
+                return true;
+            }
         }
         if found_matching_pos {
             // We had a matching-FnId pos but it didn't fully subsume —
@@ -757,7 +879,8 @@ fn func_clause_empty(c: &Conj<ArrowSig>, memo: &mut Memo) -> bool {
     // here without returning, none of them subsumes via lit reasoning;
     // drop them all from the structural check so any-args / any-ret
     // placeholders on lit clauses can't falsely subsume.
-    let filtered_negs: Vec<ArrowSig> = n.iter()
+    let filtered_negs: Vec<ArrowSig> = n
+        .iter()
         .filter(|negj| negj.lit.is_none())
         .cloned()
         .collect();
@@ -787,8 +910,12 @@ fn func_clause_empty(c: &Conj<ArrowSig>, memo: &mut Memo) -> bool {
                 }
             }
             // Either inputs of P' cover s, OR outputs of P\P' refine v.
-            if s.diff(&union_in).is_empty_memo(memo) { continue; }
-            if inter_out.diff(&v).is_empty_memo(memo) { continue; }
+            if s.diff(&union_in).is_empty_memo(memo) {
+                continue;
+            }
+            if inter_out.diff(&v).is_empty_memo(memo) {
+                continue;
+            }
             // Neither side held — this subset breaks subsumption for negj.
             continue 'next_neg;
         }
@@ -832,7 +959,8 @@ fn map_clause_empty(c: &Conj<MapSig>, memo: &mut Memo) -> bool {
     let mut merged: std::collections::BTreeMap<MapKey, Descr> = c.pos[0].fields.clone();
     for p in &c.pos[1..] {
         for (k, v) in &p.fields {
-            merged.entry(k.clone())
+            merged
+                .entry(k.clone())
                 .and_modify(|e| *e = e.intersect(v))
                 .or_insert_with(|| v.clone());
         }
@@ -844,11 +972,18 @@ fn map_clause_empty(c: &Conj<MapSig>, memo: &mut Memo) -> bool {
     // Negative subsumption.
     for n in &c.neg {
         let n_keys_subset = n.fields.keys().all(|k| merged.contains_key(k));
-        if !n_keys_subset { continue; }
+        if !n_keys_subset {
+            continue;
+        }
         let value_refines = n.fields.iter().all(|(k, nv)| {
-            merged.get(k).map(|pv| pv.diff(nv).is_empty_memo(memo)).unwrap_or(false)
+            merged
+                .get(k)
+                .map(|pv| pv.diff(nv).is_empty_memo(memo))
+                .unwrap_or(false)
         });
-        if value_refines { return true; }
+        if value_refines {
+            return true;
+        }
     }
     false
 }
@@ -858,9 +993,15 @@ fn map_clause_empty(c: &Conj<MapSig>, memo: &mut Memo) -> bool {
 // ----------------------------------------------------------------------
 
 impl BasicBits {
-    pub const fn union(self, o: BasicBits) -> BasicBits { BasicBits(self.0 | o.0) }
-    pub const fn intersect(self, o: BasicBits) -> BasicBits { BasicBits(self.0 & o.0) }
-    pub const fn neg(self) -> BasicBits { BasicBits(BasicBits::ALL.0 & !self.0) }
+    pub const fn union(self, o: BasicBits) -> BasicBits {
+        BasicBits(self.0 | o.0)
+    }
+    pub const fn intersect(self, o: BasicBits) -> BasicBits {
+        BasicBits(self.0 & o.0)
+    }
+    pub const fn neg(self) -> BasicBits {
+        BasicBits(BasicBits::ALL.0 & !self.0)
+    }
 }
 
 // ----------------------------------------------------------------------
@@ -914,19 +1055,27 @@ fn subsumption_dedup<T: Clone, F: Fn(&Conj<T>) -> Descr>(
     single: F,
 ) -> Vec<Conj<T>> {
     let n = clauses.len();
-    if n < 2 { return clauses; }
+    if n < 2 {
+        return clauses;
+    }
     let descrs: Vec<Descr> = clauses.iter().map(&single).collect();
     let mut keep = vec![true; n];
     for i in 0..n {
         for j in 0..n {
-            if i == j || !keep[j] { continue; }
+            if i == j || !keep[j] {
+                continue;
+            }
             if descrs[i].is_subtype(&descrs[j]) {
                 keep[i] = false;
                 break;
             }
         }
     }
-    clauses.into_iter().zip(keep).filter_map(|(c, k)| k.then_some(c)).collect()
+    clauses
+        .into_iter()
+        .zip(keep)
+        .filter_map(|(c, k)| k.then_some(c))
+        .collect()
 }
 
 /// fz-jvo — sig types that support semantic merging at the
@@ -948,14 +1097,21 @@ pub trait MergeSig: Clone + PartialEq {
 
 impl MergeSig for ListSig {
     fn intersect_pos(a: &Self, b: &Self) -> Option<Self> {
-        Some(ListSig { elem: Box::new(a.elem.intersect(&b.elem)) })
+        Some(ListSig {
+            elem: Box::new(a.elem.intersect(&b.elem)),
+        })
     }
 }
 
 impl MergeSig for TupleSig {
     fn intersect_pos(a: &Self, b: &Self) -> Option<Self> {
-        if a.elems.len() != b.elems.len() { return None; }
-        let elems = a.elems.iter().zip(b.elems.iter())
+        if a.elems.len() != b.elems.len() {
+            return None;
+        }
+        let elems = a
+            .elems
+            .iter()
+            .zip(b.elems.iter())
             .map(|(x, y)| x.intersect(y))
             .collect();
         Some(TupleSig { elems })
@@ -964,7 +1120,9 @@ impl MergeSig for TupleSig {
 
 impl MergeSig for ArrowSig {
     fn intersect_pos(a: &Self, b: &Self) -> Option<Self> {
-        if a.args.len() != b.args.len() { return None; }
+        if a.args.len() != b.args.len() {
+            return None;
+        }
         // fz-ul4.27.22.8 — closure-literal lit handling at ∧:
         //   lit(F,K) ∧ lit(F,K')  → lit(F, K∩K' elementwise) — same closure,
         //                          captures must satisfy both → narrow.
@@ -979,12 +1137,22 @@ impl MergeSig for ArrowSig {
         //   plain ∧ plain → existing behavior, lit stays None.
         let lit = match (&a.lit, &b.lit) {
             (Some(la), Some(lb)) => {
-                if la.fn_id != lb.fn_id { return None; }
-                if la.captures.len() != lb.captures.len() { return None; }
-                let caps: Vec<Descr> = la.captures.iter().zip(lb.captures.iter())
+                if la.fn_id != lb.fn_id {
+                    return None;
+                }
+                if la.captures.len() != lb.captures.len() {
+                    return None;
+                }
+                let caps: Vec<Descr> = la
+                    .captures
+                    .iter()
+                    .zip(lb.captures.iter())
                     .map(|(x, y)| x.intersect(y))
                     .collect();
-                Some(ClosureLit { fn_id: la.fn_id, captures: caps })
+                Some(ClosureLit {
+                    fn_id: la.fn_id,
+                    captures: caps,
+                })
             }
             (Some(la), None) => Some(la.clone()),
             (None, Some(lb)) => Some(lb.clone()),
@@ -992,11 +1160,18 @@ impl MergeSig for ArrowSig {
         };
         // Arrow contravariant on args (union to widen accepted input),
         // covariant on return (intersect to narrow accepted output).
-        let args = a.args.iter().zip(b.args.iter())
+        let args = a
+            .args
+            .iter()
+            .zip(b.args.iter())
             .map(|(x, y)| x.union(y))
             .collect();
         let ret = a.ret.intersect(&b.ret);
-        Some(ArrowSig { args, ret: Box::new(ret), lit })
+        Some(ArrowSig {
+            args,
+            ret: Box::new(ret),
+            lit,
+        })
     }
 }
 
@@ -1008,7 +1183,8 @@ impl MergeSig for MapSig {
         // type on the missing side).
         let mut fields = a.fields.clone();
         for (k, v) in &b.fields {
-            fields.entry(k.clone())
+            fields
+                .entry(k.clone())
                 .and_modify(|prev| *prev = prev.intersect(v))
                 .or_insert_with(|| v.clone());
         }
@@ -1058,15 +1234,29 @@ fn merge_clauses<T: MergeSig>(a: &Conj<T>, b: &Conj<T>) -> Conj<T> {
         }
     }
     let mut neg = a.neg.clone();
-    for x in &b.neg { if !neg.contains(x) { neg.push(x.clone()); } }
+    for x in &b.neg {
+        if !neg.contains(x) {
+            neg.push(x.clone());
+        }
+    }
     Conj { pos, neg }
 }
 
 /// ¬(⋀ pos ∧ ⋀ ¬neg) = ⋁ (¬p) ∨ ⋁ n  — one single-literal clause per element.
 fn neg_clause<T: Clone>(c: &Conj<T>) -> Vec<Conj<T>> {
     let mut out: Vec<Conj<T>> = Vec::with_capacity(c.pos.len() + c.neg.len());
-    for p in &c.pos { out.push(Conj { pos: vec![],         neg: vec![p.clone()] }); }
-    for n in &c.neg { out.push(Conj { pos: vec![n.clone()], neg: vec![] }); }
+    for p in &c.pos {
+        out.push(Conj {
+            pos: vec![],
+            neg: vec![p.clone()],
+        });
+    }
+    for n in &c.neg {
+        out.push(Conj {
+            pos: vec![n.clone()],
+            neg: vec![],
+        });
+    }
     out
 }
 
@@ -1080,24 +1270,40 @@ fn is_dnf_top<T>(d: &[Conj<T>]) -> bool {
 
 impl fmt::Display for Descr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.looks_full() { return write!(f, "any"); }
-        if self.looks_empty() { return write!(f, "none"); }
+        if self.looks_full() {
+            return write!(f, "any");
+        }
+        if self.looks_empty() {
+            return write!(f, "none");
+        }
 
         let mut parts: Vec<String> = Vec::new();
 
         for (bit, name) in BASIC_NAMES {
-            if self.basic.contains_all(*bit) { parts.push((*name).to_string()); }
+            if self.basic.contains_all(*bit) {
+                parts.push((*name).to_string());
+            }
         }
 
-        format_lit_set(&mut parts, &self.ints,   "int",   |n| format!("{}", n));
-        format_lit_set(&mut parts, &self.floats, "float", |f| format!("{}", f.get()));
-        format_lit_set(&mut parts, &self.strs,   "str",   |s| format!("{:?}", s));
-        format_lit_set(&mut parts, &self.atoms,  "atom",  |a| format!(":{}", a));
+        format_lit_set(&mut parts, &self.ints, "int", |n| format!("{}", n));
+        format_lit_set(&mut parts, &self.floats, "float", |f| {
+            format!("{}", f.get())
+        });
+        format_lit_set(&mut parts, &self.strs, "str", |s| format!("{:?}", s));
+        format_lit_set(&mut parts, &self.atoms, "atom", |a| format!(":{}", a));
 
-        for c in &self.tuples { parts.push(format_tuple_clause(c)); }
-        for c in &self.lists  { parts.push(format_list_clause(c)); }
-        for c in &self.funcs  { parts.push(format_arrow_clause(c)); }
-        for c in &self.maps   { parts.push(format_map_clause(c)); }
+        for c in &self.tuples {
+            parts.push(format_tuple_clause(c));
+        }
+        for c in &self.lists {
+            parts.push(format_list_clause(c));
+        }
+        for c in &self.funcs {
+            parts.push(format_arrow_clause(c));
+        }
+        for c in &self.maps {
+            parts.push(format_map_clause(c));
+        }
 
         write!(f, "{}", parts.join(" | "))
     }
@@ -1110,24 +1316,40 @@ impl Descr {
     /// impl above stays exact (tests rely on it).
     pub fn display_for_diag(&self) -> String {
         const CAP: usize = 5;
-        if self.looks_full() { return "any".into(); }
-        if self.looks_empty() { return "none".into(); }
+        if self.looks_full() {
+            return "any".into();
+        }
+        if self.looks_empty() {
+            return "none".into();
+        }
 
         let mut parts: Vec<String> = Vec::new();
 
         for (bit, name) in BASIC_NAMES {
-            if self.basic.contains_all(*bit) { parts.push((*name).to_string()); }
+            if self.basic.contains_all(*bit) {
+                parts.push((*name).to_string());
+            }
         }
 
-        format_lit_set_capped(&mut parts, &self.ints,   "int",   CAP, |n| format!("{}", n));
-        format_lit_set_capped(&mut parts, &self.floats, "float", CAP, |f| format!("{}", f.get()));
-        format_lit_set_capped(&mut parts, &self.strs,   "str",   CAP, |s| format!("{:?}", s));
-        format_lit_set_capped(&mut parts, &self.atoms,  "atom",  CAP, |a| format!(":{}", a));
+        format_lit_set_capped(&mut parts, &self.ints, "int", CAP, |n| format!("{}", n));
+        format_lit_set_capped(&mut parts, &self.floats, "float", CAP, |f| {
+            format!("{}", f.get())
+        });
+        format_lit_set_capped(&mut parts, &self.strs, "str", CAP, |s| format!("{:?}", s));
+        format_lit_set_capped(&mut parts, &self.atoms, "atom", CAP, |a| format!(":{}", a));
 
-        for c in &self.tuples { parts.push(format_tuple_clause(c)); }
-        for c in &self.lists  { parts.push(format_list_clause(c)); }
-        for c in &self.funcs  { parts.push(format_arrow_clause(c)); }
-        for c in &self.maps   { parts.push(format_map_clause(c)); }
+        for c in &self.tuples {
+            parts.push(format_tuple_clause(c));
+        }
+        for c in &self.lists {
+            parts.push(format_list_clause(c));
+        }
+        for c in &self.funcs {
+            parts.push(format_arrow_clause(c));
+        }
+        for c in &self.maps {
+            parts.push(format_map_clause(c));
+        }
 
         parts.join(" | ")
     }
@@ -1140,7 +1362,9 @@ fn format_lit_set_capped<T: Ord + Clone>(
     cap: usize,
     fmt_one: impl Fn(&T) -> String,
 ) {
-    if s.is_none() { return; }
+    if s.is_none() {
+        return;
+    }
     if s.cofinite {
         if s.set.is_empty() {
             parts.push(top_name.into());
@@ -1164,7 +1388,9 @@ fn format_lit_set_capped<T: Ord + Clone>(
 }
 
 impl fmt::Debug for Descr {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { write!(f, "{}", self) }
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self)
+    }
 }
 
 fn format_lit_set<T: Ord + Clone>(
@@ -1173,7 +1399,9 @@ fn format_lit_set<T: Ord + Clone>(
     top_name: &str,
     fmt_one: impl Fn(&T) -> String,
 ) {
-    if s.is_none() { return; }
+    if s.is_none() {
+        return;
+    }
     if s.cofinite {
         if s.set.is_empty() {
             parts.push(top_name.into());
@@ -1182,30 +1410,46 @@ fn format_lit_set<T: Ord + Clone>(
             parts.push(format!("{} \\ {{{}}}", top_name, exc.join(", ")));
         }
     } else {
-        for v in &s.set { parts.push(fmt_one(v)); }
+        for v in &s.set {
+            parts.push(fmt_one(v));
+        }
     }
 }
 
 fn format_tuple_clause(c: &Conj<TupleSig>) -> String {
     let pos: Vec<String> = c.pos.iter().map(format_tuple).collect();
-    let neg: Vec<String> = c.neg.iter().map(|t| format!("¬{}", format_tuple(t))).collect();
+    let neg: Vec<String> = c
+        .neg
+        .iter()
+        .map(|t| format!("¬{}", format_tuple(t)))
+        .collect();
     join_clause(&pos, &neg, "tuple")
 }
 fn format_list_clause(c: &Conj<ListSig>) -> String {
     let pos: Vec<String> = c.pos.iter().map(format_list).collect();
-    let neg: Vec<String> = c.neg.iter().map(|t| format!("¬{}", format_list(t))).collect();
+    let neg: Vec<String> = c
+        .neg
+        .iter()
+        .map(|t| format!("¬{}", format_list(t)))
+        .collect();
     join_clause(&pos, &neg, "list")
 }
 fn format_arrow_clause(c: &Conj<ArrowSig>) -> String {
     let pos: Vec<String> = c.pos.iter().map(format_arrow).collect();
-    let neg: Vec<String> = c.neg.iter().map(|t| format!("¬{}", format_arrow(t))).collect();
+    let neg: Vec<String> = c
+        .neg
+        .iter()
+        .map(|t| format!("¬{}", format_arrow(t)))
+        .collect();
     join_clause(&pos, &neg, "fn")
 }
 fn format_tuple(t: &TupleSig) -> String {
     let inner: Vec<String> = t.elems.iter().map(|d| format!("{}", d)).collect();
     format!("{{{}}}", inner.join(", "))
 }
-fn format_list(t: &ListSig)  -> String { format!("list({})", t.elem) }
+fn format_list(t: &ListSig) -> String {
+    format!("list({})", t.elem)
+}
 fn format_arrow(t: &ArrowSig) -> String {
     let args: Vec<String> = t.args.iter().map(|d| format!("{}", d)).collect();
     let body = format!("({}) -> {}", args.join(", "), t.ret);
@@ -1219,11 +1463,19 @@ fn format_arrow(t: &ArrowSig) -> String {
 }
 fn format_map_clause(c: &Conj<MapSig>) -> String {
     let pos: Vec<String> = c.pos.iter().map(format_map).collect();
-    let neg: Vec<String> = c.neg.iter().map(|m| format!("¬{}", format_map(m))).collect();
+    let neg: Vec<String> = c
+        .neg
+        .iter()
+        .map(|m| format!("¬{}", format_map(m)))
+        .collect();
     join_clause(&pos, &neg, "map")
 }
 fn format_map(m: &MapSig) -> String {
-    let inner: Vec<String> = m.fields.iter().map(|(k, v)| format!("{}: {}", format_map_key(k), v)).collect();
+    let inner: Vec<String> = m
+        .fields
+        .iter()
+        .map(|(k, v)| format!("{}: {}", format_map_key(k), v))
+        .collect();
     format!("%{{{}}}", inner.join(", "))
 }
 fn format_map_key(k: &MapKey) -> String {
@@ -1235,7 +1487,11 @@ fn format_map_key(k: &MapKey) -> String {
 }
 fn join_clause(pos: &[String], neg: &[String], top: &str) -> String {
     let all: Vec<String> = pos.iter().cloned().chain(neg.iter().cloned()).collect();
-    if all.is_empty() { top.to_string() } else { all.join(" & ") }
+    if all.is_empty() {
+        top.to_string()
+    } else {
+        all.join(" & ")
+    }
 }
 
 // ----------------------------------------------------------------------
@@ -1248,7 +1504,9 @@ mod tests {
 
     // (`str_t` was promoted to a public Descr constructor by fz-ul4.31.1.)
     impl BasicBits {
-        pub(super) const fn raw(self) -> u32 { self.0 }
+        pub(super) const fn raw(self) -> u32 {
+            self.0
+        }
     }
 
     #[test]
@@ -1259,14 +1517,14 @@ mod tests {
 
     #[test]
     fn each_basic_constructor_renders_its_name() {
-        assert_eq!(Descr::nil().to_string(),     "nil");
-        assert_eq!(Descr::bool_t().to_string(),  "bool");
-        assert_eq!(Descr::int().to_string(),     "int");
-        assert_eq!(Descr::float().to_string(),   "float");
-        assert_eq!(Descr::str_t().to_string(),   "str");
+        assert_eq!(Descr::nil().to_string(), "nil");
+        assert_eq!(Descr::bool_t().to_string(), "bool");
+        assert_eq!(Descr::int().to_string(), "int");
+        assert_eq!(Descr::float().to_string(), "float");
+        assert_eq!(Descr::str_t().to_string(), "str");
         assert_eq!(Descr::vec_i64().to_string(), "vec(i64)");
         assert_eq!(Descr::vec_f64().to_string(), "vec(f64)");
-        assert_eq!(Descr::vec_u8().to_string(),  "vec(u8)");
+        assert_eq!(Descr::vec_u8().to_string(), "vec(u8)");
         assert_eq!(Descr::vec_bit().to_string(), "vec(bit)");
     }
 
@@ -1341,11 +1599,19 @@ mod tests {
         for _ in 0..15 {
             acc = acc.union(&lst);
         }
-        assert_eq!(acc.lists.len(), 1,
+        assert_eq!(
+            acc.lists.len(),
+            1,
             "expected 1 clause after 15 self-unions, got {}: {:?}",
-            acc.lists.len(), acc);
-        assert!(acc.is_equiv(&lst),
-            "self-union must equal original: {} vs {}", acc, lst);
+            acc.lists.len(),
+            acc
+        );
+        assert!(
+            acc.is_equiv(&lst),
+            "self-union must equal original: {} vs {}",
+            acc,
+            lst
+        );
     }
 
     /// Distinct list-element types must remain distinct under dedup
@@ -1355,9 +1621,13 @@ mod tests {
         let a = Descr::list_of(Descr::int());
         let b = Descr::list_of(Descr::float());
         let u = a.union(&b);
-        assert_eq!(u.lists.len(), 2,
+        assert_eq!(
+            u.lists.len(),
+            2,
             "list(int) ∨ list(float) must keep 2 clauses, got {}: {:?}",
-            u.lists.len(), u);
+            u.lists.len(),
+            u
+        );
     }
 
     /// fz-et8 — subsumption-based dedup at union. `list(int)` is a
@@ -1366,18 +1636,30 @@ mod tests {
     #[test]
     fn union_drops_subsumed_list_clause() {
         let narrow = Descr::list_of(Descr::int());
-        let wide   = Descr::list_of(Descr::int().union(&Descr::float()));
+        let wide = Descr::list_of(Descr::int().union(&Descr::float()));
         let u = narrow.union(&wide);
-        assert_eq!(u.lists.len(), 1,
+        assert_eq!(
+            u.lists.len(),
+            1,
             "list(int) ∨ list(int|float) must collapse to 1 clause, got {}: {:?}",
-            u.lists.len(), u);
-        assert!(u.is_equiv(&wide),
-            "subsumed-union result must equal the superset: {} vs {}", u, wide);
+            u.lists.len(),
+            u
+        );
+        assert!(
+            u.is_equiv(&wide),
+            "subsumed-union result must equal the superset: {} vs {}",
+            u,
+            wide
+        );
         // Order-independence.
         let v = wide.union(&narrow);
-        assert_eq!(v.lists.len(), 1,
+        assert_eq!(
+            v.lists.len(),
+            1,
             "list(int|float) ∨ list(int) must also collapse, got {}: {:?}",
-            v.lists.len(), v);
+            v.lists.len(),
+            v
+        );
         assert!(v.is_equiv(&wide));
     }
 
@@ -1557,7 +1839,11 @@ mod tests {
     fn subtype_basics() {
         assert!(Descr::int().is_subtype(&Descr::int()));
         assert!(Descr::int().is_subtype(&Descr::int().union(&Descr::float())));
-        assert!(!Descr::int().union(&Descr::float()).is_subtype(&Descr::int()));
+        assert!(
+            !Descr::int()
+                .union(&Descr::float())
+                .is_subtype(&Descr::int())
+        );
         assert!(!Descr::int().is_subtype(&Descr::atom_top()));
         assert!(Descr::none().is_subtype(&Descr::int()));
         assert!(Descr::int().is_subtype(&Descr::any()));
@@ -1655,9 +1941,12 @@ mod tests {
         // list({:a, :b}) ⊄ list(:a) ∪ list(:b)  — the list [:a, :b] would
         // have to live in one of the homogeneous types, but it doesn't.
         let mixed = Descr::list_of(Descr::atom_lit("a").union(&Descr::atom_lit("b")));
-        let parts = Descr::list_of(Descr::atom_lit("a"))
-            .union(&Descr::list_of(Descr::atom_lit("b")));
-        assert!(!mixed.is_subtype(&parts), "homogeneous lists do not cover mixed");
+        let parts =
+            Descr::list_of(Descr::atom_lit("a")).union(&Descr::list_of(Descr::atom_lit("b")));
+        assert!(
+            !mixed.is_subtype(&parts),
+            "homogeneous lists do not cover mixed"
+        );
         // But the reverse holds:
         assert!(parts.is_subtype(&mixed));
     }
@@ -1690,8 +1979,12 @@ mod tests {
         let u = a.union(&b);
         let got = u.arrow_join_return();
         let want = Descr::int().union(&Descr::bool_t());
-        assert!(got.is_subtype(&want) && want.is_subtype(&got),
-            "got = {}, want = {}", got, want);
+        assert!(
+            got.is_subtype(&want) && want.is_subtype(&got),
+            "got = {}, want = {}",
+            got,
+            want
+        );
     }
 
     #[test]
@@ -1720,8 +2013,10 @@ mod tests {
             Descr::int().union(&Descr::str_t()),
         );
         assert!(multi.is_subtype(&combined));
-        assert!(!combined.is_subtype(&multi),
-            "combined arrow loses the per-clause return refinement");
+        assert!(
+            !combined.is_subtype(&multi),
+            "combined arrow loses the per-clause return refinement"
+        );
     }
 
     // ---- mixed kinds ----
@@ -1737,15 +2032,22 @@ mod tests {
     #[test]
     fn intersection_with_disjoint_is_empty() {
         assert!(Descr::int().intersect(&Descr::atom_top()).is_empty());
-        assert!(Descr::list_of(Descr::int()).intersect(&Descr::tuple_of([Descr::int()])).is_empty());
+        assert!(
+            Descr::list_of(Descr::int())
+                .intersect(&Descr::tuple_of([Descr::int()]))
+                .is_empty()
+        );
     }
 
     #[test]
     fn ok_or_error_result_subtype() {
         // Result(int, atom) = {:ok, int} ∪ {:error, atom}
         // {:ok, int} <: Result(int, atom)
-        let result_t = Descr::tuple_of([Descr::atom_lit("ok"), Descr::int()])
-            .union(&Descr::tuple_of([Descr::atom_lit("error"), Descr::atom_top()]));
+        let result_t =
+            Descr::tuple_of([Descr::atom_lit("ok"), Descr::int()]).union(&Descr::tuple_of([
+                Descr::atom_lit("error"),
+                Descr::atom_top(),
+            ]));
         let an_ok = Descr::tuple_of([Descr::atom_lit("ok"), Descr::int()]);
         assert!(an_ok.is_subtype(&result_t));
         // {:ok, str} </: Result(int, atom)
@@ -1807,12 +2109,17 @@ mod tests {
     #[test]
     fn display_int_singleton() {
         assert_eq!(Descr::int_lit(42).to_string(), "42");
-        assert_eq!(Descr::int_lit(0).union(&Descr::int_lit(1)).to_string(), "0 | 1");
+        assert_eq!(
+            Descr::int_lit(0).union(&Descr::int_lit(1)).to_string(),
+            "0 | 1"
+        );
     }
 
     // ---- maps ----
 
-    fn ak(s: &str) -> MapKey { MapKey::Atom(s.into()) }
+    fn ak(s: &str) -> MapKey {
+        MapKey::Atom(s.into())
+    }
 
     #[test]
     fn map_top_and_constructor() {
@@ -1858,14 +2165,22 @@ mod tests {
     #[test]
     fn basic_bits_flags_are_disjoint() {
         let bits = [
-            BasicBits::NIL, BasicBits::BOOL,
-            BasicBits::VEC_I64, BasicBits::VEC_F64,
-            BasicBits::VEC_U8, BasicBits::VEC_BIT,
+            BasicBits::NIL,
+            BasicBits::BOOL,
+            BasicBits::VEC_I64,
+            BasicBits::VEC_F64,
+            BasicBits::VEC_U8,
+            BasicBits::VEC_BIT,
         ];
         for (i, a) in bits.iter().enumerate() {
-            for b in &bits[i+1..] {
-                assert_eq!(a.raw() & b.raw(), 0,
-                    "bits should be disjoint: {:?} vs {:?}", a, b);
+            for b in &bits[i + 1..] {
+                assert_eq!(
+                    a.raw() & b.raw(),
+                    0,
+                    "bits should be disjoint: {:?} vs {:?}",
+                    a,
+                    b
+                );
             }
         }
         // ALL covers exactly those bits and nothing else.
@@ -1886,7 +2201,11 @@ mod tests {
         let s = d.display_for_diag();
         // Exactly five comma-separated int values + an ellipsis.
         let pipe_parts: Vec<&str> = s.split(" | ").collect();
-        assert!(pipe_parts.len() == 6, "expected 5 ints + ellipsis, got: {}", s);
+        assert!(
+            pipe_parts.len() == 6,
+            "expected 5 ints + ellipsis, got: {}",
+            s
+        );
         assert!(s.contains("(+5 more)"), "expected ellipsis, got: {}", s);
     }
 
@@ -1921,7 +2240,9 @@ mod tests {
 
     // ---- fz-ul4.27.22.8 closure_lit tests ----
 
-    fn fid(n: u32) -> crate::fz_ir::FnId { crate::fz_ir::FnId(n) }
+    fn fid(n: u32) -> crate::fz_ir::FnId {
+        crate::fz_ir::FnId(n)
+    }
 
     #[test]
     fn closure_lit_round_trips_through_accessor() {
@@ -1998,7 +2319,9 @@ mod tests {
         let a = Descr::closure_lit(fid(3), vec![Descr::int()], 1);
         let b = Descr::closure_lit(fid(3), vec![Descr::int_lit(10)], 1);
         let i = a.intersect(&b);
-        let tag = i.as_closure_lit().expect("expected singleton after intersect");
+        let tag = i
+            .as_closure_lit()
+            .expect("expected singleton after intersect");
         assert_eq!(tag.fn_id, fid(3));
         assert_eq!(tag.captures[0], Descr::int_lit(10));
     }
@@ -2008,8 +2331,11 @@ mod tests {
         let a = Descr::closure_lit(fid(3), vec![], 1);
         let b = Descr::closure_lit(fid(4), vec![], 1);
         let i = a.intersect(&b);
-        assert!(i.is_empty(),
-            "different-FnId closure_lits ∧ should be bottom: got {}", i);
+        assert!(
+            i.is_empty(),
+            "different-FnId closure_lits ∧ should be bottom: got {}",
+            i
+        );
     }
 
     #[test]
@@ -2020,7 +2346,10 @@ mod tests {
         let w = widen(&a);
         let tag = w.as_closure_lit().expect("widen should preserve singleton");
         assert_eq!(tag.fn_id, fid(3));
-        assert_eq!(tag.captures[0], Descr::int(),
-            "widen should drop int literals to int");
+        assert_eq!(
+            tag.captures[0],
+            Descr::int(),
+            "widen should drop int literals to int"
+        );
     }
 }

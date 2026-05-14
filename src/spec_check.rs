@@ -25,13 +25,13 @@
 //! returns a list and the driver decides whether to halt.
 
 #![allow(dead_code)] // fz-ul4.31.6 wires this into the run/jit/aot
-                     // drivers; tests exercise the API directly.
+// drivers; tests exercise the API directly.
 
 use crate::ast::{Attribute, Item, Program};
-use crate::diag::{codes, Diagnostic, Span};
+use crate::diag::{Diagnostic, Span, codes};
 use crate::fz_ir::FnId;
 use crate::ir_typer::ModuleTypes;
-use crate::type_expr::{resolve_spec_decl, ModuleTypeEnv};
+use crate::type_expr::{ModuleTypeEnv, resolve_spec_decl};
 use crate::types::Descr;
 
 /// Validate every `@spec` in `program` against the corresponding
@@ -45,18 +45,23 @@ pub fn validate_specs(
     let mut diags: Vec<Diagnostic> = Vec::new();
     let empty_env = ModuleTypeEnv::new();
     for item in &program.items {
-        let Item::Fn(fn_def) = &**item else { continue; };
+        let Item::Fn(fn_def) = &**item else {
+            continue;
+        };
         let Some(spec) = fn_def.attrs.iter().find_map(|a| match a {
             Attribute::Spec(s) => Some(s),
             _ => None,
-        }) else { continue; };
+        }) else {
+            continue;
+        };
         // The module env is keyed by everything up to the last `.` in
         // the qualified fn name. Top-level fns use "" (empty env).
         let module_path: String = match fn_def.name.rfind('.') {
             Some(i) => fn_def.name[..i].to_string(),
             None => String::new(),
         };
-        let env: &ModuleTypeEnv = program.module_type_envs
+        let env: &ModuleTypeEnv = program
+            .module_type_envs
             .get(&module_path)
             .unwrap_or(&empty_env);
         let resolved = match resolve_spec_decl(spec, env) {
@@ -70,15 +75,22 @@ pub fn validate_specs(
                 continue;
             }
         };
-        let Some(ir_fn) = ir_module.fns.iter().find(|f| f.name == fn_def.name)
-        else {
+        let Some(ir_fn) = ir_module.fns.iter().find(|f| f.name == fn_def.name) else {
             // No IR fn for this name — fn might be dead-stripped or
             // not yet lowered. Skip silently.
             continue;
         };
         let ir_fn_id = ir_fn.id;
-        validate_one_fn(&resolved.params, &resolved.result, ir_fn_id, ir_fn,
-                        &fn_def.name, fn_def.name_span, module_types, &mut diags);
+        validate_one_fn(
+            &resolved.params,
+            &resolved.result,
+            ir_fn_id,
+            ir_fn,
+            &fn_def.name,
+            fn_def.name_span,
+            module_types,
+            &mut diags,
+        );
     }
     diags
 }
@@ -96,9 +108,15 @@ fn validate_one_fn(
     let arity = declared_params.len();
     let any_key: Vec<Descr> = vec![Descr::any(); arity];
     for ((fid, key), ft) in &module_types.specs {
-        if *fid != fn_id { continue; }
-        if key.len() != arity { continue; } // should be impossible post-arity-check
-        if key == &any_key { continue; } // skip any-key per design
+        if *fid != fn_id {
+            continue;
+        }
+        if key.len() != arity {
+            continue;
+        } // should be impossible post-arity-check
+        if key == &any_key {
+            continue;
+        } // skip any-key per design
         // Element-wise inferred ⊆ declared on each input.
         for (i, inferred) in key.iter().enumerate() {
             if !inferred.is_subtype(&declared_params[i]) {
@@ -160,13 +178,15 @@ mod tests {
 
     #[test]
     fn spec_matching_inferred_passes() {
-        let (prog, ir, mt) = pipeline(r#"
+        let (prog, ir, mt) = pipeline(
+            r#"
 defmodule M do
   @spec add1(integer) :: integer
   fn add1(n), do: n + 1
 end
 fn main(), do: print(M.add1(41))
-"#);
+"#,
+        );
         let diags = validate_specs(&prog, &ir, &mt);
         assert!(diags.is_empty(), "unexpected diags: {:?}", diags);
     }
@@ -175,63 +195,85 @@ fn main(), do: print(M.add1(41))
     fn spec_wider_than_inferred_passes_success_typing_style() {
         // Declared spec accepts `integer`; inferred is the narrower
         // `int_lit(41)`. int_lit(41) ⊆ integer, so this passes.
-        let (prog, ir, mt) = pipeline(r#"
+        let (prog, ir, mt) = pipeline(
+            r#"
 defmodule M do
   @spec add1(integer) :: integer
   fn add1(n), do: n + 1
 end
 fn main(), do: print(M.add1(41))
-"#);
+"#,
+        );
         let diags = validate_specs(&prog, &ir, &mt);
-        assert!(diags.is_empty(), "wider declared must accept narrower inferred; got: {:?}", diags);
+        assert!(
+            diags.is_empty(),
+            "wider declared must accept narrower inferred; got: {:?}",
+            diags
+        );
     }
 
     #[test]
     fn spec_disjoint_from_inferred_fails() {
         // Declared accepts `float`; inferred from callsite is int.
         // int ⊄ float, so this fails.
-        let (prog, ir, mt) = pipeline(r#"
+        let (prog, ir, mt) = pipeline(
+            r#"
 defmodule M do
   @spec add1(float) :: float
   fn add1(n), do: n + 1
 end
 fn main(), do: print(M.add1(41))
-"#);
+"#,
+        );
         let diags = validate_specs(&prog, &ir, &mt);
         assert!(!diags.is_empty(), "disjoint spec must fail");
         let msg = format!("{:?}", diags[0].message);
-        assert!(msg.contains("not a subtype"),
-            "expected subtype-violation diag, got: {}", msg);
+        assert!(
+            msg.contains("not a subtype"),
+            "expected subtype-violation diag, got: {}",
+            msg
+        );
     }
 
     #[test]
     fn spec_resolves_against_module_type_env() {
-        let (prog, ir, mt) = pipeline(r#"
+        let (prog, ir, mt) = pipeline(
+            r#"
 defmodule M do
   @type id :: integer
   @spec lookup(id) :: id
   fn lookup(x), do: x
 end
 fn main(), do: print(M.lookup(7))
-"#);
+"#,
+        );
         let diags = validate_specs(&prog, &ir, &mt);
-        assert!(diags.is_empty(), "alias-based spec should resolve and pass; got: {:?}", diags);
+        assert!(
+            diags.is_empty(),
+            "alias-based spec should resolve and pass; got: {:?}",
+            diags
+        );
     }
 
     #[test]
     fn spec_with_unknown_alias_fails_at_validation() {
-        let (prog, ir, mt) = pipeline(r#"
+        let (prog, ir, mt) = pipeline(
+            r#"
 defmodule M do
   @spec one(unknown_thing) :: integer
   fn one(_), do: 1
 end
 fn main(), do: print(M.one(0))
-"#);
+"#,
+        );
         let diags = validate_specs(&prog, &ir, &mt);
         assert!(!diags.is_empty(), "unknown alias must surface a diag");
         let msg = format!("{:?}", diags[0].message);
-        assert!(msg.contains("unknown type name"),
-            "expected unknown-name diag, got: {}", msg);
+        assert!(
+            msg.contains("unknown type name"),
+            "expected unknown-name diag, got: {}",
+            msg
+        );
     }
 
     #[test]
@@ -243,42 +285,57 @@ fn main(), do: print(M.one(0))
         // covers both scenarios via a fn that *does* keep its any-key
         // because it's also reachable via a closure/cont path with a
         // narrow capture but `any` slot 0.
-        let (prog, ir, mt) = pipeline(r#"
+        let (prog, ir, mt) = pipeline(
+            r#"
 defmodule M do
   @spec add1(integer) :: integer
   fn add1(n), do: n + 1
 end
 fn main(), do: print(M.add1(41))
-"#);
+"#,
+        );
         // Validation passes — either the any-key was dropped (.29.12.6)
         // or it was kept and validation correctly skipped it.
         let diags = validate_specs(&prog, &ir, &mt);
-        assert!(diags.is_empty(),
-            "validation must pass regardless of any-key presence; got: {:?}", diags);
+        assert!(
+            diags.is_empty(),
+            "validation must pass regardless of any-key presence; got: {:?}",
+            diags
+        );
     }
 
     #[test]
     fn fn_without_spec_is_not_validated() {
-        let (prog, ir, mt) = pipeline(r#"
+        let (prog, ir, mt) = pipeline(
+            r#"
 defmodule M do
   fn double(x), do: x * 2
 end
 fn main(), do: print(M.double(7))
-"#);
+"#,
+        );
         let diags = validate_specs(&prog, &ir, &mt);
-        assert!(diags.is_empty(),
-            "fn without @spec should produce no diags; got: {:?}", diags);
+        assert!(
+            diags.is_empty(),
+            "fn without @spec should produce no diags; got: {:?}",
+            diags
+        );
     }
 
     #[test]
     fn spec_on_top_level_fn_uses_empty_env() {
-        let (prog, ir, mt) = pipeline(r#"
+        let (prog, ir, mt) = pipeline(
+            r#"
 @spec one() :: integer
 fn one(), do: 1
 fn main(), do: print(one())
-"#);
+"#,
+        );
         let diags = validate_specs(&prog, &ir, &mt);
-        assert!(diags.is_empty(),
-            "top-level @spec with builtin scalar must pass; got: {:?}", diags);
+        assert!(
+            diags.is_empty(),
+            "top-level @spec with builtin scalar must pass; got: {:?}",
+            diags
+        );
     }
 }
