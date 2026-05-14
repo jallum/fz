@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-fzn"
+  ],
   "created": "2026-05-14T23:56:03Z",
   "description": "Reorganize fixtures/ to one directory per fixture, mirroring the existing fixtures/errors/\u003cname\u003e/ convention.\n\nLayout:\n  fixtures/\u003cname\u003e/\n    README.md       frontmatter (purpose/paths/kind/defer/expect_clif_*) + narrative\n    input.fz        pure source — header comments removed\n    expected.txt    stdout golden       (was \u003cname\u003e.expected)\n    expected.clif   CLIF golden if any  (was \u003cname\u003e.clif)\n    expected.specs  specs golden if any (was \u003cname\u003e.specs)\n\nTouchpoints:\n- tests/fixture_matrix.rs: discover() walks dirs; check() reads expected.txt; parse_header() reads README.md frontmatter; GOLDEN_FIXTURES entries lose .fz; ~15 hardcoded fixture paths rewrite to fixtures/\u003cname\u003e/input.fz; fixture_index_up_to_date emits dir entries.\n- src/runtime.rs:571: concurrency_ping_pong path.\n- src/ir_interp.rs:9: comment-only reference.\n- src/diag/render.rs: already walks errors/\u003cdir\u003e/, no change.\n\nFrontmatter shape (YAML):\n---\npurpose: one-line statement\npaths: [jit, interp]\nkind: run\nexpect_clif_excludes:\n  - fn: add1_s2\n    substr: ishl_imm\n---\n\n# add1\nNarrative body — what / why.\n\nexpect_clif_* directives stay in frontmatter for this ticket. Retired in .22.19 after .22.18 proves golden coverage subsumes them.\n\nInvariants:\n- 539 tests green before and after\n- fixture_index_up_to_date passes (BLESS as needed in same commit)\n- golden_clif / golden_specs pass against the 5 existing goldens at new paths\n- fixtures/errors/ untouched\n\nSingle commit, mechanical.",
   "id": "fz-e97",
