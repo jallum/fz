@@ -1034,3 +1034,100 @@ fn golden_clif() {
         failures.join("\n\n---\n\n"),
     );
 }
+
+// ----------------------------------------------------------------------
+// fz-73m — Golden typer-spec fixtures.
+//
+// For each fixture in GOLDEN_FIXTURES, dump its ModuleTypes via `fz dump
+// --emit specs` and diff against the checked-in `fixtures/<stem>.specs`
+// sibling. Mirrors golden_clif: every typer change that affects an
+// inferred Descr surfaces here BEFORE any codegen test sees it.
+//
+// `BLESS_SPECS=1 cargo test golden_specs` rewrites every golden. Bless
+// is a deliberate act — diff the resulting commit and confirm every
+// spec change is intended. A spec dump that suddenly grew wider after
+// an unrelated refactor is the bug-class this loop is designed to
+// catch.
+// ----------------------------------------------------------------------
+
+#[test]
+fn golden_specs() {
+    let bless = std::env::var("BLESS_SPECS").ok().as_deref() == Some("1");
+    let mut failures: Vec<String> = Vec::new();
+
+    for name in GOLDEN_FIXTURES {
+        let src_path = PathBuf::from("fixtures").join(name);
+        assert!(
+            src_path.exists(),
+            "golden fixture source missing: {}",
+            src_path.display(),
+        );
+        let stem = PathBuf::from(name)
+            .file_stem()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let golden_path = PathBuf::from("fixtures").join(format!("{}.specs", stem));
+
+        let out = Command::new(FZ_BIN)
+            .args(["dump", "--emit", "specs"])
+            .arg(&src_path)
+            .output()
+            .unwrap_or_else(|e| panic!("spawn fz dump {}: {}", name, e));
+        if !out.status.success() {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            failures.push(format!(
+                "fz dump --emit specs {} exited {}: {}",
+                name,
+                out.status,
+                stderr.trim_end(),
+            ));
+            continue;
+        }
+        let actual = String::from_utf8_lossy(&out.stdout).into_owned();
+
+        if bless {
+            fs::write(&golden_path, &actual)
+                .unwrap_or_else(|e| panic!(
+                    "bless write {}: {}", golden_path.display(), e,
+                ));
+            continue;
+        }
+
+        let expected = match fs::read_to_string(&golden_path) {
+            Ok(s) => s,
+            Err(_) => {
+                failures.push(format!(
+                    "golden specs file missing for {}: {}\n\
+                     Run `BLESS_SPECS=1 cargo test golden_specs` to seed it.",
+                    name,
+                    golden_path.display(),
+                ));
+                continue;
+            }
+        };
+
+        if actual != expected {
+            failures.push(format!(
+                "golden specs mismatch for {} ({}):\n\n\
+                 Re-run with `BLESS_SPECS=1 cargo test golden_specs` to \
+                 update the golden after reviewing the diff.\n\n\
+                 --- expected ({} bytes)\n{}\n\
+                 --- actual ({} bytes)\n{}",
+                name,
+                golden_path.display(),
+                expected.len(),
+                expected,
+                actual.len(),
+                actual,
+            ));
+        }
+    }
+
+    assert!(
+        failures.is_empty(),
+        "{} golden specs failure(s):\n\n{}",
+        failures.len(),
+        failures.join("\n\n---\n\n"),
+    );
+}

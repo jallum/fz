@@ -1,0 +1,160 @@
+; spec double(1) #fn=0
+;   key:    [21]
+;   return: int
+;   vars:
+;     Var(0) :: 21
+;     Var(1) :: :a0
+;     Var(2) :: 2
+;     Var(3) :: int
+;   exits:
+;     blk0 Return Var(3)    :: int
+;     blk1 Halt Var(1)      :: :a0
+
+; spec neg(1) #fn=1
+;   key:    [5]
+;   return: int
+;   vars:
+;     Var(0) :: 5
+;     Var(1) :: :a0
+;     Var(2) :: 0
+;     Var(3) :: int
+;   exits:
+;     blk0 Return Var(3)    :: int
+;     blk1 Halt Var(1)      :: :a0
+
+; spec neg(1) #fn=1
+;   key:    [7]
+;   return: int
+;   vars:
+;     Var(0) :: 7
+;     Var(1) :: :a0
+;     Var(2) :: 0
+;     Var(3) :: int
+;   exits:
+;     blk0 Return Var(3)    :: int
+;     blk1 Halt Var(1)      :: :a0
+
+; spec apply2(2) #fn=2
+;   key:    [(any) -> any, 21]
+;   return: any
+;   fn_constants:
+;     Var(0) = double#0
+;   vars:
+;     Var(0) :: (any) -> any
+;     Var(1) :: 21
+;     Var(2) :: :a0
+;   exits:
+;     blk0 TailCallClosure Var(0)(Var(1)) [resolved=double#0]
+;     blk1 Halt Var(2)      :: :a0
+
+; spec apply2(2) #fn=2
+;   key:    [(any) -> any, 7]
+;   return: any
+;   fn_constants:
+;     Var(0) = neg#1
+;   vars:
+;     Var(0) :: (any) -> any
+;     Var(1) :: 7
+;     Var(2) :: :a0
+;   exits:
+;     blk0 TailCallClosure Var(0)(Var(1)) [resolved=neg#1]
+;     blk1 Halt Var(2)      :: :a0
+
+; spec compose(3) #fn=3
+;   key:    [(any) -> any, (any) -> any, 5]
+;   return: any
+;   fn_constants:
+;     Var(0) = double#0
+;     Var(1) = neg#1
+;   vars:
+;     Var(0) :: (any) -> any
+;     Var(1) :: (any) -> any
+;     Var(2) :: 5
+;     Var(3) :: :a0
+;   exits:
+;     blk0 CallClosure Var(1)(Var(2)) [resolved=neg#1]
+;              cont k_5#5 captured=[Var(0), Var(1), Var(2)]
+;              cont_key=[any, (any) -> any, (any) -> any, 5]
+;     blk1 Halt Var(3)      :: :a0
+
+; spec main(0) #fn=4
+;   key:    []
+;   return: any
+;   fn_constants:
+;     Var(1) = double#0
+;   vars:
+;     Var(0) :: :a0
+;     Var(1) :: (any) -> any
+;     Var(2) :: 21
+;   exits:
+;     blk0 Call apply2#2(Var(1), Var(2))
+;              callee_key=[(any) -> any, 21]
+;              cont k_6#6 captured=[]
+;              cont_key=[any]
+;     blk1 Halt Var(0)      :: :a0
+
+; spec k_5(4) #fn=5
+;   key:    [any, (any) -> any, (any) -> any, 5]
+;   return: any
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: (any) -> any
+;     Var(2) :: (any) -> any
+;     Var(3) :: 5
+;   exits:
+;     blk0 TailCallClosure Var(1)(Var(0))
+
+; spec k_5(4) #fn=5
+;   key:    [any, any, any, any]
+;   return: any
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: any
+;     Var(2) :: any
+;     Var(3) :: any
+;   exits:
+;     blk0 TailCallClosure Var(1)(Var(0))
+
+; spec k_6(1) #fn=6
+;   key:    [any]
+;   return: any
+;   fn_constants:
+;     Var(2) = neg#1
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: nil
+;     Var(2) :: (any) -> any
+;     Var(3) :: 7
+;   exits:
+;     blk0 Call apply2#2(Var(2), Var(3))
+;              callee_key=[(any) -> any, 7]
+;              cont k_7#7 captured=[]
+;              cont_key=[any]
+
+; spec k_7(1) #fn=7
+;   key:    [any]
+;   return: any
+;   fn_constants:
+;     Var(2) = double#0
+;     Var(3) = neg#1
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: nil
+;     Var(2) :: (any) -> any
+;     Var(3) :: (any) -> any
+;     Var(4) :: 5
+;   exits:
+;     blk0 Call compose#3(Var(2), Var(3), Var(4))
+;              callee_key=[(any) -> any, (any) -> any, 5]
+;              cont k_8#8 captured=[]
+;              cont_key=[any]
+
+; spec k_8(1) #fn=8
+;   key:    [any]
+;   return: nil
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: nil
+;   exits:
+;     blk0 Return Var(1)    :: nil
+

@@ -1835,6 +1835,241 @@ pub fn cont_input_key(
 }
 
 // ----------------------------------------------------------------------
+// fz-73m — pretty-printer for ModuleTypes (golden spec dump).
+// ----------------------------------------------------------------------
+
+/// Deterministic text dump of `ModuleTypes`. One stanza per (FnId, key)
+/// spec; specs are sorted by FnId, then by lexicographic Descr-string of
+/// the key so the output is stable across runs and HashMap iteration
+/// orders.
+///
+/// Format is intended for golden-file diffing — every line is a comment
+/// (`;` prefix) so the file reads like an annotated CLIF dump. Consumers
+/// should treat the output as opaque text; the goal is that a human can
+/// eyeball "are the inferred types what I expect for this fixture?"
+/// without running codegen.
+pub fn pretty_module_types(m: &Module, t: &ModuleTypes) -> String {
+    let fn_name = |fid: FnId| -> String {
+        m.fns
+            .iter()
+            .find(|f| f.id == fid)
+            .map(|f| f.name.clone())
+            .unwrap_or_else(|| format!("?fn{}", fid.0))
+    };
+    let descrs_str = |ds: &[Descr]| -> String {
+        let parts: Vec<String> = ds.iter().map(|d| format!("{}", d)).collect();
+        format!("[{}]", parts.join(", "))
+    };
+
+    let mut keys: Vec<&(FnId, Vec<Descr>)> = t.specs.keys().collect();
+    keys.sort_by(|a, b| {
+        a.0.0.cmp(&b.0.0).then_with(|| descrs_str(&a.1).cmp(&descrs_str(&b.1)))
+    });
+
+    let mut out = String::new();
+    for spec_key in keys {
+        let (fid, key) = spec_key;
+        let ft = &t.specs[spec_key];
+        let f = m.fn_by_id(*fid);
+        let entry = f.block(f.entry);
+        let arity = entry.params.len();
+
+        out.push_str(&format!(
+            "; spec {}({}) #fn={}\n",
+            f.name, arity, fid.0
+        ));
+        out.push_str(&format!(";   key:    {}\n", descrs_str(key)));
+
+        let mut visiting: HashSet<(FnId, Vec<Descr>)> = HashSet::new();
+        let ret = effective_return_descr(spec_key, m, &t.specs, &mut visiting);
+        out.push_str(&format!(";   return: {}\n", ret));
+
+        if !ft.fn_constants.is_empty() {
+            let mut fcs: Vec<(&Var, &FnId)> = ft.fn_constants.iter().collect();
+            fcs.sort_by_key(|(v, _)| v.0);
+            out.push_str(";   fn_constants:\n");
+            for (v, fc) in fcs {
+                out.push_str(&format!(
+                    ";     Var({}) = {}#{}\n",
+                    v.0,
+                    fn_name(*fc),
+                    fc.0
+                ));
+            }
+        }
+
+        let mut vars: Vec<(&Var, &Descr)> = ft.vars.iter().collect();
+        vars.sort_by_key(|(v, _)| v.0);
+        out.push_str(";   vars:\n");
+        for (v, d) in vars {
+            out.push_str(&format!(";     Var({}) :: {}\n", v.0, d));
+        }
+
+        let mut blocks: Vec<&Block> = f.blocks.iter().collect();
+        blocks.sort_by_key(|b| b.id.0);
+        out.push_str(";   exits:\n");
+        for b in blocks {
+            let bid = b.id.0;
+            match &b.terminator {
+                Term::Return(v) => {
+                    let d = ft.vars.get(v).cloned().unwrap_or_else(Descr::any);
+                    out.push_str(&format!(
+                        ";     blk{} Return Var({})    :: {}\n",
+                        bid, v.0, d
+                    ));
+                }
+                Term::Halt(v) => {
+                    let d = ft.vars.get(v).cloned().unwrap_or_else(Descr::any);
+                    out.push_str(&format!(
+                        ";     blk{} Halt Var({})      :: {}\n",
+                        bid, v.0, d
+                    ));
+                }
+                Term::TailCall { callee, args } => {
+                    let arg_descrs: Vec<Descr> = args
+                        .iter()
+                        .map(|av| ft.vars.get(av).cloned().unwrap_or_else(Descr::any))
+                        .collect();
+                    let arg_vars: Vec<String> =
+                        args.iter().map(|v| format!("Var({})", v.0)).collect();
+                    out.push_str(&format!(
+                        ";     blk{} TailCall {}#{}({})\n",
+                        bid,
+                        fn_name(*callee),
+                        callee.0,
+                        arg_vars.join(", ")
+                    ));
+                    out.push_str(&format!(
+                        ";              callee_key={}\n",
+                        descrs_str(&arg_descrs)
+                    ));
+                }
+                Term::Call { callee, args, continuation } => {
+                    let arg_descrs: Vec<Descr> = args
+                        .iter()
+                        .map(|av| ft.vars.get(av).cloned().unwrap_or_else(Descr::any))
+                        .collect();
+                    let arg_vars: Vec<String> =
+                        args.iter().map(|v| format!("Var({})", v.0)).collect();
+                    let cap_vars: Vec<String> = continuation
+                        .captured
+                        .iter()
+                        .map(|v| format!("Var({})", v.0))
+                        .collect();
+                    let ck = cont_input_key(b, continuation, ft, m, t);
+                    out.push_str(&format!(
+                        ";     blk{} Call {}#{}({})\n",
+                        bid,
+                        fn_name(*callee),
+                        callee.0,
+                        arg_vars.join(", ")
+                    ));
+                    out.push_str(&format!(
+                        ";              callee_key={}\n",
+                        descrs_str(&arg_descrs)
+                    ));
+                    out.push_str(&format!(
+                        ";              cont {}#{} captured=[{}]\n",
+                        fn_name(continuation.fn_id),
+                        continuation.fn_id.0,
+                        cap_vars.join(", ")
+                    ));
+                    out.push_str(&format!(
+                        ";              cont_key={}\n",
+                        descrs_str(&ck)
+                    ));
+                }
+                Term::CallClosure { closure, args, continuation } => {
+                    let arg_vars: Vec<String> =
+                        args.iter().map(|v| format!("Var({})", v.0)).collect();
+                    let cap_vars: Vec<String> = continuation
+                        .captured
+                        .iter()
+                        .map(|v| format!("Var({})", v.0))
+                        .collect();
+                    let ck = cont_input_key(b, continuation, ft, m, t);
+                    let target = ft.fn_constants.get(closure).copied();
+                    let target_str = match target {
+                        Some(fid) => format!(" [resolved={}#{}]", fn_name(fid), fid.0),
+                        None => String::new(),
+                    };
+                    out.push_str(&format!(
+                        ";     blk{} CallClosure Var({})({}){}\n",
+                        bid,
+                        closure.0,
+                        arg_vars.join(", "),
+                        target_str
+                    ));
+                    out.push_str(&format!(
+                        ";              cont {}#{} captured=[{}]\n",
+                        fn_name(continuation.fn_id),
+                        continuation.fn_id.0,
+                        cap_vars.join(", ")
+                    ));
+                    out.push_str(&format!(
+                        ";              cont_key={}\n",
+                        descrs_str(&ck)
+                    ));
+                }
+                Term::TailCallClosure { closure, args } => {
+                    let arg_vars: Vec<String> =
+                        args.iter().map(|v| format!("Var({})", v.0)).collect();
+                    let target = ft.fn_constants.get(closure).copied();
+                    let target_str = match target {
+                        Some(fid) => format!(" [resolved={}#{}]", fn_name(fid), fid.0),
+                        None => String::new(),
+                    };
+                    out.push_str(&format!(
+                        ";     blk{} TailCallClosure Var({})({}){}\n",
+                        bid,
+                        closure.0,
+                        arg_vars.join(", "),
+                        target_str
+                    ));
+                }
+                Term::Receive { continuation } => {
+                    let cap_vars: Vec<String> = continuation
+                        .captured
+                        .iter()
+                        .map(|v| format!("Var({})", v.0))
+                        .collect();
+                    let ck = cont_input_key(b, continuation, ft, m, t);
+                    out.push_str(&format!(
+                        ";     blk{} Receive cont {}#{} captured=[{}]\n",
+                        bid,
+                        fn_name(continuation.fn_id),
+                        continuation.fn_id.0,
+                        cap_vars.join(", ")
+                    ));
+                    out.push_str(&format!(
+                        ";              cont_key={}\n",
+                        descrs_str(&ck)
+                    ));
+                }
+                Term::Goto(target, args) => {
+                    let arg_vars: Vec<String> =
+                        args.iter().map(|v| format!("Var({})", v.0)).collect();
+                    out.push_str(&format!(
+                        ";     blk{} Goto blk{}({})\n",
+                        bid,
+                        target.0,
+                        arg_vars.join(", ")
+                    ));
+                }
+                Term::If(cond, t_blk, e_blk) => {
+                    out.push_str(&format!(
+                        ";     blk{} If Var({}) ? blk{} : blk{}\n",
+                        bid, cond.0, t_blk.0, e_blk.0
+                    ));
+                }
+            }
+        }
+        out.push('\n');
+    }
+    out
+}
+
+// ----------------------------------------------------------------------
 // Tests
 // ----------------------------------------------------------------------
 

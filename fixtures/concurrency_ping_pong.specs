@@ -1,0 +1,44 @@
+; spec child(0) #fn=0
+;   key:    []
+;   return: any
+;   vars:
+;     Var(0) :: :a0
+;     Var(1) :: 1
+;     Var(2) :: 42
+;     Var(3) :: any
+;   exits:
+;     blk0 Return Var(3)    :: any
+;     blk1 Halt Var(0)      :: :a0
+
+; spec main(0) #fn=1
+;   key:    []
+;   return: any
+;   fn_constants:
+;     Var(1) = child#0
+;   vars:
+;     Var(0) :: :a0
+;     Var(1) :: () -> any
+;     Var(2) :: (any) -> any
+;     Var(3) :: int
+;   exits:
+;     blk0 Receive cont k_receive_3#3 captured=[]
+;              cont_key=[any]
+;     blk1 Halt Var(0)      :: :a0
+
+; spec fz_spawn_thunk(1) #fn=2
+;   key:    [() -> any]
+;   return: any
+;   vars:
+;     Var(0) :: () -> any
+;   exits:
+;     blk0 TailCallClosure Var(0)()
+
+; spec k_receive_3(1) #fn=3
+;   key:    [any]
+;   return: nil
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: nil
+;   exits:
+;     blk0 Return Var(1)    :: nil
+

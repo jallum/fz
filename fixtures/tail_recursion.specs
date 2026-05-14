@@ -1,0 +1,86 @@
+; spec count(2) #fn=0
+;   key:    [100000, 0]
+;   return: int
+;   vars:
+;     Var(0) :: 100000
+;     Var(1) :: 0
+;     Var(2) :: :a0
+;     Var(3) :: 0
+;     Var(4) :: bool
+;     Var(5) :: 1
+;     Var(6) :: int
+;     Var(7) :: 1
+;     Var(8) :: int
+;   exits:
+;     blk0 Goto blk1()
+;     blk1 If Var(4) ? blk4 : blk2
+;     blk2 TailCall count#0(Var(6), Var(8))
+;              callee_key=[int, int]
+;     blk3 Halt Var(2)      :: :a0
+;     blk4 Return Var(1)    :: 0
+
+; spec count(2) #fn=0
+;   key:    [int | float, int | float]
+;   return: int | float
+;   vars:
+;     Var(0) :: int | float
+;     Var(1) :: int | float
+;     Var(2) :: :a0
+;     Var(3) :: 0
+;     Var(4) :: bool
+;     Var(5) :: 1
+;     Var(6) :: int | float
+;     Var(7) :: 1
+;     Var(8) :: int | float
+;   exits:
+;     blk0 Goto blk1()
+;     blk1 If Var(4) ? blk4 : blk2
+;     blk2 TailCall count#0(Var(6), Var(8))
+;              callee_key=[int | float, int | float]
+;     blk3 Halt Var(2)      :: :a0
+;     blk4 Return Var(1)    :: int | float
+
+; spec count(2) #fn=0
+;   key:    [int, int]
+;   return: int
+;   vars:
+;     Var(0) :: int
+;     Var(1) :: int
+;     Var(2) :: :a0
+;     Var(3) :: 0
+;     Var(4) :: bool
+;     Var(5) :: 1
+;     Var(6) :: int
+;     Var(7) :: 1
+;     Var(8) :: int
+;   exits:
+;     blk0 Goto blk1()
+;     blk1 If Var(4) ? blk4 : blk2
+;     blk2 TailCall count#0(Var(6), Var(8))
+;              callee_key=[int, int]
+;     blk3 Halt Var(2)      :: :a0
+;     blk4 Return Var(1)    :: int
+
+; spec main(0) #fn=1
+;   key:    []
+;   return: any
+;   vars:
+;     Var(0) :: :a1
+;     Var(1) :: 100000
+;     Var(2) :: 0
+;   exits:
+;     blk0 Call count#0(Var(1), Var(2))
+;              callee_key=[100000, 0]
+;              cont k_2#2 captured=[]
+;              cont_key=[int]
+;     blk1 Halt Var(0)      :: :a1
+
+; spec k_2(1) #fn=2
+;   key:    [int]
+;   return: nil
+;   vars:
+;     Var(0) :: int
+;     Var(1) :: nil
+;   exits:
+;     blk0 Return Var(1)    :: nil
+
