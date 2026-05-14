@@ -181,25 +181,19 @@ impl<'a> Renderer<'a> {
         let source_line = &f.bytes.as_bytes()[loc.line_start as usize..loc.line_end as usize];
         let (expanded_line, byte_to_col) = expand_tabs(source_line, self.tab_width as usize);
 
-        // Source line itself.
+        // Source line itself. Color is applied to the underline glyph
+        // below (color_pre / color_post), not to the source bytes —
+        // showing the source verbatim keeps copy-paste from the
+        // terminal lossless. Inline-coloring the spanned bytes would
+        // be a real diagnostics-polish feature (filed separately).
         writeln!(out, "{:>pad$} |", "", pad = gutter)?;
-        if self.use_color {
-            writeln!(
-                out,
-                "{n:>pad$} | {line}",
-                n = loc.line,
-                pad = gutter,
-                line = expanded_line
-            )?;
-        } else {
-            writeln!(
-                out,
-                "{n:>pad$} | {line}",
-                n = loc.line,
-                pad = gutter,
-                line = expanded_line
-            )?;
-        }
+        writeln!(
+            out,
+            "{n:>pad$} | {line}",
+            n = loc.line,
+            pad = gutter,
+            line = expanded_line
+        )?;
 
         // Underline. Compute start/end column in expanded coords.
         let local_start = (sl.span.start.saturating_sub(loc.line_start)) as usize;

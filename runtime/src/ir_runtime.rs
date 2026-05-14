@@ -92,13 +92,18 @@ pub extern "C" fn fz_halt(_ctx: *mut u8, fz_bits: u64) {
         Tag::Int => v.unbox_int().unwrap(),
         Tag::Atom => v.unbox_atom().unwrap() as i64,
         Tag::Special => {
+            // Tag::Special has three inhabitants: true → 1, false → 0,
+            // nil → 0. The else branch asserts the only remaining
+            // possibility; a new Special variant landing here would
+            // surface in debug builds.
             if v.is_true() {
                 1
             } else if v.is_false() {
                 0
             } else {
+                debug_assert!(v.is_nil(), "fz_halt: unrecognized Tag::Special bits");
                 0
-            } // nil
+            }
         }
         Tag::Ptr => {
             let p = v.unbox_ptr().unwrap();
