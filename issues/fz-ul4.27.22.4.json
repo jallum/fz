@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-05-14T15:52:42Z",
   "created": "2026-05-14T15:47:13Z",
   "description": "Refactor: replace the four \\\"force to Tagged\\\" rules with one shared rule — at every typed seam (closure body, closure callsite, cont entry, mailbox), both sides derive ArgRepr from the seam's static Descr via the same pure function (ArgRepr::from_descr).\n\n## The four forces being deleted\n\n1. `closure_target_fns` all-Tagged param/return force (src/ir_codegen.rs:2331-2335 + ~2452).\n2. `uniform_cont_reachable_specs` slot-0 force (src/ir_codegen.rs:2321).\n3. `tagged_slot0_cont_specs` slot-0 force (src/ir_codegen.rs:2432).\n4. `tagged_return_fns` transitive closure (src/ir_codegen.rs:2350+).\n\nAll four are workarounds for one missing rule: ArgRepr at a typed seam is a deterministic function of that seam's static Descr. With the typer's effective_returns LFP now honest (post fz-3zx + fz-8ki), the Descrs are reliable and the forces are dead weight.\n\n## Three rules in\n\n1. Closure body's param_reprs derived from the callable type of its closure-target signature (not from spec capture key). Captures inside the body remain freely typed per-spec.\n2. MakeClosure capture store: coerce each capture to body.param_reprs[i] (analogous to 21.2 for cont captures).\n3. CallClosure / TailCallClosure sig derived from `closure` Var's Descr; arg coerce uses those reprs (not blanket Tagged).\n\n## Polymorphic-closure correctness argument\n\nLambdas used both monomorphically and polymorphically already register both narrow keys and `[any, any, ...]` keys in spec_registry. MakeClosure resolves the right narrow `cl_sid` from the *caller-spec's* Descrs at that site (already done in src/ir_codegen.rs:1914 / :5489). CallClosure resolves the same shape via the closure Var's Descr at the call site. When that Descr widens to any (escaped into a generic container or mailbox), it naturally resolves to the Tagged spec.\n\n## DAG\n\n22.4.1 — body ABI from callable type. Change build_param_reprs (or a wrapper) for closure_target_fns specs to derive from surface callable type. Delete the all-Tagged param/return force. Closure-using fixtures may break correctness pending .4.2; goldens diff.\n\n22.4.2 — MakeClosure typed capture store + CallClosure typed sig and arg coerce. Restores green. (May fold into .4.1 for one-commit-no-broken-tree if .4.1's CLIF diff is small.)\n\n22.4.3 — collapse the cont forces. Delete uniform_cont_reachable_specs / tagged_slot0_cont_specs / tagged_return_fns after verifying each is subsumed by Descr propagation. Goldens should be unchanged.\n\n## Acceptance\n\n- Test suite green at each commit.\n- Per-fixture goldens diff visibly at .4.1/.4.2; .4.3 produces no golden change (cleanup-only).\n- expect_clif_excludes assertions on closure-using fixtures (analogous to 21.3) lock in the seam-typing wins.\n- Net: ~50 lines deleted vs ~30 added. Subsumes fz-ul4.27.22.1 (force-drop scoped narrower).\n\n## Supersedes\n\n- fz-ul4.27.22.1 (pending) — folds into 22.4.1.",
   "id": "fz-ul4.27.22.4",
   "labels": [],
   "parent": "fz-ul4.27.22",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "Unify seam ArgRepr via Descr — delete four forces",
   "type": "task",
-  "updated_at": "2026-05-14T15:47:13Z"
+  "updated_at": "2026-05-14T15:52:42Z"
 }
