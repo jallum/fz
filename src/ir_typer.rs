@@ -446,6 +446,121 @@ pub fn type_module(m: &Module) -> ModuleTypes {
         }
     }
 
+    // fz-vw4.5b — phase 2: MakeClosure-side any-key registration.
+    // Phase 1 (above) registered only direct + resolved-closure
+    // specs. Now sweep every registered spec's body for
+    // `Prim::MakeClosure(F, captures)` and push
+    // `(F, [capture_descrs..., any...])` for each. Captures come
+    // from the discovering spec's per-block env; arg slots fill
+    // with `any` because the closure value's invocation args are
+    // unknown at construction time.
+    //
+    // Step 5b unconditionally pushes; step 5c will gate on
+    // `opaque_consumer_arities` so closure targets that are
+    // never opaquely dispatched skip the defensive any-key.
+    for _ in 0..64 {
+        let snapshot: Vec<(FnId, Vec<Descr>)> = specs.keys().cloned().collect();
+        for (fid, key) in &snapshot {
+            let Some(&j) = idx_of.get(fid) else { continue; };
+            let entry_key = (*fid, key.clone());
+            let caller_ft = specs.get(&entry_key).cloned().unwrap();
+            let f = &m.fns[j];
+            for b in &f.blocks {
+                let mut env = caller_ft.block_envs.get(&b.id).cloned().unwrap_or_default();
+                for stmt in &b.stmts {
+                    let Stmt::Let(v, prim) = stmt;
+                    if let Prim::MakeClosure(lam_fn_id, captured) = prim {
+                        if let Some(&jj) = idx_of.get(lam_fn_id) {
+                            let lam = &m.fns[jj];
+                            let n_params = lam.block(lam.entry).params.len();
+                            let mut k: Vec<Descr> = vec![Descr::any(); n_params];
+                            for (i, cv) in captured.iter().enumerate() {
+                                if let Some(slot) = k.get_mut(i) {
+                                    *slot = env.get(cv).cloned().unwrap_or_else(Descr::any);
+                                }
+                            }
+                            if !specs.contains_key(&(*lam_fn_id, k.clone())) {
+                                pending.entry(*lam_fn_id).or_default().insert(k);
+                            }
+                        }
+                    }
+                    env.insert(*v, type_prim(prim, &env, m));
+                }
+            }
+        }
+
+        // Drain pending → register new specs (no further walking
+        // beyond MakeClosure sweep; direct callsites of these new
+        // any-key bodies will be discovered when we loop).
+        let to_process: Vec<(FnId, Vec<Descr>)> = pending.iter_mut()
+            .flat_map(|(fid, keys)| {
+                let v: Vec<Vec<Descr>> = keys.drain().collect();
+                v.into_iter().map(move |k| (*fid, k))
+            })
+            .collect();
+        let drained_anything = !to_process.is_empty();
+        for (fid, key) in to_process {
+            let Some(&j) = idx_of.get(&fid) else { continue; };
+            let entry_key = (fid, key.clone());
+            if !specs.contains_key(&entry_key) {
+                let mut ft = type_fn(&m.fns[j], m, Some(&key));
+                if let Some(arg_consts) = callsite_fn_consts.get(&entry_key) {
+                    let entry = m.fns[j].entry;
+                    let entry_params = &m.fns[j].block(entry).params;
+                    for (slot, p) in entry_params.iter().enumerate() {
+                        if let Some(Some(fid_const)) = arg_consts.get(slot) {
+                            ft.fn_constants.insert(*p, *fid_const);
+                        }
+                    }
+                }
+                specs.insert(entry_key, ft);
+            }
+        }
+
+        // Re-run the phase-1 closure-to-fixpoint on the new specs so
+        // direct callsites inside the newly-registered any-key
+        // bodies get their downstream specs registered too.
+        for _ in 0..16 {
+            let snapshot: Vec<(FnId, Vec<Descr>)> = specs.keys().cloned().collect();
+            for (fid, key) in &snapshot {
+                let Some(&j) = idx_of.get(fid) else { continue; };
+                let entry_key = (*fid, key.clone());
+                let caller_ft = specs.get(&entry_key).cloned().unwrap();
+                walk_spec_for_discovery(
+                    &m.fns[j], &caller_ft, m, &specs,
+                    &std::collections::HashSet::new(), false,
+                    &mut pending, &mut callsite_fn_consts, &mut narrowed_lub,
+                );
+            }
+            let to_process: Vec<(FnId, Vec<Descr>)> = pending.iter_mut()
+                .flat_map(|(fid, keys)| {
+                    let v: Vec<Vec<Descr>> = keys.drain().collect();
+                    v.into_iter().map(move |k| (*fid, k))
+                })
+                .collect();
+            if to_process.is_empty() { break; }
+            for (fid, key) in to_process {
+                let Some(&j) = idx_of.get(&fid) else { continue; };
+                let entry_key = (fid, key.clone());
+                if !specs.contains_key(&entry_key) {
+                    let mut ft = type_fn(&m.fns[j], m, Some(&key));
+                    if let Some(arg_consts) = callsite_fn_consts.get(&entry_key) {
+                        let entry = m.fns[j].entry;
+                        let entry_params = &m.fns[j].block(entry).params;
+                        for (slot, p) in entry_params.iter().enumerate() {
+                            if let Some(Some(fid_const)) = arg_consts.get(slot) {
+                                ft.fn_constants.insert(*p, *fid_const);
+                            }
+                        }
+                    }
+                    specs.insert(entry_key, ft);
+                }
+            }
+        }
+
+        if !drained_anything { break; }
+    }
+
     // Update by_fn_idx from narrowed_lub (legacy codegen consumer).
     for (i, f) in m.fns.iter().enumerate() {
         if let Some(next) = narrowed_lub.get(&f.id) {
@@ -750,20 +865,10 @@ fn walk_spec_for_discovery(
         let mut env = caller_ft.block_envs.get(&b.id).cloned().unwrap_or_default();
         for stmt in &b.stmts {
             let Stmt::Let(v, prim) = stmt;
-            if let Prim::MakeClosure(lam_fn_id, captured) = prim {
-                if let Some(&j) = idx_of.get(lam_fn_id) {
-                    let lam = &m.fns[j];
-                    let n_params = lam.block(lam.entry).params.len();
-                    let mut k: Vec<Descr> = vec![Descr::any(); n_params];
-                    for (i, cv) in captured.iter().enumerate() {
-                        if let Some(slot) = k.get_mut(i) {
-                            *slot = env.get(cv).cloned().unwrap_or_else(Descr::any);
-                        }
-                    }
-                    let k = maybe_widen(k, *lam_fn_id);
-                    push_key(pending, *lam_fn_id, k);
-                }
-            }
+            // fz-vw4.5b — MakeClosure-side any-key registration moved
+            // to a dedicated phase-2 sweep after phase-1 converges. The
+            // walker now only discovers direct + resolved-closure
+            // dispatch.
             env.insert(*v, type_prim(prim, &env, m));
         }
 
