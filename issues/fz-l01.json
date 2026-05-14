@@ -2,13 +2,14 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-05-14T13:35:08Z",
   "created": "2026-05-14T13:20:59Z",
   "description": "ir_lower synthesizes a \"no clause matched → halt with match-error\"\nfallback for every multi-clause fn. The typer often proves that\nfallback unreachable (good news for the user — runtime won't fault).\nThe unreachable-arm diagnostic then warns on the fallback's dead\nbranch, attributing the span to a clause pattern literal — confusing\noutput for code the user didn't directly write.\n\nSymptom (/tmp/sum.fz):\n  fn sum([]), do: 0\n  fn sum([h | t]), do: h + sum(t)\n  fn main(), do: print(sum([1, 2, 3, 4, 5]))\n\nEmits a \"the then branch is never reachable\" warning attributed to\n\\`fn sum([])\\` or \\`fn sum([h|t])\\` depending on var-span attribution.\nThe dead branch is the synthetic match-error halt, not anything\nthe user wrote.\n\n## Plan\n\nTag synthetic-lowering blocks at ir_lower emit time (e.g. set a\nSourceInfo bit per BlockId, or per Term span = DUMMY). Have\ncollect_diagnostics skip Term::If whose dead branch's target is a\nsynthetic block.\n\nAlternatively: keep emitting, but reword the message to \"match-error\nfallback proven unreachable — typer proved every input is a\ncovered clause\" and demote to info-level. Either way, stop\nattributing the span to a user-written clause literal.\n\n## Acceptance\n\n  - /tmp/sum.fz compiles with zero diagnostics.\n  - Existing tests in ir_typer::tests::unreachable_arm_* still emit\n    warnings for user-written dead branches.",
   "id": "fz-l01",
   "labels": [],
   "priority": 3,
-  "status": "open",
+  "status": "closed",
   "title": "fz-suppress-synthetic-lowering-unreachable: don't warn on match-error fallbacks",
   "type": "task",
-  "updated_at": "2026-05-14T13:20:59Z"
+  "updated_at": "2026-05-14T13:35:08Z"
 }
