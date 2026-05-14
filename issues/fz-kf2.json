@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-14T20:18:18Z",
+  "description": "4 fixture failures in fixture_matrix (closure_typed_captures, concurrency_ping_pong, higher_order, tail_recursion) when run via AOT path. Output is correct ('100000', '42', etc.) but the binary SIGBUSes after printing.\n\nIntroduced (exposed) by fz-siu.6.3 (commit 72855317) which added `aot` to these fixtures' # paths: line. The AOT codegen bug existed before but wasn't exercised.\n\n## Reproduction\n\ncargo build \u0026\u0026 target/debug/fz build fixtures/tail_recursion.fz -o /tmp/tr\n/tmp/tr           # prints 100000 then exits 138 (SIGBUS)\n\n## Root cause (partial)\n\nLLDB inspection of tail_recursion:\n\nframe #0 PC = 0x80aa0203f3  (bogus)\nframe #1 LR = fz_main_entry + 20\n\nThe crash site is fz_fn_4 (k_2_s4 — print's cont, generated):\n\n  +44: ldr x1, [x3, #0x10]    ; x1 = load(outer_cont + 16)\n  +48: mov x2, #3              ; nil bits\n  +64: br x1                   ; tail-branch to halt-cont body\n\nx1 = 0x52800080aa0203f3 decodes as two valid arm64 instructions ('orr x19, xzr, x2'  + 'mov w0, #4'). That's CODE bytes, not a function pointer. The load at +16 of outer_cont returned 8 bytes of instruction stream.\n\nEither:\n- The cont's outer_cont slot (self+24) holds a code-region pointer instead of the halt-cont singleton.\n- The halt-cont singleton's +16 was overwritten with code bytes.\n\n## Already verified\n\n- AOT halt-cont init (process.rs:151+) does write addr correctly into base+16 in unit tests.\n- fz_aot_setup wiring (aot_shim.rs:100+) installs halt-cont singletons before user code runs.\n- aot_shim.rs:282 hardcodes process.halt_cont_singletons[0] (Tagged) — fine for tail_recursion which has @abi () -\u003e Tagged.\n\n## Next investigation steps\n\n1. Set hardware watchpoint on halt_cont_singletons[0]+16 to catch the writer that clobbers it (or confirm it was never set).\n2. Dump halt_cont_singletons[0] contents in lldb right after fz_aot_setup returns and confirm the body addr is there.\n3. Check whether main's cont closure (v6 in main's CLIF) stores halt_cl correctly at cl+24. The cont closure is built by fz_alloc_closure(4, 1, 0) in main; the +24 slot store is at main+56 (`str x2, [x0, #0x18]`).\n\n## Working theory\n\nThe AOT 'Cheney copy from parked_cont' GC mechanism (fz-siu.8) may be moving the halt-cont singleton or main's cont closure mid-execution, leaving stale pointers. tail_recursion does 100000 recursive tail-calls — that's plenty of frame allocations that could trigger GC and forward objects.",
+  "id": "fz-kf2",
+  "labels": [],
+  "priority": 1,
+  "status": "open",
+  "title": "[BUG] AOT path: indirect call to tagged value at cont→halt-cont seam",
+  "type": "bug",
+  "updated_at": "2026-05-14T20:18:18Z"
+}
