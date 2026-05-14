@@ -1,7 +1,8 @@
 {
   "assignee": "Jason Allum",
   "blocked_by": [
-    "fz-ul4.27.22.3"
+    "fz-ul4.27.22.3",
+    "fz-ul4.32.1"
   ],
   "blocks": [],
   "created": "2026-05-14T01:57:44Z",
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "fz-cps-closure.4: typed Term::Return cont seam",
   "type": "task",
-  "updated_at": "2026-05-14T02:24:52Z"
+  "updated_at": "2026-05-14T03:17:41Z"
 }
