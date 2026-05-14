@@ -12,8 +12,8 @@
   "labels": [],
   "parent": "fz-ul4.27.21",
   "priority": 2,
-  "status": "pending",
+  "status": "in_progress",
   "title": "fz-cps-narrow.1: result-param type narrowing at cont seam",
   "type": "task",
-  "updated_at": "2026-05-13T23:54:51Z"
+  "updated_at": "2026-05-14T00:09:26Z"
 }
