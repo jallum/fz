@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-ul4.27.22.12"
   ],
@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-ul4.27.22",
   "priority": 4,
-  "status": "open",
+  "status": "in_progress",
   "title": "fz-cps-seam.retire-halt-kind-plumbing: reassess halt_kind closure-header plumbing post-22.7",
   "type": "task",
-  "updated_at": "2026-05-14T21:03:03Z"
+  "updated_at": "2026-05-14T21:44:58Z"
 }
