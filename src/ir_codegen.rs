@@ -348,6 +348,14 @@ thread_local! {
     /// when set_disasm is on. Enable with `asm_record_enable()` before
     /// compile; drain with `asm_record_take()` after.
     pub static ASM_RECORD: std::cell::RefCell<Option<Vec<(String, String)>>> = std::cell::RefCell::new(None);
+    /// fz-ul4.32.1 — per-fn Value → IR Descr map, populated by compile_fn
+    /// at end-of-body. Consumed by the IR_TEXT_RECORD assembly step to
+    /// annotate each `vN` definition with its typer Descr. Only the
+    /// values bound to fz Vars (block params, Prim results, etc.) are
+    /// recorded; pure Cranelift intermediates (iconst, ishl_imm, ...)
+    /// have no fz-level Descr and stay unannotated.
+    pub static VALUE_DESCR_RECORD: std::cell::RefCell<Option<HashMap<u32, crate::types::Descr>>>
+        = std::cell::RefCell::new(None);
 }
 
 pub fn asm_record_enable() {
@@ -374,10 +382,141 @@ pub fn test_capture_take() -> Vec<String> {
 /// to assert on generated IR shape.
 pub fn ir_text_record_enable() {
     IR_TEXT_RECORD.with(|c| *c.borrow_mut() = Some(Vec::new()));
+    // fz-ul4.32.1 — pair the value-descr recorder so the assembled
+    // text gets typer Descr annotations alongside the raw CLIF.
+    VALUE_DESCR_RECORD.with(|c| *c.borrow_mut() = Some(HashMap::new()));
 }
 
 pub fn ir_text_record_take() -> Vec<(String, String)> {
+    VALUE_DESCR_RECORD.with(|c| *c.borrow_mut() = None);
     IR_TEXT_RECORD.with(|c| c.borrow_mut().take().unwrap_or_default())
+}
+
+/// fz-ul4.32.1 — Build the per-fn header block that precedes annotated
+/// CLIF. Two lines: typer's param/return Descrs and codegen's ArgReprs.
+/// Disagreement between the two reveals where seam coercion lands.
+fn build_typer_header(
+    spec_id: u32,
+    f: &crate::fz_ir::FnIr,
+    ft: &crate::ir_typer::FnTypes,
+    param_reprs: &[ArgRepr],
+    return_repr: ArgRepr,
+) -> String {
+    use std::fmt::Write as _;
+    let entry_params = &f.block(f.entry).params;
+    let typer_params: Vec<String> = entry_params
+        .iter()
+        .map(|v| match ft.vars.get(v) {
+            Some(d) => format!("{}", d),
+            None => "?".to_string(),
+        })
+        .collect();
+    // Join return Descrs across all Term::Return sites in this fn.
+    let mut return_descrs: Vec<String> = Vec::new();
+    for blk in &f.blocks {
+        if let crate::fz_ir::Term::Return(v) = &blk.terminator {
+            let d = ft.vars.get(v).map(|d| format!("{}", d)).unwrap_or_else(|| "?".into());
+            if !return_descrs.contains(&d) { return_descrs.push(d); }
+        }
+    }
+    let return_str = if return_descrs.is_empty() {
+        "(none)".to_string()
+    } else {
+        return_descrs.join(" | ")
+    };
+    let codegen_params: Vec<String> = param_reprs
+        .iter()
+        .map(|r| format!("{:?}", r))
+        .collect();
+    let mut out = String::new();
+    let _ = writeln!(out, ";   spec_id={}, fn_id={}", spec_id, f.id.0);
+    let _ = writeln!(out, ";   typer:   params=[{}]  return={}",
+        typer_params.join(", "), return_str);
+    let _ = writeln!(out, ";   codegen: param_reprs=[{}]  return_repr={:?}",
+        codegen_params.join(", "), return_repr);
+    out
+}
+
+/// fz-ul4.32.1 — Annotate raw Cranelift IR text with IR-level Descrs.
+///
+/// Inputs:
+///   - `raw`: the text from `ctx.func.display()`.
+///   - `value_descrs`: Value.as_u32() → typer Descr for fz-Var-bound values.
+///   - `header`: pre-built header lines (typer params/return, codegen
+///     param_reprs/return_repr). Already starts with `; `.
+///
+/// Output: header lines + annotated CLIF. Per-`vN = ...` definitions get
+/// an inline `; vN :: <Descr>` comment appended; pure intermediates with
+/// no fz Var binding are left alone. The `block0(...)` line annotates
+/// each block-param with its Descr inline.
+fn annotate_clif_dump(
+    raw: &str,
+    value_descrs: &HashMap<u32, crate::types::Descr>,
+    header: &str,
+) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    out.push_str(header);
+    if !header.ends_with('\n') { out.push('\n'); }
+    for line in raw.lines() {
+        let trimmed = line.trim_start();
+        // Block header: `blockN(v0: ty, v1: ty, ...):`
+        if trimmed.starts_with("block") && trimmed.contains('(') && trimmed.ends_with(':') {
+            let _ = writeln!(out, "{}", annotate_block_header(line, value_descrs));
+            continue;
+        }
+        // Value definition: `    vN = <op> ...`
+        if let Some(rest) = trimmed.strip_prefix('v') {
+            if let Some((id_str, _)) = rest.split_once(' ') {
+                if let Ok(id) = id_str.parse::<u32>() {
+                    // Confirm it's actually `vN =` (not `vN+16` in a load).
+                    if rest.split_once(' ').map(|x| x.1.starts_with('=')).unwrap_or(false) {
+                        if let Some(d) = value_descrs.get(&id) {
+                            let _ = writeln!(out, "{}    ;; v{} :: {}", line.trim_end(), id, d);
+                            continue;
+                        }
+                    }
+                }
+            }
+        }
+        let _ = writeln!(out, "{}", line);
+    }
+    out
+}
+
+/// Inline-annotate the `(vN: ty, ...)` portion of a block header with the
+/// IR Descr of each param. Skips params whose value-id is absent from
+/// `value_descrs`.
+fn annotate_block_header(
+    line: &str,
+    value_descrs: &HashMap<u32, crate::types::Descr>,
+) -> String {
+    // Append a trailing `; vN :: Descr  vM :: Descr` comment AFTER the
+    // existing line. Preserves substring matches like
+    // `block0(v0: f64, v1: f64, v2: i64)` used by fixture_matrix
+    // expect_clif_contains directives.
+    let Some(open) = line.find('(') else { return line.to_string(); };
+    let Some(close) = line.rfind(')') else { return line.to_string(); };
+    if close <= open + 1 { return line.to_string(); }
+    let inner = &line[open + 1..close];
+    let mut notes: Vec<String> = Vec::new();
+    for p in inner.split(',') {
+        let p_trim = p.trim();
+        if let Some(rest) = p_trim.strip_prefix('v') {
+            if let Some((id_str, _ty)) = rest.split_once(':') {
+                if let Ok(id) = id_str.trim().parse::<u32>() {
+                    if let Some(d) = value_descrs.get(&id) {
+                        notes.push(format!("v{} :: {}", id, d));
+                    }
+                }
+            }
+        }
+    }
+    if notes.is_empty() {
+        line.to_string()
+    } else {
+        format!("{}    ;; {}", line.trim_end(), notes.join(", "))
+    }
 }
 
 /// Halt: receives an FzValue from the JIT, unboxes per-tag into a
@@ -2266,9 +2405,27 @@ pub fn compile_with_backend<B: Backend>(
         } else {
             format!("{}_s{}", f.name, sid)
         };
+        // fz-ul4.32.1 — annotate raw CLIF with IR Descrs + ArgReprs so
+        // golden_clif / `fz dump --emit clif` show what the typer
+        // decided, not just what was lowered.
         IR_TEXT_RECORD.with(|c| {
             if let Some(v) = c.borrow_mut().as_mut() {
-                v.push((display_name.clone(), ctx.func.display().to_string()));
+                let raw = ctx.func.display().to_string();
+                let header = build_typer_header(
+                    sid as u32, f, ft,
+                    &param_reprs[sid], return_reprs[sid],
+                );
+                let annotated = VALUE_DESCR_RECORD.with(|vd| {
+                    let b = vd.borrow();
+                    match b.as_ref() {
+                        Some(map) => annotate_clif_dump(&raw, map, &header),
+                        None => {
+                            let empty = HashMap::new();
+                            annotate_clif_dump(&raw, &empty, &header)
+                        }
+                    }
+                });
+                v.push((display_name.clone(), annotated));
             }
         });
         let fn_span = module.source.fn_span_of(f.id);
@@ -4014,6 +4171,20 @@ fn compile_fn<M: cranelift_module::Module>(
         if blk.id != f.entry { b.seal_block(cl_blk); }
     }
     b.finalize();
+    // fz-ul4.32.1 — publish Value → Descr for the dump path. Only the
+    // values bound to fz Vars are recorded; pure Cranelift intermediates
+    // (iconst, ishl_imm, ...) stay unannotated. Pure overhead when
+    // IR_TEXT_RECORD is disabled is the `with` + None-check.
+    VALUE_DESCR_RECORD.with(|c| {
+        if let Some(map) = c.borrow_mut().as_mut() {
+            map.clear();
+            for (var_id, value) in &var_map {
+                if let Some(d) = fn_types.vars.get(&crate::fz_ir::Var(*var_id)) {
+                    map.insert(value.as_u32(), d.clone());
+                }
+            }
+        }
+    });
     Ok(())
 }
 

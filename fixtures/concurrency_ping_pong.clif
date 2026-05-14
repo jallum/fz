@@ -1,4 +1,7 @@
 ; fn child
+    ;   spec_id=0, fn_id=0
+    ;   typer:   params=[]  return=any
+    ;   codegen: param_reprs=[]  return_repr=Tagged
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64, i64) -> i64 system_v
     sig1 = (i64, i64) -> i64 tail
@@ -17,6 +20,9 @@ block0(v0: i64, v1: i64):
 }
 
 ; fn main
+    ;   spec_id=1, fn_id=1
+    ;   typer:   params=[]  return=(none)
+    ;   codegen: param_reprs=[]  return_repr=Tagged
 function u0:0(i64) -> i64 tail {
     sig0 = (i32) -> i64 system_v
     sig1 = (i32, i32) -> i64 system_v
@@ -35,7 +41,7 @@ function u0:0(i64) -> i64 tail {
 
 block0(v0: i64):
     v1 = iconst.i32 0
-    v2 = call fn0(v1)  ; v1 = 0
+    v2 = call fn0(v1)  ; v1 = 0    ;; v2 :: () -> any
     v3 = iconst.i32 2                   ; @22:3
     v4 = iconst.i32 1                   ; @22:3
     v5 = call fn1(v3, v4)               ; @22:3  v3 = 2, v4 = 1
@@ -54,12 +60,15 @@ block0(v0: i64):
 }
 
 ; fn k_receive_3
+    ;   spec_id=3, fn_id=3
+    ;   typer:   params=[any]  return=nil
+    ;   codegen: param_reprs=[Tagged]  return_repr=Tagged
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64) system_v
     sig1 = (i64, i64) -> i64 tail
     fn0 = u0:0 sig0
 
-block0(v0: i64, v1: i64):
+    block0(v0: i64, v1: i64):    ;; v0 :: any
     call fn0(v0)                        ; @23:3
     v2 = iconst.i64 3                   ; @23:3
     v3 = load.i64 notrap aligned v1+24
@@ -68,11 +77,14 @@ block0(v0: i64, v1: i64):
 }
 
 ; fn fz_spawn_thunk_s4
+    ;   spec_id=4, fn_id=2
+    ;   typer:   params=[() -> any]  return=(none)
+    ;   codegen: param_reprs=[Tagged]  return_repr=Tagged
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64, i64) -> i64 tail
 
 block0(v0: i64, v1: i64):
-    v2 = load.i64 notrap aligned v0+24
+    v2 = load.i64 notrap aligned v0+24    ;; v2 :: () -> any
     v3 = load.i64 notrap aligned v2+16
     return_call_indirect sig0, v3(v2, v1)
 }

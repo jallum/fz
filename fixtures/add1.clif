@@ -1,4 +1,7 @@
 ; fn main
+    ;   spec_id=1, fn_id=1
+    ;   typer:   params=[]  return=(none)
+    ;   codegen: param_reprs=[]  return_repr=Tagged
 function u0:0(i64) -> i64 tail {
     sig0 = (i64, i64) -> i64 tail
     sig1 = (i64, i64) -> i64 tail
@@ -19,10 +22,13 @@ block0(v0: i64):
 }
 
 ; fn add1_s2
+    ;   spec_id=2, fn_id=0
+    ;   typer:   params=[41]  return=int
+    ;   codegen: param_reprs=[RawInt]  return_repr=RawInt
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64, i64) -> i64 tail
 
-block0(v0: i64, v1: i64):
+    block0(v0: i64, v1: i64):    ;; v0 :: 41
     v2 = iconst.i64 1                   ; @4:19
     v3 = iadd v0, v2                    ; @4:15  v2 = 1
     v4 = ishl_imm v3, 3
@@ -32,13 +38,16 @@ block0(v0: i64, v1: i64):
 }
 
 ; fn k_2_s3
+    ;   spec_id=3, fn_id=2
+    ;   typer:   params=[int]  return=nil
+    ;   codegen: param_reprs=[RawInt]  return_repr=Tagged
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64) system_v
     sig1 = (i64, i64) -> i64 tail
     fn0 = u0:1 sig0
 
 block0(v0: i64, v1: i64):
-    v2 = sshr_imm v0, 3
+    v2 = sshr_imm v0, 3    ;; v2 :: int
     call fn0(v2)                        ; @7:3
     v3 = iconst.i64 3                   ; @7:3
     v4 = load.i64 notrap aligned v1+24

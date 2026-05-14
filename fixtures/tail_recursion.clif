@@ -1,4 +1,7 @@
 ; fn main
+    ;   spec_id=1, fn_id=1
+    ;   typer:   params=[]  return=(none)
+    ;   codegen: param_reprs=[]  return_repr=Tagged
 function u0:0(i64) -> i64 tail {
     sig0 = (i64, i64, i64) -> i64 tail
     sig1 = (i64, i64) -> i64 tail
@@ -20,12 +23,15 @@ block0(v0: i64):
 }
 
 ; fn k_2
+    ;   spec_id=2, fn_id=2
+    ;   typer:   params=[any]  return=nil
+    ;   codegen: param_reprs=[Tagged]  return_repr=Tagged
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64) system_v
     sig1 = (i64, i64) -> i64 tail
     fn0 = u0:0 sig0
 
-block0(v0: i64, v1: i64):
+    block0(v0: i64, v1: i64):    ;; v0 :: any
     call fn0(v0)                        ; @8:3
     v2 = iconst.i64 3                   ; @8:3
     v3 = load.i64 notrap aligned v1+24
@@ -34,17 +40,20 @@ block0(v0: i64, v1: i64):
 }
 
 ; fn count_s3
+    ;   spec_id=3, fn_id=0
+    ;   typer:   params=[100000, 0]  return=0
+    ;   codegen: param_reprs=[RawInt, RawInt]  return_repr=Tagged
 function u0:0(i64, i64, i64) -> i64 tail {
     sig0 = (i64, i64, i64) -> i64 tail
     sig1 = (i64, i64) -> i64 tail
     fn0 = colocated u0:44 sig0
 
-block0(v0: i64, v1: i64, v2: i64):
+    block0(v0: i64, v1: i64, v2: i64):    ;; v0 :: 100000, v1 :: 0
     jump block1
 
 block1:
-    v3 = iconst.i64 0
-    v4 = iconst.i64 19
+    v3 = iconst.i64 0    ;; v3 :: 0
+    v4 = iconst.i64 19    ;; v4 :: bool
     v5 = iconst.i64 3
     v6 = iconst.i64 19
     v7 = icmp ne v4, v5  ; v4 = 19, v5 = 3
@@ -71,6 +80,9 @@ block3:
 }
 
 ; fn count_s4
+    ;   spec_id=4, fn_id=0
+    ;   typer:   params=[int | float, int | float]  return=int | float
+    ;   codegen: param_reprs=[Tagged, Tagged]  return_repr=Tagged
 function u0:0(i64, i64, i64) -> i64 tail {
     sig0 = (i64, i64) -> i64 system_v
     sig1 = (i64) -> f64 system_v
@@ -90,11 +102,11 @@ function u0:0(i64, i64, i64) -> i64 tail {
     fn6 = u0:23 sig6
     fn7 = colocated u0:44 sig7
 
-block0(v0: i64, v1: i64, v2: i64):
+    block0(v0: i64, v1: i64, v2: i64):    ;; v0 :: int | float, v1 :: int | float
     jump block1
 
 block1:
-    v3 = iconst.i64 0
+    v3 = iconst.i64 0    ;; v3 :: 0
     v4 = ishl_imm v3, 3  ; v3 = 0
     v5 = bor_imm v4, 1
     v6 = bor.i64 v0, v5
@@ -113,7 +125,7 @@ block5:
     v14 = call fn0(v0, v5)
     jump block6(v14)
 
-block6(v9: i64):
+    block6(v9: i64):    ;; v9 :: bool
     v15 = iconst.i64 3
     v16 = iconst.i64 19
     v17 = icmp ne v9, v15  ; v15 = 3
@@ -148,7 +160,7 @@ block8:
     v38 = call fn2(v37)                 ; @5:29
     jump block9(v38)                    ; @5:29
 
-block9(v28: i64):
+    block9(v28: i64):    ;; v28 :: int | float
     v39 = iconst.i64 1                  ; @5:42
     v40 = ishl_imm v39, 3               ; @5:36  v39 = 1
     v41 = bor_imm v40, 1                ; @5:36
@@ -175,7 +187,7 @@ block11:
     v57 = call fn5(v56)                 ; @5:36
     jump block12(v57)                   ; @5:36
 
-block12(v47: i64):
+    block12(v47: i64):    ;; v47 :: int | float
     return_call fn7(v28, v47, v2)       ; @5:23
 
 block3:
