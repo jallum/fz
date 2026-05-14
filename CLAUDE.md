@@ -7,6 +7,7 @@
 - Tickets are memory; `bw --help`.
 - One ticket == one commit.
 - Research thoroughly, plan out work.
-- We are fearless when we can write out the plan in a DAG where all steps are atomic, testable units that build towards a final goal.
+- All hard things are tractable if we break them into atomic, testable steps and put those steps in a DAG that builds towards the final goal. This pattern is fractal.
+- Tickets free us from the worry of context.
 - No hidden surprises. All investigation required must be done up-front, so that there are no surprises as we work.
 - Refrain from time-based estimations. I worry about time.
