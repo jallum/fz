@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-14T23:39:15Z",
+  "description": "fz-diag render snippet today writes the source line verbatim regardless\nof the use_color flag (src/diag/render.rs:186-ish). Color is applied\nonly to the underline glyph below.\n\nA nicer presentation would inline-wrap the spanned bytes in red/cyan\nANSI codes so the diagnostic visually highlights the problem region\nwithin the source line itself, not just under it. Example:\n\n  10 |     let f = foo(bar(baz));\n     |                 ^^^^^^^^\n\nvs.\n\n  10 |     let f = foo([RED]bar(baz)[RESET]);\n     |                 ^^^^^^^^\n\n## Scope\n\n- Compute (start_col, end_col) for the spanned bytes within\n  expanded_line (already computed at line 209-213 in render.rs for the\n  underline).\n- When use_color is set, split expanded_line into three parts:\n  pre-span, spanned, post-span. Wrap the spanned part in color_pre /\n  color_post (already declared at line 219-221 for the underline).\n- Care with the byte-to-col mapping for multi-byte UTF-8 / tab-expanded\n  text — reuse the existing byte_to_col machinery.\n\n## Acceptance\n\n- Visual: a diagnostic with use_color shows the spanned region inline-\n  colored as well as underlined.\n- No regression in non-color mode (e.g., piped output).\n- Golden diagnostics tests still pass (no ANSI escapes leak into\n  non-color paths).\n\n## Out of scope\n\nMulti-line spans, span-truncation for very wide lines.",
+  "id": "fz-ul4.34",
+  "labels": [],
+  "parent": "fz-ul4",
+  "priority": 4,
+  "status": "open",
+  "title": "diag: inline-color spanned bytes within source line snippet",
+  "type": "task",
+  "updated_at": "2026-05-14T23:39:15Z"
+}
