@@ -9,9 +9,15 @@
   "id": "fz-ul4.27.22.14",
   "labels": [],
   "parent": "fz-ul4.27.22",
+  "comments": [
+    {
+      "text": "Victory-lap audit (post-22.12):\n\nfn_constants has 21 reader sites across ir_typer.rs (plus 3 unit tests\nasserting on it directly). closure_lit subsumes the *closure-target\nresolution* role but fn_constants also:\n\n- Tracks resolved FnIds for direct fn-name references via the\n  unification in rewrite_known_target_closures (which still operates\n  on the IR pre-codegen and isn't trivially driven from per-spec\n  Descrs).\n- Propagates through cont captures via callsite_fn_consts\n  (per_param[k+1] = caller_ft.fn_constants[captured[k]]); without\n  this the cont's body sees an opaque-typed closure-var.\n- Is asserted on directly by unit tests that pre-date closure_lit.\n\nClosing as deferred. Replacing the readers one by one would require\neither:\n  (a) Threading the spec map through every callsite that today only\n      has access to a single FnTypes (rewrite_known_target_closures\n      currently iterates all specs to unify — a per-spec rewrite is\n      a different design).\n  (b) Removing rewrite_known_target_closures entirely and depending\n      solely on codegen-time per-spec dispatch (which 22.11 already\n      does for TailCallClosure; CallClosure non-tail is still indirect\n      so the rewrite still has work to do there).\n\nBoth are coherent refactors but each is its own ticket-sized scope,\nnot a victory-lap simplification. The duplication is documented:\nclosure_lit is the canonical singleton type; fn_constants is a\nnarrower per-Var shortcut that survives because rewrite_known_target_closures\nhasn't been ported.\n\nRe-file the focused work as fz-ul4.27.22-followup when there's\nappetite to rebuild rewrite_known_target_closures on Descr.",
+      "timestamp": "2026-05-14T21:44:54Z"
+    }
+  ],
   "priority": 4,
   "status": "in_progress",
   "title": "fz-cps-seam.retire-fn-constants: retire parallel fn_constants once closure_lit subsumes it",
   "type": "task",
-  "updated_at": "2026-05-14T21:44:15Z"
+  "updated_at": "2026-05-14T21:44:54Z"
 }
