@@ -1,7 +1,6 @@
 ; fn neg
-    ;   spec_id=1, fn_id=1
-    ;   typer:   params=[any]  return=int | float
-    ;   codegen: param_reprs=[Tagged]  return_repr=Tagged
+    ;   @spec   neg(any) -> int | float
+    ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64, i64) -> i64 tail {
     sig0 = (i64) -> f64 system_v
     sig1 = (i64) -> i64 system_v
@@ -44,9 +43,8 @@ block2:
 }
 
 ; fn main
-    ;   spec_id=4, fn_id=4
-    ;   typer:   params=[]  return=(none)
-    ;   codegen: param_reprs=[]  return_repr=Tagged
+    ;   @spec   main() -> _
+    ;   @abi    () -> Tagged
 function u0:0(i64) -> i64 tail {
     sig0 = (i32) -> i64 system_v
     sig1 = (i64, i64, i64) -> i64 tail
@@ -71,9 +69,8 @@ block0(v0: i64):
 }
 
 ; fn k_6
-    ;   spec_id=6, fn_id=6
-    ;   typer:   params=[any]  return=(none)
-    ;   codegen: param_reprs=[Tagged]  return_repr=Tagged
+    ;   @spec   k_6(any) -> _
+    ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64) system_v
     sig1 = (i32) -> i64 system_v
@@ -103,9 +100,8 @@ function u0:0(i64, i64) -> i64 tail {
 }
 
 ; fn k_7
-    ;   spec_id=7, fn_id=7
-    ;   typer:   params=[any]  return=(none)
-    ;   codegen: param_reprs=[Tagged]  return_repr=Tagged
+    ;   @spec   k_7(any) -> _
+    ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64) system_v
     sig1 = (i32) -> i64 system_v
@@ -139,9 +135,8 @@ function u0:0(i64, i64) -> i64 tail {
 }
 
 ; fn k_8
-    ;   spec_id=8, fn_id=8
-    ;   typer:   params=[any]  return=nil
-    ;   codegen: param_reprs=[Tagged]  return_repr=Tagged
+    ;   @spec   k_8(any) -> nil
+    ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64) system_v
     sig1 = (i64, i64) -> i64 tail
@@ -156,9 +151,8 @@ function u0:0(i64, i64) -> i64 tail {
 }
 
 ; fn double_s9
-    ;   spec_id=9, fn_id=0
-    ;   typer:   params=[21]  return=int
-    ;   codegen: param_reprs=[Tagged]  return_repr=Tagged
+    ;   @spec   double(21) -> int
+    ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64, i64) -> i64 tail {
     sig0 = (i64, i64) -> i64 tail
 
@@ -173,9 +167,8 @@ function u0:0(i64, i64, i64) -> i64 tail {
 }
 
 ; fn neg_s10
-    ;   spec_id=10, fn_id=1
-    ;   typer:   params=[5]  return=int
-    ;   codegen: param_reprs=[Tagged]  return_repr=Tagged
+    ;   @spec   neg(5) -> int
+    ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64, i64) -> i64 tail {
     sig0 = (i64, i64) -> i64 tail
 
@@ -190,9 +183,8 @@ function u0:0(i64, i64, i64) -> i64 tail {
 }
 
 ; fn neg_s11
-    ;   spec_id=11, fn_id=1
-    ;   typer:   params=[7]  return=int
-    ;   codegen: param_reprs=[Tagged]  return_repr=Tagged
+    ;   @spec   neg(7) -> int
+    ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64, i64) -> i64 tail {
     sig0 = (i64, i64) -> i64 tail
 
@@ -207,9 +199,8 @@ function u0:0(i64, i64, i64) -> i64 tail {
 }
 
 ; fn apply2_s12
-    ;   spec_id=12, fn_id=2
-    ;   typer:   params=[(any) -> any, 21]  return=(none)
-    ;   codegen: param_reprs=[Tagged, RawInt]  return_repr=Tagged
+    ;   @spec   apply2((any) -> any, 21) -> _
+    ;   @abi    (Tagged, RawInt) -> Tagged
 function u0:0(i64, i64, i64) -> i64 tail {
     sig0 = (i64, i64, i64) -> i64 tail
 
@@ -221,9 +212,8 @@ function u0:0(i64, i64, i64) -> i64 tail {
 }
 
 ; fn apply2_s13
-    ;   spec_id=13, fn_id=2
-    ;   typer:   params=[(any) -> any, 7]  return=(none)
-    ;   codegen: param_reprs=[Tagged, RawInt]  return_repr=Tagged
+    ;   @spec   apply2((any) -> any, 7) -> _
+    ;   @abi    (Tagged, RawInt) -> Tagged
 function u0:0(i64, i64, i64) -> i64 tail {
     sig0 = (i64, i64, i64) -> i64 tail
 
@@ -235,9 +225,8 @@ function u0:0(i64, i64, i64) -> i64 tail {
 }
 
 ; fn compose_s14
-    ;   spec_id=14, fn_id=3
-    ;   typer:   params=[(any) -> any, (any) -> any, 5]  return=(none)
-    ;   codegen: param_reprs=[Tagged, Tagged, RawInt]  return_repr=Tagged
+    ;   @spec   compose((any) -> any, (any) -> any, 5) -> _
+    ;   @abi    (Tagged, Tagged, RawInt) -> Tagged
 function u0:0(i64, i64, i64, i64) -> i64 tail {
     sig0 = (i64, i64, i64) -> i64 tail
     sig1 = (i32) -> i64 system_v
@@ -268,9 +257,8 @@ function u0:0(i64, i64, i64, i64) -> i64 tail {
 }
 
 ; fn k_5_s15
-    ;   spec_id=15, fn_id=5
-    ;   typer:   params=[any, (any) -> any, (any) -> any, 5]  return=(none)
-    ;   codegen: param_reprs=[Tagged, Tagged, Tagged, RawInt]  return_repr=Tagged
+    ;   @spec   k_5(any, (any) -> any, (any) -> any, 5) -> _
+    ;   @abi    (Tagged, Tagged, Tagged, RawInt) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64, i64, i64) -> i64 tail
 
@@ -285,9 +273,8 @@ function u0:0(i64, i64) -> i64 tail {
 }
 
 ; fn k_5_s16
-    ;   spec_id=16, fn_id=5
-    ;   typer:   params=[int | float, any, any, any]  return=(none)
-    ;   codegen: param_reprs=[Tagged, Tagged, Tagged, Tagged]  return_repr=Tagged
+    ;   @spec   k_5(int | float, any, any, any) -> _
+    ;   @abi    (Tagged, Tagged, Tagged, Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64, i64, i64) -> i64 tail
 
@@ -301,9 +288,8 @@ function u0:0(i64, i64) -> i64 tail {
 }
 
 ; fn k_5_s17
-    ;   spec_id=17, fn_id=5
-    ;   typer:   params=[int, (any) -> any, (any) -> any, 5]  return=(none)
-    ;   codegen: param_reprs=[RawInt, Tagged, Tagged, RawInt]  return_repr=Tagged
+    ;   @spec   k_5(int, (any) -> any, (any) -> any, 5) -> _
+    ;   @abi    (RawInt, Tagged, Tagged, RawInt) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64, i64, i64) -> i64 tail
 

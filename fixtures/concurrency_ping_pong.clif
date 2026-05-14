@@ -1,7 +1,6 @@
 ; fn child
-    ;   spec_id=0, fn_id=0
-    ;   typer:   params=[]  return=any
-    ;   codegen: param_reprs=[]  return_repr=Tagged
+    ;   @spec   child() -> any
+    ;   @abi    () -> Tagged
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64, i64) -> i64 system_v
     sig1 = (i64, i64) -> i64 tail
@@ -20,9 +19,8 @@ block0(v0: i64, v1: i64):
 }
 
 ; fn main
-    ;   spec_id=1, fn_id=1
-    ;   typer:   params=[]  return=(none)
-    ;   codegen: param_reprs=[]  return_repr=Tagged
+    ;   @spec   main() -> _
+    ;   @abi    () -> Tagged
 function u0:0(i64) -> i64 tail {
     sig0 = (i32) -> i64 system_v
     sig1 = (i32, i32) -> i64 system_v
@@ -60,9 +58,8 @@ block0(v0: i64):
 }
 
 ; fn k_receive_3
-    ;   spec_id=3, fn_id=3
-    ;   typer:   params=[any]  return=nil
-    ;   codegen: param_reprs=[Tagged]  return_repr=Tagged
+    ;   @spec   k_receive_3(any) -> nil
+    ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64) system_v
     sig1 = (i64, i64) -> i64 tail
@@ -77,9 +74,8 @@ function u0:0(i64, i64) -> i64 tail {
 }
 
 ; fn fz_spawn_thunk_s4
-    ;   spec_id=4, fn_id=2
-    ;   typer:   params=[() -> any]  return=(none)
-    ;   codegen: param_reprs=[Tagged]  return_repr=Tagged
+    ;   @spec   fz_spawn_thunk(() -> any) -> _
+    ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64, i64) -> i64 tail
 

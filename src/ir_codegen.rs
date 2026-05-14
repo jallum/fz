@@ -396,7 +396,6 @@ pub fn ir_text_record_take() -> Vec<(String, String)> {
 /// CLIF. Two lines: typer's param/return Descrs and codegen's ArgReprs.
 /// Disagreement between the two reveals where seam coercion lands.
 fn build_typer_header(
-    spec_id: u32,
     f: &crate::fz_ir::FnIr,
     ft: &crate::ir_typer::FnTypes,
     param_reprs: &[ArgRepr],
@@ -420,20 +419,23 @@ fn build_typer_header(
         }
     }
     let return_str = if return_descrs.is_empty() {
-        "(none)".to_string()
+        "_".to_string()
     } else {
         return_descrs.join(" | ")
     };
-    let codegen_params: Vec<String> = param_reprs
-        .iter()
-        .map(|r| format!("{:?}", r))
-        .collect();
+    let codegen_repr = |r: &ArgRepr| -> &'static str {
+        match r {
+            ArgRepr::Tagged => "Tagged",
+            ArgRepr::RawInt => "RawInt",
+            ArgRepr::RawF64 => "RawF64",
+        }
+    };
+    let codegen_params: Vec<String> = param_reprs.iter().map(|r| codegen_repr(r).to_string()).collect();
     let mut out = String::new();
-    let _ = writeln!(out, ";   spec_id={}, fn_id={}", spec_id, f.id.0);
-    let _ = writeln!(out, ";   typer:   params=[{}]  return={}",
-        typer_params.join(", "), return_str);
-    let _ = writeln!(out, ";   codegen: param_reprs=[{}]  return_repr={:?}",
-        codegen_params.join(", "), return_repr);
+    let _ = writeln!(out, ";   @spec   {}({}) -> {}",
+        f.name, typer_params.join(", "), return_str);
+    let _ = writeln!(out, ";   @abi    ({}) -> {}",
+        codegen_params.join(", "), codegen_repr(&return_repr));
     out
 }
 
@@ -2412,8 +2414,7 @@ pub fn compile_with_backend<B: Backend>(
             if let Some(v) = c.borrow_mut().as_mut() {
                 let raw = ctx.func.display().to_string();
                 let header = build_typer_header(
-                    sid as u32, f, ft,
-                    &param_reprs[sid], return_reprs[sid],
+                    f, ft, &param_reprs[sid], return_reprs[sid],
                 );
                 let annotated = VALUE_DESCR_RECORD.with(|vd| {
                     let b = vd.borrow();
