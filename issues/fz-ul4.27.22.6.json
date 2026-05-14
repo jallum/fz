@@ -4,14 +4,15 @@
   "blocks": [
     "fz-ul4.27.22.7"
   ],
+  "closed_at": "2026-05-14T19:45:20Z",
   "created": "2026-05-14T16:03:51Z",
   "description": "Progress: foundation + halt-kind plumbing landed (commits f46dd968, fc1ff766). The closure_target_fns force-drop is STILL blocked, but on a different issue than originally documented.\n\n## Updated blocker: spawn-thunk seam (not raw fz_spawn_entry ABI)\n\nThe halt-kind plumbing works: closure header packs halt_kind (high 2 bits of flags), fz_spawn_entry loads it and selects halt_cont_body_{tagged,i64,f64} by kind. Goldens diff cleanly across all closure-using fixtures.\n\nBut the force-drop still breaks spawn_enqueues_child_task. Root cause discovered:\n\nir_lower.rs:710-723 wraps EVERY spawn(closure) call in a synthesized fz_spawn_thunk whose terminator is TailCallClosure on the captured closure. The thunk's chain endpoint type IS the captured closure's return type, but chain_repr (src/ir_codegen.rs:2682-2745) has no TailCallClosure case — it defaults to JOIN identity = Tagged.\n\nSo when MakeClosure(fz_spawn_thunk, [child]) is emitted, the thunk's halt_kind is packed as 0 (Tagged), even though child returns RawInt. fz_spawn_entry loads the thunk's halt_kind (Tagged), picks halt_cont_body_tagged. child's Term::Return tail-calls cont's body, passing raw 42. halt_cont_body_tagged unboxes via sshr_imm → 5.\n\n## Resolution paths (pick when scoping)\n\n(α) chain_repr learns TailCallClosure. When the captured arg's Descr resolves to a callable with known return Descr (via fn_constants on the capture), use the capture's chain repr as the contribution. Per-spec, since each MakeClosure site has its own capture key.\n\n(β) Skip the spawn-thunk in the lowerer for spawn(x) where x is a closure value. spawn(MakeClosure(fid, [])) → fz_spawn(MakeClosure(fid, [])) with no thunk. The thunk was originally there to defer body invocation pre-stub-deletion; with current Tail-CC indirect-call ABI it's no longer needed. Probably the cleanest fix.\n\n(γ) Detect the thunk pattern at codegen and special-case its halt_kind = capture[0]'s halt_kind. Targeted but fragile if the lowerer ever changes the thunk shape.\n\n## Already in tree\n\n- arrow_join_return on Descr.\n- typer cont_slot0_descr extension for Term::CallClosure.\n- Closure header halt-kind packing (low 14 bits = captured_count, high 2 bits = halt_kind).\n- alloc_closure / init_static_closures / fz_aot_register_static_closure / fz_spawn_entry threading halt_kind end-to-end.\n- All goldens re-blessed.\n\n## Not in scope (still)\n\nClosure body ARG slot narrowing — see fz-ul4.27.22.7.",
   "id": "fz-ul4.27.22.6",
   "labels": [],
   "parent": "fz-ul4.27.22",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "fz-cps-seam.return: closure body return-slot narrowing via typer cont_slot0_descr",
   "type": "task",
-  "updated_at": "2026-05-14T16:34:31Z"
+  "updated_at": "2026-05-14T19:45:20Z"
 }
