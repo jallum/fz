@@ -1,9 +1,7 @@
 {
   "assignee": "Jason Allum",
   "blocked_by": [],
-  "blocks": [
-    "fz-ul4.27.21.1"
-  ],
+  "blocks": [],
   "closed_at": "2026-05-14T00:09:20Z",
   "created": "2026-05-13T23:54:38Z",
   "description": "PREREQUISITE for .21.1. The fz-ul4.27 typer narrows fn return types per-spec via a fixpoint on Term::TailCall unions at src/ir_codegen.rs:2070-2107 (which is actually a codegen-time fixpoint, but conceptually a typer concern). Cont specs are keyed via cont_input_key BEFORE that fixpoint widens producer returns. The result: a cont fn's spec may have param[0]:Descr=int (narrow) while its actual producer-at-runtime returns Tagged (because the producer tail-called a wider spec).\n\nThe .21.1 narrow-seam optimization needs the typer to track this. Two failed execution attempts under .21.1 (see comments on the parent epic fz-ul4.27.21) confirmed that codegen-side patches cannot soundly close the gap without typer cooperation.\n\n## Work\n\nRe-key cont specs after the return_descr fixpoint completes. Three options to evaluate during this ticket:\n\na) Two-pass: run the existing fixpoint, then re-resolve every cont's spec via cont_input_key using the post-fixpoint return_descrs. New cont specs may be created; old ones may be unreachable. Touch src/ir_typer.rs (cont_input_key) and src/ir_codegen.rs (interleave the fixpoint with cont re-keying).\n\nb) Joint fixpoint: extend the existing fixpoint loop to also re-resolve cont specs when a return_descr changes, until both converge. Single iteration loop, more complex termination.\n\nc) Backward propagation: propagate every cont's param[0] expectation backward to its producer's return_descr, in addition to the forward TailCall union. The fixpoint then converges on consistent producer/cont pairs.\n\nPick whichever is least invasive after reading the existing typer code.\n\n## Acceptance\n\nFor a fn F that tail-calls into a wider spec G (G's return is Any / Tagged):\n- F.return_descr post-fixpoint == G.return_descr (typer-existing).\n- AND: every cont keyed at F's call sites has param[0] Descr widened to match. Confirmable via a unit test that constructs an IR with F tail-calling G and verifies cont_input_key resolves to the widened spec.\n\nAfter .21.0 lands, .21.1's three-site coordinated change should land cleanly — every Term::Return's return_repr matches its cont's param_reprs[0] by typer construction.",
@@ -14,5 +12,5 @@
   "status": "closed",
   "title": "fz-cps-narrow.0: re-key cont specs post return_descr fixpoint",
   "type": "task",
-  "updated_at": "2026-05-14T00:09:20Z"
+  "updated_at": "2026-05-14T01:06:31Z"
 }
