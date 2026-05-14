@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-14T14:46:35Z",
+  "description": "Latent bug discovered while landing fz-3zx. Pre-3zx it was masked\nbecause cont slot 0 was always typed `any` at cont seams; post-3zx\nthe LFP tightens slot 0 to `int` and the mismatch surfaces.\n\n## The bug\n\nA fn body whose terminator (on any reachable exit) is Term::Tail-\nCallClosure uses a return_call_indirect against the closure-target\nsig (§8.2: all-Tagged, including return). The forwarded return\nvalue carries Tagged FzValue bits.\n\nBut that fn's OWN Cranelift outer sig declares return_reprs[sid]\nbased on its return Descr — int → RawInt, float → RawF64. The\nindirect tail-call's Tagged bits flow out under a RawInt label.\nCallers reading the result as RawInt see the tag-shifted bits\n(e.g. 42 → 337 = (42\u003c\u003c3)|1).\n\nPre-3zx: every cont's slot 0 was typed `any` → schema FzValue →\nthe consumer side ALSO treated the return as Tagged → mismatch\nself-corrected by being wrong-the-same-way on both sides.\n\nPost-3zx: cont's slot 0 widens to `int` → schema RawI64 →\nconsumer reads raw → producer's Tagged label leaks as the\ndisplayed value.\n\n## Reproducer\n\n  fixtures/apply2.fz prints 337 -55 instead of 42 -7.\n  fixtures/higher_order.fz prints 337 -55 -79 instead of 42 -7 -10.\n  fixtures/closure_typed_captures.fz: AOT SIGBUS (related).\n\nAll of these have a fn whose only exit is TailCallClosure.\n\n## The fix\n\nCodegen-side analysis: compute the transitive closure\n`tagged_return_fns` of:\n\n  Seed:\n    - every closure_target_fn (already returns Tagged by fz-cps.1.8)\n    - every fn whose any block terminator is Term::TailCallClosure\n\n  Propagate:\n    - if fn F has a block ending in Term::TailCall { callee } and\n      `callee` is in tagged_return_fns, F joins tagged_return_fns\n\nThen in the existing force passes:\n  - return_reprs[sid]: force ArgRepr::Tagged when the spec's fn\n    is in tagged_return_fns (extends the closure-target check\n    at line ~2398).\n  - tagged_slot0_cont_specs: include conts whose Term::Call's\n    callee is in tagged_return_fns (extends the existing\n    closure-target check at line ~2356).\n\n## Acceptance\n\n  - apply2.fz, higher_order.fz pass via JIT pre-3zx (no regression).\n  - With fz-3zx applied on top, all 5 fixture goldens still pass.\n  - sum_list_via_head_tail_recursion continues to pass.\n  - No new lib-test regressions.\n\n## Notes\n\nObsoletes fz-w5t (the previous catch-all \"codegen seam\nreconciliation\" ticket — this is the specific fix).",
+  "id": "fz-ntz",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "fz-3zx.2: codegen — TailCallClosure-returning fns must declare Tagged return",
+  "type": "task",
+  "updated_at": "2026-05-14T14:46:35Z"
+}
