@@ -42,7 +42,7 @@
 
 ; spec main(0) #fn=1
 ;   key:    []
-;   return: any
+;   return: nil
 ;   vars:
 ;     Var(0) :: :a1
 ;     Var(1) :: 100000

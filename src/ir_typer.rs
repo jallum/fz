@@ -196,6 +196,12 @@ pub struct FnTypes {
 /// structures against this map; `by_fn_idx` retires at that point.
 pub struct ModuleTypes {
     pub specs: HashMap<(FnId, Vec<Descr>), FnTypes>,
+    /// fz-2yw.2 — Kleene LFP of every spec's effective return Descr.
+    /// Populated once at the end of `type_module` via
+    /// `compute_effective_returns`. Consumers (cont_slot0_descr,
+    /// pretty_module_types, walker slot0_descr) read here instead of
+    /// recursing on demand.
+    pub effective_returns: HashMap<(FnId, Vec<Descr>), Descr>,
 }
 
 impl ModuleTypes {
@@ -589,7 +595,8 @@ pub fn type_module(m: &Module) -> ModuleTypes {
         if !drained_anything { break; }
     }
 
-    ModuleTypes { specs }
+    let effective_returns = compute_effective_returns(m, &specs);
+    ModuleTypes { specs, effective_returns }
 }
 
 /// fz-210 — discovery walk for one spec. Walks the spec's body and
@@ -2072,8 +2079,8 @@ pub fn pretty_module_types(m: &Module, t: &ModuleTypes) -> String {
         ));
         out.push_str(&format!(";   key:    {}\n", descrs_str(key)));
 
-        let mut visiting: HashSet<(FnId, Vec<Descr>)> = HashSet::new();
-        let ret = effective_return_descr(spec_key, m, &t.specs, &mut visiting);
+        let ret = t.effective_returns.get(spec_key).cloned()
+            .unwrap_or_else(Descr::any);
         out.push_str(&format!(";   return: {}\n", ret));
 
         if !ft.fn_constants.is_empty() {

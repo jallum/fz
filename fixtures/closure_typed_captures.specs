@@ -23,7 +23,7 @@
 
 ; spec main(0) #fn=2
 ;   key:    []
-;   return: any
+;   return: nil
 ;   vars:
 ;     Var(0) :: :a0
 ;     Var(1) :: 10
@@ -51,7 +51,7 @@
 
 ; spec k_4(1) #fn=4
 ;   key:    [(any, any, any) -> any]
-;   return: any
+;   return: nil
 ;   vars:
 ;     Var(0) :: (any, any, any) -> any
 ;     Var(1) :: 12

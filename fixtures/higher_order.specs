@@ -48,7 +48,7 @@
 
 ; spec apply2(2) #fn=2
 ;   key:    [(any) -> any, 21]
-;   return: any
+;   return: int
 ;   fn_constants:
 ;     Var(0) = double#0
 ;   vars:
@@ -61,7 +61,7 @@
 
 ; spec apply2(2) #fn=2
 ;   key:    [(any) -> any, 7]
-;   return: any
+;   return: int
 ;   fn_constants:
 ;     Var(0) = neg#1
 ;   vars:
@@ -74,7 +74,7 @@
 
 ; spec compose(3) #fn=3
 ;   key:    [(any) -> any, (any) -> any, 5]
-;   return: any
+;   return: int
 ;   fn_constants:
 ;     Var(0) = double#0
 ;     Var(1) = neg#1
@@ -91,7 +91,7 @@
 
 ; spec main(0) #fn=4
 ;   key:    []
-;   return: any
+;   return: nil
 ;   fn_constants:
 ;     Var(1) = double#0
 ;   vars:
@@ -107,7 +107,7 @@
 
 ; spec k_5(4) #fn=5
 ;   key:    [int, (any) -> any, (any) -> any, 5]
-;   return: any
+;   return: int
 ;   fn_constants:
 ;     Var(1) = double#0
 ;     Var(2) = neg#1
@@ -121,7 +121,7 @@
 
 ; spec k_6(1) #fn=6
 ;   key:    [any]
-;   return: any
+;   return: nil
 ;   fn_constants:
 ;     Var(2) = neg#1
 ;   vars:
@@ -137,7 +137,7 @@
 
 ; spec k_7(1) #fn=7
 ;   key:    [any]
-;   return: any
+;   return: nil
 ;   fn_constants:
 ;     Var(2) = double#0
 ;     Var(3) = neg#1
