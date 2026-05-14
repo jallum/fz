@@ -360,10 +360,10 @@ fn fz_dump_emits_clif() {
     assert!(stdout.contains("; fn main"), "missing main banner\n{}", stdout);
     assert!(stdout.contains("function "), "no Cranelift function header\n{}", stdout);
     // fz-ul4.23.7: srcloc annotations on body instructions resolve back
-    // to file:line:col. add1.fz's `n + 1` lives at line 4; expect at
+    // to file:line:col. add1.fz's `n + 1` lives at line 7; expect at
     // least one annotated line pointing at it.
     assert!(
-        stdout.contains("; @4:"),
+        stdout.contains("; @7:"),
         "expected line-4 srcloc annotations in dump\n{}",
         stdout
     );
