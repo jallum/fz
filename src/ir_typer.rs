@@ -227,6 +227,24 @@ impl ModuleTypes {
 /// call-site arg Descrs into callee entry-param Descrs after each pass.
 /// fz-ul4.27.10: replaces the previous one-shot `map`. Fns with no direct
 /// caller (main, closure-only targets) keep entry params at `any`.
+/// fz-vw4 step 1 — explicit reachability roots for the spec set.
+///
+/// Today only `main` is invoked from Rust without an IR caller
+/// (`Runtime::spawn(main_fn)` in main.rs). Other fns become reachable
+/// by IR-level discovery: direct callsites, MakeClosure / Spawn (via
+/// the lambda's any-key), and Receive cont sites.
+///
+/// Wired in alongside the existing unconditional bootstrap; step 2
+/// replaces the bootstrap with these seeds alone.
+fn entry_seeds(m: &Module) -> Vec<(FnId, Vec<Descr>)> {
+    let mut seeds = Vec::new();
+    if let Some(main) = m.fns.iter().find(|f| f.name == "main") {
+        let n_params = main.block(main.entry).params.len();
+        seeds.push((main.id, vec![Descr::any(); n_params]));
+    }
+    seeds
+}
+
 pub fn type_module(m: &Module) -> ModuleTypes {
     // Initial pass: every fn typed with `any` entry params.
     let mut by_fn_idx: Vec<FnTypes> =
@@ -278,6 +296,13 @@ pub fn type_module(m: &Module) -> ModuleTypes {
     for f in &m.fns {
         let n_params = f.block(f.entry).params.len();
         pending.entry(f.id).or_default().insert(vec![Descr::any(); n_params]);
+    }
+    // fz-vw4 step 1 — also pump entry_seeds in. Redundant under the
+    // unconditional bootstrap (every fn's any-key is already pending),
+    // but lets step 2 retire the for-every-fn seeding by flipping a
+    // single switch.
+    for (fid, key) in entry_seeds(m) {
+        pending.entry(fid).or_default().insert(key);
     }
     // Callsite fn-constants accumulated across walks (unified across
     // multiple callsites sharing the same (callee, key)).
