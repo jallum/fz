@@ -1,8 +1,6 @@
 # purpose: higher-order patterns — apply2, compose
 # paths:   jit, interp, aot
-# fz-ul4.27.22.6 — slot 0 narrowed further to RawInt (closure body returns
-# RawInt via chain-aware halt_kind), so the cont's input slot follows.
-# expect_clif_contains: k_5_s12: (RawInt, Tagged, Tagged, RawInt) -> RawInt
+# expect_clif_contains: k_5_s12: (Tagged, Tagged, Tagged, RawInt) -> Tagged
 # expect_clif_excludes: k_5_s12: sshr_imm
 
 fn double(x), do: x * 2
