@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-ul4.27.22.8"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-ul4.27.22.10"
+  ],
   "created": "2026-05-14T21:01:25Z",
   "description": "Typer-side helper that consumes Descr::closure_lit produced by fz-ul4.27.22.8 and resolves the return Descr of a closure invocation by consulting the spec map.\n\n## Scope\n\nAdd a typer helper that takes a closure Var's Descr + the current specs map and produces the join of resolved return Descrs:\n\n\\`\\`\\`rust\npub fn resolve_closure_return(\n    descr: \u0026Descr,\n    specs: \u0026HashMap\u003c(FnId, Vec\u003cDescr\u003e), FnTypes\u003e,\n    arg_descrs: \u0026[Descr],\n) -\u003e Descr\n\\`\\`\\`\n\nSemantics:\n\n- closure_lit(F, capture_key): build full body key as [capture_key..., arg_descrs...], look up specs[(F, full_key)]; return that spec's exit return Descr. If no exact match, fall back to subsumption resolve via spec_registry (broadest covering key).\n- Union containing closure_lits and/or plain arrow clauses: JOIN over members. Each closure_lit member resolves as above. Plain arrow members fall back to arrow_join_return (the existing path).\n- Plain arrow with no singleton tag: identical to today's arrow_join_return.\n\n## Tests\n\nUnit tests with stub spec maps:\n\n- resolve_closure_return_singleton_lookup\n- resolve_closure_return_singleton_subsumption_fallback\n- resolve_closure_return_union_of_singletons_joins\n- resolve_closure_return_mixed_singleton_and_arrow\n- resolve_closure_return_plain_arrow_matches_arrow_join\n\n## Acceptance\n\n- cargo test --workspace green; helper exists but no callers yet (added in 22.10).\n- New helper called by Descr::arrow_join_return as a generalization OR kept as a separate API. Decide during implementation; pick whichever leaves arrow_join_return semantically intact for non-closure callers.\n\n## Out of scope\n\n- Calling the helper from cont_slot0_descr, chain_repr, codegen lowering. Pure helper-introduction ticket.\n\n## BLOCKED BY\n\n- fz-ul4.27.22.8 [[fz-cps-seam.closure-lit]]\n\n## UNBLOCKS\n\n- fz-cps-seam.makeclosure-emit: MakeClosure types as closure_lit",
   "id": "fz-ul4.27.22.9",
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "fz-cps-seam.resolve-return: closure-aware return resolution helper",
   "type": "task",
-  "updated_at": "2026-05-14T21:01:40Z"
+  "updated_at": "2026-05-14T21:01:54Z"
 }
