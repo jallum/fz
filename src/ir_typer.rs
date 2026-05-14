@@ -195,31 +195,52 @@ pub struct FnTypes {
 /// fz-ul4.29.2 will introduce a `SpecId` and re-key the codegen-internal
 /// structures against this map; `by_fn_idx` retires at that point.
 pub struct ModuleTypes {
-    by_fn_idx: Vec<FnTypes>,
-    #[allow(dead_code)] // .29.2 consumes this.
     pub specs: HashMap<(FnId, Vec<Descr>), FnTypes>,
 }
 
-impl std::ops::Index<usize> for ModuleTypes {
-    type Output = FnTypes;
-    fn index(&self, i: usize) -> &Self::Output { &self.by_fn_idx[i] }
-}
-
 impl ModuleTypes {
-    // .29.1: `len`, `iter`, `spec` are exercised by the new typer unit tests
-    // (specs_contains_any_key_for_every_fn, specs_records_narrow_int_callsite,
-    // module_types_index_preserves_legacy_view) but no codegen path consumes
-    // them yet. .29.2 makes them load-bearing and the lint goes quiet.
-    #[allow(dead_code)]
-    pub fn len(&self) -> usize { self.by_fn_idx.len() }
-    #[allow(dead_code)]
-    pub fn iter(&self) -> std::slice::Iter<'_, FnTypes> { self.by_fn_idx.iter() }
-    /// Look up a specific specialization. Returns `None` if no callsite has
-    /// requested this exact input-Descr-tuple (yet); the any-key
-    /// specialization is guaranteed to exist for every fn.
+    /// Look up a specific specialization. Returns `None` if no callsite
+    /// has requested this exact input-Descr-tuple.
     #[allow(dead_code)]
     pub fn spec(&self, fn_id: FnId, input_descrs: &[Descr]) -> Option<&FnTypes> {
         self.specs.get(&(fn_id, input_descrs.to_vec()))
+    }
+
+    /// fz-pky.2 — return the any-key spec for `fn_id` if registered.
+    /// Under the reachability-driven model (fz-vw4), the any-key only
+    /// exists when the fn is closure-reachable, entry-seeded, or
+    /// genuinely needs the opaque-dispatch fallback. Direct-call-only
+    /// fns have no any-key.
+    #[allow(dead_code)]
+    pub fn any_key_spec(&self, fn_id: FnId) -> Option<&FnTypes> {
+        // Walk the specs map for any key consisting entirely of `any`.
+        // Cheap: spec count is small (~n_fns).
+        for ((fid, key), ft) in &self.specs {
+            if *fid != fn_id { continue; }
+            if key.iter().all(|d| d.is_equiv(&Descr::any())) {
+                return Some(ft);
+            }
+        }
+        None
+    }
+
+    /// fz-pky.2 — return any registered spec for `fn_id` (for callers
+    /// that just need "the typer's view of this fn under some
+    /// reachable callsite"). Picks deterministically by key's debug-
+    /// string ordering.
+    #[allow(dead_code)]
+    pub fn any_spec_for(&self, fn_id: FnId) -> Option<&FnTypes> {
+        let mut best: Option<(String, &FnTypes)> = None;
+        for ((fid, key), ft) in &self.specs {
+            if *fid != fn_id { continue; }
+            let ks = format!("{:?}", key);
+            match &best {
+                None => best = Some((ks, ft)),
+                Some((bk, _)) if &ks < bk => best = Some((ks, ft)),
+                _ => {}
+            }
+        }
+        best.map(|(_, ft)| ft)
     }
 }
 
@@ -305,11 +326,7 @@ fn opaque_consumer_arities(
 }
 
 pub fn type_module(m: &Module) -> ModuleTypes {
-    // Initial pass: every fn typed with `any` entry params.
-    let mut by_fn_idx: Vec<FnTypes> =
-        m.fns.iter().map(|f| type_fn(f, m, None)).collect();
-
-    // Fn-id → index into the `m.fns` / `by_fn_idx` vectors (cps_split inserts
+    // Fn-id → index into the `m.fns` vector (cps_split inserts
     // continuation fns out of declaration order).
     let mut idx_of: HashMap<FnId, usize> = HashMap::new();
     for (i, f) in m.fns.iter().enumerate() {
@@ -321,14 +338,6 @@ pub fn type_module(m: &Module) -> ModuleTypes {
     // demands them. No phantom any-key bootstrap; orphan any-key bodies
     // can't spawn polluting narrow specs because they're never typed.
     let mut specs: HashMap<(FnId, Vec<Descr>), FnTypes> = HashMap::new();
-
-    // fz-ul4.29.3: closure-reachable fns no longer skip narrowing —
-    // dynamic-dispatch sites (CallClosure, Spawn, Receive) route through
-    // the any-key specialization, which type_module unconditionally
-    // registers above (line 117) by capturing the initial all-any pass.
-    // The direct-call lub-narrowing recorded in `by_fn_idx` is safe to
-    // apply: it reflects what's true at direct callsites and isn't read
-    // by the closure-invoke path.
 
     // fz-210 — bottom-up SCC-driven spec discovery. Replaces the
     // capped global fixpoint with caller-first per-SCC processing.
@@ -358,7 +367,6 @@ pub fn type_module(m: &Module) -> ModuleTypes {
         HashMap::new();
     // LUB-narrowed entry-param Descrs per fn — built up across all
     // direct callsites for the legacy by_fn_idx view.
-    let mut narrowed_lub: HashMap<FnId, Vec<Descr>> = HashMap::new();
 
     const WIDEN_AT: usize = 3;
     for scc in sccs.iter() {
@@ -398,7 +406,7 @@ pub fn type_module(m: &Module) -> ModuleTypes {
                 walk_spec_for_discovery(
                     &m.fns[j], &caller_ft, m, &specs,
                     &scc_set, iter >= WIDEN_AT,
-                    &mut pending, &mut callsite_fn_consts, &mut narrowed_lub,
+                    &mut pending, &mut callsite_fn_consts,
                 );
             }
         }
@@ -452,7 +460,7 @@ pub fn type_module(m: &Module) -> ModuleTypes {
             walk_spec_for_discovery(
                 &m.fns[j], &caller_ft, m, &specs,
                 &std::collections::HashSet::new(), false,
-                &mut pending, &mut callsite_fn_consts, &mut narrowed_lub,
+                &mut pending, &mut callsite_fn_consts,
             );
         }
 
@@ -549,7 +557,7 @@ pub fn type_module(m: &Module) -> ModuleTypes {
                 walk_spec_for_discovery(
                     &m.fns[j], &caller_ft, m, &specs,
                     &std::collections::HashSet::new(), false,
-                    &mut pending, &mut callsite_fn_consts, &mut narrowed_lub,
+                    &mut pending, &mut callsite_fn_consts,
                 );
             }
             let to_process: Vec<(FnId, Vec<Descr>)> = pending.iter_mut()
@@ -581,15 +589,7 @@ pub fn type_module(m: &Module) -> ModuleTypes {
         if !drained_anything { break; }
     }
 
-    // Update by_fn_idx from narrowed_lub (legacy codegen consumer).
-    for (i, f) in m.fns.iter().enumerate() {
-        if let Some(next) = narrowed_lub.get(&f.id) {
-            by_fn_idx[i] = type_fn(f, m, Some(next));
-        }
-    }
-
-
-    ModuleTypes { by_fn_idx, specs }
+    ModuleTypes { specs }
 }
 
 /// fz-210 — discovery walk for one spec. Walks the spec's body and
@@ -597,8 +597,6 @@ pub fn type_module(m: &Module) -> ModuleTypes {
 ///   - For each direct Term::Call / Term::TailCall (callee, args):
 ///     append `args_key` to `pending[callee]`. Unify per-arg
 ///     fn-constants into `callsite_fn_consts[(callee, args_key)]`.
-///     LUB-aggregate into `narrowed_lub[callee]` for legacy
-///     `by_fn_idx`.
 ///   - For each cont site (Call / CallClosure / Receive), append the
 ///     cont's `[slot0, captures...]` key to `pending[cont.fn_id]`.
 ///   - For each MakeClosure(target, captures), append the lambda's
@@ -620,7 +618,6 @@ fn walk_spec_for_discovery(
     widen_now: bool,
     pending: &mut HashMap<FnId, std::collections::HashSet<Vec<Descr>>>,
     callsite_fn_consts: &mut HashMap<(FnId, Vec<Descr>), Vec<Option<FnId>>>,
-    narrowed_lub: &mut HashMap<FnId, Vec<Descr>>,
 ) {
     // Build idx_of locally to find each callee's entry-param arity.
     let idx_of: HashMap<FnId, usize> = m.fns.iter().enumerate()
@@ -665,16 +662,6 @@ fn walk_spec_for_discovery(
                     ).collect();
                     while key.len() < n_params { key.push(Descr::any()); }
                     key.truncate(n_params);
-                    // LUB aggregation for legacy by_fn_idx view.
-                    let slot = narrowed_lub
-                        .entry(*callee)
-                        .or_insert_with(|| vec![Descr::none(); n_params]);
-                    for (k, av) in args.iter().enumerate() {
-                        if let Some(p) = slot.get_mut(k) {
-                            let at = env.get(av).cloned().unwrap_or_else(Descr::any);
-                            *p = p.union(&at);
-                        }
-                    }
                     let key = maybe_widen(key, *callee);
                     // fn_constants propagation.
                     let mut per_arg: Vec<Option<FnId>> = args.iter().map(|av|
@@ -1575,8 +1562,19 @@ pub fn collect_diagnostics(
     // codegen-side fold (Eq -> FALSE, Neq -> TRUE) is unaffected by the
     // diagnostic; the user just gets a warning that the comparison can never
     // hold.
-    for (i, f) in module.fns.iter().enumerate() {
-        let ft = &types[i];
+    for f in module.fns.iter() {
+        // Pick any registered spec, or fall back to ad-hoc any-key
+        // (same rule as the unreachable-arm scan above).
+        let ft_owned: Option<FnTypes>;
+        let ft: &FnTypes = match types.any_spec_for(f.id) {
+            Some(ft) => ft,
+            None => {
+                let n_params = f.block(f.entry).params.len();
+                let any_key: Vec<Descr> = vec![Descr::any(); n_params];
+                ft_owned = Some(type_fn(f, module, Some(&any_key)));
+                ft_owned.as_ref().unwrap()
+            }
+        };
         let mut blocks_sorted: Vec<&crate::fz_ir::Block> = f.blocks.iter().collect();
         blocks_sorted.sort_by_key(|b| b.id.0);
         for b in blocks_sorted {
@@ -1654,8 +1652,27 @@ pub fn rewrite_vec_kinds(
     types: &ModuleTypes,
 ) -> Result<(), String> {
     use crate::fz_ir::Stmt;
-    for (i, f) in module.fns.iter_mut().enumerate() {
-        let vars = &types[i].vars;
+    // fz-pky.2 — for each fn, use the registered spec if any, else
+    // type ad-hoc under all-any. This pass runs as a pre-codegen
+    // diagnostic; even unreachable fns need their MakeVec kinds
+    // validated (the error is "you wrote a mixed-element vec," not
+    // "this code runs.")
+    let fn_types: HashMap<FnId, FnTypes> = module.fns.iter()
+        .map(|f| {
+            let ft = match types.any_spec_for(f.id) {
+                Some(ft) => ft.clone(),
+                None => {
+                    let n_params = f.block(f.entry).params.len();
+                    let any_key: Vec<Descr> = vec![Descr::any(); n_params];
+                    type_fn(f, module, Some(&any_key))
+                }
+            };
+            (f.id, ft)
+        })
+        .collect();
+    for f in module.fns.iter_mut() {
+        let Some(ft) = fn_types.get(&f.id) else { continue; };
+        let vars = &ft.vars;
         for blk in &mut f.blocks {
             for stmt in &mut blk.stmts {
                 let Stmt::Let(_, prim) = stmt;
@@ -2106,6 +2123,21 @@ mod tests {
         mb.build()
     }
 
+    /// fz-pky.2 — test helper. Returns "the most narrow registered
+    /// spec for fn at index i, or an ad-hoc any-key view if unregistered."
+    /// Replaces the legacy `mt[i]` access; the underlying by_fn_idx
+    /// field has been retired.
+    fn fn_view(m: &Module, mt: &ModuleTypes, i: usize) -> FnTypes {
+        let fid = m.fns[i].id;
+        if let Some(ft) = mt.any_spec_for(fid) {
+            return ft.clone();
+        }
+        // Unreachable fn — type ad-hoc under all-any.
+        let n_params = m.fns[i].block(m.fns[i].entry).params.len();
+        let any_key: Vec<Descr> = vec![Descr::any(); n_params];
+        type_fn(&m.fns[i], m, Some(&any_key))
+    }
+
     // ---- .24.2 tests (preserved, adjusted to FnTypes API) ----
 
     #[test]
@@ -2116,7 +2148,7 @@ mod tests {
         b.set_terminator(entry, Term::Halt(v));
         let m = build_module(vec![b.build()]);
         let mt = type_module(&m);
-        assert!(mt[0].vars.get(&v).unwrap().is_equiv(&Descr::int_lit(42)));
+        assert!(fn_view(&m, &mt, 0).vars.get(&v).unwrap().is_equiv(&Descr::int_lit(42)));
     }
 
     #[test]
@@ -2129,7 +2161,7 @@ mod tests {
         b.set_terminator(entry, Term::Return(sum));
         let m = build_module(vec![b.build()]);
         let mt = type_module(&m);
-        let sum_t = mt[0].vars.get(&sum).cloned().unwrap();
+        let sum_t = fn_view(&m, &mt, 0).vars.get(&sum).cloned().unwrap();
         assert!(sum_t.is_equiv(&Descr::int().union(&Descr::float())),
             "got {}", sum_t);
     }
@@ -2145,7 +2177,7 @@ mod tests {
         b.set_terminator(entry, Term::Return(l));
         let m = build_module(vec![b.build()]);
         let mt = type_module(&m);
-        let lt = mt[0].vars.get(&l).cloned().unwrap();
+        let lt = fn_view(&m, &mt, 0).vars.get(&l).cloned().unwrap();
         let elem = crate::typer::list_element_type(&lt);
         assert!(elem.is_subtype(&Descr::int()), "list elem: {}", elem);
         assert!(!elem.is_empty());
@@ -2168,7 +2200,7 @@ mod tests {
         b.set_terminator(bb3, Term::Return(joined));
         let m = build_module(vec![b.build()]);
         let mt = type_module(&m);
-        let join_t = mt[0].vars.get(&joined).cloned().unwrap();
+        let join_t = fn_view(&m, &mt, 0).vars.get(&joined).cloned().unwrap();
         let expected = Descr::int_lit(1).union(&Descr::int_lit(2));
         assert!(join_t.is_equiv(&expected), "got {}", join_t);
     }
@@ -2188,7 +2220,7 @@ mod tests {
         b.set_terminator(entry, Term::Return(f0));
         let m = build_module(vec![b.build()]);
         let mt = type_module(&m);
-        let f0_t = mt[0].vars.get(&f0).cloned().unwrap();
+        let f0_t = fn_view(&m, &mt, 0).vars.get(&f0).cloned().unwrap();
         assert!(f0_t.is_subtype(&Descr::int_lit(1)) && Descr::int_lit(1).is_subtype(&f0_t),
             "field 0 should be int_lit(1), got {}", f0_t);
     }
@@ -2204,7 +2236,7 @@ mod tests {
         b.set_terminator(entry, Term::Return(h));
         let m = build_module(vec![b.build()]);
         let mt = type_module(&m);
-        let h_t = mt[0].vars.get(&h).cloned().unwrap();
+        let h_t = fn_view(&m, &mt, 0).vars.get(&h).cloned().unwrap();
         // head type = list elem = union(int_lit(1), int_lit(2)) ⊆ int.
         assert!(h_t.is_subtype(&Descr::int()), "head type: {}", h_t);
     }
@@ -2230,13 +2262,14 @@ mod tests {
         let mt = type_module(&m);
 
         // In then_b's entry env, l should be narrowed to nil.
-        let then_env = mt[0].block_envs.get(&then_b).unwrap();
+        let ft = fn_view(&m, &mt, 0);
+        let then_env = ft.block_envs.get(&then_b).unwrap();
         let l_then = then_env.get(&l).cloned().unwrap();
         assert!(l_then.is_subtype(&Descr::nil()) && Descr::nil().is_subtype(&l_then),
             "l in then-branch should be nil: {}", l_then);
 
         // In else_b's entry env, l should be narrowed to list_top (no nil).
-        let else_env = mt[0].block_envs.get(&else_b).unwrap();
+        let else_env = ft.block_envs.get(&else_b).unwrap();
         let l_else = else_env.get(&l).cloned().unwrap();
         // Subtype of list_of(any) (loosely: at least the list portion).
         assert!(l_else.is_subtype(&Descr::list_of(Descr::any())),
@@ -2262,7 +2295,8 @@ mod tests {
         let m = build_module(vec![b.build()]);
         let mt = type_module(&m);
 
-        let then_env = mt[0].block_envs.get(&then_b).unwrap();
+        let ft = fn_view(&m, &mt, 0);
+        let then_env = ft.block_envs.get(&then_b).unwrap();
         let x_then = then_env.get(&x).cloned().unwrap();
         assert!(x_then.is_subtype(&Descr::int_lit(0)) && Descr::int_lit(0).is_subtype(&x_then),
             "x in then-branch should be int_lit(0): {}", x_then);
@@ -2284,7 +2318,7 @@ mod tests {
         b.set_terminator(entry, Term::Return(p00));
         let m = build_module(vec![b.build()]);
         let mt = type_module(&m);
-        let p00_t = mt[0].vars.get(&p00).cloned().unwrap();
+        let p00_t = fn_view(&m, &mt, 0).vars.get(&p00).cloned().unwrap();
         assert!(p00_t.is_equiv(&Descr::int_lit(7)),
             "outer.0.0 should be int_lit(7), got {}", p00_t);
     }
@@ -2509,7 +2543,7 @@ mod tests {
         b.set_terminator(entry, Term::Return(got));
         let m = build_module(vec![b.build()]);
         let mt = type_module(&m);
-        let got_t = mt[0].vars.get(&got).cloned().unwrap();
+        let got_t = fn_view(&m, &mt, 0).vars.get(&got).cloned().unwrap();
         // The map_field_lookup contributes int_lit(42); plus the implicit "may be absent"
         // it can also be any|nil for open-shape semantics. We assert the int_lit(42)
         // is a subtype of the result.
@@ -2580,7 +2614,7 @@ mod tests {
         let m = build_module(vec![cb.build(), mb.build()]);
         let mt = type_module(&m);
         // `id`'s entry param x should narrow to int_lit(42).
-        let xt = mt[0].vars.get(&x).cloned().unwrap();
+        let xt = fn_view(&m, &mt, 0).vars.get(&x).cloned().unwrap();
         assert!(xt.is_equiv(&Descr::int_lit(42)),
             "x should narrow to int_lit(42), got {}", xt);
     }
@@ -2607,7 +2641,7 @@ mod tests {
 
         let m = build_module(vec![cb.build(), a.build(), bb.build()]);
         let mt = type_module(&m);
-        let xt = mt[0].vars.get(&x).cloned().unwrap();
+        let xt = fn_view(&m, &mt, 0).vars.get(&x).cloned().unwrap();
         // x should accept both int_lit(1) and the atom — the union.
         assert!(Descr::int_lit(1).is_subtype(&xt),
             "x should accept int_lit(1), got {}", xt);
@@ -2641,7 +2675,7 @@ mod tests {
 
         let m = build_module(vec![wb.build(), mb.build()]);
         let mt = type_module(&m);
-        let nt = mt[0].vars.get(&n).cloned().unwrap();
+        let nt = fn_view(&m, &mt, 0).vars.get(&n).cloned().unwrap();
         assert!(nt.is_equiv(&Descr::any()),
             "worker's n must stay at any (no direct callers), got {}", nt);
     }
@@ -2668,7 +2702,7 @@ mod tests {
         let m = build_module(vec![wb.build(), mb.build()]);
         let mt = type_module(&m);
         // by_fn_idx for worker: n narrowed to the direct caller's int.
-        let nt = mt[0].vars.get(&n).cloned().unwrap();
+        let nt = fn_view(&m, &mt, 0).vars.get(&n).cloned().unwrap();
         assert!(nt.is_subtype(&Descr::int()),
             "worker's n in by_fn_idx must narrow to int (visible caller), got {}", nt);
         // any-key dropped: no callsite (direct or indirect) queries
@@ -2765,9 +2799,9 @@ mod tests {
         let m = build_module(vec![a.build(), b.build()]);
         let mt = type_module(&m);
 
-        assert_eq!(mt.len(), 2);
+        assert_eq!(mt.specs.len(), 2);
         // Legacy view: index 0 → id's narrowed FnTypes.
-        let id_x = mt[0].vars.get(&x).cloned().unwrap();
+        let id_x = fn_view(&m, &mt, 0).vars.get(&x).cloned().unwrap();
         assert!(id_x.is_subtype(&Descr::int()),
             "id's x must be narrowed to int via callsite, got {}", id_x);
     }

@@ -2061,9 +2061,8 @@ pub fn compile_with_backend<B: Backend>(
     loop {
         let mut to_remove: Vec<crate::fz_ir::FnId> = Vec::new();
         // (a) and (b): body invariants.
-        for (fn_idx, f) in module.fns.iter().enumerate() {
+        for f in module.fns.iter() {
             if !natively_callable.contains(&f.id) { continue; }
-            let ft = &module_types[fn_idx];
             let body_ok = f.blocks.iter().all(|b| match &b.terminator {
                 Term::Return(_) | Term::Halt(_)
                 | Term::Goto(_, _) | Term::If(_, _, _) => true,
@@ -2073,14 +2072,11 @@ pub fn compile_with_backend<B: Backend>(
                     // register slots invisible to the GC tracer — every
                     // cont is now a heap-allocated closure (§2.2), and
                     // the GC roots come from `process.parked_cont` (§7)
-                    // not from a stack walk. _ft retained for type
-                    // queries by future passes.
-                    let _ = ft;
+                    // not from a stack walk.
                     natively_callable.contains(callee)
                         && natively_callable.contains(&continuation.fn_id)
                 }
                 Term::TailCall { callee, .. } => {
-                    let _ = ft;
                     natively_callable.contains(callee)
                 }
                 // fz-cps.1.8 — closure-call terminators admitted; bodies
@@ -6400,8 +6396,9 @@ fn main(), do: loop_with(loop_with, 100000, 0)
         let m = lower_src("fn add(a, b) do a + b end\nfn main() do print(add(1, 2)) end");
         let mt = crate::ir_typer::type_module(&m);
         let add_idx = m.fns.iter().position(|f| f.name == "add").unwrap();
-        let rd = join_return_descrs(&m.fns[add_idx], &mt[add_idx]);
-        let prs = build_param_reprs(&m.fns[add_idx], &mt[add_idx]);
+        let ft = mt.any_spec_for(m.fns[add_idx].id).expect("registered spec");
+        let rd = join_return_descrs(&m.fns[add_idx], ft);
+        let prs = build_param_reprs(&m.fns[add_idx], ft);
         let sig = build_fn_signature(&prs, ArgRepr::from_descr(&rd), false, true, false, None);
         assert_eq!(sig.params.len(), 2);
         assert_eq!(sig.returns.len(), 1);
@@ -6419,8 +6416,9 @@ fn main(), do: loop_with(loop_with, 100000, 0)
         let m = lower_src("fn add(a, b) do a + b end\nfn main() do print(add(1, 2)) end");
         let mt = crate::ir_typer::type_module(&m);
         let add_idx = m.fns.iter().position(|f| f.name == "add").unwrap();
-        let rd = join_return_descrs(&m.fns[add_idx], &mt[add_idx]);
-        let prs = build_param_reprs(&m.fns[add_idx], &mt[add_idx]);
+        let ft = mt.any_spec_for(m.fns[add_idx].id).expect("registered spec");
+        let rd = join_return_descrs(&m.fns[add_idx], ft);
+        let prs = build_param_reprs(&m.fns[add_idx], ft);
         let sig = build_fn_signature(&prs, ArgRepr::from_descr(&rd), true, true, false, None);
         // 2 entry params + host_ctx + cont.
         assert_eq!(sig.params.len(), 4);
@@ -6445,8 +6443,9 @@ fn main(), do: loop_with(loop_with, 100000, 0)
         );
         let mt = crate::ir_typer::type_module(&m);
         let dist_idx = m.fns.iter().position(|f| f.name == "dist").unwrap();
-        let rd = join_return_descrs(&m.fns[dist_idx], &mt[dist_idx]);
-        let prs = build_param_reprs(&m.fns[dist_idx], &mt[dist_idx]);
+        let ft = mt.any_spec_for(m.fns[dist_idx].id).expect("registered spec");
+        let rd = join_return_descrs(&m.fns[dist_idx], ft);
+        let prs = build_param_reprs(&m.fns[dist_idx], ft);
         let sig = build_fn_signature(&prs, ArgRepr::from_descr(&rd), true, true, false, None);
         // 2 entry params + host_ctx + cont.
         assert_eq!(sig.params.len(), 4);
