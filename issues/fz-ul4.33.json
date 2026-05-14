@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-14T22:09:11Z",
+  "description": "Discovered while investigating fz-kf2. The fz crate depends on fz-runtime\nvia `path = \\\"runtime\\\"`. The runtime crate's Cargo.toml declares both\ncrate types:\n\n  [lib]\n  crate-type = [\\\"staticlib\\\", \\\"rlib\\\"]\n\nWhen fz src code changes, cargo rebuilds the rlib correctly. But the\nstaticlib (.a) is on a separate build path; cargo does NOT always\nre-emit the .a in lockstep with the rlib. The fz CLI's `fz build`\ninvokes `cc ... -L target/debug -lfz_runtime` against the .a — so if\nthe .a is older than the rlib, the AOT binary links against stale\nruntime code while everything else (JIT, interp, fixture matrix's\nown driver) uses the rlib.\n\n## Concrete failure mode (observed for fz-kf2)\n\nLayout drift between staticlib and rlib. The .a had an older Process\nstruct layout where halt_cont_singletons was at a different offset\nthan the current source. fz_aot_setup wrote at the new offset (because\nthe C-main emit_aot_c_main used the current rlib's view), fz_aot_run_main\nread at the old offset → garbage halt_cl → SIGBUS at the\nreturn_call_indirect inside k_2_s4 (cont seam).\n\nAfter `cargo clean \u0026\u0026 cargo build \u0026\u0026 cargo test`, the 4 AOT SIGBUS\nfixture failures vanish — no source change required.\n\n## Repro\n\nEdit any runtime/src/*.rs file's struct layout (e.g., reorder a Process\nfield), `cargo test --workspace`, then run any AOT fixture. The .a\nmay be stale.\n\n## Possible fixes\n\n(α) `fz build` invokes `cargo build -p fz-runtime` before linking. Slow\n    in the common case but always correct.\n\n(β) Drop the staticlib crate-type, generate the .a on demand from the\n    rlib in `fz build`. Decouples the two build paths.\n\n(γ) Add a checksum check at AOT-setup: assert that fz_aot_setup and\n    fz_aot_run_main agree on Process's size/layout via a generated\n    constant.\n\n(δ) Just document the assumption and rely on `cargo clean` whenever\n    runtime/ changes. Trust cargo to do the right thing.\n\nFor the immediate kf2 closeout, (δ) is what landed (clean rebuild\nfixed it). File this as a defensive ticket against recurrence.",
+  "id": "fz-ul4.33",
+  "labels": [],
+  "parent": "fz-ul4",
+  "priority": 3,
+  "status": "open",
+  "title": "fz_runtime staticlib gets stale when fz src and runtime/src diverge in cargo build",
+  "type": "bug",
+  "updated_at": "2026-05-14T22:09:11Z"
+}
