@@ -8,7 +8,7 @@
   "labels": [],
   "priority": 2,
   "status": "in_progress",
-  "title": "fz-typer.scc-widen: SCC-scoped widening replaces global iter cap",
+  "title": "fz-typer.scc-fixpoint: bottom-up SCC-based spec discovery",
   "type": "task",
-  "updated_at": "2026-05-14T04:10:26Z"
+  "updated_at": "2026-05-14T04:10:57Z"
 }
