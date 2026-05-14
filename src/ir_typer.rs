@@ -250,6 +250,62 @@ impl ModuleTypes {
     }
 }
 
+/// fz-ul4.27.22.9 — closure-aware return resolution. Given a closure
+/// Var's `Descr` and the actual `arg_descrs` at a call site, compute the
+/// joined return Descr.
+///
+/// For each positive arrow clause in `closure_descr.funcs`:
+///   - If the clause carries a `ClosureLit { fn_id, captures }`, build the
+///     full body key `[captures..., arg_descrs...]` and look up
+///     `effective_returns[(fn_id, full_key)]`. JOIN into the accumulator.
+///   - Otherwise, JOIN `sig.ret` (the existing `arrow_join_return` path).
+///
+/// Returns `None` when a lit-tagged clause's spec has not yet been
+/// registered — caller treats this as a fixpoint deferral (same convention
+/// as `cont_slot0_descr` today). Returns `Some(Descr::any())` for
+/// pathological inputs (empty funcs, negated arrows, saturated `Conj::top`
+/// pos clauses) — those convey no narrowing information so the broadest
+/// result is sound.
+///
+/// `arg_descrs` length must match the closure's apparent arity for lit
+/// clauses; mismatch falls back to `Descr::any()` for that clause.
+#[allow(dead_code)] // Wired into cont_slot0_descr / codegen in fz-ul4.27.22.10/11.
+pub fn resolve_closure_return(
+    closure_descr: &Descr,
+    effective_returns: &HashMap<(FnId, Vec<Descr>), Descr>,
+    arg_descrs: &[Descr],
+) -> Option<Descr> {
+    if closure_descr.funcs.is_empty() {
+        return Some(Descr::any());
+    }
+    let mut acc = Descr::none();
+    for c in &closure_descr.funcs {
+        if !c.neg.is_empty() || c.pos.is_empty() {
+            return Some(Descr::any());
+        }
+        for sig in &c.pos {
+            match &sig.lit {
+                None => acc = acc.union(&sig.ret),
+                Some(lit) => {
+                    if sig.args.len() != arg_descrs.len() {
+                        // Arity mismatch (shouldn't happen if MakeClosure
+                        // typing is consistent); fall back broad rather
+                        // than miss-look-up.
+                        return Some(Descr::any());
+                    }
+                    let mut full_key: Vec<Descr> = lit.captures.clone();
+                    full_key.extend_from_slice(arg_descrs);
+                    match effective_returns.get(&(lit.fn_id, full_key)) {
+                        Some(r) => acc = acc.union(r),
+                        None => return None, // defer to next fixpoint iter
+                    }
+                }
+            }
+        }
+    }
+    Some(acc)
+}
+
 /// Type a whole module. Iterates type_fn to a fixed point, propagating
 /// call-site arg Descrs into callee entry-param Descrs after each pass.
 /// fz-ul4.27.10: replaces the previous one-shot `map`. Fns with no direct
@@ -3632,5 +3688,106 @@ end
                 .filter(|((fid, _), _)| *fid == double.id)
                 .map(|((_, k), _)| k.clone())
                 .collect::<Vec<_>>());
+    }
+
+    // ---- fz-ul4.27.22.9 resolve_closure_return tests ----
+
+    fn fid(n: u32) -> FnId { FnId(n) }
+
+    #[test]
+    fn resolve_closure_return_singleton_lookup_hits() {
+        // closure_lit(F=7, []) with arg [int_lit(21)]; effective_returns has
+        // (7, [int_lit(21)]) -> int. Helper returns Some(int).
+        let descr = Descr::closure_lit(fid(7), vec![], 1);
+        let mut er: HashMap<(FnId, Vec<Descr>), Descr> = HashMap::new();
+        er.insert((fid(7), vec![Descr::int_lit(21)]), Descr::int());
+        let r = resolve_closure_return(&descr, &er, &[Descr::int_lit(21)]);
+        assert_eq!(r, Some(Descr::int()));
+    }
+
+    #[test]
+    fn resolve_closure_return_singleton_miss_returns_none() {
+        // Singleton with no matching effective_returns entry → None (defer).
+        let descr = Descr::closure_lit(fid(7), vec![], 1);
+        let er: HashMap<(FnId, Vec<Descr>), Descr> = HashMap::new();
+        let r = resolve_closure_return(&descr, &er, &[Descr::int_lit(21)]);
+        assert_eq!(r, None);
+    }
+
+    #[test]
+    fn resolve_closure_return_singleton_with_captures() {
+        // closure_lit(F=8, [int_lit(10), int_lit(20)]) — captures + arg form
+        // the full body key.
+        let descr = Descr::closure_lit(
+            fid(8),
+            vec![Descr::int_lit(10), Descr::int_lit(20)],
+            1,
+        );
+        let mut er: HashMap<(FnId, Vec<Descr>), Descr> = HashMap::new();
+        er.insert(
+            (fid(8), vec![Descr::int_lit(10), Descr::int_lit(20), Descr::int_lit(12)]),
+            Descr::int_lit(42),
+        );
+        let r = resolve_closure_return(&descr, &er, &[Descr::int_lit(12)]);
+        assert_eq!(r, Some(Descr::int_lit(42)));
+    }
+
+    #[test]
+    fn resolve_closure_return_plain_arrow_uses_sig_ret() {
+        // Lit-free arrow: ret comes straight from sig.ret (matches
+        // arrow_join_return).
+        let descr = Descr::arrow([Descr::any()], Descr::int());
+        let er: HashMap<(FnId, Vec<Descr>), Descr> = HashMap::new();
+        let r = resolve_closure_return(&descr, &er, &[Descr::int_lit(21)]);
+        assert_eq!(r, Some(Descr::int()));
+    }
+
+    #[test]
+    fn resolve_closure_return_union_of_singletons_joins() {
+        // Two clauses: lit(7,[]) returning int, lit(8,[]) returning atom.
+        // JOIN = int | atom.
+        let a = Descr::closure_lit(fid(7), vec![], 1);
+        let b = Descr::closure_lit(fid(8), vec![], 1);
+        let descr = a.union(&b);
+        assert_eq!(descr.funcs.len(), 2, "expect two clauses: {}", descr);
+        let mut er: HashMap<(FnId, Vec<Descr>), Descr> = HashMap::new();
+        er.insert((fid(7), vec![Descr::int_lit(21)]), Descr::int());
+        er.insert((fid(8), vec![Descr::int_lit(21)]), Descr::atom_lit("ok"));
+        let r = resolve_closure_return(&descr, &er, &[Descr::int_lit(21)]);
+        let expected = Descr::int().union(&Descr::atom_lit("ok"));
+        assert_eq!(r, Some(expected));
+    }
+
+    #[test]
+    fn resolve_closure_return_union_one_miss_defers() {
+        // Two clauses; one has a registered spec, the other doesn't. The
+        // helper conservatively defers (returns None) so the typer's
+        // fixpoint can re-try after the missing spec is registered.
+        let a = Descr::closure_lit(fid(7), vec![], 1);
+        let b = Descr::closure_lit(fid(8), vec![], 1);
+        let descr = a.union(&b);
+        let mut er: HashMap<(FnId, Vec<Descr>), Descr> = HashMap::new();
+        er.insert((fid(7), vec![Descr::int_lit(21)]), Descr::int());
+        // No entry for (8, _) → defer.
+        let r = resolve_closure_return(&descr, &er, &[Descr::int_lit(21)]);
+        assert_eq!(r, None);
+    }
+
+    #[test]
+    fn resolve_closure_return_empty_funcs_is_any() {
+        // Descr with no funcs at all: arrow_join_return-style any default.
+        let descr = Descr::none();
+        let er: HashMap<(FnId, Vec<Descr>), Descr> = HashMap::new();
+        let r = resolve_closure_return(&descr, &er, &[]);
+        assert_eq!(r, Some(Descr::any()));
+    }
+
+    #[test]
+    fn resolve_closure_return_saturated_arrow_is_any() {
+        // Descr::any() has funcs = [Conj::top()] — pos empty, no narrowing.
+        let descr = Descr::any();
+        let er: HashMap<(FnId, Vec<Descr>), Descr> = HashMap::new();
+        let r = resolve_closure_return(&descr, &er, &[Descr::int_lit(21)]);
+        assert_eq!(r, Some(Descr::any()));
     }
 }
