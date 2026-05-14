@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-ul4.27.22.10"
   ],
@@ -12,8 +12,8 @@
   "labels": [],
   "parent": "fz-ul4.27.22",
   "priority": 3,
-  "status": "open",
+  "status": "in_progress",
   "title": "fz-cps-seam.codegen-direct: codegen lowers TailCallClosure to direct return_call on singleton",
   "type": "task",
-  "updated_at": "2026-05-14T21:02:24Z"
+  "updated_at": "2026-05-14T21:19:54Z"
 }
