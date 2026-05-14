@@ -355,6 +355,31 @@ impl Descr {
             && self.maps.is_empty()
     }
 
+    /// fz-ul4.27.22.6 — JOIN of return Descrs across all positive arrow
+    /// clauses in this Descr's funcs axis. Used at the CallClosure seam:
+    /// the closure's static callable Descr names the body's possible
+    /// return shapes, and the cont's slot-0 Descr is the union of those.
+    ///
+    /// Returns `Descr::any()` when funcs contains any `Conj::top()`
+    /// (saturated arrow — body could return anything), any clause with
+    /// negative arrows (which can broaden what the clause accepts in
+    /// ways not captured by positive returns alone), or is empty.
+    pub fn arrow_join_return(&self) -> Descr {
+        if self.funcs.is_empty() {
+            return Descr::any();
+        }
+        let mut acc = Descr::none();
+        for c in &self.funcs {
+            if !c.neg.is_empty() || c.pos.is_empty() {
+                return Descr::any();
+            }
+            for sig in &c.pos {
+                acc = acc.union(&sig.ret);
+            }
+        }
+        acc
+    }
+
     pub fn looks_full(&self) -> bool {
         self.basic == BasicBits::ALL
             && self.atoms.is_any()
@@ -1486,6 +1511,32 @@ mod tests {
         let wide_out = Descr::arrow([Descr::int()], Descr::int().union(&Descr::float()));
         assert!(narrow_out.is_subtype(&wide_out));
         assert!(!wide_out.is_subtype(&narrow_out));
+    }
+
+    #[test]
+    fn arrow_join_return_union_of_clauses() {
+        // (int -> int) ∪ (str -> bool) joins return to int|bool.
+        let a = Descr::arrow([Descr::int()], Descr::int());
+        let b = Descr::arrow([Descr::str_t()], Descr::bool_t());
+        let u = a.union(&b);
+        let got = u.arrow_join_return();
+        let want = Descr::int().union(&Descr::bool_t());
+        assert!(got.is_subtype(&want) && want.is_subtype(&got),
+            "got = {}, want = {}", got, want);
+    }
+
+    #[test]
+    fn arrow_join_return_top_is_any() {
+        // Saturated funcs axis (Conj::top) ⇒ any.
+        assert!(Descr::any().arrow_join_return().is_subtype(&Descr::any()));
+        assert!(Descr::any().is_subtype(&Descr::any().arrow_join_return()));
+    }
+
+    #[test]
+    fn arrow_join_return_empty_is_any() {
+        // No arrow clauses (e.g., int-only Descr) ⇒ any (no info).
+        assert!(Descr::int().arrow_join_return().is_subtype(&Descr::any()));
+        assert!(Descr::any().is_subtype(&Descr::int().arrow_join_return()));
     }
 
     #[test]

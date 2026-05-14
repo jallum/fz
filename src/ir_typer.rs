@@ -1817,21 +1817,32 @@ pub fn cont_slot0_descr(
     module: &Module,
     module_types: &ModuleTypes,
 ) -> Descr {
-    let Term::Call { callee, args, .. } = &block.terminator else {
-        return Descr::any();
-    };
-    let env = env_at_terminator(caller_ft, block, module);
-    let arg_descrs: Vec<Descr> = args
-        .iter()
-        .map(|av| env.get(av).cloned().unwrap_or_else(Descr::any))
-        .collect();
-    // fz-3zx — read the converged LFP cache that type_module's outer
-    // fixpoint produced. Cycle-cut effective_return_descr is retired.
-    module_types
-        .effective_returns
-        .get(&(*callee, arg_descrs))
-        .cloned()
-        .unwrap_or_else(Descr::any)
+    match &block.terminator {
+        Term::Call { callee, args, .. } => {
+            let env = env_at_terminator(caller_ft, block, module);
+            let arg_descrs: Vec<Descr> = args
+                .iter()
+                .map(|av| env.get(av).cloned().unwrap_or_else(Descr::any))
+                .collect();
+            // fz-3zx — read the converged LFP cache that type_module's outer
+            // fixpoint produced. Cycle-cut effective_return_descr is retired.
+            module_types
+                .effective_returns
+                .get(&(*callee, arg_descrs))
+                .cloned()
+                .unwrap_or_else(Descr::any)
+        }
+        // fz-ul4.27.22.6 — at a CallClosure seam, the closure's static
+        // Descr names the body's possible return shapes. JOIN the return
+        // Descrs across positive arrow clauses; this is the value the
+        // body's Term::Return passes to the cont's slot 0.
+        Term::CallClosure { closure, .. } => {
+            let env = env_at_terminator(caller_ft, block, module);
+            let closure_d = env.get(closure).cloned().unwrap_or_else(Descr::any);
+            closure_d.arrow_join_return()
+        }
+        _ => Descr::any(),
+    }
 }
 
 /// fz-ul4.27.21.4 — JOIN of a spec's effective return Descrs, following
