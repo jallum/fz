@@ -832,73 +832,6 @@ fn build_param_reprs(
         .collect()
 }
 
-/// fz-ul4.27.14.1 — Per-spec set of cont SpecIds whose slot 1 may be
-/// written by an unconditional-Tagged path. Such specs need entry-param
-/// 0 forced to FzValue / ArgRepr::Tagged (the entry load must read the
-/// Tagged bits the writer stored).
-///
-/// Tagged-unconditional writers in the codegen pipeline:
-///   * `emit_return` (uniform callee, line ~3081): stores `val` blindly.
-///   * Uniform TailCall-to-native branch (line ~2905): stores `result_tagged`.
-///   * Native-callee closure stub's return (line ~3366): stores `result_tagged`.
-///   * fz_receive_attempt runtime path (Tagged conservative assumption).
-///
-/// The kind-aware writer (`store_args_into_callee_frame`) is used by the
-/// "uniform-caller, native-callee, uniform-cont" branch (line ~2820) and
-/// doesn't force the cont to accept Tagged.
-///
-/// Returns the set of SpecId.0 values that must keep slot-0 / param-0 as
-/// Tagged. SpecIds not in the set are free to follow the typer's Descr.
-fn uniform_cont_reachable_specs(
-    module: &crate::fz_ir::Module,
-    module_types: &crate::ir_typer::ModuleTypes,
-    spec_registry: &SpecRegistry,
-    natively_callable: &std::collections::HashSet<crate::fz_ir::FnId>,
-) -> std::collections::HashSet<u32> {
-    let is_native = |fid: crate::fz_ir::FnId| natively_callable.contains(&fid);
-    let mut flagged: std::collections::HashSet<u32> = std::collections::HashSet::new();
-
-    // Walk every (caller spec) × block in the module. `cont_input_key`
-    // depends on the caller's FnTypes (slot-0 Descr is derived from the
-    // callee's specialized return), so iterate per-spec.
-    for ((caller_fn_id, _caller_key), caller_ft) in &module_types.specs {
-        let Some(caller_fn) = module.fns.iter().find(|f| f.id == *caller_fn_id)
-        else { continue; };
-        for blk in &caller_fn.blocks {
-            let (cont, cont_via_uniform_callee) = match &blk.terminator {
-                Term::Call { callee, continuation, .. } => {
-                    // The cont's slot 1 is Tagged-written iff the emit_call
-                    // path fires — i.e. callee is uniform. Native callees
-                    // route through either the native chain (no cont frame)
-                    // or the kind-aware writer.
-                    (Some(continuation), !is_native(*callee))
-                }
-                Term::CallClosure { continuation, .. } => {
-                    // The closure stub's native-callee path writes Tagged
-                    // into the cont's slot 1 (closure stub line ~3366);
-                    // its uniform-callee path delegates to the callee's
-                    // emit_return (also Tagged). Either way: flag.
-                    (Some(continuation), true)
-                }
-                Term::Receive { continuation } => {
-                    // fz_receive_attempt fills the cont's slot 1 at
-                    // runtime; treat as Tagged-unconditional.
-                    (Some(continuation), true)
-                }
-                _ => (None, false),
-            };
-            let Some(cont) = cont else { continue; };
-            if !cont_via_uniform_callee { continue; }
-            let key = crate::ir_typer::cont_input_key(
-                blk, cont, caller_ft, module, module_types,
-            );
-            if let Some(sid) = spec_registry.resolve(cont.fn_id, &key) {
-                flagged.insert(sid.0);
-            }
-        }
-    }
-    flagged
-}
 
 /// fz-ul4.27.6.2.2 — Per-fn Cranelift Signature.
 ///
@@ -2142,20 +2075,19 @@ pub fn compile_with_backend<B: Backend>(
         for id in to_remove { natively_callable.remove(&id); }
     }
 
-    // fz-ul4.27.14.1 — per-spec uniform-cont-reachable set replaces the
-    // old per-FnId `cont_target_fns`. A spec is in the set iff some
-    // unconditional-Tagged writer may store into its slot 1; only those
-    // specs need entry-param 0 forced to Tagged. Specs reached only via
-    // the native chain (callee + cont both native, fully synchronous
-    // dispatch) or the kind-aware writer (`store_args_into_callee_frame`)
-    // stay free to follow the typer's Descr.
-    let uniform_cont_reachable: std::collections::HashSet<u32> =
-        uniform_cont_reachable_specs(
-            module,
-            &module_types,
-            &spec_registry,
-            &natively_callable,
-        );
+    // fz-ul4.27.22.16 — `uniform_cont_reachable_specs` deleted. The
+    // analysis flagged conts reachable from uniform callees / Tagged-
+    // unconditional writers so their entry slot 0 + schema kind would
+    // be forced to Tagged/FzValue. Post-22.12, every callsite that
+    // would have flagged a cont either:
+    //   - resolves via closure_lit to a narrow body spec whose ABI
+    //     already matches the cont's narrow slot 0 (direct dispatch);
+    //   - flows through the unresolved indirect Tagged seam, which
+    //     `tagged_slot0_cont_specs` (CallClosure / Receive branches)
+    //     already covers.
+    // Disabling the force changed only line numbers in
+    // closure_typed_captures.clif (verified by experiment) — no
+    // codegen content shifted. The analysis is dead.
 
     // fz-cps.1.13 — fns_needing_host_ctx analysis deleted. Native fns
     // all use fz_halt_implicit (TLS-based) for Term::Halt, dropping the
@@ -2226,13 +2158,8 @@ pub fn compile_with_backend<B: Backend>(
                 kinds[j] = FieldKind::RawI64;
             }
         }
-        // fz-ul4.27.14.1: force entry-param 0 to FzValue iff this spec
-        // is uniform-cont-reachable (some Tagged-unconditional writer
-        // stores into its slot 1). Specs reached only via the native
-        // chain don't need this and keep their typer-derived kind.
-        if !kinds.is_empty() && uniform_cont_reachable.contains(&(sid as u32)) {
-            kinds[0] = FieldKind::FzValue;
-        }
+        // fz-ul4.27.22.16 — uniform_cont_reachable slot-0 FzValue force
+        // retired; tagged_slot0_cont_specs covers every case post-22.12.
         schemas.push(build_frame_schema(&f.name, &kinds));
     }
 
@@ -2354,19 +2281,12 @@ pub fn compile_with_backend<B: Backend>(
         .map(|sid| match spec_fnidx[sid] {
             Some(idx) => {
                 let f = &module.fns[idx];
-                let mut reprs = build_param_reprs(
+                let reprs = build_param_reprs(
                     f,
                     spec_fn_types[sid].expect("non-sentinel spec must have FnTypes"),
                 );
-                // fz-ul4.27.14.1: force entry-param 0 to Tagged iff this
-                // spec is uniform-cont-reachable. Mirrors the schema-level
-                // FzValue force above so the entry load reads what the
-                // unconditional-Tagged writer stored.
-                if !reprs.is_empty()
-                    && uniform_cont_reachable.contains(&(sid as u32))
-                {
-                    reprs[0] = ArgRepr::Tagged;
-                }
+                // fz-ul4.27.22.16 — uniform_cont_reachable slot-0 Tagged
+                // force retired; tagged_slot0_cont_specs is sufficient.
                 // fz-ul4.27.22.12 — arg-slot force at closure body retired.
                 // The 22.5 capture-slot wins are preserved (CAPTURE slots
                 // [0..n_caps) keep their per-spec narrow reprs). ARG slots

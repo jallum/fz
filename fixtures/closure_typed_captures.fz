@@ -1,6 +1,10 @@
 # purpose: fz-ul4.29.5 — closure dispatched via call_indirect through stub_fp
 # paths:   jit, interp, aot
-# expect_clif_contains: apply1: call_indirect
+# fz-ul4.27.22.11 — apply1's `f(z)` resolves via closure_lit to lambda_3's
+# narrow body spec; the cl+16 indirect dispatch is replaced by a direct
+# return_call.
+# expect_clif_contains: apply1: return_call fn0
+# expect_clif_excludes: apply1: call_indirect
 # expect_clif_excludes: apply1: fz_closure_invoke
 # fz-ul4.27.22.5 — typed closure capture seam: ishl/bor pairs dropped at the
 # MakeClosure producer (add_to_s6) and sshr_imm dropped at the body's typed

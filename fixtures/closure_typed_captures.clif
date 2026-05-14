@@ -11,16 +11,16 @@ function u0:0(i64) -> i64 tail {
     fn2 = u0:31 sig2
 
 block0(v0: i64):
-    v1 = iconst.i64 10                  ; @35:23
-    v2 = iconst.i64 20                  ; @35:27
-    v3 = iconst.i32 7                   ; @35:16
-    v4 = iconst.i32 1                   ; @35:16
-    v5 = iconst.i32 0                   ; @35:16
-    v6 = call fn2(v3, v4, v5)           ; @35:16  v3 = 7, v4 = 1, v5 = 0
-    v7 = func_addr.i64 fn1              ; @35:16
-    store notrap aligned v7, v6+16      ; @35:16
-    store notrap aligned v0, v6+24      ; @35:16
-    return_call fn0(v1, v2, v6)         ; @35:16  v1 = 10, v2 = 20
+    v1 = iconst.i64 10                  ; @39:23
+    v2 = iconst.i64 20                  ; @39:27
+    v3 = iconst.i32 7                   ; @39:16
+    v4 = iconst.i32 1                   ; @39:16
+    v5 = iconst.i32 0                   ; @39:16
+    v6 = call fn2(v3, v4, v5)           ; @39:16  v3 = 7, v4 = 1, v5 = 0
+    v7 = func_addr.i64 fn1              ; @39:16
+    store notrap aligned v7, v6+16      ; @39:16
+    store notrap aligned v0, v6+24      ; @39:16
+    return_call fn0(v1, v2, v6)         ; @39:16  v1 = 10, v2 = 20
 }
 
 ; fn add_to_s3
@@ -35,14 +35,14 @@ function u0:0(i64, i64, i64) -> i64 tail {
     fn1 = colocated u0:49 sig1
 
     block0(v0: i64, v1: i64, v2: i64):    ;; v0 :: 10, v1 :: 20
-    v3 = iconst.i32 3                   ; @31:32
-    v4 = iconst.i32 2                   ; @31:32
-    v5 = iconst.i32 0                   ; @31:32
-    v6 = call fn0(v3, v4, v5)           ; @31:32  v3 = 3, v4 = 2, v5 = 0
-    v7 = func_addr.i64 fn1              ; @31:32
-    store notrap aligned v7, v6+16      ; @31:32
-    store notrap aligned v0, v6+24      ; @31:32
-    store notrap aligned v1, v6+32      ; @31:32
+    v3 = iconst.i32 3                   ; @35:32
+    v4 = iconst.i32 2                   ; @35:32
+    v5 = iconst.i32 0                   ; @35:32
+    v6 = call fn0(v3, v4, v5)           ; @35:32  v3 = 3, v4 = 2, v5 = 0
+    v7 = func_addr.i64 fn1              ; @35:32
+    store notrap aligned v7, v6+16      ; @35:32
+    store notrap aligned v0, v6+24      ; @35:32
+    store notrap aligned v1, v6+32      ; @35:32
     v8 = load.i64 notrap aligned v2+16
     return_call_indirect sig2, v8(v6, v2)
 }
@@ -56,7 +56,7 @@ function u0:0(i64, i64, i64) -> i64 tail {
     fn0 = colocated u0:48 sig0
 
     block0(v0: i64, v1: i64, v2: i64):    ;; v0 :: &fn3[10, 20]:(any) -> any, v1 :: 12
-    return_call fn0(v1, v0, v2)         ; @32:22
+    return_call fn0(v1, v0, v2)         ; @36:22
 }
 
 ; fn lambda_3_s5
@@ -135,16 +135,16 @@ function u0:0(i64, i64) -> i64 tail {
     fn2 = u0:31 sig2
 
     block0(v0: i64, v1: i64):    ;; v0 :: &fn3[10, 20]:(any) -> any
-    v2 = iconst.i64 12                  ; @35:32
-    v3 = iconst.i32 8                   ; @35:9
-    v4 = iconst.i32 1                   ; @35:9
-    v5 = iconst.i32 0                   ; @35:9
-    v6 = call fn2(v3, v4, v5)           ; @35:9  v3 = 8, v4 = 1, v5 = 0
-    v7 = func_addr.i64 fn1              ; @35:9
-    store notrap aligned v7, v6+16      ; @35:9
-    v8 = load.i64 notrap aligned v1+24  ; @35:9
-    store notrap aligned v8, v6+24      ; @35:9
-    return_call fn0(v0, v2, v6)         ; @35:9  v2 = 12
+    v2 = iconst.i64 12                  ; @39:32
+    v3 = iconst.i32 8                   ; @39:9
+    v4 = iconst.i32 1                   ; @39:9
+    v5 = iconst.i32 0                   ; @39:9
+    v6 = call fn2(v3, v4, v5)           ; @39:9  v3 = 8, v4 = 1, v5 = 0
+    v7 = func_addr.i64 fn1              ; @39:9
+    store notrap aligned v7, v6+16      ; @39:9
+    v8 = load.i64 notrap aligned v1+24  ; @39:9
+    store notrap aligned v8, v6+24      ; @39:9
+    return_call fn0(v0, v2, v6)         ; @39:9  v2 = 12
 }
 
 ; fn k_5_s8
@@ -157,8 +157,8 @@ function u0:0(i64, i64) -> i64 tail {
     fn0 = u0:1 sig0
 
     block0(v0: i64, v1: i64):    ;; v0 :: int
-    call fn0(v0)                        ; @35:3
-    v2 = iconst.i64 3                   ; @35:3
+    call fn0(v0)                        ; @39:3
+    v2 = iconst.i64 3                   ; @39:3
     v3 = load.i64 notrap aligned v1+24
     v4 = load.i64 notrap aligned v3+16
     return_call_indirect sig1, v4(v2, v3)  ; v2 = 3
