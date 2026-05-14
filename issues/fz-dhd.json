@@ -2,13 +2,14 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-05-14T11:10:58Z",
   "created": "2026-05-14T10:29:33Z",
   "description": "Same shape as fz-jvo, in src/typer.rs:\n\n- tuple_projections (line 19): unions across all pos sigs of all\n  clauses regardless of whether they're conjuncts (intersect) or\n  alternatives (union).\n- map_field_lookup (line 40): same pattern.\n\nFor a Descr like `tuple(int, int) \u0026 tuple(any, any)` (which arises\nfrom branch narrowing), the projection of field 0 should be\n`int ∩ any = int`. Currently returns `int ∪ any = any`.\n\n## Fix shape (mirrors fz-jvo)\n\nFor each clause (Conj):\n  - Intersect across pos sigs (within the clause).\n  - Union across clauses.\n\n## Acceptance\n\n- No existing test regresses (current behavior is conservative\n  over-approximation; tightening loses no soundness).\n- tuple-of-narrows fixtures show projection types matching\n  intersection, not union.\n\n## Out of scope\n\n- Negative sigs (`clause.neg`) handling. Subtractive narrowing\n  is harder; leave for follow-up.",
   "id": "fz-dhd",
   "labels": [],
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "fz-typer.field-extract-intersect: tuple_projections + map_field_lookup share the intersect bug",
   "type": "bug",
-  "updated_at": "2026-05-14T10:29:33Z"
+  "updated_at": "2026-05-14T11:10:58Z"
 }
