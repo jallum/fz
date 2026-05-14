@@ -273,16 +273,32 @@ fn opaque_consumer_arities(
         let Some(&i) = idx_of.get(fid) else { continue; };
         let f = &m.fns[i];
         for b in &f.blocks {
+            // Terminator-level opaque dispatch.
             let (closure_var, args): (Option<Var>, &[Var]) = match &b.terminator {
                 Term::CallClosure { closure, args, .. }
                 | Term::TailCallClosure { closure, args } => (Some(*closure), args.as_slice()),
                 _ => (None, &[]),
             };
-            let Some(cv) = closure_var else { continue; };
-            if ft.fn_constants.get(&cv).is_some() {
-                continue;
+            if let Some(cv) = closure_var {
+                if ft.fn_constants.get(&cv).is_none() {
+                    arities.insert(args.len());
+                }
             }
-            arities.insert(args.len());
+            // Stmt-level opaque dispatch: `Builtin(Spawn, [closure])`
+            // hands the closure to the runtime, which invokes it with
+            // zero args. Track as arity-0 opaque dispatch keyed off the
+            // closure operand's fn_constants.
+            for stmt in &b.stmts {
+                let Stmt::Let(_, prim) = stmt;
+                if let Prim::Builtin(bid, args) = prim {
+                    if *bid == BuiltinKind::Spawn.id() && args.len() == 1 {
+                        let cv = args[0];
+                        if ft.fn_constants.get(&cv).is_none() {
+                            arities.insert(0);
+                        }
+                    }
+                }
+            }
         }
     }
     arities
@@ -450,15 +466,14 @@ pub fn type_module(m: &Module) -> ModuleTypes {
     // Phase 1 (above) registered only direct + resolved-closure
     // specs. Now sweep every registered spec's body for
     // `Prim::MakeClosure(F, captures)` and push
-    // `(F, [capture_descrs..., any...])` for each. Captures come
-    // from the discovering spec's per-block env; arg slots fill
-    // with `any` because the closure value's invocation args are
-    // unknown at construction time.
-    //
-    // Step 5b unconditionally pushes; step 5c will gate on
-    // `opaque_consumer_arities` so closure targets that are
-    // never opaquely dispatched skip the defensive any-key.
+    // `(F, [capture_descrs..., any...])` — but ONLY when the lambda's
+    // expected invocation arity (`n_params(F) - captures.len()`) is
+    // present in `opaque_consumer_arities`. Closures whose every
+    // consumer resolves via fn_constants don't need a defensive
+    // any-key body: the resolved direct-Call registration emitted by
+    // phase 1 covers every runtime invocation.
     for _ in 0..64 {
+        let opaque_arities = opaque_consumer_arities(m, &specs);
         let snapshot: Vec<(FnId, Vec<Descr>)> = specs.keys().cloned().collect();
         for (fid, key) in &snapshot {
             let Some(&j) = idx_of.get(fid) else { continue; };
@@ -473,6 +488,11 @@ pub fn type_module(m: &Module) -> ModuleTypes {
                         if let Some(&jj) = idx_of.get(lam_fn_id) {
                             let lam = &m.fns[jj];
                             let n_params = lam.block(lam.entry).params.len();
+                            let opaque_arity = n_params.saturating_sub(captured.len());
+                            if !opaque_arities.contains(&opaque_arity) {
+                                env.insert(*v, type_prim(prim, &env, m));
+                                continue;
+                            }
                             let mut k: Vec<Descr> = vec![Descr::any(); n_params];
                             for (i, cv) in captured.iter().enumerate() {
                                 if let Some(slot) = k.get_mut(i) {
