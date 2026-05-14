@@ -4,14 +4,15 @@
   "blocks": [
     "fz-ul4.27.22.7"
   ],
+  "closed_at": "2026-05-14T21:35:16Z",
   "created": "2026-05-14T16:03:51Z",
   "description": "Plumbing landed (f46dd968, fc1ff766). Force-drop attempt failed (e4e3aafe, reverted as 98e5e5a7).\n\n## Current state in tree\n\n- Descr::arrow_join_return helper.\n- Typer cont_slot0_descr handles Term::CallClosure via arrow_join_return.\n- Closure header packs halt_kind (high 2 bits of flags).\n- fz_alloc_closure / init_static_closures / fz_aot_register_static_closure / fz_spawn_entry thread halt_kind end-to-end.\n- chain_repr / pure_forwarder analysis (computed but not used to drop the force).\n\n## Why the force-drop broke apply2\n\napply2(f, x), do: f(x) lowers to Term::TailCallClosure on apply2's first arg (not a capture). chain_repr looks up the closure Var's Descr via spec_fn_types[sid].vars; for apply2's spec key [(any) -\u003e any, 21], f's Descr is (any) -\u003e any. arrow_join_return gives any → Tagged. apply2's chain_repr = Tagged.\n\nThe TailCallClosure terminator seed still flagged apply2 in tagged_return_fns → apply2's return_reprs forced Tagged → apply2's outer @abi = ... -\u003e Tagged. But double's body (post force-drop) returned RawInt raw. return_call_indirect can't coerce mid-TCO → apply2 forwarded raw bits up under a Tagged ABI. main read Tagged from raw 42, sshr → 5.\n\n## Two fix paths\n\n(α) Per-callsite spec specialization on closure-arg types. apply2 gets a narrow spec [(int) -\u003e int, 21] where f's Descr is (int) -\u003e int. chain_repr extracts int → RawInt. apply2's narrow spec returns RawInt. main resolves to the narrow spec and reads RawInt. This is exactly fz-ul4.27.22.7.\n\n(β) Keep closure_target_fns force in tagged_return_fns. Bodies return Tagged → all forwarders consistent. Caps the win at: closure capture-slot narrowing (22.5) + halt_kind plumbing for spawn (22.6 partial).\n\n## Recommendation\n\nDo 22.7 (path α). It generalizes: arg-slot narrowing and return-slot narrowing both fall out of per-callsite spec specialization. Once narrow specs exist for closure-arg types, the force-drop is naturally safe — apply2's narrow spec returns RawInt by construction; main reads RawInt; no mid-TCO coerce needed.\n\nThe plumbing already in tree (chain_repr, pure_forwarder, halt_kind in closure header) is the right foundation. 22.7 lands the missing piece: typer-side closure-arg spec specialization.",
   "id": "fz-ul4.27.22.6",
   "labels": [],
   "parent": "fz-ul4.27.22",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "fz-cps-seam.return: closure body return-slot narrowing via typer cont_slot0_descr",
   "type": "task",
-  "updated_at": "2026-05-14T19:54:21Z"
+  "updated_at": "2026-05-14T21:35:16Z"
 }
