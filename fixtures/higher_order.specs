@@ -102,7 +102,7 @@
 ;     blk0 Call apply2#2(Var(1), Var(2))
 ;              callee_key=[(any) -> any, 21]
 ;              cont k_6#6 captured=[]
-;              cont_key=[any]
+;              cont_key=[int]
 ;     blk1 Halt Var(0)      :: :a0
 
 ; spec k_5(4) #fn=5
@@ -120,12 +120,12 @@
 ;     blk0 TailCallClosure Var(1)(Var(0)) [resolved=double#0]
 
 ; spec k_6(1) #fn=6
-;   key:    [any]
+;   key:    [int]
 ;   return: nil
 ;   fn_constants:
 ;     Var(2) = neg#1
 ;   vars:
-;     Var(0) :: any
+;     Var(0) :: int
 ;     Var(1) :: nil
 ;     Var(2) :: (any) -> any
 ;     Var(3) :: 7
@@ -133,16 +133,16 @@
 ;     blk0 Call apply2#2(Var(2), Var(3))
 ;              callee_key=[(any) -> any, 7]
 ;              cont k_7#7 captured=[]
-;              cont_key=[any]
+;              cont_key=[int]
 
 ; spec k_7(1) #fn=7
-;   key:    [any]
+;   key:    [int]
 ;   return: nil
 ;   fn_constants:
 ;     Var(2) = double#0
 ;     Var(3) = neg#1
 ;   vars:
-;     Var(0) :: any
+;     Var(0) :: int
 ;     Var(1) :: nil
 ;     Var(2) :: (any) -> any
 ;     Var(3) :: (any) -> any
@@ -151,13 +151,13 @@
 ;     blk0 Call compose#3(Var(2), Var(3), Var(4))
 ;              callee_key=[(any) -> any, (any) -> any, 5]
 ;              cont k_8#8 captured=[]
-;              cont_key=[any]
+;              cont_key=[int]
 
 ; spec k_8(1) #fn=8
-;   key:    [any]
+;   key:    [int]
 ;   return: nil
 ;   vars:
-;     Var(0) :: any
+;     Var(0) :: int
 ;     Var(1) :: nil
 ;   exits:
 ;     blk0 Return Var(1)    :: nil
