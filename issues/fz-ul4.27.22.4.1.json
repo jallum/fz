@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-14T15:47:30Z",
+  "description": "First atomic step of 22.4. Replace the all-Tagged force on closure_target_fns specs (src/ir_codegen.rs:2331-2335 + ~2452) with body ABI derived from the spec's *callable type* — i.e., the lambda's surface argument/return Descrs at the closure-target signature, not the per-spec capture-narrowed key.\n\n## Background\n\nclosure_target_fns is the set of fns appearing as MakeClosure targets. Each has narrow specs keyed by `[capture_descrs..., arg_descrs...]`. Today codegen rewrites every param/return ArgRepr to Tagged for these specs so the indirect-call sig at CallClosure (hardcoded all-Tagged) matches.\n\n22.4's elegant rule: ArgRepr at a typed seam = ArgRepr::from_descr(seam's static Descr). For closure bodies, the seam is the callable type — the *arg* slots' Descrs at the spec key. Captures stay per-spec narrowable; only the public-facing param ABI (arg slots, return) follows the callable type.\n\n## Touch\n\nsrc/ir_codegen.rs around 2310-2340 and 2442-2456:\n- For specs where `closure_target_fns.contains(\u0026f.id)`, build param_reprs from the spec's arg-slot Descrs (the part of the key past `captured.len()` entries). Captures (key indices [0..captured_len)) keep using spec's per-capture narrowed reprs.\n- For return_reprs, use the spec's return Descr — same source as non-closure specs.\n- Delete the all-Tagged forces.\n\n## Expected golden diffs\n\nClosure-using fixtures (higher_order.fz, fact.fz, apply2.fz, etc.) will diff:\n- Closure body fn @abi changes from `(Tagged, Tagged, ..., Tagged) -\u003e Tagged` to typed-per-arg.\n- Body's entry harness loads from `self+24+8*i` will read the body's narrow repr.\n\nNon-closure fixtures (add1.fz, tail_recursion.fz, vr*) unchanged.\n\n## Correctness state\n\nAfter this commit alone, MakeClosure capture-store and CallClosure callsite are still all-Tagged. So closure-using fixtures will likely produce wrong values at runtime — producer/consumer mismatch on captures and args.\n\nThis is the planned intermediate-broken state, handed off to .4.2 which fixes both producer-side seams.\n\n## Acceptance\n\n- cargo build green (no compile errors).\n- BLESS=1 cargo test golden_clif records the new closure-body shapes; non-closure goldens unchanged.\n- Closure-using fixtures may panic / produce wrong output — documented in commit message. .4.2 lands next and restores green.",
+  "id": "fz-ul4.27.22.4.1",
+  "labels": [],
+  "parent": "fz-ul4.27.22.4",
+  "priority": 2,
+  "status": "open",
+  "title": "fz-cps-seam.1: body ABI from callable type — drop closure_target_fns force",
+  "type": "task",
+  "updated_at": "2026-05-14T15:47:30Z"
+}
