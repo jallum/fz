@@ -626,10 +626,13 @@ fn tail_recursion_count_matches_cps_in_clif_section_8_1() {
     assert!(out.status.success(), "fz dump exited {}", out.status);
     let stdout = String::from_utf8_lossy(&out.stdout);
 
-    // Find the count_s2 (any-key spec) banner and slice to the next banner.
+    // Find a narrow count spec banner and slice to the next banner. Spec
+    // IDs shift across typer changes (fz-ul4.27.21.4 widened cont keying
+    // and bumped the count spec ID), so match by the count_s prefix
+    // rather than a specific number.
     let start = stdout
-        .find("; fn count_s2")
-        .unwrap_or_else(|| panic!("missing count_s2 banner:\n{}", stdout));
+        .find("; fn count_s")
+        .unwrap_or_else(|| panic!("missing count_s* banner:\n{}", stdout));
     let rest = &stdout[start..];
     let end = rest[1..]
         .find("; fn ")

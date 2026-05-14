@@ -33,7 +33,7 @@ use crate::fz_ir::{
     Term, UnOp, Var, VecKindIr,
 };
 use crate::types::{Descr, MapKey};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone, Default)]
 pub struct FnTypes {
@@ -223,24 +223,18 @@ pub fn type_module(m: &Module) -> ModuleTypes {
                         let arg_descrs: Vec<Descr> = args.iter().map(|av|
                             env.get(av).cloned().unwrap_or_else(Descr::any)
                         ).collect();
-                        let callee_key = (*callee, arg_descrs);
-                        if let Some(callee_ft) = specs.get(&callee_key) {
-                            if let Some(&j) = idx_of.get(callee) {
-                                let callee_fn = &m.fns[j];
-                                let mut joined: Option<Descr> = None;
-                                for cb in &callee_fn.blocks {
-                                    if let Term::Return(rv) = &cb.terminator {
-                                        let d = callee_ft.vars.get(rv).cloned()
-                                            .unwrap_or_else(Descr::any);
-                                        joined = Some(match joined {
-                                            Some(p) => p.union(&d),
-                                            None => d,
-                                        });
-                                    }
-                                }
-                                joined.unwrap_or_else(Descr::any)
-                            } else { Descr::any() }
-                        } else { Descr::any() }
+                        // fz-ul4.27.21.4: follow Term::TailCall transitively
+                        // so cont keying sees the callee's effective return,
+                        // not just its direct Term::Return values. Cycle
+                        // guard inside the helper handles self/mutual
+                        // tail-recursion.
+                        let mut visiting: HashSet<(FnId, Vec<Descr>)> = HashSet::new();
+                        effective_return_descr(
+                            &(*callee, arg_descrs),
+                            m,
+                            &specs,
+                            &mut visiting,
+                        )
                     }
                     _ => Descr::any(),
                 };
@@ -544,26 +538,17 @@ pub fn type_module(m: &Module) -> ModuleTypes {
                             let arg_descrs: Vec<Descr> = args.iter().map(|av|
                                 env.get(av).cloned().unwrap_or_else(Descr::any)
                             ).collect();
-                            specs.get(&(*callee, arg_descrs))
-                                .map(|cft| {
-                                    let Some(&j) = idx_of.get(callee) else {
-                                        return Descr::any();
-                                    };
-                                    let callee_fn = &m.fns[j];
-                                    let mut joined: Option<Descr> = None;
-                                    for cb in &callee_fn.blocks {
-                                        if let Term::Return(rv) = &cb.terminator {
-                                            let d = cft.vars.get(rv).cloned()
-                                                .unwrap_or_else(Descr::any);
-                                            joined = Some(match joined {
-                                                Some(p) => p.union(&d),
-                                                None => d,
-                                            });
-                                        }
-                                    }
-                                    joined.unwrap_or_else(Descr::any)
-                                })
-                                .unwrap_or_else(Descr::any)
+                            // fz-ul4.27.21.4: follow Term::TailCall too —
+                            // must match the registration-side computation
+                            // (lines ~221-246) or the dead-key drop pass
+                            // drops keys that are still queried.
+                            let mut visiting: HashSet<(FnId, Vec<Descr>)> = HashSet::new();
+                            effective_return_descr(
+                                &(*callee, arg_descrs),
+                                m,
+                                &specs,
+                                &mut visiting,
+                            )
                         }
                         _ => Descr::any(),
                     };
@@ -1527,20 +1512,92 @@ pub fn cont_slot0_descr(
         .iter()
         .map(|av| env.get(av).cloned().unwrap_or_else(Descr::any))
         .collect();
-    let Some(callee_ft) = module_types.specs.get(&(*callee, arg_descrs)) else {
+    let mut visiting: HashSet<(FnId, Vec<Descr>)> = HashSet::new();
+    effective_return_descr(
+        &(*callee, arg_descrs),
+        module,
+        &module_types.specs,
+        &mut visiting,
+    )
+}
+
+/// fz-ul4.27.21.4 — JOIN of a spec's effective return Descrs, following
+/// every exit path. Each `Term::Return` contributes the returned var's
+/// Descr; each `Term::TailCall` recursively contributes the callee spec's
+/// effective return. Mirrors the codegen-side return-descr fixpoint at
+/// `src/ir_codegen.rs:2070-2107` so the typer's cont keying agrees with
+/// what the producer actually passes at runtime.
+///
+/// Without this, a fn whose only direct `Term::Return` is narrow (int)
+/// but whose `Term::TailCall` reaches a wider spec (Any/Tagged) appears
+/// narrow to the cont keying — the cont's param[0] gets typed `int`,
+/// but the producer returns Tagged at runtime, and bits-in-flight are
+/// misinterpreted. This bug is what blocked fz-ul4.27.21.1 (see the
+/// epic's comments). `effective_return_descr` is the fix.
+///
+/// Cycle guard: `visiting` tracks specs currently being computed. A
+/// spec re-entered through `Term::TailCall` recursion contributes
+/// `Descr::none()` (the bottom of the lattice) — the join across other
+/// exit paths still produces a sound bound, and external callers of
+/// the cycle widen it on the next fixpoint iteration as needed.
+///
+/// Specs not yet registered in `specs` (the fixpoint hasn't reached
+/// them) contribute `Descr::any()` — conservative widening that the
+/// outer fixpoint can later refine.
+pub fn effective_return_descr(
+    spec: &(FnId, Vec<Descr>),
+    module: &Module,
+    specs: &HashMap<(FnId, Vec<Descr>), FnTypes>,
+    visiting: &mut HashSet<(FnId, Vec<Descr>)>,
+) -> Descr {
+    if !visiting.insert(spec.clone()) {
+        return Descr::none();
+    }
+    let Some(ft) = specs.get(spec) else {
+        visiting.remove(spec);
         return Descr::any();
     };
-    let callee_fn = module.fn_by_id(*callee);
+    let callee_fn = module.fn_by_id(spec.0);
+    let n_params = callee_fn.block(callee_fn.entry).params.len();
+    let any_key: Vec<Descr> = vec![Descr::any(); n_params];
+
     let mut joined: Option<Descr> = None;
+    let contribute = |d: Descr, joined: &mut Option<Descr>| {
+        *joined = Some(match joined.take() {
+            Some(prev) => prev.union(&d),
+            None => d,
+        });
+    };
+
     for cb in &callee_fn.blocks {
-        if let Term::Return(rv) = &cb.terminator {
-            let d = callee_ft.vars.get(rv).cloned().unwrap_or_else(Descr::any);
-            joined = Some(match joined {
-                Some(p) => p.union(&d),
-                None => d,
-            });
+        match &cb.terminator {
+            Term::Return(rv) => {
+                let d = ft.vars.get(rv).cloned().unwrap_or_else(Descr::any);
+                contribute(d, &mut joined);
+            }
+            Term::TailCall { callee, args } => {
+                // The tail-call's effective return = the resolved callee
+                // spec's effective return. Build the callee_key from the
+                // current spec's view of the arg vars.
+                let arg_descrs: Vec<Descr> = args
+                    .iter()
+                    .map(|av| ft.vars.get(av).cloned().unwrap_or_else(Descr::any))
+                    .collect();
+                let callee_key = (*callee, arg_descrs);
+                let key_to_use = if specs.contains_key(&callee_key) {
+                    callee_key
+                } else {
+                    // Fall back to the any-key spec, which is always
+                    // registered (see type_module's seed at the top).
+                    (*callee, any_key.clone())
+                };
+                let d = effective_return_descr(&key_to_use, module, specs, visiting);
+                contribute(d, &mut joined);
+            }
+            _ => {}
         }
     }
+    visiting.remove(spec);
     joined.unwrap_or_else(Descr::any)
 }
 
