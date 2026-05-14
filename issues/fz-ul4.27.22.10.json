@@ -6,14 +6,15 @@
   "blocks": [
     "fz-ul4.27.22.11"
   ],
+  "closed_at": "2026-05-14T21:19:43Z",
   "created": "2026-05-14T21:01:40Z",
   "description": "Switch the typer to emit Descr::closure_lit at MakeClosure sites and wire the new singleton through phase-1 discovery and cont_slot0_descr.\n\n## Scope\n\nIn src/ir_typer.rs:\n\n1. Prim::MakeClosure typing (line ~1214):\n   - Old: \\`Descr::arrow([any; arity], any)\\`\n   - New: \\`Descr::closure_lit(*fn_id, capture_descrs_from_env)\\`\n   - capture_descrs come from env.get(captured[i]); pad with any if short.\n\n2. Phase-1 walker (walk_spec_for_discovery, src/ir_typer.rs:725-744):\n   - The \"CallClosure / TailCallClosure with known target via fn_constants\" case extends: also fire when the closure Var's Descr is a closure_lit (with a single resolved FnId). Pull (F, capture_key) from the singleton; build arg-side key from env.get(args); push narrow spec [capture_key..., arg_key...] to pending.\n   - Multiple-singleton union: fire once per member (each pushes its own narrow spec).\n\n3. cont_slot0_descr (src/ir_typer.rs:779-799):\n   - Term::CallClosure case: today returns Descr::any() when fn_constants doesn't resolve. Now: call resolve_closure_return (from 22.9) with the closure Var's Descr + arg_descrs. Returns precise Descr for singletons, JOIN for unions, any for unresolved arrows.\n\n## Acceptance\n\n- cargo test --workspace green.\n- fz dump on apply2.fz: apply2 specs keyed by closure_lit(double, []) and closure_lit(neg, []) rather than (any) -\u003e any. Two specs, distinct keys.\n- Bless any golden CLIFs that shift due to new spec keys. Codegen still emits cl+16 indirect dispatch — no @abi change yet, only @spec/@key strings shift in fz dump output.\n- Spec count growth audited: bounded by current callsite diversity (no new axis introduced).\n\n## Out of scope\n\n- Codegen lowering of TailCallClosure / CallClosure to direct return_call. That is 22.11.\n- 22.6 force-drop. Still gated.\n\n## BLOCKED BY\n\n- fz-ul4.27.22.9 [[fz-cps-seam.resolve-return]]\n\n## UNBLOCKS\n\n- fz-cps-seam.codegen-direct: codegen lowering to direct return_call on singleton",
   "id": "fz-ul4.27.22.10",
   "labels": [],
   "parent": "fz-ul4.27.22",
   "priority": 3,
-  "status": "in_progress",
+  "status": "closed",
   "title": "fz-cps-seam.makeclosure-emit: Prim::MakeClosure types as closure_lit; typer plumbing",
   "type": "task",
-  "updated_at": "2026-05-14T21:16:37Z"
+  "updated_at": "2026-05-14T21:19:43Z"
 }
