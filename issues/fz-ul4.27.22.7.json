@@ -4,14 +4,15 @@
     "fz-ul4.27.22.6"
   ],
   "blocks": [],
+  "closed_at": "2026-05-14T21:35:16Z",
   "created": "2026-05-14T16:04:04Z",
   "description": "SUPERSEDED by the fz-ul4.27.22.8..16 ticket chain.\n\nAfter investigation with the user, this work was decomposed into atomic steps under fz-ul4.27.22:\n\n- .8  fz-cps-seam.closure-lit: Descr::closure_lit variant + ops\n- .9  fz-cps-seam.resolve-return: closure-aware return resolution helper\n- .10 fz-cps-seam.makeclosure-emit: MakeClosure types as closure_lit\n- .11 fz-cps-seam.codegen-direct: codegen lowers TailCallClosure to direct return_call\n- .12 fz-cps-seam.force-drop: drop closure_target_fns tagged-return seed (subsumes .6)\n- .13 fz-cps-seam.union-singletons: direct dispatch for union of closure_lits (P4)\n- .14 fz-cps-seam.retire-fn-constants: retire parallel fn_constants\n- .15 fz-cps-seam.retire-halt-kind-plumbing: reassess fc1ff766 plumbing\n- .16 fz-cps-seam.retire-uniform-forces: audit + retire residual forces\n\nDesign: closure values get singleton types in Descr (mirrors int_lit / atom_lit). Per-callsite specialization falls out of standard spec-key discovery. Per-spec direct dispatch at codegen replaces the indirect cl+16 path when the closure Var resolves to one FnId. Force-drop is then safe because every body's ABI matches its dispatch path.\n\nClose this ticket once .12 lands.",
   "id": "fz-ul4.27.22.7",
   "labels": [],
   "parent": "fz-ul4.27.22",
   "priority": 3,
-  "status": "open",
+  "status": "closed",
   "title": "fz-cps-seam.arg: closure body arg-slot narrowing via per-callsite arg-type keys",
   "type": "task",
-  "updated_at": "2026-05-14T21:03:14Z"
+  "updated_at": "2026-05-14T21:35:16Z"
 }
