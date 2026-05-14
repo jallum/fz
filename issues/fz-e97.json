@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
     "fz-fzn"
@@ -9,8 +9,8 @@
   "id": "fz-e97",
   "labels": [],
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "fz-ul4.27.22.17: fixtures — per-dir layout + README extraction",
   "type": "task",
-  "updated_at": "2026-05-14T23:56:09Z"
+  "updated_at": "2026-05-14T23:56:30Z"
 }
