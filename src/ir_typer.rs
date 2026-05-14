@@ -1790,6 +1790,159 @@ pub fn cont_slot0_descr(
 /// Specs not yet registered in `specs` (the fixpoint hasn't reached
 /// them) contribute `Descr::any()` — conservative widening that the
 /// outer fixpoint can later refine.
+/// fz-2yw.1 — compute the Kleene least-fixpoint of every registered
+/// spec's effective return Descr. Under fz's CPS-lowered IR, a spec's
+/// "effective return" is the value its caller's cont eventually
+/// receives. Every block-terminator contributes:
+///
+///   Term::Return(v)                ⇒ ft.vars[v]              (direct return)
+///   Term::TailCall(G, A)           ⇒ return(G, callee_key)   (transfer to G)
+///   Term::Call(_, _, cont)         ⇒ return(cont.fn_id, k)   (G's result feeds K;
+///                                                              K eventually returns
+///                                                              to our caller's cont)
+///   Term::CallClosure(_, _, cont)  ⇒ return(cont.fn_id, k)   (same)
+///   Term::Receive { cont }         ⇒ return(cont.fn_id, k)   (msg feeds K)
+///   Term::TailCallClosure(c, A)    ⇒ return(target?, A) | any (resolved via
+///                                                              fn_constants
+///                                                              when possible)
+///   Term::Halt / Goto / If         ⇒ no exit-level contribution
+///
+/// The cont_key is computed via the existing `cont_input_key` helper
+/// using each block's per-spec env.
+///
+/// Termination: the Descr lattice has finite height per module
+/// (DNF clauses bounded by program structure + neg-closure). Monotone
+/// updates terminate in ≤ N × height iterations.
+///
+/// Replaces the old cycle-cut-to-⊥ approach: that was sound but
+/// dropped the entire recursive contribution. With CPS, recursive
+/// flow runs THROUGH the cont chain — without lifting cont contributions
+/// to F's return, recursive fns like `sum` reported `return = 0` (base
+/// case only) even though every caller's cont actually received `int`.
+pub fn compute_effective_returns(
+    module: &Module,
+    specs: &HashMap<(FnId, Vec<Descr>), FnTypes>,
+) -> HashMap<(FnId, Vec<Descr>), Descr> {
+    let mut ret: HashMap<(FnId, Vec<Descr>), Descr> = HashMap::new();
+    for key in specs.keys() {
+        ret.insert(key.clone(), Descr::none());
+    }
+    let idx_of: HashMap<FnId, usize> = module.fns.iter().enumerate()
+        .map(|(i, f)| (f.id, i)).collect();
+
+    // Helper: cont_input_key matching the registered spec — uses
+    // cycle-cut effective_return_descr for slot 0 (the same algorithm
+    // the worklist used when it registered the cont spec). The LFP
+    // refines RETURN values, not keys; keys stay aligned with
+    // registered specs so our ret-table lookups hit.
+    let cont_key_at = |
+        b: &Block,
+        cont: &crate::fz_ir::Cont,
+        ft: &FnTypes,
+    | -> Vec<Descr> {
+        let Some(_) = idx_of.get(&cont.fn_id) else { return vec![]; };
+        let cont_fn = module.fn_by_id(cont.fn_id);
+        let n_params = cont_fn.block(cont_fn.entry).params.len();
+        let mut key: Vec<Descr> = vec![Descr::any(); n_params];
+
+        let env = env_at_terminator(ft, b, module);
+        let slot0 = match &b.terminator {
+            Term::Call { callee, args, .. } => {
+                let arg_descrs: Vec<Descr> = args.iter()
+                    .map(|av| env.get(av).cloned().unwrap_or_else(Descr::any))
+                    .collect();
+                let mut visiting: HashSet<(FnId, Vec<Descr>)> = HashSet::new();
+                effective_return_descr(&(*callee, arg_descrs), module, specs, &mut visiting)
+            }
+            Term::CallClosure { closure, args, .. } => {
+                if let Some(&target) = ft.fn_constants.get(closure) {
+                    let target_fn = module.fn_by_id(target);
+                    let np = target_fn.block(target_fn.entry).params.len();
+                    let mut ad: Vec<Descr> = args.iter()
+                        .map(|av| env.get(av).cloned().unwrap_or_else(Descr::any))
+                        .collect();
+                    while ad.len() < np { ad.push(Descr::any()); }
+                    ad.truncate(np);
+                    let mut visiting: HashSet<(FnId, Vec<Descr>)> = HashSet::new();
+                    effective_return_descr(&(target, ad), module, specs, &mut visiting)
+                } else {
+                    Descr::any()
+                }
+            }
+            _ => Descr::any(),
+        };
+        if !key.is_empty() { key[0] = slot0; }
+        for (k, cv) in cont.captured.iter().enumerate() {
+            if let Some(p) = key.get_mut(k + 1) {
+                *p = env.get(cv).cloned().unwrap_or_else(Descr::any);
+            }
+        }
+        key
+    };
+
+    // Bounded outer iterations as safety. In practice convergence is
+    // fast (≤ spec_count iterations).
+    for _ in 0..(specs.len() * 4 + 16) {
+        let mut changed = false;
+        for spec_key in specs.keys() {
+            let (fid, _) = spec_key;
+            let Some(&j) = idx_of.get(fid) else { continue; };
+            let Some(ft) = specs.get(spec_key) else { continue; };
+            let f = &module.fns[j];
+
+            let mut joined = Descr::none();
+            for b in &f.blocks {
+                match &b.terminator {
+                    Term::Return(rv) => {
+                        let d = ft.vars.get(rv).cloned().unwrap_or_else(Descr::any);
+                        joined = joined.union(&d);
+                    }
+                    Term::TailCall { callee, args } => {
+                        let arg_descrs: Vec<Descr> = args.iter()
+                            .map(|av| ft.vars.get(av).cloned().unwrap_or_else(Descr::any))
+                            .collect();
+                        let d = ret.get(&(*callee, arg_descrs)).cloned()
+                            .unwrap_or_else(Descr::any);
+                        joined = joined.union(&d);
+                    }
+                    Term::TailCallClosure { closure, args } => {
+                        if let Some(&target) = ft.fn_constants.get(closure) {
+                            let target_fn = module.fn_by_id(target);
+                            let np = target_fn.block(target_fn.entry).params.len();
+                            let mut ad: Vec<Descr> = args.iter()
+                                .map(|av| ft.vars.get(av).cloned().unwrap_or_else(Descr::any))
+                                .collect();
+                            while ad.len() < np { ad.push(Descr::any()); }
+                            ad.truncate(np);
+                            let d = ret.get(&(target, ad)).cloned()
+                                .unwrap_or_else(Descr::any);
+                            joined = joined.union(&d);
+                        } else {
+                            joined = joined.union(&Descr::any());
+                        }
+                    }
+                    Term::Call { continuation, .. }
+                    | Term::CallClosure { continuation, .. }
+                    | Term::Receive { continuation } => {
+                        let cont_k = cont_key_at(b, continuation, ft);
+                        let d = ret.get(&(continuation.fn_id, cont_k)).cloned()
+                            .unwrap_or_else(Descr::any);
+                        joined = joined.union(&d);
+                    }
+                    Term::Halt(_) | Term::Goto(_, _) | Term::If(_, _, _) => {}
+                }
+            }
+            let prev = ret.get(spec_key).cloned().unwrap_or_else(Descr::none);
+            if !joined.is_equiv(&prev) {
+                ret.insert(spec_key.clone(), joined);
+                changed = true;
+            }
+        }
+        if !changed { break; }
+    }
+    ret
+}
+
 pub fn effective_return_descr(
     spec: &(FnId, Vec<Descr>),
     module: &Module,
@@ -2815,6 +2968,36 @@ mod tests {
         let ir = crate::ir_lower::lower_program(&prog).expect("lower");
         let mt = type_module(&ir);
         (ir, mt)
+    }
+
+    /// fz-2yw.1 — recursive sum's effective return must be the LFP
+    /// (`int`, joined from base case 0 plus recursive case h + sum(t))
+    /// — NOT just the base case (0) which is what cycle-cut would give.
+    #[test]
+    fn effective_return_lfp_for_recursive_sum() {
+        let (m, mt) = pipeline(r#"
+fn sum([]), do: 0
+fn sum([h | t]), do: h + sum(t)
+fn main(), do: print(sum([1, 2, 3, 4, 5]))
+"#);
+        let returns = compute_effective_returns(&m, &mt.specs);
+        let sum_fn = m.fns.iter().find(|f| f.name == "sum").unwrap();
+        // At least one of sum's specs has a non-trivial return.
+        let any_int = returns.iter().any(|((fid, _), d)| {
+            *fid == sum_fn.id && d.is_subtype(&Descr::int()) && !d.is_empty()
+        });
+        assert!(any_int,
+            "expected at least one sum spec with return ⊆ int, got: {:?}",
+            returns.iter().filter(|((fid, _), _)| *fid == sum_fn.id)
+                .collect::<Vec<_>>());
+        // CRUCIAL: no spec should claim return = singleton 0 (the
+        // base case alone). That would mean cycle-cut leaked through.
+        for ((fid, _), d) in &returns {
+            if *fid != sum_fn.id { continue; }
+            assert!(!d.is_equiv(&Descr::int_lit(0)),
+                "sum spec return must NOT be just int_lit(0); LFP should \
+                 lift recursive contribution. Got: {}", d);
+        }
     }
 
     /// fz-vw4.5a — when every closure-dispatch site resolves via
