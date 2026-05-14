@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-14T21:03:03Z",
+  "description": "Cleanup ticket — file now, do after 22.12 lands.\n\nSeveral codegen-side forces and analyses were introduced to paper over the Tagged-everywhere ABI before 22.5/.6/.7. With closure_lit driving precise per-spec ABIs, audit each for residual necessity.\n\n## Scope\n\nFor each of the below, determine: still load-bearing? pure perf opt? dead?\n\n1. uniform_cont_reachable_specs (src/ir_codegen.rs) — gated slot-0 force on schemas/ABI when a cont was reachable from a uniform-fn (non-narrowed) path. With per-spec narrow conts, may be unreachable in the redundant sense.\n\n2. tagged_slot0_cont_specs / cont_input_key force interactions — audit which slot-0 forces remain after .22.4 (typed cont seam) and .22.7 (typed closure body).\n\n3. pure_forwarder analysis (src/ir_codegen.rs 22.6 commit fc1ff766) — was introduced to let fz_spawn_thunk's single-block forwarder pass through narrow reprs. With direct dispatch via closure_lit, the spawn-thunk may resolve naturally; verify whether the analysis is still load-bearing or pure opt.\n\n4. Any tagged_return_fns seeds beyond what 22.12 dropped — what's left? Why?\n\n## Acceptance\n\n- cargo test --workspace green.\n- Each analysis either deleted (dead), retained with a code comment citing the specific case that requires it, or marked as TODO with a follow-up ticket.\n- Goal: src/ir_codegen.rs leaner; force-mechanisms reserved only for proven-required cases.\n\n## BLOCKED BY\n\n- fz-ul4.27.22.12 [[fz-cps-seam.force-drop]]",
+  "id": "fz-ul4.27.22.16",
+  "labels": [],
+  "parent": "fz-ul4.27.22",
+  "priority": 4,
+  "status": "open",
+  "title": "fz-cps-seam.retire-uniform-forces: audit + retire uniform_cont_reachable_specs / tagged_slot0_cont_specs / pure_forwarder",
+  "type": "task",
+  "updated_at": "2026-05-14T21:03:03Z"
+}
