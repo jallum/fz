@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
     "fz-ul4.27.22.9"
@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-ul4.27.22",
   "priority": 3,
-  "status": "open",
+  "status": "in_progress",
   "title": "fz-cps-seam.closure-lit: Descr::closure_lit variant + Descr ops",
   "type": "task",
-  "updated_at": "2026-05-14T21:01:40Z"
+  "updated_at": "2026-05-14T21:03:22Z"
 }
