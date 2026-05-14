@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-ul4.27.22.12"
+  ],
   "blocks": [],
   "created": "2026-05-14T21:02:37Z",
   "description": "Cleanup ticket — file now, do after 22.12 lands.\n\nfn_constants (HashMap\u003cVar, FnId\u003e per spec, src/ir_typer.rs) was introduced as a parallel mechanism to track \\\"this Var is exactly fn F\\\" because the type system couldn't express it. closure_lit (22.8) is exactly that expression. The two mechanisms now overlap.\n\n## Scope\n\n1. Audit every reader of fn_constants:\n   - rewrite_known_target_closures (src/ir_typer.rs:860+)\n   - phase-1 walker's CallClosure-with-known-target branch (line ~725)\n   - cont_slot0_descr's CallClosure branch (line ~779)\n   - codegen chain_repr's resolve_sid_under path\n   - any others surfaced by grep\n\n2. For each, replace fn_constants[v] lookup with closure_lit extraction from env.get(v). Verify equivalence on every fixture.\n\n3. If equivalence holds across the test suite, delete fn_constants from FnTypes, delete callsite_fn_consts propagation, simplify rewrite_known_target_closures or delete it (if codegen-direct in 22.11 fully covers the rewrite intent).\n\n4. If equivalence does NOT hold for some reader (rare edge case where fn_constants tracks something singletons don't), document the gap and keep fn_constants as a narrow shim — but never as a parallel general mechanism.\n\n## Acceptance\n\n- cargo test --workspace green.\n- src/ir_typer.rs no longer carries an unmotivated parallel map. Either fn_constants is gone, or its remaining scope is documented in code.\n- Lines of code net negative.\n\n## BLOCKED BY\n\n- fz-ul4.27.22.12 [[fz-cps-seam.force-drop]]",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "fz-cps-seam.retire-fn-constants: retire parallel fn_constants once closure_lit subsumes it",
   "type": "task",
-  "updated_at": "2026-05-14T21:02:37Z"
+  "updated_at": "2026-05-14T21:02:50Z"
 }

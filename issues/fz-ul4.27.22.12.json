@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-ul4.27.22.11"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-ul4.27.22.14"
+  ],
   "created": "2026-05-14T21:02:13Z",
   "description": "With direct dispatch in place (22.11), closure bodies can return RawInt/RawF64 safely — every caller resolves the body sid and matches its ABI. The closure_target_fns tagged_return_fns seed and the arg-slot Tagged force at closure body param_reprs are now redundant scaffolding.\n\nThis subsumes fz-ul4.27.22.6 entirely.\n\n## Scope\n\nIn src/ir_codegen.rs:\n\n1. Drop closure_target_fns seed from tagged_return_fns (line ~2378-2391):\n   - Old: tagged_return_fns is initialized as closure_target_fns ∪ { fn whose exit is TailCallClosure }.\n   - New: tagged_return_fns initialized as ∅ (or only retain the TailCallClosure-exit seed if 22.11's union-fallback still requires it; verify experimentally).\n\n2. Drop arg-slot Tagged force at closure body param_reprs (line ~2349-2355):\n   - Old: for closure_target_fns specs, param_reprs is fully Tagged.\n   - New: closure_target spec param_reprs honors build_param_reprs' typed output across both capture and arg slots. The 22.5 capture-slot fix already covers the capture half; this ticket covers the arg half.\n\n## Acceptance\n\n- cargo test --workspace green.\n- fz dump fixtures/apply2.fz: apply2 spec @abi is (RawInt) -\u003e RawInt (both single-call-shape specs). double_s4 / neg_s5 emit RawInt return; main reads RawInt via cont.\n- fz dump fixtures/closure_typed_captures.fz: lambda_3_s8 @abi is (RawInt, RawInt, RawInt) -\u003e RawInt; ishl_imm/bor_imm/sshr_imm all gone at the lambda boundary.\n- expect_clif assertions across closure fixtures pass: existing add1/tail_recursion/closure_typed_captures hold; add new assertions on apply2/higher_order verifying direct return_call to body fns.\n- Spawn fixtures (spawn_with_captures, concurrency_ping_pong) green on all three paths.\n- Close fz-ul4.27.22.6 as superseded.\n\n## Out of scope\n\n- Halt-kind plumbing from fc1ff766 — left in tree; reassess in 22.14.\n- pure_forwarder analysis — left in tree; reassess in 22.14.\n\n## BLOCKED BY\n\n- fz-ul4.27.22.11 [[fz-cps-seam.codegen-direct]]\n\n## UNBLOCKS\n\n- fz-cps-seam.union-singletons: direct dispatch for union of closure_lits",
   "id": "fz-ul4.27.22.12",
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "fz-cps-seam.force-drop: drop closure_target_fns tagged-return seed + arg-slot force (subsumes 22.6)",
   "type": "task",
-  "updated_at": "2026-05-14T21:02:24Z"
+  "updated_at": "2026-05-14T21:02:50Z"
 }
