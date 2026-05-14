@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-ul4.27.22.9"
   ],
@@ -12,8 +12,8 @@
   "labels": [],
   "parent": "fz-ul4.27.22",
   "priority": 3,
-  "status": "open",
+  "status": "in_progress",
   "title": "fz-cps-seam.makeclosure-emit: Prim::MakeClosure types as closure_lit; typer plumbing",
   "type": "task",
-  "updated_at": "2026-05-14T21:02:13Z"
+  "updated_at": "2026-05-14T21:16:37Z"
 }
