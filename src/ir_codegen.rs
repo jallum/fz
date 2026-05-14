@@ -2338,11 +2338,63 @@ pub fn compile_with_backend<B: Backend>(
             None => Vec::new(),
         })
         .collect();
+    // fz-ntz (fz-3zx.2) — transitive closure of fns whose return is
+    // Tagged-by-construction. Seeded with closure-target fns (forced
+    // all-Tagged sig by fz-cps.1.8) and fns whose terminator on any
+    // block is Term::TailCallClosure (return_call_indirect against the
+    // closure-target sig forwards Tagged bits). Propagated through
+    // Term::TailCall: if F tail-calls into a Tagged-returning callee,
+    // F itself returns Tagged. The result drives BOTH the return_reprs
+    // force (below) AND the tagged_slot0_cont_specs check (next block):
+    // producer-side ABI and consumer-side schema stay aligned.
+    let tagged_return_fns: std::collections::HashSet<crate::fz_ir::FnId> = {
+        let mut set: std::collections::HashSet<crate::fz_ir::FnId> =
+            closure_target_fns.iter().copied().collect();
+        for f in &module.fns {
+            for b in &f.blocks {
+                if matches!(b.terminator, Term::TailCallClosure { .. }) {
+                    set.insert(f.id);
+                    break;
+                }
+            }
+        }
+        // Propagation: F's effective return ≡ what F's caller's cont
+        // eventually receives. In CPS, that's the value flowing out of
+        // F's exit terminators:
+        //   - Term::TailCall   → callee's effective return
+        //   - Term::Call / CallClosure / Receive → cont's effective
+        //     return (the cont's eventual Return is what reaches F's
+        //     caller's cont)
+        // If any chain node is Tagged-returning, F transitively is.
+        loop {
+            let mut changed = false;
+            for f in &module.fns {
+                if set.contains(&f.id) { continue; }
+                let propagates = f.blocks.iter().any(|b| match &b.terminator {
+                    Term::TailCall { callee, .. } => set.contains(callee),
+                    Term::Call { continuation, .. }
+                    | Term::CallClosure { continuation, .. }
+                    | Term::Receive { continuation } => set.contains(&continuation.fn_id),
+                    _ => false,
+                });
+                if propagates {
+                    set.insert(f.id);
+                    changed = true;
+                }
+            }
+            if !changed { break; }
+        }
+        set
+    };
+
     // fz-ul4.27.22.3 — cont specs whose producer is a closure-target
     // (or whose producer is a Receive / CallClosure with unknown
     // target) must accept Tagged at slot 0. The producer returns
     // Tagged (forced for closure-target; opaque for unknown closure /
     // mailbox), and the cont's wire sig at the seam must agree.
+    // fz-ntz extends "closure-target" to "Tagged-returning"
+    // (`tagged_return_fns`) so direct-Calls into a Tagged-returning
+    // fn also force the cont's slot 0 to FzValue.
     let mut tagged_slot0_cont_specs: std::collections::HashSet<u32> =
         std::collections::HashSet::new();
     for sid_caller in 0..spec_count {
@@ -2353,7 +2405,7 @@ pub fn compile_with_backend<B: Backend>(
         for blk in &caller.blocks {
             let cont = match &blk.terminator {
                 Term::Call { callee, continuation, .. } => {
-                    if closure_target_fns.contains(callee) {
+                    if tagged_return_fns.contains(callee) {
                         Some(continuation)
                     } else {
                         None
@@ -2388,14 +2440,17 @@ pub fn compile_with_backend<B: Backend>(
         .map(ArgRepr::from_descr)
         .collect();
     // fz-cps.1.8 — closure-target spec bodies return Tagged i64, matching
-    // the closure-target sig in §8.2's target clif. Raw f64 / raw i64
-    // returns are dropped for these specs — uniform return repr at
-    // indirect-call sites.
+    // the closure-target sig in §8.2's target clif. fz-ntz extends this
+    // to every fn in `tagged_return_fns`: a fn whose only exit is
+    // Term::TailCallClosure (or which TailCalls into one) forwards the
+    // closure-target's Tagged return bits through its own outer sig.
+    // Declaring that outer return as RawInt/RawF64 would let the
+    // caller read tag-shifted bits as a raw number (e.g. 42 → 337).
     let return_reprs: Vec<ArgRepr> = return_reprs
         .into_iter()
         .enumerate()
         .map(|(sid, r)| match spec_fnidx[sid] {
-            Some(idx) if closure_target_fns.contains(&module.fns[idx].id) => ArgRepr::Tagged,
+            Some(idx) if tagged_return_fns.contains(&module.fns[idx].id) => ArgRepr::Tagged,
             _ => r,
         })
         .collect();
