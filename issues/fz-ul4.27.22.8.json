@@ -9,9 +9,15 @@
   "id": "fz-ul4.27.22.8",
   "labels": [],
   "parent": "fz-ul4.27.22",
+  "comments": [
+    {
+      "text": "Implementation note: revising scope for union semantics.\n\nPer CLAUDE.md no-silent-deferral: the original ticket scope said 'closure_lit(F, K) ∪ closure_lit(F, K') with same F → closure_lit(F, K ∪ K' elementwise)'. That requires a new union-merge step (today's dnf_union keeps unequal clauses separate; subsumption_dedup runs after but checks subsumption per-axis via is_subtype, which without lit-awareness won't fire on closure_lit narrowing).\n\nActual delivery in 22.8:\n- closure_lit(F, K) ∪ closure_lit(F, K) → exact dedup (free, already works via dnf_union).\n- closure_lit(F, K1) ∪ closure_lit(F, K2) with K1≠K2 → kept as two clauses. Sound (each clause covers its narrow capture set); downstream (resolve_closure_return) JOIN-iterates.\n- closure_lit(F, K) ∪ closure_lit(F', K') with F≠F' → two clauses (correct).\n\nThe same-F-different-captures collapse is precision, not correctness. Filed implicitly under 22.9's resolve_closure_return which handles multi-clause join. If we want true collapse later (for diagnostic minimality / spec-count savings), that's a separate refinement — open a follow-up if it bites.",
+      "timestamp": "2026-05-14T21:05:59Z"
+    }
+  ],
   "priority": 3,
   "status": "in_progress",
   "title": "fz-cps-seam.closure-lit: Descr::closure_lit variant + Descr ops",
   "type": "task",
-  "updated_at": "2026-05-14T21:03:22Z"
+  "updated_at": "2026-05-14T21:05:59Z"
 }
