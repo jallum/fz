@@ -370,16 +370,27 @@ impl Descr {
     // ---- operations ----
 
     pub fn union(&self, other: &Descr) -> Descr {
+        let tuples = dnf_union(&self.tuples, &other.tuples);
+        let lists  = dnf_union(&self.lists,  &other.lists);
+        let funcs  = dnf_union(&self.funcs,  &other.funcs);
+        let maps   = dnf_union(&self.maps,   &other.maps);
+        // fz-et8 — drop semantically-subsumed clauses. Sound by absorption
+        // (`A ⊆ B ⇒ A ∨ B = B`). Per-axis: a single-clause Descr on the
+        // same axis is the witness Descr for subsumption.
+        let tuples = subsumption_dedup(tuples, |c| Descr { tuples: vec![c.clone()], ..Descr::none() });
+        let lists  = subsumption_dedup(lists,  |c| Descr { lists:  vec![c.clone()], ..Descr::none() });
+        let funcs  = subsumption_dedup(funcs,  |c| Descr { funcs:  vec![c.clone()], ..Descr::none() });
+        let maps   = subsumption_dedup(maps,   |c| Descr { maps:   vec![c.clone()], ..Descr::none() });
         Descr {
             basic: self.basic.union(other.basic),
             atoms: self.atoms.union(&other.atoms),
             ints:  self.ints.union(&other.ints),
             floats: self.floats.union(&other.floats),
             strs:  self.strs.union(&other.strs),
-            tuples: dnf_union(&self.tuples, &other.tuples),
-            lists:  dnf_union(&self.lists,  &other.lists),
-            funcs:  dnf_union(&self.funcs,  &other.funcs),
-            maps:   dnf_union(&self.maps,   &other.maps),
+            tuples,
+            lists,
+            funcs,
+            maps,
         }
     }
 
@@ -708,8 +719,8 @@ fn dnf_union<T: Clone + PartialEq>(a: &[Conj<T>], b: &[Conj<T>]) -> Vec<Conj<T>>
     // We do NOT merge same-shape clauses (`list(A) ∨ list(B) →
     // list(A∨B)`) — that's unsound for heterogeneous lists
     // (`[1, 2.0]` lives in `list(int∨float)` but not `list(int) ∨
-    // list(float)`). Step 2 adds subsumption-based dedup, which is
-    // also sound.
+    // list(float)`). Subsumption-based dedup (`A ⊆ B ⇒ A ∨ B = B`,
+    // fz-et8) runs as a post-pass at `Descr::union`.
     let mut out: Vec<Conj<T>> = Vec::with_capacity(a.len() + b.len());
     for c in a {
         if !out.contains(c) {
@@ -722,6 +733,38 @@ fn dnf_union<T: Clone + PartialEq>(a: &[Conj<T>], b: &[Conj<T>]) -> Vec<Conj<T>>
         }
     }
     out
+}
+
+/// fz-et8 — drop clauses that are semantic subsets of another clause.
+///
+/// For each pair (Cᵢ, Cⱼ) in `clauses`, if `single(Cᵢ) <: single(Cⱼ)`
+/// (and j is still kept), drop Cᵢ. Sound by absorption: `A ⊆ B ⇒ A ∨ B = B`.
+///
+/// `single` constructs the witness Descr for one clause on its axis;
+/// only that axis is non-empty, so the subtype check decides the
+/// inclusion question for this axis alone.
+///
+/// Exact-equal clauses do not appear (dnf_union already dedups them
+/// structurally), but mutual subtypes are handled: the later index
+/// is dropped because the earlier survives in `keep[j]`.
+fn subsumption_dedup<T: Clone, F: Fn(&Conj<T>) -> Descr>(
+    clauses: Vec<Conj<T>>,
+    single: F,
+) -> Vec<Conj<T>> {
+    let n = clauses.len();
+    if n < 2 { return clauses; }
+    let descrs: Vec<Descr> = clauses.iter().map(&single).collect();
+    let mut keep = vec![true; n];
+    for i in 0..n {
+        for j in 0..n {
+            if i == j || !keep[j] { continue; }
+            if descrs[i].is_subtype(&descrs[j]) {
+                keep[i] = false;
+                break;
+            }
+        }
+    }
+    clauses.into_iter().zip(keep).filter_map(|(c, k)| k.then_some(c)).collect()
 }
 
 /// fz-jvo — sig types that support semantic merging at the
@@ -1121,6 +1164,27 @@ mod tests {
         assert_eq!(u.lists.len(), 2,
             "list(int) ∨ list(float) must keep 2 clauses, got {}: {:?}",
             u.lists.len(), u);
+    }
+
+    /// fz-et8 — subsumption-based dedup at union. `list(int)` is a
+    /// strict subtype of `list(int|float)`, so their union must
+    /// collapse to the superset clause alone.
+    #[test]
+    fn union_drops_subsumed_list_clause() {
+        let narrow = Descr::list_of(Descr::int());
+        let wide   = Descr::list_of(Descr::int().union(&Descr::float()));
+        let u = narrow.union(&wide);
+        assert_eq!(u.lists.len(), 1,
+            "list(int) ∨ list(int|float) must collapse to 1 clause, got {}: {:?}",
+            u.lists.len(), u);
+        assert!(u.is_equiv(&wide),
+            "subsumed-union result must equal the superset: {} vs {}", u, wide);
+        // Order-independence.
+        let v = wide.union(&narrow);
+        assert_eq!(v.lists.len(), 1,
+            "list(int|float) ∨ list(int) must also collapse, got {}: {:?}",
+            v.lists.len(), v);
+        assert!(v.is_equiv(&wide));
     }
 
     #[test]
