@@ -874,11 +874,14 @@ fn uniform_cont_reachable_specs(
                     (Some(continuation), !is_native(*callee))
                 }
                 Term::CallClosure { continuation, .. } => {
-                    // The closure stub's native-callee path writes Tagged
-                    // into the cont's slot 1 (closure stub line ~3366);
-                    // its uniform-callee path delegates to the callee's
-                    // emit_return (also Tagged). Either way: flag.
-                    (Some(continuation), true)
+                    // fz-ul4.27.22.6: with cont_slot0_descr now reading
+                    // the closure Var's callable Descr at this seam,
+                    // cont's slot 0 Descr matches the body's narrow
+                    // return Descr. Producer and consumer agree by Descr
+                    // propagation — no force needed. (fz-cps.1.12 deleted
+                    // the closure stub; the stale Tagged-write referenced
+                    // by prior commentary no longer exists.)
+                    (Some(continuation), false)
                 }
                 Term::Receive { continuation } => {
                     // fz_receive_attempt fills the cont's slot 1 at
@@ -2367,17 +2370,23 @@ pub fn compile_with_backend<B: Backend>(
         })
         .collect();
     // fz-ntz (fz-3zx.2) — transitive closure of fns whose return is
-    // Tagged-by-construction. Seeded with closure-target fns (forced
-    // all-Tagged sig by fz-cps.1.8) and fns whose terminator on any
+    // Tagged-by-construction. Seeded with fns whose terminator on any
     // block is Term::TailCallClosure (return_call_indirect against the
-    // closure-target sig forwards Tagged bits). Propagated through
+    // closure-target sig forwards i64 bits). Propagated through
     // Term::TailCall: if F tail-calls into a Tagged-returning callee,
     // F itself returns Tagged. The result drives BOTH the return_reprs
     // force (below) AND the tagged_slot0_cont_specs check (next block):
     // producer-side ABI and consumer-side schema stay aligned.
+    //
+    // fz-ul4.27.22.6: closure_target_fns dropped from the seed. Cont's
+    // slot 0 Descr at CallClosure is read from the closure Var's
+    // callable Descr (typer: cont_slot0_descr), and fz_spawn_entry
+    // picks halt-cont matching the body's halt_kind via chain_repr —
+    // including pass-through thunks where chain_repr peeks through the
+    // captured callable's return.
     let tagged_return_fns: std::collections::HashSet<crate::fz_ir::FnId> = {
         let mut set: std::collections::HashSet<crate::fz_ir::FnId> =
-            closure_target_fns.iter().copied().collect();
+            std::collections::HashSet::new();
         for f in &module.fns {
             for b in &f.blocks {
                 if matches!(b.terminator, Term::TailCallClosure { .. }) {
@@ -2483,6 +2492,115 @@ pub fn compile_with_backend<B: Backend>(
         })
         .collect();
 
+    // fz-ul4.27.22.6 — detect pure-forwarder specs: bodies that are a
+    // single block whose terminator is TailCallClosure(entry_param[i], []).
+    // The synthesized fz_spawn_thunk fits this shape. For such specs the
+    // chain endpoint is the i-th capture's chain repr — known at the
+    // MakeClosure site via fn_constants, not derivable from the thunk's
+    // own spec key (which carries the widened `() -> any`).
+    let pure_forwarder: Vec<Option<usize>> = (0..spec_count)
+        .map(|sid| {
+            let idx = spec_fnidx[sid]?;
+            let f = &module.fns[idx];
+            if f.blocks.len() != 1 { return None; }
+            let blk = &f.blocks[0];
+            if !blk.stmts.is_empty() { return None; }
+            let Term::TailCallClosure { closure, args } = &blk.terminator
+            else { return None; };
+            if !args.is_empty() { return None; }
+            blk.params.iter().position(|p| p == closure)
+        })
+        .collect();
+
+    // fz-ul4.27.22.3 — per-spec chain analysis: for each registered spec,
+    // walk its exit terminators and follow callee resolutions transitively.
+    // The chain's halt-seam kind = JOIN of every Return contributing along
+    // reachable paths. Computed here (pre-compile_fn) because MakeClosure
+    // codegen and static_closure_targets need it to pack the right
+    // halt_kind into closure headers (fz-ul4.27.22.6).
+    let chain_repr: Vec<ArgRepr> = {
+        let join = |a: ArgRepr, b: ArgRepr| -> ArgRepr {
+            if a == b { a } else { ArgRepr::Tagged }
+        };
+        let mut chain: Vec<Option<ArgRepr>> = vec![None; spec_count];
+        let resolve_sid_under = |callee_id: FnId,
+                                 caller_sid: u32,
+                                 args: &[crate::fz_ir::Var]| -> Option<u32> {
+            let any_sid = caller_sid as usize;
+            let ft = spec_fn_types.get(any_sid).and_then(|o| *o)?;
+            let arg_descrs: Vec<crate::types::Descr> = args.iter()
+                .map(|av| ft.vars.get(av).cloned().unwrap_or_else(crate::types::Descr::any))
+                .collect();
+            spec_registry.resolve(callee_id, &arg_descrs).map(|s| s.0)
+        };
+        for _ in 0..(spec_count * 4 + 16) {
+            let mut changed = false;
+            for sid in 0..spec_count {
+                let Some(idx) = spec_fnidx[sid] else { continue; };
+                let f = &module.fns[idx];
+                let mut contributions: Vec<ArgRepr> = Vec::new();
+                for blk in &f.blocks {
+                    match &blk.terminator {
+                        Term::Return(_) => {
+                            contributions.push(return_reprs[sid]);
+                        }
+                        Term::TailCall { callee, args } => {
+                            let csid = resolve_sid_under(*callee, sid as u32, args)
+                                .unwrap_or(callee.0);
+                            if let Some(c) = chain.get(csid as usize).and_then(|o| *o) {
+                                contributions.push(c);
+                            }
+                        }
+                        Term::Call { continuation, .. }
+                        | Term::CallClosure { continuation, .. }
+                        | Term::Receive { continuation } => {
+                            let cont_sid = continuation.fn_id.0;
+                            if let Some(c) = chain.get(cont_sid as usize).and_then(|o| *o) {
+                                contributions.push(c);
+                            }
+                        }
+                        Term::TailCallClosure { closure, .. } => {
+                            // fz-ul4.27.22.6: read the closure Var's chain
+                            // endpoint, two ways:
+                            //   (1) fn_constants: if the Var is bound to a
+                            //       known FnId, recurse via that fn's
+                            //       chain_repr — captures both pure-forwarder
+                            //       thunks AND the typer's specific return
+                            //       refinement (e.g., `42` not `() -> any`).
+                            //   (2) callable Descr fallback: arrow_join_return
+                            //       on the Var's Descr — widened (e.g.,
+                            //       `() -> any`) but sound.
+                            let ft = match spec_fn_types[sid] {
+                                Some(ft) => ft,
+                                None => continue,
+                            };
+                            if let Some(fc) = ft.fn_constants.get(closure) {
+                                let target_sid = fc.0 as usize;
+                                if let Some(c) = chain.get(target_sid).and_then(|o| *o) {
+                                    contributions.push(c);
+                                    continue;
+                                }
+                            }
+                            let d = ft.vars.get(closure).cloned()
+                                .unwrap_or_else(crate::types::Descr::any);
+                            let ret_d = d.arrow_join_return();
+                            contributions.push(ArgRepr::from_descr(&ret_d));
+                        }
+                        _ => {}
+                    }
+                }
+                if contributions.is_empty() { continue; }
+                let joined = contributions.into_iter().reduce(join).unwrap();
+                if chain[sid] != Some(joined) {
+                    chain[sid] = Some(joined);
+                    changed = true;
+                }
+            }
+            if !changed { break; }
+        }
+        chain.into_iter().map(|o| o.unwrap_or(ArgRepr::Tagged)).collect()
+    };
+
     // fz-ul4.27.6.2.2/.3 — Per-spec Cranelift Signature. Native fns get
     // typed-arity i64s + host_ctx; uniform fns get (i64, i64) -> i64.
     // Sentinel slots get the uniform sig — they're never declared.
@@ -2575,6 +2693,8 @@ pub fn compile_with_backend<B: Backend>(
             &fn_ids,
             &param_reprs,
             &return_reprs,
+            &chain_repr,
+            &pure_forwarder,
             &working,
             &module_types,
         )?;
@@ -2647,91 +2767,7 @@ pub fn compile_with_backend<B: Backend>(
     let main_fn_id = module.fn_by_name("main").map(|f| f.id);
     let main_frame_size = main_fn_id.map(|id| schemas[id.0 as usize].size);
 
-    // fz-cps.1.7 — collect zero-capture closure-target specs for static
-    // singletons. fz-cps.1.8 — code_ptr is the body's func_addr directly
-    // (closure-target sig `(args, self, cont) tail`), not a SystemV stub.
-    // The singleton acts both as `self` for direct callers (zero-cap
-    // bodies ignore self) and as the closure handed to MakeClosure(fid,
-    // []) sites. See docs/cps-in-clif.md §8.2.
-    let static_closure_targets: Vec<(u32, u32, FuncId, u32)> = closure_shapes
-        .iter()
-        .filter(|(_, n_caps)| **n_caps == 0)
-        .map(|(cl_sid, _)| {
-            let fn_id = spec_keys[*cl_sid as usize].0;
-            let body_fid = *fn_ids.get(cl_sid)
-                .expect("zero-cap closure spec must have a body FuncId");
-            // fz-ul4.27.22.6: pack halt_kind so fz_spawn_entry can pick
-            // the matching halt-cont singleton at task launch.
-            let halt_kind = return_reprs[*cl_sid as usize].halt_kind();
-            (*cl_sid, fn_id.0, body_fid, halt_kind)
-        })
-        .collect();
-
     let diagnostics = crate::ir_typer::collect_diagnostics(module, &module_types);
-    // fz-ul4.27.22.3 — per-spec chain analysis: for each registered
-    // spec, walk its exit terminators and follow callee resolutions
-    // transitively. The chain's halt-seam kind = JOIN of every Return
-    // contributing along reachable paths.
-    let chain_repr: Vec<ArgRepr> = {
-        let join = |a: ArgRepr, b: ArgRepr| -> ArgRepr {
-            if a == b { a } else { ArgRepr::Tagged }
-        };
-        let mut chain: Vec<Option<ArgRepr>> = vec![None; spec_count];
-        let resolve_sid_under = |callee_id: FnId,
-                                 caller_sid: u32,
-                                 args: &[crate::fz_ir::Var]| -> Option<u32> {
-            let any_sid = caller_sid as usize;
-            let ft = spec_fn_types.get(any_sid).and_then(|o| *o)?;
-            let arg_descrs: Vec<crate::types::Descr> = args.iter()
-                .map(|av| ft.vars.get(av).cloned().unwrap_or_else(crate::types::Descr::any))
-                .collect();
-            spec_registry.resolve(callee_id, &arg_descrs).map(|s| s.0)
-        };
-        for _ in 0..(spec_count * 4 + 16) {
-            let mut changed = false;
-            for sid in 0..spec_count {
-                let Some(idx) = spec_fnidx[sid] else { continue; };
-                let f = &module.fns[idx];
-                let mut contributions: Vec<ArgRepr> = Vec::new();
-                for blk in &f.blocks {
-                    match &blk.terminator {
-                        Term::Return(_) => {
-                            contributions.push(return_reprs[sid]);
-                        }
-                        Term::TailCall { callee, args } => {
-                            let csid = resolve_sid_under(*callee, sid as u32, args)
-                                .unwrap_or(callee.0);
-                            if let Some(c) = chain.get(csid as usize).and_then(|o| *o) {
-                                contributions.push(c);
-                            }
-                        }
-                        Term::Call { continuation, .. }
-                        | Term::CallClosure { continuation, .. }
-                        | Term::Receive { continuation } => {
-                            // Cont's chain: under the caller's per-spec
-                            // env, the cont's resolved sid via the typer's
-                            // cont_input_key (already done elsewhere) —
-                            // here we use the cont's any-key as a sound
-                            // over-approximation. JOIN refines later.
-                            let cont_sid = continuation.fn_id.0;
-                            if let Some(c) = chain.get(cont_sid as usize).and_then(|o| *o) {
-                                contributions.push(c);
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-                if contributions.is_empty() { continue; }
-                let joined = contributions.into_iter().reduce(join).unwrap();
-                if chain[sid] != Some(joined) {
-                    chain[sid] = Some(joined);
-                    changed = true;
-                }
-            }
-            if !changed { break; }
-        }
-        chain.into_iter().map(|o| o.unwrap_or(ArgRepr::Tagged)).collect()
-    };
     let fn_halt_kinds: HashMap<u32, u32> = {
         let mut m: HashMap<u32, u32> = HashMap::new();
         for f in &module.fns {
@@ -2743,6 +2779,25 @@ pub fn compile_with_backend<B: Backend>(
         }
         m
     };
+
+    // fz-cps.1.7 — collect zero-capture closure-target specs for static
+    // singletons. fz-cps.1.8 — code_ptr is the body's func_addr directly
+    // (closure-target sig `(args, self, cont) tail`), not a SystemV stub.
+    // fz-ul4.27.22.6 — halt_kind comes from chain_repr (chain endpoint),
+    // not return_reprs (local return). For pure forwarders like
+    // fz_spawn_thunk whose body is TailCallClosure on a capture,
+    // chain_repr correctly extracts the captured callable's return repr.
+    let static_closure_targets: Vec<(u32, u32, FuncId, u32)> = closure_shapes
+        .iter()
+        .filter(|(_, n_caps)| **n_caps == 0)
+        .map(|(cl_sid, _)| {
+            let fn_id = spec_keys[*cl_sid as usize].0;
+            let body_fid = *fn_ids.get(cl_sid)
+                .expect("zero-cap closure spec must have a body FuncId");
+            let halt_kind = chain_repr[*cl_sid as usize].halt_kind();
+            (*cl_sid, fn_id.0, body_fid, halt_kind)
+        })
+        .collect();
     let metadata = CompiledMetadata {
         fn_ids,
         schemas,
@@ -3184,6 +3239,8 @@ fn compile_fn<M: cranelift_module::Module>(
     fn_ids: &HashMap<u32, FuncId>,
     param_reprs: &[Vec<ArgRepr>],
     return_reprs: &[ArgRepr],
+    chain_repr: &[ArgRepr],
+    pure_forwarder: &[Option<usize>],
     module: &crate::fz_ir::Module,
     module_types: &crate::ir_typer::ModuleTypes,
 ) -> Result<(), CodegenError> {
@@ -3541,7 +3598,7 @@ fn compile_fn<M: cranelift_module::Module>(
                 .unwrap_or(crate::diag::Span::DUMMY);
             b.set_srcloc(span_to_srcloc(span));
             let Stmt::Let(v, prim) = stmt;
-            let out = lower_prim(&mut b, jmod, runtime, tuple_schema_ids, stub_fn_ids, &var_map, &raw_f64_vars, &raw_int_vars, fn_types, spec_registry, module, fn_ids, param_reprs, return_reprs, prim, *v)?;
+            let out = lower_prim(&mut b, jmod, runtime, tuple_schema_ids, stub_fn_ids, &var_map, &raw_f64_vars, &raw_int_vars, fn_types, spec_registry, module, fn_ids, param_reprs, return_reprs, chain_repr, pure_forwarder, prim, *v)?;
             let val = out.value();
             if out.is_raw_f64() {
                 raw_f64_vars.insert(v.0);
@@ -4897,7 +4954,9 @@ fn lower_prim<M: cranelift_module::Module>(
     module: &crate::fz_ir::Module,
     fn_ids: &HashMap<u32, FuncId>,
     param_reprs: &[Vec<ArgRepr>],
-    return_reprs: &[ArgRepr],
+    _return_reprs: &[ArgRepr],
+    chain_repr: &[ArgRepr],
+    pure_forwarder: &[Option<usize>],
     prim: &Prim,
     dest_var: crate::fz_ir::Var,
 ) -> Result<LowerOut, CodegenError> {
@@ -5564,10 +5623,25 @@ fn lower_prim<M: cranelift_module::Module>(
             let alloc_fref = jmod.declare_func_in_func(runtime.alloc_closure_id, b.func);
             let fid_v = b.ins().iconst(types::I32, fn_id.0 as i64);
             let nc_v = b.ins().iconst(types::I32, n_caps as i64);
-            // fz-ul4.27.22.6: halt_kind from body's return repr so
-            // fz_spawn_entry can pick the matching halt-cont singleton.
-            let body_return_repr = return_reprs[cl_sid as usize];
-            let hk_v = b.ins().iconst(types::I32, body_return_repr.halt_kind() as i64);
+            // fz-ul4.27.22.6: halt_kind from the chain endpoint so
+            // fz_spawn_entry picks the matching halt_cont_body singleton.
+            // If the body is a pure forwarder (e.g., fz_spawn_thunk:
+            // TailCallClosure on capture[i]), the chain endpoint = the
+            // i-th captured callable's chain. The thunk's own spec key
+            // has the widened `() -> any` so chain_repr at the thunk
+            // sid is Tagged; resolve through fn_constants on the actual
+            // captured Var to get the narrow target's chain_repr.
+            let hk = if let Some(i) = pure_forwarder[cl_sid as usize] {
+                let cap_var = captured[i];
+                if let Some(fc) = fn_types.fn_constants.get(&cap_var) {
+                    chain_repr[fc.0 as usize].halt_kind()
+                } else {
+                    chain_repr[cl_sid as usize].halt_kind()
+                }
+            } else {
+                chain_repr[cl_sid as usize].halt_kind()
+            };
+            let hk_v = b.ins().iconst(types::I32, hk as i64);
             let inst = b.ins().call(alloc_fref, &[fid_v, nc_v, hk_v]);
             let cl_ptr = b.inst_results(inst)[0];
             let body_fref = jmod.declare_func_in_func(body_func_id, b.func);
