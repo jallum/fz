@@ -694,9 +694,33 @@ impl BasicBits {
 // DNF operations
 // ----------------------------------------------------------------------
 
-fn dnf_union<T: Clone>(a: &[Conj<T>], b: &[Conj<T>]) -> Vec<Conj<T>> {
-    let mut out = a.to_vec();
-    out.extend_from_slice(b);
+fn dnf_union<T: Clone + PartialEq>(a: &[Conj<T>], b: &[Conj<T>]) -> Vec<Conj<T>> {
+    // fz-sj6.1 — ∨ is idempotent. Dedup exact-duplicate clauses at
+    // union to keep the DNF in a canonical-enough form for diagnostic
+    // output and downstream consumers. Without this, repeated unions
+    // of equal Descrs pile up clauses (`/tmp/sum.fz` showed 15 copies
+    // of `list(1|2|3|4|5)` from recursive narrowing).
+    //
+    // Soundness: `A ∨ A = A` is unconditionally true. We compare
+    // clauses via derived PartialEq (structural equality through
+    // `Conj.pos / .neg`).
+    //
+    // We do NOT merge same-shape clauses (`list(A) ∨ list(B) →
+    // list(A∨B)`) — that's unsound for heterogeneous lists
+    // (`[1, 2.0]` lives in `list(int∨float)` but not `list(int) ∨
+    // list(float)`). Step 2 adds subsumption-based dedup, which is
+    // also sound.
+    let mut out: Vec<Conj<T>> = Vec::with_capacity(a.len() + b.len());
+    for c in a {
+        if !out.contains(c) {
+            out.push(c.clone());
+        }
+    }
+    for c in b {
+        if !out.contains(c) {
+            out.push(c.clone());
+        }
+    }
     out
 }
 
@@ -1069,6 +1093,34 @@ mod tests {
         let a = Descr::int();
         assert_eq!(a.union(&Descr::none()), a);
         assert_eq!(Descr::none().union(&a), a);
+    }
+
+    /// fz-sj6.1 — ∨ is idempotent. Unioning a list-typed Descr with
+    /// itself N times must keep exactly one clause, not N.
+    #[test]
+    fn union_idempotent_on_repeated_list_descrs() {
+        let lst = Descr::list_of(Descr::int_lit(1).union(&Descr::int_lit(2)));
+        let mut acc = lst.clone();
+        for _ in 0..15 {
+            acc = acc.union(&lst);
+        }
+        assert_eq!(acc.lists.len(), 1,
+            "expected 1 clause after 15 self-unions, got {}: {:?}",
+            acc.lists.len(), acc);
+        assert!(acc.is_equiv(&lst),
+            "self-union must equal original: {} vs {}", acc, lst);
+    }
+
+    /// Distinct list-element types must remain distinct under dedup
+    /// (only EXACT-equal clauses collapse, not merge-by-shape).
+    #[test]
+    fn union_keeps_distinct_list_clauses() {
+        let a = Descr::list_of(Descr::int());
+        let b = Descr::list_of(Descr::float());
+        let u = a.union(&b);
+        assert_eq!(u.lists.len(), 2,
+            "list(int) ∨ list(float) must keep 2 clauses, got {}: {:?}",
+            u.lists.len(), u);
     }
 
     #[test]
