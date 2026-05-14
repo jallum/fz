@@ -84,10 +84,10 @@ function u0:0(i64, i64) -> i64 tail {
     ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64, i64) -> i64 tail
+    fn0 = colocated u0:45 sig0
 
 block0(v0: i64, v1: i64):
     v2 = load.i64 notrap aligned v0+24    ;; v2 :: &fn0[]:() -> any
-    v3 = load.i64 notrap aligned v2+16
-    return_call_indirect sig0, v3(v2, v1)
+    return_call fn0(v2, v1)
 }
 

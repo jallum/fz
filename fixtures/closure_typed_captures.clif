@@ -70,12 +70,12 @@ function u0:0(i64, i64, i64) -> i64 tail {
     ;   @abi    (Tagged, RawInt) -> Tagged
 function u0:0(i64, i64, i64) -> i64 tail {
     sig0 = (i64, i64, i64) -> i64 tail
+    fn0 = colocated u0:49 sig0
 
     block0(v0: i64, v1: i64, v2: i64):    ;; v0 :: &fn3[10, 20]:(any) -> any
     v3 = ishl_imm v1, 3                 ; @27:22
     v4 = bor_imm v3, 1                  ; @27:22
-    v5 = load.i64 notrap aligned v0+16  ; @27:22
-    return_call_indirect sig0, v5(v4, v0, v2) ; @27:22
+    return_call fn0(v4, v0, v2)         ; @27:22
 }
 
 ; fn lambda_3_s8

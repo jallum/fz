@@ -4342,6 +4342,14 @@ fn compile_fn<M: cranelift_module::Module>(
                 // For cont fns, the forwarded cont is outer_cont from
                 // self+24. For non-cont native fns, cont_param is the
                 // cont SSA. Uniform callers load from frame_ptr+16.
+                //
+                // fz-ul4.27.22.11 — closure_lit fast path. When the closure
+                // Var's per-spec Descr is a single closure_lit(F, K), resolve
+                // F's narrow body spec at key [K..., arg_descrs...] and emit
+                // a direct return_call. Bypasses the cl+16 indirect load and
+                // uses the body's narrow ABI directly. Falls back to the
+                // indirect path on union-of-lits, plain arrows, and
+                // unresolved keys.
                 let cl_val = *var_map.get(&closure.0).expect("unbound tailcallclosure closure");
                 let arg_vals: Vec<ir::Value> = args
                     .iter()
@@ -4362,37 +4370,104 @@ fn compile_fn<M: cranelift_module::Module>(
                         HEADER_SIZE,
                     ),
                 }};
-                let body_fp = b.ins().load(
-                    types::I64,
-                    MemFlags::trusted(),
-                    cl_val,
-                    HEADER_SIZE,
-                );
-                let mut sig = Signature::new(CallConv::Tail);
-                for _ in &arg_vals {
-                    sig.params.push(AbiParam::new(types::I64));
-                }
-                sig.params.push(AbiParam::new(types::I64)); // self
-                sig.params.push(AbiParam::new(types::I64)); // cont
-                sig.returns.push(AbiParam::new(types::I64));
-                let sig_ref = b.func.import_signature(sig);
-                let mut indirect_args: Vec<ir::Value> =
-                    Vec::with_capacity(arg_vals.len() + 2);
-                for (i, v) in arg_vals.iter().enumerate() {
-                    let from = var_repr(args[i].0, &raw_int_vars, &raw_f64_vars);
-                    indirect_args.push(coerce_to(
-                        &mut b, jmod, &runtime, *v, from, ArgRepr::Tagged,
-                    ));
-                }
-                indirect_args.push(cl_val);
-                indirect_args.push(my_cont);
-                let _ = host_ctx;
-                if is_native {
-                    b.ins().return_call_indirect(sig_ref, body_fp, &indirect_args);
+
+                // fz-ul4.27.22.11 — try singleton resolution.
+                let lit_resolved: Option<(u32, FuncId, usize)> = (|| {
+                    let cv_descr = fn_types.vars.get(closure)?;
+                    let lit = cv_descr.as_closure_lit()?;
+                    let body_fn_id = lit.fn_id;
+                    let body_fn = module.fn_by_id(body_fn_id);
+                    let body_n_params = body_fn.block(body_fn.entry).params.len();
+                    // Build full body key: [captures..., arg_descrs...].
+                    let mut full_key: Vec<crate::types::Descr> = lit.captures.clone();
+                    for av in args.iter() {
+                        let d = fn_types.vars.get(av)
+                            .cloned()
+                            .unwrap_or_else(crate::types::Descr::any);
+                        full_key.push(d);
+                    }
+                    while full_key.len() < body_n_params {
+                        full_key.push(crate::types::Descr::any());
+                    }
+                    full_key.truncate(body_n_params);
+                    let body_sid = spec_registry.resolve(body_fn_id, &full_key)?.0;
+                    let body_fid = *fn_ids.get(&body_sid)?;
+                    let n_caps = closure_n_captures.get(&body_fn_id).copied().unwrap_or(0);
+                    Some((body_sid, body_fid, n_caps))
+                })();
+
+                if let Some((body_sid, body_fid, n_caps)) = lit_resolved {
+                    // Direct dispatch: build sig from body's narrow
+                    // param_reprs; emit return_call passing cl_val as self
+                    // and my_cont as cont.
+                    let body_param_reprs = &param_reprs[body_sid as usize];
+                    let mut sig = Signature::new(CallConv::Tail);
+                    // Closure-target sig: only arg slots [n_caps..] go on
+                    // the wire; capture slots live inside the closure heap
+                    // object and the body's entry harness loads them.
+                    for r in &body_param_reprs[n_caps..] {
+                        sig.params.push(AbiParam::new(r.cl_type()));
+                    }
+                    sig.params.push(AbiParam::new(types::I64)); // self
+                    sig.params.push(AbiParam::new(types::I64)); // cont
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let body_fref = jmod.declare_func_in_func(body_fid, b.func);
+                    let mut direct_args: Vec<ir::Value> =
+                        Vec::with_capacity(arg_vals.len() + 2);
+                    for (i, v) in arg_vals.iter().enumerate() {
+                        let from = var_repr(args[i].0, &raw_int_vars, &raw_f64_vars);
+                        let to = body_param_reprs.get(n_caps + i).copied()
+                            .unwrap_or(ArgRepr::Tagged);
+                        direct_args.push(coerce_to(
+                            &mut b, jmod, &runtime, *v, from, to,
+                        ));
+                    }
+                    direct_args.push(cl_val);
+                    direct_args.push(my_cont);
+                    let _ = host_ctx;
+                    let _ = sig; // body_fref carries the signature implicitly.
+                    if is_native {
+                        b.ins().return_call(body_fref, &direct_args);
+                    } else {
+                        let call_inst = b.ins().call(body_fref, &direct_args);
+                        let result = b.inst_results(call_inst)[0];
+                        b.ins().return_(&[result]);
+                    }
                 } else {
-                    let call_inst = b.ins().call_indirect(sig_ref, body_fp, &indirect_args);
-                    let result = b.inst_results(call_inst)[0];
-                    b.ins().return_(&[result]);
+                    // Existing indirect path (cl+16) for unresolved /
+                    // union-of-lits / plain-arrow closures.
+                    let body_fp = b.ins().load(
+                        types::I64,
+                        MemFlags::trusted(),
+                        cl_val,
+                        HEADER_SIZE,
+                    );
+                    let mut sig = Signature::new(CallConv::Tail);
+                    for _ in &arg_vals {
+                        sig.params.push(AbiParam::new(types::I64));
+                    }
+                    sig.params.push(AbiParam::new(types::I64)); // self
+                    sig.params.push(AbiParam::new(types::I64)); // cont
+                    sig.returns.push(AbiParam::new(types::I64));
+                    let sig_ref = b.func.import_signature(sig);
+                    let mut indirect_args: Vec<ir::Value> =
+                        Vec::with_capacity(arg_vals.len() + 2);
+                    for (i, v) in arg_vals.iter().enumerate() {
+                        let from = var_repr(args[i].0, &raw_int_vars, &raw_f64_vars);
+                        indirect_args.push(coerce_to(
+                            &mut b, jmod, &runtime, *v, from, ArgRepr::Tagged,
+                        ));
+                    }
+                    indirect_args.push(cl_val);
+                    indirect_args.push(my_cont);
+                    let _ = host_ctx;
+                    if is_native {
+                        b.ins().return_call_indirect(sig_ref, body_fp, &indirect_args);
+                    } else {
+                        let call_inst = b.ins().call_indirect(sig_ref, body_fp, &indirect_args);
+                        let result = b.inst_results(call_inst)[0];
+                        b.ins().return_(&[result]);
+                    }
                 }
             }
             Term::Receive { continuation } => {
