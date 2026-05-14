@@ -1396,6 +1396,78 @@ pub fn specialize_return(
     ret
 }
 
+/// fz-pky.1 — within ONE spec's narrowed env, find the first Var
+/// whose type became empty post-narrowing. Returns (Var, old_t, new_t)
+/// if found; None if narrowing kept every var inhabited.
+fn find_emptied_var(
+    pre_env: &HashMap<crate::fz_ir::Var, Descr>,
+    branch_env: &HashMap<crate::fz_ir::Var, Descr>,
+) -> Option<(crate::fz_ir::Var, Descr, Descr)> {
+    let mut keys: Vec<crate::fz_ir::Var> = branch_env.keys().copied().collect();
+    keys.sort_by_key(|v| v.0);
+    for v in keys {
+        let new_t = branch_env.get(&v).unwrap();
+        let old_t = pre_env.get(&v).cloned().unwrap_or_else(Descr::any);
+        if !new_t.is_equiv(&old_t) && new_t.is_empty() && !old_t.is_empty() {
+            return Some((v, old_t, new_t.clone()));
+        }
+    }
+    None
+}
+
+/// fz-pky.1 — build the unreachable-arm diagnostic from per-spec
+/// dead-var records. We join old_t across specs so the type-note
+/// reflects every specialization that contributed; new_t is similarly
+/// joined for the narrow-note (in practice, when ALL specs found a
+/// branch dead, each spec's new_t is `none` — joined, still `none`).
+fn emit_unreachable(
+    module: &Module,
+    fn_name: &str,
+    term_span: crate::diag::Span,
+    tag: &str,
+    bb_id: crate::fz_ir::BlockId,
+    dead_records: &[(crate::fz_ir::Var, Descr, Descr)],
+) -> crate::diag::Diagnostic {
+    use crate::diag::{Diagnostic, codes::TYPE_UNREACHABLE_ARM};
+    // Pick the lowest-id Var across all records for label attribution
+    // (stable, matches old single-spec behavior when only one spec).
+    let pick = dead_records.iter().min_by_key(|(v, _, _)| v.0).unwrap();
+    let (v, _, _) = pick;
+    // Join the offending Var's pre-narrow types across every spec that
+    // dropped this branch — that's the source-level view of the value.
+    let mut joined_old = Descr::none();
+    for (vv, ot, _) in dead_records {
+        if *vv == *v { joined_old = joined_old.union(ot); }
+    }
+    let var_name = module.source.var_name_of(*v);
+    let label_subject = match var_name {
+        Some(n) => format!("`{}`", n),
+        None => "this value".to_string(),
+    };
+    let var_span = module.source.var_span_of(*v);
+
+    let message = format!("the {} branch is never reachable", tag);
+    let type_note = format!(
+        "{} here has type `{}`",
+        label_subject,
+        joined_old.display_for_diag(),
+    );
+    let narrow_note = format!(
+        "narrowing for this branch would need `none`, but that intersection \
+         is uninhabited (unreachable arm at bb{})",
+        bb_id.0,
+    );
+
+    let mut d = Diagnostic::warning(TYPE_UNREACHABLE_ARM, message, term_span)
+        .with_label(format!("in fn `{}`", fn_name))
+        .with_note(type_note)
+        .with_note(narrow_note);
+    if !var_span.is_dummy() && var_span != term_span {
+        d = d.with_secondary(var_span, format!("{} bound here", label_subject));
+    }
+    d
+}
+
 /// .11.24.6: scan typer output for unreachable If branches. For each
 /// `Term::If(cond, then_b, else_b)`, re-run the branch narrowing under the
 /// terminator's pre-env. If either branch's narrowed operand is empty, that
@@ -1410,80 +1482,90 @@ pub fn collect_diagnostics(
     types: &ModuleTypes,
 ) -> crate::diag::Diagnostics {
     use crate::diag::{Diagnostic, Diagnostics, Span};
-    use crate::diag::codes::{TYPE_UNREACHABLE_ARM, TYPE_DEAD_BINOP};
+    use crate::diag::codes::TYPE_DEAD_BINOP;
 
     let mut out = Diagnostics::new();
-    for (i, f) in module.fns.iter().enumerate() {
-        let ft = &types[i];
+
+    // fz-pky.1 — per-spec unreachable-arm. A branch is source-level
+    // unreachable iff EVERY registered spec of the enclosing fn agrees
+    // it's dead. A branch dead in some specs but live in others (e.g.
+    // sum's `[]` arm under the narrow `[list(int_set)]` spec, but live
+    // under the recursive `[nil | list(int_set)]` spec) is reachable
+    // source-side and must NOT warn.
+    //
+    // Algorithm: for each (FnId, Term::If, branch), count specs where
+    // dead vs total specs of the fn. Emit when dead-count equals total.
+    //
+    // Group specs by FnId.
+    let mut specs_by_fn: HashMap<crate::fz_ir::FnId, Vec<Vec<Descr>>> = HashMap::new();
+    for (fid, key) in types.specs.keys() {
+        specs_by_fn.entry(*fid).or_default().push(key.clone());
+    }
+
+    // For diagnostic purposes only: fns with no registered spec
+    // (no IR caller, not closure-reachable, not entry-seeded) still
+    // contain code the user wrote. Type them under their any-key
+    // ad-hoc and run diagnostics against that. This doesn't pollute
+    // module_types.specs — codegen never sees these specs because
+    // codegen only compiles reachable fns.
+    let mut adhoc_specs: HashMap<crate::fz_ir::FnId, FnTypes> = HashMap::new();
+    for f in &module.fns {
+        if specs_by_fn.contains_key(&f.id) { continue; }
+        let n_params = f.block(f.entry).params.len();
+        let any_key: Vec<Descr> = vec![Descr::any(); n_params];
+        let ft = type_fn(f, module, Some(&any_key));
+        adhoc_specs.insert(f.id, ft);
+        specs_by_fn.entry(f.id).or_default().push(any_key);
+    }
+
+    let mut fns_sorted: Vec<&crate::fz_ir::FnIr> = module.fns.iter().collect();
+    fns_sorted.sort_by_key(|f| f.id.0);
+    for f in fns_sorted {
+        let Some(keys) = specs_by_fn.get(&f.id) else { continue };
+        let total_specs = keys.len();
+        if total_specs == 0 { continue; }
+
         let mut blocks_sorted: Vec<&crate::fz_ir::Block> = f.blocks.iter().collect();
         blocks_sorted.sort_by_key(|b| b.id.0);
         for b in blocks_sorted {
             let Term::If(cond, then_b, else_b) = b.terminator else { continue };
 
-            // Reconstruct the env at the terminator.
-            let mut env = ft.block_envs.get(&b.id).cloned().unwrap_or_default();
-            for stmt in &b.stmts {
-                let Stmt::Let(v, prim) = stmt;
-                let t = type_prim(prim, &env, module);
-                env.insert(*v, t);
-            }
-
-            let (then_env, else_env) = narrow_for_if(&env, cond, &b.stmts);
             let term_span = module.source.term_span
                 .get(&(f.id, b.id))
                 .copied()
                 .unwrap_or(Span::DUMMY);
 
-            let check = |branch_env: &HashMap<crate::fz_ir::Var, Descr>, tag: &str, bb_id: crate::fz_ir::BlockId| -> Option<Diagnostic> {
-                let mut keys: Vec<crate::fz_ir::Var> = branch_env.keys().copied().collect();
-                keys.sort_by_key(|v| v.0);
-                for v in keys {
-                    let new_t = branch_env.get(&v).unwrap();
-                    let old_t = env.get(&v).cloned().unwrap_or_else(Descr::any);
-                    if !new_t.is_equiv(&old_t) && new_t.is_empty() && !old_t.is_empty() {
-                        // `.20.8`: render the source name (or "this value"
-                        // for compiler temps) and the *set-theoretic type*
-                        // the user's value had right before the failing
-                        // narrowing. The vocabulary comes from
-                        // `Descr::display_for_diag` — same algebra the
-                        // typer reasons in.
-                        let var_name = module.source.var_name_of(v);
-                        let label_subject = match var_name {
-                            Some(n) => format!("`{}`", n),
-                            None => "this value".to_string(),
-                        };
-                        let var_span = module.source.var_span_of(v);
-
-                        let message = format!("the {} branch is never reachable", tag);
-                        let type_note = format!(
-                            "{} here has type `{}`",
-                            label_subject,
-                            old_t.display_for_diag(),
-                        );
-                        let narrow_note = format!(
-                            "narrowing for this branch would need `{}`, but that intersection \
-                             is uninhabited (unreachable arm at bb{})",
-                            new_t.display_for_diag(),
-                            bb_id.0,
-                        );
-
-                        let mut d = Diagnostic::warning(TYPE_UNREACHABLE_ARM, message, term_span)
-                            .with_label(format!("in fn `{}`", f.name))
-                            .with_note(type_note)
-                            .with_note(narrow_note);
-                        // Point a secondary at the var's binding site
-                        // when we have it — gives the reader the source
-                        // line where the value entered scope.
-                        if !var_span.is_dummy() && var_span != term_span {
-                            d = d.with_secondary(var_span, format!("{} bound here", label_subject));
-                        }
-                        return Some(d);
-                    }
+            // For each spec, narrow this If and record whether each
+            // branch is dead (and which Var made it dead, for the
+            // diagnostic note).
+            let mut dead_then: Vec<(crate::fz_ir::Var, Descr, Descr)> = Vec::new();
+            let mut dead_else: Vec<(crate::fz_ir::Var, Descr, Descr)> = Vec::new();
+            for key in keys {
+                let ft = types.specs.get(&(f.id, key.clone()))
+                    .or_else(|| adhoc_specs.get(&f.id))
+                    .unwrap();
+                let mut env = ft.block_envs.get(&b.id).cloned().unwrap_or_default();
+                for stmt in &b.stmts {
+                    let Stmt::Let(v, prim) = stmt;
+                    let t = type_prim(prim, &env, module);
+                    env.insert(*v, t);
                 }
-                None
-            };
-            if let Some(d) = check(&then_env, "then", then_b) { out.push(d); }
-            if let Some(d) = check(&else_env, "else", else_b) { out.push(d); }
+                let (then_env, else_env) = narrow_for_if(&env, cond, &b.stmts);
+                if let Some(d) = find_emptied_var(&env, &then_env) { dead_then.push(d); }
+                if let Some(d) = find_emptied_var(&env, &else_env) { dead_else.push(d); }
+            }
+
+            // Emit only when EVERY spec found the branch dead.
+            if dead_then.len() == total_specs {
+                out.push(emit_unreachable(
+                    module, &f.name, term_span, "then", then_b, &dead_then,
+                ));
+            }
+            if dead_else.len() == total_specs {
+                out.push(emit_unreachable(
+                    module, &f.name, term_span, "else", else_b, &dead_else,
+                ));
+            }
         }
     }
 
