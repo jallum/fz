@@ -6,14 +6,15 @@
   "blocks": [
     "fz-ul4.27.22.4.3"
   ],
+  "closed_at": "2026-05-14T15:52:42Z",
   "created": "2026-05-14T15:47:44Z",
   "description": "Step 2 of 22.4. With .4.1 dropping the body's all-Tagged force, this fixes the producer side: MakeClosure stores captures in the body's narrow repr, and CallClosure / TailCallClosure builds its indirect-call sig from the closure's body sig (resolved via the closure Var's Descr).\n\n## Touch\n\n### MakeClosure (src/ir_codegen.rs ~5529)\nToday: captures stored *tagged* into cl+24+8*i.\nChange: coerce each capture to `param_reprs[cl_sid][i]` (body's narrow capture repr — first `captured.len()` slots in the body's param_reprs). Same shape as 21.2 did for cont captures.\n\n### CallClosure (src/ir_codegen.rs ~4272-4287)\nToday: hardcoded sig is all-Tagged; args coerced to Tagged.\nChange: resolve body_sid from closure Var's Descr (via spec_registry); build sig from `param_reprs[body_sid]` (arg slots, then self, then cont); coerce each arg to its body-typed repr.\n\nFallback: if the closure Descr doesn't resolve to a unique narrow spec (e.g., is `(any) -\u003e any` after widening), use the all-Tagged spec. The spec_registry already has both narrow and `[any, any...]` keys registered for polymorphically-used lambdas.\n\n### TailCallClosure (src/ir_codegen.rs ~4299-4360)\nSame as CallClosure: build sig from body's param_reprs, coerce args.\n\n## Body entry harness\n\nsrc/ir_codegen.rs cont-fn entry harness already loads captures by `param_reprs[i].cl_type()` (21.2). The closure-target fn entry harness (different code path — non-cont native fns with closure-target sig) needs the same treatment if it doesn't already.\n\nPre-flight: verify whether the closure-target body's entry harness already honors param_reprs. If yes, this ticket touches only MakeClosure + CallClosure + TailCallClosure.\n\n## Acceptance\n\n- cargo test --workspace green; 459 lib tests pass.\n- Closure-using fixtures: correctness restored. higher_order.fz / fact_5.fz / etc. produce correct output.\n- Goldens diff cleanly: closure body params raw, MakeClosure capture stores raw, CallClosure indirect-call sigs typed.\n- New expect_clif_excludes assertions on closure-using fixtures lock in the typed seam (analogous to 21.3).",
   "id": "fz-ul4.27.22.4.2",
   "labels": [],
   "parent": "fz-ul4.27.22.4",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "fz-cps-seam.2: typed MakeClosure capture store + CallClosure callsite",
   "type": "task",
-  "updated_at": "2026-05-14T15:48:02Z"
+  "updated_at": "2026-05-14T15:52:42Z"
 }
