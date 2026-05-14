@@ -35,6 +35,132 @@ use crate::fz_ir::{
 use crate::types::{Descr, MapKey};
 use std::collections::{HashMap, HashSet};
 
+// ============================================================================
+// fz-210 — Call-graph + Tarjan SCC for bottom-up spec discovery.
+// ============================================================================
+
+/// Build the static call graph for the module under the supplied any-key
+/// specs (bootstrap). Edges captured:
+///   - direct Term::Call / Term::TailCall callee
+///   - continuation fn_id from Term::Call / Term::CallClosure / Term::Receive
+///   - Prim::MakeClosure(fn_id, ...) target lambda
+///   - fn_constants-resolved Term::CallClosure / TailCallClosure target
+/// Edges skipped: Term::Return / Term::Halt (dynamic dispatch, no static
+/// edge), unknown CallClosure (any-key spec is the fallback).
+fn build_call_graph(
+    m: &Module,
+    specs: &HashMap<(FnId, Vec<Descr>), FnTypes>,
+) -> HashMap<FnId, HashSet<FnId>> {
+    let mut g: HashMap<FnId, HashSet<FnId>> = HashMap::new();
+    for f in &m.fns {
+        g.entry(f.id).or_default();
+    }
+    for f in &m.fns {
+        let n = f.block(f.entry).params.len();
+        let any_key = vec![Descr::any(); n];
+        let Some(ft) = specs.get(&(f.id, any_key)) else { continue; };
+        let edges = g.entry(f.id).or_default();
+        for b in &f.blocks {
+            for stmt in &b.stmts {
+                let Stmt::Let(_, prim) = stmt;
+                if let Prim::MakeClosure(lam_fn_id, _) = prim {
+                    edges.insert(*lam_fn_id);
+                }
+            }
+            match &b.terminator {
+                Term::Call { callee, continuation, .. } => {
+                    edges.insert(*callee);
+                    edges.insert(continuation.fn_id);
+                }
+                Term::TailCall { callee, .. } => {
+                    edges.insert(*callee);
+                }
+                Term::CallClosure { closure, continuation, .. } => {
+                    if let Some(&target) = ft.fn_constants.get(closure) {
+                        edges.insert(target);
+                    }
+                    edges.insert(continuation.fn_id);
+                }
+                Term::TailCallClosure { closure, .. } => {
+                    if let Some(&target) = ft.fn_constants.get(closure) {
+                        edges.insert(target);
+                    }
+                }
+                Term::Receive { continuation } => {
+                    edges.insert(continuation.fn_id);
+                }
+                _ => {}
+            }
+        }
+    }
+    g
+}
+
+/// Tarjan strongly-connected components. Returns SCCs in
+/// reverse-topological order (leaves first) — caller reverses for
+/// caller-first processing.
+fn tarjan_scc(graph: &HashMap<FnId, HashSet<FnId>>) -> Vec<Vec<FnId>> {
+    struct State<'a> {
+        graph: &'a HashMap<FnId, HashSet<FnId>>,
+        index_of: HashMap<FnId, u32>,
+        lowlink: HashMap<FnId, u32>,
+        on_stack: HashSet<FnId>,
+        stack: Vec<FnId>,
+        next_idx: u32,
+        sccs: Vec<Vec<FnId>>,
+    }
+    fn strong(s: &mut State, v: FnId) {
+        s.index_of.insert(v, s.next_idx);
+        s.lowlink.insert(v, s.next_idx);
+        s.next_idx += 1;
+        s.stack.push(v);
+        s.on_stack.insert(v);
+        if let Some(succs) = s.graph.get(&v) {
+            let succs: Vec<FnId> = succs.iter().copied().collect();
+            for w in succs {
+                if !s.index_of.contains_key(&w) {
+                    strong(s, w);
+                    let wl = *s.lowlink.get(&w).unwrap();
+                    let vl = *s.lowlink.get(&v).unwrap();
+                    s.lowlink.insert(v, vl.min(wl));
+                } else if s.on_stack.contains(&w) {
+                    let wi = *s.index_of.get(&w).unwrap();
+                    let vl = *s.lowlink.get(&v).unwrap();
+                    s.lowlink.insert(v, vl.min(wi));
+                }
+            }
+        }
+        if s.index_of.get(&v) == s.lowlink.get(&v) {
+            let mut comp = Vec::new();
+            loop {
+                let w = s.stack.pop().unwrap();
+                s.on_stack.remove(&w);
+                comp.push(w);
+                if w == v { break; }
+            }
+            s.sccs.push(comp);
+        }
+    }
+    let mut s = State {
+        graph,
+        index_of: HashMap::new(),
+        lowlink: HashMap::new(),
+        on_stack: HashSet::new(),
+        stack: Vec::new(),
+        next_idx: 0,
+        sccs: Vec::new(),
+    };
+    // Stable iteration order so SCC numbering is deterministic across runs.
+    let mut nodes: Vec<FnId> = graph.keys().copied().collect();
+    nodes.sort_by_key(|f| f.0);
+    for v in nodes {
+        if !s.index_of.contains_key(&v) {
+            strong(&mut s, v);
+        }
+    }
+    s.sccs
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct FnTypes {
     /// Definition-site type for each Var. Block params get the join of their
@@ -132,369 +258,177 @@ pub fn type_module(m: &Module) -> ModuleTypes {
     // apply: it reflects what's true at direct callsites and isn't read
     // by the closure-invoke path.
 
-    // fz-f6e — cap on fixed-point iterations. Without it, recursive fns
-    // whose per-spec walk discovers progressively narrower keys (e.g.
-    // `map_l(f, t)` where `t`'s list Descr shrinks each iter) spawn
-    // specs unboundedly. After `MAX_FIXPOINT_ITERS`, stop discovering
-    // new narrow keys; existing specs remain registered.
-    const MAX_FIXPOINT_ITERS: usize = 8;
-    let mut iter_count: usize = 0;
-    loop {
-        iter_count += 1;
-        // Aggregate per-callee entry-param Descrs as the union over all
-        // direct (Call / TailCall) call sites. fz-ul4.29.1 also collects
-        // each callsite's distinct arg-Descr tuple into `callsite_keys` so
-        // we can emit per-specialization FnTypes alongside the lub-narrowed
-        // by_fn_idx view.
-        let mut narrowed: HashMap<FnId, Vec<Descr>> = HashMap::new();
-        let mut callsite_keys: HashMap<FnId, std::collections::HashSet<Vec<Descr>>> =
-            HashMap::new();
-        // fz-ul4.29.10.1 — per (callee, key), the unified per-arg
-        // fn-constant view across all observed direct callsites:
-        // Some(F) iff every observing caller passes the same F in that
-        // slot, None if absent or conflicting. Applied to the callee's
-        // spec FnTypes when the spec is created below.
-        let mut callsite_fn_consts: HashMap<(FnId, Vec<Descr>), Vec<Option<FnId>>> =
-            HashMap::new();
-        for (i, f) in m.fns.iter().enumerate() {
-            let ft = &by_fn_idx[i];
-            for b in &f.blocks {
-                // Reconstruct env at the terminator.
-                let mut env = ft.block_envs.get(&b.id).cloned().unwrap_or_default();
-                for stmt in &b.stmts {
-                    let Stmt::Let(v, prim) = stmt;
-                    env.insert(*v, type_prim(prim, &env, m));
-                }
-                // Propagate to the callee for direct calls (Call / TailCall).
-                match &b.terminator {
-                    Term::Call { callee, args, .. } | Term::TailCall { callee, args } => {
-                        if let Some(&j) = idx_of.get(callee) {
-                            let callee_fn = &m.fns[j];
-                            let n_params = callee_fn.block(callee_fn.entry).params.len();
-                            let slot = narrowed
-                                .entry(*callee)
-                                .or_insert_with(|| vec![Descr::none(); n_params]);
-                            for (k, av) in args.iter().enumerate() {
-                                if let Some(p) = slot.get_mut(k) {
-                                    let at = env.get(av).cloned().unwrap_or_else(Descr::any);
-                                    *p = p.union(&at);
-                                }
-                            }
-                            // fz-ul4.29.1: record this callsite's exact
-                            // arg-Descr tuple. Pad with `any` if fewer args
-                            // than params (defensive — shouldn't happen for
-                            // well-formed IR but keeps the key well-shaped).
-                            let mut key: Vec<Descr> = args.iter().map(|av|
-                                env.get(av).cloned().unwrap_or_else(Descr::any)
-                            ).collect();
-                            while key.len() < n_params { key.push(Descr::any()); }
-                            key.truncate(n_params);
-                            callsite_keys.entry(*callee).or_default().insert(key.clone());
-                            // fz-ul4.29.10.1 — collect per-arg fn-constants
-                            // from the caller's body view; unify across
-                            // multiple callsites sharing this key.
-                            let mut per_arg: Vec<Option<FnId>> = args.iter().map(|av|
-                                ft.fn_constants.get(av).copied()
-                            ).collect();
-                            while per_arg.len() < n_params { per_arg.push(None); }
-                            per_arg.truncate(n_params);
-                            let entry_key = (*callee, key);
-                            match callsite_fn_consts.get(&entry_key) {
-                                None => { callsite_fn_consts.insert(entry_key, per_arg); }
-                                Some(prev) => {
-                                    let merged: Vec<Option<FnId>> = prev.iter().zip(per_arg.iter())
-                                        .map(|(a, b)| if a == b { *a } else { None })
-                                        .collect();
-                                    callsite_fn_consts.insert(entry_key, merged);
-                                }
-                            }
-                        }
-                    }
-                    _ => {}
-                }
+    // fz-210 — bottom-up SCC-driven spec discovery. Replaces the
+    // capped global fixpoint with caller-first per-SCC processing.
+    // Build call graph from bootstrap any-key specs, Tarjan SCC, then
+    // for each SCC in caller-first topological order run a local
+    // fixpoint with widening at iter >= WIDEN_AT for SCC-internal keys.
+    let call_graph = build_call_graph(m, &specs);
+    let mut sccs = tarjan_scc(&call_graph);
+    sccs.reverse(); // caller-first
+    let mut scc_of: HashMap<FnId, usize> = HashMap::new();
+    for (i, scc) in sccs.iter().enumerate() {
+        for fid in scc { scc_of.insert(*fid, i); }
+    }
 
-                // fz-ul4.27.5.4 / .29.4: propagate to continuations for
-                // Call / CallClosure / Receive. Continuation entry params
-                // are `[result_var, ...captured_vars]`. Slot 0 (the
-                // result) is the callee's return Descr at this callsite —
-                // for Term::Call we resolve it via `specs.get((callee,
-                // arg_descrs))`; for CallClosure / Receive the callee /
-                // sender is opaque so slot 0 stays `any`.
-                let cont = match &b.terminator {
-                    Term::Call { continuation, .. } => Some(continuation),
-                    Term::CallClosure { continuation, .. } => Some(continuation),
-                    Term::Receive { continuation } => Some(continuation),
-                    _ => None,
-                };
-                let slot0_descr: Descr = match &b.terminator {
-                    Term::Call { callee, args, .. } => {
-                        let arg_descrs: Vec<Descr> = args.iter().map(|av|
-                            env.get(av).cloned().unwrap_or_else(Descr::any)
-                        ).collect();
-                        // fz-ul4.27.21.4: follow Term::TailCall transitively
-                        // so cont keying sees the callee's effective return,
-                        // not just its direct Term::Return values. Cycle
-                        // guard inside the helper handles self/mutual
-                        // tail-recursion.
-                        let mut visiting: HashSet<(FnId, Vec<Descr>)> = HashSet::new();
-                        effective_return_descr(
-                            &(*callee, arg_descrs),
-                            m,
-                            &specs,
-                            &mut visiting,
-                        )
-                    }
-                    _ => Descr::any(),
-                };
-                if let Some(cont) = cont {
-                    if let Some(&j) = idx_of.get(&cont.fn_id) {
-                        let cont_fn = &m.fns[j];
-                        let n_params = cont_fn.block(cont_fn.entry).params.len();
-                        let slot = narrowed
-                            .entry(cont.fn_id)
-                            .or_insert_with(|| vec![Descr::none(); n_params]);
-                        if let Some(p0) = slot.get_mut(0) {
-                            *p0 = p0.union(&slot0_descr);
-                        }
-                        for (k, cv) in cont.captured.iter().enumerate() {
-                            if let Some(p) = slot.get_mut(k + 1) {
-                                let ct = env.get(cv).cloned().unwrap_or_else(Descr::any);
-                                *p = p.union(&ct);
-                            }
-                        }
-                        // Record this callsite's exact cont input-Descr
-                        // tuple with slot 0 = callee's specialized return.
-                        let mut key: Vec<Descr> = vec![Descr::any(); n_params];
-                        if !key.is_empty() { key[0] = slot0_descr.clone(); }
-                        for (k, cv) in cont.captured.iter().enumerate() {
-                            if let Some(p) = key.get_mut(k + 1) {
-                                *p = env.get(cv).cloned().unwrap_or_else(Descr::any);
-                            }
-                        }
-                        callsite_keys.entry(cont.fn_id).or_default().insert(key);
+    // Per-fn pending input keys. Seeded with each fn's any-key so the
+    // SCC pass walks every any-key spec at least once for discovery
+    // (the any-key is already in `specs` from bootstrap).
+    let mut pending: HashMap<FnId, std::collections::HashSet<Vec<Descr>>> = HashMap::new();
+    for f in &m.fns {
+        let n_params = f.block(f.entry).params.len();
+        pending.entry(f.id).or_default().insert(vec![Descr::any(); n_params]);
+    }
+    // Callsite fn-constants accumulated across walks (unified across
+    // multiple callsites sharing the same (callee, key)).
+    let mut callsite_fn_consts: HashMap<(FnId, Vec<Descr>), Vec<Option<FnId>>> =
+        HashMap::new();
+    // LUB-narrowed entry-param Descrs per fn — built up across all
+    // direct callsites for the legacy by_fn_idx view.
+    let mut narrowed_lub: HashMap<FnId, Vec<Descr>> = HashMap::new();
+
+    const WIDEN_AT: usize = 3;
+    for scc in sccs.iter() {
+        let scc_set: std::collections::HashSet<FnId> = scc.iter().copied().collect();
+        for iter in 0.. {
+            // Snapshot pending keys for fns IN this SCC and drain.
+            let mut to_process: Vec<(FnId, Vec<Descr>)> = Vec::new();
+            for fid in scc.iter() {
+                if let Some(keys) = pending.get_mut(fid) {
+                    for k in keys.drain() {
+                        to_process.push((*fid, k));
                     }
                 }
             }
-        }
-
-        // fz-ul4.29.12.2 — per-spec MakeClosure walk. For every
-        // registered caller spec, inspect its MakeClosure prims under
-        // that spec's per-Var Descrs and record a narrow lambda key
-        // `[capture_descrs..., any, any, ...]`. Walking per-spec (not
-        // the lub-aggregated `by_fn_idx`) keeps distinct caller specs
-        // with different capture-Descrs from collapsing into one
-        // unioned key — codegen relies on this granularity to key
-        // typed closure stubs by lambda SpecId.
-        //
-        // The fixed point converges naturally: narrow caller specs
-        // appear in `specs` only after their callsite_keys round-trip
-        // through this loop, so successive iterations widen the set of
-        // visible MakeClosure-capture views until stable.
-        let spec_snapshot: Vec<(FnId, Vec<Descr>)> = specs.keys().cloned().collect();
-        for (caller_fn_id, caller_key) in &spec_snapshot {
-            let Some(&caller_idx) = idx_of.get(caller_fn_id) else { continue; };
-            let caller_fn = &m.fns[caller_idx];
-            let Some(caller_ft) = specs.get(&(*caller_fn_id, caller_key.clone())) else { continue; };
-            for b in &caller_fn.blocks {
-                let mut env = caller_ft.block_envs.get(&b.id).cloned().unwrap_or_default();
-                for stmt in &b.stmts {
-                    let Stmt::Let(v, prim) = stmt;
-                    if let Prim::MakeClosure(lam_fn_id, captured) = prim {
-                        if let Some(&j) = idx_of.get(lam_fn_id) {
-                            let lam = &m.fns[j];
-                            let n_params = lam.block(lam.entry).params.len();
-                            let mut k: Vec<Descr> = vec![Descr::any(); n_params];
-                            for (i, cv) in captured.iter().enumerate() {
-                                if let Some(slot) = k.get_mut(i) {
-                                    *slot = env.get(cv).cloned()
-                                        .unwrap_or_else(Descr::any);
-                                }
-                            }
-                            callsite_keys.entry(*lam_fn_id).or_default().insert(k);
-                        }
-                    }
-                    env.insert(*v, type_prim(prim, &env, m));
-                }
-                // fz-ul4.29.10.2 — per-spec CallClosure / TailCallClosure
-                // with a known target via `fn_constants` registers the
-                // lambda's narrow spec for typed args. This mirrors what
-                // a direct `Term::Call` does in the main aggregation
-                // loop, but requires per-spec fn_constants visibility
-                // (the lub-aggregated `by_fn_idx` doesn't carry the
-                // propagated entry-param fn_constants).
-                let (closure_var, call_args): (Option<Var>, &[Var]) = match &b.terminator {
-                    Term::CallClosure { closure, args, .. }
-                    | Term::TailCallClosure { closure, args } => {
-                        (Some(*closure), args.as_slice())
-                    }
-                    _ => (None, &[]),
-                };
-                if let (Some(cv), call_args) = (closure_var, call_args) {
-                    if let Some(&target_fn) = caller_ft.fn_constants.get(&cv) {
-                        if let Some(&j) = idx_of.get(&target_fn) {
-                            let target = &m.fns[j];
-                            let n_params = target.block(target.entry).params.len();
-                            let mut key: Vec<Descr> = call_args.iter().map(|av|
-                                env.get(av).cloned().unwrap_or_else(Descr::any)
-                            ).collect();
-                            while key.len() < n_params { key.push(Descr::any()); }
-                            key.truncate(n_params);
-                            callsite_keys.entry(target_fn).or_default().insert(key);
-                        }
-                    }
-                }
-
-                // fz-f6e — register direct Call / TailCall callsite_keys under
-                // the PER-SPEC env. The main aggregation loop (above) uses
-                // `by_fn_idx` (LUB view), which always widens to the union of
-                // every caller — narrow specs that compute tighter arg
-                // Descrs for their callees never seed entries via that path.
-                // Walking each spec's body separately surfaces them.
-                //
-                // Gated by iter_count: after MAX_FIXPOINT_ITERS, stop
-                // discovering. Recursive list-walk fns shrink the tail
-                // Descr each iter and would otherwise spawn specs forever.
-                if iter_count > MAX_FIXPOINT_ITERS {
-                    continue;
-                }
-                //
-                // For fact_5.fz this is what causes `[int]` to appear:
-                // fact_s2 (key [5]) sees `n - 1` as int (numeric_result(5, 1)
-                // = int), not int|float as the LUB view does.
-                match &b.terminator {
-                    Term::Call { callee, args, .. }
-                    | Term::TailCall { callee, args } => {
-                        if let Some(&j) = idx_of.get(callee) {
-                            let callee_fn = &m.fns[j];
-                            let n_params = callee_fn.block(callee_fn.entry).params.len();
-                            let mut key: Vec<Descr> = args.iter().map(|av|
-                                env.get(av).cloned().unwrap_or_else(Descr::any)
-                            ).collect();
-                            while key.len() < n_params { key.push(Descr::any()); }
-                            key.truncate(n_params);
-                            callsite_keys.entry(*callee).or_default().insert(key.clone());
-                            // Mirror the main loop's fn_constants propagation.
-                            let mut per_arg: Vec<Option<FnId>> = args.iter().map(|av|
-                                caller_ft.fn_constants.get(av).copied()
-                            ).collect();
-                            while per_arg.len() < n_params { per_arg.push(None); }
-                            per_arg.truncate(n_params);
-                            let entry_key = (*callee, key);
-                            callsite_fn_consts
-                                .entry(entry_key)
-                                .and_modify(|existing| {
-                                    for (slot, v) in per_arg.iter().enumerate() {
-                                        if let Some(slot_v) = existing.get_mut(slot) {
-                                            if *slot_v != *v { *slot_v = None; }
-                                        }
-                                    }
-                                })
-                                .or_insert(per_arg);
-                        }
-                    }
-                    _ => {}
-                }
-
-                // fz-f6e — also seed per-spec cont keys (slot0 = callee's
-                // effective return under the actual per-spec arg env; rest
-                // = per-spec view of captures). Matches the main loop's
-                // cont-keying shape (line 215..267) but reads from `env`
-                // (per-spec) instead of `by_fn_idx`.
-                let cont = match &b.terminator {
-                    Term::Call { continuation, .. } => Some(continuation),
-                    Term::CallClosure { continuation, .. } => Some(continuation),
-                    Term::Receive { continuation } => Some(continuation),
-                    _ => None,
-                };
-                let slot0_descr: Descr = match &b.terminator {
-                    Term::Call { callee, args, .. } => {
-                        let arg_descrs: Vec<Descr> = args.iter().map(|av|
-                            env.get(av).cloned().unwrap_or_else(Descr::any)
-                        ).collect();
-                        let mut visiting: HashSet<(FnId, Vec<Descr>)> = HashSet::new();
-                        effective_return_descr(
-                            &(*callee, arg_descrs),
-                            m,
-                            &specs,
-                            &mut visiting,
-                        )
-                    }
-                    _ => Descr::any(),
-                };
-                if let Some(cont) = cont {
-                    if let Some(&j) = idx_of.get(&cont.fn_id) {
-                        let cont_fn = &m.fns[j];
-                        let n_params = cont_fn.block(cont_fn.entry).params.len();
-                        let mut key: Vec<Descr> = vec![Descr::any(); n_params];
-                        if !key.is_empty() { key[0] = slot0_descr.clone(); }
-                        for (k, cv) in cont.captured.iter().enumerate() {
-                            if let Some(p) = key.get_mut(k + 1) {
-                                *p = env.get(cv).cloned().unwrap_or_else(Descr::any);
+            if to_process.is_empty() { break; }
+            // Process each (fn, key) — register spec if new, walk body,
+            // emit pending entries for discovered callsite keys.
+            for (fid, key) in to_process {
+                let Some(&j) = idx_of.get(&fid) else { continue; };
+                let entry_key = (fid, key.clone());
+                if !specs.contains_key(&entry_key) {
+                    let mut ft = type_fn(&m.fns[j], m, Some(&key));
+                    if let Some(arg_consts) = callsite_fn_consts.get(&entry_key) {
+                        let entry = m.fns[j].entry;
+                        let entry_params = &m.fns[j].block(entry).params;
+                        for (slot, p) in entry_params.iter().enumerate() {
+                            if let Some(Some(fid_const)) = arg_consts.get(slot) {
+                                ft.fn_constants.insert(*p, *fid_const);
                             }
                         }
-                        callsite_keys.entry(cont.fn_id).or_default().insert(key);
                     }
+                    specs.insert(entry_key.clone(), ft);
                 }
+                // Walk this spec's body for discovery. Use a snapshot
+                // borrow so we can mutate `specs` / `pending` inside.
+                let caller_ft = specs.get(&entry_key).cloned().unwrap();
+                walk_spec_for_discovery(
+                    &m.fns[j], &caller_ft, m, &specs,
+                    &scc_set, iter >= WIDEN_AT,
+                    &mut pending, &mut callsite_fn_consts, &mut narrowed_lub,
+                );
             }
         }
-
-        // Apply narrowed entry-param Descrs and retype any fn that changed
-        // (lub-aggregated view → by_fn_idx; this is the legacy behavior
-        // codegen still consumes through .29.1).
-        let mut changed = false;
-        for (i, f) in m.fns.iter().enumerate() {
-            let entry_block = f.block(f.entry);
-            let current: Vec<Descr> = entry_block
-                .params
-                .iter()
-                .map(|p| by_fn_idx[i].vars.get(p).cloned().unwrap_or_else(Descr::any))
-                .collect();
-            let next: Vec<Descr> = match narrowed.get(&f.id) {
-                Some(v) => v.clone(),
-                None => continue, // no direct caller — leave entry params alone
-            };
-            if next.iter().zip(current.iter()).any(|(n, c)| !n.is_equiv(c)) {
-                by_fn_idx[i] = type_fn(f, m, Some(&next));
-                changed = true;
-            }
+    }
+    let _ = scc_of;
+    // Final closure pass: re-walk every registered spec with all specs
+    // in place. effective_return_descr (used to compute cont slot0)
+    // returns `any` for specs not yet registered at walk-time — so
+    // cont keys discovered during the SCC pass may be wider than the
+    // final view. Re-walking after all specs land surfaces the
+    // narrower cont keys (and they only narrow monotonically as more
+    // specs register, so this terminates).
+    for _ in 0..16 {
+        let snapshot: Vec<(FnId, Vec<Descr>)> = specs.keys().cloned().collect();
+        let pending_before = pending.values().map(|s| s.len()).sum::<usize>();
+        for (fid, key) in &snapshot {
+            let Some(&j) = idx_of.get(fid) else { continue; };
+            let entry_key = (*fid, key.clone());
+            let caller_ft = specs.get(&entry_key).cloned().unwrap();
+            walk_spec_for_discovery(
+                &m.fns[j], &caller_ft, m, &specs,
+                &std::collections::HashSet::new(), false,
+                &mut pending, &mut callsite_fn_consts, &mut narrowed_lub,
+            );
         }
-
-        // fz-ul4.29.1: ensure `specs` has an entry for every (callee, key)
-        // pair seen at any callsite this iteration. Newly-discovered keys
-        // count as `changed` so the fixed point re-runs (a fresh spec may
-        // itself contain calls that surface further new keys).
-        for (callee, key_set) in &callsite_keys {
-            for key in key_set {
-                let entry_key = (*callee, key.clone());
-                if let Some(&j) = idx_of.get(callee) {
-                    if !specs.contains_key(&entry_key) {
-                        let mut ft = type_fn(&m.fns[j], m, Some(key));
-                        // fz-ul4.29.10.1 — overlay propagated entry-param
-                        // fn-constants from the caller side.
-                        if let Some(arg_consts) = callsite_fn_consts.get(&entry_key) {
-                            let entry = m.fns[j].entry;
-                            let entry_params = &m.fns[j].block(entry).params;
-                            for (slot, p) in entry_params.iter().enumerate() {
-                                if let Some(Some(fid)) = arg_consts.get(slot) {
-                                    ft.fn_constants.insert(*p, *fid);
-                                }
-                            }
+        let new_pending = pending.values().map(|s| s.len()).sum::<usize>();
+        if new_pending == pending_before {
+            break;
+        }
+        // Drain pending and process each new key (same shape as the
+        // late-discovery block below but inside the closure loop).
+        let to_process: Vec<(FnId, Vec<Descr>)> = pending.iter_mut()
+            .flat_map(|(fid, keys)| {
+                let v: Vec<Vec<Descr>> = keys.drain().collect();
+                v.into_iter().map(move |k| (*fid, k))
+            })
+            .collect();
+        for (fid, key) in to_process {
+            let Some(&j) = idx_of.get(&fid) else { continue; };
+            let entry_key = (fid, key.clone());
+            if !specs.contains_key(&entry_key) {
+                let mut ft = type_fn(&m.fns[j], m, Some(&key));
+                if let Some(arg_consts) = callsite_fn_consts.get(&entry_key) {
+                    let entry = m.fns[j].entry;
+                    let entry_params = &m.fns[j].block(entry).params;
+                    for (slot, p) in entry_params.iter().enumerate() {
+                        if let Some(Some(fid_const)) = arg_consts.get(slot) {
+                            ft.fn_constants.insert(*p, *fid_const);
                         }
-                        specs.insert(entry_key, ft);
-                        changed = true;
                     }
-                    // Existing keys' FnTypes may also drift as the module's
-                    // callsite envs sharpen; recompute and replace if so.
-                    // (We don't have a deep FnTypes equality so the cheap
-                    // signal is: replace if the body uses any other fn's
-                    // type info — which may have changed elsewhere this
-                    // iter. .29.2 will tighten this to a proper equality
-                    // check once specs becomes load-bearing.)
                 }
+                specs.insert(entry_key, ft);
             }
         }
+    }
 
-        if !changed {
+    // Late-discovery: any pending key for a fn whose SCC was already
+    // processed (because a narrow spec in a downstream SCC discovered
+    // an upstream callee key). Process with widening turned on.
+    for _ in 0..16 {
+        let mut to_process: Vec<(FnId, Vec<Descr>)> = Vec::new();
+        for (fid, keys) in pending.iter_mut() {
+            for k in keys.drain() { to_process.push((*fid, k)); }
+        }
+        if to_process.is_empty() { break; }
+        for (fid, key) in to_process {
+            let Some(&j) = idx_of.get(&fid) else { continue; };
+            // Widen aggressively for late entries.
+            let widened: Vec<Descr> = key.iter().map(crate::typer::widen).collect();
+            let entry_key = (fid, widened.clone());
+            if !specs.contains_key(&entry_key) {
+                let mut ft = type_fn(&m.fns[j], m, Some(&widened));
+                if let Some(arg_consts) = callsite_fn_consts.get(&entry_key) {
+                    let entry = m.fns[j].entry;
+                    let entry_params = &m.fns[j].block(entry).params;
+                    for (slot, p) in entry_params.iter().enumerate() {
+                        if let Some(Some(fid_const)) = arg_consts.get(slot) {
+                            ft.fn_constants.insert(*p, *fid_const);
+                        }
+                    }
+                }
+                specs.insert(entry_key.clone(), ft);
+                let caller_ft = specs.get(&entry_key).cloned().unwrap();
+                walk_spec_for_discovery(
+                    &m.fns[j], &caller_ft, m, &specs,
+                    &std::collections::HashSet::new(), true,
+                    &mut pending, &mut callsite_fn_consts, &mut narrowed_lub,
+                );
+            }
+        }
+    }
+
+    // Update by_fn_idx from narrowed_lub (legacy codegen consumer).
+    for (i, f) in m.fns.iter().enumerate() {
+        if let Some(next) = narrowed_lub.get(&f.id) {
+            by_fn_idx[i] = type_fn(f, m, Some(next));
+        }
+    }
+
+    // Dead any-key drop (existing logic, lifted out of the old
+    // converged-fixpoint branch).
+    {
+        {
             // fz-ul4.29.12.6 — drop dead any-keys. A fn's any-key body
             // is dead iff *no* compiled spec's body anywhere in the
             // module queries that fn with `[any; n_params]`. Walk every
@@ -727,11 +661,184 @@ pub fn type_module(m: &Module) -> ModuleTypes {
                     specs.remove(&(f.id, any_key));
                 }
             }
-            break;
         }
     }
 
     ModuleTypes { by_fn_idx, specs }
+}
+
+/// fz-210 — discovery walk for one spec. Walks the spec's body and
+/// records:
+///   - For each direct Term::Call / Term::TailCall (callee, args):
+///     append `args_key` to `pending[callee]`. Unify per-arg
+///     fn-constants into `callsite_fn_consts[(callee, args_key)]`.
+///     LUB-aggregate into `narrowed_lub[callee]` for legacy
+///     `by_fn_idx`.
+///   - For each cont site (Call / CallClosure / Receive), append the
+///     cont's `[slot0, captures...]` key to `pending[cont.fn_id]`.
+///   - For each MakeClosure(target, captures), append the lambda's
+///     `[capture_descrs..., any...]` key to `pending[target]`.
+///   - For each TailCallClosure / CallClosure with fn_constants-known
+///     target, append `args_key` to `pending[target]`.
+///
+/// When `caller_scc` is non-empty AND `widen_now` is true, any key
+/// destined for a fn IN `caller_scc` gets `widen()` applied
+/// per-element before being pushed. This bounds termination for
+/// self-recursive / mutually-recursive fns whose argument Descrs
+/// shrink each iter (list-walks).
+fn walk_spec_for_discovery(
+    f: &FnIr,
+    caller_ft: &FnTypes,
+    m: &Module,
+    specs: &HashMap<(FnId, Vec<Descr>), FnTypes>,
+    caller_scc: &std::collections::HashSet<FnId>,
+    widen_now: bool,
+    pending: &mut HashMap<FnId, std::collections::HashSet<Vec<Descr>>>,
+    callsite_fn_consts: &mut HashMap<(FnId, Vec<Descr>), Vec<Option<FnId>>>,
+    narrowed_lub: &mut HashMap<FnId, Vec<Descr>>,
+) {
+    // Build idx_of locally to find each callee's entry-param arity.
+    let idx_of: HashMap<FnId, usize> = m.fns.iter().enumerate()
+        .map(|(i, fn_ir)| (fn_ir.id, i)).collect();
+
+    let maybe_widen = |k: Vec<Descr>, callee: FnId| -> Vec<Descr> {
+        if widen_now && caller_scc.contains(&callee) {
+            k.into_iter().map(|d| crate::typer::widen(&d)).collect()
+        } else {
+            k
+        }
+    };
+
+    let push_key = |
+        pending: &mut HashMap<FnId, std::collections::HashSet<Vec<Descr>>>,
+        callee: FnId, key: Vec<Descr>,
+    | {
+        if !specs.contains_key(&(callee, key.clone())) {
+            pending.entry(callee).or_default().insert(key);
+        }
+    };
+
+    for b in &f.blocks {
+        let mut env = caller_ft.block_envs.get(&b.id).cloned().unwrap_or_default();
+        for stmt in &b.stmts {
+            let Stmt::Let(v, prim) = stmt;
+            if let Prim::MakeClosure(lam_fn_id, captured) = prim {
+                if let Some(&j) = idx_of.get(lam_fn_id) {
+                    let lam = &m.fns[j];
+                    let n_params = lam.block(lam.entry).params.len();
+                    let mut k: Vec<Descr> = vec![Descr::any(); n_params];
+                    for (i, cv) in captured.iter().enumerate() {
+                        if let Some(slot) = k.get_mut(i) {
+                            *slot = env.get(cv).cloned().unwrap_or_else(Descr::any);
+                        }
+                    }
+                    let k = maybe_widen(k, *lam_fn_id);
+                    push_key(pending, *lam_fn_id, k);
+                }
+            }
+            env.insert(*v, type_prim(prim, &env, m));
+        }
+
+        // Direct Call / TailCall.
+        match &b.terminator {
+            Term::Call { callee, args, .. } | Term::TailCall { callee, args } => {
+                if let Some(&j) = idx_of.get(callee) {
+                    let callee_fn = &m.fns[j];
+                    let n_params = callee_fn.block(callee_fn.entry).params.len();
+                    let mut key: Vec<Descr> = args.iter().map(|av|
+                        env.get(av).cloned().unwrap_or_else(Descr::any)
+                    ).collect();
+                    while key.len() < n_params { key.push(Descr::any()); }
+                    key.truncate(n_params);
+                    // LUB aggregation for legacy by_fn_idx view.
+                    let slot = narrowed_lub
+                        .entry(*callee)
+                        .or_insert_with(|| vec![Descr::none(); n_params]);
+                    for (k, av) in args.iter().enumerate() {
+                        if let Some(p) = slot.get_mut(k) {
+                            let at = env.get(av).cloned().unwrap_or_else(Descr::any);
+                            *p = p.union(&at);
+                        }
+                    }
+                    let key = maybe_widen(key, *callee);
+                    // fn_constants propagation.
+                    let mut per_arg: Vec<Option<FnId>> = args.iter().map(|av|
+                        caller_ft.fn_constants.get(av).copied()
+                    ).collect();
+                    while per_arg.len() < n_params { per_arg.push(None); }
+                    per_arg.truncate(n_params);
+                    let entry_key = (*callee, key.clone());
+                    match callsite_fn_consts.get(&entry_key) {
+                        None => { callsite_fn_consts.insert(entry_key.clone(), per_arg); }
+                        Some(prev) => {
+                            let merged: Vec<Option<FnId>> = prev.iter().zip(per_arg.iter())
+                                .map(|(a, b)| if a == b { *a } else { None })
+                                .collect();
+                            callsite_fn_consts.insert(entry_key.clone(), merged);
+                        }
+                    }
+                    push_key(pending, *callee, key);
+                }
+            }
+            _ => {}
+        }
+
+        // CallClosure / TailCallClosure with known target via fn_constants.
+        let (closure_var, closure_args): (Option<Var>, &[Var]) = match &b.terminator {
+            Term::CallClosure { closure, args, .. }
+            | Term::TailCallClosure { closure, args } => (Some(*closure), args.as_slice()),
+            _ => (None, &[]),
+        };
+        if let Some(cv) = closure_var {
+            if let Some(&target_fn) = caller_ft.fn_constants.get(&cv) {
+                if let Some(&j) = idx_of.get(&target_fn) {
+                    let target = &m.fns[j];
+                    let n_params = target.block(target.entry).params.len();
+                    let mut key: Vec<Descr> = closure_args.iter().map(|av|
+                        env.get(av).cloned().unwrap_or_else(Descr::any)
+                    ).collect();
+                    while key.len() < n_params { key.push(Descr::any()); }
+                    key.truncate(n_params);
+                    let key = maybe_widen(key, target_fn);
+                    push_key(pending, target_fn, key);
+                }
+            }
+        }
+
+        // Cont keying. Slot 0 = callee's effective return (Call only);
+        // any (CallClosure / Receive). Slots 1+ = per-spec captures.
+        let cont = match &b.terminator {
+            Term::Call { continuation, .. } => Some(continuation),
+            Term::CallClosure { continuation, .. } => Some(continuation),
+            Term::Receive { continuation } => Some(continuation),
+            _ => None,
+        };
+        let slot0_descr: Descr = match &b.terminator {
+            Term::Call { callee, args, .. } => {
+                let arg_descrs: Vec<Descr> = args.iter().map(|av|
+                    env.get(av).cloned().unwrap_or_else(Descr::any)
+                ).collect();
+                let mut visiting: HashSet<(FnId, Vec<Descr>)> = HashSet::new();
+                effective_return_descr(&(*callee, arg_descrs), m, specs, &mut visiting)
+            }
+            _ => Descr::any(),
+        };
+        if let Some(cont) = cont {
+            if let Some(&j) = idx_of.get(&cont.fn_id) {
+                let cont_fn = &m.fns[j];
+                let n_params = cont_fn.block(cont_fn.entry).params.len();
+                let mut key: Vec<Descr> = vec![Descr::any(); n_params];
+                if !key.is_empty() { key[0] = slot0_descr.clone(); }
+                for (k, cvv) in cont.captured.iter().enumerate() {
+                    if let Some(p) = key.get_mut(k + 1) {
+                        *p = env.get(cvv).cloned().unwrap_or_else(Descr::any);
+                    }
+                }
+                let key = maybe_widen(key, cont.fn_id);
+                push_key(pending, cont.fn_id, key);
+            }
+        }
+    }
 }
 
 /// fz-ul4.29.10.3 — every Var referenced by `prim` (read-side; the
