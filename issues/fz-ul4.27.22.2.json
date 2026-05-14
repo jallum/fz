@@ -11,9 +11,15 @@
   "id": "fz-ul4.27.22.2",
   "labels": [],
   "parent": "fz-ul4.27.22",
+  "comments": [
+    {
+      "text": "2026-05-14 — all listed sub-steps are already in tree:\n\n  - .21.1's three coordinated sites: done (see fz-ul4.27.21.1 close).\n  - Typed halt-cont per program: done in fz-ul4.27.22.3.\n  - Print builtin Descr-dispatched typed FFI: done (line 5167-5187\n    in src/ir_codegen.rs; descr_is_int / descr_is_float route to\n    typed print_i64 / print_f64; raw_int_vars / raw_f64_vars\n    correctly tracked).\n\nAfter fz-3zx the cont seam Descrs come from the LFP outer fixpoint\nso producer return_reprs and consumer param_reprs[0] agree by\nconstruction — the original concern about FnTypes not reflecting\ncont_input_key narrowing is moot.\n\nClosing as already-landed.",
+      "timestamp": "2026-05-14T15:21:32Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "fz-cps-closure.4: typed Term::Return cont seam",
   "type": "task",
-  "updated_at": "2026-05-14T03:46:43Z"
+  "updated_at": "2026-05-14T15:21:32Z"
 }
