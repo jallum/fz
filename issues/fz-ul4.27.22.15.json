@@ -9,9 +9,15 @@
   "id": "fz-ul4.27.22.15",
   "labels": [],
   "parent": "fz-ul4.27.22",
+  "comments": [
+    {
+      "text": "Victory-lap audit (post-22.12):\n\nThe halt_kind plumbing through closure header flags (high 2 bits) +\nfz_alloc_closure's arity-3 FFI + fn_halt_kinds map is NOT retirable\nin any clean way:\n\n- fz_spawn_entry dispatches an arbitrary user closure at runtime; the\n  halt_kind has to travel with the closure value. Compile-time\n  selection works only when the closure is statically known, which\n  spawn deliberately does not require.\n- Per-Process init_halt_cont_singletons + init_static_closures both\n  consume halt_kind for the per-closure halt-cont matching. Removing\n  one means re-introducing the per-spec ABI mismatch we just fixed\n  in 22.12.\n- The 3-bit halt_kind in flags claims headroom; reclaiming those bits\n  would touch the on-disk heap object layout and require a separate\n  format-bump ticket.\n\nONE real wart did surface: runtime/src/aot_shim.rs:282-285 hardcodes\nhalt_cont_singletons[0] (Tagged) for AOT main. This loses main's\nnarrow chain_repr in AOT builds. The fix is to emit a per-program\nhalt-kind data symbol at AOT-codegen time and read it in\nfz_aot_run_main. Not blocking any current fixture (the 4 fz-kf2\nSIGBUS failures are an unrelated Cheney-GC issue), but worth a\nfocused follow-up.\n\nClosing this ticket. Filing the AOT-main wart separately if it\nstarts to bite.",
+      "timestamp": "2026-05-14T21:45:29Z"
+    }
+  ],
   "priority": 4,
   "status": "in_progress",
   "title": "fz-cps-seam.retire-halt-kind-plumbing: reassess halt_kind closure-header plumbing post-22.7",
   "type": "task",
-  "updated_at": "2026-05-14T21:44:58Z"
+  "updated_at": "2026-05-14T21:45:29Z"
 }
