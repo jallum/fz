@@ -3,9 +3,7 @@
   "blocked_by": [
     "fz-8zx"
   ],
-  "blocks": [
-    "fz-e97"
-  ],
+  "blocks": [],
   "created": "2026-05-14T23:56:03Z",
   "description": "After .22.17 lands the per-dir layout, expand the golden set to every fixture for which 'fz dump --emit clif' and 'fz dump --emit specs' succeed.\n\nGoal: every runnable fixture has expected.clif and expected.specs sidecars, checked-in. The golden tests (golden_clif, golden_specs) iterate all such fixtures, not the hardcoded GOLDEN_FIXTURES list of 5.\n\nPlan:\n- Replace GOLDEN_FIXTURES constant with auto-discovery: scan fixture dirs, attempt fz dump --emit clif/specs, if 0-exit then record sidecar.\n- Run BLESS=1 BLESS_SPECS=1 cargo test golden_clif golden_specs to seed every sidecar.\n- Commit the seeded sidecars + the discovery change.\n- Fixtures that don't dump (interp-only, deferred, errors) get no sidecar — discovery skips them.\n\nPure additive: nothing retires yet. expect_clif_* directives stay live and asserted. This commit is the new baseline that .22.19 retires against.\n\nInvariants:\n- tests still green\n- every newly-seeded sidecar is reviewed in the diff (don't bless blind on a dirty branch)\n- non-dumpable fixtures stay skipped, matrix doesn't fail on them",
   "id": "fz-fzn",
@@ -14,5 +12,5 @@
   "status": "open",
   "title": "fz-ul4.27.22.18: fixtures — bless expected.clif / expected.specs for all runnable fixtures",
   "type": "task",
-  "updated_at": "2026-05-14T23:56:03Z"
+  "updated_at": "2026-05-14T23:56:09Z"
 }
