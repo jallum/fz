@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-05-14T15:55:46Z",
   "created": "2026-05-14T15:52:42Z",
   "description": "Mirrors fz-ul4.27.21.2's win for cont-closure captures, now for user-closure captures. Atomic codegen-only change; tests stay green.\n\n## Today\n\nAt src/ir_codegen.rs:2331-2335, every param of every closure_target_fns spec is forced to ArgRepr::Tagged. At MakeClosure (line 5529-5533), captures are stored via tagged_get → Tagged into cl+24+8*i. The body's entry harness (line 3406-3415) ALREADY loads via my_param_reprs[k].cl_type() — it honors narrow reprs whenever they exist; the force is what overrides them.\n\nVisible cost (closure_typed_captures.fz, lambda_3_s8):\n- Producer (add_to_s6): ishl_imm+bor_imm per typed capture (3 ops/seam).\n- Body: sshr_imm per typed capture load to extract raw int.\n\n## Change\n\n1. Scope the closure_target force to ARG slots only (indices [n_caps..]). Capture slots [0..n_caps) keep build_param_reprs' typed output.\n\n2. MakeClosure capture store: replace tagged_get with coerce_to(body's param_reprs[i]). Same pattern as fz-ul4.27.21.2 used for cont-closure captures at Term::Call/CallClosure/Receive.\n\n3. Update closure_typed_captures.fz / spawn_with_captures.fz golden CLIFs.\n\n## Out of scope\n\n- Closure body ARG slot narrowing. Today MakeClosure registers specs with arg-slot Descrs = any (src/ir_codegen.rs:5475-5482). Narrowing those requires per-callsite arg-type discovery — separate ticket.\n\n- Closure body RETURN slot narrowing. Requires teaching the typer's cont_slot0_descr (src/ir_typer.rs:1820-1821) to consult the closure Var's callable Descr at CallClosure seams; otherwise cont's slot 0 stays any and the producer's narrow return mismatches the consumer. Separate ticket.\n\n- Collapsing tagged_return_fns / uniform_cont_reachable_specs / tagged_slot0_cont_specs. These remain necessary while uniform-fn ABI and CallClosure-seam typer behavior haven't been extended. Separate cleanup.\n\n## Acceptance\n\n- cargo test --workspace green; 459 lib tests pass.\n- Goldens diff: closure-using fixtures lose ishl/bor at MakeClosure capture-store and sshr at body capture-load. Non-closure goldens unchanged.\n- Add expect_clif_excludes assertions on lambda_3_s8 (no sshr_imm) and add_to_s6 (no ishl_imm at the capture stores — verified via specific instruction patterns).",
   "id": "fz-ul4.27.22.5",
   "labels": [],
   "parent": "fz-ul4.27.22",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "fz-cps-seam.capture: closure body capture-slot narrowing",
   "type": "task",
-  "updated_at": "2026-05-14T15:52:42Z"
+  "updated_at": "2026-05-14T15:55:46Z"
 }
