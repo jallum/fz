@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-14T16:04:04Z",
+  "description": "Last narrowing step for closure body ABI. Today MakeClosure registers specs keyed `[capture_descrs..., any...]` — arg slots are blanket `any` because at MakeClosure time we don't know the call sites yet. After fz-ul4.27.22.5+.6, captures and return are typed; only arg slots remain Tagged.\n\n## Scope\n\nWalk every Term::CallClosure / TailCallClosure in the program; for each, compute the arg Descrs from caller_ft (the env at the callsite). Register a narrow spec at lambda's FnId with key `[capture_descrs..., arg_descrs...]` (capture descrs from the matching MakeClosure site).\n\nAt CallClosure callsite codegen: resolve the body sid from the closure Var's Descr + arg Descrs (not just capture Descrs). Build sig from body's narrow param_reprs. Coerce args to body's narrow arg reprs.\n\n## Open design questions (pre-flight before filing tickets within)\n\n- How to associate capture Descrs with arg Descrs across MakeClosure / CallClosure separation. Probably: typer associates each closure Var with its registered spec set (capture key); CallClosure resolves the body sid via (lambda FnId, capture_key + arg_descrs).\n- Fallback when closure Var Descr is polymorphic (multiple positive arrow clauses with different arg types). Likely: emit specs for each enumerable combination + Tagged fallback for the join.\n- Spec count growth. A lambda used at N callsites with K different arg-type tuples gets K specs. Bounded but may inflate codegen time/code size.\n\n## Out of scope until this lands\n\nForce collapse — uniform_cont_reachable_specs, tagged_slot0_cont_specs, tagged_return_fns TailCallClosure seed. Once .22.5+.6+.arg are all in, those should all be subsumed by Descr propagation. File a follow-up cleanup ticket once we see what's left.",
+  "id": "fz-ul4.27.22.7",
+  "labels": [],
+  "parent": "fz-ul4.27.22",
+  "priority": 3,
+  "status": "open",
+  "title": "fz-cps-seam.arg: closure body arg-slot narrowing via per-callsite arg-type keys",
+  "type": "task",
+  "updated_at": "2026-05-14T16:04:04Z"
+}
