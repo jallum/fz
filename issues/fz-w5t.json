@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-14T14:14:00Z",
+  "description": "When fz-3zx switches cont keys from cycle-cut to LFP-derived,\nsum's k_2 spec key widens slot 0 from `0` to `int`. Codegen\ncurrently encodes Const::Int as RawI64 when the consumer Descr is\nint (fz-ul4.27.15.1), and as Tagged otherwise. After widening,\nthe cont's entry-param slot expects Raw, but the producer chain\n(sum's Return → cont) carries Tagged at the seam → null deref.\n\nGoal: at every cont seam, the producer's emitted encoding must\nmatch what the cont's spec'd slot expects under the LFP-derived\nkey. The producer is the eventual Return value(s) reaching the\ncont through any number of intermediate frames; encoding must\nagree across that whole chain.\n\nEvidence:\n  - ir_codegen::tests::sum_list_via_head_tail_recursion panics\n    with null-pointer-deref at runtime/src/ir_runtime.rs:953 after\n    applying the fz-3zx changes locally (see stash).\n  - Every other current fixture passes — only sum hits the seam.\n\nThis must land BEFORE fz-3zx.\n\n## Acceptance\n\n  - Apply the fz-3zx stash; sum_list_via_head_tail_recursion\n    passes without crash.\n  - All five golden specs re-bless cleanly with sum's k_2 slot 0\n    showing `int`.\n\n## Investigation pointers\n\n  - fz-ul4.27.15.1 / 15.2 — Raw-by-consumer-Descr emission.\n  - fz-ul4.27.14.x — Tagged intermediate / native chain seam.\n  - fz-ul4.27.16 — no-frame_ptr-in-native-fn invariant.",
+  "id": "fz-w5t",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "fz-3zx.0: codegen seam reconciliation for LFP-widened cont slot0 (precondition for fz-3zx)",
+  "type": "task",
+  "updated_at": "2026-05-14T14:14:00Z"
+}
