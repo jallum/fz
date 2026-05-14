@@ -7,9 +7,15 @@
   "id": "fz-ul4.27.22.13",
   "labels": [],
   "parent": "fz-ul4.27.22",
+  "comments": [
+    {
+      "text": "Audit at victory-lap time (post-22.12):\n\nNo fixture currently demonstrates a union-of-closure-literals flow\n(e.g., `let f = if cond, do: double, else: neg` flowing into apply2).\nSearched fixtures/*.fz for conditional bare-fn-name bindings: none\nexist today.\n\nWith 22.10-22.12 landed, the existing indirect fallback handles this\ncase correctly (closure_lit union widens to multi-clause arrow, codegen\nsees no singleton, falls through to cl+16 dispatch). The behavior is\nsound; only the perf upside is left on the table.\n\nClosing as deferred (not won't-fix). Reopen with a motivating fixture\nif a real fz program hits this shape and the perf delta matters.",
+      "timestamp": "2026-05-14T21:44:10Z"
+    }
+  ],
   "priority": 4,
   "status": "in_progress",
   "title": "fz-cps-seam.union-singletons: direct dispatch for union of closure_lits",
   "type": "task",
-  "updated_at": "2026-05-14T21:43:55Z"
+  "updated_at": "2026-05-14T21:44:10Z"
 }
