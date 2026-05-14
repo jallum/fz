@@ -919,3 +919,118 @@ fn fixture_matrix() {
         failures.join("\n\n")
     );
 }
+
+// ----------------------------------------------------------------------
+// fz-ul4.32 — Golden CLIF fixtures.
+//
+// For each fixture in GOLDEN_FIXTURES, dump its CLIF via `fz dump --emit
+// clif` and diff against the checked-in `fixtures/<name>.clif` sibling.
+// Drift → test failure with the diff inline.
+//
+// `BLESS=1 cargo test golden_clif` rewrites every golden from actual
+// output. Bless is a deliberate act — review the diff in the resulting
+// commit. Adding a fixture to the golden set:
+//   1. Append its filename to GOLDEN_FIXTURES.
+//   2. Run `BLESS=1 cargo test golden_clif` to seed the golden.
+//   3. Commit the new `.clif` alongside the test list change.
+//
+// The whole point: every optimization commit's diff IS the review.
+// No more spot-checking `expect_clif_contains` / `_excludes` in fixture
+// headers; the golden captures everything we care about by construction.
+// ----------------------------------------------------------------------
+
+/// Fixtures with checked-in golden CLIF. Each entry is the filename
+/// (without path); the source lives at `fixtures/<name>` and the
+/// golden at `fixtures/<stem>.clif`.
+const GOLDEN_FIXTURES: &[&str] = &[
+    "add1.fz",
+    "tail_recursion.fz",
+    "higher_order.fz",
+    "closure_typed_captures.fz",
+    "concurrency_ping_pong.fz",
+];
+
+#[test]
+fn golden_clif() {
+    let bless = std::env::var("BLESS").ok().as_deref() == Some("1");
+    let mut failures: Vec<String> = Vec::new();
+
+    for name in GOLDEN_FIXTURES {
+        let src_path = PathBuf::from("fixtures").join(name);
+        assert!(
+            src_path.exists(),
+            "golden fixture source missing: {}",
+            src_path.display(),
+        );
+        let stem = PathBuf::from(name)
+            .file_stem()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let golden_path = PathBuf::from("fixtures").join(format!("{}.clif", stem));
+
+        // Dump current CLIF.
+        let out = Command::new(FZ_BIN)
+            .args(["dump", "--emit", "clif"])
+            .arg(&src_path)
+            .output()
+            .unwrap_or_else(|e| panic!("spawn fz dump {}: {}", name, e));
+        if !out.status.success() {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            failures.push(format!(
+                "fz dump --emit clif {} exited {}: {}",
+                name,
+                out.status,
+                stderr.trim_end(),
+            ));
+            continue;
+        }
+        let actual = String::from_utf8_lossy(&out.stdout).into_owned();
+
+        if bless {
+            fs::write(&golden_path, &actual)
+                .unwrap_or_else(|e| panic!(
+                    "bless write {}: {}", golden_path.display(), e,
+                ));
+            continue;
+        }
+
+        let expected = match fs::read_to_string(&golden_path) {
+            Ok(s) => s,
+            Err(_) => {
+                failures.push(format!(
+                    "golden file missing for {}: {}\n\
+                     Run `BLESS=1 cargo test golden_clif` to seed it.\n\
+                     (Make sure you're on a clean branch; the bless will\n\
+                      record whatever CLIF is currently emitted.)",
+                    name,
+                    golden_path.display(),
+                ));
+                continue;
+            }
+        };
+
+        if actual != expected {
+            failures.push(format!(
+                "golden CLIF mismatch for {} ({}):\n\n\
+                 Re-run with `BLESS=1 cargo test golden_clif` to update \
+                 the golden after reviewing the diff.\n\n\
+                 --- expected ({} bytes)\n{}\n\
+                 --- actual ({} bytes)\n{}",
+                name,
+                golden_path.display(),
+                expected.len(),
+                expected,
+                actual.len(),
+                actual,
+            ));
+        }
+    }
+
+    assert!(
+        failures.is_empty(),
+        "{} golden CLIF failure(s):\n\n{}",
+        failures.len(),
+        failures.join("\n\n---\n\n"),
+    );
+}

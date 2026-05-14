@@ -1,0 +1,185 @@
+; fn main
+function u0:0(i64) -> i64 tail {
+    sig0 = (i64, i64, i64) -> i64 tail
+    sig1 = (i64, i64) -> i64 tail
+    sig2 = (i32, i32) -> i64 system_v
+    fn0 = colocated u0:43 sig0
+    fn1 = colocated u0:42 sig1
+    fn2 = u0:29 sig2
+
+block0(v0: i64):
+    v1 = iconst.i64 0x0001_86a0         ; @8:15
+    v2 = iconst.i64 0                   ; @8:23
+    v3 = iconst.i32 2                   ; @8:9
+    v4 = iconst.i32 1                   ; @8:9
+    v5 = call fn2(v3, v4)               ; @8:9  v3 = 2, v4 = 1
+    v6 = func_addr.i64 fn1              ; @8:9
+    store notrap aligned v6, v5+16      ; @8:9
+    store notrap aligned v0, v5+24      ; @8:9
+    return_call fn0(v1, v2, v5)         ; @8:9  v1 = 0x0001_86a0, v2 = 0
+}
+
+; fn k_2
+function u0:0(i64, i64) -> i64 tail {
+    sig0 = (i64) system_v
+    sig1 = (i64, i64) -> i64 tail
+    fn0 = u0:0 sig0
+
+block0(v0: i64, v1: i64):
+    call fn0(v0)                        ; @8:3
+    v2 = iconst.i64 3                   ; @8:3
+    v3 = load.i64 notrap aligned v1+24
+    v4 = load.i64 notrap aligned v3+16
+    return_call_indirect sig1, v4(v2, v3)  ; v2 = 3
+}
+
+; fn count_s3
+function u0:0(i64, i64, i64) -> i64 tail {
+    sig0 = (i64, i64, i64) -> i64 tail
+    sig1 = (i64, i64) -> i64 tail
+    fn0 = colocated u0:44 sig0
+
+block0(v0: i64, v1: i64, v2: i64):
+    jump block1
+
+block1:
+    v3 = iconst.i64 0
+    v4 = iconst.i64 19
+    v5 = iconst.i64 3
+    v6 = iconst.i64 19
+    v7 = icmp ne v4, v5  ; v4 = 19, v5 = 3
+    v8 = icmp ne v4, v6  ; v4 = 19, v6 = 19
+    v9 = band v7, v8
+    brif v9, block3, block2
+
+block2:
+    v10 = iconst.i64 1                  ; @5:33
+    v11 = isub.i64 v0, v10              ; @5:29  v10 = 1
+    v12 = iconst.i64 1                  ; @5:42
+    v13 = iadd.i64 v1, v12              ; @5:36  v12 = 1
+    v14 = ishl_imm v11, 3               ; @5:23
+    v15 = bor_imm v14, 1                ; @5:23
+    v16 = ishl_imm v13, 3               ; @5:23
+    v17 = bor_imm v16, 1                ; @5:23
+    return_call fn0(v15, v17, v2)       ; @5:23
+
+block3:
+    v18 = ishl_imm.i64 v1, 3
+    v19 = bor_imm v18, 1
+    v20 = load.i64 notrap aligned v2+16
+    return_call_indirect sig1, v20(v19, v2)
+}
+
+; fn count_s4
+function u0:0(i64, i64, i64) -> i64 tail {
+    sig0 = (i64, i64) -> i64 system_v
+    sig1 = (i64) -> f64 system_v
+    sig2 = (i64) -> i64 system_v
+    sig3 = (f64, f64) -> f64 system_v
+    sig4 = (i64) -> f64 system_v
+    sig5 = (i64) -> i64 system_v
+    sig6 = (f64, f64) -> f64 system_v
+    sig7 = (i64, i64, i64) -> i64 tail
+    sig8 = (i64, i64) -> i64 tail
+    fn0 = u0:24 sig0
+    fn1 = u0:22 sig1
+    fn2 = u0:21 sig2
+    fn3 = u0:23 sig3
+    fn4 = u0:22 sig4
+    fn5 = u0:21 sig5
+    fn6 = u0:23 sig6
+    fn7 = colocated u0:44 sig7
+
+block0(v0: i64, v1: i64, v2: i64):
+    jump block1
+
+block1:
+    v3 = iconst.i64 0
+    v4 = ishl_imm v3, 3  ; v3 = 0
+    v5 = bor_imm v4, 1
+    v6 = bor.i64 v0, v5
+    v7 = band_imm v6, 7
+    v8 = icmp_imm eq v7, 0
+    brif v8, block5, block4
+
+block4:
+    v10 = icmp.i64 eq v0, v5
+    v11 = iconst.i64 11
+    v12 = iconst.i64 19
+    v13 = select v10, v11, v12  ; v11 = 11, v12 = 19
+    jump block6(v13)
+
+block5:
+    v14 = call fn0(v0, v5)
+    jump block6(v14)
+
+block6(v9: i64):
+    v15 = iconst.i64 3
+    v16 = iconst.i64 19
+    v17 = icmp ne v9, v15  ; v15 = 3
+    v18 = icmp ne v9, v16  ; v16 = 19
+    v19 = band v17, v18
+    brif v19, block3, block2
+
+block2:
+    v20 = iconst.i64 1                  ; @5:33
+    v21 = ishl_imm v20, 3               ; @5:29  v20 = 1
+    v22 = bor_imm v21, 1                ; @5:29
+    v23 = bxor_imm.i64 v0, 1            ; @5:29
+    v24 = bxor_imm v22, 1               ; @5:29
+    v25 = bor v23, v24                  ; @5:29
+    v26 = band_imm v25, 7               ; @5:29
+    v27 = icmp_imm eq v26, 0            ; @5:29
+    brif v27, block7, block8            ; @5:29
+
+block7:
+    v29 = sshr_imm.i64 v0, 3            ; @5:29
+    v30 = sshr_imm.i64 v22, 3           ; @5:29
+    v31 = isub v29, v30                 ; @5:29
+    v32 = ishl_imm v31, 3               ; @5:29
+    v33 = bor_imm v32, 1                ; @5:29
+    jump block9(v33)                    ; @5:29
+
+block8:
+    v34 = call fn1(v0)                  ; @5:29
+    v35 = call fn1(v22)                 ; @5:29
+    v36 = fsub v34, v35                 ; @5:29
+    v37 = bitcast.i64 v36               ; @5:29
+    v38 = call fn2(v37)                 ; @5:29
+    jump block9(v38)                    ; @5:29
+
+block9(v28: i64):
+    v39 = iconst.i64 1                  ; @5:42
+    v40 = ishl_imm v39, 3               ; @5:36  v39 = 1
+    v41 = bor_imm v40, 1                ; @5:36
+    v42 = bxor_imm.i64 v1, 1            ; @5:36
+    v43 = bxor_imm v41, 1               ; @5:36
+    v44 = bor v42, v43                  ; @5:36
+    v45 = band_imm v44, 7               ; @5:36
+    v46 = icmp_imm eq v45, 0            ; @5:36
+    brif v46, block10, block11          ; @5:36
+
+block10:
+    v48 = sshr_imm.i64 v1, 3            ; @5:36
+    v49 = sshr_imm.i64 v41, 3           ; @5:36
+    v50 = iadd v48, v49                 ; @5:36
+    v51 = ishl_imm v50, 3               ; @5:36
+    v52 = bor_imm v51, 1                ; @5:36
+    jump block12(v52)                   ; @5:36
+
+block11:
+    v53 = call fn4(v1)                  ; @5:36
+    v54 = call fn4(v41)                 ; @5:36
+    v55 = fadd v53, v54                 ; @5:36
+    v56 = bitcast.i64 v55               ; @5:36
+    v57 = call fn5(v56)                 ; @5:36
+    jump block12(v57)                   ; @5:36
+
+block12(v47: i64):
+    return_call fn7(v28, v47, v2)       ; @5:23
+
+block3:
+    v58 = load.i64 notrap aligned v2+16
+    return_call_indirect sig8, v58(v1, v2)
+}
+

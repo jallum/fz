@@ -1,0 +1,79 @@
+; fn child
+function u0:0(i64, i64) -> i64 tail {
+    sig0 = (i64, i64) -> i64 system_v
+    sig1 = (i64, i64) -> i64 tail
+    fn0 = u0:32 sig0
+
+block0(v0: i64, v1: i64):
+    v2 = iconst.i64 1                   ; @19:22
+    v3 = iconst.i64 42                  ; @19:25
+    v4 = ishl_imm v2, 3                 ; @19:17  v2 = 1
+    v5 = bor_imm v4, 1                  ; @19:17
+    v6 = ishl_imm v3, 3                 ; @19:17  v3 = 42
+    v7 = bor_imm v6, 1                  ; @19:17
+    v8 = call fn0(v5, v7)               ; @19:17
+    v9 = load.i64 notrap aligned v1+16
+    return_call_indirect sig1, v9(v8, v1)
+}
+
+; fn main
+function u0:0(i64) -> i64 tail {
+    sig0 = (i32) -> i64 system_v
+    sig1 = (i32, i32) -> i64 system_v
+    sig2 = (i64, i64) -> i64 tail
+    sig3 = (i64) -> i64 system_v
+    sig4 = (i64, i64) -> i64 tail
+    sig5 = (i32, i32) -> i64 system_v
+    sig6 = (i64) -> i64 system_v
+    fn0 = u0:35 sig0
+    fn1 = u0:29 sig1
+    fn2 = colocated u0:44 sig2
+    fn3 = u0:30 sig3
+    fn4 = colocated u0:43 sig4
+    fn5 = u0:29 sig5
+    fn6 = u0:34 sig6
+
+block0(v0: i64):
+    v1 = iconst.i32 0
+    v2 = call fn0(v1)  ; v1 = 0
+    v3 = iconst.i32 2                   ; @22:3
+    v4 = iconst.i32 1                   ; @22:3
+    v5 = call fn1(v3, v4)               ; @22:3  v3 = 2, v4 = 1
+    v6 = func_addr.i64 fn2              ; @22:3
+    store notrap aligned v6, v5+16      ; @22:3
+    store notrap aligned v2, v5+24      ; @22:3
+    v7 = call fn3(v5)                   ; @22:3
+    v8 = iconst.i32 3                   ; @23:9
+    v9 = iconst.i32 1                   ; @23:9
+    v10 = call fn5(v8, v9)              ; @23:9  v8 = 3, v9 = 1
+    v11 = func_addr.i64 fn4             ; @23:9
+    store notrap aligned v11, v10+16    ; @23:9
+    store notrap aligned v0, v10+24     ; @23:9
+    v12 = call fn6(v10)                 ; @23:9
+    return v12                          ; @23:9
+}
+
+; fn k_receive_3
+function u0:0(i64, i64) -> i64 tail {
+    sig0 = (i64) system_v
+    sig1 = (i64, i64) -> i64 tail
+    fn0 = u0:0 sig0
+
+block0(v0: i64, v1: i64):
+    call fn0(v0)                        ; @23:3
+    v2 = iconst.i64 3                   ; @23:3
+    v3 = load.i64 notrap aligned v1+24
+    v4 = load.i64 notrap aligned v3+16
+    return_call_indirect sig1, v4(v2, v3)  ; v2 = 3
+}
+
+; fn fz_spawn_thunk_s4
+function u0:0(i64, i64) -> i64 tail {
+    sig0 = (i64, i64) -> i64 tail
+
+block0(v0: i64, v1: i64):
+    v2 = load.i64 notrap aligned v0+24
+    v3 = load.i64 notrap aligned v2+16
+    return_call_indirect sig0, v3(v2, v1)
+}
+

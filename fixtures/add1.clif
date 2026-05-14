@@ -1,0 +1,48 @@
+; fn main
+function u0:0(i64) -> i64 tail {
+    sig0 = (i64, i64) -> i64 tail
+    sig1 = (i64, i64) -> i64 tail
+    sig2 = (i32, i32) -> i64 system_v
+    fn0 = colocated u0:42 sig0
+    fn1 = colocated u0:43 sig1
+    fn2 = u0:29 sig2
+
+block0(v0: i64):
+    v1 = iconst.i64 41                  ; @7:14
+    v2 = iconst.i32 3                   ; @7:9
+    v3 = iconst.i32 1                   ; @7:9
+    v4 = call fn2(v2, v3)               ; @7:9  v2 = 3, v3 = 1
+    v5 = func_addr.i64 fn1              ; @7:9
+    store notrap aligned v5, v4+16      ; @7:9
+    store notrap aligned v0, v4+24      ; @7:9
+    return_call fn0(v1, v4)             ; @7:9  v1 = 41
+}
+
+; fn add1_s2
+function u0:0(i64, i64) -> i64 tail {
+    sig0 = (i64, i64) -> i64 tail
+
+block0(v0: i64, v1: i64):
+    v2 = iconst.i64 1                   ; @4:19
+    v3 = iadd v0, v2                    ; @4:15  v2 = 1
+    v4 = ishl_imm v3, 3
+    v5 = bor_imm v4, 1
+    v6 = load.i64 notrap aligned v1+16
+    return_call_indirect sig0, v6(v5, v1)
+}
+
+; fn k_2_s3
+function u0:0(i64, i64) -> i64 tail {
+    sig0 = (i64) system_v
+    sig1 = (i64, i64) -> i64 tail
+    fn0 = u0:1 sig0
+
+block0(v0: i64, v1: i64):
+    v2 = sshr_imm v0, 3
+    call fn0(v2)                        ; @7:3
+    v3 = iconst.i64 3                   ; @7:3
+    v4 = load.i64 notrap aligned v1+24
+    v5 = load.i64 notrap aligned v4+16
+    return_call_indirect sig1, v5(v3, v4)  ; v3 = 3
+}
+
