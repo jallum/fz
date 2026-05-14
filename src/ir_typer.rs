@@ -245,6 +245,49 @@ fn entry_seeds(m: &Module) -> Vec<(FnId, Vec<Descr>)> {
     seeds
 }
 
+/// fz-vw4.5a — scan converged specs for unresolved closure dispatch.
+///
+/// At every `Term::CallClosure { closure, args, .. }` and
+/// `Term::TailCallClosure { closure, args }` site in every registered
+/// spec's body, check whether the spec's `fn_constants` resolves
+/// `closure` to a specific FnId. Sites that DON'T resolve are
+/// "opaque consumers" — at runtime they dispatch to whichever lambda
+/// is encoded in the closure value, which we cannot pin down
+/// statically. This function returns the set of `n_params` arities
+/// reachable via such opaque dispatch.
+///
+/// A lambda `F` with `n_params(F) == captures + opaque_arity`
+/// could land at any opaque consumer whose `args.len() == opaque_arity`.
+/// step 5c uses this to gate MakeClosure-side any-key registration:
+/// closure targets with no opaque consumer never need the defensive
+/// `(F, [captures..., any...])` spec.
+#[allow(dead_code)] // step 5b/c consume; lint quiets when wired in.
+fn opaque_consumer_arities(
+    m: &Module,
+    specs: &HashMap<(FnId, Vec<Descr>), FnTypes>,
+) -> std::collections::HashSet<usize> {
+    let mut arities = std::collections::HashSet::new();
+    let idx_of: HashMap<FnId, usize> = m.fns.iter().enumerate()
+        .map(|(i, f)| (f.id, i)).collect();
+    for ((fid, _key), ft) in specs {
+        let Some(&i) = idx_of.get(fid) else { continue; };
+        let f = &m.fns[i];
+        for b in &f.blocks {
+            let (closure_var, args): (Option<Var>, &[Var]) = match &b.terminator {
+                Term::CallClosure { closure, args, .. }
+                | Term::TailCallClosure { closure, args } => (Some(*closure), args.as_slice()),
+                _ => (None, &[]),
+            };
+            let Some(cv) = closure_var else { continue; };
+            if ft.fn_constants.get(&cv).is_some() {
+                continue;
+            }
+            arities.insert(args.len());
+        }
+    }
+    arities
+}
+
 pub fn type_module(m: &Module) -> ModuleTypes {
     // Initial pass: every fn typed with `any` entry params.
     let mut by_fn_idx: Vec<FnTypes> =
@@ -2744,6 +2787,64 @@ mod tests {
         let ir = crate::ir_lower::lower_program(&prog).expect("lower");
         let mt = type_module(&ir);
         (ir, mt)
+    }
+
+    /// fz-vw4.5a — when every closure-dispatch site resolves via
+    /// fn_constants (or there are no closures at all), the
+    /// opaque-consumer arity set is empty. Under step 5c this means
+    /// MakeClosure-side any-key registration can be skipped for the
+    /// fixture's closure targets.
+    #[test]
+    fn opaque_consumer_arities_empty_when_no_opaque_dispatch() {
+        let (m, mt) = pipeline(r#"
+fn add1(n), do: n + 1
+fn main(), do: print(add1(40) + 2)
+"#);
+        let arities = opaque_consumer_arities(&m, &mt.specs);
+        assert!(arities.is_empty(),
+            "expected no opaque consumers (only direct calls), got {:?}", arities);
+    }
+
+    /// fz-vw4.5a — when a closure flows through Receive (message from
+    /// an unknown sender), invoking it produces an unresolved
+    /// TailCallClosure. The analysis must surface its arity. Built
+    /// directly in IR since fz lacks a from-message lambda invocation
+    /// surface syntax.
+    #[test]
+    fn opaque_consumer_arities_picks_up_receive_dispatched_closure() {
+        // Build:
+        //   fn lam(x), do: x       (FnId 0, arity 1)
+        //   fn dispatcher() do
+        //     receive(); cont k_recv(f) { TailCallClosure(f, [const(7)]) }
+        //   end
+        //   fn main(): TailCall dispatcher
+        let mut lam = FnBuilder::new(FnId(0), "lam");
+        let x = lam.fresh_var();
+        let le = lam.block(vec![x]);
+        lam.set_terminator(le, Term::Return(x));
+
+        let mut k_recv = FnBuilder::new(FnId(1), "k_recv");
+        let f = k_recv.fresh_var();
+        let kre = k_recv.block(vec![f]);
+        let seven = k_recv.let_(kre, Prim::Const(Const::Int(7)));
+        k_recv.set_terminator(kre, Term::TailCallClosure { closure: f, args: vec![seven] });
+
+        let mut disp = FnBuilder::new(FnId(2), "dispatcher");
+        let de = disp.block(vec![]);
+        disp.set_terminator(de, Term::Receive {
+            continuation: crate::fz_ir::Cont { fn_id: FnId(1), captured: vec![] },
+        });
+
+        let mut main_b = FnBuilder::new(FnId(3), "main");
+        let me = main_b.block(vec![]);
+        main_b.set_terminator(me, Term::TailCall { callee: FnId(2), args: vec![] });
+
+        let m = build_module(vec![lam.build(), k_recv.build(), disp.build(), main_b.build()]);
+        let mt = type_module(&m);
+        let arities = opaque_consumer_arities(&m, &mt.specs);
+        assert!(arities.contains(&1),
+            "expected arity-1 opaque consumer from receive-dispatched closure, got {:?}",
+            arities);
     }
 
     /// Helper output for a Call-site Cont must match a key the typer
