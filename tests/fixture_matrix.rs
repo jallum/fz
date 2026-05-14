@@ -974,13 +974,12 @@ fn fixture_matrix() {
         // CLIF-substring assertions (fz-ul4.27.1). Independent of the
         // path loop: the assertion is about generated code, which is
         // the same across compiled paths.
-        if !header.expect_clif_contains.is_empty() || !header.expect_clif_excludes.is_empty() {
-            if let Err(msgs) = check_clif_assertions(&f, &header) {
+        if (!header.expect_clif_contains.is_empty() || !header.expect_clif_excludes.is_empty())
+            && let Err(msgs) = check_clif_assertions(&f, &header) {
                 for msg in msgs {
                     failures.push(msg);
                 }
             }
-        }
     }
     if !deferred_fixtures.is_empty() {
         eprintln!("deferred fixtures (no paths wired yet):");

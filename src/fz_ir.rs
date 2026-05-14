@@ -715,7 +715,7 @@ impl fmt::Display for Term {
 
 impl fmt::Display for Block {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "  {}({}):\n", self.id, fmt_var_list(&self.params))?;
+        writeln!(f, "  {}({}):", self.id, fmt_var_list(&self.params))?;
         for s in &self.stmts {
             match s {
                 Stmt::Let(v, p) => writeln!(f, "    let {} = {}", v, p)?,

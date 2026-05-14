@@ -210,7 +210,13 @@ pub extern "C" fn fz_receive_park(cont_closure_bits: u64) -> *mut u8 {
     YIELD_PTR as *mut u8
 }
 
+/// # Safety
+/// `cont_frame_ptr` must point at a valid cont closure heap object
+/// (built by codegen at the Receive seam). Called only from JIT/AOT-
+/// emitted Cranelift code; clippy's `not_unsafe_ptr_arg_deref` is
+/// silenced because the C ABI is fixed by codegen.
 #[unsafe(no_mangle)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_receive_attempt(cont_frame_ptr: *mut u8) -> *mut u8 {
     use crate::{process::ProcessState, scheduler_hooks::YIELD_PTR};
     let p = current_process();
@@ -500,7 +506,7 @@ pub extern "C" fn fz_bs_write_field(
                 );
                 let src_bytes =
                     unsafe { std::slice::from_raw_parts(src_bytes_ptr, src_bit_len.div_ceil(8)) };
-                if needed_bits % 8 == 0 && w.bit_len % 8 == 0 {
+                if needed_bits % 8 == 0 && w.bit_len.is_multiple_of(8) {
                     w.bytes.extend_from_slice(&src_bytes[..needed_bits / 8]);
                     w.bit_len += needed_bits;
                 } else {

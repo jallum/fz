@@ -435,8 +435,8 @@ mod tests {
             (Int(x), Int(y)) => x == y,
             (Float(x), Float(y)) => x.to_bits() == y.to_bits(),
             (Bool(x), Bool(y)) => x == y,
-            (Atom(x), Atom(y)) => &**x == &**y,
-            (Str(x), Str(y)) => &**x == &**y,
+            (Atom(x), Atom(y)) => **x == **y,
+            (Str(x), Str(y)) => **x == **y,
             (Nil, Nil) => true,
             (List(x), List(y)) => {
                 x.len() == y.len() && x.iter().zip(y.iter()).all(|(a, b)| value_struct_eq(a, b))

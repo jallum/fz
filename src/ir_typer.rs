@@ -379,10 +379,10 @@ fn opaque_consumer_arities(
                 | Term::TailCallClosure { closure, args } => (Some(*closure), args.as_slice()),
                 _ => (None, &[]),
             };
-            if let Some(cv) = closure_var {
-                if ft.fn_constants.get(&cv).is_none() {
-                    arities.insert(args.len());
-                }
+            if let Some(cv) = closure_var
+                && !ft.fn_constants.contains_key(&cv)
+            {
+                arities.insert(args.len());
             }
             // Stmt-level opaque dispatch: `Builtin(Spawn, [closure])`
             // hands the closure to the runtime, which invokes it with
@@ -390,12 +390,13 @@ fn opaque_consumer_arities(
             // closure operand's fn_constants.
             for stmt in &b.stmts {
                 let Stmt::Let(_, prim) = stmt;
-                if let Prim::Builtin(bid, args) = prim {
-                    if *bid == BuiltinKind::Spawn.id() && args.len() == 1 {
-                        let cv = args[0];
-                        if ft.fn_constants.get(&cv).is_none() {
-                            arities.insert(0);
-                        }
+                if let Prim::Builtin(bid, args) = prim
+                    && *bid == BuiltinKind::Spawn.id()
+                    && args.len() == 1
+                {
+                    let cv = args[0];
+                    if !ft.fn_constants.contains_key(&cv) {
+                        arities.insert(0);
                     }
                 }
             }
@@ -3473,7 +3474,7 @@ mod tests {
         // The callsite passes `int_lit(41)`, which is a subtype of int. The
         // spec key carries exactly that Descr.
         let int41 = Descr::int_lit(41);
-        let narrow = mt.spec(FnId(0), &[int41.clone()]);
+        let narrow = mt.spec(FnId(0), std::slice::from_ref(&int41));
         assert!(
             narrow.is_some(),
             "add1 must have a specialization keyed on [int_lit(41)]; \
@@ -3860,7 +3861,7 @@ end
         // `waiter(7)`).
         let mut any_narrow = false;
         for cont_id in cont_fn_ids {
-            for ((fid, key), _) in &mt.specs {
+            for (fid, key) in mt.specs.keys() {
                 if *fid != cont_id {
                     continue;
                 }
@@ -4099,7 +4100,7 @@ end
         }
         let v = closure_var.expect("test premise: a captured-MakeClosure in main");
         assert!(
-            main_ft.fn_constants.get(&v).is_none(),
+            !main_ft.fn_constants.contains_key(&v),
             "MakeClosure with captures must NOT set fn_constants"
         );
     }
@@ -4242,7 +4243,7 @@ end
         );
         let double = m.fns.iter().find(|f| f.name == "double").unwrap();
         let mut saw_narrow = false;
-        for ((fid, key), _) in &mt.specs {
+        for (fid, key) in mt.specs.keys() {
             if *fid != double.id {
                 continue;
             }

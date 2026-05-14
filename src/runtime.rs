@@ -551,10 +551,10 @@ mod tests {
         assert_eq!(rt.task(pid).unwrap().halt_value, 99);
     }
 
-    /// Deep-copy: send a heap-allocated list; sender and receiver heaps
-    /// hold independent copies. Verified by sender-side heap growing
-    /// from the list allocation plus receiver-side heap growing from
-    /// the deep-copy of the same structure.
+    // Deep-copy: send a heap-allocated list; sender and receiver heaps
+    // hold independent copies. Verified by sender-side heap growing
+    // from the list allocation plus receiver-side heap growing from
+    // the deep-copy of the same structure.
     // ----- fz-ul4.19 demonstration via the JIT pipeline -----
 
     /// End-to-end fixture test: load `fixtures/concurrency_ping_pong.fz`,

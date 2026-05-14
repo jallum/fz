@@ -361,11 +361,11 @@ thread_local! {
     /// (.11.24.4) Per-fn Cranelift IR display text captured by compile()
     /// after compile_fn but before define_function consumes the context.
     /// Test-only; enable by calling `ir_text_record_enable()` before compile.
-    pub static IR_TEXT_RECORD: std::cell::RefCell<Option<Vec<(String, String)>>> = std::cell::RefCell::new(None);
+    pub static IR_TEXT_RECORD: std::cell::RefCell<Option<Vec<(String, String)>>> = const { std::cell::RefCell::new(None) };
     /// (fz-ul4.23.8) Per-fn machine-code disassembly captured by compile()
     /// when set_disasm is on. Enable with `asm_record_enable()` before
     /// compile; drain with `asm_record_take()` after.
-    pub static ASM_RECORD: std::cell::RefCell<Option<Vec<(String, String)>>> = std::cell::RefCell::new(None);
+    pub static ASM_RECORD: std::cell::RefCell<Option<Vec<(String, String)>>> = const { std::cell::RefCell::new(None) };
     /// fz-ul4.32.1 — per-fn Value → IR Descr map, populated by compile_fn
     /// at end-of-body. Consumed by the IR_TEXT_RECORD assembly step to
     /// annotate each `vN` definition with its typer Descr. Only the
@@ -373,7 +373,7 @@ thread_local! {
     /// recorded; pure Cranelift intermediates (iconst, ishl_imm, ...)
     /// have no fz-level Descr and stay unannotated.
     pub static VALUE_DESCR_RECORD: std::cell::RefCell<Option<HashMap<u32, crate::types::Descr>>>
-        = std::cell::RefCell::new(None);
+        = const { std::cell::RefCell::new(None) };
 }
 
 pub fn asm_record_enable() {
@@ -687,12 +687,12 @@ fn default_unit_for(ty: crate::ast::BitType) -> u32 {
 // Calling either outside the scheduler path panics with a clear message.
 
 /// fz_spawn(closure_bits) -> pid_bits. Extracts fn_id from the closure
-/// heap object and enqueues a new task at that fn. Returns the pid as a
-/// boxed FzValue Int (Pid-as-struct deferred to a follow-up).
-///
-/// v1 restriction: closure must have ZERO captures. Captured values
-/// would need to be copied into the new task's heap (.19.3 territory);
-/// for v1 spawn takes plain fn references (closures with no captures).
+// heap object and enqueues a new task at that fn. Returns the pid as a
+// boxed FzValue Int (Pid-as-struct deferred to a follow-up).
+//
+// v1 restriction: closure must have ZERO captures. Captured values
+// would need to be copied into the new task's heap (.19.3 territory);
+// for v1 spawn takes plain fn references (closures with no captures).
 // Concurrency cluster (fz_spawn/self/send/receive_attempt) moved to
 // ir_runtime.rs (.23.4.12). YIELD_PTR stays here — the trampoline at
 // run_internal/run_quantum (above) reads it directly.
@@ -1982,9 +1982,7 @@ pub fn compile_with_backend<B: Backend>(
         .iter()
         .enumerate()
         .map(|(sid, (fid, key))| {
-            if spec_fnidx[sid].is_none() {
-                return None;
-            }
+            spec_fnidx[sid]?;
             module_types.specs.get(&(*fid, key.clone()))
         })
         .collect();
@@ -3917,7 +3915,7 @@ fn compile_fn<M: cranelift_module::Module>(
         let cl_blk = *block_map.get(&blk.id.0).unwrap();
         if blk.id != f.entry {
             b.switch_to_block(cl_blk);
-            let params: Vec<ir::Value> = b.block_params(cl_blk).iter().copied().collect();
+            let params: Vec<ir::Value> = b.block_params(cl_blk).to_vec();
             for (p, val) in blk.params.iter().zip(params.iter()) {
                 var_map.insert(p.0, *val);
             }
@@ -4043,7 +4041,7 @@ fn compile_fn<M: cranelift_module::Module>(
                 .collect();
             for rv in to_tag_f {
                 let raw = *var_map.get(&rv).expect("raw f64 var dropped from env");
-                let boxed = box_float_native(&mut b, jmod, &runtime, raw);
+                let boxed = box_float_native(&mut b, jmod, runtime, raw);
                 var_map.insert(rv, boxed);
                 raw_f64_vars.remove(&rv);
             }
@@ -4138,7 +4136,7 @@ fn compile_fn<M: cranelift_module::Module>(
                     // build_fn_signature).
                     let my_return_repr = return_reprs[this_spec_id as usize];
                     let from = var_repr(v.0, &raw_int_vars, &raw_f64_vars);
-                    let val_typed = coerce_to(&mut b, jmod, &runtime, val, from, my_return_repr);
+                    let val_typed = coerce_to(&mut b, jmod, runtime, val, from, my_return_repr);
                     let cont_val = if is_cont_fn {
                         let self_val = cont_param.expect("cont fn binds self via cont_param");
                         b.ins().load(
@@ -4217,7 +4215,7 @@ fn compile_fn<M: cranelift_module::Module>(
                         let raw_val = *var_map.get(&av.0).expect("unbound call arg");
                         let from = var_repr(av.0, &raw_int_vars, &raw_f64_vars);
                         let to = callee_param_reprs[i];
-                        native_args.push(coerce_to(&mut b, jmod, &runtime, raw_val, from, to));
+                        native_args.push(coerce_to(&mut b, jmod, runtime, raw_val, from, to));
                     }
                     // fz-ul4.27.19: push host_ctx only when the callee's
                     // trimmed sig still includes it.
@@ -4321,7 +4319,7 @@ fn compile_fn<M: cranelift_module::Module>(
                                     // halt-cont's body).
                                     let hc_repr = return_reprs[cont_sid as usize];
                                     let hcb_fref = jmod.declare_func_in_func(
-                                        halt_cont_body_id_for(&runtime, hc_repr),
+                                        halt_cont_body_id_for(runtime, hc_repr),
                                         b.func,
                                     );
                                     let hcb_addr = b.ins().func_addr(types::I64, hcb_fref);
@@ -4353,7 +4351,7 @@ fn compile_fn<M: cranelift_module::Module>(
                         for (i, cv) in continuation.captured.iter().enumerate() {
                             let from = var_repr(cv.0, &raw_int_vars, &raw_f64_vars);
                             let to = cont_param_reprs[i + 1];
-                            let v = coerce_to(&mut b, jmod, &runtime, cap_vals[i], from, to);
+                            let v = coerce_to(&mut b, jmod, runtime, cap_vals[i], from, to);
                             let off = HEADER_SIZE + SLOT_BYTES * 2 + (i as i32) * SLOT_BYTES;
                             b.ins().store(MemFlags::trusted(), v, cl_ptr, off);
                         }
@@ -4385,7 +4383,7 @@ fn compile_fn<M: cranelift_module::Module>(
                                 let fref =
                                     jmod.declare_func_in_func(runtime.get_halt_cont_id, b.func);
                                 let hcb_fref = jmod.declare_func_in_func(
-                                    halt_cont_body_id_for(&runtime, callee_ret_repr),
+                                    halt_cont_body_id_for(runtime, callee_ret_repr),
                                     b.func,
                                 );
                                 let hcb_addr = b.ins().func_addr(types::I64, hcb_fref);
@@ -4442,7 +4440,7 @@ fn compile_fn<M: cranelift_module::Module>(
                         let result_tagged = coerce_to(
                             &mut b,
                             jmod,
-                            &runtime,
+                            runtime,
                             result,
                             callee_ret_repr,
                             ArgRepr::Tagged,
@@ -4455,7 +4453,7 @@ fn compile_fn<M: cranelift_module::Module>(
                             payload.push(coerce_to(
                                 &mut b,
                                 jmod,
-                                &runtime,
+                                runtime,
                                 *val,
                                 from,
                                 ArgRepr::Tagged,
@@ -4498,7 +4496,7 @@ fn compile_fn<M: cranelift_module::Module>(
                         let raw_val = *var_map.get(&av.0).expect("unbound tailcall arg");
                         let from = var_repr(av.0, &raw_int_vars, &raw_f64_vars);
                         let to = callee_param_reprs[i];
-                        native_args.push(coerce_to(&mut b, jmod, &runtime, raw_val, from, to));
+                        native_args.push(coerce_to(&mut b, jmod, runtime, raw_val, from, to));
                     }
                     // fz-ul4.27.19: forward host_ctx only when the callee
                     // needs it. The transitive analysis guarantees this fn
@@ -4545,7 +4543,7 @@ fn compile_fn<M: cranelift_module::Module>(
                                 let fref =
                                     jmod.declare_func_in_func(runtime.get_halt_cont_id, b.func);
                                 let hcb_fref = jmod.declare_func_in_func(
-                                    halt_cont_body_id_for(&runtime, callee_ret_repr),
+                                    halt_cont_body_id_for(runtime, callee_ret_repr),
                                     b.func,
                                 );
                                 let hcb_addr = b.ins().func_addr(types::I64, hcb_fref);
@@ -4581,7 +4579,7 @@ fn compile_fn<M: cranelift_module::Module>(
                         let result_tagged = coerce_to(
                             &mut b,
                             jmod,
-                            &runtime,
+                            runtime,
                             result,
                             callee_ret_repr,
                             ArgRepr::Tagged,
@@ -4729,7 +4727,7 @@ fn compile_fn<M: cranelift_module::Module>(
                             // user-cont's return_repr.
                             let hc_repr = return_reprs[cont_sid as usize];
                             let hcb_fref = jmod.declare_func_in_func(
-                                halt_cont_body_id_for(&runtime, hc_repr),
+                                halt_cont_body_id_for(runtime, hc_repr),
                                 b.func,
                             );
                             let hcb_addr = b.ins().func_addr(types::I64, hcb_fref);
@@ -4756,7 +4754,7 @@ fn compile_fn<M: cranelift_module::Module>(
                 for (i, cv) in continuation.captured.iter().enumerate() {
                     let from = var_repr(cv.0, &raw_int_vars, &raw_f64_vars);
                     let to = cont_param_reprs[i + 1];
-                    let v = coerce_to(&mut b, jmod, &runtime, cap_vals[i], from, to);
+                    let v = coerce_to(&mut b, jmod, runtime, cap_vals[i], from, to);
                     let off = HEADER_SIZE + SLOT_BYTES * 2 + (i as i32) * SLOT_BYTES;
                     b.ins().store(MemFlags::trusted(), v, cf, off);
                 }
@@ -4784,7 +4782,7 @@ fn compile_fn<M: cranelift_module::Module>(
                     indirect_args.push(coerce_to(
                         &mut b,
                         jmod,
-                        &runtime,
+                        runtime,
                         *v,
                         from,
                         ArgRepr::Tagged,
@@ -4894,7 +4892,7 @@ fn compile_fn<M: cranelift_module::Module>(
                             .get(n_caps + i)
                             .copied()
                             .unwrap_or(ArgRepr::Tagged);
-                        direct_args.push(coerce_to(&mut b, jmod, &runtime, *v, from, to));
+                        direct_args.push(coerce_to(&mut b, jmod, runtime, *v, from, to));
                     }
                     direct_args.push(cl_val);
                     direct_args.push(my_cont);
@@ -4927,7 +4925,7 @@ fn compile_fn<M: cranelift_module::Module>(
                         indirect_args.push(coerce_to(
                             &mut b,
                             jmod,
-                            &runtime,
+                            runtime,
                             *v,
                             from,
                             ArgRepr::Tagged,
@@ -5023,7 +5021,7 @@ fn compile_fn<M: cranelift_module::Module>(
                             // user-cont's return_repr.
                             let hc_repr = return_reprs[cont_sid as usize];
                             let hcb_fref = jmod.declare_func_in_func(
-                                halt_cont_body_id_for(&runtime, hc_repr),
+                                halt_cont_body_id_for(runtime, hc_repr),
                                 b.func,
                             );
                             let hcb_addr = b.ins().func_addr(types::I64, hcb_fref);
@@ -5049,7 +5047,7 @@ fn compile_fn<M: cranelift_module::Module>(
                 for (i, cv) in continuation.captured.iter().enumerate() {
                     let from = var_repr(cv.0, &raw_int_vars, &raw_f64_vars);
                     let to = cont_param_reprs[i + 1];
-                    let v = coerce_to(&mut b, jmod, &runtime, cap_vals[i], from, to);
+                    let v = coerce_to(&mut b, jmod, runtime, cap_vals[i], from, to);
                     let off = HEADER_SIZE + SLOT_BYTES * 2 + (i as i32) * SLOT_BYTES;
                     b.ins().store(MemFlags::trusted(), v, cl_ptr, off);
                 }
@@ -5372,11 +5370,11 @@ fn emit_tail_call<M: cranelift_module::Module>(
 ///      and stores it kind-aware into the callee frame's capture entry slot.
 ///   4. Writes each call arg into its entry slot, kind-aware.
 ///   5. Returns the callee frame for the trampoline.
-///
-/// Closure-target bodies stay uniform-ABI in v1 (parking.rs:113 excludes
-/// `used_as_closure_target` fns from `natively_callable`). The native-
-/// callee branch is gated on .29.8 lifting that exclusion; for now we
-/// always go through the uniform frame-alloc path.
+//
+// Closure-target bodies stay uniform-ABI in v1 (parking.rs:113 excludes
+// `used_as_closure_target` fns from `natively_callable`). The native-
+// callee branch is gated on .29.8 lifting that exclusion; for now we
+// always go through the uniform frame-alloc path.
 
 /// True when `v`'s typer-inferred Descr is a subtype of `int_top` — the
 /// arithmetic dispatch elision pre-condition (.11.24.4).
@@ -7043,15 +7041,15 @@ fn main(), do: print(map_l(double, [1, 2, 3]))
 
     #[test]
     fn float_const_halt_round_trips_via_bits() {
-        let (halt, _m) = run_main_after_heap_reset("fn main(), do: 3.14");
-        assert_eq!(f64::from_bits(halt as u64), 3.14);
+        let (halt, _m) = run_main_after_heap_reset("fn main(), do: 2.5");
+        assert_eq!(f64::from_bits(halt as u64), 2.5);
     }
 
     #[test]
     fn print_float_renders_with_explicit_dot_zero() {
         assert_eq!(
-            capture_main("fn main() do\n  print(4.0)\n  print(3.14)\nend"),
-            vec!["4.0", "3.14"]
+            capture_main("fn main() do\n  print(4.0)\n  print(2.5)\nend"),
+            vec!["4.0", "2.5"]
         );
     }
 
@@ -7082,14 +7080,14 @@ fn main(), do: print(map_l(double, [1, 2, 3]))
 
     #[test]
     fn float_bit_field_round_trips_via_bitstring() {
-        let (halt, _m) = run_main_after_heap_reset("fn main(), do: <<3.14::float>>");
+        let (halt, _m) = run_main_after_heap_reset("fn main(), do: <<2.5::float>>");
         let halt = halt as u64;
         let p = fz_runtime::fz_value::FzValue(halt).unbox_ptr().unwrap();
         let bytes = unsafe { std::slice::from_raw_parts((p as *const u8).add(24), 8) };
         let mut buf = [0u8; 8];
         buf.copy_from_slice(bytes);
         let f = f64::from_bits(u64::from_be_bytes(buf));
-        assert_eq!(f, 3.14);
+        assert_eq!(f, 2.5);
     }
 
     // ----- .11.14 vec tests -----

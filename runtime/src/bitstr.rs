@@ -62,7 +62,7 @@ impl BitWriter {
     }
 
     pub fn write_bytes(&mut self, b: &[u8]) {
-        if self.bit_len % 8 == 0 {
+        if self.bit_len.is_multiple_of(8) {
             self.bytes.extend_from_slice(b);
             self.bit_len += b.len() * 8;
         } else {
@@ -136,7 +136,7 @@ pub fn apply_endian_for_write(value: u64, total_bits: u32, endian: Endian) -> u6
     if !little {
         return value;
     }
-    if n % 8 != 0 {
+    if !n.is_multiple_of(8) {
         return value;
     }
     let bytes = n / 8;
@@ -194,7 +194,7 @@ pub fn encode_utf8(cp: u32) -> Option<Vec<u8>> {
 }
 
 pub fn decode_utf8(reader: &mut BitReader) -> Option<u32> {
-    if reader.pos % 8 != 0 {
+    if !reader.pos.is_multiple_of(8) {
         return None;
     }
     let b0 = reader.read_bits(8)? as u32;

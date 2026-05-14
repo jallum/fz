@@ -140,6 +140,11 @@ pub unsafe extern "C" fn fz_panic(msg_ptr: *const u8, msg_len: usize) -> ! {
 /// so the runtime's id↔name mapping matches the compiler's. The compiler
 /// emits one call per atom in interning order; this asserts the id matches
 /// what the compiler chose, panicking if the table has been touched first.
+///
+/// # Safety
+/// `name_ptr` must point to `name_len` bytes of valid UTF-8. Called only
+/// from AOT-emitted constructors before `main` runs; the buffer is a
+/// static string literal embedded in the AOT binary.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fz_register_atom(expected_id: u32, name_ptr: *const u8, name_len: usize) {
     let bytes = unsafe { std::slice::from_raw_parts(name_ptr, name_len) };

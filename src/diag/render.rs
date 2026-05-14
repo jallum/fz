@@ -214,7 +214,7 @@ impl<'a> Renderer<'a> {
         let pad_before = " ".repeat(start_col);
         let underline_len = std::cmp::max(1, end_col.saturating_sub(start_col));
         let glyph = if primary { '^' } else { '-' };
-        let underline: String = std::iter::repeat(glyph).take(underline_len).collect();
+        let underline: String = std::iter::repeat_n(glyph, underline_len).collect();
 
         let (color_pre, color_post) = if self.use_color {
             let c = if primary { style::RED } else { style::CYAN };
@@ -226,21 +226,23 @@ impl<'a> Renderer<'a> {
         if sl.label.is_empty() {
             writeln!(
                 out,
-                "{:>pad$} | {pre}{underline}{post}",
+                "{:>pad$} | {pre}{pad_before}{underline}{post}",
                 "",
                 pad = gutter,
                 pre = color_pre,
-                underline = format!("{}{}", pad_before, underline),
+                pad_before = pad_before,
+                underline = underline,
                 post = color_post
             )?;
         } else {
             writeln!(
                 out,
-                "{:>pad$} | {pre}{underline}{post} {label}",
+                "{:>pad$} | {pre}{pad_before}{underline}{post} {label}",
                 "",
                 pad = gutter,
                 pre = color_pre,
-                underline = format!("{}{}", pad_before, underline),
+                pad_before = pad_before,
+                underline = underline,
                 post = color_post,
                 label = sl.label
             )?;

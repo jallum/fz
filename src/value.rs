@@ -99,7 +99,7 @@ pub struct BitVec {
 impl BitVec {
     pub fn from_bits(bits: &[u8]) -> Self {
         let n = bits.len();
-        let mut words = vec![0u64; (n + 63) / 64];
+        let mut words = vec![0u64; n.div_ceil(64)];
         for (i, b) in bits.iter().enumerate() {
             if *b != 0 {
                 words[i / 64] |= 1u64 << (i % 64);

@@ -50,7 +50,7 @@ const fn build_size_table() -> [usize; 32] {
     while i < 32 {
         // next ≈ ceil(prev * 1.2) then aligned up to 16. Integer-only:
         //   ceil(prev * 6 / 5) = (prev * 6 + 4) / 5.
-        let raw = (t[i - 1] * 6 + 4) / 5;
+        let raw = (t[i - 1] * 6).div_ceil(5);
         t[i] = (raw + 15) & !15;
         i += 1;
     }
@@ -232,6 +232,10 @@ impl SchemaRegistry {
     pub fn len(&self) -> usize {
         self.schemas.len()
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.schemas.is_empty()
+    }
 }
 
 impl Default for SchemaRegistry {
@@ -274,7 +278,7 @@ pub struct Heap {
 impl Heap {
     pub fn new(capacity: usize, schemas: Rc<RefCell<SchemaRegistry>>) -> Self {
         assert!(
-            capacity > 0 && capacity % 16 == 0,
+            capacity > 0 && capacity.is_multiple_of(16),
             "capacity must be 16-aligned"
         );
         let size_class = pick_size_class(capacity);
@@ -781,11 +785,10 @@ fn count_live_bytes_from(
             .unwrap_or_else(|| panic!("count_live_bytes_from: invalid HeapKind {:#x}", h.kind));
         let push = |slot: *const FzValue, stack: &mut Vec<*mut HeapHeader>| {
             let v = unsafe { std::ptr::read(slot) };
-            if let Some(cp) = v.unbox_ptr() {
-                if !cp.is_null() && ptr_in_from_space(cp as *mut u8, from_ranges) {
+            if let Some(cp) = v.unbox_ptr()
+                && !cp.is_null() && ptr_in_from_space(cp as *mut u8, from_ranges) {
                     stack.push(cp);
                 }
-            }
         };
         match kind {
             HeapKind::Struct => {
@@ -1211,12 +1214,12 @@ mod tests {
     #[test]
     fn alloc_float_round_trips_payload() {
         let mut h = Heap::new(1024, empty_registry());
-        let p = h.alloc_float(3.14);
+        let p = h.alloc_float(1.5);
         unsafe {
             assert_eq!((*p).kind, HeapKind::Float as u16);
             assert_eq!((*p).size_bytes, 32);
         }
-        assert_eq!(Heap::read_float(p), 3.14);
+        assert_eq!(Heap::read_float(p), 1.5);
     }
 
     #[test]
@@ -1285,7 +1288,7 @@ mod tests {
         assert_ne!(h.block_start, initial_block, "grow must move block_start");
         assert!(h.size_class > initial_class, "grow must bump size_class");
         assert_eq!(h.block_size, SIZE_TABLE[h.size_class as usize]);
-        assert!(h.abandoned_blocks.len() >= 1);
+        assert!(!h.abandoned_blocks.is_empty());
         assert_eq!(h.live_count(), 40);
     }
 

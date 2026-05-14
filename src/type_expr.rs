@@ -25,7 +25,7 @@
 //! `'|'` binds looser than primary forms; `'(A, B) -> R'` is one
 //! primary (the arrow itself). `[T]` is a list of T (not a postfix
 //! operator). `{T, U}` is a tuple. `:foo` is the singleton atom.
-//! Bare `42` and `3.14` are singleton literals.
+//! Bare `42` and `2.5` are singleton literals.
 
 #![allow(dead_code)] // fz-ul4.31.4 wires this into the parser; tests
 // exercise the API directly until then.
@@ -436,8 +436,8 @@ mod tests {
 
     #[test]
     fn float_literal_parses_to_singleton() {
-        let d = parse_one("3.14").unwrap();
-        assert!(d.is_equiv(&Descr::float_lit(3.14)));
+        let d = parse_one("2.5").unwrap();
+        assert!(d.is_equiv(&Descr::float_lit(2.5)));
     }
 
     #[test]

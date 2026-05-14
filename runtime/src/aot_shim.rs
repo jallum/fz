@@ -143,7 +143,14 @@ pub extern "C" fn fz_aot_setup(
 /// Register one static closure target. AOT codegen emits one call per
 /// `MakeClosure` with zero captures. `code_addr` is the body fn's
 /// address (Cranelift `func_addr` of the fz_fn_<body_id>).
+/// # Safety
+/// `proc` must point at a valid `Process` produced by `fz_aot_setup`.
+/// `code_addr` must point at a Cranelift-emitted closure-target body.
+/// Called only from the AOT-emitted C `main`; clippy's
+/// `not_unsafe_ptr_arg_deref` is silenced because the C ABI signature
+/// is fixed by AOT codegen.
 #[unsafe(no_mangle)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_aot_register_static_closure(
     proc: *mut Process,
     cl_sid: u32,
@@ -274,7 +281,13 @@ fn drain_parked_chain(proc: *mut Process) {
 /// parked chain that follows, and tear down the AOT scheduler state.
 /// Returns 0 on clean completion (matches the JIT / interp convention
 /// of treating halt_value as internal).
+/// # Safety
+/// `proc`, `main_fp`, `main_entry_addr` must be valid pointers produced
+/// by AOT codegen and `fz_aot_setup`. Called only from the AOT-emitted
+/// C `main`; clippy's `not_unsafe_ptr_arg_deref` is silenced because
+/// the C ABI signature is fixed.
 #[unsafe(no_mangle)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_aot_run_main(
     proc: *mut Process,
     main_fp: *const u8,
