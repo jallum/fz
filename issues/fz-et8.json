@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-14T13:06:22Z",
+  "description": "Step 1 of fz-sj6 landed (exact-dedup at dnf_union, idempotence\nencoded). Step 2 (subsumption-based dedup: drop clauses subsumed\nby others) was queued but no current golden exercises a\nsubsumable-clause pattern (`list(int) ∨ list(int|float)` etc.).\n\nLand this when a real program / fixture produces specs with\nsubsumable clauses and we want them collapsed in the goldens.\n\n## Algorithm\n\nFor each pair (Cᵢ, Cⱼ) of clauses in the deduped Vec, check\nwhether the single-clause Descr formed by Cᵢ on its axis is a\nsubtype of the single-clause Descr formed by Cⱼ. If yes, drop\nCᵢ. O(n²) per union — n is small post-dedup.\n\n## Soundness\n\n`A ⊆ B ⇒ A ∨ B = B`. Absorption.\n\n## Out of scope\n\nMass-merge (`list(A) ∨ list(B) → list(A∨B)`) — unsound for\nheterogeneous lists.",
+  "id": "fz-et8",
+  "labels": [],
+  "priority": 3,
+  "status": "open",
+  "title": "fz-dnf-union-subsumption: drop clauses subsumed by others",
+  "type": "task",
+  "updated_at": "2026-05-14T13:06:22Z"
+}
