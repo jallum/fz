@@ -2320,16 +2320,20 @@ pub fn compile_with_backend<B: Backend>(
                 {
                     reprs[0] = ArgRepr::Tagged;
                 }
-                // fz-cps.1.8 — closure-target spec bodies use ALL-Tagged
-                // param_reprs so the indirect call sig at every
-                // Term::CallClosure / TailCallClosure site matches the
-                // body (closure-target sig `(args:i64.., self:i64,
-                // cont:i64) tail` per docs/cps-in-clif.md §8.2 target).
-                // Raw int / raw f64 specialization is dropped for these
-                // specs — they trade arg-passing speed for a uniform
-                // closure ABI.
-                if closure_target_fns.contains(&f.id) {
-                    for r in reprs.iter_mut() {
+                // fz-cps.1.8 (fz-ul4.27.22.5) — closure-target body ARG
+                // slots are forced to Tagged so the indirect call sig at
+                // every Term::CallClosure / TailCallClosure site matches
+                // the body. Arg slots are keyed `any` by MakeClosure
+                // (src/ir_codegen.rs:5475-5482) so they'd derive Tagged
+                // anyway; the force documents the seam invariant.
+                //
+                // CAPTURE slots ([0..n_caps)) keep their per-spec narrow
+                // reprs — MakeClosure stores captures in the body's
+                // narrow repr (line ~5529), and the body's entry harness
+                // (line ~3406) loads via my_param_reprs[k].cl_type().
+                // No round-trip through Tagged for typed captures.
+                if let Some(n_caps) = closure_n_captures.get(&f.id) {
+                    for r in reprs.iter_mut().skip(*n_caps) {
                         *r = ArgRepr::Tagged;
                     }
                 }
@@ -3509,7 +3513,7 @@ fn compile_fn<M: cranelift_module::Module>(
                 .unwrap_or(crate::diag::Span::DUMMY);
             b.set_srcloc(span_to_srcloc(span));
             let Stmt::Let(v, prim) = stmt;
-            let out = lower_prim(&mut b, jmod, runtime, tuple_schema_ids, stub_fn_ids, &var_map, &raw_f64_vars, &raw_int_vars, fn_types, spec_registry, module, fn_ids, prim, *v)?;
+            let out = lower_prim(&mut b, jmod, runtime, tuple_schema_ids, stub_fn_ids, &var_map, &raw_f64_vars, &raw_int_vars, fn_types, spec_registry, module, fn_ids, param_reprs, prim, *v)?;
             let val = out.value();
             if out.is_raw_f64() {
                 raw_f64_vars.insert(v.0);
@@ -4855,6 +4859,7 @@ fn lower_prim<M: cranelift_module::Module>(
     spec_registry: &SpecRegistry,
     module: &crate::fz_ir::Module,
     fn_ids: &HashMap<u32, FuncId>,
+    param_reprs: &[Vec<ArgRepr>],
     prim: &Prim,
     dest_var: crate::fz_ir::Var,
 ) -> Result<LowerOut, CodegenError> {
@@ -5526,10 +5531,18 @@ fn lower_prim<M: cranelift_module::Module>(
             let body_fref = jmod.declare_func_in_func(body_func_id, b.func);
             let body_addr = b.ins().func_addr(types::I64, body_fref);
             b.ins().store(MemFlags::trusted(), body_addr, cl_ptr, HEADER_SIZE);
+            // fz-ul4.27.22.5: store each capture in the body's narrow
+            // param_repr (body's entry harness at line ~3406 loads via
+            // my_param_reprs[k].cl_type()). Mirrors fz-ul4.27.21.2's
+            // typed-capture seam for cont closures.
+            let body_param_reprs = &param_reprs[cl_sid as usize];
             for (i, cv) in captured.iter().enumerate() {
-                let tagged = tagged_get(env, raw_f64_vars, raw_int_vars, b, jmod, runtime, cv.0);
+                let from = var_repr(cv.0, raw_int_vars, raw_f64_vars);
+                let to = body_param_reprs[i];
+                let raw = *env.get(&cv.0).expect("MakeClosure: captured var unbound");
+                let val = coerce_to(b, jmod, runtime, raw, from, to);
                 let off = HEADER_SIZE + SLOT_BYTES + (i as i32) * SLOT_BYTES;
-                b.ins().store(MemFlags::trusted(), tagged, cl_ptr, off);
+                b.ins().store(MemFlags::trusted(), val, cl_ptr, off);
             }
             cl_ptr
         }

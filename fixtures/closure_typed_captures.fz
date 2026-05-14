@@ -2,6 +2,10 @@
 # paths:   jit, interp, aot
 # expect_clif_contains: apply1: call_indirect
 # expect_clif_excludes: apply1: fz_closure_invoke
+# fz-ul4.27.22.5 — typed closure capture seam: ishl/bor pairs dropped at the
+# MakeClosure producer (add_to_s6) and sshr_imm dropped at the body's typed
+# capture loads (lambda_3_s8 captures v3/v4 are RawInt, no untag needed).
+# expect_clif_contains: lambda_3_s8: (RawInt, RawInt, Tagged) -> Tagged
 # fz-cps.1.12: closure stubs deleted. The lambda body is invoked
 # directly via Tail-CC `return_call_indirect` through cl+16 — no stub
 # fn exists to assert about. Tracked by §8.3 acceptance test.
