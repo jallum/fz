@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-05-14T01:54:12Z",
   "created": "2026-05-14T01:51:17Z",
   "description": "Replace coarse expect_clif_contains / expect_clif_excludes spot checks with full per-fixture golden CLIF snapshots. Every commit's effect on codegen becomes visible as a precise diff; intentional changes re-bless explicitly.\n\n## Motivation\n\nThree .21 optimization attempts in the last sessions failed in part because there was no stable reference for what 'better' looks like. Each attempt: implement → run tests → check halt values → debug → revert. The CLIF was changing in subtle ways but the test harness couldn't see it.\n\nGolden CLIF fixes this. The optimization workflow becomes:\n\n1. Pin current state as goldens (status quo).\n2. Pre-write the goldens we WANT — these are the acceptance criteria.\n3. Implement; goldens diff against the WANT version.\n4. Re-bless explicitly with the optimization commit.\n\nRegressions in unrelated fixtures show up as immediate test failures with full diffs.\n\n## Work\n\n1. Add a snapshot test harness in tests/fixture_matrix.rs (or tests/golden_clif.rs). For every fixture with a sibling .clif file (or marked with a # golden_clif: directive — TBD during impl), dump via fz dump --emit clif and compare to the golden. Fail on diff. BLESS=1 cargo test overwrites.\n\n2. Bless initial set: add1.fz + the four §8 fixtures (tail_recursion, higher_order, closure_typed_captures, concurrency_ping_pong). 5 .clif files committed.\n\n3. Document the workflow inline at the top of the snapshot test + in a short fixtures/GOLDEN.md.\n\n4. Retire — or keep as belt-and-suspenders — the existing expect_clif_contains / expect_clif_excludes assertions on the blessed fixtures. The diff IS the assertion now.\n\n## Determinism\n\nCranelift's CLIF dump should be deterministic for the same input + same Cranelift version. Spec IDs are source-order. Value numbers are SSA-deterministic. FuncId numbering follows declaration order in compile_with_backend (fixed). Any non-determinism that surfaces gets either fixed at the source or normalized in the test before comparison.\n\n## Acceptance\n\n- fixtures/add1.clif exists, committed, matches current fz dump output.\n- Same for tail_recursion.clif, higher_order.clif, closure_typed_captures.clif, concurrency_ping_pong.clif.\n- cargo test --workspace green at HEAD (current state pinned).\n- Mutating ir_codegen.rs in a way that changes any fixture's CLIF causes the test to fail with a full diff.\n- BLESS=1 cargo test golden_clif overwrites all goldens from actual output.\n- fixtures/GOLDEN.md documents the workflow.\n\n## Out of scope\n\n- Golden assembly / final machine code (separate ticket — runtime cost, not codegen shape).\n- Microbenchmarks (separate ticket).\n- Cranelift version pinning beyond what Cargo.toml already constrains (separate ticket if needed).\n- Auto-blessing on every CI run (manual gate intentionally — bless is a deliberate act).\n\n## After this lands\n\n.21 / typed-closure-ABI / .27 work resumes with full visibility. Every optimization commit's diff IS the review.",
   "id": "fz-ul4.32",
   "labels": [],
   "parent": "fz-ul4",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "fz-ul4.32: golden CLIF fixtures — pin codegen output for regression + optimization visibility",
   "type": "task",
-  "updated_at": "2026-05-14T01:51:17Z"
+  "updated_at": "2026-05-14T01:54:12Z"
 }
