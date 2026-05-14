@@ -334,7 +334,7 @@ fn eval_prim(
             let cap_vals: Vec<FzValue> = collect(env, captured)?;
             let p = fz_runtime::process::current_process()
                 .heap
-                .alloc_closure(fn_id.0, cap_vals.len());
+                .alloc_closure(fn_id.0, cap_vals.len(), 0);
             unsafe {
                 std::ptr::write((p as *mut u8).add(16) as *mut u64, 0); // stub_fp = null
                 let cursor = (p as *mut u8).add(24) as *mut FzValue;

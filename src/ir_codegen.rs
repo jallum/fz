@@ -120,7 +120,7 @@ pub struct CompiledModule {
     /// per entry. `make_process` allocates one 24-byte off-heap closure
     /// per entry and registers it at `Process.static_closures[cl_sid]`.
     /// See docs/cps-in-clif.md §8.2.
-    pub(crate) static_closure_targets: Vec<(u32, u32, *const u8)>,
+    pub(crate) static_closure_targets: Vec<(u32, u32, *const u8, u32 /* halt_kind */)>,
     /// fz-cps.1.11 — finalized address of the SystemV scheduler shim
     /// `fz_resume_park(msg, parked_cont) -> i64`. The scheduler calls
     /// this via Rust FFI when a Blocked task wakes; the shim loads
@@ -167,7 +167,7 @@ impl CompiledModule {
     /// fz-cps.1.7 — registered zero-capture closure-target specs. Each
     /// entry corresponds to one Process-level static singleton allocated
     /// at `make_process` time. See docs/cps-in-clif.md §8.2.
-    pub fn static_closure_targets(&self) -> &[(u32, u32, *const u8)] {
+    pub fn static_closure_targets(&self) -> &[(u32, u32, *const u8, u32)] {
         &self.static_closure_targets
     }
 
@@ -1056,7 +1056,7 @@ pub struct CompiledMetadata {
     /// `make_process` to populate `Process.static_closures`. AOT carries
     /// the same list as a startup-init data table (fz-cps.1.7 AOT path is
     /// out of scope until aot rebuilds; see ticket notes).
-    pub static_closure_targets: Vec<(u32, u32, FuncId)>,
+    pub static_closure_targets: Vec<(u32, u32, FuncId, u32 /* halt_kind */)>,
     /// fz-cps.1.11 — fz_resume_park scheduler-wakeup shim FuncId.
     pub resume_park_id: FuncId,
     /// fz-cps.1.11 — fz_spawn_entry scheduler-launch shim FuncId.
@@ -1317,12 +1317,12 @@ impl Backend for JitBackend {
         // fz-cps.1.7 — resolve each zero-cap closure-target stub_func_id
         // to its finalized code address. `make_process` writes these into
         // the off-heap singleton's `code_ptr` slot at +16.
-        let static_closure_targets: Vec<(u32, u32, *const u8)> = meta
+        let static_closure_targets: Vec<(u32, u32, *const u8, u32)> = meta
             .static_closure_targets
             .iter()
-            .map(|(cl_sid, fn_id, stub_fid)| {
+            .map(|(cl_sid, fn_id, stub_fid, halt_kind)| {
                 let ptr = jmod.get_finalized_function(*stub_fid);
-                (*cl_sid, *fn_id, ptr)
+                (*cl_sid, *fn_id, ptr, *halt_kind)
             })
             .collect();
         let resume_park_addr = jmod.get_finalized_function(meta.resume_park_id);
@@ -1420,8 +1420,9 @@ impl Backend for AotBackend {
             .declare_function("fz_aot_setup", Linkage::Import, &setup_sig)
             .map_err(|e| CodegenError::new(format!("declare fz_aot_setup: {}", e)))?;
 
+        // fz-ul4.27.22.6: trailing i32 carries halt_kind.
         let reg_sig = sig1(
-            &[types::I64, types::I32, types::I32, types::I64],
+            &[types::I64, types::I32, types::I32, types::I64, types::I32],
             &[],
         );
         let reg_id = self
@@ -1596,19 +1597,42 @@ pub fn compile_with_backend<B: Backend>(
             b.switch_to_block(entry);
             b.seal_block(entry);
             let closure = b.block_params(entry)[0];
-            // fz-cps.5 — reuse the per-Process halt-cont singleton
-            // (off-heap) instead of allocating a fresh closure per
-            // spawned task. Keeps heap_live_count invariants stable.
-            // fz-ul4.27.22.3 — spawn'd closures are always closure-target
-            // fns (return forced Tagged), so the halt-cont seam is Tagged.
+            // fz-ul4.27.22.6 — pick the matching halt-cont based on the
+            // spawned closure's halt_kind (packed into the high 2 bits of
+            // the heap header's `flags` at MakeClosure time). For
+            // RawInt-returning bodies, this routes the i64 raw bits into
+            // halt_cont_body_i64 instead of sshr-ing them as if they were
+            // tagged FzValue. Pre-22.6 this was hardcoded Tagged.
+            //
+            // Closure HeapHeader layout:
+            //   off 0  : kind (u16)         off 4  : size_bytes (u32)
+            //   off 2  : flags (u16)        off 8  : schema_id (u32)
+            //                               off 12 : _reserved (u32)
+            // flags low 14 bits = captured_count; high 2 bits = halt_kind.
+            let flags_u16 = b.ins().load(types::I16, MemFlags::trusted(), closure, 2);
+            // Right-shift 14 to extract halt_kind (0..2), then widen to i32.
+            let hk16 = b.ins().ushr_imm(flags_u16, 14);
+            let kind = b.ins().uextend(types::I32, hk16);
+            // Select halt_cont_body_addr by kind. Branchless via three
+            // func_addrs + a tiny dispatch — keeps the spawn shim a leaf.
+            let hcb_tagged = backend.module_mut()
+                .declare_func_in_func(runtime.halt_cont_body_tagged_id, b.func);
+            let hcb_i64 = backend.module_mut()
+                .declare_func_in_func(runtime.halt_cont_body_i64_id, b.func);
+            let hcb_f64 = backend.module_mut()
+                .declare_func_in_func(runtime.halt_cont_body_f64_id, b.func);
+            let a_tagged = b.ins().func_addr(types::I64, hcb_tagged);
+            let a_i64 = b.ins().func_addr(types::I64, hcb_i64);
+            let a_f64 = b.ins().func_addr(types::I64, hcb_f64);
+            let one = b.ins().iconst(types::I32, 1);
+            let two = b.ins().iconst(types::I32, 2);
+            let is_i64 = b.ins().icmp(IntCC::Equal, kind, one);
+            let is_f64 = b.ins().icmp(IntCC::Equal, kind, two);
+            let pick_i64_or_tagged = b.ins().select(is_i64, a_i64, a_tagged);
+            let hcb_addr = b.ins().select(is_f64, a_f64, pick_i64_or_tagged);
             let ghc_fref = backend
                 .module_mut()
                 .declare_func_in_func(runtime.get_halt_cont_id, b.func);
-            let hcb_fref = backend
-                .module_mut()
-                .declare_func_in_func(runtime.halt_cont_body_tagged_id, b.func);
-            let hcb_addr = b.ins().func_addr(types::I64, hcb_fref);
-            let kind = b.ins().iconst(types::I32, 0); // Tagged
             let halt_inst = b.ins().call(ghc_fref, &[hcb_addr, kind]);
             let halt_cl = b.inst_results(halt_inst)[0];
             // Load closure body addr at +16 and invoke as
@@ -2629,14 +2653,17 @@ pub fn compile_with_backend<B: Backend>(
     // The singleton acts both as `self` for direct callers (zero-cap
     // bodies ignore self) and as the closure handed to MakeClosure(fid,
     // []) sites. See docs/cps-in-clif.md §8.2.
-    let static_closure_targets: Vec<(u32, u32, FuncId)> = closure_shapes
+    let static_closure_targets: Vec<(u32, u32, FuncId, u32)> = closure_shapes
         .iter()
         .filter(|(_, n_caps)| **n_caps == 0)
         .map(|(cl_sid, _)| {
             let fn_id = spec_keys[*cl_sid as usize].0;
             let body_fid = *fn_ids.get(cl_sid)
                 .expect("zero-cap closure spec must have a body FuncId");
-            (*cl_sid, fn_id.0, body_fid)
+            // fz-ul4.27.22.6: pack halt_kind so fz_spawn_entry can pick
+            // the matching halt-cont singleton at task launch.
+            let halt_kind = return_reprs[*cl_sid as usize].halt_kind();
+            (*cl_sid, fn_id.0, body_fid, halt_kind)
         })
         .collect();
 
@@ -2777,7 +2804,7 @@ fn emit_aot_c_main<M: cranelift_module::Module>(
     halt_cont_body_ids: [FuncId; 3],
     spawn_entry_id: FuncId,
     resume_park_id: FuncId,
-    static_closure_targets: &[(u32, u32, FuncId)],
+    static_closure_targets: &[(u32, u32, FuncId, u32 /* halt_kind */)],
     atom_blob_data: Option<DataId>,
     atom_blob_len: u32,
     setup_id: FuncId,
@@ -2833,13 +2860,14 @@ fn emit_aot_c_main<M: cranelift_module::Module>(
         let proc_v = b.inst_results(setup_call)[0];
 
         // Register each static closure target.
-        for (cl_sid, fn_id, body_func_id) in static_closure_targets {
+        for (cl_sid, fn_id, body_func_id, halt_kind) in static_closure_targets {
             let cl_sid_v = b.ins().iconst(types::I32, *cl_sid as i64);
             let fn_id_v = b.ins().iconst(types::I32, *fn_id as i64);
             let body_fref = jmod.declare_func_in_func(*body_func_id, b.func);
             let body_addr = b.ins().func_addr(types::I64, body_fref);
+            let hk_v = b.ins().iconst(types::I32, *halt_kind as i64);
             let reg_fref = jmod.declare_func_in_func(reg_id, b.func);
-            b.ins().call(reg_fref, &[proc_v, cl_sid_v, fn_id_v, body_addr]);
+            b.ins().call(reg_fref, &[proc_v, cl_sid_v, fn_id_v, body_addr, hk_v]);
         }
 
         // exit = fz_aot_run_main(proc, main_fp, main_entry_addr)
@@ -2960,7 +2988,7 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
     let vec_get_id = decl("fz_vec_get", &[types::I64, types::I64], &[types::I64])?;
 
     let alloc_closure_id =
-        decl("fz_alloc_closure", &[types::I32, types::I32], &[types::I64])?;
+        decl("fz_alloc_closure", &[types::I32, types::I32, types::I32], &[types::I64])?;
     let spawn_id = decl("fz_spawn", &[types::I64], &[types::I64])?;
     let self_id = decl("fz_self", &[], &[types::I64])?;
     let send_id = decl("fz_send", &[types::I64, types::I64], &[types::I64])?;
@@ -3513,7 +3541,7 @@ fn compile_fn<M: cranelift_module::Module>(
                 .unwrap_or(crate::diag::Span::DUMMY);
             b.set_srcloc(span_to_srcloc(span));
             let Stmt::Let(v, prim) = stmt;
-            let out = lower_prim(&mut b, jmod, runtime, tuple_schema_ids, stub_fn_ids, &var_map, &raw_f64_vars, &raw_int_vars, fn_types, spec_registry, module, fn_ids, param_reprs, prim, *v)?;
+            let out = lower_prim(&mut b, jmod, runtime, tuple_schema_ids, stub_fn_ids, &var_map, &raw_f64_vars, &raw_int_vars, fn_types, spec_registry, module, fn_ids, param_reprs, return_reprs, prim, *v)?;
             let val = out.value();
             if out.is_raw_f64() {
                 raw_f64_vars.insert(v.0);
@@ -3799,7 +3827,11 @@ fn compile_fn<M: cranelift_module::Module>(
                         let n_caps_v = b.ins().iconst(
                             types::I32, (continuation.captured.len() + 1) as i64,
                         );
-                        let cl_inst = b.ins().call(acl_fref, &[cl_fid_v, n_caps_v]);
+                        // fz-ul4.27.22.6: halt_kind=0 (Tagged). Cont closures
+                        // are never handed to fz_spawn_entry — the field is
+                        // a fz_spawn_entry-only consumer.
+                        let zero_hk = b.ins().iconst(types::I32, 0);
+                        let cl_inst = b.ins().call(acl_fref, &[cl_fid_v, n_caps_v, zero_hk]);
                         let cl_ptr = b.inst_results(cl_inst)[0];
                         let cont_code_addr = b.ins().func_addr(types::I64, cont_fref);
                         b.ins().store(
@@ -3840,8 +3872,9 @@ fn compile_fn<M: cranelift_module::Module>(
                                     .declare_func_in_func(runtime.alloc_closure_id, b.func);
                                 let dummy_fid = b.ins().iconst(types::I32, 0);
                                 let n_caps0 = b.ins().iconst(types::I32, 0);
+                                let zero_hk = b.ins().iconst(types::I32, 0);
                                 let halt_alloc =
-                                    b.ins().call(acl_fref2, &[dummy_fid, n_caps0]);
+                                    b.ins().call(acl_fref2, &[dummy_fid, n_caps0, zero_hk]);
                                 let halt_cl = b.inst_results(halt_alloc)[0];
                                 // fz-ul4.27.22.3 — halt-cont body matches
                                 // the user-cont's return_repr (the user's
@@ -4189,7 +4222,8 @@ fn compile_fn<M: cranelift_module::Module>(
                 let n_caps_v = b.ins().iconst(
                     types::I32, (continuation.captured.len() + 1) as i64,
                 );
-                let cl_inst = b.ins().call(acl_fref, &[cl_fid_v, n_caps_v]);
+                let zero_hk = b.ins().iconst(types::I32, 0);
+                let cl_inst = b.ins().call(acl_fref, &[cl_fid_v, n_caps_v, zero_hk]);
                 let cf = b.inst_results(cl_inst)[0];
                 let cont_code_addr = b.ins().func_addr(types::I64, cont_fref);
                 b.ins().store(MemFlags::trusted(), cont_code_addr, cf, HEADER_SIZE);
@@ -4223,7 +4257,8 @@ fn compile_fn<M: cranelift_module::Module>(
                         b.seal_block(alloc_blk);
                         let dummy_fid = b.ins().iconst(types::I32, 0);
                         let n_caps0 = b.ins().iconst(types::I32, 0);
-                        let halt_alloc = b.ins().call(acl_fref, &[dummy_fid, n_caps0]);
+                        let zero_hk2 = b.ins().iconst(types::I32, 0);
+                        let halt_alloc = b.ins().call(acl_fref, &[dummy_fid, n_caps0, zero_hk2]);
                         let halt_cl = b.inst_results(halt_alloc)[0];
                         // fz-ul4.27.22.3 — outer halt-cont body matches the
                         // user-cont's return_repr.
@@ -4386,7 +4421,8 @@ fn compile_fn<M: cranelift_module::Module>(
                 let n_caps_v = b.ins().iconst(
                     types::I32, (continuation.captured.len() + 1) as i64,
                 );
-                let cl_inst = b.ins().call(acl_fref, &[cl_fid_v, n_caps_v]);
+                let zero_hk = b.ins().iconst(types::I32, 0);
+                let cl_inst = b.ins().call(acl_fref, &[cl_fid_v, n_caps_v, zero_hk]);
                 let cl_ptr = b.inst_results(cl_inst)[0];
                 let cont_code_addr = b.ins().func_addr(types::I64, cont_fref);
                 b.ins().store(
@@ -4424,7 +4460,8 @@ fn compile_fn<M: cranelift_module::Module>(
                         b.seal_block(alloc_blk);
                         let dummy_fid = b.ins().iconst(types::I32, 0);
                         let n_caps0 = b.ins().iconst(types::I32, 0);
-                        let halt_alloc = b.ins().call(acl_fref, &[dummy_fid, n_caps0]);
+                        let zero_hk2 = b.ins().iconst(types::I32, 0);
+                        let halt_alloc = b.ins().call(acl_fref, &[dummy_fid, n_caps0, zero_hk2]);
                         let halt_cl = b.inst_results(halt_alloc)[0];
                         // fz-ul4.27.22.3 — outer halt-cont body matches the
                         // user-cont's return_repr.
@@ -4860,6 +4897,7 @@ fn lower_prim<M: cranelift_module::Module>(
     module: &crate::fz_ir::Module,
     fn_ids: &HashMap<u32, FuncId>,
     param_reprs: &[Vec<ArgRepr>],
+    return_reprs: &[ArgRepr],
     prim: &Prim,
     dest_var: crate::fz_ir::Var,
 ) -> Result<LowerOut, CodegenError> {
@@ -5526,7 +5564,11 @@ fn lower_prim<M: cranelift_module::Module>(
             let alloc_fref = jmod.declare_func_in_func(runtime.alloc_closure_id, b.func);
             let fid_v = b.ins().iconst(types::I32, fn_id.0 as i64);
             let nc_v = b.ins().iconst(types::I32, n_caps as i64);
-            let inst = b.ins().call(alloc_fref, &[fid_v, nc_v]);
+            // fz-ul4.27.22.6: halt_kind from body's return repr so
+            // fz_spawn_entry can pick the matching halt-cont singleton.
+            let body_return_repr = return_reprs[cl_sid as usize];
+            let hk_v = b.ins().iconst(types::I32, body_return_repr.halt_kind() as i64);
+            let inst = b.ins().call(alloc_fref, &[fid_v, nc_v, hk_v]);
             let cl_ptr = b.inst_results(inst)[0];
             let body_fref = jmod.declare_func_in_func(body_func_id, b.func);
             let body_addr = b.ins().func_addr(types::I64, body_fref);
@@ -5825,10 +5867,10 @@ mod tests {
             targets.len() >= 2,
             "expected ≥2 static closure targets (f, g); got {}: {:?}",
             targets.len(),
-            targets.iter().map(|(s, f, _)| (s, f)).collect::<Vec<_>>(),
+            targets.iter().map(|(s, f, _, _)| (s, f)).collect::<Vec<_>>(),
         );
         // Distinct cl_sids and distinct code addresses.
-        let mut cl_sids: Vec<u32> = targets.iter().map(|(s, _, _)| *s).collect();
+        let mut cl_sids: Vec<u32> = targets.iter().map(|(s, _, _, _)| *s).collect();
         cl_sids.sort();
         cl_sids.dedup();
         assert_eq!(
@@ -5836,7 +5878,7 @@ mod tests {
             targets.len(),
             "cl_sids must be unique across static_closure_targets entries"
         );
-        for (_, _, ptr) in targets {
+        for (_, _, ptr, _) in targets {
             assert!(!ptr.is_null(), "static-closure stub_fp must be a resolved address");
         }
     }
@@ -5853,7 +5895,7 @@ mod tests {
         let m = lower_src(src);
         let compiled = compile(&m).expect("compile");
         let targets = compiled.static_closure_targets();
-        let (cl_sid, _, _) = *targets.first().expect("at least one static closure target");
+        let (cl_sid, _, _, _) = *targets.first().expect("at least one static closure target");
         let mut p = compiled.make_process();
         let prev = fz_runtime::process::CURRENT_PROCESS
             .with(|c| c.replace(&mut p as *mut Process));

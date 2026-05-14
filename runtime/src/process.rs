@@ -150,21 +150,28 @@ impl Process {
     /// per Process at construction time.
     pub fn init_static_closures(
         &mut self,
-        targets: &[(u32 /* cl_sid */, u32 /* fn_id */, *const u8 /* code_ptr */)],
+        targets: &[(
+            u32, /* cl_sid */
+            u32, /* fn_id */
+            *const u8, /* code_ptr */
+            u32, /* halt_kind */
+        )],
     ) {
         use crate::fz_value::{HeapHeader, HeapKind};
         // Size table by max cl_sid encountered.
-        let max = targets.iter().map(|(s, _, _)| *s).max().unwrap_or(0) as usize;
+        let max = targets.iter().map(|(s, _, _, _)| *s).max().unwrap_or(0) as usize;
         if self.static_closures.len() < max + 1 {
             self.static_closures.resize(max + 1, std::ptr::null_mut());
         }
-        for (cl_sid, fn_id, code_ptr) in targets {
+        for (cl_sid, fn_id, code_ptr, halt_kind) in targets {
             // 24 bytes (HeapHeader 16 + code_ptr 8) with 8-byte alignment.
             let mut buf: Box<[u64; 3]> = Box::new([0u64; 3]);
             let base = buf.as_mut_ptr() as *mut u8;
+            // fz-ul4.27.22.6: pack halt_kind into the closure flags so
+            // fz_spawn_entry can pick the matching halt-cont singleton.
             let header = HeapHeader {
                 kind: HeapKind::Closure as u16,
-                flags: 0, // zero captures
+                flags: crate::fz_value::closure_flags_pack(0, *halt_kind as u16),
                 size_bytes: 24,
                 schema_id: 0,
                 _reserved: *fn_id,

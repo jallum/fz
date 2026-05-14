@@ -147,10 +147,11 @@ pub extern "C" fn fz_aot_register_static_closure(
     cl_sid: u32,
     fn_id: u32,
     code_addr: *const u8,
+    halt_kind: u32,
 ) {
     assert!(!proc.is_null(), "fz_aot_register_static_closure: null process");
     let process = unsafe { &mut *proc };
-    process.init_static_closures(&[(cl_sid, fn_id, code_addr)]);
+    process.init_static_closures(&[(cl_sid, fn_id, code_addr, halt_kind)]);
 }
 
 /// Spawn hook (fz-siu.6.2). Allocates a child Process, deep-copies the

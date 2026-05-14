@@ -454,8 +454,14 @@ impl Heap {
     /// are always tagged FzValue regardless of the callee's typed entry-
     /// slot kinds; the stub does the tagged→raw conversion when writing
     /// the callee frame.
-    pub fn alloc_closure(&mut self, callee_fn_id: u32, captured_count: usize) -> *mut HeapHeader {
-        assert!(captured_count <= u16::MAX as usize, "closure captured count overflow");
+    pub fn alloc_closure(
+        &mut self,
+        callee_fn_id: u32,
+        captured_count: usize,
+        halt_kind: u16,
+    ) -> *mut HeapHeader {
+        assert!(captured_count <= crate::fz_value::CLOSURE_FLAGS_CAPTURED_MASK as usize,
+            "closure captured count overflow");
         let payload = 8 + captured_count * 8;
         let total = (16 + payload + 15) & !15;
         let p = self.alloc(total);
@@ -464,7 +470,7 @@ impl Heap {
                 p,
                 HeapHeader {
                     kind: HeapKind::Closure as u16,
-                    flags: captured_count as u16,
+                    flags: crate::fz_value::closure_flags_pack(captured_count as u16, halt_kind),
                     size_bytes: total as u32,
                     schema_id: 0,
                     _reserved: callee_fn_id,
@@ -794,7 +800,7 @@ fn count_live_bytes_from(
                 push(tail, &mut stack);
             }
             HeapKind::Closure => {
-                let count = h.flags as usize;
+                let count = crate::fz_value::closure_flags_captured(h.flags) as usize;
                 for i in 0..count {
                     let slot = unsafe {
                         (p as *const u8).add(24).add(i * 8) as *const FzValue
@@ -891,8 +897,10 @@ fn cheney_trace_children(
         }
         HeapKind::Closure => {
             // Layout: stub_fp (8) at offset 16 — a code pointer, skip.
-            // Captures at offset 24+i*8 — FzValue each. `flags` is count.
-            let count = unsafe { (*obj).flags } as usize;
+            // Captures at offset 24+i*8 — FzValue each. `flags` low 14 bits
+            // are the captured count; high 2 bits are halt_kind (fz-22.6).
+            let count = crate::fz_value::closure_flags_captured(
+                unsafe { (*obj).flags }) as usize;
             for i in 0..count {
                 let slot = unsafe {
                     (obj as *mut u8).add(24).add(i * 8) as *mut FzValue
@@ -1064,8 +1072,9 @@ pub fn deep_copy_value(
             // fz-ul4.29.5: stub_fp at offset 16, captures (FzValue) at
             // offset 24+. Copy stub_fp as raw bytes (it's a code pointer,
             // valid across heaps); deep-copy each captured FzValue.
-            let captured_count = h.flags as usize;
-            let new_p = dst_heap.alloc_closure(h._reserved, captured_count);
+            let captured_count = crate::fz_value::closure_flags_captured(h.flags) as usize;
+            let halt_kind = crate::fz_value::closure_flags_halt_kind(h.flags);
+            let new_p = dst_heap.alloc_closure(h._reserved, captured_count, halt_kind);
             forwarding.insert(sp, new_p);
             // Copy stub_fp (raw 8 bytes).
             unsafe {

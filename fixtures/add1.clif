@@ -5,7 +5,7 @@
 function u0:0(i64) -> i64 tail {
     sig0 = (i64, i64) -> i64 tail
     sig1 = (i64, i64) -> i64 tail
-    sig2 = (i32, i32) -> i64 system_v
+    sig2 = (i32, i32, i32) -> i64 system_v
     fn0 = colocated u0:46 sig0
     fn1 = colocated u0:47 sig1
     fn2 = u0:31 sig2
@@ -14,11 +14,12 @@ block0(v0: i64):
     v1 = iconst.i64 41                  ; @10:14
     v2 = iconst.i32 3                   ; @10:9
     v3 = iconst.i32 1                   ; @10:9
-    v4 = call fn2(v2, v3)               ; @10:9  v2 = 3, v3 = 1
-    v5 = func_addr.i64 fn1              ; @10:9
-    store notrap aligned v5, v4+16      ; @10:9
-    store notrap aligned v0, v4+24      ; @10:9
-    return_call fn0(v1, v4)             ; @10:9  v1 = 41
+    v4 = iconst.i32 0                   ; @10:9
+    v5 = call fn2(v2, v3, v4)           ; @10:9  v2 = 3, v3 = 1, v4 = 0
+    v6 = func_addr.i64 fn1              ; @10:9
+    store notrap aligned v6, v5+16      ; @10:9
+    store notrap aligned v0, v5+24      ; @10:9
+    return_call fn0(v1, v5)             ; @10:9  v1 = 41
 }
 
 ; fn add1_s2

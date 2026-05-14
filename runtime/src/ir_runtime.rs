@@ -231,11 +231,18 @@ pub extern "C" fn fz_receive_attempt(cont_frame_ptr: *mut u8) -> *mut u8 {
 
 /// Allocate a closure heap object with `captured_count` capture slots.
 /// Caller writes stub_fp at offset 16 and captures at offset 24+.
+/// `halt_kind` (fz-ul4.27.22.6) is packed into the closure header's
+/// `flags` so `fz_spawn_entry` and `fz_resume_park` can pick the matching
+/// halt-cont singleton at task launch.
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_alloc_closure(callee_fn_id: u32, captured_count: u32) -> u64 {
+pub extern "C" fn fz_alloc_closure(
+    callee_fn_id: u32,
+    captured_count: u32,
+    halt_kind: u32,
+) -> u64 {
     let p = current_process()
         .heap
-        .alloc_closure(callee_fn_id, captured_count as usize);
+        .alloc_closure(callee_fn_id, captured_count as usize, halt_kind as u16);
     p as u64
 }
 
