@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-14T16:03:51Z",
+  "description": "Follow-up to fz-ul4.27.22.5. Extend the typer so cont's slot 0 Descr at a Term::CallClosure seam reflects the closure body's return type — not a blanket any. Then drop the return-slot half of the closure_target_fns force (currently kept via tagged_return_fns' closure_target_fns seed at src/ir_codegen.rs:2350-2356).\n\n## Today\n\nsrc/ir_typer.rs:1814-1835 (cont_slot0_descr): only handles Term::Call. For Term::CallClosure (and Receive), returns Descr::any(). Cont's slot 0 is therefore typed `any` → ArgRepr::Tagged → producer at CallClosure's TailCC indirect-call return sig must coerce to Tagged.\n\nsrc/ir_codegen.rs:2350-2356 (tagged_return_fns seed): closure_target_fns is included so all closure-target bodies' return_reprs are forced Tagged. Today this is necessary because cont's slot 0 at the CallClosure seam expects Tagged (from cont_slot0_descr returning any).\n\n## Change\n\n1. Extend cont_slot0_descr at src/ir_typer.rs:1820 to handle Term::CallClosure: read the `closure` Var's Descr from caller_ft, JOIN over positive arrow clauses in `closure_descr.funcs`, take the union of return types. Fall back to Descr::any() for Conj::top, negative clauses, or empty funcs.\n\n2. Add a Descr utility (src/types.rs) that JOINs return types across arrow DNF clauses. Name: `arrow_join_return` or `callable_return_union`.\n\n3. Drop closure_target_fns from tagged_return_fns seed at src/ir_codegen.rs:2350. Keep the TailCallClosure-terminator seed (still needed for forwarding fns).\n\n## Expected diff\n\nClosure-using fixtures (closure_typed_captures.fz, spawn_with_captures.fz):\n- Closure body @abi return slot narrows from Tagged to RawInt / RawF64 / etc.\n- CallClosure cont's slot 0 sig narrows correspondingly.\n- ishl/bor at body's Term::Return drops; sshr_imm at cont's entry drops.\n\n## Acceptance\n\n- cargo test --workspace green.\n- BLESS=1 cargo test golden_clif records the narrower seam shapes.\n- Add expect_clif_excludes assertions on relevant cont fns (no sshr at slot-0 load when closure body returns int).\n- Net deletion: ~5 lines from tagged_return_fns seed + ~15 lines added to cont_slot0_descr + arrow_join_return helper.",
+  "id": "fz-ul4.27.22.6",
+  "labels": [],
+  "parent": "fz-ul4.27.22",
+  "priority": 2,
+  "status": "open",
+  "title": "fz-cps-seam.return: closure body return-slot narrowing via typer cont_slot0_descr",
+  "type": "task",
+  "updated_at": "2026-05-14T16:03:51Z"
+}
