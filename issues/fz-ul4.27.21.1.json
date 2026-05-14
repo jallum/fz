@@ -11,9 +11,15 @@
   "id": "fz-ul4.27.21.1",
   "labels": [],
   "parent": "fz-ul4.27.21",
+  "comments": [
+    {
+      "text": "2026-05-14 — verified already-landed via fz-ul4.27.22.3. All three\ntarget sites use typed sigs in tree:\n\n  - build_fn_signature cont fn branch (src/ir_codegen.rs:946):\n      sig.params.push(AbiParam::new(param_reprs[0].cl_type()));\n    Comment cites fz-ul4.27.22.3. No `let _ = param_reprs;`.\n\n  - compile_fn cont-fn entry harness (line ~3283):\n      b.append_block_param(entry_cl, my_param_reprs[0].cl_type());\n    No Tagged coerce.\n\n  - Term::Return native branch (line ~3675):\n      let val_typed = coerce_to(.., val, from, my_return_repr);\n      sig.params.push(AbiParam::new(my_return_repr.cl_type()));\n    Then return_call_indirect with val_typed.\n\nVisible acceptance: fixtures/add1.clif add1_s2 has no ishl_imm/bor_imm\nbetween `iadd` and `return_call_indirect`. k_2_s3 has @abi\n`(RawInt) -\u003e Tagged` with no sshr at entry.\n\nThe May 13 soundness gap that blocked the two prior attempts is\nclosed by fz-3zx (Kleene LFP outer fixpoint over typer specs) +\nfz-ntz (tagged_return_fns transitive closure). Cont keys and\nproducer return reprs now agree by construction.\n\nClosing as already-landed.",
+      "timestamp": "2026-05-14T15:21:32Z"
+    }
+  ],
   "priority": 2,
   "status": "pending",
   "title": "fz-cps-narrow.1: result-param type narrowing at cont seam",
   "type": "task",
-  "updated_at": "2026-05-14T01:06:31Z"
+  "updated_at": "2026-05-14T15:21:32Z"
 }
