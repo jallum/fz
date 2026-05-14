@@ -1,5 +1,6 @@
 ; fn main
     ;   @spec   main() -> _
+    ;   @key    []
     ;   @abi    () -> Tagged
 function u0:0(i64) -> i64 tail {
     sig0 = (i64, i64, i64) -> i64 tail
@@ -23,6 +24,7 @@ block0(v0: i64):
 
 ; fn lambda_3
     ;   @spec   lambda_3(any, any, any) -> int | float
+    ;   @key    [any, any, any]
     ;   @abi    (Tagged, Tagged, Tagged) -> Tagged
 function u0:0(i64, i64, i64) -> i64 tail {
     sig0 = (i64) -> f64 system_v
@@ -96,6 +98,7 @@ block5:
 
 ; fn k_5
     ;   @spec   k_5(any) -> nil
+    ;   @key    [any]
     ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64) system_v
@@ -112,6 +115,7 @@ function u0:0(i64, i64) -> i64 tail {
 
 ; fn add_to_s6
     ;   @spec   add_to(10, 20) -> (any, any, any) -> any
+    ;   @key    [10, 20]
     ;   @abi    (RawInt, RawInt) -> Tagged
 function u0:0(i64, i64, i64) -> i64 tail {
     sig0 = (i32, i32) -> i64 system_v
@@ -138,6 +142,7 @@ function u0:0(i64, i64, i64) -> i64 tail {
 
 ; fn apply1_s7
     ;   @spec   apply1((any, any, any) -> any, 12) -> _
+    ;   @key    [(any, any, any) -> any, 12]
     ;   @abi    (Tagged, RawInt) -> Tagged
 function u0:0(i64, i64, i64) -> i64 tail {
     sig0 = (i64, i64, i64) -> i64 tail
@@ -151,6 +156,7 @@ function u0:0(i64, i64, i64) -> i64 tail {
 
 ; fn apply1_s8
     ;   @spec   apply1(any, 12) -> _
+    ;   @key    [any, 12]
     ;   @abi    (Tagged, RawInt) -> Tagged
 function u0:0(i64, i64, i64) -> i64 tail {
     sig0 = (i64, i64, i64) -> i64 tail
@@ -164,6 +170,7 @@ function u0:0(i64, i64, i64) -> i64 tail {
 
 ; fn lambda_3_s9
     ;   @spec   lambda_3(10, 20, any) -> int | float
+    ;   @key    [10, 20, any]
     ;   @abi    (Tagged, Tagged, Tagged) -> Tagged
 function u0:0(i64, i64, i64) -> i64 tail {
     sig0 = (i64) -> f64 system_v
@@ -212,6 +219,7 @@ block2:
 
 ; fn k_4_s10
     ;   @spec   k_4((any, any, any) -> any) -> _
+    ;   @key    [(any, any, any) -> any]
     ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64, i64, i64) -> i64 tail

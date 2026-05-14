@@ -1,5 +1,6 @@
 ; fn child
     ;   @spec   child() -> any
+    ;   @key    []
     ;   @abi    () -> Tagged
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64, i64) -> i64 system_v
@@ -20,6 +21,7 @@ block0(v0: i64, v1: i64):
 
 ; fn main
     ;   @spec   main() -> _
+    ;   @key    []
     ;   @abi    () -> Tagged
 function u0:0(i64) -> i64 tail {
     sig0 = (i32) -> i64 system_v
@@ -59,6 +61,7 @@ block0(v0: i64):
 
 ; fn k_receive_3
     ;   @spec   k_receive_3(any) -> nil
+    ;   @key    [any]
     ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64) system_v
@@ -75,6 +78,7 @@ function u0:0(i64, i64) -> i64 tail {
 
 ; fn fz_spawn_thunk_s4
     ;   @spec   fz_spawn_thunk(() -> any) -> _
+    ;   @key    [() -> any]
     ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64, i64) -> i64 tail

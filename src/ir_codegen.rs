@@ -398,6 +398,7 @@ pub fn ir_text_record_take() -> Vec<(String, String)> {
 fn build_typer_header(
     f: &crate::fz_ir::FnIr,
     ft: &crate::ir_typer::FnTypes,
+    spec_key: &[crate::types::Descr],
     param_reprs: &[ArgRepr],
     return_repr: ArgRepr,
 ) -> String {
@@ -431,9 +432,12 @@ fn build_typer_header(
         }
     };
     let codegen_params: Vec<String> = param_reprs.iter().map(|r| codegen_repr(r).to_string()).collect();
+    let key_params: Vec<String> = spec_key.iter().map(|d| format!("{}", d)).collect();
     let mut out = String::new();
     let _ = writeln!(out, ";   @spec   {}({}) -> {}",
         f.name, typer_params.join(", "), return_str);
+    let _ = writeln!(out, ";   @key    [{}]",
+        key_params.join(", "));
     let _ = writeln!(out, ";   @abi    ({}) -> {}",
         codegen_params.join(", "), codegen_repr(&return_repr));
     out
@@ -2414,7 +2418,7 @@ pub fn compile_with_backend<B: Backend>(
             if let Some(v) = c.borrow_mut().as_mut() {
                 let raw = ctx.func.display().to_string();
                 let header = build_typer_header(
-                    f, ft, &param_reprs[sid], return_reprs[sid],
+                    f, ft, &spec_keys[sid].1, &param_reprs[sid], return_reprs[sid],
                 );
                 let annotated = VALUE_DESCR_RECORD.with(|vd| {
                     let b = vd.borrow();

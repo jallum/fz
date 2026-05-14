@@ -1,5 +1,6 @@
 ; fn neg
     ;   @spec   neg(any) -> int | float
+    ;   @key    [any]
     ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64, i64) -> i64 tail {
     sig0 = (i64) -> f64 system_v
@@ -44,6 +45,7 @@ block2:
 
 ; fn main
     ;   @spec   main() -> _
+    ;   @key    []
     ;   @abi    () -> Tagged
 function u0:0(i64) -> i64 tail {
     sig0 = (i32) -> i64 system_v
@@ -70,6 +72,7 @@ block0(v0: i64):
 
 ; fn k_6
     ;   @spec   k_6(any) -> _
+    ;   @key    [any]
     ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64) system_v
@@ -101,6 +104,7 @@ function u0:0(i64, i64) -> i64 tail {
 
 ; fn k_7
     ;   @spec   k_7(any) -> _
+    ;   @key    [any]
     ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64) system_v
@@ -136,6 +140,7 @@ function u0:0(i64, i64) -> i64 tail {
 
 ; fn k_8
     ;   @spec   k_8(any) -> nil
+    ;   @key    [any]
     ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64) system_v
@@ -152,6 +157,7 @@ function u0:0(i64, i64) -> i64 tail {
 
 ; fn double_s9
     ;   @spec   double(21) -> int
+    ;   @key    [21]
     ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64, i64) -> i64 tail {
     sig0 = (i64, i64) -> i64 tail
@@ -168,6 +174,7 @@ function u0:0(i64, i64, i64) -> i64 tail {
 
 ; fn neg_s10
     ;   @spec   neg(5) -> int
+    ;   @key    [5]
     ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64, i64) -> i64 tail {
     sig0 = (i64, i64) -> i64 tail
@@ -184,6 +191,7 @@ function u0:0(i64, i64, i64) -> i64 tail {
 
 ; fn neg_s11
     ;   @spec   neg(7) -> int
+    ;   @key    [7]
     ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64, i64) -> i64 tail {
     sig0 = (i64, i64) -> i64 tail
@@ -200,6 +208,7 @@ function u0:0(i64, i64, i64) -> i64 tail {
 
 ; fn apply2_s12
     ;   @spec   apply2((any) -> any, 21) -> _
+    ;   @key    [(any) -> any, 21]
     ;   @abi    (Tagged, RawInt) -> Tagged
 function u0:0(i64, i64, i64) -> i64 tail {
     sig0 = (i64, i64, i64) -> i64 tail
@@ -213,6 +222,7 @@ function u0:0(i64, i64, i64) -> i64 tail {
 
 ; fn apply2_s13
     ;   @spec   apply2((any) -> any, 7) -> _
+    ;   @key    [(any) -> any, 7]
     ;   @abi    (Tagged, RawInt) -> Tagged
 function u0:0(i64, i64, i64) -> i64 tail {
     sig0 = (i64, i64, i64) -> i64 tail
@@ -226,6 +236,7 @@ function u0:0(i64, i64, i64) -> i64 tail {
 
 ; fn compose_s14
     ;   @spec   compose((any) -> any, (any) -> any, 5) -> _
+    ;   @key    [(any) -> any, (any) -> any, 5]
     ;   @abi    (Tagged, Tagged, RawInt) -> Tagged
 function u0:0(i64, i64, i64, i64) -> i64 tail {
     sig0 = (i64, i64, i64) -> i64 tail
@@ -258,6 +269,7 @@ function u0:0(i64, i64, i64, i64) -> i64 tail {
 
 ; fn k_5_s15
     ;   @spec   k_5(any, (any) -> any, (any) -> any, 5) -> _
+    ;   @key    [any, (any) -> any, (any) -> any, 5]
     ;   @abi    (Tagged, Tagged, Tagged, RawInt) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64, i64, i64) -> i64 tail
@@ -274,6 +286,7 @@ function u0:0(i64, i64) -> i64 tail {
 
 ; fn k_5_s16
     ;   @spec   k_5(int | float, any, any, any) -> _
+    ;   @key    [int | float, any, any, any]
     ;   @abi    (Tagged, Tagged, Tagged, Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64, i64, i64) -> i64 tail
@@ -289,6 +302,7 @@ function u0:0(i64, i64) -> i64 tail {
 
 ; fn k_5_s17
     ;   @spec   k_5(int, (any) -> any, (any) -> any, 5) -> _
+    ;   @key    [int, (any) -> any, (any) -> any, 5]
     ;   @abi    (RawInt, Tagged, Tagged, RawInt) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64, i64, i64) -> i64 tail

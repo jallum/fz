@@ -1,5 +1,6 @@
 ; fn main
     ;   @spec   main() -> _
+    ;   @key    []
     ;   @abi    () -> Tagged
 function u0:0(i64) -> i64 tail {
     sig0 = (i64, i64, i64) -> i64 tail
@@ -23,6 +24,7 @@ block0(v0: i64):
 
 ; fn k_2
     ;   @spec   k_2(any) -> nil
+    ;   @key    [any]
     ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64) system_v
@@ -39,6 +41,7 @@ function u0:0(i64, i64) -> i64 tail {
 
 ; fn count_s3
     ;   @spec   count(100000, 0) -> 0
+    ;   @key    [100000, 0]
     ;   @abi    (RawInt, RawInt) -> Tagged
 function u0:0(i64, i64, i64) -> i64 tail {
     sig0 = (i64, i64, i64) -> i64 tail
@@ -78,6 +81,7 @@ block3:
 
 ; fn count_s4
     ;   @spec   count(int | float, int | float) -> int | float
+    ;   @key    [int | float, int | float]
     ;   @abi    (Tagged, Tagged) -> Tagged
 function u0:0(i64, i64, i64) -> i64 tail {
     sig0 = (i64, i64) -> i64 system_v

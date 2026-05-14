@@ -1,5 +1,6 @@
 ; fn main
     ;   @spec   main() -> _
+    ;   @key    []
     ;   @abi    () -> Tagged
 function u0:0(i64) -> i64 tail {
     sig0 = (i64, i64) -> i64 tail
@@ -22,6 +23,7 @@ block0(v0: i64):
 
 ; fn add1_s2
     ;   @spec   add1(41) -> int
+    ;   @key    [41]
     ;   @abi    (RawInt) -> RawInt
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64, i64) -> i64 tail
@@ -37,6 +39,7 @@ function u0:0(i64, i64) -> i64 tail {
 
 ; fn k_2_s3
     ;   @spec   k_2(int) -> nil
+    ;   @key    [int]
     ;   @abi    (RawInt) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64) system_v
