@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-14T21:01:06Z",
+  "description": "First atomic step of the closure-lit epic. Add a singleton closure type to Descr, mirroring how int_lit / atom_lit / str_lit / float_lit work for first-order singletons.\n\n## Scope\n\nIn src/types.rs:\n\n- Add a Descr representation for closure_lit(FnId, capture_descrs: Vec\u003cDescr\u003e). Stored as a tagged arrow clause in the funcs vector (so existing arrow machinery sees it as an arrow), plus the (FnId, captures) tag.\n- Constructor: Descr::closure_lit(fn_id: FnId, captures: Vec\u003cDescr\u003e) -\u003e Descr.\n- Equality / Hash: by (FnId, captures).\n- is_subtype: closure_lit(F, K1) ⊆ closure_lit(F, K2) iff each K1[i] ⊆ K2[i]. closure_lit(F, K) ⊆ arrow(any..., any) always.\n- union: closure_lit(F, K) ∪ closure_lit(F, K') with same F → closure_lit(F, K ∪ K' elementwise). Different F → keep as multi-element union (do NOT collapse to plain arrow yet — that loses precision needed for 7d's union-of-singletons path).\n- intersect: closure_lit(F, K) ∩ closure_lit(F, K') → closure_lit(F, K ∩ K') elementwise. Cross-F → none.\n- widen: widen capture Descrs elementwise.\n- render: \\`closure_lit(F\u003cfn_id\u003e, [cap_descrs...])\\` (or similar concise form for fz dump).\n\n## Tests\n\nUnit tests in types.rs (mirror existing int_lit/atom_lit tests):\n\n- closure_lit_subtype_self\n- closure_lit_subtype_arrow_widening\n- closure_lit_union_same_fn_collapses\n- closure_lit_union_different_fns_stays_split\n- closure_lit_intersect_same_fn\n- closure_lit_intersect_different_fns_is_none\n- closure_lit_widen_captures\n- closure_lit_render\n\n## Acceptance\n\n- cargo test --workspace green; no fixture or behavior change (variant unused outside tests).\n- Variant addition compiles cleanly with warnings-as-errors.\n\n## Out of scope\n\n- Anything that produces or consumes closure_lit (typer, codegen). Pure data-type ticket.\n\n## UNBLOCKS\n\n- fz-cps-seam.resolve-return: closure-aware return resolution helper",
+  "id": "fz-ul4.27.22.8",
+  "labels": [],
+  "parent": "fz-ul4.27.22",
+  "priority": 3,
+  "status": "open",
+  "title": "fz-cps-seam.closure-lit: Descr::closure_lit variant + Descr ops",
+  "type": "task",
+  "updated_at": "2026-05-14T21:01:06Z"
+}
