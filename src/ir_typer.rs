@@ -588,244 +588,6 @@ pub fn type_module(m: &Module) -> ModuleTypes {
         }
     }
 
-    // Dead any-key drop (existing logic, lifted out of the old
-    // converged-fixpoint branch).
-    {
-        {
-            // fz-ul4.29.12.6 — drop dead any-keys. A fn's any-key body
-            // is dead iff *no* compiled spec's body anywhere in the
-            // module queries that fn with `[any; n_params]`. Walk every
-            // registered spec's body (under its own per-spec env) and
-            // collect the callee queries it would emit. If a spec's
-            // body queries F with `[any; n]`, F's any-key is reachable
-            // and must stay. Otherwise drop.
-            //
-            // This is stricter than relying on the LUB-aggregated
-            // `callsite_keys`: earlier fixed-point iterations may have
-            // registered narrow specs whose bodies, when compiled,
-            // query callees with `[any; n]` even though the converged
-            // LUB walk doesn't surface those queries. Walking specs
-            // directly catches them.
-            let mut queried: HashMap<FnId, std::collections::HashSet<Vec<Descr>>> =
-                HashMap::new();
-            for ((fid, key), ft) in &specs {
-                let Some(&idx) = idx_of.get(fid) else { continue; };
-                let f = &m.fns[idx];
-                let _ = key; // entry param Descrs already baked into ft.block_envs
-
-                // fz-ul4.29.10.3 — escape analysis. A closure-var (one
-                // with fn_constants set) is "resolvable" iff every use
-                // is at a safe slot: closure operand of CallClosure /
-                // TailCallClosure (resolves via fn_constants and is
-                // rewritten by `rewrite_known_target_closures`), or arg
-                // slot of `Term::Call` / `Term::TailCall` to a known
-                // callee (propagates fn_constants into the callee's
-                // entry param). Anything else is an escape. Resolvable
-                // vars' originating MakeClosure skips registering F's
-                // any-key below — that's what lets .29.12.6 drop it.
-                let closure_vars: std::collections::HashSet<Var> =
-                    ft.fn_constants.keys().copied().collect();
-                let mut resolvable = closure_vars.clone();
-                let mut buf: Vec<Var> = Vec::new();
-                for b in &f.blocks {
-                    for stmt in &b.stmts {
-                        let Stmt::Let(_, prim) = stmt;
-                        buf.clear();
-                        prim_var_uses(prim, &mut buf);
-                        for v in &buf {
-                            if closure_vars.contains(v) { resolvable.remove(v); }
-                        }
-                    }
-                    match &b.terminator {
-                        Term::Goto(_, args) => {
-                            for a in args {
-                                if closure_vars.contains(a) { resolvable.remove(a); }
-                            }
-                        }
-                        Term::If(cond, _, _) => {
-                            if closure_vars.contains(cond) { resolvable.remove(cond); }
-                        }
-                        Term::Return(v) | Term::Halt(v) => {
-                            if closure_vars.contains(v) { resolvable.remove(v); }
-                        }
-                        Term::Call { callee, args, continuation } => {
-                            let receiver_known = idx_of.contains_key(callee);
-                            if !receiver_known {
-                                for a in args {
-                                    if closure_vars.contains(a) { resolvable.remove(a); }
-                                }
-                            }
-                            for cv in &continuation.captured {
-                                if closure_vars.contains(cv) { resolvable.remove(cv); }
-                            }
-                        }
-                        Term::TailCall { callee, args } => {
-                            let receiver_known = idx_of.contains_key(callee);
-                            if !receiver_known {
-                                for a in args {
-                                    if closure_vars.contains(a) { resolvable.remove(a); }
-                                }
-                            }
-                        }
-                        Term::CallClosure { args, continuation, .. } => {
-                            // closure slot is safe; args slots ARE
-                            // escapes (lambda-body propagation is out
-                            // of scope — closure args don't pick up
-                            // fn_constants in the lambda's spec).
-                            for a in args {
-                                if closure_vars.contains(a) { resolvable.remove(a); }
-                            }
-                            for cv in &continuation.captured {
-                                if closure_vars.contains(cv) { resolvable.remove(cv); }
-                            }
-                        }
-                        Term::TailCallClosure { args, .. } => {
-                            for a in args {
-                                if closure_vars.contains(a) { resolvable.remove(a); }
-                            }
-                        }
-                        Term::Receive { continuation } => {
-                            for cv in &continuation.captured {
-                                if closure_vars.contains(cv) { resolvable.remove(cv); }
-                            }
-                        }
-                    }
-                }
-
-                for b in &f.blocks {
-                    let mut env = ft.block_envs.get(&b.id).cloned().unwrap_or_default();
-                    for stmt in &b.stmts {
-                        let Stmt::Let(v, prim) = stmt;
-                        env.insert(*v, type_prim(prim, &env, m));
-                    }
-                    // fz-ul4.29.10.2 — known-target CallClosure /
-                    // TailCallClosure registers the lambda's narrow spec
-                    // exactly like a direct call.
-                    let (callee_id, callee_args): (Option<FnId>, &[Var]) = match &b.terminator {
-                        Term::Call { callee, args, .. } => (Some(*callee), args.as_slice()),
-                        Term::TailCall { callee, args } => (Some(*callee), args.as_slice()),
-                        Term::CallClosure { closure, args, .. }
-                        | Term::TailCallClosure { closure, args } => {
-                            match ft.fn_constants.get(closure).copied() {
-                                Some(f) => (Some(f), args.as_slice()),
-                                None => (None, &[]),
-                            }
-                        }
-                        _ => (None, &[]),
-                    };
-                    if let Some(callee) = callee_id {
-                        if let Some(&j) = idx_of.get(&callee) {
-                            let n_params = m.fns[j].block(m.fns[j].entry).params.len();
-                            let mut q: Vec<Descr> = callee_args.iter().map(|av|
-                                env.get(av).cloned().unwrap_or_else(Descr::any)
-                            ).collect();
-                            while q.len() < n_params { q.push(Descr::any()); }
-                            queried.entry(callee).or_default().insert(q);
-                        }
-                    }
-                    // Cont sites mirror `cont_input_key` shape.
-                    let cont = match &b.terminator {
-                        Term::Call { continuation, .. } => Some(continuation),
-                        Term::CallClosure { continuation, .. } => Some(continuation),
-                        Term::Receive { continuation } => Some(continuation),
-                        _ => None,
-                    };
-                    let slot0 = match &b.terminator {
-                        Term::Call { callee, args, .. } => {
-                            let arg_descrs: Vec<Descr> = args.iter().map(|av|
-                                env.get(av).cloned().unwrap_or_else(Descr::any)
-                            ).collect();
-                            // fz-ul4.27.21.4: follow Term::TailCall too —
-                            // must match the registration-side computation
-                            // (lines ~221-246) or the dead-key drop pass
-                            // drops keys that are still queried.
-                            let mut visiting: HashSet<(FnId, Vec<Descr>)> = HashSet::new();
-                            effective_return_descr(
-                                &(*callee, arg_descrs),
-                                m,
-                                &specs,
-                                &mut visiting,
-                            )
-                        }
-                        _ => Descr::any(),
-                    };
-                    if let Some(c) = cont {
-                        if let Some(&j) = idx_of.get(&c.fn_id) {
-                            let n_params = m.fns[j].block(m.fns[j].entry).params.len();
-                            let mut q: Vec<Descr> = vec![Descr::any(); n_params];
-                            if !q.is_empty() { q[0] = slot0; }
-                            for (k, cv) in c.captured.iter().enumerate() {
-                                if let Some(p) = q.get_mut(k + 1) {
-                                    *p = env.get(cv).cloned().unwrap_or_else(Descr::any);
-                                }
-                            }
-                            queried.entry(c.fn_id).or_default().insert(q);
-                        }
-                    }
-                    // MakeClosure: capture Descrs + [any; n_args].
-                    // fz-ul4.29.10.3 — skip when the closure-var is
-                    // "resolvable" (escape analysis above), since the
-                    // IR rewrite turns its CallClosure consumers into
-                    // direct Calls that register narrow specs.
-                    for stmt in &b.stmts {
-                        let Stmt::Let(v, prim) = stmt;
-                        if let Prim::MakeClosure(lam_fn_id, captured) = prim {
-                            if captured.is_empty() && resolvable.contains(v) {
-                                continue;
-                            }
-                            if let Some(&j) = idx_of.get(lam_fn_id) {
-                                let n_params = m.fns[j].block(m.fns[j].entry).params.len();
-                                let mut q: Vec<Descr> = vec![Descr::any(); n_params];
-                                for (i, cv) in captured.iter().enumerate() {
-                                    if let Some(p) = q.get_mut(i) {
-                                        *p = env.get(cv).cloned().unwrap_or_else(Descr::any);
-                                    }
-                                }
-                                queried.entry(*lam_fn_id).or_default().insert(q);
-                            }
-                        }
-                    }
-                }
-            }
-
-            // fz-ul4.29.12.6 — drop dead any-keys. A fn's any-key body
-            // is dead iff every IR callsite of that fn queries with a
-            // strictly-narrower-than-any input-Descr tuple. We detect
-            // this by inspecting `queried`:
-            //   * `callsite_keys[F]` is empty → F has no IR caller →
-            //     F is entry-point-like (main, top-level driver, or
-            //     a Runtime::spawn target). The runtime's
-            //     `schema_for(F)` / `run_internal(F)` paths still
-            //     index `schemas[F.0]` directly, so the any-key must
-            //     stay.
-            //   * `[any; n_params(F)]` ∈ callsite_keys[F] → at least
-            //     one callsite genuinely needs the any-key body
-            //     (typically a Cont/CallClosure/Receive site whose
-            //     slot 0 = `any` AND captures are all `any`). Keep.
-            //   * Otherwise the any-key is dead: every callsite has
-            //     typed coverage post-.29.12.1-5. Drop.
-            //
-            // The drop saves the any-key body's compilation (codegen
-            // skips sentinel SpecIds in the per-spec compile loop) and
-            // its slot in `module_types.specs`. The SpecRegistry slot
-            // at FnId.0 becomes a sentinel pad — only the per-spec
-            // path that goes through `spec_registry.resolve` is used
-            // for non-entry fns, and `resolve` never returns sentinel
-            // SpecIds.
-            for f in &m.fns {
-                let n_params = f.block(f.entry).params.len();
-                let any_key: Vec<Descr> = vec![Descr::any(); n_params];
-                let keys = queried.get(&f.id);
-                let has_callers = keys.map(|s| !s.is_empty()).unwrap_or(false);
-                let any_in_callsites = keys
-                    .map(|s| s.contains(&any_key))
-                    .unwrap_or(false);
-                if has_callers && !any_in_callsites {
-                    specs.remove(&(f.id, any_key));
-                }
-            }
-        }
-    }
 
     ModuleTypes { by_fn_idx, specs }
 }
@@ -960,83 +722,108 @@ fn walk_spec_for_discovery(
 
         // Cont keying. Slot 0 = callee's effective return (Call only);
         // any (CallClosure / Receive). Slots 1+ = per-spec captures.
+        //
+        // fz-vw4.5d — for Term::Call, defer the cont push when the
+        // callee's specific spec hasn't been registered yet. The
+        // fallback `Descr::any()` that effective_return_descr returns
+        // for unregistered specs would pollute the cont's input key
+        // with a spurious `[any, ...]` spec alongside the narrower one
+        // that lands a closure-pass iteration later. The pass loops
+        // until convergence, so deferral is safe.
         let cont = match &b.terminator {
             Term::Call { continuation, .. } => Some(continuation),
             Term::CallClosure { continuation, .. } => Some(continuation),
             Term::Receive { continuation } => Some(continuation),
             _ => None,
         };
-        let slot0_descr: Descr = match &b.terminator {
+        let slot0_descr: Option<Descr> = match &b.terminator {
             Term::Call { callee, args, .. } => {
                 let arg_descrs: Vec<Descr> = args.iter().map(|av|
                     env.get(av).cloned().unwrap_or_else(Descr::any)
                 ).collect();
-                let mut visiting: HashSet<(FnId, Vec<Descr>)> = HashSet::new();
-                effective_return_descr(&(*callee, arg_descrs), m, specs, &mut visiting)
+                let callee_key = (*callee, arg_descrs);
+                if !specs.contains_key(&callee_key) {
+                    None
+                } else {
+                    let mut visiting: HashSet<(FnId, Vec<Descr>)> = HashSet::new();
+                    Some(effective_return_descr(&callee_key, m, specs, &mut visiting))
+                }
             }
-            _ => Descr::any(),
+            Term::CallClosure { closure, args, .. } => {
+                // fz-vw4.5d — if fn_constants resolves the closure
+                // operand, treat like Term::Call for slot-0 narrowing.
+                // Without this, k_5-style cont seams (where slot 0 is
+                // the result of a resolved CallClosure) widen to `any`,
+                // which then propagates as an unwanted [any]-key push
+                // for the *resolved* TailCallClosure target inside the
+                // cont body.
+                if let Some(&target) = caller_ft.fn_constants.get(closure) {
+                    let target_fn = m.fn_by_id(target);
+                    let n_params = target_fn.block(target_fn.entry).params.len();
+                    let mut arg_descrs: Vec<Descr> = args.iter().map(|av|
+                        env.get(av).cloned().unwrap_or_else(Descr::any)
+                    ).collect();
+                    while arg_descrs.len() < n_params { arg_descrs.push(Descr::any()); }
+                    arg_descrs.truncate(n_params);
+                    let callee_key = (target, arg_descrs);
+                    if !specs.contains_key(&callee_key) {
+                        None
+                    } else {
+                        let mut visiting: HashSet<(FnId, Vec<Descr>)> = HashSet::new();
+                        Some(effective_return_descr(&callee_key, m, specs, &mut visiting))
+                    }
+                } else {
+                    Some(Descr::any())
+                }
+            }
+            Term::Receive { .. } => Some(Descr::any()),
+            _ => None,
         };
-        if let Some(cont) = cont {
+        if let (Some(cont), Some(slot0)) = (cont, slot0_descr) {
             if let Some(&j) = idx_of.get(&cont.fn_id) {
                 let cont_fn = &m.fns[j];
                 let n_params = cont_fn.block(cont_fn.entry).params.len();
                 let mut key: Vec<Descr> = vec![Descr::any(); n_params];
-                if !key.is_empty() { key[0] = slot0_descr.clone(); }
+                if !key.is_empty() { key[0] = slot0; }
                 for (k, cvv) in cont.captured.iter().enumerate() {
                     if let Some(p) = key.get_mut(k + 1) {
                         *p = env.get(cvv).cloned().unwrap_or_else(Descr::any);
                     }
                 }
                 let key = maybe_widen(key, cont.fn_id);
+                // fz-vw4.5d — propagate fn_constants from captured
+                // vars into the cont spec's callsite_fn_consts. The
+                // cont's entry param i+1 receives captured[i] at
+                // runtime; if the caller has fn_constants for that
+                // capture, the cont's entry param inherits it. Without
+                // this, conts that pass closures via captures lose the
+                // resolution info, and the cont's body sees an opaque
+                // closure-typed var — which forces an unwanted any-key
+                // for the closure target (step 5c gating fires).
+                let mut per_param: Vec<Option<FnId>> = vec![None; n_params];
+                // Slot 0 (the awaited value) carries no captured-side
+                // fn_constants — it comes from the callee's return.
+                for (k, cvv) in cont.captured.iter().enumerate() {
+                    if let Some(slot) = per_param.get_mut(k + 1) {
+                        *slot = caller_ft.fn_constants.get(cvv).copied();
+                    }
+                }
+                let entry_key = (cont.fn_id, key.clone());
+                match callsite_fn_consts.get(&entry_key) {
+                    None => { callsite_fn_consts.insert(entry_key.clone(), per_param); }
+                    Some(prev) => {
+                        let merged: Vec<Option<FnId>> = prev.iter().zip(per_param.iter())
+                            .map(|(a, b)| if a == b { *a } else { None })
+                            .collect();
+                        callsite_fn_consts.insert(entry_key.clone(), merged);
+                    }
+                }
                 push_key(pending, cont.fn_id, key);
             }
         }
     }
 }
 
-/// fz-ul4.29.10.3 — every Var referenced by `prim` (read-side; the
-/// Let-bound LHS is not included). Used by escape analysis: any Var
-/// appearing in a Prim position is an escape, since no Prim has a
-/// "safe" slot — Prims build new values that consume their operands.
-fn prim_var_uses(prim: &Prim, out: &mut Vec<Var>) {
-    use crate::fz_ir::BitSizeIr;
-    match prim {
-        Prim::Const(_) => {}
-        Prim::BinOp(_, a, b) => { out.push(*a); out.push(*b); }
-        Prim::UnOp(_, a) => { out.push(*a); }
-        Prim::AllocStruct(_, args)
-        | Prim::Builtin(_, args)
-        | Prim::MakeTuple(args)
-        | Prim::MakeVec(_, args) => { out.extend(args.iter().copied()); }
-        Prim::ListCons(h, t) => { out.push(*h); out.push(*t); }
-        Prim::ListHead(v) | Prim::ListTail(v) | Prim::ListIsNil(v)
-        | Prim::TupleField(v, _) | Prim::BitReaderInit(v)
-        | Prim::BitReaderDone(v) => { out.push(*v); }
-        Prim::MakeList(els, tail) => {
-            out.extend(els.iter().copied());
-            if let Some(t) = tail { out.push(*t); }
-        }
-        Prim::MakeClosure(_, captured) => { out.extend(captured.iter().copied()); }
-        Prim::MakeMap(entries) => {
-            for (k, v) in entries { out.push(*k); out.push(*v); }
-        }
-        Prim::MapUpdate(base, entries) => {
-            out.push(*base);
-            for (k, v) in entries { out.push(*k); out.push(*v); }
-        }
-        Prim::MapGet(m, k) => { out.push(*m); out.push(*k); }
-        Prim::MakeBitstring(fields) => {
-            for f in fields {
-                out.push(f.value);
-                if let Some(BitSizeIr::Var(v)) = &f.size { out.push(*v); }
-            }
-        }
-        Prim::BitReadField { reader, size, .. } => {
-            out.push(*reader);
-            if let Some(BitSizeIr::Var(v)) = size { out.push(*v); }
-        }
-    }
-}
 
 /// fz-ul4.29.10.3 — rewrite `Term::CallClosure(v, args, cont)` →
 /// `Term::Call(F, args, cont)` (and `TailCallClosure` → `TailCall`)

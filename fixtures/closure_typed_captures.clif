@@ -7,15 +7,15 @@ function u0:0(i64) -> i64 tail {
     sig1 = (i64, i64) -> i64 tail
     sig2 = (i32, i32) -> i64 system_v
     fn0 = colocated u0:47 sig0
-    fn1 = colocated u0:51 sig1
+    fn1 = colocated u0:50 sig1
     fn2 = u0:31 sig2
 
 block0(v0: i64):
     v1 = iconst.i64 10                  ; @26:23
     v2 = iconst.i64 20                  ; @26:27
-    v3 = iconst.i32 10                  ; @26:16
+    v3 = iconst.i32 9                   ; @26:16
     v4 = iconst.i32 1                   ; @26:16
-    v5 = call fn2(v3, v4)               ; @26:16  v3 = 10, v4 = 1
+    v5 = call fn2(v3, v4)               ; @26:16  v3 = 9, v4 = 1
     v6 = func_addr.i64 fn1              ; @26:16
     store notrap aligned v6, v5+16      ; @26:16
     store notrap aligned v0, v5+24      ; @26:16
@@ -48,7 +48,7 @@ function u0:0(i64, i64, i64) -> i64 tail {
     sig1 = (i64, i64, i64) -> i64 tail
     sig2 = (i64, i64) -> i64 tail
     fn0 = u0:31 sig0
-    fn1 = colocated u0:50 sig1
+    fn1 = colocated u0:49 sig1
 
     block0(v0: i64, v1: i64, v2: i64):    ;; v0 :: 10, v1 :: 20
     v3 = iconst.i32 3                   ; @22:32
@@ -80,21 +80,7 @@ function u0:0(i64, i64, i64) -> i64 tail {
     return_call_indirect sig0, v5(v4, v0, v2) ; @23:22
 }
 
-; fn apply1_s8
-    ;   @spec   apply1(any, 12) -> _
-    ;   @key    [any, 12]
-    ;   @abi    (Tagged, RawInt) -> Tagged
-function u0:0(i64, i64, i64) -> i64 tail {
-    sig0 = (i64, i64, i64) -> i64 tail
-
-    block0(v0: i64, v1: i64, v2: i64):    ;; v0 :: any
-    v3 = ishl_imm v1, 3                 ; @23:22
-    v4 = bor_imm v3, 1                  ; @23:22
-    v5 = load.i64 notrap aligned v0+16  ; @23:22
-    return_call_indirect sig0, v5(v4, v0, v2) ; @23:22
-}
-
-; fn lambda_3_s9
+; fn lambda_3_s8
     ;   @spec   lambda_3(10, 20, any) -> int | float
     ;   @key    [10, 20, any]
     ;   @abi    (Tagged, Tagged, Tagged) -> Tagged
@@ -143,7 +129,7 @@ block2:
     return_call_indirect sig3, v26(v15, v2)
 }
 
-; fn k_4_s10
+; fn k_4_s9
     ;   @spec   k_4((any, any, any) -> any) -> _
     ;   @key    [(any, any, any) -> any]
     ;   @abi    (Tagged) -> Tagged

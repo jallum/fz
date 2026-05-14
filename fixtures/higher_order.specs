@@ -10,6 +10,18 @@
 ;     blk0 Return Var(3)    :: int
 ;     blk1 Halt Var(1)      :: :a0
 
+; spec double(1) #fn=0
+;   key:    [int]
+;   return: int
+;   vars:
+;     Var(0) :: int
+;     Var(1) :: :a0
+;     Var(2) :: 2
+;     Var(3) :: int
+;   exits:
+;     blk0 Return Var(3)    :: int
+;     blk1 Halt Var(1)      :: :a0
+
 ; spec neg(1) #fn=1
 ;   key:    [5]
 ;   return: int
@@ -94,15 +106,18 @@
 ;     blk1 Halt Var(0)      :: :a0
 
 ; spec k_5(4) #fn=5
-;   key:    [any, (any) -> any, (any) -> any, 5]
+;   key:    [int, (any) -> any, (any) -> any, 5]
 ;   return: any
+;   fn_constants:
+;     Var(1) = double#0
+;     Var(2) = neg#1
 ;   vars:
-;     Var(0) :: any
+;     Var(0) :: int
 ;     Var(1) :: (any) -> any
 ;     Var(2) :: (any) -> any
 ;     Var(3) :: 5
 ;   exits:
-;     blk0 TailCallClosure Var(1)(Var(0))
+;     blk0 TailCallClosure Var(1)(Var(0)) [resolved=double#0]
 
 ; spec k_6(1) #fn=6
 ;   key:    [any]

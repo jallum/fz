@@ -21,17 +21,6 @@
 ;     blk0 TailCallClosure Var(0)(Var(1))
 ;     blk1 Halt Var(2)      :: :a0
 
-; spec apply1(2) #fn=1
-;   key:    [any, 12]
-;   return: any
-;   vars:
-;     Var(0) :: any
-;     Var(1) :: 12
-;     Var(2) :: :a0
-;   exits:
-;     blk0 TailCallClosure Var(0)(Var(1))
-;     blk1 Halt Var(2)      :: :a0
-
 ; spec main(0) #fn=2
 ;   key:    []
 ;   return: any
