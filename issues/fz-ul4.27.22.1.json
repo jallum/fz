@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-14T01:56:45Z",
+  "description": "First atomic step of the typed closure ABI epic. Drops the codegen-side\nforce that makes every closure_target_fns spec emit with all-Tagged\nparam_reprs / return_repr.\n\nThe force lives at src/ir_codegen.rs:2139-2143 (param_reprs) and\n~2161 (return_reprs). It rewrites every param/return in a\nclosure-target spec to ArgRepr::Tagged. The typer already produces\nnarrow specs with typed Descrs; the force is the only thing keeping\nthose typed reprs from being honored.\n\n## Acceptance (via golden CLIF diffs)\n\nRun the existing test suite. Run the golden_clif test. Expected:\n\n- Some goldens diff. The diffs should show closure-target fn bodies\n  using their typed reprs (RawInt args / returns where the typer\n  narrowed). The MakeClosure sites still store Tagged-encoded\n  captures (that's 22.2's job). The CallClosure sites still pass\n  Tagged args (22.3's job).\n\n- Therefore: this step alone may break correctness for closure-using\n  fixtures, because producer (caller) and consumer (closure body) no\n  longer agree on the seam repr. That is EXPECTED. 22.2 + 22.3 land\n  the matching caller-side changes.\n\n- The .clif files BLESS-rewrite cleanly under BLESS=1, so we can see\n  exactly which closure-target signatures changed and how.\n\n- For NON-closure fixtures (add1.fz, tail_recursion.fz — no\n  MakeClosure), the goldens should be unchanged.\n\nIf correctness breaks for ALL fixtures that use closures, that is a\ngreen light to proceed with 22.2 — the typed body sigs are exposed,\nnow we wire the caller side. If non-closure goldens change, that's a\nsignal that closure_target_fns is leaking into fns that should be\ntyped-direct only, and we have a bug to investigate first.\n\n## Out of scope\n\n- Caller-side changes (22.2 / 22.3 / 22.4).\n- Cont seam narrowing (22.4).\n- Halt-cont typing (22.5).\n\n## How to ship\n\nSingle commit. Run BLESS=1 cargo test golden_clif to record the\npost-force-drop goldens. Note in the commit message that closure-using\nfixtures may have broken correctness pending 22.2+. The intermediate\nstate is intentional and the goldens make it auditable.\n\nIf the user prefers \"no intermediate-broken-correctness commit,\" we\nland 22.1 through 22.4 together as one big commit. Smaller commits\nare cleaner if reviewers can read the per-step golden diffs.",
+  "id": "fz-ul4.27.22.1",
+  "labels": [],
+  "parent": "fz-ul4.27.22",
+  "priority": 2,
+  "status": "open",
+  "title": "fz-cps-closure.1: drop closure_target_fns all-Tagged force",
+  "type": "task",
+  "updated_at": "2026-05-14T01:56:45Z"
+}
