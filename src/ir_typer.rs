@@ -257,16 +257,11 @@ pub fn type_module(m: &Module) -> ModuleTypes {
         idx_of.insert(f.id, i);
     }
 
-    // fz-ul4.29.1: per-callsite specialization map. Seeded with the any-key
-    // specialization for every fn so closure / Spawn / Receive paths always
-    // have a fallback. The fixed point below adds entries for each distinct
-    // (callee, input-Descr-tuple) pair seen at any direct call site.
+    // fz-vw4.2: per-callsite specialization map. Specs are inserted only
+    // when a real reachability seed (entry_seeds) or a discovered callsite
+    // demands them. No phantom any-key bootstrap; orphan any-key bodies
+    // can't spawn polluting narrow specs because they're never typed.
     let mut specs: HashMap<(FnId, Vec<Descr>), FnTypes> = HashMap::new();
-    for (i, f) in m.fns.iter().enumerate() {
-        let n_params = f.block(f.entry).params.len();
-        let any_key = vec![Descr::any(); n_params];
-        specs.insert((f.id, any_key), by_fn_idx[i].clone());
-    }
 
     // fz-ul4.29.3: closure-reachable fns no longer skip narrowing —
     // dynamic-dispatch sites (CallClosure, Spawn, Receive) route through
@@ -289,18 +284,12 @@ pub fn type_module(m: &Module) -> ModuleTypes {
         for fid in scc { scc_of.insert(*fid, i); }
     }
 
-    // Per-fn pending input keys. Seeded with each fn's any-key so the
-    // SCC pass walks every any-key spec at least once for discovery
-    // (the any-key is already in `specs` from bootstrap).
+    // fz-vw4.2: pending is seeded ONLY from entry_seeds (reachability
+    // roots). Every other spec is discovered by walking already-registered
+    // spec bodies — direct callsites, fn_constants-resolved
+    // CallClosure/TailCallClosure, MakeClosure (closure-target any-keys),
+    // and Receive cont sites.
     let mut pending: HashMap<FnId, std::collections::HashSet<Vec<Descr>>> = HashMap::new();
-    for f in &m.fns {
-        let n_params = f.block(f.entry).params.len();
-        pending.entry(f.id).or_default().insert(vec![Descr::any(); n_params]);
-    }
-    // fz-vw4 step 1 — also pump entry_seeds in. Redundant under the
-    // unconditional bootstrap (every fn's any-key is already pending),
-    // but lets step 2 retire the for-every-fn seeding by flipping a
-    // single switch.
     for (fid, key) in entry_seeds(m) {
         pending.entry(fid).or_default().insert(key);
     }
@@ -356,38 +345,27 @@ pub fn type_module(m: &Module) -> ModuleTypes {
         }
     }
     let _ = scc_of;
-    // Final closure pass: re-walk every registered spec with all specs
-    // in place. effective_return_descr (used to compute cont slot0)
-    // returns `any` for specs not yet registered at walk-time — so
-    // cont keys discovered during the SCC pass may be wider than the
-    // final view. Re-walking after all specs land surfaces the
-    // narrower cont keys (and they only narrow monotonically as more
-    // specs register, so this terminates).
-    for _ in 0..16 {
-        let snapshot: Vec<(FnId, Vec<Descr>)> = specs.keys().cloned().collect();
-        let pending_before = pending.values().map(|s| s.len()).sum::<usize>();
-        for (fid, key) in &snapshot {
-            let Some(&j) = idx_of.get(fid) else { continue; };
-            let entry_key = (*fid, key.clone());
-            let caller_ft = specs.get(&entry_key).cloned().unwrap();
-            walk_spec_for_discovery(
-                &m.fns[j], &caller_ft, m, &specs,
-                &std::collections::HashSet::new(), false,
-                &mut pending, &mut callsite_fn_consts, &mut narrowed_lub,
-            );
-        }
-        let new_pending = pending.values().map(|s| s.len()).sum::<usize>();
-        if new_pending == pending_before {
-            break;
-        }
-        // Drain pending and process each new key (same shape as the
-        // late-discovery block below but inside the closure loop).
+    // fz-vw4.2 — closure-to-fixpoint. The SCC pass above is best-effort
+    // ordering; under the entry-seed model many specs are discovered
+    // *during* the walk and end up in `pending` rather than draining
+    // through their SCC. We loop: register every pending key as a spec
+    // (at its narrow Descr — no widening, the typer's job is to be as
+    // precise as it can), then re-walk every registered spec to surface
+    // further discoveries. Terminate when a full round produces no new
+    // registrations AND no new pending entries.
+    //
+    // Cap iterations as a safety bound; in practice convergence is fast
+    // since `push_key` filters keys already in specs and pending is a
+    // HashSet (duplicates collapse).
+    for _ in 0..64 {
+        // Drain pending → register new specs.
         let to_process: Vec<(FnId, Vec<Descr>)> = pending.iter_mut()
             .flat_map(|(fid, keys)| {
                 let v: Vec<Vec<Descr>> = keys.drain().collect();
                 v.into_iter().map(move |k| (*fid, k))
             })
             .collect();
+        let drained_anything = !to_process.is_empty();
         for (fid, key) in to_process {
             let Some(&j) = idx_of.get(&fid) else { continue; };
             let entry_key = (fid, key.clone());
@@ -405,41 +383,23 @@ pub fn type_module(m: &Module) -> ModuleTypes {
                 specs.insert(entry_key, ft);
             }
         }
-    }
 
-    // Late-discovery: any pending key for a fn whose SCC was already
-    // processed (because a narrow spec in a downstream SCC discovered
-    // an upstream callee key). Process with widening turned on.
-    for _ in 0..16 {
-        let mut to_process: Vec<(FnId, Vec<Descr>)> = Vec::new();
-        for (fid, keys) in pending.iter_mut() {
-            for k in keys.drain() { to_process.push((*fid, k)); }
+        // Re-walk every registered spec to find new pending keys.
+        let snapshot: Vec<(FnId, Vec<Descr>)> = specs.keys().cloned().collect();
+        for (fid, key) in &snapshot {
+            let Some(&j) = idx_of.get(fid) else { continue; };
+            let entry_key = (*fid, key.clone());
+            let caller_ft = specs.get(&entry_key).cloned().unwrap();
+            walk_spec_for_discovery(
+                &m.fns[j], &caller_ft, m, &specs,
+                &std::collections::HashSet::new(), false,
+                &mut pending, &mut callsite_fn_consts, &mut narrowed_lub,
+            );
         }
-        if to_process.is_empty() { break; }
-        for (fid, key) in to_process {
-            let Some(&j) = idx_of.get(&fid) else { continue; };
-            // Widen aggressively for late entries.
-            let widened: Vec<Descr> = key.iter().map(crate::typer::widen).collect();
-            let entry_key = (fid, widened.clone());
-            if !specs.contains_key(&entry_key) {
-                let mut ft = type_fn(&m.fns[j], m, Some(&widened));
-                if let Some(arg_consts) = callsite_fn_consts.get(&entry_key) {
-                    let entry = m.fns[j].entry;
-                    let entry_params = &m.fns[j].block(entry).params;
-                    for (slot, p) in entry_params.iter().enumerate() {
-                        if let Some(Some(fid_const)) = arg_consts.get(slot) {
-                            ft.fn_constants.insert(*p, *fid_const);
-                        }
-                    }
-                }
-                specs.insert(entry_key.clone(), ft);
-                let caller_ft = specs.get(&entry_key).cloned().unwrap();
-                walk_spec_for_discovery(
-                    &m.fns[j], &caller_ft, m, &specs,
-                    &std::collections::HashSet::new(), true,
-                    &mut pending, &mut callsite_fn_consts, &mut narrowed_lub,
-                );
-            }
+
+        let pending_empty = pending.values().all(|s| s.is_empty());
+        if !drained_anything && pending_empty {
+            break;
         }
     }
 
@@ -3023,11 +2983,10 @@ end
             .filter(|((fid, _), _)| *fid == lam.id)
             .map(|((_, k), _)| k)
             .collect();
-        // Expect: any-key + at least two distinct narrow keys (one per
-        // distinct capture Descr — int_lit(7) vs float_lit(3.5)).
-        assert!(registered_keys.len() >= 3,
-            "expected ≥3 specs for the lambda (any-key + 2 narrow), got {}: {:?}",
-            registered_keys.len(), registered_keys);
+        // fz-vw4.2: any-key is no longer unconditionally registered for
+        // every fn — it's only present when reachability demands. The
+        // two narrow specs (one per distinct capture Descr) are what
+        // codegen actually keys off; that's what this test guards.
         let narrow: Vec<&Vec<Descr>> = registered_keys.iter()
             .filter(|k| !k.iter().all(|d| d.is_equiv(&Descr::any())))
             .copied()

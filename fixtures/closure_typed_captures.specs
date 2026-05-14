@@ -60,20 +60,6 @@
 ;     blk0 Return Var(5)    :: int | float
 ;     blk1 Halt Var(3)      :: :a0
 
-; spec lambda_3(3) #fn=3
-;   key:    [any, any, any]
-;   return: int | float
-;   vars:
-;     Var(0) :: any
-;     Var(1) :: any
-;     Var(2) :: any
-;     Var(3) :: :a0
-;     Var(4) :: int | float
-;     Var(5) :: int | float
-;   exits:
-;     blk0 Return Var(5)    :: int | float
-;     blk1 Halt Var(3)      :: :a0
-
 ; spec k_4(1) #fn=4
 ;   key:    [(any, any, any) -> any]
 ;   return: any

@@ -6,8 +6,8 @@ function u0:0(i64) -> i64 tail {
     sig0 = (i64, i64, i64) -> i64 tail
     sig1 = (i64, i64) -> i64 tail
     sig2 = (i32, i32) -> i64 system_v
-    fn0 = colocated u0:48 sig0
-    fn1 = colocated u0:52 sig1
+    fn0 = colocated u0:47 sig0
+    fn1 = colocated u0:51 sig1
     fn2 = u0:31 sig2
 
 block0(v0: i64):
@@ -20,80 +20,6 @@ block0(v0: i64):
     store notrap aligned v6, v5+16      ; @26:16
     store notrap aligned v0, v5+24      ; @26:16
     return_call fn0(v1, v2, v5)         ; @26:16  v1 = 10, v2 = 20
-}
-
-; fn lambda_3
-    ;   @spec   lambda_3(any, any, any) -> int | float
-    ;   @key    [any, any, any]
-    ;   @abi    (Tagged, Tagged, Tagged) -> Tagged
-function u0:0(i64, i64, i64) -> i64 tail {
-    sig0 = (i64) -> f64 system_v
-    sig1 = (i64) -> i64 system_v
-    sig2 = (f64, f64) -> f64 system_v
-    sig3 = (i64) -> f64 system_v
-    sig4 = (i64) -> i64 system_v
-    sig5 = (f64, f64) -> f64 system_v
-    sig6 = (i64, i64) -> i64 tail
-    fn0 = u0:24 sig0
-    fn1 = u0:23 sig1
-    fn2 = u0:25 sig2
-    fn3 = u0:24 sig3
-    fn4 = u0:23 sig4
-    fn5 = u0:25 sig5
-
-    block0(v0: i64, v1: i64, v2: i64):    ;; v0 :: any
-    v3 = load.i64 notrap aligned v1+24    ;; v3 :: any
-    v4 = load.i64 notrap aligned v1+32    ;; v4 :: any
-    v5 = bxor_imm v3, 1
-    v6 = bxor_imm v4, 1
-    v7 = bor v5, v6
-    v8 = band_imm v7, 7
-    v9 = icmp_imm eq v8, 0
-    brif v9, block1, block2
-
-block1:
-    v11 = sshr_imm.i64 v3, 3
-    v12 = sshr_imm.i64 v4, 3
-    v13 = iadd v11, v12
-    v14 = ishl_imm v13, 3
-    v15 = bor_imm v14, 1
-    jump block3(v15)
-
-block2:
-    v16 = call fn0(v3)
-    v17 = call fn0(v4)
-    v18 = fadd v16, v17
-    v19 = bitcast.i64 v18
-    v20 = call fn1(v19)
-    jump block3(v20)
-
-    block3(v10: i64):    ;; v10 :: int | float
-    v21 = bxor_imm v10, 1
-    v22 = bxor_imm.i64 v0, 1
-    v23 = bor v21, v22
-    v24 = band_imm v23, 7
-    v25 = icmp_imm eq v24, 0
-    brif v25, block4, block5
-
-block4:
-    v27 = sshr_imm.i64 v10, 3
-    v28 = sshr_imm.i64 v0, 3
-    v29 = iadd v27, v28
-    v30 = ishl_imm v29, 3
-    v31 = bor_imm v30, 1
-    jump block6(v31)
-
-block5:
-    v32 = call fn3(v10)
-    v33 = call fn3(v0)
-    v34 = fadd v32, v33
-    v35 = bitcast.i64 v34
-    v36 = call fn4(v35)
-    jump block6(v36)
-
-    block6(v26: i64):    ;; v26 :: int | float
-    v37 = load.i64 notrap aligned v2+16
-    return_call_indirect sig6, v37(v26, v2)
 }
 
 ; fn k_5
@@ -122,7 +48,7 @@ function u0:0(i64, i64, i64) -> i64 tail {
     sig1 = (i64, i64, i64) -> i64 tail
     sig2 = (i64, i64) -> i64 tail
     fn0 = u0:31 sig0
-    fn1 = colocated u0:51 sig1
+    fn1 = colocated u0:50 sig1
 
     block0(v0: i64, v1: i64, v2: i64):    ;; v0 :: 10, v1 :: 20
     v3 = iconst.i32 3                   ; @22:32
@@ -225,8 +151,8 @@ function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64, i64, i64) -> i64 tail
     sig1 = (i64, i64) -> i64 tail
     sig2 = (i32, i32) -> i64 system_v
-    fn0 = colocated u0:49 sig0
-    fn1 = colocated u0:47 sig1
+    fn0 = colocated u0:48 sig0
+    fn1 = colocated u0:46 sig1
     fn2 = u0:31 sig2
 
     block0(v0: i64, v1: i64):    ;; v0 :: (any, any, any) -> any

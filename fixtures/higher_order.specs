@@ -104,17 +104,6 @@
 ;   exits:
 ;     blk0 TailCallClosure Var(1)(Var(0))
 
-; spec k_5(4) #fn=5
-;   key:    [any, any, any, any]
-;   return: any
-;   vars:
-;     Var(0) :: any
-;     Var(1) :: any
-;     Var(2) :: any
-;     Var(3) :: any
-;   exits:
-;     blk0 TailCallClosure Var(1)(Var(0))
-
 ; spec k_6(1) #fn=6
 ;   key:    [any]
 ;   return: any
