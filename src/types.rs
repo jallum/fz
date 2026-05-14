@@ -700,7 +700,69 @@ fn dnf_union<T: Clone>(a: &[Conj<T>], b: &[Conj<T>]) -> Vec<Conj<T>> {
     out
 }
 
-fn dnf_intersect<T: Clone + PartialEq>(a: &[Conj<T>], b: &[Conj<T>]) -> Vec<Conj<T>> {
+/// fz-jvo — sig types that support semantic merging at the
+/// intersection point. When two positive sigs of compatible shape
+/// occur in the same Conj clause (e.g. `list(A) & list(B)` produced
+/// by branch narrowing), they should collapse to a single sig with
+/// elements intersected (`list(A ∩ B)`) — both for representation
+/// minimality and so that downstream consumers (list_element_type,
+/// tuple_projections, ...) don't see structurally-multi-sig clauses
+/// they then have to reason about specially.
+///
+/// `intersect_pos` returns `Some(merged)` when two sigs can be
+/// merged via intersection; `None` when they're incompatible (e.g.
+/// tuples of different arities) and must remain as separate pos
+/// sigs.
+pub trait MergeSig: Clone + PartialEq {
+    fn intersect_pos(a: &Self, b: &Self) -> Option<Self>;
+}
+
+impl MergeSig for ListSig {
+    fn intersect_pos(a: &Self, b: &Self) -> Option<Self> {
+        Some(ListSig { elem: Box::new(a.elem.intersect(&b.elem)) })
+    }
+}
+
+impl MergeSig for TupleSig {
+    fn intersect_pos(a: &Self, b: &Self) -> Option<Self> {
+        if a.elems.len() != b.elems.len() { return None; }
+        let elems = a.elems.iter().zip(b.elems.iter())
+            .map(|(x, y)| x.intersect(y))
+            .collect();
+        Some(TupleSig { elems })
+    }
+}
+
+impl MergeSig for ArrowSig {
+    fn intersect_pos(a: &Self, b: &Self) -> Option<Self> {
+        if a.args.len() != b.args.len() { return None; }
+        // Arrow contravariant on args (union to widen accepted input),
+        // covariant on return (intersect to narrow accepted output).
+        let args = a.args.iter().zip(b.args.iter())
+            .map(|(x, y)| x.union(y))
+            .collect();
+        let ret = a.ret.intersect(&b.ret);
+        Some(ArrowSig { args, ret: Box::new(ret) })
+    }
+}
+
+impl MergeSig for MapSig {
+    fn intersect_pos(a: &Self, b: &Self) -> Option<Self> {
+        // Map intersection: shared keys' values get intersected;
+        // keys present in only one side stay as-is (both maps must
+        // have at least that field, possibly with a more permissive
+        // type on the missing side).
+        let mut fields = a.fields.clone();
+        for (k, v) in &b.fields {
+            fields.entry(k.clone())
+                .and_modify(|prev| *prev = prev.intersect(v))
+                .or_insert_with(|| v.clone());
+        }
+        Some(MapSig { fields })
+    }
+}
+
+fn dnf_intersect<T: MergeSig>(a: &[Conj<T>], b: &[Conj<T>]) -> Vec<Conj<T>> {
     let mut out = Vec::with_capacity(a.len() * b.len());
     for c1 in a {
         for c2 in b {
@@ -712,7 +774,7 @@ fn dnf_intersect<T: Clone + PartialEq>(a: &[Conj<T>], b: &[Conj<T>]) -> Vec<Conj
 
 /// ¬(⋁ Cᵢ) = ⋀ ¬Cᵢ. Each ¬Cᵢ is a DNF (disjunction of single-literal
 /// clauses); we intersect them all together.
-fn dnf_neg<T: Clone + PartialEq>(d: &[Conj<T>]) -> Vec<Conj<T>> {
+fn dnf_neg<T: MergeSig>(d: &[Conj<T>]) -> Vec<Conj<T>> {
     let mut acc: Vec<Conj<T>> = vec![Conj::top()]; // start with "true"
     for c in d {
         let neg_c = neg_clause(c);
@@ -721,9 +783,26 @@ fn dnf_neg<T: Clone + PartialEq>(d: &[Conj<T>]) -> Vec<Conj<T>> {
     acc
 }
 
-fn merge_clauses<T: Clone + PartialEq>(a: &Conj<T>, b: &Conj<T>) -> Conj<T> {
+fn merge_clauses<T: MergeSig>(a: &Conj<T>, b: &Conj<T>) -> Conj<T> {
     let mut pos = a.pos.clone();
-    for x in &b.pos { if !pos.contains(x) { pos.push(x.clone()); } }
+    for new_sig in &b.pos {
+        // fz-jvo — try to merge `new_sig` with an existing pos sig
+        // via intersection. If compatible-shape, replace; otherwise
+        // append (preserving the old dedup semantics). This keeps
+        // `pos.len()` bounded for axes whose sigs always merge
+        // (lists collapse to length 1; tuples merge per arity).
+        let mut merged = false;
+        for slot in pos.iter_mut() {
+            if let Some(m) = T::intersect_pos(slot, new_sig) {
+                *slot = m;
+                merged = true;
+                break;
+            }
+        }
+        if !merged && !pos.contains(new_sig) {
+            pos.push(new_sig.clone());
+        }
+    }
     let mut neg = a.neg.clone();
     for x in &b.neg { if !neg.contains(x) { neg.push(x.clone()); } }
     Conj { pos, neg }
@@ -1094,10 +1173,16 @@ mod tests {
         let a = Descr::tuple_of([Descr::int()]);
         let b = Descr::tuple_of([Descr::str_t()]);
         let inter = a.intersect(&b);
-        // one clause from a × one clause from b = one merged clause with two positives
+        // fz-jvo — same-arity tuple pos sigs now merge via
+        // per-element intersection (TupleSig::intersect_pos),
+        // collapsing to a single sig with elem-wise intersected
+        // components. Semantically the result is empty (int ∩ str
+        // is empty, so tuple-of-empty is empty), and structurally
+        // it lives as one pos sig of length 1.
         assert_eq!(inter.tuples.len(), 1);
-        assert_eq!(inter.tuples[0].pos.len(), 2);
+        assert_eq!(inter.tuples[0].pos.len(), 1);
         assert!(inter.tuples[0].neg.is_empty());
+        assert!(inter.is_empty(), "tuple(int) ∩ tuple(str) is uninhabited");
     }
 
     #[test]
