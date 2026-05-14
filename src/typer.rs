@@ -157,6 +157,14 @@ fn widen_func(c: Conj<ArrowSig>) -> Conj<ArrowSig> {
     let widen_sig = |s: ArrowSig| ArrowSig {
         args: s.args.iter().map(widen).collect(),
         ret: Box::new(widen(&s.ret)),
+        // fz-ul4.27.22.8 — widen capture Descrs elementwise; preserve
+        // FnId identity. Widening at SCC fixpoints loses literal precision
+        // (int_lit(21) → int) but keeps the closure-target FnId, so
+        // per-callsite singleton resolution still fires post-widen.
+        lit: s.lit.map(|l| crate::types::ClosureLit {
+            fn_id: l.fn_id,
+            captures: l.captures.iter().map(widen).collect(),
+        }),
     };
     Conj { pos: c.pos.into_iter().map(widen_sig).collect(),
            neg: c.neg.into_iter().map(widen_sig).collect() }

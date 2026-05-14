@@ -146,8 +146,33 @@ pub struct TupleSig { pub elems: Vec<Descr> }
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct ListSig  { pub elem: Box<Descr> }
 
+/// fz-ul4.27.22.8 — closure-literal tag attached to an arrow clause.
+/// When `ArrowSig::lit = Some(ClosureLit { fn_id, captures })`, the clause
+/// represents the *specific* closure produced by `MakeClosure(fn_id,
+/// vars_typed_as_captures)` rather than the saturated arrow `(args)→ret`.
+///
+/// Captures are stored as a vector aligned with the first N entry params of
+/// `fn_id`'s body (N = `captures.len()`). The arrow's `args` field carries
+/// the apparent post-capture arity (vector of `Descr::any()` until 22.9's
+/// `resolve_closure_return` refines per spec lookup).
+///
+/// Two `ClosureLit`s are equal iff `fn_id` and elementwise `captures`
+/// match. Lit-bearing clauses do not collapse with lit-free clauses under
+/// union — `closure_lit(F, K) ⊆ arrow(any..., any)` semantically, but
+/// the union keeps both to preserve singleton precision downstream.
 #[derive(Clone, PartialEq, Eq, Hash)]
-pub struct ArrowSig { pub args: Vec<Descr>, pub ret: Box<Descr> }
+pub struct ClosureLit {
+    pub fn_id: crate::fz_ir::FnId,
+    pub captures: Vec<Descr>,
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct ArrowSig {
+    pub args: Vec<Descr>,
+    pub ret: Box<Descr>,
+    /// `None` for ordinary arrows; `Some` for closure literals (fz-ul4.27.22.8).
+    pub lit: Option<ClosureLit>,
+}
 
 /// Open-shape map type: "any map containing AT LEAST these literal keys with
 /// values of the corresponding types." Keys are concrete singleton values
@@ -320,10 +345,50 @@ impl Descr {
     }
 
     pub fn arrow(args: impl IntoIterator<Item = Descr>, ret: Descr) -> Self {
-        let sig = ArrowSig { args: args.into_iter().collect(), ret: Box::new(ret) };
+        let sig = ArrowSig {
+            args: args.into_iter().collect(),
+            ret: Box::new(ret),
+            lit: None,
+        };
         let mut d = Self::none();
         d.funcs.push(Conj::pos_of(sig));
         d
+    }
+
+    /// fz-ul4.27.22.8 — closure-literal singleton: the specific closure
+    /// constructed by `MakeClosure(fn_id, [vars typed as `captures`])`.
+    /// `n_args` is the post-capture apparent arity (i.e., the closure's
+    /// remaining param count once captures are bound). The arrow's `args`
+    /// and `ret` start as `any` placeholders; consumers refine them by
+    /// looking up `fn_id`'s spec at the matching key (see 22.9's
+    /// `resolve_closure_return`).
+    #[allow(dead_code)] // Used by unit tests now; production callers land in fz-ul4.27.22.10.
+    pub fn closure_lit(
+        fn_id: crate::fz_ir::FnId,
+        captures: Vec<Descr>,
+        n_args: usize,
+    ) -> Self {
+        let sig = ArrowSig {
+            args: vec![Descr::any(); n_args],
+            ret: Box::new(Descr::any()),
+            lit: Some(ClosureLit { fn_id, captures }),
+        };
+        let mut d = Self::none();
+        d.funcs.push(Conj::pos_of(sig));
+        d
+    }
+
+    /// fz-ul4.27.22.8 — if this Descr is a single positive closure-literal
+    /// arrow clause, return its `ClosureLit` tag. Returns `None` for
+    /// non-singleton shapes (unions, lit-free arrows, negated arrows).
+    /// Downstream consumers (22.9+) use this to decide whether per-callsite
+    /// specialization can take the singleton-fast path.
+    #[allow(dead_code)] // Used by unit tests now; production callers land in fz-ul4.27.22.10/11.
+    pub fn as_closure_lit(&self) -> Option<&ClosureLit> {
+        if self.funcs.len() != 1 { return None; }
+        let c = &self.funcs[0];
+        if !c.neg.is_empty() || c.pos.len() != 1 { return None; }
+        c.pos[0].lit.as_ref()
     }
 
     /// Top of the map axis: any map.
@@ -626,6 +691,78 @@ fn arrow_input(sig: &ArrowSig) -> Descr {
 fn func_clause_empty(c: &Conj<ArrowSig>, memo: &mut Memo) -> bool {
     let p = &c.pos;
     let n = &c.neg;
+
+    // fz-ul4.27.22.8 — closure-literal aware pre-checks.
+    //
+    // (a) Two positive lits in the same clause with disagreeing FnId (or
+    //     different arity) describe disjoint singletons — their ∧ is
+    //     bottom. Captures must intersect elementwise; any empty
+    //     intersection drives the clause to bottom.
+    {
+        let pos_lits: Vec<&ClosureLit> = p.iter().filter_map(|s| s.lit.as_ref()).collect();
+        for i in 0..pos_lits.len() {
+            for j in (i+1)..pos_lits.len() {
+                if pos_lits[i].fn_id != pos_lits[j].fn_id { return true; }
+                if pos_lits[i].captures.len() != pos_lits[j].captures.len() { return true; }
+                for (a, b) in pos_lits[i].captures.iter().zip(&pos_lits[j].captures) {
+                    if a.intersect(b).is_empty_memo(memo) { return true; }
+                }
+            }
+        }
+    }
+
+    // (b) Lit-aware negative subsumption. If a neg sig has a lit tag:
+    //       - it constrains the clause only via pos sigs with matching
+    //         FnId (other-FnId pos sigs don't overlap the neg's singleton
+    //         set, so the negation is automatically satisfied there);
+    //       - the neg is subsumed iff some matching-FnId pos sig has
+    //         captures elementwise ⊇ the neg's captures.
+    //     If a matching pos sig subsumes the neg → clause is bottom.
+    //     If no matching pos sig exists → this neg cannot empty the
+    //     clause via lit reasoning; defer to the structural check on
+    //     the lit-free part below.
+    'next_neg_lit: for negj in n {
+        let Some(neg_lit) = &negj.lit else { continue; };
+        let mut found_matching_pos = false;
+        for posi in p {
+            let Some(pos_lit) = &posi.lit else { continue; };
+            if pos_lit.fn_id != neg_lit.fn_id { continue; }
+            if pos_lit.captures.len() != neg_lit.captures.len() { continue; }
+            found_matching_pos = true;
+            // pos captures must elementwise ⊇ neg captures (i.e., neg
+            // ⊆ pos in capture space). diff(neg, pos) empty per axis.
+            let all_subset = pos_lit.captures.iter().zip(&neg_lit.captures)
+                .all(|(pc, nc)| nc.diff(pc).is_empty_memo(memo));
+            if all_subset { return true; }
+        }
+        if found_matching_pos {
+            // We had a matching-FnId pos but it didn't fully subsume —
+            // the neg cuts a hole the pos sigs don't cover. Clause is
+            // not bottom via this neg. Continue to next neg.
+            continue 'next_neg_lit;
+        }
+        // No matching-FnId pos — neg is irrelevant for lit reasoning;
+        // structural check below would falsely subsume on `any`
+        // placeholders. Skip negj from the structural check by
+        // recording its index... simplest: short-circuit here, since
+        // a lit-tagged neg unrelated to any pos lit cannot make the
+        // clause empty (it negates a set disjoint from the pos).
+        // Falling through to the structural check would incorrectly
+        // consider this neg's any-args / any-ret coverage. So we
+        // simply continue and do NOT consult negj in the structural
+        // loop. To enforce that, filter negs before the loop.
+    }
+
+    // Lit-tagged negs are fully handled by the pre-pass above. If we got
+    // here without returning, none of them subsumes via lit reasoning;
+    // drop them all from the structural check so any-args / any-ret
+    // placeholders on lit clauses can't falsely subsume.
+    let filtered_negs: Vec<ArrowSig> = n.iter()
+        .filter(|negj| negj.lit.is_none())
+        .cloned()
+        .collect();
+    let n = &filtered_negs;
+
     if n.is_empty() {
         // ⋀ positives is non-empty: at least one function (e.g., the constant
         // function) satisfies any consistent set of positive arrows.
@@ -828,13 +965,38 @@ impl MergeSig for TupleSig {
 impl MergeSig for ArrowSig {
     fn intersect_pos(a: &Self, b: &Self) -> Option<Self> {
         if a.args.len() != b.args.len() { return None; }
+        // fz-ul4.27.22.8 — closure-literal lit handling at ∧:
+        //   lit(F,K) ∧ lit(F,K')  → lit(F, K∩K' elementwise) — same closure,
+        //                          captures must satisfy both → narrow.
+        //   lit(F,K) ∧ lit(F',K') with F≠F' → no function is both; return
+        //                          None so the caller keeps them as separate
+        //                          pos sigs (clause becomes empty under
+        //                          func_clause_empty's structural check
+        //                          when extended; safe representation today).
+        //   lit(F,K) ∧ plain_arrow → lit(F,K) wins (singleton ⊆ arrow), but
+        //                          take args/ret from the plain arrow side
+        //                          if narrower.
+        //   plain ∧ plain → existing behavior, lit stays None.
+        let lit = match (&a.lit, &b.lit) {
+            (Some(la), Some(lb)) => {
+                if la.fn_id != lb.fn_id { return None; }
+                if la.captures.len() != lb.captures.len() { return None; }
+                let caps: Vec<Descr> = la.captures.iter().zip(lb.captures.iter())
+                    .map(|(x, y)| x.intersect(y))
+                    .collect();
+                Some(ClosureLit { fn_id: la.fn_id, captures: caps })
+            }
+            (Some(la), None) => Some(la.clone()),
+            (None, Some(lb)) => Some(lb.clone()),
+            (None, None) => None,
+        };
         // Arrow contravariant on args (union to widen accepted input),
         // covariant on return (intersect to narrow accepted output).
         let args = a.args.iter().zip(b.args.iter())
             .map(|(x, y)| x.union(y))
             .collect();
         let ret = a.ret.intersect(&b.ret);
-        Some(ArrowSig { args, ret: Box::new(ret) })
+        Some(ArrowSig { args, ret: Box::new(ret), lit })
     }
 }
 
@@ -1046,7 +1208,14 @@ fn format_tuple(t: &TupleSig) -> String {
 fn format_list(t: &ListSig)  -> String { format!("list({})", t.elem) }
 fn format_arrow(t: &ArrowSig) -> String {
     let args: Vec<String> = t.args.iter().map(|d| format!("{}", d)).collect();
-    format!("({}) -> {}", args.join(", "), t.ret)
+    let body = format!("({}) -> {}", args.join(", "), t.ret);
+    match &t.lit {
+        None => body,
+        Some(l) => {
+            let caps: Vec<String> = l.captures.iter().map(|d| format!("{}", d)).collect();
+            format!("&fn{}[{}]:{}", l.fn_id.0, caps.join(", "), body)
+        }
+    }
 }
 fn format_map_clause(c: &Conj<MapSig>) -> String {
     let pos: Vec<String> = c.pos.iter().map(format_map).collect();
@@ -1748,5 +1917,110 @@ mod tests {
         assert!(s.contains(":a"));
         assert!(s.contains(":b"));
         assert!(s.contains(":c"));
+    }
+
+    // ---- fz-ul4.27.22.8 closure_lit tests ----
+
+    fn fid(n: u32) -> crate::fz_ir::FnId { crate::fz_ir::FnId(n) }
+
+    #[test]
+    fn closure_lit_round_trips_through_accessor() {
+        let cl = Descr::closure_lit(fid(7), vec![Descr::int_lit(10), Descr::int_lit(20)], 1);
+        let tag = cl.as_closure_lit().expect("expected closure_lit");
+        assert_eq!(tag.fn_id, fid(7));
+        assert_eq!(tag.captures.len(), 2);
+        assert_eq!(tag.captures[0], Descr::int_lit(10));
+        assert_eq!(tag.captures[1], Descr::int_lit(20));
+    }
+
+    #[test]
+    fn plain_arrow_has_no_closure_lit() {
+        let a = Descr::arrow([Descr::any()], Descr::any());
+        assert!(a.as_closure_lit().is_none());
+    }
+
+    #[test]
+    fn closure_lit_renders_with_fn_id_and_captures() {
+        let cl = Descr::closure_lit(fid(3), vec![Descr::int_lit(10), Descr::int_lit(20)], 1);
+        let s = format!("{}", cl);
+        assert!(s.starts_with("&fn3["), "got {}", s);
+        assert!(s.contains("10"), "got {}", s);
+        assert!(s.contains("20"), "got {}", s);
+        assert!(s.contains(" -> "), "got {}", s);
+    }
+
+    #[test]
+    fn closure_lit_equality_is_by_fn_id_and_captures() {
+        let a = Descr::closure_lit(fid(3), vec![Descr::int_lit(10)], 1);
+        let b = Descr::closure_lit(fid(3), vec![Descr::int_lit(10)], 1);
+        let c = Descr::closure_lit(fid(3), vec![Descr::int_lit(99)], 1);
+        let d = Descr::closure_lit(fid(4), vec![Descr::int_lit(10)], 1);
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+        assert_ne!(a, d);
+    }
+
+    #[test]
+    fn closure_lit_union_exact_dedups() {
+        // Identical singletons unioned → single clause, identity preserved.
+        let a = Descr::closure_lit(fid(3), vec![Descr::int_lit(10)], 1);
+        let b = Descr::closure_lit(fid(3), vec![Descr::int_lit(10)], 1);
+        let u = a.union(&b);
+        assert_eq!(u, a, "exact dup union should idempote");
+        assert!(u.as_closure_lit().is_some(), "still a singleton");
+    }
+
+    #[test]
+    fn closure_lit_union_different_captures_keeps_both_clauses() {
+        // Different captures with same FnId → two clauses today (precision
+        // collapse is the responsibility of 22.9's resolve_closure_return).
+        let a = Descr::closure_lit(fid(3), vec![Descr::int_lit(10)], 1);
+        let b = Descr::closure_lit(fid(3), vec![Descr::int_lit(20)], 1);
+        let u = a.union(&b);
+        assert_eq!(u.funcs.len(), 2, "expected two clauses: {}", u);
+        // No longer a single-clause singleton — accessor returns None.
+        assert!(u.as_closure_lit().is_none());
+    }
+
+    #[test]
+    fn closure_lit_union_different_fn_ids_keeps_both_clauses() {
+        let a = Descr::closure_lit(fid(3), vec![], 1);
+        let b = Descr::closure_lit(fid(4), vec![], 1);
+        let u = a.union(&b);
+        assert_eq!(u.funcs.len(), 2, "expected two clauses: {}", u);
+        assert!(u.as_closure_lit().is_none());
+    }
+
+    #[test]
+    fn closure_lit_intersect_same_fn_narrows_captures() {
+        // Same FnId, captures intersect elementwise.
+        // int ∩ int_lit(10) = int_lit(10).
+        let a = Descr::closure_lit(fid(3), vec![Descr::int()], 1);
+        let b = Descr::closure_lit(fid(3), vec![Descr::int_lit(10)], 1);
+        let i = a.intersect(&b);
+        let tag = i.as_closure_lit().expect("expected singleton after intersect");
+        assert_eq!(tag.fn_id, fid(3));
+        assert_eq!(tag.captures[0], Descr::int_lit(10));
+    }
+
+    #[test]
+    fn closure_lit_intersect_different_fn_ids_is_empty() {
+        let a = Descr::closure_lit(fid(3), vec![], 1);
+        let b = Descr::closure_lit(fid(4), vec![], 1);
+        let i = a.intersect(&b);
+        assert!(i.is_empty(),
+            "different-FnId closure_lits ∧ should be bottom: got {}", i);
+    }
+
+    #[test]
+    fn closure_lit_widens_captures_via_typer() {
+        // crate::typer::widen on int_lit(N) → int. Lit FnId preserved.
+        use crate::typer::widen;
+        let a = Descr::closure_lit(fid(3), vec![Descr::int_lit(10)], 1);
+        let w = widen(&a);
+        let tag = w.as_closure_lit().expect("widen should preserve singleton");
+        assert_eq!(tag.fn_id, fid(3));
+        assert_eq!(tag.captures[0], Descr::int(),
+            "widen should drop int literals to int");
     }
 }
