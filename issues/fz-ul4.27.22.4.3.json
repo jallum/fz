@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-14T15:47:58Z",
+  "description": "Step 3 of 22.4. After .4.1 + .4.2, the typer's Descr propagation is the single source of truth for seam ArgRepr. The remaining \\\"force\\\" rules become provably redundant: each is subsumed by ArgRepr::from_descr(seam Descr) applied at both sides of the seam.\n\n## Deletions\n\n### uniform_cont_reachable_specs slot-0 force (src/ir_codegen.rs:2318-2322)\nThe rule says: cont reached from Term::Receive or Term::CallClosure has slot 0 forced to Tagged. After .4.1+.4.2, the cont's slot-0 Descr at those reach points IS already `any` (Receive returns a mailbox msg which is any; CallClosure returns whatever the closure body's return-type Descr is — Tagged for the (any) -\u003e any case). Force is redundant.\n\n### tagged_slot0_cont_specs slot-0 force (src/ir_codegen.rs:2390-2437)\nSame rule for fns reached via Call against a tagged_return_fn callee. Subsumed by the typer's effective_returns: if callee returns Tagged, cont's slot-0 Descr is `any`.\n\n### tagged_return_fns transitive closure (src/ir_codegen.rs:2350-2396)\nComputes the set of fns whose return is Tagged-by-construction. Used to drive return_reprs and tagged_slot0_cont_specs. After .4.1+.4.2, effective_returns already says \\\"this fn returns Tagged\\\" if it tail-calls into a Tagged-returning callee — that propagation is in the typer's LFP. The codegen-side closure is redundant.\n\n## Verification protocol\n\nDelete each in isolation, run cargo test --workspace, observe goldens:\n- If goldens unchanged: subsumed, safe to delete.\n- If goldens diff but tests pass: was making goldens uglier but not broken — accept the diff (typically more typed sigs, narrower seam reprs).\n- If tests break: rule was load-bearing in a way Descr propagation doesn't cover. STOP and investigate; don't delete, file a follow-up.\n\nOrder: delete uniform_cont_reachable_specs first, then tagged_slot0_cont_specs, then tagged_return_fns. Each in its own commit if any produces a golden diff.\n\n## Acceptance\n\n- cargo test --workspace green at every step.\n- Net deletion ~50 lines across the three sites.\n- 22 epic closed.",
+  "id": "fz-ul4.27.22.4.3",
+  "labels": [],
+  "parent": "fz-ul4.27.22.4",
+  "priority": 2,
+  "status": "open",
+  "title": "fz-cps-seam.3: collapse cont/return forces (cleanup)",
+  "type": "task",
+  "updated_at": "2026-05-14T15:47:58Z"
+}
