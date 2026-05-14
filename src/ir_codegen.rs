@@ -3370,15 +3370,13 @@ fn compile_fn<M: cranelift_module::Module>(
             let self_val = params[1];
             for (i, p) in entry_blk.params.iter().enumerate().skip(1) {
                 // fz_param[i] = user_cap[i-1] at offset 32 + 8*(i-1) (= +24 + 8*i).
-                // fz-cps.1.12 — captures are ALWAYS stored as Tagged (see
-                // cont-closure builders at Term::Call / Term::CallClosure /
-                // Term::Receive). Load as Tagged i64 and coerce to the
-                // body's expected param repr (RawInt / RawF64 / Tagged).
+                // fz-ul4.27.21.2 — captures are stored in their per-capture
+                // repr at the builder (param_reprs[cont_sid][i]); load with
+                // the matching Cranelift type. No tag/untag round-trip when
+                // the capture is narrow.
                 let off = HEADER_SIZE + SLOT_BYTES * 2 + ((i - 1) as i32) * SLOT_BYTES;
-                let tagged_v = b.ins().load(types::I64, MemFlags::trusted(), self_val, off);
-                let v = coerce_to(
-                    &mut b, jmod, &runtime, tagged_v, ArgRepr::Tagged, my_param_reprs[i],
-                );
+                let cl_ty = my_param_reprs[i].cl_type();
+                let v = b.ins().load(cl_ty, MemFlags::trusted(), self_val, off);
                 match my_param_reprs[i] {
                     ArgRepr::RawInt => { raw_int_vars.insert(p.0); }
                     ArgRepr::RawF64 => { raw_f64_vars.insert(p.0); }
@@ -3867,12 +3865,17 @@ fn compile_fn<M: cranelift_module::Module>(
                             MemFlags::trusted(),
                             my_outer_cont, cl_ptr, HEADER_SIZE + SLOT_BYTES,
                         );
-                        // User captures at +32+8i. Stored as Tagged; cont
-                        // entry harness re-coerces to per-capture repr.
+                        // User captures at +32+8i. fz-ul4.27.21.2 — stored
+                        // in the cont's per-capture repr (param_reprs[cont_sid]
+                        // [i+1]; [0] is the result slot). Cont entry harness
+                        // loads with the matching cl_type — no tag/untag
+                        // round-trip when the capture is narrow.
+                        let cont_param_reprs = &param_reprs[cont_sid as usize];
                         for (i, cv) in continuation.captured.iter().enumerate() {
                             let from = var_repr(cv.0, &raw_int_vars, &raw_f64_vars);
+                            let to = cont_param_reprs[i + 1];
                             let v = coerce_to(
-                                &mut b, jmod, &runtime, cap_vals[i], from, ArgRepr::Tagged,
+                                &mut b, jmod, &runtime, cap_vals[i], from, to,
                             );
                             let off = HEADER_SIZE + SLOT_BYTES * 2
                                 + (i as i32) * SLOT_BYTES;
@@ -4239,11 +4242,16 @@ fn compile_fn<M: cranelift_module::Module>(
                 }};
                 b.ins().store(MemFlags::trusted(), my_outer_cont, cf,
                     HEADER_SIZE + SLOT_BYTES);
-                // User captures at +32+8*i, Tagged.
+                // User captures at +32+8*i. fz-ul4.27.21.2 — stored in
+                // the cont's per-capture repr (param_reprs[cont_sid][i+1];
+                // [0] is the result slot, kept Tagged by tagged_slot0_cont_
+                // specs / uniform_cont_reachable_specs).
+                let cont_param_reprs = &param_reprs[cont_sid as usize];
                 for (i, cv) in continuation.captured.iter().enumerate() {
                     let from = var_repr(cv.0, &raw_int_vars, &raw_f64_vars);
+                    let to = cont_param_reprs[i + 1];
                     let v = coerce_to(
-                        &mut b, jmod, &runtime, cap_vals[i], from, ArgRepr::Tagged,
+                        &mut b, jmod, &runtime, cap_vals[i], from, to,
                     );
                     let off = HEADER_SIZE + SLOT_BYTES * 2 + (i as i32) * SLOT_BYTES;
                     b.ins().store(MemFlags::trusted(), v, cf, off);
@@ -4437,16 +4445,19 @@ fn compile_fn<M: cranelift_module::Module>(
                     MemFlags::trusted(),
                     my_outer_cont, cl_ptr, HEADER_SIZE + SLOT_BYTES,
                 );
-                // User captures at +32+8i, stored as Tagged.
+                // User captures at +32+8i. fz-ul4.27.21.2 — stored in the
+                // cont's per-capture repr. Receive's cont keeps slot 0 as
+                // Tagged (msg arrives Tagged from the mailbox), but captures
+                // can be typed.
                 for (i, cv) in continuation.captured.iter().enumerate() {
                     let from = var_repr(cv.0, &raw_int_vars, &raw_f64_vars);
+                    let to = cont_param_reprs[i + 1];
                     let v = coerce_to(
-                        &mut b, jmod, &runtime, cap_vals[i], from, ArgRepr::Tagged,
+                        &mut b, jmod, &runtime, cap_vals[i], from, to,
                     );
                     let off = HEADER_SIZE + SLOT_BYTES * 2 + (i as i32) * SLOT_BYTES;
                     b.ins().store(MemFlags::trusted(), v, cl_ptr, off);
                 }
-                let _ = cont_param_reprs; // re-read by cont fn entry harness.
 
                 // fz_receive_park(cl_ptr) — stash + yield.
                 let park_fref = jmod.declare_func_in_func(runtime.receive_park_id, b.func);
