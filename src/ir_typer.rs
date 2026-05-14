@@ -132,7 +132,15 @@ pub fn type_module(m: &Module) -> ModuleTypes {
     // apply: it reflects what's true at direct callsites and isn't read
     // by the closure-invoke path.
 
+    // fz-f6e — cap on fixed-point iterations. Without it, recursive fns
+    // whose per-spec walk discovers progressively narrower keys (e.g.
+    // `map_l(f, t)` where `t`'s list Descr shrinks each iter) spawn
+    // specs unboundedly. After `MAX_FIXPOINT_ITERS`, stop discovering
+    // new narrow keys; existing specs remain registered.
+    const MAX_FIXPOINT_ITERS: usize = 8;
+    let mut iter_count: usize = 0;
     loop {
+        iter_count += 1;
         // Aggregate per-callee entry-param Descrs as the union over all
         // direct (Call / TailCall) call sites. fz-ul4.29.1 also collects
         // each callsite's distinct arg-Descr tuple into `callsite_keys` so
@@ -333,6 +341,98 @@ pub fn type_module(m: &Module) -> ModuleTypes {
                             key.truncate(n_params);
                             callsite_keys.entry(target_fn).or_default().insert(key);
                         }
+                    }
+                }
+
+                // fz-f6e — register direct Call / TailCall callsite_keys under
+                // the PER-SPEC env. The main aggregation loop (above) uses
+                // `by_fn_idx` (LUB view), which always widens to the union of
+                // every caller — narrow specs that compute tighter arg
+                // Descrs for their callees never seed entries via that path.
+                // Walking each spec's body separately surfaces them.
+                //
+                // Gated by iter_count: after MAX_FIXPOINT_ITERS, stop
+                // discovering. Recursive list-walk fns shrink the tail
+                // Descr each iter and would otherwise spawn specs forever.
+                if iter_count > MAX_FIXPOINT_ITERS {
+                    continue;
+                }
+                //
+                // For fact_5.fz this is what causes `[int]` to appear:
+                // fact_s2 (key [5]) sees `n - 1` as int (numeric_result(5, 1)
+                // = int), not int|float as the LUB view does.
+                match &b.terminator {
+                    Term::Call { callee, args, .. }
+                    | Term::TailCall { callee, args } => {
+                        if let Some(&j) = idx_of.get(callee) {
+                            let callee_fn = &m.fns[j];
+                            let n_params = callee_fn.block(callee_fn.entry).params.len();
+                            let mut key: Vec<Descr> = args.iter().map(|av|
+                                env.get(av).cloned().unwrap_or_else(Descr::any)
+                            ).collect();
+                            while key.len() < n_params { key.push(Descr::any()); }
+                            key.truncate(n_params);
+                            callsite_keys.entry(*callee).or_default().insert(key.clone());
+                            // Mirror the main loop's fn_constants propagation.
+                            let mut per_arg: Vec<Option<FnId>> = args.iter().map(|av|
+                                caller_ft.fn_constants.get(av).copied()
+                            ).collect();
+                            while per_arg.len() < n_params { per_arg.push(None); }
+                            per_arg.truncate(n_params);
+                            let entry_key = (*callee, key);
+                            callsite_fn_consts
+                                .entry(entry_key)
+                                .and_modify(|existing| {
+                                    for (slot, v) in per_arg.iter().enumerate() {
+                                        if let Some(slot_v) = existing.get_mut(slot) {
+                                            if *slot_v != *v { *slot_v = None; }
+                                        }
+                                    }
+                                })
+                                .or_insert(per_arg);
+                        }
+                    }
+                    _ => {}
+                }
+
+                // fz-f6e — also seed per-spec cont keys (slot0 = callee's
+                // effective return under the actual per-spec arg env; rest
+                // = per-spec view of captures). Matches the main loop's
+                // cont-keying shape (line 215..267) but reads from `env`
+                // (per-spec) instead of `by_fn_idx`.
+                let cont = match &b.terminator {
+                    Term::Call { continuation, .. } => Some(continuation),
+                    Term::CallClosure { continuation, .. } => Some(continuation),
+                    Term::Receive { continuation } => Some(continuation),
+                    _ => None,
+                };
+                let slot0_descr: Descr = match &b.terminator {
+                    Term::Call { callee, args, .. } => {
+                        let arg_descrs: Vec<Descr> = args.iter().map(|av|
+                            env.get(av).cloned().unwrap_or_else(Descr::any)
+                        ).collect();
+                        let mut visiting: HashSet<(FnId, Vec<Descr>)> = HashSet::new();
+                        effective_return_descr(
+                            &(*callee, arg_descrs),
+                            m,
+                            &specs,
+                            &mut visiting,
+                        )
+                    }
+                    _ => Descr::any(),
+                };
+                if let Some(cont) = cont {
+                    if let Some(&j) = idx_of.get(&cont.fn_id) {
+                        let cont_fn = &m.fns[j];
+                        let n_params = cont_fn.block(cont_fn.entry).params.len();
+                        let mut key: Vec<Descr> = vec![Descr::any(); n_params];
+                        if !key.is_empty() { key[0] = slot0_descr.clone(); }
+                        for (k, cv) in cont.captured.iter().enumerate() {
+                            if let Some(p) = key.get_mut(k + 1) {
+                                *p = env.get(cv).cloned().unwrap_or_else(Descr::any);
+                            }
+                        }
+                        callsite_keys.entry(cont.fn_id).or_default().insert(key);
                     }
                 }
             }
