@@ -12,7 +12,7 @@
 
 ; spec apply1(2) #fn=1
 ;   key:    [&fn3[10, 20]:(any) -> any, 12]
-;   return: any
+;   return: int
 ;   vars:
 ;     Var(0) :: &fn3[10, 20]:(any) -> any
 ;     Var(1) :: 12
@@ -73,13 +73,13 @@
 ;     blk0 Call apply1#1(Var(0), Var(1))
 ;              callee_key=[&fn3[10, 20]:(any) -> any, 12]
 ;              cont k_5#5 captured=[]
-;              cont_key=[any]
+;              cont_key=[int]
 
 ; spec k_5(1) #fn=5
-;   key:    [any]
+;   key:    [int]
 ;   return: nil
 ;   vars:
-;     Var(0) :: any
+;     Var(0) :: int
 ;     Var(1) :: nil
 ;   exits:
 ;     blk0 Return Var(1)    :: nil

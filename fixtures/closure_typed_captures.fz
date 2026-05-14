@@ -5,7 +5,12 @@
 # fz-ul4.27.22.5 — typed closure capture seam: ishl/bor pairs dropped at the
 # MakeClosure producer (add_to_s6) and sshr_imm dropped at the body's typed
 # capture loads (lambda_3_s8 captures v3/v4 are RawInt, no untag needed).
-# expect_clif_contains: lambda_3_s8: (RawInt, RawInt, Tagged) -> Tagged
+# fz-ul4.27.22.12 — closure_lit-driven per-callsite specialization splits
+# lambda_3 into a narrow `[10, 20, 12]` spec and a wide `[10, 20, any]`
+# fallback. The narrow spec used at runtime gets full RawInt ABI; the wide
+# is unused by main's flow but emitted for the any-key fallback.
+# expect_clif_contains: lambda_3_s5: (RawInt, RawInt, RawInt) -> RawInt
+# expect_clif_excludes: lambda_3_s5: sshr_imm
 # fz-cps.1.12: closure stubs deleted. The lambda body is invoked
 # directly via Tail-CC `return_call_indirect` through cl+16 — no stub
 # fn exists to assert about. Tracked by §8.3 acceptance test.

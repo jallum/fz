@@ -2137,11 +2137,45 @@ pub fn compute_effective_returns(
                             while ad.len() < np { ad.push(Descr::any()); }
                             ad.truncate(np);
                             joined = joined.union(&lookup(&ret, &(target, ad)));
+                        } else if let Some(cv_descr) = ft.vars.get(closure) {
+                            // fz-ul4.27.22.12 — closure_lit-driven path:
+                            // resolve each lit clause's body return via
+                            // the spec map. Mirrors resolve_closure_return
+                            // but inlined here to share the lookup helper's
+                            // Unknown-vs-any semantics.
+                            let mut all_lit = !cv_descr.funcs.is_empty();
+                            let mut acc = Descr::none();
+                            'clauses: for c in &cv_descr.funcs {
+                                if !c.neg.is_empty() || c.pos.is_empty() {
+                                    all_lit = false; break 'clauses;
+                                }
+                                for sig in &c.pos {
+                                    let Some(lit) = &sig.lit else {
+                                        all_lit = false; break 'clauses;
+                                    };
+                                    let target_fn = module.fn_by_id(lit.fn_id);
+                                    let np = target_fn.block(target_fn.entry).params.len();
+                                    let mut full_key: Vec<Descr> = lit.captures.clone();
+                                    for av in args.iter() {
+                                        full_key.push(ft.vars.get(av).cloned()
+                                            .unwrap_or_else(Descr::any));
+                                    }
+                                    while full_key.len() < np { full_key.push(Descr::any()); }
+                                    full_key.truncate(np);
+                                    acc = acc.union(&lookup(&ret, &(lit.fn_id, full_key)));
+                                }
+                            }
+                            if all_lit {
+                                joined = joined.union(&acc);
+                            } else {
+                                joined = joined.union(&Descr::any());
+                            }
                         } else {
                             // Genuinely opaque target (no fn_constants
-                            // resolution) — not a fixpoint deferral but a
-                            // real "we cannot prove a bound." `any` is the
-                            // honest answer here, NOT the Unknown sentinel.
+                            // resolution, no closure_lit) — not a fixpoint
+                            // deferral but a real "we cannot prove a
+                            // bound." `any` is the honest answer here,
+                            // NOT the Unknown sentinel.
                             joined = joined.union(&Descr::any());
                         }
                     }

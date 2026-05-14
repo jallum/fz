@@ -2286,33 +2286,56 @@ pub fn compile_with_backend<B: Backend>(
             let f = &module.fns[idx];
             let ft = spec_fn_types[sid].expect("non-sentinel spec must have FnTypes");
             for blk in &f.blocks {
-                if let Term::TailCall { callee, args } = &blk.terminator {
-                    let arg_descrs: Vec<crate::types::Descr> = args
-                        .iter()
-                        .map(|av| ft.vars.get(av).cloned().unwrap_or_else(crate::types::Descr::any))
-                        .collect();
-                    // fz-ul4.29.11: subsumption-based lookup; any-key (when
-                    // registered, which is always pre-.29.10) is the
-                    // universal supertype and always covers if nothing
-                    // narrower does.
-                    let Some(callee_sid_v) = spec_registry
-                        .resolve(*callee, &arg_descrs)
-                        .map(|s| s.0)
-                    else { continue; };
-                    let callee_sid = callee_sid_v as usize;
-                    let Some(callee_d) = return_descrs[callee_sid].clone() else { continue; };
-                    let new_d = match &return_descrs[sid] {
-                        Some(prev) => prev.union(&callee_d),
-                        None => callee_d,
-                    };
-                    let prev_eq_new = match &return_descrs[sid] {
-                        Some(prev) => prev.is_subtype(&new_d) && new_d.is_subtype(prev),
-                        None => false,
-                    };
-                    if !prev_eq_new {
-                        return_descrs[sid] = Some(new_d);
-                        changed = true;
+                // Both Term::TailCall and a resolved-via-closure_lit
+                // Term::TailCallClosure feed the callee's return Descr
+                // into this spec's return Descr. Unresolved
+                // TailCallClosure stays opaque (any) — same as today.
+                let callee_sid_for_tc: Option<u32> = match &blk.terminator {
+                    Term::TailCall { callee, args } => {
+                        let arg_descrs: Vec<crate::types::Descr> = args
+                            .iter()
+                            .map(|av| ft.vars.get(av).cloned().unwrap_or_else(crate::types::Descr::any))
+                            .collect();
+                        spec_registry.resolve(*callee, &arg_descrs).map(|s| s.0)
                     }
+                    Term::TailCallClosure { closure, args } => {
+                        // fz-ul4.27.22.12 — closure_lit-driven return
+                        // propagation. Mirrors the codegen direct-dispatch
+                        // resolution in TailCallClosure compile.
+                        ft.vars.get(closure)
+                            .and_then(|d| d.as_closure_lit())
+                            .and_then(|lit| {
+                                let body_fn = module.fn_by_id(lit.fn_id);
+                                let np = body_fn.block(body_fn.entry).params.len();
+                                let mut full_key: Vec<crate::types::Descr> =
+                                    lit.captures.clone();
+                                for av in args.iter() {
+                                    full_key.push(ft.vars.get(av).cloned()
+                                        .unwrap_or_else(crate::types::Descr::any));
+                                }
+                                while full_key.len() < np {
+                                    full_key.push(crate::types::Descr::any());
+                                }
+                                full_key.truncate(np);
+                                spec_registry.resolve(lit.fn_id, &full_key).map(|s| s.0)
+                            })
+                    }
+                    _ => None,
+                };
+                let Some(callee_sid_v) = callee_sid_for_tc else { continue; };
+                let callee_sid = callee_sid_v as usize;
+                let Some(callee_d) = return_descrs[callee_sid].clone() else { continue; };
+                let new_d = match &return_descrs[sid] {
+                    Some(prev) => prev.union(&callee_d),
+                    None => callee_d,
+                };
+                let prev_eq_new = match &return_descrs[sid] {
+                    Some(prev) => prev.is_subtype(&new_d) && new_d.is_subtype(prev),
+                    None => false,
+                };
+                if !prev_eq_new {
+                    return_descrs[sid] = Some(new_d);
+                    changed = true;
                 }
             }
         }
@@ -2344,23 +2367,23 @@ pub fn compile_with_backend<B: Backend>(
                 {
                     reprs[0] = ArgRepr::Tagged;
                 }
-                // fz-cps.1.8 (fz-ul4.27.22.5) — closure-target body ARG
-                // slots are forced to Tagged so the indirect call sig at
-                // every Term::CallClosure / TailCallClosure site matches
-                // the body. Arg slots are keyed `any` by MakeClosure
-                // (src/ir_codegen.rs:5475-5482) so they'd derive Tagged
-                // anyway; the force documents the seam invariant.
+                // fz-ul4.27.22.12 — arg-slot force at closure body retired.
+                // The 22.5 capture-slot wins are preserved (CAPTURE slots
+                // [0..n_caps) keep their per-spec narrow reprs). ARG slots
+                // now also honor build_param_reprs' typed output: with
+                // 22.10's closure_lit-typed MakeClosure and 22.11's direct
+                // return_call dispatch, every closure-call site resolves
+                // to a single body spec whose ABI the caller targets
+                // exactly — no need to flatten arg slots to Tagged for
+                // indirect-sig matching.
                 //
-                // CAPTURE slots ([0..n_caps)) keep their per-spec narrow
-                // reprs — MakeClosure stores captures in the body's
-                // narrow repr (line ~5529), and the body's entry harness
-                // (line ~3406) loads via my_param_reprs[k].cl_type().
-                // No round-trip through Tagged for typed captures.
-                if let Some(n_caps) = closure_n_captures.get(&f.id) {
-                    for r in reprs.iter_mut().skip(*n_caps) {
-                        *r = ArgRepr::Tagged;
-                    }
-                }
+                // The indirect fallback path in TailCallClosure still
+                // assumes all-Tagged at the seam, so closures used
+                // polymorphically (union of closure_lits, opaque arrow)
+                // still go through the Tagged path correctly: the body's
+                // narrow ABI on the direct path is compatible because
+                // each direct callsite coerces explicitly.
+                let _ = closure_n_captures;
                 reprs
             }
             None => Vec::new(),
@@ -2375,44 +2398,109 @@ pub fn compile_with_backend<B: Backend>(
     // F itself returns Tagged. The result drives BOTH the return_reprs
     // force (below) AND the tagged_slot0_cont_specs check (next block):
     // producer-side ABI and consumer-side schema stay aligned.
-    let tagged_return_fns: std::collections::HashSet<crate::fz_ir::FnId> = {
-        let mut set: std::collections::HashSet<crate::fz_ir::FnId> =
-            closure_target_fns.iter().copied().collect();
-        for f in &module.fns {
+    // fz-ul4.27.22.12 — per-spec tagged-return tracking. Pre-22.12 the
+    // set was keyed by FnId, conflating all specs of the same fn. With
+    // closure_lit-driven per-spec resolution (22.10-22.11), one spec of
+    // a fn can have a fully-resolved TailCallClosure (returning the
+    // body's narrow repr) while a sibling spec's TailCallClosure stays
+    // opaque (returning Tagged through the indirect seam). Per-spec is
+    // the precise grain.
+    //
+    // Seed: spec has an UNRESOLVED TailCallClosure (or returns through
+    // the all-Tagged indirect ABI). Resolved-via-closure_lit
+    // TailCallClosure does not seed — it's structurally a typed
+    // tail-call to the resolved body, equivalent to Term::TailCall.
+    //
+    // Propagation: spec's terminator chains into another spec that's
+    // already tagged. Per-spec analysis uses each block's terminator
+    // under this spec's env (spec_fn_types[sid]).
+    let tagged_return_specs: std::collections::HashSet<u32> = {
+        let mut set: std::collections::HashSet<u32> = std::collections::HashSet::new();
+        // Per-spec resolution of TailCallClosure: returns the resolved
+        // body sid (Some) or None when unresolved (indirect Tagged seam).
+        let resolve_tcc_body_sid =
+            |sid: usize, closure: &crate::fz_ir::Var, args: &[crate::fz_ir::Var]| -> Option<u32> {
+                let ft = spec_fn_types.get(sid).and_then(|o| *o)?;
+                let cv_descr = ft.vars.get(closure)?;
+                let lit = cv_descr.as_closure_lit()?;
+                let body_fn = module.fn_by_id(lit.fn_id);
+                let body_n_params = body_fn.block(body_fn.entry).params.len();
+                let mut full_key: Vec<crate::types::Descr> = lit.captures.clone();
+                for av in args.iter() {
+                    full_key.push(ft.vars.get(av).cloned()
+                        .unwrap_or_else(crate::types::Descr::any));
+                }
+                while full_key.len() < body_n_params {
+                    full_key.push(crate::types::Descr::any());
+                }
+                full_key.truncate(body_n_params);
+                spec_registry.resolve(lit.fn_id, &full_key).map(|s| s.0)
+            };
+        // Seed: spec has an unresolved TailCallClosure.
+        for sid in 0..spec_count {
+            let Some(idx) = spec_fnidx[sid] else { continue; };
+            let f = &module.fns[idx];
             for b in &f.blocks {
-                if matches!(b.terminator, Term::TailCallClosure { .. }) {
-                    set.insert(f.id);
-                    break;
+                if let Term::TailCallClosure { closure, args } = &b.terminator {
+                    if resolve_tcc_body_sid(sid, closure, args).is_none() {
+                        set.insert(sid as u32);
+                        break;
+                    }
                 }
             }
         }
-        // Propagation: F's effective return ≡ what F's caller's cont
-        // eventually receives. In CPS, that's the value flowing out of
-        // F's exit terminators:
-        //   - Term::TailCall   → callee's effective return
-        //   - Term::Call / CallClosure / Receive → cont's effective
-        //     return (the cont's eventual Return is what reaches F's
-        //     caller's cont)
-        // If any chain node is Tagged-returning, F transitively is.
+        // Propagation: spec's terminator chains into a tagged spec.
         loop {
             let mut changed = false;
-            for f in &module.fns {
-                if set.contains(&f.id) { continue; }
+            for sid in 0..spec_count {
+                if set.contains(&(sid as u32)) { continue; }
+                let Some(idx) = spec_fnidx[sid] else { continue; };
+                let f = &module.fns[idx];
                 let propagates = f.blocks.iter().any(|b| match &b.terminator {
-                    Term::TailCall { callee, .. } => set.contains(callee),
+                    Term::TailCall { callee, args } => {
+                        // Resolve callee's spec sid under this spec's env.
+                        let csid = (|| {
+                            let ft = spec_fn_types.get(sid).and_then(|o| *o)?;
+                            let arg_descrs: Vec<crate::types::Descr> = args.iter().map(|av|
+                                ft.vars.get(av).cloned().unwrap_or_else(crate::types::Descr::any)
+                            ).collect();
+                            spec_registry.resolve(*callee, &arg_descrs).map(|s| s.0)
+                        })().unwrap_or(callee.0);
+                        set.contains(&csid)
+                    }
+                    Term::TailCallClosure { closure, args } => {
+                        match resolve_tcc_body_sid(sid, closure, args) {
+                            Some(body_sid) => set.contains(&body_sid),
+                            None => true, // unresolved is tagged by definition
+                        }
+                    }
                     Term::Call { continuation, .. }
                     | Term::CallClosure { continuation, .. }
-                    | Term::Receive { continuation } => set.contains(&continuation.fn_id),
+                    | Term::Receive { continuation } => {
+                        // Cont's any-key spec id == continuation.fn_id.0.
+                        set.contains(&continuation.fn_id.0)
+                    }
                     _ => false,
                 });
                 if propagates {
-                    set.insert(f.id);
+                    set.insert(sid as u32);
                     changed = true;
                 }
             }
             if !changed { break; }
         }
         set
+    };
+    // Fn-id-level coarse view for legacy consumers (tagged_slot0_cont_specs
+    // below queries by FnId). True iff ANY spec of the fn is tagged.
+    let tagged_return_fns: std::collections::HashSet<crate::fz_ir::FnId> = {
+        let mut s = std::collections::HashSet::new();
+        for &sid in &tagged_return_specs {
+            if let Some(idx) = spec_fnidx[sid as usize] {
+                s.insert(module.fns[idx].id);
+            }
+        }
+        s
     };
 
     // fz-ul4.27.22.3 — cont specs whose producer is a closure-target
@@ -2477,9 +2565,12 @@ pub fn compile_with_backend<B: Backend>(
     let return_reprs: Vec<ArgRepr> = return_reprs
         .into_iter()
         .enumerate()
-        .map(|(sid, r)| match spec_fnidx[sid] {
-            Some(idx) if tagged_return_fns.contains(&module.fns[idx].id) => ArgRepr::Tagged,
-            _ => r,
+        .map(|(sid, r)| {
+            // fz-ul4.27.22.12 — per-spec override (was per-fn pre-22.12).
+            // tagged_return_specs is the precise grain; specs whose
+            // TailCallClosure resolves via closure_lit keep their narrow
+            // return repr.
+            if tagged_return_specs.contains(&(sid as u32)) { ArgRepr::Tagged } else { r }
         })
         .collect();
 
@@ -2716,6 +2807,46 @@ pub fn compile_with_backend<B: Backend>(
                             let cont_sid = continuation.fn_id.0;
                             if let Some(c) = chain.get(cont_sid as usize).and_then(|o| *o) {
                                 contributions.push(c);
+                            }
+                        }
+                        Term::TailCallClosure { closure, args } => {
+                            // fz-ul4.27.22.12 — closure_lit-driven chain
+                            // resolution. When this spec's env types the
+                            // closure as `closure_lit(F, K)`, the resolved
+                            // body's chain feeds ours. Mirrors 22.11's
+                            // direct-dispatch resolution but at the
+                            // pre-codegen analysis stage so halt_kind
+                            // selection (fz_spawn_entry, halt-cont
+                            // singletons) picks the right kind.
+                            let resolved_body = (|| {
+                                let ft = spec_fn_types.get(sid).and_then(|o| *o)?;
+                                let cv_descr = ft.vars.get(closure)?;
+                                let lit = cv_descr.as_closure_lit()?;
+                                let body_fn = module.fn_by_id(lit.fn_id);
+                                let body_n_params = body_fn.block(body_fn.entry).params.len();
+                                let mut full_key: Vec<crate::types::Descr> = lit.captures.clone();
+                                for av in args.iter() {
+                                    full_key.push(ft.vars.get(av).cloned()
+                                        .unwrap_or_else(crate::types::Descr::any));
+                                }
+                                while full_key.len() < body_n_params {
+                                    full_key.push(crate::types::Descr::any());
+                                }
+                                full_key.truncate(body_n_params);
+                                spec_registry.resolve(lit.fn_id, &full_key).map(|s| s.0)
+                            })();
+                            match resolved_body {
+                                Some(body_sid) => {
+                                    if let Some(c) = chain.get(body_sid as usize).and_then(|o| *o) {
+                                        contributions.push(c);
+                                    }
+                                }
+                                None => {
+                                    // Indirect dispatch via cl+16 uses the
+                                    // all-Tagged seam ABI, so anything
+                                    // returning through it is Tagged.
+                                    contributions.push(ArgRepr::Tagged);
+                                }
                             }
                         }
                         _ => {}
@@ -3595,15 +3726,22 @@ fn compile_fn<M: cranelift_module::Module>(
         }
         // fz-ul4.27.13 — Pre-terminator retag pass. Terminators that expect
         // tagged FzValue inputs across the board (Goto/If/Halt/CallClosure/
-        // TailCallClosure/Receive, plus uniform Call/TailCall/Return) get
-        // their used-by-term raw vars promoted here. Native Call/TailCall/
-        // Return handle their own per-slot coerce inline at the branch
-        // below, against the callee's `param_reprs` or this fn's own
+        // Receive, plus uniform Call/TailCall/Return) get their
+        // used-by-term raw vars promoted here. Native Call/TailCall/Return
+        // handle their own per-slot coerce inline at the branch below,
+        // against the callee's `param_reprs` or this fn's own
         // `return_reprs` — skip the blanket retag for those.
+        //
+        // fz-ul4.27.22.12 — TailCallClosure also handles its own coerce
+        // inline. On the direct-dispatch path (closure_lit-resolved), arg
+        // slots match the body's narrow `param_reprs` so raw vars pass
+        // through untagged. The indirect path's all-Tagged coerce runs
+        // inside the else branch.
         let needs_blanket_retag = match &blk.terminator {
             Term::Return(_) => !is_native,
             Term::Call { callee, .. } => !callee_is_native(callee.0),
             Term::TailCall { callee, .. } => !callee_is_native(callee.0),
+            Term::TailCallClosure { .. } => false,
             _ => true,
         };
         if needs_blanket_retag {
