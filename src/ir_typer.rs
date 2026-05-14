@@ -1859,16 +1859,57 @@ pub fn cont_slot0_descr(
 /// flow runs THROUGH the cont chain — without lifting cont contributions
 /// to F's return, recursive fns like `sum` reported `return = 0` (base
 /// case only) even though every caller's cont actually received `int`.
+/// fz-3zx.1 (fz-8ki) — explicit two-state lattice value for the LFP table.
+///
+/// `Unknown` is the Kleene-bottom for the iteration ("we haven't computed
+/// this yet"). `Known(d)` is the converged value (possibly `Descr::none`,
+/// which means "this spec has been examined and proven to produce no
+/// values" — logically distinct from "we don't know yet").
+///
+/// Keeping these distinct lets us:
+///   1. Assert convergence: at end-of-LFP, no reachable key may remain
+///      `Unknown`. A leftover `Unknown` is a non-convergence bug.
+///   2. Have type-rule consumers (the walker's slot-0 lookup, fz-3zx)
+///      DEFER on `Unknown` instead of falling back to `Descr::any` —
+///      avoiding the spurious widening that originally pushed sum's
+///      cont slot 0 to `int | float`.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum InferredReturn {
+    Unknown,
+    Known(Descr),
+}
+
+impl InferredReturn {
+    /// LFP-join contribution. `Unknown` contributes `Descr::none()` —
+    /// the join identity — so an unknown sibling exit doesn't perturb
+    /// other contributions. This is the "skip until known" semantics.
+    fn as_contribution(&self) -> Descr {
+        match self {
+            InferredReturn::Unknown => Descr::none(),
+            InferredReturn::Known(d) => d.clone(),
+        }
+    }
+}
+
 pub fn compute_effective_returns(
     module: &Module,
     specs: &HashMap<(FnId, Vec<Descr>), FnTypes>,
 ) -> HashMap<(FnId, Vec<Descr>), Descr> {
-    let mut ret: HashMap<(FnId, Vec<Descr>), Descr> = HashMap::new();
+    // Init every registered spec to Unknown. Reads on missing keys
+    // (callee not registered) also resolve to Unknown via the
+    // `lookup` helper — same Kleene-bottom semantics.
+    let mut ret: HashMap<(FnId, Vec<Descr>), InferredReturn> = HashMap::new();
     for key in specs.keys() {
-        ret.insert(key.clone(), Descr::none());
+        ret.insert(key.clone(), InferredReturn::Unknown);
     }
     let idx_of: HashMap<FnId, usize> = module.fns.iter().enumerate()
         .map(|(i, f)| (f.id, i)).collect();
+    let lookup = |ret: &HashMap<(FnId, Vec<Descr>), InferredReturn>,
+                  key: &(FnId, Vec<Descr>)| -> Descr {
+        ret.get(key)
+            .map(|ir| ir.as_contribution())
+            .unwrap_or_else(Descr::none)
+    };
 
     // Helper: cont_input_key matching the registered spec — uses
     // cycle-cut effective_return_descr for slot 0 (the same algorithm
@@ -1941,9 +1982,7 @@ pub fn compute_effective_returns(
                         let arg_descrs: Vec<Descr> = args.iter()
                             .map(|av| ft.vars.get(av).cloned().unwrap_or_else(Descr::any))
                             .collect();
-                        let d = ret.get(&(*callee, arg_descrs)).cloned()
-                            .unwrap_or_else(Descr::any);
-                        joined = joined.union(&d);
+                        joined = joined.union(&lookup(&ret, &(*callee, arg_descrs)));
                     }
                     Term::TailCallClosure { closure, args } => {
                         if let Some(&target) = ft.fn_constants.get(closure) {
@@ -1954,10 +1993,12 @@ pub fn compute_effective_returns(
                                 .collect();
                             while ad.len() < np { ad.push(Descr::any()); }
                             ad.truncate(np);
-                            let d = ret.get(&(target, ad)).cloned()
-                                .unwrap_or_else(Descr::any);
-                            joined = joined.union(&d);
+                            joined = joined.union(&lookup(&ret, &(target, ad)));
                         } else {
+                            // Genuinely opaque target (no fn_constants
+                            // resolution) — not a fixpoint deferral but a
+                            // real "we cannot prove a bound." `any` is the
+                            // honest answer here, NOT the Unknown sentinel.
                             joined = joined.union(&Descr::any());
                         }
                     }
@@ -1965,22 +2006,46 @@ pub fn compute_effective_returns(
                     | Term::CallClosure { continuation, .. }
                     | Term::Receive { continuation } => {
                         let cont_k = cont_key_at(b, continuation, ft);
-                        let d = ret.get(&(continuation.fn_id, cont_k)).cloned()
-                            .unwrap_or_else(Descr::any);
-                        joined = joined.union(&d);
+                        joined = joined.union(&lookup(&ret, &(continuation.fn_id, cont_k)));
                     }
                     Term::Halt(_) | Term::Goto(_, _) | Term::If(_, _, _) => {}
                 }
             }
-            let prev = ret.get(spec_key).cloned().unwrap_or_else(Descr::none);
-            if !joined.is_equiv(&prev) {
-                ret.insert(spec_key.clone(), joined);
+            // First visit (Unknown) always transitions to Known, even
+            // when joined == Descr::none() — that's an honest "proven
+            // empty" result, not a non-result. Subsequent visits update
+            // only when joined widens.
+            let should_update = match ret.get(spec_key) {
+                Some(InferredReturn::Unknown) => true,
+                Some(InferredReturn::Known(prev)) => !joined.is_equiv(prev),
+                None => true,
+            };
+            if should_update {
+                ret.insert(spec_key.clone(), InferredReturn::Known(joined));
                 changed = true;
             }
         }
         if !changed { break; }
     }
-    ret
+
+    // Post-convergence assertion: every registered spec must be Known.
+    // An Unknown leftover means the LFP body never visited this key —
+    // a non-convergence bug, not an honest "no values" answer.
+    for (k, v) in &ret {
+        debug_assert!(matches!(v, InferredReturn::Known(_)),
+            "compute_effective_returns: spec {:?} left Unknown after \
+             LFP convergence — non-convergence bug", k);
+    }
+
+    // Strip the Known shell for downstream consumers. The
+    // Unknown-to-Descr coercion via as_contribution() yields none(),
+    // matching the invariant we just asserted under release builds.
+    ret.into_iter()
+        .map(|(k, v)| (k, match v {
+            InferredReturn::Known(d) => d,
+            InferredReturn::Unknown => Descr::none(),
+        }))
+        .collect()
 }
 
 pub fn effective_return_descr(
