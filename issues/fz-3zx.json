@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-05-14T14:53:11Z",
   "created": "2026-05-14T13:33:29Z",
   "description": "fz-2yw.2 cached LFP effective returns and wired pretty_module_types\nto read them. But cont_slot0_descr, walk_spec_for_discovery's slot0,\nand the cont_key computation INSIDE compute_effective_returns still\ncall effective_return_descr (cycle-cut) directly. Cycle-cut stays\nload-bearing for cont-key alignment: the worklist registered cont\nspecs using cycle-cut-derived slot0; switching to LFP slot0 would\nproduce DIFFERENT cont keys, leaving the registered specs orphan.\n\n## The real fix\n\nIterate type_module:\n  1. Run worklist with cycle-cut slot0 (current behavior). Get specs map.\n  2. Compute LFP effective_returns from those specs.\n  3. Re-run worklist with LFP-derived slot0. Get new specs map.\n  4. Repeat 2-3 until specs map stabilizes.\n\nAt convergence, cont keys are derived from the LFP — strictly tighter\nthan cycle-cut where the difference matters (recursive cont chains).\nThe LFP is now the single source of truth; cycle-cut can retire.\n\n## What deletes\n\n  - effective_return_descr() — the recursive on-demand fn\n  - cont_slot0_descr() — wrapper that just calls effective_return_descr\n  - The cycle-cut slot0 in walk_spec_for_discovery → reads LFP cache\n  - The cycle-cut slot0 in compute_effective_returns's cont_key_at →\n    self-referential read of effective_returns cache (now possible\n    because it's populated incrementally per outer iter)\n  - The `visiting: HashSet` cycle-cut state — gone entirely\n\n## Risk\n\nCont specs registered under cycle-cut might be narrower than what\nLFP produces (e.g., `0` is narrower than `int` for sum's k_2). Re-walk\nwith LFP slot0 could WIDEN cont keys for fns where cycle-cut accidentally\nhit a tight narrow case. Codegen's spec_registry.resolve uses\nsubtyping, so wider registered keys are still correct — but\nSpecRegistry behavior under wider keys may surface latent issues.\n\n## Acceptance\n\n  - effective_return_descr deleted from the codebase.\n  - All golden specs / clif diffs re-blessed; every cont key strictly\n    tighter or unchanged.\n  - cont_input_key reads from ModuleTypes.effective_returns directly.\n  - sum's k_2 spec key has slot 0 = int (not 0), matching the LFP.",
   "id": "fz-3zx",
@@ -13,8 +14,8 @@
     }
   ],
   "priority": 3,
-  "status": "open",
+  "status": "closed",
   "title": "fz-2yw.3: iterate type_module under LFP slot0 — retire effective_return_descr",
   "type": "task",
-  "updated_at": "2026-05-14T14:13:30Z"
+  "updated_at": "2026-05-14T14:53:11Z"
 }
