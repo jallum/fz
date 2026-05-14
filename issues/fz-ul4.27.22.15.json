@@ -4,6 +4,7 @@
     "fz-ul4.27.22.12"
   ],
   "blocks": [],
+  "closed_at": "2026-05-14T21:45:29Z",
   "created": "2026-05-14T21:02:50Z",
   "description": "Cleanup ticket — file now, do after 22.12 lands.\n\nThe halt_kind plumbing landed in fc1ff766 (halt_kind in closure flags high 2 bits, threaded through fz_alloc_closure / init_static_closures / fz_aot_register_static_closure / fz_spawn_entry) was load-bearing for the original 22.6 force-drop attempt because uniform main bodies needed to pick the matching halt-cont singleton at runtime.\n\nWith 22.11's per-spec direct dispatch, every fn's halt-cont can be selected at compile time from its chain_repr at the entry spec. The runtime header bits and the FFI arity-3 fz_alloc_closure may now be pure overhead.\n\n## Scope\n\n1. Audit every reader of closure header halt_kind bits:\n   - fz_spawn_entry shim's halt-cont selection (runtime/src/ir_runtime.rs region)\n   - fz_main_entry path\n   - fz_resume_park\n   - AOT shim (runtime/src/aot_shim.rs line 282-285 hardcoded Tagged)\n\n2. For each, determine whether the halt-cont can instead be selected at compile time and baked into the per-fn entry shim. If yes:\n   - Revert fz_alloc_closure to arity 2.\n   - Reclaim the high 2 flags bits.\n   - Simplify init_static_closures / fz_aot_register_static_closure FFI to drop halt_kind.\n   - Delete fn_halt_kinds map (src/ir_codegen.rs:2735+).\n\n3. If the runtime needs halt_kind for genuinely dynamic reasons (e.g., remote spawn from an unknown caller), document and keep.\n\n## Acceptance\n\n- cargo test --workspace green.\n- runtime/src/heap.rs and fz_value.rs simpler; closure header flags has fewer used bits.\n- AOT shim no longer hardcodes Tagged — it derives halt_kind from the AOT'd module's main fn spec.\n\n## BLOCKED BY\n\n- fz-ul4.27.22.12 [[fz-cps-seam.force-drop]]",
   "id": "fz-ul4.27.22.15",
@@ -16,7 +17,7 @@
     }
   ],
   "priority": 4,
-  "status": "in_progress",
+  "status": "closed",
   "title": "fz-cps-seam.retire-halt-kind-plumbing: reassess halt_kind closure-header plumbing post-22.7",
   "type": "task",
   "updated_at": "2026-05-14T21:45:29Z"
