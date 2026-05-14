@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-14T21:02:24Z",
+  "description": "22.11 falls back to indirect dispatch when the closure Var's Descr is a union of multiple closure_lits (e.g., \\`if cond, do: double, else: neg\\`). This ticket extends the direct path to cover that case when the members share compatible ABIs.\n\n## Scope\n\nGated on demonstrated demand. File a fixture that exercises a union-of-singletons closure flow (e.g., conditional closure binding into apply2) and measure whether the existing indirect fallback regresses anything we care about. If yes, implement:\n\nOption α (lightweight): when all union members resolve to body specs with identical param_reprs and return_reprs, emit a direct return_call to ONE member (any member — they're ABI-compatible) using cl as self. Reads captures via cl+24 — captures may differ per member but each member's body reads its own; provided the body still indexes correctly.\n\nOption β (full switch): emit a Cranelift br_table on the resolved body fp identifier, branching to each member's direct return_call. Cost: code size; gain: full precision.\n\nOption γ (fall-through): keep indirect path; close ticket as not-worth-it. Document the perf rationale.\n\n## Acceptance\n\n- Decision documented in ticket comments before implementation.\n- If implemented, cargo test --workspace green; fz dump on the new fixture shows direct (or switched) dispatch.\n- If γ: close as won't-fix with rationale.\n\n## BLOCKED BY\n\n- fz-ul4.27.22.11 [[fz-cps-seam.codegen-direct]]",
+  "id": "fz-ul4.27.22.13",
+  "labels": [],
+  "parent": "fz-ul4.27.22",
+  "priority": 4,
+  "status": "open",
+  "title": "fz-cps-seam.union-singletons: direct dispatch for union of closure_lits",
+  "type": "task",
+  "updated_at": "2026-05-14T21:02:24Z"
+}
