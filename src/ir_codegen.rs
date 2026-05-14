@@ -136,11 +136,19 @@ pub struct CompiledModule {
     /// Tail-CC indirect-calls main with `(halt_cont)`. Used by
     /// `Runtime::spawn(fn_id)` / `CompiledModule::run_internal`.
     pub(crate) main_entry_addr: *const u8,
-    /// fz-cps.1.11 — finalized address of the Cranelift-emitted
-    /// `fz_halt_cont_body` Tail-CC fn. `make_process` writes this into
-    /// the per-Process `halt_cont_singleton` closure's +16 slot so
-    /// every uniform→native synth halt-cont reuses the same singleton.
-    pub(crate) halt_cont_body_addr: *const u8,
+    /// fz-ul4.27.22.3 — finalized addresses of the three Cranelift-emitted
+    /// `fz_halt_cont_body_{tagged,i64,f64}` Tail-CC fns, indexed by repr
+    /// kind (0=Tagged, 1=RawInt, 2=RawF64). `make_process` seeds matching
+    /// Process singletons via `init_halt_cont_singletons`. Null slots
+    /// (unused reprs for this program) are pre-populated lazily by
+    /// `fz_get_halt_cont` at first use.
+    pub(crate) halt_cont_body_addrs: [*const u8; 3],
+    /// fz-ul4.27.22.3 — per-FnId halt-cont singleton kind. When the
+    /// Rust scheduler dispatches a task via `fz_main_entry`, it picks
+    /// `process.halt_cont_singletons[kind]` matching the entry fn's
+    /// any-key return repr. Default kind 0 (Tagged) for fns not in
+    /// the map.
+    pub(crate) fn_halt_kinds: HashMap<u32, u32>,
 }
 
 impl CompiledModule {
@@ -187,19 +195,19 @@ impl CompiledModule {
             next_frame: std::ptr::null_mut(),
             mailbox: std::collections::VecDeque::new(),
             parked_cont: std::ptr::null_mut(),
-            halt_cont_singleton: std::ptr::null_mut(),
+            halt_cont_singletons: [std::ptr::null_mut(); 3],
             pending_closure_entry: std::ptr::null_mut(),
             pending_main_entry: std::ptr::null_mut(),
+            pending_main_entry_fn_id: 0,
             static_closures: Vec::new(),
             static_closure_bufs: Vec::new(),
         };
         // fz-cps.1.7 — allocate one static singleton per zero-cap
         // closure-target spec. See docs/cps-in-clif.md §8.2.
         p.init_static_closures(&self.static_closure_targets);
-        // fz-cps.1.11 — seed the halt-cont singleton with this module's
-        // `fz_halt_cont_body` finalized address. Reused at every
-        // uniform→native synth halt-cont site.
-        p.init_halt_cont_singleton(self.halt_cont_body_addr);
+        // fz-ul4.27.22.3 — seed all three halt-cont singletons; each
+        // slot's body sig matches its repr kind (Tagged / RawInt / RawF64).
+        p.init_halt_cont_singletons(self.halt_cont_body_addrs);
         p
     }
 
@@ -276,11 +284,20 @@ impl CompiledModule {
         if !process.pending_main_entry.is_null() {
             let fp = process.pending_main_entry;
             process.pending_main_entry = std::ptr::null_mut();
-            type MainEntry = extern "C" fn(u64) -> i64;
+            // fz-ul4.27.22.3 — pick halt-cont singleton matching the
+            // entry fn's return-repr kind. `pending_main_entry_fn_id`
+            // is set alongside `pending_main_entry` by Runtime::spawn.
+            let kind = self
+                .fn_halt_kinds
+                .get(&process.pending_main_entry_fn_id)
+                .copied()
+                .unwrap_or(0) as usize;
+            let halt_cl = process.halt_cont_singletons[kind] as u64;
+            type MainEntry = extern "C" fn(u64, u64) -> i64;
             let f: MainEntry = unsafe {
                 std::mem::transmute(self.main_entry_addr)
             };
-            let _ = f(fp as u64);
+            let _ = f(fp as u64, halt_cl);
             process.next_frame = std::ptr::null_mut();
             park_time_gc(process);
             return;
@@ -310,19 +327,19 @@ impl CompiledModule {
     }
 
     fn run_internal(&self, fn_id: FnId) -> i64 {
-        // fz-cps.5 — every fz fn is Tail-CC, including main. Dispatch
-        // via the fz_main_entry SystemV→Tail-CC shim (alloc halt-cont,
-        // `call_indirect Tail (halt_cont)`). The chain runs synchronously
-        // through halt_cont_body which sets `process.halt_value`.
-        // No trampoline iterations; no entry frame.
+        // fz-cps.5 / fz-ul4.27.22.3 — every fz fn is Tail-CC. Dispatch
+        // via fz_main_entry, passing the halt-cont singleton matching
+        // the entry fn's return-repr kind.
         let fp = self
             .fn_ptrs
             .get(&fn_id.0)
             .copied()
             .unwrap_or_else(|| panic!("no fn ptr for entry {}", fn_id.0));
-        type MainEntry = extern "C" fn(u64) -> i64;
+        let kind = self.fn_halt_kinds.get(&fn_id.0).copied().unwrap_or(0) as usize;
+        let halt_cl = current_process().halt_cont_singletons[kind] as u64;
+        type MainEntry = extern "C" fn(u64, u64) -> i64;
         let f: MainEntry = unsafe { std::mem::transmute(self.main_entry_addr) };
-        let _ = f(fp as u64);
+        let _ = f(fp as u64, halt_cl);
         current_process().halt_value
     }
 
@@ -779,6 +796,23 @@ impl ArgRepr {
             _ => types::I64,
         }
     }
+    /// fz-ul4.27.22.3 — halt-cont singleton kind. 0=Tagged, 1=RawInt, 2=RawF64.
+    fn halt_kind(&self) -> u32 {
+        match self {
+            ArgRepr::Tagged => 0,
+            ArgRepr::RawInt => 1,
+            ArgRepr::RawF64 => 2,
+        }
+    }
+}
+
+/// fz-ul4.27.22.3 — pick the halt_cont_body FuncId matching `repr`.
+fn halt_cont_body_id_for(runtime: &RuntimeRefs, repr: ArgRepr) -> FuncId {
+    match repr {
+        ArgRepr::Tagged => runtime.halt_cont_body_tagged_id,
+        ArgRepr::RawInt => runtime.halt_cont_body_i64_id,
+        ArgRepr::RawF64 => runtime.halt_cont_body_f64_id,
+    }
 }
 
 /// Per-spec entry-param ArgReprs. Length matches the spec's entry block's
@@ -904,10 +938,13 @@ fn build_fn_signature(
     // it forwards into) actually consumes it.
     let mut sig = Signature::new(CallConv::Tail);
     if is_cont_fn {
-        // fz-cps.1.2 cont fn sig per §2.1: `(result:i64, self:i64) tail`.
-        sig.params.push(AbiParam::new(types::I64));               // result (Tagged)
-        sig.params.push(AbiParam::new(types::I64));               // self (closure ptr)
-        let _ = param_reprs;
+        // fz-ul4.27.22.3 cont fn sig per §2.1: `(result, self:i64) tail`.
+        // result uses param_reprs[0]'s cl_type (RawInt=i64, RawF64=f64,
+        // Tagged=i64). Producer's Term::Return sig matches via
+        // return_reprs[producer_spec_id]; typer's effective_return walk
+        // ensures producer and consumer agree at the seam.
+        sig.params.push(AbiParam::new(param_reprs[0].cl_type()));  // result
+        sig.params.push(AbiParam::new(types::I64));                // self
     } else if let Some(n_caps) = closure_target_n_caps {
         // fz-cps.1.2 closure-target fn sig per §2.1:
         // `(args..., self:i64, cont:i64) tail`. Captures (param_reprs[0..n_caps])
@@ -1026,9 +1063,15 @@ pub struct CompiledMetadata {
     pub spawn_entry_id: FuncId,
     /// fz-cps.5 — fz_main_entry scheduler-launch shim FuncId.
     pub main_entry_id: FuncId,
-    /// fz-cps.1.11 — fz_halt_cont_body FuncId, surfaced so JIT finalize
-    /// can resolve it and `make_process` can seed the singleton.
-    pub halt_cont_body_id: FuncId,
+    /// fz-ul4.27.22.3 — three fz_halt_cont_body fns indexed by repr
+    /// kind (0=Tagged, 1=RawInt, 2=RawF64). Sigs: (Tagged|i64|f64, i64)
+    /// -> i64 tail. Bodies call the matching halt_implicit_* and return 0.
+    pub halt_cont_body_ids: [FuncId; 3],
+    /// fz-ul4.27.22.3 — per-FnId halt-cont singleton kind (the entry
+    /// fn's any-key return repr). Used by the Rust scheduler to pick
+    /// the matching halt_cont_singletons slot when dispatching via
+    /// fz_main_entry.
+    pub fn_halt_kinds: HashMap<u32, u32>,
 }
 
 /// fz-ul4.29.2 — Two-way mapping between (FnId, input-Descr-tuple) and
@@ -1203,6 +1246,8 @@ impl JitBackend {
         builder.symbol("fz_print_nil",  fz_runtime::fz_print_nil  as *const u8);
         builder.symbol("fz_halt", fz_runtime::ir_runtime::fz_halt as *const u8);
         builder.symbol("fz_halt_implicit", fz_runtime::ir_runtime::fz_halt_implicit as *const u8);
+        builder.symbol("fz_halt_implicit_i64", fz_runtime::ir_runtime::fz_halt_implicit_i64 as *const u8);
+        builder.symbol("fz_halt_implicit_f64", fz_runtime::ir_runtime::fz_halt_implicit_f64 as *const u8);
         builder.symbol("fz_alloc_frame", fz_runtime::ir_runtime::fz_alloc_frame as *const u8);
         builder.symbol("fz_alloc_list_cons", fz_runtime::ir_runtime::fz_alloc_list_cons as *const u8);
         builder.symbol("fz_alloc_struct", fz_runtime::ir_runtime::fz_alloc_struct as *const u8);
@@ -1283,7 +1328,11 @@ impl Backend for JitBackend {
         let resume_park_addr = jmod.get_finalized_function(meta.resume_park_id);
         let spawn_entry_addr = jmod.get_finalized_function(meta.spawn_entry_id);
         let main_entry_addr = jmod.get_finalized_function(meta.main_entry_id);
-        let halt_cont_body_addr = jmod.get_finalized_function(meta.halt_cont_body_id);
+        let halt_cont_body_addrs = [
+            jmod.get_finalized_function(meta.halt_cont_body_ids[0]),
+            jmod.get_finalized_function(meta.halt_cont_body_ids[1]),
+            jmod.get_finalized_function(meta.halt_cont_body_ids[2]),
+        ];
         Ok(CompiledModule {
             module: jmod,
             fn_ptrs,
@@ -1299,7 +1348,8 @@ impl Backend for JitBackend {
             resume_park_addr,
             spawn_entry_addr,
             main_entry_addr,
-            halt_cont_body_addr,
+            halt_cont_body_addrs,
+            fn_halt_kinds: meta.fn_halt_kinds,
         })
     }
 }
@@ -1357,8 +1407,12 @@ impl Backend for AotBackend {
         // SystemV→Tail-CC shims (fz_main_entry / fz_halt_cont_body) emitted
         // in compile_with_backend. Three FFI fns from fz-runtime do the
         // Process setup, static-closure registration, and run-main+teardown.
+        // fz-ul4.27.22.3 — setup takes 3 halt_cont_body addrs (Tagged,
+        // RawInt, RawF64) in slots 2-4.
         let setup_sig = sig1(
-            &[types::I64, types::I32, types::I64, types::I64, types::I64],
+            &[types::I64, types::I32,
+              types::I64, types::I64, types::I64,
+              types::I64, types::I64],
             &[types::I64],
         );
         let setup_id = self
@@ -1424,7 +1478,7 @@ impl Backend for AotBackend {
             &c_main_sig,
             meta.fn_ids[&main_fn_id.0],
             meta.main_entry_id,
-            meta.halt_cont_body_id,
+            meta.halt_cont_body_ids,
             meta.spawn_entry_id,
             meta.resume_park_id,
             &meta.static_closure_targets,
@@ -1488,16 +1542,14 @@ pub fn compile_with_backend<B: Backend>(
 
     let mut fbctx = FunctionBuilderContext::new();
 
-    // fz-cps.5 — emit fz_main_entry. SystemV scheduler-callable shim
-    // that launches the user's main fn via the closure-target sig.
-    // Sig: `(main_fn_addr:i64) -> i64 system_v`.
-    // Body: get halt-cont singleton, `call_indirect Tail (halt_cont)`
-    // against main's sig `(cont:i64) -> i64 tail`. Uses the off-heap
-    // singleton to keep heap arena allocations from the launch path
-    // (preserves test invariants that count per-fixture heap allocs).
+    // fz-ul4.27.22.3 — emit fz_main_entry. Generic shim: takes the
+    // entry fn ptr + a halt-cont singleton ptr supplied by the Rust
+    // caller (caller picks the singleton matching the entry fn's
+    // return_repr kind). Body just `call_indirect Tail main_fp(halt_cl)`.
     {
         let mut ctx = backend.module_mut().make_context();
         let mut sig = Signature::new(CallConv::SystemV);
+        sig.params.push(AbiParam::new(types::I64));
         sig.params.push(AbiParam::new(types::I64));
         sig.returns.push(AbiParam::new(types::I64));
         ctx.func.signature = sig;
@@ -1508,15 +1560,7 @@ pub fn compile_with_backend<B: Backend>(
             b.switch_to_block(entry);
             b.seal_block(entry);
             let main_fp = b.block_params(entry)[0];
-            let ghc_fref = backend
-                .module_mut()
-                .declare_func_in_func(runtime.get_halt_cont_id, b.func);
-            let hcb_fref = backend
-                .module_mut()
-                .declare_func_in_func(runtime.halt_cont_body_id, b.func);
-            let hcb_addr = b.ins().func_addr(types::I64, hcb_fref);
-            let halt_inst = b.ins().call(ghc_fref, &[hcb_addr]);
-            let halt_cl = b.inst_results(halt_inst)[0];
+            let halt_cl = b.block_params(entry)[1];
             let mut main_sig = Signature::new(CallConv::Tail);
             main_sig.params.push(AbiParam::new(types::I64));
             main_sig.returns.push(AbiParam::new(types::I64));
@@ -1555,14 +1599,17 @@ pub fn compile_with_backend<B: Backend>(
             // fz-cps.5 — reuse the per-Process halt-cont singleton
             // (off-heap) instead of allocating a fresh closure per
             // spawned task. Keeps heap_live_count invariants stable.
+            // fz-ul4.27.22.3 — spawn'd closures are always closure-target
+            // fns (return forced Tagged), so the halt-cont seam is Tagged.
             let ghc_fref = backend
                 .module_mut()
                 .declare_func_in_func(runtime.get_halt_cont_id, b.func);
             let hcb_fref = backend
                 .module_mut()
-                .declare_func_in_func(runtime.halt_cont_body_id, b.func);
+                .declare_func_in_func(runtime.halt_cont_body_tagged_id, b.func);
             let hcb_addr = b.ins().func_addr(types::I64, hcb_fref);
-            let halt_inst = b.ins().call(ghc_fref, &[hcb_addr]);
+            let kind = b.ins().iconst(types::I32, 0); // Tagged
+            let halt_inst = b.ins().call(ghc_fref, &[hcb_addr, kind]);
             let halt_cl = b.inst_results(halt_inst)[0];
             // Load closure body addr at +16 and invoke as
             // closure-target sig `(self, cont) tail` (zero user args).
@@ -1626,18 +1673,22 @@ pub fn compile_with_backend<B: Backend>(
         backend.module_mut().clear_context(&mut ctx);
     }
 
-    // fz-cps.1.2 — emit fz_halt_cont_body. This is the singleton-style
-    // cont body that every Term::Halt / top-level Term::Return chain
-    // eventually invokes via return_call_indirect through its closure's
-    // +16 code_ptr. Sig: `(val:i64, self:i64) -> i64 tail`.
-    // Body: `call fz_halt_implicit(val); return iconst.i64 0`.
-    {
+    // fz-ul4.27.22.3 — emit three fz_halt_cont_body fns, one per repr.
+    // The producer's Term::Return uses sig (return_repr, i64); the
+    // closure pointer at the chain end points at the matching body so
+    // sigs agree. Tagged variant unboxes (existing semantics); RawInt
+    // / RawF64 variants store the value directly.
+    for (body_id, val_ty, halt_impl_id) in [
+        (runtime.halt_cont_body_tagged_id, types::I64, runtime.halt_implicit_id),
+        (runtime.halt_cont_body_i64_id, types::I64, runtime.halt_implicit_i64_id),
+        (runtime.halt_cont_body_f64_id, types::F64, runtime.halt_implicit_f64_id),
+    ] {
         let mut ctx = backend.module_mut().make_context();
-        let mut hcb_sig = Signature::new(CallConv::Tail);
-        hcb_sig.params.push(AbiParam::new(types::I64));
-        hcb_sig.params.push(AbiParam::new(types::I64));
-        hcb_sig.returns.push(AbiParam::new(types::I64));
-        ctx.func.signature = hcb_sig;
+        let mut sig = Signature::new(CallConv::Tail);
+        sig.params.push(AbiParam::new(val_ty));
+        sig.params.push(AbiParam::new(types::I64));
+        sig.returns.push(AbiParam::new(types::I64));
+        ctx.func.signature = sig;
         {
             let mut b = FunctionBuilder::new(&mut ctx.func, &mut fbctx);
             let entry = b.create_block();
@@ -1647,7 +1698,7 @@ pub fn compile_with_backend<B: Backend>(
             let val = b.block_params(entry)[0];
             let hi_fref = backend
                 .module_mut()
-                .declare_func_in_func(runtime.halt_implicit_id, b.func);
+                .declare_func_in_func(halt_impl_id, b.func);
             b.ins().call(hi_fref, &[val]);
             let zero = b.ins().iconst(types::I64, 0);
             b.ins().return_(&[zero]);
@@ -1655,8 +1706,8 @@ pub fn compile_with_backend<B: Backend>(
         }
         backend
             .module_mut()
-            .define_function(runtime.halt_cont_body_id, &mut ctx)
-            .map_err(|e| CodegenError::new(format!("define fz_halt_cont_body: {}", e)))?;
+            .define_function(body_id, &mut ctx)
+            .map_err(|e| CodegenError::new(format!("define halt_cont_body: {}", e)))?;
         backend.module_mut().clear_context(&mut ctx);
     }
 
@@ -2291,6 +2342,51 @@ pub fn compile_with_backend<B: Backend>(
             None => Vec::new(),
         })
         .collect();
+    // fz-ul4.27.22.3 — cont specs whose producer is a closure-target
+    // (or whose producer is a Receive / CallClosure with unknown
+    // target) must accept Tagged at slot 0. The producer returns
+    // Tagged (forced for closure-target; opaque for unknown closure /
+    // mailbox), and the cont's wire sig at the seam must agree.
+    let mut tagged_slot0_cont_specs: std::collections::HashSet<u32> =
+        std::collections::HashSet::new();
+    for sid_caller in 0..spec_count {
+        let Some(caller_idx) = spec_fnidx[sid_caller] else { continue; };
+        let caller = &module.fns[caller_idx];
+        let caller_ft = spec_fn_types[sid_caller]
+            .expect("non-sentinel spec must have FnTypes");
+        for blk in &caller.blocks {
+            let cont = match &blk.terminator {
+                Term::Call { callee, continuation, .. } => {
+                    if closure_target_fns.contains(callee) {
+                        Some(continuation)
+                    } else {
+                        None
+                    }
+                }
+                Term::CallClosure { continuation, .. }
+                | Term::Receive { continuation } => Some(continuation),
+                _ => None,
+            };
+            if let Some(cont) = cont {
+                let key = crate::ir_typer::cont_input_key(
+                    blk, cont, caller_ft, module, &module_types,
+                );
+                if let Some(sid) = spec_registry.resolve(cont.fn_id, &key) {
+                    tagged_slot0_cont_specs.insert(sid.0);
+                }
+            }
+        }
+    }
+    let param_reprs: Vec<Vec<ArgRepr>> = param_reprs
+        .into_iter()
+        .enumerate()
+        .map(|(sid, mut reprs)| {
+            if !reprs.is_empty() && tagged_slot0_cont_specs.contains(&(sid as u32)) {
+                reprs[0] = ArgRepr::Tagged;
+            }
+            reprs
+        })
+        .collect();
     let return_reprs: Vec<ArgRepr> = return_descrs
         .iter()
         .map(ArgRepr::from_descr)
@@ -2490,6 +2586,81 @@ pub fn compile_with_backend<B: Backend>(
         .collect();
 
     let diagnostics = crate::ir_typer::collect_diagnostics(module, &module_types);
+    // fz-ul4.27.22.3 — per-spec chain analysis: for each registered
+    // spec, walk its exit terminators and follow callee resolutions
+    // transitively. The chain's halt-seam kind = JOIN of every Return
+    // contributing along reachable paths.
+    let chain_repr: Vec<ArgRepr> = {
+        let join = |a: ArgRepr, b: ArgRepr| -> ArgRepr {
+            if a == b { a } else { ArgRepr::Tagged }
+        };
+        let mut chain: Vec<Option<ArgRepr>> = vec![None; spec_count];
+        let resolve_sid_under = |callee_id: FnId,
+                                 caller_sid: u32,
+                                 args: &[crate::fz_ir::Var]| -> Option<u32> {
+            let any_sid = caller_sid as usize;
+            let ft = spec_fn_types.get(any_sid).and_then(|o| *o)?;
+            let arg_descrs: Vec<crate::types::Descr> = args.iter()
+                .map(|av| ft.vars.get(av).cloned().unwrap_or_else(crate::types::Descr::any))
+                .collect();
+            spec_registry.resolve(callee_id, &arg_descrs).map(|s| s.0)
+        };
+        for _ in 0..(spec_count * 4 + 16) {
+            let mut changed = false;
+            for sid in 0..spec_count {
+                let Some(idx) = spec_fnidx[sid] else { continue; };
+                let f = &module.fns[idx];
+                let mut contributions: Vec<ArgRepr> = Vec::new();
+                for blk in &f.blocks {
+                    match &blk.terminator {
+                        Term::Return(_) => {
+                            contributions.push(return_reprs[sid]);
+                        }
+                        Term::TailCall { callee, args } => {
+                            let csid = resolve_sid_under(*callee, sid as u32, args)
+                                .unwrap_or(callee.0);
+                            if let Some(c) = chain.get(csid as usize).and_then(|o| *o) {
+                                contributions.push(c);
+                            }
+                        }
+                        Term::Call { continuation, .. }
+                        | Term::CallClosure { continuation, .. }
+                        | Term::Receive { continuation } => {
+                            // Cont's chain: under the caller's per-spec
+                            // env, the cont's resolved sid via the typer's
+                            // cont_input_key (already done elsewhere) —
+                            // here we use the cont's any-key as a sound
+                            // over-approximation. JOIN refines later.
+                            let cont_sid = continuation.fn_id.0;
+                            if let Some(c) = chain.get(cont_sid as usize).and_then(|o| *o) {
+                                contributions.push(c);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                if contributions.is_empty() { continue; }
+                let joined = contributions.into_iter().reduce(join).unwrap();
+                if chain[sid] != Some(joined) {
+                    chain[sid] = Some(joined);
+                    changed = true;
+                }
+            }
+            if !changed { break; }
+        }
+        chain.into_iter().map(|o| o.unwrap_or(ArgRepr::Tagged)).collect()
+    };
+    let fn_halt_kinds: HashMap<u32, u32> = {
+        let mut m: HashMap<u32, u32> = HashMap::new();
+        for f in &module.fns {
+            // Use the fn's any-key spec sid for the entry-time chain.
+            let sid = f.id.0 as usize;
+            if let Some(r) = chain_repr.get(sid).copied() {
+                m.insert(f.id.0, r.halt_kind());
+            }
+        }
+        m
+    };
     let metadata = CompiledMetadata {
         fn_ids,
         schemas,
@@ -2510,7 +2681,12 @@ pub fn compile_with_backend<B: Backend>(
         resume_park_id: runtime.resume_park_id,
         spawn_entry_id: runtime.spawn_entry_id,
         main_entry_id: runtime.main_entry_id,
-        halt_cont_body_id: runtime.halt_cont_body_id,
+        halt_cont_body_ids: [
+            runtime.halt_cont_body_tagged_id,
+            runtime.halt_cont_body_i64_id,
+            runtime.halt_cont_body_f64_id,
+        ],
+        fn_halt_kinds,
     };
 
     // Backend-specific metadata carriers (no-op for JIT; dispatch + main
@@ -2543,7 +2719,7 @@ fn emit_aot_c_main<M: cranelift_module::Module>(
     c_main_sig: &Signature,
     main_fz_func_id: FuncId,
     main_entry_id: FuncId,
-    halt_cont_body_id: FuncId,
+    halt_cont_body_ids: [FuncId; 3],
     spawn_entry_id: FuncId,
     resume_park_id: FuncId,
     static_closure_targets: &[(u32, u32, FuncId)],
@@ -2574,8 +2750,12 @@ fn emit_aot_c_main<M: cranelift_module::Module>(
         let atom_blob_len_v = b.ins().iconst(types::I32, atom_blob_len as i64);
 
         // Shim addresses (Local symbols in this object).
-        let hcb_fref = jmod.declare_func_in_func(halt_cont_body_id, b.func);
-        let hcb_addr = b.ins().func_addr(types::I64, hcb_fref);
+        let hcb_tagged_fref = jmod.declare_func_in_func(halt_cont_body_ids[0], b.func);
+        let hcb_tagged_addr = b.ins().func_addr(types::I64, hcb_tagged_fref);
+        let hcb_i64_fref = jmod.declare_func_in_func(halt_cont_body_ids[1], b.func);
+        let hcb_i64_addr = b.ins().func_addr(types::I64, hcb_i64_fref);
+        let hcb_f64_fref = jmod.declare_func_in_func(halt_cont_body_ids[2], b.func);
+        let hcb_f64_addr = b.ins().func_addr(types::I64, hcb_f64_fref);
         let me_fref = jmod.declare_func_in_func(main_entry_id, b.func);
         let me_addr = b.ins().func_addr(types::I64, me_fref);
         let se_fref = jmod.declare_func_in_func(spawn_entry_id, b.func);
@@ -2585,11 +2765,15 @@ fn emit_aot_c_main<M: cranelift_module::Module>(
         let main_fref = jmod.declare_func_in_func(main_fz_func_id, b.func);
         let main_fp = b.ins().func_addr(types::I64, main_fref);
 
-        // proc = fz_aot_setup(atom_blob, atom_blob_len, hcb_addr, se_addr, rp_addr)
+        // proc = fz_aot_setup(atom_blob, atom_blob_len,
+        //                     hcb_tagged, hcb_i64, hcb_f64,
+        //                     se_addr, rp_addr)
         let setup_fref = jmod.declare_func_in_func(setup_id, b.func);
         let setup_call = b.ins().call(
             setup_fref,
-            &[atom_blob_addr, atom_blob_len_v, hcb_addr, se_addr, rp_addr],
+            &[atom_blob_addr, atom_blob_len_v,
+              hcb_tagged_addr, hcb_i64_addr, hcb_f64_addr,
+              se_addr, rp_addr],
         );
         let proc_v = b.inst_results(setup_call)[0];
 
@@ -2658,6 +2842,9 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
     let print_nil_id  = decl("fz_print_nil",  &[],           &[])?;
     let halt_id = decl("fz_halt", &[types::I64, types::I64], &[])?;
     let halt_implicit_id = decl("fz_halt_implicit", &[types::I64], &[])?;
+    // fz-ul4.27.22.3 — typed halt-implicit variants.
+    let halt_implicit_i64_id = decl("fz_halt_implicit_i64", &[types::I64], &[])?;
+    let halt_implicit_f64_id = decl("fz_halt_implicit_f64", &[types::F64], &[])?;
     let alloc_id = decl("fz_alloc_frame", &[types::I32, types::I32], &[types::I64])?;
     let alloc_cons_id = decl(
         "fz_alloc_list_cons",
@@ -2734,16 +2921,25 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
     // halt-cont closure ptr; lazily initialized using the supplied
     // halt_cont_body addr (JIT pre-populates at make_process time;
     // AOT path relies on lazy init at first call).
-    let get_halt_cont_id = decl("fz_get_halt_cont", &[types::I64], &[types::I64])?;
-    // fz-cps.1.2 — fz_halt_cont_body: declared LOCAL (we emit the body
-    // in compile_with_backend). Sig: `(val:i64, self:i64) -> i64 tail`.
-    let mut hcb_sig = Signature::new(CallConv::Tail);
-    hcb_sig.params.push(AbiParam::new(types::I64));
-    hcb_sig.params.push(AbiParam::new(types::I64));
-    hcb_sig.returns.push(AbiParam::new(types::I64));
-    let halt_cont_body_id = jmod
-        .declare_function("fz_halt_cont_body", Linkage::Local, &hcb_sig)
-        .map_err(|e| CodegenError::new(format!("declare fz_halt_cont_body: {}", e)))?;
+    // fz-ul4.27.22.3 — `(addr, kind)` sig: kind selects among 3 Process
+    // singletons (0=Tagged, 1=RawInt, 2=RawF64).
+    let get_halt_cont_id =
+        decl("fz_get_halt_cont", &[types::I64, types::I32], &[types::I64])?;
+    // fz-ul4.27.22.3 — three fz_halt_cont_body variants, declared LOCAL
+    // (bodies emitted below). Tagged: `(i64 Tagged, i64) -> i64 tail`;
+    // RawInt: `(i64, i64) -> i64 tail`; RawF64: `(f64, i64) -> i64 tail`.
+    let mut declare_hcb = |name: &str, val_ty: ir::Type| -> Result<FuncId, CodegenError> {
+        let mut sig = Signature::new(CallConv::Tail);
+        sig.params.push(AbiParam::new(val_ty));
+        sig.params.push(AbiParam::new(types::I64));
+        sig.returns.push(AbiParam::new(types::I64));
+        jmod
+            .declare_function(name, Linkage::Local, &sig)
+            .map_err(|e| CodegenError::new(format!("declare {}: {}", name, e)))
+    };
+    let halt_cont_body_tagged_id = declare_hcb("fz_halt_cont_body_tagged", types::I64)?;
+    let halt_cont_body_i64_id = declare_hcb("fz_halt_cont_body_i64", types::I64)?;
+    let halt_cont_body_f64_id = declare_hcb("fz_halt_cont_body_f64", types::F64)?;
     // fz-cps.1.11 — fz_resume_park: SystemV entry the scheduler calls on
     // wakeup. Body emitted in compile_with_backend; signature `(msg:i64,
     // cont:i64) -> i64 system_v` matches Rust's extern "C" shape for FFI.
@@ -2762,9 +2958,12 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
     let spawn_entry_id = jmod
         .declare_function("fz_spawn_entry", Linkage::Local, &se_sig)
         .map_err(|e| CodegenError::new(format!("declare fz_spawn_entry: {}", e)))?;
-    // fz-cps.5 — fz_main_entry: SystemV entry the scheduler calls to launch
-    // a fresh task at a known main fn. Sig: `(main_fp:i64) -> i64`.
+    // fz-ul4.27.22.3 — fz_main_entry: SystemV entry the scheduler calls
+    // to launch at a known main fn. Sig: `(main_fp:i64, halt_cl:i64)
+    // -> i64`. Rust caller picks halt_cl from process.halt_cont_singletons
+    // by the entry fn's return_repr kind.
     let mut me_sig = Signature::new(CallConv::SystemV);
+    me_sig.params.push(AbiParam::new(types::I64));
     me_sig.params.push(AbiParam::new(types::I64));
     me_sig.returns.push(AbiParam::new(types::I64));
     let main_entry_id = jmod
@@ -2780,7 +2979,11 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         print_nil_id,
         halt_id,
         halt_implicit_id,
-        halt_cont_body_id,
+        halt_implicit_i64_id,
+        halt_implicit_f64_id,
+        halt_cont_body_tagged_id,
+        halt_cont_body_i64_id,
+        halt_cont_body_f64_id,
         alloc_id,
         alloc_cons_id,
         alloc_struct_id,
@@ -2826,7 +3029,11 @@ struct RuntimeRefs {
     print_nil_id: FuncId,
     halt_id: FuncId,
     halt_implicit_id: FuncId,
-    halt_cont_body_id: FuncId,
+    halt_implicit_i64_id: FuncId,
+    halt_implicit_f64_id: FuncId,
+    halt_cont_body_tagged_id: FuncId,
+    halt_cont_body_i64_id: FuncId,
+    halt_cont_body_f64_id: FuncId,
     alloc_id: FuncId,
     alloc_cons_id: FuncId,
     alloc_struct_id: FuncId,
@@ -3018,10 +3225,12 @@ fn compile_fn<M: cranelift_module::Module>(
         // never visit the trampoline.
         let my_param_reprs = &param_reprs[this_spec_id as usize];
         if is_cont_fn {
-            // fz-cps.1.2 cont fn entry per §2.1: `(result:i64, self:i64) tail`.
-            b.append_block_param(entry_cl, types::I64); // result (Tagged)
-            b.append_block_param(entry_cl, types::I64); // self
-            let _ = my_param_reprs;
+            // fz-ul4.27.22.3 cont fn entry per §2.1: result's Cranelift
+            // type matches my_param_reprs[0].cl_type() (RawInt=i64,
+            // RawF64=f64, Tagged=i64). Body sees the value in its native
+            // shape — no coerce at entry.
+            b.append_block_param(entry_cl, my_param_reprs[0].cl_type()); // result
+            b.append_block_param(entry_cl, types::I64);                  // self
         } else if let Some(n_caps) = closure_target_n_caps {
             // fz-cps.1.2 closure-target fn entry per §2.1:
             // `(args..., self:i64, cont:i64) tail`. n_args = total - n_caps.
@@ -3096,18 +3305,17 @@ fn compile_fn<M: cranelift_module::Module>(
             //   ...
             // The cont's "next k" is the synthetic outer_cont at +24.
             let result_param = &entry_blk.params[0];
-            // fz-cps.1.2: cont sig is canonicalized to (i64 Tagged, i64).
-            // Coerce from Tagged to my_param_reprs[0] so the body sees the
-            // value in the repr it expects (RawF64/RawInt/Tagged).
-            let coerced = coerce_to(
-                &mut b, jmod, &runtime, params[0], ArgRepr::Tagged, my_param_reprs[0],
-            );
+            // fz-ul4.27.22.3: cont sig matches my_param_reprs[0]'s
+            // Cranelift type directly. Producer's Term::Return uses the
+            // same sig (return_reprs[producer_sid] = my_param_reprs[0]
+            // via the typer's cont_input_key seam agreement). No coerce
+            // at entry — value already in body's expected repr.
             match my_param_reprs[0] {
                 ArgRepr::RawInt => { raw_int_vars.insert(result_param.0); }
                 ArgRepr::RawF64 => { raw_f64_vars.insert(result_param.0); }
                 ArgRepr::Tagged => {}
             }
-            var_map.insert(result_param.0, coerced);
+            var_map.insert(result_param.0, params[0]);
             let self_val = params[1];
             for (i, p) in entry_blk.params.iter().enumerate().skip(1) {
                 // fz_param[i] = user_cap[i-1] at offset 32 + 8*(i-1) (= +24 + 8*i).
@@ -3405,14 +3613,18 @@ fn compile_fn<M: cranelift_module::Module>(
             Term::Return(v) => {
                 let val = *var_map.get(&v.0).expect("unbound return val");
                 if is_native {
-                    // fz-cps.1.2 — native Term::Return per docs/cps-in-clif.md
+                    // fz-ul4.27.22.3 — native Term::Return per docs/cps-in-clif.md
                     // §2.1: `load cont+16; return_call_indirect sig(val, cont)`.
                     // Cont fns fetch outer_cont from `self+24`; non-cont fns
-                    // use their cont_param SSA. Sig is canonical
-                    // `(i64, i64) -> i64 tail`.
+                    // use their cont_param SSA. Sig and val coerce match this
+                    // fn's narrow return_repr — the cont's body at +16 was
+                    // chosen at construction time to match (per fz-ul4.27.22.3
+                    // halt-cont typing + cont-seam narrowing in
+                    // build_fn_signature).
+                    let my_return_repr = return_reprs[this_spec_id as usize];
                     let from = var_repr(v.0, &raw_int_vars, &raw_f64_vars);
-                    let val_tagged = coerce_to(
-                        &mut b, jmod, &runtime, val, from, ArgRepr::Tagged,
+                    let val_typed = coerce_to(
+                        &mut b, jmod, &runtime, val, from, my_return_repr,
                     );
                     let cont_val = if is_cont_fn {
                         let self_val = cont_param.expect(
@@ -3430,12 +3642,12 @@ fn compile_fn<M: cranelift_module::Module>(
                         cont_val, HEADER_SIZE,
                     );
                     let mut sig = Signature::new(CallConv::Tail);
-                    sig.params.push(AbiParam::new(types::I64));
+                    sig.params.push(AbiParam::new(my_return_repr.cl_type()));
                     sig.params.push(AbiParam::new(types::I64));
                     sig.returns.push(AbiParam::new(types::I64));
                     let sigref = b.import_signature(sig);
                     b.ins().return_call_indirect(
-                        sigref, code, &[val_tagged, cont_val],
+                        sigref, code, &[val_typed, cont_val],
                     );
                 } else if cont_ptr_known_null {
                     // fz-ul4.27.18: this fn is never a cont target; cont_ptr
@@ -3578,8 +3790,16 @@ fn compile_fn<M: cranelift_module::Module>(
                                 let halt_alloc =
                                     b.ins().call(acl_fref2, &[dummy_fid, n_caps0]);
                                 let halt_cl = b.inst_results(halt_alloc)[0];
+                                // fz-ul4.27.22.3 — halt-cont body matches
+                                // the user-cont's return_repr (the user's
+                                // cont's Term::Return calls into this
+                                // halt-cont's body).
+                                let hc_repr = return_reprs[cont_sid as usize];
                                 let hcb_fref = jmod
-                                    .declare_func_in_func(runtime.halt_cont_body_id, b.func);
+                                    .declare_func_in_func(
+                                        halt_cont_body_id_for(&runtime, hc_repr),
+                                        b.func,
+                                    );
                                 let hcb_addr =
                                     b.ins().func_addr(types::I64, hcb_fref);
                                 b.ins().store(
@@ -3630,12 +3850,18 @@ fn compile_fn<M: cranelift_module::Module>(
                             Some(c) => c,
                             None => {
                                 synth_halt_cont = true;
+                                // fz-ul4.27.22.3 — synth halt-cont's body
+                                // matches the callee's return_repr.
                                 let fref = jmod
                                     .declare_func_in_func(runtime.get_halt_cont_id, b.func);
                                 let hcb_fref = jmod
-                                    .declare_func_in_func(runtime.halt_cont_body_id, b.func);
+                                    .declare_func_in_func(
+                                        halt_cont_body_id_for(&runtime, callee_ret_repr),
+                                        b.func,
+                                    );
                                 let hcb_addr = b.ins().func_addr(types::I64, hcb_fref);
-                                let inst = b.ins().call(fref, &[hcb_addr]);
+                                let kind_v = b.ins().iconst(types::I32, callee_ret_repr.halt_kind() as i64);
+                                let inst = b.ins().call(fref, &[hcb_addr, kind_v]);
                                 b.inst_results(inst)[0]
                             }
                         }
@@ -3776,12 +4002,18 @@ fn compile_fn<M: cranelift_module::Module>(
                         Some(c) => c,
                         None => {
                             synth_halt_cont = true;
+                            // fz-ul4.27.22.3 — synth halt-cont's body
+                            // matches callee's return_repr.
                             let fref = jmod
                                 .declare_func_in_func(runtime.get_halt_cont_id, b.func);
                             let hcb_fref = jmod
-                                .declare_func_in_func(runtime.halt_cont_body_id, b.func);
+                                .declare_func_in_func(
+                                    halt_cont_body_id_for(&runtime, callee_ret_repr),
+                                    b.func,
+                                );
                             let hcb_addr = b.ins().func_addr(types::I64, hcb_fref);
-                            let inst = b.ins().call(fref, &[hcb_addr]);
+                            let kind_v = b.ins().iconst(types::I32, callee_ret_repr.halt_kind() as i64);
+                            let inst = b.ins().call(fref, &[hcb_addr, kind_v]);
                             b.inst_results(inst)[0]
                         }
                     }};
@@ -3935,8 +4167,14 @@ fn compile_fn<M: cranelift_module::Module>(
                         let n_caps0 = b.ins().iconst(types::I32, 0);
                         let halt_alloc = b.ins().call(acl_fref, &[dummy_fid, n_caps0]);
                         let halt_cl = b.inst_results(halt_alloc)[0];
+                        // fz-ul4.27.22.3 — outer halt-cont body matches the
+                        // user-cont's return_repr.
+                        let hc_repr = return_reprs[cont_sid as usize];
                         let hcb_fref = jmod
-                            .declare_func_in_func(runtime.halt_cont_body_id, b.func);
+                            .declare_func_in_func(
+                                halt_cont_body_id_for(&runtime, hc_repr),
+                                b.func,
+                            );
                         let hcb_addr = b.ins().func_addr(types::I64, hcb_fref);
                         b.ins().store(
                             MemFlags::trusted(),
@@ -4125,8 +4363,14 @@ fn compile_fn<M: cranelift_module::Module>(
                         let n_caps0 = b.ins().iconst(types::I32, 0);
                         let halt_alloc = b.ins().call(acl_fref, &[dummy_fid, n_caps0]);
                         let halt_cl = b.inst_results(halt_alloc)[0];
+                        // fz-ul4.27.22.3 — outer halt-cont body matches the
+                        // user-cont's return_repr.
+                        let hc_repr = return_reprs[cont_sid as usize];
                         let hcb_fref = jmod
-                            .declare_func_in_func(runtime.halt_cont_body_id, b.func);
+                            .declare_func_in_func(
+                                halt_cont_body_id_for(&runtime, hc_repr),
+                                b.func,
+                            );
                         let hcb_addr = b.ins().func_addr(types::I64, hcb_fref);
                         b.ins().store(
                             MemFlags::trusted(),

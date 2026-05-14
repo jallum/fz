@@ -223,6 +223,7 @@ impl<'a> Runtime<'a> {
             .fn_ptr(fn_id)
             .unwrap_or_else(|| panic!("no fn ptr for entry {}", fn_id.0));
         process.pending_main_entry = fp as *mut u8;
+        process.pending_main_entry_fn_id = fn_id.0;
         self.tasks.insert(pid, Box::new(process));
         self.run_queue.push_back(pid);
         pid

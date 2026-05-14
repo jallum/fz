@@ -68,6 +68,22 @@ pub extern "C" fn fz_halt_implicit(fz_bits: u64) {
     fz_halt(std::ptr::null_mut(), fz_bits);
 }
 
+/// fz-ul4.27.22.3 — typed halt for narrow-int seams. The cont chain
+/// carries a raw i64 all the way to halt-cont's RawInt body; no
+/// unboxing — value is already a machine int.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_halt_implicit_i64(val: i64) {
+    current_process().halt_value = val;
+}
+
+/// fz-ul4.27.22.3 — typed halt for narrow-float seams. Mirrors
+/// fz_halt's Boxed-float branch: store `to_bits() as i64` so tests
+/// can round-trip via f64::from_bits.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_halt_implicit_f64(val: f64) {
+    current_process().halt_value = val.to_bits() as i64;
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_halt(_ctx: *mut u8, fz_bits: u64) {
     use crate::fz_value::{FzValue, HeapKind, Tag};
@@ -233,10 +249,15 @@ pub extern "C" fn fz_alloc_closure(callee_fn_id: u32, captured_count: u32) -> u6
 /// call site preserves test invariants that count heap allocations
 /// exactly (`gc_traces_closure_captured_via_jit`).
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_get_halt_cont(halt_cont_body_addr: u64) -> u64 {
+pub extern "C" fn fz_get_halt_cont(halt_cont_body_addr: u64, kind: u32) -> u64 {
+    // fz-ul4.27.22.3 — `kind` selects which of three per-Process halt-cont
+    // singletons to return (0=Tagged, 1=RawInt, 2=RawF64). Each holds a
+    // body whose Tail-CC sig matches its repr. Producer's Term::Return
+    // uses sig (return_repr, i64); the body at +16 must agree.
     let p = current_process();
-    if !p.halt_cont_singleton.is_null() {
-        return p.halt_cont_singleton as u64;
+    let slot = kind as usize;
+    if !p.halt_cont_singletons[slot].is_null() {
+        return p.halt_cont_singletons[slot] as u64;
     }
     use crate::fz_value::{HeapHeader, HeapKind};
     let mut buf: Box<[u64; 3]> = Box::new([0u64; 3]);
@@ -252,7 +273,7 @@ pub extern "C" fn fz_get_halt_cont(halt_cont_body_addr: u64) -> u64 {
         std::ptr::write(base as *mut HeapHeader, header);
         std::ptr::write(base.add(16) as *mut u64, halt_cont_body_addr);
     }
-    p.halt_cont_singleton = base;
+    p.halt_cont_singletons[slot] = base;
     p.static_closure_bufs.push(buf);
     base as u64
 }

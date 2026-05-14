@@ -48,9 +48,11 @@ thread_local! {
     /// (fz_resume_park).
     static AOT_SPAWN_ENTRY: Cell<*const u8> = const { Cell::new(std::ptr::null()) };
     static AOT_RESUME_PARK: Cell<*const u8> = const { Cell::new(std::ptr::null()) };
-    /// halt_cont_body addr, retained so spawned children can initialize
-    /// their own halt_cont_singleton.
-    static AOT_HALT_CONT_BODY: Cell<*const u8> = const { Cell::new(std::ptr::null()) };
+    /// fz-ul4.27.22.3 — three halt_cont_body addrs (Tagged, RawInt,
+    /// RawF64) retained so spawned children can initialize their own
+    /// halt_cont_singletons table with the same body set.
+    static AOT_HALT_CONT_BODIES: Cell<[*const u8; 3]> =
+        const { Cell::new([std::ptr::null(); 3]) };
 }
 
 /// Decode an atom-name blob emitted by AOT codegen into a `Vec<String>`.
@@ -98,7 +100,9 @@ fn parse_atom_blob(blob: *const u8) -> Vec<String> {
 pub extern "C" fn fz_aot_setup(
     atom_blob: *const u8,
     _atom_blob_len: u32,
-    halt_cont_body_addr: *const u8,
+    halt_cont_body_tagged: *const u8,
+    halt_cont_body_i64: *const u8,
+    halt_cont_body_f64: *const u8,
     spawn_entry_addr: *const u8,
     resume_park_addr: *const u8,
 ) -> *mut Process {
@@ -106,7 +110,10 @@ pub extern "C" fn fz_aot_setup(
     AOT_TASKS.with(|c| c.borrow_mut().clear());
     AOT_SPAWN_ENTRY.with(|c| c.set(spawn_entry_addr));
     AOT_RESUME_PARK.with(|c| c.set(resume_park_addr));
-    AOT_HALT_CONT_BODY.with(|c| c.set(halt_cont_body_addr));
+    let body_addrs: [*const u8; 3] = [
+        halt_cont_body_tagged, halt_cont_body_i64, halt_cont_body_f64,
+    ];
+    AOT_HALT_CONT_BODIES.with(|c| c.set(body_addrs));
 
     let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
     AOT_SCHEMAS.with(|s| *s.borrow_mut() = Some(schemas.clone()));
@@ -114,7 +121,7 @@ pub extern "C" fn fz_aot_setup(
     let mut proc_box = Box::new(Process::new(schemas));
     proc_box.pid = 1;
     proc_box.atom_names = parse_atom_blob(atom_blob);
-    proc_box.init_halt_cont_singleton(halt_cont_body_addr);
+    proc_box.init_halt_cont_singletons(body_addrs);
 
     let proc_ptr = AOT_TASKS.with(|c| {
         let mut t = c.borrow_mut();
@@ -162,13 +169,13 @@ extern "C" fn aot_spawn_hook(closure_bits: u64) -> u32 {
     assert!(!parent_ptr.is_null(), "aot_spawn_hook: no current process");
     let parent = unsafe { &*parent_ptr };
     let schemas = parent.heap.schemas_registry();
-    let halt_cont_body_addr = AOT_HALT_CONT_BODY.with(|c| c.get());
+    let halt_cont_body_addrs = AOT_HALT_CONT_BODIES.with(|c| c.get());
     let static_closures = parent.static_closures.clone();
 
     let mut child = Box::new(Process::new(schemas));
     child.pid = pid;
     child.atom_names = parent.atom_names.clone();
-    child.init_halt_cont_singleton(halt_cont_body_addr);
+    child.init_halt_cont_singletons(halt_cont_body_addrs);
     // Share parent's static-closure singleton pointers. Their backing
     // buffers (Box<[u64;3]>) live in `parent.static_closure_bufs` and
     // outlive every child under eager-sync.
@@ -268,9 +275,16 @@ pub extern "C" fn fz_aot_run_main(
     assert!(!main_fp.is_null(), "fz_aot_run_main: null main_fp");
     assert!(!main_entry_addr.is_null(), "fz_aot_run_main: null main_entry_addr");
 
-    type MainEntry = extern "C" fn(u64) -> i64;
+    // fz-ul4.27.22.3 — pick the Tagged halt-cont for AOT main. AOT
+    // doesn't carry per-FnId halt-kind metadata at runtime; main's
+    // narrow return repr is realized by the JIT path via
+    // CompiledModule.fn_halt_kinds. AOT main forces Tagged for now;
+    // a follow-up can emit a per-program halt-kind data symbol.
+    let process = unsafe { &*proc };
+    let halt_cl = process.halt_cont_singletons[0] as u64;
+    type MainEntry = extern "C" fn(u64, u64) -> i64;
     let f: MainEntry = unsafe { std::mem::transmute(main_entry_addr) };
-    let _ = f(main_fp as u64);
+    let _ = f(main_fp as u64, halt_cl);
 
     // Drain parent's parked chain: a receive after spawn lands here if
     // the child sent before main_entry returned.
@@ -283,7 +297,7 @@ pub extern "C" fn fz_aot_run_main(
     crate::scheduler_hooks::clear_send_hook();
     AOT_SPAWN_ENTRY.with(|c| c.set(std::ptr::null()));
     AOT_RESUME_PARK.with(|c| c.set(std::ptr::null()));
-    AOT_HALT_CONT_BODY.with(|c| c.set(std::ptr::null()));
+    AOT_HALT_CONT_BODIES.with(|c| c.set([std::ptr::null(); 3]));
     CURRENT_PROCESS.with(|c| c.set(std::ptr::null_mut()));
     AOT_TASKS.with(|c| c.borrow_mut().clear());
     AOT_SCHEMAS.with(|s| *s.borrow_mut() = None);

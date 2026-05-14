@@ -54,12 +54,14 @@ pub struct Process {
     /// resuming the chain. Pointer because the closure lives in this
     /// Process's heap; layout per `Heap::alloc_closure`.
     pub parked_cont: *mut u8,
-    /// fz-cps.1.11 — per-Process halt-cont singleton. Lazily allocated
-    /// off-heap (Box) by `fz_get_halt_cont` on first call. Reused at
-    /// every uniform→native call/tailcall site as the synth cont so the
-    /// callee's Term::Return chains into halt_cont_body. Pointer
-    /// aliases the start of a Box stored in `static_closure_bufs`.
-    pub halt_cont_singleton: *mut u8,
+    /// fz-ul4.27.22.3 — per-Process halt-cont singletons indexed by
+    /// repr kind (0=Tagged, 1=RawInt, 2=RawF64). Each slot holds a
+    /// 24-byte closure whose +16 slot points at the matching
+    /// `fz_halt_cont_body_<kind>` Cranelift body. Lazily allocated by
+    /// `fz_get_halt_cont(addr, kind)` per kind, or pre-populated by
+    /// `init_halt_cont_singletons` at make_process. Pointers alias
+    /// Boxes in `static_closure_bufs`.
+    pub halt_cont_singletons: [*mut u8; 3],
     /// fz-cps.1.11 — pending closure to invoke at the next scheduler
     /// quantum. Set by `Runtime::spawn_closure` to the closure pointer;
     /// `run_quantum` clears it and dispatches via the `fz_spawn_entry`
@@ -70,6 +72,11 @@ pub struct Process {
     /// `Runtime::spawn(fn_id)`; the scheduler's `run_quantum`
     /// dispatches via the SystemV→Tail-CC `fz_main_entry` shim.
     pub pending_main_entry: *mut u8,
+    /// fz-ul4.27.22.3 — FnId.0 of the pending entry. Used by
+    /// `run_quantum` to look up the matching halt-cont singleton kind
+    /// in `CompiledModule.fn_halt_kinds`. Defaults to 0 (Tagged) if
+    /// no entry is queued.
+    pub pending_main_entry_fn_id: u32,
     /// fz-cps.1.7 — per-Process static zero-capture closure singletons.
     /// Indexed by lambda spec id (cl_sid). Null entries indicate "no
     /// singleton registered for this cl_sid." Each non-null entry points
@@ -125,9 +132,10 @@ impl Process {
             next_frame: std::ptr::null_mut(),
             mailbox: std::collections::VecDeque::new(),
             parked_cont: std::ptr::null_mut(),
-            halt_cont_singleton: std::ptr::null_mut(),
+            halt_cont_singletons: [std::ptr::null_mut(); 3],
             pending_closure_entry: std::ptr::null_mut(),
             pending_main_entry: std::ptr::null_mut(),
+            pending_main_entry_fn_id: 0,
             static_closures: Vec::new(),
             static_closure_bufs: Vec::new(),
         }
@@ -170,27 +178,31 @@ impl Process {
         }
     }
 
-    /// fz-cps.1.11 — allocate the halt-cont singleton with the given
-    /// `halt_cont_body_addr` at +16. Called once per Process by
-    /// `make_process`. `fz_get_halt_cont` returns this pointer at every
-    /// uniform→native synth halt-cont site.
-    pub fn init_halt_cont_singleton(&mut self, halt_cont_body_addr: *const u8) {
+    /// fz-ul4.27.22.3 — pre-allocate halt-cont singletons for each kind
+    /// (0=Tagged, 1=RawInt, 2=RawF64). Non-null `body_addrs[k]` seeds
+    /// the corresponding slot; null entries leave the slot null
+    /// (lazily filled by `fz_get_halt_cont` on first use). Called once
+    /// per Process by `make_process`.
+    pub fn init_halt_cont_singletons(&mut self, body_addrs: [*const u8; 3]) {
         use crate::fz_value::{HeapHeader, HeapKind};
-        let mut buf: Box<[u64; 3]> = Box::new([0u64; 3]);
-        let base = buf.as_mut_ptr() as *mut u8;
-        let header = HeapHeader {
-            kind: HeapKind::Closure as u16,
-            flags: 0,
-            size_bytes: 24,
-            schema_id: 0,
-            _reserved: 0,
-        };
-        unsafe {
-            std::ptr::write(base as *mut HeapHeader, header);
-            std::ptr::write(base.add(16) as *mut u64, halt_cont_body_addr as u64);
+        for (slot, addr) in body_addrs.iter().enumerate() {
+            if addr.is_null() { continue; }
+            let mut buf: Box<[u64; 3]> = Box::new([0u64; 3]);
+            let base = buf.as_mut_ptr() as *mut u8;
+            let header = HeapHeader {
+                kind: HeapKind::Closure as u16,
+                flags: 0,
+                size_bytes: 24,
+                schema_id: 0,
+                _reserved: 0,
+            };
+            unsafe {
+                std::ptr::write(base as *mut HeapHeader, header);
+                std::ptr::write(base.add(16) as *mut u64, *addr as u64);
+            }
+            self.halt_cont_singletons[slot] = base;
+            self.static_closure_bufs.push(buf);
         }
-        self.halt_cont_singleton = base;
-        self.static_closure_bufs.push(buf);
     }
 }
 
