@@ -1,7 +1,9 @@
 {
   "assignee": "Jason Allum",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-ul4.27.22.3"
+  ],
   "created": "2026-05-14T01:57:44Z",
   "description": "First step that affects the goldens. Applies .21.1's three coordinated\ncodegen sites AND types halt-cont per program so the seam at the very\nend of the chain is the type that flows in (per user direction:\n\"the halt 'continuation' passed in should just match this type, and\ncan be implemented by a regular function in the runtime\").\n\nThis bundles what was originally split as 22.2 + 22.5 because either\none alone breaks tests: 22.2 narrows the cont seam, but halt-cont's\nhardcoded Tagged sig at chain-end mismatches; 22.5 alone has no narrow\nchain to type. They land together.\n\n## Codegen narrowing (was .21.1)\n\n1. build_fn_signature cont-fn branch: param_reprs[0].cl_type() for\n   result param.\n2. compile_fn cont-fn entry harness: append_block_param(my_param_reprs[0]\n   .cl_type()); drop the Tagged coerce.\n3. Term::Return native branch: sig with return_reprs[this_spec_id]\n   .cl_type(); coerce val to my_return_repr.\n4. Print builtin: check raw_int_vars / raw_f64_vars (cont params\n   narrowed by typer cont_input_key without local FnTypes reflecting).\n\n## Typed halt-cont (was 22.5)\n\nThree runtime fns, three codegen bodies, per-repr singleton in Process.\n\nRuntime:\n- fz_halt_implicit_i64(val: i64): current_process().halt_value = val\n- fz_halt_implicit_f64(val: f64): halt_value = val.to_bits() as i64\n- fz_get_halt_cont_i64 / _f64 lazy singleton getters (mirror existing\n  fz_get_halt_cont for Tagged).\n\nProcess:\n- halt_cont_singleton_tagged / _i64 / _f64 fields.\n- init_halt_cont_singletons(tagged_addr, i64_addr, f64_addr).\n\nCompiledModule:\n- halt_cont_body_tagged_addr / _i64 / _f64.\n\nCodegen:\n- Declare halt_cont_body_{tagged,i64,f64}_id, get_halt_cont_{...}_id.\n- Emit halt_cont_body_i64 sig (i64, i64) -\u003e i64 tail; body calls\n  fz_halt_implicit_i64.\n- Emit halt_cont_body_f64 sig (f64, i64) -\u003e i64 tail; body calls\n  fz_halt_implicit_f64.\n- fz_main_entry: pick singleton + body matching main's return_repr.\n- fz_spawn_entry: stays _tagged (closure-targets always return Tagged).\n- Each synth_halt_cont site in Term::Call / TailCall / Receive picks\n  by callee's return_repr.\n\nAOT shim: pass all three body addrs at setup.\n\n## Acceptance\n\n- 511 + 0 failed.\n- add1.clif golden: ishl_imm/bor_imm at 28-29 deleted; sshr_imm at 41\n  deleted. BLESS the diff.\n- Other goldens: review diffs, bless intentional, fix unintentional.",
   "id": "fz-ul4.27.22.2",
@@ -11,5 +13,5 @@
   "status": "in_progress",
   "title": "fz-cps-closure.4: typed Term::Return cont seam",
   "type": "task",
-  "updated_at": "2026-05-14T02:16:12Z"
+  "updated_at": "2026-05-14T02:24:39Z"
 }
