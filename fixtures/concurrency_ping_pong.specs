@@ -17,8 +17,8 @@
 ;     Var(1) = child#0
 ;   vars:
 ;     Var(0) :: :a0
-;     Var(1) :: () -> any
-;     Var(2) :: (any) -> any
+;     Var(1) :: &fn0[]:() -> any
+;     Var(2) :: &fn2[&fn0[]:() -> any]:() -> any
 ;     Var(3) :: int
 ;   exits:
 ;     blk0 Receive cont k_receive_3#3 captured=[]
@@ -26,10 +26,10 @@
 ;     blk1 Halt Var(0)      :: :a0
 
 ; spec fz_spawn_thunk(1) #fn=2
-;   key:    [() -> any]
+;   key:    [&fn0[]:() -> any]
 ;   return: any
 ;   vars:
-;     Var(0) :: () -> any
+;     Var(0) :: &fn0[]:() -> any
 ;   exits:
 ;     blk0 TailCallClosure Var(0)()
 

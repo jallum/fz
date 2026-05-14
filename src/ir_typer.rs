@@ -777,13 +777,19 @@ fn walk_spec_for_discovery(
             _ => {}
         }
 
-        // CallClosure / TailCallClosure with known target via fn_constants.
+        // CallClosure / TailCallClosure with known target via fn_constants
+        // OR via closure_lit Descr (fz-ul4.27.22.10). Both paths fire to
+        // register narrow specs at the resolved body — fn_constants
+        // covers zero-capture references discovered pre-22.10; closure_lit
+        // covers all MakeClosure-typed closures (including non-zero capture)
+        // by inspecting the closure Var's own Descr.
         let (closure_var, closure_args): (Option<Var>, &[Var]) = match &b.terminator {
             Term::CallClosure { closure, args, .. }
             | Term::TailCallClosure { closure, args } => (Some(*closure), args.as_slice()),
             _ => (None, &[]),
         };
         if let Some(cv) = closure_var {
+            // (a) fn_constants path — legacy, zero-capture only.
             if let Some(&target_fn) = caller_ft.fn_constants.get(&cv) {
                 if let Some(&j) = idx_of.get(&target_fn) {
                     let target = &m.fns[j];
@@ -795,6 +801,28 @@ fn walk_spec_for_discovery(
                     key.truncate(n_params);
                     let key = maybe_widen(key, target_fn);
                     push_key(pending, target_fn, key);
+                }
+            }
+            // (b) closure_lit path — narrow per (fn_id, captures + args).
+            // Fires for every pos closure_lit clause in cv's Descr.
+            if let Some(cv_descr) = env.get(&cv).cloned() {
+                let arg_descrs: Vec<Descr> = closure_args.iter().map(|av|
+                    env.get(av).cloned().unwrap_or_else(Descr::any)
+                ).collect();
+                for clause in &cv_descr.funcs {
+                    if !clause.neg.is_empty() { continue; }
+                    for sig in &clause.pos {
+                        let Some(lit) = &sig.lit else { continue; };
+                        let Some(&j) = idx_of.get(&lit.fn_id) else { continue; };
+                        let target = &m.fns[j];
+                        let n_params = target.block(target.entry).params.len();
+                        let mut key: Vec<Descr> = lit.captures.clone();
+                        key.extend(arg_descrs.iter().cloned());
+                        while key.len() < n_params { key.push(Descr::any()); }
+                        key.truncate(n_params);
+                        let key = maybe_widen(key, lit.fn_id);
+                        push_key(pending, lit.fn_id, key);
+                    }
                 }
             }
         }
@@ -849,6 +877,16 @@ fn walk_spec_for_discovery(
                     } else {
                         effective_returns.get(&callee_key).cloned()
                     }
+                } else if let Some(cv_descr) = env.get(closure) {
+                    // fz-ul4.27.22.10 — closure_lit-driven slot-0 narrowing.
+                    // If the closure Var's Descr carries a closure_lit
+                    // (singleton or union of singletons), look up each
+                    // resolved body's return at the matching (captures + args)
+                    // key. Falls back to any() for unresolved arrows.
+                    let arg_descrs: Vec<Descr> = args.iter().map(|av|
+                        env.get(av).cloned().unwrap_or_else(Descr::any)
+                    ).collect();
+                    resolve_closure_return(cv_descr, effective_returns, &arg_descrs)
                 } else {
                     Some(Descr::any())
                 }
@@ -1267,12 +1305,22 @@ fn type_prim(prim: &Prim, env: &HashMap<Var, Descr>, m: &Module) -> Descr {
         },
         Prim::MakeBitstring(_) => Descr::vec_u8().union(&Descr::vec_bit()),
 
-        Prim::MakeClosure(fn_id, _) => {
+        Prim::MakeClosure(fn_id, captured) => {
+            // fz-ul4.27.22.10 — type MakeClosure's result as a closure
+            // literal: a singleton-typed arrow tagged with (fn_id,
+            // capture_descrs). Downstream consumers (cont_slot0_descr,
+            // codegen chain_repr / TailCallClosure lowering) read the lit
+            // to resolve the body spec by exact-key lookup instead of
+            // joining over the saturated arrow's return.
             let callee = m.fn_by_id(*fn_id);
             let entry = callee.block(callee.entry);
             let arity = entry.params.len();
-            let args: Vec<Descr> = std::iter::repeat_n(Descr::any(), arity).collect();
-            Descr::arrow(args, Descr::any())
+            let n_caps = captured.len();
+            let n_args = arity.saturating_sub(n_caps);
+            let capture_descrs: Vec<Descr> = captured.iter()
+                .map(|cv| env.get(cv).cloned().unwrap_or_else(Descr::any))
+                .collect();
+            Descr::closure_lit(*fn_id, capture_descrs, n_args)
         }
 
         Prim::Builtin(bid, _) => type_builtin(*bid),

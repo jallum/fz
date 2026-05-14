@@ -41,7 +41,7 @@ function u0:0(i64) -> i64 tail {
 
 block0(v0: i64):
     v1 = iconst.i32 0
-    v2 = call fn0(v1)  ; v1 = 0    ;; v2 :: () -> any
+    v2 = call fn0(v1)  ; v1 = 0    ;; v2 :: &fn0[]:() -> any
     v3 = iconst.i32 2                   ; @22:3
     v4 = iconst.i32 1                   ; @22:3
     v5 = iconst.i32 0                   ; @22:3
@@ -79,14 +79,14 @@ function u0:0(i64, i64) -> i64 tail {
 }
 
 ; fn fz_spawn_thunk_s4
-    ;   @spec   fz_spawn_thunk(() -> any) -> _
-    ;   @key    [() -> any]
+    ;   @spec   fz_spawn_thunk(&fn0[]:() -> any) -> _
+    ;   @key    [&fn0[]:() -> any]
     ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64, i64) -> i64 tail
 
 block0(v0: i64, v1: i64):
-    v2 = load.i64 notrap aligned v0+24    ;; v2 :: () -> any
+    v2 = load.i64 notrap aligned v0+24    ;; v2 :: &fn0[]:() -> any
     v3 = load.i64 notrap aligned v2+16
     return_call_indirect sig0, v3(v2, v1)
 }

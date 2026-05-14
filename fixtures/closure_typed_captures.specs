@@ -1,20 +1,20 @@
 ; spec add_to(2) #fn=0
 ;   key:    [10, 20]
-;   return: (any, any, any) -> any
+;   return: &fn3[10, 20]:(any) -> any
 ;   vars:
 ;     Var(0) :: 10
 ;     Var(1) :: 20
 ;     Var(2) :: :a0
-;     Var(3) :: (any, any, any) -> any
+;     Var(3) :: &fn3[10, 20]:(any) -> any
 ;   exits:
-;     blk0 Return Var(3)    :: (any, any, any) -> any
+;     blk0 Return Var(3)    :: &fn3[10, 20]:(any) -> any
 ;     blk1 Halt Var(2)      :: :a0
 
 ; spec apply1(2) #fn=1
-;   key:    [(any, any, any) -> any, 12]
+;   key:    [&fn3[10, 20]:(any) -> any, 12]
 ;   return: any
 ;   vars:
-;     Var(0) :: (any, any, any) -> any
+;     Var(0) :: &fn3[10, 20]:(any) -> any
 ;     Var(1) :: 12
 ;     Var(2) :: :a0
 ;   exits:
@@ -32,8 +32,22 @@
 ;     blk0 Call add_to#0(Var(1), Var(2))
 ;              callee_key=[10, 20]
 ;              cont k_4#4 captured=[]
-;              cont_key=[(any, any, any) -> any]
+;              cont_key=[&fn3[10, 20]:(any) -> any]
 ;     blk1 Halt Var(0)      :: :a0
+
+; spec lambda_3(3) #fn=3
+;   key:    [10, 20, 12]
+;   return: int
+;   vars:
+;     Var(0) :: 10
+;     Var(1) :: 20
+;     Var(2) :: 12
+;     Var(3) :: :a0
+;     Var(4) :: int
+;     Var(5) :: int
+;   exits:
+;     blk0 Return Var(5)    :: int
+;     blk1 Halt Var(3)      :: :a0
 
 ; spec lambda_3(3) #fn=3
 ;   key:    [10, 20, any]
@@ -50,14 +64,14 @@
 ;     blk1 Halt Var(3)      :: :a0
 
 ; spec k_4(1) #fn=4
-;   key:    [(any, any, any) -> any]
+;   key:    [&fn3[10, 20]:(any) -> any]
 ;   return: nil
 ;   vars:
-;     Var(0) :: (any, any, any) -> any
+;     Var(0) :: &fn3[10, 20]:(any) -> any
 ;     Var(1) :: 12
 ;   exits:
 ;     blk0 Call apply1#1(Var(0), Var(1))
-;              callee_key=[(any, any, any) -> any, 12]
+;              callee_key=[&fn3[10, 20]:(any) -> any, 12]
 ;              cont k_5#5 captured=[]
 ;              cont_key=[any]
 
