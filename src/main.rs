@@ -11,6 +11,7 @@ mod ir_interp;
 // Cranelift handles temporary spills. The richer per-call liveness was
 // never wired into codegen and the .11.31 root walker reads the existing
 // schema directly. See fz-ul4.11.30 (subsumed).
+mod ir_fold;
 mod ir_fuse;
 mod ir_inline;
 mod ir_lower;
