@@ -4,13 +4,14 @@
     "fz-fzn"
   ],
   "blocks": [],
+  "closed_at": "2026-05-15T02:37:17Z",
   "created": "2026-05-14T23:56:03Z",
   "description": "Once .22.18 has the golden set covering every dumpable fixture, retire the per-directive substring checks. The goldens subsume them: a checked-in expected.clif pins the entire output, strictly stronger than any 'this substring must/must-not appear' predicate.\n\nPlan:\n- For each fixture with expect_clif_contains / expect_clif_excludes entries:\n  * Fold the *intent* of each directive into the README.md body as prose (the WHY is what survives — 'under fz-ul4.27.15 add1_s2 emits no ishl_imm because int literals are raw-by-default').\n  * Delete the directive from the frontmatter.\n- Delete parse_fn_substr() and the assertion loop from fixture_matrix.rs.\n- Delete expect_clif_contains / expect_clif_excludes fields from Header.\n\nNet reduction in machinery. The golden is the assertion; the README is the documentation.\n\nInvariants:\n- tests still green\n- every retired directive's intent is captured in README prose (search-grep the diff: no expect_clif_* directive should vanish without a corresponding prose addition)\n- golden_clif / golden_specs continue to catch regressions",
   "id": "fz-8zx",
   "labels": [],
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "fz-ul4.27.22.19: fixtures — retire expect_clif_{contains,excludes} directives",
   "type": "task",
-  "updated_at": "2026-05-15T02:36:10Z"
+  "updated_at": "2026-05-15T02:37:17Z"
 }
