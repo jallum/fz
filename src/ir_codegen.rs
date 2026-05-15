@@ -797,6 +797,17 @@ impl ArgRepr {
     }
 }
 
+/// Declare `id` in the current function and return its address as an i64.
+/// Collapses the ubiquitous `declare_func_in_func` + `func_addr` pair.
+fn fn_addr<M: cranelift_module::Module>(
+    jmod: &mut M,
+    id: FuncId,
+    b: &mut FunctionBuilder<'_>,
+) -> ir::Value {
+    let fref = jmod.declare_func_in_func(id, b.func);
+    b.ins().func_addr(types::I64, fref)
+}
+
 /// fz-ul4.27.22.3 — pick the halt_cont_body FuncId matching `repr`.
 fn halt_cont_body_id_for(runtime: &RuntimeRefs, repr: ArgRepr) -> FuncId {
     match repr {
@@ -1532,12 +1543,9 @@ pub fn compile_with_backend<B: Backend>(
             let kind = b.ins().uextend(types::I32, hk16);
             // Select halt_cont_body_addr by kind. Branchless via three
             // func_addrs + a tiny dispatch — keeps the spawn shim a leaf.
-            let hcb_tagged = m.declare_func_in_func(runtime.halt_cont_body_tagged_id, b.func);
-            let hcb_i64 = m.declare_func_in_func(runtime.halt_cont_body_i64_id, b.func);
-            let hcb_f64 = m.declare_func_in_func(runtime.halt_cont_body_f64_id, b.func);
-            let a_tagged = b.ins().func_addr(types::I64, hcb_tagged);
-            let a_i64 = b.ins().func_addr(types::I64, hcb_i64);
-            let a_f64 = b.ins().func_addr(types::I64, hcb_f64);
+            let a_tagged = fn_addr(m, runtime.halt_cont_body_tagged_id, b);
+            let a_i64 = fn_addr(m, runtime.halt_cont_body_i64_id, b);
+            let a_f64 = fn_addr(m, runtime.halt_cont_body_f64_id, b);
             let one = b.ins().iconst(types::I32, 1);
             let two = b.ins().iconst(types::I32, 2);
             let is_i64 = b.ins().icmp(IntCC::Equal, kind, one);
@@ -2893,20 +2901,13 @@ fn emit_aot_c_main<M: cranelift_module::Module>(
         let atom_blob_len_v = b.ins().iconst(types::I32, atom_blob_len as i64);
 
         // Shim addresses (Local symbols in this object).
-        let hcb_tagged_fref = jmod.declare_func_in_func(halt_cont_body_ids[0], b.func);
-        let hcb_tagged_addr = b.ins().func_addr(types::I64, hcb_tagged_fref);
-        let hcb_i64_fref = jmod.declare_func_in_func(halt_cont_body_ids[1], b.func);
-        let hcb_i64_addr = b.ins().func_addr(types::I64, hcb_i64_fref);
-        let hcb_f64_fref = jmod.declare_func_in_func(halt_cont_body_ids[2], b.func);
-        let hcb_f64_addr = b.ins().func_addr(types::I64, hcb_f64_fref);
-        let me_fref = jmod.declare_func_in_func(main_entry_id, b.func);
-        let me_addr = b.ins().func_addr(types::I64, me_fref);
-        let se_fref = jmod.declare_func_in_func(spawn_entry_id, b.func);
-        let se_addr = b.ins().func_addr(types::I64, se_fref);
-        let rp_fref = jmod.declare_func_in_func(resume_park_id, b.func);
-        let rp_addr = b.ins().func_addr(types::I64, rp_fref);
-        let main_fref = jmod.declare_func_in_func(main_fz_func_id, b.func);
-        let main_fp = b.ins().func_addr(types::I64, main_fref);
+        let hcb_tagged_addr = fn_addr(jmod, halt_cont_body_ids[0], &mut b);
+        let hcb_i64_addr = fn_addr(jmod, halt_cont_body_ids[1], &mut b);
+        let hcb_f64_addr = fn_addr(jmod, halt_cont_body_ids[2], &mut b);
+        let me_addr = fn_addr(jmod, main_entry_id, &mut b);
+        let se_addr = fn_addr(jmod, spawn_entry_id, &mut b);
+        let rp_addr = fn_addr(jmod, resume_park_id, &mut b);
+        let main_fp = fn_addr(jmod, main_fz_func_id, &mut b);
 
         // proc = fz_aot_setup(atom_blob, atom_blob_len,
         //                     hcb_tagged, hcb_i64, hcb_f64,
@@ -2930,8 +2931,7 @@ fn emit_aot_c_main<M: cranelift_module::Module>(
         for (cl_sid, fn_id, body_func_id, halt_kind) in static_closure_targets {
             let cl_sid_v = b.ins().iconst(types::I32, *cl_sid as i64);
             let fn_id_v = b.ins().iconst(types::I32, *fn_id as i64);
-            let body_fref = jmod.declare_func_in_func(*body_func_id, b.func);
-            let body_addr = b.ins().func_addr(types::I64, body_fref);
+            let body_addr = fn_addr(jmod, *body_func_id, &mut b);
             let hk_v = b.ins().iconst(types::I32, *halt_kind as i64);
             let reg_fref = jmod.declare_func_in_func(reg_id, b.func);
             b.ins()
@@ -3697,11 +3697,8 @@ fn emit_terminator<M: cranelift_module::Module>(
                                 // cont's Term::Return calls into this
                                 // halt-cont's body).
                                 let hc_repr = return_reprs[cont_sid as usize];
-                                let hcb_fref = jmod.declare_func_in_func(
-                                    halt_cont_body_id_for(runtime, hc_repr),
-                                    b.func,
-                                );
-                                let hcb_addr = b.ins().func_addr(types::I64, hcb_fref);
+                                let hcb_addr =
+                                    fn_addr(jmod, halt_cont_body_id_for(runtime, hc_repr), b);
                                 b.ins().store(
                                     MemFlags::trusted(),
                                     hcb_addr,
@@ -3761,11 +3758,8 @@ fn emit_terminator<M: cranelift_module::Module>(
                             // matches the callee's return_repr.
                             let fref =
                                 jmod.declare_func_in_func(runtime.get_halt_cont_id, b.func);
-                            let hcb_fref = jmod.declare_func_in_func(
-                                halt_cont_body_id_for(runtime, callee_ret_repr),
-                                b.func,
-                            );
-                            let hcb_addr = b.ins().func_addr(types::I64, hcb_fref);
+                            let hcb_addr =
+                                fn_addr(jmod, halt_cont_body_id_for(runtime, callee_ret_repr), b);
                             let kind_v = b
                                 .ins()
                                 .iconst(types::I32, callee_ret_repr.halt_kind() as i64);
@@ -3911,11 +3905,8 @@ fn emit_terminator<M: cranelift_module::Module>(
                             // matches callee's return_repr.
                             let fref =
                                 jmod.declare_func_in_func(runtime.get_halt_cont_id, b.func);
-                            let hcb_fref = jmod.declare_func_in_func(
-                                halt_cont_body_id_for(runtime, callee_ret_repr),
-                                b.func,
-                            );
-                            let hcb_addr = b.ins().func_addr(types::I64, hcb_fref);
+                            let hcb_addr =
+                                fn_addr(jmod, halt_cont_body_id_for(runtime, callee_ret_repr), b);
                             let kind_v = b
                                 .ins()
                                 .iconst(types::I32, callee_ret_repr.halt_kind() as i64);
@@ -4040,7 +4031,6 @@ fn emit_terminator<M: cranelift_module::Module>(
             // user captures from +32).
             let cont_sid = resolve_cont_sid(blk, continuation);
             let cont_fid = *fn_ids.get(&cont_sid).expect("cont fn_id missing");
-            let cont_fref = jmod.declare_func_in_func(cont_fid, b.func);
             let acl_fref = jmod.declare_func_in_func(runtime.alloc_closure_id, b.func);
             let cl_fid_v = b.ins().iconst(types::I32, cont_sid as i64);
             let n_caps_v = b
@@ -4049,7 +4039,7 @@ fn emit_terminator<M: cranelift_module::Module>(
             let zero_hk = b.ins().iconst(types::I32, 0);
             let cl_inst = b.ins().call(acl_fref, &[cl_fid_v, n_caps_v, zero_hk]);
             let cf = b.inst_results(cl_inst)[0];
-            let cont_code_addr = b.ins().func_addr(types::I64, cont_fref);
+            let cont_code_addr = fn_addr(jmod, cont_fid, b);
             b.ins()
                 .store(MemFlags::trusted(), cont_code_addr, cf, HEADER_SIZE);
             // outer_cont at +24. fz-cps.1.8 — cont fns forward their
@@ -4096,11 +4086,8 @@ fn emit_terminator<M: cranelift_module::Module>(
                         // fz-ul4.27.22.3 — outer halt-cont body matches the
                         // user-cont's return_repr.
                         let hc_repr = return_reprs[cont_sid as usize];
-                        let hcb_fref = jmod.declare_func_in_func(
-                            halt_cont_body_id_for(runtime, hc_repr),
-                            b.func,
-                        );
-                        let hcb_addr = b.ins().func_addr(types::I64, hcb_fref);
+                        let hcb_addr =
+                            fn_addr(jmod, halt_cont_body_id_for(runtime, hc_repr), b);
                         b.ins()
                             .store(MemFlags::trusted(), hcb_addr, halt_cl, HEADER_SIZE);
                         b.ins().jump(join_blk, &[BlockArg::Value(halt_cl)]);
@@ -4305,7 +4292,6 @@ fn emit_terminator<M: cranelift_module::Module>(
                 .collect();
             let cont_sid = resolve_cont_sid(blk, continuation);
             let cont_fid = *fn_ids.get(&cont_sid).expect("cont fn_id missing");
-            let cont_fref = jmod.declare_func_in_func(cont_fid, b.func);
             let cont_param_reprs = &param_reprs[cont_sid as usize];
 
             let acl_fref = jmod.declare_func_in_func(runtime.alloc_closure_id, b.func);
@@ -4318,7 +4304,7 @@ fn emit_terminator<M: cranelift_module::Module>(
             let zero_hk = b.ins().iconst(types::I32, 0);
             let cl_inst = b.ins().call(acl_fref, &[cl_fid_v, n_caps_v, zero_hk]);
             let cl_ptr = b.inst_results(cl_inst)[0];
-            let cont_code_addr = b.ins().func_addr(types::I64, cont_fref);
+            let cont_code_addr = fn_addr(jmod, cont_fid, b);
             b.ins()
                 .store(MemFlags::trusted(), cont_code_addr, cl_ptr, HEADER_SIZE);
             // outer_cont at +24 (synthetic). Native caller has
@@ -4366,11 +4352,8 @@ fn emit_terminator<M: cranelift_module::Module>(
                         // fz-ul4.27.22.3 — outer halt-cont body matches the
                         // user-cont's return_repr.
                         let hc_repr = return_reprs[cont_sid as usize];
-                        let hcb_fref = jmod.declare_func_in_func(
-                            halt_cont_body_id_for(runtime, hc_repr),
-                            b.func,
-                        );
-                        let hcb_addr = b.ins().func_addr(types::I64, hcb_fref);
+                        let hcb_addr =
+                            fn_addr(jmod, halt_cont_body_id_for(runtime, hc_repr), b);
                         b.ins()
                             .store(MemFlags::trusted(), hcb_addr, halt_cl, HEADER_SIZE);
                         b.ins().jump(join_blk, &[BlockArg::Value(halt_cl)]);
@@ -5845,8 +5828,7 @@ fn lower_prim<M: cranelift_module::Module>(
                 .iconst(types::I32, body_return_repr.halt_kind() as i64);
             let inst = b.ins().call(alloc_fref, &[fid_v, nc_v, hk_v]);
             let cl_ptr = b.inst_results(inst)[0];
-            let body_fref = jmod.declare_func_in_func(body_func_id, b.func);
-            let body_addr = b.ins().func_addr(types::I64, body_fref);
+            let body_addr = fn_addr(jmod, body_func_id, b);
             b.ins()
                 .store(MemFlags::trusted(), body_addr, cl_ptr, HEADER_SIZE);
             // fz-ul4.27.22.5: store each capture in the body's narrow
