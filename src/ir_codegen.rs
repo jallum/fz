@@ -3256,6 +3256,16 @@ fn span_to_srcloc(s: crate::diag::Span) -> cranelift_codegen::ir::SourceLoc {
     cranelift_codegen::ir::SourceLoc::new(file | offset)
 }
 
+struct EntryHarnessOut {
+    var_env: HashMap<u32, VarBinding>,
+    /// Some for uniform fns; None for native.
+    frame_ptr: Option<ir::Value>,
+    /// Some for uniform fns; None for native.
+    host_ctx: Option<ir::Value>,
+    /// Some for native fns (trailing cont SSA); None for uniform.
+    cont_param: Option<ir::Value>,
+}
+
 fn build_entry_harness<M: cranelift_module::Module>(
     b: &mut FunctionBuilder<'_>,
     _jmod: &mut M,
@@ -3267,12 +3277,7 @@ fn build_entry_harness<M: cranelift_module::Module>(
     is_cont_fn: bool,
     closure_target_n_caps: Option<usize>,
     entry_cl: ir::Block,
-) -> (
-    HashMap<u32, VarBinding>,
-    Option<ir::Value>,
-    Option<ir::Value>,
-    Option<ir::Value>,
-) {
+) -> EntryHarnessOut {
     let param_reprs = env.param_reprs;
     let entry_blk = f.blocks.iter().find(|blk| blk.id == f.entry).unwrap();
     let mut var_env: HashMap<u32, VarBinding> = HashMap::new();
@@ -3397,7 +3402,7 @@ fn build_entry_harness<M: cranelift_module::Module>(
         // cont still lives in slot 0 of `frame_ptr` until fz-siu.1.5.
         (Some(frame_ptr), Some(host_ctx), None)
     };
-    (var_env, frame_ptr, host_ctx, cont_param)
+    EntryHarnessOut { var_env, frame_ptr, host_ctx, cont_param }
 }
 
 /// Resolve the outer-cont value to forward into a cont closure's +24 slot.
@@ -4397,7 +4402,7 @@ fn compile_fn<M: cranelift_module::Module>(
     b.switch_to_block(entry_cl);
     b.seal_block(entry_cl);
 
-    let (mut var_env, frame_ptr, host_ctx, cont_param) =
+    let EntryHarnessOut { var_env: mut var_env, frame_ptr, host_ctx, cont_param } =
         build_entry_harness(
             &mut b,
             jmod,
