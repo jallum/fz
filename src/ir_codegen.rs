@@ -5185,39 +5185,29 @@ fn lower_prim<M: cranelift_module::Module>(
             match op {
                 BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
                     let mop = *op;
-                    // Typed-float fast path first so we never tag the raw
-                    // f64 inputs.
-                    if descr_is_float(fn_types, *a)
-                        && descr_is_float(fn_types, *bv)
-                        && !matches!(mop, BinOp::Mod)
-                    {
-                        let af = as_raw_f64(var_env, b,a.0);
-                        let bf = as_raw_f64(var_env, b,bv.0);
-                        let raw_f = match mop {
-                            BinOp::Add => b.ins().fadd(af, bf),
-                            BinOp::Sub => b.ins().fsub(af, bf),
-                            BinOp::Mul => b.ins().fmul(af, bf),
-                            BinOp::Div => b.ins().fdiv(af, bf),
-                            _ => unreachable!(),
-                        };
-                        return Ok(LowerOut::RawF64(raw_f));
-                    }
-                    // Typed-int fast path: read operands as raw i64 (no
-                    // sshr round trip when the var came from a RawI64 slot
-                    // or a prior int fast path), do native iadd/etc., and
-                    // return the result raw. fz-ul4.27.5.3.
-                    if descr_is_int(fn_types, *a) && descr_is_int(fn_types, *bv) {
-                        let ai = as_raw_i64(var_env, b,a.0);
-                        let bi = as_raw_i64(var_env, b,bv.0);
-                        let raw = match mop {
+                    // Typed fast paths: float (skipped for Mod) and int.
+                    if let Some(out) = try_typed_binop_fast_path(
+                        fn_types, *a, *bv, b, var_env,
+                        |b, af, bf| {
+                            if matches!(mop, BinOp::Mod) { return None; }
+                            Some(LowerOut::RawF64(match mop {
+                                BinOp::Add => b.ins().fadd(af, bf),
+                                BinOp::Sub => b.ins().fsub(af, bf),
+                                BinOp::Mul => b.ins().fmul(af, bf),
+                                BinOp::Div => b.ins().fdiv(af, bf),
+                                _ => unreachable!(),
+                            }))
+                        },
+                        |b, ai, bi| Some(LowerOut::RawI64(match mop {
                             BinOp::Add => b.ins().iadd(ai, bi),
                             BinOp::Sub => b.ins().isub(ai, bi),
                             BinOp::Mul => b.ins().imul(ai, bi),
                             BinOp::Div => b.ins().sdiv(ai, bi),
                             BinOp::Mod => b.ins().srem(ai, bi),
                             _ => unreachable!(),
-                        };
-                        return Ok(LowerOut::RawI64(raw));
+                        })),
+                    ) {
+                        return Ok(out);
                     }
                     let av = tag_a!();
                     let bvv = tag_b!();
@@ -5346,26 +5336,20 @@ fn lower_prim<M: cranelift_module::Module>(
                         BinOp::Ge => IntCC::SignedGreaterThanOrEqual,
                         _ => unreachable!(),
                     };
-                    // Typed-float fast path first.
-                    if descr_is_float(fn_types, *a) && descr_is_float(fn_types, *bv) {
-                        let fcc = match op {
-                            BinOp::Lt => FloatCC::LessThan,
-                            BinOp::Le => FloatCC::LessThanOrEqual,
-                            BinOp::Gt => FloatCC::GreaterThan,
-                            BinOp::Ge => FloatCC::GreaterThanOrEqual,
-                            _ => unreachable!(),
-                        };
-                        let af = as_raw_f64(var_env, b,a.0);
-                        let bf = as_raw_f64(var_env, b,bv.0);
-                        let cmp = b.ins().fcmp(fcc, af, bf);
-                        return Ok(LowerOut::Tagged(bool_to_fz(b, cmp)));
-                    }
-                    // Typed-int fast path: read raw i64 operands directly.
-                    if descr_is_int(fn_types, *a) && descr_is_int(fn_types, *bv) {
-                        let ai = as_raw_i64(var_env, b,a.0);
-                        let bi = as_raw_i64(var_env, b,bv.0);
-                        let cmp = b.ins().icmp(icc, ai, bi);
-                        return Ok(LowerOut::Tagged(bool_to_fz(b, cmp)));
+                    let fcc = match op {
+                        BinOp::Lt => FloatCC::LessThan,
+                        BinOp::Le => FloatCC::LessThanOrEqual,
+                        BinOp::Gt => FloatCC::GreaterThan,
+                        BinOp::Ge => FloatCC::GreaterThanOrEqual,
+                        _ => unreachable!(),
+                    };
+                    // Typed fast paths: float and int.
+                    if let Some(out) = try_typed_binop_fast_path(
+                        fn_types, *a, *bv, b, var_env,
+                        |b, af, bf| { let v = b.ins().fcmp(fcc, af, bf); Some(LowerOut::Tagged(bool_to_fz(b, v))) },
+                        |b, ai, bi| { let v = b.ins().icmp(icc, ai, bi); Some(LowerOut::Tagged(bool_to_fz(b, v))) },
+                    ) {
+                        return Ok(out);
                     }
                     let av = tag_a!();
                     let bvv = tag_b!();
@@ -5890,6 +5874,42 @@ fn tagged_get<M: cranelift_module::Module>(
         ArgRepr::RawInt => box_int(b, vb.value),
         ArgRepr::Tagged => vb.value,
     }
+}
+
+/// Check if both BinOp args have narrow typed Descrs and, if so, apply
+/// the matching fast-path closure. Returns Some(LowerOut) on a hit, None
+/// to signal fall-through to the tagged slow path.
+///
+/// float_op / int_op each return Option<LowerOut> so callers can opt out
+/// of a specific fast path (e.g. Mod has no float fast path → return None).
+fn try_typed_binop_fast_path<F, I>(
+    fn_types: &crate::ir_typer::FnTypes,
+    a: crate::fz_ir::Var,
+    bv: crate::fz_ir::Var,
+    b: &mut FunctionBuilder<'_>,
+    var_env: &HashMap<u32, VarBinding>,
+    float_op: F,
+    int_op: I,
+) -> Option<LowerOut>
+where
+    F: FnOnce(&mut FunctionBuilder<'_>, ir::Value, ir::Value) -> Option<LowerOut>,
+    I: FnOnce(&mut FunctionBuilder<'_>, ir::Value, ir::Value) -> Option<LowerOut>,
+{
+    if descr_is_float(fn_types, a) && descr_is_float(fn_types, bv) {
+        let af = as_raw_f64(var_env, b, a.0);
+        let bf = as_raw_f64(var_env, b, bv.0);
+        if let Some(out) = float_op(b, af, bf) {
+            return Some(out);
+        }
+    }
+    if descr_is_int(fn_types, a) && descr_is_int(fn_types, bv) {
+        let ai = as_raw_i64(var_env, b, a.0);
+        let bi = as_raw_i64(var_env, b, bv.0);
+        if let Some(out) = int_op(b, ai, bi) {
+            return Some(out);
+        }
+    }
+    None
 }
 
 fn as_raw_f64(
