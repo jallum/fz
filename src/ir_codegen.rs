@@ -3721,13 +3721,8 @@ fn emit_terminator<M: cranelift_module::Module>(
                 let callee_ret_repr = return_reprs[callee_sid as usize];
                 let callee_fid = *fn_ids.get(&callee_sid).expect("callee fn_id missing");
                 let callee_fref = jmod.declare_func_in_func(callee_fid, b.func);
-                let mut native_args: Vec<ir::Value> = Vec::with_capacity(args.len() + 1);
-                for (i, av) in args.iter().enumerate() {
-                    let raw_val = var_env.get(&av.0).expect("unbound call arg").value;
-                    let from = var_env.get(&av.0).map_or(ArgRepr::Tagged, |vb| vb.repr);
-                    let to = callee_param_reprs[i];
-                    native_args.push(coerce_to(b, jmod, runtime, raw_val, from, to));
-                }
+                let mut native_args =
+                    coerce_call_args(args, callee_param_reprs, var_env, b, jmod, runtime);
                 // fz-cps.1.8 — if the callee is a closure-target fn,
                 // its sig is `(args..., self, cont) tail`. Direct
                 // callers load the per-Process static singleton and
@@ -3897,13 +3892,8 @@ fn emit_terminator<M: cranelift_module::Module>(
                 let callee_ret_repr = return_reprs[callee_sid as usize];
                 let callee_fid = *fn_ids.get(&callee_sid).expect("callee fn_id missing");
                 let callee_fref = jmod.declare_func_in_func(callee_fid, b.func);
-                let mut native_args: Vec<ir::Value> = Vec::with_capacity(args.len() + 1);
-                for (i, av) in args.iter().enumerate() {
-                    let raw_val = var_env.get(&av.0).expect("unbound tailcall arg").value;
-                    let from = var_env.get(&av.0).map_or(ArgRepr::Tagged, |vb| vb.repr);
-                    let to = callee_param_reprs[i];
-                    native_args.push(coerce_to(b, jmod, runtime, raw_val, from, to));
-                }
+                let mut native_args =
+                    coerce_call_args(args, callee_param_reprs, var_env, b, jmod, runtime);
                 // fz-cps.1.8 — TailCall to a closure-target fn: insert
                 // static singleton as `self` before cont. Mirror of
                 // the Term::Call path; same zero-cap invariant lets
@@ -5885,6 +5875,24 @@ fn box_int(b: &mut FunctionBuilder<'_>, raw: ir::Value) -> ir::Value {
 /// fz-ul4.27.13 — Coerce a Cranelift value between ArgReprs. `RawInt` ↔
 /// `RawF64` direct conversion is intentionally unsupported (no Descr admits
 /// both; if it surfaces, the typer or call-site narrowing is wrong).
+fn coerce_call_args<M: cranelift_module::Module>(
+    args: &[crate::fz_ir::Var],
+    callee_param_reprs: &[ArgRepr],
+    var_env: &HashMap<u32, VarBinding>,
+    b: &mut FunctionBuilder<'_>,
+    jmod: &mut M,
+    runtime: &RuntimeRefs,
+) -> Vec<ir::Value> {
+    let mut out: Vec<ir::Value> = Vec::with_capacity(args.len() + 1);
+    for (i, av) in args.iter().enumerate() {
+        let raw_val = var_env.get(&av.0).expect("unbound call arg").value;
+        let from = var_env.get(&av.0).map_or(ArgRepr::Tagged, |vb| vb.repr);
+        let to = callee_param_reprs[i];
+        out.push(coerce_to(b, jmod, runtime, raw_val, from, to));
+    }
+    out
+}
+
 fn coerce_to<M: cranelift_module::Module>(
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
