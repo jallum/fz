@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-15T10:11:22Z",
+  "description": "",
+  "id": "fz-v9l.3",
+  "labels": [],
+  "parent": "fz-v9l",
+  "priority": 2,
+  "status": "open",
+  "title": "fz-cg1.3 remove dead val computation in Term::Halt native branch",
+  "type": "task",
+  "updated_at": "2026-05-15T10:11:22Z"
+}
