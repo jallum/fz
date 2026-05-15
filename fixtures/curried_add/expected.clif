@@ -11,18 +11,15 @@ function u0:0(i64) -> i64 tail {
     fn2 = colocated u0:51 sig2
 
 block0(v0: i64):
-    v2 = iconst.i64 10                  ; @5:26
-    jump block1(v2)                     ; @5:21  v2 = 10
-
-    block1(v1: i64):    ;; v1 :: 10
-    v3 = iconst.i32 3
-    v4 = iconst.i32 1
-    v5 = iconst.i32 0
-    v6 = call fn0(v3, v4, v5)  ; v3 = 3, v4 = 1, v5 = 0    ;; v6 :: &fn3[10]:(any) -> any
-    v7 = func_addr.i64 fn1
-    store notrap aligned v7, v6+16
-    store notrap aligned v1, v6+24
-    return_call fn2(v6, v0)
+    v1 = iconst.i64 10                  ; @5:26
+    v2 = iconst.i32 3
+    v3 = iconst.i32 1
+    v4 = iconst.i32 0
+    v5 = call fn0(v2, v3, v4)  ; v2 = 3, v3 = 1, v4 = 0    ;; v5 :: &fn3[10]:(any) -> any
+    v6 = func_addr.i64 fn1
+    store notrap aligned v6, v5+16
+    store notrap aligned v1, v5+24  ; v1 = 10
+    return_call fn2(v5, v0)             ; @5:21
 }
 
 ; fn apply_s3
@@ -220,20 +217,17 @@ function u0:0(i64, i64) -> i64 tail {
 
     block0(v0: i64, v1: i64):    ;; v0 :: int
     call fn0(v0)                        ; @5:3
-    v3 = iconst.i64 3                   ; @5:3
-    v4 = iconst.i64 1                   ; @6:26
-    jump block1(v4)                     ; @6:21  v4 = 1
-
-    block1(v2: i64):    ;; v2 :: 1
-    v5 = iconst.i32 3
-    v6 = iconst.i32 1
-    v7 = iconst.i32 0
-    v8 = call fn1(v5, v6, v7)  ; v5 = 3, v6 = 1, v7 = 0    ;; v8 :: &fn3[1]:(any) -> any
-    v9 = func_addr.i64 fn2
-    store notrap aligned v9, v8+16
-    store notrap aligned v2, v8+24
-    v10 = load.i64 notrap aligned v1+24
-    return_call fn3(v8, v10)
+    v2 = iconst.i64 3                   ; @5:3
+    v3 = iconst.i64 1                   ; @6:26
+    v4 = iconst.i32 3
+    v5 = iconst.i32 1
+    v6 = iconst.i32 0
+    v7 = call fn1(v4, v5, v6)  ; v4 = 3, v5 = 1, v6 = 0    ;; v7 :: &fn3[1]:(any) -> any
+    v8 = func_addr.i64 fn2
+    store notrap aligned v8, v7+16
+    store notrap aligned v3, v7+24  ; v3 = 1
+    v9 = load.i64 notrap aligned v1+24  ; @6:21
+    return_call fn3(v7, v9)             ; @6:21
 }
 
 ; fn k_8_s14

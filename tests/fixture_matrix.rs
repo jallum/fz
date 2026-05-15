@@ -519,6 +519,11 @@ fn add1_main_cont_seam_has_no_box_unbox_roundtrip() {
         "unexpected sshr_imm (unbox) in main — tag round-trip at Goto seam:\n{}",
         main_body,
     );
+    assert!(
+        !main_body.contains("block1"),
+        "expected no block1 — single-predecessor blocks should be fused:\n{}",
+        main_body,
+    );
 }
 
 /// fz-ojo fz-ul4.rep — after repr-aware Goto coercion lands, inlining

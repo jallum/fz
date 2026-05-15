@@ -16,8 +16,8 @@ function u0:0(i64) -> i64 tail {
 block0(v0: i64):
     v1 = iconst.i64 40                  ; @2:9
     v2 = iconst.i64 2                   ; @2:14
-    v3 = iadd v1, v2                    ; @2:9  v1 = 40, v2 = 2
-    call fn0(v3)                        ; @2:3
+    v3 = iconst.i64 42                  ; @2:9
+    call fn0(v3)                        ; @2:3  v3 = 42
     v4 = iconst.i64 3                   ; @2:3
     v5 = iconst.i64 10                  ; @3:9
     call fn1(v5)                        ; @3:3  v5 = 10
