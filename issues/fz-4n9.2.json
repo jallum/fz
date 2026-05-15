@@ -4,14 +4,15 @@
   "blocks": [
     "fz-4n9.6"
   ],
+  "closed_at": "2026-05-15T11:16:46Z",
   "created": "2026-05-15T11:11:36Z",
   "description": "stub_fn_ids is initialized as an empty BTreeMap at line 2826 and never populated.\nIt is threaded through compile_fn and lower_prim but explicitly ignored with let _ = stub_fn_ids.\n\nDECLARATION (delete):\n  line 2826: let stub_fn_ids: BTreeMap\u003cu32, FuncId\u003e = BTreeMap::new();\n  lines 2819-2825: surrounding comment explaining the deletion (delete comment too)\n\nREMOVE FROM compile_fn SIGNATURE (line 3520):\n  stub_fn_ids: \u0026BTreeMap\u003cu32, FuncId\u003e,\n\nREMOVE FROM compile_fn CALL SITE (line ~2858):\n  \u0026stub_fn_ids,\n\nREMOVE FROM lower_prim SIGNATURE (line 5439):\n  stub_fn_ids: \u0026BTreeMap\u003cu32, FuncId\u003e,\n\nREMOVE FROM lower_prim CALL IN compile_fn (line 3944):\n  \u0026stub_fn_ids,  // remove this argument\n\nDELETE IN lower_prim BODY (line 6115):\n  let _ = stub_fn_ids;\n\ncargo build must produce zero warnings. All tests must pass.",
   "id": "fz-4n9.2",
   "labels": [],
   "parent": "fz-4n9",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "fz-cg2.2 remove stub_fn_ids dead parameter",
   "type": "task",
-  "updated_at": "2026-05-15T11:15:43Z"
+  "updated_at": "2026-05-15T11:16:46Z"
 }
