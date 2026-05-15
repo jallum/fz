@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-15T17:53:53Z",
+  "description": "New file. pub fn fuse_blocks(m: \u0026mut Module). Fixed-point loop: scan Goto/If terminators for predecessor counts; for each non-entry block B with predecessor_count==1 whose sole predecessor P ends with Goto(B,args): substitute B.params[i]-\u003eargs[i] in all Prim and Term Var fields, append B stmts to P, set P terminator to B substituted terminator, remove B. Use rename_prim/rename_term from ir_inline.rs as exhaustive reference. Unit tests: single-predecessor fuses; multi-predecessor untouched; entry-as-host; A-\u003eB-\u003eC chain; If-targeted block untouched.",
+  "id": "fz-q9a",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "fz-ul4.fus.2: fuse_blocks pass + unit tests (src/ir_fuse.rs)",
+  "type": "task",
+  "updated_at": "2026-05-15T17:53:53Z"
+}
