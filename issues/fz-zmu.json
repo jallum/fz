@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-l8j"
+  ],
   "created": "2026-05-15T18:27:57Z",
   "description": "",
   "id": "fz-zmu",
@@ -10,5 +12,5 @@
   "status": "open",
   "title": "fz-ul4.dce.2: Descr::as_int_singleton() — unify private copies in typer + codegen",
   "type": "task",
-  "updated_at": "2026-05-15T18:27:57Z"
+  "updated_at": "2026-05-15T18:28:01Z"
 }

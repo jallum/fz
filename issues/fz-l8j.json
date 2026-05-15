@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-zmu"
+  ],
   "blocks": [],
   "created": "2026-05-15T18:27:57Z",
   "description": "",
@@ -10,5 +12,5 @@
   "status": "open",
   "title": "fz-ul4.dce.3: src/ir_fold.rs — BinOp singleton fold pass + unit tests",
   "type": "task",
-  "updated_at": "2026-05-15T18:27:57Z"
+  "updated_at": "2026-05-15T18:28:01Z"
 }
