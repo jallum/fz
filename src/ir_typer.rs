@@ -643,8 +643,12 @@ fn type_module_pass(
     // consumer resolves via fn_constants don't need a defensive
     // any-key body: the resolved direct-Call registration emitted by
     // phase 1 covers every runtime invocation.
+    //
+    // Computed once: phase-2 registrations are MakeClosure-side any-key
+    // bodies; they can't introduce new unresolved CallClosure sites,
+    // so the opaque-arity set is stable across phase-2 iterations.
+    let opaque_arities = opaque_consumer_arities(m, &specs);
     for _ in 0..64 {
-        let opaque_arities = opaque_consumer_arities(m, &specs);
         let snapshot: Vec<(FnId, Vec<Descr>)> = specs.keys().cloned().collect();
         for (fid, key) in &snapshot {
             let Some(&j) = m.fn_idx.get(fid) else {
