@@ -1159,9 +1159,11 @@ impl SpecRegistry {
                 if ok.len() != k.len() {
                     return false;
                 }
-                let all_le = ok.iter().zip(k.iter()).all(|(o, kk)| o.is_subtype(kk));
-                let any_strict = ok.iter().zip(k.iter()).any(|(o, kk)| !kk.is_subtype(o));
-                all_le && any_strict
+                // Single-pass fold: require all ok[i] ⊆ k[i] and at least
+                // one strictly so (i.e. k[i] ⊄ ok[i]).
+                ok.iter().zip(k.iter()).fold((true, false), |(all_le, any_strict), (o, kk)| {
+                    (all_le && o.is_subtype(kk), any_strict || !kk.is_subtype(o))
+                }) == (true, true)
             })
         };
         covers.sort_by_key(|s| s.0);
