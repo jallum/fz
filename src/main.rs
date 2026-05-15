@@ -203,21 +203,36 @@ fn run_build(args: &[String]) {
         std::process::exit(1);
     });
 
-    // Locate libfz_runtime.a. Cargo puts it in the same target/<profile>/
-    // directory as this binary. CARGO_MANIFEST_DIR + Cargo's debug/release
-    // convention isn't 100% reliable, so check both paths.
+    // Locate libfz_runtime.a. Prefer the deps/ artifact — it is rebuilt
+    // in lockstep with the rlib on every `cargo build` and is always
+    // fresh. The top-level target/<profile>/libfz_runtime.a is only
+    // updated when the runtime crate is built as the primary target, so
+    // it can lag behind when fz is the primary crate (fz-ul4.33).
     let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("fz"));
     let target_dir = exe
         .parent()
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| std::path::PathBuf::from("target/debug"));
+    let deps_dir = target_dir.join("deps");
+    let runtime_a = std::fs::read_dir(&deps_dir)
+        .ok()
+        .and_then(|rd| {
+            rd.filter_map(|e| e.ok())
+                .filter(|e| {
+                    let n = e.file_name();
+                    let s = n.to_string_lossy();
+                    s.starts_with("libfz_runtime-") && s.ends_with(".a")
+                })
+                .max_by_key(|e| e.metadata().and_then(|m| m.modified()).ok())
+                .map(|e| e.path())
+        })
+        .unwrap_or_else(|| target_dir.join("libfz_runtime.a"));
 
     let mut cc = std::process::Command::new("cc");
     cc.arg("-o")
         .arg(&out_path)
         .arg(&obj_temp)
-        .arg(format!("-L{}", target_dir.display()))
-        .arg("-lfz_runtime");
+        .arg(&runtime_a);
     if cfg!(target_os = "macos") {
         cc.arg("-Wl,-undefined,dynamic_lookup");
     }
