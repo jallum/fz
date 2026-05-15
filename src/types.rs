@@ -1287,7 +1287,12 @@ impl fmt::Display for Descr {
 
         format_lit_set(&mut parts, &self.ints, "int", |n| format!("{}", n));
         format_lit_set(&mut parts, &self.floats, "float", |f| {
-            format!("{}", f.get())
+            let v = f.get();
+            if v.fract() == 0.0 {
+                format!("{:.1}", v)
+            } else {
+                format!("{}", v)
+            }
         });
         format_lit_set(&mut parts, &self.strs, "str", |s| format!("{:?}", s));
         format_lit_set(&mut parts, &self.atoms, "atom", |a| format!(":{}", a));
