@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-05-15T03:51:31Z",
   "created": "2026-05-15T03:23:34Z",
   "description": "any_key_spec (ir_typer.rs:238-249) scans all specs calling is_equiv(Descr::any()) per key element to find the all-any spec for a given FnId. is_equiv is a type-theoretic emptiness check — non-trivial. any_spec_for (ir_typer.rs:257-271) allocates a debug-format string per spec to pick a deterministic representative. Both are called in collect_diagnostics loops.\n\nAdd to ModuleTypes:\n  pub any_key_specs: HashMap\u003cFnId, usize\u003e  // index into specs for the all-any key\n\nPopulate in type_module_pass when an all-any key is registered. any_key_spec and any_spec_for become a single HashMap lookup. Remove the linear scan and the is_equiv loop from both methods. Remove the format!(\"{:?}\", key) string allocation from any_spec_for.",
   "id": "fz-afs.12",
   "labels": [],
   "parent": "fz-afs",
   "priority": 3,
-  "status": "in_progress",
+  "status": "closed",
   "title": "add any-key secondary index to ModuleTypes; remove O(n) is_equiv scans",
   "type": "task",
-  "updated_at": "2026-05-15T03:49:21Z"
+  "updated_at": "2026-05-15T03:51:31Z"
 }
