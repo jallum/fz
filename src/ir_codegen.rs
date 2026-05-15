@@ -4402,7 +4402,7 @@ fn compile_fn<M: cranelift_module::Module>(
     b.switch_to_block(entry_cl);
     b.seal_block(entry_cl);
 
-    let EntryHarnessOut { var_env: mut var_env, frame_ptr, host_ctx, cont_param } =
+    let EntryHarnessOut { mut var_env, frame_ptr, host_ctx, cont_param } =
         build_entry_harness(
             &mut b,
             jmod,
