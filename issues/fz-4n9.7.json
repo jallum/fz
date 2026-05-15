@@ -5,7 +5,7 @@
   ],
   "blocks": [],
   "created": "2026-05-15T11:11:37Z",
-  "description": "",
+  "description": "compile_fn opens with ~230 lines of entry-harness setup (lines ~3667-3900) that:\n  1. Creates the Cranelift entry block\n  2. Branches on (is_native, is_cont_fn, closure_target_n_caps) to set up params\n  3. Populates var_env (after T5) with entry-block param bindings\n  4. Returns (frame_ptr, host_ctx, cont_param)\n\nExtract this into:\n  fn build_entry_harness\u003cM: cranelift_module::Module\u003e(\n      b: \u0026mut FunctionBuilder\u003c'_\u003e,\n      jmod: \u0026mut M,\n      env: \u0026CodegenEnv\u003c'_\u003e,        // after T6\n      f: \u0026fz_ir::FnIr,\n      this_spec_id: u32,\n      is_native: bool,\n      is_cont_fn: bool,\n      closure_target_n_caps: Option\u003cusize\u003e,\n      entry_cl: ir::Block,\n      var_env: \u0026mut HashMap\u003cu32, VarBinding\u003e,  // after T5\n  ) -\u003e (Option\u003cir::Value\u003e, Option\u003cir::Value\u003e, Option\u003cir::Value\u003e)\n       // (frame_ptr, host_ctx, cont_param)\n\nThe body is the existing 3-way branch. compile_fn calls it immediately after sealing entry_cl\nand uses the returned tuple for the rest of compilation.\n\nAfter T1: fns_needing_host_ctx is gone, so host_ctx is always None for native fns.\nThe cont-fn branch at line 3792 already returns None unconditionally after T1.\nAfter T5: var_env replaces var_map+var_reprs.\nAfter T6: env replaces the bundled params.\n\ncargo build must produce zero warnings. All tests must pass.",
   "id": "fz-4n9.7",
   "labels": [],
   "parent": "fz-4n9",
@@ -13,5 +13,5 @@
   "status": "open",
   "title": "fz-cg2.7 extract build_entry_harness from compile_fn",
   "type": "task",
-  "updated_at": "2026-05-15T11:11:41Z"
+  "updated_at": "2026-05-15T11:13:04Z"
 }
