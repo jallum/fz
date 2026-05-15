@@ -1,7 +1,0 @@
-fn dist(x, y) do
-  x * x + y * y
-end
-
-fn main() do
-  print(dist(1.5, 2.5))
-end

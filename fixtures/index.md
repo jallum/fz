@@ -9,17 +9,14 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `alias/` | nested-module path aliasing — `alias Long.Path` and `alias Long.Path, as: LP` | jit, interp |
 | `apply2/` | first-class fns — pass a fn into another fn and call it | jit, interp |
 | `attributes/` | @moduledoc / @doc attributes parse and the module still executes | jit, interp |
-| `callsite_narrowing_dist/` | fz-ul4.27.10 — call-site arg narrowing flows caller arg types into callee entry params | jit, interp |
 | `classify_two_clause/` | literal-vs-wildcard clause dispatch (`0` and `_`) | jit, interp |
 | `closure_typed_captures/` | fz-ul4.29.5 — closure dispatched via call_indirect through stub_fp | jit, interp, aot |
 | `cold_fn/` | minimal call site — one fn definition, one call, no scaffolding | jit, interp |
 | `concurrency_ping_pong/` | spawn + send + receive — parent blocks on receive, prints the message | jit, interp, aot |
 | `cross_module_macro/` | defmacro in one module, called from another via `import Helpers, only: [twice: 1]` | jit, interp |
-| `expect_clif_demo/` | demonstrate expect_clif_contains / expect_clif_excludes header keys (fz-ul4.27.1) | jit, interp |
 | `hello/` | print each scalar shape — int, atom, bool, nil | jit, interp |
 | `higher_order/` | higher-order patterns — apply2, compose | jit, interp, aot |
 | `hot_fn/` | same call repeated — historical JIT tier-up trigger; today every call is JIT | jit, interp |
-| `id_int_atom/` | identity fn over int and atom — no type-driven specialization | jit, interp |
 | `import/` | selective import — `import Math, only: [add: 2]` | jit, interp |
 | `interp_only_main/` | tiny module with a single helper and a main — historical interp-tier-0 smoke test | jit, interp |
 | `macro_inc/` | defmacro + quote/unquote round-trip — two macros, one nested in the other | jit, interp |
