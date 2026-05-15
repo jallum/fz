@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-05-15T10:34:43Z",
   "created": "2026-05-15T10:11:22Z",
   "description": "In the Term::Halt lowering inside compile_fn (ir_codegen.rs), the native branch\ncomputes `val` and then immediately discards it:\n\n  Term::Halt(v) =\u003e {\n      let val = *var_map.get(\u0026v.0).expect(\"unbound halt val\");\n      if is_native {\n          // ...\n          let _ = return_reprs[this_spec_id as usize];\n          let zero = b.ins().iconst(types::I64, 0);\n          b.ins().return_(\u0026[zero]);\n          let _ = val;   // \u003c-- val discarded\n      } else {\n          let null = b.ins().iconst(types::I64, 0);\n          b.ins().return_(\u0026[null]);\n      }\n  }\n\nThe value is never used in the native branch (fz_halt is no-return at runtime;\nthe returned bits are unobservable). Remove the `val` binding from the native\nbranch entirely. The uniform branch doesn't use `val` either, so the lookup\ncan be removed from both.\n\nThe let binding should move inside the else branch only if the uniform path\nneeds it, or be removed entirely if neither path uses it after the refactor.\nVerify by reading the code: if uniform also discards val, remove the binding\nfrom both.\n\nProven: existing fixture tests pass unchanged.\n\n## LANDING THE WORK\n  Land this ticket before starting the next one:\n  - Commit only the changes for this ticket, referencing fz-cg1.3\n  - Close the ticket (`bw close fz-v9l.3`); It will tell you if work is newly unblocked",
   "id": "fz-v9l.3",
   "labels": [],
   "parent": "fz-v9l",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "fz-cg1.3 remove dead val computation in Term::Halt native branch",
   "type": "task",
-  "updated_at": "2026-05-15T10:34:11Z"
+  "updated_at": "2026-05-15T10:34:43Z"
 }
