@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-15T21:58:09Z",
+  "description": "Files: runtime/src/heap.rs\n\nAdd fields:\n  gc_watermark: *mut u8         // 75% of block_end\n  last_gc_live_bytes: usize     // exact post-GC live bytes; 0 until first GC\nRemove: low_live_streak: u8\n\nSet watermark in Heap::new(), alloc() grow path, gc() after installing to-space.\n\nRemove count_live_bytes_from() pre-pass from gc(). Replace to-space sizing:\n  if last_gc_live_bytes \u003e 0 { last_gc_live_bytes * 2 } else { bytes_used() }\nAfter BFS: last_gc_live_bytes = free - to_start. Delete count_live_bytes_from entirely.\n\nAdd compile-time constant and enforce at alloc():\n  pub const MAX_HEAP_OBJECT_BYTES: usize = 64;\n  assert!(size \u003c= MAX_HEAP_OBJECT_BYTES, ...)\nNote: alloc_map(3+ entries) and alloc_bitstring(\u003e40 bytes) already violate this; the assert surfaces violations immediately. Those callers need follow-on redesign.\n\nTests: watermark = 75% after new/grow/gc; gc() correct without pre-pass; last_gc_live_bytes = free-to_start after gc(); alloc(65) panics.",
+  "id": "fz-02r.1",
+  "labels": [],
+  "parent": "fz-02r",
+  "priority": 2,
+  "status": "open",
+  "title": "fz-sched.5: Heap foundation — watermark, last_gc_live_bytes, 64-byte limit",
+  "type": "task",
+  "updated_at": "2026-05-15T21:58:09Z"
+}
