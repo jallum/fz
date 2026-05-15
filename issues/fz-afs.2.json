@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-15T03:22:05Z",
+  "description": "ir_typer.rs numeric_result_fold: the Div and Mod arms compute bi.checked_rem(1) before the actual divide. checked_rem(n, 1) is always Some(0) — it can never return None (divisor 1 is never zero). The only real guard is the subsequent .filter(|_| bi != 0). Replace:\n  bi.checked_rem(1).filter(|_| bi != 0).and(ai.checked_div(bi))\nwith:\n  if bi != 0 { ai.checked_div(bi) } else { None }\nSame for Mod. No behavior change.",
+  "id": "fz-afs.2",
+  "labels": [],
+  "parent": "fz-afs",
+  "priority": 3,
+  "status": "open",
+  "title": "remove dead bi.checked_rem(1) from numeric_result_fold",
+  "type": "task",
+  "updated_at": "2026-05-15T03:22:05Z"
+}
