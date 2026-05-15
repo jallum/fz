@@ -11,9 +11,15 @@
   "id": "fz-ul4.11.15.2",
   "labels": [],
   "parent": "fz-ul4.11.15",
+  "comments": [
+    {
+      "text": "Stale reference corrected (2026-05-14): emit_tail_call is at ir_codegen.rs:5320, not :2185. The semantic analysis (cont_ptr preserved, Return stays Return) is still correct.",
+      "timestamp": "2026-05-15T03:21:38Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "Inline TailCall sites (Case 1)",
   "type": "task",
-  "updated_at": "2026-05-11T06:26:57Z"
+  "updated_at": "2026-05-15T03:21:38Z"
 }
