@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-h9f.1"
+  ],
   "blocks": [],
   "created": "2026-05-15T22:10:56Z",
   "description": "Files: runtime/src/heap.rs\n\npub fn gc_minor(\n  \u0026mut self,\n  roots: \u0026mut [FzValue],\n  mailbox: \u0026mut VecDeque\u003cFzValue\u003e,\n) {\n  // from_ranges = [(young_start, young_top)] only.\n  // For each FzValue in roots[] and mailbox that is a heap pointer:\n  //   if ptr in young range → copy to old_top (bump old_top), install FORWARDED_KIND, update slot\n  //   if ptr in old range → leave unchanged (old object, already valid)\n  // BFS scan of newly copied objects in old space:\n  //   for each child pointer:\n  //     young child → copy to old, forward\n  //     old child → pass through (from_range check fails, no forward)\n  // Reset young_top = young_start.\n  // Update last_minor_live_bytes = bytes promoted to old this cycle.\n  // Increment minor_gc_count.\n}\n\nThe existing forward_field() and cheney_forward() functions already implement the from_range check. gc_minor() is gc() with from_ranges restricted to the young block and to-space being the old block (bump into old_top rather than a fresh block). No new forwarding logic needed.\n\nFor park-time minor GC: roots = [parked_cont as FzValue] (mailbox empty at park time).\n\nTests: young object reachable from root survives minor GC and is now in old block. Young object not reachable is collected. Old-space pointer in root is left untouched. new→old pointer in a young object: young object promoted, pointer to old object preserved unchanged. minor_gc_count incremented after each call.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "gen-gc.2: gc_minor() — Cheney young→old, no write barrier, forward roots in place",
   "type": "task",
-  "updated_at": "2026-05-15T22:10:56Z"
+  "updated_at": "2026-05-15T22:11:50Z"
 }
