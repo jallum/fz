@@ -4,14 +4,15 @@
   "blocks": [
     "fz-v9l.7"
   ],
+  "closed_at": "2026-05-15T10:36:28Z",
   "created": "2026-05-15T10:11:22Z",
   "description": "SpecRegistry::resolve() fast path (the common case) allocates a Vec\u003cDescr\u003e on\nevery call just to perform a HashMap lookup:\n\n  if let Some(\u0026id) = self.lookup.get(\u0026(fn_id, input_descrs.to_vec())) {\n      return Some(id);\n  }\n\nThis is called at every Call, TailCall, and CallClosure codegen site. The\n.to_vec() allocation is thrown away immediately after the lookup.\n\nFix: change the internal `lookup` field from:\n  HashMap\u003c(FnId, Vec\u003cDescr\u003e), SpecId\u003e\nto:\n  HashMap\u003cFnId, HashMap\u003cVec\u003cDescr\u003e, SpecId\u003e\u003e\n\nThis allows the fast path to use \u0026[Descr] directly via Borrow:\n  if let Some(\u0026id) = self.lookup.get(\u0026fn_id).and_then(|m| m.get(input_descrs)) {\n      return Some(id);\n  }\n\nVec\u003cT\u003e implements Borrow\u003c[T]\u003e, so HashMap\u003cVec\u003cT\u003e, V\u003e::get accepts \u0026[T] without\nany allocation. No semantic change — the lookup produces the same SpecId.\n\nUpdate register() and register_any_key_at() to insert into the two-level map:\n  self.lookup.entry(fn_id).or_default().insert(input_descrs_vec, id);\n\nProven: existing SpecRegistry unit tests pass. All fixture tests pass.\n\n## LANDING THE WORK\n  Land this ticket before starting the next one:\n  - Commit only the changes for this ticket, referencing fz-cg1.6\n  - Close the ticket (`bw close fz-v9l.6`); It will tell you if work is newly unblocked",
   "id": "fz-v9l.6",
   "labels": [],
   "parent": "fz-v9l",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "fz-cg1.6 fix SpecRegistry resolve fast-path: eliminate .to_vec() allocation",
   "type": "task",
-  "updated_at": "2026-05-15T10:35:15Z"
+  "updated_at": "2026-05-15T10:36:28Z"
 }
