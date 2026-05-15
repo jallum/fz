@@ -12,24 +12,16 @@ function u0:0(i64) -> i64 tail {
     fn2 = u0:1 sig2
 
 block0(v0: i64):
-    v1 = iconst.i64 41                  ; @10:9
-    v2 = iconst.i64 1                   ; @10:9
+    v1 = iconst.i64 42                  ; @10:9
+    call fn0(v1)                        ; @10:9  v1 = 42
+    v2 = iconst.i64 3                   ; @10:9
     v3 = iconst.i64 42                  ; @10:9
-    call fn0(v3)                        ; @10:3  v3 = 42
+    call fn1(v3)                        ; @10:3  v3 = 42
     v4 = iconst.i64 3                   ; @10:3
-    v5 = iconst.i64 21                  ; @11:9
-    v6 = iconst.i64 2                   ; @11:9
-    v7 = iconst.i64 42                  ; @11:9
-    call fn1(v7)                        ; @11:3  v7 = 42
-    v8 = iconst.i64 3                   ; @11:3
-    v9 = iconst.i64 20                  ; @12:9
-    v10 = iconst.i64 2                  ; @12:9
-    v11 = iconst.i64 40                 ; @12:9
-    v12 = iconst.i64 1                  ; @12:9
-    v13 = iconst.i64 41                 ; @12:9
-    call fn2(v13)                       ; @12:3  v13 = 41
-    v14 = iconst.i64 3                  ; @12:3
-    v15 = load.i64 notrap aligned v0+16
-    return_call_indirect sig3, v15(v14, v0)  ; v14 = 3
+    v5 = iconst.i64 41                  ; @11:9
+    call fn2(v5)                        ; @11:9  v5 = 41
+    v6 = iconst.i64 3                   ; @11:9
+    v7 = load.i64 notrap aligned v0+16
+    return_call_indirect sig3, v7(v6, v0)  ; v6 = 3
 }
 
