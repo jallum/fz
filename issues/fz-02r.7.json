@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-02r.5"
+  ],
   "blocks": [],
   "created": "2026-05-15T21:59:20Z",
   "description": "Files: src/aot_codegen.rs, runtime/src/heap.rs\n\n11a — Alloc RTL: AOT does not inline bump allocation.\n  pub extern \"C\" fn fz_alloc(size: u64) -\u003e u64 {\n      current_process().heap.alloc(size as usize) as u64\n  }\nfz_alloc calls Heap::alloc which sets FZ_SHOULD_YIELD at the watermark. AOT call sites call fz_alloc instead of inlining the bump.\n\n11b — Inline back-edge check: same 3-instruction pattern (load global, branch) at every is_back_edge site in AOT-generated native code. Slow path calls fz_yield_back_edge. Resume shims emitted as ordinary extern C functions in the AOT binary.\n\nTests: fz-sched.12 integration cases via AOT mode.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "fz-sched.11: AOT parity — alloc RTL and inline back-edge check in native code",
   "type": "task",
-  "updated_at": "2026-05-15T21:59:20Z"
+  "updated_at": "2026-05-15T21:59:38Z"
 }

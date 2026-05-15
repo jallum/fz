@@ -5,7 +5,8 @@
     "fz-02r.4"
   ],
   "blocks": [
-    "fz-02r.6"
+    "fz-02r.6",
+    "fz-02r.7"
   ],
   "created": "2026-05-15T21:59:07Z",
   "description": "Files: src/ir_codegen.rs, runtime/src/ir_runtime.rs\n\n9a — Declare FZ_SHOULD_YIELD as JIT import global:\n  module.declare_data(\"FZ_SHOULD_YIELD\", Linkage::Import, false, false)\n\n9b — Inline check at is_back_edge sites (native Tail-CC path only):\n  gv   = global_value.i64 %fz_should_yield_data\n  flag = load.i8 notrap aligned gv+0\n  brz  flag, $fast\n  ; slow path: coerce args to Tagged, store to mid_flight_roots via fz_mid_flight_roots_ptr()\n  ; call fz_yield_back_edge(fn_id, n), return YIELD_PTR (1i64)\n  $fast: return_call callee(args...)\nUniform fns ignore is_back_edge.\n\n9c — Resume shim per back-edge function:\n  fz_resume_back_edge_fn{id}(): () -\u003e i64, SystemV\n  loads mid_flight_roots via fz_mid_flight_roots_ptr(), coerces Tagged→param reprs, return_call fn body\nStore in CompiledModule::back_edge_resume_shims: HashMap\u003cu32, *const u8\u003e\n\n9d — run_quantum: before existing dispatch checks:\n  Proactive shrinkage: if last_gc_live_bytes\u003e0 \u0026\u0026 bytes_used()\u003clast_gc_live_bytes/2, increment quiet_quanta; at 3, FZ_SHOULD_YIELD.store(1), reset counter.\n  Mid-flight resume: if mid_flight_fn_id!=0: gc_mid_flight if should_gc(), clear fn_id THEN call shim, park_time_gc, return.\n\nTests: self-recursive fn has shim in back_edge_resume_shims; CLIF contains global_value+load.i8+brz at back-edge block. Mutual recursion: both shims present. Proactive: quiet_quanta reaches 3 and sets FZ_SHOULD_YIELD.",
