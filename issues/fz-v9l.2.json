@@ -4,14 +4,15 @@
     "fz-v9l.1"
   ],
   "blocks": [],
+  "closed_at": "2026-05-15T10:34:08Z",
   "created": "2026-05-15T10:11:21Z",
   "description": "Remove the blanket #![allow(dead_code)] at line 22 of ir_codegen.rs.\n\nAfter fz-cg1.1 removes _kp (the last known dead item), this suppress masks\nnothing and hides any future dead code that accretes in the file.\n\nRemove the attribute. Run `cargo build` (warnings are errors per CLAUDE.md).\nFor any item that now warns, either:\n  a) Delete it if it is genuinely dead, or\n  b) Add a targeted #[allow(dead_code)] with a comment explaining why it must\n     stay (e.g., public API used by tests or external callers not visible to\n     the compiler).\n\nDo not add a blanket allow back under any circumstances.\n\n## LANDING THE WORK\n  Land this ticket before starting the next one:\n  - Commit only the changes for this ticket, referencing fz-cg1.2\n  - Close the ticket (`bw close fz-v9l.2`); It will tell you if work is newly unblocked",
   "id": "fz-v9l.2",
   "labels": [],
   "parent": "fz-v9l",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "fz-cg1.2 remove blanket #![allow(dead_code)] module suppress",
   "type": "task",
-  "updated_at": "2026-05-15T10:33:57Z"
+  "updated_at": "2026-05-15T10:34:08Z"
 }
