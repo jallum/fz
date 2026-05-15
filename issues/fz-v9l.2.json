@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-v9l.1"
   ],
@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-v9l",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "fz-cg1.2 remove blanket #![allow(dead_code)] module suppress",
   "type": "task",
-  "updated_at": "2026-05-15T10:11:42Z"
+  "updated_at": "2026-05-15T10:33:57Z"
 }
