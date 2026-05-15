@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-05-15T15:54:04Z",
@@ -7,8 +7,8 @@
   "id": "fz-ck0",
   "labels": [],
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "replace build_entry_harness 4-tuple return with EntryHarnessOut struct",
   "type": "task",
-  "updated_at": "2026-05-15T15:54:04Z"
+  "updated_at": "2026-05-15T15:56:19Z"
 }
