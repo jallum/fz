@@ -1327,9 +1327,23 @@ fn merge_into(
 
 /// Find the stmt that bound `cond` (if any) and split the env into
 /// (then_env, else_env) narrowing the predicate's operands accordingly.
-fn narrow_for_if(
-    env: &HashMap<Var, Descr>,
+fn union_envs(
+    a: HashMap<Var, Descr>,
+    b: &HashMap<Var, Descr>,
+) -> HashMap<Var, Descr> {
+    let mut out = a;
+    for (v, dt) in b {
+        let entry = out.entry(*v).or_insert_with(Descr::none);
+        *entry = entry.union(dt);
+    }
+    out
+}
+
+/// Recursive core for if-condition narrowing.
+/// Returns (then_env, else_env) with variable types refined for each branch.
+fn narrow_for_cond(
     cond: Var,
+    env: &HashMap<Var, Descr>,
     stmts: &[Stmt],
 ) -> (HashMap<Var, Descr>, HashMap<Var, Descr>) {
     let mut then_env = env.clone();
@@ -1345,6 +1359,22 @@ fn narrow_for_if(
     };
 
     match prim {
+        Prim::BinOp(BinOp::And, a, b) => {
+            // Truthy: both sub-conditions hold — narrow by a, then by b.
+            let (then_a, else_a) = narrow_for_cond(*a, env, stmts);
+            let (then_ab, _) = narrow_for_cond(*b, &then_a, stmts);
+            // Falsy: at least one fails — union of the individual false branches.
+            let (_, else_b) = narrow_for_cond(*b, env, stmts);
+            return (then_ab, union_envs(else_a, &else_b));
+        }
+        Prim::BinOp(BinOp::Or, a, b) => {
+            // Truthy: at least one holds — union of individual true branches.
+            let (then_a, else_a) = narrow_for_cond(*a, env, stmts);
+            let (then_b, _) = narrow_for_cond(*b, env, stmts);
+            // Falsy: both fail — narrow by a's false, then b's false.
+            let (_, else_ab) = narrow_for_cond(*b, &else_a, stmts);
+            return (union_envs(then_a, &then_b), else_ab);
+        }
         Prim::ListIsNil(v) => {
             let current = env.get(v).cloned().unwrap_or_else(Descr::any);
             let then_t = current.intersect(&Descr::nil());
@@ -1385,6 +1415,14 @@ fn narrow_for_if(
     }
 
     (then_env, else_env)
+}
+
+fn narrow_for_if(
+    env: &HashMap<Var, Descr>,
+    cond: Var,
+    stmts: &[Stmt],
+) -> (HashMap<Var, Descr>, HashMap<Var, Descr>) {
+    narrow_for_cond(cond, env, stmts)
 }
 
 fn is_singleton_lit(d: &Descr) -> bool {
@@ -4361,5 +4399,62 @@ end
         let er: HashMap<(FnId, Vec<Descr>), Descr> = HashMap::new();
         let r = resolve_closure_return(&descr, &er, &[Descr::int_lit(21)]);
         assert_eq!(r, Some(Descr::any()));
+    }
+
+    #[test]
+    fn narrow_for_cond_and_narrows_both_operands_in_then_branch() {
+        use crate::fz_ir::{BinOp, Prim, Stmt, Var};
+        // Simulate: if x == :ok && y == 1 do … end
+        // cx = Eq(x, lit_ok), cy = Eq(y, lit_one), cand = And(cx, cy)
+        let x = Var(0);
+        let y = Var(1);
+        let lit_ok = Var(2);
+        let lit_one = Var(3);
+        let cx = Var(4);
+        let cy = Var(5);
+        let cand = Var(6);
+
+        let stmts = vec![
+            Stmt::Let(cx, Prim::BinOp(BinOp::Eq, x, lit_ok)),
+            Stmt::Let(cy, Prim::BinOp(BinOp::Eq, y, lit_one)),
+            Stmt::Let(cand, Prim::BinOp(BinOp::And, cx, cy)),
+        ];
+
+        let mut env: HashMap<Var, Descr> = HashMap::new();
+        env.insert(x, Descr::any());
+        env.insert(y, Descr::any());
+        // lit_ok and lit_one already have singleton types in env.
+        env.insert(lit_ok, Descr::atom_lit("ok"));
+        env.insert(lit_one, Descr::int_lit(1));
+        env.insert(cx, Descr::bool_t());
+        env.insert(cy, Descr::bool_t());
+        env.insert(cand, Descr::bool_t());
+
+        let (then_env, else_env) = narrow_for_cond(cand, &env, &stmts);
+
+        // Then branch: x must be :ok and y must be 1.
+        assert_eq!(
+            then_env.get(&x).cloned().unwrap_or_else(Descr::any),
+            Descr::atom_lit("ok"),
+            "then: x should be narrowed to :ok"
+        );
+        assert_eq!(
+            then_env.get(&y).cloned().unwrap_or_else(Descr::any),
+            Descr::int_lit(1),
+            "then: y should be narrowed to 1"
+        );
+
+        // Else branch: at least one failed — union of "x != :ok" and "y != 1".
+        // Neither is fully pinned to the singleton.
+        let x_else = else_env.get(&x).cloned().unwrap_or_else(Descr::any);
+        let y_else = else_env.get(&y).cloned().unwrap_or_else(Descr::any);
+        assert!(
+            x_else != Descr::atom_lit("ok"),
+            "else: x should not be pinned to :ok"
+        );
+        assert!(
+            y_else != Descr::int_lit(1),
+            "else: y should not be pinned to 1"
+        );
     }
 }
