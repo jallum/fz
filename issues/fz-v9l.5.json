@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-05-15T10:35:11Z",
   "created": "2026-05-15T10:11:22Z",
   "description": "coerce_to() currently panics on two valid transitions:\n\n  (ArgRepr::RawInt, ArgRepr::RawF64)   =\u003e panic!(\"coerce_to: unsupported ...\")\n  (ArgRepr::RawF64, ArgRepr::RawInt)   =\u003e panic!(\"coerce_to: unsupported ...\")\n\nThese combinations are not exercised by any fixture today, but will be reached\nas the type system matures (e.g., a raw-int value passed to a continuation that\nexpects raw-float, or vice versa).\n\nFix: route through Tagged as an intermediate for both cross-raw transitions:\n\n  (ArgRepr::RawInt, ArgRepr::RawF64) =\u003e {\n      let tagged = box_int(b, val);\n      unbox_float(b, tagged)\n  }\n  (ArgRepr::RawF64, ArgRepr::RawInt) =\u003e {\n      let tagged = box_float_native(b, jmod, runtime, val);\n      unbox_int(b, tagged)\n  }\n\nProven: add a unit test that exercises both arms directly (construct the\nvalues, call coerce_to, verify no panic and the result is a valid ir::Value).\nAll existing tests continue to pass.\n\n## LANDING THE WORK\n  Land this ticket before starting the next one:\n  - Commit only the changes for this ticket, referencing fz-cg1.5\n  - Close the ticket (`bw close fz-v9l.5`); It will tell you if work is newly unblocked",
   "id": "fz-v9l.5",
   "labels": [],
   "parent": "fz-v9l",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "fz-cg1.5 fix coerce_to missing RawInt\u003c-\u003eRawF64 arms",
   "type": "task",
-  "updated_at": "2026-05-15T10:34:46Z"
+  "updated_at": "2026-05-15T10:35:11Z"
 }
