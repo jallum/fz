@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-05-15T03:28:36Z",
   "created": "2026-05-15T03:22:04Z",
   "description": "ir_typer.rs:1228 — 'let _ = i;' suppresses an unused-var warning for i, which was used two lines earlier in the same loop body. The suppression is vestigial from a refactor. Remove it. One-line deletion.",
   "id": "fz-afs.1",
   "labels": [],
   "parent": "fz-afs",
   "priority": 3,
-  "status": "in_progress",
+  "status": "closed",
   "title": "remove vestigial let _ = i in type_fn Goto handler",
   "type": "task",
-  "updated_at": "2026-05-15T03:27:22Z"
+  "updated_at": "2026-05-15T03:28:36Z"
 }
