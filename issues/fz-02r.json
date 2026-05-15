@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-h9f"
+  ],
   "created": "2026-05-15T21:57:56Z",
   "description": "Cooperative yield point at every loop back-edge (SCC-detected, covers mutual recursion). Nearly-free 3-instruction inline check; when GC is needed the process yields to the scheduler, gc_mid_flight runs with the correct root set (mid_flight_roots slab + mailbox items), and the process resumes via a per-function shim. Same mechanism provides soft preemption. See docs/mid-flight-gc.md for full design.",
   "id": "fz-02r",
@@ -10,5 +12,5 @@
   "status": "open",
   "title": "fz-sched: mid-flight GC via back-edge cooperative yield",
   "type": "epic",
-  "updated_at": "2026-05-15T21:57:56Z"
+  "updated_at": "2026-05-15T22:11:51Z"
 }

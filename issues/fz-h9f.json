@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-02r"
+  ],
   "blocks": [],
   "created": "2026-05-15T22:10:30Z",
   "description": "Splits the per-process heap into a small young block (~64KB) and a larger old block. Minor GC (gc_minor) copies only the young generation using the existing Cheney machinery with a narrower from_ranges — no write barriers needed because fz is purely immutable (old→young pointers are structurally impossible). Major GC (gc_major) extends the existing gc() to cover both blocks. Back-edge yield, FZ_SHOULD_YIELD, mid_flight_roots slab, and mailbox-as-root are unchanged — only the block layout and GC dispatch change. Theoretical basis: Baker's 'Cheney on the M.T.A.' Blocked by fz-02r (mid-flight GC scaffolding must exist first).",
@@ -10,5 +12,5 @@
   "status": "open",
   "title": "gen-gc: generational GC — young/old split with write-barrier-free minor collection",
   "type": "epic",
-  "updated_at": "2026-05-15T22:10:30Z"
+  "updated_at": "2026-05-15T22:11:51Z"
 }
