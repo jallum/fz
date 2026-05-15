@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-15T10:11:22Z",
+  "description": "",
+  "id": "fz-v9l.4",
+  "labels": [],
+  "parent": "fz-v9l",
+  "priority": 2,
+  "status": "open",
+  "title": "fz-cg1.4 replace dual HashSet var tracking with VarRepr enum map; remove var_repr()",
+  "type": "task",
+  "updated_at": "2026-05-15T10:11:22Z"
+}
