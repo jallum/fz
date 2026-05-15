@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-15T00:29:44Z",
+  "description": "In concurrency_ping_pong, the child process return value (result of the send expression) is typed as any in the specs rather than being narrowed to the expected message type.\n\nThe send operation's return type should be inferable from the message protocol, but the spec shows any, indicating the return narrowing for inter-process send is not yet implemented in the typer.\n\nThis may be intentional pending concurrency type inference work, but is noted here as a spec correctness gap.",
+  "id": "fz-1pq.8",
+  "labels": [],
+  "parent": "fz-1pq",
+  "priority": 2,
+  "status": "open",
+  "title": "concurrency_ping_pong: child process return typed as any — send return not narrowed",
+  "type": "bug",
+  "updated_at": "2026-05-15T00:29:44Z"
+}
