@@ -219,6 +219,10 @@ impl CompiledModule {
             }
             process.heap.gc(&mut process.parked_cont);
             process.heap.clear_should_gc_flag();
+            // After park-time GC the process is about to park on receive,
+            // so FZ_SHOULD_YIELD no longer applies to this quantum.
+            fz_runtime::yield_flag::FZ_SHOULD_YIELD
+                .store(0, std::sync::atomic::Ordering::Relaxed);
         }
 
         // fz-cps.1.11 — wakeup path: if the task has a parked_cont and

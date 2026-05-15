@@ -33,10 +33,12 @@
 //!     Arc when threading lands).
 
 use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::Ordering;
 
 use crate::fz_ir::FnId;
 use crate::ir_codegen::{CURRENT_PROCESS, CompiledModule, PidId, Process, ProcessState};
 use fz_runtime::fz_value::FzValue;
+use fz_runtime::yield_flag::FZ_SHOULD_YIELD;
 
 /// Task scheduler bound to a single CompiledModule. v1 is single-worker /
 /// single-threaded — `run_until_idle` drives all spawned tasks to
@@ -297,6 +299,10 @@ impl<'a> Runtime<'a> {
                 .expect("task in run_queue not in registry");
             task.state = ProcessState::Running;
             let ptr: *mut Process = &mut *task;
+            // Clear FZ_SHOULD_YIELD before installing the process so a
+            // stale flag from the previous quantum doesn't immediately
+            // re-yield the incoming task.
+            FZ_SHOULD_YIELD.store(0, Ordering::Relaxed);
             let prev = CURRENT_PROCESS.with(|c| c.replace(ptr));
             self.compiled.run_quantum(&mut task);
             CURRENT_PROCESS.with(|c| c.set(prev));
@@ -670,5 +676,35 @@ mod tests {
             task.heap.gc_run_count
         );
         assert!(!task.heap.should_gc(), "flag should be cleared after gc()");
+    }
+
+    // ----- fz-02r.2: FZ_SHOULD_YIELD global -----
+
+    /// run_until_idle clears FZ_SHOULD_YIELD before each quantum so a stale
+    /// flag from a previous task's watermark crossing doesn't falsely
+    /// pre-yield the incoming task.
+    #[test]
+    fn run_until_idle_clears_yield_flag_before_each_quantum() {
+        use fz_runtime::yield_flag::FZ_SHOULD_YIELD;
+        use std::sync::atomic::Ordering;
+
+        // Pre-set the flag as if a previous task had crossed the watermark.
+        FZ_SHOULD_YIELD.store(1, Ordering::Relaxed);
+
+        let src = "fn main(), do: 7";
+        let m = lower_src(src);
+        let entry = m.fn_by_name("main").unwrap().id;
+        let compiled = compile(&m).unwrap();
+        let mut rt = Runtime::new(&compiled, 1);
+        rt.spawn(entry);
+        rt.run_until_idle();
+
+        // After the quantum completes the flag is 0 (cleared at quantum
+        // start; task allocates nothing near the watermark).
+        assert_eq!(
+            FZ_SHOULD_YIELD.load(Ordering::Relaxed),
+            0,
+            "FZ_SHOULD_YIELD should be 0 after run_until_idle"
+        );
     }
 }
