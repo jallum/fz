@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-05-15T03:30:33Z",
   "created": "2026-05-15T03:22:05Z",
   "description": "ir_typer.rs:1774-1864 — specialize_return is #[allow(dead_code)] and tagged as a tier-up hook for fz-ul4.19.5, which is not scheduled. The function duplicates type_fn's block-env propagation logic with its own widen-at-K cap. Dead code that shares a problem with live code but not the implementation is a drift risk: when type_fn changes, specialize_return silently diverges. Remove the 90-line function entirely. When fz-ul4.19.5 lands it will be rebuilt from the real type_fn, not from a stale copy.",
   "id": "fz-afs.3",
   "labels": [],
   "parent": "fz-afs",
   "priority": 3,
-  "status": "in_progress",
+  "status": "closed",
   "title": "remove dead specialize_return function",
   "type": "task",
-  "updated_at": "2026-05-15T03:29:00Z"
+  "updated_at": "2026-05-15T03:30:33Z"
 }
