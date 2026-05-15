@@ -375,6 +375,7 @@ pub fn asm_record_take() -> Vec<(String, String)> {
 /// the fixture_matrix integration tests) call this to read what
 /// fz_print_value emitted during a compile/run. The actual storage lives
 /// in the runtime crate alongside fz_print_value (fz-ul4.23.10).
+#[cfg(test)]
 pub fn test_capture_take() -> Vec<String> {
     fz_runtime::ir_runtime::test_capture_take()
 }
@@ -574,6 +575,7 @@ fn annotate_block_header(line: &str, value_descrs: &HashMap<u32, crate::types::D
 /// Reset DEFAULT_PROCESS. Call at the start of any test that needs a clean
 /// heap. Tests share threads via the cargo test runner's worker pool, so
 /// leftover state is otherwise sticky.
+#[cfg(test)]
 pub fn heap_reset_for_test() {
     DEFAULT_PROCESS.with(|c| *c.borrow_mut() = None);
 }
