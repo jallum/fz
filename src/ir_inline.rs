@@ -1,7 +1,8 @@
-use crate::fz_ir::{
-    BitSizeIr, Block, BlockId, Cont, FnId, FnIr, Module, Prim, Stmt, Term, Var,
-};
+use crate::fz_ir::{BitSizeIr, Block, BlockId, Cont, FnId, FnIr, Module, Prim, Stmt, Term, Var};
 use std::collections::{HashMap, HashSet};
+
+/// (caller_fn_idx, block_idx, callee, callee_args, cont_fn_id, cont_captured)
+type InlineWork = Vec<(usize, usize, FnId, Vec<Var>, FnId, Vec<Var>)>;
 
 const INLINE_BUDGET: usize = 8;
 const MAX_ITERATIONS: usize = 3;
@@ -136,12 +137,18 @@ fn max_var_in_term(t: &Term) -> u32 {
     match t {
         Term::Goto(_, args) => args.iter().for_each(|x| v(*x)),
         Term::If(c, _, _) => v(*c),
-        Term::Call { args, continuation, .. } => {
+        Term::Call {
+            args, continuation, ..
+        } => {
             args.iter().for_each(|x| v(*x));
             continuation.captured.iter().for_each(|x| v(*x));
         }
         Term::TailCall { args, .. } => args.iter().for_each(|x| v(*x)),
-        Term::CallClosure { closure, args, continuation } => {
+        Term::CallClosure {
+            closure,
+            args,
+            continuation,
+        } => {
             v(*closure);
             args.iter().for_each(|x| v(*x));
             continuation.captured.iter().for_each(|x| v(*x));
@@ -181,9 +188,7 @@ pub fn alpha_rename(
             Prim::AllocStruct(sid, args) => {
                 Prim::AllocStruct(*sid, args.iter().map(|x| sv(*x)).collect())
             }
-            Prim::Builtin(bid, args) => {
-                Prim::Builtin(*bid, args.iter().map(|x| sv(*x)).collect())
-            }
+            Prim::Builtin(bid, args) => Prim::Builtin(*bid, args.iter().map(|x| sv(*x)).collect()),
             Prim::ListCons(a, b) => Prim::ListCons(sv(*a), sv(*b)),
             Prim::ListHead(a) => Prim::ListHead(sv(*a)),
             Prim::ListTail(a) => Prim::ListTail(sv(*a)),
@@ -204,9 +209,7 @@ pub fn alpha_rename(
                 entries.iter().map(|(k, v)| (sv(*k), sv(*v))).collect(),
             ),
             Prim::MapGet(a, b) => Prim::MapGet(sv(*a), sv(*b)),
-            Prim::MakeVec(kind, els) => {
-                Prim::MakeVec(*kind, els.iter().map(|x| sv(*x)).collect())
-            }
+            Prim::MakeVec(kind, els) => Prim::MakeVec(*kind, els.iter().map(|x| sv(*x)).collect()),
             Prim::MakeBitstring(fields) => Prim::MakeBitstring(
                 fields
                     .iter()
@@ -225,20 +228,26 @@ pub fn alpha_rename(
             ),
             Prim::BitReaderInit(a) => Prim::BitReaderInit(sv(*a)),
             Prim::BitReaderDone(a) => Prim::BitReaderDone(sv(*a)),
-            Prim::BitReadField { reader, ty, size, endian, signed, unit, is_last } => {
-                Prim::BitReadField {
-                    reader: sv(*reader),
-                    ty: *ty,
-                    size: size.as_ref().map(|s| match s {
-                        BitSizeIr::Literal(n) => BitSizeIr::Literal(*n),
-                        BitSizeIr::Var(v) => BitSizeIr::Var(sv(*v)),
-                    }),
-                    endian: *endian,
-                    signed: *signed,
-                    unit: *unit,
-                    is_last: *is_last,
-                }
-            }
+            Prim::BitReadField {
+                reader,
+                ty,
+                size,
+                endian,
+                signed,
+                unit,
+                is_last,
+            } => Prim::BitReadField {
+                reader: sv(*reader),
+                ty: *ty,
+                size: size.as_ref().map(|s| match s {
+                    BitSizeIr::Literal(n) => BitSizeIr::Literal(*n),
+                    BitSizeIr::Var(v) => BitSizeIr::Var(sv(*v)),
+                }),
+                endian: *endian,
+                signed: *signed,
+                unit: *unit,
+                is_last: *is_last,
+            },
         }
     };
 
@@ -255,7 +264,11 @@ pub fn alpha_rename(
         match t {
             Term::Goto(b, args) => Term::Goto(sb(*b), args.iter().map(|x| sv(*x)).collect()),
             Term::If(c, then_b, else_b) => Term::If(sv(*c), sb(*then_b), sb(*else_b)),
-            Term::Call { callee, args, continuation } => Term::Call {
+            Term::Call {
+                callee,
+                args,
+                continuation,
+            } => Term::Call {
                 callee: *callee,
                 args: args.iter().map(|x| sv(*x)).collect(),
                 continuation: rename_cont(continuation),
@@ -264,7 +277,11 @@ pub fn alpha_rename(
                 callee: *callee,
                 args: args.iter().map(|x| sv(*x)).collect(),
             },
-            Term::CallClosure { closure, args, continuation } => Term::CallClosure {
+            Term::CallClosure {
+                closure,
+                args,
+                continuation,
+            } => Term::CallClosure {
                 closure: sv(*closure),
                 args: args.iter().map(|x| sv(*x)).collect(),
                 continuation: rename_cont(continuation),
@@ -409,13 +426,18 @@ pub fn inline_calls_once(m: &mut Module) -> usize {
     let mut count = 0;
     let closure_fns = closure_targets(m);
 
-    let work: Vec<(usize, usize, FnId, Vec<Var>, FnId, Vec<Var>)> = m
+    let work: InlineWork = m
         .fns
         .iter()
         .enumerate()
         .flat_map(|(fi, f)| {
             f.blocks.iter().enumerate().filter_map(move |(bi, b)| {
-                if let Term::Call { callee, args, continuation } = &b.terminator {
+                if let Term::Call {
+                    callee,
+                    args,
+                    continuation,
+                } = &b.terminator
+                {
                     Some((
                         fi,
                         bi,
@@ -485,7 +507,7 @@ pub fn inline_calls_once(m: &mut Module) -> usize {
 /// Run both inliner passes to fixed-point (up to MAX_ITERATIONS rounds).
 /// Returns total inlinings performed.
 pub fn inline_module(m: &mut Module) -> usize {
-    let base_stmts: usize = m.fns.iter().map(|f| stmt_count(f)).sum();
+    let base_stmts: usize = m.fns.iter().map(stmt_count).sum();
     let cap = base_stmts * GROWTH_CAP + 1;
     let mut total = 0;
 
@@ -495,7 +517,7 @@ pub fn inline_module(m: &mut Module) -> usize {
             break;
         }
         total += n;
-        let new_stmts: usize = m.fns.iter().map(|f| stmt_count(f)).sum();
+        let new_stmts: usize = m.fns.iter().map(stmt_count).sum();
         if new_stmts > cap {
             break;
         }
@@ -509,9 +531,7 @@ pub fn inline_module(m: &mut Module) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fz_ir::{
-        BinOp, Const, FnBuilder, FnId, FnIr, ModuleBuilder, Prim, Stmt, Term, Var,
-    };
+    use crate::fz_ir::{BinOp, Const, FnBuilder, FnId, FnIr, ModuleBuilder, Prim, Stmt, Term, Var};
 
     fn make_leaf_add1() -> FnIr {
         // fn add1(x) { let one = 1; let s = x+one; return s }
@@ -529,7 +549,13 @@ mod tests {
         let mut b = FnBuilder::new(FnId(0), "caller");
         let y = b.fresh_var();
         let entry = b.block(vec![y]);
-        b.set_terminator(entry, Term::TailCall { callee, args: vec![y] });
+        b.set_terminator(
+            entry,
+            Term::TailCall {
+                callee,
+                args: vec![y],
+            },
+        );
         b.build()
     }
 
@@ -544,7 +570,10 @@ mod tests {
             Term::Call {
                 callee,
                 args: vec![y],
-                continuation: Cont { fn_id: k, captured: vec![] },
+                continuation: Cont {
+                    fn_id: k,
+                    captured: vec![],
+                },
             },
         );
         b.build()
@@ -576,7 +605,10 @@ mod tests {
         b.set_terminator(
             entry,
             Term::Receive {
-                continuation: Cont { fn_id: FnId(7), captured: vec![] },
+                continuation: Cont {
+                    fn_id: FnId(7),
+                    captured: vec![],
+                },
             },
         );
         assert!(!is_leaf(&b.build()));
@@ -592,7 +624,10 @@ mod tests {
             Term::CallClosure {
                 closure: cl,
                 args: vec![],
-                continuation: Cont { fn_id: FnId(7), captured: vec![] },
+                continuation: Cont {
+                    fn_id: FnId(7),
+                    captured: vec![],
+                },
             },
         );
         assert!(!is_leaf(&b.build()));
@@ -603,7 +638,13 @@ mod tests {
         let mut b = FnBuilder::new(FnId(0), "tcc");
         let cl = b.fresh_var();
         let entry = b.block(vec![cl]);
-        b.set_terminator(entry, Term::TailCallClosure { closure: cl, args: vec![] });
+        b.set_terminator(
+            entry,
+            Term::TailCallClosure {
+                closure: cl,
+                args: vec![],
+            },
+        );
         assert!(!is_leaf(&b.build()));
     }
 
@@ -660,8 +701,11 @@ mod tests {
         let caller = make_caller_tail(FnId(1));
         let (renamed, _, _) = alpha_rename(&callee, &caller);
 
-        let caller_vars: std::collections::HashSet<u32> =
-            caller.blocks.iter().flat_map(|b| b.params.iter().map(|v| v.0)).collect();
+        let caller_vars: std::collections::HashSet<u32> = caller
+            .blocks
+            .iter()
+            .flat_map(|b| b.params.iter().map(|v| v.0))
+            .collect();
         for b in &renamed.blocks {
             for p in &b.params {
                 assert!(!caller_vars.contains(&p.0));
@@ -675,7 +719,11 @@ mod tests {
         let caller = make_caller_tail(FnId(1)); // max_var = 0 → shift = 1
         let (renamed, _, _) = alpha_rename(&callee, &caller);
 
-        let entry = renamed.blocks.iter().find(|b| b.id == renamed.entry).unwrap();
+        let entry = renamed
+            .blocks
+            .iter()
+            .find(|b| b.id == renamed.entry)
+            .unwrap();
         // stmts[1] should be BinOp(Add, v1, v2) after shift-by-1 from v0,v1
         match &entry.stmts[1] {
             Stmt::Let(_, Prim::BinOp(BinOp::Add, a, b)) => {
@@ -698,7 +746,11 @@ mod tests {
 
         let caller = make_caller_tail(FnId(1)); // max_var = 0 → shift = 1
         let (renamed, _, _) = alpha_rename(&callee, &caller);
-        let eb = renamed.blocks.iter().find(|b| b.id == renamed.entry).unwrap();
+        let eb = renamed
+            .blocks
+            .iter()
+            .find(|b| b.id == renamed.entry)
+            .unwrap();
         match &eb.stmts[0] {
             Stmt::Let(_, Prim::MakeList(els, Some(tail))) => {
                 assert_eq!(els[0].0, 1);
@@ -778,7 +830,10 @@ mod tests {
             Term::Call {
                 callee: FnId(1),
                 args: vec![y],
-                continuation: Cont { fn_id: k, captured: vec![] },
+                continuation: Cont {
+                    fn_id: k,
+                    captured: vec![],
+                },
             },
         );
         let caller_fn = b.build();
@@ -793,9 +848,10 @@ mod tests {
 
         // There should now be a block with TailCall(K, [...]) terminator.
         let caller = m.fns.iter().find(|f| f.name == "caller").unwrap();
-        let has_tail_k = caller.blocks.iter().any(|b| {
-            matches!(&b.terminator, Term::TailCall { callee, .. } if *callee == k)
-        });
+        let has_tail_k = caller
+            .blocks
+            .iter()
+            .any(|b| matches!(&b.terminator, Term::TailCall { callee, .. } if *callee == k));
         assert!(has_tail_k, "expected TailCall(K=99) after inlining");
     }
 
@@ -928,9 +984,9 @@ mod tests {
         inline_module(&mut inlined);
 
         let has_tail_call_to_add1 = inlined.fns.iter().any(|f| {
-            f.blocks.iter().any(|b| {
-                matches!(&b.terminator, Term::TailCall { callee, .. } if *callee == add1_id)
-            })
+            f.blocks.iter().any(
+                |b| matches!(&b.terminator, Term::TailCall { callee, .. } if *callee == add1_id),
+            )
         });
         assert!(
             !has_tail_call_to_add1,
@@ -949,9 +1005,9 @@ mod tests {
         inline_module(&mut inlined);
 
         let has_call_to_double = inlined.fns.iter().any(|f| {
-            f.blocks.iter().any(|b| {
-                matches!(&b.terminator, Term::Call { callee, .. } if *callee == double_id)
-            })
+            f.blocks
+                .iter()
+                .any(|b| matches!(&b.terminator, Term::Call { callee, .. } if *callee == double_id))
         });
         assert!(
             !has_call_to_double,

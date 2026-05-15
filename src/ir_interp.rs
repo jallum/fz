@@ -58,6 +58,9 @@ enum InterpStep {
     Blocked(FnId, Vec<FzValue>, Vec<(FnId, Vec<FzValue>)>),
 }
 
+/// Per-task resume state: fn to call, captures (no message), and after-chain.
+type ResumeEntry = (FnId, Vec<FzValue>, Vec<(FnId, Vec<FzValue>)>);
+
 thread_local! {
     static INTERP_TASKS: RefCell<HashMap<u32, Box<Process>>> =
         RefCell::new(HashMap::new());
@@ -65,12 +68,12 @@ thread_local! {
     static INTERP_SCHEMAS: RefCell<Option<std::rc::Rc<std::cell::RefCell<fz_runtime::heap::SchemaRegistry>>>> =
         const { RefCell::new(None) };
     /// FIFO run-queue of pids ready to execute.
-    static INTERP_RUN_QUEUE: RefCell<VecDeque<u32>> = RefCell::new(VecDeque::new());
+    static INTERP_RUN_QUEUE: RefCell<VecDeque<u32>> = const { RefCell::new(VecDeque::new()) };
     /// Per-task resume state: (resume_fn, cap_vals, after_chain).
     /// cap_vals holds captures only (no message); interp_send prepends the
     /// message. after_chain is the sequence of (fn_id, caps) continuations to
     /// invoke in order after resume_fn returns, passing each return value on.
-    static INTERP_RESUME: RefCell<HashMap<u32, (FnId, Vec<FzValue>, Vec<(FnId, Vec<FzValue>)>)>> =
+    static INTERP_RESUME: RefCell<HashMap<u32, ResumeEntry>> =
         RefCell::new(HashMap::new());
 }
 
@@ -156,16 +159,16 @@ pub fn run_main(module: &Module) -> Result<i64, String> {
     INTERP_RUN_QUEUE.with(|q| q.borrow_mut().push_back(1));
 
     let mut halt_val = 0i64;
-    'sched: loop {
-        let pid = match INTERP_RUN_QUEUE.with(|q| q.borrow_mut().pop_front()) {
-            Some(p) => p,
-            None => break,
-        };
+    'sched: while let Some(pid) = INTERP_RUN_QUEUE.with(|q| q.borrow_mut().pop_front()) {
         let (fn_id, args, mut after) = INTERP_RESUME
             .with(|r| r.borrow_mut().remove(&pid))
             .expect("pid in run_queue with no resume entry");
         let proc_ptr = INTERP_TASKS
-            .with(|t| t.borrow().get(&pid).map(|b| b.as_ref() as *const _ as *mut Process))
+            .with(|t| {
+                t.borrow()
+                    .get(&pid)
+                    .map(|b| b.as_ref() as *const _ as *mut Process)
+            })
             .expect("pid in run_queue with no process entry");
         unsafe { (*proc_ptr).state = ProcessState::Running };
         let prev = fz_runtime::process::CURRENT_PROCESS.with(|c| c.replace(proc_ptr));
@@ -240,7 +243,9 @@ pub fn run_test_fn(module: &Module, fn_id: FnId) -> Result<(), String> {
     INTERP_SCHEMAS.with(|s| *s.borrow_mut() = None);
     match result {
         Ok(InterpStep::Done(_)) => Ok(()),
-        Ok(InterpStep::Blocked(..)) => Err("test fn blocked on receive with empty mailbox".to_string()),
+        Ok(InterpStep::Blocked(..)) => {
+            Err("test fn blocked on receive with empty mailbox".to_string())
+        }
         Err(e) => Err(e),
     }
 }
@@ -406,7 +411,9 @@ fn run_fn(module: &Module, mut fn_id: FnId, mut args: Vec<FzValue>) -> Result<In
                             args = cont_args;
                             continue 'tail;
                         }
-                        None => return Ok(InterpStep::Blocked(continuation.fn_id, cap_vals, vec![])),
+                        None => {
+                            return Ok(InterpStep::Blocked(continuation.fn_id, cap_vals, vec![]));
+                        }
                     }
                 }
             }

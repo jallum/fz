@@ -565,21 +565,40 @@ fn inlined_goto_edges_have_no_sshr_imm() {
 #[test]
 fn fused_blocks_and_folded_constants_in_inlined_main() {
     let out = Command::new(FZ_BIN)
-        .args(["dump", "fixtures/add1/input.fz", "--emit", "clif", "--fn", "main"])
+        .args([
+            "dump",
+            "fixtures/add1/input.fz",
+            "--emit",
+            "clif",
+            "--fn",
+            "main",
+        ])
         .output()
         .expect("spawn fz dump");
     assert!(out.status.success(), "fz dump exited {}", out.status);
     let stdout = String::from_utf8_lossy(&out.stdout);
     let main_start = stdout.find("; fn main").expect("missing main banner");
     let main_body = &stdout[main_start..];
-    assert!(!main_body.contains("iadd"),
-        "expected no iadd — arithmetic should be constant-folded:\n{}", main_body);
-    assert!(!main_body.contains("block1"),
-        "expected no block1 — single-predecessor blocks should be fused:\n{}", main_body);
-    assert!(!main_body.contains("block2"),
-        "expected no block2 — single-predecessor blocks should be fused:\n{}", main_body);
-    assert!(main_body.contains("42"),
-        "expected folded constant 42 in main's CLIF:\n{}", main_body);
+    assert!(
+        !main_body.contains("iadd"),
+        "expected no iadd — arithmetic should be constant-folded:\n{}",
+        main_body
+    );
+    assert!(
+        !main_body.contains("block1"),
+        "expected no block1 — single-predecessor blocks should be fused:\n{}",
+        main_body
+    );
+    assert!(
+        !main_body.contains("block2"),
+        "expected no block2 — single-predecessor blocks should be fused:\n{}",
+        main_body
+    );
+    assert!(
+        main_body.contains("42"),
+        "expected folded constant 42 in main's CLIF:\n{}",
+        main_body
+    );
 }
 
 /// fz-ul4.27.16 — native fns must not emit a dead `iconst.i64 0` for a

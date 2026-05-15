@@ -6,7 +6,7 @@
 //!   1. `proc = fz_aot_setup(atom_blob, atom_blob_len, halt_cont_body_addr,
 //!                            spawn_entry_addr, resume_park_addr)`
 //!   2. for each static closure target:
-//!         `fz_aot_register_static_closure(proc, cl_sid, fn_id, code_addr)`
+//!      `fz_aot_register_static_closure(proc, cl_sid, fn_id, code_addr)`
 //!   3. `exit = fz_aot_run_main(proc, main_fp, main_entry_addr)`
 //!   4. `return exit`
 //!
@@ -44,7 +44,7 @@ thread_local! {
     static AOT_HALT_CONT_BODIES: Cell<[*const u8; 3]> =
         const { Cell::new([std::ptr::null(); 3]) };
     /// fz-sched.1 — cooperative run-queue. PIDs of processes ready to run.
-    static AOT_RUN_QUEUE: RefCell<VecDeque<u32>> = RefCell::new(VecDeque::new());
+    static AOT_RUN_QUEUE: RefCell<VecDeque<u32>> = const { RefCell::new(VecDeque::new()) };
     /// fz-sched.1 — fz_main_entry shim address and halt cont, stored so the
     /// run-queue loop can dispatch main's initial quantum.
     static AOT_MAIN_ENTRY: Cell<*const u8> = const { Cell::new(std::ptr::null()) };
@@ -244,7 +244,6 @@ extern "C" fn aot_send_hook(receiver_pid: u32, msg_bits: u64) {
     }
 }
 
-
 /// Run main and all spawned processes via the cooperative run-queue, then
 /// tear down AOT scheduler state. Returns 0 on clean completion.
 /// # Safety
@@ -308,21 +307,17 @@ fn aot_run_queue_loop() {
     let resume_park_addr = AOT_RESUME_PARK.with(|c| c.get());
     let halt_cl = AOT_HALT_CL.with(|c| c.get());
 
-    loop {
-        let pid = match AOT_RUN_QUEUE.with(|q| q.borrow_mut().pop_front()) {
-            Some(p) => p,
-            None => break,
-        };
-
-        let proc_ptr = AOT_TASKS.with(|c| {
-            c.borrow()
-                .get(&pid)
-                .map(|b| b.as_ref() as *const Process as *mut Process)
-        })
-        .unwrap_or_else(|| {
-            eprintln!("aot_run_queue_loop: pid {} not in tasks", pid);
-            std::process::abort();
-        });
+    while let Some(pid) = AOT_RUN_QUEUE.with(|q| q.borrow_mut().pop_front()) {
+        let proc_ptr = AOT_TASKS
+            .with(|c| {
+                c.borrow()
+                    .get(&pid)
+                    .map(|b| b.as_ref() as *const Process as *mut Process)
+            })
+            .unwrap_or_else(|| {
+                eprintln!("aot_run_queue_loop: pid {} not in tasks", pid);
+                std::process::abort();
+            });
 
         let prev = CURRENT_PROCESS.with(|c| c.replace(proc_ptr));
 

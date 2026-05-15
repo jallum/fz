@@ -902,11 +902,11 @@ fn func_clause_empty(c: &Conj<ArrowSig>, memo: &mut Memo) -> bool {
         for mask in 0u32..(1u32 << n_pos) {
             let mut union_in = Descr::none();
             let mut inter_out = Descr::any();
-            for i in 0..n_pos {
+            for (i, pi) in p.iter().enumerate().take(n_pos) {
                 if (mask >> i) & 1 == 1 {
-                    union_in = union_in.union(&arrow_input(&p[i]));
+                    union_in = union_in.union(&arrow_input(pi));
                 } else {
-                    inter_out = inter_out.intersect(&p[i].ret);
+                    inter_out = inter_out.intersect(&pi.ret);
                 }
             }
             // Either inputs of P' cover s, OR outputs of P\P' refine v.

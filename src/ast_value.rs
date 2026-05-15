@@ -260,14 +260,14 @@ fn decode_ast_node(head: &Value, tail: &Value) -> Result<Expr, String> {
             Ok(Expr::Match(pat, Box::new(rhs)))
         }
         _ => {
-            if let Some(b) = binop_from_atom(name) {
-                if args.len() == 2 {
-                    return Ok(Expr::BinOp(
-                        b,
-                        Box::new(value_to_expr(&args[0])?),
-                        Box::new(value_to_expr(&args[1])?),
-                    ));
-                }
+            if let Some(b) = binop_from_atom(name)
+                && args.len() == 2
+            {
+                return Ok(Expr::BinOp(
+                    b,
+                    Box::new(value_to_expr(&args[0])?),
+                    Box::new(value_to_expr(&args[1])?),
+                ));
             }
             if let Some(u) = unop_from_atom(name, args.len()) {
                 return Ok(Expr::UnOp(u, Box::new(value_to_expr(&args[0])?)));

@@ -45,6 +45,7 @@ use std::collections::{HashMap, HashSet};
 ///   - continuation fn_id from Term::Call / Term::CallClosure / Term::Receive
 ///   - Prim::MakeClosure(fn_id, ...) target lambda
 ///   - fn_constants-resolved Term::CallClosure / TailCallClosure target
+///
 /// Edges skipped: Term::Return / Term::Halt (dynamic dispatch, no static
 /// edge), unknown CallClosure (any-key spec is the fallback).
 fn build_call_graph(
@@ -259,7 +260,11 @@ impl ModuleTypes {
             if *fid != fn_id {
                 continue;
             }
-            let ks: String = key.iter().map(|d| format!("{}", d)).collect::<Vec<_>>().join(",");
+            let ks: String = key
+                .iter()
+                .map(|d| format!("{}", d))
+                .collect::<Vec<_>>()
+                .join(",");
             match &best {
                 None => best = Some((ks, ft)),
                 Some((bk, _)) if &ks < bk => best = Some((ks, ft)),
@@ -619,8 +624,7 @@ fn type_module_pass(
     // HashSet (duplicates collapse).
     // Worklist: walk only newly-registered specs each round instead of
     // re-walking all specs. Terminates when drain produces no new registrations.
-    let mut worklist =
-        drain_and_register(&mut pending, &mut specs, m, &mut callsite_fn_consts);
+    let mut worklist = drain_and_register(&mut pending, &mut specs, m, &mut callsite_fn_consts);
     loop {
         if worklist.is_empty() {
             break;
@@ -674,24 +678,24 @@ fn type_module_pass(
                 let mut env = caller_ft.block_envs.get(&b.id).cloned().unwrap_or_default();
                 for stmt in &b.stmts {
                     let Stmt::Let(v, prim) = stmt;
-                    if let Prim::MakeClosure(lam_fn_id, captured) = prim {
-                        if let Some(&jj) = m.fn_idx.get(lam_fn_id) {
-                            let lam = &m.fns[jj];
-                            let n_params = lam.block(lam.entry).params.len();
-                            let opaque_arity = n_params.saturating_sub(captured.len());
-                            if !opaque_arities.contains(&opaque_arity) {
-                                env.insert(*v, type_prim(prim, &env, m, &HashSet::new()));
-                                continue;
+                    if let Prim::MakeClosure(lam_fn_id, captured) = prim
+                        && let Some(&jj) = m.fn_idx.get(lam_fn_id)
+                    {
+                        let lam = &m.fns[jj];
+                        let n_params = lam.block(lam.entry).params.len();
+                        let opaque_arity = n_params.saturating_sub(captured.len());
+                        if !opaque_arities.contains(&opaque_arity) {
+                            env.insert(*v, type_prim(prim, &env, m, &HashSet::new()));
+                            continue;
+                        }
+                        let mut k: Vec<Descr> = vec![Descr::any(); n_params];
+                        for (i, cv) in captured.iter().enumerate() {
+                            if let Some(slot) = k.get_mut(i) {
+                                *slot = env.get(cv).cloned().unwrap_or_else(Descr::any);
                             }
-                            let mut k: Vec<Descr> = vec![Descr::any(); n_params];
-                            for (i, cv) in captured.iter().enumerate() {
-                                if let Some(slot) = k.get_mut(i) {
-                                    *slot = env.get(cv).cloned().unwrap_or_else(Descr::any);
-                                }
-                            }
-                            if !specs.contains_key(&(*lam_fn_id, k.clone())) {
-                                pending.entry(*lam_fn_id).or_default().insert(k);
-                            }
+                        }
+                        if !specs.contains_key(&(*lam_fn_id, k.clone())) {
+                            pending.entry(*lam_fn_id).or_default().insert(k);
                         }
                     }
                     env.insert(*v, type_prim(prim, &env, m, &HashSet::new()));
@@ -702,8 +706,7 @@ fn type_module_pass(
         // Drain pending → register new specs (no further walking
         // beyond MakeClosure sweep; direct callsites of these new
         // any-key bodies will be discovered when we loop).
-        let new_specs =
-            drain_and_register(&mut pending, &mut specs, m, &mut callsite_fn_consts);
+        let new_specs = drain_and_register(&mut pending, &mut specs, m, &mut callsite_fn_consts);
         let drained_anything = !new_specs.is_empty();
 
         // Re-run the phase-1 closure-to-fixpoint on the new specs so
@@ -729,9 +732,7 @@ fn type_module_pass(
                     &mut callsite_fn_consts,
                 );
             }
-            if drain_and_register(&mut pending, &mut specs, m, &mut callsite_fn_consts)
-                .is_empty()
-            {
+            if drain_and_register(&mut pending, &mut specs, m, &mut callsite_fn_consts).is_empty() {
                 break;
             }
         }
@@ -772,7 +773,6 @@ fn walk_spec_for_discovery(
     pending: &mut HashMap<FnId, std::collections::HashSet<Vec<Descr>>>,
     callsite_fn_consts: &mut HashMap<(FnId, Vec<Descr>), Vec<Option<FnId>>>,
 ) {
-
     let maybe_widen = |k: Vec<Descr>, callee: FnId| -> Vec<Descr> {
         if widen_now && caller_scc.contains(&callee) {
             k.into_iter().map(|d| crate::typer::widen(&d)).collect()
@@ -858,21 +858,21 @@ fn walk_spec_for_discovery(
         };
         if let Some(cv) = closure_var {
             // (a) fn_constants path — legacy, zero-capture only.
-            if let Some(&target_fn) = caller_ft.fn_constants.get(&cv) {
-                if let Some(&j) = m.fn_idx.get(&target_fn) {
-                    let target = &m.fns[j];
-                    let n_params = target.block(target.entry).params.len();
-                    let mut key: Vec<Descr> = closure_args
-                        .iter()
-                        .map(|av| env.get(av).cloned().unwrap_or_else(Descr::any))
-                        .collect();
-                    while key.len() < n_params {
-                        key.push(Descr::any());
-                    }
-                    key.truncate(n_params);
-                    let key = maybe_widen(key, target_fn);
-                    push_key(pending, target_fn, key);
+            if let Some(&target_fn) = caller_ft.fn_constants.get(&cv)
+                && let Some(&j) = m.fn_idx.get(&target_fn)
+            {
+                let target = &m.fns[j];
+                let n_params = target.block(target.entry).params.len();
+                let mut key: Vec<Descr> = closure_args
+                    .iter()
+                    .map(|av| env.get(av).cloned().unwrap_or_else(Descr::any))
+                    .collect();
+                while key.len() < n_params {
+                    key.push(Descr::any());
                 }
+                key.truncate(n_params);
+                let key = maybe_widen(key, target_fn);
+                push_key(pending, target_fn, key);
             }
             // (b) closure_lit path — narrow per (fn_id, captures + args).
             // Fires for every pos closure_lit clause in cv's Descr.
@@ -979,53 +979,53 @@ fn walk_spec_for_discovery(
             Term::Receive { .. } => Some(Descr::any()),
             _ => None,
         };
-        if let (Some(cont), Some(slot0)) = (cont, slot0_descr) {
-            if let Some(&j) = m.fn_idx.get(&cont.fn_id) {
-                let cont_fn = &m.fns[j];
-                let n_params = cont_fn.block(cont_fn.entry).params.len();
-                let mut key: Vec<Descr> = vec![Descr::any(); n_params];
-                if !key.is_empty() {
-                    key[0] = slot0;
-                }
-                for (k, cvv) in cont.captured.iter().enumerate() {
-                    if let Some(p) = key.get_mut(k + 1) {
-                        *p = env.get(cvv).cloned().unwrap_or_else(Descr::any);
-                    }
-                }
-                let key = maybe_widen(key, cont.fn_id);
-                // fz-vw4.5d — propagate fn_constants from captured
-                // vars into the cont spec's callsite_fn_consts. The
-                // cont's entry param i+1 receives captured[i] at
-                // runtime; if the caller has fn_constants for that
-                // capture, the cont's entry param inherits it. Without
-                // this, conts that pass closures via captures lose the
-                // resolution info, and the cont's body sees an opaque
-                // closure-typed var — which forces an unwanted any-key
-                // for the closure target (step 5c gating fires).
-                let mut per_param: Vec<Option<FnId>> = vec![None; n_params];
-                // Slot 0 (the awaited value) carries no captured-side
-                // fn_constants — it comes from the callee's return.
-                for (k, cvv) in cont.captured.iter().enumerate() {
-                    if let Some(slot) = per_param.get_mut(k + 1) {
-                        *slot = caller_ft.fn_constants.get(cvv).copied();
-                    }
-                }
-                let entry_key = (cont.fn_id, key.clone());
-                match callsite_fn_consts.get(&entry_key) {
-                    None => {
-                        callsite_fn_consts.insert(entry_key.clone(), per_param);
-                    }
-                    Some(prev) => {
-                        let merged: Vec<Option<FnId>> = prev
-                            .iter()
-                            .zip(per_param.iter())
-                            .map(|(a, b)| if a == b { *a } else { None })
-                            .collect();
-                        callsite_fn_consts.insert(entry_key.clone(), merged);
-                    }
-                }
-                push_key(pending, cont.fn_id, key);
+        if let (Some(cont), Some(slot0)) = (cont, slot0_descr)
+            && let Some(&j) = m.fn_idx.get(&cont.fn_id)
+        {
+            let cont_fn = &m.fns[j];
+            let n_params = cont_fn.block(cont_fn.entry).params.len();
+            let mut key: Vec<Descr> = vec![Descr::any(); n_params];
+            if !key.is_empty() {
+                key[0] = slot0;
             }
+            for (k, cvv) in cont.captured.iter().enumerate() {
+                if let Some(p) = key.get_mut(k + 1) {
+                    *p = env.get(cvv).cloned().unwrap_or_else(Descr::any);
+                }
+            }
+            let key = maybe_widen(key, cont.fn_id);
+            // fz-vw4.5d — propagate fn_constants from captured
+            // vars into the cont spec's callsite_fn_consts. The
+            // cont's entry param i+1 receives captured[i] at
+            // runtime; if the caller has fn_constants for that
+            // capture, the cont's entry param inherits it. Without
+            // this, conts that pass closures via captures lose the
+            // resolution info, and the cont's body sees an opaque
+            // closure-typed var — which forces an unwanted any-key
+            // for the closure target (step 5c gating fires).
+            let mut per_param: Vec<Option<FnId>> = vec![None; n_params];
+            // Slot 0 (the awaited value) carries no captured-side
+            // fn_constants — it comes from the callee's return.
+            for (k, cvv) in cont.captured.iter().enumerate() {
+                if let Some(slot) = per_param.get_mut(k + 1) {
+                    *slot = caller_ft.fn_constants.get(cvv).copied();
+                }
+            }
+            let entry_key = (cont.fn_id, key.clone());
+            match callsite_fn_consts.get(&entry_key) {
+                None => {
+                    callsite_fn_consts.insert(entry_key.clone(), per_param);
+                }
+                Some(prev) => {
+                    let merged: Vec<Option<FnId>> = prev
+                        .iter()
+                        .zip(per_param.iter())
+                        .map(|(a, b)| if a == b { *a } else { None })
+                        .collect();
+                    callsite_fn_consts.insert(entry_key.clone(), merged);
+                }
+            }
+            push_key(pending, cont.fn_id, key);
         }
     }
 }
@@ -1177,9 +1177,7 @@ pub fn type_fn(f: &FnIr, m: &Module, entry_param_types: Option<&[Descr]>) -> FnT
                     Prim::Const(_) => {
                         const_vars.insert(*v);
                     }
-                    Prim::BinOp(_, a, b)
-                        if const_vars.contains(a) && const_vars.contains(b) =>
-                    {
+                    Prim::BinOp(_, a, b) if const_vars.contains(a) && const_vars.contains(b) => {
                         const_vars.insert(*v);
                     }
                     Prim::UnOp(_, a) if const_vars.contains(a) => {
@@ -1220,7 +1218,7 @@ pub fn type_fn(f: &FnIr, m: &Module, entry_param_types: Option<&[Descr]>) -> FnT
                     // Update vars for target's params via union across all
                     // predecessors (handled via merge_into's union, but we
                     // also need to mirror in vars).
-                    for (_, &p) in target_b.params.iter().enumerate() {
+                    for &p in target_b.params.iter() {
                         let from_env = block_envs[target]
                             .get(&p)
                             .cloned()
@@ -1266,10 +1264,10 @@ pub fn type_fn(f: &FnIr, m: &Module, entry_param_types: Option<&[Descr]>) -> FnT
     for b in &f.blocks {
         for stmt in &b.stmts {
             let Stmt::Let(v, prim) = stmt;
-            if let Prim::MakeClosure(fid, captured) = prim {
-                if captured.is_empty() {
-                    fn_constants.insert(*v, *fid);
-                }
+            if let Prim::MakeClosure(fid, captured) = prim
+                && captured.is_empty()
+            {
+                fn_constants.insert(*v, *fid);
             }
         }
     }
@@ -1340,10 +1338,7 @@ fn merge_into(
 
 /// Find the stmt that bound `cond` (if any) and split the env into
 /// (then_env, else_env) narrowing the predicate's operands accordingly.
-fn union_envs(
-    a: HashMap<Var, Descr>,
-    b: &HashMap<Var, Descr>,
-) -> HashMap<Var, Descr> {
+fn union_envs(a: HashMap<Var, Descr>, b: &HashMap<Var, Descr>) -> HashMap<Var, Descr> {
     let mut out = a;
     for (v, dt) in b {
         let entry = out.entry(*v).or_insert_with(Descr::none);
@@ -1637,7 +1632,10 @@ fn type_const(c: &Const, atom_names: &[String]) -> Descr {
         Const::Float(f) => Descr::float_lit(*f),
         Const::Str(s) => Descr::str_lit(s.clone()),
         Const::Atom(id) => {
-            let name = atom_names.get(*id as usize).map(String::as_str).unwrap_or("?");
+            let name = atom_names
+                .get(*id as usize)
+                .map(String::as_str)
+                .unwrap_or("?");
             Descr::atom_lit(name)
         }
         Const::Nil => Descr::nil(),
@@ -1738,8 +1736,20 @@ fn numeric_result_fold(op: BinOp, a: &Descr, b: &Descr) -> Descr {
             Add => ai.checked_add(bi),
             Sub => ai.checked_sub(bi),
             Mul => ai.checked_mul(bi),
-            Div => if bi != 0 { ai.checked_div(bi) } else { None },
-            Mod => if bi != 0 { ai.checked_rem(bi) } else { None },
+            Div => {
+                if bi != 0 {
+                    ai.checked_div(bi)
+                } else {
+                    None
+                }
+            }
+            Mod => {
+                if bi != 0 {
+                    ai.checked_rem(bi)
+                } else {
+                    None
+                }
+            }
             _ => None,
         };
         if let Some(r) = result {
@@ -1797,7 +1807,6 @@ fn var_as_map_key(v: Var, env: &HashMap<Var, Descr>) -> Option<MapKey> {
 // Suppress unused imports under cfg(not(test)).
 #[allow(dead_code)]
 fn _suppress_block(_: &Block) {}
-
 
 /// fz-l01 — synthetic match-error halt block detector. ir_lower
 /// inserts a fail block that does `Halt(:match_error)` as the
@@ -2050,41 +2059,40 @@ pub fn collect_diagnostics(module: &Module, types: &ModuleTypes) -> crate::diag:
             let spans = module.source.stmt_spans.get(&(f.id, b.id));
             for (sidx, stmt) in b.stmts.iter().enumerate() {
                 let Stmt::Let(v, prim) = stmt;
-                if let Prim::BinOp(op, lhs, rhs) = prim {
-                    if matches!(op, BinOp::Eq | BinOp::Neq) {
-                        let ta = env.get(lhs).cloned().unwrap_or_else(Descr::any);
-                        let tb = env.get(rhs).cloned().unwrap_or_else(Descr::any);
-                        // Lint only on cross-kind disjointness (int vs atom,
-                        // float vs nil, etc.). Within a single axis, two
-                        // disjoint literal sets (e.g. `1 == 2`) still fold to
-                        // false at codegen but are not surprising to the
-                        // reader, so we keep them silent.
-                        let cross_kind =
-                            !ta.is_empty() && !tb.is_empty() && !axes_overlap(&ta, &tb);
-                        if cross_kind {
-                            let span = spans
-                                .and_then(|s| s.get(sidx).copied())
-                                .unwrap_or(Span::DUMMY);
-                            let constant = if matches!(op, BinOp::Eq) {
-                                "false"
-                            } else {
-                                "true"
-                            };
-                            let opname = if matches!(op, BinOp::Eq) { "==" } else { "!=" };
-                            let message = format!(
-                                "`{}` is always {}: operand types do not overlap",
-                                opname, constant,
-                            );
-                            let note = format!(
-                                "left has type `{}`; right has type `{}`",
-                                ta.display_for_diag(),
-                                tb.display_for_diag(),
-                            );
-                            let d = Diagnostic::warning(TYPE_DEAD_BINOP, message, span)
-                                .with_label(format!("in fn `{}`", f.name))
-                                .with_note(note);
-                            out.push(d);
-                        }
+                if let Prim::BinOp(op, lhs, rhs) = prim
+                    && matches!(op, BinOp::Eq | BinOp::Neq)
+                {
+                    let ta = env.get(lhs).cloned().unwrap_or_else(Descr::any);
+                    let tb = env.get(rhs).cloned().unwrap_or_else(Descr::any);
+                    // Lint only on cross-kind disjointness (int vs atom,
+                    // float vs nil, etc.). Within a single axis, two
+                    // disjoint literal sets (e.g. `1 == 2`) still fold to
+                    // false at codegen but are not surprising to the
+                    // reader, so we keep them silent.
+                    let cross_kind = !ta.is_empty() && !tb.is_empty() && !axes_overlap(&ta, &tb);
+                    if cross_kind {
+                        let span = spans
+                            .and_then(|s| s.get(sidx).copied())
+                            .unwrap_or(Span::DUMMY);
+                        let constant = if matches!(op, BinOp::Eq) {
+                            "false"
+                        } else {
+                            "true"
+                        };
+                        let opname = if matches!(op, BinOp::Eq) { "==" } else { "!=" };
+                        let message = format!(
+                            "`{}` is always {}: operand types do not overlap",
+                            opname, constant,
+                        );
+                        let note = format!(
+                            "left has type `{}`; right has type `{}`",
+                            ta.display_for_diag(),
+                            tb.display_for_diag(),
+                        );
+                        let d = Diagnostic::warning(TYPE_DEAD_BINOP, message, span)
+                            .with_label(format!("in fn `{}`", f.name))
+                            .with_note(note);
+                        out.push(d);
                     }
                 }
                 let t = type_prim(prim, &env, module, &HashSet::new());
@@ -2316,7 +2324,7 @@ pub fn cont_slot0_descr(
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum InferredReturn {
     Unknown,
-    Known(Descr),
+    Known(Box<Descr>),
 }
 
 impl InferredReturn {
@@ -2326,7 +2334,7 @@ impl InferredReturn {
     fn as_contribution(&self) -> Descr {
         match self {
             InferredReturn::Unknown => Descr::none(),
-            InferredReturn::Known(d) => d.clone(),
+            InferredReturn::Known(d) => (**d).clone(),
         }
     }
 }
@@ -2520,7 +2528,7 @@ pub fn compute_effective_returns(
                 None => true,
             };
             if should_update {
-                ret.insert(spec_key.clone(), InferredReturn::Known(joined));
+                ret.insert(spec_key.clone(), InferredReturn::Known(Box::new(joined)));
                 changed = true;
             }
         }
@@ -2549,7 +2557,7 @@ pub fn compute_effective_returns(
             (
                 k,
                 match v {
-                    InferredReturn::Known(d) => d,
+                    InferredReturn::Known(d) => *d,
                     InferredReturn::Unknown => Descr::none(),
                 },
             )
@@ -3861,7 +3869,7 @@ fn main(), do: print(42)
 "#,
         );
         let main = m.fns.iter().find(|f| f.name == "main").unwrap();
-        let any_key: Vec<Descr> = vec![Descr::any(); 0];
+        let any_key: Vec<Descr> = vec![];
         assert!(
             mt.specs.contains_key(&(main.id, any_key)),
             "main must keep its any-key (entry-point)"
@@ -4089,10 +4097,11 @@ end
         for b in &main.blocks {
             for stmt in &b.stmts {
                 let Stmt::Let(v, prim) = stmt;
-                if let Prim::MakeClosure(fid, captured) = prim {
-                    if *fid == double.id && captured.is_empty() {
-                        closure_var = Some(*v);
-                    }
+                if let Prim::MakeClosure(fid, captured) = prim
+                    && *fid == double.id
+                    && captured.is_empty()
+                {
+                    closure_var = Some(*v);
                 }
             }
         }
@@ -4136,10 +4145,10 @@ end
         for b in &main.blocks {
             for stmt in &b.stmts {
                 let Stmt::Let(v, prim) = stmt;
-                if let Prim::MakeClosure(_, captured) = prim {
-                    if !captured.is_empty() {
-                        closure_var = Some(*v);
-                    }
+                if let Prim::MakeClosure(_, captured) = prim
+                    && !captured.is_empty()
+                {
+                    closure_var = Some(*v);
                 }
             }
         }

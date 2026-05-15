@@ -424,52 +424,51 @@ pub fn expand_expr(
 
     // Macro calls are handled BEFORE recursing into args — the macro
     // receives args quoted, not expanded.
-    if let Expr::Call(callee, args) = &mut e.node {
-        if let Expr::Var(name) = &callee.node {
-            if macros.contains(name) {
-                let call_span = e.span;
-                let def_span = interp.macro_def_spans.borrow().get(name).copied();
-                let arg_vs = args
-                    .iter()
-                    .map(expr_to_value)
-                    .collect::<Result<Vec<_>, _>>()
-                    .map_err(|inner| {
-                        Box::new(MacroError::ArgReification {
-                            name: name.clone(),
-                            call_span,
-                            def_span,
-                            inner,
-                        })
-                    })?;
-                let prev = interp.gensym_table.borrow_mut().take();
-                *interp.gensym_table.borrow_mut() = Some(std::collections::HashMap::new());
-                let ret_res = interp.call_named(name, arg_vs);
-                *interp.gensym_table.borrow_mut() = prev;
-                let ret = ret_res.map_err(|inner| {
-                    Box::new(MacroError::BodyFailed {
-                        name: name.clone(),
-                        call_span,
-                        def_span,
-                        inner,
-                    })
-                })?;
-                let mut new_e = value_to_expr(&ret).map_err(|inner| {
-                    Box::new(MacroError::ReturnDecode {
-                        name: name.clone(),
-                        call_span,
-                        def_span,
-                        inner,
-                    })
-                })?;
-                // The decoded tree is entirely DUMMY-spanned. Stamp every
-                // node with the call's span + Expanded lineage so any later
-                // diagnostic can point at the user's `Foo(args)` and show
-                // "expanded from `Foo`, defined at <file>:<line>:<col>".
-                stamp_expanded(&mut new_e, call_span, def_span);
-                *e = new_e;
-                return expand_expr(e, interp, macros, depth + 1);
-            }
-        }
+    if let Expr::Call(callee, args) = &mut e.node
+        && let Expr::Var(name) = &callee.node
+        && macros.contains(name)
+    {
+        let call_span = e.span;
+        let def_span = interp.macro_def_spans.borrow().get(name).copied();
+        let arg_vs = args
+            .iter()
+            .map(expr_to_value)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|inner| {
+                Box::new(MacroError::ArgReification {
+                    name: name.clone(),
+                    call_span,
+                    def_span,
+                    inner,
+                })
+            })?;
+        let prev = interp.gensym_table.borrow_mut().take();
+        *interp.gensym_table.borrow_mut() = Some(std::collections::HashMap::new());
+        let ret_res = interp.call_named(name, arg_vs);
+        *interp.gensym_table.borrow_mut() = prev;
+        let ret = ret_res.map_err(|inner| {
+            Box::new(MacroError::BodyFailed {
+                name: name.clone(),
+                call_span,
+                def_span,
+                inner,
+            })
+        })?;
+        let mut new_e = value_to_expr(&ret).map_err(|inner| {
+            Box::new(MacroError::ReturnDecode {
+                name: name.clone(),
+                call_span,
+                def_span,
+                inner,
+            })
+        })?;
+        // The decoded tree is entirely DUMMY-spanned. Stamp every
+        // node with the call's span + Expanded lineage so any later
+        // diagnostic can point at the user's `Foo(args)` and show
+        // "expanded from `Foo`, defined at <file>:<line>:<col>".
+        stamp_expanded(&mut new_e, call_span, def_span);
+        *e = new_e;
+        return expand_expr(e, interp, macros, depth + 1);
     }
 
     // Default: recurse into children.

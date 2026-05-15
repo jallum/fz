@@ -734,21 +734,20 @@ impl Parser {
         }
         let mut only: Option<Vec<(String, usize)>> = None;
         let mut except: Option<Vec<(String, usize)>> = None;
-        if matches!(self.peek(), Tok::Comma) {
-            if let Tok::KwKey(s) = self.peek_at(1) {
-                if s == "only" || s == "except" {
-                    self.bump();
-                    let kind = match self.bump() {
-                        Tok::KwKey(k) => k,
-                        _ => unreachable!(),
-                    };
-                    let pairs = self.parse_arity_kw_list()?;
-                    if kind == "only" {
-                        only = Some(pairs);
-                    } else {
-                        except = Some(pairs);
-                    }
-                }
+        if matches!(self.peek(), Tok::Comma)
+            && let Tok::KwKey(s) = self.peek_at(1)
+            && (s == "only" || s == "except")
+        {
+            self.bump();
+            let kind = match self.bump() {
+                Tok::KwKey(k) => k,
+                _ => unreachable!(),
+            };
+            let pairs = self.parse_arity_kw_list()?;
+            if kind == "only" {
+                only = Some(pairs);
+            } else {
+                except = Some(pairs);
             }
         }
         Ok(Item::Import {

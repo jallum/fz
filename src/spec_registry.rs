@@ -24,12 +24,19 @@ impl SpecRegistry {
     /// already registered, returns the existing SpecId without
     /// duplicating.
     pub fn register(&mut self, fn_id: FnId, input_descrs: Vec<crate::types::Descr>) -> SpecId {
-        if let Some(&id) = self.lookup.get(&fn_id).and_then(|m| m.get(input_descrs.as_slice())) {
+        if let Some(&id) = self
+            .lookup
+            .get(&fn_id)
+            .and_then(|m| m.get(input_descrs.as_slice()))
+        {
             return id;
         }
         let id = SpecId(self.keys.len() as u32);
         self.keys.push((fn_id, input_descrs.clone()));
-        self.lookup.entry(fn_id).or_default().insert(input_descrs, id);
+        self.lookup
+            .entry(fn_id)
+            .or_default()
+            .insert(input_descrs, id);
         self.by_fn.entry(fn_id).or_default().push(id);
         id
     }
@@ -59,7 +66,10 @@ impl SpecRegistry {
         let id = SpecId(self.keys.len() as u32);
         debug_assert_eq!(id.0, fn_id.0);
         self.keys.push((fn_id, input_descrs.clone()));
-        self.lookup.entry(fn_id).or_default().insert(input_descrs, id);
+        self.lookup
+            .entry(fn_id)
+            .or_default()
+            .insert(input_descrs, id);
         self.by_fn.entry(fn_id).or_default().push(id);
         id
     }
@@ -120,9 +130,12 @@ impl SpecRegistry {
                 }
                 // Single-pass fold: require all ok[i] ⊆ k[i] and at least
                 // one strictly so (i.e. k[i] ⊄ ok[i]).
-                ok.iter().zip(k.iter()).fold((true, false), |(all_le, any_strict), (o, kk)| {
-                    (all_le && o.is_subtype(kk), any_strict || !kk.is_subtype(o))
-                }) == (true, true)
+                ok.iter()
+                    .zip(k.iter())
+                    .fold((true, false), |(all_le, any_strict), (o, kk)| {
+                        (all_le && o.is_subtype(kk), any_strict || !kk.is_subtype(o))
+                    })
+                    == (true, true)
             })
         };
         covers.sort_by_key(|s| s.0);

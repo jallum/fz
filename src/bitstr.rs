@@ -145,7 +145,7 @@ fn encode_binary(
             bytes_rc.len() * 8
         ));
     }
-    if total_bits % 8 == 0 && writer.bit_len % 8 == 0 {
+    if total_bits.is_multiple_of(8) && writer.bit_len.is_multiple_of(8) {
         writer.bytes.extend_from_slice(&bytes_rc[..total_bits / 8]);
         writer.bit_len += total_bits;
     } else {
@@ -336,7 +336,7 @@ impl BitWriter {
     }
 
     pub fn write_bytes(&mut self, b: &[u8]) {
-        if self.bit_len % 8 == 0 {
+        if self.bit_len.is_multiple_of(8) {
             self.bytes.extend_from_slice(b);
             self.bit_len += b.len() * 8;
         } else {
@@ -347,7 +347,7 @@ impl BitWriter {
     }
 
     pub fn finalize(self) -> Value {
-        if self.bit_len % 8 == 0 {
+        if self.bit_len.is_multiple_of(8) {
             Value::Vec(FzVec::U8(Rc::new(self.bytes)))
         } else {
             Value::BitStr(Rc::new(BitString {
@@ -446,7 +446,7 @@ pub fn apply_endian_for_write(value: u64, total_bits: u32, endian: Endian) -> u6
     // Reverse byte order. Total bits must be a byte multiple for byte-swap to
     // be meaningful; if not, fall back to MSB-first big-endian (Elixir's
     // behavior is documented as "endianness on integers requires byte-aligned size").
-    if n % 8 != 0 {
+    if !n.is_multiple_of(8) {
         return value;
     }
     let bytes = n / 8;
@@ -505,7 +505,7 @@ pub fn encode_utf8(cp: u32) -> Option<Vec<u8>> {
 }
 
 pub fn decode_utf8(reader: &mut BitReader) -> Option<u32> {
-    if reader.pos % 8 != 0 {
+    if !reader.pos.is_multiple_of(8) {
         return None;
     } // require byte alignment
     let b0 = reader.read_bits(8)? as u32;

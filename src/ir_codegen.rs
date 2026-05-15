@@ -13,11 +13,11 @@
 //! placeholder schema computed in .11.6.)
 //!
 //! .11.8 scope additions over .11.7: Term::Call (allocates continuation frame
-//! + callee frame), Term::TailCall (frame reuse when callee shares schema,
-//! else fresh alloc), Term::Return (writes result into continuation frame's
-//! result slot or halts on null), real trampoline. Out of scope:
-//! Term::CallClosure / TailCallClosure (closure invocation needs heap-typed
-//! closures — lands later), and heap-typed prims (.11.10+).
+//!   + callee frame), Term::TailCall (frame reuse when callee shares schema,
+//!     else fresh alloc), Term::Return (writes result into continuation frame's
+//!     result slot or halts on null), real trampoline. Out of scope:
+//!     Term::CallClosure / TailCallClosure (closure invocation needs heap-typed
+//!     closures — lands later), and heap-typed prims (.11.10+).
 
 use crate::fz_ir::{BinOp, Const, FnId, Module, Prim, Stmt, Term, UnOp};
 use cranelift_codegen::Context;
@@ -227,17 +227,17 @@ impl CompiledModule {
         // (`load parked_cont+16; call_indirect Tail (msg, parked_cont)`).
         // The cont chain runs synchronously to halt; halt_value is set
         // before fz_resume_park returns.
-        if !process.parked_cont.is_null() {
-            if let Some(msg) = process.mailbox.pop_front() {
-                let cont_ptr = process.parked_cont;
-                process.parked_cont = std::ptr::null_mut();
-                type ResumePark = extern "C" fn(u64, u64) -> i64;
-                let f: ResumePark = unsafe { std::mem::transmute(self.resume_park_addr) };
-                let _ = f(msg.0, cont_ptr as u64);
-                process.next_frame = std::ptr::null_mut();
-                park_time_gc(process);
-                return;
-            }
+        if !process.parked_cont.is_null()
+            && let Some(msg) = process.mailbox.pop_front()
+        {
+            let cont_ptr = process.parked_cont;
+            process.parked_cont = std::ptr::null_mut();
+            type ResumePark = extern "C" fn(u64, u64) -> i64;
+            let f: ResumePark = unsafe { std::mem::transmute(self.resume_park_addr) };
+            let _ = f(msg.0, cont_ptr as u64);
+            process.next_frame = std::ptr::null_mut();
+            park_time_gc(process);
+            return;
         }
         // fz-cps.5 — fresh main-style task entry: a fn ptr was queued
         // by `Runtime::spawn(fn_id)` or `run_internal`. Dispatch via
@@ -283,7 +283,6 @@ impl CompiledModule {
         // No uniform fns exist, so no frame-by-frame dispatch is needed.
         process.next_frame = std::ptr::null_mut();
     }
-
 }
 
 #[cfg(test)]
@@ -335,11 +334,9 @@ impl CompiledModule {
 // current_process() moved to src/process.rs (fz-ul4.23.4.2). Re-exported
 // here for back-compat with downstream users (runtime.rs, ir_runtime.rs,
 // tests) while consumers migrate to `fz_runtime::process::*`.
-pub use fz_runtime::process::{
-    CURRENT_PROCESS, PidId, Process, ProcessState,
-};
+pub use fz_runtime::process::{CURRENT_PROCESS, PidId, Process, ProcessState};
 #[cfg(test)]
-use fz_runtime::process::{current_process, DEFAULT_PROCESS};
+use fz_runtime::process::{DEFAULT_PROCESS, current_process};
 
 // Runtime FFI fns called from JIT'd code now live in src/ir_runtime.rs.
 // Value rendering lives in fz_runtime::fz_value::debug (fz-ul4.23.4.3).
@@ -497,22 +494,15 @@ fn annotate_clif_dump(
             continue;
         }
         // Value definition: `    vN = <op> ...`
-        if let Some(rest) = trimmed.strip_prefix('v') {
-            if let Some((id_str, _)) = rest.split_once(' ') {
-                if let Ok(id) = id_str.parse::<u32>() {
-                    // Confirm it's actually `vN =` (not `vN+16` in a load).
-                    if rest
-                        .split_once(' ')
-                        .map(|x| x.1.starts_with('='))
-                        .unwrap_or(false)
-                    {
-                        if let Some(d) = value_descrs.get(&id) {
-                            let _ = writeln!(out, "{}    ;; v{} :: {}", line.trim_end(), id, d);
-                            continue;
-                        }
-                    }
-                }
-            }
+        if let Some(rest) = trimmed.strip_prefix('v')
+            && let Some((id_str, _)) = rest.split_once(' ')
+            && let Ok(id) = id_str.parse::<u32>()
+            // Confirm it's actually `vN =` (not `vN+16` in a load).
+            && rest.split_once(' ').map(|x| x.1.starts_with('=')).unwrap_or(false)
+            && let Some(d) = value_descrs.get(&id)
+        {
+            let _ = writeln!(out, "{}    ;; v{} :: {}", line.trim_end(), id, d);
+            continue;
         }
         let _ = writeln!(out, "{}", line);
     }
@@ -538,14 +528,12 @@ fn annotate_block_header(line: &str, value_descrs: &HashMap<u32, crate::types::D
     let mut notes: Vec<String> = Vec::new();
     for p in inner.split(',') {
         let p_trim = p.trim();
-        if let Some(rest) = p_trim.strip_prefix('v') {
-            if let Some((id_str, _ty)) = rest.split_once(':') {
-                if let Ok(id) = id_str.trim().parse::<u32>() {
-                    if let Some(d) = value_descrs.get(&id) {
-                        notes.push(format!("v{} :: {}", id, d));
-                    }
-                }
-            }
+        if let Some(rest) = p_trim.strip_prefix('v')
+            && let Some((id_str, _ty)) = rest.split_once(':')
+            && let Ok(id) = id_str.trim().parse::<u32>()
+            && let Some(d) = value_descrs.get(&id)
+        {
+            notes.push(format!("v{} :: {}", id, d));
         }
     }
     if notes.is_empty() {
@@ -555,15 +543,15 @@ fn annotate_block_header(line: &str, value_descrs: &HashMap<u32, crate::types::D
     }
 }
 
-/// Halt: receives an FzValue from the JIT, unboxes per-tag into a
-/// debug-friendly i64 stored on the current Process's halt_value. Halt is a
-/// debugging seam; this preserves byte-for-byte halt values for existing
-/// scalar tests while not constraining heap-typed semantics later.
-///
-/// The second arg is the per-fn ABI's `ctx: *mut u8` (= *mut Process). For
-/// the migration we ignore it in favor of current_process() — they point at
-/// the same Process, but using current_process() keeps the access pattern
-/// uniform with every other fz_* fn.
+// Halt: receives an FzValue from the JIT, unboxes per-tag into a
+// debug-friendly i64 stored on the current Process's halt_value. Halt is a
+// debugging seam; this preserves byte-for-byte halt values for existing
+// scalar tests while not constraining heap-typed semantics later.
+//
+// The second arg is the per-fn ABI's `ctx: *mut u8` (= *mut Process). For
+// the migration we ignore it in favor of current_process() — they point at
+// the same Process, but using current_process() keeps the access pattern
+// uniform with every other fz_* fn.
 // fz_halt moved to ir_runtime.rs (.23.4.13).
 
 // ----- Heap (managed cons-cell allocator) -----
@@ -673,7 +661,7 @@ fn default_unit_for(ty: crate::ast::BitType) -> u32 {
 // Both consume a Runtime installed in TLS by Runtime::run_until_idle.
 // Calling either outside the scheduler path panics with a clear message.
 
-/// fz_spawn(closure_bits) -> pid_bits. Extracts fn_id from the closure
+// fz_spawn(closure_bits) -> pid_bits. Extracts fn_id from the closure
 // heap object and enqueues a new task at that fn. Returns the pid as a
 // boxed FzValue Int (Pid-as-struct deferred to a follow-up).
 //
@@ -1430,7 +1418,12 @@ fn resolve_tcc_body(
     let np = body_fn.block(body_fn.entry).params.len();
     let mut key: Vec<crate::types::Descr> = lit.captures.clone();
     for av in args {
-        key.push(ft.vars.get(av).cloned().unwrap_or_else(crate::types::Descr::any));
+        key.push(
+            ft.vars
+                .get(av)
+                .cloned()
+                .unwrap_or_else(crate::types::Descr::any),
+        );
     }
     while key.len() < np {
         key.push(crate::types::Descr::any());
@@ -1448,7 +1441,7 @@ fn emit_fn_body<M: cranelift_module::Module>(
     sig: Signature,
     func_id: FuncId,
     body: impl FnOnce(&mut M, &mut FunctionBuilder<'_>),
-) -> Result<(), cranelift_module::ModuleError> {
+) -> Result<(), Box<cranelift_module::ModuleError>> {
     let mut ctx = module.make_context();
     ctx.func.signature = sig;
     {
@@ -1456,7 +1449,9 @@ fn emit_fn_body<M: cranelift_module::Module>(
         body(module, &mut b);
         b.finalize();
     }
-    module.define_function(func_id, &mut ctx)?;
+    module
+        .define_function(func_id, &mut ctx)
+        .map_err(Box::new)?;
     module.clear_context(&mut ctx);
     Ok(())
 }
@@ -1485,21 +1480,27 @@ pub fn compile_with_backend<B: Backend>(
         sig.params.push(AbiParam::new(types::I64));
         sig.params.push(AbiParam::new(types::I64));
         sig.returns.push(AbiParam::new(types::I64));
-        emit_fn_body(backend.module_mut(), &mut fbctx, sig, runtime.main_entry_id, |_m, b| {
-            let entry = b.create_block();
-            b.append_block_params_for_function_params(entry);
-            b.switch_to_block(entry);
-            b.seal_block(entry);
-            let main_fp = b.block_params(entry)[0];
-            let halt_cl = b.block_params(entry)[1];
-            let mut main_sig = Signature::new(CallConv::Tail);
-            main_sig.params.push(AbiParam::new(types::I64));
-            main_sig.returns.push(AbiParam::new(types::I64));
-            let sig_ref = b.func.import_signature(main_sig);
-            let inst = b.ins().call_indirect(sig_ref, main_fp, &[halt_cl]);
-            let r = b.inst_results(inst)[0];
-            b.ins().return_(&[r]);
-        })
+        emit_fn_body(
+            backend.module_mut(),
+            &mut fbctx,
+            sig,
+            runtime.main_entry_id,
+            |_m, b| {
+                let entry = b.create_block();
+                b.append_block_params_for_function_params(entry);
+                b.switch_to_block(entry);
+                b.seal_block(entry);
+                let main_fp = b.block_params(entry)[0];
+                let halt_cl = b.block_params(entry)[1];
+                let mut main_sig = Signature::new(CallConv::Tail);
+                main_sig.params.push(AbiParam::new(types::I64));
+                main_sig.returns.push(AbiParam::new(types::I64));
+                let sig_ref = b.func.import_signature(main_sig);
+                let inst = b.ins().call_indirect(sig_ref, main_fp, &[halt_cl]);
+                let r = b.inst_results(inst)[0];
+                b.ins().return_(&[r]);
+            },
+        )
         .map_err(|e| CodegenError::new(format!("define fz_main_entry: {}", e)))?;
     }
 
@@ -1513,54 +1514,62 @@ pub fn compile_with_backend<B: Backend>(
         let mut sig = Signature::new(CallConv::SystemV);
         sig.params.push(AbiParam::new(types::I64));
         sig.returns.push(AbiParam::new(types::I64));
-        emit_fn_body(backend.module_mut(), &mut fbctx, sig, runtime.spawn_entry_id, |m, b| {
-            let entry = b.create_block();
-            b.append_block_params_for_function_params(entry);
-            b.switch_to_block(entry);
-            b.seal_block(entry);
-            let closure = b.block_params(entry)[0];
-            // fz-ul4.27.22.6 — pick the matching halt-cont based on the
-            // spawned closure's halt_kind (packed into the high 2 bits of
-            // the heap header's `flags` at MakeClosure time). For
-            // RawInt-returning bodies, this routes the i64 raw bits into
-            // halt_cont_body_i64 instead of sshr-ing them as if they were
-            // tagged FzValue. Pre-22.6 this was hardcoded Tagged.
-            //
-            // Closure HeapHeader layout:
-            //   off 0  : kind (u16)         off 4  : size_bytes (u32)
-            //   off 2  : flags (u16)        off 8  : schema_id (u32)
-            //                               off 12 : _reserved (u32)
-            // flags low 14 bits = captured_count; high 2 bits = halt_kind.
-            let flags_u16 = b.ins().load(types::I16, MemFlags::trusted(), closure, 2);
-            // Right-shift 14 to extract halt_kind (0..2), then widen to i32.
-            let hk16 = b.ins().ushr_imm(flags_u16, 14);
-            let kind = b.ins().uextend(types::I32, hk16);
-            // Select halt_cont_body_addr by kind. Branchless via three
-            // func_addrs + a tiny dispatch — keeps the spawn shim a leaf.
-            let a_tagged = fn_addr(m, runtime.halt_cont_body_tagged_id, b);
-            let a_i64 = fn_addr(m, runtime.halt_cont_body_i64_id, b);
-            let a_f64 = fn_addr(m, runtime.halt_cont_body_f64_id, b);
-            let one = b.ins().iconst(types::I32, 1);
-            let two = b.ins().iconst(types::I32, 2);
-            let is_i64 = b.ins().icmp(IntCC::Equal, kind, one);
-            let is_f64 = b.ins().icmp(IntCC::Equal, kind, two);
-            let pick_i64_or_tagged = b.ins().select(is_i64, a_i64, a_tagged);
-            let hcb_addr = b.ins().select(is_f64, a_f64, pick_i64_or_tagged);
-            let ghc_fref = m.declare_func_in_func(runtime.get_halt_cont_id, b.func);
-            let halt_inst = b.ins().call(ghc_fref, &[hcb_addr, kind]);
-            let halt_cl = b.inst_results(halt_inst)[0];
-            // Load closure body addr at +16 and invoke as
-            // closure-target sig `(self, cont) tail` (zero user args).
-            let code = b.ins().load(types::I64, MemFlags::trusted(), closure, HEADER_SIZE);
-            let mut closure_sig = Signature::new(CallConv::Tail);
-            closure_sig.params.push(AbiParam::new(types::I64)); // self
-            closure_sig.params.push(AbiParam::new(types::I64)); // cont
-            closure_sig.returns.push(AbiParam::new(types::I64));
-            let sig_ref = b.func.import_signature(closure_sig);
-            let inst = b.ins().call_indirect(sig_ref, code, &[closure, halt_cl]);
-            let r = b.inst_results(inst)[0];
-            b.ins().return_(&[r]);
-        })
+        emit_fn_body(
+            backend.module_mut(),
+            &mut fbctx,
+            sig,
+            runtime.spawn_entry_id,
+            |m, b| {
+                let entry = b.create_block();
+                b.append_block_params_for_function_params(entry);
+                b.switch_to_block(entry);
+                b.seal_block(entry);
+                let closure = b.block_params(entry)[0];
+                // fz-ul4.27.22.6 — pick the matching halt-cont based on the
+                // spawned closure's halt_kind (packed into the high 2 bits of
+                // the heap header's `flags` at MakeClosure time). For
+                // RawInt-returning bodies, this routes the i64 raw bits into
+                // halt_cont_body_i64 instead of sshr-ing them as if they were
+                // tagged FzValue. Pre-22.6 this was hardcoded Tagged.
+                //
+                // Closure HeapHeader layout:
+                //   off 0  : kind (u16)         off 4  : size_bytes (u32)
+                //   off 2  : flags (u16)        off 8  : schema_id (u32)
+                //                               off 12 : _reserved (u32)
+                // flags low 14 bits = captured_count; high 2 bits = halt_kind.
+                let flags_u16 = b.ins().load(types::I16, MemFlags::trusted(), closure, 2);
+                // Right-shift 14 to extract halt_kind (0..2), then widen to i32.
+                let hk16 = b.ins().ushr_imm(flags_u16, 14);
+                let kind = b.ins().uextend(types::I32, hk16);
+                // Select halt_cont_body_addr by kind. Branchless via three
+                // func_addrs + a tiny dispatch — keeps the spawn shim a leaf.
+                let a_tagged = fn_addr(m, runtime.halt_cont_body_tagged_id, b);
+                let a_i64 = fn_addr(m, runtime.halt_cont_body_i64_id, b);
+                let a_f64 = fn_addr(m, runtime.halt_cont_body_f64_id, b);
+                let one = b.ins().iconst(types::I32, 1);
+                let two = b.ins().iconst(types::I32, 2);
+                let is_i64 = b.ins().icmp(IntCC::Equal, kind, one);
+                let is_f64 = b.ins().icmp(IntCC::Equal, kind, two);
+                let pick_i64_or_tagged = b.ins().select(is_i64, a_i64, a_tagged);
+                let hcb_addr = b.ins().select(is_f64, a_f64, pick_i64_or_tagged);
+                let ghc_fref = m.declare_func_in_func(runtime.get_halt_cont_id, b.func);
+                let halt_inst = b.ins().call(ghc_fref, &[hcb_addr, kind]);
+                let halt_cl = b.inst_results(halt_inst)[0];
+                // Load closure body addr at +16 and invoke as
+                // closure-target sig `(self, cont) tail` (zero user args).
+                let code = b
+                    .ins()
+                    .load(types::I64, MemFlags::trusted(), closure, HEADER_SIZE);
+                let mut closure_sig = Signature::new(CallConv::Tail);
+                closure_sig.params.push(AbiParam::new(types::I64)); // self
+                closure_sig.params.push(AbiParam::new(types::I64)); // cont
+                closure_sig.returns.push(AbiParam::new(types::I64));
+                let sig_ref = b.func.import_signature(closure_sig);
+                let inst = b.ins().call_indirect(sig_ref, code, &[closure, halt_cl]);
+                let r = b.inst_results(inst)[0];
+                b.ins().return_(&[r]);
+            },
+        )
         .map_err(|e| CodegenError::new(format!("define fz_spawn_entry: {}", e)))?;
     }
 
@@ -1574,23 +1583,31 @@ pub fn compile_with_backend<B: Backend>(
         sig.params.push(AbiParam::new(types::I64));
         sig.params.push(AbiParam::new(types::I64));
         sig.returns.push(AbiParam::new(types::I64));
-        emit_fn_body(backend.module_mut(), &mut fbctx, sig, runtime.resume_park_id, |_m, b| {
-            let entry = b.create_block();
-            b.append_block_params_for_function_params(entry);
-            b.switch_to_block(entry);
-            b.seal_block(entry);
-            let msg = b.block_params(entry)[0];
-            let cont = b.block_params(entry)[1];
-            let code = b.ins().load(types::I64, MemFlags::trusted(), cont, HEADER_SIZE);
-            let mut cont_sig = Signature::new(CallConv::Tail);
-            cont_sig.params.push(AbiParam::new(types::I64));
-            cont_sig.params.push(AbiParam::new(types::I64));
-            cont_sig.returns.push(AbiParam::new(types::I64));
-            let sig_ref = b.func.import_signature(cont_sig);
-            let inst = b.ins().call_indirect(sig_ref, code, &[msg, cont]);
-            let r = b.inst_results(inst)[0];
-            b.ins().return_(&[r]);
-        })
+        emit_fn_body(
+            backend.module_mut(),
+            &mut fbctx,
+            sig,
+            runtime.resume_park_id,
+            |_m, b| {
+                let entry = b.create_block();
+                b.append_block_params_for_function_params(entry);
+                b.switch_to_block(entry);
+                b.seal_block(entry);
+                let msg = b.block_params(entry)[0];
+                let cont = b.block_params(entry)[1];
+                let code = b
+                    .ins()
+                    .load(types::I64, MemFlags::trusted(), cont, HEADER_SIZE);
+                let mut cont_sig = Signature::new(CallConv::Tail);
+                cont_sig.params.push(AbiParam::new(types::I64));
+                cont_sig.params.push(AbiParam::new(types::I64));
+                cont_sig.returns.push(AbiParam::new(types::I64));
+                let sig_ref = b.func.import_signature(cont_sig);
+                let inst = b.ins().call_indirect(sig_ref, code, &[msg, cont]);
+                let r = b.inst_results(inst)[0];
+                b.ins().return_(&[r]);
+            },
+        )
         .map_err(|e| CodegenError::new(format!("define fz_resume_park: {}", e)))?;
     }
 
@@ -1600,9 +1617,21 @@ pub fn compile_with_backend<B: Backend>(
     // sigs agree. Tagged variant unboxes (existing semantics); RawInt
     // / RawF64 variants store the value directly.
     for (body_id, val_ty, halt_impl_id) in [
-        (runtime.halt_cont_body_tagged_id, types::I64, runtime.halt_implicit_id),
-        (runtime.halt_cont_body_i64_id, types::I64, runtime.halt_implicit_i64_id),
-        (runtime.halt_cont_body_f64_id, types::F64, runtime.halt_implicit_f64_id),
+        (
+            runtime.halt_cont_body_tagged_id,
+            types::I64,
+            runtime.halt_implicit_id,
+        ),
+        (
+            runtime.halt_cont_body_i64_id,
+            types::I64,
+            runtime.halt_implicit_i64_id,
+        ),
+        (
+            runtime.halt_cont_body_f64_id,
+            types::F64,
+            runtime.halt_implicit_f64_id,
+        ),
     ] {
         let mut sig = Signature::new(CallConv::Tail);
         sig.params.push(AbiParam::new(val_ty));
@@ -2354,28 +2383,28 @@ pub fn compile_with_backend<B: Backend>(
             resolve_tcc_body(closure, args, ft, module, &spec_registry).map(|(_, s)| s)
         };
         // Seed: spec has an unresolved TailCallClosure.
-        for sid in 0..spec_count {
-            let Some(idx) = spec_fnidx[sid] else {
+        for (sid, &entry) in spec_fnidx.iter().enumerate() {
+            let Some(idx) = entry else {
                 continue;
             };
             let f = &module.fns[idx];
             for b in &f.blocks {
-                if let Term::TailCallClosure { closure, args } = &b.terminator {
-                    if tcc_sid(sid, closure, args).is_none() {
-                        set.insert(sid as u32);
-                        break;
-                    }
+                if let Term::TailCallClosure { closure, args } = &b.terminator
+                    && tcc_sid(sid, closure, args).is_none()
+                {
+                    set.insert(sid as u32);
+                    break;
                 }
             }
         }
         // Propagation: spec's terminator chains into a tagged spec.
         loop {
             let mut changed = false;
-            for sid in 0..spec_count {
+            for (sid, &entry) in spec_fnidx.iter().enumerate() {
                 if set.contains(&(sid as u32)) {
                     continue;
                 }
-                let Some(idx) = spec_fnidx[sid] else {
+                let Some(idx) = entry else {
                     continue;
                 };
                 let f = &module.fns[idx];
@@ -2653,16 +2682,15 @@ pub fn compile_with_backend<B: Backend>(
             .map_err(|e| {
                 CodegenError::new(format!("define {}: {}", display_name, e)).with_span(fn_span)
             })?;
-        if want_asm {
-            if let Some(cc) = ctx.compiled_code() {
-                if let Some(vcode) = cc.vcode.as_ref() {
-                    ASM_RECORD.with(|c| {
-                        if let Some(v) = c.borrow_mut().as_mut() {
-                            v.push((display_name.clone(), vcode.clone()));
-                        }
-                    });
+        if want_asm
+            && let Some(cc) = ctx.compiled_code()
+            && let Some(vcode) = cc.vcode.as_ref()
+        {
+            ASM_RECORD.with(|c| {
+                if let Some(v) = c.borrow_mut().as_mut() {
+                    v.push((display_name.clone(), vcode.clone()));
                 }
-            }
+            });
         }
         backend.module_mut().clear_context(&mut ctx);
     }
@@ -2760,10 +2788,8 @@ pub fn compile_with_backend<B: Backend>(
                             // pre-codegen analysis stage so halt_kind
                             // selection (fz_spawn_entry, halt-cont
                             // singletons) picks the right kind.
-                            let resolved_body = spec_fn_types
-                                .get(sid)
-                                .and_then(|o| *o)
-                                .and_then(|ft| {
+                            let resolved_body =
+                                spec_fn_types.get(sid).and_then(|o| *o).and_then(|ft| {
                                     resolve_tcc_body(closure, args, ft, module, &spec_registry)
                                         .map(|(_, s)| s)
                                 });
@@ -3294,7 +3320,13 @@ fn build_entry_harness<M: cranelift_module::Module>(
             // same sig (return_reprs[producer_sid] = my_param_reprs[0]
             // via the typer's cont_input_key seam agreement). No coerce
             // at entry — value already in body's expected repr.
-            var_env.insert(result_param.0, VarBinding { value: params[0], repr: my_param_reprs[0] });
+            var_env.insert(
+                result_param.0,
+                VarBinding {
+                    value: params[0],
+                    repr: my_param_reprs[0],
+                },
+            );
             let self_val = params[1];
             for (i, p) in entry_blk.params.iter().enumerate().skip(1) {
                 // fz_param[i] = user_cap[i-1] at offset 32 + 8*(i-1) (= +24 + 8*i).
@@ -3305,7 +3337,13 @@ fn build_entry_harness<M: cranelift_module::Module>(
                 let off = HEADER_SIZE + SLOT_BYTES * 2 + ((i - 1) as i32) * SLOT_BYTES;
                 let cl_ty = my_param_reprs[i].cl_type();
                 let v = b.ins().load(cl_ty, MemFlags::trusted(), self_val, off);
-                var_env.insert(p.0, VarBinding { value: v, repr: my_param_reprs[i] });
+                var_env.insert(
+                    p.0,
+                    VarBinding {
+                        value: v,
+                        repr: my_param_reprs[i],
+                    },
+                );
             }
             let host_ctx = None;
             (None, host_ctx, Some(self_val))
@@ -3326,18 +3364,36 @@ fn build_entry_harness<M: cranelift_module::Module>(
                 let off = HEADER_SIZE + SLOT_BYTES + (k as i32) * SLOT_BYTES;
                 let cl_ty = my_param_reprs[k].cl_type();
                 let v = b.ins().load(cl_ty, MemFlags::trusted(), self_val, off);
-                var_env.insert(p.0, VarBinding { value: v, repr: my_param_reprs[k] });
+                var_env.insert(
+                    p.0,
+                    VarBinding {
+                        value: v,
+                        repr: my_param_reprs[k],
+                    },
+                );
             }
             // Args: fz_params[n_caps..] ← Cranelift params[0..n_args].
             for (j, p) in entry_blk.params.iter().enumerate().skip(n_caps) {
                 let cl_idx = j - n_caps;
-                var_env.insert(p.0, VarBinding { value: params[cl_idx], repr: my_param_reprs[j] });
+                var_env.insert(
+                    p.0,
+                    VarBinding {
+                        value: params[cl_idx],
+                        repr: my_param_reprs[j],
+                    },
+                );
             }
             let _ = self_val;
             (None, None, Some(cont_val))
         } else {
             for (i, p) in entry_blk.params.iter().enumerate() {
-                var_env.insert(p.0, VarBinding { value: params[i], repr: my_param_reprs[i] });
+                var_env.insert(
+                    p.0,
+                    VarBinding {
+                        value: params[i],
+                        repr: my_param_reprs[i],
+                    },
+                );
             }
             let host_ctx_idx = entry_blk.params.len();
             let (host_ctx, cont_idx) = (None, host_ctx_idx);
@@ -3368,7 +3424,8 @@ fn build_entry_harness<M: cranelift_module::Module>(
                     (n, ArgRepr::RawInt)
                 }
                 _ => (
-                    b.ins().load(types::I64, MemFlags::trusted(), frame_ptr, off),
+                    b.ins()
+                        .load(types::I64, MemFlags::trusted(), frame_ptr, off),
                     ArgRepr::Tagged,
                 ),
             };
@@ -3378,7 +3435,12 @@ fn build_entry_harness<M: cranelift_module::Module>(
         // cont still lives in slot 0 of `frame_ptr` until fz-siu.1.5.
         (Some(frame_ptr), Some(host_ctx), None)
     };
-    EntryHarnessOut { var_env, frame_ptr, host_ctx, cont_param }
+    EntryHarnessOut {
+        var_env,
+        frame_ptr,
+        host_ctx,
+        cont_param,
+    }
 }
 
 /// Resolve the outer-cont value to forward into a cont closure's +24 slot.
@@ -3397,8 +3459,12 @@ fn resolve_outer_cont<M: cranelift_module::Module>(
 ) -> ir::Value {
     if is_cont_fn {
         let self_val = cont_param.expect("cont fn binds self via cont_param");
-        b.ins()
-            .load(types::I64, MemFlags::trusted(), self_val, HEADER_SIZE + SLOT_BYTES)
+        b.ins().load(
+            types::I64,
+            MemFlags::trusted(),
+            self_val,
+            HEADER_SIZE + SLOT_BYTES,
+        )
     } else {
         match cont_param {
             Some(c) => c,
@@ -3431,7 +3497,8 @@ fn resolve_outer_cont<M: cranelift_module::Module>(
                 let halt_cl = b.inst_results(halt_alloc)[0];
                 let hc_repr = return_reprs[cont_sid as usize];
                 let hcb_addr = fn_addr(jmod, halt_cont_body_id_for(runtime, hc_repr), b);
-                b.ins().store(MemFlags::trusted(), hcb_addr, halt_cl, HEADER_SIZE);
+                b.ins()
+                    .store(MemFlags::trusted(), hcb_addr, halt_cl, HEADER_SIZE);
                 b.ins().jump(join_blk, &[BlockArg::Value(halt_cl)]);
                 b.switch_to_block(join_blk);
                 b.seal_block(join_blk);
@@ -3468,7 +3535,8 @@ fn build_cont_closure<M: cranelift_module::Module>(
     let cl_inst = b.ins().call(acl_fref, &[cl_fid_v, n_caps_v, zero_hk]);
     let cl_ptr = b.inst_results(cl_inst)[0];
     let cont_code_addr = fn_addr(jmod, cont_fid, b);
-    b.ins().store(MemFlags::trusted(), cont_code_addr, cl_ptr, HEADER_SIZE);
+    b.ins()
+        .store(MemFlags::trusted(), cont_code_addr, cl_ptr, HEADER_SIZE);
     let my_outer_cont = resolve_outer_cont(
         jmod,
         b,
@@ -3479,8 +3547,12 @@ fn build_cont_closure<M: cranelift_module::Module>(
         frame_ptr,
         cont_sid,
     );
-    b.ins()
-        .store(MemFlags::trusted(), my_outer_cont, cl_ptr, HEADER_SIZE + SLOT_BYTES);
+    b.ins().store(
+        MemFlags::trusted(),
+        my_outer_cont,
+        cl_ptr,
+        HEADER_SIZE + SLOT_BYTES,
+    );
     let cont_param_reprs = &param_reprs[cont_sid as usize];
     for (i, &(val, from)) in cap_bindings.iter().enumerate() {
         let to = cont_param_reprs[i + 1];
@@ -3816,27 +3888,14 @@ fn emit_terminator<M: cranelift_module::Module>(
                     // into the cont's typed entry slots. `store_args
                     // _into_callee_frame` reads `cont_schema` per
                     // slot kind and unboxes from Tagged as needed.
-                    let result_tagged = coerce_to(
-                        b,
-                        jmod,
-                        runtime,
-                        result,
-                        callee_ret_repr,
-                        ArgRepr::Tagged,
-                    );
+                    let result_tagged =
+                        coerce_to(b, jmod, runtime, result, callee_ret_repr, ArgRepr::Tagged);
                     let mut payload: Vec<ir::Value> =
                         Vec::with_capacity(continuation.captured.len() + 1);
                     payload.push(result_tagged);
                     for (cv, val) in continuation.captured.iter().zip(cap_vals.iter()) {
                         let from = var_env.get(&cv.0).map_or(ArgRepr::Tagged, |vb| vb.repr);
-                        payload.push(coerce_to(
-                            b,
-                            jmod,
-                            runtime,
-                            *val,
-                            from,
-                            ArgRepr::Tagged,
-                        ));
+                        payload.push(coerce_to(b, jmod, runtime, *val, from, ArgRepr::Tagged));
                     }
                     store_args_into_callee_frame(b, cont_schema, cf, &payload, 1);
                     b.ins().return_(&[cf]);
@@ -3924,14 +3983,8 @@ fn emit_terminator<M: cranelift_module::Module>(
                     // stays `any` in the typer). Coerce result to Tagged.
                     let call_inst = b.ins().call(callee_fref, &native_args);
                     let result = b.inst_results(call_inst)[0];
-                    let result_tagged = coerce_to(
-                        b,
-                        jmod,
-                        runtime,
-                        result,
-                        callee_ret_repr,
-                        ArgRepr::Tagged,
-                    );
+                    let result_tagged =
+                        coerce_to(b, jmod, runtime, result, callee_ret_repr, ArgRepr::Tagged);
                     let my_cont = b.ins().load(
                         types::I64,
                         MemFlags::trusted(),
@@ -4053,7 +4106,9 @@ fn emit_terminator<M: cranelift_module::Module>(
             let sig_ref = b.func.import_signature(sig);
             let mut indirect_args: Vec<ir::Value> = Vec::with_capacity(arg_vals.len() + 2);
             for (i, v) in arg_vals.iter().enumerate() {
-                let from = var_env.get(&args[i].0).map_or(ArgRepr::Tagged, |vb| vb.repr);
+                let from = var_env
+                    .get(&args[i].0)
+                    .map_or(ArgRepr::Tagged, |vb| vb.repr);
                 indirect_args.push(coerce_to(b, jmod, runtime, *v, from, ArgRepr::Tagged));
             }
             indirect_args.push(cl_val);
@@ -4089,7 +4144,12 @@ fn emit_terminator<M: cranelift_module::Module>(
                 .value;
             let arg_vals: Vec<ir::Value> = args
                 .iter()
-                .map(|v| var_env.get(&v.0).expect("unbound tailcallclosure arg").value)
+                .map(|v| {
+                    var_env
+                        .get(&v.0)
+                        .expect("unbound tailcallclosure arg")
+                        .value
+                })
                 .collect();
             let my_cont = if is_cont_fn {
                 let self_val = cont_param.expect("cont fn binds self via cont_param");
@@ -4138,7 +4198,9 @@ fn emit_terminator<M: cranelift_module::Module>(
                 let body_fref = jmod.declare_func_in_func(body_fid, b.func);
                 let mut direct_args: Vec<ir::Value> = Vec::with_capacity(arg_vals.len() + 2);
                 for (i, v) in arg_vals.iter().enumerate() {
-                    let from = var_env.get(&args[i].0).map_or(ArgRepr::Tagged, |vb| vb.repr);
+                    let from = var_env
+                        .get(&args[i].0)
+                        .map_or(ArgRepr::Tagged, |vb| vb.repr);
                     let to = body_param_reprs
                         .get(n_caps + i)
                         .copied()
@@ -4159,9 +4221,9 @@ fn emit_terminator<M: cranelift_module::Module>(
             } else {
                 // Existing indirect path (cl+16) for unresolved /
                 // union-of-lits / plain-arrow closures.
-                let body_fp =
-                    b.ins()
-                        .load(types::I64, MemFlags::trusted(), cl_val, HEADER_SIZE);
+                let body_fp = b
+                    .ins()
+                    .load(types::I64, MemFlags::trusted(), cl_val, HEADER_SIZE);
                 let mut sig = Signature::new(CallConv::Tail);
                 for _ in &arg_vals {
                     sig.params.push(AbiParam::new(types::I64));
@@ -4172,15 +4234,10 @@ fn emit_terminator<M: cranelift_module::Module>(
                 let sig_ref = b.func.import_signature(sig);
                 let mut indirect_args: Vec<ir::Value> = Vec::with_capacity(arg_vals.len() + 2);
                 for (i, v) in arg_vals.iter().enumerate() {
-                    let from = var_env.get(&args[i].0).map_or(ArgRepr::Tagged, |vb| vb.repr);
-                    indirect_args.push(coerce_to(
-                        b,
-                        jmod,
-                        runtime,
-                        *v,
-                        from,
-                        ArgRepr::Tagged,
-                    ));
+                    let from = var_env
+                        .get(&args[i].0)
+                        .map_or(ArgRepr::Tagged, |vb| vb.repr);
+                    indirect_args.push(coerce_to(b, jmod, runtime, *v, from, ArgRepr::Tagged));
                 }
                 indirect_args.push(cl_val);
                 indirect_args.push(my_cont);
@@ -4302,7 +4359,9 @@ fn compile_fn<M: cranelift_module::Module>(
             if !reach.insert(bid) {
                 continue;
             }
-            let Some(blk) = blk_idx.get(&bid) else { continue };
+            let Some(blk) = blk_idx.get(&bid) else {
+                continue;
+            };
             match &blk.terminator {
                 Term::Goto(t, _) => stack.push(t.0),
                 Term::If(_, t, e) => {
@@ -4378,19 +4437,23 @@ fn compile_fn<M: cranelift_module::Module>(
     b.switch_to_block(entry_cl);
     b.seal_block(entry_cl);
 
-    let EntryHarnessOut { mut var_env, frame_ptr, host_ctx, cont_param } =
-        build_entry_harness(
-            &mut b,
-            jmod,
-            env,
-            schemas,
-            f,
-            this_spec_id,
-            is_native,
-            is_cont_fn,
-            closure_target_n_caps,
-            entry_cl,
-        );
+    let EntryHarnessOut {
+        mut var_env,
+        frame_ptr,
+        host_ctx,
+        cont_param,
+    } = build_entry_harness(
+        &mut b,
+        jmod,
+        env,
+        schemas,
+        f,
+        this_spec_id,
+        is_native,
+        is_cont_fn,
+        closure_target_n_caps,
+        entry_cl,
+    );
 
     // Walk blocks in declared order with entry first. Unreachable
     // fz_ir blocks (fz-ul4.30) are filtered out — they have no
@@ -4415,7 +4478,11 @@ fn compile_fn<M: cranelift_module::Module>(
             let params: Vec<ir::Value> = b.block_params(cl_blk).to_vec();
             for (p, val) in blk.params.iter().zip(params.iter()) {
                 let repr = ArgRepr::for_block_param(
-                    &fn_types.vars.get(p).cloned().unwrap_or_else(crate::types::Descr::any),
+                    &fn_types
+                        .vars
+                        .get(p)
+                        .cloned()
+                        .unwrap_or_else(crate::types::Descr::any),
                 );
                 var_env.insert(p.0, VarBinding { value: *val, repr });
             }
@@ -4433,14 +4500,7 @@ fn compile_fn<M: cranelift_module::Module>(
                 .unwrap_or(crate::diag::Span::DUMMY);
             b.set_srcloc(span_to_srcloc(span));
             let Stmt::Let(v, prim) = stmt;
-            let out = lower_prim(
-                &mut b,
-                jmod,
-                env,
-                &var_env,
-                prim,
-                *v,
-            )?;
+            let out = lower_prim(&mut b, jmod, env, &var_env, prim, *v)?;
             let repr = if out.is_raw_f64() {
                 ArgRepr::RawF64
             } else if out.is_raw_i64() {
@@ -4448,7 +4508,13 @@ fn compile_fn<M: cranelift_module::Module>(
             } else {
                 ArgRepr::Tagged
             };
-            var_env.insert(v.0, VarBinding { value: out.value(), repr });
+            var_env.insert(
+                v.0,
+                VarBinding {
+                    value: out.value(),
+                    repr,
+                },
+            );
         }
         // Terminator gets its own srcloc (often the same as the last
         // stmt for Return blocks; distinct for Call/Goto).
@@ -4538,7 +4604,13 @@ fn compile_fn<M: cranelift_module::Module>(
                     ArgRepr::RawInt => box_int(&mut b, raw),
                     ArgRepr::Tagged => unreachable!("Tagged in to_retag"),
                 };
-                var_env.insert(rv, VarBinding { value: boxed, repr: ArgRepr::Tagged });
+                var_env.insert(
+                    rv,
+                    VarBinding {
+                        value: boxed,
+                        repr: ArgRepr::Tagged,
+                    },
+                );
             }
         }
 
@@ -4550,12 +4622,22 @@ fn compile_fn<M: cranelift_module::Module>(
         if let Term::Goto(target, args) = &blk.terminator {
             for (param, arg) in f.block(*target).params.iter().zip(args.iter()) {
                 let want = ArgRepr::for_block_param(
-                    &fn_types.vars.get(param).cloned().unwrap_or_else(crate::types::Descr::any),
+                    &fn_types
+                        .vars
+                        .get(param)
+                        .cloned()
+                        .unwrap_or_else(crate::types::Descr::any),
                 );
                 let vb = *var_env.get(&arg.0).expect("unbound goto arg");
                 if vb.repr != want {
                     let coerced = coerce_to(&mut b, jmod, runtime, vb.value, vb.repr, want);
-                    var_env.insert(arg.0, VarBinding { value: coerced, repr: want });
+                    var_env.insert(
+                        arg.0,
+                        VarBinding {
+                            value: coerced,
+                            repr: want,
+                        },
+                    );
                 }
             }
         }
@@ -4822,15 +4904,15 @@ fn emit_tail_call<M: cranelift_module::Module>(
 // helpers (fz_closure_begin / push / finalize / arg / invoke / tail) are
 // gone from the runtime; their work happens at compile time in stubs.
 
-/// fz-ul4.29.5: compile a closure stub. The stub is the adapter that
-/// the closure heap object's `stub_fp` points at. When CallClosure (or
-/// fz_spawn for the initial frame) invokes it, the stub:
-///   1. Allocates the callee's entry frame (sized to the narrow spec).
-///   2. Writes cont_ptr into slot 0 (offset 16).
-///   3. Reads each capture as tagged FzValue from `closure_ptr + 24 + 8*k`
-///      and stores it kind-aware into the callee frame's capture entry slot.
-///   4. Writes each call arg into its entry slot, kind-aware.
-///   5. Returns the callee frame for the trampoline.
+// fz-ul4.29.5: compile a closure stub. The stub is the adapter that
+// the closure heap object's `stub_fp` points at. When CallClosure (or
+// fz_spawn for the initial frame) invokes it, the stub:
+//   1. Allocates the callee's entry frame (sized to the narrow spec).
+//   2. Writes cont_ptr into slot 0 (offset 16).
+//   3. Reads each capture as tagged FzValue from `closure_ptr + 24 + 8*k`
+//      and stores it kind-aware into the callee frame's capture entry slot.
+//   4. Writes each call arg into its entry slot, kind-aware.
+//   5. Returns the callee frame for the trampoline.
 //
 // Closure-target bodies stay uniform-ABI in v1 (parking.rs:113 excludes
 // `used_as_closure_target` fns from `natively_callable`). The native-
@@ -5050,7 +5132,15 @@ fn lower_collection_prim<M: cranelift_module::Module>(
                 };
                 b.ins().call(
                     write,
-                    &[value_v, ty_tag, size_present, size_value, unit, endian, signed],
+                    &[
+                        value_v,
+                        ty_tag,
+                        size_present,
+                        size_value,
+                        unit,
+                        endian,
+                        signed,
+                    ],
                 );
             }
             let fin = jmod.declare_func_in_func(runtime.bs_finalize_id, b.func);
@@ -5063,7 +5153,15 @@ fn lower_collection_prim<M: cranelift_module::Module>(
             let inst = b.ins().call(fref, &[vv]);
             b.inst_results(inst)[0]
         }
-        Prim::BitReadField { reader, ty, size, endian, signed, unit, is_last } => {
+        Prim::BitReadField {
+            reader,
+            ty,
+            size,
+            endian,
+            signed,
+            unit,
+            is_last,
+        } => {
             let rv = tagged_get(var_env, b, jmod, runtime, reader.0);
             let ty_tag = b.ins().iconst(types::I32, encode_bit_type(*ty) as i64);
             let unit_v = b
@@ -5088,7 +5186,16 @@ fn lower_collection_prim<M: cranelift_module::Module>(
             let fref = jmod.declare_func_in_func(runtime.bs_read_field_id, b.func);
             let inst = b.ins().call(
                 fref,
-                &[rv, ty_tag, size_present, size_value, unit_v, endian_v, signed_v, is_last_v],
+                &[
+                    rv,
+                    ty_tag,
+                    size_present,
+                    size_value,
+                    unit_v,
+                    endian_v,
+                    signed_v,
+                    is_last_v,
+                ],
             );
             b.inst_results(inst)[0]
         }
@@ -5259,12 +5366,12 @@ fn lower_prim<M: cranelift_module::Module>(
             // fallback) call `tag_a` / `tag_b` and pay the conversion.
             macro_rules! tag_a {
                 () => {
-                    tagged_get(var_env, b, jmod, runtime,a.0)
+                    tagged_get(var_env, b, jmod, runtime, a.0)
                 };
             }
             macro_rules! tag_b {
                 () => {
-                    tagged_get(var_env, b, jmod, runtime,bv.0)
+                    tagged_get(var_env, b, jmod, runtime, bv.0)
                 };
             }
             match op {
@@ -5272,9 +5379,15 @@ fn lower_prim<M: cranelift_module::Module>(
                     let mop = *op;
                     // Typed fast paths: float (skipped for Mod) and int.
                     if let Some(out) = try_typed_binop_fast_path(
-                        fn_types, *a, *bv, b, var_env,
+                        fn_types,
+                        *a,
+                        *bv,
+                        b,
+                        var_env,
                         |b, af, bf| {
-                            if matches!(mop, BinOp::Mod) { return None; }
+                            if matches!(mop, BinOp::Mod) {
+                                return None;
+                            }
                             Some(LowerOut::RawF64(match mop {
                                 BinOp::Add => b.ins().fadd(af, bf),
                                 BinOp::Sub => b.ins().fsub(af, bf),
@@ -5283,14 +5396,16 @@ fn lower_prim<M: cranelift_module::Module>(
                                 _ => unreachable!(),
                             }))
                         },
-                        |b, ai, bi| Some(LowerOut::RawI64(match mop {
-                            BinOp::Add => b.ins().iadd(ai, bi),
-                            BinOp::Sub => b.ins().isub(ai, bi),
-                            BinOp::Mul => b.ins().imul(ai, bi),
-                            BinOp::Div => b.ins().sdiv(ai, bi),
-                            BinOp::Mod => b.ins().srem(ai, bi),
-                            _ => unreachable!(),
-                        })),
+                        |b, ai, bi| {
+                            Some(LowerOut::RawI64(match mop {
+                                BinOp::Add => b.ins().iadd(ai, bi),
+                                BinOp::Sub => b.ins().isub(ai, bi),
+                                BinOp::Mul => b.ins().imul(ai, bi),
+                                BinOp::Div => b.ins().sdiv(ai, bi),
+                                BinOp::Mod => b.ins().srem(ai, bi),
+                                _ => unreachable!(),
+                            }))
+                        },
                     ) {
                         return Ok(out);
                     }
@@ -5358,8 +5473,8 @@ fn lower_prim<M: cranelift_module::Module>(
                     }
                     // Same-kind float: native fcmp on raw f64.
                     if descr_is_float(fn_types, *a) && descr_is_float(fn_types, *bv) {
-                        let af = as_raw_f64(var_env, b,a.0);
-                        let bf = as_raw_f64(var_env, b,bv.0);
+                        let af = as_raw_f64(var_env, b, a.0);
+                        let bf = as_raw_f64(var_env, b, bv.0);
                         let cmp = b.ins().fcmp(f_cc, af, bf);
                         return Ok(LowerOut::Tagged(bool_to_fz(b, cmp)));
                     }
@@ -5367,8 +5482,8 @@ fn lower_prim<M: cranelift_module::Module>(
                     // not mix raw and tagged operands — bit-eq is only
                     // correct when both are in the same encoding.
                     if descr_is_int(fn_types, *a) && descr_is_int(fn_types, *bv) {
-                        let ai = as_raw_i64(var_env, b,a.0);
-                        let bi = as_raw_i64(var_env, b,bv.0);
+                        let ai = as_raw_i64(var_env, b, a.0);
+                        let bi = as_raw_i64(var_env, b, bv.0);
                         let cmp = b.ins().icmp(int_cc, ai, bi);
                         return Ok(LowerOut::Tagged(bool_to_fz(b, cmp)));
                     }
@@ -5430,9 +5545,19 @@ fn lower_prim<M: cranelift_module::Module>(
                     };
                     // Typed fast paths: float and int.
                     if let Some(out) = try_typed_binop_fast_path(
-                        fn_types, *a, *bv, b, var_env,
-                        |b, af, bf| { let v = b.ins().fcmp(fcc, af, bf); Some(LowerOut::Tagged(bool_to_fz(b, v))) },
-                        |b, ai, bi| { let v = b.ins().icmp(icc, ai, bi); Some(LowerOut::Tagged(bool_to_fz(b, v))) },
+                        fn_types,
+                        *a,
+                        *bv,
+                        b,
+                        var_env,
+                        |b, af, bf| {
+                            let v = b.ins().fcmp(fcc, af, bf);
+                            Some(LowerOut::Tagged(bool_to_fz(b, v)))
+                        },
+                        |b, ai, bi| {
+                            let v = b.ins().icmp(icc, ai, bi);
+                            Some(LowerOut::Tagged(bool_to_fz(b, v)))
+                        },
                     ) {
                         return Ok(out);
                     }
@@ -5489,11 +5614,11 @@ fn lower_prim<M: cranelift_module::Module>(
                 UnOp::Neg => {
                     // .5.3: read raw i64, native ineg, return raw — same
                     // shape as the BinOp int fast paths.
-                    let xi = as_raw_i64(var_env, b,x.0);
+                    let xi = as_raw_i64(var_env, b, x.0);
                     return Ok(LowerOut::RawI64(b.ins().ineg(xi)));
                 }
                 UnOp::Not => {
-                    let xv = tagged_get(var_env, b, jmod, runtime,x.0);
+                    let xv = tagged_get(var_env, b, jmod, runtime, x.0);
                     let truthy = is_truthy(b, xv);
                     let zero = b.ins().iconst(types::I8, 0);
                     let inv = b.ins().icmp(IntCC::Equal, truthy, zero);
@@ -5515,15 +5640,15 @@ fn lower_prim<M: cranelift_module::Module>(
                     // round-trip that the polymorphic fz_print_value needs.
                     let a = args[0];
                     if descr_is_int(fn_types, a) {
-                        let n = as_raw_i64(var_env, b,a.0);
+                        let n = as_raw_i64(var_env, b, a.0);
                         let fref = jmod.declare_func_in_func(runtime.print_i64_id, b.func);
                         b.ins().call(fref, &[n]);
                     } else if descr_is_float(fn_types, a) {
-                        let f = as_raw_f64(var_env, b,a.0);
+                        let f = as_raw_f64(var_env, b, a.0);
                         let fref = jmod.declare_func_in_func(runtime.print_f64_id, b.func);
                         b.ins().call(fref, &[f]);
                     } else {
-                        let av = tagged_get(var_env, b, jmod, runtime,a.0);
+                        let av = tagged_get(var_env, b, jmod, runtime, a.0);
                         let fref = jmod.declare_func_in_func(runtime.print_id, b.func);
                         b.ins().call(fref, &[av]);
                     }
@@ -5535,10 +5660,8 @@ fn lower_prim<M: cranelift_module::Module>(
                     if args.len() != 2 {
                         return Err(CodegenError::new("vec_get/2 expected"));
                     }
-                    let vv =
-                        tagged_get(var_env, b, jmod, runtime,args[0].0);
-                    let iv =
-                        tagged_get(var_env, b, jmod, runtime,args[1].0);
+                    let vv = tagged_get(var_env, b, jmod, runtime, args[0].0);
+                    let iv = tagged_get(var_env, b, jmod, runtime, args[1].0);
                     let fref = jmod.declare_func_in_func(runtime.vec_get_id, b.func);
                     let inst = b.ins().call(fref, &[vv, iv]);
                     b.inst_results(inst)[0]
@@ -5581,10 +5704,8 @@ fn lower_prim<M: cranelift_module::Module>(
                     if args.len() != 2 {
                         return Err(CodegenError::new("send/2 expected"));
                     }
-                    let pv =
-                        tagged_get(var_env, b, jmod, runtime,args[0].0);
-                    let mv =
-                        tagged_get(var_env, b, jmod, runtime,args[1].0);
+                    let pv = tagged_get(var_env, b, jmod, runtime, args[0].0);
+                    let mv = tagged_get(var_env, b, jmod, runtime, args[1].0);
                     let fref = jmod.declare_func_in_func(runtime.send_id, b.func);
                     let inst = b.ins().call(fref, &[pv, mv]);
                     b.inst_results(inst)[0]
@@ -5607,7 +5728,9 @@ fn lower_prim<M: cranelift_module::Module>(
         | Prim::MapUpdate(..)
         | Prim::MapGet(..)
         | Prim::MakeVec(..) => {
-            return Ok(LowerOut::Tagged(lower_collection_prim(b, jmod, env, var_env, prim)?));
+            return Ok(LowerOut::Tagged(lower_collection_prim(
+                b, jmod, env, var_env, prim,
+            )?));
         }
         Prim::MakeClosure(fn_id, captured) => {
             // fz-ul4.29.5: alloc closure heap object via fz_alloc_closure;
@@ -5655,7 +5778,9 @@ fn lower_prim<M: cranelift_module::Module>(
             // site. fz-cps.1.8 — singleton's +16 holds the body's
             // func_addr (closure-target sig). docs/cps-in-clif.md §8.2.
             if captured.is_empty() {
-                return Ok(LowerOut::Tagged(fetch_static_closure(jmod, b, runtime, cl_sid)));
+                return Ok(LowerOut::Tagged(fetch_static_closure(
+                    jmod, b, runtime, cl_sid,
+                )));
             }
             // fz-cps.1.8 — non-zero captures: alloc closure heap object,
             // write body's func_addr at +16 (no stub), captures at +24+i*8.
@@ -5688,7 +5813,9 @@ fn lower_prim<M: cranelift_module::Module>(
             // typed-capture seam for cont closures.
             let body_param_reprs = &param_reprs[cl_sid as usize];
             for (i, cv) in captured.iter().enumerate() {
-                let vb = var_env.get(&cv.0).expect("MakeClosure: captured var unbound");
+                let vb = var_env
+                    .get(&cv.0)
+                    .expect("MakeClosure: captured var unbound");
                 let to = body_param_reprs[i];
                 let val = coerce_to(b, jmod, runtime, vb.value, vb.repr, to);
                 let off = HEADER_SIZE + SLOT_BYTES + (i as i32) * SLOT_BYTES;
@@ -5776,7 +5903,11 @@ fn as_raw_f64(
     v: u32,
 ) -> ir::Value {
     let vb = var_env.get(&v).expect("unbound var");
-    if vb.repr == ArgRepr::RawF64 { vb.value } else { unbox_float(b, vb.value) }
+    if vb.repr == ArgRepr::RawF64 {
+        vb.value
+    } else {
+        unbox_float(b, vb.value)
+    }
 }
 
 fn as_raw_i64(
@@ -5785,7 +5916,11 @@ fn as_raw_i64(
     v: u32,
 ) -> ir::Value {
     let vb = var_env.get(&v).expect("unbound var");
-    if vb.repr == ArgRepr::RawInt { vb.value } else { unbox_int(b, vb.value) }
+    if vb.repr == ArgRepr::RawInt {
+        vb.value
+    } else {
+        unbox_int(b, vb.value)
+    }
 }
 
 /// Emit `((a^1) | (b^1)) & 7 == 0` — true iff both operands are Tag::Int
@@ -5911,7 +6046,9 @@ fn coerce_to<M: cranelift_module::Module>(
         }
         (ArgRepr::Tagged, ArgRepr::Tagged)
         | (ArgRepr::RawInt, ArgRepr::RawInt)
-        | (ArgRepr::RawF64, ArgRepr::RawF64) => unreachable!("same-repr coerce: handled by early return"),
+        | (ArgRepr::RawF64, ArgRepr::RawF64) => {
+            unreachable!("same-repr coerce: handled by early return")
+        }
     }
 }
 
@@ -5957,7 +6094,7 @@ fn bool_to_fz(b: &mut FunctionBuilder<'_>, v: ir::Value) -> ir::Value {
 
 #[cfg(test)]
 thread_local! {
-    static INLINE_DISABLED: std::cell::Cell<bool> = std::cell::Cell::new(false);
+    static INLINE_DISABLED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 #[cfg(test)]
@@ -6874,7 +7011,7 @@ fn main(), do: loop_with(loop_with, 100000, 0)
         let via_any = reg.any_key(fid, 2);
         assert_eq!(via_any, sid);
         // A different fn gets a different SpecId.
-        let other_sid = reg.register(FnId(1), vec![crate::types::Descr::any(); 0]);
+        let other_sid = reg.register(FnId(1), vec![]);
         assert_eq!(other_sid.0, 1);
         assert_eq!(reg.len(), 2);
     }

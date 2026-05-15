@@ -502,10 +502,10 @@ impl Heap {
     }
 
     /// Vec layout (all kinds): `HeapHeader (16) + len: u32 (4) + pad: u32 (4)
-    /// + raw_payload (16-byte aligned)`. Kind in the header, payload pure
-    /// raw data so SIMD codegen can address it uniformly. Returns the
-    /// header pointer with header + len written; payload is zeroed and the
-    /// caller writes element bytes directly at offset 24.
+    ///   + raw_payload (16-byte aligned)`. Kind in the header, payload pure
+    ///     raw data so SIMD codegen can address it uniformly. Returns the
+    ///     header pointer with header + len written; payload is zeroed and the
+    ///     caller writes element bytes directly at offset 24.
     fn alloc_vec_raw(&mut self, kind: HeapKind, len: u32, payload_bytes: usize) -> *mut HeapHeader {
         let total = (24 + payload_bytes + 15) & !15;
         let p = self.alloc(total);

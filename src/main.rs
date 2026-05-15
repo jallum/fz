@@ -232,10 +232,7 @@ fn run_build(args: &[String]) {
         .unwrap_or_else(|| target_dir.join("libfz_runtime.a"));
 
     let mut cc = std::process::Command::new("cc");
-    cc.arg("-o")
-        .arg(&out_path)
-        .arg(&obj_temp)
-        .arg(&runtime_a);
+    cc.arg("-o").arg(&out_path).arg(&obj_temp).arg(&runtime_a);
     if cfg!(target_os = "macos") {
         cc.arg("-Wl,-undefined,dynamic_lookup");
     }
@@ -508,30 +505,26 @@ fn run_dump(args: &[String]) {
             }
         }
         println!("; fn {}", name);
-        if emit_clif {
-            if let Some(text) = clif_map.get(name) {
-                println!("{}", format_clif(text, &compiled.sm));
-            }
+        if emit_clif && let Some(text) = clif_map.get(name) {
+            println!("{}", format_clif(text, &compiled.sm));
         }
-        if emit_asm {
-            if let Some(text) = asm_map.get(name) {
-                if emit_clif {
-                    println!("; ---- asm ----");
-                }
-                println!("{}", text);
+        if emit_asm && let Some(text) = asm_map.get(name) {
+            if emit_clif {
+                println!("; ---- asm ----");
             }
+            println!("{}", text);
         }
         printed += 1;
     }
-    if let Some(filter) = &fn_filter {
-        if printed == 0 {
-            eprintln!(
-                "fz dump: no fn named `{}` (available: {})",
-                filter,
-                order.join(", ")
-            );
-            std::process::exit(1);
-        }
+    if let Some(filter) = &fn_filter
+        && printed == 0
+    {
+        eprintln!(
+            "fz dump: no fn named `{}` (available: {})",
+            filter,
+            order.join(", ")
+        );
+        std::process::exit(1);
     }
 }
 

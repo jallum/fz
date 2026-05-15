@@ -968,7 +968,7 @@ pub fn fz_alloc_frame_for_test(schema_id: u32, total_size: u32) -> *mut u8 {
 }
 
 thread_local! {
-    static FRAME_ALLOC_COUNT: std::cell::Cell<u64> = std::cell::Cell::new(0);
+    static FRAME_ALLOC_COUNT: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 /// Reset the per-thread frame alloc counter. Call before the code under test.

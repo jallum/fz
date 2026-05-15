@@ -485,12 +485,12 @@ fn rewrite_expr(
         Expr::Call(callee, args) => {
             if let Some(q) = qualify_callee(callee, intro, module_path, module_paths, aliases) {
                 callee.node = Expr::Var(q);
-            } else if let Expr::Var(n) = &callee.node {
-                if !intro.contains(n) && !siblings.contains(n) {
-                    if let Some(target) = imports.get(&(n.clone(), args.len())) {
-                        callee.node = Expr::Var(format!("{}.{}", target, n));
-                    }
-                }
+            } else if let Expr::Var(n) = &callee.node
+                && !intro.contains(n)
+                && !siblings.contains(n)
+                && let Some(target) = imports.get(&(n.clone(), args.len()))
+            {
+                callee.node = Expr::Var(format!("{}.{}", target, n));
             }
             rewrite_expr(
                 callee,

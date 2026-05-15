@@ -17,9 +17,7 @@
 //!   3. Remove marked blocks.
 //!   4. Repeat until no blocks were removed.
 
-use crate::fz_ir::{
-    BitSizeIr, BlockId, Cont, FnIr, Module, Prim, Stmt, Term, Var,
-};
+use crate::fz_ir::{BitSizeIr, BlockId, Cont, FnIr, Module, Prim, Stmt, Term, Var};
 use std::collections::HashMap;
 
 /// Apply `fuse_blocks` to every fn in the module in-place.
@@ -75,11 +73,11 @@ fn fuse_one_pass(f: &mut FnIr) -> bool {
         }
         // Find the predecessor — it must end with Goto(b.id, _).
         for pred in &f.blocks {
-            if let Term::Goto(target, _) = &pred.terminator {
-                if *target == b.id {
-                    fuse_target = Some(b.id);
-                    break 'outer;
-                }
+            if let Term::Goto(target, _) = &pred.terminator
+                && *target == b.id
+            {
+                fuse_target = Some(b.id);
+                break 'outer;
             }
         }
     }
@@ -104,10 +102,10 @@ fn fuse_one_pass(f: &mut FnIr) -> bool {
         .blocks
         .iter()
         .find_map(|b| {
-            if let Term::Goto(tid, args) = &b.terminator {
-                if *tid == target_id {
-                    return Some((b.id, args.clone()));
-                }
+            if let Term::Goto(tid, args) = &b.terminator
+                && *tid == target_id
+            {
+                return Some((b.id, args.clone()));
             }
             None
         })
@@ -126,11 +124,7 @@ fn fuse_one_pass(f: &mut FnIr) -> bool {
             .iter()
             .find(|b| b.id == target_id)
             .expect("target block exists");
-        let stmts: Vec<Stmt> = target
-            .stmts
-            .iter()
-            .map(|s| subst_stmt(s, &subst))
-            .collect();
+        let stmts: Vec<Stmt> = target.stmts.iter().map(|s| subst_stmt(s, &subst)).collect();
         let term = subst_term(&target.terminator, &subst);
         (stmts, term)
     };
@@ -176,9 +170,7 @@ fn subst_prim(p: &Prim, subst: &HashMap<Var, Var>) -> Prim {
         Prim::AllocStruct(sid, args) => {
             Prim::AllocStruct(*sid, args.iter().map(|x| sv(*x)).collect())
         }
-        Prim::Builtin(bid, args) => {
-            Prim::Builtin(*bid, args.iter().map(|x| sv(*x)).collect())
-        }
+        Prim::Builtin(bid, args) => Prim::Builtin(*bid, args.iter().map(|x| sv(*x)).collect()),
         Prim::ListCons(a, b) => Prim::ListCons(sv(*a), sv(*b)),
         Prim::ListHead(a) => Prim::ListHead(sv(*a)),
         Prim::ListTail(a) => Prim::ListTail(sv(*a)),
@@ -199,9 +191,7 @@ fn subst_prim(p: &Prim, subst: &HashMap<Var, Var>) -> Prim {
             entries.iter().map(|(k, v)| (sv(*k), sv(*v))).collect(),
         ),
         Prim::MapGet(a, b) => Prim::MapGet(sv(*a), sv(*b)),
-        Prim::MakeVec(kind, els) => {
-            Prim::MakeVec(*kind, els.iter().map(|x| sv(*x)).collect())
-        }
+        Prim::MakeVec(kind, els) => Prim::MakeVec(*kind, els.iter().map(|x| sv(*x)).collect()),
         Prim::MakeBitstring(fields) => Prim::MakeBitstring(
             fields
                 .iter()
