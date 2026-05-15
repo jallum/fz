@@ -2,13 +2,14 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-05-15T00:08:31Z",
   "created": "2026-05-15T00:08:05Z",
   "description": "Three fixtures contribute nothing the keepers don't:\n\n  expect_clif_demo  → byte-identical to add1; its sole role was to\n                      demo expect_clif_* header keys, which fz-8zx\n                      retires. Delete.\n  callsite_narrowing_dist → byte-identical to vr3_float_args (both\n                      input.fz and all three sidecars). vr3_float_args\n                      has the strictly-stronger raw-f64-register check\n                      and fits VR naming. The .27.10 narrowing fact is\n                      already in vr3_float_args's narrative. Delete.\n  id_int_atom       → strict subset of polymorphic (id over int+atom\n                      vs id over int+atom+bool). polymorphic's\n                      expected.specs pins the 'one spec, no\n                      specialization' claim by construction. Delete.\n\nAfter: 33 fixtures (was 36), 0 byte-duplicate pairs.\n\nInvariants:\n- 539 tests green\n- fixture_index_up_to_date regenerated",
   "id": "fz-p3f",
   "labels": [],
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "fz-ul4.27.22.21: fixtures — eliminate redundant duplicate examples",
   "type": "task",
-  "updated_at": "2026-05-15T00:08:09Z"
+  "updated_at": "2026-05-15T00:08:31Z"
 }
