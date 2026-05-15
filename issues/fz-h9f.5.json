@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-h9f.3"
+  ],
   "blocks": [],
   "created": "2026-05-15T22:11:33Z",
   "description": "Files: runtime/src/heap.rs\n\nWhen gc_minor() promotes a young survivor but old_top \u003e= old_end (old block full mid-promotion), escalate to gc_major() rather than overflowing. The old block must never overflow silently.\n\nDetection: in gc_minor(), before each cheney_forward into old space, check if old_top + object_size \u003e old_end. If so, abort minor GC, restore state, and call gc_major() instead.\n\nAlternative (simpler for v1): pre-flight check at the start of gc_minor(). If young bytes_used() \u003e old free space (old_end - old_top), skip minor and call gc_major() directly. This is conservative but safe and avoids mid-GC state restoration.\n\nImplement the pre-flight check (simpler):\n  if young_top - young_start \u003e old_end - old_top {\n      gc_major(roots, mailbox);\n      return;\n  }\n\nTests: when old block has insufficient space for all young live objects, gc_major() is called instead of gc_minor(). gc_minor() completes successfully when old has sufficient space.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "gen-gc.5: Old block growth on promotion overflow",
   "type": "task",
-  "updated_at": "2026-05-15T22:11:33Z"
+  "updated_at": "2026-05-15T22:11:50Z"
 }
