@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-15T10:11:02Z",
+  "description": "",
+  "id": "fz-v9l",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "fz-cg1 [EPIC] codegen: dead-code removal, efficiency, and correctness",
+  "type": "task",
+  "updated_at": "2026-05-15T10:11:02Z"
+}
