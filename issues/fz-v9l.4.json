@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-05-15T10:40:18Z",
   "created": "2026-05-15T10:11:22Z",
   "description": "compile_fn currently tracks variable representations using two parallel sets:\n\n  let mut raw_f64_vars: HashSet\u003cu32\u003e = HashSet::new();\n  let mut raw_int_vars: HashSet\u003cu32\u003e = HashSet::new();\n\nThese are passed as separate arguments to every helper that needs to know a\nvariable's representation. There is no enforced invariant preventing a variable\nfrom appearing in both sets simultaneously.\n\nThe free function:\n  fn var_repr(v: u32, raw_int_vars: \u0026HashSet\u003cu32\u003e, raw_f64_vars: \u0026HashSet\u003cu32\u003e) -\u003e ArgRepr\n\nencodes the query logic and is threaded through ~10 call sites.\n\nReplace with:\n\n  enum VarRepr { Tagged, RawInt, RawF64 }\n  let mut var_reprs: HashMap\u003cu32, VarRepr\u003e = HashMap::new();\n\nInsertions become:\n  var_reprs.insert(v, VarRepr::RawInt);   // was raw_int_vars.insert(v)\n  var_reprs.insert(v, VarRepr::RawF64);   // was raw_f64_vars.insert(v)\n\nQueries at call sites:\n  var_reprs.get(\u0026v).copied().unwrap_or(VarRepr::Tagged)\n  // was: var_repr(v, \u0026raw_int_vars, \u0026raw_f64_vars)\n\nRemove:\n  - raw_f64_vars declaration and all insertions\n  - raw_int_vars declaration and all insertions\n  - var_repr() free function definition\n  - Every parameter site that passed both sets to a helper\n\nUpdate every helper function signature that accepted raw_int_vars and\nraw_f64_vars to instead accept var_reprs: \u0026HashMap\u003cu32, VarRepr\u003e (or a\nshared reference to the same map).\n\nProven: all existing tests pass. The VarRepr enum enforces mutual exclusion\nat the type level.\n\n## LANDING THE WORK\n  Land this ticket before starting the next one:\n  - Commit only the changes for this ticket, referencing fz-cg1.4\n  - Close the ticket (`bw close fz-v9l.4`); It will tell you if work is newly unblocked",
   "id": "fz-v9l.4",
   "labels": [],
   "parent": "fz-v9l",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "fz-cg1.4 replace dual HashSet var tracking with VarRepr enum map; remove var_repr()",
   "type": "task",
-  "updated_at": "2026-05-15T10:37:09Z"
+  "updated_at": "2026-05-15T10:40:18Z"
 }
