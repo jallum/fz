@@ -2765,26 +2765,29 @@ pub fn compile_with_backend<B: Backend>(
         if want_asm {
             ctx.set_disasm(true);
         }
+        let cg_env = CodegenEnv {
+            runtime: &runtime,
+            module,
+            fn_types: ft,
+            spec_registry: &spec_registry,
+            fn_ids: &fn_ids,
+            tuple_schema_ids: &tuple_schema_ids,
+            param_reprs: &param_reprs,
+            return_reprs: &return_reprs,
+            natively_callable: &natively_callable,
+            cont_target_fns: &cont_target_fns,
+            cont_fns: &cont_fns,
+            closure_n_captures: &closure_n_captures,
+        };
         compile_fn(
             backend.module_mut(),
             &mut ctx,
             &mut fbctx,
-            &runtime,
+            &cg_env,
             &schemas,
-            &tuple_schema_ids,
             f,
-            ft,
             sid as u32,
-            &spec_registry,
             &module.source,
-            &natively_callable,
-            &cont_target_fns,
-            &cont_fns,
-            &closure_n_captures,
-            &fn_ids,
-            &param_reprs,
-            &return_reprs,
-            &working,
             &module_types,
         )?;
         // Any-key SpecId.0 == FnId.0 (invariant); use the bare fn name so
@@ -3362,6 +3365,21 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
     })
 }
 
+struct CodegenEnv<'a> {
+    runtime: &'a RuntimeRefs,
+    module: &'a crate::fz_ir::Module,
+    fn_types: &'a crate::ir_typer::FnTypes,
+    spec_registry: &'a SpecRegistry,
+    fn_ids: &'a HashMap<u32, FuncId>,
+    tuple_schema_ids: &'a HashMap<usize, u32>,
+    param_reprs: &'a [Vec<ArgRepr>],
+    return_reprs: &'a [ArgRepr],
+    natively_callable: &'a std::collections::HashSet<crate::fz_ir::FnId>,
+    cont_target_fns: &'a std::collections::HashSet<crate::fz_ir::FnId>,
+    cont_fns: &'a std::collections::HashSet<crate::fz_ir::FnId>,
+    closure_n_captures: &'a std::collections::HashMap<crate::fz_ir::FnId, usize>,
+}
+
 #[derive(Clone, Copy)]
 struct RuntimeRefs {
     print_id: FuncId,
@@ -3425,24 +3443,24 @@ fn compile_fn<M: cranelift_module::Module>(
     jmod: &mut M,
     ctx: &mut Context,
     fbctx: &mut FunctionBuilderContext,
-    runtime: &RuntimeRefs,
+    env: &CodegenEnv<'_>,
     schemas: &[Schema],
-    tuple_schema_ids: &HashMap<usize, u32>,
     f: &crate::fz_ir::FnIr,
-    fn_types: &crate::ir_typer::FnTypes,
     this_spec_id: u32,
-    spec_registry: &SpecRegistry,
     source: &crate::fz_ir::SourceInfo,
-    natively_callable: &std::collections::HashSet<crate::fz_ir::FnId>,
-    cont_target_fns: &std::collections::HashSet<crate::fz_ir::FnId>,
-    cont_fns: &std::collections::HashSet<crate::fz_ir::FnId>,
-    closure_n_captures: &std::collections::HashMap<crate::fz_ir::FnId, usize>,
-    fn_ids: &HashMap<u32, FuncId>,
-    param_reprs: &[Vec<ArgRepr>],
-    return_reprs: &[ArgRepr],
-    module: &crate::fz_ir::Module,
     module_types: &crate::ir_typer::ModuleTypes,
 ) -> Result<(), CodegenError> {
+    let runtime = env.runtime;
+    let module = env.module;
+    let fn_types = env.fn_types;
+    let spec_registry = env.spec_registry;
+    let fn_ids = env.fn_ids;
+    let param_reprs = env.param_reprs;
+    let return_reprs = env.return_reprs;
+    let natively_callable = env.natively_callable;
+    let cont_target_fns = env.cont_target_fns;
+    let cont_fns = env.cont_fns;
+    let closure_n_captures = env.closure_n_captures;
     let is_native = natively_callable.contains(&f.id);
     let is_cont_fn = cont_fns.contains(&f.id);
     // fz-cps.1.2 — closure-target fn shape per §2.1: `(args..., self,
@@ -3787,15 +3805,8 @@ fn compile_fn<M: cranelift_module::Module>(
             let out = lower_prim(
                 &mut b,
                 jmod,
-                runtime,
-                tuple_schema_ids,
+                env,
                 &var_env,
-                fn_types,
-                spec_registry,
-                module,
-                fn_ids,
-                param_reprs,
-                return_reprs,
                 prim,
                 *v,
             )?;
@@ -5243,18 +5254,19 @@ impl LowerOut {
 fn lower_prim<M: cranelift_module::Module>(
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
-    runtime: &RuntimeRefs,
-    tuple_schema_ids: &HashMap<usize, u32>,
+    env: &CodegenEnv<'_>,
     var_env: &HashMap<u32, VarBinding>,
-    fn_types: &crate::ir_typer::FnTypes,
-    spec_registry: &SpecRegistry,
-    module: &crate::fz_ir::Module,
-    fn_ids: &HashMap<u32, FuncId>,
-    param_reprs: &[Vec<ArgRepr>],
-    return_reprs: &[ArgRepr],
     prim: &Prim,
     dest_var: crate::fz_ir::Var,
 ) -> Result<LowerOut, CodegenError> {
+    let runtime = env.runtime;
+    let tuple_schema_ids = env.tuple_schema_ids;
+    let fn_types = env.fn_types;
+    let spec_registry = env.spec_registry;
+    let module = env.module;
+    let fn_ids = env.fn_ids;
+    let param_reprs = env.param_reprs;
+    let return_reprs = env.return_reprs;
     // Helper: every consumer site below that wants a tagged FzValue uses
     // this. Sites that want a raw f64 (float fast paths only) call
     // `as_raw_f64` directly.
