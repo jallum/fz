@@ -2,13 +2,14 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-05-15T15:57:07Z",
   "created": "2026-05-15T15:54:04Z",
   "description": "",
   "id": "fz-ck0",
   "labels": [],
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "replace build_entry_harness 4-tuple return with EntryHarnessOut struct",
   "type": "task",
-  "updated_at": "2026-05-15T15:56:19Z"
+  "updated_at": "2026-05-15T15:57:07Z"
 }
