@@ -5,7 +5,7 @@
   ],
   "blocks": [],
   "created": "2026-05-15T10:11:22Z",
-  "description": "",
+  "description": "The subsumption check in SpecRegistry::resolve slow path iterates the same\nzipped key pairs twice per candidate:\n\n  let all_le = ok.iter().zip(k.iter()).all(|(o, kk)| o.is_subtype(kk));\n  let any_strict = ok.iter().zip(k.iter()).any(|(o, kk)| !kk.is_subtype(o));\n\nReplace with a single fold that produces both booleans in one pass:\n\n  let (all_le, any_strict) = ok.iter().zip(k.iter()).fold(\n      (true, false),\n      |(al, as_), (o, kk)| (al \u0026\u0026 o.is_subtype(kk), as_ || !kk.is_subtype(o)),\n  );\n\nThis is a pure mechanical improvement — same result, half the iterations on\nthe key vectors. For narrow specs with long arities (closures with many\ncaptured vars) the saving is proportional to arity.\n\nProven: existing SpecRegistry subsumption tests pass. All fixture tests pass.\n\n## LANDING THE WORK\n  Land this ticket before starting the next one:\n  - Commit only the changes for this ticket, referencing fz-cg1.7\n  - Close the ticket (`bw close fz-v9l.7`); It will tell you if work is newly unblocked",
   "id": "fz-v9l.7",
   "labels": [],
   "parent": "fz-v9l",
@@ -13,5 +13,5 @@
   "status": "open",
   "title": "fz-cg1.7 subsumption single-pass fold in resolve slow path",
   "type": "task",
-  "updated_at": "2026-05-15T10:11:27Z"
+  "updated_at": "2026-05-15T10:12:34Z"
 }
