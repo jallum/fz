@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-05-15T01:24:58Z",
   "created": "2026-05-15T00:29:10Z",
   "description": "In types.rs:1292, float literals use `format!(\"{}\", f.get())` which drops the .0 suffix for whole-number floats. A spec containing float literal 10.0 prints as 10, making it indistinguishable from int literal 10 in expected.specs output.\n\nAffected fixtures: vr2_float_arith\n\nFix: use `format!(\"{:?}\", f.get())` or a custom formatter that ensures .0 is always present for floats.",
   "id": "fz-1pq.2",
   "labels": [],
   "parent": "fz-1pq",
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "types.rs Display: whole-number floats render without .0 suffix",
   "type": "bug",
-  "updated_at": "2026-05-15T00:29:10Z"
+  "updated_at": "2026-05-15T01:24:58Z"
 }
