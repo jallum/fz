@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-15T22:10:42Z",
+  "description": "Files: runtime/src/heap.rs\n\nReplace the single block with two:\n  young_start: *mut u8\n  young_top: *mut u8\n  young_end: *mut u8\n  young_size_class: u8       // small pool block, target ~64KB\n  \n  old_start: *mut u8\n  old_top: *mut u8\n  old_end: *mut u8\n  old_size_class: u8         // larger pool block, initial ~512KB\n  \n  minor_gc_count: u8         // triggers major after 10+ minors\n  last_minor_live_bytes: usize\n  last_major_live_bytes: usize\n\nHeap::new(): allocate one young block (pick SIZE_TABLE entry nearest 64KB) and one old block (nearest 512KB). Retire block_start/bump_top/block_end/size_class/low_live_streak fields (last_gc_live_bytes splits into last_minor_live_bytes / last_major_live_bytes).\n\nHeap::alloc(): bump young_top. gc_watermark points into young block at 75% of young_size. FZ_SHOULD_YIELD check unchanged.\n\nHeap::bytes_used(): young_top - young_start + old_top - old_start.\n\nTests: alloc() fills young block; watermark fires at 75% of young block; old block is unaffected by young allocs.",
+  "id": "fz-h9f.1",
+  "labels": [],
+  "parent": "fz-h9f",
+  "priority": 2,
+  "status": "open",
+  "title": "gen-gc.1: Heap struct — young + old blocks, alloc into young, young watermark",
+  "type": "task",
+  "updated_at": "2026-05-15T22:10:42Z"
+}
