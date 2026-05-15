@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-05-15T14:28:28Z",
   "created": "2026-05-15T13:38:15Z",
   "description": "compile_fn's block-walking loop contains an ~950-line match on \u0026blk.terminator (lines ~3788-4737)\ncovering all 8 Term variants (Halt, Return, Goto, If, Call, TailCall, CallClosure,\nTailCallClosure). Extract into a free function.\n\nADD before compile_fn:\n\n  fn emit_terminator\u003cM: cranelift_module::Module\u003e(\n      b: \u0026mut FunctionBuilder\u003c'_\u003e,\n      jmod: \u0026mut M,\n      env: \u0026CodegenEnv\u003c'_\u003e,\n      module_types: \u0026crate::ir_typer::ModuleTypes,\n      schemas: \u0026[Schema],\n      var_env: \u0026HashMap\u003cu32, VarBinding\u003e,\n      blk: \u0026crate::fz_ir::Block,\n      block_map: \u0026HashMap\u003cu32, ir::Block\u003e,\n      frame_ptr: Option\u003cir::Value\u003e,\n      host_ctx: Option\u003cir::Value\u003e,\n      cont_param: Option\u003cir::Value\u003e,\n      is_native: bool,\n      is_cont_fn: bool,\n      cont_ptr_known_null: bool,\n      this_spec_id: u32,\n      f: \u0026crate::fz_ir::FnIr,\n      source: \u0026crate::fz_ir::SourceInfo,\n  ) -\u003e Result\u003c(), CodegenError\u003e\n\nInside the function body, reconstruct resolve_callee_sid and resolve_cont_sid from env fields\n(fn_types, module, spec_registry are all in env; module_types is passed separately).\nThe closures currently defined in compile_fn can be re-scoped here.\n\nREPLACE the match block in compile_fn's loop with:\n  emit_terminator(\u0026mut b, jmod, env, module_types, schemas, \u0026var_env, blk,\n      \u0026block_map, frame_ptr, host_ctx, cont_param,\n      is_native, is_cont_fn, cont_ptr_known_null, this_spec_id, f, source)?;\n\nNOTE: var_env is read-only inside all terminator arms — safe to pass as \u0026HashMap.\n\ncargo build must produce zero warnings. All tests must pass.",
   "id": "fz-yls.1",
   "labels": [],
   "parent": "fz-yls",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "fz-cg3.1 extract emit_terminator from compile_fn",
   "type": "task",
-  "updated_at": "2026-05-15T13:38:15Z"
+  "updated_at": "2026-05-15T14:28:28Z"
 }
