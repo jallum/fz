@@ -371,9 +371,8 @@ fn opaque_consumer_arities(
     specs: &HashMap<(FnId, Vec<Descr>), FnTypes>,
 ) -> std::collections::HashSet<usize> {
     let mut arities = std::collections::HashSet::new();
-    let idx_of: HashMap<FnId, usize> = m.fns.iter().enumerate().map(|(i, f)| (f.id, i)).collect();
     for ((fid, _key), ft) in specs {
-        let Some(&i) = idx_of.get(fid) else {
+        let Some(&i) = m.fn_idx.get(fid) else {
             continue;
         };
         let f = &m.fns[i];
@@ -460,13 +459,6 @@ fn type_module_pass(
     m: &Module,
     prev_returns: &HashMap<(FnId, Vec<Descr>), Descr>,
 ) -> HashMap<(FnId, Vec<Descr>), FnTypes> {
-    // Fn-id → index into the `m.fns` vector (cps_split inserts
-    // continuation fns out of declaration order).
-    let mut idx_of: HashMap<FnId, usize> = HashMap::new();
-    for (i, f) in m.fns.iter().enumerate() {
-        idx_of.insert(f.id, i);
-    }
-
     // fz-vw4.2: per-callsite specialization map. Specs are inserted only
     // when a real reachability seed (entry_seeds) or a discovered callsite
     // demands them. No phantom any-key bootstrap; orphan any-key bodies
@@ -522,7 +514,7 @@ fn type_module_pass(
             // Process each (fn, key) — register spec if new, walk body,
             // emit pending entries for discovered callsite keys.
             for (fid, key) in to_process {
-                let Some(&j) = idx_of.get(&fid) else {
+                let Some(&j) = m.fn_idx.get(&fid) else {
                     continue;
                 };
                 let entry_key = (fid, key.clone());
@@ -580,7 +572,7 @@ fn type_module_pass(
             .collect();
         let drained_anything = !to_process.is_empty();
         for (fid, key) in to_process {
-            let Some(&j) = idx_of.get(&fid) else {
+            let Some(&j) = m.fn_idx.get(&fid) else {
                 continue;
             };
             let entry_key = (fid, key.clone());
@@ -602,7 +594,7 @@ fn type_module_pass(
         // Re-walk every registered spec to find new pending keys.
         let snapshot: Vec<(FnId, Vec<Descr>)> = specs.keys().cloned().collect();
         for (fid, key) in &snapshot {
-            let Some(&j) = idx_of.get(fid) else {
+            let Some(&j) = m.fn_idx.get(fid) else {
                 continue;
             };
             let entry_key = (*fid, key.clone());
@@ -640,7 +632,7 @@ fn type_module_pass(
         let opaque_arities = opaque_consumer_arities(m, &specs);
         let snapshot: Vec<(FnId, Vec<Descr>)> = specs.keys().cloned().collect();
         for (fid, key) in &snapshot {
-            let Some(&j) = idx_of.get(fid) else {
+            let Some(&j) = m.fn_idx.get(fid) else {
                 continue;
             };
             let entry_key = (*fid, key.clone());
@@ -651,7 +643,7 @@ fn type_module_pass(
                 for stmt in &b.stmts {
                     let Stmt::Let(v, prim) = stmt;
                     if let Prim::MakeClosure(lam_fn_id, captured) = prim {
-                        if let Some(&jj) = idx_of.get(lam_fn_id) {
+                        if let Some(&jj) = m.fn_idx.get(lam_fn_id) {
                             let lam = &m.fns[jj];
                             let n_params = lam.block(lam.entry).params.len();
                             let opaque_arity = n_params.saturating_sub(captured.len());
@@ -687,7 +679,7 @@ fn type_module_pass(
             .collect();
         let drained_anything = !to_process.is_empty();
         for (fid, key) in to_process {
-            let Some(&j) = idx_of.get(&fid) else {
+            let Some(&j) = m.fn_idx.get(&fid) else {
                 continue;
             };
             let entry_key = (fid, key.clone());
@@ -712,7 +704,7 @@ fn type_module_pass(
         for _ in 0..16 {
             let snapshot: Vec<(FnId, Vec<Descr>)> = specs.keys().cloned().collect();
             for (fid, key) in &snapshot {
-                let Some(&j) = idx_of.get(fid) else {
+                let Some(&j) = m.fn_idx.get(fid) else {
                     continue;
                 };
                 let entry_key = (*fid, key.clone());
@@ -740,7 +732,7 @@ fn type_module_pass(
                 break;
             }
             for (fid, key) in to_process {
-                let Some(&j) = idx_of.get(&fid) else {
+                let Some(&j) = m.fn_idx.get(&fid) else {
                     continue;
                 };
                 let entry_key = (fid, key.clone());
@@ -796,13 +788,6 @@ fn walk_spec_for_discovery(
     pending: &mut HashMap<FnId, std::collections::HashSet<Vec<Descr>>>,
     callsite_fn_consts: &mut HashMap<(FnId, Vec<Descr>), Vec<Option<FnId>>>,
 ) {
-    // Build idx_of locally to find each callee's entry-param arity.
-    let idx_of: HashMap<FnId, usize> = m
-        .fns
-        .iter()
-        .enumerate()
-        .map(|(i, fn_ir)| (fn_ir.id, i))
-        .collect();
 
     let maybe_widen = |k: Vec<Descr>, callee: FnId| -> Vec<Descr> {
         if widen_now && caller_scc.contains(&callee) {
@@ -834,7 +819,7 @@ fn walk_spec_for_discovery(
         // Direct Call / TailCall.
         match &b.terminator {
             Term::Call { callee, args, .. } | Term::TailCall { callee, args } => {
-                if let Some(&j) = idx_of.get(callee) {
+                if let Some(&j) = m.fn_idx.get(callee) {
                     let callee_fn = &m.fns[j];
                     let n_params = callee_fn.block(callee_fn.entry).params.len();
                     let mut key: Vec<Descr> = args
@@ -890,7 +875,7 @@ fn walk_spec_for_discovery(
         if let Some(cv) = closure_var {
             // (a) fn_constants path — legacy, zero-capture only.
             if let Some(&target_fn) = caller_ft.fn_constants.get(&cv) {
-                if let Some(&j) = idx_of.get(&target_fn) {
+                if let Some(&j) = m.fn_idx.get(&target_fn) {
                     let target = &m.fns[j];
                     let n_params = target.block(target.entry).params.len();
                     let mut key: Vec<Descr> = closure_args
@@ -920,7 +905,7 @@ fn walk_spec_for_discovery(
                         let Some(lit) = &sig.lit else {
                             continue;
                         };
-                        let Some(&j) = idx_of.get(&lit.fn_id) else {
+                        let Some(&j) = m.fn_idx.get(&lit.fn_id) else {
                             continue;
                         };
                         let target = &m.fns[j];
@@ -1011,7 +996,7 @@ fn walk_spec_for_discovery(
             _ => None,
         };
         if let (Some(cont), Some(slot0)) = (cont, slot0_descr) {
-            if let Some(&j) = idx_of.get(&cont.fn_id) {
+            if let Some(&j) = m.fn_idx.get(&cont.fn_id) {
                 let cont_fn = &m.fns[j];
                 let n_params = cont_fn.block(cont_fn.entry).params.len();
                 let mut key: Vec<Descr> = vec![Descr::any(); n_params];
@@ -2300,12 +2285,6 @@ pub fn compute_effective_returns(
     for key in specs.keys() {
         ret.insert(key.clone(), InferredReturn::Unknown);
     }
-    let idx_of: HashMap<FnId, usize> = module
-        .fns
-        .iter()
-        .enumerate()
-        .map(|(i, f)| (f.id, i))
-        .collect();
     let lookup =
         |ret: &HashMap<(FnId, Vec<Descr>), InferredReturn>, key: &(FnId, Vec<Descr>)| -> Descr {
             ret.get(key)
@@ -2321,7 +2300,7 @@ pub fn compute_effective_returns(
     // entries in prev_returns fall back to Descr::any (the Receive /
     // opaque-CallClosure default).
     let cont_key_at = |b: &Block, cont: &crate::fz_ir::Cont, ft: &FnTypes| -> Vec<Descr> {
-        let Some(_) = idx_of.get(&cont.fn_id) else {
+        let Some(_) = module.fn_idx.get(&cont.fn_id) else {
             return vec![];
         };
         let cont_fn = module.fn_by_id(cont.fn_id);
@@ -2379,7 +2358,7 @@ pub fn compute_effective_returns(
         let mut changed = false;
         for spec_key in specs.keys() {
             let (fid, _) = spec_key;
-            let Some(&j) = idx_of.get(fid) else {
+            let Some(&j) = module.fn_idx.get(fid) else {
                 continue;
             };
             let Some(ft) = specs.get(spec_key) else {
