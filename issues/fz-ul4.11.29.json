@@ -6,10 +6,10 @@
   "description": "GOAL: Dead-fn elimination pass that removes FnIrs with zero remaining\ncallsites after inlining (or that are otherwise unreachable from `main`).\n\nStatus when authored: scoped out of fz-ul4.11.15. The inliner intentionally\nleaves callee FnIrs in `module.fns` even after all their callsites are\ninlined away; codegen still compiles them, wasting cycles and code space.\n\n## What \"reachable\" means in fz-IR\n\n  Starting from `main` FnIr:\n    - Follow Term::Call.callee → FnId.\n    - Follow Term::TailCall.callee → FnId.\n    - Follow Term::Call.continuation.fn_id → FnId.\n    - Follow Term::CallClosure.continuation.fn_id → FnId.\n    - Follow Prim::MakeClosure(FnId, _) → FnId.\n  Mark all reached FnIds; sweep the rest.\n\n## Schema-vec interaction\n\n  ir_codegen builds `schemas` as `vec![placeholder; max_id + 1]` indexed by\n  FnId.0 (codegen.rs:1473-1480). If DCE drops fns, the schemas vec STAYS the\n  same size (we don't renumber FnIds) — placeholder entries are harmless.\n  Equivalently, we can compact by remapping FnIds, but renumbering all\n  call/cont/closure refs is more invasive. v1 DCE: just drop from\n  module.fns; keep FnIds dense at max_id.\n\n## Tests\n\n  - After inline_module, a fully-inlined leaf callee with 0 remaining\n    callsites is dropped from module.fns.\n  - A fn still referenced via Prim::MakeClosure (even if MakeClosure result\n    is unused) is kept (conservative).\n  - main's FnIr is always kept.\n  - End-to-end: SAMPLE output unchanged.\n\n## Dependencies\n\n  - Blocked by fz-ul4.11.15 (DCE only matters after inliner exists).\n\n## Acceptance\n\n  - One commit referencing fz-ul4.11.28.",
   "id": "fz-ul4.11.29",
   "labels": [],
-  "parent": "fz-ul4.11",
+  "parent": "fz-ul4",
   "priority": 3,
   "status": "open",
   "title": "Dead-callee elimination pass",
   "type": "task",
-  "updated_at": "2026-05-11T06:27:04Z"
+  "updated_at": "2026-05-15T19:42:40Z"
 }
