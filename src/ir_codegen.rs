@@ -1739,6 +1739,8 @@ pub fn compile_with_backend<B: Backend>(
     }
     crate::ir_fuse::fuse_blocks(&mut working);
     let module_types = crate::ir_typer::type_module(&working);
+    crate::ir_fold::fold_module(&mut working, &module_types);
+    crate::ir_dce::dce_module(&mut working);
     let module = &working;
 
     // fz-ul4.29.2.1 — Build the SpecRegistry.
@@ -5331,19 +5333,6 @@ fn lower_prim<M: cranelift_module::Module>(
             }
         },
         Prim::BinOp(op, a, bv) => {
-            // Singleton fold: if the typer proved this result is a singleton
-            // int (e.g. const(41)+const(1)={42} after block fusion co-locates
-            // the operands), emit the constant directly — no arithmetic needed.
-            {
-                let rd = fn_types
-                    .vars
-                    .get(&dest_var)
-                    .cloned()
-                    .unwrap_or_else(crate::types::Descr::any);
-                if let Some(n) = rd.as_int_singleton() {
-                    return Ok(LowerOut::RawI64(b.ins().iconst(types::I64, n)));
-                }
-            }
             // .5.2: tagged operands are materialised lazily by `tag_a` /
             // `tag_b` below. The typed-float fast paths read raw via
             // `as_raw_f64` and never trigger the box round-trip; only the
