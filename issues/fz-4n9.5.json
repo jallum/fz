@@ -4,14 +4,15 @@
   "blocks": [
     "fz-4n9.6"
   ],
+  "closed_at": "2026-05-15T11:33:11Z",
   "created": "2026-05-15T11:11:37Z",
   "description": "compile_fn maintains two parallel HashMaps for variable state:\n  var_map: HashMap\u003cu32, ir::Value\u003e    -- the Cranelift SSA value\n  var_reprs: HashMap\u003cu32, ArgRepr\u003e    -- the repr (absent = Tagged by convention)\n\nThese are always updated together. The implicit-absence-means-Tagged convention in var_reprs\nis fragile. Combine into one map with an explicit repr per entry.\n\nADD (before compile_fn, or alongside ArgRepr):\n  #[derive(Clone, Copy)]\n  struct VarBinding {\n      value: ir::Value,\n      repr: ArgRepr,\n  }\n\nIN compile_fn: replace both declarations (lines 3720-3721) with:\n  let mut var_env: HashMap\u003cu32, VarBinding\u003e = HashMap::new();\n\nUPDATE all insert sites (currently: match on repr, insert into var_reprs if non-Tagged, insert into var_map always):\n  -- old pattern:\n     match repr { ArgRepr::RawInt =\u003e { var_reprs.insert(p.0, ArgRepr::RawInt); } ... Tagged =\u003e {} }\n     var_map.insert(p.0, val);\n  -- new pattern (one line):\n     var_env.insert(p.0, VarBinding { value: val, repr });\n\nUPDATE all lookup sites:\n  *var_map.get(\u0026v).expect(...)  -\u003e  var_env.get(\u0026v).expect(...).value\n  var_reprs.get(\u0026v).copied().unwrap_or(ArgRepr::Tagged)  -\u003e  var_env.get(\u0026v).map_or(ArgRepr::Tagged, |b| b.repr)\n\nUPDATE retag pass (currently iterates var_reprs):\n  iterate var_env, filter repr != Tagged\n\nUPDATE lower_prim SIGNATURE: replace\n  env: \u0026HashMap\u003cu32, ir::Value\u003e,\n  var_reprs: \u0026HashMap\u003cu32, ArgRepr\u003e,\nwith:\n  var_env: \u0026HashMap\u003cu32, VarBinding\u003e,\n\nUPDATE lower_prim CALL SITE in compile_fn: pass \u0026var_env\n\nUPDATE tagged_get, as_raw_f64, as_raw_i64: take \u0026HashMap\u003cu32, VarBinding\u003e instead of two maps.\n\ncargo build must produce zero warnings. All tests must pass.",
   "id": "fz-4n9.5",
   "labels": [],
   "parent": "fz-4n9",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "fz-cg2.5 VarBinding: combine var_map + var_reprs into one map",
   "type": "task",
-  "updated_at": "2026-05-15T11:27:39Z"
+  "updated_at": "2026-05-15T11:33:11Z"
 }
