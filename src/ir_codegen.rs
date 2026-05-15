@@ -536,9 +536,7 @@ fn annotate_clif_dump(
 /// `value_descrs`.
 fn annotate_block_header(line: &str, value_descrs: &HashMap<u32, crate::types::Descr>) -> String {
     // Append a trailing `; vN :: Descr  vM :: Descr` comment AFTER the
-    // existing line. Preserves substring matches like
-    // `block0(v0: f64, v1: f64, v2: i64)` used by fixture_matrix
-    // expect_clif_contains directives.
+    // existing line, leaving the original CLIF text intact.
     let Some(open) = line.find('(') else {
         return line.to_string();
     };
