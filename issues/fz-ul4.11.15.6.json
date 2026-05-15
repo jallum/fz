@@ -9,9 +9,15 @@
   "id": "fz-ul4.11.15.6",
   "labels": [],
   "parent": "fz-ul4.11.15",
+  "comments": [
+    {
+      "text": "2026-05-15 line-number correction: emit_tail_call same-schema reuse is now at ir_codegen.rs:4844 (was 5335). GC trigger note: fz-ul4.11 parent (Tracing GC) is fully closed; use whatever GC test hook landed there or document skip if none exists in a test-accessible form.",
+      "timestamp": "2026-05-15T16:01:47Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "Hot-loop allocation assert + SAMPLE parity + closeout",
   "type": "task",
-  "updated_at": "2026-05-15T03:22:54Z"
+  "updated_at": "2026-05-15T16:01:47Z"
 }
