@@ -1,0 +1,19 @@
+; spec main(0) #fn=0
+;   key:    []
+;   return: nil
+;   vars:
+;     Var(0) :: :a0
+;     Var(1) :: 40
+;     Var(2) :: 2
+;     Var(3) :: int
+;     Var(4) :: nil
+;     Var(5) :: :a1
+;     Var(6) :: nil
+;     Var(7) :: :true
+;     Var(8) :: nil
+;     Var(9) :: nil
+;     Var(10) :: nil
+;   exits:
+;     blk0 Return Var(10)    :: nil
+;     blk1 Halt Var(0)      :: :a0
+

@@ -1,0 +1,47 @@
+; spec double(1) #fn=0
+;   key:    [7]
+;   return: int
+;   vars:
+;     Var(0) :: 7
+;     Var(1) :: :a0
+;     Var(2) :: 2
+;     Var(3) :: int
+;   exits:
+;     blk0 Return Var(3)    :: int
+;     blk1 Halt Var(1)      :: :a0
+
+; spec use_x(1) #fn=1
+;   key:    [7]
+;   return: nil
+;   vars:
+;     Var(0) :: 7
+;     Var(1) :: :a0
+;   exits:
+;     blk0 Call double#0(Var(0))
+;              callee_key=[7]
+;              cont k_3#3 captured=[Var(0)]
+;              cont_key=[int, 7]
+;     blk1 Halt Var(1)      :: :a0
+
+; spec main(0) #fn=2
+;   key:    []
+;   return: nil
+;   vars:
+;     Var(0) :: :a0
+;     Var(1) :: 7
+;   exits:
+;     blk0 TailCall use_x#1(Var(1))
+;              callee_key=[7]
+;     blk1 Halt Var(0)      :: :a0
+
+; spec k_3(2) #fn=3
+;   key:    [int, 7]
+;   return: nil
+;   vars:
+;     Var(0) :: int
+;     Var(1) :: 7
+;     Var(2) :: int
+;     Var(3) :: nil
+;   exits:
+;     blk0 Return Var(3)    :: nil
+

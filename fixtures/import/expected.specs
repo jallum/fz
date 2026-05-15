@@ -1,0 +1,47 @@
+; spec Math.add(2) #fn=0
+;   key:    [10, 32]
+;   return: int
+;   vars:
+;     Var(0) :: 10
+;     Var(1) :: 32
+;     Var(2) :: :a0
+;     Var(3) :: int
+;   exits:
+;     blk0 Return Var(3)    :: int
+;     blk1 Halt Var(2)      :: :a0
+
+; spec User.calc(2) #fn=2
+;   key:    [10, 32]
+;   return: int
+;   vars:
+;     Var(0) :: 10
+;     Var(1) :: 32
+;     Var(2) :: :a0
+;   exits:
+;     blk0 TailCall Math.add#0(Var(0), Var(1))
+;              callee_key=[10, 32]
+;     blk1 Halt Var(2)      :: :a0
+
+; spec main(0) #fn=3
+;   key:    []
+;   return: nil
+;   vars:
+;     Var(0) :: :a0
+;     Var(1) :: 10
+;     Var(2) :: 32
+;   exits:
+;     blk0 Call User.calc#2(Var(1), Var(2))
+;              callee_key=[10, 32]
+;              cont k_4#4 captured=[]
+;              cont_key=[int]
+;     blk1 Halt Var(0)      :: :a0
+
+; spec k_4(1) #fn=4
+;   key:    [int]
+;   return: nil
+;   vars:
+;     Var(0) :: int
+;     Var(1) :: nil
+;   exits:
+;     blk0 Return Var(1)    :: nil
+

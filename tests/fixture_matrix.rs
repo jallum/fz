@@ -1152,56 +1152,88 @@ fn fixture_matrix() {
 }
 
 // ----------------------------------------------------------------------
-// fz-ul4.32 — Golden CLIF fixtures.
+// fz-ul4.32 / fz-73m — Golden dumps.
 //
-// For each fixture in GOLDEN_FIXTURES, dump its CLIF via `fz dump --emit
-// clif` and diff against the checked-in `expected.clif` sibling in the
-// same directory. Drift → test failure with the diff inline.
+// For every fixture with non-empty `paths:` (i.e. not deferred), dump
+// its CLIF and typer specs and diff against checked-in sidecars
+// (`expected.clif`, `expected.specs`). Drift → test failure with the
+// diff inline. The golden set is `discover()` itself — every fixture
+// that's supposed to compile contributes its dumps. This was an
+// explicit list in fz-ul4.32 (5 fixtures); fz-fzn promoted the whole
+// runnable corpus so any typer/codegen change surfaces here BEFORE a
+// downstream test sees it.
 //
-// `BLESS=1 cargo test golden_clif` rewrites every golden from actual
-// output. Bless is a deliberate act — review the diff in the resulting
-// commit. Adding a fixture to the golden set:
-//   1. Append its directory name to GOLDEN_FIXTURES.
-//   2. Run `BLESS=1 cargo test golden_clif` to seed the golden.
-//   3. Commit the new `expected.clif` alongside the test list change.
+// `BLESS=1 cargo test golden_clif` / `BLESS_SPECS=1 cargo test
+// golden_specs` rewrite every sidecar. Bless is a deliberate act —
+// review the diff in the resulting commit.
 // ----------------------------------------------------------------------
 
-/// Fixtures with checked-in golden CLIF. Each entry is the directory
-/// name under `fixtures/`. Source: `fixtures/<name>/input.fz`,
-/// golden: `fixtures/<name>/expected.clif`.
-const GOLDEN_FIXTURES: &[&str] = &[
-    "add1",
-    "tail_recursion",
-    "higher_order",
-    "closure_typed_captures",
-    "concurrency_ping_pong",
-];
+#[derive(Clone, Copy)]
+enum Emit {
+    Clif,
+    Specs,
+}
 
-#[test]
-fn golden_clif() {
-    let bless = std::env::var("BLESS").ok().as_deref() == Some("1");
+impl Emit {
+    fn flag(self) -> &'static str {
+        match self {
+            Emit::Clif => "clif",
+            Emit::Specs => "specs",
+        }
+    }
+    fn sidecar(self) -> &'static str {
+        match self {
+            Emit::Clif => "expected.clif",
+            Emit::Specs => "expected.specs",
+        }
+    }
+    fn bless_env(self) -> &'static str {
+        match self {
+            Emit::Clif => "BLESS",
+            Emit::Specs => "BLESS_SPECS",
+        }
+    }
+}
+
+/// Drive `fz dump --emit <kind>` over every non-deferred fixture and
+/// diff against its sidecar. Failures aggregate so one bad fixture
+/// doesn't mask the rest.
+fn check_goldens(emit: Emit) {
+    let bless = std::env::var(emit.bless_env()).ok().as_deref() == Some("1");
     let mut failures: Vec<String> = Vec::new();
 
-    for name in GOLDEN_FIXTURES {
-        let dir = PathBuf::from("fixtures").join(name);
+    for dir in discover() {
+        let header = match parse_header_from_dir(&dir) {
+            Ok(h) => h,
+            Err(_) => continue, // matrix test surfaces header errors
+        };
+        if header.paths.is_empty() {
+            // Deferred fixtures don't participate in goldens — their dumps
+            // may not even compile, and pinning nonsense is worse than
+            // pinning nothing.
+            continue;
+        }
+        if header.kind == Kind::Test {
+            // `kind: test` fixtures route through the `fz test` runner,
+            // which expands the prelude `test()` macro. `fz dump` doesn't
+            // — so dumping them surfaces a `not-a-defmacro` error. Skip;
+            // their drift detection lives in `fixture_matrix` itself.
+            continue;
+        }
         let src_path = dir.join("input.fz");
-        assert!(
-            src_path.exists(),
-            "golden fixture source missing: {}",
-            src_path.display(),
-        );
-        let golden_path = dir.join("expected.clif");
+        let golden_path = dir.join(emit.sidecar());
+        let name = dir.file_name().unwrap().to_string_lossy().into_owned();
 
-        // Dump current CLIF.
         let out = Command::new(FZ_BIN)
-            .args(["dump", "--emit", "clif"])
+            .args(["dump", "--emit", emit.flag()])
             .arg(&src_path)
             .output()
             .unwrap_or_else(|e| panic!("spawn fz dump {}: {}", name, e));
         if !out.status.success() {
             let stderr = String::from_utf8_lossy(&out.stderr);
             failures.push(format!(
-                "fz dump --emit clif {} exited {}: {}",
+                "fz dump --emit {} {} exited {}: {}",
+                emit.flag(),
                 name,
                 out.status,
                 stderr.trim_end(),
@@ -1212,7 +1244,7 @@ fn golden_clif() {
 
         if bless {
             fs::write(&golden_path, &actual)
-                .unwrap_or_else(|e| panic!("bless write {}: {}", golden_path.display(), e,));
+                .unwrap_or_else(|e| panic!("bless write {}: {}", golden_path.display(), e));
             continue;
         }
 
@@ -1220,12 +1252,13 @@ fn golden_clif() {
             Ok(s) => s,
             Err(_) => {
                 failures.push(format!(
-                    "golden file missing for {}: {}\n\
-                     Run `BLESS=1 cargo test golden_clif` to seed it.\n\
-                     (Make sure you're on a clean branch; the bless will\n\
-                      record whatever CLIF is currently emitted.)",
+                    "golden {} missing for {}: {}\n\
+                     Run `{}=1 cargo test golden_{}` to seed it.",
+                    emit.flag(),
                     name,
                     golden_path.display(),
+                    emit.bless_env(),
+                    emit.flag(),
                 ));
                 continue;
             }
@@ -1233,13 +1266,16 @@ fn golden_clif() {
 
         if actual != expected {
             failures.push(format!(
-                "golden CLIF mismatch for {} ({}):\n\n\
-                 Re-run with `BLESS=1 cargo test golden_clif` to update \
-                 the golden after reviewing the diff.\n\n\
+                "golden {} mismatch for {} ({}):\n\n\
+                 Re-run with `{}=1 cargo test golden_{}` to update the \
+                 golden after reviewing the diff.\n\n\
                  --- expected ({} bytes)\n{}\n\
                  --- actual ({} bytes)\n{}",
+                emit.flag(),
                 name,
                 golden_path.display(),
+                emit.bless_env(),
+                emit.flag(),
                 expected.len(),
                 expected,
                 actual.len(),
@@ -1250,99 +1286,19 @@ fn golden_clif() {
 
     assert!(
         failures.is_empty(),
-        "{} golden CLIF failure(s):\n\n{}",
+        "{} golden {} failure(s):\n\n{}",
         failures.len(),
+        emit.flag(),
         failures.join("\n\n---\n\n"),
     );
 }
 
-// ----------------------------------------------------------------------
-// fz-73m — Golden typer-spec fixtures.
-//
-// For each fixture in GOLDEN_FIXTURES, dump its ModuleTypes via `fz dump
-// --emit specs` and diff against the checked-in `fixtures/<stem>.specs`
-// sibling. Mirrors golden_clif: every typer change that affects an
-// inferred Descr surfaces here BEFORE any codegen test sees it.
-//
-// `BLESS_SPECS=1 cargo test golden_specs` rewrites every golden. Bless
-// is a deliberate act — diff the resulting commit and confirm every
-// spec change is intended. A spec dump that suddenly grew wider after
-// an unrelated refactor is the bug-class this loop is designed to
-// catch.
-// ----------------------------------------------------------------------
+#[test]
+fn golden_clif() {
+    check_goldens(Emit::Clif);
+}
 
 #[test]
 fn golden_specs() {
-    let bless = std::env::var("BLESS_SPECS").ok().as_deref() == Some("1");
-    let mut failures: Vec<String> = Vec::new();
-
-    for name in GOLDEN_FIXTURES {
-        let dir = PathBuf::from("fixtures").join(name);
-        let src_path = dir.join("input.fz");
-        assert!(
-            src_path.exists(),
-            "golden fixture source missing: {}",
-            src_path.display(),
-        );
-        let golden_path = dir.join("expected.specs");
-
-        let out = Command::new(FZ_BIN)
-            .args(["dump", "--emit", "specs"])
-            .arg(&src_path)
-            .output()
-            .unwrap_or_else(|e| panic!("spawn fz dump {}: {}", name, e));
-        if !out.status.success() {
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            failures.push(format!(
-                "fz dump --emit specs {} exited {}: {}",
-                name,
-                out.status,
-                stderr.trim_end(),
-            ));
-            continue;
-        }
-        let actual = String::from_utf8_lossy(&out.stdout).into_owned();
-
-        if bless {
-            fs::write(&golden_path, &actual)
-                .unwrap_or_else(|e| panic!("bless write {}: {}", golden_path.display(), e,));
-            continue;
-        }
-
-        let expected = match fs::read_to_string(&golden_path) {
-            Ok(s) => s,
-            Err(_) => {
-                failures.push(format!(
-                    "golden specs file missing for {}: {}\n\
-                     Run `BLESS_SPECS=1 cargo test golden_specs` to seed it.",
-                    name,
-                    golden_path.display(),
-                ));
-                continue;
-            }
-        };
-
-        if actual != expected {
-            failures.push(format!(
-                "golden specs mismatch for {} ({}):\n\n\
-                 Re-run with `BLESS_SPECS=1 cargo test golden_specs` to \
-                 update the golden after reviewing the diff.\n\n\
-                 --- expected ({} bytes)\n{}\n\
-                 --- actual ({} bytes)\n{}",
-                name,
-                golden_path.display(),
-                expected.len(),
-                expected,
-                actual.len(),
-                actual,
-            ));
-        }
-    }
-
-    assert!(
-        failures.is_empty(),
-        "{} golden specs failure(s):\n\n{}",
-        failures.len(),
-        failures.join("\n\n---\n\n"),
-    );
+    check_goldens(Emit::Specs);
 }

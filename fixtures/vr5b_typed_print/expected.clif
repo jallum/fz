@@ -1,0 +1,72 @@
+; fn int_main
+    ;   @spec   int_main() -> nil
+    ;   @key    []
+    ;   @abi    () -> Tagged
+function u0:0(i64) -> i64 tail {
+    sig0 = (i64) system_v
+    sig1 = (i64, i64) -> i64 tail
+    fn0 = u0:1 sig0
+
+block0(v0: i64):
+    v1 = iconst.i64 42                  ; @2:9
+    call fn0(v1)                        ; @2:3  v1 = 42
+    v2 = iconst.i64 3                   ; @2:3
+    v3 = load.i64 notrap aligned v0+16
+    return_call_indirect sig1, v3(v2, v0)  ; v2 = 3
+}
+
+; fn float_main
+    ;   @spec   float_main() -> nil
+    ;   @key    []
+    ;   @abi    () -> Tagged
+function u0:0(i64) -> i64 tail {
+    sig0 = (f64) system_v
+    sig1 = (i64, i64) -> i64 tail
+    fn0 = u0:2 sig0
+
+block0(v0: i64):
+    v1 = f64const 0x1.8000000000000p0   ; @6:9
+    v2 = f64const 0x1.4000000000000p1   ; @6:15
+    v3 = fadd v1, v2                    ; @6:9  v1 = 0x1.8000000000000p0, v2 = 0x1.4000000000000p1
+    call fn0(v3)                        ; @6:3
+    v4 = iconst.i64 3                   ; @6:3
+    v5 = load.i64 notrap aligned v0+16
+    return_call_indirect sig1, v5(v4, v0)  ; v4 = 3
+}
+
+; fn main
+    ;   @spec   main() -> _
+    ;   @key    []
+    ;   @abi    () -> Tagged
+function u0:0(i64) -> i64 tail {
+    sig0 = (i64) -> i64 tail
+    sig1 = (i64, i64) -> i64 tail
+    sig2 = (i32, i32, i32) -> i64 system_v
+    fn0 = colocated u0:45 sig0
+    fn1 = colocated u0:48 sig1
+    fn2 = u0:31 sig2
+
+block0(v0: i64):
+    v1 = iconst.i32 3                   ; @10:3
+    v2 = iconst.i32 1                   ; @10:3
+    v3 = iconst.i32 0                   ; @10:3
+    v4 = call fn2(v1, v2, v3)           ; @10:3  v1 = 3, v2 = 1, v3 = 0
+    v5 = func_addr.i64 fn1              ; @10:3
+    store notrap aligned v5, v4+16      ; @10:3
+    store notrap aligned v0, v4+24      ; @10:3
+    return_call fn0(v4)                 ; @10:3
+}
+
+; fn k_3
+    ;   @spec   k_3(nil) -> _
+    ;   @key    [nil]
+    ;   @abi    (Tagged) -> Tagged
+function u0:0(i64, i64) -> i64 tail {
+    sig0 = (i64) -> i64 tail
+    fn0 = colocated u0:46 sig0
+
+    block0(v0: i64, v1: i64):    ;; v0 :: nil
+    v2 = load.i64 notrap aligned v1+24  ; @11:3
+    return_call fn0(v2)                 ; @11:3
+}
+

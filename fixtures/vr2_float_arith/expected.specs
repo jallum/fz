@@ -1,0 +1,25 @@
+; spec main(0) #fn=0
+;   key:    []
+;   return: nil
+;   vars:
+;     Var(0) :: :a0
+;     Var(1) :: 1.5
+;     Var(2) :: 2.5
+;     Var(3) :: float
+;     Var(4) :: nil
+;     Var(5) :: 10
+;     Var(6) :: 3
+;     Var(7) :: float
+;     Var(8) :: nil
+;     Var(9) :: 2.5
+;     Var(10) :: 4
+;     Var(11) :: float
+;     Var(12) :: nil
+;     Var(13) :: 1
+;     Var(14) :: 2
+;     Var(15) :: bool
+;     Var(16) :: nil
+;   exits:
+;     blk0 Return Var(16)    :: nil
+;     blk1 Halt Var(0)      :: :a0
+

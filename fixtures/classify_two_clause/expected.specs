@@ -1,0 +1,69 @@
+; spec classify(1) #fn=0
+;   key:    [0]
+;   return: :a1 | :a2
+;   vars:
+;     Var(0) :: 0
+;     Var(1) :: :a0
+;     Var(2) :: 0
+;     Var(3) :: bool
+;     Var(4) :: :a1
+;     Var(5) :: :a2
+;   exits:
+;     blk0 Goto blk1()
+;     blk1 If Var(3) ? blk4 : blk2
+;     blk2 Return Var(5)    :: :a2
+;     blk3 Halt Var(1)      :: :a0
+;     blk4 Return Var(4)    :: :a1
+
+; spec classify(1) #fn=0
+;   key:    [7]
+;   return: :a1 | :a2
+;   vars:
+;     Var(0) :: 7
+;     Var(1) :: :a0
+;     Var(2) :: 0
+;     Var(3) :: bool
+;     Var(4) :: :a1
+;     Var(5) :: :a2
+;   exits:
+;     blk0 Goto blk1()
+;     blk1 If Var(3) ? blk4 : blk2
+;     blk2 Return Var(5)    :: :a2
+;     blk3 Halt Var(1)      :: :a0
+;     blk4 Return Var(4)    :: :a1
+
+; spec main(0) #fn=1
+;   key:    []
+;   return: nil
+;   vars:
+;     Var(0) :: :a3
+;     Var(1) :: 0
+;   exits:
+;     blk0 Call classify#0(Var(1))
+;              callee_key=[0]
+;              cont k_2#2 captured=[]
+;              cont_key=[:a1 | :a2]
+;     blk1 Halt Var(0)      :: :a3
+
+; spec k_2(1) #fn=2
+;   key:    [:a1 | :a2]
+;   return: nil
+;   vars:
+;     Var(0) :: :a1 | :a2
+;     Var(1) :: nil
+;     Var(2) :: 7
+;   exits:
+;     blk0 Call classify#0(Var(2))
+;              callee_key=[7]
+;              cont k_3#3 captured=[]
+;              cont_key=[:a1 | :a2]
+
+; spec k_3(1) #fn=3
+;   key:    [:a1 | :a2]
+;   return: nil
+;   vars:
+;     Var(0) :: :a1 | :a2
+;     Var(1) :: nil
+;   exits:
+;     blk0 Return Var(1)    :: nil
+

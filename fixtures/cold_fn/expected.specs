@@ -1,0 +1,34 @@
+; spec cold(1) #fn=0
+;   key:    [14]
+;   return: int
+;   vars:
+;     Var(0) :: 14
+;     Var(1) :: :a0
+;     Var(2) :: 3
+;     Var(3) :: int
+;   exits:
+;     blk0 Return Var(3)    :: int
+;     blk1 Halt Var(1)      :: :a0
+
+; spec main(0) #fn=1
+;   key:    []
+;   return: nil
+;   vars:
+;     Var(0) :: :a0
+;     Var(1) :: 14
+;   exits:
+;     blk0 Call cold#0(Var(1))
+;              callee_key=[14]
+;              cont k_2#2 captured=[]
+;              cont_key=[int]
+;     blk1 Halt Var(0)      :: :a0
+
+; spec k_2(1) #fn=2
+;   key:    [int]
+;   return: nil
+;   vars:
+;     Var(0) :: int
+;     Var(1) :: nil
+;   exits:
+;     blk0 Return Var(1)    :: nil
+

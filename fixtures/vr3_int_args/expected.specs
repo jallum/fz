@@ -1,0 +1,38 @@
+; spec sum3(3) #fn=0
+;   key:    [40, 1, 1]
+;   return: int
+;   vars:
+;     Var(0) :: 40
+;     Var(1) :: 1
+;     Var(2) :: 1
+;     Var(3) :: :a0
+;     Var(4) :: int
+;     Var(5) :: int
+;   exits:
+;     blk0 Return Var(5)    :: int
+;     blk1 Halt Var(3)      :: :a0
+
+; spec main(0) #fn=1
+;   key:    []
+;   return: nil
+;   vars:
+;     Var(0) :: :a0
+;     Var(1) :: 40
+;     Var(2) :: 1
+;     Var(3) :: 1
+;   exits:
+;     blk0 Call sum3#0(Var(1), Var(2), Var(3))
+;              callee_key=[40, 1, 1]
+;              cont k_2#2 captured=[]
+;              cont_key=[int]
+;     blk1 Halt Var(0)      :: :a0
+
+; spec k_2(1) #fn=2
+;   key:    [int]
+;   return: nil
+;   vars:
+;     Var(0) :: int
+;     Var(1) :: nil
+;   exits:
+;     blk0 Return Var(1)    :: nil
+

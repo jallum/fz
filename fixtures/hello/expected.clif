@@ -1,0 +1,34 @@
+; fn main
+    ;   @spec   main() -> nil
+    ;   @key    []
+    ;   @abi    () -> Tagged
+function u0:0(i64) -> i64 tail {
+    sig0 = (i64) system_v
+    sig1 = (i64) system_v
+    sig2 = (i64) system_v
+    sig3 = (i64) system_v
+    sig4 = (i64, i64) -> i64 tail
+    fn0 = u0:1 sig0
+    fn1 = u0:0 sig1
+    fn2 = u0:0 sig2
+    fn3 = u0:0 sig3
+
+block0(v0: i64):
+    v1 = iconst.i64 40                  ; @2:9
+    v2 = iconst.i64 2                   ; @2:14
+    v3 = iadd v1, v2                    ; @2:9  v1 = 40, v2 = 2
+    call fn0(v3)                        ; @2:3
+    v4 = iconst.i64 3                   ; @2:3
+    v5 = iconst.i64 10                  ; @3:9
+    call fn1(v5)                        ; @3:3  v5 = 10
+    v6 = iconst.i64 3                   ; @3:3
+    v7 = iconst.i64 11                  ; @4:9
+    call fn2(v7)                        ; @4:3  v7 = 11
+    v8 = iconst.i64 3                   ; @4:3
+    v9 = iconst.i64 3                   ; @5:9
+    call fn3(v9)                        ; @5:3  v9 = 3
+    v10 = iconst.i64 3                  ; @5:3
+    v11 = load.i64 notrap aligned v0+16
+    return_call_indirect sig4, v11(v10, v0)  ; v10 = 3
+}
+
