@@ -4,13 +4,14 @@
   "blocks": [
     "fz-q9a"
   ],
+  "closed_at": "2026-05-15T18:10:20Z",
   "created": "2026-05-15T17:53:53Z",
   "description": "Add fixture_matrix test asserting fz dump fixtures/add1/input.fz --emit clif --fn main produces: no iadd, no block1 label, no block2 label, and contains 42 as a direct value. Must be RED before fus.2.",
   "id": "fz-l5l",
   "labels": [],
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "fz-ul4.fus.1: proof test — no iadd, no block1/block2 in inlined main",
   "type": "task",
-  "updated_at": "2026-05-15T17:53:57Z"
+  "updated_at": "2026-05-15T18:10:20Z"
 }
