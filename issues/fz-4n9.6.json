@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-4n9.1"
+  ],
   "blocks": [],
   "created": "2026-05-15T11:11:37Z",
   "description": "",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "fz-cg2.6 CodegenEnv: bundle shared parameters into context struct",
   "type": "task",
-  "updated_at": "2026-05-15T11:11:37Z"
+  "updated_at": "2026-05-15T11:11:41Z"
 }
