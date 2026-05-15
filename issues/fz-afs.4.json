@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-05-15T03:22:12Z",
@@ -8,8 +8,8 @@
   "labels": [],
   "parent": "fz-afs",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "replace O(n) fn_by_id scan with O(1) Module index",
   "type": "task",
-  "updated_at": "2026-05-15T03:22:12Z"
+  "updated_at": "2026-05-15T03:30:33Z"
 }
