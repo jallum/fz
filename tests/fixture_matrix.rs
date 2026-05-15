@@ -494,14 +494,25 @@ fn add1_main_cont_seam_has_no_box_unbox_roundtrip() {
         "missing main banner:\n{}",
         stdout
     );
-    // fz-ul4.11.15: add1 is inlined into main — the call boundary is gone.
-    // The stronger invariant is that main's body contains the iadd directly
-    // (no separate return_call to an add1 fn), and the inlined computation
-    // appears as a block with `iadd`.
+    // fz-ul4.11.15: add1 is inlined into main — iadd is visible directly.
+    // fz-xs2 fz-ul4.rep.2: repr-aware Goto coercion eliminates the tag/untag
+    // round-trips at inliner seams. Main's body must have zero tag ops.
     assert!(
         stdout.contains("iadd"),
         "expected inlined add1 arithmetic (iadd) in main's CLIF:\n{}",
         stdout,
+    );
+    let main_start = stdout.find("; fn main").expect("missing main banner");
+    let main_body = &stdout[main_start..];
+    assert!(
+        !main_body.contains("ishl_imm"),
+        "unexpected ishl_imm (box) in main — tag round-trip at Goto seam:\n{}",
+        main_body,
+    );
+    assert!(
+        !main_body.contains("sshr_imm"),
+        "unexpected sshr_imm (unbox) in main — tag round-trip at Goto seam:\n{}",
+        main_body,
     );
 }
 
