@@ -4,13 +4,14 @@
   "blocks": [
     "fz-cg2"
   ],
+  "closed_at": "2026-05-15T18:48:41Z",
   "created": "2026-05-15T18:27:56Z",
   "description": "",
   "id": "fz-466",
   "labels": [],
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "fz-ul4.dce.1: proof test — no dead const operands after singleton fold",
   "type": "task",
-  "updated_at": "2026-05-15T18:28:01Z"
+  "updated_at": "2026-05-15T18:48:41Z"
 }
