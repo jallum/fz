@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-02r.1"
+  ],
   "blocks": [],
   "created": "2026-05-15T21:58:20Z",
   "description": "Files: runtime/src/yield_flag.rs (new), runtime/src/heap.rs, src/runtime.rs\n\nNew file:\n  #[no_mangle]\n  pub static FZ_SHOULD_YIELD: std::sync::atomic::AtomicU8 = AtomicU8::new(0);\n\nGlobal (not per-process) because: (a) native Tail-CC JIT fns have no cheap path to current process; (b) external timer/signal handler can write to a known address without knowing which process is running — foundation for future soft preemption.\n\nIn Heap::alloc(), after bump:\n  if self.bump_top \u003e= self.gc_watermark {\n      FZ_SHOULD_YIELD.store(1, Ordering::Relaxed);\n  }\nExisting note_alloc_pressure()/pressure AtomicBool unchanged (park-time path).\n\nClear FZ_SHOULD_YIELD in run_until_idle before CURRENT_PROCESS install, and in park_time_gc after any gc() call.\n\nTests: crossing watermark sets global; store(0) clears it; existing pressure-flag tests pass.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "fz-sched.6: FZ_SHOULD_YIELD global — set at watermark, cleared by scheduler",
   "type": "task",
-  "updated_at": "2026-05-15T21:58:20Z"
+  "updated_at": "2026-05-15T21:59:37Z"
 }
