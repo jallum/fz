@@ -15,11 +15,15 @@
     {
       "text": "Stale reference corrected (2026-05-14): emit_tail_call is at ir_codegen.rs:5320, not :2185. The semantic analysis (cont_ptr preserved, Return stays Return) is still correct.",
       "timestamp": "2026-05-15T03:21:38Z"
+    },
+    {
+      "text": "2026-05-15 line-number correction: emit_tail_call is now at ir_codegen.rs:4829 (was 5320). The same-schema in-place reuse is at :4844.",
+      "timestamp": "2026-05-15T16:01:21Z"
     }
   ],
   "priority": 3,
   "status": "open",
   "title": "Inline TailCall sites (Case 1)",
   "type": "task",
-  "updated_at": "2026-05-15T03:21:38Z"
+  "updated_at": "2026-05-15T16:01:21Z"
 }
