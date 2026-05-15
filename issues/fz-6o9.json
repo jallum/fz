@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-15T15:54:04Z",
+  "description": "",
+  "id": "fz-6o9",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "extract coerce_call_args from Term::Call and Term::TailCall native paths",
+  "type": "task",
+  "updated_at": "2026-05-15T15:54:04Z"
+}
