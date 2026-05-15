@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-h9f.4"
+  ],
   "blocks": [],
   "created": "2026-05-15T22:11:44Z",
   "description": "Tests covering the full generational GC lifecycle.\n\nCase 1 — Minor collects young, leaves old: allocate objects A (young), trigger minor GC, verify A in old block. Allocate B (young), trigger minor GC, verify B in old, A still in old unchanged.\n\nCase 2 — new→old pointer survives minor GC: allocate old object O (via major GC cycle to promote it), then allocate young Y pointing to O. Minor GC: Y promoted to old, Y.child still points to O (O not moved).\n\nCase 3 — Dead young objects collected: allocate X (young, no reference kept), trigger minor GC, verify X not in old block.\n\nCase 4 — Major trigger after 10 minors: run 10 minor GCs, verify 11th GC dispatches major. After major: old block contains all live data, young block empty, minor_gc_count = 0.\n\nCase 5 — Major trigger by old occupancy: fill old to 71%, trigger minor GC, verify it escalates to major.\n\nCase 6 — Correctness parity: build a 500-element list via a loop. Result must be identical whether using flat Cheney (baseline), minor-only GC, or minor+major GC.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "gen-gc.6: Integration tests — generational correctness",
   "type": "task",
-  "updated_at": "2026-05-15T22:11:44Z"
+  "updated_at": "2026-05-15T22:11:50Z"
 }
