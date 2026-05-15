@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-15T10:11:22Z",
+  "description": "",
+  "id": "fz-v9l.6",
+  "labels": [],
+  "parent": "fz-v9l",
+  "priority": 2,
+  "status": "open",
+  "title": "fz-cg1.6 fix SpecRegistry resolve fast-path: eliminate .to_vec() allocation",
+  "type": "task",
+  "updated_at": "2026-05-15T10:11:22Z"
+}
