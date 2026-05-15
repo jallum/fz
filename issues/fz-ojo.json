@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-l17"
+  ],
   "blocks": [],
   "created": "2026-05-15T17:19:19Z",
   "description": "Add fixture_matrix test asserting fz dump fixtures/add1/input.fz --emit clif --fn main produces no sshr_imm instructions. Must be RED before rep.2 lands.",
@@ -10,5 +12,5 @@
   "status": "open",
   "title": "fz-ul4.rep.1: proof test — zero sshr_imm in inlined main",
   "type": "task",
-  "updated_at": "2026-05-15T17:19:19Z"
+  "updated_at": "2026-05-15T17:19:22Z"
 }

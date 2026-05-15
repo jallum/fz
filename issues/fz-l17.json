@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-ojo"
+  ],
   "created": "2026-05-15T17:19:19Z",
   "description": "The blanket-retag pass at ir_codegen.rs:4512 iterates var_env (HashMap) and emits ishl/bor pairs in non-deterministic order. Add sort_unstable_by_key(|(rv,_)| *rv) before the emit loop so CLIF output is stable across runs. One line.",
   "id": "fz-l17",
@@ -10,5 +12,5 @@
   "status": "open",
   "title": "fz-ul4.rep.0: sort to_retag for deterministic CLIF emission",
   "type": "task",
-  "updated_at": "2026-05-15T17:19:19Z"
+  "updated_at": "2026-05-15T17:19:22Z"
 }
