@@ -4,13 +4,14 @@
     "fz-xs2"
   ],
   "blocks": [],
+  "closed_at": "2026-05-15T17:24:47Z",
   "created": "2026-05-15T17:19:19Z",
   "description": "BLESS=1 cargo test --test fixture_matrix (full-suite context, not golden_clif alone). Strengthen add1_main_cont_seam_has_no_box_unbox_roundtrip to assert zero sshr_imm in main body. Full suite green.",
   "id": "fz-zsn",
   "labels": [],
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "fz-ul4.rep.3: fixtures + proof test green",
   "type": "task",
-  "updated_at": "2026-05-15T17:23:07Z"
+  "updated_at": "2026-05-15T17:24:47Z"
 }
