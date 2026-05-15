@@ -19,19 +19,16 @@ block0(v0: i64):
     block2(v2: i64):    ;; v2 :: :alice
     call fn0(v2)
     v6 = iconst.i64 3    ;; v6 :: nil
-    v7 = iconst.i64 42
-    v8 = ishl_imm v7, 3  ; v7 = 42
-    v9 = bor_imm v8, 1    ;; v9 :: 42
-    jump block3(v9)
+    v7 = iconst.i64 42    ;; v7 :: 42
+    jump block3(v7)  ; v7 = 42
 
     block3(v3: i64):    ;; v3 :: 42
     jump block4(v3)
 
     block4(v4: i64):    ;; v4 :: 42
-    v10 = sshr_imm v4, 3
-    call fn1(v10)
-    v11 = iconst.i64 3    ;; v11 :: nil
-    v12 = load.i64 notrap aligned v0+16
-    return_call_indirect sig2, v12(v11, v0)  ; v11 = 3
+    call fn1(v4)
+    v8 = iconst.i64 3    ;; v8 :: nil
+    v9 = load.i64 notrap aligned v0+16
+    return_call_indirect sig2, v9(v8, v0)  ; v8 = 3
 }
 

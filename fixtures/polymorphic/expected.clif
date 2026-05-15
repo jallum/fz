@@ -8,13 +8,10 @@ function u0:0(i64) -> i64 tail {
 
 block0(v0: i64):
     v2 = iconst.i64 42                  ; @4:12
-    v3 = ishl_imm v2, 3                 ; @4:9  v2 = 42
-    v4 = bor_imm v3, 1                  ; @4:9
-    jump block1(v4)                     ; @4:9
+    jump block1(v2)                     ; @4:9  v2 = 42
 
     block1(v1: i64):    ;; v1 :: 42
-    v5 = sshr_imm v1, 3
-    return_call fn0(v5, v0)
+    return_call fn0(v1, v0)
 }
 
 ; fn k_2

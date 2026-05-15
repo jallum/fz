@@ -11,46 +11,34 @@ function u0:0(i64) -> i64 tail {
 
 block0(v0: i64):
     v7 = iconst.i64 40                  ; @16:24
-    v8 = ishl_imm v7, 3                 ; @16:9  v7 = 40
-    v9 = bor_imm v8, 1                  ; @16:9
-    jump block1(v9)                     ; @16:9
+    jump block1(v7)                     ; @16:9  v7 = 40
 
     block1(v1: i64):    ;; v1 :: 40
     jump block2(v1)
 
     block2(v2: i64):    ;; v2 :: 40
-    v10 = iconst.i64 1000    ;; v10 :: 1000
-    v11 = sshr_imm v2, 3
-    v12 = iadd v11, v10  ; v10 = 1000
-    v13 = ishl_imm v12, 3
-    v14 = bor_imm v13, 1    ;; v14 :: int
-    jump block3(v14)
+    v8 = iconst.i64 1000    ;; v8 :: 1000
+    v9 = iadd v2, v8  ; v8 = 1000    ;; v9 :: int
+    jump block3(v9)
 
     block3(v3: i64):    ;; v3 :: int
-    v15 = sshr_imm v3, 3
-    call fn0(v15)
-    v16 = iconst.i64 3    ;; v16 :: nil
-    v17 = iconst.i64 41
-    v18 = ishl_imm v17, 3  ; v17 = 41
-    v19 = bor_imm v18, 1    ;; v19 :: 41
-    jump block4(v19)
+    call fn0(v3)
+    v10 = iconst.i64 3    ;; v10 :: nil
+    v11 = iconst.i64 41    ;; v11 :: 41
+    jump block4(v11)  ; v11 = 41
 
     block4(v4: i64):    ;; v4 :: 41
     jump block5(v4)
 
     block5(v5: i64):    ;; v5 :: 41
-    v20 = iconst.i64 1000    ;; v20 :: 1000
-    v21 = sshr_imm v5, 3
-    v22 = iadd v21, v20  ; v20 = 1000
-    v23 = ishl_imm v22, 3
-    v24 = bor_imm v23, 1    ;; v24 :: int
-    jump block6(v24)
+    v12 = iconst.i64 1000    ;; v12 :: 1000
+    v13 = iadd v5, v12  ; v12 = 1000    ;; v13 :: int
+    jump block6(v13)
 
     block6(v6: i64):    ;; v6 :: int
-    v25 = sshr_imm v6, 3
-    call fn1(v25)
-    v26 = iconst.i64 3    ;; v26 :: nil
-    v27 = load.i64 notrap aligned v0+16
-    return_call_indirect sig2, v27(v26, v0)  ; v26 = 3
+    call fn1(v6)
+    v14 = iconst.i64 3    ;; v14 :: nil
+    v15 = load.i64 notrap aligned v0+16
+    return_call_indirect sig2, v15(v14, v0)  ; v14 = 3
 }
 

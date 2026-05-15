@@ -8,15 +8,12 @@ function u0:0(i64) -> i64 tail {
 
 block0(v0: i64):
     v2 = iconst.i64 21                  ; @11:18
-    v3 = ishl_imm v2, 3                 ; @11:9  v2 = 21
-    v4 = bor_imm v3, 1                  ; @11:9
-    jump block1(v4)                     ; @11:9
+    jump block1(v2)                     ; @11:9  v2 = 21
 
     block1(v1: i64):    ;; v1 :: 21
-    v5 = iconst.i64 2    ;; v5 :: 2
-    v6 = sshr_imm v1, 3
-    v7 = imul v6, v5  ; v5 = 2    ;; v7 :: int
-    return_call fn0(v7, v0)
+    v3 = iconst.i64 2    ;; v3 :: 2
+    v4 = imul v1, v3  ; v3 = 2    ;; v4 :: int
+    return_call fn0(v4, v0)
 }
 
 ; fn k_5_s4
@@ -36,54 +33,39 @@ function u0:0(i64, i64) -> i64 tail {
     call fn0(v0)                        ; @11:3
     v10 = iconst.i64 3                  ; @11:3
     v11 = iconst.i64 5                  ; @12:16
-    v12 = ishl_imm v11, 3               ; @12:9  v11 = 5
-    v13 = bor_imm v12, 1                ; @12:9
-    jump block1(v13)                    ; @12:9
+    jump block1(v11)                    ; @12:9  v11 = 5
 
     block1(v2: i64):    ;; v2 :: 5
     jump block2(v2)
 
     block2(v3: i64):    ;; v3 :: 5
-    v14 = iconst.i64 2    ;; v14 :: 2
-    v15 = sshr_imm v3, 3
-    v16 = imul v15, v14  ; v14 = 2
-    v17 = ishl_imm v16, 3
-    v18 = bor_imm v17, 1    ;; v18 :: int
-    jump block3(v18, v2)
+    v12 = iconst.i64 2    ;; v12 :: 2
+    v13 = imul v3, v12  ; v12 = 2    ;; v13 :: int
+    jump block3(v13, v2)
 
     block3(v4: i64, v5: i64):    ;; v4 :: int, v5 :: 5
     jump block4(v4)
 
     block4(v6: i64):    ;; v6 :: int
-    v19 = iconst.i64 2    ;; v19 :: 2
-    v20 = sshr_imm v6, 3
-    v21 = imul v20, v19  ; v19 = 2
-    v22 = ishl_imm v21, 3
-    v23 = bor_imm v22, 1    ;; v23 :: int
-    jump block5(v23)
+    v14 = iconst.i64 2    ;; v14 :: 2
+    v15 = imul v6, v14  ; v14 = 2    ;; v15 :: int
+    jump block5(v15)
 
     block5(v7: i64):    ;; v7 :: int
-    v24 = sshr_imm v7, 3
-    call fn1(v24)
-    v25 = iconst.i64 3    ;; v25 :: nil
-    v26 = iconst.i64 7
-    v27 = ishl_imm v26, 3  ; v26 = 7
-    v28 = bor_imm v27, 1    ;; v28 :: 7
-    jump block6(v28)
+    call fn1(v7)
+    v16 = iconst.i64 3    ;; v16 :: nil
+    v17 = iconst.i64 7    ;; v17 :: 7
+    jump block6(v17)  ; v17 = 7
 
     block6(v8: i64):    ;; v8 :: 7
-    v29 = iconst.i64 100    ;; v29 :: 100
-    v30 = sshr_imm v8, 3
-    v31 = iadd v30, v29  ; v29 = 100
-    v32 = ishl_imm v31, 3
-    v33 = bor_imm v32, 1    ;; v33 :: int
-    jump block7(v33)
+    v18 = iconst.i64 100    ;; v18 :: 100
+    v19 = iadd v8, v18  ; v18 = 100    ;; v19 :: int
+    jump block7(v19)
 
     block7(v9: i64):    ;; v9 :: int
-    v34 = sshr_imm v9, 3
-    call fn2(v34)
-    v35 = iconst.i64 3    ;; v35 :: nil
-    v36 = load.i64 notrap aligned v1+16
-    return_call_indirect sig3, v36(v35, v1)  ; v35 = 3
+    call fn2(v9)
+    v20 = iconst.i64 3    ;; v20 :: nil
+    v21 = load.i64 notrap aligned v1+16
+    return_call_indirect sig3, v21(v20, v1)  ; v20 = 3
 }
 
