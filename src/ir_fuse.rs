@@ -255,9 +255,10 @@ fn subst_term(t: &Term, subst: &HashMap<Var, Var>) -> Term {
             args: args.iter().map(|x| sv(*x)).collect(),
             continuation: subst_cont(continuation, subst),
         },
-        Term::TailCall { callee, args } => Term::TailCall {
+        Term::TailCall { callee, args, is_back_edge } => Term::TailCall {
             callee: *callee,
             args: args.iter().map(|x| sv(*x)).collect(),
+            is_back_edge: *is_back_edge,
         },
         Term::CallClosure {
             closure,

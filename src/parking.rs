@@ -323,6 +323,7 @@ mod tests {
             Term::TailCall {
                 callee: FnId(0),
                 args: vec![],
+                is_back_edge: false,
             },
         );
 
@@ -413,6 +414,7 @@ mod tests {
             Term::TailCall {
                 callee: FnId(1),
                 args: vec![],
+                is_back_edge: false,
             },
         );
 
@@ -478,6 +480,7 @@ mod tests {
             Term::TailCall {
                 callee: FnId(0),
                 args: vec![],
+                is_back_edge: false,
             },
         );
         let m = build(vec![f.build(), helper, k, outer.build()]);
@@ -528,6 +531,7 @@ mod tests {
             Term::TailCall {
                 callee: FnId(0),
                 args: vec![],
+                is_back_edge: false,
             },
         );
 

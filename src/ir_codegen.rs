@@ -2272,7 +2272,7 @@ pub fn compile_with_backend<B: Backend>(
                 // into this spec's return Descr. Unresolved
                 // TailCallClosure stays opaque (any) — same as today.
                 let callee_sid_for_tc: Option<u32> = match &blk.terminator {
-                    Term::TailCall { callee, args } => {
+                    Term::TailCall { callee, args, .. } => {
                         let arg_descrs: Vec<crate::types::Descr> = args
                             .iter()
                             .map(|av| {
@@ -2417,7 +2417,7 @@ pub fn compile_with_backend<B: Backend>(
                 };
                 let f = &module.fns[idx];
                 let propagates = f.blocks.iter().any(|b| match &b.terminator {
-                    Term::TailCall { callee, args } => {
+                    Term::TailCall { callee, args, .. } => {
                         // Resolve callee's spec sid under this spec's env.
                         let csid = (|| {
                             let ft = spec_fn_types.get(sid).and_then(|o| *o)?;
@@ -2767,7 +2767,7 @@ pub fn compile_with_backend<B: Backend>(
                         Term::Return(_) => {
                             contributions.push(return_reprs[sid]);
                         }
-                        Term::TailCall { callee, args } => {
+                        Term::TailCall { callee, args, .. } => {
                             let csid =
                                 resolve_sid_under(*callee, sid as u32, args).unwrap_or(callee.0);
                             if let Some(c) = chain.get(csid as usize).and_then(|o| *o) {
@@ -3925,7 +3925,7 @@ fn emit_terminator<M: cranelift_module::Module>(
                 );
             }
         }
-        Term::TailCall { callee, args } => {
+        Term::TailCall { callee, args, .. } => {
             let callee_sid = resolve_callee_sid(*callee, args);
             if callee_is_native(callee.0) {
                 // fz-ul4.27.6.2.3 / .27.13 — TailCall to a native callee.

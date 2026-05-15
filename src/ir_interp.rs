@@ -359,6 +359,7 @@ fn run_fn(module: &Module, mut fn_id: FnId, mut args: Vec<FzValue>) -> Result<In
                 Term::TailCall {
                     callee,
                     args: call_args,
+                    ..
                 } => {
                     let arg_vals = collect(&env, call_args)?;
                     fn_id = *callee;

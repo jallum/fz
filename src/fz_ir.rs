@@ -263,6 +263,12 @@ pub enum Term {
     TailCall {
         callee: FnId,
         args: Vec<Var>,
+        /// True when the callee is in the same SCC as the caller — i.e., this
+        /// call is on a loop back-edge. Set by ir_lower via the SCC map from
+        /// ir_typer. Self-recursion is the degenerate SCC-of-one case; mutual
+        /// recursion (f→g→f) is covered automatically. Back-edge sites get
+        /// the yield-check inline check in JIT/AOT codegen and in the interp.
+        is_back_edge: bool,
     },
     /// Invoke a closure value (Var holding a Value::IrClosure). The closure's
     /// captured slots are spliced ahead of `args` when entering the lambda's fn.
@@ -696,7 +702,7 @@ impl fmt::Display for Term {
                 fmt_var_list(args),
                 continuation
             ),
-            Term::TailCall { callee, args } => {
+            Term::TailCall { callee, args, .. } => {
                 write!(f, "tail_call {}([{}])", callee, fmt_var_list(args))
             }
             Term::CallClosure {
@@ -952,6 +958,7 @@ mod tests {
             Term::TailCall {
                 callee: FnId(0),
                 args: vec![x],
+                is_back_edge: false,
             },
         );
         let fn_ir = b.build();
