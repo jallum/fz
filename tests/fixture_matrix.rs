@@ -413,10 +413,11 @@ fn fz_dump_emits_clif() {
         "no Cranelift function header\n{}",
         stdout
     );
-    // Inlined add1 arithmetic should be visible directly in main's body.
+    // After block fusion + singleton fold, the inlined add1 arithmetic folds
+    // to iconst 42 directly — no iadd remains. The folded constant is visible.
     assert!(
-        stdout.contains("iadd"),
-        "expected inlined iadd in main's body (add1 should be inlined):\n{}",
+        stdout.contains("42"),
+        "expected folded constant 42 in main's body (add1 inlined + folded):\n{}",
         stdout
     );
     // fz-ul4.23.7: srcloc annotations on body instructions resolve back
@@ -494,16 +495,20 @@ fn add1_main_cont_seam_has_no_box_unbox_roundtrip() {
         "missing main banner:\n{}",
         stdout
     );
-    // fz-ul4.11.15: add1 is inlined into main — iadd is visible directly.
-    // fz-xs2 fz-ul4.rep.2: repr-aware Goto coercion eliminates the tag/untag
-    // round-trips at inliner seams. Main's body must have zero tag ops.
-    assert!(
-        stdout.contains("iadd"),
-        "expected inlined add1 arithmetic (iadd) in main's CLIF:\n{}",
-        stdout,
-    );
+    // fz-ul4.fus: block fusion + singleton fold eliminates the iadd entirely;
+    // folded constant 42 is visible directly. No tag round-trips either.
     let main_start = stdout.find("; fn main").expect("missing main banner");
     let main_body = &stdout[main_start..];
+    assert!(
+        !main_body.contains("iadd"),
+        "unexpected iadd — add1 arithmetic should be constant-folded:\n{}",
+        main_body,
+    );
+    assert!(
+        main_body.contains("42"),
+        "expected folded constant 42 in main:\n{}",
+        main_body,
+    );
     assert!(
         !main_body.contains("ishl_imm"),
         "unexpected ishl_imm (box) in main — tag round-trip at Goto seam:\n{}",

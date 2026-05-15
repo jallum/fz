@@ -18,7 +18,7 @@
 //!   4. Repeat until no blocks were removed.
 
 use crate::fz_ir::{
-    BitSizeIr, Block, BlockId, Cont, FnIr, Module, Prim, Stmt, Term, Var,
+    BitSizeIr, BlockId, Cont, FnIr, Module, Prim, Stmt, Term, Var,
 };
 use std::collections::HashMap;
 
@@ -135,7 +135,20 @@ fn fuse_one_pass(f: &mut FnIr) -> bool {
         (stmts, term)
     };
 
-    // Step 5: merge into the predecessor.
+    // Step 5: apply the substitution to ALL remaining blocks (except the
+    // target itself, which we're about to merge). This is necessary because
+    // the inliner can produce code where a block's param (e.g. bb4's v8) is
+    // referenced in downstream blocks' Goto args (e.g. bb5's Goto to bb7
+    // passes v8 as an argument). Those references must also be renamed.
+    for blk in f.blocks.iter_mut() {
+        if blk.id == target_id || blk.id == pred_id {
+            continue;
+        }
+        blk.stmts = blk.stmts.iter().map(|s| subst_stmt(s, &subst)).collect();
+        blk.terminator = subst_term(&blk.terminator, &subst);
+    }
+
+    // Step 6: merge into the predecessor.
     let pred = f
         .blocks
         .iter_mut()
@@ -144,7 +157,7 @@ fn fuse_one_pass(f: &mut FnIr) -> bool {
     pred.stmts.extend(target_stmts);
     pred.terminator = target_term;
 
-    // Step 6: remove the target block.
+    // Step 7: remove the target block.
     f.blocks.retain(|b| b.id != target_id);
 
     true
