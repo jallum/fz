@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-15T17:19:19Z",
+  "description": "Three coupled changes to ir_codegen.rs (atomic commit). A: needs_blanket_retag — add Term::Goto(..) =\u003e false before _ =\u003e true. B: new pre-terminator block for Goto: zip f.block(target).params with args, derive want=ArgRepr::from_descr(fn_types.vars.get(param)), coerce_to when repr differs, update var_env. C: block param registration line 4405: replace repr: ArgRepr::Tagged with ArgRepr::from_descr(fn_types.vars.get(p).cloned().unwrap_or_else(Descr::any)).",
+  "id": "fz-xs2",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "fz-ul4.rep.2: repr-aware Goto coercion + block param repr registration",
+  "type": "task",
+  "updated_at": "2026-05-15T17:19:19Z"
+}
