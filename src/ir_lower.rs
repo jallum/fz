@@ -512,11 +512,12 @@ fn lower_fn(ctx: &mut LowerCtx, fn_def: &FnDef) -> Result<(), LowerError> {
             // by the pattern walker (e.g. tuple-destructured params).
             ctx.name_var(*pv, "", pat.span);
         }
-        if let Some(_g) = &clause.guard {
-            return Err(LowerError::Unsupported {
-                span: clause.span,
-                what: "guards (deferred)".into(),
-            });
+        if let Some(g) = &clause.guard {
+            let guard_var = lower_expr(ctx, g, false)?;
+            let body_b = ctx.cur_mut().block(vec![]);
+            ctx.set_term(Term::If(guard_var, body_b, fail_block));
+            ctx.cur_block = Some(body_b);
+            ctx.terminated = false;
         }
         let result = lower_expr(ctx, &clause.body, /* is_tail */ true)?;
         if !ctx.terminated {
@@ -561,12 +562,6 @@ fn lower_multi_clause(
         .set_terminator(entry, Term::Goto(try_blocks[0], vec![]));
 
     for (i, clause) in fn_def.clauses.iter().enumerate() {
-        if let Some(_g) = &clause.guard {
-            return Err(LowerError::Unsupported {
-                span: clause.span,
-                what: "guards (deferred)".into(),
-            });
-        }
         let next = try_blocks.get(i + 1).copied().unwrap_or(fail_block);
         ctx.cur_block = Some(try_blocks[i]);
         ctx.env.clear();
@@ -574,6 +569,13 @@ fn lower_multi_clause(
         ctx.terminated = false;
         for (pv, pat) in param_vars.iter().zip(&clause.params) {
             lower_pattern_bind(ctx, *pv, pat, next)?;
+        }
+        if let Some(g) = &clause.guard {
+            let guard_var = lower_expr(ctx, g, false)?;
+            let body_b = ctx.cur_mut().block(vec![]);
+            ctx.set_term(Term::If(guard_var, body_b, next));
+            ctx.cur_block = Some(body_b);
+            ctx.terminated = false;
         }
         let result = lower_expr(ctx, &clause.body, /* is_tail */ true)?;
         if !ctx.terminated {
