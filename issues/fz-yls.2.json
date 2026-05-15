@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-05-15T14:16:57Z",
   "created": "2026-05-15T13:38:26Z",
   "description": "lower_prim is ~770 lines covering 22 Prim variants. ~235 of those lines are collection\nprimitives that share state requirements and have no dependency on spec_registry, fn_ids,\nparam_reprs, or return_reprs.\n\nCollection variants and their approximate line spans in lower_prim:\n  ListCons, ListHead, ListTail, ListIsNil, MakeList (~40 lines)\n  MakeTuple, TupleField (~25 lines)\n  AllocStruct (~16 lines)\n  MakeBitstring, BitReaderInit, BitReadField, BitReaderDone (~106 lines)\n  MakeMap, MapUpdate, MapGet (~35 lines)\n  MakeVec (~23 lines)\n\nADD before lower_prim:\n\n  fn lower_collection_prim\u003cM: cranelift_module::Module\u003e(\n      b: \u0026mut FunctionBuilder\u003c'_\u003e,\n      jmod: \u0026mut M,\n      env: \u0026CodegenEnv\u003c'_\u003e,\n      var_env: \u0026HashMap\u003cu32, VarBinding\u003e,\n      prim: \u0026Prim,\n      dest_var: crate::fz_ir::Var,\n  ) -\u003e Result\u003cLowerOut, CodegenError\u003e\n\nInside lower_collection_prim: re-bind the env aliases it needs (runtime, tuple_schema_ids).\nThe function should match only the collection variants and panic/unreachable on others.\n\nIN lower_prim: replace each collection variant arm with a call to lower_collection_prim.\nOr restructure as an early dispatch: check if prim is a collection prim at top of lower_prim,\nforward to lower_collection_prim, else continue with the rest.\n\ncargo build must produce zero warnings. All tests must pass.",
   "id": "fz-yls.2",
   "labels": [],
   "parent": "fz-yls",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "fz-cg3.2 extract lower_collection_prim from lower_prim",
   "type": "task",
-  "updated_at": "2026-05-15T13:38:26Z"
+  "updated_at": "2026-05-15T14:16:57Z"
 }
