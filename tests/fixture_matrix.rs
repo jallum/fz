@@ -21,12 +21,6 @@
 //!     paths: [jit, interp, aot]
 //!     kind: run            # or `test`; defaults to run if `fn main` present
 //!     defer: rationale     # required iff `paths:` is empty
-//!     expect_clif_contains:
-//!       - fn: <name>
-//!         substr: <text>
-//!     expect_clif_excludes:
-//!       - fn: <name>
-//!         substr: <text>
 //!     ---
 //!
 //! Workflow: re-run with `BLESS=1 cargo test fixture_matrix` to rewrite
@@ -51,14 +45,6 @@ struct Header {
     paths: Vec<String>,
     kind: Kind,
     defer: Option<String>,
-    /// Per-fn CLIF substring assertions from `# expect_clif_contains: <fn>: <substr>`
-    /// header keys. Each entry: (fn_name, substr_that_must_appear). Asserted by
-    /// shelling `fz dump --emit clif --fn <name>` and grepping the stdout.
-    /// fz-ul4.27.1 (VR.0).
-    expect_clif_contains: Vec<(String, String)>,
-    /// Same shape as `expect_clif_contains` but the substring must NOT appear.
-    /// Useful for proving a tag-check fast/slow path got elided.
-    expect_clif_excludes: Vec<(String, String)>,
 }
 
 /// Parse a fixture's README.md frontmatter. Frontmatter is the block
@@ -69,7 +55,6 @@ struct Header {
 /// nothing more. Supported:
 ///   * `key: scalar` (string)
 ///   * `paths: [a, b, c]` (flow sequence of bare scalars)
-///   * `expect_clif_{contains,excludes}:` block sequence of `- fn:`/`substr:` maps
 fn parse_header_from_dir(dir: &Path) -> Result<Header, String> {
     let readme = dir.join("README.md");
     let src =
@@ -84,8 +69,6 @@ fn parse_header_from_dir(dir: &Path) -> Result<Header, String> {
     let mut paths: Option<Vec<String>> = None;
     let mut kind: Option<Kind> = None;
     let mut defer: Option<String> = None;
-    let mut expect_clif_contains: Vec<(String, String)> = Vec::new();
-    let mut expect_clif_excludes: Vec<(String, String)> = Vec::new();
 
     let lines: Vec<&str> = fm.lines().collect();
     let mut i = 0;
@@ -124,48 +107,6 @@ fn parse_header_from_dir(dir: &Path) -> Result<Header, String> {
                 });
             }
             "defer" => defer = Some(unquote(val).to_string()),
-            "expect_clif_contains" | "expect_clif_excludes" => {
-                if !val.is_empty() {
-                    return Err(format!(
-                        "{}: `{}:` must introduce a block list (no inline value)",
-                        readme.display(),
-                        key
-                    ));
-                }
-                let target = if key == "expect_clif_contains" {
-                    &mut expect_clif_contains
-                } else {
-                    &mut expect_clif_excludes
-                };
-                i += 1;
-                while i < lines.len() && lines[i].starts_with("  - fn:") {
-                    let fn_val = lines[i].trim_start().trim_start_matches("- fn:").trim();
-                    let fn_name = unquote(fn_val).to_string();
-                    i += 1;
-                    let substr_line = lines.get(i).copied().unwrap_or("");
-                    let substr_v = substr_line
-                        .trim_start()
-                        .strip_prefix("substr:")
-                        .ok_or_else(|| {
-                            format!(
-                                "{}: expected `substr:` after `- fn: {}`",
-                                readme.display(),
-                                fn_name
-                            )
-                        })?
-                        .trim();
-                    let substr = unquote(substr_v).to_string();
-                    if fn_name.is_empty() || substr.is_empty() {
-                        return Err(format!(
-                            "{}: expect_clif_*: empty fn or substr",
-                            readme.display()
-                        ));
-                    }
-                    target.push((fn_name, substr));
-                    i += 1;
-                }
-                continue;
-            }
             other => return Err(format!("{}: unknown key `{}`", readme.display(), other)),
         }
         i += 1;
@@ -194,8 +135,6 @@ fn parse_header_from_dir(dir: &Path) -> Result<Header, String> {
         paths,
         kind,
         defer,
-        expect_clif_contains,
-        expect_clif_excludes,
     })
 }
 
@@ -1013,84 +952,6 @@ fn concurrency_ping_pong_matches_cps_in_clif_section_8_4() {
     );
 }
 
-/// Shell `fz dump --emit clif --fn <name>` and check each fn's
-/// per-fixture expect_clif_contains / expect_clif_excludes assertion.
-/// Returns all failure messages in one vec so a fixture surfaces every
-/// mismatch in one pass instead of bailing on the first.
-fn check_clif_assertions(fixture: &Path, header: &Header) -> Result<(), Vec<String>> {
-    use std::collections::HashSet;
-    let mut fns: HashSet<&str> = HashSet::new();
-    for (f, _) in &header.expect_clif_contains {
-        fns.insert(f.as_str());
-    }
-    for (f, _) in &header.expect_clif_excludes {
-        fns.insert(f.as_str());
-    }
-    let input = fixture.join("input.fz");
-    let mut dumps: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-    for fn_name in fns {
-        let out = match Command::new(FZ_BIN)
-            .args(["dump", "--emit", "clif", "--fn"])
-            .arg(fn_name)
-            .arg(&input)
-            .output()
-        {
-            Ok(o) => o,
-            Err(e) => {
-                return Err(vec![format!(
-                    "{}: spawn fz dump for fn `{}`: {}",
-                    fixture.display(),
-                    fn_name,
-                    e
-                )]);
-            }
-        };
-        if !out.status.success() {
-            return Err(vec![format!(
-                "{}: fz dump --fn {} exited {}: {}",
-                fixture.display(),
-                fn_name,
-                out.status,
-                String::from_utf8_lossy(&out.stderr).trim_end(),
-            )]);
-        }
-        dumps.insert(
-            fn_name.to_string(),
-            String::from_utf8_lossy(&out.stdout).into_owned(),
-        );
-    }
-    let mut failures = Vec::new();
-    for (fn_name, substr) in &header.expect_clif_contains {
-        let dump = dumps.get(fn_name.as_str()).expect("dump captured above");
-        if !dump.contains(substr.as_str()) {
-            failures.push(format!(
-                "{}: expect_clif_contains failed — fn `{}` does not contain `{}`:\n{}",
-                fixture.display(),
-                fn_name,
-                substr,
-                dump
-            ));
-        }
-    }
-    for (fn_name, substr) in &header.expect_clif_excludes {
-        let dump = dumps.get(fn_name.as_str()).expect("dump captured above");
-        if dump.contains(substr.as_str()) {
-            failures.push(format!(
-                "{}: expect_clif_excludes failed — fn `{}` unexpectedly contains `{}`:\n{}",
-                fixture.display(),
-                fn_name,
-                substr,
-                dump
-            ));
-        }
-    }
-    if failures.is_empty() {
-        Ok(())
-    } else {
-        Err(failures)
-    }
-}
-
 #[test]
 fn fixture_matrix() {
     let bless = std::env::var("BLESS").ok().as_deref() == Some("1");
@@ -1118,16 +979,6 @@ fn fixture_matrix() {
                     deferred_paths.push((f.clone(), path.clone(), msg));
                 }
                 CheckOutcome::Fail(e) => failures.push(e),
-            }
-        }
-        // CLIF-substring assertions (fz-ul4.27.1). Independent of the
-        // path loop: the assertion is about generated code, which is
-        // the same across compiled paths.
-        if (!header.expect_clif_contains.is_empty() || !header.expect_clif_excludes.is_empty())
-            && let Err(msgs) = check_clif_assertions(&f, &header)
-        {
-            for msg in msgs {
-                failures.push(msg);
             }
         }
     }

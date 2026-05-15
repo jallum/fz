@@ -1,18 +1,6 @@
 ---
 purpose: "fz-ul4.29.5 — closure dispatched via call_indirect through stub_fp"
 paths: [jit, interp, aot]
-expect_clif_contains:
-  - fn: apply1
-    substr: return_call fn0
-  - fn: lambda_3_s5
-    substr: "(RawInt, RawInt, RawInt) -> RawInt"
-expect_clif_excludes:
-  - fn: apply1
-    substr: call_indirect
-  - fn: apply1
-    substr: fz_closure_invoke
-  - fn: lambda_3_s5
-    substr: sshr_imm
 ---
 
 # closure_typed_captures
@@ -45,5 +33,4 @@ fz-ul4.29.8 — the lambda's body is leaf (Return only, no parking),
 so post-.29.8 it becomes natively-callable. The stub for
 `lambda_3` (the inner closure target, 2 captures) no longer
 allocates a frame; it loads captures from the closure heap object
-and directly calls the native body. expect_clif_excludes
-`fz_alloc_frame` asserts the native-path stub layout.
+and directly calls the native body (no `fz_alloc_frame` for the stub).

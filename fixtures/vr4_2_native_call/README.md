@@ -1,14 +1,6 @@
 ---
 purpose: "VR.4.2 — leaf-bodied helper goes through the native ABI"
 paths: [jit, interp]
-expect_clif_contains:
-  - fn: square
-    substr: tail
-expect_clif_excludes:
-  - fn: square
-    substr: fz_alloc_frame
-  - fn: main
-    substr: "fz_alloc_frame fn0:0"
 ---
 
 # vr4_2_native_call

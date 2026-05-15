@@ -1,18 +1,6 @@
 ---
 purpose: "VR.1 — int-literal arithmetic elides the tag-check fast/slow path"
 paths: [jit, interp]
-expect_clif_contains:
-  - fn: main
-    substr: iadd
-  - fn: main
-    substr: isub
-  - fn: main
-    substr: imul
-expect_clif_excludes:
-  - fn: main
-    substr: icmp_imm eq
-  - fn: main
-    substr: bxor_imm
 ---
 
 # vr1_int_arith

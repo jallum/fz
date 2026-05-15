@@ -1,14 +1,6 @@
 ---
 purpose: "VR.5a — cross-kind `==` folds to constant + emits type/dead-binop lint"
 paths: [jit, interp]
-expect_clif_contains:
-  - fn: main
-    substr: iconst.i64 19
-expect_clif_excludes:
-  - fn: main
-    substr: fz_value_eq
-  - fn: main
-    substr: both_ptr
 ---
 
 # vr5a_cross_kind_eq

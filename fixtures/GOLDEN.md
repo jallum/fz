@@ -82,7 +82,7 @@ order leaking into emitted IR), either:
 
 The first is preferred.
 
-## Why this instead of expect_clif_contains?
+## Why golden files instead of spot-check directives?
 
 `expect_clif_contains: count_s2: iadd` is fine for "does this
 instruction appear anywhere." It cannot answer:
@@ -92,10 +92,8 @@ instruction appear anywhere." It cannot answer:
 - What changed between this commit and the last one?
 
 A golden file answers all three by construction. The legacy
-`expect_clif_*` directives in fixture headers stay for now as
-belt-and-braces — they pin specific invariants in human-readable form.
-For new acceptance criteria, prefer adding a fixture to the golden set
-over writing more spot-check directives.
+`expect_clif_{contains,excludes}` directives have been retired (fz-8zx);
+all acceptance criteria now live in `expected.clif` golden files.
 
 ## Out of scope
 

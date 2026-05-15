@@ -1,22 +1,6 @@
 ---
 purpose: "VR.2 — float-literal arithmetic + comparisons emit native fadd/fcmp, no dispatch"
 paths: [jit, interp]
-expect_clif_contains:
-  - fn: main
-    substr: fadd
-  - fn: main
-    substr: fsub
-  - fn: main
-    substr: fmul
-  - fn: main
-    substr: fcmp lt
-expect_clif_excludes:
-  - fn: main
-    substr: fz_arith_add
-  - fn: main
-    substr: fz_cmp_lt
-  - fn: main
-    substr: fz_alloc_float
 ---
 
 # vr2_float_arith

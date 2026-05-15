@@ -1,14 +1,6 @@
 ---
 purpose: "VR.5a — int-int / atom-atom equality lowers to a single icmp, no fz_value_eq dispatch"
 paths: [jit, interp]
-expect_clif_contains:
-  - fn: main
-    substr: icmp eq
-expect_clif_excludes:
-  - fn: main
-    substr: fz_value_eq
-  - fn: main
-    substr: both_ptr
 ---
 
 # vr5a_typed_eq

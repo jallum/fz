@@ -1,11 +1,6 @@
 ---
 purpose: VR.5b — print dispatches to typed FFI when the arg Descr narrows
 paths: [jit, interp]
-expect_clif_excludes:
-  - fn: int_main
-    substr: fz_print_value
-  - fn: float_main
-    substr: fz_print_value
 ---
 
 # vr5b_typed_print
