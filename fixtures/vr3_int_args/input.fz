@@ -1,0 +1,7 @@
+fn sum3(a, b, c) do
+  a + b + c
+end
+
+fn main() do
+  print(sum3(40, 1, 1))
+end

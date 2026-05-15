@@ -1,0 +1,12 @@
+fn int_main() do
+  print(42)
+end
+
+fn float_main() do
+  print(1.5 + 2.5)
+end
+
+fn main() do
+  int_main()
+  float_main()
+end

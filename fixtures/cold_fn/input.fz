@@ -1,0 +1,2 @@
+fn cold(x), do: x * 3
+fn main(), do: print(cold(14))

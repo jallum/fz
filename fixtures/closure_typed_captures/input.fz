@@ -1,0 +1,6 @@
+fn add_to(x, y), do: fn (z) -> x + y + z
+fn apply1(f, x), do: f(x)
+
+fn main() do
+  print(apply1(add_to(10, 20), 12))
+end

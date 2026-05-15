@@ -1,22 +1,37 @@
-//! fz-ul4.23.1 — fixture matrix.
+//! fz-ul4.23.1 — fixture matrix (per-dir layout, fz-e97).
 //!
-//! Walks `fixtures/*.fz`, parses the header comments at the top of each
-//! file, and runs every fixture through each declared path. stdout is
-//! compared against a sidecar `<name>.expected` (empty if the sidecar
-//! is absent). Exit code must be 0.
+//! Walks `fixtures/<name>/`, reads each fixture's `README.md`
+//! frontmatter, and runs `input.fz` through each declared path. stdout
+//! is compared against `expected.txt` in the same dir (empty if the
+//! sidecar is absent). Exit code must be 0.
 //!
-//! Header grammar (lines must precede the first non-comment line):
+//! Per-fixture layout:
 //!
-//!     # purpose: one-line statement of what this fixture proves
-//!     # paths:   comma-separated list of backends (`jit`, eventually `interp`, `aot`)
-//!     # kind:    `run` (default if `fn main` present) or `test`
+//!     fixtures/<name>/
+//!         README.md         YAML frontmatter + narrative body
+//!         input.fz          fz source
+//!         expected.txt      stdout golden (optional)
+//!         expected.clif     CLIF golden   (optional, fz-ul4.32)
+//!         expected.specs    specs golden  (optional, fz-73m)
 //!
-//! Empty `paths:` is a flagged deferral — the runner skips, but the
-//! fixture must include a `# defer:` line so the gap is named.
+//! Frontmatter grammar:
+//!
+//!     ---
+//!     purpose: one-line statement of what this fixture proves
+//!     paths: [jit, interp, aot]
+//!     kind: run            # or `test`; defaults to run if `fn main` present
+//!     defer: rationale     # required iff `paths:` is empty
+//!     expect_clif_contains:
+//!       - fn: <name>
+//!         substr: <text>
+//!     expect_clif_excludes:
+//!       - fn: <name>
+//!         substr: <text>
+//!     ---
 //!
 //! Workflow: re-run with `BLESS=1 cargo test fixture_matrix` to rewrite
-//! `.expected` files from current stdout. On failure (non-bless) the
-//! actual stdout is dropped at `<name>.output` for diffing.
+//! `expected.txt` from current stdout. On failure (non-bless) the
+//! actual stdout is dropped at `<dir>/actual.txt` for diffing.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -46,51 +61,133 @@ struct Header {
     expect_clif_excludes: Vec<(String, String)>,
 }
 
-fn parse_header(src: &str) -> Result<Header, String> {
+/// Parse a fixture's README.md frontmatter. Frontmatter is the block
+/// between the first `---` and the next `---` line (both at column 0);
+/// the body that follows is documentation only.
+///
+/// Grammar is a deliberately tiny YAML subset — enough for our keys,
+/// nothing more. Supported:
+///   * `key: scalar` (string)
+///   * `paths: [a, b, c]` (flow sequence of bare scalars)
+///   * `expect_clif_{contains,excludes}:` block sequence of `- fn:`/`substr:` maps
+fn parse_header_from_dir(dir: &Path) -> Result<Header, String> {
+    let readme = dir.join("README.md");
+    let src =
+        fs::read_to_string(&readme).map_err(|e| format!("read {}: {}", readme.display(), e))?;
+    let fm = extract_frontmatter(&src).ok_or_else(|| {
+        format!(
+            "{}: missing `---` frontmatter block at top",
+            readme.display()
+        )
+    })?;
     let mut purpose: Option<String> = None;
     let mut paths: Option<Vec<String>> = None;
     let mut kind: Option<Kind> = None;
     let mut defer: Option<String> = None;
     let mut expect_clif_contains: Vec<(String, String)> = Vec::new();
     let mut expect_clif_excludes: Vec<(String, String)> = Vec::new();
-    for line in src.lines() {
-        let t = line.trim_start();
-        if t.is_empty() {
+
+    let lines: Vec<&str> = fm.lines().collect();
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i];
+        if line.trim().is_empty() {
+            i += 1;
             continue;
         }
-        let Some(rest) = t.strip_prefix('#') else {
-            break;
-        };
-        let rest = rest.trim_start();
-        let parse_kv = |key: &str| rest.strip_prefix(key).map(|v| v.trim().to_string());
-        if let Some(v) = parse_kv("purpose:") {
-            purpose = Some(v);
-        } else if let Some(v) = parse_kv("paths:") {
-            paths = Some(
-                v.split(',')
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty() && s != "none")
-                    .collect(),
-            );
-        } else if let Some(v) = parse_kv("kind:") {
-            kind = Some(match v.as_str() {
-                "run" => Kind::Run,
-                "test" => Kind::Test,
-                other => return Err(format!("unknown kind: {}", other)),
-            });
-        } else if let Some(v) = parse_kv("defer:") {
-            defer = Some(v);
-        } else if let Some(v) = parse_kv("expect_clif_contains:") {
-            expect_clif_contains.push(parse_fn_substr(&v)?);
-        } else if let Some(v) = parse_kv("expect_clif_excludes:") {
-            expect_clif_excludes.push(parse_fn_substr(&v)?);
+        // Top-level key (no leading whitespace).
+        if line.starts_with(' ') || line.starts_with('-') {
+            return Err(format!(
+                "{}: stray indented line at top level: `{}`",
+                readme.display(),
+                line
+            ));
         }
+        let (key, rest) = line
+            .split_once(':')
+            .ok_or_else(|| format!("{}: line without `:`: `{}`", readme.display(), line))?;
+        let key = key.trim();
+        let val = rest.trim();
+        match key {
+            "purpose" => purpose = Some(unquote(val).to_string()),
+            "paths" => {
+                paths = Some(
+                    parse_flow_seq(val)
+                        .map_err(|e| format!("{}: paths: {}", readme.display(), e))?,
+                );
+            }
+            "kind" => {
+                kind = Some(match unquote(val) {
+                    "run" => Kind::Run,
+                    "test" => Kind::Test,
+                    other => return Err(format!("{}: unknown kind `{}`", readme.display(), other)),
+                });
+            }
+            "defer" => defer = Some(unquote(val).to_string()),
+            "expect_clif_contains" | "expect_clif_excludes" => {
+                if !val.is_empty() {
+                    return Err(format!(
+                        "{}: `{}:` must introduce a block list (no inline value)",
+                        readme.display(),
+                        key
+                    ));
+                }
+                let target = if key == "expect_clif_contains" {
+                    &mut expect_clif_contains
+                } else {
+                    &mut expect_clif_excludes
+                };
+                i += 1;
+                while i < lines.len() && lines[i].starts_with("  - fn:") {
+                    let fn_val = lines[i].trim_start().trim_start_matches("- fn:").trim();
+                    let fn_name = unquote(fn_val).to_string();
+                    i += 1;
+                    let substr_line = lines.get(i).copied().unwrap_or("");
+                    let substr_v = substr_line
+                        .trim_start()
+                        .strip_prefix("substr:")
+                        .ok_or_else(|| {
+                            format!(
+                                "{}: expected `substr:` after `- fn: {}`",
+                                readme.display(),
+                                fn_name
+                            )
+                        })?
+                        .trim();
+                    let substr = unquote(substr_v).to_string();
+                    if fn_name.is_empty() || substr.is_empty() {
+                        return Err(format!(
+                            "{}: expect_clif_*: empty fn or substr",
+                            readme.display()
+                        ));
+                    }
+                    target.push((fn_name, substr));
+                    i += 1;
+                }
+                continue;
+            }
+            other => return Err(format!("{}: unknown key `{}`", readme.display(), other)),
+        }
+        i += 1;
     }
-    let purpose = purpose.ok_or("missing `# purpose:` header")?;
-    let paths = paths.ok_or("missing `# paths:` header")?;
-    let kind = kind.unwrap_or_else(|| if has_main(src) { Kind::Run } else { Kind::Test });
+
+    let purpose = purpose.ok_or_else(|| format!("{}: missing `purpose:`", readme.display()))?;
+    let paths = paths.ok_or_else(|| format!("{}: missing `paths:`", readme.display()))?;
+    let input_fz = dir.join("input.fz");
+    let src_fz =
+        fs::read_to_string(&input_fz).map_err(|e| format!("read {}: {}", input_fz.display(), e))?;
+    let kind = kind.unwrap_or_else(|| {
+        if has_main(&src_fz) {
+            Kind::Run
+        } else {
+            Kind::Test
+        }
+    });
     if paths.is_empty() && defer.is_none() {
-        return Err("empty `# paths:` without a `# defer:` rationale".into());
+        return Err(format!(
+            "{}: empty `paths:` without a `defer:` rationale",
+            readme.display()
+        ));
     }
     Ok(Header {
         purpose,
@@ -102,37 +199,49 @@ fn parse_header(src: &str) -> Result<Header, String> {
     })
 }
 
-/// Parse a `<fn>: <substr>` value from an `expect_clif_*` header line. The
-/// fn name is the prefix up to the first `:`; the rest (trimmed) is the
-/// substring. CLIF text contains colons too — so we split on the FIRST
-/// colon only.
-fn parse_fn_substr(v: &str) -> Result<(String, String), String> {
-    let (fn_name, rest) = v
-        .split_once(':')
-        .ok_or_else(|| format!("expect_clif_*: expected `<fn>: <substr>`, got `{}`", v))?;
-    let fn_name = fn_name.trim().to_string();
-    let substr = rest.trim().to_string();
-    if fn_name.is_empty() || substr.is_empty() {
-        return Err(format!(
-            "expect_clif_*: both fn name and substring must be non-empty, got `{}`",
-            v
-        ));
+fn extract_frontmatter(src: &str) -> Option<&str> {
+    let rest = src.strip_prefix("---\n")?;
+    let end = rest.find("\n---")?;
+    Some(&rest[..end])
+}
+
+fn unquote(s: &str) -> &str {
+    let s = s.trim();
+    if s.len() >= 2 && s.starts_with('"') && s.ends_with('"') {
+        &s[1..s.len() - 1]
+    } else {
+        s
     }
-    Ok((fn_name, substr))
+}
+
+/// Parse a YAML flow sequence: `[a, b, c]`. Empty `[]` → empty vec.
+fn parse_flow_seq(s: &str) -> Result<Vec<String>, String> {
+    let s = s.trim();
+    let inner = s
+        .strip_prefix('[')
+        .and_then(|s| s.strip_suffix(']'))
+        .ok_or_else(|| format!("expected `[...]`, got `{}`", s))?;
+    Ok(inner
+        .split(',')
+        .map(|s| unquote(s.trim()).to_string())
+        .filter(|s| !s.is_empty())
+        .collect())
 }
 
 fn has_main(src: &str) -> bool {
     src.lines()
-        .filter(|l| !l.trim_start().starts_with('#'))
         .any(|l| l.contains("fn main(") || l.contains("fn main "))
 }
 
+/// Discover fixture directories. Returns each fixture's directory path
+/// (e.g. `fixtures/add1`). The matrix and goldens derive concrete file
+/// paths from this via `<dir>/input.fz`, `<dir>/expected.txt`, etc.
 fn discover() -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = fs::read_dir("fixtures")
         .expect("fixtures/ should exist")
         .filter_map(|e| e.ok())
         .map(|e| e.path())
-        .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("fz"))
+        .filter(|p| p.is_dir() && p.join("input.fz").is_file())
         .collect();
     out.sort();
     out
@@ -162,7 +271,8 @@ fn run_path(fixture: &Path, header: &Header, path: &str) -> RunOutcome {
             return RunOutcome::Failed(format!("unknown path `{}`", path));
         }
     };
-    let out = match Command::new(FZ_BIN).arg(subcmd).arg(fixture).output() {
+    let input = fixture.join("input.fz");
+    let out = match Command::new(FZ_BIN).arg(subcmd).arg(&input).output() {
         Ok(o) => o,
         Err(e) => return RunOutcome::Failed(format!("spawn fz: {}", e)),
     };
@@ -189,14 +299,15 @@ fn run_aot_path(fixture: &Path, header: &Header) -> RunOutcome {
         );
     }
     let stem = fixture
-        .file_stem()
+        .file_name()
         .and_then(|s| s.to_str())
         .unwrap_or("fz_fixture");
     let out_path = std::env::temp_dir().join(format!("fz_matrix_{}", stem));
+    let input = fixture.join("input.fz");
     // Build.
     let build = match Command::new(FZ_BIN)
         .args(["build"])
-        .arg(fixture)
+        .arg(&input)
         .args(["-o"])
         .arg(&out_path)
         .output()
@@ -266,12 +377,12 @@ fn check(fixture: &Path, header: &Header, path: &str, bless: bool) -> CheckOutco
         RunOutcome::Failed(e) => return CheckOutcome::Fail(e),
     };
     let actual = normalize(&actual);
-    let expected_path = fixture.with_extension("expected");
+    let expected_path = fixture.join("expected.txt");
     let expected = fs::read_to_string(&expected_path).unwrap_or_default();
     let expected = normalize(&expected);
     if actual == expected {
-        // Clean up any stale .output from a prior failure.
-        let _ = fs::remove_file(fixture.with_extension("output"));
+        // Clean up any stale actual.txt from a prior failure.
+        let _ = fs::remove_file(fixture.join("actual.txt"));
         return CheckOutcome::Pass;
     }
     if bless {
@@ -282,7 +393,7 @@ fn check(fixture: &Path, header: &Header, path: &str, bless: bool) -> CheckOutco
         }
         return CheckOutcome::Pass;
     }
-    let output_path = fixture.with_extension("output");
+    let output_path = fixture.join("actual.txt");
     let _ = fs::write(&output_path, &actual);
     CheckOutcome::Fail(format!(
         "stdout mismatch for {} via {}; wrote {}\n--- expected\n{}--- actual\n{}",
@@ -300,13 +411,12 @@ fn check(fixture: &Path, header: &Header, path: &str, bless: bool) -> CheckOutco
 fn fixture_index_up_to_date() {
     let bless = std::env::var("BLESS").ok().as_deref() == Some("1");
     let mut rows: Vec<(String, String, String)> = Vec::new();
-    for f in discover() {
-        let src = fs::read_to_string(&f).expect("read");
-        let header = match parse_header(&src) {
+    for dir in discover() {
+        let header = match parse_header_from_dir(&dir) {
             Ok(h) => h,
             Err(_) => continue,
         };
-        let name = f.file_name().unwrap().to_string_lossy().into_owned();
+        let name = dir.file_name().unwrap().to_string_lossy().into_owned();
         let paths = if header.paths.is_empty() {
             match header.defer.as_deref() {
                 Some(d) => format!("_(deferred: {})_", d),
@@ -319,12 +429,14 @@ fn fixture_index_up_to_date() {
     }
     let mut out = String::new();
     out.push_str("# Fixture index\n\n");
-    out.push_str("Regenerated from header comments by `cargo test fixture_index_up_to_date`.\n");
+    out.push_str(
+        "Regenerated from README.md frontmatter by `cargo test fixture_index_up_to_date`.\n",
+    );
     out.push_str("Run with `BLESS=1` to rewrite after editing fixtures.\n\n");
-    out.push_str("| file | purpose | paths |\n");
-    out.push_str("|------|---------|-------|\n");
+    out.push_str("| fixture | purpose | paths |\n");
+    out.push_str("|---------|---------|-------|\n");
     for (name, purpose, paths) in &rows {
-        out.push_str(&format!("| `{}` | {} | {} |\n", name, purpose, paths));
+        out.push_str(&format!("| `{}/` | {} | {} |\n", name, purpose, paths));
     }
     let index_path = PathBuf::from("fixtures/index.md");
     let current = fs::read_to_string(&index_path).unwrap_or_default();
@@ -346,7 +458,7 @@ fn fixture_index_up_to_date() {
 #[test]
 fn fz_dump_emits_clif() {
     let out = Command::new(FZ_BIN)
-        .args(["dump", "fixtures/add1.fz"])
+        .args(["dump", "fixtures/add1/input.fz"])
         .output()
         .expect("spawn fz dump");
     assert!(out.status.success(), "fz dump exited {}", out.status);
@@ -367,16 +479,17 @@ fn fz_dump_emits_clif() {
         stdout
     );
     // fz-ul4.23.7: srcloc annotations on body instructions resolve back
-    // to file:line:col. add1.fz's `n + 1` lives at line 7; expect at
-    // least one annotated line pointing at it.
+    // to file:line:col. add1's `n + 1` lives at line 1 (fz-e97: header
+    // comments lifted out of input.fz into README.md); expect at least
+    // one annotated line pointing at it.
     assert!(
-        stdout.contains("; @7:"),
-        "expected line-4 srcloc annotations in dump\n{}",
+        stdout.contains("; @1:"),
+        "expected line-1 srcloc annotations in dump\n{}",
         stdout
     );
 
     let filtered = Command::new(FZ_BIN)
-        .args(["dump", "fixtures/add1.fz", "--fn", "add1"])
+        .args(["dump", "fixtures/add1/input.fz", "--fn", "add1"])
         .output()
         .expect("spawn fz dump --fn");
     assert!(filtered.status.success());
@@ -389,7 +502,14 @@ fn fz_dump_emits_clif() {
     // host arch — but every supported target emits real assembly,
     // including a block0 label and at least one inst per fn body.
     let asm = Command::new(FZ_BIN)
-        .args(["dump", "fixtures/add1.fz", "--emit", "asm", "--fn", "add1"])
+        .args([
+            "dump",
+            "fixtures/add1/input.fz",
+            "--emit",
+            "asm",
+            "--fn",
+            "add1",
+        ])
         .output()
         .expect("spawn fz dump --emit asm");
     assert!(
@@ -406,7 +526,7 @@ fn fz_dump_emits_clif() {
     );
 }
 
-/// fz-ul4.27.14.1 — for `fixtures/add1.fz`, the print continuation
+/// fz-ul4.27.14.1 — for `fixtures/add1/input.fz`, the print continuation
 /// `k_2` is reached only via the native chain (callee `add1` is native,
 /// cont `k_2` is native). Its entry-param 0 should therefore be RawInt,
 /// loaded directly from the frame without a tag-strip. Before .27.14.1
@@ -417,7 +537,14 @@ fn fz_dump_emits_clif() {
 #[test]
 fn add1_k_2_continuation_has_no_entry_side_unbox() {
     let out = Command::new(FZ_BIN)
-        .args(["dump", "fixtures/add1.fz", "--emit", "clif", "--fn", "k_2"])
+        .args([
+            "dump",
+            "fixtures/add1/input.fz",
+            "--emit",
+            "clif",
+            "--fn",
+            "k_2",
+        ])
         .output()
         .expect("spawn fz dump");
     assert!(out.status.success(), "fz dump exited {}", out.status);
@@ -435,7 +562,7 @@ fn add1_k_2_continuation_has_no_entry_side_unbox() {
     );
 }
 
-/// fz-ul4.27.14.2 — for `fixtures/add1.fz`, the seam between the
+/// fz-ul4.27.14.2 — for `fixtures/add1/input.fz`, the seam between the
 /// native callee `add1` and the native cont `k_2` must carry the raw
 /// int directly. Before .27.14.2 the native-chain branch in codegen
 /// coerced `result → Tagged → cont_param_reprs[0]`; with .27.14.1 also
@@ -446,7 +573,14 @@ fn add1_k_2_continuation_has_no_entry_side_unbox() {
 #[test]
 fn add1_main_cont_seam_has_no_box_unbox_roundtrip() {
     let out = Command::new(FZ_BIN)
-        .args(["dump", "fixtures/add1.fz", "--emit", "clif", "--fn", "main"])
+        .args([
+            "dump",
+            "fixtures/add1/input.fz",
+            "--emit",
+            "clif",
+            "--fn",
+            "main",
+        ])
         .output()
         .expect("spawn fz dump");
     assert!(out.status.success(), "fz dump exited {}", out.status);
@@ -474,7 +608,7 @@ fn add1_main_cont_seam_has_no_box_unbox_roundtrip() {
 
 /// fz-ul4.27.15.1 — `Const::Int(n)` consumed by an int-monomorphic var
 /// should emit `iconst.i64 n` raw, not `iconst((n<<3)|1)` tagged that a
-/// downstream `sshr_imm` immediately unboxes. For `fixtures/add1.fz`,
+/// downstream `sshr_imm` immediately unboxes. For `fixtures/add1/input.fz`,
 /// both literals (`41` in main, `1` in add1's body) flow into raw
 /// consumers (a RawInt slot and a typed int BinOp respectively). With
 /// raw-by-default for Const::Int the entire program's CLIF should
@@ -484,7 +618,7 @@ fn add1_main_cont_seam_has_no_box_unbox_roundtrip() {
 #[test]
 fn add1_has_no_int_box_or_unbox_anywhere() {
     let out = Command::new(FZ_BIN)
-        .args(["dump", "fixtures/add1.fz", "--emit", "clif"])
+        .args(["dump", "fixtures/add1/input.fz", "--emit", "clif"])
         .output()
         .expect("spawn fz dump");
     assert!(out.status.success(), "fz dump exited {}", out.status);
@@ -510,7 +644,7 @@ fn add1_has_no_int_box_or_unbox_anywhere() {
     );
 }
 
-/// fz-ul4.27.19 — for `fixtures/add1.fz`, native fns that don't
+/// fz-ul4.27.19 — for `fixtures/add1/input.fz`, native fns that don't
 /// transitively need host_ctx (no `Term::Halt`, no callees that need
 /// it) drop the trailing host_ctx i64 from their signature. `add1_s2`
 /// and `k_2_s3` should both be `(i64) -> i64 tail` — a single i64 param.
@@ -518,7 +652,7 @@ fn add1_has_no_int_box_or_unbox_anywhere() {
 #[test]
 fn add1_native_fns_drop_unused_host_ctx() {
     let out = Command::new(FZ_BIN)
-        .args(["dump", "fixtures/add1.fz", "--emit", "clif"])
+        .args(["dump", "fixtures/add1/input.fz", "--emit", "clif"])
         .output()
         .expect("spawn fz dump");
     assert!(out.status.success(), "fz dump exited {}", out.status);
@@ -550,7 +684,7 @@ fn add1_native_fns_drop_unused_host_ctx() {
     }
 }
 
-/// fz-ul4.27.18 — for `fixtures/add1.fz`, `main` is never invoked from
+/// fz-ul4.27.18 — for `fixtures/add1/input.fz`, `main` is never invoked from
 /// any fz IR site (not a direct callee, not a continuation, not a
 /// closure target). It can only enter via the trampoline entry, which
 /// writes null into slot 0. So `main`'s emit_return paths specialize
@@ -561,7 +695,14 @@ fn add1_native_fns_drop_unused_host_ctx() {
 #[test]
 fn add1_main_has_no_runtime_cont_ptr_dispatch() {
     let out = Command::new(FZ_BIN)
-        .args(["dump", "fixtures/add1.fz", "--emit", "clif", "--fn", "main"])
+        .args([
+            "dump",
+            "fixtures/add1/input.fz",
+            "--emit",
+            "clif",
+            "--fn",
+            "main",
+        ])
         .output()
         .expect("spawn fz dump");
     assert!(out.status.success(), "fz dump exited {}", out.status);
@@ -590,14 +731,21 @@ fn add1_main_has_no_runtime_cont_ptr_dispatch() {
 
 /// fz-ul4.27.17 — `emit_return`'s halt-branch reuses the same `iconst.i64 0`
 /// it materialized for the null-compare, instead of emitting a duplicate
-/// inside the halt block. For fixtures/add1.fz's `main`, the body has
+/// inside the halt block. For fixtures/add1/input.fz's `main`, the body has
 /// exactly one `iconst.i64 0` (used by both the icmp and the
 /// `return null` sentinel via SSA dominance).
 #[ignore = "fz-cps.5: main is native; trampoline-era emit_return iconst-counting invariant doesn't apply"]
 #[test]
 fn add1_main_emits_one_iconst_zero_in_emit_return() {
     let out = Command::new(FZ_BIN)
-        .args(["dump", "fixtures/add1.fz", "--emit", "clif", "--fn", "main"])
+        .args([
+            "dump",
+            "fixtures/add1/input.fz",
+            "--emit",
+            "clif",
+            "--fn",
+            "main",
+        ])
         .output()
         .expect("spawn fz dump");
     assert!(out.status.success(), "fz dump exited {}", out.status);
@@ -628,7 +776,14 @@ fn native_fns_have_no_dead_frame_ptr_placeholder() {
     // body contains no `iconst.i64 0` is a strict check because add1 has
     // no other reason to materialize zero.
     let out = Command::new(FZ_BIN)
-        .args(["dump", "fixtures/add1.fz", "--emit", "clif", "--fn", "add1"])
+        .args([
+            "dump",
+            "fixtures/add1/input.fz",
+            "--emit",
+            "clif",
+            "--fn",
+            "add1",
+        ])
         .output()
         .expect("spawn fz dump");
     assert!(out.status.success(), "fz dump exited {}", out.status);
@@ -655,7 +810,7 @@ fn tail_recursion_count_matches_cps_in_clif_section_8_1() {
     let out = Command::new(FZ_BIN)
         .args([
             "dump",
-            "fixtures/tail_recursion.fz",
+            "fixtures/tail_recursion/input.fz",
             "--emit",
             "clif",
             "--fn",
@@ -721,7 +876,7 @@ fn higher_order_compose_matches_cps_in_clif_section_8_2() {
     let out = Command::new(FZ_BIN)
         .args([
             "dump",
-            "fixtures/higher_order.fz",
+            "fixtures/higher_order/input.fz",
             "--emit",
             "clif",
             "--fn",
@@ -779,7 +934,7 @@ fn closure_typed_captures_matches_cps_in_clif_section_8_3() {
     let out = Command::new(FZ_BIN)
         .args([
             "dump",
-            "fixtures/closure_typed_captures.fz",
+            "fixtures/closure_typed_captures/input.fz",
             "--emit",
             "clif",
         ])
@@ -827,7 +982,7 @@ fn concurrency_ping_pong_matches_cps_in_clif_section_8_4() {
     let out = Command::new(FZ_BIN)
         .args([
             "dump",
-            "fixtures/concurrency_ping_pong.fz",
+            "fixtures/concurrency_ping_pong/input.fz",
             "--emit",
             "clif",
             "--fn",
@@ -871,12 +1026,13 @@ fn check_clif_assertions(fixture: &Path, header: &Header) -> Result<(), Vec<Stri
     for (f, _) in &header.expect_clif_excludes {
         fns.insert(f.as_str());
     }
+    let input = fixture.join("input.fz");
     let mut dumps: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     for fn_name in fns {
         let out = match Command::new(FZ_BIN)
             .args(["dump", "--emit", "clif", "--fn"])
             .arg(fn_name)
-            .arg(fixture)
+            .arg(&input)
             .output()
         {
             Ok(o) => o,
@@ -944,14 +1100,7 @@ fn fixture_matrix() {
     let fixtures = discover();
     assert!(!fixtures.is_empty(), "no fixtures discovered");
     for f in fixtures {
-        let src = match fs::read_to_string(&f) {
-            Ok(s) => s,
-            Err(e) => {
-                failures.push(format!("{}: read: {}", f.display(), e));
-                continue;
-            }
-        };
-        let header = match parse_header(&src) {
+        let header = match parse_header_from_dir(&f) {
             Ok(h) => h,
             Err(e) => {
                 failures.push(format!("{}: header: {}", f.display(), e));
@@ -975,11 +1124,12 @@ fn fixture_matrix() {
         // path loop: the assertion is about generated code, which is
         // the same across compiled paths.
         if (!header.expect_clif_contains.is_empty() || !header.expect_clif_excludes.is_empty())
-            && let Err(msgs) = check_clif_assertions(&f, &header) {
-                for msg in msgs {
-                    failures.push(msg);
-                }
+            && let Err(msgs) = check_clif_assertions(&f, &header)
+        {
+            for msg in msgs {
+                failures.push(msg);
             }
+        }
     }
     if !deferred_fixtures.is_empty() {
         eprintln!("deferred fixtures (no paths wired yet):");
@@ -1005,30 +1155,26 @@ fn fixture_matrix() {
 // fz-ul4.32 — Golden CLIF fixtures.
 //
 // For each fixture in GOLDEN_FIXTURES, dump its CLIF via `fz dump --emit
-// clif` and diff against the checked-in `fixtures/<name>.clif` sibling.
-// Drift → test failure with the diff inline.
+// clif` and diff against the checked-in `expected.clif` sibling in the
+// same directory. Drift → test failure with the diff inline.
 //
 // `BLESS=1 cargo test golden_clif` rewrites every golden from actual
 // output. Bless is a deliberate act — review the diff in the resulting
 // commit. Adding a fixture to the golden set:
-//   1. Append its filename to GOLDEN_FIXTURES.
+//   1. Append its directory name to GOLDEN_FIXTURES.
 //   2. Run `BLESS=1 cargo test golden_clif` to seed the golden.
-//   3. Commit the new `.clif` alongside the test list change.
-//
-// The whole point: every optimization commit's diff IS the review.
-// No more spot-checking `expect_clif_contains` / `_excludes` in fixture
-// headers; the golden captures everything we care about by construction.
+//   3. Commit the new `expected.clif` alongside the test list change.
 // ----------------------------------------------------------------------
 
-/// Fixtures with checked-in golden CLIF. Each entry is the filename
-/// (without path); the source lives at `fixtures/<name>` and the
-/// golden at `fixtures/<stem>.clif`.
+/// Fixtures with checked-in golden CLIF. Each entry is the directory
+/// name under `fixtures/`. Source: `fixtures/<name>/input.fz`,
+/// golden: `fixtures/<name>/expected.clif`.
 const GOLDEN_FIXTURES: &[&str] = &[
-    "add1.fz",
-    "tail_recursion.fz",
-    "higher_order.fz",
-    "closure_typed_captures.fz",
-    "concurrency_ping_pong.fz",
+    "add1",
+    "tail_recursion",
+    "higher_order",
+    "closure_typed_captures",
+    "concurrency_ping_pong",
 ];
 
 #[test]
@@ -1037,18 +1183,14 @@ fn golden_clif() {
     let mut failures: Vec<String> = Vec::new();
 
     for name in GOLDEN_FIXTURES {
-        let src_path = PathBuf::from("fixtures").join(name);
+        let dir = PathBuf::from("fixtures").join(name);
+        let src_path = dir.join("input.fz");
         assert!(
             src_path.exists(),
             "golden fixture source missing: {}",
             src_path.display(),
         );
-        let stem = PathBuf::from(name)
-            .file_stem()
-            .unwrap()
-            .to_string_lossy()
-            .into_owned();
-        let golden_path = PathBuf::from("fixtures").join(format!("{}.clif", stem));
+        let golden_path = dir.join("expected.clif");
 
         // Dump current CLIF.
         let out = Command::new(FZ_BIN)
@@ -1135,18 +1277,14 @@ fn golden_specs() {
     let mut failures: Vec<String> = Vec::new();
 
     for name in GOLDEN_FIXTURES {
-        let src_path = PathBuf::from("fixtures").join(name);
+        let dir = PathBuf::from("fixtures").join(name);
+        let src_path = dir.join("input.fz");
         assert!(
             src_path.exists(),
             "golden fixture source missing: {}",
             src_path.display(),
         );
-        let stem = PathBuf::from(name)
-            .file_stem()
-            .unwrap()
-            .to_string_lossy()
-            .into_owned();
-        let golden_path = PathBuf::from("fixtures").join(format!("{}.specs", stem));
+        let golden_path = dir.join("expected.specs");
 
         let out = Command::new(FZ_BIN)
             .args(["dump", "--emit", "specs"])

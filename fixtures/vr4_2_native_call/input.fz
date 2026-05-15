@@ -1,0 +1,7 @@
+fn square(x) do
+  x * x
+end
+
+fn main() do
+  print(square(7))
+end

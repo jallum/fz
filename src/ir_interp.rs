@@ -6,7 +6,7 @@
 //! renders through `fz_runtime::ir_runtime::fz_print_value`. Heap allocations
 //! go through the current Process's Heap.
 //!
-//! Scope at .5.2: minimal for fixtures/add1.fz —
+//! Scope at .5.2: minimal for fixtures/add1/input.fz —
 //!   Const::{Int, Atom, Nil, True, False}
 //!   BinOp::Add  (Int + Int)
 //!   Prim::Builtin(Print, ...)

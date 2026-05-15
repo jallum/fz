@@ -557,7 +557,7 @@ mod tests {
     // the deep-copy of the same structure.
     // ----- fz-ul4.19 demonstration via the JIT pipeline -----
 
-    /// End-to-end fixture test: load `fixtures/concurrency_ping_pong.fz`,
+    /// End-to-end fixture test: load `fixtures/concurrency_ping_pong/input.fz`,
     /// run it through the FULL JIT pipeline (lex → parse → resolve →
     /// macros → ir_lower → ir_codegen → Runtime::run_until_idle), and
     /// assert the parent's halt value matches the message the child sent.
@@ -568,8 +568,8 @@ mod tests {
     /// drive the same assertion through their pipelines.
     #[test]
     fn fixture_ping_pong_via_jit_runtime() {
-        let src = std::fs::read_to_string("fixtures/concurrency_ping_pong.fz")
-            .expect("failed to read fixtures/concurrency_ping_pong.fz");
+        let src = std::fs::read_to_string("fixtures/concurrency_ping_pong/input.fz")
+            .expect("failed to read fixtures/concurrency_ping_pong/input.fz");
         // Pipeline: lex, parse, resolve (flatten modules), expand macros,
         // ir_lower, ir_codegen, Runtime.
         let toks = Lexer::new(&src).tokenize().expect("lex");

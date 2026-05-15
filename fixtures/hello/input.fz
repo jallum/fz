@@ -1,0 +1,6 @@
+fn main() do
+  print(40 + 2)
+  print(:ok)
+  print(true)
+  print(nil)
+end

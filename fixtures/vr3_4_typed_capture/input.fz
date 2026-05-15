@@ -1,0 +1,5 @@
+fn double(x) do x * 2 end
+fn use_x(x) do print(double(x) + x) end
+fn main() do
+  use_x(7)
+end

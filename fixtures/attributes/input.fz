@@ -1,0 +1,14 @@
+defmodule Greeter do
+  @moduledoc "Hand-rolled greeter for the v1 demo."
+
+  @doc "Returns a friendly greeting for the given name atom."
+  fn hi(name), do: name
+
+  @doc "Echoes its argument back."
+  fn echo(x), do: x
+end
+
+fn main() do
+  print(Greeter.hi(:alice))
+  print(Greeter.echo(42))
+end
