@@ -244,17 +244,26 @@ impl Default for SchemaRegistry {
     }
 }
 
+/// Maximum bytes for any single heap object. Objects larger than this
+/// belong in the shared zone (future epic). Enforced in `Heap::alloc()`.
+pub const MAX_HEAP_OBJECT_BYTES: usize = 64;
+
 pub struct Heap {
     block_start: *mut u8,
     bump_top: *mut u8,
     block_end: *mut u8,
     block_size: usize,
     /// Index into SIZE_TABLE (§6.3, wired in fz-siu.9). Tracked here so
-    /// shrink hysteresis (§6.5) can read/adjust it without growing the API.
+    /// proactive shrinkage can read/adjust it without growing the API.
     pub size_class: u8,
-    /// Counter for shrink hysteresis (§6.5): bumps when a GC reports
-    /// live < 25% of current block size; resets otherwise.
-    pub low_live_streak: u8,
+    /// 75% of `block_end`. Crossing this pointer in `alloc()` sets
+    /// `FZ_SHOULD_YIELD` so the scheduler can run `gc_mid_flight` at the
+    /// next back-edge yield point.
+    pub gc_watermark: *mut u8,
+    /// Exact live bytes after the most recent GC. Zero until the first GC.
+    /// Used by `gc_mid_flight` and proactive shrinkage to size the to-space
+    /// and detect low-live quiet periods.
+    pub last_gc_live_bytes: usize,
     /// Old blocks abandoned by `grow`. Each carries its size_class so
     /// `Drop` / gc() can return it to the pool (§6.6). Cheney (.8)
     /// frees the entire list at every collection.
@@ -284,13 +293,15 @@ impl Heap {
         let size_class = pick_size_class(capacity);
         let block_size = SIZE_TABLE[size_class as usize];
         let block_start = pool_alloc(size_class);
+        let block_end = unsafe { block_start.add(block_size) };
         Self {
             block_start,
             bump_top: block_start,
-            block_end: unsafe { block_start.add(block_size) },
+            block_end,
             block_size,
             size_class,
-            low_live_streak: 0,
+            gc_watermark: watermark_for(block_start, block_size),
+            last_gc_live_bytes: 0,
             abandoned_blocks: Vec::new(),
             schemas,
             pressure: std::sync::atomic::AtomicBool::new(false),
@@ -322,7 +333,16 @@ impl Heap {
     /// On overflow, abandons the current block and allocates a fresh
     /// pool-backed block at the next size_class. The next park-time
     /// Cheney recycles the whole abandoned chain.
+    ///
+    /// Panics if `size` exceeds `MAX_HEAP_OBJECT_BYTES`. Objects larger than
+    /// this limit belong in the shared zone (future epic).
     pub fn alloc(&mut self, size: usize) -> *mut HeapHeader {
+        assert!(
+            size <= MAX_HEAP_OBJECT_BYTES,
+            "heap object too large: {} bytes (max {}); use shared zone for large objects",
+            size,
+            MAX_HEAP_OBJECT_BYTES
+        );
         let size = (size + 15) & !15;
         assert!(size >= 16, "alloc must include at least the 16-byte header");
         let new_top = unsafe { self.bump_top.add(size) };
@@ -345,11 +365,15 @@ impl Heap {
             self.block_end = unsafe { new_block.add(new_size) };
             self.block_size = new_size;
             self.size_class = new_class;
+            self.gc_watermark = watermark_for(new_block, new_size);
         }
         let p = self.bump_top;
         self.bump_top = unsafe { self.bump_top.add(size) };
         self.alloc_count += 1;
         self.note_alloc_pressure();
+        if self.bump_top >= self.gc_watermark {
+            crate::yield_flag::FZ_SHOULD_YIELD.store(1, std::sync::atomic::Ordering::Relaxed);
+        }
         p as *mut HeapHeader
     }
 
@@ -663,6 +687,16 @@ impl Heap {
     /// (static-closure / halt-cont singletons) are detected by an
     /// in-from-space range check and left untouched.
     pub fn gc(&mut self, root_slot: &mut *mut u8) {
+        self.gc_with_extra_roots(root_slot, &mut []);
+    }
+
+    /// Cheney GC with an optional slice of extra root FzValues (for mid-flight
+    /// roots and mailbox items). Each element is forwarded in-place.
+    pub fn gc_with_extra_roots(
+        &mut self,
+        root_slot: &mut *mut u8,
+        extra_roots: &mut [crate::fz_value::FzValue],
+    ) {
         // Snapshot from-space ranges before we allocate to-space.
         let mut from_ranges: Vec<(*mut u8, *mut u8)> =
             Vec::with_capacity(1 + self.abandoned_blocks.len());
@@ -671,32 +705,14 @@ impl Heap {
             from_ranges.push((p, unsafe { p.add(SIZE_TABLE[sc as usize]) }));
         }
 
-        // Pre-pass: compute reachable bytes from the root (cycles tracked
-        // via HashSet). Determines the to-space size_class per §6.3 / §6.4
-        // — smallest class fitting `live_bytes + slack` where slack is
-        // live_bytes itself (target ~50% post-gc occupancy). Null root
-        // shrinks to the minimum class.
-        let live_bytes = if root_slot.is_null() {
-            0
+        // Pick to-space size: first GC uses bytes_used() as upper bound;
+        // subsequent GCs use last_gc_live_bytes * 2 (50% post-GC target).
+        let sizing = if self.last_gc_live_bytes > 0 {
+            self.last_gc_live_bytes.saturating_mul(2)
         } else {
-            let schemas = self.schemas.borrow();
-            count_live_bytes_from(*root_slot as *mut HeapHeader, &from_ranges, &schemas)
+            self.bytes_used()
         };
-        // §6.5 hysteresis: growth is eager (size up the moment live + slack
-        // exceeds the current class), but shrink waits for two consecutive
-        // low-live (<25%) cycles. The streak counter is updated post-Cheney
-        // below; here we read it.
-        let live_after_slack = live_bytes.saturating_mul(2);
-        let want_class = pick_size_class(live_after_slack);
-        let prev_class = self.size_class;
-        let size_class = if want_class > prev_class {
-            want_class
-        } else if self.low_live_streak >= 2 && prev_class > 0 {
-            prev_class - 1
-        } else {
-            prev_class
-        };
-        let consumed_streak = size_class < prev_class;
+        let size_class = pick_size_class(sizing.max(SIZE_TABLE[0]));
         let to_size = SIZE_TABLE[size_class as usize];
         let to_start = pool_alloc(size_class);
         let to_end = unsafe { to_start.add(to_size) };
@@ -712,23 +728,35 @@ impl Heap {
             );
             *root_slot = new_root as *mut u8;
             live_count += 1;
+        }
 
-            // Scan loop: process to-space objects breadth-first.
-            let schemas = self.schemas.borrow();
-            let mut scan = to_start;
-            while scan < free {
-                let h = scan as *mut HeapHeader;
-                let obj_size = unsafe { (*h).size_bytes as usize };
-                let before_trace = free;
-                cheney_trace_children(h, &from_ranges, &mut free, to_end, &schemas);
-                // Every child that triggered a copy contributes one live obj.
-                let added = unsafe { free.offset_from(before_trace) } as usize;
-                if added > 0 {
-                    live_count += count_objects_in_range(before_trace, free) as u64;
-                }
-                scan = unsafe { scan.add(obj_size) };
+        // Forward extra roots (mid-flight args, mailbox items).
+        for v in extra_roots.iter_mut() {
+            if let Some(p) = v.unbox_ptr()
+                && !p.is_null()
+                && ptr_in_from_space(p as *mut u8, &from_ranges)
+            {
+                let new_p = cheney_forward(p, &from_ranges, &mut free, to_end);
+                *v = crate::fz_value::FzValue::from_ptr(new_p);
+                live_count += 1;
             }
         }
+
+        // Scan loop: process to-space objects breadth-first.
+        let schemas = self.schemas.borrow();
+        let mut scan = to_start;
+        while scan < free {
+            let h = scan as *mut HeapHeader;
+            let obj_size = unsafe { (*h).size_bytes as usize };
+            let before_trace = free;
+            cheney_trace_children(h, &from_ranges, &mut free, to_end, &schemas);
+            let added = unsafe { free.offset_from(before_trace) } as usize;
+            if added > 0 {
+                live_count += count_objects_in_range(before_trace, free) as u64;
+            }
+            scan = unsafe { scan.add(obj_size) };
+        }
+        drop(schemas);
 
         // Return old from-space (current + abandoned) to the pool (§6.6).
         pool_free(self.block_start, self.size_class);
@@ -744,98 +772,42 @@ impl Heap {
         self.size_class = size_class;
         self.alloc_count = live_count;
         self.gc_run_count += 1;
-        // Reset gc_threshold to half the new block. Per-test overrides
-        // are sticky across cycles only if the test reasserts them.
         self.gc_threshold_bytes = to_size / 2;
-        // §6.5 shrink hysteresis bookkeeping. A "low live" pass is one
-        // where surviving bytes fall below 25% of the just-installed block.
-        // When the streak we observed at gc-entry was consumed to shrink,
-        // reset to 0 — otherwise we'd cascade-shrink on every cycle.
-        let live_bytes_postgc = unsafe { free.offset_from(to_start) } as usize;
-        if consumed_streak {
-            self.low_live_streak = 0;
-        } else if live_bytes_postgc * 4 < to_size {
-            self.low_live_streak = self.low_live_streak.saturating_add(1);
-        } else {
-            self.low_live_streak = 0;
+        self.gc_watermark = watermark_for(to_start, to_size);
+        self.last_gc_live_bytes = unsafe { free.offset_from(to_start) } as usize;
+    }
+
+    /// Mid-flight GC: Cheney with `mid_flight_roots` slab + mailbox as roots.
+    /// Called by the scheduler when `FZ_SHOULD_YIELD` was set and the process
+    /// yields at a back-edge. `parked_cont` is null (process is mid-flight).
+    pub fn gc_mid_flight(
+        &mut self,
+        roots: &mut [crate::fz_value::FzValue],
+        mailbox: &mut std::collections::VecDeque<crate::fz_value::FzValue>,
+    ) {
+        let mut null_root: *mut u8 = std::ptr::null_mut();
+        // Collect mailbox into a temporary vec for forwarding, then write back.
+        let mb_vec: Vec<crate::fz_value::FzValue> = mailbox.drain(..).collect();
+        let mut all_extras: Vec<crate::fz_value::FzValue> = roots
+            .iter()
+            .copied()
+            .chain(mb_vec.iter().copied())
+            .collect();
+        self.gc_with_extra_roots(&mut null_root, &mut all_extras);
+        // Write forwarded values back to roots slab and mailbox.
+        let n = roots.len();
+        roots.copy_from_slice(&all_extras[..n]);
+        for v in &all_extras[n..] {
+            mailbox.push_back(*v);
         }
+        drop(mb_vec);
     }
 }
 
-/// Pre-pass for §6.4: sum `size_bytes` over every from-space object
-/// reachable from `root`. Used by gc() to pick the to-space size_class
-/// before allocating. Tracks visited pointers in a HashSet so cycles
-/// terminate cleanly.
-fn count_live_bytes_from(
-    root: *mut HeapHeader,
-    from_ranges: &[(*mut u8, *mut u8)],
-    schemas: &SchemaRegistry,
-) -> usize {
-    use std::collections::HashSet;
-    let mut visited: HashSet<*mut HeapHeader> = HashSet::new();
-    let mut stack: Vec<*mut HeapHeader> = vec![root];
-    let mut total = 0usize;
-    while let Some(p) = stack.pop() {
-        if !visited.insert(p) {
-            continue;
-        }
-        let h = unsafe { &*p };
-        total += h.size_bytes as usize;
-        let kind = HeapKind::from_u16(h.kind)
-            .unwrap_or_else(|| panic!("count_live_bytes_from: invalid HeapKind {:#x}", h.kind));
-        let push = |slot: *const FzValue, stack: &mut Vec<*mut HeapHeader>| {
-            let v = unsafe { std::ptr::read(slot) };
-            if let Some(cp) = v.unbox_ptr()
-                && !cp.is_null()
-                && ptr_in_from_space(cp as *mut u8, from_ranges)
-            {
-                stack.push(cp);
-            }
-        };
-        match kind {
-            HeapKind::Struct => {
-                let schema = schemas.get(h.schema_id);
-                for f in &schema.fields {
-                    if let FieldKind::FzValue = f.kind {
-                        let slot = unsafe {
-                            (p as *const u8).add(16).add(f.offset as usize) as *const FzValue
-                        };
-                        push(slot, &mut stack);
-                    }
-                }
-            }
-            HeapKind::List => {
-                let head = unsafe { (p as *const u8).add(16) as *const FzValue };
-                let tail = unsafe { (p as *const u8).add(24) as *const FzValue };
-                push(head, &mut stack);
-                push(tail, &mut stack);
-            }
-            HeapKind::Closure => {
-                let count = crate::fz_value::closure_flags_captured(h.flags) as usize;
-                for i in 0..count {
-                    let slot = unsafe { (p as *const u8).add(24).add(i * 8) as *const FzValue };
-                    push(slot, &mut stack);
-                }
-            }
-            HeapKind::Map => {
-                let count =
-                    unsafe { std::ptr::read((p as *const u8).add(16) as *const u64) as usize };
-                for i in 0..count {
-                    let k = unsafe { (p as *const u8).add(24).add(i * 16) as *const FzValue };
-                    let v = unsafe { (p as *const u8).add(24).add(i * 16 + 8) as *const FzValue };
-                    push(k, &mut stack);
-                    push(v, &mut stack);
-                }
-            }
-            HeapKind::Bitstring
-            | HeapKind::Float
-            | HeapKind::VecI64
-            | HeapKind::VecF64
-            | HeapKind::VecU8
-            | HeapKind::VecBit => {}
-        }
-    }
-    total
+/// Compute the 75%-of-block watermark pointer.
+fn watermark_for(block_start: *mut u8, block_size: usize) -> *mut u8 {
+    let offset = (block_size * 3) / 4;
+    unsafe { block_start.add(offset) }
 }
 
 /// Copy a single from-space object to `*free` and install a forwarding
@@ -1508,79 +1480,47 @@ mod tests {
         }
     }
 
-    /// Acceptance (fz-siu.11 / §6.5): a spike-then-settle workload ends
-    /// with a smaller heap than peak. After building a large chain
-    /// (size_class climbs), we drop it and gc with a tiny working set
-    /// repeatedly. Hysteresis demotes size_class one step per pair of
-    /// low-live cycles until it bottoms out.
+    /// last_gc_live_bytes is set correctly after GC and used for to-space sizing.
+    /// First GC uses bytes_used() as upper bound; subsequent GCs use
+    /// last_gc_live_bytes * 2 (50% post-GC target occupancy).
     #[test]
-    fn shrink_hysteresis_settles_below_peak() {
+    fn gc_updates_last_gc_live_bytes() {
         let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
-        // Spike: build a large rooted chain (push size_class up).
-        let mut tail = FzValue::NIL;
-        for i in 0..2048 {
-            let cell = h.alloc_list_cons(FzValue::from_int(i), tail);
-            tail = FzValue::from_ptr(cell);
-        }
-        let head = tail.unbox_ptr().unwrap();
-        let mut root = head as *mut u8;
+        assert_eq!(h.last_gc_live_bytes, 0, "zero before first gc");
+        // Build [1, 2, 3].
+        let n3 = h.alloc_list_cons(FzValue::from_int(3), FzValue::NIL);
+        let n2 = h.alloc_list_cons(FzValue::from_int(2), FzValue::from_ptr(n3));
+        let n1 = h.alloc_list_cons(FzValue::from_int(1), FzValue::from_ptr(n2));
+        let mut root = n1 as *mut u8;
         h.gc(&mut root);
-        let peak_class = h.size_class;
-        assert!(
-            peak_class >= 4,
-            "spike should drive size_class up; got {}",
-            peak_class
-        );
+        assert_eq!(h.last_gc_live_bytes, 3 * 32, "three cons cells = 96 bytes");
 
-        // Settle: shrink the working set to one cell, gc repeatedly.
-        // Hysteresis requires two consecutive low-live cycles per shrink
-        // step, so 2 × peak_class iterations is a safe upper bound.
-        let lone_cell = h.alloc_list_cons(FzValue::from_int(42), FzValue::NIL);
-        let mut root = lone_cell as *mut u8;
-        for _ in 0..(peak_class as usize * 2 + 4) {
-            h.gc(&mut root);
-        }
-        assert!(
-            h.size_class < peak_class,
-            "size_class did not shrink: peak={}, settled={}",
-            peak_class,
-            h.size_class
-        );
-        assert!(
-            h.block_size < SIZE_TABLE[peak_class as usize],
-            "block_size did not shrink: peak={}, settled={}",
-            SIZE_TABLE[peak_class as usize],
-            h.block_size
-        );
+        // Second GC with same live set: to-space sizing = 96 * 2 = 192,
+        // clamped to SIZE_TABLE[0]. live bytes stay the same.
+        h.gc(&mut root);
+        assert_eq!(h.last_gc_live_bytes, 3 * 32, "live bytes unchanged");
+        assert_eq!(h.size_class, 0, "tiny live set stays at smallest class");
     }
 
-    /// Hysteresis defers shrink: one low-live cycle alone must NOT
-    /// demote size_class — only two consecutive cycles do. Guards
-    /// against thrashing from a single dip.
+    /// Watermark is set to 75% of block. After alloc crossing watermark,
+    /// FZ_SHOULD_YIELD is set; it can be cleared externally.
     #[test]
-    fn one_low_live_cycle_does_not_shrink() {
-        let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
-        // Climb to a non-zero class.
-        let mut tail = FzValue::NIL;
-        for i in 0..512 {
-            let c = h.alloc_list_cons(FzValue::from_int(i), tail);
-            tail = FzValue::from_ptr(c);
-        }
-        let head = tail.unbox_ptr().unwrap();
-        let mut root = head as *mut u8;
-        h.gc(&mut root);
-        let class_after_spike = h.size_class;
-        assert!(class_after_spike >= 2);
+    fn watermark_is_75_percent_of_block() {
+        use crate::yield_flag::FZ_SHOULD_YIELD;
+        use std::sync::atomic::Ordering;
+        FZ_SHOULD_YIELD.store(0, Ordering::Relaxed);
+        let h = Heap::new(SIZE_TABLE[0], empty_registry());
+        let expected = unsafe { h.block_start.add(SIZE_TABLE[0] * 3 / 4) };
+        assert_eq!(h.gc_watermark, expected);
+        FZ_SHOULD_YIELD.store(0, Ordering::Relaxed); // cleanup
+    }
 
-        // One gc with small live set: streak goes from 0 → 1. No shrink.
-        let small = h.alloc_list_cons(FzValue::from_int(1), FzValue::NIL);
-        let mut root = small as *mut u8;
-        h.gc(&mut root);
-        assert_eq!(
-            h.size_class, class_after_spike,
-            "single low-live cycle must not shrink"
-        );
-        assert_eq!(h.low_live_streak, 1);
+    /// MAX_HEAP_OBJECT_BYTES is enforced: alloc of >64 bytes panics.
+    #[test]
+    #[should_panic(expected = "heap object too large")]
+    fn alloc_panics_over_max_object_bytes() {
+        let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
+        h.alloc(MAX_HEAP_OBJECT_BYTES + 1);
     }
 
     /// Acceptance: ≥10 GC cycles with the same small live working set

@@ -51,6 +51,7 @@ pub const LOWER_UNSUPPORTED: DiagCode = DiagCode("lower/unsupported");
 pub const LOWER_UNBOUND: DiagCode = DiagCode("lower/unbound");
 pub const LOWER_ARITY_MISMATCH: DiagCode = DiagCode("lower/arity-mismatch");
 pub const LOWER_POST_EXPANSION_LEFTOVER: DiagCode = DiagCode("lower/post-expansion-leftover");
+pub const LOWER_BACK_EDGE_TOO_MANY_ARGS: DiagCode = DiagCode("lower/back-edge-too-many-args");
 
 // ----- typer (post-.11.24) -----
 

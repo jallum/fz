@@ -359,8 +359,26 @@ fn run_fn(module: &Module, mut fn_id: FnId, mut args: Vec<FzValue>) -> Result<In
                 Term::TailCall {
                     callee,
                     args: call_args,
+                    is_back_edge,
                 } => {
-                    let arg_vals = collect(&env, call_args)?;
+                    let mut arg_vals = collect(&env, call_args)?;
+                    // fz-02r.6 — interpreter back-edge cooperative GC.
+                    // Check FZ_SHOULD_YIELD at annotated back-edges; if set,
+                    // forward live args through gc_mid_flight and clear the
+                    // flag. The interpreter runs synchronously so no yield or
+                    // re-enqueue is needed — just GC in place and continue.
+                    if *is_back_edge {
+                        use std::sync::atomic::Ordering;
+                        if fz_runtime::yield_flag::FZ_SHOULD_YIELD.load(Ordering::Relaxed) != 0 {
+                            let p = fz_runtime::process::current_process();
+                            p.heap.gc_mid_flight(&mut arg_vals, &mut p.mailbox);
+                            p.quiet_quanta = 0;
+                            fz_runtime::yield_flag::FZ_SHOULD_YIELD.store(0, Ordering::Relaxed);
+                        } else {
+                            let p = fz_runtime::process::current_process();
+                            p.quiet_quanta = p.quiet_quanta.saturating_add(1);
+                        }
+                    }
                     fn_id = *callee;
                     args = arg_vals;
                     continue 'tail;

@@ -251,6 +251,38 @@ pub extern "C" fn fz_receive_attempt(cont_frame_ptr: *mut u8) -> *mut u8 {
     }
 }
 
+// ===== Mid-flight GC helpers (fz-02r.3) =====
+//
+// Called at back-edge TailCall sites when FZ_SHOULD_YIELD is set. The JIT
+// emits a 3-instruction inline check (load FZ_SHOULD_YIELD; cmp 0; jz skip)
+// then calls fz_yield_back_edge if the flag is set. The function stashes the
+// live args into Process::mid_flight_roots, sets state=Running (yield-style),
+// and returns YIELD_PTR so the trampoline breaks out of the quantum loop.
+// The scheduler then calls gc_mid_flight, resets the flag, and re-enqueues.
+
+/// Return a raw pointer to the start of `Process::mid_flight_roots`.
+/// The JIT uses this to write live args directly into the slab before
+/// calling fz_yield_back_edge. Avoids a second pass through the root count.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_mid_flight_roots_ptr() -> *mut u64 {
+    let p = current_process();
+    p.mid_flight_roots.as_mut_ptr() as *mut u64
+}
+
+/// Signal a cooperative back-edge yield. Called by JIT after writing
+/// `arg_count` live args into `mid_flight_roots` (via fz_mid_flight_roots_ptr).
+/// Stores the callee's raw code pointer (`fn_ptr`) so the scheduler can
+/// resume without a spec_id→ptr lookup. Returns YIELD_PTR to break the
+/// quantum loop.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_yield_back_edge(fn_ptr: u64, arg_count: u32) -> *mut u8 {
+    use crate::scheduler_hooks::YIELD_PTR;
+    let p = current_process();
+    p.mid_flight_fn_ptr = fn_ptr;
+    p.mid_flight_root_count = arg_count as u8;
+    YIELD_PTR as *mut u8
+}
+
 // ===== Closure cluster (fz-ul4.23.4.11) =====
 //
 // fz-ul4.29.5: closures are (stub_fp, captures...) pairs. Every closure

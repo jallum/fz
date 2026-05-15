@@ -7,7 +7,7 @@ function u0:0(i64, i64) -> i64 tail {
     sig1 = (i64, i64) -> i64 tail
     sig2 = (i64) -> i64 system_v
     fn0 = u0:28 sig0
-    fn1 = colocated u0:45 sig1
+    fn1 = colocated u0:47 sig1
     fn2 = u0:33 sig2
 
 block0(v0: i64, v1: i64):
@@ -40,13 +40,13 @@ function u0:0(i64) -> i64 tail {
     sig5 = (i32, i32, i32) -> i64 system_v
     sig6 = (i64, i64) -> i64 tail
     sig7 = (i64) -> i64 system_v
-    fn0 = u0:34 sig0
+    fn0 = u0:36 sig0
     fn1 = u0:28 sig1
-    fn2 = colocated u0:46 sig2
+    fn2 = colocated u0:48 sig2
     fn3 = u0:29 sig3
     fn4 = u0:32 sig4
     fn5 = u0:28 sig5
-    fn6 = colocated u0:44 sig6
+    fn6 = colocated u0:46 sig6
     fn7 = u0:33 sig7
 
 block0(v0: i64):
@@ -153,7 +153,7 @@ block2:
     ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64, i64) -> i64 tail
-    fn0 = colocated u0:42 sig0
+    fn0 = colocated u0:44 sig0
 
 block0(v0: i64, v1: i64):
     v2 = load.i64 notrap aligned v0+24    ;; v2 :: &fn0[]:() -> any

@@ -224,6 +224,12 @@ pub struct ModuleTypes {
     /// Populated in `type_module` from the final specs map. Enables O(1)
     /// any-key lookup without the per-element is_equiv scan.
     pub any_key_specs: HashMap<FnId, Vec<Descr>>,
+    /// fz-02r.4 — SCC index for back-edge detection. Two FnIds share a
+    /// back-edge (i.e., the call is on a loop) iff `scc_of[a] == scc_of[b]`.
+    /// Self-recursion maps a fn to its own SCC (singleton). Populated at the
+    /// start of `type_module` from the initial Tarjan run; stable thereafter.
+    #[allow(dead_code)] // consumed by ir_codegen back-edge check (fz-02r.5)
+    pub scc_of: HashMap<FnId, usize>,
 }
 
 impl ModuleTypes {
@@ -438,6 +444,22 @@ fn build_any_key_index(specs: &HashMap<(FnId, Vec<Descr>), FnTypes>) -> HashMap<
 }
 
 pub fn type_module(m: &Module) -> ModuleTypes {
+    // fz-02r.4 — compute SCC once from the structural call graph. The call
+    // graph structure is fixed (the module doesn't change during typing), so
+    // we compute it here with an empty specs map — the same starting point
+    // type_module_pass uses. Exposed via ModuleTypes.scc_of for ir_lower to
+    // annotate Term::TailCall with is_back_edge.
+    let initial_specs: HashMap<(FnId, Vec<Descr>), FnTypes> = HashMap::new();
+    let call_graph = build_call_graph(m, &initial_specs);
+    let mut sccs = tarjan_scc(&call_graph);
+    sccs.reverse(); // caller-first (matches type_module_pass ordering)
+    let mut scc_of: HashMap<FnId, usize> = HashMap::new();
+    for (i, scc) in sccs.iter().enumerate() {
+        for fid in scc {
+            scc_of.insert(*fid, i);
+        }
+    }
+
     // fz-3zx — outer fixpoint over (specs, effective_returns).
     // Each pass rebuilds `specs` from scratch using `prev_returns` as
     // the slot-0 source for cont-key construction. After each pass we
@@ -456,6 +478,7 @@ pub fn type_module(m: &Module) -> ModuleTypes {
                 specs,
                 effective_returns,
                 any_key_specs,
+                scc_of,
             };
         }
         prev_returns = effective_returns;
@@ -470,6 +493,7 @@ pub fn type_module(m: &Module) -> ModuleTypes {
         specs,
         effective_returns,
         any_key_specs,
+        scc_of,
     }
 }
 
@@ -802,7 +826,7 @@ fn walk_spec_for_discovery(
 
         // Direct Call / TailCall.
         match &b.terminator {
-            Term::Call { callee, args, .. } | Term::TailCall { callee, args } => {
+            Term::Call { callee, args, .. } | Term::TailCall { callee, args, .. } => {
                 if let Some(&j) = m.fn_idx.get(callee) {
                     let callee_fn = &m.fns[j];
                     let n_params = callee_fn.block(callee_fn.entry).params.len();
@@ -1083,6 +1107,7 @@ pub fn rewrite_known_target_closures(module: &mut Module, types: &ModuleTypes) {
                         Some(Term::TailCall {
                             callee: target,
                             args: args.clone(),
+                            is_back_edge: false,
                         })
                     } else {
                         None
@@ -2434,7 +2459,7 @@ pub fn compute_effective_returns(
                         let d = ft.vars.get(rv).cloned().unwrap_or_else(Descr::any);
                         joined = joined.union(&d);
                     }
-                    Term::TailCall { callee, args } => {
+                    Term::TailCall { callee, args, .. } => {
                         let arg_descrs: Vec<Descr> = args
                             .iter()
                             .map(|av| ft.vars.get(av).cloned().unwrap_or_else(Descr::any))
@@ -2671,7 +2696,7 @@ pub fn pretty_module_types(m: &Module, t: &ModuleTypes) -> String {
                         bid, v.0, d
                     ));
                 }
-                Term::TailCall { callee, args } => {
+                Term::TailCall { callee, args, .. } => {
                     let arg_descrs: Vec<Descr> = args
                         .iter()
                         .map(|av| ft.vars.get(av).cloned().unwrap_or_else(Descr::any))
@@ -3301,6 +3326,7 @@ mod tests {
             Term::TailCall {
                 callee: FnId(0),
                 args: vec![v],
+                is_back_edge: false,
             },
         );
 
@@ -3332,6 +3358,7 @@ mod tests {
             Term::TailCall {
                 callee: FnId(0),
                 args: vec![one],
+                is_back_edge: false,
             },
         );
 
@@ -3344,6 +3371,7 @@ mod tests {
             Term::TailCall {
                 callee: FnId(0),
                 args: vec![ok],
+                is_back_edge: false,
             },
         );
 
@@ -3419,6 +3447,7 @@ mod tests {
             Term::TailCall {
                 callee: FnId(0),
                 args: vec![lit],
+                is_back_edge: false,
             },
         );
 
@@ -3467,6 +3496,7 @@ mod tests {
             Term::TailCall {
                 callee: FnId(0),
                 args: vec![lit],
+                is_back_edge: false,
             },
         );
 
@@ -3510,6 +3540,7 @@ mod tests {
             Term::TailCall {
                 callee: FnId(0),
                 args: vec![lit],
+                is_back_edge: false,
             },
         );
 
@@ -3552,6 +3583,7 @@ mod tests {
             Term::TailCall {
                 callee: FnId(0),
                 args: vec![lit],
+                is_back_edge: false,
             },
         );
 
@@ -3692,6 +3724,7 @@ fn main(), do: print(add1(40) + 2)
             Term::TailCall {
                 callee: FnId(2),
                 args: vec![],
+                is_back_edge: false,
             },
         );
 

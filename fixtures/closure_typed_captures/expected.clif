@@ -7,8 +7,8 @@ function u0:0(i64) -> i64 tail {
     sig1 = (i64, i64, i64) -> i64 tail
     sig2 = (i64, i64) -> i64 tail
     fn0 = u0:28 sig0
-    fn1 = colocated u0:44 sig1
-    fn2 = colocated u0:45 sig2
+    fn1 = colocated u0:46 sig1
+    fn2 = colocated u0:47 sig2
 
 block0(v0: i64):
     v1 = iconst.i64 10                  ; @5:23
@@ -30,7 +30,7 @@ block0(v0: i64):
     ;   @abi    (Tagged, RawInt) -> RawInt
 function u0:0(i64, i64, i64) -> i64 tail {
     sig0 = (i64, i64, i64) -> i64 tail
-    fn0 = colocated u0:44 sig0
+    fn0 = colocated u0:46 sig0
 
     block0(v0: i64, v1: i64, v2: i64):    ;; v0 :: &fn3[10, 20]:(any) -> any, v1 :: 12
     return_call fn0(v1, v0, v2)         ; @2:22
@@ -60,9 +60,9 @@ function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64, i64, i64) -> i64 tail
     sig1 = (i32, i32, i32) -> i64 system_v
     sig2 = (i64, i64) -> i64 tail
-    fn0 = colocated u0:43 sig0
+    fn0 = colocated u0:45 sig0
     fn1 = u0:28 sig1
-    fn2 = colocated u0:46 sig2
+    fn2 = colocated u0:48 sig2
 
     block0(v0: i64, v1: i64):    ;; v0 :: &fn3[10, 20]:(any) -> any
     v2 = iconst.i64 12                  ; @5:32

@@ -47,6 +47,15 @@ pub enum LowerError {
         span: Span,
         what: String,
     },
+    /// A back-edge tail call has more than 8 arguments, exceeding the
+    /// mid_flight_roots slab limit. Emit a structured diagnostic at the
+    /// declaration, not a runtime assert.
+    BackEdgeTooManyArgs {
+        span: Span,
+        fn_name: String,
+        callee_name: String,
+        arg_count: usize,
+    },
 }
 
 impl LowerError {
@@ -77,6 +86,19 @@ impl LowerError {
             LowerError::PostExpansionNode { span, what } => Diagnostic::error(
                 codes::LOWER_POST_EXPANSION_LEFTOVER,
                 format!("post-expansion node leaked: {}", what),
+                *span,
+            ),
+            LowerError::BackEdgeTooManyArgs {
+                span,
+                fn_name,
+                callee_name,
+                arg_count,
+            } => Diagnostic::error(
+                codes::LOWER_BACK_EDGE_TOO_MANY_ARGS,
+                format!(
+                    "back-edge call from `{}` to `{}` passes {} arguments (max 8 at a yield point)",
+                    fn_name, callee_name, arg_count
+                ),
                 *span,
             ),
         }
@@ -407,7 +429,157 @@ pub fn lower_program_full(prog: &Program) -> Result<(Module, AtomTable, BuiltinT
     let mut module = mb.build();
     module.source = build_source_info(&module, &ctx);
     module.atom_names = ctx.atoms.names();
+    // fz-02r.4 — annotate TailCall back-edges from the structural SCC.
+    annotate_back_edges(&mut module, &ctx.fn_spans)?;
     Ok((module, ctx.atoms, ctx.builtins))
+}
+
+/// Post-lowering pass: compute the SCC of the fn-level call graph and set
+/// `is_back_edge` on every `Term::TailCall` whose callee is in the same SCC
+/// as the caller (i.e., the call is on a loop back-edge). Also emits
+/// `LowerError::BackEdgeTooManyArgs` when a back-edge tail call passes >8 args.
+fn annotate_back_edges(
+    module: &mut Module,
+    fn_spans: &HashMap<FnId, crate::diag::Span>,
+) -> Result<(), LowerError> {
+    use std::collections::{HashMap as HM, HashSet};
+
+    // Build call graph: FnId → set of FnIds it tail-calls.
+    let mut graph: HM<FnId, HashSet<FnId>> = HM::new();
+    for f in &module.fns {
+        let entry = graph.entry(f.id).or_default();
+        for block in &f.blocks {
+            if let Term::TailCall { callee, .. } = &block.terminator {
+                entry.insert(*callee);
+            }
+        }
+    }
+
+    // Tarjan SCC on the call graph.
+    let scc_of = {
+        let mut index_counter = 0usize;
+        let mut stack: Vec<FnId> = Vec::new();
+        let mut on_stack: HashSet<FnId> = HashSet::new();
+        let mut index: HM<FnId, usize> = HM::new();
+        let mut lowlink: HM<FnId, usize> = HM::new();
+        let mut scc_of: HM<FnId, usize> = HM::new();
+        let mut scc_count = 0usize;
+        let all_fns: Vec<FnId> = module.fns.iter().map(|f| f.id).collect();
+
+        fn strongconnect(
+            v: FnId,
+            graph: &HM<FnId, HashSet<FnId>>,
+            index_counter: &mut usize,
+            stack: &mut Vec<FnId>,
+            on_stack: &mut HashSet<FnId>,
+            index: &mut HM<FnId, usize>,
+            lowlink: &mut HM<FnId, usize>,
+            scc_of: &mut HM<FnId, usize>,
+            scc_count: &mut usize,
+        ) {
+            let v_index = *index_counter;
+            index.insert(v, v_index);
+            lowlink.insert(v, v_index);
+            *index_counter += 1;
+            stack.push(v);
+            on_stack.insert(v);
+
+            if let Some(neighbors) = graph.get(&v) {
+                let neighbors: Vec<FnId> = neighbors.iter().copied().collect();
+                for w in neighbors {
+                    if !index.contains_key(&w) {
+                        strongconnect(
+                            w,
+                            graph,
+                            index_counter,
+                            stack,
+                            on_stack,
+                            index,
+                            lowlink,
+                            scc_of,
+                            scc_count,
+                        );
+                        let w_ll = lowlink[&w];
+                        let v_ll = lowlink.get_mut(&v).unwrap();
+                        if w_ll < *v_ll {
+                            *v_ll = w_ll;
+                        }
+                    } else if on_stack.contains(&w) {
+                        let w_idx = index[&w];
+                        let v_ll = lowlink.get_mut(&v).unwrap();
+                        if w_idx < *v_ll {
+                            *v_ll = w_idx;
+                        }
+                    }
+                }
+            }
+
+            if lowlink[&v] == index[&v] {
+                let scc_id = *scc_count;
+                *scc_count += 1;
+                loop {
+                    let w = stack.pop().unwrap();
+                    on_stack.remove(&w);
+                    scc_of.insert(w, scc_id);
+                    if w == v {
+                        break;
+                    }
+                }
+            }
+        }
+
+        for fid in &all_fns {
+            if !index.contains_key(fid) {
+                strongconnect(
+                    *fid,
+                    &graph,
+                    &mut index_counter,
+                    &mut stack,
+                    &mut on_stack,
+                    &mut index,
+                    &mut lowlink,
+                    &mut scc_of,
+                    &mut scc_count,
+                );
+            }
+        }
+        scc_of
+    };
+
+    // Annotate each TailCall. Build a map from FnId to fn name for error messages.
+    let fn_name_of: HM<FnId, String> = module.fns.iter().map(|f| (f.id, f.name.clone())).collect();
+
+    for f in &mut module.fns {
+        let caller_scc = scc_of.get(&f.id).copied().unwrap_or(usize::MAX);
+        let caller_name = fn_name_of.get(&f.id).cloned().unwrap_or_default();
+        let caller_span = fn_spans
+            .get(&f.id)
+            .copied()
+            .unwrap_or(crate::diag::Span::DUMMY);
+        for block in &mut f.blocks {
+            if let Term::TailCall {
+                callee,
+                args,
+                is_back_edge,
+            } = &mut block.terminator
+            {
+                let callee_scc = scc_of.get(callee).copied().unwrap_or(usize::MAX);
+                if callee_scc == caller_scc {
+                    *is_back_edge = true;
+                    if args.len() > 8 {
+                        let callee_name = fn_name_of.get(callee).cloned().unwrap_or_default();
+                        return Err(LowerError::BackEdgeTooManyArgs {
+                            span: caller_span,
+                            fn_name: caller_name.clone(),
+                            callee_name,
+                            arg_count: args.len(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Collect the per-fn metadata accumulated on `ctx` into `Module.source`.
@@ -792,6 +964,7 @@ fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -> Result<Va
                     Term::TailCall {
                         callee,
                         args: arg_vars,
+                        is_back_edge: false, // annotate_back_edges fills this in post-lowering
                     },
                     sp,
                 );
@@ -2207,5 +2380,61 @@ end
         let sp = m.source.var_span_of(v);
         let txt = &src[sp.start as usize..sp.end as usize];
         assert_eq!(txt, "1");
+    }
+
+    fn first_tail_call(m: &crate::fz_ir::Module) -> Option<(crate::fz_ir::FnId, bool)> {
+        for f in &m.fns {
+            for b in &f.blocks {
+                if let Term::TailCall {
+                    callee,
+                    is_back_edge,
+                    ..
+                } = &b.terminator
+                {
+                    return Some((*callee, *is_back_edge));
+                }
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn self_recursive_fn_has_back_edge() {
+        let m = lower_src("fn loop(n), do: loop(n)");
+        let (callee, is_back_edge) = first_tail_call(&m).expect("no TailCall");
+        assert!(
+            is_back_edge,
+            "self-recursion must be a back-edge; callee={:?}",
+            callee
+        );
+    }
+
+    #[test]
+    fn non_recursive_call_is_not_back_edge() {
+        let m = lower_src("fn id(x), do: x\nfn main(), do: id(1)");
+        // Find the TailCall from main to id.
+        let mut found = false;
+        for f in &m.fns {
+            if f.name == "main" {
+                for b in &f.blocks {
+                    if let Term::TailCall { is_back_edge, .. } = &b.terminator {
+                        assert!(!is_back_edge, "non-recursive call must NOT be back-edge");
+                        found = true;
+                    }
+                }
+            }
+        }
+        assert!(found, "no TailCall from main");
+    }
+
+    #[test]
+    fn back_edge_too_many_args_returns_error() {
+        // A self-recursive fn with 9 args exceeds the 8-slot slab limit.
+        let err = lower_src_err("fn bigloop(a,b,c,d,e,f,g,h,i), do: bigloop(a,b,c,d,e,f,g,h,i)");
+        assert!(
+            matches!(err, LowerError::BackEdgeTooManyArgs { arg_count: 9, .. }),
+            "expected BackEdgeTooManyArgs(9), got {:?}",
+            err
+        );
     }
 }

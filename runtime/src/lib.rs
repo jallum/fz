@@ -14,6 +14,7 @@ pub mod heap;
 pub mod ir_runtime;
 pub mod process;
 pub mod scheduler_hooks;
+pub mod yield_flag;
 
 // ---------------------------------------------------------------------------
 // C-ABI builtins called from compiled fz code

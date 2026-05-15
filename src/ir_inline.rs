@@ -273,9 +273,14 @@ pub fn alpha_rename(
                 args: args.iter().map(|x| sv(*x)).collect(),
                 continuation: rename_cont(continuation),
             },
-            Term::TailCall { callee, args } => Term::TailCall {
+            Term::TailCall {
+                callee,
+                args,
+                is_back_edge,
+            } => Term::TailCall {
                 callee: *callee,
                 args: args.iter().map(|x| sv(*x)).collect(),
+                is_back_edge: *is_back_edge,
             },
             Term::CallClosure {
                 closure,
@@ -366,7 +371,7 @@ pub fn inline_tail_calls_once(m: &mut Module) -> usize {
         .enumerate()
         .flat_map(|(fi, f)| {
             f.blocks.iter().enumerate().filter_map(move |(bi, b)| {
-                if let Term::TailCall { callee, args } = &b.terminator {
+                if let Term::TailCall { callee, args, .. } = &b.terminator {
                     let callee = *callee;
                     let args = args.clone();
                     Some((fi, bi, callee, args))
@@ -481,6 +486,7 @@ pub fn inline_calls_once(m: &mut Module) -> usize {
                 b.terminator = Term::TailCall {
                     callee: cont_fn,
                     args: tail_args,
+                    is_back_edge: false,
                 };
             }
         }
@@ -554,6 +560,7 @@ mod tests {
             Term::TailCall {
                 callee,
                 args: vec![y],
+                is_back_edge: false,
             },
         );
         b.build()
