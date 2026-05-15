@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-4n9.6"
+  ],
   "created": "2026-05-15T11:11:37Z",
   "description": "",
   "id": "fz-4n9.5",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "fz-cg2.5 VarBinding: combine var_map + var_reprs into one map",
   "type": "task",
-  "updated_at": "2026-05-15T11:11:37Z"
+  "updated_at": "2026-05-15T11:11:41Z"
 }
