@@ -379,6 +379,27 @@ impl Descr {
         d
     }
 
+    /// fz-zmu fz-ul4.dce.2 — If this Descr is a pure singleton int (exactly one
+    /// integer value with all other type axes empty), return that integer.
+    /// Used by ir_fold to detect BinOp results the typer proved to a constant.
+    pub fn as_int_singleton(&self) -> Option<i64> {
+        if !self.ints.cofinite
+            && self.ints.set.len() == 1
+            && self.atoms.is_none()
+            && self.floats.is_none()
+            && self.strs.is_none()
+            && self.basic.is_empty()
+            && self.tuples.is_empty()
+            && self.lists.is_empty()
+            && self.funcs.is_empty()
+            && self.maps.is_empty()
+        {
+            self.ints.set.iter().next().copied()
+        } else {
+            None
+        }
+    }
+
     /// Top of the string/binary axis. Promoted from test-only in
     /// fz-ul4.31.1 to let the type-expression parser lower `binary` to
     /// the correct Descr. (`dead_code` allowed: production consumers

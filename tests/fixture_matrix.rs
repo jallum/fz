@@ -1040,6 +1040,36 @@ fn check_goldens(emit: Emit) {
     );
 }
 
+/// fz-466 fz-ul4.dce.1 — proof test (RED gate).
+///
+/// After fold+DCE land, the BinOp operand iconst 41 (left-hand side of
+/// the constant-folded 41+1=42 in add1) must be eliminated from main's
+/// CLIF body. This test is RED until fz-cg2 (dce.5) wires the pipeline.
+#[test]
+fn no_dead_const_operands_after_singleton_fold() {
+    let out = Command::new(FZ_BIN)
+        .args([
+            "dump",
+            "fixtures/add1/input.fz",
+            "--emit",
+            "clif",
+            "--fn",
+            "main",
+        ])
+        .output()
+        .expect("spawn fz dump");
+    assert!(out.status.success(), "fz dump exited {}", out.status);
+    let clif = String::from_utf8_lossy(&out.stdout);
+    let main_start = clif.find("; fn main").expect("missing main banner");
+    let main_section = &clif[main_start..];
+    // After fold+DCE, the operands of the folded 41+1 BinOp must be gone.
+    assert!(
+        !main_section.contains("iconst.i64 41"),
+        "dead operand iconst 41 should be eliminated by DCE:\n{}",
+        main_section
+    );
+}
+
 #[test]
 fn golden_clif() {
     check_goldens(Emit::Clif);
