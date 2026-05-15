@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-15T22:11:13Z",
+  "description": "Files: runtime/src/heap.rs\n\npub fn gc_major(\u0026mut self, roots: \u0026mut [FzValue], mailbox: \u0026mut VecDeque\u003cFzValue\u003e) {\n  // from_ranges = [(young_start, young_top), (old_start, old_top)] — both generations.\n  // Allocate fresh old block (sized by last_major_live_bytes*2 or bytes_used()).\n  // Cheney BFS from roots into fresh old block — same algorithm as current gc().\n  // pool_free(old_start, old_size_class)  // reclaim old from-space\n  // pool_free(young_start, young_size_class)  // reclaim young (all promoted or dead)\n  // Install fresh block as new old block. Reset young_top = young_start (young now empty).\n  // Set gc_watermark = young_start + young_size*3/4 (young watermark unchanged).\n  // Update last_major_live_bytes. Reset minor_gc_count = 0.\n}\n\nThis is the existing gc() with two from_ranges instead of one. The Cheney machinery (cheney_forward, cheney_trace_children, forward_field) is unchanged. The to-space is a fresh old block; the young block is reset rather than freed (reused as the new young space).\n\nTests: after major GC, all live objects (from both young and old) are in the new old block; both old from-space and young from-space are freed; young block is empty and ready for allocation; last_major_live_bytes = bytes in new old block; minor_gc_count = 0.",
+  "id": "fz-h9f.3",
+  "labels": [],
+  "parent": "fz-h9f",
+  "priority": 2,
+  "status": "open",
+  "title": "gen-gc.3: gc_major() — full Cheney across both generations into fresh old block",
+  "type": "task",
+  "updated_at": "2026-05-15T22:11:13Z"
+}
