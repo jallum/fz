@@ -2,13 +2,14 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-05-15T15:31:25Z",
   "created": "2026-05-15T15:25:29Z",
   "description": "",
   "id": "fz-1zz",
   "labels": [],
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "fz-cg4.2: replace let _ = (...) documentation tuples with comments",
   "type": "task",
-  "updated_at": "2026-05-15T15:25:29Z"
+  "updated_at": "2026-05-15T15:31:25Z"
 }
