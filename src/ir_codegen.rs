@@ -797,6 +797,22 @@ impl ArgRepr {
     }
 }
 
+/// Allocate and return a halt-cont singleton for `repr` via `fz_get_halt_cont`.
+/// Used when the caller has no cont_param and needs a halt-cont to pass to the
+/// callee — the callee's Term::Return chains through it to record halt_value.
+fn synthesize_halt_cont<M: cranelift_module::Module>(
+    jmod: &mut M,
+    b: &mut FunctionBuilder<'_>,
+    runtime: &RuntimeRefs,
+    repr: ArgRepr,
+) -> ir::Value {
+    let fref = jmod.declare_func_in_func(runtime.get_halt_cont_id, b.func);
+    let hcb_addr = fn_addr(jmod, halt_cont_body_id_for(runtime, repr), b);
+    let kind_v = b.ins().iconst(types::I32, repr.halt_kind() as i64);
+    let inst = b.ins().call(fref, &[hcb_addr, kind_v]);
+    b.inst_results(inst)[0]
+}
+
 /// Declare `id` in the current function and return its address as an i64.
 /// Collapses the ubiquitous `declare_func_in_func` + `func_addr` pair.
 fn fn_addr<M: cranelift_module::Module>(
@@ -3750,17 +3766,7 @@ fn emit_terminator<M: cranelift_module::Module>(
                         Some(c) => c,
                         None => {
                             synth_halt_cont = true;
-                            // fz-ul4.27.22.3 — synth halt-cont's body
-                            // matches the callee's return_repr.
-                            let fref =
-                                jmod.declare_func_in_func(runtime.get_halt_cont_id, b.func);
-                            let hcb_addr =
-                                fn_addr(jmod, halt_cont_body_id_for(runtime, callee_ret_repr), b);
-                            let kind_v = b
-                                .ins()
-                                .iconst(types::I32, callee_ret_repr.halt_kind() as i64);
-                            let inst = b.ins().call(fref, &[hcb_addr, kind_v]);
-                            b.inst_results(inst)[0]
+                            synthesize_halt_cont(jmod, b, runtime, callee_ret_repr)
                         }
                     }
                 };
@@ -3897,17 +3903,7 @@ fn emit_terminator<M: cranelift_module::Module>(
                         Some(c) => c,
                         None => {
                             synth_halt_cont = true;
-                            // fz-ul4.27.22.3 — synth halt-cont's body
-                            // matches callee's return_repr.
-                            let fref =
-                                jmod.declare_func_in_func(runtime.get_halt_cont_id, b.func);
-                            let hcb_addr =
-                                fn_addr(jmod, halt_cont_body_id_for(runtime, callee_ret_repr), b);
-                            let kind_v = b
-                                .ins()
-                                .iconst(types::I32, callee_ret_repr.halt_kind() as i64);
-                            let inst = b.ins().call(fref, &[hcb_addr, kind_v]);
-                            b.inst_results(inst)[0]
+                            synthesize_halt_cont(jmod, b, runtime, callee_ret_repr)
                         }
                     }
                 };
