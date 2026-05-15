@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-afs.5"
+  ],
   "blocks": [],
   "created": "2026-05-15T03:22:29Z",
   "description": "walk_spec_for_discovery receives its caller's FnTypes by value after a .cloned().unwrap() (lines 544, 609, 647, 718). FnTypes contains four HashMaps (vars, block_envs, fn_constants, reachable_blocks) — cloning it inside a loop over all specs×outer-iterations is expensive.\n\nRoot cause: specs (immutable) and pending/callsite_fn_consts (mutable) are both needed in the same scope, so the borrow checker forces a clone of FnTypes out of specs before the mutable borrows begin.\n\nFix: change walk_spec_for_discovery's caller_ft parameter from FnTypes to \u0026FnTypes. The call site holds a shared borrow of specs (\u0026HashMap lookup) and passes \u0026mut pending and \u0026mut callsite_fn_consts as separate parameters — these are disjoint from specs, so the borrow checker is satisfied.\n\nRequires fz-afs.5 (S1) to have stabilised the function signature first.",
