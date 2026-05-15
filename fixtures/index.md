@@ -24,9 +24,11 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `macro_inc/` | defmacro + quote/unquote round-trip — two macros, one nested in the other | jit, interp |
 | `modules/` | cross-module qualified calls — `M.double`, `M.quad`, `N.helper` | jit, interp |
 | `multi_clause/` | multi-clause dispatch with a guard clause (`when n > 0`), plus recursive `fact` | jit, interp |
+| `multi_relay/` | two workers both block on receive simultaneously; exercises scheduler managing multiple Blocked processes | jit |
 | `mutual_recursion/` | mutual recursion — is_even/is_odd call each other; exercises cross-function recursive dispatch | jit, interp, aot |
 | `nested_modules/` | inner module addressed both fully-qualified (`Outer.Inner.f`) and via outer-local reference | jit, interp |
 | `polymorphic/` | parametric `id` exercised over int, atom, and bool | jit, interp |
+| `relay/` | one-hop relay — spawned child blocks on receive before parent sends; exercises non-blocking spawn + receive-parks semantics | jit |
 | `sample_tests/` | `test()` macro from the prelude — assert_eq / assert_neq / assert | jit |
 | `sample_tests_module/` | `test()` inside a defmodule body | jit |
 | `spawn2_basic/` | fz-siu.12 — spawn/2 with min_heap_size hint behaves identically to spawn/1 | jit, interp, aot |
