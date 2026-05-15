@@ -91,12 +91,10 @@ impl From<String> for CodegenError {
 /// host runs a fn via `compiled.run(fn_id)` (constructs an internal default
 /// Process) or `compiled.run_in(fn_id, &mut Process)` (caller-owned Process).
 pub struct CompiledModule {
+    #[allow(dead_code)] // keep-alive: JIT memory is freed on drop
     module: JITModule,
     /// fz_fn_id -> compiled fn ptr.
     fn_ptrs: HashMap<u32, *const u8>,
-    /// Per-fn frame schema (size, layout). Indexed by fz_fn_id (1:1 with
-    /// schema_id).
-    schemas: Vec<Schema>,
     /// User-data SchemaRegistry (tuple, struct, list, map, closure, bitstring,
     /// vec, float). Lifted from TLS in fz-ul4.11.32. Each Process constructed
     /// via `make_process()` shares this registry through its Heap.
@@ -115,9 +113,6 @@ pub struct CompiledModule {
     /// make_process() time so fz_value::debug::render can spell atoms
     /// out as `:name` (fz-ul4.25).
     pub(crate) atom_names: Vec<String>,
-    /// Per-fn Var -> Descr maps from fz-ul4.11.24.2's flow-insensitive typer.
-    /// Indexed by position in source Module.fns (not by FnId.0).
-    pub(crate) types: crate::ir_typer::ModuleTypes,
     /// .11.24.6 + .20.5: diagnostics surface (unreachable arms, dead
     /// branches). Structured via the central `diag::Diagnostic` type.
     pub(crate) diagnostics: crate::diag::Diagnostics,
@@ -170,17 +165,6 @@ impl CompiledModule {
         self.fn_ptrs.get(&fn_id.0).copied()
     }
 
-    /// fz-cps.1.7 — registered zero-capture closure-target specs. Each
-    /// entry corresponds to one Process-level static singleton allocated
-    /// at `make_process` time. See docs/cps-in-clif.md §8.2.
-    pub fn static_closure_targets(&self) -> &[(u32, u32, *const u8, u32)] {
-        &self.static_closure_targets
-    }
-
-    pub fn schema_for(&self, fn_id: FnId) -> &Schema {
-        &self.schemas[fn_id.0 as usize]
-    }
-
     /// Construct a fresh Process bound to this module's compile-time data
     /// (SchemaRegistry, frame_sizes, bs_tuple_arity*_schema). Multiple
     /// Processes can be made from the same CompiledModule and run
@@ -215,32 +199,6 @@ impl CompiledModule {
         // slot's body sig matches its repr kind (Tagged / RawInt / RawF64).
         p.init_halt_cont_singletons(self.halt_cont_body_addrs);
         p
-    }
-
-    /// Run the trampoline with `fn_id` as the entry fn, using a fresh Process
-    /// stashed in DEFAULT_PROCESS for post-run inspection (test helpers
-    /// `heap_live_count`, `heap_gc`, etc. read from DEFAULT_PROCESS).
-    pub fn run(&self, fn_id: FnId) -> i64 {
-        DEFAULT_PROCESS.with(|c| *c.borrow_mut() = Some(self.make_process()));
-        let ptr = DEFAULT_PROCESS.with(|c| {
-            let mut b = c.borrow_mut();
-            b.as_mut().unwrap() as *mut Process
-        });
-        let prev = CURRENT_PROCESS.with(|c| c.replace(ptr));
-        let result = self.run_internal(fn_id);
-        CURRENT_PROCESS.with(|c| c.set(prev));
-        result
-    }
-
-    /// Run with a caller-owned Process. Tests that need to inspect Process
-    /// state after the run (or interleave runs of multiple Processes) use
-    /// this form.
-    pub fn run_in(&self, fn_id: FnId, process: &mut Process) -> i64 {
-        let ptr = process as *mut Process;
-        let prev = CURRENT_PROCESS.with(|c| c.replace(ptr));
-        let result = self.run_internal(fn_id);
-        CURRENT_PROCESS.with(|c| c.set(prev));
-        result
     }
 
     /// Run one quantum for a Process. Resumes from `process.next_frame`
@@ -326,10 +284,39 @@ impl CompiledModule {
         process.next_frame = std::ptr::null_mut();
     }
 
+}
+
+#[cfg(test)]
+impl CompiledModule {
+    /// fz-cps.1.7 — registered zero-capture closure-target specs.
+    pub fn static_closure_targets(&self) -> &[(u32, u32, *const u8, u32)] {
+        &self.static_closure_targets
+    }
+
+    /// Run the trampoline with `fn_id` as the entry fn, using a fresh Process
+    /// stashed in DEFAULT_PROCESS for post-run inspection.
+    pub fn run(&self, fn_id: FnId) -> i64 {
+        DEFAULT_PROCESS.with(|c| *c.borrow_mut() = Some(self.make_process()));
+        let ptr = DEFAULT_PROCESS.with(|c| {
+            let mut b = c.borrow_mut();
+            b.as_mut().unwrap() as *mut Process
+        });
+        let prev = CURRENT_PROCESS.with(|c| c.replace(ptr));
+        let result = self.run_internal(fn_id);
+        CURRENT_PROCESS.with(|c| c.set(prev));
+        result
+    }
+
+    /// Run with a caller-owned Process.
+    pub fn run_in(&self, fn_id: FnId, process: &mut Process) -> i64 {
+        let ptr = process as *mut Process;
+        let prev = CURRENT_PROCESS.with(|c| c.replace(ptr));
+        let result = self.run_internal(fn_id);
+        CURRENT_PROCESS.with(|c| c.set(prev));
+        result
+    }
+
     fn run_internal(&self, fn_id: FnId) -> i64 {
-        // fz-cps.5 / fz-ul4.27.22.3 — every fz fn is Tail-CC. Dispatch
-        // via fz_main_entry, passing the halt-cont singleton matching
-        // the entry fn's return-repr kind.
         let fp = self
             .fn_ptrs
             .get(&fn_id.0)
@@ -349,8 +336,10 @@ impl CompiledModule {
 // here for back-compat with downstream users (runtime.rs, ir_runtime.rs,
 // tests) while consumers migrate to `fz_runtime::process::*`.
 pub use fz_runtime::process::{
-    CURRENT_PROCESS, DEFAULT_PROCESS, PidId, Process, ProcessState, current_process,
+    CURRENT_PROCESS, DEFAULT_PROCESS, PidId, Process, ProcessState,
 };
+#[cfg(test)]
+use fz_runtime::process::current_process;
 
 // Runtime FFI fns called from JIT'd code now live in src/ir_runtime.rs.
 // Value rendering lives in fz_runtime::fz_value::debug (fz-ul4.23.4.3).
@@ -767,32 +756,6 @@ fn build_frame_schema(name: &str, param_kinds: &[FieldKind]) -> Schema {
 /// fz-ul4.23.12 unification: where the trait used to expose only
 /// `module_mut` and the surrounding pipeline was duplicated in
 /// `compile()` and `compile_aot()`, the surrounding pipeline is now
-/// fz-ul4.27.6.2.1 — Join the Descrs of every `Term::Return` operand in a
-/// fn's blocks. For a fn whose only exits are TailCall / Halt / Goto / If
-/// (no Return), the result is `any`. .6.2.2 consumes this to build per-fn
-/// typed Signatures: an int-only return becomes `i64`, a float-only return
-/// becomes `f64`, anything else stays `i64` (tagged FzValue).
-fn join_return_descrs(
-    f: &crate::fz_ir::FnIr,
-    ft: &crate::ir_typer::FnTypes,
-) -> crate::types::Descr {
-    let mut joined: Option<crate::types::Descr> = None;
-    for b in &f.blocks {
-        if let Term::Return(v) = &b.terminator {
-            let d = ft
-                .vars
-                .get(v)
-                .cloned()
-                .unwrap_or_else(crate::types::Descr::any);
-            joined = Some(match joined {
-                Some(prev) => prev.union(&d),
-                None => d,
-            });
-        }
-    }
-    joined.unwrap_or_else(crate::types::Descr::any)
-}
-
 /// fz-ul4.27.13 — How a fz arg/return rides the Cranelift ABI for a native
 /// fn. `Tagged` is the default FzValue i64 (low 3 bits = tag); `RawInt` is
 /// an unshifted int payload as i64; `RawF64` is a raw f64.
@@ -1242,13 +1205,11 @@ impl Backend for JitBackend {
         Ok(CompiledModule {
             module: jmod,
             fn_ptrs,
-            schemas: meta.schemas,
             user_schemas: meta.user_schemas,
             frame_sizes: meta.frame_sizes,
             atom_names: meta.atom_names,
             bs_tuple_arity1_schema: meta.bs_tuple_arity1_schema,
             bs_tuple_arity3_schema: meta.bs_tuple_arity3_schema,
-            types: meta.types,
             diagnostics: meta.diagnostics,
             static_closure_targets,
             resume_park_addr,
@@ -6087,7 +6048,6 @@ fn bool_to_fz(b: &mut FunctionBuilder<'_>, v: ir::Value) -> ir::Value {
 }
 
 #[cfg(test)]
-#[cfg(test)]
 mod tests {
     use super::*;
     use crate::ir_lower::lower_program;
@@ -6098,6 +6058,27 @@ mod tests {
         let toks = Lexer::new(src).tokenize().expect("lex");
         let prog = Parser::new(toks).parse_program().expect("parse");
         lower_program(&prog).expect("lower")
+    }
+
+    fn join_return_descrs(
+        f: &crate::fz_ir::FnIr,
+        ft: &crate::ir_typer::FnTypes,
+    ) -> crate::types::Descr {
+        let mut joined: Option<crate::types::Descr> = None;
+        for b in &f.blocks {
+            if let Term::Return(v) = &b.terminator {
+                let d = ft
+                    .vars
+                    .get(v)
+                    .cloned()
+                    .unwrap_or_else(crate::types::Descr::any);
+                joined = Some(match joined {
+                    Some(prev) => prev.union(&d),
+                    None => d,
+                });
+            }
+        }
+        joined.unwrap_or_else(crate::types::Descr::any)
     }
 
     /// fz-cps.1.7 — every zero-capture `MakeClosure(f, [])` target gets
