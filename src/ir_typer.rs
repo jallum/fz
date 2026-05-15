@@ -219,6 +219,10 @@ pub struct ModuleTypes {
     /// pretty_module_types, walker slot0_descr) read here instead of
     /// recursing on demand.
     pub effective_returns: HashMap<(FnId, Vec<Descr>), Descr>,
+    /// fz-afs.12 — secondary index: FnId → all-any key for that fn.
+    /// Populated in `type_module` from the final specs map. Enables O(1)
+    /// any-key lookup without the per-element is_equiv scan.
+    pub any_key_specs: HashMap<FnId, Vec<Descr>>,
 }
 
 impl ModuleTypes {
@@ -236,31 +240,26 @@ impl ModuleTypes {
     /// fns have no any-key.
     #[allow(dead_code)]
     pub fn any_key_spec(&self, fn_id: FnId) -> Option<&FnTypes> {
-        // Walk the specs map for any key consisting entirely of `any`.
-        // Cheap: spec count is small (~n_fns).
-        for ((fid, key), ft) in &self.specs {
-            if *fid != fn_id {
-                continue;
-            }
-            if key.iter().all(|d| d.is_equiv(&Descr::any())) {
-                return Some(ft);
-            }
-        }
-        None
+        let key = self.any_key_specs.get(&fn_id)?;
+        self.specs.get(&(fn_id, key.clone()))
     }
 
     /// fz-pky.2 — return any registered spec for `fn_id` (for callers
     /// that just need "the typer's view of this fn under some
-    /// reachable callsite"). Picks deterministically by key's debug-
-    /// string ordering.
+    /// reachable callsite"). Prefers the any-key spec when available;
+    /// falls back to a deterministic linear scan over remaining specs.
     #[allow(dead_code)]
     pub fn any_spec_for(&self, fn_id: FnId) -> Option<&FnTypes> {
+        if let Some(ft) = self.any_key_spec(fn_id) {
+            return Some(ft);
+        }
+        // No any-key: pick the spec whose key Display-string is smallest.
         let mut best: Option<(String, &FnTypes)> = None;
         for ((fid, key), ft) in &self.specs {
             if *fid != fn_id {
                 continue;
             }
-            let ks = format!("{:?}", key);
+            let ks: String = key.iter().map(|d| format!("{}", d)).collect::<Vec<_>>().join(",");
             match &best {
                 None => best = Some((ks, ft)),
                 Some((bk, _)) if &ks < bk => best = Some((ks, ft)),
@@ -423,6 +422,16 @@ fn opaque_consumer_arities(
     arities
 }
 
+fn build_any_key_index(specs: &HashMap<(FnId, Vec<Descr>), FnTypes>) -> HashMap<FnId, Vec<Descr>> {
+    let mut idx: HashMap<FnId, Vec<Descr>> = HashMap::new();
+    for (fid, key) in specs.keys() {
+        if key.iter().all(|d| d.is_equiv(&Descr::any())) {
+            idx.entry(*fid).or_insert_with(|| key.clone());
+        }
+    }
+    idx
+}
+
 pub fn type_module(m: &Module) -> ModuleTypes {
     // fz-3zx — outer fixpoint over (specs, effective_returns).
     // Each pass rebuilds `specs` from scratch using `prev_returns` as
@@ -437,9 +446,11 @@ pub fn type_module(m: &Module) -> ModuleTypes {
         let specs = type_module_pass(m, &prev_returns);
         let effective_returns = compute_effective_returns(m, &specs, &prev_returns);
         if effective_returns == prev_returns {
+            let any_key_specs = build_any_key_index(&specs);
             return ModuleTypes {
                 specs,
                 effective_returns,
+                any_key_specs,
             };
         }
         prev_returns = effective_returns;
@@ -449,9 +460,11 @@ pub fn type_module(m: &Module) -> ModuleTypes {
     // every fixture we've seen.
     let specs = type_module_pass(m, &prev_returns);
     let effective_returns = compute_effective_returns(m, &specs, &prev_returns);
+    let any_key_specs = build_any_key_index(&specs);
     ModuleTypes {
         specs,
         effective_returns,
+        any_key_specs,
     }
 }
 
