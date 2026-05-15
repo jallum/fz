@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-15T21:59:20Z",
+  "description": "Files: src/ir_interp.rs\n\nAt Term::TailCall eval arm, when is_back_edge:\n  if FZ_SHOULD_YIELD.load(Relaxed) != 0 {\n      coerce args to Tagged, spill to mid_flight_roots\n      set mid_flight_fn_id, mid_flight_root_count, state=Ready\n      FZ_SHOULD_YIELD.store(0)\n      return interpreter yield sentinel\n  }\n\nScheduler re-enters run_quantum with mid_flight_fn_id!=0. If function has a JIT resume shim, use it. If interp-only, scheduler re-dispatches through interpreter from mid_flight_roots slab.\n\nTests: fz-sched.12 integration cases via interp mode.",
+  "id": "fz-02r.6",
+  "labels": [],
+  "parent": "fz-02r",
+  "priority": 2,
+  "status": "open",
+  "title": "fz-sched.10: Interpreter parity — back-edge check in eval loop",
+  "type": "task",
+  "updated_at": "2026-05-15T21:59:20Z"
+}
