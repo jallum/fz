@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-15T18:27:57Z",
+  "description": "",
+  "id": "fz-adc",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "fz-ul4.dce.4: src/ir_dce.rs — dead stmt elimination + unit tests",
+  "type": "task",
+  "updated_at": "2026-05-15T18:27:57Z"
+}
