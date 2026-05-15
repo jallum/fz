@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-15T03:21:52Z",
+  "description": "Holistic improvement pass on ir_typer.rs across three axes:\n\nREMOVE\n- specialize_return (90-line dead hook, drifts from type_fn)\n- let _ = i; vestigial suppression in Goto handler\n- bi.checked_rem(1) dead computation in numeric_result_fold\n- per-call idx_of rebuilds (4 sites, each O(n_fns))\n- FnTypes clone on every discovery-walk call\n- full-spec re-walk each closure-to-fixpoint iteration\n- per-iteration opaque_consumer_arities recomputation\n\nCHANGE\n- fn_by_id: linear scan → O(1) via Module-level HashMap\n- idx_of: rebuilt per call → hoisted once into type_module_pass\n- drain/register/walk: 4 duplicated copies → 1 extracted helper\n- type_fn block traversal: storage order → topological order\n\nADD\n- worklist-based closure-to-fixpoint (only new specs trigger re-walks)\n- compound condition narrowing: BinOp::And/Or in narrow_for_if\n- any-key secondary index in ModuleTypes (O(1) lookup, no is_equiv scan)\n\nDAG (each step is one commit):\n  T1 fn_by_id O(1)         ─┐\n  T2 remove let _ = i       │ no deps, can land in any order\n  T3 remove checked_rem     │\n  T4 remove specialize_return┘\n  S1 hoist idx_of           → C1 avoid FnTypes clone\n                            → W0 extract helper → W1 remove opaque recompute\n                                               → W2 worklist\n  F1 topo block order       (independent)\n  P1 And/Or narrowing       (independent, more valuable after W2)\n  L1 any-key secondary index(independent)",
+  "id": "fz-afs",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "typer: efficiency, precision, and dead-code removal",
+  "type": "epic",
+  "updated_at": "2026-05-15T03:21:52Z"
+}
