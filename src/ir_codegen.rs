@@ -3629,16 +3629,15 @@ fn compile_fn<M: cranelift_module::Module>(
     // Cranelift verifier (f64 sig vs i64 return). Skip emitting those
     // blocks entirely.
     let reachable_fz_blocks: std::collections::HashSet<u32> = {
+        let blk_idx: HashMap<u32, &crate::fz_ir::Block> =
+            f.blocks.iter().map(|b| (b.id.0, b)).collect();
         let mut reach: std::collections::HashSet<u32> = std::collections::HashSet::new();
         let mut stack: Vec<u32> = vec![f.entry.0];
         while let Some(bid) = stack.pop() {
             if !reach.insert(bid) {
                 continue;
             }
-            let blk = match f.blocks.iter().find(|b| b.id.0 == bid) {
-                Some(b) => b,
-                None => continue,
-            };
+            let Some(blk) = blk_idx.get(&bid) else { continue };
             match &blk.terminator {
                 Term::Goto(t, _) => stack.push(t.0),
                 Term::If(_, t, e) => {
