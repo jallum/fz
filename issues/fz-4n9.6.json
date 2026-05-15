@@ -8,14 +8,15 @@
   "blocks": [
     "fz-4n9.7"
   ],
+  "closed_at": "2026-05-15T11:37:19Z",
   "created": "2026-05-15T11:11:37Z",
   "description": "compile_fn takes 23 parameters. lower_prim takes 13. Ten are shared between them.\nAfter T1 (fns_needing_host_ctx removed) and T2 (stub_fn_ids removed), bundle the shared params.\n\nADD (before compile_fn):\n  struct CodegenEnv\u003c'a\u003e {\n      runtime: \u0026'a RuntimeRefs,\n      module: \u0026'a fz_ir::Module,\n      fn_types: \u0026'a FnTypes,\n      spec_registry: \u0026'a SpecRegistry,\n      fn_ids: \u0026'a HashMap\u003cu32, FuncId\u003e,\n      tuple_schema_ids: \u0026'a HashMap\u003cusize, u32\u003e,\n      param_reprs: \u0026'a [Vec\u003cArgRepr\u003e],\n      return_reprs: \u0026'a [ArgRepr],\n      natively_callable: \u0026'a HashSet\u003cFnId\u003e,\n      cont_target_fns: \u0026'a HashSet\u003cFnId\u003e,\n      cont_fns: \u0026'a HashSet\u003cFnId\u003e,\n      closure_n_captures: \u0026'a HashMap\u003cFnId, usize\u003e,\n  }\n\nNOTE: jmod is \u0026mut M (generic mutable ref) — leave it as a separate parameter on compile_fn\nand lower_prim since it cannot be stored in a shared-ref struct alongside other \u0026mut borrows.\n\nUPDATE compile_fn signature: replace the 12 bundled params with env: \u0026CodegenEnv\u003c'_\u003e\nUPDATE lower_prim signature: same\nUPDATE all call sites in compile_with_backend\nUPDATE all internal references: env.runtime, env.module, etc.\n\ncompile_fn goes from 23 params to ~11. lower_prim from 13 to ~5.\n\ncargo build must produce zero warnings. All tests must pass.",
   "id": "fz-4n9.6",
   "labels": [],
   "parent": "fz-4n9",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "fz-cg2.6 CodegenEnv: bundle shared parameters into context struct",
   "type": "task",
-  "updated_at": "2026-05-15T11:33:13Z"
+  "updated_at": "2026-05-15T11:37:19Z"
 }
