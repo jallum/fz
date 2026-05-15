@@ -64,15 +64,15 @@ function u0:0(i64, i64) -> i64 tail {
 block0(v0: i64, v1: i64):
     v2 = iconst.i32 2                   ; @2:23
     v3 = iconst.i32 1                   ; @2:23
-    v4 = iconst.i32 0                   ; @2:23
-    v5 = call fn0(v2, v3, v4)           ; @2:23  v2 = 2, v3 = 1, v4 = 0
+    v4 = iconst.i32 1                   ; @2:23
+    v5 = call fn0(v2, v3, v4)           ; @2:23  v2 = 2, v3 = 1, v4 = 1
     v6 = func_addr.i64 fn1              ; @2:23
     store notrap aligned v6, v5+16      ; @2:23
     store notrap aligned v0, v5+24      ; @2:23
     v7 = iconst.i32 3                   ; @2:18
     v8 = iconst.i32 1                   ; @2:18
-    v9 = iconst.i32 0                   ; @2:18
-    v10 = call fn2(v7, v8, v9)          ; @2:18  v7 = 3, v8 = 1, v9 = 0
+    v9 = iconst.i32 1                   ; @2:18
+    v10 = call fn2(v7, v8, v9)          ; @2:18  v7 = 3, v8 = 1, v9 = 1
     v11 = func_addr.i64 fn3             ; @2:18
     store notrap aligned v11, v10+16    ; @2:18
     store notrap aligned v5, v10+24     ; @2:18
@@ -93,9 +93,9 @@ block0(v0: i64, v1: i64):
 }
 
 ; fn lambda_2_s7
-    ;   @spec   lambda_2(99) -> any
+    ;   @spec   lambda_2(99) -> 99
     ;   @key    [99]
-    ;   @abi    (RawInt) -> Tagged
+    ;   @abi    (RawInt) -> RawInt
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64, i64) -> i64 system_v
     sig1 = (i64, i64) -> i64 tail
@@ -108,15 +108,16 @@ block0(v0: i64, v1: i64):
     v5 = bor_imm v4, 1
     v6 = ishl_imm v2, 3
     v7 = bor_imm v6, 1
-    v8 = call fn0(v5, v7)    ;; v8 :: any
-    v9 = load.i64 notrap aligned v1+16
-    return_call_indirect sig1, v9(v8, v1)
+    v8 = call fn0(v5, v7)    ;; v8 :: 99
+    v9 = sshr_imm v8, 3
+    v10 = load.i64 notrap aligned v1+16
+    return_call_indirect sig1, v10(v9, v1)
 }
 
 ; fn fz_spawn_thunk_s8
     ;   @spec   fz_spawn_thunk(&fn2[99]:() -> any) -> _
     ;   @key    [&fn2[99]:() -> any]
-    ;   @abi    (Tagged) -> Tagged
+    ;   @abi    (Tagged) -> RawInt
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64, i64) -> i64 tail
     fn0 = colocated u0:48 sig0

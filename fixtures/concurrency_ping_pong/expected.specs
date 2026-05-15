@@ -1,13 +1,13 @@
 ; spec child(0) #fn=0
 ;   key:    []
-;   return: any
+;   return: 42
 ;   vars:
 ;     Var(0) :: :match_error
 ;     Var(1) :: 1
 ;     Var(2) :: 42
-;     Var(3) :: any
+;     Var(3) :: 42
 ;   exits:
-;     blk0 Return Var(3)    :: any
+;     blk0 Return Var(3)    :: 42
 ;     blk1 Halt Var(0)      :: :match_error
 
 ; spec main(0) #fn=1
@@ -27,7 +27,7 @@
 
 ; spec fz_spawn_thunk(1) #fn=2
 ;   key:    [&fn0[]:() -> any]
-;   return: any
+;   return: 42
 ;   vars:
 ;     Var(0) :: &fn0[]:() -> any
 ;   exits:
