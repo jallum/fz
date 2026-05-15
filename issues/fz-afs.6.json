@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-afs.5"
   ],
@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-afs",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "remove FnTypes clone in discovery walk",
   "type": "task",
-  "updated_at": "2026-05-15T03:22:29Z"
+  "updated_at": "2026-05-15T03:34:16Z"
 }
