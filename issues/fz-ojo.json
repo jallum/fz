@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-l17"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-xs2"
+  ],
   "created": "2026-05-15T17:19:19Z",
   "description": "Add fixture_matrix test asserting fz dump fixtures/add1/input.fz --emit clif --fn main produces no sshr_imm instructions. Must be RED before rep.2 lands.",
   "id": "fz-ojo",
