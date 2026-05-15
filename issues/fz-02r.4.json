@@ -4,14 +4,15 @@
   "blocks": [
     "fz-02r.5"
   ],
+  "closed_at": "2026-05-15T23:33:08Z",
   "created": "2026-05-15T21:58:49Z",
   "description": "Files: src/fz_ir.rs, src/ir_typer.rs, src/ir_lower.rs\n\nIR change:\n  Term::TailCall { callee: FnId, args: Vec\u003cVar\u003e, is_back_edge: bool }\n\nExpose scc_of from typer (currently computed but discarded at ir_typer.rs:607):\n  pub struct ModuleTypes { ..., pub scc_of: HashMap\u003cFnId, usize\u003e }\nPopulate in type_module where 'let _ = scc_of' currently appears.\n\nIn ir_lower, thread \u0026ModuleTypes through lower_expr context. At Term::TailCall site:\n  is_back_edge = scc_of.get(\u0026callee) == scc_of.get(\u0026ctx.current_fn_id)\n\nSelf-recursion is the degenerate SCC-of-one case. Mutual recursion (f→g→f) covered automatically. Non-recursive calls get is_back_edge=false.\n\nIf is_back_edge \u0026\u0026 args.len() \u003e 8: return LowerError::BackEdgeTooManyArgs { span, fn_name, callee_name, arg_count }. This is a programming error at the declaration — emit structured diagnostic, not a runtime assert.\n\nTests: self-recursive fn → is_back_edge=true. Mutual recursion pair → both cross-calls true. Non-recursive call → false. 9-arg back-edge → LowerError. Existing lowering tests pass with is_back_edge:false in match arms.",
   "id": "fz-02r.4",
   "labels": [],
   "parent": "fz-02r",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "fz-sched.8: SCC-based is_back_edge on Term::TailCall; \u003e8-arg compile error",
   "type": "task",
-  "updated_at": "2026-05-15T21:59:38Z"
+  "updated_at": "2026-05-15T23:33:08Z"
 }
