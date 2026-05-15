@@ -4,7 +4,7 @@
     ;   @abi    () -> Tagged
 function u0:0(i64) -> i64 tail {
     sig0 = (i64, i64) -> i64 tail
-    fn0 = colocated u0:43 sig0
+    fn0 = colocated u0:45 sig0
 
 block0(v0: i64):
     v1 = iconst.i64 42                  ; @11:18

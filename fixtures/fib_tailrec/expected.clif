@@ -6,9 +6,9 @@ function u0:0(i64) -> i64 tail {
     sig0 = (i64, i64, i64, i64) -> i64 tail
     sig1 = (i32, i32, i32) -> i64 system_v
     sig2 = (i64, i64) -> i64 tail
-    fn0 = colocated u0:43 sig0
+    fn0 = colocated u0:45 sig0
     fn1 = u0:28 sig1
-    fn2 = colocated u0:51 sig2
+    fn2 = colocated u0:53 sig2
 
 block0(v0: i64):
     v1 = iconst.i64 0                   ; @6:13
@@ -29,10 +29,15 @@ block0(v0: i64):
     ;   @key    [0, 0, 1]
     ;   @abi    (RawInt, RawInt, RawInt) -> RawInt
 function u0:0(i64, i64, i64, i64) -> i64 tail {
+    gv0 = symbol userextname1
     sig0 = (i64, i64, i64, i64) -> i64 tail
-    sig1 = (i64, i64) -> i64 tail
-    sig2 = (i64, i64) -> i64 tail
-    fn0 = colocated u0:47 sig0
+    sig1 = () -> i64 system_v
+    sig2 = (i32, i32) -> i64 system_v
+    sig3 = (i64, i64) -> i64 tail
+    sig4 = (i64, i64) -> i64 tail
+    fn0 = colocated u0:49 sig0
+    fn1 = u0:34 sig1
+    fn2 = u0:35 sig2
 
     block0(v0: i64, v1: i64, v2: i64, v3: i64):    ;; v0 :: 0, v1 :: 0, v2 :: 1
     v4 = iconst.i64 0    ;; v4 :: 0
@@ -63,15 +68,34 @@ block2:
     v23 = iadd.i64 v1, v2               ; @3:36
     v24 = ishl_imm v22, 3               ; @3:22
     v25 = bor_imm v24, 1                ; @3:22
+    v26 = global_value.i64 gv0          ; @3:22
+    v27 = load.i8 notrap aligned v26    ; @3:22
+    v28 = uextend.i64 v27               ; @3:22
+    v29 = iconst.i64 0                  ; @3:22
+    v30 = icmp ne v28, v29              ; @3:22  v29 = 0
+    brif v30, block5, block6            ; @3:22
+
+block5:
+    v31 = call fn1()                    ; @3:22
+    store.i64 notrap aligned v25, v31   ; @3:22
+    store.i64 notrap aligned v2, v31+8  ; @3:22
+    store.i64 notrap aligned v23, v31+16 ; @3:22
+    store.i64 notrap aligned v3, v31+24 ; @3:22
+    v32 = iconst.i32 6                  ; @3:22
+    v33 = iconst.i32 4                  ; @3:22
+    v34 = call fn2(v32, v33)            ; @3:22  v32 = 6, v33 = 4
+    return v34                          ; @3:22
+
+block6:
     return_call fn0(v25, v2, v23, v3)   ; @3:22
 
 block3:
-    v26 = load.i64 notrap aligned v3+16
-    return_call_indirect sig1, v26(v1, v3)
+    v35 = load.i64 notrap aligned v3+16
+    return_call_indirect sig3, v35(v1, v3)
 
 block4:
-    v27 = load.i64 notrap aligned v3+16
-    return_call_indirect sig2, v27(v2, v3)
+    v36 = load.i64 notrap aligned v3+16
+    return_call_indirect sig4, v36(v2, v3)
 }
 
 ; fn fib_s3
@@ -79,10 +103,15 @@ block4:
     ;   @key    [1, 0, 1]
     ;   @abi    (RawInt, RawInt, RawInt) -> RawInt
 function u0:0(i64, i64, i64, i64) -> i64 tail {
+    gv0 = symbol userextname1
     sig0 = (i64, i64, i64, i64) -> i64 tail
-    sig1 = (i64, i64) -> i64 tail
-    sig2 = (i64, i64) -> i64 tail
-    fn0 = colocated u0:47 sig0
+    sig1 = () -> i64 system_v
+    sig2 = (i32, i32) -> i64 system_v
+    sig3 = (i64, i64) -> i64 tail
+    sig4 = (i64, i64) -> i64 tail
+    fn0 = colocated u0:49 sig0
+    fn1 = u0:34 sig1
+    fn2 = u0:35 sig2
 
     block0(v0: i64, v1: i64, v2: i64, v3: i64):    ;; v0 :: 1, v1 :: 0, v2 :: 1
     v4 = iconst.i64 0    ;; v4 :: 0
@@ -113,15 +142,34 @@ block2:
     v23 = iadd.i64 v1, v2               ; @3:36
     v24 = ishl_imm v22, 3               ; @3:22
     v25 = bor_imm v24, 1                ; @3:22
+    v26 = global_value.i64 gv0          ; @3:22
+    v27 = load.i8 notrap aligned v26    ; @3:22
+    v28 = uextend.i64 v27               ; @3:22
+    v29 = iconst.i64 0                  ; @3:22
+    v30 = icmp ne v28, v29              ; @3:22  v29 = 0
+    brif v30, block5, block6            ; @3:22
+
+block5:
+    v31 = call fn1()                    ; @3:22
+    store.i64 notrap aligned v25, v31   ; @3:22
+    store.i64 notrap aligned v2, v31+8  ; @3:22
+    store.i64 notrap aligned v23, v31+16 ; @3:22
+    store.i64 notrap aligned v3, v31+24 ; @3:22
+    v32 = iconst.i32 6                  ; @3:22
+    v33 = iconst.i32 4                  ; @3:22
+    v34 = call fn2(v32, v33)            ; @3:22  v32 = 6, v33 = 4
+    return v34                          ; @3:22
+
+block6:
     return_call fn0(v25, v2, v23, v3)   ; @3:22
 
 block3:
-    v26 = load.i64 notrap aligned v3+16
-    return_call_indirect sig1, v26(v1, v3)
+    v35 = load.i64 notrap aligned v3+16
+    return_call_indirect sig3, v35(v1, v3)
 
 block4:
-    v27 = load.i64 notrap aligned v3+16
-    return_call_indirect sig2, v27(v2, v3)
+    v36 = load.i64 notrap aligned v3+16
+    return_call_indirect sig4, v36(v2, v3)
 }
 
 ; fn fib_s4
@@ -129,10 +177,15 @@ block4:
     ;   @key    [10, 0, 1]
     ;   @abi    (RawInt, RawInt, RawInt) -> RawInt
 function u0:0(i64, i64, i64, i64) -> i64 tail {
+    gv0 = symbol userextname1
     sig0 = (i64, i64, i64, i64) -> i64 tail
-    sig1 = (i64, i64) -> i64 tail
-    sig2 = (i64, i64) -> i64 tail
-    fn0 = colocated u0:49 sig0
+    sig1 = () -> i64 system_v
+    sig2 = (i32, i32) -> i64 system_v
+    sig3 = (i64, i64) -> i64 tail
+    sig4 = (i64, i64) -> i64 tail
+    fn0 = colocated u0:51 sig0
+    fn1 = u0:34 sig1
+    fn2 = u0:35 sig2
 
     block0(v0: i64, v1: i64, v2: i64, v3: i64):    ;; v0 :: 10, v1 :: 0, v2 :: 1
     v4 = iconst.i64 0    ;; v4 :: 0
@@ -158,15 +211,34 @@ block2:
     v18 = iconst.i64 1                  ; @3:30
     v19 = isub.i64 v0, v18              ; @3:26  v18 = 1
     v20 = iadd.i64 v1, v2               ; @3:36
+    v21 = global_value.i64 gv0          ; @3:22
+    v22 = load.i8 notrap aligned v21    ; @3:22
+    v23 = uextend.i64 v22               ; @3:22
+    v24 = iconst.i64 0                  ; @3:22
+    v25 = icmp ne v23, v24              ; @3:22  v24 = 0
+    brif v25, block5, block6            ; @3:22
+
+block5:
+    v26 = call fn1()                    ; @3:22
+    store.i64 notrap aligned v19, v26   ; @3:22
+    store.i64 notrap aligned v2, v26+8  ; @3:22
+    store.i64 notrap aligned v20, v26+16 ; @3:22
+    store.i64 notrap aligned v3, v26+24 ; @3:22
+    v27 = iconst.i32 8                  ; @3:22
+    v28 = iconst.i32 4                  ; @3:22
+    v29 = call fn2(v27, v28)            ; @3:22  v27 = 8, v28 = 4
+    return v29                          ; @3:22
+
+block6:
     return_call fn0(v19, v2, v20, v3)   ; @3:22
 
 block3:
-    v21 = load.i64 notrap aligned v3+16
-    return_call_indirect sig1, v21(v1, v3)
+    v30 = load.i64 notrap aligned v3+16
+    return_call_indirect sig3, v30(v1, v3)
 
 block4:
-    v22 = load.i64 notrap aligned v3+16
-    return_call_indirect sig2, v22(v2, v3)
+    v31 = load.i64 notrap aligned v3+16
+    return_call_indirect sig4, v31(v2, v3)
 }
 
 ; fn fib_s5
@@ -174,10 +246,15 @@ block4:
     ;   @key    [20, 0, 1]
     ;   @abi    (RawInt, RawInt, RawInt) -> RawInt
 function u0:0(i64, i64, i64, i64) -> i64 tail {
+    gv0 = symbol userextname1
     sig0 = (i64, i64, i64, i64) -> i64 tail
-    sig1 = (i64, i64) -> i64 tail
-    sig2 = (i64, i64) -> i64 tail
-    fn0 = colocated u0:49 sig0
+    sig1 = () -> i64 system_v
+    sig2 = (i32, i32) -> i64 system_v
+    sig3 = (i64, i64) -> i64 tail
+    sig4 = (i64, i64) -> i64 tail
+    fn0 = colocated u0:51 sig0
+    fn1 = u0:34 sig1
+    fn2 = u0:35 sig2
 
     block0(v0: i64, v1: i64, v2: i64, v3: i64):    ;; v0 :: 20, v1 :: 0, v2 :: 1
     v4 = iconst.i64 0    ;; v4 :: 0
@@ -203,15 +280,34 @@ block2:
     v18 = iconst.i64 1                  ; @3:30
     v19 = isub.i64 v0, v18              ; @3:26  v18 = 1
     v20 = iadd.i64 v1, v2               ; @3:36
+    v21 = global_value.i64 gv0          ; @3:22
+    v22 = load.i8 notrap aligned v21    ; @3:22
+    v23 = uextend.i64 v22               ; @3:22
+    v24 = iconst.i64 0                  ; @3:22
+    v25 = icmp ne v23, v24              ; @3:22  v24 = 0
+    brif v25, block5, block6            ; @3:22
+
+block5:
+    v26 = call fn1()                    ; @3:22
+    store.i64 notrap aligned v19, v26   ; @3:22
+    store.i64 notrap aligned v2, v26+8  ; @3:22
+    store.i64 notrap aligned v20, v26+16 ; @3:22
+    store.i64 notrap aligned v3, v26+24 ; @3:22
+    v27 = iconst.i32 8                  ; @3:22
+    v28 = iconst.i32 4                  ; @3:22
+    v29 = call fn2(v27, v28)            ; @3:22  v27 = 8, v28 = 4
+    return v29                          ; @3:22
+
+block6:
     return_call fn0(v19, v2, v20, v3)   ; @3:22
 
 block3:
-    v21 = load.i64 notrap aligned v3+16
-    return_call_indirect sig1, v21(v1, v3)
+    v30 = load.i64 notrap aligned v3+16
+    return_call_indirect sig3, v30(v1, v3)
 
 block4:
-    v22 = load.i64 notrap aligned v3+16
-    return_call_indirect sig2, v22(v2, v3)
+    v31 = load.i64 notrap aligned v3+16
+    return_call_indirect sig4, v31(v2, v3)
 }
 
 ; fn fib_s6
@@ -219,20 +315,25 @@ block4:
     ;   @key    [int | float, 1, int]
     ;   @abi    (Tagged, RawInt, RawInt) -> RawInt
 function u0:0(i64, i64, i64, i64) -> i64 tail {
+    gv0 = symbol userextname5
     sig0 = (i64, i64) -> i64 system_v
     sig1 = (i64, i64) -> i64 system_v
     sig2 = (i64) -> f64 system_v
     sig3 = (i64) -> i64 system_v
     sig4 = (f64, f64) -> f64 system_v
     sig5 = (i64, i64, i64, i64) -> i64 tail
-    sig6 = (i64, i64) -> i64 tail
-    sig7 = (i64, i64) -> i64 tail
+    sig6 = () -> i64 system_v
+    sig7 = (i32, i32) -> i64 system_v
+    sig8 = (i64, i64) -> i64 tail
+    sig9 = (i64, i64) -> i64 tail
     fn0 = u0:23 sig0
     fn1 = u0:23 sig1
     fn2 = u0:21 sig2
     fn3 = u0:20 sig3
     fn4 = u0:22 sig4
-    fn5 = colocated u0:48 sig5
+    fn5 = colocated u0:50 sig5
+    fn6 = u0:34 sig6
+    fn7 = u0:35 sig7
 
     block0(v0: i64, v1: i64, v2: i64, v3: i64):    ;; v0 :: int | float, v1 :: 1, v2 :: int
     v4 = iconst.i64 0    ;; v4 :: 0
@@ -319,15 +420,34 @@ block12:
 
     block13(v46: i64):    ;; v46 :: int | float
     v57 = iadd.i64 v1, v2               ; @3:36
+    v58 = global_value.i64 gv0          ; @3:22
+    v59 = load.i8 notrap aligned v58    ; @3:22
+    v60 = uextend.i64 v59               ; @3:22
+    v61 = iconst.i64 0                  ; @3:22
+    v62 = icmp ne v60, v61              ; @3:22  v61 = 0
+    brif v62, block14, block15          ; @3:22
+
+block14:
+    v63 = call fn6()                    ; @3:22
+    store.i64 notrap aligned v46, v63   ; @3:22
+    store.i64 notrap aligned v2, v63+8  ; @3:22
+    store.i64 notrap aligned v57, v63+16 ; @3:22
+    store.i64 notrap aligned v3, v63+24 ; @3:22
+    v64 = iconst.i32 7                  ; @3:22
+    v65 = iconst.i32 4                  ; @3:22
+    v66 = call fn7(v64, v65)            ; @3:22  v64 = 7, v65 = 4
+    return v66                          ; @3:22
+
+block15:
     return_call fn5(v46, v2, v57, v3)   ; @3:22
 
 block3:
-    v58 = load.i64 notrap aligned v3+16
-    return_call_indirect sig6, v58(v1, v3)
+    v67 = load.i64 notrap aligned v3+16
+    return_call_indirect sig8, v67(v1, v3)
 
 block4:
-    v59 = load.i64 notrap aligned v3+16
-    return_call_indirect sig7, v59(v2, v3)
+    v68 = load.i64 notrap aligned v3+16
+    return_call_indirect sig9, v68(v2, v3)
 }
 
 ; fn fib_s7
@@ -335,20 +455,25 @@ block4:
     ;   @key    [int | float, int, int]
     ;   @abi    (Tagged, RawInt, RawInt) -> RawInt
 function u0:0(i64, i64, i64, i64) -> i64 tail {
+    gv0 = symbol userextname5
     sig0 = (i64, i64) -> i64 system_v
     sig1 = (i64, i64) -> i64 system_v
     sig2 = (i64) -> f64 system_v
     sig3 = (i64) -> i64 system_v
     sig4 = (f64, f64) -> f64 system_v
     sig5 = (i64, i64, i64, i64) -> i64 tail
-    sig6 = (i64, i64) -> i64 tail
-    sig7 = (i64, i64) -> i64 tail
+    sig6 = () -> i64 system_v
+    sig7 = (i32, i32) -> i64 system_v
+    sig8 = (i64, i64) -> i64 tail
+    sig9 = (i64, i64) -> i64 tail
     fn0 = u0:23 sig0
     fn1 = u0:23 sig1
     fn2 = u0:21 sig2
     fn3 = u0:20 sig3
     fn4 = u0:22 sig4
-    fn5 = colocated u0:48 sig5
+    fn5 = colocated u0:50 sig5
+    fn6 = u0:34 sig6
+    fn7 = u0:35 sig7
 
     block0(v0: i64, v1: i64, v2: i64, v3: i64):    ;; v0 :: int | float, v1 :: int, v2 :: int
     v4 = iconst.i64 0    ;; v4 :: 0
@@ -435,15 +560,34 @@ block12:
 
     block13(v46: i64):    ;; v46 :: int | float
     v57 = iadd.i64 v1, v2               ; @3:36
+    v58 = global_value.i64 gv0          ; @3:22
+    v59 = load.i8 notrap aligned v58    ; @3:22
+    v60 = uextend.i64 v59               ; @3:22
+    v61 = iconst.i64 0                  ; @3:22
+    v62 = icmp ne v60, v61              ; @3:22  v61 = 0
+    brif v62, block14, block15          ; @3:22
+
+block14:
+    v63 = call fn6()                    ; @3:22
+    store.i64 notrap aligned v46, v63   ; @3:22
+    store.i64 notrap aligned v2, v63+8  ; @3:22
+    store.i64 notrap aligned v57, v63+16 ; @3:22
+    store.i64 notrap aligned v3, v63+24 ; @3:22
+    v64 = iconst.i32 7                  ; @3:22
+    v65 = iconst.i32 4                  ; @3:22
+    v66 = call fn7(v64, v65)            ; @3:22  v64 = 7, v65 = 4
+    return v66                          ; @3:22
+
+block15:
     return_call fn5(v46, v2, v57, v3)   ; @3:22
 
 block3:
-    v58 = load.i64 notrap aligned v3+16
-    return_call_indirect sig6, v58(v1, v3)
+    v67 = load.i64 notrap aligned v3+16
+    return_call_indirect sig8, v67(v1, v3)
 
 block4:
-    v59 = load.i64 notrap aligned v3+16
-    return_call_indirect sig7, v59(v2, v3)
+    v68 = load.i64 notrap aligned v3+16
+    return_call_indirect sig9, v68(v2, v3)
 }
 
 ; fn fib_s8
@@ -451,10 +595,15 @@ block4:
     ;   @key    [int, 1, int]
     ;   @abi    (RawInt, RawInt, RawInt) -> RawInt
 function u0:0(i64, i64, i64, i64) -> i64 tail {
+    gv0 = symbol userextname1
     sig0 = (i64, i64, i64, i64) -> i64 tail
-    sig1 = (i64, i64) -> i64 tail
-    sig2 = (i64, i64) -> i64 tail
-    fn0 = colocated u0:50 sig0
+    sig1 = () -> i64 system_v
+    sig2 = (i32, i32) -> i64 system_v
+    sig3 = (i64, i64) -> i64 tail
+    sig4 = (i64, i64) -> i64 tail
+    fn0 = colocated u0:52 sig0
+    fn1 = u0:34 sig1
+    fn2 = u0:35 sig2
 
     block0(v0: i64, v1: i64, v2: i64, v3: i64):    ;; v0 :: int, v1 :: 1, v2 :: int
     v4 = iconst.i64 0    ;; v4 :: 0
@@ -486,15 +635,34 @@ block2:
     v24 = iconst.i64 1                  ; @3:30
     v25 = isub.i64 v0, v24              ; @3:26  v24 = 1
     v26 = iadd.i64 v1, v2               ; @3:36
+    v27 = global_value.i64 gv0          ; @3:22
+    v28 = load.i8 notrap aligned v27    ; @3:22
+    v29 = uextend.i64 v28               ; @3:22
+    v30 = iconst.i64 0                  ; @3:22
+    v31 = icmp ne v29, v30              ; @3:22  v30 = 0
+    brif v31, block5, block6            ; @3:22
+
+block5:
+    v32 = call fn1()                    ; @3:22
+    store.i64 notrap aligned v25, v32   ; @3:22
+    store.i64 notrap aligned v2, v32+8  ; @3:22
+    store.i64 notrap aligned v26, v32+16 ; @3:22
+    store.i64 notrap aligned v3, v32+24 ; @3:22
+    v33 = iconst.i32 9                  ; @3:22
+    v34 = iconst.i32 4                  ; @3:22
+    v35 = call fn2(v33, v34)            ; @3:22  v33 = 9, v34 = 4
+    return v35                          ; @3:22
+
+block6:
     return_call fn0(v25, v2, v26, v3)   ; @3:22
 
 block3:
-    v27 = load.i64 notrap aligned v3+16
-    return_call_indirect sig1, v27(v1, v3)
+    v36 = load.i64 notrap aligned v3+16
+    return_call_indirect sig3, v36(v1, v3)
 
 block4:
-    v28 = load.i64 notrap aligned v3+16
-    return_call_indirect sig2, v28(v2, v3)
+    v37 = load.i64 notrap aligned v3+16
+    return_call_indirect sig4, v37(v2, v3)
 }
 
 ; fn fib_s9
@@ -502,10 +670,15 @@ block4:
     ;   @key    [int, int, int]
     ;   @abi    (RawInt, RawInt, RawInt) -> RawInt
 function u0:0(i64, i64, i64, i64) -> i64 tail {
+    gv0 = symbol userextname1
     sig0 = (i64, i64, i64, i64) -> i64 tail
-    sig1 = (i64, i64) -> i64 tail
-    sig2 = (i64, i64) -> i64 tail
-    fn0 = colocated u0:50 sig0
+    sig1 = () -> i64 system_v
+    sig2 = (i32, i32) -> i64 system_v
+    sig3 = (i64, i64) -> i64 tail
+    sig4 = (i64, i64) -> i64 tail
+    fn0 = colocated u0:52 sig0
+    fn1 = u0:34 sig1
+    fn2 = u0:35 sig2
 
     block0(v0: i64, v1: i64, v2: i64, v3: i64):    ;; v0 :: int, v1 :: int, v2 :: int
     v4 = iconst.i64 0    ;; v4 :: 0
@@ -537,15 +710,34 @@ block2:
     v24 = iconst.i64 1                  ; @3:30
     v25 = isub.i64 v0, v24              ; @3:26  v24 = 1
     v26 = iadd.i64 v1, v2               ; @3:36
+    v27 = global_value.i64 gv0          ; @3:22
+    v28 = load.i8 notrap aligned v27    ; @3:22
+    v29 = uextend.i64 v28               ; @3:22
+    v30 = iconst.i64 0                  ; @3:22
+    v31 = icmp ne v29, v30              ; @3:22  v30 = 0
+    brif v31, block5, block6            ; @3:22
+
+block5:
+    v32 = call fn1()                    ; @3:22
+    store.i64 notrap aligned v25, v32   ; @3:22
+    store.i64 notrap aligned v2, v32+8  ; @3:22
+    store.i64 notrap aligned v26, v32+16 ; @3:22
+    store.i64 notrap aligned v3, v32+24 ; @3:22
+    v33 = iconst.i32 9                  ; @3:22
+    v34 = iconst.i32 4                  ; @3:22
+    v35 = call fn2(v33, v34)            ; @3:22  v33 = 9, v34 = 4
+    return v35                          ; @3:22
+
+block6:
     return_call fn0(v25, v2, v26, v3)   ; @3:22
 
 block3:
-    v27 = load.i64 notrap aligned v3+16
-    return_call_indirect sig1, v27(v1, v3)
+    v36 = load.i64 notrap aligned v3+16
+    return_call_indirect sig3, v36(v1, v3)
 
 block4:
-    v28 = load.i64 notrap aligned v3+16
-    return_call_indirect sig2, v28(v2, v3)
+    v37 = load.i64 notrap aligned v3+16
+    return_call_indirect sig4, v37(v2, v3)
 }
 
 ; fn k_2_s10
@@ -558,9 +750,9 @@ function u0:0(i64, i64) -> i64 tail {
     sig2 = (i32, i32, i32) -> i64 system_v
     sig3 = (i64, i64) -> i64 tail
     fn0 = u0:1 sig0
-    fn1 = colocated u0:44 sig1
+    fn1 = colocated u0:46 sig1
     fn2 = u0:28 sig2
-    fn3 = colocated u0:52 sig3
+    fn3 = colocated u0:54 sig3
 
     block0(v0: i64, v1: i64):    ;; v0 :: 0
     call fn0(v0)                        ; @6:3
@@ -589,9 +781,9 @@ function u0:0(i64, i64) -> i64 tail {
     sig2 = (i32, i32, i32) -> i64 system_v
     sig3 = (i64, i64) -> i64 tail
     fn0 = u0:1 sig0
-    fn1 = colocated u0:45 sig1
+    fn1 = colocated u0:47 sig1
     fn2 = u0:28 sig2
-    fn3 = colocated u0:53 sig3
+    fn3 = colocated u0:55 sig3
 
     block0(v0: i64, v1: i64):    ;; v0 :: 1
     call fn0(v0)                        ; @7:3
@@ -620,9 +812,9 @@ function u0:0(i64, i64) -> i64 tail {
     sig2 = (i32, i32, i32) -> i64 system_v
     sig3 = (i64, i64) -> i64 tail
     fn0 = u0:1 sig0
-    fn1 = colocated u0:46 sig1
+    fn1 = colocated u0:48 sig1
     fn2 = u0:28 sig2
-    fn3 = colocated u0:54 sig3
+    fn3 = colocated u0:56 sig3
 
     block0(v0: i64, v1: i64):    ;; v0 :: int
     call fn0(v0)                        ; @8:3

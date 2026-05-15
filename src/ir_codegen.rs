@@ -150,6 +150,12 @@ pub struct CompiledModule {
     /// any-key return repr. Default kind 0 (Tagged) for fns not in
     /// the map.
     pub(crate) fn_halt_kinds: HashMap<u32, u32>,
+    /// fz-02r.5 — SystemV shims for resuming a mid-flight back-edge yield.
+    /// Indexed by arg count (0..=8). Shim N takes `(fn_ptr: u64) -> i64`,
+    /// reads N values from `current_process().mid_flight_roots`, and
+    /// `call_indirect Tail fn_ptr(arg0, ..., argN-1)`. Generated
+    /// unconditionally; unused entries are never called.
+    pub(crate) mid_flight_resume_addrs: [*const u8; 9],
 }
 
 impl CompiledModule {
@@ -243,6 +249,28 @@ impl CompiledModule {
             type ResumePark = extern "C" fn(u64, u64) -> i64;
             let f: ResumePark = unsafe { std::mem::transmute(self.resume_park_addr) };
             let _ = f(msg.0, cont_ptr as u64);
+            process.next_frame = std::ptr::null_mut();
+            park_time_gc(process);
+            return;
+        }
+        // fz-02r.5 — mid-flight back-edge yield resume. fz_yield_back_edge
+        // stored the callee's spec_id in mid_flight_fn_id and its live args
+        // (all i64 / FzValues, post-GC-forwarding) in mid_flight_roots.
+        // Dispatch via the matching fz_mid_flight_resume_N shim which
+        // reads N args from the slab and Tail-CC indirect-calls the fn.
+        if process.mid_flight_fn_id != 0 {
+            let spec_id = process.mid_flight_fn_id;
+            let n = process.mid_flight_root_count as usize;
+            process.mid_flight_fn_id = 0;
+            process.mid_flight_root_count = 0;
+            let fn_ptr = *self
+                .fn_ptrs
+                .get(&spec_id)
+                .expect("mid_flight resume: spec_id not in fn_ptrs");
+            let shim = self.mid_flight_resume_addrs[n];
+            type MidFlightResume = extern "C" fn(u64) -> i64;
+            let f: MidFlightResume = unsafe { std::mem::transmute(shim) };
+            let _ = f(fn_ptr as u64);
             process.next_frame = std::ptr::null_mut();
             park_time_gc(process);
             return;
@@ -995,6 +1023,8 @@ pub struct CompiledMetadata {
     /// the matching halt_cont_singletons slot when dispatching via
     /// fz_main_entry.
     pub fn_halt_kinds: HashMap<u32, u32>,
+    /// fz-02r.5 — FuncIds for the 9 mid-flight resume shims (arg count 0..=8).
+    pub mid_flight_resume_ids: [FuncId; 9],
 }
 
 /// fz-ul4.29.2 — Two-way mapping between (FnId, input-Descr-tuple) and
@@ -1143,12 +1173,25 @@ impl JitBackend {
             fz_runtime::ir_runtime::fz_receive_park as *const u8,
         );
         builder.symbol(
+            "fz_mid_flight_roots_ptr",
+            fz_runtime::ir_runtime::fz_mid_flight_roots_ptr as *const u8,
+        );
+        builder.symbol(
+            "fz_yield_back_edge",
+            fz_runtime::ir_runtime::fz_yield_back_edge as *const u8,
+        );
+        builder.symbol(
             "fz_get_static_closure",
             fz_runtime::ir_runtime::fz_get_static_closure as *const u8,
         );
         builder.symbol(
             "fz_get_halt_cont",
             fz_runtime::ir_runtime::fz_get_halt_cont as *const u8,
+        );
+        // fz-02r.5 — bind the cooperative yield helpers and the yield-flag data.
+        builder.symbol(
+            "FZ_SHOULD_YIELD",
+            (&fz_runtime::yield_flag::FZ_SHOULD_YIELD) as *const _ as *const u8,
         );
         Self {
             jmod: JITModule::new(builder),
@@ -1206,6 +1249,13 @@ impl Backend for JitBackend {
             jmod.get_finalized_function(meta.halt_cont_body_ids[1]),
             jmod.get_finalized_function(meta.halt_cont_body_ids[2]),
         ];
+        let mid_flight_resume_addrs = {
+            let mut arr = [std::ptr::null::<u8>(); 9];
+            for (i, fid) in meta.mid_flight_resume_ids.iter().enumerate() {
+                arr[i] = jmod.get_finalized_function(*fid);
+            }
+            arr
+        };
         Ok(CompiledModule {
             module: jmod,
             fn_ptrs,
@@ -1221,6 +1271,7 @@ impl Backend for JitBackend {
             main_entry_addr,
             halt_cont_body_addrs,
             fn_halt_kinds: meta.fn_halt_kinds,
+            mid_flight_resume_addrs,
         })
     }
 }
@@ -2855,6 +2906,58 @@ pub fn compile_with_backend<B: Backend>(
         }
         m
     };
+    // fz-02r.5 — generate 9 mid-flight resume shims (one per arg count 0..=8).
+    // Each shim is SystemV `(fn_ptr: i64) -> i64` and calls the target fn
+    // via Tail-CC indirect with N args loaded from current_process.mid_flight_roots.
+    let mid_flight_resume_ids: [FuncId; 9] = {
+        let mut ids = [runtime.mid_flight_roots_ptr_id; 9]; // placeholder; overwritten below
+        for n in 0usize..=8 {
+            let shim_name = format!("fz_mid_flight_resume_{}", n);
+            let mut shim_sig = Signature::new(CallConv::SystemV);
+            shim_sig.params.push(AbiParam::new(types::I64)); // fn_ptr
+            shim_sig.returns.push(AbiParam::new(types::I64)); // result
+            let shim_id = backend
+                .module_mut()
+                .declare_function(&shim_name, Linkage::Local, &shim_sig)
+                .map_err(|e| CodegenError::new(format!("declare {}: {}", shim_name, e)))?;
+            ids[n] = shim_id;
+            let roots_ptr_id = runtime.mid_flight_roots_ptr_id;
+            emit_fn_body(backend.module_mut(), &mut fbctx, shim_sig, shim_id, move |m, b| {
+                let entry = b.create_block();
+                b.append_block_params_for_function_params(entry);
+                b.switch_to_block(entry);
+                b.seal_block(entry);
+                let fn_ptr = b.block_params(entry)[0];
+                // Get the current process's mid_flight_roots slab ptr.
+                let roots_fref = m.declare_func_in_func(roots_ptr_id, b.func);
+                let roots_call = b.ins().call(roots_fref, &[]);
+                let roots_ptr_val = b.inst_results(roots_call)[0];
+                // Load n args from the slab.
+                let mut args: Vec<ir::Value> = Vec::with_capacity(n);
+                for i in 0..n {
+                    let v = b.ins().load(
+                        types::I64,
+                        MemFlags::trusted(),
+                        roots_ptr_val,
+                        (i * 8) as i32,
+                    );
+                    args.push(v);
+                }
+                // Build Tail-CC sig with n i64 params.
+                let mut tail_sig = Signature::new(CallConv::Tail);
+                for _ in 0..n {
+                    tail_sig.params.push(AbiParam::new(types::I64));
+                }
+                tail_sig.returns.push(AbiParam::new(types::I64));
+                let sig_ref = b.func.import_signature(tail_sig);
+                let call_inst = b.ins().call_indirect(sig_ref, fn_ptr, &args);
+                let result = b.inst_results(call_inst)[0];
+                b.ins().return_(&[result]);
+            })
+            .map_err(|e| CodegenError::new(format!("define {}: {}", shim_name, e)))?;
+        }
+        ids
+    };
     let metadata = CompiledMetadata {
         fn_ids,
         user_schemas,
@@ -2874,6 +2977,7 @@ pub fn compile_with_backend<B: Backend>(
             runtime.halt_cont_body_f64_id,
         ],
         fn_halt_kinds,
+        mid_flight_resume_ids,
     };
 
     // Backend-specific metadata carriers (no-op for JIT; dispatch + main
@@ -3016,6 +3120,11 @@ fn sig1(params: &[ir::Type], rets: &[ir::Type]) -> Signature {
 fn declare_runtime_symbols<M: cranelift_module::Module>(
     jmod: &mut M,
 ) -> Result<RuntimeRefs, CodegenError> {
+    // fz-02r.5 — import FZ_SHOULD_YIELD as a 1-byte external data object.
+    // Must be declared before the `decl` closure borrows `jmod`.
+    let should_yield_data_id = jmod
+        .declare_data("FZ_SHOULD_YIELD", Linkage::Import, false, false)
+        .map_err(|e| CodegenError::new(format!("declare FZ_SHOULD_YIELD: {}", e)))?;
     let mut decl = |name: &str, params: &[ir::Type], rets: &[ir::Type]| {
         let sig = sig1(params, rets);
         jmod.declare_function(name, Linkage::Import, &sig)
@@ -3101,6 +3210,10 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
     // fz-cps.1.2 — receive cutover. Takes a cont closure ptr (i64),
     // stashes in Process::parked_cont, returns YIELD sentinel.
     let receive_park_id = decl("fz_receive_park", &[types::I64], &[types::I64])?;
+    // fz-02r.5 — mid-flight back-edge yield helpers.
+    let mid_flight_roots_ptr_id = decl("fz_mid_flight_roots_ptr", &[], &[types::I64])?;
+    let yield_back_edge_id =
+        decl("fz_yield_back_edge", &[types::I32, types::I32], &[types::I64])?;
     // fz-cps.1.7 — static zero-capture closure singleton lookup.
     // Returns the per-Process singleton pointer for the given cl_sid.
     let get_static_closure_id = decl("fz_get_static_closure", &[types::I32], &[types::I64])?;
@@ -3198,6 +3311,9 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         resume_park_id,
         spawn_entry_id,
         main_entry_id,
+        mid_flight_roots_ptr_id,
+        yield_back_edge_id,
+        should_yield_data_id,
     })
 }
 
@@ -3260,6 +3376,10 @@ struct RuntimeRefs {
     resume_park_id: FuncId,
     spawn_entry_id: FuncId,
     main_entry_id: FuncId,
+    // fz-02r.5 — mid-flight back-edge yield helpers.
+    mid_flight_roots_ptr_id: FuncId,
+    yield_back_edge_id: FuncId,
+    should_yield_data_id: DataId,
 }
 
 /// Pack a Span into a Cranelift SourceLoc (u32). 8 bits file_id + 24
@@ -3933,7 +4053,7 @@ fn emit_terminator<M: cranelift_module::Module>(
                 );
             }
         }
-        Term::TailCall { callee, args, .. } => {
+        Term::TailCall { callee, args, is_back_edge } => {
             let callee_sid = resolve_callee_sid(*callee, args);
             if callee_is_native(callee.0) {
                 // fz-ul4.27.6.2.3 / .27.13 — TailCall to a native callee.
@@ -3983,6 +4103,63 @@ fn emit_terminator<M: cranelift_module::Module>(
                     // Native-to-native TailCall: use return_call so
                     // recursive tail calls reuse the same stack frame
                     // (TCO). Without this, count_100k blows the stack.
+                    //
+                    // fz-02r.5 — back-edge cooperative yield check. When
+                    // is_back_edge (annotated by annotate_back_edges in
+                    // ir_lower), emit a 3-instruction guard: load
+                    // FZ_SHOULD_YIELD, compare to zero, branch to the
+                    // yield path if nonzero. The yield path writes all
+                    // live args to mid_flight_roots, calls
+                    // fz_yield_back_edge(spec_id, count), and returns
+                    // the YIELD_PTR sentinel. On the scheduler side,
+                    // gc_mid_flight forwards the slab, then a
+                    // fz_mid_flight_resume_N shim re-enters the callee.
+                    if *is_back_edge {
+                        let yield_gv =
+                            jmod.declare_data_in_func(runtime.should_yield_data_id, b.func);
+                        let flag_ptr = b.ins().global_value(types::I64, yield_gv);
+                        let flag = b.ins().load(types::I8, MemFlags::trusted(), flag_ptr, 0);
+                        let flag64 = b.ins().uextend(types::I64, flag);
+                        let zero64 = b.ins().iconst(types::I64, 0);
+                        let is_set = b.ins().icmp(IntCC::NotEqual, flag64, zero64);
+                        let yield_blk = b.create_block();
+                        let proceed_blk = b.create_block();
+                        let no_args: Vec<BlockArg> = Vec::new();
+                        b.ins()
+                            .brif(is_set, yield_blk, &no_args, proceed_blk, &no_args);
+
+                        // yield block: write args to slab, call yield helper.
+                        b.switch_to_block(yield_blk);
+                        b.seal_block(yield_blk);
+                        let roots_fref = jmod
+                            .declare_func_in_func(runtime.mid_flight_roots_ptr_id, b.func);
+                        let roots_call = b.ins().call(roots_fref, &[]);
+                        let roots_ptr_val = b.inst_results(roots_call)[0];
+                        debug_assert!(
+                            native_args.len() <= 8,
+                            "back-edge native_args ({}) exceeds mid_flight_roots slab (8)",
+                            native_args.len()
+                        );
+                        for (i, &av) in native_args.iter().enumerate() {
+                            b.ins().store(
+                                MemFlags::trusted(),
+                                av,
+                                roots_ptr_val,
+                                (i * 8) as i32,
+                            );
+                        }
+                        let yield_fref = jmod
+                            .declare_func_in_func(runtime.yield_back_edge_id, b.func);
+                        let sid_v = b.ins().iconst(types::I32, callee_sid as i64);
+                        let cnt_v = b.ins().iconst(types::I32, native_args.len() as i64);
+                        let yield_inst = b.ins().call(yield_fref, &[sid_v, cnt_v]);
+                        let yield_ret = b.inst_results(yield_inst)[0];
+                        b.ins().return_(&[yield_ret]);
+
+                        // proceed block: normal TCO.
+                        b.switch_to_block(proceed_blk);
+                        b.seal_block(proceed_blk);
+                    }
                     b.ins().return_call(callee_fref, &native_args);
                 } else if synth_halt_cont {
                     // fz-cps.1.11 — uniform caller + native callee
