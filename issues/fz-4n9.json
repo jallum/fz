@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-15T11:11:31Z",
+  "description": "",
+  "id": "fz-4n9",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "fz-cg2 [EPIC] codegen: dead param removal, deduplication, structural refactoring",
+  "type": "task",
+  "updated_at": "2026-05-15T11:11:31Z"
+}
