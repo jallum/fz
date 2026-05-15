@@ -2801,15 +2801,6 @@ pub fn compile_with_backend<B: Backend>(
         fn_ids.insert(sid as u32, id);
     }
 
-    // fz-cps.1.8 — closure stubs deleted. Closure invocation is now a
-    // direct Tail-CC return_call_indirect through cl+16 against the
-    // body's closure-target sig `(args..., self, cont) tail` (§8.2).
-    // MakeClosure stores body_func_addr at +16; the body's entry harness
-    // loads its captures from self+24+8*i. fz_stub_fn_ids is retained as
-    // an empty BTreeMap so compile_fn's signature stays unchanged for
-    // this commit; fz-siu.1.13 will drop the parameter.
-    let stub_fn_ids: std::collections::BTreeMap<u32, FuncId> = std::collections::BTreeMap::new();
-
     for sid in 0..spec_count {
         let Some(idx) = spec_fnidx[sid] else {
             continue;
@@ -2830,7 +2821,6 @@ pub fn compile_with_backend<B: Backend>(
             &runtime,
             &schemas,
             &tuple_schema_ids,
-            &stub_fn_ids,
             f,
             ft,
             sid as u32,
@@ -3501,7 +3491,6 @@ fn compile_fn<M: cranelift_module::Module>(
     runtime: &RuntimeRefs,
     schemas: &[Schema],
     tuple_schema_ids: &HashMap<usize, u32>,
-    stub_fn_ids: &std::collections::BTreeMap<u32, FuncId>,
     f: &crate::fz_ir::FnIr,
     fn_types: &crate::ir_typer::FnTypes,
     this_spec_id: u32,
@@ -3911,7 +3900,6 @@ fn compile_fn<M: cranelift_module::Module>(
                 jmod,
                 runtime,
                 tuple_schema_ids,
-                stub_fn_ids,
                 &var_map,
                 &var_reprs,
                 fn_types,
@@ -5385,7 +5373,6 @@ fn lower_prim<M: cranelift_module::Module>(
     jmod: &mut M,
     runtime: &RuntimeRefs,
     tuple_schema_ids: &HashMap<usize, u32>,
-    stub_fn_ids: &std::collections::BTreeMap<u32, FuncId>,
     env: &HashMap<u32, ir::Value>,
     var_reprs: &HashMap<u32, ArgRepr>,
     fn_types: &crate::ir_typer::FnTypes,
@@ -6058,10 +6045,7 @@ fn lower_prim<M: cranelift_module::Module>(
             }
             // fz-ul4.29.10.3 — fall back to any registered SpecId for
             // the lambda when the any-key was dropped (closure unreachable
-            // post-rewrite). The stub field is required by the closure
-            // header layout but nothing dispatches through it in the
-            // unreachable case.
-            let _ = stub_fn_ids;
+            // post-rewrite).
             let cl_sid = spec_registry
                 .resolve(*fn_id, &key)
                 .map(|s| s.0)
