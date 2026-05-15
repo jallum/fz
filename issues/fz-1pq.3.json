@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-05-15T01:24:58Z",
   "created": "2026-05-15T00:29:17Z",
   "description": "In classify_two_clause, the function has two clauses that return different atom literals (:big vs :small) depending on the input. The spec for each callsite should carry a narrowed return Descr reflecting which branch fires for that argument, but the spec shows the wide union of both branches for every callsite.\n\nExpected: spec key (int) → return :big ; spec key (int where x\u003e10) → return :small (or equivalent per-clause narrowing).\nActual: return shows union of all clause returns regardless of entry arg.\n\nRoot cause: the spec derivation unifies clause returns rather than tracking per-clause path-sensitive return.",
   "id": "fz-1pq.3",
   "labels": [],
   "parent": "fz-1pq",
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "classify_two_clause: per-clause return not narrowed per spec key",
   "type": "bug",
-  "updated_at": "2026-05-15T00:29:17Z"
+  "updated_at": "2026-05-15T01:24:58Z"
 }
