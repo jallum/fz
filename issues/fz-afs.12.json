@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-05-15T03:23:34Z",
@@ -8,8 +8,8 @@
   "labels": [],
   "parent": "fz-afs",
   "priority": 3,
-  "status": "open",
+  "status": "in_progress",
   "title": "add any-key secondary index to ModuleTypes; remove O(n) is_equiv scans",
   "type": "task",
-  "updated_at": "2026-05-15T03:23:34Z"
+  "updated_at": "2026-05-15T03:49:21Z"
 }
