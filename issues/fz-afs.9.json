@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-15T03:23:02Z",
+  "description": "The closure-to-fixpoint loop (lines 572-627) re-walks every registered spec each iteration to find new pending keys:\n\n  let snapshot: Vec\u003c_\u003e = specs.keys().cloned().collect();\n  for (fid, key) in \u0026snapshot { walk_spec_for_discovery(...) }\n\nA newly-registered spec can generate new pending keys. A stable spec (already walked, no change to specs or effective_returns since last walk) cannot — it would generate the same keys it already generated, which are already in specs and would be filtered by push_key.\n\nReplace: maintain a worklist Vec\u003c(FnId, Vec\u003cDescr\u003e)\u003e of specs registered this round (from drain_and_register's return value, per fz-afs.7/W0). Each iteration: walk only the worklist specs, collect new registrations, repeat. Terminate when the worklist is empty.\n\nThe full-snapshot clone and the O(all_specs) re-walk per iteration are removed. Work is proportional to new registrations, not total spec count.\n\nAdd a test: a module with many independent fns; verify type_module produces the same ModuleTypes as before but with fewer walk_spec_for_discovery calls (instrument via a counter or check spec-count stability).\n\nRequires fz-afs.7 (W0) for drain_and_register's return value.",
+  "id": "fz-afs.9",
+  "labels": [],
+  "parent": "fz-afs",
+  "priority": 2,
+  "status": "open",
+  "title": "replace full-spec re-walk with worklist in closure-to-fixpoint",
+  "type": "task",
+  "updated_at": "2026-05-15T03:23:02Z"
+}
