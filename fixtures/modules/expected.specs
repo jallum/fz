@@ -3,74 +3,74 @@
 ;   return: int
 ;   vars:
 ;     Var(0) :: 21
-;     Var(1) :: :a0
+;     Var(1) :: :match_error
 ;     Var(2) :: 2
 ;     Var(3) :: int
 ;   exits:
 ;     blk0 Return Var(3)    :: int
-;     blk1 Halt Var(1)      :: :a0
+;     blk1 Halt Var(1)      :: :match_error
 
 ; spec M.double(1) #fn=0
 ;   key:    [5]
 ;   return: int
 ;   vars:
 ;     Var(0) :: 5
-;     Var(1) :: :a0
+;     Var(1) :: :match_error
 ;     Var(2) :: 2
 ;     Var(3) :: int
 ;   exits:
 ;     blk0 Return Var(3)    :: int
-;     blk1 Halt Var(1)      :: :a0
+;     blk1 Halt Var(1)      :: :match_error
 
 ; spec M.double(1) #fn=0
 ;   key:    [int]
 ;   return: int
 ;   vars:
 ;     Var(0) :: int
-;     Var(1) :: :a0
+;     Var(1) :: :match_error
 ;     Var(2) :: 2
 ;     Var(3) :: int
 ;   exits:
 ;     blk0 Return Var(3)    :: int
-;     blk1 Halt Var(1)      :: :a0
+;     blk1 Halt Var(1)      :: :match_error
 
 ; spec M.quad(1) #fn=1
 ;   key:    [5]
 ;   return: int
 ;   vars:
 ;     Var(0) :: 5
-;     Var(1) :: :a0
+;     Var(1) :: :match_error
 ;   exits:
 ;     blk0 Call M.double#0(Var(0))
 ;              callee_key=[5]
 ;              cont k_4#4 captured=[Var(0)]
 ;              cont_key=[int, 5]
-;     blk1 Halt Var(1)      :: :a0
+;     blk1 Halt Var(1)      :: :match_error
 
 ; spec N.helper(1) #fn=2
 ;   key:    [7]
 ;   return: int
 ;   vars:
 ;     Var(0) :: 7
-;     Var(1) :: :a0
+;     Var(1) :: :match_error
 ;     Var(2) :: 100
 ;     Var(3) :: int
 ;   exits:
 ;     blk0 Return Var(3)    :: int
-;     blk1 Halt Var(1)      :: :a0
+;     blk1 Halt Var(1)      :: :match_error
 
 ; spec main(0) #fn=3
 ;   key:    []
 ;   return: nil
 ;   vars:
-;     Var(0) :: :a0
+;     Var(0) :: :match_error
 ;     Var(1) :: 21
 ;   exits:
 ;     blk0 Call M.double#0(Var(1))
 ;              callee_key=[21]
 ;              cont k_5#5 captured=[]
 ;              cont_key=[int]
-;     blk1 Halt Var(0)      :: :a0
+;     blk1 Halt Var(0)      :: :match_error
 
 ; spec k_4(2) #fn=4
 ;   key:    [int, 5]

@@ -35,13 +35,13 @@ function u0:0(i64, i64) -> i64 tail {
 }
 
 ; fn id_s3
-    ;   @spec   id(:a1) -> :a1
-    ;   @key    [:a1]
+    ;   @spec   id(:hello) -> :hello
+    ;   @key    [:hello]
     ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64, i64) -> i64 tail
 
-    block0(v0: i64, v1: i64):    ;; v0 :: :a1
+    block0(v0: i64, v1: i64):    ;; v0 :: :hello
     v2 = load.i64 notrap aligned v1+16
     return_call_indirect sig0, v2(v0, v1)
 }
@@ -88,8 +88,8 @@ function u0:0(i64, i64) -> i64 tail {
 }
 
 ; fn k_3_s6
-    ;   @spec   k_3(:a1) -> _
-    ;   @key    [:a1]
+    ;   @spec   k_3(:hello) -> _
+    ;   @key    [:hello]
     ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64) system_v
@@ -101,7 +101,7 @@ function u0:0(i64, i64) -> i64 tail {
     fn2 = colocated u0:51 sig2
     fn3 = u0:31 sig3
 
-    block0(v0: i64, v1: i64):    ;; v0 :: :a1
+    block0(v0: i64, v1: i64):    ;; v0 :: :hello
     call fn0(v0)                        ; @5:3
     v2 = iconst.i64 3                   ; @5:3
     v3 = iconst.i64 11                  ; @6:12

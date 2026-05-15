@@ -23,7 +23,7 @@ block0(v0: i64):
 }
 
 ; fn classify_s2
-    ;   @spec   classify(0) -> :a2 | :a1
+    ;   @spec   classify(0) -> :other | :zero
     ;   @key    [0]
     ;   @abi    (RawInt) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
@@ -58,7 +58,7 @@ block3:
 }
 
 ; fn classify_s3
-    ;   @spec   classify(7) -> :a2 | :a1
+    ;   @spec   classify(7) -> :other | :zero
     ;   @key    [7]
     ;   @abi    (RawInt) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
@@ -90,8 +90,8 @@ block3:
 }
 
 ; fn k_2_s4
-    ;   @spec   k_2(:a1 | :a2) -> _
-    ;   @key    [:a1 | :a2]
+    ;   @spec   k_2(:other | :zero) -> _
+    ;   @key    [:other | :zero]
     ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64) system_v
@@ -103,7 +103,7 @@ function u0:0(i64, i64) -> i64 tail {
     fn2 = colocated u0:49 sig2
     fn3 = u0:31 sig3
 
-    block0(v0: i64, v1: i64):    ;; v0 :: :a1 | :a2
+    block0(v0: i64, v1: i64):    ;; v0 :: :other | :zero
     call fn0(v0)                        ; @5:3
     v2 = iconst.i64 3                   ; @5:3
     v3 = iconst.i64 7                   ; @6:18
@@ -119,15 +119,15 @@ function u0:0(i64, i64) -> i64 tail {
 }
 
 ; fn k_3_s5
-    ;   @spec   k_3(:a1 | :a2) -> nil
-    ;   @key    [:a1 | :a2]
+    ;   @spec   k_3(:other | :zero) -> nil
+    ;   @key    [:other | :zero]
     ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64) system_v
     sig1 = (i64, i64) -> i64 tail
     fn0 = u0:0 sig0
 
-    block0(v0: i64, v1: i64):    ;; v0 :: :a1 | :a2
+    block0(v0: i64, v1: i64):    ;; v0 :: :other | :zero
     call fn0(v0)                        ; @6:3
     v2 = iconst.i64 3                   ; @6:3
     v3 = load.i64 notrap aligned v1+24

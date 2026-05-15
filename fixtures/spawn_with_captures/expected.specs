@@ -3,39 +3,39 @@
 ;   return: any
 ;   vars:
 ;     Var(0) :: 99
-;     Var(1) :: :a0
+;     Var(1) :: :match_error
 ;     Var(2) :: &fn2[99]:() -> any
 ;     Var(3) :: &fn3[&fn2[99]:() -> any]:() -> any
 ;     Var(4) :: int
 ;   exits:
 ;     blk0 Receive cont k_receive_4#4 captured=[Var(0)]
 ;              cont_key=[any, 99]
-;     blk1 Halt Var(1)      :: :a0
+;     blk1 Halt Var(1)      :: :match_error
 
 ; spec main(0) #fn=1
 ;   key:    []
 ;   return: nil
 ;   vars:
-;     Var(0) :: :a0
+;     Var(0) :: :match_error
 ;     Var(1) :: 99
 ;   exits:
 ;     blk0 Call parent#0(Var(1))
 ;              callee_key=[99]
 ;              cont k_5#5 captured=[]
 ;              cont_key=[any]
-;     blk1 Halt Var(0)      :: :a0
+;     blk1 Halt Var(0)      :: :match_error
 
 ; spec lambda_2(1) #fn=2
 ;   key:    [99]
 ;   return: any
 ;   vars:
 ;     Var(0) :: 99
-;     Var(1) :: :a0
+;     Var(1) :: :match_error
 ;     Var(2) :: 1
 ;     Var(3) :: any
 ;   exits:
 ;     blk0 Return Var(3)    :: any
-;     blk1 Halt Var(1)      :: :a0
+;     blk1 Halt Var(1)      :: :match_error
 
 ; spec fz_spawn_thunk(1) #fn=3
 ;   key:    [&fn2[99]:() -> any]

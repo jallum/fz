@@ -3,24 +3,24 @@
 ;   return: int
 ;   vars:
 ;     Var(0) :: 21
-;     Var(1) :: :a0
+;     Var(1) :: :match_error
 ;     Var(2) :: 2
 ;     Var(3) :: int
 ;   exits:
 ;     blk0 Return Var(3)    :: int
-;     blk1 Halt Var(1)      :: :a0
+;     blk1 Halt Var(1)      :: :match_error
 
 ; spec neg(1) #fn=1
 ;   key:    [7]
 ;   return: int
 ;   vars:
 ;     Var(0) :: 7
-;     Var(1) :: :a0
+;     Var(1) :: :match_error
 ;     Var(2) :: 0
 ;     Var(3) :: int
 ;   exits:
 ;     blk0 Return Var(3)    :: int
-;     blk1 Halt Var(1)      :: :a0
+;     blk1 Halt Var(1)      :: :match_error
 
 ; spec apply2(2) #fn=2
 ;   key:    [&fn0[]:(any) -> any, 21]
@@ -30,10 +30,10 @@
 ;   vars:
 ;     Var(0) :: &fn0[]:(any) -> any
 ;     Var(1) :: 21
-;     Var(2) :: :a0
+;     Var(2) :: :match_error
 ;   exits:
 ;     blk0 TailCallClosure Var(0)(Var(1)) [resolved=double#0]
-;     blk1 Halt Var(2)      :: :a0
+;     blk1 Halt Var(2)      :: :match_error
 
 ; spec apply2(2) #fn=2
 ;   key:    [&fn1[]:(any) -> any, 7]
@@ -43,10 +43,10 @@
 ;   vars:
 ;     Var(0) :: &fn1[]:(any) -> any
 ;     Var(1) :: 7
-;     Var(2) :: :a0
+;     Var(2) :: :match_error
 ;   exits:
 ;     blk0 TailCallClosure Var(0)(Var(1)) [resolved=neg#1]
-;     blk1 Halt Var(2)      :: :a0
+;     blk1 Halt Var(2)      :: :match_error
 
 ; spec main(0) #fn=3
 ;   key:    []
@@ -54,7 +54,7 @@
 ;   fn_constants:
 ;     Var(1) = double#0
 ;   vars:
-;     Var(0) :: :a0
+;     Var(0) :: :match_error
 ;     Var(1) :: &fn0[]:(any) -> any
 ;     Var(2) :: 21
 ;   exits:
@@ -62,7 +62,7 @@
 ;              callee_key=[&fn0[]:(any) -> any, 21]
 ;              cont k_4#4 captured=[]
 ;              cont_key=[int]
-;     blk1 Halt Var(0)      :: :a0
+;     blk1 Halt Var(0)      :: :match_error
 
 ; spec k_4(1) #fn=4
 ;   key:    [int]

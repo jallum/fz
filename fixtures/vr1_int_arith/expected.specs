@@ -2,7 +2,7 @@
 ;   key:    []
 ;   return: nil
 ;   vars:
-;     Var(0) :: :a0
+;     Var(0) :: :match_error
 ;     Var(1) :: 40
 ;     Var(2) :: 2
 ;     Var(3) :: int
@@ -17,5 +17,5 @@
 ;     Var(12) :: nil
 ;   exits:
 ;     blk0 Return Var(12)    :: nil
-;     blk1 Halt Var(0)      :: :a0
+;     blk1 Halt Var(0)      :: :match_error
 

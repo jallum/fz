@@ -3,59 +3,59 @@
 ;   return: int
 ;   vars:
 ;     Var(0) :: 40
-;     Var(1) :: :a0
+;     Var(1) :: :match_error
 ;     Var(2) :: 1000
 ;     Var(3) :: int
 ;   exits:
 ;     blk0 Return Var(3)    :: int
-;     blk1 Halt Var(1)      :: :a0
+;     blk1 Halt Var(1)      :: :match_error
 
 ; spec Long.Path.greet(1) #fn=0
 ;   key:    [41]
 ;   return: int
 ;   vars:
 ;     Var(0) :: 41
-;     Var(1) :: :a0
+;     Var(1) :: :match_error
 ;     Var(2) :: 1000
 ;     Var(3) :: int
 ;   exits:
 ;     blk0 Return Var(3)    :: int
-;     blk1 Halt Var(1)      :: :a0
+;     blk1 Halt Var(1)      :: :match_error
 
 ; spec User.nick_name(1) #fn=1
 ;   key:    [40]
 ;   return: int
 ;   vars:
 ;     Var(0) :: 40
-;     Var(1) :: :a0
+;     Var(1) :: :match_error
 ;   exits:
 ;     blk0 TailCall Long.Path.greet#0(Var(0))
 ;              callee_key=[40]
-;     blk1 Halt Var(1)      :: :a0
+;     blk1 Halt Var(1)      :: :match_error
 
 ; spec User.renamed(1) #fn=2
 ;   key:    [41]
 ;   return: int
 ;   vars:
 ;     Var(0) :: 41
-;     Var(1) :: :a0
+;     Var(1) :: :match_error
 ;   exits:
 ;     blk0 TailCall Long.Path.greet#0(Var(0))
 ;              callee_key=[41]
-;     blk1 Halt Var(1)      :: :a0
+;     blk1 Halt Var(1)      :: :match_error
 
 ; spec main(0) #fn=3
 ;   key:    []
 ;   return: nil
 ;   vars:
-;     Var(0) :: :a0
+;     Var(0) :: :match_error
 ;     Var(1) :: 40
 ;   exits:
 ;     blk0 Call User.nick_name#1(Var(1))
 ;              callee_key=[40]
 ;              cont k_4#4 captured=[]
 ;              cont_key=[int]
-;     blk1 Halt Var(0)      :: :a0
+;     blk1 Halt Var(0)      :: :match_error
 
 ; spec k_4(1) #fn=4
 ;   key:    [int]

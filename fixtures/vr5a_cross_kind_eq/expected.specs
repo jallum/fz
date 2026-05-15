@@ -2,12 +2,12 @@
 ;   key:    []
 ;   return: nil
 ;   vars:
-;     Var(0) :: :a0
+;     Var(0) :: :match_error
 ;     Var(1) :: 1
-;     Var(2) :: :a1
+;     Var(2) :: :ok
 ;     Var(3) :: bool
 ;     Var(4) :: nil
 ;   exits:
 ;     blk0 Return Var(4)    :: nil
-;     blk1 Halt Var(0)      :: :a0
+;     blk1 Halt Var(0)      :: :match_error
 

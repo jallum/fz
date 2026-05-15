@@ -1328,7 +1328,7 @@ fn is_singleton_lit(d: &Descr) -> bool {
 
 fn type_prim(prim: &Prim, env: &HashMap<Var, Descr>, m: &Module) -> Descr {
     match prim {
-        Prim::Const(c) => type_const(c),
+        Prim::Const(c) => type_const(c, &m.atom_names),
 
         Prim::BinOp(op, a, b) => {
             let at = lookup(env, *a);
@@ -1491,12 +1491,15 @@ fn type_prim(prim: &Prim, env: &HashMap<Var, Descr>, m: &Module) -> Descr {
     }
 }
 
-fn type_const(c: &Const) -> Descr {
+fn type_const(c: &Const, atom_names: &[String]) -> Descr {
     match c {
         Const::Int(n) => Descr::int_lit(*n),
         Const::Float(f) => Descr::float_lit(*f),
         Const::Str(s) => Descr::str_lit(s.clone()),
-        Const::Atom(id) => Descr::atom_lit(format!("a{}", id)),
+        Const::Atom(id) => {
+            let name = atom_names.get(*id as usize).map(String::as_str).unwrap_or("?");
+            Descr::atom_lit(name)
+        }
         Const::Nil => Descr::nil(),
         Const::True => Descr::atom_lit("true"),
         Const::False => Descr::atom_lit("false"),
@@ -2968,19 +2971,21 @@ mod tests {
         let then_b = b.block(vec![]);
         let else_b = b.block(vec![]);
         b.set_terminator(entry, Term::If(c, then_b, else_b));
-        let zero_at = b.let_(then_b, Prim::Const(Const::Atom(1))); // "a1"
+        let zero_at = b.let_(then_b, Prim::Const(Const::Atom(1))); // :zero
         b.set_terminator(then_b, Term::Return(zero_at));
-        let other_at = b.let_(else_b, Prim::Const(Const::Atom(2))); // "a2"
+        let other_at = b.let_(else_b, Prim::Const(Const::Atom(2))); // :other
         b.set_terminator(else_b, Term::Return(other_at));
-        let m = build_module(vec![b.build()]);
+        let mut m = build_module(vec![b.build()]);
+        // id 0 unused; id 1 = "zero"; id 2 = "other"
+        m.atom_names = vec!["_".into(), "zero".into(), "other".into()];
 
         let r0 = specialize_return(&m, FnId(0), &[Descr::int_lit(0)]);
         // With negative-narrowing on Eq's else (added in .24.6), the else arm's
         // x becomes int_lit(0).diff(int_lit(0)) = empty, but the body still
         // assigns Const(:other) which is a literal -> the Return picks up
-        // atom_lit("a2") from env. So union includes both arms in this
+        // atom_lit("other") from env. So union includes both arms in this
         // construction. Assert the truthy result is present at minimum.
-        let zero_d = Descr::atom_lit("a1");
+        let zero_d = Descr::atom_lit("zero");
         assert!(
             zero_d.is_subtype(&r0),
             "expected :zero in return, got {}",

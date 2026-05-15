@@ -3,24 +3,24 @@
 ;   return: int
 ;   vars:
 ;     Var(0) :: 7
-;     Var(1) :: :a0
+;     Var(1) :: :match_error
 ;     Var(2) :: int
 ;   exits:
 ;     blk0 Return Var(2)    :: int
-;     blk1 Halt Var(1)      :: :a0
+;     blk1 Halt Var(1)      :: :match_error
 
 ; spec main(0) #fn=1
 ;   key:    []
 ;   return: nil
 ;   vars:
-;     Var(0) :: :a0
+;     Var(0) :: :match_error
 ;     Var(1) :: 7
 ;   exits:
 ;     blk0 Call square#0(Var(1))
 ;              callee_key=[7]
 ;              cont k_2#2 captured=[]
 ;              cont_key=[int]
-;     blk1 Halt Var(0)      :: :a0
+;     blk1 Halt Var(0)      :: :match_error
 
 ; spec k_2(1) #fn=2
 ;   key:    [int]

@@ -23,13 +23,13 @@ block0(v0: i64):
 }
 
 ; fn Greeter.hi_s3
-    ;   @spec   Greeter.hi(:a1) -> :a1
-    ;   @key    [:a1]
+    ;   @spec   Greeter.hi(:alice) -> :alice
+    ;   @key    [:alice]
     ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64, i64) -> i64 tail
 
-    block0(v0: i64, v1: i64):    ;; v0 :: :a1
+    block0(v0: i64, v1: i64):    ;; v0 :: :alice
     v2 = load.i64 notrap aligned v1+16
     return_call_indirect sig0, v2(v0, v1)
 }
@@ -47,8 +47,8 @@ function u0:0(i64, i64) -> i64 tail {
 }
 
 ; fn k_3_s5
-    ;   @spec   k_3(:a1) -> _
-    ;   @key    [:a1]
+    ;   @spec   k_3(:alice) -> _
+    ;   @key    [:alice]
     ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64) system_v
@@ -60,7 +60,7 @@ function u0:0(i64, i64) -> i64 tail {
     fn2 = colocated u0:49 sig2
     fn3 = u0:31 sig3
 
-    block0(v0: i64, v1: i64):    ;; v0 :: :a1
+    block0(v0: i64, v1: i64):    ;; v0 :: :alice
     call fn0(v0)                        ; @12:3
     v2 = iconst.i64 3                   ; @12:3
     v3 = iconst.i64 42                  ; @13:22

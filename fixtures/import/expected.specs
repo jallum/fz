@@ -4,11 +4,11 @@
 ;   vars:
 ;     Var(0) :: 10
 ;     Var(1) :: 32
-;     Var(2) :: :a0
+;     Var(2) :: :match_error
 ;     Var(3) :: int
 ;   exits:
 ;     blk0 Return Var(3)    :: int
-;     blk1 Halt Var(2)      :: :a0
+;     blk1 Halt Var(2)      :: :match_error
 
 ; spec User.calc(2) #fn=2
 ;   key:    [10, 32]
@@ -16,17 +16,17 @@
 ;   vars:
 ;     Var(0) :: 10
 ;     Var(1) :: 32
-;     Var(2) :: :a0
+;     Var(2) :: :match_error
 ;   exits:
 ;     blk0 TailCall Math.add#0(Var(0), Var(1))
 ;              callee_key=[10, 32]
-;     blk1 Halt Var(2)      :: :a0
+;     blk1 Halt Var(2)      :: :match_error
 
 ; spec main(0) #fn=3
 ;   key:    []
 ;   return: nil
 ;   vars:
-;     Var(0) :: :a0
+;     Var(0) :: :match_error
 ;     Var(1) :: 10
 ;     Var(2) :: 32
 ;   exits:
@@ -34,7 +34,7 @@
 ;              callee_key=[10, 32]
 ;              cont k_4#4 captured=[]
 ;              cont_key=[int]
-;     blk1 Halt Var(0)      :: :a0
+;     blk1 Halt Var(0)      :: :match_error
 
 ; spec k_4(1) #fn=4
 ;   key:    [int]

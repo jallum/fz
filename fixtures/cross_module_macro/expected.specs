@@ -3,36 +3,36 @@
 ;   return: int
 ;   vars:
 ;     Var(0) :: 21
-;     Var(1) :: :a0
+;     Var(1) :: :match_error
 ;     Var(2) :: 2
 ;     Var(3) :: int
 ;   exits:
 ;     blk0 Return Var(3)    :: int
-;     blk1 Halt Var(1)      :: :a0
+;     blk1 Halt Var(1)      :: :match_error
 
 ; spec App.run(1) #fn=2
 ;   key:    [21]
 ;   return: int
 ;   vars:
 ;     Var(0) :: 21
-;     Var(1) :: :a0
+;     Var(1) :: :match_error
 ;   exits:
 ;     blk0 TailCall Helpers.double#0(Var(0))
 ;              callee_key=[21]
-;     blk1 Halt Var(1)      :: :a0
+;     blk1 Halt Var(1)      :: :match_error
 
 ; spec main(0) #fn=3
 ;   key:    []
 ;   return: nil
 ;   vars:
-;     Var(0) :: :a0
+;     Var(0) :: :match_error
 ;     Var(1) :: 21
 ;   exits:
 ;     blk0 Call App.run#2(Var(1))
 ;              callee_key=[21]
 ;              cont k_4#4 captured=[]
 ;              cont_key=[int]
-;     blk1 Halt Var(0)      :: :a0
+;     blk1 Halt Var(0)      :: :match_error
 
 ; spec k_4(1) #fn=4
 ;   key:    [int]

@@ -2,7 +2,7 @@
 ;   key:    []
 ;   return: nil
 ;   vars:
-;     Var(0) :: :a0
+;     Var(0) :: :match_error
 ;     Var(1) :: 1.5
 ;     Var(2) :: 2.5
 ;     Var(3) :: float
@@ -21,5 +21,5 @@
 ;     Var(16) :: nil
 ;   exits:
 ;     blk0 Return Var(16)    :: nil
-;     blk1 Halt Var(0)      :: :a0
+;     blk1 Halt Var(0)      :: :match_error
 

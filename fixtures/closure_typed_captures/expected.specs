@@ -4,11 +4,11 @@
 ;   vars:
 ;     Var(0) :: 10
 ;     Var(1) :: 20
-;     Var(2) :: :a0
+;     Var(2) :: :match_error
 ;     Var(3) :: &fn3[10, 20]:(any) -> any
 ;   exits:
 ;     blk0 Return Var(3)    :: &fn3[10, 20]:(any) -> any
-;     blk1 Halt Var(2)      :: :a0
+;     blk1 Halt Var(2)      :: :match_error
 
 ; spec apply1(2) #fn=1
 ;   key:    [&fn3[10, 20]:(any) -> any, 12]
@@ -16,16 +16,16 @@
 ;   vars:
 ;     Var(0) :: &fn3[10, 20]:(any) -> any
 ;     Var(1) :: 12
-;     Var(2) :: :a0
+;     Var(2) :: :match_error
 ;   exits:
 ;     blk0 TailCallClosure Var(0)(Var(1))
-;     blk1 Halt Var(2)      :: :a0
+;     blk1 Halt Var(2)      :: :match_error
 
 ; spec main(0) #fn=2
 ;   key:    []
 ;   return: nil
 ;   vars:
-;     Var(0) :: :a0
+;     Var(0) :: :match_error
 ;     Var(1) :: 10
 ;     Var(2) :: 20
 ;   exits:
@@ -33,7 +33,7 @@
 ;              callee_key=[10, 20]
 ;              cont k_4#4 captured=[]
 ;              cont_key=[&fn3[10, 20]:(any) -> any]
-;     blk1 Halt Var(0)      :: :a0
+;     blk1 Halt Var(0)      :: :match_error
 
 ; spec lambda_3(3) #fn=3
 ;   key:    [10, 20, 12]
@@ -42,12 +42,12 @@
 ;     Var(0) :: 10
 ;     Var(1) :: 20
 ;     Var(2) :: 12
-;     Var(3) :: :a0
+;     Var(3) :: :match_error
 ;     Var(4) :: int
 ;     Var(5) :: int
 ;   exits:
 ;     blk0 Return Var(5)    :: int
-;     blk1 Halt Var(3)      :: :a0
+;     blk1 Halt Var(3)      :: :match_error
 
 ; spec lambda_3(3) #fn=3
 ;   key:    [10, 20, any]
@@ -56,12 +56,12 @@
 ;     Var(0) :: 10
 ;     Var(1) :: 20
 ;     Var(2) :: any
-;     Var(3) :: :a0
+;     Var(3) :: :match_error
 ;     Var(4) :: int
 ;     Var(5) :: int | float
 ;   exits:
 ;     blk0 Return Var(5)    :: int | float
-;     blk1 Halt Var(3)      :: :a0
+;     blk1 Halt Var(3)      :: :match_error
 
 ; spec k_4(1) #fn=4
 ;   key:    [&fn3[10, 20]:(any) -> any]
