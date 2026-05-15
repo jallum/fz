@@ -1605,6 +1605,32 @@ pub struct AotArtifact {
     pub diagnostics: crate::diag::Diagnostics,
 }
 
+/// Resolve a TailCallClosure edge to its body's (FnId, SpecId raw u32).
+/// Returns None when the closure var isn't typed as a singleton closure_lit
+/// or when no covering spec is registered for the resolved key.
+/// Shared by the return-type fixpoint, tagged-return seeding, halt_kind
+/// analysis, and TailCallClosure codegen — all four had identical inline copies.
+fn resolve_tcc_body(
+    closure: &crate::fz_ir::Var,
+    args: &[crate::fz_ir::Var],
+    ft: &crate::ir_typer::FnTypes,
+    module: &crate::fz_ir::Module,
+    spec_registry: &SpecRegistry,
+) -> Option<(crate::fz_ir::FnId, u32)> {
+    let lit = ft.vars.get(closure)?.as_closure_lit()?;
+    let body_fn = module.fn_by_id(lit.fn_id);
+    let np = body_fn.block(body_fn.entry).params.len();
+    let mut key: Vec<crate::types::Descr> = lit.captures.clone();
+    for av in args {
+        key.push(ft.vars.get(av).cloned().unwrap_or_else(crate::types::Descr::any));
+    }
+    while key.len() < np {
+        key.push(crate::types::Descr::any());
+    }
+    key.truncate(np);
+    Some((lit.fn_id, spec_registry.resolve(lit.fn_id, &key)?.0))
+}
+
 /// Drive the shared compile pipeline through any Backend impl. JIT and
 /// AOT both route through here; the backend's hooks pick the legit
 /// variation points (linkage, per-program metadata carriers, finalize).
@@ -2449,27 +2475,8 @@ pub fn compile_with_backend<B: Backend>(
                         // fz-ul4.27.22.12 — closure_lit-driven return
                         // propagation. Mirrors the codegen direct-dispatch
                         // resolution in TailCallClosure compile.
-                        ft.vars
-                            .get(closure)
-                            .and_then(|d| d.as_closure_lit())
-                            .and_then(|lit| {
-                                let body_fn = module.fn_by_id(lit.fn_id);
-                                let np = body_fn.block(body_fn.entry).params.len();
-                                let mut full_key: Vec<crate::types::Descr> = lit.captures.clone();
-                                for av in args.iter() {
-                                    full_key.push(
-                                        ft.vars
-                                            .get(av)
-                                            .cloned()
-                                            .unwrap_or_else(crate::types::Descr::any),
-                                    );
-                                }
-                                while full_key.len() < np {
-                                    full_key.push(crate::types::Descr::any());
-                                }
-                                full_key.truncate(np);
-                                spec_registry.resolve(lit.fn_id, &full_key).map(|s| s.0)
-                            })
+                        resolve_tcc_body(closure, args, ft, module, &spec_registry)
+                            .map(|(_, sid)| sid)
                     }
                     _ => None,
                 };
@@ -2566,30 +2573,10 @@ pub fn compile_with_backend<B: Backend>(
     // under this spec's env (spec_fn_types[sid]).
     let tagged_return_specs: std::collections::HashSet<u32> = {
         let mut set: std::collections::HashSet<u32> = std::collections::HashSet::new();
-        // Per-spec resolution of TailCallClosure: returns the resolved
-        // body sid (Some) or None when unresolved (indirect Tagged seam).
-        let resolve_tcc_body_sid =
-            |sid: usize, closure: &crate::fz_ir::Var, args: &[crate::fz_ir::Var]| -> Option<u32> {
-                let ft = spec_fn_types.get(sid).and_then(|o| *o)?;
-                let cv_descr = ft.vars.get(closure)?;
-                let lit = cv_descr.as_closure_lit()?;
-                let body_fn = module.fn_by_id(lit.fn_id);
-                let body_n_params = body_fn.block(body_fn.entry).params.len();
-                let mut full_key: Vec<crate::types::Descr> = lit.captures.clone();
-                for av in args.iter() {
-                    full_key.push(
-                        ft.vars
-                            .get(av)
-                            .cloned()
-                            .unwrap_or_else(crate::types::Descr::any),
-                    );
-                }
-                while full_key.len() < body_n_params {
-                    full_key.push(crate::types::Descr::any());
-                }
-                full_key.truncate(body_n_params);
-                spec_registry.resolve(lit.fn_id, &full_key).map(|s| s.0)
-            };
+        let tcc_sid = |sid: usize, closure: &crate::fz_ir::Var, args: &[crate::fz_ir::Var]| {
+            let ft = spec_fn_types.get(sid).and_then(|o| *o)?;
+            resolve_tcc_body(closure, args, ft, module, &spec_registry).map(|(_, s)| s)
+        };
         // Seed: spec has an unresolved TailCallClosure.
         for sid in 0..spec_count {
             let Some(idx) = spec_fnidx[sid] else {
@@ -2598,7 +2585,7 @@ pub fn compile_with_backend<B: Backend>(
             let f = &module.fns[idx];
             for b in &f.blocks {
                 if let Term::TailCallClosure { closure, args } = &b.terminator {
-                    if resolve_tcc_body_sid(sid, closure, args).is_none() {
+                    if tcc_sid(sid, closure, args).is_none() {
                         set.insert(sid as u32);
                         break;
                     }
@@ -2636,7 +2623,7 @@ pub fn compile_with_backend<B: Backend>(
                         set.contains(&csid)
                     }
                     Term::TailCallClosure { closure, args } => {
-                        match resolve_tcc_body_sid(sid, closure, args) {
+                        match tcc_sid(sid, closure, args) {
                             Some(body_sid) => set.contains(&body_sid),
                             None => true, // unresolved is tagged by definition
                         }
@@ -2995,27 +2982,13 @@ pub fn compile_with_backend<B: Backend>(
                             // pre-codegen analysis stage so halt_kind
                             // selection (fz_spawn_entry, halt-cont
                             // singletons) picks the right kind.
-                            let resolved_body = (|| {
-                                let ft = spec_fn_types.get(sid).and_then(|o| *o)?;
-                                let cv_descr = ft.vars.get(closure)?;
-                                let lit = cv_descr.as_closure_lit()?;
-                                let body_fn = module.fn_by_id(lit.fn_id);
-                                let body_n_params = body_fn.block(body_fn.entry).params.len();
-                                let mut full_key: Vec<crate::types::Descr> = lit.captures.clone();
-                                for av in args.iter() {
-                                    full_key.push(
-                                        ft.vars
-                                            .get(av)
-                                            .cloned()
-                                            .unwrap_or_else(crate::types::Descr::any),
-                                    );
-                                }
-                                while full_key.len() < body_n_params {
-                                    full_key.push(crate::types::Descr::any());
-                                }
-                                full_key.truncate(body_n_params);
-                                spec_registry.resolve(lit.fn_id, &full_key).map(|s| s.0)
-                            })();
+                            let resolved_body = spec_fn_types
+                                .get(sid)
+                                .and_then(|o| *o)
+                                .and_then(|ft| {
+                                    resolve_tcc_body(closure, args, ft, module, &spec_registry)
+                                        .map(|(_, s)| s)
+                                });
                             match resolved_body {
                                 Some(body_sid) => {
                                     if let Some(c) = chain.get(body_sid as usize).and_then(|o| *o) {
@@ -4753,26 +4726,8 @@ fn compile_fn<M: cranelift_module::Module>(
 
                 // fz-ul4.27.22.11 — try singleton resolution.
                 let lit_resolved: Option<(u32, FuncId, usize)> = (|| {
-                    let cv_descr = fn_types.vars.get(closure)?;
-                    let lit = cv_descr.as_closure_lit()?;
-                    let body_fn_id = lit.fn_id;
-                    let body_fn = module.fn_by_id(body_fn_id);
-                    let body_n_params = body_fn.block(body_fn.entry).params.len();
-                    // Build full body key: [captures..., arg_descrs...].
-                    let mut full_key: Vec<crate::types::Descr> = lit.captures.clone();
-                    for av in args.iter() {
-                        let d = fn_types
-                            .vars
-                            .get(av)
-                            .cloned()
-                            .unwrap_or_else(crate::types::Descr::any);
-                        full_key.push(d);
-                    }
-                    while full_key.len() < body_n_params {
-                        full_key.push(crate::types::Descr::any());
-                    }
-                    full_key.truncate(body_n_params);
-                    let body_sid = spec_registry.resolve(body_fn_id, &full_key)?.0;
+                    let (body_fn_id, body_sid) =
+                        resolve_tcc_body(closure, args, fn_types, module, spec_registry)?;
                     let body_fid = *fn_ids.get(&body_sid)?;
                     let n_caps = closure_n_captures.get(&body_fn_id).copied().unwrap_or(0);
                     Some((body_sid, body_fid, n_caps))
