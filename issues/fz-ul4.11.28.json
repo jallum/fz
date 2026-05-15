@@ -6,10 +6,10 @@
   "description": "GOAL: Bounded loop unrolling for self-recursive fns.\n\nStatus when authored: speculative. Mentioned in fz-ul4.11.15 (\"Recursion:\ndon't inline self-recursive directly; can do bounded unrolling separately\").\n\n## What this looks like\n\n  For a fn `loop(n, acc) -\u003e if n == 0 then acc else loop(n-1, step(acc))`,\n  unroll the tail-recursive call up to K times (e.g., K=4):\n\n  Pseudo-IR after unroll:\n    loop(n, acc):\n      if n == 0 then return acc\n      a1 = step(acc)\n      if n == 1 then return a1\n      a2 = step(a1)\n      if n == 2 then return a2\n      ...\n      tail_call loop(n - K, aK)\n\n## Benefits\n\n  - Amortizes loop-header overhead.\n  - Composes with .11.15 inlining: each unrolled `step(...)` call is a\n    fresh inlinable site, so step's body gets fused K times.\n\n## Trade-offs\n\n  - Code bloat. Need a budget.\n  - Currently no profile data, so K is static.\n\n## Sketch\n\n  - Detect self-recursive tail-call structure: a block whose terminator is\n    `TailCall(self, ...)` reached from an If branch.\n  - Clone the loop body K-1 times, threading the new vars.\n  - Final iteration's TailCall becomes the recurrence point.\n\n## Dependencies\n\n  - Logically follows fz-ul4.11.15 (inliner uses unrolled body). Not strictly\n    blocked, but ordering is natural.\n\n## Acceptance\n\n  - One commit referencing fz-ul4.11.27.",
   "id": "fz-ul4.11.28",
   "labels": [],
-  "parent": "fz-ul4.11",
+  "parent": "fz-ul4",
   "priority": 3,
   "status": "open",
   "title": "Bounded recursion unrolling",
   "type": "task",
-  "updated_at": "2026-05-11T06:27:04Z"
+  "updated_at": "2026-05-15T19:42:40Z"
 }
