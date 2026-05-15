@@ -6,13 +6,14 @@
   "blocks": [
     "fz-lqe"
   ],
+  "closed_at": "2026-05-15T15:32:18Z",
   "created": "2026-05-15T15:25:30Z",
   "description": "",
   "id": "fz-na1",
   "labels": [],
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "fz-cg4.3: extract synthesize_halt_cont from emit_terminator",
   "type": "task",
-  "updated_at": "2026-05-15T15:25:33Z"
+  "updated_at": "2026-05-15T15:32:18Z"
 }
