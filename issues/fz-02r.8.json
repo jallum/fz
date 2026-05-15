@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-15T21:59:31Z",
+  "description": "All cases run in JIT, interp, and AOT modes (three-path parity).\n\nCase 1 — GC fires mid-loop: fn allocating one cons cell/iter, 200 iters, aggressive gc_watermark. Assert gc_run_count (from gc_mid_flight) \u003e= 1. Assert final list = 200 elements.\n\nCase 2 — Resume correctness: same fn; result bit-for-bit identical with aggressive vs normal watermark.\n\nCase 3 — Multi-process fairness: compute-heavy loop task + send/receive task, aggressive watermark on compute task. Assert both complete; receive task not starved.\n\nCase 4 — Mailbox root survives mid-flight GC: process self-sends a cons list, runs tight compute loop triggering mid-flight GC, receives message, asserts it is intact.\n\nCase 5 — Mutual recursion gets yield points: two mutually-recursive fns, high iteration count. Assert FZ_SHOULD_YIELD is observed and process yields (does not run indefinitely).",
+  "id": "fz-02r.8",
+  "labels": [],
+  "parent": "fz-02r",
+  "priority": 2,
+  "status": "open",
+  "title": "fz-sched.12: Integration tests — all cases on JIT, interp, and AOT",
+  "type": "task",
+  "updated_at": "2026-05-15T21:59:31Z"
+}
