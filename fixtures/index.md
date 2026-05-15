@@ -21,7 +21,7 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `interp_only_main/` | tiny module with a single helper and a main — historical interp-tier-0 smoke test | jit, interp |
 | `macro_inc/` | defmacro + quote/unquote round-trip — two macros, one nested in the other | jit, interp |
 | `modules/` | cross-module qualified calls — `M.double`, `M.quad`, `N.helper` | jit, interp |
-| `multi_clause/` | multi-clause dispatch with a guard, plus recursive `fact` — currently deferred on `# paths: ` because guard lowering is not yet wired | _(deferred: fz-ul4.24 (guard clauses in ir_lower))_ |
+| `multi_clause/` | multi-clause dispatch with a guard clause (`when n > 0`), plus recursive `fact` | jit, interp |
 | `nested_modules/` | inner module addressed both fully-qualified (`Outer.Inner.f`) and via outer-local reference | jit, interp |
 | `polymorphic/` | parametric `id` exercised over int, atom, and bool | jit, interp |
 | `sample_tests/` | `test()` macro from the prelude — assert_eq / assert_neq / assert | jit |
