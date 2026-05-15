@@ -36,4 +36,40 @@ jobs:
       - run: |
           cargo llvm-cov \
             --all-features \
-            --fail-under-lines "$(cat .coverage-threshold)"
+            --fail-under-lines "$(cat .coverage-threshold)" \
+            --json --summary-only \
+            --output-path coverage.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage-json
+          path: coverage.json
+
+  badge:
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: coverage-json
+      - name: Push coverage badge to badges branch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PCT=$(jq -r '.data[0].totals.lines.percent | floor' coverage.json)
+          if   [ "$PCT" -ge 80 ]; then COLOR=brightgreen
+          elif [ "$PCT" -ge 60 ]; then COLOR=yellow
+          else COLOR=red
+          fi
+          curl -sf "https://img.shields.io/badge/coverage-${PCT}%25-${COLOR}.svg" > coverage.svg
+          git init
+          git checkout -b badges
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add coverage.svg
+          git commit -m "coverage: ${PCT}%"
+          git push --force \
+            "https://x-access-token:${GH_TOKEN}@github.com/jallum/fz.git" \
+            badges
