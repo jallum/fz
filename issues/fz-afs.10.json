@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-05-15T03:46:17Z",
   "created": "2026-05-15T03:23:13Z",
   "description": "type_fn's fixpoint loop iterates f.blocks in storage order (line 1159: 'for b in \u0026f.blocks'). For functions with back-edges (loops), this means the loop body is visited before the back-edge predecessor has been processed, requiring extra outer iterations to converge.\n\nAdd: fn topo_order(f: \u0026FnIr) -\u003e Vec\u003cBlockId\u003e\n  BFS from f.entry. Track visited set. Edges that would revisit a node are back-edges — record them but don't enqueue. Return BFS order (guaranteed to visit each predecessor before its successors for all non-back edges).\n\nReplace 'for b in \u0026f.blocks' with 'for \u0026bid in \u0026topo' in the main propagation loop. The outer 'loop { … if !changed { break } }' still handles back-edges — they just require fewer iterations because forward edges converge in one pass.\n\nFor DAG-shaped functions (continuations, most lambdas — the majority of CPS output), the fixpoint terminates after a single forward pass with no second iteration needed.\n\nNo change to the merge_into / narrow_for_if logic. Test: a fixture with a loop; verify the inferred types are identical to before. Verify a DAG-only function converges in one iteration (add an iteration counter to type_fn gated on cfg(test)).",
   "id": "fz-afs.10",
   "labels": [],
   "parent": "fz-afs",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "replace storage-order block traversal in type_fn with topological order",
   "type": "task",
-  "updated_at": "2026-05-15T03:43:24Z"
+  "updated_at": "2026-05-15T03:46:17Z"
 }
