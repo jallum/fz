@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-05-15T02:37:59Z",
   "created": "2026-05-14T01:56:25Z",
   "description": "A closure is a struct: { code_ptr; capture_0; capture_1; ... }. Each\nfield has a type known at compile time. At every MakeClosure site the\ncompiler knows the body fn, the captured values, and their types. Same\nas constructing any other struct.\n\nWhen we invoke through the closure pointer (call_indirect (load cl+16)),\nwe need a Cranelift signature for the indirect call. Nothing forces it\nto be the universal (i64 Tagged, i64) tail — it can be (RawInt, i64)\nor (f64, i64) as long as the body the pointer leads to has a matching\nsignature.\n\nToday fz emits one closure-target body per fn with sig\n(args:i64..., self:i64, cont:i64) tail, all params Tagged. That was a\nTime-To-Working-CPS choice. It is not architecturally required and is\nthe root cause of every downstream patch I have been chasing:\n\n- halt_bound_fns force on return_repr.\n- cont_force_tagged_fnid widening at cont seams.\n- The producer/consumer mismatches at every seam where typed-direct\n  meets universal-Tagged (modules.fz, fact_5, map_higher_order\n  failures all trace here).\n\nThe fix is one level up: emit typed closure bodies per narrow spec\n(already partially done — closure_target_fns has narrow specs), bind\nthe right narrow spec's code_ptr at each MakeClosure site, emit typed\ncall_indirect at each CallClosure site with the sig matching the\nclosure's known static type. Tagged remains a real ABI variant for\nthe truly-Any-typed flow (mailbox, polymorphic container, dyn-dispatch\nsites).\n\n## DAG (provisional)\n\n22.1: drop the all-Tagged param_reprs force on closure_target_fns.\nPer-narrow-spec specs already exist; just stop forcing their reprs.\n\n22.2: per-MakeClosure-site narrow spec binding. Codegen stores the\nmatching narrow spec's body code_ptr at cl+16.\n\n22.3: typed call_indirect at CallClosure / TailCallClosure. Sig\nmatches the closure's known static type. Tagged fallback for\nAny-typed closures.\n\n22.4: cont seams as a special case of typed closure call. Per-cont\ntyped sig; producer's Term::Return uses cont's typed sig; entry\nharness drops the Tagged round-trip.\n\n22.5: typed halt-cont. Halt is a cont whose body calls\nfz_halt_implicit_\u003ctype\u003e. Falls out of 22.4 + per-program halt-cont\nemission.\n\n22.6: drop the codegen-side closure_target_fns return_repr force.\nAfter 22.1-22.5 land, the force is no longer load-bearing.\n\n## Acceptance\n\nPer-fixture golden CLIF diffs show every closure / cont / halt seam\ntag/untag round-trip deleted for typed flows. Closure escapes into\nAny-typed flow keep the Tagged fallback.\n\nFor add1.fz golden:\n- add1_s2: no ishl_imm/bor_imm pair at the cont seam.\n- k_2_s3: no sshr_imm at entry.\n\nFor higher_order.fz: compose's cont captures stored/loaded raw where\ntyper narrows.\n\nTest suite: 511 + golden diffs blessed cleanly.\n\n## Supersedes\n\n- fz-ul4.27.21 — folds into 22.4 (cont seams).\n- the .21.5 / .21.6 paths I was building — superseded by the\n  closure-ABI approach.",
   "id": "fz-ul4.27.22",
   "labels": [],
   "parent": "fz-ul4.27",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "[EPIC] Typed closure ABI — closures are structs with typed fields",
   "type": "task",
-  "updated_at": "2026-05-14T01:56:25Z"
+  "updated_at": "2026-05-15T02:37:59Z"
 }
