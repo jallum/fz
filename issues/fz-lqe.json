@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-na1"
+  ],
   "blocks": [],
   "created": "2026-05-15T15:25:30Z",
   "description": "",
@@ -10,5 +12,5 @@
   "status": "open",
   "title": "fz-cg4.4: extract build_cont_closure from Term::Call and Term::CallClosure",
   "type": "task",
-  "updated_at": "2026-05-15T15:25:30Z"
+  "updated_at": "2026-05-15T15:25:33Z"
 }
