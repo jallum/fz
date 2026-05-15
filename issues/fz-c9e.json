@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-q9a"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-x4f"
+  ],
   "created": "2026-05-15T17:53:53Z",
   "description": "Two changes in ir_codegen.rs. (1) compile_with_backend after inline_module: call crate::ir_fuse::fuse_blocks(\u0026mut working) before type_module so typer sees merged blocks. (2) lower_prim BinOp handler before iadd emit: add int_singleton check on fn_types.vars[dest_var]; if singleton return LowerOut::RawI64(iconst(n)). Add fn int_singleton(d: \u0026Descr) -\u003e Option\u003ci64\u003e: !d.ints.cofinite \u0026\u0026 d.ints.set.len()==1 with no other axes.",
   "id": "fz-c9e",
