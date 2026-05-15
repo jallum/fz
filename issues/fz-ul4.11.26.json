@@ -6,10 +6,10 @@
   "description": "GOAL: Per-fn opt-out from the inliner via an `@no_inline` attribute on the\nAST `fn` form, threaded through AST → ir_lower → FnIr → ir_inline.\n\nStatus when authored: speculative. Open in the original fz-ul4.11.15 design\n(\"Per-fn opt-out attribute (e.g. @no_inline)?\"). Defer until we have a\nconcrete case where the inliner makes a fn slower or harder to debug.\n\n## When this becomes load-bearing\n\n  - A fn whose body is small and leaf, but inlining it explodes a hot caller's\n    code size beyond what GROWTH_CAP catches.\n  - A fn we want to keep distinct for profiling/debuggability.\n  - A fn whose semantics must not be observed via the inlined merged frame\n    (e.g., specialized for tier-up — though that's also handled by .11.24.7's\n    specialize_return path).\n\n## Sketch of work\n\n  1. AST: extend Item::FnDecl (src/ast.rs) with an `attrs: Vec\u003cAttr\u003e` field;\n     parser recognizes `@no_inline` before a `fn` head.\n  2. ir_lower: propagate flag to FnIr (new field `pub no_inline: bool` on\n     FnIr; default false).\n  3. ir_inline: gate `is_inlinable` on `!f.no_inline`.\n  4. Tests: a marked fn is not inlined even when otherwise eligible.\n\n## Acceptance\n\n  - One commit referencing fz-ul4.11.25.\n\n## References\n\n  - fz-ul4.11.15 parent (deferral list).\n  - src/ir_inline.rs::is_inlinable (created by .11.15.1).",
   "id": "fz-ul4.11.26",
   "labels": [],
-  "parent": "fz-ul4.11",
+  "parent": "fz-ul4",
   "priority": 3,
   "status": "open",
   "title": "@no_inline attribute (per-fn opt-out)",
   "type": "task",
-  "updated_at": "2026-05-11T06:27:04Z"
+  "updated_at": "2026-05-15T19:42:39Z"
 }
