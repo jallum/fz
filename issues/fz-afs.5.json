@@ -3,7 +3,8 @@
   "blocked_by": [],
   "blocks": [
     "fz-afs.6",
-    "fz-afs.7"
+    "fz-afs.7",
+    "fz-afs.8"
   ],
   "created": "2026-05-15T03:22:19Z",
   "description": "idx_of: HashMap\u003cFnId, usize\u003e is rebuilt from scratch inside walk_spec_for_discovery (line 800), compute_effective_returns (line 2410), opaque_consumer_arities (line 374), and type_module_pass itself (line 465). Each rebuild is O(n_fns) and these functions are called inside fixpoint loops.\n\nBuild idx_of once at the top of type_module_pass and thread it as \u0026HashMap\u003cFnId, usize\u003e into:\n  - walk_spec_for_discovery (new parameter)\n  - compute_effective_returns (new parameter)\n  - opaque_consumer_arities (new parameter)\n\nThe local idx_of construction inside each function is removed. type_module_pass holds the single canonical copy for the duration of one pass.",
@@ -14,5 +15,5 @@
   "status": "open",
   "title": "hoist idx_of into type_module_pass; remove 4 per-call rebuilds",
   "type": "task",
-  "updated_at": "2026-05-15T03:22:39Z"
+  "updated_at": "2026-05-15T03:22:48Z"
 }

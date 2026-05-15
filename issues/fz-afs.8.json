@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-afs.5"
+  ],
   "blocks": [],
   "created": "2026-05-15T03:22:48Z",
   "description": "Phase 2 of type_module_pass (lines 639-766) calls opaque_consumer_arities(m, \u0026specs) at the top of every loop iteration. opaque_consumer_arities scans all registered specs and all their blocks — O(specs × blocks) — each time through the loop.\n\nThe result is stable once phase 1 has converged: new specs registered in phase 2 are MakeClosure-side any-key bodies whose callers were already walked in phase 1. They don't introduce new opaque consumers; the set of unresolved CallClosure sites doesn't change between phase-2 iterations.\n\nRemove the per-iteration call. Compute opaque_consumer_arities once, after phase 1 converges, and pass the result into the phase-2 loop body.\n\nRequires fz-afs.5 (S1) so opaque_consumer_arities accepts the shared idx_of.",
