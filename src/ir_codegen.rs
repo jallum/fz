@@ -5088,6 +5088,226 @@ impl LowerOut {
     }
 }
 
+/// Lower collection-typed Prim variants (List, Tuple, AllocStruct, Bitstring,
+/// Map, Vec) to a tagged `ir::Value`. Called by `lower_prim` for these arms.
+fn lower_collection_prim<M: cranelift_module::Module>(
+    b: &mut FunctionBuilder<'_>,
+    jmod: &mut M,
+    env: &CodegenEnv<'_>,
+    var_env: &HashMap<u32, VarBinding>,
+    prim: &Prim,
+) -> Result<ir::Value, CodegenError> {
+    let runtime = env.runtime;
+    let tuple_schema_ids = env.tuple_schema_ids;
+    let v: ir::Value = match prim {
+        Prim::ListCons(h, t) => {
+            let hv = tagged_get(var_env, b, jmod, runtime, h.0);
+            let tv = tagged_get(var_env, b, jmod, runtime, t.0);
+            let fref = jmod.declare_func_in_func(runtime.alloc_cons_id, b.func);
+            let inst = b.ins().call(fref, &[hv, tv]);
+            b.inst_results(inst)[0]
+        }
+        Prim::ListHead(c) => {
+            let cv = tagged_get(var_env, b, jmod, runtime, c.0);
+            b.ins().load(types::I64, MemFlags::trusted(), cv, 16)
+        }
+        Prim::ListTail(c) => {
+            let cv = tagged_get(var_env, b, jmod, runtime, c.0);
+            b.ins().load(types::I64, MemFlags::trusted(), cv, 24)
+        }
+        Prim::ListIsNil(c) => {
+            let cv = tagged_get(var_env, b, jmod, runtime, c.0);
+            let nil_v = b.ins().iconst(types::I64, NIL_BITS);
+            let cmp = b.ins().icmp(IntCC::Equal, cv, nil_v);
+            bool_to_fz(b, cmp)
+        }
+        Prim::MakeList(elems, tail) => {
+            let mut acc = match tail {
+                Some(t) => tagged_get(var_env, b, jmod, runtime, t.0),
+                None => b.ins().iconst(types::I64, NIL_BITS),
+            };
+            let fref = jmod.declare_func_in_func(runtime.alloc_cons_id, b.func);
+            for e in elems.iter().rev() {
+                let ev = tagged_get(var_env, b, jmod, runtime, e.0);
+                let inst = b.ins().call(fref, &[ev, acc]);
+                acc = b.inst_results(inst)[0];
+            }
+            acc
+        }
+        Prim::MakeTuple(elems) => {
+            let arity = elems.len();
+            let schema_id = *tuple_schema_ids.get(&arity).ok_or_else(|| {
+                CodegenError::new(format!(
+                    "tuple arity {} not pre-registered (compile() walk missed it?)",
+                    arity
+                ))
+            })?;
+            let fref = jmod.declare_func_in_func(runtime.alloc_struct_id, b.func);
+            let sid = b.ins().iconst(types::I32, schema_id as i64);
+            let inst = b.ins().call(fref, &[sid]);
+            let p = b.inst_results(inst)[0];
+            for (i, e) in elems.iter().enumerate() {
+                let ev = tagged_get(var_env, b, jmod, runtime, e.0);
+                let off = HEADER_SIZE + (i as i32) * SLOT_BYTES;
+                b.ins().store(MemFlags::trusted(), ev, p, off);
+            }
+            p
+        }
+        Prim::TupleField(c, idx) => {
+            let cv = tagged_get(var_env, b, jmod, runtime, c.0);
+            let off = HEADER_SIZE + (*idx as i32) * SLOT_BYTES;
+            b.ins().load(types::I64, MemFlags::trusted(), cv, off)
+        }
+        Prim::AllocStruct(schema_id, fields) => {
+            let fref = jmod.declare_func_in_func(runtime.alloc_struct_id, b.func);
+            let sid = b.ins().iconst(types::I32, *schema_id as i64);
+            let inst = b.ins().call(fref, &[sid]);
+            let p = b.inst_results(inst)[0];
+            for (i, fv) in fields.iter().enumerate() {
+                let v = tagged_get(var_env, b, jmod, runtime, fv.0);
+                let off = HEADER_SIZE + (i as i32) * SLOT_BYTES;
+                b.ins().store(MemFlags::trusted(), v, p, off);
+            }
+            p
+        }
+        Prim::MakeBitstring(fields) => {
+            let begin = jmod.declare_func_in_func(runtime.bs_begin_id, b.func);
+            b.ins().call(begin, &[]);
+            let write = jmod.declare_func_in_func(runtime.bs_write_id, b.func);
+            for f in fields {
+                let value_v = tagged_get(var_env, b, jmod, runtime, f.value.0);
+                let ty_tag = b.ins().iconst(types::I32, encode_bit_type(f.ty) as i64);
+                let unit = b
+                    .ins()
+                    .iconst(types::I32, f.unit.unwrap_or(default_unit_for(f.ty)) as i64);
+                let endian = b.ins().iconst(types::I32, encode_endian(f.endian) as i64);
+                let signed = b.ins().iconst(types::I32, f.signed as i64);
+                let (size_present, size_value) = match &f.size {
+                    None => (b.ins().iconst(types::I32, 0), b.ins().iconst(types::I32, 0)),
+                    Some(crate::fz_ir::BitSizeIr::Literal(n)) => (
+                        b.ins().iconst(types::I32, 1),
+                        b.ins().iconst(types::I32, *n as i64),
+                    ),
+                    Some(crate::fz_ir::BitSizeIr::Var(v)) => {
+                        let raw = tagged_get(var_env, b, jmod, runtime, v.0);
+                        let unb = unbox_int(b, raw);
+                        let truncated = b.ins().ireduce(types::I32, unb);
+                        (b.ins().iconst(types::I32, 1), truncated)
+                    }
+                };
+                b.ins().call(
+                    write,
+                    &[value_v, ty_tag, size_present, size_value, unit, endian, signed],
+                );
+            }
+            let fin = jmod.declare_func_in_func(runtime.bs_finalize_id, b.func);
+            let inst = b.ins().call(fin, &[]);
+            b.inst_results(inst)[0]
+        }
+        Prim::BitReaderInit(v) => {
+            let vv = tagged_get(var_env, b, jmod, runtime, v.0);
+            let fref = jmod.declare_func_in_func(runtime.bs_reader_init_id, b.func);
+            let inst = b.ins().call(fref, &[vv]);
+            b.inst_results(inst)[0]
+        }
+        Prim::BitReadField { reader, ty, size, endian, signed, unit, is_last } => {
+            let rv = tagged_get(var_env, b, jmod, runtime, reader.0);
+            let ty_tag = b.ins().iconst(types::I32, encode_bit_type(*ty) as i64);
+            let unit_v = b
+                .ins()
+                .iconst(types::I32, unit.unwrap_or(default_unit_for(*ty)) as i64);
+            let endian_v = b.ins().iconst(types::I32, encode_endian(*endian) as i64);
+            let signed_v = b.ins().iconst(types::I32, *signed as i64);
+            let is_last_v = b.ins().iconst(types::I32, *is_last as i64);
+            let (size_present, size_value) = match size {
+                None => (b.ins().iconst(types::I32, 0), b.ins().iconst(types::I32, 0)),
+                Some(crate::fz_ir::BitSizeIr::Literal(n)) => (
+                    b.ins().iconst(types::I32, 1),
+                    b.ins().iconst(types::I32, *n as i64),
+                ),
+                Some(crate::fz_ir::BitSizeIr::Var(v)) => {
+                    let raw = tagged_get(var_env, b, jmod, runtime, v.0);
+                    let unb = unbox_int(b, raw);
+                    let truncated = b.ins().ireduce(types::I32, unb);
+                    (b.ins().iconst(types::I32, 1), truncated)
+                }
+            };
+            let fref = jmod.declare_func_in_func(runtime.bs_read_field_id, b.func);
+            let inst = b.ins().call(
+                fref,
+                &[rv, ty_tag, size_present, size_value, unit_v, endian_v, signed_v, is_last_v],
+            );
+            b.inst_results(inst)[0]
+        }
+        Prim::BitReaderDone(r) => {
+            let rv = tagged_get(var_env, b, jmod, runtime, r.0);
+            let bit_len_b = b.ins().load(types::I64, MemFlags::trusted(), rv, 24);
+            let pos_b = b.ins().load(types::I64, MemFlags::trusted(), rv, 32);
+            let cmp = b.ins().icmp(IntCC::Equal, bit_len_b, pos_b);
+            bool_to_fz(b, cmp)
+        }
+        Prim::MakeMap(entries) => {
+            let begin = jmod.declare_func_in_func(runtime.map_begin_id, b.func);
+            b.ins().call(begin, &[]);
+            let push = jmod.declare_func_in_func(runtime.map_push_id, b.func);
+            for (k, v) in entries {
+                let kv = tagged_get(var_env, b, jmod, runtime, k.0);
+                let vv = tagged_get(var_env, b, jmod, runtime, v.0);
+                b.ins().call(push, &[kv, vv]);
+            }
+            let fin = jmod.declare_func_in_func(runtime.map_finalize_id, b.func);
+            let inst = b.ins().call(fin, &[]);
+            b.inst_results(inst)[0]
+        }
+        Prim::MapUpdate(base, entries) => {
+            let bv = tagged_get(var_env, b, jmod, runtime, base.0);
+            let cln = jmod.declare_func_in_func(runtime.map_clone_id, b.func);
+            b.ins().call(cln, &[bv]);
+            let push = jmod.declare_func_in_func(runtime.map_push_id, b.func);
+            for (k, v) in entries {
+                let kv = tagged_get(var_env, b, jmod, runtime, k.0);
+                let vv = tagged_get(var_env, b, jmod, runtime, v.0);
+                b.ins().call(push, &[kv, vv]);
+            }
+            let fin = jmod.declare_func_in_func(runtime.map_finalize_id, b.func);
+            let inst = b.ins().call(fin, &[]);
+            b.inst_results(inst)[0]
+        }
+        Prim::MapGet(m, k) => {
+            let mv = tagged_get(var_env, b, jmod, runtime, m.0);
+            let kv = tagged_get(var_env, b, jmod, runtime, k.0);
+            let fref = jmod.declare_func_in_func(runtime.map_get_id, b.func);
+            let inst = b.ins().call(fref, &[mv, kv]);
+            b.inst_results(inst)[0]
+        }
+        Prim::MakeVec(kind, els) => {
+            use crate::fz_ir::VecKindIr;
+            use fz_runtime::fz_value::HeapKind;
+            let kind_tag = match kind {
+                VecKindIr::I64 => HeapKind::VecI64 as i64,
+                VecKindIr::U8 => HeapKind::VecU8 as i64,
+                VecKindIr::Bit => HeapKind::VecBit as i64,
+                VecKindIr::F64 => {
+                    return Err(CodegenError::new("MakeVec(F64) deferred to fz-ul4.11.23"));
+                }
+            };
+            let begin = jmod.declare_func_in_func(runtime.vec_begin_id, b.func);
+            let kt = b.ins().iconst(types::I32, kind_tag);
+            b.ins().call(begin, &[kt]);
+            let push = jmod.declare_func_in_func(runtime.vec_push_id, b.func);
+            for ev in els {
+                let v = tagged_get(var_env, b, jmod, runtime, ev.0);
+                b.ins().call(push, &[v]);
+            }
+            let fin = jmod.declare_func_in_func(runtime.vec_finalize_id, b.func);
+            let inst = b.ins().call(fin, &[]);
+            b.inst_results(inst)[0]
+        }
+        _ => unreachable!("lower_collection_prim: not a collection prim"),
+    };
+    Ok(v)
+}
+
 fn lower_prim<M: cranelift_module::Module>(
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
@@ -5097,7 +5317,6 @@ fn lower_prim<M: cranelift_module::Module>(
     dest_var: crate::fz_ir::Var,
 ) -> Result<LowerOut, CodegenError> {
     let runtime = env.runtime;
-    let tuple_schema_ids = env.tuple_schema_ids;
     let fn_types = env.fn_types;
     let spec_registry = env.spec_registry;
     let module = env.module;
@@ -5506,223 +5725,23 @@ fn lower_prim<M: cranelift_module::Module>(
                 }
             }
         }
-        Prim::ListCons(h, t) => {
-            let hv = tagged_get(var_env, b, jmod, runtime,h.0);
-            let tv = tagged_get(var_env, b, jmod, runtime,t.0);
-            let fref = jmod.declare_func_in_func(runtime.alloc_cons_id, b.func);
-            let inst = b.ins().call(fref, &[hv, tv]);
-            b.inst_results(inst)[0]
-        }
-        Prim::ListHead(c) => {
-            // `c` is FzValue ptr-tagged (tag bits = 000), so `c` is the raw
-            // ListCons base address. head sits at byte offset 16 (after
-            // HeapHeader); load it as i64 (raw FzValue bits).
-            let cv = tagged_get(var_env, b, jmod, runtime,c.0);
-            b.ins().load(types::I64, MemFlags::trusted(), cv, 16)
-        }
-        Prim::ListTail(c) => {
-            let cv = tagged_get(var_env, b, jmod, runtime,c.0);
-            b.ins().load(types::I64, MemFlags::trusted(), cv, 24)
-        }
-        Prim::ListIsNil(c) => {
-            let cv = tagged_get(var_env, b, jmod, runtime,c.0);
-            let nil_v = b.ins().iconst(types::I64, NIL_BITS);
-            let cmp = b.ins().icmp(IntCC::Equal, cv, nil_v);
-            bool_to_fz(b, cmp)
-        }
-        Prim::MakeList(elems, tail) => {
-            // Fold right: cons(e0, cons(e1, ..., cons(eN, tail-or-nil))).
-            let mut acc = match tail {
-                Some(t) => tagged_get(var_env, b, jmod, runtime,t.0),
-                None => b.ins().iconst(types::I64, NIL_BITS),
-            };
-            let fref = jmod.declare_func_in_func(runtime.alloc_cons_id, b.func);
-            for e in elems.iter().rev() {
-                let ev = tagged_get(var_env, b, jmod, runtime,e.0);
-                let inst = b.ins().call(fref, &[ev, acc]);
-                acc = b.inst_results(inst)[0];
-            }
-            acc
-        }
-        Prim::MakeTuple(elems) => {
-            let arity = elems.len();
-            let schema_id = *tuple_schema_ids.get(&arity).ok_or_else(|| {
-                CodegenError::new(format!(
-                    "tuple arity {} not pre-registered (compile() walk missed it?)",
-                    arity
-                ))
-            })?;
-            let fref = jmod.declare_func_in_func(runtime.alloc_struct_id, b.func);
-            let sid = b.ins().iconst(types::I32, schema_id as i64);
-            let inst = b.ins().call(fref, &[sid]);
-            let p = b.inst_results(inst)[0];
-            for (i, e) in elems.iter().enumerate() {
-                let ev = tagged_get(var_env, b, jmod, runtime,e.0);
-                let off = HEADER_SIZE + (i as i32) * SLOT_BYTES;
-                b.ins().store(MemFlags::trusted(), ev, p, off);
-            }
-            p
-        }
-        Prim::TupleField(c, idx) => {
-            let cv = tagged_get(var_env, b, jmod, runtime,c.0);
-            let off = HEADER_SIZE + (*idx as i32) * SLOT_BYTES;
-            b.ins().load(types::I64, MemFlags::trusted(), cv, off)
-        }
-        Prim::AllocStruct(schema_id, fields) => {
-            // schema_id refers to a heap-registered Schema (caller's
-            // responsibility). Reused later by .11.13 maps / .11.19 closures /
-            // future user records. v1 has no in-tree caller — kept here so the
-            // path is exercised by ir_codegen's existing Prim coverage.
-            let fref = jmod.declare_func_in_func(runtime.alloc_struct_id, b.func);
-            let sid = b.ins().iconst(types::I32, *schema_id as i64);
-            let inst = b.ins().call(fref, &[sid]);
-            let p = b.inst_results(inst)[0];
-            for (i, fv) in fields.iter().enumerate() {
-                let v = tagged_get(var_env, b, jmod, runtime,fv.0);
-                let off = HEADER_SIZE + (i as i32) * SLOT_BYTES;
-                b.ins().store(MemFlags::trusted(), v, p, off);
-            }
-            p
-        }
-        Prim::MakeBitstring(fields) => {
-            let begin = jmod.declare_func_in_func(runtime.bs_begin_id, b.func);
-            b.ins().call(begin, &[]);
-            let write = jmod.declare_func_in_func(runtime.bs_write_id, b.func);
-            for f in fields {
-                let value_v =
-                    tagged_get(var_env, b, jmod, runtime,f.value.0);
-                let ty_tag = b.ins().iconst(types::I32, encode_bit_type(f.ty) as i64);
-                let unit = b
-                    .ins()
-                    .iconst(types::I32, f.unit.unwrap_or(default_unit_for(f.ty)) as i64);
-                let endian = b.ins().iconst(types::I32, encode_endian(f.endian) as i64);
-                let signed = b.ins().iconst(types::I32, f.signed as i64);
-                let (size_present, size_value) = match &f.size {
-                    None => (b.ins().iconst(types::I32, 0), b.ins().iconst(types::I32, 0)),
-                    Some(crate::fz_ir::BitSizeIr::Literal(n)) => (
-                        b.ins().iconst(types::I32, 1),
-                        b.ins().iconst(types::I32, *n as i64),
-                    ),
-                    Some(crate::fz_ir::BitSizeIr::Var(v)) => {
-                        let raw =
-                            tagged_get(var_env, b, jmod, runtime,v.0);
-                        // Boxed int -> raw int -> truncate to i32.
-                        let unb = unbox_int(b, raw);
-                        let truncated = b.ins().ireduce(types::I32, unb);
-                        (b.ins().iconst(types::I32, 1), truncated)
-                    }
-                };
-                b.ins().call(
-                    write,
-                    &[
-                        value_v,
-                        ty_tag,
-                        size_present,
-                        size_value,
-                        unit,
-                        endian,
-                        signed,
-                    ],
-                );
-            }
-            let fin = jmod.declare_func_in_func(runtime.bs_finalize_id, b.func);
-            let inst = b.ins().call(fin, &[]);
-            b.inst_results(inst)[0]
-        }
-        Prim::BitReaderInit(v) => {
-            let vv = tagged_get(var_env, b, jmod, runtime,v.0);
-            let fref = jmod.declare_func_in_func(runtime.bs_reader_init_id, b.func);
-            let inst = b.ins().call(fref, &[vv]);
-            b.inst_results(inst)[0]
-        }
-        Prim::BitReadField {
-            reader,
-            ty,
-            size,
-            endian,
-            signed,
-            unit,
-            is_last,
-        } => {
-            let rv = tagged_get(var_env, b, jmod, runtime,reader.0);
-            let ty_tag = b.ins().iconst(types::I32, encode_bit_type(*ty) as i64);
-            let unit_v = b
-                .ins()
-                .iconst(types::I32, unit.unwrap_or(default_unit_for(*ty)) as i64);
-            let endian_v = b.ins().iconst(types::I32, encode_endian(*endian) as i64);
-            let signed_v = b.ins().iconst(types::I32, *signed as i64);
-            let is_last_v = b.ins().iconst(types::I32, *is_last as i64);
-            let (size_present, size_value) = match size {
-                None => (b.ins().iconst(types::I32, 0), b.ins().iconst(types::I32, 0)),
-                Some(crate::fz_ir::BitSizeIr::Literal(n)) => (
-                    b.ins().iconst(types::I32, 1),
-                    b.ins().iconst(types::I32, *n as i64),
-                ),
-                Some(crate::fz_ir::BitSizeIr::Var(v)) => {
-                    let raw = tagged_get(var_env, b, jmod, runtime,v.0);
-                    let unb = unbox_int(b, raw);
-                    let truncated = b.ins().ireduce(types::I32, unb);
-                    (b.ins().iconst(types::I32, 1), truncated)
-                }
-            };
-            let fref = jmod.declare_func_in_func(runtime.bs_read_field_id, b.func);
-            let inst = b.ins().call(
-                fref,
-                &[
-                    rv,
-                    ty_tag,
-                    size_present,
-                    size_value,
-                    unit_v,
-                    endian_v,
-                    signed_v,
-                    is_last_v,
-                ],
-            );
-            b.inst_results(inst)[0]
-        }
-        Prim::BitReaderDone(r) => {
-            // Reader tuple shape: [bs_ptr@16, bit_len_boxed@24, pos_boxed@32].
-            // Compare bit_len == pos; return tagged bool.
-            let rv = tagged_get(var_env, b, jmod, runtime,r.0);
-            let bit_len_b = b.ins().load(types::I64, MemFlags::trusted(), rv, 24);
-            let pos_b = b.ins().load(types::I64, MemFlags::trusted(), rv, 32);
-            let cmp = b.ins().icmp(IntCC::Equal, bit_len_b, pos_b);
-            bool_to_fz(b, cmp)
-        }
-        Prim::MakeMap(entries) => {
-            let begin = jmod.declare_func_in_func(runtime.map_begin_id, b.func);
-            b.ins().call(begin, &[]);
-            let push = jmod.declare_func_in_func(runtime.map_push_id, b.func);
-            for (k, v) in entries {
-                let kv = tagged_get(var_env, b, jmod, runtime,k.0);
-                let vv = tagged_get(var_env, b, jmod, runtime,v.0);
-                b.ins().call(push, &[kv, vv]);
-            }
-            let fin = jmod.declare_func_in_func(runtime.map_finalize_id, b.func);
-            let inst = b.ins().call(fin, &[]);
-            b.inst_results(inst)[0]
-        }
-        Prim::MapUpdate(base, entries) => {
-            let bv = tagged_get(var_env, b, jmod, runtime,base.0);
-            let cln = jmod.declare_func_in_func(runtime.map_clone_id, b.func);
-            b.ins().call(cln, &[bv]);
-            let push = jmod.declare_func_in_func(runtime.map_push_id, b.func);
-            for (k, v) in entries {
-                let kv = tagged_get(var_env, b, jmod, runtime,k.0);
-                let vv = tagged_get(var_env, b, jmod, runtime,v.0);
-                b.ins().call(push, &[kv, vv]);
-            }
-            let fin = jmod.declare_func_in_func(runtime.map_finalize_id, b.func);
-            let inst = b.ins().call(fin, &[]);
-            b.inst_results(inst)[0]
-        }
-        Prim::MapGet(m, k) => {
-            let mv = tagged_get(var_env, b, jmod, runtime,m.0);
-            let kv = tagged_get(var_env, b, jmod, runtime,k.0);
-            let fref = jmod.declare_func_in_func(runtime.map_get_id, b.func);
-            let inst = b.ins().call(fref, &[mv, kv]);
-            b.inst_results(inst)[0]
+        Prim::ListCons(..)
+        | Prim::ListHead(..)
+        | Prim::ListTail(..)
+        | Prim::ListIsNil(..)
+        | Prim::MakeList(..)
+        | Prim::MakeTuple(..)
+        | Prim::TupleField(..)
+        | Prim::AllocStruct(..)
+        | Prim::MakeBitstring(..)
+        | Prim::BitReaderInit(..)
+        | Prim::BitReadField { .. }
+        | Prim::BitReaderDone(..)
+        | Prim::MakeMap(..)
+        | Prim::MapUpdate(..)
+        | Prim::MapGet(..)
+        | Prim::MakeVec(..) => {
+            return Ok(LowerOut::Tagged(lower_collection_prim(b, jmod, env, var_env, prim)?));
         }
         Prim::MakeClosure(fn_id, captured) => {
             // fz-ul4.29.5: alloc closure heap object via fz_alloc_closure;
@@ -5814,29 +5833,6 @@ fn lower_prim<M: cranelift_module::Module>(
                 b.ins().store(MemFlags::trusted(), val, cl_ptr, off);
             }
             cl_ptr
-        }
-        Prim::MakeVec(kind, els) => {
-            use crate::fz_ir::VecKindIr;
-            use fz_runtime::fz_value::HeapKind;
-            let kind_tag = match kind {
-                VecKindIr::I64 => HeapKind::VecI64 as i64,
-                VecKindIr::U8 => HeapKind::VecU8 as i64,
-                VecKindIr::Bit => HeapKind::VecBit as i64,
-                VecKindIr::F64 => {
-                    return Err(CodegenError::new("MakeVec(F64) deferred to fz-ul4.11.23"));
-                }
-            };
-            let begin = jmod.declare_func_in_func(runtime.vec_begin_id, b.func);
-            let kt = b.ins().iconst(types::I32, kind_tag);
-            b.ins().call(begin, &[kt]);
-            let push = jmod.declare_func_in_func(runtime.vec_push_id, b.func);
-            for ev in els {
-                let v = tagged_get(var_env, b, jmod, runtime,ev.0);
-                b.ins().call(push, &[v]);
-            }
-            let fin = jmod.declare_func_in_func(runtime.vec_finalize_id, b.func);
-            let inst = b.ins().call(fin, &[]);
-            b.inst_results(inst)[0]
         }
     };
     Ok(LowerOut::Tagged(v))
