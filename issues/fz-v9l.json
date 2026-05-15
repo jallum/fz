@@ -3,12 +3,12 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-05-15T10:11:02Z",
-  "description": "",
+  "description": "Holistic improvement pass on ir_codegen.rs across three axes:\n\nREMOVE\n- _kp dead function\n- #![allow(dead_code)] blanket module suppress\n- dead val computation in Term::Halt native branch\n- dual HashSet\u003cu32\u003e var tracking (raw_f64_vars + raw_int_vars)\n- var_repr() free function\n\nCHANGE\n- SpecRegistry::resolve fast path: eliminate .to_vec() allocation on every hit\n- SpecRegistry::resolve slow path: subsumption single-pass fold\n- reachability DFS: O(n_blocks²) block scan → pre-built lookup map\n- coerce_to: add missing RawInt\u003c-\u003eRawF64 arms (currently panics at compile time)\n- VarRepr enum replacing the dual HashSet pair\n\nDAG (each step is one commit):\n  T1 remove _kp                 -+\n  T2 remove blanket allow        |  T1 -\u003e T2\n  T3 remove dead val in Halt     |  independent\n  T4 VarRepr enum + remove       |  independent\n     dual HashSets + var_repr()  |\n  C1 fix coerce_to missing arms  |  independent\n  C2 fix resolve fast-path alloc -+\n      +-\u003e C3 subsumption fold       depends on C2\n  C4 fix reachability DFS O(n2)     independent",
   "id": "fz-v9l",
   "labels": [],
   "priority": 2,
   "status": "open",
   "title": "fz-cg1 [EPIC] codegen: dead-code removal, efficiency, and correctness",
   "type": "task",
-  "updated_at": "2026-05-15T10:11:02Z"
+  "updated_at": "2026-05-15T10:11:13Z"
 }
