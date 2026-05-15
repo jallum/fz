@@ -1215,7 +1215,7 @@ pub fn type_fn(f: &FnIr, m: &Module, entry_param_types: Option<&[Descr]>) -> FnT
                     // Update vars for target's params via union across all
                     // predecessors (handled via merge_into's union, but we
                     // also need to mirror in vars).
-                    for (i, &p) in target_b.params.iter().enumerate() {
+                    for (_, &p) in target_b.params.iter().enumerate() {
                         let from_env = block_envs[target]
                             .get(&p)
                             .cloned()
@@ -1225,7 +1225,6 @@ pub fn type_fn(f: &FnIr, m: &Module, entry_param_types: Option<&[Descr]>) -> FnT
                             vars.insert(p, from_env);
                             changed = true;
                         }
-                        let _ = i;
                     }
                 }
                 Term::If(cond, then_b, else_b) => {
