@@ -5,7 +5,9 @@
     "fz-adc",
     "fz-l8j"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-loz"
+  ],
   "created": "2026-05-15T18:27:57Z",
   "description": "",
   "id": "fz-cg2",
