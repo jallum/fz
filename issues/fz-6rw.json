@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-15T03:08:42Z",
+  "description": "## Goal\n\nRemove the 16-byte HeapHeader from list cons cells and use a distinct pointer tag (TAG_LIST = 0b100) to identify them, matching the BEAM's approach. This halves the per-cell allocation from 32 bytes to 16 bytes.\n\n## Background\n\nfz cons cells are currently 32 bytes: a 16-byte HeapHeader followed by head (8 bytes) and tail (8 bytes). The BEAM achieves 16-byte cons cells by encoding the cell type in the pointer tag rather than in a per-cell header, eliminating the header entirely.\n\nfz has three reserved tag slots (0b100–0b110) available. Using 0b100 for list pointers gives us the same trick.\n\n## Changes required\n\n### runtime/src/fz_value.rs\n- Add TAG_LIST = 0b100\n- Shrink ListCons: drop header field; head at offset 0, tail at offset 8\n- Update unbox_ptr() to recognise both TAG_PTR (0b000) and TAG_LIST (0b100)\n- Update render_list(): replace h.kind check with tag-bit check (v.0 \u0026 TAG_MASK == TAG_LIST)\n\n### runtime/src/heap.rs\n- alloc_list_cons: allocate 16 bytes instead of 32, write no header, tag returned pointer with TAG_LIST\n- count_live_bytes: special-case TAG_LIST pointers as always-16 bytes (no size_bytes in header)\n- cheney_trace_children (List branch): change offsets 16/24 → 0/8\n- count_live_bytes (List branch): change offsets 16/24 → 0/8\n- deep_copy_value (List branch): change offsets 16/24 → 0/8\n- GC forwarding: add a HashMap\u003c*mut u8, *mut u8\u003e forwarding table allocated per GC cycle for cons cells; all other heap kinds keep in-place forwarding via the header. The current in-place scheme (FORWARDED_KIND at offset 0, new ptr at offset 8) cannot be used on headerless cells as both offsets are live data.\n\n### src/ir_codegen.rs\n- ListHead load: change offset 16 → 0\n- ListTail load: change offset 24 → 8\n\n## Non-changes\n- src/ir_lower.rs: no changes — operates on Prim ops with no offset knowledge\n- src/fz_ir.rs: no changes\n- AOT path: shares codegen, picks up the offset fix automatically\n\n## Verification\n- All existing list tests must pass\n- Add a test that allocates a large list and measures heap bytes consumed, asserting 16 bytes per cell\n- Three-path parity: interpreter, JIT, AOT all exercise the new layout",
+  "id": "fz-6rw",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "fz: shrink cons cells from 32 to 16 bytes",
+  "type": "task",
+  "updated_at": "2026-05-15T03:08:42Z"
+}
