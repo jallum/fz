@@ -675,19 +675,6 @@ fn default_unit_for(ty: crate::ast::BitType) -> u32 {
 // heap object and enqueues a new task at that fn. Returns the pid as a
 // boxed FzValue Int (Pid-as-struct deferred to a follow-up).
 //
-// v1 restriction: closure must have ZERO captures. Captured values
-// would need to be copied into the new task's heap (.19.3 territory);
-// for v1 spawn takes plain fn references (closures with no captures).
-// Concurrency cluster (fz_spawn/self/send/receive_attempt) moved to
-// ir_runtime.rs (.23.4.12). YIELD_PTR stays here — the trampoline at
-// run_internal/run_quantum (above) reads it directly.
-
-/// fz-ul4.19.3 YIELD_PTR: the trampoline recognizes this non-null return
-/// value as "task wants to suspend; resume at the same frame on next
-/// scheduling". 0x1 is not 16-aligned, so it can never be a real heap
-/// pointer.
-pub(crate) const YIELD_PTR: u64 = 0x1;
-
 // Arith / cmp / eq FFI cluster moved to src/ir_runtime.rs (fz-ul4.23.4.1).
 
 // Vec cluster moved to ir_runtime.rs (.23.4.10).
@@ -3077,7 +3064,6 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
     let spawn_opt_id = decl("fz_spawn_opt", &[types::I64, types::I64], &[types::I64])?;
     let self_id = decl("fz_self", &[], &[types::I64])?;
     let send_id = decl("fz_send", &[types::I64, types::I64], &[types::I64])?;
-    let receive_attempt_id = decl("fz_receive_attempt", &[types::I64], &[types::I64])?;
     // fz-cps.1.2 — receive cutover. Takes a cont closure ptr (i64),
     // stashes in Process::parked_cont, returns YIELD sentinel.
     let receive_park_id = decl("fz_receive_park", &[types::I64], &[types::I64])?;
@@ -3172,7 +3158,6 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         spawn_opt_id,
         self_id,
         send_id,
-        receive_attempt_id,
         receive_park_id,
         get_static_closure_id,
         get_halt_cont_id,
@@ -3235,7 +3220,6 @@ struct RuntimeRefs {
     spawn_opt_id: FuncId,
     self_id: FuncId,
     send_id: FuncId,
-    receive_attempt_id: FuncId,
     receive_park_id: FuncId,
     get_static_closure_id: FuncId,
     get_halt_cont_id: FuncId,
@@ -4777,55 +4761,6 @@ fn store_args_into_callee_frame(
             }
         }
     }
-}
-
-/// Term::Receive (fz-ul4.19.3). Allocate the continuation frame (just like
-/// Term::Call does for its cont) and hand it to fz_receive_attempt, which
-/// either pops a message and writes it into the cont's result slot
-/// (returning the cont frame, which the trampoline dispatches), or sets the
-/// current Process's state to Blocked and returns YIELD_PTR. The yield
-/// sentinel is `0x1` — never a valid heap-aligned pointer; the trampoline
-/// recognizes it and parks the task.
-fn emit_receive<M: cranelift_module::Module>(
-    b: &mut FunctionBuilder<'_>,
-    jmod: &mut M,
-    runtime: &RuntimeRefs,
-    schemas: &[Schema],
-    frame_ptr: Option<ir::Value>,
-    cont_fn_id: u32,
-    captured: &[ir::Value],
-) {
-    let frame_ptr = frame_ptr
-        .expect("emit_receive reached from native-fn body — natively_callable invariant violated");
-    let alloc_fref = jmod.declare_func_in_func(runtime.alloc_id, b.func);
-
-    // Read my cont_ptr from current frame[16] (becomes the cont frame's
-    // cont_ptr — same shape as Term::Call).
-    let my_cont = b
-        .ins()
-        .load(types::I64, MemFlags::trusted(), frame_ptr, HEADER_SIZE);
-
-    let cont_schema = &schemas[cont_fn_id as usize];
-    let sid = b.ins().iconst(types::I32, cont_fn_id as i64);
-    let sz = b.ins().iconst(types::I32, cont_schema.size as i64);
-    let inst = b.ins().call(alloc_fref, &[sid, sz]);
-    let cf = b.inst_results(inst)[0];
-    // Slot 0 (offset 16): cont_ptr.
-    b.ins().store(MemFlags::trusted(), my_cont, cf, HEADER_SIZE);
-    // Slot 1 (offset 24) is the result slot the message will land in;
-    // fz_receive_attempt writes it on a hit.
-    // Slots 2..: captured vars — kind-aware (fz-ul4.27.5.4).
-    store_args_into_callee_frame(b, cont_schema, cf, captured, 2);
-
-    // Call fz_receive_attempt(cont_frame). Returns cont_frame on hit,
-    // YIELD_PTR (0x1) on empty mailbox.
-    let recv_fref = jmod.declare_func_in_func(runtime.receive_attempt_id, b.func);
-    let recv_inst = b.ins().call(recv_fref, &[cf]);
-    let result = b.inst_results(recv_inst)[0];
-    // Return whatever fz_receive_attempt returned. The trampoline
-    // interprets 0x1 as yield; any other non-null ptr is the next frame
-    // to dispatch.
-    b.ins().return_(&[result]);
 }
 
 /// Term::TailCall: if callee shares schema with caller, overwrite caller's
