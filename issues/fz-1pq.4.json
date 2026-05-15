@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-15T00:29:23Z",
+  "description": "In apply2, the higher-order parameter f is passed a statically-known callee (add1 or double) at each callsite. Despite this, the spec for apply2 shows f typed as any rather than a narrowed function type or closure descriptor.\n\nThe callsite narrows the arg types flowing into apply2, but the Var for the function param itself remains any — the spec key captures concrete arg Descrs for data params but not for the function param.\n\nAffects: apply2 fixture. Likely related to how closure/function-typed vars are handled in the spec lattice.",
+  "id": "fz-1pq.4",
+  "labels": [],
+  "parent": "fz-1pq",
+  "priority": 1,
+  "status": "open",
+  "title": "apply2: function param typed as any despite static callee resolution",
+  "type": "bug",
+  "updated_at": "2026-05-15T00:29:23Z"
+}
