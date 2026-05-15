@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-l17"
   ],
@@ -11,8 +11,8 @@
   "id": "fz-ojo",
   "labels": [],
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "fz-ul4.rep.1: proof test — zero sshr_imm in inlined main",
   "type": "task",
-  "updated_at": "2026-05-15T17:19:22Z"
+  "updated_at": "2026-05-15T17:20:02Z"
 }
