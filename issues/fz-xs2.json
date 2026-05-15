@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-ojo"
   ],
@@ -11,8 +11,8 @@
   "id": "fz-xs2",
   "labels": [],
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "fz-ul4.rep.2: repr-aware Goto coercion + block param repr registration",
   "type": "task",
-  "updated_at": "2026-05-15T17:19:22Z"
+  "updated_at": "2026-05-15T17:20:24Z"
 }
