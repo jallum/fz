@@ -194,7 +194,10 @@ fn collect_term_vars(t: &Term, used: &mut HashSet<Var>) {
 fn is_impure(p: &Prim) -> bool {
     matches!(
         p,
-        Prim::Builtin(..) | Prim::BitReaderInit(_) | Prim::BitReadField { .. } | Prim::BitReaderDone(_)
+        Prim::Builtin(..)
+            | Prim::BitReaderInit(_)
+            | Prim::BitReadField { .. }
+            | Prim::BitReaderDone(_)
     )
 }
 
