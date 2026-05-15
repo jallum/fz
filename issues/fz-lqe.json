@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-15T15:25:30Z",
+  "description": "",
+  "id": "fz-lqe",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "fz-cg4.4: extract build_cont_closure from Term::Call and Term::CallClosure",
+  "type": "task",
+  "updated_at": "2026-05-15T15:25:30Z"
+}
