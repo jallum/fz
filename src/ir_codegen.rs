@@ -1631,6 +1631,28 @@ fn resolve_tcc_body(
     Some((lit.fn_id, spec_registry.resolve(lit.fn_id, &key)?.0))
 }
 
+/// Emit a single Cranelift function: make_context → set sig → build body →
+/// finalize → define_function → clear_context. Eliminates the boilerplate
+/// repeated for every runtime shim (fz_main_entry, fz_spawn_entry, etc.).
+fn emit_fn_body<M: cranelift_module::Module>(
+    module: &mut M,
+    fbctx: &mut FunctionBuilderContext,
+    sig: Signature,
+    func_id: FuncId,
+    body: impl FnOnce(&mut M, &mut FunctionBuilder<'_>),
+) -> Result<(), cranelift_module::ModuleError> {
+    let mut ctx = module.make_context();
+    ctx.func.signature = sig;
+    {
+        let mut b = FunctionBuilder::new(&mut ctx.func, fbctx);
+        body(module, &mut b);
+        b.finalize();
+    }
+    module.define_function(func_id, &mut ctx)?;
+    module.clear_context(&mut ctx);
+    Ok(())
+}
+
 /// Drive the shared compile pipeline through any Backend impl. JIT and
 /// AOT both route through here; the backend's hooks pick the legit
 /// variation points (linkage, per-program metadata carriers, finalize).
@@ -1651,14 +1673,11 @@ pub fn compile_with_backend<B: Backend>(
     // caller (caller picks the singleton matching the entry fn's
     // return_repr kind). Body just `call_indirect Tail main_fp(halt_cl)`.
     {
-        let mut ctx = backend.module_mut().make_context();
         let mut sig = Signature::new(CallConv::SystemV);
         sig.params.push(AbiParam::new(types::I64));
         sig.params.push(AbiParam::new(types::I64));
         sig.returns.push(AbiParam::new(types::I64));
-        ctx.func.signature = sig;
-        {
-            let mut b = FunctionBuilder::new(&mut ctx.func, &mut fbctx);
+        emit_fn_body(backend.module_mut(), &mut fbctx, sig, runtime.main_entry_id, |_m, b| {
             let entry = b.create_block();
             b.append_block_params_for_function_params(entry);
             b.switch_to_block(entry);
@@ -1672,13 +1691,8 @@ pub fn compile_with_backend<B: Backend>(
             let inst = b.ins().call_indirect(sig_ref, main_fp, &[halt_cl]);
             let r = b.inst_results(inst)[0];
             b.ins().return_(&[r]);
-            b.finalize();
-        }
-        backend
-            .module_mut()
-            .define_function(runtime.main_entry_id, &mut ctx)
-            .map_err(|e| CodegenError::new(format!("define fz_main_entry: {}", e)))?;
-        backend.module_mut().clear_context(&mut ctx);
+        })
+        .map_err(|e| CodegenError::new(format!("define fz_main_entry: {}", e)))?;
     }
 
     // fz-cps.1.11 — emit fz_spawn_entry. SystemV scheduler-callable shim
@@ -1688,13 +1702,10 @@ pub fn compile_with_backend<B: Backend>(
     // tail-chains into a halt-cont; halt sets process.halt_value.
     // Sig: `(closure:i64) -> i64 system_v`.
     {
-        let mut ctx = backend.module_mut().make_context();
         let mut sig = Signature::new(CallConv::SystemV);
         sig.params.push(AbiParam::new(types::I64));
         sig.returns.push(AbiParam::new(types::I64));
-        ctx.func.signature = sig;
-        {
-            let mut b = FunctionBuilder::new(&mut ctx.func, &mut fbctx);
+        emit_fn_body(backend.module_mut(), &mut fbctx, sig, runtime.spawn_entry_id, |m, b| {
             let entry = b.create_block();
             b.append_block_params_for_function_params(entry);
             b.switch_to_block(entry);
@@ -1718,15 +1729,9 @@ pub fn compile_with_backend<B: Backend>(
             let kind = b.ins().uextend(types::I32, hk16);
             // Select halt_cont_body_addr by kind. Branchless via three
             // func_addrs + a tiny dispatch — keeps the spawn shim a leaf.
-            let hcb_tagged = backend
-                .module_mut()
-                .declare_func_in_func(runtime.halt_cont_body_tagged_id, b.func);
-            let hcb_i64 = backend
-                .module_mut()
-                .declare_func_in_func(runtime.halt_cont_body_i64_id, b.func);
-            let hcb_f64 = backend
-                .module_mut()
-                .declare_func_in_func(runtime.halt_cont_body_f64_id, b.func);
+            let hcb_tagged = m.declare_func_in_func(runtime.halt_cont_body_tagged_id, b.func);
+            let hcb_i64 = m.declare_func_in_func(runtime.halt_cont_body_i64_id, b.func);
+            let hcb_f64 = m.declare_func_in_func(runtime.halt_cont_body_f64_id, b.func);
             let a_tagged = b.ins().func_addr(types::I64, hcb_tagged);
             let a_i64 = b.ins().func_addr(types::I64, hcb_i64);
             let a_f64 = b.ins().func_addr(types::I64, hcb_f64);
@@ -1736,16 +1741,12 @@ pub fn compile_with_backend<B: Backend>(
             let is_f64 = b.ins().icmp(IntCC::Equal, kind, two);
             let pick_i64_or_tagged = b.ins().select(is_i64, a_i64, a_tagged);
             let hcb_addr = b.ins().select(is_f64, a_f64, pick_i64_or_tagged);
-            let ghc_fref = backend
-                .module_mut()
-                .declare_func_in_func(runtime.get_halt_cont_id, b.func);
+            let ghc_fref = m.declare_func_in_func(runtime.get_halt_cont_id, b.func);
             let halt_inst = b.ins().call(ghc_fref, &[hcb_addr, kind]);
             let halt_cl = b.inst_results(halt_inst)[0];
             // Load closure body addr at +16 and invoke as
             // closure-target sig `(self, cont) tail` (zero user args).
-            let code = b
-                .ins()
-                .load(types::I64, MemFlags::trusted(), closure, HEADER_SIZE);
+            let code = b.ins().load(types::I64, MemFlags::trusted(), closure, HEADER_SIZE);
             let mut closure_sig = Signature::new(CallConv::Tail);
             closure_sig.params.push(AbiParam::new(types::I64)); // self
             closure_sig.params.push(AbiParam::new(types::I64)); // cont
@@ -1754,13 +1755,8 @@ pub fn compile_with_backend<B: Backend>(
             let inst = b.ins().call_indirect(sig_ref, code, &[closure, halt_cl]);
             let r = b.inst_results(inst)[0];
             b.ins().return_(&[r]);
-            b.finalize();
-        }
-        backend
-            .module_mut()
-            .define_function(runtime.spawn_entry_id, &mut ctx)
-            .map_err(|e| CodegenError::new(format!("define fz_spawn_entry: {}", e)))?;
-        backend.module_mut().clear_context(&mut ctx);
+        })
+        .map_err(|e| CodegenError::new(format!("define fz_spawn_entry: {}", e)))?;
     }
 
     // fz-cps.1.11 — emit fz_resume_park. SystemV scheduler-callable shim
@@ -1769,23 +1765,18 @@ pub fn compile_with_backend<B: Backend>(
     // this when a Blocked task transitions to Ready (a message has
     // arrived). Sig: `(msg:i64, parked_cont:i64) -> i64 system_v`.
     {
-        let mut ctx = backend.module_mut().make_context();
         let mut sig = Signature::new(CallConv::SystemV);
         sig.params.push(AbiParam::new(types::I64));
         sig.params.push(AbiParam::new(types::I64));
         sig.returns.push(AbiParam::new(types::I64));
-        ctx.func.signature = sig;
-        {
-            let mut b = FunctionBuilder::new(&mut ctx.func, &mut fbctx);
+        emit_fn_body(backend.module_mut(), &mut fbctx, sig, runtime.resume_park_id, |_m, b| {
             let entry = b.create_block();
             b.append_block_params_for_function_params(entry);
             b.switch_to_block(entry);
             b.seal_block(entry);
             let msg = b.block_params(entry)[0];
             let cont = b.block_params(entry)[1];
-            let code = b
-                .ins()
-                .load(types::I64, MemFlags::trusted(), cont, HEADER_SIZE);
+            let code = b.ins().load(types::I64, MemFlags::trusted(), cont, HEADER_SIZE);
             let mut cont_sig = Signature::new(CallConv::Tail);
             cont_sig.params.push(AbiParam::new(types::I64));
             cont_sig.params.push(AbiParam::new(types::I64));
@@ -1794,13 +1785,8 @@ pub fn compile_with_backend<B: Backend>(
             let inst = b.ins().call_indirect(sig_ref, code, &[msg, cont]);
             let r = b.inst_results(inst)[0];
             b.ins().return_(&[r]);
-            b.finalize();
-        }
-        backend
-            .module_mut()
-            .define_function(runtime.resume_park_id, &mut ctx)
-            .map_err(|e| CodegenError::new(format!("define fz_resume_park: {}", e)))?;
-        backend.module_mut().clear_context(&mut ctx);
+        })
+        .map_err(|e| CodegenError::new(format!("define fz_resume_park: {}", e)))?;
     }
 
     // fz-ul4.27.22.3 — emit three fz_halt_cont_body fns, one per repr.
@@ -1809,48 +1795,26 @@ pub fn compile_with_backend<B: Backend>(
     // sigs agree. Tagged variant unboxes (existing semantics); RawInt
     // / RawF64 variants store the value directly.
     for (body_id, val_ty, halt_impl_id) in [
-        (
-            runtime.halt_cont_body_tagged_id,
-            types::I64,
-            runtime.halt_implicit_id,
-        ),
-        (
-            runtime.halt_cont_body_i64_id,
-            types::I64,
-            runtime.halt_implicit_i64_id,
-        ),
-        (
-            runtime.halt_cont_body_f64_id,
-            types::F64,
-            runtime.halt_implicit_f64_id,
-        ),
+        (runtime.halt_cont_body_tagged_id, types::I64, runtime.halt_implicit_id),
+        (runtime.halt_cont_body_i64_id, types::I64, runtime.halt_implicit_i64_id),
+        (runtime.halt_cont_body_f64_id, types::F64, runtime.halt_implicit_f64_id),
     ] {
-        let mut ctx = backend.module_mut().make_context();
         let mut sig = Signature::new(CallConv::Tail);
         sig.params.push(AbiParam::new(val_ty));
         sig.params.push(AbiParam::new(types::I64));
         sig.returns.push(AbiParam::new(types::I64));
-        ctx.func.signature = sig;
-        {
-            let mut b = FunctionBuilder::new(&mut ctx.func, &mut fbctx);
+        emit_fn_body(backend.module_mut(), &mut fbctx, sig, body_id, |m, b| {
             let entry = b.create_block();
             b.append_block_params_for_function_params(entry);
             b.switch_to_block(entry);
             b.seal_block(entry);
             let val = b.block_params(entry)[0];
-            let hi_fref = backend
-                .module_mut()
-                .declare_func_in_func(halt_impl_id, b.func);
+            let hi_fref = m.declare_func_in_func(halt_impl_id, b.func);
             b.ins().call(hi_fref, &[val]);
             let zero = b.ins().iconst(types::I64, 0);
             b.ins().return_(&[zero]);
-            b.finalize();
-        }
-        backend
-            .module_mut()
-            .define_function(body_id, &mut ctx)
-            .map_err(|e| CodegenError::new(format!("define halt_cont_body: {}", e)))?;
-        backend.module_mut().clear_context(&mut ctx);
+        })
+        .map_err(|e| CodegenError::new(format!("define halt_cont_body: {}", e)))?;
     }
 
     // Register a heap Schema for every tuple arity used by MakeTuple, so the
@@ -7075,7 +7039,7 @@ fn main(), do: loop_with(loop_with, 100000, 0)
         let ft = mt.any_spec_for(m.fns[add_idx].id).expect("registered spec");
         let rd = join_return_descrs(&m.fns[add_idx], ft);
         let prs = build_param_reprs(&m.fns[add_idx], ft);
-        let sig = build_fn_signature(&prs, ArgRepr::from_descr(&rd), false, true, false, None);
+        let sig = build_fn_signature(&prs, ArgRepr::from_descr(&rd), false, true, None);
         assert_eq!(sig.params.len(), 2);
         assert_eq!(sig.returns.len(), 1);
         assert_eq!(sig.params[0].value_type, types::I64);
@@ -7084,10 +7048,10 @@ fn main(), do: loop_with(loop_with, 100000, 0)
     }
 
     #[test]
-    fn signature_native_uses_typed_params_and_host_ctx() {
+    fn signature_native_uses_typed_params_and_cont() {
         // Same `add` fn, this time the typer has narrowed entry params to
         // int via call-site narrowing. Native sig should be
-        // `(i64, i64, host_ctx: i64, cont: i64) -> i64`.
+        // `(i64, i64, cont: i64) -> i64`.
         // fz-cps.1.a (fz-siu.1.1): trailing cont:i64 per §2.1.
         let m = lower_src("fn add(a, b) do a + b end\nfn main() do print(add(1, 2)) end");
         let mt = crate::ir_typer::type_module(&m);
@@ -7095,24 +7059,22 @@ fn main(), do: loop_with(loop_with, 100000, 0)
         let ft = mt.any_spec_for(m.fns[add_idx].id).expect("registered spec");
         let rd = join_return_descrs(&m.fns[add_idx], ft);
         let prs = build_param_reprs(&m.fns[add_idx], ft);
-        let sig = build_fn_signature(&prs, ArgRepr::from_descr(&rd), true, true, false, None);
-        // 2 entry params + host_ctx + cont.
-        assert_eq!(sig.params.len(), 4);
+        let sig = build_fn_signature(&prs, ArgRepr::from_descr(&rd), true, false, None);
+        // 2 entry params + cont.
+        assert_eq!(sig.params.len(), 3);
         assert_eq!(sig.returns.len(), 1);
         // Trailing cont is i64.
         assert_eq!(sig.params.last().unwrap().value_type, types::I64);
-        // host_ctx (second-to-last) is i64.
-        assert_eq!(sig.params[sig.params.len() - 2].value_type, types::I64);
         // Return is i64 (tagged or raw-int — both ride i64 register).
         assert_eq!(sig.returns[0].value_type, types::I64);
     }
 
     #[test]
-    fn signature_native_arity_matches_entry_params_plus_host_ctx() {
+    fn signature_native_arity_matches_entry_params_plus_cont() {
         // .27.13: native sig is per-Descr typed. For `dist(x, y)` called
         // with `dist(1.5, 2.5)`, call-site narrowing types `x` and `y` as
-        // float-only → AbiParam(f64). `host_ctx` stays i64. Return joins
-        // every Term::Return val Descr; here that's float-only → f64.
+        // float-only → AbiParam(f64). Return joins every Term::Return val
+        // Descr; here that's float-only → f64.
         // fz-cps.1.a (fz-siu.1.1): trailing cont:i64 per §2.1.
         let m =
             lower_src("fn dist(x, y) do x * x + y * y end\nfn main() do print(dist(1.5, 2.5)) end");
@@ -7123,13 +7085,12 @@ fn main(), do: loop_with(loop_with, 100000, 0)
             .expect("registered spec");
         let rd = join_return_descrs(&m.fns[dist_idx], ft);
         let prs = build_param_reprs(&m.fns[dist_idx], ft);
-        let sig = build_fn_signature(&prs, ArgRepr::from_descr(&rd), true, true, false, None);
-        // 2 entry params + host_ctx + cont.
-        assert_eq!(sig.params.len(), 4);
+        let sig = build_fn_signature(&prs, ArgRepr::from_descr(&rd), true, false, None);
+        // 2 entry params + cont.
+        assert_eq!(sig.params.len(), 3);
         assert_eq!(sig.params[0].value_type, types::F64);
         assert_eq!(sig.params[1].value_type, types::F64);
-        assert_eq!(sig.params[2].value_type, types::I64);
-        assert_eq!(sig.params[3].value_type, types::I64); // cont
+        assert_eq!(sig.params[2].value_type, types::I64); // cont
         // fz-cps.1.2: native return canonicalized to i64 (cont indirect
         // sig is `(i64, i64) -> i64 tail`; caller's return type must
         // match per Cranelift's tail-call verifier).
