@@ -30,7 +30,7 @@ function u0:0(i64, i64) -> i64 tail {
     gv0 = symbol userextname1
     sig0 = (i64, i64) -> i64 tail
     sig1 = () -> i64 system_v
-    sig2 = (i32, i32) -> i64 system_v
+    sig2 = (i64, i32) -> i64 system_v
     sig3 = (i64, i64) -> i64 tail
     fn0 = colocated u0:51 sig0
     fn1 = u0:34 sig1
@@ -65,9 +65,9 @@ block3:
     v21 = call fn1()                    ; @2:20
     store.i64 notrap aligned v15, v21   ; @2:20
     store.i64 notrap aligned v1, v21+8  ; @2:20
-    v22 = iconst.i32 9                  ; @2:20
+    v22 = func_addr.i64 fn0             ; @2:20
     v23 = iconst.i32 2                  ; @2:20
-    v24 = call fn2(v22, v23)            ; @2:20  v22 = 9, v23 = 2
+    v24 = call fn2(v22, v23)            ; @2:20  v23 = 2
     return v24                          ; @2:20
 
 block4:
@@ -87,7 +87,7 @@ function u0:0(i64, i64) -> i64 tail {
     gv0 = symbol userextname1
     sig0 = (i64, i64) -> i64 tail
     sig1 = () -> i64 system_v
-    sig2 = (i32, i32) -> i64 system_v
+    sig2 = (i64, i32) -> i64 system_v
     sig3 = (i64, i64) -> i64 tail
     fn0 = colocated u0:52 sig0
     fn1 = u0:34 sig1
@@ -117,9 +117,9 @@ block3:
     v16 = call fn1()                    ; @2:20
     store.i64 notrap aligned v10, v16   ; @2:20
     store.i64 notrap aligned v1, v16+8  ; @2:20
-    v17 = iconst.i32 10                 ; @2:20
+    v17 = func_addr.i64 fn0             ; @2:20
     v18 = iconst.i32 2                  ; @2:20
-    v19 = call fn2(v17, v18)            ; @2:20  v17 = 10, v18 = 2
+    v19 = call fn2(v17, v18)            ; @2:20  v18 = 2
     return v19                          ; @2:20
 
 block4:
@@ -143,7 +143,7 @@ function u0:0(i64, i64) -> i64 tail {
     sig3 = (f64, f64) -> f64 system_v
     sig4 = (i64, i64) -> i64 tail
     sig5 = () -> i64 system_v
-    sig6 = (i32, i32) -> i64 system_v
+    sig6 = (i64, i32) -> i64 system_v
     sig7 = (i64, i64) -> i64 tail
     fn0 = u0:23 sig0
     fn1 = u0:21 sig1
@@ -220,9 +220,9 @@ block9:
     v43 = call fn5()                    ; @2:20
     store.i64 notrap aligned v27, v43   ; @2:20
     store.i64 notrap aligned v1, v43+8  ; @2:20
-    v44 = iconst.i32 9                  ; @2:20
+    v44 = func_addr.i64 fn4             ; @2:20
     v45 = iconst.i32 2                  ; @2:20
-    v46 = call fn6(v44, v45)            ; @2:20  v44 = 9, v45 = 2
+    v46 = call fn6(v44, v45)            ; @2:20  v45 = 2
     return v46                          ; @2:20
 
 block10:
@@ -242,7 +242,7 @@ function u0:0(i64, i64) -> i64 tail {
     gv0 = symbol userextname1
     sig0 = (i64, i64) -> i64 tail
     sig1 = () -> i64 system_v
-    sig2 = (i32, i32) -> i64 system_v
+    sig2 = (i64, i32) -> i64 system_v
     sig3 = (i64, i64) -> i64 tail
     fn0 = colocated u0:52 sig0
     fn1 = u0:34 sig1
@@ -275,9 +275,9 @@ block3:
     v19 = call fn1()                    ; @2:20
     store.i64 notrap aligned v13, v19   ; @2:20
     store.i64 notrap aligned v1, v19+8  ; @2:20
-    v20 = iconst.i32 10                 ; @2:20
+    v20 = func_addr.i64 fn0             ; @2:20
     v21 = iconst.i32 2                  ; @2:20
-    v22 = call fn2(v20, v21)            ; @2:20  v20 = 10, v21 = 2
+    v22 = call fn2(v20, v21)            ; @2:20  v21 = 2
     return v22                          ; @2:20
 
 block4:
@@ -297,7 +297,7 @@ function u0:0(i64, i64) -> i64 tail {
     gv0 = symbol userextname1
     sig0 = (i64, i64) -> i64 tail
     sig1 = () -> i64 system_v
-    sig2 = (i32, i32) -> i64 system_v
+    sig2 = (i64, i32) -> i64 system_v
     sig3 = (i64, i64) -> i64 tail
     fn0 = colocated u0:48 sig0
     fn1 = u0:34 sig1
@@ -327,9 +327,9 @@ block3:
     v16 = call fn1()                    ; @4:19
     store.i64 notrap aligned v10, v16   ; @4:19
     store.i64 notrap aligned v1, v16+8  ; @4:19
-    v17 = iconst.i32 6                  ; @4:19
+    v17 = func_addr.i64 fn0             ; @4:19
     v18 = iconst.i32 2                  ; @4:19
-    v19 = call fn2(v17, v18)            ; @4:19  v17 = 6, v18 = 2
+    v19 = call fn2(v17, v18)            ; @4:19  v18 = 2
     return v19                          ; @4:19
 
 block4:
@@ -349,7 +349,7 @@ function u0:0(i64, i64) -> i64 tail {
     gv0 = symbol userextname1
     sig0 = (i64, i64) -> i64 tail
     sig1 = () -> i64 system_v
-    sig2 = (i32, i32) -> i64 system_v
+    sig2 = (i64, i32) -> i64 system_v
     sig3 = (i64, i64) -> i64 tail
     fn0 = colocated u0:48 sig0
     fn1 = u0:34 sig1
@@ -379,9 +379,9 @@ block3:
     v16 = call fn1()                    ; @4:19
     store.i64 notrap aligned v10, v16   ; @4:19
     store.i64 notrap aligned v1, v16+8  ; @4:19
-    v17 = iconst.i32 6                  ; @4:19
+    v17 = func_addr.i64 fn0             ; @4:19
     v18 = iconst.i32 2                  ; @4:19
-    v19 = call fn2(v17, v18)            ; @4:19  v17 = 6, v18 = 2
+    v19 = call fn2(v17, v18)            ; @4:19  v18 = 2
     return v19                          ; @4:19
 
 block4:
@@ -405,7 +405,7 @@ function u0:0(i64, i64) -> i64 tail {
     sig3 = (f64, f64) -> f64 system_v
     sig4 = (i64, i64) -> i64 tail
     sig5 = () -> i64 system_v
-    sig6 = (i32, i32) -> i64 system_v
+    sig6 = (i64, i32) -> i64 system_v
     sig7 = (i64, i64) -> i64 tail
     fn0 = u0:23 sig0
     fn1 = u0:21 sig1
@@ -482,9 +482,9 @@ block9:
     v43 = call fn5()                    ; @4:19
     store.i64 notrap aligned v27, v43   ; @4:19
     store.i64 notrap aligned v1, v43+8  ; @4:19
-    v44 = iconst.i32 5                  ; @4:19
+    v44 = func_addr.i64 fn4             ; @4:19
     v45 = iconst.i32 2                  ; @4:19
-    v46 = call fn6(v44, v45)            ; @4:19  v44 = 5, v45 = 2
+    v46 = call fn6(v44, v45)            ; @4:19  v45 = 2
     return v46                          ; @4:19
 
 block10:
@@ -504,7 +504,7 @@ function u0:0(i64, i64) -> i64 tail {
     gv0 = symbol userextname1
     sig0 = (i64, i64) -> i64 tail
     sig1 = () -> i64 system_v
-    sig2 = (i32, i32) -> i64 system_v
+    sig2 = (i64, i32) -> i64 system_v
     sig3 = (i64, i64) -> i64 tail
     fn0 = colocated u0:48 sig0
     fn1 = u0:34 sig1
@@ -537,9 +537,9 @@ block3:
     v19 = call fn1()                    ; @4:19
     store.i64 notrap aligned v13, v19   ; @4:19
     store.i64 notrap aligned v1, v19+8  ; @4:19
-    v20 = iconst.i32 6                  ; @4:19
+    v20 = func_addr.i64 fn0             ; @4:19
     v21 = iconst.i32 2                  ; @4:19
-    v22 = call fn2(v20, v21)            ; @4:19  v20 = 6, v21 = 2
+    v22 = call fn2(v20, v21)            ; @4:19  v21 = 2
     return v22                          ; @4:19
 
 block4:

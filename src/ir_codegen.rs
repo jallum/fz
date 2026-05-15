@@ -197,7 +197,7 @@ impl CompiledModule {
             pending_main_entry_fn_id: 0,
             static_closures: Vec::new(),
             static_closure_bufs: Vec::new(),
-            mid_flight_fn_id: 0,
+            mid_flight_fn_ptr: 0,
             mid_flight_root_count: 0,
             mid_flight_roots: [fz_runtime::fz_value::FzValue(0); 8],
             quiet_quanta: 0,
@@ -254,23 +254,19 @@ impl CompiledModule {
             return;
         }
         // fz-02r.5 — mid-flight back-edge yield resume. fz_yield_back_edge
-        // stored the callee's spec_id in mid_flight_fn_id and its live args
-        // (all i64 / FzValues, post-GC-forwarding) in mid_flight_roots.
+        // stored the callee's raw code ptr in mid_flight_fn_ptr and its live
+        // args (all i64 / FzValues, post-GC-forwarding) in mid_flight_roots.
         // Dispatch via the matching fz_mid_flight_resume_N shim which
-        // reads N args from the slab and Tail-CC indirect-calls the fn.
-        if process.mid_flight_fn_id != 0 {
-            let spec_id = process.mid_flight_fn_id;
+        // reads N args from the slab and Tail-CC indirect-calls fn_ptr.
+        if process.mid_flight_fn_ptr != 0 {
+            let fn_ptr = process.mid_flight_fn_ptr;
             let n = process.mid_flight_root_count as usize;
-            process.mid_flight_fn_id = 0;
+            process.mid_flight_fn_ptr = 0;
             process.mid_flight_root_count = 0;
-            let fn_ptr = *self
-                .fn_ptrs
-                .get(&spec_id)
-                .expect("mid_flight resume: spec_id not in fn_ptrs");
             let shim = self.mid_flight_resume_addrs[n];
             type MidFlightResume = extern "C" fn(u64) -> i64;
             let f: MidFlightResume = unsafe { std::mem::transmute(shim) };
-            let _ = f(fn_ptr as u64);
+            let _ = f(fn_ptr);
             process.next_frame = std::ptr::null_mut();
             park_time_gc(process);
             return;
@@ -1366,6 +1362,15 @@ impl Backend for AotBackend {
             .declare_function("fz_aot_run_main", Linkage::Import, &run_sig)
             .map_err(|e| CodegenError::new(format!("declare fz_aot_run_main: {}", e)))?;
 
+        // fz-02r.7 — register mid-flight resume shims before fz_aot_run_main.
+        let set_shims_sig = sig1(&[types::I64], &[]);
+        let set_shims_id = self
+            .omod
+            .declare_function("fz_aot_set_resume_shims", Linkage::Import, &set_shims_sig)
+            .map_err(|e| {
+                CodegenError::new(format!("declare fz_aot_set_resume_shims: {}", e))
+            })?;
+
         let (atom_blob_data, atom_blob_len): (Option<DataId>, u32) = if meta.atom_names.is_empty() {
             (None, 0)
         } else {
@@ -1412,6 +1417,8 @@ impl Backend for AotBackend {
             setup_id,
             reg_id,
             run_id,
+            &meta.mid_flight_resume_ids,
+            set_shims_id,
         )?;
         Ok(())
     }
@@ -3018,6 +3025,8 @@ fn emit_aot_c_main<M: cranelift_module::Module>(
     setup_id: FuncId,
     reg_id: FuncId,
     run_id: FuncId,
+    mid_flight_resume_ids: &[FuncId; 9],
+    set_shims_id: FuncId,
 ) -> Result<(), CodegenError> {
     use cranelift_frontend::FunctionBuilder;
 
@@ -3075,6 +3084,26 @@ fn emit_aot_c_main<M: cranelift_module::Module>(
             let reg_fref = jmod.declare_func_in_func(reg_id, b.func);
             b.ins()
                 .call(reg_fref, &[proc_v, cl_sid_v, fn_id_v, body_addr, hk_v]);
+        }
+
+        // fz-02r.7 — register mid-flight resume shims. Build a 9-pointer
+        // stack array, fill with func_addr for each resume shim, then
+        // call fz_aot_set_resume_shims(&array[0]).
+        {
+            use cranelift_codegen::ir::StackSlotData;
+            use cranelift_codegen::ir::StackSlotKind;
+            let slot = b.create_sized_stack_slot(StackSlotData::new(
+                StackSlotKind::ExplicitSlot,
+                72, // 9 * 8 bytes
+                3,  // log2(8) alignment
+            ));
+            for (i, &rid) in mid_flight_resume_ids.iter().enumerate() {
+                let addr = fn_addr(jmod, rid, &mut b);
+                b.ins().stack_store(addr, slot, (i * 8) as i32);
+            }
+            let shims_ptr = b.ins().stack_addr(types::I64, slot, 0);
+            let set_fref = jmod.declare_func_in_func(set_shims_id, b.func);
+            b.ins().call(set_fref, &[shims_ptr]);
         }
 
         // exit = fz_aot_run_main(proc, main_fp, main_entry_addr)
@@ -3213,7 +3242,7 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
     // fz-02r.5 — mid-flight back-edge yield helpers.
     let mid_flight_roots_ptr_id = decl("fz_mid_flight_roots_ptr", &[], &[types::I64])?;
     let yield_back_edge_id =
-        decl("fz_yield_back_edge", &[types::I32, types::I32], &[types::I64])?;
+        decl("fz_yield_back_edge", &[types::I64, types::I32], &[types::I64])?;
     // fz-cps.1.7 — static zero-capture closure singleton lookup.
     // Returns the per-Process singleton pointer for the given cl_sid.
     let get_static_closure_id = decl("fz_get_static_closure", &[types::I32], &[types::I64])?;
@@ -4150,9 +4179,11 @@ fn emit_terminator<M: cranelift_module::Module>(
                         }
                         let yield_fref = jmod
                             .declare_func_in_func(runtime.yield_back_edge_id, b.func);
-                        let sid_v = b.ins().iconst(types::I32, callee_sid as i64);
+                        // Pass the callee's raw code ptr (func_addr) so the
+                        // scheduler can resume without a spec_id→ptr lookup.
+                        let callee_ptr_v = b.ins().func_addr(types::I64, callee_fref);
                         let cnt_v = b.ins().iconst(types::I32, native_args.len() as i64);
-                        let yield_inst = b.ins().call(yield_fref, &[sid_v, cnt_v]);
+                        let yield_inst = b.ins().call(yield_fref, &[callee_ptr_v, cnt_v]);
                         let yield_ret = b.inst_results(yield_inst)[0];
                         b.ins().return_(&[yield_ret]);
 

@@ -271,17 +271,15 @@ pub extern "C" fn fz_mid_flight_roots_ptr() -> *mut u64 {
 
 /// Signal a cooperative back-edge yield. Called by JIT after writing
 /// `arg_count` live args into `mid_flight_roots` (via fz_mid_flight_roots_ptr).
-/// Sets `mid_flight_root_count` and `mid_flight_fn_id`, then returns
-/// YIELD_PTR so the trampoline breaks the quantum loop.
+/// Stores the callee's raw code pointer (`fn_ptr`) so the scheduler can
+/// resume without a spec_id→ptr lookup. Returns YIELD_PTR to break the
+/// quantum loop.
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_yield_back_edge(fn_id: u32, arg_count: u32) -> *mut u8 {
+pub extern "C" fn fz_yield_back_edge(fn_ptr: u64, arg_count: u32) -> *mut u8 {
     use crate::scheduler_hooks::YIELD_PTR;
     let p = current_process();
-    p.mid_flight_fn_id = fn_id;
+    p.mid_flight_fn_ptr = fn_ptr;
     p.mid_flight_root_count = arg_count as u8;
-    // State stays Running; the scheduler distinguishes mid-flight yield
-    // from Blocked-on-receive by checking mid_flight_root_count > 0 ||
-    // mid_flight_fn_id != 0 (both set here), vs. parked_cont non-null.
     YIELD_PTR as *mut u8
 }
 

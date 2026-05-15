@@ -49,6 +49,11 @@ thread_local! {
     /// run-queue loop can dispatch main's initial quantum.
     static AOT_MAIN_ENTRY: Cell<*const u8> = const { Cell::new(std::ptr::null()) };
     static AOT_HALT_CL: Cell<u64> = const { Cell::new(0) };
+    /// fz-02r.7 — mid-flight resume shim addresses (arg count 0..=8).
+    /// Set by fz_aot_set_resume_shims; used by aot_run_queue_loop to resume
+    /// a process that yielded at a back-edge after gc_mid_flight.
+    static AOT_RESUME_SHIMS: Cell<[*const u8; 9]> =
+        const { Cell::new([std::ptr::null(); 9]) };
 }
 
 /// Decode an atom-name blob emitted by AOT codegen into a `Vec<String>`.
@@ -286,11 +291,29 @@ pub extern "C" fn fz_aot_run_main(
     AOT_MAIN_ENTRY.with(|c| c.set(std::ptr::null()));
     AOT_HALT_CL.with(|c| c.set(0));
     AOT_HALT_CONT_BODIES.with(|c| c.set([std::ptr::null(); 3]));
+    AOT_RESUME_SHIMS.with(|c| c.set([std::ptr::null(); 9]));
     CURRENT_PROCESS.with(|c| c.set(std::ptr::null_mut()));
     AOT_TASKS.with(|c| c.borrow_mut().clear());
     AOT_RUN_QUEUE.with(|q| q.borrow_mut().clear());
     AOT_SCHEMAS.with(|s| *s.borrow_mut() = None);
     0
+}
+
+/// fz-02r.7 — register the 9 mid-flight resume shim addresses (arg count
+/// 0..=8). Called from the AOT-emitted C main after fz_aot_setup but before
+/// fz_aot_run_main so the shims are available when back-edge yields fire.
+/// `shims` must point to 9 consecutive *const u8 pointers.
+///
+/// # Safety
+/// `shims` must point to 9 valid fn pointers (Local Cranelift symbols
+/// emitted by compile_with_backend). Called only from AOT-generated C main.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fz_aot_set_resume_shims(shims: *const *const u8) {
+    let mut arr = [std::ptr::null::<u8>(); 9];
+    for (i, slot) in arr.iter_mut().enumerate() {
+        *slot = unsafe { *shims.add(i) };
+    }
+    AOT_RESUME_SHIMS.with(|c| c.set(arr));
 }
 
 /// Cooperative run-queue loop. Drives all enqueued processes to completion
@@ -301,6 +324,7 @@ pub extern "C" fn fz_aot_run_main(
 ///   1. pending_main_entry — initial main dispatch via fz_main_entry shim
 ///   2. pending_closure_entry — initial spawn dispatch via fz_spawn_entry shim
 ///   3. parked_cont + message in mailbox — resume via fz_resume_park
+///   4. mid_flight_fn_ptr != 0 — resume after mid-flight back-edge GC
 fn aot_run_queue_loop() {
     let main_entry_addr = AOT_MAIN_ENTRY.with(|c| c.get());
     let spawn_entry_addr = AOT_SPAWN_ENTRY.with(|c| c.get());
@@ -350,11 +374,40 @@ fn aot_run_queue_loop() {
             type ResumePark = extern "C" fn(u64, u64) -> i64;
             let resume: ResumePark = unsafe { std::mem::transmute(resume_park_addr) };
             let _ = resume(msg.0, cont as u64);
+        } else if unsafe { (*proc_ptr).mid_flight_fn_ptr } != 0 {
+            // fz-02r.7 — mid-flight back-edge yield resume. gc_mid_flight
+            // was run by the scheduler before re-enqueue; mid_flight_roots
+            // holds forwarded args. Call the matching resume shim which
+            // reads N args from the slab and Tail-CC indirect-calls fn_ptr.
+            let fn_ptr = unsafe { (*proc_ptr).mid_flight_fn_ptr };
+            let n = unsafe { (*proc_ptr).mid_flight_root_count } as usize;
+            unsafe { (*proc_ptr).mid_flight_fn_ptr = 0 };
+            unsafe { (*proc_ptr).mid_flight_root_count = 0 };
+            let shims = AOT_RESUME_SHIMS.with(|c| c.get());
+            let shim = shims[n];
+            if !shim.is_null() {
+                type MidFlightResume = extern "C" fn(u64) -> i64;
+                let f: MidFlightResume = unsafe { std::mem::transmute(shim) };
+                let _ = f(fn_ptr);
+            }
         }
 
-        // Post-quantum: re-enqueue on self-send; leave Blocked in registry.
+        // Post-quantum state check.
         let state = unsafe { (*proc_ptr).state };
-        if state == ProcessState::Ready {
+        let mid_flight = unsafe { (*proc_ptr).mid_flight_fn_ptr };
+        if state == ProcessState::Running && mid_flight != 0 {
+            // Mid-flight yield: GC the slab, clear flag, re-enqueue.
+            let n = unsafe { (*proc_ptr).mid_flight_root_count as usize };
+            let process = unsafe { &mut *proc_ptr };
+            process.heap.gc_mid_flight(
+                &mut process.mid_flight_roots[..n],
+                &mut process.mailbox,
+            );
+            process.quiet_quanta = 0;
+            crate::yield_flag::FZ_SHOULD_YIELD.store(0, std::sync::atomic::Ordering::Relaxed);
+            unsafe { (*proc_ptr).state = ProcessState::Ready };
+            AOT_RUN_QUEUE.with(|q| q.borrow_mut().push_back(pid));
+        } else if state == ProcessState::Ready {
             AOT_RUN_QUEUE.with(|q| q.borrow_mut().push_back(pid));
         }
 

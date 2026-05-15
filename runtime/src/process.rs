@@ -93,9 +93,11 @@ pub struct Process {
     // fz-02r.3 — mid-flight GC fields. Set by fz_yield_back_edge when
     // FZ_SHOULD_YIELD fires at a back-edge. The scheduler reads these to
     // run gc_mid_flight, then clears them before re-queueing.
-    /// FnId.0 of the function that yielded. Informational (logging / future
-    /// fairness accounting); not used for GC correctness.
-    pub mid_flight_fn_id: u32,
+    /// Raw code pointer of the callee to resume into after mid-flight GC.
+    /// Stored by fz_yield_back_edge; used by both JIT (run_quantum) and
+    /// AOT (aot_run_queue_loop) resume paths. Zero when no mid-flight yield
+    /// is pending.
+    pub mid_flight_fn_ptr: u64,
     /// Number of live args stashed in `mid_flight_roots` (0..=8).
     pub mid_flight_root_count: u8,
     /// Slab of up to 8 live arg FzValues at the back-edge yield point.
@@ -155,7 +157,7 @@ impl Process {
             pending_main_entry_fn_id: 0,
             static_closures: Vec::new(),
             static_closure_bufs: Vec::new(),
-            mid_flight_fn_id: 0,
+            mid_flight_fn_ptr: 0,
             mid_flight_root_count: 0,
             mid_flight_roots: [crate::fz_value::FzValue(0); 8],
             quiet_quanta: 0,

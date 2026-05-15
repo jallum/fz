@@ -342,7 +342,7 @@ impl<'a> Runtime<'a> {
                 self.run_queue.push_back(pid);
                 continue;
             } else if task.state == ProcessState::Running {
-                if task.mid_flight_root_count > 0 {
+                if task.mid_flight_fn_ptr != 0 {
                     // fz-02r.3 — mid-flight back-edge yield: GC with live
                     // args + mailbox as roots, then clear the slab.
                     let n = task.mid_flight_root_count as usize;
@@ -351,7 +351,7 @@ impl<'a> Runtime<'a> {
                         &mut task.mailbox,
                     );
                     task.mid_flight_root_count = 0;
-                    task.mid_flight_fn_id = 0;
+                    task.mid_flight_fn_ptr = 0;
                     FZ_SHOULD_YIELD.store(0, Ordering::Relaxed);
                     task.quiet_quanta = 0;
                 } else {
