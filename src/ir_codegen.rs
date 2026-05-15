@@ -1685,6 +1685,7 @@ pub fn compile_with_backend<B: Backend>(
     // .29.12.6's any-key drop logic can remove the now-dead any-key.
     let mid_types = crate::ir_typer::type_module(&working);
     crate::ir_typer::rewrite_known_target_closures(&mut working, &mid_types);
+    crate::ir_inline::inline_module(&mut working);
     let module_types = crate::ir_typer::type_module(&working);
     let module = &working;
 
