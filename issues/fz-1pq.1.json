@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-05-15T01:24:58Z",
   "created": "2026-05-15T00:29:06Z",
   "description": "At ir_typer.rs:1499, `Const::Atom(id) =\u003e Descr::atom_lit(format!(\"a{}\", id))` renders atoms using their interned integer id rather than their source name. All atom literals in specs appear as :a1, :a2, etc. instead of :ok, :err, etc.\n\nAffected fixtures: polymorphic, vr5a_cross_kind_eq, vr5a_typed_eq, attributes, concurrency_ping_pong, classify_two_clause\n\nFix: look up the atom name from the intern table at the Const::Atom arm and pass the real name to atom_lit.",
   "id": "fz-1pq.1",
   "labels": [],
   "parent": "fz-1pq",
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "ir_typer: Const::Atom uses interned id not name — atoms display as :a\u003cN\u003e in specs",
   "type": "bug",
-  "updated_at": "2026-05-15T00:29:06Z"
+  "updated_at": "2026-05-15T01:24:58Z"
 }
