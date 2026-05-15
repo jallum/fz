@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-15T15:54:04Z",
+  "description": "",
+  "id": "fz-42m",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "extract fetch_static_closure from Call/TailCall/MakeClosure",
+  "type": "task",
+  "updated_at": "2026-05-15T15:54:04Z"
+}
