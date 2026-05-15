@@ -446,7 +446,8 @@ impl Parser {
                 let spec_name = match self.bump() {
                     Tok::Ident(n) => n,
                     other => {
-                        return self.err(format!("expected fn name after `@spec`, got {:?}", other));
+                        return self
+                            .err(format!("expected fn name after `@spec`, got {:?}", other));
                     }
                 };
                 self.expect(&Tok::LParen, "`(`")?;

@@ -786,9 +786,11 @@ fn count_live_bytes_from(
         let push = |slot: *const FzValue, stack: &mut Vec<*mut HeapHeader>| {
             let v = unsafe { std::ptr::read(slot) };
             if let Some(cp) = v.unbox_ptr()
-                && !cp.is_null() && ptr_in_from_space(cp as *mut u8, from_ranges) {
-                    stack.push(cp);
-                }
+                && !cp.is_null()
+                && ptr_in_from_space(cp as *mut u8, from_ranges)
+            {
+                stack.push(cp);
+            }
         };
         match kind {
             HeapKind::Struct => {

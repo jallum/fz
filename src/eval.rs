@@ -703,8 +703,8 @@ impl Interp {
 
 #[cfg(test)]
 #[allow(clippy::items_after_test_module)] // mid-file: quote/unquote/`...`-pattern tests
-                                           // sit between the parse/lower helpers above and
-                                           // the Interp impl that runs them.
+// sit between the parse/lower helpers above and
+// the Interp impl that runs them.
 mod quote_tests {
     use super::*;
     use crate::lexer::Lexer;
