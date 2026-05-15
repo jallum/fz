@@ -19,8 +19,6 @@
 //! Term::CallClosure / TailCallClosure (closure invocation needs heap-typed
 //! closures — lands later), and heap-typed prims (.11.10+).
 
-#![allow(dead_code)]
-
 use crate::fz_ir::{BinOp, Const, FnId, Module, Prim, SpecId, Stmt, Term, UnOp, Var};
 use cranelift_codegen::Context;
 use cranelift_codegen::ir::{
