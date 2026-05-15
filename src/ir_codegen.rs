@@ -3623,8 +3623,7 @@ fn compile_fn<M: cranelift_module::Module>(
     b.switch_to_block(entry_cl);
     b.seal_block(entry_cl);
 
-    let mut var_map: HashMap<u32, ir::Value> = HashMap::new();
-    let mut var_reprs: HashMap<u32, ArgRepr> = HashMap::new();
+    let mut var_env: HashMap<u32, VarBinding> = HashMap::new();
     let my_schema = &schemas[this_spec_id as usize];
 
     // (frame_ptr, host_ctx) — uniform fns get both from entry block_params;
@@ -3662,16 +3661,7 @@ fn compile_fn<M: cranelift_module::Module>(
             // same sig (return_reprs[producer_sid] = my_param_reprs[0]
             // via the typer's cont_input_key seam agreement). No coerce
             // at entry — value already in body's expected repr.
-            match my_param_reprs[0] {
-                ArgRepr::RawInt => {
-                    var_reprs.insert(result_param.0, ArgRepr::RawInt);
-                }
-                ArgRepr::RawF64 => {
-                    var_reprs.insert(result_param.0, ArgRepr::RawF64);
-                }
-                ArgRepr::Tagged => {}
-            }
-            var_map.insert(result_param.0, params[0]);
+            var_env.insert(result_param.0, VarBinding { value: params[0], repr: my_param_reprs[0] });
             let self_val = params[1];
             for (i, p) in entry_blk.params.iter().enumerate().skip(1) {
                 // fz_param[i] = user_cap[i-1] at offset 32 + 8*(i-1) (= +24 + 8*i).
@@ -3682,16 +3672,7 @@ fn compile_fn<M: cranelift_module::Module>(
                 let off = HEADER_SIZE + SLOT_BYTES * 2 + ((i - 1) as i32) * SLOT_BYTES;
                 let cl_ty = my_param_reprs[i].cl_type();
                 let v = b.ins().load(cl_ty, MemFlags::trusted(), self_val, off);
-                match my_param_reprs[i] {
-                    ArgRepr::RawInt => {
-                        var_reprs.insert(p.0, ArgRepr::RawInt);
-                    }
-                    ArgRepr::RawF64 => {
-                        var_reprs.insert(p.0, ArgRepr::RawF64);
-                    }
-                    ArgRepr::Tagged => {}
-                }
-                var_map.insert(p.0, v);
+                var_env.insert(p.0, VarBinding { value: v, repr: my_param_reprs[i] });
             }
             let host_ctx = None;
             (None, host_ctx, Some(self_val))
@@ -3712,46 +3693,18 @@ fn compile_fn<M: cranelift_module::Module>(
                 let off = HEADER_SIZE + SLOT_BYTES + (k as i32) * SLOT_BYTES;
                 let cl_ty = my_param_reprs[k].cl_type();
                 let v = b.ins().load(cl_ty, MemFlags::trusted(), self_val, off);
-                match my_param_reprs[k] {
-                    ArgRepr::RawInt => {
-                        var_reprs.insert(p.0, ArgRepr::RawInt);
-                    }
-                    ArgRepr::RawF64 => {
-                        var_reprs.insert(p.0, ArgRepr::RawF64);
-                    }
-                    ArgRepr::Tagged => {}
-                }
-                var_map.insert(p.0, v);
+                var_env.insert(p.0, VarBinding { value: v, repr: my_param_reprs[k] });
             }
             // Args: fz_params[n_caps..] ← Cranelift params[0..n_args].
             for (j, p) in entry_blk.params.iter().enumerate().skip(n_caps) {
                 let cl_idx = j - n_caps;
-                let repr = my_param_reprs[j];
-                match repr {
-                    ArgRepr::RawInt => {
-                        var_reprs.insert(p.0, ArgRepr::RawInt);
-                    }
-                    ArgRepr::RawF64 => {
-                        var_reprs.insert(p.0, ArgRepr::RawF64);
-                    }
-                    ArgRepr::Tagged => {}
-                }
-                var_map.insert(p.0, params[cl_idx]);
+                var_env.insert(p.0, VarBinding { value: params[cl_idx], repr: my_param_reprs[j] });
             }
             let _ = self_val;
             (None, None, Some(cont_val))
         } else {
             for (i, p) in entry_blk.params.iter().enumerate() {
-                match my_param_reprs[i] {
-                    ArgRepr::RawInt => {
-                        var_reprs.insert(p.0, ArgRepr::RawInt);
-                    }
-                    ArgRepr::RawF64 => {
-                        var_reprs.insert(p.0, ArgRepr::RawF64);
-                    }
-                    ArgRepr::Tagged => {}
-                }
-                var_map.insert(p.0, params[i]);
+                var_env.insert(p.0, VarBinding { value: params[i], repr: my_param_reprs[i] });
             }
             let host_ctx_idx = entry_blk.params.len();
             let (host_ctx, cont_idx) = (None, host_ctx_idx);
@@ -3768,26 +3721,25 @@ fn compile_fn<M: cranelift_module::Module>(
         for (i, p) in entry_blk.params.iter().enumerate() {
             let off = HEADER_SIZE + ((i as i32 + 1) * SLOT_BYTES);
             let slot_kind = &my_schema.fields[i + 1].kind;
-            let val = match slot_kind {
+            let (value, repr) = match slot_kind {
                 FieldKind::RawF64 => {
                     let f = b
                         .ins()
                         .load(types::F64, MemFlags::trusted(), frame_ptr, off);
-                    var_reprs.insert(p.0, ArgRepr::RawF64);
-                    f
+                    (f, ArgRepr::RawF64)
                 }
                 FieldKind::RawI64 => {
                     let n = b
                         .ins()
                         .load(types::I64, MemFlags::trusted(), frame_ptr, off);
-                    var_reprs.insert(p.0, ArgRepr::RawInt);
-                    n
+                    (n, ArgRepr::RawInt)
                 }
-                _ => b
-                    .ins()
-                    .load(types::I64, MemFlags::trusted(), frame_ptr, off),
+                _ => (
+                    b.ins().load(types::I64, MemFlags::trusted(), frame_ptr, off),
+                    ArgRepr::Tagged,
+                ),
             };
-            var_map.insert(p.0, val);
+            var_env.insert(p.0, VarBinding { value, repr });
         }
         // fz-cps.1.a: uniform fns do not yet have a cont SSA value; the
         // cont still lives in slot 0 of `frame_ptr` until fz-siu.1.5.
@@ -3816,7 +3768,7 @@ fn compile_fn<M: cranelift_module::Module>(
             b.switch_to_block(cl_blk);
             let params: Vec<ir::Value> = b.block_params(cl_blk).to_vec();
             for (p, val) in blk.params.iter().zip(params.iter()) {
-                var_map.insert(p.0, *val);
+                var_env.insert(p.0, VarBinding { value: *val, repr: ArgRepr::Tagged });
             }
         }
 
@@ -3837,8 +3789,7 @@ fn compile_fn<M: cranelift_module::Module>(
                 jmod,
                 runtime,
                 tuple_schema_ids,
-                &var_map,
-                &var_reprs,
+                &var_env,
                 fn_types,
                 spec_registry,
                 module,
@@ -3848,13 +3799,14 @@ fn compile_fn<M: cranelift_module::Module>(
                 prim,
                 *v,
             )?;
-            let val = out.value();
-            if out.is_raw_f64() {
-                var_reprs.insert(v.0, ArgRepr::RawF64);
+            let repr = if out.is_raw_f64() {
+                ArgRepr::RawF64
             } else if out.is_raw_i64() {
-                var_reprs.insert(v.0, ArgRepr::RawInt);
-            }
-            var_map.insert(v.0, val);
+                ArgRepr::RawInt
+            } else {
+                ArgRepr::Tagged
+            };
+            var_env.insert(v.0, VarBinding { value: out.value(), repr });
         }
         // Terminator gets its own srcloc (often the same as the last
         // stmt for Return blocks; distinct for Call/Goto).
@@ -3930,20 +3882,19 @@ fn compile_fn<M: cranelift_module::Module>(
             _ => true,
         };
         if needs_blanket_retag {
-            let to_retag: Vec<(u32, ArgRepr)> = var_reprs
+            let to_retag: Vec<(u32, ArgRepr)> = var_env
                 .iter()
-                .filter(|(rv, _)| used_by_term.contains(rv))
-                .map(|(&rv, &repr)| (rv, repr))
+                .filter(|(rv, vb)| used_by_term.contains(rv) && vb.repr != ArgRepr::Tagged)
+                .map(|(&rv, vb)| (rv, vb.repr))
                 .collect();
             for (rv, repr) in to_retag {
-                let raw = *var_map.get(&rv).expect("raw var dropped from env");
+                let raw = var_env.get(&rv).expect("raw var dropped from env").value;
                 let boxed = match repr {
                     ArgRepr::RawF64 => box_float_native(&mut b, jmod, runtime, raw),
                     ArgRepr::RawInt => box_int(&mut b, raw),
-                    ArgRepr::Tagged => unreachable!("Tagged in var_reprs"),
+                    ArgRepr::Tagged => unreachable!("Tagged in to_retag"),
                 };
-                var_map.insert(rv, boxed);
-                var_reprs.remove(&rv);
+                var_env.insert(rv, VarBinding { value: boxed, repr: ArgRepr::Tagged });
             }
         }
 
@@ -3952,12 +3903,12 @@ fn compile_fn<M: cranelift_module::Module>(
                 let tgt = *block_map.get(&target.0).unwrap();
                 let arg_vals: Vec<BlockArg> = args
                     .iter()
-                    .map(|v| BlockArg::Value(*var_map.get(&v.0).expect("unbound goto arg")))
+                    .map(|v| BlockArg::Value(var_env.get(&v.0).expect("unbound goto arg").value))
                     .collect();
                 b.ins().jump(tgt, &arg_vals);
             }
             Term::If(c, t, e) => {
-                let cv = *var_map.get(&c.0).expect("unbound if cond");
+                let cv = var_env.get(&c.0).expect("unbound if cond").value;
                 let t_b = *block_map.get(&t.0).unwrap();
                 let e_b = *block_map.get(&e.0).unwrap();
                 let no_args: Vec<BlockArg> = Vec::new();
@@ -3965,7 +3916,7 @@ fn compile_fn<M: cranelift_module::Module>(
                 b.ins().brif(truthy, t_b, &no_args, e_b, &no_args);
             }
             Term::Halt(v) => {
-                let val = *var_map.get(&v.0).expect("unbound halt val");
+                let val = var_env.get(&v.0).expect("unbound halt val").value;
                 // fz-cps.1.2 — cont fns have no host_ctx (§2.1); their
                 // Halt uses fz_halt_implicit which pulls process from TLS.
                 // fz-cps.1.12 — all native fns use fz_halt_implicit too;
@@ -3995,7 +3946,7 @@ fn compile_fn<M: cranelift_module::Module>(
                 }
             }
             Term::Return(v) => {
-                let val = *var_map.get(&v.0).expect("unbound return val");
+                let val = var_env.get(&v.0).expect("unbound return val").value;
                 if is_native {
                     // fz-ul4.27.22.3 — native Term::Return per docs/cps-in-clif.md
                     // §2.1: `load cont+16; return_call_indirect sig(val, cont)`.
@@ -4006,7 +3957,7 @@ fn compile_fn<M: cranelift_module::Module>(
                     // halt-cont typing + cont-seam narrowing in
                     // build_fn_signature).
                     let my_return_repr = return_reprs[this_spec_id as usize];
-                    let from = var_reprs.get(&v.0).copied().unwrap_or(ArgRepr::Tagged);
+                    let from = var_env.get(&v.0).map_or(ArgRepr::Tagged, |vb| vb.repr);
                     let val_typed = coerce_to(&mut b, jmod, runtime, val, from, my_return_repr);
                     let cont_val = if is_cont_fn {
                         let self_val = cont_param.expect("cont fn binds self via cont_param");
@@ -4061,7 +4012,7 @@ fn compile_fn<M: cranelift_module::Module>(
                 let cap_vals: Vec<ir::Value> = continuation
                     .captured
                     .iter()
-                    .map(|v| *var_map.get(&v.0).expect("unbound captured val"))
+                    .map(|v| var_env.get(&v.0).expect("unbound captured val").value)
                     .collect();
                 // fz-ul4.29.7: resolve callee → narrow SpecId.0 (falls
                 // back to any-key == callee.0 via subsumption).
@@ -4083,8 +4034,8 @@ fn compile_fn<M: cranelift_module::Module>(
                     let callee_fref = jmod.declare_func_in_func(callee_fid, b.func);
                     let mut native_args: Vec<ir::Value> = Vec::with_capacity(args.len() + 1);
                     for (i, av) in args.iter().enumerate() {
-                        let raw_val = *var_map.get(&av.0).expect("unbound call arg");
-                        let from = var_reprs.get(&av.0).copied().unwrap_or(ArgRepr::Tagged);
+                        let raw_val = var_env.get(&av.0).expect("unbound call arg").value;
+                        let from = var_env.get(&av.0).map_or(ArgRepr::Tagged, |vb| vb.repr);
                         let to = callee_param_reprs[i];
                         native_args.push(coerce_to(&mut b, jmod, runtime, raw_val, from, to));
                     }
@@ -4212,7 +4163,7 @@ fn compile_fn<M: cranelift_module::Module>(
                         // round-trip when the capture is narrow.
                         let cont_param_reprs = &param_reprs[cont_sid as usize];
                         for (i, cv) in continuation.captured.iter().enumerate() {
-                            let from = var_reprs.get(&cv.0).copied().unwrap_or(ArgRepr::Tagged);
+                            let from = var_env.get(&cv.0).map_or(ArgRepr::Tagged, |vb| vb.repr);
                             let to = cont_param_reprs[i + 1];
                             let v = coerce_to(&mut b, jmod, runtime, cap_vals[i], from, to);
                             let off = HEADER_SIZE + SLOT_BYTES * 2 + (i as i32) * SLOT_BYTES;
@@ -4312,7 +4263,7 @@ fn compile_fn<M: cranelift_module::Module>(
                             Vec::with_capacity(continuation.captured.len() + 1);
                         payload.push(result_tagged);
                         for (cv, val) in continuation.captured.iter().zip(cap_vals.iter()) {
-                            let from = var_reprs.get(&cv.0).copied().unwrap_or(ArgRepr::Tagged);
+                            let from = var_env.get(&cv.0).map_or(ArgRepr::Tagged, |vb| vb.repr);
                             payload.push(coerce_to(
                                 &mut b,
                                 jmod,
@@ -4328,7 +4279,7 @@ fn compile_fn<M: cranelift_module::Module>(
                 } else {
                     let arg_vals: Vec<ir::Value> = args
                         .iter()
-                        .map(|v| *var_map.get(&v.0).expect("unbound call arg"))
+                        .map(|v| var_env.get(&v.0).expect("unbound call arg").value)
                         .collect();
                     emit_call(
                         &mut b,
@@ -4356,8 +4307,8 @@ fn compile_fn<M: cranelift_module::Module>(
                     let callee_fref = jmod.declare_func_in_func(callee_fid, b.func);
                     let mut native_args: Vec<ir::Value> = Vec::with_capacity(args.len() + 1);
                     for (i, av) in args.iter().enumerate() {
-                        let raw_val = *var_map.get(&av.0).expect("unbound tailcall arg");
-                        let from = var_reprs.get(&av.0).copied().unwrap_or(ArgRepr::Tagged);
+                        let raw_val = var_env.get(&av.0).expect("unbound tailcall arg").value;
+                        let from = var_env.get(&av.0).map_or(ArgRepr::Tagged, |vb| vb.repr);
                         let to = callee_param_reprs[i];
                         native_args.push(coerce_to(&mut b, jmod, runtime, raw_val, from, to));
                     }
@@ -4482,7 +4433,7 @@ fn compile_fn<M: cranelift_module::Module>(
                 } else {
                     let arg_vals: Vec<ir::Value> = args
                         .iter()
-                        .map(|v| *var_map.get(&v.0).expect("unbound tailcall arg"))
+                        .map(|v| var_env.get(&v.0).expect("unbound tailcall arg").value)
                         .collect();
                     emit_tail_call(
                         &mut b,
@@ -4504,17 +4455,18 @@ fn compile_fn<M: cranelift_module::Module>(
                 // fz-ul4.29.5: load stub_fp from closure_ptr+16, build a
                 // cont frame, then call_indirect through stub_fp. The stub
                 // adapts the call into the callee's entry-frame layout.
-                let cl_val = *var_map
+                let cl_val = var_env
                     .get(&closure.0)
-                    .expect("unbound callclosure closure");
+                    .expect("unbound callclosure closure")
+                    .value;
                 let arg_vals: Vec<ir::Value> = args
                     .iter()
-                    .map(|v| *var_map.get(&v.0).expect("unbound callclosure arg"))
+                    .map(|v| var_env.get(&v.0).expect("unbound callclosure arg").value)
                     .collect();
                 let cap_vals: Vec<ir::Value> = continuation
                     .captured
                     .iter()
-                    .map(|v| *var_map.get(&v.0).expect("unbound captured val"))
+                    .map(|v| var_env.get(&v.0).expect("unbound captured val").value)
                     .collect();
                 // fz-cps.1.2: build cont CLOSURE (not cont frame) per
                 // §2.2. The closure-target callee's body indirect-calls
@@ -4605,7 +4557,7 @@ fn compile_fn<M: cranelift_module::Module>(
                 // specs / uniform_cont_reachable_specs).
                 let cont_param_reprs = &param_reprs[cont_sid as usize];
                 for (i, cv) in continuation.captured.iter().enumerate() {
-                    let from = var_reprs.get(&cv.0).copied().unwrap_or(ArgRepr::Tagged);
+                    let from = var_env.get(&cv.0).map_or(ArgRepr::Tagged, |vb| vb.repr);
                     let to = cont_param_reprs[i + 1];
                     let v = coerce_to(&mut b, jmod, runtime, cap_vals[i], from, to);
                     let off = HEADER_SIZE + SLOT_BYTES * 2 + (i as i32) * SLOT_BYTES;
@@ -4631,7 +4583,7 @@ fn compile_fn<M: cranelift_module::Module>(
                 let sig_ref = b.func.import_signature(sig);
                 let mut indirect_args: Vec<ir::Value> = Vec::with_capacity(arg_vals.len() + 2);
                 for (i, v) in arg_vals.iter().enumerate() {
-                    let from = var_reprs.get(&args[i].0).copied().unwrap_or(ArgRepr::Tagged);
+                    let from = var_env.get(&args[i].0).map_or(ArgRepr::Tagged, |vb| vb.repr);
                     indirect_args.push(coerce_to(&mut b, jmod, runtime, *v, from, ArgRepr::Tagged));
                 }
                 indirect_args.push(cl_val);
@@ -4661,12 +4613,13 @@ fn compile_fn<M: cranelift_module::Module>(
                 // uses the body's narrow ABI directly. Falls back to the
                 // indirect path on union-of-lits, plain arrows, and
                 // unresolved keys.
-                let cl_val = *var_map
+                let cl_val = var_env
                     .get(&closure.0)
-                    .expect("unbound tailcallclosure closure");
+                    .expect("unbound tailcallclosure closure")
+                    .value;
                 let arg_vals: Vec<ir::Value> = args
                     .iter()
-                    .map(|v| *var_map.get(&v.0).expect("unbound tailcallclosure arg"))
+                    .map(|v| var_env.get(&v.0).expect("unbound tailcallclosure arg").value)
                     .collect();
                 let my_cont = if is_cont_fn {
                     let self_val = cont_param.expect("cont fn binds self via cont_param");
@@ -4715,7 +4668,7 @@ fn compile_fn<M: cranelift_module::Module>(
                     let body_fref = jmod.declare_func_in_func(body_fid, b.func);
                     let mut direct_args: Vec<ir::Value> = Vec::with_capacity(arg_vals.len() + 2);
                     for (i, v) in arg_vals.iter().enumerate() {
-                        let from = var_reprs.get(&args[i].0).copied().unwrap_or(ArgRepr::Tagged);
+                        let from = var_env.get(&args[i].0).map_or(ArgRepr::Tagged, |vb| vb.repr);
                         let to = body_param_reprs
                             .get(n_caps + i)
                             .copied()
@@ -4749,7 +4702,7 @@ fn compile_fn<M: cranelift_module::Module>(
                     let sig_ref = b.func.import_signature(sig);
                     let mut indirect_args: Vec<ir::Value> = Vec::with_capacity(arg_vals.len() + 2);
                     for (i, v) in arg_vals.iter().enumerate() {
-                        let from = var_reprs.get(&args[i].0).copied().unwrap_or(ArgRepr::Tagged);
+                        let from = var_env.get(&args[i].0).map_or(ArgRepr::Tagged, |vb| vb.repr);
                         indirect_args.push(coerce_to(
                             &mut b,
                             jmod,
@@ -4783,7 +4736,7 @@ fn compile_fn<M: cranelift_module::Module>(
                 let cap_vals: Vec<ir::Value> = continuation
                     .captured
                     .iter()
-                    .map(|v| *var_map.get(&v.0).expect("unbound receive cont capture"))
+                    .map(|v| var_env.get(&v.0).expect("unbound receive cont capture").value)
                     .collect();
                 let cont_sid = resolve_cont_sid(blk, continuation);
                 let cont_fid = *fn_ids.get(&cont_sid).expect("cont fn_id missing");
@@ -4873,7 +4826,7 @@ fn compile_fn<M: cranelift_module::Module>(
                 // Tagged (msg arrives Tagged from the mailbox), but captures
                 // can be typed.
                 for (i, cv) in continuation.captured.iter().enumerate() {
-                    let from = var_reprs.get(&cv.0).copied().unwrap_or(ArgRepr::Tagged);
+                    let from = var_env.get(&cv.0).map_or(ArgRepr::Tagged, |vb| vb.repr);
                     let to = cont_param_reprs[i + 1];
                     let v = coerce_to(&mut b, jmod, runtime, cap_vals[i], from, to);
                     let off = HEADER_SIZE + SLOT_BYTES * 2 + (i as i32) * SLOT_BYTES;
@@ -4914,9 +4867,9 @@ fn compile_fn<M: cranelift_module::Module>(
     VALUE_DESCR_RECORD.with(|c| {
         if let Some(map) = c.borrow_mut().as_mut() {
             map.clear();
-            for (var_id, value) in &var_map {
+            for (var_id, vb) in &var_env {
                 if let Some(d) = fn_types.vars.get(&crate::fz_ir::Var(*var_id)) {
-                    map.insert(value.as_u32(), d.clone());
+                    map.insert(vb.value.as_u32(), d.clone());
                 }
             }
         }
@@ -5292,8 +5245,7 @@ fn lower_prim<M: cranelift_module::Module>(
     jmod: &mut M,
     runtime: &RuntimeRefs,
     tuple_schema_ids: &HashMap<usize, u32>,
-    env: &HashMap<u32, ir::Value>,
-    var_reprs: &HashMap<u32, ArgRepr>,
+    var_env: &HashMap<u32, VarBinding>,
     fn_types: &crate::ir_typer::FnTypes,
     spec_registry: &SpecRegistry,
     module: &crate::fz_ir::Module,
@@ -5373,12 +5325,12 @@ fn lower_prim<M: cranelift_module::Module>(
             // fallback) call `tag_a` / `tag_b` and pay the conversion.
             macro_rules! tag_a {
                 () => {
-                    tagged_get(env, var_reprs, b, jmod, runtime,a.0)
+                    tagged_get(var_env, b, jmod, runtime,a.0)
                 };
             }
             macro_rules! tag_b {
                 () => {
-                    tagged_get(env, var_reprs, b, jmod, runtime,bv.0)
+                    tagged_get(var_env, b, jmod, runtime,bv.0)
                 };
             }
             match op {
@@ -5390,8 +5342,8 @@ fn lower_prim<M: cranelift_module::Module>(
                         && descr_is_float(fn_types, *bv)
                         && !matches!(mop, BinOp::Mod)
                     {
-                        let af = as_raw_f64(env, var_reprs, b,a.0);
-                        let bf = as_raw_f64(env, var_reprs, b,bv.0);
+                        let af = as_raw_f64(var_env, b,a.0);
+                        let bf = as_raw_f64(var_env, b,bv.0);
                         let raw_f = match mop {
                             BinOp::Add => b.ins().fadd(af, bf),
                             BinOp::Sub => b.ins().fsub(af, bf),
@@ -5406,8 +5358,8 @@ fn lower_prim<M: cranelift_module::Module>(
                     // or a prior int fast path), do native iadd/etc., and
                     // return the result raw. fz-ul4.27.5.3.
                     if descr_is_int(fn_types, *a) && descr_is_int(fn_types, *bv) {
-                        let ai = as_raw_i64(env, var_reprs, b,a.0);
-                        let bi = as_raw_i64(env, var_reprs, b,bv.0);
+                        let ai = as_raw_i64(var_env, b,a.0);
+                        let bi = as_raw_i64(var_env, b,bv.0);
                         let raw = match mop {
                             BinOp::Add => b.ins().iadd(ai, bi),
                             BinOp::Sub => b.ins().isub(ai, bi),
@@ -5482,8 +5434,8 @@ fn lower_prim<M: cranelift_module::Module>(
                     }
                     // Same-kind float: native fcmp on raw f64.
                     if descr_is_float(fn_types, *a) && descr_is_float(fn_types, *bv) {
-                        let af = as_raw_f64(env, var_reprs, b,a.0);
-                        let bf = as_raw_f64(env, var_reprs, b,bv.0);
+                        let af = as_raw_f64(var_env, b,a.0);
+                        let bf = as_raw_f64(var_env, b,bv.0);
                         let cmp = b.ins().fcmp(f_cc, af, bf);
                         return Ok(LowerOut::Tagged(bool_to_fz(b, cmp)));
                     }
@@ -5491,8 +5443,8 @@ fn lower_prim<M: cranelift_module::Module>(
                     // not mix raw and tagged operands — bit-eq is only
                     // correct when both are in the same encoding.
                     if descr_is_int(fn_types, *a) && descr_is_int(fn_types, *bv) {
-                        let ai = as_raw_i64(env, var_reprs, b,a.0);
-                        let bi = as_raw_i64(env, var_reprs, b,bv.0);
+                        let ai = as_raw_i64(var_env, b,a.0);
+                        let bi = as_raw_i64(var_env, b,bv.0);
                         let cmp = b.ins().icmp(int_cc, ai, bi);
                         return Ok(LowerOut::Tagged(bool_to_fz(b, cmp)));
                     }
@@ -5554,15 +5506,15 @@ fn lower_prim<M: cranelift_module::Module>(
                             BinOp::Ge => FloatCC::GreaterThanOrEqual,
                             _ => unreachable!(),
                         };
-                        let af = as_raw_f64(env, var_reprs, b,a.0);
-                        let bf = as_raw_f64(env, var_reprs, b,bv.0);
+                        let af = as_raw_f64(var_env, b,a.0);
+                        let bf = as_raw_f64(var_env, b,bv.0);
                         let cmp = b.ins().fcmp(fcc, af, bf);
                         return Ok(LowerOut::Tagged(bool_to_fz(b, cmp)));
                     }
                     // Typed-int fast path: read raw i64 operands directly.
                     if descr_is_int(fn_types, *a) && descr_is_int(fn_types, *bv) {
-                        let ai = as_raw_i64(env, var_reprs, b,a.0);
-                        let bi = as_raw_i64(env, var_reprs, b,bv.0);
+                        let ai = as_raw_i64(var_env, b,a.0);
+                        let bi = as_raw_i64(var_env, b,bv.0);
                         let cmp = b.ins().icmp(icc, ai, bi);
                         return Ok(LowerOut::Tagged(bool_to_fz(b, cmp)));
                     }
@@ -5619,11 +5571,11 @@ fn lower_prim<M: cranelift_module::Module>(
                 UnOp::Neg => {
                     // .5.3: read raw i64, native ineg, return raw — same
                     // shape as the BinOp int fast paths.
-                    let xi = as_raw_i64(env, var_reprs, b,x.0);
+                    let xi = as_raw_i64(var_env, b,x.0);
                     return Ok(LowerOut::RawI64(b.ins().ineg(xi)));
                 }
                 UnOp::Not => {
-                    let xv = tagged_get(env, var_reprs, b, jmod, runtime,x.0);
+                    let xv = tagged_get(var_env, b, jmod, runtime,x.0);
                     let truthy = is_truthy(b, xv);
                     let zero = b.ins().iconst(types::I8, 0);
                     let inv = b.ins().icmp(IntCC::Equal, truthy, zero);
@@ -5645,15 +5597,15 @@ fn lower_prim<M: cranelift_module::Module>(
                     // round-trip that the polymorphic fz_print_value needs.
                     let a = args[0];
                     if descr_is_int(fn_types, a) {
-                        let n = as_raw_i64(env, var_reprs, b,a.0);
+                        let n = as_raw_i64(var_env, b,a.0);
                         let fref = jmod.declare_func_in_func(runtime.print_i64_id, b.func);
                         b.ins().call(fref, &[n]);
                     } else if descr_is_float(fn_types, a) {
-                        let f = as_raw_f64(env, var_reprs, b,a.0);
+                        let f = as_raw_f64(var_env, b,a.0);
                         let fref = jmod.declare_func_in_func(runtime.print_f64_id, b.func);
                         b.ins().call(fref, &[f]);
                     } else {
-                        let av = tagged_get(env, var_reprs, b, jmod, runtime,a.0);
+                        let av = tagged_get(var_env, b, jmod, runtime,a.0);
                         let fref = jmod.declare_func_in_func(runtime.print_id, b.func);
                         b.ins().call(fref, &[av]);
                     }
@@ -5666,9 +5618,9 @@ fn lower_prim<M: cranelift_module::Module>(
                         return Err(CodegenError::new("vec_get/2 expected"));
                     }
                     let vv =
-                        tagged_get(env, var_reprs, b, jmod, runtime,args[0].0);
+                        tagged_get(var_env, b, jmod, runtime,args[0].0);
                     let iv =
-                        tagged_get(env, var_reprs, b, jmod, runtime,args[1].0);
+                        tagged_get(var_env, b, jmod, runtime,args[1].0);
                     let fref = jmod.declare_func_in_func(runtime.vec_get_id, b.func);
                     let inst = b.ins().call(fref, &[vv, iv]);
                     b.inst_results(inst)[0]
@@ -5681,14 +5633,14 @@ fn lower_prim<M: cranelift_module::Module>(
                 }
                 BuiltinKind::Spawn => match args.len() {
                     1 => {
-                        let cv = tagged_get(env, var_reprs, b, jmod, runtime, args[0].0);
+                        let cv = tagged_get(var_env, b, jmod, runtime, args[0].0);
                         let fref = jmod.declare_func_in_func(runtime.spawn_id, b.func);
                         let inst = b.ins().call(fref, &[cv]);
                         b.inst_results(inst)[0]
                     }
                     2 => {
-                        let cv = tagged_get(env, var_reprs, b, jmod, runtime, args[0].0);
-                        let mv = tagged_get(env, var_reprs, b, jmod, runtime, args[1].0);
+                        let cv = tagged_get(var_env, b, jmod, runtime, args[0].0);
+                        let mv = tagged_get(var_env, b, jmod, runtime, args[1].0);
                         let fref = jmod.declare_func_in_func(runtime.spawn_opt_id, b.func);
                         let inst = b.ins().call(fref, &[cv, mv]);
                         b.inst_results(inst)[0]
@@ -5712,9 +5664,9 @@ fn lower_prim<M: cranelift_module::Module>(
                         return Err(CodegenError::new("send/2 expected"));
                     }
                     let pv =
-                        tagged_get(env, var_reprs, b, jmod, runtime,args[0].0);
+                        tagged_get(var_env, b, jmod, runtime,args[0].0);
                     let mv =
-                        tagged_get(env, var_reprs, b, jmod, runtime,args[1].0);
+                        tagged_get(var_env, b, jmod, runtime,args[1].0);
                     let fref = jmod.declare_func_in_func(runtime.send_id, b.func);
                     let inst = b.ins().call(fref, &[pv, mv]);
                     b.inst_results(inst)[0]
@@ -5722,8 +5674,8 @@ fn lower_prim<M: cranelift_module::Module>(
             }
         }
         Prim::ListCons(h, t) => {
-            let hv = tagged_get(env, var_reprs, b, jmod, runtime,h.0);
-            let tv = tagged_get(env, var_reprs, b, jmod, runtime,t.0);
+            let hv = tagged_get(var_env, b, jmod, runtime,h.0);
+            let tv = tagged_get(var_env, b, jmod, runtime,t.0);
             let fref = jmod.declare_func_in_func(runtime.alloc_cons_id, b.func);
             let inst = b.ins().call(fref, &[hv, tv]);
             b.inst_results(inst)[0]
@@ -5732,15 +5684,15 @@ fn lower_prim<M: cranelift_module::Module>(
             // `c` is FzValue ptr-tagged (tag bits = 000), so `c` is the raw
             // ListCons base address. head sits at byte offset 16 (after
             // HeapHeader); load it as i64 (raw FzValue bits).
-            let cv = tagged_get(env, var_reprs, b, jmod, runtime,c.0);
+            let cv = tagged_get(var_env, b, jmod, runtime,c.0);
             b.ins().load(types::I64, MemFlags::trusted(), cv, 16)
         }
         Prim::ListTail(c) => {
-            let cv = tagged_get(env, var_reprs, b, jmod, runtime,c.0);
+            let cv = tagged_get(var_env, b, jmod, runtime,c.0);
             b.ins().load(types::I64, MemFlags::trusted(), cv, 24)
         }
         Prim::ListIsNil(c) => {
-            let cv = tagged_get(env, var_reprs, b, jmod, runtime,c.0);
+            let cv = tagged_get(var_env, b, jmod, runtime,c.0);
             let nil_v = b.ins().iconst(types::I64, NIL_BITS);
             let cmp = b.ins().icmp(IntCC::Equal, cv, nil_v);
             bool_to_fz(b, cmp)
@@ -5748,12 +5700,12 @@ fn lower_prim<M: cranelift_module::Module>(
         Prim::MakeList(elems, tail) => {
             // Fold right: cons(e0, cons(e1, ..., cons(eN, tail-or-nil))).
             let mut acc = match tail {
-                Some(t) => tagged_get(env, var_reprs, b, jmod, runtime,t.0),
+                Some(t) => tagged_get(var_env, b, jmod, runtime,t.0),
                 None => b.ins().iconst(types::I64, NIL_BITS),
             };
             let fref = jmod.declare_func_in_func(runtime.alloc_cons_id, b.func);
             for e in elems.iter().rev() {
-                let ev = tagged_get(env, var_reprs, b, jmod, runtime,e.0);
+                let ev = tagged_get(var_env, b, jmod, runtime,e.0);
                 let inst = b.ins().call(fref, &[ev, acc]);
                 acc = b.inst_results(inst)[0];
             }
@@ -5772,14 +5724,14 @@ fn lower_prim<M: cranelift_module::Module>(
             let inst = b.ins().call(fref, &[sid]);
             let p = b.inst_results(inst)[0];
             for (i, e) in elems.iter().enumerate() {
-                let ev = tagged_get(env, var_reprs, b, jmod, runtime,e.0);
+                let ev = tagged_get(var_env, b, jmod, runtime,e.0);
                 let off = HEADER_SIZE + (i as i32) * SLOT_BYTES;
                 b.ins().store(MemFlags::trusted(), ev, p, off);
             }
             p
         }
         Prim::TupleField(c, idx) => {
-            let cv = tagged_get(env, var_reprs, b, jmod, runtime,c.0);
+            let cv = tagged_get(var_env, b, jmod, runtime,c.0);
             let off = HEADER_SIZE + (*idx as i32) * SLOT_BYTES;
             b.ins().load(types::I64, MemFlags::trusted(), cv, off)
         }
@@ -5793,7 +5745,7 @@ fn lower_prim<M: cranelift_module::Module>(
             let inst = b.ins().call(fref, &[sid]);
             let p = b.inst_results(inst)[0];
             for (i, fv) in fields.iter().enumerate() {
-                let v = tagged_get(env, var_reprs, b, jmod, runtime,fv.0);
+                let v = tagged_get(var_env, b, jmod, runtime,fv.0);
                 let off = HEADER_SIZE + (i as i32) * SLOT_BYTES;
                 b.ins().store(MemFlags::trusted(), v, p, off);
             }
@@ -5805,7 +5757,7 @@ fn lower_prim<M: cranelift_module::Module>(
             let write = jmod.declare_func_in_func(runtime.bs_write_id, b.func);
             for f in fields {
                 let value_v =
-                    tagged_get(env, var_reprs, b, jmod, runtime,f.value.0);
+                    tagged_get(var_env, b, jmod, runtime,f.value.0);
                 let ty_tag = b.ins().iconst(types::I32, encode_bit_type(f.ty) as i64);
                 let unit = b
                     .ins()
@@ -5820,7 +5772,7 @@ fn lower_prim<M: cranelift_module::Module>(
                     ),
                     Some(crate::fz_ir::BitSizeIr::Var(v)) => {
                         let raw =
-                            tagged_get(env, var_reprs, b, jmod, runtime,v.0);
+                            tagged_get(var_env, b, jmod, runtime,v.0);
                         // Boxed int -> raw int -> truncate to i32.
                         let unb = unbox_int(b, raw);
                         let truncated = b.ins().ireduce(types::I32, unb);
@@ -5845,7 +5797,7 @@ fn lower_prim<M: cranelift_module::Module>(
             b.inst_results(inst)[0]
         }
         Prim::BitReaderInit(v) => {
-            let vv = tagged_get(env, var_reprs, b, jmod, runtime,v.0);
+            let vv = tagged_get(var_env, b, jmod, runtime,v.0);
             let fref = jmod.declare_func_in_func(runtime.bs_reader_init_id, b.func);
             let inst = b.ins().call(fref, &[vv]);
             b.inst_results(inst)[0]
@@ -5859,7 +5811,7 @@ fn lower_prim<M: cranelift_module::Module>(
             unit,
             is_last,
         } => {
-            let rv = tagged_get(env, var_reprs, b, jmod, runtime,reader.0);
+            let rv = tagged_get(var_env, b, jmod, runtime,reader.0);
             let ty_tag = b.ins().iconst(types::I32, encode_bit_type(*ty) as i64);
             let unit_v = b
                 .ins()
@@ -5874,7 +5826,7 @@ fn lower_prim<M: cranelift_module::Module>(
                     b.ins().iconst(types::I32, *n as i64),
                 ),
                 Some(crate::fz_ir::BitSizeIr::Var(v)) => {
-                    let raw = tagged_get(env, var_reprs, b, jmod, runtime,v.0);
+                    let raw = tagged_get(var_env, b, jmod, runtime,v.0);
                     let unb = unbox_int(b, raw);
                     let truncated = b.ins().ireduce(types::I32, unb);
                     (b.ins().iconst(types::I32, 1), truncated)
@@ -5899,7 +5851,7 @@ fn lower_prim<M: cranelift_module::Module>(
         Prim::BitReaderDone(r) => {
             // Reader tuple shape: [bs_ptr@16, bit_len_boxed@24, pos_boxed@32].
             // Compare bit_len == pos; return tagged bool.
-            let rv = tagged_get(env, var_reprs, b, jmod, runtime,r.0);
+            let rv = tagged_get(var_env, b, jmod, runtime,r.0);
             let bit_len_b = b.ins().load(types::I64, MemFlags::trusted(), rv, 24);
             let pos_b = b.ins().load(types::I64, MemFlags::trusted(), rv, 32);
             let cmp = b.ins().icmp(IntCC::Equal, bit_len_b, pos_b);
@@ -5910,8 +5862,8 @@ fn lower_prim<M: cranelift_module::Module>(
             b.ins().call(begin, &[]);
             let push = jmod.declare_func_in_func(runtime.map_push_id, b.func);
             for (k, v) in entries {
-                let kv = tagged_get(env, var_reprs, b, jmod, runtime,k.0);
-                let vv = tagged_get(env, var_reprs, b, jmod, runtime,v.0);
+                let kv = tagged_get(var_env, b, jmod, runtime,k.0);
+                let vv = tagged_get(var_env, b, jmod, runtime,v.0);
                 b.ins().call(push, &[kv, vv]);
             }
             let fin = jmod.declare_func_in_func(runtime.map_finalize_id, b.func);
@@ -5919,13 +5871,13 @@ fn lower_prim<M: cranelift_module::Module>(
             b.inst_results(inst)[0]
         }
         Prim::MapUpdate(base, entries) => {
-            let bv = tagged_get(env, var_reprs, b, jmod, runtime,base.0);
+            let bv = tagged_get(var_env, b, jmod, runtime,base.0);
             let cln = jmod.declare_func_in_func(runtime.map_clone_id, b.func);
             b.ins().call(cln, &[bv]);
             let push = jmod.declare_func_in_func(runtime.map_push_id, b.func);
             for (k, v) in entries {
-                let kv = tagged_get(env, var_reprs, b, jmod, runtime,k.0);
-                let vv = tagged_get(env, var_reprs, b, jmod, runtime,v.0);
+                let kv = tagged_get(var_env, b, jmod, runtime,k.0);
+                let vv = tagged_get(var_env, b, jmod, runtime,v.0);
                 b.ins().call(push, &[kv, vv]);
             }
             let fin = jmod.declare_func_in_func(runtime.map_finalize_id, b.func);
@@ -5933,8 +5885,8 @@ fn lower_prim<M: cranelift_module::Module>(
             b.inst_results(inst)[0]
         }
         Prim::MapGet(m, k) => {
-            let mv = tagged_get(env, var_reprs, b, jmod, runtime,m.0);
-            let kv = tagged_get(env, var_reprs, b, jmod, runtime,k.0);
+            let mv = tagged_get(var_env, b, jmod, runtime,m.0);
+            let kv = tagged_get(var_env, b, jmod, runtime,k.0);
             let fref = jmod.declare_func_in_func(runtime.map_get_id, b.func);
             let inst = b.ins().call(fref, &[mv, kv]);
             b.inst_results(inst)[0]
@@ -6022,10 +5974,9 @@ fn lower_prim<M: cranelift_module::Module>(
             // typed-capture seam for cont closures.
             let body_param_reprs = &param_reprs[cl_sid as usize];
             for (i, cv) in captured.iter().enumerate() {
-                let from = var_reprs.get(&cv.0).copied().unwrap_or(ArgRepr::Tagged);
+                let vb = var_env.get(&cv.0).expect("MakeClosure: captured var unbound");
                 let to = body_param_reprs[i];
-                let raw = *env.get(&cv.0).expect("MakeClosure: captured var unbound");
-                let val = coerce_to(b, jmod, runtime, raw, from, to);
+                let val = coerce_to(b, jmod, runtime, vb.value, vb.repr, to);
                 let off = HEADER_SIZE + SLOT_BYTES + (i as i32) * SLOT_BYTES;
                 b.ins().store(MemFlags::trusted(), val, cl_ptr, off);
             }
@@ -6047,7 +5998,7 @@ fn lower_prim<M: cranelift_module::Module>(
             b.ins().call(begin, &[kt]);
             let push = jmod.declare_func_in_func(runtime.vec_push_id, b.func);
             for ev in els {
-                let v = tagged_get(env, var_reprs, b, jmod, runtime,ev.0);
+                let v = tagged_get(var_env, b, jmod, runtime,ev.0);
                 b.ins().call(push, &[v]);
             }
             let fin = jmod.declare_func_in_func(runtime.vec_finalize_id, b.func);
@@ -6064,47 +6015,50 @@ fn unbox_int(b: &mut FunctionBuilder<'_>, v: ir::Value) -> ir::Value {
     b.ins().sshr_imm(v, 3)
 }
 
+#[derive(Clone, Copy)]
+struct VarBinding {
+    value: ir::Value,
+    repr: ArgRepr,
+}
+
 /// Per-fn env: SSA value table for every Var in scope. For most Vars the
-/// value is a tagged FzValue (i64). For Vars in `var_reprs` with RawF64
-/// it is a raw f64; RawInt is a raw i64 (the unshifted int payload). These
-/// exist so arithmetic ops can chain without tag/untag round trips.
+/// value is a tagged FzValue (i64). For Vars with RawF64 repr it is a raw
+/// f64; RawInt is a raw i64 (the unshifted int payload). These exist so
+/// arithmetic ops can chain without tag/untag round trips.
 ///
 /// `tagged_get` is what every boundary site wants — it boxes raw vars lazily.
 /// `as_raw_f64`/`as_raw_i64` are for the typed fast paths in `lower_prim`.
 fn tagged_get<M: cranelift_module::Module>(
-    env: &HashMap<u32, ir::Value>,
-    var_reprs: &HashMap<u32, ArgRepr>,
+    var_env: &HashMap<u32, VarBinding>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
     runtime: &RuntimeRefs,
     v: u32,
 ) -> ir::Value {
-    let val = *env.get(&v).expect("unbound var");
-    match var_reprs.get(&v).copied().unwrap_or(ArgRepr::Tagged) {
-        ArgRepr::RawF64 => box_float_native(b, jmod, runtime, val),
-        ArgRepr::RawInt => box_int(b, val),
-        ArgRepr::Tagged => val,
+    let vb = var_env.get(&v).expect("unbound var");
+    match vb.repr {
+        ArgRepr::RawF64 => box_float_native(b, jmod, runtime, vb.value),
+        ArgRepr::RawInt => box_int(b, vb.value),
+        ArgRepr::Tagged => vb.value,
     }
 }
 
 fn as_raw_f64(
-    env: &HashMap<u32, ir::Value>,
-    var_reprs: &HashMap<u32, ArgRepr>,
+    var_env: &HashMap<u32, VarBinding>,
     b: &mut FunctionBuilder<'_>,
     v: u32,
 ) -> ir::Value {
-    let val = *env.get(&v).expect("unbound var");
-    if var_reprs.get(&v) == Some(&ArgRepr::RawF64) { val } else { unbox_float(b, val) }
+    let vb = var_env.get(&v).expect("unbound var");
+    if vb.repr == ArgRepr::RawF64 { vb.value } else { unbox_float(b, vb.value) }
 }
 
 fn as_raw_i64(
-    env: &HashMap<u32, ir::Value>,
-    var_reprs: &HashMap<u32, ArgRepr>,
+    var_env: &HashMap<u32, VarBinding>,
     b: &mut FunctionBuilder<'_>,
     v: u32,
 ) -> ir::Value {
-    let val = *env.get(&v).expect("unbound var");
-    if var_reprs.get(&v) == Some(&ArgRepr::RawInt) { val } else { unbox_int(b, val) }
+    let vb = var_env.get(&v).expect("unbound var");
+    if vb.repr == ArgRepr::RawInt { vb.value } else { unbox_int(b, vb.value) }
 }
 
 /// Emit `((a^1) | (b^1)) & 7 == 0` — true iff both operands are Tag::Int
