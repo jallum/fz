@@ -3731,10 +3731,7 @@ fn emit_terminator<M: cranelift_module::Module>(
                 // self at runtime, so a singleton with no captures is
                 // valid for any direct-call site.
                 if closure_n_captures.contains_key(callee) {
-                    let fref = jmod.declare_func_in_func(runtime.get_static_closure_id, b.func);
-                    let sid_v = b.ins().iconst(types::I32, callee.0 as i64);
-                    let inst = b.ins().call(fref, &[sid_v]);
-                    native_args.push(b.inst_results(inst)[0]);
+                    native_args.push(fetch_static_closure(jmod, b, runtime, callee.0));
                 }
                 // fz-cps.1.a: trailing cont arg per §2.1. Native
                 // caller forwards its cont SSA; uniform caller passes
@@ -3899,10 +3896,7 @@ fn emit_terminator<M: cranelift_module::Module>(
                 // the Term::Call path; same zero-cap invariant lets
                 // any singleton serve as self (body ignores it).
                 if closure_n_captures.contains_key(callee) {
-                    let fref = jmod.declare_func_in_func(runtime.get_static_closure_id, b.func);
-                    let sid_v = b.ins().iconst(types::I32, callee.0 as i64);
-                    let inst = b.ins().call(fref, &[sid_v]);
-                    native_args.push(b.inst_results(inst)[0]);
+                    native_args.push(fetch_static_closure(jmod, b, runtime, callee.0));
                 }
                 // fz-cps.1.a: trailing cont arg per §2.1. fz-cps.1.11:
                 // build halt-cont closure inline when uniform-tier
@@ -5672,10 +5666,7 @@ fn lower_prim<M: cranelift_module::Module>(
             // site. fz-cps.1.8 — singleton's +16 holds the body's
             // func_addr (closure-target sig). docs/cps-in-clif.md §8.2.
             if captured.is_empty() {
-                let fref = jmod.declare_func_in_func(runtime.get_static_closure_id, b.func);
-                let sid_v = b.ins().iconst(types::I32, cl_sid as i64);
-                let inst = b.ins().call(fref, &[sid_v]);
-                return Ok(LowerOut::Tagged(b.inst_results(inst)[0]));
+                return Ok(LowerOut::Tagged(fetch_static_closure(jmod, b, runtime, cl_sid)));
             }
             // fz-cps.1.8 — non-zero captures: alloc closure heap object,
             // write body's func_addr at +16 (no stub), captures at +24+i*8.
@@ -5875,6 +5866,18 @@ fn box_int(b: &mut FunctionBuilder<'_>, raw: ir::Value) -> ir::Value {
 /// fz-ul4.27.13 — Coerce a Cranelift value between ArgReprs. `RawInt` ↔
 /// `RawF64` direct conversion is intentionally unsupported (no Descr admits
 /// both; if it surfaces, the typer or call-site narrowing is wrong).
+fn fetch_static_closure<M: cranelift_module::Module>(
+    jmod: &mut M,
+    b: &mut FunctionBuilder<'_>,
+    runtime: &RuntimeRefs,
+    spec_id: u32,
+) -> ir::Value {
+    let fref = jmod.declare_func_in_func(runtime.get_static_closure_id, b.func);
+    let sid_v = b.ins().iconst(types::I32, spec_id as i64);
+    let inst = b.ins().call(fref, &[sid_v]);
+    b.inst_results(inst)[0]
+}
+
 fn coerce_call_args<M: cranelift_module::Module>(
     args: &[crate::fz_ir::Var],
     callee_param_reprs: &[ArgRepr],
