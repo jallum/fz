@@ -166,11 +166,10 @@ pub extern "C" fn fz_aot_register_static_closure(
     process.init_static_closures(&[(cl_sid, fn_id, code_addr, halt_kind)]);
 }
 
-/// Spawn hook (fz-siu.6.2). Allocates a child Process, deep-copies the
-/// closure into its heap, then dispatches `fz_spawn_entry` to run the
-/// child synchronously to halt. The child may itself spawn / send /
-/// receive; receive on an empty mailbox parks via fz_receive_park,
-/// which under eager-sync means deadlock — aborted by fz_aot_run_main.
+/// Spawn hook (fz-sched.2). Allocates a child Process, deep-copies the
+/// closure into its heap, sets pending_closure_entry, and enqueues the
+/// child — returning immediately to the caller. The run-queue loop in
+/// fz_aot_run_main drives the child when the parent yields or halts.
 extern "C" fn aot_spawn_hook(closure_bits: u64) -> u32 {
     let pid = AOT_NEXT_PID.with(|c| {
         let p = c.get();
@@ -189,9 +188,6 @@ extern "C" fn aot_spawn_hook(closure_bits: u64) -> u32 {
     child.pid = pid;
     child.atom_names = parent.atom_names.clone();
     child.init_halt_cont_singletons(halt_cont_body_addrs);
-    // Share parent's static-closure singleton pointers. Their backing
-    // buffers (Box<[u64;3]>) live in `parent.static_closure_bufs` and
-    // outlive every child under eager-sync.
     child.static_closures = static_closures;
 
     // Deep-copy the closure into the child's heap.
@@ -206,28 +202,13 @@ extern "C" fn aot_spawn_hook(closure_bits: u64) -> u32 {
         .unbox_ptr()
         .expect("aot_spawn_hook: closure must be a heap ptr");
 
-    let child_ptr = AOT_TASKS.with(|c| {
-        let mut t = c.borrow_mut();
-        t.insert(pid, child);
-        t.get_mut(&pid).map(|b| b.as_mut() as *mut Process).unwrap()
-    });
+    // Store the entry point and enqueue — do not run now.
+    child.pending_closure_entry = copied_ptr as *mut u8;
+    child.state = ProcessState::Ready;
 
-    // Dispatch via fz_spawn_entry under the child's CURRENT_PROCESS.
-    let prev = CURRENT_PROCESS.with(|c| c.replace(child_ptr));
-    let spawn_entry_addr = AOT_SPAWN_ENTRY.with(|c| c.get());
-    assert!(
-        !spawn_entry_addr.is_null(),
-        "aot_spawn_hook: spawn_entry not set"
-    );
-    type SpawnEntry = extern "C" fn(u64) -> i64;
-    let f: SpawnEntry = unsafe { std::mem::transmute(spawn_entry_addr) };
-    let _ = f(copied_ptr as u64);
+    AOT_TASKS.with(|c| c.borrow_mut().insert(pid, child));
+    AOT_RUN_QUEUE.with(|q| q.borrow_mut().push_back(pid));
 
-    // Drain any parked-then-Ready chain on the child (e.g., self-send +
-    // receive). Mirrors fz_aot_run_main's loop below at the child scope.
-    drain_parked_chain(child_ptr);
-
-    CURRENT_PROCESS.with(|c| c.set(prev));
     pid
 }
 
@@ -236,51 +217,33 @@ extern "C" fn aot_spawn_opt_hook(closure_bits: u64, _min_heap_size: u32) -> u32 
     aot_spawn_hook(closure_bits)
 }
 
-/// Send hook (fz-siu.6.2). Pushes a message into the receiver's mailbox.
-/// Receiver pid must be registered in AOT_TASKS (parent is pid 1; spawn
-/// allocates fresh pids).
+/// Send hook (fz-sched.2). Pushes a message into the receiver's mailbox.
+/// If the receiver was Blocked on receive, flips it to Ready and enqueues
+/// it — matching the JIT's send_via_current_runtime semantics.
 extern "C" fn aot_send_hook(receiver_pid: u32, msg_bits: u64) {
-    AOT_TASKS.with(|c| {
+    let wake = AOT_TASKS.with(|c| {
         let mut t = c.borrow_mut();
         match t.get_mut(&receiver_pid) {
-            Some(task) => task.mailbox.push_back(FzValue(msg_bits)),
+            Some(task) => {
+                task.mailbox.push_back(FzValue(msg_bits));
+                if task.state == ProcessState::Blocked {
+                    task.state = ProcessState::Ready;
+                    true
+                } else {
+                    false
+                }
+            }
             None => {
                 eprintln!("aot_send: no task with pid {}", receiver_pid);
                 std::process::abort();
             }
         }
     });
+    if wake {
+        AOT_RUN_QUEUE.with(|q| q.borrow_mut().push_back(receiver_pid));
+    }
 }
 
-/// Drains the parked-then-Ready chain on the given process: while it
-/// has a parked_cont AND a waiting message, dispatch via fz_resume_park.
-/// Each call may set parked_cont again (chained Receives); loop until
-/// either parked_cont clears (halt) or the mailbox is empty (Blocked).
-fn drain_parked_chain(proc: *mut Process) {
-    let resume_park_addr = AOT_RESUME_PARK.with(|c| c.get());
-    if resume_park_addr.is_null() {
-        return;
-    }
-    type ResumePark = extern "C" fn(u64, u64) -> i64;
-    let resume: ResumePark = unsafe { std::mem::transmute(resume_park_addr) };
-    loop {
-        let p = unsafe { &mut *proc };
-        if p.parked_cont.is_null() {
-            return;
-        }
-        let Some(msg) = p.mailbox.pop_front() else {
-            eprintln!(
-                "aot: process pid {} blocked on receive with empty mailbox \
-                 (no preempt-and-resume in AOT eager-sync v1)",
-                p.pid,
-            );
-            std::process::abort();
-        };
-        let cont = p.parked_cont;
-        p.parked_cont = std::ptr::null_mut();
-        let _ = resume(msg.0, cont as u64);
-    }
-}
 
 /// Run main and all spawned processes via the cooperative run-queue, then
 /// tear down AOT scheduler state. Returns 0 on clean completion.
