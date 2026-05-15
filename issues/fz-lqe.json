@@ -4,13 +4,14 @@
     "fz-na1"
   ],
   "blocks": [],
+  "closed_at": "2026-05-15T15:38:04Z",
   "created": "2026-05-15T15:25:30Z",
   "description": "",
   "id": "fz-lqe",
   "labels": [],
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "fz-cg4.4: extract build_cont_closure from Term::Call and Term::CallClosure",
   "type": "task",
-  "updated_at": "2026-05-15T15:25:33Z"
+  "updated_at": "2026-05-15T15:38:04Z"
 }
