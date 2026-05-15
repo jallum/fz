@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-cg2"
+  ],
   "created": "2026-05-15T18:27:56Z",
   "description": "",
   "id": "fz-466",
@@ -10,5 +12,5 @@
   "status": "open",
   "title": "fz-ul4.dce.1: proof test — no dead const operands after singleton fold",
   "type": "task",
-  "updated_at": "2026-05-15T18:27:56Z"
+  "updated_at": "2026-05-15T18:28:01Z"
 }

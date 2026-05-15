@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-466"
+  ],
   "blocks": [],
   "created": "2026-05-15T18:27:57Z",
   "description": "",
@@ -10,5 +12,5 @@
   "status": "open",
   "title": "fz-ul4.dce.5: pipeline wiring + codegen singleton fold deletion",
   "type": "task",
-  "updated_at": "2026-05-15T18:27:57Z"
+  "updated_at": "2026-05-15T18:28:01Z"
 }
