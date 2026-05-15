@@ -3,7 +3,7 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-05-15T11:11:37Z",
-  "description": "",
+  "description": "The closure-literal body-spec resolution pattern appears 4 times identically.\nEach copy: reads a ClosureLit from fn_types, pads/truncates a key, calls spec_registry.resolve.\n\nDUPLICATE SITES (all do the same thing):\n  ~line 2467: inside return-type propagation (Term::TailCallClosure arm)\n  ~line 2588: resolve_tcc_body_sid closure (already a local closure — hoist it)\n  ~line 3027: halt_kind selection analysis\n  ~line 4820: TailCallClosure direct dispatch in compile_fn\n\nEXTRACT to a free function (before compile_with_backend):\n  fn resolve_tcc_body_sid(\n      closure: \u0026Var,\n      args: \u0026[Var],\n      ft: \u0026FnTypes,\n      module: \u0026fz_ir::Module,\n      spec_registry: \u0026SpecRegistry,\n  ) -\u003e Option\u003cu32\u003e {\n      let lit = ft.vars.get(closure)?.as_closure_lit()?;\n      let body_fn = module.fn_by_id(lit.fn_id);\n      let np = body_fn.block(body_fn.entry).params.len();\n      let mut key: Vec\u003cDescr\u003e = lit.captures.clone();\n      for av in args { key.push(ft.vars.get(av).cloned().unwrap_or_else(Descr::any)); }\n      while key.len() \u003c np { key.push(Descr::any()); }\n      key.truncate(np);\n      spec_registry.resolve(lit.fn_id, \u0026key).map(|s| s.0)\n  }\n\nReplace all 4 sites with a call to this function.\nPlace 2 (the existing local closure) is already named resolve_tcc_body_sid — hoist it to module scope\nand replace its 2 internal call sites.\n\ncargo build must produce zero warnings. All tests must pass.",
   "id": "fz-4n9.3",
   "labels": [],
   "parent": "fz-4n9",
@@ -11,5 +11,5 @@
   "status": "open",
   "title": "fz-cg2.3 extract resolve_tcc_body_sid helper",
   "type": "task",
-  "updated_at": "2026-05-15T11:11:37Z"
+  "updated_at": "2026-05-15T11:12:25Z"
 }
