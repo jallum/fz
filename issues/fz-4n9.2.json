@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-4n9.6"
+  ],
   "created": "2026-05-15T11:11:36Z",
   "description": "",
   "id": "fz-4n9.2",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "fz-cg2.2 remove stub_fn_ids dead parameter",
   "type": "task",
-  "updated_at": "2026-05-15T11:11:36Z"
+  "updated_at": "2026-05-15T11:11:41Z"
 }
