@@ -457,15 +457,16 @@ pub fn type_module(m: &Module) -> ModuleTypes {
 
 /// Drain every pending key into `specs`. For each key not already
 /// present, call `type_fn`, apply accumulated `callsite_fn_consts`,
-/// and insert the resulting `FnTypes`. Returns `true` if any keys
-/// were drained (even if all were already registered — this is the
-/// signal callers use to determine whether another round is needed).
+/// and insert the resulting `FnTypes`. Returns the newly-registered
+/// `(FnId, key)` pairs — specs that did not exist before this call.
+/// An empty return means nothing new was registered (pending was
+/// already empty or all drained keys were already in specs).
 fn drain_and_register(
     pending: &mut HashMap<FnId, std::collections::HashSet<Vec<Descr>>>,
     specs: &mut HashMap<(FnId, Vec<Descr>), FnTypes>,
     m: &Module,
     callsite_fn_consts: &mut HashMap<(FnId, Vec<Descr>), Vec<Option<FnId>>>,
-) -> bool {
+) -> Vec<(FnId, Vec<Descr>)> {
     let to_process: Vec<(FnId, Vec<Descr>)> = pending
         .iter_mut()
         .flat_map(|(fid, keys)| {
@@ -473,7 +474,7 @@ fn drain_and_register(
             v.into_iter().map(move |k| (*fid, k))
         })
         .collect();
-    let drained_anything = !to_process.is_empty();
+    let mut newly_registered = Vec::new();
     for (fid, key) in to_process {
         let Some(&j) = m.fn_idx.get(&fid) else {
             continue;
@@ -490,10 +491,11 @@ fn drain_and_register(
                     }
                 }
             }
-            specs.insert(entry_key, ft);
+            specs.insert(entry_key.clone(), ft);
+            newly_registered.push(entry_key);
         }
     }
-    drained_anything
+    newly_registered
 }
 
 fn type_module_pass(
@@ -602,13 +604,15 @@ fn type_module_pass(
     // Cap iterations as a safety bound; in practice convergence is fast
     // since `push_key` filters keys already in specs and pending is a
     // HashSet (duplicates collapse).
-    for _ in 0..64 {
-        let drained_anything =
-            drain_and_register(&mut pending, &mut specs, m, &mut callsite_fn_consts);
-
-        // Re-walk every registered spec to find new pending keys.
-        let snapshot: Vec<(FnId, Vec<Descr>)> = specs.keys().cloned().collect();
-        for (fid, key) in &snapshot {
+    // Worklist: walk only newly-registered specs each round instead of
+    // re-walking all specs. Terminates when drain produces no new registrations.
+    let mut worklist =
+        drain_and_register(&mut pending, &mut specs, m, &mut callsite_fn_consts);
+    loop {
+        if worklist.is_empty() {
+            break;
+        }
+        for (fid, key) in &worklist {
             let Some(&j) = m.fn_idx.get(fid) else {
                 continue;
             };
@@ -626,11 +630,7 @@ fn type_module_pass(
                 &mut callsite_fn_consts,
             );
         }
-
-        let pending_empty = pending.values().all(|s| s.is_empty());
-        if !drained_anything && pending_empty {
-            break;
-        }
+        worklist = drain_and_register(&mut pending, &mut specs, m, &mut callsite_fn_consts);
     }
 
     // fz-vw4.5b — phase 2: MakeClosure-side any-key registration.
@@ -689,8 +689,9 @@ fn type_module_pass(
         // Drain pending → register new specs (no further walking
         // beyond MakeClosure sweep; direct callsites of these new
         // any-key bodies will be discovered when we loop).
-        let drained_anything =
+        let new_specs =
             drain_and_register(&mut pending, &mut specs, m, &mut callsite_fn_consts);
+        let drained_anything = !new_specs.is_empty();
 
         // Re-run the phase-1 closure-to-fixpoint on the new specs so
         // direct callsites inside the newly-registered any-key
@@ -715,7 +716,9 @@ fn type_module_pass(
                     &mut callsite_fn_consts,
                 );
             }
-            if !drain_and_register(&mut pending, &mut specs, m, &mut callsite_fn_consts) {
+            if drain_and_register(&mut pending, &mut specs, m, &mut callsite_fn_consts)
+                .is_empty()
+            {
                 break;
             }
         }
