@@ -4,13 +4,14 @@
   "blocks": [
     "fz-cg2"
   ],
+  "closed_at": "2026-05-15T18:48:42Z",
   "created": "2026-05-15T18:27:57Z",
   "description": "",
   "id": "fz-adc",
   "labels": [],
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "fz-ul4.dce.4: src/ir_dce.rs — dead stmt elimination + unit tests",
   "type": "task",
-  "updated_at": "2026-05-15T18:28:01Z"
+  "updated_at": "2026-05-15T18:48:42Z"
 }
