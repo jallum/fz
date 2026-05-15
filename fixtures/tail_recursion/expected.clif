@@ -37,7 +37,7 @@ function u0:0(i64, i64, i64) -> i64 tail {
 
 block1:
     v3 = iconst.i64 0    ;; v3 :: 0
-    v4 = iconst.i64 19    ;; v4 :: bool
+    v4 = iconst.i64 19    ;; v4 :: :false
     v5 = iconst.i64 3
     v6 = iconst.i64 19
     v7 = icmp ne v4, v5  ; v4 = 19, v5 = 3

@@ -17,7 +17,7 @@
 ;     Var(12) :: nil
 ;     Var(13) :: 1.0
 ;     Var(14) :: 2.0
-;     Var(15) :: bool
+;     Var(15) :: :true
 ;     Var(16) :: nil
 ;   exits:
 ;     blk0 Return Var(16)    :: nil

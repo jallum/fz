@@ -187,6 +187,11 @@ pub struct FnTypes {
     /// known-target `CallClosure → Call`. `Descr` deliberately carries
     /// no FnId identity; this map lives alongside it.
     pub fn_constants: HashMap<Var, FnId>,
+    /// Blocks provably reachable from the entry under the inferred types.
+    /// If terminators whose condition is a singleton bool prune the dead
+    /// branch. Used by `compute_effective_returns` to ignore returns that
+    /// can never execute.
+    pub reachable_blocks: HashSet<BlockId>,
 }
 
 /// Per-module type information.
@@ -1231,10 +1236,48 @@ pub fn type_fn(f: &FnIr, m: &Module, entry_param_types: Option<&[Descr]>) -> FnT
         }
     }
 
+    // fz-1pq.3 — post-convergence reachability pass. Worklist from
+    // entry; at If terminators, use the post-stmt env (stmts may define
+    // the condition var) to prune branches whose condition is a singleton
+    // boolean (folded by compare_result).
+    let mut reachable_blocks: HashSet<BlockId> = HashSet::new();
+    let mut worklist: Vec<BlockId> = vec![f.entry];
+    while let Some(bid) = worklist.pop() {
+        if !reachable_blocks.insert(bid) {
+            continue;
+        }
+        let b = f.block(bid);
+        match &b.terminator {
+            Term::Goto(target, _) => worklist.push(*target),
+            Term::If(cond, then_b, else_b) => {
+                // Re-evaluate stmts to get the env at the terminator.
+                let mut env = block_envs[&bid].clone();
+                for stmt in &b.stmts {
+                    let Stmt::Let(v, prim) = stmt;
+                    env.insert(*v, type_prim(prim, &env, m));
+                }
+                let ct = env.get(cond).cloned().unwrap_or_else(Descr::any);
+                // Use is_subtype to check provable branch deadness.
+                // `ct ⊆ atom_lit("true")` means ct can ONLY be true →
+                // else-branch dead. `ct ⊆ atom_lit("false")` → then dead.
+                // bool_t()/any()/etc. are NOT subtypes of either singleton,
+                // so both branches remain reachable.
+                if !ct.is_subtype(&Descr::atom_lit("false")) {
+                    worklist.push(*then_b);
+                }
+                if !ct.is_subtype(&Descr::atom_lit("true")) {
+                    worklist.push(*else_b);
+                }
+            }
+            _ => {}
+        }
+    }
+
     FnTypes {
         vars,
         block_envs,
         fn_constants,
+        reachable_blocks,
     }
 }
 
@@ -1510,9 +1553,62 @@ fn type_binop(op: BinOp, a: &Descr, b: &Descr) -> Descr {
     use BinOp::*;
     match op {
         Add | Sub | Mul | Div | Mod => numeric_result(a, b),
-        Eq | Neq | Lt | Le | Gt | Ge => Descr::bool_t(),
+        Eq | Neq | Lt | Le | Gt | Ge => compare_result(op, a, b),
         And | Or => a.union(b),
     }
+}
+
+fn int_singleton(d: &Descr) -> Option<i64> {
+    if !d.ints.cofinite && d.ints.set.len() == 1 {
+        d.ints.set.iter().next().copied()
+    } else {
+        None
+    }
+}
+
+fn float_singleton(d: &Descr) -> Option<f64> {
+    if !d.floats.cofinite && d.floats.set.len() == 1 {
+        d.floats.set.iter().next().map(|f| f.get())
+    } else {
+        None
+    }
+}
+
+fn compare_result(op: BinOp, a: &Descr, b: &Descr) -> Descr {
+    use BinOp::*;
+    if let (Some(ai), Some(bi)) = (int_singleton(a), int_singleton(b)) {
+        let result = match op {
+            Eq => ai == bi,
+            Neq => ai != bi,
+            Lt => ai < bi,
+            Le => ai <= bi,
+            Gt => ai > bi,
+            Ge => ai >= bi,
+            _ => return Descr::bool_t(),
+        };
+        return if result {
+            Descr::atom_lit("true")
+        } else {
+            Descr::atom_lit("false")
+        };
+    }
+    if let (Some(af), Some(bf)) = (float_singleton(a), float_singleton(b)) {
+        let result = match op {
+            Eq => af == bf,
+            Neq => af != bf,
+            Lt => af < bf,
+            Le => af <= bf,
+            Gt => af > bf,
+            Ge => af >= bf,
+            _ => return Descr::bool_t(),
+        };
+        return if result {
+            Descr::atom_lit("true")
+        } else {
+            Descr::atom_lit("false")
+        };
+    }
+    Descr::bool_t()
 }
 
 fn numeric_result(a: &Descr, b: &Descr) -> Descr {
@@ -2306,6 +2402,9 @@ pub fn compute_effective_returns(
 
             let mut joined = Descr::none();
             for b in &f.blocks {
+                if !ft.reachable_blocks.contains(&b.id) {
+                    continue;
+                }
                 match &b.terminator {
                     Term::Return(rv) => {
                         let d = ft.vars.get(rv).cloned().unwrap_or_else(Descr::any);

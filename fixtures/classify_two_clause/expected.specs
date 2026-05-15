@@ -1,11 +1,11 @@
 ; spec classify(1) #fn=0
 ;   key:    [0]
-;   return: :other | :zero
+;   return: :zero
 ;   vars:
 ;     Var(0) :: 0
 ;     Var(1) :: :function_clause
 ;     Var(2) :: 0
-;     Var(3) :: bool
+;     Var(3) :: :true
 ;     Var(4) :: :zero
 ;     Var(5) :: :other
 ;   exits:
@@ -17,12 +17,12 @@
 
 ; spec classify(1) #fn=0
 ;   key:    [7]
-;   return: :other | :zero
+;   return: :other
 ;   vars:
 ;     Var(0) :: 7
 ;     Var(1) :: :function_clause
 ;     Var(2) :: 0
-;     Var(3) :: bool
+;     Var(3) :: :false
 ;     Var(4) :: :zero
 ;     Var(5) :: :other
 ;   exits:
@@ -42,27 +42,27 @@
 ;     blk0 Call classify#0(Var(1))
 ;              callee_key=[0]
 ;              cont k_2#2 captured=[]
-;              cont_key=[:other | :zero]
+;              cont_key=[:zero]
 ;     blk1 Halt Var(0)      :: :match_error
 
 ; spec k_2(1) #fn=2
-;   key:    [:other | :zero]
+;   key:    [:zero]
 ;   return: nil
 ;   vars:
-;     Var(0) :: :other | :zero
+;     Var(0) :: :zero
 ;     Var(1) :: nil
 ;     Var(2) :: 7
 ;   exits:
 ;     blk0 Call classify#0(Var(2))
 ;              callee_key=[7]
 ;              cont k_3#3 captured=[]
-;              cont_key=[:other | :zero]
+;              cont_key=[:other]
 
 ; spec k_3(1) #fn=3
-;   key:    [:other | :zero]
+;   key:    [:other]
 ;   return: nil
 ;   vars:
-;     Var(0) :: :other | :zero
+;     Var(0) :: :other
 ;     Var(1) :: nil
 ;   exits:
 ;     blk0 Return Var(1)    :: nil
