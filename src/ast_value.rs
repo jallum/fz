@@ -385,7 +385,6 @@ impl Value {
             Value::Map(_) => "map",
             Value::Closure(_) => "closure",
             Value::Builtin(_) => "builtin",
-            Value::IrClosure(_) => "ir-closure",
         }
     }
 }

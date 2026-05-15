@@ -26,20 +26,6 @@ pub enum Value {
     Closure(Rc<Closure>),
     /// Built-in (host) function.
     Builtin(Rc<Builtin>),
-    /// IR-level closure: a Lambda lowered through fz-IR. Vestigial — the
-    /// legacy fz-IR interpreter (built on Value) was retired in
-    /// fz-ul4.23.5.9 in favor of ir_interp on FzValue. Kept under
-    /// `#[allow(dead_code)]` for one cycle so ast_value's value-tagging
-    /// still compiles; remove once ast_value's IrClosure branch is also
-    /// gone.
-    #[allow(dead_code)]
-    IrClosure(Rc<IrClosure>),
-}
-
-#[derive(Clone)]
-pub struct IrClosure {
-    pub fn_id: u32,
-    pub captured: Vec<Value>,
 }
 
 #[derive(Clone)]
@@ -304,9 +290,6 @@ impl fmt::Display for Value {
                 c.clauses.first().map(|cl| cl.params.len()).unwrap_or(0)
             ),
             Value::Builtin(b) => write!(f, "#builtin<{}/{}>", b.name, b.arity),
-            Value::IrClosure(c) => {
-                write!(f, "#ir_closure<fn{}/cap{}>", c.fn_id, c.captured.len())
-            }
         }
     }
 }

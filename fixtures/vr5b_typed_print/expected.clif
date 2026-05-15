@@ -42,9 +42,9 @@ function u0:0(i64) -> i64 tail {
     sig0 = (i64) -> i64 tail
     sig1 = (i64, i64) -> i64 tail
     sig2 = (i32, i32, i32) -> i64 system_v
-    fn0 = colocated u0:46 sig0
-    fn1 = colocated u0:49 sig1
-    fn2 = u0:31 sig2
+    fn0 = colocated u0:43 sig0
+    fn1 = colocated u0:46 sig1
+    fn2 = u0:28 sig2
 
 block0(v0: i64):
     v1 = iconst.i32 3                   ; @10:3
@@ -63,7 +63,7 @@ block0(v0: i64):
     ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64) -> i64 tail
-    fn0 = colocated u0:47 sig0
+    fn0 = colocated u0:44 sig0
 
     block0(v0: i64, v1: i64):    ;; v0 :: nil
     v2 = load.i64 notrap aligned v1+24  ; @11:3

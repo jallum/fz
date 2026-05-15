@@ -1224,9 +1224,6 @@ impl JitBackend {
         // the arg Descr is monomorphic, skipping the boxing round-trip.
         builder.symbol("fz_print_i64", fz_runtime::fz_print_i64 as *const u8);
         builder.symbol("fz_print_f64", fz_runtime::fz_print_f64 as *const u8);
-        builder.symbol("fz_print_bool", fz_runtime::fz_print_bool as *const u8);
-        builder.symbol("fz_print_atom", fz_runtime::fz_print_atom as *const u8);
-        builder.symbol("fz_print_nil", fz_runtime::fz_print_nil as *const u8);
         builder.symbol("fz_halt", fz_runtime::ir_runtime::fz_halt as *const u8);
         builder.symbol(
             "fz_halt_implicit",
@@ -3275,9 +3272,6 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
     let print_id = decl("fz_print_value", &[types::I64], &[])?;
     let print_i64_id = decl("fz_print_i64", &[types::I64], &[])?;
     let print_f64_id = decl("fz_print_f64", &[types::F64], &[])?;
-    let print_bool_id = decl("fz_print_bool", &[types::I8], &[])?;
-    let print_atom_id = decl("fz_print_atom", &[types::I32], &[])?;
-    let print_nil_id = decl("fz_print_nil", &[], &[])?;
     let halt_id = decl("fz_halt", &[types::I64, types::I64], &[])?;
     let halt_implicit_id = decl("fz_halt_implicit", &[types::I64], &[])?;
     // fz-ul4.27.22.3 — typed halt-implicit variants.
@@ -3413,9 +3407,6 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         print_id,
         print_i64_id,
         print_f64_id,
-        print_bool_id,
-        print_atom_id,
-        print_nil_id,
         halt_id,
         halt_implicit_id,
         halt_implicit_i64_id,
@@ -3464,9 +3455,6 @@ struct RuntimeRefs {
     print_id: FuncId,
     print_i64_id: FuncId,
     print_f64_id: FuncId,
-    print_bool_id: FuncId,
-    print_atom_id: FuncId,
-    print_nil_id: FuncId,
     halt_id: FuncId,
     halt_implicit_id: FuncId,
     halt_implicit_i64_id: FuncId,
