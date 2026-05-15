@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-15T13:38:47Z",
+  "description": "In lower_prim's BinOp arm, the typed float/int fast-path check appears twice in nearly\nidentical form — once for arithmetic (Add/Sub/Mul/Div/Mod) and once for comparison\n(Lt/Le/Gt/Ge). Each follows the same structure:\n\n  if both args are typed float -\u003e early return LowerOut::RawF64(float_op(af, bf))\n  if both args are typed int   -\u003e early return LowerOut::RawI64(int_op(ai, bi))\n  // else fall through to emit_dispatch_binop(...)\n\nADD a helper (private, before lower_prim):\n\n  fn try_typed_binop_fast_path(\n      fn_types: \u0026crate::ir_typer::FnTypes,\n      a: \u0026crate::fz_ir::Var,\n      b_var: \u0026crate::fz_ir::Var,\n      b: \u0026mut FunctionBuilder\u003c'_\u003e,\n      var_env: \u0026HashMap\u003cu32, VarBinding\u003e,\n      float_op: impl FnOnce(\u0026mut FunctionBuilder\u003c'_\u003e, ir::Value, ir::Value) -\u003e ir::Value,\n      int_op: impl FnOnce(\u0026mut FunctionBuilder\u003c'_\u003e, ir::Value, ir::Value) -\u003e ir::Value,\n  ) -\u003e Option\u003cLowerOut\u003e\n\nReturns Some(LowerOut::RawF64/RawI64) if both args have a narrow typed Descr matching the\nfast path; returns None to signal fall-through to emit_dispatch_binop.\n\nUPDATE the arithmetic arm and comparison arm in BinOp to call try_typed_binop_fast_path,\nreplacing the ~8 lines of inline float/int type checking in each arm.\n\nThe Eq/Neq arm has a different structure (disjoint-kind fold, different slow path) and\nshould NOT be changed by this ticket.\n\ncargo build must produce zero warnings. All tests must pass.",
+  "id": "fz-yls.4",
+  "labels": [],
+  "parent": "fz-yls",
+  "priority": 2,
+  "status": "open",
+  "title": "fz-cg3.4 consolidate typed fast-path dispatch in BinOp arm",
+  "type": "task",
+  "updated_at": "2026-05-15T13:38:47Z"
+}
