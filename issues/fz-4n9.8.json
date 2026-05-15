@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-05-15T11:44:17Z",
   "created": "2026-05-15T11:11:37Z",
   "description": "SpecRegistry is a self-contained data structure with its own API\n(register, register_any_key_at, resolve, any_key, iter, len).\nIt currently lives buried in ir_codegen.rs. Move it to its own file.\n\nCREATE src/spec_registry.rs containing:\n  - The SpecId type (currently in fz_ir or ir_codegen — check where it lives)\n  - The SpecRegistry struct and its full impl block\n  - All imports it needs\n\nUPDATE src/ir_codegen.rs:\n  - Remove SpecRegistry struct and impl\n  - Add: use crate::spec_registry::{SpecRegistry, SpecId};  (or mod spec_registry; pub use ...)\n\nUPDATE src/main.rs or lib root:\n  - Add mod spec_registry; if needed\n\nSpecId location: grep for 'pub struct SpecId' to find its current home before moving.\nIf SpecId is in fz_ir.rs, leave it there and import from both files.\n\ncargo build must produce zero warnings. All tests must pass.",
   "id": "fz-4n9.8",
   "labels": [],
   "parent": "fz-4n9",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "fz-cg2.8 extract SpecRegistry into src/spec_registry.rs",
   "type": "task",
-  "updated_at": "2026-05-15T11:41:53Z"
+  "updated_at": "2026-05-15T11:44:17Z"
 }
