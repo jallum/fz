@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-afs.5"
   ],
@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-afs",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "remove per-iteration opaque_consumer_arities recomputation in phase 2",
   "type": "task",
-  "updated_at": "2026-05-15T03:22:48Z"
+  "updated_at": "2026-05-15T03:38:25Z"
 }
