@@ -4,13 +4,14 @@
     "fz-cg2"
   ],
   "blocks": [],
+  "closed_at": "2026-05-15T18:48:42Z",
   "created": "2026-05-15T18:27:57Z",
   "description": "",
   "id": "fz-loz",
   "labels": [],
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "fz-ul4.dce.6: rebless fixtures + proof test GREEN",
   "type": "task",
-  "updated_at": "2026-05-15T18:28:01Z"
+  "updated_at": "2026-05-15T18:48:42Z"
 }
