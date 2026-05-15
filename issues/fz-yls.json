@@ -3,12 +3,12 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-05-15T13:37:50Z",
-  "description": "",
+  "description": "Three-axis structural pass on ir_codegen.rs following fz-cg2:\n\nEXTRACT (large functions still too long)\n- emit_terminator: ~950-line Term match from compile_fn block loop -\u003e free function\n- lower_collection_prim: ~235 lines of collection Prim variants from lower_prim -\u003e free function\n\nCONSOLIDATE (repeated pattern)\n- try_typed_fast_path: typed float/int early-return checks before emit_dispatch_binop\n  repeat identically in BinOp arithmetic and comparison arms\n\nREMOVE (compiler-confirmed dead code)\n- CompiledModule fields never read: module, schemas, types\n- CompiledModule methods never used: static_closure_targets, schema_for, run, run_in, run_internal\n- Free function join_return_descrs (dead outside test cfg)\n- Double #[cfg(test)] at line ~6089\n\nDAG: all four tickets are independent.",
   "id": "fz-yls",
   "labels": [],
   "priority": 2,
   "status": "open",
   "title": "fz-cg3 [EPIC] codegen: extract terminator dispatch, split lower_prim, remove dead code",
   "type": "epic",
-  "updated_at": "2026-05-15T13:37:50Z"
+  "updated_at": "2026-05-15T13:38:01Z"
 }
