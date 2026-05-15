@@ -3439,6 +3439,150 @@ fn span_to_srcloc(s: crate::diag::Span) -> cranelift_codegen::ir::SourceLoc {
     cranelift_codegen::ir::SourceLoc::new(file | offset)
 }
 
+fn build_entry_harness<M: cranelift_module::Module>(
+    b: &mut FunctionBuilder<'_>,
+    _jmod: &mut M,
+    env: &CodegenEnv<'_>,
+    schemas: &[Schema],
+    f: &crate::fz_ir::FnIr,
+    this_spec_id: u32,
+    is_native: bool,
+    is_cont_fn: bool,
+    closure_target_n_caps: Option<usize>,
+    entry_cl: ir::Block,
+) -> (
+    HashMap<u32, VarBinding>,
+    Option<ir::Value>,
+    Option<ir::Value>,
+    Option<ir::Value>,
+) {
+    let param_reprs = env.param_reprs;
+    let entry_blk = f.blocks.iter().find(|blk| blk.id == f.entry).unwrap();
+    let mut var_env: HashMap<u32, VarBinding> = HashMap::new();
+    let my_schema = &schemas[this_spec_id as usize];
+
+    // (frame_ptr, host_ctx) — uniform fns get both from entry block_params;
+    // native fns have no frame and no frame_ptr (None). fz-ul4.27.16: the
+    // 9 downstream consumer sites are each gated on `is_native` or on a
+    // terminator type that natively_callable excludes from native fns,
+    // so unwrapping the Option below is invariant-safe. Any future code
+    // path that violates this surfaces immediately as a panic at codegen.
+    // host_ctx is Some only for uniform fns (always the second block param).
+    // Native fns always have host_ctx = None; they use fz_halt_implicit (TLS).
+    // fz-cps.1.a (fz-siu.1.1): `cont_param` is the trailing i64 in the
+    // native-tier signature. Threaded but unused in .1.1; .1.2+ consume it.
+    let (frame_ptr, host_ctx, cont_param): (
+        Option<ir::Value>,
+        Option<ir::Value>,
+        Option<ir::Value>,
+    ) = if is_native {
+        let params: Vec<ir::Value> = b.block_params(entry_cl).to_vec();
+        let my_param_reprs = &param_reprs[this_spec_id as usize];
+        if is_cont_fn {
+            // fz-cps.1.2 cont fn entry harness per §2.1:
+            //   params[0] = result        → fz_param[0]
+            //   params[1] = self          → closure ptr
+            //   params[2] = host_ctx?     → conditional
+            // Closure layout (§2.2 + cps cutover):
+            //   self+16 : code_ptr
+            //   self+24 : outer_cont       (synthetic; not in fz_param)
+            //   self+32 : user_cap[0]      → fz_param[1]
+            //   self+40 : user_cap[1]      → fz_param[2]
+            //   ...
+            // The cont's "next k" is the synthetic outer_cont at +24.
+            let result_param = &entry_blk.params[0];
+            // fz-ul4.27.22.3: cont sig matches my_param_reprs[0]'s
+            // Cranelift type directly. Producer's Term::Return uses the
+            // same sig (return_reprs[producer_sid] = my_param_reprs[0]
+            // via the typer's cont_input_key seam agreement). No coerce
+            // at entry — value already in body's expected repr.
+            var_env.insert(result_param.0, VarBinding { value: params[0], repr: my_param_reprs[0] });
+            let self_val = params[1];
+            for (i, p) in entry_blk.params.iter().enumerate().skip(1) {
+                // fz_param[i] = user_cap[i-1] at offset 32 + 8*(i-1) (= +24 + 8*i).
+                // fz-ul4.27.21.2 — captures are stored in their per-capture
+                // repr at the builder (param_reprs[cont_sid][i]); load with
+                // the matching Cranelift type. No tag/untag round-trip when
+                // the capture is narrow.
+                let off = HEADER_SIZE + SLOT_BYTES * 2 + ((i - 1) as i32) * SLOT_BYTES;
+                let cl_ty = my_param_reprs[i].cl_type();
+                let v = b.ins().load(cl_ty, MemFlags::trusted(), self_val, off);
+                var_env.insert(p.0, VarBinding { value: v, repr: my_param_reprs[i] });
+            }
+            let host_ctx = None;
+            (None, host_ctx, Some(self_val))
+        } else if let Some(n_caps) = closure_target_n_caps {
+            // fz-cps.1.2 closure-target fn entry harness per §2.1.
+            // fz_params order (set by ir_lower / closure stub convention):
+            //   fz_params[0..n_caps]            = captures      → load self+24+8*k
+            //   fz_params[n_caps..n_caps+n_args] = args         → Cranelift params[0..n_args]
+            // Cranelift sig: `(args..., self, cont) tail`.
+            //   params[0..n_args]  = args
+            //   params[n_args]     = self  (closure ptr)
+            //   params[n_args+1]   = cont  (cont SSA)
+            let n_args = entry_blk.params.len().saturating_sub(n_caps);
+            let self_val = params[n_args];
+            let cont_val = params[n_args + 1];
+            // Captures: fz_params[0..n_caps] ← load from self+24+8*k.
+            for (k, p) in entry_blk.params.iter().enumerate().take(n_caps) {
+                let off = HEADER_SIZE + SLOT_BYTES + (k as i32) * SLOT_BYTES;
+                let cl_ty = my_param_reprs[k].cl_type();
+                let v = b.ins().load(cl_ty, MemFlags::trusted(), self_val, off);
+                var_env.insert(p.0, VarBinding { value: v, repr: my_param_reprs[k] });
+            }
+            // Args: fz_params[n_caps..] ← Cranelift params[0..n_args].
+            for (j, p) in entry_blk.params.iter().enumerate().skip(n_caps) {
+                let cl_idx = j - n_caps;
+                var_env.insert(p.0, VarBinding { value: params[cl_idx], repr: my_param_reprs[j] });
+            }
+            let _ = self_val;
+            (None, None, Some(cont_val))
+        } else {
+            for (i, p) in entry_blk.params.iter().enumerate() {
+                var_env.insert(p.0, VarBinding { value: params[i], repr: my_param_reprs[i] });
+            }
+            let host_ctx_idx = entry_blk.params.len();
+            let (host_ctx, cont_idx) = (None, host_ctx_idx);
+            (None, host_ctx, Some(params[cont_idx]))
+        }
+    } else {
+        let frame_ptr = b.block_params(entry_cl)[0];
+        let host_ctx = b.block_params(entry_cl)[1];
+
+        // Load entry params from frame slots [1..N+1] (offsets 24, 32, ...).
+        // fz-ul4.27.5.2/3: RawF64 slots load as raw f64 (ArgRepr::RawF64);
+        // RawI64 slots load as raw i64 (ArgRepr::RawInt — unshifted payload).
+        // Everything else loads as a tagged FzValue i64 (ArgRepr::Tagged).
+        for (i, p) in entry_blk.params.iter().enumerate() {
+            let off = HEADER_SIZE + ((i as i32 + 1) * SLOT_BYTES);
+            let slot_kind = &my_schema.fields[i + 1].kind;
+            let (value, repr) = match slot_kind {
+                FieldKind::RawF64 => {
+                    let f = b
+                        .ins()
+                        .load(types::F64, MemFlags::trusted(), frame_ptr, off);
+                    (f, ArgRepr::RawF64)
+                }
+                FieldKind::RawI64 => {
+                    let n = b
+                        .ins()
+                        .load(types::I64, MemFlags::trusted(), frame_ptr, off);
+                    (n, ArgRepr::RawInt)
+                }
+                _ => (
+                    b.ins().load(types::I64, MemFlags::trusted(), frame_ptr, off),
+                    ArgRepr::Tagged,
+                ),
+            };
+            var_env.insert(p.0, VarBinding { value, repr });
+        }
+        // fz-cps.1.a: uniform fns do not yet have a cont SSA value; the
+        // cont still lives in slot 0 of `frame_ptr` until fz-siu.1.5.
+        (Some(frame_ptr), Some(host_ctx), None)
+    };
+    (var_env, frame_ptr, host_ctx, cont_param)
+}
+
 fn compile_fn<M: cranelift_module::Module>(
     jmod: &mut M,
     ctx: &mut Context,
@@ -3590,7 +3734,6 @@ fn compile_fn<M: cranelift_module::Module>(
         block_map.insert(blk.id.0, cl_blk);
     }
     let entry_cl = *block_map.get(&f.entry.0).unwrap();
-    let entry_blk = f.blocks.iter().find(|b| b.id == f.entry).unwrap();
     if is_native {
         // fz-ul4.27.6.2.3 / .27.13 — native fn entry: one block_param per
         // fz arg whose type matches my param_reprs[i] (F64 for raw float,
@@ -3641,128 +3784,19 @@ fn compile_fn<M: cranelift_module::Module>(
     b.switch_to_block(entry_cl);
     b.seal_block(entry_cl);
 
-    let mut var_env: HashMap<u32, VarBinding> = HashMap::new();
-    let my_schema = &schemas[this_spec_id as usize];
-
-    // (frame_ptr, host_ctx) — uniform fns get both from entry block_params;
-    // native fns have no frame and no frame_ptr (None). fz-ul4.27.16: the
-    // 9 downstream consumer sites are each gated on `is_native` or on a
-    // terminator type that natively_callable excludes from native fns,
-    // so unwrapping the Option below is invariant-safe. Any future code
-    // path that violates this surfaces immediately as a panic at codegen.
-    // host_ctx is Some only for uniform fns (always the second block param).
-    // Native fns always have host_ctx = None; they use fz_halt_implicit (TLS).
-    // fz-cps.1.a (fz-siu.1.1): `cont_param` is the trailing i64 in the
-    // native-tier signature. Threaded but unused in .1.1; .1.2+ consume it.
-    let (frame_ptr, host_ctx, cont_param): (
-        Option<ir::Value>,
-        Option<ir::Value>,
-        Option<ir::Value>,
-    ) = if is_native {
-        let params: Vec<ir::Value> = b.block_params(entry_cl).to_vec();
-        let my_param_reprs = &param_reprs[this_spec_id as usize];
-        if is_cont_fn {
-            // fz-cps.1.2 cont fn entry harness per §2.1:
-            //   params[0] = result        → fz_param[0]
-            //   params[1] = self          → closure ptr
-            //   params[2] = host_ctx?     → conditional
-            // Closure layout (§2.2 + cps cutover):
-            //   self+16 : code_ptr
-            //   self+24 : outer_cont       (synthetic; not in fz_param)
-            //   self+32 : user_cap[0]      → fz_param[1]
-            //   self+40 : user_cap[1]      → fz_param[2]
-            //   ...
-            // The cont's "next k" is the synthetic outer_cont at +24.
-            let result_param = &entry_blk.params[0];
-            // fz-ul4.27.22.3: cont sig matches my_param_reprs[0]'s
-            // Cranelift type directly. Producer's Term::Return uses the
-            // same sig (return_reprs[producer_sid] = my_param_reprs[0]
-            // via the typer's cont_input_key seam agreement). No coerce
-            // at entry — value already in body's expected repr.
-            var_env.insert(result_param.0, VarBinding { value: params[0], repr: my_param_reprs[0] });
-            let self_val = params[1];
-            for (i, p) in entry_blk.params.iter().enumerate().skip(1) {
-                // fz_param[i] = user_cap[i-1] at offset 32 + 8*(i-1) (= +24 + 8*i).
-                // fz-ul4.27.21.2 — captures are stored in their per-capture
-                // repr at the builder (param_reprs[cont_sid][i]); load with
-                // the matching Cranelift type. No tag/untag round-trip when
-                // the capture is narrow.
-                let off = HEADER_SIZE + SLOT_BYTES * 2 + ((i - 1) as i32) * SLOT_BYTES;
-                let cl_ty = my_param_reprs[i].cl_type();
-                let v = b.ins().load(cl_ty, MemFlags::trusted(), self_val, off);
-                var_env.insert(p.0, VarBinding { value: v, repr: my_param_reprs[i] });
-            }
-            let host_ctx = None;
-            (None, host_ctx, Some(self_val))
-        } else if let Some(n_caps) = closure_target_n_caps {
-            // fz-cps.1.2 closure-target fn entry harness per §2.1.
-            // fz_params order (set by ir_lower / closure stub convention):
-            //   fz_params[0..n_caps]            = captures      → load self+24+8*k
-            //   fz_params[n_caps..n_caps+n_args] = args         → Cranelift params[0..n_args]
-            // Cranelift sig: `(args..., self, cont) tail`.
-            //   params[0..n_args]  = args
-            //   params[n_args]     = self  (closure ptr)
-            //   params[n_args+1]   = cont  (cont SSA)
-            let n_args = entry_blk.params.len().saturating_sub(n_caps);
-            let self_val = params[n_args];
-            let cont_val = params[n_args + 1];
-            // Captures: fz_params[0..n_caps] ← load from self+24+8*k.
-            for (k, p) in entry_blk.params.iter().enumerate().take(n_caps) {
-                let off = HEADER_SIZE + SLOT_BYTES + (k as i32) * SLOT_BYTES;
-                let cl_ty = my_param_reprs[k].cl_type();
-                let v = b.ins().load(cl_ty, MemFlags::trusted(), self_val, off);
-                var_env.insert(p.0, VarBinding { value: v, repr: my_param_reprs[k] });
-            }
-            // Args: fz_params[n_caps..] ← Cranelift params[0..n_args].
-            for (j, p) in entry_blk.params.iter().enumerate().skip(n_caps) {
-                let cl_idx = j - n_caps;
-                var_env.insert(p.0, VarBinding { value: params[cl_idx], repr: my_param_reprs[j] });
-            }
-            let _ = self_val;
-            (None, None, Some(cont_val))
-        } else {
-            for (i, p) in entry_blk.params.iter().enumerate() {
-                var_env.insert(p.0, VarBinding { value: params[i], repr: my_param_reprs[i] });
-            }
-            let host_ctx_idx = entry_blk.params.len();
-            let (host_ctx, cont_idx) = (None, host_ctx_idx);
-            (None, host_ctx, Some(params[cont_idx]))
-        }
-    } else {
-        let frame_ptr = b.block_params(entry_cl)[0];
-        let host_ctx = b.block_params(entry_cl)[1];
-
-        // Load entry params from frame slots [1..N+1] (offsets 24, 32, ...).
-        // fz-ul4.27.5.2/3: RawF64 slots load as raw f64 (ArgRepr::RawF64);
-        // RawI64 slots load as raw i64 (ArgRepr::RawInt — unshifted payload).
-        // Everything else loads as a tagged FzValue i64 (ArgRepr::Tagged).
-        for (i, p) in entry_blk.params.iter().enumerate() {
-            let off = HEADER_SIZE + ((i as i32 + 1) * SLOT_BYTES);
-            let slot_kind = &my_schema.fields[i + 1].kind;
-            let (value, repr) = match slot_kind {
-                FieldKind::RawF64 => {
-                    let f = b
-                        .ins()
-                        .load(types::F64, MemFlags::trusted(), frame_ptr, off);
-                    (f, ArgRepr::RawF64)
-                }
-                FieldKind::RawI64 => {
-                    let n = b
-                        .ins()
-                        .load(types::I64, MemFlags::trusted(), frame_ptr, off);
-                    (n, ArgRepr::RawInt)
-                }
-                _ => (
-                    b.ins().load(types::I64, MemFlags::trusted(), frame_ptr, off),
-                    ArgRepr::Tagged,
-                ),
-            };
-            var_env.insert(p.0, VarBinding { value, repr });
-        }
-        // fz-cps.1.a: uniform fns do not yet have a cont SSA value; the
-        // cont still lives in slot 0 of `frame_ptr` until fz-siu.1.5.
-        (Some(frame_ptr), Some(host_ctx), None)
-    };
+    let (mut var_env, frame_ptr, host_ctx, cont_param) =
+        build_entry_harness(
+            &mut b,
+            jmod,
+            env,
+            schemas,
+            f,
+            this_spec_id,
+            is_native,
+            is_cont_fn,
+            closure_target_n_caps,
+            entry_cl,
+        );
 
     // Walk blocks in declared order with entry first. Unreachable
     // fz_ir blocks (fz-ul4.30) are filtered out — they have no
