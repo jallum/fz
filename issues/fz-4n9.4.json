@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-15T11:11:37Z",
+  "description": "",
+  "id": "fz-4n9.4",
+  "labels": [],
+  "parent": "fz-4n9",
+  "priority": 2,
+  "status": "open",
+  "title": "fz-cg2.4 extract emit_fn_body helper",
+  "type": "task",
+  "updated_at": "2026-05-15T11:11:37Z"
+}
