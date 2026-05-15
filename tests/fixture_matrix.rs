@@ -505,6 +505,37 @@ fn add1_main_cont_seam_has_no_box_unbox_roundtrip() {
     );
 }
 
+/// fz-ojo fz-ul4.rep — after repr-aware Goto coercion lands, inlining
+/// add1 into main should produce zero tag/untag round-trips: the RawInt
+/// arg flows directly through Goto edges without any sshr_imm.
+///
+/// This test is RED until fz-xs2 (rep.2) is implemented.
+#[test]
+fn inlined_goto_edges_have_no_sshr_imm() {
+    let out = Command::new(FZ_BIN)
+        .args([
+            "dump",
+            "fixtures/add1/input.fz",
+            "--emit",
+            "clif",
+            "--fn",
+            "main",
+        ])
+        .output()
+        .expect("spawn fz dump");
+    assert!(out.status.success(), "fz dump exited {}", out.status);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    // Isolate main's CLIF body.
+    let main_start = stdout.find("; fn main").expect("missing main banner");
+    let main_body = &stdout[main_start..];
+    assert!(
+        !main_body.contains("sshr_imm"),
+        "expected zero sshr_imm in inlined main — repr-aware Goto coercion \
+         should pass RawInt args directly without any tag/untag round-trips:\n{}",
+        main_body
+    );
+}
+
 /// fz-ul4.27.16 — native fns must not emit a dead `iconst.i64 0` for a
 /// frame_ptr placeholder. Before .27.16, every native fn's entry began
 /// with a never-read `iconst.i64 0` so the rest of `compile_fn` could
