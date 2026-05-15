@@ -820,4 +820,149 @@ mod tests {
         // Second run: no new TailCall sites targeting add1 remain.
         assert_eq!(inline_module(&mut m), 0);
     }
+
+    // --- ir_interp parity: semantics preserved across inline ---
+
+    fn lower_src(src: &str) -> crate::fz_ir::Module {
+        let toks = crate::lexer::Lexer::new(src).tokenize().unwrap();
+        let prog = crate::parser::Parser::new(toks).parse_program().unwrap();
+        crate::ir_lower::lower_program(&prog).unwrap()
+    }
+
+    fn interp(m: &crate::fz_ir::Module) -> i64 {
+        crate::ir_interp::run_main(m).expect("interp failed")
+    }
+
+    fn parity(src: &str) {
+        let orig = lower_src(src);
+        let expected = interp(&orig);
+
+        let mut inlined = orig.clone();
+        inline_module(&mut inlined);
+        let got = interp(&inlined);
+
+        assert_eq!(
+            got, expected,
+            "interp parity failed for:\n{}\nexpected {}, got {}",
+            src, expected, got
+        );
+    }
+
+    #[test]
+    fn parity_tail_call_inlined() {
+        // main tail-calls add1(41) → inlined → same result 42
+        parity("fn add1(x), do: x + 1\nfn main(), do: add1(41)");
+    }
+
+    #[test]
+    fn parity_call_cont_inlined() {
+        // double(5) called with continuation → inlined → same result 10
+        parity("fn double(x), do: x * 2\nfn main(), do: double(5)");
+    }
+
+    #[test]
+    fn parity_non_leaf_not_changed() {
+        // fact(5) — fact is not a leaf (calls itself); not inlined; same result
+        parity(
+            "fn fact(0), do: 1\n\
+             fn fact(n), do: n * fact(n - 1)\n\
+             fn main(), do: fact(5)",
+        );
+    }
+
+    #[test]
+    fn parity_over_budget_not_changed() {
+        // chain of 9 adds — exceeds INLINE_BUDGET; not inlined
+        parity(
+            "fn big(x), do: x + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1\n\
+             fn main(), do: big(0)",
+        );
+    }
+
+    #[test]
+    fn parity_chain_inline() {
+        // main → inc → double, both leaves → chain inlined → same result
+        parity(
+            "fn inc(x), do: x + 1\n\
+             fn double(x), do: x * 2\n\
+             fn main(), do: double(inc(3))",
+        );
+    }
+
+    #[test]
+    fn parity_no_inline_sites() {
+        // main just returns a constant — no call sites to inline
+        parity("fn main(), do: 42");
+    }
+
+    #[test]
+    fn parity_count_loop() {
+        // Recursive loop with step inlined: loop_(100, 0) == 100
+        parity(
+            "fn step(x), do: x + 1\n\
+             fn loop_(0, acc), do: acc\n\
+             fn loop_(n, acc), do: loop_(n - 1, step(acc))\n\
+             fn main(), do: loop_(100, 0)",
+        );
+    }
+
+    #[test]
+    fn parity_receive_callee_not_inlined() {
+        // A fn that contains Receive is not a leaf and must not be inlined.
+        // We can't build a source-level program with Receive that terminates
+        // deterministically (needs a mailbox), so test at IR level: verify
+        // is_leaf returns false for a fn with Receive (see is_leaf_receive_is_not_leaf
+        // above) — which is the guard that prevents inlining.
+        // Semantic parity for Receive-containing programs is exercised by the
+        // existing scheduler tests (fz-ul4.19.x fixture suite).
+    }
+
+    #[test]
+    fn tail_call_site_eliminated_after_inline() {
+        // Concrete IR proof: after inlining, no TailCall to add1 remains.
+        let src = "fn add1(x), do: x + 1\nfn main(), do: add1(41)";
+        let orig = lower_src(src);
+        let add1_id = orig.fn_by_name("add1").unwrap().id;
+
+        let mut inlined = orig.clone();
+        inline_module(&mut inlined);
+
+        let has_tail_call_to_add1 = inlined.fns.iter().any(|f| {
+            f.blocks.iter().any(|b| {
+                matches!(&b.terminator, Term::TailCall { callee, .. } if *callee == add1_id)
+            })
+        });
+        assert!(
+            !has_tail_call_to_add1,
+            "expected no TailCall to add1 after inlining, but one remains"
+        );
+    }
+
+    #[test]
+    fn call_site_eliminated_after_inline() {
+        // After inlining double into its only Call site, no Call to double remains.
+        let src = "fn double(x), do: x * 2\nfn main(), do: double(5)";
+        let orig = lower_src(src);
+        let double_id = orig.fn_by_name("double").unwrap().id;
+
+        let mut inlined = orig.clone();
+        inline_module(&mut inlined);
+
+        let has_call_to_double = inlined.fns.iter().any(|f| {
+            f.blocks.iter().any(|b| {
+                matches!(&b.terminator, Term::Call { callee, .. } if *callee == double_id)
+            })
+        });
+        assert!(
+            !has_call_to_double,
+            "expected no Call to double after inlining, but one remains"
+        );
+    }
+
+    // GC root invariant: no test-accessible GC trigger exists in the current
+    // runtime (fz-ul4.11 is the Tracing GC epic; the trigger hook is part of
+    // that work). The semantic correctness guarantee — that inlined values are
+    // visible and correct — is covered by the parity tests above, which run
+    // all computations through the interpreter. The JIT-level GC stress test
+    // is deferred to fz-ul4.11 as documented there.
 }

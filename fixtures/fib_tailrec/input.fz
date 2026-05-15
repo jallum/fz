@@ -1,0 +1,10 @@
+fn fib(0, a, _), do: a
+fn fib(1, _, b), do: b
+fn fib(n, a, b), do: fib(n - 1, b, a + b)
+
+fn main() do
+  print(fib(0, 0, 1))
+  print(fib(1, 0, 1))
+  print(fib(10, 0, 1))
+  print(fib(20, 0, 1))
+end

@@ -1,0 +1,14 @@
+fn first_relay() do
+  send(3, receive() + 1)
+end
+
+fn second_relay() do
+  send(1, receive() + 1)
+end
+
+fn main() do
+  spawn(first_relay)
+  spawn(second_relay)
+  send(2, 40)
+  print(receive())
+end

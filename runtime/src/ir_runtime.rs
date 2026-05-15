@@ -265,6 +265,7 @@ pub extern "C" fn fz_receive_attempt(cont_frame_ptr: *mut u8) -> *mut u8 {
 /// halt-cont singleton at task launch.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_alloc_closure(callee_fn_id: u32, captured_count: u32, halt_kind: u32) -> u64 {
+    FRAME_ALLOC_COUNT.with(|c| c.set(c.get() + 1));
     let p = current_process().heap.alloc_closure(
         callee_fn_id,
         captured_count as usize,
@@ -966,8 +967,27 @@ pub fn fz_alloc_frame_for_test(schema_id: u32, total_size: u32) -> *mut u8 {
     fz_alloc_frame(schema_id, total_size)
 }
 
+thread_local! {
+    static FRAME_ALLOC_COUNT: std::cell::Cell<u64> = std::cell::Cell::new(0);
+}
+
+/// Reset the per-thread frame alloc counter. Call before the code under test.
+pub fn frame_alloc_count_reset() {
+    FRAME_ALLOC_COUNT.with(|c| c.set(0));
+}
+
+/// Drain and return the per-thread frame alloc count since last reset.
+pub fn frame_alloc_count_take() -> u64 {
+    FRAME_ALLOC_COUNT.with(|c| {
+        let n = c.get();
+        c.set(0);
+        n
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_alloc_frame(schema_id: u32, total_size: u32) -> *mut u8 {
+    FRAME_ALLOC_COUNT.with(|c| c.set(c.get() + 1));
     use std::alloc::{Layout, alloc_zeroed};
     // Round size up to a multiple of 16 to keep allocator happy and ensure
     // the resulting block aligns whatever follows.

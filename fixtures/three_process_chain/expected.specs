@@ -1,0 +1,93 @@
+; spec first_relay(0) #fn=0
+;   key:    []
+;   return: int | float
+;   vars:
+;     Var(0) :: :match_error
+;     Var(1) :: 3
+;   exits:
+;     blk0 Receive cont k_receive_3#3 captured=[Var(1)]
+;              cont_key=[any, 3]
+;     blk1 Halt Var(0)      :: :match_error
+
+; spec second_relay(0) #fn=1
+;   key:    []
+;   return: int | float
+;   vars:
+;     Var(0) :: :match_error
+;     Var(1) :: 1
+;   exits:
+;     blk0 Receive cont k_receive_4#4 captured=[Var(1)]
+;              cont_key=[any, 1]
+;     blk1 Halt Var(0)      :: :match_error
+
+; spec main(0) #fn=2
+;   key:    []
+;   return: nil
+;   fn_constants:
+;     Var(1) = first_relay#0
+;     Var(4) = second_relay#1
+;   vars:
+;     Var(0) :: :match_error
+;     Var(1) :: &fn0[]:() -> any
+;     Var(2) :: &fn5[&fn0[]:() -> any]:() -> any
+;     Var(3) :: int
+;     Var(4) :: &fn1[]:() -> any
+;     Var(5) :: &fn5[&fn1[]:() -> any]:() -> any
+;     Var(6) :: int
+;     Var(7) :: 2
+;     Var(8) :: 40
+;     Var(9) :: 40
+;   exits:
+;     blk0 Receive cont k_receive_6#6 captured=[]
+;              cont_key=[any]
+;     blk1 Halt Var(0)      :: :match_error
+
+; spec k_receive_3(2) #fn=3
+;   key:    [any, 3]
+;   return: int | float
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: 3
+;     Var(2) :: 1
+;     Var(3) :: int | float
+;     Var(4) :: int | float
+;   exits:
+;     blk0 Return Var(4)    :: int | float
+
+; spec k_receive_4(2) #fn=4
+;   key:    [any, 1]
+;   return: int | float
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: 1
+;     Var(2) :: 1
+;     Var(3) :: int | float
+;     Var(4) :: int | float
+;   exits:
+;     blk0 Return Var(4)    :: int | float
+
+; spec fz_spawn_thunk(1) #fn=5
+;   key:    [&fn0[]:() -> any]
+;   return: int | float
+;   vars:
+;     Var(0) :: &fn0[]:() -> any
+;   exits:
+;     blk0 TailCallClosure Var(0)()
+
+; spec fz_spawn_thunk(1) #fn=5
+;   key:    [&fn1[]:() -> any]
+;   return: int | float
+;   vars:
+;     Var(0) :: &fn1[]:() -> any
+;   exits:
+;     blk0 TailCallClosure Var(0)()
+
+; spec k_receive_6(1) #fn=6
+;   key:    [any]
+;   return: nil
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: nil
+;   exits:
+;     blk0 Return Var(1)    :: nil
+

@@ -1685,7 +1685,12 @@ pub fn compile_with_backend<B: Backend>(
     // .29.12.6's any-key drop logic can remove the now-dead any-key.
     let mid_types = crate::ir_typer::type_module(&working);
     crate::ir_typer::rewrite_known_target_closures(&mut working, &mid_types);
+    #[cfg(not(test))]
     crate::ir_inline::inline_module(&mut working);
+    #[cfg(test)]
+    if !INLINE_DISABLED.with(|d| d.get()) {
+        crate::ir_inline::inline_module(&mut working);
+    }
     let module_types = crate::ir_typer::type_module(&working);
     let module = &working;
 
@@ -5882,6 +5887,19 @@ fn bool_to_fz(b: &mut FunctionBuilder<'_>, v: ir::Value) -> ir::Value {
 }
 
 #[cfg(test)]
+thread_local! {
+    static INLINE_DISABLED: std::cell::Cell<bool> = std::cell::Cell::new(false);
+}
+
+#[cfg(test)]
+fn with_inline_disabled<F: FnOnce() -> R, R>(f: F) -> R {
+    INLINE_DISABLED.with(|d| d.set(true));
+    let r = f();
+    INLINE_DISABLED.with(|d| d.set(false));
+    r
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::ir_lower::lower_program;
@@ -6903,5 +6921,51 @@ fn main(), do: loop_with(loop_with, 100000, 0)
         // any-key, it shouldn't cover queries to FnId(1).
         let q = vec![crate::types::Descr::int()];
         assert_eq!(reg.resolve(FnId(1), &q), None);
+    }
+
+    // ----- fz-ul4.11.15.6: hot-loop frame alloc reduction -----
+
+    /// Pre-inline: each `step(...)` call allocates a continuation frame.
+    /// Post-inline: `step` is inlined — those allocs vanish.
+    /// The post count must be < 50% of the pre count.
+    ///
+    /// Uses 10 nested step calls (step(step(...step(0)...))) so the
+    /// pre/post ratio is clear without triggering the multi-clause
+    /// dispatch codegen path that requires the inliner to succeed.
+    #[test]
+    fn hot_loop_inline_reduces_frame_allocs() {
+        // 10 nested calls to step — each is a Call+Cont site pre-inline.
+        let src = "fn step(x), do: x + 1\n\
+                   fn main(), do: step(step(step(step(step(step(step(step(step(step(0))))))))))";
+
+        // Pre-inline run: compile with the inliner bypassed.
+        let pre_count = with_inline_disabled(|| {
+            let m = lower_src(src);
+            fz_runtime::ir_runtime::frame_alloc_count_reset();
+            let entry = m.fn_by_name("main").unwrap().id;
+            let r = compile(&m).unwrap().run(entry);
+            assert_eq!(r, 10, "pre-inline result must be 10");
+            fz_runtime::ir_runtime::frame_alloc_count_take()
+        });
+
+        // Post-inline run: normal compile (inliner active).
+        let m = lower_src(src);
+        fz_runtime::ir_runtime::frame_alloc_count_reset();
+        let entry = m.fn_by_name("main").unwrap().id;
+        let post_result = compile(&m).unwrap().run(entry);
+        let post_count = fz_runtime::ir_runtime::frame_alloc_count_take();
+
+        assert_eq!(post_result, 10, "post-inline result must still be 10");
+        assert!(
+            pre_count >= 5,
+            "pre-inline: expected >= 5 allocs for step cont closures, got {}",
+            pre_count
+        );
+        assert!(
+            post_count * 2 < pre_count,
+            "post-inline frame allocs ({}) must be < 50% of pre-inline ({})",
+            post_count,
+            pre_count
+        );
     }
 }

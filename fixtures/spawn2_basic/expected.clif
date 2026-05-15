@@ -12,7 +12,7 @@ function u0:0(i64) -> i64 tail {
     sig6 = (i64) -> i64 system_v
     fn0 = u0:34 sig0
     fn1 = u0:28 sig1
-    fn2 = colocated u0:46 sig2
+    fn2 = colocated u0:45 sig2
     fn3 = u0:30 sig3
     fn4 = u0:28 sig4
     fn5 = colocated u0:44 sig5
@@ -44,16 +44,28 @@ block0(v0: i64):
 }
 
 ; fn lambda_2
-    ;   @spec   lambda_2() -> _
+    ;   @spec   lambda_2() -> 42
     ;   @key    []
     ;   @abi    () -> RawInt
 function u0:0(i64, i64) -> i64 tail {
-    sig0 = (i64, i64) -> i64 tail
-    fn0 = colocated u0:45 sig0
+    sig0 = (i64, i64) -> i64 system_v
+    sig1 = (i64, i64) -> i64 tail
+    fn0 = u0:32 sig0
 
 block0(v0: i64, v1: i64):
-    v2 = iconst.i64 42    ;; v2 :: 42
-    return_call fn0(v2, v1)  ; v2 = 42
+    v3 = iconst.i64 42
+    v4 = ishl_imm v3, 3  ; v3 = 42
+    v5 = bor_imm v4, 1    ;; v5 :: 42
+    jump block1(v5)
+
+    block1(v2: i64):    ;; v2 :: 42
+    v6 = iconst.i64 1    ;; v6 :: 1
+    v7 = ishl_imm v6, 3  ; v6 = 1
+    v8 = bor_imm v7, 1
+    v9 = call fn0(v8, v2)    ;; v9 :: 42
+    v10 = sshr_imm v9, 3
+    v11 = load.i64 notrap aligned v1+16
+    return_call_indirect sig1, v11(v10, v1)
 }
 
 ; fn k_receive_4
@@ -74,28 +86,7 @@ function u0:0(i64, i64) -> i64 tail {
     return v3  ; v3 = 0
 }
 
-; fn child_s5
-    ;   @spec   child(42) -> 42
-    ;   @key    [42]
-    ;   @abi    (RawInt) -> RawInt
-function u0:0(i64, i64) -> i64 tail {
-    sig0 = (i64, i64) -> i64 system_v
-    sig1 = (i64, i64) -> i64 tail
-    fn0 = u0:32 sig0
-
-    block0(v0: i64, v1: i64):    ;; v0 :: 42
-    v2 = iconst.i64 1                   ; @2:8
-    v3 = ishl_imm v2, 3                 ; @2:3  v2 = 1
-    v4 = bor_imm v3, 1                  ; @2:3
-    v5 = ishl_imm v0, 3                 ; @2:3
-    v6 = bor_imm v5, 1                  ; @2:3
-    v7 = call fn0(v4, v6)               ; @2:3
-    v8 = sshr_imm v7, 3
-    v9 = load.i64 notrap aligned v1+16
-    return_call_indirect sig1, v9(v8, v1)
-}
-
-; fn fz_spawn_thunk_s6
+; fn fz_spawn_thunk_s5
     ;   @spec   fz_spawn_thunk(&fn2[]:() -> any) -> _
     ;   @key    [&fn2[]:() -> any]
     ;   @abi    (Tagged) -> RawInt

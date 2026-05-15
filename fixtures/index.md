@@ -14,6 +14,8 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `cold_fn/` | minimal call site — one fn definition, one call, no scaffolding | jit, interp |
 | `concurrency_ping_pong/` | spawn + send + receive — parent blocks on receive, prints the message | jit, interp, aot |
 | `cross_module_macro/` | defmacro in one module, called from another via `import Helpers, only: [twice: 1]` | jit, interp |
+| `curried_add/` | three-level currying — nested lambdas each capturing outer scope; exercises multi-depth closure allocation | jit, interp, aot |
+| `fib_tailrec/` | fibonacci via two-accumulator tail recursion — three-clause dispatch + tail-call forwarding under load | jit, interp, aot |
 | `hello/` | print each scalar shape — int, atom, bool, nil | jit, interp |
 | `higher_order/` | higher-order patterns — apply2, compose | jit, interp, aot |
 | `hot_fn/` | same call repeated — historical JIT tier-up trigger; today every call is JIT | jit, interp |
@@ -22,6 +24,7 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `macro_inc/` | defmacro + quote/unquote round-trip — two macros, one nested in the other | jit, interp |
 | `modules/` | cross-module qualified calls — `M.double`, `M.quad`, `N.helper` | jit, interp |
 | `multi_clause/` | multi-clause dispatch with a guard clause (`when n > 0`), plus recursive `fact` | jit, interp |
+| `mutual_recursion/` | mutual recursion — is_even/is_odd call each other; exercises cross-function recursive dispatch | jit, interp, aot |
 | `nested_modules/` | inner module addressed both fully-qualified (`Outer.Inner.f`) and via outer-local reference | jit, interp |
 | `polymorphic/` | parametric `id` exercised over int, atom, and bool | jit, interp |
 | `sample_tests/` | `test()` macro from the prelude — assert_eq / assert_neq / assert | jit |
@@ -30,6 +33,7 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `spawn_with_captures/` | fz-ul4.29.5 — spawn-with-captures lift (was forbidden v1) | jit, interp |
 | `spec_ok/` | fz-ul4.31.6 — declared @spec matches inferred behavior; | jit, interp |
 | `tail_recursion/` | 100k-deep self-recursion must TCO — exits cleanly with the accumulated count | jit, interp, aot |
+| `three_process_chain/` | two-hop process relay — main → first_relay → second_relay → main; exercises multi-process message chaining | jit |
 | `vr1_int_arith/` | VR.1 — int-literal arithmetic elides the tag-check fast/slow path | jit, interp |
 | `vr2_float_arith/` | VR.2 — float-literal arithmetic + comparisons emit native fadd/fcmp, no dispatch | jit, interp |
 | `vr3_4_typed_capture/` | VR.3.4 / VR.4.3 — typed captures survive cont handoffs via native chain | jit, interp |

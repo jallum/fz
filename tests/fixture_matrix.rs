@@ -402,11 +402,7 @@ fn fz_dump_emits_clif() {
         .expect("spawn fz dump");
     assert!(out.status.success(), "fz dump exited {}", out.status);
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        stdout.contains("; fn add1"),
-        "missing add1 banner\n{}",
-        stdout
-    );
+    // fz-ul4.11.15: add1 is now inlined into main — no separate add1 fn in dump.
     assert!(
         stdout.contains("; fn main"),
         "missing main banner\n{}",
@@ -417,24 +413,29 @@ fn fz_dump_emits_clif() {
         "no Cranelift function header\n{}",
         stdout
     );
-    // fz-ul4.23.7: srcloc annotations on body instructions resolve back
-    // to file:line:col. add1's `n + 1` lives at line 1 (fz-e97: header
-    // comments lifted out of input.fz into README.md); expect at least
-    // one annotated line pointing at it.
+    // Inlined add1 arithmetic should be visible directly in main's body.
     assert!(
-        stdout.contains("; @1:"),
-        "expected line-1 srcloc annotations in dump\n{}",
+        stdout.contains("iadd"),
+        "expected inlined iadd in main's body (add1 should be inlined):\n{}",
+        stdout
+    );
+    // fz-ul4.23.7: srcloc annotations on body instructions resolve back
+    // to file:line:col. main's call site lives at line 4; after inlining
+    // add1, main's block0 carries those annotations.
+    assert!(
+        stdout.contains("; @4:"),
+        "expected line-4 srcloc annotations in main's dump\n{}",
         stdout
     );
 
+    // --fn main filter: main is the only live fn (add1 is inlined).
     let filtered = Command::new(FZ_BIN)
-        .args(["dump", "fixtures/add1/input.fz", "--fn", "add1"])
+        .args(["dump", "fixtures/add1/input.fz", "--fn", "main"])
         .output()
         .expect("spawn fz dump --fn");
     assert!(filtered.status.success());
     let s = String::from_utf8_lossy(&filtered.stdout);
-    assert!(s.contains("; fn add1"));
-    assert!(!s.contains("; fn main"), "filter leaked main: {}", s);
+    assert!(s.contains("; fn main"));
 
     // fz-ul4.23.8: --emit asm produces machine-code dump via Cranelift's
     // vcode disassembly. Don't pin specific instructions — they vary by
@@ -447,7 +448,7 @@ fn fz_dump_emits_clif() {
             "--emit",
             "asm",
             "--fn",
-            "add1",
+            "main",
         ])
         .output()
         .expect("spawn fz dump --emit asm");
@@ -457,7 +458,7 @@ fn fz_dump_emits_clif() {
         asm.status
     );
     let asm_out = String::from_utf8_lossy(&asm.stdout);
-    assert!(asm_out.contains("; fn add1"));
+    assert!(asm_out.contains("; fn main"));
     assert!(
         asm_out.contains("block0"),
         "expected block0 label in asm:\n{}",
@@ -493,18 +494,13 @@ fn add1_main_cont_seam_has_no_box_unbox_roundtrip() {
         "missing main banner:\n{}",
         stdout
     );
-    // The native chain's cont seam should be two adjacent direct calls
-    // with no boxing instructions between them. We pin this by asserting
-    // `main` contains no `ishl_imm` (the box op) and no `bor_imm` (the
-    // tag-set op).
+    // fz-ul4.11.15: add1 is inlined into main — the call boundary is gone.
+    // The stronger invariant is that main's body contains the iadd directly
+    // (no separate return_call to an add1 fn), and the inlined computation
+    // appears as a block with `iadd`.
     assert!(
-        !stdout.contains("ishl_imm"),
-        "main still boxes a value at the cont seam under .27.14.2:\n{}",
-        stdout,
-    );
-    assert!(
-        !stdout.contains("bor_imm"),
-        "main still tag-sets at the cont seam under .27.14.2:\n{}",
+        stdout.contains("iadd"),
+        "expected inlined add1 arithmetic (iadd) in main's CLIF:\n{}",
         stdout,
     );
 }
@@ -514,11 +510,12 @@ fn add1_main_cont_seam_has_no_box_unbox_roundtrip() {
 /// with a never-read `iconst.i64 0` so the rest of `compile_fn` could
 /// reference `frame_ptr` uniformly. Now `frame_ptr` is `Option<ir::Value>`
 /// and downstream consumers `.expect()` it — native fns emit nothing.
+///
+/// fz-ul4.11.15: add1 is inlined into main so has no separate compiled body.
+/// We verify the invariant on `main` instead — main is native and has no
+/// semantic reason to materialize zero.
 #[test]
 fn native_fns_have_no_dead_frame_ptr_placeholder() {
-    // add1_s2 is native; it has no use for frame_ptr. Asserting that its
-    // body contains no `iconst.i64 0` is a strict check because add1 has
-    // no other reason to materialize zero.
     let out = Command::new(FZ_BIN)
         .args([
             "dump",
@@ -526,20 +523,20 @@ fn native_fns_have_no_dead_frame_ptr_placeholder() {
             "--emit",
             "clif",
             "--fn",
-            "add1",
+            "main",
         ])
         .output()
         .expect("spawn fz dump");
     assert!(out.status.success(), "fz dump exited {}", out.status);
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stdout.contains("; fn add1"),
-        "missing add1 banner:\n{}",
+        stdout.contains("; fn main"),
+        "missing main banner:\n{}",
         stdout
     );
     assert!(
         !stdout.contains("iconst.i64 0"),
-        "add1_s2 still emits a dead `iconst.i64 0` (frame_ptr placeholder):\n{}",
+        "main emits a dead `iconst.i64 0` (frame_ptr placeholder):\n{}",
         stdout,
     );
 }
@@ -687,29 +684,27 @@ fn closure_typed_captures_matches_cps_in_clif_section_8_3() {
     assert!(out.status.success(), "fz dump exited {}", out.status);
     let stdout = String::from_utf8_lossy(&out.stdout);
 
-    let add_to_start = stdout.find("; fn add_to").expect("missing add_to banner");
-    let add_to_rest = &stdout[add_to_start..];
-    let add_to_end = add_to_rest[1..]
+    // fz-ul4.11.15: add_to is inlined into main — check main's CLIF.
+    let main_start = stdout.find("; fn main").expect("missing main banner");
+    let main_rest = &stdout[main_start..];
+    let main_end = main_rest[1..]
         .find("; fn ")
         .map(|i| i + 1)
-        .unwrap_or(add_to_rest.len());
-    let add_to_body = &add_to_rest[..add_to_end];
+        .unwrap_or(main_rest.len());
+    let main_body = &main_rest[..main_end];
     // fz-cps.1.8 — Cranelift CLIF dumps don't carry runtime-symbol
     // names; assert structural shape: a `func_addr.i64` materialized
     // (lambda body addr) and stored at +16 (closure code_ptr slot).
     assert!(
-        add_to_body.contains("func_addr.i64"),
-        "add_to must materialize the lambda's code_ptr via func_addr:\n{}",
-        add_to_body
+        main_body.contains("func_addr.i64"),
+        "main must materialize the lambda's code_ptr via func_addr (add_to inlined):\n{}",
+        main_body
     );
     assert!(
-        add_to_body.contains("+16"),
-        "add_to must store the lambda's code_ptr at +16:\n{}",
-        add_to_body
+        main_body.contains("+16"),
+        "main must store the lambda's code_ptr at +16 (add_to inlined):\n{}",
+        main_body
     );
-    // Lambda's body should compute x+y+z and tail-return through cont.
-    let lam_start = stdout.find("; fn ").expect("module not empty");
-    let _ = lam_start;
 }
 
 /// fz-siu.1.2 acceptance per docs/cps-in-clif.md §8.4.

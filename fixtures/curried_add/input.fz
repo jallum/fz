@@ -1,0 +1,7 @@
+fn add3(x), do: fn(y) -> fn(z) -> x + y + z
+fn apply(f, x), do: f(x)
+
+fn main() do
+  print(apply(apply(add3(10), 20), 12))
+  print(apply(apply(add3(1), 2), 3))
+end
