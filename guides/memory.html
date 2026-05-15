@@ -1,0 +1,473 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>fz memory guide</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: #0d1117;
+    color: #c9d1d9;
+    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 14px;
+    line-height: 1.7;
+    padding: 40px 24px;
+    max-width: 900px;
+    margin: 0 auto;
+  }
+  h1 { color: #58a6ff; font-size: 1.8em; margin-bottom: 6px; }
+  h2 { color: #79c0ff; font-size: 1.2em; margin: 36px 0 12px; border-bottom: 1px solid #21262d; padding-bottom: 6px; }
+  h3 { color: #a5d6ff; font-size: 1em; margin: 20px 0 8px; }
+  p { margin-bottom: 12px; }
+  .subtitle { color: #8b949e; margin-bottom: 36px; }
+  pre {
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 6px;
+    padding: 16px;
+    overflow-x: auto;
+    margin: 12px 0 20px;
+    line-height: 1.5;
+  }
+  .tag { color: #ff7b72; }
+  .val { color: #79c0ff; }
+  .ptr { color: #d2a8ff; }
+  .hdr { color: #ffa657; }
+  .dead { color: #484f58; }
+  .live { color: #56d364; }
+  .new  { color: #f0883e; }
+  .flag { color: #ff7b72; }
+  .ok   { color: #56d364; }
+  .note { color: #8b949e; font-style: italic; }
+  .warn { color: #e3b341; }
+  .box {
+    border: 1px solid #30363d;
+    border-radius: 6px;
+    padding: 14px 18px;
+    margin: 16px 0;
+    background: #161b22;
+  }
+  .box.green  { border-color: #238636; background: #0d1f0f; }
+  .box.yellow { border-color: #9e6a03; background: #1f1700; }
+  .box.blue   { border-color: #1f6feb; background: #0d1f40; }
+  ul { padding-left: 20px; margin-bottom: 12px; }
+  li { margin-bottom: 4px; }
+  .toc { margin-bottom: 32px; }
+  .toc a { color: #58a6ff; text-decoration: none; }
+  .toc a:hover { text-decoration: underline; }
+  .toc li { margin-bottom: 2px; }
+  code { background: #161b22; padding: 2px 5px; border-radius: 3px; color: #ff7b72; }
+</style>
+</head>
+<body>
+
+<h1>fz memory guide</h1>
+<p class="subtitle">How fz allocates, garbage-collects, and reclaims memory — from bits to scheduler.</p>
+
+<div class="toc">
+<ul>
+  <li><a href="#fzvalue">1. FzValue — the 64-bit universe</a></li>
+  <li><a href="#heap">2. The process heap — bump allocation and block pool</a></li>
+  <li><a href="#pressure">3. Watermark, FZ_SHOULD_YIELD, and back-edge yield</a></li>
+  <li><a href="#gc-parktime">4. Park-time GC — Cheney copy with one root</a></li>
+  <li><a href="#gc-midflight">5. Mid-flight GC — yielding without parking</a></li>
+  <li><a href="#roots">6. GC roots — what stays alive</a></li>
+  <li><a href="#scheduler">7. Scheduler dispatch and proactive shrinkage</a></li>
+  <li><a href="#messages">8. Message passing — self-send and cross-process</a></li>
+  <li><a href="#limits">9. The 64-byte limit and the shared zone</a></li>
+  <li><a href="#future">10. What comes next — generational GC</a></li>
+</ul>
+</div>
+
+<!-- ─────────────────────────────── 1. FZVALUE ─────────────────────────────── -->
+<h2 id="fzvalue">1. FzValue — the 64-bit universe</h2>
+
+<p>Every value in fz — integers, atoms, heap pointers, nil — is a single 64-bit
+word called <code>FzValue</code>. The bottom three bits are a tag that tells
+you how to read the rest:</p>
+
+<pre>
+  bits 63…3          bits 2…0   meaning
+  ──────────────────────────────────────────────────────────
+  <ptr class="ptr">heap pointer (16-byte aligned)</ptr>     <tag class="tag">000</tag>      pointer to a HeapHeader
+  <val class="val">integer × 8 + 1</val>                    <tag class="tag">001</tag>      small integer (RawInt)
+  <val class="val">atom index × 8 + 2</val>                 <tag class="tag">010</tag>      interned atom
+  <val class="val">special (nil, true, false…)</val>        <tag class="tag">011</tag>      immediate special
+  <val class="val">raw f64 bits</val>                       <tag class="tag">100</tag>      float (RawF64)
+</pre>
+
+<p>Because <code>000</code> means pointer, a zero FzValue (<code>0x0000…0000</code>)
+is nil. The GC reads tag bits to decide whether to trace a value into the heap or
+leave it alone. Scalars (int, atom, float, special) are never dereferenced.</p>
+
+<!-- ─────────────────────────────── 2. HEAP ─────────────────────────────── -->
+<h2 id="heap">2. The process heap — bump allocation and block pool</h2>
+
+<p>Every fz process gets its own private heap. No sharing, no locks. Allocation
+is a pointer bump — just two comparisons and an increment on the fast path.</p>
+
+<pre>
+  Process heap (one block, contiguous):
+
+  block_start                      gc_watermark (75%)   block_end
+      │                                   │                 │
+      ▼                                   ▼                 ▼
+      ┌──────────────────────────────────┬──────────────────┐
+      │  allocated objects  ← bump_top   │    free space    │
+      └──────────────────────────────────┴──────────────────┘
+                            ▲
+                         bump_top
+</pre>
+
+<p>Every heap object begins with a <strong>HeapHeader</strong> (16 bytes,
+16-byte aligned):</p>
+
+<pre>
+  struct HeapHeader {
+    kind:      u16,   <span class="note">// Cons, Closure, Map, Bitstring, Struct, …</span>
+    flags:     u16,   <span class="note">// kind-specific (e.g. capture count for closures)</span>
+    size_bytes: u32,  <span class="note">// total object size including this header</span>
+    schema_id: u32,   <span class="note">// struct schema lookup</span>
+    _reserved: u32,   <span class="note">// callee fn_id for closures</span>
+  }  <span class="note">// 16 bytes exactly</span>
+</pre>
+
+<p>Sizes of the common kinds:</p>
+
+<pre>
+  cons cell:              <span class="ok">32 bytes</span>  (16 hdr + 8 head + 8 tail)
+  closure, 0 captures:   <span class="ok">24 bytes</span>  (16 hdr + 8 fn_ptr)
+  closure, n captures:   <span class="ok">24 + n×8 bytes</span>  (max 5 captures → 64 bytes)
+  map, 0–2 entries:       <span class="ok">32–64 bytes</span>
+  map, 3+ entries:        <span class="warn">over limit — needs redesign</span>
+</pre>
+
+<h3>Block pool and size classes</h3>
+
+<p>Blocks come from a per-thread pool in a Fibonacci-then-geometric size table
+(1 KiB → 6 MiB). When a block fills before GC fires, a new block is allocated
+and the old one is added to <code>abandoned_blocks</code>. All abandoned blocks
+are reclaimed after the next GC.</p>
+
+<!-- ─────────────────────────────── 3. PRESSURE ─────────────────────────────── -->
+<h2 id="pressure">3. Watermark, FZ_SHOULD_YIELD, and back-edge yield</h2>
+
+<p>The old model only ran GC when a process parked on <code>receive</code>.
+A long compute loop could grow the heap without bound — the process never
+parked, so it never GC'd.</p>
+
+<p>The fix: a <strong>watermark</strong> and a <strong>back-edge yield</strong>.</p>
+
+<h3>gc_watermark</h3>
+
+<p>Set to 75% of <code>block_end</code> whenever a block is created or replaced.
+Every <code>Heap::alloc()</code> call checks:</p>
+
+<pre>
+  if bump_top >= gc_watermark {
+      FZ_SHOULD_YIELD.store(1, Relaxed);
+  }
+</pre>
+
+<h3>FZ_SHOULD_YIELD</h3>
+
+<pre>
+  #[no_mangle]
+  pub static FZ_SHOULD_YIELD: AtomicU8 = AtomicU8::new(0);
+</pre>
+
+<p>A single global byte. It is a global — not per-process — for two reasons:</p>
+<ul>
+  <li>Native (Tail-CC) JIT functions have no path to the current process;
+  a global is a single <code>load</code> instruction via Cranelift's
+  <code>global_value</code>.</li>
+  <li>An external timer or signal handler can set it at a known address
+  without knowing which process is running. This enables future soft
+  preemption with no kernel interrupt machinery.</li>
+</ul>
+
+<p>The scheduler clears it before installing each process, and after any GC.</p>
+
+<h3>Back-edge check — 3 inline instructions</h3>
+
+<p>Every loop in fz is a tail-recursive call. The compiler's
+<strong>SCC analysis</strong> (Tarjan, already run by the type system)
+identifies which tail calls are back-edges: any call whose callee is in the
+same strongly-connected component as the caller. Self-recursion is the
+degenerate case; mutual recursion (<code>f → g → f</code>) is covered
+automatically.</p>
+
+<p>At every back-edge call site, codegen emits:</p>
+
+<pre>
+  gv   = global_value.i64 %FZ_SHOULD_YIELD   <span class="note">; address of the global</span>
+  flag = load.i8 notrap aligned gv+0          <span class="note">; one load</span>
+  brz  flag, $fast                            <span class="note">; almost always taken</span>
+
+  <span class="note">; slow path (flag set):</span>
+  slab = call fz_mid_flight_roots_ptr()
+  store.i64 coerced_arg0, slab+0
+  store.i64 coerced_arg1, slab+8
+  ...
+  call fz_yield_back_edge(fn_id, n)
+  return [YIELD_PTR]                          <span class="note">; 1i64 — propagates to scheduler</span>
+
+  $fast:
+  return_call loop_fn(args...)                <span class="note">; unchanged hot path</span>
+</pre>
+
+<p>The fast path costs one load and one branch. On modern hardware the branch
+is always predicted-not-taken. The slow path only executes when the watermark
+has been crossed or the scheduler has requested a yield.</p>
+
+<!-- ─────────────────────────────── 4. PARK-TIME GC ─────────────────────────────── -->
+<h2 id="gc-parktime">4. Park-time GC — Cheney copy with one root</h2>
+
+<p>When a process parks on <code>receive</code>, all live data is exactly
+reachable from one pointer: <code>parked_cont</code>, the closure the process
+left behind. The GC needs no stack scan, no register enumeration — just one
+root.</p>
+
+<pre>
+  from-space (current block + abandoned blocks)
+  ┌────────────────────────────────┐
+  │ [dead]  [dead]  <span class="live">[live]</span>  [dead]  │
+  │          parked_cont points ──►│──►<span class="live">closure──►cont chain</span>
+  └────────────────────────────────┘
+           │ Cheney BFS copy │
+           ▼
+  to-space (new block, sized by last_gc_live_bytes × 2)
+  ┌─────────────────┐
+  │ <span class="live">[live][live][live]</span>│
+  │         bump_top│
+  └─────────────────┘
+  from-space → pool (freed)
+</pre>
+
+<h3>Algorithm (Cheney BFS, no pre-pass)</h3>
+
+<p>The size of to-space is chosen from the block pool using a two-tier formula:</p>
+<ul>
+  <li><strong>First GC:</strong> <code>bytes_used()</code> — a safe upper bound
+  (includes dead objects, never exhausts to-space).</li>
+  <li><strong>Subsequent GCs:</strong> <code>last_gc_live_bytes × 2</code> —
+  the exact count of bytes that survived the previous GC, doubled for slack.
+  Accurate, no pre-pass needed.</li>
+</ul>
+
+<p>After BFS: <code>last_gc_live_bytes = free - to_start</code>. This value
+drives the next GC's sizing. The old <code>low_live_streak</code> counter is
+retired; <code>last_gc_live_bytes</code> gives exact information every cycle.</p>
+
+<p>Each object that gets copied has its header rewritten to
+<code>FORWARDED_KIND</code> with the to-space address at <code>+8</code>, so
+any other pointer to the same object gets the new address immediately.</p>
+
+<!-- ─────────────────────────────── 5. MID-FLIGHT GC ─────────────────────────────── -->
+<h2 id="gc-midflight">5. Mid-flight GC — yielding without parking</h2>
+
+<p>When the back-edge slow path fires, the process is mid-loop: no
+<code>parked_cont</code>, no stack frames. The live set is exactly the loop
+args being passed to the next iteration. These are spilled to a fixed-size
+slab before yielding:</p>
+
+<pre>
+  struct Process {
+    ...
+    mid_flight_fn_id:    u32,          <span class="note">// which fn to resume; 0 = none</span>
+    mid_flight_root_count: u8,         <span class="note">// how many args were spilled</span>
+    mid_flight_roots: [FzValue; 8],    <span class="note">// the spilled args (max 8)</span>
+    quiet_quanta: u8,                  <span class="note">// for proactive shrinkage</span>
+  }
+</pre>
+
+<p>The slab holds at most 8 FzValues. If a loop body carries more than 8 live
+arguments at a back-edge, the compiler emits an error at the function
+declaration pointing to the specific call site.</p>
+
+<p>Before spilling, each arg is coerced to <code>Tagged</code> repr so the GC
+can read tag bits. The resume shim coerces back to the callee's parameter
+reprs before calling the function body.</p>
+
+<h3>Resume shim</h3>
+
+<p>For each function that has any back-edge call, codegen emits a dedicated
+SystemV resume shim alongside the function body:</p>
+
+<pre>
+  fz_resume_back_edge_fn42():          <span class="note">; () → i64, SystemV calling conv</span>
+    slab = call fz_mid_flight_roots_ptr()
+    r0   = load.i64 slab+0            <span class="note">; root 0, already forwarded by GC</span>
+    r1   = load.i64 slab+8            <span class="note">; root 1</span>
+    <span class="note">; coerce Tagged → callee param reprs</span>
+    return_call fn42_body(r0, r1)     <span class="note">; resumes the loop</span>
+</pre>
+
+<p>Shim pointers live in <code>CompiledModule::back_edge_resume_shims</code>,
+keyed by <code>fn_id</code>.</p>
+
+<!-- ─────────────────────────────── 6. ROOTS ─────────────────────────────── -->
+<h2 id="roots">6. GC roots — what stays alive</h2>
+
+<p>The GC traces only explicit roots. Everything else is dead.</p>
+
+<div class="box blue">
+<strong>Park-time GC roots</strong><br>
+<code>parked_cont</code> — the single pointer left behind when the process
+parks on <code>receive</code>. The mailbox is empty at park time (that's why
+the process parked), so no additional roots are needed.
+</div>
+
+<div class="box blue">
+<strong>Mid-flight GC roots</strong><br>
+<code>mid_flight_roots[0..mid_flight_root_count]</code> — the loop args spilled
+before yield.<br><br>
+<code>process.mailbox</code> — every FzValue in the mailbox that is a heap
+pointer is forwarded in place during <code>gc_mid_flight</code>. This matters
+for self-send: a process can send itself a message and continue running; that
+message lives only in the mailbox and would otherwise be collected.
+</div>
+
+<p>Scalars in both root sets (int, atom, float, nil) are passed through
+unchanged — the GC checks tag bits before any dereference.</p>
+
+<!-- ─────────────────────────────── 7. SCHEDULER ─────────────────────────────── -->
+<h2 id="scheduler">7. Scheduler dispatch and proactive shrinkage</h2>
+
+<h3>run_quantum dispatch order</h3>
+
+<pre>
+  1. Proactive shrinkage check (see below)
+  2. if mid_flight_fn_id != 0:
+       if heap.should_gc():
+         gc_mid_flight(mid_flight_roots[..n], mailbox)
+         clear_should_gc_flag()
+         FZ_SHOULD_YIELD.store(0)
+       fn_id = mid_flight_fn_id
+       mid_flight_fn_id = 0            <span class="note">// clear BEFORE calling shim</span>
+       shim = back_edge_resume_shims[fn_id]
+       shim()                          <span class="note">// resumes the loop</span>
+       return
+  3. if parked_cont != null:
+       resume via fz_resume_park thunk
+  4. if pending_main_entry / pending_closure_entry:
+       dispatch entry
+</pre>
+
+<h3>Proactive shrinkage</h3>
+
+<p>A process that did a lot of allocation, GC'd down to a small live set, and
+is now allocating very little should not hold a large block indefinitely. The
+scheduler detects this:</p>
+
+<pre>
+  if last_gc_live_bytes > 0
+      && bytes_used() < last_gc_live_bytes / 2
+  {
+    quiet_quanta += 1;
+    if quiet_quanta >= 3 {
+      quiet_quanta = 0;
+      FZ_SHOULD_YIELD.store(1);    <span class="note">// fire at next back-edge</span>
+    }
+  }
+</pre>
+
+<p>When the yield fires, <code>gc_mid_flight</code> moves the process to a
+correctly-sized smaller block and returns the large block to the pool. Any
+other process can immediately claim it.</p>
+
+<!-- ─────────────────────────────── 8. MESSAGES ─────────────────────────────── -->
+<h2 id="messages">8. Message passing — self-send and cross-process</h2>
+
+<h3>Cross-process send</h3>
+
+<p>Messages are deep-copied into the receiver's heap.
+<code>deep_copy_value</code> walks the value graph, allocating each object in
+the destination heap and maintaining a forwarding map for shared structure.
+After the copy, the FzValue pushed to the receiver's mailbox is an ordinary
+heap pointer in the receiver's heap — owned by the receiver, traced by
+<code>gc_mid_flight</code> as a mailbox root.</p>
+
+<h3>Self-send (same process)</h3>
+
+<p>A process sending to itself skips the copy entirely. The original FzValue
+is pushed directly to the mailbox. Since <code>gc_mid_flight</code> roots the
+mailbox, the value survives any subsequent back-edge GC even if the sending
+code no longer holds a reference to it. No copy, no wasted allocation.</p>
+
+<!-- ─────────────────────────────── 9. LIMITS ─────────────────────────────── -->
+<h2 id="limits">9. The 64-byte limit and the shared zone</h2>
+
+<p>Every allocation on the process heap must be ≤ <code>MAX_HEAP_OBJECT_BYTES</code>
+(64 bytes). This is enforced by <code>Heap::alloc()</code> and is the single
+source of truth for anything that references this threshold.</p>
+
+<pre>
+  pub const MAX_HEAP_OBJECT_BYTES: usize = 64;
+</pre>
+
+<p>Why 64? It matches the threshold BEAM uses for inline vs. reference-counted
+binaries — a well-validated sweet spot between allocation overhead and
+object complexity. Below this limit, the GC copies objects freely and the
+<code>mid_flight_roots</code> slab has predictable worst-case size. Above it,
+copying becomes expensive and the value should live in a shared zone with a
+pointer on the process heap.</p>
+
+<div class="box yellow">
+<strong>Objects that currently violate the limit:</strong><br>
+Maps with 3+ entries (80+ bytes) and bitstrings with more than ~40 bytes of
+inline data. These will be redesigned: maps as trees of ≤64-byte nodes;
+bitstrings with a header on the process heap pointing to a reference-counted
+off-heap buffer (the "shared zone"). Until then, the assert in
+<code>Heap::alloc</code> surfaces violations immediately.
+</div>
+
+<h3>The shared zone (future)</h3>
+
+<p>Large objects will live in a process-external reference-counted region,
+similar to BEAM's refc binaries. The process heap holds a stub (≤ 64 bytes:
+header + ref-count pointer). GC copies the stub and increments the refcount;
+the shared data is never copied. Refcounts are decremented during a fullsweep
+(major GC). This is out of scope for the current epic.</p>
+
+<!-- ─────────────────────────────── 10. FUTURE ─────────────────────────────── -->
+<h2 id="future">10. What comes next — generational GC</h2>
+
+<p>The most expensive property of flat Cheney GC: it re-copies the entire live
+set on every cycle. A loop that builds a list of 1000 elements copies 100 +
+200 + … + 1000 = O(N²) bytes total if GC fires every 100 allocations.</p>
+
+<p>Generational GC fixes this by splitting the heap into young and old
+generations. Minor GC collects only new objects (above the high-watermark);
+old objects stay put. The list tail — allocated many GC cycles ago — is never
+re-copied in a minor collection. Total work: O(N).</p>
+
+<h3>Why fz gets generational GC almost for free</h3>
+
+<p>Generational GC normally requires <strong>write barriers</strong>: if an
+old object is mutated to point at a new object, the GC must record this
+(otherwise the new object appears unreachable from the old heap). Every
+pointer write needs an extra store — significant overhead.</p>
+
+<div class="box green">
+fz is purely immutable. Once an object is allocated and initialised, it is
+never modified. Old objects can never gain new-object references after
+promotion. <strong>No write barriers needed.</strong>
+</div>
+
+<p>The watermark already exists. After any GC, objects below the watermark are
+"old"; objects above are "new." A future minor-collection pass would:</p>
+<ul>
+  <li>Trace from <code>mid_flight_roots</code> and <code>mailbox</code> as roots.</li>
+  <li>Copy only objects above the watermark (young generation).</li>
+  <li>Leave objects below the watermark untouched.</li>
+  <li>Reset the watermark to <code>bump_top</code> after the collection.</li>
+</ul>
+
+<p>The scaffolding from the current epic — watermark, <code>mid_flight_roots</code>
+slab, mailbox roots, proactive trigger — is exactly what that pass requires.
+The hard work is already done.</p>
+
+</body>
+</html>
