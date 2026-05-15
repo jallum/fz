@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-15T13:38:36Z",
+  "description": "Compiler-confirmed dead code. Remove everything the compiler warns about.\n\nFIELDS of CompiledModule — never read:\n  module: JITModule       (populated but never accessed)\n  schemas: Vec\u003cSchema\u003e    (populated but never accessed)\n  types: ModuleTypes      (pub(crate), never accessed)\n\nMETHODS of CompiledModule — never used:\n  static_closure_targets(\u0026self)\n  schema_for(\u0026self, fn_id) -\u003e \u0026Schema\n  run(\u0026self, fn_id) -\u003e i64\n  run_in(\u0026self, fn_id, process) -\u003e i64\n  run_internal(\u0026self, fn_id) -\u003e i64  (private)\n\nFREE FUNCTION — dead outside test cfg:\n  join_return_descrs (line ~775): used only in test code; move inside #[cfg(test)]\n  or delete if the tests that call it are also being cleaned up.\n\nDUPLICATE ATTRIBUTE — double #[cfg(test)] at lines ~6089-6090: remove one.\n\nFor each deletion: if removing a field requires removing its population site in\ncompile_with_backend or compile(), do so. If a method's removal creates a type error\n(e.g., a trait impl references it), remove the impl too.\n\nAfter removal, cargo build must produce zero warnings and all tests must pass.",
+  "id": "fz-yls.3",
+  "labels": [],
+  "parent": "fz-yls",
+  "priority": 2,
+  "status": "open",
+  "title": "fz-cg3.3 dead code removal: CompiledModule fields, methods, join_return_descrs, double cfg",
+  "type": "task",
+  "updated_at": "2026-05-15T13:38:36Z"
+}
