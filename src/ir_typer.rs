@@ -533,10 +533,10 @@ fn type_module_pass(
                 }
                 // Walk this spec's body for discovery. Use a snapshot
                 // borrow so we can mutate `specs` / `pending` inside.
-                let caller_ft = specs.get(&entry_key).cloned().unwrap();
+                let caller_ft = specs.get(&entry_key).unwrap();
                 walk_spec_for_discovery(
                     &m.fns[j],
-                    &caller_ft,
+                    caller_ft,
                     m,
                     &specs,
                     prev_returns,
@@ -598,10 +598,10 @@ fn type_module_pass(
                 continue;
             };
             let entry_key = (*fid, key.clone());
-            let caller_ft = specs.get(&entry_key).cloned().unwrap();
+            let caller_ft = specs.get(&entry_key).unwrap();
             walk_spec_for_discovery(
                 &m.fns[j],
-                &caller_ft,
+                caller_ft,
                 m,
                 &specs,
                 prev_returns,
@@ -636,7 +636,7 @@ fn type_module_pass(
                 continue;
             };
             let entry_key = (*fid, key.clone());
-            let caller_ft = specs.get(&entry_key).cloned().unwrap();
+            let caller_ft = specs.get(&entry_key).unwrap();
             let f = &m.fns[j];
             for b in &f.blocks {
                 let mut env = caller_ft.block_envs.get(&b.id).cloned().unwrap_or_default();
@@ -708,10 +708,10 @@ fn type_module_pass(
                     continue;
                 };
                 let entry_key = (*fid, key.clone());
-                let caller_ft = specs.get(&entry_key).cloned().unwrap();
+                let caller_ft = specs.get(&entry_key).unwrap();
                 walk_spec_for_discovery(
                     &m.fns[j],
-                    &caller_ft,
+                    caller_ft,
                     m,
                     &specs,
                     prev_returns,
