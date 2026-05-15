@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-05-15T03:32:07Z",
   "created": "2026-05-15T03:22:12Z",
   "description": "Module::fn_by_id (fz_ir.rs:397) is iter().find() — O(n_fns) per call. It is called from hot paths: compute_effective_returns (inside a loop over all specs×blocks), walk_spec_for_discovery (per block), type_prim (MakeClosure arm, per stmt). Add a fn_idx: HashMap\u003cFnId, usize\u003e field to Module, populated in ir_lower when each FnIr is pushed into module.fns. fn_by_id becomes: self.fns[*self.fn_idx.get(\u0026id).expect(\"unknown fn id\")]. All callers are unaffected; the API surface stays the same.",
   "id": "fz-afs.4",
   "labels": [],
   "parent": "fz-afs",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "replace O(n) fn_by_id scan with O(1) Module index",
   "type": "task",
-  "updated_at": "2026-05-15T03:30:33Z"
+  "updated_at": "2026-05-15T03:32:07Z"
 }
