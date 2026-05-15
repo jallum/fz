@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-15T13:37:50Z",
+  "description": "",
+  "id": "fz-yls",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "fz-cg3 [EPIC] codegen: extract terminator dispatch, split lower_prim, remove dead code",
+  "type": "epic",
+  "updated_at": "2026-05-15T13:37:50Z"
+}
