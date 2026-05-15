@@ -231,8 +231,7 @@ impl CompiledModule {
             process.heap.clear_should_gc_flag();
             // After park-time GC the process is about to park on receive,
             // so FZ_SHOULD_YIELD no longer applies to this quantum.
-            fz_runtime::yield_flag::FZ_SHOULD_YIELD
-                .store(0, std::sync::atomic::Ordering::Relaxed);
+            fz_runtime::yield_flag::FZ_SHOULD_YIELD.store(0, std::sync::atomic::Ordering::Relaxed);
         }
 
         // fz-cps.1.11 — wakeup path: if the task has a parked_cont and
@@ -1367,9 +1366,7 @@ impl Backend for AotBackend {
         let set_shims_id = self
             .omod
             .declare_function("fz_aot_set_resume_shims", Linkage::Import, &set_shims_sig)
-            .map_err(|e| {
-                CodegenError::new(format!("declare fz_aot_set_resume_shims: {}", e))
-            })?;
+            .map_err(|e| CodegenError::new(format!("declare fz_aot_set_resume_shims: {}", e)))?;
 
         let (atom_blob_data, atom_blob_len): (Option<DataId>, u32) = if meta.atom_names.is_empty() {
             (None, 0)
@@ -2929,38 +2926,44 @@ pub fn compile_with_backend<B: Backend>(
                 .map_err(|e| CodegenError::new(format!("declare {}: {}", shim_name, e)))?;
             ids[n] = shim_id;
             let roots_ptr_id = runtime.mid_flight_roots_ptr_id;
-            emit_fn_body(backend.module_mut(), &mut fbctx, shim_sig, shim_id, move |m, b| {
-                let entry = b.create_block();
-                b.append_block_params_for_function_params(entry);
-                b.switch_to_block(entry);
-                b.seal_block(entry);
-                let fn_ptr = b.block_params(entry)[0];
-                // Get the current process's mid_flight_roots slab ptr.
-                let roots_fref = m.declare_func_in_func(roots_ptr_id, b.func);
-                let roots_call = b.ins().call(roots_fref, &[]);
-                let roots_ptr_val = b.inst_results(roots_call)[0];
-                // Load n args from the slab.
-                let mut args: Vec<ir::Value> = Vec::with_capacity(n);
-                for i in 0..n {
-                    let v = b.ins().load(
-                        types::I64,
-                        MemFlags::trusted(),
-                        roots_ptr_val,
-                        (i * 8) as i32,
-                    );
-                    args.push(v);
-                }
-                // Build Tail-CC sig with n i64 params.
-                let mut tail_sig = Signature::new(CallConv::Tail);
-                for _ in 0..n {
-                    tail_sig.params.push(AbiParam::new(types::I64));
-                }
-                tail_sig.returns.push(AbiParam::new(types::I64));
-                let sig_ref = b.func.import_signature(tail_sig);
-                let call_inst = b.ins().call_indirect(sig_ref, fn_ptr, &args);
-                let result = b.inst_results(call_inst)[0];
-                b.ins().return_(&[result]);
-            })
+            emit_fn_body(
+                backend.module_mut(),
+                &mut fbctx,
+                shim_sig,
+                shim_id,
+                move |m, b| {
+                    let entry = b.create_block();
+                    b.append_block_params_for_function_params(entry);
+                    b.switch_to_block(entry);
+                    b.seal_block(entry);
+                    let fn_ptr = b.block_params(entry)[0];
+                    // Get the current process's mid_flight_roots slab ptr.
+                    let roots_fref = m.declare_func_in_func(roots_ptr_id, b.func);
+                    let roots_call = b.ins().call(roots_fref, &[]);
+                    let roots_ptr_val = b.inst_results(roots_call)[0];
+                    // Load n args from the slab.
+                    let mut args: Vec<ir::Value> = Vec::with_capacity(n);
+                    for i in 0..n {
+                        let v = b.ins().load(
+                            types::I64,
+                            MemFlags::trusted(),
+                            roots_ptr_val,
+                            (i * 8) as i32,
+                        );
+                        args.push(v);
+                    }
+                    // Build Tail-CC sig with n i64 params.
+                    let mut tail_sig = Signature::new(CallConv::Tail);
+                    for _ in 0..n {
+                        tail_sig.params.push(AbiParam::new(types::I64));
+                    }
+                    tail_sig.returns.push(AbiParam::new(types::I64));
+                    let sig_ref = b.func.import_signature(tail_sig);
+                    let call_inst = b.ins().call_indirect(sig_ref, fn_ptr, &args);
+                    let result = b.inst_results(call_inst)[0];
+                    b.ins().return_(&[result]);
+                },
+            )
             .map_err(|e| CodegenError::new(format!("define {}: {}", shim_name, e)))?;
         }
         ids
@@ -3241,8 +3244,11 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
     let receive_park_id = decl("fz_receive_park", &[types::I64], &[types::I64])?;
     // fz-02r.5 — mid-flight back-edge yield helpers.
     let mid_flight_roots_ptr_id = decl("fz_mid_flight_roots_ptr", &[], &[types::I64])?;
-    let yield_back_edge_id =
-        decl("fz_yield_back_edge", &[types::I64, types::I32], &[types::I64])?;
+    let yield_back_edge_id = decl(
+        "fz_yield_back_edge",
+        &[types::I64, types::I32],
+        &[types::I64],
+    )?;
     // fz-cps.1.7 — static zero-capture closure singleton lookup.
     // Returns the per-Process singleton pointer for the given cl_sid.
     let get_static_closure_id = decl("fz_get_static_closure", &[types::I32], &[types::I64])?;
@@ -4082,7 +4088,11 @@ fn emit_terminator<M: cranelift_module::Module>(
                 );
             }
         }
-        Term::TailCall { callee, args, is_back_edge } => {
+        Term::TailCall {
+            callee,
+            args,
+            is_back_edge,
+        } => {
             let callee_sid = resolve_callee_sid(*callee, args);
             if callee_is_native(callee.0) {
                 // fz-ul4.27.6.2.3 / .27.13 — TailCall to a native callee.
@@ -4160,8 +4170,8 @@ fn emit_terminator<M: cranelift_module::Module>(
                         // yield block: write args to slab, call yield helper.
                         b.switch_to_block(yield_blk);
                         b.seal_block(yield_blk);
-                        let roots_fref = jmod
-                            .declare_func_in_func(runtime.mid_flight_roots_ptr_id, b.func);
+                        let roots_fref =
+                            jmod.declare_func_in_func(runtime.mid_flight_roots_ptr_id, b.func);
                         let roots_call = b.ins().call(roots_fref, &[]);
                         let roots_ptr_val = b.inst_results(roots_call)[0];
                         debug_assert!(
@@ -4170,15 +4180,11 @@ fn emit_terminator<M: cranelift_module::Module>(
                             native_args.len()
                         );
                         for (i, &av) in native_args.iter().enumerate() {
-                            b.ins().store(
-                                MemFlags::trusted(),
-                                av,
-                                roots_ptr_val,
-                                (i * 8) as i32,
-                            );
+                            b.ins()
+                                .store(MemFlags::trusted(), av, roots_ptr_val, (i * 8) as i32);
                         }
-                        let yield_fref = jmod
-                            .declare_func_in_func(runtime.yield_back_edge_id, b.func);
+                        let yield_fref =
+                            jmod.declare_func_in_func(runtime.yield_back_edge_id, b.func);
                         // Pass the callee's raw code ptr (func_addr) so the
                         // scheduler can resume without a spec_id→ptr lookup.
                         let callee_ptr_v = b.ins().func_addr(types::I64, callee_fref);

@@ -273,7 +273,11 @@ pub fn alpha_rename(
                 args: args.iter().map(|x| sv(*x)).collect(),
                 continuation: rename_cont(continuation),
             },
-            Term::TailCall { callee, args, is_back_edge } => Term::TailCall {
+            Term::TailCall {
+                callee,
+                args,
+                is_back_edge,
+            } => Term::TailCall {
                 callee: *callee,
                 args: args.iter().map(|x| sv(*x)).collect(),
                 is_back_edge: *is_back_edge,

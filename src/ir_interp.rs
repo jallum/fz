@@ -373,8 +373,7 @@ fn run_fn(module: &Module, mut fn_id: FnId, mut args: Vec<FzValue>) -> Result<In
                             let p = fz_runtime::process::current_process();
                             p.heap.gc_mid_flight(&mut arg_vals, &mut p.mailbox);
                             p.quiet_quanta = 0;
-                            fz_runtime::yield_flag::FZ_SHOULD_YIELD
-                                .store(0, Ordering::Relaxed);
+                            fz_runtime::yield_flag::FZ_SHOULD_YIELD.store(0, Ordering::Relaxed);
                         } else {
                             let p = fz_runtime::process::current_process();
                             p.quiet_quanta = p.quiet_quanta.saturating_add(1);

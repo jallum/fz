@@ -489,8 +489,15 @@ fn annotate_back_edges(
                 for w in neighbors {
                     if !index.contains_key(&w) {
                         strongconnect(
-                            w, graph, index_counter, stack, on_stack, index, lowlink,
-                            scc_of, scc_count,
+                            w,
+                            graph,
+                            index_counter,
+                            stack,
+                            on_stack,
+                            index,
+                            lowlink,
+                            scc_of,
+                            scc_count,
                         );
                         let w_ll = lowlink[&w];
                         let v_ll = lowlink.get_mut(&v).unwrap();
@@ -524,8 +531,15 @@ fn annotate_back_edges(
         for fid in &all_fns {
             if !index.contains_key(fid) {
                 strongconnect(
-                    *fid, &graph, &mut index_counter, &mut stack, &mut on_stack,
-                    &mut index, &mut lowlink, &mut scc_of, &mut scc_count,
+                    *fid,
+                    &graph,
+                    &mut index_counter,
+                    &mut stack,
+                    &mut on_stack,
+                    &mut index,
+                    &mut lowlink,
+                    &mut scc_of,
+                    &mut scc_count,
                 );
             }
         }
@@ -538,9 +552,17 @@ fn annotate_back_edges(
     for f in &mut module.fns {
         let caller_scc = scc_of.get(&f.id).copied().unwrap_or(usize::MAX);
         let caller_name = fn_name_of.get(&f.id).cloned().unwrap_or_default();
-        let caller_span = fn_spans.get(&f.id).copied().unwrap_or(crate::diag::Span::DUMMY);
+        let caller_span = fn_spans
+            .get(&f.id)
+            .copied()
+            .unwrap_or(crate::diag::Span::DUMMY);
         for block in &mut f.blocks {
-            if let Term::TailCall { callee, args, is_back_edge } = &mut block.terminator {
+            if let Term::TailCall {
+                callee,
+                args,
+                is_back_edge,
+            } = &mut block.terminator
+            {
                 let callee_scc = scc_of.get(callee).copied().unwrap_or(usize::MAX);
                 if callee_scc == caller_scc {
                     *is_back_edge = true;
@@ -2363,7 +2385,12 @@ end
     fn first_tail_call(m: &crate::fz_ir::Module) -> Option<(crate::fz_ir::FnId, bool)> {
         for f in &m.fns {
             for b in &f.blocks {
-                if let Term::TailCall { callee, is_back_edge, .. } = &b.terminator {
+                if let Term::TailCall {
+                    callee,
+                    is_back_edge,
+                    ..
+                } = &b.terminator
+                {
                     return Some((*callee, *is_back_edge));
                 }
             }
@@ -2375,7 +2402,11 @@ end
     fn self_recursive_fn_has_back_edge() {
         let m = lower_src("fn loop(n), do: loop(n)");
         let (callee, is_back_edge) = first_tail_call(&m).expect("no TailCall");
-        assert!(is_back_edge, "self-recursion must be a back-edge; callee={:?}", callee);
+        assert!(
+            is_back_edge,
+            "self-recursion must be a back-edge; callee={:?}",
+            callee
+        );
     }
 
     #[test]

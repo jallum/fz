@@ -335,10 +335,8 @@ impl<'a> Runtime<'a> {
                 // Mid-flight back-edge yield: GC with live args + mailbox as
                 // roots, keep fn_ptr/root_count for run_quantum's resume path.
                 let n = task.mid_flight_root_count as usize;
-                task.heap.gc_mid_flight(
-                    &mut task.mid_flight_roots[..n],
-                    &mut task.mailbox,
-                );
+                task.heap
+                    .gc_mid_flight(&mut task.mid_flight_roots[..n], &mut task.mailbox);
                 FZ_SHOULD_YIELD.store(0, Ordering::Relaxed);
                 task.quiet_quanta = 0;
                 task.state = ProcessState::Ready;

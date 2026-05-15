@@ -399,10 +399,9 @@ fn aot_run_queue_loop() {
             // Mid-flight yield: GC the slab, clear flag, re-enqueue.
             let n = unsafe { (*proc_ptr).mid_flight_root_count as usize };
             let process = unsafe { &mut *proc_ptr };
-            process.heap.gc_mid_flight(
-                &mut process.mid_flight_roots[..n],
-                &mut process.mailbox,
-            );
+            process
+                .heap
+                .gc_mid_flight(&mut process.mid_flight_roots[..n], &mut process.mailbox);
             process.quiet_quanta = 0;
             crate::yield_flag::FZ_SHOULD_YIELD.store(0, std::sync::atomic::Ordering::Relaxed);
             unsafe { (*proc_ptr).state = ProcessState::Ready };

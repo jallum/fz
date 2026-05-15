@@ -787,8 +787,11 @@ impl Heap {
         let mut null_root: *mut u8 = std::ptr::null_mut();
         // Collect mailbox into a temporary vec for forwarding, then write back.
         let mb_vec: Vec<crate::fz_value::FzValue> = mailbox.drain(..).collect();
-        let mut all_extras: Vec<crate::fz_value::FzValue> =
-            roots.iter().copied().chain(mb_vec.iter().copied()).collect();
+        let mut all_extras: Vec<crate::fz_value::FzValue> = roots
+            .iter()
+            .copied()
+            .chain(mb_vec.iter().copied())
+            .collect();
         self.gc_with_extra_roots(&mut null_root, &mut all_extras);
         // Write forwarded values back to roots slab and mailbox.
         let n = roots.len();
