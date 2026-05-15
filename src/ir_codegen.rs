@@ -1569,7 +1569,18 @@ impl Backend for AotBackend {
 
     fn finalize(self, meta: CompiledMetadata) -> Result<AotArtifact, CodegenError> {
         let AotBackend { omod } = self;
-        let product = omod.finish();
+        let mut product = omod.finish();
+        // Emit the macOS platform load command (LC_BUILD_VERSION) so ld
+        // doesn't warn "no platform load command found". Cranelift's
+        // ObjectBuilder doesn't inject this automatically (fz-ul4.33).
+        #[cfg(target_os = "macos")]
+        {
+            let mut ver = object::write::MachOBuildVersion::default();
+            ver.platform = object::macho::PLATFORM_MACOS;
+            ver.minos = 11 << 16; // 11.0.0 — first macOS on Apple Silicon
+            ver.sdk = 11 << 16;
+            product.object.set_macho_build_version(ver);
+        }
         let object = product
             .emit()
             .map_err(|e| CodegenError::new(format!("object emit: {}", e)))?;

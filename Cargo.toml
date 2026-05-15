@@ -11,6 +11,7 @@ cranelift-codegen = { version = "0.131", features = ["disas"] }
 cranelift-frontend = "0.131"
 cranelift-module = "0.131"
 cranelift-object = "0.131"
+object = { version = "0.39", features = ["write"] }
 cranelift-jit = "0.131"
 cranelift-native = "0.131"
 target-lexicon = "0.13"
