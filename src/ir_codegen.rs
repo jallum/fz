@@ -877,7 +877,6 @@ fn build_fn_signature(
     param_reprs: &[ArgRepr],
     ret_repr: ArgRepr,
     is_native: bool,
-    needs_host_ctx: bool,
     is_cont_fn: bool,
     closure_target_n_caps: Option<usize>,
 ) -> Signature {
@@ -916,13 +915,9 @@ fn build_fn_signature(
         }
         sig.params.push(AbiParam::new(types::I64)); // self
         sig.params.push(AbiParam::new(types::I64)); // cont
-        let _ = needs_host_ctx;
     } else {
         for r in param_reprs {
             sig.params.push(AbiParam::new(r.cl_type()));
-        }
-        if needs_host_ctx {
-            sig.params.push(AbiParam::new(types::I64)); // host_ctx
         }
         // fz-cps.1.a — trailing cont:i64 per §2.1.
         sig.params.push(AbiParam::new(types::I64)); // cont
@@ -2297,14 +2292,6 @@ pub fn compile_with_backend<B: Backend>(
     // closure_typed_captures.clif (verified by experiment) — no
     // codegen content shifted. The analysis is dead.
 
-    // fz-cps.1.13 — fns_needing_host_ctx analysis deleted. Native fns
-    // all use fz_halt_implicit (TLS-based) for Term::Halt, dropping the
-    // host_ctx parameter. The set was always empty post-1.12; threading
-    // remained as a no-op placeholder. Now constructed inline as empty
-    // wherever still consumed.
-    let fns_needing_host_ctx: std::collections::HashSet<crate::fz_ir::FnId> =
-        std::collections::HashSet::new();
-
     // fz-ul4.27.18 — per-FnId set: fns invoked from any fz IR site
     // (as a direct callee, a continuation, or a closure target).
     // A fn NOT in this set has no fz IR caller and can only enter via
@@ -2770,12 +2757,10 @@ pub fn compile_with_backend<B: Backend>(
             Some(idx) => {
                 let f = &module.fns[idx];
                 let is_native = natively_callable.contains(&f.id);
-                let needs_host_ctx = fns_needing_host_ctx.contains(&f.id);
                 build_fn_signature(
                     &param_reprs[sid],
                     return_reprs[sid],
                     is_native,
-                    needs_host_ctx,
                     cont_fns.contains(&f.id),
                     // fz-cps.1.2: closure-target fn shape gated on
                     // native (uniform closure targets still go through
@@ -2855,7 +2840,6 @@ pub fn compile_with_backend<B: Backend>(
             &cont_target_fns,
             &cont_fns,
             &closure_n_captures,
-            &fns_needing_host_ctx,
             &fn_ids,
             &param_reprs,
             &return_reprs,
@@ -3527,7 +3511,6 @@ fn compile_fn<M: cranelift_module::Module>(
     cont_target_fns: &std::collections::HashSet<crate::fz_ir::FnId>,
     cont_fns: &std::collections::HashSet<crate::fz_ir::FnId>,
     closure_n_captures: &std::collections::HashMap<crate::fz_ir::FnId, usize>,
-    fns_needing_host_ctx: &std::collections::HashSet<crate::fz_ir::FnId>,
     fn_ids: &HashMap<u32, FuncId>,
     param_reprs: &[Vec<ArgRepr>],
     return_reprs: &[ArgRepr],
@@ -3691,9 +3674,6 @@ fn compile_fn<M: cranelift_module::Module>(
             for r in my_param_reprs {
                 b.append_block_param(entry_cl, r.cl_type());
             }
-            if fns_needing_host_ctx.contains(&f.id) {
-                b.append_block_param(entry_cl, types::I64); // host_ctx
-            }
             b.append_block_param(entry_cl, types::I64); // cont
         }
     } else {
@@ -3727,10 +3707,8 @@ fn compile_fn<M: cranelift_module::Module>(
     // terminator type that natively_callable excludes from native fns,
     // so unwrapping the Option below is invariant-safe. Any future code
     // path that violates this surfaces immediately as a panic at codegen.
-    // fz-ul4.27.19: host_ctx is `Option<ir::Value>` — None for native fns
-    // whose sig dropped it (per `fns_needing_host_ctx`). Use sites that
-    // forward or call fz_halt unwrap with `.expect(...)`; the analysis
-    // guarantees those paths only fire when host_ctx was kept.
+    // host_ctx is Some only for uniform fns (always the second block param).
+    // Native fns always have host_ctx = None; they use fz_halt_implicit (TLS).
     // fz-cps.1.a (fz-siu.1.1): `cont_param` is the trailing i64 in the
     // native-tier signature. Threaded but unused in .1.1; .1.2+ consume it.
     let (frame_ptr, host_ctx, cont_param): (
@@ -3789,11 +3767,7 @@ fn compile_fn<M: cranelift_module::Module>(
                 }
                 var_map.insert(p.0, v);
             }
-            let host_ctx = if fns_needing_host_ctx.contains(&f.id) {
-                Some(params[2])
-            } else {
-                None
-            };
+            let host_ctx = None;
             (None, host_ctx, Some(self_val))
         } else if let Some(n_caps) = closure_target_n_caps {
             // fz-cps.1.2 closure-target fn entry harness per §2.1.
@@ -3854,11 +3828,7 @@ fn compile_fn<M: cranelift_module::Module>(
                 var_map.insert(p.0, params[i]);
             }
             let host_ctx_idx = entry_blk.params.len();
-            let (host_ctx, cont_idx) = if fns_needing_host_ctx.contains(&f.id) {
-                (Some(params[host_ctx_idx]), host_ctx_idx + 1)
-            } else {
-                (None, host_ctx_idx)
-            };
+            let (host_ctx, cont_idx) = (None, host_ctx_idx);
             (None, host_ctx, Some(params[cont_idx]))
         }
     } else {
@@ -4080,10 +4050,7 @@ fn compile_fn<M: cranelift_module::Module>(
                     b.ins().call(hi_fref, &[val]);
                 } else {
                     let halt_fref = jmod.declare_func_in_func(runtime.halt_id, b.func);
-                    let hctx = host_ctx.expect(
-                        "Term::Halt needs host_ctx but fns_needing_host_ctx \
-                         analysis dropped it — invariant violated",
-                    );
+                    let hctx = host_ctx.expect("uniform fn always has host_ctx");
                     b.ins().call(halt_fref, &[hctx, val]);
                 }
                 if is_native {
@@ -4195,14 +4162,6 @@ fn compile_fn<M: cranelift_module::Module>(
                         let from = var_reprs.get(&av.0).copied().unwrap_or(ArgRepr::Tagged);
                         let to = callee_param_reprs[i];
                         native_args.push(coerce_to(&mut b, jmod, runtime, raw_val, from, to));
-                    }
-                    // fz-ul4.27.19: push host_ctx only when the callee's
-                    // trimmed sig still includes it.
-                    if fns_needing_host_ctx.contains(callee) {
-                        native_args.push(host_ctx.expect(
-                            "callee needs host_ctx; this fn must also have it \
-                             by the forward-transitive analysis",
-                        ));
                     }
                     // fz-cps.1.8 — if the callee is a closure-target fn,
                     // its sig is `(args..., self, cont) tail`. Direct
@@ -4476,16 +4435,6 @@ fn compile_fn<M: cranelift_module::Module>(
                         let from = var_reprs.get(&av.0).copied().unwrap_or(ArgRepr::Tagged);
                         let to = callee_param_reprs[i];
                         native_args.push(coerce_to(&mut b, jmod, runtime, raw_val, from, to));
-                    }
-                    // fz-ul4.27.19: forward host_ctx only when the callee
-                    // needs it. The transitive analysis guarantees this fn
-                    // has host_ctx if its callee does.
-                    if fns_needing_host_ctx.contains(callee) {
-                        native_args.push(
-                            host_ctx.expect(
-                                "TailCall callee needs host_ctx; this fn must also have it",
-                            ),
-                        );
                     }
                     // fz-cps.1.8 — TailCall to a closure-target fn: insert
                     // static singleton as `self` before cont. Mirror of
