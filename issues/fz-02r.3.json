@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-15T21:58:36Z",
+  "description": "Files: runtime/src/process.rs, runtime/src/heap.rs, runtime/src/ir_runtime.rs, src/runtime.rs\n\nAdd to Process:\n  mid_flight_fn_id: u32\n  mid_flight_root_count: u8\n  mid_flight_roots: [FzValue; 8]\n  quiet_quanta: u8\n\nAdd Heap::gc_mid_flight(roots: \u0026mut [FzValue], mailbox: \u0026mut VecDeque\u003cFzValue\u003e):\n  Same Cheney as gc() (no pre-pass). To-space: last_gc_live_bytes*2 or bytes_used().\n  Forward each root in roots[]. Forward each heap-pointer FzValue in mailbox (iter_mut).\n  BFS scan. Reclaim from-space. Reset watermark. Update last_gc_live_bytes.\n  parked_cont not touched (null while mid-flight).\n\nAdd extern C helpers:\n  fz_mid_flight_roots_ptr() -\u003e u64   // \u0026process.mid_flight_roots as u64\n  fz_yield_back_edge(fn_id: u32, n: u32)  // sets mid_flight_fn_id, root_count, state=Ready, clears FZ_SHOULD_YIELD\n\nSelf-send optimisation (same commit as gc_mid_flight — mailbox root must be in place first):\n  In send_via_current_runtime, self-send branch: drop deep_copy_value, push msg directly.\n  Correct because gc_mid_flight now roots the mailbox.\n\nTests:\n  gc_mid_flight forwards cons list roots correctly.\n  Mailbox item with no other reference survives mid-flight GC.\n  quiet_quanta increments when bytes_used() \u003c last_gc_live_bytes/2; proactive yield after 3.\n  Self-send value survives mid-flight GC cycle.",
+  "id": "fz-02r.3",
+  "labels": [],
+  "parent": "fz-02r",
+  "priority": 2,
+  "status": "open",
+  "title": "fz-sched.7: Process mid-flight fields, gc_mid_flight, mailbox roots, self-send opt",
+  "type": "task",
+  "updated_at": "2026-05-15T21:58:36Z"
+}
