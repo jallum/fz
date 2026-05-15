@@ -4095,30 +4095,15 @@ fn compile_fn<M: cranelift_module::Module>(
                     b.ins().call(halt_fref, &[hctx, val]);
                 }
                 if is_native {
-                    // fz-ul4.27.6.4 — native fn: propagate halt val back
-                    // up the chain via the native return register. The
-                    // outermost uniform caller's emit_return will re-call
-                    // fz_halt with this val (idempotent: same value), so
-                    // halt_value stays correct even when the chain halts
-                    // before control returns to the trampoline.
-                    //
-                    // fz-ul4.27.13: dead-code halts (e.g. unreachable
-                    // function_clause / match_error fail blocks) still
-                    // need a typed return value — fz_halt is no-return at
-                    // runtime but Cranelift's verifier doesn't model that.
-                    // Emit a typed dummy when my return_repr is RawF64;
-                    // for RawInt/Tagged the tagged i64 `val` is fine
-                    // (caller would interpret it as the halt-propagated
-                    // value if the unreachable path were ever taken).
-                    // fz-cps.1.2: native return canonicalized to i64.
-                    // val here is whatever repr the body produced; coerce
-                    // to a tagged i64 sentinel (fz_halt already set
-                    // process.halt_value, so the actual returned bits
-                    // are unobservable — but the type must match the sig).
-                    let _ = return_reprs[this_spec_id as usize];
+                    // fz-ul4.27.6.4 — native fn: propagate halt via the
+                    // native return register. fz_halt already recorded
+                    // process.halt_value; the actual bits are unobservable
+                    // but the Cranelift sig requires a typed return.
+                    // fz-ul4.27.13: dead-code halt blocks (match_error etc.)
+                    // still need a well-typed return — iconst(0) satisfies
+                    // the i64 sig without depending on val's repr.
                     let zero = b.ins().iconst(types::I64, 0);
                     b.ins().return_(&[zero]);
-                    let _ = val;
                 } else {
                     // Uniform fn: trampoline sentinel is null.
                     let null = b.ins().iconst(types::I64, 0);
