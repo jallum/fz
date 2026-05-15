@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-15T03:22:39Z",
+  "description": "The pattern drain-pending → register-new-specs → walk-bodies appears four times in type_module_pass (lines 572-598, 600-626, 682-707, 712-760). Each copy is structurally identical: drain keys from pending, call type_fn if the key is new in specs, then walk the newly-registered spec's body via walk_spec_for_discovery.\n\nExtract into:\n  fn drain_and_register(\n      pending: \u0026mut Pending,\n      specs: \u0026mut Specs,\n      idx_of: \u0026IdxOf,\n      m: \u0026Module,\n      callsite_fn_consts: \u0026mut FnConsts,\n      prev_returns: \u0026Returns,\n      caller_scc: \u0026SccSet,\n      widen_now: bool,\n  ) -\u003e Vec\u003c(FnId, Vec\u003cDescr\u003e)\u003e  // newly-registered keys this call\n\nThree of the four duplicated blocks are removed. The fourth (inside the SCC loop) stays distinct because it has SCC-specific widening logic.\n\nNo behavior change. Returns newly-registered keys — this return value is the hook W2 uses to build the worklist.\n\nRequires fz-afs.5 (S1) for the idx_of parameter.",
+  "id": "fz-afs.7",
+  "labels": [],
+  "parent": "fz-afs",
+  "priority": 2,
+  "status": "open",
+  "title": "extract drain/register/walk into helper; remove 3 duplicated copies",
+  "type": "task",
+  "updated_at": "2026-05-15T03:22:39Z"
+}
