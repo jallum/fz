@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-15T00:29:40Z",
+  "description": "In higher_order, when a function-typed argument is passed as a known callee at some callsites and unknown at others, only a generic (wide) spec is generated covering all sites. A separate narrow spec for the known-callee callsites is missing.\n\nThe specializer should detect that some callsites resolve to a concrete function and emit a narrow spec for those, keeping the wide spec for fully polymorphic callsites.",
+  "id": "fz-1pq.7",
+  "labels": [],
+  "parent": "fz-1pq",
+  "priority": 2,
+  "status": "open",
+  "title": "higher_order: generic and narrow spec coexistence — narrow spec not generated for known-callee sites",
+  "type": "bug",
+  "updated_at": "2026-05-15T00:29:40Z"
+}
