@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-v9l.1"
+  ],
   "blocks": [],
   "created": "2026-05-15T10:11:21Z",
   "description": "",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "fz-cg1.2 remove blanket #![allow(dead_code)] module suppress",
   "type": "task",
-  "updated_at": "2026-05-15T10:11:21Z"
+  "updated_at": "2026-05-15T10:11:27Z"
 }

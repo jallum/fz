@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-v9l.2"
+  ],
   "created": "2026-05-15T10:11:21Z",
   "description": "",
   "id": "fz-v9l.1",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "fz-cg1.1 remove _kp dead function",
   "type": "task",
-  "updated_at": "2026-05-15T10:11:21Z"
+  "updated_at": "2026-05-15T10:11:27Z"
 }
