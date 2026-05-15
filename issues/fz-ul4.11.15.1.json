@@ -9,9 +9,15 @@
   "id": "fz-ul4.11.15.1",
   "labels": [],
   "parent": "fz-ul4.11.15",
+  "comments": [
+    {
+      "text": "2026-05-15: Module.fn_idx added (fz-cg1.8 era). The inliner does NOT add new FnIrs to module.fns, so fn_idx never needs updating. But splice_blocks mutates an existing FnIr — the implementation must not hold an immutable \u0026FnIr reference to the callee across the mutable borrow of the caller FnIr. Clone the callee's blocks before acquiring the mutable borrow.",
+      "timestamp": "2026-05-15T16:01:21Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "IR inliner skeleton + leaf detector + alpha-rename",
   "type": "task",
-  "updated_at": "2026-05-15T03:21:34Z"
+  "updated_at": "2026-05-15T16:01:21Z"
 }
