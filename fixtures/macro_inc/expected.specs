@@ -5,17 +5,17 @@
 ;     Var(0) :: :match_error
 ;     Var(1) :: 41
 ;     Var(2) :: 1
-;     Var(3) :: int
+;     Var(3) :: 42
 ;     Var(4) :: nil
 ;     Var(5) :: 21
 ;     Var(6) :: 2
-;     Var(7) :: int
+;     Var(7) :: 42
 ;     Var(8) :: nil
 ;     Var(9) :: 20
 ;     Var(10) :: 2
-;     Var(11) :: int
+;     Var(11) :: 40
 ;     Var(12) :: 1
-;     Var(13) :: int
+;     Var(13) :: 41
 ;     Var(14) :: nil
 ;   exits:
 ;     blk0 Return Var(14)    :: nil

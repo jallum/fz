@@ -656,7 +656,7 @@ fn type_module_pass(
                             let n_params = lam.block(lam.entry).params.len();
                             let opaque_arity = n_params.saturating_sub(captured.len());
                             if !opaque_arities.contains(&opaque_arity) {
-                                env.insert(*v, type_prim(prim, &env, m));
+                                env.insert(*v, type_prim(prim, &env, m, &HashSet::new()));
                                 continue;
                             }
                             let mut k: Vec<Descr> = vec![Descr::any(); n_params];
@@ -670,7 +670,7 @@ fn type_module_pass(
                             }
                         }
                     }
-                    env.insert(*v, type_prim(prim, &env, m));
+                    env.insert(*v, type_prim(prim, &env, m, &HashSet::new()));
                 }
             }
         }
@@ -828,7 +828,7 @@ fn walk_spec_for_discovery(
             // to a dedicated phase-2 sweep after phase-1 converges. The
             // walker now only discovers direct + resolved-closure
             // dispatch.
-            env.insert(*v, type_prim(prim, &env, m));
+            env.insert(*v, type_prim(prim, &env, m, &HashSet::new()));
         }
 
         // Direct Call / TailCall.
@@ -1159,9 +1159,29 @@ pub fn type_fn(f: &FnIr, m: &Module, entry_param_types: Option<&[Descr]>) -> FnT
         for b in &f.blocks {
             // Re-derive env at each stmt position.
             let mut env = block_envs[&b.id].clone();
+            // Track vars provably derived from IR-level Prim::Const stmts
+            // within this block. Used to enable literal folding in
+            // numeric_result_fold without cascading spec keys (fz-1pq.6).
+            let mut const_vars: HashSet<Var> = HashSet::new();
             for stmt in &b.stmts {
                 let Stmt::Let(v, prim) = stmt;
-                let t = type_prim(prim, &env, m);
+                let t = type_prim(prim, &env, m, &const_vars);
+                // Propagate const-derivation: a Const is trivially const; a
+                // BinOp/UnOp on const vars is also const.
+                match prim {
+                    Prim::Const(_) => {
+                        const_vars.insert(*v);
+                    }
+                    Prim::BinOp(_, a, b)
+                        if const_vars.contains(a) && const_vars.contains(b) =>
+                    {
+                        const_vars.insert(*v);
+                    }
+                    Prim::UnOp(_, a) if const_vars.contains(a) => {
+                        const_vars.insert(*v);
+                    }
+                    _ => {}
+                }
                 env.insert(*v, t.clone());
                 // vars is the definition-site type; single assignment so
                 // we just overwrite each iteration (will converge).
@@ -1268,7 +1288,7 @@ pub fn type_fn(f: &FnIr, m: &Module, entry_param_types: Option<&[Descr]>) -> FnT
                 let mut env = block_envs[&bid].clone();
                 for stmt in &b.stmts {
                     let Stmt::Let(v, prim) = stmt;
-                    env.insert(*v, type_prim(prim, &env, m));
+                    env.insert(*v, type_prim(prim, &env, m, &HashSet::new()));
                 }
                 let ct = env.get(cond).cloned().unwrap_or_else(Descr::any);
                 // Use is_subtype to check provable branch deadness.
@@ -1383,19 +1403,31 @@ fn is_singleton_lit(d: &Descr) -> bool {
         || (!d.floats.cofinite && d.floats.set.len() == 1)
 }
 
-fn type_prim(prim: &Prim, env: &HashMap<Var, Descr>, m: &Module) -> Descr {
+fn type_prim(
+    prim: &Prim,
+    env: &HashMap<Var, Descr>,
+    m: &Module,
+    const_vars: &HashSet<Var>,
+) -> Descr {
     match prim {
         Prim::Const(c) => type_const(c, &m.atom_names),
 
         Prim::BinOp(op, a, b) => {
             let at = lookup(env, *a);
             let bt = lookup(env, *b);
-            type_binop(*op, &at, &bt)
+            let fold = const_vars.contains(a) && const_vars.contains(b);
+            type_binop(*op, &at, &bt, fold)
         }
         Prim::UnOp(op, v) => {
             let vt = lookup(env, *v);
             match op {
-                UnOp::Neg => numeric_result(&vt, &vt),
+                UnOp::Neg => {
+                    if const_vars.contains(v) {
+                        numeric_result_fold(BinOp::Sub, &Descr::int_lit(0), &vt)
+                    } else {
+                        numeric_result(&vt, &vt)
+                    }
+                }
                 UnOp::Not => Descr::bool_t(),
             }
         }
@@ -1572,10 +1604,16 @@ fn type_const(c: &Const, atom_names: &[String]) -> Descr {
     }
 }
 
-fn type_binop(op: BinOp, a: &Descr, b: &Descr) -> Descr {
+fn type_binop(op: BinOp, a: &Descr, b: &Descr, fold: bool) -> Descr {
     use BinOp::*;
     match op {
-        Add | Sub | Mul | Div | Mod => numeric_result(a, b),
+        Add | Sub | Mul | Div | Mod => {
+            if fold {
+                numeric_result_fold(op, a, b)
+            } else {
+                numeric_result(a, b)
+            }
+        }
         Eq | Neq | Lt | Le | Gt | Ge => compare_result(op, a, b),
         And | Or => a.union(b),
     }
@@ -1646,6 +1684,40 @@ fn numeric_result(a: &Descr, b: &Descr) -> Descr {
     } else {
         int.union(&float)
     }
+}
+
+/// Like `numeric_result` but folds singleton operands to a literal result.
+/// Only called when both operands are known IR-level constants (const_vars),
+/// so the result cannot cascade into new narrow spec keys (fz-1pq.6).
+fn numeric_result_fold(op: BinOp, a: &Descr, b: &Descr) -> Descr {
+    use BinOp::*;
+    if let (Some(ai), Some(bi)) = (int_singleton(a), int_singleton(b)) {
+        let result = match op {
+            Add => ai.checked_add(bi),
+            Sub => ai.checked_sub(bi),
+            Mul => ai.checked_mul(bi),
+            Div => bi.checked_rem(1).filter(|_| bi != 0).and(ai.checked_div(bi)),
+            Mod => bi.checked_rem(1).filter(|_| bi != 0).and(ai.checked_rem(bi)),
+            _ => None,
+        };
+        if let Some(r) = result {
+            return Descr::int_lit(r);
+        }
+    }
+    if let (Some(af), Some(bf)) = (float_singleton(a), float_singleton(b)) {
+        let result = match op {
+            Add => Some(af + bf),
+            Sub => Some(af - bf),
+            Mul => Some(af * bf),
+            Div => Some(af / bf),
+            Mod => Some(af % bf),
+            _ => None,
+        };
+        if let Some(r) = result {
+            return Descr::float_lit(r);
+        }
+    }
+    numeric_result(a, b)
 }
 
 fn type_builtin(bid: BuiltinId) -> Descr {
@@ -1727,7 +1799,7 @@ pub fn specialize_return(m: &Module, fn_id: crate::fz_ir::FnId, params: &[Descr]
             let mut env = block_envs[&b.id].clone();
             for stmt in &b.stmts {
                 let Stmt::Let(v, prim) = stmt;
-                let t = type_prim(prim, &env, m);
+                let t = type_prim(prim, &env, m, &HashSet::new());
                 env.insert(*v, t);
             }
             match &b.terminator {
@@ -1777,7 +1849,7 @@ pub fn specialize_return(m: &Module, fn_id: crate::fz_ir::FnId, params: &[Descr]
         let mut env = block_envs.get(&b.id).cloned().unwrap_or_default();
         for stmt in &b.stmts {
             let Stmt::Let(v, prim) = stmt;
-            let t = type_prim(prim, &env, m);
+            let t = type_prim(prim, &env, m, &HashSet::new());
             env.insert(*v, t);
         }
         match &b.terminator {
@@ -1986,7 +2058,7 @@ pub fn collect_diagnostics(module: &Module, types: &ModuleTypes) -> crate::diag:
                 let mut env = ft.block_envs.get(&b.id).cloned().unwrap_or_default();
                 for stmt in &b.stmts {
                     let Stmt::Let(v, prim) = stmt;
-                    let t = type_prim(prim, &env, module);
+                    let t = type_prim(prim, &env, module, &HashSet::new());
                     env.insert(*v, t);
                 }
                 let (then_env, else_env) = narrow_for_if(&env, cond, &b.stmts);
@@ -2079,7 +2151,7 @@ pub fn collect_diagnostics(module: &Module, types: &ModuleTypes) -> crate::diag:
                         }
                     }
                 }
-                let t = type_prim(prim, &env, module);
+                let t = type_prim(prim, &env, module, &HashSet::new());
                 env.insert(*v, t);
             }
         }
@@ -2189,7 +2261,7 @@ fn env_at_terminator(caller_ft: &FnTypes, block: &Block, module: &Module) -> Has
         .unwrap_or_default();
     for stmt in &block.stmts {
         let Stmt::Let(v, prim) = stmt;
-        let t = type_prim(prim, &env, module);
+        let t = type_prim(prim, &env, module, &HashSet::new());
         env.insert(*v, t);
     }
     env

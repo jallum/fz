@@ -16,7 +16,7 @@
 ;     Var(0) :: :match_error
 ;     Var(1) :: 1.5
 ;     Var(2) :: 2.5
-;     Var(3) :: float
+;     Var(3) :: 4.0
 ;     Var(4) :: nil
 ;   exits:
 ;     blk0 Return Var(4)    :: nil
