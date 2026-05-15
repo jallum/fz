@@ -897,11 +897,9 @@ fn build_fn_signature(
         sig.params.push(AbiParam::new(types::I64)); // cont
     }
     if is_native {
-        // fz-cps.1.2: native fn return canonicalized to i64. Term::Return
-        // is now `return_call_indirect sig(i64, i64) -> i64 tail`; the
-        // caller's return type must match the target's per Cranelift's
-        // tail-call verifier. Coercion happens at the return site.
-        let _ = ret_repr;
+        // fz-cps.1.2: native fn return canonicalized to i64 regardless of
+        // ret_repr. Term::Return is `return_call_indirect sig(i64,i64)->i64
+        // tail`; coercion happens at the return site.
         sig.returns.push(AbiParam::new(types::I64));
     } else {
         sig.returns.push(AbiParam::new(ret_repr.cl_type()));
@@ -3630,7 +3628,6 @@ fn emit_terminator<M: cranelift_module::Module>(
                 let cont_is_native = callee_is_native(continuation.fn_id.0);
                 let cl_ptr_opt: Option<ir::Value> = if cont_is_native {
                     let cont_fid = *fn_ids.get(&cont_sid).expect("cont fn_id missing");
-                    let cont_fref = jmod.declare_func_in_func(cont_fid, b.func);
                     let acl_fref = jmod.declare_func_in_func(runtime.alloc_closure_id, b.func);
                     let cl_fid_v = b.ins().iconst(types::I32, cont_sid as i64);
                     let n_caps_v = b
@@ -3642,7 +3639,7 @@ fn emit_terminator<M: cranelift_module::Module>(
                     let zero_hk = b.ins().iconst(types::I32, 0);
                     let cl_inst = b.ins().call(acl_fref, &[cl_fid_v, n_caps_v, zero_hk]);
                     let cl_ptr = b.inst_results(cl_inst)[0];
-                    let cont_code_addr = b.ins().func_addr(types::I64, cont_fref);
+                    let cont_code_addr = fn_addr(jmod, cont_fid, b);
                     b.ins()
                         .store(MemFlags::trusted(), cont_code_addr, cl_ptr, HEADER_SIZE);
                     // outer_cont at +24. fz-cps.1.8 — cont fns
@@ -3731,7 +3728,6 @@ fn emit_terminator<M: cranelift_module::Module>(
                         let off = HEADER_SIZE + SLOT_BYTES * 2 + (i as i32) * SLOT_BYTES;
                         b.ins().store(MemFlags::trusted(), v, cl_ptr, off);
                     }
-                    let _ = cont_fref;
                     Some(cl_ptr)
                 } else {
                     None
@@ -3775,16 +3771,16 @@ fn emit_terminator<M: cranelift_module::Module>(
                     // return_call (TCO via Tail-CC). The callee's
                     // Term::Return tail-chains into the cont closure
                     // we built above. Matches §8.2 target clif.
-                    let _ = (return_reprs[this_spec_id as usize], callee_ret_repr);
+                    // Repr invariant: natively_callable fixed-point guarantees
+                    // return_reprs[this_spec_id] == callee_ret_repr here.
                     b.ins().return_call(callee_fref, &native_args);
                 } else if cl_ptr_opt.is_some() || synth_halt_cont {
                     // Uniform caller → native callee (chained). Can't
                     // return_call across CC; synchronous call then
                     // return the chain-final value (halt_value already
-                    // set by the time we get here).
-                    let call_inst = b.ins().call(callee_fref, &native_args);
-                    let result = b.inst_results(call_inst)[0];
-                    let _ = (return_reprs[this_spec_id as usize], callee_ret_repr, result);
+                    // set by the time we get here). Call result is
+                    // intentionally discarded — chain unwinds via halt-cont.
+                    b.ins().call(callee_fref, &native_args);
                     let zero = b.ins().iconst(types::I64, 0);
                     b.ins().return_(&[zero]);
                 } else {

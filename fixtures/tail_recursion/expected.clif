@@ -4,11 +4,11 @@
     ;   @abi    () -> Tagged
 function u0:0(i64) -> i64 tail {
     sig0 = (i64, i64, i64) -> i64 tail
-    sig1 = (i64, i64) -> i64 tail
-    sig2 = (i32, i32, i32) -> i64 system_v
+    sig1 = (i32, i32, i32) -> i64 system_v
+    sig2 = (i64, i64) -> i64 tail
     fn0 = colocated u0:44 sig0
-    fn1 = colocated u0:46 sig1
-    fn2 = u0:28 sig2
+    fn1 = u0:28 sig1
+    fn2 = colocated u0:46 sig2
 
 block0(v0: i64):
     v1 = iconst.i64 0x0001_86a0         ; @5:15
@@ -16,8 +16,8 @@ block0(v0: i64):
     v3 = iconst.i32 4                   ; @5:9
     v4 = iconst.i32 1                   ; @5:9
     v5 = iconst.i32 0                   ; @5:9
-    v6 = call fn2(v3, v4, v5)           ; @5:9  v3 = 4, v4 = 1, v5 = 0
-    v7 = func_addr.i64 fn1              ; @5:9
+    v6 = call fn1(v3, v4, v5)           ; @5:9  v3 = 4, v4 = 1, v5 = 0
+    v7 = func_addr.i64 fn2              ; @5:9
     store notrap aligned v7, v6+16      ; @5:9
     store notrap aligned v0, v6+24      ; @5:9
     return_call fn0(v1, v2, v6)         ; @5:9  v1 = 0x0001_86a0, v2 = 0

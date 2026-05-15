@@ -4,19 +4,19 @@
     ;   @abi    () -> Tagged
 function u0:0(i64) -> i64 tail {
     sig0 = (i64, i64) -> i64 tail
-    sig1 = (i64, i64) -> i64 tail
-    sig2 = (i32, i32, i32) -> i64 system_v
+    sig1 = (i32, i32, i32) -> i64 system_v
+    sig2 = (i64, i64) -> i64 tail
     fn0 = colocated u0:44 sig0
-    fn1 = colocated u0:46 sig1
-    fn2 = u0:28 sig2
+    fn1 = u0:28 sig1
+    fn2 = colocated u0:46 sig2
 
 block0(v0: i64):
     v1 = iconst.i64 0                   ; @5:18
     v2 = iconst.i32 4                   ; @5:9
     v3 = iconst.i32 1                   ; @5:9
     v4 = iconst.i32 0                   ; @5:9
-    v5 = call fn2(v2, v3, v4)           ; @5:9  v2 = 4, v3 = 1, v4 = 0
-    v6 = func_addr.i64 fn1              ; @5:9
+    v5 = call fn1(v2, v3, v4)           ; @5:9  v2 = 4, v3 = 1, v4 = 0
+    v6 = func_addr.i64 fn2              ; @5:9
     store notrap aligned v6, v5+16      ; @5:9
     store notrap aligned v0, v5+24      ; @5:9
     return_call fn0(v1, v5)             ; @5:9  v1 = 0
@@ -96,12 +96,12 @@ block3:
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64) system_v
     sig1 = (i64, i64) -> i64 tail
-    sig2 = (i64, i64) -> i64 tail
-    sig3 = (i32, i32, i32) -> i64 system_v
+    sig2 = (i32, i32, i32) -> i64 system_v
+    sig3 = (i64, i64) -> i64 tail
     fn0 = u0:0 sig0
     fn1 = colocated u0:45 sig1
-    fn2 = colocated u0:47 sig2
-    fn3 = u0:28 sig3
+    fn2 = u0:28 sig2
+    fn3 = colocated u0:47 sig3
 
     block0(v0: i64, v1: i64):    ;; v0 :: :zero
     call fn0(v0)                        ; @5:3
@@ -110,8 +110,8 @@ function u0:0(i64, i64) -> i64 tail {
     v4 = iconst.i32 5                   ; @6:9
     v5 = iconst.i32 1                   ; @6:9
     v6 = iconst.i32 0                   ; @6:9
-    v7 = call fn3(v4, v5, v6)           ; @6:9  v4 = 5, v5 = 1, v6 = 0
-    v8 = func_addr.i64 fn2              ; @6:9
+    v7 = call fn2(v4, v5, v6)           ; @6:9  v4 = 5, v5 = 1, v6 = 0
+    v8 = func_addr.i64 fn3              ; @6:9
     store notrap aligned v8, v7+16      ; @6:9
     v9 = load.i64 notrap aligned v1+24  ; @6:9
     store notrap aligned v9, v7+24      ; @6:9
