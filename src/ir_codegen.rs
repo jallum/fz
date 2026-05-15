@@ -2915,7 +2915,7 @@ pub fn compile_with_backend<B: Backend>(
     // via Tail-CC indirect with N args loaded from current_process.mid_flight_roots.
     let mid_flight_resume_ids: [FuncId; 9] = {
         let mut ids = [runtime.mid_flight_roots_ptr_id; 9]; // placeholder; overwritten below
-        for n in 0usize..=8 {
+        for (n, id_slot) in ids.iter_mut().enumerate() {
             let shim_name = format!("fz_mid_flight_resume_{}", n);
             let mut shim_sig = Signature::new(CallConv::SystemV);
             shim_sig.params.push(AbiParam::new(types::I64)); // fn_ptr
@@ -2924,7 +2924,7 @@ pub fn compile_with_backend<B: Backend>(
                 .module_mut()
                 .declare_function(&shim_name, Linkage::Local, &shim_sig)
                 .map_err(|e| CodegenError::new(format!("declare {}: {}", shim_name, e)))?;
-            ids[n] = shim_id;
+            *id_slot = shim_id;
             let roots_ptr_id = runtime.mid_flight_roots_ptr_id;
             emit_fn_body(
                 backend.module_mut(),

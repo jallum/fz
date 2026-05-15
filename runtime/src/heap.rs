@@ -732,12 +732,13 @@ impl Heap {
 
         // Forward extra roots (mid-flight args, mailbox items).
         for v in extra_roots.iter_mut() {
-            if let Some(p) = v.unbox_ptr() {
-                if !p.is_null() && ptr_in_from_space(p as *mut u8, &from_ranges) {
-                    let new_p = cheney_forward(p, &from_ranges, &mut free, to_end);
-                    *v = crate::fz_value::FzValue::from_ptr(new_p);
-                    live_count += 1;
-                }
+            if let Some(p) = v.unbox_ptr()
+                && !p.is_null()
+                && ptr_in_from_space(p as *mut u8, &from_ranges)
+            {
+                let new_p = cheney_forward(p, &from_ranges, &mut free, to_end);
+                *v = crate::fz_value::FzValue::from_ptr(new_p);
+                live_count += 1;
             }
         }
 
