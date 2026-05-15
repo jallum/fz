@@ -135,6 +135,7 @@ pub extern "C" fn fz_aot_setup(
     // Install scheduler hooks so fz_spawn / fz_send (in ir_runtime) dispatch
     // back to the AOT eager-sync handlers.
     crate::scheduler_hooks::install_spawn_hook(aot_spawn_hook);
+    crate::scheduler_hooks::install_spawn_opt_hook(aot_spawn_opt_hook);
     crate::scheduler_hooks::install_send_hook(aot_send_hook);
 
     proc_ptr
@@ -229,6 +230,11 @@ extern "C" fn aot_spawn_hook(closure_bits: u64) -> u32 {
 
     CURRENT_PROCESS.with(|c| c.set(prev));
     pid
+}
+
+/// fz-siu.12: spawn_opt hook. v1 ignores min_heap_size; delegates to aot_spawn_hook.
+extern "C" fn aot_spawn_opt_hook(closure_bits: u64, _min_heap_size: u32) -> u32 {
+    aot_spawn_hook(closure_bits)
 }
 
 /// Send hook (fz-siu.6.2). Pushes a message into the receiver's mailbox.

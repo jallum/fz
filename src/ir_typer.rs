@@ -411,7 +411,7 @@ fn opaque_consumer_arities(
                 let Stmt::Let(_, prim) = stmt;
                 if let Prim::Builtin(bid, args) = prim
                     && *bid == BuiltinKind::Spawn.id()
-                    && args.len() == 1
+                    && (args.len() == 1 || args.len() == 2)
                 {
                     let cv = args[0];
                     if !ft.fn_constants.contains_key(&cv) {

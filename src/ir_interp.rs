@@ -500,8 +500,10 @@ fn run_builtin(
             // heap; the body fn is invoked with the captures as its entry
             // params (a spawned closure has zero call args, so the entry
             // params are exactly the captures).
-            if args.len() != 1 {
-                return Err(format!("spawn/1 got {} args", args.len()));
+            // fz-siu.12: spawn/2 accepts a min_heap_size hint (ignored by
+            // the interp — single shared heap, no per-process sizing).
+            if args.len() != 1 && args.len() != 2 {
+                return Err(format!("spawn/1 or spawn/2 got {} args", args.len()));
             }
             let (fn_id, captured) = unpack_closure(args[0])?;
             // Deep-copy the captured values into the child's heap is

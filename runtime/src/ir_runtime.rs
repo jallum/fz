@@ -147,6 +147,20 @@ pub extern "C" fn fz_spawn(closure_bits: u64) -> u64 {
     FzValue::from_int(pid as i64).0
 }
 
+/// fz-siu.12: fz_spawn_opt(closure_bits, min_heap_size_bits) -> pid_bits.
+/// Like fz_spawn but accepts a min_heap_size hint as a tagged FzValue int
+/// (bytes). v1: hint is accepted and ignored.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_spawn_opt(closure_bits: u64, min_heap_size_bits: u64) -> u64 {
+    use crate::fz_value::FzValue;
+    let _cp = FzValue(closure_bits)
+        .unbox_ptr()
+        .expect("spawn_opt: closure not a heap ptr");
+    let min_heap_size = FzValue(min_heap_size_bits).unbox_int().unwrap_or(0) as u32;
+    let pid = crate::scheduler_hooks::dispatch_spawn_opt(closure_bits, min_heap_size);
+    FzValue::from_int(pid as i64).0
+}
+
 /// fz_self() -> pid_bits. Returns the currently-running task's pid as a
 /// boxed FzValue Int.
 #[unsafe(no_mangle)]

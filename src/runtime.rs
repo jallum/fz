@@ -74,6 +74,10 @@ extern "C" fn spawn_hook_thunk(closure_bits: u64) -> u32 {
     spawn_closure_via_current_runtime(closure_bits)
 }
 
+extern "C" fn spawn_opt_hook_thunk(closure_bits: u64, _min_heap_size: u32) -> u32 {
+    spawn_closure_via_current_runtime(closure_bits)
+}
+
 extern "C" fn send_hook_thunk(receiver_pid: u32, msg_bits: u64) {
     send_via_current_runtime(receiver_pid, FzValue(msg_bits));
 }
@@ -284,6 +288,7 @@ impl<'a> Runtime<'a> {
         // Runtime. The runtime crate can't see Runtime directly, so it
         // calls through extern "C" fn pointers we register here.
         fz_runtime::scheduler_hooks::install_spawn_hook(spawn_hook_thunk);
+        fz_runtime::scheduler_hooks::install_spawn_opt_hook(spawn_opt_hook_thunk);
         fz_runtime::scheduler_hooks::install_send_hook(send_hook_thunk);
         while let Some(pid) = self.run_queue.pop_front() {
             let mut task = self
@@ -337,6 +342,7 @@ impl<'a> Runtime<'a> {
         }
         CURRENT_RUNTIME.with(|c| c.set(prev_rt));
         fz_runtime::scheduler_hooks::clear_spawn_hook();
+        fz_runtime::scheduler_hooks::clear_spawn_opt_hook();
         fz_runtime::scheduler_hooks::clear_send_hook();
     }
 

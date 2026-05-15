@@ -1328,6 +1328,10 @@ impl JitBackend {
             fz_runtime::ir_runtime::fz_alloc_closure as *const u8,
         );
         builder.symbol("fz_spawn", fz_runtime::ir_runtime::fz_spawn as *const u8);
+        builder.symbol(
+            "fz_spawn_opt",
+            fz_runtime::ir_runtime::fz_spawn_opt as *const u8,
+        );
         builder.symbol("fz_self", fz_runtime::ir_runtime::fz_self as *const u8);
         builder.symbol("fz_send", fz_runtime::ir_runtime::fz_send as *const u8);
         builder.symbol(
@@ -3335,6 +3339,7 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         &[types::I64],
     )?;
     let spawn_id = decl("fz_spawn", &[types::I64], &[types::I64])?;
+    let spawn_opt_id = decl("fz_spawn_opt", &[types::I64, types::I64], &[types::I64])?;
     let self_id = decl("fz_self", &[], &[types::I64])?;
     let send_id = decl("fz_send", &[types::I64, types::I64], &[types::I64])?;
     let receive_attempt_id = decl("fz_receive_attempt", &[types::I64], &[types::I64])?;
@@ -3432,6 +3437,7 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         vec_get_id,
         alloc_closure_id,
         spawn_id,
+        spawn_opt_id,
         self_id,
         send_id,
         receive_attempt_id,
@@ -3482,6 +3488,7 @@ struct RuntimeRefs {
     value_eq_id: FuncId,
     alloc_closure_id: FuncId,
     spawn_id: FuncId,
+    spawn_opt_id: FuncId,
     self_id: FuncId,
     send_id: FuncId,
     receive_attempt_id: FuncId,
@@ -4779,14 +4786,7 @@ fn compile_fn<M: cranelift_module::Module>(
                 let mut indirect_args: Vec<ir::Value> = Vec::with_capacity(arg_vals.len() + 2);
                 for (i, v) in arg_vals.iter().enumerate() {
                     let from = var_repr(args[i].0, &raw_int_vars, &raw_f64_vars);
-                    indirect_args.push(coerce_to(
-                        &mut b,
-                        jmod,
-                        runtime,
-                        *v,
-                        from,
-                        ArgRepr::Tagged,
-                    ));
+                    indirect_args.push(coerce_to(&mut b, jmod, runtime, *v, from, ArgRepr::Tagged));
                 }
                 indirect_args.push(cl_val);
                 indirect_args.push(cf);
@@ -5853,16 +5853,32 @@ fn lower_prim<M: cranelift_module::Module>(
                         kind.name()
                     )));
                 }
-                BuiltinKind::Spawn => {
-                    if args.len() != 1 {
-                        return Err(CodegenError::new("spawn/1 expected"));
+                BuiltinKind::Spawn => match args.len() {
+                    1 => {
+                        let cv = tagged_get(
+                            env, raw_f64_vars, raw_int_vars, b, jmod, runtime, args[0].0,
+                        );
+                        let fref = jmod.declare_func_in_func(runtime.spawn_id, b.func);
+                        let inst = b.ins().call(fref, &[cv]);
+                        b.inst_results(inst)[0]
                     }
-                    let cv =
-                        tagged_get(env, raw_f64_vars, raw_int_vars, b, jmod, runtime, args[0].0);
-                    let fref = jmod.declare_func_in_func(runtime.spawn_id, b.func);
-                    let inst = b.ins().call(fref, &[cv]);
-                    b.inst_results(inst)[0]
-                }
+                    2 => {
+                        let cv = tagged_get(
+                            env, raw_f64_vars, raw_int_vars, b, jmod, runtime, args[0].0,
+                        );
+                        let mv = tagged_get(
+                            env, raw_f64_vars, raw_int_vars, b, jmod, runtime, args[1].0,
+                        );
+                        let fref = jmod.declare_func_in_func(runtime.spawn_opt_id, b.func);
+                        let inst = b.ins().call(fref, &[cv, mv]);
+                        b.inst_results(inst)[0]
+                    }
+                    n => {
+                        return Err(CodegenError::new(format!(
+                            "spawn/1 or spawn/2 expected, got {n} args"
+                        )));
+                    }
+                },
                 BuiltinKind::SelfPid => {
                     if !args.is_empty() {
                         return Err(CodegenError::new("self/0 expected"));

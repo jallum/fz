@@ -773,10 +773,14 @@ fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -> Result<Va
                 // closure value (the existing bare-fn-name adapter at
                 // src/ir_lower.rs already lifts plain fn names into
                 // MakeClosure(target, [])).
-                if bid == crate::fz_ir::BuiltinKind::Spawn.id() && arg_vars.len() == 1 {
+                if bid == crate::fz_ir::BuiltinKind::Spawn.id()
+                    && (arg_vars.len() == 1 || arg_vars.len() == 2)
+                {
                     let thunk_id = ctx.ensure_spawn_thunk();
                     let wrapper = ctx.let_at(Prim::MakeClosure(thunk_id, vec![arg_vars[0]]), sp);
-                    return Ok(ctx.let_at(Prim::Builtin(bid, vec![wrapper]), sp));
+                    let mut new_args = vec![wrapper];
+                    new_args.extend_from_slice(&arg_vars[1..]);
+                    return Ok(ctx.let_at(Prim::Builtin(bid, new_args), sp));
                 }
                 return Ok(ctx.let_at(Prim::Builtin(bid, arg_vars), sp));
             }
@@ -1883,6 +1887,35 @@ mod tests {
             s.contains(&needle),
             "expected wrapper `{}` in lowered IR:\n{}",
             needle,
+            s
+        );
+    }
+
+    /// fz-siu.12 — spawn/2 wraps the closure arg in fz_spawn_thunk exactly
+    /// like spawn/1; the min_heap_size arg passes through as the second
+    /// Builtin operand.
+    #[test]
+    fn spawn2_wraps_closure_and_threads_opts() {
+        let m = lower_src("fn child(), do: 0\nfn p() do spawn(child, 4096) end");
+        let thunk_id = m
+            .fns
+            .iter()
+            .find(|f| f.name == "fz_spawn_thunk")
+            .expect("fz_spawn_thunk must be synthesized for spawn/2")
+            .id;
+        let s = format!("{}", m);
+        // Wrapper closure must appear.
+        let needle = format!("closure(fn{}", thunk_id.0);
+        assert!(
+            s.contains(&needle),
+            "expected wrapper `{}` in spawn/2 IR:\n{}",
+            needle,
+            s
+        );
+        // The Builtin(Spawn, ...) call must have two operands.
+        assert!(
+            s.contains("builtin#5("),
+            "expected Builtin(Spawn, ...) in IR:\n{}",
             s
         );
     }

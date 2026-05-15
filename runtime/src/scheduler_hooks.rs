@@ -37,6 +37,11 @@ pub const YIELD_PTR: u64 = 0x1;
 /// closure's stub_fp to materialize the initial frame, and enqueue.
 pub type SpawnHook = extern "C" fn(closure_bits: u64) -> u32;
 
+/// fz-siu.12: fz_spawn_opt FFI signature. Like SpawnHook but also accepts
+/// min_heap_size (bytes, already unboxed from FzValue). v1: hint accepted
+/// and ignored by the binary; hook body is identical to SpawnHook.
+pub type SpawnOptHook = extern "C" fn(closure_bits: u64, min_heap_size: u32) -> u32;
+
 /// fz_send FFI signature on the binary side: takes receiver pid and the
 /// message's raw FzValue bits. The binary's send_via_current_runtime
 /// handles the deep-copy into the receiver's heap and the wake-up.
@@ -52,6 +57,7 @@ pub type SendHook = extern "C" fn(receiver_pid: u32, msg_bits: u64);
 // (v1 AOT/JIT runtime is single-worker per fz-ul4.19.1) and dodges
 // the TLS-instance issue entirely.
 static SPAWN_HOOK: AtomicUsize = AtomicUsize::new(0);
+static SPAWN_OPT_HOOK: AtomicUsize = AtomicUsize::new(0);
 static SEND_HOOK: AtomicUsize = AtomicUsize::new(0);
 
 pub fn install_spawn_hook(hook: SpawnHook) {
@@ -60,6 +66,14 @@ pub fn install_spawn_hook(hook: SpawnHook) {
 
 pub fn clear_spawn_hook() {
     SPAWN_HOOK.store(0, Ordering::SeqCst);
+}
+
+pub fn install_spawn_opt_hook(hook: SpawnOptHook) {
+    SPAWN_OPT_HOOK.store(hook as usize, Ordering::SeqCst);
+}
+
+pub fn clear_spawn_opt_hook() {
+    SPAWN_OPT_HOOK.store(0, Ordering::SeqCst);
 }
 
 pub fn install_send_hook(hook: SendHook) {
@@ -80,6 +94,18 @@ pub(crate) fn dispatch_spawn(closure_bits: u64) -> u32 {
     }
     let hook: SpawnHook = unsafe { std::mem::transmute(raw) };
     hook(closure_bits)
+}
+
+pub(crate) fn dispatch_spawn_opt(closure_bits: u64, min_heap_size: u32) -> u32 {
+    let raw = SPAWN_OPT_HOOK.load(Ordering::SeqCst);
+    if raw == 0 {
+        panic!(
+            "fz_spawn_opt called outside a Runtime — install_spawn_opt_hook \
+             must be called before driving any task"
+        );
+    }
+    let hook: SpawnOptHook = unsafe { std::mem::transmute(raw) };
+    hook(closure_bits, min_heap_size)
 }
 
 pub(crate) fn dispatch_send(receiver_pid: u32, msg_bits: u64) {

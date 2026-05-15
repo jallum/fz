@@ -1,0 +1,8 @@
+fn child(tag) do
+  send(1, tag)
+end
+
+fn main() do
+  spawn(fn () -> child(42), 4096)
+  print(receive())
+end
