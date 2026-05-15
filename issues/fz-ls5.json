@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-15T15:25:29Z",
+  "description": "",
+  "id": "fz-ls5",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "fz-cg4.1: extract fn_addr helper (declare_func_in_func + func_addr)",
+  "type": "task",
+  "updated_at": "2026-05-15T15:25:29Z"
+}
