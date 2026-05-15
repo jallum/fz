@@ -27,25 +27,36 @@ use crate::fz_ir::{BinOp, BuiltinKind, Const, FnId, Module, Prim, Stmt, Term, Va
 use fz_runtime::fz_value::FzValue;
 use fz_runtime::process::Process;
 
-// ===== Interp-internal scheduler (fz-ul4.23.5.8) =====
+// ===== Interp-internal scheduler (fz-ul4.23.5.8 / fz-sched.3) =====
 //
 // The interp owns its own task registry separate from runtime.rs::Runtime
 // (which is wired into the JIT trampoline). They share the Process type,
 // the FzValue rep, and the heap — so messages and mailboxes are byte-
 // compatible between paths.
 //
-// Scheduling model: eager-synchronous. Builtin::Spawn runs the spawned
-// task to completion before returning (i.e. spawned tasks are
-// synchronous from the parent's perspective). Term::Receive pops from
-// the current task's mailbox; if empty, it errors — there is no
-// preemption / suspend-and-resume in the interp v1 since fz-IR doesn't
-// run on stackable continuations here.
+// Scheduling model (fz-sched.3): cooperative run-queue, BEAM-correct.
+// Builtin::Spawn enqueues the child and returns immediately; the parent
+// continues its own quantum. Term::Receive parks the task (InterpStep::Blocked)
+// if the mailbox is empty; the scheduler records the resume state and moves on.
+// interp_send flips a Blocked receiver to Ready, prepends the message to its
+// resume args, and re-enqueues it. run_main drives the loop until the queue
+// is empty.
 //
-// This matches concurrency_ping_pong.fz's semantics (parent spawns child
-// → child eagerly runs send(1, 42) → returns; parent's receive pops 42)
-// but does NOT match richer concurrency patterns where the child holds
-// internal state across receive points. fz-ul4.23.5.8.1 (follow-up)
-// tracks the proper green-thread scheduler.
+// Limitation: Blocked propagates as an error through non-tail call sites
+// (Term::Call / Term::CallClosure). In practice all fixture receive sites are
+// in tail position inside spawned fns, so this doesn't matter yet.
+
+use std::collections::VecDeque;
+
+/// Returned by run_fn to signal either completion or a receive-park.
+enum InterpStep {
+    Done(FzValue),
+    /// Task parked on receive. `resume_fn(msg, cap_vals...)` is called when
+    /// the message arrives. `after` is a chain of (fn_id, caps) continuations
+    /// to call in order with each successive return value — built up when
+    /// Blocked propagates through Term::Call frames.
+    Blocked(FnId, Vec<FzValue>, Vec<(FnId, Vec<FzValue>)>),
+}
 
 thread_local! {
     static INTERP_TASKS: RefCell<HashMap<u32, Box<Process>>> =
@@ -53,6 +64,14 @@ thread_local! {
     static INTERP_NEXT_PID: Cell<u32> = const { Cell::new(2) };
     static INTERP_SCHEMAS: RefCell<Option<std::rc::Rc<std::cell::RefCell<fz_runtime::heap::SchemaRegistry>>>> =
         const { RefCell::new(None) };
+    /// FIFO run-queue of pids ready to execute.
+    static INTERP_RUN_QUEUE: RefCell<VecDeque<u32>> = RefCell::new(VecDeque::new());
+    /// Per-task resume state: (resume_fn, cap_vals, after_chain).
+    /// cap_vals holds captures only (no message); interp_send prepends the
+    /// message. after_chain is the sequence of (fn_id, caps) continuations to
+    /// invoke in order after resume_fn returns, passing each return value on.
+    static INTERP_RESUME: RefCell<HashMap<u32, (FnId, Vec<FzValue>, Vec<(FnId, Vec<FzValue>)>)>> =
+        RefCell::new(HashMap::new());
 }
 
 fn interp_register_task(pid: u32, process: Box<Process>) -> *mut Process {
@@ -75,29 +94,53 @@ fn interp_next_pid() -> u32 {
 }
 
 fn interp_send(receiver_pid: u32, msg: FzValue) -> Result<(), String> {
-    INTERP_TASKS.with(|t| {
+    use fz_runtime::process::ProcessState;
+    let was_blocked = INTERP_TASKS.with(|t| {
         let mut tasks = t.borrow_mut();
         match tasks.get_mut(&receiver_pid) {
             Some(task) => {
-                task.mailbox.push_back(msg);
-                Ok(())
+                if task.state == ProcessState::Blocked {
+                    task.state = ProcessState::Ready;
+                    true
+                } else {
+                    task.mailbox.push_back(msg);
+                    false
+                }
             }
-            None => Err(format!("send: no task with pid {}", receiver_pid)),
+            None => {
+                eprintln!("send: no task with pid {}", receiver_pid);
+                false
+            }
         }
-    })
+    });
+    if was_blocked {
+        // Blocked task has cap_vals in INTERP_RESUME; prepend message to form
+        // the complete args for the next run_fn call, then re-enqueue.
+        INTERP_RESUME.with(|r| {
+            let mut resume = r.borrow_mut();
+            if let Some(entry) = resume.get_mut(&receiver_pid) {
+                entry.1.insert(0, msg); // prepend msg before cap_vals
+            }
+        });
+        INTERP_RUN_QUEUE.with(|q| q.borrow_mut().push_back(receiver_pid));
+    }
+    Ok(())
 }
 
 fn interp_reset_state() {
     INTERP_TASKS.with(|t| t.borrow_mut().clear());
     INTERP_NEXT_PID.with(|n| n.set(2));
+    INTERP_RUN_QUEUE.with(|q| q.borrow_mut().clear());
+    INTERP_RESUME.with(|r| r.borrow_mut().clear());
 }
 
 /// Run `module`'s `main` fn through the interpreter.
 ///
-/// Creates a fresh Process, installs it in CURRENT_PROCESS for the duration
-/// of the run (so runtime FFI fns like fz_print_value see a valid Process),
-/// drives main to completion, returns the Process's `halt_value`.
+/// Drives a cooperative run-queue loop: main starts at pid=1, spawned tasks
+/// are enqueued and run one quantum at a time in FIFO order. Tasks that block
+/// on receive park until a send wakes them. Loop exits when the queue is empty.
 pub fn run_main(module: &Module) -> Result<i64, String> {
+    use fz_runtime::process::ProcessState;
     let main_id = module.fn_by_name("main").ok_or("no `main/0` fn found")?.id;
     interp_reset_state();
     let user_schemas = std::rc::Rc::new(std::cell::RefCell::new(
@@ -107,13 +150,72 @@ pub fn run_main(module: &Module) -> Result<i64, String> {
     let mut main_process = Box::new(Process::new(user_schemas));
     main_process.pid = 1;
     main_process.atom_names = module.atom_names.clone();
-    let main_ptr = interp_register_task(1, main_process);
-    let prev = fz_runtime::process::CURRENT_PROCESS.with(|c| c.replace(main_ptr));
-    let result = run_fn(module, main_id, Vec::new());
-    fz_runtime::process::CURRENT_PROCESS.with(|c| c.set(prev));
+    main_process.state = ProcessState::Ready;
+    interp_register_task(1, main_process);
+    INTERP_RESUME.with(|r| r.borrow_mut().insert(1, (main_id, vec![], vec![])));
+    INTERP_RUN_QUEUE.with(|q| q.borrow_mut().push_back(1));
+
+    let mut halt_val = 0i64;
+    'sched: loop {
+        let pid = match INTERP_RUN_QUEUE.with(|q| q.borrow_mut().pop_front()) {
+            Some(p) => p,
+            None => break,
+        };
+        let (fn_id, args, mut after) = INTERP_RESUME
+            .with(|r| r.borrow_mut().remove(&pid))
+            .expect("pid in run_queue with no resume entry");
+        let proc_ptr = INTERP_TASKS
+            .with(|t| t.borrow().get(&pid).map(|b| b.as_ref() as *const _ as *mut Process))
+            .expect("pid in run_queue with no process entry");
+        unsafe { (*proc_ptr).state = ProcessState::Running };
+        let prev = fz_runtime::process::CURRENT_PROCESS.with(|c| c.replace(proc_ptr));
+        let mut step = run_fn(module, fn_id, args);
+        // Process the after-chain: each Done value is threaded into the next fn.
+        loop {
+            match step {
+                Ok(InterpStep::Done(val)) => {
+                    if let Some((next_fn, next_caps)) = after.first().cloned() {
+                        after.remove(0);
+                        let mut next_args = vec![val];
+                        next_args.extend(next_caps);
+                        step = run_fn(module, next_fn, next_args);
+                        // loop continues
+                    } else {
+                        fz_runtime::process::CURRENT_PROCESS.with(|c| c.set(prev));
+                        INTERP_TASKS.with(|t| {
+                            if let Some(p) = t.borrow_mut().get_mut(&pid) {
+                                p.state = ProcessState::Exited;
+                            }
+                        });
+                        if pid == 1 {
+                            halt_val = value_to_halt(val);
+                        }
+                        continue 'sched;
+                    }
+                }
+                Ok(InterpStep::Blocked(resume_fn, cap_vals, mut new_after)) => {
+                    fz_runtime::process::CURRENT_PROCESS.with(|c| c.set(prev));
+                    new_after.extend(after);
+                    INTERP_TASKS.with(|t| {
+                        if let Some(p) = t.borrow_mut().get_mut(&pid) {
+                            p.state = ProcessState::Blocked;
+                        }
+                    });
+                    INTERP_RESUME
+                        .with(|r| r.borrow_mut().insert(pid, (resume_fn, cap_vals, new_after)));
+                    continue 'sched;
+                }
+                Err(e) => {
+                    fz_runtime::process::CURRENT_PROCESS.with(|c| c.set(prev));
+                    INTERP_SCHEMAS.with(|s| *s.borrow_mut() = None);
+                    return Err(e);
+                }
+            }
+        }
+    }
+
     INTERP_SCHEMAS.with(|s| *s.borrow_mut() = None);
-    let r = result?;
-    Ok(value_to_halt(r))
+    Ok(halt_val)
 }
 
 /// Run a single test fn (no args) through the interp on a fresh Process.
@@ -136,13 +238,17 @@ pub fn run_test_fn(module: &Module, fn_id: FnId) -> Result<(), String> {
     let result = run_fn(module, fn_id, Vec::new());
     fz_runtime::process::CURRENT_PROCESS.with(|c| c.set(prev));
     INTERP_SCHEMAS.with(|s| *s.borrow_mut() = None);
-    result.map(|_| ())
+    match result {
+        Ok(InterpStep::Done(_)) => Ok(()),
+        Ok(InterpStep::Blocked(..)) => Err("test fn blocked on receive with empty mailbox".to_string()),
+        Err(e) => Err(e),
+    }
 }
 
-/// Spawn a new task at `fn_id`, run it to completion synchronously, and
-/// return its pid. Matches the JIT's pid allocation convention (main=1,
-/// children get sequential pids starting at 2).
+/// Spawn a new task: enqueue it and return its pid immediately.
+/// The child runs in a later scheduler quantum, not in the parent's.
 fn interp_spawn(module: &Module, fn_id: FnId, args: Vec<FzValue>) -> Result<u32, String> {
+    use fz_runtime::process::ProcessState;
     let pid = interp_next_pid();
     let user_schemas = INTERP_SCHEMAS
         .with(|s| s.borrow().as_ref().cloned())
@@ -150,11 +256,10 @@ fn interp_spawn(module: &Module, fn_id: FnId, args: Vec<FzValue>) -> Result<u32,
     let mut child = Box::new(Process::new(user_schemas));
     child.pid = pid;
     child.atom_names = module.atom_names.clone();
-    let child_ptr = interp_register_task(pid, child);
-    let prev = fz_runtime::process::CURRENT_PROCESS.with(|c| c.replace(child_ptr));
-    let result = run_fn(module, fn_id, args);
-    fz_runtime::process::CURRENT_PROCESS.with(|c| c.set(prev));
-    result?;
+    child.state = ProcessState::Ready;
+    interp_register_task(pid, child);
+    INTERP_RESUME.with(|r| r.borrow_mut().insert(pid, (fn_id, args, vec![])));
+    INTERP_RUN_QUEUE.with(|q| q.borrow_mut().push_back(pid));
     Ok(pid)
 }
 
@@ -181,15 +286,10 @@ fn value_to_halt(v: FzValue) -> i64 {
     }
 }
 
-/// Run an fz fn to completion. Tail calls reuse this stack frame (no Rust
-/// recursion) so deeply tail-recursive programs run in O(1) Rust stack —
-/// `tail_recursion.fz`'s 100k-deep count exits cleanly.
-///
-/// Non-tail calls (Term::Call, Term::CallClosure) still recurse into a
-/// fresh `run_fn`; that's correct for the language's semantics (the
-/// continuation runs AFTER the callee returns), and it's bounded by the
-/// program's actual call depth which is typically small.
-fn run_fn(module: &Module, mut fn_id: FnId, mut args: Vec<FzValue>) -> Result<FzValue, String> {
+/// Run an fz fn. Tail calls reuse this stack frame (O(1) Rust stack).
+/// Returns Done(val) on Halt/Return or Blocked(fn_id, cap_vals) when a
+/// Term::Receive fires on an empty mailbox.
+fn run_fn(module: &Module, mut fn_id: FnId, mut args: Vec<FzValue>) -> Result<InterpStep, String> {
     'tail: loop {
         let fn_ir = module.fn_by_id(fn_id);
         let mut env: HashMap<Var, FzValue> = HashMap::new();
@@ -234,15 +334,22 @@ fn run_fn(module: &Module, mut fn_id: FnId, mut args: Vec<FzValue>) -> Result<Fz
                     continuation,
                 } => {
                     let arg_vals = collect(&env, call_args)?;
-                    let result = run_fn(module, *callee, arg_vals)?;
-                    let cap_vals = collect(&env, &continuation.captured)?;
-                    let mut cont_args = vec![result];
-                    cont_args.extend(cap_vals);
-                    // The continuation invocation is itself a tail
-                    // position — reuse this stack frame.
-                    fn_id = continuation.fn_id;
-                    args = cont_args;
-                    continue 'tail;
+                    let outer_cap_vals = collect(&env, &continuation.captured)?;
+                    match run_fn(module, *callee, arg_vals)? {
+                        InterpStep::Done(val) => {
+                            let mut cont_args = vec![val];
+                            cont_args.extend(outer_cap_vals);
+                            fn_id = continuation.fn_id;
+                            args = cont_args;
+                            continue 'tail;
+                        }
+                        InterpStep::Blocked(rf, cv, mut inner_after) => {
+                            // Append our continuation to the chain so the
+                            // scheduler calls it after the blocked task resumes.
+                            inner_after.push((continuation.fn_id, outer_cap_vals));
+                            return Ok(InterpStep::Blocked(rf, cv, inner_after));
+                        }
+                    }
                 }
                 Term::TailCall {
                     callee,
@@ -261,13 +368,20 @@ fn run_fn(module: &Module, mut fn_id: FnId, mut args: Vec<FzValue>) -> Result<Fz
                     let cl = env_get(&env, *closure)?;
                     let (lam_fn, mut clos_args) = unpack_closure(cl)?;
                     clos_args.extend(collect(&env, call_args)?);
-                    let result = run_fn(module, lam_fn, clos_args)?;
-                    let cap_vals = collect(&env, &continuation.captured)?;
-                    let mut cont_args = vec![result];
-                    cont_args.extend(cap_vals);
-                    fn_id = continuation.fn_id;
-                    args = cont_args;
-                    continue 'tail;
+                    let outer_cap_vals = collect(&env, &continuation.captured)?;
+                    match run_fn(module, lam_fn, clos_args)? {
+                        InterpStep::Done(val) => {
+                            let mut cont_args = vec![val];
+                            cont_args.extend(outer_cap_vals);
+                            fn_id = continuation.fn_id;
+                            args = cont_args;
+                            continue 'tail;
+                        }
+                        InterpStep::Blocked(rf, cv, mut inner_after) => {
+                            inner_after.push((continuation.fn_id, outer_cap_vals));
+                            return Ok(InterpStep::Blocked(rf, cv, inner_after));
+                        }
+                    }
                 }
                 Term::TailCallClosure {
                     closure,
@@ -280,22 +394,20 @@ fn run_fn(module: &Module, mut fn_id: FnId, mut args: Vec<FzValue>) -> Result<Fz
                     args = clos_args;
                     continue 'tail;
                 }
-                Term::Return(v) => return env_get(&env, *v),
-                Term::Halt(v) => return env_get(&env, *v),
+                Term::Return(v) => return Ok(InterpStep::Done(env_get(&env, *v)?)),
+                Term::Halt(v) => return Ok(InterpStep::Done(env_get(&env, *v)?)),
                 Term::Receive { continuation } => {
-                    let msg = fz_runtime::process::current_process()
-                        .mailbox
-                        .pop_front()
-                        .ok_or_else(|| {
-                            "interp: receive on empty mailbox (no preemption in v1 scheduler)"
-                                .to_string()
-                        })?;
                     let cap_vals = collect(&env, &continuation.captured)?;
-                    let mut cont_args = vec![msg];
-                    cont_args.extend(cap_vals);
-                    fn_id = continuation.fn_id;
-                    args = cont_args;
-                    continue 'tail;
+                    match fz_runtime::process::current_process().mailbox.pop_front() {
+                        Some(msg) => {
+                            let mut cont_args = vec![msg];
+                            cont_args.extend(cap_vals);
+                            fn_id = continuation.fn_id;
+                            args = cont_args;
+                            continue 'tail;
+                        }
+                        None => return Ok(InterpStep::Blocked(continuation.fn_id, cap_vals, vec![])),
+                    }
                 }
             }
         }
