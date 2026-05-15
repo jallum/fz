@@ -387,7 +387,21 @@ fn opaque_consumer_arities(
             if let Some(cv) = closure_var
                 && !ft.fn_constants.contains_key(&cv)
             {
-                arities.insert(args.len());
+                // fz-1pq.5 — skip closures whose type is fully resolvable
+                // via closure_lit (path b in walk_spec_for_discovery).
+                // Those callers register narrow specs; the MakeClosure sweep's
+                // any-arg spec is redundant for them.
+                let fully_lit = ft.vars.get(&cv).is_some_and(|d| {
+                    !d.funcs.is_empty()
+                        && d.funcs.iter().all(|c| {
+                            c.neg.is_empty()
+                                && !c.pos.is_empty()
+                                && c.pos.iter().all(|s| s.lit.is_some())
+                        })
+                });
+                if !fully_lit {
+                    arities.insert(args.len());
+                }
             }
             // Stmt-level opaque dispatch: `Builtin(Spawn, [closure])`
             // hands the closure to the runtime, which invokes it with
