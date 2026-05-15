@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-05-15T02:36:08Z",
   "created": "2026-05-15T00:29:35Z",
   "description": "When both operands of an arithmetic op are literal-narrow (e.g. 1 + 1, or 2 * n where n is literal 3), the result Descr is widened to the base type (int, float) rather than the computed literal value.\n\nAffected fixtures: hello, macro_inc, spec_ok, vr1_int_arith, vr3_4_typed_capture, vr4_2_native_call, vr5b_typed_print, add1\n\nExample: add1(3) should produce a spec where the return is literally 4, but it shows int.\n\nFix: in ir_typer, when both operand Descrs are singleton literal sets of the same numeric type, evaluate the op at type-inference time and return the literal result Descr.",
   "id": "fz-1pq.6",
@@ -14,8 +15,8 @@
     }
   ],
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "ir_typer: arithmetic on literal operands not constant-folded to literal result",
   "type": "bug",
-  "updated_at": "2026-05-15T01:25:16Z"
+  "updated_at": "2026-05-15T02:36:08Z"
 }
