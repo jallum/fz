@@ -6447,9 +6447,6 @@ fn bool_to_fz(b: &mut FunctionBuilder<'_>, v: ir::Value) -> ir::Value {
     b.ins().select(v, true_v, false_v)
 }
 
-#[allow(dead_code)]
-fn _kp(_: &Var) {}
-
 #[cfg(test)]
 #[cfg(test)]
 mod tests {
