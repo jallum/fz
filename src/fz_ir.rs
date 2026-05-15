@@ -387,6 +387,9 @@ pub struct Module {
     /// hands this to its Process so `fz_value::debug::render` can print
     /// `:ok` instead of `:atom_1`. Closed by fz-ul4.25.
     pub atom_names: Vec<String>,
+    /// O(1) index from FnId to position in `fns`. Kept in sync by
+    /// `ModuleBuilder::add_fn`; never mutated after `build()`.
+    pub fn_idx: HashMap<FnId, usize>,
 }
 
 impl Module {
@@ -395,7 +398,7 @@ impl Module {
     }
 
     pub fn fn_by_id(&self, id: FnId) -> &FnIr {
-        self.fns.iter().find(|f| f.id == id).expect("unknown fn id")
+        &self.fns[*self.fn_idx.get(&id).expect("unknown fn id")]
     }
 
     pub fn fn_by_name(&self, name: &str) -> Option<&FnIr> {
@@ -485,6 +488,7 @@ impl FnBuilder {
 pub struct ModuleBuilder {
     next_fn: u32,
     fns: Vec<FnIr>,
+    fn_idx: HashMap<FnId, usize>,
     schemas: Vec<Schema>,
 }
 
@@ -493,6 +497,7 @@ impl ModuleBuilder {
         Self {
             next_fn: 0,
             fns: Vec::new(),
+            fn_idx: HashMap::new(),
             schemas: Vec::new(),
         }
     }
@@ -504,6 +509,7 @@ impl ModuleBuilder {
     }
 
     pub fn add_fn(&mut self, fn_ir: FnIr) {
+        self.fn_idx.insert(fn_ir.id, self.fns.len());
         self.fns.push(fn_ir);
     }
 
@@ -516,6 +522,7 @@ impl ModuleBuilder {
     pub fn build(self) -> Module {
         Module {
             fns: self.fns,
+            fn_idx: self.fn_idx,
             schemas: self.schemas,
             source: SourceInfo::default(),
             atom_names: Vec::new(),
