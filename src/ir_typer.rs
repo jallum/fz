@@ -1659,14 +1659,6 @@ fn type_binop(op: BinOp, a: &Descr, b: &Descr, fold: bool) -> Descr {
     }
 }
 
-fn int_singleton(d: &Descr) -> Option<i64> {
-    if !d.ints.cofinite && d.ints.set.len() == 1 {
-        d.ints.set.iter().next().copied()
-    } else {
-        None
-    }
-}
-
 fn float_singleton(d: &Descr) -> Option<f64> {
     if !d.floats.cofinite && d.floats.set.len() == 1 {
         d.floats.set.iter().next().map(|f| f.get())
@@ -1677,7 +1669,7 @@ fn float_singleton(d: &Descr) -> Option<f64> {
 
 fn compare_result(op: BinOp, a: &Descr, b: &Descr) -> Descr {
     use BinOp::*;
-    if let (Some(ai), Some(bi)) = (int_singleton(a), int_singleton(b)) {
+    if let (Some(ai), Some(bi)) = (a.as_int_singleton(), b.as_int_singleton()) {
         let result = match op {
             Eq => ai == bi,
             Neq => ai != bi,
@@ -1731,7 +1723,7 @@ fn numeric_result(a: &Descr, b: &Descr) -> Descr {
 /// so the result cannot cascade into new narrow spec keys (fz-1pq.6).
 fn numeric_result_fold(op: BinOp, a: &Descr, b: &Descr) -> Descr {
     use BinOp::*;
-    if let (Some(ai), Some(bi)) = (int_singleton(a), int_singleton(b)) {
+    if let (Some(ai), Some(bi)) = (a.as_int_singleton(), b.as_int_singleton()) {
         let result = match op {
             Add => ai.checked_add(bi),
             Sub => ai.checked_sub(bi),

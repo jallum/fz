@@ -4983,27 +4983,6 @@ fn descrs_disjoint(
     }
 }
 
-/// If `d` is a singleton int type (exactly one integer value, no other
-/// components), return that integer. Used by the BinOp singleton fold:
-/// when the typer proves `dest_var :: {42}`, emit `iconst 42` directly.
-fn int_singleton(d: &crate::types::Descr) -> Option<i64> {
-    if !d.ints.cofinite
-        && d.ints.set.len() == 1
-        && d.atoms.is_none()
-        && d.floats.is_none()
-        && d.strs.is_none()
-        && d.basic.is_empty()
-        && d.tuples.is_empty()
-        && d.lists.is_empty()
-        && d.funcs.is_empty()
-        && d.maps.is_empty()
-    {
-        d.ints.set.iter().next().copied()
-    } else {
-        None
-    }
-}
-
 /// Output of `lower_prim`. Tagged is the common case (i64 FzValue bits);
 /// RawF64 is what the typed-float fast paths return so subsequent ops on
 /// the same SSA value can stay raw (fz-ul4.27.5.2). RawI64 is the same
@@ -5361,7 +5340,7 @@ fn lower_prim<M: cranelift_module::Module>(
                     .get(&dest_var)
                     .cloned()
                     .unwrap_or_else(crate::types::Descr::any);
-                if let Some(n) = int_singleton(&rd) {
+                if let Some(n) = rd.as_int_singleton() {
                     return Ok(LowerOut::RawI64(b.ins().iconst(types::I64, n)));
                 }
             }
