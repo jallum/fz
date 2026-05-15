@@ -3,7 +3,7 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-05-15T11:11:37Z",
-  "description": "",
+  "description": "The FunctionBuilder emit loop appears 4 times with identical structure:\n  make_context -\u003e set signature -\u003e FunctionBuilder::new -\u003e build body -\u003e finalize -\u003e define_function -\u003e clear_context\n\nFOUR SITES (all in compile_with_backend):\n  lines ~1633-1660: fz_main_entry\n  lines ~1670-1742: fz_spawn_entry\n  lines ~1751-1782: fz_resume_park\n  lines ~1807-1832: fz_halt_cont_body_*\n\nEXTRACT helper (near top of file, generic over Module):\n  fn emit_fn_body\u003cM: cranelift_module::Module\u003e(\n      module: \u0026mut M,\n      fbctx: \u0026mut FunctionBuilderContext,\n      sig: Signature,\n      func_id: FuncId,\n      f: impl FnOnce(\u0026mut FunctionBuilder\u003c'_\u003e),\n  ) -\u003e Result\u003c(), cranelift_module::ModuleError\u003e {\n      let mut ctx = module.make_context();\n      ctx.func.signature = sig;\n      {\n          let mut b = FunctionBuilder::new(\u0026mut ctx.func, fbctx);\n          f(\u0026mut b);\n          b.finalize();\n      }\n      module.define_function(func_id, \u0026mut ctx)?;\n      module.clear_context(\u0026mut ctx);\n      Ok(())\n  }\n\nReplace the 4 boilerplate sites with calls to emit_fn_body.\nThe 5th occurrence (line ~2835, user fn compilation) wraps compile_fn differently — leave it.\n\ncargo build must produce zero warnings. All tests must pass.",
   "id": "fz-4n9.4",
   "labels": [],
   "parent": "fz-4n9",
@@ -11,5 +11,5 @@
   "status": "open",
   "title": "fz-cg2.4 extract emit_fn_body helper",
   "type": "task",
-  "updated_at": "2026-05-15T11:11:37Z"
+  "updated_at": "2026-05-15T11:12:25Z"
 }
