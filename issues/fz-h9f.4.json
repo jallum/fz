@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-15T22:11:24Z",
+  "description": "Files: runtime/src/heap.rs, src/runtime.rs\n\nReplace gc() and gc_mid_flight() dispatch with minor/major selection:\n\nfn should_run_major(\u0026self) -\u003e bool {\n  self.minor_gc_count \u003e= 10\n  || (self.old_top as usize - self.old_start as usize) \u003e (self.old_end as usize - self.old_start as usize) * 7 / 10\n}\n\ngc_mid_flight (called from run_quantum):\n  if should_run_major() { gc_major(roots, mailbox) }\n  else { gc_minor(roots, mailbox) }\n\npark_time_gc (called from run_quantum at parked_cont wakeup):\n  let root_bits = parked_cont as usize as u64;\n  let mut roots = [FzValue(root_bits)];\n  let mut empty_mailbox = VecDeque::new();  // mailbox empty at park time\n  if should_run_major() { gc_major(\u0026mut roots, \u0026mut empty_mailbox) }\n  else { gc_minor(\u0026mut roots, \u0026mut empty_mailbox) }\n  process.parked_cont = roots[0].unbox_ptr() as *mut u8;\n\nTests: after 10 minor GCs, next call to gc_mid_flight triggers major. When old block is 71% full, should_run_major() returns true. Below thresholds, gc_minor() is called.",
+  "id": "fz-h9f.4",
+  "labels": [],
+  "parent": "fz-h9f",
+  "priority": 2,
+  "status": "open",
+  "title": "gen-gc.4: Dispatch — gc_mid_flight and park_time_gc choose minor vs major",
+  "type": "task",
+  "updated_at": "2026-05-15T22:11:24Z"
+}
