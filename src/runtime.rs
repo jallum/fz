@@ -319,23 +319,44 @@ impl<'a> Runtime<'a> {
             //    re-enqueue (via send_via_current_runtime).
             //
             // 3. next_frame non-null and state still Running -> yielded
-            //    without explicit block (e.g., future cooperative-yield
-            //    builtin). Mark Ready and re-enqueue.
+            //    without explicit block. Two sub-cases:
+            //    a. mid_flight_root_count > 0 — fz_yield_back_edge fired;
+            //       run gc_mid_flight (forwards live args + mailbox), clear
+            //       the slab, reset FZ_SHOULD_YIELD, then re-enqueue.
+            //    b. other cooperative yield (future builtin) — just re-queue.
             if task.next_frame.is_null() && task.parked_cont.is_null() {
                 task.state = ProcessState::Exited;
+                task.quiet_quanta = task.quiet_quanta.saturating_add(1);
             } else if task.state == ProcessState::Blocked {
                 // Park: keep in registry, no re-enqueue. send() will
                 // wake.
+                task.quiet_quanta = task.quiet_quanta.saturating_add(1);
             } else if task.state == ProcessState::Ready {
                 // fz-cps.1.12 — fz_receive_park detected a pending
                 // message in our own mailbox (self-send → receive); it
                 // set state=Ready so the scheduler immediately re-runs
                 // the task, where run_quantum's wakeup path dispatches
                 // via fz_resume_park.
+                task.quiet_quanta = task.quiet_quanta.saturating_add(1);
                 self.tasks.insert(pid, task);
                 self.run_queue.push_back(pid);
                 continue;
             } else if task.state == ProcessState::Running {
+                if task.mid_flight_root_count > 0 {
+                    // fz-02r.3 — mid-flight back-edge yield: GC with live
+                    // args + mailbox as roots, then clear the slab.
+                    let n = task.mid_flight_root_count as usize;
+                    task.heap.gc_mid_flight(
+                        &mut task.mid_flight_roots[..n],
+                        &mut task.mailbox,
+                    );
+                    task.mid_flight_root_count = 0;
+                    task.mid_flight_fn_id = 0;
+                    FZ_SHOULD_YIELD.store(0, Ordering::Relaxed);
+                    task.quiet_quanta = 0;
+                } else {
+                    task.quiet_quanta = task.quiet_quanta.saturating_add(1);
+                }
                 task.state = ProcessState::Ready;
                 self.tasks.insert(pid, task);
                 self.run_queue.push_back(pid);

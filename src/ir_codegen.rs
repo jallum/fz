@@ -191,6 +191,10 @@ impl CompiledModule {
             pending_main_entry_fn_id: 0,
             static_closures: Vec::new(),
             static_closure_bufs: Vec::new(),
+            mid_flight_fn_id: 0,
+            mid_flight_root_count: 0,
+            mid_flight_roots: [fz_runtime::fz_value::FzValue(0); 8],
+            quiet_quanta: 0,
         };
         // fz-cps.1.7 — allocate one static singleton per zero-cap
         // closure-target spec. See docs/cps-in-clif.md §8.2.
