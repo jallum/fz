@@ -4,13 +4,14 @@
     "fz-c9e"
   ],
   "blocks": [],
+  "closed_at": "2026-05-15T18:10:21Z",
   "created": "2026-05-15T17:53:54Z",
   "description": "BLESS=1 cargo test --test fixture_matrix (full-suite context). Strengthen add1_main_cont_seam_has_no_box_unbox_roundtrip: add !main_body.contains(iadd) and !main_body.contains(block1) assertions. Full suite green; consecutive runs stable.",
   "id": "fz-x4f",
   "labels": [],
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "fz-ul4.fus.4: fixtures + proof test green",
   "type": "task",
-  "updated_at": "2026-05-15T17:53:57Z"
+  "updated_at": "2026-05-15T18:10:21Z"
 }
