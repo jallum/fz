@@ -10,7 +10,7 @@
   "description": "GOAL: Wire VecF64 element storage, the bifurcation of ~v[...] sigil into VecI64 vs VecF64 at lower-time, and end-to-end JIT support for f64-element vector literals.\n\n## Why deferred from .11.14\n\nThe .11.14 implementation chose option (a): land VecI64 / VecU8 / VecBit elegantly now, defer VecF64 until boxed-float codegen lands. F64 element storage requires Const::Float codegen (currently gated to '.11.10+' placeholder error), which is fz-ul4.11.20 (boxed floats in the JIT).\n\n## Decisions to inherit from .11.14\n\n- Heap layout: HeapHeader (16) + len:u32 (4) + padding (4) + raw_payload.\n- VecKindIr::F64 should already be a variant after .11.14 (added explicitly during the I64/U8/Bit bifurcation).\n- alloc_vec_f64 is straightforward: 8-byte payload per element.\n\n## Deliverables\n\n- Lower-time bifurcation in lower_vec_lit: when VecKind::Numeric and any element is Expr::Float, emit MakeVec(F64, ...). Otherwise I64. (Mixed int/float should error or coerce to F64 — pick during impl.)\n- alloc_vec_f64 in Heap.\n- TLS-staged push for f64 element bits in fz_vec_push.\n- render_vec arm for VecF64.\n- vec_get(vec_f64, i) returns boxed f64 (via .11.20's float boxing).\n\n## Tests\n\n- ~v[1.0, 2.0, 3.0] allocates a VecF64 with 3 elements.\n- vec_get(~v[1.0, 2.0, 3.0], 1) returns 2.0.\n- print(~v[1.0, 2.0]) renders as ~v[1.0, 2.0].\n- Mixed ~v[1, 2.0] rule: pick coerce or error during impl, document.\n\n## Dependencies\n\n- BLOCKED BY: fz-ul4.11.20 (Boxed floats in the JIT).\n- BLOCKED BY: fz-ul4.11.14 (Vec storage layout + bifurcation skeleton).\n\n## Out of scope\n\n- vec_map / vec_reduce on VecF64 (handled in .11.22 once both .11.14 and this land).",
   "id": "fz-ul4.11.23",
   "labels": [],
-  "parent": "fz-ul4.11",
+  "parent": "fz-ul4.14",
   "comments": [
     {
       "text": "Re-blocked on fz-ul4.11.24.5 (typed schema selection) — VecF64 lowering should be type-driven from the start, not retrofitted onto the .11.14 syntactic heuristic. Authorized 2026-05-10 via .11.24 design.",
@@ -21,5 +21,5 @@
   "status": "open",
   "title": "VecF64 storage and ~v[1.0, 2.0] sigil",
   "type": "task",
-  "updated_at": "2026-05-10T20:53:10Z"
+  "updated_at": "2026-05-15T19:42:38Z"
 }
