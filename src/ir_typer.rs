@@ -1084,6 +1084,40 @@ pub fn rewrite_known_target_closures(module: &mut Module, types: &ModuleTypes) {
     }
 }
 
+/// BFS from entry; returns blocks in topological order for all forward edges.
+/// Back-edges (to already-visited blocks) are skipped — the outer fixpoint
+/// in `type_fn` handles them by iterating until convergence.
+/// Unreachable blocks (dead-code match-error branches etc.) are appended
+/// after the reachable prefix so their vars still get typed.
+fn topo_order(f: &FnIr) -> Vec<BlockId> {
+    let mut visited: HashSet<BlockId> = HashSet::new();
+    let mut order: Vec<BlockId> = Vec::with_capacity(f.blocks.len());
+    let mut queue: std::collections::VecDeque<BlockId> = std::collections::VecDeque::new();
+    queue.push_back(f.entry);
+    visited.insert(f.entry);
+    while let Some(bid) = queue.pop_front() {
+        order.push(bid);
+        let b = f.block(bid);
+        let succs: &[BlockId] = match &b.terminator {
+            Term::Goto(t, _) => std::slice::from_ref(t),
+            Term::If(_, t, e) => &[*t, *e],
+            _ => &[],
+        };
+        for &s in succs {
+            if visited.insert(s) {
+                queue.push_back(s);
+            }
+        }
+    }
+    // Append unreachable blocks so their vars are still typed.
+    for b in &f.blocks {
+        if visited.insert(b.id) {
+            order.push(b.id);
+        }
+    }
+    order
+}
+
 pub fn type_fn(f: &FnIr, m: &Module, entry_param_types: Option<&[Descr]>) -> FnTypes {
     let mut vars: HashMap<Var, Descr> = HashMap::new();
     let mut block_envs: HashMap<BlockId, HashMap<Var, Descr>> = HashMap::new();
@@ -1109,10 +1143,12 @@ pub fn type_fn(f: &FnIr, m: &Module, entry_param_types: Option<&[Descr]>) -> FnT
         block_envs.insert(b.id, env);
     }
 
+    let topo = topo_order(f);
     loop {
         let mut changed = false;
 
-        for b in &f.blocks {
+        for &bid in &topo {
+            let b = f.block(bid);
             // Re-derive env at each stmt position.
             let mut env = block_envs[&b.id].clone();
             // Track vars provably derived from IR-level Prim::Const stmts
