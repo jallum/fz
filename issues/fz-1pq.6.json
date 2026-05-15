@@ -7,9 +7,15 @@
   "id": "fz-1pq.6",
   "labels": [],
   "parent": "fz-1pq",
+  "comments": [
+    {
+      "text": "Investigation: naively folding in type_binop breaks recursive functions (fact tests fail). n-1 for n=int_lit(5) produces int_lit(4), creating a new narrow spec key [4] for fact. This cascades into [3],[2],[1],[0] before WIDEN_AT kicks in. These narrow specs get their comparisons folded too, and descrs_disjoint in codegen produces incorrect constant-folded branches.\n\nSafe approach: only fold when both operands are IR-level constants (from Prim::Const), not from spec-key parameters. Requires threading const_vars: HashSet\u003cVar\u003e through type_prim. The const_vars set includes vars bound by Prim::Const(_) stmts plus any vars derived from const_vars via arithmetic (closure under const-derivation).\n\nComparison folding (compare_result) is already implemented and safe since boolean results don't create new numeric spec keys.",
+      "timestamp": "2026-05-15T01:25:16Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "ir_typer: arithmetic on literal operands not constant-folded to literal result",
   "type": "bug",
-  "updated_at": "2026-05-15T00:29:35Z"
+  "updated_at": "2026-05-15T01:25:16Z"
 }
