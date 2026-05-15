@@ -5,7 +5,7 @@
     "fz-4n9.6"
   ],
   "created": "2026-05-15T11:11:36Z",
-  "description": "",
+  "description": "fns_needing_host_ctx is declared as an empty HashSet at line 2305 and never populated.\nEvery .contains() call returns false. Three branches are permanently dead.\n\nDECLARATION (delete both lines):\n  line 2305-2306: let fns_needing_host_ctx: HashSet\u003cFnId\u003e = HashSet::new();\n\nREMOVE FROM compile_fn SIGNATURE (line 3517):\n  fns_needing_host_ctx: \u0026HashSet\u003cFnId\u003e,\n\nREMOVE FROM compile_fn CALL SITE (line 2858):\n  \u0026fns_needing_host_ctx,\n\nSIMPLIFY SIX .contains() SITES:\n  line 2773: let needs_host_ctx = fns_needing_host_ctx.contains(\u0026f.id);\n    -\u003e needs_host_ctx always false; trace how it's used in build_fn_signature and delete/simplify there\n  line 3792: if fns_needing_host_ctx.contains(\u0026f.id) { Some(params[2]) } else { None }\n    -\u003e always None; replace entire if-else with None\n  line 3857: if fns_needing_host_ctx.contains(\u0026f.id) { (Some(...), ...) } else { (None, host_ctx_idx) }\n    -\u003e always else branch; simplify\n  line 3694: if fns_needing_host_ctx.contains(\u0026f.id) { ... } (dead branch, delete whole block)\n  line 4201: if fns_needing_host_ctx.contains(callee) { ... } (dead branch, delete whole block)\n  line 4483: if fns_needing_host_ctx.contains(callee) { ... } (dead branch, delete whole block)\n\nALSO: check build_fn_signature for needs_host_ctx usage and simplify there too.\n\ncargo build must produce zero warnings. All tests must pass.",
   "id": "fz-4n9.1",
   "labels": [],
   "parent": "fz-4n9",
@@ -13,5 +13,5 @@
   "status": "open",
   "title": "fz-cg2.1 remove fns_needing_host_ctx dead analysis",
   "type": "task",
-  "updated_at": "2026-05-15T11:11:41Z"
+  "updated_at": "2026-05-15T11:12:06Z"
 }
