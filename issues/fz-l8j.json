@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-zmu"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-cg2"
+  ],
   "created": "2026-05-15T18:27:57Z",
   "description": "",
   "id": "fz-l8j",
