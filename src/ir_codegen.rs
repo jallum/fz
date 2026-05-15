@@ -1046,8 +1046,10 @@ pub struct CompiledMetadata {
 pub struct SpecRegistry {
     /// keys[spec_id.0 as usize] = (callee, input_descrs).
     keys: Vec<(FnId, Vec<crate::types::Descr>)>,
-    /// (callee, input_descrs) → SpecId. Exact-match fast path for `resolve`.
-    lookup: HashMap<(FnId, Vec<crate::types::Descr>), SpecId>,
+    /// fn_id → (input_descrs → SpecId). Two-level map: outer keyed by FnId
+    /// so the inner `get` can borrow `&[Descr]` via `Vec<T>: Borrow<[T]>` —
+    /// zero-allocation exact-match fast path for `resolve`.
+    lookup: HashMap<FnId, HashMap<Vec<crate::types::Descr>, SpecId>>,
     /// fz-ul4.29.11 — per-FnId list of registered SpecIds, used by the
     /// subsumption fallback in `resolve`. Excludes sentinel slots inserted
     /// by `register_any_key_at`'s padding (those have no real registration).
@@ -1063,13 +1065,12 @@ impl SpecRegistry {
     /// already registered, returns the existing SpecId without
     /// duplicating.
     pub fn register(&mut self, fn_id: FnId, input_descrs: Vec<crate::types::Descr>) -> SpecId {
-        let key = (fn_id, input_descrs);
-        if let Some(&id) = self.lookup.get(&key) {
+        if let Some(&id) = self.lookup.get(&fn_id).and_then(|m| m.get(input_descrs.as_slice())) {
             return id;
         }
         let id = SpecId(self.keys.len() as u32);
-        self.keys.push(key.clone());
-        self.lookup.insert(key, id);
+        self.keys.push((fn_id, input_descrs.clone()));
+        self.lookup.entry(fn_id).or_default().insert(input_descrs, id);
         self.by_fn.entry(fn_id).or_default().push(id);
         id
     }
@@ -1098,9 +1099,8 @@ impl SpecRegistry {
         }
         let id = SpecId(self.keys.len() as u32);
         debug_assert_eq!(id.0, fn_id.0);
-        let key = (fn_id, input_descrs);
-        self.keys.push(key.clone());
-        self.lookup.insert(key, id);
+        self.keys.push((fn_id, input_descrs.clone()));
+        self.lookup.entry(fn_id).or_default().insert(input_descrs, id);
         self.by_fn.entry(fn_id).or_default().push(id);
         id
     }
@@ -1123,8 +1123,8 @@ impl SpecRegistry {
     /// Best-match specialization quality (typer registering tight-enough
     /// specs at every callsite) is a separate concern — different ticket.
     pub fn resolve(&self, fn_id: FnId, input_descrs: &[crate::types::Descr]) -> Option<SpecId> {
-        // Fast path.
-        if let Some(&id) = self.lookup.get(&(fn_id, input_descrs.to_vec())) {
+        // Fast path: zero-allocation exact match via two-level map.
+        if let Some(&id) = self.lookup.get(&fn_id).and_then(|m| m.get(input_descrs)) {
             return Some(id);
         }
         // Slow path: subsumption search.
@@ -1181,7 +1181,8 @@ impl SpecRegistry {
         let key = vec![crate::types::Descr::any(); n_params];
         *self
             .lookup
-            .get(&(fn_id, key))
+            .get(&fn_id)
+            .and_then(|m| m.get(key.as_slice()))
             .expect("any-key spec must always be registered for every fn")
     }
 
