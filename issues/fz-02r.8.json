@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-02r.6"
+    "fz-02r.6",
+    "fz-02r.7"
   ],
   "blocks": [],
   "created": "2026-05-15T21:59:31Z",
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "fz-sched.12: Integration tests — all cases on JIT, interp, and AOT",
   "type": "task",
-  "updated_at": "2026-05-15T21:59:38Z"
+  "updated_at": "2026-05-15T21:59:39Z"
 }
