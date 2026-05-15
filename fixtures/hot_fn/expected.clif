@@ -7,13 +7,10 @@ function u0:0(i64) -> i64 tail {
     fn0 = colocated u0:43 sig0
 
 block0(v0: i64):
-    v2 = iconst.i64 0                   ; @4:13
-    jump block1(v2)                     ; @4:9  v2 = 0
-
-    block1(v1: i64):    ;; v1 :: 0
+    v1 = iconst.i64 0                   ; @4:13
+    v2 = iconst.i64 1    ;; v2 :: 1
     v3 = iconst.i64 1    ;; v3 :: 1
-    v4 = iadd v1, v3  ; v3 = 1    ;; v4 :: int
-    return_call fn0(v4, v0)
+    return_call fn0(v3, v0)             ; @4:9  v3 = 1
 }
 
 ; fn k_2
@@ -28,14 +25,11 @@ function u0:0(i64, i64) -> i64 tail {
 
     block0(v0: i64, v1: i64):    ;; v0 :: int
     call fn0(v0)                        ; @4:3
-    v3 = iconst.i64 3                   ; @4:3
-    v4 = iconst.i64 0                   ; @5:13
-    jump block1(v4)                     ; @5:9  v4 = 0
-
-    block1(v2: i64):    ;; v2 :: 0
+    v2 = iconst.i64 3                   ; @4:3
+    v3 = iconst.i64 0                   ; @5:13
+    v4 = iconst.i64 1    ;; v4 :: 1
     v5 = iconst.i64 1    ;; v5 :: 1
-    v6 = iadd v2, v5  ; v5 = 1    ;; v6 :: int
-    return_call fn1(v6, v1)
+    return_call fn1(v5, v1)             ; @5:9  v5 = 1
 }
 
 ; fn k_3
@@ -50,14 +44,11 @@ function u0:0(i64, i64) -> i64 tail {
 
     block0(v0: i64, v1: i64):    ;; v0 :: int
     call fn0(v0)                        ; @5:3
-    v3 = iconst.i64 3                   ; @5:3
-    v4 = iconst.i64 0                   ; @6:13
-    jump block1(v4)                     ; @6:9  v4 = 0
-
-    block1(v2: i64):    ;; v2 :: 0
+    v2 = iconst.i64 3                   ; @5:3
+    v3 = iconst.i64 0                   ; @6:13
+    v4 = iconst.i64 1    ;; v4 :: 1
     v5 = iconst.i64 1    ;; v5 :: 1
-    v6 = iadd v2, v5  ; v5 = 1    ;; v6 :: int
-    return_call fn1(v6, v1)
+    return_call fn1(v5, v1)             ; @6:9  v5 = 1
 }
 
 ; fn k_4
@@ -72,14 +63,11 @@ function u0:0(i64, i64) -> i64 tail {
 
     block0(v0: i64, v1: i64):    ;; v0 :: int
     call fn0(v0)                        ; @6:3
-    v3 = iconst.i64 3                   ; @6:3
-    v4 = iconst.i64 0                   ; @7:13
-    jump block1(v4)                     ; @7:9  v4 = 0
-
-    block1(v2: i64):    ;; v2 :: 0
+    v2 = iconst.i64 3                   ; @6:3
+    v3 = iconst.i64 0                   ; @7:13
+    v4 = iconst.i64 1    ;; v4 :: 1
     v5 = iconst.i64 1    ;; v5 :: 1
-    v6 = iadd v2, v5  ; v5 = 1    ;; v6 :: int
-    return_call fn1(v6, v1)
+    return_call fn1(v5, v1)             ; @7:9  v5 = 1
 }
 
 ; fn k_5
@@ -94,14 +82,11 @@ function u0:0(i64, i64) -> i64 tail {
 
     block0(v0: i64, v1: i64):    ;; v0 :: int
     call fn0(v0)                        ; @7:3
-    v3 = iconst.i64 3                   ; @7:3
-    v4 = iconst.i64 0                   ; @8:13
-    jump block1(v4)                     ; @8:9  v4 = 0
-
-    block1(v2: i64):    ;; v2 :: 0
+    v2 = iconst.i64 3                   ; @7:3
+    v3 = iconst.i64 0                   ; @8:13
+    v4 = iconst.i64 1    ;; v4 :: 1
     v5 = iconst.i64 1    ;; v5 :: 1
-    v6 = iadd v2, v5  ; v5 = 1    ;; v6 :: int
-    return_call fn1(v6, v1)
+    return_call fn1(v5, v1)             ; @8:9  v5 = 1
 }
 
 ; fn k_6
@@ -116,14 +101,11 @@ function u0:0(i64, i64) -> i64 tail {
 
     block0(v0: i64, v1: i64):    ;; v0 :: int
     call fn0(v0)                        ; @8:3
-    v3 = iconst.i64 3                   ; @8:3
-    v4 = iconst.i64 0                   ; @9:13
-    jump block1(v4)                     ; @9:9  v4 = 0
-
-    block1(v2: i64):    ;; v2 :: 0
+    v2 = iconst.i64 3                   ; @8:3
+    v3 = iconst.i64 0                   ; @9:13
+    v4 = iconst.i64 1    ;; v4 :: 1
     v5 = iconst.i64 1    ;; v5 :: 1
-    v6 = iadd v2, v5  ; v5 = 1    ;; v6 :: int
-    return_call fn1(v6, v1)
+    return_call fn1(v5, v1)             ; @9:9  v5 = 1
 }
 
 ; fn k_7
@@ -138,14 +120,11 @@ function u0:0(i64, i64) -> i64 tail {
 
     block0(v0: i64, v1: i64):    ;; v0 :: int
     call fn0(v0)                        ; @9:3
-    v3 = iconst.i64 3                   ; @9:3
-    v4 = iconst.i64 0                   ; @10:13
-    jump block1(v4)                     ; @10:9  v4 = 0
-
-    block1(v2: i64):    ;; v2 :: 0
+    v2 = iconst.i64 3                   ; @9:3
+    v3 = iconst.i64 0                   ; @10:13
+    v4 = iconst.i64 1    ;; v4 :: 1
     v5 = iconst.i64 1    ;; v5 :: 1
-    v6 = iadd v2, v5  ; v5 = 1    ;; v6 :: int
-    return_call fn1(v6, v1)
+    return_call fn1(v5, v1)             ; @10:9  v5 = 1
 }
 
 ; fn k_8
@@ -160,14 +139,11 @@ function u0:0(i64, i64) -> i64 tail {
 
     block0(v0: i64, v1: i64):    ;; v0 :: int
     call fn0(v0)                        ; @10:3
-    v3 = iconst.i64 3                   ; @10:3
-    v4 = iconst.i64 0                   ; @11:13
-    jump block1(v4)                     ; @11:9  v4 = 0
-
-    block1(v2: i64):    ;; v2 :: 0
+    v2 = iconst.i64 3                   ; @10:3
+    v3 = iconst.i64 0                   ; @11:13
+    v4 = iconst.i64 1    ;; v4 :: 1
     v5 = iconst.i64 1    ;; v5 :: 1
-    v6 = iadd v2, v5  ; v5 = 1    ;; v6 :: int
-    return_call fn1(v6, v1)
+    return_call fn1(v5, v1)             ; @11:9  v5 = 1
 }
 
 ; fn k_9
@@ -185,30 +161,18 @@ function u0:0(i64, i64) -> i64 tail {
 
     block0(v0: i64, v1: i64):    ;; v0 :: int
     call fn0(v0)                        ; @11:3
-    v6 = iconst.i64 3                   ; @11:3
-    v7 = iconst.i64 0                   ; @12:13
-    jump block1(v7)                     ; @12:9  v7 = 0
-
-    block1(v2: i64):    ;; v2 :: 0
+    v2 = iconst.i64 3                   ; @11:3
+    v3 = iconst.i64 0                   ; @12:13
+    v4 = iconst.i64 1    ;; v4 :: 1
+    v5 = iconst.i64 1    ;; v5 :: 1
+    call fn1(v5)  ; v5 = 1
+    v6 = iconst.i64 3    ;; v6 :: nil
+    v7 = iconst.i64 0    ;; v7 :: 0
     v8 = iconst.i64 1    ;; v8 :: 1
-    v9 = iadd v2, v8  ; v8 = 1    ;; v9 :: int
-    jump block2(v9)
-
-    block2(v3: i64):    ;; v3 :: int
-    call fn1(v3)
+    v9 = iconst.i64 1    ;; v9 :: 1
+    call fn2(v9)  ; v9 = 1
     v10 = iconst.i64 3    ;; v10 :: nil
-    v11 = iconst.i64 0    ;; v11 :: 0
-    jump block3(v11)  ; v11 = 0
-
-    block3(v4: i64):    ;; v4 :: 0
-    v12 = iconst.i64 1    ;; v12 :: 1
-    v13 = iadd v4, v12  ; v12 = 1    ;; v13 :: int
-    jump block4(v13)
-
-    block4(v5: i64):    ;; v5 :: int
-    call fn2(v5)
-    v14 = iconst.i64 3    ;; v14 :: nil
-    v15 = load.i64 notrap aligned v1+16
-    return_call_indirect sig3, v15(v14, v1)  ; v14 = 3
+    v11 = load.i64 notrap aligned v1+16 ; @12:9
+    return_call_indirect sig3, v11(v10, v1) ; @12:9  v10 = 3
 }
 

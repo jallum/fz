@@ -53,19 +53,16 @@ function u0:0(i64, i64) -> i64 tail {
     fn0 = u0:32 sig0
 
 block0(v0: i64, v1: i64):
-    v3 = iconst.i64 42    ;; v3 :: 42
-    jump block1(v3)  ; v3 = 42
-
-    block1(v2: i64):    ;; v2 :: 42
-    v4 = iconst.i64 1    ;; v4 :: 1
-    v5 = ishl_imm v4, 3  ; v4 = 1
-    v6 = bor_imm v5, 1
-    v7 = ishl_imm v2, 3
-    v8 = bor_imm v7, 1
-    v9 = call fn0(v6, v8)    ;; v9 :: 42
-    v10 = sshr_imm v9, 3
-    v11 = load.i64 notrap aligned v1+16
-    return_call_indirect sig1, v11(v10, v1)
+    v2 = iconst.i64 42    ;; v2 :: 42
+    v3 = iconst.i64 1    ;; v3 :: 1
+    v4 = ishl_imm v3, 3  ; v3 = 1
+    v5 = bor_imm v4, 1
+    v6 = ishl_imm v2, 3  ; v2 = 42
+    v7 = bor_imm v6, 1
+    v8 = call fn0(v5, v7)    ;; v8 :: 42
+    v9 = sshr_imm v8, 3
+    v10 = load.i64 notrap aligned v1+16
+    return_call_indirect sig1, v10(v9, v1)
 }
 
 ; fn k_receive_4

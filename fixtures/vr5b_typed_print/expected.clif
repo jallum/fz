@@ -10,24 +10,15 @@ function u0:0(i64) -> i64 tail {
     fn1 = u0:2 sig1
 
 block0(v0: i64):
-    jump block1                         ; @10:3
-
-block1:
-    v2 = iconst.i64 42    ;; v2 :: 42
-    call fn0(v2)  ; v2 = 42
-    v3 = iconst.i64 3    ;; v3 :: nil
-    jump block2(v3)  ; v3 = 3
-
-    block2(v1: i64):    ;; v1 :: nil
-    jump block3
-
-block3:
-    v4 = f64const 0x1.8000000000000p0    ;; v4 :: 1.5
-    v5 = f64const 0x1.4000000000000p1    ;; v5 :: 2.5
-    v6 = fadd v4, v5  ; v4 = 0x1.8000000000000p0, v5 = 0x1.4000000000000p1    ;; v6 :: 4.0
-    call fn1(v6)
-    v7 = iconst.i64 3    ;; v7 :: nil
-    v8 = load.i64 notrap aligned v0+16
-    return_call_indirect sig2, v8(v7, v0)  ; v7 = 3
+    v1 = iconst.i64 42    ;; v1 :: 42
+    call fn0(v1)  ; v1 = 42
+    v2 = iconst.i64 3    ;; v2 :: nil
+    v3 = f64const 0x1.8000000000000p0    ;; v3 :: 1.5
+    v4 = f64const 0x1.4000000000000p1    ;; v4 :: 2.5
+    v5 = fadd v3, v4  ; v3 = 0x1.8000000000000p0, v4 = 0x1.4000000000000p1    ;; v5 :: 4.0
+    call fn1(v5)
+    v6 = iconst.i64 3    ;; v6 :: nil
+    v7 = load.i64 notrap aligned v0+16  ; @10:3
+    return_call_indirect sig2, v7(v6, v0) ; @10:3  v6 = 3
 }
 

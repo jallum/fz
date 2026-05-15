@@ -11,49 +11,43 @@ function u0:0(i64) -> i64 tail {
     fn2 = colocated u0:48 sig2
 
 block0(v0: i64):
-    v2 = iconst.i64 0                   ; @9:18
-    jump block1(v2)                     ; @9:9  v2 = 0
+    v1 = iconst.i64 0                   ; @9:18
+    v2 = iconst.i64 0    ;; v2 :: 0
+    v3 = icmp eq v1, v2  ; v1 = 0, v2 = 0
+    v4 = iconst.i64 11
+    v5 = iconst.i64 19
+    v6 = select v3, v4, v5  ; v4 = 11, v5 = 19    ;; v6 :: :true
+    v7 = iconst.i64 3                   ; @9:9
+    v8 = iconst.i64 19                  ; @9:9
+    v9 = icmp ne v6, v7                 ; @9:9  v7 = 3
+    v10 = icmp ne v6, v8                ; @9:9  v8 = 19
+    v11 = band v9, v10                  ; @9:9
+    brif v11, block3, block1            ; @9:9
 
-    block1(v1: i64):    ;; v1 :: 0
-    jump block2
+block1:
+    v12 = iconst.i64 0    ;; v12 :: 0
+    v13 = icmp.i64 sgt v1, v12  ; v1 = 0, v12 = 0
+    v14 = iconst.i64 11
+    v15 = iconst.i64 19
+    v16 = select v13, v14, v15  ; v14 = 11, v15 = 19    ;; v16 :: bool
+    v17 = iconst.i64 3
+    v18 = iconst.i64 19
+    v19 = icmp ne v16, v17  ; v17 = 3
+    v20 = icmp ne v16, v18  ; v18 = 19
+    v21 = band v19, v20
+    brif v21, block4, block2
 
 block2:
-    v3 = iconst.i64 0    ;; v3 :: 0
-    v4 = icmp.i64 eq v1, v3  ; v3 = 0
-    v5 = iconst.i64 11
-    v6 = iconst.i64 19
-    v7 = select v4, v5, v6  ; v5 = 11, v6 = 19    ;; v7 :: :true
-    v8 = iconst.i64 3
-    v9 = iconst.i64 19
-    v10 = icmp ne v7, v8  ; v8 = 3
-    v11 = icmp ne v7, v9  ; v9 = 19
-    v12 = band v10, v11
-    brif v12, block5, block3
+    v22 = iconst.i64 26    ;; v22 :: :negative
+    return_call fn0(v22, v0)  ; v22 = 26
 
 block3:
-    v13 = iconst.i64 0    ;; v13 :: 0
-    v14 = icmp.i64 sgt v1, v13  ; v13 = 0
-    v15 = iconst.i64 11
-    v16 = iconst.i64 19
-    v17 = select v14, v15, v16  ; v15 = 11, v16 = 19    ;; v17 :: bool
-    v18 = iconst.i64 3
-    v19 = iconst.i64 19
-    v20 = icmp ne v17, v18  ; v18 = 3
-    v21 = icmp ne v17, v19  ; v19 = 19
-    v22 = band v20, v21
-    brif v22, block6, block4
+    v23 = iconst.i64 10    ;; v23 :: :zero
+    return_call fn1(v23, v0)  ; v23 = 10
 
 block4:
-    v23 = iconst.i64 26    ;; v23 :: :negative
-    return_call fn0(v23, v0)  ; v23 = 26
-
-block5:
-    v24 = iconst.i64 10    ;; v24 :: :zero
-    return_call fn1(v24, v0)  ; v24 = 10
-
-block6:
-    v25 = iconst.i64 18    ;; v25 :: :positive
-    return_call fn2(v25, v0)  ; v25 = 18
+    v24 = iconst.i64 18    ;; v24 :: :positive
+    return_call fn2(v24, v0)  ; v24 = 18
 }
 
 ; fn fact_s3
@@ -70,9 +64,6 @@ function u0:0(i64, i64) -> i64 tail {
     fn2 = colocated u0:45 sig2
 
     block0(v0: i64, v1: i64):    ;; v0 :: 5
-    jump block1
-
-block1:
     v2 = iconst.i64 0    ;; v2 :: 0
     v3 = iconst.i64 19    ;; v3 :: :false
     v4 = iconst.i64 3
@@ -80,9 +71,9 @@ block1:
     v6 = icmp ne v3, v4  ; v3 = 19, v4 = 3
     v7 = icmp ne v3, v5  ; v3 = 19, v5 = 19
     v8 = band v6, v7
-    brif v8, block3, block2
+    brif v8, block2, block1
 
-block2:
+block1:
     v9 = iconst.i64 1                   ; @6:30
     v10 = isub.i64 v0, v9               ; @6:26  v9 = 1
     v11 = iconst.i32 5                  ; @6:21
@@ -96,7 +87,7 @@ block2:
     store.i64 notrap aligned v0, v14+40 ; @6:21
     return_call fn0(v10, v14)           ; @6:21
 
-block3:
+block2:
     v16 = iconst.i64 1                  ; @5:17
     v17 = load.i64 notrap aligned v1+16
     return_call_indirect sig3, v17(v16, v1)  ; v16 = 1
@@ -116,11 +107,8 @@ function u0:0(i64, i64) -> i64 tail {
     fn2 = colocated u0:46 sig2
 
     block0(v0: i64, v1: i64):    ;; v0 :: int
-    jump block1
-
-block1:
     v2 = iconst.i64 0    ;; v2 :: 0
-    v3 = icmp.i64 eq v0, v2  ; v2 = 0
+    v3 = icmp eq v0, v2  ; v2 = 0
     v4 = iconst.i64 11
     v5 = iconst.i64 19
     v6 = select v3, v4, v5  ; v4 = 11, v5 = 19    ;; v6 :: bool
@@ -129,9 +117,9 @@ block1:
     v9 = icmp ne v6, v7  ; v7 = 3
     v10 = icmp ne v6, v8  ; v8 = 19
     v11 = band v9, v10
-    brif v11, block3, block2
+    brif v11, block2, block1
 
-block2:
+block1:
     v12 = iconst.i64 1                  ; @6:30
     v13 = isub.i64 v0, v12              ; @6:26  v12 = 1
     v14 = iconst.i32 6                  ; @6:21
@@ -145,7 +133,7 @@ block2:
     store.i64 notrap aligned v0, v17+40 ; @6:21
     return_call fn0(v13, v17)           ; @6:21
 
-block3:
+block2:
     v19 = iconst.i64 1                  ; @5:17
     v20 = load.i64 notrap aligned v1+16
     return_call_indirect sig3, v20(v19, v1)  ; v19 = 1
@@ -199,47 +187,41 @@ function u0:0(i64, i64) -> i64 tail {
 
     block0(v0: i64, v1: i64):    ;; v0 :: :negative
     call fn0(v0)                        ; @9:3
-    v3 = iconst.i64 3                   ; @9:3
-    v4 = iconst.i64 7                   ; @10:18
-    jump block1(v4)                     ; @10:9  v4 = 7
+    v2 = iconst.i64 3                   ; @9:3
+    v3 = iconst.i64 7                   ; @10:18
+    v4 = iconst.i64 0    ;; v4 :: 0
+    v5 = iconst.i64 19    ;; v5 :: :false
+    v6 = iconst.i64 3                   ; @10:9
+    v7 = iconst.i64 19                  ; @10:9
+    v8 = icmp ne v5, v6                 ; @10:9  v5 = 19, v6 = 3
+    v9 = icmp ne v5, v7                 ; @10:9  v5 = 19, v7 = 19
+    v10 = band v8, v9                   ; @10:9
+    brif v10, block3, block1            ; @10:9
 
-    block1(v2: i64):    ;; v2 :: 7
-    jump block2
+block1:
+    v11 = iconst.i64 0    ;; v11 :: 0
+    v12 = icmp.i64 sgt v3, v11  ; v3 = 7, v11 = 0
+    v13 = iconst.i64 11
+    v14 = iconst.i64 19
+    v15 = select v12, v13, v14  ; v13 = 11, v14 = 19    ;; v15 :: :true
+    v16 = iconst.i64 3
+    v17 = iconst.i64 19
+    v18 = icmp ne v15, v16  ; v16 = 3
+    v19 = icmp ne v15, v17  ; v17 = 19
+    v20 = band v18, v19
+    brif v20, block4, block2
 
 block2:
-    v5 = iconst.i64 0    ;; v5 :: 0
-    v6 = iconst.i64 19    ;; v6 :: :false
-    v7 = iconst.i64 3
-    v8 = iconst.i64 19
-    v9 = icmp ne v6, v7  ; v6 = 19, v7 = 3
-    v10 = icmp ne v6, v8  ; v6 = 19, v8 = 19
-    v11 = band v9, v10
-    brif v11, block5, block3
+    v21 = iconst.i64 26    ;; v21 :: :negative
+    return_call fn1(v21, v1)  ; v21 = 26
 
 block3:
-    v12 = iconst.i64 0    ;; v12 :: 0
-    v13 = icmp.i64 sgt v2, v12  ; v12 = 0
-    v14 = iconst.i64 11
-    v15 = iconst.i64 19
-    v16 = select v13, v14, v15  ; v14 = 11, v15 = 19    ;; v16 :: :true
-    v17 = iconst.i64 3
-    v18 = iconst.i64 19
-    v19 = icmp ne v16, v17  ; v17 = 3
-    v20 = icmp ne v16, v18  ; v18 = 19
-    v21 = band v19, v20
-    brif v21, block6, block4
+    v22 = iconst.i64 10    ;; v22 :: :zero
+    return_call fn2(v22, v1)  ; v22 = 10
 
 block4:
-    v22 = iconst.i64 26    ;; v22 :: :negative
-    return_call fn1(v22, v1)  ; v22 = 26
-
-block5:
-    v23 = iconst.i64 10    ;; v23 :: :zero
-    return_call fn2(v23, v1)  ; v23 = 10
-
-block6:
-    v24 = iconst.i64 18    ;; v24 :: :positive
-    return_call fn3(v24, v1)  ; v24 = 18
+    v23 = iconst.i64 18    ;; v23 :: :positive
+    return_call fn3(v23, v1)  ; v23 = 18
 }
 
 ; fn k_4_s8
@@ -258,47 +240,41 @@ function u0:0(i64, i64) -> i64 tail {
 
     block0(v0: i64, v1: i64):    ;; v0 :: :positive
     call fn0(v0)                        ; @9:3
-    v3 = iconst.i64 3                   ; @9:3
-    v4 = iconst.i64 7                   ; @10:18
-    jump block1(v4)                     ; @10:9  v4 = 7
+    v2 = iconst.i64 3                   ; @9:3
+    v3 = iconst.i64 7                   ; @10:18
+    v4 = iconst.i64 0    ;; v4 :: 0
+    v5 = iconst.i64 19    ;; v5 :: :false
+    v6 = iconst.i64 3                   ; @10:9
+    v7 = iconst.i64 19                  ; @10:9
+    v8 = icmp ne v5, v6                 ; @10:9  v5 = 19, v6 = 3
+    v9 = icmp ne v5, v7                 ; @10:9  v5 = 19, v7 = 19
+    v10 = band v8, v9                   ; @10:9
+    brif v10, block3, block1            ; @10:9
 
-    block1(v2: i64):    ;; v2 :: 7
-    jump block2
+block1:
+    v11 = iconst.i64 0    ;; v11 :: 0
+    v12 = icmp.i64 sgt v3, v11  ; v3 = 7, v11 = 0
+    v13 = iconst.i64 11
+    v14 = iconst.i64 19
+    v15 = select v12, v13, v14  ; v13 = 11, v14 = 19    ;; v15 :: :true
+    v16 = iconst.i64 3
+    v17 = iconst.i64 19
+    v18 = icmp ne v15, v16  ; v16 = 3
+    v19 = icmp ne v15, v17  ; v17 = 19
+    v20 = band v18, v19
+    brif v20, block4, block2
 
 block2:
-    v5 = iconst.i64 0    ;; v5 :: 0
-    v6 = iconst.i64 19    ;; v6 :: :false
-    v7 = iconst.i64 3
-    v8 = iconst.i64 19
-    v9 = icmp ne v6, v7  ; v6 = 19, v7 = 3
-    v10 = icmp ne v6, v8  ; v6 = 19, v8 = 19
-    v11 = band v9, v10
-    brif v11, block5, block3
+    v21 = iconst.i64 26    ;; v21 :: :negative
+    return_call fn1(v21, v1)  ; v21 = 26
 
 block3:
-    v12 = iconst.i64 0    ;; v12 :: 0
-    v13 = icmp.i64 sgt v2, v12  ; v12 = 0
-    v14 = iconst.i64 11
-    v15 = iconst.i64 19
-    v16 = select v13, v14, v15  ; v14 = 11, v15 = 19    ;; v16 :: :true
-    v17 = iconst.i64 3
-    v18 = iconst.i64 19
-    v19 = icmp ne v16, v17  ; v17 = 3
-    v20 = icmp ne v16, v18  ; v18 = 19
-    v21 = band v19, v20
-    brif v21, block6, block4
+    v22 = iconst.i64 10    ;; v22 :: :zero
+    return_call fn2(v22, v1)  ; v22 = 10
 
 block4:
-    v22 = iconst.i64 26    ;; v22 :: :negative
-    return_call fn1(v22, v1)  ; v22 = 26
-
-block5:
-    v23 = iconst.i64 10    ;; v23 :: :zero
-    return_call fn2(v23, v1)  ; v23 = 10
-
-block6:
-    v24 = iconst.i64 18    ;; v24 :: :positive
-    return_call fn3(v24, v1)  ; v24 = 18
+    v23 = iconst.i64 18    ;; v23 :: :positive
+    return_call fn3(v23, v1)  ; v23 = 18
 }
 
 ; fn k_4_s9
@@ -317,47 +293,41 @@ function u0:0(i64, i64) -> i64 tail {
 
     block0(v0: i64, v1: i64):    ;; v0 :: :zero
     call fn0(v0)                        ; @9:3
-    v3 = iconst.i64 3                   ; @9:3
-    v4 = iconst.i64 7                   ; @10:18
-    jump block1(v4)                     ; @10:9  v4 = 7
+    v2 = iconst.i64 3                   ; @9:3
+    v3 = iconst.i64 7                   ; @10:18
+    v4 = iconst.i64 0    ;; v4 :: 0
+    v5 = iconst.i64 19    ;; v5 :: :false
+    v6 = iconst.i64 3                   ; @10:9
+    v7 = iconst.i64 19                  ; @10:9
+    v8 = icmp ne v5, v6                 ; @10:9  v5 = 19, v6 = 3
+    v9 = icmp ne v5, v7                 ; @10:9  v5 = 19, v7 = 19
+    v10 = band v8, v9                   ; @10:9
+    brif v10, block3, block1            ; @10:9
 
-    block1(v2: i64):    ;; v2 :: 7
-    jump block2
+block1:
+    v11 = iconst.i64 0    ;; v11 :: 0
+    v12 = icmp.i64 sgt v3, v11  ; v3 = 7, v11 = 0
+    v13 = iconst.i64 11
+    v14 = iconst.i64 19
+    v15 = select v12, v13, v14  ; v13 = 11, v14 = 19    ;; v15 :: :true
+    v16 = iconst.i64 3
+    v17 = iconst.i64 19
+    v18 = icmp ne v15, v16  ; v16 = 3
+    v19 = icmp ne v15, v17  ; v17 = 19
+    v20 = band v18, v19
+    brif v20, block4, block2
 
 block2:
-    v5 = iconst.i64 0    ;; v5 :: 0
-    v6 = iconst.i64 19    ;; v6 :: :false
-    v7 = iconst.i64 3
-    v8 = iconst.i64 19
-    v9 = icmp ne v6, v7  ; v6 = 19, v7 = 3
-    v10 = icmp ne v6, v8  ; v6 = 19, v8 = 19
-    v11 = band v9, v10
-    brif v11, block5, block3
+    v21 = iconst.i64 26    ;; v21 :: :negative
+    return_call fn1(v21, v1)  ; v21 = 26
 
 block3:
-    v12 = iconst.i64 0    ;; v12 :: 0
-    v13 = icmp.i64 sgt v2, v12  ; v12 = 0
-    v14 = iconst.i64 11
-    v15 = iconst.i64 19
-    v16 = select v13, v14, v15  ; v14 = 11, v15 = 19    ;; v16 :: :true
-    v17 = iconst.i64 3
-    v18 = iconst.i64 19
-    v19 = icmp ne v16, v17  ; v17 = 3
-    v20 = icmp ne v16, v18  ; v18 = 19
-    v21 = band v19, v20
-    brif v21, block6, block4
+    v22 = iconst.i64 10    ;; v22 :: :zero
+    return_call fn2(v22, v1)  ; v22 = 10
 
 block4:
-    v22 = iconst.i64 26    ;; v22 :: :negative
-    return_call fn1(v22, v1)  ; v22 = 26
-
-block5:
-    v23 = iconst.i64 10    ;; v23 :: :zero
-    return_call fn2(v23, v1)  ; v23 = 10
-
-block6:
-    v24 = iconst.i64 18    ;; v24 :: :positive
-    return_call fn3(v24, v1)  ; v24 = 18
+    v23 = iconst.i64 18    ;; v23 :: :positive
+    return_call fn3(v23, v1)  ; v23 = 18
 }
 
 ; fn k_5_s10
@@ -376,48 +346,42 @@ function u0:0(i64, i64) -> i64 tail {
 
     block0(v0: i64, v1: i64):    ;; v0 :: :negative
     call fn0(v0)                        ; @10:3
-    v3 = iconst.i64 3                   ; @10:3
-    v4 = iconst.i64 3                   ; @11:19
-    v5 = ineg v4                        ; @11:18  v4 = 3
-    jump block1(v5)                     ; @11:9
+    v2 = iconst.i64 3                   ; @10:3
+    v3 = iconst.i64 3                   ; @11:19
+    v4 = ineg v3                        ; @11:18  v3 = 3
+    v5 = iconst.i64 0    ;; v5 :: 0
+    v6 = iconst.i64 19    ;; v6 :: :false
+    v7 = iconst.i64 3                   ; @11:9
+    v8 = iconst.i64 19                  ; @11:9
+    v9 = icmp ne v6, v7                 ; @11:9  v6 = 19, v7 = 3
+    v10 = icmp ne v6, v8                ; @11:9  v6 = 19, v8 = 19
+    v11 = band v9, v10                  ; @11:9
+    brif v11, block3, block1            ; @11:9
 
-    block1(v2: i64):    ;; v2 :: -3
-    jump block2
+block1:
+    v12 = iconst.i64 0    ;; v12 :: 0
+    v13 = icmp.i64 sgt v4, v12  ; v12 = 0
+    v14 = iconst.i64 11
+    v15 = iconst.i64 19
+    v16 = select v13, v14, v15  ; v14 = 11, v15 = 19    ;; v16 :: :false
+    v17 = iconst.i64 3
+    v18 = iconst.i64 19
+    v19 = icmp ne v16, v17  ; v17 = 3
+    v20 = icmp ne v16, v18  ; v18 = 19
+    v21 = band v19, v20
+    brif v21, block4, block2
 
 block2:
-    v6 = iconst.i64 0    ;; v6 :: 0
-    v7 = iconst.i64 19    ;; v7 :: :false
-    v8 = iconst.i64 3
-    v9 = iconst.i64 19
-    v10 = icmp ne v7, v8  ; v7 = 19, v8 = 3
-    v11 = icmp ne v7, v9  ; v7 = 19, v9 = 19
-    v12 = band v10, v11
-    brif v12, block5, block3
+    v22 = iconst.i64 26    ;; v22 :: :negative
+    return_call fn1(v22, v1)  ; v22 = 26
 
 block3:
-    v13 = iconst.i64 0    ;; v13 :: 0
-    v14 = icmp.i64 sgt v2, v13  ; v13 = 0
-    v15 = iconst.i64 11
-    v16 = iconst.i64 19
-    v17 = select v14, v15, v16  ; v15 = 11, v16 = 19    ;; v17 :: :false
-    v18 = iconst.i64 3
-    v19 = iconst.i64 19
-    v20 = icmp ne v17, v18  ; v18 = 3
-    v21 = icmp ne v17, v19  ; v19 = 19
-    v22 = band v20, v21
-    brif v22, block6, block4
+    v23 = iconst.i64 10    ;; v23 :: :zero
+    return_call fn2(v23, v1)  ; v23 = 10
 
 block4:
-    v23 = iconst.i64 26    ;; v23 :: :negative
-    return_call fn1(v23, v1)  ; v23 = 26
-
-block5:
-    v24 = iconst.i64 10    ;; v24 :: :zero
-    return_call fn2(v24, v1)  ; v24 = 10
-
-block6:
-    v25 = iconst.i64 18    ;; v25 :: :positive
-    return_call fn3(v25, v1)  ; v25 = 18
+    v24 = iconst.i64 18    ;; v24 :: :positive
+    return_call fn3(v24, v1)  ; v24 = 18
 }
 
 ; fn k_5_s11
@@ -436,48 +400,42 @@ function u0:0(i64, i64) -> i64 tail {
 
     block0(v0: i64, v1: i64):    ;; v0 :: :positive
     call fn0(v0)                        ; @10:3
-    v3 = iconst.i64 3                   ; @10:3
-    v4 = iconst.i64 3                   ; @11:19
-    v5 = ineg v4                        ; @11:18  v4 = 3
-    jump block1(v5)                     ; @11:9
+    v2 = iconst.i64 3                   ; @10:3
+    v3 = iconst.i64 3                   ; @11:19
+    v4 = ineg v3                        ; @11:18  v3 = 3
+    v5 = iconst.i64 0    ;; v5 :: 0
+    v6 = iconst.i64 19    ;; v6 :: :false
+    v7 = iconst.i64 3                   ; @11:9
+    v8 = iconst.i64 19                  ; @11:9
+    v9 = icmp ne v6, v7                 ; @11:9  v6 = 19, v7 = 3
+    v10 = icmp ne v6, v8                ; @11:9  v6 = 19, v8 = 19
+    v11 = band v9, v10                  ; @11:9
+    brif v11, block3, block1            ; @11:9
 
-    block1(v2: i64):    ;; v2 :: -3
-    jump block2
+block1:
+    v12 = iconst.i64 0    ;; v12 :: 0
+    v13 = icmp.i64 sgt v4, v12  ; v12 = 0
+    v14 = iconst.i64 11
+    v15 = iconst.i64 19
+    v16 = select v13, v14, v15  ; v14 = 11, v15 = 19    ;; v16 :: :false
+    v17 = iconst.i64 3
+    v18 = iconst.i64 19
+    v19 = icmp ne v16, v17  ; v17 = 3
+    v20 = icmp ne v16, v18  ; v18 = 19
+    v21 = band v19, v20
+    brif v21, block4, block2
 
 block2:
-    v6 = iconst.i64 0    ;; v6 :: 0
-    v7 = iconst.i64 19    ;; v7 :: :false
-    v8 = iconst.i64 3
-    v9 = iconst.i64 19
-    v10 = icmp ne v7, v8  ; v7 = 19, v8 = 3
-    v11 = icmp ne v7, v9  ; v7 = 19, v9 = 19
-    v12 = band v10, v11
-    brif v12, block5, block3
+    v22 = iconst.i64 26    ;; v22 :: :negative
+    return_call fn1(v22, v1)  ; v22 = 26
 
 block3:
-    v13 = iconst.i64 0    ;; v13 :: 0
-    v14 = icmp.i64 sgt v2, v13  ; v13 = 0
-    v15 = iconst.i64 11
-    v16 = iconst.i64 19
-    v17 = select v14, v15, v16  ; v15 = 11, v16 = 19    ;; v17 :: :false
-    v18 = iconst.i64 3
-    v19 = iconst.i64 19
-    v20 = icmp ne v17, v18  ; v18 = 3
-    v21 = icmp ne v17, v19  ; v19 = 19
-    v22 = band v20, v21
-    brif v22, block6, block4
+    v23 = iconst.i64 10    ;; v23 :: :zero
+    return_call fn2(v23, v1)  ; v23 = 10
 
 block4:
-    v23 = iconst.i64 26    ;; v23 :: :negative
-    return_call fn1(v23, v1)  ; v23 = 26
-
-block5:
-    v24 = iconst.i64 10    ;; v24 :: :zero
-    return_call fn2(v24, v1)  ; v24 = 10
-
-block6:
-    v25 = iconst.i64 18    ;; v25 :: :positive
-    return_call fn3(v25, v1)  ; v25 = 18
+    v24 = iconst.i64 18    ;; v24 :: :positive
+    return_call fn3(v24, v1)  ; v24 = 18
 }
 
 ; fn k_5_s12
@@ -496,48 +454,42 @@ function u0:0(i64, i64) -> i64 tail {
 
     block0(v0: i64, v1: i64):    ;; v0 :: :zero
     call fn0(v0)                        ; @10:3
-    v3 = iconst.i64 3                   ; @10:3
-    v4 = iconst.i64 3                   ; @11:19
-    v5 = ineg v4                        ; @11:18  v4 = 3
-    jump block1(v5)                     ; @11:9
+    v2 = iconst.i64 3                   ; @10:3
+    v3 = iconst.i64 3                   ; @11:19
+    v4 = ineg v3                        ; @11:18  v3 = 3
+    v5 = iconst.i64 0    ;; v5 :: 0
+    v6 = iconst.i64 19    ;; v6 :: :false
+    v7 = iconst.i64 3                   ; @11:9
+    v8 = iconst.i64 19                  ; @11:9
+    v9 = icmp ne v6, v7                 ; @11:9  v6 = 19, v7 = 3
+    v10 = icmp ne v6, v8                ; @11:9  v6 = 19, v8 = 19
+    v11 = band v9, v10                  ; @11:9
+    brif v11, block3, block1            ; @11:9
 
-    block1(v2: i64):    ;; v2 :: -3
-    jump block2
+block1:
+    v12 = iconst.i64 0    ;; v12 :: 0
+    v13 = icmp.i64 sgt v4, v12  ; v12 = 0
+    v14 = iconst.i64 11
+    v15 = iconst.i64 19
+    v16 = select v13, v14, v15  ; v14 = 11, v15 = 19    ;; v16 :: :false
+    v17 = iconst.i64 3
+    v18 = iconst.i64 19
+    v19 = icmp ne v16, v17  ; v17 = 3
+    v20 = icmp ne v16, v18  ; v18 = 19
+    v21 = band v19, v20
+    brif v21, block4, block2
 
 block2:
-    v6 = iconst.i64 0    ;; v6 :: 0
-    v7 = iconst.i64 19    ;; v7 :: :false
-    v8 = iconst.i64 3
-    v9 = iconst.i64 19
-    v10 = icmp ne v7, v8  ; v7 = 19, v8 = 3
-    v11 = icmp ne v7, v9  ; v7 = 19, v9 = 19
-    v12 = band v10, v11
-    brif v12, block5, block3
+    v22 = iconst.i64 26    ;; v22 :: :negative
+    return_call fn1(v22, v1)  ; v22 = 26
 
 block3:
-    v13 = iconst.i64 0    ;; v13 :: 0
-    v14 = icmp.i64 sgt v2, v13  ; v13 = 0
-    v15 = iconst.i64 11
-    v16 = iconst.i64 19
-    v17 = select v14, v15, v16  ; v15 = 11, v16 = 19    ;; v17 :: :false
-    v18 = iconst.i64 3
-    v19 = iconst.i64 19
-    v20 = icmp ne v17, v18  ; v18 = 3
-    v21 = icmp ne v17, v19  ; v19 = 19
-    v22 = band v20, v21
-    brif v22, block6, block4
+    v23 = iconst.i64 10    ;; v23 :: :zero
+    return_call fn2(v23, v1)  ; v23 = 10
 
 block4:
-    v23 = iconst.i64 26    ;; v23 :: :negative
-    return_call fn1(v23, v1)  ; v23 = 26
-
-block5:
-    v24 = iconst.i64 10    ;; v24 :: :zero
-    return_call fn2(v24, v1)  ; v24 = 10
-
-block6:
-    v25 = iconst.i64 18    ;; v25 :: :positive
-    return_call fn3(v25, v1)  ; v25 = 18
+    v24 = iconst.i64 18    ;; v24 :: :positive
+    return_call fn3(v24, v1)  ; v24 = 18
 }
 
 ; fn k_6_s13
