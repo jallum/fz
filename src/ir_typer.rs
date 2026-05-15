@@ -455,6 +455,47 @@ pub fn type_module(m: &Module) -> ModuleTypes {
     }
 }
 
+/// Drain every pending key into `specs`. For each key not already
+/// present, call `type_fn`, apply accumulated `callsite_fn_consts`,
+/// and insert the resulting `FnTypes`. Returns `true` if any keys
+/// were drained (even if all were already registered — this is the
+/// signal callers use to determine whether another round is needed).
+fn drain_and_register(
+    pending: &mut HashMap<FnId, std::collections::HashSet<Vec<Descr>>>,
+    specs: &mut HashMap<(FnId, Vec<Descr>), FnTypes>,
+    m: &Module,
+    callsite_fn_consts: &mut HashMap<(FnId, Vec<Descr>), Vec<Option<FnId>>>,
+) -> bool {
+    let to_process: Vec<(FnId, Vec<Descr>)> = pending
+        .iter_mut()
+        .flat_map(|(fid, keys)| {
+            let v: Vec<Vec<Descr>> = keys.drain().collect();
+            v.into_iter().map(move |k| (*fid, k))
+        })
+        .collect();
+    let drained_anything = !to_process.is_empty();
+    for (fid, key) in to_process {
+        let Some(&j) = m.fn_idx.get(&fid) else {
+            continue;
+        };
+        let entry_key = (fid, key.clone());
+        if !specs.contains_key(&entry_key) {
+            let mut ft = type_fn(&m.fns[j], m, Some(&key));
+            if let Some(arg_consts) = callsite_fn_consts.get(&entry_key) {
+                let entry = m.fns[j].entry;
+                let entry_params = &m.fns[j].block(entry).params;
+                for (slot, p) in entry_params.iter().enumerate() {
+                    if let Some(Some(fid_const)) = arg_consts.get(slot) {
+                        ft.fn_constants.insert(*p, *fid_const);
+                    }
+                }
+            }
+            specs.insert(entry_key, ft);
+        }
+    }
+    drained_anything
+}
+
 fn type_module_pass(
     m: &Module,
     prev_returns: &HashMap<(FnId, Vec<Descr>), Descr>,
@@ -562,34 +603,8 @@ fn type_module_pass(
     // since `push_key` filters keys already in specs and pending is a
     // HashSet (duplicates collapse).
     for _ in 0..64 {
-        // Drain pending → register new specs.
-        let to_process: Vec<(FnId, Vec<Descr>)> = pending
-            .iter_mut()
-            .flat_map(|(fid, keys)| {
-                let v: Vec<Vec<Descr>> = keys.drain().collect();
-                v.into_iter().map(move |k| (*fid, k))
-            })
-            .collect();
-        let drained_anything = !to_process.is_empty();
-        for (fid, key) in to_process {
-            let Some(&j) = m.fn_idx.get(&fid) else {
-                continue;
-            };
-            let entry_key = (fid, key.clone());
-            if !specs.contains_key(&entry_key) {
-                let mut ft = type_fn(&m.fns[j], m, Some(&key));
-                if let Some(arg_consts) = callsite_fn_consts.get(&entry_key) {
-                    let entry = m.fns[j].entry;
-                    let entry_params = &m.fns[j].block(entry).params;
-                    for (slot, p) in entry_params.iter().enumerate() {
-                        if let Some(Some(fid_const)) = arg_consts.get(slot) {
-                            ft.fn_constants.insert(*p, *fid_const);
-                        }
-                    }
-                }
-                specs.insert(entry_key, ft);
-            }
-        }
+        let drained_anything =
+            drain_and_register(&mut pending, &mut specs, m, &mut callsite_fn_consts);
 
         // Re-walk every registered spec to find new pending keys.
         let snapshot: Vec<(FnId, Vec<Descr>)> = specs.keys().cloned().collect();
@@ -670,33 +685,8 @@ fn type_module_pass(
         // Drain pending → register new specs (no further walking
         // beyond MakeClosure sweep; direct callsites of these new
         // any-key bodies will be discovered when we loop).
-        let to_process: Vec<(FnId, Vec<Descr>)> = pending
-            .iter_mut()
-            .flat_map(|(fid, keys)| {
-                let v: Vec<Vec<Descr>> = keys.drain().collect();
-                v.into_iter().map(move |k| (*fid, k))
-            })
-            .collect();
-        let drained_anything = !to_process.is_empty();
-        for (fid, key) in to_process {
-            let Some(&j) = m.fn_idx.get(&fid) else {
-                continue;
-            };
-            let entry_key = (fid, key.clone());
-            if !specs.contains_key(&entry_key) {
-                let mut ft = type_fn(&m.fns[j], m, Some(&key));
-                if let Some(arg_consts) = callsite_fn_consts.get(&entry_key) {
-                    let entry = m.fns[j].entry;
-                    let entry_params = &m.fns[j].block(entry).params;
-                    for (slot, p) in entry_params.iter().enumerate() {
-                        if let Some(Some(fid_const)) = arg_consts.get(slot) {
-                            ft.fn_constants.insert(*p, *fid_const);
-                        }
-                    }
-                }
-                specs.insert(entry_key, ft);
-            }
-        }
+        let drained_anything =
+            drain_and_register(&mut pending, &mut specs, m, &mut callsite_fn_consts);
 
         // Re-run the phase-1 closure-to-fixpoint on the new specs so
         // direct callsites inside the newly-registered any-key
@@ -721,34 +711,8 @@ fn type_module_pass(
                     &mut callsite_fn_consts,
                 );
             }
-            let to_process: Vec<(FnId, Vec<Descr>)> = pending
-                .iter_mut()
-                .flat_map(|(fid, keys)| {
-                    let v: Vec<Vec<Descr>> = keys.drain().collect();
-                    v.into_iter().map(move |k| (*fid, k))
-                })
-                .collect();
-            if to_process.is_empty() {
+            if !drain_and_register(&mut pending, &mut specs, m, &mut callsite_fn_consts) {
                 break;
-            }
-            for (fid, key) in to_process {
-                let Some(&j) = m.fn_idx.get(&fid) else {
-                    continue;
-                };
-                let entry_key = (fid, key.clone());
-                if !specs.contains_key(&entry_key) {
-                    let mut ft = type_fn(&m.fns[j], m, Some(&key));
-                    if let Some(arg_consts) = callsite_fn_consts.get(&entry_key) {
-                        let entry = m.fns[j].entry;
-                        let entry_params = &m.fns[j].block(entry).params;
-                        for (slot, p) in entry_params.iter().enumerate() {
-                            if let Some(Some(fid_const)) = arg_consts.get(slot) {
-                                ft.fn_constants.insert(*p, *fid_const);
-                            }
-                        }
-                    }
-                    specs.insert(entry_key, ft);
-                }
             }
         }
 
