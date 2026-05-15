@@ -1695,8 +1695,8 @@ fn numeric_result_fold(op: BinOp, a: &Descr, b: &Descr) -> Descr {
             Add => ai.checked_add(bi),
             Sub => ai.checked_sub(bi),
             Mul => ai.checked_mul(bi),
-            Div => bi.checked_rem(1).filter(|_| bi != 0).and(ai.checked_div(bi)),
-            Mod => bi.checked_rem(1).filter(|_| bi != 0).and(ai.checked_rem(bi)),
+            Div => if bi != 0 { ai.checked_div(bi) } else { None },
+            Mod => if bi != 0 { ai.checked_rem(bi) } else { None },
             _ => None,
         };
         if let Some(r) = result {
