@@ -135,18 +135,6 @@ impl SpecRegistry {
         covers.into_iter().min_by_key(|s| s.0)
     }
 
-    /// Look up a fn's any-key SpecId (the conservative fallback used by
-    /// closure / Spawn / Receive paths, and by every callsite under
-    /// .29.2 until .29.2.1 enables narrow consumption).
-    pub fn any_key(&self, fn_id: FnId, n_params: usize) -> SpecId {
-        let key = vec![crate::types::Descr::any(); n_params];
-        *self
-            .lookup
-            .get(&fn_id)
-            .and_then(|m| m.get(key.as_slice()))
-            .expect("any-key spec must always be registered for every fn")
-    }
-
     pub fn len(&self) -> usize {
         self.keys.len()
     }
@@ -158,5 +146,18 @@ impl SpecRegistry {
             .iter()
             .enumerate()
             .map(|(i, (f, d))| (SpecId(i as u32), *f, d.as_slice()))
+    }
+}
+
+#[cfg(test)]
+impl SpecRegistry {
+    /// Look up a fn's any-key SpecId. Test-only helper.
+    pub fn any_key(&self, fn_id: FnId, n_params: usize) -> SpecId {
+        let key = vec![crate::types::Descr::any(); n_params];
+        *self
+            .lookup
+            .get(&fn_id)
+            .and_then(|m| m.get(key.as_slice()))
+            .expect("any-key spec must always be registered for every fn")
     }
 }
