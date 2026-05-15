@@ -3400,6 +3400,116 @@ fn build_entry_harness<M: cranelift_module::Module>(
     (var_env, frame_ptr, host_ctx, cont_param)
 }
 
+/// Resolve the outer-cont value to forward into a cont closure's +24 slot.
+/// For cont fns: loaded from self+24. For non-cont native: cont_param.
+/// For uniform fns without cont_param: load frame_ptr+16, brif on null to
+/// allocate a halt-cont fallback closure.
+fn resolve_outer_cont<M: cranelift_module::Module>(
+    jmod: &mut M,
+    b: &mut FunctionBuilder<'_>,
+    runtime: &RuntimeRefs,
+    return_reprs: &[ArgRepr],
+    is_cont_fn: bool,
+    cont_param: Option<ir::Value>,
+    frame_ptr: Option<ir::Value>,
+    cont_sid: u32,
+) -> ir::Value {
+    if is_cont_fn {
+        let self_val = cont_param.expect("cont fn binds self via cont_param");
+        b.ins()
+            .load(types::I64, MemFlags::trusted(), self_val, HEADER_SIZE + SLOT_BYTES)
+    } else {
+        match cont_param {
+            Some(c) => c,
+            None => {
+                let from_slot = b.ins().load(
+                    types::I64,
+                    MemFlags::trusted(),
+                    frame_ptr.expect("uniform caller building cont closure must have frame_ptr"),
+                    HEADER_SIZE,
+                );
+                let zero = b.ins().iconst(types::I64, 0);
+                let is_null = b.ins().icmp(IntCC::Equal, from_slot, zero);
+                let alloc_blk = b.create_block();
+                let join_blk = b.create_block();
+                b.append_block_param(join_blk, types::I64);
+                b.ins().brif(
+                    is_null,
+                    alloc_blk,
+                    &[][..],
+                    join_blk,
+                    &[BlockArg::Value(from_slot)],
+                );
+                b.switch_to_block(alloc_blk);
+                b.seal_block(alloc_blk);
+                let acl = jmod.declare_func_in_func(runtime.alloc_closure_id, b.func);
+                let dummy_fid = b.ins().iconst(types::I32, 0);
+                let n_caps0 = b.ins().iconst(types::I32, 0);
+                let zero_hk = b.ins().iconst(types::I32, 0);
+                let halt_alloc = b.ins().call(acl, &[dummy_fid, n_caps0, zero_hk]);
+                let halt_cl = b.inst_results(halt_alloc)[0];
+                let hc_repr = return_reprs[cont_sid as usize];
+                let hcb_addr = fn_addr(jmod, halt_cont_body_id_for(runtime, hc_repr), b);
+                b.ins().store(MemFlags::trusted(), hcb_addr, halt_cl, HEADER_SIZE);
+                b.ins().jump(join_blk, &[BlockArg::Value(halt_cl)]);
+                b.switch_to_block(join_blk);
+                b.seal_block(join_blk);
+                b.block_params(join_blk)[0]
+            }
+        }
+    }
+}
+
+/// Allocate a cont closure, populate its code-addr, outer-cont, and user
+/// captures. Returns the heap pointer to the new closure object.
+///
+/// `cap_bindings` is a slice of (value, from_repr) pairs for each user
+/// capture; these are stored at `cl_ptr + HEADER_SIZE + 2*SLOT_BYTES + i*8`
+/// coerced to `param_reprs[cont_sid][i+1]`.
+fn build_cont_closure<M: cranelift_module::Module>(
+    jmod: &mut M,
+    b: &mut FunctionBuilder<'_>,
+    runtime: &RuntimeRefs,
+    return_reprs: &[ArgRepr],
+    param_reprs: &[Vec<ArgRepr>],
+    is_cont_fn: bool,
+    cont_param: Option<ir::Value>,
+    frame_ptr: Option<ir::Value>,
+    cont_sid: u32,
+    cont_fid: FuncId,
+    cap_bindings: &[(ir::Value, ArgRepr)],
+) -> ir::Value {
+    let acl_fref = jmod.declare_func_in_func(runtime.alloc_closure_id, b.func);
+    let cl_fid_v = b.ins().iconst(types::I32, cont_sid as i64);
+    // +1: slot 0 is the synthetic outer_cont at +24; user captures start at +32.
+    let n_caps_v = b.ins().iconst(types::I32, (cap_bindings.len() + 1) as i64);
+    let zero_hk = b.ins().iconst(types::I32, 0);
+    let cl_inst = b.ins().call(acl_fref, &[cl_fid_v, n_caps_v, zero_hk]);
+    let cl_ptr = b.inst_results(cl_inst)[0];
+    let cont_code_addr = fn_addr(jmod, cont_fid, b);
+    b.ins().store(MemFlags::trusted(), cont_code_addr, cl_ptr, HEADER_SIZE);
+    let my_outer_cont = resolve_outer_cont(
+        jmod,
+        b,
+        runtime,
+        return_reprs,
+        is_cont_fn,
+        cont_param,
+        frame_ptr,
+        cont_sid,
+    );
+    b.ins()
+        .store(MemFlags::trusted(), my_outer_cont, cl_ptr, HEADER_SIZE + SLOT_BYTES);
+    let cont_param_reprs = &param_reprs[cont_sid as usize];
+    for (i, &(val, from)) in cap_bindings.iter().enumerate() {
+        let to = cont_param_reprs[i + 1];
+        let v = coerce_to(b, jmod, runtime, val, from, to);
+        let off = HEADER_SIZE + SLOT_BYTES * 2 + (i as i32) * SLOT_BYTES;
+        b.ins().store(MemFlags::trusted(), v, cl_ptr, off);
+    }
+    cl_ptr
+}
+
 fn emit_terminator<M: cranelift_module::Module>(
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
@@ -3644,107 +3754,28 @@ fn emit_terminator<M: cranelift_module::Module>(
                 let cont_is_native = callee_is_native(continuation.fn_id.0);
                 let cl_ptr_opt: Option<ir::Value> = if cont_is_native {
                     let cont_fid = *fn_ids.get(&cont_sid).expect("cont fn_id missing");
-                    let acl_fref = jmod.declare_func_in_func(runtime.alloc_closure_id, b.func);
-                    let cl_fid_v = b.ins().iconst(types::I32, cont_sid as i64);
-                    let n_caps_v = b
-                        .ins()
-                        .iconst(types::I32, (continuation.captured.len() + 1) as i64);
-                    // fz-ul4.27.22.6: halt_kind=0 (Tagged). Cont closures
-                    // are never handed to fz_spawn_entry — the field is
-                    // a fz_spawn_entry-only consumer.
-                    let zero_hk = b.ins().iconst(types::I32, 0);
-                    let cl_inst = b.ins().call(acl_fref, &[cl_fid_v, n_caps_v, zero_hk]);
-                    let cl_ptr = b.inst_results(cl_inst)[0];
-                    let cont_code_addr = fn_addr(jmod, cont_fid, b);
-                    b.ins()
-                        .store(MemFlags::trusted(), cont_code_addr, cl_ptr, HEADER_SIZE);
-                    // outer_cont at +24. fz-cps.1.8 — cont fns
-                    // forward their own outer_cont (loaded from
-                    // self+24); non-cont native fns use cont_param;
-                    // uniform fns load from frame_ptr+16.
-                    let my_outer_cont = if is_cont_fn {
-                        let self_val = cont_param.expect("cont fn binds self via cont_param");
-                        b.ins().load(
-                            types::I64,
-                            MemFlags::trusted(),
-                            self_val,
-                            HEADER_SIZE + SLOT_BYTES,
-                        )
-                    } else {
-                        match cont_param {
-                            Some(c) => c,
-                            None => {
-                                let from_slot = b.ins().load(
-                                    types::I64,
-                                    MemFlags::trusted(),
-                                    frame_ptr.expect(
-                                        "uniform caller building cont closure \
-                                     must have frame_ptr",
-                                    ),
-                                    HEADER_SIZE,
-                                );
-                                let zero = b.ins().iconst(types::I64, 0);
-                                let is_null = b.ins().icmp(IntCC::Equal, from_slot, zero);
-                                let alloc_blk = b.create_block();
-                                let join_blk = b.create_block();
-                                b.append_block_param(join_blk, types::I64);
-                                b.ins().brif(
-                                    is_null,
-                                    alloc_blk,
-                                    &[][..],
-                                    join_blk,
-                                    &[BlockArg::Value(from_slot)],
-                                );
-                                b.switch_to_block(alloc_blk);
-                                b.seal_block(alloc_blk);
-                                let acl_fref2 =
-                                    jmod.declare_func_in_func(runtime.alloc_closure_id, b.func);
-                                let dummy_fid = b.ins().iconst(types::I32, 0);
-                                let n_caps0 = b.ins().iconst(types::I32, 0);
-                                let zero_hk = b.ins().iconst(types::I32, 0);
-                                let halt_alloc =
-                                    b.ins().call(acl_fref2, &[dummy_fid, n_caps0, zero_hk]);
-                                let halt_cl = b.inst_results(halt_alloc)[0];
-                                // fz-ul4.27.22.3 — halt-cont body matches
-                                // the user-cont's return_repr (the user's
-                                // cont's Term::Return calls into this
-                                // halt-cont's body).
-                                let hc_repr = return_reprs[cont_sid as usize];
-                                let hcb_addr =
-                                    fn_addr(jmod, halt_cont_body_id_for(runtime, hc_repr), b);
-                                b.ins().store(
-                                    MemFlags::trusted(),
-                                    hcb_addr,
-                                    halt_cl,
-                                    HEADER_SIZE,
-                                );
-                                b.ins().jump(join_blk, &[BlockArg::Value(halt_cl)]);
-                                b.switch_to_block(join_blk);
-                                b.seal_block(join_blk);
-                                b.block_params(join_blk)[0]
-                            }
-                        }
-                    };
-                    b.ins().store(
-                        MemFlags::trusted(),
-                        my_outer_cont,
-                        cl_ptr,
-                        HEADER_SIZE + SLOT_BYTES,
-                    );
-                    // User captures at +32+8i. fz-ul4.27.21.2 — stored
-                    // in the cont's per-capture repr (param_reprs[cont_sid]
-                    // [i+1]; [0] is the result slot). Cont entry harness
-                    // loads with the matching cl_type — no tag/untag
-                    // round-trip when the capture is narrow.
-                    let cont_param_reprs = &param_reprs[cont_sid as usize];
-                    for (i, cv) in continuation.captured.iter().enumerate() {
-                        let from = var_env.get(&cv.0).map_or(ArgRepr::Tagged, |vb| vb.repr);
-                        let to = cont_param_reprs[i + 1];
-                        let v = coerce_to(b, jmod, runtime, cap_vals[i], from, to);
-                        let off = HEADER_SIZE + SLOT_BYTES * 2 + (i as i32) * SLOT_BYTES;
-                        b.ins().store(MemFlags::trusted(), v, cl_ptr, off);
-                    }
-                    Some(cl_ptr)
+                    let cap_bindings: Vec<(ir::Value, ArgRepr)> = continuation
+                        .captured
+                        .iter()
+                        .zip(cap_vals.iter())
+                        .map(|(cv, &val)| {
+                            let repr = var_env.get(&cv.0).map_or(ArgRepr::Tagged, |vb| vb.repr);
+                            (val, repr)
+                        })
+                        .collect();
+                    Some(build_cont_closure(
+                        jmod,
+                        b,
+                        runtime,
+                        return_reprs,
+                        param_reprs,
+                        is_cont_fn,
+                        cont_param,
+                        frame_ptr,
+                        cont_sid,
+                        cont_fid,
+                        &cap_bindings,
+                    ))
                 } else {
                     None
                 };
@@ -4011,11 +4042,6 @@ fn emit_terminator<M: cranelift_module::Module>(
                 .iter()
                 .map(|v| var_env.get(&v.0).expect("unbound callclosure arg").value)
                 .collect();
-            let cap_vals: Vec<ir::Value> = continuation
-                .captured
-                .iter()
-                .map(|v| var_env.get(&v.0).expect("unbound captured val").value)
-                .collect();
             // fz-cps.1.2: build cont CLOSURE (not cont frame) per
             // §2.2. The closure-target callee's body indirect-calls
             // through cont+16 on Return, so the cont must be a
@@ -4023,92 +4049,27 @@ fn emit_terminator<M: cranelift_module::Module>(
             // user captures from +32).
             let cont_sid = resolve_cont_sid(blk, continuation);
             let cont_fid = *fn_ids.get(&cont_sid).expect("cont fn_id missing");
-            let acl_fref = jmod.declare_func_in_func(runtime.alloc_closure_id, b.func);
-            let cl_fid_v = b.ins().iconst(types::I32, cont_sid as i64);
-            let n_caps_v = b
-                .ins()
-                .iconst(types::I32, (continuation.captured.len() + 1) as i64);
-            let zero_hk = b.ins().iconst(types::I32, 0);
-            let cl_inst = b.ins().call(acl_fref, &[cl_fid_v, n_caps_v, zero_hk]);
-            let cf = b.inst_results(cl_inst)[0];
-            let cont_code_addr = fn_addr(jmod, cont_fid, b);
-            b.ins()
-                .store(MemFlags::trusted(), cont_code_addr, cf, HEADER_SIZE);
-            // outer_cont at +24. fz-cps.1.8 — cont fns forward their
-            // own outer_cont; non-cont native use cont_param; uniform
-            // loads frame_ptr+16 with halt-cont fallback.
-            let my_outer_cont = if is_cont_fn {
-                let self_val = cont_param.expect("cont fn binds self via cont_param");
-                b.ins().load(
-                    types::I64,
-                    MemFlags::trusted(),
-                    self_val,
-                    HEADER_SIZE + SLOT_BYTES,
-                )
-            } else {
-                match cont_param {
-                    Some(c) => c,
-                    None => {
-                        let from_slot = b.ins().load(
-                            types::I64,
-                            MemFlags::trusted(),
-                            frame_ptr.expect("uniform CallClosure must have frame_ptr"),
-                            HEADER_SIZE,
-                        );
-                        let zero = b.ins().iconst(types::I64, 0);
-                        let is_null = b.ins().icmp(IntCC::Equal, from_slot, zero);
-                        let alloc_blk = b.create_block();
-                        let join_blk = b.create_block();
-                        b.append_block_param(join_blk, types::I64);
-                        b.ins().brif(
-                            is_null,
-                            alloc_blk,
-                            &[][..],
-                            join_blk,
-                            &[BlockArg::Value(from_slot)],
-                        );
-                        b.switch_to_block(alloc_blk);
-                        b.seal_block(alloc_blk);
-                        let dummy_fid = b.ins().iconst(types::I32, 0);
-                        let n_caps0 = b.ins().iconst(types::I32, 0);
-                        let zero_hk2 = b.ins().iconst(types::I32, 0);
-                        let halt_alloc =
-                            b.ins().call(acl_fref, &[dummy_fid, n_caps0, zero_hk2]);
-                        let halt_cl = b.inst_results(halt_alloc)[0];
-                        // fz-ul4.27.22.3 — outer halt-cont body matches the
-                        // user-cont's return_repr.
-                        let hc_repr = return_reprs[cont_sid as usize];
-                        let hcb_addr =
-                            fn_addr(jmod, halt_cont_body_id_for(runtime, hc_repr), b);
-                        b.ins()
-                            .store(MemFlags::trusted(), hcb_addr, halt_cl, HEADER_SIZE);
-                        b.ins().jump(join_blk, &[BlockArg::Value(halt_cl)]);
-                        b.switch_to_block(join_blk);
-                        b.seal_block(join_blk);
-                        b.block_params(join_blk)[0]
-                    }
-                }
-            };
-            b.ins().store(
-                MemFlags::trusted(),
-                my_outer_cont,
-                cf,
-                HEADER_SIZE + SLOT_BYTES,
+            let cap_bindings: Vec<(ir::Value, ArgRepr)> = continuation
+                .captured
+                .iter()
+                .map(|cv| {
+                    let vb = var_env.get(&cv.0).expect("unbound captured val");
+                    (vb.value, vb.repr)
+                })
+                .collect();
+            let cf = build_cont_closure(
+                jmod,
+                b,
+                runtime,
+                return_reprs,
+                param_reprs,
+                is_cont_fn,
+                cont_param,
+                frame_ptr,
+                cont_sid,
+                cont_fid,
+                &cap_bindings,
             );
-            // User captures at +32+8*i. fz-ul4.27.21.2 — stored in
-            // the cont's per-capture repr (param_reprs[cont_sid][i+1];
-            // [0] is the result slot, kept Tagged by tagged_slot0_cont_
-            // specs / uniform_cont_reachable_specs).
-            let cont_param_reprs = &param_reprs[cont_sid as usize];
-            for (i, cv) in continuation.captured.iter().enumerate() {
-                let from = var_env.get(&cv.0).map_or(ArgRepr::Tagged, |vb| vb.repr);
-                let to = cont_param_reprs[i + 1];
-                let v = coerce_to(b, jmod, runtime, cap_vals[i], from, to);
-                let off = HEADER_SIZE + SLOT_BYTES * 2 + (i as i32) * SLOT_BYTES;
-                b.ins().store(MemFlags::trusted(), v, cf, off);
-            }
-            let _ = cont_param; // captures wired into cont closure.
-            let _ = continuation; // remainder of capture/cont metadata done.
             // fz-cps.1.8 — load body's func_addr from cl+16 and Tail-CC
             // indirect-call with closure-target sig `(args..., self,
             // cont) -> i64 tail`. All-Tagged params. Native callers
@@ -4277,101 +4238,29 @@ fn emit_terminator<M: cranelift_module::Module>(
             // in Process::parked_cont and returns YIELD sentinel.
             // On message arrival the scheduler will dispatch the
             // parked cont via a Cranelift thunk (fz-cps.1.2 follow-on).
-            let cap_vals: Vec<ir::Value> = continuation
+            let cont_sid = resolve_cont_sid(blk, continuation);
+            let cap_bindings: Vec<(ir::Value, ArgRepr)> = continuation
                 .captured
                 .iter()
-                .map(|v| var_env.get(&v.0).expect("unbound receive cont capture").value)
+                .map(|cv| {
+                    let vb = var_env.get(&cv.0).expect("unbound receive cont capture");
+                    (vb.value, vb.repr)
+                })
                 .collect();
-            let cont_sid = resolve_cont_sid(blk, continuation);
             let cont_fid = *fn_ids.get(&cont_sid).expect("cont fn_id missing");
-            let cont_param_reprs = &param_reprs[cont_sid as usize];
-
-            let acl_fref = jmod.declare_func_in_func(runtime.alloc_closure_id, b.func);
-            let cl_fid_v = b.ins().iconst(types::I32, cont_sid as i64);
-            // +1 slot for synthetic outer_cont at +24; user captures
-            // start at +32.
-            let n_caps_v = b
-                .ins()
-                .iconst(types::I32, (continuation.captured.len() + 1) as i64);
-            let zero_hk = b.ins().iconst(types::I32, 0);
-            let cl_inst = b.ins().call(acl_fref, &[cl_fid_v, n_caps_v, zero_hk]);
-            let cl_ptr = b.inst_results(cl_inst)[0];
-            let cont_code_addr = fn_addr(jmod, cont_fid, b);
-            b.ins()
-                .store(MemFlags::trusted(), cont_code_addr, cl_ptr, HEADER_SIZE);
-            // outer_cont at +24 (synthetic). Native caller has
-            // cont_param; uniform caller loads frame_ptr+16 with
-            // null-fallback to a halt-cont closure inline.
-            // fz-cps.1.8 — cont fns load outer_cont from self+24.
-            let my_outer_cont = if is_cont_fn {
-                let self_val = cont_param.expect("cont fn binds self via cont_param");
-                b.ins().load(
-                    types::I64,
-                    MemFlags::trusted(),
-                    self_val,
-                    HEADER_SIZE + SLOT_BYTES,
-                )
-            } else {
-                match cont_param {
-                    Some(c) => c,
-                    None => {
-                        let from_slot = b.ins().load(
-                            types::I64,
-                            MemFlags::trusted(),
-                            frame_ptr.expect("uniform Receive caller must have frame_ptr"),
-                            HEADER_SIZE,
-                        );
-                        let zero = b.ins().iconst(types::I64, 0);
-                        let is_null = b.ins().icmp(IntCC::Equal, from_slot, zero);
-                        let alloc_blk = b.create_block();
-                        let join_blk = b.create_block();
-                        b.append_block_param(join_blk, types::I64);
-                        b.ins().brif(
-                            is_null,
-                            alloc_blk,
-                            &[][..],
-                            join_blk,
-                            &[BlockArg::Value(from_slot)],
-                        );
-                        b.switch_to_block(alloc_blk);
-                        b.seal_block(alloc_blk);
-                        let dummy_fid = b.ins().iconst(types::I32, 0);
-                        let n_caps0 = b.ins().iconst(types::I32, 0);
-                        let zero_hk2 = b.ins().iconst(types::I32, 0);
-                        let halt_alloc =
-                            b.ins().call(acl_fref, &[dummy_fid, n_caps0, zero_hk2]);
-                        let halt_cl = b.inst_results(halt_alloc)[0];
-                        // fz-ul4.27.22.3 — outer halt-cont body matches the
-                        // user-cont's return_repr.
-                        let hc_repr = return_reprs[cont_sid as usize];
-                        let hcb_addr =
-                            fn_addr(jmod, halt_cont_body_id_for(runtime, hc_repr), b);
-                        b.ins()
-                            .store(MemFlags::trusted(), hcb_addr, halt_cl, HEADER_SIZE);
-                        b.ins().jump(join_blk, &[BlockArg::Value(halt_cl)]);
-                        b.switch_to_block(join_blk);
-                        b.seal_block(join_blk);
-                        b.block_params(join_blk)[0]
-                    }
-                }
-            };
-            b.ins().store(
-                MemFlags::trusted(),
-                my_outer_cont,
-                cl_ptr,
-                HEADER_SIZE + SLOT_BYTES,
+            let cl_ptr = build_cont_closure(
+                jmod,
+                b,
+                runtime,
+                return_reprs,
+                param_reprs,
+                is_cont_fn,
+                cont_param,
+                frame_ptr,
+                cont_sid,
+                cont_fid,
+                &cap_bindings,
             );
-            // User captures at +32+8i. fz-ul4.27.21.2 — stored in the
-            // cont's per-capture repr. Receive's cont keeps slot 0 as
-            // Tagged (msg arrives Tagged from the mailbox), but captures
-            // can be typed.
-            for (i, cv) in continuation.captured.iter().enumerate() {
-                let from = var_env.get(&cv.0).map_or(ArgRepr::Tagged, |vb| vb.repr);
-                let to = cont_param_reprs[i + 1];
-                let v = coerce_to(b, jmod, runtime, cap_vals[i], from, to);
-                let off = HEADER_SIZE + SLOT_BYTES * 2 + (i as i32) * SLOT_BYTES;
-                b.ins().store(MemFlags::trusted(), v, cl_ptr, off);
-            }
 
             // fz_receive_park(cl_ptr) — stash + yield.
             let park_fref = jmod.declare_func_in_func(runtime.receive_park_id, b.func);
