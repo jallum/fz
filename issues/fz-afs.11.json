@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-15T03:23:25Z",
+  "description": "narrow_for_if currently handles three cases: ListIsNil, BinOp::Eq, BinOp::Neq. BinOp::And and BinOp::Or are unhandled: a condition like 'cond = a \u0026\u0026 b' narrows neither operand on either branch.\n\nRefactor narrow_for_if into a recursive helper:\n  fn narrow_for_cond(cond_var: Var, env: \u0026Env, stmts: \u0026[Stmt]) -\u003e (Env, Env)\n\nFor BinOp::And(a, b):\n  - Truthy branch: intersect the (then_env from a) with (then_env from b). Both sub-conditions must hold.\n  - Falsy branch: union the (else_env from a) with (else_env from b). At least one fails.\n\nFor BinOp::Or(a, b):\n  - Mirror of And: truthy = union of sub-truthy; falsy = intersect of sub-falsy.\n\nExisting Eq/Neq/ListIsNil cases become leaves of the recursion (base cases). The recursion depth is bounded by the depth of the boolean expression tree in the source function, which is small in practice.\n\nThis narrows spec keys: callees see tighter Descrs at sites guarded by compound conditions. More specs may be registered. The worklist (fz-afs.9/W2) absorbs the extra work without full-sweep re-walks — P1 and W2 compound positively.\n\nTest: a function with 'if x == :ok \u0026\u0026 y == 1 do … end' — verify that inside the then-branch both x is atom_lit(:ok) and y is int_lit(1).",
+  "id": "fz-afs.11",
+  "labels": [],
+  "parent": "fz-afs",
+  "priority": 2,
+  "status": "open",
+  "title": "extend narrow_for_if to handle BinOp::And and BinOp::Or compound conditions",
+  "type": "task",
+  "updated_at": "2026-05-15T03:23:25Z"
+}
