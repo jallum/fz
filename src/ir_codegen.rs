@@ -336,10 +336,10 @@ impl CompiledModule {
 // here for back-compat with downstream users (runtime.rs, ir_runtime.rs,
 // tests) while consumers migrate to `fz_runtime::process::*`.
 pub use fz_runtime::process::{
-    CURRENT_PROCESS, DEFAULT_PROCESS, PidId, Process, ProcessState,
+    CURRENT_PROCESS, PidId, Process, ProcessState,
 };
 #[cfg(test)]
-use fz_runtime::process::current_process;
+use fz_runtime::process::{current_process, DEFAULT_PROCESS};
 
 // Runtime FFI fns called from JIT'd code now live in src/ir_runtime.rs.
 // Value rendering lives in fz_runtime::fz_value::debug (fz-ul4.23.4.3).
@@ -953,35 +953,15 @@ pub trait Backend {
 /// already seen the module while declaring fns and compiling bodies.
 pub struct CompiledMetadata {
     pub fn_ids: HashMap<u32, FuncId>,
-    pub schemas: Vec<Schema>,
     pub user_schemas: std::rc::Rc<std::cell::RefCell<fz_runtime::heap::SchemaRegistry>>,
     pub frame_sizes: Vec<u32>,
     pub atom_names: Vec<String>,
     pub bs_tuple_arity1_schema: Option<u32>,
     pub bs_tuple_arity3_schema: Option<u32>,
-    pub types: crate::ir_typer::ModuleTypes,
     pub diagnostics: crate::diag::Diagnostics,
     /// FnId of fz user `main`, if present. AOT needs it to wire the C
     /// `main` shim; JIT keeps it as a convenience for the run path.
     pub main_fn_id: Option<FnId>,
-    /// Main fn's frame size (looked up from `schemas`). Convenience.
-    pub main_frame_size: Option<u32>,
-    /// fz-ul4.27.6.2.1 — Fns that may suspend (Receive / closure ops / any
-    /// fn transitively calling such). Used by .6.2.4 to decide ABI per fn.
-    pub parking_reachable: std::collections::HashSet<FnId>,
-    /// fz-ul4.27.6.2.1 — Fns eligible for typed native-call ABI in .6.2.
-    /// See `parking::natively_callable` for qualification rules.
-    pub natively_callable: std::collections::HashSet<FnId>,
-    /// fz-ul4.27.6.2.1 — Per-fn join of all `Term::Return` operand Descrs.
-    /// For fns with no Term::Return (only Halt / TailCall) this is `any`,
-    /// which is the conservative default for .6.2.2's Signature builder.
-    /// Indexed by FnId.0.
-    pub return_descrs: Vec<crate::types::Descr>,
-    /// fz-ul4.29.2 — (FnId, input-Descr-tuple) ↔ SpecId mapping.
-    /// Resolves callsite callees to their compiled spec. fz-ul4.29.2.1
-    /// makes this load-bearing for narrow-spec consumption and converts
-    /// the eight FnId.0-keyed fields above to SpecId.0 in concert.
-    pub spec_registry: SpecRegistry,
     /// fz-cps.1.7 — zero-capture closure-target specs.
     /// `(cl_sid, fn_id, stub_func_id)` per entry. JIT finalize resolves
     /// stub_func_id to a code address; the resulting
@@ -2675,7 +2655,6 @@ pub fn compile_with_backend<B: Backend>(
     // commit.
 
     let main_fn_id = module.fn_by_name("main").map(|f| f.id);
-    let main_frame_size = main_fn_id.map(|id| schemas[id.0 as usize].size);
 
     // fz-cps.1.7 — collect zero-capture closure-target specs for static
     // singletons. fz-cps.1.8 — code_ptr is the body's func_addr directly
@@ -2818,20 +2797,13 @@ pub fn compile_with_backend<B: Backend>(
     };
     let metadata = CompiledMetadata {
         fn_ids,
-        schemas,
         user_schemas,
         frame_sizes,
         atom_names: module.atom_names.clone(),
         bs_tuple_arity1_schema,
         bs_tuple_arity3_schema,
-        types: module_types,
         diagnostics,
-        parking_reachable,
-        natively_callable,
-        return_descrs,
         main_fn_id,
-        main_frame_size,
-        spec_registry,
         static_closure_targets,
         resume_park_id: runtime.resume_park_id,
         spawn_entry_id: runtime.spawn_entry_id,
