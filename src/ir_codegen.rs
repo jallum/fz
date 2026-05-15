@@ -6386,7 +6386,17 @@ fn coerce_to<M: cranelift_module::Module>(
         (ArgRepr::Tagged, ArgRepr::RawF64) => unbox_float(b, val),
         (ArgRepr::RawInt, ArgRepr::Tagged) => box_int(b, val),
         (ArgRepr::RawF64, ArgRepr::Tagged) => box_float_native(b, jmod, runtime, val),
-        (a, c) => panic!("coerce_to: unsupported {:?} → {:?}", a, c),
+        (ArgRepr::RawInt, ArgRepr::RawF64) => {
+            let tagged = box_int(b, val);
+            unbox_float(b, tagged)
+        }
+        (ArgRepr::RawF64, ArgRepr::RawInt) => {
+            let tagged = box_float_native(b, jmod, runtime, val);
+            unbox_int(b, tagged)
+        }
+        (ArgRepr::Tagged, ArgRepr::Tagged)
+        | (ArgRepr::RawInt, ArgRepr::RawInt)
+        | (ArgRepr::RawF64, ArgRepr::RawF64) => unreachable!("same-repr coerce: handled by early return"),
     }
 }
 
