@@ -1,0 +1,7 @@
+fn relay(), do: send(1, receive() + 1)
+
+fn main() do
+  spawn(relay)
+  send(2, 41)
+  print(receive())
+end

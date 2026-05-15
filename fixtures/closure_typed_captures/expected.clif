@@ -13,11 +13,11 @@ function u0:0(i64) -> i64 tail {
 block0(v0: i64):
     v3 = iconst.i64 10                  ; @5:23
     v4 = iconst.i64 20                  ; @5:27
-    v5 = ishl_imm v4, 3                 ; @5:16  v4 = 20
+    v5 = ishl_imm v3, 3                 ; @5:16  v3 = 10
     v6 = bor_imm v5, 1                  ; @5:16
-    v7 = ishl_imm v3, 3                 ; @5:16  v3 = 10
+    v7 = ishl_imm v4, 3                 ; @5:16  v4 = 20
     v8 = bor_imm v7, 1                  ; @5:16
-    jump block1(v8, v6)                 ; @5:16
+    jump block1(v6, v8)                 ; @5:16
 
     block1(v1: i64, v2: i64):    ;; v1 :: 10, v2 :: 20
     v9 = iconst.i32 3

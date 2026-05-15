@@ -4509,11 +4509,12 @@ fn compile_fn<M: cranelift_module::Module>(
             _ => true,
         };
         if needs_blanket_retag {
-            let to_retag: Vec<(u32, ArgRepr)> = var_env
+            let mut to_retag: Vec<(u32, ArgRepr)> = var_env
                 .iter()
                 .filter(|(rv, vb)| used_by_term.contains(rv) && vb.repr != ArgRepr::Tagged)
                 .map(|(&rv, vb)| (rv, vb.repr))
                 .collect();
+            to_retag.sort_unstable_by_key(|(rv, _)| *rv);
             for (rv, repr) in to_retag {
                 let raw = var_env.get(&rv).expect("raw var dropped from env").value;
                 let boxed = match repr {

@@ -1,0 +1,58 @@
+; spec relay(0) #fn=0
+;   key:    []
+;   return: int | float
+;   vars:
+;     Var(0) :: :match_error
+;     Var(1) :: 1
+;   exits:
+;     blk0 Receive cont k_receive_2#2 captured=[Var(1)]
+;              cont_key=[any, 1]
+;     blk1 Halt Var(0)      :: :match_error
+
+; spec main(0) #fn=1
+;   key:    []
+;   return: nil
+;   fn_constants:
+;     Var(1) = relay#0
+;   vars:
+;     Var(0) :: :match_error
+;     Var(1) :: &fn0[]:() -> any
+;     Var(2) :: &fn3[&fn0[]:() -> any]:() -> any
+;     Var(3) :: int
+;     Var(4) :: 2
+;     Var(5) :: 41
+;     Var(6) :: 41
+;   exits:
+;     blk0 Receive cont k_receive_4#4 captured=[]
+;              cont_key=[any]
+;     blk1 Halt Var(0)      :: :match_error
+
+; spec k_receive_2(2) #fn=2
+;   key:    [any, 1]
+;   return: int | float
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: 1
+;     Var(2) :: 1
+;     Var(3) :: int | float
+;     Var(4) :: int | float
+;   exits:
+;     blk0 Return Var(4)    :: int | float
+
+; spec fz_spawn_thunk(1) #fn=3
+;   key:    [&fn0[]:() -> any]
+;   return: int | float
+;   vars:
+;     Var(0) :: &fn0[]:() -> any
+;   exits:
+;     blk0 TailCallClosure Var(0)()
+
+; spec k_receive_4(1) #fn=4
+;   key:    [any]
+;   return: nil
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: nil
+;   exits:
+;     blk0 Return Var(1)    :: nil
+
