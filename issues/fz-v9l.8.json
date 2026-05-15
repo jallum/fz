@@ -3,7 +3,7 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-05-15T10:11:22Z",
-  "description": "",
+  "description": "The reachability DFS inside compile_fn performs a linear scan of f.blocks on\nevery step:\n\n  let blk = match f.blocks.iter().find(|b| b.id.0 == bid) {\n      Some(b) =\u003e b,\n      None =\u003e continue,\n  };\n\nThis makes the DFS O(n_blocks²). For a function with 100 blocks (loops,\nmatch chains) this is 10,000 comparisons instead of 100.\n\nFix: before the DFS, build a lookup map from the block list once:\n\n  let block_by_id: HashMap\u003cu32, \u0026Block\u003e =\n      f.blocks.iter().map(|b| (b.id.0, b)).collect();\n\nThen replace the find() with:\n\n  let Some(blk) = block_by_id.get(\u0026bid) else { continue; };\n\nThe map is O(n_blocks) to build and O(1) per lookup. Total DFS cost is\nO(n_blocks + n_edges) instead of O(n_blocks * n_edges).\n\nProven: all existing fixture tests pass. The block_by_id map is local to the\nreachability scope and can be dropped after it.\n\n## LANDING THE WORK\n  Land this ticket before starting the next one:\n  - Commit only the changes for this ticket, referencing fz-cg1.8\n  - Close the ticket (`bw close fz-v9l.8`); It will tell you if work is newly unblocked",
   "id": "fz-v9l.8",
   "labels": [],
   "parent": "fz-v9l",
@@ -11,5 +11,5 @@
   "status": "open",
   "title": "fz-cg1.8 fix reachability DFS O(n2): pre-build block lookup map",
   "type": "task",
-  "updated_at": "2026-05-15T10:11:22Z"
+  "updated_at": "2026-05-15T10:12:43Z"
 }
