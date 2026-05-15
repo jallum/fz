@@ -770,6 +770,17 @@ impl ArgRepr {
             ArgRepr::Tagged
         }
     }
+
+    // CLIF block params are always declared as i64. RawF64 (an actual f64
+    // CLIF value) cannot cross a block-param boundary without a type error.
+    // At block edges, only integers benefit from repr narrowing; floats must
+    // remain Tagged (boxed heap pointer, i64) across block params.
+    fn for_block_param(d: &crate::types::Descr) -> ArgRepr {
+        match Self::from_descr(d) {
+            ArgRepr::RawInt => ArgRepr::RawInt,
+            _ => ArgRepr::Tagged,
+        }
+    }
     fn cl_type(&self) -> types::Type {
         match self {
             ArgRepr::RawF64 => types::F64,
@@ -4402,7 +4413,10 @@ fn compile_fn<M: cranelift_module::Module>(
             b.switch_to_block(cl_blk);
             let params: Vec<ir::Value> = b.block_params(cl_blk).to_vec();
             for (p, val) in blk.params.iter().zip(params.iter()) {
-                var_env.insert(p.0, VarBinding { value: *val, repr: ArgRepr::Tagged });
+                let repr = ArgRepr::for_block_param(
+                    &fn_types.vars.get(p).cloned().unwrap_or_else(crate::types::Descr::any),
+                );
+                var_env.insert(p.0, VarBinding { value: *val, repr });
             }
         }
 
@@ -4506,6 +4520,7 @@ fn compile_fn<M: cranelift_module::Module>(
             Term::Call { callee, .. } => !callee_is_native(callee.0),
             Term::TailCall { callee, .. } => !callee_is_native(callee.0),
             Term::TailCallClosure { .. } => false,
+            Term::Goto(..) => false, // handled per-arg below
             _ => true,
         };
         if needs_blanket_retag {
@@ -4523,6 +4538,24 @@ fn compile_fn<M: cranelift_module::Module>(
                     ArgRepr::Tagged => unreachable!("Tagged in to_retag"),
                 };
                 var_env.insert(rv, VarBinding { value: boxed, repr: ArgRepr::Tagged });
+            }
+        }
+
+        // fz-xs2 fz-ul4.rep.2: repr-aware Goto coercion.  Mirrors
+        // coerce_call_args but for intra-function block edges.  Each arg is
+        // coerced to the repr the target block param actually needs (derived
+        // from fn_types.vars), so RawInt values flow through without a
+        // box/unbox round-trip at inliner seams.
+        if let Term::Goto(target, args) = &blk.terminator {
+            for (param, arg) in f.block(*target).params.iter().zip(args.iter()) {
+                let want = ArgRepr::for_block_param(
+                    &fn_types.vars.get(param).cloned().unwrap_or_else(crate::types::Descr::any),
+                );
+                let vb = *var_env.get(&arg.0).expect("unbound goto arg");
+                if vb.repr != want {
+                    let coerced = coerce_to(&mut b, jmod, runtime, vb.value, vb.repr, want);
+                    var_env.insert(arg.0, VarBinding { value: coerced, repr: want });
+                }
             }
         }
 
