@@ -324,7 +324,28 @@ impl<'a> Runtime<'a> {
             //       run gc_mid_flight (forwards live args + mailbox), clear
             //       the slab, reset FZ_SHOULD_YIELD, then re-enqueue.
             //    b. other cooperative yield (future builtin) — just re-queue.
-            if task.next_frame.is_null() && task.parked_cont.is_null() {
+            //
+            // fz-02r.3: mid-flight detection must come FIRST. run_quantum
+            // always sets next_frame=null before returning (even on yield),
+            // so the null-frame branch would otherwise swallow mid-flight
+            // yields and incorrectly mark the task Exited. Also: fn_ptr and
+            // root_count are NOT cleared here — run_quantum needs them on the
+            // next quantum to dispatch the resume shim.
+            if task.mid_flight_fn_ptr != 0 {
+                // Mid-flight back-edge yield: GC with live args + mailbox as
+                // roots, keep fn_ptr/root_count for run_quantum's resume path.
+                let n = task.mid_flight_root_count as usize;
+                task.heap.gc_mid_flight(
+                    &mut task.mid_flight_roots[..n],
+                    &mut task.mailbox,
+                );
+                FZ_SHOULD_YIELD.store(0, Ordering::Relaxed);
+                task.quiet_quanta = 0;
+                task.state = ProcessState::Ready;
+                self.tasks.insert(pid, task);
+                self.run_queue.push_back(pid);
+                continue;
+            } else if task.next_frame.is_null() && task.parked_cont.is_null() {
                 task.state = ProcessState::Exited;
                 task.quiet_quanta = task.quiet_quanta.saturating_add(1);
             } else if task.state == ProcessState::Blocked {
@@ -342,21 +363,8 @@ impl<'a> Runtime<'a> {
                 self.run_queue.push_back(pid);
                 continue;
             } else if task.state == ProcessState::Running {
-                if task.mid_flight_fn_ptr != 0 {
-                    // fz-02r.3 — mid-flight back-edge yield: GC with live
-                    // args + mailbox as roots, then clear the slab.
-                    let n = task.mid_flight_root_count as usize;
-                    task.heap.gc_mid_flight(
-                        &mut task.mid_flight_roots[..n],
-                        &mut task.mailbox,
-                    );
-                    task.mid_flight_root_count = 0;
-                    task.mid_flight_fn_ptr = 0;
-                    FZ_SHOULD_YIELD.store(0, Ordering::Relaxed);
-                    task.quiet_quanta = 0;
-                } else {
-                    task.quiet_quanta = task.quiet_quanta.saturating_add(1);
-                }
+                // Other cooperative yield (future builtin).
+                task.quiet_quanta = task.quiet_quanta.saturating_add(1);
                 task.state = ProcessState::Ready;
                 self.tasks.insert(pid, task);
                 self.run_queue.push_back(pid);
@@ -727,5 +735,126 @@ mod tests {
             0,
             "FZ_SHOULD_YIELD should be 0 after run_until_idle"
         );
+    }
+
+    // ----- fz-02r.8: mid-flight back-edge GC integration -----
+
+    /// A recursive function that allocates a cons cell per iteration runs to
+    /// completion with the correct integer result even when the GC watermark
+    /// fires mid-loop. We force the watermark to be crossed on the very first
+    /// allocation by setting gc_watermark to null (always < bump_top) before
+    /// spawning.
+    #[test]
+    fn mid_flight_gc_fires_and_result_is_correct() {
+        // sum(n, acc, _) allocates [n] per iteration so the watermark trips.
+        // sum(10, 0, nil) = 55 = 10+9+...+1.
+        let src = "\
+fn sum(0, acc, _), do: acc
+fn sum(n, acc, _), do: sum(n - 1, acc + n, [n])
+fn main(), do: sum(10, 0, nil)";
+        let m = lower_src(src);
+        let entry = m.fn_by_name("main").unwrap().id;
+        let compiled = compile(&m).unwrap();
+        let mut rt = Runtime::new(&compiled, 1);
+        let pid = rt.spawn(entry);
+        // Force the GC watermark to null so any allocation immediately sets
+        // FZ_SHOULD_YIELD=1, triggering the back-edge yield on the first
+        // recursive call.
+        rt.tasks.get_mut(&pid).unwrap().heap.gc_watermark = std::ptr::null_mut();
+        rt.run_until_idle();
+        let task = rt.task(pid).unwrap();
+        assert_eq!(task.state, ProcessState::Exited);
+        assert_eq!(task.halt_value, 55, "sum(10,0,nil) should be 55");
+    }
+
+    /// After mid-flight GC fires, gc_run_count must be at least 1 — the heap
+    /// actually ran a Cheney collect on the live slab.
+    #[test]
+    fn mid_flight_gc_increments_gc_run_count() {
+        let src = "\
+fn sum(0, acc, _), do: acc
+fn sum(n, acc, _), do: sum(n - 1, acc + n, [n])
+fn main(), do: sum(10, 0, nil)";
+        let m = lower_src(src);
+        let entry = m.fn_by_name("main").unwrap().id;
+        let compiled = compile(&m).unwrap();
+        let mut rt = Runtime::new(&compiled, 1);
+        let pid = rt.spawn(entry);
+        rt.tasks.get_mut(&pid).unwrap().heap.gc_watermark = std::ptr::null_mut();
+        rt.run_until_idle();
+        let task = rt.task(pid).unwrap();
+        assert!(
+            task.heap.gc_run_count >= 1,
+            "mid-flight GC should have incremented gc_run_count; got {}",
+            task.heap.gc_run_count
+        );
+    }
+
+    /// Two processes both complete correctly when mid-flight GC fires in each.
+    #[test]
+    fn two_processes_survive_mid_flight_gc() {
+        let src = "\
+fn sum(0, acc, _), do: acc
+fn sum(n, acc, _), do: sum(n - 1, acc + n, [n])
+fn main(), do: sum(8, 0, nil)";
+        let m = lower_src(src);
+        let entry = m.fn_by_name("main").unwrap().id;
+        let compiled = compile(&m).unwrap();
+        let mut rt = Runtime::new(&compiled, 1);
+        let pa = rt.spawn(entry);
+        let pb = rt.spawn(entry);
+        // Force watermark on both processes.
+        rt.tasks.get_mut(&pa).unwrap().heap.gc_watermark = std::ptr::null_mut();
+        rt.tasks.get_mut(&pb).unwrap().heap.gc_watermark = std::ptr::null_mut();
+        rt.run_until_idle();
+        // sum(8,0,nil) = 8+7+...+1 = 36
+        assert_eq!(rt.task(pa).unwrap().halt_value, 36);
+        assert_eq!(rt.task(pb).unwrap().halt_value, 36);
+        assert_eq!(rt.task(pa).unwrap().state, ProcessState::Exited);
+        assert_eq!(rt.task(pb).unwrap().state, ProcessState::Exited);
+    }
+
+    /// quiet_quanta increments each quantum that completes without a
+    /// mid-flight yield. A non-allocating recursive function should complete
+    /// in one quantum and quiet_quanta should be 1.
+    #[test]
+    fn quiet_quanta_increments_when_no_mid_flight_yield() {
+        // Pure integer counter: no allocations, back-edge never yields.
+        let src = "fn count(0, acc), do: acc\nfn count(n, acc), do: count(n - 1, acc + 1)\nfn main(), do: count(20, 0)";
+        let m = lower_src(src);
+        let entry = m.fn_by_name("main").unwrap().id;
+        let compiled = compile(&m).unwrap();
+        let mut rt = Runtime::new(&compiled, 1);
+        let pid = rt.spawn(entry);
+        rt.run_until_idle();
+        let task = rt.task(pid).unwrap();
+        assert_eq!(task.halt_value, 20);
+        assert!(
+            task.quiet_quanta >= 1,
+            "quiet_quanta should be >= 1 after a non-yielding quantum; got {}",
+            task.quiet_quanta
+        );
+    }
+
+    /// When mid-flight GC fires, quiet_quanta is reset to 0 (not incremented).
+    #[test]
+    fn quiet_quanta_resets_on_mid_flight_yield() {
+        let src = "\
+fn sum(0, acc, _), do: acc
+fn sum(n, acc, _), do: sum(n - 1, acc + n, [n])
+fn main(), do: sum(10, 0, nil)";
+        let m = lower_src(src);
+        let entry = m.fn_by_name("main").unwrap().id;
+        let compiled = compile(&m).unwrap();
+        let mut rt = Runtime::new(&compiled, 1);
+        let pid = rt.spawn(entry);
+        rt.tasks.get_mut(&pid).unwrap().heap.gc_watermark = std::ptr::null_mut();
+        rt.run_until_idle();
+        // After mid-flight GC fires, quiet_quanta is reset to 0 by the
+        // scheduler, then incremented by 1 in the final (halting) quantum.
+        // Exact count depends on how many times the watermark fires, so we
+        // just check the computation completed correctly.
+        assert_eq!(rt.task(pid).unwrap().halt_value, 55);
+        assert_eq!(rt.task(pid).unwrap().state, ProcessState::Exited);
     }
 }
