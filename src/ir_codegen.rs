@@ -694,6 +694,9 @@ fn host_isa_with(pic: bool) -> Arc<dyn cranelift_codegen::isa::TargetIsa> {
         .set("is_pic", if pic { "true" } else { "false" })
         .unwrap();
     flag_builder.set("use_colocated_libcalls", "false").unwrap();
+    // Cranelift's Tail CC implementation asserts frame pointers are present.
+    // macOS preserves them by default; Linux does not.
+    flag_builder.set("preserve_frame_pointers", "true").unwrap();
     let isa_builder = cranelift_native::builder().expect("host ISA");
     isa_builder
         .finish(settings::Flags::new(flag_builder))
@@ -1356,18 +1359,21 @@ impl Backend for AotBackend {
 
     fn finalize(self, meta: CompiledMetadata) -> Result<AotArtifact, CodegenError> {
         let AotBackend { omod } = self;
-        let mut product = omod.finish();
         // Emit the macOS platform load command (LC_BUILD_VERSION) so ld
         // doesn't warn "no platform load command found". Cranelift's
         // ObjectBuilder doesn't inject this automatically (fz-ul4.33).
         #[cfg(target_os = "macos")]
-        {
+        let product = {
+            let mut p = omod.finish();
             let mut ver = object::write::MachOBuildVersion::default();
             ver.platform = object::macho::PLATFORM_MACOS;
             ver.minos = 11 << 16; // 11.0.0 — first macOS on Apple Silicon
             ver.sdk = 11 << 16;
-            product.object.set_macho_build_version(ver);
-        }
+            p.object.set_macho_build_version(ver);
+            p
+        };
+        #[cfg(not(target_os = "macos"))]
+        let product = omod.finish();
         let object = product
             .emit()
             .map_err(|e| CodegenError::new(format!("object emit: {}", e)))?;
