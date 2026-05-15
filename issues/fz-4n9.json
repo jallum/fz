@@ -3,12 +3,12 @@
   "blocked_by": [],
   "blocks": [],
   "created": "2026-05-15T11:11:31Z",
-  "description": "",
+  "description": "Three-axis improvement pass on ir_codegen.rs:\n\nREMOVE (dead code)\n- fns_needing_host_ctx: always-empty HashSet, 6 dead .contains() sites, 3 dead branches\n- stub_fn_ids: always-empty BTreeMap, threaded through compile_fn + lower_prim for nothing\n\nDEDUPLICATE\n- resolve_tcc_body_sid: 4 identical closure-lit resolution blocks → one function\n- emit_fn_body: 4 identical make_context/FunctionBuilder/define/clear loops → one helper\n\nSTRUCTURE\n- VarBinding: var_map + var_reprs (two parallel HashMaps) → one HashMap\u003cu32, VarBinding\u003e\n- CodegenEnv: 10 params shared between compile_fn + lower_prim → one context struct\n- build_entry_harness: 200-line entry setup block extracted from compile_fn\n- SpecRegistry: move to src/spec_registry.rs (self-contained data structure, wrong file)\n\nDAG:\n  T1 remove fns_needing_host_ctx  ─┐\n  T2 remove stub_fn_ids            ├──\u003e T6 CodegenEnv ──\u003e T7 build_entry_harness\n  T5 VarBinding                   ─┘\n  T3 resolve_tcc_body_sid             (independent)\n  T4 emit_fn_body                     (independent)\n  T8 SpecRegistry extraction          (independent)",
   "id": "fz-4n9",
   "labels": [],
   "priority": 2,
   "status": "open",
   "title": "fz-cg2 [EPIC] codegen: dead param removal, deduplication, structural refactoring",
   "type": "task",
-  "updated_at": "2026-05-15T11:11:31Z"
+  "updated_at": "2026-05-15T11:11:50Z"
 }
