@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-15T00:11:02Z",
+  "description": "Multi-agent audit of every fixture's expected.specs against its input.fz, asking: is each derived Descr as narrow as the program structure permits, and are spec keys correct?\n\nFor each fixture, the audit assesses:\n  - Per-Var Descr narrowness (literal-narrow where possible?  where a singleton would do?)\n  - Return Descr correctness (does it match the function body?)\n  - Spec key precision (caller arg types flowed to entry params?)\n  - Spec count (missing narrow specs? spurious wide ones?)\n\nFindings file as child tickets under this epic, severity-tagged. Fixes are out of scope for the epic itself — each finding gets its own work ticket.\n\nThe audit is run by Explore subagents in parallel, each handling 5-6 fixtures. Aggregated results land here.",
+  "id": "fz-1pq",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "[EPIC] fz-ul4.27.22.22: fixture spec correctness audit",
+  "type": "task",
+  "updated_at": "2026-05-15T00:11:02Z"
+}
