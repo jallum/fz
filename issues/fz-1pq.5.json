@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-05-15T01:24:58Z",
   "created": "2026-05-15T00:29:28Z",
   "description": "In closure_typed_captures, lambda_3 has two specialization specs. In spec #2 the key shows Var(2) typed as any, but from the source program Var(2) is a captured literal-typed value (int or float depending on the site). The capture type should be narrow.\n\nThe issue is that the captured var's Descr is not properly threaded into the spec key when the lambda is called from a context where the capture type is known.",
   "id": "fz-1pq.5",
   "labels": [],
   "parent": "fz-1pq",
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "closure_typed_captures: lambda_3 spec #2 key Var(2) widened to any",
   "type": "bug",
-  "updated_at": "2026-05-15T00:29:28Z"
+  "updated_at": "2026-05-15T01:24:58Z"
 }
