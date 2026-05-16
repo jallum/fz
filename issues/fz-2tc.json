@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-vh4"
+  ],
   "blocks": [],
   "created": "2026-05-16T22:52:20Z",
   "description": "",
@@ -10,5 +12,5 @@
   "status": "open",
   "title": "fz-cg.7: Fix C — dead extern-result nil elision via per-block pre-scan",
   "type": "task",
-  "updated_at": "2026-05-16T22:52:20Z"
+  "updated_at": "2026-05-16T22:52:25Z"
 }
