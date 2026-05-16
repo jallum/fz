@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-16T21:18:44Z",
+  "description": "",
+  "id": "fz-1gr",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "fz-wmy.4: stable ExternId — id on ExternDecl, extern_idx on Module, next_extern counter, extern_by_id helper, four consumer sites",
+  "type": "task",
+  "updated_at": "2026-05-16T21:18:44Z"
+}
