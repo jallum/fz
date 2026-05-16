@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-cty.5"
+  ],
   "blocks": [],
   "created": "2026-05-16T00:34:51Z",
   "description": "## Goal\n\nEnd-to-end acceptance that proves the shared zone works under realistic spawn-and-share traffic across all three execution paths.\n\n## Depends on\n\nfz-cty.1 (lift-cap), fz-cty.5 (bitstring policy).\n\n## Scenario\n\nA sender process creates one large bitstring (≥ 128 bytes — well above threshold). It spawns N receivers and sends the bitstring to each. Each receiver receives the message, optionally does some work that triggers GC, then exits.\n\nExpected behaviour:\n\n- Exactly **one** SharedBin is ever allocated (live count peaks at 1 across the entire run).\n- SharedBin refcount climbs to 1 + N as sends complete, then drops to zero as receivers exit.\n- Across mid-flight GCs in each receiver, the receiver's MSO entry is correctly updated to the to-space copy of its ProcBin (no UAF, no leak).\n- Across receiver process drop, the SharedBin refcount decrements correctly.\n\n## Implementation\n\nAdd `tests/shared_heap_acceptance.rs` (or equivalent in the existing spec_parity / test_runner infrastructure). Test runs the scenario under:\n- Interpreter (`ir_interp`)\n- JIT (current default Cranelift path)\n- AOT (`aot_shim`)\n\nEach path runs the same fz source. Assertions:\n- `shared_bin_live_count()` (from .2) is exactly 1 at peak, 0 at end.\n- All N receivers observe the expected bytes (round-trip integrity).\n- Optional: instrument MSO list sizes to assert expected counts per process.\n\n## Tests\n\nThe acceptance test itself. May discover that one of the runtime paths needs a small adjustment to expose `shared_bin_live_count` for assertion; if so, surface as a tightly-scoped change inside this ticket (no new behaviour).\n\n## Verification\n\n- Test passes in all three paths.\n- Refcount invariant holds across GC cycles and process death.\n- No deadlocks, no panics, no leaks.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "fz-shr.6: Three-path acceptance — shared-bin survives spawn-and-share",
   "type": "task",
-  "updated_at": "2026-05-16T00:34:51Z"
+  "updated_at": "2026-05-16T00:34:58Z"
 }
