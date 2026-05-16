@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-16T21:18:44Z",
+  "description": "",
+  "id": "fz-r4m",
+  "labels": [],
+  "priority": 3,
+  "status": "open",
+  "title": "fz-wmy.6: research — can type_module calls 1+2 merge? read both transforms, characterize dependencies, document finding",
+  "type": "task",
+  "updated_at": "2026-05-16T21:18:44Z"
+}
