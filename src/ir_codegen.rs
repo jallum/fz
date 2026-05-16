@@ -1804,6 +1804,15 @@ pub fn compile_with_backend<B: Backend>(
     // Run the typer ahead of codegen so per-fn Var->Descr info is
     // available during lowering. .11.24.5 clones first so the typed-schema
     // rewrite can swap MakeVec(I64) → MakeVec(F64) where elements are Float.
+    //
+    // fz-wmy.6 research: rewrite_vec_kinds reads any_key_specs/ft.vars to find
+    // element types of MakeVec stmts. rewrite_known_target_closures reads
+    // specs/ft.fn_constants to find constant-closure CallClosure targets. The
+    // two reads are orthogonal (element types vs. fn_constants) and their
+    // writes are orthogonal (VecKindIr mutations vs. CallClosure→Call rewrites).
+    // A single type_module call CAN serve both — merging calls 1+2 would reduce
+    // the pipeline count from 3 to 2. Left as a future simplification; the
+    // type_module_called_exactly_three_times test pins the current count.
     let mut working = module.clone();
     let pre_types = crate::ir_typer::type_module(&working);
     crate::ir_typer::rewrite_vec_kinds(&mut working, &pre_types).map_err(CodegenError::new)?;
