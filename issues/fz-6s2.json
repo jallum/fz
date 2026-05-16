@@ -2,13 +2,14 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-05-16T21:21:41Z",
   "created": "2026-05-16T21:18:43Z",
   "description": "",
   "id": "fz-6s2",
   "labels": [],
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "fz-wmy.1: alpha_rename — drop dead HashMap returns; rewrite test to inspect FnIr directly",
   "type": "task",
-  "updated_at": "2026-05-16T21:18:43Z"
+  "updated_at": "2026-05-16T21:21:41Z"
 }
