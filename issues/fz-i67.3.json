@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-16T22:58:09Z",
+  "description": "## Goal\n\nWalk every fixture under `fixtures/`. For each that does not use `spawn`/`send`/`receive`, add `repl` to its `paths:`. Run the matrix. For every fixture where the REPL leg diverges from the other three legs, either fix `eval::Interp` to match or record an explicit opt-out rationale in the fixture's frontmatter.\n\n## Depends on\n\nREPL .2 (the matrix `repl` path must exist).\n\n## Process\n\n1. Grep fixtures for `spawn(`, `send(`, `receive(`. These stay on `paths: [jit, interp, aot]` — no change.\n2. For every other fixture, add `repl` to `paths:`. Run matrix.\n3. For each failing fixture, categorise:\n   - **Bug in `eval::Interp`** — file a separate ticket; in the meantime, opt the fixture out with `# repl-skip: \u003creason\u003e` in the frontmatter and link the ticket.\n   - **Bug in the REPL `--script` harness** — file/fix.\n   - **Acceptable divergence** (e.g., `eval::Interp` lacks support for a prim) — opt out with a rationale; file follow-up ticket if the prim should be added.\n4. No silent skips. Every fixture not on `repl` has either spawn/send/receive in its source or a rationale comment.\n\n## Acceptance\n\n- `cargo test --test fixture_matrix` green.\n- Every fixture's `paths:` line either includes `repl` or has a justification (concurrency primitive or rationale comment).\n- A summary in the ticket comments lists: count opted in, count opted out by reason.\n\n## Closes\n\n`fz-ul4.23.9` (REPL onto `ir_interp` — obsoleted: parity goal achieved without migration).",
+  "id": "fz-i67.3",
+  "labels": [],
+  "parent": "fz-i67",
+  "priority": 2,
+  "status": "open",
+  "title": "REPL .3: opt sequential fixtures into [..., repl]; resolve divergences",
+  "type": "task",
+  "updated_at": "2026-05-16T22:58:09Z"
+}
