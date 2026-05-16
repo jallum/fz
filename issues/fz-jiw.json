@@ -4,13 +4,14 @@
     "fz-vh4"
   ],
   "blocks": [],
+  "closed_at": "2026-05-16T23:32:06Z",
   "created": "2026-05-16T22:52:20Z",
   "description": "",
   "id": "fz-jiw",
   "labels": [],
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "fz-cg.6: Fix B — condition cache; TypeTest/cmp vars bypass bool_to_fz→is_truthy in Term::If",
   "type": "task",
-  "updated_at": "2026-05-16T23:25:19Z"
+  "updated_at": "2026-05-16T23:32:06Z"
 }
