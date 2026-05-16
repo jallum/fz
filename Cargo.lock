@@ -315,6 +315,7 @@ dependencies = [
  "cranelift-native",
  "cranelift-object",
  "fz-runtime",
+ "libc",
  "object",
  "target-lexicon",
 ]

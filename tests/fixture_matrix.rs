@@ -496,7 +496,10 @@ fn add1_main_cont_seam_has_no_box_unbox_roundtrip() {
         stdout
     );
     // fz-ul4.fus: block fusion + singleton fold eliminates the iadd entirely;
-    // folded constant 42 is visible directly. No tag round-trips either.
+    // folded constant 42 is visible directly.
+    // fz-ext.7: print is now a wrapper fn requiring a tagged arg, so
+    // ishl_imm/bor_imm appear at the main→print_wrapper seam (not a
+    // roundtrip — the print wrapper doesn't unbox and rebox).
     let main_start = stdout.find("; fn main").expect("missing main banner");
     let main_body = &stdout[main_start..];
     assert!(
@@ -507,11 +510,6 @@ fn add1_main_cont_seam_has_no_box_unbox_roundtrip() {
     assert!(
         main_body.contains("42"),
         "expected folded constant 42 in main:\n{}",
-        main_body,
-    );
-    assert!(
-        !main_body.contains("ishl_imm"),
-        "unexpected ishl_imm (box) in main — tag round-trip at Goto seam:\n{}",
         main_body,
     );
     assert!(

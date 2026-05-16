@@ -1,0 +1,17 @@
+extern "C" fn fz_print_value(any) :: nil
+extern "C" fn fz_assert(any) :: nil
+extern "C" fn fz_assert_eq(any, any) :: nil
+extern "C" fn fz_assert_neq(any, any) :: nil
+extern "C" fn fz_vec_get(any, any) :: any
+extern "C" fn fz_spawn(any) :: any
+extern "C" fn fz_spawn_opt(any, any) :: any
+extern "C" fn fz_self() :: any
+extern "C" fn fz_send(any, any) :: any
+
+fn print(x) do fz_print_value(x) end
+fn assert(x) do fz_assert(x) end
+fn assert_eq(a, b) do fz_assert_eq(a, b) end
+fn assert_neq(a, b) do fz_assert_neq(a, b) end
+fn vec_get(v, i) do fz_vec_get(v, i) end
+fn self() do fz_self() end
+fn send(pid, msg) do fz_send(pid, msg) end

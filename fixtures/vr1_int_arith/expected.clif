@@ -1,27 +1,45 @@
 ; fn main
-    ;   @spec   main() -> nil
+    ;   @spec   main() -> _
     ;   @key    []
     ;   @abi    () -> Tagged
 function u0:0(i64) -> i64 tail {
     sig0 = (i64) system_v
-    sig1 = (i64) system_v
-    sig2 = (i64) system_v
-    sig3 = (i64, i64) -> i64 tail
-    fn0 = u0:1 sig0
-    fn1 = u0:1 sig1
-    fn2 = u0:1 sig2
+    sig1 = (i64, i64) -> i64 tail
+    fn0 = u0:0 sig0
+    fn1 = colocated u0:45 sig1
 
 block0(v0: i64):
     v1 = iconst.i64 42                  ; @2:9
-    call fn0(v1)                        ; @2:14  v1 = 42
-    v2 = iconst.i64 3                   ; @2:14
-    v3 = iconst.i64 93                  ; @2:9
-    call fn1(v3)                        ; @2:3  v3 = 93
-    v4 = iconst.i64 3                   ; @2:3
-    v5 = iconst.i64 42                  ; @3:9
-    call fn2(v5)                        ; @3:15  v5 = 42
-    v6 = iconst.i64 3                   ; @3:15
-    v7 = load.i64 notrap aligned v0+16
-    return_call_indirect sig3, v7(v6, v0)  ; v6 = 3
+    v2 = ishl_imm v1, 3                 ; @2:14  v1 = 42
+    v3 = bor_imm v2, 1                  ; @2:14
+    call fn0(v3)                        ; @2:14
+    v4 = iconst.i64 3                   ; @2:14
+    return_call fn1(v4, v0)             ; @2:3  v4 = 3
+}
+
+; fn k_8
+    ;   @spec   k_8(any) -> any
+    ;   @key    [any]
+    ;   @abi    (Tagged) -> Tagged
+function u0:0(i64, i64) -> i64 tail {
+    sig0 = (i64) system_v
+    sig1 = (i64) system_v
+    sig2 = (i64, i64) -> i64 tail
+    fn0 = u0:0 sig0
+    fn1 = u0:0 sig1
+
+    block0(v0: i64, v1: i64):    ;; v0 :: any
+    v2 = iconst.i64 93                  ; @3:9
+    v3 = ishl_imm v2, 3                 ; @3:15  v2 = 93
+    v4 = bor_imm v3, 1                  ; @3:15
+    call fn0(v4)                        ; @3:15
+    v5 = iconst.i64 3                   ; @3:15
+    v6 = iconst.i64 42                  ; @3:9
+    v7 = ishl_imm v6, 3  ; v6 = 42
+    v8 = bor_imm v7, 1
+    call fn1(v8)
+    v9 = iconst.i64 3    ;; v9 :: any
+    v10 = load.i64 notrap aligned v1+16 ; @3:3
+    return_call_indirect sig2, v10(v9, v1) ; @3:3  v9 = 3
 }
 

@@ -1,13 +1,24 @@
-; spec main(0) #fn=0
+; spec print(1) #fn=0
+;   key:    [bool]
+;   return: any
+;   vars:
+;     Var(0) :: bool
+;     Var(1) :: :match_error
+;     Var(2) :: any
+;   exits:
+;     blk0 Return Var(2)    :: any
+;     blk1 Halt Var(1)      :: :match_error
+
+; spec main(0) #fn=7
 ;   key:    []
-;   return: nil
+;   return: any
 ;   vars:
 ;     Var(0) :: :match_error
 ;     Var(1) :: 1
 ;     Var(2) :: :ok
 ;     Var(3) :: bool
-;     Var(4) :: nil
 ;   exits:
-;     blk0 Return Var(4)    :: nil
+;     blk0 TailCall print#0(Var(3))
+;              callee_key=[bool]
 ;     blk1 Halt Var(0)      :: :match_error
 

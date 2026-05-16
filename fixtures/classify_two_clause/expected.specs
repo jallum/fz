@@ -1,4 +1,26 @@
-; spec classify(1) #fn=0
+; spec print(1) #fn=0
+;   key:    [:other]
+;   return: any
+;   vars:
+;     Var(0) :: :other
+;     Var(1) :: :match_error
+;     Var(2) :: any
+;   exits:
+;     blk0 Return Var(2)    :: any
+;     blk1 Halt Var(1)      :: :match_error
+
+; spec print(1) #fn=0
+;   key:    [:zero]
+;   return: any
+;   vars:
+;     Var(0) :: :zero
+;     Var(1) :: :match_error
+;     Var(2) :: any
+;   exits:
+;     blk0 Return Var(2)    :: any
+;     blk1 Halt Var(1)      :: :match_error
+
+; spec classify(1) #fn=7
 ;   key:    [0]
 ;   return: :zero
 ;   vars:
@@ -15,7 +37,7 @@
 ;     blk3 Halt Var(1)      :: :function_clause
 ;     blk4 Return Var(4)    :: :zero
 
-; spec classify(1) #fn=0
+; spec classify(1) #fn=7
 ;   key:    [7]
 ;   return: :other
 ;   vars:
@@ -32,38 +54,48 @@
 ;     blk3 Halt Var(1)      :: :function_clause
 ;     blk4 Return Var(4)    :: :zero
 
-; spec main(0) #fn=1
+; spec main(0) #fn=8
 ;   key:    []
-;   return: nil
+;   return: any
 ;   vars:
 ;     Var(0) :: :match_error
 ;     Var(1) :: 0
 ;   exits:
-;     blk0 Call classify#0(Var(1))
+;     blk0 Call classify#7(Var(1))
 ;              callee_key=[0]
-;              cont k_2#2 captured=[]
+;              cont k_9#9 captured=[]
 ;              cont_key=[:zero]
 ;     blk1 Halt Var(0)      :: :match_error
 
-; spec k_2(1) #fn=2
+; spec k_9(1) #fn=9
 ;   key:    [:zero]
-;   return: nil
+;   return: any
 ;   vars:
 ;     Var(0) :: :zero
-;     Var(1) :: nil
-;     Var(2) :: 7
 ;   exits:
-;     blk0 Call classify#0(Var(2))
+;     blk0 Call print#0(Var(0))
+;              callee_key=[:zero]
+;              cont k_10#10 captured=[]
+;              cont_key=[any]
+
+; spec k_10(1) #fn=10
+;   key:    [any]
+;   return: any
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: 7
+;   exits:
+;     blk0 Call classify#7(Var(1))
 ;              callee_key=[7]
-;              cont k_3#3 captured=[]
+;              cont k_11#11 captured=[]
 ;              cont_key=[:other]
 
-; spec k_3(1) #fn=3
+; spec k_11(1) #fn=11
 ;   key:    [:other]
-;   return: nil
+;   return: any
 ;   vars:
 ;     Var(0) :: :other
-;     Var(1) :: nil
 ;   exits:
-;     blk0 Return Var(1)    :: nil
+;     blk0 TailCall print#0(Var(0))
+;              callee_key=[:other]
 
