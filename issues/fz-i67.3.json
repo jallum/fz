@@ -9,9 +9,15 @@
   "id": "fz-i67.3",
   "labels": [],
   "parent": "fz-i67",
+  "comments": [
+    {
+      "text": "Audit summary (fz-i67.3):\n\n- Total fixtures: 41\n- Concurrency (spawn/send/receive) — left on existing paths, REPL leg N/A: 7\n  (concurrency_ping_pong, multi_relay, relay, spawn2_basic, spawn_with_captures,\n   shared_heap_send_large_bitstring, three_process_chain)\n- `kind: test` — REPL leg auto-defers (no assertion runner): 2\n  (sample_tests, sample_tests_module)\n- No `paths:` (special): 1 (errors)\n- Sequential candidates audited: 31\n  - Opted in to `repl` (PASS exact-stdout): 30\n  - Opted out with `repl-skip:` rationale: 1 (tail_recursion — eval::Interp\n    lacks TCO; 100k-deep self-recursion overflows the host stack)\n- Divergences requiring eval::Interp fixes: 0\n\nCloses fz-ul4.23.9 (REPL onto ir_interp — obsoleted: parity goal achieved\nwithout migration).",
+      "timestamp": "2026-05-16T23:08:41Z"
+    }
+  ],
   "priority": 2,
   "status": "in_progress",
   "title": "REPL .3: opt sequential fixtures into [..., repl]; resolve divergences",
   "type": "task",
-  "updated_at": "2026-05-16T23:05:37Z"
+  "updated_at": "2026-05-16T23:08:41Z"
 }
