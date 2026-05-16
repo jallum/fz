@@ -165,69 +165,9 @@ impl HeapKind {
     }
 }
 
-// ===== fz-cty.5 — bitstring storage dispatchers =============================
-//
-// fz bitstrings live in one of two storage modes:
-//   * `HeapKind::Bitstring` — inline payload: bit_len at +16, bytes at +24.
-//   * `HeapKind::ProcBin` — *mut SharedBin at +16; bytes + bit_len off-heap.
-//
-// Read sites use these helpers so equality, render, and bit-match treat
-// the two kinds uniformly.
-
-/// True if `p` is a heap value whose bytes can be read as a bitstring
-/// (either inline Bitstring or off-heap ProcBin).
-///
-/// # Safety
-/// `p` must be a live heap header.
-pub unsafe fn is_bitstring_like(p: *const HeapHeader) -> bool {
-    let kind = unsafe { (*p).kind };
-    matches!(
-        HeapKind::from_u16(kind),
-        Some(HeapKind::Bitstring) | Some(HeapKind::ProcBin)
-    )
-}
-
-/// Bit length of a bitstring-like heap value. Reads inline for Bitstring,
-/// forwards to the SharedBin for ProcBin.
-///
-/// # Safety
-/// `p` must be a live heap header whose kind is Bitstring or ProcBin.
-pub unsafe fn bitstring_bit_len(p: *const HeapHeader) -> u64 {
-    let kind = unsafe { (*p).kind };
-    match HeapKind::from_u16(kind) {
-        Some(HeapKind::Bitstring) => unsafe {
-            std::ptr::read((p as *const u8).add(16) as *const u64)
-        },
-        Some(HeapKind::ProcBin) => {
-            let sp = unsafe {
-                std::ptr::read((p as *const u8).add(16) as *const *mut crate::shared_bin::SharedBin)
-            };
-            unsafe { (*sp).bit_len }
-        }
-        other => panic!("bitstring_bit_len: not a bitstring-like kind: {:?}", other),
-    }
-}
-
-/// Byte pointer to the underlying bitstring payload. Reads inline for
-/// Bitstring (offset 24), follows the SharedBin for ProcBin.
-///
-/// # Safety
-/// `p` must be a live heap header whose kind is Bitstring or ProcBin.
-/// The returned pointer is valid for as long as `p` (and, for ProcBin,
-/// as long as some reference to the SharedBin) remains live.
-pub unsafe fn bitstring_byte_ptr(p: *const HeapHeader) -> *const u8 {
-    let kind = unsafe { (*p).kind };
-    match HeapKind::from_u16(kind) {
-        Some(HeapKind::Bitstring) => unsafe { (p as *const u8).add(24) },
-        Some(HeapKind::ProcBin) => {
-            let sp = unsafe {
-                std::ptr::read((p as *const u8).add(16) as *const *mut crate::shared_bin::SharedBin)
-            };
-            unsafe { (*sp).bytes.as_ptr() }
-        }
-        other => panic!("bitstring_byte_ptr: not a bitstring-like kind: {:?}", other),
-    }
-}
+// Bitstring storage dispatchers moved to `crate::procbin` in fz-q8d.1.
+// `fz_value.rs` does not own bitstring layout; render uses the procbin
+// helpers like every other read site.
 
 /// Heap object header — exactly 16 bytes, 16-byte aligned.
 ///
@@ -618,9 +558,9 @@ pub mod debug {
 
     fn render_bitstring(bits: u64) -> String {
         let p = FzValue(bits).unbox_ptr().unwrap();
-        let bit_len = unsafe { super::bitstring_bit_len(p) } as usize;
+        let bit_len = unsafe { crate::procbin::bitstring_bit_len(p) } as usize;
         let total_bytes = bit_len.div_ceil(8);
-        let byte_ptr = unsafe { super::bitstring_byte_ptr(p) };
+        let byte_ptr = unsafe { crate::procbin::bitstring_byte_ptr(p) };
         let bytes = unsafe { std::slice::from_raw_parts(byte_ptr, total_bytes) };
         let full_bytes = bit_len / 8;
         let trailing_bits = bit_len % 8;

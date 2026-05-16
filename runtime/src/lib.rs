@@ -12,9 +12,9 @@ pub mod bitstr;
 pub mod fz_value;
 pub mod heap;
 pub mod ir_runtime;
+pub mod procbin;
 pub mod process;
 pub mod scheduler_hooks;
-pub mod shared_bin;
 pub mod yield_flag;
 
 // ---------------------------------------------------------------------------

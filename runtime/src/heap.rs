@@ -20,7 +20,7 @@
 #![allow(dead_code)]
 
 use crate::fz_value::{FzValue, HeapHeader, HeapKind, ListCons};
-use crate::shared_bin::{SharedBin, shared_bin_release};
+use crate::procbin::{ProcBin, SharedBinHandle, alloc_procbin, mso_drop_all, mso_sweep};
 use std::alloc::{Layout, alloc_zeroed, dealloc};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -285,13 +285,13 @@ pub struct Heap {
     /// — under bump-only with no reclaim, every alloc since-start is "live".
     /// .8 resets this on each Cheney pass to the surviving-object count.
     alloc_count: u64,
-    /// fz-cty.3 — MSO ("Mixed Set / Off-heap") list. One entry per live
-    /// `HeapKind::ProcBin` allocated on this heap, pointing at the ProcBin
-    /// header. The post-Cheney sweep rewrites each entry to its to-space
-    /// copy (or drops it and releases the SharedBin if the ProcBin died);
-    /// `Heap::drop` releases every entry's shared_ptr so the bins outlive
-    /// only as long as some heap still references them.
-    pub mso_list: Vec<*mut HeapHeader>,
+    /// fz-q8d.1 — intrusive MSO ("Mixed Set / Off-heap") chain. Head of a
+    /// singly-linked list of live `HeapKind::ProcBin` objects allocated on
+    /// this heap; each ProcBin's `mso_next` slot stores the predecessor.
+    /// The post-Cheney sweep (`procbin::mso_sweep`) rewrites entries to
+    /// their to-space copies; `Heap::drop` calls `procbin::mso_drop_all`
+    /// before pool reclaim so SharedBin references are balanced.
+    pub mso_head: *mut HeapHeader,
 }
 
 impl Heap {
@@ -320,7 +320,7 @@ impl Heap {
             gc_threshold_bytes: block_size / 2,
             gc_run_count: 0,
             alloc_count: 0,
-            mso_list: Vec::new(),
+            mso_head: std::ptr::null_mut(),
         }
     }
 
@@ -472,8 +472,8 @@ impl Heap {
     /// `bitstring_bit_len` / `bitstring_byte_ptr`.
     pub fn alloc_bitstring(&mut self, bytes: &[u8], bit_len: u64) -> *mut HeapHeader {
         if bytes.len() > SHARED_BIN_THRESHOLD_BYTES {
-            let shared_ptr = crate::shared_bin::shared_bin_alloc(bytes, bit_len);
-            return unsafe { self.alloc_procbin(shared_ptr) };
+            let handle = SharedBinHandle::from_bytes(bytes, bit_len);
+            return alloc_procbin(self, handle).as_raw();
         }
         let total = (16 + 8 + bytes.len() + 15) & !15;
         let p = self.alloc(total);
@@ -500,49 +500,6 @@ impl Heap {
             }
         }
         p
-    }
-
-    /// fz-cty.3 — allocate a 32-byte `HeapKind::ProcBin` stub on this heap
-    /// referencing `shared_ptr`. The caller must have already established
-    /// the refcount edge on the SharedBin (typically via `shared_bin_alloc`,
-    /// which returns refcount=1, or `shared_bin_retain` on a pre-existing
-    /// reference). The new ProcBin is pushed onto `mso_list` so the
-    /// post-Cheney sweep and `Heap::drop` can manage its lifetime.
-    ///
-    /// Layout:
-    ///   offset 0..16   HeapHeader { kind=ProcBin, size_bytes=32, .. }
-    ///   offset 16..24  shared_ptr: *mut SharedBin
-    ///   offset 24..32  padding (zero)
-    ///
-    /// # Safety
-    /// `shared_ptr` must point at a SharedBin whose refcount already
-    /// accounts for the new ProcBin (i.e. callers got it from
-    /// `shared_bin_alloc`, or have called `shared_bin_retain` once). The
-    /// MSO sweep / `Heap::drop` will issue exactly one `shared_bin_release`
-    /// for each ProcBin allocated this way.
-    pub unsafe fn alloc_procbin(&mut self, shared_ptr: *mut SharedBin) -> *mut HeapHeader {
-        let p = self.alloc(32);
-        unsafe {
-            std::ptr::write(
-                p,
-                HeapHeader {
-                    kind: HeapKind::ProcBin as u16,
-                    flags: 0,
-                    size_bytes: 32,
-                    schema_id: 0,
-                    _reserved: 0,
-                },
-            );
-            std::ptr::write((p as *mut u8).add(16) as *mut *mut SharedBin, shared_ptr);
-            std::ptr::write_bytes((p as *mut u8).add(24), 0, 8);
-        }
-        self.mso_list.push(p);
-        p
-    }
-
-    /// Read the `*mut SharedBin` payload of a `HeapKind::ProcBin` object.
-    pub fn procbin_shared_ptr(p: *const HeapHeader) -> *mut SharedBin {
-        unsafe { std::ptr::read((p as *const u8).add(16) as *const *mut SharedBin) }
     }
 
     /// Closure layout (fz-ul4.29.5):
@@ -823,35 +780,12 @@ impl Heap {
         }
         drop(schemas);
 
-        // fz-cty.3 — MSO sweep. Each entry is a *mut HeapHeader for a
-        // ProcBin that lived in from-space. After Cheney finished BFS:
-        //   - If the ProcBin survived, its from-header now has
-        //     FORWARDED_KIND and the to-space pointer at offset 8.
-        //     Rewrite the MSO entry to the new location.
-        //   - If the ProcBin died, the from-header still carries kind
-        //     ProcBin (Cheney never touched it). Release its shared_ptr
-        //     and drop the entry.
-        // Ordering requirement: this MUST run before `pool_free` of
-        // from-space below, because the reads below dereference the
-        // from-space ProcBins.
-        self.mso_list.retain_mut(|entry| {
-            let p = *entry;
-            let kind = unsafe { (*p).kind };
-            if kind == FORWARDED_KIND {
-                let new_p = unsafe { std::ptr::read((p as *const u8).add(8) as *const u64) }
-                    as *mut HeapHeader;
-                *entry = new_p;
-                true
-            } else {
-                debug_assert_eq!(kind, HeapKind::ProcBin as u16);
-                let shared_ptr =
-                    unsafe { std::ptr::read((p as *const u8).add(16) as *const *mut SharedBin) };
-                unsafe {
-                    shared_bin_release(shared_ptr);
-                }
-                false
-            }
-        });
+        // fz-q8d.1 — MSO sweep walks the intrusive chain. Survivors get
+        // rewritten to their to-space copies; dead entries release their
+        // SharedBin reference. Must run before `pool_free` below because
+        // it dereferences from-space ProcBins (specifically their
+        // mso_next link, which Cheney never overwrites).
+        mso_sweep(self);
 
         // Return old from-space (current + abandoned) to the pool (§6.6).
         pool_free(self.block_start, self.size_class);
@@ -1055,17 +989,10 @@ fn count_objects_in_range(start: *mut u8, end: *mut u8) -> usize {
 
 impl Drop for Heap {
     fn drop(&mut self) {
-        // fz-cty.3 — every ProcBin in the MSO list owns one refcount edge
-        // on its SharedBin. Release them before the backing blocks are
-        // returned to the pool; otherwise the bins leak when the last
-        // heap holding them goes away.
-        for p in self.mso_list.drain(..) {
-            let shared_ptr =
-                unsafe { std::ptr::read((p as *const u8).add(16) as *const *mut SharedBin) };
-            unsafe {
-                shared_bin_release(shared_ptr);
-            }
-        }
+        // fz-q8d.1 — release every SharedBin held via the intrusive MSO
+        // chain. Order matters: must run before pool_free below, since
+        // mso_drop_all walks ProcBin payloads in the from-space blocks.
+        mso_drop_all(self);
         // Return blocks to the pool (§6.6) instead of free'ing. Next
         // spawn pulls from the same class — no per-spawn malloc.
         pool_free(self.block_start, self.size_class);
@@ -1215,17 +1142,12 @@ pub fn deep_copy_value(
             panic!("deep_copy_value: HeapKind::VecF64 not yet supported (see fz-ul4.11.23)");
         }
         HeapKind::ProcBin => {
-            // fz-cty.4 — cross-process send shares the bytes. Retain the
-            // SharedBin (the destination ProcBin owns a new refcount edge)
-            // and allocate a fresh ProcBin on the destination heap, which
-            // pushes the new entry onto dst_heap.mso_list. The forwarding
-            // map deduplicates: if the same source ProcBin appears multiple
-            // times in the value graph, only one retain + alloc happens.
-            let shared_ptr = Heap::procbin_shared_ptr(sp);
-            unsafe {
-                crate::shared_bin::shared_bin_retain(shared_ptr);
-            }
-            let new_p = unsafe { dst_heap.alloc_procbin(shared_ptr) };
+            // fz-q8d.1 — cross-heap deep_copy shares the bytes via retain.
+            // The new handle holds a fresh refcount edge that alloc_procbin
+            // transfers into the destination ProcBin / MSO chain.
+            let src_pb = unsafe { ProcBin::from_raw(sp) };
+            let handle = unsafe { SharedBinHandle::retain_from_raw(src_pb.shared_raw()) };
+            let new_p = alloc_procbin(dst_heap, handle).as_raw();
             forwarding.insert(sp, new_p);
             return FzValue(new_p as u64);
         }
@@ -1786,147 +1708,137 @@ mod tests {
         assert_eq!(h.live_count(), 2);
     }
 
-    // ===== fz-cty.3 — ProcBin + MSO + post-Cheney sweep ====================
+    // ===== fz-q8d.1 — ProcBin + intrusive MSO + post-Cheney sweep =========
 
-    /// `alloc_procbin` writes a ProcBin header, stores the shared_ptr at
-    /// offset 16, and pushes the new pointer onto the heap's MSO list.
-    #[test]
-    fn alloc_procbin_pushes_into_mso_list_with_correct_header() {
-        use crate::shared_bin::{shared_bin_alloc, shared_bin_live_count};
-        let _live_lock = crate::shared_bin::live_count_lock();
-        let baseline = shared_bin_live_count();
-        let sp = shared_bin_alloc(&[1, 2, 3, 4], 32);
-        let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
-        let p = unsafe { h.alloc_procbin(sp) };
-        unsafe {
-            assert_eq!((*p).kind, HeapKind::ProcBin as u16);
-            assert_eq!((*p).size_bytes, 32);
+    use crate::procbin::{
+        ProcBin, SharedBinHandle, alloc_procbin, bitstring_bit_len, bitstring_byte_ptr, live_count,
+    };
+
+    /// Walk the heap's MSO chain and return the contained header pointers
+    /// in chain order (head → tail).
+    fn mso_chain(h: &Heap) -> Vec<*mut HeapHeader> {
+        let mut out = Vec::new();
+        let mut cur = h.mso_head;
+        while !cur.is_null() {
+            let pb = unsafe { ProcBin::from_raw(cur) };
+            let next = pb.mso_next();
+            out.push(cur);
+            cur = next;
         }
-        assert_eq!(h.mso_list.len(), 1);
-        assert_eq!(h.mso_list[0], p);
-        assert_eq!(Heap::procbin_shared_ptr(p), sp);
-        // Heap drop releases the shared ref.
-        drop(h);
-        assert_eq!(shared_bin_live_count(), baseline);
+        out
     }
 
-    /// A ProcBin reachable from the GC root survives Cheney: the MSO entry
-    /// is rewritten to the to-space copy and the SharedBin live count is
-    /// unchanged across the collection.
+    /// `alloc_procbin` writes a ProcBin header and pushes onto the chain.
+    #[test]
+    fn alloc_procbin_pushes_into_mso_chain_with_correct_header() {
+        let baseline = live_count();
+        {
+            let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
+            let pb = alloc_procbin(&mut h, SharedBinHandle::from_bytes(&[1, 2, 3, 4], 32));
+            unsafe {
+                assert_eq!((*pb.as_raw()).kind, HeapKind::ProcBin as u16);
+                assert_eq!((*pb.as_raw()).size_bytes, 32);
+            }
+            assert_eq!(mso_chain(&h), vec![pb.as_raw()]);
+        }
+        assert_eq!(live_count(), baseline);
+    }
+
+    /// A rooted ProcBin survives Cheney: chain rewritten to to-space copy.
     #[test]
     fn procbin_survives_gc_via_mso_rewrite() {
-        use crate::shared_bin::{shared_bin_alloc, shared_bin_live_count};
-        let _live_lock = crate::shared_bin::live_count_lock();
-        let baseline = shared_bin_live_count();
+        let baseline = live_count();
         let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
-        let sp = shared_bin_alloc(&[0xaa; 8], 64);
-        let pb = unsafe { h.alloc_procbin(sp) };
-        let from_pb = pb;
-        let mut root = pb as *mut u8;
-        assert_eq!(shared_bin_live_count(), baseline + 1);
+        let pb = alloc_procbin(&mut h, SharedBinHandle::from_bytes(&[0xaa; 8], 64));
+        let shared_p = pb.shared_raw();
+        let from_pb = pb.as_raw();
+        let mut root = from_pb as *mut u8;
+        assert_eq!(live_count(), baseline + 1);
         h.gc(&mut root);
         let new_pb = root as *mut HeapHeader;
         assert_ne!(new_pb, from_pb, "ProcBin should have moved to to-space");
-        assert_eq!(h.mso_list.len(), 1, "MSO entry retained");
-        assert_eq!(h.mso_list[0], new_pb, "MSO rewritten to to-space ptr");
-        assert_eq!(
-            shared_bin_live_count(),
-            baseline + 1,
-            "shared bin unchanged across GC"
-        );
-        assert_eq!(Heap::procbin_shared_ptr(new_pb), sp);
-        // Heap drop releases the surviving reference.
+        assert_eq!(mso_chain(&h), vec![new_pb], "chain rewritten");
+        assert_eq!(live_count(), baseline + 1, "shared bin unchanged across GC");
+        let pb_to = unsafe { ProcBin::from_raw(new_pb) };
+        assert_eq!(pb_to.shared_raw(), shared_p);
         drop(h);
-        assert_eq!(shared_bin_live_count(), baseline);
+        assert_eq!(live_count(), baseline);
     }
 
-    /// A ProcBin that is *not* reachable from any root is swept after Cheney
-    /// finishes BFS: the MSO entry is dropped and the SharedBin refcount is
-    /// decremented (freeing the bin if this was the last reference).
+    /// Unrooted ProcBin: MSO sweep releases its SharedBin.
     #[test]
     fn procbin_dies_in_gc_and_sweep_releases_shared_bin() {
-        use crate::shared_bin::{shared_bin_alloc, shared_bin_live_count};
-        let _live_lock = crate::shared_bin::live_count_lock();
-        let baseline = shared_bin_live_count();
+        let baseline = live_count();
         let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
-        let sp = shared_bin_alloc(&[0x55; 16], 128);
-        let _pb = unsafe { h.alloc_procbin(sp) };
-        assert_eq!(shared_bin_live_count(), baseline + 1);
+        let _ = alloc_procbin(&mut h, SharedBinHandle::from_bytes(&[0x55; 16], 128));
+        assert_eq!(live_count(), baseline + 1);
         let mut root: *mut u8 = std::ptr::null_mut();
         h.gc(&mut root);
-        assert!(h.mso_list.is_empty(), "dead ProcBin swept from MSO");
-        assert_eq!(
-            shared_bin_live_count(),
-            baseline,
-            "sweep released the shared bin"
-        );
+        assert!(h.mso_head.is_null(), "dead ProcBin swept from MSO");
+        assert_eq!(live_count(), baseline);
     }
 
-    /// Heap::drop releases every live MSO entry's shared_ptr.
+    /// Heap::drop releases every chain entry's shared_ptr.
     #[test]
     fn heap_drop_releases_all_mso_shared_refs() {
-        use crate::shared_bin::{shared_bin_alloc, shared_bin_live_count};
-        let _live_lock = crate::shared_bin::live_count_lock();
-        let baseline = shared_bin_live_count();
+        let baseline = live_count();
         {
             let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
-            let sa = shared_bin_alloc(&[1, 2], 16);
-            let sb = shared_bin_alloc(&[3, 4, 5], 24);
-            let _ = unsafe { h.alloc_procbin(sa) };
-            let _ = unsafe { h.alloc_procbin(sb) };
-            assert_eq!(shared_bin_live_count(), baseline + 2);
-            assert_eq!(h.mso_list.len(), 2);
+            let _ = alloc_procbin(&mut h, SharedBinHandle::from_bytes(&[1, 2], 16));
+            let _ = alloc_procbin(&mut h, SharedBinHandle::from_bytes(&[3, 4, 5], 24));
+            assert_eq!(live_count(), baseline + 2);
+            assert_eq!(mso_chain(&h).len(), 2);
         }
-        assert_eq!(
-            shared_bin_live_count(),
-            baseline,
-            "heap drop released both bins"
-        );
+        assert_eq!(live_count(), baseline);
     }
 
-    // ===== fz-cty.4 — deep_copy_value handles ProcBin via retain ============
+    // ===== deep_copy_value handles ProcBin via retain =====================
 
-    /// Cross-heap deep_copy of a ProcBin shares the SharedBin: source MSO
-    /// keeps its entry, destination MSO gains one, refcount climbs to 2.
+    /// Cross-heap deep_copy of a ProcBin shares the SharedBin.
     #[test]
     fn deep_copy_procbin_shares_via_retain() {
-        use crate::shared_bin::{shared_bin_alloc, shared_bin_live_count};
-        let _live_lock = crate::shared_bin::live_count_lock();
-        let baseline = shared_bin_live_count();
+        let baseline = live_count();
         let mut src = Heap::new(SIZE_TABLE[0], empty_registry());
         let mut dst = Heap::new(SIZE_TABLE[0], empty_registry());
-        let sp = shared_bin_alloc(&[7, 8, 9, 10], 32);
-        let src_pb = unsafe { src.alloc_procbin(sp) };
-        let v = FzValue::from_ptr(src_pb);
+        let src_pb = alloc_procbin(&mut src, SharedBinHandle::from_bytes(&[7, 8, 9, 10], 32));
+        let shared_p = src_pb.shared_raw();
+        let v = FzValue::from_ptr(src_pb.as_raw());
         let mut fwd = std::collections::HashMap::new();
         let copied = deep_copy_value(v, &src, &mut dst, &mut fwd);
-        let dst_pb = copied.unbox_ptr().unwrap();
-        assert_ne!(dst_pb, src_pb, "destination ProcBin is a fresh allocation");
-        assert_eq!(Heap::procbin_shared_ptr(dst_pb), sp);
-        assert_eq!(src.mso_list.len(), 1);
-        assert_eq!(dst.mso_list.len(), 1);
+        let dst_p = copied.unbox_ptr().unwrap();
+        let dst_pb = unsafe { ProcBin::from_raw(dst_p) };
+        assert_ne!(dst_p, src_pb.as_raw());
+        assert_eq!(dst_pb.shared_raw(), shared_p);
+        assert_eq!(mso_chain(&src).len(), 1);
+        assert_eq!(mso_chain(&dst).len(), 1);
         unsafe {
-            assert_eq!((*sp).refcount.load(std::sync::atomic::Ordering::Relaxed), 2);
+            assert_eq!(
+                (*shared_p)
+                    .refcount
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                2
+            );
         }
-        assert_eq!(shared_bin_live_count(), baseline + 1);
-        // Drop dst — refcount back to 1, src unaffected.
+        assert_eq!(live_count(), baseline + 1);
         drop(dst);
         unsafe {
-            assert_eq!((*sp).refcount.load(std::sync::atomic::Ordering::Relaxed), 1);
+            assert_eq!(
+                (*shared_p)
+                    .refcount
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                1
+            );
         }
-        assert_eq!(src.mso_list.len(), 1);
+        assert_eq!(mso_chain(&src).len(), 1);
         drop(src);
-        assert_eq!(shared_bin_live_count(), baseline);
+        assert_eq!(live_count(), baseline);
     }
 
     /// Shared structure: a tuple containing the same ProcBin twice
-    /// deep-copies to a single retained reference (refcount 2, not 3),
-    /// because the forwarding map dedupes on the second visit.
+    /// deep-copies to a single retained reference (refcount 2, not 3).
     #[test]
     fn deep_copy_procbin_dedup_via_forwarding_map() {
-        use crate::shared_bin::{shared_bin_alloc, shared_bin_live_count};
-        let _live_lock = crate::shared_bin::live_count_lock();
-        let baseline = shared_bin_live_count();
+        let baseline = live_count();
         let reg = empty_registry();
         let pair_id = reg.borrow_mut().register(Schema {
             name: "Pair".into(),
@@ -1944,36 +1856,31 @@ mod tests {
         });
         let mut src = Heap::new(SIZE_TABLE[0], reg.clone());
         let mut dst = Heap::new(SIZE_TABLE[0], reg);
-        let sp = shared_bin_alloc(&[0xab, 0xcd], 16);
-        let src_pb = unsafe { src.alloc_procbin(sp) };
+        let src_pb = alloc_procbin(&mut src, SharedBinHandle::from_bytes(&[0xab, 0xcd], 16));
+        let shared_p = src_pb.shared_raw();
         let pair = src.alloc_struct(pair_id);
-        src.write_field(pair, 0, FzValue::from_ptr(src_pb));
-        src.write_field(pair, 8, FzValue::from_ptr(src_pb));
+        src.write_field(pair, 0, FzValue::from_ptr(src_pb.as_raw()));
+        src.write_field(pair, 8, FzValue::from_ptr(src_pb.as_raw()));
         let mut fwd = std::collections::HashMap::new();
         let _ = deep_copy_value(FzValue::from_ptr(pair), &src, &mut dst, &mut fwd);
-        assert_eq!(
-            dst.mso_list.len(),
-            1,
-            "dedup: one destination ProcBin even though tuple holds it twice"
-        );
+        assert_eq!(mso_chain(&dst).len(), 1, "dedup");
         unsafe {
             assert_eq!(
-                (*sp).refcount.load(std::sync::atomic::Ordering::Relaxed),
-                2,
-                "exactly one retain; src and dst together hold 2 references"
+                (*shared_p)
+                    .refcount
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                2
             );
         }
         drop(dst);
         drop(src);
-        assert_eq!(shared_bin_live_count(), baseline);
+        assert_eq!(live_count(), baseline);
     }
 
-    // ===== fz-cty.5 — alloc_bitstring threshold + dispatch =================
+    // ===== alloc_bitstring threshold + dispatch ===========================
 
-    /// Bitstrings ≤ 64 bytes stay inline: HeapKind::Bitstring, no MSO entry.
     #[test]
     fn alloc_bitstring_small_stays_inline() {
-        use crate::fz_value::{HeapKind, bitstring_bit_len, bitstring_byte_ptr};
         let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
         let bytes: Vec<u8> = (0..32u8).collect();
         let p = h.alloc_bitstring(&bytes, 256);
@@ -1985,17 +1892,12 @@ mod tests {
                 assert_eq!(*pay.add(i), bytes[i]);
             }
         }
-        assert!(h.mso_list.is_empty());
+        assert!(h.mso_head.is_null());
     }
 
-    /// Bitstrings > 64 bytes go to the shared zone: HeapKind::ProcBin, MSO
-    /// gains one entry, SharedBin refcount = 1.
     #[test]
     fn alloc_bitstring_large_routes_to_shared_zone() {
-        use crate::fz_value::{HeapKind, bitstring_bit_len, bitstring_byte_ptr};
-        use crate::shared_bin::shared_bin_live_count;
-        let _live_lock = crate::shared_bin::live_count_lock();
-        let baseline = shared_bin_live_count();
+        let baseline = live_count();
         let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
         let bytes: Vec<u8> = (0..128u8).collect();
         let p = h.alloc_bitstring(&bytes, 1024);
@@ -2007,34 +1909,22 @@ mod tests {
                 assert_eq!(*pay.add(i), bytes[i]);
             }
         }
-        assert_eq!(h.mso_list.len(), 1);
-        assert_eq!(shared_bin_live_count(), baseline + 1);
+        assert_eq!(mso_chain(&h).len(), 1);
+        assert_eq!(live_count(), baseline + 1);
         drop(h);
-        assert_eq!(shared_bin_live_count(), baseline);
+        assert_eq!(live_count(), baseline);
     }
 
-    /// fz-cty.6 — full spawn-and-share scenario at the heap layer. A
-    /// sender constructs one large bitstring (which the alloc_bitstring
-    /// policy routes to a single SharedBin + ProcBin), then "sends" it to
-    /// N receivers via deep_copy. Each receiver triggers a GC mid-run
-    /// (the ProcBin must survive via the MSO sweep), then drops.
-    /// Invariants:
-    ///   * exactly one SharedBin is ever allocated (live count peaks at 1)
-    ///   * refcount climbs to 1+N as sends complete, then drops to zero
-    ///     as receivers exit
-    ///   * the bytes are content-identical across every receiver
+    /// Full spawn-and-share scenario at the heap layer.
     #[test]
     fn shared_heap_acceptance_spawn_and_share() {
-        use crate::shared_bin::shared_bin_live_count;
         const N: usize = 4;
-        let _live_lock = crate::shared_bin::live_count_lock();
-        let baseline = shared_bin_live_count();
+        let baseline = live_count();
         let payload: Vec<u8> = (0..128u8).collect();
         let mut sender = Heap::new(SIZE_TABLE[0], empty_registry());
         let bs_in_sender = sender.alloc_bitstring(&payload, 1024);
-        assert_eq!(shared_bin_live_count(), baseline + 1);
+        assert_eq!(live_count(), baseline + 1);
 
-        // Send to N receivers via deep_copy.
         let mut receivers: Vec<Heap> = (0..N)
             .map(|_| Heap::new(SIZE_TABLE[0], empty_registry()))
             .collect();
@@ -2044,73 +1934,59 @@ mod tests {
             let copied = deep_copy_value(FzValue::from_ptr(bs_in_sender), &sender, r, &mut fwd);
             receiver_roots.push(copied.unbox_ptr().unwrap());
         }
-        // SharedBin refcount climbs to 1 (sender) + N (each receiver).
+        let sender_pb = unsafe { ProcBin::from_raw(bs_in_sender) };
+        let shared_p = sender_pb.shared_raw();
         unsafe {
-            let sp = Heap::procbin_shared_ptr(bs_in_sender);
             assert_eq!(
-                (*sp).refcount.load(std::sync::atomic::Ordering::Relaxed),
+                (*shared_p)
+                    .refcount
+                    .load(std::sync::atomic::Ordering::Relaxed),
                 1 + N
             );
         }
-        // Only one allocation total — peak live count is 1.
-        assert_eq!(shared_bin_live_count(), baseline + 1);
+        assert_eq!(live_count(), baseline + 1);
 
-        // Mid-run GC in each receiver: the ProcBin is rooted (we hold
-        // receiver_roots[i]), so the MSO sweep rewrites the entry to the
-        // to-space copy and the SharedBin live count stays at 1.
         for (r, root_ptr) in receivers.iter_mut().zip(receiver_roots.iter_mut()) {
             let mut root_u8 = (*root_ptr) as *mut u8;
             r.gc(&mut root_u8);
             *root_ptr = root_u8 as *mut HeapHeader;
-            assert_eq!(r.mso_list.len(), 1, "MSO entry survives GC");
-            assert_eq!(r.mso_list[0], *root_ptr);
+            let chain = mso_chain(r);
+            assert_eq!(chain.len(), 1);
+            assert_eq!(chain[0], *root_ptr);
         }
-        // Live count still 1 across all the GCs.
-        assert_eq!(shared_bin_live_count(), baseline + 1);
+        assert_eq!(live_count(), baseline + 1);
 
-        // Each receiver observes the expected bytes via the dispatch
-        // helpers — works whether storage is inline Bitstring or ProcBin.
         for root_ptr in &receiver_roots {
             unsafe {
-                assert_eq!(crate::fz_value::bitstring_bit_len(*root_ptr), 1024);
-                let bp = crate::fz_value::bitstring_byte_ptr(*root_ptr);
+                assert_eq!(bitstring_bit_len(*root_ptr), 1024);
+                let bp = bitstring_byte_ptr(*root_ptr);
                 for (i, expected) in payload.iter().enumerate() {
                     assert_eq!(*bp.add(i), *expected);
                 }
             }
         }
 
-        // Receivers exit: each drop releases its ProcBin's reference.
         let _ = receiver_roots;
         drop(receivers);
         unsafe {
-            let sp = Heap::procbin_shared_ptr(bs_in_sender);
             assert_eq!(
-                (*sp).refcount.load(std::sync::atomic::Ordering::Relaxed),
-                1,
-                "all receivers exited; only sender's reference remains"
+                (*shared_p)
+                    .refcount
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                1
             );
         }
-        assert_eq!(shared_bin_live_count(), baseline + 1);
+        assert_eq!(live_count(), baseline + 1);
 
-        // Sender exits: bin is freed.
         drop(sender);
-        assert_eq!(
-            shared_bin_live_count(),
-            baseline,
-            "SharedBin freed once last reference drops"
-        );
+        assert_eq!(live_count(), baseline);
     }
 
-    /// Bit-match round-trip over a ProcBin source yields the expected bytes.
-    /// Threshold-crossing is invisible to bs_reader_init + bs_read_field.
     #[test]
     fn procbin_round_trips_through_bitstring_dispatchers() {
-        use crate::fz_value::{bitstring_bit_len, bitstring_byte_ptr};
         let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
         let bytes: Vec<u8> = (0..100u8).collect();
         let p = h.alloc_bitstring(&bytes, 800);
-        // Dispatch helpers return the underlying payload regardless of kind.
         let bl = unsafe { bitstring_bit_len(p) };
         let bp = unsafe { bitstring_byte_ptr(p) };
         assert_eq!(bl, 800);

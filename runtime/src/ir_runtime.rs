@@ -538,11 +538,11 @@ pub extern "C" fn fz_bs_write_field(
                     Tag::Ptr => v.unbox_ptr().expect("binary field: bad ptr"),
                     _ => panic!("binary/bits bit field expects heap bitstring"),
                 };
-                if !unsafe { crate::fz_value::is_bitstring_like(p) } {
+                if !unsafe { crate::procbin::is_bitstring_like(p) } {
                     panic!("binary/bits bit field source is not a Bitstring");
                 }
-                let src_bit_len = unsafe { crate::fz_value::bitstring_bit_len(p) } as usize;
-                let src_bytes_ptr = unsafe { crate::fz_value::bitstring_byte_ptr(p) };
+                let src_bit_len = unsafe { crate::procbin::bitstring_bit_len(p) } as usize;
+                let src_bytes_ptr = unsafe { crate::procbin::bitstring_byte_ptr(p) };
                 let needed_bits = match (ty, size) {
                     (BitType::Binary, None) => src_bit_len,
                     (BitType::Binary, Some(n)) => (n * unit) as usize,
@@ -667,10 +667,10 @@ pub extern "C" fn fz_bs_reader_init(bs_bits: u64) -> u64 {
         Tag::Ptr => v.unbox_ptr().expect("reader_init: bad ptr"),
         _ => panic!("reader_init expects heap value"),
     };
-    if !unsafe { crate::fz_value::is_bitstring_like(p) } {
+    if !unsafe { crate::procbin::is_bitstring_like(p) } {
         panic!("reader_init source is not a Bitstring");
     }
-    let bit_len = unsafe { crate::fz_value::bitstring_bit_len(p) } as i64;
+    let bit_len = unsafe { crate::procbin::bitstring_bit_len(p) } as i64;
     let arity3 = current_process()
         .bs_tuple_arity3_schema
         .expect("bs_tuple_arity3_schema not set");
@@ -724,10 +724,10 @@ pub extern "C" fn fz_bs_read_field(
     // Bytes pointer from bs.
     let bs_v = FzValue(bs_bits);
     let bsp = bs_v.unbox_ptr().expect("read_field: reader bs not a ptr");
-    if !unsafe { crate::fz_value::is_bitstring_like(bsp) } {
+    if !unsafe { crate::procbin::is_bitstring_like(bsp) } {
         panic!("read_field reader bs is not a Bitstring");
     }
-    let bytes_ptr = unsafe { crate::fz_value::bitstring_byte_ptr(bsp) };
+    let bytes_ptr = unsafe { crate::procbin::bitstring_byte_ptr(bsp) };
     let bytes = unsafe { std::slice::from_raw_parts(bytes_ptr, bit_len.div_ceil(8)) };
 
     // Failure path: alloc 1-tuple [false].
@@ -1138,8 +1138,8 @@ fn eq_fz(a: u64, b: u64) -> bool {
     let bh = unsafe { &*bp };
     // fz-cty.5: a Bitstring and a ProcBin with equal bytes + bit_len are
     // semantically equal — storage kind is an implementation detail.
-    let a_bs_like = unsafe { crate::fz_value::is_bitstring_like(ap) };
-    let b_bs_like = unsafe { crate::fz_value::is_bitstring_like(bp) };
+    let a_bs_like = unsafe { crate::procbin::is_bitstring_like(ap) };
+    let b_bs_like = unsafe { crate::procbin::is_bitstring_like(bp) };
     if a_bs_like && b_bs_like {
         return eq_bitstring(ap, bp);
     }
@@ -1224,16 +1224,16 @@ fn eq_bitstring(
     ap: *mut crate::fz_value::HeapHeader,
     bp: *mut crate::fz_value::HeapHeader,
 ) -> bool {
-    let a_bits = unsafe { crate::fz_value::bitstring_bit_len(ap) };
-    let b_bits = unsafe { crate::fz_value::bitstring_bit_len(bp) };
+    let a_bits = unsafe { crate::procbin::bitstring_bit_len(ap) };
+    let b_bits = unsafe { crate::procbin::bitstring_bit_len(bp) };
     if a_bits != b_bits {
         return false;
     }
     let bit_len = a_bits as usize;
     let full_bytes = bit_len / 8;
     let trailing = bit_len % 8;
-    let a_pay = unsafe { crate::fz_value::bitstring_byte_ptr(ap) };
-    let b_pay = unsafe { crate::fz_value::bitstring_byte_ptr(bp) };
+    let a_pay = unsafe { crate::procbin::bitstring_byte_ptr(ap) };
+    let b_pay = unsafe { crate::procbin::bitstring_byte_ptr(bp) };
     for i in 0..full_bytes {
         if unsafe { *a_pay.add(i) != *b_pay.add(i) } {
             return false;
@@ -1278,8 +1278,9 @@ fn eq_map(ap: *mut crate::fz_value::HeapHeader, bp: *mut crate::fz_value::HeapHe
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fz_value::{HeapKind, bitstring_bit_len, bitstring_byte_ptr};
+    use crate::fz_value::HeapKind;
     use crate::heap::SchemaRegistry;
+    use crate::procbin::{bitstring_bit_len, bitstring_byte_ptr};
     use crate::process::{CURRENT_PROCESS, Process};
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -1319,7 +1320,6 @@ mod tests {
     /// fz-cty.8 — large (> threshold) payload routes through ProcBin / SharedBin.
     #[test]
     fn alloc_bitstring_const_large_payload_is_procbin() {
-        let _live_lock = crate::shared_bin::live_count_lock();
         with_process(|| {
             let payload: Vec<u8> = (0..70u8).collect(); // 70 > SHARED_BIN_THRESHOLD_BYTES (64)
             let bits =
