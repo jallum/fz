@@ -71,6 +71,19 @@ fn main() {
             return;
         }
         Some("repl") => {
+            // fz-i67.1 — `--script <path>` drives the REPL non-interactively
+            // for the fixture matrix's `repl` parity leg.
+            if args.get(1).map(|s| s.as_str()) == Some("--script") {
+                let path = args.get(2).cloned().unwrap_or_else(|| {
+                    eprintln!("fz repl --script <path>");
+                    std::process::exit(2);
+                });
+                if let Err(e) = repl::run_script(std::path::Path::new(&path)) {
+                    eprintln!("repl: {}", e);
+                    std::process::exit(1);
+                }
+                return;
+            }
             if let Err(e) = repl::run() {
                 eprintln!("repl: {}", e);
                 std::process::exit(1);

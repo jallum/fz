@@ -10,6 +10,13 @@
 //! buffering until the parser succeeds or returns a non-EOF error.
 //!
 //! `:quit` / `:q` / Ctrl-D exits.
+//!
+//! fz-i67.1 — `run_script` drives the same `try_eval` loop non-interactively
+//! for the fixture matrix's `repl` parity leg. Lines come from a file, no
+//! banner/prompts are emitted, expression results are not echoed, and after
+//! EOF `main/0` is invoked if defined. Only program-side `print()` reaches
+//! stdout, so a fixture's REPL-leg output is exact-comparable to the other
+//! legs' golden.
 
 use crate::ast::{Item, Program};
 use crate::eval::Interp;
@@ -17,6 +24,7 @@ use crate::lexer::Lexer;
 use crate::parser::Parser;
 use crate::value::{Env, Value};
 use std::io::{self, BufRead, Write};
+use std::path::Path;
 
 pub fn run() -> io::Result<()> {
     let interp = Interp::new();
@@ -64,7 +72,7 @@ pub fn run() -> io::Result<()> {
         }
         buf.push_str(&line);
 
-        match try_eval(&buf, &interp, &repl_env) {
+        match try_eval(&buf, &interp, &repl_env, /*interactive=*/ true) {
             Outcome::Ok => buf.clear(),
             Outcome::Incomplete => { /* keep buffering */ }
             Outcome::Err(msg) => {
@@ -76,13 +84,65 @@ pub fn run() -> io::Result<()> {
     Ok(())
 }
 
+/// fz-i67.1 — non-interactive driver: feed a file's contents through the same
+/// `try_eval` loop the prompt uses, then call `main/0` if defined. Only
+/// program-side `print()` writes to stdout.
+pub fn run_script(path: &Path) -> io::Result<()> {
+    let src = std::fs::read_to_string(path)?;
+    run_script_str(&src)
+}
+
+/// Underlying driver shared by `run_script` and tests. Returns Err on
+/// parse/eval errors so callers can decide the exit code; on success the
+/// only output is whatever the program's own `print()` calls produced.
+pub fn run_script_str(src: &str) -> io::Result<()> {
+    let interp = Interp::new();
+    let repl_env = interp.globals.child();
+    let mut buf = String::new();
+    for line in src.lines() {
+        if !buf.is_empty() {
+            buf.push('\n');
+        }
+        buf.push_str(line);
+        match try_eval(&buf, &interp, &repl_env, /*interactive=*/ false) {
+            Outcome::Ok => buf.clear(),
+            Outcome::Incomplete => { /* keep buffering */ }
+            Outcome::Err(msg) => {
+                return Err(io::Error::other(msg));
+            }
+        }
+    }
+    if !buf.is_empty() {
+        // File ended mid-construct: report the final attempt's error.
+        return Err(io::Error::other(format!(
+            "unexpected end of input; buffered: {:?}",
+            buf
+        )));
+    }
+    // Invoke main/0 if defined. Run via the same try_eval path so closures,
+    // macros, and the print pipeline are exercised identically to an
+    // interactive `main()` invocation at the prompt.
+    if let Some(Value::Closure(c)) = interp.globals.lookup("main")
+        && c.clauses.first().map(|cl| cl.params.len()) == Some(0)
+    {
+        match try_eval("main()", &interp, &repl_env, /*interactive=*/ false) {
+            Outcome::Ok => {}
+            Outcome::Incomplete => {
+                return Err(io::Error::other("main() parsed as incomplete (unreachable)"));
+            }
+            Outcome::Err(msg) => return Err(io::Error::other(msg)),
+        }
+    }
+    Ok(())
+}
+
 enum Outcome {
     Ok,
     Incomplete,
     Err(String),
 }
 
-fn try_eval(src: &str, interp: &Interp, env: &Env) -> Outcome {
+fn try_eval(src: &str, interp: &Interp, env: &Env, interactive: bool) -> Outcome {
     // Lex once. Lex errors are real errors (no incomplete-lex story for now).
     let toks = match Lexer::new(src).tokenize() {
         Ok(t) => t,
@@ -154,7 +214,9 @@ fn try_eval(src: &str, interp: &Interp, env: &Env) -> Outcome {
             match interp.eval(&e, env) {
                 Ok(Value::Nil) => Outcome::Ok,
                 Ok(v) => {
-                    println!("{}", v);
+                    if interactive {
+                        println!("{}", v);
+                    }
                     Outcome::Ok
                 }
                 Err(msg) => Outcome::Err(msg),
@@ -499,6 +561,49 @@ end
     fn doc_query_empty_shows_usage() {
         let interp = Interp::new();
         assert!(lookup_doc(&interp, "").starts_with("usage:"));
+    }
+
+    // ===== fz-i67.1 — run_script_str =====
+
+    #[test]
+    fn run_script_str_accepts_program_with_main() {
+        // Defines main/0; run_script_str should call it. (We can't capture
+        // stdout from a unit test without subprocessing; the matrix leg in
+        // fz-i67.2 covers the stdout side. Here we just verify the driver
+        // completes without error.)
+        let src = "fn add1(n) do n + 1 end\nfn main() do print(add1(41)) end\n";
+        run_script_str(src).expect("script with main should succeed");
+    }
+
+    #[test]
+    fn run_script_str_accepts_program_without_main() {
+        // No main/0 defined → driver finishes without calling anything.
+        let src = "fn add1(n) do n + 1 end\n";
+        run_script_str(src).expect("script without main should succeed");
+    }
+
+    #[test]
+    fn run_script_str_buffers_multi_line_forms() {
+        // Same continuation-buffer machinery the prompt uses must work
+        // when input is fed line-by-line from a file.
+        let src = "fn double(x) do\n  x * 2\nend\nfn main() do print(double(21)) end\n";
+        run_script_str(src).expect("multi-line fn body should buffer and load");
+    }
+
+    #[test]
+    fn run_script_str_reports_parse_error() {
+        // A syntactically broken input should surface as Err — the matrix
+        // leg will translate that into a nonzero exit code.
+        let src = "fn main() do print(\n"; // unterminated
+        let err = run_script_str(src).expect_err("unterminated input should fail");
+        // Either an incomplete-buffer report or a parser error, depending
+        // on which trigger fires first; both are acceptable.
+        let msg = err.to_string();
+        assert!(
+            msg.contains("end of input") || msg.contains("Eof") || msg.contains("expected"),
+            "expected a parse/EOF error, got: {}",
+            msg
+        );
     }
 
     #[test]
