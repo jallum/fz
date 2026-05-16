@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-16T19:42:03Z",
+  "description": "Fold TypeTest statements and Term::If terminators when the test variable has a singleton type (known statically). Removes dead branches at compile time.\n\n## Acceptance\n- Singleton TypeTest folded to a Stmt::Assign of the constant.\n- Term::If with singleton condition folded to Goto.\n- Tests pass.\n\n## Commit\nfz-ty1.opt.1 (already landed in commit 6885a02d)",
+  "id": "fz-bg9",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "fz-ty1.opt.1: ir_fold — singleton fold for TypeTest stmts and Term::If terminators",
+  "type": "task",
+  "updated_at": "2026-05-16T19:42:03Z"
+}
