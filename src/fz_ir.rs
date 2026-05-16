@@ -103,6 +103,7 @@ pub enum ExternTy {
 /// One resolved `extern "C" fn` declaration stored in `Module.externs`.
 #[derive(Debug, Clone)]
 pub struct ExternDecl {
+    pub id: ExternId,
     pub fz_name: String,
     /// C symbol name (same as fz_name for v1; override possible later).
     pub symbol: String,
@@ -373,13 +374,19 @@ pub struct Module {
     /// O(1) index from FnId to position in `fns`. Kept in sync by
     /// `ModuleBuilder::add_fn`; never mutated after `build()`.
     pub fn_idx: HashMap<FnId, usize>,
-    /// All `extern "C" fn` declarations in declaration order. Indexed by ExternId.
+    /// All `extern "C" fn` declarations. Stable: ExternId is a counter, not a vec index.
     pub externs: Vec<ExternDecl>,
+    /// O(1) index from ExternId to position in `externs`. Mirrors fn_idx.
+    pub extern_idx: HashMap<ExternId, usize>,
 }
 
 impl Module {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn extern_by_id(&self, eid: ExternId) -> &ExternDecl {
+        &self.externs[*self.extern_idx.get(&eid).expect("unknown extern id")]
     }
 
     pub fn fn_by_id(&self, id: FnId) -> &FnIr {
@@ -518,6 +525,7 @@ impl ModuleBuilder {
             source: SourceInfo::default(),
             atom_names: Vec::new(),
             externs: Vec::new(),
+            extern_idx: HashMap::new(),
         }
     }
 }

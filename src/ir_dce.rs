@@ -21,8 +21,8 @@ use std::collections::HashSet;
 /// Prim::MakeClosure. Keeps any fn transitively reachable. Sweeps the rest.
 /// FnIds are NOT renumbered — the codegen schemas vec is indexed by FnId.0
 /// and renumbering would require updating every call/cont/closure reference.
-/// Externs are kept as-is: ExternId is their index in module.externs, so
-/// removing any entry would invalidate all Prim::Extern(eid, ..) references.
+/// Externs are kept as-is; fz-wmy.5 will extend this to sweep them once
+/// extern_idx makes reordering safe.
 pub fn dce_module_level(m: &mut Module) {
     let Some(entry) = m.fn_by_name("main") else {
         return;

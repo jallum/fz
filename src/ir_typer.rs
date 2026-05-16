@@ -422,9 +422,12 @@ fn opaque_consumer_arities(
                 let spawn_cv: Option<Var> = match prim {
                     Prim::Extern(eid, args)
                         if (args.len() == 1 || args.len() == 2)
-                            && m.externs
-                                .get(eid.0 as usize)
-                                .map(|d| d.symbol == "fz_spawn" || d.symbol == "fz_spawn_opt")
+                            && m.extern_idx
+                                .get(eid)
+                                .map(|&i| {
+                                    m.externs[i].symbol == "fz_spawn"
+                                        || m.externs[i].symbol == "fz_spawn_opt"
+                                })
                                 .unwrap_or(false) =>
                     {
                         Some(args[0])
@@ -1635,9 +1638,9 @@ fn type_prim(
         }
 
         Prim::Extern(eid, _) => m
-            .externs
-            .get(eid.0 as usize)
-            .map(|e| e.ret_descr.clone())
+            .extern_idx
+            .get(eid)
+            .map(|&i| m.externs[i].ret_descr.clone())
             .unwrap_or_else(Descr::any),
 
         Prim::TypeTest(v, descr) => {

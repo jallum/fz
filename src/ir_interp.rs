@@ -699,10 +699,7 @@ fn eval_binop(op: BinOp, a: FzValue, b: FzValue) -> Result<FzValue, String> {
 }
 
 fn call_extern(module: &Module, eid: ExternId, args: &[FzValue]) -> Result<FzValue, String> {
-    let decl = module
-        .externs
-        .get(eid.0 as usize)
-        .ok_or_else(|| format!("interp: unknown extern id {}", eid.0))?;
+    let decl = module.extern_by_id(eid);
     // Assert fns use std::process::abort on failure — fatal for the JIT/AOT
     // path, but unusable in the interpreter where failures must return Err.
     // Handle them inline with the same logic as run_builtin::Assert*.

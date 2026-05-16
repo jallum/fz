@@ -187,8 +187,10 @@ type FnMap = HashMap<(String, usize), FnId>;
 pub struct LowerCtx {
     pub atoms: AtomTable,
     pub externs: ExternTable,
-    /// Accumulated ExternDecls in declaration order; moved into Module.externs after build.
+    /// Accumulated ExternDecls; moved into Module.externs after build.
     pub extern_decls: Vec<ExternDecl>,
+    /// Monotonic counter for minting stable ExternIds. Mirrors mb.next_fn.
+    next_extern: u32,
     pub mb: ModuleBuilder,
     pub fns: FnMap,
     /// Currently-being-built fn.
@@ -240,6 +242,7 @@ impl LowerCtx {
             atoms: AtomTable::default(),
             externs: ExternTable::new(),
             extern_decls: Vec::new(),
+            next_extern: 0,
             mb: ModuleBuilder::new(),
             fns: HashMap::new(),
             cur: None,
@@ -449,7 +452,8 @@ pub fn lower_program_full(prog: &Program) -> Result<(Module, AtomTable), LowerEr
     for item in all_items.iter().take(runtime_item_count) {
         if let Item::Fn(fn_def) = item.as_ref() {
             if fn_def.extern_abi.is_some() {
-                let eid = ExternId(ctx.extern_decls.len() as u32);
+                let eid = ExternId(ctx.next_extern);
+                ctx.next_extern += 1;
                 let params: Vec<ExternTy> = fn_def
                     .extern_params
                     .iter()
@@ -457,6 +461,7 @@ pub fn lower_program_full(prog: &Program) -> Result<(Module, AtomTable), LowerEr
                     .collect();
                 let (ret, ret_descr) = lower_extern_ret_ty(fn_def, &ctx.prelude_type_env)?;
                 ctx.extern_decls.push(ExternDecl {
+                    id: eid,
                     fz_name: fn_def.name.clone(),
                     symbol: fn_def.name.clone(),
                     params,
@@ -478,7 +483,8 @@ pub fn lower_program_full(prog: &Program) -> Result<(Module, AtomTable), LowerEr
         match item.as_ref() {
             Item::Fn(fn_def) => {
                 if fn_def.extern_abi.is_some() {
-                    let eid = ExternId(ctx.extern_decls.len() as u32);
+                    let eid = ExternId(ctx.next_extern);
+                    ctx.next_extern += 1;
                     let params: Vec<ExternTy> = fn_def
                         .extern_params
                         .iter()
@@ -486,6 +492,7 @@ pub fn lower_program_full(prog: &Program) -> Result<(Module, AtomTable), LowerEr
                         .collect();
                     let (ret, ret_descr) = lower_extern_ret_ty(fn_def, &ctx.prelude_type_env)?;
                     ctx.extern_decls.push(ExternDecl {
+                        id: eid,
                         fz_name: fn_def.name.clone(),
                         symbol: fn_def.name.clone(),
                         params,
@@ -536,6 +543,9 @@ pub fn lower_program_full(prog: &Program) -> Result<(Module, AtomTable), LowerEr
     module.source = build_source_info(&module, &ctx);
     module.atom_names = ctx.atoms.names();
     module.externs = std::mem::take(&mut ctx.extern_decls);
+    for (i, e) in module.externs.iter().enumerate() {
+        module.extern_idx.insert(e.id, i);
+    }
     // fz-02r.4 — annotate TailCall back-edges from the structural SCC.
     annotate_back_edges(&mut module, &ctx.fn_spans)?;
     Ok((module, ctx.atoms))
@@ -2682,5 +2692,26 @@ end
             "expected extern#10 in IR:\n{}",
             ir
         );
+    }
+
+    #[test]
+    fn extern_id_is_stable_and_extern_idx_is_consistent() {
+        let toks = Lexer::new("extern \"C\" fn fz_nop(any) :: nil\nfn main() do fz_nop(1) end\n")
+            .tokenize()
+            .expect("lex");
+        let prog = crate::parser::Parser::new(toks)
+            .parse_program()
+            .expect("parse");
+        let (module, _) = lower_program_full(&prog).expect("lower");
+        // extern_idx must have an entry for every extern.
+        assert_eq!(module.extern_idx.len(), module.externs.len());
+        // Each extern's id field must resolve via extern_by_id to itself.
+        for (i, e) in module.externs.iter().enumerate() {
+            assert_eq!(module.extern_idx[&e.id], i, "extern_idx out of sync at index {}", i);
+            assert_eq!(module.extern_by_id(e.id).fz_name, e.fz_name);
+        }
+        // ExternIds are monotonically increasing (counter-based, not len()-based).
+        let ids: Vec<u32> = module.externs.iter().map(|e| e.id.0).collect();
+        assert!(ids.windows(2).all(|w| w[0] < w[1]), "ExternIds not monotonic: {:?}", ids);
     }
 }

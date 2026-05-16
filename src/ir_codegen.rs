@@ -5992,11 +5992,7 @@ fn lower_prim<M: cranelift_module::Module>(
         }
         Prim::Extern(eid, args) => {
             use crate::fz_ir::ExternTy;
-            let decl = env
-                .module
-                .externs
-                .get(eid.0 as usize)
-                .ok_or_else(|| CodegenError::new(format!("unknown extern id {}", eid.0)))?;
+            let decl = env.module.extern_by_id(*eid);
             let param_tys: Vec<ir::Type> = decl
                 .params
                 .iter()
