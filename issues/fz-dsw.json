@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-16T19:43:32Z",
+  "description": "Passes 0 and 1 in ir_lower.rs both just assign IDs (ExternIds and FnIds respectively). Merge them into a single registration pass.\n\n## What to change\n\nir_lower.rs:\n  - Merge the pass-0 loop (lines ~472-503) and pass-1 loop (lines ~505-552) into one loop.\n  - ExternTable built inline; FnIds assigned inline.\n  - prelude_fn_id_cutoff still tracked: recorded after processing prelude entries.\n  - Pass-2 body lowering is unchanged.\n\n## Risk\n\nPasses 0 and 1 operate on independent namespaces (ExternIds vs FnIds). No ordering dependency. Merge is safe.\n\n## Acceptance\n- cargo clippy -- -D warnings passes.\n- All tests pass.\n- One commit referencing fz-ty1.pip.6.",
+  "id": "fz-dsw",
+  "labels": [],
+  "priority": 3,
+  "status": "open",
+  "title": "fz-ty1.pip.6: merge ir_lower passes 0+1 into single registration pass",
+  "type": "task",
+  "updated_at": "2026-05-16T19:43:32Z"
+}
