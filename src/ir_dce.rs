@@ -11,9 +11,66 @@
 //! single-predecessor target. Runs after dead block elimination so that only
 //! reachable blocks remain. Fixed-point loop handles chains.
 
-use crate::fz_ir::{BlockId, FnIr, Module, Prim, Stmt, Term, Var};
+use crate::fz_ir::{BlockId, FnId, FnIr, Module, Prim, Stmt, Term, Var};
 use std::collections::HashMap;
 use std::collections::HashSet;
+
+/// Remove IR functions unreachable from `main`.
+///
+/// Walks from `main` via Term::Call/TailCall callee, Cont::fn_id, and
+/// Prim::MakeClosure. Keeps any fn transitively reachable. Sweeps the rest.
+/// FnIds are NOT renumbered — the codegen schemas vec is indexed by FnId.0
+/// and renumbering would require updating every call/cont/closure reference.
+/// Externs are kept as-is: ExternId is their index in module.externs, so
+/// removing any entry would invalidate all Prim::Extern(eid, ..) references.
+pub fn dce_module_level(m: &mut Module) {
+    let Some(entry) = m.fn_by_name("main") else {
+        return;
+    };
+    let entry_id = entry.id;
+
+    let mut reachable: HashSet<FnId> = HashSet::new();
+    let mut queue: Vec<FnId> = vec![entry_id];
+
+    while let Some(fid) = queue.pop() {
+        if !reachable.insert(fid) {
+            continue;
+        }
+        let Some(&fi) = m.fn_idx.get(&fid) else {
+            continue;
+        };
+        for block in &m.fns[fi].blocks {
+            match &block.terminator {
+                Term::Call { callee, continuation, .. } => {
+                    queue.push(*callee);
+                    queue.push(continuation.fn_id);
+                }
+                Term::TailCall { callee, .. } => {
+                    queue.push(*callee);
+                }
+                Term::CallClosure { continuation, .. } => {
+                    queue.push(continuation.fn_id);
+                }
+                Term::Receive { continuation } => {
+                    queue.push(continuation.fn_id);
+                }
+                _ => {}
+            }
+            for stmt in &block.stmts {
+                let Stmt::Let(_, Prim::MakeClosure(fid, _)) = stmt else {
+                    continue;
+                };
+                queue.push(*fid);
+            }
+        }
+    }
+
+    m.fns.retain(|f| reachable.contains(&f.id));
+    m.fn_idx.clear();
+    for (i, f) in m.fns.iter().enumerate() {
+        m.fn_idx.insert(f.id, i);
+    }
+}
 
 pub fn dce_module(m: &mut Module) {
     for f in &mut m.fns {
@@ -283,6 +340,67 @@ fn fuse_fn(f: &mut FnIr) {
 mod tests {
     use super::*;
     use crate::fz_ir::{BinOp, Const, Cont, FnBuilder, FnId, ModuleBuilder, Prim, Term};
+
+    fn build_two_fn_module(main_calls_leaf: bool) -> crate::fz_ir::Module {
+        let leaf_id = FnId(1);
+        let main_id = FnId(0);
+
+        let mut bm = FnBuilder::new(main_id, "main");
+        let entry = bm.block(vec![]);
+        if main_calls_leaf {
+            let nil_v = bm.let_(entry, Prim::Const(Const::Nil));
+            let leaf_cont_id = FnId(99); // dummy cont — not in module; tests only sweep fns
+            let cont = Cont { fn_id: leaf_cont_id, captured: vec![] };
+            bm.set_terminator(entry, Term::Call { callee: leaf_id, args: vec![nil_v], continuation: cont });
+        } else {
+            let nil_v = bm.let_(entry, Prim::Const(Const::Nil));
+            bm.set_terminator(entry, Term::Return(nil_v));
+        }
+
+        let mut bl = FnBuilder::new(leaf_id, "leaf");
+        let lentry = bl.block(vec![]);
+        let lv = bl.let_(lentry, Prim::Const(Const::Nil));
+        bl.set_terminator(lentry, Term::Return(lv));
+
+        let mut mb = ModuleBuilder::new();
+        mb.add_fn(bm.build());
+        mb.add_fn(bl.build());
+        mb.build()
+    }
+
+    #[test]
+    fn dce_module_level_keeps_reachable_leaf() {
+        let mut m = build_two_fn_module(true);
+        assert_eq!(m.fns.len(), 2);
+        dce_module_level(&mut m);
+        // leaf is reachable via Term::Call from main; both kept (cont fn_id 99 missing from module, that's fine)
+        assert!(m.fns.iter().any(|f| f.name == "main"), "main must survive");
+        assert!(m.fns.iter().any(|f| f.name == "leaf"), "leaf reachable via Call must survive");
+    }
+
+    #[test]
+    fn dce_module_level_removes_unreachable_leaf() {
+        let mut m = build_two_fn_module(false);
+        assert_eq!(m.fns.len(), 2);
+        dce_module_level(&mut m);
+        assert!(m.fns.iter().any(|f| f.name == "main"), "main must survive");
+        assert!(!m.fns.iter().any(|f| f.name == "leaf"), "leaf unreachable must be removed");
+        assert_eq!(m.fns.len(), 1);
+    }
+
+    #[test]
+    fn dce_module_level_always_keeps_main() {
+        let mut mb = ModuleBuilder::new();
+        let mut b = FnBuilder::new(FnId(0), "main");
+        let entry = b.block(vec![]);
+        let v = b.let_(entry, Prim::Const(Const::Nil));
+        b.set_terminator(entry, Term::Return(v));
+        mb.add_fn(b.build());
+        let mut m = mb.build();
+        dce_module_level(&mut m);
+        assert_eq!(m.fns.len(), 1);
+        assert_eq!(m.fns[0].name, "main");
+    }
 
     /// Test 1: Dead Const removed; live Const (used by a Call arg) kept.
     ///

@@ -1831,6 +1831,8 @@ pub fn compile_with_backend<B: Backend>(
     // eliminating the need for a full type_module recompute afterwards.
     crate::ir_inline::inline_single_use_conts(&mut working, &mut module_types);
     crate::ir_dce::dce_module(&mut working);
+    // fz-ul4.11.29: sweep IR fns unreachable from main after inlining.
+    crate::ir_dce::dce_module_level(&mut working);
     let module = &working;
 
     // fz-ul4.29.2.1 — Build the SpecRegistry.
