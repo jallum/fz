@@ -5908,8 +5908,47 @@ fn lower_prim<M: cranelift_module::Module>(
                 }
             }
         }
-        Prim::Extern(eid, _args) => {
-            todo!("Prim::Extern {:?} — wired in T6", eid)
+        Prim::Extern(eid, args) => {
+            use crate::fz_ir::ExternTy;
+            let decl = env
+                .module
+                .externs
+                .get(eid.0 as usize)
+                .ok_or_else(|| CodegenError::new(format!("unknown extern id {}", eid.0)))?;
+            let param_tys: Vec<ir::Type> = decl
+                .params
+                .iter()
+                .map(|t| match t {
+                    ExternTy::F64 => types::F64,
+                    _ => types::I64,
+                })
+                .collect();
+            let returns_value = !matches!(decl.ret, ExternTy::Unit | ExternTy::Never);
+            let ret_tys: &[ir::Type] = if returns_value {
+                match decl.ret {
+                    ExternTy::F64 => &[types::F64],
+                    _ => &[types::I64],
+                }
+            } else {
+                &[]
+            };
+            let sig = sig1(&param_tys, ret_tys);
+            let func_id = jmod
+                .declare_function(&decl.symbol, Linkage::Import, &sig)
+                .map_err(|e| {
+                    CodegenError::new(format!("declare extern `{}`: {}", decl.symbol, e))
+                })?;
+            let fref = jmod.declare_func_in_func(func_id, b.func);
+            let arg_vals: Vec<ir::Value> = args
+                .iter()
+                .map(|v| tagged_get(var_env, b, jmod, runtime, v.0))
+                .collect();
+            let inst = b.ins().call(fref, &arg_vals);
+            if returns_value {
+                b.inst_results(inst)[0]
+            } else {
+                b.ins().iconst(types::I64, NIL_BITS)
+            }
         }
         Prim::ListCons(..)
         | Prim::ListHead(..)
