@@ -244,10 +244,6 @@ impl Default for SchemaRegistry {
     }
 }
 
-/// Maximum bytes for any single heap object. Objects larger than this
-/// belong in the shared zone (future epic). Enforced in `Heap::alloc()`.
-pub const MAX_HEAP_OBJECT_BYTES: usize = 64;
-
 pub struct Heap {
     block_start: *mut u8,
     bump_top: *mut u8,
@@ -334,15 +330,10 @@ impl Heap {
     /// pool-backed block at the next size_class. The next park-time
     /// Cheney recycles the whole abandoned chain.
     ///
-    /// Panics if `size` exceeds `MAX_HEAP_OBJECT_BYTES`. Objects larger than
-    /// this limit belong in the shared zone (future epic).
+    /// The largest supported single object is `SIZE_TABLE[SIZE_TABLE.len()-1]`
+    /// (~6 MiB). Anything larger panics in the grow branch — truly large data
+    /// belongs in the shared zone (refcounted off-heap binaries).
     pub fn alloc(&mut self, size: usize) -> *mut HeapHeader {
-        assert!(
-            size <= MAX_HEAP_OBJECT_BYTES,
-            "heap object too large: {} bytes (max {}); use shared zone for large objects",
-            size,
-            MAX_HEAP_OBJECT_BYTES
-        );
         let size = (size + 15) & !15;
         assert!(size >= 16, "alloc must include at least the 16-byte header");
         let new_top = unsafe { self.bump_top.add(size) };
@@ -357,6 +348,12 @@ impl Heap {
                 .min((SIZE_TABLE.len() - 1) as u8);
             let new_class = want_for_alloc.max(bumped);
             let new_size = SIZE_TABLE[new_class as usize];
+            assert!(
+                size <= new_size,
+                "heap object {} bytes exceeds largest size class {} (use shared zone)",
+                size,
+                SIZE_TABLE[SIZE_TABLE.len() - 1]
+            );
             self.abandoned_blocks
                 .push((self.block_start, self.size_class));
             let new_block = pool_alloc(new_class);
@@ -1515,12 +1512,87 @@ mod tests {
         FZ_SHOULD_YIELD.store(0, Ordering::Relaxed); // cleanup
     }
 
-    /// MAX_HEAP_OBJECT_BYTES is enforced: alloc of >64 bytes panics.
+    /// Large struct (200-byte payload, well past the old 64-byte cap)
+    /// allocates without panic; grow promotes to a larger size_class as needed.
     #[test]
-    #[should_panic(expected = "heap object too large")]
-    fn alloc_panics_over_max_object_bytes() {
+    fn alloc_large_struct_succeeds_and_grows_size_class() {
+        let reg = empty_registry();
+        // Build a schema whose payload is 200 bytes of FzValue fields.
+        let n_fields = 200 / 8; // 25 FzValue slots
+        let mut fields = Vec::with_capacity(n_fields);
+        for i in 0..n_fields {
+            fields.push(FieldDescriptor {
+                offset: (i * 8) as u32,
+                kind: FieldKind::FzValue,
+            });
+        }
+        let id = reg.borrow_mut().register(Schema {
+            name: "Big".into(),
+            size: (n_fields * 8) as u32,
+            fields,
+        });
+        let mut h = Heap::new(SIZE_TABLE[0], reg);
+        let p = h.alloc_struct(id);
+        unsafe {
+            assert_eq!((*p).kind, HeapKind::Struct as u16);
+            // total = 16 + 200 = 216, rounded to 224.
+            assert_eq!((*p).size_bytes, 224);
+        }
+    }
+
+    /// Map with 5 entries (~96 byte payload) — exercises both alloc and the
+    /// Cheney trace path (Map walks each entry's FzValue children).
+    #[test]
+    fn alloc_large_map_round_trips_through_gc() {
         let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
-        h.alloc(MAX_HEAP_OBJECT_BYTES + 1);
+        let entries: Vec<(FzValue, FzValue)> = (0..5)
+            .map(|i| {
+                (
+                    FzValue::from_int(i as i64),
+                    FzValue::from_int((i * 10) as i64),
+                )
+            })
+            .collect();
+        let p = h.alloc_map(&entries);
+        let mut root = p as *mut u8;
+        h.gc(&mut root);
+        assert_eq!(h.live_count(), 1, "map survives GC");
+        let new_p = root as *mut HeapHeader;
+        unsafe {
+            assert_eq!((*new_p).kind, HeapKind::Map as u16);
+            let count = std::ptr::read((new_p as *const u8).add(16) as *const u64);
+            assert_eq!(count, 5);
+        }
+    }
+
+    /// Vec<i64> with 100 elements (~824-byte total) — past the old 64-byte cap
+    /// and forces a grow because the initial 1 KiB block also holds garbage.
+    #[test]
+    fn alloc_large_vec_i64_round_trips_through_gc() {
+        let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
+        let elems: Vec<i64> = (0..100).collect();
+        let p = h.alloc_vec_i64(&elems);
+        let mut root = p as *mut u8;
+        h.gc(&mut root);
+        assert_eq!(h.live_count(), 1);
+        let new_p = root as *mut HeapHeader;
+        assert_eq!(Heap::vec_len(new_p), 100);
+        unsafe {
+            let payload = (new_p as *const u8).add(24) as *const i64;
+            for (i, expected) in elems.iter().enumerate() {
+                assert_eq!(std::ptr::read(payload.add(i)), *expected);
+            }
+        }
+    }
+
+    /// Objects larger than the largest size class trigger the new assert
+    /// in the grow branch.
+    #[test]
+    #[should_panic(expected = "exceeds largest size class")]
+    fn alloc_panics_over_largest_size_class() {
+        let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
+        // SIZE_TABLE[last] is the maximum supported; +16 always overflows.
+        h.alloc(SIZE_TABLE[SIZE_TABLE.len() - 1] + 16);
     }
 
     /// Acceptance: ≥10 GC cycles with the same small live working set
