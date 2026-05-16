@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-16T19:43:21Z",
+  "description": "Stop carrying raw token bundles past the parser for extern type annotations. Extract identifier name strings at parse time.\n\n## What to change\n\nIn ast.rs, FnDef:\n  - extern_param_types: Vec\u003cVec\u003cToken\u003e\u003e  → extern_params: Vec\u003cString\u003e\n  - extern_ret_tokens: Vec\u003cToken\u003e        → extern_ret_name: Option\u003cString\u003e\n\nIn parser (wherever extern decl is parsed):\n  - For each param type token sequence: extract the identifier name string.\n  - For the return type token sequence: extract the identifier name string.\n\nRationale: extern type annotations are always a single identifier (\"integer\", \"any\", \"nil\", etc.). There is no grammar to parse — just name extraction. The tokens serve no purpose past the parser.\n\nNote: FnClause::param_type_tokens (regular clause annotations) is unchanged here. Those still need the full combined_type_env at lowering time and are handled by fz-ty1.pip.7.\n\n## Acceptance\n- cargo clippy -- -D warnings passes.\n- All tests pass.\n- One commit referencing fz-ty1.pip.4.",
+  "id": "fz-djx",
+  "labels": [],
+  "priority": 3,
+  "status": "open",
+  "title": "fz-ty1.pip.4: extern decl tokens → strings in FnDef",
+  "type": "task",
+  "updated_at": "2026-05-16T19:43:21Z"
+}
