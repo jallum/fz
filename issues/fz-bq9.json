@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-16T19:43:00Z",
+  "description": "After fz-ty1.pip.1 lands, the inliner maintains ModuleTypes itself. Remove the redundant type_module call at line 1834 of ir_codegen.rs.\n\n## What to change\n\nir_codegen.rs, around line 1823:\n  - Change: let module_types = crate::ir_typer::type_module(\u0026working);  // call 3\n  - To:     let mut module_types = crate::ir_typer::type_module(\u0026working);  // call 3\n\nPass \u0026mut module_types to inline_single_use_conts (signature from fz-ty1.pip.1).\n\nDelete the synthetic 4th call (currently line 1834):\n  - Delete: let module_types = crate::ir_typer::type_module(\u0026working);\n\n## Acceptance\n- cargo clippy -- -D warnings passes.\n- All tests pass.\n- type_module is called exactly 3 times in the pipeline (verified by fz-ty1.pip.3).\n- One commit referencing fz-ty1.pip.2.",
+  "id": "fz-bq9",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "fz-ty1.pip.2: eliminate synthetic 4th type_module call in pipeline",
+  "type": "task",
+  "updated_at": "2026-05-16T19:43:00Z"
+}
