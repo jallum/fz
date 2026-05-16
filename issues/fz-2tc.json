@@ -4,13 +4,14 @@
     "fz-vh4"
   ],
   "blocks": [],
+  "closed_at": "2026-05-16T23:41:37Z",
   "created": "2026-05-16T22:52:20Z",
   "description": "",
   "id": "fz-2tc",
   "labels": [],
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "fz-cg.7: Fix C — dead extern-result nil elision via per-block pre-scan",
   "type": "task",
-  "updated_at": "2026-05-16T22:52:25Z"
+  "updated_at": "2026-05-16T23:41:37Z"
 }
