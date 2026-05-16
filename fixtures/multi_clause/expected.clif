@@ -4,50 +4,15 @@
     ;   @abi    () -> Tagged
 function u0:0(i64) -> i64 tail {
     sig0 = (i64, i64) -> i64 tail
-    sig1 = (i64, i64) -> i64 tail
-    sig2 = (i64, i64) -> i64 tail
-    fn0 = colocated u0:52 sig0
-    fn1 = colocated u0:54 sig1
-    fn2 = colocated u0:53 sig2
+    fn0 = colocated u0:54 sig0
 
 block0(v0: i64):
     v1 = iconst.i64 0                   ; @9:18
-    v2 = iconst.i64 0    ;; v2 :: 0
-    v3 = icmp eq v1, v2  ; v1 = 0, v2 = 0
-    v4 = iconst.i64 11
-    v5 = iconst.i64 19
-    v6 = select v3, v4, v5  ; v4 = 11, v5 = 19    ;; v6 :: :true
-    v7 = iconst.i64 3                   ; @9:9
-    v8 = iconst.i64 19                  ; @9:9
-    v9 = icmp ne v6, v7                 ; @9:9  v7 = 3
-    v10 = icmp ne v6, v8                ; @9:9  v8 = 19
-    v11 = band v9, v10                  ; @9:9
-    brif v11, block3, block1            ; @9:9
+    jump block1                         ; @9:9
 
 block1:
-    v12 = iconst.i64 0    ;; v12 :: 0
-    v13 = icmp.i64 sgt v1, v12  ; v1 = 0, v12 = 0
-    v14 = iconst.i64 11
-    v15 = iconst.i64 19
-    v16 = select v13, v14, v15  ; v14 = 11, v15 = 19    ;; v16 :: bool
-    v17 = iconst.i64 3
-    v18 = iconst.i64 19
-    v19 = icmp ne v16, v17  ; v17 = 3
-    v20 = icmp ne v16, v18  ; v18 = 19
-    v21 = band v19, v20
-    brif v21, block4, block2
-
-block2:
-    v22 = iconst.i64 34    ;; v22 :: :negative
-    return_call fn0(v22, v0)  ; v22 = 34
-
-block3:
-    v23 = iconst.i64 18    ;; v23 :: :zero
-    return_call fn1(v23, v0)  ; v23 = 18
-
-block4:
-    v24 = iconst.i64 26    ;; v24 :: :positive
-    return_call fn2(v24, v0)  ; v24 = 26
+    v2 = iconst.i64 18    ;; v2 :: :zero
+    return_call fn0(v2, v0)  ; v2 = 18
 }
 
 ; fn fact_s10
@@ -225,47 +190,17 @@ function u0:0(i64, i64) -> i64 tail {
     ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64, i64) -> i64 tail
-    sig1 = (i64, i64) -> i64 tail
-    sig2 = (i64, i64) -> i64 tail
-    fn0 = colocated u0:56 sig0
-    fn1 = colocated u0:58 sig1
-    fn2 = colocated u0:57 sig2
+    fn0 = colocated u0:57 sig0
 
     block0(v0: i64, v1: i64):    ;; v0 :: nil
-    v2 = iconst.i64 7                   ; @10:18
-    v3 = iconst.i64 0    ;; v3 :: 0
-    v4 = iconst.i64 19    ;; v4 :: :false
-    v5 = iconst.i64 3                   ; @10:9
-    v6 = iconst.i64 19                  ; @10:9
-    v7 = icmp ne v4, v5                 ; @10:9  v4 = 19, v5 = 3
-    v8 = icmp ne v4, v6                 ; @10:9  v4 = 19, v6 = 19
-    v9 = band v7, v8                    ; @10:9
-    brif v9, block3, block1             ; @10:9
+    jump block1                         ; @10:9
 
 block1:
-    v10 = iconst.i64 0    ;; v10 :: 0
-    v11 = icmp.i64 sgt v2, v10  ; v2 = 7, v10 = 0
-    v12 = iconst.i64 11
-    v13 = iconst.i64 19
-    v14 = select v11, v12, v13  ; v12 = 11, v13 = 19    ;; v14 :: :true
-    v15 = iconst.i64 3
-    v16 = iconst.i64 19
-    v17 = icmp ne v14, v15  ; v15 = 3
-    v18 = icmp ne v14, v16  ; v16 = 19
-    v19 = band v17, v18
-    brif v19, block4, block2
+    jump block2
 
 block2:
-    v20 = iconst.i64 34    ;; v20 :: :negative
-    return_call fn0(v20, v1)  ; v20 = 34
-
-block3:
-    v21 = iconst.i64 18    ;; v21 :: :zero
-    return_call fn1(v21, v1)  ; v21 = 18
-
-block4:
-    v22 = iconst.i64 26    ;; v22 :: :positive
-    return_call fn2(v22, v1)  ; v22 = 26
+    v2 = iconst.i64 26    ;; v2 :: :positive
+    return_call fn0(v2, v1)  ; v2 = 26
 }
 
 ; fn k_13_s18
@@ -322,48 +257,17 @@ function u0:0(i64, i64) -> i64 tail {
     ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64, i64) -> i64 tail
-    sig1 = (i64, i64) -> i64 tail
-    sig2 = (i64, i64) -> i64 tail
     fn0 = colocated u0:60 sig0
-    fn1 = colocated u0:62 sig1
-    fn2 = colocated u0:61 sig2
 
     block0(v0: i64, v1: i64):    ;; v0 :: nil
-    v2 = iconst.i64 3                   ; @11:19
-    v3 = ineg v2  ; v2 = 3    ;; v3 :: -3
-    v4 = iconst.i64 0    ;; v4 :: 0
-    v5 = iconst.i64 19    ;; v5 :: :false
-    v6 = iconst.i64 3                   ; @11:9
-    v7 = iconst.i64 19                  ; @11:9
-    v8 = icmp ne v5, v6                 ; @11:9  v5 = 19, v6 = 3
-    v9 = icmp ne v5, v7                 ; @11:9  v5 = 19, v7 = 19
-    v10 = band v8, v9                   ; @11:9
-    brif v10, block3, block1            ; @11:9
+    jump block1                         ; @11:9
 
 block1:
-    v11 = iconst.i64 0    ;; v11 :: 0
-    v12 = icmp.i64 sgt v3, v11  ; v11 = 0
-    v13 = iconst.i64 11
-    v14 = iconst.i64 19
-    v15 = select v12, v13, v14  ; v13 = 11, v14 = 19    ;; v15 :: :false
-    v16 = iconst.i64 3
-    v17 = iconst.i64 19
-    v18 = icmp ne v15, v16  ; v16 = 3
-    v19 = icmp ne v15, v17  ; v17 = 19
-    v20 = band v18, v19
-    brif v20, block4, block2
+    jump block2
 
 block2:
-    v21 = iconst.i64 34    ;; v21 :: :negative
-    return_call fn0(v21, v1)  ; v21 = 34
-
-block3:
-    v22 = iconst.i64 18    ;; v22 :: :zero
-    return_call fn1(v22, v1)  ; v22 = 18
-
-block4:
-    v23 = iconst.i64 26    ;; v23 :: :positive
-    return_call fn2(v23, v1)  ; v23 = 26
+    v2 = iconst.i64 34    ;; v2 :: :negative
+    return_call fn0(v2, v1)  ; v2 = 34
 }
 
 ; fn k_15_s22

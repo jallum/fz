@@ -31,7 +31,11 @@ fn best_fn_types<'a>(f: &FnIr, types: &'a ModuleTypes) -> Option<&'a FnTypes> {
     }
     let mut iter = types.specs.iter().filter(|((fid, _), _)| *fid == f.id);
     let first = iter.next()?.1;
-    if iter.next().is_none() { Some(first) } else { None }
+    if iter.next().is_none() {
+        Some(first)
+    } else {
+        None
+    }
 }
 
 fn fold_fn(f: &mut FnIr, types: &ModuleTypes) {

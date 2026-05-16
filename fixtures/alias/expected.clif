@@ -27,14 +27,12 @@ function u0:0(i64, i64) -> i64 tail {
     v3 = bor_imm v2, 1
     call fn0(v3)
     v4 = iconst.i64 3    ;; v4 :: nil
-    v5 = iconst.i64 41    ;; v5 :: 41
-    v6 = iconst.i64 1000    ;; v6 :: 1000
-    v7 = iadd v5, v6  ; v5 = 41, v6 = 1000    ;; v7 :: 1041
-    v8 = ishl_imm v7, 3
-    v9 = bor_imm v8, 1
-    call fn1(v9)
-    v10 = iconst.i64 3    ;; v10 :: nil
-    v11 = load.i64 notrap aligned v1+16 ; @16:3
-    return_call_indirect sig2, v11(v10, v1) ; @16:3  v10 = 3
+    v5 = iconst.i64 1041    ;; v5 :: 1041
+    v6 = ishl_imm v5, 3  ; v5 = 1041
+    v7 = bor_imm v6, 1
+    call fn1(v7)
+    v8 = iconst.i64 3    ;; v8 :: nil
+    v9 = load.i64 notrap aligned v1+16  ; @16:3
+    return_call_indirect sig2, v9(v8, v1) ; @16:3  v8 = 3
 }
 
