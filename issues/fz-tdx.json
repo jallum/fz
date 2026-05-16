@@ -2,13 +2,14 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-05-16T21:27:42Z",
   "created": "2026-05-16T21:18:44Z",
   "description": "",
   "id": "fz-tdx",
   "labels": [],
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "fz-wmy.3: inliner scc_of maintenance — mt.scc_of.remove(k_id); debug_assert + proof test",
   "type": "task",
-  "updated_at": "2026-05-16T21:18:44Z"
+  "updated_at": "2026-05-16T21:27:42Z"
 }
