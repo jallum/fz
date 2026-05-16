@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-16T21:18:44Z",
+  "description": "",
+  "id": "fz-rse",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "fz-wmy.5: extern DCE — extend dce_module_level to sweep unreachable externs; proof test",
+  "type": "task",
+  "updated_at": "2026-05-16T21:18:44Z"
+}
