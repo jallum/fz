@@ -1,6 +1,6 @@
 ---
 purpose: VR.3.3 / VR.4.2.3 — typed int args flow through native ABI
-paths: [jit, interp]
+paths: [jit, interp, repl]
 ---
 
 # vr3_int_args

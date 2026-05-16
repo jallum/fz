@@ -1,6 +1,6 @@
 ---
 purpose: VR.5b — print dispatches to typed FFI when the arg Descr narrows
-paths: [jit, interp]
+paths: [jit, interp, repl]
 ---
 
 # vr5b_typed_print

@@ -1,6 +1,6 @@
 ---
 purpose: "VR.2 — float-literal arithmetic + comparisons emit native fadd/fcmp, no dispatch"
-paths: [jit, interp]
+paths: [jit, interp, repl]
 ---
 
 # vr2_float_arith

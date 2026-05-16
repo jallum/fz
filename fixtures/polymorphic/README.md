@@ -1,6 +1,6 @@
 ---
 purpose: "parametric `id` exercised over int, atom, and bool"
-paths: [jit, interp]
+paths: [jit, interp, repl]
 ---
 
 # polymorphic

@@ -1,6 +1,6 @@
 ---
 purpose: "VR.1 — int-literal arithmetic elides the tag-check fast/slow path"
-paths: [jit, interp]
+paths: [jit, interp, repl]
 ---
 
 # vr1_int_arith

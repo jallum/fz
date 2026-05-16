@@ -1,6 +1,6 @@
 ---
 purpose: "fz-ul4.29.5 — closure dispatched via call_indirect through stub_fp"
-paths: [jit, interp, aot]
+paths: [jit, interp, aot, repl]
 ---
 
 # closure_typed_captures

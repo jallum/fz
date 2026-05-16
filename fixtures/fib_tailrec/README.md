@@ -1,6 +1,6 @@
 ---
 purpose: "fibonacci via two-accumulator tail recursion — three-clause dispatch + tail-call forwarding under load"
-paths: [jit, interp, aot]
+paths: [jit, interp, aot, repl]
 ---
 
 # fib_tailrec

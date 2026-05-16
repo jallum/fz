@@ -1,6 +1,6 @@
 ---
 purpose: "fz-ul4.31.6 — declared @spec matches inferred behavior;"
-paths: [jit, interp]
+paths: [jit, interp, repl]
 ---
 
 # spec_ok

@@ -107,6 +107,10 @@ fn parse_header_from_dir(dir: &Path) -> Result<Header, String> {
                 });
             }
             "defer" => defer = Some(unquote(val).to_string()),
+            // fz-i67.3 — informational rationale for omitting `repl` from
+            // `paths:` (sequential fixture that `eval::Interp` cannot run).
+            // Parsed so the key is accepted; not otherwise consumed.
+            "repl-skip" => {}
             other => return Err(format!("{}: unknown key `{}`", readme.display(), other)),
         }
         i += 1;

@@ -1,6 +1,6 @@
 ---
 purpose: "VR.4 + VR.3.2 + .27.13 — narrow-spec float entry params arrive in F64 registers; fmul/fadd fire raw"
-paths: [jit, interp]
+paths: [jit, interp, repl]
 ---
 
 # vr3_float_args

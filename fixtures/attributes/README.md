@@ -1,6 +1,6 @@
 ---
 purpose: "@moduledoc / @doc attributes parse and the module still executes"
-paths: [jit, interp]
+paths: [jit, interp, repl]
 ---
 
 # attributes
