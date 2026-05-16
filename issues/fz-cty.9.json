@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-05-16T21:59:06Z",
   "created": "2026-05-16T01:55:12Z",
   "description": "## Goal\n\nFor constant byte-literal binaries above the shared-zone threshold, bake the `SharedBin` struct itself into the module's `.rodata` rather than allocating it at startup. Runtime construction becomes: one ProcBin alloc on the heap pointing at the static SharedBin. The bytes never get copied at any point in the run.\n\n## Depends on\n\nfz-cty.8 (constant-fold MakeBitstring).\n\n## Design\n\n- New layout-compatible static-SharedBin variant or sentinel: refcount initialised to `usize::MAX / 2` (or a dedicated bit pattern) that `shared_bin_retain` no-ops on (saturating add) and `shared_bin_release` no-ops on (saturating sub). Never reaches zero, never freed.\n- Codegen for above-threshold `Prim::ConstBitstring`: emit a static SharedBin in `.rodata` with the bytes inline; emit one heap-side ProcBin allocation at runtime.\n- Runtime: `shared_bin_retain` / `release` recognise the sentinel and skip the atomic op. (Or use the standard atomic ops and rely on the count never approaching zero.)\n\n## Non-changes\n\n- Below-threshold constants stay inline via the existing `Heap::alloc_bitstring` path.\n- Runtime-constructed bitstrings unaffected.\n\n## Open questions\n\n- Layout: SharedBin currently uses `Box\u003c[u8]\u003e` for the byte payload. A static SharedBin would either need a flexible-array-member layout (DST) or a thin-pointer-to-static-slice variant. DST is more uniform but requires unsafe layout; thin pointer is simpler but adds an indirection per byte access (probably negligible).\n- Whether to file separately or fold into fz-cty.8: keeping it separate so .8 lands quickly and this is opt-in if the static path proves worth the complexity.",
   "id": "fz-cty.9",
   "labels": [],
   "parent": "fz-cty",
   "priority": 3,
-  "status": "open",
+  "status": "closed",
   "title": "fz-cty.9: static SharedBin in .rodata for above-threshold constants (follow-up)",
   "type": "task",
-  "updated_at": "2026-05-16T01:55:12Z"
+  "updated_at": "2026-05-16T21:59:06Z"
 }
