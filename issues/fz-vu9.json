@@ -2,13 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-05-16T19:42:16Z",
+  "close_reason": "Landed: commit a1500252 on fz-ext branch.",
   "created": "2026-05-16T19:42:15Z",
   "description": "Inline compiler-generated single-use CPS continuation functions (k_N) back into their callers. Replaces TailCall with Goto, optionally converts the cont site's Term::Call to TailCall.\n\nGuards: closure target, multi-site, back-edge TailCalled, self-referential, Receive-containing.\n\n## Acceptance\n- alias.clif golden: two print calls inlined into main, no k_N functions.\n- All existing tests pass.\n\n## Commit\nfz-ty1.opt.3 (already landed in commit a1500252 on fz-ext branch)",
   "id": "fz-vu9",
   "labels": [],
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "fz-ty1.opt.3: single-use continuation inlining",
   "type": "task",
-  "updated_at": "2026-05-16T19:42:15Z"
+  "updated_at": "2026-05-16T19:42:16Z"
 }
