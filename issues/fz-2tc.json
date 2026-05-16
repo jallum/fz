@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-16T22:52:20Z",
+  "description": "",
+  "id": "fz-2tc",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "fz-cg.7: Fix C — dead extern-result nil elision via per-block pre-scan",
+  "type": "task",
+  "updated_at": "2026-05-16T22:52:20Z"
+}
