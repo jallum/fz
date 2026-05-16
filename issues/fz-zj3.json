@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-vh4"
+  ],
   "blocks": [],
   "created": "2026-05-16T22:52:20Z",
   "description": "",
@@ -10,5 +12,5 @@
   "status": "open",
   "title": "fz-cg.5: Fix D — box_int constant fold via CodegenCache.raw_int_consts tracking",
   "type": "task",
-  "updated_at": "2026-05-16T22:52:20Z"
+  "updated_at": "2026-05-16T22:52:25Z"
 }
