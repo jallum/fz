@@ -118,6 +118,19 @@ pub fn build_module_type_env(
                 continue;
             }
             let decl = pending[name];
+            // `@type Foo :: opaque T` — purely nominal; create an opaque
+            // Descr keyed by the alias name. The underlying type T is not
+            // stored in the Descr (opaque types are nominal, not structural).
+            let is_opaque = decl
+                .body_tokens
+                .first()
+                .map(|t| matches!(&t.tok, Tok::Ident(n) if n == "opaque"))
+                .unwrap_or(false);
+            if is_opaque {
+                env.insert(name.clone(), Descr::opaque_of(name.as_str()));
+                progressed = true;
+                continue;
+            }
             match parse_type_expr(&decl.body_tokens, &env) {
                 Ok((d, _consumed)) => {
                     env.insert(name.clone(), d);
@@ -179,7 +192,8 @@ fn referenced_names(tokens: &[crate::lexer::Token]) -> Vec<String> {
         .iter()
         .filter_map(|t| match &t.tok {
             Tok::Ident(n) | Tok::Upper(n) => match n.as_str() {
-                "nil" | "bool" | "integer" | "float" | "binary" | "atom" | "any" | "never" => None,
+                "nil" | "bool" | "integer" | "float" | "binary" | "atom" | "any" | "never"
+                | "opaque" | "vector" | "u8" | "bit" => None,
                 _ => Some(n.clone()),
             },
             _ => None,
@@ -296,13 +310,44 @@ impl<'a> TypeExprParser<'a> {
             }
             Tok::Ident(name) => {
                 self.bump();
-                self.lookup_named(&name)
+                if name == "vector" {
+                    self.parse_vector()
+                } else {
+                    self.lookup_named(&name)
+                }
             }
             Tok::Upper(name) => {
                 self.bump();
                 self.lookup_named(&name)
             }
             other => Err(self.err(format!("expected a type expression, got {}", other))),
+        }
+    }
+
+    fn parse_vector(&mut self) -> Result<Descr, TypeExprError> {
+        // `vector` already consumed. Parse `(elem_type)`.
+        self.expect(&Tok::LParen, "`(` after `vector`")?;
+        let elem_name = match self.peek().clone() {
+            Tok::Ident(n) => {
+                self.bump();
+                n
+            }
+            other => {
+                return Err(
+                    self.err(format!("expected element type in vector(T), got {}", other))
+                )
+            }
+        };
+        self.expect(&Tok::RParen, "`)` after vector element type")?;
+        match elem_name.as_str() {
+            "integer" => Ok(Descr::vec_i64()),
+            "float" => Ok(Descr::vec_f64()),
+            "u8" => Ok(Descr::vec_u8()),
+            "bit" => Ok(Descr::vec_bit()),
+            other => Err(self.err(format!(
+                "unknown vector element type `{}`; expected integer, float, u8, or bit",
+                other
+            ))),
         }
     }
 
@@ -758,5 +803,82 @@ mod tests {
         let (d, consumed) = parse_type_expr(&toks, &env).unwrap();
         assert!(d.is_equiv(&Descr::int()));
         assert_eq!(consumed, 1, "consumed only the `integer` token");
+    }
+
+    // ---- vector(T) ----
+
+    #[test]
+    fn vector_integer_parses() {
+        let d = parse_one("vector(integer)").unwrap();
+        assert!(d.is_equiv(&Descr::vec_i64()), "got {}", d);
+    }
+
+    #[test]
+    fn vector_float_parses() {
+        let d = parse_one("vector(float)").unwrap();
+        assert!(d.is_equiv(&Descr::vec_f64()), "got {}", d);
+    }
+
+    #[test]
+    fn vector_u8_parses() {
+        let d = parse_one("vector(u8)").unwrap();
+        assert!(d.is_equiv(&Descr::vec_u8()), "got {}", d);
+    }
+
+    #[test]
+    fn vector_bit_parses() {
+        let d = parse_one("vector(bit)").unwrap();
+        assert!(d.is_equiv(&Descr::vec_bit()), "got {}", d);
+    }
+
+    #[test]
+    fn vector_unknown_elem_type_errors() {
+        let r = parse_one("vector(atom)");
+        assert!(r.is_err(), "vector(atom) should error; got {:?}", r);
+    }
+
+    // ---- opaque aliases ----
+
+    #[test]
+    fn build_env_opaque_alias_creates_nominal_type() {
+        let attrs = vec![type_alias_attr("pid", "opaque integer")];
+        let env = build_module_type_env(&attrs).unwrap();
+        let pid = env.get("pid").unwrap();
+        assert!(
+            pid.is_equiv(&Descr::opaque_of("pid")),
+            "opaque alias should resolve to nominal opaque Descr: got {}",
+            pid
+        );
+    }
+
+    #[test]
+    fn build_env_opaque_alias_is_disjoint_from_underlying() {
+        let attrs = vec![type_alias_attr("pid", "opaque integer")];
+        let env = build_module_type_env(&attrs).unwrap();
+        let pid = env.get("pid").unwrap();
+        assert!(
+            !pid.is_subtype(&Descr::int()),
+            "pid should NOT be a subtype of integer"
+        );
+        assert!(
+            !Descr::int().is_subtype(pid),
+            "integer should NOT be a subtype of pid"
+        );
+    }
+
+    #[test]
+    fn build_env_two_opaque_aliases_are_distinct() {
+        let attrs = vec![
+            type_alias_attr("pid", "opaque integer"),
+            type_alias_attr("timestamp", "opaque integer"),
+        ];
+        let env = build_module_type_env(&attrs).unwrap();
+        let pid = env.get("pid").unwrap();
+        let ts = env.get("timestamp").unwrap();
+        assert!(
+            pid.intersect(ts).is_empty(),
+            "distinct opaques should be disjoint: pid ∩ timestamp = {}",
+            pid.intersect(ts)
+        );
     }
 }
