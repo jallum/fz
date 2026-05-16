@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-16T22:52:19Z",
+  "description": "",
+  "id": "fz-li4",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "fz-cg.1: fix needs_blanket_retag — add Term::Receive arm; proof test + blessed goldens",
+  "type": "task",
+  "updated_at": "2026-05-16T22:52:19Z"
+}
