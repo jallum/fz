@@ -3,11 +3,16 @@
 ;   return: nil
 ;   vars:
 ;     Var(0) :: int
-;     Var(1) :: :match_error
-;     Var(2) :: nil
+;     Var(1) :: :function_clause
+;     Var(2) :: :true
+;     Var(3) :: nil
+;     Var(4) :: nil
 ;   exits:
-;     blk0 Return Var(2)    :: nil
-;     blk1 Halt Var(1)      :: :match_error
+;     blk0 Goto blk1()
+;     blk1 If Var(2) ? blk4 : blk2
+;     blk2 Return Var(4)    :: nil
+;     blk3 Halt Var(1)      :: :function_clause
+;     blk4 Return Var(3)    :: nil
 
 ; spec Long.Path.greet(1) #fn=7
 ;   key:    [40]

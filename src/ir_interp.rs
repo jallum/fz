@@ -888,7 +888,14 @@ fn call_extern(module: &Module, eid: ExternId, args: &[FzValue]) -> Result<FzVal
         _ => {}
     }
     let fp = resolve_symbol(&decl.symbol)?;
-    let raw_args: Vec<u64> = args.iter().map(|v| v.0).collect();
+    let raw_args: Vec<u64> = args
+        .iter()
+        .zip(decl.params.iter())
+        .map(|(v, ty)| match ty {
+            ExternTy::I64 => v.unbox_int().unwrap_or(0) as u64,
+            _ => v.0,
+        })
+        .collect();
     let returns_value = !matches!(decl.ret, ExternTy::Unit | ExternTy::Never);
     let ret = if returns_value {
         unsafe { dispatch_fn_returning(fp, &raw_args) }
@@ -910,6 +917,7 @@ fn resolve_symbol(name: &str) -> Result<*const (), String> {
     // are linked into the binary; using their address directly avoids relying
     // on dlsym visibility, which is unreliable for statically-linked rlibs.
     let native: Option<*const ()> = match name {
+        "fz_print_i64" => Some(fz_runtime::fz_print_i64 as *const ()),
         "fz_print_value" => Some(fz_runtime::ir_runtime::fz_print_value as *const ()),
         "fz_assert" => Some(fz_runtime::fz_assert as *const ()),
         "fz_assert_eq" => Some(fz_runtime::fz_assert_eq as *const ()),

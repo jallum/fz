@@ -6125,9 +6125,15 @@ fn lower_prim<M: cranelift_module::Module>(
                     CodegenError::new(format!("declare extern `{}`: {}", decl.symbol, e))
                 })?;
             let fref = jmod.declare_func_in_func(func_id, b.func);
+            let param_kinds: Vec<ExternTy> = decl.params.clone();
             let arg_vals: Vec<ir::Value> = args
                 .iter()
-                .map(|v| tagged_get(var_env, b, jmod, runtime, v.0))
+                .zip(param_kinds.iter())
+                .map(|(v, ty)| match ty {
+                    ExternTy::I64 => as_raw_i64(var_env, b, v.0),
+                    ExternTy::F64 => as_raw_f64(var_env, b, v.0),
+                    _ => tagged_get(var_env, b, jmod, runtime, v.0),
+                })
                 .collect();
             let inst = b.ins().call(fref, &arg_vals);
             if returns_value {

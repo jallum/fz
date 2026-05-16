@@ -2,6 +2,7 @@
 
 @doc "Prints x to standard output."
 @spec print(any) :: nil
+fn print(x :: integer) do fz_print_i64(x) end
 fn print(x) do fz_print_value(x) end
 
 @doc "Aborts the process if x is falsy (nil or false)."
@@ -29,6 +30,7 @@ fn self() do fz_self() end
 @spec send(integer, any) :: any
 fn send(pid, msg) do fz_send(pid, msg) end
 
+extern "C" fn fz_print_i64(integer) :: nil
 extern "C" fn fz_print_value(any) :: nil
 extern "C" fn fz_assert(any) :: nil
 extern "C" fn fz_assert_eq(any, any) :: nil

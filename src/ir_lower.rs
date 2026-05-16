@@ -197,7 +197,8 @@ impl ExternTable {
 /// return-type annotation in an `extern "C" fn` declaration.
 fn extern_ty_from_name(name: &str) -> Option<ExternTy> {
     match name {
-        "any" | "integer" | "binary" | "atom" | "bool" => Some(ExternTy::Any),
+        "any" | "binary" | "atom" | "bool" => Some(ExternTy::Any),
+        "integer" => Some(ExternTy::I64),
         "float" => Some(ExternTy::F64),
         "nil" => Some(ExternTy::Unit),
         "never" => Some(ExternTy::Never),
@@ -475,7 +476,20 @@ pub fn lower_program_full(prog: &Program) -> Result<(Module, AtomTable, BuiltinT
                 continue;
             }
             let eid = ExternId(ctx.extern_decls.len() as u32);
-            let params = vec![ExternTy::Any; fn_def.extern_param_types.len()];
+            let params: Vec<ExternTy> = fn_def
+                .extern_param_types
+                .iter()
+                .map(|toks| {
+                    use crate::lexer::Tok;
+                    toks.iter()
+                        .find_map(|t| match &t.tok {
+                            Tok::Nil => Some(ExternTy::Unit),
+                            Tok::Ident(n) | Tok::Upper(n) => extern_ty_from_name(n.as_str()),
+                            _ => None,
+                        })
+                        .unwrap_or(ExternTy::Any)
+                })
+                .collect();
             let (ret, ret_descr) = lower_extern_ret_ty(fn_def, &ctx.prelude_type_env)?;
             ctx.extern_decls.push(ExternDecl {
                 fz_name: fn_def.name.clone(),
@@ -2314,10 +2328,10 @@ mod tests {
             needle,
             s
         );
-        // fz_spawn_opt = ExternId(6) in runtime.fz (0-based, after fz_spawn=5).
+        // fz_spawn_opt = ExternId(7) in runtime.fz (0-based, after fz_spawn=6).
         assert!(
-            s.contains("extern#6("),
-            "expected Extern(fz_spawn_opt=6, ...) in IR:\n{}",
+            s.contains("extern#7("),
+            "expected Extern(fz_spawn_opt=7, ...) in IR:\n{}",
             s
         );
     }
@@ -2681,8 +2695,8 @@ end
             .parse_program()
             .expect("parse");
         let (module, _, _) = lower_program_full(&prog).expect("lower");
-        // 9 runtime.fz externs + 1 user extern = 10 total.
-        assert_eq!(module.externs.len(), 10);
+        // 10 runtime.fz externs + 1 user extern = 11 total.
+        assert_eq!(module.externs.len(), 11);
         // fz_nop is at the end (user externs follow runtime.fz externs).
         let nop = module
             .externs
@@ -2693,6 +2707,10 @@ end
         assert_eq!(nop.ret, ExternTy::Unit);
         // main's IR should contain Extern(9, [...]) — fz_nop is ExternId(9).
         let ir = format!("{}", module);
-        assert!(ir.contains("extern#9"), "expected extern#9 in IR:\n{}", ir);
+        assert!(
+            ir.contains("extern#10"),
+            "expected extern#10 in IR:\n{}",
+            ir
+        );
     }
 }

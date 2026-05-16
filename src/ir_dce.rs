@@ -1,4 +1,4 @@
-//! fz-ul4.dce.4 — Dead stmt and dead block elimination.
+//! fz-ul4.dce.4 — Dead stmt elimination, dead block elimination, block fusion.
 //!
 //! Dead stmts: removes pure stmts whose dest var is not used anywhere in the fn.
 //! Fixed-point loop handles chains of dead stmts.
@@ -6,13 +6,19 @@
 //! Dead blocks: after stmt DCE, prunes blocks unreachable from the entry block.
 //! Only Goto and If create intra-function block edges; all other terminators
 //! exit to a separate FnIr or terminate execution.
+//!
+//! Block fusion: merges a block that ends with a parameterless Goto into its
+//! single-predecessor target. Runs after dead block elimination so that only
+//! reachable blocks remain. Fixed-point loop handles chains.
 
 use crate::fz_ir::{BlockId, FnIr, Module, Prim, Stmt, Term, Var};
+use std::collections::HashMap;
 use std::collections::HashSet;
 
 pub fn dce_module(m: &mut Module) {
     for f in &mut m.fns {
         dce_fn(f);
+        fuse_fn(f);
     }
 }
 
@@ -232,6 +238,46 @@ fn is_impure(p: &Prim) -> bool {
             | Prim::BitReadField { .. }
             | Prim::BitReaderDone(_)
     )
+}
+
+/// Merge a block that ends with a parameterless Goto into its single-predecessor
+/// target. Repeat until no more fusions are possible.
+fn fuse_fn(f: &mut FnIr) {
+    loop {
+        let mut in_degree: HashMap<BlockId, usize> = f.blocks.iter().map(|b| (b.id, 0)).collect();
+        for block in &f.blocks {
+            match &block.terminator {
+                Term::Goto(t, _) => *in_degree.entry(*t).or_insert(0) += 1,
+                Term::If(_, t, e) => {
+                    *in_degree.entry(*t).or_insert(0) += 1;
+                    *in_degree.entry(*e).or_insert(0) += 1;
+                }
+                _ => {}
+            }
+        }
+
+        let fuseable = f.blocks.iter().find_map(|block| {
+            if let Term::Goto(target, args) = &block.terminator {
+                if args.is_empty() {
+                    let tb = f.blocks.iter().find(|b| b.id == *target)?;
+                    if tb.params.is_empty() && in_degree.get(target) == Some(&1) {
+                        return Some((block.id, *target));
+                    }
+                }
+            }
+            None
+        });
+
+        let Some((src_id, target_id)) = fuseable else {
+            break;
+        };
+
+        let target_pos = f.blocks.iter().position(|b| b.id == target_id).unwrap();
+        let target_block = f.blocks.remove(target_pos);
+        let src_block = f.blocks.iter_mut().find(|b| b.id == src_id).unwrap();
+        src_block.stmts.extend(target_block.stmts);
+        src_block.terminator = target_block.terminator;
+    }
 }
 
 #[cfg(test)]
@@ -455,10 +501,13 @@ mod tests {
 
         assert_eq!(m.fns[0].blocks.len(), 3, "should start with 3 blocks");
         dce_module(&mut m);
-        assert_eq!(m.fns[0].blocks.len(), 2, "else_b should be removed");
-        let ids: Vec<_> = m.fns[0].blocks.iter().map(|b| b.id).collect();
-        assert!(ids.contains(&entry));
-        assert!(ids.contains(&then_b));
-        assert!(!ids.contains(&else_b));
+        // else_b removed by dead block elimination; entry fused with then_b.
+        assert_eq!(
+            m.fns[0].blocks.len(),
+            1,
+            "else_b removed and entry+then_b fused"
+        );
+        assert_eq!(m.fns[0].blocks[0].id, entry);
+        assert!(matches!(m.fns[0].blocks[0].terminator, Term::Return(_)));
     }
 }

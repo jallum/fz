@@ -18,15 +18,13 @@ block0(v0: i64):
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64) system_v
     sig1 = (i64, i64) -> i64 tail
-    fn0 = u0:0 sig0
+    fn0 = u0:1 sig0
     fn1 = colocated u0:49 sig1
 
     block0(v0: i64, v1: i64):    ;; v0 :: 7
-    v2 = ishl_imm v0, 3
-    v3 = bor_imm v2, 1
-    call fn0(v3)
-    v4 = iconst.i64 3    ;; v4 :: nil
-    return_call fn1(v4, v1)             ; @12:3  v4 = 3
+    call fn0(v0)
+    v2 = iconst.i64 3    ;; v2 :: nil
+    return_call fn1(v2, v1)             ; @12:3  v2 = 3
 }
 
 ; fn k_12
@@ -43,27 +41,35 @@ function u0:0(i64, i64) -> i64 tail {
 }
 
 ; fn k_13
-    ;   @spec   k_13(int) -> nil
+    ;   @spec   k_13(int) -> _
     ;   @key    [int]
     ;   @abi    (RawInt) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64) system_v
-    sig1 = (i64) system_v
-    sig2 = (i64, i64) -> i64 tail
-    fn0 = u0:0 sig0
-    fn1 = u0:0 sig1
+    sig1 = (i64, i64) -> i64 tail
+    fn0 = u0:1 sig0
+    fn1 = colocated u0:51 sig1
 
     block0(v0: i64, v1: i64):    ;; v0 :: int
-    v2 = ishl_imm v0, 3
-    v3 = bor_imm v2, 1
-    call fn0(v3)
-    v4 = iconst.i64 3    ;; v4 :: nil
-    v5 = iconst.i64 1007    ;; v5 :: 1007
-    v6 = ishl_imm v5, 3  ; v5 = 1007
-    v7 = bor_imm v6, 1
-    call fn1(v7)
-    v8 = iconst.i64 3    ;; v8 :: nil
-    v9 = load.i64 notrap aligned v1+16  ; @13:3
-    return_call_indirect sig2, v9(v8, v1) ; @13:3  v8 = 3
+    call fn0(v0)
+    v2 = iconst.i64 3    ;; v2 :: nil
+    return_call fn1(v2, v1)             ; @13:3  v2 = 3
+}
+
+; fn k_14
+    ;   @spec   k_14(nil) -> nil
+    ;   @key    [nil]
+    ;   @abi    (Tagged) -> Tagged
+function u0:0(i64, i64) -> i64 tail {
+    sig0 = (i64) system_v
+    sig1 = (i64, i64) -> i64 tail
+    fn0 = u0:1 sig0
+
+    block0(v0: i64, v1: i64):    ;; v0 :: nil
+    v2 = iconst.i64 1007                ; @14:25
+    call fn0(v2)  ; v2 = 1007
+    v3 = iconst.i64 3    ;; v3 :: nil
+    v4 = load.i64 notrap aligned v1+16  ; @14:9
+    return_call_indirect sig1, v4(v3, v1) ; @14:9  v3 = 3
 }
 
