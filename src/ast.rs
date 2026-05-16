@@ -329,6 +329,15 @@ pub struct FnDef {
     pub name_span: Span,
     pub clauses: Vec<FnClause>,
     pub is_macro: bool,
+    /// `Some("C")` for `extern "C" fn` declarations; `None` for regular fns.
+    #[allow(dead_code)] // read by ir_lower in T3
+    pub extern_abi: Option<String>,
+    /// Declared parameter count (used by lowering to build ExternDecl). 0 for regular fns.
+    #[allow(dead_code)] // read by ir_lower in T3
+    pub extern_param_count: usize,
+    /// Raw return-type tokens from `:: RetType`. Empty for regular fns.
+    #[allow(dead_code)] // read by ir_lower in T3
+    pub extern_ret_tokens: Vec<crate::lexer::Token>,
     /// Attributes attached above the first clause of this fn. The REPL
     /// surfaces `Attribute::Doc` via `?<name>`. Empty when no `@…`
     /// preceded the fn.

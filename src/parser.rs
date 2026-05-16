@@ -111,6 +111,43 @@ end
     }
 }
 
+#[cfg(test)]
+mod extern_parse_tests {
+    use super::*;
+    use crate::lexer::Lexer;
+
+    fn parse_extern(src: &str) -> FnDef {
+        let toks = Lexer::new(src).tokenize().unwrap();
+        let prog = Parser::new(toks).parse_program().unwrap();
+        match &*prog.items[0] {
+            Item::Fn(d) => d.clone(),
+            other => panic!("expected Item::Fn, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn extern_fn_no_params() {
+        let d = parse_extern("extern \"C\" fn fz_halt() :: never\n");
+        assert_eq!(d.name, "fz_halt");
+        assert_eq!(d.extern_abi, Some("C".into()));
+        assert_eq!(d.extern_param_count, 0);
+        assert!(d.clauses.is_empty());
+    }
+
+    #[test]
+    fn extern_fn_one_param() {
+        let d = parse_extern("extern \"C\" fn fz_print(any) :: unit\n");
+        assert_eq!(d.extern_param_count, 1);
+    }
+
+    #[test]
+    fn extern_fn_two_params() {
+        let d = parse_extern("extern \"C\" fn fz_assert_eq(any, any) :: unit\n");
+        assert_eq!(d.extern_param_count, 2);
+        assert!(!d.extern_ret_tokens.is_empty());
+    }
+}
+
 /// Drain pending fn-clause groups into the items vec in declaration order.
 fn flush_fn_groups(
     items: &mut Vec<Rc<Item>>,
@@ -316,6 +353,14 @@ impl Parser {
                     let i = self.parse_import()?;
                     items.push(Rc::new(i));
                 }
+                Tok::Extern => {
+                    flush_fn_groups(&mut items, &mut order, &mut groups);
+                    let _attrs = std::mem::take(&mut pending_fn_attrs);
+                    self.bump(); // consume `extern`
+                    let def = self.parse_extern_item()?;
+                    order.push(def.name.clone());
+                    items.push(Rc::new(Item::Fn(def)));
+                }
                 Tok::Fn | Tok::Defmacro => {
                     let start = self.cur_span();
                     let (name, name_span, clause, is_macro) = self.parse_fn_clause()?;
@@ -355,6 +400,9 @@ impl Parser {
                             name_span,
                             clauses: vec![clause],
                             is_macro,
+                            extern_abi: None,
+                            extern_param_count: 0,
+                            extern_ret_tokens: vec![],
                             attrs,
                             span: start.merge(clause_span),
                         });
@@ -654,6 +702,72 @@ impl Parser {
             },
             is_macro,
         ))
+    }
+
+    /// `extern "C" fn name(type, type) :: RetType`
+    /// Caller has already consumed `Tok::Extern`.
+    fn parse_extern_item(&mut self) -> PR<FnDef> {
+        let start = self.cur_span();
+        let abi = match self.bump() {
+            Tok::Str(s) => s,
+            other => return self.err(format!("expected ABI string after `extern`, got {:?}", other)),
+        };
+        self.expect(&Tok::Fn, "`fn` after extern ABI string")?;
+        let name_span = self.cur_span();
+        let name = match self.bump() {
+            Tok::Ident(n) => n,
+            other => return self.err(format!("expected function name, got {:?}", other)),
+        };
+        self.expect(&Tok::LParen, "`(`")?;
+        let extern_param_count = if matches!(self.peek(), Tok::RParen) {
+            0
+        } else {
+            let mut count = 1usize;
+            let mut depth = 0usize;
+            loop {
+                match self.peek() {
+                    Tok::LParen | Tok::LBrace | Tok::LBrack => {
+                        depth += 1;
+                        self.bump();
+                    }
+                    Tok::RParen | Tok::RBrace | Tok::RBrack if depth > 0 => {
+                        depth -= 1;
+                        self.bump();
+                    }
+                    Tok::RParen => break,
+                    Tok::Comma if depth == 0 => {
+                        count += 1;
+                        self.bump();
+                    }
+                    Tok::Eof | Tok::Newline => {
+                        return self.err("unexpected end of extern parameter list");
+                    }
+                    _ => {
+                        self.bump();
+                    }
+                }
+            }
+            count
+        };
+        self.expect(&Tok::RParen, "`)`")?;
+        self.expect(&Tok::ColonColon, "`::`")?;
+        let mut extern_ret_tokens = Vec::new();
+        while !matches!(self.peek(), Tok::Newline | Tok::Eof) {
+            extern_ret_tokens.push(self.toks[self.pos].clone());
+            self.bump();
+        }
+        let span = self.finish(start);
+        Ok(FnDef {
+            name,
+            name_span,
+            clauses: vec![],
+            is_macro: false,
+            extern_abi: Some(abi),
+            extern_param_count,
+            extern_ret_tokens,
+            attrs: vec![],
+            span,
+        })
     }
 
     /// `alias A.B.C` or `alias A.B.C, as: D`.
