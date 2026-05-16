@@ -673,6 +673,8 @@ pub fn inline_single_use_conts_once(m: &mut Module, mt: &mut ModuleTypes) -> usi
         mt.specs.retain(|(fid, _), _| *fid != *k_id);
         mt.effective_returns.retain(|(fid, _), _| *fid != *k_id);
         mt.any_key_specs.remove(k_id);
+        mt.scc_of.remove(k_id);
+        debug_assert!(!mt.scc_of.contains_key(k_id), "scc_of must not contain inlined k");
 
         return 1; // restart — indices changed
     }
@@ -1198,6 +1200,23 @@ mod tests {
             !has_call_to_double,
             "expected no Call to double after inlining, but one remains"
         );
+    }
+
+    #[test]
+    fn inline_single_use_conts_cleans_up_scc_of() {
+        // After inlining, every FnId in mt.scc_of must still exist in the module.
+        // This proves that scc_of has no stale entries for inlined CPS continuations.
+        let src = "fn add1(x), do: x + 1\nfn main(), do: add1(3)";
+        let mut m = lower_src(src);
+        let mut mt = crate::ir_typer::type_module(&m);
+        inline_single_use_conts(&mut m, &mut mt);
+        for fid in mt.scc_of.keys() {
+            assert!(
+                m.fn_idx.contains_key(fid),
+                "scc_of contains stale FnId {:?} not in module",
+                fid
+            );
+        }
     }
 
     // GC root invariant: no test-accessible GC trigger exists in the current
