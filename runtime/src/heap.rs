@@ -1730,6 +1730,7 @@ mod tests {
 
     /// `alloc_procbin` writes a ProcBin header and pushes onto the chain.
     #[test]
+    #[serial_test::serial]
     fn alloc_procbin_pushes_into_mso_chain_with_correct_header() {
         let baseline = live_count();
         {
@@ -1746,6 +1747,7 @@ mod tests {
 
     /// A rooted ProcBin survives Cheney: chain rewritten to to-space copy.
     #[test]
+    #[serial_test::serial]
     fn procbin_survives_gc_via_mso_rewrite() {
         let baseline = live_count();
         let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
@@ -1767,6 +1769,7 @@ mod tests {
 
     /// Unrooted ProcBin: MSO sweep releases its SharedBin.
     #[test]
+    #[serial_test::serial]
     fn procbin_dies_in_gc_and_sweep_releases_shared_bin() {
         let baseline = live_count();
         let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
@@ -1780,6 +1783,7 @@ mod tests {
 
     /// Heap::drop releases every chain entry's shared_ptr.
     #[test]
+    #[serial_test::serial]
     fn heap_drop_releases_all_mso_shared_refs() {
         let baseline = live_count();
         {
@@ -1796,6 +1800,7 @@ mod tests {
 
     /// Cross-heap deep_copy of a ProcBin shares the SharedBin.
     #[test]
+    #[serial_test::serial]
     fn deep_copy_procbin_shares_via_retain() {
         let baseline = live_count();
         let mut src = Heap::new(SIZE_TABLE[0], empty_registry());
@@ -1837,6 +1842,7 @@ mod tests {
     /// Shared structure: a tuple containing the same ProcBin twice
     /// deep-copies to a single retained reference (refcount 2, not 3).
     #[test]
+    #[serial_test::serial]
     fn deep_copy_procbin_dedup_via_forwarding_map() {
         let baseline = live_count();
         let reg = empty_registry();
@@ -1896,6 +1902,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn alloc_bitstring_large_routes_to_shared_zone() {
         let baseline = live_count();
         let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
@@ -1917,6 +1924,7 @@ mod tests {
 
     /// Full spawn-and-share scenario at the heap layer.
     #[test]
+    #[serial_test::serial]
     fn shared_heap_acceptance_spawn_and_share() {
         const N: usize = 4;
         let baseline = live_count();

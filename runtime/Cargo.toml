@@ -5,3 +5,10 @@ edition = "2024"
 
 [lib]
 crate-type = ["staticlib", "rlib"]
+
+[dev-dependencies]
+# fz-q8d.1 — used by tests that baseline-delta against the global
+# `procbin::live_count` gauge. The earlier `live_count_lock` global
+# mutex is gone; tests that need exclusive access serialise via
+# `#[serial_test::serial]` instead.
+serial_test = "3"

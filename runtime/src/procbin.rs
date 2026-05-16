@@ -437,6 +437,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn alloc_retain_release_free_pattern() {
         let g = LiveCountGuard::snap();
         let p = shared_bin_alloc(&[1, 2, 3, 4], 32);
@@ -453,6 +454,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn alloc_release_immediately_frees() {
         let _g = LiveCountGuard::snap();
         let p = shared_bin_alloc(b"hello", 40);
@@ -460,6 +462,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn bytes_preserved_across_retain_release() {
         let _g = LiveCountGuard::snap();
         let p = shared_bin_alloc(&[0xde, 0xad, 0xbe, 0xef], 32);
@@ -477,6 +480,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn concurrent_retain_release_is_consistent() {
         let _g = LiveCountGuard::snap();
         let p = shared_bin_alloc(&[7; 64], 512);
@@ -510,6 +514,7 @@ mod tests {
 
     /// Heap-allocated bin's destructor field equals `shared_bin_destructor_heap`.
     #[test]
+    #[serial_test::serial]
     fn alloc_installs_heap_destructor() {
         let _g = LiveCountGuard::snap();
         let p = shared_bin_alloc(&[0u8; 4], 32);
@@ -524,6 +529,7 @@ mod tests {
     /// Construct a SharedBin manually with a test destructor that flips
     /// an AtomicBool; retain/release exactly to zero fires it once.
     #[test]
+    #[serial_test::serial]
     fn custom_destructor_fires_exactly_once() {
         static FIRED: AtomicUsize = AtomicUsize::new(0);
         unsafe extern "C" fn test_dtor(_p: *mut SharedBin) {
@@ -563,6 +569,7 @@ mod tests {
 
     /// SharedBinHandle Drop releases.
     #[test]
+    #[serial_test::serial]
     fn handle_drop_releases() {
         let g = LiveCountGuard::snap();
         {
@@ -574,6 +581,7 @@ mod tests {
     /// SharedBinHandle Clone retains; the destructor fires exactly when
     /// the second Drop runs.
     #[test]
+    #[serial_test::serial]
     fn handle_clone_retains_then_balanced_drops_free() {
         let g = LiveCountGuard::snap();
         let h = SharedBinHandle::from_bytes(&[0xab, 0xcd], 16);
@@ -592,6 +600,7 @@ mod tests {
 
     /// alloc_procbin pushes onto MSO chain; Heap::drop releases SharedBin.
     #[test]
+    #[serial_test::serial]
     fn alloc_procbin_pushes_into_mso_chain() {
         let g = LiveCountGuard::snap();
         {
@@ -608,6 +617,7 @@ mod tests {
 
     /// Three ProcBins on one heap: intrusive chain links latest → earlier.
     #[test]
+    #[serial_test::serial]
     fn mso_chain_threads_through_procbins() {
         let _g = LiveCountGuard::snap();
         let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
@@ -622,6 +632,7 @@ mod tests {
 
     /// Heap::drop releases every chain entry.
     #[test]
+    #[serial_test::serial]
     fn heap_drop_releases_all_chain_entries() {
         let g = LiveCountGuard::snap();
         {

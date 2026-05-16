@@ -10,19 +10,24 @@ A parent process builds a 70-byte bitstring (well above the
 closure captures the bitstring; the child sends the captured bitstring
 back to the parent; the parent prints it.
 
-The bitstring crosses the 64-byte threshold, so its payload is routed
-through the shared zone: a single `SharedBin` is allocated and both the
-parent's and the child's heaps hold a `ProcBin` stub referencing it.
-Deep-copy at spawn (capture) and at send (mailbox delivery) goes
-through `shared_bin_retain`, not byte-copy.
+The bitstring crosses the 64-byte threshold. As of fz-q8d.2 the
+const-fold pass collapses the byte-literal fields into a single
+`Prim::ConstBitstring`; codegen emits both a bytes payload and a
+40-byte static `SharedBin` struct in `.data` (refcount=1 anchor plus
+relocations for `bytes_ptr` and the noop destructor), then a single
+call to `fz_alloc_procbin_from_static`. Each `spawn` / `send` retains
+the static SharedBin — no heap allocation, no byte copy at any step.
 
 Three-path notes:
   * JIT, interp, and AOT all exercise the full code path. The fixture
-    matrix asserts identical stdout. The interp path lands via
-    fz-cty.7, which routes `Prim::MakeBitstring` through the same
-    `fz_bs_*` runtime calls the JIT and AOT emit.
+    matrix asserts identical stdout. Interp does not emit Cranelift
+    `.data` and continues to route through `Heap::alloc_bitstring`,
+    which yields a runtime-allocated ProcBin for above-threshold
+    payloads. Output is identical because the dispatch helpers
+    (`procbin::bitstring_bit_len` / `procbin::bitstring_byte_ptr`)
+    abstract over the two storage modes.
 
-The refcount invariant — exactly one SharedBin allocation across the
-whole run, zero at the end — is asserted in the
-`runtime/src/shared_bin.rs` and `runtime/src/heap.rs` unit tests via
-`shared_bin_live_count()`.
+The refcount invariant — at most one heap-allocated SharedBin across
+the whole run; the static SharedBin's anchor stays ≥ 1 — is verified
+in `runtime/src/procbin.rs` and `runtime/src/heap.rs` unit tests via
+`procbin::live_count()`.

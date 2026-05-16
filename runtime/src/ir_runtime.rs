@@ -633,6 +633,23 @@ pub extern "C" fn fz_alloc_bitstring_const(ptr: u64, byte_len: u64, bit_len: u64
     p as u64
 }
 
+/// fz-q8d.2 — allocate a ProcBin on the current heap referencing a
+/// compiler-baked static SharedBin in `.data`. The static SharedBin's
+/// refcount anchor (initial value 1) is kept; we retain to climb to 2,
+/// then the new ProcBin's lifetime release brings it back to 1 (anchor
+/// preserved). The noop destructor never runs in practice.
+///
+/// `static_sharedbin` is the address of the 40-byte SharedBin struct
+/// emitted into `.data` by codegen, with bytes_ptr and destructor
+/// relocations resolved by the linker.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_alloc_procbin_from_static(static_sharedbin: u64) -> u64 {
+    let sb = static_sharedbin as *mut crate::procbin::SharedBin;
+    let handle = unsafe { crate::procbin::SharedBinHandle::retain_from_raw(sb) };
+    let pb = crate::procbin::alloc_procbin(&mut current_process().heap, handle);
+    pb.as_raw() as u64
+}
+
 fn decode_bit_type(t: u32) -> crate::bitstr::BitType {
     use crate::bitstr::BitType;
     match t {
@@ -1317,8 +1334,49 @@ mod tests {
         });
     }
 
+    /// fz-q8d.2 — `fz_alloc_procbin_from_static` retains the static
+    /// SharedBin's anchor (climbing 1 → 2), allocates a ProcBin that
+    /// owns the new edge, and returns it as a tagged FzValue ptr. When
+    /// the holding heap drops, the anchor is preserved (refcount stays
+    /// at 1) — the static SharedBin lives forever.
+    #[test]
+    #[serial_test::serial]
+    fn alloc_procbin_from_static_preserves_anchor() {
+        use crate::procbin::SharedBin;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        // Construct a "static" SharedBin by hand. Its destructor is a
+        // noop pointer so the test owns its lifetime explicitly.
+        static PAYLOAD: [u8; 8] = [0xde, 0xad, 0xbe, 0xef, 0xca, 0xfe, 0xba, 0xbe];
+        unsafe extern "C" fn noop(_: *mut SharedBin) {}
+        let mut sb = SharedBin {
+            refcount: AtomicUsize::new(1),
+            bit_len: 64,
+            bytes_ptr: PAYLOAD.as_ptr(),
+            bytes_len: PAYLOAD.len(),
+            destructor: noop,
+        };
+        let sb_ptr = &mut sb as *mut SharedBin;
+        with_process(|| {
+            let bits = fz_alloc_procbin_from_static(sb_ptr as u64);
+            let p = crate::fz_value::FzValue(bits).unbox_ptr().unwrap();
+            unsafe {
+                assert_eq!(HeapKind::from_u16((*p).kind), Some(HeapKind::ProcBin));
+                assert_eq!(bitstring_bit_len(p), 64);
+                let bp = bitstring_byte_ptr(p);
+                assert_eq!(std::slice::from_raw_parts(bp, 8), &PAYLOAD[..]);
+                // retain climbed anchor 1 -> 2.
+                assert_eq!(sb.refcount.load(Ordering::Relaxed), 2);
+            }
+            // When the with_process drops the temp Process, the heap drop
+            // releases the ProcBin's edge, returning refcount to the
+            // anchor value 1.
+        });
+        assert_eq!(sb.refcount.load(Ordering::Relaxed), 1, "anchor preserved");
+    }
+
     /// fz-cty.8 — large (> threshold) payload routes through ProcBin / SharedBin.
     #[test]
+    #[serial_test::serial]
     fn alloc_bitstring_const_large_payload_is_procbin() {
         with_process(|| {
             let payload: Vec<u8> = (0..70u8).collect(); // 70 > SHARED_BIN_THRESHOLD_BYTES (64)

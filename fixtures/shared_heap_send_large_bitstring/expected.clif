@@ -4,7 +4,7 @@
     ;   @abi    () -> Tagged
 function u0:0(i64) -> i64 tail {
     gv0 = symbol colocated userextname0
-    sig0 = (i64, i64, i64) -> i64 system_v
+    sig0 = (i64) -> i64 system_v
     sig1 = (i32, i32, i32) -> i64 system_v
     sig2 = (i64, i64) -> i64 tail
     sig3 = (i32, i32, i32) -> i64 system_v
@@ -13,46 +13,44 @@ function u0:0(i64) -> i64 tail {
     sig6 = (i32, i32, i32) -> i64 system_v
     sig7 = (i64, i64) -> i64 tail
     sig8 = (i64) -> i64 system_v
-    fn0 = u0:13 sig0
-    fn1 = u0:29 sig1
-    fn2 = colocated u0:46 sig2
-    fn3 = u0:29 sig3
-    fn4 = colocated u0:47 sig4
-    fn5 = u0:30 sig5
-    fn6 = u0:29 sig6
-    fn7 = colocated u0:48 sig7
-    fn8 = u0:34 sig8
+    fn0 = u0:14 sig0
+    fn1 = u0:31 sig1
+    fn2 = colocated u0:48 sig2
+    fn3 = u0:31 sig3
+    fn4 = colocated u0:49 sig4
+    fn5 = u0:32 sig5
+    fn6 = u0:31 sig6
+    fn7 = colocated u0:50 sig7
+    fn8 = u0:36 sig8
 
 block0(v0: i64):
     v1 = symbol_value.i64 gv0           ; @6:10
-    v2 = iconst.i64 70                  ; @6:10
-    v3 = iconst.i64 560                 ; @6:10
-    v4 = call fn0(v1, v2, v3)           ; @6:10  v2 = 70, v3 = 560
-    v5 = iconst.i32 2                   ; @6:13
-    v6 = iconst.i32 1                   ; @6:13
-    v7 = iconst.i32 0                   ; @6:13
-    v8 = call fn1(v5, v6, v7)           ; @6:13  v5 = 2, v6 = 1, v7 = 0
-    v9 = func_addr.i64 fn2              ; @6:13
-    store notrap aligned v9, v8+16      ; @6:13
-    store notrap aligned v4, v8+24      ; @6:13
-    v10 = iconst.i32 3                  ; @6:16
-    v11 = iconst.i32 1                  ; @6:16
-    v12 = iconst.i32 0                  ; @6:16
-    v13 = call fn3(v10, v11, v12)       ; @6:16  v10 = 3, v11 = 1, v12 = 0
-    v14 = func_addr.i64 fn4             ; @6:16
-    store notrap aligned v14, v13+16    ; @6:16
-    store notrap aligned v8, v13+24     ; @6:16
-    v15 = call fn5(v13)                 ; @6:19
-    v16 = iconst.i32 4                  ; @8:9
-    v17 = iconst.i32 2                  ; @8:9
-    v18 = iconst.i32 0                  ; @8:9
-    v19 = call fn6(v16, v17, v18)       ; @8:9  v16 = 4, v17 = 2, v18 = 0
-    v20 = func_addr.i64 fn7             ; @8:9
-    store notrap aligned v20, v19+16    ; @8:9
-    store notrap aligned v0, v19+24     ; @8:9
-    store notrap aligned v4, v19+32     ; @8:9
-    v21 = call fn8(v19)                 ; @8:9
-    return v21                          ; @8:9
+    v2 = call fn0(v1)                   ; @6:10
+    v3 = iconst.i32 2                   ; @6:13
+    v4 = iconst.i32 1                   ; @6:13
+    v5 = iconst.i32 0                   ; @6:13
+    v6 = call fn1(v3, v4, v5)           ; @6:13  v3 = 2, v4 = 1, v5 = 0
+    v7 = func_addr.i64 fn2              ; @6:13
+    store notrap aligned v7, v6+16      ; @6:13
+    store notrap aligned v2, v6+24      ; @6:13
+    v8 = iconst.i32 3                   ; @6:16
+    v9 = iconst.i32 1                   ; @6:16
+    v10 = iconst.i32 0                  ; @6:16
+    v11 = call fn3(v8, v9, v10)         ; @6:16  v8 = 3, v9 = 1, v10 = 0
+    v12 = func_addr.i64 fn4             ; @6:16
+    store notrap aligned v12, v11+16    ; @6:16
+    store notrap aligned v6, v11+24     ; @6:16
+    v13 = call fn5(v11)                 ; @6:19
+    v14 = iconst.i32 4                  ; @8:9
+    v15 = iconst.i32 2                  ; @8:9
+    v16 = iconst.i32 0                  ; @8:9
+    v17 = call fn6(v14, v15, v16)       ; @8:9  v14 = 4, v15 = 2, v16 = 0
+    v18 = func_addr.i64 fn7             ; @8:9
+    store notrap aligned v18, v17+16    ; @8:9
+    store notrap aligned v0, v17+24     ; @8:9
+    store notrap aligned v2, v17+32     ; @8:9
+    v19 = call fn8(v17)                 ; @8:9
+    return v19                          ; @8:9
 }
 
 ; fn lambda_2
@@ -62,7 +60,7 @@ block0(v0: i64):
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64, i64) -> i64 system_v
     sig1 = (i64, i64) -> i64 tail
-    fn0 = u0:33 sig0
+    fn0 = u0:35 sig0
 
 block0(v0: i64, v1: i64):
     v2 = load.i64 notrap aligned v0+24    ;; v2 :: vec(u8) | vec(bit)
@@ -80,7 +78,7 @@ block0(v0: i64, v1: i64):
     ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64, i64) -> i64 tail
-    fn0 = colocated u0:46 sig0
+    fn0 = colocated u0:48 sig0
 
 block0(v0: i64, v1: i64):
     v2 = load.i64 notrap aligned v0+24    ;; v2 :: &fn2[vec(u8) | vec(bit)]:() -> any
