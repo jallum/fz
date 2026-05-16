@@ -1,63 +1,36 @@
 ; fn main
-    ;   @spec   main() -> _
+    ;   @spec   main() -> nil
     ;   @key    []
     ;   @abi    () -> Tagged
 function u0:0(i64) -> i64 tail {
-    sig0 = (i64, i64) -> i64 tail
-    fn0 = colocated u0:48 sig0
-
-block0(v0: i64):
-    v1 = iconst.i64 42                  ; @11:18
-    return_call fn0(v1, v0)             ; @11:9  v1 = 42
-}
-
-; fn k_12_s11
-    ;   @spec   k_12(int) -> _
-    ;   @key    [int]
-    ;   @abi    (RawInt) -> Tagged
-function u0:0(i64, i64) -> i64 tail {
-    sig0 = (i64) system_v
-    sig1 = (i64, i64) -> i64 tail
-    fn0 = u0:1 sig0
-    fn1 = colocated u0:49 sig1
-
-    block0(v0: i64, v1: i64):    ;; v0 :: int
-    call fn0(v0)
-    v2 = iconst.i64 3    ;; v2 :: nil
-    return_call fn1(v2, v1)             ; @11:3  v2 = 3
-}
-
-; fn k_13_s12
-    ;   @spec   k_13(nil) -> _
-    ;   @key    [nil]
-    ;   @abi    (Tagged) -> Tagged
-function u0:0(i64, i64) -> i64 tail {
-    sig0 = (i64, i64) -> i64 tail
-    fn0 = colocated u0:50 sig0
-
-    block0(v0: i64, v1: i64):    ;; v0 :: nil
-    v2 = iconst.i64 20                  ; @12:16
-    return_call fn0(v2, v1)             ; @12:9  v2 = 20
-}
-
-; fn k_14_s13
-    ;   @spec   k_14(int) -> nil
-    ;   @key    [int]
-    ;   @abi    (RawInt) -> Tagged
-function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64) system_v
     sig1 = (i64) system_v
-    sig2 = (i64, i64) -> i64 tail
+    sig2 = (i64) system_v
+    sig3 = (i64, i64) -> i64 tail
     fn0 = u0:1 sig0
     fn1 = u0:1 sig1
+    fn2 = u0:1 sig2
 
-    block0(v0: i64, v1: i64):    ;; v0 :: int
-    call fn0(v0)
-    v2 = iconst.i64 3    ;; v2 :: nil
-    v3 = iconst.i64 107    ;; v3 :: 107
-    call fn1(v3)  ; v3 = 107
-    v4 = iconst.i64 3    ;; v4 :: nil
-    v5 = load.i64 notrap aligned v1+16  ; @12:3
-    return_call_indirect sig2, v5(v4, v1) ; @12:3  v4 = 3
+block0(v0: i64):
+    v4 = iconst.i64 42                  ; @11:18
+    jump block1(v4)                     ; @11:9  v4 = 42
+
+    block1(v1: i64):    ;; v1 :: 42
+    call fn0(v1)
+    v5 = iconst.i64 3    ;; v5 :: nil
+    jump block2(v5)  ; v5 = 3
+
+    block2(v2: i64):    ;; v2 :: nil
+    v6 = iconst.i64 20    ;; v6 :: 20
+    jump block3(v6)  ; v6 = 20
+
+    block3(v3: i64):    ;; v3 :: 20
+    call fn1(v3)
+    v7 = iconst.i64 3    ;; v7 :: nil
+    v8 = iconst.i64 107    ;; v8 :: 107
+    call fn2(v8)  ; v8 = 107
+    v9 = iconst.i64 3    ;; v9 :: nil
+    v10 = load.i64 notrap aligned v0+16
+    return_call_indirect sig3, v10(v9, v0)  ; v9 = 3
 }
 

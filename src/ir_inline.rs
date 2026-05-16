@@ -515,6 +515,181 @@ pub fn inline_calls_once(m: &mut Module) -> usize {
     count
 }
 
+// ---------- pass: inline_single_use_conts_once ----------
+
+/// One pass: for every continuation fn `k` that is:
+///   - the callee of exactly one `TailCall` (in fn F at block B), and
+///   - referenced by at most one `Cont { fn_id: k }` in some `Term::Call`
+///     with empty captures,
+///
+/// inline k's blocks into F (replacing the TailCall with a Goto), then:
+///   - if there was a `Term::Call { callee: G, continuation: Cont { fn_id: k } }`
+///     in some fn M, convert it to `TailCall { callee: G, args }` — the
+///     continuation has been absorbed into F.
+///   - remove k from the module.
+///
+/// This eliminates the CPS-overhead functions that fold+DCE produce when a
+/// `Term::If` becomes `Term::Goto`: the surviving single-path continuation
+/// chain collapses into one function.
+pub fn inline_single_use_conts_once(m: &mut Module) -> usize {
+    use std::collections::HashMap;
+    let closure_fns = closure_targets(m);
+
+    // Count non-back-edge TailCall sites per FnId.
+    let mut tc_sites: HashMap<FnId, Vec<(usize, usize)>> = HashMap::new();
+    // Count back-edge TailCall references per FnId (any function targeting k
+    // via a back-edge). Removing k while these exist would leave them dangling.
+    let mut be_tc_count: HashMap<FnId, usize> = HashMap::new();
+    for (fi, f) in m.fns.iter().enumerate() {
+        for (bi, b) in f.blocks.iter().enumerate() {
+            if let Term::TailCall {
+                callee,
+                is_back_edge,
+                ..
+            } = &b.terminator
+            {
+                if *is_back_edge {
+                    *be_tc_count.entry(*callee).or_insert(0) += 1;
+                } else {
+                    tc_sites.entry(*callee).or_default().push((fi, bi));
+                }
+            }
+        }
+    }
+
+    // Count Cont references per FnId.
+    let mut cont_sites: HashMap<FnId, Vec<(usize, usize)>> = HashMap::new();
+    // Count direct Term::Call callee references per FnId (not as continuation).
+    // A function appearing here as callee is a live use — inlining+removing it
+    // would leave those Call sites dangling.
+    let mut direct_call_sites: HashMap<FnId, usize> = HashMap::new();
+    for (fi, f) in m.fns.iter().enumerate() {
+        for (bi, b) in f.blocks.iter().enumerate() {
+            let k = match &b.terminator {
+                Term::Call { callee, continuation, .. } => {
+                    *direct_call_sites.entry(*callee).or_insert(0) += 1;
+                    Some(continuation.fn_id)
+                }
+                Term::CallClosure { continuation, .. } => Some(continuation.fn_id),
+                Term::Receive { continuation } => Some(continuation.fn_id),
+                _ => None,
+            };
+            if let Some(kid) = k {
+                cont_sites.entry(kid).or_default().push((fi, bi));
+            }
+        }
+    }
+
+    for (k_id, tcs) in &tc_sites {
+        if tcs.len() != 1 {
+            continue;
+        }
+        let (caller_fi, caller_bi) = tcs[0];
+        if closure_fns.contains(k_id) {
+            continue;
+        }
+        // Skip if k appears as a direct callee in any Term::Call — removing it
+        // would leave those sites dangling (catches non-tail recursion and
+        // multi-site user functions like step(step(step(...)))).
+        if direct_call_sites.get(k_id).copied().unwrap_or(0) > 0 {
+            continue;
+        }
+        // Skip if any back-edge TailCall targets k (mutual or direct
+        // back-edge recursion — removing k would leave those sites dangling).
+        if be_tc_count.get(k_id).copied().unwrap_or(0) > 0 {
+            continue;
+        }
+        let k_idx = match m.fn_idx.get(k_id) {
+            Some(&i) => i,
+            None => continue,
+        };
+        if k_idx == caller_fi {
+            continue; // self-tail — skip
+        }
+        // No Receive inside k — runtime async boundary can't be inlined away.
+        if m.fns[k_idx]
+            .blocks
+            .iter()
+            .any(|b| matches!(b.terminator, Term::Receive { .. }))
+        {
+            continue;
+        }
+        // No self-references inside k — inlining removes k from the module,
+        // so any Term::Call/TailCall with callee==k_id would become dangling.
+        // This catches both back-edge tail-recursion and non-tail recursion.
+        if m.fns[k_idx].blocks.iter().any(|b| match &b.terminator {
+            Term::TailCall { callee, .. } | Term::Call { callee, .. } => callee == k_id,
+            _ => false,
+        }) {
+            continue;
+        }
+        // At most one Cont ref, and if so captured must be empty.
+        let conts = cont_sites.get(k_id).map(|v| v.as_slice()).unwrap_or(&[]);
+        if conts.len() > 1 {
+            continue;
+        }
+        let cont_site = conts.first().copied();
+        if let Some((m_fi, m_bi)) = cont_site {
+            let ok = match &m.fns[m_fi].blocks[m_bi].terminator {
+                Term::Call { continuation, .. } | Term::CallClosure { continuation, .. } => {
+                    continuation.fn_id == *k_id && continuation.captured.is_empty()
+                }
+                _ => false,
+            };
+            if !ok {
+                continue;
+            }
+        }
+
+        // Inline k into caller.
+        let tail_args = match &m.fns[caller_fi].blocks[caller_bi].terminator {
+            Term::TailCall { args, .. } => args.clone(),
+            _ => continue,
+        };
+        let k_fn = m.fns[k_idx].clone();
+        let (renamed, _, _) = alpha_rename(&k_fn, &m.fns[caller_fi]);
+        let entry = splice_blocks(&mut m.fns[caller_fi], renamed);
+        m.fns[caller_fi].blocks[caller_bi].terminator = Term::Goto(entry, tail_args);
+
+        // Convert the Term::Call at the Cont site to TailCall.
+        if let Some((m_fi, m_bi)) = cont_site {
+            let new_term = match &m.fns[m_fi].blocks[m_bi].terminator {
+                Term::Call { callee, args, .. } => Some(Term::TailCall {
+                    callee: *callee,
+                    args: args.clone(),
+                    is_back_edge: false,
+                }),
+                Term::CallClosure { closure, args, .. } => Some(Term::TailCallClosure {
+                    closure: *closure,
+                    args: args.clone(),
+                }),
+                _ => None,
+            };
+            if let Some(t) = new_term {
+                m.fns[m_fi].blocks[m_bi].terminator = t;
+            }
+        }
+
+        // Remove k and rebuild the index.
+        m.fns.remove(k_idx);
+        m.fn_idx.clear();
+        for (i, f) in m.fns.iter().enumerate() {
+            m.fn_idx.insert(f.id, i);
+        }
+        return 1; // restart — indices changed
+    }
+    0
+}
+
+/// Run single-use continuation inlining to fixed-point.
+pub fn inline_single_use_conts(m: &mut Module) {
+    loop {
+        if inline_single_use_conts_once(m) == 0 {
+            break;
+        }
+    }
+}
+
 // ---------- driver ----------
 
 /// Run both inliner passes to fixed-point (up to MAX_ITERATIONS rounds).

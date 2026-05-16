@@ -1826,6 +1826,12 @@ pub fn compile_with_backend<B: Backend>(
     // DCE so the per-byte Const(Int) operand stmts go dead in the same pass.
     crate::ir_const_bs::fold_module(&mut working);
     crate::ir_dce::dce_module(&mut working);
+    crate::ir_inline::inline_single_use_conts(&mut working);
+    crate::ir_dce::dce_module(&mut working);
+    // Recompute types after cont inlining: alpha-renamed vars from inlined
+    // continuations are not in the pre-pass module_types, so the spec
+    // registry lookups would fall back to Descr::any and miss.
+    let module_types = crate::ir_typer::type_module(&working);
     let module = &working;
 
     // fz-ul4.29.2.1 — Build the SpecRegistry.

@@ -1,34 +1,25 @@
 ; fn main
-    ;   @spec   main() -> _
+    ;   @spec   main() -> nil
     ;   @key    []
     ;   @abi    () -> Tagged
 function u0:0(i64) -> i64 tail {
-    sig0 = (i64, i64) -> i64 tail
-    fn0 = colocated u0:48 sig0
-
-block0(v0: i64):
-    v1 = iconst.i64 18                  ; @12:20
-    return_call fn0(v1, v0)             ; @12:9  v1 = 18
-}
-
-; fn k_10
-    ;   @spec   k_10(:alice) -> nil
-    ;   @key    [:alice]
-    ;   @abi    (Tagged) -> Tagged
-function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64) system_v
     sig1 = (i64) system_v
     sig2 = (i64, i64) -> i64 tail
     fn0 = u0:0 sig0
     fn1 = u0:1 sig1
 
-    block0(v0: i64, v1: i64):    ;; v0 :: :alice
-    call fn0(v0)
-    v2 = iconst.i64 3    ;; v2 :: nil
-    v3 = iconst.i64 42    ;; v3 :: 42
-    call fn1(v3)  ; v3 = 42
-    v4 = iconst.i64 3    ;; v4 :: nil
-    v5 = load.i64 notrap aligned v1+16  ; @12:3
-    return_call_indirect sig2, v5(v4, v1) ; @12:3  v4 = 3
+block0(v0: i64):
+    v2 = iconst.i64 18                  ; @12:20
+    jump block1(v2)                     ; @12:9  v2 = 18
+
+    block1(v1: i64):    ;; v1 :: :alice
+    call fn0(v1)
+    v3 = iconst.i64 3    ;; v3 :: nil
+    v4 = iconst.i64 42    ;; v4 :: 42
+    call fn1(v4)  ; v4 = 42
+    v5 = iconst.i64 3    ;; v5 :: nil
+    v6 = load.i64 notrap aligned v0+16
+    return_call_indirect sig2, v6(v5, v0)  ; v5 = 3
 }
 

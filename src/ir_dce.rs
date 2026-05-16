@@ -257,12 +257,12 @@ fn fuse_fn(f: &mut FnIr) {
         }
 
         let fuseable = f.blocks.iter().find_map(|block| {
-            if let Term::Goto(target, args) = &block.terminator {
-                if args.is_empty() {
-                    let tb = f.blocks.iter().find(|b| b.id == *target)?;
-                    if tb.params.is_empty() && in_degree.get(target) == Some(&1) {
-                        return Some((block.id, *target));
-                    }
+            if let Term::Goto(target, args) = &block.terminator
+                && args.is_empty()
+            {
+                let tb = f.blocks.iter().find(|b| b.id == *target)?;
+                if tb.params.is_empty() && in_degree.get(target) == Some(&1) {
+                    return Some((block.id, *target));
                 }
             }
             None

@@ -2,33 +2,33 @@
 
 @doc "Prints x to standard output."
 @spec print(any) :: nil
-fn print(x :: integer) do fz_print_i64(x) end
-fn print(x) do fz_print_value(x) end
+fn print(x :: integer), do: fz_print_i64(x)
+fn print(x), do: fz_print_value(x)
 
 @doc "Aborts the process if x is falsy (nil or false)."
 @spec assert(any) :: nil
-fn assert(x) do fz_assert(x) end
+fn assert(x), do: fz_assert(x)
 
 @doc "Aborts the process if a and b are not equal."
 @spec assert_eq(any, any) :: nil
-fn assert_eq(a, b) do fz_assert_eq(a, b) end
+fn assert_eq(a, b), do: fz_assert_eq(a, b)
 
 @doc "Aborts the process if a and b are equal."
 @spec assert_neq(any, any) :: nil
-fn assert_neq(a, b) do fz_assert_neq(a, b) end
+fn assert_neq(a, b), do: fz_assert_neq(a, b)
 
 @doc "Returns element i of vector v (zero-based index)."
 @spec vec_get(any, integer) :: any
-fn vec_get(v :: vector(integer), i) do fz_vec_get(v, i) end
-fn vec_get(v, i) do fz_vec_get(v, i) end
+fn vec_get(v :: vector(integer), i), do: fz_vec_get(v, i)
+fn vec_get(v, i), do: fz_vec_get(v, i)
 
 @doc "Returns the PID of the calling process."
 @spec self() :: pid
-fn self() do fz_self() end
+fn self(), do: fz_self()
 
 @doc "Sends msg to the process identified by pid; returns msg."
-@spec send(integer, any) :: any
-fn send(pid, msg) do fz_send(pid, msg) end
+@spec send(pid, any) :: any
+fn send(pid, msg), do: fz_send(pid, msg)
 
 extern "C" fn fz_print_i64(integer) :: nil
 extern "C" fn fz_print_value(any) :: nil
@@ -39,4 +39,4 @@ extern "C" fn fz_vec_get(any, any) :: any
 extern "C" fn fz_spawn(any) :: any
 extern "C" fn fz_spawn_opt(any, any) :: any
 extern "C" fn fz_self() :: pid
-extern "C" fn fz_send(any, any) :: any
+extern "C" fn fz_send(pid, any) :: any
