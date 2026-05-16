@@ -71,10 +71,10 @@ pub fn resolve_spec_decl(
 ) -> Result<ResolvedSpec, TypeExprError> {
     let mut params = Vec::with_capacity(decl.param_body_tokens.len());
     for body in &decl.param_body_tokens {
-        let (d, _consumed) = parse_type_expr(body, env)?;
+        let (d, _consumed) = parse_type_expr(&body.0, env)?;
         params.push(d);
     }
-    let (result, _consumed) = parse_type_expr(&decl.result_body_tokens, env)?;
+    let (result, _consumed) = parse_type_expr(&decl.result_body_tokens.0, env)?;
     Ok(ResolvedSpec { params, result })
 }
 
@@ -123,6 +123,7 @@ pub fn build_module_type_env(
             // stored in the Descr (opaque types are nominal, not structural).
             let is_opaque = decl
                 .body_tokens
+                .0
                 .first()
                 .map(|t| matches!(&t.tok, Tok::Ident(n) if n == "opaque"))
                 .unwrap_or(false);
@@ -131,7 +132,7 @@ pub fn build_module_type_env(
                 progressed = true;
                 continue;
             }
-            match parse_type_expr(&decl.body_tokens, &env) {
+            match parse_type_expr(&decl.body_tokens.0, &env) {
                 Ok((d, _consumed)) => {
                     env.insert(name.clone(), d);
                     progressed = true;
@@ -156,7 +157,7 @@ pub fn build_module_type_env(
             let decl = pending[name];
             // Distinguish cycle from unknown-name by checking whether
             // the body references another unresolved alias.
-            let body_refs = referenced_names(&decl.body_tokens);
+            let body_refs = referenced_names(&decl.body_tokens.0);
             let mut cycle_partner: Option<&str> = None;
             for r in &body_refs {
                 if pending.contains_key(r) && !env.contains_key(r) {
@@ -174,7 +175,7 @@ pub fn build_module_type_env(
                 });
             }
             // No cycle partner — surface the original parse error.
-            match parse_type_expr(&decl.body_tokens, &env) {
+            match parse_type_expr(&decl.body_tokens.0, &env) {
                 Ok(_) => unreachable!("env did not grow; this should not parse OK"),
                 Err(e) => return Err(e),
             }
@@ -676,7 +677,7 @@ mod tests {
         Attribute::TypeAlias(TypeAliasDecl {
             name: name.to_string(),
             name_span: Span::DUMMY,
-            body_tokens,
+            body_tokens: crate::ast::TypeExprBody(body_tokens),
             span: Span::DUMMY,
         })
     }

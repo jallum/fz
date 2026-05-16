@@ -550,7 +550,7 @@ fn lower_extern_ret_ty(
     type_env: &crate::type_expr::ModuleTypeEnv,
 ) -> Result<(ExternTy, crate::types::Descr), LowerError> {
     use crate::lexer::Tok;
-    let tokens = &fn_def.extern_ret_tokens;
+    let tokens = &fn_def.extern_ret_tokens.0;
 
     // Try to resolve via parse_type_expr first (handles named types like `pid`).
     if !tokens.is_empty()
@@ -892,7 +892,7 @@ fn emit_param_type_guards(
     );
     for (pv, type_toks_opt) in param_vars.iter().zip(&clause.param_annotations) {
         let toks = match type_toks_opt {
-            Some(t) => t,
+            Some(t) => &t.0,
             None => continue,
         };
         let descr = match crate::type_expr::parse_type_expr(toks, &ctx.combined_type_env) {

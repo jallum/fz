@@ -144,7 +144,7 @@ mod extern_parse_tests {
     fn extern_fn_two_params() {
         let d = parse_extern("extern \"C\" fn fz_assert_eq(any, any) :: unit\n");
         assert_eq!(d.extern_params.len(), 2);
-        assert!(!d.extern_ret_tokens.is_empty());
+        assert!(!d.extern_ret_tokens.0.is_empty());
     }
 }
 
@@ -410,7 +410,7 @@ impl Parser {
                             is_macro,
                             extern_abi: None,
                             extern_params: vec![],
-                            extern_ret_tokens: vec![],
+                            extern_ret_tokens: TypeExprBody(vec![]),
                             attrs,
                             span: start.merge(clause_span),
                         });
@@ -507,7 +507,7 @@ impl Parser {
                     }
                 };
                 self.expect(&Tok::LParen, "`(`")?;
-                let mut param_body_tokens: Vec<Vec<Token>> = Vec::new();
+                let mut param_body_tokens: Vec<TypeExprBody> = Vec::new();
                 if !matches!(self.peek(), Tok::RParen) {
                     loop {
                         let toks = self.collect_until_comma_or_rparen();
@@ -515,7 +515,7 @@ impl Parser {
                             return self
                                 .err("expected type expression in @spec param list".to_string());
                         }
-                        param_body_tokens.push(toks);
+                        param_body_tokens.push(TypeExprBody(toks));
                         if matches!(self.peek(), Tok::Comma) {
                             self.bump();
                             continue;
@@ -535,7 +535,7 @@ impl Parser {
                     name: spec_name,
                     name_span,
                     param_body_tokens,
-                    result_body_tokens,
+                    result_body_tokens: TypeExprBody(result_body_tokens),
                     span: start.merge(end_span),
                 }))
             }
@@ -561,7 +561,7 @@ impl Parser {
                 Ok(Attribute::TypeAlias(TypeAliasDecl {
                     name: alias_name,
                     name_span: alias_name_span,
-                    body_tokens,
+                    body_tokens: TypeExprBody(body_tokens),
                     span: start.merge(end_span),
                 }))
             }
@@ -642,9 +642,9 @@ impl Parser {
     /// Parse function parameter list with optional type annotations (`x :: T`).
     /// Returns (patterns, per-param type token vecs). Called from `parse_fn_clause`.
     #[allow(clippy::type_complexity)]
-    fn parse_fn_params(&mut self) -> PR<(Vec<Spanned<Pattern>>, Vec<Option<Vec<Token>>>)> {
+    fn parse_fn_params(&mut self) -> PR<(Vec<Spanned<Pattern>>, Vec<Option<TypeExprBody>>)> {
         let mut patterns = Vec::new();
-        let mut types: Vec<Option<Vec<Token>>> = Vec::new();
+        let mut types: Vec<Option<TypeExprBody>> = Vec::new();
         self.skip_newlines();
         if matches!(self.peek(), Tok::RParen) {
             return Ok((patterns, types));
@@ -657,7 +657,7 @@ impl Parser {
                 if toks.is_empty() {
                     return self.err("expected type expression after `::`");
                 }
-                Some(toks)
+                Some(TypeExprBody(toks))
             } else {
                 None
             };
@@ -859,7 +859,7 @@ impl Parser {
             is_macro: false,
             extern_abi: Some(abi),
             extern_params,
-            extern_ret_tokens,
+            extern_ret_tokens: TypeExprBody(extern_ret_tokens),
             attrs: vec![],
             span,
         })
