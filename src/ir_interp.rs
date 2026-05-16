@@ -9,7 +9,6 @@
 //! Scope at .5.2: minimal for fixtures/add1/input.fz —
 //!   Const::{Int, Atom, Nil, True, False}
 //!   BinOp::Add  (Int + Int)
-//!   Prim::Builtin(Print, ...)
 //!   Term::{Call, Return, Halt}
 //!
 //! Subsequent atoms expand the surface fixture by fixture:
@@ -23,9 +22,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 
-use crate::fz_ir::{
-    BinOp, BuiltinKind, Const, ExternId, ExternTy, FnId, Module, Prim, Stmt, Term, Var,
-};
+use crate::fz_ir::{BinOp, Const, ExternId, ExternTy, FnId, Module, Prim, Stmt, Term, Var};
 use fz_runtime::fz_value::FzValue;
 use fz_runtime::process::Process;
 
@@ -463,10 +460,6 @@ fn eval_prim(module: &Module, prim: &Prim, env: &HashMap<Var, FzValue>) -> Resul
             let bv = env_get(env, *b)?;
             eval_binop(*op, av, bv)?
         }
-        Prim::Builtin(bid, args) => {
-            let arg_vals = collect(env, args)?;
-            run_builtin(module, *bid, &arg_vals)?
-        }
         Prim::Extern(eid, args) => {
             let arg_vals = collect(env, args)?;
             call_extern(module, *eid, &arg_vals)?
@@ -702,108 +695,6 @@ fn eval_binop(op: BinOp, a: FzValue, b: FzValue) -> Result<FzValue, String> {
         BinOp::Ge => float_cmp!(>=),
         BinOp::And => Ok(if !is_truthy(a) { a } else { b }),
         BinOp::Or => Ok(if is_truthy(a) { a } else { b }),
-    }
-}
-
-fn run_builtin(
-    module: &Module,
-    bid: crate::fz_ir::BuiltinId,
-    args: &[FzValue],
-) -> Result<FzValue, String> {
-    let Some(kind) = BuiltinKind::from_id(bid) else {
-        return Err(format!("interp: unknown builtin id {}", bid.0));
-    };
-    match kind {
-        BuiltinKind::Print => {
-            if args.len() != 1 {
-                return Err(format!("print/1 got {} args", args.len()));
-            }
-            fz_runtime::ir_runtime::fz_print_value(args[0].0);
-            Ok(FzValue::NIL)
-        }
-        BuiltinKind::Assert => {
-            if args.len() != 1 {
-                return Err(format!("assert/1 got {} args", args.len()));
-            }
-            if is_truthy(args[0]) {
-                Ok(FzValue::NIL)
-            } else {
-                Err("assertion failed".into())
-            }
-        }
-        BuiltinKind::AssertEq => {
-            if args.len() != 2 {
-                return Err(format!("assert_eq/2 got {} args", args.len()));
-            }
-            let eq = FzValue(fz_runtime::ir_runtime::fz_value_eq(args[0].0, args[1].0));
-            if eq.is_true() {
-                Ok(FzValue::NIL)
-            } else {
-                Err(format!(
-                    "assertion failed: assert_eq({}, {})",
-                    fz_runtime::fz_value::debug::render(args[0].0),
-                    fz_runtime::fz_value::debug::render(args[1].0),
-                ))
-            }
-        }
-        BuiltinKind::AssertNeq => {
-            if args.len() != 2 {
-                return Err(format!("assert_neq/2 got {} args", args.len()));
-            }
-            let eq = FzValue(fz_runtime::ir_runtime::fz_value_eq(args[0].0, args[1].0));
-            if eq.is_false() {
-                Ok(FzValue::NIL)
-            } else {
-                Err(format!(
-                    "assertion failed: assert_neq({}, {})",
-                    fz_runtime::fz_value::debug::render(args[0].0),
-                    fz_runtime::fz_value::debug::render(args[1].0),
-                ))
-            }
-        }
-        BuiltinKind::Spawn => {
-            // fz-ul4.29.5: lifted zero-captures restriction. Spawn deep-
-            // copies the closure (captures included) into the new task's
-            // heap; the body fn is invoked with the captures as its entry
-            // params (a spawned closure has zero call args, so the entry
-            // params are exactly the captures).
-            // fz-siu.12: spawn/2 accepts a min_heap_size hint (ignored by
-            // the interp — single shared heap, no per-process sizing).
-            if args.len() != 1 && args.len() != 2 {
-                return Err(format!("spawn/1 or spawn/2 got {} args", args.len()));
-            }
-            let (fn_id, captured) = unpack_closure(args[0])?;
-            // Deep-copy the captured values into the child's heap is
-            // implicit: interp runs every task on the same heap (single
-            // shared SchemaRegistry, single Process model under the test
-            // harness). For correctness of cross-heap semantics under
-            // multi-task interp execution see .19's design — v1 interp
-            // uses a single heap, so captures are already there.
-            let pid = interp_spawn(module, fn_id, captured)?;
-            Ok(FzValue::from_int(pid as i64))
-        }
-        BuiltinKind::SelfPid => Ok(FzValue::from_int(
-            fz_runtime::process::current_process().pid as i64,
-        )),
-        BuiltinKind::Send => {
-            if args.len() != 2 {
-                return Err(format!("send/2 got {} args", args.len()));
-            }
-            let receiver = args[0]
-                .unbox_int()
-                .ok_or_else(|| "send/2: pid must be Int".to_string())?
-                as u32;
-            interp_send(receiver, args[1])?;
-            Ok(args[1])
-        }
-        BuiltinKind::VecGet => {
-            if args.len() != 2 {
-                return Err(format!("vec_get/2 got {} args", args.len()));
-            }
-            Ok(FzValue(fz_runtime::ir_runtime::fz_vec_get(
-                args[0].0, args[1].0,
-            )))
-        }
     }
 }
 

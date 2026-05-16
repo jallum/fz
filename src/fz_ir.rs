@@ -88,9 +88,6 @@ pub struct BlockId(pub u32);
 pub struct Var(pub u32);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct BuiltinId(pub u32);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ExternId(pub u32);
 
 /// C ABI wire type for `extern "C" fn` declarations.
@@ -117,67 +114,6 @@ pub struct ExternDecl {
     pub ret_descr: crate::types::Descr,
 }
 
-/// Typed view of a `BuiltinId`. The discriminants match the registration
-/// order in `BuiltinTable::new` (single source of truth for that mapping
-/// is `BuiltinKind::name`). Codegen dispatches on this enum so the wire
-/// between ir_lower's name-based BuiltinTable and ir_codegen's per-builtin
-/// runtime fns stays type-checked.
-#[repr(u32)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BuiltinKind {
-    Print = 0,
-    Assert = 1,
-    AssertEq = 2,
-    AssertNeq = 3,
-    VecGet = 4,
-    /// fz-ul4.19.2: spawn(closure) -> pid. Creates a new task at the
-    /// closure's entry fn and enqueues it. v1 restriction: closure must
-    /// have zero captures (no cross-heap arg passing yet — .19.3
-    /// territory). Pid returned as boxed Int for v1; struct-typed Pid
-    /// is a follow-up.
-    Spawn = 5,
-    /// fz-ul4.19.2: self() -> pid. Returns the current task's pid as a
-    /// boxed Int.
-    SelfPid = 6,
-    /// fz-ul4.19.3: send(pid, msg) -> msg. Deep-copies msg into receiver's
-    /// heap, enqueues into receiver's mailbox, wakes receiver if Blocked.
-    /// Returns the original msg (sender side) so the caller can chain.
-    Send = 7,
-}
-
-impl BuiltinKind {
-    pub const ALL: [BuiltinKind; 8] = [
-        Self::Print,
-        Self::Assert,
-        Self::AssertEq,
-        Self::AssertNeq,
-        Self::VecGet,
-        Self::Spawn,
-        Self::SelfPid,
-        Self::Send,
-    ];
-
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::Print => "print",
-            Self::Assert => "assert",
-            Self::AssertEq => "assert_eq",
-            Self::AssertNeq => "assert_neq",
-            Self::VecGet => "vec_get",
-            Self::Spawn => "spawn",
-            Self::SelfPid => "self",
-            Self::Send => "send",
-        }
-    }
-
-    pub fn from_id(id: BuiltinId) -> Option<Self> {
-        Self::ALL.iter().copied().find(|k| *k as u32 == id.0)
-    }
-
-    pub fn id(self) -> BuiltinId {
-        BuiltinId(self as u32)
-    }
-}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Const {
@@ -219,7 +155,6 @@ pub enum Prim {
     BinOp(BinOp, Var, Var),
     UnOp(UnOp, Var),
     AllocStruct(u32, Vec<Var>),
-    Builtin(BuiltinId, Vec<Var>),
     Extern(ExternId, Vec<Var>),
     ListCons(Var, Var),
     ListHead(Var),
@@ -673,9 +608,6 @@ impl fmt::Display for Prim {
             Prim::UnOp(op, a) => write!(f, "{} {}", op, a),
             Prim::AllocStruct(sid, args) => {
                 write!(f, "alloc_struct(schema={}, [{}])", sid, fmt_var_list(args))
-            }
-            Prim::Builtin(b, args) => {
-                write!(f, "builtin#{}([{}])", b.0, fmt_var_list(args))
             }
             Prim::Extern(e, args) => {
                 write!(f, "extern#{}([{}])", e.0, fmt_var_list(args))

@@ -3203,9 +3203,6 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
             .map_err(|e| CodegenError::new(format!("declare {}: {}", name, e)))
     };
 
-    let print_id = decl("fz_print_value", &[types::I64], &[])?;
-    let print_i64_id = decl("fz_print_i64", &[types::I64], &[])?;
-    let print_f64_id = decl("fz_print_f64", &[types::F64], &[])?;
     let halt_id = decl("fz_halt", &[types::I64, types::I64], &[])?;
     let halt_implicit_id = decl("fz_halt_implicit", &[types::I64], &[])?;
     // fz-ul4.27.22.3 — typed halt-implicit variants.
@@ -3284,17 +3281,11 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
     let vec_begin_id = decl("fz_vec_begin", &[types::I32], &[])?;
     let vec_push_id = decl("fz_vec_push", &[types::I64], &[])?;
     let vec_finalize_id = decl("fz_vec_finalize", &[], &[types::I64])?;
-    let vec_get_id = decl("fz_vec_get", &[types::I64, types::I64], &[types::I64])?;
-
     let alloc_closure_id = decl(
         "fz_alloc_closure",
         &[types::I32, types::I32, types::I32],
         &[types::I64],
     )?;
-    let spawn_id = decl("fz_spawn", &[types::I64], &[types::I64])?;
-    let spawn_opt_id = decl("fz_spawn_opt", &[types::I64, types::I64], &[types::I64])?;
-    let self_id = decl("fz_self", &[], &[types::I64])?;
-    let send_id = decl("fz_send", &[types::I64, types::I64], &[types::I64])?;
     // fz-cps.1.2 — receive cutover. Takes a cont closure ptr (i64),
     // stashes in Process::parked_cont, returns YIELD sentinel.
     let receive_park_id = decl("fz_receive_park", &[types::I64], &[types::I64])?;
@@ -3360,9 +3351,6 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         .map_err(|e| CodegenError::new(format!("declare fz_main_entry: {}", e)))?;
 
     Ok(RuntimeRefs {
-        print_id,
-        print_i64_id,
-        print_f64_id,
         halt_id,
         halt_implicit_id,
         halt_implicit_i64_id,
@@ -3393,12 +3381,7 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         vec_begin_id,
         vec_push_id,
         vec_finalize_id,
-        vec_get_id,
         alloc_closure_id,
-        spawn_id,
-        spawn_opt_id,
-        self_id,
-        send_id,
         receive_park_id,
         get_static_closure_id,
         get_halt_cont_id,
@@ -3484,9 +3467,6 @@ struct CodegenEnv<'a> {
 
 #[derive(Clone, Copy)]
 struct RuntimeRefs {
-    print_id: FuncId,
-    print_i64_id: FuncId,
-    print_f64_id: FuncId,
     halt_id: FuncId,
     halt_implicit_id: FuncId,
     halt_implicit_i64_id: FuncId,
@@ -3516,16 +3496,11 @@ struct RuntimeRefs {
     vec_begin_id: FuncId,
     vec_push_id: FuncId,
     vec_finalize_id: FuncId,
-    vec_get_id: FuncId,
     alloc_float_id: FuncId,
     promote_f64_id: FuncId,
     fmod_id: FuncId,
     value_eq_id: FuncId,
     alloc_closure_id: FuncId,
-    spawn_id: FuncId,
-    spawn_opt_id: FuncId,
-    self_id: FuncId,
-    send_id: FuncId,
     receive_park_id: FuncId,
     get_static_closure_id: FuncId,
     get_halt_cont_id: FuncId,
@@ -6011,92 +5986,6 @@ fn lower_prim<M: cranelift_module::Module>(
                     let zero = b.ins().iconst(types::I8, 0);
                     let inv = b.ins().icmp(IntCC::Equal, truthy, zero);
                     bool_to_fz(b, inv)
-                }
-            }
-        }
-        Prim::Builtin(bid, args) => {
-            use crate::fz_ir::BuiltinKind;
-            let kind = BuiltinKind::from_id(*bid)
-                .ok_or_else(|| CodegenError::new(format!("unknown builtin id {}", bid.0)))?;
-            match kind {
-                BuiltinKind::Print => {
-                    if args.len() != 1 {
-                        return Err(CodegenError::new("print/1 expected"));
-                    }
-                    // VR.5b (fz-ul4.27.7): dispatch on the arg's Descr to a
-                    // typed print FFI when monomorphic. Saves the boxing
-                    // round-trip that the polymorphic fz_print_value needs.
-                    let a = args[0];
-                    if descr_is_int(fn_types, a) {
-                        let n = as_raw_i64(var_env, b, a.0);
-                        let fref = jmod.declare_func_in_func(runtime.print_i64_id, b.func);
-                        b.ins().call(fref, &[n]);
-                    } else if descr_is_float(fn_types, a) {
-                        let f = as_raw_f64(var_env, b, a.0);
-                        let fref = jmod.declare_func_in_func(runtime.print_f64_id, b.func);
-                        b.ins().call(fref, &[f]);
-                    } else {
-                        let av = tagged_get(var_env, b, jmod, runtime, a.0);
-                        let fref = jmod.declare_func_in_func(runtime.print_id, b.func);
-                        b.ins().call(fref, &[av]);
-                    }
-                    // print/1 returns FzValue::NIL — never raw 0 (which would
-                    // alias Tag::Ptr null and trip fz_halt's Ptr-deref path).
-                    b.ins().iconst(types::I64, NIL_BITS)
-                }
-                BuiltinKind::VecGet => {
-                    if args.len() != 2 {
-                        return Err(CodegenError::new("vec_get/2 expected"));
-                    }
-                    let vv = tagged_get(var_env, b, jmod, runtime, args[0].0);
-                    let iv = tagged_get(var_env, b, jmod, runtime, args[1].0);
-                    let fref = jmod.declare_func_in_func(runtime.vec_get_id, b.func);
-                    let inst = b.ins().call(fref, &[vv, iv]);
-                    b.inst_results(inst)[0]
-                }
-                BuiltinKind::Assert | BuiltinKind::AssertEq | BuiltinKind::AssertNeq => {
-                    return Err(CodegenError::new(format!(
-                        "builtin {} not yet wired through JIT",
-                        kind.name()
-                    )));
-                }
-                BuiltinKind::Spawn => match args.len() {
-                    1 => {
-                        let cv = tagged_get(var_env, b, jmod, runtime, args[0].0);
-                        let fref = jmod.declare_func_in_func(runtime.spawn_id, b.func);
-                        let inst = b.ins().call(fref, &[cv]);
-                        b.inst_results(inst)[0]
-                    }
-                    2 => {
-                        let cv = tagged_get(var_env, b, jmod, runtime, args[0].0);
-                        let mv = tagged_get(var_env, b, jmod, runtime, args[1].0);
-                        let fref = jmod.declare_func_in_func(runtime.spawn_opt_id, b.func);
-                        let inst = b.ins().call(fref, &[cv, mv]);
-                        b.inst_results(inst)[0]
-                    }
-                    n => {
-                        return Err(CodegenError::new(format!(
-                            "spawn/1 or spawn/2 expected, got {n} args"
-                        )));
-                    }
-                },
-                BuiltinKind::SelfPid => {
-                    if !args.is_empty() {
-                        return Err(CodegenError::new("self/0 expected"));
-                    }
-                    let fref = jmod.declare_func_in_func(runtime.self_id, b.func);
-                    let inst = b.ins().call(fref, &[]);
-                    b.inst_results(inst)[0]
-                }
-                BuiltinKind::Send => {
-                    if args.len() != 2 {
-                        return Err(CodegenError::new("send/2 expected"));
-                    }
-                    let pv = tagged_get(var_env, b, jmod, runtime, args[0].0);
-                    let mv = tagged_get(var_env, b, jmod, runtime, args[1].0);
-                    let fref = jmod.declare_func_in_func(runtime.send_id, b.func);
-                    let inst = b.ins().call(fref, &[pv, mv]);
-                    b.inst_results(inst)[0]
                 }
             }
         }

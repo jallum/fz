@@ -14,16 +14,16 @@ function u0:0(i64) -> i64 tail {
     sig8 = (i64) system_v
     sig9 = (i64) system_v
     sig10 = (i64, i64) -> i64 tail
-    fn0 = u0:1 sig0
-    fn1 = u0:1 sig1
-    fn2 = u0:1 sig2
-    fn3 = u0:1 sig3
-    fn4 = u0:1 sig4
-    fn5 = u0:1 sig5
-    fn6 = u0:1 sig6
-    fn7 = u0:1 sig7
-    fn8 = u0:1 sig8
-    fn9 = u0:1 sig9
+    fn0 = u0:40 sig0
+    fn1 = u0:40 sig1
+    fn2 = u0:40 sig2
+    fn3 = u0:40 sig3
+    fn4 = u0:40 sig4
+    fn5 = u0:40 sig5
+    fn6 = u0:40 sig6
+    fn7 = u0:40 sig7
+    fn8 = u0:40 sig8
+    fn9 = u0:40 sig9
 
 block0(v0: i64):
     v18 = iconst.i64 1                  ; @4:13

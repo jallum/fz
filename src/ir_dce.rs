@@ -91,7 +91,7 @@ fn collect_prim_vars(p: &Prim, used: &mut HashSet<Var>) {
                 used.insert(*v);
             }
         }
-        Prim::Builtin(_, args) | Prim::Extern(_, args) => {
+        Prim::Extern(_, args) => {
             for v in args {
                 used.insert(*v);
             }
@@ -232,8 +232,7 @@ fn collect_term_vars(t: &Term, used: &mut HashSet<Var>) {
 fn is_impure(p: &Prim) -> bool {
     matches!(
         p,
-        Prim::Builtin(..)
-            | Prim::Extern(..)
+        Prim::Extern(..)
             | Prim::BitReaderInit(_)
             | Prim::BitReadField { .. }
             | Prim::BitReaderDone(_)
@@ -312,18 +311,18 @@ mod tests {
         }
     }
 
-    /// Test 2: Builtin with unused dest kept (impure).
+    /// Test 2: Extern with unused dest kept (impure).
     ///
-    /// Build: entry has Builtin(Print, []) whose dest is never used.
-    /// DCE must keep it because Builtin is impure.
+    /// Build: entry has Extern(0, []) whose dest is never used.
+    /// DCE must keep it because Extern is impure.
     #[test]
-    fn impure_builtin_kept_even_if_unused() {
-        use crate::fz_ir::BuiltinId;
+    fn impure_extern_kept_even_if_unused() {
+        use crate::fz_ir::ExternId;
         let mut b = FnBuilder::new(FnId(0), "main");
         let entry = b.block(vec![]);
-        let nil_v = b.let_(entry, Prim::Const(Const::Nil)); // arg for print
-        // Builtin(Print) with nil as arg — dest is never used.
-        let _print_result = b.let_(entry, Prim::Builtin(BuiltinId(0), vec![nil_v]));
+        let nil_v = b.let_(entry, Prim::Const(Const::Nil)); // arg for extern call
+        // Extern(0) with nil as arg — dest is never used.
+        let _extern_result = b.let_(entry, Prim::Extern(ExternId(0), vec![nil_v]));
         b.set_terminator(entry, Term::Return(nil_v));
         let f = b.build();
 
@@ -334,16 +333,16 @@ mod tests {
         dce_module(&mut m);
 
         let block = m.fns[0].block(m.fns[0].entry);
-        // The Builtin stmt must remain (impure). nil_v is used by both Builtin and Return.
+        // The Extern stmt must remain (impure). nil_v is used by both Extern and Return.
         assert_eq!(
             block.stmts.len(),
             2,
-            "impure Builtin must be kept; stmts: {:?}",
+            "impure Extern must be kept; stmts: {:?}",
             block.stmts
         );
         assert!(
-            matches!(&block.stmts[1], Stmt::Let(_, Prim::Builtin(..))),
-            "second stmt should be Builtin, got {:?}",
+            matches!(&block.stmts[1], Stmt::Let(_, Prim::Extern(..))),
+            "second stmt should be Extern, got {:?}",
             block.stmts[1]
         );
     }

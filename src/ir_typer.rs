@@ -29,8 +29,7 @@
 //! `ir_codegen::compile()` continues to populate `CompiledModule.types`.
 
 use crate::fz_ir::{
-    BinOp, Block, BlockId, BuiltinId, BuiltinKind, Const, Cont, FnId, FnIr, Module, Prim, Stmt,
-    Term, UnOp, Var, VecKindIr,
+    BinOp, Block, BlockId, Const, Cont, FnId, FnIr, Module, Prim, Stmt, Term, UnOp, Var, VecKindIr,
 };
 use crate::types::{Descr, MapKey};
 use std::collections::{HashMap, HashSet};
@@ -417,17 +416,10 @@ fn opaque_consumer_arities(
             // arity-0 opaque dispatch keyed off the closure operand's
             // fn_constants.
             //
-            // fz-ext.7: spawn now emits Prim::Extern(fz_spawn/fz_spawn_opt)
-            // instead of Prim::Builtin(Spawn). Both forms are checked here.
+            // fz-ext.7: spawn emits Prim::Extern(fz_spawn/fz_spawn_opt).
             for stmt in &b.stmts {
                 let Stmt::Let(_, prim) = stmt;
                 let spawn_cv: Option<Var> = match prim {
-                    Prim::Builtin(bid, args)
-                        if *bid == BuiltinKind::Spawn.id()
-                            && (args.len() == 1 || args.len() == 2) =>
-                    {
-                        Some(args[0])
-                    }
                     Prim::Extern(eid, args)
                         if (args.len() == 1 || args.len() == 2)
                             && m.externs
@@ -1635,17 +1627,6 @@ fn type_prim(
             Descr::closure_lit(*fn_id, capture_descrs, n_args)
         }
 
-        Prim::Builtin(bid, args) => {
-            // send(pid, msg) returns msg — passthrough on arg[1].
-            if matches!(BuiltinKind::from_id(*bid), Some(BuiltinKind::Send)) {
-                args.get(1)
-                    .map(|v| lookup(env, *v))
-                    .unwrap_or_else(Descr::any)
-            } else {
-                type_builtin(*bid)
-            }
-        }
-
         Prim::Extern(eid, _) => m
             .externs
             .get(eid.0 as usize)
@@ -1825,20 +1806,6 @@ fn numeric_result_fold(op: BinOp, a: &Descr, b: &Descr) -> Descr {
         }
     }
     numeric_result(a, b)
-}
-
-fn type_builtin(bid: BuiltinId) -> Descr {
-    match BuiltinKind::from_id(bid) {
-        Some(BuiltinKind::Print) => Descr::nil(),
-        Some(BuiltinKind::Assert) | Some(BuiltinKind::AssertEq) | Some(BuiltinKind::AssertNeq) => {
-            Descr::nil()
-        }
-        Some(BuiltinKind::VecGet) => Descr::int().union(&Descr::float()),
-        // fz-ul4.19.2: spawn/self both return a Pid (boxed Int for v1).
-        Some(BuiltinKind::Spawn) | Some(BuiltinKind::SelfPid) => Descr::int(),
-        Some(BuiltinKind::Send) => Descr::any(), // unreachable; handled in type_prim
-        None => Descr::any(),
-    }
 }
 
 fn lookup(env: &HashMap<Var, Descr>, v: Var) -> Descr {

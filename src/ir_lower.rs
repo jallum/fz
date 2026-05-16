@@ -22,8 +22,8 @@ use crate::ast::{
 };
 use crate::diag::Span;
 use crate::fz_ir::{
-    BinOp, BitFieldIr, BitSizeIr, BlockId, BuiltinId, Const, Cont, ExternDecl, ExternId, ExternTy,
-    FnBuilder, FnId, Module, ModuleBuilder, Prim, SourceInfo, Term, UnOp, Var,
+    BinOp, BitFieldIr, BitSizeIr, BlockId, Const, Cont, ExternDecl, ExternId, ExternTy, FnBuilder,
+    FnId, Module, ModuleBuilder, Prim, SourceInfo, Term, UnOp, Var,
 };
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -149,31 +149,6 @@ impl AtomTable {
     }
 }
 
-/// Builtin registry. Stable ids 0..N seeded for the v1 set.
-pub struct BuiltinTable {
-    map: HashMap<String, BuiltinId>,
-}
-
-impl BuiltinTable {
-    pub fn new() -> Self {
-        // fz-ext.7 — builtins now registered via runtime.fz ExternTable; keep
-        // the BuiltinTable empty so call resolution falls through to ExternTable.
-        // Removed in fz-ext.8.
-        Self {
-            map: HashMap::new(),
-        }
-    }
-    pub fn lookup(&self, name: &str) -> Option<BuiltinId> {
-        self.map.get(name).copied()
-    }
-}
-
-impl Default for BuiltinTable {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 /// Name → ExternId index, built during the zeroth lowering pass.
 pub struct ExternTable {
     map: HashMap<String, ExternId>,
@@ -211,7 +186,6 @@ type FnMap = HashMap<(String, usize), FnId>;
 
 pub struct LowerCtx {
     pub atoms: AtomTable,
-    pub builtins: BuiltinTable,
     pub externs: ExternTable,
     /// Accumulated ExternDecls in declaration order; moved into Module.externs after build.
     pub extern_decls: Vec<ExternDecl>,
@@ -264,7 +238,6 @@ impl LowerCtx {
     pub fn new() -> Self {
         Self {
             atoms: AtomTable::default(),
-            builtins: BuiltinTable::new(),
             externs: ExternTable::new(),
             extern_decls: Vec::new(),
             mb: ModuleBuilder::new(),
@@ -446,11 +419,11 @@ fn parse_runtime_prelude() -> (Vec<Rc<Item>>, crate::type_expr::ModuleTypeEnv) {
 }
 
 pub fn lower_program(prog: &Program) -> Result<Module, LowerError> {
-    let (m, _, _) = lower_program_full(prog)?;
+    let (m, _) = lower_program_full(prog)?;
     Ok(m)
 }
 
-pub fn lower_program_full(prog: &Program) -> Result<(Module, AtomTable, BuiltinTable), LowerError> {
+pub fn lower_program_full(prog: &Program) -> Result<(Module, AtomTable), LowerError> {
     let mut ctx = LowerCtx::new();
 
     // Prepend the built-in runtime.fz prelude so its externs and wrapper fns
@@ -569,7 +542,7 @@ pub fn lower_program_full(prog: &Program) -> Result<(Module, AtomTable, BuiltinT
     module.externs = std::mem::take(&mut ctx.extern_decls);
     // fz-02r.4 — annotate TailCall back-edges from the structural SCC.
     annotate_back_edges(&mut module, &ctx.fn_spans)?;
-    Ok((module, ctx.atoms, ctx.builtins))
+    Ok((module, ctx.atoms))
 }
 
 /// Parse `extern_ret_tokens` into an ExternTy (wire format) and Descr
@@ -1185,10 +1158,6 @@ fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -> Result<Va
             // Extern (runtime.fz / user-declared `extern "C" fn`)?
             if let Some(eid) = ctx.externs.lookup(&callee_name) {
                 return Ok(ctx.let_at(Prim::Extern(eid, arg_vars), sp));
-            }
-            // Builtin fallback — empty in fz-ext.7; fully removed in fz-ext.8.
-            if let Some(bid) = ctx.builtins.lookup(&callee_name) {
-                return Ok(ctx.let_at(Prim::Builtin(bid, arg_vars), sp));
             }
             let arity = arg_vars.len();
             let callee =
@@ -2694,7 +2663,7 @@ end
         let prog = crate::parser::Parser::new(toks)
             .parse_program()
             .expect("parse");
-        let (module, _, _) = lower_program_full(&prog).expect("lower");
+        let (module, _) = lower_program_full(&prog).expect("lower");
         // 10 runtime.fz externs + 1 user extern = 11 total.
         assert_eq!(module.externs.len(), 11);
         // fz_nop is at the end (user externs follow runtime.fz externs).
