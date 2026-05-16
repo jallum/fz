@@ -202,6 +202,9 @@ fn run_path(fixture: &Path, header: &Header, path: &str) -> RunOutcome {
     if path == "aot" {
         return run_aot_path(fixture, header);
     }
+    if path == "repl" {
+        return run_repl_path(fixture, header);
+    }
     let subcmd = match (path, header.kind) {
         ("jit", Kind::Run) => "run",
         ("jit", Kind::Test) => "test",
@@ -286,6 +289,38 @@ fn run_aot_path(fixture: &Path, header: &Header) -> RunOutcome {
         ));
     }
     match String::from_utf8(run.stdout) {
+        Ok(s) => RunOutcome::Ok(s),
+        Err(e) => RunOutcome::Failed(format!("stdout utf8: {}", e)),
+    }
+}
+
+/// fz-i67.2 — drive the REPL parity leg: spawn `fz repl --script <input.fz>`,
+/// capture stdout. Same comparison plumbing as the other legs. `kind: test`
+/// fixtures don't go through here (the REPL has no `assert_eq` runner).
+fn run_repl_path(fixture: &Path, header: &Header) -> RunOutcome {
+    if header.kind == Kind::Test {
+        return RunOutcome::Deferred(
+            "kind: test fixtures don't yet run via repl (`fz test` is jit-only)".into(),
+        );
+    }
+    let input = fixture.join("input.fz");
+    let out = match Command::new(FZ_BIN)
+        .args(["repl", "--script"])
+        .arg(&input)
+        .output()
+    {
+        Ok(o) => o,
+        Err(e) => return RunOutcome::Failed(format!("spawn fz repl: {}", e)),
+    };
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    if !out.status.success() {
+        return RunOutcome::Failed(format!(
+            "fz repl --script exit {}: {}",
+            out.status,
+            stderr.trim_end()
+        ));
+    }
+    match String::from_utf8(out.stdout) {
         Ok(s) => RunOutcome::Ok(s),
         Err(e) => RunOutcome::Failed(format!("stdout utf8: {}", e)),
     }

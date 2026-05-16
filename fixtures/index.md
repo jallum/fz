@@ -5,7 +5,7 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 
 | fixture | purpose | paths |
 |---------|---------|-------|
-| `add1/` | smallest JIT round-trip — fn def + call + print | jit, interp |
+| `add1/` | smallest JIT round-trip — fn def + call + print | jit, interp, repl |
 | `alias/` | nested-module path aliasing — `alias Long.Path` and `alias Long.Path, as: LP` | jit, interp |
 | `apply2/` | first-class fns — pass a fn into another fn and call it | jit, interp |
 | `attributes/` | @moduledoc / @doc attributes parse and the module still executes | jit, interp |

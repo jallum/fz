@@ -1,6 +1,6 @@
 ---
 purpose: "smallest JIT round-trip — fn def + call + print"
-paths: [jit, interp]
+paths: [jit, interp, repl]
 ---
 
 # add1
