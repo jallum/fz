@@ -140,6 +140,10 @@ pub enum HeapKind {
     Map = 7,
     Closure = 8,
     Float = 9,
+    /// fz-cty.3 — 32-byte stub on a per-process heap that references an
+    /// off-heap `SharedBin`. Cheney trace is a no-op; the per-heap MSO
+    /// list governs retain/release across GC.
+    ProcBin = 10,
 }
 
 impl HeapKind {
@@ -155,6 +159,7 @@ impl HeapKind {
             7 => Some(HeapKind::Map),
             8 => Some(HeapKind::Closure),
             9 => Some(HeapKind::Float),
+            10 => Some(HeapKind::ProcBin),
             _ => None,
         }
     }
@@ -429,6 +434,7 @@ mod tests {
             HeapKind::Map,
             HeapKind::Closure,
             HeapKind::Float,
+            HeapKind::ProcBin,
         ] {
             assert_eq!(HeapKind::from_u16(k as u16), Some(k));
         }
