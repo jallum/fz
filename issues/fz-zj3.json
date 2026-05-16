@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-16T22:52:20Z",
+  "description": "",
+  "id": "fz-zj3",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "fz-cg.5: Fix D — box_int constant fold via CodegenCache.raw_int_consts tracking",
+  "type": "task",
+  "updated_at": "2026-05-16T22:52:20Z"
+}
