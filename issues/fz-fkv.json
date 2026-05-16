@@ -2,13 +2,14 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-05-16T23:20:42Z",
   "created": "2026-05-16T23:16:40Z",
   "description": "## Goal\n\nRefactor `tests/fixture_matrix.rs` so each `(fixture, path)` pair is its own trial in `cargo test` output, instead of all collapsing into one `test fixture_matrix ... ok` line. Failures will then point at exactly which fixture × leg diverged, and `cargo test add1` / `cargo test ::repl` / etc. will filter naturally.\n\n## Approach\n\nUse the `libtest-mimic` crate (small, purpose-built for runtime-discovered tests).\n\n### Cargo.toml\n- Add `libtest-mimic = \"0.8\"` (or current) as a dev-dependency.\n- Add `[[test]] name = \"fixture_matrix\" harness = false` so the file owns its own `fn main`.\n\n### tests/fixture_matrix.rs\n- Keep `discover`, `parse_header_from_dir`, `run_path`, `run_aot_path`, `run_repl_path`, `normalize`, comparison logic — all reusable.\n- Replace the top-level `#[test] fn fixture_matrix()` with `fn main()` that:\n  1. Calls `discover()` to get fixtures.\n  2. For each fixture, parses the header and builds one `Trial::test(...)` per declared path, named `\"\u003cfixture\u003e::\u003cpath\u003e\"`.\n  3. Calls `libtest_mimic::run(\u0026Arguments::from_args(), trials).exit()`.\n- Each trial closure runs `run_path` and compares to `expected.txt`. Deferred → trial reports as ignored with the reason. Failed → trial fails with the diff at `\u003cdir\u003e/actual.txt`.\n- `fixture_index_up_to_date` becomes its own `Trial::test(\"fixture_index_up_to_date\", ...)` so `BLESS=1` still works.\n\n## Acceptance\n\n- `cargo test --test fixture_matrix` lists each fixture × path on its own line: `test add1::jit ... ok`, `test add1::interp ... ok`, `test add1::repl ... ok`, `test alias::jit ... ok`, ….\n- `cargo test --test fixture_matrix add1` runs only add1's legs.\n- `cargo test --test fixture_matrix ::repl` runs every REPL leg.\n- A made-up failing case shows exactly which `\u003cfixture\u003e::\u003cpath\u003e` failed and dumps `actual.txt`.\n- `BLESS=1 cargo test --test fixture_matrix fixture_index_up_to_date` still works.\n- `cargo test --all` green; clippy `-D warnings` clean.\n\n## Non-changes\n\n- No fixture frontmatter changes. No new opt-ins.\n- No change to what's actually executed — same backends, same comparisons. Purely test-harness UX.",
   "id": "fz-fkv",
   "labels": [],
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "fixture matrix: one trial per (fixture, path) via libtest-mimic",
   "type": "task",
-  "updated_at": "2026-05-16T23:16:40Z"
+  "updated_at": "2026-05-16T23:20:42Z"
 }
