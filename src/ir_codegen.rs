@@ -1820,18 +1820,17 @@ pub fn compile_with_backend<B: Backend>(
         crate::ir_inline::inline_module(&mut working);
     }
     crate::ir_fuse::fuse_blocks(&mut working);
-    let module_types = crate::ir_typer::type_module(&working);
+    let mut module_types = crate::ir_typer::type_module(&working);
     crate::ir_fold::fold_module(&mut working, &module_types);
     // fz-cty.8 — fold byte-literal MakeBitstring into ConstBitstring before
     // DCE so the per-byte Const(Int) operand stmts go dead in the same pass.
     crate::ir_const_bs::fold_module(&mut working);
     crate::ir_dce::dce_module(&mut working);
-    crate::ir_inline::inline_single_use_conts(&mut working);
+    // fz-ty1.pip.1/2: pass &mut module_types so the inliner surgically
+    // re-types only affected caller specs and removes k's dead entries,
+    // eliminating the need for a full type_module recompute afterwards.
+    crate::ir_inline::inline_single_use_conts(&mut working, &mut module_types);
     crate::ir_dce::dce_module(&mut working);
-    // Recompute types after cont inlining: alpha-renamed vars from inlined
-    // continuations are not in the pre-pass module_types, so the spec
-    // registry lookups would fall back to Descr::any and miss.
-    let module_types = crate::ir_typer::type_module(&working);
     let module = &working;
 
     // fz-ul4.29.2.1 — Build the SpecRegistry.
@@ -7612,5 +7611,19 @@ fn main(), do: loop_with(loop_with, 100000, 0)
             post_count,
             pre_count
         );
+    }
+
+    /// fz-ty1.pip.3 — type_module must be called exactly 3 times in the
+    /// codegen pipeline. A 4th call was removed in fz-ty1.pip.1/2 by
+    /// threading &mut ModuleTypes through inline_single_use_conts so it
+    /// surgically re-types only affected specs.
+    #[test]
+    fn type_module_called_exactly_three_times_in_pipeline() {
+        let src = "fn main(), do: print(42)";
+        let m = lower_src(src);
+        crate::ir_typer::TYPE_MODULE_CALLS.with(|c| c.set(0));
+        compile(&m).expect("compile");
+        let count = crate::ir_typer::TYPE_MODULE_CALLS.with(|c| c.get());
+        assert_eq!(count, 3, "type_module called {} times, expected 3", count);
     }
 }

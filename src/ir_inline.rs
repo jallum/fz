@@ -1,4 +1,5 @@
 use crate::fz_ir::{BitSizeIr, Block, BlockId, Cont, FnId, FnIr, Module, Prim, Stmt, Term, Var};
+use crate::ir_typer::ModuleTypes;
 use std::collections::{HashMap, HashSet};
 
 /// (caller_fn_idx, block_idx, callee, callee_args, cont_fn_id, cont_captured)
@@ -530,7 +531,7 @@ pub fn inline_calls_once(m: &mut Module) -> usize {
 /// This eliminates the CPS-overhead functions that fold+DCE produce when a
 /// `Term::If` becomes `Term::Goto`: the surviving single-path continuation
 /// chain collapses into one function.
-pub fn inline_single_use_conts_once(m: &mut Module) -> usize {
+pub fn inline_single_use_conts_once(m: &mut Module, mt: &mut ModuleTypes) -> usize {
     use std::collections::HashMap;
     let closure_fns = closure_targets(m);
 
@@ -670,20 +671,38 @@ pub fn inline_single_use_conts_once(m: &mut Module) -> usize {
         }
 
         // Remove k and rebuild the index.
+        let caller_id = m.fns[caller_fi].id;
         m.fns.remove(k_idx);
         m.fn_idx.clear();
         for (i, f) in m.fns.iter().enumerate() {
             m.fn_idx.insert(f.id, i);
         }
+
+        // Surgical type refresh: re-type only the caller's specs; remove k's.
+        let caller_fi2 = m.fn_idx[&caller_id];
+        let caller_spec_keys: Vec<Vec<crate::types::Descr>> = mt
+            .specs
+            .keys()
+            .filter(|(fid, _)| *fid == caller_id)
+            .map(|(_, descrs)| descrs.clone())
+            .collect();
+        for descrs in caller_spec_keys {
+            let ft = crate::ir_typer::type_fn(&m.fns[caller_fi2], m, Some(&descrs));
+            mt.specs.insert((caller_id, descrs), ft);
+        }
+        mt.specs.retain(|(fid, _), _| *fid != *k_id);
+        mt.effective_returns.retain(|(fid, _), _| *fid != *k_id);
+        mt.any_key_specs.remove(k_id);
+
         return 1; // restart — indices changed
     }
     0
 }
 
 /// Run single-use continuation inlining to fixed-point.
-pub fn inline_single_use_conts(m: &mut Module) {
+pub fn inline_single_use_conts(m: &mut Module, mt: &mut ModuleTypes) {
     loop {
-        if inline_single_use_conts_once(m) == 0 {
+        if inline_single_use_conts_once(m, mt) == 0 {
             break;
         }
     }

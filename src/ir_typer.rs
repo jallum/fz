@@ -452,7 +452,14 @@ fn build_any_key_index(specs: &HashMap<(FnId, Vec<Descr>), FnTypes>) -> HashMap<
     idx
 }
 
+#[cfg(test)]
+thread_local! {
+    pub static TYPE_MODULE_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 pub fn type_module(m: &Module) -> ModuleTypes {
+    #[cfg(test)]
+    TYPE_MODULE_CALLS.with(|c| c.set(c.get() + 1));
     // fz-02r.4 — compute SCC once from the structural call graph. The call
     // graph structure is fixed (the module doesn't change during typing), so
     // we compute it here with an empty specs map — the same starting point
