@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-li4"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-bwp"
+  ],
   "created": "2026-05-16T22:52:19Z",
   "description": "",
   "id": "fz-vh4",
@@ -12,5 +14,5 @@
   "status": "open",
   "title": "fz-cg.2: introduce CodegenCache struct; thread \u0026mut CodegenCache through lower_prim and emit_terminator — no behavior change",
   "type": "task",
-  "updated_at": "2026-05-16T22:52:24Z"
+  "updated_at": "2026-05-16T22:52:25Z"
 }
