@@ -2,13 +2,14 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-05-16T23:09:02Z",
   "created": "2026-05-16T22:58:08Z",
   "description": "## Goal\n\nAdd `eval::Interp` (via the existing REPL) as a parity leg in the fixture matrix, alongside `[jit, interp, aot]`. Drive the REPL by feeding `input.fz` line-by-line — exactly how a user would type it — and compare captured stdout against the same `expected.txt` the other three legs use.\n\n## Why\n\n`eval::Interp` has zero parity coverage today. It is the only execution path that runs without sharing the `FzValue` rep / heap / runtime with JIT and AOT, so divergence bugs in the AST evaluator (or in macro expansion, since macros run through `eval::Interp`) go undetected. Three-path parity (per CLAUDE.md feedback memory) is currently really \"three of four\"; this closes the fourth.\n\nOriginally `fz-ul4.23.9` proposed migrating the REPL onto `ir_interp` to fix this. That ticket is obsoleted: keeping the REPL on `eval::Interp` AND adding it as a parity leg achieves the same correctness goal without the session-state design work.\n\n## Scope boundary\n\n`eval::Interp` has no `Spawn`/`Send`/`Receive` — concurrency fixtures cannot run through it. The REPL leg covers only sequential fixtures, opted in per-fixture via the existing `paths:` frontmatter mechanism. No harness escape hatch.\n\n## DAG\n\n```\n.1 (fz repl --script \u003cpath\u003e)\n        |\n        v\n.2 (matrix `repl` path)\n        |\n        v\n.3 (opt sequential fixtures into [..., repl])\n```\n\n## Invariants\n\n- The REPL `try_eval` code path used by `--script` is the same one the interactive prompt uses. No \"script-only\" eval branch.\n- `--script` mode emits only program-side `print()` output to stdout. No banner, no prompts, no per-input informational text.\n- Every fixture with `repl` in `paths:` either passes parity or has a rationale comment in the frontmatter explaining the opt-out. No silent skips.",
   "id": "fz-i67",
   "labels": [],
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "[EPIC] REPL as parity leg in fixture matrix",
   "type": "task",
-  "updated_at": "2026-05-16T22:58:08Z"
+  "updated_at": "2026-05-16T23:09:02Z"
 }
