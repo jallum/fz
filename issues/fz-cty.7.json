@@ -2,14 +2,15 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-05-16T21:59:06Z",
   "created": "2026-05-16T01:55:11Z",
   "description": "## Goal\n\nClose the interp's `Prim::MakeBitstring` gap so the fz-cty.6 acceptance fixture (and any other bitstring-using code) runs through all three execution paths.\n\n## Background\n\n`src/ir_interp.rs` has a catch-all `_ =\u003e \"prim {:?} not yet supported\"` branch around line 489. `MakeBitstring` (Prim discriminant 17) hits it. JIT and AOT both implement the prim by emitting calls to `fz_bs_begin` / `fz_bs_write_field` / `fz_bs_finalize` (defined in `runtime/src/ir_runtime.rs`). The interp can invoke the same `extern \"C\" fn`s as ordinary Rust calls — every path then funnels into the same `BitWriter` and `Heap::alloc_bitstring`.\n\n## Changes\n\n### src/ir_interp.rs\n- Add a `Prim::MakeBitstring(fields)` arm. Mirror the codegen sequence in `src/ir_codegen.rs::Prim::MakeBitstring`:\n  1. `fz_bs_begin()`\n  2. For each field: compute the FzValue for the field's source (already-resolved Var or Literal) and the field config (BitType, size, signedness, endianness), then `fz_bs_write_field(...)`.\n  3. `fz_bs_finalize()` returns the FzValue bits; convert and yield.\n- Audit the rest of `_ =\u003e` for any other still-unsupported prims and surface a separate ticket if more than one variant is missing. Do NOT silently expand scope.\n\n### fixtures/shared_heap_send_large_bitstring/README.md\n- Add `interp` to the `paths:` frontmatter list so the fixture matrix runs interp too. Drop the \"Interpreter omitted — pre-existing gap\" paragraph.\n\n### Tests\n- Confirm `cargo test --all` covers the fixture across all three paths post-change.\n- If `BitstringMatch` or related read prims are missing from interp too, surface the gap in a separate ticket — keep this commit scoped to `MakeBitstring` unless something is hard-blocking.\n\n## Verification\n\n- All paths green on the existing fixture.\n- No regression in any other fixture.\n- Clippy clean, warnings clean.",
   "id": "fz-cty.7",
   "labels": [],
   "parent": "fz-cty",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "fz-cty.7: interp MakeBitstring — close three-path gap",
   "type": "task",
-  "updated_at": "2026-05-16T01:55:11Z"
+  "updated_at": "2026-05-16T21:59:06Z"
 }
