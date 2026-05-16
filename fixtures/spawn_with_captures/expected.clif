@@ -124,13 +124,12 @@ function u0:0(i64, i64) -> i64 tail {
 block0(v0: i64, v1: i64):
     v2 = load.i64 notrap aligned v0+24    ;; v2 :: 99
     v3 = iconst.i64 1    ;; v3 :: 1
-    v4 = ishl_imm v3, 3  ; v3 = 1
-    v5 = bor_imm v4, 1
-    v6 = ishl_imm v2, 3
-    v7 = bor_imm v6, 1
-    v8 = call fn0(v5, v7)    ;; v8 :: any
-    v9 = load.i64 notrap aligned v1+16
-    return_call_indirect sig1, v9(v8, v1)
+    v4 = iconst.i64 9
+    v5 = ishl_imm v2, 3
+    v6 = bor_imm v5, 1
+    v7 = call fn0(v4, v6)  ; v4 = 9    ;; v7 :: any
+    v8 = load.i64 notrap aligned v1+16
+    return_call_indirect sig1, v8(v7, v1)
 }
 
 ; fn fz_spawn_thunk_s15

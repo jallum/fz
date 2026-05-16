@@ -4956,7 +4956,13 @@ fn compile_fn<M: cranelift_module::Module>(
                 let raw = var_env.get(&rv).expect("raw var dropped from env").value;
                 let boxed = match repr {
                     ArgRepr::RawF64 => box_float_native(&mut b, jmod, runtime, raw),
-                    ArgRepr::RawInt => box_int(&mut b, raw),
+                    ArgRepr::RawInt => {
+                        if let Some(&n) = cache.raw_int_consts.get(&rv) {
+                            cached_iconst(&mut b, &mut cache, (n << 3) | TAG_INT)
+                        } else {
+                            box_int(&mut b, raw)
+                        }
+                    }
                     ArgRepr::Tagged => unreachable!("Tagged in to_retag"),
                 };
                 var_env.insert(
@@ -5372,34 +5378,34 @@ fn lower_collection_prim<M: cranelift_module::Module>(
     let tuple_schema_ids = env.tuple_schema_ids;
     let v: ir::Value = match prim {
         Prim::ListCons(h, t) => {
-            let hv = tagged_get(var_env, b, jmod, runtime, h.0);
-            let tv = tagged_get(var_env, b, jmod, runtime, t.0);
+            let hv = tagged_get(var_env, b, jmod, runtime, h.0, cache);
+            let tv = tagged_get(var_env, b, jmod, runtime, t.0, cache);
             let fref = jmod.declare_func_in_func(runtime.alloc_cons_id, b.func);
             let inst = b.ins().call(fref, &[hv, tv]);
             b.inst_results(inst)[0]
         }
         Prim::ListHead(c) => {
-            let cv = tagged_get(var_env, b, jmod, runtime, c.0);
+            let cv = tagged_get(var_env, b, jmod, runtime, c.0, cache);
             b.ins().load(types::I64, MemFlags::trusted(), cv, 16)
         }
         Prim::ListTail(c) => {
-            let cv = tagged_get(var_env, b, jmod, runtime, c.0);
+            let cv = tagged_get(var_env, b, jmod, runtime, c.0, cache);
             b.ins().load(types::I64, MemFlags::trusted(), cv, 24)
         }
         Prim::ListIsNil(c) => {
-            let cv = tagged_get(var_env, b, jmod, runtime, c.0);
+            let cv = tagged_get(var_env, b, jmod, runtime, c.0, cache);
             let nil_v = b.ins().iconst(types::I64, NIL_BITS);
             let cmp = b.ins().icmp(IntCC::Equal, cv, nil_v);
             bool_to_fz(b, cache, cmp)
         }
         Prim::MakeList(elems, tail) => {
             let mut acc = match tail {
-                Some(t) => tagged_get(var_env, b, jmod, runtime, t.0),
+                Some(t) => tagged_get(var_env, b, jmod, runtime, t.0, cache),
                 None => b.ins().iconst(types::I64, NIL_BITS),
             };
             let fref = jmod.declare_func_in_func(runtime.alloc_cons_id, b.func);
             for e in elems.iter().rev() {
-                let ev = tagged_get(var_env, b, jmod, runtime, e.0);
+                let ev = tagged_get(var_env, b, jmod, runtime, e.0, cache);
                 let inst = b.ins().call(fref, &[ev, acc]);
                 acc = b.inst_results(inst)[0];
             }
@@ -5418,14 +5424,14 @@ fn lower_collection_prim<M: cranelift_module::Module>(
             let inst = b.ins().call(fref, &[sid]);
             let p = b.inst_results(inst)[0];
             for (i, e) in elems.iter().enumerate() {
-                let ev = tagged_get(var_env, b, jmod, runtime, e.0);
+                let ev = tagged_get(var_env, b, jmod, runtime, e.0, cache);
                 let off = HEADER_SIZE + (i as i32) * SLOT_BYTES;
                 b.ins().store(MemFlags::trusted(), ev, p, off);
             }
             p
         }
         Prim::TupleField(c, idx) => {
-            let cv = tagged_get(var_env, b, jmod, runtime, c.0);
+            let cv = tagged_get(var_env, b, jmod, runtime, c.0, cache);
             let off = HEADER_SIZE + (*idx as i32) * SLOT_BYTES;
             b.ins().load(types::I64, MemFlags::trusted(), cv, off)
         }
@@ -5435,7 +5441,7 @@ fn lower_collection_prim<M: cranelift_module::Module>(
             let inst = b.ins().call(fref, &[sid]);
             let p = b.inst_results(inst)[0];
             for (i, fv) in fields.iter().enumerate() {
-                let v = tagged_get(var_env, b, jmod, runtime, fv.0);
+                let v = tagged_get(var_env, b, jmod, runtime, fv.0, cache);
                 let off = HEADER_SIZE + (i as i32) * SLOT_BYTES;
                 b.ins().store(MemFlags::trusted(), v, p, off);
             }
@@ -5446,7 +5452,7 @@ fn lower_collection_prim<M: cranelift_module::Module>(
             b.ins().call(begin, &[]);
             let write = jmod.declare_func_in_func(runtime.bs_write_id, b.func);
             for f in fields {
-                let value_v = tagged_get(var_env, b, jmod, runtime, f.value.0);
+                let value_v = tagged_get(var_env, b, jmod, runtime, f.value.0, cache);
                 let ty_tag = b.ins().iconst(types::I32, encode_bit_type(f.ty) as i64);
                 let unit = b
                     .ins()
@@ -5460,7 +5466,7 @@ fn lower_collection_prim<M: cranelift_module::Module>(
                         b.ins().iconst(types::I32, *n as i64),
                     ),
                     Some(crate::fz_ir::BitSizeIr::Var(v)) => {
-                        let raw = tagged_get(var_env, b, jmod, runtime, v.0);
+                        let raw = tagged_get(var_env, b, jmod, runtime, v.0, cache);
                         let unb = unbox_int(b, raw);
                         let truncated = b.ins().ireduce(types::I32, unb);
                         (b.ins().iconst(types::I32, 1), truncated)
@@ -5555,7 +5561,7 @@ fn lower_collection_prim<M: cranelift_module::Module>(
             }
         }
         Prim::BitReaderInit(v) => {
-            let vv = tagged_get(var_env, b, jmod, runtime, v.0);
+            let vv = tagged_get(var_env, b, jmod, runtime, v.0, cache);
             let fref = jmod.declare_func_in_func(runtime.bs_reader_init_id, b.func);
             let inst = b.ins().call(fref, &[vv]);
             b.inst_results(inst)[0]
@@ -5569,7 +5575,7 @@ fn lower_collection_prim<M: cranelift_module::Module>(
             unit,
             is_last,
         } => {
-            let rv = tagged_get(var_env, b, jmod, runtime, reader.0);
+            let rv = tagged_get(var_env, b, jmod, runtime, reader.0, cache);
             let ty_tag = b.ins().iconst(types::I32, encode_bit_type(*ty) as i64);
             let unit_v = b
                 .ins()
@@ -5584,7 +5590,7 @@ fn lower_collection_prim<M: cranelift_module::Module>(
                     b.ins().iconst(types::I32, *n as i64),
                 ),
                 Some(crate::fz_ir::BitSizeIr::Var(v)) => {
-                    let raw = tagged_get(var_env, b, jmod, runtime, v.0);
+                    let raw = tagged_get(var_env, b, jmod, runtime, v.0, cache);
                     let unb = unbox_int(b, raw);
                     let truncated = b.ins().ireduce(types::I32, unb);
                     (b.ins().iconst(types::I32, 1), truncated)
@@ -5607,7 +5613,7 @@ fn lower_collection_prim<M: cranelift_module::Module>(
             b.inst_results(inst)[0]
         }
         Prim::BitReaderDone(r) => {
-            let rv = tagged_get(var_env, b, jmod, runtime, r.0);
+            let rv = tagged_get(var_env, b, jmod, runtime, r.0, cache);
             let bit_len_b = b.ins().load(types::I64, MemFlags::trusted(), rv, 24);
             let pos_b = b.ins().load(types::I64, MemFlags::trusted(), rv, 32);
             let cmp = b.ins().icmp(IntCC::Equal, bit_len_b, pos_b);
@@ -5618,8 +5624,8 @@ fn lower_collection_prim<M: cranelift_module::Module>(
             b.ins().call(begin, &[]);
             let push = jmod.declare_func_in_func(runtime.map_push_id, b.func);
             for (k, v) in entries {
-                let kv = tagged_get(var_env, b, jmod, runtime, k.0);
-                let vv = tagged_get(var_env, b, jmod, runtime, v.0);
+                let kv = tagged_get(var_env, b, jmod, runtime, k.0, cache);
+                let vv = tagged_get(var_env, b, jmod, runtime, v.0, cache);
                 b.ins().call(push, &[kv, vv]);
             }
             let fin = jmod.declare_func_in_func(runtime.map_finalize_id, b.func);
@@ -5627,13 +5633,13 @@ fn lower_collection_prim<M: cranelift_module::Module>(
             b.inst_results(inst)[0]
         }
         Prim::MapUpdate(base, entries) => {
-            let bv = tagged_get(var_env, b, jmod, runtime, base.0);
+            let bv = tagged_get(var_env, b, jmod, runtime, base.0, cache);
             let cln = jmod.declare_func_in_func(runtime.map_clone_id, b.func);
             b.ins().call(cln, &[bv]);
             let push = jmod.declare_func_in_func(runtime.map_push_id, b.func);
             for (k, v) in entries {
-                let kv = tagged_get(var_env, b, jmod, runtime, k.0);
-                let vv = tagged_get(var_env, b, jmod, runtime, v.0);
+                let kv = tagged_get(var_env, b, jmod, runtime, k.0, cache);
+                let vv = tagged_get(var_env, b, jmod, runtime, v.0, cache);
                 b.ins().call(push, &[kv, vv]);
             }
             let fin = jmod.declare_func_in_func(runtime.map_finalize_id, b.func);
@@ -5641,8 +5647,8 @@ fn lower_collection_prim<M: cranelift_module::Module>(
             b.inst_results(inst)[0]
         }
         Prim::MapGet(m, k) => {
-            let mv = tagged_get(var_env, b, jmod, runtime, m.0);
-            let kv = tagged_get(var_env, b, jmod, runtime, k.0);
+            let mv = tagged_get(var_env, b, jmod, runtime, m.0, cache);
+            let kv = tagged_get(var_env, b, jmod, runtime, k.0, cache);
             let fref = jmod.declare_func_in_func(runtime.map_get_id, b.func);
             let inst = b.ins().call(fref, &[mv, kv]);
             b.inst_results(inst)[0]
@@ -5663,7 +5669,7 @@ fn lower_collection_prim<M: cranelift_module::Module>(
             b.ins().call(begin, &[kt]);
             let push = jmod.declare_func_in_func(runtime.vec_push_id, b.func);
             for ev in els {
-                let v = tagged_get(var_env, b, jmod, runtime, ev.0);
+                let v = tagged_get(var_env, b, jmod, runtime, ev.0, cache);
                 b.ins().call(push, &[v]);
             }
             let fin = jmod.declare_func_in_func(runtime.vec_finalize_id, b.func);
@@ -5717,6 +5723,7 @@ fn lower_prim<M: cranelift_module::Module>(
                     .cloned()
                     .unwrap_or_else(crate::types::Descr::any);
                 if d.is_subtype(&crate::types::Descr::int()) {
+                    cache.raw_int_consts.insert(dest_var.0, *n);
                     return Ok(LowerOut::RawI64(b.ins().iconst(types::I64, *n)));
                 }
                 b.ins().iconst(types::I64, ((*n) << 3) | TAG_INT)
@@ -5761,12 +5768,12 @@ fn lower_prim<M: cranelift_module::Module>(
             // fallback) call `tag_a` / `tag_b` and pay the conversion.
             macro_rules! tag_a {
                 () => {
-                    tagged_get(var_env, b, jmod, runtime, a.0)
+                    tagged_get(var_env, b, jmod, runtime, a.0, cache)
                 };
             }
             macro_rules! tag_b {
                 () => {
-                    tagged_get(var_env, b, jmod, runtime, bv.0)
+                    tagged_get(var_env, b, jmod, runtime, bv.0, cache)
                 };
             }
             match op {
@@ -6029,7 +6036,7 @@ fn lower_prim<M: cranelift_module::Module>(
                     return Ok(LowerOut::RawI64(b.ins().ineg(xi)));
                 }
                 UnOp::Not => {
-                    let xv = tagged_get(var_env, b, jmod, runtime, x.0);
+                    let xv = tagged_get(var_env, b, jmod, runtime, x.0, cache);
                     let truthy = is_truthy(b, cache, xv);
                     let zero = b.ins().iconst(types::I8, 0);
                     let inv = b.ins().icmp(IntCC::Equal, truthy, zero);
@@ -6077,7 +6084,7 @@ fn lower_prim<M: cranelift_module::Module>(
                 .map(|(v, ty)| match ty {
                     ExternTy::I64 => as_raw_i64(var_env, b, v.0),
                     ExternTy::F64 => as_raw_f64(var_env, b, v.0),
-                    _ => tagged_get(var_env, b, jmod, runtime, v.0),
+                    _ => tagged_get(var_env, b, jmod, runtime, v.0, cache),
                 })
                 .collect();
             let inst = b.ins().call(fref, &arg_vals);
@@ -6203,7 +6210,7 @@ fn lower_prim<M: cranelift_module::Module>(
             use crate::types::BasicBits;
             use fz_runtime::fz_value::HeapKind;
 
-            let val = tagged_get(var_env, b, jmod, runtime, v.0);
+            let val = tagged_get(var_env, b, jmod, runtime, v.0, cache);
             let tag3 = b.ins().band_imm(val, 7);
 
             // Scalar checks: safe unconditionally (no heap loads).
@@ -6339,11 +6346,18 @@ fn tagged_get<M: cranelift_module::Module>(
     jmod: &mut M,
     runtime: &RuntimeRefs,
     v: u32,
+    cache: &mut CodegenCache,
 ) -> ir::Value {
     let vb = var_env.get(&v).expect("unbound var");
     match vb.repr {
         ArgRepr::RawF64 => box_float_native(b, jmod, runtime, vb.value),
-        ArgRepr::RawInt => box_int(b, vb.value),
+        ArgRepr::RawInt => {
+            if let Some(&n) = cache.raw_int_consts.get(&v) {
+                cached_iconst(b, cache, (n << 3) | TAG_INT)
+            } else {
+                box_int(b, vb.value)
+            }
+        }
         ArgRepr::Tagged => vb.value,
     }
 }
@@ -7685,6 +7699,38 @@ fn main(), do: loop_with(loop_with, 100000, 0)
             "post-inline frame allocs ({}) must be < 50% of pre-inline ({})",
             post_count,
             pre_count
+        );
+    }
+
+    /// fz-zj3 — box_int constant fold: Const::Int(n) lowered as RawInt must be
+    /// retagged as a single iconst ((n<<3)|TAG_INT), not ishl_imm + bor_imm.
+    #[test]
+    fn box_int_const_fold_eliminates_ishl_bor() {
+        // send(2, 41) passes integer constants to an extern taking Tagged args.
+        // Before the fix: v9=iconst 2; ishl_imm v9,3; bor_imm result,1 (3 insns).
+        // After: v9=iconst 2; v11=iconst 17 — raw_int_consts hit in tagged_get.
+        let src = "fn relay(), do: send(1, receive() + 1)\n\
+                   fn main() do\n\
+                     spawn(relay)\n\
+                     send(2, 41)\n\
+                     print(receive())\n\
+                   end";
+        let m = lower_src(src);
+        ir_text_record_enable();
+        let _ = compile(&m).unwrap();
+        let ir = ir_text_record_take();
+        let main_ir = ir.iter().find(|(n, _)| n == "main").map(|(_, s)| s.as_str()).unwrap_or("");
+        // send(2, 41): the tagged forms of 2 and 41 are iconst 17 and iconst 329.
+        // The ishl_imm + bor_imm sequence should not appear for these constants.
+        assert!(
+            main_ir.contains("iconst.i64 17") && main_ir.contains("iconst.i64 329"),
+            "expected pre-tagged iconst 17 and 329 for send(2, 41):\n{}",
+            main_ir
+        );
+        assert!(
+            !main_ir.contains("ishl_imm"),
+            "spurious ishl_imm in main CLIF — box_int fold not applied:\n{}",
+            main_ir
         );
     }
 

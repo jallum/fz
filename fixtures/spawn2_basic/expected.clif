@@ -29,18 +29,17 @@ block0(v0: i64):
     v8 = func_addr.i64 fn2              ; @6:29
     store notrap aligned v8, v7+16      ; @6:29
     store notrap aligned v2, v7+24      ; @6:29
-    v9 = ishl_imm v3, 3                 ; @6:3  v3 = 4096
-    v10 = bor_imm v9, 1                 ; @6:3
-    v11 = call fn3(v7, v10)             ; @6:3
-    v12 = iconst.i32 11                 ; @7:9
-    v13 = iconst.i32 1                  ; @7:9
-    v14 = iconst.i32 0                  ; @7:9
-    v15 = call fn4(v12, v13, v14)       ; @7:9  v12 = 11, v13 = 1, v14 = 0
-    v16 = func_addr.i64 fn5             ; @7:9
-    store notrap aligned v16, v15+16    ; @7:9
-    store notrap aligned v0, v15+24     ; @7:9
-    v17 = call fn6(v15)                 ; @7:9
-    return v17                          ; @7:9
+    v9 = iconst.i64 0x8001              ; @6:3
+    v10 = call fn3(v7, v9)              ; @6:3  v9 = 0x8001
+    v11 = iconst.i32 11                 ; @7:9
+    v12 = iconst.i32 1                  ; @7:9
+    v13 = iconst.i32 0                  ; @7:9
+    v14 = call fn4(v11, v12, v13)       ; @7:9  v11 = 11, v12 = 1, v13 = 0
+    v15 = func_addr.i64 fn5             ; @7:9
+    store notrap aligned v15, v14+16    ; @7:9
+    store notrap aligned v0, v14+24     ; @7:9
+    v16 = call fn6(v14)                 ; @7:9
+    return v16                          ; @7:9
 }
 
 ; fn lambda_9
@@ -55,13 +54,11 @@ function u0:0(i64, i64) -> i64 tail {
 block0(v0: i64, v1: i64):
     v2 = iconst.i64 42    ;; v2 :: 42
     v3 = iconst.i64 1    ;; v3 :: 1
-    v4 = ishl_imm v3, 3  ; v3 = 1
-    v5 = bor_imm v4, 1
-    v6 = ishl_imm v2, 3  ; v2 = 42
-    v7 = bor_imm v6, 1
-    v8 = call fn0(v5, v7)    ;; v8 :: any
-    v9 = load.i64 notrap aligned v1+16
-    return_call_indirect sig1, v9(v8, v1)
+    v4 = iconst.i64 9
+    v5 = iconst.i64 337
+    v6 = call fn0(v4, v5)  ; v4 = 9, v5 = 337    ;; v6 :: any
+    v7 = load.i64 notrap aligned v1+16
+    return_call_indirect sig1, v7(v6, v1)
 }
 
 ; fn k_receive_11

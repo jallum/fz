@@ -65,11 +65,10 @@ function u0:0(i64, i64) -> i64 tail {
 block0(v0: i64, v1: i64):
     v2 = load.i64 notrap aligned v0+24    ;; v2 :: vec(u8) | vec(bit)
     v3 = iconst.i64 1    ;; v3 :: 1
-    v4 = ishl_imm v3, 3  ; v3 = 1
-    v5 = bor_imm v4, 1
-    v6 = call fn0(v5, v2)    ;; v6 :: any
-    v7 = load.i64 notrap aligned v1+16
-    return_call_indirect sig1, v7(v6, v1)
+    v4 = iconst.i64 9
+    v5 = call fn0(v4, v2)  ; v4 = 9    ;; v5 :: any
+    v6 = load.i64 notrap aligned v1+16
+    return_call_indirect sig1, v6(v5, v1)
 }
 
 ; fn fz_spawn_thunk

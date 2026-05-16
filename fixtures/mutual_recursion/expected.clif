@@ -154,83 +154,81 @@ function u0:0(i64, i64) -> i64 tail {
 
     block0(v0: i64, v1: i64):    ;; v0 :: int | float
     v2 = iconst.i64 0    ;; v2 :: 0
-    v3 = ishl_imm v2, 3  ; v2 = 0
-    v4 = bor_imm v3, 1
-    v5 = bor v0, v4
-    v6 = band_imm v5, 7
-    v7 = icmp_imm eq v6, 0
-    brif v7, block4, block3
+    v3 = iconst.i64 1
+    v4 = bor v0, v3  ; v3 = 1
+    v5 = band_imm v4, 7
+    v6 = icmp_imm eq v5, 0
+    brif v6, block4, block3
 
 block3:
-    v9 = icmp.i64 eq v0, v4
-    v10 = iconst.i64 11
-    v11 = iconst.i64 19
-    v12 = select v9, v10, v11  ; v10 = 11, v11 = 19
-    jump block5(v12)
+    v8 = icmp.i64 eq v0, v3  ; v3 = 1
+    v9 = iconst.i64 11
+    v10 = iconst.i64 19
+    v11 = select v8, v9, v10  ; v9 = 11, v10 = 19
+    jump block5(v11)
 
 block4:
-    v13 = call fn0(v0, v4)
-    jump block5(v13)
+    v12 = call fn0(v0, v3)  ; v3 = 1
+    jump block5(v12)
 
-    block5(v8: i64):    ;; v8 :: bool
-    v14 = iconst.i64 3
-    v15 = iconst.i64 19
-    v16 = icmp ne v8, v14  ; v14 = 3
-    v17 = icmp ne v8, v15  ; v15 = 19
-    v18 = band v16, v17
-    brif v18, block2, block1
+    block5(v7: i64):    ;; v7 :: bool
+    v13 = iconst.i64 3
+    v14 = iconst.i64 19
+    v15 = icmp ne v7, v13  ; v13 = 3
+    v16 = icmp ne v7, v14  ; v14 = 19
+    v17 = band v15, v16
+    brif v17, block2, block1
 
 block1:
-    v19 = iconst.i64 1                  ; @2:31
-    v20 = ishl_imm v19, 3               ; @2:27  v19 = 1
-    v21 = bor_imm v20, 1                ; @2:27
-    v22 = bxor_imm.i64 v0, 1            ; @2:27
-    v23 = bxor_imm v21, 1               ; @2:27
-    v24 = bor v22, v23                  ; @2:27
-    v25 = band_imm v24, 7               ; @2:27
-    v26 = icmp_imm eq v25, 0            ; @2:27
-    brif v26, block6, block7            ; @2:27
+    v18 = iconst.i64 1                  ; @2:31
+    v19 = iconst.i64 9                  ; @2:27
+    v20 = bxor_imm.i64 v0, 1            ; @2:27
+    v21 = bxor_imm v19, 1               ; @2:27  v19 = 9
+    v22 = bor v20, v21                  ; @2:27
+    v23 = band_imm v22, 7               ; @2:27
+    v24 = icmp_imm eq v23, 0            ; @2:27
+    brif v24, block6, block7            ; @2:27
 
 block6:
-    v28 = sshr_imm.i64 v0, 3            ; @2:27
-    v29 = sshr_imm.i64 v21, 3           ; @2:27
-    v30 = isub v28, v29                 ; @2:27
-    v31 = ishl_imm v30, 3               ; @2:27
-    v32 = bor_imm v31, 1                ; @2:27
-    jump block8(v32)                    ; @2:27
+    v26 = sshr_imm.i64 v0, 3            ; @2:27
+    v27 = sshr_imm.i64 v19, 3           ; @2:27  v19 = 9
+    v28 = isub v26, v27                 ; @2:27
+    v29 = ishl_imm v28, 3               ; @2:27
+    v30 = bor_imm v29, 1                ; @2:27
+    jump block8(v30)                    ; @2:27
 
 block7:
-    v33 = call fn1(v0)                  ; @2:27
-    v34 = call fn1(v21)                 ; @2:27
-    v35 = fsub v33, v34                 ; @2:27
-    v36 = bitcast.i64 v35               ; @2:27
-    v37 = call fn2(v36)                 ; @2:27
-    jump block8(v37)                    ; @2:27
+    v31 = call fn1(v0)                  ; @2:27
+    v32 = call fn1(v19)                 ; @2:27  v19 = 9
+    v33 = fsub v31, v32                 ; @2:27
+    v34 = bitcast.i64 v33               ; @2:27
+    v35 = call fn2(v34)                 ; @2:27
+    jump block8(v35)                    ; @2:27
 
-    block8(v27: i64):    ;; v27 :: int | float
-    v38 = global_value.i64 gv0          ; @2:20
-    v39 = load.i8 notrap aligned v38    ; @2:20
-    v40 = uextend.i64 v39               ; @2:20
-    v41 = iconst.i64 0                  ; @2:20
-    v42 = icmp ne v40, v41              ; @2:20  v41 = 0
-    brif v42, block9, block10           ; @2:20
+    block8(v25: i64):    ;; v25 :: int | float
+    v36 = global_value.i64 gv0          ; @2:20
+    v37 = load.i8 notrap aligned v36    ; @2:20
+    v38 = uextend.i64 v37               ; @2:20
+    v39 = iconst.i64 0                  ; @2:20
+    v40 = icmp ne v38, v39              ; @2:20  v39 = 0
+    brif v40, block9, block10           ; @2:20
 
 block9:
-    v43 = call fn5()                    ; @2:20
-    store.i64 notrap aligned v27, v43   ; @2:20
-    store.i64 notrap aligned v1, v43+8  ; @2:20
-    v44 = func_addr.i64 fn4             ; @2:20
-    v45 = iconst.i32 2                  ; @2:20
-    v46 = call fn6(v44, v45)            ; @2:20  v45 = 2
-    return v46                          ; @2:20
+    v41 = call fn5()                    ; @2:20
+    store.i64 notrap aligned v25, v41   ; @2:20
+    store.i64 notrap aligned v1, v41+8  ; @2:20
+    v42 = func_addr.i64 fn4             ; @2:20
+    v43 = iconst.i32 2                  ; @2:20
+    v44 = call fn6(v42, v43)            ; @2:20  v43 = 2
+    return v44                          ; @2:20
 
 block10:
-    return_call fn4(v27, v1)            ; @2:20
+    return_call fn4(v25, v1)            ; @2:20
 
 block2:
-    v47 = iconst.i64 11                 ; @1:20
-    v48 = load.i64 notrap aligned v1+16
-    return_call_indirect sig7, v48(v47, v1)  ; v47 = 11
+    v45 = iconst.i64 11                 ; @1:20
+    v46 = load.i64 notrap aligned v1+16
+    return_call_indirect sig7, v46(v45, v1)  ; v45 = 11
 }
 
 ; fn is_even_s13
@@ -415,83 +413,81 @@ function u0:0(i64, i64) -> i64 tail {
 
     block0(v0: i64, v1: i64):    ;; v0 :: int | float
     v2 = iconst.i64 0    ;; v2 :: 0
-    v3 = ishl_imm v2, 3  ; v2 = 0
-    v4 = bor_imm v3, 1
-    v5 = bor v0, v4
-    v6 = band_imm v5, 7
-    v7 = icmp_imm eq v6, 0
-    brif v7, block4, block3
+    v3 = iconst.i64 1
+    v4 = bor v0, v3  ; v3 = 1
+    v5 = band_imm v4, 7
+    v6 = icmp_imm eq v5, 0
+    brif v6, block4, block3
 
 block3:
-    v9 = icmp.i64 eq v0, v4
-    v10 = iconst.i64 11
-    v11 = iconst.i64 19
-    v12 = select v9, v10, v11  ; v10 = 11, v11 = 19
-    jump block5(v12)
+    v8 = icmp.i64 eq v0, v3  ; v3 = 1
+    v9 = iconst.i64 11
+    v10 = iconst.i64 19
+    v11 = select v8, v9, v10  ; v9 = 11, v10 = 19
+    jump block5(v11)
 
 block4:
-    v13 = call fn0(v0, v4)
-    jump block5(v13)
+    v12 = call fn0(v0, v3)  ; v3 = 1
+    jump block5(v12)
 
-    block5(v8: i64):    ;; v8 :: bool
-    v14 = iconst.i64 3
-    v15 = iconst.i64 19
-    v16 = icmp ne v8, v14  ; v14 = 3
-    v17 = icmp ne v8, v15  ; v15 = 19
-    v18 = band v16, v17
-    brif v18, block2, block1
+    block5(v7: i64):    ;; v7 :: bool
+    v13 = iconst.i64 3
+    v14 = iconst.i64 19
+    v15 = icmp ne v7, v13  ; v13 = 3
+    v16 = icmp ne v7, v14  ; v14 = 19
+    v17 = band v15, v16
+    brif v17, block2, block1
 
 block1:
-    v19 = iconst.i64 1                  ; @4:31
-    v20 = ishl_imm v19, 3               ; @4:27  v19 = 1
-    v21 = bor_imm v20, 1                ; @4:27
-    v22 = bxor_imm.i64 v0, 1            ; @4:27
-    v23 = bxor_imm v21, 1               ; @4:27
-    v24 = bor v22, v23                  ; @4:27
-    v25 = band_imm v24, 7               ; @4:27
-    v26 = icmp_imm eq v25, 0            ; @4:27
-    brif v26, block6, block7            ; @4:27
+    v18 = iconst.i64 1                  ; @4:31
+    v19 = iconst.i64 9                  ; @4:27
+    v20 = bxor_imm.i64 v0, 1            ; @4:27
+    v21 = bxor_imm v19, 1               ; @4:27  v19 = 9
+    v22 = bor v20, v21                  ; @4:27
+    v23 = band_imm v22, 7               ; @4:27
+    v24 = icmp_imm eq v23, 0            ; @4:27
+    brif v24, block6, block7            ; @4:27
 
 block6:
-    v28 = sshr_imm.i64 v0, 3            ; @4:27
-    v29 = sshr_imm.i64 v21, 3           ; @4:27
-    v30 = isub v28, v29                 ; @4:27
-    v31 = ishl_imm v30, 3               ; @4:27
-    v32 = bor_imm v31, 1                ; @4:27
-    jump block8(v32)                    ; @4:27
+    v26 = sshr_imm.i64 v0, 3            ; @4:27
+    v27 = sshr_imm.i64 v19, 3           ; @4:27  v19 = 9
+    v28 = isub v26, v27                 ; @4:27
+    v29 = ishl_imm v28, 3               ; @4:27
+    v30 = bor_imm v29, 1                ; @4:27
+    jump block8(v30)                    ; @4:27
 
 block7:
-    v33 = call fn1(v0)                  ; @4:27
-    v34 = call fn1(v21)                 ; @4:27
-    v35 = fsub v33, v34                 ; @4:27
-    v36 = bitcast.i64 v35               ; @4:27
-    v37 = call fn2(v36)                 ; @4:27
-    jump block8(v37)                    ; @4:27
+    v31 = call fn1(v0)                  ; @4:27
+    v32 = call fn1(v19)                 ; @4:27  v19 = 9
+    v33 = fsub v31, v32                 ; @4:27
+    v34 = bitcast.i64 v33               ; @4:27
+    v35 = call fn2(v34)                 ; @4:27
+    jump block8(v35)                    ; @4:27
 
-    block8(v27: i64):    ;; v27 :: int | float
-    v38 = global_value.i64 gv0          ; @4:19
-    v39 = load.i8 notrap aligned v38    ; @4:19
-    v40 = uextend.i64 v39               ; @4:19
-    v41 = iconst.i64 0                  ; @4:19
-    v42 = icmp ne v40, v41              ; @4:19  v41 = 0
-    brif v42, block9, block10           ; @4:19
+    block8(v25: i64):    ;; v25 :: int | float
+    v36 = global_value.i64 gv0          ; @4:19
+    v37 = load.i8 notrap aligned v36    ; @4:19
+    v38 = uextend.i64 v37               ; @4:19
+    v39 = iconst.i64 0                  ; @4:19
+    v40 = icmp ne v38, v39              ; @4:19  v39 = 0
+    brif v40, block9, block10           ; @4:19
 
 block9:
-    v43 = call fn5()                    ; @4:19
-    store.i64 notrap aligned v27, v43   ; @4:19
-    store.i64 notrap aligned v1, v43+8  ; @4:19
-    v44 = func_addr.i64 fn4             ; @4:19
-    v45 = iconst.i32 2                  ; @4:19
-    v46 = call fn6(v44, v45)            ; @4:19  v45 = 2
-    return v46                          ; @4:19
+    v41 = call fn5()                    ; @4:19
+    store.i64 notrap aligned v25, v41   ; @4:19
+    store.i64 notrap aligned v1, v41+8  ; @4:19
+    v42 = func_addr.i64 fn4             ; @4:19
+    v43 = iconst.i32 2                  ; @4:19
+    v44 = call fn6(v42, v43)            ; @4:19  v43 = 2
+    return v44                          ; @4:19
 
 block10:
-    return_call fn4(v27, v1)            ; @4:19
+    return_call fn4(v25, v1)            ; @4:19
 
 block2:
-    v47 = iconst.i64 19                 ; @3:19
-    v48 = load.i64 notrap aligned v1+16
-    return_call_indirect sig7, v48(v47, v1)  ; v47 = 19
+    v45 = iconst.i64 19                 ; @3:19
+    v46 = load.i64 notrap aligned v1+16
+    return_call_indirect sig7, v46(v45, v1)  ; v45 = 19
 }
 
 ; fn is_odd_s17
