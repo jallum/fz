@@ -4,13 +4,14 @@
     "fz-5hl"
   ],
   "blocks": [],
+  "closed_at": "2026-05-16T21:57:50Z",
   "created": "2026-05-16T21:52:57Z",
   "description": "",
   "id": "fz-pjw",
   "labels": [],
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "fz-abs.2: wire absorb_callee into all three inliners; remove splice_blocks; update alias golden",
   "type": "task",
-  "updated_at": "2026-05-16T21:55:26Z"
+  "updated_at": "2026-05-16T21:57:50Z"
 }
