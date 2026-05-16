@@ -464,13 +464,14 @@ pub fn lower_program_full(prog: &Program) -> Result<(Module, AtomTable, BuiltinT
                 continue;
             }
             let eid = ExternId(ctx.extern_decls.len() as u32);
-            let params = vec![ExternTy::Any; fn_def.extern_param_count];
-            let ret = lower_extern_ret_ty(fn_def)?;
+            let params = vec![ExternTy::Any; fn_def.extern_param_types.len()];
+            let (ret, ret_descr) = lower_extern_ret_ty(fn_def, &ctx.prelude_type_env)?;
             ctx.extern_decls.push(ExternDecl {
                 fz_name: fn_def.name.clone(),
                 symbol: fn_def.name.clone(),
                 params,
                 ret,
+                ret_descr,
             });
             ctx.externs.insert(fn_def.name.clone(), eid);
         }
@@ -546,24 +547,61 @@ pub fn lower_program_full(prog: &Program) -> Result<(Module, AtomTable, BuiltinT
     Ok((module, ctx.atoms, ctx.builtins))
 }
 
-/// Parse the `extern_ret_tokens` of an extern fn def to an ExternTy.
-fn lower_extern_ret_ty(fn_def: &FnDef) -> Result<ExternTy, LowerError> {
+/// Parse `extern_ret_tokens` into an ExternTy (wire format) and Descr
+/// (semantic type for the type system).
+///
+/// `type_env` is consulted for named type references (e.g. `pid`).
+fn lower_extern_ret_ty(
+    fn_def: &FnDef,
+    type_env: &crate::type_expr::ModuleTypeEnv,
+) -> Result<(ExternTy, crate::types::Descr), LowerError> {
     use crate::lexer::Tok;
     let tokens = &fn_def.extern_ret_tokens;
-    // Match on the first meaningful token, including special-cased keywords.
+
+    // Try to resolve via parse_type_expr first (handles named types like `pid`).
+    if !tokens.is_empty() {
+        if let Ok((descr, _)) = crate::type_expr::parse_type_expr(tokens, type_env) {
+            let wire = descr_to_extern_ty(&descr);
+            return Ok((wire, descr));
+        }
+    }
+
+    // Fallback: first-meaningful-token heuristic for tokens that don't
+    // parse as a full type expression (e.g. bare `unit` which is not a
+    // built-in fz type name).
     let ty = tokens.iter().find_map(|t| match &t.tok {
         Tok::Nil => Some(ExternTy::Unit),
         Tok::True | Tok::False => Some(ExternTy::Any),
         Tok::Ident(n) | Tok::Upper(n) => extern_ty_from_name(n.as_str()),
         _ => None,
     });
-    ty.ok_or_else(|| LowerError::Unsupported {
-        span: fn_def.name_span,
-        what: format!(
-            "unrecognised return type in `extern fn {}` (expected any/nil/never/float)",
-            fn_def.name
-        ),
-    })
+    ty.map(|wire| (wire, crate::types::Descr::any()))
+        .ok_or_else(|| LowerError::Unsupported {
+            span: fn_def.name_span,
+            what: format!(
+                "unrecognised return type in `extern fn {}` (expected any/nil/never/float/pid/…)",
+                fn_def.name
+            ),
+        })
+}
+
+/// Derive a coarse C-ABI wire type from a semantic Descr.
+///
+/// Opaque types erase to Any (they are fz tagged values at runtime).
+/// Float-only types get the F64 wire. Nil-only → Unit. Never → Never.
+/// Everything else → Any (opaque u64 fz value).
+fn descr_to_extern_ty(d: &crate::types::Descr) -> ExternTy {
+    use crate::types::Descr;
+    if d.is_subtype(&Descr::none()) {
+        return ExternTy::Never;
+    }
+    if d.is_subtype(&Descr::nil()) {
+        return ExternTy::Unit;
+    }
+    if d.is_subtype(&Descr::float()) {
+        return ExternTy::F64;
+    }
+    ExternTy::Any
 }
 
 /// Post-lowering pass: compute the SCC of the fn-level call graph and set

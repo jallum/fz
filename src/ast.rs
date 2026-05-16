@@ -332,9 +332,10 @@ pub struct FnDef {
     /// `Some("C")` for `extern "C" fn` declarations; `None` for regular fns.
     #[allow(dead_code)] // read by ir_lower in T3
     pub extern_abi: Option<String>,
-    /// Declared parameter count (used by lowering to build ExternDecl). 0 for regular fns.
+    /// Per-parameter type tokens for `extern "C" fn` declarations.
+    /// `extern_param_types.len()` gives the arity. Empty for regular fns.
     #[allow(dead_code)] // read by ir_lower in T3
-    pub extern_param_count: usize,
+    pub extern_param_types: Vec<Vec<crate::lexer::Token>>,
     /// Raw return-type tokens from `:: RetType`. Empty for regular fns.
     #[allow(dead_code)] // read by ir_lower in T3
     pub extern_ret_tokens: Vec<crate::lexer::Token>,

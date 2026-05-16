@@ -130,20 +130,20 @@ mod extern_parse_tests {
         let d = parse_extern("extern \"C\" fn fz_halt() :: never\n");
         assert_eq!(d.name, "fz_halt");
         assert_eq!(d.extern_abi, Some("C".into()));
-        assert_eq!(d.extern_param_count, 0);
+        assert_eq!(d.extern_param_types.len(), 0);
         assert!(d.clauses.is_empty());
     }
 
     #[test]
     fn extern_fn_one_param() {
         let d = parse_extern("extern \"C\" fn fz_print(any) :: unit\n");
-        assert_eq!(d.extern_param_count, 1);
+        assert_eq!(d.extern_param_types.len(), 1);
     }
 
     #[test]
     fn extern_fn_two_params() {
         let d = parse_extern("extern \"C\" fn fz_assert_eq(any, any) :: unit\n");
-        assert_eq!(d.extern_param_count, 2);
+        assert_eq!(d.extern_param_types.len(), 2);
         assert!(!d.extern_ret_tokens.is_empty());
     }
 }
@@ -409,7 +409,7 @@ impl Parser {
                             clauses: vec![clause],
                             is_macro,
                             extern_abi: None,
-                            extern_param_count: 0,
+                            extern_param_types: vec![],
                             extern_ret_tokens: vec![],
                             attrs,
                             span: start.merge(clause_span),
@@ -732,35 +732,42 @@ impl Parser {
             other => return self.err(format!("expected function name, got {:?}", other)),
         };
         self.expect(&Tok::LParen, "`(`")?;
-        let extern_param_count = if matches!(self.peek(), Tok::RParen) {
-            0
+        let extern_param_types: Vec<Vec<crate::lexer::Token>> = if matches!(self.peek(), Tok::RParen) {
+            vec![]
         } else {
-            let mut count = 1usize;
+            let mut params: Vec<Vec<crate::lexer::Token>> = Vec::new();
+            let mut current: Vec<crate::lexer::Token> = Vec::new();
             let mut depth = 0usize;
             loop {
                 match self.peek() {
                     Tok::LParen | Tok::LBrace | Tok::LBrack => {
                         depth += 1;
+                        current.push(self.toks[self.pos].clone());
                         self.bump();
                     }
                     Tok::RParen | Tok::RBrace | Tok::RBrack if depth > 0 => {
                         depth -= 1;
+                        current.push(self.toks[self.pos].clone());
                         self.bump();
                     }
-                    Tok::RParen => break,
+                    Tok::RParen => {
+                        params.push(std::mem::take(&mut current));
+                        break;
+                    }
                     Tok::Comma if depth == 0 => {
-                        count += 1;
+                        params.push(std::mem::take(&mut current));
                         self.bump();
                     }
                     Tok::Eof | Tok::Newline => {
                         return self.err("unexpected end of extern parameter list");
                     }
                     _ => {
+                        current.push(self.toks[self.pos].clone());
                         self.bump();
                     }
                 }
             }
-            count
+            params
         };
         self.expect(&Tok::RParen, "`)`")?;
         self.expect(&Tok::ColonColon, "`::`")?;
@@ -776,7 +783,7 @@ impl Parser {
             clauses: vec![],
             is_macro: false,
             extern_abi: Some(abi),
-            extern_param_count,
+            extern_param_types,
             extern_ret_tokens,
             attrs: vec![],
             span,
