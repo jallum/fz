@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-16T00:34:20Z",
+  "description": "## Goal\n\nMake cross-process send share, rather than copy, the bytes behind a ProcBin. The sender's ProcBin and the receiver's ProcBin both reference the same SharedBin; the refcount tracks the number of live references.\n\n## Depends on\n\nfz-cty.3 (ProcBin + MSO + sweep).\n\n## Changes\n\n### runtime/src/heap.rs — deep_copy_value\nAdd a match arm for `HeapKind::ProcBin`:\n\n```rust\nHeapKind::ProcBin =\u003e {\n    let shared_ptr = unsafe { std::ptr::read((sp as *const u8).add(16) as *const *mut SharedBin) };\n    unsafe { shared_bin_retain(shared_ptr); }\n    let new_p = dst_heap.alloc_procbin(shared_ptr);\n    forwarding.insert(sp, new_p);\n    return FzValue(new_p as u64);\n}\n```\n\nNotes:\n- `dst_heap.alloc_procbin` pushes the new ProcBin onto the dst heap's mso_list as part of allocation; no extra MSO bookkeeping needed here.\n- The forwarding map (which prevents double-copying shared structure within a single send) ensures that if the same src ProcBin appears multiple times in the value graph, only one dst ProcBin is allocated and only one retain happens.\n\n## Tests\n\n- Single-process round-trip: allocate a ProcBin in heap A, deep_copy to heap B. Assert: heap A's MSO still has the entry; heap B's MSO has one entry; SharedBin refcount = 2; bytes accessible from both ProcBins.\n- Shared structure: build a value graph where a Tuple contains the same ProcBin pointer twice. deep_copy. Assert: dst contains exactly one new ProcBin (forwarding-map deduplication); SharedBin refcount = 2 (not 3).\n- Refcount drop on heap destruction: drop heap B; assert refcount returns to 1; heap A unaffected.\n- Mailbox delivery: simulate full send-via-runtime path (covered by existing test infrastructure if available); assert MSO entries are correctly placed in receiver.\n\n## Non-changes\n\n- Bitstring allocation policy (.5 handles that).\n- ProcBin construction is not yet user-reachable — there is no caller that produces a ProcBin until .5 wires the policy into `alloc_bitstring`.\n\n## Verification\n\n- New tests pass.\n- Refcount invariant holds across deep_copy and subsequent drops.",
+  "id": "fz-cty.4",
+  "labels": [],
+  "parent": "fz-cty",
+  "priority": 2,
+  "status": "open",
+  "title": "fz-shr.4: deep_copy_value handles ProcBin via retain",
+  "type": "task",
+  "updated_at": "2026-05-16T00:34:20Z"
+}
