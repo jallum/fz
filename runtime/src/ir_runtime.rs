@@ -616,6 +616,23 @@ pub extern "C" fn fz_bs_finalize() -> u64 {
     p as u64
 }
 
+/// fz-cty.8 — single-shot bitstring allocation from module-interned bytes.
+///
+/// Replaces the begin/write-per-field/finalize sequence for the common
+/// case of an all-constant byte-literal bitstring (e.g. `<<1, 2, ..., 70>>`).
+/// `ptr` points at a static byte payload baked into the module; the runtime
+/// copies through `Heap::alloc_bitstring`, which picks inline / ProcBin /
+/// SharedBin storage by length.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_alloc_bitstring_const(ptr: u64, byte_len: u64, bit_len: u64) -> u64 {
+    // ptr is the address of a module-baked byte payload (Cranelift Local data
+    // symbol). It outlives the call; we materialise a slice over it just long
+    // enough for Heap::alloc_bitstring to copy / wrap.
+    let bytes = unsafe { std::slice::from_raw_parts(ptr as *const u8, byte_len as usize) };
+    let p = current_process().heap.alloc_bitstring(bytes, bit_len);
+    p as u64
+}
+
 fn decode_bit_type(t: u32) -> crate::bitstr::BitType {
     use crate::bitstr::BitType;
     match t {
@@ -1256,4 +1273,71 @@ fn eq_map(ap: *mut crate::fz_value::HeapHeader, bp: *mut crate::fz_value::HeapHe
         }
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fz_value::{HeapKind, bitstring_bit_len, bitstring_byte_ptr};
+    use crate::heap::SchemaRegistry;
+    use crate::process::{CURRENT_PROCESS, Process};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    /// Install a fresh Process for the duration of `f`. Mirrors the
+    /// install/clear dance done by aot_shim and the scheduler, but stays
+    /// on the test thread.
+    fn with_process<R>(f: impl FnOnce() -> R) -> R {
+        let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
+        let mut proc = Box::new(Process::new(schemas));
+        let prev = CURRENT_PROCESS.with(|c| c.replace(proc.as_mut() as *mut Process));
+        let r = f();
+        CURRENT_PROCESS.with(|c| c.set(prev));
+        r
+    }
+
+    /// fz-cty.8 — small (<= threshold) payload allocates inline Bitstring.
+    #[test]
+    fn alloc_bitstring_const_small_payload_is_inline() {
+        with_process(|| {
+            let bytes: [u8; 3] = [0xaa, 0xbb, 0xcc];
+            let bits = fz_alloc_bitstring_const(bytes.as_ptr() as u64, 3, 24);
+            let p = crate::fz_value::FzValue(bits).unbox_ptr().unwrap();
+            unsafe {
+                assert_eq!(
+                    HeapKind::from_u16((*p).kind),
+                    Some(HeapKind::Bitstring),
+                    "small payload should pick the inline Bitstring kind"
+                );
+                assert_eq!(bitstring_bit_len(p), 24);
+                let bp = bitstring_byte_ptr(p);
+                assert_eq!(std::slice::from_raw_parts(bp, 3), &bytes);
+            }
+        });
+    }
+
+    /// fz-cty.8 — large (> threshold) payload routes through ProcBin / SharedBin.
+    #[test]
+    fn alloc_bitstring_const_large_payload_is_procbin() {
+        let _live_lock = crate::shared_bin::live_count_lock();
+        with_process(|| {
+            let payload: Vec<u8> = (0..70u8).collect(); // 70 > SHARED_BIN_THRESHOLD_BYTES (64)
+            let bits =
+                fz_alloc_bitstring_const(payload.as_ptr() as u64, payload.len() as u64, 70 * 8);
+            let p = crate::fz_value::FzValue(bits).unbox_ptr().unwrap();
+            unsafe {
+                assert_eq!(
+                    HeapKind::from_u16((*p).kind),
+                    Some(HeapKind::ProcBin),
+                    "large payload should route through ProcBin / SharedBin"
+                );
+                assert_eq!(bitstring_bit_len(p), 70 * 8);
+                let bp = bitstring_byte_ptr(p);
+                assert_eq!(
+                    std::slice::from_raw_parts(bp, payload.len()),
+                    payload.as_slice()
+                );
+            }
+        });
+    }
 }

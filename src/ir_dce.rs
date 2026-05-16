@@ -121,6 +121,7 @@ fn collect_prim_vars(p: &Prim, used: &mut HashSet<Var>) {
                 }
             }
         }
+        Prim::ConstBitstring(_, _) => {}
         Prim::BitReaderInit(a) => {
             used.insert(*a);
         }

@@ -528,6 +528,16 @@ fn eval_prim(module: &Module, prim: &Prim, env: &HashMap<Var, FzValue>) -> Resul
             }
             FzValue(fz_runtime::ir_runtime::fz_bs_finalize())
         }
+        Prim::ConstBitstring(bytes, bit_len) => {
+            // fz-cty.8 — bytes are owned by the Module (and live as long as
+            // the interp run), so it's safe to alloc straight from them via
+            // the shared runtime FFI; identical to the JIT/AOT lowering.
+            FzValue(fz_runtime::ir_runtime::fz_alloc_bitstring_const(
+                bytes.as_ptr() as u64,
+                bytes.len() as u64,
+                *bit_len,
+            ))
+        }
         Prim::MakeClosure(fn_id, captured) => {
             // fz-ul4.29.5: new closure layout — header (16) + stub_fp (8) +
             // captures. The interp has no compiled stub for the closure;

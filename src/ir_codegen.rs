@@ -1092,6 +1092,10 @@ impl JitBackend {
             fz_runtime::ir_runtime::fz_bs_finalize as *const u8,
         );
         builder.symbol(
+            "fz_alloc_bitstring_const",
+            fz_runtime::ir_runtime::fz_alloc_bitstring_const as *const u8,
+        );
+        builder.symbol(
             "fz_bs_reader_init",
             fz_runtime::ir_runtime::fz_bs_reader_init as *const u8,
         );
@@ -1803,6 +1807,9 @@ pub fn compile_with_backend<B: Backend>(
     crate::ir_fuse::fuse_blocks(&mut working);
     let module_types = crate::ir_typer::type_module(&working);
     crate::ir_fold::fold_module(&mut working, &module_types);
+    // fz-cty.8 — fold byte-literal MakeBitstring into ConstBitstring before
+    // DCE so the per-byte Const(Int) operand stmts go dead in the same pass.
+    crate::ir_const_bs::fold_module(&mut working);
     crate::ir_dce::dce_module(&mut working);
     let module = &working;
 
@@ -2664,6 +2671,11 @@ pub fn compile_with_backend<B: Backend>(
         fn_ids.insert(sid as u32, id);
     }
 
+    // fz-cty.8 — per-module byte-payload cache for ConstBitstring. Same
+    // byte payload across the whole module shares one DataId / symbol.
+    let bs_const_data: std::cell::RefCell<HashMap<Vec<u8>, DataId>> =
+        std::cell::RefCell::new(HashMap::new());
+
     for sid in 0..spec_count {
         let Some(idx) = spec_fnidx[sid] else {
             continue;
@@ -2684,6 +2696,7 @@ pub fn compile_with_backend<B: Backend>(
             spec_registry: &spec_registry,
             fn_ids: &fn_ids,
             tuple_schema_ids: &tuple_schema_ids,
+            bs_const_data: &bs_const_data,
             param_reprs: &param_reprs,
             return_reprs: &return_reprs,
             natively_callable: &natively_callable,
@@ -3193,6 +3206,12 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         &[],
     )?;
     let bs_finalize_id = decl("fz_bs_finalize", &[], &[types::I64])?;
+    // fz-cty.8 — `(payload_ptr: i64, byte_len: i64, bit_len: i64) -> i64`.
+    let alloc_bitstring_const_id = decl(
+        "fz_alloc_bitstring_const",
+        &[types::I64, types::I64, types::I64],
+        &[types::I64],
+    )?;
     let bs_reader_init_id = decl("fz_bs_reader_init", &[types::I64], &[types::I64])?;
     let bs_read_field_id = decl(
         "fz_bs_read_field",
@@ -3320,6 +3339,7 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         bs_begin_id,
         bs_write_id,
         bs_finalize_id,
+        alloc_bitstring_const_id,
         bs_reader_init_id,
         bs_read_field_id,
         map_begin_id,
@@ -3359,6 +3379,9 @@ struct CodegenEnv<'a> {
     spec_registry: &'a SpecRegistry,
     fn_ids: &'a HashMap<u32, FuncId>,
     tuple_schema_ids: &'a HashMap<usize, u32>,
+    /// fz-cty.8 — interned byte payloads for `Prim::ConstBitstring`. Same
+    /// byte payload across the module shares a single `DataId` / symbol.
+    bs_const_data: &'a std::cell::RefCell<HashMap<Vec<u8>, DataId>>,
     param_reprs: &'a [Vec<ArgRepr>],
     return_reprs: &'a [ArgRepr],
     natively_callable: &'a std::collections::HashSet<crate::fz_ir::FnId>,
@@ -3385,6 +3408,8 @@ struct RuntimeRefs {
     bs_begin_id: FuncId,
     bs_write_id: FuncId,
     bs_finalize_id: FuncId,
+    // fz-cty.8 — single-shot allocation from a module-baked byte payload.
+    alloc_bitstring_const_id: FuncId,
     bs_reader_init_id: FuncId,
     bs_read_field_id: FuncId,
     map_begin_id: FuncId,
@@ -5356,6 +5381,39 @@ fn lower_collection_prim<M: cranelift_module::Module>(
             let inst = b.ins().call(fin, &[]);
             b.inst_results(inst)[0]
         }
+        Prim::ConstBitstring(bytes, bit_len) => {
+            // fz-cty.8 — intern the byte payload as a module-private data
+            // symbol (one per unique payload) and emit a single allocation
+            // call. The runtime fn copies the bytes through
+            // `Heap::alloc_bitstring`, which picks inline / ProcBin /
+            // SharedBin storage by length — same policy as
+            // `fz_bs_finalize`.
+            let data_id = {
+                let mut cache = env.bs_const_data.borrow_mut();
+                if let Some(id) = cache.get(bytes) {
+                    *id
+                } else {
+                    let name = format!(".fz_bs_const_{}", cache.len());
+                    let id = jmod
+                        .declare_data(&name, Linkage::Local, false, false)
+                        .map_err(|e| CodegenError::new(format!("declare {}: {}", name, e)))?;
+                    let mut desc = DataDescription::new();
+                    desc.define(bytes.clone().into_boxed_slice());
+                    desc.set_align(1);
+                    jmod.define_data(id, &desc)
+                        .map_err(|e| CodegenError::new(format!("define {}: {}", name, e)))?;
+                    cache.insert(bytes.clone(), id);
+                    id
+                }
+            };
+            let gv = jmod.declare_data_in_func(data_id, b.func);
+            let ptr_v = b.ins().symbol_value(types::I64, gv);
+            let byte_len_v = b.ins().iconst(types::I64, bytes.len() as i64);
+            let bit_len_v = b.ins().iconst(types::I64, *bit_len as i64);
+            let fref = jmod.declare_func_in_func(runtime.alloc_bitstring_const_id, b.func);
+            let inst = b.ins().call(fref, &[ptr_v, byte_len_v, bit_len_v]);
+            b.inst_results(inst)[0]
+        }
         Prim::BitReaderInit(v) => {
             let vv = tagged_get(var_env, b, jmod, runtime, v.0);
             let fref = jmod.declare_func_in_func(runtime.bs_reader_init_id, b.func);
@@ -5917,6 +5975,7 @@ fn lower_prim<M: cranelift_module::Module>(
         | Prim::TupleField(..)
         | Prim::AllocStruct(..)
         | Prim::MakeBitstring(..)
+        | Prim::ConstBitstring(..)
         | Prim::BitReaderInit(..)
         | Prim::BitReadField { .. }
         | Prim::BitReaderDone(..)
