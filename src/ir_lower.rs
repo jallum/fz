@@ -442,43 +442,33 @@ pub fn lower_program_full(prog: &Program) -> Result<(Module, AtomTable), LowerEr
         .chain(prog.items.iter().cloned())
         .collect();
 
-    // Zeroth pass: register extern "C" fn declarations into ExternTable.
-    for item in &all_items {
-        if let Item::Fn(fn_def) = item.as_ref() {
-            if fn_def.extern_abi.is_none() {
-                continue;
-            }
-            let eid = ExternId(ctx.extern_decls.len() as u32);
-            let params: Vec<ExternTy> = fn_def
-                .extern_params
-                .iter()
-                .map(|name| extern_ty_from_name(name).unwrap_or(ExternTy::Any))
-                .collect();
-            let (ret, ret_descr) = lower_extern_ret_ty(fn_def, &ctx.prelude_type_env)?;
-            ctx.extern_decls.push(ExternDecl {
-                fz_name: fn_def.name.clone(),
-                symbol: fn_def.name.clone(),
-                params,
-                ret,
-                ret_descr,
-            });
-            ctx.externs.insert(fn_def.name.clone(), eid);
-        }
-    }
-
-    // First pass: assign FnIds to every top-level regular (non-extern) FnDef.
-    // We split this into two sub-passes (runtime.fz, then user) so we can
-    // record prelude_fn_id_cutoff before user fns get their FnIds. The cutoff
-    // lets build_source_info ignore prelude var spans, which would otherwise
-    // overwrite user-program spans (both fns restart Var numbering at 0).
+    // Registration pass: assign ExternIds and FnIds in a single sweep.
+    // Prelude items come first; recording prelude_fn_id_cutoff after them
+    // lets build_source_info ignore prelude var spans (both halves restart
+    // Var numbering at 0, so user spans must not be overwritten).
     for item in all_items.iter().take(runtime_item_count) {
         if let Item::Fn(fn_def) = item.as_ref() {
             if fn_def.extern_abi.is_some() {
-                continue;
+                let eid = ExternId(ctx.extern_decls.len() as u32);
+                let params: Vec<ExternTy> = fn_def
+                    .extern_params
+                    .iter()
+                    .map(|name| extern_ty_from_name(name).unwrap_or(ExternTy::Any))
+                    .collect();
+                let (ret, ret_descr) = lower_extern_ret_ty(fn_def, &ctx.prelude_type_env)?;
+                ctx.extern_decls.push(ExternDecl {
+                    fz_name: fn_def.name.clone(),
+                    symbol: fn_def.name.clone(),
+                    params,
+                    ret,
+                    ret_descr,
+                });
+                ctx.externs.insert(fn_def.name.clone(), eid);
+            } else {
+                let arity = fn_def.clauses.first().map(|c| c.params.len()).unwrap_or(0);
+                let id = ctx.mb.fresh_fn_id();
+                ctx.fns.insert((fn_def.name.clone(), arity), id);
             }
-            let arity = fn_def.clauses.first().map(|c| c.params.len()).unwrap_or(0);
-            let id = ctx.mb.fresh_fn_id();
-            ctx.fns.insert((fn_def.name.clone(), arity), id);
         }
     }
     // All FnIds assigned so far belong to the prelude.
@@ -488,11 +478,26 @@ pub fn lower_program_full(prog: &Program) -> Result<(Module, AtomTable), LowerEr
         match item.as_ref() {
             Item::Fn(fn_def) => {
                 if fn_def.extern_abi.is_some() {
-                    continue; // extern decls have no IR body
+                    let eid = ExternId(ctx.extern_decls.len() as u32);
+                    let params: Vec<ExternTy> = fn_def
+                        .extern_params
+                        .iter()
+                        .map(|name| extern_ty_from_name(name).unwrap_or(ExternTy::Any))
+                        .collect();
+                    let (ret, ret_descr) = lower_extern_ret_ty(fn_def, &ctx.prelude_type_env)?;
+                    ctx.extern_decls.push(ExternDecl {
+                        fz_name: fn_def.name.clone(),
+                        symbol: fn_def.name.clone(),
+                        params,
+                        ret,
+                        ret_descr,
+                    });
+                    ctx.externs.insert(fn_def.name.clone(), eid);
+                } else {
+                    let arity = fn_def.clauses.first().map(|c| c.params.len()).unwrap_or(0);
+                    let id = ctx.mb.fresh_fn_id();
+                    ctx.fns.insert((fn_def.name.clone(), arity), id);
                 }
-                let arity = fn_def.clauses.first().map(|c| c.params.len()).unwrap_or(0);
-                let id = ctx.mb.fresh_fn_id();
-                ctx.fns.insert((fn_def.name.clone(), arity), id);
             }
             Item::Module(m) => {
                 return Err(LowerError::Unsupported {
