@@ -4,13 +4,14 @@
   "blocks": [
     "fz-vh4"
   ],
+  "closed_at": "2026-05-16T23:04:12Z",
   "created": "2026-05-16T22:52:19Z",
   "description": "",
   "id": "fz-li4",
   "labels": [],
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "fz-cg.1: fix needs_blanket_retag — add Term::Receive arm; proof test + blessed goldens",
   "type": "task",
-  "updated_at": "2026-05-16T23:01:05Z"
+  "updated_at": "2026-05-16T23:04:12Z"
 }
