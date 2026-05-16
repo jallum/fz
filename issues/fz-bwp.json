@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-16T22:52:19Z",
+  "description": "",
+  "id": "fz-bwp",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "fz-cg.3: Fix E — nil/true/false constant CSE via CodegenCache.const_cache (per-block reset)",
+  "type": "task",
+  "updated_at": "2026-05-16T22:52:19Z"
+}
