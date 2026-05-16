@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-16T21:52:57Z",
+  "description": "",
+  "id": "fz-5hl",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "fz-abs.1: pub(crate) subst_stmt/subst_term in ir_fuse; add absorb_callee to ir_inline with proof test",
+  "type": "task",
+  "updated_at": "2026-05-16T21:52:57Z"
+}
