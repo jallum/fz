@@ -6,13 +6,15 @@
   "blocks": [
     "fz-ul4.11.29"
   ],
+  "closed_at": "2026-05-16T20:40:53Z",
+  "close_reason": "Landed: commit 13bff93a on fz-ext branch.",
   "created": "2026-05-16T19:43:07Z",
   "description": "Add a test that instruments the pipeline and asserts type_module is called exactly 3 times, not 4.\n\n## Implementation\n\nAdd a thread_local call counter in ir_typer.rs behind #[cfg(test)]:\n```rust\n#[cfg(test)]\nthread_local! {\n    pub static TYPE_MODULE_CALLS: std::cell::Cell\u003cusize\u003e = std::cell::Cell::new(0);\n}\n```\nIncrement in type_module (cfg(test) only).\n\nAdd a test in ir_codegen.rs (or a dedicated integration test) that:\n1. Resets the counter.\n2. Runs the full codegen pipeline on a trivial module.\n3. Asserts TYPE_MODULE_CALLS == 3.\n\n## Acceptance\n- Test passes.\n- One commit referencing fz-ty1.pip.3.",
   "id": "fz-99i",
   "labels": [],
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "fz-ty1.pip.3: proof test — type_module called exactly 3× in pipeline",
   "type": "task",
-  "updated_at": "2026-05-16T19:43:36Z"
+  "updated_at": "2026-05-16T20:40:53Z"
 }
