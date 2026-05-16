@@ -1,4 +1,5 @@
 use crate::fz_ir::{BitSizeIr, Block, BlockId, Cont, FnId, FnIr, Module, Prim, Stmt, Term, Var};
+use crate::ir_fuse::{subst_stmt, subst_term};
 use crate::ir_typer::ModuleTypes;
 use std::collections::{HashMap, HashSet};
 
@@ -331,13 +332,56 @@ pub fn alpha_rename(callee: &FnIr, caller: &FnIr) -> FnIr {
     }
 }
 
-// ---------- splice ----------
+// ---------- splice (transitional — replaced by absorb_callee in fz-abs.2) ----------
 
 /// Move all blocks from `renamed` into `caller`; return the entry BlockId.
 pub fn splice_blocks(caller: &mut FnIr, renamed: FnIr) -> BlockId {
     let entry = renamed.entry;
     caller.blocks.extend(renamed.blocks);
     entry
+}
+
+// ---------- absorb ----------
+
+/// Inline `callee` at block `bi` of `caller`.
+///
+/// Substitutes `args` for the callee's entry-block params, appends the entry
+/// block's stmts to caller's block, sets the caller terminator to the entry
+/// terminator, and splices in the remaining callee blocks — all without
+/// creating a Goto.  `callee` must already be alpha-renamed so its vars are
+/// disjoint from `caller`'s.
+pub fn absorb_callee(caller: &mut FnIr, bi: usize, mut callee: FnIr, args: &[Var]) {
+    let entry_id = callee.entry;
+    let entry_idx = callee
+        .blocks
+        .iter()
+        .position(|b| b.id == entry_id)
+        .expect("callee entry block missing");
+
+    let params: Vec<Var> = callee.blocks[entry_idx].params.clone();
+    debug_assert_eq!(
+        params.len(),
+        args.len(),
+        "absorb_callee: arity mismatch — {} params vs {} args",
+        params.len(),
+        args.len()
+    );
+
+    let subst: HashMap<Var, Var> = params.into_iter().zip(args.iter().copied()).collect();
+
+    if !subst.is_empty() {
+        for b in &mut callee.blocks {
+            b.stmts = b.stmts.iter().map(|s| subst_stmt(s, &subst)).collect();
+            b.terminator = subst_term(&b.terminator, &subst);
+        }
+    }
+
+    let entry_block = callee.blocks.remove(entry_idx);
+    // entry_block.params is now stale but we discard the block after splicing.
+
+    caller.blocks[bi].stmts.extend(entry_block.stmts);
+    caller.blocks[bi].terminator = entry_block.terminator;
+    caller.blocks.extend(callee.blocks);
 }
 
 // ---------- pass: inline_tail_calls_once ----------
@@ -962,6 +1006,44 @@ mod tests {
 
         assert_eq!(entry, renamed_entry);
         assert_eq!(caller_mut.blocks.len(), orig_len + callee.blocks.len());
+    }
+
+    // --- absorb_callee ---
+
+    #[test]
+    fn absorb_callee_no_goto_no_params() {
+        // After absorb: the call-site block must NOT end with a Goto that still
+        // carries args (the old splice_blocks + Goto artifact).
+        let callee = make_leaf_add1(); // entry has 1 param `x`
+        let caller = make_caller_tail(FnId(1));
+        let renamed = alpha_rename(&callee, &caller);
+
+        // The arg that was heading to the TailCall — pick caller's entry param.
+        let caller_entry = caller.blocks.iter().find(|b| b.id == caller.entry).unwrap();
+        let y = caller_entry.params[0];
+
+        let mut caller_mut = caller;
+        // bi=0: the entry block index (only one block in caller)
+        absorb_callee(&mut caller_mut, 0, renamed, &[y]);
+
+        // The entry block must NOT be a Goto with args.
+        let entry = caller_mut.blocks.iter().find(|b| b.id == caller_mut.entry).unwrap();
+        match &entry.terminator {
+            Term::Goto(_, args) => assert!(
+                args.is_empty(),
+                "absorb_callee must not leave a parameterized Goto; got args={args:?}"
+            ),
+            _ => {} // Return, TailCall, etc — all fine
+        }
+
+        // The entry block must have no params (callee entry params were consumed).
+        // (Caller's own params are on the block, but callee's were substituted away.)
+        // The callee add1 had stmts: let one=1, let s=x+one; check they were absorbed.
+        assert!(
+            entry.stmts.len() >= 2,
+            "callee stmts must be absorbed into caller entry; got {}",
+            entry.stmts.len()
+        );
     }
 
     // --- inline_tail_calls_once ---

@@ -242,7 +242,7 @@ fn subst_cont(c: &Cont, subst: &HashMap<Var, Var>) -> Cont {
     }
 }
 
-fn subst_term(t: &Term, subst: &HashMap<Var, Var>) -> Term {
+pub(crate) fn subst_term(t: &Term, subst: &HashMap<Var, Var>) -> Term {
     let sv = |v: Var| subst_var(v, subst);
     match t {
         // BlockId targets are NOT substituted — only Var args are.
@@ -287,7 +287,7 @@ fn subst_term(t: &Term, subst: &HashMap<Var, Var>) -> Term {
     }
 }
 
-fn subst_stmt(s: &Stmt, subst: &HashMap<Var, Var>) -> Stmt {
+pub(crate) fn subst_stmt(s: &Stmt, subst: &HashMap<Var, Var>) -> Stmt {
     let Stmt::Let(v, p) = s;
     // The bound variable `v` is never substituted — it's a definition site,
     // not a use. Only Vars that appear as operands in `p` are substituted.
