@@ -565,6 +565,53 @@ fn eval_prim(module: &Module, prim: &Prim, env: &HashMap<Var, FzValue>) -> Resul
             }
             FzValue(p as u64)
         }
+        Prim::TypeTest(v, descr) => {
+            use crate::types::BasicBits;
+            use fz_runtime::fz_value::{HeapKind, Tag};
+            let val = env_get(env, *v)?;
+            let tag = val.tag();
+            let mut matched = false;
+            if !descr.ints.is_none() {
+                matched |= tag == Tag::Int;
+            }
+            if descr.atoms.is_any() {
+                matched |= tag == Tag::Atom;
+            } else if !descr.atoms.is_none() {
+                return Err(
+                    "TypeTest: specific atom literal sets not yet supported in interpreter".into(),
+                );
+            }
+            if descr.basic.contains_all(BasicBits::NIL) {
+                matched |= val.is_nil();
+            }
+            if descr.basic.contains_all(BasicBits::BOOL) {
+                matched |= val.is_true() || val.is_false();
+            }
+            let need_heap = !descr.floats.is_none()
+                || descr.basic.contains_all(BasicBits::VEC_I64)
+                || descr.basic.contains_all(BasicBits::VEC_F64)
+                || descr.basic.contains_all(BasicBits::VEC_U8)
+                || descr.basic.contains_all(BasicBits::VEC_BIT);
+            if need_heap && let Some(ptr) = val.unbox_ptr() {
+                let hk = HeapKind::from_u16(unsafe { (*ptr).kind });
+                if !descr.floats.is_none() {
+                    matched |= hk == Some(HeapKind::Float);
+                }
+                if descr.basic.contains_all(BasicBits::VEC_I64) {
+                    matched |= hk == Some(HeapKind::VecI64);
+                }
+                if descr.basic.contains_all(BasicBits::VEC_F64) {
+                    matched |= hk == Some(HeapKind::VecF64);
+                }
+                if descr.basic.contains_all(BasicBits::VEC_U8) {
+                    matched |= hk == Some(HeapKind::VecU8);
+                }
+                if descr.basic.contains_all(BasicBits::VEC_BIT) {
+                    matched |= hk == Some(HeapKind::VecBit);
+                }
+            }
+            if matched { FzValue::TRUE } else { FzValue::FALSE }
+        }
         _ => {
             return Err(format!(
                 "interp .5.2: prim {:?} not yet supported (lands in fz-ul4.23.5.3+)",

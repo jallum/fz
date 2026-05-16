@@ -6248,6 +6248,115 @@ fn lower_prim<M: cranelift_module::Module>(
             }
             cl_ptr
         }
+        Prim::TypeTest(v, descr) => {
+            use crate::types::BasicBits;
+            use fz_runtime::fz_value::HeapKind;
+
+            let val = tagged_get(var_env, b, jmod, runtime, v.0);
+            let tag3 = b.ins().band_imm(val, 7);
+
+            // Scalar checks: safe unconditionally (no heap loads).
+            let mut scalar: Option<ir::Value> = None;
+            macro_rules! or_scalar {
+                ($f:expr) => {
+                    scalar = Some(match scalar.take() {
+                        None => $f,
+                        Some(p) => b.ins().bor(p, $f),
+                    });
+                };
+            }
+            if !descr.ints.is_none() {
+                let c = b.ins().icmp_imm(IntCC::Equal, tag3, TAG_INT);
+                or_scalar!(c);
+            }
+            if descr.atoms.is_any() {
+                let c = b.ins().icmp_imm(IntCC::Equal, tag3, TAG_ATOM);
+                or_scalar!(c);
+            } else if !descr.atoms.is_none() {
+                return Err(CodegenError::new(
+                    "TypeTest: specific atom literal sets require atom id lookup (not yet implemented)",
+                ));
+            }
+            if descr.basic.contains_all(BasicBits::NIL) {
+                let c = b.ins().icmp_imm(IntCC::Equal, val, NIL_BITS);
+                or_scalar!(c);
+            }
+            if descr.basic.contains_all(BasicBits::BOOL) {
+                let t = b.ins().icmp_imm(IntCC::Equal, val, TRUE_BITS);
+                let f = b.ins().icmp_imm(IntCC::Equal, val, FALSE_BITS);
+                let e = b.ins().bor(t, f);
+                or_scalar!(e);
+            }
+
+            // Heap-kind checks: guard with is_ptr to avoid loading from a non-pointer.
+            let need_heap = !descr.floats.is_none()
+                || descr.basic.contains_all(BasicBits::VEC_I64)
+                || descr.basic.contains_all(BasicBits::VEC_F64)
+                || descr.basic.contains_all(BasicBits::VEC_U8)
+                || descr.basic.contains_all(BasicBits::VEC_BIT);
+
+            let heap: Option<ir::Value> = if need_heap {
+                let is_ptr = b.ins().icmp_imm(IntCC::Equal, tag3, 0i64);
+                let heap_blk = b.create_block();
+                let join_blk = b.create_block();
+                b.append_block_param(join_blk, types::I8);
+                let no_args: Vec<BlockArg> = Vec::new();
+                let false8 = b.ins().iconst(types::I8, 0);
+                b.ins().brif(
+                    is_ptr,
+                    heap_blk,
+                    &no_args,
+                    join_blk,
+                    &[BlockArg::Value(false8)],
+                );
+
+                b.switch_to_block(heap_blk);
+                b.seal_block(heap_blk);
+                let kind_raw = b.ins().load(types::I16, MemFlags::trusted(), val, 0);
+                let kind64 = b.ins().uextend(types::I64, kind_raw);
+
+                let mut hf: Option<ir::Value> = None;
+                macro_rules! or_heap {
+                    ($f:expr) => {
+                        hf = Some(match hf.take() {
+                            None => $f,
+                            Some(p) => b.ins().bor(p, $f),
+                        });
+                    };
+                }
+                if !descr.floats.is_none() {
+                    let c = b.ins().icmp_imm(IntCC::Equal, kind64, HeapKind::Float as i64);
+                    or_heap!(c);
+                }
+                for (bit, hk) in [
+                    (BasicBits::VEC_I64, HeapKind::VecI64),
+                    (BasicBits::VEC_F64, HeapKind::VecF64),
+                    (BasicBits::VEC_U8, HeapKind::VecU8),
+                    (BasicBits::VEC_BIT, HeapKind::VecBit),
+                ] {
+                    if descr.basic.contains_all(bit) {
+                        let c = b.ins().icmp_imm(IntCC::Equal, kind64, hk as i64);
+                        or_heap!(c);
+                    }
+                }
+                let hr = hf.unwrap_or_else(|| b.ins().iconst(types::I8, 0));
+                b.ins().jump(join_blk, &[BlockArg::Value(hr)]);
+
+                b.switch_to_block(join_blk);
+                b.seal_block(join_blk);
+                Some(b.block_params(join_blk)[0])
+            } else {
+                None
+            };
+
+            let flag = match (scalar, heap) {
+                (None, None) => b.ins().iconst(types::I8, 0),
+                (Some(s), None) => s,
+                (None, Some(h)) => h,
+                (Some(s), Some(h)) => b.ins().bor(s, h),
+            };
+            bool_to_fz(b, flag)
+        }
     };
     Ok(LowerOut::Tagged(v))
 }
@@ -6798,7 +6907,9 @@ mod tests {
 
     #[test]
     fn atom_const_returns_atom_id() {
-        assert_eq!(run_main("fn main(), do: :ok"), 1); // match_error interns first.
+        // match_error (id=0) and function_clause (id=1) intern during prelude
+        // lowering; :ok is the next user atom (id=2).
+        assert_eq!(run_main("fn main(), do: :ok"), 2);
     }
 
     // ----- .11.8 frame-allocation tests -----

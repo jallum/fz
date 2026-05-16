@@ -18,10 +18,11 @@ fn assert_neq(a, b) do fz_assert_neq(a, b) end
 
 @doc "Returns element i of vector v (zero-based index)."
 @spec vec_get(any, integer) :: any
+fn vec_get(v :: vector(integer), i) do fz_vec_get(v, i) end
 fn vec_get(v, i) do fz_vec_get(v, i) end
 
 @doc "Returns the PID of the calling process."
-@spec self() :: integer
+@spec self() :: pid
 fn self() do fz_self() end
 
 @doc "Sends msg to the process identified by pid; returns msg."
@@ -35,5 +36,5 @@ extern "C" fn fz_assert_neq(any, any) :: nil
 extern "C" fn fz_vec_get(any, any) :: any
 extern "C" fn fz_spawn(any) :: any
 extern "C" fn fz_spawn_opt(any, any) :: any
-extern "C" fn fz_self() :: any
+extern "C" fn fz_self() :: pid
 extern "C" fn fz_send(any, any) :: any

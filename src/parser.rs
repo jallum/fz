@@ -610,6 +610,69 @@ impl Parser {
     /// newline / eof / module-end. Brackets, braces, and parens are
     /// balanced so a multi-line type body could in principle span lines
     /// inside brackets, but in v1 we only emit single-line bodies.
+    /// Collect type tokens for one function parameter annotation (`x :: T`).
+    /// Stops at `,` or `)` at depth 0 without consuming them.
+    fn collect_fn_param_type_tokens(&mut self) -> Vec<Token> {
+        let mut out: Vec<Token> = Vec::new();
+        let mut depth: i32 = 0;
+        loop {
+            match self.peek() {
+                Tok::Eof | Tok::End | Tok::Newline => break,
+                Tok::Comma if depth == 0 => break,
+                Tok::RParen if depth == 0 => break,
+                Tok::LParen | Tok::LBrack | Tok::LBrace => {
+                    depth += 1;
+                    out.push(self.toks[self.pos].clone());
+                    self.pos += 1;
+                }
+                Tok::RParen | Tok::RBrack | Tok::RBrace => {
+                    depth -= 1;
+                    out.push(self.toks[self.pos].clone());
+                    self.pos += 1;
+                }
+                _ => {
+                    out.push(self.toks[self.pos].clone());
+                    self.pos += 1;
+                }
+            }
+        }
+        out
+    }
+
+    /// Parse function parameter list with optional type annotations (`x :: T`).
+    /// Returns (patterns, per-param type token vecs). Called from `parse_fn_clause`.
+    #[allow(clippy::type_complexity)]
+    fn parse_fn_params(
+        &mut self,
+    ) -> PR<(Vec<Spanned<Pattern>>, Vec<Option<Vec<Token>>>)> {
+        let mut patterns = Vec::new();
+        let mut types: Vec<Option<Vec<Token>>> = Vec::new();
+        self.skip_newlines();
+        if matches!(self.peek(), Tok::RParen) {
+            return Ok((patterns, types));
+        }
+        loop {
+            patterns.push(self.parse_pattern()?);
+            self.skip_newlines();
+            let ty = if self.eat(&Tok::ColonColon) {
+                let toks = self.collect_fn_param_type_tokens();
+                if toks.is_empty() {
+                    return self.err("expected type expression after `::`");
+                }
+                Some(toks)
+            } else {
+                None
+            };
+            types.push(ty);
+            self.skip_newlines();
+            if !self.eat(&Tok::Comma) {
+                break;
+            }
+            self.skip_newlines();
+        }
+        Ok((patterns, types))
+    }
+
     fn collect_type_body_tokens(&mut self) -> Vec<Token> {
         let mut out: Vec<Token> = Vec::new();
         let mut depth: i32 = 0;
@@ -670,7 +733,7 @@ impl Parser {
             other => return self.err(format!("expected function name, got {:?}", other)),
         };
         self.expect(&Tok::LParen, "`(`")?;
-        let params = self.parse_pattern_list(&Tok::RParen)?;
+        let (params, param_type_tokens) = self.parse_fn_params()?;
         self.expect(&Tok::RParen, "`)`")?;
 
         let guard = if matches!(self.peek(), Tok::When) {
@@ -704,6 +767,7 @@ impl Parser {
             name_span,
             FnClause {
                 params,
+                param_type_tokens,
                 guard,
                 body,
                 span,

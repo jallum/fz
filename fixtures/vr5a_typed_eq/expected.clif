@@ -51,14 +51,14 @@ function u0:0(i64, i64) -> i64 tail {
     fn1 = u0:0 sig1
 
     block0(v0: i64, v1: i64):    ;; v0 :: nil
-    v2 = iconst.i64 10                  ; @4:9
-    v3 = iconst.i64 18                  ; @4:16
+    v2 = iconst.i64 18                  ; @4:9
+    v3 = iconst.i64 26                  ; @4:16
     v4 = iconst.i64 19                  ; @4:9
     call fn0(v4)  ; v4 = 19
     v5 = iconst.i64 3    ;; v5 :: nil
-    v6 = iconst.i64 10    ;; v6 :: :ok
-    v7 = iconst.i64 10    ;; v7 :: :ok
-    v8 = icmp eq v6, v7  ; v6 = 10, v7 = 10
+    v6 = iconst.i64 18    ;; v6 :: :ok
+    v7 = iconst.i64 18    ;; v7 :: :ok
+    v8 = icmp eq v6, v7  ; v6 = 18, v7 = 18
     v9 = iconst.i64 11
     v10 = iconst.i64 19
     v11 = select v8, v9, v10  ; v9 = 11, v10 = 19    ;; v11 :: bool

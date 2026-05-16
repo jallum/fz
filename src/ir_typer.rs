@@ -1652,6 +1652,20 @@ fn type_prim(
             .map(|e| e.ret_descr.clone())
             .unwrap_or_else(Descr::any),
 
+        Prim::TypeTest(v, descr) => {
+            let vt = lookup(env, *v);
+            // If vt ⊆ descr → always true; if vt ∩ descr = ∅ → always false;
+            // otherwise unknown bool. Branch pruning in the typer's If-rewriting
+            // pass then eliminates dead branches when the result is a singleton.
+            if vt.is_subtype(descr) {
+                Descr::atom_lit("true")
+            } else if vt.intersect(descr).is_empty() {
+                Descr::atom_lit("false")
+            } else {
+                Descr::bool_t()
+            }
+        }
+
         // Reader and struct ops: conservative Top until later tickets refine.
         Prim::AllocStruct(_, _) => Descr::any(),
         Prim::BitReaderInit(_) => Descr::any(),

@@ -270,6 +270,14 @@ pub enum Prim {
     },
     /// True if the reader has consumed all bits.
     BitReaderDone(Var),
+    /// Runtime type test: returns `true` if the value held in `Var` belongs
+    /// to the described type, `false` otherwise.
+    ///
+    /// For structural types (BasicBits, ints, etc.) this is a real runtime
+    /// tag check. For opaque types, the check is resolved to a constant by
+    /// the typer (opaque types have no runtime tag) — the branch is then
+    /// eliminated by DCE.
+    TypeTest(Var, Box<crate::types::Descr>),
 }
 
 #[derive(Debug, Clone)]
@@ -725,6 +733,7 @@ impl fmt::Display for Prim {
             Prim::BitReaderInit(v) => write!(f, "bit_reader_init({})", v),
             Prim::BitReadField { reader, .. } => write!(f, "bit_read_field({})", reader),
             Prim::BitReaderDone(v) => write!(f, "bit_reader_done({})", v),
+            Prim::TypeTest(v, d) => write!(f, "type_test({}, {})", v, d),
         }
     }
 }

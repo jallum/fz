@@ -134,6 +134,9 @@ fn collect_prim_vars(p: &Prim, used: &mut HashSet<Var>) {
                 used.insert(*sv);
             }
         }
+        Prim::TypeTest(v, _) => {
+            used.insert(*v);
+        }
     }
 }
 

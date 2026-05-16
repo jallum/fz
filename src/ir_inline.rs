@@ -130,6 +130,7 @@ fn max_var_in_prim(p: &Prim) -> u32 {
                 v(*sv);
             }
         }
+        Prim::TypeTest(a, _) => v(*a),
     }
     m
 }
@@ -231,6 +232,7 @@ pub fn alpha_rename(
                     })
                     .collect(),
             ),
+            Prim::TypeTest(a, d) => Prim::TypeTest(sv(*a), d.clone()),
             Prim::BitReaderInit(a) => Prim::BitReaderInit(sv(*a)),
             Prim::BitReaderDone(a) => Prim::BitReaderDone(sv(*a)),
             Prim::BitReadField {

@@ -17,8 +17,8 @@
 #![allow(dead_code)]
 
 use crate::ast::{
-    BinOp as AstBinOp, BitField as AstBitField, BitSize as AstBitSize, Expr, FnDef, Item,
-    MatchClause, Pattern, Program, Spanned, UnOp as AstUnOp, WithBinding,
+    BinOp as AstBinOp, BitField as AstBitField, BitSize as AstBitSize, Expr, FnClause, FnDef,
+    Item, MatchClause, Pattern, Program, Spanned, UnOp as AstUnOp, WithBinding,
 };
 use crate::diag::Span;
 use crate::fz_ir::{
@@ -253,6 +253,10 @@ pub struct LowerCtx {
     /// Available to downstream passes (e.g. lower_extern_ret_ty) for
     /// resolving opaque type names declared in the prelude.
     pub prelude_type_env: crate::type_expr::ModuleTypeEnv,
+    /// fz-ty1.9 — Merged type env: prelude + all user-module @type aliases.
+    /// Used by `emit_param_type_guards` to resolve annotation tokens in
+    /// `fn f(x :: T)` parameter heads.
+    pub combined_type_env: crate::type_expr::ModuleTypeEnv,
 }
 
 impl LowerCtx {
@@ -278,6 +282,7 @@ impl LowerCtx {
             spawn_thunk_id: None,
             prelude_fn_id_cutoff: 0,
             prelude_type_env: crate::type_expr::ModuleTypeEnv::new(),
+            combined_type_env: crate::type_expr::ModuleTypeEnv::new(),
         }
     }
 
@@ -450,7 +455,13 @@ pub fn lower_program_full(prog: &Program) -> Result<(Module, AtomTable, BuiltinT
     // Prepend the built-in runtime.fz prelude so its externs and wrapper fns
     // are visible to every user program without an explicit import.
     let (runtime_items, prelude_type_env) = parse_runtime_prelude();
-    ctx.prelude_type_env = prelude_type_env;
+    ctx.prelude_type_env = prelude_type_env.clone();
+    // Build the combined type env: prelude aliases + all user-module aliases.
+    let mut combined = prelude_type_env;
+    for module_env in prog.module_type_envs.values() {
+        combined.extend(module_env.iter().map(|(k, v)| (k.clone(), v.clone())));
+    }
+    ctx.combined_type_env = combined;
     let runtime_item_count = runtime_items.len();
     let all_items: Vec<Rc<Item>> = runtime_items
         .into_iter()
@@ -559,11 +570,11 @@ fn lower_extern_ret_ty(
     let tokens = &fn_def.extern_ret_tokens;
 
     // Try to resolve via parse_type_expr first (handles named types like `pid`).
-    if !tokens.is_empty() {
-        if let Ok((descr, _)) = crate::type_expr::parse_type_expr(tokens, type_env) {
-            let wire = descr_to_extern_ty(&descr);
-            return Ok((wire, descr));
-        }
+    if !tokens.is_empty()
+        && let Ok((descr, _)) = crate::type_expr::parse_type_expr(tokens, type_env)
+    {
+        let wire = descr_to_extern_ty(&descr);
+        return Ok((wire, descr));
     }
 
     // Fallback: first-meaningful-token heuristic for tokens that don't
@@ -860,6 +871,7 @@ fn lower_fn(ctx: &mut LowerCtx, fn_def: &FnDef) -> Result<(), LowerError> {
             // by the pattern walker (e.g. tuple-destructured params).
             ctx.name_var(*pv, "", pat.span);
         }
+        emit_param_type_guards(ctx, clause, &param_vars, fail_block)?;
         if let Some(g) = &clause.guard {
             let guard_var = lower_expr(ctx, g, false)?;
             let body_b = ctx.cur_mut().block(vec![]);
@@ -878,6 +890,33 @@ fn lower_fn(ctx: &mut LowerCtx, fn_def: &FnDef) -> Result<(), LowerError> {
     let built = ctx.cur.take().unwrap().build();
     ctx.mb.add_fn(built);
     ctx.cur_block = None;
+    Ok(())
+}
+
+/// fz-ty1.9 — Emit TypeTest guards for `fn f(x :: T)` parameter annotations.
+/// For each param that has a type annotation, emit a `TypeTest(pv, descr)`
+/// stmt and branch: pass → continue to next block, fail → `on_fail` block.
+fn emit_param_type_guards(
+    ctx: &mut LowerCtx,
+    clause: &FnClause,
+    param_vars: &[Var],
+    on_fail: BlockId,
+) -> Result<(), LowerError> {
+    for (pv, type_toks_opt) in param_vars.iter().zip(&clause.param_type_tokens) {
+        let toks = match type_toks_opt {
+            Some(t) => t,
+            None => continue,
+        };
+        let descr = match crate::type_expr::parse_type_expr(toks, &ctx.combined_type_env) {
+            Ok((d, _)) => d,
+            Err(_) => continue,
+        };
+        let tt_var = ctx.let_(crate::fz_ir::Prim::TypeTest(*pv, Box::new(descr)));
+        let pass_b = ctx.cur_mut().block(vec![]);
+        ctx.set_term(crate::fz_ir::Term::If(tt_var, pass_b, on_fail));
+        ctx.cur_block = Some(pass_b);
+        ctx.terminated = false;
+    }
     Ok(())
 }
 
@@ -918,6 +957,7 @@ fn lower_multi_clause(
         for (pv, pat) in param_vars.iter().zip(&clause.params) {
             lower_pattern_bind(ctx, *pv, pat, next)?;
         }
+        emit_param_type_guards(ctx, clause, param_vars, next)?;
         if let Some(g) = &clause.guard {
             let guard_var = lower_expr(ctx, g, false)?;
             let body_b = ctx.cur_mut().block(vec![]);
