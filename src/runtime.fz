@@ -1,13 +1,3 @@
-extern "C" fn fz_print_value(any) :: nil
-extern "C" fn fz_assert(any) :: nil
-extern "C" fn fz_assert_eq(any, any) :: nil
-extern "C" fn fz_assert_neq(any, any) :: nil
-extern "C" fn fz_vec_get(any, any) :: any
-extern "C" fn fz_spawn(any) :: any
-extern "C" fn fz_spawn_opt(any, any) :: any
-extern "C" fn fz_self() :: any
-extern "C" fn fz_send(any, any) :: any
-
 @doc "Prints x to standard output."
 @spec print(any) :: nil
 fn print(x) do fz_print_value(x) end
@@ -35,3 +25,13 @@ fn self() do fz_self() end
 @doc "Sends msg to the process identified by pid; returns msg."
 @spec send(integer, any) :: any
 fn send(pid, msg) do fz_send(pid, msg) end
+
+extern "C" fn fz_print_value(any) :: nil
+extern "C" fn fz_assert(any) :: nil
+extern "C" fn fz_assert_eq(any, any) :: nil
+extern "C" fn fz_assert_neq(any, any) :: nil
+extern "C" fn fz_vec_get(any, any) :: any
+extern "C" fn fz_spawn(any) :: any
+extern "C" fn fz_spawn_opt(any, any) :: any
+extern "C" fn fz_self() :: any
+extern "C" fn fz_send(any, any) :: any
