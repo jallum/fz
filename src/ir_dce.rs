@@ -1,9 +1,13 @@
-//! fz-ul4.dce.4 — Dead stmt elimination.
+//! fz-ul4.dce.4 — Dead stmt and dead block elimination.
 //!
-//! Removes pure stmts whose dest var is not used anywhere in the fn.
+//! Dead stmts: removes pure stmts whose dest var is not used anywhere in the fn.
 //! Fixed-point loop handles chains of dead stmts.
+//!
+//! Dead blocks: after stmt DCE, prunes blocks unreachable from the entry block.
+//! Only Goto and If create intra-function block edges; all other terminators
+//! exit to a separate FnIr or terminate execution.
 
-use crate::fz_ir::{FnIr, Module, Prim, Stmt, Term, Var};
+use crate::fz_ir::{BlockId, FnIr, Module, Prim, Stmt, Term, Var};
 use std::collections::HashSet;
 
 pub fn dce_module(m: &mut Module) {
@@ -28,6 +32,30 @@ fn dce_fn(f: &mut FnIr) {
             break;
         }
     }
+
+    // Dead block elimination: compute reachable set BEFORE retaining so that
+    // f.block(id) — which panics on unknown id — is still safe to call.
+    let reachable = reachable_from_entry(f);
+    f.blocks.retain(|b| reachable.contains(&b.id));
+}
+
+fn reachable_from_entry(f: &FnIr) -> HashSet<BlockId> {
+    let mut seen = HashSet::new();
+    let mut work = vec![f.entry];
+    while let Some(bid) = work.pop() {
+        if !seen.insert(bid) {
+            continue;
+        }
+        match &f.block(bid).terminator {
+            Term::Goto(t, _) => work.push(*t),
+            Term::If(_, t, e) => {
+                work.push(*t);
+                work.push(*e);
+            }
+            _ => {}
+        }
+    }
+    seen
 }
 
 fn collect_used(f: &FnIr) -> HashSet<Var> {
@@ -348,5 +376,89 @@ mod tests {
             Stmt::Let(_, Prim::Const(Const::Int(42))) => {}
             other => panic!("expected live Const(42), got {:?}", other),
         }
+    }
+
+    // ── Dead block elimination ────────────────────────────────────────────────
+
+    #[test]
+    fn unreachable_block_removed() {
+        // entry → Return(nil); orphan block exists but is never jumped to.
+        let mut b = FnBuilder::new(FnId(0), "main");
+        let entry = b.block(vec![]);
+        let orphan = b.block(vec![]);
+        let nil_e = b.let_(entry, Prim::Const(Const::Nil));
+        b.set_terminator(entry, Term::Return(nil_e));
+        let nil_o = b.let_(orphan, Prim::Const(Const::Nil));
+        b.set_terminator(orphan, Term::Return(nil_o));
+
+        let mut mb = ModuleBuilder::new();
+        mb.add_fn(b.build());
+        let mut m = mb.build();
+
+        assert_eq!(m.fns[0].blocks.len(), 2, "should start with 2 blocks");
+        dce_module(&mut m);
+        assert_eq!(m.fns[0].blocks.len(), 1, "orphan block should be removed");
+        assert_eq!(m.fns[0].blocks[0].id, entry);
+    }
+
+    #[test]
+    fn entry_always_retained() {
+        let mut b = FnBuilder::new(FnId(0), "main");
+        let entry = b.block(vec![]);
+        let nil = b.let_(entry, Prim::Const(Const::Nil));
+        b.set_terminator(entry, Term::Return(nil));
+
+        let mut mb = ModuleBuilder::new();
+        mb.add_fn(b.build());
+        let mut m = mb.build();
+        dce_module(&mut m);
+        assert_eq!(m.fns[0].blocks.len(), 1);
+        assert_eq!(m.fns[0].blocks[0].id, entry);
+    }
+
+    #[test]
+    fn both_if_branches_kept() {
+        let mut b = FnBuilder::new(FnId(0), "main");
+        let cond_v = b.fresh_var();
+        let entry = b.block(vec![cond_v]);
+        let then_b = b.block(vec![]);
+        let else_b = b.block(vec![]);
+        b.set_terminator(entry, Term::If(cond_v, then_b, else_b));
+        let n1 = b.let_(then_b, Prim::Const(Const::Nil));
+        b.set_terminator(then_b, Term::Return(n1));
+        let n2 = b.let_(else_b, Prim::Const(Const::Nil));
+        b.set_terminator(else_b, Term::Return(n2));
+
+        let mut mb = ModuleBuilder::new();
+        mb.add_fn(b.build());
+        let mut m = mb.build();
+        dce_module(&mut m);
+        assert_eq!(m.fns[0].blocks.len(), 3, "both If branches must be kept");
+    }
+
+    #[test]
+    fn dead_branch_removed_after_goto() {
+        // entry → Goto(then_b); else_b exists but is unreferenced.
+        let mut b = FnBuilder::new(FnId(0), "main");
+        let entry = b.block(vec![]);
+        let then_b = b.block(vec![]);
+        let else_b = b.block(vec![]);
+        b.set_terminator(entry, Term::Goto(then_b, vec![]));
+        let n1 = b.let_(then_b, Prim::Const(Const::Nil));
+        b.set_terminator(then_b, Term::Return(n1));
+        let n2 = b.let_(else_b, Prim::Const(Const::Nil));
+        b.set_terminator(else_b, Term::Return(n2));
+
+        let mut mb = ModuleBuilder::new();
+        mb.add_fn(b.build());
+        let mut m = mb.build();
+
+        assert_eq!(m.fns[0].blocks.len(), 3, "should start with 3 blocks");
+        dce_module(&mut m);
+        assert_eq!(m.fns[0].blocks.len(), 2, "else_b should be removed");
+        let ids: Vec<_> = m.fns[0].blocks.iter().map(|b| b.id).collect();
+        assert!(ids.contains(&entry));
+        assert!(ids.contains(&then_b));
+        assert!(!ids.contains(&else_b));
     }
 }
