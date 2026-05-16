@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-16T22:52:19Z",
+  "description": "",
+  "id": "fz-vh4",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "fz-cg.2: introduce CodegenCache struct; thread \u0026mut CodegenCache through lower_prim and emit_terminator — no behavior change",
+  "type": "task",
+  "updated_at": "2026-05-16T22:52:19Z"
+}
