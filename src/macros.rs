@@ -322,7 +322,7 @@ pub fn value_to_items(v: &Value) -> Result<Vec<Item>, String> {
                         name,
                         name_span: span,
                         clauses: vec![FnClause {
-                            param_type_tokens: vec![],
+                            param_annotations: vec![],
                             params: vec![],
                             guard: None,
                             body,

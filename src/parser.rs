@@ -612,7 +612,7 @@ impl Parser {
     /// inside brackets, but in v1 we only emit single-line bodies.
     /// Collect type tokens for one function parameter annotation (`x :: T`).
     /// Stops at `,` or `)` at depth 0 without consuming them.
-    fn collect_fn_param_type_tokens(&mut self) -> Vec<Token> {
+    fn collect_fn_param_annotations(&mut self) -> Vec<Token> {
         let mut out: Vec<Token> = Vec::new();
         let mut depth: i32 = 0;
         loop {
@@ -653,7 +653,7 @@ impl Parser {
             patterns.push(self.parse_pattern()?);
             self.skip_newlines();
             let ty = if self.eat(&Tok::ColonColon) {
-                let toks = self.collect_fn_param_type_tokens();
+                let toks = self.collect_fn_param_annotations();
                 if toks.is_empty() {
                     return self.err("expected type expression after `::`");
                 }
@@ -731,7 +731,7 @@ impl Parser {
             other => return self.err(format!("expected function name, got {:?}", other)),
         };
         self.expect(&Tok::LParen, "`(`")?;
-        let (params, param_type_tokens) = self.parse_fn_params()?;
+        let (params, param_annotations) = self.parse_fn_params()?;
         self.expect(&Tok::RParen, "`)`")?;
 
         let guard = if matches!(self.peek(), Tok::When) {
@@ -765,7 +765,7 @@ impl Parser {
             name_span,
             FnClause {
                 params,
-                param_type_tokens,
+                param_annotations,
                 guard,
                 body,
                 span,

@@ -885,7 +885,12 @@ fn emit_param_type_guards(
     param_vars: &[Var],
     on_fail: BlockId,
 ) -> Result<(), LowerError> {
-    for (pv, type_toks_opt) in param_vars.iter().zip(&clause.param_type_tokens) {
+    debug_assert_eq!(
+        param_vars.len(),
+        clause.param_annotations.len(),
+        "param/annotation length mismatch"
+    );
+    for (pv, type_toks_opt) in param_vars.iter().zip(&clause.param_annotations) {
         let toks = match type_toks_opt {
             Some(t) => t,
             None => continue,

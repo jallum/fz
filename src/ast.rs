@@ -264,8 +264,8 @@ pub enum Endian {
 pub struct FnClause {
     pub params: Vec<Spanned<Pattern>>,
     /// fz-ty1.8: per-parameter type annotation tokens (`x :: T`).
-    /// `param_type_tokens.len() == params.len()`. `None` means unannotated.
-    pub param_type_tokens: Vec<Option<Vec<crate::lexer::Token>>>,
+    /// `param_annotations.len() == params.len()`. `None` means unannotated.
+    pub param_annotations: Vec<Option<Vec<crate::lexer::Token>>>,
     pub guard: Option<Spanned<Expr>>,
     pub body: Spanned<Expr>,
     /// Span of the whole clause: from the `fn`/`defmacro` keyword through
