@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-16T22:52:19Z",
+  "description": "",
+  "id": "fz-0uu",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "fz-cg.4: Fix F — extern FuncRef dedup via CodegenCache.extern_funcs (per-function)",
+  "type": "task",
+  "updated_at": "2026-05-16T22:52:19Z"
+}
