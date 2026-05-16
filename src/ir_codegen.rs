@@ -3475,6 +3475,20 @@ struct CodegenEnv<'a> {
     closure_n_captures: &'a std::collections::HashMap<crate::fz_ir::FnId, usize>,
 }
 
+/// Per-function mutable state threaded through `lower_prim` and
+/// `emit_terminator`. Fields are populated in later fz-cg tickets.
+#[derive(Default)]
+struct CodegenCache {
+    /// Cranelift values for small integer/atom constants (fz-bwp).
+    const_cache: HashMap<i64, ir::Value>,
+    /// i1 condition values keyed by Var ID — bypass is_truthy in Term::If (fz-jiw).
+    condition: HashMap<u32, ir::Value>,
+    /// Raw (unboxed) i64 values for integer constants keyed by Var ID (fz-zj3).
+    raw_int_consts: HashMap<u32, i64>,
+    /// FuncRef for each extern, deduplicated per function (fz-0uu).
+    extern_funcs: HashMap<crate::fz_ir::ExternId, ir::FuncRef>,
+}
+
 #[derive(Clone, Copy)]
 struct RuntimeRefs {
     halt_id: FuncId,
@@ -3856,6 +3870,7 @@ fn emit_terminator<M: cranelift_module::Module>(
     frame_ptr: Option<ir::Value>,
     host_ctx: Option<ir::Value>,
     cont_param: Option<ir::Value>,
+    _cache: &mut CodegenCache,
 ) -> Result<(), CodegenError> {
     let runtime = env.runtime;
     let fn_types = env.fn_types;
@@ -4791,6 +4806,8 @@ fn compile_fn<M: cranelift_module::Module>(
         entry_cl,
     );
 
+    let mut cache = CodegenCache::default();
+
     // Walk blocks in declared order with entry first. Unreachable
     // fz_ir blocks (fz-ul4.30) are filtered out — they have no
     // Cranelift counterpart.
@@ -4836,7 +4853,7 @@ fn compile_fn<M: cranelift_module::Module>(
                 .unwrap_or(crate::diag::Span::DUMMY);
             b.set_srcloc(span_to_srcloc(span));
             let Stmt::Let(v, prim) = stmt;
-            let out = lower_prim(&mut b, jmod, env, &var_env, prim, *v)?;
+            let out = lower_prim(&mut b, jmod, env, &var_env, prim, *v, &mut cache)?;
             let repr = if out.is_raw_f64() {
                 ArgRepr::RawF64
             } else if out.is_raw_i64() {
@@ -4995,6 +5012,7 @@ fn compile_fn<M: cranelift_module::Module>(
             frame_ptr,
             host_ctx,
             cont_param,
+            &mut cache,
         )?;
     }
 
@@ -5662,6 +5680,7 @@ fn lower_prim<M: cranelift_module::Module>(
     var_env: &HashMap<u32, VarBinding>,
     prim: &Prim,
     dest_var: crate::fz_ir::Var,
+    _cache: &mut CodegenCache,
 ) -> Result<LowerOut, CodegenError> {
     let runtime = env.runtime;
     let fn_types = env.fn_types;
