@@ -4,14 +4,15 @@
   "blocks": [
     "fz-cty.3"
   ],
+  "closed_at": "2026-05-16T21:59:05Z",
   "created": "2026-05-16T00:33:42Z",
   "description": "## Goal\n\nIntroduce the off-heap refcounted binary store: a leak-allocated struct with atomic retain/release. No global registry, no mutex — each SharedBin is its own allocation, freed when its refcount hits zero.\n\n## Layout\n\n```rust\n#[repr(C)]\npub struct SharedBin {\n    pub refcount: AtomicUsize,\n    pub bit_len: u64,\n    pub bytes: Box\u003c[u8]\u003e,\n}\n```\n\n## API (runtime/src/shared_bin.rs, new module)\n\n```rust\npub fn shared_bin_alloc(bytes: \u0026[u8], bit_len: u64) -\u003e *mut SharedBin;\npub unsafe fn shared_bin_retain(p: *mut SharedBin);\npub unsafe fn shared_bin_release(p: *mut SharedBin);\n```\n\n- `shared_bin_alloc` initialises refcount to 1, copies bytes into a fresh `Box\u003c[u8]\u003e`, leaks the SharedBin, returns the raw pointer.\n- `shared_bin_retain` performs `fetch_add(1, Ordering::Relaxed)` on the refcount. Caller already owns at least one reference, so Relaxed is sufficient.\n- `shared_bin_release` performs `fetch_sub(1, Ordering::Release)`. If the previous value was 1, performs an `Acquire` fence and reconstructs the Box via `Box::from_raw`, letting it drop and free the bytes plus the SharedBin struct.\n\nThis is the canonical Arc pattern.\n\n## Test infrastructure\n\n`#[cfg(test)] static SHARED_BIN_LIVE_COUNT: AtomicUsize` increments on alloc, decrements on free. Test-only helper `shared_bin_live_count() -\u003e usize` for assertions.\n\n## Tests\n\n- alloc → retain → release: refcount climbs and falls; final release frees (live count = 0).\n- alloc → release: refcount = 0 immediately, freed.\n- Concurrent retain/release from two threads on the same SharedBin (spawn 100 retain/release pairs across two threads, assert final refcount and live count are consistent).\n- Bytes are preserved across retain/release.\n\n## Non-changes\n\n- No Heap or fz_value integration in this ticket — pure infrastructure.\n\n## Verification\n\n- New tests pass.\n- No fz integration yet; module is dead code consumed by .3.",
   "id": "fz-cty.2",
   "labels": [],
   "parent": "fz-cty",
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "fz-shr.2: SharedBin allocator with atomic refcounts",
   "type": "task",
-  "updated_at": "2026-05-16T00:34:58Z"
+  "updated_at": "2026-05-16T21:59:05Z"
 }
