@@ -450,18 +450,9 @@ pub fn lower_program_full(prog: &Program) -> Result<(Module, AtomTable), LowerEr
             }
             let eid = ExternId(ctx.extern_decls.len() as u32);
             let params: Vec<ExternTy> = fn_def
-                .extern_param_types
+                .extern_params
                 .iter()
-                .map(|toks| {
-                    use crate::lexer::Tok;
-                    toks.iter()
-                        .find_map(|t| match &t.tok {
-                            Tok::Nil => Some(ExternTy::Unit),
-                            Tok::Ident(n) | Tok::Upper(n) => extern_ty_from_name(n.as_str()),
-                            _ => None,
-                        })
-                        .unwrap_or(ExternTy::Any)
-                })
+                .map(|name| extern_ty_from_name(name).unwrap_or(ExternTy::Any))
                 .collect();
             let (ret, ret_descr) = lower_extern_ret_ty(fn_def, &ctx.prelude_type_env)?;
             ctx.extern_decls.push(ExternDecl {

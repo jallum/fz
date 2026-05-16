@@ -330,7 +330,7 @@ pub fn value_to_items(v: &Value) -> Result<Vec<Item>, String> {
                         }],
                         is_macro: false,
                         extern_abi: None,
-                        extern_param_types: vec![],
+                        extern_params: vec![],
                         extern_ret_tokens: vec![],
                         attrs: Vec::new(),
                         span,

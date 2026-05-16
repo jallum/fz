@@ -130,20 +130,20 @@ mod extern_parse_tests {
         let d = parse_extern("extern \"C\" fn fz_halt() :: never\n");
         assert_eq!(d.name, "fz_halt");
         assert_eq!(d.extern_abi, Some("C".into()));
-        assert_eq!(d.extern_param_types.len(), 0);
+        assert_eq!(d.extern_params.len(), 0);
         assert!(d.clauses.is_empty());
     }
 
     #[test]
     fn extern_fn_one_param() {
         let d = parse_extern("extern \"C\" fn fz_print(any) :: unit\n");
-        assert_eq!(d.extern_param_types.len(), 1);
+        assert_eq!(d.extern_params.len(), 1);
     }
 
     #[test]
     fn extern_fn_two_params() {
         let d = parse_extern("extern \"C\" fn fz_assert_eq(any, any) :: unit\n");
-        assert_eq!(d.extern_param_types.len(), 2);
+        assert_eq!(d.extern_params.len(), 2);
         assert!(!d.extern_ret_tokens.is_empty());
     }
 }
@@ -409,7 +409,7 @@ impl Parser {
                             clauses: vec![clause],
                             is_macro,
                             extern_abi: None,
-                            extern_param_types: vec![],
+                            extern_params: vec![],
                             extern_ret_tokens: vec![],
                             attrs,
                             span: start.merge(clause_span),
@@ -794,38 +794,50 @@ impl Parser {
             other => return self.err(format!("expected function name, got {:?}", other)),
         };
         self.expect(&Tok::LParen, "`(`")?;
-        let extern_param_types: Vec<Vec<crate::lexer::Token>> =
+        // Extern param types are always single identifiers (e.g. "any", "integer").
+        // Extract the name string at parse time; no need to carry token bundles.
+        let extern_params: Vec<String> =
             if matches!(self.peek(), Tok::RParen) {
                 vec![]
             } else {
-                let mut params: Vec<Vec<crate::lexer::Token>> = Vec::new();
-                let mut current: Vec<crate::lexer::Token> = Vec::new();
+                let mut params: Vec<String> = Vec::new();
                 let mut depth = 0usize;
+                let mut current_name: Option<String> = None;
                 loop {
                     match self.peek() {
                         Tok::LParen | Tok::LBrace | Tok::LBrack => {
                             depth += 1;
-                            current.push(self.toks[self.pos].clone());
                             self.bump();
                         }
                         Tok::RParen | Tok::RBrace | Tok::RBrack if depth > 0 => {
                             depth -= 1;
-                            current.push(self.toks[self.pos].clone());
                             self.bump();
                         }
                         Tok::RParen => {
-                            params.push(std::mem::take(&mut current));
+                            params.push(current_name.take().unwrap_or_default());
                             break;
                         }
                         Tok::Comma if depth == 0 => {
-                            params.push(std::mem::take(&mut current));
+                            params.push(current_name.take().unwrap_or_default());
                             self.bump();
                         }
                         Tok::Eof | Tok::Newline => {
                             return self.err("unexpected end of extern parameter list");
                         }
+                        Tok::Nil => {
+                            if current_name.is_none() {
+                                current_name = Some("nil".into());
+                            }
+                            self.bump();
+                        }
+                        Tok::Ident(n) | Tok::Upper(n) => {
+                            let name = n.clone();
+                            if current_name.is_none() {
+                                current_name = Some(name);
+                            }
+                            self.bump();
+                        }
                         _ => {
-                            current.push(self.toks[self.pos].clone());
                             self.bump();
                         }
                     }
@@ -846,7 +858,7 @@ impl Parser {
             clauses: vec![],
             is_macro: false,
             extern_abi: Some(abi),
-            extern_param_types,
+            extern_params,
             extern_ret_tokens,
             attrs: vec![],
             span,
