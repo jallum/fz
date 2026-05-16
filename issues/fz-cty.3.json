@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-cty.2"
+  ],
   "blocks": [
     "fz-cty.4"
   ],
