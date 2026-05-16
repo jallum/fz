@@ -171,15 +171,9 @@ fn max_var_in_term(t: &Term) -> u32 {
 /// Return a copy of `callee` with all Var and BlockId values shifted by
 /// `var_shift` and `block_shift` respectively. Also returns the forward maps
 /// (original → renamed) for callers that need to substitute entry params.
-pub fn alpha_rename(
-    callee: &FnIr,
-    caller: &FnIr,
-) -> (FnIr, HashMap<Var, Var>, HashMap<BlockId, BlockId>) {
+pub fn alpha_rename(callee: &FnIr, caller: &FnIr) -> FnIr {
     let var_shift = max_var(caller) + 1;
     let block_shift = max_block(caller) + 1;
-
-    let mut var_map: HashMap<Var, Var> = HashMap::new();
-    let mut block_map: HashMap<BlockId, BlockId> = HashMap::new();
 
     let shift_v = |v: Var| Var(v.0 + var_shift);
     let shift_b = |b: BlockId| BlockId(b.0 + block_shift);
@@ -328,27 +322,13 @@ pub fn alpha_rename(
         })
         .collect();
 
-    // Build forward maps for callers that need param substitution.
-    for b in &callee.blocks {
-        for p in &b.params {
-            var_map.insert(*p, shift_v(*p));
-        }
-        for s in &b.stmts {
-            let Stmt::Let(v, _) = s;
-            var_map.insert(*v, shift_v(*v));
-        }
-        block_map.insert(b.id, shift_b(b.id));
-    }
-
-    let renamed = FnIr {
+    FnIr {
         id: callee.id,
         name: callee.name.clone(),
         frame_schema_id: 0,
         blocks,
         entry: shift_b(callee.entry),
-    };
-
-    (renamed, var_map, block_map)
+    }
 }
 
 // ---------- splice ----------
@@ -406,7 +386,7 @@ pub fn inline_tail_calls_once(m: &mut Module) -> usize {
 
         let callee = m.fns[callee_idx].clone();
         let caller = &m.fns[fi];
-        let (renamed, _var_map, _block_map) = alpha_rename(&callee, caller);
+        let renamed = alpha_rename(&callee, caller);
 
         // Entry params must match arg count — guaranteed by well-formed IR.
         let entry_params: Vec<Var> = renamed
@@ -482,7 +462,7 @@ pub fn inline_calls_once(m: &mut Module) -> usize {
 
         let callee = m.fns[callee_idx].clone();
         let caller = &m.fns[fi];
-        let (mut renamed, _var_map, _block_map) = alpha_rename(&callee, caller);
+        let mut renamed = alpha_rename(&callee, caller);
 
         // Rewrite each Return(v') in the renamed body to
         // TailCall(K, [v', cont_captured...]).
@@ -647,7 +627,7 @@ pub fn inline_single_use_conts_once(m: &mut Module, mt: &mut ModuleTypes) -> usi
             _ => continue,
         };
         let k_fn = m.fns[k_idx].clone();
-        let (renamed, _, _) = alpha_rename(&k_fn, &m.fns[caller_fi]);
+        let renamed = alpha_rename(&k_fn, &m.fns[caller_fi]);
         let entry = splice_blocks(&mut m.fns[caller_fi], renamed);
         m.fns[caller_fi].blocks[caller_bi].terminator = Term::Goto(entry, tail_args);
 
@@ -883,7 +863,7 @@ mod tests {
     fn alpha_rename_shifts_vars_above_caller_max() {
         let callee = make_leaf_add1(); // vars 0,1,2; blocks 0
         let caller = make_caller_tail(FnId(1)); // vars 0; blocks 0
-        let (renamed, var_map, block_map) = alpha_rename(&callee, &caller);
+        let renamed = alpha_rename(&callee, &caller);
 
         // caller max_var = 0, so callee vars shift by 1
         // callee var 0 → 1, var 1 → 2, var 2 → 3
@@ -898,15 +878,13 @@ mod tests {
         }
         // block shift: caller max_block = 0, so callee block 0 → 1
         assert_eq!(renamed.entry.0, 1);
-        assert!(var_map.values().all(|v| v.0 >= 1));
-        assert!(block_map.values().all(|b| b.0 >= 1));
     }
 
     #[test]
     fn alpha_rename_no_var_collision_with_caller() {
         let callee = make_leaf_add1();
         let caller = make_caller_tail(FnId(1));
-        let (renamed, _, _) = alpha_rename(&callee, &caller);
+        let renamed = alpha_rename(&callee, &caller);
 
         let caller_vars: std::collections::HashSet<u32> = caller
             .blocks
@@ -924,7 +902,7 @@ mod tests {
     fn alpha_rename_prim_binop_vars_shifted() {
         let callee = make_leaf_add1(); // entry block has BinOp(Add, v0, v1)
         let caller = make_caller_tail(FnId(1)); // max_var = 0 → shift = 1
-        let (renamed, _, _) = alpha_rename(&callee, &caller);
+        let renamed = alpha_rename(&callee, &caller);
 
         let entry = renamed
             .blocks
@@ -952,7 +930,7 @@ mod tests {
         let callee = b.build();
 
         let caller = make_caller_tail(FnId(1)); // max_var = 0 → shift = 1
-        let (renamed, _, _) = alpha_rename(&callee, &caller);
+        let renamed = alpha_rename(&callee, &caller);
         let eb = renamed
             .blocks
             .iter()
@@ -973,7 +951,7 @@ mod tests {
     fn splice_blocks_appends_and_returns_entry() {
         let callee = make_leaf_add1();
         let caller_fn = make_caller_tail(FnId(1));
-        let (renamed, _, _) = alpha_rename(&callee, &caller_fn);
+        let renamed = alpha_rename(&callee, &caller_fn);
         let renamed_entry = renamed.entry;
 
         let mut caller_mut = caller_fn.clone();
