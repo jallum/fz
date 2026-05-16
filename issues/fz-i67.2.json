@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-16T22:58:08Z",
+  "description": "## Goal\n\nTeach `tests/fixture_matrix.rs` to recognise `repl` as a path. For fixtures with `repl` in their `paths:` frontmatter, run `fz repl --script \u003cinput.fz\u003e`, capture stdout, and compare to `expected.txt` exactly like the other legs.\n\n## Depends on\n\nREPL .1 (the `--script` subcommand must exist).\n\n## Changes\n\n### tests/fixture_matrix.rs\n- Extend `run_path` to accept `\"repl\"`. Spawn `fz repl --script \u003cfixture\u003e/input.fz`, capture stdout, return `RunOutcome` shaped like the other legs.\n- No new code path for output diffing — the existing exact-stdout-vs-`expected.txt` compare applies.\n- `actual.txt` on failure works automatically.\n\n## Acceptance\n\n- Adding `repl` to a fixture's `paths:` causes the harness to run the REPL leg.\n- A single hand-converted fixture (e.g., `fixtures/add1/` with `paths: [jit, interp, aot, repl]`) passes all four legs.\n- `cargo test --test fixture_matrix` green.\n\n## Non-changes\n\n- No fixtures are opted in by this ticket. That is REPL .3.",
+  "id": "fz-i67.2",
+  "labels": [],
+  "parent": "fz-i67",
+  "priority": 2,
+  "status": "open",
+  "title": "REPL .2: matrix repl path",
+  "type": "task",
+  "updated_at": "2026-05-16T22:58:08Z"
+}
