@@ -4924,6 +4924,7 @@ fn compile_fn<M: cranelift_module::Module>(
             Term::TailCall { callee, .. } => !callee_is_native(callee.0),
             Term::TailCallClosure { .. } => false,
             Term::Goto(..) => false, // handled per-arg below
+            Term::Receive { continuation } => !callee_is_native(continuation.fn_id.0),
             _ => true,
         };
         if needs_blanket_retag {
@@ -7617,6 +7618,38 @@ fn main(), do: loop_with(loop_with, 100000, 0)
             "post-inline frame allocs ({}) must be < 50% of pre-inline ({})",
             post_count,
             pre_count
+        );
+    }
+
+    /// fz-li4 — Term::Receive with a natively-callable continuation must not
+    /// emit a box→unbox roundtrip for raw-int captures. Before the fix,
+    /// needs_blanket_retag fell through to `_ => true` for Term::Receive,
+    /// forcing ishl_imm+bor_imm on every raw var immediately before the
+    /// fz_receive_park call — then the cont had to sshr_imm them back out.
+    #[test]
+    fn receive_native_cont_no_box_unbox_roundtrip() {
+        let src = "fn relay(), do: send(1, receive() + 1)\n\
+                   fn main() do\n\
+                     spawn(relay)\n\
+                     send(2, 41)\n\
+                     print(receive())\n\
+                   end";
+        let m = lower_src(src);
+        ir_text_record_enable();
+        let _ = compile(&m).unwrap();
+        let ir = ir_text_record_take();
+        let relay_ir = ir
+            .iter()
+            .find(|(n, _)| n == "relay")
+            .map(|(_, s)| s.as_str())
+            .unwrap_or("");
+        // The relay fn holds one raw-int capture (1). With the fix it is
+        // stored directly — no ishl_imm or bor_imm should appear in relay's
+        // block. (Arithmetic in the receive continuation is a different fn.)
+        assert!(
+            !relay_ir.contains("ishl_imm"),
+            "spurious box in relay CLIF — integer capture was re-tagged before Receive:\n{}",
+            relay_ir
         );
     }
 

@@ -85,7 +85,7 @@ function u0:0(i64, i64) -> i64 tail {
     fn6 = colocated u0:44 sig6
     fn7 = u0:28 sig7
 
-block0(v0: i64, v1: i64):
+    block0(v0: i64, v1: i64):    ;; v0 :: 99
     v2 = iconst.i32 9                   ; @2:23
     v3 = iconst.i32 1                   ; @2:23
     v4 = iconst.i32 0                   ; @2:23
@@ -101,19 +101,16 @@ block0(v0: i64, v1: i64):
     store notrap aligned v11, v10+16
     store notrap aligned v5, v10+24
     v12 = call fn4(v10)                 ; @2:3
-    v13 = ishl_imm v0, 3                ; @3:3
-    v14 = bor_imm v13, 1                ; @3:3
-    v15 = iconst.i32 16                 ; @3:3
-    v16 = iconst.i32 2                  ; @3:3
-    v17 = iconst.i32 0                  ; @3:3
-    v18 = call fn5(v15, v16, v17)       ; @3:3  v15 = 16, v16 = 2, v17 = 0
-    v19 = func_addr.i64 fn6             ; @3:3
-    store notrap aligned v19, v18+16    ; @3:3
-    store notrap aligned v1, v18+24     ; @3:3
-    v20 = sshr_imm v14, 3               ; @3:3
-    store notrap aligned v20, v18+32    ; @3:3
-    v21 = call fn7(v18)                 ; @3:3
-    return v21                          ; @3:3
+    v13 = iconst.i32 16                 ; @3:3
+    v14 = iconst.i32 2                  ; @3:3
+    v15 = iconst.i32 0                  ; @3:3
+    v16 = call fn5(v13, v14, v15)       ; @3:3  v13 = 16, v14 = 2, v15 = 0
+    v17 = func_addr.i64 fn6             ; @3:3
+    store notrap aligned v17, v16+16    ; @3:3
+    store notrap aligned v1, v16+24     ; @3:3
+    store notrap aligned v0, v16+32     ; @3:3
+    v18 = call fn7(v16)                 ; @3:3
+    return v18                          ; @3:3
 }
 
 ; fn lambda_9_s14
