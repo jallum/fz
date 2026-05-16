@@ -7,9 +7,15 @@
   "id": "fz-q8d.4",
   "labels": [],
   "parent": "fz-q8d",
+  "comments": [
+    {
+      "text": "Closing without an end-to-end fz-source fixture. fz lacks any allocation primitive that can construct a single object larger than ~6 MiB from source — no vec-fill, no range iteration, no recursion path that produces a single large allocation rather than many small cons cells. The 7 Rust unit tests in heap.rs cover the fragment code path (alloc routing, GC survival, GC reclamation, fragment→fragment edges, fragment→to-space edges, mixed liveness, drop without leak). Three-path parity is structural: JIT, interp, and AOT all reach Heap::alloc through the same call, with no separate codegen for oversized objects. The structural check the fixture would have provided is already covered by the unit tests. If/when fz gains a vec-fill or generator primitive (a separate language decision), revisiting an end-to-end fixture becomes straightforward — file a follow-up at that point.",
+      "timestamp": "2026-05-16T11:47:18Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "fz-q8d.4: heap fragments — genuine large-object support",
   "type": "task",
-  "updated_at": "2026-05-16T10:57:20Z"
+  "updated_at": "2026-05-16T11:47:18Z"
 }
