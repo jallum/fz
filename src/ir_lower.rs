@@ -22,8 +22,8 @@ use crate::ast::{
 };
 use crate::diag::Span;
 use crate::fz_ir::{
-    BinOp, BitFieldIr, BitSizeIr, BlockId, BuiltinId, Const, Cont, FnBuilder, FnId, Module,
-    ModuleBuilder, Prim, SourceInfo, Term, UnOp, Var,
+    BinOp, BitFieldIr, BitSizeIr, BlockId, BuiltinId, Const, Cont, ExternDecl, ExternId, ExternTy,
+    FnBuilder, FnId, Module, ModuleBuilder, Prim, SourceInfo, Term, UnOp, Var,
 };
 use std::collections::HashMap;
 
@@ -175,12 +175,44 @@ impl Default for BuiltinTable {
     }
 }
 
+/// Name → ExternId index, built during the zeroth lowering pass.
+pub struct ExternTable {
+    map: HashMap<String, ExternId>,
+}
+
+impl ExternTable {
+    pub fn new() -> Self {
+        Self { map: HashMap::new() }
+    }
+    fn insert(&mut self, name: String, id: ExternId) {
+        self.map.insert(name, id);
+    }
+    pub fn lookup(&self, name: &str) -> Option<ExternId> {
+        self.map.get(name).copied()
+    }
+}
+
+/// Map a single token identifier to an `ExternTy`. Used when resolving the
+/// return-type annotation in an `extern "C" fn` declaration.
+fn extern_ty_from_name(name: &str) -> Option<ExternTy> {
+    match name {
+        "any" | "integer" | "binary" | "atom" | "bool" => Some(ExternTy::Any),
+        "float" => Some(ExternTy::F64),
+        "nil" => Some(ExternTy::Unit),
+        "never" => Some(ExternTy::Never),
+        _ => None,
+    }
+}
+
 /// Map of source-fn name -> primary FnId (the entry IR fn for a multi-clause source fn).
 type FnMap = HashMap<(String, usize), FnId>;
 
 pub struct LowerCtx {
     pub atoms: AtomTable,
     pub builtins: BuiltinTable,
+    pub externs: ExternTable,
+    /// Accumulated ExternDecls in declaration order; moved into Module.externs after build.
+    pub extern_decls: Vec<ExternDecl>,
     pub mb: ModuleBuilder,
     pub fns: FnMap,
     /// Currently-being-built fn.
@@ -218,6 +250,8 @@ impl LowerCtx {
         Self {
             atoms: AtomTable::default(),
             builtins: BuiltinTable::new(),
+            externs: ExternTable::new(),
+            extern_decls: Vec::new(),
             mb: ModuleBuilder::new(),
             fns: HashMap::new(),
             cur: None,
@@ -387,10 +421,32 @@ pub fn lower_program(prog: &Program) -> Result<Module, LowerError> {
 pub fn lower_program_full(prog: &Program) -> Result<(Module, AtomTable, BuiltinTable), LowerError> {
     let mut ctx = LowerCtx::new();
 
-    // First pass: assign FnIds to every top-level FnDef.
+    // Zeroth pass: register extern "C" fn declarations into ExternTable.
+    for item in &prog.items {
+        if let Item::Fn(fn_def) = item.as_ref() {
+            if fn_def.extern_abi.is_none() {
+                continue;
+            }
+            let eid = ExternId(ctx.extern_decls.len() as u32);
+            let params = vec![ExternTy::Any; fn_def.extern_param_count];
+            let ret = lower_extern_ret_ty(fn_def)?;
+            ctx.extern_decls.push(ExternDecl {
+                fz_name: fn_def.name.clone(),
+                symbol: fn_def.name.clone(),
+                params,
+                ret,
+            });
+            ctx.externs.insert(fn_def.name.clone(), eid);
+        }
+    }
+
+    // First pass: assign FnIds to every top-level regular (non-extern) FnDef.
     for item in &prog.items {
         match item.as_ref() {
             Item::Fn(fn_def) => {
+                if fn_def.extern_abi.is_some() {
+                    continue; // extern decls have no IR body
+                }
                 let arity = fn_def.clauses.first().map(|c| c.params.len()).unwrap_or(0);
                 let id = ctx.mb.fresh_fn_id();
                 ctx.fns.insert((fn_def.name.clone(), arity), id);
@@ -416,10 +472,12 @@ pub fn lower_program_full(prog: &Program) -> Result<(Module, AtomTable, BuiltinT
         }
     }
 
-    // Second pass: lower each fn.
+    // Second pass: lower each fn body.
     for item in &prog.items {
         if let Item::Fn(fn_def) = item.as_ref() {
-            lower_fn(&mut ctx, fn_def)?;
+            if fn_def.extern_abi.is_none() {
+                lower_fn(&mut ctx, fn_def)?;
+            }
         }
     }
 
@@ -429,9 +487,30 @@ pub fn lower_program_full(prog: &Program) -> Result<(Module, AtomTable, BuiltinT
     let mut module = mb.build();
     module.source = build_source_info(&module, &ctx);
     module.atom_names = ctx.atoms.names();
+    module.externs = std::mem::take(&mut ctx.extern_decls);
     // fz-02r.4 — annotate TailCall back-edges from the structural SCC.
     annotate_back_edges(&mut module, &ctx.fn_spans)?;
     Ok((module, ctx.atoms, ctx.builtins))
+}
+
+/// Parse the `extern_ret_tokens` of an extern fn def to an ExternTy.
+fn lower_extern_ret_ty(fn_def: &FnDef) -> Result<ExternTy, LowerError> {
+    use crate::lexer::Tok;
+    let tokens = &fn_def.extern_ret_tokens;
+    // Match on the first meaningful token, including special-cased keywords.
+    let ty = tokens.iter().find_map(|t| match &t.tok {
+        Tok::Nil => Some(ExternTy::Unit),
+        Tok::True | Tok::False => Some(ExternTy::Any),
+        Tok::Ident(n) | Tok::Upper(n) => extern_ty_from_name(n.as_str()),
+        _ => None,
+    });
+    ty.ok_or_else(|| LowerError::Unsupported {
+        span: fn_def.name_span,
+        what: format!(
+            "unrecognised return type in `extern fn {}` (expected any/nil/never/float)",
+            fn_def.name
+        ),
+    })
 }
 
 /// Post-lowering pass: compute the SCC of the fn-level call graph and set
@@ -930,6 +1009,10 @@ fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -> Result<Va
                     return cps_split_receive(ctx, sp, /* tail */ true);
                 }
                 return cps_split_receive(ctx, sp, /* tail */ false);
+            }
+            // Extern (runtime.fz / user-declared `extern "C" fn`)?
+            if let Some(eid) = ctx.externs.lookup(&callee_name) {
+                return Ok(ctx.let_at(Prim::Extern(eid, arg_vars), sp));
             }
             // Builtin?
             if let Some(bid) = ctx.builtins.lookup(&callee_name) {
@@ -2436,5 +2519,21 @@ end
             "expected BackEdgeTooManyArgs(9), got {:?}",
             err
         );
+    }
+
+    #[test]
+    fn extern_fn_registers_in_module_externs() {
+        let toks = Lexer::new(
+            "extern \"C\" fn fz_nop(any) :: nil\nfn main() do fz_nop(1) end\n"
+        ).tokenize().expect("lex");
+        let prog = crate::parser::Parser::new(toks).parse_program().expect("parse");
+        let (module, _, _) = lower_program_full(&prog).expect("lower");
+        assert_eq!(module.externs.len(), 1);
+        assert_eq!(module.externs[0].fz_name, "fz_nop");
+        assert_eq!(module.externs[0].params, vec![ExternTy::Any]);
+        assert_eq!(module.externs[0].ret, ExternTy::Unit);
+        // main's IR should contain Extern(0, [...]) not a TailCall to fz_nop.
+        let ir = format!("{}", module);
+        assert!(ir.contains("extern#0"), "expected extern#0 in IR:\n{}", ir);
     }
 }
