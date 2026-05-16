@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-16T19:42:15Z",
+  "description": "Remove unreachable blocks from FnIr. After folding, some branches become unreachable — this pass sweeps them.\n\n## Acceptance\n- Unreachable blocks removed from fn.blocks.\n- Tests pass.\n\n## Commit\nfz-ty1.opt.2 (already landed in commit 6c004f50)",
+  "id": "fz-66f",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "fz-ty1.opt.2: ir_dce — dead block elimination",
+  "type": "task",
+  "updated_at": "2026-05-16T19:42:15Z"
+}
