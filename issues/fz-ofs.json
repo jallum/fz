@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-bq9"
+  ],
   "created": "2026-05-16T19:42:53Z",
   "description": "After each k inlining in inline_single_use_conts_once, re-type only the affected caller specs instead of letting the caller do a full type_module pass.\n\n## What to change\n\nIn inline_single_use_conts_once(m, module_types: \u0026mut ModuleTypes):\n\nAfter inlining k into caller:\n1. For each spec key (caller_id, descrs) in module_types.specs, call:\n     type_fn(caller_fn, m, Some(\u0026descrs)) → new FnTypes\n   and update module_types.specs entry.\n2. Remove all entries (k_id, _) from module_types.specs:\n     module_types.specs.retain(|(fid, _), _| *fid != k_id)\n\nThe var_map returned by alpha_rename is no longer needed for types (the re-type via type_fn handles it), but it should still be verified correct for block/var id consistency.\n\n## Signature change\n\n```rust\npub fn inline_single_use_conts(m: \u0026mut Module, module_types: \u0026mut ModuleTypes)\n```\n\nThe inner loop in inline_single_use_conts threads the \u0026mut ModuleTypes into inline_single_use_conts_once.\n\n## Acceptance\n- cargo clippy -- -D warnings passes.\n- All tests pass.\n- One commit referencing fz-ty1.pip.1.",
   "id": "fz-ofs",
@@ -10,5 +12,5 @@
   "status": "open",
   "title": "fz-ty1.pip.1: surgical type refresh in inline_single_use_conts_once",
   "type": "task",
-  "updated_at": "2026-05-16T19:42:53Z"
+  "updated_at": "2026-05-16T19:43:07Z"
 }
