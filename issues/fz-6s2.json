@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-16T21:18:43Z",
+  "description": "",
+  "id": "fz-6s2",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "fz-wmy.1: alpha_rename — drop dead HashMap returns; rewrite test to inspect FnIr directly",
+  "type": "task",
+  "updated_at": "2026-05-16T21:18:43Z"
+}
