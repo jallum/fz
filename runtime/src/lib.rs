@@ -71,7 +71,8 @@ pub extern "C" fn fz_assert(cond: u64) {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_assert_eq(a: u64, b: u64) {
-    if crate::ir_runtime::fz_value_eq(a, b) == 0 {
+    // fz_value_eq returns a FzValue-encoded bool (TRUE=10, FALSE=18), not 0/1.
+    if !crate::fz_value::FzValue(crate::ir_runtime::fz_value_eq(a, b)).is_true() {
         eprintln!("fz assert_eq failed: values are not equal");
         std::process::abort();
     }
@@ -79,7 +80,8 @@ pub extern "C" fn fz_assert_eq(a: u64, b: u64) {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_assert_neq(a: u64, b: u64) {
-    if crate::ir_runtime::fz_value_eq(a, b) != 0 {
+    // fz_value_eq returns a FzValue-encoded bool (TRUE=10, FALSE=18), not 0/1.
+    if crate::fz_value::FzValue(crate::ir_runtime::fz_value_eq(a, b)).is_true() {
         eprintln!("fz assert_neq failed: values are equal");
         std::process::abort();
     }

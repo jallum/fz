@@ -540,6 +540,12 @@ impl ModuleBuilder {
         id
     }
 
+    /// The FnId value that would be assigned by the next `fresh_fn_id` call.
+    /// Used to snapshot the prelude/user boundary in `lower_program_full`.
+    pub fn next_fn_id(&self) -> u32 {
+        self.next_fn
+    }
+
     pub fn add_fn(&mut self, fn_ir: FnIr) {
         self.fn_idx.insert(fn_ir.id, self.fns.len());
         self.fns.push(fn_ir);

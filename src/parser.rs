@@ -710,7 +710,12 @@ impl Parser {
         let start = self.cur_span();
         let abi = match self.bump() {
             Tok::Str(s) => s,
-            other => return self.err(format!("expected ABI string after `extern`, got {:?}", other)),
+            other => {
+                return self.err(format!(
+                    "expected ABI string after `extern`, got {:?}",
+                    other
+                ));
+            }
         };
         self.expect(&Tok::Fn, "`fn` after extern ABI string")?;
         let name_span = self.cur_span();

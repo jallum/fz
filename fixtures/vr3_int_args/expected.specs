@@ -1,4 +1,15 @@
-; spec sum3(3) #fn=0
+; spec print(1) #fn=0
+;   key:    [int]
+;   return: any
+;   vars:
+;     Var(0) :: int
+;     Var(1) :: :match_error
+;     Var(2) :: any
+;   exits:
+;     blk0 Return Var(2)    :: any
+;     blk1 Halt Var(1)      :: :match_error
+
+; spec sum3(3) #fn=7
 ;   key:    [40, 1, 1]
 ;   return: int
 ;   vars:
@@ -12,27 +23,27 @@
 ;     blk0 Return Var(5)    :: int
 ;     blk1 Halt Var(3)      :: :match_error
 
-; spec main(0) #fn=1
+; spec main(0) #fn=8
 ;   key:    []
-;   return: nil
+;   return: any
 ;   vars:
 ;     Var(0) :: :match_error
 ;     Var(1) :: 40
 ;     Var(2) :: 1
 ;     Var(3) :: 1
 ;   exits:
-;     blk0 Call sum3#0(Var(1), Var(2), Var(3))
+;     blk0 Call sum3#7(Var(1), Var(2), Var(3))
 ;              callee_key=[40, 1, 1]
-;              cont k_2#2 captured=[]
+;              cont k_9#9 captured=[]
 ;              cont_key=[int]
 ;     blk1 Halt Var(0)      :: :match_error
 
-; spec k_2(1) #fn=2
+; spec k_9(1) #fn=9
 ;   key:    [int]
-;   return: nil
+;   return: any
 ;   vars:
 ;     Var(0) :: int
-;     Var(1) :: nil
 ;   exits:
-;     blk0 Return Var(1)    :: nil
+;     blk0 TailCall print#0(Var(0))
+;              callee_key=[int]
 

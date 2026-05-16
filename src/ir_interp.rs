@@ -23,7 +23,9 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 
-use crate::fz_ir::{BinOp, BuiltinKind, Const, ExternId, ExternTy, FnId, Module, Prim, Stmt, Term, Var};
+use crate::fz_ir::{
+    BinOp, BuiltinKind, Const, ExternId, ExternTy, FnId, Module, Prim, Stmt, Term, Var,
+};
 use fz_runtime::fz_value::FzValue;
 use fz_runtime::process::Process;
 
@@ -686,6 +688,81 @@ fn call_extern(module: &Module, eid: ExternId, args: &[FzValue]) -> Result<FzVal
         .externs
         .get(eid.0 as usize)
         .ok_or_else(|| format!("interp: unknown extern id {}", eid.0))?;
+    // Assert fns use std::process::abort on failure — fatal for the JIT/AOT
+    // path, but unusable in the interpreter where failures must return Err.
+    // Handle them inline with the same logic as run_builtin::Assert*.
+    match decl.symbol.as_str() {
+        "fz_assert" => {
+            if args.len() != 1 {
+                return Err(format!("fz_assert/1 got {} args", args.len()));
+            }
+            return if is_truthy(args[0]) {
+                Ok(FzValue::NIL)
+            } else {
+                Err("assertion failed".into())
+            };
+        }
+        "fz_assert_eq" => {
+            if args.len() != 2 {
+                return Err(format!("fz_assert_eq/2 got {} args", args.len()));
+            }
+            let eq = FzValue(fz_runtime::ir_runtime::fz_value_eq(args[0].0, args[1].0));
+            return if eq.is_true() {
+                Ok(FzValue::NIL)
+            } else {
+                Err(format!(
+                    "assertion failed: assert_eq({}, {})",
+                    fz_runtime::fz_value::debug::render(args[0].0),
+                    fz_runtime::fz_value::debug::render(args[1].0),
+                ))
+            };
+        }
+        "fz_assert_neq" => {
+            if args.len() != 2 {
+                return Err(format!("fz_assert_neq/2 got {} args", args.len()));
+            }
+            let eq = FzValue(fz_runtime::ir_runtime::fz_value_eq(args[0].0, args[1].0));
+            return if eq.is_false() {
+                Ok(FzValue::NIL)
+            } else {
+                Err(format!(
+                    "assertion failed: assert_neq({}, {})",
+                    fz_runtime::fz_value::debug::render(args[0].0),
+                    fz_runtime::fz_value::debug::render(args[1].0),
+                ))
+            };
+        }
+        // Spawn/send/self need the interpreter's own scheduler — the C
+        // implementations require a Runtime spawn hook which is only
+        // installed on the JIT/AOT path.
+        "fz_spawn" | "fz_spawn_opt" => {
+            if args.is_empty() {
+                return Err(format!("{}/1+ got 0 args", &decl.symbol));
+            }
+            // args[0] is the thunk closure (wrapping the user's closure);
+            // args[1] (fz_spawn_opt) is a min_heap_size hint — ignored here.
+            let (fn_id, captured) = unpack_closure(args[0])?;
+            let pid = interp_spawn(module, fn_id, captured)?;
+            return Ok(FzValue::from_int(pid as i64));
+        }
+        "fz_self" => {
+            return Ok(FzValue::from_int(
+                fz_runtime::process::current_process().pid as i64,
+            ));
+        }
+        "fz_send" => {
+            if args.len() != 2 {
+                return Err(format!("fz_send/2 got {} args", args.len()));
+            }
+            let receiver = args[0]
+                .unbox_int()
+                .ok_or_else(|| "send/2: pid must be Int".to_string())?
+                as u32;
+            interp_send(receiver, args[1])?;
+            return Ok(args[1]);
+        }
+        _ => {}
+    }
     let fp = resolve_symbol(&decl.symbol)?;
     let raw_args: Vec<u64> = args.iter().map(|v| v.0).collect();
     let returns_value = !matches!(decl.ret, ExternTy::Unit | ExternTy::Never);
@@ -698,7 +775,32 @@ fn call_extern(module: &Module, eid: ExternId, args: &[FzValue]) -> Result<FzVal
     Ok(FzValue(ret))
 }
 
+/// Return the function pointer for a named C symbol.
+///
+/// Checks the built-in native table first (all symbols declared in runtime.fz
+/// are registered here so that the interpreter finds them even when the runtime
+/// is statically linked and dlsym(RTLD_DEFAULT) cannot reach the symbols).
+/// Falls back to dlsym for any name not in the table.
 fn resolve_symbol(name: &str) -> Result<*const (), String> {
+    // Native table: every symbol declared in runtime.fz. These Rust functions
+    // are linked into the binary; using their address directly avoids relying
+    // on dlsym visibility, which is unreliable for statically-linked rlibs.
+    let native: Option<*const ()> = match name {
+        "fz_print_value" => Some(fz_runtime::ir_runtime::fz_print_value as *const ()),
+        "fz_assert" => Some(fz_runtime::fz_assert as *const ()),
+        "fz_assert_eq" => Some(fz_runtime::fz_assert_eq as *const ()),
+        "fz_assert_neq" => Some(fz_runtime::fz_assert_neq as *const ()),
+        "fz_vec_get" => Some(fz_runtime::ir_runtime::fz_vec_get as *const ()),
+        "fz_spawn" => Some(fz_runtime::ir_runtime::fz_spawn as *const ()),
+        "fz_spawn_opt" => Some(fz_runtime::ir_runtime::fz_spawn_opt as *const ()),
+        "fz_self" => Some(fz_runtime::ir_runtime::fz_self as *const ()),
+        "fz_send" => Some(fz_runtime::ir_runtime::fz_send as *const ()),
+        _ => None,
+    };
+    if let Some(fp) = native {
+        return Ok(fp);
+    }
+    // Fallback: dlsym for user-declared externs not in the native table.
     use std::ffi::CString;
     let cname = CString::new(name).map_err(|e| format!("bad symbol name: {}", e))?;
     #[cfg(unix)]
@@ -713,22 +815,52 @@ fn resolve_symbol(name: &str) -> Result<*const (), String> {
 
 unsafe fn dispatch_fn_returning(fp: *const (), args: &[u64]) -> u64 {
     match args.len() {
-        0 => unsafe { let f: unsafe extern "C" fn() -> u64 = std::mem::transmute(fp); f() }
-        1 => unsafe { let f: unsafe extern "C" fn(u64) -> u64 = std::mem::transmute(fp); f(args[0]) }
-        2 => unsafe { let f: unsafe extern "C" fn(u64, u64) -> u64 = std::mem::transmute(fp); f(args[0], args[1]) }
-        3 => unsafe { let f: unsafe extern "C" fn(u64, u64, u64) -> u64 = std::mem::transmute(fp); f(args[0], args[1], args[2]) }
-        4 => unsafe { let f: unsafe extern "C" fn(u64, u64, u64, u64) -> u64 = std::mem::transmute(fp); f(args[0], args[1], args[2], args[3]) }
+        0 => unsafe {
+            let f: unsafe extern "C" fn() -> u64 = std::mem::transmute(fp);
+            f()
+        },
+        1 => unsafe {
+            let f: unsafe extern "C" fn(u64) -> u64 = std::mem::transmute(fp);
+            f(args[0])
+        },
+        2 => unsafe {
+            let f: unsafe extern "C" fn(u64, u64) -> u64 = std::mem::transmute(fp);
+            f(args[0], args[1])
+        },
+        3 => unsafe {
+            let f: unsafe extern "C" fn(u64, u64, u64) -> u64 = std::mem::transmute(fp);
+            f(args[0], args[1], args[2])
+        },
+        4 => unsafe {
+            let f: unsafe extern "C" fn(u64, u64, u64, u64) -> u64 = std::mem::transmute(fp);
+            f(args[0], args[1], args[2], args[3])
+        },
         n => panic!("extern arity {} not supported (max 4)", n),
     }
 }
 
 unsafe fn dispatch_fn_void(fp: *const (), args: &[u64]) {
     match args.len() {
-        0 => unsafe { let f: unsafe extern "C" fn() = std::mem::transmute(fp); f() }
-        1 => unsafe { let f: unsafe extern "C" fn(u64) = std::mem::transmute(fp); f(args[0]) }
-        2 => unsafe { let f: unsafe extern "C" fn(u64, u64) = std::mem::transmute(fp); f(args[0], args[1]) }
-        3 => unsafe { let f: unsafe extern "C" fn(u64, u64, u64) = std::mem::transmute(fp); f(args[0], args[1], args[2]) }
-        4 => unsafe { let f: unsafe extern "C" fn(u64, u64, u64, u64) = std::mem::transmute(fp); f(args[0], args[1], args[2], args[3]) }
+        0 => unsafe {
+            let f: unsafe extern "C" fn() = std::mem::transmute(fp);
+            f()
+        },
+        1 => unsafe {
+            let f: unsafe extern "C" fn(u64) = std::mem::transmute(fp);
+            f(args[0])
+        },
+        2 => unsafe {
+            let f: unsafe extern "C" fn(u64, u64) = std::mem::transmute(fp);
+            f(args[0], args[1])
+        },
+        3 => unsafe {
+            let f: unsafe extern "C" fn(u64, u64, u64) = std::mem::transmute(fp);
+            f(args[0], args[1], args[2])
+        },
+        4 => unsafe {
+            let f: unsafe extern "C" fn(u64, u64, u64, u64) = std::mem::transmute(fp);
+            f(args[0], args[1], args[2], args[3])
+        },
         n => panic!("extern arity {} not supported (max 4)", n),
     }
 }

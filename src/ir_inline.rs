@@ -83,7 +83,9 @@ fn max_var_in_prim(p: &Prim) -> u32 {
             v(*b);
         }
         Prim::UnOp(_, a) => v(*a),
-        Prim::AllocStruct(_, args) | Prim::Builtin(_, args) | Prim::Extern(_, args) => args.iter().for_each(|x| v(*x)),
+        Prim::AllocStruct(_, args) | Prim::Builtin(_, args) | Prim::Extern(_, args) => {
+            args.iter().for_each(|x| v(*x))
+        }
         Prim::ListCons(a, b) => {
             v(*a);
             v(*b);

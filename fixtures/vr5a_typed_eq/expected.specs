@@ -1,25 +1,88 @@
-; spec main(0) #fn=0
+; spec print(1) #fn=0
+;   key:    [:false]
+;   return: any
+;   vars:
+;     Var(0) :: :false
+;     Var(1) :: :match_error
+;     Var(2) :: any
+;   exits:
+;     blk0 Return Var(2)    :: any
+;     blk1 Halt Var(1)      :: :match_error
+
+; spec print(1) #fn=0
+;   key:    [:true]
+;   return: any
+;   vars:
+;     Var(0) :: :true
+;     Var(1) :: :match_error
+;     Var(2) :: any
+;   exits:
+;     blk0 Return Var(2)    :: any
+;     blk1 Halt Var(1)      :: :match_error
+
+; spec print(1) #fn=0
+;   key:    [bool]
+;   return: any
+;   vars:
+;     Var(0) :: bool
+;     Var(1) :: :match_error
+;     Var(2) :: any
+;   exits:
+;     blk0 Return Var(2)    :: any
+;     blk1 Halt Var(1)      :: :match_error
+
+; spec main(0) #fn=7
 ;   key:    []
-;   return: nil
+;   return: any
 ;   vars:
 ;     Var(0) :: :match_error
 ;     Var(1) :: 1
 ;     Var(2) :: 2
 ;     Var(3) :: :false
-;     Var(4) :: nil
-;     Var(5) :: 1
-;     Var(6) :: 1
-;     Var(7) :: :true
-;     Var(8) :: nil
-;     Var(9) :: :ok
-;     Var(10) :: :err
-;     Var(11) :: bool
-;     Var(12) :: nil
-;     Var(13) :: :ok
-;     Var(14) :: :ok
-;     Var(15) :: bool
-;     Var(16) :: nil
 ;   exits:
-;     blk0 Return Var(16)    :: nil
+;     blk0 Call print#0(Var(3))
+;              callee_key=[:false]
+;              cont k_8#8 captured=[]
+;              cont_key=[any]
 ;     blk1 Halt Var(0)      :: :match_error
+
+; spec k_8(1) #fn=8
+;   key:    [any]
+;   return: any
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: 1
+;     Var(2) :: 1
+;     Var(3) :: :true
+;   exits:
+;     blk0 Call print#0(Var(3))
+;              callee_key=[:true]
+;              cont k_9#9 captured=[]
+;              cont_key=[any]
+
+; spec k_9(1) #fn=9
+;   key:    [any]
+;   return: any
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: :ok
+;     Var(2) :: :err
+;     Var(3) :: bool
+;   exits:
+;     blk0 Call print#0(Var(3))
+;              callee_key=[bool]
+;              cont k_10#10 captured=[]
+;              cont_key=[any]
+
+; spec k_10(1) #fn=10
+;   key:    [any]
+;   return: any
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: :ok
+;     Var(2) :: :ok
+;     Var(3) :: bool
+;   exits:
+;     blk0 TailCall print#0(Var(3))
+;              callee_key=[bool]
 

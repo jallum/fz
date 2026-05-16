@@ -1,11 +1,13 @@
 ; fn main
-    ;   @spec   main() -> nil
+    ;   @spec   main() -> any
     ;   @key    []
     ;   @abi    () -> Tagged
 function u0:0(i64) -> i64 tail {
-    sig0 = (f64) system_v
-    sig1 = (i64, i64) -> i64 tail
-    fn0 = u0:2 sig0
+    sig0 = (i64) system_v
+    sig1 = (i64) -> i64 system_v
+    sig2 = (i64, i64) -> i64 tail
+    fn0 = u0:0 sig0
+    fn1 = u0:20 sig1
 
 block0(v0: i64):
     v1 = f64const 0x1.8000000000000p0   ; @6:14
@@ -13,9 +15,11 @@ block0(v0: i64):
     v3 = fmul v1, v1  ; v1 = 0x1.8000000000000p0, v1 = 0x1.8000000000000p0    ;; v3 :: 2.25
     v4 = fmul v2, v2  ; v2 = 0x1.4000000000000p1, v2 = 0x1.4000000000000p1    ;; v4 :: 6.25
     v5 = fadd v3, v4    ;; v5 :: 8.5
-    call fn0(v5)
-    v6 = iconst.i64 3    ;; v6 :: nil
-    v7 = load.i64 notrap aligned v0+16  ; @6:9
-    return_call_indirect sig1, v7(v6, v0) ; @6:9  v6 = 3
+    v6 = bitcast.i64 v5
+    v7 = call fn1(v6)
+    call fn0(v7)
+    v8 = iconst.i64 3    ;; v8 :: any
+    v9 = load.i64 notrap aligned v0+16  ; @6:9
+    return_call_indirect sig2, v9(v8, v0) ; @6:9  v8 = 3
 }
 

@@ -26,6 +26,7 @@ use crate::fz_ir::{
     FnBuilder, FnId, Module, ModuleBuilder, Prim, SourceInfo, Term, UnOp, Var,
 };
 use std::collections::HashMap;
+use std::rc::Rc;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum LowerError {
@@ -155,14 +156,12 @@ pub struct BuiltinTable {
 
 impl BuiltinTable {
     pub fn new() -> Self {
-        use crate::fz_ir::BuiltinKind;
-        let mut t = Self {
+        // fz-ext.7 — builtins now registered via runtime.fz ExternTable; keep
+        // the BuiltinTable empty so call resolution falls through to ExternTable.
+        // Removed in fz-ext.8.
+        Self {
             map: HashMap::new(),
-        };
-        for k in BuiltinKind::ALL {
-            t.map.insert(k.name().into(), k.id());
         }
-        t
     }
     pub fn lookup(&self, name: &str) -> Option<BuiltinId> {
         self.map.get(name).copied()
@@ -182,7 +181,9 @@ pub struct ExternTable {
 
 impl ExternTable {
     pub fn new() -> Self {
-        Self { map: HashMap::new() }
+        Self {
+            map: HashMap::new(),
+        }
     }
     fn insert(&mut self, name: String, id: ExternId) {
         self.map.insert(name, id);
@@ -243,6 +244,11 @@ pub struct LowerCtx {
     /// the same FnId and produce a single `MakeClosure(thunk, [x])`
     /// shape in stub generation.
     spawn_thunk_id: Option<FnId>,
+    /// fz-ext.7 — FnIds below this threshold belong to the runtime.fz
+    /// prelude. `build_source_info` ignores their var_meta entries so
+    /// prelude spans (relative to runtime.fz bytes) don't overwrite
+    /// user-program spans (which share the same per-fn Var numbering).
+    pub prelude_fn_id_cutoff: u32,
 }
 
 impl LowerCtx {
@@ -266,6 +272,7 @@ impl LowerCtx {
             term_spans: HashMap::new(),
             fn_spans: HashMap::new(),
             spawn_thunk_id: None,
+            prelude_fn_id_cutoff: 0,
         }
     }
 
@@ -413,6 +420,18 @@ impl Default for LowerCtx {
     }
 }
 
+const RUNTIME_FZ: &str = include_str!("runtime.fz");
+
+fn parse_runtime_prelude() -> Vec<Rc<Item>> {
+    let toks = crate::lexer::Lexer::new(RUNTIME_FZ)
+        .tokenize()
+        .expect("runtime.fz lex error (bug in built-in prelude)");
+    crate::parser::Parser::new(toks)
+        .parse_program()
+        .expect("runtime.fz parse error (bug in built-in prelude)")
+        .items
+}
+
 pub fn lower_program(prog: &Program) -> Result<Module, LowerError> {
     let (m, _, _) = lower_program_full(prog)?;
     Ok(m)
@@ -421,8 +440,17 @@ pub fn lower_program(prog: &Program) -> Result<Module, LowerError> {
 pub fn lower_program_full(prog: &Program) -> Result<(Module, AtomTable, BuiltinTable), LowerError> {
     let mut ctx = LowerCtx::new();
 
+    // Prepend the built-in runtime.fz prelude so its externs and wrapper fns
+    // are visible to every user program without an explicit import.
+    let runtime_items = parse_runtime_prelude();
+    let runtime_item_count = runtime_items.len();
+    let all_items: Vec<Rc<Item>> = runtime_items
+        .into_iter()
+        .chain(prog.items.iter().cloned())
+        .collect();
+
     // Zeroth pass: register extern "C" fn declarations into ExternTable.
-    for item in &prog.items {
+    for item in &all_items {
         if let Item::Fn(fn_def) = item.as_ref() {
             if fn_def.extern_abi.is_none() {
                 continue;
@@ -441,7 +469,24 @@ pub fn lower_program_full(prog: &Program) -> Result<(Module, AtomTable, BuiltinT
     }
 
     // First pass: assign FnIds to every top-level regular (non-extern) FnDef.
-    for item in &prog.items {
+    // We split this into two sub-passes (runtime.fz, then user) so we can
+    // record prelude_fn_id_cutoff before user fns get their FnIds. The cutoff
+    // lets build_source_info ignore prelude var spans, which would otherwise
+    // overwrite user-program spans (both fns restart Var numbering at 0).
+    for item in all_items.iter().take(runtime_item_count) {
+        if let Item::Fn(fn_def) = item.as_ref() {
+            if fn_def.extern_abi.is_some() {
+                continue;
+            }
+            let arity = fn_def.clauses.first().map(|c| c.params.len()).unwrap_or(0);
+            let id = ctx.mb.fresh_fn_id();
+            ctx.fns.insert((fn_def.name.clone(), arity), id);
+        }
+    }
+    // All FnIds assigned so far belong to the prelude.
+    ctx.prelude_fn_id_cutoff = ctx.mb.next_fn_id();
+
+    for item in all_items.iter().skip(runtime_item_count) {
         match item.as_ref() {
             Item::Fn(fn_def) => {
                 if fn_def.extern_abi.is_some() {
@@ -473,11 +518,11 @@ pub fn lower_program_full(prog: &Program) -> Result<(Module, AtomTable, BuiltinT
     }
 
     // Second pass: lower each fn body.
-    for item in &prog.items {
-        if let Item::Fn(fn_def) = item.as_ref() {
-            if fn_def.extern_abi.is_none() {
-                lower_fn(&mut ctx, fn_def)?;
-            }
+    for item in &all_items {
+        if let Item::Fn(fn_def) = item.as_ref()
+            && fn_def.extern_abi.is_none()
+        {
+            lower_fn(&mut ctx, fn_def)?;
         }
     }
 
@@ -673,22 +718,28 @@ fn build_source_info(module: &Module, ctx: &LowerCtx) -> SourceInfo {
             fn_span[idx] = *sp;
         }
     }
-    // Var spans/names: pick the maximum Var across all fns. Each fn's
-    // Vars start at 0 and are local to that fn, so we record one global
-    // table indexed by Var.0 — when the same Var.0 exists in two fns it
-    // shares an entry, which is fine for the renderer (it'll always be
-    // looked up within the right fn's scope).
-    let max_var = ctx.var_meta.keys().map(|(_, v)| v.0).max().unwrap_or(0);
+    // Var spans/names: pick the maximum Var across user-program fns only.
+    // Each fn's Vars restart at 0, so we maintain one global table indexed
+    // by Var.0. Prelude fns (FnId < prelude_fn_id_cutoff) are excluded:
+    // their spans are byte offsets into runtime.fz, not the user source,
+    // and would overwrite user-program entries that share the same Var.0.
+    let cutoff = ctx.prelude_fn_id_cutoff;
+    let max_var = ctx
+        .var_meta
+        .keys()
+        .filter(|(fid, _)| fid.0 >= cutoff)
+        .map(|(_, v)| v.0)
+        .max()
+        .unwrap_or(0);
     let n = (max_var as usize) + 1;
     let mut var_span = vec![Span::DUMMY; n];
     let mut var_name = vec![String::new(); n];
-    for ((_fid, v), (sp, name)) in &ctx.var_meta {
+    for ((fid, v), (sp, name)) in &ctx.var_meta {
+        if fid.0 < cutoff {
+            continue; // skip prelude fn metadata
+        }
         let idx = v.0 as usize;
         if idx < n {
-            // Last write wins. Per-fn precision can come later if a
-            // consumer needs to disambiguate Var.0 across fns; today
-            // ir_typer's lookup is always paired with the FnId it's
-            // working on, so the conflict doesn't surface.
             if var_span[idx].is_dummy() {
                 var_span[idx] = *sp;
             }
@@ -1010,28 +1061,33 @@ fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -> Result<Va
                 }
                 return cps_split_receive(ctx, sp, /* tail */ false);
             }
+            // fz-ul4.29.9 / fz-ext.7 — spawn is special: wrap the closure arg
+            // in fz_spawn_thunk before dispatching to fz_spawn / fz_spawn_opt.
+            // This must be checked before the generic ExternTable lookup so that
+            // `spawn` (user-facing name) resolves to the thunk-wrapped fz_spawn
+            // extern, not a non-existent user fn.
+            if callee_name == "spawn" && (arg_vars.len() == 1 || arg_vars.len() == 2) {
+                let thunk_id = ctx.ensure_spawn_thunk();
+                let wrapper = ctx.let_at(Prim::MakeClosure(thunk_id, vec![arg_vars[0]]), sp);
+                let mut new_args = vec![wrapper];
+                new_args.extend_from_slice(&arg_vars[1..]);
+                let sym = if arg_vars.len() == 1 {
+                    "fz_spawn"
+                } else {
+                    "fz_spawn_opt"
+                };
+                let eid = ctx
+                    .externs
+                    .lookup(sym)
+                    .expect("fz_spawn/fz_spawn_opt must be in runtime.fz");
+                return Ok(ctx.let_at(Prim::Extern(eid, new_args), sp));
+            }
             // Extern (runtime.fz / user-declared `extern "C" fn`)?
             if let Some(eid) = ctx.externs.lookup(&callee_name) {
                 return Ok(ctx.let_at(Prim::Extern(eid, arg_vars), sp));
             }
-            // Builtin?
+            // Builtin fallback — empty in fz-ext.7; fully removed in fz-ext.8.
             if let Some(bid) = ctx.builtins.lookup(&callee_name) {
-                // fz-ul4.29.9 — wrap the spawn arg in `fz_spawn_thunk` so
-                // the spawn-time stub invocation never executes the
-                // user's closure body synchronously. Wrapping is
-                // unconditional on Spawn calls: the only operand is a
-                // closure value (the existing bare-fn-name adapter at
-                // src/ir_lower.rs already lifts plain fn names into
-                // MakeClosure(target, [])).
-                if bid == crate::fz_ir::BuiltinKind::Spawn.id()
-                    && (arg_vars.len() == 1 || arg_vars.len() == 2)
-                {
-                    let thunk_id = ctx.ensure_spawn_thunk();
-                    let wrapper = ctx.let_at(Prim::MakeClosure(thunk_id, vec![arg_vars[0]]), sp);
-                    let mut new_args = vec![wrapper];
-                    new_args.extend_from_slice(&arg_vars[1..]);
-                    return Ok(ctx.let_at(Prim::Builtin(bid, new_args), sp));
-                }
                 return Ok(ctx.let_at(Prim::Builtin(bid, arg_vars), sp));
             }
             let arity = arg_vars.len();
@@ -2000,17 +2056,12 @@ mod tests {
     fn lower_nontail_call_splits_into_continuation() {
         let m = lower_src("fn caller(x), do: callee(x) + 1\nfn callee(y), do: y");
         let s = format!("{}", m);
-        assert!(
-            s.contains("call fn1"),
-            "expected explicit call, got:\n{}",
-            s
-        );
+        // "call fnN" where N is callee's FnId (shifts with runtime.fz prelude).
+        assert!(s.contains("call fn"), "expected explicit call, got:\n{}", s);
         assert!(s.contains("cont(fn"), "expected continuation, got:\n{}", s);
+        // Continuation fn is named "k_{FnId}"; FnId shifts with runtime.fz prelude.
         assert!(
-            s.contains("k_2")
-                || s.contains("k_3")
-                || s.contains("lambda_")
-                || s.matches("fn ").count() >= 3,
+            s.contains(" k_") || s.contains("lambda_"),
             "expected continuation fn, got:\n{}",
             s
         );
@@ -2103,19 +2154,33 @@ mod tests {
             s
         );
         assert!(s.contains("lambda_"), "expected lambda fn name: {}", s);
-        assert_eq!(m.fns.len(), 2);
+        // Module has 7 runtime.fz wrapper fns + mk + lambda = 9.
+        assert!(
+            m.fns.len() >= 2,
+            "expected ≥2 fns (mk + lambda + prelude), got {}",
+            m.fns.len()
+        );
+        assert!(m.fns.iter().any(|f| f.name == "mk"), "expected 'mk' fn");
+        assert!(
+            m.fns.iter().any(|f| f.name.starts_with("lambda_")),
+            "expected lambda fn"
+        );
     }
 
+    /// fz-ext.7 — `print(x)` now routes through the runtime.fz wrapper fn
+    /// `fn print(x) do fz_print_value(x) end`. The wrapper's body contains
+    /// `extern#0(` (fz_print_value = ExternId 0 in runtime.fz).
     #[test]
-    fn builtin_call_lowers_to_builtin_prim() {
+    fn print_call_routes_through_runtime_fz_wrapper() {
         let m = lower_src("fn p(), do: print(1)");
         let s = format!("{}", m);
-        assert!(s.contains("builtin#0("), "got:\n{}", s);
+        // The fz_print_value extern dispatch lives inside the print wrapper.
+        assert!(s.contains("extern#0("), "expected extern#0( in:\n{}", s);
     }
 
-    /// fz-ul4.29.9 — a `spawn(x)` call lowers to `MakeClosure(fz_spawn_thunk, [x])`
-    /// followed by `Builtin(Spawn, [wrapper])`. The synthesized thunk fn
-    /// appears in the module alongside the user fns.
+    /// fz-ul4.29.9 / fz-ext.7 — a `spawn(x)` call lowers to
+    /// `MakeClosure(fz_spawn_thunk, [x])` followed by `Extern(fz_spawn, [wrapper])`.
+    /// The synthesized thunk fn appears in the module alongside the user fns.
     #[test]
     fn spawn_callsite_is_wrapped_in_fz_spawn_thunk() {
         let m = lower_src("fn child(), do: 0\nfn p() do spawn(child) end");
@@ -2131,7 +2196,7 @@ mod tests {
             .unwrap()
             .id;
         // p's body should contain `MakeClosure(thunk_id, [<child-closure>])`
-        // followed by `Builtin(Spawn, [<wrapper>])`. Render and grep.
+        // followed by `Extern(fz_spawn=5, [<wrapper>])`. Render and grep.
         let s = format!("{}", m);
         let needle = format!("closure(fn{}", thunk_id.0);
         assert!(
@@ -2144,7 +2209,7 @@ mod tests {
 
     /// fz-siu.12 — spawn/2 wraps the closure arg in fz_spawn_thunk exactly
     /// like spawn/1; the min_heap_size arg passes through as the second
-    /// Builtin operand.
+    /// Extern operand. fz_spawn_opt = ExternId(6) per runtime.fz ordering.
     #[test]
     fn spawn2_wraps_closure_and_threads_opts() {
         let m = lower_src("fn child(), do: 0\nfn p() do spawn(child, 4096) end");
@@ -2163,10 +2228,10 @@ mod tests {
             needle,
             s
         );
-        // The Builtin(Spawn, ...) call must have two operands.
+        // fz_spawn_opt = ExternId(6) in runtime.fz (0-based, after fz_spawn=5).
         assert!(
-            s.contains("builtin#5("),
-            "expected Builtin(Spawn, ...) in IR:\n{}",
+            s.contains("extern#6("),
+            "expected Extern(fz_spawn_opt=6, ...) in IR:\n{}",
             s
         );
     }
@@ -2523,17 +2588,25 @@ end
 
     #[test]
     fn extern_fn_registers_in_module_externs() {
-        let toks = Lexer::new(
-            "extern \"C\" fn fz_nop(any) :: nil\nfn main() do fz_nop(1) end\n"
-        ).tokenize().expect("lex");
-        let prog = crate::parser::Parser::new(toks).parse_program().expect("parse");
+        let toks = Lexer::new("extern \"C\" fn fz_nop(any) :: nil\nfn main() do fz_nop(1) end\n")
+            .tokenize()
+            .expect("lex");
+        let prog = crate::parser::Parser::new(toks)
+            .parse_program()
+            .expect("parse");
         let (module, _, _) = lower_program_full(&prog).expect("lower");
-        assert_eq!(module.externs.len(), 1);
-        assert_eq!(module.externs[0].fz_name, "fz_nop");
-        assert_eq!(module.externs[0].params, vec![ExternTy::Any]);
-        assert_eq!(module.externs[0].ret, ExternTy::Unit);
-        // main's IR should contain Extern(0, [...]) not a TailCall to fz_nop.
+        // 9 runtime.fz externs + 1 user extern = 10 total.
+        assert_eq!(module.externs.len(), 10);
+        // fz_nop is at the end (user externs follow runtime.fz externs).
+        let nop = module
+            .externs
+            .iter()
+            .find(|e| e.fz_name == "fz_nop")
+            .expect("fz_nop not found in externs");
+        assert_eq!(nop.params, vec![ExternTy::Any]);
+        assert_eq!(nop.ret, ExternTy::Unit);
+        // main's IR should contain Extern(9, [...]) — fz_nop is ExternId(9).
         let ir = format!("{}", module);
-        assert!(ir.contains("extern#0"), "expected extern#0 in IR:\n{}", ir);
+        assert!(ir.contains("extern#9"), "expected extern#9 in IR:\n{}", ir);
     }
 }

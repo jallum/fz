@@ -412,20 +412,37 @@ fn opaque_consumer_arities(
                     arities.insert(args.len());
                 }
             }
-            // Stmt-level opaque dispatch: `Builtin(Spawn, [closure])`
-            // hands the closure to the runtime, which invokes it with
-            // zero args. Track as arity-0 opaque dispatch keyed off the
-            // closure operand's fn_constants.
+            // Stmt-level opaque dispatch: spawn calls hand the closure to
+            // the runtime, which invokes it with zero args. Track as
+            // arity-0 opaque dispatch keyed off the closure operand's
+            // fn_constants.
+            //
+            // fz-ext.7: spawn now emits Prim::Extern(fz_spawn/fz_spawn_opt)
+            // instead of Prim::Builtin(Spawn). Both forms are checked here.
             for stmt in &b.stmts {
                 let Stmt::Let(_, prim) = stmt;
-                if let Prim::Builtin(bid, args) = prim
-                    && *bid == BuiltinKind::Spawn.id()
-                    && (args.len() == 1 || args.len() == 2)
-                {
-                    let cv = args[0];
-                    if !ft.fn_constants.contains_key(&cv) {
-                        arities.insert(0);
+                let spawn_cv: Option<Var> = match prim {
+                    Prim::Builtin(bid, args)
+                        if *bid == BuiltinKind::Spawn.id()
+                            && (args.len() == 1 || args.len() == 2) =>
+                    {
+                        Some(args[0])
                     }
+                    Prim::Extern(eid, args)
+                        if (args.len() == 1 || args.len() == 2)
+                            && m.externs
+                                .get(eid.0 as usize)
+                                .map(|d| d.symbol == "fz_spawn" || d.symbol == "fz_spawn_opt")
+                                .unwrap_or(false) =>
+                    {
+                        Some(args[0])
+                    }
+                    _ => None,
+                };
+                if let Some(cv) = spawn_cv
+                    && !ft.fn_constants.contains_key(&cv)
+                {
+                    arities.insert(0);
                 }
             }
         }

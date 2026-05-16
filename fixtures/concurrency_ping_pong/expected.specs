@@ -1,44 +1,67 @@
-; spec child(0) #fn=0
+; spec print(1) #fn=0
+;   key:    [any]
+;   return: any
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: :match_error
+;     Var(2) :: any
+;   exits:
+;     blk0 Return Var(2)    :: any
+;     blk1 Halt Var(1)      :: :match_error
+
+; spec send(2) #fn=6
+;   key:    [1, 42]
+;   return: any
+;   vars:
+;     Var(0) :: 1
+;     Var(1) :: 42
+;     Var(2) :: :match_error
+;     Var(3) :: any
+;   exits:
+;     blk0 Return Var(3)    :: any
+;     blk1 Halt Var(2)      :: :match_error
+
+; spec child(0) #fn=7
 ;   key:    []
-;   return: 42
+;   return: any
 ;   vars:
 ;     Var(0) :: :match_error
 ;     Var(1) :: 1
 ;     Var(2) :: 42
-;     Var(3) :: 42
 ;   exits:
-;     blk0 Return Var(3)    :: 42
+;     blk0 TailCall send#6(Var(1), Var(2))
+;              callee_key=[1, 42]
 ;     blk1 Halt Var(0)      :: :match_error
 
-; spec main(0) #fn=1
+; spec main(0) #fn=8
 ;   key:    []
-;   return: nil
+;   return: any
 ;   fn_constants:
-;     Var(1) = child#0
+;     Var(1) = child#7
 ;   vars:
 ;     Var(0) :: :match_error
-;     Var(1) :: &fn0[]:() -> any
-;     Var(2) :: &fn2[&fn0[]:() -> any]:() -> any
-;     Var(3) :: int
+;     Var(1) :: &fn7[]:() -> any
+;     Var(2) :: &fn9[&fn7[]:() -> any]:() -> any
+;     Var(3) :: any
 ;   exits:
-;     blk0 Receive cont k_receive_3#3 captured=[]
+;     blk0 Receive cont k_receive_10#10 captured=[]
 ;              cont_key=[any]
 ;     blk1 Halt Var(0)      :: :match_error
 
-; spec fz_spawn_thunk(1) #fn=2
-;   key:    [&fn0[]:() -> any]
-;   return: 42
+; spec fz_spawn_thunk(1) #fn=9
+;   key:    [&fn7[]:() -> any]
+;   return: any
 ;   vars:
-;     Var(0) :: &fn0[]:() -> any
+;     Var(0) :: &fn7[]:() -> any
 ;   exits:
 ;     blk0 TailCallClosure Var(0)()
 
-; spec k_receive_3(1) #fn=3
+; spec k_receive_10(1) #fn=10
 ;   key:    [any]
-;   return: nil
+;   return: any
 ;   vars:
 ;     Var(0) :: any
-;     Var(1) :: nil
 ;   exits:
-;     blk0 Return Var(1)    :: nil
+;     blk0 TailCall print#0(Var(0))
+;              callee_key=[any]
 

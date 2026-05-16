@@ -1,19 +1,93 @@
-; spec main(0) #fn=0
+; spec print(1) #fn=0
+;   key:    [:ok]
+;   return: any
+;   vars:
+;     Var(0) :: :ok
+;     Var(1) :: :match_error
+;     Var(2) :: any
+;   exits:
+;     blk0 Return Var(2)    :: any
+;     blk1 Halt Var(1)      :: :match_error
+
+; spec print(1) #fn=0
+;   key:    [:true]
+;   return: any
+;   vars:
+;     Var(0) :: :true
+;     Var(1) :: :match_error
+;     Var(2) :: any
+;   exits:
+;     blk0 Return Var(2)    :: any
+;     blk1 Halt Var(1)      :: :match_error
+
+; spec print(1) #fn=0
+;   key:    [int]
+;   return: any
+;   vars:
+;     Var(0) :: int
+;     Var(1) :: :match_error
+;     Var(2) :: any
+;   exits:
+;     blk0 Return Var(2)    :: any
+;     blk1 Halt Var(1)      :: :match_error
+
+; spec print(1) #fn=0
+;   key:    [nil]
+;   return: any
+;   vars:
+;     Var(0) :: nil
+;     Var(1) :: :match_error
+;     Var(2) :: any
+;   exits:
+;     blk0 Return Var(2)    :: any
+;     blk1 Halt Var(1)      :: :match_error
+
+; spec main(0) #fn=7
 ;   key:    []
-;   return: nil
+;   return: any
 ;   vars:
 ;     Var(0) :: :match_error
 ;     Var(1) :: 40
 ;     Var(2) :: 2
 ;     Var(3) :: 42
-;     Var(4) :: nil
-;     Var(5) :: :ok
-;     Var(6) :: nil
-;     Var(7) :: :true
-;     Var(8) :: nil
-;     Var(9) :: nil
-;     Var(10) :: nil
 ;   exits:
-;     blk0 Return Var(10)    :: nil
+;     blk0 Call print#0(Var(3))
+;              callee_key=[42]
+;              cont k_8#8 captured=[]
+;              cont_key=[any]
 ;     blk1 Halt Var(0)      :: :match_error
+
+; spec k_8(1) #fn=8
+;   key:    [any]
+;   return: any
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: :ok
+;   exits:
+;     blk0 Call print#0(Var(1))
+;              callee_key=[:ok]
+;              cont k_9#9 captured=[]
+;              cont_key=[any]
+
+; spec k_9(1) #fn=9
+;   key:    [any]
+;   return: any
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: :true
+;   exits:
+;     blk0 Call print#0(Var(1))
+;              callee_key=[:true]
+;              cont k_10#10 captured=[]
+;              cont_key=[any]
+
+; spec k_10(1) #fn=10
+;   key:    [any]
+;   return: any
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: nil
+;   exits:
+;     blk0 TailCall print#0(Var(1))
+;              callee_key=[nil]
 
