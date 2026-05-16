@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-16T21:52:50Z",
+  "description": "",
+  "id": "fz-6pa",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "fz-abs [EPIC]: absorb-based inlining — eliminate parameterized Goto artifact from all three inliners",
+  "type": "task",
+  "updated_at": "2026-05-16T21:52:50Z"
+}
