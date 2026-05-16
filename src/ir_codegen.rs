@@ -3947,7 +3947,11 @@ fn emit_terminator<M: cranelift_module::Module>(
             let t_b = *block_map.get(&t.0).unwrap();
             let e_b = *block_map.get(&e.0).unwrap();
             let no_args: Vec<BlockArg> = Vec::new();
-            let truthy = is_truthy(b, cache, cv);
+            let truthy = if let Some(&i1) = cache.condition.get(&c.0) {
+                i1
+            } else {
+                is_truthy(b, cache, cv)
+            };
             b.ins().brif(truthy, t_b, &no_args, e_b, &no_args);
         }
         Term::Halt(v) => {
@@ -5878,6 +5882,7 @@ fn lower_prim<M: cranelift_module::Module>(
                         let af = as_raw_f64(var_env, b, a.0);
                         let bf = as_raw_f64(var_env, b, bv.0);
                         let cmp = b.ins().fcmp(f_cc, af, bf);
+                        cache.condition.insert(dest_var.0, cmp);
                         return Ok(LowerOut::Tagged(bool_to_fz(b, cache, cmp)));
                     }
                     // Same-kind int: native icmp on raw i64. .5.3: must
@@ -5887,6 +5892,7 @@ fn lower_prim<M: cranelift_module::Module>(
                         let ai = as_raw_i64(var_env, b, a.0);
                         let bi = as_raw_i64(var_env, b, bv.0);
                         let cmp = b.ins().icmp(int_cc, ai, bi);
+                        cache.condition.insert(dest_var.0, cmp);
                         return Ok(LowerOut::Tagged(bool_to_fz(b, cache, cmp)));
                     }
                     let av = tag_a!();
@@ -5896,6 +5902,7 @@ fn lower_prim<M: cranelift_module::Module>(
                             && descr_is_nil_or_bool(fn_types, *bv))
                     {
                         let cmp = b.ins().icmp(int_cc, av, bvv);
+                        cache.condition.insert(dest_var.0, cmp);
                         bool_to_fz(b, cache, cmp)
                     } else {
                         // Original dispatch (unchanged): both_ptr=true -> slow.
@@ -6315,6 +6322,7 @@ fn lower_prim<M: cranelift_module::Module>(
                 (None, Some(h)) => h,
                 (Some(s), Some(h)) => b.ins().bor(s, h),
             };
+            cache.condition.insert(dest_var.0, flag);
             bool_to_fz(b, cache, flag)
         }
     };
@@ -7764,6 +7772,36 @@ fn main(), do: loop_with(loop_with, 100000, 0)
             "spurious box in relay CLIF — integer capture was re-tagged before Receive:\n{}",
             relay_ir
         );
+    }
+
+    /// fz-jiw — TypeTest i1 cached in `condition` map; Term::If consumes it
+    /// directly, bypassing bool_to_fz → is_truthy roundtrip.
+    /// Before the fix: brif was preceded by `icmp ne v, nil`, `icmp ne v, false`,
+    /// `band` (3 extra instructions decoding the tagged bool back to i1).
+    /// After: the i1 produced by `icmp_imm eq (v & 7), TAG_INT` is reused
+    /// directly — no `icmp ne` appears in the branching block.
+    #[test]
+    fn condition_cache_bypasses_is_truthy_in_type_dispatch() {
+        // check(42) dispatches on `x :: integer` — a TypeTest followed by Term::If.
+        let src = "fn check(x :: integer) do :is_int end\n\
+                   fn check(x) do :other end\n\
+                   fn main() do\n\
+                     print(check(42))\n\
+                     print(check(:foo))\n\
+                   end";
+        let m = lower_src(src);
+        ir_text_record_enable();
+        let _ = compile(&m).unwrap();
+        let ir = ir_text_record_take();
+        let main_ir = ir.iter().find(|(n, _)| n == "main").map(|(_, s)| s.as_str()).unwrap_or("");
+        // With the fix the TypeTest i1 goes straight to brif — no is_truthy decode.
+        assert!(
+            !main_ir.contains("icmp ne"),
+            "spurious is_truthy icmp ne in main CLIF — condition cache not applied:\n{}",
+            main_ir
+        );
+        // The brif must still be present.
+        assert!(main_ir.contains("brif"), "expected brif in main CLIF:\n{}", main_ir);
     }
 
     /// fz-ty1.pip.3 — type_module must be called exactly 3 times in the

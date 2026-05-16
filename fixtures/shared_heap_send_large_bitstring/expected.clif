@@ -103,25 +103,21 @@ function u0:0(i64, i64) -> i64 tail {
     v5 = iconst.i64 11
     v6 = iconst.i64 19
     v7 = select v4, v5, v6  ; v5 = 11, v6 = 19    ;; v7 :: bool
-    v8 = iconst.i64 3                   ; @8:3
-    v9 = icmp ne v7, v8                 ; @8:3  v8 = 3
-    v10 = icmp ne v7, v6                ; @8:3  v6 = 19
-    v11 = band v9, v10                  ; @8:3
-    brif v11, block2, block1            ; @8:3
+    brif v4, block2, block1             ; @8:3
 
 block1:
     call fn0(v0)
+    v8 = iconst.i64 3    ;; v8 :: nil
+    v9 = load.i64 notrap aligned v1+24
+    v10 = load.i64 notrap aligned v9+16
+    return_call_indirect sig1, v10(v8, v9)  ; v8 = 3
+
+block2:
+    v11 = sshr_imm.i64 v0, 3
+    call fn1(v11)
     v12 = iconst.i64 3    ;; v12 :: nil
     v13 = load.i64 notrap aligned v1+24
     v14 = load.i64 notrap aligned v13+16
-    return_call_indirect sig1, v14(v12, v13)  ; v12 = 3
-
-block2:
-    v15 = sshr_imm.i64 v0, 3
-    call fn1(v15)
-    v16 = iconst.i64 3    ;; v16 :: nil
-    v17 = load.i64 notrap aligned v1+24
-    v18 = load.i64 notrap aligned v17+16
-    return_call_indirect sig3, v18(v16, v17)  ; v16 = 3
+    return_call_indirect sig3, v14(v12, v13)  ; v12 = 3
 }
 
