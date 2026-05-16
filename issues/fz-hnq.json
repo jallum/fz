@@ -6,13 +6,15 @@
   "blocks": [
     "fz-dsw"
   ],
+  "closed_at": "2026-05-16T20:43:49Z",
+  "close_reason": "Landed: commit 5c0a3a5c on fz-ext branch.",
   "created": "2026-05-16T19:43:21Z",
   "description": "After fz-ty1.pip.4, FnDef carries extern_params: Vec\u003cString\u003e and extern_ret_name: Option\u003cString\u003e. Update ir_lower.rs zeroth pass to call extern_ty_from_name on these strings directly, with no token re-parsing.\n\n## What to change\n\nir_lower.rs, zeroth pass (lines ~472-503):\n  - Remove any code that extracts string values from token sequences.\n  - Call extern_ty_from_name(param_name) directly.\n  - Call extern_ty_from_name(ret_name) directly for return type.\n\n## Acceptance\n- cargo clippy -- -D warnings passes.\n- All tests pass.\n- One commit referencing fz-ty1.pip.5.",
   "id": "fz-hnq",
   "labels": [],
   "priority": 3,
-  "status": "open",
+  "status": "closed",
   "title": "fz-ty1.pip.5: ir_lower zeroth pass uses extern_params strings directly",
   "type": "task",
-  "updated_at": "2026-05-16T19:43:36Z"
+  "updated_at": "2026-05-16T20:43:49Z"
 }
