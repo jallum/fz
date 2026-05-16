@@ -21,15 +21,16 @@ use std::collections::HashSet;
 /// Prim::MakeClosure. Keeps any fn transitively reachable. Sweeps the rest.
 /// FnIds are NOT renumbered — the codegen schemas vec is indexed by FnId.0
 /// and renumbering would require updating every call/cont/closure reference.
-/// Externs are kept as-is; fz-wmy.5 will extend this to sweep them once
-/// extern_idx makes reordering safe.
 pub fn dce_module_level(m: &mut Module) {
+    use crate::fz_ir::ExternId;
+
     let Some(entry) = m.fn_by_name("main") else {
         return;
     };
     let entry_id = entry.id;
 
     let mut reachable: HashSet<FnId> = HashSet::new();
+    let mut reachable_externs: HashSet<ExternId> = HashSet::new();
     let mut queue: Vec<FnId> = vec![entry_id];
 
     while let Some(fid) = queue.pop() {
@@ -57,10 +58,13 @@ pub fn dce_module_level(m: &mut Module) {
                 _ => {}
             }
             for stmt in &block.stmts {
-                let Stmt::Let(_, Prim::MakeClosure(fid, _)) = stmt else {
-                    continue;
-                };
-                queue.push(*fid);
+                match stmt {
+                    Stmt::Let(_, Prim::MakeClosure(fid, _)) => queue.push(*fid),
+                    Stmt::Let(_, Prim::Extern(eid, _)) => {
+                        reachable_externs.insert(*eid);
+                    }
+                    _ => {}
+                }
             }
         }
     }
@@ -69,6 +73,12 @@ pub fn dce_module_level(m: &mut Module) {
     m.fn_idx.clear();
     for (i, f) in m.fns.iter().enumerate() {
         m.fn_idx.insert(f.id, i);
+    }
+
+    m.externs.retain(|e| reachable_externs.contains(&e.id));
+    m.extern_idx.clear();
+    for (i, e) in m.externs.iter().enumerate() {
+        m.extern_idx.insert(e.id, i);
     }
 }
 
@@ -386,6 +396,50 @@ mod tests {
         assert!(m.fns.iter().any(|f| f.name == "main"), "main must survive");
         assert!(!m.fns.iter().any(|f| f.name == "leaf"), "leaf unreachable must be removed");
         assert_eq!(m.fns.len(), 1);
+    }
+
+    #[test]
+    fn dce_module_level_sweeps_unreachable_externs() {
+        use crate::fz_ir::{ExternDecl, ExternId, ExternTy};
+        // Build a module with two externs: used_ext (called from main) and dead_ext (never called).
+        let used_id = ExternId(0);
+        let dead_id = ExternId(1);
+
+        let mut b = FnBuilder::new(FnId(0), "main");
+        let entry = b.block(vec![]);
+        let nil = b.let_(entry, Prim::Const(Const::Nil));
+        let _ret = b.let_(entry, Prim::Extern(used_id, vec![nil]));
+        b.set_terminator(entry, Term::Return(nil));
+        let mut mb = ModuleBuilder::new();
+        mb.add_fn(b.build());
+        let mut m = mb.build();
+        let dead_descr = crate::types::Descr::any();
+        m.externs.push(ExternDecl {
+            id: used_id,
+            fz_name: "used_ext".into(),
+            symbol: "used_ext".into(),
+            params: vec![ExternTy::Any],
+            ret: ExternTy::Any,
+            ret_descr: dead_descr.clone(),
+        });
+        m.externs.push(ExternDecl {
+            id: dead_id,
+            fz_name: "dead_ext".into(),
+            symbol: "dead_ext".into(),
+            params: vec![],
+            ret: ExternTy::Unit,
+            ret_descr: dead_descr,
+        });
+        m.extern_idx.insert(used_id, 0);
+        m.extern_idx.insert(dead_id, 1);
+
+        dce_module_level(&mut m);
+
+        assert_eq!(m.externs.len(), 1, "dead extern must be swept");
+        assert_eq!(m.externs[0].fz_name, "used_ext");
+        assert_eq!(m.extern_idx.len(), 1);
+        assert!(m.extern_idx.contains_key(&used_id));
+        assert!(!m.extern_idx.contains_key(&dead_id));
     }
 
     #[test]
