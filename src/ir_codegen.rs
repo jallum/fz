@@ -3479,8 +3479,9 @@ struct CodegenEnv<'a> {
 /// `emit_terminator`. Fields are populated in later fz-cg tickets.
 #[derive(Default)]
 struct CodegenCache {
-    /// Cranelift values for small integer/atom constants (fz-bwp).
-    const_cache: HashMap<i64, ir::Value>,
+    /// Cranelift values for small integer/atom constants, keyed by (block, value)
+    /// so entries from sibling blocks are never reused (fz-bwp).
+    const_cache: HashMap<(ir::Block, i64), ir::Value>,
     /// i1 condition values keyed by Var ID — bypass is_truthy in Term::If (fz-jiw).
     condition: HashMap<u32, ir::Value>,
     /// Raw (unboxed) i64 values for integer constants keyed by Var ID (fz-zj3).
@@ -3870,7 +3871,7 @@ fn emit_terminator<M: cranelift_module::Module>(
     frame_ptr: Option<ir::Value>,
     host_ctx: Option<ir::Value>,
     cont_param: Option<ir::Value>,
-    _cache: &mut CodegenCache,
+    cache: &mut CodegenCache,
 ) -> Result<(), CodegenError> {
     let runtime = env.runtime;
     let fn_types = env.fn_types;
@@ -3946,7 +3947,7 @@ fn emit_terminator<M: cranelift_module::Module>(
             let t_b = *block_map.get(&t.0).unwrap();
             let e_b = *block_map.get(&e.0).unwrap();
             let no_args: Vec<BlockArg> = Vec::new();
-            let truthy = is_truthy(b, cv);
+            let truthy = is_truthy(b, cache, cv);
             b.ins().brif(truthy, t_b, &no_args, e_b, &no_args);
         }
         Term::Halt(v) => {
@@ -5365,6 +5366,7 @@ fn lower_collection_prim<M: cranelift_module::Module>(
     env: &CodegenEnv<'_>,
     var_env: &HashMap<u32, VarBinding>,
     prim: &Prim,
+    cache: &mut CodegenCache,
 ) -> Result<ir::Value, CodegenError> {
     let runtime = env.runtime;
     let tuple_schema_ids = env.tuple_schema_ids;
@@ -5388,7 +5390,7 @@ fn lower_collection_prim<M: cranelift_module::Module>(
             let cv = tagged_get(var_env, b, jmod, runtime, c.0);
             let nil_v = b.ins().iconst(types::I64, NIL_BITS);
             let cmp = b.ins().icmp(IntCC::Equal, cv, nil_v);
-            bool_to_fz(b, cmp)
+            bool_to_fz(b, cache, cmp)
         }
         Prim::MakeList(elems, tail) => {
             let mut acc = match tail {
@@ -5609,7 +5611,7 @@ fn lower_collection_prim<M: cranelift_module::Module>(
             let bit_len_b = b.ins().load(types::I64, MemFlags::trusted(), rv, 24);
             let pos_b = b.ins().load(types::I64, MemFlags::trusted(), rv, 32);
             let cmp = b.ins().icmp(IntCC::Equal, bit_len_b, pos_b);
-            bool_to_fz(b, cmp)
+            bool_to_fz(b, cache, cmp)
         }
         Prim::MakeMap(entries) => {
             let begin = jmod.declare_func_in_func(runtime.map_begin_id, b.func);
@@ -5680,7 +5682,7 @@ fn lower_prim<M: cranelift_module::Module>(
     var_env: &HashMap<u32, VarBinding>,
     prim: &Prim,
     dest_var: crate::fz_ir::Var,
-    _cache: &mut CodegenCache,
+    cache: &mut CodegenCache,
 ) -> Result<LowerOut, CodegenError> {
     let runtime = env.runtime;
     let fn_types = env.fn_types;
@@ -5869,7 +5871,7 @@ fn lower_prim<M: cranelift_module::Module>(
                         let af = as_raw_f64(var_env, b, a.0);
                         let bf = as_raw_f64(var_env, b, bv.0);
                         let cmp = b.ins().fcmp(f_cc, af, bf);
-                        return Ok(LowerOut::Tagged(bool_to_fz(b, cmp)));
+                        return Ok(LowerOut::Tagged(bool_to_fz(b, cache, cmp)));
                     }
                     // Same-kind int: native icmp on raw i64. .5.3: must
                     // not mix raw and tagged operands — bit-eq is only
@@ -5878,7 +5880,7 @@ fn lower_prim<M: cranelift_module::Module>(
                         let ai = as_raw_i64(var_env, b, a.0);
                         let bi = as_raw_i64(var_env, b, bv.0);
                         let cmp = b.ins().icmp(int_cc, ai, bi);
-                        return Ok(LowerOut::Tagged(bool_to_fz(b, cmp)));
+                        return Ok(LowerOut::Tagged(bool_to_fz(b, cache, cmp)));
                     }
                     let av = tag_a!();
                     let bvv = tag_b!();
@@ -5887,7 +5889,7 @@ fn lower_prim<M: cranelift_module::Module>(
                             && descr_is_nil_or_bool(fn_types, *bv))
                     {
                         let cmp = b.ins().icmp(int_cc, av, bvv);
-                        bool_to_fz(b, cmp)
+                        bool_to_fz(b, cache, cmp)
                     } else {
                         // Original dispatch (unchanged): both_ptr=true -> slow.
                         let cond = both_ptr(b, av, bvv);
@@ -5901,7 +5903,7 @@ fn lower_prim<M: cranelift_module::Module>(
                         b.switch_to_block(fast_blk);
                         b.seal_block(fast_blk);
                         let cmp = b.ins().icmp(int_cc, av, bvv);
-                        let fast_v = bool_to_fz(b, cmp);
+                        let fast_v = bool_to_fz(b, cache, cmp);
                         b.ins().jump(join_blk, &[BlockArg::Value(fast_v)]);
 
                         b.switch_to_block(slow_blk);
@@ -5937,6 +5939,10 @@ fn lower_prim<M: cranelift_module::Module>(
                         _ => unreachable!(),
                     };
                     // Typed fast paths: float and int.
+                    // Safety: the two closures are mutually exclusive — only the
+                    // float arm fires for float operands and only the int arm fires
+                    // for int operands, so the two reborrow sites never alias.
+                    let cache_ptr = cache as *mut CodegenCache;
                     if let Some(out) = try_typed_binop_fast_path(
                         fn_types,
                         *a,
@@ -5945,23 +5951,35 @@ fn lower_prim<M: cranelift_module::Module>(
                         var_env,
                         |b, af, bf| {
                             let v = b.ins().fcmp(fcc, af, bf);
-                            Some(LowerOut::Tagged(bool_to_fz(b, v)))
+                            Some(LowerOut::Tagged(bool_to_fz(
+                                b,
+                                unsafe { &mut *cache_ptr },
+                                v,
+                            )))
                         },
                         |b, ai, bi| {
                             let v = b.ins().icmp(icc, ai, bi);
-                            Some(LowerOut::Tagged(bool_to_fz(b, v)))
+                            Some(LowerOut::Tagged(bool_to_fz(
+                                b,
+                                unsafe { &mut *cache_ptr },
+                                v,
+                            )))
                         },
                     ) {
                         return Ok(out);
                     }
                     let av = tag_a!();
                     let bvv = tag_b!();
+                    // Safety: fast_int and slow_cmp run in blocks both dominated
+                    // by the current block, so SSA values from the cached iconst
+                    // are visible in both, and the two closures execute serially.
+                    let cache_ptr = cache as *mut CodegenCache;
                     let fast_int =
                         move |b: &mut FunctionBuilder<'_>, av: ir::Value, bv: ir::Value| {
                             let ai = unbox_int(b, av);
                             let bi = unbox_int(b, bv);
                             let cmp = b.ins().icmp(icc, ai, bi);
-                            bool_to_fz(b, cmp)
+                            bool_to_fz(b, unsafe { &mut *cache_ptr }, cmp)
                         };
                     // fz-ul4.27.9: inlined float-cmp slow path. Promote both
                     // operands to f64 and emit native fcmp.
@@ -5980,25 +5998,25 @@ fn lower_prim<M: cranelift_module::Module>(
                             let i1 = b.ins().call(pfref, &[bv]);
                             let bf = b.inst_results(i1)[0];
                             let cmp = b.ins().fcmp(fcc, af, bf);
-                            bool_to_fz(b, cmp)
+                            bool_to_fz(b, unsafe { &mut *cache_ptr }, cmp)
                         };
                     emit_dispatch_binop(b, av, bvv, fast_int, slow_cmp)
                 }
                 BinOp::And => {
                     let av = tag_a!();
                     let bvv = tag_b!();
-                    let at = is_truthy(b, av);
-                    let bt = is_truthy(b, bvv);
+                    let at = is_truthy(b, cache, av);
+                    let bt = is_truthy(b, cache, bvv);
                     let conj = b.ins().band(at, bt);
-                    bool_to_fz(b, conj)
+                    bool_to_fz(b, cache, conj)
                 }
                 BinOp::Or => {
                     let av = tag_a!();
                     let bvv = tag_b!();
-                    let at = is_truthy(b, av);
-                    let bt = is_truthy(b, bvv);
+                    let at = is_truthy(b, cache, av);
+                    let bt = is_truthy(b, cache, bvv);
                     let disj = b.ins().bor(at, bt);
-                    bool_to_fz(b, disj)
+                    bool_to_fz(b, cache, disj)
                 }
             }
         }
@@ -6012,10 +6030,10 @@ fn lower_prim<M: cranelift_module::Module>(
                 }
                 UnOp::Not => {
                     let xv = tagged_get(var_env, b, jmod, runtime, x.0);
-                    let truthy = is_truthy(b, xv);
+                    let truthy = is_truthy(b, cache, xv);
                     let zero = b.ins().iconst(types::I8, 0);
                     let inv = b.ins().icmp(IntCC::Equal, truthy, zero);
-                    bool_to_fz(b, inv)
+                    bool_to_fz(b, cache, inv)
                 }
             }
         }
@@ -6081,7 +6099,7 @@ fn lower_prim<M: cranelift_module::Module>(
         | Prim::MapGet(..)
         | Prim::MakeVec(..) => {
             return Ok(LowerOut::Tagged(lower_collection_prim(
-                b, jmod, env, var_env, prim,
+                b, jmod, env, var_env, prim, cache,
             )?));
         }
         Prim::MakeClosure(fn_id, captured) => {
@@ -6284,7 +6302,7 @@ fn lower_prim<M: cranelift_module::Module>(
                 (None, Some(h)) => h,
                 (Some(s), Some(h)) => b.ins().bor(s, h),
             };
-            bool_to_fz(b, flag)
+            bool_to_fz(b, cache, flag)
         }
     };
     Ok(LowerOut::Tagged(v))
@@ -6539,19 +6557,43 @@ fn box_float_native<M: cranelift_module::Module>(
     b.inst_results(inst)[0]
 }
 
+fn cached_iconst(
+    b: &mut FunctionBuilder<'_>,
+    cache: &mut CodegenCache,
+    val: i64,
+) -> ir::Value {
+    if let Some(blk) = b.current_block() {
+        if let Some(&v) = cache.const_cache.get(&(blk, val)) {
+            return v;
+        }
+        let v = b.ins().iconst(types::I64, val);
+        cache.const_cache.insert((blk, val), v);
+        return v;
+    }
+    b.ins().iconst(types::I64, val)
+}
+
 /// Returns an i8 (0/1) indicating whether `v` is truthy: not nil and not false.
-fn is_truthy(b: &mut FunctionBuilder<'_>, v: ir::Value) -> ir::Value {
-    let nil_v = b.ins().iconst(types::I64, NIL_BITS);
-    let false_v = b.ins().iconst(types::I64, FALSE_BITS);
+fn is_truthy(
+    b: &mut FunctionBuilder<'_>,
+    cache: &mut CodegenCache,
+    v: ir::Value,
+) -> ir::Value {
+    let nil_v = cached_iconst(b, cache, NIL_BITS);
+    let false_v = cached_iconst(b, cache, FALSE_BITS);
     let not_nil = b.ins().icmp(IntCC::NotEqual, v, nil_v);
     let not_false = b.ins().icmp(IntCC::NotEqual, v, false_v);
     b.ins().band(not_nil, not_false)
 }
 
 /// Convert an i8 cranelift bool to FzValue::TRUE / FzValue::FALSE.
-fn bool_to_fz(b: &mut FunctionBuilder<'_>, v: ir::Value) -> ir::Value {
-    let true_v = b.ins().iconst(types::I64, TRUE_BITS);
-    let false_v = b.ins().iconst(types::I64, FALSE_BITS);
+fn bool_to_fz(
+    b: &mut FunctionBuilder<'_>,
+    cache: &mut CodegenCache,
+    v: ir::Value,
+) -> ir::Value {
+    let true_v = cached_iconst(b, cache, TRUE_BITS);
+    let false_v = cached_iconst(b, cache, FALSE_BITS);
     b.ins().select(v, true_v, false_v)
 }
 

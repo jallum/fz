@@ -35,12 +35,10 @@ block0(v0: i64):
     v16 = iconst.i64 18    ;; v16 :: :ok
     v17 = iconst.i64 18    ;; v17 :: :ok
     v18 = icmp eq v16, v17  ; v16 = 18, v17 = 18
-    v19 = iconst.i64 11
-    v20 = iconst.i64 19
-    v21 = select v18, v19, v20  ; v19 = 11, v20 = 19    ;; v21 :: bool
-    call fn3(v21)
-    v22 = iconst.i64 3    ;; v22 :: nil
-    v23 = load.i64 notrap aligned v0+16 ; @2:3
-    return_call_indirect sig4, v23(v22, v0) ; @2:3  v22 = 3
+    v19 = select v18, v8, v9  ; v8 = 11, v9 = 19    ;; v19 :: bool
+    call fn3(v19)
+    v20 = iconst.i64 3    ;; v20 :: nil
+    v21 = load.i64 notrap aligned v0+16 ; @2:3
+    return_call_indirect sig4, v21(v20, v0) ; @2:3  v20 = 3
 }
 

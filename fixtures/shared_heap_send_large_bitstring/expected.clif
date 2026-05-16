@@ -105,25 +105,24 @@ function u0:0(i64, i64) -> i64 tail {
     v6 = iconst.i64 19
     v7 = select v4, v5, v6  ; v5 = 11, v6 = 19    ;; v7 :: bool
     v8 = iconst.i64 3                   ; @8:3
-    v9 = iconst.i64 19                  ; @8:3
-    v10 = icmp ne v7, v8                ; @8:3  v8 = 3
-    v11 = icmp ne v7, v9                ; @8:3  v9 = 19
-    v12 = band v10, v11                 ; @8:3
-    brif v12, block2, block1            ; @8:3
+    v9 = icmp ne v7, v8                 ; @8:3  v8 = 3
+    v10 = icmp ne v7, v6                ; @8:3  v6 = 19
+    v11 = band v9, v10                  ; @8:3
+    brif v11, block2, block1            ; @8:3
 
 block1:
     call fn0(v0)
-    v13 = iconst.i64 3    ;; v13 :: nil
-    v14 = load.i64 notrap aligned v1+24
-    v15 = load.i64 notrap aligned v14+16
-    return_call_indirect sig1, v15(v13, v14)  ; v13 = 3
+    v12 = iconst.i64 3    ;; v12 :: nil
+    v13 = load.i64 notrap aligned v1+24
+    v14 = load.i64 notrap aligned v13+16
+    return_call_indirect sig1, v14(v12, v13)  ; v12 = 3
 
 block2:
-    v16 = sshr_imm.i64 v0, 3
-    call fn1(v16)
-    v17 = iconst.i64 3    ;; v17 :: nil
-    v18 = load.i64 notrap aligned v1+24
-    v19 = load.i64 notrap aligned v18+16
-    return_call_indirect sig3, v19(v17, v18)  ; v17 = 3
+    v15 = sshr_imm.i64 v0, 3
+    call fn1(v15)
+    v16 = iconst.i64 3    ;; v16 :: nil
+    v17 = load.i64 notrap aligned v1+24
+    v18 = load.i64 notrap aligned v17+16
+    return_call_indirect sig3, v18(v16, v17)  ; v16 = 3
 }
 
