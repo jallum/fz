@@ -209,25 +209,24 @@ function u0:0(i64, i64) -> i64 tail {
 
     block0(v0: i64, v1: i64):    ;; v0 :: int
     call fn0(v0)
-    v2 = iconst.i64 3    ;; v2 :: nil
-    v3 = iconst.i64 1    ;; v3 :: 1
-    v4 = iconst.i32 10
-    v5 = iconst.i32 1
-    v6 = iconst.i32 0
-    v7 = call fn1(v4, v5, v6)  ; v4 = 10, v5 = 1, v6 = 0    ;; v7 :: &fn10[1]:(any) -> any
-    v8 = func_addr.i64 fn2
-    store notrap aligned v8, v7+16
-    store notrap aligned v3, v7+24  ; v3 = 1
-    v9 = iconst.i64 2    ;; v9 :: 2
-    v10 = iconst.i32 20                 ; @5:3
-    v11 = iconst.i32 1                  ; @5:3
-    v12 = iconst.i32 0                  ; @5:3
-    v13 = call fn4(v10, v11, v12)       ; @5:3  v10 = 20, v11 = 1, v12 = 0
-    v14 = func_addr.i64 fn5             ; @5:3
-    store notrap aligned v14, v13+16    ; @5:3
-    v15 = load.i64 notrap aligned v1+24 ; @5:3
-    store notrap aligned v15, v13+24    ; @5:3
-    return_call fn3(v7, v9, v13)        ; @5:3  v9 = 2
+    v2 = iconst.i64 1    ;; v2 :: 1
+    v3 = iconst.i32 10
+    v4 = iconst.i32 1
+    v5 = iconst.i32 0
+    v6 = call fn1(v3, v4, v5)  ; v3 = 10, v4 = 1, v5 = 0    ;; v6 :: &fn10[1]:(any) -> any
+    v7 = func_addr.i64 fn2
+    store notrap aligned v7, v6+16
+    store notrap aligned v2, v6+24  ; v2 = 1
+    v8 = iconst.i64 2    ;; v8 :: 2
+    v9 = iconst.i32 20                  ; @5:3
+    v10 = iconst.i32 1                  ; @5:3
+    v11 = iconst.i32 0                  ; @5:3
+    v12 = call fn4(v9, v10, v11)        ; @5:3  v9 = 20, v10 = 1, v11 = 0
+    v13 = func_addr.i64 fn5             ; @5:3
+    store notrap aligned v13, v12+16    ; @5:3
+    v14 = load.i64 notrap aligned v1+24 ; @5:3
+    store notrap aligned v14, v12+24    ; @5:3
+    return_call fn3(v6, v8, v12)        ; @5:3  v8 = 2
 }
 
 ; fn k_17_s20

@@ -12,27 +12,24 @@ block0(v0: i64):
     v2 = iconst.i64 2                   ; @2:14
     v3 = iconst.i64 19                  ; @2:9
     call fn0(v3)  ; v3 = 19
-    v4 = iconst.i64 3    ;; v4 :: nil
+    v4 = iconst.i64 1    ;; v4 :: 1
     v5 = iconst.i64 1    ;; v5 :: 1
-    v6 = iconst.i64 1    ;; v6 :: 1
-    v7 = icmp eq v5, v6  ; v5 = 1, v6 = 1
-    v8 = iconst.i64 11
-    v9 = iconst.i64 19
-    v10 = select v7, v8, v9  ; v8 = 11, v9 = 19    ;; v10 :: :true
-    call fn0(v10)
-    v11 = iconst.i64 3    ;; v11 :: nil
-    v12 = iconst.i64 18    ;; v12 :: :ok
-    v13 = iconst.i64 26    ;; v13 :: :err
-    v14 = iconst.i64 19    ;; v14 :: bool
-    call fn0(v14)  ; v14 = 19
-    v15 = iconst.i64 3    ;; v15 :: nil
-    v16 = iconst.i64 18    ;; v16 :: :ok
-    v17 = iconst.i64 18    ;; v17 :: :ok
-    v18 = icmp eq v16, v17  ; v16 = 18, v17 = 18
-    v19 = select v18, v8, v9  ; v8 = 11, v9 = 19    ;; v19 :: bool
-    call fn0(v19)
-    v20 = iconst.i64 3    ;; v20 :: nil
-    v21 = load.i64 notrap aligned v0+16 ; @2:3
-    return_call_indirect sig1, v21(v20, v0) ; @2:3  v20 = 3
+    v6 = icmp eq v4, v5  ; v4 = 1, v5 = 1
+    v7 = iconst.i64 11
+    v8 = iconst.i64 19
+    v9 = select v6, v7, v8  ; v7 = 11, v8 = 19    ;; v9 :: :true
+    call fn0(v9)
+    v10 = iconst.i64 18    ;; v10 :: :ok
+    v11 = iconst.i64 26    ;; v11 :: :err
+    v12 = iconst.i64 19    ;; v12 :: bool
+    call fn0(v12)  ; v12 = 19
+    v13 = iconst.i64 18    ;; v13 :: :ok
+    v14 = iconst.i64 18    ;; v14 :: :ok
+    v15 = icmp eq v13, v14  ; v13 = 18, v14 = 18
+    v16 = select v15, v7, v8  ; v7 = 11, v8 = 19    ;; v16 :: bool
+    call fn0(v16)
+    v17 = iconst.i64 3    ;; v17 :: nil
+    v18 = load.i64 notrap aligned v0+16 ; @2:3
+    return_call_indirect sig1, v18(v17, v0) ; @2:3  v17 = 3
 }
 

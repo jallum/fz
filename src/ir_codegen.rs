@@ -3477,7 +3477,6 @@ struct CodegenEnv<'a> {
 
 /// Per-function mutable state threaded through `lower_prim` and
 /// `emit_terminator`. Fields are populated in later fz-cg tickets.
-#[derive(Default)]
 struct CodegenCache {
     /// Cranelift values for small integer/atom constants, keyed by (block, value)
     /// so entries from sibling blocks are never reused (fz-bwp).
@@ -3488,6 +3487,21 @@ struct CodegenCache {
     raw_int_consts: HashMap<u32, i64>,
     /// FuncRef for each extern, deduplicated per function (fz-0uu).
     extern_funcs: HashMap<crate::fz_ir::ExternId, ir::FuncRef>,
+    /// Var IDs referenced anywhere in the function's IR (fz-2tc). Unit-return
+    /// extern results whose dest ID is absent here can skip the nil iconst.
+    used_vars: std::collections::HashSet<u32>,
+}
+
+impl Default for CodegenCache {
+    fn default() -> Self {
+        Self {
+            const_cache: HashMap::new(),
+            condition: HashMap::new(),
+            raw_int_consts: HashMap::new(),
+            extern_funcs: HashMap::new(),
+            used_vars: std::collections::HashSet::new(),
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -4811,7 +4825,11 @@ fn compile_fn<M: cranelift_module::Module>(
         entry_cl,
     );
 
-    let mut cache = CodegenCache::default();
+    let mut cache = {
+        let used = crate::ir_dce::collect_used(f);
+        let used_vars = used.into_iter().map(|v| v.0).collect();
+        CodegenCache { used_vars, ..CodegenCache::default() }
+    };
 
     // Walk blocks in declared order with entry first. Unreachable
     // fz_ir blocks (fz-ul4.30) are filtered out — they have no
@@ -4859,20 +4877,16 @@ fn compile_fn<M: cranelift_module::Module>(
             b.set_srcloc(span_to_srcloc(span));
             let Stmt::Let(v, prim) = stmt;
             let out = lower_prim(&mut b, jmod, env, &var_env, prim, *v, &mut cache)?;
-            let repr = if out.is_raw_f64() {
-                ArgRepr::RawF64
-            } else if out.is_raw_i64() {
-                ArgRepr::RawInt
-            } else {
-                ArgRepr::Tagged
-            };
-            var_env.insert(
-                v.0,
-                VarBinding {
-                    value: out.value(),
-                    repr,
-                },
-            );
+            if !matches!(out, LowerOut::DeadUnit) {
+                let repr = if out.is_raw_f64() {
+                    ArgRepr::RawF64
+                } else if out.is_raw_i64() {
+                    ArgRepr::RawInt
+                } else {
+                    ArgRepr::Tagged
+                };
+                var_env.insert(v.0, VarBinding { value: out.value(), repr });
+            }
         }
         // Terminator gets its own srcloc (often the same as the last
         // stmt for Return blocks; distinct for Call/Goto).
@@ -5352,12 +5366,15 @@ enum LowerOut {
     Tagged(ir::Value),
     RawF64(ir::Value),
     RawI64(ir::Value),
+    /// Unit-return extern whose dest var is dead — no CLIF value emitted (fz-2tc).
+    DeadUnit,
 }
 
 impl LowerOut {
     fn value(&self) -> ir::Value {
         match self {
             LowerOut::Tagged(v) | LowerOut::RawF64(v) | LowerOut::RawI64(v) => *v,
+            LowerOut::DeadUnit => panic!("DeadUnit has no ir::Value"),
         }
     }
     fn is_raw_f64(&self) -> bool {
@@ -6096,10 +6113,12 @@ fn lower_prim<M: cranelift_module::Module>(
                 .collect();
             let inst = b.ins().call(fref, &arg_vals);
             if returns_value {
-                b.inst_results(inst)[0]
-            } else {
-                b.ins().iconst(types::I64, NIL_BITS)
+                return Ok(LowerOut::Tagged(b.inst_results(inst)[0]));
             }
+            if cache.used_vars.contains(&dest_var.0) {
+                return Ok(LowerOut::Tagged(cached_iconst(b, cache, NIL_BITS)));
+            }
+            return Ok(LowerOut::DeadUnit);
         }
         Prim::ListCons(..)
         | Prim::ListHead(..)
@@ -7802,6 +7821,37 @@ fn main(), do: loop_with(loop_with, 100000, 0)
         );
         // The brif must still be present.
         assert!(main_ir.contains("brif"), "expected brif in main CLIF:\n{}", main_ir);
+    }
+
+    /// fz-2tc — unit-return extern results whose dest var is unused emit no
+    /// iconst at all (DeadUnit path). Live results use cached_iconst so they
+    /// share an existing nil if the same block already holds one.
+    /// hello: print(42), print(:ok), print(true) are all unit-return externs
+    /// whose nil results are dead — only print(nil)'s result is live (passed
+    /// to the continuation). Before: 5 × `iconst.i64 3`. After: ≤ 2.
+    #[test]
+    fn dead_unit_extern_result_elided() {
+        let src = "fn main() do\n\
+                     print(40 + 2)\n\
+                     print(:ok)\n\
+                     print(true)\n\
+                     print(nil)\n\
+                   end";
+        let m = lower_src(src);
+        ir_text_record_enable();
+        let _ = compile(&m).unwrap();
+        let ir = ir_text_record_take();
+        let main_ir = ir.iter().find(|(n, _)| n == "main").map(|(_, s)| s.as_str()).unwrap_or("");
+        // Dead nil results are gone. Count occurrences of "iconst.i64 3".
+        let nil_count = main_ir.matches("iconst.i64 3").count();
+        assert!(
+            nil_count <= 2,
+            "expected ≤ 2 nil iconsts in main CLIF (got {}); dead unit results not elided:\n{}",
+            nil_count,
+            main_ir
+        );
+        // The live nil (used as continuation arg) must still be present.
+        assert!(main_ir.contains("iconst.i64 3"), "expected at least one nil iconst:\n{}", main_ir);
     }
 
     /// fz-ty1.pip.3 — type_module must be called exactly 3 times in the

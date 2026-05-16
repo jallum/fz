@@ -131,7 +131,7 @@ fn reachable_from_entry(f: &FnIr) -> HashSet<BlockId> {
     seen
 }
 
-fn collect_used(f: &FnIr) -> HashSet<Var> {
+pub fn collect_used(f: &FnIr) -> HashSet<Var> {
     let mut used = HashSet::new();
     for block in &f.blocks {
         for stmt in &block.stmts {

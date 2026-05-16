@@ -12,14 +12,12 @@ function u0:0(i64) -> i64 tail {
 block0(v0: i64):
     v1 = iconst.i64 42                  ; @4:12
     call fn0(v1)  ; v1 = 42
-    v2 = iconst.i64 3    ;; v2 :: nil
-    v3 = iconst.i64 18    ;; v3 :: :hello
-    call fn1(v3)  ; v3 = 18
+    v2 = iconst.i64 18    ;; v2 :: :hello
+    call fn1(v2)  ; v2 = 18
+    v3 = iconst.i64 11    ;; v3 :: :true
+    call fn1(v3)  ; v3 = 11
     v4 = iconst.i64 3    ;; v4 :: nil
-    v5 = iconst.i64 11    ;; v5 :: :true
-    call fn1(v5)  ; v5 = 11
-    v6 = iconst.i64 3    ;; v6 :: nil
-    v7 = load.i64 notrap aligned v0+16  ; @4:9
-    return_call_indirect sig2, v7(v6, v0) ; @4:9  v6 = 3
+    v5 = load.i64 notrap aligned v0+16  ; @4:9
+    return_call_indirect sig2, v5(v4, v0) ; @4:9  v4 = 3
 }
 
