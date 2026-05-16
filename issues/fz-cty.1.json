@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-cty.6"
+  ],
   "created": "2026-05-16T00:33:31Z",
   "description": "## Goal\n\nRemove the 64-byte hard cap on per-process heap objects. Allow ordinary large objects (tuples, maps, vectors with many fields) to live on the heap, bounded only by the largest block in SIZE_TABLE.\n\n## Background\n\n`MAX_HEAP_OBJECT_BYTES = 64` is asserted in `Heap::alloc()` and exists defensively for a future shared zone (now the parent epic). The grow logic in `alloc()` already handles oversized objects by jumping size_class via `pick_size_class(size).max(bumped)`. The cap is a single assertion, not a structural requirement.\n\n## Latent bug surfaced by lifting\n\nToday's grow path picks `new_class = max(want_for_alloc, bumped)` but never verifies that the resulting block size actually fits the object. An object larger than `SIZE_TABLE[last]` (~6 MB) would silently bump_top past block_end. Currently masked by the 64-byte cap.\n\n## Changes\n\n### runtime/src/heap.rs\n- Remove the `assert!(size \u003c= MAX_HEAP_OBJECT_BYTES, ...)` in `Heap::alloc()`.\n- Remove the `MAX_HEAP_OBJECT_BYTES` constant.\n- In the grow branch, after computing `new_size`, add `assert!(size \u003c= new_size, \"heap object {} bytes exceeds largest size class {}\", size, SIZE_TABLE[SIZE_TABLE.len()-1])`. Objects beyond SIZE_TABLE's last entry are unsupported; document this as the new effective cap (~6 MB).\n- Remove the test `alloc_panics_over_max_object_bytes`.\n- Add tests: \n  - Allocate a Struct with payload pushing total size to 200 bytes; verify alloc succeeds and grow promoted to a larger size_class.\n  - Allocate a Map with 5+ entries (~96 bytes); verify alloc + GC round-trip.\n  - Allocate a VecI64 with 100 elements (~824 bytes); verify alloc + GC.\n  - (Optional) Allocate a struct whose size is exactly `SIZE_TABLE[last]`; verify it fits. One beyond `SIZE_TABLE[last]` triggers the new assert.\n\n### docs/guides/memory.html\nHandled by the epic-level guide rewrite; do not duplicate here.\n\n## Non-changes\n\n- src/ir_codegen.rs: no changes; codegen never references MAX_HEAP_OBJECT_BYTES.\n- src/ir_lower.rs: no changes.\n- Cheney to-space sizing already handles large objects via `pick_size_class(bytes_used or last_gc_live * 2)`.\n\n## Verification\n\n- All existing tests pass.\n- New large-object tests pass for Struct, Map, and Vec kinds.\n- The over-max assert fires for objects \u003e SIZE_TABLE[last].\n- Three-path parity: not exercised in this ticket — codegen path is unchanged.",
   "id": "fz-cty.1",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "fz-shr.1: Lift MAX_HEAP_OBJECT_BYTES cap",
   "type": "task",
-  "updated_at": "2026-05-16T00:33:31Z"
+  "updated_at": "2026-05-16T00:34:58Z"
 }
