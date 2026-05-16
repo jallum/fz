@@ -1817,22 +1817,12 @@ mod tests {
         assert_eq!(mso_chain(&src).len(), 1);
         assert_eq!(mso_chain(&dst).len(), 1);
         unsafe {
-            assert_eq!(
-                (*shared_p)
-                    .refcount
-                    .load(std::sync::atomic::Ordering::Relaxed),
-                2
-            );
+            assert_eq!((*shared_p).refcount.load(crate::sync::Ordering::Relaxed), 2);
         }
         assert_eq!(live_count(), baseline + 1);
         drop(dst);
         unsafe {
-            assert_eq!(
-                (*shared_p)
-                    .refcount
-                    .load(std::sync::atomic::Ordering::Relaxed),
-                1
-            );
+            assert_eq!((*shared_p).refcount.load(crate::sync::Ordering::Relaxed), 1);
         }
         assert_eq!(mso_chain(&src).len(), 1);
         drop(src);
@@ -1871,12 +1861,7 @@ mod tests {
         let _ = deep_copy_value(FzValue::from_ptr(pair), &src, &mut dst, &mut fwd);
         assert_eq!(mso_chain(&dst).len(), 1, "dedup");
         unsafe {
-            assert_eq!(
-                (*shared_p)
-                    .refcount
-                    .load(std::sync::atomic::Ordering::Relaxed),
-                2
-            );
+            assert_eq!((*shared_p).refcount.load(crate::sync::Ordering::Relaxed), 2);
         }
         drop(dst);
         drop(src);
@@ -1946,9 +1931,7 @@ mod tests {
         let shared_p = sender_pb.shared_raw();
         unsafe {
             assert_eq!(
-                (*shared_p)
-                    .refcount
-                    .load(std::sync::atomic::Ordering::Relaxed),
+                (*shared_p).refcount.load(crate::sync::Ordering::Relaxed),
                 1 + N
             );
         }
@@ -1977,12 +1960,7 @@ mod tests {
         let _ = receiver_roots;
         drop(receivers);
         unsafe {
-            assert_eq!(
-                (*shared_p)
-                    .refcount
-                    .load(std::sync::atomic::Ordering::Relaxed),
-                1
-            );
+            assert_eq!((*shared_p).refcount.load(crate::sync::Ordering::Relaxed), 1);
         }
         assert_eq!(live_count(), baseline + 1);
 

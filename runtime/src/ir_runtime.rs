@@ -1343,7 +1343,7 @@ mod tests {
     #[serial_test::serial]
     fn alloc_procbin_from_static_preserves_anchor() {
         use crate::procbin::SharedBin;
-        use std::sync::atomic::{AtomicUsize, Ordering};
+        use crate::sync::{AtomicUsize, Ordering};
         // Construct a "static" SharedBin by hand. Its destructor is a
         // noop pointer so the test owns its lifetime explicitly.
         static PAYLOAD: [u8; 8] = [0xde, 0xad, 0xbe, 0xef, 0xca, 0xfe, 0xba, 0xbe];

@@ -23,8 +23,8 @@
 //! lands in fz-q8d.3 via the `crate::sync` abstraction module.
 
 use crate::fz_value::{HeapHeader, HeapKind};
+use crate::sync::{AtomicUsize, Ordering, fence};
 use std::ptr::NonNull;
-use std::sync::atomic::{AtomicUsize, Ordering, fence};
 
 // ===== SharedBin layout =====================================================
 
@@ -68,7 +68,11 @@ pub unsafe extern "C" fn shared_bin_destructor_heap(p: *mut SharedBin) {
     };
     drop(bytes);
     drop(bin);
-    LIVE_COUNT.fetch_sub(1, Ordering::Relaxed);
+    // The LIVE_COUNT gauge is a production debug counter; loom doesn't
+    // model it (and shouldn't — it's incidental to the ordering claims
+    // we're trying to verify). Skip the update under cfg(loom).
+    #[cfg(not(loom))]
+    LIVE_COUNT.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// No-op destructor for compiler-baked static SharedBins (fz-q8d.2). The
@@ -97,7 +101,7 @@ pub fn shared_bin_alloc(bytes: &[u8], bit_len: u64) -> *mut SharedBin {
         bytes_len,
         destructor: shared_bin_destructor_heap,
     });
-    LIVE_COUNT.fetch_add(1, Ordering::Relaxed);
+    LIVE_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     Box::into_raw(bin)
 }
 
@@ -136,12 +140,15 @@ pub unsafe fn shared_bin_release(p: *mut SharedBin) {
 // static SharedBins from fz-q8d.2 will not touch it (their dtor is noop).
 // `pub(crate)` so tests inside the crate can baseline-delta against it.
 
-static LIVE_COUNT: AtomicUsize = AtomicUsize::new(0);
+// LIVE_COUNT is always a std atomic — not part of the ordering claim
+// the loom test verifies. Use std types directly so cfg(loom) builds
+// don't accidentally pull this gauge into the model.
+static LIVE_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// Number of currently-live heap-allocated SharedBin objects.
 #[cfg(test)]
 pub(crate) fn live_count() -> usize {
-    LIVE_COUNT.load(Ordering::Relaxed)
+    LIVE_COUNT.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 // ===== SharedBinHandle ======================================================
@@ -519,8 +526,8 @@ mod tests {
         let _g = LiveCountGuard::snap();
         let p = shared_bin_alloc(&[0u8; 4], 32);
         unsafe {
-            let d = (*p).destructor as usize;
-            let want = shared_bin_destructor_heap as usize;
+            let d = (*p).destructor as *const () as usize;
+            let want = shared_bin_destructor_heap as *const () as usize;
             assert_eq!(d, want);
             shared_bin_release(p);
         }
@@ -531,11 +538,11 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn custom_destructor_fires_exactly_once() {
-        static FIRED: AtomicUsize = AtomicUsize::new(0);
+        static FIRED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         unsafe extern "C" fn test_dtor(_p: *mut SharedBin) {
-            FIRED.fetch_add(1, Ordering::Relaxed);
+            FIRED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
-        FIRED.store(0, Ordering::Relaxed);
+        FIRED.store(0, std::sync::atomic::Ordering::Relaxed);
         // Allocate bytes + bin without entering shared_bin_alloc (so the
         // global LIVE_COUNT isn't touched and the test destructor isn't
         // shared_bin_destructor_heap). We leak both — test_dtor is a no-op.
@@ -553,10 +560,18 @@ mod tests {
         unsafe {
             shared_bin_retain(p);
             shared_bin_release(p);
-            assert_eq!(FIRED.load(Ordering::Relaxed), 0, "still has 1 ref");
+            assert_eq!(
+                FIRED.load(std::sync::atomic::Ordering::Relaxed),
+                0,
+                "still has 1 ref"
+            );
             shared_bin_release(p);
         }
-        assert_eq!(FIRED.load(Ordering::Relaxed), 1, "fired exactly once");
+        assert_eq!(
+            FIRED.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "fired exactly once"
+        );
         // Reclaim manually so we don't actually leak. test_dtor was a noop.
         unsafe {
             let _ = Box::from_raw(p);
@@ -641,5 +656,103 @@ mod tests {
             let _ = alloc_procbin(&mut h, SharedBinHandle::from_bytes(&[3, 4, 5], 24));
             assert_eq!(live_count(), g.baseline() + 2);
         }
+    }
+}
+
+// ===== fz-q8d.3 — loom verification of retain/release ordering ==============
+//
+// Enabled only under `RUSTFLAGS="--cfg loom"`. The two-thread model
+// constructs a SharedBin manually (so LIVE_COUNT isn't exercised — that
+// gauge is not part of the ordering claim), spawns two children that
+// each retain+release, then the "main" thread performs the final
+// release. Across every legal interleaving loom can produce, the test
+// destructor must fire exactly once.
+//
+// Run: `RUSTFLAGS="--cfg loom" cargo test --release -p fz-runtime loom_`.
+// See `runtime/RUNNING_LOOM.md`.
+
+#[cfg(all(test, loom))]
+mod loom_tests {
+    use super::*;
+    use loom::sync::Arc;
+    use loom::sync::atomic::{AtomicBool, Ordering as LoomOrdering};
+
+    // Destructor for the loom test sets a flag on a loom-instrumented
+    // `AtomicBool` handed out via the thread-local `LOOM_FLAG` slot. The
+    // model asserts the destructor fires exactly once per iteration.
+    loom::thread_local! {
+        static LOOM_FLAG: std::cell::RefCell<Option<Arc<AtomicBool>>> =
+            std::cell::RefCell::new(None);
+    }
+
+    unsafe extern "C" fn loom_dtor(_p: *mut SharedBin) {
+        LOOM_FLAG.with(|c| {
+            let flag = c.borrow();
+            let f = flag.as_ref().expect("LOOM_FLAG not installed");
+            // Use SeqCst so loom treats the destructor invocation as a
+            // single, observable event in the model.
+            let prev = f.swap(true, LoomOrdering::SeqCst);
+            assert!(!prev, "destructor fired more than once");
+        });
+    }
+
+    fn install_loom_flag(flag: Arc<AtomicBool>) {
+        LOOM_FLAG.with(|c| *c.borrow_mut() = Some(flag));
+    }
+
+    /// Build a SharedBin manually with `loom_dtor` installed and
+    /// `refcount = 1`. Returns the raw pointer. The byte buffer is a
+    /// constant we never free — loom_dtor doesn't reclaim it; the bin
+    /// itself is also leaked at end of model iteration. Each loom
+    /// model run allocates a fresh one, which is acceptable: loom
+    /// runs are tens of thousands of iterations, each allocating one
+    /// 40-byte bin and one Box that loom_dtor leaves intact.
+    fn build_loom_sharedbin() -> *mut SharedBin {
+        static PAYLOAD: [u8; 4] = [0, 0, 0, 0];
+        let bin = Box::new(SharedBin {
+            refcount: AtomicUsize::new(1),
+            bit_len: 32,
+            bytes_ptr: PAYLOAD.as_ptr(),
+            bytes_len: PAYLOAD.len(),
+            destructor: loom_dtor,
+        });
+        Box::into_raw(bin)
+    }
+
+    #[test]
+    fn loom_retain_release_two_threads() {
+        loom::model(|| {
+            let flag = Arc::new(AtomicBool::new(false));
+            install_loom_flag(flag.clone());
+            let p = build_loom_sharedbin();
+            let p_addr = p as usize;
+
+            let f1 = flag.clone();
+            let t1 = loom::thread::spawn(move || {
+                install_loom_flag(f1);
+                let p = p_addr as *mut SharedBin;
+                unsafe {
+                    shared_bin_retain(p);
+                    shared_bin_release(p);
+                }
+            });
+            let f2 = flag.clone();
+            let t2 = loom::thread::spawn(move || {
+                install_loom_flag(f2);
+                let p = p_addr as *mut SharedBin;
+                unsafe {
+                    shared_bin_retain(p);
+                    shared_bin_release(p);
+                }
+            });
+            t1.join().unwrap();
+            t2.join().unwrap();
+            // Main thread's final release fires the destructor.
+            unsafe { shared_bin_release(p_addr as *mut SharedBin) };
+            assert!(
+                flag.load(LoomOrdering::SeqCst),
+                "destructor must fire on last release"
+            );
+        });
     }
 }

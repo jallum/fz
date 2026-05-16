@@ -12,3 +12,15 @@ crate-type = ["staticlib", "rlib"]
 # mutex is gone; tests that need exclusive access serialise via
 # `#[serial_test::serial]` instead.
 serial_test = "3"
+
+# fz-q8d.3 — loom model-checker for SharedBin retain/release ordering.
+# Default builds (no `--cfg loom`) do not pull this dep at all; under
+# `RUSTFLAGS="--cfg loom"` it replaces `std::sync::atomic` via the
+# `crate::sync` re-export module so loom can exhaustively explore
+# every legal thread interleaving. See `runtime/RUNNING_LOOM.md`.
+[target.'cfg(loom)'.dependencies]
+loom = "0.7"
+
+# fz-q8d.3 — silence rustc's unexpected_cfgs lint for the loom cfg seam.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
