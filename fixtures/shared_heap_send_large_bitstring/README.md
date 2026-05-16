@@ -1,6 +1,6 @@
 ---
 purpose: "fz-cty.6 — sending a >64-byte bitstring via spawn-and-send rounds through ProcBin/SharedBin under JIT and AOT"
-paths: [jit, aot]
+paths: [jit, interp, aot]
 ---
 
 # shared_heap_send_large_bitstring
@@ -17,14 +17,10 @@ Deep-copy at spawn (capture) and at send (mailbox delivery) goes
 through `shared_bin_retain`, not byte-copy.
 
 Three-path notes:
-  * JIT and AOT both exercise the full code path. The fixture matrix
-    asserts identical stdout.
-  * Interpreter omitted — the legacy `ir_interp` does not yet implement
-    the `Bitstring` IR prims (Discriminant(17)); that gap predates this
-    epic and is out of scope. The runtime-level behaviour (deep_copy
-    via retain, MSO sweep across GC) is asserted directly in
-    `runtime/src/heap.rs` unit tests, which is the codepath the
-    interpreter would invoke once it lands bitstring support.
+  * JIT, interp, and AOT all exercise the full code path. The fixture
+    matrix asserts identical stdout. The interp path lands via
+    fz-cty.7, which routes `Prim::MakeBitstring` through the same
+    `fz_bs_*` runtime calls the JIT and AOT emit.
 
 The refcount invariant — exactly one SharedBin allocation across the
 whole run, zero at the end — is asserted in the

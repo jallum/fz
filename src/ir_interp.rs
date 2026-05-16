@@ -465,6 +465,69 @@ fn eval_prim(module: &Module, prim: &Prim, env: &HashMap<Var, FzValue>) -> Resul
             let arg_vals = collect(env, args)?;
             run_builtin(module, *bid, &arg_vals)?
         }
+        Prim::MakeBitstring(fields) => {
+            // fz-cty.7 — mirror src/ir_codegen.rs Prim::MakeBitstring: drive the
+            // same runtime BitWriter through the same extern "C" calls the JIT
+            // and AOT paths use, so all three paths funnel through the shared
+            // bitstring substrate.
+            use crate::ast::BitType as AstBitType;
+            use crate::fz_ir::BitSizeIr;
+            fn encode_bit_type(t: AstBitType) -> u32 {
+                match t {
+                    AstBitType::Integer => 0,
+                    AstBitType::Float => 1,
+                    AstBitType::Binary => 2,
+                    AstBitType::Bits => 3,
+                    AstBitType::Utf8 => 4,
+                    AstBitType::Utf16 => 5,
+                    AstBitType::Utf32 => 6,
+                }
+            }
+            fn encode_endian(e: crate::ast::Endian) -> u32 {
+                use crate::ast::Endian;
+                match e {
+                    Endian::Big => 0,
+                    Endian::Little => 1,
+                    Endian::Native => 2,
+                }
+            }
+            fn default_unit_for(ty: AstBitType) -> u32 {
+                match ty {
+                    AstBitType::Integer | AstBitType::Float | AstBitType::Bits => 1,
+                    AstBitType::Binary => 8,
+                    AstBitType::Utf8 | AstBitType::Utf16 | AstBitType::Utf32 => 1,
+                }
+            }
+            fz_runtime::ir_runtime::fz_bs_begin();
+            for f in fields {
+                let value_v = env_get(env, f.value)?;
+                let ty_tag = encode_bit_type(f.ty);
+                let unit = f.unit.unwrap_or(default_unit_for(f.ty));
+                let endian_tag = encode_endian(f.endian);
+                let signed = f.signed as u32;
+                let (size_present, size_value) = match &f.size {
+                    None => (0u32, 0u32),
+                    Some(BitSizeIr::Literal(n)) => (1, *n),
+                    Some(BitSizeIr::Var(v)) => {
+                        let raw = env_get(env, *v)?;
+                        let n = raw
+                            .unbox_int()
+                            .ok_or_else(|| "bit size var must be an integer".to_string())?;
+                        (1, n as u32)
+                    }
+                };
+                fz_runtime::ir_runtime::fz_bs_write_field(
+                    value_v.0,
+                    ty_tag,
+                    size_present,
+                    size_value,
+                    unit,
+                    endian_tag,
+                    signed,
+                );
+            }
+            FzValue(fz_runtime::ir_runtime::fz_bs_finalize())
+        }
         Prim::MakeClosure(fn_id, captured) => {
             // fz-ul4.29.5: new closure layout — header (16) + stub_fp (8) +
             // captures. The interp has no compiled stub for the closure;
