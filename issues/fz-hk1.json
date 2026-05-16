@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-16T22:52:18Z",
+  "description": "",
+  "id": "fz-hk1",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "fz-cg [EPIC]: codegen quality — give Cranelift clean SSA",
+  "type": "task",
+  "updated_at": "2026-05-16T22:52:18Z"
+}
