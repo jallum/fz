@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-16T19:43:32Z",
+  "description": "Pure rename for clarity, plus a debug assertion that catches annotation list length mismatches early.\n\n## What to change\n\nIn ast.rs, FnClause:\n  - param_type_tokens: Vec\u003cOption\u003cVec\u003cToken\u003e\u003e\u003e  → param_annotations: Vec\u003cOption\u003cVec\u003cToken\u003e\u003e\u003e\n\nUpdate all references across the codebase (parser, ir_lower.rs, any tests).\n\nIn ir_lower.rs, wherever param_annotations is accessed:\n  - Add: debug_assert_eq!(clause.params.len(), clause.param_annotations.len(), \"param/annotation length mismatch\");\n\n## Why the assert\n\nSilent param/annotation count mismatch causes type widening to any downstream. Catching it at the source saves debugging.\n\n## Acceptance\n- cargo clippy -- -D warnings passes.\n- All tests pass.\n- One commit referencing fz-ty1.pip.7.",
+  "id": "fz-noj",
+  "labels": [],
+  "priority": 3,
+  "status": "open",
+  "title": "fz-ty1.pip.7: rename FnClause::param_type_tokens → param_annotations + length invariant",
+  "type": "task",
+  "updated_at": "2026-05-16T19:43:32Z"
+}
