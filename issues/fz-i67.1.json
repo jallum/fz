@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-16T22:58:08Z",
+  "description": "## Goal\n\nAdd a non-interactive REPL driver: `fz repl --script \u003cpath\u003e` reads the file, feeds it line-by-line through the same `try_eval` loop the interactive REPL uses, captures only program-side `print()` output to stdout, and after EOF invokes `main/0` if defined.\n\n## Changes\n\n### src/repl.rs\n- New `pub fn run_script(path: \u0026Path) -\u003e io::Result\u003c()\u003e`. Mirrors `run()` but:\n  - Input is the file's lines instead of stdin.\n  - No banner. No `fz\u003e ` / `... ` prompts.\n  - On `Outcome::Incomplete`, continue buffering (same as interactive).\n  - On `Outcome::Err`, print to stderr and exit nonzero.\n  - After EOF, look up `main/0` in `interp.globals`; if present, evaluate `main()` via the same path the interactive REPL uses for expressions.\n- Audit `try_eval`: if it currently prints anything besides program-driven `print()` output (e.g., echoing values of bound expressions, fn-def confirmation), gate that behind an `interactive: bool` flag so `run_script` suppresses it. Goal: only `print()` calls reach stdout.\n\n### src/main.rs\n- `fz repl --script \u003cpath\u003e` dispatches to `repl::run_script`.\n- `fz repl` with no args keeps interactive behavior.\n\n## Acceptance\n\n- `fz repl --script fixtures/add1/input.fz` prints `42\\n` to stdout and nothing else. Exits 0.\n- A fixture with a parse error: `fz repl --script` exits nonzero, error on stderr, no partial program output on stdout.\n- The five existing `repl.rs` interactive tests still pass.\n- New test exercising `run_script` against an inline fixture string.",
+  "id": "fz-i67.1",
+  "labels": [],
+  "parent": "fz-i67",
+  "priority": 2,
+  "status": "open",
+  "title": "REPL .1: fz repl --script \u003cpath\u003e non-interactive entry point",
+  "type": "task",
+  "updated_at": "2026-05-16T22:58:08Z"
+}
