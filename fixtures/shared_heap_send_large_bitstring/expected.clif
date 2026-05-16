@@ -86,7 +86,7 @@ block0(v0: i64, v1: i64):
 }
 
 ; fn k_receive_11
-    ;   @spec   k_receive_11(any, vec(u8) | vec(bit)) -> any
+    ;   @spec   k_receive_11(any, vec(u8) | vec(bit)) -> nil
     ;   @key    [any, vec(u8) | vec(bit)]
     ;   @abi    (Tagged, Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
@@ -97,7 +97,7 @@ function u0:0(i64, i64) -> i64 tail {
     block0(v0: i64, v1: i64):    ;; v0 :: any
     v2 = load.i64 notrap aligned v1+32    ;; v2 :: vec(u8) | vec(bit)
     call fn0(v0)
-    v3 = iconst.i64 3    ;; v3 :: any
+    v3 = iconst.i64 3    ;; v3 :: nil
     v4 = load.i64 notrap aligned v1+24  ; @8:3
     v5 = load.i64 notrap aligned v4+16  ; @8:3
     return_call_indirect sig1, v5(v3, v4) ; @8:3  v3 = 3

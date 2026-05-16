@@ -12,7 +12,7 @@ block0(v0: i64):
 }
 
 ; fn k_10
-    ;   @spec   k_10(:alice) -> any
+    ;   @spec   k_10(:alice) -> nil
     ;   @key    [:alice]
     ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
@@ -24,12 +24,12 @@ function u0:0(i64, i64) -> i64 tail {
 
     block0(v0: i64, v1: i64):    ;; v0 :: :alice
     call fn0(v0)
-    v2 = iconst.i64 3    ;; v2 :: any
+    v2 = iconst.i64 3    ;; v2 :: nil
     v3 = iconst.i64 42    ;; v3 :: 42
     v4 = ishl_imm v3, 3  ; v3 = 42
     v5 = bor_imm v4, 1
     call fn1(v5)
-    v6 = iconst.i64 3    ;; v6 :: any
+    v6 = iconst.i64 3    ;; v6 :: nil
     v7 = load.i64 notrap aligned v1+16  ; @12:3
     return_call_indirect sig2, v7(v6, v1) ; @12:3  v6 = 3
 }

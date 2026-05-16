@@ -77,7 +77,7 @@ function u0:0(i64, i64) -> i64 tail {
 }
 
 ; fn k_12_s13
-    ;   @spec   k_12(int) -> any
+    ;   @spec   k_12(int) -> nil
     ;   @key    [int]
     ;   @abi    (RawInt) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
@@ -89,7 +89,7 @@ function u0:0(i64, i64) -> i64 tail {
     v2 = ishl_imm v0, 3
     v3 = bor_imm v2, 1
     call fn0(v3)
-    v4 = iconst.i64 3    ;; v4 :: any
+    v4 = iconst.i64 3    ;; v4 :: nil
     v5 = load.i64 notrap aligned v1+24  ; @5:3
     v6 = load.i64 notrap aligned v5+16  ; @5:3
     return_call_indirect sig1, v6(v4, v5) ; @5:3  v4 = 3

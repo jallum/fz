@@ -17,13 +17,13 @@ block0(v0: i64):
     v4 = bitcast.i64 v3
     v5 = call fn1(v4)
     call fn0(v5)
-    v6 = iconst.i64 3    ;; v6 :: any
+    v6 = iconst.i64 3    ;; v6 :: nil
     return_call fn2(v6, v0)             ; @2:3  v6 = 3
 }
 
 ; fn k_8
-    ;   @spec   k_8(any) -> _
-    ;   @key    [any]
+    ;   @spec   k_8(nil) -> _
+    ;   @key    [nil]
     ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64) system_v
@@ -33,20 +33,20 @@ function u0:0(i64, i64) -> i64 tail {
     fn1 = u0:23 sig1
     fn2 = colocated u0:49 sig2
 
-    block0(v0: i64, v1: i64):    ;; v0 :: any
+    block0(v0: i64, v1: i64):    ;; v0 :: nil
     v2 = f64const 0x1.4000000000000p3   ; @3:9
     v3 = f64const 0x1.8000000000000p1   ; @3:16
     v4 = fsub v2, v3                    ; @3:9  v2 = 0x1.4000000000000p3, v3 = 0x1.8000000000000p1
     v5 = bitcast.i64 v4
     v6 = call fn1(v5)
     call fn0(v6)
-    v7 = iconst.i64 3    ;; v7 :: any
+    v7 = iconst.i64 3    ;; v7 :: nil
     return_call fn2(v7, v1)             ; @3:3  v7 = 3
 }
 
 ; fn k_9
-    ;   @spec   k_9(any) -> any
-    ;   @key    [any]
+    ;   @spec   k_9(nil) -> nil
+    ;   @key    [nil]
     ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64) system_v
@@ -57,14 +57,14 @@ function u0:0(i64, i64) -> i64 tail {
     fn1 = u0:23 sig1
     fn2 = u0:0 sig2
 
-    block0(v0: i64, v1: i64):    ;; v0 :: any
+    block0(v0: i64, v1: i64):    ;; v0 :: nil
     v2 = f64const 0x1.4000000000000p1   ; @4:9
     v3 = f64const 0x1.0000000000000p2   ; @4:15
     v4 = fmul v2, v3                    ; @4:9  v2 = 0x1.4000000000000p1, v3 = 0x1.0000000000000p2
     v5 = bitcast.i64 v4
     v6 = call fn1(v5)
     call fn0(v6)
-    v7 = iconst.i64 3    ;; v7 :: any
+    v7 = iconst.i64 3    ;; v7 :: nil
     v8 = f64const 0x1.0000000000000p0    ;; v8 :: 1.0
     v9 = f64const 0x1.0000000000000p1    ;; v9 :: 2.0
     v10 = fcmp lt v8, v9  ; v8 = 0x1.0000000000000p0, v9 = 0x1.0000000000000p1
@@ -72,7 +72,7 @@ function u0:0(i64, i64) -> i64 tail {
     v12 = iconst.i64 19
     v13 = select v10, v11, v12  ; v11 = 11, v12 = 19    ;; v13 :: :true
     call fn2(v13)
-    v14 = iconst.i64 3    ;; v14 :: any
+    v14 = iconst.i64 3    ;; v14 :: nil
     v15 = load.i64 notrap aligned v1+16 ; @4:3
     return_call_indirect sig3, v15(v14, v1) ; @4:3  v14 = 3
 }

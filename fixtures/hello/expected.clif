@@ -18,8 +18,8 @@ block0(v0: i64):
 }
 
 ; fn k_8
-    ;   @spec   k_8(any) -> any
-    ;   @key    [any]
+    ;   @spec   k_8(nil) -> nil
+    ;   @key    [nil]
     ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64) system_v
@@ -30,16 +30,16 @@ function u0:0(i64, i64) -> i64 tail {
     fn1 = u0:0 sig1
     fn2 = u0:0 sig2
 
-    block0(v0: i64, v1: i64):    ;; v0 :: any
+    block0(v0: i64, v1: i64):    ;; v0 :: nil
     v2 = iconst.i64 10                  ; @3:9
     call fn0(v2)  ; v2 = 10
-    v3 = iconst.i64 3    ;; v3 :: any
+    v3 = iconst.i64 3    ;; v3 :: nil
     v4 = iconst.i64 11    ;; v4 :: :true
     call fn1(v4)  ; v4 = 11
-    v5 = iconst.i64 3    ;; v5 :: any
+    v5 = iconst.i64 3    ;; v5 :: nil
     v6 = iconst.i64 3    ;; v6 :: nil
     call fn2(v6)  ; v6 = 3
-    v7 = iconst.i64 3    ;; v7 :: any
+    v7 = iconst.i64 3    ;; v7 :: nil
     v8 = load.i64 notrap aligned v1+16  ; @3:3
     return_call_indirect sig3, v8(v7, v1) ; @3:3  v7 = 3
 }

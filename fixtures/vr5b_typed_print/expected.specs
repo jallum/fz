@@ -1,28 +1,28 @@
 ; spec print(1) #fn=0
 ;   key:    [42]
-;   return: any
+;   return: nil
 ;   vars:
 ;     Var(0) :: 42
 ;     Var(1) :: :match_error
-;     Var(2) :: any
+;     Var(2) :: nil
 ;   exits:
-;     blk0 Return Var(2)    :: any
+;     blk0 Return Var(2)    :: nil
 ;     blk1 Halt Var(1)      :: :match_error
 
 ; spec print(1) #fn=0
 ;   key:    [float]
-;   return: any
+;   return: nil
 ;   vars:
 ;     Var(0) :: float
 ;     Var(1) :: :match_error
-;     Var(2) :: any
+;     Var(2) :: nil
 ;   exits:
-;     blk0 Return Var(2)    :: any
+;     blk0 Return Var(2)    :: nil
 ;     blk1 Halt Var(1)      :: :match_error
 
 ; spec int_main(0) #fn=7
 ;   key:    []
-;   return: any
+;   return: nil
 ;   vars:
 ;     Var(0) :: :match_error
 ;     Var(1) :: 42
@@ -53,14 +53,14 @@
 ;     blk0 Call int_main#7()
 ;              callee_key=[]
 ;              cont k_10#10 captured=[]
-;              cont_key=[any]
+;              cont_key=[nil]
 ;     blk1 Halt Var(0)      :: :match_error
 
 ; spec k_10(1) #fn=10
-;   key:    [any]
+;   key:    [nil]
 ;   return: none
 ;   vars:
-;     Var(0) :: any
+;     Var(0) :: nil
 ;   exits:
 ;     blk0 TailCall float_main#8()
 ;              callee_key=[]

@@ -1,12 +1,12 @@
 ; spec print(1) #fn=0
 ;   key:    [int]
-;   return: any
+;   return: nil
 ;   vars:
 ;     Var(0) :: int
 ;     Var(1) :: :match_error
-;     Var(2) :: any
+;     Var(2) :: nil
 ;   exits:
-;     blk0 Return Var(2)    :: any
+;     blk0 Return Var(2)    :: nil
 ;     blk1 Halt Var(1)      :: :match_error
 
 ; spec double(1) #fn=7
@@ -61,7 +61,7 @@
 
 ; spec main(0) #fn=10
 ;   key:    []
-;   return: any
+;   return: nil
 ;   fn_constants:
 ;     Var(1) = double#7
 ;   vars:
@@ -77,22 +77,22 @@
 
 ; spec k_11(1) #fn=11
 ;   key:    [int]
-;   return: any
+;   return: nil
 ;   vars:
 ;     Var(0) :: int
 ;   exits:
 ;     blk0 Call print#0(Var(0))
 ;              callee_key=[int]
 ;              cont k_12#12 captured=[]
-;              cont_key=[any]
+;              cont_key=[nil]
 
 ; spec k_12(1) #fn=12
-;   key:    [any]
-;   return: any
+;   key:    [nil]
+;   return: nil
 ;   fn_constants:
 ;     Var(1) = neg#8
 ;   vars:
-;     Var(0) :: any
+;     Var(0) :: nil
 ;     Var(1) :: &fn8[]:(any) -> any
 ;     Var(2) :: 7
 ;   exits:
@@ -103,7 +103,7 @@
 
 ; spec k_13(1) #fn=13
 ;   key:    [int]
-;   return: any
+;   return: nil
 ;   vars:
 ;     Var(0) :: int
 ;   exits:

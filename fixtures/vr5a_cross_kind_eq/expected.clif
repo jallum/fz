@@ -1,5 +1,5 @@
 ; fn main
-    ;   @spec   main() -> any
+    ;   @spec   main() -> nil
     ;   @key    []
     ;   @abi    () -> Tagged
 function u0:0(i64) -> i64 tail {
@@ -12,7 +12,7 @@ block0(v0: i64):
     v2 = iconst.i64 10                  ; @2:14
     v3 = iconst.i64 19                  ; @2:9
     call fn0(v3)  ; v3 = 19
-    v4 = iconst.i64 3    ;; v4 :: any
+    v4 = iconst.i64 3    ;; v4 :: nil
     v5 = load.i64 notrap aligned v0+16  ; @2:3
     return_call_indirect sig1, v5(v4, v0) ; @2:3  v4 = 3
 }

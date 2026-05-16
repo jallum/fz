@@ -1646,7 +1646,11 @@ fn type_prim(
             }
         }
 
-        Prim::Extern(_, _) => Descr::any(),
+        Prim::Extern(eid, _) => m
+            .externs
+            .get(eid.0 as usize)
+            .map(|e| e.ret_descr.clone())
+            .unwrap_or_else(Descr::any),
 
         // Reader and struct ops: conservative Top until later tickets refine.
         Prim::AllocStruct(_, _) => Descr::any(),

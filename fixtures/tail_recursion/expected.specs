@@ -1,12 +1,12 @@
 ; spec print(1) #fn=0
 ;   key:    [int]
-;   return: any
+;   return: nil
 ;   vars:
 ;     Var(0) :: int
 ;     Var(1) :: :match_error
-;     Var(2) :: any
+;     Var(2) :: nil
 ;   exits:
-;     blk0 Return Var(2)    :: any
+;     blk0 Return Var(2)    :: nil
 ;     blk1 Halt Var(1)      :: :match_error
 
 ; spec count(2) #fn=7
@@ -53,7 +53,7 @@
 
 ; spec main(0) #fn=8
 ;   key:    []
-;   return: any
+;   return: nil
 ;   vars:
 ;     Var(0) :: :match_error
 ;     Var(1) :: 100000
@@ -67,7 +67,7 @@
 
 ; spec k_9(1) #fn=9
 ;   key:    [int]
-;   return: any
+;   return: nil
 ;   vars:
 ;     Var(0) :: int
 ;   exits:

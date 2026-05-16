@@ -18,8 +18,8 @@ block0(v0: i64):
 }
 
 ; fn k_10
-    ;   @spec   k_10(any) -> any
-    ;   @key    [any]
+    ;   @spec   k_10(nil) -> nil
+    ;   @key    [nil]
     ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64) system_v
@@ -28,18 +28,24 @@ function u0:0(i64, i64) -> i64 tail {
     fn0 = u0:0 sig0
     fn1 = u0:0 sig1
 
-    block0(v0: i64, v1: i64):    ;; v0 :: any
-    v2 = iconst.i64 42                  ; @11:9
-    v3 = ishl_imm v2, 3                 ; @11:9  v2 = 42
-    v4 = bor_imm v3, 1                  ; @11:9
-    call fn0(v4)                        ; @11:9
-    v5 = iconst.i64 3                   ; @11:9
-    v6 = iconst.i64 41                  ; @11:9
-    v7 = ishl_imm v6, 3  ; v6 = 41
-    v8 = bor_imm v7, 1
-    call fn1(v8)
-    v9 = iconst.i64 3    ;; v9 :: any
-    v10 = load.i64 notrap aligned v1+16 ; @11:3
-    return_call_indirect sig2, v10(v9, v1) ; @11:3  v9 = 3
+    block0(v0: i64, v1: i64):    ;; v0 :: nil
+    v2 = iconst.i64 21                  ; @11:9
+    v3 = iconst.i64 2                   ; @11:9
+    v4 = imul v2, v3                    ; @11:9  v2 = 21, v3 = 2
+    v5 = ishl_imm v4, 3
+    v6 = bor_imm v5, 1
+    call fn0(v6)
+    v7 = iconst.i64 3    ;; v7 :: nil
+    v8 = iconst.i64 20    ;; v8 :: 20
+    v9 = iconst.i64 2    ;; v9 :: 2
+    v10 = imul v8, v9  ; v8 = 20, v9 = 2    ;; v10 :: 40
+    v11 = iconst.i64 1    ;; v11 :: 1
+    v12 = iadd v10, v11  ; v11 = 1    ;; v12 :: 41
+    v13 = ishl_imm v12, 3
+    v14 = bor_imm v13, 1
+    call fn1(v14)
+    v15 = iconst.i64 3    ;; v15 :: nil
+    v16 = load.i64 notrap aligned v1+16 ; @11:3
+    return_call_indirect sig2, v16(v15, v1) ; @11:3  v15 = 3
 }
 

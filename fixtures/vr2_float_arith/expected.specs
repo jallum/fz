@@ -1,28 +1,28 @@
 ; spec print(1) #fn=0
 ;   key:    [:true]
-;   return: any
+;   return: nil
 ;   vars:
 ;     Var(0) :: :true
 ;     Var(1) :: :match_error
-;     Var(2) :: any
+;     Var(2) :: nil
 ;   exits:
-;     blk0 Return Var(2)    :: any
+;     blk0 Return Var(2)    :: nil
 ;     blk1 Halt Var(1)      :: :match_error
 
 ; spec print(1) #fn=0
 ;   key:    [float]
-;   return: any
+;   return: nil
 ;   vars:
 ;     Var(0) :: float
 ;     Var(1) :: :match_error
-;     Var(2) :: any
+;     Var(2) :: nil
 ;   exits:
-;     blk0 Return Var(2)    :: any
+;     blk0 Return Var(2)    :: nil
 ;     blk1 Halt Var(1)      :: :match_error
 
 ; spec main(0) #fn=7
 ;   key:    []
-;   return: any
+;   return: nil
 ;   vars:
 ;     Var(0) :: :match_error
 ;     Var(1) :: 1.5
@@ -32,14 +32,14 @@
 ;     blk0 Call print#0(Var(3))
 ;              callee_key=[4.0]
 ;              cont k_8#8 captured=[]
-;              cont_key=[any]
+;              cont_key=[nil]
 ;     blk1 Halt Var(0)      :: :match_error
 
 ; spec k_8(1) #fn=8
-;   key:    [any]
-;   return: any
+;   key:    [nil]
+;   return: nil
 ;   vars:
-;     Var(0) :: any
+;     Var(0) :: nil
 ;     Var(1) :: 10.0
 ;     Var(2) :: 3.0
 ;     Var(3) :: 7.0
@@ -47,13 +47,13 @@
 ;     blk0 Call print#0(Var(3))
 ;              callee_key=[7.0]
 ;              cont k_9#9 captured=[]
-;              cont_key=[any]
+;              cont_key=[nil]
 
 ; spec k_9(1) #fn=9
-;   key:    [any]
-;   return: any
+;   key:    [nil]
+;   return: nil
 ;   vars:
-;     Var(0) :: any
+;     Var(0) :: nil
 ;     Var(1) :: 2.5
 ;     Var(2) :: 4.0
 ;     Var(3) :: 10.0
@@ -61,13 +61,13 @@
 ;     blk0 Call print#0(Var(3))
 ;              callee_key=[10.0]
 ;              cont k_10#10 captured=[]
-;              cont_key=[any]
+;              cont_key=[nil]
 
 ; spec k_10(1) #fn=10
-;   key:    [any]
-;   return: any
+;   key:    [nil]
+;   return: nil
 ;   vars:
-;     Var(0) :: any
+;     Var(0) :: nil
 ;     Var(1) :: 1.0
 ;     Var(2) :: 2.0
 ;     Var(3) :: :true

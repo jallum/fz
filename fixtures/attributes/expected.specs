@@ -1,23 +1,23 @@
 ; spec print(1) #fn=0
 ;   key:    [42]
-;   return: any
+;   return: nil
 ;   vars:
 ;     Var(0) :: 42
 ;     Var(1) :: :match_error
-;     Var(2) :: any
+;     Var(2) :: nil
 ;   exits:
-;     blk0 Return Var(2)    :: any
+;     blk0 Return Var(2)    :: nil
 ;     blk1 Halt Var(1)      :: :match_error
 
 ; spec print(1) #fn=0
 ;   key:    [:alice]
-;   return: any
+;   return: nil
 ;   vars:
 ;     Var(0) :: :alice
 ;     Var(1) :: :match_error
-;     Var(2) :: any
+;     Var(2) :: nil
 ;   exits:
-;     blk0 Return Var(2)    :: any
+;     blk0 Return Var(2)    :: nil
 ;     blk1 Halt Var(1)      :: :match_error
 
 ; spec Greeter.hi(1) #fn=7
@@ -42,7 +42,7 @@
 
 ; spec main(0) #fn=9
 ;   key:    []
-;   return: any
+;   return: nil
 ;   vars:
 ;     Var(0) :: :match_error
 ;     Var(1) :: :alice
@@ -55,20 +55,20 @@
 
 ; spec k_10(1) #fn=10
 ;   key:    [:alice]
-;   return: any
+;   return: nil
 ;   vars:
 ;     Var(0) :: :alice
 ;   exits:
 ;     blk0 Call print#0(Var(0))
 ;              callee_key=[:alice]
 ;              cont k_11#11 captured=[]
-;              cont_key=[any]
+;              cont_key=[nil]
 
 ; spec k_11(1) #fn=11
-;   key:    [any]
-;   return: any
+;   key:    [nil]
+;   return: nil
 ;   vars:
-;     Var(0) :: any
+;     Var(0) :: nil
 ;     Var(1) :: 42
 ;   exits:
 ;     blk0 Call Greeter.echo#8(Var(1))
@@ -78,7 +78,7 @@
 
 ; spec k_12(1) #fn=12
 ;   key:    [42]
-;   return: any
+;   return: nil
 ;   vars:
 ;     Var(0) :: 42
 ;   exits:

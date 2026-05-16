@@ -1,23 +1,23 @@
 ; spec print(1) #fn=0
 ;   key:    [:other]
-;   return: any
+;   return: nil
 ;   vars:
 ;     Var(0) :: :other
 ;     Var(1) :: :match_error
-;     Var(2) :: any
+;     Var(2) :: nil
 ;   exits:
-;     blk0 Return Var(2)    :: any
+;     blk0 Return Var(2)    :: nil
 ;     blk1 Halt Var(1)      :: :match_error
 
 ; spec print(1) #fn=0
 ;   key:    [:zero]
-;   return: any
+;   return: nil
 ;   vars:
 ;     Var(0) :: :zero
 ;     Var(1) :: :match_error
-;     Var(2) :: any
+;     Var(2) :: nil
 ;   exits:
-;     blk0 Return Var(2)    :: any
+;     blk0 Return Var(2)    :: nil
 ;     blk1 Halt Var(1)      :: :match_error
 
 ; spec classify(1) #fn=7
@@ -56,7 +56,7 @@
 
 ; spec main(0) #fn=8
 ;   key:    []
-;   return: any
+;   return: nil
 ;   vars:
 ;     Var(0) :: :match_error
 ;     Var(1) :: 0
@@ -69,20 +69,20 @@
 
 ; spec k_9(1) #fn=9
 ;   key:    [:zero]
-;   return: any
+;   return: nil
 ;   vars:
 ;     Var(0) :: :zero
 ;   exits:
 ;     blk0 Call print#0(Var(0))
 ;              callee_key=[:zero]
 ;              cont k_10#10 captured=[]
-;              cont_key=[any]
+;              cont_key=[nil]
 
 ; spec k_10(1) #fn=10
-;   key:    [any]
-;   return: any
+;   key:    [nil]
+;   return: nil
 ;   vars:
-;     Var(0) :: any
+;     Var(0) :: nil
 ;     Var(1) :: 7
 ;   exits:
 ;     blk0 Call classify#7(Var(1))
@@ -92,7 +92,7 @@
 
 ; spec k_11(1) #fn=11
 ;   key:    [:other]
-;   return: any
+;   return: nil
 ;   vars:
 ;     Var(0) :: :other
 ;   exits:

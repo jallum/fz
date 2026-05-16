@@ -1,12 +1,12 @@
 ; spec print(1) #fn=0
 ;   key:    [any]
-;   return: any
+;   return: nil
 ;   vars:
 ;     Var(0) :: any
 ;     Var(1) :: :match_error
-;     Var(2) :: any
+;     Var(2) :: nil
 ;   exits:
-;     blk0 Return Var(2)    :: any
+;     blk0 Return Var(2)    :: nil
 ;     blk1 Halt Var(1)      :: :match_error
 
 ; spec send(2) #fn=6
@@ -69,7 +69,7 @@
 
 ; spec main(0) #fn=9
 ;   key:    []
-;   return: any
+;   return: nil
 ;   fn_constants:
 ;     Var(1) = first_relay#7
 ;     Var(4) = second_relay#8
@@ -132,7 +132,7 @@
 
 ; spec k_13(1) #fn=13
 ;   key:    [any]
-;   return: any
+;   return: nil
 ;   vars:
 ;     Var(0) :: any
 ;   exits:
@@ -141,7 +141,7 @@
 
 ; spec k_receive_14(1) #fn=14
 ;   key:    [any]
-;   return: any
+;   return: nil
 ;   vars:
 ;     Var(0) :: any
 ;   exits:
