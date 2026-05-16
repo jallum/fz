@@ -1199,9 +1199,19 @@ pub fn deep_copy_value(
             panic!("deep_copy_value: HeapKind::VecF64 not yet supported (see fz-ul4.11.23)");
         }
         HeapKind::ProcBin => {
-            // fz-cty.3: ProcBin construction is not yet user-reachable. The
-            // arm proper lands in fz-cty.4. Surface intent rather than partial.
-            panic!("deep_copy_value: HeapKind::ProcBin not yet wired (lands in fz-cty.4)");
+            // fz-cty.4 — cross-process send shares the bytes. Retain the
+            // SharedBin (the destination ProcBin owns a new refcount edge)
+            // and allocate a fresh ProcBin on the destination heap, which
+            // pushes the new entry onto dst_heap.mso_list. The forwarding
+            // map deduplicates: if the same source ProcBin appears multiple
+            // times in the value graph, only one retain + alloc happens.
+            let shared_ptr = Heap::procbin_shared_ptr(sp);
+            unsafe {
+                crate::shared_bin::shared_bin_retain(shared_ptr);
+            }
+            let new_p = unsafe { dst_heap.alloc_procbin(shared_ptr) };
+            forwarding.insert(sp, new_p);
+            return FzValue(new_p as u64);
         }
     };
     forwarding.insert(sp, dp);
@@ -1852,5 +1862,87 @@ mod tests {
             baseline,
             "heap drop released both bins"
         );
+    }
+
+    // ===== fz-cty.4 — deep_copy_value handles ProcBin via retain ============
+
+    /// Cross-heap deep_copy of a ProcBin shares the SharedBin: source MSO
+    /// keeps its entry, destination MSO gains one, refcount climbs to 2.
+    #[test]
+    fn deep_copy_procbin_shares_via_retain() {
+        use crate::shared_bin::{shared_bin_alloc, shared_bin_live_count};
+        let baseline = shared_bin_live_count();
+        let mut src = Heap::new(SIZE_TABLE[0], empty_registry());
+        let mut dst = Heap::new(SIZE_TABLE[0], empty_registry());
+        let sp = shared_bin_alloc(&[7, 8, 9, 10], 32);
+        let src_pb = unsafe { src.alloc_procbin(sp) };
+        let v = FzValue::from_ptr(src_pb);
+        let mut fwd = std::collections::HashMap::new();
+        let copied = deep_copy_value(v, &src, &mut dst, &mut fwd);
+        let dst_pb = copied.unbox_ptr().unwrap();
+        assert_ne!(dst_pb, src_pb, "destination ProcBin is a fresh allocation");
+        assert_eq!(Heap::procbin_shared_ptr(dst_pb), sp);
+        assert_eq!(src.mso_list.len(), 1);
+        assert_eq!(dst.mso_list.len(), 1);
+        unsafe {
+            assert_eq!((*sp).refcount.load(std::sync::atomic::Ordering::Relaxed), 2);
+        }
+        assert_eq!(shared_bin_live_count(), baseline + 1);
+        // Drop dst — refcount back to 1, src unaffected.
+        drop(dst);
+        unsafe {
+            assert_eq!((*sp).refcount.load(std::sync::atomic::Ordering::Relaxed), 1);
+        }
+        assert_eq!(src.mso_list.len(), 1);
+        drop(src);
+        assert_eq!(shared_bin_live_count(), baseline);
+    }
+
+    /// Shared structure: a tuple containing the same ProcBin twice
+    /// deep-copies to a single retained reference (refcount 2, not 3),
+    /// because the forwarding map dedupes on the second visit.
+    #[test]
+    fn deep_copy_procbin_dedup_via_forwarding_map() {
+        use crate::shared_bin::{shared_bin_alloc, shared_bin_live_count};
+        let baseline = shared_bin_live_count();
+        let reg = empty_registry();
+        let pair_id = reg.borrow_mut().register(Schema {
+            name: "Pair".into(),
+            size: 16,
+            fields: vec![
+                FieldDescriptor {
+                    offset: 0,
+                    kind: FieldKind::FzValue,
+                },
+                FieldDescriptor {
+                    offset: 8,
+                    kind: FieldKind::FzValue,
+                },
+            ],
+        });
+        let mut src = Heap::new(SIZE_TABLE[0], reg.clone());
+        let mut dst = Heap::new(SIZE_TABLE[0], reg);
+        let sp = shared_bin_alloc(&[0xab, 0xcd], 16);
+        let src_pb = unsafe { src.alloc_procbin(sp) };
+        let pair = src.alloc_struct(pair_id);
+        src.write_field(pair, 0, FzValue::from_ptr(src_pb));
+        src.write_field(pair, 8, FzValue::from_ptr(src_pb));
+        let mut fwd = std::collections::HashMap::new();
+        let _ = deep_copy_value(FzValue::from_ptr(pair), &src, &mut dst, &mut fwd);
+        assert_eq!(
+            dst.mso_list.len(),
+            1,
+            "dedup: one destination ProcBin even though tuple holds it twice"
+        );
+        unsafe {
+            assert_eq!(
+                (*sp).refcount.load(std::sync::atomic::Ordering::Relaxed),
+                2,
+                "exactly one retain; src and dst together hold 2 references"
+            );
+        }
+        drop(dst);
+        drop(src);
+        assert_eq!(shared_bin_live_count(), baseline);
     }
 }
