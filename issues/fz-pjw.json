@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-5hl"
+  ],
   "blocks": [],
   "created": "2026-05-16T21:52:57Z",
   "description": "",
@@ -10,5 +12,5 @@
   "status": "open",
   "title": "fz-abs.2: wire absorb_callee into all three inliners; remove splice_blocks; update alias golden",
   "type": "task",
-  "updated_at": "2026-05-16T21:52:57Z"
+  "updated_at": "2026-05-16T21:53:00Z"
 }
