@@ -1,3 +1,5 @@
+@type pid :: opaque integer
+
 @doc "Prints x to standard output."
 @spec print(any) :: nil
 fn print(x) do fz_print_value(x) end

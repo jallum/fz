@@ -249,6 +249,10 @@ pub struct LowerCtx {
     /// prelude spans (relative to runtime.fz bytes) don't overwrite
     /// user-program spans (which share the same per-fn Var numbering).
     pub prelude_fn_id_cutoff: u32,
+    /// fz-ty1.3 — Type env built from runtime.fz @type declarations.
+    /// Available to downstream passes (e.g. lower_extern_ret_ty) for
+    /// resolving opaque type names declared in the prelude.
+    pub prelude_type_env: crate::type_expr::ModuleTypeEnv,
 }
 
 impl LowerCtx {
@@ -273,6 +277,7 @@ impl LowerCtx {
             fn_spans: HashMap::new(),
             spawn_thunk_id: None,
             prelude_fn_id_cutoff: 0,
+            prelude_type_env: crate::type_expr::ModuleTypeEnv::new(),
         }
     }
 
@@ -422,14 +427,16 @@ impl Default for LowerCtx {
 
 const RUNTIME_FZ: &str = include_str!("runtime.fz");
 
-fn parse_runtime_prelude() -> Vec<Rc<Item>> {
+fn parse_runtime_prelude() -> (Vec<Rc<Item>>, crate::type_expr::ModuleTypeEnv) {
     let toks = crate::lexer::Lexer::new(RUNTIME_FZ)
         .tokenize()
         .expect("runtime.fz lex error (bug in built-in prelude)");
-    crate::parser::Parser::new(toks)
-        .parse_program()
-        .expect("runtime.fz parse error (bug in built-in prelude)")
-        .items
+    let (items, attrs) = crate::parser::Parser::new(toks)
+        .parse_prelude()
+        .expect("runtime.fz parse error (bug in built-in prelude)");
+    let env = crate::type_expr::build_module_type_env(&attrs)
+        .expect("runtime.fz @type error (bug in built-in prelude)");
+    (items, env)
 }
 
 pub fn lower_program(prog: &Program) -> Result<Module, LowerError> {
@@ -442,7 +449,8 @@ pub fn lower_program_full(prog: &Program) -> Result<(Module, AtomTable, BuiltinT
 
     // Prepend the built-in runtime.fz prelude so its externs and wrapper fns
     // are visible to every user program without an explicit import.
-    let runtime_items = parse_runtime_prelude();
+    let (runtime_items, prelude_type_env) = parse_runtime_prelude();
+    ctx.prelude_type_env = prelude_type_env;
     let runtime_item_count = runtime_items.len();
     let all_items: Vec<Rc<Item>> = runtime_items
         .into_iter()

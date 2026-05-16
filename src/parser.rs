@@ -285,6 +285,14 @@ impl Parser {
         })
     }
 
+    /// Like `parse_program` but allows top-level `@type` declarations
+    /// (and returns them separately). Used for the built-in runtime.fz
+    /// prelude, which is not wrapped in a `defmodule`.
+    pub fn parse_prelude(&mut self) -> PR<(Vec<Rc<Item>>, Vec<crate::ast::Attribute>)> {
+        let (items, attrs) = self.parse_items_until(&[Tok::Eof])?;
+        Ok((items, attrs))
+    }
+
     fn parse_items_until(&mut self, terminators: &[Tok]) -> PR<(Vec<Rc<Item>>, Vec<Attribute>)> {
         let mut items: Vec<Rc<Item>> = Vec::new();
         let mut order: Vec<String> = Vec::new();
