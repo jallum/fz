@@ -333,9 +333,7 @@ impl<'a> TypeExprParser<'a> {
                 n
             }
             other => {
-                return Err(
-                    self.err(format!("expected element type in vector(T), got {}", other))
-                )
+                return Err(self.err(format!("expected element type in vector(T), got {}", other)));
             }
         };
         self.expect(&Tok::RParen, "`)` after vector element type")?;

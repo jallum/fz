@@ -642,9 +642,7 @@ impl Parser {
     /// Parse function parameter list with optional type annotations (`x :: T`).
     /// Returns (patterns, per-param type token vecs). Called from `parse_fn_clause`.
     #[allow(clippy::type_complexity)]
-    fn parse_fn_params(
-        &mut self,
-    ) -> PR<(Vec<Spanned<Pattern>>, Vec<Option<Vec<Token>>>)> {
+    fn parse_fn_params(&mut self) -> PR<(Vec<Spanned<Pattern>>, Vec<Option<Vec<Token>>>)> {
         let mut patterns = Vec::new();
         let mut types: Vec<Option<Vec<Token>>> = Vec::new();
         self.skip_newlines();
@@ -796,43 +794,44 @@ impl Parser {
             other => return self.err(format!("expected function name, got {:?}", other)),
         };
         self.expect(&Tok::LParen, "`(`")?;
-        let extern_param_types: Vec<Vec<crate::lexer::Token>> = if matches!(self.peek(), Tok::RParen) {
-            vec![]
-        } else {
-            let mut params: Vec<Vec<crate::lexer::Token>> = Vec::new();
-            let mut current: Vec<crate::lexer::Token> = Vec::new();
-            let mut depth = 0usize;
-            loop {
-                match self.peek() {
-                    Tok::LParen | Tok::LBrace | Tok::LBrack => {
-                        depth += 1;
-                        current.push(self.toks[self.pos].clone());
-                        self.bump();
-                    }
-                    Tok::RParen | Tok::RBrace | Tok::RBrack if depth > 0 => {
-                        depth -= 1;
-                        current.push(self.toks[self.pos].clone());
-                        self.bump();
-                    }
-                    Tok::RParen => {
-                        params.push(std::mem::take(&mut current));
-                        break;
-                    }
-                    Tok::Comma if depth == 0 => {
-                        params.push(std::mem::take(&mut current));
-                        self.bump();
-                    }
-                    Tok::Eof | Tok::Newline => {
-                        return self.err("unexpected end of extern parameter list");
-                    }
-                    _ => {
-                        current.push(self.toks[self.pos].clone());
-                        self.bump();
+        let extern_param_types: Vec<Vec<crate::lexer::Token>> =
+            if matches!(self.peek(), Tok::RParen) {
+                vec![]
+            } else {
+                let mut params: Vec<Vec<crate::lexer::Token>> = Vec::new();
+                let mut current: Vec<crate::lexer::Token> = Vec::new();
+                let mut depth = 0usize;
+                loop {
+                    match self.peek() {
+                        Tok::LParen | Tok::LBrace | Tok::LBrack => {
+                            depth += 1;
+                            current.push(self.toks[self.pos].clone());
+                            self.bump();
+                        }
+                        Tok::RParen | Tok::RBrace | Tok::RBrack if depth > 0 => {
+                            depth -= 1;
+                            current.push(self.toks[self.pos].clone());
+                            self.bump();
+                        }
+                        Tok::RParen => {
+                            params.push(std::mem::take(&mut current));
+                            break;
+                        }
+                        Tok::Comma if depth == 0 => {
+                            params.push(std::mem::take(&mut current));
+                            self.bump();
+                        }
+                        Tok::Eof | Tok::Newline => {
+                            return self.err("unexpected end of extern parameter list");
+                        }
+                        _ => {
+                            current.push(self.toks[self.pos].clone());
+                            self.bump();
+                        }
                     }
                 }
-            }
-            params
-        };
+                params
+            };
         self.expect(&Tok::RParen, "`)`")?;
         self.expect(&Tok::ColonColon, "`::`")?;
         let mut extern_ret_tokens = Vec::new();

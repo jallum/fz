@@ -610,7 +610,11 @@ fn eval_prim(module: &Module, prim: &Prim, env: &HashMap<Var, FzValue>) -> Resul
                     matched |= hk == Some(HeapKind::VecBit);
                 }
             }
-            if matched { FzValue::TRUE } else { FzValue::FALSE }
+            if matched {
+                FzValue::TRUE
+            } else {
+                FzValue::FALSE
+            }
         }
         _ => {
             return Err(format!(

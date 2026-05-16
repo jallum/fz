@@ -17,8 +17,8 @@
 #![allow(dead_code)]
 
 use crate::ast::{
-    BinOp as AstBinOp, BitField as AstBitField, BitSize as AstBitSize, Expr, FnClause, FnDef,
-    Item, MatchClause, Pattern, Program, Spanned, UnOp as AstUnOp, WithBinding,
+    BinOp as AstBinOp, BitField as AstBitField, BitSize as AstBitSize, Expr, FnClause, FnDef, Item,
+    MatchClause, Pattern, Program, Spanned, UnOp as AstUnOp, WithBinding,
 };
 use crate::diag::Span;
 use crate::fz_ir::{

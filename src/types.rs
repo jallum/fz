@@ -2446,11 +2446,7 @@ mod tests {
         let pid = Descr::opaque_of("pid");
         let ts = Descr::opaque_of("timestamp");
         let i = pid.intersect(&ts);
-        assert!(
-            i.is_empty(),
-            "pid ∩ timestamp should be empty: got {}",
-            i
-        );
+        assert!(i.is_empty(), "pid ∩ timestamp should be empty: got {}", i);
     }
 
     #[test]

@@ -6325,7 +6325,9 @@ fn lower_prim<M: cranelift_module::Module>(
                     };
                 }
                 if !descr.floats.is_none() {
-                    let c = b.ins().icmp_imm(IntCC::Equal, kind64, HeapKind::Float as i64);
+                    let c = b
+                        .ins()
+                        .icmp_imm(IntCC::Equal, kind64, HeapKind::Float as i64);
                     or_heap!(c);
                 }
                 for (bit, hk) in [
