@@ -140,6 +140,10 @@ pub enum HeapKind {
     Map = 7,
     Closure = 8,
     Float = 9,
+    /// fz-cty.3 — 32-byte stub on a per-process heap that references an
+    /// off-heap `SharedBin`. Cheney trace is a no-op; the per-heap MSO
+    /// list governs retain/release across GC.
+    ProcBin = 10,
 }
 
 impl HeapKind {
@@ -155,10 +159,15 @@ impl HeapKind {
             7 => Some(HeapKind::Map),
             8 => Some(HeapKind::Closure),
             9 => Some(HeapKind::Float),
+            10 => Some(HeapKind::ProcBin),
             _ => None,
         }
     }
 }
+
+// Bitstring storage dispatchers moved to `crate::procbin` in fz-q8d.1.
+// `fz_value.rs` does not own bitstring layout; render uses the procbin
+// helpers like every other read site.
 
 /// Heap object header — exactly 16 bytes, 16-byte aligned.
 ///
@@ -429,6 +438,7 @@ mod tests {
             HeapKind::Map,
             HeapKind::Closure,
             HeapKind::Float,
+            HeapKind::ProcBin,
         ] {
             assert_eq!(HeapKind::from_u16(k as u16), Some(k));
         }
@@ -491,7 +501,7 @@ pub mod debug {
                 match HeapKind::from_u16(kind) {
                     Some(HeapKind::List) => render_list(bits),
                     Some(HeapKind::Struct) => render_struct(bits),
-                    Some(HeapKind::Bitstring) => render_bitstring(bits),
+                    Some(HeapKind::Bitstring) | Some(HeapKind::ProcBin) => render_bitstring(bits),
                     Some(HeapKind::Map) => render_map(bits),
                     Some(HeapKind::Closure) => render_closure(bits),
                     Some(HeapKind::Float) => render_float(bits),
@@ -548,9 +558,10 @@ pub mod debug {
 
     fn render_bitstring(bits: u64) -> String {
         let p = FzValue(bits).unbox_ptr().unwrap();
-        let bit_len = unsafe { std::ptr::read((p as *const u8).add(16) as *const u64) } as usize;
+        let bit_len = unsafe { crate::procbin::bitstring_bit_len(p) } as usize;
         let total_bytes = bit_len.div_ceil(8);
-        let bytes = unsafe { std::slice::from_raw_parts((p as *const u8).add(24), total_bytes) };
+        let byte_ptr = unsafe { crate::procbin::bitstring_byte_ptr(p) };
+        let bytes = unsafe { std::slice::from_raw_parts(byte_ptr, total_bytes) };
         let full_bytes = bit_len / 8;
         let trailing_bits = bit_len % 8;
         let mut parts: Vec<String> = bytes[..full_bytes].iter().map(|b| b.to_string()).collect();

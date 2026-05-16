@@ -1092,6 +1092,25 @@ impl JitBackend {
             fz_runtime::ir_runtime::fz_bs_finalize as *const u8,
         );
         builder.symbol(
+            "fz_alloc_bitstring_const",
+            fz_runtime::ir_runtime::fz_alloc_bitstring_const as *const u8,
+        );
+        // fz-q8d.2 — static SharedBin path: codegen emits a 40-byte data
+        // symbol in `.data`, then a call to this helper to wrap it in a
+        // per-process ProcBin / MSO entry.
+        builder.symbol(
+            "fz_alloc_procbin_from_static",
+            fz_runtime::ir_runtime::fz_alloc_procbin_from_static as *const u8,
+        );
+        // fz-q8d.2 — noop destructor address baked into each static
+        // SharedBin's `destructor` field via a function-address
+        // relocation. Never invoked in practice (anchor refcount stays
+        // ≥ 1) but must resolve at link time.
+        builder.symbol(
+            "shared_bin_destructor_noop",
+            fz_runtime::procbin::shared_bin_destructor_noop as *const u8,
+        );
+        builder.symbol(
             "fz_bs_reader_init",
             fz_runtime::ir_runtime::fz_bs_reader_init as *const u8,
         );
@@ -1803,6 +1822,9 @@ pub fn compile_with_backend<B: Backend>(
     crate::ir_fuse::fuse_blocks(&mut working);
     let module_types = crate::ir_typer::type_module(&working);
     crate::ir_fold::fold_module(&mut working, &module_types);
+    // fz-cty.8 — fold byte-literal MakeBitstring into ConstBitstring before
+    // DCE so the per-byte Const(Int) operand stmts go dead in the same pass.
+    crate::ir_const_bs::fold_module(&mut working);
     crate::ir_dce::dce_module(&mut working);
     let module = &working;
 
@@ -2664,6 +2686,17 @@ pub fn compile_with_backend<B: Backend>(
         fn_ids.insert(sid as u32, id);
     }
 
+    // fz-q8d.2 — per-module ConstBitstring symbol cache. Same byte payload
+    // across the whole module shares one set of symbols:
+    //   * `bytes_id`: the raw payload (Local, read-only).
+    //   * `sharedbin_id`: present only for above-threshold payloads — a
+    //     40-byte static SharedBin in `.data` with refcount=1 anchor, plus
+    //     two relocations (bytes_ptr and the noop destructor). Below-
+    //     threshold payloads have `None` here and continue to flow through
+    //     `fz_alloc_bitstring_const` for inline / runtime-decided storage.
+    let bs_const_data: std::cell::RefCell<HashMap<Vec<u8>, BsConstSyms>> =
+        std::cell::RefCell::new(HashMap::new());
+
     for sid in 0..spec_count {
         let Some(idx) = spec_fnidx[sid] else {
             continue;
@@ -2684,6 +2717,7 @@ pub fn compile_with_backend<B: Backend>(
             spec_registry: &spec_registry,
             fn_ids: &fn_ids,
             tuple_schema_ids: &tuple_schema_ids,
+            bs_const_data: &bs_const_data,
             param_reprs: &param_reprs,
             return_reprs: &return_reprs,
             natively_callable: &natively_callable,
@@ -3193,6 +3227,22 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         &[],
     )?;
     let bs_finalize_id = decl("fz_bs_finalize", &[], &[types::I64])?;
+    // fz-cty.8 — `(payload_ptr: i64, byte_len: i64, bit_len: i64) -> i64`.
+    let alloc_bitstring_const_id = decl(
+        "fz_alloc_bitstring_const",
+        &[types::I64, types::I64, types::I64],
+        &[types::I64],
+    )?;
+    // fz-q8d.2 — `(static_sharedbin: i64) -> i64`. Retains the anchor on
+    // the supplied static SharedBin and allocates a ProcBin on the
+    // current process heap that owns the new refcount edge.
+    let alloc_procbin_from_static_id =
+        decl("fz_alloc_procbin_from_static", &[types::I64], &[types::I64])?;
+    // fz-q8d.2 — noop destructor symbol. Imported so its address can be
+    // baked into each static SharedBin's `destructor` slot via a
+    // function-address relocation. Matches the runtime's `extern "C" fn
+    // (*mut SharedBin)` signature exactly.
+    let shared_bin_destructor_noop_id = decl("shared_bin_destructor_noop", &[types::I64], &[])?;
     let bs_reader_init_id = decl("fz_bs_reader_init", &[types::I64], &[types::I64])?;
     let bs_read_field_id = decl(
         "fz_bs_read_field",
@@ -3320,6 +3370,9 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         bs_begin_id,
         bs_write_id,
         bs_finalize_id,
+        alloc_bitstring_const_id,
+        alloc_procbin_from_static_id,
+        shared_bin_destructor_noop_id,
         bs_reader_init_id,
         bs_read_field_id,
         map_begin_id,
@@ -3352,6 +3405,58 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
     })
 }
 
+/// fz-q8d.2 — symbol set for one unique ConstBitstring byte payload.
+#[derive(Clone, Copy)]
+struct BsConstSyms {
+    /// Byte payload symbol (Local data, read-only). Always present.
+    bytes_id: DataId,
+    /// Static `SharedBin` symbol (Local data, writable so the refcount
+    /// anchor lives in .data). `Some` for above-threshold payloads,
+    /// `None` for below-threshold (which keep the inline / runtime
+    /// allocation path via `fz_alloc_bitstring_const`).
+    sharedbin_id: Option<DataId>,
+}
+
+/// fz-q8d.2 — emit a 40-byte static `SharedBin` symbol in `.data`:
+///
+///   offset  0..8   refcount = 1 (LE u64, anchor — never decremented to 0)
+///   offset  8..16  bit_len (LE u64)
+///   offset 16..24  bytes_ptr — relocation to the bytes payload symbol
+///   offset 24..32  bytes_len (LE u64)
+///   offset 32..40  destructor — function-address relocation to noop
+///
+/// The destructor relocation is to `shared_bin_destructor_noop`, declared
+/// as `Linkage::Import` so the linker resolves it to the runtime export.
+fn define_static_sharedbin<M: cranelift_module::Module>(
+    jmod: &mut M,
+    runtime: &RuntimeRefs,
+    bytes_id: DataId,
+    bytes: &[u8],
+    bit_len: u64,
+    idx: usize,
+) -> Result<DataId, CodegenError> {
+    let sb_name = format!(".fz_bs_sb_{}", idx);
+    let sb_id = jmod
+        .declare_data(&sb_name, Linkage::Local, /*writable=*/ true, false)
+        .map_err(|e| CodegenError::new(format!("declare {}: {}", sb_name, e)))?;
+    let mut buf = vec![0u8; 40];
+    buf[0..8].copy_from_slice(&1u64.to_le_bytes());
+    buf[8..16].copy_from_slice(&bit_len.to_le_bytes());
+    // bytes_ptr at 16..24 — zero placeholder; relocation patches at link.
+    buf[24..32].copy_from_slice(&(bytes.len() as u64).to_le_bytes());
+    // destructor at 32..40 — zero placeholder; function-addr reloc patches.
+    let mut desc = DataDescription::new();
+    desc.define(buf.into_boxed_slice());
+    desc.set_align(8);
+    let bytes_gv = jmod.declare_data_in_data(bytes_id, &mut desc);
+    desc.write_data_addr(16, bytes_gv, 0);
+    let dtor_fref = jmod.declare_func_in_data(runtime.shared_bin_destructor_noop_id, &mut desc);
+    desc.write_function_addr(32, dtor_fref);
+    jmod.define_data(sb_id, &desc)
+        .map_err(|e| CodegenError::new(format!("define {}: {}", sb_name, e)))?;
+    Ok(sb_id)
+}
+
 struct CodegenEnv<'a> {
     runtime: &'a RuntimeRefs,
     module: &'a crate::fz_ir::Module,
@@ -3359,6 +3464,10 @@ struct CodegenEnv<'a> {
     spec_registry: &'a SpecRegistry,
     fn_ids: &'a HashMap<u32, FuncId>,
     tuple_schema_ids: &'a HashMap<usize, u32>,
+    /// fz-q8d.2 — per-payload symbol cache. Below-threshold payloads
+    /// carry only `bytes_id`; above-threshold payloads additionally carry
+    /// a static `SharedBin` symbol in `.data`.
+    bs_const_data: &'a std::cell::RefCell<HashMap<Vec<u8>, BsConstSyms>>,
     param_reprs: &'a [Vec<ArgRepr>],
     return_reprs: &'a [ArgRepr],
     natively_callable: &'a std::collections::HashSet<crate::fz_ir::FnId>,
@@ -3385,6 +3494,12 @@ struct RuntimeRefs {
     bs_begin_id: FuncId,
     bs_write_id: FuncId,
     bs_finalize_id: FuncId,
+    // fz-cty.8 — single-shot allocation from a module-baked byte payload.
+    alloc_bitstring_const_id: FuncId,
+    // fz-q8d.2 — alloc a ProcBin referencing a static SharedBin in .data.
+    alloc_procbin_from_static_id: FuncId,
+    // fz-q8d.2 — noop destructor address relocated into static SharedBins.
+    shared_bin_destructor_noop_id: FuncId,
     bs_reader_init_id: FuncId,
     bs_read_field_id: FuncId,
     map_begin_id: FuncId,
@@ -5356,6 +5471,77 @@ fn lower_collection_prim<M: cranelift_module::Module>(
             let inst = b.ins().call(fin, &[]);
             b.inst_results(inst)[0]
         }
+        Prim::ConstBitstring(bytes, bit_len) => {
+            // fz-q8d.2 — split paths by payload size:
+            //   * Below threshold: intern bytes, call
+            //     `fz_alloc_bitstring_const(ptr, byte_len, bit_len)`. The
+            //     runtime allocates an inline HeapKind::Bitstring.
+            //   * Above threshold: emit both a bytes-payload symbol and a
+            //     40-byte static SharedBin symbol in `.data` (refcount=1
+            //     anchor, relocs for bytes_ptr and the noop destructor),
+            //     call `fz_alloc_procbin_from_static(static_ptr)`. The
+            //     runtime retains the anchor and wraps a ProcBin around it.
+            let above_threshold = bytes.len() > fz_runtime::heap::SHARED_BIN_THRESHOLD_BYTES;
+            let syms = {
+                let mut cache = env.bs_const_data.borrow_mut();
+                if let Some(syms) = cache.get(bytes) {
+                    // Cached. If the existing entry lacks the SharedBin
+                    // symbol but this call site needs it, populate now.
+                    let mut syms = *syms;
+                    if above_threshold && syms.sharedbin_id.is_none() {
+                        syms.sharedbin_id = Some(define_static_sharedbin(
+                            jmod,
+                            runtime,
+                            syms.bytes_id,
+                            bytes,
+                            *bit_len,
+                            cache.len(),
+                        )?);
+                        cache.insert(bytes.clone(), syms);
+                    }
+                    syms
+                } else {
+                    let idx = cache.len();
+                    let bytes_name = format!(".fz_bs_const_{}", idx);
+                    let bytes_id = jmod
+                        .declare_data(&bytes_name, Linkage::Local, false, false)
+                        .map_err(|e| CodegenError::new(format!("declare {}: {}", bytes_name, e)))?;
+                    let mut desc = DataDescription::new();
+                    desc.define(bytes.clone().into_boxed_slice());
+                    desc.set_align(1);
+                    jmod.define_data(bytes_id, &desc)
+                        .map_err(|e| CodegenError::new(format!("define {}: {}", bytes_name, e)))?;
+                    let sharedbin_id = if above_threshold {
+                        Some(define_static_sharedbin(
+                            jmod, runtime, bytes_id, bytes, *bit_len, idx,
+                        )?)
+                    } else {
+                        None
+                    };
+                    let syms = BsConstSyms {
+                        bytes_id,
+                        sharedbin_id,
+                    };
+                    cache.insert(bytes.clone(), syms);
+                    syms
+                }
+            };
+            if let Some(sb_id) = syms.sharedbin_id {
+                let gv = jmod.declare_data_in_func(sb_id, b.func);
+                let sb_ptr = b.ins().symbol_value(types::I64, gv);
+                let fref = jmod.declare_func_in_func(runtime.alloc_procbin_from_static_id, b.func);
+                let inst = b.ins().call(fref, &[sb_ptr]);
+                b.inst_results(inst)[0]
+            } else {
+                let gv = jmod.declare_data_in_func(syms.bytes_id, b.func);
+                let ptr_v = b.ins().symbol_value(types::I64, gv);
+                let byte_len_v = b.ins().iconst(types::I64, bytes.len() as i64);
+                let bit_len_v = b.ins().iconst(types::I64, *bit_len as i64);
+                let fref = jmod.declare_func_in_func(runtime.alloc_bitstring_const_id, b.func);
+                let inst = b.ins().call(fref, &[ptr_v, byte_len_v, bit_len_v]);
+                b.inst_results(inst)[0]
+            }
+        }
         Prim::BitReaderInit(v) => {
             let vv = tagged_get(var_env, b, jmod, runtime, v.0);
             let fref = jmod.declare_func_in_func(runtime.bs_reader_init_id, b.func);
@@ -5959,6 +6145,7 @@ fn lower_prim<M: cranelift_module::Module>(
         | Prim::TupleField(..)
         | Prim::AllocStruct(..)
         | Prim::MakeBitstring(..)
+        | Prim::ConstBitstring(..)
         | Prim::BitReaderInit(..)
         | Prim::BitReadField { .. }
         | Prim::BitReaderDone(..)

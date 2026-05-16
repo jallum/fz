@@ -122,6 +122,7 @@ fn max_var_in_prim(p: &Prim) -> u32 {
                 v(*sv);
             }
         }),
+        Prim::ConstBitstring(_, _) => {}
         Prim::BitReaderInit(a) | Prim::BitReaderDone(a) => v(*a),
         Prim::BitReadField { reader, size, .. } => {
             v(*reader);
@@ -213,6 +214,7 @@ pub fn alpha_rename(
             ),
             Prim::MapGet(a, b) => Prim::MapGet(sv(*a), sv(*b)),
             Prim::MakeVec(kind, els) => Prim::MakeVec(*kind, els.iter().map(|x| sv(*x)).collect()),
+            Prim::ConstBitstring(bytes, bit_len) => Prim::ConstBitstring(bytes.clone(), *bit_len),
             Prim::MakeBitstring(fields) => Prim::MakeBitstring(
                 fields
                     .iter()

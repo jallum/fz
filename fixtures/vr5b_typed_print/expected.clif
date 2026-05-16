@@ -9,7 +9,7 @@ function u0:0(i64) -> i64 tail {
     sig3 = (i64, i64) -> i64 tail
     fn0 = u0:0 sig0
     fn1 = u0:0 sig1
-    fn2 = u0:20 sig2
+    fn2 = u0:23 sig2
 
 block0(v0: i64):
     v1 = iconst.i64 42    ;; v1 :: 42

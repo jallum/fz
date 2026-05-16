@@ -1614,6 +1614,7 @@ fn type_prim(
             VecKindIr::Bit => Descr::vec_bit(),
         },
         Prim::MakeBitstring(_) => Descr::vec_u8().union(&Descr::vec_bit()),
+        Prim::ConstBitstring(_, _) => Descr::vec_u8().union(&Descr::vec_bit()),
 
         Prim::MakeClosure(fn_id, captured) => {
             // fz-ul4.27.22.10 — type MakeClosure's result as a closure

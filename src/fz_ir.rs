@@ -240,6 +240,12 @@ pub enum Prim {
     MakeVec(VecKindIr, Vec<Var>),
     /// Build a bitstring from a sequence of fields.
     MakeBitstring(Vec<BitFieldIr>),
+    /// fz-cty.8 — constant-folded byte-payload bitstring. Carries the
+    /// materialised bytes and bit length; codegen interns the payload as a
+    /// module-private data symbol and emits a single allocation call. Produced
+    /// only by `ir_const_bs::fold_module`; lowered identically to a
+    /// `MakeBitstring` of byte fields at runtime.
+    ConstBitstring(Vec<u8>, u64),
     /// Initialize a bit-reader from a binary/bitstring value. Returns an
     /// opaque reader value. Pattern-matching of bitstrings uses this plus
     /// `BitReadField` per field, so size-vars in later fields can refer to
@@ -703,6 +709,14 @@ impl fmt::Display for Prim {
             }
             Prim::MakeBitstring(fields) => {
                 write!(f, "bitstring([{}])", fields.len())
+            }
+            Prim::ConstBitstring(bytes, bit_len) => {
+                write!(
+                    f,
+                    "const_bitstring(byte_len={}, bit_len={})",
+                    bytes.len(),
+                    bit_len
+                )
             }
             Prim::BitReaderInit(v) => write!(f, "bit_reader_init({})", v),
             Prim::BitReadField { reader, .. } => write!(f, "bit_read_field({})", reader),
