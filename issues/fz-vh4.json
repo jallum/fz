@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-li4"
+  ],
   "blocks": [],
   "created": "2026-05-16T22:52:19Z",
   "description": "",
@@ -10,5 +12,5 @@
   "status": "open",
   "title": "fz-cg.2: introduce CodegenCache struct; thread \u0026mut CodegenCache through lower_prim and emit_terminator — no behavior change",
   "type": "task",
-  "updated_at": "2026-05-16T22:52:19Z"
+  "updated_at": "2026-05-16T22:52:24Z"
 }
