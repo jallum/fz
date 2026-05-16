@@ -23,7 +23,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 
-use crate::fz_ir::{BinOp, BuiltinKind, Const, FnId, Module, Prim, Stmt, Term, Var};
+use crate::fz_ir::{BinOp, BuiltinKind, Const, ExternId, ExternTy, FnId, Module, Prim, Stmt, Term, Var};
 use fz_runtime::fz_value::FzValue;
 use fz_runtime::process::Process;
 
@@ -465,8 +465,9 @@ fn eval_prim(module: &Module, prim: &Prim, env: &HashMap<Var, FzValue>) -> Resul
             let arg_vals = collect(env, args)?;
             run_builtin(module, *bid, &arg_vals)?
         }
-        Prim::Extern(eid, _args) => {
-            todo!("Prim::Extern {:?} — wired in T5", eid)
+        Prim::Extern(eid, args) => {
+            let arg_vals = collect(env, args)?;
+            call_extern(module, *eid, &arg_vals)?
         }
         Prim::MakeClosure(fn_id, captured) => {
             // fz-ul4.29.5: new closure layout — header (16) + stub_fp (8) +
@@ -677,5 +678,57 @@ fn run_builtin(
                 args[0].0, args[1].0,
             )))
         }
+    }
+}
+
+fn call_extern(module: &Module, eid: ExternId, args: &[FzValue]) -> Result<FzValue, String> {
+    let decl = module
+        .externs
+        .get(eid.0 as usize)
+        .ok_or_else(|| format!("interp: unknown extern id {}", eid.0))?;
+    let fp = resolve_symbol(&decl.symbol)?;
+    let raw_args: Vec<u64> = args.iter().map(|v| v.0).collect();
+    let returns_value = !matches!(decl.ret, ExternTy::Unit | ExternTy::Never);
+    let ret = if returns_value {
+        unsafe { dispatch_fn_returning(fp, &raw_args) }
+    } else {
+        unsafe { dispatch_fn_void(fp, &raw_args) };
+        0
+    };
+    Ok(FzValue(ret))
+}
+
+fn resolve_symbol(name: &str) -> Result<*const (), String> {
+    use std::ffi::CString;
+    let cname = CString::new(name).map_err(|e| format!("bad symbol name: {}", e))?;
+    #[cfg(unix)]
+    let ptr = unsafe { libc::dlsym(libc::RTLD_DEFAULT, cname.as_ptr()) };
+    #[cfg(not(unix))]
+    let ptr: *mut std::ffi::c_void = std::ptr::null_mut();
+    if ptr.is_null() {
+        return Err(format!("dlsym: symbol `{}` not found", name));
+    }
+    Ok(ptr as *const ())
+}
+
+unsafe fn dispatch_fn_returning(fp: *const (), args: &[u64]) -> u64 {
+    match args.len() {
+        0 => unsafe { let f: unsafe extern "C" fn() -> u64 = std::mem::transmute(fp); f() }
+        1 => unsafe { let f: unsafe extern "C" fn(u64) -> u64 = std::mem::transmute(fp); f(args[0]) }
+        2 => unsafe { let f: unsafe extern "C" fn(u64, u64) -> u64 = std::mem::transmute(fp); f(args[0], args[1]) }
+        3 => unsafe { let f: unsafe extern "C" fn(u64, u64, u64) -> u64 = std::mem::transmute(fp); f(args[0], args[1], args[2]) }
+        4 => unsafe { let f: unsafe extern "C" fn(u64, u64, u64, u64) -> u64 = std::mem::transmute(fp); f(args[0], args[1], args[2], args[3]) }
+        n => panic!("extern arity {} not supported (max 4)", n),
+    }
+}
+
+unsafe fn dispatch_fn_void(fp: *const (), args: &[u64]) {
+    match args.len() {
+        0 => unsafe { let f: unsafe extern "C" fn() = std::mem::transmute(fp); f() }
+        1 => unsafe { let f: unsafe extern "C" fn(u64) = std::mem::transmute(fp); f(args[0]) }
+        2 => unsafe { let f: unsafe extern "C" fn(u64, u64) = std::mem::transmute(fp); f(args[0], args[1]) }
+        3 => unsafe { let f: unsafe extern "C" fn(u64, u64, u64) = std::mem::transmute(fp); f(args[0], args[1], args[2]) }
+        4 => unsafe { let f: unsafe extern "C" fn(u64, u64, u64, u64) = std::mem::transmute(fp); f(args[0], args[1], args[2], args[3]) }
+        n => panic!("extern arity {} not supported (max 4)", n),
     }
 }
