@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-i67.2"
   ],
@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-i67",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "REPL .3: opt sequential fixtures into [..., repl]; resolve divergences",
   "type": "task",
-  "updated_at": "2026-05-16T22:58:14Z"
+  "updated_at": "2026-05-16T23:05:37Z"
 }
