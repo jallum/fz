@@ -245,6 +245,12 @@ impl Default for SchemaRegistry {
     }
 }
 
+/// fz-cty.5 — bitstrings above this many bytes are routed through the
+/// shared zone (refcounted off-heap `SharedBin` + per-process `ProcBin`
+/// stub) instead of being inlined on the per-process heap. Matches
+/// BEAM's refc-binary threshold.
+pub const SHARED_BIN_THRESHOLD_BYTES: usize = 64;
+
 pub struct Heap {
     block_start: *mut u8,
     bump_top: *mut u8,
@@ -458,7 +464,17 @@ impl Heap {
     /// Bitstring layout: HeapHeader (16) + bit_len: u64 (8) + bytes (padded
     /// to 16). Caller supplies a fully-built byte buffer + bit_len; this
     /// performs the heap copy.
+    ///
+    /// fz-cty.5 — payloads larger than `SHARED_BIN_THRESHOLD_BYTES` route
+    /// through the shared zone: a SharedBin is allocated off-heap and the
+    /// per-process heap gets a 32-byte `HeapKind::ProcBin` stub referencing
+    /// it. Render and bit-match dispatch on kind via
+    /// `bitstring_bit_len` / `bitstring_byte_ptr`.
     pub fn alloc_bitstring(&mut self, bytes: &[u8], bit_len: u64) -> *mut HeapHeader {
+        if bytes.len() > SHARED_BIN_THRESHOLD_BYTES {
+            let shared_ptr = crate::shared_bin::shared_bin_alloc(bytes, bit_len);
+            return unsafe { self.alloc_procbin(shared_ptr) };
+        }
         let total = (16 + 8 + bytes.len() + 15) & !15;
         let p = self.alloc(total);
         unsafe {
@@ -1944,5 +1960,65 @@ mod tests {
         drop(dst);
         drop(src);
         assert_eq!(shared_bin_live_count(), baseline);
+    }
+
+    // ===== fz-cty.5 — alloc_bitstring threshold + dispatch =================
+
+    /// Bitstrings ≤ 64 bytes stay inline: HeapKind::Bitstring, no MSO entry.
+    #[test]
+    fn alloc_bitstring_small_stays_inline() {
+        use crate::fz_value::{HeapKind, bitstring_bit_len, bitstring_byte_ptr};
+        let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
+        let bytes: Vec<u8> = (0..32u8).collect();
+        let p = h.alloc_bitstring(&bytes, 256);
+        unsafe {
+            assert_eq!((*p).kind, HeapKind::Bitstring as u16);
+            assert_eq!(bitstring_bit_len(p), 256);
+            let pay = bitstring_byte_ptr(p);
+            for i in 0..32 {
+                assert_eq!(*pay.add(i), bytes[i]);
+            }
+        }
+        assert!(h.mso_list.is_empty());
+    }
+
+    /// Bitstrings > 64 bytes go to the shared zone: HeapKind::ProcBin, MSO
+    /// gains one entry, SharedBin refcount = 1.
+    #[test]
+    fn alloc_bitstring_large_routes_to_shared_zone() {
+        use crate::fz_value::{HeapKind, bitstring_bit_len, bitstring_byte_ptr};
+        use crate::shared_bin::shared_bin_live_count;
+        let baseline = shared_bin_live_count();
+        let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
+        let bytes: Vec<u8> = (0..128u8).collect();
+        let p = h.alloc_bitstring(&bytes, 1024);
+        unsafe {
+            assert_eq!((*p).kind, HeapKind::ProcBin as u16);
+            assert_eq!(bitstring_bit_len(p), 1024);
+            let pay = bitstring_byte_ptr(p);
+            for i in 0..128 {
+                assert_eq!(*pay.add(i), bytes[i]);
+            }
+        }
+        assert_eq!(h.mso_list.len(), 1);
+        assert_eq!(shared_bin_live_count(), baseline + 1);
+        drop(h);
+        assert_eq!(shared_bin_live_count(), baseline);
+    }
+
+    /// Bit-match round-trip over a ProcBin source yields the expected bytes.
+    /// Threshold-crossing is invisible to bs_reader_init + bs_read_field.
+    #[test]
+    fn procbin_round_trips_through_bitstring_dispatchers() {
+        use crate::fz_value::{bitstring_bit_len, bitstring_byte_ptr};
+        let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
+        let bytes: Vec<u8> = (0..100u8).collect();
+        let p = h.alloc_bitstring(&bytes, 800);
+        // Dispatch helpers return the underlying payload regardless of kind.
+        let bl = unsafe { bitstring_bit_len(p) };
+        let bp = unsafe { bitstring_byte_ptr(p) };
+        assert_eq!(bl, 800);
+        let recovered: Vec<u8> = (0..100).map(|i| unsafe { *bp.add(i) }).collect();
+        assert_eq!(recovered, bytes);
     }
 }
