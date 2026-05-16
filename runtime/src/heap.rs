@@ -1793,6 +1793,7 @@ mod tests {
     #[test]
     fn alloc_procbin_pushes_into_mso_list_with_correct_header() {
         use crate::shared_bin::{shared_bin_alloc, shared_bin_live_count};
+        let _live_lock = crate::shared_bin::live_count_lock();
         let baseline = shared_bin_live_count();
         let sp = shared_bin_alloc(&[1, 2, 3, 4], 32);
         let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
@@ -1815,6 +1816,7 @@ mod tests {
     #[test]
     fn procbin_survives_gc_via_mso_rewrite() {
         use crate::shared_bin::{shared_bin_alloc, shared_bin_live_count};
+        let _live_lock = crate::shared_bin::live_count_lock();
         let baseline = shared_bin_live_count();
         let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
         let sp = shared_bin_alloc(&[0xaa; 8], 64);
@@ -1844,6 +1846,7 @@ mod tests {
     #[test]
     fn procbin_dies_in_gc_and_sweep_releases_shared_bin() {
         use crate::shared_bin::{shared_bin_alloc, shared_bin_live_count};
+        let _live_lock = crate::shared_bin::live_count_lock();
         let baseline = shared_bin_live_count();
         let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
         let sp = shared_bin_alloc(&[0x55; 16], 128);
@@ -1863,6 +1866,7 @@ mod tests {
     #[test]
     fn heap_drop_releases_all_mso_shared_refs() {
         use crate::shared_bin::{shared_bin_alloc, shared_bin_live_count};
+        let _live_lock = crate::shared_bin::live_count_lock();
         let baseline = shared_bin_live_count();
         {
             let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
@@ -1887,6 +1891,7 @@ mod tests {
     #[test]
     fn deep_copy_procbin_shares_via_retain() {
         use crate::shared_bin::{shared_bin_alloc, shared_bin_live_count};
+        let _live_lock = crate::shared_bin::live_count_lock();
         let baseline = shared_bin_live_count();
         let mut src = Heap::new(SIZE_TABLE[0], empty_registry());
         let mut dst = Heap::new(SIZE_TABLE[0], empty_registry());
@@ -1920,6 +1925,7 @@ mod tests {
     #[test]
     fn deep_copy_procbin_dedup_via_forwarding_map() {
         use crate::shared_bin::{shared_bin_alloc, shared_bin_live_count};
+        let _live_lock = crate::shared_bin::live_count_lock();
         let baseline = shared_bin_live_count();
         let reg = empty_registry();
         let pair_id = reg.borrow_mut().register(Schema {
@@ -1988,6 +1994,7 @@ mod tests {
     fn alloc_bitstring_large_routes_to_shared_zone() {
         use crate::fz_value::{HeapKind, bitstring_bit_len, bitstring_byte_ptr};
         use crate::shared_bin::shared_bin_live_count;
+        let _live_lock = crate::shared_bin::live_count_lock();
         let baseline = shared_bin_live_count();
         let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
         let bytes: Vec<u8> = (0..128u8).collect();
@@ -2004,6 +2011,95 @@ mod tests {
         assert_eq!(shared_bin_live_count(), baseline + 1);
         drop(h);
         assert_eq!(shared_bin_live_count(), baseline);
+    }
+
+    /// fz-cty.6 — full spawn-and-share scenario at the heap layer. A
+    /// sender constructs one large bitstring (which the alloc_bitstring
+    /// policy routes to a single SharedBin + ProcBin), then "sends" it to
+    /// N receivers via deep_copy. Each receiver triggers a GC mid-run
+    /// (the ProcBin must survive via the MSO sweep), then drops.
+    /// Invariants:
+    ///   * exactly one SharedBin is ever allocated (live count peaks at 1)
+    ///   * refcount climbs to 1+N as sends complete, then drops to zero
+    ///     as receivers exit
+    ///   * the bytes are content-identical across every receiver
+    #[test]
+    fn shared_heap_acceptance_spawn_and_share() {
+        use crate::shared_bin::shared_bin_live_count;
+        const N: usize = 4;
+        let _live_lock = crate::shared_bin::live_count_lock();
+        let baseline = shared_bin_live_count();
+        let payload: Vec<u8> = (0..128u8).collect();
+        let mut sender = Heap::new(SIZE_TABLE[0], empty_registry());
+        let bs_in_sender = sender.alloc_bitstring(&payload, 1024);
+        assert_eq!(shared_bin_live_count(), baseline + 1);
+
+        // Send to N receivers via deep_copy.
+        let mut receivers: Vec<Heap> = (0..N)
+            .map(|_| Heap::new(SIZE_TABLE[0], empty_registry()))
+            .collect();
+        let mut receiver_roots: Vec<*mut HeapHeader> = Vec::with_capacity(N);
+        for r in receivers.iter_mut() {
+            let mut fwd = std::collections::HashMap::new();
+            let copied = deep_copy_value(FzValue::from_ptr(bs_in_sender), &sender, r, &mut fwd);
+            receiver_roots.push(copied.unbox_ptr().unwrap());
+        }
+        // SharedBin refcount climbs to 1 (sender) + N (each receiver).
+        unsafe {
+            let sp = Heap::procbin_shared_ptr(bs_in_sender);
+            assert_eq!(
+                (*sp).refcount.load(std::sync::atomic::Ordering::Relaxed),
+                1 + N
+            );
+        }
+        // Only one allocation total — peak live count is 1.
+        assert_eq!(shared_bin_live_count(), baseline + 1);
+
+        // Mid-run GC in each receiver: the ProcBin is rooted (we hold
+        // receiver_roots[i]), so the MSO sweep rewrites the entry to the
+        // to-space copy and the SharedBin live count stays at 1.
+        for (r, root_ptr) in receivers.iter_mut().zip(receiver_roots.iter_mut()) {
+            let mut root_u8 = (*root_ptr) as *mut u8;
+            r.gc(&mut root_u8);
+            *root_ptr = root_u8 as *mut HeapHeader;
+            assert_eq!(r.mso_list.len(), 1, "MSO entry survives GC");
+            assert_eq!(r.mso_list[0], *root_ptr);
+        }
+        // Live count still 1 across all the GCs.
+        assert_eq!(shared_bin_live_count(), baseline + 1);
+
+        // Each receiver observes the expected bytes via the dispatch
+        // helpers — works whether storage is inline Bitstring or ProcBin.
+        for root_ptr in &receiver_roots {
+            unsafe {
+                assert_eq!(crate::fz_value::bitstring_bit_len(*root_ptr), 1024);
+                let bp = crate::fz_value::bitstring_byte_ptr(*root_ptr);
+                for (i, expected) in payload.iter().enumerate() {
+                    assert_eq!(*bp.add(i), *expected);
+                }
+            }
+        }
+
+        // Receivers exit: each drop releases its ProcBin's reference.
+        let _ = receiver_roots;
+        drop(receivers);
+        unsafe {
+            let sp = Heap::procbin_shared_ptr(bs_in_sender);
+            assert_eq!(
+                (*sp).refcount.load(std::sync::atomic::Ordering::Relaxed),
+                1,
+                "all receivers exited; only sender's reference remains"
+            );
+        }
+        assert_eq!(shared_bin_live_count(), baseline + 1);
+
+        // Sender exits: bin is freed.
+        drop(sender);
+        assert_eq!(
+            shared_bin_live_count(),
+            baseline,
+            "SharedBin freed once last reference drops"
+        );
     }
 
     /// Bit-match round-trip over a ProcBin source yields the expected bytes.

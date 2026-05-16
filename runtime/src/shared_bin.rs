@@ -37,7 +37,6 @@ pub fn shared_bin_alloc(bytes: &[u8], bit_len: u64) -> *mut SharedBin {
         bit_len,
         bytes: buf,
     });
-    #[cfg(test)]
     SHARED_BIN_LIVE_COUNT.fetch_add(1, Ordering::Relaxed);
     Box::into_raw(bin)
 }
@@ -76,22 +75,37 @@ pub unsafe fn shared_bin_release(p: *mut SharedBin) {
         unsafe {
             drop(Box::from_raw(p));
         }
-        #[cfg(test)]
         SHARED_BIN_LIVE_COUNT.fetch_sub(1, Ordering::Relaxed);
     }
 }
 
-// ===== Test infrastructure =====================================================
+// ===== Live-count gauge =======================================================
 //
-// A live-count gauge for assertions. Increments on alloc, decrements on the
-// final release. Not used by the runtime hot path.
+// Tracks the number of currently-allocated SharedBin objects. Incremented on
+// `shared_bin_alloc`, decremented when the final release frees the bin. Used
+// by tests and the three-path acceptance test (fz-cty.6) to assert the
+// refcount invariant across the runtime. Out-of-band of the per-bin
+// refcounts: those count references; this counts distinct bin allocations.
 
-#[cfg(test)]
 static SHARED_BIN_LIVE_COUNT: AtomicUsize = AtomicUsize::new(0);
 
-#[cfg(test)]
+/// Number of currently-live SharedBin allocations across the process.
 pub fn shared_bin_live_count() -> usize {
     SHARED_BIN_LIVE_COUNT.load(Ordering::Relaxed)
+}
+
+/// Test-only mutex used to serialise tests that assert against the global
+/// `shared_bin_live_count`. Tests cannot use a baseline-delta strategy in
+/// parallel because other tests may concurrently allocate/free bins.
+/// Acquire via `live_count_lock()` for the entire duration of the
+/// assertion sequence.
+#[cfg(test)]
+pub fn live_count_lock() -> std::sync::MutexGuard<'static, ()> {
+    use std::sync::{Mutex, OnceLock};
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 #[cfg(test)]
@@ -105,6 +119,7 @@ mod tests {
     /// count drops by one across the test.
     #[test]
     fn alloc_retain_release_free_pattern() {
+        let _live_lock = crate::shared_bin::live_count_lock();
         let baseline = shared_bin_live_count();
         let p = shared_bin_alloc(&[1, 2, 3, 4], 32);
         assert_eq!(shared_bin_live_count(), baseline + 1);
@@ -123,6 +138,7 @@ mod tests {
     /// Single alloc → single release frees immediately.
     #[test]
     fn alloc_release_immediately_frees() {
+        let _live_lock = crate::shared_bin::live_count_lock();
         let baseline = shared_bin_live_count();
         let p = shared_bin_alloc(b"hello", 40);
         assert_eq!(shared_bin_live_count(), baseline + 1);
@@ -152,6 +168,7 @@ mod tests {
     /// baseline only after the producer releases.
     #[test]
     fn concurrent_retain_release_is_consistent() {
+        let _live_lock = crate::shared_bin::live_count_lock();
         let baseline = shared_bin_live_count();
         let p = shared_bin_alloc(&[7; 64], 512);
         let p_addr = p as usize;
