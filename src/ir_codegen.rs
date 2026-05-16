@@ -6058,12 +6058,18 @@ fn lower_prim<M: cranelift_module::Module>(
                 &[]
             };
             let sig = sig1(&param_tys, ret_tys);
-            let func_id = jmod
-                .declare_function(&decl.symbol, Linkage::Import, &sig)
-                .map_err(|e| {
-                    CodegenError::new(format!("declare extern `{}`: {}", decl.symbol, e))
-                })?;
-            let fref = jmod.declare_func_in_func(func_id, b.func);
+            let fref = if let Some(&cached) = cache.extern_funcs.get(eid) {
+                cached
+            } else {
+                let func_id = jmod
+                    .declare_function(&decl.symbol, Linkage::Import, &sig)
+                    .map_err(|e| {
+                        CodegenError::new(format!("declare extern `{}`: {}", decl.symbol, e))
+                    })?;
+                let fref = jmod.declare_func_in_func(func_id, b.func);
+                cache.extern_funcs.insert(*eid, fref);
+                fref
+            };
             let param_kinds: Vec<ExternTy> = decl.params.clone();
             let arg_vals: Vec<ir::Value> = args
                 .iter()

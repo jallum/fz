@@ -4,14 +4,8 @@
     ;   @abi    () -> Tagged
 function u0:0(i64) -> i64 tail {
     sig0 = (i64) system_v
-    sig1 = (i64) system_v
-    sig2 = (i64) system_v
-    sig3 = (i64) system_v
-    sig4 = (i64, i64) -> i64 tail
+    sig1 = (i64, i64) -> i64 tail
     fn0 = u0:40 sig0
-    fn1 = u0:40 sig1
-    fn2 = u0:40 sig2
-    fn3 = u0:40 sig3
 
 block0(v0: i64):
     v1 = iconst.i64 1                   ; @2:9
@@ -25,20 +19,20 @@ block0(v0: i64):
     v8 = iconst.i64 11
     v9 = iconst.i64 19
     v10 = select v7, v8, v9  ; v8 = 11, v9 = 19    ;; v10 :: :true
-    call fn1(v10)
+    call fn0(v10)
     v11 = iconst.i64 3    ;; v11 :: nil
     v12 = iconst.i64 18    ;; v12 :: :ok
     v13 = iconst.i64 26    ;; v13 :: :err
     v14 = iconst.i64 19    ;; v14 :: bool
-    call fn2(v14)  ; v14 = 19
+    call fn0(v14)  ; v14 = 19
     v15 = iconst.i64 3    ;; v15 :: nil
     v16 = iconst.i64 18    ;; v16 :: :ok
     v17 = iconst.i64 18    ;; v17 :: :ok
     v18 = icmp eq v16, v17  ; v16 = 18, v17 = 18
     v19 = select v18, v8, v9  ; v8 = 11, v9 = 19    ;; v19 :: bool
-    call fn3(v19)
+    call fn0(v19)
     v20 = iconst.i64 3    ;; v20 :: nil
     v21 = load.i64 notrap aligned v0+16 ; @2:3
-    return_call_indirect sig4, v21(v20, v0) ; @2:3  v20 = 3
+    return_call_indirect sig1, v21(v20, v0) ; @2:3  v20 = 3
 }
 

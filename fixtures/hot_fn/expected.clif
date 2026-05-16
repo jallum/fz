@@ -4,59 +4,41 @@
     ;   @abi    () -> Tagged
 function u0:0(i64) -> i64 tail {
     sig0 = (i64) system_v
-    sig1 = (i64) system_v
-    sig2 = (i64) system_v
-    sig3 = (i64) system_v
-    sig4 = (i64) system_v
-    sig5 = (i64) system_v
-    sig6 = (i64) system_v
-    sig7 = (i64) system_v
-    sig8 = (i64) system_v
-    sig9 = (i64) system_v
-    sig10 = (i64, i64) -> i64 tail
+    sig1 = (i64, i64) -> i64 tail
     fn0 = u0:40 sig0
-    fn1 = u0:40 sig1
-    fn2 = u0:40 sig2
-    fn3 = u0:40 sig3
-    fn4 = u0:40 sig4
-    fn5 = u0:40 sig5
-    fn6 = u0:40 sig6
-    fn7 = u0:40 sig7
-    fn8 = u0:40 sig8
-    fn9 = u0:40 sig9
 
 block0(v0: i64):
     v1 = iconst.i64 1                   ; @4:13
     call fn0(v1)  ; v1 = 1
     v2 = iconst.i64 3    ;; v2 :: nil
     v3 = iconst.i64 1    ;; v3 :: 1
-    call fn1(v3)  ; v3 = 1
+    call fn0(v3)  ; v3 = 1
     v4 = iconst.i64 3    ;; v4 :: nil
     v5 = iconst.i64 1    ;; v5 :: 1
-    call fn2(v5)  ; v5 = 1
+    call fn0(v5)  ; v5 = 1
     v6 = iconst.i64 3    ;; v6 :: nil
     v7 = iconst.i64 1    ;; v7 :: 1
-    call fn3(v7)  ; v7 = 1
+    call fn0(v7)  ; v7 = 1
     v8 = iconst.i64 3    ;; v8 :: nil
     v9 = iconst.i64 1    ;; v9 :: 1
-    call fn4(v9)  ; v9 = 1
+    call fn0(v9)  ; v9 = 1
     v10 = iconst.i64 3    ;; v10 :: nil
     v11 = iconst.i64 1    ;; v11 :: 1
-    call fn5(v11)  ; v11 = 1
+    call fn0(v11)  ; v11 = 1
     v12 = iconst.i64 3    ;; v12 :: nil
     v13 = iconst.i64 1    ;; v13 :: 1
-    call fn6(v13)  ; v13 = 1
+    call fn0(v13)  ; v13 = 1
     v14 = iconst.i64 3    ;; v14 :: nil
     v15 = iconst.i64 1    ;; v15 :: 1
-    call fn7(v15)  ; v15 = 1
+    call fn0(v15)  ; v15 = 1
     v16 = iconst.i64 3    ;; v16 :: nil
     v17 = iconst.i64 1    ;; v17 :: 1
-    call fn8(v17)  ; v17 = 1
+    call fn0(v17)  ; v17 = 1
     v18 = iconst.i64 3    ;; v18 :: nil
     v19 = iconst.i64 1    ;; v19 :: 1
-    call fn9(v19)  ; v19 = 1
+    call fn0(v19)  ; v19 = 1
     v20 = iconst.i64 3    ;; v20 :: nil
     v21 = load.i64 notrap aligned v0+16 ; @4:9
-    return_call_indirect sig10, v21(v20, v0) ; @4:9  v20 = 3
+    return_call_indirect sig1, v21(v20, v0) ; @4:9  v20 = 3
 }
 

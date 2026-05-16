@@ -5,11 +5,9 @@
 function u0:0(i64) -> i64 tail {
     sig0 = (i64) system_v
     sig1 = (i64) system_v
-    sig2 = (i64) system_v
-    sig3 = (i64, i64) -> i64 tail
+    sig2 = (i64, i64) -> i64 tail
     fn0 = u0:40 sig0
     fn1 = u0:41 sig1
-    fn2 = u0:41 sig2
 
 block0(v0: i64):
     v1 = iconst.i64 42                  ; @4:12
@@ -19,9 +17,9 @@ block0(v0: i64):
     call fn1(v3)  ; v3 = 18
     v4 = iconst.i64 3    ;; v4 :: nil
     v5 = iconst.i64 11    ;; v5 :: :true
-    call fn2(v5)  ; v5 = 11
+    call fn1(v5)  ; v5 = 11
     v6 = iconst.i64 3    ;; v6 :: nil
     v7 = load.i64 notrap aligned v0+16  ; @4:9
-    return_call_indirect sig3, v7(v6, v0) ; @4:9  v6 = 3
+    return_call_indirect sig2, v7(v6, v0) ; @4:9  v6 = 3
 }
 
