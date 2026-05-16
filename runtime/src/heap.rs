@@ -20,6 +20,7 @@
 #![allow(dead_code)]
 
 use crate::fz_value::{FzValue, HeapHeader, HeapKind, ListCons};
+use crate::procbin::{ProcBin, SharedBinHandle, alloc_procbin, mso_drop_all, mso_sweep};
 use std::alloc::{Layout, alloc_zeroed, dealloc};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -244,9 +245,26 @@ impl Default for SchemaRegistry {
     }
 }
 
-/// Maximum bytes for any single heap object. Objects larger than this
-/// belong in the shared zone (future epic). Enforced in `Heap::alloc()`.
-pub const MAX_HEAP_OBJECT_BYTES: usize = 64;
+/// fz-cty.5 — bitstrings above this many bytes are routed through the
+/// shared zone (refcounted off-heap `SharedBin` + per-process `ProcBin`
+/// stub) instead of being inlined on the per-process heap. Matches
+/// BEAM's refc-binary threshold.
+pub const SHARED_BIN_THRESHOLD_BYTES: usize = 64;
+
+/// fz-q8d.4 — objects larger than the largest size_class are allocated as
+/// their own system-allocator backed fragment, bypassing the bump arena.
+/// Threshold is the largest entry of `SIZE_TABLE`; anything strictly
+/// larger goes to fragments.
+const FRAGMENT_THRESHOLD: usize = SIZE_TABLE[SIZE_TABLE.len() - 1];
+
+/// fz-q8d.4 — a single oversized allocation outside the bump arena.
+/// Participates in GC via a mark bit instead of being copied.
+struct Fragment {
+    ptr: *mut u8,
+    size: usize,
+    layout: Layout,
+    mark: bool,
+}
 
 pub struct Heap {
     block_start: *mut u8,
@@ -282,6 +300,18 @@ pub struct Heap {
     /// — under bump-only with no reclaim, every alloc since-start is "live".
     /// .8 resets this on each Cheney pass to the surviving-object count.
     alloc_count: u64,
+    /// fz-q8d.1 — intrusive MSO ("Mixed Set / Off-heap") chain. Head of a
+    /// singly-linked list of live `HeapKind::ProcBin` objects allocated on
+    /// this heap; each ProcBin's `mso_next` slot stores the predecessor.
+    /// The post-Cheney sweep (`procbin::mso_sweep`) rewrites entries to
+    /// their to-space copies; `Heap::drop` calls `procbin::mso_drop_all`
+    /// before pool reclaim so SharedBin references are balanced.
+    pub mso_head: *mut HeapHeader,
+    /// fz-q8d.4 — fragment list. Oversized allocations (above the
+    /// largest size_class) live here as their own system-allocator
+    /// backed singletons. GC marks them via the `mark` bit; survivors
+    /// stay put across collections, dead fragments are freed.
+    fragments: Vec<Fragment>,
 }
 
 impl Heap {
@@ -310,6 +340,8 @@ impl Heap {
             gc_threshold_bytes: block_size / 2,
             gc_run_count: 0,
             alloc_count: 0,
+            mso_head: std::ptr::null_mut(),
+            fragments: Vec::new(),
         }
     }
 
@@ -334,17 +366,29 @@ impl Heap {
     /// pool-backed block at the next size_class. The next park-time
     /// Cheney recycles the whole abandoned chain.
     ///
-    /// Panics if `size` exceeds `MAX_HEAP_OBJECT_BYTES`. Objects larger than
-    /// this limit belong in the shared zone (future epic).
+    /// fz-q8d.4 — objects larger than `FRAGMENT_THRESHOLD` (the last
+    /// `SIZE_TABLE` entry, ~6 MiB) are allocated as system-allocator
+    /// backed singletons attached to `self.fragments`. They don't move
+    /// during Cheney; the collector marks them in place and frees
+    /// survivors / unmarked fragments at sweep time.
     pub fn alloc(&mut self, size: usize) -> *mut HeapHeader {
-        assert!(
-            size <= MAX_HEAP_OBJECT_BYTES,
-            "heap object too large: {} bytes (max {}); use shared zone for large objects",
-            size,
-            MAX_HEAP_OBJECT_BYTES
-        );
         let size = (size + 15) & !15;
         assert!(size >= 16, "alloc must include at least the 16-byte header");
+        // Oversize allocations route through the fragment path.
+        if size > FRAGMENT_THRESHOLD {
+            let layout = Layout::from_size_align(size, 16).expect("fragment layout");
+            let ptr = unsafe { alloc_zeroed(layout) };
+            assert!(!ptr.is_null(), "fragment allocation failed");
+            self.fragments.push(Fragment {
+                ptr,
+                size,
+                layout,
+                mark: false,
+            });
+            self.alloc_count += 1;
+            self.note_alloc_pressure();
+            return ptr as *mut HeapHeader;
+        }
         let new_top = unsafe { self.bump_top.add(size) };
         if new_top > self.block_end {
             // Grow: pick the smallest size_class > current that also fits
@@ -452,7 +496,17 @@ impl Heap {
     /// Bitstring layout: HeapHeader (16) + bit_len: u64 (8) + bytes (padded
     /// to 16). Caller supplies a fully-built byte buffer + bit_len; this
     /// performs the heap copy.
+    ///
+    /// fz-cty.5 — payloads larger than `SHARED_BIN_THRESHOLD_BYTES` route
+    /// through the shared zone: a SharedBin is allocated off-heap and the
+    /// per-process heap gets a 32-byte `HeapKind::ProcBin` stub referencing
+    /// it. Render and bit-match dispatch on kind via
+    /// `bitstring_bit_len` / `bitstring_byte_ptr`.
     pub fn alloc_bitstring(&mut self, bytes: &[u8], bit_len: u64) -> *mut HeapHeader {
+        if bytes.len() > SHARED_BIN_THRESHOLD_BYTES {
+            let handle = SharedBinHandle::from_bytes(bytes, bit_len);
+            return alloc_procbin(self, handle).as_raw();
+        }
         let total = (16 + 8 + bytes.len() + 15) & !15;
         let p = self.alloc(total);
         unsafe {
@@ -671,7 +725,10 @@ impl Heap {
             .iter()
             .map(|(_, sc)| SIZE_TABLE[*sc as usize])
             .sum();
-        current + abandoned
+        // fz-q8d.4 — include fragment sizes so allocation pressure
+        // accounting reflects the full per-heap footprint.
+        let fragments: usize = self.fragments.iter().map(|f| f.size).sum();
+        current + abandoned + fragments
     }
 
     /// Park-time Cheney GC (§6.4). Single-root by design: §7 establishes
@@ -697,7 +754,7 @@ impl Heap {
         root_slot: &mut *mut u8,
         extra_roots: &mut [crate::fz_value::FzValue],
     ) {
-        // Snapshot from-space ranges before we allocate to-space.
+        // Snapshot from-space block ranges before we allocate to-space.
         let mut from_ranges: Vec<(*mut u8, *mut u8)> =
             Vec::with_capacity(1 + self.abandoned_blocks.len());
         from_ranges.push((self.block_start, self.block_end));
@@ -705,24 +762,35 @@ impl Heap {
             from_ranges.push((p, unsafe { p.add(SIZE_TABLE[sc as usize]) }));
         }
 
+        // fz-q8d.4 — reset fragment marks at the start of each GC.
+        for f in &mut self.fragments {
+            f.mark = false;
+        }
+
         // Pick to-space size: first GC uses bytes_used() as upper bound;
         // subsequent GCs use last_gc_live_bytes * 2 (50% post-GC target).
-        let sizing = if self.last_gc_live_bytes > 0 {
+        // Fragment bytes are excluded from the bump-arena sizing because
+        // fragments don't get copied into to-space.
+        let bump_live_for_sizing = if self.last_gc_live_bytes > 0 {
             self.last_gc_live_bytes.saturating_mul(2)
         } else {
             self.bytes_used()
+                .saturating_sub(self.fragments.iter().map(|f| f.size).sum())
         };
-        let size_class = pick_size_class(sizing.max(SIZE_TABLE[0]));
+        let size_class = pick_size_class(bump_live_for_sizing.max(SIZE_TABLE[0]));
         let to_size = SIZE_TABLE[size_class as usize];
         let to_start = pool_alloc(size_class);
         let to_end = unsafe { to_start.add(to_size) };
         let mut free = to_start;
         let mut live_count: u64 = 0;
+        let mut frag_queue: Vec<*mut HeapHeader> = Vec::new();
 
         if !root_slot.is_null() {
             let new_root = cheney_forward(
                 *root_slot as *mut HeapHeader,
                 &from_ranges,
+                &mut self.fragments,
+                &mut frag_queue,
                 &mut free,
                 to_end,
             );
@@ -734,29 +802,90 @@ impl Heap {
         for v in extra_roots.iter_mut() {
             if let Some(p) = v.unbox_ptr()
                 && !p.is_null()
-                && ptr_in_from_space(p as *mut u8, &from_ranges)
+                && (ptr_in_from_space(p as *mut u8, &from_ranges)
+                    || classify_fragment(p as *mut u8, &self.fragments).is_some())
             {
-                let new_p = cheney_forward(p, &from_ranges, &mut free, to_end);
+                let new_p = cheney_forward(
+                    p,
+                    &from_ranges,
+                    &mut self.fragments,
+                    &mut frag_queue,
+                    &mut free,
+                    to_end,
+                );
                 *v = crate::fz_value::FzValue::from_ptr(new_p);
                 live_count += 1;
             }
         }
 
-        // Scan loop: process to-space objects breadth-first.
+        // Mixed-mode BFS: alternately drain to-space scan and frag_queue
+        // until both are empty. Fragments traced in frag_queue may push
+        // new to-space objects (their children); newly-traced to-space
+        // objects may push new fragments. Loop until no work left.
         let schemas = self.schemas.borrow();
         let mut scan = to_start;
-        while scan < free {
-            let h = scan as *mut HeapHeader;
-            let obj_size = unsafe { (*h).size_bytes as usize };
-            let before_trace = free;
-            cheney_trace_children(h, &from_ranges, &mut free, to_end, &schemas);
-            let added = unsafe { free.offset_from(before_trace) } as usize;
-            if added > 0 {
-                live_count += count_objects_in_range(before_trace, free) as u64;
+        loop {
+            // Drain to-space BFS frontier.
+            while scan < free {
+                let h = scan as *mut HeapHeader;
+                let obj_size = unsafe { (*h).size_bytes as usize };
+                let before_trace = free;
+                cheney_trace_children(
+                    h,
+                    &from_ranges,
+                    &mut self.fragments,
+                    &mut frag_queue,
+                    &mut free,
+                    to_end,
+                    &schemas,
+                );
+                let added = unsafe { free.offset_from(before_trace) } as usize;
+                if added > 0 {
+                    live_count += count_objects_in_range(before_trace, free) as u64;
+                }
+                scan = unsafe { scan.add(obj_size) };
             }
-            scan = unsafe { scan.add(obj_size) };
+            // Drain fragment queue. Each fragment's children may forward
+            // either into to-space (which extends `free`, picked up by
+            // the loop above on the next iteration) or into another
+            // fragment (re-pushes to frag_queue).
+            if let Some(frag_ptr) = frag_queue.pop() {
+                cheney_trace_children(
+                    frag_ptr,
+                    &from_ranges,
+                    &mut self.fragments,
+                    &mut frag_queue,
+                    &mut free,
+                    to_end,
+                    &schemas,
+                );
+                continue;
+            }
+            break;
         }
         drop(schemas);
+
+        // fz-q8d.1 — MSO sweep walks the intrusive chain. Survivors get
+        // rewritten to their to-space copies; dead entries release their
+        // SharedBin reference. Must run before `pool_free` below because
+        // it dereferences from-space ProcBins (specifically their
+        // mso_next link, which Cheney never overwrites).
+        mso_sweep(self);
+
+        // fz-q8d.4 — fragment sweep: free unmarked fragments, count
+        // survivors into live_count, and reset marks on those that
+        // remain. `swap_remove` is safe because order doesn't matter.
+        let mut i = 0;
+        while i < self.fragments.len() {
+            if self.fragments[i].mark {
+                self.fragments[i].mark = false;
+                live_count += 1;
+                i += 1;
+            } else {
+                let f = self.fragments.swap_remove(i);
+                unsafe { dealloc(f.ptr, f.layout) };
+            }
+        }
 
         // Return old from-space (current + abandoned) to the pool (§6.6).
         pool_free(self.block_start, self.size_class);
@@ -810,20 +939,32 @@ fn watermark_for(block_start: *mut u8, block_size: usize) -> *mut u8 {
     unsafe { block_start.add(offset) }
 }
 
-/// Copy a single from-space object to `*free` and install a forwarding
-/// pointer in the from-header. If the from-header already has
-/// `FORWARDED_KIND`, returns the existing forwarded pointer instead.
-/// Caller must ensure `p` is in from-space (per `ptr_in_from_space`).
+/// Forward a from-space pointer. For a block-resident object: copy to
+/// `*free` and install a forwarding marker in the from-header (or
+/// return the already-installed forwarded pointer). For a fragment-
+/// resident object: set the fragment's mark bit and (on the false→true
+/// transition) push the pointer onto `frag_queue`; the pointer is
+/// returned unchanged because fragments do not move.
 fn cheney_forward(
     p: *mut HeapHeader,
-    _from_ranges: &[(*mut u8, *mut u8)],
+    from_ranges: &[(*mut u8, *mut u8)],
+    fragments: &mut [Fragment],
+    frag_queue: &mut Vec<*mut HeapHeader>,
     free: &mut *mut u8,
     to_end: *mut u8,
 ) -> *mut HeapHeader {
+    // fz-q8d.4 — fragment path. Fragments don't move; mark in place
+    // and push to the queue on first visit so children get traced.
+    if let Some(idx) = classify_fragment(p as *mut u8, fragments) {
+        if !fragments[idx].mark {
+            fragments[idx].mark = true;
+            frag_queue.push(p);
+        }
+        return p;
+    }
+    // Block-resident path: standard Cheney copy + forward.
     let h = unsafe { &*p };
     if h.kind == FORWARDED_KIND {
-        // Forwarding pointer was written at offset 8 (replacing schema_id +
-        // _reserved). Read it back.
         let fwd = unsafe { std::ptr::read((p as *const u8).add(8) as *const u64) };
         return fwd as *mut HeapHeader;
     }
@@ -831,25 +972,34 @@ fn cheney_forward(
     let dst = *free;
     let new_top = unsafe { dst.add(size) };
     assert!(new_top <= to_end, "Cheney: to-space exhausted");
-    // Copy the whole object verbatim.
     unsafe {
         std::ptr::copy_nonoverlapping(p as *const u8, dst, size);
     }
     *free = new_top;
-    // Install forwarding marker in from-header.
     unsafe {
         std::ptr::write(p as *mut u16, FORWARDED_KIND);
         std::ptr::write((p as *mut u8).add(8) as *mut u64, dst as u64);
     }
+    let _ = from_ranges; // retained in signature for symmetry; not consulted here
     dst as *mut HeapHeader
+}
+
+/// Return the index of the fragment containing `p`, if any.
+fn classify_fragment(p: *mut u8, fragments: &[Fragment]) -> Option<usize> {
+    fragments
+        .iter()
+        .position(|f| p >= f.ptr && p < unsafe { f.ptr.add(f.size) })
 }
 
 /// Trace every FzValue child of a to-space object, forwarding each
 /// from-space pointer it contains. Off-heap (static-closure / halt-cont)
 /// pointers are detected by range and left untouched.
+#[allow(clippy::too_many_arguments)]
 fn cheney_trace_children(
     obj: *mut HeapHeader,
     from_ranges: &[(*mut u8, *mut u8)],
+    fragments: &mut [Fragment],
+    frag_queue: &mut Vec<*mut HeapHeader>,
     free: &mut *mut u8,
     to_end: *mut u8,
     schemas: &SchemaRegistry,
@@ -867,15 +1017,15 @@ fn cheney_trace_children(
                 if let FieldKind::FzValue = f.kind {
                     let slot =
                         unsafe { (obj as *mut u8).add(16).add(f.offset as usize) as *mut FzValue };
-                    forward_field(slot, from_ranges, free, to_end);
+                    forward_field(slot, from_ranges, fragments, frag_queue, free, to_end);
                 }
             }
         }
         HeapKind::List => {
             let head_slot = unsafe { (obj as *mut u8).add(16) as *mut FzValue };
             let tail_slot = unsafe { (obj as *mut u8).add(24) as *mut FzValue };
-            forward_field(head_slot, from_ranges, free, to_end);
-            forward_field(tail_slot, from_ranges, free, to_end);
+            forward_field(head_slot, from_ranges, fragments, frag_queue, free, to_end);
+            forward_field(tail_slot, from_ranges, fragments, frag_queue, free, to_end);
         }
         HeapKind::Closure => {
             // Layout: stub_fp (8) at offset 16 — a code pointer, skip.
@@ -884,7 +1034,7 @@ fn cheney_trace_children(
             let count = crate::fz_value::closure_flags_captured(unsafe { (*obj).flags }) as usize;
             for i in 0..count {
                 let slot = unsafe { (obj as *mut u8).add(24).add(i * 8) as *mut FzValue };
-                forward_field(slot, from_ranges, free, to_end);
+                forward_field(slot, from_ranges, fragments, frag_queue, free, to_end);
             }
         }
         HeapKind::Map => {
@@ -893,8 +1043,8 @@ fn cheney_trace_children(
             for i in 0..count {
                 let key_slot = unsafe { (obj as *mut u8).add(24).add(i * 16) as *mut FzValue };
                 let val_slot = unsafe { (obj as *mut u8).add(24).add(i * 16 + 8) as *mut FzValue };
-                forward_field(key_slot, from_ranges, free, to_end);
-                forward_field(val_slot, from_ranges, free, to_end);
+                forward_field(key_slot, from_ranges, fragments, frag_queue, free, to_end);
+                forward_field(val_slot, from_ranges, fragments, frag_queue, free, to_end);
             }
         }
         HeapKind::Bitstring
@@ -902,33 +1052,43 @@ fn cheney_trace_children(
         | HeapKind::VecI64
         | HeapKind::VecF64
         | HeapKind::VecU8
-        | HeapKind::VecBit => {
-            // Raw payload, no FzValue children.
+        | HeapKind::VecBit
+        | HeapKind::ProcBin => {
+            // Raw payload, no FzValue children. For ProcBin the +16
+            // payload is a *mut SharedBin into the off-heap zone; the
+            // MSO sweep handles those edges separately.
         }
     }
 }
 
-/// For one FzValue slot in a to-space object: if it holds a Ptr-tagged
-/// pointer into from-space, copy the target (or follow an existing
-/// forwarding) and rewrite the slot. Off-heap and scalar values pass through.
+/// For one FzValue slot in a to-space (or fragment) object: if it holds
+/// a Ptr-tagged pointer into from-space (block or fragment), forward
+/// the target and rewrite the slot to the new location. Block-resident
+/// targets get copied to to-space; fragment-resident targets stay put
+/// (mark + queue). Off-heap and scalar values pass through.
+#[allow(clippy::too_many_arguments)]
 fn forward_field(
     slot: *mut FzValue,
     from_ranges: &[(*mut u8, *mut u8)],
+    fragments: &mut [Fragment],
+    frag_queue: &mut Vec<*mut HeapHeader>,
     free: &mut *mut u8,
     to_end: *mut u8,
 ) {
     let v = unsafe { std::ptr::read(slot) };
     let p = match v.unbox_ptr() {
         Some(p) => p,
-        None => return, // scalar / nil
+        None => return,
     };
     if p.is_null() {
         return;
     }
-    if !ptr_in_from_space(p as *mut u8, from_ranges) {
+    let in_block = ptr_in_from_space(p as *mut u8, from_ranges);
+    let in_frag = classify_fragment(p as *mut u8, fragments).is_some();
+    if !in_block && !in_frag {
         return; // off-heap singleton (static closure / halt cont)
     }
-    let new = cheney_forward(p, from_ranges, free, to_end);
+    let new = cheney_forward(p, from_ranges, fragments, frag_queue, free, to_end);
     unsafe {
         std::ptr::write(slot, FzValue::from_ptr(new));
     }
@@ -957,6 +1117,15 @@ fn count_objects_in_range(start: *mut u8, end: *mut u8) -> usize {
 
 impl Drop for Heap {
     fn drop(&mut self) {
+        // fz-q8d.1 — release every SharedBin held via the intrusive MSO
+        // chain. Order matters: must run before pool_free below, since
+        // mso_drop_all walks ProcBin payloads in the from-space blocks.
+        mso_drop_all(self);
+        // fz-q8d.4 — free every fragment outright. Fragments are
+        // system-allocator backed; no pool involvement.
+        for f in self.fragments.drain(..) {
+            unsafe { dealloc(f.ptr, f.layout) };
+        }
         // Return blocks to the pool (§6.6) instead of free'ing. Next
         // spawn pulls from the same class — no per-spawn malloc.
         pool_free(self.block_start, self.size_class);
@@ -1104,6 +1273,16 @@ pub fn deep_copy_value(
         }
         HeapKind::VecF64 => {
             panic!("deep_copy_value: HeapKind::VecF64 not yet supported (see fz-ul4.11.23)");
+        }
+        HeapKind::ProcBin => {
+            // fz-q8d.1 — cross-heap deep_copy shares the bytes via retain.
+            // The new handle holds a fresh refcount edge that alloc_procbin
+            // transfers into the destination ProcBin / MSO chain.
+            let src_pb = unsafe { ProcBin::from_raw(sp) };
+            let handle = unsafe { SharedBinHandle::retain_from_raw(src_pb.shared_raw()) };
+            let new_p = alloc_procbin(dst_heap, handle).as_raw();
+            forwarding.insert(sp, new_p);
+            return FzValue(new_p as u64);
         }
     };
     forwarding.insert(sp, dp);
@@ -1515,12 +1694,77 @@ mod tests {
         FZ_SHOULD_YIELD.store(0, Ordering::Relaxed); // cleanup
     }
 
-    /// MAX_HEAP_OBJECT_BYTES is enforced: alloc of >64 bytes panics.
+    /// Large struct (200-byte payload, well past the old 64-byte cap)
+    /// allocates without panic; grow promotes to a larger size_class as needed.
     #[test]
-    #[should_panic(expected = "heap object too large")]
-    fn alloc_panics_over_max_object_bytes() {
+    fn alloc_large_struct_succeeds_and_grows_size_class() {
+        let reg = empty_registry();
+        // Build a schema whose payload is 200 bytes of FzValue fields.
+        let n_fields = 200 / 8; // 25 FzValue slots
+        let mut fields = Vec::with_capacity(n_fields);
+        for i in 0..n_fields {
+            fields.push(FieldDescriptor {
+                offset: (i * 8) as u32,
+                kind: FieldKind::FzValue,
+            });
+        }
+        let id = reg.borrow_mut().register(Schema {
+            name: "Big".into(),
+            size: (n_fields * 8) as u32,
+            fields,
+        });
+        let mut h = Heap::new(SIZE_TABLE[0], reg);
+        let p = h.alloc_struct(id);
+        unsafe {
+            assert_eq!((*p).kind, HeapKind::Struct as u16);
+            // total = 16 + 200 = 216, rounded to 224.
+            assert_eq!((*p).size_bytes, 224);
+        }
+    }
+
+    /// Map with 5 entries (~96 byte payload) — exercises both alloc and the
+    /// Cheney trace path (Map walks each entry's FzValue children).
+    #[test]
+    fn alloc_large_map_round_trips_through_gc() {
         let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
-        h.alloc(MAX_HEAP_OBJECT_BYTES + 1);
+        let entries: Vec<(FzValue, FzValue)> = (0..5)
+            .map(|i| {
+                (
+                    FzValue::from_int(i as i64),
+                    FzValue::from_int((i * 10) as i64),
+                )
+            })
+            .collect();
+        let p = h.alloc_map(&entries);
+        let mut root = p as *mut u8;
+        h.gc(&mut root);
+        assert_eq!(h.live_count(), 1, "map survives GC");
+        let new_p = root as *mut HeapHeader;
+        unsafe {
+            assert_eq!((*new_p).kind, HeapKind::Map as u16);
+            let count = std::ptr::read((new_p as *const u8).add(16) as *const u64);
+            assert_eq!(count, 5);
+        }
+    }
+
+    /// Vec<i64> with 100 elements (~824-byte total) — past the old 64-byte cap
+    /// and forces a grow because the initial 1 KiB block also holds garbage.
+    #[test]
+    fn alloc_large_vec_i64_round_trips_through_gc() {
+        let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
+        let elems: Vec<i64> = (0..100).collect();
+        let p = h.alloc_vec_i64(&elems);
+        let mut root = p as *mut u8;
+        h.gc(&mut root);
+        assert_eq!(h.live_count(), 1);
+        let new_p = root as *mut HeapHeader;
+        assert_eq!(Heap::vec_len(new_p), 100);
+        unsafe {
+            let payload = (new_p as *const u8).add(24) as *const i64;
+            for (i, expected) in elems.iter().enumerate() {
+                assert_eq!(std::ptr::read(payload.add(i)), *expected);
+            }
+        }
     }
 
     /// Acceptance: ≥10 GC cycles with the same small live working set
@@ -1585,5 +1829,464 @@ mod tests {
         let mut root = a as *mut u8;
         h.gc(&mut root);
         assert_eq!(h.live_count(), 2);
+    }
+
+    // ===== fz-q8d.1 — ProcBin + intrusive MSO + post-Cheney sweep =========
+
+    use crate::procbin::{
+        ProcBin, SharedBinHandle, alloc_procbin, bitstring_bit_len, bitstring_byte_ptr, live_count,
+    };
+
+    /// Walk the heap's MSO chain and return the contained header pointers
+    /// in chain order (head → tail).
+    fn mso_chain(h: &Heap) -> Vec<*mut HeapHeader> {
+        let mut out = Vec::new();
+        let mut cur = h.mso_head;
+        while !cur.is_null() {
+            let pb = unsafe { ProcBin::from_raw(cur) };
+            let next = pb.mso_next();
+            out.push(cur);
+            cur = next;
+        }
+        out
+    }
+
+    /// `alloc_procbin` writes a ProcBin header and pushes onto the chain.
+    #[test]
+    #[serial_test::serial]
+    fn alloc_procbin_pushes_into_mso_chain_with_correct_header() {
+        let baseline = live_count();
+        {
+            let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
+            let pb = alloc_procbin(&mut h, SharedBinHandle::from_bytes(&[1, 2, 3, 4], 32));
+            unsafe {
+                assert_eq!((*pb.as_raw()).kind, HeapKind::ProcBin as u16);
+                assert_eq!((*pb.as_raw()).size_bytes, 32);
+            }
+            assert_eq!(mso_chain(&h), vec![pb.as_raw()]);
+        }
+        assert_eq!(live_count(), baseline);
+    }
+
+    /// A rooted ProcBin survives Cheney: chain rewritten to to-space copy.
+    #[test]
+    #[serial_test::serial]
+    fn procbin_survives_gc_via_mso_rewrite() {
+        let baseline = live_count();
+        let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
+        let pb = alloc_procbin(&mut h, SharedBinHandle::from_bytes(&[0xaa; 8], 64));
+        let shared_p = pb.shared_raw();
+        let from_pb = pb.as_raw();
+        let mut root = from_pb as *mut u8;
+        assert_eq!(live_count(), baseline + 1);
+        h.gc(&mut root);
+        let new_pb = root as *mut HeapHeader;
+        assert_ne!(new_pb, from_pb, "ProcBin should have moved to to-space");
+        assert_eq!(mso_chain(&h), vec![new_pb], "chain rewritten");
+        assert_eq!(live_count(), baseline + 1, "shared bin unchanged across GC");
+        let pb_to = unsafe { ProcBin::from_raw(new_pb) };
+        assert_eq!(pb_to.shared_raw(), shared_p);
+        drop(h);
+        assert_eq!(live_count(), baseline);
+    }
+
+    /// Unrooted ProcBin: MSO sweep releases its SharedBin.
+    #[test]
+    #[serial_test::serial]
+    fn procbin_dies_in_gc_and_sweep_releases_shared_bin() {
+        let baseline = live_count();
+        let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
+        let _ = alloc_procbin(&mut h, SharedBinHandle::from_bytes(&[0x55; 16], 128));
+        assert_eq!(live_count(), baseline + 1);
+        let mut root: *mut u8 = std::ptr::null_mut();
+        h.gc(&mut root);
+        assert!(h.mso_head.is_null(), "dead ProcBin swept from MSO");
+        assert_eq!(live_count(), baseline);
+    }
+
+    /// Heap::drop releases every chain entry's shared_ptr.
+    #[test]
+    #[serial_test::serial]
+    fn heap_drop_releases_all_mso_shared_refs() {
+        let baseline = live_count();
+        {
+            let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
+            let _ = alloc_procbin(&mut h, SharedBinHandle::from_bytes(&[1, 2], 16));
+            let _ = alloc_procbin(&mut h, SharedBinHandle::from_bytes(&[3, 4, 5], 24));
+            assert_eq!(live_count(), baseline + 2);
+            assert_eq!(mso_chain(&h).len(), 2);
+        }
+        assert_eq!(live_count(), baseline);
+    }
+
+    // ===== deep_copy_value handles ProcBin via retain =====================
+
+    /// Cross-heap deep_copy of a ProcBin shares the SharedBin.
+    #[test]
+    #[serial_test::serial]
+    fn deep_copy_procbin_shares_via_retain() {
+        let baseline = live_count();
+        let mut src = Heap::new(SIZE_TABLE[0], empty_registry());
+        let mut dst = Heap::new(SIZE_TABLE[0], empty_registry());
+        let src_pb = alloc_procbin(&mut src, SharedBinHandle::from_bytes(&[7, 8, 9, 10], 32));
+        let shared_p = src_pb.shared_raw();
+        let v = FzValue::from_ptr(src_pb.as_raw());
+        let mut fwd = std::collections::HashMap::new();
+        let copied = deep_copy_value(v, &src, &mut dst, &mut fwd);
+        let dst_p = copied.unbox_ptr().unwrap();
+        let dst_pb = unsafe { ProcBin::from_raw(dst_p) };
+        assert_ne!(dst_p, src_pb.as_raw());
+        assert_eq!(dst_pb.shared_raw(), shared_p);
+        assert_eq!(mso_chain(&src).len(), 1);
+        assert_eq!(mso_chain(&dst).len(), 1);
+        unsafe {
+            assert_eq!((*shared_p).refcount.load(crate::sync::Ordering::Relaxed), 2);
+        }
+        assert_eq!(live_count(), baseline + 1);
+        drop(dst);
+        unsafe {
+            assert_eq!((*shared_p).refcount.load(crate::sync::Ordering::Relaxed), 1);
+        }
+        assert_eq!(mso_chain(&src).len(), 1);
+        drop(src);
+        assert_eq!(live_count(), baseline);
+    }
+
+    /// Shared structure: a tuple containing the same ProcBin twice
+    /// deep-copies to a single retained reference (refcount 2, not 3).
+    #[test]
+    #[serial_test::serial]
+    fn deep_copy_procbin_dedup_via_forwarding_map() {
+        let baseline = live_count();
+        let reg = empty_registry();
+        let pair_id = reg.borrow_mut().register(Schema {
+            name: "Pair".into(),
+            size: 16,
+            fields: vec![
+                FieldDescriptor {
+                    offset: 0,
+                    kind: FieldKind::FzValue,
+                },
+                FieldDescriptor {
+                    offset: 8,
+                    kind: FieldKind::FzValue,
+                },
+            ],
+        });
+        let mut src = Heap::new(SIZE_TABLE[0], reg.clone());
+        let mut dst = Heap::new(SIZE_TABLE[0], reg);
+        let src_pb = alloc_procbin(&mut src, SharedBinHandle::from_bytes(&[0xab, 0xcd], 16));
+        let shared_p = src_pb.shared_raw();
+        let pair = src.alloc_struct(pair_id);
+        src.write_field(pair, 0, FzValue::from_ptr(src_pb.as_raw()));
+        src.write_field(pair, 8, FzValue::from_ptr(src_pb.as_raw()));
+        let mut fwd = std::collections::HashMap::new();
+        let _ = deep_copy_value(FzValue::from_ptr(pair), &src, &mut dst, &mut fwd);
+        assert_eq!(mso_chain(&dst).len(), 1, "dedup");
+        unsafe {
+            assert_eq!((*shared_p).refcount.load(crate::sync::Ordering::Relaxed), 2);
+        }
+        drop(dst);
+        drop(src);
+        assert_eq!(live_count(), baseline);
+    }
+
+    // ===== alloc_bitstring threshold + dispatch ===========================
+
+    #[test]
+    fn alloc_bitstring_small_stays_inline() {
+        let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
+        let bytes: Vec<u8> = (0..32u8).collect();
+        let p = h.alloc_bitstring(&bytes, 256);
+        unsafe {
+            assert_eq!((*p).kind, HeapKind::Bitstring as u16);
+            assert_eq!(bitstring_bit_len(p), 256);
+            let pay = bitstring_byte_ptr(p);
+            for i in 0..32 {
+                assert_eq!(*pay.add(i), bytes[i]);
+            }
+        }
+        assert!(h.mso_head.is_null());
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn alloc_bitstring_large_routes_to_shared_zone() {
+        let baseline = live_count();
+        let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
+        let bytes: Vec<u8> = (0..128u8).collect();
+        let p = h.alloc_bitstring(&bytes, 1024);
+        unsafe {
+            assert_eq!((*p).kind, HeapKind::ProcBin as u16);
+            assert_eq!(bitstring_bit_len(p), 1024);
+            let pay = bitstring_byte_ptr(p);
+            for i in 0..128 {
+                assert_eq!(*pay.add(i), bytes[i]);
+            }
+        }
+        assert_eq!(mso_chain(&h).len(), 1);
+        assert_eq!(live_count(), baseline + 1);
+        drop(h);
+        assert_eq!(live_count(), baseline);
+    }
+
+    /// Full spawn-and-share scenario at the heap layer.
+    #[test]
+    #[serial_test::serial]
+    fn shared_heap_acceptance_spawn_and_share() {
+        const N: usize = 4;
+        let baseline = live_count();
+        let payload: Vec<u8> = (0..128u8).collect();
+        let mut sender = Heap::new(SIZE_TABLE[0], empty_registry());
+        let bs_in_sender = sender.alloc_bitstring(&payload, 1024);
+        assert_eq!(live_count(), baseline + 1);
+
+        let mut receivers: Vec<Heap> = (0..N)
+            .map(|_| Heap::new(SIZE_TABLE[0], empty_registry()))
+            .collect();
+        let mut receiver_roots: Vec<*mut HeapHeader> = Vec::with_capacity(N);
+        for r in receivers.iter_mut() {
+            let mut fwd = std::collections::HashMap::new();
+            let copied = deep_copy_value(FzValue::from_ptr(bs_in_sender), &sender, r, &mut fwd);
+            receiver_roots.push(copied.unbox_ptr().unwrap());
+        }
+        let sender_pb = unsafe { ProcBin::from_raw(bs_in_sender) };
+        let shared_p = sender_pb.shared_raw();
+        unsafe {
+            assert_eq!(
+                (*shared_p).refcount.load(crate::sync::Ordering::Relaxed),
+                1 + N
+            );
+        }
+        assert_eq!(live_count(), baseline + 1);
+
+        for (r, root_ptr) in receivers.iter_mut().zip(receiver_roots.iter_mut()) {
+            let mut root_u8 = (*root_ptr) as *mut u8;
+            r.gc(&mut root_u8);
+            *root_ptr = root_u8 as *mut HeapHeader;
+            let chain = mso_chain(r);
+            assert_eq!(chain.len(), 1);
+            assert_eq!(chain[0], *root_ptr);
+        }
+        assert_eq!(live_count(), baseline + 1);
+
+        for root_ptr in &receiver_roots {
+            unsafe {
+                assert_eq!(bitstring_bit_len(*root_ptr), 1024);
+                let bp = bitstring_byte_ptr(*root_ptr);
+                for (i, expected) in payload.iter().enumerate() {
+                    assert_eq!(*bp.add(i), *expected);
+                }
+            }
+        }
+
+        let _ = receiver_roots;
+        drop(receivers);
+        unsafe {
+            assert_eq!((*shared_p).refcount.load(crate::sync::Ordering::Relaxed), 1);
+        }
+        assert_eq!(live_count(), baseline + 1);
+
+        drop(sender);
+        assert_eq!(live_count(), baseline);
+    }
+
+    // ===== fz-q8d.4 — heap fragments ======================================
+
+    /// Oversized allocations land in the fragment list, bypass the bump
+    /// arena, and report their size via `bytes_used()`.
+    #[test]
+    fn alloc_oversized_routes_to_fragment_list() {
+        let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
+        let want = SIZE_TABLE[SIZE_TABLE.len() - 1] + 16;
+        let p = h.alloc(want);
+        assert!(!p.is_null());
+        assert_eq!(h.fragments.len(), 1);
+        assert_eq!(h.fragments[0].size, (want + 15) & !15);
+        // bytes_used includes the fragment size.
+        assert!(h.bytes_used() >= h.fragments[0].size);
+    }
+
+    /// Rooted oversized struct survives GC; mark bit cycles back to false.
+    #[test]
+    fn rooted_fragment_survives_gc() {
+        let reg = empty_registry();
+        // A schema large enough that alloc_struct routes to fragments.
+        let n_fields = (FRAGMENT_THRESHOLD + 256) / 8; // payload size > threshold
+        let mut fields = Vec::with_capacity(n_fields);
+        for i in 0..n_fields {
+            fields.push(FieldDescriptor {
+                offset: (i * 8) as u32,
+                kind: FieldKind::FzValue,
+            });
+        }
+        let id = reg.borrow_mut().register(Schema {
+            name: "Big".into(),
+            size: (n_fields * 8) as u32,
+            fields,
+        });
+        let mut h = Heap::new(SIZE_TABLE[0], reg);
+        let big = h.alloc_struct(id);
+        assert_eq!(h.fragments.len(), 1);
+        let frag_ptr = h.fragments[0].ptr;
+        let mut root = big as *mut u8;
+        h.gc(&mut root);
+        assert_eq!(h.fragments.len(), 1, "fragment survives");
+        assert_eq!(h.fragments[0].ptr, frag_ptr, "fragment did not move");
+        assert!(!h.fragments[0].mark, "mark reset post-GC");
+        // Root is unchanged because the fragment did not move.
+        assert_eq!(root as *mut HeapHeader, big);
+    }
+
+    /// Unrooted oversized object is freed by GC; fragment list shrinks.
+    #[test]
+    fn unrooted_fragment_is_freed_by_gc() {
+        let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
+        let _ = h.alloc(FRAGMENT_THRESHOLD + 16);
+        assert_eq!(h.fragments.len(), 1);
+        let mut root: *mut u8 = std::ptr::null_mut();
+        h.gc(&mut root);
+        assert!(h.fragments.is_empty(), "unrooted fragment freed");
+    }
+
+    /// Three fragments, two rooted: the unrooted one is reclaimed.
+    #[test]
+    fn mixed_fragment_liveness() {
+        let reg = empty_registry();
+        let n_fields = (FRAGMENT_THRESHOLD + 256) / 8;
+        let mut fields = Vec::with_capacity(n_fields);
+        for i in 0..n_fields {
+            fields.push(FieldDescriptor {
+                offset: (i * 8) as u32,
+                kind: FieldKind::FzValue,
+            });
+        }
+        let id = reg.borrow_mut().register(Schema {
+            name: "Big".into(),
+            size: (n_fields * 8) as u32,
+            fields,
+        });
+        let mut h = Heap::new(SIZE_TABLE[0], reg.clone());
+        let a = h.alloc_struct(id);
+        let _b_dead = h.alloc_struct(id);
+        let c = h.alloc_struct(id);
+        assert_eq!(h.fragments.len(), 3);
+        // We can only thread one root pointer through `gc`; package a
+        // pair {a, c} into a tuple in the bump arena (a Struct with
+        // FzValue fields) — that becomes a root containing both.
+        let pair_id = reg.borrow_mut().register(Schema {
+            name: "Pair".into(),
+            size: 16,
+            fields: vec![
+                FieldDescriptor {
+                    offset: 0,
+                    kind: FieldKind::FzValue,
+                },
+                FieldDescriptor {
+                    offset: 8,
+                    kind: FieldKind::FzValue,
+                },
+            ],
+        });
+        let pair = h.alloc_struct(pair_id);
+        h.write_field(pair, 0, FzValue::from_ptr(a));
+        h.write_field(pair, 8, FzValue::from_ptr(c));
+        let mut root = pair as *mut u8;
+        h.gc(&mut root);
+        assert_eq!(h.fragments.len(), 2, "the unrooted fragment was reclaimed");
+    }
+
+    /// Fragment → fragment edge: the head fragment holds a pointer at
+    /// payload offset 0 to a second fragment. Rooting the head must
+    /// keep both alive.
+    #[test]
+    fn fragment_to_fragment_edge_survives_gc() {
+        let reg = empty_registry();
+        let n_fields = (FRAGMENT_THRESHOLD + 256) / 8;
+        let mut fields = Vec::with_capacity(n_fields);
+        for i in 0..n_fields {
+            fields.push(FieldDescriptor {
+                offset: (i * 8) as u32,
+                kind: FieldKind::FzValue,
+            });
+        }
+        let id = reg.borrow_mut().register(Schema {
+            name: "Big".into(),
+            size: (n_fields * 8) as u32,
+            fields,
+        });
+        let mut h = Heap::new(SIZE_TABLE[0], reg);
+        let head = h.alloc_struct(id);
+        let tail = h.alloc_struct(id);
+        h.write_field(head, 0, FzValue::from_ptr(tail));
+        let mut root = head as *mut u8;
+        h.gc(&mut root);
+        assert_eq!(h.fragments.len(), 2, "both fragments survive");
+    }
+
+    /// Fragment → to-space edge: a fragment holds a pointer to a
+    /// normal heap-resident List cons. Rooting the fragment must
+    /// preserve the cons and move it to to-space.
+    #[test]
+    fn fragment_to_block_edge_promotes_block_object() {
+        let reg = empty_registry();
+        let n_fields = (FRAGMENT_THRESHOLD + 256) / 8;
+        let mut fields = Vec::with_capacity(n_fields);
+        for i in 0..n_fields {
+            fields.push(FieldDescriptor {
+                offset: (i * 8) as u32,
+                kind: FieldKind::FzValue,
+            });
+        }
+        let id = reg.borrow_mut().register(Schema {
+            name: "Big".into(),
+            size: (n_fields * 8) as u32,
+            fields,
+        });
+        let mut h = Heap::new(SIZE_TABLE[0], reg);
+        let cons = h.alloc_list_cons(FzValue::from_int(7), FzValue::NIL);
+        let big = h.alloc_struct(id);
+        h.write_field(big, 0, FzValue::from_ptr(cons));
+        let mut root = big as *mut u8;
+        h.gc(&mut root);
+        assert_eq!(h.fragments.len(), 1, "fragment survives");
+        // cons survives in to-space; read child from fragment payload.
+        let child_bits = unsafe { std::ptr::read((big as *const u8).add(16) as *const u64) };
+        let child = crate::fz_value::FzValue(child_bits).unbox_ptr().unwrap();
+        unsafe {
+            assert_eq!((*child).kind, HeapKind::List as u16);
+            let head = std::ptr::read((child as *const u8).add(16) as *const u64);
+            assert_eq!(crate::fz_value::FzValue(head).unbox_int(), Some(7));
+        }
+    }
+
+    /// Heap::drop with live fragments deallocates them (no leak).
+    /// Verified indirectly: drop without panic, and a follow-up alloc
+    /// at the same allocator gets a fresh pointer.
+    #[test]
+    fn heap_drop_releases_fragments_without_leak() {
+        // Two heaps in sequence: first holds a fragment then drops; the
+        // drop frees the fragment. Second heap can allocate without
+        // tripping anything in the allocator's reuse path.
+        {
+            let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
+            let _ = h.alloc(FRAGMENT_THRESHOLD + 16);
+            assert_eq!(h.fragments.len(), 1);
+        }
+        let mut h2 = Heap::new(SIZE_TABLE[0], empty_registry());
+        let p = h2.alloc(FRAGMENT_THRESHOLD + 16);
+        assert!(!p.is_null());
+    }
+
+    #[test]
+    fn procbin_round_trips_through_bitstring_dispatchers() {
+        let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
+        let bytes: Vec<u8> = (0..100u8).collect();
+        let p = h.alloc_bitstring(&bytes, 800);
+        let bl = unsafe { bitstring_bit_len(p) };
+        let bp = unsafe { bitstring_byte_ptr(p) };
+        assert_eq!(bl, 800);
+        let recovered: Vec<u8> = (0..100).map(|i| unsafe { *bp.add(i) }).collect();
+        assert_eq!(recovered, bytes);
     }
 }

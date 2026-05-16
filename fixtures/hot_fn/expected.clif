@@ -4,7 +4,7 @@
     ;   @abi    () -> Tagged
 function u0:0(i64) -> i64 tail {
     sig0 = (i64, i64) -> i64 tail
-    fn0 = colocated u0:45 sig0
+    fn0 = colocated u0:48 sig0
 
 block0(v0: i64):
     v1 = iconst.i64 1                   ; @4:13
@@ -19,7 +19,7 @@ function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64) system_v
     sig1 = (i64, i64) -> i64 tail
     fn0 = u0:1 sig0
-    fn1 = colocated u0:46 sig1
+    fn1 = colocated u0:49 sig1
 
     block0(v0: i64, v1: i64):    ;; v0 :: int
     call fn0(v0)                        ; @4:3
@@ -38,7 +38,7 @@ function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64) system_v
     sig1 = (i64, i64) -> i64 tail
     fn0 = u0:1 sig0
-    fn1 = colocated u0:47 sig1
+    fn1 = colocated u0:50 sig1
 
     block0(v0: i64, v1: i64):    ;; v0 :: int
     call fn0(v0)                        ; @5:3
@@ -57,7 +57,7 @@ function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64) system_v
     sig1 = (i64, i64) -> i64 tail
     fn0 = u0:1 sig0
-    fn1 = colocated u0:48 sig1
+    fn1 = colocated u0:51 sig1
 
     block0(v0: i64, v1: i64):    ;; v0 :: int
     call fn0(v0)                        ; @6:3
@@ -76,7 +76,7 @@ function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64) system_v
     sig1 = (i64, i64) -> i64 tail
     fn0 = u0:1 sig0
-    fn1 = colocated u0:49 sig1
+    fn1 = colocated u0:52 sig1
 
     block0(v0: i64, v1: i64):    ;; v0 :: int
     call fn0(v0)                        ; @7:3
@@ -95,7 +95,7 @@ function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64) system_v
     sig1 = (i64, i64) -> i64 tail
     fn0 = u0:1 sig0
-    fn1 = colocated u0:50 sig1
+    fn1 = colocated u0:53 sig1
 
     block0(v0: i64, v1: i64):    ;; v0 :: int
     call fn0(v0)                        ; @8:3
@@ -114,7 +114,7 @@ function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64) system_v
     sig1 = (i64, i64) -> i64 tail
     fn0 = u0:1 sig0
-    fn1 = colocated u0:51 sig1
+    fn1 = colocated u0:54 sig1
 
     block0(v0: i64, v1: i64):    ;; v0 :: int
     call fn0(v0)                        ; @9:3
@@ -133,7 +133,7 @@ function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64) system_v
     sig1 = (i64, i64) -> i64 tail
     fn0 = u0:1 sig0
-    fn1 = colocated u0:52 sig1
+    fn1 = colocated u0:55 sig1
 
     block0(v0: i64, v1: i64):    ;; v0 :: int
     call fn0(v0)                        ; @10:3

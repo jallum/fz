@@ -498,7 +498,7 @@ pub extern "C" fn fz_bs_write_field(
     signed: u32,
 ) {
     use crate::bitstr::BitType;
-    use crate::fz_value::{FzValue, HeapKind, Tag};
+    use crate::fz_value::{FzValue, Tag};
     let ty = decode_bit_type(ty_tag);
     let size = if size_present != 0 {
         Some(size_value)
@@ -538,13 +538,11 @@ pub extern "C" fn fz_bs_write_field(
                     Tag::Ptr => v.unbox_ptr().expect("binary field: bad ptr"),
                     _ => panic!("binary/bits bit field expects heap bitstring"),
                 };
-                let header = unsafe { &*p };
-                if HeapKind::from_u16(header.kind) != Some(HeapKind::Bitstring) {
+                if !unsafe { crate::procbin::is_bitstring_like(p) } {
                     panic!("binary/bits bit field source is not a Bitstring");
                 }
-                let src_bit_len =
-                    unsafe { std::ptr::read((p as *const u8).add(16) as *const u64) } as usize;
-                let src_bytes_ptr = unsafe { (p as *const u8).add(24) };
+                let src_bit_len = unsafe { crate::procbin::bitstring_bit_len(p) } as usize;
+                let src_bytes_ptr = unsafe { crate::procbin::bitstring_byte_ptr(p) };
                 let needed_bits = match (ty, size) {
                     (BitType::Binary, None) => src_bit_len,
                     (BitType::Binary, Some(n)) => (n * unit) as usize,
@@ -618,6 +616,40 @@ pub extern "C" fn fz_bs_finalize() -> u64 {
     p as u64
 }
 
+/// fz-cty.8 — single-shot bitstring allocation from module-interned bytes.
+///
+/// Replaces the begin/write-per-field/finalize sequence for the common
+/// case of an all-constant byte-literal bitstring (e.g. `<<1, 2, ..., 70>>`).
+/// `ptr` points at a static byte payload baked into the module; the runtime
+/// copies through `Heap::alloc_bitstring`, which picks inline / ProcBin /
+/// SharedBin storage by length.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_alloc_bitstring_const(ptr: u64, byte_len: u64, bit_len: u64) -> u64 {
+    // ptr is the address of a module-baked byte payload (Cranelift Local data
+    // symbol). It outlives the call; we materialise a slice over it just long
+    // enough for Heap::alloc_bitstring to copy / wrap.
+    let bytes = unsafe { std::slice::from_raw_parts(ptr as *const u8, byte_len as usize) };
+    let p = current_process().heap.alloc_bitstring(bytes, bit_len);
+    p as u64
+}
+
+/// fz-q8d.2 — allocate a ProcBin on the current heap referencing a
+/// compiler-baked static SharedBin in `.data`. The static SharedBin's
+/// refcount anchor (initial value 1) is kept; we retain to climb to 2,
+/// then the new ProcBin's lifetime release brings it back to 1 (anchor
+/// preserved). The noop destructor never runs in practice.
+///
+/// `static_sharedbin` is the address of the 40-byte SharedBin struct
+/// emitted into `.data` by codegen, with bytes_ptr and destructor
+/// relocations resolved by the linker.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_alloc_procbin_from_static(static_sharedbin: u64) -> u64 {
+    let sb = static_sharedbin as *mut crate::procbin::SharedBin;
+    let handle = unsafe { crate::procbin::SharedBinHandle::retain_from_raw(sb) };
+    let pb = crate::procbin::alloc_procbin(&mut current_process().heap, handle);
+    pb.as_raw() as u64
+}
+
 fn decode_bit_type(t: u32) -> crate::bitstr::BitType {
     use crate::bitstr::BitType;
     match t {
@@ -646,17 +678,16 @@ fn decode_endian(e: u32) -> crate::bitstr::Endian {
 /// bitstring. Schema id is set by compile() into BS_TUPLE_ARITY3_SCHEMA.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_bs_reader_init(bs_bits: u64) -> u64 {
-    use crate::fz_value::{FzValue, HeapKind, Tag};
+    use crate::fz_value::{FzValue, Tag};
     let v = FzValue(bs_bits);
     let p = match v.tag() {
         Tag::Ptr => v.unbox_ptr().expect("reader_init: bad ptr"),
         _ => panic!("reader_init expects heap value"),
     };
-    let header = unsafe { &*p };
-    if HeapKind::from_u16(header.kind) != Some(HeapKind::Bitstring) {
+    if !unsafe { crate::procbin::is_bitstring_like(p) } {
         panic!("reader_init source is not a Bitstring");
     }
-    let bit_len = unsafe { std::ptr::read((p as *const u8).add(16) as *const u64) } as i64;
+    let bit_len = unsafe { crate::procbin::bitstring_bit_len(p) } as i64;
     let arity3 = current_process()
         .bs_tuple_arity3_schema
         .expect("bs_tuple_arity3_schema not set");
@@ -685,7 +716,7 @@ pub extern "C" fn fz_bs_read_field(
 ) -> u64 {
     use crate::bitstr::BitType;
     use crate::bitstr::{apply_endian_for_read, sign_extend};
-    use crate::fz_value::{FzValue, HeapKind};
+    use crate::fz_value::FzValue;
     let ty = decode_bit_type(ty_tag);
     let size = if size_present != 0 {
         Some(size_value)
@@ -710,11 +741,10 @@ pub extern "C" fn fz_bs_read_field(
     // Bytes pointer from bs.
     let bs_v = FzValue(bs_bits);
     let bsp = bs_v.unbox_ptr().expect("read_field: reader bs not a ptr");
-    let bs_header = unsafe { &*bsp };
-    if HeapKind::from_u16(bs_header.kind) != Some(HeapKind::Bitstring) {
+    if !unsafe { crate::procbin::is_bitstring_like(bsp) } {
         panic!("read_field reader bs is not a Bitstring");
     }
-    let bytes_ptr = unsafe { (bsp as *const u8).add(24) };
+    let bytes_ptr = unsafe { crate::procbin::bitstring_byte_ptr(bsp) };
     let bytes = unsafe { std::slice::from_raw_parts(bytes_ptr, bit_len.div_ceil(8)) };
 
     // Failure path: alloc 1-tuple [false].
@@ -1123,6 +1153,13 @@ fn eq_fz(a: u64, b: u64) -> bool {
     }
     let ah = unsafe { &*ap };
     let bh = unsafe { &*bp };
+    // fz-cty.5: a Bitstring and a ProcBin with equal bytes + bit_len are
+    // semantically equal — storage kind is an implementation detail.
+    let a_bs_like = unsafe { crate::procbin::is_bitstring_like(ap) };
+    let b_bs_like = unsafe { crate::procbin::is_bitstring_like(bp) };
+    if a_bs_like && b_bs_like {
+        return eq_bitstring(ap, bp);
+    }
     if ah.kind != bh.kind {
         return false;
     }
@@ -1132,7 +1169,6 @@ fn eq_fz(a: u64, b: u64) -> bool {
         }
         Some(HeapKind::List) => eq_list(ap, bp),
         Some(HeapKind::Struct) => eq_struct(ap, bp, ah.schema_id, bh.schema_id),
-        Some(HeapKind::Bitstring) => eq_bitstring(ap, bp),
         Some(HeapKind::Map) => eq_map(ap, bp),
         // Closures + Vecs: ticket scope is List/Struct/Bitstring/Map only.
         // Fall back to ptr-identity (already false here, since a != b).
@@ -1205,16 +1241,16 @@ fn eq_bitstring(
     ap: *mut crate::fz_value::HeapHeader,
     bp: *mut crate::fz_value::HeapHeader,
 ) -> bool {
-    let a_bits = unsafe { std::ptr::read((ap as *const u8).add(16) as *const u64) };
-    let b_bits = unsafe { std::ptr::read((bp as *const u8).add(16) as *const u64) };
+    let a_bits = unsafe { crate::procbin::bitstring_bit_len(ap) };
+    let b_bits = unsafe { crate::procbin::bitstring_bit_len(bp) };
     if a_bits != b_bits {
         return false;
     }
     let bit_len = a_bits as usize;
     let full_bytes = bit_len / 8;
     let trailing = bit_len % 8;
-    let a_pay = unsafe { (ap as *const u8).add(24) };
-    let b_pay = unsafe { (bp as *const u8).add(24) };
+    let a_pay = unsafe { crate::procbin::bitstring_byte_ptr(ap) };
+    let b_pay = unsafe { crate::procbin::bitstring_byte_ptr(bp) };
     for i in 0..full_bytes {
         if unsafe { *a_pay.add(i) != *b_pay.add(i) } {
             return false;
@@ -1254,4 +1290,112 @@ fn eq_map(ap: *mut crate::fz_value::HeapHeader, bp: *mut crate::fz_value::HeapHe
         }
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fz_value::HeapKind;
+    use crate::heap::SchemaRegistry;
+    use crate::procbin::{bitstring_bit_len, bitstring_byte_ptr};
+    use crate::process::{CURRENT_PROCESS, Process};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    /// Install a fresh Process for the duration of `f`. Mirrors the
+    /// install/clear dance done by aot_shim and the scheduler, but stays
+    /// on the test thread.
+    fn with_process<R>(f: impl FnOnce() -> R) -> R {
+        let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
+        let mut proc = Box::new(Process::new(schemas));
+        let prev = CURRENT_PROCESS.with(|c| c.replace(proc.as_mut() as *mut Process));
+        let r = f();
+        CURRENT_PROCESS.with(|c| c.set(prev));
+        r
+    }
+
+    /// fz-cty.8 — small (<= threshold) payload allocates inline Bitstring.
+    #[test]
+    fn alloc_bitstring_const_small_payload_is_inline() {
+        with_process(|| {
+            let bytes: [u8; 3] = [0xaa, 0xbb, 0xcc];
+            let bits = fz_alloc_bitstring_const(bytes.as_ptr() as u64, 3, 24);
+            let p = crate::fz_value::FzValue(bits).unbox_ptr().unwrap();
+            unsafe {
+                assert_eq!(
+                    HeapKind::from_u16((*p).kind),
+                    Some(HeapKind::Bitstring),
+                    "small payload should pick the inline Bitstring kind"
+                );
+                assert_eq!(bitstring_bit_len(p), 24);
+                let bp = bitstring_byte_ptr(p);
+                assert_eq!(std::slice::from_raw_parts(bp, 3), &bytes);
+            }
+        });
+    }
+
+    /// fz-q8d.2 — `fz_alloc_procbin_from_static` retains the static
+    /// SharedBin's anchor (climbing 1 → 2), allocates a ProcBin that
+    /// owns the new edge, and returns it as a tagged FzValue ptr. When
+    /// the holding heap drops, the anchor is preserved (refcount stays
+    /// at 1) — the static SharedBin lives forever.
+    #[test]
+    #[serial_test::serial]
+    fn alloc_procbin_from_static_preserves_anchor() {
+        use crate::procbin::SharedBin;
+        use crate::sync::{AtomicUsize, Ordering};
+        // Construct a "static" SharedBin by hand. Its destructor is a
+        // noop pointer so the test owns its lifetime explicitly.
+        static PAYLOAD: [u8; 8] = [0xde, 0xad, 0xbe, 0xef, 0xca, 0xfe, 0xba, 0xbe];
+        unsafe extern "C" fn noop(_: *mut SharedBin) {}
+        let mut sb = SharedBin {
+            refcount: AtomicUsize::new(1),
+            bit_len: 64,
+            bytes_ptr: PAYLOAD.as_ptr(),
+            bytes_len: PAYLOAD.len(),
+            destructor: noop,
+        };
+        let sb_ptr = &mut sb as *mut SharedBin;
+        with_process(|| {
+            let bits = fz_alloc_procbin_from_static(sb_ptr as u64);
+            let p = crate::fz_value::FzValue(bits).unbox_ptr().unwrap();
+            unsafe {
+                assert_eq!(HeapKind::from_u16((*p).kind), Some(HeapKind::ProcBin));
+                assert_eq!(bitstring_bit_len(p), 64);
+                let bp = bitstring_byte_ptr(p);
+                assert_eq!(std::slice::from_raw_parts(bp, 8), &PAYLOAD[..]);
+                // retain climbed anchor 1 -> 2.
+                assert_eq!(sb.refcount.load(Ordering::Relaxed), 2);
+            }
+            // When the with_process drops the temp Process, the heap drop
+            // releases the ProcBin's edge, returning refcount to the
+            // anchor value 1.
+        });
+        assert_eq!(sb.refcount.load(Ordering::Relaxed), 1, "anchor preserved");
+    }
+
+    /// fz-cty.8 — large (> threshold) payload routes through ProcBin / SharedBin.
+    #[test]
+    #[serial_test::serial]
+    fn alloc_bitstring_const_large_payload_is_procbin() {
+        with_process(|| {
+            let payload: Vec<u8> = (0..70u8).collect(); // 70 > SHARED_BIN_THRESHOLD_BYTES (64)
+            let bits =
+                fz_alloc_bitstring_const(payload.as_ptr() as u64, payload.len() as u64, 70 * 8);
+            let p = crate::fz_value::FzValue(bits).unbox_ptr().unwrap();
+            unsafe {
+                assert_eq!(
+                    HeapKind::from_u16((*p).kind),
+                    Some(HeapKind::ProcBin),
+                    "large payload should route through ProcBin / SharedBin"
+                );
+                assert_eq!(bitstring_bit_len(p), 70 * 8);
+                let bp = bitstring_byte_ptr(p);
+                assert_eq!(
+                    std::slice::from_raw_parts(bp, payload.len()),
+                    payload.as_slice()
+                );
+            }
+        });
+    }
 }
