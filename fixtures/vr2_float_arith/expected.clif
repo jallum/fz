@@ -20,42 +20,36 @@ function u0:0(i64) -> i64 tail {
     fn6 = u0:40 sig6
 
 block0(v0: i64):
-    v3 = f64const 0x1.8000000000000p0   ; @2:9
-    v4 = f64const 0x1.4000000000000p1   ; @2:15
-    v5 = fadd v3, v4                    ; @2:9  v3 = 0x1.8000000000000p0, v4 = 0x1.4000000000000p1
-    v6 = bitcast.i64 v5
-    v7 = call fn1(v6)
-    call fn0(v7)
-    v8 = iconst.i64 3    ;; v8 :: nil
-    jump block1(v8)                     ; @2:3  v8 = 3
-
-    block1(v1: i64):    ;; v1 :: nil
-    v9 = f64const 0x1.4000000000000p3    ;; v9 :: 10.0
-    v10 = f64const 0x1.8000000000000p1    ;; v10 :: 3.0
-    v11 = fsub v9, v10  ; v9 = 0x1.4000000000000p3, v10 = 0x1.8000000000000p1    ;; v11 :: 7.0
-    v12 = bitcast.i64 v11
-    v13 = call fn3(v12)
-    call fn2(v13)
-    v14 = iconst.i64 3    ;; v14 :: nil
-    jump block2(v14)  ; v14 = 3
-
-    block2(v2: i64):    ;; v2 :: nil
-    v15 = f64const 0x1.4000000000000p1    ;; v15 :: 2.5
-    v16 = f64const 0x1.0000000000000p2    ;; v16 :: 4.0
-    v17 = fmul v15, v16  ; v15 = 0x1.4000000000000p1, v16 = 0x1.0000000000000p2    ;; v17 :: 10.0
-    v18 = bitcast.i64 v17
-    v19 = call fn5(v18)
-    call fn4(v19)
-    v20 = iconst.i64 3    ;; v20 :: nil
-    v21 = f64const 0x1.0000000000000p0    ;; v21 :: 1.0
-    v22 = f64const 0x1.0000000000000p1    ;; v22 :: 2.0
-    v23 = fcmp lt v21, v22  ; v21 = 0x1.0000000000000p0, v22 = 0x1.0000000000000p1
-    v24 = iconst.i64 11
-    v25 = iconst.i64 19
-    v26 = select v23, v24, v25  ; v24 = 11, v25 = 19    ;; v26 :: :true
-    call fn6(v26)
-    v27 = iconst.i64 3    ;; v27 :: nil
-    v28 = load.i64 notrap aligned v0+16
-    return_call_indirect sig7, v28(v27, v0)  ; v27 = 3
+    v1 = f64const 0x1.8000000000000p0   ; @2:9
+    v2 = f64const 0x1.4000000000000p1   ; @2:15
+    v3 = fadd v1, v2                    ; @2:9  v1 = 0x1.8000000000000p0, v2 = 0x1.4000000000000p1
+    v4 = bitcast.i64 v3
+    v5 = call fn1(v4)
+    call fn0(v5)
+    v6 = iconst.i64 3    ;; v6 :: nil
+    v7 = f64const 0x1.4000000000000p3    ;; v7 :: 10.0
+    v8 = f64const 0x1.8000000000000p1    ;; v8 :: 3.0
+    v9 = fsub v7, v8  ; v7 = 0x1.4000000000000p3, v8 = 0x1.8000000000000p1    ;; v9 :: 7.0
+    v10 = bitcast.i64 v9
+    v11 = call fn3(v10)
+    call fn2(v11)
+    v12 = iconst.i64 3    ;; v12 :: nil
+    v13 = f64const 0x1.4000000000000p1    ;; v13 :: 2.5
+    v14 = f64const 0x1.0000000000000p2    ;; v14 :: 4.0
+    v15 = fmul v13, v14  ; v13 = 0x1.4000000000000p1, v14 = 0x1.0000000000000p2    ;; v15 :: 10.0
+    v16 = bitcast.i64 v15
+    v17 = call fn5(v16)
+    call fn4(v17)
+    v18 = iconst.i64 3    ;; v18 :: nil
+    v19 = f64const 0x1.0000000000000p0    ;; v19 :: 1.0
+    v20 = f64const 0x1.0000000000000p1    ;; v20 :: 2.0
+    v21 = fcmp lt v19, v20  ; v19 = 0x1.0000000000000p0, v20 = 0x1.0000000000000p1
+    v22 = iconst.i64 11
+    v23 = iconst.i64 19
+    v24 = select v21, v22, v23  ; v22 = 11, v23 = 19    ;; v24 :: :true
+    call fn6(v24)
+    v25 = iconst.i64 3    ;; v25 :: nil
+    v26 = load.i64 notrap aligned v0+16 ; @2:3
+    return_call_indirect sig7, v26(v25, v0) ; @2:3  v25 = 3
 }
 

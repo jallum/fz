@@ -756,22 +756,19 @@ function u0:0(i64, i64) -> i64 tail {
 
     block0(v0: i64, v1: i64):    ;; v0 :: 0
     call fn0(v0)
-    v3 = iconst.i64 3    ;; v3 :: nil
-    jump block1(v3)                     ; @6:3  v3 = 3
-
-    block1(v2: i64):    ;; v2 :: nil
-    v4 = iconst.i64 1    ;; v4 :: 1
-    v5 = iconst.i64 0    ;; v5 :: 0
-    v6 = iconst.i64 1    ;; v6 :: 1
-    v7 = iconst.i32 18
-    v8 = iconst.i32 1
-    v9 = iconst.i32 0
-    v10 = call fn2(v7, v8, v9)  ; v7 = 18, v8 = 1, v9 = 0
-    v11 = func_addr.i64 fn3
-    store notrap aligned v11, v10+16
-    v12 = load.i64 notrap aligned v1+24
-    store notrap aligned v12, v10+24
-    return_call fn1(v4, v5, v6, v10)  ; v4 = 1, v5 = 0, v6 = 1
+    v2 = iconst.i64 3    ;; v2 :: nil
+    v3 = iconst.i64 1    ;; v3 :: 1
+    v4 = iconst.i64 0    ;; v4 :: 0
+    v5 = iconst.i64 1    ;; v5 :: 1
+    v6 = iconst.i32 18                  ; @6:3
+    v7 = iconst.i32 1                   ; @6:3
+    v8 = iconst.i32 0                   ; @6:3
+    v9 = call fn2(v6, v7, v8)           ; @6:3  v6 = 18, v7 = 1, v8 = 0
+    v10 = func_addr.i64 fn3             ; @6:3
+    store notrap aligned v10, v9+16     ; @6:3
+    v11 = load.i64 notrap aligned v1+24 ; @6:3
+    store notrap aligned v11, v9+24     ; @6:3
+    return_call fn1(v3, v4, v5, v9)     ; @6:3  v3 = 1, v4 = 0, v5 = 1
 }
 
 ; fn k_11_s18
@@ -790,22 +787,19 @@ function u0:0(i64, i64) -> i64 tail {
 
     block0(v0: i64, v1: i64):    ;; v0 :: 1
     call fn0(v0)
-    v3 = iconst.i64 3    ;; v3 :: nil
-    jump block1(v3)                     ; @7:3  v3 = 3
-
-    block1(v2: i64):    ;; v2 :: nil
-    v4 = iconst.i64 10    ;; v4 :: 10
-    v5 = iconst.i64 0    ;; v5 :: 0
-    v6 = iconst.i64 1    ;; v6 :: 1
-    v7 = iconst.i32 19
-    v8 = iconst.i32 1
-    v9 = iconst.i32 0
-    v10 = call fn2(v7, v8, v9)  ; v7 = 19, v8 = 1, v9 = 0
-    v11 = func_addr.i64 fn3
-    store notrap aligned v11, v10+16
-    v12 = load.i64 notrap aligned v1+24
-    store notrap aligned v12, v10+24
-    return_call fn1(v4, v5, v6, v10)  ; v4 = 10, v5 = 0, v6 = 1
+    v2 = iconst.i64 3    ;; v2 :: nil
+    v3 = iconst.i64 10    ;; v3 :: 10
+    v4 = iconst.i64 0    ;; v4 :: 0
+    v5 = iconst.i64 1    ;; v5 :: 1
+    v6 = iconst.i32 19                  ; @7:3
+    v7 = iconst.i32 1                   ; @7:3
+    v8 = iconst.i32 0                   ; @7:3
+    v9 = call fn2(v6, v7, v8)           ; @7:3  v6 = 19, v7 = 1, v8 = 0
+    v10 = func_addr.i64 fn3             ; @7:3
+    store notrap aligned v10, v9+16     ; @7:3
+    v11 = load.i64 notrap aligned v1+24 ; @7:3
+    store notrap aligned v11, v9+24     ; @7:3
+    return_call fn1(v3, v4, v5, v9)     ; @7:3  v3 = 10, v4 = 0, v5 = 1
 }
 
 ; fn k_13_s19
@@ -824,22 +818,19 @@ function u0:0(i64, i64) -> i64 tail {
 
     block0(v0: i64, v1: i64):    ;; v0 :: int
     call fn0(v0)
-    v3 = iconst.i64 3    ;; v3 :: nil
-    jump block1(v3)                     ; @8:3  v3 = 3
-
-    block1(v2: i64):    ;; v2 :: nil
-    v4 = iconst.i64 20    ;; v4 :: 20
-    v5 = iconst.i64 0    ;; v5 :: 0
-    v6 = iconst.i64 1    ;; v6 :: 1
-    v7 = iconst.i32 20
-    v8 = iconst.i32 1
-    v9 = iconst.i32 0
-    v10 = call fn2(v7, v8, v9)  ; v7 = 20, v8 = 1, v9 = 0
-    v11 = func_addr.i64 fn3
-    store notrap aligned v11, v10+16
-    v12 = load.i64 notrap aligned v1+24
-    store notrap aligned v12, v10+24
-    return_call fn1(v4, v5, v6, v10)  ; v4 = 20, v5 = 0, v6 = 1
+    v2 = iconst.i64 3    ;; v2 :: nil
+    v3 = iconst.i64 20    ;; v3 :: 20
+    v4 = iconst.i64 0    ;; v4 :: 0
+    v5 = iconst.i64 1    ;; v5 :: 1
+    v6 = iconst.i32 20                  ; @8:3
+    v7 = iconst.i32 1                   ; @8:3
+    v8 = iconst.i32 0                   ; @8:3
+    v9 = call fn2(v6, v7, v8)           ; @8:3  v6 = 20, v7 = 1, v8 = 0
+    v10 = func_addr.i64 fn3             ; @8:3
+    store notrap aligned v10, v9+16     ; @8:3
+    v11 = load.i64 notrap aligned v1+24 ; @8:3
+    store notrap aligned v11, v9+24     ; @8:3
+    return_call fn1(v3, v4, v5, v9)     ; @8:3  v3 = 20, v4 = 0, v5 = 1
 }
 
 ; fn k_15_s20

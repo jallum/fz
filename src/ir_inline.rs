@@ -332,15 +332,6 @@ pub fn alpha_rename(callee: &FnIr, caller: &FnIr) -> FnIr {
     }
 }
 
-// ---------- splice (transitional — replaced by absorb_callee in fz-abs.2) ----------
-
-/// Move all blocks from `renamed` into `caller`; return the entry BlockId.
-pub fn splice_blocks(caller: &mut FnIr, renamed: FnIr) -> BlockId {
-    let entry = renamed.entry;
-    caller.blocks.extend(renamed.blocks);
-    entry
-}
-
 // ---------- absorb ----------
 
 /// Inline `callee` at block `bi` of `caller`.
@@ -432,20 +423,7 @@ pub fn inline_tail_calls_once(m: &mut Module) -> usize {
         let caller = &m.fns[fi];
         let renamed = alpha_rename(&callee, caller);
 
-        // Entry params must match arg count — guaranteed by well-formed IR.
-        let entry_params: Vec<Var> = renamed
-            .blocks
-            .iter()
-            .find(|b| b.id == renamed.entry)
-            .expect("entry block")
-            .params
-            .clone();
-        debug_assert_eq!(entry_params.len(), args.len());
-
-        let entry = splice_blocks(&mut m.fns[fi], renamed);
-
-        // Replace TailCall with Goto(entry, args).
-        m.fns[fi].blocks[bi].terminator = Term::Goto(entry, args);
+        absorb_callee(&mut m.fns[fi], bi, renamed, &args);
         count += 1;
     }
 
@@ -522,17 +500,7 @@ pub fn inline_calls_once(m: &mut Module) -> usize {
             }
         }
 
-        let entry_params: Vec<Var> = renamed
-            .blocks
-            .iter()
-            .find(|b| b.id == renamed.entry)
-            .expect("entry block")
-            .params
-            .clone();
-        debug_assert_eq!(entry_params.len(), args.len());
-
-        let entry = splice_blocks(&mut m.fns[fi], renamed);
-        m.fns[fi].blocks[bi].terminator = Term::Goto(entry, args);
+        absorb_callee(&mut m.fns[fi], bi, renamed, &args);
         count += 1;
     }
 
@@ -672,8 +640,7 @@ pub fn inline_single_use_conts_once(m: &mut Module, mt: &mut ModuleTypes) -> usi
         };
         let k_fn = m.fns[k_idx].clone();
         let renamed = alpha_rename(&k_fn, &m.fns[caller_fi]);
-        let entry = splice_blocks(&mut m.fns[caller_fi], renamed);
-        m.fns[caller_fi].blocks[caller_bi].terminator = Term::Goto(entry, tail_args);
+        absorb_callee(&mut m.fns[caller_fi], caller_bi, renamed, &tail_args);
 
         // Convert the Term::Call at the Cont site to TailCall.
         if let Some((m_fi, m_bi)) = cont_site {
@@ -991,23 +958,6 @@ mod tests {
         }
     }
 
-    // --- splice_blocks ---
-
-    #[test]
-    fn splice_blocks_appends_and_returns_entry() {
-        let callee = make_leaf_add1();
-        let caller_fn = make_caller_tail(FnId(1));
-        let renamed = alpha_rename(&callee, &caller_fn);
-        let renamed_entry = renamed.entry;
-
-        let mut caller_mut = caller_fn.clone();
-        let orig_len = caller_mut.blocks.len();
-        let entry = splice_blocks(&mut caller_mut, renamed);
-
-        assert_eq!(entry, renamed_entry);
-        assert_eq!(caller_mut.blocks.len(), orig_len + callee.blocks.len());
-    }
-
     // --- absorb_callee ---
 
     #[test]
@@ -1049,7 +999,7 @@ mod tests {
     // --- inline_tail_calls_once ---
 
     #[test]
-    fn inline_tail_calls_replaces_tailcall_with_goto() {
+    fn inline_tail_calls_absorbs_callee_no_goto() {
         let mut mb = ModuleBuilder::new();
         mb.add_fn(make_caller_tail(FnId(1)));
         mb.add_fn(make_leaf_add1());
@@ -1058,10 +1008,19 @@ mod tests {
         let n = inline_tail_calls_once(&mut m);
         assert_eq!(n, 1);
 
-        // The call site block should now have a Goto terminator.
+        // absorb_callee: entry block must NOT be a Goto with args.
+        // The callee (add1) had 2 stmts; they must be present in the caller entry.
         let caller = m.fns.iter().find(|f| f.name == "caller").unwrap();
         let entry = caller.blocks.iter().find(|b| b.id == caller.entry).unwrap();
-        assert!(matches!(entry.terminator, Term::Goto(_, _)));
+        assert!(
+            !matches!(&entry.terminator, Term::Goto(_, args) if !args.is_empty()),
+            "must not leave a parameterized Goto after absorb"
+        );
+        assert!(
+            entry.stmts.len() >= 2,
+            "callee stmts must be absorbed into entry; got {}",
+            entry.stmts.len()
+        );
     }
 
     #[test]

@@ -567,20 +567,17 @@ function u0:0(i64, i64) -> i64 tail {
 
     block0(v0: i64, v1: i64):    ;; v0 :: :false | :true
     call fn0(v0)
-    v3 = iconst.i64 3    ;; v3 :: nil
-    jump block1(v3)                     ; @7:3  v3 = 3
-
-    block1(v2: i64):    ;; v2 :: nil
-    v4 = iconst.i64 7    ;; v4 :: 7
-    v5 = iconst.i32 19
-    v6 = iconst.i32 1
-    v7 = iconst.i32 0
-    v8 = call fn2(v5, v6, v7)  ; v5 = 19, v6 = 1, v7 = 0
-    v9 = func_addr.i64 fn3
-    store notrap aligned v9, v8+16
-    v10 = load.i64 notrap aligned v1+24
-    store notrap aligned v10, v8+24
-    return_call fn1(v4, v8)  ; v4 = 7
+    v2 = iconst.i64 3    ;; v2 :: nil
+    v3 = iconst.i64 7    ;; v3 :: 7
+    v4 = iconst.i32 19                  ; @7:3
+    v5 = iconst.i32 1                   ; @7:3
+    v6 = iconst.i32 0                   ; @7:3
+    v7 = call fn2(v4, v5, v6)           ; @7:3  v4 = 19, v5 = 1, v6 = 0
+    v8 = func_addr.i64 fn3              ; @7:3
+    store notrap aligned v8, v7+16      ; @7:3
+    v9 = load.i64 notrap aligned v1+24  ; @7:3
+    store notrap aligned v9, v7+24      ; @7:3
+    return_call fn1(v3, v7)             ; @7:3  v3 = 7
 }
 
 ; fn k_12_s19
@@ -599,20 +596,17 @@ function u0:0(i64, i64) -> i64 tail {
 
     block0(v0: i64, v1: i64):    ;; v0 :: :false | :true
     call fn0(v0)
-    v3 = iconst.i64 3    ;; v3 :: nil
-    jump block1(v3)                     ; @8:3  v3 = 3
-
-    block1(v2: i64):    ;; v2 :: nil
-    v4 = iconst.i64 0    ;; v4 :: 0
-    v5 = iconst.i32 20
-    v6 = iconst.i32 1
-    v7 = iconst.i32 0
-    v8 = call fn2(v5, v6, v7)  ; v5 = 20, v6 = 1, v7 = 0
-    v9 = func_addr.i64 fn3
-    store notrap aligned v9, v8+16
-    v10 = load.i64 notrap aligned v1+24
-    store notrap aligned v10, v8+24
-    return_call fn1(v4, v8)  ; v4 = 0
+    v2 = iconst.i64 3    ;; v2 :: nil
+    v3 = iconst.i64 0    ;; v3 :: 0
+    v4 = iconst.i32 20                  ; @8:3
+    v5 = iconst.i32 1                   ; @8:3
+    v6 = iconst.i32 0                   ; @8:3
+    v7 = call fn2(v4, v5, v6)           ; @8:3  v4 = 20, v5 = 1, v6 = 0
+    v8 = func_addr.i64 fn3              ; @8:3
+    store notrap aligned v8, v7+16      ; @8:3
+    v9 = load.i64 notrap aligned v1+24  ; @8:3
+    store notrap aligned v9, v7+24      ; @8:3
+    return_call fn1(v3, v7)             ; @8:3  v3 = 0
 }
 
 ; fn k_14_s20
@@ -631,20 +625,17 @@ function u0:0(i64, i64) -> i64 tail {
 
     block0(v0: i64, v1: i64):    ;; v0 :: :true
     call fn0(v0)
-    v3 = iconst.i64 3    ;; v3 :: nil
-    jump block1(v3)                     ; @9:3  v3 = 3
-
-    block1(v2: i64):    ;; v2 :: nil
-    v4 = iconst.i64 1    ;; v4 :: 1
-    v5 = iconst.i32 21
-    v6 = iconst.i32 1
-    v7 = iconst.i32 0
-    v8 = call fn2(v5, v6, v7)  ; v5 = 21, v6 = 1, v7 = 0
-    v9 = func_addr.i64 fn3
-    store notrap aligned v9, v8+16
-    v10 = load.i64 notrap aligned v1+24
-    store notrap aligned v10, v8+24
-    return_call fn1(v4, v8)  ; v4 = 1
+    v2 = iconst.i64 3    ;; v2 :: nil
+    v3 = iconst.i64 1    ;; v3 :: 1
+    v4 = iconst.i32 21                  ; @9:3
+    v5 = iconst.i32 1                   ; @9:3
+    v6 = iconst.i32 0                   ; @9:3
+    v7 = call fn2(v4, v5, v6)           ; @9:3  v4 = 21, v5 = 1, v6 = 0
+    v8 = func_addr.i64 fn3              ; @9:3
+    store notrap aligned v8, v7+16      ; @9:3
+    v9 = load.i64 notrap aligned v1+24  ; @9:3
+    store notrap aligned v9, v7+24      ; @9:3
+    return_call fn1(v3, v7)             ; @9:3  v3 = 1
 }
 
 ; fn k_16_s21

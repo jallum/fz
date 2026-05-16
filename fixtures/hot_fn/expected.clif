@@ -26,88 +26,37 @@ function u0:0(i64) -> i64 tail {
     fn9 = u0:40 sig9
 
 block0(v0: i64):
-    v18 = iconst.i64 1                  ; @4:13
-    jump block1(v18)                    ; @4:9  v18 = 1
-
-    block1(v1: i64):    ;; v1 :: 1
-    call fn0(v1)
-    v19 = iconst.i64 3    ;; v19 :: nil
-    jump block2(v19)  ; v19 = 3
-
-    block2(v2: i64):    ;; v2 :: nil
-    v20 = iconst.i64 1    ;; v20 :: 1
-    jump block3(v20)  ; v20 = 1
-
-    block3(v3: i64):    ;; v3 :: 1
-    call fn1(v3)
-    v21 = iconst.i64 3    ;; v21 :: nil
-    jump block4(v21)  ; v21 = 3
-
-    block4(v4: i64):    ;; v4 :: nil
-    v22 = iconst.i64 1    ;; v22 :: 1
-    jump block5(v22)  ; v22 = 1
-
-    block5(v5: i64):    ;; v5 :: 1
-    call fn2(v5)
-    v23 = iconst.i64 3    ;; v23 :: nil
-    jump block6(v23)  ; v23 = 3
-
-    block6(v6: i64):    ;; v6 :: nil
-    v24 = iconst.i64 1    ;; v24 :: 1
-    jump block7(v24)  ; v24 = 1
-
-    block7(v7: i64):    ;; v7 :: 1
-    call fn3(v7)
-    v25 = iconst.i64 3    ;; v25 :: nil
-    jump block8(v25)  ; v25 = 3
-
-    block8(v8: i64):    ;; v8 :: nil
-    v26 = iconst.i64 1    ;; v26 :: 1
-    jump block9(v26)  ; v26 = 1
-
-    block9(v9: i64):    ;; v9 :: 1
-    call fn4(v9)
-    v27 = iconst.i64 3    ;; v27 :: nil
-    jump block10(v27)  ; v27 = 3
-
-    block10(v10: i64):    ;; v10 :: nil
-    v28 = iconst.i64 1    ;; v28 :: 1
-    jump block11(v28)  ; v28 = 1
-
-    block11(v11: i64):    ;; v11 :: 1
-    call fn5(v11)
-    v29 = iconst.i64 3    ;; v29 :: nil
-    jump block12(v29)  ; v29 = 3
-
-    block12(v12: i64):    ;; v12 :: nil
-    v30 = iconst.i64 1    ;; v30 :: 1
-    jump block13(v30)  ; v30 = 1
-
-    block13(v13: i64):    ;; v13 :: 1
-    call fn6(v13)
-    v31 = iconst.i64 3    ;; v31 :: nil
-    jump block14(v31)  ; v31 = 3
-
-    block14(v14: i64):    ;; v14 :: nil
-    v32 = iconst.i64 1    ;; v32 :: 1
-    jump block15(v32)  ; v32 = 1
-
-    block15(v15: i64):    ;; v15 :: 1
-    call fn7(v15)
-    v33 = iconst.i64 3    ;; v33 :: nil
-    jump block16(v33)  ; v33 = 3
-
-    block16(v16: i64):    ;; v16 :: nil
-    v34 = iconst.i64 1    ;; v34 :: 1
-    jump block17(v34)  ; v34 = 1
-
-    block17(v17: i64):    ;; v17 :: 1
-    call fn8(v17)
-    v35 = iconst.i64 3    ;; v35 :: nil
-    v36 = iconst.i64 1    ;; v36 :: 1
-    call fn9(v36)  ; v36 = 1
-    v37 = iconst.i64 3    ;; v37 :: nil
-    v38 = load.i64 notrap aligned v0+16
-    return_call_indirect sig10, v38(v37, v0)  ; v37 = 3
+    v1 = iconst.i64 1                   ; @4:13
+    call fn0(v1)  ; v1 = 1
+    v2 = iconst.i64 3    ;; v2 :: nil
+    v3 = iconst.i64 1    ;; v3 :: 1
+    call fn1(v3)  ; v3 = 1
+    v4 = iconst.i64 3    ;; v4 :: nil
+    v5 = iconst.i64 1    ;; v5 :: 1
+    call fn2(v5)  ; v5 = 1
+    v6 = iconst.i64 3    ;; v6 :: nil
+    v7 = iconst.i64 1    ;; v7 :: 1
+    call fn3(v7)  ; v7 = 1
+    v8 = iconst.i64 3    ;; v8 :: nil
+    v9 = iconst.i64 1    ;; v9 :: 1
+    call fn4(v9)  ; v9 = 1
+    v10 = iconst.i64 3    ;; v10 :: nil
+    v11 = iconst.i64 1    ;; v11 :: 1
+    call fn5(v11)  ; v11 = 1
+    v12 = iconst.i64 3    ;; v12 :: nil
+    v13 = iconst.i64 1    ;; v13 :: 1
+    call fn6(v13)  ; v13 = 1
+    v14 = iconst.i64 3    ;; v14 :: nil
+    v15 = iconst.i64 1    ;; v15 :: 1
+    call fn7(v15)  ; v15 = 1
+    v16 = iconst.i64 3    ;; v16 :: nil
+    v17 = iconst.i64 1    ;; v17 :: 1
+    call fn8(v17)  ; v17 = 1
+    v18 = iconst.i64 3    ;; v18 :: nil
+    v19 = iconst.i64 1    ;; v19 :: 1
+    call fn9(v19)  ; v19 = 1
+    v20 = iconst.i64 3    ;; v20 :: nil
+    v21 = load.i64 notrap aligned v0+16 ; @4:9
+    return_call_indirect sig10, v21(v20, v0) ; @4:9  v20 = 3
 }
 
