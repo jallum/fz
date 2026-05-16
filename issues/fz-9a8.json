@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-16T19:42:22Z",
+  "description": "Remove the legacy Prim::Builtin variant and the BuiltinKind enum. All 42 references in the codebase must be routed through Prim::Extern instead. Authorized in prior session.\n\n## Scope\n- Delete BuiltinKind enum and Prim::Builtin variant from fz_ir.rs.\n- Update all match arms across ir_interp.rs, ir_codegen.rs, ir_lower.rs, and any other files that reference them.\n- Update any tests that construct or pattern-match on Prim::Builtin.\n- Warnings are errors: zero remaining references.\n\n## Acceptance\n- cargo clippy -- -D warnings passes.\n- All tests pass.\n- One commit referencing fz-ext.8.",
+  "id": "fz-9a8",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "fz-ext.8: Remove BuiltinKind and Prim::Builtin",
+  "type": "task",
+  "updated_at": "2026-05-16T19:42:22Z"
+}
