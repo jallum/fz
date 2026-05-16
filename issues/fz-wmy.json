@@ -2,13 +2,14 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-05-16T21:34:23Z",
   "created": "2026-05-16T21:18:28Z",
   "description": "",
   "id": "fz-wmy",
   "labels": [],
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "fz-rep [EPIC] IR representation cleanup: dead returns, typed AST fields, stable extern identity",
   "type": "task",
-  "updated_at": "2026-05-16T21:18:28Z"
+  "updated_at": "2026-05-16T21:34:23Z"
 }
