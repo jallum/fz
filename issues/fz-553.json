@@ -2,13 +2,14 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-05-16T19:07:49Z",
   "created": "2026-05-16T17:54:01Z",
   "description": "fz_print_i64(n: i64) already exists in runtime/src/lib.rs. Wire it into runtime.fz:\n\n1. Add extern declaration:\n   extern \"C\" fn fz_print_i64(integer) :: nil\n\n2. Add typed clause before the existing catch-all:\n   fn print(x :: integer) do fz_print_i64(x) end\n\nNo C runtime changes needed. The fz-ty1.opt.1 singleton fold will prove the argument is integer at call sites like print(42), fold the TypeTest → Goto, and DCE will remove the dead boxing (ishl_imm / bor_imm). Bless add1/expected.clif after.\n\nTests: existing golden_clif tests cover the regression; interp tests cover correctness.",
   "id": "fz-553",
   "labels": [],
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "fz-ext.9: wire fz_print_i64 into runtime.fz for unboxed integer print",
   "type": "task",
-  "updated_at": "2026-05-16T17:54:01Z"
+  "updated_at": "2026-05-16T19:07:49Z"
 }
