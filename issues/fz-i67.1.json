@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
     "fz-i67.2"
@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-i67",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "REPL .1: fz repl --script \u003cpath\u003e non-interactive entry point",
   "type": "task",
-  "updated_at": "2026-05-16T22:58:14Z"
+  "updated_at": "2026-05-16T23:00:25Z"
 }
