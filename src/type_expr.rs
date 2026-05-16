@@ -179,7 +179,7 @@ fn referenced_names(tokens: &[crate::lexer::Token]) -> Vec<String> {
         .iter()
         .filter_map(|t| match &t.tok {
             Tok::Ident(n) | Tok::Upper(n) => match n.as_str() {
-                "nil" | "bool" | "integer" | "float" | "binary" | "atom" | "any" => None,
+                "nil" | "bool" | "integer" | "float" | "binary" | "atom" | "any" | "never" => None,
                 _ => Some(n.clone()),
             },
             _ => None,
@@ -372,6 +372,7 @@ impl<'a> TypeExprParser<'a> {
             "binary" => Ok(Descr::str_t()),
             "atom" => Ok(Descr::atom_top()),
             "any" => Ok(Descr::any()),
+            "never" => Ok(Descr::none()),
             _ => match self.env.get(name) {
                 Some(d) => Ok(d.clone()),
                 None => Err(TypeExprError {

@@ -5908,6 +5908,9 @@ fn lower_prim<M: cranelift_module::Module>(
                 }
             }
         }
+        Prim::Extern(eid, _args) => {
+            todo!("Prim::Extern {:?} — wired in T6", eid)
+        }
         Prim::ListCons(..)
         | Prim::ListHead(..)
         | Prim::ListTail(..)

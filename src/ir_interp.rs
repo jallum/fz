@@ -465,6 +465,9 @@ fn eval_prim(module: &Module, prim: &Prim, env: &HashMap<Var, FzValue>) -> Resul
             let arg_vals = collect(env, args)?;
             run_builtin(module, *bid, &arg_vals)?
         }
+        Prim::Extern(eid, _args) => {
+            todo!("Prim::Extern {:?} — wired in T5", eid)
+        }
         Prim::MakeClosure(fn_id, captured) => {
             // fz-ul4.29.5: new closure layout — header (16) + stub_fp (8) +
             // captures. The interp has no compiled stub for the closure;

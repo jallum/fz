@@ -1628,6 +1628,8 @@ fn type_prim(
             }
         }
 
+        Prim::Extern(_, _) => Descr::any(),
+
         // Reader and struct ops: conservative Top until later tickets refine.
         Prim::AllocStruct(_, _) => Descr::any(),
         Prim::BitReaderInit(_) => Descr::any(),

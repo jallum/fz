@@ -171,6 +171,7 @@ fn subst_prim(p: &Prim, subst: &HashMap<Var, Var>) -> Prim {
             Prim::AllocStruct(*sid, args.iter().map(|x| sv(*x)).collect())
         }
         Prim::Builtin(bid, args) => Prim::Builtin(*bid, args.iter().map(|x| sv(*x)).collect()),
+        Prim::Extern(eid, args) => Prim::Extern(*eid, args.iter().map(|x| sv(*x)).collect()),
         Prim::ListCons(a, b) => Prim::ListCons(sv(*a), sv(*b)),
         Prim::ListHead(a) => Prim::ListHead(sv(*a)),
         Prim::ListTail(a) => Prim::ListTail(sv(*a)),

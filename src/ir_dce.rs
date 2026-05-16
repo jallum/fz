@@ -57,7 +57,7 @@ fn collect_prim_vars(p: &Prim, used: &mut HashSet<Var>) {
                 used.insert(*v);
             }
         }
-        Prim::Builtin(_, args) => {
+        Prim::Builtin(_, args) | Prim::Extern(_, args) => {
             for v in args {
                 used.insert(*v);
             }
@@ -195,6 +195,7 @@ fn is_impure(p: &Prim) -> bool {
     matches!(
         p,
         Prim::Builtin(..)
+            | Prim::Extern(..)
             | Prim::BitReaderInit(_)
             | Prim::BitReadField { .. }
             | Prim::BitReaderDone(_)

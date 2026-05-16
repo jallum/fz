@@ -90,6 +90,29 @@ pub struct Var(pub u32);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct BuiltinId(pub u32);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ExternId(pub u32);
+
+/// C ABI wire type for `extern "C" fn` declarations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExternTy {
+    I64,
+    F64,
+    Any,   // opaque u64 fz value
+    Unit,  // maps to 0 on return
+    Never, // diverges
+}
+
+/// One resolved `extern "C" fn` declaration stored in `Module.externs`.
+#[derive(Debug, Clone)]
+pub struct ExternDecl {
+    pub fz_name: String,
+    /// C symbol name (same as fz_name for v1; override possible later).
+    pub symbol: String,
+    pub params: Vec<ExternTy>,
+    pub ret: ExternTy,
+}
+
 /// Typed view of a `BuiltinId`. The discriminants match the registration
 /// order in `BuiltinTable::new` (single source of truth for that mapping
 /// is `BuiltinKind::name`). Codegen dispatches on this enum so the wire
@@ -193,6 +216,7 @@ pub enum Prim {
     UnOp(UnOp, Var),
     AllocStruct(u32, Vec<Var>),
     Builtin(BuiltinId, Vec<Var>),
+    Extern(ExternId, Vec<Var>),
     ListCons(Var, Var),
     ListHead(Var),
     ListTail(Var),
@@ -396,6 +420,8 @@ pub struct Module {
     /// O(1) index from FnId to position in `fns`. Kept in sync by
     /// `ModuleBuilder::add_fn`; never mutated after `build()`.
     pub fn_idx: HashMap<FnId, usize>,
+    /// All `extern "C" fn` declarations in declaration order. Indexed by ExternId.
+    pub externs: Vec<ExternDecl>,
 }
 
 impl Module {
@@ -532,6 +558,7 @@ impl ModuleBuilder {
             schemas: self.schemas,
             source: SourceInfo::default(),
             atom_names: Vec::new(),
+            externs: Vec::new(),
         }
     }
 }
@@ -625,6 +652,9 @@ impl fmt::Display for Prim {
             }
             Prim::Builtin(b, args) => {
                 write!(f, "builtin#{}([{}])", b.0, fmt_var_list(args))
+            }
+            Prim::Extern(e, args) => {
+                write!(f, "extern#{}([{}])", e.0, fmt_var_list(args))
             }
             Prim::ListCons(h, t) => write!(f, "cons({}, {})", h, t),
             Prim::ListHead(l) => write!(f, "head({})", l),
