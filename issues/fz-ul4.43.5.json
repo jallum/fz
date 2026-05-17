@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-ul4.43.3"
   ],
@@ -15,8 +15,8 @@
   "labels": [],
   "parent": "fz-ul4.43",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "fz-ul4.43.D: lower_pattern_matrix + wire into lower_multi_clause",
   "type": "task",
-  "updated_at": "2026-05-17T12:08:36Z"
+  "updated_at": "2026-05-17T12:34:12Z"
 }
