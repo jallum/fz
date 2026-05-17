@@ -4909,7 +4909,13 @@ fn compile_fn<M: cranelift_module::Module>(
                 } else {
                     ArgRepr::Tagged
                 };
-                var_env.insert(v.0, VarBinding { value: out.value(), repr });
+                var_env.insert(
+                    v.0,
+                    VarBinding {
+                        value: out.value(),
+                        repr,
+                    },
+                );
             }
         }
         // Terminator gets its own srcloc (often the same as the last
@@ -6670,11 +6676,7 @@ fn box_float_native<M: cranelift_module::Module>(
     b.inst_results(inst)[0]
 }
 
-fn cached_iconst(
-    b: &mut FunctionBuilder<'_>,
-    cache: &mut CodegenCache,
-    val: i64,
-) -> ir::Value {
+fn cached_iconst(b: &mut FunctionBuilder<'_>, cache: &mut CodegenCache, val: i64) -> ir::Value {
     if let Some(blk) = b.current_block() {
         if let Some(&v) = cache.const_cache.get(&(blk, val)) {
             return v;
@@ -6687,11 +6689,7 @@ fn cached_iconst(
 }
 
 /// Returns an i8 (0/1) indicating whether `v` is truthy: not nil and not false.
-fn is_truthy(
-    b: &mut FunctionBuilder<'_>,
-    cache: &mut CodegenCache,
-    v: ir::Value,
-) -> ir::Value {
+fn is_truthy(b: &mut FunctionBuilder<'_>, cache: &mut CodegenCache, v: ir::Value) -> ir::Value {
     let nil_v = cached_iconst(b, cache, NIL_BITS);
     let false_v = cached_iconst(b, cache, FALSE_BITS);
     let not_nil = b.ins().icmp(IntCC::NotEqual, v, nil_v);
@@ -6700,11 +6698,7 @@ fn is_truthy(
 }
 
 /// Convert an i8 cranelift bool to FzValue::TRUE / FzValue::FALSE.
-fn bool_to_fz(
-    b: &mut FunctionBuilder<'_>,
-    cache: &mut CodegenCache,
-    v: ir::Value,
-) -> ir::Value {
+fn bool_to_fz(b: &mut FunctionBuilder<'_>, cache: &mut CodegenCache, v: ir::Value) -> ir::Value {
     let true_v = cached_iconst(b, cache, TRUE_BITS);
     let false_v = cached_iconst(b, cache, FALSE_BITS);
     b.ins().select(v, true_v, false_v)
@@ -7812,7 +7806,11 @@ fn main(), do: loop_with(loop_with, 100000, 0)
         ir_text_record_enable();
         let _ = compile(&m).unwrap();
         let ir = ir_text_record_take();
-        let main_ir = ir.iter().find(|(n, _)| n == "main").map(|(_, s)| s.as_str()).unwrap_or("");
+        let main_ir = ir
+            .iter()
+            .find(|(n, _)| n == "main")
+            .map(|(_, s)| s.as_str())
+            .unwrap_or("");
         // send(2, 41): the tagged forms of 2 and 41 are iconst 17 and iconst 329.
         // The ishl_imm + bor_imm sequence should not appear for these constants.
         assert!(
@@ -7878,7 +7876,11 @@ fn main(), do: loop_with(loop_with, 100000, 0)
         ir_text_record_enable();
         let _ = compile(&m).unwrap();
         let ir = ir_text_record_take();
-        let main_ir = ir.iter().find(|(n, _)| n == "main").map(|(_, s)| s.as_str()).unwrap_or("");
+        let main_ir = ir
+            .iter()
+            .find(|(n, _)| n == "main")
+            .map(|(_, s)| s.as_str())
+            .unwrap_or("");
         // With the fix the TypeTest i1 goes straight to brif — no is_truthy decode.
         assert!(
             !main_ir.contains("icmp ne"),
@@ -7886,7 +7888,11 @@ fn main(), do: loop_with(loop_with, 100000, 0)
             main_ir
         );
         // The brif must still be present.
-        assert!(main_ir.contains("brif"), "expected brif in main CLIF:\n{}", main_ir);
+        assert!(
+            main_ir.contains("brif"),
+            "expected brif in main CLIF:\n{}",
+            main_ir
+        );
     }
 
     /// fz-h4q — ArgRepr::Condition: pure-branch TypeTest produces no `select`
@@ -7906,13 +7912,21 @@ fn main(), do: loop_with(loop_with, 100000, 0)
         ir_text_record_enable();
         let _ = compile(&m).unwrap();
         let ir = ir_text_record_take();
-        let main_ir = ir.iter().find(|(n, _)| n == "main").map(|(_, s)| s.as_str()).unwrap_or("");
+        let main_ir = ir
+            .iter()
+            .find(|(n, _)| n == "main")
+            .map(|(_, s)| s.as_str())
+            .unwrap_or("");
         assert!(
             !main_ir.contains("select"),
             "spurious select in main CLIF — bool_to_fz was emitted eagerly:\n{}",
             main_ir
         );
-        assert!(main_ir.contains("brif"), "expected brif in main CLIF:\n{}", main_ir);
+        assert!(
+            main_ir.contains("brif"),
+            "expected brif in main CLIF:\n{}",
+            main_ir
+        );
     }
 
     /// fz-2tc — unit-return extern results whose dest var is unused emit no
@@ -7933,7 +7947,11 @@ fn main(), do: loop_with(loop_with, 100000, 0)
         ir_text_record_enable();
         let _ = compile(&m).unwrap();
         let ir = ir_text_record_take();
-        let main_ir = ir.iter().find(|(n, _)| n == "main").map(|(_, s)| s.as_str()).unwrap_or("");
+        let main_ir = ir
+            .iter()
+            .find(|(n, _)| n == "main")
+            .map(|(_, s)| s.as_str())
+            .unwrap_or("");
         // Dead nil results are gone. Count occurrences of "iconst.i64 3".
         let nil_count = main_ir.matches("iconst.i64 3").count();
         assert!(
@@ -7943,7 +7961,11 @@ fn main(), do: loop_with(loop_with, 100000, 0)
             main_ir
         );
         // The live nil (used as continuation arg) must still be present.
-        assert!(main_ir.contains("iconst.i64 3"), "expected at least one nil iconst:\n{}", main_ir);
+        assert!(
+            main_ir.contains("iconst.i64 3"),
+            "expected at least one nil iconst:\n{}",
+            main_ir
+        );
     }
 
     /// fz-o2g — Const::Nil/Bool/Atom through cached_iconst. The nil arg
@@ -7959,7 +7981,11 @@ fn main(), do: loop_with(loop_with, 100000, 0)
         ir_text_record_enable();
         let _ = compile(&m).unwrap();
         let ir = ir_text_record_take();
-        let main_ir = ir.iter().find(|(n, _)| n == "main").map(|(_, s)| s.as_str()).unwrap_or("");
+        let main_ir = ir
+            .iter()
+            .find(|(n, _)| n == "main")
+            .map(|(_, s)| s.as_str())
+            .unwrap_or("");
         let nil_count = main_ir.matches("iconst.i64 3").count();
         assert_eq!(
             nil_count, 1,

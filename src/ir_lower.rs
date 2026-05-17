@@ -2707,11 +2707,19 @@ end
         assert_eq!(module.extern_idx.len(), module.externs.len());
         // Each extern's id field must resolve via extern_by_id to itself.
         for (i, e) in module.externs.iter().enumerate() {
-            assert_eq!(module.extern_idx[&e.id], i, "extern_idx out of sync at index {}", i);
+            assert_eq!(
+                module.extern_idx[&e.id], i,
+                "extern_idx out of sync at index {}",
+                i
+            );
             assert_eq!(module.extern_by_id(e.id).fz_name, e.fz_name);
         }
         // ExternIds are monotonically increasing (counter-based, not len()-based).
         let ids: Vec<u32> = module.externs.iter().map(|e| e.id.0).collect();
-        assert!(ids.windows(2).all(|w| w[0] < w[1]), "ExternIds not monotonic: {:?}", ids);
+        assert!(
+            ids.windows(2).all(|w| w[0] < w[1]),
+            "ExternIds not monotonic: {:?}",
+            ids
+        );
     }
 }

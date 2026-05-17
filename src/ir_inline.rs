@@ -85,9 +85,7 @@ fn max_var_in_prim(p: &Prim) -> u32 {
             v(*b);
         }
         Prim::UnOp(_, a) => v(*a),
-        Prim::AllocStruct(_, args) | Prim::Extern(_, args) => {
-            args.iter().for_each(|x| v(*x))
-        }
+        Prim::AllocStruct(_, args) | Prim::Extern(_, args) => args.iter().for_each(|x| v(*x)),
         Prim::ListCons(a, b) => {
             v(*a);
             v(*b);
@@ -558,7 +556,11 @@ pub fn inline_single_use_conts_once(m: &mut Module, mt: &mut ModuleTypes) -> usi
     for (fi, f) in m.fns.iter().enumerate() {
         for (bi, b) in f.blocks.iter().enumerate() {
             let k = match &b.terminator {
-                Term::Call { callee, continuation, .. } => {
+                Term::Call {
+                    callee,
+                    continuation,
+                    ..
+                } => {
                     *direct_call_sites.entry(*callee).or_insert(0) += 1;
                     Some(continuation.fn_id)
                 }
@@ -685,7 +687,10 @@ pub fn inline_single_use_conts_once(m: &mut Module, mt: &mut ModuleTypes) -> usi
         mt.effective_returns.retain(|(fid, _), _| *fid != *k_id);
         mt.any_key_specs.remove(k_id);
         mt.scc_of.remove(k_id);
-        debug_assert!(!mt.scc_of.contains_key(k_id), "scc_of must not contain inlined k");
+        debug_assert!(
+            !mt.scc_of.contains_key(k_id),
+            "scc_of must not contain inlined k"
+        );
 
         return 1; // restart — indices changed
     }
@@ -977,7 +982,11 @@ mod tests {
         absorb_callee(&mut caller_mut, 0, renamed, &[y]);
 
         // The entry block must NOT be a Goto with args.
-        let entry = caller_mut.blocks.iter().find(|b| b.id == caller_mut.entry).unwrap();
+        let entry = caller_mut
+            .blocks
+            .iter()
+            .find(|b| b.id == caller_mut.entry)
+            .unwrap();
         match &entry.terminator {
             Term::Goto(_, args) => assert!(
                 args.is_empty(),

@@ -42,7 +42,11 @@ pub fn dce_module_level(m: &mut Module) {
         };
         for block in &m.fns[fi].blocks {
             match &block.terminator {
-                Term::Call { callee, continuation, .. } => {
+                Term::Call {
+                    callee,
+                    continuation,
+                    ..
+                } => {
                     queue.push(*callee);
                     queue.push(continuation.fn_id);
                 }
@@ -156,8 +160,10 @@ pub fn classify_var_uses(f: &FnIr) -> (HashSet<Var>, HashSet<Var>) {
     }
     let mut all_used = other_uses.clone();
     all_used.extend(if_conds.iter().cloned());
-    let if_only_conds: HashSet<Var> =
-        if_conds.into_iter().filter(|v| !other_uses.contains(v)).collect();
+    let if_only_conds: HashSet<Var> = if_conds
+        .into_iter()
+        .filter(|v| !other_uses.contains(v))
+        .collect();
     (if_only_conds, all_used)
 }
 
@@ -382,8 +388,18 @@ mod tests {
         if main_calls_leaf {
             let nil_v = bm.let_(entry, Prim::Const(Const::Nil));
             let leaf_cont_id = FnId(99); // dummy cont — not in module; tests only sweep fns
-            let cont = Cont { fn_id: leaf_cont_id, captured: vec![] };
-            bm.set_terminator(entry, Term::Call { callee: leaf_id, args: vec![nil_v], continuation: cont });
+            let cont = Cont {
+                fn_id: leaf_cont_id,
+                captured: vec![],
+            };
+            bm.set_terminator(
+                entry,
+                Term::Call {
+                    callee: leaf_id,
+                    args: vec![nil_v],
+                    continuation: cont,
+                },
+            );
         } else {
             let nil_v = bm.let_(entry, Prim::Const(Const::Nil));
             bm.set_terminator(entry, Term::Return(nil_v));
@@ -407,7 +423,10 @@ mod tests {
         dce_module_level(&mut m);
         // leaf is reachable via Term::Call from main; both kept (cont fn_id 99 missing from module, that's fine)
         assert!(m.fns.iter().any(|f| f.name == "main"), "main must survive");
-        assert!(m.fns.iter().any(|f| f.name == "leaf"), "leaf reachable via Call must survive");
+        assert!(
+            m.fns.iter().any(|f| f.name == "leaf"),
+            "leaf reachable via Call must survive"
+        );
     }
 
     #[test]
@@ -416,7 +435,10 @@ mod tests {
         assert_eq!(m.fns.len(), 2);
         dce_module_level(&mut m);
         assert!(m.fns.iter().any(|f| f.name == "main"), "main must survive");
-        assert!(!m.fns.iter().any(|f| f.name == "leaf"), "leaf unreachable must be removed");
+        assert!(
+            !m.fns.iter().any(|f| f.name == "leaf"),
+            "leaf unreachable must be removed"
+        );
         assert_eq!(m.fns.len(), 1);
     }
 
@@ -719,7 +741,10 @@ mod tests {
         let mut bm = FnBuilder::new(FnId(0), "pure");
         let x = bm.fresh_var();
         let entry = bm.block(vec![x]);
-        let c = bm.let_(entry, Prim::TypeTest(x, Box::new(crate::types::Descr::int())));
+        let c = bm.let_(
+            entry,
+            Prim::TypeTest(x, Box::new(crate::types::Descr::int())),
+        );
         let t_blk = bm.block(vec![]);
         let f_blk = bm.block(vec![]);
         bm.set_terminator(entry, Term::If(c, t_blk, f_blk));

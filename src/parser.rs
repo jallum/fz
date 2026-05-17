@@ -796,54 +796,53 @@ impl Parser {
         self.expect(&Tok::LParen, "`(`")?;
         // Extern param types are always single identifiers (e.g. "any", "integer").
         // Extract the name string at parse time; no need to carry token bundles.
-        let extern_params: Vec<String> =
-            if matches!(self.peek(), Tok::RParen) {
-                vec![]
-            } else {
-                let mut params: Vec<String> = Vec::new();
-                let mut depth = 0usize;
-                let mut current_name: Option<String> = None;
-                loop {
-                    match self.peek() {
-                        Tok::LParen | Tok::LBrace | Tok::LBrack => {
-                            depth += 1;
-                            self.bump();
+        let extern_params: Vec<String> = if matches!(self.peek(), Tok::RParen) {
+            vec![]
+        } else {
+            let mut params: Vec<String> = Vec::new();
+            let mut depth = 0usize;
+            let mut current_name: Option<String> = None;
+            loop {
+                match self.peek() {
+                    Tok::LParen | Tok::LBrace | Tok::LBrack => {
+                        depth += 1;
+                        self.bump();
+                    }
+                    Tok::RParen | Tok::RBrace | Tok::RBrack if depth > 0 => {
+                        depth -= 1;
+                        self.bump();
+                    }
+                    Tok::RParen => {
+                        params.push(current_name.take().unwrap_or_default());
+                        break;
+                    }
+                    Tok::Comma if depth == 0 => {
+                        params.push(current_name.take().unwrap_or_default());
+                        self.bump();
+                    }
+                    Tok::Eof | Tok::Newline => {
+                        return self.err("unexpected end of extern parameter list");
+                    }
+                    Tok::Nil => {
+                        if current_name.is_none() {
+                            current_name = Some("nil".into());
                         }
-                        Tok::RParen | Tok::RBrace | Tok::RBrack if depth > 0 => {
-                            depth -= 1;
-                            self.bump();
+                        self.bump();
+                    }
+                    Tok::Ident(n) | Tok::Upper(n) => {
+                        let name = n.clone();
+                        if current_name.is_none() {
+                            current_name = Some(name);
                         }
-                        Tok::RParen => {
-                            params.push(current_name.take().unwrap_or_default());
-                            break;
-                        }
-                        Tok::Comma if depth == 0 => {
-                            params.push(current_name.take().unwrap_or_default());
-                            self.bump();
-                        }
-                        Tok::Eof | Tok::Newline => {
-                            return self.err("unexpected end of extern parameter list");
-                        }
-                        Tok::Nil => {
-                            if current_name.is_none() {
-                                current_name = Some("nil".into());
-                            }
-                            self.bump();
-                        }
-                        Tok::Ident(n) | Tok::Upper(n) => {
-                            let name = n.clone();
-                            if current_name.is_none() {
-                                current_name = Some(name);
-                            }
-                            self.bump();
-                        }
-                        _ => {
-                            self.bump();
-                        }
+                        self.bump();
+                    }
+                    _ => {
+                        self.bump();
                     }
                 }
-                params
-            };
+            }
+            params
+        };
         self.expect(&Tok::RParen, "`)`")?;
         self.expect(&Tok::ColonColon, "`::`")?;
         let mut extern_ret_tokens = Vec::new();

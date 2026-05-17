@@ -61,9 +61,10 @@ fn main() {
             Ok(h) => h,
             Err(e) => {
                 let msg = e.clone();
-                trials.push(Trial::test(format!("matrix::{}::header", name), move || {
-                    Err(Failed::from(msg))
-                }));
+                trials.push(Trial::test(
+                    format!("matrix::{}::header", name),
+                    move || Err(Failed::from(msg)),
+                ));
                 continue;
             }
         };

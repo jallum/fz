@@ -115,7 +115,6 @@ pub struct ExternDecl {
     pub ret_descr: crate::types::Descr,
 }
 
-
 #[derive(Debug, Clone, PartialEq)]
 pub enum Const {
     Int(i64),
