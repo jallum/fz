@@ -15,22 +15,19 @@ function u0:0(i64) -> i64 tail {
 block0(v0: i64):
     v1 = iconst.i64 18                  ; @5:18
     v2 = band_imm v1, 7  ; v1 = 18
-    v3 = icmp_imm eq v2, 1
-    v4 = iconst.i64 11
-    v5 = iconst.i64 19
-    v6 = select v3, v4, v5  ; v4 = 11, v5 = 19    ;; v6 :: :false
+    v3 = icmp_imm eq v2, 1    ;; v3 :: :false
     brif v3, block2, block1             ; @5:9
 
 block1:
     call fn0(v1)  ; v1 = 18
-    v7 = iconst.i64 3    ;; v7 :: nil
-    return_call fn1(v7, v0)  ; v7 = 3
+    v4 = iconst.i64 3    ;; v4 :: nil
+    return_call fn1(v4, v0)  ; v4 = 3
 
 block2:
-    v8 = sshr_imm.i64 v1, 3  ; v1 = 18
-    call fn2(v8)
-    v9 = iconst.i64 3    ;; v9 :: nil
-    return_call fn3(v9, v0)  ; v9 = 3
+    v5 = sshr_imm.i64 v1, 3  ; v1 = 18
+    call fn2(v5)
+    v6 = iconst.i64 3    ;; v6 :: nil
+    return_call fn3(v6, v0)  ; v6 = 3
 }
 
 ; fn k_10_s9

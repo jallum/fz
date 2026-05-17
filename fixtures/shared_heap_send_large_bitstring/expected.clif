@@ -99,25 +99,22 @@ function u0:0(i64, i64) -> i64 tail {
     block0(v0: i64, v1: i64):    ;; v0 :: any
     v2 = load.i64 notrap aligned v1+32    ;; v2 :: vec(u8) | vec(bit)
     v3 = band_imm v0, 7
-    v4 = icmp_imm eq v3, 1
-    v5 = iconst.i64 11
-    v6 = iconst.i64 19
-    v7 = select v4, v5, v6  ; v5 = 11, v6 = 19    ;; v7 :: bool
+    v4 = icmp_imm eq v3, 1    ;; v4 :: bool
     brif v4, block2, block1             ; @8:3
 
 block1:
     call fn0(v0)
-    v8 = iconst.i64 3    ;; v8 :: nil
-    v9 = load.i64 notrap aligned v1+24
-    v10 = load.i64 notrap aligned v9+16
-    return_call_indirect sig1, v10(v8, v9)  ; v8 = 3
+    v5 = iconst.i64 3    ;; v5 :: nil
+    v6 = load.i64 notrap aligned v1+24
+    v7 = load.i64 notrap aligned v6+16
+    return_call_indirect sig1, v7(v5, v6)  ; v5 = 3
 
 block2:
-    v11 = sshr_imm.i64 v0, 3
-    call fn1(v11)
-    v12 = iconst.i64 3    ;; v12 :: nil
-    v13 = load.i64 notrap aligned v1+24
-    v14 = load.i64 notrap aligned v13+16
-    return_call_indirect sig3, v14(v12, v13)  ; v12 = 3
+    v8 = sshr_imm.i64 v0, 3
+    call fn1(v8)
+    v9 = iconst.i64 3    ;; v9 :: nil
+    v10 = load.i64 notrap aligned v1+24
+    v11 = load.i64 notrap aligned v10+16
+    return_call_indirect sig3, v11(v9, v10)  ; v9 = 3
 }
 
