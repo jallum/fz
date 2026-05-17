@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-05-17T10:21:29Z",
@@ -8,8 +8,8 @@
   "labels": [],
   "parent": "fz-ul4",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "codegen: notrap → trap on TypeTest-gated tuple field loads",
   "type": "task",
-  "updated_at": "2026-05-17T11:40:55Z"
+  "updated_at": "2026-05-17T11:40:56Z"
 }
