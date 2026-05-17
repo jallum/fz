@@ -8,14 +8,15 @@
   "blocks": [
     "fz-aiz.6"
   ],
+  "closed_at": "2026-05-17T18:33:31Z",
   "created": "2026-05-17T16:05:05Z",
   "description": "## Change\n\nIn `ir_codegen.rs`:\n- `:3958` (resolve_cont_sid): drop the `panic!`; rely on the `resolve` total\n  guarantee from fz-aiz.4.\n- `:4005` (resolve_callee_sid_in): same.\n\nThe `.unwrap_or_else(...)` becomes `.expect(\"...\")` with a tight invariant\nmessage, or — since `resolve` is now total — simply `.unwrap()` with a\ndebug-only assertion documenting the invariant.\n\n## Integration test: quicksort fixture\n\nAdd `fixtures/quicksort/` exercising the HOF + non-tail-recursion + closures\nshape that surfaced the bugs:\n\n```fz\nfn filter(_, []), do: []\nfn filter(pred, [h | t]) do\n  if pred(h) do [h | filter(pred, t)] else filter(pred, t) end\nend\n\nfn concat([], ys), do: ys\nfn concat([h | t], ys), do: [h | concat(t, ys)]\n\nfn quicksort([]), do: []\nfn quicksort([p | t]) do\n  less    = filter(fn(x) -\u003e x \u003c p, t)\n  greater = filter(fn(x) -\u003e x \u003e= p, t)\n  concat(quicksort(less), [p | quicksort(greater)])\nend\n\nfn main() do\n  print(quicksort([]))\n  print(quicksort([42]))\n  print(quicksort([5, 4, 3, 2, 1]))\n  print(quicksort([3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5]))\nend\n```\n\n`paths: [jit, interp, aot]`. This shape only compiles cleanly after fz-aiz.1\n(if/else multi-line) and fz-aiz.4 (resolve total). It's THE proof that the\narc works.\n\n## Tests\n\n- Quicksort fixture passes on `jit`, `interp` (if not blocked on Discriminant), `aot`.\n- Existing `expected.specs` goldens may shift — bless and review.\n- Existing `expected.clif` goldens should be stable (codegen body changes\n  are limited to the dispatch lookup, not body emission).\n\n## Blocked by fz-aiz.4 (and effectively fz-aiz.1 + fz-aiz.2 for the fixture\nshape to parse and not warn-as-error). Blocks fz-aiz.6.",
   "id": "fz-aiz.5",
   "labels": [],
   "parent": "fz-aiz",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "fz-aiz.5: replace .29.11 / .29.12.1 panics with degraded dispatch; quicksort integration fixture",
   "type": "task",
-  "updated_at": "2026-05-17T18:21:24Z"
+  "updated_at": "2026-05-17T18:33:31Z"
 }
