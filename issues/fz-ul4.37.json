@@ -6,14 +6,15 @@
     "fz-ul4.38"
   ],
   "blocks": [],
+  "closed_at": "2026-05-17T10:07:38Z",
   "created": "2026-05-17T04:48:27Z",
   "description": "# Stretch fixture: tagged-tuple AST evaluator\n\n## What\n\nAdd `fixtures/ast_eval/` — a multi-clause fn that pattern-matches\non tagged tuples `{:num, n}`, `{:add, a, b}`, `{:mul, a, b}` and\nrecursively evaluates to an int. Classic Erlang \"eval\" teaching\nshape; first fixture to exercise tagged-tuple dispatch end-to-end\nacross all three execution paths.\n\n```fz\nfn eval({:num, n}), do: n\nfn eval({:add, a, b}), do: eval(a) + eval(b)\nfn eval({:mul, a, b}), do: eval(a) * eval(b)\n\nfn main() do\n  print(eval({:add, {:num, 2}, {:mul, {:num, 3}, {:num, 4}}}))\nend\n```\n\nExpected stdout: `14\\n` (2 + 3*4).\n\n## Single-print only\n\nThe fixture uses **one** `print(eval(...))` rather than the more\ndemonstrative two-or-more sequence. Reason: fz-i82 (open bug)\ntruncates main's CPS chain after the first call when the called fn\ntakes tuple arguments. Multi-print form would silently miscompile.\nWhen fz-i82 lands, a follow-up fixture can demonstrate the\nmulti-print stretch.\n\n## Atomic deliverables\n\n1. `fixtures/ast_eval/input.fz` — the program above\n2. `fixtures/ast_eval/README.md` with frontmatter\n   (`purpose: …`, `paths: [jit, interp, aot]`)\n3. `expected.txt` blessed via `BLESS=1 cargo test fixture_matrix`\n4. `expected.specs` blessed via `BLESS_SPECS=1 cargo test …`\n5. `expected.clif` blessed via `BLESS=1 cargo test golden_clif`\n6. `fixtures/index.md` regenerated via\n   `BLESS=1 cargo test fixture_index_up_to_date`\n\n## Try the repl leg\n\nAttempt `paths: [jit, interp, aot, repl]`. If repl runs cleanly,\ninclude it. If it fails, drop to `[jit, interp, aot]` and file a\nseparate ticket for the repl leg — do not include repl with a\ndefer rationale (per [[feedback_no_silent_deferrals]]).\n\n## Blocked by\n\n- fz-ul4.38 (AOT register tuple schemas) — without it the aot leg\n  panics on first tuple alloc.\n\n## Acceptance\n\n- `cargo test fixture_matrix ast_eval` passes all declared paths.\n- `cargo test fixture_index_up_to_date` passes.\n- All existing fixture trials still pass.\n\n## Out of scope\n\n- Multi-print stretch (waits on fz-i82).\n- Larger expression languages (variables, let, conditionals) —\n  natural follow-ups once this lands and fz-i82 is resolved.",
   "id": "fz-ul4.37",
   "labels": [],
   "parent": "fz-ul4",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "fixture: ast_eval — Erlang-style expression evaluator",
   "type": "task",
-  "updated_at": "2026-05-17T10:06:01Z"
+  "updated_at": "2026-05-17T10:07:38Z"
 }
