@@ -10,9 +10,15 @@
   "id": "fz-ul4.43.6",
   "labels": [],
   "parent": "fz-ul4.43",
+  "comments": [
+    {
+      "text": "DEFERRED post-research; depends on .43.4 being un-deferred. See .43.5 for rationale.",
+      "timestamp": "2026-05-17T12:41:34Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "fz-ul4.43.E.2: matrix emits Term::Switch when dense",
   "type": "task",
-  "updated_at": "2026-05-17T12:08:35Z"
+  "updated_at": "2026-05-17T12:41:34Z"
 }
