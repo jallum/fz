@@ -2725,9 +2725,7 @@ pub fn compile_with_backend<B: Backend>(
             backend
                 .module_mut()
                 .define_function(func_id, &mut ctx)
-                .map_err(|e| {
-                    CodegenError::new(format!("define unreached fz_fn_{}: {}", sid, e))
-                })?;
+                .map_err(|e| CodegenError::new(format!("define unreached fz_fn_{}: {}", sid, e)))?;
             backend.module_mut().clear_context(&mut ctx);
             continue;
         }

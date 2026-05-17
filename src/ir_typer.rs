@@ -2651,7 +2651,9 @@ pub fn reachable_specs(
     // require an explicit `resolve(fid, narrow_key)` match somewhere in
     // a reachable body to be marked.
     for (sid, fid, key) in spec_registry.iter() {
-        let is_any_key = key.iter().all(|d| d.is_subtype(&Descr::any()) && Descr::any().is_subtype(d));
+        let is_any_key = key
+            .iter()
+            .all(|d| d.is_subtype(&Descr::any()) && Descr::any().is_subtype(d));
         let _ = fid;
         if is_any_key {
             worklist.push(sid.0);
@@ -2720,7 +2722,11 @@ pub fn reachable_specs(
                 ad
             };
             match &blk.terminator {
-                Term::Call { callee, args, continuation } => {
+                Term::Call {
+                    callee,
+                    args,
+                    continuation,
+                } => {
                     let key = pad_to_arity(*callee, arg_descrs(args));
                     if let Some(sid) = spec_registry.resolve(*callee, &key) {
                         worklist.push(sid.0);
@@ -2736,7 +2742,11 @@ pub fn reachable_specs(
                         worklist.push(sid.0);
                     }
                 }
-                Term::CallClosure { closure, args, continuation } => {
+                Term::CallClosure {
+                    closure,
+                    args,
+                    continuation,
+                } => {
                     if let Some(&target) = ft.fn_constants.get(closure) {
                         let key = pad_to_arity(target, arg_descrs(args));
                         if let Some(sid) = spec_registry.resolve(target, &key) {
