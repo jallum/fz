@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-b9b"
+  ],
   "blocks": [],
   "created": "2026-05-17T23:33:32Z",
   "description": "## Goal\n\nRead the inflow histograms diagnostically, verify fz-t45 dissolves,\nfinal polish.\n\n## What lands\n\n### --Wspec-quality reads histograms\n- src/ir_typer.rs / wherever --Wspec-quality is wired (fz-aiz.6):\n  for each canonical, for each slot, inspect `inflows`. A slot whose\n  LUB is Tagged but whose inflow histogram is dominated by a narrower\n  repr (e.g., RawInt: 99, Tagged: 1) is reported as a split candidate:\n  \"consider splitting fn `\u003cname\u003e`: 99% RawInt callers paying Tagged\n  tax for 1 polymorphic caller.\"\n- Threshold for \"dominant\": configurable; default sensible (e.g., 90%).\n\n### Close fz-t45\n- Run the fz-t45 repro: `each` + non-empty closure captures, expects\n  `11 / 12 / 13`. Verify correct output under JIT and AOT.\n- Confirm by inspection: closure values' body_fn_id wires to\n  canonical's FuncId; indirect-dispatch sig is all-Tagged i64;\n  canonical ABI for opaque-reachable fns is Tagged by construction.\n  Wire matches semantics. Mismatch structurally impossible.\n- `bw close fz-t45` with reference to this ticket.\n\n### Sweep\n- Rip the now-unused `input_descrs` param from `SpecRegistry::resolve`\n  if all callers tolerate the signature change. Update callsites.\n- `cargo clippy --all-targets --all-features -- -D warnings`.\n- `cargo fmt`.\n- Full `cargo test` pass.\n\n## Acceptance\n\n- `--Wspec-quality` emits actionable per-slot reports across all\n  fixtures; at least one fixture surfaces a meaningful candidate.\n- fz-t45 closed with verified repro.\n- No clippy warnings; fmt clean.\n- All 618 unit + 166 fixture-matrix tests pass.\n\n## See also\n\n- fz-7ot.2 — populates the canonical/histogram data this consumes.\n- fz-aiz.6 — original --Wspec-quality wiring.\n- fz-t45 — closure ABI mismatch; verified dissolved here.",
@@ -10,5 +12,5 @@
   "status": "open",
   "title": "fz-7ot.3: diagnostic + close fz-t45 + sweep",
   "type": "task",
-  "updated_at": "2026-05-17T23:33:32Z"
+  "updated_at": "2026-05-17T23:33:36Z"
 }
