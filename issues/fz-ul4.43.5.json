@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-ul4.43.3"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-ul4.43.6"
+  ],
   "created": "2026-05-17T12:07:42Z",
   "description": "# First real wiring; ast_eval gets the win\n\n## What changes\n\nIn `src/ir_lower.rs`:\n\nNew `lower_pattern_matrix(ctx, matrix, fail_block) -\u003e Result\u003c(), LowerError\u003e`:\n- builds a `Matrix` from the caller's subjects + rows\n- compiles via `pattern_matrix::compile`\n- walks the `Decision` tree, emitting IR:\n  - `Switch` → `Term::Switch` (when ≥3 dense cases) OR chained\n    `Prim::TypeTest + Term::If` (when sparse, or until .E.2 lands)\n  - `Bind` → `ctx.bind(name, subject)`\n  - `Project` → `ctx.let_(Prim::TupleField/ListHead/.../MapGet)`\n  - `Guard` → emit guard expr, `Term::If(g, on_pass_block, on_fail_block)`\n  - `Leaf(body_id)` → caller-supplied closure invokes body lowering\n    (so .D doesn't have to know about cont_fn vs inline-body)\n  - `Fail` → `Term::Goto(fail_block, vec![])`\n\n`lower_multi_clause` (line 1030):\n- builds `Matrix { subjects: param_vars, rows: clauses }`\n- calls `lower_pattern_matrix` with body lowering as a callback that\n  preserves today's `body_might_cps_split` → cont_fn vs inline branch\n- removes the per-clause `try_blocks` cascade\n\n## What stays\n\n- `body_might_cps_split` + `mint_cont_fn` lift — orthogonal, runs above\n  the dispatch.\n- `emit_param_type_guards` — folds into matrix via per-row guard.\n- `fail_block` Halt(function_clause) — the matrix's default sink.\n- `lower_pattern_bind` — still used by lower_case, lower_with, and\n  single-pattern positions. Removed in .43.H.\n\n## What's removed\n\n- Per-clause `try_blocks` cascade in `lower_multi_clause`.\n- Per-clause threading of `next: BlockId` for the multi-clause case\n  (matrix knows; lower_pattern_bind callers still thread for now).\n- Duplicate TypeTest emission across same-arity clauses (the structural\n  win).\n\n## Acceptance\n\n- `fixtures/ast_eval/expected.clif`: re-blessed; strictly smaller than\n  pre-.43.D. Specifically: one `is_tuple` arity-check per arity group\n  (2), not per clause (3).\n- All other multi-clause fixtures: golden byte-identical OR strictly\n  smaller. Single-clause fns: unchanged (matrix degenerates to direct\n  lowering of one row).\n- Three-path parity at every fixture.\n- Guarded multi-clause fns: dispatch order preserved (clause N still\n  beats N+1 when both could match); guard failure falls through\n  correctly.\n\n## Risk\n\n**Guards.** A guarded clause that fails the guard must fall through to\nthe next clause's full pattern test. Approach: a row with a guard\nbecomes a `Guard` node whose `on_fail` is a fresh sub-matrix of all\nlater rows (sacrifices sharing below the guard; preserves semantics).\nEasy, correct, less optimal than Maranget's residual-matrix\nduplication — that's explicitly out of scope.\n\n**Bitstring + Map columns.** Both fall back to per-row sequential\nlowering (no shared dispatch). Explicit narrow exception in\n`pattern_matrix::compile`.\n\n**Body lowering callback.** The matrix shouldn't know about cont_fn vs\ninline-body. Pass a `FnMut(ctx, body_id) -\u003e Result\u003c(), LowerError\u003e`\nclosure that the caller wires up.",
   "id": "fz-ul4.43.5",
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "fz-ul4.43.D: lower_pattern_matrix + wire into lower_multi_clause",
   "type": "task",
-  "updated_at": "2026-05-17T12:08:34Z"
+  "updated_at": "2026-05-17T12:08:35Z"
 }
