@@ -9,9 +9,15 @@
   "id": "fz-ul4.43.1",
   "labels": [],
   "parent": "fz-ul4.43",
+  "comments": [
+    {
+      "text": "BLOCKED — surprise surfaced on first impl.\n\nCHANGE: ~10 LOC adding Prim::TypeTest arm to narrow_for_cond as specified.\n\nRESULT on ast_eval:\n- expected.specs: 38793 → 25136 bytes (-35%)  ← spec set shrank\n- expected.clif:  76276 → 81845 bytes (+7%)   ← CLIF grew\n- Specific concrete loss: 'v40 = load.i64 ...;; v40 :: :add' became 'v40 :: any'\n\nROOT CAUSE (hypothesis, not verified): narrow_for_cond's output flows into recursive-call argument descrs at call sites. Those descrs are spec keys. Narrowing changes the keys → different spec set. In this fixture, some specs merged (good — fewer copies) but the merged spec has broader types than either input spec previously had (because the per-callsite specialization that USED to capture the narrowed view is gone — replaced by a single spec that handles both).\n\nSo narrowing made the typer's BRANCH-LOCAL info more precise but destabilized the spec set, and without per-spec fold (.43.B) consuming the new narrower envs, the net per-spec CLIF is broader and bigger.\n\nACCEPTANCE VIOLATION: ticket said 'byte-identical OR strictly smaller'. Actual: bigger CLIF. Reverted.\n\nOPTIONS TO CONSIDER (need user direction):\n\n(a) Bundle .43.A + .43.B as one atomic ticket. They're inseparable — A alone regresses, A+B should net-improve.\n\n(b) Narrow more conservatively: only refine vars not used as call args (preserves spec-key stability). Possible but adds complexity and may give up most of the benefit.\n\n(c) Investigate further: are we really losing info, or just changing specialization granularity? Maybe spec set shrinking is a real net win (less code in ICache) even if CLIF size grew. Need runtime benchmark, not just byte count.\n\n(d) Investigate the underlying spec-key sensitivity. Why does narrowing in then-branch destabilize spec creation? Is there a stability invariant we should be preserving?\n\nRECOMMENDATION: option (a). The arc as designed has A and B compounding; the surprise is that they don't compose additively in isolation. Bundle them and re-bless under combined acceptance.\n\nBut this needs user authorization — restructuring atomic units mid-arc per CLAUDE.md no-silent-deferrals.",
+      "timestamp": "2026-05-17T12:13:07Z"
+    }
+  ],
   "priority": 1,
   "status": "in_progress",
   "title": "fz-ul4.43.A: narrow_for_cond handles Prim::TypeTest",
   "type": "task",
-  "updated_at": "2026-05-17T12:09:04Z"
+  "updated_at": "2026-05-17T12:13:07Z"
 }
