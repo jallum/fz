@@ -1,6 +1,6 @@
 ---
 purpose: "literal-vs-wildcard clause dispatch (`0` and `_`)"
-paths: [jit, interp]
+paths: [jit, interp, repl]
 ---
 
 # classify_two_clause

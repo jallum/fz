@@ -1,6 +1,6 @@
 ---
 purpose: "multi-clause dispatch with a guard clause (`when n > 0`), plus recursive `fact`"
-paths: [jit, interp]
+paths: [jit, interp, repl]
 ---
 
 # multi_clause

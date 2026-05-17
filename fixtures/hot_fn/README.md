@@ -1,6 +1,6 @@
 ---
 purpose: "same call repeated — historical JIT tier-up trigger; today every call is JIT"
-paths: [jit, interp]
+paths: [jit, interp, repl]
 ---
 
 # hot_fn

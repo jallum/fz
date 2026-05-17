@@ -18,6 +18,16 @@ cranelift-native = "0.131"
 target-lexicon = "0.13"
 fz-runtime = { path = "runtime" }
 
+[dev-dependencies]
+# fz-fkv — fixture matrix uses libtest-mimic so each (fixture, path) pair
+# is its own trial in `cargo test` output (filterable, parallelizable,
+# named individually instead of collapsing into one `fixture_matrix ... ok`).
+libtest-mimic = "0.8"
+
+[[test]]
+name = "fixture_matrix"
+harness = false
+
 [profile.dev]
 opt-level = 0
 

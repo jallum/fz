@@ -1,6 +1,6 @@
 ---
 purpose: "three-level currying — nested lambdas each capturing outer scope; exercises multi-depth closure allocation"
-paths: [jit, interp, aot]
+paths: [jit, interp, aot, repl]
 ---
 
 # curried_add

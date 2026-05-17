@@ -27,11 +27,129 @@
 //! `expected.txt` from current stdout. On failure (non-bless) the
 //! actual stdout is dropped at `<dir>/actual.txt` for diffing.
 
+use libtest_mimic::{Arguments, Failed, Trial};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const FZ_BIN: &str = env!("CARGO_BIN_EXE_fz");
+
+// fz-fkv — custom main: each (fixture, path) pair becomes its own
+// `cargo test` trial, named `matrix::<fixture>::<path>`. `cargo test add1`
+// filters to one fixture; `cargo test ::repl` filters to one leg. Static
+// invariant tests (CLIF shape, golden dumps, etc.) become trials too so
+// the harness is uniform.
+fn main() {
+    let args = Arguments::from_args();
+    let mut trials: Vec<Trial> = Vec::new();
+
+    // Static invariant trials. Bodies are unchanged from their previous
+    // `#[test]` form; libtest-mimic catches panics from `assert!` and
+    // reports them as failures.
+    for (name, f) in static_tests() {
+        trials.push(Trial::test(name, move || {
+            f();
+            Ok(())
+        }));
+    }
+
+    // Dynamic matrix trials: one per (fixture, path).
+    let bless = std::env::var("BLESS").ok().as_deref() == Some("1");
+    for fixture in discover() {
+        let name = fixture.file_name().unwrap().to_string_lossy().into_owned();
+        let header = match parse_header_from_dir(&fixture) {
+            Ok(h) => h,
+            Err(e) => {
+                let msg = e.clone();
+                trials.push(Trial::test(format!("matrix::{}::header", name), move || {
+                    Err(Failed::from(msg))
+                }));
+                continue;
+            }
+        };
+        if header.paths.is_empty() {
+            // Deferred fixture (no paths wired). Surface as an ignored
+            // trial so the reason is visible but the run doesn't fail.
+            let why = header.defer.clone().unwrap_or_default();
+            trials.push(
+                Trial::test(format!("matrix::{}", name), move || {
+                    eprintln!("deferred: {}", why);
+                    Ok(())
+                })
+                .with_ignored_flag(true),
+            );
+            continue;
+        }
+        for path in &header.paths {
+            let trial_name = format!("matrix::{}::{}", name, path);
+            let fixture = fixture.clone();
+            let header = header.clone();
+            let path = path.clone();
+            trials.push(Trial::test(trial_name, move || {
+                match check(&fixture, &header, &path, bless) {
+                    CheckOutcome::Pass => Ok(()),
+                    CheckOutcome::Deferred(msg) => {
+                        // Path declared but not yet wired (exit 75). Don't
+                        // fail; surface the reason on stderr.
+                        eprintln!("deferred: {}", msg);
+                        Ok(())
+                    }
+                    CheckOutcome::Fail(e) => Err(Failed::from(e)),
+                }
+            }));
+        }
+    }
+
+    libtest_mimic::run(&args, trials).exit();
+}
+
+/// List of (trial-name, fn-pointer) for every static invariant test in
+/// this file. Kept explicit so adding a new test is a one-line append
+/// and the trial list survives refactors.
+fn static_tests() -> Vec<(&'static str, fn())> {
+    vec![
+        ("fixture_index_up_to_date", fixture_index_up_to_date),
+        ("fz_dump_emits_clif", fz_dump_emits_clif),
+        (
+            "add1_main_cont_seam_has_no_box_unbox_roundtrip",
+            add1_main_cont_seam_has_no_box_unbox_roundtrip,
+        ),
+        (
+            "inlined_goto_edges_have_no_sshr_imm",
+            inlined_goto_edges_have_no_sshr_imm,
+        ),
+        (
+            "fused_blocks_and_folded_constants_in_inlined_main",
+            fused_blocks_and_folded_constants_in_inlined_main,
+        ),
+        (
+            "native_fns_have_no_dead_frame_ptr_placeholder",
+            native_fns_have_no_dead_frame_ptr_placeholder,
+        ),
+        (
+            "tail_recursion_count_matches_cps_in_clif_section_8_1",
+            tail_recursion_count_matches_cps_in_clif_section_8_1,
+        ),
+        (
+            "higher_order_compose_matches_cps_in_clif_section_8_2",
+            higher_order_compose_matches_cps_in_clif_section_8_2,
+        ),
+        (
+            "closure_typed_captures_matches_cps_in_clif_section_8_3",
+            closure_typed_captures_matches_cps_in_clif_section_8_3,
+        ),
+        (
+            "concurrency_ping_pong_matches_cps_in_clif_section_8_4",
+            concurrency_ping_pong_matches_cps_in_clif_section_8_4,
+        ),
+        (
+            "no_dead_const_operands_after_singleton_fold",
+            no_dead_const_operands_after_singleton_fold,
+        ),
+        ("golden_clif", golden_clif),
+        ("golden_specs", golden_specs),
+    ]
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Kind {
@@ -39,7 +157,7 @@ enum Kind {
     Test,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Header {
     purpose: String,
     paths: Vec<String>,
@@ -107,6 +225,10 @@ fn parse_header_from_dir(dir: &Path) -> Result<Header, String> {
                 });
             }
             "defer" => defer = Some(unquote(val).to_string()),
+            // fz-i67.3 — informational rationale for omitting `repl` from
+            // `paths:` (sequential fixture that `eval::Interp` cannot run).
+            // Parsed so the key is accepted; not otherwise consumed.
+            "repl-skip" => {}
             other => return Err(format!("{}: unknown key `{}`", readme.display(), other)),
         }
         i += 1;
@@ -202,6 +324,9 @@ fn run_path(fixture: &Path, header: &Header, path: &str) -> RunOutcome {
     if path == "aot" {
         return run_aot_path(fixture, header);
     }
+    if path == "repl" {
+        return run_repl_path(fixture, header);
+    }
     let subcmd = match (path, header.kind) {
         ("jit", Kind::Run) => "run",
         ("jit", Kind::Test) => "test",
@@ -291,6 +416,38 @@ fn run_aot_path(fixture: &Path, header: &Header) -> RunOutcome {
     }
 }
 
+/// fz-i67.2 — drive the REPL parity leg: spawn `fz repl --script <input.fz>`,
+/// capture stdout. Same comparison plumbing as the other legs. `kind: test`
+/// fixtures don't go through here (the REPL has no `assert_eq` runner).
+fn run_repl_path(fixture: &Path, header: &Header) -> RunOutcome {
+    if header.kind == Kind::Test {
+        return RunOutcome::Deferred(
+            "kind: test fixtures don't yet run via repl (`fz test` is jit-only)".into(),
+        );
+    }
+    let input = fixture.join("input.fz");
+    let out = match Command::new(FZ_BIN)
+        .args(["repl", "--script"])
+        .arg(&input)
+        .output()
+    {
+        Ok(o) => o,
+        Err(e) => return RunOutcome::Failed(format!("spawn fz repl: {}", e)),
+    };
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    if !out.status.success() {
+        return RunOutcome::Failed(format!(
+            "fz repl --script exit {}: {}",
+            out.status,
+            stderr.trim_end()
+        ));
+    }
+    match String::from_utf8(out.stdout) {
+        Ok(s) => RunOutcome::Ok(s),
+        Err(e) => RunOutcome::Failed(format!("stdout utf8: {}", e)),
+    }
+}
+
 fn normalize(s: &str) -> String {
     if s.is_empty() || s.ends_with('\n') {
         s.to_string()
@@ -346,7 +503,6 @@ fn check(fixture: &Path, header: &Header, path: &str, bless: bool) -> CheckOutco
 
 /// Regenerate `fixtures/index.md` from headers and assert it matches the
 /// checked-in file. `BLESS=1` rewrites the index in place.
-#[test]
 fn fixture_index_up_to_date() {
     let bless = std::env::var("BLESS").ok().as_deref() == Some("1");
     let mut rows: Vec<(String, String, String)> = Vec::new();
@@ -394,7 +550,6 @@ fn fixture_index_up_to_date() {
 
 /// `fz dump --emit clif` smoke test. Confirms the feedback-loop subcommand
 /// is wired and produces real CLIF for a baseline fixture.
-#[test]
 fn fz_dump_emits_clif() {
     let out = Command::new(FZ_BIN)
         .args(["dump", "fixtures/add1/input.fz"])
@@ -475,7 +630,6 @@ fn fz_dump_emits_clif() {
 /// box-then-unbox round-trip (`ishl_imm`/`bor_imm`/`sshr_imm`) at the
 /// seam. .27.14.2 skips the Tagged intermediate so `main`'s body has
 /// no shift/OR instructions between the two calls.
-#[test]
 fn add1_main_cont_seam_has_no_box_unbox_roundtrip() {
     let out = Command::new(FZ_BIN)
         .args([
@@ -529,7 +683,6 @@ fn add1_main_cont_seam_has_no_box_unbox_roundtrip() {
 /// arg flows directly through Goto edges without any sshr_imm.
 ///
 /// This test is RED until fz-xs2 (rep.2) is implemented.
-#[test]
 fn inlined_goto_edges_have_no_sshr_imm() {
     let out = Command::new(FZ_BIN)
         .args([
@@ -560,7 +713,6 @@ fn inlined_goto_edges_have_no_sshr_imm() {
 /// separate block1/block2 labels.
 ///
 /// RED until fz-c9e (fus.3) lands.
-#[test]
 fn fused_blocks_and_folded_constants_in_inlined_main() {
     let out = Command::new(FZ_BIN)
         .args([
@@ -608,7 +760,6 @@ fn fused_blocks_and_folded_constants_in_inlined_main() {
 /// fz-ul4.11.15: add1 is inlined into main so has no separate compiled body.
 /// We verify the invariant on `main` instead — main is native and has no
 /// semantic reason to materialize zero.
-#[test]
 fn native_fns_have_no_dead_frame_ptr_placeholder() {
     let out = Command::new(FZ_BIN)
         .args([
@@ -640,7 +791,6 @@ fn native_fns_have_no_dead_frame_ptr_placeholder() {
 /// Tail-CC body whose recursive case ends in `return_call %count(...)`
 /// with zero `fz_alloc_*` calls. Base case ends in
 /// `load.i64 ...+16` followed by `return_call_indirect ...`.
-#[test]
 fn tail_recursion_count_matches_cps_in_clif_section_8_1() {
     let out = Command::new(FZ_BIN)
         .args([
@@ -706,7 +856,6 @@ fn tail_recursion_count_matches_cps_in_clif_section_8_1() {
 /// `func_addr` + outer-cont + captures, then `return_call_indirect`
 /// through `g+16` with `(x, g, kg)`. No `fz_closure_invoke` runtime
 /// helper referenced.
-#[test]
 fn higher_order_compose_matches_cps_in_clif_section_8_2() {
     let out = Command::new(FZ_BIN)
         .args([
@@ -764,7 +913,6 @@ fn higher_order_compose_matches_cps_in_clif_section_8_2() {
 /// closure_typed_captures.fz's `add_to(x,y) = fn(z) -> x+y+z` returns
 /// the lambda. `add_to` must call `fz_alloc_closure` exactly once (the
 /// lambda escape); the lambda body must call `fz_alloc_*` zero times.
-#[test]
 fn closure_typed_captures_matches_cps_in_clif_section_8_3() {
     let out = Command::new(FZ_BIN)
         .args([
@@ -810,7 +958,6 @@ fn closure_typed_captures_matches_cps_in_clif_section_8_3() {
 /// don't appear in raw clif (Cranelift uses numeric `u0:N` refs), so
 /// the test asserts the shape: a `(i64) -> i64 system_v` sig declared
 /// AND a `func_addr.i64` store into +16 of a freshly-alloc'd closure.
-#[test]
 fn concurrency_ping_pong_matches_cps_in_clif_section_8_4() {
     let out = Command::new(FZ_BIN)
         .args([
@@ -846,55 +993,10 @@ fn concurrency_ping_pong_matches_cps_in_clif_section_8_4() {
     );
 }
 
-#[test]
-fn fixture_matrix() {
-    let bless = std::env::var("BLESS").ok().as_deref() == Some("1");
-    let mut failures: Vec<String> = Vec::new();
-    let mut deferred_paths: Vec<(PathBuf, String, String)> = Vec::new();
-    let mut deferred_fixtures: Vec<(PathBuf, String, String)> = Vec::new();
-    let fixtures = discover();
-    assert!(!fixtures.is_empty(), "no fixtures discovered");
-    for f in fixtures {
-        let header = match parse_header_from_dir(&f) {
-            Ok(h) => h,
-            Err(e) => {
-                failures.push(format!("{}: header: {}", f.display(), e));
-                continue;
-            }
-        };
-        if header.paths.is_empty() {
-            deferred_fixtures.push((f, header.purpose.clone(), header.defer.unwrap_or_default()));
-            continue;
-        }
-        for path in &header.paths {
-            match check(&f, &header, path, bless) {
-                CheckOutcome::Pass => {}
-                CheckOutcome::Deferred(msg) => {
-                    deferred_paths.push((f.clone(), path.clone(), msg));
-                }
-                CheckOutcome::Fail(e) => failures.push(e),
-            }
-        }
-    }
-    if !deferred_fixtures.is_empty() {
-        eprintln!("deferred fixtures (no paths wired yet):");
-        for (f, purpose, why) in &deferred_fixtures {
-            eprintln!("  {}: {}\n    defer: {}", f.display(), purpose, why);
-        }
-    }
-    if !deferred_paths.is_empty() {
-        eprintln!("deferred paths (declared but stub):");
-        for (f, path, msg) in &deferred_paths {
-            eprintln!("  {} via {}: {}", f.display(), path, msg);
-        }
-    }
-    assert!(
-        failures.is_empty(),
-        "{} fixture failure(s):\n\n{}",
-        failures.len(),
-        failures.join("\n\n")
-    );
-}
+// fz-fkv: the bulk `fixture_matrix()` test was replaced by per-pair
+// trials emitted from `fn main()`. Discovery, header parsing, and
+// per-pair compare all live in the helpers above; the trial wiring
+// is at the top of this file.
 
 // ----------------------------------------------------------------------
 // fz-ul4.32 / fz-73m — Golden dumps.
@@ -1043,7 +1145,6 @@ fn check_goldens(emit: Emit) {
 /// After fold+DCE land, the BinOp operand iconst 41 (left-hand side of
 /// the constant-folded 41+1=42 in add1) must be eliminated from main's
 /// CLIF body. This test is RED until fz-cg2 (dce.5) wires the pipeline.
-#[test]
 fn no_dead_const_operands_after_singleton_fold() {
     let out = Command::new(FZ_BIN)
         .args([
@@ -1068,12 +1169,10 @@ fn no_dead_const_operands_after_singleton_fold() {
     );
 }
 
-#[test]
 fn golden_clif() {
     check_goldens(Emit::Clif);
 }
 
-#[test]
 fn golden_specs() {
     check_goldens(Emit::Specs);
 }

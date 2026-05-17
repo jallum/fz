@@ -1,6 +1,6 @@
 ---
 purpose: "VR.4.2 — leaf-bodied helper goes through the native ABI"
-paths: [jit, interp]
+paths: [jit, interp, repl]
 ---
 
 # vr4_2_native_call
