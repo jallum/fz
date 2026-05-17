@@ -235,11 +235,13 @@
 ;     Var(3) :: :err
 ;     Var(4) :: bool
 ;   exits:
-;     blk0 Goto blk1()
-;     blk1 If Var(4) ? blk3 : blk2
-;     blk2 Halt Var(2)      :: :with_clause
+;     blk0 Goto blk2()
+;     blk1 Halt Var(2)      :: :with_clause
+;     blk2 If Var(4) ? blk3 : blk4
 ;     blk3 TailCall with_else_0#17(Var(1))
 ;              callee_key=[{:ok, 7}]
+;     blk4 Goto blk1()
+;     blk5 Goto blk1()
 
 ; spec with_else_0(1) #fn=17
 ;   key:    [{:ok, 7}]

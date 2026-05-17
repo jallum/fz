@@ -3084,10 +3084,8 @@ fn lower_with(
         ctx.set_term(Term::Halt(v));
         ctx.terminated = true;
     } else {
-        // Inside with_fail_cont: try_blocks + else_fail block, intra-fn.
-        let try_blocks: Vec<BlockId> = (0..else_clauses.len())
-            .map(|_| ctx.cur_mut().block(vec![]))
-            .collect();
+        // fz-ul4.43.G — matrix dispatch over else clauses (inside
+        // with_fail_cont). Same shape as lower_case's matrix wiring.
         let else_fail = ctx.cur_mut().block(vec![]);
         let saved_b = ctx.cur_block();
         ctx.cur_block = Some(else_fail);
@@ -3095,38 +3093,76 @@ fn lower_with(
         let v = ctx.let_(Prim::Const(Const::Atom(cc)));
         ctx.set_term(Term::Halt(v));
         ctx.cur_block = Some(saved_b);
-        ctx.set_term(Term::Goto(try_blocks[0], vec![]));
+
+        let matrix_entry = ctx.cur_mut().block(vec![]);
+        ctx.set_term(Term::Goto(matrix_entry, vec![]));
+        ctx.cur_block = Some(matrix_entry);
+        ctx.terminated = false;
 
         let saved_env_2 = ctx.env.clone();
         let saved_order_2 = ctx.env_order.clone();
-        let mut else_conts: Vec<ContFn> = Vec::with_capacity(else_clauses.len());
-        for (i, clause) in else_clauses.iter().enumerate() {
-            if let Some(_g) = &clause.guard {
-                return Err(LowerError::Unsupported {
-                    span: clause.span,
-                    what: "with-else guard (deferred)".into(),
+
+        let matrix = Matrix {
+            subjects: vec![unmatched_v],
+            rows: else_clauses
+                .iter()
+                .enumerate()
+                .map(|(i, c)| Row {
+                    patterns: vec![c.pattern.clone()],
+                    preconditions: Vec::new(),
+                    guard: c.guard.clone(),
+                    body_id: i as BodyId,
+                })
+                .collect(),
+        };
+
+        let mut else_conts: Vec<Option<ContFn>> = (0..else_clauses.len()).map(|_| None).collect();
+        {
+            let else_clauses_ref = else_clauses;
+            let else_conts_ref = &mut else_conts;
+            let saved_env_ref = &saved_env_2;
+            let saved_order_ref = &saved_order_2;
+            let mut cb = |ctx: &mut LowerCtx,
+                          body_id: BodyId,
+                          bindings: Vec<(String, Var)>,
+                          _preconds: Vec<(Var, crate::types::Descr)>,
+                          guard: Option<crate::ast::Spanned<crate::ast::Expr>>,
+                          fall_block: BlockId|
+             -> Result<(), LowerError> {
+                let i = body_id as usize;
+                let clause = &else_clauses_ref[i];
+                ctx.env = saved_env_ref.clone();
+                ctx.env_order = saved_order_ref.clone();
+                for (name, var) in &bindings {
+                    ctx.bind(name, *var);
+                }
+                if let Some(g) = &guard {
+                    let guard_var = lower_expr(ctx, g, false)?;
+                    let body_b = ctx.cur_mut().block(vec![]);
+                    ctx.set_term(Term::If(guard_var, body_b, fall_block));
+                    ctx.cur_block = Some(body_b);
+                    ctx.terminated = false;
+                }
+                let cont = mint_cont_fn(ctx, format!("with_else_{}", i), clause.span);
+                let captures = ctx.captured_snapshot();
+                let capture_vars: Vec<Var> = captures.iter().map(|(_, v)| *v).collect();
+                ctx.set_term(Term::TailCall {
+                    callee: cont.id,
+                    args: capture_vars,
+                    is_back_edge: false,
                 });
-            }
-            let next = try_blocks.get(i + 1).copied().unwrap_or(else_fail);
-            ctx.cur_block = Some(try_blocks[i]);
-            ctx.env = saved_env_2.clone();
-            ctx.env_order = saved_order_2.clone();
-            lower_pattern_bind(ctx, unmatched_v, &clause.pattern, next)?;
-            // Mint per-else-clause cont with post-pattern-bind env.
-            let cont = mint_cont_fn(ctx, format!("with_else_{}", i), clause.span);
-            let captures = ctx.captured_snapshot();
-            let capture_vars: Vec<Var> = captures.iter().map(|(_, v)| *v).collect();
-            ctx.set_term(Term::TailCall {
-                callee: cont.id,
-                args: capture_vars,
-                is_back_edge: false,
-            });
-            else_conts.push(cont);
+                ctx.terminated = true;
+                else_conts_ref[i] = Some(cont);
+                Ok(())
+            };
+            lower_pattern_matrix(ctx, matrix, else_fail, &mut cb)?;
         }
 
-        // Lower each else-clause body in its cont fn.
         for (i, clause) in else_clauses.iter().enumerate() {
-            let _ = switch_to_cont_fn(ctx, &else_conts[i], 0);
+            let Some(cont) = else_conts[i].clone() else {
+                continue;
+            };
+            let _ = switch_to_cont_fn(ctx, &cont, 0);
             let result = lower_expr(ctx, &clause.body, /* is_tail */ true)?;
             finalize_arm(ctx, result, join_opt.as_ref());
         }
