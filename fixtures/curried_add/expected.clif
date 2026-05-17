@@ -1,5 +1,5 @@
 ; fn main
-    ;   @spec   main() -> _
+    ;   @spec   main() -> nil
     ;   @key    []
     ;   @abi    () -> Tagged
 function u0:0(i64) -> i64 tail {
@@ -35,7 +35,7 @@ block0(v0: i64):
 }
 
 ; fn apply_s10
-    ;   @spec   apply(&fn10[10]:(any) -> any, 20) -> _
+    ;   @spec   apply(&fn10[10]:(any) -> any, 20) -> &fn11[10, 20]:(any) -> any
     ;   @key    [&fn10[10]:(any) -> any, 20]
     ;   @abi    (Tagged, RawInt) -> Tagged
 function u0:0(i64, i64, i64) -> i64 tail {
@@ -47,7 +47,7 @@ function u0:0(i64, i64, i64) -> i64 tail {
 }
 
 ; fn apply_s11
-    ;   @spec   apply(&fn10[1]:(any) -> any, 2) -> _
+    ;   @spec   apply(&fn10[1]:(any) -> any, 2) -> &fn11[1, 2]:(any) -> any
     ;   @key    [&fn10[1]:(any) -> any, 2]
     ;   @abi    (Tagged, RawInt) -> Tagged
 function u0:0(i64, i64, i64) -> i64 tail {
@@ -59,7 +59,7 @@ function u0:0(i64, i64, i64) -> i64 tail {
 }
 
 ; fn apply_s12
-    ;   @spec   apply(&fn11[1, 2]:(any) -> any, 3) -> _
+    ;   @spec   apply(&fn11[1, 2]:(any) -> any, 3) -> int
     ;   @key    [&fn11[1, 2]:(any) -> any, 3]
     ;   @abi    (Tagged, RawInt) -> RawInt
 function u0:0(i64, i64, i64) -> i64 tail {
@@ -71,7 +71,7 @@ function u0:0(i64, i64, i64) -> i64 tail {
 }
 
 ; fn apply_s13
-    ;   @spec   apply(&fn11[10, 20]:(any) -> any, 12) -> _
+    ;   @spec   apply(&fn11[10, 20]:(any) -> any, 12) -> int
     ;   @key    [&fn11[10, 20]:(any) -> any, 12]
     ;   @abi    (Tagged, RawInt) -> RawInt
 function u0:0(i64, i64, i64) -> i64 tail {
@@ -165,7 +165,7 @@ function u0:0(i64, i64, i64) -> i64 tail {
 }
 
 ; fn k_13_s18
-    ;   @spec   k_13(&fn11[10, 20]:(any) -> any) -> _
+    ;   @spec   k_13(&fn11[10, 20]:(any) -> any) -> nil
     ;   @key    [&fn11[10, 20]:(any) -> any]
     ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
@@ -190,7 +190,7 @@ function u0:0(i64, i64) -> i64 tail {
 }
 
 ; fn k_14_s19
-    ;   @spec   k_14(int) -> _
+    ;   @spec   k_14(int) -> nil
     ;   @key    [int]
     ;   @abi    (RawInt) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
@@ -230,7 +230,7 @@ function u0:0(i64, i64) -> i64 tail {
 }
 
 ; fn k_17_s20
-    ;   @spec   k_17(&fn11[1, 2]:(any) -> any) -> _
+    ;   @spec   k_17(&fn11[1, 2]:(any) -> any) -> nil
     ;   @key    [&fn11[1, 2]:(any) -> any]
     ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {

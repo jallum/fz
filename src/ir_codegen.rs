@@ -433,6 +433,7 @@ fn build_typer_header(
     f: &crate::fz_ir::FnIr,
     ft: &crate::ir_typer::FnTypes,
     spec_key: &[crate::types::Descr],
+    effective_return: &crate::types::Descr,
     param_reprs: &[ArgRepr],
     return_repr: ArgRepr,
 ) -> String {
@@ -445,24 +446,14 @@ fn build_typer_header(
             None => "?".to_string(),
         })
         .collect();
-    // Join return Descrs across all Term::Return sites in this fn.
-    let mut return_descrs: Vec<String> = Vec::new();
-    for blk in &f.blocks {
-        if let crate::fz_ir::Term::Return(v) = &blk.terminator {
-            let d = ft
-                .vars
-                .get(v)
-                .map(|d| format!("{}", d))
-                .unwrap_or_else(|| "?".into());
-            if !return_descrs.contains(&d) {
-                return_descrs.push(d);
-            }
-        }
-    }
-    let return_str = if return_descrs.is_empty() {
+    // fz-i82.2 — `@spec` reports the same effective return that drives
+    // `@abi` and the cont's slot-0 keying (`module_types.effective_returns`).
+    // Halt-only specs converge to `none` in the LFP; show `_` for those
+    // (matches the previous "no Term::Return found" rendering).
+    let return_str = if effective_return.is_subtype(&crate::types::Descr::none()) {
         "_".to_string()
     } else {
-        return_descrs.join(" | ")
+        format!("{}", effective_return)
     };
     let codegen_repr = |r: &ArgRepr| -> &'static str {
         match r {
@@ -2365,115 +2356,37 @@ pub fn compile_with_backend<B: Backend>(
     // frame-size dispatch fn). Indexed by SpecId.0.
     let frame_sizes: Vec<u32> = schemas.iter().map(|s| s.size).collect();
 
-    // Per-spec return Descrs (each spec's `Term::Return` join under its
-    // own typed view) — extended in fz-ul4.27.13 to propagate through
-    // `Term::TailCall` so a fn whose only exit is a tail call inherits
-    // the callee's return Descr instead of defaulting to `any`. Without
-    // this, a chain like `fn run(n), do twice(n)` (which lowers to a
-    // single tail call to `double`) would report `any` and force a
-    // tagged-FzValue boundary at the caller, undoing the .27.13 unbox
-    // win at every macro-style hop.
+    // fz-i82.2 — per-spec return Descr comes from the typer's LFP
+    // (`module_types.effective_returns`). That walk filters by
+    // `reachable_blocks` AND propagates through every exit terminator
+    // including `Term::Call` / `Term::CallClosure` / `Term::Receive`
+    // with a continuation; the cont side (`cont_slot0_descr`) already
+    // reads from the same map. Reading it here too means the producer
+    // abi and the cont's slot-0 abi agree by construction — the
+    // mismatch that fz-i82 manifested cannot recur.
     //
-    // Iterate to fixpoint: each pass folds in TailCall callees' current
-    // return Descrs through `spec_registry` resolution. Indexed by
-    // SpecId.0; sentinel slots get `any`.
-    // Seed: per-spec join of Term::Return val Descrs (None == no
-    // Term::Return yet). Sentinel slots seed to `any` (never reached).
-    let mut return_descrs: Vec<Option<crate::types::Descr>> = (0..spec_count)
-        .map(|sid| match spec_fnidx[sid] {
-            Some(idx) => {
-                let f = &module.fns[idx];
-                let ft = spec_fn_types[sid].expect("non-sentinel spec must have FnTypes");
-                let mut joined: Option<crate::types::Descr> = None;
-                for blk in &f.blocks {
-                    if let Term::Return(v) = &blk.terminator {
-                        let d = ft
-                            .vars
-                            .get(v)
-                            .cloned()
-                            .unwrap_or_else(crate::types::Descr::any);
-                        joined = Some(match joined {
-                            Some(p) => p.union(&d),
-                            None => d,
-                        });
-                    }
-                }
-                joined
+    // Halt-only specs converge to `Descr::none()` in the LFP; substitute
+    // `any` so `ArgRepr::from_descr` doesn't pick RawF64 (none is a
+    // subtype of every set, including float). The value never reaches
+    // anyone for a halt-only spec, but the abi must still be valid.
+    let return_descrs: Vec<crate::types::Descr> = spec_keys
+        .iter()
+        .enumerate()
+        .map(|(sid, (fid, key))| {
+            if spec_fnidx[sid].is_none() {
+                return crate::types::Descr::any();
             }
-            None => Some(crate::types::Descr::any()),
+            let d = module_types
+                .effective_returns
+                .get(&(*fid, key.clone()))
+                .cloned()
+                .unwrap_or_else(crate::types::Descr::any);
+            if d.is_subtype(&crate::types::Descr::none()) {
+                crate::types::Descr::any()
+            } else {
+                d
+            }
         })
-        .collect();
-    // Use semantic mutual-subtype check for fixpoint termination: the
-    // DNF Descr representation isn't canonical, so `prev.union(callee_d)`
-    // can produce a structurally-different but semantically-equal value
-    // (e.g. for recursive fns where callee_sid == sid and the value is
-    // already its own fixpoint). Cap iterations as a belt-and-braces
-    // bound — spec_count is small and the lattice has bounded height
-    // for fz's first-order Descrs.
-    let max_iters = spec_count.saturating_mul(spec_count).saturating_add(8);
-    for _ in 0..max_iters {
-        let mut changed = false;
-        for sid in 0..spec_count {
-            let Some(idx) = spec_fnidx[sid] else {
-                continue;
-            };
-            let f = &module.fns[idx];
-            let ft = spec_fn_types[sid].expect("non-sentinel spec must have FnTypes");
-            for blk in &f.blocks {
-                // Both Term::TailCall and a resolved-via-closure_lit
-                // Term::TailCallClosure feed the callee's return Descr
-                // into this spec's return Descr. Unresolved
-                // TailCallClosure stays opaque (any) — same as today.
-                let callee_sid_for_tc: Option<u32> = match &blk.terminator {
-                    Term::TailCall { callee, args, .. } => {
-                        let arg_descrs: Vec<crate::types::Descr> = args
-                            .iter()
-                            .map(|av| {
-                                ft.vars
-                                    .get(av)
-                                    .cloned()
-                                    .unwrap_or_else(crate::types::Descr::any)
-                            })
-                            .collect();
-                        spec_registry.resolve(*callee, &arg_descrs).map(|s| s.0)
-                    }
-                    Term::TailCallClosure { closure, args } => {
-                        // fz-ul4.27.22.12 — closure_lit-driven return
-                        // propagation. Mirrors the codegen direct-dispatch
-                        // resolution in TailCallClosure compile.
-                        resolve_tcc_body(closure, args, ft, module, &spec_registry)
-                            .map(|(_, sid)| sid)
-                    }
-                    _ => None,
-                };
-                let Some(callee_sid_v) = callee_sid_for_tc else {
-                    continue;
-                };
-                let callee_sid = callee_sid_v as usize;
-                let Some(callee_d) = return_descrs[callee_sid].clone() else {
-                    continue;
-                };
-                let new_d = match &return_descrs[sid] {
-                    Some(prev) => prev.union(&callee_d),
-                    None => callee_d,
-                };
-                let prev_eq_new = match &return_descrs[sid] {
-                    Some(prev) => prev.is_subtype(&new_d) && new_d.is_subtype(prev),
-                    None => false,
-                };
-                if !prev_eq_new {
-                    return_descrs[sid] = Some(new_d);
-                    changed = true;
-                }
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
-    let return_descrs: Vec<crate::types::Descr> = return_descrs
-        .into_iter()
-        .map(|opt| opt.unwrap_or_else(crate::types::Descr::any))
         .collect();
 
     // fz-ul4.27.13 — Per-spec entry-param ArgReprs + return ArgRepr.
@@ -2822,6 +2735,7 @@ pub fn compile_with_backend<B: Backend>(
                     f,
                     ft,
                     &spec_keys[sid].1,
+                    &return_descrs[sid],
                     &param_reprs[sid],
                     return_reprs[sid],
                 );

@@ -1,5 +1,5 @@
 ; fn main
-    ;   @spec   main() -> _
+    ;   @spec   main() -> nil
     ;   @key    []
     ;   @abi    () -> Tagged
 function u0:0(i64) -> i64 tail {
@@ -83,7 +83,7 @@ function u0:0(i64, i64, i64) -> i64 tail {
 }
 
 ; fn apply2_s16
-    ;   @spec   apply2(&fn7[]:(any) -> any, 21) -> _
+    ;   @spec   apply2(&fn7[]:(any) -> any, 21) -> int
     ;   @key    [&fn7[]:(any) -> any, 21]
     ;   @abi    (Tagged, RawInt) -> RawInt
 function u0:0(i64, i64, i64) -> i64 tail {
@@ -95,7 +95,7 @@ function u0:0(i64, i64, i64) -> i64 tail {
 }
 
 ; fn apply2_s17
-    ;   @spec   apply2(&fn8[]:(any) -> any, 7) -> _
+    ;   @spec   apply2(&fn8[]:(any) -> any, 7) -> int
     ;   @key    [&fn8[]:(any) -> any, 7]
     ;   @abi    (Tagged, RawInt) -> RawInt
 function u0:0(i64, i64, i64) -> i64 tail {
@@ -107,9 +107,9 @@ function u0:0(i64, i64, i64) -> i64 tail {
 }
 
 ; fn compose_s18
-    ;   @spec   compose(&fn7[]:(any) -> any, &fn8[]:(any) -> any, 5) -> _
+    ;   @spec   compose(&fn7[]:(any) -> any, &fn8[]:(any) -> any, 5) -> int
     ;   @key    [&fn7[]:(any) -> any, &fn8[]:(any) -> any, 5]
-    ;   @abi    (Tagged, Tagged, RawInt) -> Tagged
+    ;   @abi    (Tagged, Tagged, RawInt) -> RawInt
 function u0:0(i64, i64, i64, i64) -> i64 tail {
     sig0 = (i64, i64, i64) -> i64 tail
     sig1 = (i32) -> i64 system_v
@@ -137,7 +137,7 @@ function u0:0(i64, i64, i64, i64) -> i64 tail {
 }
 
 ; fn k_12_s19
-    ;   @spec   k_12(int, &fn7[]:(any) -> any, &fn8[]:(any) -> any, 5) -> _
+    ;   @spec   k_12(int, &fn7[]:(any) -> any, &fn8[]:(any) -> any, 5) -> int
     ;   @key    [int, &fn7[]:(any) -> any, &fn8[]:(any) -> any, 5]
     ;   @abi    (RawInt, Tagged, Tagged, RawInt) -> RawInt
 function u0:0(i64, i64) -> i64 tail {
@@ -157,7 +157,7 @@ function u0:0(i64, i64) -> i64 tail {
 }
 
 ; fn k_13_s20
-    ;   @spec   k_13(int) -> _
+    ;   @spec   k_13(int) -> nil
     ;   @key    [int]
     ;   @abi    (RawInt) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
@@ -189,7 +189,7 @@ function u0:0(i64, i64) -> i64 tail {
 }
 
 ; fn k_15_s21
-    ;   @spec   k_15(int) -> _
+    ;   @spec   k_15(int) -> nil
     ;   @key    [int]
     ;   @abi    (RawInt) -> Tagged
 function u0:0(i64, i64) -> i64 tail {

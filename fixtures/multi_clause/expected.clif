@@ -1,5 +1,5 @@
 ; fn main
-    ;   @spec   main() -> _
+    ;   @spec   main() -> nil
     ;   @key    []
     ;   @abi    () -> Tagged
 function u0:0(i64) -> i64 tail {
@@ -31,7 +31,7 @@ block2:
 }
 
 ; fn fact_s10
-    ;   @spec   fact(5) -> 1
+    ;   @spec   fact(5) -> int
     ;   @key    [5]
     ;   @abi    (RawInt) -> RawInt
 function u0:0(i64, i64) -> i64 tail {
@@ -144,7 +144,7 @@ function u0:0(i64, i64) -> i64 tail {
 }
 
 ; fn k_13_s14
-    ;   @spec   k_13(nil) -> _
+    ;   @spec   k_13(nil) -> nil
     ;   @key    [nil]
     ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
@@ -176,7 +176,7 @@ block2:
 }
 
 ; fn k_15
-    ;   @spec   k_15(nil) -> _
+    ;   @spec   k_15(nil) -> nil
     ;   @key    [nil]
     ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
@@ -208,7 +208,7 @@ block2:
 }
 
 ; fn k_17_s16
-    ;   @spec   k_17(nil) -> _
+    ;   @spec   k_17(nil) -> nil
     ;   @key    [nil]
     ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {

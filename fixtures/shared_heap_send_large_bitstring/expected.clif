@@ -1,5 +1,5 @@
 ; fn main
-    ;   @spec   main() -> _
+    ;   @spec   main() -> nil
     ;   @key    []
     ;   @abi    () -> Tagged
 function u0:0(i64) -> i64 tail {
@@ -72,7 +72,7 @@ block0(v0: i64, v1: i64):
 }
 
 ; fn fz_spawn_thunk
-    ;   @spec   fz_spawn_thunk(&fn9[vec(u8) | vec(bit)]:() -> any) -> _
+    ;   @spec   fz_spawn_thunk(&fn9[vec(u8) | vec(bit)]:() -> any) -> any
     ;   @key    [&fn9[vec(u8) | vec(bit)]:() -> any]
     ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {

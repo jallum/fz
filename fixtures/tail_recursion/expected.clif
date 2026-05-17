@@ -1,5 +1,5 @@
 ; fn main
-    ;   @spec   main() -> _
+    ;   @spec   main() -> nil
     ;   @key    []
     ;   @abi    () -> Tagged
 function u0:0(i64) -> i64 tail {
@@ -24,7 +24,7 @@ block0(v0: i64):
 }
 
 ; fn count_s9
-    ;   @spec   count(100000, 0) -> 0
+    ;   @spec   count(100000, 0) -> int
     ;   @key    [100000, 0]
     ;   @abi    (RawInt, RawInt) -> RawInt
 function u0:0(i64, i64, i64) -> i64 tail {

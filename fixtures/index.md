@@ -11,6 +11,7 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `apply2/` | first-class fns — pass a fn into another fn and call it | jit, interp, repl |
 | `ast_eval/` | tagged-tuple AST evaluator — first fixture to exercise multi-clause tuple-pattern dispatch end-to-end | jit, interp, aot, repl |
 | `attributes/` | @moduledoc / @doc attributes parse and the module still executes | jit, interp, repl |
+| `case_tuple_pattern_sequential/` | sequential calls returning tuple-pattern results (fz-i82 regression) | interp, jit, aot |
 | `classify_two_clause/` | literal-vs-wildcard clause dispatch (`0` and `_`) | jit, interp, repl |
 | `closure_typed_captures/` | fz-ul4.29.5 — closure dispatched via call_indirect through stub_fp | jit, interp, aot, repl |
 | `cold_fn/` | minimal call site — one fn definition, one call, no scaffolding | jit, interp, repl |

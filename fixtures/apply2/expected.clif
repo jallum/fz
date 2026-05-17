@@ -1,5 +1,5 @@
 ; fn main
-    ;   @spec   main() -> _
+    ;   @spec   main() -> nil
     ;   @key    []
     ;   @abi    () -> Tagged
 function u0:0(i64) -> i64 tail {
@@ -55,7 +55,7 @@ function u0:0(i64, i64, i64) -> i64 tail {
 }
 
 ; fn apply2_s13
-    ;   @spec   apply2(&fn7[]:(any) -> any, 21) -> _
+    ;   @spec   apply2(&fn7[]:(any) -> any, 21) -> int
     ;   @key    [&fn7[]:(any) -> any, 21]
     ;   @abi    (Tagged, RawInt) -> RawInt
 function u0:0(i64, i64, i64) -> i64 tail {
@@ -67,7 +67,7 @@ function u0:0(i64, i64, i64) -> i64 tail {
 }
 
 ; fn apply2_s14
-    ;   @spec   apply2(&fn8[]:(any) -> any, 7) -> _
+    ;   @spec   apply2(&fn8[]:(any) -> any, 7) -> int
     ;   @key    [&fn8[]:(any) -> any, 7]
     ;   @abi    (Tagged, RawInt) -> RawInt
 function u0:0(i64, i64, i64) -> i64 tail {
@@ -79,7 +79,7 @@ function u0:0(i64, i64, i64) -> i64 tail {
 }
 
 ; fn k_11_s15
-    ;   @spec   k_11(int) -> _
+    ;   @spec   k_11(int) -> nil
     ;   @key    [int]
     ;   @abi    (RawInt) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
