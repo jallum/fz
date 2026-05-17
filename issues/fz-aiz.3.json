@@ -5,7 +5,7 @@
     "fz-aiz.4"
   ],
   "created": "2026-05-17T16:04:29Z",
-  "description": "## Policy change\n\nToday (ir_typer.rs:238–242): *\"the any-key only exists when the fn is\nclosure-reachable, entry-seeded, or genuinely needs the opaque-dispatch\nfallback. Direct-call-only fns have no any-key.\"*\n\nFlip the policy: **every reachable FnId gets an any-key spec.** Symmetric for\nreachable conts: every cont fn gets an any-key entry in the same registry\n(slot 0 = `Descr::any()`, captures = `Descr::any()`).\n\nThis is the floor. Narrowed specs continue to land above it as pure\noptimization.\n\n## Implementation sketch\n\nIn `type_module`, after the existing reachability-driven spec generation, walk\n`module.fns` and:\n- for each `f` with at least one registered spec (i.e. reachable), if the\n  any-key (`vec![Descr::any(); arity]`) is not present, type `f` once more\n  with that key and register.\n- same for conts (`module.fns` includes conts; check by `kind` or by\n  `is_cont_fn`).\n\n`any_key_specs` index becomes total over reachable FnIds — currently partial.\n\n## Tests\n\n- Spec-table golden test: every reachable FnId in a fixture has an any-key entry.\n- Unit test: a fn called only with `int` still gets an any-key spec registered.\n- Existing `expected.specs` goldens get blessed with the new any-key entries.\n- Spec count must not regress wildly: assert `n_specs_after \u003c= 1.5 * n_specs_before` on `ast_eval` and `list_primitives` fixtures (sanity).\n\n## Independent of (1) and (2). Blocks (4).",
+  "description": "fz-aiz.3 — annotation-driven dispatch: the typer is the sole arbiter of\nwhich SpecId each call site dispatches to. Codegen reads annotations\ninstead of calling resolve(). Lands as a multi-step sub-arc:\n\n  3a: add IR annotation fields (callsite_sid / body_sid / resolved_sid)\n      on Term::Call, Term::TailCall, Term::TailCallClosure,\n      Term::CallClosure, Prim::MakeClosure. Initially None. No behavior.\n\n  3b: typer pass populates the annotations. Add debug-asserts in codegen\n      that the existing resolve() calls agree with the annotation. Matrix\n      green, asserts never fire.\n\n  3c: codegen reads annotations instead of resolve(), site by site,\n      asserts stay live as a safety net. Final commit in 3c removes\n      asserts.\n\n  3d: delete dangling patterns (tagged_return_fns, tagged_return_specs,\n      resolve_tcc_body, naturally_opaque on CodegenEnv, .29.11/.29.12.1\n      panics, or_else iter-find fallbacks, the skip-check at line 1914).\n\n  3e: NOW ensure_any_keys lands. Annotations already chose specs before\n      any-keys existed for direct-only fns; adding any-keys doesn't\n      perturb any decision. The data model split (naturally_opaque vs\n      total any_key_specs) becomes typer-internal only.\n\nBlocks fz-aiz.4.",
   "id": "fz-aiz.3",
   "labels": [],
   "parent": "fz-aiz",
@@ -19,5 +19,5 @@
   "status": "in_progress",
   "title": "fz-aiz.3: mandatory any-key spec for every reachable FnId + Cont",
   "type": "task",
-  "updated_at": "2026-05-17T16:48:57Z"
+  "updated_at": "2026-05-17T17:36:50Z"
 }
