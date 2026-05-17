@@ -1,6 +1,8 @@
 {
   "assignee": "Jason Allum",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-ul4.43.12"
+  ],
   "blocks": [
     "fz-ul4.43.7",
     "fz-ul4.43.8",
@@ -15,5 +17,5 @@
   "status": "in_progress",
   "title": "fz-ul4.43.D.1: matrix dispatch in lower_multi_clause",
   "type": "task",
-  "updated_at": "2026-05-17T13:05:15Z"
+  "updated_at": "2026-05-17T13:15:04Z"
 }
