@@ -9,9 +9,15 @@
   "id": "fz-ul4.43.4",
   "labels": [],
   "parent": "fz-ul4.43",
+  "comments": [
+    {
+      "text": "DEFERRED post-research. See fz-ul4.43.5 (D) for rationale: for typical atom/arity dispatch widths in fz fixtures (3-5 cases), br_table index-translation overhead exceeds chained-If savings. The structural win lives in matrix sharing (D/F/G/H), not in the IR primitive. Re-file as a future ticket once we have a fixture with ≥8-way dense dispatch that warrants br_table.",
+      "timestamp": "2026-05-17T12:41:34Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "fz-ul4.43.E.1: Term::Switch IR + interp + br_table codegen",
   "type": "task",
-  "updated_at": "2026-05-17T12:08:35Z"
+  "updated_at": "2026-05-17T12:41:34Z"
 }
