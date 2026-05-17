@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-ul4.39"
   ],
@@ -12,8 +12,8 @@
   "labels": [],
   "parent": "fz-ul4",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "typer: payoff-gated spec creation (drop narrowings that change nothing)",
   "type": "task",
-  "updated_at": "2026-05-17T10:21:48Z"
+  "updated_at": "2026-05-17T10:24:44Z"
 }
