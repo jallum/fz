@@ -42,6 +42,17 @@ fn fold_fn(f: &mut FnIr, types: &ModuleTypes) {
     let Some(fn_types) = best_fn_types(f, types) else {
         return;
     };
+    fold_fn_with_types(f, fn_types);
+}
+
+/// fz-ul4.43.B — per-spec fold entry point.
+///
+/// Codegen calls this on a cloned FnIr per spec, passing that spec's
+/// FnTypes directly, so each spec gets folded against its own narrowed
+/// env. Avoids `fold_fn`'s `best_fn_types` fallback which bails when
+/// multiple narrow specs exist — exactly the case where per-spec fold
+/// is most valuable.
+pub fn fold_fn_with_types(f: &mut FnIr, fn_types: &FnTypes) {
     for block in &mut f.blocks {
         for stmt in &mut block.stmts {
             let Stmt::Let(dest, prim) = stmt;
@@ -54,6 +65,11 @@ fn fold_fn(f: &mut FnIr, types: &ModuleTypes) {
             if let Prim::BinOp(..) = prim {
                 if let Some(n) = d.as_int_singleton() {
                     *stmt = Stmt::Let(*dest, Prim::Const(Const::Int(n)));
+                } else if d.is_subtype(&Descr::atom_lit("true")) {
+                    // fz-ul4.43.D.1 — BinOp::Eq/Neq result narrowed to :true.
+                    *stmt = Stmt::Let(*dest, Prim::Const(Const::True));
+                } else if d.is_subtype(&Descr::atom_lit("false")) {
+                    *stmt = Stmt::Let(*dest, Prim::Const(Const::False));
                 }
             } else if let Prim::TypeTest(..) = prim {
                 if d.is_subtype(&Descr::atom_lit("true")) {

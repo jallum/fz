@@ -8,26 +8,19 @@ function u0:0(i64) -> i64 tail {
     fn0 = u0:40 sig0
 
 block0(v0: i64):
-    v1 = iconst.i64 1                   ; @2:9
-    v2 = iconst.i64 2                   ; @2:14
-    v3 = iconst.i64 19                  ; @2:9
-    call fn0(v3)  ; v3 = 19
-    v4 = iconst.i64 1    ;; v4 :: 1
-    v5 = iconst.i64 1    ;; v5 :: 1
-    v6 = icmp eq v4, v5  ; v4 = 1, v5 = 1
-    v7 = iconst.i64 11
-    v8 = iconst.i64 19
-    v9 = select v6, v7, v8  ; v7 = 11, v8 = 19    ;; v9 :: :true
-    call fn0(v9)
-    v10 = iconst.i64 18    ;; v10 :: :ok
-    v11 = iconst.i64 26    ;; v11 :: :err
-    v12 = iconst.i64 19    ;; v12 :: bool
-    call fn0(v12)  ; v12 = 19
-    v13 = icmp eq v10, v10  ; v10 = 18, v10 = 18
-    v14 = select v13, v7, v8  ; v7 = 11, v8 = 19    ;; v14 :: bool
-    call fn0(v14)
-    v15 = iconst.i64 3    ;; v15 :: nil
-    v16 = load.i64 notrap aligned v0+16 ; @2:3
-    return_call_indirect sig1, v16(v15, v0) ; @2:3  v15 = 3
+    v1 = iconst.i64 19                  ; @2:9
+    call fn0(v1)                        ; @2:14  v1 = 19
+    v2 = iconst.i64 11                  ; @2:9
+    call fn0(v2)  ; v2 = 11
+    v3 = iconst.i64 18    ;; v3 :: :ok
+    v4 = iconst.i64 26    ;; v4 :: :err
+    v5 = iconst.i64 19    ;; v5 :: bool
+    call fn0(v5)  ; v5 = 19
+    v6 = icmp eq v3, v3  ; v3 = 18, v3 = 18
+    v7 = select v6, v2, v1  ; v2 = 11, v1 = 19    ;; v7 :: bool
+    call fn0(v7)
+    v8 = iconst.i64 3    ;; v8 :: nil
+    v9 = load.i64 notrap aligned v0+16  ; @2:3
+    return_call_indirect sig1, v9(v8, v0) ; @2:3  v8 = 3
 }
 

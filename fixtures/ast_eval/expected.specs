@@ -5,14 +5,14 @@
 ;     Var(0) :: 42
 ;     Var(1) :: :function_clause
 ;     Var(2) :: :true
-;     Var(3) :: nil
-;     Var(4) :: nil
 ;   exits:
-;     blk0 Goto blk1()
-;     blk1 If Var(2) ? blk4 : blk2
-;     blk2 Return Var(4)    :: nil
-;     blk3 Halt Var(1)      :: :function_clause
-;     blk4 Return Var(3)    :: nil
+;     blk0 Goto blk2()
+;     blk1 Halt Var(1)      :: :function_clause
+;     blk2 If Var(2) ? blk4 : blk3
+;     blk3 TailCall fn_clause_1#8(Var(0))
+;              callee_key=[42]
+;     blk4 TailCall fn_clause_0#7(Var(0))
+;              callee_key=[42]
 
 ; spec print(1) #fn=0
 ;   key:    [int]
@@ -21,206 +21,43 @@
 ;     Var(0) :: int
 ;     Var(1) :: :function_clause
 ;     Var(2) :: :true
-;     Var(3) :: nil
-;     Var(4) :: nil
 ;   exits:
-;     blk0 Goto blk1()
-;     blk1 If Var(2) ? blk4 : blk2
-;     blk2 Return Var(4)    :: nil
-;     blk3 Halt Var(1)      :: :function_clause
-;     blk4 Return Var(3)    :: nil
+;     blk0 Goto blk2()
+;     blk1 Halt Var(1)      :: :function_clause
+;     blk2 If Var(2) ? blk4 : blk3
+;     blk3 TailCall fn_clause_1#8(Var(0))
+;              callee_key=[int]
+;     blk4 TailCall fn_clause_0#7(Var(0))
+;              callee_key=[int]
 
-; spec eval(1) #fn=7
-;   key:    [1]
-;   return: none
-;   vars:
-;     Var(0) :: 1
-;     Var(1) :: :function_clause
-;     Var(2) :: :false
-;     Var(3) :: any
-;     Var(4) :: :num
-;     Var(5) :: bool
-;     Var(6) :: any
-;     Var(7) :: :false
-;     Var(8) :: any
-;     Var(9) :: :add
-;     Var(10) :: bool
-;     Var(11) :: any
-;     Var(12) :: any
-;     Var(13) :: :false
-;     Var(14) :: any
-;     Var(15) :: :mul
-;     Var(16) :: bool
-;     Var(17) :: any
-;     Var(18) :: any
-;   exits:
-;     blk0 Goto blk1()
-;     blk1 If Var(2) ? blk5 : blk2
-;     blk2 If Var(7) ? blk7 : blk3
-;     blk3 If Var(13) ? blk9 : blk4
-;     blk4 Halt Var(1)      :: :function_clause
-;     blk5 If Var(5) ? blk6 : blk2
-;     blk6 Return Var(6)    :: any
-;     blk7 If Var(10) ? blk8 : blk3
-;     blk8 TailCall fn_clause_1#9(Var(11), Var(12))
-;              callee_key=[any, any]
-;     blk9 If Var(16) ? blk10 : blk4
-;     blk10 TailCall fn_clause_2#10(Var(17), Var(18))
-;              callee_key=[any, any]
-
-; spec eval(1) #fn=7
-;   key:    [2]
-;   return: none
-;   vars:
-;     Var(0) :: 2
-;     Var(1) :: :function_clause
-;     Var(2) :: :false
-;     Var(3) :: any
-;     Var(4) :: :num
-;     Var(5) :: bool
-;     Var(6) :: any
-;     Var(7) :: :false
-;     Var(8) :: any
-;     Var(9) :: :add
-;     Var(10) :: bool
-;     Var(11) :: any
-;     Var(12) :: any
-;     Var(13) :: :false
-;     Var(14) :: any
-;     Var(15) :: :mul
-;     Var(16) :: bool
-;     Var(17) :: any
-;     Var(18) :: any
-;   exits:
-;     blk0 Goto blk1()
-;     blk1 If Var(2) ? blk5 : blk2
-;     blk2 If Var(7) ? blk7 : blk3
-;     blk3 If Var(13) ? blk9 : blk4
-;     blk4 Halt Var(1)      :: :function_clause
-;     blk5 If Var(5) ? blk6 : blk2
-;     blk6 Return Var(6)    :: any
-;     blk7 If Var(10) ? blk8 : blk3
-;     blk8 TailCall fn_clause_1#9(Var(11), Var(12))
-;              callee_key=[any, any]
-;     blk9 If Var(16) ? blk10 : blk4
-;     blk10 TailCall fn_clause_2#10(Var(17), Var(18))
-;              callee_key=[any, any]
-
-; spec eval(1) #fn=7
-;   key:    [3]
-;   return: none
-;   vars:
-;     Var(0) :: 3
-;     Var(1) :: :function_clause
-;     Var(2) :: :false
-;     Var(3) :: any
-;     Var(4) :: :num
-;     Var(5) :: bool
-;     Var(6) :: any
-;     Var(7) :: :false
-;     Var(8) :: any
-;     Var(9) :: :add
-;     Var(10) :: bool
-;     Var(11) :: any
-;     Var(12) :: any
-;     Var(13) :: :false
-;     Var(14) :: any
-;     Var(15) :: :mul
-;     Var(16) :: bool
-;     Var(17) :: any
-;     Var(18) :: any
-;   exits:
-;     blk0 Goto blk1()
-;     blk1 If Var(2) ? blk5 : blk2
-;     blk2 If Var(7) ? blk7 : blk3
-;     blk3 If Var(13) ? blk9 : blk4
-;     blk4 Halt Var(1)      :: :function_clause
-;     blk5 If Var(5) ? blk6 : blk2
-;     blk6 Return Var(6)    :: any
-;     blk7 If Var(10) ? blk8 : blk3
-;     blk8 TailCall fn_clause_1#9(Var(11), Var(12))
-;              callee_key=[any, any]
-;     blk9 If Var(16) ? blk10 : blk4
-;     blk10 TailCall fn_clause_2#10(Var(17), Var(18))
-;              callee_key=[any, any]
-
-; spec eval(1) #fn=7
+; spec fn_clause_0(1) #fn=7
 ;   key:    [42]
-;   return: none
+;   return: nil
 ;   vars:
 ;     Var(0) :: 42
-;     Var(1) :: :function_clause
-;     Var(2) :: :false
-;     Var(3) :: any
-;     Var(4) :: :num
-;     Var(5) :: bool
-;     Var(6) :: any
-;     Var(7) :: :false
-;     Var(8) :: any
-;     Var(9) :: :add
-;     Var(10) :: bool
-;     Var(11) :: any
-;     Var(12) :: any
-;     Var(13) :: :false
-;     Var(14) :: any
-;     Var(15) :: :mul
-;     Var(16) :: bool
-;     Var(17) :: any
-;     Var(18) :: any
+;     Var(1) :: nil
 ;   exits:
-;     blk0 Goto blk1()
-;     blk1 If Var(2) ? blk5 : blk2
-;     blk2 If Var(7) ? blk7 : blk3
-;     blk3 If Var(13) ? blk9 : blk4
-;     blk4 Halt Var(1)      :: :function_clause
-;     blk5 If Var(5) ? blk6 : blk2
-;     blk6 Return Var(6)    :: any
-;     blk7 If Var(10) ? blk8 : blk3
-;     blk8 TailCall fn_clause_1#9(Var(11), Var(12))
-;              callee_key=[any, any]
-;     blk9 If Var(16) ? blk10 : blk4
-;     blk10 TailCall fn_clause_2#10(Var(17), Var(18))
-;              callee_key=[any, any]
+;     blk0 Return Var(1)    :: nil
 
-; spec eval(1) #fn=7
-;   key:    [4]
-;   return: none
+; spec fn_clause_0(1) #fn=7
+;   key:    [int]
+;   return: nil
 ;   vars:
-;     Var(0) :: 4
-;     Var(1) :: :function_clause
-;     Var(2) :: :false
-;     Var(3) :: any
-;     Var(4) :: :num
-;     Var(5) :: bool
-;     Var(6) :: any
-;     Var(7) :: :false
-;     Var(8) :: any
-;     Var(9) :: :add
-;     Var(10) :: bool
-;     Var(11) :: any
-;     Var(12) :: any
-;     Var(13) :: :false
-;     Var(14) :: any
-;     Var(15) :: :mul
-;     Var(16) :: bool
-;     Var(17) :: any
-;     Var(18) :: any
+;     Var(0) :: int
+;     Var(1) :: nil
 ;   exits:
-;     blk0 Goto blk1()
-;     blk1 If Var(2) ? blk5 : blk2
-;     blk2 If Var(7) ? blk7 : blk3
-;     blk3 If Var(13) ? blk9 : blk4
-;     blk4 Halt Var(1)      :: :function_clause
-;     blk5 If Var(5) ? blk6 : blk2
-;     blk6 Return Var(6)    :: any
-;     blk7 If Var(10) ? blk8 : blk3
-;     blk8 TailCall fn_clause_1#9(Var(11), Var(12))
-;              callee_key=[any, any]
-;     blk9 If Var(16) ? blk10 : blk4
-;     blk10 TailCall fn_clause_2#10(Var(17), Var(18))
-;              callee_key=[any, any]
+;     blk0 Return Var(1)    :: nil
 
-; spec eval(1) #fn=7
+; spec fn_clause_1(1) #fn=8
+;   key:    [any]
+;   return: nil
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: nil
+;   exits:
+;     blk0 Return Var(1)    :: nil
+
+; spec eval(1) #fn=11
 ;   key:    [any]
 ;   return: any
 ;   vars:
@@ -228,227 +65,221 @@
 ;     Var(1) :: :function_clause
 ;     Var(2) :: bool
 ;     Var(3) :: any
-;     Var(4) :: :num
-;     Var(5) :: bool
-;     Var(6) :: any
+;     Var(4) :: any
+;     Var(5) :: :num
+;     Var(6) :: bool
 ;     Var(7) :: bool
 ;     Var(8) :: any
-;     Var(9) :: :add
-;     Var(10) :: bool
-;     Var(11) :: any
-;     Var(12) :: any
-;     Var(13) :: bool
-;     Var(14) :: any
-;     Var(15) :: :mul
-;     Var(16) :: bool
-;     Var(17) :: any
-;     Var(18) :: any
+;     Var(9) :: any
+;     Var(10) :: any
+;     Var(11) :: :add
+;     Var(12) :: bool
+;     Var(13) :: :mul
+;     Var(14) :: bool
 ;   exits:
-;     blk0 Goto blk1()
-;     blk1 If Var(2) ? blk5 : blk2
-;     blk2 If Var(7) ? blk7 : blk3
-;     blk3 If Var(13) ? blk9 : blk4
-;     blk4 Halt Var(1)      :: :function_clause
-;     blk5 If Var(5) ? blk6 : blk2
-;     blk6 Return Var(6)    :: any
-;     blk7 If Var(10) ? blk8 : blk3
-;     blk8 TailCall fn_clause_1#9(Var(11), Var(12))
+;     blk0 Goto blk2()
+;     blk1 Halt Var(1)      :: :function_clause
+;     blk2 If Var(2) ? blk3 : blk4
+;     blk3 If Var(6) ? blk5 : blk6
+;     blk4 If Var(7) ? blk7 : blk8
+;     blk5 TailCall fn_clause_0#13(Var(4))
+;              callee_key=[any]
+;     blk6 Goto blk1()
+;     blk7 If Var(12) ? blk9 : blk10
+;     blk8 Goto blk1()
+;     blk9 TailCall fn_clause_1#14(Var(9), Var(10))
 ;              callee_key=[any, any]
-;     blk9 If Var(16) ? blk10 : blk4
-;     blk10 TailCall fn_clause_2#10(Var(17), Var(18))
+;     blk10 If Var(14) ? blk11 : blk12
+;     blk11 TailCall fn_clause_2#15(Var(9), Var(10))
 ;              callee_key=[any, any]
+;     blk12 Goto blk1()
 
-; spec eval(1) #fn=7
+; spec eval(1) #fn=11
 ;   key:    [{:add, {:num, 1}, {:num, 2}}]
 ;   return: int
 ;   vars:
 ;     Var(0) :: {:add, {:num, 1}, {:num, 2}}
 ;     Var(1) :: :function_clause
 ;     Var(2) :: :false
-;     Var(3) :: :add
-;     Var(4) :: :num
-;     Var(5) :: bool
-;     Var(6) :: {:num, 1}
+;     Var(3) :: any
+;     Var(4) :: any
+;     Var(5) :: :num
+;     Var(6) :: bool
 ;     Var(7) :: :true
 ;     Var(8) :: :add
-;     Var(9) :: :add
-;     Var(10) :: bool
-;     Var(11) :: {:num, 1}
-;     Var(12) :: {:num, 2}
-;     Var(13) :: :true
-;     Var(14) :: :add
-;     Var(15) :: :mul
-;     Var(16) :: bool
-;     Var(17) :: {:num, 1}
-;     Var(18) :: {:num, 2}
+;     Var(9) :: {:num, 1}
+;     Var(10) :: {:num, 2}
+;     Var(11) :: :add
+;     Var(12) :: bool
+;     Var(13) :: :mul
+;     Var(14) :: bool
 ;   exits:
-;     blk0 Goto blk1()
-;     blk1 If Var(2) ? blk5 : blk2
-;     blk2 If Var(7) ? blk7 : blk3
-;     blk3 If Var(13) ? blk9 : blk4
-;     blk4 Halt Var(1)      :: :function_clause
-;     blk5 If Var(5) ? blk6 : blk2
-;     blk6 Return Var(6)    :: {:num, 1}
-;     blk7 If Var(10) ? blk8 : blk3
-;     blk8 TailCall fn_clause_1#9(Var(11), Var(12))
+;     blk0 Goto blk2()
+;     blk1 Halt Var(1)      :: :function_clause
+;     blk2 If Var(2) ? blk3 : blk4
+;     blk3 If Var(6) ? blk5 : blk6
+;     blk4 If Var(7) ? blk7 : blk8
+;     blk5 TailCall fn_clause_0#13(Var(4))
+;              callee_key=[any]
+;     blk6 Goto blk1()
+;     blk7 If Var(12) ? blk9 : blk10
+;     blk8 Goto blk1()
+;     blk9 TailCall fn_clause_1#14(Var(9), Var(10))
 ;              callee_key=[{:num, 1}, {:num, 2}]
-;     blk9 If Var(16) ? blk10 : blk4
-;     blk10 TailCall fn_clause_2#10(Var(17), Var(18))
+;     blk10 If Var(14) ? blk11 : blk12
+;     blk11 TailCall fn_clause_2#15(Var(9), Var(10))
 ;              callee_key=[{:num, 1}, {:num, 2}]
+;     blk12 Goto blk1()
 
-; spec eval(1) #fn=7
+; spec eval(1) #fn=11
 ;   key:    [{:add, {:num, 2}, {:mul, {:num, 3}, {:num, 4}}}]
 ;   return: int
 ;   vars:
 ;     Var(0) :: {:add, {:num, 2}, {:mul, {:num, 3}, {:num, 4}}}
 ;     Var(1) :: :function_clause
 ;     Var(2) :: :false
-;     Var(3) :: :add
-;     Var(4) :: :num
-;     Var(5) :: bool
-;     Var(6) :: {:num, 2}
+;     Var(3) :: any
+;     Var(4) :: any
+;     Var(5) :: :num
+;     Var(6) :: bool
 ;     Var(7) :: :true
 ;     Var(8) :: :add
-;     Var(9) :: :add
-;     Var(10) :: bool
-;     Var(11) :: {:num, 2}
-;     Var(12) :: {:mul, {:num, 3}, {:num, 4}}
-;     Var(13) :: :true
-;     Var(14) :: :add
-;     Var(15) :: :mul
-;     Var(16) :: bool
-;     Var(17) :: {:num, 2}
-;     Var(18) :: {:mul, {:num, 3}, {:num, 4}}
+;     Var(9) :: {:num, 2}
+;     Var(10) :: {:mul, {:num, 3}, {:num, 4}}
+;     Var(11) :: :add
+;     Var(12) :: bool
+;     Var(13) :: :mul
+;     Var(14) :: bool
 ;   exits:
-;     blk0 Goto blk1()
-;     blk1 If Var(2) ? blk5 : blk2
-;     blk2 If Var(7) ? blk7 : blk3
-;     blk3 If Var(13) ? blk9 : blk4
-;     blk4 Halt Var(1)      :: :function_clause
-;     blk5 If Var(5) ? blk6 : blk2
-;     blk6 Return Var(6)    :: {:num, 2}
-;     blk7 If Var(10) ? blk8 : blk3
-;     blk8 TailCall fn_clause_1#9(Var(11), Var(12))
+;     blk0 Goto blk2()
+;     blk1 Halt Var(1)      :: :function_clause
+;     blk2 If Var(2) ? blk3 : blk4
+;     blk3 If Var(6) ? blk5 : blk6
+;     blk4 If Var(7) ? blk7 : blk8
+;     blk5 TailCall fn_clause_0#13(Var(4))
+;              callee_key=[any]
+;     blk6 Goto blk1()
+;     blk7 If Var(12) ? blk9 : blk10
+;     blk8 Goto blk1()
+;     blk9 TailCall fn_clause_1#14(Var(9), Var(10))
 ;              callee_key=[{:num, 2}, {:mul, {:num, 3}, {:num, 4}}]
-;     blk9 If Var(16) ? blk10 : blk4
-;     blk10 TailCall fn_clause_2#10(Var(17), Var(18))
+;     blk10 If Var(14) ? blk11 : blk12
+;     blk11 TailCall fn_clause_2#15(Var(9), Var(10))
 ;              callee_key=[{:num, 2}, {:mul, {:num, 3}, {:num, 4}}]
+;     blk12 Goto blk1()
 
-; spec eval(1) #fn=7
+; spec eval(1) #fn=11
 ;   key:    [{:add, {:num, 3}, {:num, 4}}]
 ;   return: int
 ;   vars:
 ;     Var(0) :: {:add, {:num, 3}, {:num, 4}}
 ;     Var(1) :: :function_clause
 ;     Var(2) :: :false
-;     Var(3) :: :add
-;     Var(4) :: :num
-;     Var(5) :: bool
-;     Var(6) :: {:num, 3}
+;     Var(3) :: any
+;     Var(4) :: any
+;     Var(5) :: :num
+;     Var(6) :: bool
 ;     Var(7) :: :true
 ;     Var(8) :: :add
-;     Var(9) :: :add
-;     Var(10) :: bool
-;     Var(11) :: {:num, 3}
-;     Var(12) :: {:num, 4}
-;     Var(13) :: :true
-;     Var(14) :: :add
-;     Var(15) :: :mul
-;     Var(16) :: bool
-;     Var(17) :: {:num, 3}
-;     Var(18) :: {:num, 4}
+;     Var(9) :: {:num, 3}
+;     Var(10) :: {:num, 4}
+;     Var(11) :: :add
+;     Var(12) :: bool
+;     Var(13) :: :mul
+;     Var(14) :: bool
 ;   exits:
-;     blk0 Goto blk1()
-;     blk1 If Var(2) ? blk5 : blk2
-;     blk2 If Var(7) ? blk7 : blk3
-;     blk3 If Var(13) ? blk9 : blk4
-;     blk4 Halt Var(1)      :: :function_clause
-;     blk5 If Var(5) ? blk6 : blk2
-;     blk6 Return Var(6)    :: {:num, 3}
-;     blk7 If Var(10) ? blk8 : blk3
-;     blk8 TailCall fn_clause_1#9(Var(11), Var(12))
+;     blk0 Goto blk2()
+;     blk1 Halt Var(1)      :: :function_clause
+;     blk2 If Var(2) ? blk3 : blk4
+;     blk3 If Var(6) ? blk5 : blk6
+;     blk4 If Var(7) ? blk7 : blk8
+;     blk5 TailCall fn_clause_0#13(Var(4))
+;              callee_key=[any]
+;     blk6 Goto blk1()
+;     blk7 If Var(12) ? blk9 : blk10
+;     blk8 Goto blk1()
+;     blk9 TailCall fn_clause_1#14(Var(9), Var(10))
 ;              callee_key=[{:num, 3}, {:num, 4}]
-;     blk9 If Var(16) ? blk10 : blk4
-;     blk10 TailCall fn_clause_2#10(Var(17), Var(18))
+;     blk10 If Var(14) ? blk11 : blk12
+;     blk11 TailCall fn_clause_2#15(Var(9), Var(10))
 ;              callee_key=[{:num, 3}, {:num, 4}]
+;     blk12 Goto blk1()
 
-; spec eval(1) #fn=7
+; spec eval(1) #fn=11
 ;   key:    [{:mul, {:add, {:num, 1}, {:num, 2}}, {:add, {:num, 3}, {:num, 4}}}]
 ;   return: int
 ;   vars:
 ;     Var(0) :: {:mul, {:add, {:num, 1}, {:num, 2}}, {:add, {:num, 3}, {:num, 4}}}
 ;     Var(1) :: :function_clause
 ;     Var(2) :: :false
-;     Var(3) :: :mul
-;     Var(4) :: :num
-;     Var(5) :: bool
-;     Var(6) :: {:add, {:num, 1}, {:num, 2}}
+;     Var(3) :: any
+;     Var(4) :: any
+;     Var(5) :: :num
+;     Var(6) :: bool
 ;     Var(7) :: :true
 ;     Var(8) :: :mul
-;     Var(9) :: :add
-;     Var(10) :: bool
-;     Var(11) :: {:add, {:num, 1}, {:num, 2}}
-;     Var(12) :: {:add, {:num, 3}, {:num, 4}}
-;     Var(13) :: :true
-;     Var(14) :: :mul
-;     Var(15) :: :mul
-;     Var(16) :: bool
-;     Var(17) :: {:add, {:num, 1}, {:num, 2}}
-;     Var(18) :: {:add, {:num, 3}, {:num, 4}}
+;     Var(9) :: {:add, {:num, 1}, {:num, 2}}
+;     Var(10) :: {:add, {:num, 3}, {:num, 4}}
+;     Var(11) :: :add
+;     Var(12) :: bool
+;     Var(13) :: :mul
+;     Var(14) :: bool
 ;   exits:
-;     blk0 Goto blk1()
-;     blk1 If Var(2) ? blk5 : blk2
-;     blk2 If Var(7) ? blk7 : blk3
-;     blk3 If Var(13) ? blk9 : blk4
-;     blk4 Halt Var(1)      :: :function_clause
-;     blk5 If Var(5) ? blk6 : blk2
-;     blk6 Return Var(6)    :: {:add, {:num, 1}, {:num, 2}}
-;     blk7 If Var(10) ? blk8 : blk3
-;     blk8 TailCall fn_clause_1#9(Var(11), Var(12))
+;     blk0 Goto blk2()
+;     blk1 Halt Var(1)      :: :function_clause
+;     blk2 If Var(2) ? blk3 : blk4
+;     blk3 If Var(6) ? blk5 : blk6
+;     blk4 If Var(7) ? blk7 : blk8
+;     blk5 TailCall fn_clause_0#13(Var(4))
+;              callee_key=[any]
+;     blk6 Goto blk1()
+;     blk7 If Var(12) ? blk9 : blk10
+;     blk8 Goto blk1()
+;     blk9 TailCall fn_clause_1#14(Var(9), Var(10))
 ;              callee_key=[{:add, {:num, 1}, {:num, 2}}, {:add, {:num, 3}, {:num, 4}}]
-;     blk9 If Var(16) ? blk10 : blk4
-;     blk10 TailCall fn_clause_2#10(Var(17), Var(18))
+;     blk10 If Var(14) ? blk11 : blk12
+;     blk11 TailCall fn_clause_2#15(Var(9), Var(10))
 ;              callee_key=[{:add, {:num, 1}, {:num, 2}}, {:add, {:num, 3}, {:num, 4}}]
+;     blk12 Goto blk1()
 
-; spec eval(1) #fn=7
+; spec eval(1) #fn=11
 ;   key:    [{:mul, {:num, 3}, {:num, 4}}]
 ;   return: int
 ;   vars:
 ;     Var(0) :: {:mul, {:num, 3}, {:num, 4}}
 ;     Var(1) :: :function_clause
 ;     Var(2) :: :false
-;     Var(3) :: :mul
-;     Var(4) :: :num
-;     Var(5) :: bool
-;     Var(6) :: {:num, 3}
+;     Var(3) :: any
+;     Var(4) :: any
+;     Var(5) :: :num
+;     Var(6) :: bool
 ;     Var(7) :: :true
 ;     Var(8) :: :mul
-;     Var(9) :: :add
-;     Var(10) :: bool
-;     Var(11) :: {:num, 3}
-;     Var(12) :: {:num, 4}
-;     Var(13) :: :true
-;     Var(14) :: :mul
-;     Var(15) :: :mul
-;     Var(16) :: bool
-;     Var(17) :: {:num, 3}
-;     Var(18) :: {:num, 4}
+;     Var(9) :: {:num, 3}
+;     Var(10) :: {:num, 4}
+;     Var(11) :: :add
+;     Var(12) :: bool
+;     Var(13) :: :mul
+;     Var(14) :: bool
 ;   exits:
-;     blk0 Goto blk1()
-;     blk1 If Var(2) ? blk5 : blk2
-;     blk2 If Var(7) ? blk7 : blk3
-;     blk3 If Var(13) ? blk9 : blk4
-;     blk4 Halt Var(1)      :: :function_clause
-;     blk5 If Var(5) ? blk6 : blk2
-;     blk6 Return Var(6)    :: {:num, 3}
-;     blk7 If Var(10) ? blk8 : blk3
-;     blk8 TailCall fn_clause_1#9(Var(11), Var(12))
+;     blk0 Goto blk2()
+;     blk1 Halt Var(1)      :: :function_clause
+;     blk2 If Var(2) ? blk3 : blk4
+;     blk3 If Var(6) ? blk5 : blk6
+;     blk4 If Var(7) ? blk7 : blk8
+;     blk5 TailCall fn_clause_0#13(Var(4))
+;              callee_key=[any]
+;     blk6 Goto blk1()
+;     blk7 If Var(12) ? blk9 : blk10
+;     blk8 Goto blk1()
+;     blk9 TailCall fn_clause_1#14(Var(9), Var(10))
 ;              callee_key=[{:num, 3}, {:num, 4}]
-;     blk9 If Var(16) ? blk10 : blk4
-;     blk10 TailCall fn_clause_2#10(Var(17), Var(18))
+;     blk10 If Var(14) ? blk11 : blk12
+;     blk11 TailCall fn_clause_2#15(Var(9), Var(10))
 ;              callee_key=[{:num, 3}, {:num, 4}]
+;     blk12 Goto blk1()
 
-; spec eval(1) #fn=7
+; spec eval(1) #fn=11
 ;   key:    [{:num, 1}]
 ;   return: 1
 ;   vars:
@@ -456,37 +287,36 @@
 ;     Var(1) :: :function_clause
 ;     Var(2) :: :true
 ;     Var(3) :: :num
-;     Var(4) :: :num
-;     Var(5) :: bool
-;     Var(6) :: 1
-;     Var(7) :: :false
-;     Var(8) :: :num
-;     Var(9) :: :add
-;     Var(10) :: bool
-;     Var(11) :: 1
-;     Var(12) :: any
-;     Var(13) :: :false
-;     Var(14) :: :num
-;     Var(15) :: :mul
-;     Var(16) :: bool
-;     Var(17) :: 1
-;     Var(18) :: any
+;     Var(4) :: 1
+;     Var(5) :: :num
+;     Var(6) :: bool
+;     Var(7) :: bool
+;     Var(8) :: any
+;     Var(9) :: any
+;     Var(10) :: any
+;     Var(11) :: :add
+;     Var(12) :: bool
+;     Var(13) :: :mul
+;     Var(14) :: bool
 ;   exits:
-;     blk0 Goto blk1()
-;     blk1 If Var(2) ? blk5 : blk2
-;     blk2 If Var(7) ? blk7 : blk3
-;     blk3 If Var(13) ? blk9 : blk4
-;     blk4 Halt Var(1)      :: :function_clause
-;     blk5 If Var(5) ? blk6 : blk2
-;     blk6 Return Var(6)    :: 1
-;     blk7 If Var(10) ? blk8 : blk3
-;     blk8 TailCall fn_clause_1#9(Var(11), Var(12))
-;              callee_key=[1, any]
-;     blk9 If Var(16) ? blk10 : blk4
-;     blk10 TailCall fn_clause_2#10(Var(17), Var(18))
-;              callee_key=[1, any]
+;     blk0 Goto blk2()
+;     blk1 Halt Var(1)      :: :function_clause
+;     blk2 If Var(2) ? blk3 : blk4
+;     blk3 If Var(6) ? blk5 : blk6
+;     blk4 If Var(7) ? blk7 : blk8
+;     blk5 TailCall fn_clause_0#13(Var(4))
+;              callee_key=[1]
+;     blk6 Goto blk1()
+;     blk7 If Var(12) ? blk9 : blk10
+;     blk8 Goto blk1()
+;     blk9 TailCall fn_clause_1#14(Var(9), Var(10))
+;              callee_key=[any, any]
+;     blk10 If Var(14) ? blk11 : blk12
+;     blk11 TailCall fn_clause_2#15(Var(9), Var(10))
+;              callee_key=[any, any]
+;     blk12 Goto blk1()
 
-; spec eval(1) #fn=7
+; spec eval(1) #fn=11
 ;   key:    [{:num, 2}]
 ;   return: 2
 ;   vars:
@@ -494,37 +324,36 @@
 ;     Var(1) :: :function_clause
 ;     Var(2) :: :true
 ;     Var(3) :: :num
-;     Var(4) :: :num
-;     Var(5) :: bool
-;     Var(6) :: 2
-;     Var(7) :: :false
-;     Var(8) :: :num
-;     Var(9) :: :add
-;     Var(10) :: bool
-;     Var(11) :: 2
-;     Var(12) :: any
-;     Var(13) :: :false
-;     Var(14) :: :num
-;     Var(15) :: :mul
-;     Var(16) :: bool
-;     Var(17) :: 2
-;     Var(18) :: any
+;     Var(4) :: 2
+;     Var(5) :: :num
+;     Var(6) :: bool
+;     Var(7) :: bool
+;     Var(8) :: any
+;     Var(9) :: any
+;     Var(10) :: any
+;     Var(11) :: :add
+;     Var(12) :: bool
+;     Var(13) :: :mul
+;     Var(14) :: bool
 ;   exits:
-;     blk0 Goto blk1()
-;     blk1 If Var(2) ? blk5 : blk2
-;     blk2 If Var(7) ? blk7 : blk3
-;     blk3 If Var(13) ? blk9 : blk4
-;     blk4 Halt Var(1)      :: :function_clause
-;     blk5 If Var(5) ? blk6 : blk2
-;     blk6 Return Var(6)    :: 2
-;     blk7 If Var(10) ? blk8 : blk3
-;     blk8 TailCall fn_clause_1#9(Var(11), Var(12))
-;              callee_key=[2, any]
-;     blk9 If Var(16) ? blk10 : blk4
-;     blk10 TailCall fn_clause_2#10(Var(17), Var(18))
-;              callee_key=[2, any]
+;     blk0 Goto blk2()
+;     blk1 Halt Var(1)      :: :function_clause
+;     blk2 If Var(2) ? blk3 : blk4
+;     blk3 If Var(6) ? blk5 : blk6
+;     blk4 If Var(7) ? blk7 : blk8
+;     blk5 TailCall fn_clause_0#13(Var(4))
+;              callee_key=[2]
+;     blk6 Goto blk1()
+;     blk7 If Var(12) ? blk9 : blk10
+;     blk8 Goto blk1()
+;     blk9 TailCall fn_clause_1#14(Var(9), Var(10))
+;              callee_key=[any, any]
+;     blk10 If Var(14) ? blk11 : blk12
+;     blk11 TailCall fn_clause_2#15(Var(9), Var(10))
+;              callee_key=[any, any]
+;     blk12 Goto blk1()
 
-; spec eval(1) #fn=7
+; spec eval(1) #fn=11
 ;   key:    [{:num, 3}]
 ;   return: 3
 ;   vars:
@@ -532,37 +361,36 @@
 ;     Var(1) :: :function_clause
 ;     Var(2) :: :true
 ;     Var(3) :: :num
-;     Var(4) :: :num
-;     Var(5) :: bool
-;     Var(6) :: 3
-;     Var(7) :: :false
-;     Var(8) :: :num
-;     Var(9) :: :add
-;     Var(10) :: bool
-;     Var(11) :: 3
-;     Var(12) :: any
-;     Var(13) :: :false
-;     Var(14) :: :num
-;     Var(15) :: :mul
-;     Var(16) :: bool
-;     Var(17) :: 3
-;     Var(18) :: any
+;     Var(4) :: 3
+;     Var(5) :: :num
+;     Var(6) :: bool
+;     Var(7) :: bool
+;     Var(8) :: any
+;     Var(9) :: any
+;     Var(10) :: any
+;     Var(11) :: :add
+;     Var(12) :: bool
+;     Var(13) :: :mul
+;     Var(14) :: bool
 ;   exits:
-;     blk0 Goto blk1()
-;     blk1 If Var(2) ? blk5 : blk2
-;     blk2 If Var(7) ? blk7 : blk3
-;     blk3 If Var(13) ? blk9 : blk4
-;     blk4 Halt Var(1)      :: :function_clause
-;     blk5 If Var(5) ? blk6 : blk2
-;     blk6 Return Var(6)    :: 3
-;     blk7 If Var(10) ? blk8 : blk3
-;     blk8 TailCall fn_clause_1#9(Var(11), Var(12))
-;              callee_key=[3, any]
-;     blk9 If Var(16) ? blk10 : blk4
-;     blk10 TailCall fn_clause_2#10(Var(17), Var(18))
-;              callee_key=[3, any]
+;     blk0 Goto blk2()
+;     blk1 Halt Var(1)      :: :function_clause
+;     blk2 If Var(2) ? blk3 : blk4
+;     blk3 If Var(6) ? blk5 : blk6
+;     blk4 If Var(7) ? blk7 : blk8
+;     blk5 TailCall fn_clause_0#13(Var(4))
+;              callee_key=[3]
+;     blk6 Goto blk1()
+;     blk7 If Var(12) ? blk9 : blk10
+;     blk8 Goto blk1()
+;     blk9 TailCall fn_clause_1#14(Var(9), Var(10))
+;              callee_key=[any, any]
+;     blk10 If Var(14) ? blk11 : blk12
+;     blk11 TailCall fn_clause_2#15(Var(9), Var(10))
+;              callee_key=[any, any]
+;     blk12 Goto blk1()
 
-; spec eval(1) #fn=7
+; spec eval(1) #fn=11
 ;   key:    [{:num, 42}]
 ;   return: 42
 ;   vars:
@@ -570,37 +398,36 @@
 ;     Var(1) :: :function_clause
 ;     Var(2) :: :true
 ;     Var(3) :: :num
-;     Var(4) :: :num
-;     Var(5) :: bool
-;     Var(6) :: 42
-;     Var(7) :: :false
-;     Var(8) :: :num
-;     Var(9) :: :add
-;     Var(10) :: bool
-;     Var(11) :: 42
-;     Var(12) :: any
-;     Var(13) :: :false
-;     Var(14) :: :num
-;     Var(15) :: :mul
-;     Var(16) :: bool
-;     Var(17) :: 42
-;     Var(18) :: any
+;     Var(4) :: 42
+;     Var(5) :: :num
+;     Var(6) :: bool
+;     Var(7) :: bool
+;     Var(8) :: any
+;     Var(9) :: any
+;     Var(10) :: any
+;     Var(11) :: :add
+;     Var(12) :: bool
+;     Var(13) :: :mul
+;     Var(14) :: bool
 ;   exits:
-;     blk0 Goto blk1()
-;     blk1 If Var(2) ? blk5 : blk2
-;     blk2 If Var(7) ? blk7 : blk3
-;     blk3 If Var(13) ? blk9 : blk4
-;     blk4 Halt Var(1)      :: :function_clause
-;     blk5 If Var(5) ? blk6 : blk2
-;     blk6 Return Var(6)    :: 42
-;     blk7 If Var(10) ? blk8 : blk3
-;     blk8 TailCall fn_clause_1#9(Var(11), Var(12))
-;              callee_key=[42, any]
-;     blk9 If Var(16) ? blk10 : blk4
-;     blk10 TailCall fn_clause_2#10(Var(17), Var(18))
-;              callee_key=[42, any]
+;     blk0 Goto blk2()
+;     blk1 Halt Var(1)      :: :function_clause
+;     blk2 If Var(2) ? blk3 : blk4
+;     blk3 If Var(6) ? blk5 : blk6
+;     blk4 If Var(7) ? blk7 : blk8
+;     blk5 TailCall fn_clause_0#13(Var(4))
+;              callee_key=[42]
+;     blk6 Goto blk1()
+;     blk7 If Var(12) ? blk9 : blk10
+;     blk8 Goto blk1()
+;     blk9 TailCall fn_clause_1#14(Var(9), Var(10))
+;              callee_key=[any, any]
+;     blk10 If Var(14) ? blk11 : blk12
+;     blk11 TailCall fn_clause_2#15(Var(9), Var(10))
+;              callee_key=[any, any]
+;     blk12 Goto blk1()
 
-; spec eval(1) #fn=7
+; spec eval(1) #fn=11
 ;   key:    [{:num, 4}]
 ;   return: 4
 ;   vars:
@@ -608,37 +435,36 @@
 ;     Var(1) :: :function_clause
 ;     Var(2) :: :true
 ;     Var(3) :: :num
-;     Var(4) :: :num
-;     Var(5) :: bool
-;     Var(6) :: 4
-;     Var(7) :: :false
-;     Var(8) :: :num
-;     Var(9) :: :add
-;     Var(10) :: bool
-;     Var(11) :: 4
-;     Var(12) :: any
-;     Var(13) :: :false
-;     Var(14) :: :num
-;     Var(15) :: :mul
-;     Var(16) :: bool
-;     Var(17) :: 4
-;     Var(18) :: any
+;     Var(4) :: 4
+;     Var(5) :: :num
+;     Var(6) :: bool
+;     Var(7) :: bool
+;     Var(8) :: any
+;     Var(9) :: any
+;     Var(10) :: any
+;     Var(11) :: :add
+;     Var(12) :: bool
+;     Var(13) :: :mul
+;     Var(14) :: bool
 ;   exits:
-;     blk0 Goto blk1()
-;     blk1 If Var(2) ? blk5 : blk2
-;     blk2 If Var(7) ? blk7 : blk3
-;     blk3 If Var(13) ? blk9 : blk4
-;     blk4 Halt Var(1)      :: :function_clause
-;     blk5 If Var(5) ? blk6 : blk2
-;     blk6 Return Var(6)    :: 4
-;     blk7 If Var(10) ? blk8 : blk3
-;     blk8 TailCall fn_clause_1#9(Var(11), Var(12))
-;              callee_key=[4, any]
-;     blk9 If Var(16) ? blk10 : blk4
-;     blk10 TailCall fn_clause_2#10(Var(17), Var(18))
-;              callee_key=[4, any]
+;     blk0 Goto blk2()
+;     blk1 Halt Var(1)      :: :function_clause
+;     blk2 If Var(2) ? blk3 : blk4
+;     blk3 If Var(6) ? blk5 : blk6
+;     blk4 If Var(7) ? blk7 : blk8
+;     blk5 TailCall fn_clause_0#13(Var(4))
+;              callee_key=[4]
+;     blk6 Goto blk1()
+;     blk7 If Var(12) ? blk9 : blk10
+;     blk8 Goto blk1()
+;     blk9 TailCall fn_clause_1#14(Var(9), Var(10))
+;              callee_key=[any, any]
+;     blk10 If Var(14) ? blk11 : blk12
+;     blk11 TailCall fn_clause_2#15(Var(9), Var(10))
+;              callee_key=[any, any]
+;     blk12 Goto blk1()
 
-; spec main(0) #fn=8
+; spec main(0) #fn=12
 ;   key:    []
 ;   return: nil
 ;   vars:
@@ -647,253 +473,181 @@
 ;     Var(2) :: 42
 ;     Var(3) :: {:num, 42}
 ;   exits:
-;     blk0 Call eval#7(Var(3))
+;     blk0 Call eval#11(Var(3))
 ;              callee_key=[{:num, 42}]
-;              cont k_15#15 captured=[]
+;              cont k_20#20 captured=[]
 ;              cont_key=[42]
 ;     blk1 Halt Var(0)      :: :match_error
 
-; spec fn_clause_1(2) #fn=9
-;   key:    [1, any]
-;   return: int | float
+; spec fn_clause_0(1) #fn=13
+;   key:    [1]
+;   return: 1
 ;   vars:
 ;     Var(0) :: 1
-;     Var(1) :: any
 ;   exits:
-;     blk0 Call eval#7(Var(0))
-;              callee_key=[1]
-;              cont k_11#11 captured=[Var(0), Var(1)]
-;              cont_key=[none, 1, any]
+;     blk0 Return Var(0)    :: 1
 
-; spec fn_clause_1(2) #fn=9
-;   key:    [2, any]
-;   return: int | float
+; spec fn_clause_0(1) #fn=13
+;   key:    [2]
+;   return: 2
 ;   vars:
 ;     Var(0) :: 2
-;     Var(1) :: any
 ;   exits:
-;     blk0 Call eval#7(Var(0))
-;              callee_key=[2]
-;              cont k_11#11 captured=[Var(0), Var(1)]
-;              cont_key=[none, 2, any]
+;     blk0 Return Var(0)    :: 2
 
-; spec fn_clause_1(2) #fn=9
-;   key:    [3, any]
-;   return: int | float
+; spec fn_clause_0(1) #fn=13
+;   key:    [3]
+;   return: 3
 ;   vars:
 ;     Var(0) :: 3
-;     Var(1) :: any
 ;   exits:
-;     blk0 Call eval#7(Var(0))
-;              callee_key=[3]
-;              cont k_11#11 captured=[Var(0), Var(1)]
-;              cont_key=[none, 3, any]
+;     blk0 Return Var(0)    :: 3
 
-; spec fn_clause_1(2) #fn=9
-;   key:    [4, any]
-;   return: int | float
-;   vars:
-;     Var(0) :: 4
-;     Var(1) :: any
-;   exits:
-;     blk0 Call eval#7(Var(0))
-;              callee_key=[4]
-;              cont k_11#11 captured=[Var(0), Var(1)]
-;              cont_key=[none, 4, any]
-
-; spec fn_clause_1(2) #fn=9
-;   key:    [42, any]
-;   return: int | float
+; spec fn_clause_0(1) #fn=13
+;   key:    [42]
+;   return: 42
 ;   vars:
 ;     Var(0) :: 42
-;     Var(1) :: any
 ;   exits:
-;     blk0 Call eval#7(Var(0))
-;              callee_key=[42]
-;              cont k_11#11 captured=[Var(0), Var(1)]
-;              cont_key=[none, 42, any]
+;     blk0 Return Var(0)    :: 42
 
-; spec fn_clause_1(2) #fn=9
+; spec fn_clause_0(1) #fn=13
+;   key:    [4]
+;   return: 4
+;   vars:
+;     Var(0) :: 4
+;   exits:
+;     blk0 Return Var(0)    :: 4
+
+; spec fn_clause_0(1) #fn=13
+;   key:    [any]
+;   return: any
+;   vars:
+;     Var(0) :: any
+;   exits:
+;     blk0 Return Var(0)    :: any
+
+; spec fn_clause_1(2) #fn=14
 ;   key:    [any, any]
 ;   return: int | float
 ;   vars:
 ;     Var(0) :: any
 ;     Var(1) :: any
 ;   exits:
-;     blk0 Call eval#7(Var(0))
+;     blk0 Call eval#11(Var(0))
 ;              callee_key=[any]
-;              cont k_11#11 captured=[Var(0), Var(1)]
+;              cont k_16#16 captured=[Var(0), Var(1)]
 ;              cont_key=[any, any, any]
 
-; spec fn_clause_1(2) #fn=9
+; spec fn_clause_1(2) #fn=14
 ;   key:    [{:add, {:num, 1}, {:num, 2}}, {:add, {:num, 3}, {:num, 4}}]
 ;   return: int
 ;   vars:
 ;     Var(0) :: {:add, {:num, 1}, {:num, 2}}
 ;     Var(1) :: {:add, {:num, 3}, {:num, 4}}
 ;   exits:
-;     blk0 Call eval#7(Var(0))
+;     blk0 Call eval#11(Var(0))
 ;              callee_key=[{:add, {:num, 1}, {:num, 2}}]
-;              cont k_11#11 captured=[Var(0), Var(1)]
+;              cont k_16#16 captured=[Var(0), Var(1)]
 ;              cont_key=[int, {:add, {:num, 1}, {:num, 2}}, {:add, {:num, 3}, {:num, 4}}]
 
-; spec fn_clause_1(2) #fn=9
+; spec fn_clause_1(2) #fn=14
 ;   key:    [{:num, 1}, {:num, 2}]
 ;   return: int
 ;   vars:
 ;     Var(0) :: {:num, 1}
 ;     Var(1) :: {:num, 2}
 ;   exits:
-;     blk0 Call eval#7(Var(0))
+;     blk0 Call eval#11(Var(0))
 ;              callee_key=[{:num, 1}]
-;              cont k_11#11 captured=[Var(0), Var(1)]
+;              cont k_16#16 captured=[Var(0), Var(1)]
 ;              cont_key=[1, {:num, 1}, {:num, 2}]
 
-; spec fn_clause_1(2) #fn=9
+; spec fn_clause_1(2) #fn=14
 ;   key:    [{:num, 2}, {:mul, {:num, 3}, {:num, 4}}]
 ;   return: int
 ;   vars:
 ;     Var(0) :: {:num, 2}
 ;     Var(1) :: {:mul, {:num, 3}, {:num, 4}}
 ;   exits:
-;     blk0 Call eval#7(Var(0))
+;     blk0 Call eval#11(Var(0))
 ;              callee_key=[{:num, 2}]
-;              cont k_11#11 captured=[Var(0), Var(1)]
+;              cont k_16#16 captured=[Var(0), Var(1)]
 ;              cont_key=[2, {:num, 2}, {:mul, {:num, 3}, {:num, 4}}]
 
-; spec fn_clause_1(2) #fn=9
+; spec fn_clause_1(2) #fn=14
 ;   key:    [{:num, 3}, {:num, 4}]
 ;   return: int
 ;   vars:
 ;     Var(0) :: {:num, 3}
 ;     Var(1) :: {:num, 4}
 ;   exits:
-;     blk0 Call eval#7(Var(0))
+;     blk0 Call eval#11(Var(0))
 ;              callee_key=[{:num, 3}]
-;              cont k_11#11 captured=[Var(0), Var(1)]
+;              cont k_16#16 captured=[Var(0), Var(1)]
 ;              cont_key=[3, {:num, 3}, {:num, 4}]
 
-; spec fn_clause_2(2) #fn=10
-;   key:    [1, any]
-;   return: int | float
-;   vars:
-;     Var(0) :: 1
-;     Var(1) :: any
-;   exits:
-;     blk0 Call eval#7(Var(0))
-;              callee_key=[1]
-;              cont k_13#13 captured=[Var(0), Var(1)]
-;              cont_key=[none, 1, any]
-
-; spec fn_clause_2(2) #fn=10
-;   key:    [2, any]
-;   return: int | float
-;   vars:
-;     Var(0) :: 2
-;     Var(1) :: any
-;   exits:
-;     blk0 Call eval#7(Var(0))
-;              callee_key=[2]
-;              cont k_13#13 captured=[Var(0), Var(1)]
-;              cont_key=[none, 2, any]
-
-; spec fn_clause_2(2) #fn=10
-;   key:    [3, any]
-;   return: int | float
-;   vars:
-;     Var(0) :: 3
-;     Var(1) :: any
-;   exits:
-;     blk0 Call eval#7(Var(0))
-;              callee_key=[3]
-;              cont k_13#13 captured=[Var(0), Var(1)]
-;              cont_key=[none, 3, any]
-
-; spec fn_clause_2(2) #fn=10
-;   key:    [4, any]
-;   return: int | float
-;   vars:
-;     Var(0) :: 4
-;     Var(1) :: any
-;   exits:
-;     blk0 Call eval#7(Var(0))
-;              callee_key=[4]
-;              cont k_13#13 captured=[Var(0), Var(1)]
-;              cont_key=[none, 4, any]
-
-; spec fn_clause_2(2) #fn=10
-;   key:    [42, any]
-;   return: int | float
-;   vars:
-;     Var(0) :: 42
-;     Var(1) :: any
-;   exits:
-;     blk0 Call eval#7(Var(0))
-;              callee_key=[42]
-;              cont k_13#13 captured=[Var(0), Var(1)]
-;              cont_key=[none, 42, any]
-
-; spec fn_clause_2(2) #fn=10
+; spec fn_clause_2(2) #fn=15
 ;   key:    [any, any]
 ;   return: int | float
 ;   vars:
 ;     Var(0) :: any
 ;     Var(1) :: any
 ;   exits:
-;     blk0 Call eval#7(Var(0))
+;     blk0 Call eval#11(Var(0))
 ;              callee_key=[any]
-;              cont k_13#13 captured=[Var(0), Var(1)]
+;              cont k_18#18 captured=[Var(0), Var(1)]
 ;              cont_key=[any, any, any]
 
-; spec fn_clause_2(2) #fn=10
+; spec fn_clause_2(2) #fn=15
 ;   key:    [{:add, {:num, 1}, {:num, 2}}, {:add, {:num, 3}, {:num, 4}}]
 ;   return: int
 ;   vars:
 ;     Var(0) :: {:add, {:num, 1}, {:num, 2}}
 ;     Var(1) :: {:add, {:num, 3}, {:num, 4}}
 ;   exits:
-;     blk0 Call eval#7(Var(0))
+;     blk0 Call eval#11(Var(0))
 ;              callee_key=[{:add, {:num, 1}, {:num, 2}}]
-;              cont k_13#13 captured=[Var(0), Var(1)]
+;              cont k_18#18 captured=[Var(0), Var(1)]
 ;              cont_key=[int, {:add, {:num, 1}, {:num, 2}}, {:add, {:num, 3}, {:num, 4}}]
 
-; spec fn_clause_2(2) #fn=10
+; spec fn_clause_2(2) #fn=15
 ;   key:    [{:num, 1}, {:num, 2}]
 ;   return: int
 ;   vars:
 ;     Var(0) :: {:num, 1}
 ;     Var(1) :: {:num, 2}
 ;   exits:
-;     blk0 Call eval#7(Var(0))
+;     blk0 Call eval#11(Var(0))
 ;              callee_key=[{:num, 1}]
-;              cont k_13#13 captured=[Var(0), Var(1)]
+;              cont k_18#18 captured=[Var(0), Var(1)]
 ;              cont_key=[1, {:num, 1}, {:num, 2}]
 
-; spec fn_clause_2(2) #fn=10
+; spec fn_clause_2(2) #fn=15
 ;   key:    [{:num, 2}, {:mul, {:num, 3}, {:num, 4}}]
 ;   return: int
 ;   vars:
 ;     Var(0) :: {:num, 2}
 ;     Var(1) :: {:mul, {:num, 3}, {:num, 4}}
 ;   exits:
-;     blk0 Call eval#7(Var(0))
+;     blk0 Call eval#11(Var(0))
 ;              callee_key=[{:num, 2}]
-;              cont k_13#13 captured=[Var(0), Var(1)]
+;              cont k_18#18 captured=[Var(0), Var(1)]
 ;              cont_key=[2, {:num, 2}, {:mul, {:num, 3}, {:num, 4}}]
 
-; spec fn_clause_2(2) #fn=10
+; spec fn_clause_2(2) #fn=15
 ;   key:    [{:num, 3}, {:num, 4}]
 ;   return: int
 ;   vars:
 ;     Var(0) :: {:num, 3}
 ;     Var(1) :: {:num, 4}
 ;   exits:
-;     blk0 Call eval#7(Var(0))
+;     blk0 Call eval#11(Var(0))
 ;              callee_key=[{:num, 3}]
-;              cont k_13#13 captured=[Var(0), Var(1)]
+;              cont k_18#18 captured=[Var(0), Var(1)]
 ;              cont_key=[3, {:num, 3}, {:num, 4}]
 
-; spec k_11(3) #fn=11
+; spec k_16(3) #fn=16
 ;   key:    [1, {:num, 1}, {:num, 2}]
 ;   return: int
 ;   vars:
@@ -901,12 +655,12 @@
 ;     Var(1) :: {:num, 1}
 ;     Var(2) :: {:num, 2}
 ;   exits:
-;     blk0 Call eval#7(Var(2))
+;     blk0 Call eval#11(Var(2))
 ;              callee_key=[{:num, 2}]
-;              cont k_12#12 captured=[Var(1), Var(2), Var(0)]
+;              cont k_17#17 captured=[Var(1), Var(2), Var(0)]
 ;              cont_key=[2, {:num, 1}, {:num, 2}, 1]
 
-; spec k_11(3) #fn=11
+; spec k_16(3) #fn=16
 ;   key:    [2, {:num, 2}, {:mul, {:num, 3}, {:num, 4}}]
 ;   return: int
 ;   vars:
@@ -914,12 +668,12 @@
 ;     Var(1) :: {:num, 2}
 ;     Var(2) :: {:mul, {:num, 3}, {:num, 4}}
 ;   exits:
-;     blk0 Call eval#7(Var(2))
+;     blk0 Call eval#11(Var(2))
 ;              callee_key=[{:mul, {:num, 3}, {:num, 4}}]
-;              cont k_12#12 captured=[Var(1), Var(2), Var(0)]
+;              cont k_17#17 captured=[Var(1), Var(2), Var(0)]
 ;              cont_key=[int, {:num, 2}, {:mul, {:num, 3}, {:num, 4}}, 2]
 
-; spec k_11(3) #fn=11
+; spec k_16(3) #fn=16
 ;   key:    [3, {:num, 3}, {:num, 4}]
 ;   return: int
 ;   vars:
@@ -927,12 +681,12 @@
 ;     Var(1) :: {:num, 3}
 ;     Var(2) :: {:num, 4}
 ;   exits:
-;     blk0 Call eval#7(Var(2))
+;     blk0 Call eval#11(Var(2))
 ;              callee_key=[{:num, 4}]
-;              cont k_12#12 captured=[Var(1), Var(2), Var(0)]
+;              cont k_17#17 captured=[Var(1), Var(2), Var(0)]
 ;              cont_key=[4, {:num, 3}, {:num, 4}, 3]
 
-; spec k_11(3) #fn=11
+; spec k_16(3) #fn=16
 ;   key:    [any, any, any]
 ;   return: int | float
 ;   vars:
@@ -940,12 +694,12 @@
 ;     Var(1) :: any
 ;     Var(2) :: any
 ;   exits:
-;     blk0 Call eval#7(Var(2))
+;     blk0 Call eval#11(Var(2))
 ;              callee_key=[any]
-;              cont k_12#12 captured=[Var(1), Var(2), Var(0)]
+;              cont k_17#17 captured=[Var(1), Var(2), Var(0)]
 ;              cont_key=[any, any, any, any]
 
-; spec k_11(3) #fn=11
+; spec k_16(3) #fn=16
 ;   key:    [int, {:add, {:num, 1}, {:num, 2}}, {:add, {:num, 3}, {:num, 4}}]
 ;   return: int
 ;   vars:
@@ -953,77 +707,12 @@
 ;     Var(1) :: {:add, {:num, 1}, {:num, 2}}
 ;     Var(2) :: {:add, {:num, 3}, {:num, 4}}
 ;   exits:
-;     blk0 Call eval#7(Var(2))
+;     blk0 Call eval#11(Var(2))
 ;              callee_key=[{:add, {:num, 3}, {:num, 4}}]
-;              cont k_12#12 captured=[Var(1), Var(2), Var(0)]
+;              cont k_17#17 captured=[Var(1), Var(2), Var(0)]
 ;              cont_key=[int, {:add, {:num, 1}, {:num, 2}}, {:add, {:num, 3}, {:num, 4}}, int]
 
-; spec k_11(3) #fn=11
-;   key:    [none, 1, any]
-;   return: int | float
-;   vars:
-;     Var(0) :: none
-;     Var(1) :: 1
-;     Var(2) :: any
-;   exits:
-;     blk0 Call eval#7(Var(2))
-;              callee_key=[any]
-;              cont k_12#12 captured=[Var(1), Var(2), Var(0)]
-;              cont_key=[any, 1, any, none]
-
-; spec k_11(3) #fn=11
-;   key:    [none, 2, any]
-;   return: int | float
-;   vars:
-;     Var(0) :: none
-;     Var(1) :: 2
-;     Var(2) :: any
-;   exits:
-;     blk0 Call eval#7(Var(2))
-;              callee_key=[any]
-;              cont k_12#12 captured=[Var(1), Var(2), Var(0)]
-;              cont_key=[any, 2, any, none]
-
-; spec k_11(3) #fn=11
-;   key:    [none, 3, any]
-;   return: int | float
-;   vars:
-;     Var(0) :: none
-;     Var(1) :: 3
-;     Var(2) :: any
-;   exits:
-;     blk0 Call eval#7(Var(2))
-;              callee_key=[any]
-;              cont k_12#12 captured=[Var(1), Var(2), Var(0)]
-;              cont_key=[any, 3, any, none]
-
-; spec k_11(3) #fn=11
-;   key:    [none, 4, any]
-;   return: int | float
-;   vars:
-;     Var(0) :: none
-;     Var(1) :: 4
-;     Var(2) :: any
-;   exits:
-;     blk0 Call eval#7(Var(2))
-;              callee_key=[any]
-;              cont k_12#12 captured=[Var(1), Var(2), Var(0)]
-;              cont_key=[any, 4, any, none]
-
-; spec k_11(3) #fn=11
-;   key:    [none, 42, any]
-;   return: int | float
-;   vars:
-;     Var(0) :: none
-;     Var(1) :: 42
-;     Var(2) :: any
-;   exits:
-;     blk0 Call eval#7(Var(2))
-;              callee_key=[any]
-;              cont k_12#12 captured=[Var(1), Var(2), Var(0)]
-;              cont_key=[any, 42, any, none]
-
-; spec k_12(4) #fn=12
+; spec k_17(4) #fn=17
 ;   key:    [2, {:num, 1}, {:num, 2}, 1]
 ;   return: int
 ;   vars:
@@ -1035,7 +724,7 @@
 ;   exits:
 ;     blk0 Return Var(4)    :: int
 
-; spec k_12(4) #fn=12
+; spec k_17(4) #fn=17
 ;   key:    [4, {:num, 3}, {:num, 4}, 3]
 ;   return: int
 ;   vars:
@@ -1047,67 +736,7 @@
 ;   exits:
 ;     blk0 Return Var(4)    :: int
 
-; spec k_12(4) #fn=12
-;   key:    [any, 1, any, none]
-;   return: int | float
-;   vars:
-;     Var(0) :: any
-;     Var(1) :: 1
-;     Var(2) :: any
-;     Var(3) :: none
-;     Var(4) :: int | float
-;   exits:
-;     blk0 Return Var(4)    :: int | float
-
-; spec k_12(4) #fn=12
-;   key:    [any, 2, any, none]
-;   return: int | float
-;   vars:
-;     Var(0) :: any
-;     Var(1) :: 2
-;     Var(2) :: any
-;     Var(3) :: none
-;     Var(4) :: int | float
-;   exits:
-;     blk0 Return Var(4)    :: int | float
-
-; spec k_12(4) #fn=12
-;   key:    [any, 3, any, none]
-;   return: int | float
-;   vars:
-;     Var(0) :: any
-;     Var(1) :: 3
-;     Var(2) :: any
-;     Var(3) :: none
-;     Var(4) :: int | float
-;   exits:
-;     blk0 Return Var(4)    :: int | float
-
-; spec k_12(4) #fn=12
-;   key:    [any, 4, any, none]
-;   return: int | float
-;   vars:
-;     Var(0) :: any
-;     Var(1) :: 4
-;     Var(2) :: any
-;     Var(3) :: none
-;     Var(4) :: int | float
-;   exits:
-;     blk0 Return Var(4)    :: int | float
-
-; spec k_12(4) #fn=12
-;   key:    [any, 42, any, none]
-;   return: int | float
-;   vars:
-;     Var(0) :: any
-;     Var(1) :: 42
-;     Var(2) :: any
-;     Var(3) :: none
-;     Var(4) :: int | float
-;   exits:
-;     blk0 Return Var(4)    :: int | float
-
-; spec k_12(4) #fn=12
+; spec k_17(4) #fn=17
 ;   key:    [any, any, any, any]
 ;   return: int | float
 ;   vars:
@@ -1119,7 +748,7 @@
 ;   exits:
 ;     blk0 Return Var(4)    :: int | float
 
-; spec k_12(4) #fn=12
+; spec k_17(4) #fn=17
 ;   key:    [int, {:add, {:num, 1}, {:num, 2}}, {:add, {:num, 3}, {:num, 4}}, int]
 ;   return: int
 ;   vars:
@@ -1131,7 +760,7 @@
 ;   exits:
 ;     blk0 Return Var(4)    :: int
 
-; spec k_12(4) #fn=12
+; spec k_17(4) #fn=17
 ;   key:    [int, {:num, 2}, {:mul, {:num, 3}, {:num, 4}}, 2]
 ;   return: int
 ;   vars:
@@ -1143,7 +772,7 @@
 ;   exits:
 ;     blk0 Return Var(4)    :: int
 
-; spec k_13(3) #fn=13
+; spec k_18(3) #fn=18
 ;   key:    [1, {:num, 1}, {:num, 2}]
 ;   return: int
 ;   vars:
@@ -1151,12 +780,12 @@
 ;     Var(1) :: {:num, 1}
 ;     Var(2) :: {:num, 2}
 ;   exits:
-;     blk0 Call eval#7(Var(2))
+;     blk0 Call eval#11(Var(2))
 ;              callee_key=[{:num, 2}]
-;              cont k_14#14 captured=[Var(1), Var(2), Var(0)]
+;              cont k_19#19 captured=[Var(1), Var(2), Var(0)]
 ;              cont_key=[2, {:num, 1}, {:num, 2}, 1]
 
-; spec k_13(3) #fn=13
+; spec k_18(3) #fn=18
 ;   key:    [2, {:num, 2}, {:mul, {:num, 3}, {:num, 4}}]
 ;   return: int
 ;   vars:
@@ -1164,12 +793,12 @@
 ;     Var(1) :: {:num, 2}
 ;     Var(2) :: {:mul, {:num, 3}, {:num, 4}}
 ;   exits:
-;     blk0 Call eval#7(Var(2))
+;     blk0 Call eval#11(Var(2))
 ;              callee_key=[{:mul, {:num, 3}, {:num, 4}}]
-;              cont k_14#14 captured=[Var(1), Var(2), Var(0)]
+;              cont k_19#19 captured=[Var(1), Var(2), Var(0)]
 ;              cont_key=[int, {:num, 2}, {:mul, {:num, 3}, {:num, 4}}, 2]
 
-; spec k_13(3) #fn=13
+; spec k_18(3) #fn=18
 ;   key:    [3, {:num, 3}, {:num, 4}]
 ;   return: int
 ;   vars:
@@ -1177,12 +806,12 @@
 ;     Var(1) :: {:num, 3}
 ;     Var(2) :: {:num, 4}
 ;   exits:
-;     blk0 Call eval#7(Var(2))
+;     blk0 Call eval#11(Var(2))
 ;              callee_key=[{:num, 4}]
-;              cont k_14#14 captured=[Var(1), Var(2), Var(0)]
+;              cont k_19#19 captured=[Var(1), Var(2), Var(0)]
 ;              cont_key=[4, {:num, 3}, {:num, 4}, 3]
 
-; spec k_13(3) #fn=13
+; spec k_18(3) #fn=18
 ;   key:    [any, any, any]
 ;   return: int | float
 ;   vars:
@@ -1190,12 +819,12 @@
 ;     Var(1) :: any
 ;     Var(2) :: any
 ;   exits:
-;     blk0 Call eval#7(Var(2))
+;     blk0 Call eval#11(Var(2))
 ;              callee_key=[any]
-;              cont k_14#14 captured=[Var(1), Var(2), Var(0)]
+;              cont k_19#19 captured=[Var(1), Var(2), Var(0)]
 ;              cont_key=[any, any, any, any]
 
-; spec k_13(3) #fn=13
+; spec k_18(3) #fn=18
 ;   key:    [int, {:add, {:num, 1}, {:num, 2}}, {:add, {:num, 3}, {:num, 4}}]
 ;   return: int
 ;   vars:
@@ -1203,77 +832,12 @@
 ;     Var(1) :: {:add, {:num, 1}, {:num, 2}}
 ;     Var(2) :: {:add, {:num, 3}, {:num, 4}}
 ;   exits:
-;     blk0 Call eval#7(Var(2))
+;     blk0 Call eval#11(Var(2))
 ;              callee_key=[{:add, {:num, 3}, {:num, 4}}]
-;              cont k_14#14 captured=[Var(1), Var(2), Var(0)]
+;              cont k_19#19 captured=[Var(1), Var(2), Var(0)]
 ;              cont_key=[int, {:add, {:num, 1}, {:num, 2}}, {:add, {:num, 3}, {:num, 4}}, int]
 
-; spec k_13(3) #fn=13
-;   key:    [none, 1, any]
-;   return: int | float
-;   vars:
-;     Var(0) :: none
-;     Var(1) :: 1
-;     Var(2) :: any
-;   exits:
-;     blk0 Call eval#7(Var(2))
-;              callee_key=[any]
-;              cont k_14#14 captured=[Var(1), Var(2), Var(0)]
-;              cont_key=[any, 1, any, none]
-
-; spec k_13(3) #fn=13
-;   key:    [none, 2, any]
-;   return: int | float
-;   vars:
-;     Var(0) :: none
-;     Var(1) :: 2
-;     Var(2) :: any
-;   exits:
-;     blk0 Call eval#7(Var(2))
-;              callee_key=[any]
-;              cont k_14#14 captured=[Var(1), Var(2), Var(0)]
-;              cont_key=[any, 2, any, none]
-
-; spec k_13(3) #fn=13
-;   key:    [none, 3, any]
-;   return: int | float
-;   vars:
-;     Var(0) :: none
-;     Var(1) :: 3
-;     Var(2) :: any
-;   exits:
-;     blk0 Call eval#7(Var(2))
-;              callee_key=[any]
-;              cont k_14#14 captured=[Var(1), Var(2), Var(0)]
-;              cont_key=[any, 3, any, none]
-
-; spec k_13(3) #fn=13
-;   key:    [none, 4, any]
-;   return: int | float
-;   vars:
-;     Var(0) :: none
-;     Var(1) :: 4
-;     Var(2) :: any
-;   exits:
-;     blk0 Call eval#7(Var(2))
-;              callee_key=[any]
-;              cont k_14#14 captured=[Var(1), Var(2), Var(0)]
-;              cont_key=[any, 4, any, none]
-
-; spec k_13(3) #fn=13
-;   key:    [none, 42, any]
-;   return: int | float
-;   vars:
-;     Var(0) :: none
-;     Var(1) :: 42
-;     Var(2) :: any
-;   exits:
-;     blk0 Call eval#7(Var(2))
-;              callee_key=[any]
-;              cont k_14#14 captured=[Var(1), Var(2), Var(0)]
-;              cont_key=[any, 42, any, none]
-
-; spec k_14(4) #fn=14
+; spec k_19(4) #fn=19
 ;   key:    [2, {:num, 1}, {:num, 2}, 1]
 ;   return: int
 ;   vars:
@@ -1285,7 +849,7 @@
 ;   exits:
 ;     blk0 Return Var(4)    :: int
 
-; spec k_14(4) #fn=14
+; spec k_19(4) #fn=19
 ;   key:    [4, {:num, 3}, {:num, 4}, 3]
 ;   return: int
 ;   vars:
@@ -1297,67 +861,7 @@
 ;   exits:
 ;     blk0 Return Var(4)    :: int
 
-; spec k_14(4) #fn=14
-;   key:    [any, 1, any, none]
-;   return: int | float
-;   vars:
-;     Var(0) :: any
-;     Var(1) :: 1
-;     Var(2) :: any
-;     Var(3) :: none
-;     Var(4) :: int | float
-;   exits:
-;     blk0 Return Var(4)    :: int | float
-
-; spec k_14(4) #fn=14
-;   key:    [any, 2, any, none]
-;   return: int | float
-;   vars:
-;     Var(0) :: any
-;     Var(1) :: 2
-;     Var(2) :: any
-;     Var(3) :: none
-;     Var(4) :: int | float
-;   exits:
-;     blk0 Return Var(4)    :: int | float
-
-; spec k_14(4) #fn=14
-;   key:    [any, 3, any, none]
-;   return: int | float
-;   vars:
-;     Var(0) :: any
-;     Var(1) :: 3
-;     Var(2) :: any
-;     Var(3) :: none
-;     Var(4) :: int | float
-;   exits:
-;     blk0 Return Var(4)    :: int | float
-
-; spec k_14(4) #fn=14
-;   key:    [any, 4, any, none]
-;   return: int | float
-;   vars:
-;     Var(0) :: any
-;     Var(1) :: 4
-;     Var(2) :: any
-;     Var(3) :: none
-;     Var(4) :: int | float
-;   exits:
-;     blk0 Return Var(4)    :: int | float
-
-; spec k_14(4) #fn=14
-;   key:    [any, 42, any, none]
-;   return: int | float
-;   vars:
-;     Var(0) :: any
-;     Var(1) :: 42
-;     Var(2) :: any
-;     Var(3) :: none
-;     Var(4) :: int | float
-;   exits:
-;     blk0 Return Var(4)    :: int | float
-
-; spec k_14(4) #fn=14
+; spec k_19(4) #fn=19
 ;   key:    [any, any, any, any]
 ;   return: int | float
 ;   vars:
@@ -1369,7 +873,7 @@
 ;   exits:
 ;     blk0 Return Var(4)    :: int | float
 
-; spec k_14(4) #fn=14
+; spec k_19(4) #fn=19
 ;   key:    [int, {:add, {:num, 1}, {:num, 2}}, {:add, {:num, 3}, {:num, 4}}, int]
 ;   return: int
 ;   vars:
@@ -1381,7 +885,7 @@
 ;   exits:
 ;     blk0 Return Var(4)    :: int
 
-; spec k_14(4) #fn=14
+; spec k_19(4) #fn=19
 ;   key:    [int, {:num, 2}, {:mul, {:num, 3}, {:num, 4}}, 2]
 ;   return: int
 ;   vars:
@@ -1393,7 +897,7 @@
 ;   exits:
 ;     blk0 Return Var(4)    :: int
 
-; spec k_15(1) #fn=15
+; spec k_20(1) #fn=20
 ;   key:    [42]
 ;   return: nil
 ;   vars:
@@ -1401,10 +905,10 @@
 ;   exits:
 ;     blk0 Call print#0(Var(0))
 ;              callee_key=[42]
-;              cont k_16#16 captured=[]
+;              cont k_21#21 captured=[]
 ;              cont_key=[nil]
 
-; spec k_16(1) #fn=16
+; spec k_21(1) #fn=21
 ;   key:    [nil]
 ;   return: nil
 ;   vars:
@@ -1423,12 +927,12 @@
 ;     Var(12) :: {:mul, {:num, 3}, {:num, 4}}
 ;     Var(13) :: {:add, {:num, 2}, {:mul, {:num, 3}, {:num, 4}}}
 ;   exits:
-;     blk0 Call eval#7(Var(13))
+;     blk0 Call eval#11(Var(13))
 ;              callee_key=[{:add, {:num, 2}, {:mul, {:num, 3}, {:num, 4}}}]
-;              cont k_17#17 captured=[]
+;              cont k_22#22 captured=[]
 ;              cont_key=[int]
 
-; spec k_17(1) #fn=17
+; spec k_22(1) #fn=22
 ;   key:    [int]
 ;   return: nil
 ;   vars:
@@ -1436,10 +940,10 @@
 ;   exits:
 ;     blk0 Call print#0(Var(0))
 ;              callee_key=[int]
-;              cont k_18#18 captured=[]
+;              cont k_23#23 captured=[]
 ;              cont_key=[nil]
 
-; spec k_18(1) #fn=18
+; spec k_23(1) #fn=23
 ;   key:    [nil]
 ;   return: nil
 ;   vars:
@@ -1463,12 +967,12 @@
 ;     Var(17) :: {:add, {:num, 3}, {:num, 4}}
 ;     Var(18) :: {:mul, {:add, {:num, 1}, {:num, 2}}, {:add, {:num, 3}, {:num, 4}}}
 ;   exits:
-;     blk0 Call eval#7(Var(18))
+;     blk0 Call eval#11(Var(18))
 ;              callee_key=[{:mul, {:add, {:num, 1}, {:num, 2}}, {:add, {:num, 3}, {:num, 4}}}]
-;              cont k_19#19 captured=[]
+;              cont k_24#24 captured=[]
 ;              cont_key=[int]
 
-; spec k_19(1) #fn=19
+; spec k_24(1) #fn=24
 ;   key:    [int]
 ;   return: nil
 ;   vars:

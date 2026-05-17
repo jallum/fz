@@ -22,6 +22,8 @@ mod lexer;
 mod macros;
 mod parking;
 mod parser;
+mod pattern_check;
+mod pattern_matrix;
 mod repl;
 mod resolve;
 mod runtime;
@@ -41,7 +43,10 @@ use std::io::{IsTerminal, Read};
 /// so all three paths produce identical accept/reject verdicts.
 fn validate_specs_or_exit(prog: &ast::Program, module: &fz_ir::Module, sm: &diag::SourceMap) {
     let mt = ir_typer::type_module(module);
-    let diags = spec_check::validate_specs(prog, module, &mt);
+    let mut diags = spec_check::validate_specs(prog, module, &mt);
+    // fz-ul4.45 — pattern-match correctness analysis. Unreachable clauses
+    // and inexhaustive matches surface as warnings here (non-fatal).
+    diags.extend(pattern_check::check_program(prog));
     let has_error = diags.iter().any(|d| d.severity == diag::Severity::Error);
     for d in &diags {
         diag::render_one_to_stderr(sm, d);

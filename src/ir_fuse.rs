@@ -27,7 +27,7 @@ pub fn fuse_blocks(module: &mut Module) {
     }
 }
 
-fn fuse_fn(f: &mut FnIr) {
+pub fn fuse_fn(f: &mut FnIr) {
     loop {
         let removed = fuse_one_pass(f);
         if !removed {

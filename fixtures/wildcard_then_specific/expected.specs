@@ -1,0 +1,203 @@
+; spec print(1) #fn=0
+;   key:    [:anything]
+;   return: nil
+;   vars:
+;     Var(0) :: :anything
+;     Var(1) :: :function_clause
+;     Var(2) :: :false
+;   exits:
+;     blk0 Goto blk2()
+;     blk1 Halt Var(1)      :: :function_clause
+;     blk2 If Var(2) ? blk4 : blk3
+;     blk3 TailCall fn_clause_1#8(Var(0))
+;              callee_key=[:anything]
+;     blk4 TailCall fn_clause_0#7(Var(0))
+;              callee_key=[:anything]
+
+; spec fn_clause_0(1) #fn=7
+;   key:    [any]
+;   return: nil
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: nil
+;   exits:
+;     blk0 Return Var(1)    :: nil
+
+; spec fn_clause_1(1) #fn=8
+;   key:    [:anything]
+;   return: nil
+;   vars:
+;     Var(0) :: :anything
+;     Var(1) :: nil
+;   exits:
+;     blk0 Return Var(1)    :: nil
+
+; spec catch(1) #fn=11
+;   key:    [0]
+;   return: :anything
+;   vars:
+;     Var(0) :: 0
+;     Var(1) :: :function_clause
+;   exits:
+;     blk0 Goto blk2()
+;     blk1 Halt Var(1)      :: :function_clause
+;     blk2 TailCall fn_clause_0#14()
+;              callee_key=[]
+
+; spec catch(1) #fn=11
+;   key:    [7]
+;   return: :anything
+;   vars:
+;     Var(0) :: 7
+;     Var(1) :: :function_clause
+;   exits:
+;     blk0 Goto blk2()
+;     blk1 Halt Var(1)      :: :function_clause
+;     blk2 TailCall fn_clause_0#14()
+;              callee_key=[]
+
+; spec cmatch(1) #fn=12
+;   key:    [0]
+;   return: :anything
+;   vars:
+;     Var(0) :: 0
+;     Var(1) :: :match_error
+;     Var(2) :: :case_clause
+;   exits:
+;     blk0 Goto blk3()
+;     blk1 Halt Var(1)      :: :match_error
+;     blk2 Halt Var(2)      :: :case_clause
+;     blk3 TailCall case_clause_0#15(Var(0))
+;              callee_key=[0]
+
+; spec cmatch(1) #fn=12
+;   key:    [99]
+;   return: :anything
+;   vars:
+;     Var(0) :: 99
+;     Var(1) :: :match_error
+;     Var(2) :: :case_clause
+;   exits:
+;     blk0 Goto blk3()
+;     blk1 Halt Var(1)      :: :match_error
+;     blk2 Halt Var(2)      :: :case_clause
+;     blk3 TailCall case_clause_0#15(Var(0))
+;              callee_key=[99]
+
+; spec main(0) #fn=13
+;   key:    []
+;   return: nil
+;   vars:
+;     Var(0) :: :match_error
+;     Var(1) :: 0
+;   exits:
+;     blk0 Call catch#11(Var(1))
+;              callee_key=[0]
+;              cont k_16#16 captured=[]
+;              cont_key=[:anything]
+;     blk1 Halt Var(0)      :: :match_error
+
+; spec fn_clause_0(0) #fn=14
+;   key:    []
+;   return: :anything
+;   vars:
+;     Var(0) :: :anything
+;   exits:
+;     blk0 Return Var(0)    :: :anything
+
+; spec case_clause_0(1) #fn=15
+;   key:    [0]
+;   return: :anything
+;   vars:
+;     Var(0) :: 0
+;     Var(1) :: :anything
+;   exits:
+;     blk0 Return Var(1)    :: :anything
+
+; spec case_clause_0(1) #fn=15
+;   key:    [99]
+;   return: :anything
+;   vars:
+;     Var(0) :: 99
+;     Var(1) :: :anything
+;   exits:
+;     blk0 Return Var(1)    :: :anything
+
+; spec k_16(1) #fn=16
+;   key:    [:anything]
+;   return: nil
+;   vars:
+;     Var(0) :: :anything
+;   exits:
+;     blk0 Call print#0(Var(0))
+;              callee_key=[:anything]
+;              cont k_17#17 captured=[]
+;              cont_key=[nil]
+
+; spec k_17(1) #fn=17
+;   key:    [nil]
+;   return: nil
+;   vars:
+;     Var(0) :: nil
+;     Var(1) :: 7
+;   exits:
+;     blk0 Call catch#11(Var(1))
+;              callee_key=[7]
+;              cont k_18#18 captured=[]
+;              cont_key=[:anything]
+
+; spec k_18(1) #fn=18
+;   key:    [:anything]
+;   return: nil
+;   vars:
+;     Var(0) :: :anything
+;   exits:
+;     blk0 Call print#0(Var(0))
+;              callee_key=[:anything]
+;              cont k_19#19 captured=[]
+;              cont_key=[nil]
+
+; spec k_19(1) #fn=19
+;   key:    [nil]
+;   return: nil
+;   vars:
+;     Var(0) :: nil
+;     Var(1) :: 0
+;   exits:
+;     blk0 Call cmatch#12(Var(1))
+;              callee_key=[0]
+;              cont k_20#20 captured=[]
+;              cont_key=[:anything]
+
+; spec k_20(1) #fn=20
+;   key:    [:anything]
+;   return: nil
+;   vars:
+;     Var(0) :: :anything
+;   exits:
+;     blk0 Call print#0(Var(0))
+;              callee_key=[:anything]
+;              cont k_21#21 captured=[]
+;              cont_key=[nil]
+
+; spec k_21(1) #fn=21
+;   key:    [nil]
+;   return: nil
+;   vars:
+;     Var(0) :: nil
+;     Var(1) :: 99
+;   exits:
+;     blk0 Call cmatch#12(Var(1))
+;              callee_key=[99]
+;              cont k_22#22 captured=[]
+;              cont_key=[:anything]
+
+; spec k_22(1) #fn=22
+;   key:    [:anything]
+;   return: nil
+;   vars:
+;     Var(0) :: :anything
+;   exits:
+;     blk0 TailCall print#0(Var(0))
+;              callee_key=[:anything]
+

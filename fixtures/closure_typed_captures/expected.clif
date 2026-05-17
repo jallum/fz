@@ -17,39 +17,39 @@ function u0:0(i64) -> i64 tail {
 block0(v0: i64):
     v1 = iconst.i64 10                  ; @5:23
     v2 = iconst.i64 20                  ; @5:27
-    v3 = iconst.i32 10
+    v3 = iconst.i32 14
     v4 = iconst.i32 2
     v5 = iconst.i32 1
-    v6 = call fn0(v3, v4, v5)  ; v3 = 10, v4 = 2, v5 = 1    ;; v6 :: &fn10[10, 20]:(any) -> any
+    v6 = call fn0(v3, v4, v5)  ; v3 = 14, v4 = 2, v5 = 1    ;; v6 :: &fn14[10, 20]:(any) -> any
     v7 = func_addr.i64 fn1
     store notrap aligned v7, v6+16
     store notrap aligned v1, v6+24  ; v1 = 10
     store notrap aligned v2, v6+32  ; v2 = 20
     v8 = iconst.i64 12    ;; v8 :: 12
-    v9 = iconst.i32 12                  ; @5:16
+    v9 = iconst.i32 16                  ; @5:16
     v10 = iconst.i32 1                  ; @5:16
     v11 = iconst.i32 0                  ; @5:16
-    v12 = call fn3(v9, v10, v11)        ; @5:16  v9 = 12, v10 = 1, v11 = 0
+    v12 = call fn3(v9, v10, v11)        ; @5:16  v9 = 16, v10 = 1, v11 = 0
     v13 = func_addr.i64 fn4             ; @5:16
     store notrap aligned v13, v12+16    ; @5:16
     store notrap aligned v0, v12+24     ; @5:16
     return_call fn2(v6, v8, v12)        ; @5:16  v8 = 12
 }
 
-; fn apply1_s10
-    ;   @spec   apply1(&fn10[10, 20]:(any) -> any, 12) -> int
-    ;   @key    [&fn10[10, 20]:(any) -> any, 12]
+; fn apply1_s14
+    ;   @spec   apply1(&fn14[10, 20]:(any) -> any, 12) -> int
+    ;   @key    [&fn14[10, 20]:(any) -> any, 12]
     ;   @abi    (Tagged, RawInt) -> RawInt
 function u0:0(i64, i64, i64) -> i64 tail {
     sig0 = (i64, i64, i64) -> i64 tail
     fn0 = colocated u0:41 sig0
 
-    block0(v0: i64, v1: i64, v2: i64):    ;; v0 :: &fn10[10, 20]:(any) -> any, v1 :: 12
+    block0(v0: i64, v1: i64, v2: i64):    ;; v0 :: &fn14[10, 20]:(any) -> any, v1 :: 12
     return_call fn0(v1, v0, v2)         ; @2:22
 }
 
-; fn lambda_10_s11
-    ;   @spec   lambda_10(10, 20, 12) -> int
+; fn lambda_14_s15
+    ;   @spec   lambda_14(10, 20, 12) -> int
     ;   @key    [10, 20, 12]
     ;   @abi    (RawInt, RawInt, RawInt) -> RawInt
 function u0:0(i64, i64, i64) -> i64 tail {
@@ -64,8 +64,8 @@ function u0:0(i64, i64, i64) -> i64 tail {
     return_call_indirect sig0, v7(v6, v2)
 }
 
-; fn k_12
-    ;   @spec   k_12(int) -> nil
+; fn k_16
+    ;   @spec   k_16(int) -> nil
     ;   @key    [int]
     ;   @abi    (RawInt) -> Tagged
 function u0:0(i64, i64) -> i64 tail {

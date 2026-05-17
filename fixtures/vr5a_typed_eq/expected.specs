@@ -5,14 +5,14 @@
 ;     Var(0) :: :false
 ;     Var(1) :: :function_clause
 ;     Var(2) :: :false
-;     Var(3) :: nil
-;     Var(4) :: nil
 ;   exits:
-;     blk0 Goto blk1()
-;     blk1 If Var(2) ? blk4 : blk2
-;     blk2 Return Var(4)    :: nil
-;     blk3 Halt Var(1)      :: :function_clause
-;     blk4 Return Var(3)    :: nil
+;     blk0 Goto blk2()
+;     blk1 Halt Var(1)      :: :function_clause
+;     blk2 If Var(2) ? blk4 : blk3
+;     blk3 TailCall fn_clause_1#8(Var(0))
+;              callee_key=[:false]
+;     blk4 TailCall fn_clause_0#7(Var(0))
+;              callee_key=[:false]
 
 ; spec print(1) #fn=0
 ;   key:    [:true]
@@ -21,14 +21,14 @@
 ;     Var(0) :: :true
 ;     Var(1) :: :function_clause
 ;     Var(2) :: :false
-;     Var(3) :: nil
-;     Var(4) :: nil
 ;   exits:
-;     blk0 Goto blk1()
-;     blk1 If Var(2) ? blk4 : blk2
-;     blk2 Return Var(4)    :: nil
-;     blk3 Halt Var(1)      :: :function_clause
-;     blk4 Return Var(3)    :: nil
+;     blk0 Goto blk2()
+;     blk1 Halt Var(1)      :: :function_clause
+;     blk2 If Var(2) ? blk4 : blk3
+;     blk3 TailCall fn_clause_1#8(Var(0))
+;              callee_key=[:true]
+;     blk4 TailCall fn_clause_0#7(Var(0))
+;              callee_key=[:true]
 
 ; spec print(1) #fn=0
 ;   key:    [bool]
@@ -37,16 +37,52 @@
 ;     Var(0) :: bool
 ;     Var(1) :: :function_clause
 ;     Var(2) :: :false
-;     Var(3) :: nil
-;     Var(4) :: nil
 ;   exits:
-;     blk0 Goto blk1()
-;     blk1 If Var(2) ? blk4 : blk2
-;     blk2 Return Var(4)    :: nil
-;     blk3 Halt Var(1)      :: :function_clause
-;     blk4 Return Var(3)    :: nil
+;     blk0 Goto blk2()
+;     blk1 Halt Var(1)      :: :function_clause
+;     blk2 If Var(2) ? blk4 : blk3
+;     blk3 TailCall fn_clause_1#8(Var(0))
+;              callee_key=[bool]
+;     blk4 TailCall fn_clause_0#7(Var(0))
+;              callee_key=[bool]
 
-; spec main(0) #fn=7
+; spec fn_clause_0(1) #fn=7
+;   key:    [any]
+;   return: nil
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: nil
+;   exits:
+;     blk0 Return Var(1)    :: nil
+
+; spec fn_clause_1(1) #fn=8
+;   key:    [:false]
+;   return: nil
+;   vars:
+;     Var(0) :: :false
+;     Var(1) :: nil
+;   exits:
+;     blk0 Return Var(1)    :: nil
+
+; spec fn_clause_1(1) #fn=8
+;   key:    [:true]
+;   return: nil
+;   vars:
+;     Var(0) :: :true
+;     Var(1) :: nil
+;   exits:
+;     blk0 Return Var(1)    :: nil
+
+; spec fn_clause_1(1) #fn=8
+;   key:    [bool]
+;   return: nil
+;   vars:
+;     Var(0) :: bool
+;     Var(1) :: nil
+;   exits:
+;     blk0 Return Var(1)    :: nil
+
+; spec main(0) #fn=11
 ;   key:    []
 ;   return: nil
 ;   vars:
@@ -57,11 +93,11 @@
 ;   exits:
 ;     blk0 Call print#0(Var(3))
 ;              callee_key=[:false]
-;              cont k_8#8 captured=[]
+;              cont k_12#12 captured=[]
 ;              cont_key=[nil]
 ;     blk1 Halt Var(0)      :: :match_error
 
-; spec k_8(1) #fn=8
+; spec k_12(1) #fn=12
 ;   key:    [nil]
 ;   return: nil
 ;   vars:
@@ -72,10 +108,10 @@
 ;   exits:
 ;     blk0 Call print#0(Var(3))
 ;              callee_key=[:true]
-;              cont k_9#9 captured=[]
+;              cont k_13#13 captured=[]
 ;              cont_key=[nil]
 
-; spec k_9(1) #fn=9
+; spec k_13(1) #fn=13
 ;   key:    [nil]
 ;   return: nil
 ;   vars:
@@ -86,10 +122,10 @@
 ;   exits:
 ;     blk0 Call print#0(Var(3))
 ;              callee_key=[bool]
-;              cont k_10#10 captured=[]
+;              cont k_14#14 captured=[]
 ;              cont_key=[nil]
 
-; spec k_10(1) #fn=10
+; spec k_14(1) #fn=14
 ;   key:    [nil]
 ;   return: nil
 ;   vars:

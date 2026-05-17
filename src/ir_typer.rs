@@ -1457,6 +1457,11 @@ fn narrow_for_cond(
                 then_env.insert(*a, at.diff(&bt));
             }
         }
+        Prim::TypeTest(v, descr) => {
+            let current = env.get(v).cloned().unwrap_or_else(Descr::any);
+            then_env.insert(*v, current.intersect(descr));
+            else_env.insert(*v, current.diff(descr));
+        }
         _ => {}
     }
 
