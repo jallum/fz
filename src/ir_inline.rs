@@ -33,6 +33,31 @@ pub fn is_inlinable(f: &FnIr) -> bool {
     is_leaf(f) && stmt_count(f) <= INLINE_BUDGET
 }
 
+/// fz-ul4.43.D.0 — A "pure tail caller" is a single-block fn whose only
+/// terminator is `TailCall(target, args)`. Its stmts compute the args
+/// then transfer control. Inlining it through a caller's TailCall
+/// substitutes args into the stmts and splices the inner TailCall up to
+/// the caller — turning chained tail-calls into one.
+///
+/// This is the shape lower_multi_clause/case/with mint for clause bodies
+/// that end in a recursive call (e.g. `count(n-1, acc+1)`). Without
+/// this path, those cont fns are permanent overhead since `is_inlinable`
+/// requires a leaf. With it, the matrix-leaf cont_fn becomes free for
+/// the common recursive-body shape.
+pub fn is_pure_tail_caller(f: &FnIr) -> bool {
+    if f.blocks.len() != 1 {
+        return false;
+    }
+    let b = &f.blocks[0];
+    if !matches!(b.terminator, Term::TailCall { .. }) {
+        return false;
+    }
+    if stmt_count(f) > INLINE_BUDGET {
+        return false;
+    }
+    true
+}
+
 /// Fns referenced by any `MakeClosure` in the module. These must remain
 /// callable as closure targets and must never be inlined away — inlining
 /// their only direct callsite would make the typer's reachability analysis
@@ -413,7 +438,7 @@ pub fn inline_tail_calls_once(m: &mut Module) -> usize {
         if callee_idx == fi {
             continue; // self-recursive — skip
         }
-        if !is_inlinable(&m.fns[callee_idx]) {
+        if !is_inlinable(&m.fns[callee_idx]) && !is_pure_tail_caller(&m.fns[callee_idx]) {
             continue;
         }
 
@@ -1028,6 +1053,54 @@ mod tests {
             entry.stmts.len() >= 2,
             "callee stmts must be absorbed into entry; got {}",
             entry.stmts.len()
+        );
+    }
+
+    /// fz-ul4.43.D.0 — pure-tail-caller callee merges through inliner.
+    /// Shape: `caller(y) -> TailCall(K, [y])`; `K(x) -> let v = x+1;
+    /// TailCall(target, [v])`. After inline: caller block ends in
+    /// `TailCall(target, [y+1])` — one tail-call instead of two.
+    #[test]
+    fn inline_tail_calls_absorbs_pure_tail_caller() {
+        let target = FnId(2);
+        // K: pure-tail-caller
+        let mut b = FnBuilder::new(FnId(1), "k");
+        let x = b.fresh_var();
+        let entry = b.block(vec![x]);
+        let one = b.let_(entry, Prim::Const(Const::Int(1)));
+        let v = b.let_(entry, Prim::BinOp(BinOp::Add, x, one));
+        b.set_terminator(
+            entry,
+            Term::TailCall {
+                callee: target,
+                args: vec![v],
+                is_back_edge: false,
+            },
+        );
+        let k = b.build();
+
+        let mut mb = ModuleBuilder::new();
+        mb.add_fn(make_caller_tail(FnId(1)));
+        mb.add_fn(k);
+        let mut m = mb.build();
+
+        let n = inline_tail_calls_once(&mut m);
+        assert_eq!(n, 1, "pure-tail-caller must be inlined");
+
+        // Caller's terminator should now be a TailCall to `target`, not to K.
+        let caller = m.fns.iter().find(|f| f.name == "caller").unwrap();
+        let entry_b = caller.blocks.iter().find(|b| b.id == caller.entry).unwrap();
+        match &entry_b.terminator {
+            Term::TailCall { callee, .. } => {
+                assert_eq!(*callee, target, "must tail-call through to target");
+            }
+            other => panic!("expected TailCall(target), got {:?}", other),
+        }
+        // K's stmts (the +1 computation) must be spliced into the caller block.
+        assert!(
+            entry_b.stmts.len() >= 2,
+            "K's stmts must be absorbed; got {}",
+            entry_b.stmts.len()
         );
     }
 
