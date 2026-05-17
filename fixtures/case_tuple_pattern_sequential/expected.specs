@@ -94,22 +94,26 @@
 ;     Var(2) :: :case_clause
 ;     Var(3) :: :false
 ;     Var(4) :: any
-;     Var(5) :: :ok
-;     Var(6) :: bool
-;     Var(7) :: any
+;     Var(5) :: any
+;     Var(6) :: :ok
+;     Var(7) :: bool
 ;     Var(8) :: :err
 ;     Var(9) :: bool
 ;   exits:
-;     blk0 Goto blk2()
+;     blk0 Goto blk3()
 ;     blk1 Halt Var(1)      :: :match_error
-;     blk2 If Var(3) ? blk5 : blk3
-;     blk3 If Var(9) ? blk7 : blk4
-;     blk4 Halt Var(2)      :: :case_clause
-;     blk5 If Var(6) ? blk6 : blk3
-;     blk6 TailCall case_clause_0#14(Var(0), Var(0), Var(7))
-;              callee_key=[:err, :err, any]
-;     blk7 TailCall case_clause_1#15(Var(0), Var(0))
-;              callee_key=[:err, :err]
+;     blk2 Halt Var(2)      :: :case_clause
+;     blk3 If Var(3) ? blk4 : blk5
+;     blk4 If Var(7) ? blk6 : blk7
+;     blk5 If Var(9) ? blk9 : blk10
+;     blk6 TailCall case_clause_0#14(Var(0), Var(5))
+;              callee_key=[:err, any]
+;     blk7 Goto blk2()
+;     blk8 Goto blk2()
+;     blk9 TailCall case_clause_1#15(Var(0))
+;              callee_key=[:err]
+;     blk10 Goto blk2()
+;     blk11 Goto blk2()
 
 ; spec f(1) #fn=11
 ;   key:    [{:ok, 7}]
@@ -120,22 +124,26 @@
 ;     Var(2) :: :case_clause
 ;     Var(3) :: :true
 ;     Var(4) :: :ok
-;     Var(5) :: :ok
-;     Var(6) :: bool
-;     Var(7) :: 7
+;     Var(5) :: 7
+;     Var(6) :: :ok
+;     Var(7) :: bool
 ;     Var(8) :: :err
 ;     Var(9) :: bool
 ;   exits:
-;     blk0 Goto blk2()
+;     blk0 Goto blk3()
 ;     blk1 Halt Var(1)      :: :match_error
-;     blk2 If Var(3) ? blk5 : blk3
-;     blk3 If Var(9) ? blk7 : blk4
-;     blk4 Halt Var(2)      :: :case_clause
-;     blk5 If Var(6) ? blk6 : blk3
-;     blk6 TailCall case_clause_0#14(Var(0), Var(0), Var(7))
-;              callee_key=[{:ok, 7}, {:ok, 7}, 7]
-;     blk7 TailCall case_clause_1#15(Var(0), Var(0))
-;              callee_key=[{:ok, 7}, {:ok, 7}]
+;     blk2 Halt Var(2)      :: :case_clause
+;     blk3 If Var(3) ? blk4 : blk5
+;     blk4 If Var(7) ? blk6 : blk7
+;     blk5 If Var(9) ? blk9 : blk10
+;     blk6 TailCall case_clause_0#14(Var(0), Var(5))
+;              callee_key=[{:ok, 7}, 7]
+;     blk7 Goto blk2()
+;     blk8 Goto blk2()
+;     blk9 TailCall case_clause_1#15(Var(0))
+;              callee_key=[{:ok, 7}]
+;     blk10 Goto blk2()
+;     blk11 Goto blk2()
 
 ; spec g(1) #fn=12
 ;   key:    [:err]
@@ -190,45 +198,32 @@
 ;              cont_key=[7]
 ;     blk1 Halt Var(0)      :: :match_error
 
-; spec case_clause_0(3) #fn=14
-;   key:    [any, any, any]
+; spec case_clause_0(2) #fn=14
+;   key:    [any, any]
 ;   return: any
 ;   vars:
 ;     Var(0) :: any
 ;     Var(1) :: any
-;     Var(2) :: any
 ;   exits:
-;     blk0 Return Var(2)    :: any
+;     blk0 Return Var(1)    :: any
 
-; spec case_clause_0(3) #fn=14
-;   key:    [{:ok, 7}, {:ok, 7}, 7]
+; spec case_clause_0(2) #fn=14
+;   key:    [{:ok, 7}, 7]
 ;   return: 7
 ;   vars:
 ;     Var(0) :: {:ok, 7}
-;     Var(1) :: {:ok, 7}
-;     Var(2) :: 7
+;     Var(1) :: 7
 ;   exits:
-;     blk0 Return Var(2)    :: 7
+;     blk0 Return Var(1)    :: 7
 
-; spec case_clause_1(2) #fn=15
-;   key:    [:err, :err]
+; spec case_clause_1(1) #fn=15
+;   key:    [:err]
 ;   return: 0
 ;   vars:
 ;     Var(0) :: :err
-;     Var(1) :: :err
-;     Var(2) :: 0
+;     Var(1) :: 0
 ;   exits:
-;     blk0 Return Var(2)    :: 0
-
-; spec case_clause_1(2) #fn=15
-;   key:    [any, any]
-;   return: 0
-;   vars:
-;     Var(0) :: any
-;     Var(1) :: any
-;     Var(2) :: 0
-;   exits:
-;     blk0 Return Var(2)    :: 0
+;     blk0 Return Var(1)    :: 0
 
 ; spec with_fail(2) #fn=16
 ;   key:    [{:ok, 7}, {:ok, 7}]

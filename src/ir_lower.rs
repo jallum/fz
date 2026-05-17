@@ -1203,6 +1203,7 @@ fn lower_matrix_tuple_arity(
     use std::collections::BTreeMap;
     let mut by_arity: BTreeMap<u32, Vec<Row>> = BTreeMap::new();
     let mut default_rows: Vec<Row> = Vec::new();
+    let mut other_rows: Vec<Row> = Vec::new();
     for row in matrix.rows {
         let p = peel_as_pat(&row.patterns[col]);
         match &p.node {
@@ -1210,7 +1211,9 @@ fn lower_matrix_tuple_arity(
                 by_arity.entry(fields.len() as u32).or_default().push(row);
             }
             Pattern::Wildcard | Pattern::Var(_) => default_rows.push(row),
-            _ => {}
+            // Different-kind constructors keep their pattern at this column
+            // and get retried in the fall-through matrix.
+            _ => other_rows.push(row),
         }
     }
     for (arity, rows) in by_arity {
@@ -1263,12 +1266,15 @@ fn lower_matrix_tuple_arity(
         ctx.cur_block = Some(next_b);
         ctx.terminated = false;
     }
-    if default_rows.is_empty() {
+    // Fall-through: other-kind rows keep their col patterns; default
+    // (wildlike) rows drop the col. Recurse on the resulting matrix so a
+    // different specialization kind can fire (e.g. tuple-or-atom case).
+    if default_rows.is_empty() && other_rows.is_empty() {
         if !ctx.terminated {
             ctx.set_term(Term::Goto(fail_block, vec![]));
         }
         Ok(())
-    } else {
+    } else if other_rows.is_empty() {
         let mut sub_subjects = matrix.subjects.clone();
         sub_subjects.remove(col);
         let sub_rows: Vec<Row> = default_rows
@@ -1282,6 +1288,25 @@ fn lower_matrix_tuple_arity(
             ctx,
             Matrix {
                 subjects: sub_subjects,
+                rows: sub_rows,
+            },
+            fail_block,
+            body_cb,
+        )
+    } else {
+        // Mixed-kind: keep this column for other-kind rows so the
+        // recursive call specializes on a different kind. Default rows
+        // also retained (with original wildcard pat) so their match
+        // order is preserved.
+        let mut sub_rows: Vec<Row> = Vec::new();
+        // Preserve source order: re-interleave by body_id.
+        let mut all: Vec<Row> = other_rows.into_iter().chain(default_rows).collect();
+        all.sort_by_key(|r| r.body_id);
+        sub_rows.extend(all);
+        lower_pattern_matrix(
+            ctx,
+            Matrix {
+                subjects: matrix.subjects.clone(),
                 rows: sub_rows,
             },
             fail_block,
@@ -2763,6 +2788,10 @@ fn lower_case(
     //
     // The clause-fn captures are snapshotted *after* pattern bind so the
     // newly-bound pattern names are included.
+    // fz-ul4.43.F — matrix dispatch replaces the per-clause try_blocks
+    // cascade. body_cb mints per-clause cont fns (case bodies always
+    // wrap; no inline fast path here unlike multi_clause). join_opt
+    // handles non-tail return-value plumbing.
     if clauses.is_empty() {
         return Err(LowerError::Unsupported {
             span: subject.span,
@@ -2770,15 +2799,8 @@ fn lower_case(
         });
     }
     let sv = lower_expr(ctx, subject, false)?;
-    let subject_park = ctx.park(sv);
 
-    // Allocate try blocks + fail block in the current fn.
-    let try_blocks: Vec<BlockId> = (0..clauses.len())
-        .map(|_| ctx.cur_mut().block(vec![]))
-        .collect();
     let fail_block = ctx.cur_mut().block(vec![]);
-
-    // Seal fail block with halt :case_clause.
     let saved_block = ctx.cur_block();
     ctx.cur_block = Some(fail_block);
     let cc = ctx.atoms.intern("case_clause");
@@ -2786,62 +2808,83 @@ fn lower_case(
     ctx.set_term(Term::Halt(v));
     ctx.cur_block = Some(saved_block);
 
-    // Goto the first try block.
-    ctx.set_term(Term::Goto(try_blocks[0], vec![]));
+    let matrix_entry = ctx.cur_mut().block(vec![]);
+    ctx.set_term(Term::Goto(matrix_entry, vec![]));
+    ctx.cur_block = Some(matrix_entry);
+    ctx.terminated = false;
 
-    // Optional join fn — only for non-tail position.
     let join_opt = if is_tail {
         None
     } else {
         Some(mint_cont_fn(ctx, "case_join", case_span))
     };
 
+    let matrix = Matrix {
+        subjects: vec![sv],
+        rows: clauses
+            .iter()
+            .enumerate()
+            .map(|(i, c)| Row {
+                patterns: vec![c.pattern.clone()],
+                preconditions: Vec::new(),
+                guard: c.guard.clone(),
+                body_id: i as BodyId,
+            })
+            .collect(),
+    };
+
     let saved_env = ctx.env.clone();
     let saved_order = ctx.env_order.clone();
 
-    // Lower each clause's pattern bind in its try_block, then mint a
-    // per-clause cont fn (capturing the post-pattern-bind env) and set
-    // the try_block's terminator to TailCall it.
-    let mut clause_conts: Vec<ContFn> = Vec::with_capacity(clauses.len());
-    for (i, clause) in clauses.iter().enumerate() {
-        if let Some(_g) = &clause.guard {
-            return Err(LowerError::Unsupported {
-                span: clause.span,
-                what: "case guard (deferred)".into(),
+    let mut clause_conts: Vec<Option<ContFn>> = (0..clauses.len()).map(|_| None).collect();
+    {
+        let clauses_ref = clauses;
+        let clause_conts_ref = &mut clause_conts;
+        let saved_env_ref = &saved_env;
+        let saved_order_ref = &saved_order;
+        let mut cb = |ctx: &mut LowerCtx,
+                      body_id: BodyId,
+                      bindings: Vec<(String, Var)>,
+                      _preconds: Vec<(Var, crate::types::Descr)>,
+                      guard: Option<crate::ast::Spanned<crate::ast::Expr>>,
+                      fall_block: BlockId|
+         -> Result<(), LowerError> {
+            let i = body_id as usize;
+            let clause = &clauses_ref[i];
+            // Reset env to outer scope (drop previous leaf's bindings),
+            // then install this leaf's bindings on top.
+            ctx.env = saved_env_ref.clone();
+            ctx.env_order = saved_order_ref.clone();
+            for (name, var) in &bindings {
+                ctx.bind(name, *var);
+            }
+            if let Some(g) = &guard {
+                let guard_var = lower_expr(ctx, g, false)?;
+                let body_b = ctx.cur_mut().block(vec![]);
+                ctx.set_term(Term::If(guard_var, body_b, fall_block));
+                ctx.cur_block = Some(body_b);
+                ctx.terminated = false;
+            }
+            let clause_cont = mint_cont_fn(ctx, format!("case_clause_{}", i), clause.span);
+            let captures = ctx.captured_snapshot();
+            let capture_vars: Vec<Var> = captures.iter().map(|(_, v)| *v).collect();
+            ctx.set_term(Term::TailCall {
+                callee: clause_cont.id,
+                args: capture_vars,
+                is_back_edge: false,
             });
-        }
-        let next = try_blocks.get(i + 1).copied().unwrap_or(fail_block);
-        ctx.cur_block = Some(try_blocks[i]);
-        ctx.env = saved_env.clone();
-        ctx.env_order = saved_order.clone();
-        let subj_v = ctx.unpark(&subject_park);
-        // Re-park so subsequent try-blocks still see the subject.
-        let inner_park = ctx.park(subj_v);
-        lower_pattern_bind(ctx, subj_v, &clause.pattern, next)?;
-        ctx.unbind(&inner_park);
-
-        // Mint the clause-cont with the *current* env (outer + bindings
-        // from pattern). Set the post-bind block's terminator to TailCall
-        // this cont with the current captured Vars.
-        let clause_cont = mint_cont_fn(ctx, format!("case_clause_{}", i), clause.span);
-        let captures = ctx.captured_snapshot();
-        let capture_vars: Vec<Var> = captures.iter().map(|(_, v)| *v).collect();
-        ctx.set_term(Term::TailCall {
-            callee: clause_cont.id,
-            args: capture_vars,
-            is_back_edge: false,
-        });
-        clause_conts.push(clause_cont);
+            ctx.terminated = true;
+            clause_conts_ref[i] = Some(clause_cont);
+            Ok(())
+        };
+        lower_pattern_matrix(ctx, matrix, fail_block, &mut cb)?;
     }
 
-    // Subject park is no longer needed in outer fn.
-    ctx.unbind(&subject_park);
-
-    // Lower each clause body in its cont fn. The first switch finalizes
-    // the outer fn (fully populated now). Each subsequent switch
-    // finalizes the previous clause's cont (or its CPS-split descendant).
     for (i, clause) in clauses.iter().enumerate() {
-        let _ = switch_to_cont_fn(ctx, &clause_conts[i], 0);
+        let Some(cont) = clause_conts[i].clone() else {
+            continue;
+        };
+        let _ = switch_to_cont_fn(ctx, &cont, 0);
         let result = lower_expr(ctx, &clause.body, /* is_tail */ true)?;
         finalize_arm(ctx, result, join_opt.as_ref());
     }
@@ -2850,9 +2893,6 @@ fn lower_case(
         let extras = switch_to_cont_fn(ctx, join, 1);
         Ok(extras[0])
     } else {
-        // Tail position: all clauses finalized via Return. ctx.cur is
-        // the last clause cont (or its CPS-split descendant). Caller
-        // finalizes it.
         ctx.terminated = true;
         Ok(Var(0))
     }
