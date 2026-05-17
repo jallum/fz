@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-17T16:05:05Z",
+  "description": "## Optimization-quality signal\n\nNow that any-key is the soundness floor, specialization is a pure\noptimization. We want a knob to tell us \"this call fell through to the\ngeneric dispatch when a narrower spec exists or could have existed.\"\n\n## Change\n\nIn `spec_check.rs` (or as a pass invoked at end-of-compile when\n`--Wspec-quality` is set):\n- Walk every direct-call site in every spec body.\n- For each, recompute the codegen's Descr query (`block_env`-narrowed args).\n- Run `resolve`; if the chosen spec is the any-key AND there exists a\n  narrower registered spec keyed strictly above `[any; arity]`, emit:\n  ```\n  warning[spec-quality/any-key-fallback]: call to `f/2` dispatched to any-key spec\n    --\u003e file:line\n     | the typer registered narrower specs but none covers the inferred call-site Descrs\n     = note: dispatch is correct but may be slower; consider whether the typer's\n       narrowing is incomplete at this call site\n  ```\n\nGated behind `--Wspec-quality` (off by default; CI can enable for regression\ncatching).\n\n## Tests\n\n- A fixture with a deliberately-pessimized typing (e.g. function called with\n  `any` because it's stored in a heterogeneous list) emits the warning.\n- The existing fixture matrix passes with the flag off.\n- A new `spec_quality_clean` test asserts the matrix passes with the flag on\n  for fixtures we expect to be fully specialized (`vr*`).\n\n## Blocked by fz-aiz.5. P3 — nice-to-have, not required for soundness.",
+  "id": "fz-aiz.6",
+  "labels": [],
+  "parent": "fz-aiz",
+  "priority": 3,
+  "status": "open",
+  "title": "fz-aiz.6: --Wspec-quality diagnostic when call dispatches to any-key",
+  "type": "task",
+  "updated_at": "2026-05-17T16:05:05Z"
+}
