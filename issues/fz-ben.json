@@ -2,13 +2,14 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-05-17T04:47:38Z",
   "created": "2026-05-17T03:35:15Z",
   "description": "Independent of fz-qbg. Latent silent-UB bug.\n\n## Symptom\n\n```fz\nfn f(v) do\n  with {:ok, x} \u003c- v do x else :err -\u003e 0 end\nend\nfn main(), do: print(f(:err))\n```\n\nExpected stdout: `0`.\nActual stdout: empty (sometimes SIGSEGV depending on heap layout).\n\n## Diagnosis\n\n`lower_pattern_bind`'s `Pattern::Tuple` case (`src/ir_lower.rs:1787`)\nunconditionally emits `Prim::TupleField(subject, i)` for each element\nWITHOUT first emitting a TypeTest to confirm `subject` is a tuple of\nthe expected arity. The codegen then emits `load notrap aligned vN+16`\non the subject — which for a non-tuple (e.g. an atom) reads heap\ngarbage. `notrap` suppresses the SIGSEGV; the program silently\ncontinues with corrupted values, sometimes crashing later.\n\n## Fix\n\nThe `Pattern::List` case at `:1794` already does this correctly using\n`Prim::ListIsNil` + `Term::If` to gate head/tail projection. Apply\nthe same shape to `Pattern::Tuple`:\n\n```rust\nPattern::Tuple(elems) =\u003e {\n    let n = elems.len();\n    let tuple_descr = crate::types::Descr::tuple_of(vec![crate::types::Descr::any(); n]);\n    let test = ctx.let_(Prim::TypeTest(subject, Box::new(tuple_descr)));\n    let project_b = ctx.cur_mut().block(vec![]);\n    ctx.set_term(Term::If(test, project_b, fail_block));\n    ctx.cur_block = Some(project_b);\n    for (i, elem_pat) in elems.iter().enumerate() {\n        let fv = ctx.let_(Prim::TupleField(subject, i as u32));\n        lower_pattern_bind(ctx, fv, elem_pat, fail_block)?;\n    }\n    Ok(())\n}\n```\n\n(`Descr::tuple_of(vec![Descr::any(); n])` is \"any tuple of arity N\";\nmatches when the subject is a tuple with that many elements, fields\nunconstrained.)\n\n## What's removed\n\n- The unguarded TupleField projection for non-tuple subjects.\n- Silent garbage-read behavior; the `notrap` flag in codegen becomes\n  provably unreachable from valid IR (could be tightened to `trap`\n  later as a separate cleanup, but not in scope here).\n\n## Acceptance\n\n- Above repro plus the more complex `try_div` variant from fz-duq.4's\n  investigation produce correct output.\n- New fixture `fixtures/with_tuple_pattern_mismatch/` locks in the\n  behavior across interp + JIT.\n- All existing tests stay green (no fixture today uses tuple-pattern\n  on non-tuple subjects, so no behavior change for existing programs).",
   "id": "fz-ben",
   "labels": [],
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "lower_pattern_bind: TypeTest tuple before field projection",
   "type": "bug",
-  "updated_at": "2026-05-17T03:35:15Z"
+  "updated_at": "2026-05-17T04:47:38Z"
 }
