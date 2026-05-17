@@ -160,16 +160,18 @@ pub extern "C" fn fz_aot_setup(
 /// point at `len` consecutive `u32`s when len > 0.
 #[unsafe(no_mangle)]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn fz_aot_register_tuple_schemas(
-    proc: *mut Process,
-    arities: *const u32,
-    len: u32,
-) {
-    assert!(!proc.is_null(), "fz_aot_register_tuple_schemas: null process");
+pub extern "C" fn fz_aot_register_tuple_schemas(proc: *mut Process, arities: *const u32, len: u32) {
+    assert!(
+        !proc.is_null(),
+        "fz_aot_register_tuple_schemas: null process"
+    );
     if len == 0 {
         return;
     }
-    assert!(!arities.is_null(), "fz_aot_register_tuple_schemas: null arities with len > 0");
+    assert!(
+        !arities.is_null(),
+        "fz_aot_register_tuple_schemas: null arities with len > 0"
+    );
     let process = unsafe { &mut *proc };
     let registry = process.heap.schemas_registry();
     let mut reg = registry.borrow_mut();

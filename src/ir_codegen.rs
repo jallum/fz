@@ -1399,8 +1399,14 @@ impl Backend for AotBackend {
         let reg_tuples_sig = sig1(&[types::I64, types::I64, types::I32], &[]);
         let reg_tuples_id = self
             .omod
-            .declare_function("fz_aot_register_tuple_schemas", Linkage::Import, &reg_tuples_sig)
-            .map_err(|e| CodegenError::new(format!("declare fz_aot_register_tuple_schemas: {}", e)))?;
+            .declare_function(
+                "fz_aot_register_tuple_schemas",
+                Linkage::Import,
+                &reg_tuples_sig,
+            )
+            .map_err(|e| {
+                CodegenError::new(format!("declare fz_aot_register_tuple_schemas: {}", e))
+            })?;
 
         let (tuple_arities_data, tuple_arities_len): (Option<DataId>, u32) =
             if meta.tuple_arities.is_empty() {
