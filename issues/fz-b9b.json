@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-a5z"
   ],
@@ -11,8 +11,8 @@
   "id": "fz-b9b",
   "labels": [],
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "fz-7ot.2: demolition — collapse to one spec per fn",
   "type": "task",
-  "updated_at": "2026-05-17T23:33:36Z"
+  "updated_at": "2026-05-17T23:47:49Z"
 }
