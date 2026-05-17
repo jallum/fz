@@ -1938,6 +1938,24 @@ fn lower_pattern_bind(
             lower_pattern_bind(ctx, subject, inner, fail_block)
         }
         Pattern::Tuple(elems) => {
+            // fz-ben — TypeTest tuple-of-arity-N before projecting fields.
+            // Pre-fix this branch unconditionally emitted
+            // `Prim::TupleField(subject, i)`, which the codegen lowered to
+            // `load notrap aligned subject+offset`. For non-tuple subjects
+            // (e.g. an atom flowing into `{:ok, x} <- :err`), `notrap`
+            // suppresses the SIGSEGV but reads heap garbage; the program
+            // silently propagates corrupted values. Mirror the List case's
+            // discipline: gate projection on a type test.
+            let n = elems.len();
+            let tuple_descr = crate::types::Descr::tuple_of(
+                std::iter::repeat_with(crate::types::Descr::any)
+                    .take(n)
+                    .collect::<Vec<_>>(),
+            );
+            let test = ctx.let_(Prim::TypeTest(subject, Box::new(tuple_descr)));
+            let project_b = ctx.cur_mut().block(vec![]);
+            ctx.set_term(Term::If(test, project_b, fail_block));
+            ctx.cur_block = Some(project_b);
             for (i, elem_pat) in elems.iter().enumerate() {
                 let fv = ctx.let_(Prim::TupleField(subject, i as u32));
                 lower_pattern_bind(ctx, fv, elem_pat, fail_block)?;
@@ -2808,6 +2826,25 @@ mod tests {
                print(classify(5))\n\
              end",
         );
+    }
+
+    #[test]
+    fn fz_ben_tuple_pattern_typetest_routes_non_tuple_to_else() {
+        // fz-ben — `{:ok, x}` pattern on `:err` (a non-tuple). Pre-fix,
+        // lower_pattern_bind for Pattern::Tuple unconditionally emitted
+        // `Prim::TupleField(:err, 0)`, which codegen lowered to a
+        // `load notrap aligned :err+16` reading heap garbage. With
+        // `notrap` swallowing the SIGSEGV, this fixture silently failed
+        // (exit 0, no stdout). After fix: a TypeTest gates the
+        // projection — non-tuple subjects route to the fail_block, which
+        // dispatches the else-clause `:err -> 0`.
+        let out = run_and_capture(
+            "fn f(v) do\n\
+               with {:ok, x} <- v do x else :err -> 0 end\n\
+             end\n\
+             fn main() do print(f(:err)) end",
+        );
+        assert_eq!(out, "0");
     }
 
     #[test]
