@@ -1,0 +1,10 @@
+fn helper(), do: 7
+
+fn pick(n) do
+  if n == 0 do helper() else 99 end
+end
+
+fn main() do
+  print(pick(0))
+  print(pick(1))
+end

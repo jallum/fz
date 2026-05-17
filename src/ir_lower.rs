@@ -476,7 +476,20 @@ pub fn lower_program_full(prog: &Program) -> Result<(Module, AtomTable), LowerEr
             }
         }
     }
-    // All FnIds assigned so far belong to the prelude.
+    // fz-qbg.2 — Lower prelude bodies *before* registering user FnIds.
+    // Prelude lowering may mint continuation fns (multi-clause prelude
+    // fns like `print` and `vec_get` now route each clause through a
+    // body cont fn). Doing user registration AFTER prelude body lowering
+    // keeps user FnIds contiguous and all >= prelude_fn_id_cutoff —
+    // so `build_source_info` correctly excludes every prelude-origin
+    // FnId (source plus minted conts) from the user var-meta table.
+    for item in all_items.iter().take(runtime_item_count) {
+        if let Item::Fn(fn_def) = item.as_ref()
+            && fn_def.extern_abi.is_none()
+        {
+            lower_fn(&mut ctx, fn_def)?;
+        }
+    }
     ctx.prelude_fn_id_cutoff = ctx.mb.next_fn_id();
 
     for item in all_items.iter().skip(runtime_item_count) {
@@ -527,8 +540,10 @@ pub fn lower_program_full(prog: &Program) -> Result<(Module, AtomTable), LowerEr
         }
     }
 
-    // Second pass: lower each fn body.
-    for item in &all_items {
+    // Second pass: lower user fn bodies. (Prelude bodies were already
+    // lowered above, before user FnId registration — see the fz-qbg.2
+    // note for why.)
+    for item in all_items.iter().skip(runtime_item_count) {
         if let Item::Fn(fn_def) = item.as_ref()
             && fn_def.extern_abi.is_none()
         {
@@ -918,17 +933,121 @@ fn emit_param_type_guards(
     Ok(())
 }
 
+/// fz-qbg.2 — detect whether a clause body's lowering would CPS-split.
+/// A body lowered at `is_tail=true` cps-splits iff it contains a `Receive`
+/// call OR a `Call` in non-tail position (i.e., as an argument / operand
+/// to something else). Bodies that are "safe" stay block-inline; only
+/// CPS-splitting bodies pay for a per-clause continuation fn.
+fn body_might_cps_split(body: &Spanned<Expr>) -> bool {
+    fn is_receive_call(e: &Spanned<Expr>) -> bool {
+        if let Expr::Call(target, _) = &e.node
+            && let Expr::Var(name) = &target.node
+        {
+            return name == "receive";
+        }
+        false
+    }
+    // walk(e, in_tail): true ⇒ this subexpression's lowering would
+    // cps_split somewhere.
+    fn walk(e: &Spanned<Expr>, in_tail: bool) -> bool {
+        // receive() always cps-splits, regardless of position.
+        if is_receive_call(e) {
+            return true;
+        }
+        match &e.node {
+            // Leaves never cps-split.
+            Expr::Int(_)
+            | Expr::Float(_)
+            | Expr::Str(_)
+            | Expr::Atom(_)
+            | Expr::Bool(_)
+            | Expr::Nil
+            | Expr::Var(_)
+            | Expr::Lambda(_, _)
+            | Expr::Quote(_)
+            | Expr::Unquote(_) => false,
+            // Calls: at tail, the top-level call becomes a TailCall (no
+            // cps-split). Non-tail Calls cps-split. Args + target are
+            // always non-tail.
+            Expr::Call(target, args) => {
+                if !in_tail {
+                    return true;
+                }
+                walk(target, false) || args.iter().any(|a| walk(a, false))
+            }
+            // Operators and projections: operands are always non-tail.
+            Expr::BinOp(_, l, r) => walk(l, false) || walk(r, false),
+            Expr::UnOp(_, inner) => walk(inner, false),
+            Expr::Index(m, k) => walk(m, false) || walk(k, false),
+            // Control flow: cond/subject non-tail; arms inherit parent's tail.
+            Expr::If(cond, then_e, else_opt) => {
+                walk(cond, false)
+                    || walk(then_e, in_tail)
+                    || else_opt.as_ref().is_some_and(|e| walk(e, in_tail))
+            }
+            Expr::Case(subject, clauses) => {
+                walk(subject, false)
+                    || clauses.iter().any(|c| {
+                        c.guard.as_ref().is_some_and(|g| walk(g, false)) || walk(&c.body, in_tail)
+                    })
+            }
+            Expr::Cond(arms) => arms
+                .iter()
+                .any(|(test, body)| walk(test, false) || walk(body, in_tail)),
+            // `with` has CPS-split potential in any binding expr; play
+            // conservative.
+            Expr::With(_, _, _) => true,
+            // Block: last expr inherits tail, others are non-tail.
+            Expr::Block(exprs) => {
+                let last_idx = exprs.len().saturating_sub(1);
+                exprs
+                    .iter()
+                    .enumerate()
+                    .any(|(i, e)| walk(e, in_tail && i == last_idx))
+            }
+            Expr::Match(_, e) => walk(e, false),
+            // Collections: every element is non-tail.
+            Expr::List(elems, tail) => {
+                elems.iter().any(|e| walk(e, false))
+                    || tail.as_ref().is_some_and(|t| walk(t, false))
+            }
+            Expr::Tuple(elems) | Expr::VecLit(_, elems) => elems.iter().any(|e| walk(e, false)),
+            Expr::Map(entries) => entries
+                .iter()
+                .any(|(k, v)| walk(k, false) || walk(v, false)),
+            Expr::MapUpdate(base, entries) => {
+                walk(base, false)
+                    || entries
+                        .iter()
+                        .any(|(k, v)| walk(k, false) || walk(v, false))
+            }
+            Expr::Bitstring(fields) => fields.iter().any(|f| walk(&f.value, false)),
+        }
+    }
+    walk(body, /* in_tail */ true)
+}
+
 fn lower_multi_clause(
     ctx: &mut LowerCtx,
     fn_def: &FnDef,
     param_vars: &[Var],
     entry: BlockId,
 ) -> Result<(), LowerError> {
-    // Plan: entry already exists, current_block points to it.
-    // For each clause, allocate a "try" block (no params; relies on params being
-    // available via Var ids that are stable within this FnIr). Entry Goto's
-    // first try block. Each try block tests its patterns; on success, runs the
-    // body and returns; on fail, Goto's the next try block (or fail block).
+    // fz-qbg.2 — per-clause body continuation fns, mirroring fz-duq's
+    // if/case/cond/with shape. The try_blocks + fail_block cascade stays
+    // intra-fn (pattern bind and guard tests can't CPS-split — they only
+    // emit TypeTest / projection / If). After pattern bind succeeds, the
+    // try_block TailCalls a per-clause body cont fn (`fn_clause_N`) with
+    // the post-pattern env (outer + pattern bindings). The body lowers in
+    // that cont fn so any internal CPS-split stays confined to that
+    // clause's lineage; the source-level fn's outer FnIr is fully
+    // populated (try cascade + arm TailCalls) before any body lowers.
+    //
+    // Why the typer cooperates now: fz-qbg.1 made the typer's call graph
+    // structural rather than any-key-spec-gated. With that, outer ↔
+    // fn_clause_N edges show up in the SCC, widening fires at the
+    // per-SCC fixpoint, and the recursive callsite's broadened key
+    // (e.g. `[int, int]` for `count`'s tail) lands in the spec set.
 
     // Allocate try blocks up front so terminators can reference them.
     let try_blocks: Vec<BlockId> = (0..fn_def.clauses.len())
@@ -936,7 +1055,7 @@ fn lower_multi_clause(
         .collect();
     let fail_block = ctx.cur_mut().block(vec![]);
 
-    // Seal fail_block FIRST so CPS-split during clause body lowering can't orphan it.
+    // Seal fail_block.
     ctx.cur_block = Some(fail_block);
     let fc = ctx.atoms.intern("function_clause");
     let v = ctx.let_(Prim::Const(Const::Atom(fc)));
@@ -946,6 +1065,16 @@ fn lower_multi_clause(
     ctx.cur_mut()
         .set_terminator(entry, Term::Goto(try_blocks[0], vec![]));
 
+    // Two-pass: first lower pattern bind + guard for each clause in its
+    // try_block. For clauses whose body CAN cps-split (contains Receive
+    // or a non-tail Call), mint a per-clause body cont fn — try_block
+    // TailCalls it. For "safe" clauses (body cps-split-free), lower the
+    // body inline in the try_block and finalize with Return — preserves
+    // the pre-fz-qbg.2 block-shape, so existing fixture goldens with
+    // pure-tail-call recursive multi-clause (fib_tailrec, count, etc.)
+    // remain byte-identical post-inline. The wrap is only paid by
+    // clauses that need it.
+    let mut clause_conts: Vec<Option<ContFn>> = Vec::with_capacity(fn_def.clauses.len());
     for (i, clause) in fn_def.clauses.iter().enumerate() {
         let next = try_blocks.get(i + 1).copied().unwrap_or(fail_block);
         ctx.cur_block = Some(try_blocks[i]);
@@ -963,9 +1092,41 @@ fn lower_multi_clause(
             ctx.cur_block = Some(body_b);
             ctx.terminated = false;
         }
+
+        if body_might_cps_split(&clause.body) {
+            // Wrap in a cont fn: body lowers later, in its own fn.
+            let cont = mint_cont_fn(ctx, format!("fn_clause_{}", i), clause.span);
+            let captures = ctx.captured_snapshot();
+            let capture_vars: Vec<Var> = captures.iter().map(|(_, v)| *v).collect();
+            ctx.set_term(Term::TailCall {
+                callee: cont.id,
+                args: capture_vars,
+                is_back_edge: false,
+            });
+            clause_conts.push(Some(cont));
+        } else {
+            // Safe to lower inline (block-join). Body is finalised here
+            // with Return — the try_block becomes a leaf-ending block in
+            // the source-level fn.
+            let result = lower_expr(ctx, &clause.body, /* is_tail */ true)?;
+            if !ctx.terminated {
+                ctx.set_term(Term::Return(result));
+                ctx.terminated = true;
+            }
+            clause_conts.push(None);
+        }
+    }
+
+    // Lower each wrapped clause body in its cont fn.
+    for (i, clause) in fn_def.clauses.iter().enumerate() {
+        let Some(cont) = clause_conts[i].clone() else {
+            continue;
+        };
+        let _ = switch_to_cont_fn(ctx, &cont, 0);
         let result = lower_expr(ctx, &clause.body, /* is_tail */ true)?;
         if !ctx.terminated {
             ctx.set_term(Term::Return(result));
+            ctx.terminated = true;
         }
     }
 
@@ -1049,7 +1210,7 @@ fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -> Result<Va
             Ok(result)
         }
 
-        Expr::If(cond, then_e, else_opt) => lower_if(ctx, cond, then_e, else_opt, is_tail),
+        Expr::If(cond, then_e, else_opt) => lower_if(ctx, cond, then_e, else_opt, is_tail, sp),
 
         Expr::Match(pat, expr) => {
             let v = lower_expr(ctx, expr, false)?;
@@ -1196,10 +1357,10 @@ fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -> Result<Va
 
         Expr::Lambda(params, body) => lower_lambda(ctx, params, body),
 
-        Expr::Case(subject, clauses) => lower_case(ctx, subject, clauses, is_tail),
-        Expr::Cond(arms) => lower_cond(ctx, arms, is_tail),
+        Expr::Case(subject, clauses) => lower_case(ctx, subject, clauses, is_tail, sp),
+        Expr::Cond(arms) => lower_cond(ctx, arms, is_tail, sp),
         Expr::With(bindings, body, else_clauses) => {
-            lower_with(ctx, bindings, body, else_clauses, is_tail)
+            lower_with(ctx, bindings, body, else_clauses, is_tail, sp)
         }
         Expr::Map(entries) => lower_map(ctx, entries),
         Expr::MapUpdate(base, entries) => lower_map_update(ctx, base, entries),
@@ -1220,41 +1381,260 @@ fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -> Result<Va
     // direct branch into it before this match.
 }
 
+// -----------------------------------------------------------------------------
+// fz-duq.1: branching-construct join helpers
+// -----------------------------------------------------------------------------
+//
+// `if`/`case`/`cond`/`with` need to join multiple arm bodies at a single
+// "rest of surrounding code" point. The pre-fz-duq design used a join
+// *block* inside the current fn — fragile because a non-tail Call in any
+// arm body triggers `cps_split_call`, which finalizes the current fn,
+// stranding the join block in a built-and-immutable FnIr.
+//
+// The fix mirrors what `cps_split_call` already does for non-tail Calls:
+// each branching construct uses *continuation fns* as joins. Each arm is
+// itself a continuation fn so that arm-internal CPS-splits stay confined
+// to their own arm's lineage and never finalize the construct's outer
+// fn prematurely.
+//
+// The three helpers below are used by `lower_if`/`lower_case`/`lower_cond`/
+// `lower_with`:
+//
+//   * `mint_cont_fn`           — allocate a FnId + snapshot outer env.
+//   * `switch_to_cont_fn`      — finalize current fn, switch to the cont's
+//                                builder, rebind env to cap params.
+//   * `finalize_arm`           — at arm's end, emit the right terminator
+//                                (Return for tail position, TailCall to
+//                                the join fn for non-tail position, or
+//                                nothing if the arm self-terminated).
+//
+// Post-inline, these collapse: a one-call-site cont fn whose body is just
+// `Return(param)` gets inlined back by `inline_tail_calls_once`, so the
+// final CLIF for a non-CPS-splitting arm is the same as today's block-join
+// shape (often tighter — see fz-duq.2 acceptance).
+
+/// Handle to a freshly minted continuation fn (per-arm body or post-construct
+/// join). The fn's builder is not yet created; the caller switches into it
+/// via `switch_to_cont_fn` when ready to lower its body.
+#[derive(Debug, Clone)]
+struct ContFn {
+    id: FnId,
+    name: String,
+    /// Names + outer-fn Vars of locals captured at the time the fn was
+    /// minted. These names become the cont fn's entry params (after the
+    /// extras). The Vars are the *outer-fn* Vars (used by callers when
+    /// constructing the TailCall args into this fn).
+    outer_captured: Vec<(String, Var)>,
+    span: Span,
+}
+
+/// Mint a fresh continuation FnId, snapshot the outer env at this point,
+/// and record the span for diagnostics. The builder is created lazily by
+/// `switch_to_cont_fn`.
+fn mint_cont_fn(ctx: &mut LowerCtx, name: impl Into<String>, span: Span) -> ContFn {
+    let id = ctx.mb.fresh_fn_id();
+    ctx.fn_spans.insert(id, span);
+    ContFn {
+        id,
+        name: name.into(),
+        outer_captured: ctx.captured_snapshot(),
+        span,
+    }
+}
+
+/// Finalize ctx.cur (adding it to the module) and switch into a fresh
+/// builder for `cont`. Allocates an entry block with params:
+/// `[extras..., captured...]`. Returns the Vars for the extras (for a
+/// per-arm fn there are 0 extras; for a join fn the single extra is the
+/// joined value the arms passed in). The env is rebound from
+/// `cont.outer_captured`'s names to the fresh captured-param Vars in the
+/// new fn.
+fn switch_to_cont_fn(ctx: &mut LowerCtx, cont: &ContFn, extra_param_count: usize) -> Vec<Var> {
+    // Finalize current fn.
+    let done = ctx
+        .cur
+        .take()
+        .expect("switch_to_cont_fn: no current fn")
+        .build();
+    ctx.mb.add_fn(done);
+
+    // Build new fn.
+    let mut kbuilder = FnBuilder::new(cont.id, cont.name.clone());
+
+    // Entry params: extras (e.g. join_param) first, then captured renames.
+    let extras: Vec<Var> = (0..extra_param_count)
+        .map(|_| kbuilder.fresh_var())
+        .collect();
+    let cap_params: Vec<Var> = cont
+        .outer_captured
+        .iter()
+        .map(|_| kbuilder.fresh_var())
+        .collect();
+    let mut entry_params = extras.clone();
+    entry_params.extend(cap_params.clone());
+    let entry = kbuilder.block(entry_params);
+
+    ctx.cur = Some(kbuilder);
+    ctx.cur_fn_id = Some(cont.id);
+    ctx.cur_block = Some(entry);
+    ctx.terminated = false;
+
+    // Var meta for extras + captured renames so diagnostics can attribute
+    // them to the construct's span.
+    for v in &extras {
+        ctx.var_meta
+            .insert((cont.id, *v), (cont.span, String::new()));
+    }
+    for v in &cap_params {
+        ctx.var_meta
+            .insert((cont.id, *v), (cont.span, String::new()));
+    }
+
+    // Rebind env: clear, then map each captured name to its new param Var.
+    ctx.env.clear();
+    ctx.env_order.clear();
+    for ((name, _outer_v), nv) in cont.outer_captured.iter().zip(&cap_params) {
+        ctx.bind(name, *nv);
+    }
+
+    extras
+}
+
+/// At the end of an arm's body, emit the appropriate terminator.
+///
+/// - If the arm self-terminated (Return / Halt / inner TailCall),
+///   `ctx.terminated` is already true: emit nothing.
+/// - If `join` is `Some`, emit `TailCall(join.id, [arm_value, ...captured])`.
+///   Captured Vars are re-resolved from `ctx.env` at *this* moment because
+///   ctx.cur may have changed (via internal CPS-splits) since the arm
+///   started — the captured names point to the current fn's Vars now.
+/// - If `join` is `None` (tail position), emit `Return(arm_value)`.
+///
+/// Sets `ctx.terminated = true` after emission.
+fn finalize_arm(ctx: &mut LowerCtx, arm_value: Var, join: Option<&ContFn>) {
+    if ctx.terminated {
+        return;
+    }
+    if let Some(join) = join {
+        let mut tail_args = Vec::with_capacity(1 + join.outer_captured.len());
+        tail_args.push(arm_value);
+        for (name, _outer_v) in &join.outer_captured {
+            let v = ctx.env.get(name).copied().unwrap_or_else(|| {
+                panic!(
+                    "finalize_arm: captured name `{}` not in env at arm-end",
+                    name
+                )
+            });
+            tail_args.push(v);
+        }
+        ctx.set_term(Term::TailCall {
+            callee: join.id,
+            args: tail_args,
+            is_back_edge: false,
+        });
+    } else {
+        ctx.set_term(Term::Return(arm_value));
+    }
+    ctx.terminated = true;
+}
+
 fn lower_if(
     ctx: &mut LowerCtx,
     cond: &Spanned<Expr>,
     then_e: &Spanned<Expr>,
     else_opt: &Option<Box<Spanned<Expr>>>,
     is_tail: bool,
+    if_span: Span,
 ) -> Result<Var, LowerError> {
+    // fz-duq.2 — Per-arm + (optional) join continuation fns, mirroring
+    // the CPS-split protocol from `cps_split_call`. The old block-join
+    // design corrupted control flow whenever an arm body contained a
+    // non-tail Call (Bug 2) and clobbered self-terminated arms with a
+    // Goto-to-join carrying the sentinel Var(0) (Bug 1).
+    //
+    // Shape (non-tail):
+    //   outer fn   : ... ; Term::If(cv, then_b, else_b)
+    //   outer.then_b: TailCall(then_fn, [...captures])
+    //   outer.else_b: TailCall(else_fn, [...captures])
+    //   then_fn     : lower(then_e, is_tail=true) ;
+    //                 finalize → TailCall(join_fn, [v, ...captures])
+    //   else_fn     : lower(else_e, is_tail=true) ;
+    //                 finalize → TailCall(join_fn, [v, ...captures])
+    //   join_fn     : becomes ctx.cur. param `join_param` carries the
+    //                 if's value. Surrounding code continues here.
+    //
+    // Shape (tail):
+    //   same as above, but no join_fn; arms finalize via Return(v).
+    //   ctx.terminated = true on return; ctx.cur is else_fn (or its
+    //   inner-CPS-split descendant) — surrounding lower_fn finalizes it.
+    //
+    // The inliner (`inline_tail_calls_once`) collapses the tiny per-arm
+    // and join fns post-IR-build; for non-CPS-splitting arms the
+    // final CLIF matches today's block-join shape (often tighter — no
+    // join block at all).
+
     let cv = lower_expr(ctx, cond, false)?;
+
+    let then_cont = mint_cont_fn(ctx, "if_then", if_span);
+    let else_cont = mint_cont_fn(ctx, "if_else", if_span);
+    let join_opt = if is_tail {
+        None
+    } else {
+        Some(mint_cont_fn(ctx, "if_join", if_span))
+    };
+
+    // Allocate arm blocks in the outer (current) fn.
     let then_b = ctx.cur_mut().block(vec![]);
     let else_b = ctx.cur_mut().block(vec![]);
-    let join_param = ctx.cur_mut().fresh_var();
-    let join_b = ctx.cur_mut().block(vec![join_param]);
     ctx.set_term(Term::If(cv, then_b, else_b));
 
-    let saved_env = ctx.env.clone();
-    let saved_order = ctx.env_order.clone();
+    // Wire each arm block: TailCall its arm fn with the outer captures.
+    // Captures are snapshotted from the outer env *now*; they're the
+    // same set we passed to `mint_cont_fn` for then_cont/else_cont/join_opt
+    // (which all snapshot identical envs at this moment).
+    let captures = ctx.captured_snapshot();
+    let capture_vars: Vec<Var> = captures.iter().map(|(_, v)| *v).collect();
 
     ctx.cur_block = Some(then_b);
-    let tv = lower_expr(ctx, then_e, is_tail)?;
-    ctx.set_term(Term::Goto(join_b, vec![tv]));
-
-    ctx.env = saved_env.clone();
-    ctx.env_order = saved_order.clone();
+    ctx.set_term(Term::TailCall {
+        callee: then_cont.id,
+        args: capture_vars.clone(),
+        is_back_edge: false,
+    });
     ctx.cur_block = Some(else_b);
+    ctx.set_term(Term::TailCall {
+        callee: else_cont.id,
+        args: capture_vars,
+        is_back_edge: false,
+    });
+
+    // Move to then_fn. Finalizes the outer fn (which is now fully populated).
+    let _ = switch_to_cont_fn(ctx, &then_cont, 0);
+    let tv = lower_expr(ctx, then_e, /* is_tail */ true)?;
+    finalize_arm(ctx, tv, join_opt.as_ref());
+
+    // Move to else_fn. Finalizes then_fn (or its CPS-split descendant).
+    let _ = switch_to_cont_fn(ctx, &else_cont, 0);
     let ev = if let Some(else_e) = else_opt {
-        lower_expr(ctx, else_e, is_tail)?
+        lower_expr(ctx, else_e, /* is_tail */ true)?
     } else {
         ctx.let_(Prim::Const(Const::Nil))
     };
-    ctx.set_term(Term::Goto(join_b, vec![ev]));
+    finalize_arm(ctx, ev, join_opt.as_ref());
 
-    ctx.env = saved_env;
-    ctx.env_order = saved_order;
-    ctx.cur_block = Some(join_b);
-    Ok(join_param)
+    if let Some(join) = &join_opt {
+        // Non-tail: finalize else_fn, switch into join_fn. Surrounding
+        // code continues lowering into join_fn with `join_param` as the
+        // if's value.
+        let extras = switch_to_cont_fn(ctx, join, 1);
+        Ok(extras[0])
+    } else {
+        // Tail position: both arms finalized via Return. ctx.cur is
+        // else_fn (or a downstream CPS-split cont). Caller will finalize
+        // it via `ctx.cur.take().build()`.
+        ctx.terminated = true;
+        Ok(Var(0))
+    }
 }
 
 fn lower_lambda(
@@ -1558,6 +1938,24 @@ fn lower_pattern_bind(
             lower_pattern_bind(ctx, subject, inner, fail_block)
         }
         Pattern::Tuple(elems) => {
+            // fz-ben — TypeTest tuple-of-arity-N before projecting fields.
+            // Pre-fix this branch unconditionally emitted
+            // `Prim::TupleField(subject, i)`, which the codegen lowered to
+            // `load notrap aligned subject+offset`. For non-tuple subjects
+            // (e.g. an atom flowing into `{:ok, x} <- :err`), `notrap`
+            // suppresses the SIGSEGV but reads heap garbage; the program
+            // silently propagates corrupted values. Mirror the List case's
+            // discipline: gate projection on a type test.
+            let n = elems.len();
+            let tuple_descr = crate::types::Descr::tuple_of(
+                std::iter::repeat_with(crate::types::Descr::any)
+                    .take(n)
+                    .collect::<Vec<_>>(),
+            );
+            let test = ctx.let_(Prim::TypeTest(subject, Box::new(tuple_descr)));
+            let project_b = ctx.cur_mut().block(vec![]);
+            ctx.set_term(Term::If(test, project_b, fail_block));
+            ctx.cur_block = Some(project_b);
             for (i, elem_pat) in elems.iter().enumerate() {
                 let fv = ctx.let_(Prim::TupleField(subject, i as u32));
                 lower_pattern_bind(ctx, fv, elem_pat, fail_block)?;
@@ -1856,7 +2254,22 @@ fn lower_case(
     subject: &Spanned<Expr>,
     clauses: &[MatchClause],
     is_tail: bool,
+    case_span: Span,
 ) -> Result<Var, LowerError> {
+    // fz-duq.3 — Per-clause + optional join continuation fns. Same shape
+    // as lower_if's fix from fz-duq.2, generalized to N clauses with
+    // pattern bind on each.
+    //
+    // Outer fn: lowers subject, allocates try_blocks + fail_block. The
+    // try_blocks form a fail-cascade chain (pattern mismatch → next try
+    // block; final mismatch → fail_block → Halt(:case_clause)). At the
+    // end of each try_block (after pattern bind succeeded), the block
+    // TailCalls a per-clause continuation fn passing the current env
+    // (outer + pattern-bound names). The clause body lives in its own fn
+    // so any internal CPS-split stays confined to that clause's lineage.
+    //
+    // The clause-fn captures are snapshotted *after* pattern bind so the
+    // newly-bound pattern names are included.
     if clauses.is_empty() {
         return Err(LowerError::Unsupported {
             span: subject.span,
@@ -1866,13 +2279,11 @@ fn lower_case(
     let sv = lower_expr(ctx, subject, false)?;
     let subject_park = ctx.park(sv);
 
-    // Allocate try blocks + fail block + join block.
+    // Allocate try blocks + fail block in the current fn.
     let try_blocks: Vec<BlockId> = (0..clauses.len())
         .map(|_| ctx.cur_mut().block(vec![]))
         .collect();
     let fail_block = ctx.cur_mut().block(vec![]);
-    let join_param = ctx.cur_mut().fresh_var();
-    let join_b = ctx.cur_mut().block(vec![join_param]);
 
     // Seal fail block with halt :case_clause.
     let saved_block = ctx.cur_block();
@@ -1885,9 +2296,20 @@ fn lower_case(
     // Goto the first try block.
     ctx.set_term(Term::Goto(try_blocks[0], vec![]));
 
+    // Optional join fn — only for non-tail position.
+    let join_opt = if is_tail {
+        None
+    } else {
+        Some(mint_cont_fn(ctx, "case_join", case_span))
+    };
+
     let saved_env = ctx.env.clone();
     let saved_order = ctx.env_order.clone();
 
+    // Lower each clause's pattern bind in its try_block, then mint a
+    // per-clause cont fn (capturing the post-pattern-bind env) and set
+    // the try_block's terminator to TailCall it.
+    let mut clause_conts: Vec<ContFn> = Vec::with_capacity(clauses.len());
     for (i, clause) in clauses.iter().enumerate() {
         if let Some(_g) = &clause.guard {
             return Err(LowerError::Unsupported {
@@ -1899,32 +2321,65 @@ fn lower_case(
         ctx.cur_block = Some(try_blocks[i]);
         ctx.env = saved_env.clone();
         ctx.env_order = saved_order.clone();
-        ctx.terminated = false;
         let subj_v = ctx.unpark(&subject_park);
-        // Re-park so subsequent clauses still see it.
+        // Re-park so subsequent try-blocks still see the subject.
         let inner_park = ctx.park(subj_v);
         lower_pattern_bind(ctx, subj_v, &clause.pattern, next)?;
         ctx.unbind(&inner_park);
-        let result = lower_expr(ctx, &clause.body, is_tail)?;
-        if !ctx.terminated {
-            ctx.set_term(Term::Goto(join_b, vec![result]));
-        }
+
+        // Mint the clause-cont with the *current* env (outer + bindings
+        // from pattern). Set the post-bind block's terminator to TailCall
+        // this cont with the current captured Vars.
+        let clause_cont = mint_cont_fn(ctx, format!("case_clause_{}", i), clause.span);
+        let captures = ctx.captured_snapshot();
+        let capture_vars: Vec<Var> = captures.iter().map(|(_, v)| *v).collect();
+        ctx.set_term(Term::TailCall {
+            callee: clause_cont.id,
+            args: capture_vars,
+            is_back_edge: false,
+        });
+        clause_conts.push(clause_cont);
     }
 
+    // Subject park is no longer needed in outer fn.
     ctx.unbind(&subject_park);
-    ctx.env = saved_env;
-    ctx.env_order = saved_order;
-    ctx.cur_block = Some(join_b);
-    Ok(join_param)
+
+    // Lower each clause body in its cont fn. The first switch finalizes
+    // the outer fn (fully populated now). Each subsequent switch
+    // finalizes the previous clause's cont (or its CPS-split descendant).
+    for (i, clause) in clauses.iter().enumerate() {
+        let _ = switch_to_cont_fn(ctx, &clause_conts[i], 0);
+        let result = lower_expr(ctx, &clause.body, /* is_tail */ true)?;
+        finalize_arm(ctx, result, join_opt.as_ref());
+    }
+
+    if let Some(join) = &join_opt {
+        let extras = switch_to_cont_fn(ctx, join, 1);
+        Ok(extras[0])
+    } else {
+        // Tail position: all clauses finalized via Return. ctx.cur is
+        // the last clause cont (or its CPS-split descendant). Caller
+        // finalizes it.
+        ctx.terminated = true;
+        Ok(Var(0))
+    }
 }
 
 fn lower_cond(
     ctx: &mut LowerCtx,
     arms: &[(Spanned<Expr>, Spanned<Expr>)],
     is_tail: bool,
+    cond_span: Span,
 ) -> Result<Var, LowerError> {
-    // cond is right-associative: each arm is a fresh test/body; on test false,
-    // fall through to the next arm. If all fail, halt :cond_clause.
+    // fz-duq.4 — Per-arm continuation fns. Each arm fn evaluates its test
+    // and dispatches: true → lower body, finalize; false → TailCall the
+    // next arm fn (or the fail fn for the last arm). Because tests in
+    // cond can themselves contain calls (unlike `case` pattern bind),
+    // wrapping the entire arm in its own fn confines arm-internal
+    // CPS-splits — fixing the latent test-side analogue of fz-84m as well
+    // as the body side.
+    //
+    // The outer fn TailCalls the first arm. fail_cont halts `:cond_clause`.
     if arms.is_empty() {
         let cc = ctx.atoms.intern("cond_clause");
         let v = ctx.let_(Prim::Const(Const::Atom(cc)));
@@ -1933,43 +2388,72 @@ fn lower_cond(
         return Ok(Var(0));
     }
 
-    let join_param = ctx.cur_mut().fresh_var();
-    let join_b = ctx.cur_mut().block(vec![join_param]);
-    let arm_test_blocks: Vec<BlockId> = (0..arms.len())
-        .map(|_| ctx.cur_mut().block(vec![]))
+    let join_opt = if is_tail {
+        None
+    } else {
+        Some(mint_cont_fn(ctx, "cond_join", cond_span))
+    };
+
+    // Per-arm cont fns + fail cont.
+    let arm_conts: Vec<ContFn> = (0..arms.len())
+        .map(|i| mint_cont_fn(ctx, format!("cond_arm_{}", i), arms[i].0.span))
         .collect();
-    let fail_block = ctx.cur_mut().block(vec![]);
-    let saved_blk = ctx.cur_block();
-    ctx.cur_block = Some(fail_block);
+    let fail_cont = mint_cont_fn(ctx, "cond_fail", cond_span);
+
+    // Outer fn: TailCall first arm.
+    let captures = ctx.captured_snapshot();
+    let capture_vars: Vec<Var> = captures.iter().map(|(_, v)| *v).collect();
+    ctx.set_term(Term::TailCall {
+        callee: arm_conts[0].id,
+        args: capture_vars,
+        is_back_edge: false,
+    });
+
+    // Build each arm fn.
+    for (i, (test, body)) in arms.iter().enumerate() {
+        let next_id = arm_conts.get(i + 1).map(|c| c.id).unwrap_or(fail_cont.id);
+        let _ = switch_to_cont_fn(ctx, &arm_conts[i], 0);
+        let cv = lower_expr(ctx, test, false)?;
+
+        // body_b + fall_b in whatever fn ctx.cur is now (arm_conts[i] or
+        // a CPS-split descendant if the test contained a non-tail call).
+        let body_b = ctx.cur_mut().block(vec![]);
+        let fall_b = ctx.cur_mut().block(vec![]);
+        ctx.set_term(Term::If(cv, body_b, fall_b));
+
+        // fall_b: TailCall next arm (or fail). Captures are the current
+        // env, which includes the outer captures (rebound into the arm fn
+        // or its CPS-split descendant) plus any temps from test lowering.
+        let fall_captures = ctx.captured_snapshot();
+        let fall_capture_vars: Vec<Var> = fall_captures.iter().map(|(_, v)| *v).collect();
+        ctx.cur_block = Some(fall_b);
+        ctx.set_term(Term::TailCall {
+            callee: next_id,
+            args: fall_capture_vars,
+            is_back_edge: false,
+        });
+
+        // body_b: lower the body inline, finalize.
+        ctx.cur_block = Some(body_b);
+        ctx.terminated = false;
+        let result = lower_expr(ctx, body, /* is_tail */ true)?;
+        finalize_arm(ctx, result, join_opt.as_ref());
+    }
+
+    // Build fail_cont: halt :cond_clause.
+    let _ = switch_to_cont_fn(ctx, &fail_cont, 0);
     let cc = ctx.atoms.intern("cond_clause");
     let v = ctx.let_(Prim::Const(Const::Atom(cc)));
     ctx.set_term(Term::Halt(v));
-    ctx.cur_block = Some(saved_blk);
-    ctx.set_term(Term::Goto(arm_test_blocks[0], vec![]));
+    ctx.terminated = true;
 
-    let saved_env = ctx.env.clone();
-    let saved_order = ctx.env_order.clone();
-
-    for (i, (test, body)) in arms.iter().enumerate() {
-        let next = arm_test_blocks.get(i + 1).copied().unwrap_or(fail_block);
-        ctx.cur_block = Some(arm_test_blocks[i]);
-        ctx.env = saved_env.clone();
-        ctx.env_order = saved_order.clone();
-        ctx.terminated = false;
-        let cv = lower_expr(ctx, test, false)?;
-        let body_b = ctx.cur_mut().block(vec![]);
-        ctx.set_term(Term::If(cv, body_b, next));
-        ctx.cur_block = Some(body_b);
-        let result = lower_expr(ctx, body, is_tail)?;
-        if !ctx.terminated {
-            ctx.set_term(Term::Goto(join_b, vec![result]));
-        }
+    if let Some(join) = &join_opt {
+        let extras = switch_to_cont_fn(ctx, join, 1);
+        Ok(extras[0])
+    } else {
+        ctx.terminated = true;
+        Ok(Var(0))
     }
-
-    ctx.env = saved_env;
-    ctx.env_order = saved_order;
-    ctx.cur_block = Some(join_b);
-    Ok(join_param)
 }
 
 fn lower_with(
@@ -1978,70 +2462,40 @@ fn lower_with(
     body: &Spanned<Expr>,
     else_clauses: &[MatchClause],
     is_tail: bool,
+    with_span: Span,
 ) -> Result<Var, LowerError> {
-    // Plan: each binding in turn evaluates an expression. For Match(pat, expr):
-    //   evaluate expr; match pat against it; if mismatch, jump to a shared
-    //   "with_fail" join (carrying the unmatched value). If all match, evaluate
-    //   the body and goto join_b with its result. with_fail dispatches to
-    //   else_clauses (case-style on the unmatched value); if none match, halt
-    //   :with_clause.
-    let join_param = ctx.cur_mut().fresh_var();
-    let join_b = ctx.cur_mut().block(vec![join_param]);
+    // fz-duq.4 — `with` lowers into:
+    //   * Main path (in outer fn + CPS descendants): walk bindings.
+    //     Each Match binding emits a per-binding `mismatch_b` block whose
+    //     terminator TailCalls `with_fail_cont` (a continuation fn)
+    //     carrying the unmatched value plus the outer captures.
+    //   * `with_fail_cont` (cont fn): dispatches over else_clauses via
+    //     try_blocks + per-else-clause body cont fns. No else_clauses →
+    //     halt :with_clause.
+    //   * Main body: lowered inline at the end of the main path; on
+    //     fall-through (`!ctx.terminated`), finalize_arm emits either
+    //     Return (tail) or TailCall(with_join_cont, ...).
+    //
+    // The old design used a single `join_b` block + `with_fail` block in
+    // the outer fn; any CPS-split inside a binding/body/else-clause body
+    // stranded those blocks in a finalized fn. Continuation-fn shape
+    // makes the lowering robust to all CPS-split positions.
 
-    // with_fail receives the unmatched value as a block param, then dispatches.
-    let with_fail_param = ctx.cur_mut().fresh_var();
-    let with_fail = ctx.cur_mut().block(vec![with_fail_param]);
+    let join_opt = if is_tail {
+        None
+    } else {
+        Some(mint_cont_fn(ctx, "with_join", with_span))
+    };
+
+    // with_fail_cont: a continuation fn that receives (unmatched_value,
+    // ...outer_captures). Minted now so we know its FnId before walking
+    // bindings.
+    let with_fail_cont = mint_cont_fn(ctx, "with_fail", with_span);
 
     let saved_env = ctx.env.clone();
     let saved_order = ctx.env_order.clone();
 
-    // -- with_fail block: case-on the unmatched value.
-    {
-        let saved_blk = ctx.cur_block();
-        ctx.cur_block = Some(with_fail);
-        if else_clauses.is_empty() {
-            // No else: halt :with_clause (re-raise the unmatched value).
-            let cc = ctx.atoms.intern("with_clause");
-            let v = ctx.let_(Prim::Const(Const::Atom(cc)));
-            ctx.set_term(Term::Halt(v));
-        } else {
-            // Build try blocks + fail.
-            let try_blocks: Vec<BlockId> = (0..else_clauses.len())
-                .map(|_| ctx.cur_mut().block(vec![]))
-                .collect();
-            let else_fail = ctx.cur_mut().block(vec![]);
-            let saved_b2 = ctx.cur_block();
-            ctx.cur_block = Some(else_fail);
-            let cc = ctx.atoms.intern("with_clause");
-            let v = ctx.let_(Prim::Const(Const::Atom(cc)));
-            ctx.set_term(Term::Halt(v));
-            ctx.cur_block = Some(saved_b2);
-            ctx.set_term(Term::Goto(try_blocks[0], vec![]));
-            for (i, clause) in else_clauses.iter().enumerate() {
-                if let Some(_g) = &clause.guard {
-                    return Err(LowerError::Unsupported {
-                        span: clause.span,
-                        what: "with-else guard (deferred)".into(),
-                    });
-                }
-                let next = try_blocks.get(i + 1).copied().unwrap_or(else_fail);
-                ctx.cur_block = Some(try_blocks[i]);
-                ctx.env = saved_env.clone();
-                ctx.env_order = saved_order.clone();
-                ctx.terminated = false;
-                lower_pattern_bind(ctx, with_fail_param, &clause.pattern, next)?;
-                let result = lower_expr(ctx, &clause.body, is_tail)?;
-                if !ctx.terminated {
-                    ctx.set_term(Term::Goto(join_b, vec![result]));
-                }
-            }
-        }
-        ctx.cur_block = Some(saved_blk);
-        ctx.env = saved_env.clone();
-        ctx.env_order = saved_order.clone();
-    }
-
-    // -- main path: walk bindings.
+    // -- Main path: walk bindings.
     for binding in bindings {
         match binding {
             WithBinding::Bare(e) => {
@@ -2049,15 +2503,32 @@ fn lower_with(
             }
             WithBinding::Match(pat, e) => {
                 let v = lower_expr(ctx, e, false)?;
-                // Park v so that any CPS-split during pattern lowering rebinds it.
+                // Park v so any CPS-split during pattern lowering rebinds it.
                 let v_park = ctx.park(v);
-                // Custom mismatch path: build a per-binding "mismatch" block
-                // that gotos with_fail with the unmatched value.
+                // Per-binding mismatch block — TailCalls with_fail_cont
+                // with [unmatched, ...outer_captures]. Captures resolved
+                // by name (with_fail_cont's outer_captured) from current
+                // env, which may be a CPS-split descendant of outer.
                 let mismatch_b = ctx.cur_mut().block(vec![]);
                 let saved_blk = ctx.cur_block();
                 ctx.cur_block = Some(mismatch_b);
                 let v_in_mismatch = ctx.unpark(&v_park);
-                ctx.set_term(Term::Goto(with_fail, vec![v_in_mismatch]));
+                let mut args = Vec::with_capacity(1 + with_fail_cont.outer_captured.len());
+                args.push(v_in_mismatch);
+                for (name, _) in &with_fail_cont.outer_captured {
+                    let cv = ctx.env.get(name).copied().unwrap_or_else(|| {
+                        panic!(
+                            "lower_with: captured name `{}` not in env at mismatch",
+                            name
+                        )
+                    });
+                    args.push(cv);
+                }
+                ctx.set_term(Term::TailCall {
+                    callee: with_fail_cont.id,
+                    args,
+                    is_back_edge: false,
+                });
                 ctx.cur_block = Some(saved_blk);
                 let v_resolved = ctx.unpark(&v_park);
                 ctx.unbind(&v_park);
@@ -2066,15 +2537,78 @@ fn lower_with(
         }
     }
 
-    let result = lower_expr(ctx, body, is_tail)?;
-    if !ctx.terminated {
-        ctx.set_term(Term::Goto(join_b, vec![result]));
+    // Main body lowered inline. Finalize via join_opt or Return.
+    let result = lower_expr(ctx, body, /* is_tail */ true)?;
+    finalize_arm(ctx, result, join_opt.as_ref());
+
+    // -- Build with_fail_cont. Receives (unmatched_value, ...captures).
+    let extras = switch_to_cont_fn(ctx, &with_fail_cont, 1);
+    let unmatched_v = extras[0];
+
+    if else_clauses.is_empty() {
+        let cc = ctx.atoms.intern("with_clause");
+        let v = ctx.let_(Prim::Const(Const::Atom(cc)));
+        ctx.set_term(Term::Halt(v));
+        ctx.terminated = true;
+    } else {
+        // Inside with_fail_cont: try_blocks + else_fail block, intra-fn.
+        let try_blocks: Vec<BlockId> = (0..else_clauses.len())
+            .map(|_| ctx.cur_mut().block(vec![]))
+            .collect();
+        let else_fail = ctx.cur_mut().block(vec![]);
+        let saved_b = ctx.cur_block();
+        ctx.cur_block = Some(else_fail);
+        let cc = ctx.atoms.intern("with_clause");
+        let v = ctx.let_(Prim::Const(Const::Atom(cc)));
+        ctx.set_term(Term::Halt(v));
+        ctx.cur_block = Some(saved_b);
+        ctx.set_term(Term::Goto(try_blocks[0], vec![]));
+
+        let saved_env_2 = ctx.env.clone();
+        let saved_order_2 = ctx.env_order.clone();
+        let mut else_conts: Vec<ContFn> = Vec::with_capacity(else_clauses.len());
+        for (i, clause) in else_clauses.iter().enumerate() {
+            if let Some(_g) = &clause.guard {
+                return Err(LowerError::Unsupported {
+                    span: clause.span,
+                    what: "with-else guard (deferred)".into(),
+                });
+            }
+            let next = try_blocks.get(i + 1).copied().unwrap_or(else_fail);
+            ctx.cur_block = Some(try_blocks[i]);
+            ctx.env = saved_env_2.clone();
+            ctx.env_order = saved_order_2.clone();
+            lower_pattern_bind(ctx, unmatched_v, &clause.pattern, next)?;
+            // Mint per-else-clause cont with post-pattern-bind env.
+            let cont = mint_cont_fn(ctx, format!("with_else_{}", i), clause.span);
+            let captures = ctx.captured_snapshot();
+            let capture_vars: Vec<Var> = captures.iter().map(|(_, v)| *v).collect();
+            ctx.set_term(Term::TailCall {
+                callee: cont.id,
+                args: capture_vars,
+                is_back_edge: false,
+            });
+            else_conts.push(cont);
+        }
+
+        // Lower each else-clause body in its cont fn.
+        for (i, clause) in else_clauses.iter().enumerate() {
+            let _ = switch_to_cont_fn(ctx, &else_conts[i], 0);
+            let result = lower_expr(ctx, &clause.body, /* is_tail */ true)?;
+            finalize_arm(ctx, result, join_opt.as_ref());
+        }
     }
 
-    ctx.env = saved_env;
-    ctx.env_order = saved_order;
-    ctx.cur_block = Some(join_b);
-    Ok(join_param)
+    let _ = saved_env;
+    let _ = saved_order;
+
+    if let Some(join) = &join_opt {
+        let extras = switch_to_cont_fn(ctx, join, 1);
+        Ok(extras[0])
+    } else {
+        ctx.terminated = true;
+        Ok(Var(0))
+    }
 }
 
 #[cfg(test)]
@@ -2093,6 +2627,18 @@ mod tests {
         let toks = Lexer::new(src).tokenize().expect("lex");
         let prog = Parser::new(toks).parse_program().expect("parse");
         lower_program(&prog).expect_err("expected lower error")
+    }
+
+    /// fz-qbg.4 — Compile + run a fz program through the JIT and return
+    /// captured stdout (joined by newline). Mirrors `ir_codegen::tests::
+    /// capture_main`; lets ir_lower-level tests assert end-to-end runtime
+    /// correctness rather than just IR shape.
+    fn run_and_capture(src: &str) -> String {
+        let m = lower_src(src);
+        let entry = m.fn_by_name("main").expect("no main fn").id;
+        let _ = fz_runtime::ir_runtime::test_capture_take();
+        let _ = crate::ir_codegen::compile(&m).unwrap().run(entry);
+        fz_runtime::ir_runtime::test_capture_take().join("\n")
     }
 
     #[test]
@@ -2148,11 +2694,187 @@ mod tests {
     }
 
     #[test]
-    fn lower_if_uses_join_block() {
+    fn lower_if_uses_continuation_fns() {
+        // fz-duq.2 — `if` lowers to: outer fn with Term::If + per-arm
+        // TailCalls into separate fns (if_then / if_else / optional
+        // if_join). The old block-join shape is gone.
         let m = lower_src("fn pos(x), do: if x > 0, do: 1, else: -1");
         let s = format!("{}", m);
         assert!(s.contains("if v"), "expected If terminator: {}", s);
-        assert!(s.contains("goto bb"), "expected Goto to join: {}", s);
+        assert!(s.contains("if_then"), "expected if_then arm fn: {}", s);
+        assert!(s.contains("if_else"), "expected if_else arm fn: {}", s);
+        assert!(
+            s.contains("tail_call"),
+            "expected TailCall from arm block: {}",
+            s
+        );
+        // Tail-position if: no join fn (arms self-Return).
+        assert!(
+            !s.contains("if_join"),
+            "tail-position if should not need a join fn: {}",
+            s
+        );
+    }
+
+    #[test]
+    fn fz_84m_repro_a_prints_99() {
+        // fz-84m repro A — constant cond + non-tail call in if-arm.
+        // Pre-fz-duq.2 panicked at fz_ir.rs:453 (block_mut "unknown
+        // block") during IR construction. Now runs end-to-end.
+        let out = run_and_capture(
+            "fn helper(), do: 7\n\
+             fn main() do\n\
+               if 1 == 0 do print(helper()) else print(99) end\n\
+             end",
+        );
+        assert_eq!(out, "99");
+    }
+
+    #[test]
+    fn fz_84m_repro_b_prints_7_then_99() {
+        // fz-84m repro B — tail-call in if-arm + per-callsite narrowing.
+        // Pre-fz-duq.2 silently dropped the tail call by overwriting its
+        // TailCall terminator with `Goto(join_b, [Var(0)])`, propagating
+        // the sentinel as the if's value. Result: exit 0, no stdout.
+        let out = run_and_capture(
+            "fn helper(), do: 7\n\
+             fn pick(n) do if n == 0 do helper() else 99 end end\n\
+             fn main() do print(pick(0)); print(pick(1)) end",
+        );
+        assert_eq!(out, "7\n99");
+    }
+
+    #[test]
+    fn lower_case_uses_per_clause_cont_fns() {
+        // fz-duq.3 — `case` lowers each clause body into its own cont fn
+        // so that internal CPS-splits stay confined.
+        let m = lower_src(
+            "fn helper(), do: 7\n\
+             fn classify(n) do\n\
+               case n do\n\
+                 0 -> helper()\n\
+                 _ -> 99\n\
+               end\n\
+             end",
+        );
+        let s = format!("{}", m);
+        assert!(s.contains("case_clause_0"), "expected clause cont: {}", s);
+        assert!(s.contains("case_clause_1"), "expected clause cont: {}", s);
+        // Tail-position case: no join fn.
+        assert!(
+            !s.contains("case_join"),
+            "tail-position case should not need a join fn: {}",
+            s
+        );
+    }
+
+    #[test]
+    fn lower_cond_uses_per_arm_cont_fns() {
+        // fz-duq.4 — cond arms each lower into their own cont fn so that
+        // both test- and body-side CPS-splits stay confined.
+        let m = lower_src(
+            "fn helper(), do: 7\n\
+             fn route(n) do\n\
+               cond do\n\
+                 n == 0 -> helper()\n\
+                 true -> 99\n\
+               end\n\
+             end",
+        );
+        let s = format!("{}", m);
+        assert!(s.contains("cond_arm_0"), "expected arm cont: {}", s);
+        assert!(s.contains("cond_arm_1"), "expected arm cont: {}", s);
+        assert!(s.contains("cond_fail"), "expected fail cont: {}", s);
+    }
+
+    #[test]
+    fn lower_with_uses_continuation_fns() {
+        // fz-duq.4 — `with`'s mismatch funnel becomes a continuation fn
+        // (`with_fail`) and each else-clause body lives in its own cont fn.
+        let m = lower_src(
+            "fn f(v) do\n\
+               with :ok <- v do\n\
+                 1\n\
+               else\n\
+                 :err -> 2\n\
+               end\n\
+             end",
+        );
+        let s = format!("{}", m);
+        assert!(s.contains("with_fail"), "expected with_fail cont: {}", s);
+        assert!(
+            s.contains("with_else_0"),
+            "expected else clause cont: {}",
+            s
+        );
+    }
+
+    #[test]
+    fn lower_case_with_call_in_clause_no_panic() {
+        // case body with a call (was silently broken via Bug 2 — same
+        // class as fz-84m's if repros).
+        let _ = lower_src(
+            "fn helper(), do: 7\n\
+             fn classify(n) do\n\
+               case n do\n\
+                 0 -> helper()\n\
+                 _ -> 99\n\
+               end\n\
+             end\n\
+             fn main() do\n\
+               print(classify(0))\n\
+               print(classify(5))\n\
+             end",
+        );
+    }
+
+    #[test]
+    fn fz_ben_tuple_pattern_typetest_routes_non_tuple_to_else() {
+        // fz-ben — `{:ok, x}` pattern on `:err` (a non-tuple). Pre-fix,
+        // lower_pattern_bind for Pattern::Tuple unconditionally emitted
+        // `Prim::TupleField(:err, 0)`, which codegen lowered to a
+        // `load notrap aligned :err+16` reading heap garbage. With
+        // `notrap` swallowing the SIGSEGV, this fixture silently failed
+        // (exit 0, no stdout). After fix: a TypeTest gates the
+        // projection — non-tuple subjects route to the fail_block, which
+        // dispatches the else-clause `:err -> 0`.
+        let out = run_and_capture(
+            "fn f(v) do\n\
+               with {:ok, x} <- v do x else :err -> 0 end\n\
+             end\n\
+             fn main() do print(f(:err)) end",
+        );
+        assert_eq!(out, "0");
+    }
+
+    #[test]
+    fn fz_84m_repro_c_prints_7_then_99_no_narrowing() {
+        // fz-84m repro C — same bug shape as B but with `n > 0` rather
+        // than `n == 0`, so the typer doesn't narrow either arm. Proves
+        // the bug was structural in lowering, not type-narrowing driven.
+        let out = run_and_capture(
+            "fn helper(), do: 7\n\
+             fn pick(n) do if n > 0 do helper() else 99 end end\n\
+             fn main() do print(pick(5)); print(pick(0)) end",
+        );
+        assert_eq!(out, "7\n99");
+    }
+
+    #[test]
+    fn lower_if_nontail_uses_join_fn() {
+        // Non-tail if (used as call argument): all three cont fns minted.
+        let m = lower_src(
+            "fn id(x), do: x\n\
+             fn pick(x), do: id(if x > 0, do: 1, else: -1)",
+        );
+        let s = format!("{}", m);
+        assert!(s.contains("if_then"), "{}", s);
+        assert!(s.contains("if_else"), "{}", s);
+        assert!(
+            s.contains("if_join"),
+            "expected join fn for non-tail: {}",
+            s
+        );
     }
 
     #[test]
@@ -2628,8 +3350,28 @@ end
 
     #[test]
     fn self_recursive_fn_has_back_edge() {
+        // fz-qbg.2: with multi-clause body cont fns, prelude multi-clause
+        // fns (`print`, `vec_get`) contribute TailCalls to their per-clause
+        // cont fns earlier in module order. Look up `loop` specifically
+        // rather than the first TailCall anywhere.
         let m = lower_src("fn loop(n), do: loop(n)");
-        let (callee, is_back_edge) = first_tail_call(&m).expect("no TailCall");
+        let loop_fn = m.fn_by_name("loop").expect("loop fn missing");
+        let (callee, is_back_edge) = loop_fn
+            .blocks
+            .iter()
+            .find_map(|b| {
+                if let Term::TailCall {
+                    callee,
+                    is_back_edge,
+                    ..
+                } = &b.terminator
+                {
+                    Some((*callee, *is_back_edge))
+                } else {
+                    None
+                }
+            })
+            .expect("no TailCall in loop");
         assert!(
             is_back_edge,
             "self-recursion must be a back-edge; callee={:?}",

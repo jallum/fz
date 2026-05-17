@@ -1,0 +1,91 @@
+; spec print(1) #fn=0
+;   key:    [any]
+;   return: nil
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: :function_clause
+;     Var(2) :: bool
+;     Var(3) :: nil
+;     Var(4) :: nil
+;   exits:
+;     blk0 Goto blk1()
+;     blk1 If Var(2) ? blk4 : blk2
+;     blk2 Return Var(4)    :: nil
+;     blk3 Halt Var(1)      :: :function_clause
+;     blk4 Return Var(3)    :: nil
+
+; spec self(0) #fn=5
+;   key:    []
+;   return: pid
+;   vars:
+;     Var(0) :: :match_error
+;     Var(1) :: pid
+;   exits:
+;     blk0 Return Var(1)    :: pid
+;     blk1 Halt Var(0)      :: :match_error
+
+; spec send(2) #fn=6
+;   key:    [any, 0]
+;   return: any
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: 0
+;     Var(2) :: :match_error
+;     Var(3) :: any
+;   exits:
+;     blk0 Return Var(3)    :: any
+;     blk1 Halt Var(2)      :: :match_error
+
+; spec main(0) #fn=8
+;   key:    []
+;   return: nil
+;   vars:
+;     Var(0) :: :match_error
+;   exits:
+;     blk0 Call self#5()
+;              callee_key=[]
+;              cont k_15#15 captured=[]
+;              cont_key=[pid]
+;     blk1 Halt Var(0)      :: :match_error
+
+; spec k_15(1) #fn=15
+;   key:    [pid]
+;   return: nil
+;   vars:
+;     Var(0) :: pid
+;     Var(1) :: :match_error
+;     Var(2) :: &fn16[pid]:() -> any
+;     Var(3) :: &fn13[&fn16[pid]:() -> any]:() -> any
+;     Var(4) :: any
+;     Var(5) :: :match_error
+;     Var(6) :: 0
+;   exits:
+;     blk0 Call send#6(Var(4), Var(6))
+;              callee_key=[any, 0]
+;              cont k_17#17 captured=[Var(0), Var(4)]
+;              cont_key=[any, pid, any]
+;     blk1 Halt Var(1)      :: :match_error
+;     blk2 Halt Var(5)      :: :match_error
+
+; spec k_17(3) #fn=17
+;   key:    [any, pid, any]
+;   return: nil
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: pid
+;     Var(2) :: any
+;   exits:
+;     blk0 Receive cont k_receive_18#18 captured=[Var(1), Var(2)]
+;              cont_key=[any, pid, any]
+
+; spec k_receive_18(3) #fn=18
+;   key:    [any, pid, any]
+;   return: nil
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: pid
+;     Var(2) :: any
+;   exits:
+;     blk0 TailCall print#0(Var(0))
+;              callee_key=[any]
+

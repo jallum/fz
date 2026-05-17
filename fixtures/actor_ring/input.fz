@@ -1,0 +1,15 @@
+fn relay(0, home) do
+  send(home, receive() + 1)
+end
+
+fn relay(n, home) do
+  next = spawn(fn() -> relay(n - 1, home))
+  send(next, receive() + 1)
+end
+
+fn main() do
+  home = self()
+  head = spawn(fn() -> relay(4, home))
+  send(head, 0)
+  print(receive())
+end

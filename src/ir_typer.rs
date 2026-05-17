@@ -47,20 +47,26 @@ use std::collections::{HashMap, HashSet};
 ///
 /// Edges skipped: Term::Return / Term::Halt (dynamic dispatch, no static
 /// edge), unknown CallClosure (any-key spec is the fallback).
-fn build_call_graph(
-    m: &Module,
-    specs: &HashMap<(FnId, Vec<Descr>), FnTypes>,
-) -> HashMap<FnId, HashSet<FnId>> {
+/// fz-qbg.1: purely structural call graph derived from terminator
+/// shape + `Prim::MakeClosure` edges. Previously coupled to any-key
+/// spec registration — that coupling silently regressed SCC analysis
+/// whenever new fns were introduced mid-lowering (cps_split_call's
+/// continuations, fz-duq's per-arm cont fns, fz-qbg.2's per-clause
+/// body cont fns). The lower pass already does structural-only
+/// graph building in `annotate_back_edges` (src/ir_lower.rs:615);
+/// the typer now matches that discipline.
+///
+/// Closure call edges become continuation-only (the call's
+/// continuation fn). The closure *target* isn't resolved here — it
+/// was resolved via `fn_constants`, which required an any-key spec
+/// that may not exist yet at graph-build time. Recursion through
+/// closures (Y-combinator-style) gets a looser SCC; not a concern
+/// for current fz code. If it becomes one, structural
+/// over-approximation via `Prim::MakeClosure` edges (already
+/// included here) covers the common case.
+fn build_call_graph(m: &Module) -> HashMap<FnId, HashSet<FnId>> {
     let mut g: HashMap<FnId, HashSet<FnId>> = HashMap::new();
     for f in &m.fns {
-        g.entry(f.id).or_default();
-    }
-    for f in &m.fns {
-        let n = f.block(f.entry).params.len();
-        let any_key = vec![Descr::any(); n];
-        let Some(ft) = specs.get(&(f.id, any_key)) else {
-            continue;
-        };
         let edges = g.entry(f.id).or_default();
         for b in &f.blocks {
             for stmt in &b.stmts {
@@ -81,21 +87,10 @@ fn build_call_graph(
                 Term::TailCall { callee, .. } => {
                     edges.insert(*callee);
                 }
-                Term::CallClosure {
-                    closure,
-                    continuation,
-                    ..
-                } => {
-                    if let Some(&target) = ft.fn_constants.get(closure) {
-                        edges.insert(target);
-                    }
+                Term::CallClosure { continuation, .. } => {
                     edges.insert(continuation.fn_id);
                 }
-                Term::TailCallClosure { closure, .. } => {
-                    if let Some(&target) = ft.fn_constants.get(closure) {
-                        edges.insert(target);
-                    }
-                }
+                Term::TailCallClosure { .. } => {}
                 Term::Receive { continuation } => {
                     edges.insert(continuation.fn_id);
                 }
@@ -464,12 +459,11 @@ pub fn type_module(m: &Module) -> ModuleTypes {
     #[cfg(test)]
     TYPE_MODULE_CALLS.with(|c| c.set(c.get() + 1));
     // fz-02r.4 — compute SCC once from the structural call graph. The call
-    // graph structure is fixed (the module doesn't change during typing), so
-    // we compute it here with an empty specs map — the same starting point
-    // type_module_pass uses. Exposed via ModuleTypes.scc_of for ir_lower to
-    // annotate Term::TailCall with is_back_edge.
-    let initial_specs: HashMap<(FnId, Vec<Descr>), FnTypes> = HashMap::new();
-    let call_graph = build_call_graph(m, &initial_specs);
+    // graph structure is fixed (the module doesn't change during typing).
+    // Post-fz-qbg.1: purely structural, no any-key spec dependency.
+    // Exposed via ModuleTypes.scc_of for ir_lower to annotate Term::TailCall
+    // with is_back_edge.
+    let call_graph = build_call_graph(m);
     let mut sccs = tarjan_scc(&call_graph);
     sccs.reverse(); // caller-first (matches type_module_pass ordering)
     let mut scc_of: HashMap<FnId, usize> = HashMap::new();
@@ -574,7 +568,7 @@ fn type_module_pass(
     // Build call graph from bootstrap any-key specs, Tarjan SCC, then
     // for each SCC in caller-first topological order run a local
     // fixpoint with widening at iter >= WIDEN_AT for SCC-internal keys.
-    let call_graph = build_call_graph(m, &specs);
+    let call_graph = build_call_graph(m);
     let mut sccs = tarjan_scc(&call_graph);
     sccs.reverse(); // caller-first
     let mut scc_of: HashMap<FnId, usize> = HashMap::new();

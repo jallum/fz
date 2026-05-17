@@ -5,6 +5,7 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 
 | fixture | purpose | paths |
 |---------|---------|-------|
+| `actor_ring/` | N-hop actor ring with self()-capture + spawn-with-captures + multi-clause CPS-split-in-body; closes fz-g8v by exercising the fz-qbg.2 multi-clause body cont-fn path end-to-end | jit, interp |
 | `add1/` | smallest JIT round-trip — fn def + call + print | jit, interp, repl |
 | `alias/` | nested-module path aliasing — `alias Long.Path` and `alias Long.Path, as: LP` | jit, interp, repl |
 | `apply2/` | first-class fns — pass a fn into another fn and call it | jit, interp, repl |
@@ -19,11 +20,16 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `hello/` | print each scalar shape — int, atom, bool, nil | jit, interp, repl |
 | `higher_order/` | higher-order patterns — apply2, compose | jit, interp, aot, repl |
 | `hot_fn/` | same call repeated — historical JIT tier-up trigger; today every call is JIT | jit, interp, repl |
+| `if_constant_cond_with_call/` | fz-84m repro A — constant cond + non-tail call in if-arm; formerly panicked at fz_ir.rs:453 ('unknown block') because then-arm's CPS-split finalized the outer fn while else_b was still empty | jit, interp |
+| `if_tail_call_in_arm_narrowed/` | fz-84m repro B — if-arm tail call + per-callsite narrowing; formerly silently dropped the tail-call (overwritten with Goto(join_b, [Var(0)])) | jit, interp |
+| `if_tail_call_in_arm_unnarrowed/` | fz-84m repro C — same shape as repro B but with `n > 0` instead of `n == 0`, proving the bug was structural in lowering and NOT driven by per-callsite type narrowing | jit, interp |
 | `import/` | selective import — `import Math, only: [add: 2]` | jit, interp, repl |
 | `interp_only_main/` | tiny module with a single helper and a main — historical interp-tier-0 smoke test | jit, interp, repl |
+| `list_primitives/` | list primitives from scratch — length / reverse / map / foldl exercising cons-pattern dispatch and first-class fns | jit, interp |
 | `macro_inc/` | defmacro + quote/unquote round-trip — two macros, one nested in the other | jit, interp, repl |
 | `modules/` | cross-module qualified calls — `M.double`, `M.quad`, `N.helper` | jit, interp, repl |
 | `multi_clause/` | multi-clause dispatch with a guard clause (`when n > 0`), plus recursive `fact` | jit, interp, repl |
+| `multi_clause_body_with_call/` | minimal multi-clause Bug-2 repro — clause body has a Call. Pre-fz-qbg.2 panicked at fz_ir.rs:453; now lowers correctly via the per-clause body cont-fn path | jit, interp |
 | `multi_relay/` | two workers both block on receive simultaneously; exercises scheduler managing multiple Blocked processes | jit, interp, aot |
 | `mutual_recursion/` | mutual recursion — is_even/is_odd call each other; exercises cross-function recursive dispatch | jit, interp, aot, repl |
 | `nested_modules/` | inner module addressed both fully-qualified (`Outer.Inner.f`) and via outer-local reference | jit, interp, repl |
