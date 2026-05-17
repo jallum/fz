@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-aiz.10"
+  ],
   "created": "2026-05-17T17:36:50Z",
   "description": "Pure data-model addition. Add Option\u003cu32\u003e callsite_sid / body_sid / resolved_sid fields to Term::Call, Term::TailCall, Term::TailCallClosure, Term::CallClosure, Prim::MakeClosure. Default None. Compile fixers (constructors). No behavior change. All tests green.",
   "id": "fz-aiz.9",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "fz-aiz.3a: add annotation fields to IR Term/Prim variants",
   "type": "task",
-  "updated_at": "2026-05-17T17:36:50Z"
+  "updated_at": "2026-05-17T17:36:58Z"
 }
