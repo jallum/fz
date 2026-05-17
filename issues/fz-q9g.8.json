@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-q9g.7"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-q9g.9"
+  ],
   "created": "2026-05-17T04:46:53Z",
   "description": "What: Mechanical extension of D2 to the other monomorphic vec kinds.\n\nCLIF impact: strict reduction per destinationized call.\n\nRemoves: per-call vec alloc when destinationized.\n\nTests: golden CLIF parity per kind.",
   "id": "fz-q9g.8",
