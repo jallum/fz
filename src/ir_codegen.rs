@@ -2684,6 +2684,18 @@ pub fn compile_with_backend<B: Backend>(
     let bs_const_data: std::cell::RefCell<HashMap<Vec<u8>, BsConstSyms>> =
         std::cell::RefCell::new(HashMap::new());
 
+    // fz-ul4.42 — set of SpecIds reachable from main + closure-dispatched
+    // fns. Specs not in this set get a trap-stub body instead of full
+    // codegen. Closure-target specs (those in `closure_shapes`) are seeded
+    // explicitly because runtime closure dispatch through `stub_fp` isn't
+    // visible to the IR-body BFS. See ir_typer::reachable_specs.
+    let reachable: std::collections::HashSet<u32> = crate::ir_typer::reachable_specs(
+        module,
+        &spec_registry,
+        &module_types,
+        closure_shapes.keys().copied(),
+    );
+
     for sid in 0..spec_count {
         let Some(idx) = spec_fnidx[sid] else {
             continue;
@@ -2693,6 +2705,33 @@ pub fn compile_with_backend<B: Backend>(
         let func_id = *fn_ids.get(&(sid as u32)).unwrap();
         let mut ctx = backend.module_mut().make_context();
         ctx.func.signature = fn_sigs[sid].clone();
+
+        // fz-ul4.42 — unreached spec: emit a trap stub so the symbol exists
+        // (other emitted code may name it via fz_fn_{sid}) but the body is
+        // a single unreachable trap. Skip the @spec header annotation,
+        // verifier, and any further per-spec analysis.
+        if !reachable.contains(&(sid as u32)) {
+            use cranelift_codegen::ir::TrapCode;
+            use cranelift_frontend::FunctionBuilder;
+            {
+                let mut b = FunctionBuilder::new(&mut ctx.func, &mut fbctx);
+                let entry = b.create_block();
+                b.append_block_params_for_function_params(entry);
+                b.switch_to_block(entry);
+                b.seal_block(entry);
+                b.ins().trap(TrapCode::user(1).unwrap());
+                b.finalize();
+            }
+            backend
+                .module_mut()
+                .define_function(func_id, &mut ctx)
+                .map_err(|e| {
+                    CodegenError::new(format!("define unreached fz_fn_{}: {}", sid, e))
+                })?;
+            backend.module_mut().clear_context(&mut ctx);
+            continue;
+        }
+
         let want_asm = ASM_RECORD.with(|c| c.borrow().is_some());
         if want_asm {
             ctx.set_disasm(true);

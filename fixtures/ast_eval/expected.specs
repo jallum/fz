@@ -421,7 +421,7 @@
 
 ; spec fn_clause_1(2) #fn=9
 ;   key:    [2, any]
-;   return: none
+;   return: int | float
 ;   vars:
 ;     Var(0) :: 2
 ;     Var(1) :: any
@@ -433,7 +433,7 @@
 
 ; spec fn_clause_1(2) #fn=9
 ;   key:    [3, any]
-;   return: none
+;   return: int | float
 ;   vars:
 ;     Var(0) :: 3
 ;     Var(1) :: any
@@ -445,7 +445,7 @@
 
 ; spec fn_clause_1(2) #fn=9
 ;   key:    [4, any]
-;   return: none
+;   return: int | float
 ;   vars:
 ;     Var(0) :: 4
 ;     Var(1) :: any
@@ -493,7 +493,7 @@
 
 ; spec fn_clause_2(2) #fn=10
 ;   key:    [2, any]
-;   return: none
+;   return: int | float
 ;   vars:
 ;     Var(0) :: 2
 ;     Var(1) :: any
@@ -505,7 +505,7 @@
 
 ; spec fn_clause_2(2) #fn=10
 ;   key:    [3, any]
-;   return: none
+;   return: int | float
 ;   vars:
 ;     Var(0) :: 3
 ;     Var(1) :: any
@@ -517,7 +517,7 @@
 
 ; spec fn_clause_2(2) #fn=10
 ;   key:    [4, any]
-;   return: none
+;   return: int | float
 ;   vars:
 ;     Var(0) :: 4
 ;     Var(1) :: any
@@ -602,6 +602,45 @@
 ;              cont k_12#12 captured=[Var(1), Var(2), Var(0)]
 ;              cont_key=[any, any, any, any]
 
+; spec k_11(3) #fn=11
+;   key:    [none, 2, any]
+;   return: int | float
+;   vars:
+;     Var(0) :: none
+;     Var(1) :: 2
+;     Var(2) :: any
+;   exits:
+;     blk0 Call eval#7(Var(2))
+;              callee_key=[any]
+;              cont k_12#12 captured=[Var(1), Var(2), Var(0)]
+;              cont_key=[any, 2, any, none]
+
+; spec k_11(3) #fn=11
+;   key:    [none, 3, any]
+;   return: int | float
+;   vars:
+;     Var(0) :: none
+;     Var(1) :: 3
+;     Var(2) :: any
+;   exits:
+;     blk0 Call eval#7(Var(2))
+;              callee_key=[any]
+;              cont k_12#12 captured=[Var(1), Var(2), Var(0)]
+;              cont_key=[any, 3, any, none]
+
+; spec k_11(3) #fn=11
+;   key:    [none, 4, any]
+;   return: int | float
+;   vars:
+;     Var(0) :: none
+;     Var(1) :: 4
+;     Var(2) :: any
+;   exits:
+;     blk0 Call eval#7(Var(2))
+;              callee_key=[any]
+;              cont k_12#12 captured=[Var(1), Var(2), Var(0)]
+;              cont_key=[any, 4, any, none]
+
 ; spec k_12(4) #fn=12
 ;   key:    [4, {:num, 3}, {:num, 4}, 3]
 ;   return: int
@@ -613,6 +652,42 @@
 ;     Var(4) :: int
 ;   exits:
 ;     blk0 Return Var(4)    :: int
+
+; spec k_12(4) #fn=12
+;   key:    [any, 2, any, none]
+;   return: int | float
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: 2
+;     Var(2) :: any
+;     Var(3) :: none
+;     Var(4) :: int | float
+;   exits:
+;     blk0 Return Var(4)    :: int | float
+
+; spec k_12(4) #fn=12
+;   key:    [any, 3, any, none]
+;   return: int | float
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: 3
+;     Var(2) :: any
+;     Var(3) :: none
+;     Var(4) :: int | float
+;   exits:
+;     blk0 Return Var(4)    :: int | float
+
+; spec k_12(4) #fn=12
+;   key:    [any, 4, any, none]
+;   return: int | float
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: 4
+;     Var(2) :: any
+;     Var(3) :: none
+;     Var(4) :: int | float
+;   exits:
+;     blk0 Return Var(4)    :: int | float
 
 ; spec k_12(4) #fn=12
 ;   key:    [any, any, any, any]
@@ -677,6 +752,45 @@
 ;              cont k_14#14 captured=[Var(1), Var(2), Var(0)]
 ;              cont_key=[any, any, any, any]
 
+; spec k_13(3) #fn=13
+;   key:    [none, 2, any]
+;   return: int | float
+;   vars:
+;     Var(0) :: none
+;     Var(1) :: 2
+;     Var(2) :: any
+;   exits:
+;     blk0 Call eval#7(Var(2))
+;              callee_key=[any]
+;              cont k_14#14 captured=[Var(1), Var(2), Var(0)]
+;              cont_key=[any, 2, any, none]
+
+; spec k_13(3) #fn=13
+;   key:    [none, 3, any]
+;   return: int | float
+;   vars:
+;     Var(0) :: none
+;     Var(1) :: 3
+;     Var(2) :: any
+;   exits:
+;     blk0 Call eval#7(Var(2))
+;              callee_key=[any]
+;              cont k_14#14 captured=[Var(1), Var(2), Var(0)]
+;              cont_key=[any, 3, any, none]
+
+; spec k_13(3) #fn=13
+;   key:    [none, 4, any]
+;   return: int | float
+;   vars:
+;     Var(0) :: none
+;     Var(1) :: 4
+;     Var(2) :: any
+;   exits:
+;     blk0 Call eval#7(Var(2))
+;              callee_key=[any]
+;              cont k_14#14 captured=[Var(1), Var(2), Var(0)]
+;              cont_key=[any, 4, any, none]
+
 ; spec k_14(4) #fn=14
 ;   key:    [4, {:num, 3}, {:num, 4}, 3]
 ;   return: int
@@ -688,6 +802,42 @@
 ;     Var(4) :: int
 ;   exits:
 ;     blk0 Return Var(4)    :: int
+
+; spec k_14(4) #fn=14
+;   key:    [any, 2, any, none]
+;   return: int | float
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: 2
+;     Var(2) :: any
+;     Var(3) :: none
+;     Var(4) :: int | float
+;   exits:
+;     blk0 Return Var(4)    :: int | float
+
+; spec k_14(4) #fn=14
+;   key:    [any, 3, any, none]
+;   return: int | float
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: 3
+;     Var(2) :: any
+;     Var(3) :: none
+;     Var(4) :: int | float
+;   exits:
+;     blk0 Return Var(4)    :: int | float
+
+; spec k_14(4) #fn=14
+;   key:    [any, 4, any, none]
+;   return: int | float
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: 4
+;     Var(2) :: any
+;     Var(3) :: none
+;     Var(4) :: int | float
+;   exits:
+;     blk0 Return Var(4)    :: int | float
 
 ; spec k_14(4) #fn=14
 ;   key:    [any, any, any, any]

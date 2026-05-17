@@ -516,32 +516,6 @@ pub fn type_module(m: &Module) -> ModuleTypes {
 /// `(FnId, key)` pairs — specs that did not exist before this call.
 /// An empty return means nothing new was registered (pending was
 /// already empty or all drained keys were already in specs).
-/// fz-ul4.40 — payoff predicate for a candidate new spec.
-///
-/// Returns `true` (skip registration) when EITHER:
-///   - Some element of `key` is `Descr::none()` — the spec is statically
-///     unreachable (no value can inhabit a `none`-typed param).
-///   - An already-registered spec `(fid, wider_key)` exists whose key
-///     subsumes `key` AND yields identical entry ArgReprs param-by-param.
-///     Under these conditions the narrow body lowers to the same fn
-///     prologue as the wider one; remaining body differences (TypeTest
-///     folding, typed fast paths) aren't yet checked — those are deferred
-///     follow-ups, conservative bias: keep on doubt.
-///
-/// When skipped, `SpecRegistry::resolve`'s subsumption search dispatches
-/// the narrow callsite to the wider spec automatically (src/spec_registry.rs).
-fn skip_payoff_free_spec(
-    _specs: &HashMap<(FnId, Vec<Descr>), FnTypes>,
-    _fid: FnId,
-    key: &[Descr],
-) -> bool {
-    // v1: only filter statically-unreachable specs (any element ⊆ `none`).
-    // The richer ABI-parity check breaks codegen's per-spec cont resolution
-    // (which doesn't go through SpecRegistry::resolve's subsumption search
-    // at every site); revisit when cont resolution is unified through resolve.
-    key.iter().any(|d| d.is_empty())
-}
-
 fn drain_and_register(
     pending: &mut HashMap<FnId, std::collections::HashSet<Vec<Descr>>>,
     specs: &mut HashMap<(FnId, Vec<Descr>), FnTypes>,
@@ -560,13 +534,6 @@ fn drain_and_register(
         let Some(&j) = m.fn_idx.get(&fid) else {
             continue;
         };
-        // fz-ul4.40 — payoff gate. Skip narrow keys that would compile to the
-        // same code as an already-registered wider key, and skip `none`-typed
-        // dead-on-arrival keys. Existing subsumption dispatch in
-        // `SpecRegistry::resolve` routes the call to the surviving wider spec.
-        if skip_payoff_free_spec(specs, fid, &key) {
-            continue;
-        }
         let entry_key = (fid, key.clone());
         if !specs.contains_key(&entry_key) {
             let mut ft = type_fn(&m.fns[j], m, Some(&key));
@@ -2622,6 +2589,184 @@ pub fn compute_effective_returns(
             )
         })
         .collect()
+}
+
+/// fz-ul4.42 — compute the set of SpecIds reachable at runtime from
+/// `main` (plus closure-dispatched any-key specs as a conservative catch).
+///
+/// Codegen consults this to skip body emission for unreached specs: a
+/// trap stub goes out instead of the full body, dramatically shrinking
+/// the emitted binary and the golden CLIF for fixtures that have any
+/// per-callsite specialization fan-out the runtime never reaches
+/// (ast_eval is the canonical example — pre-prune it ships eval(any),
+/// eval(int), eval(2), eval(3), eval(4) bodies that no callsite ever
+/// resolves to).
+///
+/// Algorithm:
+///   - Seed with main's spec id, every test/exported entry, and every
+///     any-key spec whose fn appears in a `MakeClosure` (conservatively
+///     covers opaque closure dispatch without needing per-site
+///     closure_lit resolution).
+///   - BFS: for each reached spec, walk its reachable blocks, find
+///     direct Call/TailCall + their conts and CallClosure/TailCallClosure
+///     resolvable via fn_constants. Use the same `SpecRegistry::resolve`
+///     subsumption search codegen uses, so a spec marked reachable here
+///     is exactly a spec codegen will look up.
+pub fn reachable_specs(
+    module: &Module,
+    spec_registry: &crate::spec_registry::SpecRegistry,
+    module_types: &ModuleTypes,
+    extra_seeds: impl IntoIterator<Item = u32>,
+) -> HashSet<u32> {
+    let mut reached: HashSet<u32> = HashSet::new();
+    let mut worklist: Vec<u32> = Vec::new();
+
+    // Build spec_fn_types lookup keyed by SpecId.
+    let spec_keys: Vec<(FnId, Vec<Descr>)> = spec_registry
+        .iter()
+        .map(|(_, f, k)| (f, k.to_vec()))
+        .collect();
+    let ft_of = |sid: u32| -> Option<&FnTypes> {
+        let (fid, key) = spec_keys.get(sid as usize)?;
+        module_types.specs.get(&(*fid, key.clone()))
+    };
+    let fn_of = |sid: u32| -> Option<&FnIr> {
+        let (fid, _) = spec_keys.get(sid as usize)?;
+        let &j = module.fn_idx.get(fid)?;
+        Some(&module.fns[j])
+    };
+
+    // Seed: main + every registered any-key spec.
+    //
+    // The any-key seed is the conservative bias for v1: any spec keyed by
+    // `[any; n]` represents the wide-callable form of its fn — invocable
+    // through opaque closure dispatch, spawn entry, mid-flight resume
+    // shim, scheduler hook, MakeClosure consumer, or test entry. We don't
+    // model each of those source-of-entry channels precisely; we just
+    // declare every any-key reachable and let downstream callsite BFS
+    // pick up the narrow specs.
+    //
+    // This still drops every value-narrowed spec that no callsite
+    // resolves to — the actual fz-ul4.42 win — because narrow specs
+    // require an explicit `resolve(fid, narrow_key)` match somewhere in
+    // a reachable body to be marked.
+    for (sid, fid, key) in spec_registry.iter() {
+        let is_any_key = key.iter().all(|d| d.is_subtype(&Descr::any()) && Descr::any().is_subtype(d));
+        let _ = fid;
+        if is_any_key {
+            worklist.push(sid.0);
+        }
+    }
+    if let Some(main_fn) = module.fns.iter().find(|f| f.name == "main") {
+        let n_params = main_fn.block(main_fn.entry).params.len();
+        let key: Vec<Descr> = vec![Descr::any(); n_params];
+        if let Some(sid) = spec_registry.resolve(main_fn.id, &key) {
+            worklist.push(sid.0);
+        }
+    }
+    // Caller-supplied seeds: closure-target specs (dispatched via stub_fp
+    // at runtime), spawn thunks, scheduler hooks, etc. — anything codegen
+    // knows is an entry point that our IR-body BFS can't see.
+    worklist.extend(extra_seeds);
+    // Closure-lit dispatch: any fn whose id appears in a MakeClosure prim
+    // could be invoked through a closure-typed Var whose Descr carries a
+    // closure_lit. The per-callsite invocation might resolve to any of
+    // that fn's narrow specs. Without modeling the full closure_lit
+    // narrowing chain (deferred from v1), mark every spec of every
+    // MakeClosure'd fn reachable. Over-marks but stays correct; the
+    // value-narrow dead specs in non-closure'd fns (the actual fz-ul4.42
+    // target — eval(2)/eval(3)/etc in ast_eval) are still pruned.
+    let mut closure_target_fns: HashSet<FnId> = HashSet::new();
+    for f in &module.fns {
+        for blk in &f.blocks {
+            for stmt in &blk.stmts {
+                let Stmt::Let(_, prim) = stmt;
+                if let Prim::MakeClosure(lam_id, _) = prim {
+                    closure_target_fns.insert(*lam_id);
+                }
+            }
+        }
+    }
+    for (sid, fid, _) in spec_registry.iter() {
+        if closure_target_fns.contains(&fid) {
+            worklist.push(sid.0);
+        }
+    }
+
+    while let Some(sid) = worklist.pop() {
+        if !reached.insert(sid) {
+            continue;
+        }
+        let Some(f) = fn_of(sid) else { continue };
+        let Some(ft) = ft_of(sid) else { continue };
+        for blk in &f.blocks {
+            if !ft.reachable_blocks.contains(&blk.id) {
+                continue;
+            }
+            let env = env_at_terminator(ft, blk, module);
+            let arg_descrs = |args: &[Var]| -> Vec<Descr> {
+                args.iter()
+                    .map(|av| env.get(av).cloned().unwrap_or_else(Descr::any))
+                    .collect()
+            };
+            let pad_to_arity = |callee: FnId, mut ad: Vec<Descr>| -> Vec<Descr> {
+                if let Some(&j) = module.fn_idx.get(&callee) {
+                    let np = module.fns[j].block(module.fns[j].entry).params.len();
+                    while ad.len() < np {
+                        ad.push(Descr::any());
+                    }
+                    ad.truncate(np);
+                }
+                ad
+            };
+            match &blk.terminator {
+                Term::Call { callee, args, continuation } => {
+                    let key = pad_to_arity(*callee, arg_descrs(args));
+                    if let Some(sid) = spec_registry.resolve(*callee, &key) {
+                        worklist.push(sid.0);
+                    }
+                    let cont_key = cont_input_key(blk, continuation, ft, module, module_types);
+                    if let Some(sid) = spec_registry.resolve(continuation.fn_id, &cont_key) {
+                        worklist.push(sid.0);
+                    }
+                }
+                Term::TailCall { callee, args, .. } => {
+                    let key = pad_to_arity(*callee, arg_descrs(args));
+                    if let Some(sid) = spec_registry.resolve(*callee, &key) {
+                        worklist.push(sid.0);
+                    }
+                }
+                Term::CallClosure { closure, args, continuation } => {
+                    if let Some(&target) = ft.fn_constants.get(closure) {
+                        let key = pad_to_arity(target, arg_descrs(args));
+                        if let Some(sid) = spec_registry.resolve(target, &key) {
+                            worklist.push(sid.0);
+                        }
+                    }
+                    let cont_key = cont_input_key(blk, continuation, ft, module, module_types);
+                    if let Some(sid) = spec_registry.resolve(continuation.fn_id, &cont_key) {
+                        worklist.push(sid.0);
+                    }
+                }
+                Term::TailCallClosure { closure, args } => {
+                    if let Some(&target) = ft.fn_constants.get(closure) {
+                        let key = pad_to_arity(target, arg_descrs(args));
+                        if let Some(sid) = spec_registry.resolve(target, &key) {
+                            worklist.push(sid.0);
+                        }
+                    }
+                }
+                Term::Receive { continuation } => {
+                    let cont_key = cont_input_key(blk, continuation, ft, module, module_types);
+                    if let Some(sid) = spec_registry.resolve(continuation.fn_id, &cont_key) {
+                        worklist.push(sid.0);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    reached
 }
 
 /// fz-ul4.29.12.1 — build the full Cont input-Descr key at a call-site:
