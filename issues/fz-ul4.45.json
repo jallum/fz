@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-ul4.43.3"
+  ],
   "blocks": [],
   "created": "2026-05-17T12:08:45Z",
   "description": "# Follow-on to .43 — leverage the matrix for correctness wins\n\n## What changes\n\nOnce `pattern_matrix::compile` exists (.43.C), it has all the info to\ndetect:\n\n1. **Unreachable clauses** — a row whose constructor is fully covered\n   by earlier rows in every column it discriminates on.\n2. **Non-exhaustive matches** — a `Decision` tree whose default branch\n   is reachable but the function's input type doesn't include any\n   value that would land there.\n\nEmit these as warnings via the diagnostic infrastructure (fz-ul4.20).\nCLAUDE.md mandates warnings-as-errors, so this becomes real correctness\nenforcement.\n\n## What stays\n\nThe matrix infrastructure built in .43.C-.H. This ticket reads from it,\ndoesn't modify it.\n\n## What's removed\n\nNothing structural. Adds a new diagnostic site.\n\n## Acceptance\n\n- A test fixture with an unreachable clause produces the warning.\n- A test fixture with an inexhaustive case (on a type the typer\n  knows) produces the warning.\n- Warnings render via the existing diagnostic renderer.\n- All current fixtures pass (none have unreachable/inexhaustive\n  clauses — if any do, that's a bug to fix, not a warning to\n  suppress).\n\n## Risk\n\nExhaustiveness checking against polymorphic descrs is subtle. Scope v1\nto: warn when a case's default is unreachable AND no row body is\nreachable from default. Skip the harder \"input type can never reach\nthis row\" check until we have a need.\n\n## Dependencies\n\nBlocked by .43.C (matrix types must exist).",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "fz-ul4.47: dead-clause + exhaustiveness warnings from pattern matrix",
   "type": "task",
-  "updated_at": "2026-05-17T12:08:45Z"
+  "updated_at": "2026-05-17T12:08:51Z"
 }
