@@ -1,8 +1,6 @@
 {
   "assignee": "",
-  "blocked_by": [
-    "fz-7ot"
-  ],
+  "blocked_by": [],
   "blocks": [
     "fz-b9b"
   ],
@@ -14,5 +12,5 @@
   "status": "open",
   "title": "fz-7ot.1: canonical model + LUB observation (additive)",
   "type": "task",
-  "updated_at": "2026-05-17T23:33:36Z"
+  "updated_at": "2026-05-17T23:33:43Z"
 }
