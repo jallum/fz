@@ -7,7 +7,7 @@
     "fz-q9g.3"
   ],
   "created": "2026-05-17T04:46:31Z",
-  "description": "What: In build_fn_signature (ir_codegen.rs:896), when a fn's any-key spec has a result Descr that pins to exactly one HeapKind, set return_reprs[sid] = ArgRepr::Dst(k). Reuses the existing return-type join over Return sites.\n\nInvariant: never emitted on extern signatures (asserted).\n\nWhy: Single decision point. Everything downstream reads return_reprs.\n\nCLIF impact: unchanged (no lowering consumes Dst yet — C2 turns it on).\n\nTests: golden assertion that selected stdlib fns get Dst ABI in their any-key spec; externs never do.",
+  "description": "What: In build_fn_signature (ir_codegen.rs), when a fn's any-key spec has a result Descr that pins to exactly one HeapKind, set return_reprs[sid] = ArgRepr::Dst(k).\n\nSource of the result Descr: read module_types.effective_returns[(fn_id, spec_key)] — landed on main as fz-i82.2 (PR #12, fz-ul4.43 follow-up). This is the LFP of per-spec return Descrs, already consumed by codegen at ir_codegen.rs:2385 and by @spec / @abi rendering. No duplication of the return-type join logic.\n\nClassifier: Descr -\u003e Option\u003cHeapKind\u003e. Pins iff the Descr is a single concrete shape (e.g. Tuple{arity:2}, VecI64, ProcBin, Closure, etc.). Anything polymorphic, any-typed, or halt-only stays None (uniform path).\n\nInvariant: never emitted on extern signatures (asserted).\n\nWhy: Single decision point. Everything downstream (C2/C3/C4/D1/D2) reads return_reprs. Riding on effective_returns means we inherit any future typer improvements automatically.\n\nCLIF impact: unchanged (no lowering consumes Dst yet — C2 turns it on).\n\nTests:\n- unit test for the Descr -\u003e HeapKind classifier (pins on single shapes, None on unions / any / halt-only).\n- golden assertion that selected stdlib fns get Dst ABI in their any-key spec.\n- assertion that externs never receive Dst.",
   "id": "fz-q9g.2",
   "labels": [],
   "parent": "fz-q9g",
@@ -15,5 +15,5 @@
   "status": "open",
   "title": "fz-dps.C1: per-spec result Descr -\u003e HeapKind classifier",
   "type": "task",
-  "updated_at": "2026-05-17T04:47:53Z"
+  "updated_at": "2026-05-17T14:59:41Z"
 }
