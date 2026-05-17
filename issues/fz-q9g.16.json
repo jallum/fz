@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-q9g.15"
+  ],
   "blocks": [],
   "created": "2026-05-17T04:47:21Z",
   "description": "What: Refcount primitives. rc_dec enqueues drop; the park-checkpoint flushes the queue. Reuses mso_drop_all's cadence (procbin.rs precedent).\n\nCLIF impact: rc_inc is one add (non-atomic per-process) emitted at stores into RC-arena slots.\n\nRemoves: nothing.\n\nTests: refcount bookkeeping under stress; assert batched drop occurs at park checkpoint, not synchronously per stmt.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "fz-dps.B2: rc_inc / rc_dec + park-checkpoint batched drop",
   "type": "task",
-  "updated_at": "2026-05-17T04:47:21Z"
+  "updated_at": "2026-05-17T04:47:56Z"
 }
