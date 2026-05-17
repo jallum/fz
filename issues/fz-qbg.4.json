@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-17T03:34:55Z",
+  "description": "Retroactive tightening of fz-duq.2's three repro unit tests.\nIndependent of fz-qbg.1/.2/.3 — can ship at any time.\n\n## Motivation\n\nfz-duq.2's three repro unit tests (`lower_if_*_no_panic` etc.) assert\nIR shape (`s.contains(\"tail_call\")`) rather than runtime correctness.\nThe end-to-end stdout verification lives in the fixture matrix from\nfz-duq.5 — two commits later in the DAG. If someone bisects to .2\nand the test goes green, they're trusting the test name more than\nthe assertions.\n\nThis ticket adds a test-only helper that compiles + runs a fz program\nthrough the JIT and captures its stdout, then rewrites the three\ntests to assert stdout equality.\n\n## Add helper\n\nIn `src/ir_lower.rs::tests`:\n\n```rust\nfn run_and_capture(src: \u0026str) -\u003e String {\n    use crate::fz_ir::Module;\n    use crate::ir_codegen::compile;\n    let m: Module = lower_src(src);\n    let entry = m.fn_by_name(\"main\").expect(\"no main fn\").id;\n    let _ = fz_runtime::ir_runtime::test_capture_take();\n    let _ = compile(\u0026m).unwrap().run(entry);\n    fz_runtime::ir_runtime::test_capture_take().join(\"\\n\")\n}\n```\n\n(Pattern matches existing `capture_main` in `src/ir_codegen.rs:6859`.)\n\n## Replace three weak tests\n\n```rust\n#[test]\nfn fz_84m_repro_a_prints_99() {\n    let out = run_and_capture(\n        \"fn helper(), do: 7\\n\\\n         fn main() do\\n\\\n           if 1 == 0 do print(helper()) else print(99) end\\n\\\n         end\",\n    );\n    assert_eq!(out, \"99\");\n}\n\n#[test]\nfn fz_84m_repro_b_prints_7_then_99() {\n    let out = run_and_capture(\n        \"fn helper(), do: 7\\n\\\n         fn pick(n) do if n == 0 do helper() else 99 end end\\n\\\n         fn main() do print(pick(0)); print(pick(1)) end\",\n    );\n    assert_eq!(out, \"7\\n99\");\n}\n\n#[test]\nfn fz_84m_repro_c_prints_7_then_99_no_narrowing() {\n    let out = run_and_capture(\n        \"fn helper(), do: 7\\n\\\n         fn pick(n) do if n \u003e 0 do helper() else 99 end end\\n\\\n         fn main() do print(pick(5)); print(pick(0)) end\",\n    );\n    assert_eq!(out, \"7\\n99\");\n}\n```\n\n## What's removed\n\n- `src/ir_lower.rs::tests::lower_if_constant_cond_with_call_in_arm_no_panic`\n- `src/ir_lower.rs::tests::lower_if_tail_call_in_arm_preserved`\n- `src/ir_lower.rs::tests::lower_if_unnarrowed_cond_with_tail_call_in_arm`\n\nAll three assert IR shape; replaced with end-to-end stdout tests.\n\n## Acceptance\n\n- Three new tests pass.\n- Three old tests deleted.\n- `cargo test --workspace` green.\n\n## Out of scope\n\nFixture matrix tests in fz-duq.5 stay — they cover interp/jit/repl/\naot path parity, which the in-process helper doesn't.",
+  "id": "fz-qbg.4",
+  "labels": [],
+  "parent": "fz-qbg",
+  "priority": 2,
+  "status": "open",
+  "title": "fz-qbg.4: run_and_capture helper; tighten fz-duq.2 repro tests",
+  "type": "task",
+  "updated_at": "2026-05-17T03:34:55Z"
+}
