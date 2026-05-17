@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
     "fz-aiz.4"
@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-aiz",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "fz-aiz.3: mandatory any-key spec for every reachable FnId + Cont",
   "type": "task",
-  "updated_at": "2026-05-17T16:05:05Z"
+  "updated_at": "2026-05-17T16:17:37Z"
 }
