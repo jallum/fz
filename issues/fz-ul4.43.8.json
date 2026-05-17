@@ -1,6 +1,7 @@
 {
   "assignee": "",
   "blocked_by": [
+    "fz-ul4.43.11",
     "fz-ul4.43.5"
   ],
   "blocks": [
@@ -15,5 +16,5 @@
   "status": "open",
   "title": "fz-ul4.43.G: wire lower_with's pattern step onto matrix",
   "type": "task",
-  "updated_at": "2026-05-17T12:58:46Z"
+  "updated_at": "2026-05-17T12:58:54Z"
 }
