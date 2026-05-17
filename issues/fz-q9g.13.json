@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-q9g.3"
+  ],
   "blocks": [],
   "created": "2026-05-17T04:47:20Z",
   "description": "What: The uniform return path (writes to frame slot 1, returns frame pointer) stays alive for any-typed specs. Dst specs go through C2 and never use it — remove the dead branch in their codegen.\n\nCLIF impact: compiler-side reduction. Runtime CLIF for Dst specs is set by C2.\n\nRemoves: one conditional branch in emit_terminator for Dst specs.\n\nTests: existing tests pass; assert any-typed specs still use uniform path.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "fz-dps.E2: drop uniform emit_return() for Dst specs",
   "type": "task",
-  "updated_at": "2026-05-17T04:47:20Z"
+  "updated_at": "2026-05-17T04:47:55Z"
 }
