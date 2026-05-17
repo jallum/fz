@@ -74,7 +74,7 @@ block2:
     return v17  ; v17 = 0
 
 block3:
-    v18 = load.i64 notrap aligned v0+16    ;; v18 :: any
+    v18 = load.i64 aligned v0+16    ;; v18 :: any
     v19 = iconst.i64 26    ;; v19 :: :ok
     v20 = bor v18, v19  ; v19 = 26
     v21 = band_imm v20, 7
@@ -101,7 +101,7 @@ block9:
     brif v33, block4, block1
 
 block4:
-    v34 = load.i64 notrap aligned v0+24    ;; v34 :: any
+    v34 = load.i64 aligned v0+24    ;; v34 :: any
     v35 = sshr_imm v34, 3
     v36 = load.i64 notrap aligned v1+16
     return_call_indirect sig2, v36(v35, v1)
@@ -159,13 +159,13 @@ block2:
     return v22  ; v22 = 0
 
 block3:
-    v23 = load.i64 notrap aligned v0+16    ;; v23 :: :ok
+    v23 = load.i64 aligned v0+16    ;; v23 :: :ok
     v24 = iconst.i64 26    ;; v24 :: :ok
     v25 = icmp eq v23, v24  ; v24 = 26    ;; v25 :: bool
     brif v25, block4, block1
 
 block4:
-    v26 = load.i64 notrap aligned v0+24    ;; v26 :: 7
+    v26 = load.i64 aligned v0+24    ;; v26 :: 7
     v27 = sshr_imm v26, 3
     v28 = load.i64 notrap aligned v1+16
     return_call_indirect sig1, v28(v27, v1)
@@ -214,7 +214,7 @@ block1:
     brif v15, block5, block4
 
 block2:
-    v16 = load.i64 notrap aligned v0+16    ;; v16 :: any
+    v16 = load.i64 aligned v0+16    ;; v16 :: any
     v17 = iconst.i64 26    ;; v17 :: :ok
     v18 = bor v16, v17  ; v17 = 26
     v19 = band_imm v18, 7
@@ -241,7 +241,7 @@ block9:
     brif v31, block3, block1
 
 block3:
-    v32 = load.i64 notrap aligned v0+24    ;; v32 :: any
+    v32 = load.i64 aligned v0+24    ;; v32 :: any
     v33 = sshr_imm v32, 3
     v34 = load.i64 notrap aligned v1+16
     return_call_indirect sig1, v34(v33, v1)
@@ -299,13 +299,13 @@ block1:
     brif v20, block5, block4
 
 block2:
-    v21 = load.i64 notrap aligned v0+16    ;; v21 :: :ok
+    v21 = load.i64 aligned v0+16    ;; v21 :: :ok
     v22 = iconst.i64 26    ;; v22 :: :ok
     v23 = icmp eq v21, v22  ; v22 = 26    ;; v23 :: bool
     brif v23, block3, block1
 
 block3:
-    v24 = load.i64 notrap aligned v0+24    ;; v24 :: 7
+    v24 = load.i64 aligned v0+24    ;; v24 :: 7
     v25 = sshr_imm v24, 3
     v26 = load.i64 notrap aligned v1+16
     return_call_indirect sig0, v26(v25, v1)

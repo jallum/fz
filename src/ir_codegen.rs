@@ -5529,9 +5529,20 @@ fn lower_collection_prim<M: cranelift_module::Module>(
             p
         }
         Prim::TupleField(c, idx) => {
+            // fz-ul4.44 — `aligned` without `notrap`. Pre-fz-ben the load
+            // was unconditional; `notrap` silently masked SIGSEGV-via-
+            // garbage-read when the subject wasn't a tuple. Post-fz-ben
+            // every TupleField is gated by a `Prim::TypeTest` (lowered at
+            // `ir_lower.rs:1949`) that runtime-checks subject is a
+            // matching-arity Struct heap value (fz-ul4.36 made the
+            // TypeTest actually consult `descr.tuples`). The load is now
+            // provably safe; SIGSEGV on a bad load would be an IR
+            // integrity bug worth surfacing immediately.
             let cv = tagged_get(var_env, b, jmod, runtime, c.0, cache);
             let off = HEADER_SIZE + (*idx as i32) * SLOT_BYTES;
-            b.ins().load(types::I64, MemFlags::trusted(), cv, off)
+            let mut mf = MemFlags::new();
+            mf.set_aligned();
+            b.ins().load(types::I64, mf, cv, off)
         }
         Prim::AllocStruct(schema_id, fields) => {
             let fref = jmod.declare_func_in_func(runtime.alloc_struct_id, b.func);

@@ -92,7 +92,7 @@ block3:
     return v39  ; v39 = 0
 
 block4:
-    v40 = load.i64 notrap aligned v0+16    ;; v40 :: any
+    v40 = load.i64 aligned v0+16    ;; v40 :: any
     v41 = iconst.i64 18    ;; v41 :: :num
     v42 = bor v40, v41  ; v41 = 18
     v43 = band_imm v42, 7
@@ -119,12 +119,12 @@ block17:
     brif v55, block5, block1
 
 block5:
-    v56 = load.i64 notrap aligned v0+24    ;; v56 :: any
+    v56 = load.i64 aligned v0+24    ;; v56 :: any
     v57 = load.i64 notrap aligned v1+16
     return_call_indirect sig2, v57(v56, v1)
 
 block6:
-    v58 = load.i64 notrap aligned v0+16    ;; v58 :: any
+    v58 = load.i64 aligned v0+16    ;; v58 :: any
     v59 = iconst.i64 26    ;; v59 :: :add
     v60 = bor v58, v59  ; v59 = 26
     v61 = band_imm v60, 7
@@ -151,8 +151,8 @@ block20:
     brif v73, block7, block2
 
 block7:
-    v74 = load.i64 notrap aligned v0+24    ;; v74 :: any
-    v75 = load.i64 notrap aligned v0+32    ;; v75 :: any
+    v74 = load.i64 aligned v0+24    ;; v74 :: any
+    v75 = load.i64 aligned v0+32    ;; v75 :: any
     v76 = iconst.i32 11
     v77 = iconst.i32 3
     v78 = iconst.i32 0
@@ -165,7 +165,7 @@ block7:
     return_call fn3(v74, v79)
 
 block8:
-    v81 = load.i64 notrap aligned v0+16    ;; v81 :: any
+    v81 = load.i64 aligned v0+16    ;; v81 :: any
     v82 = iconst.i64 34    ;; v82 :: :mul
     v83 = bor v81, v82  ; v82 = 34
     v84 = band_imm v83, 7
@@ -192,8 +192,8 @@ block23:
     brif v96, block9, block3
 
 block9:
-    v97 = load.i64 notrap aligned v0+24    ;; v97 :: any
-    v98 = load.i64 notrap aligned v0+32    ;; v98 :: any
+    v97 = load.i64 aligned v0+24    ;; v97 :: any
+    v98 = load.i64 aligned v0+32    ;; v98 :: any
     v99 = iconst.i32 13
     v100 = iconst.i32 3
     v101 = iconst.i32 0
@@ -508,7 +508,7 @@ block3:
     return v39  ; v39 = 0
 
 block4:
-    v40 = load.i64 notrap aligned v0+16    ;; v40 :: :add
+    v40 = load.i64 aligned v0+16    ;; v40 :: :add
     v41 = iconst.i64 18    ;; v41 :: :num
     v42 = iconst.i64 19    ;; v42 :: bool
     v43 = iconst.i64 3
@@ -519,20 +519,20 @@ block4:
     brif v47, block5, block1
 
 block5:
-    v48 = load.i64 notrap aligned v0+24    ;; v48 :: {:num, 2}
+    v48 = load.i64 aligned v0+24    ;; v48 :: {:num, 2}
     v49 = sshr_imm v48, 3
     v50 = load.i64 notrap aligned v1+16
     return_call_indirect sig1, v50(v49, v1)
 
 block6:
-    v51 = load.i64 notrap aligned v0+16    ;; v51 :: :add
+    v51 = load.i64 aligned v0+16    ;; v51 :: :add
     v52 = iconst.i64 26    ;; v52 :: :add
     v53 = icmp eq v51, v52  ; v52 = 26    ;; v53 :: bool
     brif v53, block7, block2
 
 block7:
-    v54 = load.i64 notrap aligned v0+24    ;; v54 :: {:num, 2}
-    v55 = load.i64 notrap aligned v0+32    ;; v55 :: {:mul, {:num, 3}, {:num, 4}}
+    v54 = load.i64 aligned v0+24    ;; v54 :: {:num, 2}
+    v55 = load.i64 aligned v0+32    ;; v55 :: {:mul, {:num, 3}, {:num, 4}}
     v56 = iconst.i32 24
     v57 = iconst.i32 3
     v58 = iconst.i32 0
@@ -545,7 +545,7 @@ block7:
     return_call fn1(v54, v59)
 
 block8:
-    v61 = load.i64 notrap aligned v0+16    ;; v61 :: :add
+    v61 = load.i64 aligned v0+16    ;; v61 :: :add
     v62 = iconst.i64 34    ;; v62 :: :mul
     v63 = iconst.i64 19    ;; v63 :: bool
     v64 = iconst.i64 3
@@ -556,8 +556,8 @@ block8:
     brif v68, block9, block3
 
 block9:
-    v69 = load.i64 notrap aligned v0+24    ;; v69 :: {:num, 2}
-    v70 = load.i64 notrap aligned v0+32    ;; v70 :: {:mul, {:num, 3}, {:num, 4}}
+    v69 = load.i64 aligned v0+24    ;; v69 :: {:num, 2}
+    v70 = load.i64 aligned v0+32    ;; v70 :: {:mul, {:num, 3}, {:num, 4}}
     v71 = iconst.i32 34
     v72 = iconst.i32 3
     v73 = iconst.i32 0
@@ -658,7 +658,7 @@ block3:
     return v39  ; v39 = 0
 
 block4:
-    v40 = load.i64 notrap aligned v0+16    ;; v40 :: :mul
+    v40 = load.i64 aligned v0+16    ;; v40 :: :mul
     v41 = iconst.i64 18    ;; v41 :: :num
     v42 = iconst.i64 19    ;; v42 :: bool
     v43 = iconst.i64 3
@@ -669,13 +669,13 @@ block4:
     brif v47, block5, block1
 
 block5:
-    v48 = load.i64 notrap aligned v0+24    ;; v48 :: {:num, 3}
+    v48 = load.i64 aligned v0+24    ;; v48 :: {:num, 3}
     v49 = sshr_imm v48, 3
     v50 = load.i64 notrap aligned v1+16
     return_call_indirect sig1, v50(v49, v1)
 
 block6:
-    v51 = load.i64 notrap aligned v0+16    ;; v51 :: :mul
+    v51 = load.i64 aligned v0+16    ;; v51 :: :mul
     v52 = iconst.i64 26    ;; v52 :: :add
     v53 = iconst.i64 19    ;; v53 :: bool
     v54 = iconst.i64 3
@@ -686,8 +686,8 @@ block6:
     brif v58, block7, block2
 
 block7:
-    v59 = load.i64 notrap aligned v0+24    ;; v59 :: {:num, 3}
-    v60 = load.i64 notrap aligned v0+32    ;; v60 :: {:num, 4}
+    v59 = load.i64 aligned v0+24    ;; v59 :: {:num, 3}
+    v60 = load.i64 aligned v0+32    ;; v60 :: {:num, 4}
     v61 = iconst.i32 25
     v62 = iconst.i32 3
     v63 = iconst.i32 0
@@ -700,14 +700,14 @@ block7:
     return_call fn1(v59, v64)
 
 block8:
-    v66 = load.i64 notrap aligned v0+16    ;; v66 :: :mul
+    v66 = load.i64 aligned v0+16    ;; v66 :: :mul
     v67 = iconst.i64 34    ;; v67 :: :mul
     v68 = icmp eq v66, v67  ; v67 = 34    ;; v68 :: bool
     brif v68, block9, block3
 
 block9:
-    v69 = load.i64 notrap aligned v0+24    ;; v69 :: {:num, 3}
-    v70 = load.i64 notrap aligned v0+32    ;; v70 :: {:num, 4}
+    v69 = load.i64 aligned v0+24    ;; v69 :: {:num, 3}
+    v70 = load.i64 aligned v0+32    ;; v70 :: {:num, 4}
     v71 = iconst.i32 35
     v72 = iconst.i32 3
     v73 = iconst.i32 0
@@ -808,19 +808,19 @@ block3:
     return v39  ; v39 = 0
 
 block4:
-    v40 = load.i64 notrap aligned v0+16    ;; v40 :: :num
+    v40 = load.i64 aligned v0+16    ;; v40 :: :num
     v41 = iconst.i64 18    ;; v41 :: :num
     v42 = icmp eq v40, v41  ; v41 = 18    ;; v42 :: bool
     brif v42, block5, block1
 
 block5:
-    v43 = load.i64 notrap aligned v0+24    ;; v43 :: 2
+    v43 = load.i64 aligned v0+24    ;; v43 :: 2
     v44 = sshr_imm v43, 3
     v45 = load.i64 notrap aligned v1+16
     return_call_indirect sig1, v45(v44, v1)
 
 block6:
-    v46 = load.i64 notrap aligned v0+16    ;; v46 :: :num
+    v46 = load.i64 aligned v0+16    ;; v46 :: :num
     v47 = iconst.i64 26    ;; v47 :: :add
     v48 = iconst.i64 19    ;; v48 :: bool
     v49 = iconst.i64 3
@@ -831,8 +831,8 @@ block6:
     brif v53, block7, block2
 
 block7:
-    v54 = load.i64 notrap aligned v0+24    ;; v54 :: 2
-    v55 = load.i64 notrap aligned v0+32    ;; v55 :: any
+    v54 = load.i64 aligned v0+24    ;; v54 :: 2
+    v55 = load.i64 aligned v0+32    ;; v55 :: any
     v56 = sshr_imm v54, 3
     v57 = iconst.i32 26
     v58 = iconst.i32 3
@@ -847,7 +847,7 @@ block7:
     return_call fn1(v56, v60)
 
 block8:
-    v63 = load.i64 notrap aligned v0+16    ;; v63 :: :num
+    v63 = load.i64 aligned v0+16    ;; v63 :: :num
     v64 = iconst.i64 34    ;; v64 :: :mul
     v65 = iconst.i64 19    ;; v65 :: bool
     v66 = iconst.i64 3
@@ -858,8 +858,8 @@ block8:
     brif v70, block9, block3
 
 block9:
-    v71 = load.i64 notrap aligned v0+24    ;; v71 :: 2
-    v72 = load.i64 notrap aligned v0+32    ;; v72 :: any
+    v71 = load.i64 aligned v0+24    ;; v71 :: 2
+    v72 = load.i64 aligned v0+32    ;; v72 :: any
     v73 = sshr_imm v71, 3
     v74 = iconst.i32 36
     v75 = iconst.i32 3
@@ -962,19 +962,19 @@ block3:
     return v39  ; v39 = 0
 
 block4:
-    v40 = load.i64 notrap aligned v0+16    ;; v40 :: :num
+    v40 = load.i64 aligned v0+16    ;; v40 :: :num
     v41 = iconst.i64 18    ;; v41 :: :num
     v42 = icmp eq v40, v41  ; v41 = 18    ;; v42 :: bool
     brif v42, block5, block1
 
 block5:
-    v43 = load.i64 notrap aligned v0+24    ;; v43 :: 3
+    v43 = load.i64 aligned v0+24    ;; v43 :: 3
     v44 = sshr_imm v43, 3
     v45 = load.i64 notrap aligned v1+16
     return_call_indirect sig1, v45(v44, v1)
 
 block6:
-    v46 = load.i64 notrap aligned v0+16    ;; v46 :: :num
+    v46 = load.i64 aligned v0+16    ;; v46 :: :num
     v47 = iconst.i64 26    ;; v47 :: :add
     v48 = iconst.i64 19    ;; v48 :: bool
     v49 = iconst.i64 3
@@ -985,8 +985,8 @@ block6:
     brif v53, block7, block2
 
 block7:
-    v54 = load.i64 notrap aligned v0+24    ;; v54 :: 3
-    v55 = load.i64 notrap aligned v0+32    ;; v55 :: any
+    v54 = load.i64 aligned v0+24    ;; v54 :: 3
+    v55 = load.i64 aligned v0+32    ;; v55 :: any
     v56 = sshr_imm v54, 3
     v57 = iconst.i32 27
     v58 = iconst.i32 3
@@ -1001,7 +1001,7 @@ block7:
     return_call fn1(v56, v60)
 
 block8:
-    v63 = load.i64 notrap aligned v0+16    ;; v63 :: :num
+    v63 = load.i64 aligned v0+16    ;; v63 :: :num
     v64 = iconst.i64 34    ;; v64 :: :mul
     v65 = iconst.i64 19    ;; v65 :: bool
     v66 = iconst.i64 3
@@ -1012,8 +1012,8 @@ block8:
     brif v70, block9, block3
 
 block9:
-    v71 = load.i64 notrap aligned v0+24    ;; v71 :: 3
-    v72 = load.i64 notrap aligned v0+32    ;; v72 :: any
+    v71 = load.i64 aligned v0+24    ;; v71 :: 3
+    v72 = load.i64 aligned v0+32    ;; v72 :: any
     v73 = sshr_imm v71, 3
     v74 = iconst.i32 37
     v75 = iconst.i32 3
@@ -1116,19 +1116,19 @@ block3:
     return v39  ; v39 = 0
 
 block4:
-    v40 = load.i64 notrap aligned v0+16    ;; v40 :: :num
+    v40 = load.i64 aligned v0+16    ;; v40 :: :num
     v41 = iconst.i64 18    ;; v41 :: :num
     v42 = icmp eq v40, v41  ; v41 = 18    ;; v42 :: bool
     brif v42, block5, block1
 
 block5:
-    v43 = load.i64 notrap aligned v0+24    ;; v43 :: 4
+    v43 = load.i64 aligned v0+24    ;; v43 :: 4
     v44 = sshr_imm v43, 3
     v45 = load.i64 notrap aligned v1+16
     return_call_indirect sig1, v45(v44, v1)
 
 block6:
-    v46 = load.i64 notrap aligned v0+16    ;; v46 :: :num
+    v46 = load.i64 aligned v0+16    ;; v46 :: :num
     v47 = iconst.i64 26    ;; v47 :: :add
     v48 = iconst.i64 19    ;; v48 :: bool
     v49 = iconst.i64 3
@@ -1139,8 +1139,8 @@ block6:
     brif v53, block7, block2
 
 block7:
-    v54 = load.i64 notrap aligned v0+24    ;; v54 :: 4
-    v55 = load.i64 notrap aligned v0+32    ;; v55 :: any
+    v54 = load.i64 aligned v0+24    ;; v54 :: 4
+    v55 = load.i64 aligned v0+32    ;; v55 :: any
     v56 = sshr_imm v54, 3
     v57 = iconst.i32 28
     v58 = iconst.i32 3
@@ -1155,7 +1155,7 @@ block7:
     return_call fn1(v56, v60)
 
 block8:
-    v63 = load.i64 notrap aligned v0+16    ;; v63 :: :num
+    v63 = load.i64 aligned v0+16    ;; v63 :: :num
     v64 = iconst.i64 34    ;; v64 :: :mul
     v65 = iconst.i64 19    ;; v65 :: bool
     v66 = iconst.i64 3
@@ -1166,8 +1166,8 @@ block8:
     brif v70, block9, block3
 
 block9:
-    v71 = load.i64 notrap aligned v0+24    ;; v71 :: 4
-    v72 = load.i64 notrap aligned v0+32    ;; v72 :: any
+    v71 = load.i64 aligned v0+24    ;; v71 :: 4
+    v72 = load.i64 aligned v0+32    ;; v72 :: any
     v73 = sshr_imm v71, 3
     v74 = iconst.i32 38
     v75 = iconst.i32 3
