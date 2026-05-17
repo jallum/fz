@@ -6,14 +6,15 @@
   "blocks": [
     "fz-ul4.43.9"
   ],
+  "closed_at": "2026-05-17T14:02:21Z",
   "created": "2026-05-17T12:08:07Z",
   "description": "# .43.G — lower_with's else cascade REPLACED by matrix dispatch\n\n## What changes\n\nlower_with (src/ir_lower.rs ~2459) has two parts:\n- The `\u003c-` bindings: SEQUENTIAL thread, NOT a parallel match. Unchanged\n  by this ticket (lower_pattern_bind subsumed in .H).\n- The else-clauses inside with_fail_cont: a multi-clause cascade\n  identical in shape to lower_case's. THIS gets matrix.\n\nSo .G is .F applied inside with_fail_cont. Same callback shape (always\ncont-fn-wrap).\n\n## What stays\n\n- The outer `\u003c-` thread\n- with_fail_cont minting + invocation\n- unmatched_v plumbing\n- join_opt\n\n## What's removed\n\n- ~40 LOC of else-clause try_blocks cascade\n- Third copy of the dispatch-by-cascade pattern (now ZERO copies)\n\n## Acceptance\n\n- with-using fixtures: meaningfully tighter OR equivalent\n- Three-path parity\n\n## Risk\n\nwith-else currently errors on guards (line 2572). v1 keeps that;\nmatrix encounters guarded row, callback errors with same message.",
   "id": "fz-ul4.43.8",
   "labels": [],
   "parent": "fz-ul4.43",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "fz-ul4.43.G: wire lower_with's pattern step onto matrix",
   "type": "task",
-  "updated_at": "2026-05-17T14:00:29Z"
+  "updated_at": "2026-05-17T14:02:21Z"
 }
