@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
     "fz-ul4.43.2"
@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-ul4.43",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "fz-ul4.43.A: narrow_for_cond handles Prim::TypeTest",
   "type": "task",
-  "updated_at": "2026-05-17T12:08:34Z"
+  "updated_at": "2026-05-17T12:09:04Z"
 }
