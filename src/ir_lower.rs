@@ -1196,7 +1196,7 @@ fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -> Result<Va
 
         Expr::Lambda(params, body) => lower_lambda(ctx, params, body),
 
-        Expr::Case(subject, clauses) => lower_case(ctx, subject, clauses, is_tail),
+        Expr::Case(subject, clauses) => lower_case(ctx, subject, clauses, is_tail, sp),
         Expr::Cond(arms) => lower_cond(ctx, arms, is_tail),
         Expr::With(bindings, body, else_clauses) => {
             lower_with(ctx, bindings, body, else_clauses, is_tail)
@@ -2075,7 +2075,22 @@ fn lower_case(
     subject: &Spanned<Expr>,
     clauses: &[MatchClause],
     is_tail: bool,
+    case_span: Span,
 ) -> Result<Var, LowerError> {
+    // fz-duq.3 — Per-clause + optional join continuation fns. Same shape
+    // as lower_if's fix from fz-duq.2, generalized to N clauses with
+    // pattern bind on each.
+    //
+    // Outer fn: lowers subject, allocates try_blocks + fail_block. The
+    // try_blocks form a fail-cascade chain (pattern mismatch → next try
+    // block; final mismatch → fail_block → Halt(:case_clause)). At the
+    // end of each try_block (after pattern bind succeeded), the block
+    // TailCalls a per-clause continuation fn passing the current env
+    // (outer + pattern-bound names). The clause body lives in its own fn
+    // so any internal CPS-split stays confined to that clause's lineage.
+    //
+    // The clause-fn captures are snapshotted *after* pattern bind so the
+    // newly-bound pattern names are included.
     if clauses.is_empty() {
         return Err(LowerError::Unsupported {
             span: subject.span,
@@ -2085,13 +2100,11 @@ fn lower_case(
     let sv = lower_expr(ctx, subject, false)?;
     let subject_park = ctx.park(sv);
 
-    // Allocate try blocks + fail block + join block.
+    // Allocate try blocks + fail block in the current fn.
     let try_blocks: Vec<BlockId> = (0..clauses.len())
         .map(|_| ctx.cur_mut().block(vec![]))
         .collect();
     let fail_block = ctx.cur_mut().block(vec![]);
-    let join_param = ctx.cur_mut().fresh_var();
-    let join_b = ctx.cur_mut().block(vec![join_param]);
 
     // Seal fail block with halt :case_clause.
     let saved_block = ctx.cur_block();
@@ -2104,9 +2117,20 @@ fn lower_case(
     // Goto the first try block.
     ctx.set_term(Term::Goto(try_blocks[0], vec![]));
 
+    // Optional join fn — only for non-tail position.
+    let join_opt = if is_tail {
+        None
+    } else {
+        Some(mint_cont_fn(ctx, "case_join", case_span))
+    };
+
     let saved_env = ctx.env.clone();
     let saved_order = ctx.env_order.clone();
 
+    // Lower each clause's pattern bind in its try_block, then mint a
+    // per-clause cont fn (capturing the post-pattern-bind env) and set
+    // the try_block's terminator to TailCall it.
+    let mut clause_conts: Vec<ContFn> = Vec::with_capacity(clauses.len());
     for (i, clause) in clauses.iter().enumerate() {
         if let Some(_g) = &clause.guard {
             return Err(LowerError::Unsupported {
@@ -2118,23 +2142,48 @@ fn lower_case(
         ctx.cur_block = Some(try_blocks[i]);
         ctx.env = saved_env.clone();
         ctx.env_order = saved_order.clone();
-        ctx.terminated = false;
         let subj_v = ctx.unpark(&subject_park);
-        // Re-park so subsequent clauses still see it.
+        // Re-park so subsequent try-blocks still see the subject.
         let inner_park = ctx.park(subj_v);
         lower_pattern_bind(ctx, subj_v, &clause.pattern, next)?;
         ctx.unbind(&inner_park);
-        let result = lower_expr(ctx, &clause.body, is_tail)?;
-        if !ctx.terminated {
-            ctx.set_term(Term::Goto(join_b, vec![result]));
-        }
+
+        // Mint the clause-cont with the *current* env (outer + bindings
+        // from pattern). Set the post-bind block's terminator to TailCall
+        // this cont with the current captured Vars.
+        let clause_cont = mint_cont_fn(ctx, format!("case_clause_{}", i), clause.span);
+        let captures = ctx.captured_snapshot();
+        let capture_vars: Vec<Var> = captures.iter().map(|(_, v)| *v).collect();
+        ctx.set_term(Term::TailCall {
+            callee: clause_cont.id,
+            args: capture_vars,
+            is_back_edge: false,
+        });
+        clause_conts.push(clause_cont);
     }
 
+    // Subject park is no longer needed in outer fn.
     ctx.unbind(&subject_park);
-    ctx.env = saved_env;
-    ctx.env_order = saved_order;
-    ctx.cur_block = Some(join_b);
-    Ok(join_param)
+
+    // Lower each clause body in its cont fn. The first switch finalizes
+    // the outer fn (fully populated now). Each subsequent switch
+    // finalizes the previous clause's cont (or its CPS-split descendant).
+    for (i, clause) in clauses.iter().enumerate() {
+        let _ = switch_to_cont_fn(ctx, &clause_conts[i], 0);
+        let result = lower_expr(ctx, &clause.body, /* is_tail */ true)?;
+        finalize_arm(ctx, result, join_opt.as_ref());
+    }
+
+    if let Some(join) = &join_opt {
+        let extras = switch_to_cont_fn(ctx, join, 1);
+        Ok(extras[0])
+    } else {
+        // Tail position: all clauses finalized via Return. ctx.cur is
+        // the last clause cont (or its CPS-split descendant). Caller
+        // finalizes it.
+        ctx.terminated = true;
+        Ok(Var(0))
+    }
 }
 
 fn lower_cond(
@@ -2426,6 +2475,49 @@ mod tests {
             s.contains("tail_call"),
             "expected at least one tail_call in module: {}",
             s
+        );
+    }
+
+    #[test]
+    fn lower_case_uses_per_clause_cont_fns() {
+        // fz-duq.3 — `case` lowers each clause body into its own cont fn
+        // so that internal CPS-splits stay confined.
+        let m = lower_src(
+            "fn helper(), do: 7\n\
+             fn classify(n) do\n\
+               case n do\n\
+                 0 -> helper()\n\
+                 _ -> 99\n\
+               end\n\
+             end",
+        );
+        let s = format!("{}", m);
+        assert!(s.contains("case_clause_0"), "expected clause cont: {}", s);
+        assert!(s.contains("case_clause_1"), "expected clause cont: {}", s);
+        // Tail-position case: no join fn.
+        assert!(
+            !s.contains("case_join"),
+            "tail-position case should not need a join fn: {}",
+            s
+        );
+    }
+
+    #[test]
+    fn lower_case_with_call_in_clause_no_panic() {
+        // case body with a call (was silently broken via Bug 2 — same
+        // class as fz-84m's if repros).
+        let _ = lower_src(
+            "fn helper(), do: 7\n\
+             fn classify(n) do\n\
+               case n do\n\
+                 0 -> helper()\n\
+                 _ -> 99\n\
+               end\n\
+             end\n\
+             fn main() do\n\
+               print(classify(0))\n\
+               print(classify(5))\n\
+             end",
         );
     }
 
