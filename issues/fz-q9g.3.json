@@ -14,6 +14,12 @@
   "id": "fz-q9g.3",
   "labels": [],
   "parent": "fz-q9g",
+  "comments": [
+    {
+      "text": "Scope refined per user: native-path only. Uniform-path DPS deferred to fz-ag9 (CD.2).",
+      "timestamp": "2026-05-17T16:39:56Z"
+    }
+  ],
   "priority": 1,
   "status": "in_progress",
   "title": "fz-dps.CD: native-path wire ABI (Return/Call/TailCall) + MakeList DPS via TRMC",
