@@ -1,35 +1,43 @@
 //! Tagged FzValue and heap object header.
 //!
 //! Low-bit tag scheme (3 bits):
-//!   0b000 = ptr to heap object (HeapHeader is 16-byte aligned, so low 4 bits are 0)
-//!   0b001 = small int (61-bit signed; payload = (n << 3) | 0b001)
-//!   0b010 = atom (32-bit interned id; payload = (id << 3) | 0b010)
-//!   0b011 = special (nil/true/false/sentinels)
-//!   1xx   = reserved (future: boxed float, etc.)
+//!   0b000 = small int (61-bit signed; payload = n << 3; arithmetic on
+//!           two tagged ints retains the tag with no untag/retag — that
+//!           drives the choice of 0b000)
+//!   0b001 = ptr to heap object (HeapHeader is 16-byte aligned; payload =
+//!           addr | 1; deref costs one `band -8`)
+//!   0b010 = atom (32-bit interned id; payload = (id << 3) | 0b010);
+//!           atom ids 0/1/2 are reserved for nil/true/false
+//!   0b011..0b111 = reserved (future: TAG_LIST, TAG_FWD, TAG_FLOAT, ...)
 
 #![allow(dead_code)]
 
 use std::alloc::{Layout, alloc};
 use std::ptr;
 
-const TAG_BITS: u64 = 3;
-const TAG_MASK: u64 = 0b111;
+pub const TAG_BITS: u64 = 3;
+pub const TAG_MASK: u64 = 0b111;
 
-const TAG_PTR: u64 = 0b000;
-const TAG_INT: u64 = 0b001;
-const TAG_ATOM: u64 = 0b010;
-const TAG_SPECIAL: u64 = 0b011;
+pub const TAG_INT: u64 = 0b000;
+pub const TAG_PTR: u64 = 0b001;
+pub const TAG_ATOM: u64 = 0b010;
 
-const SPECIAL_NIL: u64 = (0 << TAG_BITS) | TAG_SPECIAL;
-const SPECIAL_TRUE: u64 = (1 << TAG_BITS) | TAG_SPECIAL;
-const SPECIAL_FALSE: u64 = (2 << TAG_BITS) | TAG_SPECIAL;
+/// Atom id reserved for nil. Pre-seeded at process startup.
+pub const ATOM_ID_NIL: u32 = 0;
+/// Atom id reserved for true. Pre-seeded at process startup.
+pub const ATOM_ID_TRUE: u32 = 1;
+/// Atom id reserved for false. Pre-seeded at process startup.
+pub const ATOM_ID_FALSE: u32 = 2;
+
+const NIL_BITS: u64 = ((ATOM_ID_NIL as u64) << TAG_BITS) | TAG_ATOM;
+const TRUE_BITS: u64 = ((ATOM_ID_TRUE as u64) << TAG_BITS) | TAG_ATOM;
+const FALSE_BITS: u64 = ((ATOM_ID_FALSE as u64) << TAG_BITS) | TAG_ATOM;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum Tag {
-    Ptr,
     Int,
+    Ptr,
     Atom,
-    Special,
     Reserved,
 }
 
@@ -38,15 +46,12 @@ pub enum Tag {
 pub struct FzValue(pub u64);
 
 impl FzValue {
-    pub const NIL: FzValue = FzValue(SPECIAL_NIL);
-    pub const TRUE: FzValue = FzValue(SPECIAL_TRUE);
-    pub const FALSE: FzValue = FzValue(SPECIAL_FALSE);
+    pub const NIL: FzValue = FzValue(NIL_BITS);
+    pub const TRUE: FzValue = FzValue(TRUE_BITS);
+    pub const FALSE: FzValue = FzValue(FALSE_BITS);
 
     pub const fn from_int(n: i64) -> FzValue {
-        // Sign-preserving shift left by 3, OR in tag.
-        // Caller is responsible for range; debug builds check.
-        let bits = ((n as u64) << TAG_BITS) | TAG_INT;
-        FzValue(bits)
+        FzValue((n as u64) << TAG_BITS)
     }
 
     pub const fn from_atom_id(id: u32) -> FzValue {
@@ -56,22 +61,20 @@ impl FzValue {
     pub fn from_ptr(p: *mut HeapHeader) -> FzValue {
         let bits = p as u64;
         debug_assert!(bits & TAG_MASK == 0, "heap pointer not 8-byte aligned");
-        FzValue(bits)
+        FzValue(bits | TAG_PTR)
     }
 
     pub fn tag(self) -> Tag {
         match self.0 & TAG_MASK {
-            TAG_PTR => Tag::Ptr,
             TAG_INT => Tag::Int,
+            TAG_PTR => Tag::Ptr,
             TAG_ATOM => Tag::Atom,
-            TAG_SPECIAL => Tag::Special,
             _ => Tag::Reserved,
         }
     }
 
     pub fn unbox_int(self) -> Option<i64> {
         if self.0 & TAG_MASK == TAG_INT {
-            // Arithmetic shift right preserves sign.
             Some((self.0 as i64) >> TAG_BITS)
         } else {
             None
@@ -87,24 +90,21 @@ impl FzValue {
     }
 
     pub fn unbox_ptr(self) -> Option<*mut HeapHeader> {
-        if self.0 == SPECIAL_NIL || self.0 == SPECIAL_TRUE || self.0 == SPECIAL_FALSE {
-            return None;
-        }
         if self.0 & TAG_MASK == TAG_PTR {
-            Some(self.0 as *mut HeapHeader)
+            Some((self.0 & !TAG_MASK) as *mut HeapHeader)
         } else {
             None
         }
     }
 
     pub fn is_nil(self) -> bool {
-        self.0 == SPECIAL_NIL
+        self.0 == NIL_BITS
     }
     pub fn is_true(self) -> bool {
-        self.0 == SPECIAL_TRUE
+        self.0 == TRUE_BITS
     }
     pub fn is_false(self) -> bool {
-        self.0 == SPECIAL_FALSE
+        self.0 == FALSE_BITS
     }
 
     /// Range of valid 61-bit signed ints.
@@ -114,13 +114,18 @@ impl FzValue {
 
 impl std::fmt::Debug for FzValue {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.is_nil() {
+            return write!(f, "FzValue::Nil");
+        }
+        if self.is_true() {
+            return write!(f, "FzValue::True");
+        }
+        if self.is_false() {
+            return write!(f, "FzValue::False");
+        }
         match self.tag() {
             Tag::Int => write!(f, "FzValue::Int({})", self.unbox_int().unwrap()),
             Tag::Atom => write!(f, "FzValue::Atom({})", self.unbox_atom().unwrap()),
-            Tag::Special if self.is_nil() => write!(f, "FzValue::Nil"),
-            Tag::Special if self.is_true() => write!(f, "FzValue::True"),
-            Tag::Special if self.is_false() => write!(f, "FzValue::False"),
-            Tag::Special => write!(f, "FzValue::Special({:#x})", self.0),
             Tag::Ptr => write!(f, "FzValue::Ptr({:#x})", self.0),
             Tag::Reserved => write!(f, "FzValue::Reserved({:#x})", self.0),
         }
@@ -299,6 +304,13 @@ mod tests {
     }
 
     #[test]
+    fn int_zero_is_all_zero_bits() {
+        // Zero-initialised memory must read back as int 0 — that's the
+        // motivation for TAG_INT = 0b000.
+        assert_eq!(FzValue::from_int(0).0, 0);
+    }
+
+    #[test]
     fn int_round_trip_positive() {
         assert_eq!(FzValue::from_int(42).unbox_int(), Some(42));
         assert_eq!(FzValue::from_int(1_000_000).unbox_int(), Some(1_000_000));
@@ -330,12 +342,33 @@ mod tests {
     }
 
     #[test]
+    fn tagged_int_addition_preserves_tag() {
+        // The cardinal feature of TAG_INT = 0b000: raw u64 addition of
+        // two tagged ints is the same as the tagged form of the sum.
+        let a = FzValue::from_int(17);
+        let b = FzValue::from_int(25);
+        let sum_raw = FzValue(a.0.wrapping_add(b.0));
+        assert_eq!(sum_raw.unbox_int(), Some(42));
+        assert_eq!(sum_raw.tag(), Tag::Int);
+    }
+
+    #[test]
     fn atom_round_trip() {
         for id in [0u32, 1, 42, 1234, u32::MAX] {
             let v = FzValue::from_atom_id(id);
             assert_eq!(v.tag(), Tag::Atom);
             assert_eq!(v.unbox_atom(), Some(id));
         }
+    }
+
+    #[test]
+    fn nil_true_false_are_atoms() {
+        assert_eq!(FzValue::NIL.tag(), Tag::Atom);
+        assert_eq!(FzValue::TRUE.tag(), Tag::Atom);
+        assert_eq!(FzValue::FALSE.tag(), Tag::Atom);
+        assert_eq!(FzValue::NIL.unbox_atom(), Some(ATOM_ID_NIL));
+        assert_eq!(FzValue::TRUE.unbox_atom(), Some(ATOM_ID_TRUE));
+        assert_eq!(FzValue::FALSE.unbox_atom(), Some(ATOM_ID_FALSE));
     }
 
     #[test]
@@ -346,9 +379,6 @@ mod tests {
         assert!(n.is_nil() && !n.is_true() && !n.is_false());
         assert!(!t.is_nil() && t.is_true() && !t.is_false());
         assert!(!f.is_nil() && !f.is_true() && f.is_false());
-        assert_eq!(n.tag(), Tag::Special);
-        assert_eq!(t.tag(), Tag::Special);
-        assert_eq!(f.tag(), Tag::Special);
         assert_ne!(n.0, t.0);
         assert_ne!(n.0, f.0);
         assert_ne!(t.0, f.0);
@@ -376,6 +406,14 @@ mod tests {
         assert_eq!(v.unbox_ptr(), Some(p));
         assert_eq!(v.unbox_int(), None);
         assert_eq!(v.unbox_atom(), None);
+    }
+
+    #[test]
+    fn ptr_low_bit_set() {
+        let p = alloc_list_cons(FzValue::NIL, FzValue::NIL);
+        let v = FzValue::from_ptr(p);
+        assert_eq!(v.0 & TAG_MASK, TAG_PTR);
+        assert_eq!((v.0 & !TAG_MASK) as *mut HeapHeader, p);
     }
 
     #[test]
@@ -446,8 +484,10 @@ mod tests {
     }
 
     #[test]
-    fn pointer_alignment_satisfies_tag_zero_low_bits() {
+    fn pointer_alignment_satisfies_tag_low_bit() {
         let p = alloc_list_cons(FzValue::NIL, FzValue::NIL);
+        // Raw heap address is 16-byte aligned (HeapHeader alignment),
+        // so the TAG_PTR bit is the only nonzero low bit when tagged.
         assert_eq!((p as u64) & TAG_MASK, 0);
     }
 }
@@ -481,20 +521,18 @@ pub mod debug {
 
     pub fn render(bits: u64) -> String {
         let v = FzValue(bits);
+        if v.is_nil() {
+            return "nil".into();
+        }
+        if v.is_true() {
+            return "true".into();
+        }
+        if v.is_false() {
+            return "false".into();
+        }
         match v.tag() {
             Tag::Int => v.unbox_int().unwrap().to_string(),
             Tag::Atom => render_atom(v.unbox_atom().unwrap()),
-            Tag::Special => {
-                if v.is_nil() {
-                    "nil".into()
-                } else if v.is_true() {
-                    "true".into()
-                } else if v.is_false() {
-                    "false".into()
-                } else {
-                    format!("#special<{:#x}>", bits)
-                }
-            }
             Tag::Ptr => {
                 let p = v.unbox_ptr().unwrap();
                 let kind = unsafe { (*p).kind };

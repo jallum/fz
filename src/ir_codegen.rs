@@ -38,12 +38,19 @@ use std::sync::Arc;
 pub(crate) const HEADER_SIZE: i32 = 16;
 const SLOT_BYTES: i32 = 8;
 
-// FzValue tag scheme (matches src/fz_value.rs).
-const TAG_INT: i64 = 0b001;
+// FzValue tag scheme (matches runtime/src/fz_value.rs).
+// TAG_INT = 0b000: int payload is `n << 3`; arithmetic on two tagged
+// ints retains the tag with no untag/retag. TAG_PTR = 0b001: heap
+// pointers have the low bit set, so every deref through a tagged ptr
+// emits `band_imm -8` before the load. TAG_ATOM = 0b010 with atom ids
+// 0/1/2 reserved for nil/true/false.
+const TAG_INT: i64 = 0b000;
+const TAG_PTR: i64 = 0b001;
 const TAG_ATOM: i64 = 0b010;
-const NIL_BITS: i64 = 0b011;
-const TRUE_BITS: i64 = (1 << 3) | 0b011;
-const FALSE_BITS: i64 = (2 << 3) | 0b011;
+const PTR_UNTAG_MASK: i64 = !0b111; // -8; band before deref through a tagged ptr
+const NIL_BITS: i64 = (0 << 3) | TAG_ATOM;
+const TRUE_BITS: i64 = (1 << 3) | TAG_ATOM;
+const FALSE_BITS: i64 = (2 << 3) | TAG_ATOM;
 
 /// Errors from `compile()`. Backend-plumbing failures (cranelift
 /// `declare_function` / `define_function` / `finalize_definitions`) carry
@@ -1670,7 +1677,8 @@ pub fn compile_with_backend<B: Backend>(
                 //   off 2  : flags (u16)        off 8  : schema_id (u32)
                 //                               off 12 : _reserved (u32)
                 // flags low 14 bits = captured_count; high 2 bits = halt_kind.
-                let flags_u16 = b.ins().load(types::I16, MemFlags::trusted(), closure, 2);
+                let closure_raw = untag_ptr(b, closure);
+                let flags_u16 = b.ins().load(types::I16, MemFlags::trusted(), closure_raw, 2);
                 // Right-shift 14 to extract halt_kind (0..2), then widen to i32.
                 let hk16 = b.ins().ushr_imm(flags_u16, 14);
                 let kind = b.ins().uextend(types::I32, hk16);
@@ -1690,9 +1698,10 @@ pub fn compile_with_backend<B: Backend>(
                 let halt_cl = b.inst_results(halt_inst)[0];
                 // Load closure body addr at +16 and invoke as
                 // closure-target sig `(self, cont) tail` (zero user args).
+                let closure_raw_for_body = untag_ptr(b, closure);
                 let code = b
                     .ins()
-                    .load(types::I64, MemFlags::trusted(), closure, HEADER_SIZE);
+                    .load(types::I64, MemFlags::trusted(), closure_raw_for_body, HEADER_SIZE);
                 let mut closure_sig = Signature::new(CallConv::Tail);
                 closure_sig.params.push(AbiParam::new(types::I64)); // self
                 closure_sig.params.push(AbiParam::new(types::I64)); // cont
@@ -1728,9 +1737,10 @@ pub fn compile_with_backend<B: Backend>(
                 b.seal_block(entry);
                 let msg = b.block_params(entry)[0];
                 let cont = b.block_params(entry)[1];
+                let cont_raw = untag_ptr(b, cont);
                 let code = b
                     .ins()
-                    .load(types::I64, MemFlags::trusted(), cont, HEADER_SIZE);
+                    .load(types::I64, MemFlags::trusted(), cont_raw, HEADER_SIZE);
                 let mut cont_sig = Signature::new(CallConv::Tail);
                 cont_sig.params.push(AbiParam::new(types::I64));
                 cont_sig.params.push(AbiParam::new(types::I64));
@@ -3684,6 +3694,7 @@ fn build_entry_harness<M: cranelift_module::Module>(
                 },
             );
             let self_val = params[1];
+            let self_raw = untag_ptr(b, self_val);
             for (i, p) in entry_blk.params.iter().enumerate().skip(1) {
                 // fz_param[i] = user_cap[i-1] at offset 32 + 8*(i-1) (= +24 + 8*i).
                 // fz-ul4.27.21.2 — captures are stored in their per-capture
@@ -3692,7 +3703,7 @@ fn build_entry_harness<M: cranelift_module::Module>(
                 // the capture is narrow.
                 let off = HEADER_SIZE + SLOT_BYTES * 2 + ((i - 1) as i32) * SLOT_BYTES;
                 let cl_ty = my_param_reprs[i].cl_type();
-                let v = b.ins().load(cl_ty, MemFlags::trusted(), self_val, off);
+                let v = b.ins().load(cl_ty, MemFlags::trusted(), self_raw, off);
                 var_env.insert(
                     p.0,
                     VarBinding {
@@ -3715,11 +3726,12 @@ fn build_entry_harness<M: cranelift_module::Module>(
             let n_args = entry_blk.params.len().saturating_sub(n_caps);
             let self_val = params[n_args];
             let cont_val = params[n_args + 1];
+            let self_raw = untag_ptr(b, self_val);
             // Captures: fz_params[0..n_caps] ← load from self+24+8*k.
             for (k, p) in entry_blk.params.iter().enumerate().take(n_caps) {
                 let off = HEADER_SIZE + SLOT_BYTES + (k as i32) * SLOT_BYTES;
                 let cl_ty = my_param_reprs[k].cl_type();
-                let v = b.ins().load(cl_ty, MemFlags::trusted(), self_val, off);
+                let v = b.ins().load(cl_ty, MemFlags::trusted(), self_raw, off);
                 var_env.insert(
                     p.0,
                     VarBinding {
@@ -3815,10 +3827,11 @@ fn resolve_outer_cont<M: cranelift_module::Module>(
 ) -> ir::Value {
     if is_cont_fn {
         let self_val = cont_param.expect("cont fn binds self via cont_param");
+        let self_raw = untag_ptr(b, self_val);
         b.ins().load(
             types::I64,
             MemFlags::trusted(),
-            self_val,
+            self_raw,
             HEADER_SIZE + SLOT_BYTES,
         )
     } else {
@@ -3850,11 +3863,12 @@ fn resolve_outer_cont<M: cranelift_module::Module>(
                 let n_caps0 = b.ins().iconst(types::I32, 0);
                 let zero_hk = b.ins().iconst(types::I32, 0);
                 let halt_alloc = b.ins().call(acl, &[dummy_fid, n_caps0, zero_hk]);
-                let halt_cl = b.inst_results(halt_alloc)[0];
+                let halt_cl = b.inst_results(halt_alloc)[0]; // tagged FzValue ptr
+                let halt_cl_raw = untag_ptr(b, halt_cl);
                 let hc_repr = return_reprs[cont_sid as usize];
                 let hcb_addr = fn_addr(jmod, halt_cont_body_id_for(runtime, hc_repr), b);
                 b.ins()
-                    .store(MemFlags::trusted(), hcb_addr, halt_cl, HEADER_SIZE);
+                    .store(MemFlags::trusted(), hcb_addr, halt_cl_raw, HEADER_SIZE);
                 b.ins().jump(join_blk, &[BlockArg::Value(halt_cl)]);
                 b.switch_to_block(join_blk);
                 b.seal_block(join_blk);
@@ -3889,10 +3903,11 @@ fn build_cont_closure<M: cranelift_module::Module>(
     let n_caps_v = b.ins().iconst(types::I32, (cap_bindings.len() + 1) as i64);
     let zero_hk = b.ins().iconst(types::I32, 0);
     let cl_inst = b.ins().call(acl_fref, &[cl_fid_v, n_caps_v, zero_hk]);
-    let cl_ptr = b.inst_results(cl_inst)[0];
+    let cl_ptr = b.inst_results(cl_inst)[0]; // tagged FzValue ptr
+    let cl_raw = untag_ptr(b, cl_ptr);
     let cont_code_addr = fn_addr(jmod, cont_fid, b);
     b.ins()
-        .store(MemFlags::trusted(), cont_code_addr, cl_ptr, HEADER_SIZE);
+        .store(MemFlags::trusted(), cont_code_addr, cl_raw, HEADER_SIZE);
     let my_outer_cont = resolve_outer_cont(
         jmod,
         b,
@@ -3906,7 +3921,7 @@ fn build_cont_closure<M: cranelift_module::Module>(
     b.ins().store(
         MemFlags::trusted(),
         my_outer_cont,
-        cl_ptr,
+        cl_raw,
         HEADER_SIZE + SLOT_BYTES,
     );
     let cont_param_reprs = &param_reprs[cont_sid as usize];
@@ -3914,7 +3929,7 @@ fn build_cont_closure<M: cranelift_module::Module>(
         let to = cont_param_reprs[i + 1];
         let v = coerce_to(b, jmod, runtime, val, from, to);
         let off = HEADER_SIZE + SLOT_BYTES * 2 + (i as i32) * SLOT_BYTES;
-        b.ins().store(MemFlags::trusted(), v, cl_ptr, off);
+        b.ins().store(MemFlags::trusted(), v, cl_raw, off);
     }
     cl_ptr
 }
@@ -4086,18 +4101,20 @@ fn emit_terminator<M: cranelift_module::Module>(
                 let val_typed = coerce_to(b, jmod, runtime, val, from, my_return_repr);
                 let cont_val = if is_cont_fn {
                     let self_val = cont_param.expect("cont fn binds self via cont_param");
+                    let self_raw = untag_ptr(b, self_val);
                     b.ins().load(
                         types::I64,
                         MemFlags::trusted(),
-                        self_val,
+                        self_raw,
                         HEADER_SIZE + SLOT_BYTES,
                     )
                 } else {
                     cont_param.expect("non-cont native fn has cont_param")
                 };
+                let cont_raw = untag_ptr(b, cont_val);
                 let code = b
                     .ins()
-                    .load(types::I64, MemFlags::trusted(), cont_val, HEADER_SIZE);
+                    .load(types::I64, MemFlags::trusted(), cont_raw, HEADER_SIZE);
                 let mut sig = Signature::new(CallConv::Tail);
                 sig.params.push(AbiParam::new(my_return_repr.cl_type()));
                 sig.params.push(AbiParam::new(types::I64));
@@ -4334,10 +4351,11 @@ fn emit_terminator<M: cranelift_module::Module>(
                 let mut synth_halt_cont = false;
                 let tail_cont_arg = if is_cont_fn {
                     let self_val = cont_param.expect("cont fn binds self via cont_param");
+                    let self_raw = untag_ptr(b, self_val);
                     b.ins().load(
                         types::I64,
                         MemFlags::trusted(),
-                        self_val,
+                        self_raw,
                         HEADER_SIZE + SLOT_BYTES,
                     )
                 } else {
@@ -4535,9 +4553,10 @@ fn emit_terminator<M: cranelift_module::Module>(
             // cont) -> i64 tail`. All-Tagged params. Native callers
             // use return_call_indirect (TCO); uniform callers use
             // call_indirect Tail (cross-CC) and return result.
+            let cl_val_raw = untag_ptr(b, cl_val);
             let body_fp = b
                 .ins()
-                .load(types::I64, MemFlags::trusted(), cl_val, HEADER_SIZE);
+                .load(types::I64, MemFlags::trusted(), cl_val_raw, HEADER_SIZE);
             let mut sig = Signature::new(CallConv::Tail);
             for _ in &arg_vals {
                 sig.params.push(AbiParam::new(types::I64));
@@ -4595,10 +4614,11 @@ fn emit_terminator<M: cranelift_module::Module>(
                 .collect();
             let my_cont = if is_cont_fn {
                 let self_val = cont_param.expect("cont fn binds self via cont_param");
+                let self_raw = untag_ptr(b, self_val);
                 b.ins().load(
                     types::I64,
                     MemFlags::trusted(),
-                    self_val,
+                    self_raw,
                     HEADER_SIZE + SLOT_BYTES,
                 )
             } else {
@@ -4663,9 +4683,10 @@ fn emit_terminator<M: cranelift_module::Module>(
             } else {
                 // Existing indirect path (cl+16) for unresolved /
                 // union-of-lits / plain-arrow closures.
+                let cl_val_raw = untag_ptr(b, cl_val);
                 let body_fp = b
                     .ins()
-                    .load(types::I64, MemFlags::trusted(), cl_val, HEADER_SIZE);
+                    .load(types::I64, MemFlags::trusted(), cl_val_raw, HEADER_SIZE);
                 let mut sig = Signature::new(CallConv::Tail);
                 for _ in &arg_vals {
                     sig.params.push(AbiParam::new(types::I64));
@@ -5506,11 +5527,13 @@ fn lower_collection_prim<M: cranelift_module::Module>(
         }
         Prim::ListHead(c) => {
             let cv = tagged_get(var_env, b, jmod, runtime, c.0, cache);
-            b.ins().load(types::I64, MemFlags::trusted(), cv, 16)
+            let raw = untag_ptr(b, cv);
+            b.ins().load(types::I64, MemFlags::trusted(), raw, 16)
         }
         Prim::ListTail(c) => {
             let cv = tagged_get(var_env, b, jmod, runtime, c.0, cache);
-            b.ins().load(types::I64, MemFlags::trusted(), cv, 24)
+            let raw = untag_ptr(b, cv);
+            b.ins().load(types::I64, MemFlags::trusted(), raw, 24)
         }
         Prim::MakeList(elems, tail) => {
             let mut acc = match tail {
@@ -5536,11 +5559,12 @@ fn lower_collection_prim<M: cranelift_module::Module>(
             let fref = jmod.declare_func_in_func(runtime.alloc_struct_id, b.func);
             let sid = b.ins().iconst(types::I32, schema_id as i64);
             let inst = b.ins().call(fref, &[sid]);
-            let p = b.inst_results(inst)[0];
+            let p = b.inst_results(inst)[0]; // tagged FzValue ptr (TAG_PTR set)
+            let raw = untag_ptr(b, p);
             for (i, e) in elems.iter().enumerate() {
                 let ev = tagged_get(var_env, b, jmod, runtime, e.0, cache);
                 let off = HEADER_SIZE + (i as i32) * SLOT_BYTES;
-                b.ins().store(MemFlags::trusted(), ev, p, off);
+                b.ins().store(MemFlags::trusted(), ev, raw, off);
             }
             p
         }
@@ -5555,20 +5579,26 @@ fn lower_collection_prim<M: cranelift_module::Module>(
             // provably safe; SIGSEGV on a bad load would be an IR
             // integrity bug worth surfacing immediately.
             let cv = tagged_get(var_env, b, jmod, runtime, c.0, cache);
+            let raw = untag_ptr(b, cv);
             let off = HEADER_SIZE + (*idx as i32) * SLOT_BYTES;
+            // fz-o0u + fz-ul4.44 — load through the untagged pointer
+            // (TAG_PTR=0b001 means the tagged value is not 8-aligned).
+            // `aligned` without `notrap` per fz-ul4.44: TypeTest gates the
+            // load, so SIGSEGV would be an IR integrity bug worth surfacing.
             let mut mf = MemFlags::new();
             mf.set_aligned();
-            b.ins().load(types::I64, mf, cv, off)
+            b.ins().load(types::I64, mf, raw, off)
         }
         Prim::AllocStruct(schema_id, fields) => {
             let fref = jmod.declare_func_in_func(runtime.alloc_struct_id, b.func);
             let sid = b.ins().iconst(types::I32, *schema_id as i64);
             let inst = b.ins().call(fref, &[sid]);
-            let p = b.inst_results(inst)[0];
+            let p = b.inst_results(inst)[0]; // tagged FzValue ptr (TAG_PTR set)
+            let raw = untag_ptr(b, p);
             for (i, fv) in fields.iter().enumerate() {
                 let v = tagged_get(var_env, b, jmod, runtime, fv.0, cache);
                 let off = HEADER_SIZE + (i as i32) * SLOT_BYTES;
-                b.ins().store(MemFlags::trusted(), v, p, off);
+                b.ins().store(MemFlags::trusted(), v, raw, off);
             }
             p
         }
@@ -6244,8 +6274,9 @@ fn lower_prim<M: cranelift_module::Module>(
         }
         Prim::BitReaderDone(r) => {
             let rv = tagged_get(var_env, b, jmod, runtime, r.0, cache);
-            let bit_len_b = b.ins().load(types::I64, MemFlags::trusted(), rv, 24);
-            let pos_b = b.ins().load(types::I64, MemFlags::trusted(), rv, 32);
+            let rv_raw = untag_ptr(b, rv);
+            let bit_len_b = b.ins().load(types::I64, MemFlags::trusted(), rv_raw, 24);
+            let pos_b = b.ins().load(types::I64, MemFlags::trusted(), rv_raw, 32);
             let cmp = b.ins().icmp(IntCC::Equal, bit_len_b, pos_b);
             if cache.if_only_conds.contains(&dest_var.0) {
                 return Ok(LowerOut::Condition(cmp));
@@ -6342,10 +6373,11 @@ fn lower_prim<M: cranelift_module::Module>(
                 .ins()
                 .iconst(types::I32, body_return_repr.halt_kind() as i64);
             let inst = b.ins().call(alloc_fref, &[fid_v, nc_v, hk_v]);
-            let cl_ptr = b.inst_results(inst)[0];
+            let cl_ptr = b.inst_results(inst)[0]; // tagged FzValue ptr
+            let cl_raw = untag_ptr(b, cl_ptr);
             let body_addr = fn_addr(jmod, body_func_id, b);
             b.ins()
-                .store(MemFlags::trusted(), body_addr, cl_ptr, HEADER_SIZE);
+                .store(MemFlags::trusted(), body_addr, cl_raw, HEADER_SIZE);
             // fz-ul4.27.22.5: store each capture in the body's narrow
             // param_repr (body's entry harness at line ~3406 loads via
             // my_param_reprs[k].cl_type()). Mirrors fz-ul4.27.21.2's
@@ -6358,7 +6390,7 @@ fn lower_prim<M: cranelift_module::Module>(
                 let to = body_param_reprs[i];
                 let val = coerce_to(b, jmod, runtime, vb.value, vb.repr, to);
                 let off = HEADER_SIZE + SLOT_BYTES + (i as i32) * SLOT_BYTES;
-                b.ins().store(MemFlags::trusted(), val, cl_ptr, off);
+                b.ins().store(MemFlags::trusted(), val, cl_raw, off);
             }
             cl_ptr
         }
@@ -6431,7 +6463,7 @@ fn lower_prim<M: cranelift_module::Module>(
                 || !tuple_arities_to_check.is_empty();
 
             let heap: Option<ir::Value> = if need_heap {
-                let is_ptr = b.ins().icmp_imm(IntCC::Equal, tag3, 0i64);
+                let is_ptr = b.ins().icmp_imm(IntCC::Equal, tag3, TAG_PTR);
                 let heap_blk = b.create_block();
                 let join_blk = b.create_block();
                 b.append_block_param(join_blk, types::I8);
@@ -6447,7 +6479,8 @@ fn lower_prim<M: cranelift_module::Module>(
 
                 b.switch_to_block(heap_blk);
                 b.seal_block(heap_blk);
-                let kind_raw = b.ins().load(types::I16, MemFlags::trusted(), val, 0);
+                let val_raw = untag_ptr(b, val);
+                let kind_raw = b.ins().load(types::I16, MemFlags::trusted(), val_raw, 0);
                 let kind64 = b.ins().uextend(types::I64, kind_raw);
 
                 let mut hf: Option<ir::Value> = None;
@@ -6627,15 +6660,14 @@ fn as_raw_i64(
     }
 }
 
-/// Emit `((a^1) | (b^1)) & 7 == 0` — true iff both operands are Tag::Int
-/// (low 3 bits = 001). Used by arithmetic / ordered comparisons to choose
-/// between the inline int fast-path and the boxed-float slow path.
+/// Emit `(a | b) & 7 == 0` — true iff both operands are Tag::Int
+/// (low 3 bits = TAG_INT = 000). Used by arithmetic / ordered comparisons
+/// to choose between the inline int fast-path and the boxed-float slow
+/// path.
 fn both_int(b: &mut FunctionBuilder<'_>, av: ir::Value, bv: ir::Value) -> ir::Value {
-    let xa = b.ins().bxor_imm(av, TAG_INT);
-    let xb = b.ins().bxor_imm(bv, TAG_INT);
-    let or_xab = b.ins().bor(xa, xb);
-    let lo = b.ins().band_imm(or_xab, 7);
-    b.ins().icmp_imm(IntCC::Equal, lo, 0)
+    let or_ab = b.ins().bor(av, bv);
+    let lo = b.ins().band_imm(or_ab, 7);
+    b.ins().icmp_imm(IntCC::Equal, lo, TAG_INT)
 }
 
 /// Emit a tag-dispatched binary op: if both Tag::Int, run `fast`; else run
@@ -6675,20 +6707,38 @@ where
     b.block_params(join_blk)[0]
 }
 
-/// True iff BOTH operands are Tag::Ptr (low 3 bits = 000). Used by Eq/Neq
-/// to dispatch to fz_value_eq only when there's actually a heap value to
-/// inspect; (Ptr, Int) and other cross-tag pairs are correctly handled by
-/// raw bit-eq (always false: ptr bits never alias non-ptr tags).
+/// True iff BOTH operands are Tag::Ptr (low 3 bits = TAG_PTR = 001).
+/// Used by Eq/Neq to dispatch to fz_value_eq only when there's actually
+/// a heap value to inspect; (Ptr, Int) and other cross-tag pairs are
+/// correctly handled by raw bit-eq (always false: ptr bits never alias
+/// non-ptr tags).
 fn both_ptr(b: &mut FunctionBuilder<'_>, av: ir::Value, bv: ir::Value) -> ir::Value {
-    let or_ab = b.ins().bor(av, bv);
+    let xa = b.ins().bxor_imm(av, TAG_PTR);
+    let xb = b.ins().bxor_imm(bv, TAG_PTR);
+    let or_ab = b.ins().bor(xa, xb);
     let lo = b.ins().band_imm(or_ab, 7);
     b.ins().icmp_imm(IntCC::Equal, lo, 0)
 }
 
-/// Box a raw i64 into an FzValue-tagged int: `(n << 3) | TAG_INT`.
+/// Box a raw i64 into an FzValue-tagged int: `n << 3` (TAG_INT = 0).
 fn box_int(b: &mut FunctionBuilder<'_>, raw: ir::Value) -> ir::Value {
-    let shifted = b.ins().ishl_imm(raw, 3);
-    b.ins().bor_imm(shifted, TAG_INT)
+    b.ins().ishl_imm(raw, 3)
+}
+
+/// Strip the TAG_PTR low bit before dereferencing a tagged FzValue ptr.
+/// Use this any time a tagged FzValue is the base of a load or store.
+fn untag_ptr(b: &mut FunctionBuilder<'_>, tagged: ir::Value) -> ir::Value {
+    b.ins().band_imm(tagged, PTR_UNTAG_MASK)
+}
+
+/// Wrap a raw heap-aligned pointer in TAG_PTR to materialise an FzValue
+/// pointer bit-pattern. Currently unused: runtime allocators tag their
+/// own results, so codegen rarely sees raw pointers needing tagging.
+/// Kept for the eventual DPS arc which will allocate destinations
+/// directly in CLIF and tag the result inline.
+#[allow(dead_code)]
+fn tag_ptr(b: &mut FunctionBuilder<'_>, raw: ir::Value) -> ir::Value {
+    b.ins().bor_imm(raw, TAG_PTR)
 }
 
 /// fz-ul4.27.13 — Coerce a Cranelift value between ArgReprs. `RawInt` ↔
@@ -6765,7 +6815,8 @@ fn coerce_to<M: cranelift_module::Module>(
 /// must already have proven Tag::Ptr+HeapKind::Float via the typer
 /// (descr_is_float). fz-ul4.27.3.
 fn unbox_float(b: &mut FunctionBuilder<'_>, v: ir::Value) -> ir::Value {
-    b.ins().load(types::F64, MemFlags::trusted(), v, 16)
+    let raw = untag_ptr(b, v);
+    b.ins().load(types::F64, MemFlags::trusted(), raw, 16)
 }
 
 /// Heap-allocate a fresh boxed float from a raw f64 and return its
@@ -7092,9 +7143,10 @@ mod tests {
 
     #[test]
     fn atom_const_returns_atom_id() {
-        // match_error (id=0) and function_clause (id=1) intern during prelude
-        // lowering; :ok is the next user atom (id=2).
-        assert_eq!(run_main("fn main(), do: :ok"), 2);
+        // fz-o0u: atom ids 0/1/2 reserved for nil/true/false; then
+        // match_error and function_clause intern during prelude lowering
+        // (ids 3 and 4); :ok is the next user atom (id 5).
+        assert_eq!(run_main("fn main(), do: :ok"), 5);
     }
 
     // ----- .11.8 frame-allocation tests -----
@@ -7918,11 +7970,11 @@ fn main(), do: loop_with(loop_with, 100000, 0)
             .find(|(n, _)| n == "main")
             .map(|(_, s)| s.as_str())
             .unwrap_or("");
-        // send(2, 41): the tagged forms of 2 and 41 are iconst 17 and iconst 329.
-        // The ishl_imm + bor_imm sequence should not appear for these constants.
+        // send(2, 41): post fz-o0u, tagged int is just `n << 3`
+        // (TAG_INT = 0). So 2 → iconst 16, 41 → iconst 328.
         assert!(
-            main_ir.contains("iconst.i64 17") && main_ir.contains("iconst.i64 329"),
-            "expected pre-tagged iconst 17 and 329 for send(2, 41):\n{}",
+            main_ir.contains("iconst.i64 16") && main_ir.contains("iconst.i64 328"),
+            "expected pre-tagged iconst 16 and 328 for send(2, 41):\n{}",
             main_ir
         );
         assert!(
@@ -8064,8 +8116,9 @@ fn main(), do: loop_with(loop_with, 100000, 0)
             .find(|(n, _)| n == "main")
             .map(|(_, s)| s.as_str())
             .unwrap_or("");
-        // Dead nil results are gone. Count occurrences of "iconst.i64 3".
-        let nil_count = main_ir.matches("iconst.i64 3").count();
+        // Dead nil results are gone. Count occurrences of "iconst.i64 2"
+        // (NIL_BITS = atom 0 = 0b010 post fz-o0u).
+        let nil_count = main_ir.matches("iconst.i64 2").count();
         assert!(
             nil_count <= 2,
             "expected ≤ 2 nil iconsts in main CLIF (got {}); dead unit results not elided:\n{}",
@@ -8074,8 +8127,8 @@ fn main(), do: loop_with(loop_with, 100000, 0)
         );
         // The live nil (used as continuation arg) must still be present.
         assert!(
-            main_ir.contains("iconst.i64 3"),
-            "expected at least one nil iconst:\n{}",
+            main_ir.contains("iconst.i64 2"),
+            "expected at least one nil iconst (NIL_BITS = atom 0 = 0b010 = 2):\n{}",
             main_ir
         );
     }
@@ -8083,7 +8136,7 @@ fn main(), do: loop_with(loop_with, 100000, 0)
     /// fz-o2g — Const::Nil/Bool/Atom through cached_iconst. The nil arg
     /// to print(nil) and the live unit-extern result both call
     /// cached_iconst(NIL_BITS) and must share the same SSA value — one
-    /// iconst.i64 3, not two.
+    /// iconst.i64 2, not two. (NIL_BITS = atom 0 = 0b010 post fz-o0u.)
     #[test]
     fn const_nil_bool_atom_deduplicated_within_block() {
         let src = "fn main() do\n\
@@ -8098,7 +8151,7 @@ fn main(), do: loop_with(loop_with, 100000, 0)
             .find(|(n, _)| n == "main")
             .map(|(_, s)| s.as_str())
             .unwrap_or("");
-        let nil_count = main_ir.matches("iconst.i64 3").count();
+        let nil_count = main_ir.matches("iconst.i64 2").count();
         assert_eq!(
             nil_count, 1,
             "expected exactly 1 nil iconst in main (Const::Nil and unit-extern result share via cached_iconst), got {}:\n{}",

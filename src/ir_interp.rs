@@ -305,19 +305,18 @@ fn value_to_halt(v: FzValue) -> i64 {
     use fz_runtime::fz_value::Tag;
     match v.tag() {
         Tag::Int => v.unbox_int().unwrap(),
-        Tag::Atom => v.unbox_atom().unwrap() as i64,
-        Tag::Special => {
-            // Tag::Special has three inhabitants: true → 1, false → 0,
-            // nil → 0. The else branch asserts the only remaining
-            // possibility; a new Special variant landing here would
-            // surface in debug builds.
-            if v.is_true() {
+        Tag::Atom => {
+            // Preserve legacy halt mapping nil/true/false → 0/1/0
+            // (Unix-exit-code style) carried over from the old
+            // Tag::Special arm. Other atoms halt with their id.
+            // Why: existing fixtures depend on false → 0; new tag
+            // scheme would otherwise return the atom id (2).
+            if v.is_false() || v.is_nil() {
+                0
+            } else if v.is_true() {
                 1
-            } else if v.is_false() {
-                0
             } else {
-                debug_assert!(v.is_nil(), "value_to_halt: unrecognized Tag::Special bits");
-                0
+                v.unbox_atom().unwrap() as i64
             }
         }
         Tag::Ptr | Tag::Reserved => v.0 as i64,
@@ -590,7 +589,7 @@ fn eval_prim(module: &Module, prim: &Prim, env: &HashMap<Var, FzValue>) -> Resul
                     std::ptr::write(cursor.add(i), *cv);
                 }
             }
-            FzValue(p as u64)
+            FzValue::from_ptr(p)
         }
         Prim::MakeTuple(elems) => {
             // fz-ul4.35 — mirror src/ir_codegen.rs MakeTuple: alloc a heap

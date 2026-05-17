@@ -124,9 +124,23 @@ impl std::error::Error for LowerError {}
 /// - Two CompiledModules built from different source produce independent
 ///   atom-id spaces. Cross-module sends (a future feature) would require
 ///   atom-id translation; not needed for v1.
-#[derive(Default)]
 pub struct AtomTable {
     map: HashMap<String, u32>,
+}
+
+impl Default for AtomTable {
+    fn default() -> Self {
+        // fz-o0u: pre-seed atom ids 0/1/2 for nil/true/false so
+        // FzValue::NIL / TRUE / FALSE encodings refer to the canonical
+        // interned ids. Without these slots, any later intern of "nil"
+        // (etc.) would land at a different id and break equality.
+        use fz_runtime::fz_value::{ATOM_ID_FALSE, ATOM_ID_NIL, ATOM_ID_TRUE};
+        let mut map = HashMap::new();
+        map.insert("nil".to_string(), ATOM_ID_NIL);
+        map.insert("true".to_string(), ATOM_ID_TRUE);
+        map.insert("false".to_string(), ATOM_ID_FALSE);
+        AtomTable { map }
+    }
 }
 
 impl AtomTable {

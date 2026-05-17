@@ -1182,7 +1182,7 @@ pub fn deep_copy_value(
         return src;
     }
     if let Some(&dp) = forwarding.get(&sp) {
-        return FzValue(dp as u64);
+        return FzValue::from_ptr(dp);
     }
     let h = unsafe { &*sp };
     let kind = HeapKind::from_u16(h.kind)
@@ -1201,7 +1201,7 @@ pub fn deep_copy_value(
             let f = Heap::read_float(sp);
             let new_p = dst_heap.alloc_float(f);
             forwarding.insert(sp, new_p);
-            return FzValue(new_p as u64);
+            return FzValue::from_ptr(new_p);
         }
         HeapKind::Bitstring => {
             let bit_len = unsafe { std::ptr::read((sp as *const u8).add(16) as *const u64) };
@@ -1209,7 +1209,7 @@ pub fn deep_copy_value(
             let bytes = unsafe { std::slice::from_raw_parts((sp as *const u8).add(24), bytes_len) };
             let new_p = dst_heap.alloc_bitstring(bytes, bit_len);
             forwarding.insert(sp, new_p);
-            return FzValue(new_p as u64);
+            return FzValue::from_ptr(new_p);
         }
         HeapKind::Map => {
             // Collect (k, v) pairs from src, deep-copy each, then alloc
@@ -1232,7 +1232,7 @@ pub fn deep_copy_value(
             }
             let new_p = dst_heap.alloc_map(&copied_entries);
             forwarding.insert(sp, new_p);
-            return FzValue(new_p as u64);
+            return FzValue::from_ptr(new_p);
         }
         HeapKind::Closure => {
             // fz-ul4.29.5: stub_fp at offset 16, captures (FzValue) at
@@ -1256,7 +1256,7 @@ pub fn deep_copy_value(
                     std::ptr::write(dst_cursor.add(i), nc);
                 }
             }
-            return FzValue(new_p as u64);
+            return FzValue::from_ptr(new_p);
         }
         HeapKind::VecI64 => {
             let len = Heap::vec_len(sp) as usize;
@@ -1266,7 +1266,7 @@ pub fn deep_copy_value(
                 .collect();
             let new_p = dst_heap.alloc_vec_i64(&v);
             forwarding.insert(sp, new_p);
-            return FzValue(new_p as u64);
+            return FzValue::from_ptr(new_p);
         }
         HeapKind::VecU8 => {
             let len = Heap::vec_len(sp) as usize;
@@ -1274,7 +1274,7 @@ pub fn deep_copy_value(
             let v: Vec<u8> = (0..len).map(|i| unsafe { *payload.add(i) }).collect();
             let new_p = dst_heap.alloc_vec_u8(&v);
             forwarding.insert(sp, new_p);
-            return FzValue(new_p as u64);
+            return FzValue::from_ptr(new_p);
         }
         HeapKind::VecBit => {
             let len = Heap::vec_len(sp) as usize;
@@ -1289,7 +1289,7 @@ pub fn deep_copy_value(
                 .collect();
             let new_p = dst_heap.alloc_vec_bit(&v);
             forwarding.insert(sp, new_p);
-            return FzValue(new_p as u64);
+            return FzValue::from_ptr(new_p);
         }
         HeapKind::VecF64 => {
             panic!("deep_copy_value: HeapKind::VecF64 not yet supported (see fz-ul4.11.23)");
@@ -1302,7 +1302,7 @@ pub fn deep_copy_value(
             let handle = unsafe { SharedBinHandle::retain_from_raw(src_pb.shared_raw()) };
             let new_p = alloc_procbin(dst_heap, handle).as_raw();
             forwarding.insert(sp, new_p);
-            return FzValue(new_p as u64);
+            return FzValue::from_ptr(new_p);
         }
     };
     forwarding.insert(sp, dp);
@@ -1335,7 +1335,7 @@ pub fn deep_copy_value(
         }
         _ => unreachable!("scalar-only kinds returned early"),
     }
-    FzValue(dp as u64)
+    FzValue::from_ptr(dp)
 }
 
 #[cfg(test)]

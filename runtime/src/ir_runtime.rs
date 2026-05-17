@@ -90,19 +90,19 @@ pub extern "C" fn fz_halt(_ctx: *mut u8, fz_bits: u64) {
     let v = FzValue(fz_bits);
     let i: i64 = match v.tag() {
         Tag::Int => v.unbox_int().unwrap(),
-        Tag::Atom => v.unbox_atom().unwrap() as i64,
-        Tag::Special => {
-            // Tag::Special has three inhabitants: true → 1, false → 0,
-            // nil → 0. The else branch asserts the only remaining
-            // possibility; a new Special variant landing here would
-            // surface in debug builds.
-            if v.is_true() {
+        Tag::Atom => {
+            // Preserve the legacy halt mapping nil/true/false → 0/1/0
+            // (Unix-exit-code style) carried over from the old
+            // Tag::Special arm. Other atoms halt with their id as i64.
+            // Why: existing fixtures and external callers depend on
+            // false halting as 0; new tag scheme would otherwise return
+            // its atom id (2).
+            if v.is_false() || v.is_nil() {
+                0
+            } else if v.is_true() {
                 1
-            } else if v.is_false() {
-                0
             } else {
-                debug_assert!(v.is_nil(), "fz_halt: unrecognized Tag::Special bits");
-                0
+                v.unbox_atom().unwrap() as i64
             }
         }
         Tag::Ptr => {
@@ -303,7 +303,7 @@ pub extern "C" fn fz_alloc_closure(callee_fn_id: u32, captured_count: u32, halt_
         captured_count as usize,
         halt_kind as u16,
     );
-    p as u64
+    crate::fz_value::FzValue::from_ptr(p).0
 }
 
 /// fz-cps.1.11 — return the per-Process singleton halt-cont closure.
@@ -440,7 +440,7 @@ pub extern "C" fn fz_vec_finalize() -> u64 {
         VecBuild::U8(v) => heap.alloc_vec_u8(&v),
         VecBuild::Bit(v) => heap.alloc_vec_bit(&v),
     };
-    p as u64
+    crate::fz_value::FzValue::from_ptr(p).0
 }
 
 /// vec_get(vec, index) -> element as FzValue Int (for I64/U8/Bit).
@@ -613,7 +613,7 @@ pub extern "C" fn fz_bs_finalize() -> u64 {
     let bit_len = w.bit_len as u64;
     let bytes = w.bytes;
     let p = current_process().heap.alloc_bitstring(&bytes, bit_len);
-    p as u64
+    crate::fz_value::FzValue::from_ptr(p).0
 }
 
 /// fz-cty.8 — single-shot bitstring allocation from module-interned bytes.
@@ -630,7 +630,7 @@ pub extern "C" fn fz_alloc_bitstring_const(ptr: u64, byte_len: u64, bit_len: u64
     // enough for Heap::alloc_bitstring to copy / wrap.
     let bytes = unsafe { std::slice::from_raw_parts(ptr as *const u8, byte_len as usize) };
     let p = current_process().heap.alloc_bitstring(bytes, bit_len);
-    p as u64
+    crate::fz_value::FzValue::from_ptr(p).0
 }
 
 /// fz-q8d.2 — allocate a ProcBin on the current heap referencing a
@@ -647,7 +647,7 @@ pub extern "C" fn fz_alloc_procbin_from_static(static_sharedbin: u64) -> u64 {
     let sb = static_sharedbin as *mut crate::procbin::SharedBin;
     let handle = unsafe { crate::procbin::SharedBinHandle::retain_from_raw(sb) };
     let pb = crate::procbin::alloc_procbin(&mut current_process().heap, handle);
-    pb.as_raw() as u64
+    crate::fz_value::FzValue::from_ptr(pb.as_raw()).0
 }
 
 fn decode_bit_type(t: u32) -> crate::bitstr::BitType {
@@ -696,10 +696,10 @@ pub extern "C" fn fz_bs_reader_init(bs_bits: u64) -> u64 {
         let base = (tuple_p as *mut u8).add(16);
         // [bs_ptr, bit_len_boxed, 0_boxed]
         std::ptr::write(base as *mut u64, bs_bits);
-        std::ptr::write(base.add(8) as *mut u64, ((bit_len as u64) << 3) | 0b001);
-        std::ptr::write(base.add(16) as *mut u64, ((0i64 as u64) << 3) | 0b001);
+        std::ptr::write(base.add(8) as *mut u64, FzValue::from_int(bit_len as i64).0);
+        std::ptr::write(base.add(16) as *mut u64, FzValue::from_int(0).0);
     }
-    tuple_p as u64
+    FzValue::from_ptr(tuple_p).0
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -760,7 +760,7 @@ pub extern "C" fn fz_bs_read_field(
             let base = (p as *mut u8).add(16);
             std::ptr::write(base as *mut u64, FzValue::FALSE.0);
         }
-        p as u64
+        FzValue::from_ptr(p).0
     };
 
     let mut r = crate::bitstr::BitReader {
@@ -810,8 +810,7 @@ pub extern "C" fn fz_bs_read_field(
             let new_bs = current_process()
                 .heap
                 .alloc_bitstring(&sub_bytes, needed_bits as u64);
-            let new_bs_bits = new_bs as u64;
-            (new_bs_bits, needed_bits)
+            (FzValue::from_ptr(new_bs).0, needed_bits)
         }
         BitType::Float => {
             let total = size.unwrap_or(64) * unit;
@@ -829,7 +828,7 @@ pub extern "C" fn fz_bs_read_field(
                 f64::from_bits(raw)
             };
             let p = current_process().heap.alloc_float(f);
-            (p as u64, total as usize)
+            (FzValue::from_ptr(p).0, total as usize)
         }
         BitType::Utf8 | BitType::Utf16 | BitType::Utf32 => {
             // UTF: read uses crate::bitstr::decode_utf*; not exercised by
@@ -847,8 +846,8 @@ pub extern "C" fn fz_bs_read_field(
     unsafe {
         let base = (new_reader_p as *mut u8).add(16);
         std::ptr::write(base as *mut u64, bs_bits);
-        std::ptr::write(base.add(8) as *mut u64, ((bit_len as u64) << 3) | 0b001);
-        std::ptr::write(base.add(16) as *mut u64, ((new_pos as u64) << 3) | 0b001);
+        std::ptr::write(base.add(8) as *mut u64, FzValue::from_int(bit_len as i64).0);
+        std::ptr::write(base.add(16) as *mut u64, FzValue::from_int(new_pos).0);
     }
 
     // Allocate result tuple [true, extracted, new_reader].
@@ -857,9 +856,9 @@ pub extern "C" fn fz_bs_read_field(
         let base = (result_p as *mut u8).add(16);
         std::ptr::write(base as *mut u64, FzValue::TRUE.0);
         std::ptr::write(base.add(8) as *mut u64, extracted_bits);
-        std::ptr::write(base.add(16) as *mut u64, new_reader_p as u64);
+        std::ptr::write(base.add(16) as *mut u64, FzValue::from_ptr(new_reader_p).0);
     }
-    result_p as u64
+    FzValue::from_ptr(result_p).0
 }
 
 // ===== Map cluster (fz-ul4.23.4.8) =====
@@ -870,17 +869,17 @@ pub extern "C" fn fz_bs_read_field(
 // pairs as `(key_bits, val_bits)`; finalize sorts canonically (later writes
 // win on duplicate keys) and allocates one heap Map.
 //
-// Key total ordering for canonical layout: Int < Atom < Special < Ptr;
-// within each category, by raw bits (Int compares signed). Keys compare
-// equal iff their u64 bits are equal — pointer-equal heap keys for v1.
+// Key total ordering for canonical layout: Int < Atom < Ptr; within each
+// category, by raw bits (Int compares signed). Keys compare equal iff
+// their u64 bits are equal — pointer-equal heap keys for v1.
 
 fn fz_key_category(bits: u64) -> u8 {
+    use crate::fz_value::{TAG_ATOM, TAG_INT, TAG_PTR};
     match bits & 0b111 {
-        0b001 => 0,
-        0b010 => 1,
-        0b011 => 2,
-        0b000 => 3,
-        _ => 4,
+        x if x == TAG_INT => 0,
+        x if x == TAG_ATOM => 1,
+        x if x == TAG_PTR => 2,
+        _ => 3,
     }
 }
 
@@ -954,7 +953,7 @@ pub extern "C" fn fz_map_finalize() -> u64 {
         .map(|(k, v)| (FzValue(k), FzValue(v)))
         .collect();
     let p = current_process().heap.alloc_map(&entries);
-    p as u64
+    crate::fz_value::FzValue::from_ptr(p).0
 }
 
 #[unsafe(no_mangle)]
@@ -989,26 +988,24 @@ pub extern "C" fn fz_alloc_list_cons(head_bits: u64, tail_bits: u64) -> u64 {
     let p = current_process()
         .heap
         .alloc_list_cons(FzValue(head_bits), FzValue(tail_bits));
-    // Heap returns 16-byte-aligned pointers (low 4 bits zero), so the raw
-    // pointer doubles as the FzValue ptr-tagged encoding (tag bits = 000).
-    p as u64
+    FzValue::from_ptr(p).0
 }
 
 /// Allocate a heap-typed Struct. `schema_id` must already be registered in
 /// the current Process's heap SchemaRegistry (shared with CompiledModule).
-/// Returns the FzValue ptr-bits (heap-aligned, so tag = 000). Caller is
+/// Returns the FzValue ptr-bits (low bit set = TAG_PTR). Caller is
 /// responsible for writing field values into payload slots after allocation.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_alloc_struct(schema_id: u32) -> u64 {
     let p = current_process().heap.alloc_struct(schema_id);
-    p as u64
+    crate::fz_value::FzValue::from_ptr(p).0
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_alloc_float(bits: u64) -> u64 {
     let f = f64::from_bits(bits);
     let p = current_process().heap.alloc_float(f);
-    p as u64
+    crate::fz_value::FzValue::from_ptr(p).0
 }
 
 /// Allocate a frame for fn `fn_id`, looking up its size in the current
@@ -1094,7 +1091,7 @@ pub fn fz_to_f64(bits: u64) -> f64 {
 
 pub fn box_float(f: f64) -> u64 {
     let p = current_process().heap.alloc_float(f);
-    p as u64
+    crate::fz_value::FzValue::from_ptr(p).0
 }
 
 /// Tag-promotion helper for the JIT's mixed-type arithmetic slow path.
