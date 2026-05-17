@@ -42,7 +42,7 @@ use std::collections::{HashMap, HashSet};
 /// specs (bootstrap). Edges captured:
 ///   - direct Term::Call / Term::TailCall callee
 ///   - continuation fn_id from Term::Call / Term::CallClosure / Term::Receive
-///   - Prim::MakeClosure(fn_id, ...) target lambda
+///   - Prim::MakeClosure(fn_id, ..., None) target lambda
 ///   - fn_constants-resolved Term::CallClosure / TailCallClosure target
 ///
 /// Edges skipped: Term::Return / Term::Halt (dynamic dispatch, no static
@@ -71,7 +71,7 @@ fn build_call_graph(m: &Module) -> HashMap<FnId, HashSet<FnId>> {
         for b in &f.blocks {
             for stmt in &b.stmts {
                 let Stmt::Let(_, prim) = stmt;
-                if let Prim::MakeClosure(lam_fn_id, _) = prim {
+                if let Prim::MakeClosure(lam_fn_id, _, _) = prim {
                     edges.insert(*lam_fn_id);
                 }
             }
@@ -91,7 +91,8 @@ fn build_call_graph(m: &Module) -> HashMap<FnId, HashSet<FnId>> {
                     edges.insert(continuation.fn_id);
                 }
                 Term::TailCallClosure { .. } => {}
-                Term::Receive { continuation } => {
+                Term::Receive { continuation, ..
+            } => {
                     edges.insert(continuation.fn_id);
                 }
                 _ => {}
@@ -356,7 +357,7 @@ fn entry_seeds(m: &Module) -> Vec<(FnId, Vec<Descr>)> {
 /// fz-vw4.5a — scan converged specs for unresolved closure dispatch.
 ///
 /// At every `Term::CallClosure { closure, args, .. }` and
-/// `Term::TailCallClosure { closure, args }` site in every registered
+/// `Term::TailCallClosure { closure, args, .. }` site in every registered
 /// spec's body, check whether the spec's `fn_constants` resolves
 /// `closure` to a specific FnId. Sites that DON'T resolve are
 /// "opaque consumers" — at runtime they dispatch to whichever lambda
@@ -384,7 +385,8 @@ fn opaque_consumer_arities(
             // Terminator-level opaque dispatch.
             let (closure_var, args): (Option<Var>, &[Var]) = match &b.terminator {
                 Term::CallClosure { closure, args, .. }
-                | Term::TailCallClosure { closure, args } => (Some(*closure), args.as_slice()),
+                | Term::TailCallClosure { closure, args, ..
+            } => (Some(*closure), args.as_slice()),
                 _ => (None, &[]),
             };
             if let Some(cv) = closure_var
@@ -690,7 +692,7 @@ fn type_module_pass(
     // fz-vw4.5b — phase 2: MakeClosure-side any-key registration.
     // Phase 1 (above) registered only direct + resolved-closure
     // specs. Now sweep every registered spec's body for
-    // `Prim::MakeClosure(F, captures)` and push
+    // `Prim::MakeClosure(F, captures, None)` and push
     // `(F, [capture_descrs..., any...])` — but ONLY when the lambda's
     // expected invocation arity (`n_params(F) - captures.len()`) is
     // present in `opaque_consumer_arities`. Closures whose every
@@ -715,7 +717,7 @@ fn type_module_pass(
                 let mut env = caller_ft.block_envs.get(&b.id).cloned().unwrap_or_default();
                 for stmt in &b.stmts {
                     let Stmt::Let(v, prim) = stmt;
-                    if let Prim::MakeClosure(lam_fn_id, captured) = prim
+                    if let Prim::MakeClosure(lam_fn_id, captured, _) = prim
                         && let Some(&jj) = m.fn_idx.get(lam_fn_id)
                     {
                         let lam = &m.fns[jj];
@@ -888,7 +890,8 @@ fn walk_spec_for_discovery(
         // covers all MakeClosure-typed closures (including non-zero capture)
         // by inspecting the closure Var's own Descr.
         let (closure_var, closure_args): (Option<Var>, &[Var]) = match &b.terminator {
-            Term::CallClosure { closure, args, .. } | Term::TailCallClosure { closure, args } => {
+            Term::CallClosure { closure, args, .. } | Term::TailCallClosure { closure, args, ..
+            } => {
                 (Some(*closure), args.as_slice())
             }
             _ => (None, &[]),
@@ -962,7 +965,8 @@ fn walk_spec_for_discovery(
         let cont = match &b.terminator {
             Term::Call { continuation, .. } => Some(continuation),
             Term::CallClosure { continuation, .. } => Some(continuation),
-            Term::Receive { continuation } => Some(continuation),
+            Term::Receive { continuation, ..
+            } => Some(continuation),
             _ => None,
         };
         let slot0_descr: Option<Descr> = match &b.terminator {
@@ -1103,25 +1107,26 @@ pub fn rewrite_known_target_closures(module: &mut Module, types: &ModuleTypes) {
                 Term::CallClosure {
                     closure,
                     args,
-                    continuation,
-                } => {
+                    continuation, ..
+            } => {
                     if let Some(Some(target)) = map.get(closure).copied() {
                         Some(Term::Call {
                             callee: target,
                             args: args.clone(),
-                            continuation: continuation.clone(),
-                        })
+                            continuation: continuation.clone(), callsite_sid: None
+            })
                     } else {
                         None
                     }
                 }
-                Term::TailCallClosure { closure, args } => {
+                Term::TailCallClosure { closure, args, ..
+            } => {
                     if let Some(Some(target)) = map.get(closure).copied() {
                         Some(Term::TailCall {
                             callee: target,
                             args: args.clone(),
-                            is_back_edge: false,
-                        })
+                            is_back_edge: false, callsite_sid: None
+            })
                     } else {
                         None
                     }
@@ -1302,7 +1307,7 @@ pub fn type_fn(f: &FnIr, m: &Module, entry_param_types: Option<&[Descr]>) -> FnT
     for b in &f.blocks {
         for stmt in &b.stmts {
             let Stmt::Let(v, prim) = stmt;
-            if let Prim::MakeClosure(fid, captured) = prim
+            if let Prim::MakeClosure(fid, captured, _) = prim
                 && captured.is_empty()
             {
                 fn_constants.insert(*v, *fid);
@@ -1617,7 +1622,7 @@ fn type_prim(
         Prim::MakeBitstring(_) => Descr::vec_u8().union(&Descr::vec_bit()),
         Prim::ConstBitstring(_, _) => Descr::vec_u8().union(&Descr::vec_bit()),
 
-        Prim::MakeClosure(fn_id, captured) => {
+        Prim::MakeClosure(fn_id, captured, _) => {
             // fz-ul4.27.22.10 — type MakeClosure's result as a closure
             // literal: a singleton-typed arrow tagged with (fn_id,
             // capture_descrs). Downstream consumers (cont_slot0_descr,
@@ -2320,7 +2325,7 @@ pub fn cont_slot0_descr(
 ///                                                              K eventually returns
 ///                                                              to our caller's cont)
 ///   Term::CallClosure(_, _, cont)  ⇒ return(cont.fn_id, k)   (same)
-///   Term::Receive { cont }         ⇒ return(cont.fn_id, k)   (msg feeds K)
+///   Term::Receive { cont, .. }     ⇒ return(cont.fn_id, k)   (msg feeds K)
 ///   Term::TailCallClosure(c, A)    ⇒ return(target?, A) | any (resolved via
 ///                                                              fn_constants
 ///                                                              when possible)
@@ -2480,7 +2485,8 @@ pub fn compute_effective_returns(
                             .collect();
                         joined = joined.union(&lookup(&ret, &(*callee, arg_descrs)));
                     }
-                    Term::TailCallClosure { closure, args } => {
+                    Term::TailCallClosure { closure, args, ..
+            } => {
                         if let Some(&target) = ft.fn_constants.get(closure) {
                             let target_fn = module.fn_by_id(target);
                             let np = target_fn.block(target_fn.entry).params.len();
@@ -2542,7 +2548,8 @@ pub fn compute_effective_returns(
                     }
                     Term::Call { continuation, .. }
                     | Term::CallClosure { continuation, .. }
-                    | Term::Receive { continuation } => {
+                    | Term::Receive { continuation, ..
+            } => {
                         let cont_k = cont_key_at(b, continuation, ft);
                         joined = joined.union(&lookup(&ret, &(continuation.fn_id, cont_k)));
                     }
@@ -2688,7 +2695,7 @@ pub fn reachable_specs(
         for blk in &f.blocks {
             for stmt in &blk.stmts {
                 let Stmt::Let(_, prim) = stmt;
-                if let Prim::MakeClosure(lam_id, _) = prim {
+                if let Prim::MakeClosure(lam_id, _, _) = prim {
                     closure_target_fns.insert(*lam_id);
                 }
             }
@@ -2730,8 +2737,8 @@ pub fn reachable_specs(
                 Term::Call {
                     callee,
                     args,
-                    continuation,
-                } => {
+                    continuation, ..
+            } => {
                     let key = pad_to_arity(*callee, arg_descrs(args));
                     if let Some(sid) = spec_registry.resolve(*callee, &key) {
                         worklist.push(sid.0);
@@ -2750,8 +2757,8 @@ pub fn reachable_specs(
                 Term::CallClosure {
                     closure,
                     args,
-                    continuation,
-                } => {
+                    continuation, ..
+            } => {
                     if let Some(&target) = ft.fn_constants.get(closure) {
                         let key = pad_to_arity(target, arg_descrs(args));
                         if let Some(sid) = spec_registry.resolve(target, &key) {
@@ -2763,7 +2770,8 @@ pub fn reachable_specs(
                         worklist.push(sid.0);
                     }
                 }
-                Term::TailCallClosure { closure, args } => {
+                Term::TailCallClosure { closure, args, ..
+            } => {
                     if let Some(&target) = ft.fn_constants.get(closure) {
                         let key = pad_to_arity(target, arg_descrs(args));
                         if let Some(sid) = spec_registry.resolve(target, &key) {
@@ -2771,7 +2779,8 @@ pub fn reachable_specs(
                         }
                     }
                 }
-                Term::Receive { continuation } => {
+                Term::Receive { continuation, ..
+            } => {
                     let cont_key = cont_input_key(blk, continuation, ft, module, module_types);
                     if let Some(sid) = spec_registry.resolve(continuation.fn_id, &cont_key) {
                         worklist.push(sid.0);
@@ -2920,8 +2929,8 @@ pub fn pretty_module_types(m: &Module, t: &ModuleTypes) -> String {
                 Term::Call {
                     callee,
                     args,
-                    continuation,
-                } => {
+                    continuation, ..
+            } => {
                     let arg_descrs: Vec<Descr> = args
                         .iter()
                         .map(|av| ft.vars.get(av).cloned().unwrap_or_else(Descr::any))
@@ -2956,8 +2965,8 @@ pub fn pretty_module_types(m: &Module, t: &ModuleTypes) -> String {
                 Term::CallClosure {
                     closure,
                     args,
-                    continuation,
-                } => {
+                    continuation, ..
+            } => {
                     let arg_vars: Vec<String> =
                         args.iter().map(|v| format!("Var({})", v.0)).collect();
                     let cap_vars: Vec<String> = continuation
@@ -2986,7 +2995,8 @@ pub fn pretty_module_types(m: &Module, t: &ModuleTypes) -> String {
                     ));
                     out.push_str(&format!(";              cont_key={}\n", descrs_str(&ck)));
                 }
-                Term::TailCallClosure { closure, args } => {
+                Term::TailCallClosure { closure, args, ..
+            } => {
                     let arg_vars: Vec<String> =
                         args.iter().map(|v| format!("Var({})", v.0)).collect();
                     let target = ft.fn_constants.get(closure).copied();
@@ -3002,7 +3012,8 @@ pub fn pretty_module_types(m: &Module, t: &ModuleTypes) -> String {
                         target_str
                     ));
                 }
-                Term::Receive { continuation } => {
+                Term::Receive { continuation, ..
+            } => {
                     let cap_vars: Vec<String> = continuation
                         .captured
                         .iter()
@@ -3528,7 +3539,7 @@ mod tests {
             Term::TailCall {
                 callee: FnId(0),
                 args: vec![v],
-                is_back_edge: false,
+                is_back_edge: false, ..
             },
         );
 
@@ -3560,7 +3571,7 @@ mod tests {
             Term::TailCall {
                 callee: FnId(0),
                 args: vec![one],
-                is_back_edge: false,
+                is_back_edge: false, ..
             },
         );
 
@@ -3573,7 +3584,7 @@ mod tests {
             Term::TailCall {
                 callee: FnId(0),
                 args: vec![ok],
-                is_back_edge: false,
+                is_back_edge: false, ..
             },
         );
 
@@ -3649,7 +3660,7 @@ mod tests {
             Term::TailCall {
                 callee: FnId(0),
                 args: vec![lit],
-                is_back_edge: false,
+                is_back_edge: false, ..
             },
         );
 
@@ -3698,7 +3709,7 @@ mod tests {
             Term::TailCall {
                 callee: FnId(0),
                 args: vec![lit],
-                is_back_edge: false,
+                is_back_edge: false, ..
             },
         );
 
@@ -3742,7 +3753,7 @@ mod tests {
             Term::TailCall {
                 callee: FnId(0),
                 args: vec![lit],
-                is_back_edge: false,
+                is_back_edge: false, ..
             },
         );
 
@@ -3785,7 +3796,7 @@ mod tests {
             Term::TailCall {
                 callee: FnId(0),
                 args: vec![lit],
-                is_back_edge: false,
+                is_back_edge: false, ..
             },
         );
 
@@ -3903,7 +3914,7 @@ fn main(), do: print(add1(40) + 2)
             kre,
             Term::TailCallClosure {
                 closure: f,
-                args: vec![seven],
+                args: vec![seven], ..
             },
         );
 
@@ -3914,8 +3925,7 @@ fn main(), do: print(add1(40) + 2)
             Term::Receive {
                 continuation: crate::fz_ir::Cont {
                     fn_id: FnId(1),
-                    captured: vec![],
-                },
+                    captured: vec![], .. },
             },
         );
 
@@ -3926,7 +3936,7 @@ fn main(), do: print(add1(40) + 2)
             Term::TailCall {
                 callee: FnId(2),
                 args: vec![],
-                is_back_edge: false,
+                is_back_edge: false, ..
             },
         );
 
@@ -4128,7 +4138,8 @@ end
         let waiter = m.fns.iter().find(|f| f.name == "waiter").unwrap();
         let mut cont_fn_ids: Vec<FnId> = Vec::new();
         for b in &waiter.blocks {
-            if let Term::Receive { continuation } = &b.terminator {
+            if let Term::Receive { continuation, ..
+            } = &b.terminator {
                 cont_fn_ids.push(continuation.fn_id);
             }
         }
@@ -4324,7 +4335,7 @@ end
         for b in &main.blocks {
             for stmt in &b.stmts {
                 let Stmt::Let(v, prim) = stmt;
-                if let Prim::MakeClosure(fid, captured) = prim
+                if let Prim::MakeClosure(fid, captured, _) = prim
                     && *fid == double.id
                     && captured.is_empty()
                 {
@@ -4372,7 +4383,7 @@ end
         for b in &main.blocks {
             for stmt in &b.stmts {
                 let Stmt::Let(v, prim) = stmt;
-                if let Prim::MakeClosure(_, captured) = prim
+                if let Prim::MakeClosure(_, captured, _) = prim
                     && !captured.is_empty()
                 {
                     closure_var = Some(*v);

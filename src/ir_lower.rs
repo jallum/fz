@@ -289,7 +289,7 @@ impl LowerCtx {
             entry,
             Term::TailCallClosure {
                 closure: c,
-                args: vec![],
+                args: vec![], resolved_sid: None
             },
         );
         let built = tb.build();
@@ -749,7 +749,7 @@ fn annotate_back_edges(
             if let Term::TailCall {
                 callee,
                 args,
-                is_back_edge,
+                is_back_edge, ..
             } = &mut block.terminator
             {
                 let callee_scc = scc_of.get(callee).copied().unwrap_or(usize::MAX);
@@ -1712,7 +1712,7 @@ fn lower_multi_clause(
             ctx.set_term(Term::TailCall {
                 callee: cont.id,
                 args: capture_vars,
-                is_back_edge: false,
+                is_back_edge: false, callsite_sid: None
             });
             ctx.terminated = true;
             clause_conts_ref[i] = Some(cont);
@@ -1764,7 +1764,7 @@ fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -> Result<Va
                 .find(|((n, _), _)| n == name)
                 .map(|(k, v)| (k.clone(), *v))
             {
-                return Ok(ctx.let_(Prim::MakeClosure(fn_id, vec![])));
+                return Ok(ctx.let_(Prim::MakeClosure(fn_id, vec![], None)));
             }
             Err(LowerError::Unbound {
                 span: sp,
@@ -1880,8 +1880,8 @@ fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -> Result<Va
                     ctx.set_term_at(
                         Term::TailCallClosure {
                             closure: local_var,
-                            args: arg_vars,
-                        },
+                            args: arg_vars, resolved_sid: None
+            },
                         sp,
                     );
                     ctx.terminated = true;
@@ -1916,7 +1916,7 @@ fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -> Result<Va
             // extern, not a non-existent user fn.
             if callee_name == "spawn" && (arg_vars.len() == 1 || arg_vars.len() == 2) {
                 let thunk_id = ctx.ensure_spawn_thunk();
-                let wrapper = ctx.let_at(Prim::MakeClosure(thunk_id, vec![arg_vars[0]]), sp);
+                let wrapper = ctx.let_at(Prim::MakeClosure(thunk_id, vec![arg_vars[0]], None), sp);
                 let mut new_args = vec![wrapper];
                 new_args.extend_from_slice(&arg_vars[1..]);
                 let sym = if arg_vars.len() == 1 {
@@ -1948,6 +1948,7 @@ fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -> Result<Va
                         callee,
                         args: arg_vars,
                         is_back_edge: false, // annotate_back_edges fills this in post-lowering
+                        callsite_sid: None,
                     },
                     sp,
                 );
@@ -2133,8 +2134,8 @@ fn finalize_arm(ctx: &mut LowerCtx, arm_value: Var, join: Option<&ContFn>) {
         ctx.set_term(Term::TailCall {
             callee: join.id,
             args: tail_args,
-            is_back_edge: false,
-        });
+            is_back_edge: false, callsite_sid: None
+            });
     } else {
         ctx.set_term(Term::Return(arm_value));
     }
@@ -2202,14 +2203,14 @@ fn lower_if(
     ctx.set_term(Term::TailCall {
         callee: then_cont.id,
         args: capture_vars.clone(),
-        is_back_edge: false,
-    });
+        is_back_edge: false, callsite_sid: None
+            });
     ctx.cur_block = Some(else_b);
     ctx.set_term(Term::TailCall {
         callee: else_cont.id,
         args: capture_vars,
-        is_back_edge: false,
-    });
+        is_back_edge: false, callsite_sid: None
+            });
 
     // Move to then_fn. Finalizes the outer fn (which is now fully populated).
     let _ = switch_to_cont_fn(ctx, &then_cont, 0);
@@ -2298,7 +2299,7 @@ fn lower_lambda(
     ctx.env = saved_env;
     ctx.env_order = saved_order;
 
-    Ok(ctx.let_(Prim::MakeClosure(lam_id, captured_vars)))
+    Ok(ctx.let_(Prim::MakeClosure(lam_id, captured_vars, None)))
 }
 
 fn cps_split_call_closure(
@@ -2318,7 +2319,9 @@ fn cps_split_call_closure(
             continuation: Cont {
                 fn_id: cont_id,
                 captured: captured_vars.clone(),
+                sid: None,
             },
+            resolved_sid: None,
         },
         call_span,
     );
@@ -2370,8 +2373,7 @@ fn cps_split_receive(
         Term::Receive {
             continuation: Cont {
                 fn_id: cont_id,
-                captured: captured_vars.clone(),
-            },
+                captured: captured_vars.clone(), sid: None },
         },
         call_span,
     );
@@ -2429,7 +2431,9 @@ fn cps_split_call(
             continuation: Cont {
                 fn_id: cont_id,
                 captured: captured_vars.clone(),
+                sid: None,
             },
+            callsite_sid: None,
         },
         call_span,
     );
@@ -2986,7 +2990,7 @@ fn lower_case(
             ctx.set_term(Term::TailCall {
                 callee: clause_cont.id,
                 args: capture_vars,
-                is_back_edge: false,
+                is_back_edge: false, callsite_sid: None
             });
             ctx.terminated = true;
             clause_conts_ref[i] = Some(clause_cont);
@@ -3054,8 +3058,8 @@ fn lower_cond(
     ctx.set_term(Term::TailCall {
         callee: arm_conts[0].id,
         args: capture_vars,
-        is_back_edge: false,
-    });
+        is_back_edge: false, callsite_sid: None
+            });
 
     // Build each arm fn.
     for (i, (test, body)) in arms.iter().enumerate() {
@@ -3078,8 +3082,8 @@ fn lower_cond(
         ctx.set_term(Term::TailCall {
             callee: next_id,
             args: fall_capture_vars,
-            is_back_edge: false,
-        });
+            is_back_edge: false, callsite_sid: None
+            });
 
         // body_b: lower the body inline, finalize.
         ctx.cur_block = Some(body_b);
@@ -3175,8 +3179,8 @@ fn lower_with(
                 ctx.set_term(Term::TailCall {
                     callee: with_fail_cont.id,
                     args,
-                    is_back_edge: false,
-                });
+                    is_back_edge: false, callsite_sid: None
+            });
                 ctx.cur_block = Some(saved_blk);
                 let v_resolved = ctx.unpark(&v_park);
                 ctx.unbind(&v_park);
@@ -3264,8 +3268,8 @@ fn lower_with(
                 ctx.set_term(Term::TailCall {
                     callee: cont.id,
                     args: capture_vars,
-                    is_back_edge: false,
-                });
+                    is_back_edge: false, callsite_sid: None
+            });
                 ctx.terminated = true;
                 else_conts_ref[i] = Some(cont);
                 Ok(())

@@ -10,7 +10,7 @@
 //!     plus a terminator. Terminators are the CPS-shaped control: Goto, If,
 //!     Call (with explicit continuation), TailCall (forwards our continuation),
 //!     Return (invoke our frame's continuation), Halt (process result).
-//!   Cont { fn_id, captured } — first-class continuation: an IR fn id plus a
+//!   Cont { fn_id, captured, .. } — first-class continuation: an IR fn id plus a
 //!     list of locals to splice in when invoked. Frames materialize these as
 //!     special-purpose structs at codegen time.
 //!
@@ -168,7 +168,11 @@ pub enum Prim {
     MakeList(Vec<Var>, Option<Var>),
     /// Allocate a closure: a struct holding the IR fn id of the lambda body
     /// plus the captured environment locals.
-    MakeClosure(FnId, Vec<Var>),
+    ///
+    /// fz-aiz.3a — third element is the typer-chosen SpecId for the
+    /// closure's `body_func_id` slot. None until the typer's annotation
+    /// pass populates it.
+    MakeClosure(FnId, Vec<Var>, Option<SpecId>),
     /// Build a map from (key, value) pairs in insertion order.
     MakeMap(Vec<(Var, Var)>),
     /// Functional update of `base` map: every key in entries must exist.
@@ -226,6 +230,11 @@ pub enum Stmt {
 pub struct Cont {
     pub fn_id: FnId,
     pub captured: Vec<Var>,
+    /// fz-aiz.3a — typer-chosen SpecId for this continuation's body. Filled
+    /// by the typer's annotation pass in fz-aiz.3b. Codegen reads from here
+    /// instead of re-resolving (fz-aiz.3c). None on freshly-constructed
+    /// Conts (ir_lower, repro tests) until the typer runs.
+    pub sid: Option<SpecId>,
 }
 
 #[derive(Debug, Clone)]
@@ -236,6 +245,9 @@ pub enum Term {
         callee: FnId,
         args: Vec<Var>,
         continuation: Cont,
+        /// fz-aiz.3a — typer-chosen SpecId for the callee's body at this
+        /// site. None until the typer's annotation pass fills it.
+        callsite_sid: Option<SpecId>,
     },
     TailCall {
         callee: FnId,
@@ -246,6 +258,8 @@ pub enum Term {
         /// recursion (f→g→f) is covered automatically. Back-edge sites get
         /// the yield-check inline check in JIT/AOT codegen and in the interp.
         is_back_edge: bool,
+        /// fz-aiz.3a — typer-chosen SpecId for the callee's body.
+        callsite_sid: Option<SpecId>,
     },
     /// Invoke a closure value (Var holding a Value::IrClosure). The closure's
     /// captured slots are spliced ahead of `args` when entering the lambda's fn.
@@ -253,10 +267,18 @@ pub enum Term {
         closure: Var,
         args: Vec<Var>,
         continuation: Cont,
+        /// fz-aiz.3a — typer-chosen SpecId when the closure resolves to a
+        /// singleton closure_lit (so codegen can emit direct dispatch).
+        /// None when the closure type is union-of-lits, plain arrow, or
+        /// otherwise opaque — codegen falls back to loading body_func_id
+        /// from the closure heap object at +16.
+        resolved_sid: Option<SpecId>,
     },
     TailCallClosure {
         closure: Var,
         args: Vec<Var>,
+        /// fz-aiz.3a — see CallClosure.resolved_sid.
+        resolved_sid: Option<SpecId>,
     },
     Return(Var),
     Halt(Var),
@@ -629,7 +651,7 @@ impl fmt::Display for Prim {
                 Some(t) => write!(f, "list([{}] | {})", fmt_var_list(els), t),
                 None => write!(f, "list([{}])", fmt_var_list(els)),
             },
-            Prim::MakeClosure(fid, captured) => {
+            Prim::MakeClosure(fid, captured, _) => {
                 write!(f, "closure({}, captured=[{}])", fid, fmt_var_list(captured))
             }
             Prim::MakeMap(entries) => {
@@ -696,7 +718,7 @@ impl fmt::Display for Term {
             Term::Call {
                 callee,
                 args,
-                continuation,
+                continuation, ..
             } => write!(
                 f,
                 "call {}([{}]) -> {}",
@@ -710,7 +732,7 @@ impl fmt::Display for Term {
             Term::CallClosure {
                 closure,
                 args,
-                continuation,
+                continuation, ..
             } => write!(
                 f,
                 "call_closure {}([{}]) -> {}",
@@ -718,12 +740,14 @@ impl fmt::Display for Term {
                 fmt_var_list(args),
                 continuation
             ),
-            Term::TailCallClosure { closure, args } => {
+            Term::TailCallClosure { closure, args, ..
+            } => {
                 write!(f, "tail_call_closure {}([{}])", closure, fmt_var_list(args))
             }
             Term::Return(v) => write!(f, "return {}", v),
             Term::Halt(v) => write!(f, "halt {}", v),
-            Term::Receive { continuation } => write!(f, "receive -> {}", continuation),
+            Term::Receive { continuation, ..
+            } => write!(f, "receive -> {}", continuation),
         }
     }
 }
@@ -941,8 +965,7 @@ mod tests {
                 args: vec![x],
                 continuation: Cont {
                     fn_id: FnId(7),
-                    captured: vec![x],
-                },
+                    captured: vec![x], .. },
             },
         );
         let fn_ir = b.build();
@@ -960,7 +983,7 @@ mod tests {
             Term::TailCall {
                 callee: FnId(0),
                 args: vec![x],
-                is_back_edge: false,
+                is_back_edge: false, ..
             },
         );
         let fn_ir = b.build();

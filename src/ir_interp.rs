@@ -369,8 +369,8 @@ fn run_fn(module: &Module, mut fn_id: FnId, mut args: Vec<FzValue>) -> Result<In
                 Term::Call {
                     callee,
                     args: call_args,
-                    continuation,
-                } => {
+                    continuation, ..
+            } => {
                     let arg_vals = collect(&env, call_args)?;
                     let outer_cap_vals = collect(&env, &continuation.captured)?;
                     match run_fn(module, *callee, arg_vals)? {
@@ -392,8 +392,8 @@ fn run_fn(module: &Module, mut fn_id: FnId, mut args: Vec<FzValue>) -> Result<In
                 Term::TailCall {
                     callee,
                     args: call_args,
-                    is_back_edge,
-                } => {
+                    is_back_edge, ..
+            } => {
                     let mut arg_vals = collect(&env, call_args)?;
                     // fz-02r.6 — interpreter back-edge cooperative GC.
                     // Check FZ_SHOULD_YIELD at annotated back-edges; if set,
@@ -419,8 +419,8 @@ fn run_fn(module: &Module, mut fn_id: FnId, mut args: Vec<FzValue>) -> Result<In
                 Term::CallClosure {
                     closure,
                     args: call_args,
-                    continuation,
-                } => {
+                    continuation, ..
+            } => {
                     let cl = env_get(&env, *closure)?;
                     let (lam_fn, mut clos_args) = unpack_closure(cl)?;
                     clos_args.extend(collect(&env, call_args)?);
@@ -441,8 +441,8 @@ fn run_fn(module: &Module, mut fn_id: FnId, mut args: Vec<FzValue>) -> Result<In
                 }
                 Term::TailCallClosure {
                     closure,
-                    args: call_args,
-                } => {
+                    args: call_args, ..
+            } => {
                     let cl = env_get(&env, *closure)?;
                     let (lam_fn, mut clos_args) = unpack_closure(cl)?;
                     clos_args.extend(collect(&env, call_args)?);
@@ -452,7 +452,8 @@ fn run_fn(module: &Module, mut fn_id: FnId, mut args: Vec<FzValue>) -> Result<In
                 }
                 Term::Return(v) => return Ok(InterpStep::Done(env_get(&env, *v)?)),
                 Term::Halt(v) => return Ok(InterpStep::Done(env_get(&env, *v)?)),
-                Term::Receive { continuation } => {
+                Term::Receive { continuation, ..
+            } => {
                     let cap_vals = collect(&env, &continuation.captured)?;
                     match fz_runtime::process::current_process().mailbox.pop_front() {
                         Some(msg) => {
@@ -571,7 +572,7 @@ fn eval_prim(module: &Module, prim: &Prim, env: &HashMap<Var, FzValue>) -> Resul
                 *bit_len,
             ))
         }
-        Prim::MakeClosure(fn_id, captured) => {
+        Prim::MakeClosure(fn_id, captured, None) => {
             // fz-ul4.29.5: new closure layout — header (16) + stub_fp (8) +
             // captures. The interp has no compiled stub for the closure;
             // it dispatches via the body fn id stored in header._reserved
