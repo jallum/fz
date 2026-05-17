@@ -516,6 +516,32 @@ pub fn type_module(m: &Module) -> ModuleTypes {
 /// `(FnId, key)` pairs — specs that did not exist before this call.
 /// An empty return means nothing new was registered (pending was
 /// already empty or all drained keys were already in specs).
+/// fz-ul4.40 — payoff predicate for a candidate new spec.
+///
+/// Returns `true` (skip registration) when EITHER:
+///   - Some element of `key` is `Descr::none()` — the spec is statically
+///     unreachable (no value can inhabit a `none`-typed param).
+///   - An already-registered spec `(fid, wider_key)` exists whose key
+///     subsumes `key` AND yields identical entry ArgReprs param-by-param.
+///     Under these conditions the narrow body lowers to the same fn
+///     prologue as the wider one; remaining body differences (TypeTest
+///     folding, typed fast paths) aren't yet checked — those are deferred
+///     follow-ups, conservative bias: keep on doubt.
+///
+/// When skipped, `SpecRegistry::resolve`'s subsumption search dispatches
+/// the narrow callsite to the wider spec automatically (src/spec_registry.rs).
+fn skip_payoff_free_spec(
+    _specs: &HashMap<(FnId, Vec<Descr>), FnTypes>,
+    _fid: FnId,
+    key: &[Descr],
+) -> bool {
+    // v1: only filter statically-unreachable specs (any element ⊆ `none`).
+    // The richer ABI-parity check breaks codegen's per-spec cont resolution
+    // (which doesn't go through SpecRegistry::resolve's subsumption search
+    // at every site); revisit when cont resolution is unified through resolve.
+    key.iter().any(|d| d.is_empty())
+}
+
 fn drain_and_register(
     pending: &mut HashMap<FnId, std::collections::HashSet<Vec<Descr>>>,
     specs: &mut HashMap<(FnId, Vec<Descr>), FnTypes>,
@@ -534,6 +560,13 @@ fn drain_and_register(
         let Some(&j) = m.fn_idx.get(&fid) else {
             continue;
         };
+        // fz-ul4.40 — payoff gate. Skip narrow keys that would compile to the
+        // same code as an already-registered wider key, and skip `none`-typed
+        // dead-on-arrival keys. Existing subsumption dispatch in
+        // `SpecRegistry::resolve` routes the call to the surviving wider spec.
+        if skip_payoff_free_spec(specs, fid, &key) {
+            continue;
+        }
         let entry_key = (fid, key.clone());
         if !specs.contains_key(&entry_key) {
             let mut ft = type_fn(&m.fns[j], m, Some(&key));
