@@ -16,7 +16,7 @@
   "parent": "fz-q9g",
   "priority": 1,
   "status": "in_progress",
-  "title": "fz-dps.CD: wire ABI (Return/Call/TailCall) + MakeList DPS via TRMC",
+  "title": "fz-dps.CD: native-path wire ABI (Return/Call/TailCall) + MakeList DPS via TRMC",
   "type": "task",
-  "updated_at": "2026-05-17T16:27:39Z"
+  "updated_at": "2026-05-17T16:39:56Z"
 }
