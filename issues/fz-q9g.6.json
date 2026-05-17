@@ -2,6 +2,7 @@
   "assignee": "",
   "blocked_by": [
     "fz-duq",
+    "fz-q9g.25",
     "fz-q9g.3"
   ],
   "blocks": [],
@@ -14,5 +15,5 @@
   "status": "open",
   "title": "fz-dps.D1: case-arm join into shared dst",
   "type": "task",
-  "updated_at": "2026-05-17T04:47:59Z"
+  "updated_at": "2026-05-17T14:59:24Z"
 }
