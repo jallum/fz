@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-q9g.4"
+  ],
   "blocks": [],
   "created": "2026-05-17T04:46:31Z",
   "description": "What: Forward our own dst to the tail callee. No new alloc.\n\nWhy: Tail recursion must not allocate per iteration; this is what makes DPS pay off in loops.\n\nCLIF impact: strict reduction — removes one alloc per loop iteration in DPS-shaped tail-recursive constructors.\n\nRemoves: per-iteration accumulator alloc in tail-recursive constructors.\n\nTests: golden CLIF on a tail-recursive list/vec builder fixture; assert zero allocs in the loop body.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "fz-dps.C4: lower Term::TailCall/TailCallClosure under Dst ABI",
   "type": "task",
-  "updated_at": "2026-05-17T04:46:31Z"
+  "updated_at": "2026-05-17T04:47:54Z"
 }
