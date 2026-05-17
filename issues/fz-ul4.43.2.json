@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-ul4.43.1"
+  ],
   "blocks": [],
   "created": "2026-05-17T12:06:46Z",
   "description": "# Kill best_fn_types' multi-spec bail; per-spec fold inside codegen\n\n## The smell\n\n`ir_fold::best_fn_types` (lines 28-39) returns:\n- the any-key spec, OR\n- the single narrow spec when there's exactly one, OR\n- `None` (bails) when there are multiple narrow specs.\n\nFor functions specialized at multiple callsites (e.g. ast_eval's `eval`\nwith arity-2 vs arity-3 specialization), `best_fn_types` returns None\nand **no folding happens**. The infra is there; the per-spec wiring\nisn't. Compounded with .43.A this is the wasted leverage.\n\n## What changes\n\nIn codegen's per-spec emission loop, before lowering a spec to CLIF:\n- clone the source `FnIr` for this spec\n- run `fold_fn` on the clone, passing this spec's `FnTypes` directly\n- lower the folded clone\n\nThe pre-codegen `fold_module` stays — keeps single-spec fns folded\nin-place, no behavior change for them.\n\n## What stays\n\n- `fold_module` (the pre-codegen pass) — folds single-spec/any-key fns,\n  unchanged behavior for them.\n- `best_fn_types` — its callers will narrow over time, but it's still\n  the right fallback for the global pre-codegen pass.\n\n## What's removed\n\n- The multi-spec-bail. When .43.A's narrowing lands per-spec, the dead\n  TypeTest arms in ast_eval's specialized specs fold to constants;\n  ir_dce removes the dead branches.\n\n## Acceptance\n\n- ast_eval's per-spec CLIF strictly smaller for specialized specs\n  (verify before/after).\n- All other fixtures: golden byte-identical OR strictly smaller.\n  Re-bless honestly; review every diff.\n- Three-path parity holds (interp/JIT/AOT all still pass).\n\n## Risk\n\nCloning IR per spec uses memory only when \u003e1 spec exists (minority of\nfns). Acceptable.\n\nThe fold pass mutates terminators (If → Goto). Running it twice on the\nsame FnIr (once pre-codegen with any-key, once per-spec) means the\nper-spec pass sees a partially-folded IR. Should be safe — fold is\nmonotonic. Tests confirm.\n\n## Why second\n\nStep .43.A turns on the information; .43.B turns on the consumption.\nThe two compound and prove the typer's per-callsite spec investment\nalready pays off — before any matrix work.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "fz-ul4.43.B: ir_fold runs per-spec",
   "type": "task",
-  "updated_at": "2026-05-17T12:06:46Z"
+  "updated_at": "2026-05-17T12:08:34Z"
 }
