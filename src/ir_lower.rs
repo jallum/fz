@@ -1427,7 +1427,20 @@ fn lower_matrix_list_cons(
     }
     ctx.cur_block = Some(cons_b);
     ctx.terminated = false;
+    // fz-aiz.2 — snapshot the env once before the cons-rows loop. Each
+    // iteration's match_list mutates ctx.env / ctx.env_order with that
+    // clause's head/tail bindings, but those bindings are scoped to that
+    // clause's body. Subsequent iterations must start with a fresh env
+    // (otherwise iteration N>1 sees env entries from clause N-1 as
+    // "pre-existing" and filters them out of pat_bind_extras — the
+    // ir_lower-side companion of the guard-aware exhaustiveness fix).
+    let env_before_loop: HashMap<String, Var> = ctx.env.clone();
+    let env_order_before_loop: Vec<String> = ctx.env_order.clone();
     for r in cons_rows {
+        // Restore env to the pre-loop snapshot so per-iteration match_list
+        // additions are seen as new.
+        ctx.env = env_before_loop.clone();
+        ctx.env_order = env_order_before_loop.clone();
         let rest_block = ctx.cur_mut().block(vec![]);
         let env_before: std::collections::HashSet<String> = ctx.env.keys().cloned().collect();
         // fz-ul4.43.H — call match_list directly. The pattern at col was
@@ -1461,6 +1474,10 @@ fn lower_matrix_list_cons(
         ctx.cur_block = Some(rest_block);
         ctx.terminated = false;
     }
+    // Final restore so downstream code (default-rows recursion, fail
+    // fall-through) sees the env it had before the cons-rows loop.
+    ctx.env = env_before_loop;
+    ctx.env_order = env_order_before_loop;
     if default_rows.is_empty() {
         if !ctx.terminated {
             ctx.set_term(Term::Goto(fail_block, vec![]));

@@ -608,13 +608,46 @@ fn peel_to_inner_with_bind(pat: &Spanned<Pattern>, _subject: Var) -> (bool, Span
 /// Body ids that no path through the decision tree reaches. A row whose
 /// body_id is in this set is unreachable — earlier rows fully cover its
 /// matching space, OR its pattern conflicts with an earlier specialization.
+///
+/// fz-aiz.2 — guarded rows do **not** consume coverage. A guard is a runtime
+/// predicate that can reject, so a row whose guard fails falls through to
+/// the next row. For each row R, we ask "is R's pattern unreachable given
+/// only the preceding **unguarded** rows?" — i.e., we form a sub-matrix
+/// containing the unguarded prefix ending with R, and check whether R is
+/// unreachable there. R's own guard, if any, doesn't affect the check
+/// (we're testing pattern coverage, not whether R itself matches).
 pub fn find_unreachable_rows(matrix: &Matrix) -> Vec<BodyId> {
-    let row_bodies: std::collections::BTreeSet<BodyId> =
-        matrix.rows.iter().map(|r| r.body_id).collect();
-    let decision = compile(matrix.clone());
-    let mut reached = std::collections::BTreeSet::new();
-    collect_reachable_bodies(&decision, &mut reached);
-    row_bodies.difference(&reached).copied().collect()
+    // Fast path: no guards anywhere → original single-compile behavior.
+    if matrix.rows.iter().all(|r| r.guard.is_none()) {
+        let row_bodies: std::collections::BTreeSet<BodyId> =
+            matrix.rows.iter().map(|r| r.body_id).collect();
+        let decision = compile(matrix.clone());
+        let mut reached = std::collections::BTreeSet::new();
+        collect_reachable_bodies(&decision, &mut reached);
+        return row_bodies.difference(&reached).copied().collect();
+    }
+    // Guarded matrix: walk row-by-row, accumulating only unguarded rows
+    // into the prefix used to test subsequent rows.
+    let mut unreachable: Vec<BodyId> = Vec::new();
+    let mut unguarded_prefix: Vec<Row> = Vec::new();
+    for row in &matrix.rows {
+        let mut test_rows = unguarded_prefix.clone();
+        test_rows.push(row.clone());
+        let test_matrix = Matrix {
+            subjects: matrix.subjects.clone(),
+            rows: test_rows,
+        };
+        let decision = compile(test_matrix);
+        let mut reached = std::collections::BTreeSet::new();
+        collect_reachable_bodies(&decision, &mut reached);
+        if !reached.contains(&row.body_id) {
+            unreachable.push(row.body_id);
+        }
+        if row.guard.is_none() {
+            unguarded_prefix.push(row.clone());
+        }
+    }
+    unreachable
 }
 
 /// True if any path through the decision tree leads to Fail — i.e., the
@@ -893,5 +926,65 @@ mod tests {
             ],
         };
         assert!(!is_inexhaustive(&m));
+    }
+
+    // fz-aiz.2 — guard-aware unreachability tests.
+    fn guarded_row(patterns: Vec<Pattern>, body_id: BodyId) -> Row {
+        use crate::ast::Expr;
+        Row {
+            patterns: patterns.into_iter().map(sp).collect(),
+            preconditions: Vec::new(),
+            guard: Some(sp(Expr::Bool(true))),
+            body_id,
+        }
+    }
+
+    #[test]
+    fn guarded_row_does_not_make_next_row_unreachable() {
+        // Wildcard with a guard does NOT cover the wildcard space — the
+        // guard might reject. Row 1 must remain reachable.
+        let m = Matrix {
+            subjects: vec![Var(0)],
+            rows: vec![
+                guarded_row(vec![Pattern::Wildcard], 0),
+                row(vec![Pattern::Wildcard], 1),
+            ],
+        };
+        let dead = find_unreachable_rows(&m);
+        assert!(
+            dead.is_empty(),
+            "expected no unreachable rows under a guarded prefix, got {:?}",
+            dead
+        );
+    }
+
+    #[test]
+    fn unguarded_wildcard_still_dominates_after_guarded_row() {
+        // Row 0 guarded, row 1 unguarded wildcard catches everything,
+        // row 2 is therefore unreachable.
+        let m = Matrix {
+            subjects: vec![Var(0)],
+            rows: vec![
+                guarded_row(vec![Pattern::Int(0)], 0),
+                row(vec![Pattern::Wildcard], 1),
+                row(vec![Pattern::Int(42)], 2),
+            ],
+        };
+        let dead = find_unreachable_rows(&m);
+        assert_eq!(dead, vec![2]);
+    }
+
+    #[test]
+    fn guarded_row_itself_is_unreachable_when_pattern_covered() {
+        // Row 0 unguarded wildcard covers all; row 1 guarded is dead by pattern.
+        let m = Matrix {
+            subjects: vec![Var(0)],
+            rows: vec![
+                row(vec![Pattern::Wildcard], 0),
+                guarded_row(vec![Pattern::Int(42)], 1),
+            ],
+        };
+        let dead = find_unreachable_rows(&m);
+        assert_eq!(dead, vec![1]);
     }
 }
