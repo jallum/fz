@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-aiz.3"
+  ],
   "blocks": [],
   "created": "2026-05-17T16:05:04Z",
   "description": "## Change\n\nIn `spec_registry.rs`, when subsumption finds no covering spec for a reachable\nFnId, return the any-key spec instead of `None`. Resolve becomes total over\nreachable FnIds.\n\n```rust\n// after the existing minimal-subsumption pick:\ncovers.into_iter().min_by_key(|s| s.0)\n  .or_else(|| self.any_key(fn_id))   // ← NEW: floor\n```\n\n`any_key` already exists as a test helper at the bottom of the file — promote\nto public.\n\n## Why this is sound\n\nAfter fz-aiz.3 lands, every reachable FnId has an any-key spec registered.\nThe any-key spec's compiled body accepts any Descrs (because its key is\n`[any; arity]`), so dispatching there is always type-safe — narrower queries\ntrivially satisfy `query[i] ⊆ any` for every slot.\n\n## Tests\n\n- Unit: `resolve(fn_id, [any, any])` returns the any-key when no narrower spec covers.\n- Unit: when both a narrowed spec and the any-key cover, the narrowed one wins (existing minimal-subsumption logic).\n- Unit: `resolve` never returns `None` for a FnId with an any-key.\n\n## Blocked by fz-aiz.3. Blocks fz-aiz.5.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "fz-aiz.4: SpecRegistry::resolve falls back to any-key",
   "type": "task",
-  "updated_at": "2026-05-17T16:05:04Z"
+  "updated_at": "2026-05-17T16:05:05Z"
 }
