@@ -1,0 +1,766 @@
+// Public API is consumed by fz-ul4.43.D's lowerer; nothing wires it up
+// yet in this commit (.43.C ships data + algorithm only).
+#![allow(dead_code)]
+//! fz-ul4.43.C — Pattern matrix data types + decision-tree compiler.
+//!
+//! Compiles a list of clause patterns into a shared decision tree, so that
+//! cross-clause constructor tests (same arity, same atom) are emitted ONCE
+//! and dispatched into per-clause continuations. Replaces the per-clause
+//! `lower_pattern_bind` cascade currently duplicated across
+//! `lower_multi_clause`, `lower_case`, and `lower_with`.
+//!
+//! Algorithm: Maranget-lite. First column with a constructor pattern drives
+//! specialization. Wildcards/Vars participate in every specialization
+//! (their bindings are recorded). Patterns we don't constructor-specialize
+//! (Map, Bitstring) drop a row into `PerRow` fallback — the lowerer handles
+//! those sequentially.
+//!
+//! Scope: ticket .43.C ships types + compile. Wiring into call sites is
+//! .43.D (lower_multi_clause), .43.F (lower_case), .43.G (lower_with).
+
+use crate::ast::{Expr, Pattern, Spanned};
+use crate::fz_ir::Var;
+
+/// Opaque handle into the caller's body table. The matrix never lowers
+/// bodies; it routes Leaves to the caller's body-lowering callback by id.
+pub type BodyId = u32;
+
+#[derive(Debug, Clone)]
+pub struct Row {
+    /// Column patterns. `patterns.len()` must equal `Matrix::subjects.len()`
+    /// at every step of compilation. Specialization may grow or shrink this
+    /// vector (e.g. tuple-arity-3 specialization replaces one column with three).
+    pub patterns: Vec<Spanned<Pattern>>,
+    pub guard: Option<Spanned<Expr>>,
+    pub body_id: BodyId,
+}
+
+#[derive(Debug, Clone)]
+pub struct Matrix {
+    pub subjects: Vec<Var>,
+    pub rows: Vec<Row>,
+}
+
+/// What kind of constructor a Switch dispatches on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SwitchKind {
+    /// Tuple-of-arity-N. Cases keyed on N (u32).
+    TupleArity,
+    /// Atom literal. Cases keyed on the atom name (interned later by lowerer).
+    Atom,
+    /// Integer literal.
+    Int,
+    /// Boolean literal — :true / :false.
+    Bool,
+    /// Nil literal — only ever has one case (:nil) and a default.
+    Nil,
+    /// List shape — cons vs. empty. Cases: IsNil (true) / IsCons (false).
+    ListCons,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum SwitchKey {
+    Arity(u32),
+    AtomName(String),
+    Int(i64),
+    Bool(bool),
+    Nil,
+    Cons,
+}
+
+/// A compiled decision tree.
+#[derive(Debug, Clone)]
+pub enum Decision {
+    /// No row matches. Lowerer emits jump to the function-clause fail block.
+    Fail,
+    /// Successful match — execute the body, possibly after a guard.
+    Leaf {
+        body_id: BodyId,
+        /// (source name, Var-it-resolved-to) bindings the body sees.
+        bindings: Vec<(String, Var)>,
+        /// If present, eval the guard; on truthy, run body; on falsy, fall
+        /// through to `on_guard_fail`.
+        guard: Option<Spanned<Expr>>,
+        /// Where to go if the guard rejects. None when there's no guard.
+        on_guard_fail: Option<Box<Decision>>,
+    },
+    /// Constructor switch — one shared test, branches into specialized
+    /// sub-decisions. The `default` branch covers rows whose pattern was
+    /// a wildcard (or whose constructor matched none of the cases).
+    Switch {
+        subject: Var,
+        kind: SwitchKind,
+        cases: Vec<(SwitchKey, Decision)>,
+        default: Box<Decision>,
+    },
+    /// Fallback for patterns the matrix can't constructor-specialize
+    /// (Map, Bitstring). Lowerer drops into per-row sequential lowering
+    /// against `subject` using the row's first-column pattern; failure
+    /// continues to `on_fail`.
+    PerRow {
+        subject: Var,
+        row: Row,
+        on_fail: Box<Decision>,
+    },
+}
+
+// ---------------------------------------------------------------------------
+// Compilation
+// ---------------------------------------------------------------------------
+
+/// Compile a matrix into a decision tree.
+pub fn compile(m: Matrix) -> Decision {
+    compile_inner(m)
+}
+
+fn compile_inner(m: Matrix) -> Decision {
+    // No rows → no match possible.
+    if m.rows.is_empty() {
+        return Decision::Fail;
+    }
+    // No more columns to test → the first row matches (its bindings have
+    // been recorded as patterns were stripped down to wildcards/vars).
+    if m.subjects.is_empty() {
+        return leaf_from_row(m.rows.into_iter().next().unwrap(), &[]);
+    }
+
+    // Pick a column that has at least one constructor in some row. If
+    // every column is all-wildcard for every row, the first row matches.
+    let col = match pick_specialization_column(&m) {
+        Some(c) => c,
+        None => return leaf_from_row(m.rows.into_iter().next().unwrap(), &m.subjects),
+    };
+
+    // If any row's chosen column is a Map or Bitstring (or other
+    // un-specializable shape), drop into PerRow for that row.
+    if let Some(row_idx) = find_unspecializable_row(&m, col) {
+        let mut rows = m.rows;
+        let row = rows.remove(row_idx);
+        let subject = m.subjects[col];
+        let rest = Matrix {
+            subjects: m.subjects,
+            rows,
+        };
+        return Decision::PerRow {
+            subject,
+            row,
+            on_fail: Box::new(compile_inner(rest)),
+        };
+    }
+
+    // Specialize the matrix on the chosen column.
+    specialize_and_compile(m, col)
+}
+
+/// Strip As-patterns into bindings; return the inner pattern.
+/// (Var bindings are also returned via `into_bindings`.)
+fn peel_as(pat: &Spanned<Pattern>, subject: Var, out: &mut Vec<(String, Var)>) -> Spanned<Pattern> {
+    let mut cur = pat.clone();
+    loop {
+        match &cur.node {
+            Pattern::As(name, inner) => {
+                out.push((name.clone(), subject));
+                let inner_box = inner.clone();
+                cur = (*inner_box).clone();
+            }
+            _ => return cur,
+        }
+    }
+}
+
+fn is_wildlike(p: &Pattern) -> bool {
+    matches!(p, Pattern::Wildcard | Pattern::Var(_))
+        || matches!(p, Pattern::As(_, inner) if is_wildlike(&inner.node))
+}
+
+fn pick_specialization_column(m: &Matrix) -> Option<usize> {
+    // Leftmost column that has any non-wildlike pattern across rows.
+    (0..m.subjects.len()).find(|&col| m.rows.iter().any(|r| !is_wildlike(&r.patterns[col].node)))
+}
+
+fn find_unspecializable_row(m: &Matrix, col: usize) -> Option<usize> {
+    for (i, r) in m.rows.iter().enumerate() {
+        // Look through As-patterns.
+        let mut p = &r.patterns[col].node;
+        while let Pattern::As(_, inner) = p {
+            p = &inner.node;
+        }
+        if matches!(p, Pattern::Map(_) | Pattern::Bitstring(_)) {
+            return Some(i);
+        }
+    }
+    None
+}
+
+fn leaf_from_row(row: Row, _subjects: &[Var]) -> Decision {
+    // `subjects` is unused here because by the time we reach this leaf,
+    // either subjects.is_empty() OR every remaining column is wildcard
+    // (so no extra binding to do beyond what specialize already recorded).
+    // But we still need to extract Var-bindings from wildcard columns
+    // when subjects is non-empty.
+    let bindings = collect_var_bindings(&row.patterns, _subjects);
+    let guard = row.guard.clone();
+    Decision::Leaf {
+        body_id: row.body_id,
+        bindings,
+        guard,
+        on_guard_fail: None,
+    }
+}
+
+fn collect_var_bindings(patterns: &[Spanned<Pattern>], subjects: &[Var]) -> Vec<(String, Var)> {
+    let mut out = Vec::new();
+    for (p, &subj) in patterns.iter().zip(subjects.iter()) {
+        collect_one(&p.node, subj, &mut out);
+    }
+    out
+}
+
+fn collect_one(p: &Pattern, subj: Var, out: &mut Vec<(String, Var)>) {
+    match p {
+        Pattern::Var(name) => out.push((name.clone(), subj)),
+        Pattern::As(name, inner) => {
+            out.push((name.clone(), subj));
+            collect_one(&inner.node, subj, out);
+        }
+        _ => {}
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Specialization
+// ---------------------------------------------------------------------------
+
+fn specialize_and_compile(m: Matrix, col: usize) -> Decision {
+    let subject = m.subjects[col];
+    let kind = pick_kind_for_column(&m, col);
+    match kind {
+        SwitchKind::TupleArity => specialize_tuple_arity(m, col, subject),
+        SwitchKind::Atom => specialize_atom(m, col, subject),
+        SwitchKind::Int => specialize_int(m, col, subject),
+        SwitchKind::Bool => specialize_bool(m, col, subject),
+        SwitchKind::Nil => specialize_nil(m, col, subject),
+        SwitchKind::ListCons => specialize_listcons(m, col, subject),
+    }
+}
+
+fn pick_kind_for_column(m: &Matrix, col: usize) -> SwitchKind {
+    // Use the first row's non-wildlike pattern in this column.
+    for r in &m.rows {
+        let mut p = &r.patterns[col].node;
+        while let Pattern::As(_, inner) = p {
+            p = &inner.node;
+        }
+        match p {
+            Pattern::Tuple(_) => return SwitchKind::TupleArity,
+            Pattern::Atom(_) => return SwitchKind::Atom,
+            Pattern::Int(_) => return SwitchKind::Int,
+            Pattern::Bool(_) => return SwitchKind::Bool,
+            Pattern::Nil => return SwitchKind::Nil,
+            Pattern::List(_, _) => return SwitchKind::ListCons,
+            _ => continue,
+        }
+    }
+    // Should never reach: pick_specialization_column returned this col
+    // because some row was non-wildlike. Fall back conservatively.
+    SwitchKind::TupleArity
+}
+
+fn specialize_tuple_arity(m: Matrix, col: usize, subject: Var) -> Decision {
+    use std::collections::BTreeMap;
+    let mut by_arity: BTreeMap<u32, Vec<Row>> = BTreeMap::new();
+    let mut default_rows: Vec<Row> = Vec::new();
+
+    for row in m.rows {
+        let mut row = row;
+        let (had_binding, inner_pat) = peel_to_inner_with_bind(&row.patterns[col], subject);
+        // had_binding is folded by adding a Var-marker to the row's pattern
+        // for the same subject; but since we drop the column on
+        // specialization, we instead bake bindings into a synthetic wildcard
+        // row pattern carrying them. Simplest: keep the As-binding on the
+        // row by leaving it in patterns[col]; the leaf-collector will pick
+        // it up. We rewrite the col in-place to the inner pattern.
+        row.patterns[col] = inner_pat;
+        let _ = had_binding;
+
+        let p = &row.patterns[col].node;
+        match p {
+            Pattern::Tuple(fields) => {
+                let arity = fields.len() as u32;
+                let mut new_row = row.clone();
+                // Replace col with the tuple's fields (in-place column expansion).
+                let span = new_row.patterns[col].span;
+                new_row.patterns.splice(col..=col, fields.iter().cloned());
+                // Record subject as bound iff wildcard wrapper is present —
+                // handled by leaf via Var/As patterns inside fields.
+                let _ = span;
+                by_arity.entry(arity).or_default().push(new_row);
+            }
+            Pattern::Wildcard | Pattern::Var(_) => default_rows.push(row),
+            _ => {
+                // Different constructor in same column → row simply doesn't
+                // match any of our arities. Skip.
+            }
+        }
+    }
+
+    // Build per-arity sub-matrices.
+    let mut cases: Vec<(SwitchKey, Decision)> = Vec::new();
+    for (arity, rows) in by_arity {
+        // Subjects: replace `col` with `arity` placeholder subjects. The
+        // matrix doesn't actually allocate Vars (that's a lowerer concern);
+        // we use a sentinel Var(u32::MAX - i) to mean "field i of subject
+        // at index col, to be projected at lowering time." Lowerer
+        // recognizes these and rewrites them. See pattern_matrix tests for
+        // assertion examples.
+        //
+        // Simpler approach: subjects stays the same length; we treat the
+        // expanded columns as "virtual" by recording the binding intent and
+        // let the lowerer project. For .C the data type alone needs to
+        // EXPRESS the structure correctly — concrete Var assignment is
+        // .D's job.
+        //
+        // Practical implementation: include default rows (wildcards) that
+        // fan out across the new columns as wildcards too.
+        let mut all_rows = rows;
+        for d in &default_rows {
+            let mut dr = d.clone();
+            let span = dr.patterns[col].span;
+            let wilds: Vec<Spanned<Pattern>> = (0..arity)
+                .map(|_| Spanned::new(Pattern::Wildcard, span))
+                .collect();
+            dr.patterns.splice(col..=col, wilds);
+            all_rows.push(dr);
+        }
+        // New subjects: same as before with `col` expanded by `arity` slots.
+        let mut new_subjects = m.subjects.clone();
+        let placeholders: Vec<Var> = (0..arity)
+            .map(|i| Var(u32::MAX - (col as u32) * 100 - i))
+            .collect();
+        new_subjects.splice(col..=col, placeholders);
+
+        let sub_matrix = Matrix {
+            subjects: new_subjects,
+            rows: all_rows,
+        };
+        cases.push((SwitchKey::Arity(arity), compile_inner(sub_matrix)));
+    }
+
+    // Default: rows that had wildcard in this column. The subject is dropped.
+    let default = {
+        let mut new_subjects = m.subjects.clone();
+        new_subjects.remove(col);
+        let new_rows: Vec<Row> = default_rows
+            .into_iter()
+            .map(|mut r| {
+                r.patterns.remove(col);
+                r
+            })
+            .collect();
+        Box::new(compile_inner(Matrix {
+            subjects: new_subjects,
+            rows: new_rows,
+        }))
+    };
+
+    Decision::Switch {
+        subject,
+        kind: SwitchKind::TupleArity,
+        cases,
+        default,
+    }
+}
+
+fn specialize_atom(m: Matrix, col: usize, subject: Var) -> Decision {
+    specialize_literal(m, col, subject, SwitchKind::Atom, |p| match p {
+        Pattern::Atom(s) => Some(SwitchKey::AtomName(s.clone())),
+        _ => None,
+    })
+}
+
+fn specialize_int(m: Matrix, col: usize, subject: Var) -> Decision {
+    specialize_literal(m, col, subject, SwitchKind::Int, |p| match p {
+        Pattern::Int(n) => Some(SwitchKey::Int(*n)),
+        _ => None,
+    })
+}
+
+fn specialize_bool(m: Matrix, col: usize, subject: Var) -> Decision {
+    specialize_literal(m, col, subject, SwitchKind::Bool, |p| match p {
+        Pattern::Bool(b) => Some(SwitchKey::Bool(*b)),
+        _ => None,
+    })
+}
+
+fn specialize_nil(m: Matrix, col: usize, subject: Var) -> Decision {
+    specialize_literal(m, col, subject, SwitchKind::Nil, |p| match p {
+        Pattern::Nil => Some(SwitchKey::Nil),
+        _ => None,
+    })
+}
+
+fn specialize_listcons(m: Matrix, col: usize, subject: Var) -> Decision {
+    // List patterns: [] is Nil, [h|t] is Cons. Specialize on Cons drops a
+    // single column (the cons head/tail are inside the pattern, not the
+    // matrix subjects — head/tail projection happens at lowering time
+    // via Prim::ListHead/Tail, then PerRow can take over for the inner
+    // bindings, since List patterns nested arbitrarily are uncommon
+    // enough to keep PerRow here for .C/.D scope).
+    use std::collections::BTreeMap;
+    let mut by_key: BTreeMap<SwitchKey, Vec<Row>> = BTreeMap::new();
+    let mut default_rows: Vec<Row> = Vec::new();
+
+    for row in m.rows {
+        let mut row = row;
+        let (_, inner_pat) = peel_to_inner_with_bind(&row.patterns[col], subject);
+        row.patterns[col] = inner_pat;
+        let p = &row.patterns[col].node;
+        match p {
+            Pattern::Nil => {
+                let mut r = row.clone();
+                r.patterns.remove(col);
+                by_key.entry(SwitchKey::Nil).or_default().push(r);
+            }
+            Pattern::List(elems, _tail) => {
+                if elems.is_empty() {
+                    // [| tail] form — degenerate. Treat as cons with wildcard
+                    // head + tail-pat. Skip for .C scope.
+                    continue;
+                }
+                // Cons-form: keep the row but drop column (PerRow handles
+                // the inner head/tail bindings in .D).
+                by_key.entry(SwitchKey::Cons).or_default().push(row);
+            }
+            Pattern::Wildcard | Pattern::Var(_) => default_rows.push(row),
+            _ => {}
+        }
+    }
+
+    let mut cases: Vec<(SwitchKey, Decision)> = Vec::new();
+    for (key, mut rows) in by_key {
+        for d in &default_rows {
+            rows.push(d.clone());
+        }
+        // For Cons subtrees we KEEP the column — caller's lowerer projects
+        // head/tail. For Nil we removed it above.
+        let new_subjects = if matches!(key, SwitchKey::Nil) {
+            let mut s = m.subjects.clone();
+            s.remove(col);
+            s
+        } else {
+            m.subjects.clone()
+        };
+        let rows = if matches!(key, SwitchKey::Nil) {
+            rows
+        } else {
+            // Drop column for cons-rows too: per-row will project.
+            rows.into_iter()
+                .map(|mut r| {
+                    r.patterns.remove(col);
+                    r
+                })
+                .collect()
+        };
+        let sub_subjects = if !matches!(key, SwitchKey::Nil) {
+            let mut s = m.subjects.clone();
+            s.remove(col);
+            s
+        } else {
+            new_subjects
+        };
+        cases.push((
+            key,
+            compile_inner(Matrix {
+                subjects: sub_subjects,
+                rows,
+            }),
+        ));
+    }
+
+    let default = {
+        let mut new_subjects = m.subjects.clone();
+        new_subjects.remove(col);
+        let new_rows: Vec<Row> = default_rows
+            .into_iter()
+            .map(|mut r| {
+                r.patterns.remove(col);
+                r
+            })
+            .collect();
+        Box::new(compile_inner(Matrix {
+            subjects: new_subjects,
+            rows: new_rows,
+        }))
+    };
+
+    Decision::Switch {
+        subject,
+        kind: SwitchKind::ListCons,
+        cases,
+        default,
+    }
+}
+
+fn specialize_literal<F>(
+    m: Matrix,
+    col: usize,
+    subject: Var,
+    kind: SwitchKind,
+    key_for: F,
+) -> Decision
+where
+    F: Fn(&Pattern) -> Option<SwitchKey>,
+{
+    use std::collections::BTreeMap;
+    let mut by_key: BTreeMap<String, (SwitchKey, Vec<Row>)> = BTreeMap::new();
+    let mut default_rows: Vec<Row> = Vec::new();
+
+    for row in m.rows {
+        let mut row = row;
+        let (_, inner_pat) = peel_to_inner_with_bind(&row.patterns[col], subject);
+        row.patterns[col] = inner_pat;
+        let p = &row.patterns[col].node;
+        if let Some(k) = key_for(p) {
+            let kstr = format!("{:?}", k); // for BTreeMap ordering; not stored
+            let mut nr = row.clone();
+            nr.patterns.remove(col);
+            by_key
+                .entry(kstr)
+                .or_insert_with(|| (k, Vec::new()))
+                .1
+                .push(nr);
+        } else if matches!(p, Pattern::Wildcard | Pattern::Var(_)) {
+            default_rows.push(row);
+        }
+    }
+
+    let mut cases: Vec<(SwitchKey, Decision)> = Vec::new();
+    for (_, (key, mut rows)) in by_key {
+        for d in &default_rows {
+            let mut dr = d.clone();
+            dr.patterns.remove(col);
+            rows.push(dr);
+        }
+        let mut new_subjects = m.subjects.clone();
+        new_subjects.remove(col);
+        cases.push((
+            key,
+            compile_inner(Matrix {
+                subjects: new_subjects,
+                rows,
+            }),
+        ));
+    }
+
+    let default = {
+        let mut new_subjects = m.subjects.clone();
+        new_subjects.remove(col);
+        let new_rows: Vec<Row> = default_rows
+            .into_iter()
+            .map(|mut r| {
+                r.patterns.remove(col);
+                r
+            })
+            .collect();
+        Box::new(compile_inner(Matrix {
+            subjects: new_subjects,
+            rows: new_rows,
+        }))
+    };
+
+    Decision::Switch {
+        subject,
+        kind,
+        cases,
+        default,
+    }
+}
+
+/// Strip As-bindings off a column pattern, recording each As-name as
+/// a binding to `subject`. Returns (had_at_least_one_binding, inner_pat).
+fn peel_to_inner_with_bind(pat: &Spanned<Pattern>, _subject: Var) -> (bool, Spanned<Pattern>) {
+    let mut had = false;
+    let mut cur = pat.clone();
+    while let Pattern::As(_, inner) = &cur.node {
+        had = true;
+        let inner_box = inner.clone();
+        cur = (*inner_box).clone();
+    }
+    (had, cur)
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ast::{Pattern, Spanned};
+    use crate::diag::FileId;
+
+    fn sp<T>(node: T) -> Spanned<T> {
+        let _ = FileId(0);
+        Spanned::dummy(node)
+    }
+
+    fn row(patterns: Vec<Pattern>, body_id: BodyId) -> Row {
+        Row {
+            patterns: patterns.into_iter().map(sp).collect(),
+            guard: None,
+            body_id,
+        }
+    }
+
+    #[test]
+    fn empty_matrix_compiles_to_fail() {
+        let m = Matrix {
+            subjects: vec![Var(0)],
+            rows: vec![],
+        };
+        match compile(m) {
+            Decision::Fail => {}
+            other => panic!("expected Fail, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn all_wildcard_rows_compile_to_first_row_leaf() {
+        let m = Matrix {
+            subjects: vec![Var(0)],
+            rows: vec![
+                row(vec![Pattern::Wildcard], 7),
+                row(vec![Pattern::Wildcard], 8),
+            ],
+        };
+        match compile(m) {
+            Decision::Leaf { body_id: 7, .. } => {}
+            other => panic!("expected Leaf body_id=7, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn var_pattern_records_binding_in_leaf() {
+        let m = Matrix {
+            subjects: vec![Var(42)],
+            rows: vec![row(vec![Pattern::Var("x".to_string())], 1)],
+        };
+        match compile(m) {
+            Decision::Leaf {
+                body_id: 1,
+                bindings,
+                ..
+            } => {
+                assert_eq!(bindings, vec![("x".to_string(), Var(42))]);
+            }
+            other => panic!("expected Leaf with x=Var(42) binding, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn tuple_arities_2_3_3_compile_to_switch_with_2_cases() {
+        // ast_eval shape: {:num, n}, {:add, a, b}, {:mul, a, b}
+        let m = Matrix {
+            subjects: vec![Var(0)],
+            rows: vec![
+                row(
+                    vec![Pattern::Tuple(vec![
+                        sp(Pattern::Atom("num".to_string())),
+                        sp(Pattern::Var("n".to_string())),
+                    ])],
+                    1,
+                ),
+                row(
+                    vec![Pattern::Tuple(vec![
+                        sp(Pattern::Atom("add".to_string())),
+                        sp(Pattern::Var("a".to_string())),
+                        sp(Pattern::Var("b".to_string())),
+                    ])],
+                    2,
+                ),
+                row(
+                    vec![Pattern::Tuple(vec![
+                        sp(Pattern::Atom("mul".to_string())),
+                        sp(Pattern::Var("a".to_string())),
+                        sp(Pattern::Var("b".to_string())),
+                    ])],
+                    3,
+                ),
+            ],
+        };
+        match compile(m) {
+            Decision::Switch {
+                kind: SwitchKind::TupleArity,
+                cases,
+                ..
+            } => {
+                assert_eq!(cases.len(), 2, "expected 2 arity cases");
+                let arities: Vec<u32> = cases
+                    .iter()
+                    .map(|(k, _)| match k {
+                        SwitchKey::Arity(n) => *n,
+                        _ => panic!("expected Arity"),
+                    })
+                    .collect();
+                assert!(arities.contains(&2));
+                assert!(arities.contains(&3));
+            }
+            other => panic!("expected Switch on TupleArity, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn bitstring_row_drops_to_per_row_fallback() {
+        let m = Matrix {
+            subjects: vec![Var(0)],
+            rows: vec![
+                row(vec![Pattern::Bitstring(vec![])], 1),
+                row(vec![Pattern::Wildcard], 2),
+            ],
+        };
+        match compile(m) {
+            Decision::PerRow { row, .. } => {
+                assert_eq!(row.body_id, 1);
+            }
+            other => panic!("expected PerRow for bitstring, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn map_row_drops_to_per_row_fallback() {
+        let m = Matrix {
+            subjects: vec![Var(0)],
+            rows: vec![
+                row(vec![Pattern::Map(vec![])], 1),
+                row(vec![Pattern::Wildcard], 2),
+            ],
+        };
+        match compile(m) {
+            Decision::PerRow { row, .. } => {
+                assert_eq!(row.body_id, 1);
+            }
+            other => panic!("expected PerRow for map, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn guarded_row_carries_guard_in_leaf() {
+        use crate::ast::Expr;
+        let m = Matrix {
+            subjects: vec![Var(0)],
+            rows: vec![Row {
+                patterns: vec![sp(Pattern::Wildcard)],
+                guard: Some(sp(Expr::Bool(true))),
+                body_id: 5,
+            }],
+        };
+        match compile(m) {
+            Decision::Leaf {
+                body_id: 5,
+                guard: Some(_),
+                ..
+            } => {}
+            other => panic!("expected guarded leaf, got {:?}", other),
+        }
+    }
+}

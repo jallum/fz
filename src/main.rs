@@ -22,6 +22,7 @@ mod lexer;
 mod macros;
 mod parking;
 mod parser;
+mod pattern_matrix;
 mod repl;
 mod resolve;
 mod runtime;
