@@ -179,20 +179,19 @@ fn max_var_in_term(t: &Term) -> u32 {
         Term::CallClosure {
             closure,
             args,
-            continuation, ..
-            } => {
+            continuation,
+            ..
+        } => {
             v(*closure);
             args.iter().for_each(|x| v(*x));
             continuation.captured.iter().for_each(|x| v(*x));
         }
-        Term::TailCallClosure { closure, args, ..
-            } => {
+        Term::TailCallClosure { closure, args, .. } => {
             v(*closure);
             args.iter().for_each(|x| v(*x));
         }
         Term::Return(a) | Term::Halt(a) => v(*a),
-        Term::Receive { continuation, ..
-            } => continuation.captured.iter().for_each(|x| v(*x)),
+        Term::Receive { continuation, .. } => continuation.captured.iter().for_each(|x| v(*x)),
     }
     m
 }
@@ -284,7 +283,9 @@ pub fn alpha_rename(callee: &FnIr, caller: &FnIr) -> FnIr {
     let rename_cont = |c: &Cont| -> Cont {
         Cont {
             fn_id: c.fn_id,
-            captured: c.captured.iter().map(|x| shift_v(*x)).collect(), sid: None }
+            captured: c.captured.iter().map(|x| shift_v(*x)).collect(),
+            sid: None,
+        }
     };
 
     let rename_term = |t: &Term| -> Term {
@@ -296,40 +297,45 @@ pub fn alpha_rename(callee: &FnIr, caller: &FnIr) -> FnIr {
             Term::Call {
                 callee,
                 args,
-                continuation, ..
+                continuation,
+                ..
             } => Term::Call {
                 callee: *callee,
                 args: args.iter().map(|x| sv(*x)).collect(),
-                continuation: rename_cont(continuation), callsite_sid: None
+                continuation: rename_cont(continuation),
+                callsite_sid: None,
             },
             Term::TailCall {
                 callee,
                 args,
-                is_back_edge, ..
+                is_back_edge,
+                ..
             } => Term::TailCall {
                 callee: *callee,
                 args: args.iter().map(|x| sv(*x)).collect(),
-                is_back_edge: *is_back_edge, callsite_sid: None
+                is_back_edge: *is_back_edge,
+                callsite_sid: None,
             },
             Term::CallClosure {
                 closure,
                 args,
-                continuation, ..
+                continuation,
+                ..
             } => Term::CallClosure {
                 closure: sv(*closure),
                 args: args.iter().map(|x| sv(*x)).collect(),
-                continuation: rename_cont(continuation), resolved_sid: None
+                continuation: rename_cont(continuation),
+                resolved_sid: None,
             },
-            Term::TailCallClosure { closure, args, ..
-            } => Term::TailCallClosure {
+            Term::TailCallClosure { closure, args, .. } => Term::TailCallClosure {
                 closure: sv(*closure),
-                args: args.iter().map(|x| sv(*x)).collect(), resolved_sid: None
+                args: args.iter().map(|x| sv(*x)).collect(),
+                resolved_sid: None,
             },
             Term::Return(a) => Term::Return(sv(*a)),
             Term::Halt(a) => Term::Halt(sv(*a)),
-            Term::Receive { continuation, ..
-            } => Term::Receive {
-                continuation: rename_cont(continuation)
+            Term::Receive { continuation, .. } => Term::Receive {
+                continuation: rename_cont(continuation),
             },
         }
     };
@@ -478,8 +484,9 @@ pub fn inline_calls_once(m: &mut Module) -> usize {
                 if let Term::Call {
                     callee,
                     args,
-                    continuation, ..
-            } = &b.terminator
+                    continuation,
+                    ..
+                } = &b.terminator
                 {
                     Some((
                         fi,
@@ -524,8 +531,9 @@ pub fn inline_calls_once(m: &mut Module) -> usize {
                 b.terminator = Term::TailCall {
                     callee: cont_fn,
                     args: tail_args,
-                    is_back_edge: false, callsite_sid: None
-            };
+                    is_back_edge: false,
+                    callsite_sid: None,
+                };
             }
         }
 
@@ -596,8 +604,7 @@ pub fn inline_single_use_conts_once(m: &mut Module, mt: &mut ModuleTypes) -> usi
                     Some(continuation.fn_id)
                 }
                 Term::CallClosure { continuation, .. } => Some(continuation.fn_id),
-                Term::Receive { continuation, ..
-            } => Some(continuation.fn_id),
+                Term::Receive { continuation, .. } => Some(continuation.fn_id),
                 _ => None,
             };
             if let Some(kid) = k {
@@ -682,12 +689,14 @@ pub fn inline_single_use_conts_once(m: &mut Module, mt: &mut ModuleTypes) -> usi
                 Term::Call { callee, args, .. } => Some(Term::TailCall {
                     callee: *callee,
                     args: args.clone(),
-                    is_back_edge: false, callsite_sid: None
-            }),
+                    is_back_edge: false,
+                    callsite_sid: None,
+                }),
                 Term::CallClosure { closure, args, .. } => Some(Term::TailCallClosure {
                     closure: *closure,
-                    args: args.clone(), resolved_sid: None
-            }),
+                    args: args.clone(),
+                    resolved_sid: None,
+                }),
                 _ => None,
             };
             if let Some(t) = new_term {
@@ -790,7 +799,8 @@ mod tests {
             Term::TailCall {
                 callee,
                 args: vec![y],
-                is_back_edge: false, ..
+                is_back_edge: false,
+                callsite_sid: None,
             },
         );
         b.build()
@@ -809,7 +819,10 @@ mod tests {
                 args: vec![y],
                 continuation: Cont {
                     fn_id: k,
-                    captured: vec![], .. },
+                    captured: vec![],
+                    sid: None,
+                },
+                callsite_sid: None,
             },
         );
         b.build()
@@ -843,7 +856,9 @@ mod tests {
             Term::Receive {
                 continuation: Cont {
                     fn_id: FnId(7),
-                    captured: vec![], .. },
+                    captured: vec![],
+                    sid: None,
+                },
             },
         );
         assert!(!is_leaf(&b.build()));
@@ -861,7 +876,10 @@ mod tests {
                 args: vec![],
                 continuation: Cont {
                     fn_id: FnId(7),
-                    captured: vec![], .. },
+                    captured: vec![],
+                    sid: None,
+                },
+                resolved_sid: None,
             },
         );
         assert!(!is_leaf(&b.build()));
@@ -876,7 +894,8 @@ mod tests {
             entry,
             Term::TailCallClosure {
                 closure: cl,
-                args: vec![], ..
+                args: vec![],
+                resolved_sid: None,
             },
         );
         assert!(!is_leaf(&b.build()));
@@ -1078,7 +1097,8 @@ mod tests {
             Term::TailCall {
                 callee: target,
                 args: vec![v],
-                is_back_edge: false, ..
+                is_back_edge: false,
+                callsite_sid: None,
             },
         );
         let k = b.build();
@@ -1145,7 +1165,10 @@ mod tests {
                 args: vec![y],
                 continuation: Cont {
                     fn_id: k,
-                    captured: vec![], .. },
+                    captured: vec![],
+                    sid: None,
+                },
+                callsite_sid: None,
             },
         );
         let caller_fn = b.build();

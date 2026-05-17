@@ -59,6 +59,11 @@ pub const TYPE_UNREACHABLE_ARM: DiagCode = DiagCode("type/unreachable-arm");
 pub const TYPE_EMPTY_NARROWING: DiagCode = DiagCode("type/empty-narrowing");
 pub const TYPE_NO_MATCHING_CLAUSE: DiagCode = DiagCode("type/no-matching-clause");
 pub const TYPE_DEAD_BINOP: DiagCode = DiagCode("type/dead-binop");
+/// fz-aiz.6 — call dispatches to the any-key spec while a narrower one
+/// exists for the same fn. The program runs correctly; this is a
+/// specialization-quality signal: the typer's narrowing didn't reach this
+/// call site, or the narrowed key didn't match any registered spec.
+pub const TYPE_SPEC_QUALITY: DiagCode = DiagCode("type/spec-quality");
 
 // ----- codegen -----
 

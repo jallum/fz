@@ -718,7 +718,8 @@ impl fmt::Display for Term {
             Term::Call {
                 callee,
                 args,
-                continuation, ..
+                continuation,
+                ..
             } => write!(
                 f,
                 "call {}([{}]) -> {}",
@@ -732,7 +733,8 @@ impl fmt::Display for Term {
             Term::CallClosure {
                 closure,
                 args,
-                continuation, ..
+                continuation,
+                ..
             } => write!(
                 f,
                 "call_closure {}([{}]) -> {}",
@@ -740,14 +742,12 @@ impl fmt::Display for Term {
                 fmt_var_list(args),
                 continuation
             ),
-            Term::TailCallClosure { closure, args, ..
-            } => {
+            Term::TailCallClosure { closure, args, .. } => {
                 write!(f, "tail_call_closure {}([{}])", closure, fmt_var_list(args))
             }
             Term::Return(v) => write!(f, "return {}", v),
             Term::Halt(v) => write!(f, "halt {}", v),
-            Term::Receive { continuation, ..
-            } => write!(f, "receive -> {}", continuation),
+            Term::Receive { continuation, .. } => write!(f, "receive -> {}", continuation),
         }
     }
 }
@@ -965,7 +965,10 @@ mod tests {
                 args: vec![x],
                 continuation: Cont {
                     fn_id: FnId(7),
-                    captured: vec![x], .. },
+                    captured: vec![x],
+                    sid: None,
+                },
+                callsite_sid: None,
             },
         );
         let fn_ir = b.build();
@@ -983,7 +986,8 @@ mod tests {
             Term::TailCall {
                 callee: FnId(0),
                 args: vec![x],
-                is_back_edge: false, ..
+                is_back_edge: false,
+                callsite_sid: None,
             },
         );
         let fn_ir = b.build();

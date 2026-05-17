@@ -56,8 +56,7 @@ pub fn dce_module_level(m: &mut Module) {
                 Term::CallClosure { continuation, .. } => {
                     queue.push(continuation.fn_id);
                 }
-                Term::Receive { continuation, ..
-            } => {
+                Term::Receive { continuation, .. } => {
                     queue.push(continuation.fn_id);
                 }
                 _ => {}
@@ -298,8 +297,9 @@ fn collect_term_vars(t: &Term, used: &mut HashSet<Var>) {
         Term::CallClosure {
             closure,
             args,
-            continuation, ..
-            } => {
+            continuation,
+            ..
+        } => {
             used.insert(*closure);
             for v in args {
                 used.insert(*v);
@@ -308,8 +308,7 @@ fn collect_term_vars(t: &Term, used: &mut HashSet<Var>) {
                 used.insert(*v);
             }
         }
-        Term::TailCallClosure { closure, args, ..
-            } => {
+        Term::TailCallClosure { closure, args, .. } => {
             used.insert(*closure);
             for v in args {
                 used.insert(*v);
@@ -318,8 +317,7 @@ fn collect_term_vars(t: &Term, used: &mut HashSet<Var>) {
         Term::Return(a) | Term::Halt(a) => {
             used.insert(*a);
         }
-        Term::Receive { continuation, ..
-            } => {
+        Term::Receive { continuation, .. } => {
             for v in &continuation.captured {
                 used.insert(*v);
             }
@@ -393,14 +391,17 @@ mod tests {
             let leaf_cont_id = FnId(99); // dummy cont — not in module; tests only sweep fns
             let cont = Cont {
                 fn_id: leaf_cont_id,
-                captured: vec![], .. };
+                captured: vec![],
+                sid: None,
+            };
             bm.set_terminator(
                 entry,
                 Term::Call {
                     callee: leaf_id,
                     args: vec![nil_v],
-                    continuation: cont, ..
-            },
+                    continuation: cont,
+                    callsite_sid: None,
+                },
             );
         } else {
             let nil_v = bm.let_(entry, Prim::Const(Const::Nil));
@@ -616,7 +617,10 @@ mod tests {
                 args: vec![live],
                 continuation: Cont {
                     fn_id: cont_fn,
-                    captured: vec![], .. },
+                    captured: vec![],
+                    sid: None,
+                },
+                callsite_sid: None,
             },
         );
         let f = b.build();

@@ -238,7 +238,9 @@ fn subst_prim(p: &Prim, subst: &HashMap<Var, Var>) -> Prim {
 fn subst_cont(c: &Cont, subst: &HashMap<Var, Var>) -> Cont {
     Cont {
         fn_id: c.fn_id,
-        captured: c.captured.iter().map(|x| subst_var(*x, subst)).collect(), sid: None }
+        captured: c.captured.iter().map(|x| subst_var(*x, subst)).collect(),
+        sid: None,
+    }
 }
 
 pub(crate) fn subst_term(t: &Term, subst: &HashMap<Var, Var>) -> Term {
@@ -250,41 +252,46 @@ pub(crate) fn subst_term(t: &Term, subst: &HashMap<Var, Var>) -> Term {
         Term::Call {
             callee,
             args,
-            continuation, ..
-            } => Term::Call {
+            continuation,
+            ..
+        } => Term::Call {
             callee: *callee,
             args: args.iter().map(|x| sv(*x)).collect(),
-            continuation: subst_cont(continuation, subst), callsite_sid: None
-            },
+            continuation: subst_cont(continuation, subst),
+            callsite_sid: None,
+        },
         Term::TailCall {
             callee,
             args,
-            is_back_edge, ..
-            } => Term::TailCall {
+            is_back_edge,
+            ..
+        } => Term::TailCall {
             callee: *callee,
             args: args.iter().map(|x| sv(*x)).collect(),
-            is_back_edge: *is_back_edge, callsite_sid: None
-            },
+            is_back_edge: *is_back_edge,
+            callsite_sid: None,
+        },
         Term::CallClosure {
             closure,
             args,
-            continuation, ..
-            } => Term::CallClosure {
+            continuation,
+            ..
+        } => Term::CallClosure {
             closure: sv(*closure),
             args: args.iter().map(|x| sv(*x)).collect(),
-            continuation: subst_cont(continuation, subst), resolved_sid: None
-            },
-        Term::TailCallClosure { closure, args, ..
-            } => Term::TailCallClosure {
+            continuation: subst_cont(continuation, subst),
+            resolved_sid: None,
+        },
+        Term::TailCallClosure { closure, args, .. } => Term::TailCallClosure {
             closure: sv(*closure),
-            args: args.iter().map(|x| sv(*x)).collect(), resolved_sid: None
-            },
+            args: args.iter().map(|x| sv(*x)).collect(),
+            resolved_sid: None,
+        },
         Term::Return(a) => Term::Return(sv(*a)),
         Term::Halt(a) => Term::Halt(sv(*a)),
-        Term::Receive { continuation, ..
-            } => Term::Receive {
-            continuation: subst_cont(continuation, subst)
-            },
+        Term::Receive { continuation, .. } => Term::Receive {
+            continuation: subst_cont(continuation, subst),
+        },
     }
 }
 

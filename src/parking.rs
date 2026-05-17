@@ -86,8 +86,7 @@ pub fn natively_callable(m: &Module, parking: &HashSet<FnId>) -> HashSet<FnId> {
                 // fz-cps.1.8: closures are heap-resident with body_addr@+16
                 // (closure-target sig Tail). Their conts can be native —
                 // no longer cont_blocked.
-                Term::CallClosure { continuation, .. } | Term::Receive { continuation, ..
-            } => {
+                Term::CallClosure { continuation, .. } | Term::Receive { continuation, .. } => {
                     used_as_cont.insert(continuation.fn_id);
                 }
                 _ => {}
@@ -170,8 +169,7 @@ pub fn natively_callable(m: &Module, parking: &HashSet<FnId>) -> HashSet<FnId> {
                 // the cont (if any) is also native.
                 Term::CallClosure { continuation, .. } => set.contains(&continuation.fn_id),
                 Term::TailCallClosure { .. } => true,
-                Term::Receive { continuation, ..
-            } => set.contains(&continuation.fn_id),
+                Term::Receive { continuation, .. } => set.contains(&continuation.fn_id),
             });
             // A cont must only be reachable from native Term::Call sites.
             // If any of its Term::Call callers has a callee that's not in
@@ -283,7 +281,9 @@ mod tests {
             Term::Receive {
                 continuation: Cont {
                     fn_id: FnId(0),
-                    captured: vec![], .. },
+                    captured: vec![],
+                    sid: None,
+                },
             },
         );
         let m = build(vec![b.build()]);
@@ -312,7 +312,9 @@ mod tests {
             Term::Receive {
                 continuation: Cont {
                     fn_id: FnId(2),
-                    captured: vec![], .. },
+                    captured: vec![],
+                    sid: None,
+                },
             },
         );
 
@@ -323,7 +325,8 @@ mod tests {
             Term::TailCall {
                 callee: FnId(0),
                 args: vec![],
-                is_back_edge: false, ..
+                is_back_edge: false,
+                callsite_sid: None,
             },
         );
 
@@ -358,7 +361,7 @@ mod tests {
         // the closure might be invoked at a parking-reachable site.
         let mut b = FnBuilder::new(FnId(0), "packer");
         let entry = b.block(vec![]);
-        let cl = b.let_(entry, Prim::MakeClosure(FnId(1), vec![]));
+        let cl = b.let_(entry, Prim::MakeClosure(FnId(1), vec![], None));
         b.set_terminator(entry, Term::Halt(cl));
         // Dummy target fn.
         let mut t = FnBuilder::new(FnId(1), "target");
@@ -376,12 +379,13 @@ mod tests {
         // the set — the closure target is opaque to this analysis.
         let mut b = FnBuilder::new(FnId(0), "invoker");
         let entry = b.block(vec![]);
-        let cl = b.let_(entry, Prim::MakeClosure(FnId(1), vec![]));
+        let cl = b.let_(entry, Prim::MakeClosure(FnId(1), vec![], None));
         b.set_terminator(
             entry,
             Term::TailCallClosure {
                 closure: cl,
-                args: vec![], ..
+                args: vec![],
+                resolved_sid: None,
             },
         );
         let mut t = FnBuilder::new(FnId(1), "target");
@@ -414,7 +418,8 @@ mod tests {
             Term::TailCall {
                 callee: FnId(1),
                 args: vec![],
-                is_back_edge: false, ..
+                is_back_edge: false,
+                callsite_sid: None,
             },
         );
 
@@ -437,7 +442,9 @@ mod tests {
             Term::Receive {
                 continuation: Cont {
                     fn_id: FnId(1),
-                    captured: vec![], .. },
+                    captured: vec![],
+                    sid: None,
+                },
             },
         );
         let k = make_fn(1, "k");
@@ -464,7 +471,10 @@ mod tests {
                 args: vec![],
                 continuation: Cont {
                     fn_id: FnId(2),
-                    captured: vec![], .. },
+                    captured: vec![],
+                    sid: None,
+                },
+                callsite_sid: None,
             },
         );
         let helper = make_fn(1, "helper");
@@ -478,7 +488,8 @@ mod tests {
             Term::TailCall {
                 callee: FnId(0),
                 args: vec![],
-                is_back_edge: false, ..
+                is_back_edge: false,
+                callsite_sid: None,
             },
         );
         let m = build(vec![f.build(), helper, k, outer.build()]);
@@ -517,7 +528,9 @@ mod tests {
             Term::Receive {
                 continuation: Cont {
                     fn_id: FnId(2),
-                    captured: vec![], .. },
+                    captured: vec![],
+                    sid: None,
+                },
             },
         );
 
@@ -528,7 +541,8 @@ mod tests {
             Term::TailCall {
                 callee: FnId(0),
                 args: vec![],
-                is_back_edge: false, ..
+                is_back_edge: false,
+                callsite_sid: None,
             },
         );
 
@@ -559,7 +573,10 @@ mod tests {
                 args: vec![],
                 continuation: Cont {
                     fn_id: FnId(2),
-                    captured: vec![], .. },
+                    captured: vec![],
+                    sid: None,
+                },
+                callsite_sid: None,
             },
         );
         let helper = make_fn(1, "helper");
