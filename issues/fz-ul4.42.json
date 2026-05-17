@@ -11,9 +11,15 @@
   "id": "fz-ul4.42",
   "labels": [],
   "parent": "fz-ul4",
+  "comments": [
+    {
+      "text": "**Cleanup hand-off from fz-ul4.40 v1.**\n\nfz-ul4.40 v1 (PR #13) added `skip_payoff_free_spec` in `src/ir_typer.rs` as a chokepoint filter that drops candidate specs whose key contains a `Descr::is_empty()` element. That filter exists *only* because the typer currently produces such candidates — which it does because cont_input_key reads slot 0 from `effective_returns` of the callee, and unreachable callees contribute `none`.\n\nfz-ul4.42 (this ticket) prunes unreachable specs at the source. Post-42, no callee is typed unless reachable from main/exports, so no `none` slot 0 contributions, so no `none`-keyed cont candidates, so no work for `skip_payoff_free_spec` to do.\n\n**Acceptance addition**: closing this ticket should include deleting `skip_payoff_free_spec` and its call site in `drain_and_register` (`src/ir_typer.rs`). Verify ast_eval and full fixture matrix still pass post-deletion — if they don't, 42's reachability set is incomplete and needs widening (not a v1 gate restoration).\n\nThis is the data-model-correctness layering: 42 removes the bad data at its source, making the boundary filter redundant. Per the design discussion, keeping the v1 gate temporary and deleting it cleanly when 42 lands is cheaper than implementing a middle-layer push-site filter that would also need deletion.",
+      "timestamp": "2026-05-17T11:26:39Z"
+    }
+  ],
   "priority": 1,
   "status": "in_progress",
   "title": "codegen: skip emission of specs unreachable from main",
   "type": "task",
-  "updated_at": "2026-05-17T10:37:09Z"
+  "updated_at": "2026-05-17T11:26:39Z"
 }
