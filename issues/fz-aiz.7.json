@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-17T16:05:16Z",
+  "description": "Adds fixtures/ast_eval_env/ — extends ast_eval with `{:var, name}` and\n`{:let, name, expr, body}` over a cons-list environment of `{name, value}`\ntuples. Exercises:\n- 5-arm multi-clause tuple-pattern dispatch\n- tuple destructure inside cons-pattern head (`[{n, v} | rest]`)\n- atom equality inside `if` for lookup-loop termination\n- binding shadow across nested `let`s\n- list-of-pair env construction via cons on every recursive call\n\nAll four paths green (jit, interp, aot, repl).\n\nThis fixture is the proving ground for the arc — it pushed the envelope just\nenough to reveal `.29.11`/`.29.12.1` panics when extended toward HOFs +\nnon-tail recursion (quicksort attempt). The quicksort form lands in fz-aiz.5\nas the keystone integration test.\n\nIndependent of the rest of the arc; lands first as a fast quick-fix.",
+  "id": "fz-aiz.7",
+  "labels": [],
+  "parent": "fz-aiz",
+  "priority": 2,
+  "status": "open",
+  "title": "fz-aiz.0: fixture ast_eval_env (let-bound AST evaluator)",
+  "type": "task",
+  "updated_at": "2026-05-17T16:05:16Z"
+}
