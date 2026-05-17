@@ -2611,6 +2611,18 @@ mod tests {
         lower_program(&prog).expect_err("expected lower error")
     }
 
+    /// fz-qbg.4 — Compile + run a fz program through the JIT and return
+    /// captured stdout (joined by newline). Mirrors `ir_codegen::tests::
+    /// capture_main`; lets ir_lower-level tests assert end-to-end runtime
+    /// correctness rather than just IR shape.
+    fn run_and_capture(src: &str) -> String {
+        let m = lower_src(src);
+        let entry = m.fn_by_name("main").expect("no main fn").id;
+        let _ = fz_runtime::ir_runtime::test_capture_take();
+        let _ = crate::ir_codegen::compile(&m).unwrap().run(entry);
+        fz_runtime::ir_runtime::test_capture_take().join("\n")
+    }
+
     #[test]
     fn lower_const_int_returns_in_entry_block() {
         let m = lower_src("fn f() do 42 end");
@@ -2687,43 +2699,31 @@ mod tests {
     }
 
     #[test]
-    fn lower_if_constant_cond_with_call_in_arm_no_panic() {
-        // fz-84m repro A — formerly panicked at fz_ir.rs:453 (block_mut
-        // "unknown block") because the then-arm's non-tail Call CPS-split
-        // finalized the outer fn while else_b was still empty, then
-        // lower_if tried to write into else_b in the now-built fn.
-        let _ = lower_src(
+    fn fz_84m_repro_a_prints_99() {
+        // fz-84m repro A — constant cond + non-tail call in if-arm.
+        // Pre-fz-duq.2 panicked at fz_ir.rs:453 (block_mut "unknown
+        // block") during IR construction. Now runs end-to-end.
+        let out = run_and_capture(
             "fn helper(), do: 7\n\
              fn main() do\n\
                if 1 == 0 do print(helper()) else print(99) end\n\
              end",
         );
+        assert_eq!(out, "99");
     }
 
     #[test]
-    fn lower_if_tail_call_in_arm_preserved() {
-        // fz-84m repro B — formerly silently dropped the tail call by
-        // overwriting its TailCall terminator with Goto(join_b, [Var(0)]).
-        // After fix: the arm's body is in its own fn, terminating naturally
-        // with its tail-call. No overwrite.
-        let m = lower_src(
+    fn fz_84m_repro_b_prints_7_then_99() {
+        // fz-84m repro B — tail-call in if-arm + per-callsite narrowing.
+        // Pre-fz-duq.2 silently dropped the tail call by overwriting its
+        // TailCall terminator with `Goto(join_b, [Var(0)])`, propagating
+        // the sentinel as the if's value. Result: exit 0, no stdout.
+        let out = run_and_capture(
             "fn helper(), do: 7\n\
-             fn pick(n) do\n\
-               if n == 0 do helper() else 99 end\n\
-             end\n\
-             fn main() do\n\
-               print(pick(0))\n\
-               print(pick(1))\n\
-             end",
+             fn pick(n) do if n == 0 do helper() else 99 end end\n\
+             fn main() do print(pick(0)); print(pick(1)) end",
         );
-        let s = format!("{}", m);
-        // The then-arm contains a TailCall to helper, which must survive
-        // lowering (no Goto-to-join-fn clobber).
-        assert!(
-            s.contains("tail_call"),
-            "expected at least one tail_call in module: {}",
-            s
-        );
+        assert_eq!(out, "7\n99");
     }
 
     #[test]
@@ -2811,20 +2811,16 @@ mod tests {
     }
 
     #[test]
-    fn lower_if_unnarrowed_cond_with_tail_call_in_arm() {
-        // fz-84m repro C — same bug shape but without any type narrowing
-        // (cond is `n > 0`, not `n == 0`). Proves the fix is structural in
-        // lowering, not narrowing-driven.
-        let _ = lower_src(
+    fn fz_84m_repro_c_prints_7_then_99_no_narrowing() {
+        // fz-84m repro C — same bug shape as B but with `n > 0` rather
+        // than `n == 0`, so the typer doesn't narrow either arm. Proves
+        // the bug was structural in lowering, not type-narrowing driven.
+        let out = run_and_capture(
             "fn helper(), do: 7\n\
-             fn pick(n) do\n\
-               if n > 0 do helper() else 99 end\n\
-             end\n\
-             fn main() do\n\
-               print(pick(5))\n\
-               print(pick(0))\n\
-             end",
+             fn pick(n) do if n > 0 do helper() else 99 end end\n\
+             fn main() do print(pick(5)); print(pick(0)) end",
         );
+        assert_eq!(out, "7\n99");
     }
 
     #[test]
