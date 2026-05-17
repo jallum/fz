@@ -1049,7 +1049,7 @@ fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -> Result<Va
             Ok(result)
         }
 
-        Expr::If(cond, then_e, else_opt) => lower_if(ctx, cond, then_e, else_opt, is_tail),
+        Expr::If(cond, then_e, else_opt) => lower_if(ctx, cond, then_e, else_opt, is_tail, sp),
 
         Expr::Match(pat, expr) => {
             let v = lower_expr(ctx, expr, false)?;
@@ -1383,35 +1383,97 @@ fn lower_if(
     then_e: &Spanned<Expr>,
     else_opt: &Option<Box<Spanned<Expr>>>,
     is_tail: bool,
+    if_span: Span,
 ) -> Result<Var, LowerError> {
+    // fz-duq.2 — Per-arm + (optional) join continuation fns, mirroring
+    // the CPS-split protocol from `cps_split_call`. The old block-join
+    // design corrupted control flow whenever an arm body contained a
+    // non-tail Call (Bug 2) and clobbered self-terminated arms with a
+    // Goto-to-join carrying the sentinel Var(0) (Bug 1).
+    //
+    // Shape (non-tail):
+    //   outer fn   : ... ; Term::If(cv, then_b, else_b)
+    //   outer.then_b: TailCall(then_fn, [...captures])
+    //   outer.else_b: TailCall(else_fn, [...captures])
+    //   then_fn     : lower(then_e, is_tail=true) ;
+    //                 finalize → TailCall(join_fn, [v, ...captures])
+    //   else_fn     : lower(else_e, is_tail=true) ;
+    //                 finalize → TailCall(join_fn, [v, ...captures])
+    //   join_fn     : becomes ctx.cur. param `join_param` carries the
+    //                 if's value. Surrounding code continues here.
+    //
+    // Shape (tail):
+    //   same as above, but no join_fn; arms finalize via Return(v).
+    //   ctx.terminated = true on return; ctx.cur is else_fn (or its
+    //   inner-CPS-split descendant) — surrounding lower_fn finalizes it.
+    //
+    // The inliner (`inline_tail_calls_once`) collapses the tiny per-arm
+    // and join fns post-IR-build; for non-CPS-splitting arms the
+    // final CLIF matches today's block-join shape (often tighter — no
+    // join block at all).
+
     let cv = lower_expr(ctx, cond, false)?;
+
+    let then_cont = mint_cont_fn(ctx, "if_then", if_span);
+    let else_cont = mint_cont_fn(ctx, "if_else", if_span);
+    let join_opt = if is_tail {
+        None
+    } else {
+        Some(mint_cont_fn(ctx, "if_join", if_span))
+    };
+
+    // Allocate arm blocks in the outer (current) fn.
     let then_b = ctx.cur_mut().block(vec![]);
     let else_b = ctx.cur_mut().block(vec![]);
-    let join_param = ctx.cur_mut().fresh_var();
-    let join_b = ctx.cur_mut().block(vec![join_param]);
     ctx.set_term(Term::If(cv, then_b, else_b));
 
-    let saved_env = ctx.env.clone();
-    let saved_order = ctx.env_order.clone();
+    // Wire each arm block: TailCall its arm fn with the outer captures.
+    // Captures are snapshotted from the outer env *now*; they're the
+    // same set we passed to `mint_cont_fn` for then_cont/else_cont/join_opt
+    // (which all snapshot identical envs at this moment).
+    let captures = ctx.captured_snapshot();
+    let capture_vars: Vec<Var> = captures.iter().map(|(_, v)| *v).collect();
 
     ctx.cur_block = Some(then_b);
-    let tv = lower_expr(ctx, then_e, is_tail)?;
-    ctx.set_term(Term::Goto(join_b, vec![tv]));
-
-    ctx.env = saved_env.clone();
-    ctx.env_order = saved_order.clone();
+    ctx.set_term(Term::TailCall {
+        callee: then_cont.id,
+        args: capture_vars.clone(),
+        is_back_edge: false,
+    });
     ctx.cur_block = Some(else_b);
+    ctx.set_term(Term::TailCall {
+        callee: else_cont.id,
+        args: capture_vars,
+        is_back_edge: false,
+    });
+
+    // Move to then_fn. Finalizes the outer fn (which is now fully populated).
+    let _ = switch_to_cont_fn(ctx, &then_cont, 0);
+    let tv = lower_expr(ctx, then_e, /* is_tail */ true)?;
+    finalize_arm(ctx, tv, join_opt.as_ref());
+
+    // Move to else_fn. Finalizes then_fn (or its CPS-split descendant).
+    let _ = switch_to_cont_fn(ctx, &else_cont, 0);
     let ev = if let Some(else_e) = else_opt {
-        lower_expr(ctx, else_e, is_tail)?
+        lower_expr(ctx, else_e, /* is_tail */ true)?
     } else {
         ctx.let_(Prim::Const(Const::Nil))
     };
-    ctx.set_term(Term::Goto(join_b, vec![ev]));
+    finalize_arm(ctx, ev, join_opt.as_ref());
 
-    ctx.env = saved_env;
-    ctx.env_order = saved_order;
-    ctx.cur_block = Some(join_b);
-    Ok(join_param)
+    if let Some(join) = &join_opt {
+        // Non-tail: finalize else_fn, switch into join_fn. Surrounding
+        // code continues lowering into join_fn with `join_param` as the
+        // if's value.
+        let extras = switch_to_cont_fn(ctx, join, 1);
+        Ok(extras[0])
+    } else {
+        // Tail position: both arms finalized via Return. ctx.cur is
+        // else_fn (or a downstream CPS-split cont). Caller will finalize
+        // it via `ctx.cur.take().build()`.
+        ctx.terminated = true;
+        Ok(Var(0))
+    }
 }
 
 fn lower_lambda(
@@ -2305,11 +2367,100 @@ mod tests {
     }
 
     #[test]
-    fn lower_if_uses_join_block() {
+    fn lower_if_uses_continuation_fns() {
+        // fz-duq.2 — `if` lowers to: outer fn with Term::If + per-arm
+        // TailCalls into separate fns (if_then / if_else / optional
+        // if_join). The old block-join shape is gone.
         let m = lower_src("fn pos(x), do: if x > 0, do: 1, else: -1");
         let s = format!("{}", m);
         assert!(s.contains("if v"), "expected If terminator: {}", s);
-        assert!(s.contains("goto bb"), "expected Goto to join: {}", s);
+        assert!(s.contains("if_then"), "expected if_then arm fn: {}", s);
+        assert!(s.contains("if_else"), "expected if_else arm fn: {}", s);
+        assert!(
+            s.contains("tail_call"),
+            "expected TailCall from arm block: {}",
+            s
+        );
+        // Tail-position if: no join fn (arms self-Return).
+        assert!(
+            !s.contains("if_join"),
+            "tail-position if should not need a join fn: {}",
+            s
+        );
+    }
+
+    #[test]
+    fn lower_if_constant_cond_with_call_in_arm_no_panic() {
+        // fz-84m repro A — formerly panicked at fz_ir.rs:453 (block_mut
+        // "unknown block") because the then-arm's non-tail Call CPS-split
+        // finalized the outer fn while else_b was still empty, then
+        // lower_if tried to write into else_b in the now-built fn.
+        let _ = lower_src(
+            "fn helper(), do: 7\n\
+             fn main() do\n\
+               if 1 == 0 do print(helper()) else print(99) end\n\
+             end",
+        );
+    }
+
+    #[test]
+    fn lower_if_tail_call_in_arm_preserved() {
+        // fz-84m repro B — formerly silently dropped the tail call by
+        // overwriting its TailCall terminator with Goto(join_b, [Var(0)]).
+        // After fix: the arm's body is in its own fn, terminating naturally
+        // with its tail-call. No overwrite.
+        let m = lower_src(
+            "fn helper(), do: 7\n\
+             fn pick(n) do\n\
+               if n == 0 do helper() else 99 end\n\
+             end\n\
+             fn main() do\n\
+               print(pick(0))\n\
+               print(pick(1))\n\
+             end",
+        );
+        let s = format!("{}", m);
+        // The then-arm contains a TailCall to helper, which must survive
+        // lowering (no Goto-to-join-fn clobber).
+        assert!(
+            s.contains("tail_call"),
+            "expected at least one tail_call in module: {}",
+            s
+        );
+    }
+
+    #[test]
+    fn lower_if_unnarrowed_cond_with_tail_call_in_arm() {
+        // fz-84m repro C — same bug shape but without any type narrowing
+        // (cond is `n > 0`, not `n == 0`). Proves the fix is structural in
+        // lowering, not narrowing-driven.
+        let _ = lower_src(
+            "fn helper(), do: 7\n\
+             fn pick(n) do\n\
+               if n > 0 do helper() else 99 end\n\
+             end\n\
+             fn main() do\n\
+               print(pick(5))\n\
+               print(pick(0))\n\
+             end",
+        );
+    }
+
+    #[test]
+    fn lower_if_nontail_uses_join_fn() {
+        // Non-tail if (used as call argument): all three cont fns minted.
+        let m = lower_src(
+            "fn id(x), do: x\n\
+             fn pick(x), do: id(if x > 0, do: 1, else: -1)",
+        );
+        let s = format!("{}", m);
+        assert!(s.contains("if_then"), "{}", s);
+        assert!(s.contains("if_else"), "{}", s);
+        assert!(
+            s.contains("if_join"),
+            "expected join fn for non-tail: {}",
+            s
+        );
     }
 
     #[test]
