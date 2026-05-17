@@ -15,23 +15,6 @@ block0(v0: i64):
     return_call fn1(v2, v0)             ; @7:9  v2 = 3
 }
 
-; fn k_17
-    ;   @spec   k_17(any) -> nil
-    ;   @key    [any]
-    ;   @abi    (Tagged) -> Tagged
-function u0:0(i64, i64) -> i64 tail {
-    sig0 = (i64) system_v
-    sig1 = (i64, i64) -> i64 tail
-    fn0 = u0:42 sig0
-
-    block0(v0: i64, v1: i64):    ;; v0 :: any
-    v2 = iconst.i64 99                  ; @8:18
-    call fn0(v2)  ; v2 = 99
-    v3 = iconst.i64 3    ;; v3 :: nil
-    v4 = load.i64 notrap aligned v1+16  ; @8:9
-    return_call_indirect sig1, v4(v3, v1) ; @8:9  v3 = 3
-}
-
 ; fn k_17_s18
     ;   @spec   k_17(nil) -> nil
     ;   @key    [nil]

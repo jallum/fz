@@ -2893,29 +2893,26 @@ pub fn reachable_specs(
         Some(&module.fns[j])
     };
 
-    // Seed: main + every registered any-key spec.
+    // fz-aiz.7 — Seed: main + extra_seeds + closure-target sweep.
     //
-    // The any-key seed is the conservative bias for v1: any spec keyed by
-    // `[any; n]` represents the wide-callable form of its fn — invocable
-    // through opaque closure dispatch, spawn entry, mid-flight resume
-    // shim, scheduler hook, MakeClosure consumer, or test entry. We don't
-    // model each of those source-of-entry channels precisely; we just
-    // declare every any-key reachable and let downstream callsite BFS
-    // pick up the narrow specs.
+    // Pre-arc this function also seeded every registered any-key spec
+    // unconditionally, on the theory that any-keys were the "wide
+    // callable" form invocable through opaque channels. That seed was a
+    // harmless over-approximation while typer-side spec dropping kept
+    // any-keys for direct-only fns out of the registry. After
+    // `ensure_any_keys` (fz-aiz.3e), every reachable FnId has an any-key
+    // in the registry, so the blanket seed dragged a full any-key body
+    // into CLIF for every fn — including direct-only fns whose every
+    // callsite resolves to a narrow spec. Result: ~2× CLIF function
+    // count and severe Cranelift debug-codegen-time blowup.
     //
-    // This still drops every value-narrowed spec that no callsite
-    // resolves to — the actual fz-ul4.42 win — because narrow specs
-    // require an explicit `resolve(fid, narrow_key)` match somewhere in
-    // a reachable body to be marked.
-    for (sid, fid, key) in spec_registry.iter() {
-        let is_any_key = key
-            .iter()
-            .all(|d| d.is_subtype(&Descr::any()) && Descr::any().is_subtype(d));
-        let _ = fid;
-        if is_any_key {
-            worklist.push(sid.0);
-        }
-    }
+    // The opaque entry channels the old comment listed are now covered
+    // precisely: main is seeded below; spawn / scheduler / mid-flight
+    // resume shims flow through `extra_seeds`; closure-lit dispatch is
+    // handled by the MakeClosure-target sweep further down. Any other
+    // any-key only enters `reached` if the BFS resolves to it via
+    // `spec_registry.resolve` at a real reachable callsite — i.e. there
+    // is an actual witness that the body is needed.
     if let Some(main_fn) = module.fns.iter().find(|f| f.name == "main") {
         let n_params = main_fn.block(main_fn.entry).params.len();
         let key: Vec<Descr> = vec![Descr::any(); n_params];

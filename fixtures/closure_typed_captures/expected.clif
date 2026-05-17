@@ -1,15 +1,3 @@
-; fn apply1
-    ;   @spec   apply1(any, any) -> any
-    ;   @key    [any, any]
-    ;   @abi    (Tagged, Tagged) -> Tagged
-function u0:0(i64, i64, i64) -> i64 tail {
-    sig0 = (i64, i64, i64) -> i64 tail
-
-    block0(v0: i64, v1: i64, v2: i64):    ;; v0 :: any, v1 :: any
-    v3 = load.i64 notrap aligned v0+16  ; @2:22
-    return_call_indirect sig0, v3(v1, v0, v2) ; @2:22
-}
-
 ; fn main
     ;   @spec   main() -> nil
     ;   @key    []
@@ -122,39 +110,6 @@ block5:
     return_call_indirect sig6, v37(v26, v2)
 }
 
-; fn k_16
-    ;   @spec   k_16(any) -> nil
-    ;   @key    [any]
-    ;   @abi    (Tagged) -> Tagged
-function u0:0(i64, i64) -> i64 tail {
-    sig0 = (i64) system_v
-    sig1 = (i64, i64) -> i64 tail
-    sig2 = (i64) system_v
-    sig3 = (i64, i64) -> i64 tail
-    fn0 = u0:46 sig0
-    fn1 = u0:47 sig2
-
-    block0(v0: i64, v1: i64):    ;; v0 :: any
-    v2 = band_imm v0, 7
-    v3 = icmp_imm eq v2, 1    ;; v3 :: bool
-    brif v3, block2, block1             ; @5:3
-
-block1:
-    call fn0(v0)
-    v4 = iconst.i64 3    ;; v4 :: nil
-    v5 = load.i64 notrap aligned v1+24
-    v6 = load.i64 notrap aligned v5+16
-    return_call_indirect sig1, v6(v4, v5)  ; v4 = 3
-
-block2:
-    v7 = sshr_imm.i64 v0, 3
-    call fn1(v7)
-    v8 = iconst.i64 3    ;; v8 :: nil
-    v9 = load.i64 notrap aligned v1+24
-    v10 = load.i64 notrap aligned v9+16
-    return_call_indirect sig3, v10(v8, v9)  ; v8 = 3
-}
-
 ; fn apply1_s17
     ;   @spec   apply1(&fn14[10, 20]:(any) -> any, 12) -> int
     ;   @key    [&fn14[10, 20]:(any) -> any, 12]
@@ -190,7 +145,7 @@ function u0:0(i64, i64, i64) -> i64 tail {
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64) system_v
     sig1 = (i64, i64) -> i64 tail
-    fn0 = u0:47 sig0
+    fn0 = u0:46 sig0
 
     block0(v0: i64, v1: i64):    ;; v0 :: int
     call fn0(v0)

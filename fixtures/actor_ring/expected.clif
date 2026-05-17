@@ -347,67 +347,6 @@ block0(v0: i64, v1: i64):
     return_call fn0(v5, v2, v1)
 }
 
-; fn k_21
-    ;   @spec   k_21(any, any, any) -> nil
-    ;   @key    [any, any, any]
-    ;   @abi    (Tagged, Tagged, Tagged) -> Tagged
-function u0:0(i64, i64, i64, i64) -> i64 tail {
-    sig0 = (i32, i32, i32) -> i64 system_v
-    sig1 = (i64, i64) -> i64 tail
-    sig2 = (i64) -> i64 system_v
-    fn0 = u0:27 sig0
-    fn1 = colocated u0:49 sig1
-    fn2 = u0:28 sig2
-
-    block0(v0: i64, v1: i64, v2: i64, v3: i64):    ;; v0 :: any, v1 :: any, v2 :: any
-    v4 = iconst.i32 22                  ; @14:9
-    v5 = iconst.i32 3                   ; @14:9
-    v6 = iconst.i32 0                   ; @14:9
-    v7 = call fn0(v4, v5, v6)           ; @14:9  v4 = 22, v5 = 3, v6 = 0
-    v8 = func_addr.i64 fn1              ; @14:9
-    store notrap aligned v8, v7+16      ; @14:9
-    store notrap aligned v3, v7+24      ; @14:9
-    store notrap aligned v1, v7+32      ; @14:9
-    store notrap aligned v2, v7+40      ; @14:9
-    v9 = call fn2(v7)                   ; @14:9
-    return v9                           ; @14:9
-}
-
-; fn k_receive_22
-    ;   @spec   k_receive_22(any, any, any) -> nil
-    ;   @key    [any, any, any]
-    ;   @abi    (Tagged, Tagged, Tagged) -> Tagged
-function u0:0(i64, i64) -> i64 tail {
-    sig0 = (i64) system_v
-    sig1 = (i64, i64) -> i64 tail
-    sig2 = (i64) system_v
-    sig3 = (i64, i64) -> i64 tail
-    fn0 = u0:69 sig0
-    fn1 = u0:70 sig2
-
-    block0(v0: i64, v1: i64):    ;; v0 :: any
-    v2 = load.i64 notrap aligned v1+32    ;; v2 :: any
-    v3 = load.i64 notrap aligned v1+40    ;; v3 :: any
-    v4 = band_imm v0, 7
-    v5 = icmp_imm eq v4, 1    ;; v5 :: bool
-    brif v5, block2, block1             ; @14:3
-
-block1:
-    call fn0(v0)
-    v6 = iconst.i64 3    ;; v6 :: nil
-    v7 = load.i64 notrap aligned v1+24
-    v8 = load.i64 notrap aligned v7+16
-    return_call_indirect sig1, v8(v6, v7)  ; v6 = 3
-
-block2:
-    v9 = sshr_imm.i64 v0, 3
-    call fn1(v9)
-    v10 = iconst.i64 3    ;; v10 :: nil
-    v11 = load.i64 notrap aligned v1+24
-    v12 = load.i64 notrap aligned v11+16
-    return_call_indirect sig3, v12(v10, v11)  ; v10 = 3
-}
-
 ; fn relay_s23
     ;   @spec   relay(4, pid) -> any
     ;   @key    [4, pid]
