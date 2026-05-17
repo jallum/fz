@@ -239,6 +239,7 @@ fn subst_cont(c: &Cont, subst: &HashMap<Var, Var>) -> Cont {
     Cont {
         fn_id: c.fn_id,
         captured: c.captured.iter().map(|x| subst_var(*x, subst)).collect(),
+        dst: c.dst.clone(),
     }
 }
 

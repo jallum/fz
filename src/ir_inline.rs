@@ -283,6 +283,7 @@ pub fn alpha_rename(callee: &FnIr, caller: &FnIr) -> FnIr {
         Cont {
             fn_id: c.fn_id,
             captured: c.captured.iter().map(|x| shift_v(*x)).collect(),
+            dst: c.dst.clone(),
         }
     };
 
@@ -806,6 +807,7 @@ mod tests {
                 continuation: Cont {
                     fn_id: k,
                     captured: vec![],
+                    dst: None,
                 },
             },
         );
@@ -841,6 +843,7 @@ mod tests {
                 continuation: Cont {
                     fn_id: FnId(7),
                     captured: vec![],
+                    dst: None,
                 },
             },
         );
@@ -860,6 +863,7 @@ mod tests {
                 continuation: Cont {
                     fn_id: FnId(7),
                     captured: vec![],
+                    dst: None,
                 },
             },
         );
@@ -1145,6 +1149,7 @@ mod tests {
                 continuation: Cont {
                     fn_id: k,
                     captured: vec![],
+                    dst: None,
                 },
             },
         );

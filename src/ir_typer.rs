@@ -3915,6 +3915,7 @@ fn main(), do: print(add1(40) + 2)
                 continuation: crate::fz_ir::Cont {
                     fn_id: FnId(1),
                     captured: vec![],
+                    dst: None,
                 },
             },
         );

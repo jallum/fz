@@ -282,6 +282,7 @@ mod tests {
                 continuation: Cont {
                     fn_id: FnId(0),
                     captured: vec![],
+                    dst: None,
                 },
             },
         );
@@ -312,6 +313,7 @@ mod tests {
                 continuation: Cont {
                     fn_id: FnId(2),
                     captured: vec![],
+                    dst: None,
                 },
             },
         );
@@ -438,6 +440,7 @@ mod tests {
                 continuation: Cont {
                     fn_id: FnId(1),
                     captured: vec![],
+                    dst: None,
                 },
             },
         );
@@ -466,6 +469,7 @@ mod tests {
                 continuation: Cont {
                     fn_id: FnId(2),
                     captured: vec![],
+                    dst: None,
                 },
             },
         );
@@ -520,6 +524,7 @@ mod tests {
                 continuation: Cont {
                     fn_id: FnId(2),
                     captured: vec![],
+                    dst: None,
                 },
             },
         );
@@ -563,6 +568,7 @@ mod tests {
                 continuation: Cont {
                     fn_id: FnId(2),
                     captured: vec![],
+                    dst: None,
                 },
             },
         );

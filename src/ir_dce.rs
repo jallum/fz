@@ -391,6 +391,7 @@ mod tests {
             let cont = Cont {
                 fn_id: leaf_cont_id,
                 captured: vec![],
+                dst: None,
             };
             bm.set_terminator(
                 entry,
@@ -615,6 +616,7 @@ mod tests {
                 continuation: Cont {
                     fn_id: cont_fn,
                     captured: vec![],
+                    dst: None,
                 },
             },
         );

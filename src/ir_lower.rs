@@ -2315,6 +2315,7 @@ fn cps_split_call_closure(
             continuation: Cont {
                 fn_id: cont_id,
                 captured: captured_vars.clone(),
+                dst: None,
             },
         },
         call_span,
@@ -2368,6 +2369,7 @@ fn cps_split_receive(
             continuation: Cont {
                 fn_id: cont_id,
                 captured: captured_vars.clone(),
+                dst: None,
             },
         },
         call_span,
@@ -2426,6 +2428,7 @@ fn cps_split_call(
             continuation: Cont {
                 fn_id: cont_id,
                 captured: captured_vars.clone(),
+                dst: None,
             },
         },
         call_span,

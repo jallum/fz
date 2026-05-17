@@ -220,12 +220,31 @@ pub enum Stmt {
     Let(Var, Prim),
 }
 
+/// fz-q9g.1 (fz-dps.A) — optional destination-passing-style hint
+/// carried by a continuation. When `Some`, the caller has allocated a
+/// destination slot whose `kind` (and, when `Struct`, `schema_id`) the
+/// callee should write its result into directly rather than returning
+/// a value to be re-allocated. v0 ignores this field at codegen; future
+/// fz-q9g.2..fz-q9g.4 (per-spec DPS lowering for Term::Return /
+/// Term::Call / Term::TailCall) will consume it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DstSig {
+    pub kind: fz_runtime::fz_value::HeapKind,
+    /// Set only when `kind == HeapKind::Struct`; identifies the
+    /// schema of the destination tuple/record.
+    pub schema_id: Option<u32>,
+}
+
 /// First-class continuation: an IR fn to invoke with the given captured vars
 /// (plus the value(s) being returned to it, supplied by the caller at runtime).
 #[derive(Debug, Clone)]
 pub struct Cont {
     pub fn_id: FnId,
     pub captured: Vec<Var>,
+    /// fz-q9g.1 (fz-dps.A) — optional DPS destination. `None` for
+    /// every existing call site; future DPS lowering populates it
+    /// when the caller can hand the callee a pre-allocated slot.
+    pub dst: Option<DstSig>,
 }
 
 #[derive(Debug, Clone)]
@@ -942,12 +961,36 @@ mod tests {
                 continuation: Cont {
                     fn_id: FnId(7),
                     captured: vec![x],
+                    dst: None,
                 },
             },
         );
         let fn_ir = b.build();
         let s = format!("{}", fn_ir);
         assert!(s.contains("call fn0([v0]) -> cont(fn7, captured=[v0])"));
+    }
+
+    /// fz-q9g.1 — every existing Cont construction across the lowering /
+    /// inlining / DCE / typer / parking / fusion paths leaves dst = None.
+    /// Future DPS lowering will populate it; the foundation contract is
+    /// that v0 IR is dst-clean.
+    #[test]
+    fn cont_default_construction_yields_dst_none() {
+        let cont = Cont {
+            fn_id: FnId(0),
+            captured: vec![],
+            dst: None,
+        };
+        assert!(cont.dst.is_none());
+
+        // The DstSig type also round-trips its kind + optional schema.
+        use fz_runtime::fz_value::HeapKind;
+        let dst = DstSig {
+            kind: HeapKind::Struct,
+            schema_id: Some(42),
+        };
+        assert_eq!(dst.kind, HeapKind::Struct);
+        assert_eq!(dst.schema_id, Some(42));
     }
 
     #[test]

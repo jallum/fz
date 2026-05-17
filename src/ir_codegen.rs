@@ -468,6 +468,7 @@ fn build_typer_header(
             ArgRepr::RawInt => "RawInt",
             ArgRepr::RawF64 => "RawF64",
             ArgRepr::Condition => "Condition",
+            ArgRepr::Dst(_) => "Dst",
         }
     };
     let codegen_params: Vec<String> = param_reprs
@@ -783,6 +784,14 @@ enum ArgRepr {
     /// — the tagged form is never materialised unless tagged_get is called,
     /// which emits bool_to_fz lazily at the use site (fz-h4q).
     Condition,
+    /// fz-q9g.1 (fz-dps.A) — destination-passing-style slot. The caller
+    /// supplies an untagged heap pointer (its `HeapKind` known statically)
+    /// that the callee writes its result into directly, avoiding the
+    /// allocate-then-return round-trip. Never emitted by v0 codegen; the
+    /// per-spec ABI selection at `build_fn_signature` will populate this
+    /// variant in fz-q9g.2..fz-q9g.5 as the C-arc DPS lowering lands.
+    #[allow(dead_code)]
+    Dst(fz_runtime::fz_value::HeapKind),
 }
 
 impl ArgRepr {
@@ -820,6 +829,9 @@ impl ArgRepr {
             ArgRepr::RawInt => 1,
             ArgRepr::RawF64 => 2,
             ArgRepr::Condition => unreachable!("Condition vars never reach halt-cont"),
+            ArgRepr::Dst(_) => {
+                unreachable!("Dst is a caller-side ABI; never reaches halt-cont")
+            }
         }
     }
 }
@@ -858,6 +870,7 @@ fn halt_cont_body_id_for(runtime: &RuntimeRefs, repr: ArgRepr) -> FuncId {
         ArgRepr::RawInt => runtime.halt_cont_body_i64_id,
         ArgRepr::RawF64 => runtime.halt_cont_body_f64_id,
         ArgRepr::Condition => unreachable!("Condition vars never reach halt-cont"),
+        ArgRepr::Dst(_) => unreachable!("Dst is a caller-side ABI; never reaches halt-cont"),
     }
 }
 
@@ -5089,8 +5102,8 @@ fn compile_fn<M: cranelift_module::Module>(
                             box_int(&mut b, raw)
                         }
                     }
-                    ArgRepr::Tagged | ArgRepr::Condition => {
-                        unreachable!("Tagged/Condition in to_retag")
+                    ArgRepr::Tagged | ArgRepr::Condition | ArgRepr::Dst(_) => {
+                        unreachable!("Tagged/Condition/Dst in to_retag")
                     }
                 };
                 var_env.insert(
@@ -6595,6 +6608,9 @@ fn tagged_get<M: cranelift_module::Module>(
         }
         ArgRepr::Tagged => vb.value,
         ArgRepr::Condition => bool_to_fz(b, cache, vb.value),
+        ArgRepr::Dst(_) => {
+            unreachable!("Dst-repr vars are write-only destinations; never read via tagged_get")
+        }
     }
 }
 
@@ -6800,6 +6816,14 @@ fn coerce_to<M: cranelift_module::Module>(
         }
         (ArgRepr::Condition, _) | (_, ArgRepr::Condition) => {
             unreachable!("Condition vars are never coerced")
+        }
+        (ArgRepr::Dst(_), _) | (_, ArgRepr::Dst(_)) => {
+            // fz-q9g.1: v0 never materialises Dst-repr values to coerce
+            // them; per-spec selection guarantees Dst lives only at the
+            // dst-arg seam. fz-q9g.2..5 may revisit this if a Dst-typed
+            // capture needs to be carried; cross that bridge when it
+            // surfaces with a real test.
+            unreachable!("Dst is a caller-side ABI seam; not coerced")
         }
         (ArgRepr::Tagged, ArgRepr::Tagged)
         | (ArgRepr::RawInt, ArgRepr::RawInt)
