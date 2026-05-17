@@ -4,14 +4,15 @@
   "blocks": [
     "fz-ul4.40"
   ],
+  "closed_at": "2026-05-17T10:24:37Z",
   "created": "2026-05-17T10:18:52Z",
   "description": "# Verify fz-i82 attribution before betting fz-ul4.43 fixes it\n\n## Why\n\nfz-i82 (sequential calls in main truncate to the first) currently\nhas a hypothesis but no confirmation: \"Suspect (2): per-callsite\nspecialization makes the second call appear as dead code\". If\ncorrect, fz-ul4.43's decision-tree dispatch likely resolves it as\na side effect (clause dispatch stops cascading through per-callsite\nspecs). If wrong, fz-i82 is its own arc and fz-ul4.43's scope\nnarrows.\n\nCheap to verify; expensive to discover post-implementation.\n\n## The experiment\n\nConstruct a fz program that exercises the fz-i82 shape — two\nsequential `print(eval(...))` calls in main on a multi-clause\ntuple-pattern eval — but **force eval into a single spec** so the\ntyper can't per-callsite-specialize it. Three plausible routes:\n\n1. Indirect call via a closure (any-key dispatch):\n   ```fz\n   fn main() do\n     f = fn(x) -\u003e eval(x)\n     print(f({:num, 7}))\n     print(f({:add, {:num, 2}, {:num, 3}}))\n   end\n   ```\n2. `@spec eval(any) -\u003e any` annotation forcing the any-key path\n   at every callsite.\n3. apply2 wrapper that the typer can't unwrap.\n\nFor each route: `fz dump` and inspect main's CLIF. If main contains\n**both** return_calls instead of truncating to one, the hypothesis\nholds.\n\n## Verdict criteria\n\n- **Holds** → fz-ul4.43 should subsume fz-i82. Mark fz-i82 as\n  duplicate-of-fz-ul4.43.\n- **Doesn't hold** → fz-i82 is downstream of something else (likely\n  the CPS-chain construction in main itself, not the typer). Keep\n  it as an independent arc; consider de-prioritizing fz-ul4.43's\n  fz-i82-coupling claim.\n\n## Deliverable\n\nA single paragraph comment on fz-i82 (and copied to fz-ul4.43's\nticket) naming the verdict with the experiment evidence. No code\nlanded.\n\n## Out of scope\n\n- Actually fixing fz-i82. Investigation only.\n- Implementing the spec-collapse mechanism — fz-ul4.40 covers that.",
   "id": "fz-ul4.39",
   "labels": [],
   "parent": "fz-ul4",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "investigate: does collapsing eval to one spec fix fz-i82?",
   "type": "task",
-  "updated_at": "2026-05-17T10:23:12Z"
+  "updated_at": "2026-05-17T10:24:37Z"
 }
