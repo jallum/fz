@@ -13,9 +13,15 @@
   "id": "fz-ul4.43.11",
   "labels": [],
   "parent": "fz-ul4.43",
+  "comments": [
+    {
+      "text": "ATTEMPTED + REVERTED. Surfaced a real second-order issue.\n\nWHAT I BUILT: full matrix dispatch in lower_multi_clause. Handles Tuple/Atom/Int/Bool/Nil/List with shared cross-clause tests; PerRow fallback for Map/Bitstring; @spec annotations via row.preconditions; guards via fall_block routing. body_cb owns env install + preconds + guard + body; matrix supplies fall_block. Semantically correct — 604/604 unit tests pass, all 158 fixture-matrix path tests pass (3-path parity holds).\n\nWHY REVERTED: golden_clif failures show CLIF GREW across all fixtures. Net +2198 lines across 72 fixtures. ast_eval specifically +7% larger.\n\nROOT CAUSE (from inspecting ast_eval diff): in OLD per-clause cascade, a clause's TupleField projection had its result Var typed as the SINGLETON ATOM (e.g. 'v40 :: :add') because per-spec fold sees a narrow IR per clause and can prove the projection's value from spec key. In NEW shared dispatch, the SHARED TupleField projection has result 'v16 :: any' — typer can't narrow past the shared branch point.\n\nThe shared matrix dispatch is structurally cleaner (one arity test, one projection) but it DEFEATS per-spec fold's narrowing within sub-branches. Per-spec fold (.43.B) was getting MASSIVE wins (-1906 lines) by tightening per-clause IR; shared dispatch removes the per-clause structure fold leans on.\n\nTHE TENSION:\n- Per-clause cascade: redundant arity tests (bad), but per-spec fold tightens each clause's IR (good)\n- Shared matrix: deduplicated tests (good), but per-spec fold can't narrow across shared branches (bad)\n\nNet: matrix delivers structural improvement, fold loses optimization power, CLIF grows.\n\nPOSSIBLE PATHS FORWARD:\n1. Extend per-spec fold/typer to propagate post-test type narrowing into shared sub-branches. The narrow_for_cond change (.43.A) already does this for branch refinement — extend it across the matrix's shared dispatch shape so type-narrowing flows into the sub-tree after a successful arity/atom test.\n2. Use matrix structurally but emit per-clause UNSHARED dispatch inside hot paths so per-spec fold has clean per-clause IR to narrow.\n3. Accept the trade and ship — matrix's structural simplicity is worth the per-spec optimization loss.\n\nRECOMMENDATION: path (1). The information IS there at typer time. After successful arity-3 TypeTest + successful atom-:add Eq test, the typer can prove v0 is {:add, _, _} → TupleField(v0, 0) :: :add. This is conditional narrowing inside the shared branch tree. Implementing it requires extending narrow_for_cond's reach to chained tests AND making fold rewrite TupleField when the source is provably narrowed to a tuple-literal singleton.\n\nKEEPING: .43.D.0 (smarter inliner) — that's a real improvement and lands cleanly. The matrix infrastructure (.43.C) is intact and reusable.\n\nNEXT TICKET: 'fz-ul4.46 — narrow_for_cond reaches across shared dispatch chains' OR similar. With that landed, .43.D.1 can be retried.",
+      "timestamp": "2026-05-17T13:33:41Z"
+    }
+  ],
   "priority": 1,
   "status": "in_progress",
   "title": "fz-ul4.43.D.1: matrix dispatch in lower_multi_clause",
   "type": "task",
-  "updated_at": "2026-05-17T13:15:04Z"
+  "updated_at": "2026-05-17T13:33:41Z"
 }
