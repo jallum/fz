@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-aiz.5"
+  ],
   "created": "2026-05-17T16:04:29Z",
   "description": "## Bug\n\n`pattern_check` treats a guarded clause as if its pattern alone covered the\ninput space, so the next clause is incorrectly marked unreachable AND its\nbinders are elided in lowering, surfacing as `error[lower/unbound]`:\n\n```fz\nfn lt_filter(p, [h | rest]) when h \u003c p, do: [h | lt_filter(p, rest)]\nfn lt_filter(p, [h | rest]),            do: lt_filter(p, rest)\n```\n\nToday: clause 2 warns \"earlier clauses cover every input\" (false — `when h \u003c p`\ndoesn't cover h \u003e= p), then `error[lower/unbound]: unbound: rest`.\n\n## Fix\n\nIn `pattern_check`, a guarded clause does **not** contribute to the covered\npattern set for exhaustiveness/redundancy purposes. Standard ML/Erlang\nsemantics: guards are runtime predicates, not part of static pattern coverage.\n\nTwo analyses use this:\n- \"this clause is unreachable\" → only fires when prior **unguarded** clauses cover.\n- \"fn clauses don't cover every input\" → consider only unguarded clauses' patterns.\n\n## Tests\n\n- `lt_filter`-shaped fixture compiles + runs (will land in `fz-aiz.5` as quicksort).\n- Unit test in `pattern_check`: clause 2 (unguarded) after clause 1 (guarded with same pattern) is **not** unreachable.\n- Unit test: guarded-clause-only function still warns \"doesn't cover every input.\"\n\n## Independent of other children. Leaf.",
   "id": "fz-aiz.2",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "fz-aiz.2: pattern exhaustiveness respects guards",
   "type": "task",
-  "updated_at": "2026-05-17T16:04:29Z"
+  "updated_at": "2026-05-17T16:05:06Z"
 }
