@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-ul4.43.11"
   ],
@@ -12,8 +12,8 @@
   "labels": [],
   "parent": "fz-ul4.43",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "fz-ul4.43.G: wire lower_with's pattern step onto matrix",
   "type": "task",
-  "updated_at": "2026-05-17T12:58:55Z"
+  "updated_at": "2026-05-17T14:00:29Z"
 }
