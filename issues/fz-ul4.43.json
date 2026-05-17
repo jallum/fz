@@ -11,9 +11,15 @@
   "id": "fz-ul4.43",
   "labels": [],
   "parent": "fz-ul4",
+  "comments": [
+    {
+      "text": "fz-ul4.39 verdict (see fz-i82 comment): per-callsite specialization is NOT the cause of fz-i82. Decision-tree dispatch will NOT subsume it. The 'Bonus expected outcome' section in this ticket should be considered withdrawn. Scope here is now just: collapse cross-clause TypeTest duplicates and produce tighter CLIF. fz-i82 stays as its own arc.",
+      "timestamp": "2026-05-17T10:24:36Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "lower_multi_clause: emit shared decision tree (collapses cross-clause TypeTests)",
   "type": "task",
-  "updated_at": "2026-05-17T10:21:48Z"
+  "updated_at": "2026-05-17T10:24:36Z"
 }
