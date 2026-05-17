@@ -7,7 +7,7 @@
     "fz-ul4.43.9"
   ],
   "created": "2026-05-17T12:08:07Z",
-  "description": "# .43.G — wire lower_with's else cascade onto matrix\n\n## What changes\n\n`lower_with` (src/ir_lower.rs ~2459) has TWO sequential parts:\n  1. The `\u003c-` bindings (sequential thread, NOT a parallel match) —\n     unchanged in this ticket. lower_pattern_bind still used per\n     binding (subsumed in .H when bind becomes a matrix wrapper).\n  2. The else-clauses inside `with_fail_cont` — a multi-clause cascade\n     identical in shape to lower_case's clause loop. THIS gets the\n     matrix wiring.\n\nSo .G is essentially .F applied to the with_fail_cont's interior:\n- Same eligibility gate\n- Same cont-fn-always-wrapped callback (with's else bodies have the\n  same shape as case clause bodies)\n- Cascade fallback for ineligible else-clauses\n\n## What stays\n\n- The outer `\u003c-` thread structure\n- `with_fail_cont` minting + invocation\n- `unmatched_v` plumbing\n- join_opt for non-tail position\n\n## What's removed\n\n- Per-else-clause try_blocks cascade INSIDE with_fail_cont (when\n  eligible)\n\n## Acceptance\n\n- with-using fixtures: golden byte-identical (most don't have\n  matrix-sharable else clauses)\n- The one fixture with multi-clause else (if any) tightens\n- Three-path parity\n\n## Risk\n\nwith currently errors on else-guards (line 2572). v1 keeps that.\n\n## NOT in this ticket\n\n- Matrix-ifying the `\u003c-` binding's single-pattern match. That's a\n  single-pattern position, subsumed by .H's 1-row matrix wrapper.",
+  "description": "# .43.G — lower_with's else cascade REPLACED by matrix dispatch\n\n## What changes\n\nlower_with (src/ir_lower.rs ~2459) has two parts:\n- The `\u003c-` bindings: SEQUENTIAL thread, NOT a parallel match. Unchanged\n  by this ticket (lower_pattern_bind subsumed in .H).\n- The else-clauses inside with_fail_cont: a multi-clause cascade\n  identical in shape to lower_case's. THIS gets matrix.\n\nSo .G is .F applied inside with_fail_cont. Same callback shape (always\ncont-fn-wrap).\n\n## What stays\n\n- The outer `\u003c-` thread\n- with_fail_cont minting + invocation\n- unmatched_v plumbing\n- join_opt\n\n## What's removed\n\n- ~40 LOC of else-clause try_blocks cascade\n- Third copy of the dispatch-by-cascade pattern (now ZERO copies)\n\n## Acceptance\n\n- with-using fixtures: meaningfully tighter OR equivalent\n- Three-path parity\n\n## Risk\n\nwith-else currently errors on guards (line 2572). v1 keeps that;\nmatrix encounters guarded row, callback errors with same message.",
   "id": "fz-ul4.43.8",
   "labels": [],
   "parent": "fz-ul4.43",
@@ -15,5 +15,5 @@
   "status": "open",
   "title": "fz-ul4.43.G: wire lower_with's pattern step onto matrix",
   "type": "task",
-  "updated_at": "2026-05-17T12:42:03Z"
+  "updated_at": "2026-05-17T12:58:46Z"
 }
