@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-aiz.11"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-aiz.13"
+  ],
   "created": "2026-05-17T17:36:51Z",
   "description": "Now-dead code: tagged_return_fns/_specs derivations, tagged_slot0_cont_specs build loop (replaced by per-callsite annotation), resolve_tcc_body, naturally_opaque CodegenEnv field, .29.11/.29.12.1 panic sites, or_else iter-find fallbacks at MakeClosure sites, skip-check at line 1914. Blocked by 3c.",
   "id": "fz-aiz.12",
