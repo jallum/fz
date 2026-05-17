@@ -3926,10 +3926,29 @@ fn emit_terminator<M: cranelift_module::Module>(
                 )
             })
     };
-    let resolve_callee_sid = |callee: crate::fz_ir::FnId, args: &[crate::fz_ir::Var]| -> u32 {
+    // fz-qbg.2 — Resolve callee spec by querying with FLOW-NARROWED arg
+    // Descrs from the current block's typer env (`fn_types.block_envs`),
+    // not the def-site types (`fn_types.vars`). The dispatcher in
+    // multi-clause (and any `if`/`case` pattern-bind narrowing) refines
+    // an entry-block Var's type via per-block narrowing; the typer
+    // registers callee specs keyed against that narrowing, so the
+    // codegen lookup must use the same. Falls back to def-site when a
+    // block env entry is absent (e.g. for Vars defined later in the
+    // block — though calls in fz CPS-form only see args bound at or
+    // before the terminator, so this is rare).
+    let resolve_callee_sid_in = |callee: crate::fz_ir::FnId,
+                                 args: &[crate::fz_ir::Var],
+                                 block_id: crate::fz_ir::BlockId|
+     -> u32 {
+        let block_env = fn_types.block_envs.get(&block_id);
         let descrs: Vec<crate::types::Descr> = args
             .iter()
             .map(|av| {
+                if let Some(env) = block_env
+                    && let Some(d) = env.get(av)
+                {
+                    return d.clone();
+                }
                 fn_types
                     .vars
                     .get(av)
@@ -3953,6 +3972,9 @@ fn emit_terminator<M: cranelift_module::Module>(
                         .collect::<Vec<_>>()
                 )
             })
+    };
+    let resolve_callee_sid = |callee: crate::fz_ir::FnId, args: &[crate::fz_ir::Var]| -> u32 {
+        resolve_callee_sid_in(callee, args, blk.id)
     };
 
     match &blk.terminator {
