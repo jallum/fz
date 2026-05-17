@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-q9g.2"
+    "fz-q9g.2",
+    "fz-q9g.24"
   ],
   "blocks": [
     "fz-q9g.13",
@@ -17,5 +18,5 @@
   "status": "open",
   "title": "fz-dps.C2: lower Term::Return under Dst ABI",
   "type": "task",
-  "updated_at": "2026-05-17T04:47:55Z"
+  "updated_at": "2026-05-17T14:59:25Z"
 }
