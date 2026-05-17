@@ -7,9 +7,15 @@
   "id": "fz-q9g.14",
   "labels": [],
   "parent": "fz-q9g",
+  "comments": [
+    {
+      "text": "**Audit complete — no foldable arms.**\n\n`cheney_trace_children` (runtime/src/heap.rs:1018) arms:\n- `Struct` — already uses `FieldKind::FzValue` walk over `schema.fields` (the generic pattern; this IS the target shape).\n- `List` — hardcoded 2-slot walk (head@+16, tail@+24). No schema; computed layout. Cannot fold without giving List a synthetic schema.\n- `Closure` — hardcoded captures walk (count from `flags`, slots at +24+i*8). No schema; layout derived from runtime flags. Cannot fold without dynamic schema construction.\n- `Map` — hardcoded key/value pairs walk (count at +16, pairs at +24+i*16). No schema; computed layout.\n- `Bitstring | Float | VecI64 | VecF64 | VecU8 | VecBit | ProcBin` — already collapsed into a single \"raw payload, no children\" arm.\n\nThe hand-coded arms (List/Closure/Map) have genuine layout specificity that the schema-driven walk doesn't express today. Folding them would require either (a) registering synthetic schemas for non-Struct HeapKinds or (b) a separate \"layout walker\" abstraction — both bigger than E3's stated scope.\n\nRecommendation: close as audit-complete, no code changes. Revisit if/when List/Closure/Map gain schema representation for unrelated reasons.",
+      "timestamp": "2026-05-17T16:43:34Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "fz-dps.E3: collapse per-HeapKind tracer arms into FieldKind-driven loop",
   "type": "task",
-  "updated_at": "2026-05-17T04:47:21Z"
+  "updated_at": "2026-05-17T16:43:34Z"
 }
