@@ -9,9 +9,15 @@
   "id": "fz-ul4.43.10",
   "labels": [],
   "parent": "fz-ul4.43",
+  "comments": [
+    {
+      "text": "WRONG ASSUMPTION — body_might_cps_split fast path is NOT goldens bookkeeping.\n\ninline_tail_calls_once.is_inlinable requires is_leaf — no Call/TailCall in the body. Recursive multi_clause bodies (count, fib_tailrec, eval, etc.) end in TailCall and are NOT inlinable. So always-cont-fn permanently bloats every recursive multi_clause: each clause's tail call is wrapped in an extra fn boundary the inliner cannot remove.\n\nTried it: ast_eval + 71 fixtures churned, +2557 lines net (CLIF GREW).\n\nCONCLUSION: the fork stays. D.1's matrix dispatch must preserve body_might_cps_split per leaf, just as today's per-clause cascade does.\n\nDELETING this ticket. D.1's design absorbs the per-leaf fork decision in its body callback.",
+      "timestamp": "2026-05-17T13:05:13Z"
+    }
+  ],
   "priority": 1,
   "status": "in_progress",
   "title": "fz-ul4.43.D.0: drop body_might_cps_split fast path",
   "type": "task",
-  "updated_at": "2026-05-17T13:02:17Z"
+  "updated_at": "2026-05-17T13:05:13Z"
 }
