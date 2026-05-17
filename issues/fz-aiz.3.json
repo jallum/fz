@@ -13,11 +13,15 @@
     {
       "text": "fz-aiz.3 revised — see also session findings on the data-model conflation.\n\nOriginal plan was naive: adding any-keys to module_types.specs is not a\npassive enrichment, it is a codegen instruction. Three roles are bundled\nunder that one map's any-key membership:\n  1. type inference under widest inputs\n  2. codegen emits a Tagged-ABI body at SpecId == FnId.0\n  3. closure routing: MakeClosure's body_func_id picks via\n     spec_registry.resolve(fid, [any; n] + captures), and exact-matches\n     the any-key when present\n\nRoles 2 and 3 are gated by typer reachability (fz-vw4 / fz-pky.2).\nAdding an any-key for a direct-only fn flips role 3 from \"fall back via\niter to a narrow spec\" to \"exact-match the any-key\" — making\nMakeClosure store the Tagged-ABI body in the closure value while\nnarrow callers expect RawInt ABI. ABI mismatch on `apply2(double, 21)`\nproduced `5 = 21 \u003e\u003e 2`.\n\nReframe — small fix, not the intrinsic/adapter arc:\n\n1. ensure_any_keys: register an any-key spec for every reachable FnId\n   (the soundness floor for resolve fallback).\n2. MakeClosure body_func_id selection (ir_codegen.rs:6300): stop using\n   resolve([any; n] + captures); add `closure_canonical_body(fid,\n   captures)` that consults the typer's opaque-dispatch reachability\n   flag — if opaque dispatch is reachable, pick any-key (Tagged ABI);\n   otherwise pick the deterministic canonical narrow spec. Decouples\n   role 3 from role 1.\n3. Narrow call sites that today exact-match a narrow spec are unaffected\n   (their query Descrs are concrete, not all-any).\n\nThe intrinsic-and-adapter design is unnecessary: the any-key body itself\nserves as the dispatch fallback target. resolve()'s subsumption already\nprefers narrow when one covers; any-key is naturally picked only when\nno narrow covers. aiz.4 wires the actual fallback edge; aiz.5 replaces\nthe panics with that fallback at call sites.",
       "timestamp": "2026-05-17T16:48:57Z"
+    },
+    {
+      "text": "Superseded by 3a-3e. Closing.",
+      "timestamp": "2026-05-17T17:37:00Z"
     }
   ],
   "priority": 1,
   "status": "in_progress",
   "title": "fz-aiz.3: mandatory any-key spec for every reachable FnId + Cont",
   "type": "task",
-  "updated_at": "2026-05-17T17:36:50Z"
+  "updated_at": "2026-05-17T17:37:00Z"
 }
