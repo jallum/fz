@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-17T12:07:05Z",
+  "description": "# Skeleton step — types + unit tests, no wiring\n\n## What changes\n\nNew module (probably `src/pattern_matrix.rs`):\n\n```rust\npub struct Row {\n    pub patterns: Vec\u003cSpanned\u003cPattern\u003e\u003e,\n    pub guard: Option\u003cSpanned\u003cExpr\u003e\u003e,\n    pub body_id: BodyId,  // opaque handle; matrix doesn't lower bodies\n}\n\npub struct Matrix {\n    pub subjects: Vec\u003cVar\u003e,\n    pub rows: Vec\u003cRow\u003e,\n}\n\npub enum Decision {\n    Leaf(BodyId),\n    Switch {\n        subject: Var,\n        kind: SwitchKind,  // TupleArity | Atom | Int | Bool | ListIsNil\n        cases: Vec\u003c(SwitchKey, Box\u003cDecision\u003e)\u003e,\n        default: Box\u003cDecision\u003e,\n    },\n    Bind {\n        subject: Var,\n        name: String,\n        next: Box\u003cDecision\u003e,\n    },\n    Project {\n        subject: Var,\n        kind: ProjectKind,  // TupleField(u32) | ListHead | ListTail | MapGet(Var)\n        result: Var,\n        next: Box\u003cDecision\u003e,\n    },\n    Guard {\n        body_id: BodyId,\n        guard: Spanned\u003cExpr\u003e,\n        on_pass: Box\u003cDecision\u003e,  // execute body\n        on_fail: Box\u003cDecision\u003e,  // continue to next clause\n    },\n    Fail,\n}\n\npub fn compile(matrix: Matrix) -\u003e Decision { ... }\n```\n\n`compile()` implements Maranget-lite:\n- empty rows → Fail\n- first row all-wildcard (or all-bind) → Leaf with any binds threaded\n- pick leftmost column with non-wildcard; classify discriminator;\n  specialize matrix per constructor; recurse; default = recurse on\n  wildcards-only rows\n- bitstring/map columns → no specialize, drop to per-row fallback marker\n  (a Switch with one case + default)\n\n## What stays\n\nNothing here yet — this ticket is types and unit tests only.\n\n## What's removed\n\nNothing here yet.\n\n## Acceptance\n\n- Unit test: 3-row matrix with tuple patterns of arities {2, 3, 3}\n  compiles to a Switch on TupleArity with 2 cases (the arity-3 case is\n  a nested Switch or Leaf chain on atom field-0).\n- Unit test: all-wildcard rows compile to first-row Leaf.\n- Unit test: bitstring row compiles to per-row fallback marker.\n- Unit test: guarded row compiles to Guard node with on_pass/on_fail.\n- No fixture goldens touched — no wiring yet.\n\n## Why now\n\nThe data types alone don't break anything. Lets the next ticket (.43.D)\nfocus purely on lowering, not also on inventing the IR.\n\n## Risk\n\nDesigning the wrong abstraction. Mitigation: validate against the three\ncall sites (lower_multi_clause, lower_case, lower_with) — the types\nmust serve all three. Specifically `Matrix::subjects` is plural so\nlower_multi_clause's multi-param matches work natively.",
+  "id": "fz-ul4.43.3",
+  "labels": [],
+  "parent": "fz-ul4.43",
+  "priority": 1,
+  "status": "open",
+  "title": "fz-ul4.43.C: PatternMatrix data types",
+  "type": "task",
+  "updated_at": "2026-05-17T12:07:05Z"
+}
