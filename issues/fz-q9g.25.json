@@ -9,9 +9,15 @@
   "id": "fz-q9g.25",
   "labels": [],
   "parent": "fz-q9g",
+  "comments": [
+    {
+      "text": "Investigation complete.\n\nD1 (fz-q9g.6) target shape PRESERVED. src/ir_lower.rs:2885 lower_case under the matrix arc still mints a per-case join cont (case_join) in non-tail position. Each clause body lives in its own cont fn (case_clause_\u003ci\u003e_cont), and all clause bodies end with finalize_arm(result, join_opt) which tail-calls the shared join cont with the result. N arms reach one join cont; each may allocate the result independently. D1's optimization (give caller a dst, all arms write into dst) still applies.\n\nConcrete witness: case_tuple_pattern_sequential's g_s17 has block2 (matched arm, extracts x) and block3 (else, returns 0) both tail-calling sig0 (the same cont). That IS the D1 shape.\n\nSide-effect of matrix arc that HELPS the arc: combined with main's effective_returns LFP, the matrix narrows more spec keys to monomorphic return Descrs (it collapses arms that would have widened the join). More specs will classify to a single HeapKind under C1, so more specs become Dst-eligible. C1's harvest grew.\n\nINTERACTION FLAGGED on C4 (fz-q9g.5): is_pure_tail_caller (PR #14) eats the small-K hop before C4 would fire. C4 still applies for above-budget / multi-callsite / closure-referenced K. Fixture choice matters — noted in fz-q9g.5 body.\n\nDECISION: D1 proceeds as written. C1, C2, C3, D2, F-arc, B-arc, G-arc, E-arc: no changes from this investigation.",
+      "timestamp": "2026-05-17T15:35:02Z"
+    }
+  ],
   "priority": 1,
   "status": "in_progress",
   "title": "fz-dps.D1.0: re-investigate case-arm join under pattern matrix",
   "type": "task",
-  "updated_at": "2026-05-17T15:31:57Z"
+  "updated_at": "2026-05-17T15:35:02Z"
 }
