@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
     "fz-ul4.37"
@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-ul4",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "Prim::TypeTest: read descr.tuples (interp + JIT)",
   "type": "bug",
-  "updated_at": "2026-05-17T04:48:34Z"
+  "updated_at": "2026-05-17T04:52:58Z"
 }
