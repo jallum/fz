@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-17T16:11:20Z",
+  "description": "Missed in fz-aiz.7 commit. golden_clif/golden_specs require all non-deferred fixtures to have sidecars. Trivial bless.",
+  "id": "fz-aiz.8",
+  "labels": [],
+  "parent": "fz-aiz",
+  "priority": 2,
+  "status": "open",
+  "title": "fz-aiz.7-fu: seed expected.clif/expected.specs for ast_eval_env",
+  "type": "task",
+  "updated_at": "2026-05-17T16:11:20Z"
+}
