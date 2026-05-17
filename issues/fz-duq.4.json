@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-duq.2"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-duq.5"
+  ],
   "created": "2026-05-17T02:04:22Z",
   "description": "Same mechanical application. Depends on fz-duq.2/.3. Combined into\none ticket because both are short and structurally identical.\n\n## Replace `lower_cond` (`src/ir_lower.rs:1921`)\n\nTwo-shape pattern. Tail-position: each arm body lowered with\n`is_tail=true`, finalize with Return. Non-tail: mint join fn,\nfinalize each arm with TailCall(join_fn, [v, ...captured]).\n\nThe cond's arm-test cascade (`arm_test_blocks` + Term::If between\nthem) stays as-is — that's intra-fn block flow with direct Gotos, no\nCPS-split hazard. Only the arm BODIES (which can contain calls)\nneed the new join treatment.\n\n## Replace `lower_with` (`src/ir_lower.rs:1975`)\n\nSame shape for the main success body and the else-clause bodies —\nboth join via the new continuation-fn join.\n\n`with_fail` block stays a block. It's reached only by direct Goto\nfrom per-binding mismatch sites (no CPS-split between mismatch and\n`with_fail`), so the block-level join is valid there. Only the\npost-clause join needs the new shape.\n\n## Test\n\nA `cond`-with-call-in-arm-body test and a `with`-with-call-in-body\ntest, both today silently broken via Bug 2.\n\n```fz\nfn helper(), do: 7\nfn route(n) do\n  cond do\n    n == 0 -\u003e helper()\n    true -\u003e 99\n  end\nend\nfn main() do\n  print(route(0))\n  print(route(5))\nend\n```\n\nExpected: `7\\n99\\n`.\n\n## Acceptance\n\n- `cargo test --workspace` green.\n- `cargo test --workspace golden_clif` zero drift.\n- Both new fixtures pass interp + JIT.\n\n## Removes\n\n- `lower_cond`'s `join_b` allocation (`:1936-1937`) and Goto-to-join\n  at `:1965`.\n- `lower_with`'s `join_b` allocation (`:1988-1989`) and Goto-to-join\n  sites at `:2035`, `:2071`.\n- Duplicated per-arm env/terminated boilerplate now subsumed by the\n  arm-finalizer helper.",
   "id": "fz-duq.4",
