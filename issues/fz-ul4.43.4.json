@@ -5,6 +5,7 @@
     "fz-ul4.43.6"
   ],
   "created": "2026-05-17T12:07:15Z",
+  "defer_until": "2026-12-31",
   "description": "# IR primitive for dense multi-way dispatch; no matrix wiring yet\n\n## What changes\n\nIn `src/fz_ir.rs`:\n\n```rust\npub enum Term {\n    // ... existing variants ...\n    Switch {\n        subject: Var,\n        cases: Vec\u003c(SwitchKey, BlockId)\u003e,  // sorted by key for determinism\n        default: BlockId,\n    },\n}\n\npub enum SwitchKey {\n    Atom(u32),  // atom ID\n    Int(i64),\n    Bool(bool),  // probably collapses to Atom(:true)/Atom(:false)\n    TupleArity(u32),\n}\n```\n\nInterpreter (`ir_interp.rs`): switch arm — match subject's value against\neach key in order, fall through to default.\n\nCodegen (`ir_codegen.rs`): two strategies:\n- **dense** (≥3 cases, key spread ≤ 64): Cranelift `br_table`.\n- **sparse**: chained `BinOp::Eq + If` (same code we'd emit before).\n\nStrategy choice happens inside codegen; the IR carries the same Switch\neither way.\n\n## What stays\n\nAll existing Term variants. All existing codegen paths.\n\n## What's removed\n\nNothing here. Pure addition.\n\n## Acceptance\n\n- New IR test: build a Switch Term, type_module accepts it, ir_dce/fold\n  pass don't crash.\n- New interp test: Switch dispatches on each key + default.\n- New codegen test: 3-case Switch lowers via br_table; 2-case Switch\n  lowers via If; verify both produce correct runtime behavior.\n- All existing fixtures unchanged (nothing emits Switch yet).\n\n## Risk\n\nCranelift `br_table` semantics: requires keys to be 0-indexed dense\nintegers in the table. For sparse atom IDs we'd build a small lookup\nin the IR or fall back to If-chain. The \"key spread ≤ 64\" heuristic\nkeeps us inside the dense-table-friendly regime.\n\nThree-path parity: this ticket is the parity check itself — interp +\nJIT + AOT must all execute Switch identically.\n\n## Why before E.2\n\nAdding the IR primitive separately from the optimization that emits\nit lets us land .E.1 with zero golden churn and full test coverage.\n.E.2 then becomes a pure heuristic-and-emission change.",
   "id": "fz-ul4.43.4",
   "labels": [],
@@ -16,7 +17,7 @@
     }
   ],
   "priority": 1,
-  "status": "open",
+  "status": "deferred",
   "title": "fz-ul4.43.E.1: Term::Switch IR + interp + br_table codegen",
   "type": "task",
   "updated_at": "2026-05-17T12:41:34Z"
