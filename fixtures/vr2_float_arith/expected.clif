@@ -32,16 +32,11 @@ block0(v0: i64):
     v14 = bitcast.i64 v13
     v15 = call fn3(v14)
     call fn0(v15)
-    v16 = f64const 0x1.0000000000000p0    ;; v16 :: 1.0
-    v17 = f64const 0x1.0000000000000p1    ;; v17 :: 2.0
-    v18 = fcmp lt v16, v17  ; v16 = 0x1.0000000000000p0, v17 = 0x1.0000000000000p1
-    v19 = iconst.i64 10
-    v20 = iconst.i64 18
-    v21 = select v18, v19, v20  ; v19 = 10, v20 = 18    ;; v21 :: :true
-    call fn0(v21)
-    v22 = iconst.i64 2    ;; v22 :: nil
-    v23 = band_imm v0, -8               ; @2:3
-    v24 = load.i64 notrap aligned v23+16 ; @2:3
-    return_call_indirect sig4, v24(v22, v0) ; @2:3  v22 = 2
+    v16 = iconst.i64 10    ;; v16 :: :true
+    call fn0(v16)  ; v16 = 10
+    v17 = iconst.i64 2    ;; v17 :: nil
+    v18 = band_imm v0, -8               ; @2:3
+    v19 = load.i64 notrap aligned v18+16 ; @2:3
+    return_call_indirect sig4, v19(v17, v0) ; @2:3  v17 = 2
 }
 

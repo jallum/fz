@@ -610,7 +610,7 @@ fn eval_prim(module: &Module, prim: &Prim, env: &HashMap<Var, FzValue>) -> Resul
                     std::ptr::write(dst, val);
                 }
             }
-            FzValue(p as u64)
+            FzValue::from_ptr(p as *mut _)
         }
         Prim::TupleField(c, idx) => {
             let cv = env_get(env, *c)?;

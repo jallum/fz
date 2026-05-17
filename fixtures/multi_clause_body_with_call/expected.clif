@@ -1,44 +1,28 @@
 ; fn main
-    ;   @spec   main() -> _
+    ;   @spec   main() -> nil
     ;   @key    []
     ;   @abi    () -> Tagged
 function u0:0(i64) -> i64 tail {
     sig0 = (i64) system_v
     sig1 = (i64, i64) -> i64 tail
-    sig2 = (i64) system_v
-    sig3 = (i64, i64) -> i64 tail
     fn0 = u0:41 sig0
     fn1 = colocated u0:40 sig1
-    fn2 = u0:42 sig2
-    fn3 = colocated u0:40 sig3
 
 block0(v0: i64):
     v1 = iconst.i64 7                   ; @7:18
-    v2 = iconst.i64 56
-    v3 = band_imm v2, 7  ; v2 = 56
-    v4 = icmp_imm eq v3, 0    ;; v4 :: :true
-    brif v4, block2, block1             ; @7:9
-
-block1:
-    v5 = iconst.i64 56
-    call fn0(v5)  ; v5 = 56
-    v6 = iconst.i64 2    ;; v6 :: nil
-    return_call fn1(v6, v0)  ; v6 = 2
-
-block2:
-    call fn2(v1)  ; v1 = 7
-    v7 = iconst.i64 2    ;; v7 :: nil
-    return_call fn3(v7, v0)  ; v7 = 2
+    call fn0(v1)  ; v1 = 7
+    v2 = iconst.i64 2    ;; v2 :: nil
+    return_call fn1(v2, v0)             ; @7:9  v2 = 2
 }
 
-; fn k_11_s10
-    ;   @spec   k_11(nil) -> nil
+; fn k_17_s14
+    ;   @spec   k_17(nil) -> nil
     ;   @key    [nil]
     ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64) system_v
     sig1 = (i64, i64) -> i64 tail
-    fn0 = u0:42 sig0
+    fn0 = u0:41 sig0
 
     block0(v0: i64, v1: i64):    ;; v0 :: nil
     v2 = iconst.i64 99                  ; @8:18
