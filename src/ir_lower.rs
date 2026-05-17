@@ -1102,12 +1102,21 @@ fn lower_pattern_matrix(
         let subject = matrix.subjects[col];
         let rest_block = ctx.cur_mut().block(vec![]);
         let env_before: std::collections::HashSet<String> = ctx.env.keys().cloned().collect();
-        lower_pattern_bind(ctx, subject, &row.patterns[col], rest_block)?;
+        // fz-ul4.43.H — call the helpers directly (was lower_pattern_bind
+        // which would just dispatch back here for these shapes anyway).
+        match &peel_as_pat(&row.patterns[col]).node {
+            Pattern::Map(entries) => match_map(ctx, subject, entries, rest_block)?,
+            Pattern::Bitstring(fields) => match_bitstring(ctx, subject, fields, rest_block)?,
+            _ => lower_pattern_bind(ctx, subject, &row.patterns[col], rest_block)?,
+        }
+        // env_order preserves insertion order — env (HashMap) doesn't.
+        // Use env_order so capture snapshots and TailCall arg order are
+        // deterministic across runs.
         let pat_bind_extras: Vec<(String, Var)> = ctx
-            .env
+            .env_order
             .iter()
-            .filter(|(k, _)| !env_before.contains(*k))
-            .map(|(k, v)| (k.clone(), *v))
+            .filter(|k| !env_before.contains(k.as_str()))
+            .filter_map(|k| ctx.env.get(k).map(|v| (k.clone(), *v)))
             .collect();
         let mut r = row;
         r.patterns.remove(col);
@@ -1389,12 +1398,23 @@ fn lower_matrix_list_cons(
     for r in cons_rows {
         let rest_block = ctx.cur_mut().block(vec![]);
         let env_before: std::collections::HashSet<String> = ctx.env.keys().cloned().collect();
-        lower_pattern_bind(ctx, subject, &r.patterns[col], rest_block)?;
+        // fz-ul4.43.H — call match_list directly. The pattern at col was
+        // selected by lower_matrix_list_cons as a List variant; we know
+        // its shape and skip lower_pattern_bind's dispatch.
+        let col_pat = peel_as_pat(&r.patterns[col]);
+        if let Pattern::List(elems, tail) = &col_pat.node {
+            match_list(ctx, subject, elems, tail.as_deref(), rest_block)?;
+        } else {
+            lower_pattern_bind(ctx, subject, &r.patterns[col], rest_block)?;
+        }
+        // env_order preserves insertion order — env (HashMap) doesn't.
+        // Use env_order so capture snapshots and TailCall arg order are
+        // deterministic across runs.
         let pat_bind_extras: Vec<(String, Var)> = ctx
-            .env
+            .env_order
             .iter()
-            .filter(|(k, _)| !env_before.contains(*k))
-            .map(|(k, v)| (k.clone(), *v))
+            .filter(|k| !env_before.contains(k.as_str()))
+            .filter_map(|k| ctx.env.get(k).map(|v| (k.clone(), *v)))
             .collect();
         let r_body_id = r.body_id;
         let r_preconds = r.preconditions.clone();
@@ -2470,111 +2490,141 @@ fn lower_pattern_bind(
             ctx.name_var(subject, name, pat_span);
             lower_pattern_bind(ctx, subject, inner, fail_block)
         }
-        Pattern::Tuple(elems) => {
-            // fz-ben — TypeTest tuple-of-arity-N before projecting fields.
-            // The matrix (.D.1, .F, .G) replaces this for multi-row sites;
-            // single-pattern positions (let, with `<-`, multi-head) still
-            // use this branch because lower_pattern_bind's contract leaves
-            // the success block un-terminated for the caller to continue
-            // inline, which the matrix's dispatch-terminating model can't
-            // express. Future ticket: extract this into a shared helper
-            // both lower_pattern_bind and matrix's leaf reach via callback.
-            let n = elems.len();
-            let tuple_descr = crate::types::Descr::tuple_of(
-                std::iter::repeat_with(crate::types::Descr::any)
-                    .take(n)
-                    .collect::<Vec<_>>(),
-            );
-            let test = ctx.let_(Prim::TypeTest(subject, Box::new(tuple_descr)));
-            let project_b = ctx.cur_mut().block(vec![]);
-            ctx.set_term(Term::If(test, project_b, fail_block));
-            ctx.cur_block = Some(project_b);
-            for (i, elem_pat) in elems.iter().enumerate() {
-                let fv = ctx.let_(Prim::TupleField(subject, i as u32));
-                lower_pattern_bind(ctx, fv, elem_pat, fail_block)?;
-            }
-            Ok(())
-        }
-        Pattern::List(elems, tail) => {
-            let mut cur = subject;
-            for elem_pat in elems {
-                let isnil = ctx.let_(Prim::ListIsNil(cur));
-                let cont_b = ctx.cur_mut().block(vec![]);
-                ctx.set_term(Term::If(isnil, fail_block, cont_b));
-                ctx.cur_block = Some(cont_b);
-                let h = ctx.let_(Prim::ListHead(cur));
-                let t = ctx.let_(Prim::ListTail(cur));
-                lower_pattern_bind(ctx, h, elem_pat, fail_block)?;
-                cur = t;
-            }
-            match tail {
-                Some(tail_pat) => lower_pattern_bind(ctx, cur, tail_pat, fail_block),
-                None => {
-                    // Must end with nil.
-                    let isnil = ctx.let_(Prim::ListIsNil(cur));
-                    let cont_b = ctx.cur_mut().block(vec![]);
-                    ctx.set_term(Term::If(isnil, cont_b, fail_block));
-                    ctx.cur_block = Some(cont_b);
-                    Ok(())
-                }
-            }
-        }
-        Pattern::Map(entries) => {
-            // For each (key_pattern, value_pattern) in the map pattern: build the
-            // key (must be a literal expression-equivalent), call MapGet, ensure
-            // result is non-nil (key present), then recurse into value pattern.
-            for (key_pat, val_pat) in entries {
-                let key_var = lower_pattern_as_key_expr(ctx, key_pat)?;
-                let got = ctx.let_(Prim::MapGet(subject, key_var));
-                let nil_v = ctx.let_(Prim::Const(Const::Nil));
-                let is_nil = ctx.let_(Prim::BinOp(BinOp::Eq, got, nil_v));
-                let cont_b = ctx.cur_mut().block(vec![]);
-                ctx.set_term(Term::If(is_nil, fail_block, cont_b));
-                ctx.cur_block = Some(cont_b);
-                lower_pattern_bind(ctx, got, val_pat, fail_block)?;
-            }
-            Ok(())
-        }
-        Pattern::Bitstring(fields) => {
-            // Initialize a reader, then per field: read with size resolved
-            // against any IR vars bound by *earlier* fields' patterns; check
-            // success; pattern-bind the extracted value (which may bind names
-            // visible to later fields' size resolution); thread the new
-            // reader. Finally require the reader is fully consumed.
-            let mut reader = ctx.let_(Prim::BitReaderInit(subject));
-            let n = fields.len();
-            for (i, field) in fields.iter().enumerate() {
-                let is_last = i + 1 == n;
-                let size_ir = lower_bit_size(ctx, &field.spec.size, field.value.span)?;
-                let result = ctx.let_(Prim::BitReadField {
-                    reader,
-                    ty: field.spec.ty,
-                    size: size_ir,
-                    endian: field.spec.endian,
-                    signed: field.spec.signed,
-                    unit: field.spec.unit,
-                    is_last,
-                });
-                let ok = ctx.let_(Prim::TupleField(result, 0));
-                let cont_b = ctx.cur_mut().block(vec![]);
-                ctx.set_term(Term::If(ok, cont_b, fail_block));
-                ctx.cur_block = Some(cont_b);
-                let extracted = ctx.let_(Prim::TupleField(result, 1));
-                let next_reader = ctx.let_(Prim::TupleField(result, 2));
-                // Park reader so any CPS-split inside the pattern keeps it.
-                let r_park = ctx.park(next_reader);
-                lower_pattern_bind(ctx, extracted, &field.value, fail_block)?;
-                reader = ctx.unpark(&r_park);
-                ctx.unbind(&r_park);
-            }
-            // Require empty reader.
-            let done = ctx.let_(Prim::BitReaderDone(reader));
+        Pattern::Tuple(elems) => match_tuple(ctx, subject, elems, fail_block),
+        Pattern::List(elems, tail) => match_list(ctx, subject, elems, tail.as_deref(), fail_block),
+        Pattern::Map(entries) => match_map(ctx, subject, entries, fail_block),
+        Pattern::Bitstring(fields) => match_bitstring(ctx, subject, fields, fail_block),
+    }
+}
+
+/// fz-ul4.43.H — Constructor pattern helpers. Each emits the IR for a
+/// single subject against the constructor pattern. On match success, the
+/// helper leaves ctx.cur_block at a "success" block where any bindings
+/// from inner sub-patterns are in env and the caller continues lowering
+/// inline. On match failure, control jumps to `fail_block` via Term::If
+/// terminators along the way.
+///
+/// Shared by `lower_pattern_bind` (single-pattern positions) and the
+/// matrix's PerRow / list-cons handlers (which previously called
+/// `lower_pattern_bind` recursively, costing a layer of dispatch).
+fn match_tuple(
+    ctx: &mut LowerCtx,
+    subject: Var,
+    elems: &[Spanned<Pattern>],
+    fail_block: BlockId,
+) -> Result<(), LowerError> {
+    // fz-ben — TypeTest tuple-of-arity-N before projecting fields. For
+    // non-tuple subjects (e.g. an atom flowing into `{:ok, x} <- :err`),
+    // projection would read heap garbage without the type test gate.
+    let n = elems.len();
+    let tuple_descr = crate::types::Descr::tuple_of(
+        std::iter::repeat_with(crate::types::Descr::any)
+            .take(n)
+            .collect::<Vec<_>>(),
+    );
+    let test = ctx.let_(Prim::TypeTest(subject, Box::new(tuple_descr)));
+    let project_b = ctx.cur_mut().block(vec![]);
+    ctx.set_term(Term::If(test, project_b, fail_block));
+    ctx.cur_block = Some(project_b);
+    for (i, elem_pat) in elems.iter().enumerate() {
+        let fv = ctx.let_(Prim::TupleField(subject, i as u32));
+        lower_pattern_bind(ctx, fv, elem_pat, fail_block)?;
+    }
+    Ok(())
+}
+
+fn match_list(
+    ctx: &mut LowerCtx,
+    subject: Var,
+    elems: &[Spanned<Pattern>],
+    tail: Option<&Spanned<Pattern>>,
+    fail_block: BlockId,
+) -> Result<(), LowerError> {
+    let mut cur = subject;
+    for elem_pat in elems {
+        let isnil = ctx.let_(Prim::ListIsNil(cur));
+        let cont_b = ctx.cur_mut().block(vec![]);
+        ctx.set_term(Term::If(isnil, fail_block, cont_b));
+        ctx.cur_block = Some(cont_b);
+        let h = ctx.let_(Prim::ListHead(cur));
+        let t = ctx.let_(Prim::ListTail(cur));
+        lower_pattern_bind(ctx, h, elem_pat, fail_block)?;
+        cur = t;
+    }
+    match tail {
+        Some(tail_pat) => lower_pattern_bind(ctx, cur, tail_pat, fail_block),
+        None => {
+            // Must end with nil.
+            let isnil = ctx.let_(Prim::ListIsNil(cur));
             let cont_b = ctx.cur_mut().block(vec![]);
-            ctx.set_term(Term::If(done, cont_b, fail_block));
+            ctx.set_term(Term::If(isnil, cont_b, fail_block));
             ctx.cur_block = Some(cont_b);
             Ok(())
         }
     }
+}
+
+fn match_map(
+    ctx: &mut LowerCtx,
+    subject: Var,
+    entries: &[(Spanned<Pattern>, Spanned<Pattern>)],
+    fail_block: BlockId,
+) -> Result<(), LowerError> {
+    for (key_pat, val_pat) in entries {
+        let key_var = lower_pattern_as_key_expr(ctx, key_pat)?;
+        let got = ctx.let_(Prim::MapGet(subject, key_var));
+        let nil_v = ctx.let_(Prim::Const(Const::Nil));
+        let is_nil = ctx.let_(Prim::BinOp(BinOp::Eq, got, nil_v));
+        let cont_b = ctx.cur_mut().block(vec![]);
+        ctx.set_term(Term::If(is_nil, fail_block, cont_b));
+        ctx.cur_block = Some(cont_b);
+        lower_pattern_bind(ctx, got, val_pat, fail_block)?;
+    }
+    Ok(())
+}
+
+fn match_bitstring(
+    ctx: &mut LowerCtx,
+    subject: Var,
+    fields: &[AstBitField<Spanned<Pattern>>],
+    fail_block: BlockId,
+) -> Result<(), LowerError> {
+    // Initialize a reader, then per field: read with size resolved against
+    // any IR vars bound by EARLIER fields' patterns; check success;
+    // pattern-bind the extracted value (which may bind names visible to
+    // later fields' size resolution); thread the new reader. Finally
+    // require the reader is fully consumed.
+    let mut reader = ctx.let_(Prim::BitReaderInit(subject));
+    let n = fields.len();
+    for (i, field) in fields.iter().enumerate() {
+        let is_last = i + 1 == n;
+        let size_ir = lower_bit_size(ctx, &field.spec.size, field.value.span)?;
+        let result = ctx.let_(Prim::BitReadField {
+            reader,
+            ty: field.spec.ty,
+            size: size_ir,
+            endian: field.spec.endian,
+            signed: field.spec.signed,
+            unit: field.spec.unit,
+            is_last,
+        });
+        let ok = ctx.let_(Prim::TupleField(result, 0));
+        let cont_b = ctx.cur_mut().block(vec![]);
+        ctx.set_term(Term::If(ok, cont_b, fail_block));
+        ctx.cur_block = Some(cont_b);
+        let extracted = ctx.let_(Prim::TupleField(result, 1));
+        let next_reader = ctx.let_(Prim::TupleField(result, 2));
+        // Park reader so any CPS-split inside the pattern keeps it.
+        let r_park = ctx.park(next_reader);
+        lower_pattern_bind(ctx, extracted, &field.value, fail_block)?;
+        reader = ctx.unpark(&r_park);
+        ctx.unbind(&r_park);
+    }
+    let done = ctx.let_(Prim::BitReaderDone(reader));
+    let cont_b = ctx.cur_mut().block(vec![]);
+    ctx.set_term(Term::If(done, cont_b, fail_block));
+    ctx.cur_block = Some(cont_b);
+    Ok(())
 }
 
 /// Lower a Pattern that represents a map key. Map keys in patterns are
