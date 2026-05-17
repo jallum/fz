@@ -1539,6 +1539,270 @@ pub struct AotArtifact {
 /// or when no covering spec is registered for the resolved key.
 /// Shared by the return-type fixpoint, tagged-return seeding, halt_kind
 /// analysis, and TailCallClosure codegen — all four had identical inline copies.
+/// fz-aiz.3b — populate per-spec annotations on `f_owned`.
+///
+/// Walks every block in the cloned IR and computes the SpecId codegen
+/// would pick at each call-shaped position:
+///
+///   Term::Call.callsite_sid           — direct callee resolve
+///   Term::Call.continuation.sid       — cont resolve (cont_input_key)
+///   Term::TailCall.callsite_sid       — direct callee resolve
+///   Term::CallClosure.resolved_sid    — closure_lit static resolve, else None
+///   Term::CallClosure.continuation.sid — cont resolve
+///   Term::TailCallClosure.resolved_sid — closure_lit static resolve, else None
+///   Term::Receive.continuation.sid    — cont resolve
+///   Prim::MakeClosure(.., body_sid)   — closure body resolve (per existing
+///                                       fz-ul4.29.12.2 + .10.3 fallback path)
+///
+/// `compile_fn` and `lower_prim` still call `spec_registry.resolve(...)` at
+/// every site for fz-aiz.3b; debug-asserts compare each result to the
+/// annotation. fz-aiz.3c will replace the resolves with annotation reads
+/// and remove the asserts.
+fn annotate_spec_ir(
+    f: &mut crate::fz_ir::FnIr,
+    ft: &crate::ir_typer::FnTypes,
+    spec_registry: &SpecRegistry,
+    fn_ids: &HashMap<u32, FuncId>,
+    module: &crate::fz_ir::Module,
+    module_types: &crate::ir_typer::ModuleTypes,
+) {
+    // Mirror the codegen-side closure body picker (Prim::MakeClosure
+    // and closure_shapes builder share the same logic).
+    let closure_body_sid = |fn_id: crate::fz_ir::FnId,
+                            captured: &[crate::fz_ir::Var]|
+     -> Option<crate::fz_ir::SpecId> {
+        let lam = module.fn_by_id(fn_id);
+        let n_params = lam.block(lam.entry).params.len();
+        let mut key: Vec<crate::types::Descr> =
+            vec![crate::types::Descr::any(); n_params];
+        for (k, cv) in captured.iter().enumerate() {
+            if let Some(slot) = key.get_mut(k) {
+                *slot = ft
+                    .vars
+                    .get(cv)
+                    .cloned()
+                    .unwrap_or_else(crate::types::Descr::any);
+            }
+        }
+        spec_registry.resolve(fn_id, &key).or_else(|| {
+            spec_registry
+                .iter()
+                .find(|(s, fid, _)| *fid == fn_id && fn_ids.contains_key(&s.0))
+                .map(|(s, _, _)| s)
+        })
+    };
+    // Mirror resolve_callee_sid_in (per-block-env narrowing).
+    let callee_sid = |callee: crate::fz_ir::FnId,
+                      args: &[crate::fz_ir::Var],
+                      block_id: crate::fz_ir::BlockId|
+     -> Option<crate::fz_ir::SpecId> {
+        let block_env = ft.block_envs.get(&block_id);
+        let descrs: Vec<crate::types::Descr> = args
+            .iter()
+            .map(|av| {
+                if let Some(env) = block_env
+                    && let Some(d) = env.get(av)
+                {
+                    return d.clone();
+                }
+                ft.vars
+                    .get(av)
+                    .cloned()
+                    .unwrap_or_else(crate::types::Descr::any)
+            })
+            .collect();
+        spec_registry.resolve(callee, &descrs)
+    };
+    // Mirror resolve_cont_sid (cont_input_key).
+    let cont_sid = |blk: &crate::fz_ir::Block, cont: &crate::fz_ir::Cont|
+     -> Option<crate::fz_ir::SpecId> {
+        let key = crate::ir_typer::cont_input_key(blk, cont, ft, module, module_types);
+        spec_registry.resolve(cont.fn_id, &key)
+    };
+    // Mirror resolve_tcc_body (closure_lit fast path).
+    let tcc_resolved = |closure: &crate::fz_ir::Var,
+                        args: &[crate::fz_ir::Var]|
+     -> Option<crate::fz_ir::SpecId> {
+        let lit = ft.vars.get(closure)?.as_closure_lit()?;
+        let body_fn = module.fn_by_id(lit.fn_id);
+        let np = body_fn.block(body_fn.entry).params.len();
+        let mut key: Vec<crate::types::Descr> = lit.captures.clone();
+        for av in args {
+            key.push(
+                ft.vars
+                    .get(av)
+                    .cloned()
+                    .unwrap_or_else(crate::types::Descr::any),
+            );
+        }
+        while key.len() < np {
+            key.push(crate::types::Descr::any());
+        }
+        key.truncate(np);
+        spec_registry.resolve(lit.fn_id, &key)
+    };
+
+    // First pass: collect annotation writes via immutable block references
+    // (the closures above hold immutable refs into the block during cont_sid
+    // calls). Apply mutations after.
+    enum Write {
+        Stmt {
+            blk_idx: usize,
+            stmt_idx: usize,
+            sid: crate::fz_ir::SpecId,
+        },
+        TermCall {
+            blk_idx: usize,
+            callsite: Option<crate::fz_ir::SpecId>,
+            cont: Option<crate::fz_ir::SpecId>,
+        },
+        TermTailCall {
+            blk_idx: usize,
+            callsite: Option<crate::fz_ir::SpecId>,
+        },
+        TermCallClosure {
+            blk_idx: usize,
+            resolved: Option<crate::fz_ir::SpecId>,
+            cont: Option<crate::fz_ir::SpecId>,
+        },
+        TermTailCallClosure {
+            blk_idx: usize,
+            resolved: Option<crate::fz_ir::SpecId>,
+        },
+        TermReceive {
+            blk_idx: usize,
+            cont: Option<crate::fz_ir::SpecId>,
+        },
+    }
+
+    let mut writes: Vec<Write> = Vec::new();
+    for (blk_idx, blk) in f.blocks.iter().enumerate() {
+        for (stmt_idx, stmt) in blk.stmts.iter().enumerate() {
+            let crate::fz_ir::Stmt::Let(_, prim) = stmt;
+            if let crate::fz_ir::Prim::MakeClosure(fid, caps, _) = prim
+                && let Some(sid) = closure_body_sid(*fid, caps)
+            {
+                writes.push(Write::Stmt {
+                    blk_idx,
+                    stmt_idx,
+                    sid,
+                });
+            }
+        }
+        match &blk.terminator {
+            crate::fz_ir::Term::Call {
+                callee,
+                args,
+                continuation,
+                ..
+            } => {
+                writes.push(Write::TermCall {
+                    blk_idx,
+                    callsite: callee_sid(*callee, args, blk.id),
+                    cont: cont_sid(blk, continuation),
+                });
+            }
+            crate::fz_ir::Term::TailCall { callee, args, .. } => {
+                writes.push(Write::TermTailCall {
+                    blk_idx,
+                    callsite: callee_sid(*callee, args, blk.id),
+                });
+            }
+            crate::fz_ir::Term::CallClosure {
+                closure,
+                args,
+                continuation,
+                ..
+            } => {
+                writes.push(Write::TermCallClosure {
+                    blk_idx,
+                    resolved: tcc_resolved(closure, args),
+                    cont: cont_sid(blk, continuation),
+                });
+            }
+            crate::fz_ir::Term::TailCallClosure { closure, args, .. } => {
+                writes.push(Write::TermTailCallClosure {
+                    blk_idx,
+                    resolved: tcc_resolved(closure, args),
+                });
+            }
+            crate::fz_ir::Term::Receive { continuation, .. } => {
+                writes.push(Write::TermReceive {
+                    blk_idx,
+                    cont: cont_sid(blk, continuation),
+                });
+            }
+            _ => {}
+        }
+    }
+
+    for w in writes {
+        match w {
+            Write::Stmt {
+                blk_idx,
+                stmt_idx,
+                sid,
+            } => {
+                let crate::fz_ir::Stmt::Let(_, prim) = &mut f.blocks[blk_idx].stmts[stmt_idx];
+                if let crate::fz_ir::Prim::MakeClosure(_, _, slot) = prim {
+                    *slot = Some(sid);
+                }
+            }
+            Write::TermCall {
+                blk_idx,
+                callsite,
+                cont,
+            } => {
+                if let crate::fz_ir::Term::Call {
+                    callsite_sid,
+                    continuation,
+                    ..
+                } = &mut f.blocks[blk_idx].terminator
+                {
+                    *callsite_sid = callsite;
+                    continuation.sid = cont;
+                }
+            }
+            Write::TermTailCall { blk_idx, callsite } => {
+                if let crate::fz_ir::Term::TailCall { callsite_sid, .. } =
+                    &mut f.blocks[blk_idx].terminator
+                {
+                    *callsite_sid = callsite;
+                }
+            }
+            Write::TermCallClosure {
+                blk_idx,
+                resolved,
+                cont,
+            } => {
+                if let crate::fz_ir::Term::CallClosure {
+                    resolved_sid,
+                    continuation,
+                    ..
+                } = &mut f.blocks[blk_idx].terminator
+                {
+                    *resolved_sid = resolved;
+                    continuation.sid = cont;
+                }
+            }
+            Write::TermTailCallClosure { blk_idx, resolved } => {
+                if let crate::fz_ir::Term::TailCallClosure { resolved_sid, .. } =
+                    &mut f.blocks[blk_idx].terminator
+                {
+                    *resolved_sid = resolved;
+                }
+            }
+            Write::TermReceive { blk_idx, cont } => {
+                if let crate::fz_ir::Term::Receive { continuation, .. } =
+                    &mut f.blocks[blk_idx].terminator
+                {
+                    continuation.sid = cont;
+                }
+            }
+        }
+    }
+}
+
 fn resolve_tcc_body(
     closure: &crate::fz_ir::Var,
     args: &[crate::fz_ir::Var],
@@ -2726,6 +2990,22 @@ pub fn compile_with_backend<B: Backend>(
             crate::ir_fuse::fuse_fn(&mut clone);
             clone
         };
+        // fz-aiz.3b — populate per-spec annotations on the cloned IR.
+        // Mirrors the resolve logic in compile_fn / lower_prim /
+        // emit_terminator. Writes the typer-chosen SpecIds into the IR
+        // fields added by fz-aiz.3a so that fz-aiz.3c can swap codegen's
+        // inline resolve calls with annotation reads. Until 3c lands,
+        // codegen still calls resolve and debug-asserts the result
+        // matches the annotation.
+        let mut f_owned = f_owned;
+        annotate_spec_ir(
+            &mut f_owned,
+            spec_fn_types[sid].expect("non-sentinel spec must have FnTypes"),
+            &spec_registry,
+            &fn_ids,
+            module,
+            &module_types,
+        );
         let f = &f_owned;
         let func_id = *fn_ids.get(&(sid as u32)).unwrap();
         let mut ctx = backend.module_mut().make_context();
@@ -3960,7 +4240,7 @@ fn emit_terminator<M: cranelift_module::Module>(
     let resolve_cont_sid = |blk: &crate::fz_ir::Block, continuation: &crate::fz_ir::Cont| -> u32 {
         let key =
             crate::ir_typer::cont_input_key(blk, continuation, fn_types, module, module_types);
-        spec_registry
+        let resolved = spec_registry
             .resolve(continuation.fn_id, &key)
             .map(|s| s.0)
             .unwrap_or_else(|| {
@@ -3975,7 +4255,18 @@ fn emit_terminator<M: cranelift_module::Module>(
                         .map(|(s, _, k)| (s.0, k.to_vec()))
                         .collect::<Vec<_>>()
                 )
-            })
+            });
+        // fz-aiz.3b — annotation safety net: if the IR carries a typer-chosen
+        // cont SpecId, it must match what resolve() produces here. fz-aiz.3c
+        // replaces the resolve call with `continuation.sid.unwrap()`.
+        if let Some(annotated) = continuation.sid {
+            debug_assert_eq!(
+                annotated.0, resolved,
+                "fz-aiz.3b: cont annotation drift on block {:?}: annotated={} resolved={} (cont fn_id={}, key={:?})",
+                blk.id, annotated.0, resolved, continuation.fn_id.0, key
+            );
+        }
+        resolved
     };
     // fz-qbg.2 — Resolve callee spec by querying with FLOW-NARROWED arg
     // Descrs from the current block's typer env (`fn_types.block_envs`),
@@ -4007,7 +4298,7 @@ fn emit_terminator<M: cranelift_module::Module>(
                     .unwrap_or_else(crate::types::Descr::any)
             })
             .collect();
-        spec_registry
+        let resolved = spec_registry
             .resolve(callee, &descrs)
             .map(|s| s.0)
             .unwrap_or_else(|| {
@@ -4022,7 +4313,27 @@ fn emit_terminator<M: cranelift_module::Module>(
                         .map(|(s, _, k)| (s.0, k.to_vec()))
                         .collect::<Vec<_>>()
                 )
-            })
+            });
+        // fz-aiz.3b — annotation safety net for Call/TailCall callsite_sid.
+        // We look up the matching block's terminator to fetch the annotation;
+        // only assert when the block_id matches `blk.id` (the terminator
+        // currently being emitted) so we don't re-fetch for indirect calls
+        // from other utility functions.
+        if block_id == blk.id {
+            let annotation = match &blk.terminator {
+                crate::fz_ir::Term::Call { callsite_sid, .. } => *callsite_sid,
+                crate::fz_ir::Term::TailCall { callsite_sid, .. } => *callsite_sid,
+                _ => None,
+            };
+            if let Some(annotated) = annotation {
+                debug_assert_eq!(
+                    annotated.0, resolved,
+                    "fz-aiz.3b: callee annotation drift on block {:?}: annotated={} resolved={} (callee={}, descrs={:?})",
+                    blk.id, annotated.0, resolved, callee.0, descrs
+                );
+            }
+        }
+        resolved
     };
     let resolve_callee_sid = |callee: crate::fz_ir::FnId, args: &[crate::fz_ir::Var]| -> u32 {
         resolve_callee_sid_in(callee, args, blk.id)
