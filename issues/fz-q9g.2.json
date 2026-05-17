@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-q9g.1"
+  ],
   "blocks": [],
   "created": "2026-05-17T04:46:31Z",
   "description": "What: In build_fn_signature (ir_codegen.rs:896), when a fn's any-key spec has a result Descr that pins to exactly one HeapKind, set return_reprs[sid] = ArgRepr::Dst(k). Reuses the existing return-type join over Return sites.\n\nInvariant: never emitted on extern signatures (asserted).\n\nWhy: Single decision point. Everything downstream reads return_reprs.\n\nCLIF impact: unchanged (no lowering consumes Dst yet — C2 turns it on).\n\nTests: golden assertion that selected stdlib fns get Dst ABI in their any-key spec; externs never do.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "fz-dps.C1: per-spec result Descr -\u003e HeapKind classifier",
   "type": "task",
-  "updated_at": "2026-05-17T04:46:31Z"
+  "updated_at": "2026-05-17T04:47:53Z"
 }
