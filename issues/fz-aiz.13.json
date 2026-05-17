@@ -6,14 +6,15 @@
   "blocks": [
     "fz-aiz.4"
   ],
+  "closed_at": "2026-05-17T18:20:57Z",
   "created": "2026-05-17T17:36:51Z",
   "description": "With annotations driving codegen, ensure_any_keys is safe to land. Direct-only fns get an any-key spec for inference; no codegen path is perturbed because no codegen path picks specs. naturally_opaque becomes typer-internal. Blocked by 3d.",
   "id": "fz-aiz.13",
   "labels": [],
   "parent": "fz-aiz",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "fz-aiz.3e: land ensure_any_keys — the soundness floor",
   "type": "task",
-  "updated_at": "2026-05-17T18:03:32Z"
+  "updated_at": "2026-05-17T18:20:57Z"
 }
