@@ -9,9 +9,15 @@
   "id": "fz-aiz.6",
   "labels": [],
   "parent": "fz-aiz",
+  "comments": [
+    {
+      "text": "Deferred from this arc. With annotation-driven dispatch (fz-aiz.3a–3e),\nthe diagnostic shape simplifies: walk every spec body, look at each\nTerm's callsite_sid / resolved_sid / Cont.sid annotation, and warn\nwhen the resolved SpecId is the any-key while a narrower spec exists\nfor the same FnId. One IR walk, no resolve-replay.\n\nLift from a separate ticket when the spec-quality signal becomes\nuseful (e.g., during follow-up perf passes or as part of a CI gate).",
+      "timestamp": "2026-05-17T18:33:45Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "fz-aiz.6: --Wspec-quality diagnostic when call dispatches to any-key",
   "type": "task",
-  "updated_at": "2026-05-17T16:05:06Z"
+  "updated_at": "2026-05-17T18:33:45Z"
 }
