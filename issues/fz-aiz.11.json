@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-aiz.10"
+  ],
   "blocks": [],
   "created": "2026-05-17T17:36:50Z",
   "description": "Convert each of the 11 spec_registry.resolve(...) sites in ir_codegen.rs to an annotation read. Debug-asserts stay live as safety net during migration. Final commit removes the asserts. Blocked by 3b.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "fz-aiz.3c: codegen reads annotations instead of resolve, site-by-site",
   "type": "task",
-  "updated_at": "2026-05-17T17:36:50Z"
+  "updated_at": "2026-05-17T17:36:59Z"
 }

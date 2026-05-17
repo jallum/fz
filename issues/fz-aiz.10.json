@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-aiz.9"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-aiz.11"
+  ],
   "created": "2026-05-17T17:36:50Z",
   "description": "Typer pass writes the SpecId it chose at each call site into the annotation. Codegen still calls resolve(). Add debug_assert_eq! that resolve() == annotation. Matrix green; asserts never fire. Blocked by 3a.",
   "id": "fz-aiz.10",
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "fz-aiz.3b: typer populates annotations; debug-asserts codegen agreement",
   "type": "task",
-  "updated_at": "2026-05-17T17:36:58Z"
+  "updated_at": "2026-05-17T17:36:59Z"
 }
