@@ -3484,7 +3484,16 @@ struct CodegenEnv<'a> {
 }
 
 /// Per-function mutable state threaded through `lower_prim` and
-/// `emit_terminator`. Fields are populated in later fz-cg tickets.
+/// `emit_terminator`. Holds five orthogonal caches:
+///
+/// - `const_cache`: per-block constant deduplication (avoids redundant iconst).
+/// - `raw_int_consts`: raw i64 value for RawInt vars (drives box-int const fold).
+/// - `extern_funcs`: FuncRef deduplicated per extern symbol per function.
+/// - `used_vars`: all var IDs that appear as operands anywhere in the function;
+///   unit-return extern results whose dest ID is absent skip the nil iconst.
+/// - `if_only_conds`: var IDs used exclusively as Term::If conditions; their
+///   boolean prims emit ArgRepr::Condition (raw i1) instead of bool_to_fz, so
+///   the tagged form is never materialised and brif consumes the i1 directly.
 struct CodegenCache {
     /// Cranelift values for small integer/atom constants, keyed by (block, value)
     /// so entries from sibling blocks are never reused (fz-bwp).
