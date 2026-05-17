@@ -7,9 +7,15 @@
   "id": "fz-q9g.12",
   "labels": [],
   "parent": "fz-q9g",
+  "comments": [
+    {
+      "text": "**Audit complete — no deletions warranted.**\n\nLive HeapKind::Float allocation sites found:\n- `src/ir_codegen.rs:6036` — float literal in Tagged context (any-typed slot). Required: float literal can't stay raw when its consumer is polymorphic.\n- `src/ir_codegen.rs:6117` — slow path for BinOp on tagged-typed floats (the polymorphic arithmetic fallback after typed fast-path miss). Required: `slow_arith` closure must box result via fz_alloc_float for the tagged return shape.\n- `src/ir_codegen.rs:6976` — `tag_box_float` helper, canonical RawF64→Tagged promotion. Required by every polymorphic edge.\n- `runtime/src/ir_runtime.rs:830,1007,1093` — runtime polymorphic-edge re-boxes (fz_alloc_float extern + FFI promotion paths).\n\nEvery site is a polymorphic-edge re-box exactly as the ticket hypothesized. The typed RawF64 fast paths (`try_typed_binop_fast_path`, frame-slot RawF64 entries) already skip these. **HeapKind::Float variant remains live and necessary** for the polymorphic edge.\n\nRecommendation: close as audit-complete, no code changes.",
+      "timestamp": "2026-05-17T16:43:34Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "fz-dps.E1: audit + delete dead HeapKind::Float alloc sites",
   "type": "task",
-  "updated_at": "2026-05-17T04:47:20Z"
+  "updated_at": "2026-05-17T16:43:34Z"
 }
