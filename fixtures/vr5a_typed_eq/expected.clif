@@ -23,13 +23,11 @@ block0(v0: i64):
     v11 = iconst.i64 26    ;; v11 :: :err
     v12 = iconst.i64 19    ;; v12 :: bool
     call fn0(v12)  ; v12 = 19
-    v13 = iconst.i64 18    ;; v13 :: :ok
-    v14 = iconst.i64 18    ;; v14 :: :ok
-    v15 = icmp eq v13, v14  ; v13 = 18, v14 = 18
-    v16 = select v15, v7, v8  ; v7 = 11, v8 = 19    ;; v16 :: bool
-    call fn0(v16)
-    v17 = iconst.i64 3    ;; v17 :: nil
-    v18 = load.i64 notrap aligned v0+16 ; @2:3
-    return_call_indirect sig1, v18(v17, v0) ; @2:3  v17 = 3
+    v13 = icmp eq v10, v10  ; v10 = 18, v10 = 18
+    v14 = select v13, v7, v8  ; v7 = 11, v8 = 19    ;; v14 :: bool
+    call fn0(v14)
+    v15 = iconst.i64 3    ;; v15 :: nil
+    v16 = load.i64 notrap aligned v0+16 ; @2:3
+    return_call_indirect sig1, v16(v15, v0) ; @2:3  v15 = 3
 }
 

@@ -5415,14 +5415,14 @@ fn lower_collection_prim<M: cranelift_module::Module>(
         }
         Prim::ListIsNil(c) => {
             let cv = tagged_get(var_env, b, jmod, runtime, c.0, cache);
-            let nil_v = b.ins().iconst(types::I64, NIL_BITS);
+            let nil_v = cached_iconst(b, cache, NIL_BITS);
             let cmp = b.ins().icmp(IntCC::Equal, cv, nil_v);
             bool_to_fz(b, cache, cmp)
         }
         Prim::MakeList(elems, tail) => {
             let mut acc = match tail {
                 Some(t) => tagged_get(var_env, b, jmod, runtime, t.0, cache),
-                None => b.ins().iconst(types::I64, NIL_BITS),
+                None => cached_iconst(b, cache, NIL_BITS),
             };
             let fref = jmod.declare_func_in_func(runtime.alloc_cons_id, b.func);
             for e in elems.iter().rev() {
@@ -5749,10 +5749,10 @@ fn lower_prim<M: cranelift_module::Module>(
                 }
                 b.ins().iconst(types::I64, ((*n) << 3) | TAG_INT)
             }
-            Const::True => b.ins().iconst(types::I64, TRUE_BITS),
-            Const::False => b.ins().iconst(types::I64, FALSE_BITS),
-            Const::Nil => b.ins().iconst(types::I64, NIL_BITS),
-            Const::Atom(id) => b.ins().iconst(types::I64, ((*id as i64) << 3) | TAG_ATOM),
+            Const::True => cached_iconst(b, cache, TRUE_BITS),
+            Const::False => cached_iconst(b, cache, FALSE_BITS),
+            Const::Nil => cached_iconst(b, cache, NIL_BITS),
+            Const::Atom(id) => cached_iconst(b, cache, ((*id as i64) << 3) | TAG_ATOM),
             Const::Float(f) => {
                 // fz-ul4.27.15.2: emit a raw `f64const` when the consumer
                 // is float-monomorphic. Tagged consumers heap-alloc via
@@ -7852,6 +7852,28 @@ fn main(), do: loop_with(loop_with, 100000, 0)
         );
         // The live nil (used as continuation arg) must still be present.
         assert!(main_ir.contains("iconst.i64 3"), "expected at least one nil iconst:\n{}", main_ir);
+    }
+
+    /// fz-o2g — Const::Nil/Bool/Atom through cached_iconst. The nil arg
+    /// to print(nil) and the live unit-extern result both call
+    /// cached_iconst(NIL_BITS) and must share the same SSA value — one
+    /// iconst.i64 3, not two.
+    #[test]
+    fn const_nil_bool_atom_deduplicated_within_block() {
+        let src = "fn main() do\n\
+                     print(nil)\n\
+                   end";
+        let m = lower_src(src);
+        ir_text_record_enable();
+        let _ = compile(&m).unwrap();
+        let ir = ir_text_record_take();
+        let main_ir = ir.iter().find(|(n, _)| n == "main").map(|(_, s)| s.as_str()).unwrap_or("");
+        let nil_count = main_ir.matches("iconst.i64 3").count();
+        assert_eq!(
+            nil_count, 1,
+            "expected exactly 1 nil iconst in main (Const::Nil and unit-extern result share via cached_iconst), got {}:\n{}",
+            nil_count, main_ir
+        );
     }
 
     /// fz-ty1.pip.3 — type_module must be called exactly 3 times in the
