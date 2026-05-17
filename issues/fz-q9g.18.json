@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-q9g.15"
+  ],
   "blocks": [],
   "created": "2026-05-17T04:47:22Z",
   "description": "What: Cheney's root walk includes live RC-arena objects' FzValue fields. Address-range check decides forward-vs-skip per field.\n\nWhy: Cross-region tracing in the other direction — an RC object holding a Cheney pointer is a Cheney root.\n\nCLIF impact: runtime-only.\n\nRemoves: nothing.\n\nTests: stress test where RC objects hold Cheney pointers; assert no Cheney dangling refs.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "fz-dps.B4: live RC region as Cheney root set",
   "type": "task",
-  "updated_at": "2026-05-17T04:47:22Z"
+  "updated_at": "2026-05-17T04:47:57Z"
 }
