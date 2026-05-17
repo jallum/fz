@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-q9g.2"
+  ],
   "blocks": [],
   "created": "2026-05-17T04:46:31Z",
   "description": "What: When return_reprs[my_sid] = Dst(k), lower Term::Return(v) to 'store v through dst pointer; tail-call cont with dst'. Cont signature changes to sig(dst_i64) -\u003e i64 for Dst specs. Caller's cont fn receives dst, not value.\n\nWhy: Pairs with C3 — callee writes directly into caller-owned slot, no intermediate boxing.\n\nCLIF impact: for a Dst spec — return_call_indirect(sig(i64) -\u003e i64, cont_code, [dst]) plus one store. For a fn that previously alloc'd a struct and returned its pointer: same instruction count, alloc moves up one frame (counted in C3).\n\nRemoves: per-callee alloc of the result struct (the alloc moves to the caller).\n\nTests: golden CLIF for one stdlib fn before/after.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "fz-dps.C2: lower Term::Return under Dst ABI",
   "type": "task",
-  "updated_at": "2026-05-17T04:46:31Z"
+  "updated_at": "2026-05-17T04:47:53Z"
 }
