@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-aiz.1",
     "fz-aiz.2",
@@ -14,8 +14,8 @@
   "labels": [],
   "parent": "fz-aiz",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "fz-aiz.5: replace .29.11 / .29.12.1 panics with degraded dispatch; quicksort integration fixture",
   "type": "task",
-  "updated_at": "2026-05-17T16:05:06Z"
+  "updated_at": "2026-05-17T18:21:24Z"
 }
