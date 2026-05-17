@@ -12,11 +12,15 @@
     {
       "text": "Superseded by fz-qbg. Root-caused: the typer's call graph (ir_typer.rs:50) silently degrades when new fns are introduced mid-lowering, because it's coupled to any-key spec registration. fz-qbg.1 decouples it; fz-qbg.2 then re-applies the structural multi-clause body-cont fix on the now-correct foundation; fz-qbg.3 graduates actor_ring.",
       "timestamp": "2026-05-17T03:35:44Z"
+    },
+    {
+      "text": "Closed by fz-qbg.3 (which graduates actor_ring + multi_clause_body_with_call fixtures). The structural fix is fz-qbg.2 on top of fz-qbg.1 (decoupled call graph).",
+      "timestamp": "2026-05-17T04:11:26Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "lower_multi_clause: per-clause body cont fns (same Bug-2 class)",
   "type": "bug",
-  "updated_at": "2026-05-17T03:35:44Z"
+  "updated_at": "2026-05-17T04:11:26Z"
 }
