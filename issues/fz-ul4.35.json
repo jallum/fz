@@ -9,9 +9,15 @@
   "id": "fz-ul4.35",
   "labels": [],
   "parent": "fz-ul4",
+  "comments": [
+    {
+      "text": "Acceptance test in original description includes `{a, b} = e` destructuring, which routes through Pattern::Tuple → TypeTest → fz-ul4.36's gap (TypeTest always returns false for tuple Descrs). So only `Prim::MakeTuple` is reachable in isolation here. `Prim::TupleField` arm is implemented and ready, exercised end-to-end once fz-ul4.36 lands. Verified MakeTuple via:\n\n```fz\nfn main() do\n  e = {:num, 7}\n  print(e)\n  print(:next)\nend\n```\n\nprints `{:num, 7}\\n:next\\n`. All 48 interp fixture legs pass — no regressions.",
+      "timestamp": "2026-05-17T04:52:34Z"
+    }
+  ],
   "priority": 1,
   "status": "in_progress",
   "title": "ir_interp: implement Prim::MakeTuple + Prim::TupleField",
   "type": "task",
-  "updated_at": "2026-05-17T04:48:56Z"
+  "updated_at": "2026-05-17T04:52:34Z"
 }
