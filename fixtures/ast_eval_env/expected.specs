@@ -1,0 +1,3919 @@
+; spec print(1) #fn=0
+;   key:    [:x]
+;   return: nil
+;   vars:
+;     Var(0) :: :x
+;     Var(1) :: :function_clause
+;     Var(2) :: :false
+;   exits:
+;     blk0 Goto blk2()
+;     blk1 Halt Var(1)      :: :function_clause
+;     blk2 If Var(2) ? blk4 : blk3
+;     blk3 TailCall fn_clause_1#8(Var(0))
+;              callee_key=[:x]
+;     blk4 TailCall fn_clause_0#7(Var(0))
+;              callee_key=[:x]
+
+; spec print(1) #fn=0
+;   key:    [int | float]
+;   return: none
+;   vars:
+;     Var(0) :: int | float
+;     Var(1) :: :function_clause
+;     Var(2) :: bool
+;   exits:
+;     blk0 Goto blk2()
+;     blk1 Halt Var(1)      :: :function_clause
+;     blk2 If Var(2) ? blk4 : blk3
+;     blk3 TailCall fn_clause_1#8(Var(0))
+;              callee_key=[int | float]
+;     blk4 TailCall fn_clause_0#7(Var(0))
+;              callee_key=[int | float]
+
+; spec fn_clause_0(1) #fn=7
+;   key:    [any]
+;   return: nil
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: nil
+;   exits:
+;     blk0 Return Var(1)    :: nil
+
+; spec fn_clause_0(1) #fn=7
+;   key:    [int]
+;   return: nil
+;   vars:
+;     Var(0) :: int
+;     Var(1) :: nil
+;   exits:
+;     blk0 Return Var(1)    :: nil
+
+; spec fn_clause_1(1) #fn=8
+;   key:    [:x]
+;   return: nil
+;   vars:
+;     Var(0) :: :x
+;     Var(1) :: nil
+;   exits:
+;     blk0 Return Var(1)    :: nil
+
+; spec fn_clause_1(1) #fn=8
+;   key:    [float]
+;   return: nil
+;   vars:
+;     Var(0) :: float
+;     Var(1) :: nil
+;   exits:
+;     blk0 Return Var(1)    :: nil
+
+; spec lookup(2) #fn=11
+;   key:    [1, list(none)]
+;   return: none
+;   vars:
+;     Var(0) :: 1
+;     Var(1) :: list(none)
+;     Var(2) :: :match_error
+;     Var(3) :: bool
+;     Var(5) :: nil | list(none)
+;     Var(6) :: :true
+;     Var(7) :: any
+;     Var(8) :: any
+;     Var(9) :: bool
+;   exits:
+;     blk0 If Var(3) ? blk1 : blk2
+;     blk1 Halt Var(2)      :: :match_error
+;     blk2 If Var(6) ? blk3 : blk1
+;     blk3 If Var(9) ? blk4 : blk5
+;     blk4 TailCall if_then#14(Var(0), Var(7), Var(8), Var(5))
+;              callee_key=[1, any, any, nil | list(none)]
+;     blk5 TailCall if_else#15(Var(0), Var(7), Var(8), Var(5))
+;              callee_key=[1, any, any, nil | list(none)]
+
+; spec lookup(2) #fn=11
+;   key:    [1, nil | list(none)]
+;   return: none
+;   vars:
+;     Var(0) :: 1
+;     Var(1) :: nil | list(none)
+;     Var(2) :: :match_error
+;     Var(3) :: bool
+;     Var(5) :: nil | list(none)
+;     Var(6) :: :true
+;     Var(7) :: any
+;     Var(8) :: any
+;     Var(9) :: bool
+;   exits:
+;     blk0 If Var(3) ? blk1 : blk2
+;     blk1 Halt Var(2)      :: :match_error
+;     blk2 If Var(6) ? blk3 : blk1
+;     blk3 If Var(9) ? blk4 : blk5
+;     blk4 TailCall if_then#14(Var(0), Var(7), Var(8), Var(5))
+;              callee_key=[1, any, any, nil | list(none)]
+;     blk5 TailCall if_else#15(Var(0), Var(7), Var(8), Var(5))
+;              callee_key=[1, any, any, nil | list(none)]
+
+; spec lookup(2) #fn=11
+;   key:    [10, list({:x, 5})]
+;   return: none
+;   vars:
+;     Var(0) :: 10
+;     Var(1) :: list({:x, 5})
+;     Var(2) :: :match_error
+;     Var(3) :: bool
+;     Var(4) :: {:x, 5}
+;     Var(5) :: nil | list({:x, 5})
+;     Var(6) :: :true
+;     Var(7) :: :x
+;     Var(8) :: 5
+;     Var(9) :: bool
+;   exits:
+;     blk0 If Var(3) ? blk1 : blk2
+;     blk1 Halt Var(2)      :: :match_error
+;     blk2 If Var(6) ? blk3 : blk1
+;     blk3 If Var(9) ? blk4 : blk5
+;     blk4 TailCall if_then#14(Var(0), Var(7), Var(8), Var(5))
+;              callee_key=[10, :x, 5, nil | list({:x, 5})]
+;     blk5 TailCall if_else#15(Var(0), Var(7), Var(8), Var(5))
+;              callee_key=[10, :x, 5, nil | list({:x, 5})]
+
+; spec lookup(2) #fn=11
+;   key:    [10, nil | list({:x, 5})]
+;   return: none
+;   vars:
+;     Var(0) :: 10
+;     Var(1) :: nil | list({:x, 5})
+;     Var(2) :: :match_error
+;     Var(3) :: bool
+;     Var(4) :: {:x, 5}
+;     Var(5) :: nil | list({:x, 5})
+;     Var(6) :: :true
+;     Var(7) :: :x
+;     Var(8) :: 5
+;     Var(9) :: bool
+;   exits:
+;     blk0 If Var(3) ? blk1 : blk2
+;     blk1 Halt Var(2)      :: :match_error
+;     blk2 If Var(6) ? blk3 : blk1
+;     blk3 If Var(9) ? blk4 : blk5
+;     blk4 TailCall if_then#14(Var(0), Var(7), Var(8), Var(5))
+;              callee_key=[10, :x, 5, nil | list({:x, 5})]
+;     blk5 TailCall if_else#15(Var(0), Var(7), Var(8), Var(5))
+;              callee_key=[10, :x, 5, nil | list({:x, 5})]
+
+; spec lookup(2) #fn=11
+;   key:    [2, list({:x, 1})]
+;   return: none
+;   vars:
+;     Var(0) :: 2
+;     Var(1) :: list({:x, 1})
+;     Var(2) :: :match_error
+;     Var(3) :: bool
+;     Var(4) :: {:x, 1}
+;     Var(5) :: nil | list({:x, 1})
+;     Var(6) :: :true
+;     Var(7) :: :x
+;     Var(8) :: 1
+;     Var(9) :: bool
+;   exits:
+;     blk0 If Var(3) ? blk1 : blk2
+;     blk1 Halt Var(2)      :: :match_error
+;     blk2 If Var(6) ? blk3 : blk1
+;     blk3 If Var(9) ? blk4 : blk5
+;     blk4 TailCall if_then#14(Var(0), Var(7), Var(8), Var(5))
+;              callee_key=[2, :x, 1, nil | list({:x, 1})]
+;     blk5 TailCall if_else#15(Var(0), Var(7), Var(8), Var(5))
+;              callee_key=[2, :x, 1, nil | list({:x, 1})]
+
+; spec lookup(2) #fn=11
+;   key:    [3, list(none)]
+;   return: none
+;   vars:
+;     Var(0) :: 3
+;     Var(1) :: list(none)
+;     Var(2) :: :match_error
+;     Var(3) :: bool
+;     Var(5) :: nil | list(none)
+;     Var(6) :: :true
+;     Var(7) :: any
+;     Var(8) :: any
+;     Var(9) :: bool
+;   exits:
+;     blk0 If Var(3) ? blk1 : blk2
+;     blk1 Halt Var(2)      :: :match_error
+;     blk2 If Var(6) ? blk3 : blk1
+;     blk3 If Var(9) ? blk4 : blk5
+;     blk4 TailCall if_then#14(Var(0), Var(7), Var(8), Var(5))
+;              callee_key=[3, any, any, nil | list(none)]
+;     blk5 TailCall if_else#15(Var(0), Var(7), Var(8), Var(5))
+;              callee_key=[3, any, any, nil | list(none)]
+
+; spec lookup(2) #fn=11
+;   key:    [3, nil | list(none)]
+;   return: none
+;   vars:
+;     Var(0) :: 3
+;     Var(1) :: nil | list(none)
+;     Var(2) :: :match_error
+;     Var(3) :: bool
+;     Var(5) :: nil | list(none)
+;     Var(6) :: :true
+;     Var(7) :: any
+;     Var(8) :: any
+;     Var(9) :: bool
+;   exits:
+;     blk0 If Var(3) ? blk1 : blk2
+;     blk1 Halt Var(2)      :: :match_error
+;     blk2 If Var(6) ? blk3 : blk1
+;     blk3 If Var(9) ? blk4 : blk5
+;     blk4 TailCall if_then#14(Var(0), Var(7), Var(8), Var(5))
+;              callee_key=[3, any, any, nil | list(none)]
+;     blk5 TailCall if_else#15(Var(0), Var(7), Var(8), Var(5))
+;              callee_key=[3, any, any, nil | list(none)]
+
+; spec lookup(2) #fn=11
+;   key:    [5, list(none)]
+;   return: none
+;   vars:
+;     Var(0) :: 5
+;     Var(1) :: list(none)
+;     Var(2) :: :match_error
+;     Var(3) :: bool
+;     Var(5) :: nil | list(none)
+;     Var(6) :: :true
+;     Var(7) :: any
+;     Var(8) :: any
+;     Var(9) :: bool
+;   exits:
+;     blk0 If Var(3) ? blk1 : blk2
+;     blk1 Halt Var(2)      :: :match_error
+;     blk2 If Var(6) ? blk3 : blk1
+;     blk3 If Var(9) ? blk4 : blk5
+;     blk4 TailCall if_then#14(Var(0), Var(7), Var(8), Var(5))
+;              callee_key=[5, any, any, nil | list(none)]
+;     blk5 TailCall if_else#15(Var(0), Var(7), Var(8), Var(5))
+;              callee_key=[5, any, any, nil | list(none)]
+
+; spec lookup(2) #fn=11
+;   key:    [5, nil | list(none)]
+;   return: none
+;   vars:
+;     Var(0) :: 5
+;     Var(1) :: nil | list(none)
+;     Var(2) :: :match_error
+;     Var(3) :: bool
+;     Var(5) :: nil | list(none)
+;     Var(6) :: :true
+;     Var(7) :: any
+;     Var(8) :: any
+;     Var(9) :: bool
+;   exits:
+;     blk0 If Var(3) ? blk1 : blk2
+;     blk1 Halt Var(2)      :: :match_error
+;     blk2 If Var(6) ? blk3 : blk1
+;     blk3 If Var(9) ? blk4 : blk5
+;     blk4 TailCall if_then#14(Var(0), Var(7), Var(8), Var(5))
+;              callee_key=[5, any, any, nil | list(none)]
+;     blk5 TailCall if_else#15(Var(0), Var(7), Var(8), Var(5))
+;              callee_key=[5, any, any, nil | list(none)]
+
+; spec lookup(2) #fn=11
+;   key:    [:x, list({:x, 3})]
+;   return: 3
+;   vars:
+;     Var(0) :: :x
+;     Var(1) :: list({:x, 3})
+;     Var(2) :: :match_error
+;     Var(3) :: bool
+;     Var(4) :: {:x, 3}
+;     Var(5) :: nil | list({:x, 3})
+;     Var(6) :: :true
+;     Var(7) :: :x
+;     Var(8) :: 3
+;     Var(9) :: bool
+;   exits:
+;     blk0 If Var(3) ? blk1 : blk2
+;     blk1 Halt Var(2)      :: :match_error
+;     blk2 If Var(6) ? blk3 : blk1
+;     blk3 If Var(9) ? blk4 : blk5
+;     blk4 TailCall if_then#14(Var(0), Var(7), Var(8), Var(5))
+;              callee_key=[:x, :x, 3, nil | list({:x, 3})]
+;     blk5 TailCall if_else#15(Var(0), Var(7), Var(8), Var(5))
+;              callee_key=[:x, :x, 3, nil | list({:x, 3})]
+
+; spec lookup(2) #fn=11
+;   key:    [:x, list({:y, 10} | {:x, 5})]
+;   return: none
+;   vars:
+;     Var(0) :: :x
+;     Var(1) :: list({:y, 10} | {:x, 5})
+;     Var(2) :: :match_error
+;     Var(3) :: bool
+;     Var(4) :: {:y, 10} | {:x, 5}
+;     Var(5) :: nil | list({:y, 10} | {:x, 5})
+;     Var(6) :: :true
+;     Var(7) :: :x | :y
+;     Var(8) :: 5 | 10
+;     Var(9) :: bool
+;   exits:
+;     blk0 If Var(3) ? blk1 : blk2
+;     blk1 Halt Var(2)      :: :match_error
+;     blk2 If Var(6) ? blk3 : blk1
+;     blk3 If Var(9) ? blk4 : blk5
+;     blk4 TailCall if_then#14(Var(0), Var(7), Var(8), Var(5))
+;              callee_key=[:x, :x | :y, 5 | 10, nil | list({:y, 10} | {:x, 5})]
+;     blk5 TailCall if_else#15(Var(0), Var(7), Var(8), Var(5))
+;              callee_key=[:x, :x | :y, 5 | 10, nil | list({:y, 10} | {:x, 5})]
+
+; spec lookup(2) #fn=11
+;   key:    [:x, nil | list({:y, 10} | {:x, 5})]
+;   return: none
+;   vars:
+;     Var(0) :: :x
+;     Var(1) :: nil | list({:y, 10} | {:x, 5})
+;     Var(2) :: :match_error
+;     Var(3) :: bool
+;     Var(4) :: {:y, 10} | {:x, 5}
+;     Var(5) :: nil | list({:y, 10} | {:x, 5})
+;     Var(6) :: :true
+;     Var(7) :: :x | :y
+;     Var(8) :: 5 | 10
+;     Var(9) :: bool
+;   exits:
+;     blk0 If Var(3) ? blk1 : blk2
+;     blk1 Halt Var(2)      :: :match_error
+;     blk2 If Var(6) ? blk3 : blk1
+;     blk3 If Var(9) ? blk4 : blk5
+;     blk4 TailCall if_then#14(Var(0), Var(7), Var(8), Var(5))
+;              callee_key=[:x, :x | :y, 5 | 10, nil | list({:y, 10} | {:x, 5})]
+;     blk5 TailCall if_else#15(Var(0), Var(7), Var(8), Var(5))
+;              callee_key=[:x, :x | :y, 5 | 10, nil | list({:y, 10} | {:x, 5})]
+
+; spec lookup(2) #fn=11
+;   key:    [:y, list({:y, 10} | {:x, 5})]
+;   return: none
+;   vars:
+;     Var(0) :: :y
+;     Var(1) :: list({:y, 10} | {:x, 5})
+;     Var(2) :: :match_error
+;     Var(3) :: bool
+;     Var(4) :: {:y, 10} | {:x, 5}
+;     Var(5) :: nil | list({:y, 10} | {:x, 5})
+;     Var(6) :: :true
+;     Var(7) :: :x | :y
+;     Var(8) :: 5 | 10
+;     Var(9) :: bool
+;   exits:
+;     blk0 If Var(3) ? blk1 : blk2
+;     blk1 Halt Var(2)      :: :match_error
+;     blk2 If Var(6) ? blk3 : blk1
+;     blk3 If Var(9) ? blk4 : blk5
+;     blk4 TailCall if_then#14(Var(0), Var(7), Var(8), Var(5))
+;              callee_key=[:y, :x | :y, 5 | 10, nil | list({:y, 10} | {:x, 5})]
+;     blk5 TailCall if_else#15(Var(0), Var(7), Var(8), Var(5))
+;              callee_key=[:y, :x | :y, 5 | 10, nil | list({:y, 10} | {:x, 5})]
+
+; spec lookup(2) #fn=11
+;   key:    [:y, nil | list({:y, 10} | {:x, 5})]
+;   return: none
+;   vars:
+;     Var(0) :: :y
+;     Var(1) :: nil | list({:y, 10} | {:x, 5})
+;     Var(2) :: :match_error
+;     Var(3) :: bool
+;     Var(4) :: {:y, 10} | {:x, 5}
+;     Var(5) :: nil | list({:y, 10} | {:x, 5})
+;     Var(6) :: :true
+;     Var(7) :: :x | :y
+;     Var(8) :: 5 | 10
+;     Var(9) :: bool
+;   exits:
+;     blk0 If Var(3) ? blk1 : blk2
+;     blk1 Halt Var(2)      :: :match_error
+;     blk2 If Var(6) ? blk3 : blk1
+;     blk3 If Var(9) ? blk4 : blk5
+;     blk4 TailCall if_then#14(Var(0), Var(7), Var(8), Var(5))
+;              callee_key=[:y, :x | :y, 5 | 10, nil | list({:y, 10} | {:x, 5})]
+;     blk5 TailCall if_else#15(Var(0), Var(7), Var(8), Var(5))
+;              callee_key=[:y, :x | :y, 5 | 10, nil | list({:y, 10} | {:x, 5})]
+
+; spec lookup(2) #fn=11
+;   key:    [any, list(none)]
+;   return: any
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: list(none)
+;     Var(2) :: :match_error
+;     Var(3) :: bool
+;     Var(5) :: nil | list(none)
+;     Var(6) :: :true
+;     Var(7) :: any
+;     Var(8) :: any
+;     Var(9) :: bool
+;   exits:
+;     blk0 If Var(3) ? blk1 : blk2
+;     blk1 Halt Var(2)      :: :match_error
+;     blk2 If Var(6) ? blk3 : blk1
+;     blk3 If Var(9) ? blk4 : blk5
+;     blk4 TailCall if_then#14(Var(0), Var(7), Var(8), Var(5))
+;              callee_key=[any, any, any, nil | list(none)]
+;     blk5 TailCall if_else#15(Var(0), Var(7), Var(8), Var(5))
+;              callee_key=[any, any, any, nil | list(none)]
+
+; spec lookup(2) #fn=11
+;   key:    [any, list({:x, 1})]
+;   return: 1
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: list({:x, 1})
+;     Var(2) :: :match_error
+;     Var(3) :: bool
+;     Var(4) :: {:x, 1}
+;     Var(5) :: nil | list({:x, 1})
+;     Var(6) :: :true
+;     Var(7) :: :x
+;     Var(8) :: 1
+;     Var(9) :: bool
+;   exits:
+;     blk0 If Var(3) ? blk1 : blk2
+;     blk1 Halt Var(2)      :: :match_error
+;     blk2 If Var(6) ? blk3 : blk1
+;     blk3 If Var(9) ? blk4 : blk5
+;     blk4 TailCall if_then#14(Var(0), Var(7), Var(8), Var(5))
+;              callee_key=[any, :x, 1, nil | list({:x, 1})]
+;     blk5 TailCall if_else#15(Var(0), Var(7), Var(8), Var(5))
+;              callee_key=[any, :x, 1, nil | list({:x, 1})]
+
+; spec lookup(2) #fn=11
+;   key:    [any, list({:x, 3})]
+;   return: 3
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: list({:x, 3})
+;     Var(2) :: :match_error
+;     Var(3) :: bool
+;     Var(4) :: {:x, 3}
+;     Var(5) :: nil | list({:x, 3})
+;     Var(6) :: :true
+;     Var(7) :: :x
+;     Var(8) :: 3
+;     Var(9) :: bool
+;   exits:
+;     blk0 If Var(3) ? blk1 : blk2
+;     blk1 Halt Var(2)      :: :match_error
+;     blk2 If Var(6) ? blk3 : blk1
+;     blk3 If Var(9) ? blk4 : blk5
+;     blk4 TailCall if_then#14(Var(0), Var(7), Var(8), Var(5))
+;              callee_key=[any, :x, 3, nil | list({:x, 3})]
+;     blk5 TailCall if_else#15(Var(0), Var(7), Var(8), Var(5))
+;              callee_key=[any, :x, 3, nil | list({:x, 3})]
+
+; spec lookup(2) #fn=11
+;   key:    [any, list({:x, 5})]
+;   return: 5
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: list({:x, 5})
+;     Var(2) :: :match_error
+;     Var(3) :: bool
+;     Var(4) :: {:x, 5}
+;     Var(5) :: nil | list({:x, 5})
+;     Var(6) :: :true
+;     Var(7) :: :x
+;     Var(8) :: 5
+;     Var(9) :: bool
+;   exits:
+;     blk0 If Var(3) ? blk1 : blk2
+;     blk1 Halt Var(2)      :: :match_error
+;     blk2 If Var(6) ? blk3 : blk1
+;     blk3 If Var(9) ? blk4 : blk5
+;     blk4 TailCall if_then#14(Var(0), Var(7), Var(8), Var(5))
+;              callee_key=[any, :x, 5, nil | list({:x, 5})]
+;     blk5 TailCall if_else#15(Var(0), Var(7), Var(8), Var(5))
+;              callee_key=[any, :x, 5, nil | list({:x, 5})]
+
+; spec lookup(2) #fn=11
+;   key:    [any, list({:y, 10} | {:x, 5})]
+;   return: 5 | 10
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: list({:y, 10} | {:x, 5})
+;     Var(2) :: :match_error
+;     Var(3) :: bool
+;     Var(4) :: {:y, 10} | {:x, 5}
+;     Var(5) :: nil | list({:y, 10} | {:x, 5})
+;     Var(6) :: :true
+;     Var(7) :: :x | :y
+;     Var(8) :: 5 | 10
+;     Var(9) :: bool
+;   exits:
+;     blk0 If Var(3) ? blk1 : blk2
+;     blk1 Halt Var(2)      :: :match_error
+;     blk2 If Var(6) ? blk3 : blk1
+;     blk3 If Var(9) ? blk4 : blk5
+;     blk4 TailCall if_then#14(Var(0), Var(7), Var(8), Var(5))
+;              callee_key=[any, :x | :y, 5 | 10, nil | list({:y, 10} | {:x, 5})]
+;     blk5 TailCall if_else#15(Var(0), Var(7), Var(8), Var(5))
+;              callee_key=[any, :x | :y, 5 | 10, nil | list({:y, 10} | {:x, 5})]
+
+; spec lookup(2) #fn=11
+;   key:    [any, list({any, any})]
+;   return: any
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: list({any, any})
+;     Var(2) :: :match_error
+;     Var(3) :: bool
+;     Var(4) :: {any, any}
+;     Var(5) :: nil | list({any, any})
+;     Var(6) :: :true
+;     Var(7) :: any
+;     Var(8) :: any
+;     Var(9) :: bool
+;   exits:
+;     blk0 If Var(3) ? blk1 : blk2
+;     blk1 Halt Var(2)      :: :match_error
+;     blk2 If Var(6) ? blk3 : blk1
+;     blk3 If Var(9) ? blk4 : blk5
+;     blk4 TailCall if_then#14(Var(0), Var(7), Var(8), Var(5))
+;              callee_key=[any, any, any, nil | list({any, any})]
+;     blk5 TailCall if_else#15(Var(0), Var(7), Var(8), Var(5))
+;              callee_key=[any, any, any, nil | list({any, any})]
+
+; spec lookup(2) #fn=11
+;   key:    [any, nil | list(none)]
+;   return: any
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: nil | list(none)
+;     Var(2) :: :match_error
+;     Var(3) :: bool
+;     Var(5) :: nil | list(none)
+;     Var(6) :: :true
+;     Var(7) :: any
+;     Var(8) :: any
+;     Var(9) :: bool
+;   exits:
+;     blk0 If Var(3) ? blk1 : blk2
+;     blk1 Halt Var(2)      :: :match_error
+;     blk2 If Var(6) ? blk3 : blk1
+;     blk3 If Var(9) ? blk4 : blk5
+;     blk4 TailCall if_then#14(Var(0), Var(7), Var(8), Var(5))
+;              callee_key=[any, any, any, nil | list(none)]
+;     blk5 TailCall if_else#15(Var(0), Var(7), Var(8), Var(5))
+;              callee_key=[any, any, any, nil | list(none)]
+
+; spec lookup(2) #fn=11
+;   key:    [any, nil | list({:x, 3})]
+;   return: 3
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: nil | list({:x, 3})
+;     Var(2) :: :match_error
+;     Var(3) :: bool
+;     Var(4) :: {:x, 3}
+;     Var(5) :: nil | list({:x, 3})
+;     Var(6) :: :true
+;     Var(7) :: :x
+;     Var(8) :: 3
+;     Var(9) :: bool
+;   exits:
+;     blk0 If Var(3) ? blk1 : blk2
+;     blk1 Halt Var(2)      :: :match_error
+;     blk2 If Var(6) ? blk3 : blk1
+;     blk3 If Var(9) ? blk4 : blk5
+;     blk4 TailCall if_then#14(Var(0), Var(7), Var(8), Var(5))
+;              callee_key=[any, :x, 3, nil | list({:x, 3})]
+;     blk5 TailCall if_else#15(Var(0), Var(7), Var(8), Var(5))
+;              callee_key=[any, :x, 3, nil | list({:x, 3})]
+
+; spec lookup(2) #fn=11
+;   key:    [any, nil | list({:y, 10} | {:x, 5})]
+;   return: 5 | 10
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: nil | list({:y, 10} | {:x, 5})
+;     Var(2) :: :match_error
+;     Var(3) :: bool
+;     Var(4) :: {:y, 10} | {:x, 5}
+;     Var(5) :: nil | list({:y, 10} | {:x, 5})
+;     Var(6) :: :true
+;     Var(7) :: :x | :y
+;     Var(8) :: 5 | 10
+;     Var(9) :: bool
+;   exits:
+;     blk0 If Var(3) ? blk1 : blk2
+;     blk1 Halt Var(2)      :: :match_error
+;     blk2 If Var(6) ? blk3 : blk1
+;     blk3 If Var(9) ? blk4 : blk5
+;     blk4 TailCall if_then#14(Var(0), Var(7), Var(8), Var(5))
+;              callee_key=[any, :x | :y, 5 | 10, nil | list({:y, 10} | {:x, 5})]
+;     blk5 TailCall if_else#15(Var(0), Var(7), Var(8), Var(5))
+;              callee_key=[any, :x | :y, 5 | 10, nil | list({:y, 10} | {:x, 5})]
+
+; spec lookup(2) #fn=11
+;   key:    [any, nil | list({any, any})]
+;   return: any
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: nil | list({any, any})
+;     Var(2) :: :match_error
+;     Var(3) :: bool
+;     Var(4) :: {any, any}
+;     Var(5) :: nil | list({any, any})
+;     Var(6) :: :true
+;     Var(7) :: any
+;     Var(8) :: any
+;     Var(9) :: bool
+;   exits:
+;     blk0 If Var(3) ? blk1 : blk2
+;     blk1 Halt Var(2)      :: :match_error
+;     blk2 If Var(6) ? blk3 : blk1
+;     blk3 If Var(9) ? blk4 : blk5
+;     blk4 TailCall if_then#14(Var(0), Var(7), Var(8), Var(5))
+;              callee_key=[any, any, any, nil | list({any, any})]
+;     blk5 TailCall if_else#15(Var(0), Var(7), Var(8), Var(5))
+;              callee_key=[any, any, any, nil | list({any, any})]
+
+; spec lookup(2) #fn=11
+;   key:    [nil | bool | vec(i64) | vec(f64) | vec(u8) | vec(bit) | int | float | str | atom \ {:x} | opaque | tuple | list | fn | map, nil | list({:x, 1})]
+;   return: none
+;   vars:
+;     Var(0) :: nil | bool | vec(i64) | vec(f64) | vec(u8) | vec(bit) | int | float | str | atom \ {:x} | opaque | tuple | list | fn | map
+;     Var(1) :: nil | list({:x, 1})
+;     Var(2) :: :match_error
+;     Var(3) :: bool
+;     Var(4) :: {:x, 1}
+;     Var(5) :: nil | list({:x, 1})
+;     Var(6) :: :true
+;     Var(7) :: :x
+;     Var(8) :: 1
+;     Var(9) :: bool
+;   exits:
+;     blk0 If Var(3) ? blk1 : blk2
+;     blk1 Halt Var(2)      :: :match_error
+;     blk2 If Var(6) ? blk3 : blk1
+;     blk3 If Var(9) ? blk4 : blk5
+;     blk4 TailCall if_then#14(Var(0), Var(7), Var(8), Var(5))
+;              callee_key=[nil | bool | vec(i64) | vec(f64) | vec(u8) | vec(bit) | int | float | str | atom \ {:x} | opaque | tuple | list | fn | map, :x, 1, nil | list({:x, 1})]
+;     blk5 TailCall if_else#15(Var(0), Var(7), Var(8), Var(5))
+;              callee_key=[nil | bool | vec(i64) | vec(f64) | vec(u8) | vec(bit) | int | float | str | atom \ {:x} | opaque | tuple | list | fn | map, :x, 1, nil | list({:x, 1})]
+
+; spec lookup(2) #fn=11
+;   key:    [nil | bool | vec(i64) | vec(f64) | vec(u8) | vec(bit) | int | float | str | atom \ {:x} | opaque | tuple | list | fn | map, nil | list({:x, 3})]
+;   return: none
+;   vars:
+;     Var(0) :: nil | bool | vec(i64) | vec(f64) | vec(u8) | vec(bit) | int | float | str | atom \ {:x} | opaque | tuple | list | fn | map
+;     Var(1) :: nil | list({:x, 3})
+;     Var(2) :: :match_error
+;     Var(3) :: bool
+;     Var(4) :: {:x, 3}
+;     Var(5) :: nil | list({:x, 3})
+;     Var(6) :: :true
+;     Var(7) :: :x
+;     Var(8) :: 3
+;     Var(9) :: bool
+;   exits:
+;     blk0 If Var(3) ? blk1 : blk2
+;     blk1 Halt Var(2)      :: :match_error
+;     blk2 If Var(6) ? blk3 : blk1
+;     blk3 If Var(9) ? blk4 : blk5
+;     blk4 TailCall if_then#14(Var(0), Var(7), Var(8), Var(5))
+;              callee_key=[nil | bool | vec(i64) | vec(f64) | vec(u8) | vec(bit) | int | float | str | atom \ {:x} | opaque | tuple | list | fn | map, :x, 3, nil | list({:x, 3})]
+;     blk5 TailCall if_else#15(Var(0), Var(7), Var(8), Var(5))
+;              callee_key=[nil | bool | vec(i64) | vec(f64) | vec(u8) | vec(bit) | int | float | str | atom \ {:x} | opaque | tuple | list | fn | map, :x, 3, nil | list({:x, 3})]
+
+; spec lookup(2) #fn=11
+;   key:    [nil | bool | vec(i64) | vec(f64) | vec(u8) | vec(bit) | int | float | str | atom \ {:x} | opaque | tuple | list | fn | map, nil | list({:x, 5})]
+;   return: none
+;   vars:
+;     Var(0) :: nil | bool | vec(i64) | vec(f64) | vec(u8) | vec(bit) | int | float | str | atom \ {:x} | opaque | tuple | list | fn | map
+;     Var(1) :: nil | list({:x, 5})
+;     Var(2) :: :match_error
+;     Var(3) :: bool
+;     Var(4) :: {:x, 5}
+;     Var(5) :: nil | list({:x, 5})
+;     Var(6) :: :true
+;     Var(7) :: :x
+;     Var(8) :: 5
+;     Var(9) :: bool
+;   exits:
+;     blk0 If Var(3) ? blk1 : blk2
+;     blk1 Halt Var(2)      :: :match_error
+;     blk2 If Var(6) ? blk3 : blk1
+;     blk3 If Var(9) ? blk4 : blk5
+;     blk4 TailCall if_then#14(Var(0), Var(7), Var(8), Var(5))
+;              callee_key=[nil | bool | vec(i64) | vec(f64) | vec(u8) | vec(bit) | int | float | str | atom \ {:x} | opaque | tuple | list | fn | map, :x, 5, nil | list({:x, 5})]
+;     blk5 TailCall if_else#15(Var(0), Var(7), Var(8), Var(5))
+;              callee_key=[nil | bool | vec(i64) | vec(f64) | vec(u8) | vec(bit) | int | float | str | atom \ {:x} | opaque | tuple | list | fn | map, :x, 5, nil | list({:x, 5})]
+
+; spec eval(2) #fn=12
+;   key:    [any, list(none)]
+;   return: any
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: list(none)
+;     Var(2) :: :function_clause
+;     Var(3) :: bool
+;     Var(4) :: any
+;     Var(5) :: any
+;     Var(6) :: :num
+;     Var(7) :: bool
+;     Var(8) :: :var
+;     Var(9) :: bool
+;     Var(10) :: bool
+;     Var(11) :: any
+;     Var(12) :: any
+;     Var(13) :: any
+;     Var(14) :: :add
+;     Var(15) :: bool
+;     Var(16) :: :mul
+;     Var(17) :: bool
+;     Var(18) :: bool
+;     Var(19) :: any
+;     Var(20) :: any
+;     Var(21) :: any
+;     Var(22) :: any
+;     Var(23) :: :let
+;     Var(24) :: bool
+;   exits:
+;     blk0 Goto blk2()
+;     blk1 Halt Var(2)      :: :function_clause
+;     blk2 If Var(3) ? blk3 : blk4
+;     blk3 If Var(7) ? blk5 : blk6
+;     blk4 If Var(10) ? blk9 : blk10
+;     blk5 TailCall fn_clause_0#16(Var(1), Var(5))
+;              callee_key=[list(none), any]
+;     blk6 If Var(9) ? blk7 : blk8
+;     blk7 TailCall fn_clause_1#17(Var(1), Var(5))
+;              callee_key=[list(none), any]
+;     blk8 Goto blk1()
+;     blk9 If Var(15) ? blk11 : blk12
+;     blk10 If Var(18) ? blk15 : blk16
+;     blk11 TailCall fn_clause_2#18(Var(1), Var(12), Var(13))
+;              callee_key=[list(none), any, any]
+;     blk12 If Var(17) ? blk13 : blk14
+;     blk13 TailCall fn_clause_3#19(Var(1), Var(12), Var(13))
+;              callee_key=[list(none), any, any]
+;     blk14 Goto blk1()
+;     blk15 If Var(24) ? blk17 : blk18
+;     blk16 Goto blk1()
+;     blk17 TailCall fn_clause_4#20(Var(1), Var(20), Var(21), Var(22))
+;              callee_key=[list(none), any, any, any]
+;     blk18 Goto blk1()
+
+; spec eval(2) #fn=12
+;   key:    [any, list({:x, 1})]
+;   return: any
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: list({:x, 1})
+;     Var(2) :: :function_clause
+;     Var(3) :: bool
+;     Var(4) :: any
+;     Var(5) :: any
+;     Var(6) :: :num
+;     Var(7) :: bool
+;     Var(8) :: :var
+;     Var(9) :: bool
+;     Var(10) :: bool
+;     Var(11) :: any
+;     Var(12) :: any
+;     Var(13) :: any
+;     Var(14) :: :add
+;     Var(15) :: bool
+;     Var(16) :: :mul
+;     Var(17) :: bool
+;     Var(18) :: bool
+;     Var(19) :: any
+;     Var(20) :: any
+;     Var(21) :: any
+;     Var(22) :: any
+;     Var(23) :: :let
+;     Var(24) :: bool
+;   exits:
+;     blk0 Goto blk2()
+;     blk1 Halt Var(2)      :: :function_clause
+;     blk2 If Var(3) ? blk3 : blk4
+;     blk3 If Var(7) ? blk5 : blk6
+;     blk4 If Var(10) ? blk9 : blk10
+;     blk5 TailCall fn_clause_0#16(Var(1), Var(5))
+;              callee_key=[list({:x, 1}), any]
+;     blk6 If Var(9) ? blk7 : blk8
+;     blk7 TailCall fn_clause_1#17(Var(1), Var(5))
+;              callee_key=[list({:x, 1}), any]
+;     blk8 Goto blk1()
+;     blk9 If Var(15) ? blk11 : blk12
+;     blk10 If Var(18) ? blk15 : blk16
+;     blk11 TailCall fn_clause_2#18(Var(1), Var(12), Var(13))
+;              callee_key=[list({:x, 1}), any, any]
+;     blk12 If Var(17) ? blk13 : blk14
+;     blk13 TailCall fn_clause_3#19(Var(1), Var(12), Var(13))
+;              callee_key=[list({:x, 1}), any, any]
+;     blk14 Goto blk1()
+;     blk15 If Var(24) ? blk17 : blk18
+;     blk16 Goto blk1()
+;     blk17 TailCall fn_clause_4#20(Var(1), Var(20), Var(21), Var(22))
+;              callee_key=[list({:x, 1}), any, any, any]
+;     blk18 Goto blk1()
+
+; spec eval(2) #fn=12
+;   key:    [any, list({:x, 3})]
+;   return: any
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: list({:x, 3})
+;     Var(2) :: :function_clause
+;     Var(3) :: bool
+;     Var(4) :: any
+;     Var(5) :: any
+;     Var(6) :: :num
+;     Var(7) :: bool
+;     Var(8) :: :var
+;     Var(9) :: bool
+;     Var(10) :: bool
+;     Var(11) :: any
+;     Var(12) :: any
+;     Var(13) :: any
+;     Var(14) :: :add
+;     Var(15) :: bool
+;     Var(16) :: :mul
+;     Var(17) :: bool
+;     Var(18) :: bool
+;     Var(19) :: any
+;     Var(20) :: any
+;     Var(21) :: any
+;     Var(22) :: any
+;     Var(23) :: :let
+;     Var(24) :: bool
+;   exits:
+;     blk0 Goto blk2()
+;     blk1 Halt Var(2)      :: :function_clause
+;     blk2 If Var(3) ? blk3 : blk4
+;     blk3 If Var(7) ? blk5 : blk6
+;     blk4 If Var(10) ? blk9 : blk10
+;     blk5 TailCall fn_clause_0#16(Var(1), Var(5))
+;              callee_key=[list({:x, 3}), any]
+;     blk6 If Var(9) ? blk7 : blk8
+;     blk7 TailCall fn_clause_1#17(Var(1), Var(5))
+;              callee_key=[list({:x, 3}), any]
+;     blk8 Goto blk1()
+;     blk9 If Var(15) ? blk11 : blk12
+;     blk10 If Var(18) ? blk15 : blk16
+;     blk11 TailCall fn_clause_2#18(Var(1), Var(12), Var(13))
+;              callee_key=[list({:x, 3}), any, any]
+;     blk12 If Var(17) ? blk13 : blk14
+;     blk13 TailCall fn_clause_3#19(Var(1), Var(12), Var(13))
+;              callee_key=[list({:x, 3}), any, any]
+;     blk14 Goto blk1()
+;     blk15 If Var(24) ? blk17 : blk18
+;     blk16 Goto blk1()
+;     blk17 TailCall fn_clause_4#20(Var(1), Var(20), Var(21), Var(22))
+;              callee_key=[list({:x, 3}), any, any, any]
+;     blk18 Goto blk1()
+
+; spec eval(2) #fn=12
+;   key:    [any, list({:x, 5})]
+;   return: any
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: list({:x, 5})
+;     Var(2) :: :function_clause
+;     Var(3) :: bool
+;     Var(4) :: any
+;     Var(5) :: any
+;     Var(6) :: :num
+;     Var(7) :: bool
+;     Var(8) :: :var
+;     Var(9) :: bool
+;     Var(10) :: bool
+;     Var(11) :: any
+;     Var(12) :: any
+;     Var(13) :: any
+;     Var(14) :: :add
+;     Var(15) :: bool
+;     Var(16) :: :mul
+;     Var(17) :: bool
+;     Var(18) :: bool
+;     Var(19) :: any
+;     Var(20) :: any
+;     Var(21) :: any
+;     Var(22) :: any
+;     Var(23) :: :let
+;     Var(24) :: bool
+;   exits:
+;     blk0 Goto blk2()
+;     blk1 Halt Var(2)      :: :function_clause
+;     blk2 If Var(3) ? blk3 : blk4
+;     blk3 If Var(7) ? blk5 : blk6
+;     blk4 If Var(10) ? blk9 : blk10
+;     blk5 TailCall fn_clause_0#16(Var(1), Var(5))
+;              callee_key=[list({:x, 5}), any]
+;     blk6 If Var(9) ? blk7 : blk8
+;     blk7 TailCall fn_clause_1#17(Var(1), Var(5))
+;              callee_key=[list({:x, 5}), any]
+;     blk8 Goto blk1()
+;     blk9 If Var(15) ? blk11 : blk12
+;     blk10 If Var(18) ? blk15 : blk16
+;     blk11 TailCall fn_clause_2#18(Var(1), Var(12), Var(13))
+;              callee_key=[list({:x, 5}), any, any]
+;     blk12 If Var(17) ? blk13 : blk14
+;     blk13 TailCall fn_clause_3#19(Var(1), Var(12), Var(13))
+;              callee_key=[list({:x, 5}), any, any]
+;     blk14 Goto blk1()
+;     blk15 If Var(24) ? blk17 : blk18
+;     blk16 Goto blk1()
+;     blk17 TailCall fn_clause_4#20(Var(1), Var(20), Var(21), Var(22))
+;              callee_key=[list({:x, 5}), any, any, any]
+;     blk18 Goto blk1()
+
+; spec eval(2) #fn=12
+;   key:    [any, list({:y, 10} | {:x, 5})]
+;   return: any
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: list({:y, 10} | {:x, 5})
+;     Var(2) :: :function_clause
+;     Var(3) :: bool
+;     Var(4) :: any
+;     Var(5) :: any
+;     Var(6) :: :num
+;     Var(7) :: bool
+;     Var(8) :: :var
+;     Var(9) :: bool
+;     Var(10) :: bool
+;     Var(11) :: any
+;     Var(12) :: any
+;     Var(13) :: any
+;     Var(14) :: :add
+;     Var(15) :: bool
+;     Var(16) :: :mul
+;     Var(17) :: bool
+;     Var(18) :: bool
+;     Var(19) :: any
+;     Var(20) :: any
+;     Var(21) :: any
+;     Var(22) :: any
+;     Var(23) :: :let
+;     Var(24) :: bool
+;   exits:
+;     blk0 Goto blk2()
+;     blk1 Halt Var(2)      :: :function_clause
+;     blk2 If Var(3) ? blk3 : blk4
+;     blk3 If Var(7) ? blk5 : blk6
+;     blk4 If Var(10) ? blk9 : blk10
+;     blk5 TailCall fn_clause_0#16(Var(1), Var(5))
+;              callee_key=[list({:y, 10} | {:x, 5}), any]
+;     blk6 If Var(9) ? blk7 : blk8
+;     blk7 TailCall fn_clause_1#17(Var(1), Var(5))
+;              callee_key=[list({:y, 10} | {:x, 5}), any]
+;     blk8 Goto blk1()
+;     blk9 If Var(15) ? blk11 : blk12
+;     blk10 If Var(18) ? blk15 : blk16
+;     blk11 TailCall fn_clause_2#18(Var(1), Var(12), Var(13))
+;              callee_key=[list({:y, 10} | {:x, 5}), any, any]
+;     blk12 If Var(17) ? blk13 : blk14
+;     blk13 TailCall fn_clause_3#19(Var(1), Var(12), Var(13))
+;              callee_key=[list({:y, 10} | {:x, 5}), any, any]
+;     blk14 Goto blk1()
+;     blk15 If Var(24) ? blk17 : blk18
+;     blk16 Goto blk1()
+;     blk17 TailCall fn_clause_4#20(Var(1), Var(20), Var(21), Var(22))
+;              callee_key=[list({:y, 10} | {:x, 5}), any, any, any]
+;     blk18 Goto blk1()
+
+; spec eval(2) #fn=12
+;   key:    [any, list({any, any})]
+;   return: any
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: list({any, any})
+;     Var(2) :: :function_clause
+;     Var(3) :: bool
+;     Var(4) :: any
+;     Var(5) :: any
+;     Var(6) :: :num
+;     Var(7) :: bool
+;     Var(8) :: :var
+;     Var(9) :: bool
+;     Var(10) :: bool
+;     Var(11) :: any
+;     Var(12) :: any
+;     Var(13) :: any
+;     Var(14) :: :add
+;     Var(15) :: bool
+;     Var(16) :: :mul
+;     Var(17) :: bool
+;     Var(18) :: bool
+;     Var(19) :: any
+;     Var(20) :: any
+;     Var(21) :: any
+;     Var(22) :: any
+;     Var(23) :: :let
+;     Var(24) :: bool
+;   exits:
+;     blk0 Goto blk2()
+;     blk1 Halt Var(2)      :: :function_clause
+;     blk2 If Var(3) ? blk3 : blk4
+;     blk3 If Var(7) ? blk5 : blk6
+;     blk4 If Var(10) ? blk9 : blk10
+;     blk5 TailCall fn_clause_0#16(Var(1), Var(5))
+;              callee_key=[list({any, any}), any]
+;     blk6 If Var(9) ? blk7 : blk8
+;     blk7 TailCall fn_clause_1#17(Var(1), Var(5))
+;              callee_key=[list({any, any}), any]
+;     blk8 Goto blk1()
+;     blk9 If Var(15) ? blk11 : blk12
+;     blk10 If Var(18) ? blk15 : blk16
+;     blk11 TailCall fn_clause_2#18(Var(1), Var(12), Var(13))
+;              callee_key=[list({any, any}), any, any]
+;     blk12 If Var(17) ? blk13 : blk14
+;     blk13 TailCall fn_clause_3#19(Var(1), Var(12), Var(13))
+;              callee_key=[list({any, any}), any, any]
+;     blk14 Goto blk1()
+;     blk15 If Var(24) ? blk17 : blk18
+;     blk16 Goto blk1()
+;     blk17 TailCall fn_clause_4#20(Var(1), Var(20), Var(21), Var(22))
+;              callee_key=[list({any, any}), any, any, any]
+;     blk18 Goto blk1()
+
+; spec eval(2) #fn=12
+;   key:    [{:add, {:var, :x}, {:num, 4}}, list({:x, 3})]
+;   return: int | float
+;   vars:
+;     Var(0) :: {:add, {:var, :x}, {:num, 4}}
+;     Var(1) :: list({:x, 3})
+;     Var(2) :: :function_clause
+;     Var(3) :: :false
+;     Var(4) :: any
+;     Var(5) :: any
+;     Var(6) :: :num
+;     Var(7) :: bool
+;     Var(8) :: :var
+;     Var(9) :: bool
+;     Var(10) :: :true
+;     Var(11) :: :add
+;     Var(12) :: {:var, :x}
+;     Var(13) :: {:num, 4}
+;     Var(14) :: :add
+;     Var(15) :: bool
+;     Var(16) :: :mul
+;     Var(17) :: bool
+;     Var(18) :: bool
+;     Var(19) :: any
+;     Var(20) :: any
+;     Var(21) :: any
+;     Var(22) :: any
+;     Var(23) :: :let
+;     Var(24) :: bool
+;   exits:
+;     blk0 Goto blk2()
+;     blk1 Halt Var(2)      :: :function_clause
+;     blk2 If Var(3) ? blk3 : blk4
+;     blk3 If Var(7) ? blk5 : blk6
+;     blk4 If Var(10) ? blk9 : blk10
+;     blk5 TailCall fn_clause_0#16(Var(1), Var(5))
+;              callee_key=[list({:x, 3}), any]
+;     blk6 If Var(9) ? blk7 : blk8
+;     blk7 TailCall fn_clause_1#17(Var(1), Var(5))
+;              callee_key=[list({:x, 3}), any]
+;     blk8 Goto blk1()
+;     blk9 If Var(15) ? blk11 : blk12
+;     blk10 If Var(18) ? blk15 : blk16
+;     blk11 TailCall fn_clause_2#18(Var(1), Var(12), Var(13))
+;              callee_key=[list({:x, 3}), {:var, :x}, {:num, 4}]
+;     blk12 If Var(17) ? blk13 : blk14
+;     blk13 TailCall fn_clause_3#19(Var(1), Var(12), Var(13))
+;              callee_key=[list({:x, 3}), {:var, :x}, {:num, 4}]
+;     blk14 Goto blk1()
+;     blk15 If Var(24) ? blk17 : blk18
+;     blk16 Goto blk1()
+;     blk17 TailCall fn_clause_4#20(Var(1), Var(20), Var(21), Var(22))
+;              callee_key=[list({:x, 3}), any, any, any]
+;     blk18 Goto blk1()
+
+; spec eval(2) #fn=12
+;   key:    [{:add, {:var, :x}, {:var, :y}}, list({:y, 10} | {:x, 5})]
+;   return: int | float
+;   vars:
+;     Var(0) :: {:add, {:var, :x}, {:var, :y}}
+;     Var(1) :: list({:y, 10} | {:x, 5})
+;     Var(2) :: :function_clause
+;     Var(3) :: :false
+;     Var(4) :: any
+;     Var(5) :: any
+;     Var(6) :: :num
+;     Var(7) :: bool
+;     Var(8) :: :var
+;     Var(9) :: bool
+;     Var(10) :: :true
+;     Var(11) :: :add
+;     Var(12) :: {:var, :x}
+;     Var(13) :: {:var, :y}
+;     Var(14) :: :add
+;     Var(15) :: bool
+;     Var(16) :: :mul
+;     Var(17) :: bool
+;     Var(18) :: bool
+;     Var(19) :: any
+;     Var(20) :: any
+;     Var(21) :: any
+;     Var(22) :: any
+;     Var(23) :: :let
+;     Var(24) :: bool
+;   exits:
+;     blk0 Goto blk2()
+;     blk1 Halt Var(2)      :: :function_clause
+;     blk2 If Var(3) ? blk3 : blk4
+;     blk3 If Var(7) ? blk5 : blk6
+;     blk4 If Var(10) ? blk9 : blk10
+;     blk5 TailCall fn_clause_0#16(Var(1), Var(5))
+;              callee_key=[list({:y, 10} | {:x, 5}), any]
+;     blk6 If Var(9) ? blk7 : blk8
+;     blk7 TailCall fn_clause_1#17(Var(1), Var(5))
+;              callee_key=[list({:y, 10} | {:x, 5}), any]
+;     blk8 Goto blk1()
+;     blk9 If Var(15) ? blk11 : blk12
+;     blk10 If Var(18) ? blk15 : blk16
+;     blk11 TailCall fn_clause_2#18(Var(1), Var(12), Var(13))
+;              callee_key=[list({:y, 10} | {:x, 5}), {:var, :x}, {:var, :y}]
+;     blk12 If Var(17) ? blk13 : blk14
+;     blk13 TailCall fn_clause_3#19(Var(1), Var(12), Var(13))
+;              callee_key=[list({:y, 10} | {:x, 5}), {:var, :x}, {:var, :y}]
+;     blk14 Goto blk1()
+;     blk15 If Var(24) ? blk17 : blk18
+;     blk16 Goto blk1()
+;     blk17 TailCall fn_clause_4#20(Var(1), Var(20), Var(21), Var(22))
+;              callee_key=[list({:y, 10} | {:x, 5}), any, any, any]
+;     blk18 Goto blk1()
+
+; spec eval(2) #fn=12
+;   key:    [{:let, :x, {:num, 1}, {:let, :x, {:num, 2}, {:var, :x}}}, list(none)]
+;   return: :x
+;   vars:
+;     Var(0) :: {:let, :x, {:num, 1}, {:let, :x, {:num, 2}, {:var, :x}}}
+;     Var(1) :: list(none)
+;     Var(2) :: :function_clause
+;     Var(3) :: :false
+;     Var(4) :: any
+;     Var(5) :: any
+;     Var(6) :: :num
+;     Var(7) :: bool
+;     Var(8) :: :var
+;     Var(9) :: bool
+;     Var(10) :: :false
+;     Var(11) :: any
+;     Var(12) :: any
+;     Var(13) :: any
+;     Var(14) :: :add
+;     Var(15) :: bool
+;     Var(16) :: :mul
+;     Var(17) :: bool
+;     Var(18) :: :true
+;     Var(19) :: :let
+;     Var(20) :: :x
+;     Var(21) :: {:num, 1}
+;     Var(22) :: {:let, :x, {:num, 2}, {:var, :x}}
+;     Var(23) :: :let
+;     Var(24) :: bool
+;   exits:
+;     blk0 Goto blk2()
+;     blk1 Halt Var(2)      :: :function_clause
+;     blk2 If Var(3) ? blk3 : blk4
+;     blk3 If Var(7) ? blk5 : blk6
+;     blk4 If Var(10) ? blk9 : blk10
+;     blk5 TailCall fn_clause_0#16(Var(1), Var(5))
+;              callee_key=[list(none), any]
+;     blk6 If Var(9) ? blk7 : blk8
+;     blk7 TailCall fn_clause_1#17(Var(1), Var(5))
+;              callee_key=[list(none), any]
+;     blk8 Goto blk1()
+;     blk9 If Var(15) ? blk11 : blk12
+;     blk10 If Var(18) ? blk15 : blk16
+;     blk11 TailCall fn_clause_2#18(Var(1), Var(12), Var(13))
+;              callee_key=[list(none), any, any]
+;     blk12 If Var(17) ? blk13 : blk14
+;     blk13 TailCall fn_clause_3#19(Var(1), Var(12), Var(13))
+;              callee_key=[list(none), any, any]
+;     blk14 Goto blk1()
+;     blk15 If Var(24) ? blk17 : blk18
+;     blk16 Goto blk1()
+;     blk17 TailCall fn_clause_4#20(Var(1), Var(20), Var(21), Var(22))
+;              callee_key=[list(none), :x, {:num, 1}, {:let, :x, {:num, 2}, {:var, :x}}]
+;     blk18 Goto blk1()
+
+; spec eval(2) #fn=12
+;   key:    [{:let, :x, {:num, 2}, {:var, :x}}, list({:x, 1})]
+;   return: :x
+;   vars:
+;     Var(0) :: {:let, :x, {:num, 2}, {:var, :x}}
+;     Var(1) :: list({:x, 1})
+;     Var(2) :: :function_clause
+;     Var(3) :: :false
+;     Var(4) :: any
+;     Var(5) :: any
+;     Var(6) :: :num
+;     Var(7) :: bool
+;     Var(8) :: :var
+;     Var(9) :: bool
+;     Var(10) :: :false
+;     Var(11) :: any
+;     Var(12) :: any
+;     Var(13) :: any
+;     Var(14) :: :add
+;     Var(15) :: bool
+;     Var(16) :: :mul
+;     Var(17) :: bool
+;     Var(18) :: :true
+;     Var(19) :: :let
+;     Var(20) :: :x
+;     Var(21) :: {:num, 2}
+;     Var(22) :: {:var, :x}
+;     Var(23) :: :let
+;     Var(24) :: bool
+;   exits:
+;     blk0 Goto blk2()
+;     blk1 Halt Var(2)      :: :function_clause
+;     blk2 If Var(3) ? blk3 : blk4
+;     blk3 If Var(7) ? blk5 : blk6
+;     blk4 If Var(10) ? blk9 : blk10
+;     blk5 TailCall fn_clause_0#16(Var(1), Var(5))
+;              callee_key=[list({:x, 1}), any]
+;     blk6 If Var(9) ? blk7 : blk8
+;     blk7 TailCall fn_clause_1#17(Var(1), Var(5))
+;              callee_key=[list({:x, 1}), any]
+;     blk8 Goto blk1()
+;     blk9 If Var(15) ? blk11 : blk12
+;     blk10 If Var(18) ? blk15 : blk16
+;     blk11 TailCall fn_clause_2#18(Var(1), Var(12), Var(13))
+;              callee_key=[list({:x, 1}), any, any]
+;     blk12 If Var(17) ? blk13 : blk14
+;     blk13 TailCall fn_clause_3#19(Var(1), Var(12), Var(13))
+;              callee_key=[list({:x, 1}), any, any]
+;     blk14 Goto blk1()
+;     blk15 If Var(24) ? blk17 : blk18
+;     blk16 Goto blk1()
+;     blk17 TailCall fn_clause_4#20(Var(1), Var(20), Var(21), Var(22))
+;              callee_key=[list({:x, 1}), :x, {:num, 2}, {:var, :x}]
+;     blk18 Goto blk1()
+
+; spec eval(2) #fn=12
+;   key:    [{:let, :x, {:num, 3}, {:mul, {:var, :x}, {:add, {:var, :x}, {:num, 4}}}}, list(none)]
+;   return: int | float
+;   vars:
+;     Var(0) :: {:let, :x, {:num, 3}, {:mul, {:var, :x}, {:add, {:var, :x}, {:num, 4}}}}
+;     Var(1) :: list(none)
+;     Var(2) :: :function_clause
+;     Var(3) :: :false
+;     Var(4) :: any
+;     Var(5) :: any
+;     Var(6) :: :num
+;     Var(7) :: bool
+;     Var(8) :: :var
+;     Var(9) :: bool
+;     Var(10) :: :false
+;     Var(11) :: any
+;     Var(12) :: any
+;     Var(13) :: any
+;     Var(14) :: :add
+;     Var(15) :: bool
+;     Var(16) :: :mul
+;     Var(17) :: bool
+;     Var(18) :: :true
+;     Var(19) :: :let
+;     Var(20) :: :x
+;     Var(21) :: {:num, 3}
+;     Var(22) :: {:mul, {:var, :x}, {:add, {:var, :x}, {:num, 4}}}
+;     Var(23) :: :let
+;     Var(24) :: bool
+;   exits:
+;     blk0 Goto blk2()
+;     blk1 Halt Var(2)      :: :function_clause
+;     blk2 If Var(3) ? blk3 : blk4
+;     blk3 If Var(7) ? blk5 : blk6
+;     blk4 If Var(10) ? blk9 : blk10
+;     blk5 TailCall fn_clause_0#16(Var(1), Var(5))
+;              callee_key=[list(none), any]
+;     blk6 If Var(9) ? blk7 : blk8
+;     blk7 TailCall fn_clause_1#17(Var(1), Var(5))
+;              callee_key=[list(none), any]
+;     blk8 Goto blk1()
+;     blk9 If Var(15) ? blk11 : blk12
+;     blk10 If Var(18) ? blk15 : blk16
+;     blk11 TailCall fn_clause_2#18(Var(1), Var(12), Var(13))
+;              callee_key=[list(none), any, any]
+;     blk12 If Var(17) ? blk13 : blk14
+;     blk13 TailCall fn_clause_3#19(Var(1), Var(12), Var(13))
+;              callee_key=[list(none), any, any]
+;     blk14 Goto blk1()
+;     blk15 If Var(24) ? blk17 : blk18
+;     blk16 Goto blk1()
+;     blk17 TailCall fn_clause_4#20(Var(1), Var(20), Var(21), Var(22))
+;              callee_key=[list(none), :x, {:num, 3}, {:mul, {:var, :x}, {:add, {:var, :x}, {:num, 4}}}]
+;     blk18 Goto blk1()
+
+; spec eval(2) #fn=12
+;   key:    [{:let, :x, {:num, 5}, {:let, :y, {:num, 10}, {:add, {:var, :x}, {:var, :y}}}}, list(none)]
+;   return: int | float
+;   vars:
+;     Var(0) :: {:let, :x, {:num, 5}, {:let, :y, {:num, 10}, {:add, {:var, :x}, {:var, :y}}}}
+;     Var(1) :: list(none)
+;     Var(2) :: :function_clause
+;     Var(3) :: :false
+;     Var(4) :: any
+;     Var(5) :: any
+;     Var(6) :: :num
+;     Var(7) :: bool
+;     Var(8) :: :var
+;     Var(9) :: bool
+;     Var(10) :: :false
+;     Var(11) :: any
+;     Var(12) :: any
+;     Var(13) :: any
+;     Var(14) :: :add
+;     Var(15) :: bool
+;     Var(16) :: :mul
+;     Var(17) :: bool
+;     Var(18) :: :true
+;     Var(19) :: :let
+;     Var(20) :: :x
+;     Var(21) :: {:num, 5}
+;     Var(22) :: {:let, :y, {:num, 10}, {:add, {:var, :x}, {:var, :y}}}
+;     Var(23) :: :let
+;     Var(24) :: bool
+;   exits:
+;     blk0 Goto blk2()
+;     blk1 Halt Var(2)      :: :function_clause
+;     blk2 If Var(3) ? blk3 : blk4
+;     blk3 If Var(7) ? blk5 : blk6
+;     blk4 If Var(10) ? blk9 : blk10
+;     blk5 TailCall fn_clause_0#16(Var(1), Var(5))
+;              callee_key=[list(none), any]
+;     blk6 If Var(9) ? blk7 : blk8
+;     blk7 TailCall fn_clause_1#17(Var(1), Var(5))
+;              callee_key=[list(none), any]
+;     blk8 Goto blk1()
+;     blk9 If Var(15) ? blk11 : blk12
+;     blk10 If Var(18) ? blk15 : blk16
+;     blk11 TailCall fn_clause_2#18(Var(1), Var(12), Var(13))
+;              callee_key=[list(none), any, any]
+;     blk12 If Var(17) ? blk13 : blk14
+;     blk13 TailCall fn_clause_3#19(Var(1), Var(12), Var(13))
+;              callee_key=[list(none), any, any]
+;     blk14 Goto blk1()
+;     blk15 If Var(24) ? blk17 : blk18
+;     blk16 Goto blk1()
+;     blk17 TailCall fn_clause_4#20(Var(1), Var(20), Var(21), Var(22))
+;              callee_key=[list(none), :x, {:num, 5}, {:let, :y, {:num, 10}, {:add, {:var, :x}, {:var, :y}}}]
+;     blk18 Goto blk1()
+
+; spec eval(2) #fn=12
+;   key:    [{:let, :y, {:num, 10}, {:add, {:var, :x}, {:var, :y}}}, list({:x, 5})]
+;   return: int | float
+;   vars:
+;     Var(0) :: {:let, :y, {:num, 10}, {:add, {:var, :x}, {:var, :y}}}
+;     Var(1) :: list({:x, 5})
+;     Var(2) :: :function_clause
+;     Var(3) :: :false
+;     Var(4) :: any
+;     Var(5) :: any
+;     Var(6) :: :num
+;     Var(7) :: bool
+;     Var(8) :: :var
+;     Var(9) :: bool
+;     Var(10) :: :false
+;     Var(11) :: any
+;     Var(12) :: any
+;     Var(13) :: any
+;     Var(14) :: :add
+;     Var(15) :: bool
+;     Var(16) :: :mul
+;     Var(17) :: bool
+;     Var(18) :: :true
+;     Var(19) :: :let
+;     Var(20) :: :y
+;     Var(21) :: {:num, 10}
+;     Var(22) :: {:add, {:var, :x}, {:var, :y}}
+;     Var(23) :: :let
+;     Var(24) :: bool
+;   exits:
+;     blk0 Goto blk2()
+;     blk1 Halt Var(2)      :: :function_clause
+;     blk2 If Var(3) ? blk3 : blk4
+;     blk3 If Var(7) ? blk5 : blk6
+;     blk4 If Var(10) ? blk9 : blk10
+;     blk5 TailCall fn_clause_0#16(Var(1), Var(5))
+;              callee_key=[list({:x, 5}), any]
+;     blk6 If Var(9) ? blk7 : blk8
+;     blk7 TailCall fn_clause_1#17(Var(1), Var(5))
+;              callee_key=[list({:x, 5}), any]
+;     blk8 Goto blk1()
+;     blk9 If Var(15) ? blk11 : blk12
+;     blk10 If Var(18) ? blk15 : blk16
+;     blk11 TailCall fn_clause_2#18(Var(1), Var(12), Var(13))
+;              callee_key=[list({:x, 5}), any, any]
+;     blk12 If Var(17) ? blk13 : blk14
+;     blk13 TailCall fn_clause_3#19(Var(1), Var(12), Var(13))
+;              callee_key=[list({:x, 5}), any, any]
+;     blk14 Goto blk1()
+;     blk15 If Var(24) ? blk17 : blk18
+;     blk16 Goto blk1()
+;     blk17 TailCall fn_clause_4#20(Var(1), Var(20), Var(21), Var(22))
+;              callee_key=[list({:x, 5}), :y, {:num, 10}, {:add, {:var, :x}, {:var, :y}}]
+;     blk18 Goto blk1()
+
+; spec eval(2) #fn=12
+;   key:    [{:mul, {:var, :x}, {:add, {:var, :x}, {:num, 4}}}, list({:x, 3})]
+;   return: int | float
+;   vars:
+;     Var(0) :: {:mul, {:var, :x}, {:add, {:var, :x}, {:num, 4}}}
+;     Var(1) :: list({:x, 3})
+;     Var(2) :: :function_clause
+;     Var(3) :: :false
+;     Var(4) :: any
+;     Var(5) :: any
+;     Var(6) :: :num
+;     Var(7) :: bool
+;     Var(8) :: :var
+;     Var(9) :: bool
+;     Var(10) :: :true
+;     Var(11) :: :mul
+;     Var(12) :: {:var, :x}
+;     Var(13) :: {:add, {:var, :x}, {:num, 4}}
+;     Var(14) :: :add
+;     Var(15) :: bool
+;     Var(16) :: :mul
+;     Var(17) :: bool
+;     Var(18) :: bool
+;     Var(19) :: any
+;     Var(20) :: any
+;     Var(21) :: any
+;     Var(22) :: any
+;     Var(23) :: :let
+;     Var(24) :: bool
+;   exits:
+;     blk0 Goto blk2()
+;     blk1 Halt Var(2)      :: :function_clause
+;     blk2 If Var(3) ? blk3 : blk4
+;     blk3 If Var(7) ? blk5 : blk6
+;     blk4 If Var(10) ? blk9 : blk10
+;     blk5 TailCall fn_clause_0#16(Var(1), Var(5))
+;              callee_key=[list({:x, 3}), any]
+;     blk6 If Var(9) ? blk7 : blk8
+;     blk7 TailCall fn_clause_1#17(Var(1), Var(5))
+;              callee_key=[list({:x, 3}), any]
+;     blk8 Goto blk1()
+;     blk9 If Var(15) ? blk11 : blk12
+;     blk10 If Var(18) ? blk15 : blk16
+;     blk11 TailCall fn_clause_2#18(Var(1), Var(12), Var(13))
+;              callee_key=[list({:x, 3}), {:var, :x}, {:add, {:var, :x}, {:num, 4}}]
+;     blk12 If Var(17) ? blk13 : blk14
+;     blk13 TailCall fn_clause_3#19(Var(1), Var(12), Var(13))
+;              callee_key=[list({:x, 3}), {:var, :x}, {:add, {:var, :x}, {:num, 4}}]
+;     blk14 Goto blk1()
+;     blk15 If Var(24) ? blk17 : blk18
+;     blk16 Goto blk1()
+;     blk17 TailCall fn_clause_4#20(Var(1), Var(20), Var(21), Var(22))
+;              callee_key=[list({:x, 3}), any, any, any]
+;     blk18 Goto blk1()
+
+; spec eval(2) #fn=12
+;   key:    [{:num, 10}, list({:x, 5})]
+;   return: 10
+;   vars:
+;     Var(0) :: {:num, 10}
+;     Var(1) :: list({:x, 5})
+;     Var(2) :: :function_clause
+;     Var(3) :: :true
+;     Var(4) :: :num
+;     Var(5) :: 10
+;     Var(6) :: :num
+;     Var(7) :: bool
+;     Var(8) :: :var
+;     Var(9) :: bool
+;     Var(10) :: bool
+;     Var(11) :: any
+;     Var(12) :: any
+;     Var(13) :: any
+;     Var(14) :: :add
+;     Var(15) :: bool
+;     Var(16) :: :mul
+;     Var(17) :: bool
+;     Var(18) :: bool
+;     Var(19) :: any
+;     Var(20) :: any
+;     Var(21) :: any
+;     Var(22) :: any
+;     Var(23) :: :let
+;     Var(24) :: bool
+;   exits:
+;     blk0 Goto blk2()
+;     blk1 Halt Var(2)      :: :function_clause
+;     blk2 If Var(3) ? blk3 : blk4
+;     blk3 If Var(7) ? blk5 : blk6
+;     blk4 If Var(10) ? blk9 : blk10
+;     blk5 TailCall fn_clause_0#16(Var(1), Var(5))
+;              callee_key=[list({:x, 5}), 10]
+;     blk6 If Var(9) ? blk7 : blk8
+;     blk7 TailCall fn_clause_1#17(Var(1), Var(5))
+;              callee_key=[list({:x, 5}), 10]
+;     blk8 Goto blk1()
+;     blk9 If Var(15) ? blk11 : blk12
+;     blk10 If Var(18) ? blk15 : blk16
+;     blk11 TailCall fn_clause_2#18(Var(1), Var(12), Var(13))
+;              callee_key=[list({:x, 5}), any, any]
+;     blk12 If Var(17) ? blk13 : blk14
+;     blk13 TailCall fn_clause_3#19(Var(1), Var(12), Var(13))
+;              callee_key=[list({:x, 5}), any, any]
+;     blk14 Goto blk1()
+;     blk15 If Var(24) ? blk17 : blk18
+;     blk16 Goto blk1()
+;     blk17 TailCall fn_clause_4#20(Var(1), Var(20), Var(21), Var(22))
+;              callee_key=[list({:x, 5}), any, any, any]
+;     blk18 Goto blk1()
+
+; spec eval(2) #fn=12
+;   key:    [{:num, 1}, list(none)]
+;   return: 1
+;   vars:
+;     Var(0) :: {:num, 1}
+;     Var(1) :: list(none)
+;     Var(2) :: :function_clause
+;     Var(3) :: :true
+;     Var(4) :: :num
+;     Var(5) :: 1
+;     Var(6) :: :num
+;     Var(7) :: bool
+;     Var(8) :: :var
+;     Var(9) :: bool
+;     Var(10) :: bool
+;     Var(11) :: any
+;     Var(12) :: any
+;     Var(13) :: any
+;     Var(14) :: :add
+;     Var(15) :: bool
+;     Var(16) :: :mul
+;     Var(17) :: bool
+;     Var(18) :: bool
+;     Var(19) :: any
+;     Var(20) :: any
+;     Var(21) :: any
+;     Var(22) :: any
+;     Var(23) :: :let
+;     Var(24) :: bool
+;   exits:
+;     blk0 Goto blk2()
+;     blk1 Halt Var(2)      :: :function_clause
+;     blk2 If Var(3) ? blk3 : blk4
+;     blk3 If Var(7) ? blk5 : blk6
+;     blk4 If Var(10) ? blk9 : blk10
+;     blk5 TailCall fn_clause_0#16(Var(1), Var(5))
+;              callee_key=[list(none), 1]
+;     blk6 If Var(9) ? blk7 : blk8
+;     blk7 TailCall fn_clause_1#17(Var(1), Var(5))
+;              callee_key=[list(none), 1]
+;     blk8 Goto blk1()
+;     blk9 If Var(15) ? blk11 : blk12
+;     blk10 If Var(18) ? blk15 : blk16
+;     blk11 TailCall fn_clause_2#18(Var(1), Var(12), Var(13))
+;              callee_key=[list(none), any, any]
+;     blk12 If Var(17) ? blk13 : blk14
+;     blk13 TailCall fn_clause_3#19(Var(1), Var(12), Var(13))
+;              callee_key=[list(none), any, any]
+;     blk14 Goto blk1()
+;     blk15 If Var(24) ? blk17 : blk18
+;     blk16 Goto blk1()
+;     blk17 TailCall fn_clause_4#20(Var(1), Var(20), Var(21), Var(22))
+;              callee_key=[list(none), any, any, any]
+;     blk18 Goto blk1()
+
+; spec eval(2) #fn=12
+;   key:    [{:num, 2}, list({:x, 1})]
+;   return: 2
+;   vars:
+;     Var(0) :: {:num, 2}
+;     Var(1) :: list({:x, 1})
+;     Var(2) :: :function_clause
+;     Var(3) :: :true
+;     Var(4) :: :num
+;     Var(5) :: 2
+;     Var(6) :: :num
+;     Var(7) :: bool
+;     Var(8) :: :var
+;     Var(9) :: bool
+;     Var(10) :: bool
+;     Var(11) :: any
+;     Var(12) :: any
+;     Var(13) :: any
+;     Var(14) :: :add
+;     Var(15) :: bool
+;     Var(16) :: :mul
+;     Var(17) :: bool
+;     Var(18) :: bool
+;     Var(19) :: any
+;     Var(20) :: any
+;     Var(21) :: any
+;     Var(22) :: any
+;     Var(23) :: :let
+;     Var(24) :: bool
+;   exits:
+;     blk0 Goto blk2()
+;     blk1 Halt Var(2)      :: :function_clause
+;     blk2 If Var(3) ? blk3 : blk4
+;     blk3 If Var(7) ? blk5 : blk6
+;     blk4 If Var(10) ? blk9 : blk10
+;     blk5 TailCall fn_clause_0#16(Var(1), Var(5))
+;              callee_key=[list({:x, 1}), 2]
+;     blk6 If Var(9) ? blk7 : blk8
+;     blk7 TailCall fn_clause_1#17(Var(1), Var(5))
+;              callee_key=[list({:x, 1}), 2]
+;     blk8 Goto blk1()
+;     blk9 If Var(15) ? blk11 : blk12
+;     blk10 If Var(18) ? blk15 : blk16
+;     blk11 TailCall fn_clause_2#18(Var(1), Var(12), Var(13))
+;              callee_key=[list({:x, 1}), any, any]
+;     blk12 If Var(17) ? blk13 : blk14
+;     blk13 TailCall fn_clause_3#19(Var(1), Var(12), Var(13))
+;              callee_key=[list({:x, 1}), any, any]
+;     blk14 Goto blk1()
+;     blk15 If Var(24) ? blk17 : blk18
+;     blk16 Goto blk1()
+;     blk17 TailCall fn_clause_4#20(Var(1), Var(20), Var(21), Var(22))
+;              callee_key=[list({:x, 1}), any, any, any]
+;     blk18 Goto blk1()
+
+; spec eval(2) #fn=12
+;   key:    [{:num, 3}, list(none)]
+;   return: 3
+;   vars:
+;     Var(0) :: {:num, 3}
+;     Var(1) :: list(none)
+;     Var(2) :: :function_clause
+;     Var(3) :: :true
+;     Var(4) :: :num
+;     Var(5) :: 3
+;     Var(6) :: :num
+;     Var(7) :: bool
+;     Var(8) :: :var
+;     Var(9) :: bool
+;     Var(10) :: bool
+;     Var(11) :: any
+;     Var(12) :: any
+;     Var(13) :: any
+;     Var(14) :: :add
+;     Var(15) :: bool
+;     Var(16) :: :mul
+;     Var(17) :: bool
+;     Var(18) :: bool
+;     Var(19) :: any
+;     Var(20) :: any
+;     Var(21) :: any
+;     Var(22) :: any
+;     Var(23) :: :let
+;     Var(24) :: bool
+;   exits:
+;     blk0 Goto blk2()
+;     blk1 Halt Var(2)      :: :function_clause
+;     blk2 If Var(3) ? blk3 : blk4
+;     blk3 If Var(7) ? blk5 : blk6
+;     blk4 If Var(10) ? blk9 : blk10
+;     blk5 TailCall fn_clause_0#16(Var(1), Var(5))
+;              callee_key=[list(none), 3]
+;     blk6 If Var(9) ? blk7 : blk8
+;     blk7 TailCall fn_clause_1#17(Var(1), Var(5))
+;              callee_key=[list(none), 3]
+;     blk8 Goto blk1()
+;     blk9 If Var(15) ? blk11 : blk12
+;     blk10 If Var(18) ? blk15 : blk16
+;     blk11 TailCall fn_clause_2#18(Var(1), Var(12), Var(13))
+;              callee_key=[list(none), any, any]
+;     blk12 If Var(17) ? blk13 : blk14
+;     blk13 TailCall fn_clause_3#19(Var(1), Var(12), Var(13))
+;              callee_key=[list(none), any, any]
+;     blk14 Goto blk1()
+;     blk15 If Var(24) ? blk17 : blk18
+;     blk16 Goto blk1()
+;     blk17 TailCall fn_clause_4#20(Var(1), Var(20), Var(21), Var(22))
+;              callee_key=[list(none), any, any, any]
+;     blk18 Goto blk1()
+
+; spec eval(2) #fn=12
+;   key:    [{:num, 4}, list({:x, 3})]
+;   return: 4
+;   vars:
+;     Var(0) :: {:num, 4}
+;     Var(1) :: list({:x, 3})
+;     Var(2) :: :function_clause
+;     Var(3) :: :true
+;     Var(4) :: :num
+;     Var(5) :: 4
+;     Var(6) :: :num
+;     Var(7) :: bool
+;     Var(8) :: :var
+;     Var(9) :: bool
+;     Var(10) :: bool
+;     Var(11) :: any
+;     Var(12) :: any
+;     Var(13) :: any
+;     Var(14) :: :add
+;     Var(15) :: bool
+;     Var(16) :: :mul
+;     Var(17) :: bool
+;     Var(18) :: bool
+;     Var(19) :: any
+;     Var(20) :: any
+;     Var(21) :: any
+;     Var(22) :: any
+;     Var(23) :: :let
+;     Var(24) :: bool
+;   exits:
+;     blk0 Goto blk2()
+;     blk1 Halt Var(2)      :: :function_clause
+;     blk2 If Var(3) ? blk3 : blk4
+;     blk3 If Var(7) ? blk5 : blk6
+;     blk4 If Var(10) ? blk9 : blk10
+;     blk5 TailCall fn_clause_0#16(Var(1), Var(5))
+;              callee_key=[list({:x, 3}), 4]
+;     blk6 If Var(9) ? blk7 : blk8
+;     blk7 TailCall fn_clause_1#17(Var(1), Var(5))
+;              callee_key=[list({:x, 3}), 4]
+;     blk8 Goto blk1()
+;     blk9 If Var(15) ? blk11 : blk12
+;     blk10 If Var(18) ? blk15 : blk16
+;     blk11 TailCall fn_clause_2#18(Var(1), Var(12), Var(13))
+;              callee_key=[list({:x, 3}), any, any]
+;     blk12 If Var(17) ? blk13 : blk14
+;     blk13 TailCall fn_clause_3#19(Var(1), Var(12), Var(13))
+;              callee_key=[list({:x, 3}), any, any]
+;     blk14 Goto blk1()
+;     blk15 If Var(24) ? blk17 : blk18
+;     blk16 Goto blk1()
+;     blk17 TailCall fn_clause_4#20(Var(1), Var(20), Var(21), Var(22))
+;              callee_key=[list({:x, 3}), any, any, any]
+;     blk18 Goto blk1()
+
+; spec eval(2) #fn=12
+;   key:    [{:num, 5}, list(none)]
+;   return: 5
+;   vars:
+;     Var(0) :: {:num, 5}
+;     Var(1) :: list(none)
+;     Var(2) :: :function_clause
+;     Var(3) :: :true
+;     Var(4) :: :num
+;     Var(5) :: 5
+;     Var(6) :: :num
+;     Var(7) :: bool
+;     Var(8) :: :var
+;     Var(9) :: bool
+;     Var(10) :: bool
+;     Var(11) :: any
+;     Var(12) :: any
+;     Var(13) :: any
+;     Var(14) :: :add
+;     Var(15) :: bool
+;     Var(16) :: :mul
+;     Var(17) :: bool
+;     Var(18) :: bool
+;     Var(19) :: any
+;     Var(20) :: any
+;     Var(21) :: any
+;     Var(22) :: any
+;     Var(23) :: :let
+;     Var(24) :: bool
+;   exits:
+;     blk0 Goto blk2()
+;     blk1 Halt Var(2)      :: :function_clause
+;     blk2 If Var(3) ? blk3 : blk4
+;     blk3 If Var(7) ? blk5 : blk6
+;     blk4 If Var(10) ? blk9 : blk10
+;     blk5 TailCall fn_clause_0#16(Var(1), Var(5))
+;              callee_key=[list(none), 5]
+;     blk6 If Var(9) ? blk7 : blk8
+;     blk7 TailCall fn_clause_1#17(Var(1), Var(5))
+;              callee_key=[list(none), 5]
+;     blk8 Goto blk1()
+;     blk9 If Var(15) ? blk11 : blk12
+;     blk10 If Var(18) ? blk15 : blk16
+;     blk11 TailCall fn_clause_2#18(Var(1), Var(12), Var(13))
+;              callee_key=[list(none), any, any]
+;     blk12 If Var(17) ? blk13 : blk14
+;     blk13 TailCall fn_clause_3#19(Var(1), Var(12), Var(13))
+;              callee_key=[list(none), any, any]
+;     blk14 Goto blk1()
+;     blk15 If Var(24) ? blk17 : blk18
+;     blk16 Goto blk1()
+;     blk17 TailCall fn_clause_4#20(Var(1), Var(20), Var(21), Var(22))
+;              callee_key=[list(none), any, any, any]
+;     blk18 Goto blk1()
+
+; spec eval(2) #fn=12
+;   key:    [{:var, :x}, list({:x, 2} | {:x, 1})]
+;   return: :x
+;   vars:
+;     Var(0) :: {:var, :x}
+;     Var(1) :: list({:x, 2} | {:x, 1})
+;     Var(2) :: :function_clause
+;     Var(3) :: :true
+;     Var(4) :: :var
+;     Var(5) :: :x
+;     Var(6) :: :num
+;     Var(7) :: bool
+;     Var(8) :: :var
+;     Var(9) :: bool
+;     Var(10) :: bool
+;     Var(11) :: any
+;     Var(12) :: any
+;     Var(13) :: any
+;     Var(14) :: :add
+;     Var(15) :: bool
+;     Var(16) :: :mul
+;     Var(17) :: bool
+;     Var(18) :: bool
+;     Var(19) :: any
+;     Var(20) :: any
+;     Var(21) :: any
+;     Var(22) :: any
+;     Var(23) :: :let
+;     Var(24) :: bool
+;   exits:
+;     blk0 Goto blk2()
+;     blk1 Halt Var(2)      :: :function_clause
+;     blk2 If Var(3) ? blk3 : blk4
+;     blk3 If Var(7) ? blk5 : blk6
+;     blk4 If Var(10) ? blk9 : blk10
+;     blk5 TailCall fn_clause_0#16(Var(1), Var(5))
+;              callee_key=[list({:x, 2} | {:x, 1}), :x]
+;     blk6 If Var(9) ? blk7 : blk8
+;     blk7 TailCall fn_clause_1#17(Var(1), Var(5))
+;              callee_key=[list({:x, 2} | {:x, 1}), :x]
+;     blk8 Goto blk1()
+;     blk9 If Var(15) ? blk11 : blk12
+;     blk10 If Var(18) ? blk15 : blk16
+;     blk11 TailCall fn_clause_2#18(Var(1), Var(12), Var(13))
+;              callee_key=[list({:x, 2} | {:x, 1}), any, any]
+;     blk12 If Var(17) ? blk13 : blk14
+;     blk13 TailCall fn_clause_3#19(Var(1), Var(12), Var(13))
+;              callee_key=[list({:x, 2} | {:x, 1}), any, any]
+;     blk14 Goto blk1()
+;     blk15 If Var(24) ? blk17 : blk18
+;     blk16 Goto blk1()
+;     blk17 TailCall fn_clause_4#20(Var(1), Var(20), Var(21), Var(22))
+;              callee_key=[list({:x, 2} | {:x, 1}), any, any, any]
+;     blk18 Goto blk1()
+
+; spec eval(2) #fn=12
+;   key:    [{:var, :x}, list({:x, 3})]
+;   return: 3 | :x
+;   vars:
+;     Var(0) :: {:var, :x}
+;     Var(1) :: list({:x, 3})
+;     Var(2) :: :function_clause
+;     Var(3) :: :true
+;     Var(4) :: :var
+;     Var(5) :: :x
+;     Var(6) :: :num
+;     Var(7) :: bool
+;     Var(8) :: :var
+;     Var(9) :: bool
+;     Var(10) :: bool
+;     Var(11) :: any
+;     Var(12) :: any
+;     Var(13) :: any
+;     Var(14) :: :add
+;     Var(15) :: bool
+;     Var(16) :: :mul
+;     Var(17) :: bool
+;     Var(18) :: bool
+;     Var(19) :: any
+;     Var(20) :: any
+;     Var(21) :: any
+;     Var(22) :: any
+;     Var(23) :: :let
+;     Var(24) :: bool
+;   exits:
+;     blk0 Goto blk2()
+;     blk1 Halt Var(2)      :: :function_clause
+;     blk2 If Var(3) ? blk3 : blk4
+;     blk3 If Var(7) ? blk5 : blk6
+;     blk4 If Var(10) ? blk9 : blk10
+;     blk5 TailCall fn_clause_0#16(Var(1), Var(5))
+;              callee_key=[list({:x, 3}), :x]
+;     blk6 If Var(9) ? blk7 : blk8
+;     blk7 TailCall fn_clause_1#17(Var(1), Var(5))
+;              callee_key=[list({:x, 3}), :x]
+;     blk8 Goto blk1()
+;     blk9 If Var(15) ? blk11 : blk12
+;     blk10 If Var(18) ? blk15 : blk16
+;     blk11 TailCall fn_clause_2#18(Var(1), Var(12), Var(13))
+;              callee_key=[list({:x, 3}), any, any]
+;     blk12 If Var(17) ? blk13 : blk14
+;     blk13 TailCall fn_clause_3#19(Var(1), Var(12), Var(13))
+;              callee_key=[list({:x, 3}), any, any]
+;     blk14 Goto blk1()
+;     blk15 If Var(24) ? blk17 : blk18
+;     blk16 Goto blk1()
+;     blk17 TailCall fn_clause_4#20(Var(1), Var(20), Var(21), Var(22))
+;              callee_key=[list({:x, 3}), any, any, any]
+;     blk18 Goto blk1()
+
+; spec eval(2) #fn=12
+;   key:    [{:var, :x}, list({:y, 10} | {:x, 5})]
+;   return: :x
+;   vars:
+;     Var(0) :: {:var, :x}
+;     Var(1) :: list({:y, 10} | {:x, 5})
+;     Var(2) :: :function_clause
+;     Var(3) :: :true
+;     Var(4) :: :var
+;     Var(5) :: :x
+;     Var(6) :: :num
+;     Var(7) :: bool
+;     Var(8) :: :var
+;     Var(9) :: bool
+;     Var(10) :: bool
+;     Var(11) :: any
+;     Var(12) :: any
+;     Var(13) :: any
+;     Var(14) :: :add
+;     Var(15) :: bool
+;     Var(16) :: :mul
+;     Var(17) :: bool
+;     Var(18) :: bool
+;     Var(19) :: any
+;     Var(20) :: any
+;     Var(21) :: any
+;     Var(22) :: any
+;     Var(23) :: :let
+;     Var(24) :: bool
+;   exits:
+;     blk0 Goto blk2()
+;     blk1 Halt Var(2)      :: :function_clause
+;     blk2 If Var(3) ? blk3 : blk4
+;     blk3 If Var(7) ? blk5 : blk6
+;     blk4 If Var(10) ? blk9 : blk10
+;     blk5 TailCall fn_clause_0#16(Var(1), Var(5))
+;              callee_key=[list({:y, 10} | {:x, 5}), :x]
+;     blk6 If Var(9) ? blk7 : blk8
+;     blk7 TailCall fn_clause_1#17(Var(1), Var(5))
+;              callee_key=[list({:y, 10} | {:x, 5}), :x]
+;     blk8 Goto blk1()
+;     blk9 If Var(15) ? blk11 : blk12
+;     blk10 If Var(18) ? blk15 : blk16
+;     blk11 TailCall fn_clause_2#18(Var(1), Var(12), Var(13))
+;              callee_key=[list({:y, 10} | {:x, 5}), any, any]
+;     blk12 If Var(17) ? blk13 : blk14
+;     blk13 TailCall fn_clause_3#19(Var(1), Var(12), Var(13))
+;              callee_key=[list({:y, 10} | {:x, 5}), any, any]
+;     blk14 Goto blk1()
+;     blk15 If Var(24) ? blk17 : blk18
+;     blk16 Goto blk1()
+;     blk17 TailCall fn_clause_4#20(Var(1), Var(20), Var(21), Var(22))
+;              callee_key=[list({:y, 10} | {:x, 5}), any, any, any]
+;     blk18 Goto blk1()
+
+; spec eval(2) #fn=12
+;   key:    [{:var, :y}, list({:y, 10} | {:x, 5})]
+;   return: :y
+;   vars:
+;     Var(0) :: {:var, :y}
+;     Var(1) :: list({:y, 10} | {:x, 5})
+;     Var(2) :: :function_clause
+;     Var(3) :: :true
+;     Var(4) :: :var
+;     Var(5) :: :y
+;     Var(6) :: :num
+;     Var(7) :: bool
+;     Var(8) :: :var
+;     Var(9) :: bool
+;     Var(10) :: bool
+;     Var(11) :: any
+;     Var(12) :: any
+;     Var(13) :: any
+;     Var(14) :: :add
+;     Var(15) :: bool
+;     Var(16) :: :mul
+;     Var(17) :: bool
+;     Var(18) :: bool
+;     Var(19) :: any
+;     Var(20) :: any
+;     Var(21) :: any
+;     Var(22) :: any
+;     Var(23) :: :let
+;     Var(24) :: bool
+;   exits:
+;     blk0 Goto blk2()
+;     blk1 Halt Var(2)      :: :function_clause
+;     blk2 If Var(3) ? blk3 : blk4
+;     blk3 If Var(7) ? blk5 : blk6
+;     blk4 If Var(10) ? blk9 : blk10
+;     blk5 TailCall fn_clause_0#16(Var(1), Var(5))
+;              callee_key=[list({:y, 10} | {:x, 5}), :y]
+;     blk6 If Var(9) ? blk7 : blk8
+;     blk7 TailCall fn_clause_1#17(Var(1), Var(5))
+;              callee_key=[list({:y, 10} | {:x, 5}), :y]
+;     blk8 Goto blk1()
+;     blk9 If Var(15) ? blk11 : blk12
+;     blk10 If Var(18) ? blk15 : blk16
+;     blk11 TailCall fn_clause_2#18(Var(1), Var(12), Var(13))
+;              callee_key=[list({:y, 10} | {:x, 5}), any, any]
+;     blk12 If Var(17) ? blk13 : blk14
+;     blk13 TailCall fn_clause_3#19(Var(1), Var(12), Var(13))
+;              callee_key=[list({:y, 10} | {:x, 5}), any, any]
+;     blk14 Goto blk1()
+;     blk15 If Var(24) ? blk17 : blk18
+;     blk16 Goto blk1()
+;     blk17 TailCall fn_clause_4#20(Var(1), Var(20), Var(21), Var(22))
+;              callee_key=[list({:y, 10} | {:x, 5}), any, any, any]
+;     blk18 Goto blk1()
+
+; spec main(0) #fn=13
+;   key:    []
+;   return: nil
+;   vars:
+;     Var(0) :: :match_error
+;     Var(1) :: list(none)
+;     Var(2) :: :match_error
+;     Var(3) :: :let
+;     Var(4) :: :x
+;     Var(5) :: :num
+;     Var(6) :: 5
+;     Var(7) :: {:num, 5}
+;     Var(8) :: :let
+;     Var(9) :: :y
+;     Var(10) :: :num
+;     Var(11) :: 10
+;     Var(12) :: {:num, 10}
+;     Var(13) :: :add
+;     Var(14) :: :var
+;     Var(15) :: :x
+;     Var(16) :: {:var, :x}
+;     Var(17) :: :var
+;     Var(18) :: :y
+;     Var(19) :: {:var, :y}
+;     Var(20) :: {:add, {:var, :x}, {:var, :y}}
+;     Var(21) :: {:let, :y, {:num, 10}, {:add, {:var, :x}, {:var, :y}}}
+;     Var(22) :: {:let, :x, {:num, 5}, {:let, :y, {:num, 10}, {:add, {:var, :x}, {:var, :y}}}}
+;     Var(23) :: :match_error
+;   exits:
+;     blk0 Call eval#12(Var(22), Var(1))
+;              callee_key=[{:let, :x, {:num, 5}, {:let, :y, {:num, 10}, {:add, {:var, :x}, {:var, :y}}}}, list(none)]
+;              cont k_26#26 captured=[Var(1), Var(22)]
+;              cont_key=[int | float, list(none), {:let, :x, {:num, 5}, {:let, :y, {:num, 10}, {:add, {:var, :x}, {:var, :y}}}}]
+;     blk1 Halt Var(0)      :: :match_error
+;     blk2 Halt Var(2)      :: :match_error
+;     blk3 Halt Var(23)      :: :match_error
+
+; spec if_then(4) #fn=14
+;   key:    [1, 1, any, nil | list(none)]
+;   return: any
+;   vars:
+;     Var(0) :: 1
+;     Var(1) :: 1
+;     Var(2) :: any
+;     Var(3) :: nil | list(none)
+;   exits:
+;     blk0 Return Var(2)    :: any
+
+; spec if_then(4) #fn=14
+;   key:    [3, 3, any, nil | list(none)]
+;   return: any
+;   vars:
+;     Var(0) :: 3
+;     Var(1) :: 3
+;     Var(2) :: any
+;     Var(3) :: nil | list(none)
+;   exits:
+;     blk0 Return Var(2)    :: any
+
+; spec if_then(4) #fn=14
+;   key:    [5, 5, any, nil | list(none)]
+;   return: any
+;   vars:
+;     Var(0) :: 5
+;     Var(1) :: 5
+;     Var(2) :: any
+;     Var(3) :: nil | list(none)
+;   exits:
+;     blk0 Return Var(2)    :: any
+
+; spec if_then(4) #fn=14
+;   key:    [:x, :x, 1, nil | list({:x, 1})]
+;   return: 1
+;   vars:
+;     Var(0) :: :x
+;     Var(1) :: :x
+;     Var(2) :: 1
+;     Var(3) :: nil | list({:x, 1})
+;   exits:
+;     blk0 Return Var(2)    :: 1
+
+; spec if_then(4) #fn=14
+;   key:    [:x, :x, 3, nil | list({:x, 3})]
+;   return: 3
+;   vars:
+;     Var(0) :: :x
+;     Var(1) :: :x
+;     Var(2) :: 3
+;     Var(3) :: nil | list({:x, 3})
+;   exits:
+;     blk0 Return Var(2)    :: 3
+
+; spec if_then(4) #fn=14
+;   key:    [:x, :x, 5 | 10, nil | list({:y, 10} | {:x, 5})]
+;   return: 5 | 10
+;   vars:
+;     Var(0) :: :x
+;     Var(1) :: :x
+;     Var(2) :: 5 | 10
+;     Var(3) :: nil | list({:y, 10} | {:x, 5})
+;   exits:
+;     blk0 Return Var(2)    :: 5 | 10
+
+; spec if_then(4) #fn=14
+;   key:    [:x, :x, 5, nil | list({:x, 5})]
+;   return: 5
+;   vars:
+;     Var(0) :: :x
+;     Var(1) :: :x
+;     Var(2) :: 5
+;     Var(3) :: nil | list({:x, 5})
+;   exits:
+;     blk0 Return Var(2)    :: 5
+
+; spec if_then(4) #fn=14
+;   key:    [:y, :y, 5 | 10, nil | list({:y, 10} | {:x, 5})]
+;   return: 5 | 10
+;   vars:
+;     Var(0) :: :y
+;     Var(1) :: :y
+;     Var(2) :: 5 | 10
+;     Var(3) :: nil | list({:y, 10} | {:x, 5})
+;   exits:
+;     blk0 Return Var(2)    :: 5 | 10
+
+; spec if_then(4) #fn=14
+;   key:    [any, :x | :y, 5 | 10, nil | list({:y, 10} | {:x, 5})]
+;   return: 5 | 10
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: :x | :y
+;     Var(2) :: 5 | 10
+;     Var(3) :: nil | list({:y, 10} | {:x, 5})
+;   exits:
+;     blk0 Return Var(2)    :: 5 | 10
+
+; spec if_then(4) #fn=14
+;   key:    [any, :x, 1, nil | list({:x, 1})]
+;   return: 1
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: :x
+;     Var(2) :: 1
+;     Var(3) :: nil | list({:x, 1})
+;   exits:
+;     blk0 Return Var(2)    :: 1
+
+; spec if_then(4) #fn=14
+;   key:    [any, :x, 3, nil | list({:x, 3})]
+;   return: 3
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: :x
+;     Var(2) :: 3
+;     Var(3) :: nil | list({:x, 3})
+;   exits:
+;     blk0 Return Var(2)    :: 3
+
+; spec if_then(4) #fn=14
+;   key:    [any, :x, 5, nil | list({:x, 5})]
+;   return: 5
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: :x
+;     Var(2) :: 5
+;     Var(3) :: nil | list({:x, 5})
+;   exits:
+;     blk0 Return Var(2)    :: 5
+
+; spec if_then(4) #fn=14
+;   key:    [any, any, 1, nil | list({:x, 1})]
+;   return: 1
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: any
+;     Var(2) :: 1
+;     Var(3) :: nil | list({:x, 1})
+;   exits:
+;     blk0 Return Var(2)    :: 1
+
+; spec if_then(4) #fn=14
+;   key:    [any, any, 5, nil | list({:x, 5})]
+;   return: 5
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: any
+;     Var(2) :: 5
+;     Var(3) :: nil | list({:x, 5})
+;   exits:
+;     blk0 Return Var(2)    :: 5
+
+; spec if_then(4) #fn=14
+;   key:    [any, any, any, nil | list(none)]
+;   return: any
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: any
+;     Var(2) :: any
+;     Var(3) :: nil | list(none)
+;   exits:
+;     blk0 Return Var(2)    :: any
+
+; spec if_then(4) #fn=14
+;   key:    [any, any, any, nil | list({any, any})]
+;   return: any
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: any
+;     Var(2) :: any
+;     Var(3) :: nil | list({any, any})
+;   exits:
+;     blk0 Return Var(2)    :: any
+
+; spec if_else(4) #fn=15
+;   key:    [1, nil | bool | vec(i64) | vec(f64) | vec(u8) | vec(bit) | int \ {1} | float | str | atom | opaque | tuple | list | fn | map, any, nil | list(none)]
+;   return: none
+;   vars:
+;     Var(0) :: 1
+;     Var(1) :: nil | bool | vec(i64) | vec(f64) | vec(u8) | vec(bit) | int \ {1} | float | str | atom | opaque | tuple | list | fn | map
+;     Var(2) :: any
+;     Var(3) :: nil | list(none)
+;   exits:
+;     blk0 TailCall lookup#11(Var(0), Var(3))
+;              callee_key=[1, nil | list(none)]
+
+; spec if_else(4) #fn=15
+;   key:    [10, :x, 5, nil | list({:x, 5})]
+;   return: none
+;   vars:
+;     Var(0) :: 10
+;     Var(1) :: :x
+;     Var(2) :: 5
+;     Var(3) :: nil | list({:x, 5})
+;   exits:
+;     blk0 TailCall lookup#11(Var(0), Var(3))
+;              callee_key=[10, nil | list({:x, 5})]
+
+; spec if_else(4) #fn=15
+;   key:    [2, :x, 1, nil | list({:x, 1})]
+;   return: none
+;   vars:
+;     Var(0) :: 2
+;     Var(1) :: :x
+;     Var(2) :: 1
+;     Var(3) :: nil | list({:x, 1})
+;   exits:
+;     blk0 TailCall lookup#11(Var(0), Var(3))
+;              callee_key=[2, nil | list({:x, 1})]
+
+; spec if_else(4) #fn=15
+;   key:    [3, nil | bool | vec(i64) | vec(f64) | vec(u8) | vec(bit) | int \ {3} | float | str | atom | opaque | tuple | list | fn | map, any, nil | list(none)]
+;   return: none
+;   vars:
+;     Var(0) :: 3
+;     Var(1) :: nil | bool | vec(i64) | vec(f64) | vec(u8) | vec(bit) | int \ {3} | float | str | atom | opaque | tuple | list | fn | map
+;     Var(2) :: any
+;     Var(3) :: nil | list(none)
+;   exits:
+;     blk0 TailCall lookup#11(Var(0), Var(3))
+;              callee_key=[3, nil | list(none)]
+
+; spec if_else(4) #fn=15
+;   key:    [5, nil | bool | vec(i64) | vec(f64) | vec(u8) | vec(bit) | int \ {5} | float | str | atom | opaque | tuple | list | fn | map, any, nil | list(none)]
+;   return: none
+;   vars:
+;     Var(0) :: 5
+;     Var(1) :: nil | bool | vec(i64) | vec(f64) | vec(u8) | vec(bit) | int \ {5} | float | str | atom | opaque | tuple | list | fn | map
+;     Var(2) :: any
+;     Var(3) :: nil | list(none)
+;   exits:
+;     blk0 TailCall lookup#11(Var(0), Var(3))
+;              callee_key=[5, nil | list(none)]
+
+; spec if_else(4) #fn=15
+;   key:    [:x, :y, 5 | 10, nil | list({:y, 10} | {:x, 5})]
+;   return: none
+;   vars:
+;     Var(0) :: :x
+;     Var(1) :: :y
+;     Var(2) :: 5 | 10
+;     Var(3) :: nil | list({:y, 10} | {:x, 5})
+;   exits:
+;     blk0 TailCall lookup#11(Var(0), Var(3))
+;              callee_key=[:x, nil | list({:y, 10} | {:x, 5})]
+
+; spec if_else(4) #fn=15
+;   key:    [:y, :x, 5 | 10, nil | list({:y, 10} | {:x, 5})]
+;   return: none
+;   vars:
+;     Var(0) :: :y
+;     Var(1) :: :x
+;     Var(2) :: 5 | 10
+;     Var(3) :: nil | list({:y, 10} | {:x, 5})
+;   exits:
+;     blk0 TailCall lookup#11(Var(0), Var(3))
+;              callee_key=[:y, nil | list({:y, 10} | {:x, 5})]
+
+; spec if_else(4) #fn=15
+;   key:    [any, :x | :y, 5 | 10, nil | list({:y, 10} | {:x, 5})]
+;   return: 5 | 10
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: :x | :y
+;     Var(2) :: 5 | 10
+;     Var(3) :: nil | list({:y, 10} | {:x, 5})
+;   exits:
+;     blk0 TailCall lookup#11(Var(0), Var(3))
+;              callee_key=[any, nil | list({:y, 10} | {:x, 5})]
+
+; spec if_else(4) #fn=15
+;   key:    [any, any, 3, nil | list({:x, 3})]
+;   return: 3
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: any
+;     Var(2) :: 3
+;     Var(3) :: nil | list({:x, 3})
+;   exits:
+;     blk0 TailCall lookup#11(Var(0), Var(3))
+;              callee_key=[any, nil | list({:x, 3})]
+
+; spec if_else(4) #fn=15
+;   key:    [any, any, any, nil | list(none)]
+;   return: any
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: any
+;     Var(2) :: any
+;     Var(3) :: nil | list(none)
+;   exits:
+;     blk0 TailCall lookup#11(Var(0), Var(3))
+;              callee_key=[any, nil | list(none)]
+
+; spec if_else(4) #fn=15
+;   key:    [any, any, any, nil | list({any, any})]
+;   return: any
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: any
+;     Var(2) :: any
+;     Var(3) :: nil | list({any, any})
+;   exits:
+;     blk0 TailCall lookup#11(Var(0), Var(3))
+;              callee_key=[any, nil | list({any, any})]
+
+; spec if_else(4) #fn=15
+;   key:    [nil | bool | vec(i64) | vec(f64) | vec(u8) | vec(bit) | int | float | str | atom \ {:x} | opaque | tuple | list | fn | map, :x, 1, nil | list({:x, 1})]
+;   return: none
+;   vars:
+;     Var(0) :: nil | bool | vec(i64) | vec(f64) | vec(u8) | vec(bit) | int | float | str | atom \ {:x} | opaque | tuple | list | fn | map
+;     Var(1) :: :x
+;     Var(2) :: 1
+;     Var(3) :: nil | list({:x, 1})
+;   exits:
+;     blk0 TailCall lookup#11(Var(0), Var(3))
+;              callee_key=[nil | bool | vec(i64) | vec(f64) | vec(u8) | vec(bit) | int | float | str | atom \ {:x} | opaque | tuple | list | fn | map, nil | list({:x, 1})]
+
+; spec if_else(4) #fn=15
+;   key:    [nil | bool | vec(i64) | vec(f64) | vec(u8) | vec(bit) | int | float | str | atom \ {:x} | opaque | tuple | list | fn | map, :x, 3, nil | list({:x, 3})]
+;   return: none
+;   vars:
+;     Var(0) :: nil | bool | vec(i64) | vec(f64) | vec(u8) | vec(bit) | int | float | str | atom \ {:x} | opaque | tuple | list | fn | map
+;     Var(1) :: :x
+;     Var(2) :: 3
+;     Var(3) :: nil | list({:x, 3})
+;   exits:
+;     blk0 TailCall lookup#11(Var(0), Var(3))
+;              callee_key=[nil | bool | vec(i64) | vec(f64) | vec(u8) | vec(bit) | int | float | str | atom \ {:x} | opaque | tuple | list | fn | map, nil | list({:x, 3})]
+
+; spec if_else(4) #fn=15
+;   key:    [nil | bool | vec(i64) | vec(f64) | vec(u8) | vec(bit) | int | float | str | atom \ {:x} | opaque | tuple | list | fn | map, :x, 5, nil | list({:x, 5})]
+;   return: none
+;   vars:
+;     Var(0) :: nil | bool | vec(i64) | vec(f64) | vec(u8) | vec(bit) | int | float | str | atom \ {:x} | opaque | tuple | list | fn | map
+;     Var(1) :: :x
+;     Var(2) :: 5
+;     Var(3) :: nil | list({:x, 5})
+;   exits:
+;     blk0 TailCall lookup#11(Var(0), Var(3))
+;              callee_key=[nil | bool | vec(i64) | vec(f64) | vec(u8) | vec(bit) | int | float | str | atom \ {:x} | opaque | tuple | list | fn | map, nil | list({:x, 5})]
+
+; spec fn_clause_0(2) #fn=16
+;   key:    [list(none), 1]
+;   return: 1
+;   vars:
+;     Var(0) :: list(none)
+;     Var(1) :: 1
+;   exits:
+;     blk0 Return Var(1)    :: 1
+
+; spec fn_clause_0(2) #fn=16
+;   key:    [list(none), 3]
+;   return: 3
+;   vars:
+;     Var(0) :: list(none)
+;     Var(1) :: 3
+;   exits:
+;     blk0 Return Var(1)    :: 3
+
+; spec fn_clause_0(2) #fn=16
+;   key:    [list(none), 5]
+;   return: 5
+;   vars:
+;     Var(0) :: list(none)
+;     Var(1) :: 5
+;   exits:
+;     blk0 Return Var(1)    :: 5
+
+; spec fn_clause_0(2) #fn=16
+;   key:    [list(none), any]
+;   return: any
+;   vars:
+;     Var(0) :: list(none)
+;     Var(1) :: any
+;   exits:
+;     blk0 Return Var(1)    :: any
+
+; spec fn_clause_0(2) #fn=16
+;   key:    [list({:x, 1}), 2]
+;   return: 2
+;   vars:
+;     Var(0) :: list({:x, 1})
+;     Var(1) :: 2
+;   exits:
+;     blk0 Return Var(1)    :: 2
+
+; spec fn_clause_0(2) #fn=16
+;   key:    [list({:x, 1}), any]
+;   return: any
+;   vars:
+;     Var(0) :: list({:x, 1})
+;     Var(1) :: any
+;   exits:
+;     blk0 Return Var(1)    :: any
+
+; spec fn_clause_0(2) #fn=16
+;   key:    [list({:x, 2} | {:x, 1}), :x]
+;   return: :x
+;   vars:
+;     Var(0) :: list({:x, 2} | {:x, 1})
+;     Var(1) :: :x
+;   exits:
+;     blk0 Return Var(1)    :: :x
+
+; spec fn_clause_0(2) #fn=16
+;   key:    [list({:x, 3}), 4]
+;   return: 4
+;   vars:
+;     Var(0) :: list({:x, 3})
+;     Var(1) :: 4
+;   exits:
+;     blk0 Return Var(1)    :: 4
+
+; spec fn_clause_0(2) #fn=16
+;   key:    [list({:x, 3}), :x]
+;   return: :x
+;   vars:
+;     Var(0) :: list({:x, 3})
+;     Var(1) :: :x
+;   exits:
+;     blk0 Return Var(1)    :: :x
+
+; spec fn_clause_0(2) #fn=16
+;   key:    [list({:x, 3}), any]
+;   return: any
+;   vars:
+;     Var(0) :: list({:x, 3})
+;     Var(1) :: any
+;   exits:
+;     blk0 Return Var(1)    :: any
+
+; spec fn_clause_0(2) #fn=16
+;   key:    [list({:x, 5}), 10]
+;   return: 10
+;   vars:
+;     Var(0) :: list({:x, 5})
+;     Var(1) :: 10
+;   exits:
+;     blk0 Return Var(1)    :: 10
+
+; spec fn_clause_0(2) #fn=16
+;   key:    [list({:x, 5}), any]
+;   return: any
+;   vars:
+;     Var(0) :: list({:x, 5})
+;     Var(1) :: any
+;   exits:
+;     blk0 Return Var(1)    :: any
+
+; spec fn_clause_0(2) #fn=16
+;   key:    [list({:y, 10} | {:x, 5}), :x]
+;   return: :x
+;   vars:
+;     Var(0) :: list({:y, 10} | {:x, 5})
+;     Var(1) :: :x
+;   exits:
+;     blk0 Return Var(1)    :: :x
+
+; spec fn_clause_0(2) #fn=16
+;   key:    [list({:y, 10} | {:x, 5}), :y]
+;   return: :y
+;   vars:
+;     Var(0) :: list({:y, 10} | {:x, 5})
+;     Var(1) :: :y
+;   exits:
+;     blk0 Return Var(1)    :: :y
+
+; spec fn_clause_0(2) #fn=16
+;   key:    [list({:y, 10} | {:x, 5}), any]
+;   return: any
+;   vars:
+;     Var(0) :: list({:y, 10} | {:x, 5})
+;     Var(1) :: any
+;   exits:
+;     blk0 Return Var(1)    :: any
+
+; spec fn_clause_0(2) #fn=16
+;   key:    [list({any, any}), any]
+;   return: any
+;   vars:
+;     Var(0) :: list({any, any})
+;     Var(1) :: any
+;   exits:
+;     blk0 Return Var(1)    :: any
+
+; spec fn_clause_1(2) #fn=17
+;   key:    [list(none), 1]
+;   return: none
+;   vars:
+;     Var(0) :: list(none)
+;     Var(1) :: 1
+;   exits:
+;     blk0 TailCall lookup#11(Var(1), Var(0))
+;              callee_key=[1, list(none)]
+
+; spec fn_clause_1(2) #fn=17
+;   key:    [list(none), 3]
+;   return: none
+;   vars:
+;     Var(0) :: list(none)
+;     Var(1) :: 3
+;   exits:
+;     blk0 TailCall lookup#11(Var(1), Var(0))
+;              callee_key=[3, list(none)]
+
+; spec fn_clause_1(2) #fn=17
+;   key:    [list(none), 5]
+;   return: none
+;   vars:
+;     Var(0) :: list(none)
+;     Var(1) :: 5
+;   exits:
+;     blk0 TailCall lookup#11(Var(1), Var(0))
+;              callee_key=[5, list(none)]
+
+; spec fn_clause_1(2) #fn=17
+;   key:    [list(none), any]
+;   return: any
+;   vars:
+;     Var(0) :: list(none)
+;     Var(1) :: any
+;   exits:
+;     blk0 TailCall lookup#11(Var(1), Var(0))
+;              callee_key=[any, list(none)]
+
+; spec fn_clause_1(2) #fn=17
+;   key:    [list({:x, 1}), 2]
+;   return: none
+;   vars:
+;     Var(0) :: list({:x, 1})
+;     Var(1) :: 2
+;   exits:
+;     blk0 TailCall lookup#11(Var(1), Var(0))
+;              callee_key=[2, list({:x, 1})]
+
+; spec fn_clause_1(2) #fn=17
+;   key:    [list({:x, 1}), any]
+;   return: 1
+;   vars:
+;     Var(0) :: list({:x, 1})
+;     Var(1) :: any
+;   exits:
+;     blk0 TailCall lookup#11(Var(1), Var(0))
+;              callee_key=[any, list({:x, 1})]
+
+; spec fn_clause_1(2) #fn=17
+;   key:    [list({:x, 2} | {:x, 1}), :x]
+;   return: none
+;   vars:
+;     Var(0) :: list({:x, 2} | {:x, 1})
+;     Var(1) :: :x
+;   exits:
+;     blk0 TailCall lookup#11(Var(1), Var(0))
+;              callee_key=[:x, list({:x, 2} | {:x, 1})]
+
+; spec fn_clause_1(2) #fn=17
+;   key:    [list({:x, 3}), 4]
+;   return: none
+;   vars:
+;     Var(0) :: list({:x, 3})
+;     Var(1) :: 4
+;   exits:
+;     blk0 TailCall lookup#11(Var(1), Var(0))
+;              callee_key=[4, list({:x, 3})]
+
+; spec fn_clause_1(2) #fn=17
+;   key:    [list({:x, 3}), :x]
+;   return: 3
+;   vars:
+;     Var(0) :: list({:x, 3})
+;     Var(1) :: :x
+;   exits:
+;     blk0 TailCall lookup#11(Var(1), Var(0))
+;              callee_key=[:x, list({:x, 3})]
+
+; spec fn_clause_1(2) #fn=17
+;   key:    [list({:x, 3}), any]
+;   return: 3
+;   vars:
+;     Var(0) :: list({:x, 3})
+;     Var(1) :: any
+;   exits:
+;     blk0 TailCall lookup#11(Var(1), Var(0))
+;              callee_key=[any, list({:x, 3})]
+
+; spec fn_clause_1(2) #fn=17
+;   key:    [list({:x, 5}), 10]
+;   return: none
+;   vars:
+;     Var(0) :: list({:x, 5})
+;     Var(1) :: 10
+;   exits:
+;     blk0 TailCall lookup#11(Var(1), Var(0))
+;              callee_key=[10, list({:x, 5})]
+
+; spec fn_clause_1(2) #fn=17
+;   key:    [list({:x, 5}), any]
+;   return: 5
+;   vars:
+;     Var(0) :: list({:x, 5})
+;     Var(1) :: any
+;   exits:
+;     blk0 TailCall lookup#11(Var(1), Var(0))
+;              callee_key=[any, list({:x, 5})]
+
+; spec fn_clause_1(2) #fn=17
+;   key:    [list({:y, 10} | {:x, 5}), :x]
+;   return: none
+;   vars:
+;     Var(0) :: list({:y, 10} | {:x, 5})
+;     Var(1) :: :x
+;   exits:
+;     blk0 TailCall lookup#11(Var(1), Var(0))
+;              callee_key=[:x, list({:y, 10} | {:x, 5})]
+
+; spec fn_clause_1(2) #fn=17
+;   key:    [list({:y, 10} | {:x, 5}), :y]
+;   return: none
+;   vars:
+;     Var(0) :: list({:y, 10} | {:x, 5})
+;     Var(1) :: :y
+;   exits:
+;     blk0 TailCall lookup#11(Var(1), Var(0))
+;              callee_key=[:y, list({:y, 10} | {:x, 5})]
+
+; spec fn_clause_1(2) #fn=17
+;   key:    [list({:y, 10} | {:x, 5}), any]
+;   return: 5 | 10
+;   vars:
+;     Var(0) :: list({:y, 10} | {:x, 5})
+;     Var(1) :: any
+;   exits:
+;     blk0 TailCall lookup#11(Var(1), Var(0))
+;              callee_key=[any, list({:y, 10} | {:x, 5})]
+
+; spec fn_clause_1(2) #fn=17
+;   key:    [list({any, any}), any]
+;   return: any
+;   vars:
+;     Var(0) :: list({any, any})
+;     Var(1) :: any
+;   exits:
+;     blk0 TailCall lookup#11(Var(1), Var(0))
+;              callee_key=[any, list({any, any})]
+
+; spec fn_clause_2(3) #fn=18
+;   key:    [list(none), any, any]
+;   return: int | float
+;   vars:
+;     Var(0) :: list(none)
+;     Var(1) :: any
+;     Var(2) :: any
+;   exits:
+;     blk0 Call eval#12(Var(1), Var(0))
+;              callee_key=[any, list(none)]
+;              cont k_21#21 captured=[Var(0), Var(1), Var(2)]
+;              cont_key=[any, list(none), any, any]
+
+; spec fn_clause_2(3) #fn=18
+;   key:    [list({:x, 1}), any, any]
+;   return: int | float
+;   vars:
+;     Var(0) :: list({:x, 1})
+;     Var(1) :: any
+;     Var(2) :: any
+;   exits:
+;     blk0 Call eval#12(Var(1), Var(0))
+;              callee_key=[any, list({:x, 1})]
+;              cont k_21#21 captured=[Var(0), Var(1), Var(2)]
+;              cont_key=[any, list({:x, 1}), any, any]
+
+; spec fn_clause_2(3) #fn=18
+;   key:    [list({:x, 2} | {:x, 1}), any, any]
+;   return: none
+;   vars:
+;     Var(0) :: list({:x, 2} | {:x, 1})
+;     Var(1) :: any
+;     Var(2) :: any
+;   exits:
+;     blk0 Call eval#12(Var(1), Var(0))
+;              callee_key=[any, list({:x, 2} | {:x, 1})]
+;              cont k_21#21 captured=[Var(0), Var(1), Var(2)]
+;              cont_key=[any, list({:x, 2} | {:x, 1}), any, any]
+
+; spec fn_clause_2(3) #fn=18
+;   key:    [list({:x, 3}), any, any]
+;   return: int | float
+;   vars:
+;     Var(0) :: list({:x, 3})
+;     Var(1) :: any
+;     Var(2) :: any
+;   exits:
+;     blk0 Call eval#12(Var(1), Var(0))
+;              callee_key=[any, list({:x, 3})]
+;              cont k_21#21 captured=[Var(0), Var(1), Var(2)]
+;              cont_key=[any, list({:x, 3}), any, any]
+
+; spec fn_clause_2(3) #fn=18
+;   key:    [list({:x, 3}), {:var, :x}, {:add, {:var, :x}, {:num, 4}}]
+;   return: int | float
+;   vars:
+;     Var(0) :: list({:x, 3})
+;     Var(1) :: {:var, :x}
+;     Var(2) :: {:add, {:var, :x}, {:num, 4}}
+;   exits:
+;     blk0 Call eval#12(Var(1), Var(0))
+;              callee_key=[{:var, :x}, list({:x, 3})]
+;              cont k_21#21 captured=[Var(0), Var(1), Var(2)]
+;              cont_key=[3 | :x, list({:x, 3}), {:var, :x}, {:add, {:var, :x}, {:num, 4}}]
+
+; spec fn_clause_2(3) #fn=18
+;   key:    [list({:x, 3}), {:var, :x}, {:num, 4}]
+;   return: int | float
+;   vars:
+;     Var(0) :: list({:x, 3})
+;     Var(1) :: {:var, :x}
+;     Var(2) :: {:num, 4}
+;   exits:
+;     blk0 Call eval#12(Var(1), Var(0))
+;              callee_key=[{:var, :x}, list({:x, 3})]
+;              cont k_21#21 captured=[Var(0), Var(1), Var(2)]
+;              cont_key=[3 | :x, list({:x, 3}), {:var, :x}, {:num, 4}]
+
+; spec fn_clause_2(3) #fn=18
+;   key:    [list({:x, 5}), any, any]
+;   return: int | float
+;   vars:
+;     Var(0) :: list({:x, 5})
+;     Var(1) :: any
+;     Var(2) :: any
+;   exits:
+;     blk0 Call eval#12(Var(1), Var(0))
+;              callee_key=[any, list({:x, 5})]
+;              cont k_21#21 captured=[Var(0), Var(1), Var(2)]
+;              cont_key=[any, list({:x, 5}), any, any]
+
+; spec fn_clause_2(3) #fn=18
+;   key:    [list({:y, 10} | {:x, 5}), any, any]
+;   return: int | float
+;   vars:
+;     Var(0) :: list({:y, 10} | {:x, 5})
+;     Var(1) :: any
+;     Var(2) :: any
+;   exits:
+;     blk0 Call eval#12(Var(1), Var(0))
+;              callee_key=[any, list({:y, 10} | {:x, 5})]
+;              cont k_21#21 captured=[Var(0), Var(1), Var(2)]
+;              cont_key=[any, list({:y, 10} | {:x, 5}), any, any]
+
+; spec fn_clause_2(3) #fn=18
+;   key:    [list({:y, 10} | {:x, 5}), {:var, :x}, {:var, :y}]
+;   return: int | float
+;   vars:
+;     Var(0) :: list({:y, 10} | {:x, 5})
+;     Var(1) :: {:var, :x}
+;     Var(2) :: {:var, :y}
+;   exits:
+;     blk0 Call eval#12(Var(1), Var(0))
+;              callee_key=[{:var, :x}, list({:y, 10} | {:x, 5})]
+;              cont k_21#21 captured=[Var(0), Var(1), Var(2)]
+;              cont_key=[:x, list({:y, 10} | {:x, 5}), {:var, :x}, {:var, :y}]
+
+; spec fn_clause_2(3) #fn=18
+;   key:    [list({any, any}), any, any]
+;   return: int | float
+;   vars:
+;     Var(0) :: list({any, any})
+;     Var(1) :: any
+;     Var(2) :: any
+;   exits:
+;     blk0 Call eval#12(Var(1), Var(0))
+;              callee_key=[any, list({any, any})]
+;              cont k_21#21 captured=[Var(0), Var(1), Var(2)]
+;              cont_key=[any, list({any, any}), any, any]
+
+; spec fn_clause_3(3) #fn=19
+;   key:    [list(none), any, any]
+;   return: int | float
+;   vars:
+;     Var(0) :: list(none)
+;     Var(1) :: any
+;     Var(2) :: any
+;   exits:
+;     blk0 Call eval#12(Var(1), Var(0))
+;              callee_key=[any, list(none)]
+;              cont k_23#23 captured=[Var(0), Var(1), Var(2)]
+;              cont_key=[any, list(none), any, any]
+
+; spec fn_clause_3(3) #fn=19
+;   key:    [list({:x, 1}), any, any]
+;   return: int | float
+;   vars:
+;     Var(0) :: list({:x, 1})
+;     Var(1) :: any
+;     Var(2) :: any
+;   exits:
+;     blk0 Call eval#12(Var(1), Var(0))
+;              callee_key=[any, list({:x, 1})]
+;              cont k_23#23 captured=[Var(0), Var(1), Var(2)]
+;              cont_key=[any, list({:x, 1}), any, any]
+
+; spec fn_clause_3(3) #fn=19
+;   key:    [list({:x, 2} | {:x, 1}), any, any]
+;   return: none
+;   vars:
+;     Var(0) :: list({:x, 2} | {:x, 1})
+;     Var(1) :: any
+;     Var(2) :: any
+;   exits:
+;     blk0 Call eval#12(Var(1), Var(0))
+;              callee_key=[any, list({:x, 2} | {:x, 1})]
+;              cont k_23#23 captured=[Var(0), Var(1), Var(2)]
+;              cont_key=[any, list({:x, 2} | {:x, 1}), any, any]
+
+; spec fn_clause_3(3) #fn=19
+;   key:    [list({:x, 3}), any, any]
+;   return: int | float
+;   vars:
+;     Var(0) :: list({:x, 3})
+;     Var(1) :: any
+;     Var(2) :: any
+;   exits:
+;     blk0 Call eval#12(Var(1), Var(0))
+;              callee_key=[any, list({:x, 3})]
+;              cont k_23#23 captured=[Var(0), Var(1), Var(2)]
+;              cont_key=[any, list({:x, 3}), any, any]
+
+; spec fn_clause_3(3) #fn=19
+;   key:    [list({:x, 3}), {:var, :x}, {:add, {:var, :x}, {:num, 4}}]
+;   return: int | float
+;   vars:
+;     Var(0) :: list({:x, 3})
+;     Var(1) :: {:var, :x}
+;     Var(2) :: {:add, {:var, :x}, {:num, 4}}
+;   exits:
+;     blk0 Call eval#12(Var(1), Var(0))
+;              callee_key=[{:var, :x}, list({:x, 3})]
+;              cont k_23#23 captured=[Var(0), Var(1), Var(2)]
+;              cont_key=[3 | :x, list({:x, 3}), {:var, :x}, {:add, {:var, :x}, {:num, 4}}]
+
+; spec fn_clause_3(3) #fn=19
+;   key:    [list({:x, 3}), {:var, :x}, {:num, 4}]
+;   return: int | float
+;   vars:
+;     Var(0) :: list({:x, 3})
+;     Var(1) :: {:var, :x}
+;     Var(2) :: {:num, 4}
+;   exits:
+;     blk0 Call eval#12(Var(1), Var(0))
+;              callee_key=[{:var, :x}, list({:x, 3})]
+;              cont k_23#23 captured=[Var(0), Var(1), Var(2)]
+;              cont_key=[3 | :x, list({:x, 3}), {:var, :x}, {:num, 4}]
+
+; spec fn_clause_3(3) #fn=19
+;   key:    [list({:x, 5}), any, any]
+;   return: int | float
+;   vars:
+;     Var(0) :: list({:x, 5})
+;     Var(1) :: any
+;     Var(2) :: any
+;   exits:
+;     blk0 Call eval#12(Var(1), Var(0))
+;              callee_key=[any, list({:x, 5})]
+;              cont k_23#23 captured=[Var(0), Var(1), Var(2)]
+;              cont_key=[any, list({:x, 5}), any, any]
+
+; spec fn_clause_3(3) #fn=19
+;   key:    [list({:y, 10} | {:x, 5}), any, any]
+;   return: int | float
+;   vars:
+;     Var(0) :: list({:y, 10} | {:x, 5})
+;     Var(1) :: any
+;     Var(2) :: any
+;   exits:
+;     blk0 Call eval#12(Var(1), Var(0))
+;              callee_key=[any, list({:y, 10} | {:x, 5})]
+;              cont k_23#23 captured=[Var(0), Var(1), Var(2)]
+;              cont_key=[any, list({:y, 10} | {:x, 5}), any, any]
+
+; spec fn_clause_3(3) #fn=19
+;   key:    [list({:y, 10} | {:x, 5}), {:var, :x}, {:var, :y}]
+;   return: int | float
+;   vars:
+;     Var(0) :: list({:y, 10} | {:x, 5})
+;     Var(1) :: {:var, :x}
+;     Var(2) :: {:var, :y}
+;   exits:
+;     blk0 Call eval#12(Var(1), Var(0))
+;              callee_key=[{:var, :x}, list({:y, 10} | {:x, 5})]
+;              cont k_23#23 captured=[Var(0), Var(1), Var(2)]
+;              cont_key=[:x, list({:y, 10} | {:x, 5}), {:var, :x}, {:var, :y}]
+
+; spec fn_clause_3(3) #fn=19
+;   key:    [list({any, any}), any, any]
+;   return: int | float
+;   vars:
+;     Var(0) :: list({any, any})
+;     Var(1) :: any
+;     Var(2) :: any
+;   exits:
+;     blk0 Call eval#12(Var(1), Var(0))
+;              callee_key=[any, list({any, any})]
+;              cont k_23#23 captured=[Var(0), Var(1), Var(2)]
+;              cont_key=[any, list({any, any}), any, any]
+
+; spec fn_clause_4(4) #fn=20
+;   key:    [list(none), :x, {:num, 1}, {:let, :x, {:num, 2}, {:var, :x}}]
+;   return: :x
+;   vars:
+;     Var(0) :: list(none)
+;     Var(1) :: :x
+;     Var(2) :: {:num, 1}
+;     Var(3) :: {:let, :x, {:num, 2}, {:var, :x}}
+;   exits:
+;     blk0 Call eval#12(Var(2), Var(0))
+;              callee_key=[{:num, 1}, list(none)]
+;              cont k_25#25 captured=[Var(0), Var(1), Var(2), Var(3)]
+;              cont_key=[1, list(none), :x, {:num, 1}, {:let, :x, {:num, 2}, {:var, :x}}]
+
+; spec fn_clause_4(4) #fn=20
+;   key:    [list(none), :x, {:num, 3}, {:mul, {:var, :x}, {:add, {:var, :x}, {:num, 4}}}]
+;   return: int | float
+;   vars:
+;     Var(0) :: list(none)
+;     Var(1) :: :x
+;     Var(2) :: {:num, 3}
+;     Var(3) :: {:mul, {:var, :x}, {:add, {:var, :x}, {:num, 4}}}
+;   exits:
+;     blk0 Call eval#12(Var(2), Var(0))
+;              callee_key=[{:num, 3}, list(none)]
+;              cont k_25#25 captured=[Var(0), Var(1), Var(2), Var(3)]
+;              cont_key=[3, list(none), :x, {:num, 3}, {:mul, {:var, :x}, {:add, {:var, :x}, {:num, 4}}}]
+
+; spec fn_clause_4(4) #fn=20
+;   key:    [list(none), :x, {:num, 5}, {:let, :y, {:num, 10}, {:add, {:var, :x}, {:var, :y}}}]
+;   return: int | float
+;   vars:
+;     Var(0) :: list(none)
+;     Var(1) :: :x
+;     Var(2) :: {:num, 5}
+;     Var(3) :: {:let, :y, {:num, 10}, {:add, {:var, :x}, {:var, :y}}}
+;   exits:
+;     blk0 Call eval#12(Var(2), Var(0))
+;              callee_key=[{:num, 5}, list(none)]
+;              cont k_25#25 captured=[Var(0), Var(1), Var(2), Var(3)]
+;              cont_key=[5, list(none), :x, {:num, 5}, {:let, :y, {:num, 10}, {:add, {:var, :x}, {:var, :y}}}]
+
+; spec fn_clause_4(4) #fn=20
+;   key:    [list(none), any, any, any]
+;   return: any
+;   vars:
+;     Var(0) :: list(none)
+;     Var(1) :: any
+;     Var(2) :: any
+;     Var(3) :: any
+;   exits:
+;     blk0 Call eval#12(Var(2), Var(0))
+;              callee_key=[any, list(none)]
+;              cont k_25#25 captured=[Var(0), Var(1), Var(2), Var(3)]
+;              cont_key=[any, list(none), any, any, any]
+
+; spec fn_clause_4(4) #fn=20
+;   key:    [list({:x, 1}), :x, {:num, 2}, {:var, :x}]
+;   return: :x
+;   vars:
+;     Var(0) :: list({:x, 1})
+;     Var(1) :: :x
+;     Var(2) :: {:num, 2}
+;     Var(3) :: {:var, :x}
+;   exits:
+;     blk0 Call eval#12(Var(2), Var(0))
+;              callee_key=[{:num, 2}, list({:x, 1})]
+;              cont k_25#25 captured=[Var(0), Var(1), Var(2), Var(3)]
+;              cont_key=[2, list({:x, 1}), :x, {:num, 2}, {:var, :x}]
+
+; spec fn_clause_4(4) #fn=20
+;   key:    [list({:x, 1}), any, any, any]
+;   return: any
+;   vars:
+;     Var(0) :: list({:x, 1})
+;     Var(1) :: any
+;     Var(2) :: any
+;     Var(3) :: any
+;   exits:
+;     blk0 Call eval#12(Var(2), Var(0))
+;              callee_key=[any, list({:x, 1})]
+;              cont k_25#25 captured=[Var(0), Var(1), Var(2), Var(3)]
+;              cont_key=[any, list({:x, 1}), any, any, any]
+
+; spec fn_clause_4(4) #fn=20
+;   key:    [list({:x, 2} | {:x, 1}), any, any, any]
+;   return: none
+;   vars:
+;     Var(0) :: list({:x, 2} | {:x, 1})
+;     Var(1) :: any
+;     Var(2) :: any
+;     Var(3) :: any
+;   exits:
+;     blk0 Call eval#12(Var(2), Var(0))
+;              callee_key=[any, list({:x, 2} | {:x, 1})]
+;              cont k_25#25 captured=[Var(0), Var(1), Var(2), Var(3)]
+;              cont_key=[any, list({:x, 2} | {:x, 1}), any, any, any]
+
+; spec fn_clause_4(4) #fn=20
+;   key:    [list({:x, 3}), any, any, any]
+;   return: any
+;   vars:
+;     Var(0) :: list({:x, 3})
+;     Var(1) :: any
+;     Var(2) :: any
+;     Var(3) :: any
+;   exits:
+;     blk0 Call eval#12(Var(2), Var(0))
+;              callee_key=[any, list({:x, 3})]
+;              cont k_25#25 captured=[Var(0), Var(1), Var(2), Var(3)]
+;              cont_key=[any, list({:x, 3}), any, any, any]
+
+; spec fn_clause_4(4) #fn=20
+;   key:    [list({:x, 5}), :y, {:num, 10}, {:add, {:var, :x}, {:var, :y}}]
+;   return: int | float
+;   vars:
+;     Var(0) :: list({:x, 5})
+;     Var(1) :: :y
+;     Var(2) :: {:num, 10}
+;     Var(3) :: {:add, {:var, :x}, {:var, :y}}
+;   exits:
+;     blk0 Call eval#12(Var(2), Var(0))
+;              callee_key=[{:num, 10}, list({:x, 5})]
+;              cont k_25#25 captured=[Var(0), Var(1), Var(2), Var(3)]
+;              cont_key=[10, list({:x, 5}), :y, {:num, 10}, {:add, {:var, :x}, {:var, :y}}]
+
+; spec fn_clause_4(4) #fn=20
+;   key:    [list({:x, 5}), any, any, any]
+;   return: any
+;   vars:
+;     Var(0) :: list({:x, 5})
+;     Var(1) :: any
+;     Var(2) :: any
+;     Var(3) :: any
+;   exits:
+;     blk0 Call eval#12(Var(2), Var(0))
+;              callee_key=[any, list({:x, 5})]
+;              cont k_25#25 captured=[Var(0), Var(1), Var(2), Var(3)]
+;              cont_key=[any, list({:x, 5}), any, any, any]
+
+; spec fn_clause_4(4) #fn=20
+;   key:    [list({:y, 10} | {:x, 5}), any, any, any]
+;   return: any
+;   vars:
+;     Var(0) :: list({:y, 10} | {:x, 5})
+;     Var(1) :: any
+;     Var(2) :: any
+;     Var(3) :: any
+;   exits:
+;     blk0 Call eval#12(Var(2), Var(0))
+;              callee_key=[any, list({:y, 10} | {:x, 5})]
+;              cont k_25#25 captured=[Var(0), Var(1), Var(2), Var(3)]
+;              cont_key=[any, list({:y, 10} | {:x, 5}), any, any, any]
+
+; spec fn_clause_4(4) #fn=20
+;   key:    [list({any, any}), any, any, any]
+;   return: any
+;   vars:
+;     Var(0) :: list({any, any})
+;     Var(1) :: any
+;     Var(2) :: any
+;     Var(3) :: any
+;   exits:
+;     blk0 Call eval#12(Var(2), Var(0))
+;              callee_key=[any, list({any, any})]
+;              cont k_25#25 captured=[Var(0), Var(1), Var(2), Var(3)]
+;              cont_key=[any, list({any, any}), any, any, any]
+
+; spec k_21(4) #fn=21
+;   key:    [3 | :x, list({:x, 3}), {:var, :x}, {:add, {:var, :x}, {:num, 4}}]
+;   return: int | float
+;   vars:
+;     Var(0) :: 3 | :x
+;     Var(1) :: list({:x, 3})
+;     Var(2) :: {:var, :x}
+;     Var(3) :: {:add, {:var, :x}, {:num, 4}}
+;   exits:
+;     blk0 Call eval#12(Var(3), Var(1))
+;              callee_key=[{:add, {:var, :x}, {:num, 4}}, list({:x, 3})]
+;              cont k_22#22 captured=[Var(1), Var(2), Var(3), Var(0)]
+;              cont_key=[int | float, list({:x, 3}), {:var, :x}, {:add, {:var, :x}, {:num, 4}}, 3 | :x]
+
+; spec k_21(4) #fn=21
+;   key:    [3 | :x, list({:x, 3}), {:var, :x}, {:num, 4}]
+;   return: int | float
+;   vars:
+;     Var(0) :: 3 | :x
+;     Var(1) :: list({:x, 3})
+;     Var(2) :: {:var, :x}
+;     Var(3) :: {:num, 4}
+;   exits:
+;     blk0 Call eval#12(Var(3), Var(1))
+;              callee_key=[{:num, 4}, list({:x, 3})]
+;              cont k_22#22 captured=[Var(1), Var(2), Var(3), Var(0)]
+;              cont_key=[4, list({:x, 3}), {:var, :x}, {:num, 4}, 3 | :x]
+
+; spec k_21(4) #fn=21
+;   key:    [:x, list({:y, 10} | {:x, 5}), {:var, :x}, {:var, :y}]
+;   return: int | float
+;   vars:
+;     Var(0) :: :x
+;     Var(1) :: list({:y, 10} | {:x, 5})
+;     Var(2) :: {:var, :x}
+;     Var(3) :: {:var, :y}
+;   exits:
+;     blk0 Call eval#12(Var(3), Var(1))
+;              callee_key=[{:var, :y}, list({:y, 10} | {:x, 5})]
+;              cont k_22#22 captured=[Var(1), Var(2), Var(3), Var(0)]
+;              cont_key=[:y, list({:y, 10} | {:x, 5}), {:var, :x}, {:var, :y}, :x]
+
+; spec k_21(4) #fn=21
+;   key:    [any, list(none), any, any]
+;   return: int | float
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: list(none)
+;     Var(2) :: any
+;     Var(3) :: any
+;   exits:
+;     blk0 Call eval#12(Var(3), Var(1))
+;              callee_key=[any, list(none)]
+;              cont k_22#22 captured=[Var(1), Var(2), Var(3), Var(0)]
+;              cont_key=[any, list(none), any, any, any]
+
+; spec k_21(4) #fn=21
+;   key:    [any, list({:x, 1}), any, any]
+;   return: int | float
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: list({:x, 1})
+;     Var(2) :: any
+;     Var(3) :: any
+;   exits:
+;     blk0 Call eval#12(Var(3), Var(1))
+;              callee_key=[any, list({:x, 1})]
+;              cont k_22#22 captured=[Var(1), Var(2), Var(3), Var(0)]
+;              cont_key=[any, list({:x, 1}), any, any, any]
+
+; spec k_21(4) #fn=21
+;   key:    [any, list({:x, 3}), any, any]
+;   return: int | float
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: list({:x, 3})
+;     Var(2) :: any
+;     Var(3) :: any
+;   exits:
+;     blk0 Call eval#12(Var(3), Var(1))
+;              callee_key=[any, list({:x, 3})]
+;              cont k_22#22 captured=[Var(1), Var(2), Var(3), Var(0)]
+;              cont_key=[any, list({:x, 3}), any, any, any]
+
+; spec k_21(4) #fn=21
+;   key:    [any, list({:x, 5}), any, any]
+;   return: int | float
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: list({:x, 5})
+;     Var(2) :: any
+;     Var(3) :: any
+;   exits:
+;     blk0 Call eval#12(Var(3), Var(1))
+;              callee_key=[any, list({:x, 5})]
+;              cont k_22#22 captured=[Var(1), Var(2), Var(3), Var(0)]
+;              cont_key=[any, list({:x, 5}), any, any, any]
+
+; spec k_21(4) #fn=21
+;   key:    [any, list({:y, 10} | {:x, 5}), any, any]
+;   return: int | float
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: list({:y, 10} | {:x, 5})
+;     Var(2) :: any
+;     Var(3) :: any
+;   exits:
+;     blk0 Call eval#12(Var(3), Var(1))
+;              callee_key=[any, list({:y, 10} | {:x, 5})]
+;              cont k_22#22 captured=[Var(1), Var(2), Var(3), Var(0)]
+;              cont_key=[any, list({:y, 10} | {:x, 5}), any, any, any]
+
+; spec k_21(4) #fn=21
+;   key:    [any, list({any, any}), any, any]
+;   return: int | float
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: list({any, any})
+;     Var(2) :: any
+;     Var(3) :: any
+;   exits:
+;     blk0 Call eval#12(Var(3), Var(1))
+;              callee_key=[any, list({any, any})]
+;              cont k_22#22 captured=[Var(1), Var(2), Var(3), Var(0)]
+;              cont_key=[any, list({any, any}), any, any, any]
+
+; spec k_22(5) #fn=22
+;   key:    [4, list({:x, 3}), {:var, :x}, {:num, 4}, 3 | :x]
+;   return: int | float
+;   vars:
+;     Var(0) :: 4
+;     Var(1) :: list({:x, 3})
+;     Var(2) :: {:var, :x}
+;     Var(3) :: {:num, 4}
+;     Var(4) :: 3 | :x
+;     Var(5) :: int | float
+;   exits:
+;     blk0 Return Var(5)    :: int | float
+
+; spec k_22(5) #fn=22
+;   key:    [:y, list({:y, 10} | {:x, 5}), {:var, :x}, {:var, :y}, :x]
+;   return: int | float
+;   vars:
+;     Var(0) :: :y
+;     Var(1) :: list({:y, 10} | {:x, 5})
+;     Var(2) :: {:var, :x}
+;     Var(3) :: {:var, :y}
+;     Var(4) :: :x
+;     Var(5) :: int | float
+;   exits:
+;     blk0 Return Var(5)    :: int | float
+
+; spec k_22(5) #fn=22
+;   key:    [any, list(none), any, any, any]
+;   return: int | float
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: list(none)
+;     Var(2) :: any
+;     Var(3) :: any
+;     Var(4) :: any
+;     Var(5) :: int | float
+;   exits:
+;     blk0 Return Var(5)    :: int | float
+
+; spec k_22(5) #fn=22
+;   key:    [any, list({:x, 1}), any, any, any]
+;   return: int | float
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: list({:x, 1})
+;     Var(2) :: any
+;     Var(3) :: any
+;     Var(4) :: any
+;     Var(5) :: int | float
+;   exits:
+;     blk0 Return Var(5)    :: int | float
+
+; spec k_22(5) #fn=22
+;   key:    [any, list({:x, 3}), any, any, any]
+;   return: int | float
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: list({:x, 3})
+;     Var(2) :: any
+;     Var(3) :: any
+;     Var(4) :: any
+;     Var(5) :: int | float
+;   exits:
+;     blk0 Return Var(5)    :: int | float
+
+; spec k_22(5) #fn=22
+;   key:    [any, list({:x, 5}), any, any, any]
+;   return: int | float
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: list({:x, 5})
+;     Var(2) :: any
+;     Var(3) :: any
+;     Var(4) :: any
+;     Var(5) :: int | float
+;   exits:
+;     blk0 Return Var(5)    :: int | float
+
+; spec k_22(5) #fn=22
+;   key:    [any, list({:y, 10} | {:x, 5}), any, any, any]
+;   return: int | float
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: list({:y, 10} | {:x, 5})
+;     Var(2) :: any
+;     Var(3) :: any
+;     Var(4) :: any
+;     Var(5) :: int | float
+;   exits:
+;     blk0 Return Var(5)    :: int | float
+
+; spec k_22(5) #fn=22
+;   key:    [any, list({any, any}), any, any, any]
+;   return: int | float
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: list({any, any})
+;     Var(2) :: any
+;     Var(3) :: any
+;     Var(4) :: any
+;     Var(5) :: int | float
+;   exits:
+;     blk0 Return Var(5)    :: int | float
+
+; spec k_22(5) #fn=22
+;   key:    [int | float, list({:x, 3}), {:var, :x}, {:add, {:var, :x}, {:num, 4}}, 3 | :x]
+;   return: int | float
+;   vars:
+;     Var(0) :: int | float
+;     Var(1) :: list({:x, 3})
+;     Var(2) :: {:var, :x}
+;     Var(3) :: {:add, {:var, :x}, {:num, 4}}
+;     Var(4) :: 3 | :x
+;     Var(5) :: int | float
+;   exits:
+;     blk0 Return Var(5)    :: int | float
+
+; spec k_23(4) #fn=23
+;   key:    [3 | :x, list({:x, 3}), {:var, :x}, {:add, {:var, :x}, {:num, 4}}]
+;   return: int | float
+;   vars:
+;     Var(0) :: 3 | :x
+;     Var(1) :: list({:x, 3})
+;     Var(2) :: {:var, :x}
+;     Var(3) :: {:add, {:var, :x}, {:num, 4}}
+;   exits:
+;     blk0 Call eval#12(Var(3), Var(1))
+;              callee_key=[{:add, {:var, :x}, {:num, 4}}, list({:x, 3})]
+;              cont k_24#24 captured=[Var(1), Var(2), Var(3), Var(0)]
+;              cont_key=[int | float, list({:x, 3}), {:var, :x}, {:add, {:var, :x}, {:num, 4}}, 3 | :x]
+
+; spec k_23(4) #fn=23
+;   key:    [3 | :x, list({:x, 3}), {:var, :x}, {:num, 4}]
+;   return: int | float
+;   vars:
+;     Var(0) :: 3 | :x
+;     Var(1) :: list({:x, 3})
+;     Var(2) :: {:var, :x}
+;     Var(3) :: {:num, 4}
+;   exits:
+;     blk0 Call eval#12(Var(3), Var(1))
+;              callee_key=[{:num, 4}, list({:x, 3})]
+;              cont k_24#24 captured=[Var(1), Var(2), Var(3), Var(0)]
+;              cont_key=[4, list({:x, 3}), {:var, :x}, {:num, 4}, 3 | :x]
+
+; spec k_23(4) #fn=23
+;   key:    [:x, list({:y, 10} | {:x, 5}), {:var, :x}, {:var, :y}]
+;   return: int | float
+;   vars:
+;     Var(0) :: :x
+;     Var(1) :: list({:y, 10} | {:x, 5})
+;     Var(2) :: {:var, :x}
+;     Var(3) :: {:var, :y}
+;   exits:
+;     blk0 Call eval#12(Var(3), Var(1))
+;              callee_key=[{:var, :y}, list({:y, 10} | {:x, 5})]
+;              cont k_24#24 captured=[Var(1), Var(2), Var(3), Var(0)]
+;              cont_key=[:y, list({:y, 10} | {:x, 5}), {:var, :x}, {:var, :y}, :x]
+
+; spec k_23(4) #fn=23
+;   key:    [any, list(none), any, any]
+;   return: int | float
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: list(none)
+;     Var(2) :: any
+;     Var(3) :: any
+;   exits:
+;     blk0 Call eval#12(Var(3), Var(1))
+;              callee_key=[any, list(none)]
+;              cont k_24#24 captured=[Var(1), Var(2), Var(3), Var(0)]
+;              cont_key=[any, list(none), any, any, any]
+
+; spec k_23(4) #fn=23
+;   key:    [any, list({:x, 1}), any, any]
+;   return: int | float
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: list({:x, 1})
+;     Var(2) :: any
+;     Var(3) :: any
+;   exits:
+;     blk0 Call eval#12(Var(3), Var(1))
+;              callee_key=[any, list({:x, 1})]
+;              cont k_24#24 captured=[Var(1), Var(2), Var(3), Var(0)]
+;              cont_key=[any, list({:x, 1}), any, any, any]
+
+; spec k_23(4) #fn=23
+;   key:    [any, list({:x, 3}), any, any]
+;   return: int | float
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: list({:x, 3})
+;     Var(2) :: any
+;     Var(3) :: any
+;   exits:
+;     blk0 Call eval#12(Var(3), Var(1))
+;              callee_key=[any, list({:x, 3})]
+;              cont k_24#24 captured=[Var(1), Var(2), Var(3), Var(0)]
+;              cont_key=[any, list({:x, 3}), any, any, any]
+
+; spec k_23(4) #fn=23
+;   key:    [any, list({:x, 5}), any, any]
+;   return: int | float
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: list({:x, 5})
+;     Var(2) :: any
+;     Var(3) :: any
+;   exits:
+;     blk0 Call eval#12(Var(3), Var(1))
+;              callee_key=[any, list({:x, 5})]
+;              cont k_24#24 captured=[Var(1), Var(2), Var(3), Var(0)]
+;              cont_key=[any, list({:x, 5}), any, any, any]
+
+; spec k_23(4) #fn=23
+;   key:    [any, list({:y, 10} | {:x, 5}), any, any]
+;   return: int | float
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: list({:y, 10} | {:x, 5})
+;     Var(2) :: any
+;     Var(3) :: any
+;   exits:
+;     blk0 Call eval#12(Var(3), Var(1))
+;              callee_key=[any, list({:y, 10} | {:x, 5})]
+;              cont k_24#24 captured=[Var(1), Var(2), Var(3), Var(0)]
+;              cont_key=[any, list({:y, 10} | {:x, 5}), any, any, any]
+
+; spec k_23(4) #fn=23
+;   key:    [any, list({any, any}), any, any]
+;   return: int | float
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: list({any, any})
+;     Var(2) :: any
+;     Var(3) :: any
+;   exits:
+;     blk0 Call eval#12(Var(3), Var(1))
+;              callee_key=[any, list({any, any})]
+;              cont k_24#24 captured=[Var(1), Var(2), Var(3), Var(0)]
+;              cont_key=[any, list({any, any}), any, any, any]
+
+; spec k_24(5) #fn=24
+;   key:    [4, list({:x, 3}), {:var, :x}, {:num, 4}, 3 | :x]
+;   return: int | float
+;   vars:
+;     Var(0) :: 4
+;     Var(1) :: list({:x, 3})
+;     Var(2) :: {:var, :x}
+;     Var(3) :: {:num, 4}
+;     Var(4) :: 3 | :x
+;     Var(5) :: int | float
+;   exits:
+;     blk0 Return Var(5)    :: int | float
+
+; spec k_24(5) #fn=24
+;   key:    [:y, list({:y, 10} | {:x, 5}), {:var, :x}, {:var, :y}, :x]
+;   return: int | float
+;   vars:
+;     Var(0) :: :y
+;     Var(1) :: list({:y, 10} | {:x, 5})
+;     Var(2) :: {:var, :x}
+;     Var(3) :: {:var, :y}
+;     Var(4) :: :x
+;     Var(5) :: int | float
+;   exits:
+;     blk0 Return Var(5)    :: int | float
+
+; spec k_24(5) #fn=24
+;   key:    [any, list(none), any, any, any]
+;   return: int | float
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: list(none)
+;     Var(2) :: any
+;     Var(3) :: any
+;     Var(4) :: any
+;     Var(5) :: int | float
+;   exits:
+;     blk0 Return Var(5)    :: int | float
+
+; spec k_24(5) #fn=24
+;   key:    [any, list({:x, 1}), any, any, any]
+;   return: int | float
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: list({:x, 1})
+;     Var(2) :: any
+;     Var(3) :: any
+;     Var(4) :: any
+;     Var(5) :: int | float
+;   exits:
+;     blk0 Return Var(5)    :: int | float
+
+; spec k_24(5) #fn=24
+;   key:    [any, list({:x, 3}), any, any, any]
+;   return: int | float
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: list({:x, 3})
+;     Var(2) :: any
+;     Var(3) :: any
+;     Var(4) :: any
+;     Var(5) :: int | float
+;   exits:
+;     blk0 Return Var(5)    :: int | float
+
+; spec k_24(5) #fn=24
+;   key:    [any, list({:x, 5}), any, any, any]
+;   return: int | float
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: list({:x, 5})
+;     Var(2) :: any
+;     Var(3) :: any
+;     Var(4) :: any
+;     Var(5) :: int | float
+;   exits:
+;     blk0 Return Var(5)    :: int | float
+
+; spec k_24(5) #fn=24
+;   key:    [any, list({:y, 10} | {:x, 5}), any, any, any]
+;   return: int | float
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: list({:y, 10} | {:x, 5})
+;     Var(2) :: any
+;     Var(3) :: any
+;     Var(4) :: any
+;     Var(5) :: int | float
+;   exits:
+;     blk0 Return Var(5)    :: int | float
+
+; spec k_24(5) #fn=24
+;   key:    [any, list({any, any}), any, any, any]
+;   return: int | float
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: list({any, any})
+;     Var(2) :: any
+;     Var(3) :: any
+;     Var(4) :: any
+;     Var(5) :: int | float
+;   exits:
+;     blk0 Return Var(5)    :: int | float
+
+; spec k_24(5) #fn=24
+;   key:    [int | float, list({:x, 3}), {:var, :x}, {:add, {:var, :x}, {:num, 4}}, 3 | :x]
+;   return: int | float
+;   vars:
+;     Var(0) :: int | float
+;     Var(1) :: list({:x, 3})
+;     Var(2) :: {:var, :x}
+;     Var(3) :: {:add, {:var, :x}, {:num, 4}}
+;     Var(4) :: 3 | :x
+;     Var(5) :: int | float
+;   exits:
+;     blk0 Return Var(5)    :: int | float
+
+; spec k_25(5) #fn=25
+;   key:    [1, list(none), :x, {:num, 1}, {:let, :x, {:num, 2}, {:var, :x}}]
+;   return: :x
+;   vars:
+;     Var(0) :: 1
+;     Var(1) :: list(none)
+;     Var(2) :: :x
+;     Var(3) :: {:num, 1}
+;     Var(4) :: {:let, :x, {:num, 2}, {:var, :x}}
+;     Var(5) :: :match_error
+;     Var(6) :: {:x, 1}
+;     Var(7) :: list({:x, 1})
+;   exits:
+;     blk0 TailCall eval#12(Var(4), Var(7))
+;              callee_key=[{:let, :x, {:num, 2}, {:var, :x}}, list({:x, 1})]
+;     blk1 Halt Var(5)      :: :match_error
+
+; spec k_25(5) #fn=25
+;   key:    [10, list({:x, 5}), :y, {:num, 10}, {:add, {:var, :x}, {:var, :y}}]
+;   return: int | float
+;   vars:
+;     Var(0) :: 10
+;     Var(1) :: list({:x, 5})
+;     Var(2) :: :y
+;     Var(3) :: {:num, 10}
+;     Var(4) :: {:add, {:var, :x}, {:var, :y}}
+;     Var(5) :: :match_error
+;     Var(6) :: {:y, 10}
+;     Var(7) :: list({:y, 10} | {:x, 5})
+;   exits:
+;     blk0 TailCall eval#12(Var(4), Var(7))
+;              callee_key=[{:add, {:var, :x}, {:var, :y}}, list({:y, 10} | {:x, 5})]
+;     blk1 Halt Var(5)      :: :match_error
+
+; spec k_25(5) #fn=25
+;   key:    [2, list({:x, 1}), :x, {:num, 2}, {:var, :x}]
+;   return: :x
+;   vars:
+;     Var(0) :: 2
+;     Var(1) :: list({:x, 1})
+;     Var(2) :: :x
+;     Var(3) :: {:num, 2}
+;     Var(4) :: {:var, :x}
+;     Var(5) :: :match_error
+;     Var(6) :: {:x, 2}
+;     Var(7) :: list({:x, 2} | {:x, 1})
+;   exits:
+;     blk0 TailCall eval#12(Var(4), Var(7))
+;              callee_key=[{:var, :x}, list({:x, 2} | {:x, 1})]
+;     blk1 Halt Var(5)      :: :match_error
+
+; spec k_25(5) #fn=25
+;   key:    [3, list(none), :x, {:num, 3}, {:mul, {:var, :x}, {:add, {:var, :x}, {:num, 4}}}]
+;   return: int | float
+;   vars:
+;     Var(0) :: 3
+;     Var(1) :: list(none)
+;     Var(2) :: :x
+;     Var(3) :: {:num, 3}
+;     Var(4) :: {:mul, {:var, :x}, {:add, {:var, :x}, {:num, 4}}}
+;     Var(5) :: :match_error
+;     Var(6) :: {:x, 3}
+;     Var(7) :: list({:x, 3})
+;   exits:
+;     blk0 TailCall eval#12(Var(4), Var(7))
+;              callee_key=[{:mul, {:var, :x}, {:add, {:var, :x}, {:num, 4}}}, list({:x, 3})]
+;     blk1 Halt Var(5)      :: :match_error
+
+; spec k_25(5) #fn=25
+;   key:    [5, list(none), :x, {:num, 5}, {:let, :y, {:num, 10}, {:add, {:var, :x}, {:var, :y}}}]
+;   return: int | float
+;   vars:
+;     Var(0) :: 5
+;     Var(1) :: list(none)
+;     Var(2) :: :x
+;     Var(3) :: {:num, 5}
+;     Var(4) :: {:let, :y, {:num, 10}, {:add, {:var, :x}, {:var, :y}}}
+;     Var(5) :: :match_error
+;     Var(6) :: {:x, 5}
+;     Var(7) :: list({:x, 5})
+;   exits:
+;     blk0 TailCall eval#12(Var(4), Var(7))
+;              callee_key=[{:let, :y, {:num, 10}, {:add, {:var, :x}, {:var, :y}}}, list({:x, 5})]
+;     blk1 Halt Var(5)      :: :match_error
+
+; spec k_25(5) #fn=25
+;   key:    [any, list(none), any, any, any]
+;   return: any
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: list(none)
+;     Var(2) :: any
+;     Var(3) :: any
+;     Var(4) :: any
+;     Var(5) :: :match_error
+;     Var(6) :: {any, any}
+;     Var(7) :: list({any, any})
+;   exits:
+;     blk0 TailCall eval#12(Var(4), Var(7))
+;              callee_key=[any, list({any, any})]
+;     blk1 Halt Var(5)      :: :match_error
+
+; spec k_25(5) #fn=25
+;   key:    [any, list({:x, 1}), any, any, any]
+;   return: any
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: list({:x, 1})
+;     Var(2) :: any
+;     Var(3) :: any
+;     Var(4) :: any
+;     Var(5) :: :match_error
+;     Var(6) :: {any, any}
+;     Var(7) :: list({any, any})
+;   exits:
+;     blk0 TailCall eval#12(Var(4), Var(7))
+;              callee_key=[any, list({any, any})]
+;     blk1 Halt Var(5)      :: :match_error
+
+; spec k_25(5) #fn=25
+;   key:    [any, list({:x, 3}), any, any, any]
+;   return: any
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: list({:x, 3})
+;     Var(2) :: any
+;     Var(3) :: any
+;     Var(4) :: any
+;     Var(5) :: :match_error
+;     Var(6) :: {any, any}
+;     Var(7) :: list({any, any})
+;   exits:
+;     blk0 TailCall eval#12(Var(4), Var(7))
+;              callee_key=[any, list({any, any})]
+;     blk1 Halt Var(5)      :: :match_error
+
+; spec k_25(5) #fn=25
+;   key:    [any, list({:x, 5}), any, any, any]
+;   return: any
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: list({:x, 5})
+;     Var(2) :: any
+;     Var(3) :: any
+;     Var(4) :: any
+;     Var(5) :: :match_error
+;     Var(6) :: {any, any}
+;     Var(7) :: list({any, any})
+;   exits:
+;     blk0 TailCall eval#12(Var(4), Var(7))
+;              callee_key=[any, list({any, any})]
+;     blk1 Halt Var(5)      :: :match_error
+
+; spec k_25(5) #fn=25
+;   key:    [any, list({:y, 10} | {:x, 5}), any, any, any]
+;   return: any
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: list({:y, 10} | {:x, 5})
+;     Var(2) :: any
+;     Var(3) :: any
+;     Var(4) :: any
+;     Var(5) :: :match_error
+;     Var(6) :: {any, any}
+;     Var(7) :: list({any, any})
+;   exits:
+;     blk0 TailCall eval#12(Var(4), Var(7))
+;              callee_key=[any, list({any, any})]
+;     blk1 Halt Var(5)      :: :match_error
+
+; spec k_25(5) #fn=25
+;   key:    [any, list({any, any}), any, any, any]
+;   return: any
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: list({any, any})
+;     Var(2) :: any
+;     Var(3) :: any
+;     Var(4) :: any
+;     Var(5) :: :match_error
+;     Var(6) :: {any, any}
+;     Var(7) :: list({any, any})
+;   exits:
+;     blk0 TailCall eval#12(Var(4), Var(7))
+;              callee_key=[any, list({any, any})]
+;     blk1 Halt Var(5)      :: :match_error
+
+; spec k_26(3) #fn=26
+;   key:    [int | float, list(none), {:let, :x, {:num, 5}, {:let, :y, {:num, 10}, {:add, {:var, :x}, {:var, :y}}}}]
+;   return: nil
+;   vars:
+;     Var(0) :: int | float
+;     Var(1) :: list(none)
+;     Var(2) :: {:let, :x, {:num, 5}, {:let, :y, {:num, 10}, {:add, {:var, :x}, {:var, :y}}}}
+;   exits:
+;     blk0 Call print#0(Var(0))
+;              callee_key=[int | float]
+;              cont k_27#27 captured=[Var(1), Var(2)]
+;              cont_key=[none, list(none), {:let, :x, {:num, 5}, {:let, :y, {:num, 10}, {:add, {:var, :x}, {:var, :y}}}}]
+
+; spec k_27(3) #fn=27
+;   key:    [none, list(none), {:let, :x, {:num, 5}, {:let, :y, {:num, 10}, {:add, {:var, :x}, {:var, :y}}}}]
+;   return: nil
+;   vars:
+;     Var(0) :: none
+;     Var(1) :: list(none)
+;     Var(2) :: {:let, :x, {:num, 5}, {:let, :y, {:num, 10}, {:add, {:var, :x}, {:var, :y}}}}
+;     Var(3) :: :let
+;     Var(4) :: :x
+;     Var(5) :: :num
+;     Var(6) :: 3
+;     Var(7) :: {:num, 3}
+;     Var(8) :: :mul
+;     Var(9) :: :var
+;     Var(10) :: :x
+;     Var(11) :: {:var, :x}
+;     Var(12) :: :add
+;     Var(13) :: :var
+;     Var(14) :: :x
+;     Var(15) :: {:var, :x}
+;     Var(16) :: :num
+;     Var(17) :: 4
+;     Var(18) :: {:num, 4}
+;     Var(19) :: {:add, {:var, :x}, {:num, 4}}
+;     Var(20) :: {:mul, {:var, :x}, {:add, {:var, :x}, {:num, 4}}}
+;     Var(21) :: {:let, :x, {:num, 3}, {:mul, {:var, :x}, {:add, {:var, :x}, {:num, 4}}}}
+;     Var(22) :: :match_error
+;   exits:
+;     blk0 Call eval#12(Var(21), Var(1))
+;              callee_key=[{:let, :x, {:num, 3}, {:mul, {:var, :x}, {:add, {:var, :x}, {:num, 4}}}}, list(none)]
+;              cont k_28#28 captured=[Var(1), Var(2), Var(21)]
+;              cont_key=[int | float, list(none), {:let, :x, {:num, 5}, {:let, :y, {:num, 10}, {:add, {:var, :x}, {:var, :y}}}}, {:let, :x, {:num, 3}, {:mul, {:var, :x}, {:add, {:var, :x}, {:num, 4}}}}]
+;     blk1 Halt Var(22)      :: :match_error
+
+; spec k_28(4) #fn=28
+;   key:    [int | float, list(none), {:let, :x, {:num, 5}, {:let, :y, {:num, 10}, {:add, {:var, :x}, {:var, :y}}}}, {:let, :x, {:num, 3}, {:mul, {:var, :x}, {:add, {:var, :x}, {:num, 4}}}}]
+;   return: nil
+;   vars:
+;     Var(0) :: int | float
+;     Var(1) :: list(none)
+;     Var(2) :: {:let, :x, {:num, 5}, {:let, :y, {:num, 10}, {:add, {:var, :x}, {:var, :y}}}}
+;     Var(3) :: {:let, :x, {:num, 3}, {:mul, {:var, :x}, {:add, {:var, :x}, {:num, 4}}}}
+;   exits:
+;     blk0 Call print#0(Var(0))
+;              callee_key=[int | float]
+;              cont k_29#29 captured=[Var(1), Var(2), Var(3)]
+;              cont_key=[none, list(none), {:let, :x, {:num, 5}, {:let, :y, {:num, 10}, {:add, {:var, :x}, {:var, :y}}}}, {:let, :x, {:num, 3}, {:mul, {:var, :x}, {:add, {:var, :x}, {:num, 4}}}}]
+
+; spec k_29(4) #fn=29
+;   key:    [none, list(none), {:let, :x, {:num, 5}, {:let, :y, {:num, 10}, {:add, {:var, :x}, {:var, :y}}}}, {:let, :x, {:num, 3}, {:mul, {:var, :x}, {:add, {:var, :x}, {:num, 4}}}}]
+;   return: nil
+;   vars:
+;     Var(0) :: none
+;     Var(1) :: list(none)
+;     Var(2) :: {:let, :x, {:num, 5}, {:let, :y, {:num, 10}, {:add, {:var, :x}, {:var, :y}}}}
+;     Var(3) :: {:let, :x, {:num, 3}, {:mul, {:var, :x}, {:add, {:var, :x}, {:num, 4}}}}
+;     Var(4) :: :let
+;     Var(5) :: :x
+;     Var(6) :: :num
+;     Var(7) :: 1
+;     Var(8) :: {:num, 1}
+;     Var(9) :: :let
+;     Var(10) :: :x
+;     Var(11) :: :num
+;     Var(12) :: 2
+;     Var(13) :: {:num, 2}
+;     Var(14) :: :var
+;     Var(15) :: :x
+;     Var(16) :: {:var, :x}
+;     Var(17) :: {:let, :x, {:num, 2}, {:var, :x}}
+;     Var(18) :: {:let, :x, {:num, 1}, {:let, :x, {:num, 2}, {:var, :x}}}
+;     Var(19) :: :match_error
+;   exits:
+;     blk0 Call eval#12(Var(18), Var(1))
+;              callee_key=[{:let, :x, {:num, 1}, {:let, :x, {:num, 2}, {:var, :x}}}, list(none)]
+;              cont k_30#30 captured=[Var(1), Var(2), Var(3), Var(18)]
+;              cont_key=[:x, list(none), {:let, :x, {:num, 5}, {:let, :y, {:num, 10}, {:add, {:var, :x}, {:var, :y}}}}, {:let, :x, {:num, 3}, {:mul, {:var, :x}, {:add, {:var, :x}, {:num, 4}}}}, {:let, :x, {:num, 1}, {:let, :x, {:num, 2}, {:var, :x}}}]
+;     blk1 Halt Var(19)      :: :match_error
+
+; spec k_30(5) #fn=30
+;   key:    [:x, list(none), {:let, :x, {:num, 5}, {:let, :y, {:num, 10}, {:add, {:var, :x}, {:var, :y}}}}, {:let, :x, {:num, 3}, {:mul, {:var, :x}, {:add, {:var, :x}, {:num, 4}}}}, {:let, :x, {:num, 1}, {:let, :x, {:num, 2}, {:var, :x}}}]
+;   return: nil
+;   vars:
+;     Var(0) :: :x
+;     Var(1) :: list(none)
+;     Var(2) :: {:let, :x, {:num, 5}, {:let, :y, {:num, 10}, {:add, {:var, :x}, {:var, :y}}}}
+;     Var(3) :: {:let, :x, {:num, 3}, {:mul, {:var, :x}, {:add, {:var, :x}, {:num, 4}}}}
+;     Var(4) :: {:let, :x, {:num, 1}, {:let, :x, {:num, 2}, {:var, :x}}}
+;   exits:
+;     blk0 TailCall print#0(Var(0))
+;              callee_key=[:x]
+
