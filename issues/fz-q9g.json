@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-17T04:46:07Z",
+  "description": "Integrate destination-passing-style (DPS) codegen and a hybrid (Cheney + RC) GC into fz. DPS lowers result construction so callees write into a caller-supplied slot; the RC arena unlocks future FBIP reuse rewrites without requiring a wholesale GC rewrite.\n\n## The architectural insight\n\nDPS is not a new system — it is a new variant of the per-spec ABI that already exists. `ArgRepr` (Tagged/RawI64/RawF64) gains `Dst(HeapKind)`. `Cont` gains `dst: Option\u003cDstSig\u003e`. The decision lives in `build_fn_signature` (ir_codegen.rs:896), the same place spec ABIs are already chosen.\n\nDPS and RC are independent: a destination can live in Cheney. RC earns its keep only when paired with uniqueness/FBIP. The plan splits into three independent arcs.\n\n## Arcs\n\n- C+D+F+E (DPS-only): ships measurable CLIF reductions allocating from Cheney. No RC needed.\n- B (hybrid GC arena): introduces alloc_owned + refcount machinery. Enables FBIP.\n- G (FBIP, gated by spike G0): uniqueness inference + in-place reuse rewrites. Requires both DPS and RC.\n\n## Goals\n\n1. CLIF is monotonic-or-better at every ticket. No regressions.\n2. Three-path parity preserved by construction (interp ignores dst).\n3. Removals are first-class tickets (E1-E3).\n\n## Out of scope (deferrals)\n\n- Per-callsite ABI specialization — defers to fz-ul4.29.2.1.\n- RC for HeapKind::Closure — cycle risk, unpredictable sharing, low payoff.\n- RC for HeapKind::Map — insertion-order linear-lookup maps do not benefit from FBIP.\n- A general FBIP rewrite engine — kind-by-kind rewrites with per-kind benchmarks instead.\n\n## Dependencies on existing tickets\n\n- fz-o0u (tag scheme cleanup) should land before C-phase.\n- fz-6rw (16-byte cons cells) blocks F4 — cell layout decides RC-for-cons feasibility.\n- fz-h9f (generational GC) is orthogonal; composes with hybrid Cheney/RC.\n- fz-duq (branching-construct lowering) blocks D1.\n\n## Walkthrough findings already baked in\n\n- D1 fixture must be a heap-result case ({1,2} / {3,4}), not int arms.\n- Sharp-spec DPS deferred; only any-key specs targeted in v1.\n- E1 (HeapKind::Float) is an audit, not a confident deletion.\n- F4 explicitly depends on fz-6rw cell layout decision.\n- Externs invariant: ArgRepr::Dst must never appear on extern signatures.\n\nSee child tickets for the atomic DAG.",
+  "id": "fz-q9g",
+  "labels": [],
+  "priority": 1,
+  "status": "open",
+  "title": "fz-dps: destination-passing codegen + hybrid GC foundation",
+  "type": "epic",
+  "updated_at": "2026-05-17T04:46:07Z"
+}
