@@ -4237,37 +4237,20 @@ fn emit_terminator<M: cranelift_module::Module>(
     let module = env.module;
 
     let callee_is_native = |id: u32| natively_callable.contains(&crate::fz_ir::FnId(id));
-    let resolve_cont_sid = |blk: &crate::fz_ir::Block, continuation: &crate::fz_ir::Cont| -> u32 {
-        let key =
-            crate::ir_typer::cont_input_key(blk, continuation, fn_types, module, module_types);
-        let resolved = spec_registry
-            .resolve(continuation.fn_id, &key)
-            .map(|s| s.0)
-            .unwrap_or_else(|| {
-                panic!(
-                    ".29.12.1: no covering spec for Cont FnId({}) with key {:?}; \
-                 registered keys for this cont: {:?}",
-                    continuation.fn_id.0,
-                    key,
-                    spec_registry
-                        .iter()
-                        .filter(|(_, fid, _)| *fid == continuation.fn_id)
-                        .map(|(s, _, k)| (s.0, k.to_vec()))
-                        .collect::<Vec<_>>()
+    // fz-aiz.3c — read typer-chosen cont SpecId from the annotation; the
+    // resolve()-based path was the bug surface for fz-aiz.3-precursor. The
+    // `_blk` / `_module_types` args stay for callsite compatibility (other
+    // analyses may grow back-references); the body no longer touches them.
+    let resolve_cont_sid =
+        |_blk: &crate::fz_ir::Block, continuation: &crate::fz_ir::Cont| -> u32 {
+            continuation
+                .sid
+                .expect(
+                    "fz-aiz.3c: cont annotation missing — annotate_spec_ir \
+                     must populate every cont.sid before emit_terminator runs",
                 )
-            });
-        // fz-aiz.3b — annotation safety net: if the IR carries a typer-chosen
-        // cont SpecId, it must match what resolve() produces here. fz-aiz.3c
-        // replaces the resolve call with `continuation.sid.unwrap()`.
-        if let Some(annotated) = continuation.sid {
-            debug_assert_eq!(
-                annotated.0, resolved,
-                "fz-aiz.3b: cont annotation drift on block {:?}: annotated={} resolved={} (cont fn_id={}, key={:?})",
-                blk.id, annotated.0, resolved, continuation.fn_id.0, key
-            );
-        }
-        resolved
-    };
+                .0
+        };
     // fz-qbg.2 — Resolve callee spec by querying with FLOW-NARROWED arg
     // Descrs from the current block's typer env (`fn_types.block_envs`),
     // not the def-site types (`fn_types.vars`). The dispatcher in
@@ -4278,63 +4261,33 @@ fn emit_terminator<M: cranelift_module::Module>(
     // block env entry is absent (e.g. for Vars defined later in the
     // block — though calls in fz CPS-form only see args bound at or
     // before the terminator, so this is rare).
-    let resolve_callee_sid_in = |callee: crate::fz_ir::FnId,
-                                 args: &[crate::fz_ir::Var],
-                                 block_id: crate::fz_ir::BlockId|
-     -> u32 {
-        let block_env = fn_types.block_envs.get(&block_id);
-        let descrs: Vec<crate::types::Descr> = args
-            .iter()
-            .map(|av| {
-                if let Some(env) = block_env
-                    && let Some(d) = env.get(av)
-                {
-                    return d.clone();
-                }
-                fn_types
-                    .vars
-                    .get(av)
-                    .cloned()
-                    .unwrap_or_else(crate::types::Descr::any)
-            })
-            .collect();
-        let resolved = spec_registry
-            .resolve(callee, &descrs)
-            .map(|s| s.0)
-            .unwrap_or_else(|| {
-                panic!(
-                    ".29.11: no covering spec for FnId({}) with arg Descrs {:?}; \
-                 registered specs for this fn: {:?}",
-                    callee.0,
-                    descrs,
-                    spec_registry
-                        .iter()
-                        .filter(|(_, fid, _)| *fid == callee)
-                        .map(|(s, _, k)| (s.0, k.to_vec()))
-                        .collect::<Vec<_>>()
-                )
-            });
-        // fz-aiz.3b — annotation safety net for Call/TailCall callsite_sid.
-        // We look up the matching block's terminator to fetch the annotation;
-        // only assert when the block_id matches `blk.id` (the terminator
-        // currently being emitted) so we don't re-fetch for indirect calls
-        // from other utility functions.
-        if block_id == blk.id {
+    // fz-aiz.3c — read typer-chosen callsite SpecId from the Term annotation.
+    // resolve_callee_sid_in always operated on `blk`'s terminator's
+    // callee/args, so we go straight to the annotation. The closure remains
+    // typed against (callee, args, block_id) for callsite ergonomics, but
+    // the body just reads the annotation.
+    let resolve_callee_sid_in =
+        |_callee: crate::fz_ir::FnId,
+         _args: &[crate::fz_ir::Var],
+         block_id: crate::fz_ir::BlockId|
+         -> u32 {
+            debug_assert_eq!(
+                block_id, blk.id,
+                "fz-aiz.3c: resolve_callee_sid_in invoked with foreign block_id; only the \
+                 terminator's annotation is reachable here"
+            );
             let annotation = match &blk.terminator {
                 crate::fz_ir::Term::Call { callsite_sid, .. } => *callsite_sid,
                 crate::fz_ir::Term::TailCall { callsite_sid, .. } => *callsite_sid,
                 _ => None,
             };
-            if let Some(annotated) = annotation {
-                debug_assert_eq!(
-                    annotated.0, resolved,
-                    "fz-aiz.3b: callee annotation drift on block {:?}: annotated={} resolved={} (callee={}, descrs={:?})",
-                    blk.id, annotated.0, resolved, callee.0, descrs
-                );
-            }
-        }
-        resolved
-    };
+            annotation
+                .expect(
+                    "fz-aiz.3c: callsite annotation missing — annotate_spec_ir must populate \
+                     every Call/TailCall.callsite_sid before emit_terminator runs",
+                )
+                .0
+        };
     let resolve_callee_sid = |callee: crate::fz_ir::FnId, args: &[crate::fz_ir::Var]| -> u32 {
         resolve_callee_sid_in(callee, args, blk.id)
     };
@@ -6596,47 +6549,32 @@ fn lower_prim<M: cranelift_module::Module>(
                 b, jmod, env, var_env, prim, cache,
             )?));
         }
-        Prim::MakeClosure(fn_id, captured, _) => {
+        Prim::MakeClosure(fn_id, captured, body_sid_annotation) => {
             // fz-ul4.29.5: alloc closure heap object via fz_alloc_closure;
             // store stub_fp at payload offset 16; write captures (tagged)
             // at offsets 24+i*8. Captures are always tagged FzValue in
             // the closure payload regardless of the callee's typed entry
             // slots — the stub handles tagged→raw conversion at invoke
-            // time. fz-ul4.29.12.2: resolve this MakeClosure's narrow
-            // SpecId via the lambda's full input-Descr key (captures
-            // from caller's `fn_types`, args = `any`); pick the typed
-            // stub keyed by that SpecId.
+            // time.
+            //
+            // fz-aiz.3c — body SpecId is the typer's annotation, not a
+            // local resolve. Eliminates the closure-routing ABI hazard:
+            // both the closure_shapes builder (which seeds
+            // static_closure_targets) and this lowering used to call
+            // resolve(*fn_id, [any; n] + captures) independently, with
+            // an or_else iter-find fallback. If the two diverged (e.g.
+            // any-key membership flipped between passes), the stored
+            // body_func_id at the closure's +16 mismatched the spec
+            // registered in static_closures. With the annotation, both
+            // sites read the same SpecId by construction.
             let n_caps = captured.len();
-            let lam = module.fn_by_id(*fn_id);
-            let n_params = lam.block(lam.entry).params.len();
-            let mut key: Vec<crate::types::Descr> = vec![crate::types::Descr::any(); n_params];
-            for (k, cv) in captured.iter().enumerate() {
-                if let Some(slot) = key.get_mut(k) {
-                    *slot = fn_types
-                        .vars
-                        .get(cv)
-                        .cloned()
-                        .unwrap_or_else(crate::types::Descr::any);
-                }
-            }
-            // fz-ul4.29.10.3 — fall back to any registered SpecId for
-            // the lambda when the any-key was dropped (closure unreachable
-            // post-rewrite).
-            let cl_sid = spec_registry
-                .resolve(*fn_id, &key)
-                .map(|s| s.0)
-                .or_else(|| {
-                    spec_registry
-                        .iter()
-                        .find(|(s, fid, _)| *fid == *fn_id && fn_ids.contains_key(&s.0))
-                        .map(|(s, _, _)| s.0)
-                })
-                .ok_or_else(|| {
-                    CodegenError::new(format!(
-                        ".29.12.2: no live spec for closure target FnId({})",
-                        fn_id.0
-                    ))
-                })?;
+            let cl_sid: u32 = body_sid_annotation
+                .expect(
+                    "fz-aiz.3c: MakeClosure body annotation missing — \
+                     annotate_spec_ir must populate Prim::MakeClosure body_sid \
+                     before lower_prim runs",
+                )
+                .0;
             // fz-cps.1.7 — zero-capture MakeClosure: look up the
             // per-Process static singleton instead of allocating per call
             // site. fz-cps.1.8 — singleton's +16 holds the body's
