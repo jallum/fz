@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-17T01:09:29Z",
+  "description": "",
+  "id": "fz-zky",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "fz-cg2 [EPIC]: zero dead instructions from boolean prims",
+  "type": "task",
+  "updated_at": "2026-05-17T01:09:29Z"
+}
