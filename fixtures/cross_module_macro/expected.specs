@@ -1,4 +1,20 @@
 ; spec print(1) #fn=0
+;   key:    [any]
+;   return: nil
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: :function_clause
+;     Var(2) :: bool
+;   exits:
+;     blk0 Goto blk2()
+;     blk1 Halt Var(1)      :: :function_clause
+;     blk2 If Var(2) ? blk4 : blk3
+;     blk3 TailCall fn_clause_1#8(Var(0))
+;              callee_key=[any]
+;     blk4 TailCall fn_clause_0#7(Var(0))
+;              callee_key=[any]
+
+; spec print(1) #fn=0
 ;   key:    [int]
 ;   return: nil
 ;   vars:
@@ -13,6 +29,15 @@
 ;              callee_key=[int]
 ;     blk4 TailCall fn_clause_0#7(Var(0))
 ;              callee_key=[int]
+
+; spec fn_clause_0(1) #fn=7
+;   key:    [any]
+;   return: nil
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: nil
+;   exits:
+;     blk0 Return Var(1)    :: nil
 
 ; spec fn_clause_0(1) #fn=7
 ;   key:    [int]
@@ -44,6 +69,18 @@
 ;     blk0 Return Var(3)    :: int
 ;     blk1 Halt Var(1)      :: :match_error
 
+; spec Helpers.double(1) #fn=11
+;   key:    [any]
+;   return: int | float
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: :match_error
+;     Var(2) :: 2
+;     Var(3) :: int | float
+;   exits:
+;     blk0 Return Var(3)    :: int | float
+;     blk1 Halt Var(1)      :: :match_error
+
 ; spec App.run(1) #fn=13
 ;   key:    [21]
 ;   return: int
@@ -53,6 +90,17 @@
 ;   exits:
 ;     blk0 TailCall Helpers.double#11(Var(0))
 ;              callee_key=[21]
+;     blk1 Halt Var(1)      :: :match_error
+
+; spec App.run(1) #fn=13
+;   key:    [any]
+;   return: int | float
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: :match_error
+;   exits:
+;     blk0 TailCall Helpers.double#11(Var(0))
+;              callee_key=[any]
 ;     blk1 Halt Var(1)      :: :match_error
 
 ; spec main(0) #fn=14
@@ -67,6 +115,15 @@
 ;              cont k_15#15 captured=[]
 ;              cont_key=[int]
 ;     blk1 Halt Var(0)      :: :match_error
+
+; spec k_15(1) #fn=15
+;   key:    [any]
+;   return: nil
+;   vars:
+;     Var(0) :: any
+;   exits:
+;     blk0 TailCall print#0(Var(0))
+;              callee_key=[any]
 
 ; spec k_15(1) #fn=15
 ;   key:    [int]

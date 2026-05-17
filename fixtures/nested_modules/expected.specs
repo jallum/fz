@@ -15,6 +15,22 @@
 ;              callee_key=[7]
 
 ; spec print(1) #fn=0
+;   key:    [any]
+;   return: nil
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: :function_clause
+;     Var(2) :: bool
+;   exits:
+;     blk0 Goto blk2()
+;     blk1 Halt Var(1)      :: :function_clause
+;     blk2 If Var(2) ? blk4 : blk3
+;     blk3 TailCall fn_clause_1#8(Var(0))
+;              callee_key=[any]
+;     blk4 TailCall fn_clause_0#7(Var(0))
+;              callee_key=[any]
+
+; spec print(1) #fn=0
 ;   key:    [int]
 ;   return: nil
 ;   vars:
@@ -35,6 +51,15 @@
 ;   return: nil
 ;   vars:
 ;     Var(0) :: 7
+;     Var(1) :: nil
+;   exits:
+;     blk0 Return Var(1)    :: nil
+
+; spec fn_clause_0(1) #fn=7
+;   key:    [any]
+;   return: nil
+;   vars:
+;     Var(0) :: any
 ;     Var(1) :: nil
 ;   exits:
 ;     blk0 Return Var(1)    :: nil
@@ -67,6 +92,16 @@
 ;     blk0 Return Var(0)    :: 7
 ;     blk1 Halt Var(1)      :: :match_error
 
+; spec Outer.f(1) #fn=11
+;   key:    [any]
+;   return: any
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: :match_error
+;   exits:
+;     blk0 Return Var(0)    :: any
+;     blk1 Halt Var(1)      :: :match_error
+
 ; spec Outer.Inner.f(1) #fn=12
 ;   key:    [7]
 ;   return: int
@@ -79,6 +114,18 @@
 ;     blk0 Return Var(3)    :: int
 ;     blk1 Halt Var(1)      :: :match_error
 
+; spec Outer.Inner.f(1) #fn=12
+;   key:    [any]
+;   return: int | float
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: :match_error
+;     Var(2) :: 1000
+;     Var(3) :: int | float
+;   exits:
+;     blk0 Return Var(3)    :: int | float
+;     blk1 Halt Var(1)      :: :match_error
+
 ; spec Outer.use_inner(1) #fn=13
 ;   key:    [7]
 ;   return: int
@@ -88,6 +135,17 @@
 ;   exits:
 ;     blk0 TailCall Outer.Inner.f#12(Var(0))
 ;              callee_key=[7]
+;     blk1 Halt Var(1)      :: :match_error
+
+; spec Outer.use_inner(1) #fn=13
+;   key:    [any]
+;   return: int | float
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: :match_error
+;   exits:
+;     blk0 TailCall Outer.Inner.f#12(Var(0))
+;              callee_key=[any]
 ;     blk1 Halt Var(1)      :: :match_error
 
 ; spec main(0) #fn=14
@@ -114,6 +172,29 @@
 ;              cont k_16#16 captured=[]
 ;              cont_key=[nil]
 
+; spec k_15(1) #fn=15
+;   key:    [any]
+;   return: nil
+;   vars:
+;     Var(0) :: any
+;   exits:
+;     blk0 Call print#0(Var(0))
+;              callee_key=[any]
+;              cont k_16#16 captured=[]
+;              cont_key=[nil]
+
+; spec k_16(1) #fn=16
+;   key:    [any]
+;   return: nil
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: 7
+;   exits:
+;     blk0 Call Outer.Inner.f#12(Var(1))
+;              callee_key=[7]
+;              cont k_17#17 captured=[]
+;              cont_key=[int]
+
 ; spec k_16(1) #fn=16
 ;   key:    [nil]
 ;   return: nil
@@ -127,6 +208,17 @@
 ;              cont_key=[int]
 
 ; spec k_17(1) #fn=17
+;   key:    [any]
+;   return: nil
+;   vars:
+;     Var(0) :: any
+;   exits:
+;     blk0 Call print#0(Var(0))
+;              callee_key=[any]
+;              cont k_18#18 captured=[]
+;              cont_key=[nil]
+
+; spec k_17(1) #fn=17
 ;   key:    [int]
 ;   return: nil
 ;   vars:
@@ -136,6 +228,18 @@
 ;              callee_key=[int]
 ;              cont k_18#18 captured=[]
 ;              cont_key=[nil]
+
+; spec k_18(1) #fn=18
+;   key:    [any]
+;   return: nil
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: 7
+;   exits:
+;     blk0 Call Outer.use_inner#13(Var(1))
+;              callee_key=[7]
+;              cont k_19#19 captured=[]
+;              cont_key=[int]
 
 ; spec k_18(1) #fn=18
 ;   key:    [nil]
@@ -148,6 +252,15 @@
 ;              callee_key=[7]
 ;              cont k_19#19 captured=[]
 ;              cont_key=[int]
+
+; spec k_19(1) #fn=19
+;   key:    [any]
+;   return: nil
+;   vars:
+;     Var(0) :: any
+;   exits:
+;     blk0 TailCall print#0(Var(0))
+;              callee_key=[any]
 
 ; spec k_19(1) #fn=19
 ;   key:    [int]

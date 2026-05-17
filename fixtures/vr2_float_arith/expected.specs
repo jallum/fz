@@ -15,6 +15,22 @@
 ;              callee_key=[:true]
 
 ; spec print(1) #fn=0
+;   key:    [any]
+;   return: nil
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: :function_clause
+;     Var(2) :: bool
+;   exits:
+;     blk0 Goto blk2()
+;     blk1 Halt Var(1)      :: :function_clause
+;     blk2 If Var(2) ? blk4 : blk3
+;     blk3 TailCall fn_clause_1#8(Var(0))
+;              callee_key=[any]
+;     blk4 TailCall fn_clause_0#7(Var(0))
+;              callee_key=[any]
+
+; spec print(1) #fn=0
 ;   key:    [float]
 ;   return: nil
 ;   vars:
@@ -49,6 +65,15 @@
 ;     blk0 Return Var(1)    :: nil
 
 ; spec fn_clause_1(1) #fn=8
+;   key:    [any]
+;   return: nil
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: nil
+;   exits:
+;     blk0 Return Var(1)    :: nil
+
+; spec fn_clause_1(1) #fn=8
 ;   key:    [float]
 ;   return: nil
 ;   vars:
@@ -73,6 +98,20 @@
 ;     blk1 Halt Var(0)      :: :match_error
 
 ; spec k_12(1) #fn=12
+;   key:    [any]
+;   return: nil
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: 10.0
+;     Var(2) :: 3.0
+;     Var(3) :: 7.0
+;   exits:
+;     blk0 Call print#0(Var(3))
+;              callee_key=[7.0]
+;              cont k_13#13 captured=[]
+;              cont_key=[nil]
+
+; spec k_12(1) #fn=12
 ;   key:    [nil]
 ;   return: nil
 ;   vars:
@@ -84,6 +123,20 @@
 ;     blk0 Call print#0(Var(3))
 ;              callee_key=[7.0]
 ;              cont k_13#13 captured=[]
+;              cont_key=[nil]
+
+; spec k_13(1) #fn=13
+;   key:    [any]
+;   return: nil
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: 2.5
+;     Var(2) :: 4.0
+;     Var(3) :: 10.0
+;   exits:
+;     blk0 Call print#0(Var(3))
+;              callee_key=[10.0]
+;              cont k_14#14 captured=[]
 ;              cont_key=[nil]
 
 ; spec k_13(1) #fn=13
@@ -99,6 +152,18 @@
 ;              callee_key=[10.0]
 ;              cont k_14#14 captured=[]
 ;              cont_key=[nil]
+
+; spec k_14(1) #fn=14
+;   key:    [any]
+;   return: nil
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: 1.0
+;     Var(2) :: 2.0
+;     Var(3) :: :true
+;   exits:
+;     blk0 TailCall print#0(Var(3))
+;              callee_key=[:true]
 
 ; spec k_14(1) #fn=14
 ;   key:    [nil]

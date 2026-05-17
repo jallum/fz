@@ -1,4 +1,20 @@
 ; spec print(1) #fn=0
+;   key:    [any]
+;   return: nil
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: :function_clause
+;     Var(2) :: bool
+;   exits:
+;     blk0 Goto blk2()
+;     blk1 Halt Var(1)      :: :function_clause
+;     blk2 If Var(2) ? blk4 : blk3
+;     blk3 TailCall fn_clause_1#8(Var(0))
+;              callee_key=[any]
+;     blk4 TailCall fn_clause_0#7(Var(0))
+;              callee_key=[any]
+
+; spec print(1) #fn=0
 ;   key:    [int]
 ;   return: nil
 ;   vars:
@@ -13,6 +29,15 @@
 ;              callee_key=[int]
 ;     blk4 TailCall fn_clause_0#7(Var(0))
 ;              callee_key=[int]
+
+; spec fn_clause_0(1) #fn=7
+;   key:    [any]
+;   return: nil
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: nil
+;   exits:
+;     blk0 Return Var(1)    :: nil
 
 ; spec fn_clause_0(1) #fn=7
 ;   key:    [int]
@@ -44,6 +69,18 @@
 ;     blk0 Return Var(3)    :: int
 ;     blk1 Halt Var(1)      :: :match_error
 
+; spec hot(1) #fn=11
+;   key:    [any]
+;   return: int | float
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: :match_error
+;     Var(2) :: 1
+;     Var(3) :: int | float
+;   exits:
+;     blk0 Return Var(3)    :: int | float
+;     blk1 Halt Var(1)      :: :match_error
+
 ; spec main(0) #fn=12
 ;   key:    []
 ;   return: none
@@ -58,6 +95,17 @@
 ;     blk1 Halt Var(0)      :: :match_error
 
 ; spec k_13(1) #fn=13
+;   key:    [any]
+;   return: none
+;   vars:
+;     Var(0) :: any
+;   exits:
+;     blk0 Call print#0(Var(0))
+;              callee_key=[any]
+;              cont k_14#14 captured=[]
+;              cont_key=[nil]
+
+; spec k_13(1) #fn=13
 ;   key:    [int]
 ;   return: none
 ;   vars:
@@ -67,6 +115,18 @@
 ;              callee_key=[int]
 ;              cont k_14#14 captured=[]
 ;              cont_key=[nil]
+
+; spec k_14(1) #fn=14
+;   key:    [any]
+;   return: none
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: 0
+;   exits:
+;     blk0 Call hot#11(Var(1))
+;              callee_key=[0]
+;              cont k_15#15 captured=[]
+;              cont_key=[int]
 
 ; spec k_14(1) #fn=14
 ;   key:    [nil]
@@ -81,6 +141,17 @@
 ;              cont_key=[int]
 
 ; spec k_15(1) #fn=15
+;   key:    [any]
+;   return: none
+;   vars:
+;     Var(0) :: any
+;   exits:
+;     blk0 Call print#0(Var(0))
+;              callee_key=[any]
+;              cont k_16#16 captured=[]
+;              cont_key=[nil]
+
+; spec k_15(1) #fn=15
 ;   key:    [int]
 ;   return: none
 ;   vars:
@@ -90,6 +161,18 @@
 ;              callee_key=[int]
 ;              cont k_16#16 captured=[]
 ;              cont_key=[nil]
+
+; spec k_16(1) #fn=16
+;   key:    [any]
+;   return: none
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: 0
+;   exits:
+;     blk0 Call hot#11(Var(1))
+;              callee_key=[0]
+;              cont k_17#17 captured=[]
+;              cont_key=[int]
 
 ; spec k_16(1) #fn=16
 ;   key:    [nil]
@@ -104,6 +187,17 @@
 ;              cont_key=[int]
 
 ; spec k_17(1) #fn=17
+;   key:    [any]
+;   return: none
+;   vars:
+;     Var(0) :: any
+;   exits:
+;     blk0 Call print#0(Var(0))
+;              callee_key=[any]
+;              cont k_18#18 captured=[]
+;              cont_key=[nil]
+
+; spec k_17(1) #fn=17
 ;   key:    [int]
 ;   return: none
 ;   vars:
@@ -113,6 +207,18 @@
 ;              callee_key=[int]
 ;              cont k_18#18 captured=[]
 ;              cont_key=[nil]
+
+; spec k_18(1) #fn=18
+;   key:    [any]
+;   return: none
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: 0
+;   exits:
+;     blk0 Call hot#11(Var(1))
+;              callee_key=[0]
+;              cont k_19#19 captured=[]
+;              cont_key=[int]
 
 ; spec k_18(1) #fn=18
 ;   key:    [nil]
@@ -127,6 +233,17 @@
 ;              cont_key=[int]
 
 ; spec k_19(1) #fn=19
+;   key:    [any]
+;   return: none
+;   vars:
+;     Var(0) :: any
+;   exits:
+;     blk0 Call print#0(Var(0))
+;              callee_key=[any]
+;              cont k_20#20 captured=[]
+;              cont_key=[nil]
+
+; spec k_19(1) #fn=19
 ;   key:    [int]
 ;   return: none
 ;   vars:
@@ -136,6 +253,18 @@
 ;              callee_key=[int]
 ;              cont k_20#20 captured=[]
 ;              cont_key=[nil]
+
+; spec k_20(1) #fn=20
+;   key:    [any]
+;   return: none
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: 0
+;   exits:
+;     blk0 Call hot#11(Var(1))
+;              callee_key=[0]
+;              cont k_21#21 captured=[]
+;              cont_key=[int]
 
 ; spec k_20(1) #fn=20
 ;   key:    [nil]
@@ -150,6 +279,17 @@
 ;              cont_key=[int]
 
 ; spec k_21(1) #fn=21
+;   key:    [any]
+;   return: none
+;   vars:
+;     Var(0) :: any
+;   exits:
+;     blk0 Call print#0(Var(0))
+;              callee_key=[any]
+;              cont k_22#22 captured=[]
+;              cont_key=[nil]
+
+; spec k_21(1) #fn=21
 ;   key:    [int]
 ;   return: none
 ;   vars:
@@ -159,6 +299,18 @@
 ;              callee_key=[int]
 ;              cont k_22#22 captured=[]
 ;              cont_key=[nil]
+
+; spec k_22(1) #fn=22
+;   key:    [any]
+;   return: none
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: 0
+;   exits:
+;     blk0 Call hot#11(Var(1))
+;              callee_key=[0]
+;              cont k_23#23 captured=[]
+;              cont_key=[int]
 
 ; spec k_22(1) #fn=22
 ;   key:    [nil]
@@ -173,6 +325,17 @@
 ;              cont_key=[int]
 
 ; spec k_23(1) #fn=23
+;   key:    [any]
+;   return: none
+;   vars:
+;     Var(0) :: any
+;   exits:
+;     blk0 Call print#0(Var(0))
+;              callee_key=[any]
+;              cont k_24#24 captured=[]
+;              cont_key=[nil]
+
+; spec k_23(1) #fn=23
 ;   key:    [int]
 ;   return: none
 ;   vars:
@@ -182,6 +345,18 @@
 ;              callee_key=[int]
 ;              cont k_24#24 captured=[]
 ;              cont_key=[nil]
+
+; spec k_24(1) #fn=24
+;   key:    [any]
+;   return: none
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: 0
+;   exits:
+;     blk0 Call hot#11(Var(1))
+;              callee_key=[0]
+;              cont k_25#25 captured=[]
+;              cont_key=[int]
 
 ; spec k_24(1) #fn=24
 ;   key:    [nil]
@@ -196,6 +371,17 @@
 ;              cont_key=[int]
 
 ; spec k_25(1) #fn=25
+;   key:    [any]
+;   return: none
+;   vars:
+;     Var(0) :: any
+;   exits:
+;     blk0 Call print#0(Var(0))
+;              callee_key=[any]
+;              cont k_26#26 captured=[]
+;              cont_key=[nil]
+
+; spec k_25(1) #fn=25
 ;   key:    [int]
 ;   return: none
 ;   vars:
@@ -205,6 +391,18 @@
 ;              callee_key=[int]
 ;              cont k_26#26 captured=[]
 ;              cont_key=[nil]
+
+; spec k_26(1) #fn=26
+;   key:    [any]
+;   return: none
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: 0
+;   exits:
+;     blk0 Call hot#11(Var(1))
+;              callee_key=[0]
+;              cont k_27#27 captured=[]
+;              cont_key=[int]
 
 ; spec k_26(1) #fn=26
 ;   key:    [nil]
@@ -217,6 +415,17 @@
 ;              callee_key=[0]
 ;              cont k_27#27 captured=[]
 ;              cont_key=[int]
+
+; spec k_27(1) #fn=27
+;   key:    [any]
+;   return: none
+;   vars:
+;     Var(0) :: any
+;   exits:
+;     blk0 Call print#0(Var(0))
+;              callee_key=[any]
+;              cont k_28#28 captured=[]
+;              cont_key=[nil]
 
 ; spec k_27(1) #fn=27
 ;   key:    [int]

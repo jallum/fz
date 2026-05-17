@@ -218,7 +218,21 @@ pub struct ModuleTypes {
     /// fz-afs.12 — secondary index: FnId → all-any key for that fn.
     /// Populated in `type_module` from the final specs map. Enables O(1)
     /// any-key lookup without the per-element is_equiv scan.
+    ///
+    /// fz-aiz.3e — total over every reachable FnId after `ensure_any_keys`.
+    /// Codegen must use `naturally_opaque` (below) to decide closure body
+    /// routing — `any_key_specs` is now a pure existence signal, not a
+    /// reachability gate.
     pub any_key_specs: HashMap<FnId, Vec<Descr>>,
+    /// fz-aiz.3e — FnIds whose any-key was naturally seeded by the
+    /// typer's reachability pass (i.e., opaque dispatch is reachable
+    /// for that fn: spawn target, Receive consumer, or unresolved
+    /// CallClosure). Snapshotted before `ensure_any_keys` augments
+    /// the spec set; codegen reads this to decide closure body routing
+    /// at MakeClosure sites — opaque-reachable fns route through their
+    /// any-key body (Tagged ABI); direct-only fns route through a
+    /// canonical narrow body.
+    pub naturally_opaque: std::collections::HashSet<FnId>,
     /// fz-02r.4 — SCC index for back-edge detection. Two FnIds share a
     /// back-edge (i.e., the call is on a loop) iff `scc_of[a] == scc_of[b]`.
     /// Self-recursion maps a fn to its own SCC (singleton). Populated at the
@@ -488,13 +502,7 @@ pub fn type_module(m: &Module) -> ModuleTypes {
         let specs = type_module_pass(m, &prev_returns);
         let effective_returns = compute_effective_returns(m, &specs, &prev_returns);
         if effective_returns == prev_returns {
-            let any_key_specs = build_any_key_index(&specs);
-            return ModuleTypes {
-                specs,
-                effective_returns,
-                any_key_specs,
-                scc_of,
-            };
+            return finalize_module_types(specs, effective_returns, m, scc_of);
         }
         prev_returns = effective_returns;
     }
@@ -503,12 +511,75 @@ pub fn type_module(m: &Module) -> ModuleTypes {
     // every fixture we've seen.
     let specs = type_module_pass(m, &prev_returns);
     let effective_returns = compute_effective_returns(m, &specs, &prev_returns);
+    finalize_module_types(specs, effective_returns, m, scc_of)
+}
+
+/// fz-aiz.3e — finalize ModuleTypes after the fixpoint converges:
+///
+/// 1. Snapshot `naturally_opaque` from the typer's reachability-driven
+///    spec set (every FnId that already has an any-key registered means
+///    opaque dispatch is reachable for it).
+/// 2. Augment specs with an any-key for every reachable FnId that
+///    doesn't already have one (`ensure_any_keys`). This is the
+///    soundness floor consumed by `SpecRegistry::resolve` fallback
+///    (fz-aiz.4). Per-spec inference under widest inputs becomes
+///    available for every reachable fn.
+/// 3. Re-derive `any_key_specs` (now total) and `effective_returns`
+///    over the augmented spec set so the new any-key entries get their
+///    canonical return Descr.
+///
+/// Closure routing decisions in codegen consult `naturally_opaque`,
+/// NOT `any_key_specs`. The two roles that used to share one bit
+/// (presence of (fid, any-key) in specs) are now distinct fields.
+fn finalize_module_types(
+    specs: HashMap<(FnId, Vec<Descr>), FnTypes>,
+    effective_returns: HashMap<(FnId, Vec<Descr>), Descr>,
+    m: &Module,
+    scc_of: HashMap<FnId, usize>,
+) -> ModuleTypes {
+    let naturally_opaque: std::collections::HashSet<FnId> = specs
+        .keys()
+        .filter(|(_, key)| key.iter().all(|d| d.is_equiv(&Descr::any())))
+        .map(|(fid, _)| *fid)
+        .collect();
+    let mut specs = specs;
+    ensure_any_keys(&mut specs, m);
+    let effective_returns = compute_effective_returns(m, &specs, &effective_returns);
     let any_key_specs = build_any_key_index(&specs);
     ModuleTypes {
         specs,
         effective_returns,
         any_key_specs,
+        naturally_opaque,
         scc_of,
+    }
+}
+
+/// fz-aiz.3e — the any-key floor.
+///
+/// After the typer's reachability-driven pass converges, every FnId
+/// with at least one registered spec gets an additional any-key spec
+/// (key = `[Descr::any(); arity]`). This is the soundness floor that
+/// `SpecRegistry::resolve` can fall back to in fz-aiz.4 when no
+/// narrower spec covers a codegen-side query. Codegen NEVER reads
+/// these specs as a routing decision — `naturally_opaque` is the
+/// routing signal — so adding an any-key for a direct-only fn is
+/// purely an inference enrichment.
+fn ensure_any_keys(specs: &mut HashMap<(FnId, Vec<Descr>), FnTypes>, m: &Module) {
+    let fns_in_specs: std::collections::BTreeSet<FnId> =
+        specs.keys().map(|(fid, _)| *fid).collect();
+    for fid in fns_in_specs {
+        let Some(&j) = m.fn_idx.get(&fid) else {
+            continue;
+        };
+        let f = &m.fns[j];
+        let arity = f.block(f.entry).params.len();
+        let any_key: Vec<Descr> = vec![Descr::any(); arity];
+        if specs.contains_key(&(fid, any_key.clone())) {
+            continue;
+        }
+        let ft = type_fn(f, m, Some(&any_key));
+        specs.insert((fid, any_key), ft);
     }
 }
 

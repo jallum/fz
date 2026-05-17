@@ -15,12 +15,12 @@ function u0:0(i64) -> i64 tail {
     sig8 = (i64) -> i64 system_v
     fn0 = u0:11 sig0
     fn1 = u0:27 sig1
-    fn2 = colocated u0:40 sig2
+    fn2 = colocated u0:43 sig2
     fn3 = u0:27 sig3
-    fn4 = colocated u0:41 sig4
-    fn5 = u0:43 sig5
+    fn4 = colocated u0:44 sig4
+    fn5 = u0:46 sig5
     fn6 = u0:27 sig6
-    fn7 = colocated u0:42 sig7
+    fn7 = colocated u0:45 sig7
     fn8 = u0:28 sig8
 
 block0(v0: i64):
@@ -41,10 +41,10 @@ block0(v0: i64):
     store notrap aligned v12, v11+16    ; @6:16
     store notrap aligned v6, v11+24     ; @6:16
     v13 = call fn5(v11)                 ; @6:19
-    v14 = iconst.i32 15                 ; @8:9
+    v14 = iconst.i32 18                 ; @8:9
     v15 = iconst.i32 2                  ; @8:9
     v16 = iconst.i32 0                  ; @8:9
-    v17 = call fn6(v14, v15, v16)       ; @8:9  v14 = 15, v15 = 2, v16 = 0
+    v17 = call fn6(v14, v15, v16)       ; @8:9  v14 = 18, v15 = 2, v16 = 0
     v18 = func_addr.i64 fn7             ; @8:9
     store notrap aligned v18, v17+16    ; @8:9
     store notrap aligned v0, v17+24     ; @8:9
@@ -54,13 +54,78 @@ block0(v0: i64):
 }
 
 ; fn lambda_13
+    ;   @spec   lambda_13(any) -> any
+    ;   @key    [any]
+    ;   @abi    (Tagged) -> Tagged
+function u0:0(i64, i64) -> i64 tail {
+    sig0 = (i64, i64) -> i64 system_v
+    sig1 = (i64, i64) -> i64 tail
+    fn0 = u0:47 sig0
+
+block0(v0: i64, v1: i64):
+    v2 = load.i64 notrap aligned v0+24    ;; v2 :: any
+    v3 = iconst.i64 1    ;; v3 :: 1
+    v4 = iconst.i64 9
+    v5 = call fn0(v4, v2)  ; v4 = 9    ;; v5 :: any
+    v6 = load.i64 notrap aligned v1+16
+    return_call_indirect sig1, v6(v5, v1)
+}
+
+; fn fz_spawn_thunk
+    ;   @spec   fz_spawn_thunk(any) -> any
+    ;   @key    [any]
+    ;   @abi    (Tagged) -> Tagged
+function u0:0(i64, i64) -> i64 tail {
+    sig0 = (i64, i64) -> i64 tail
+
+block0(v0: i64, v1: i64):
+    v2 = load.i64 notrap aligned v0+24    ;; v2 :: any
+    v3 = load.i64 notrap aligned v2+16
+    return_call_indirect sig0, v3(v2, v1)
+}
+
+; fn k_receive_15
+    ;   @spec   k_receive_15(any, any) -> nil
+    ;   @key    [any, any]
+    ;   @abi    (Tagged, Tagged) -> Tagged
+function u0:0(i64, i64) -> i64 tail {
+    sig0 = (i64) system_v
+    sig1 = (i64, i64) -> i64 tail
+    sig2 = (i64) system_v
+    sig3 = (i64, i64) -> i64 tail
+    fn0 = u0:48 sig0
+    fn1 = u0:49 sig2
+
+    block0(v0: i64, v1: i64):    ;; v0 :: any
+    v2 = load.i64 notrap aligned v1+32    ;; v2 :: any
+    v3 = band_imm v0, 7
+    v4 = icmp_imm eq v3, 1    ;; v4 :: bool
+    brif v4, block2, block1             ; @8:3
+
+block1:
+    call fn0(v0)
+    v5 = iconst.i64 3    ;; v5 :: nil
+    v6 = load.i64 notrap aligned v1+24
+    v7 = load.i64 notrap aligned v6+16
+    return_call_indirect sig1, v7(v5, v6)  ; v5 = 3
+
+block2:
+    v8 = sshr_imm.i64 v0, 3
+    call fn1(v8)
+    v9 = iconst.i64 3    ;; v9 :: nil
+    v10 = load.i64 notrap aligned v1+24
+    v11 = load.i64 notrap aligned v10+16
+    return_call_indirect sig3, v11(v9, v10)  ; v9 = 3
+}
+
+; fn lambda_13_s16
     ;   @spec   lambda_13(vec(u8) | vec(bit)) -> any
     ;   @key    [vec(u8) | vec(bit)]
     ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64, i64) -> i64 system_v
     sig1 = (i64, i64) -> i64 tail
-    fn0 = u0:44 sig0
+    fn0 = u0:47 sig0
 
 block0(v0: i64, v1: i64):
     v2 = load.i64 notrap aligned v0+24    ;; v2 :: vec(u8) | vec(bit)
@@ -71,20 +136,20 @@ block0(v0: i64, v1: i64):
     return_call_indirect sig1, v6(v5, v1)
 }
 
-; fn fz_spawn_thunk
+; fn fz_spawn_thunk_s17
     ;   @spec   fz_spawn_thunk(&fn13[vec(u8) | vec(bit)]:() -> any) -> any
     ;   @key    [&fn13[vec(u8) | vec(bit)]:() -> any]
     ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64, i64) -> i64 tail
-    fn0 = colocated u0:40 sig0
+    fn0 = colocated u0:43 sig0
 
 block0(v0: i64, v1: i64):
     v2 = load.i64 notrap aligned v0+24    ;; v2 :: &fn13[vec(u8) | vec(bit)]:() -> any
     return_call fn0(v2, v1)
 }
 
-; fn k_receive_15
+; fn k_receive_15_s18
     ;   @spec   k_receive_15(any, vec(u8) | vec(bit)) -> nil
     ;   @key    [any, vec(u8) | vec(bit)]
     ;   @abi    (Tagged, Tagged) -> Tagged
@@ -93,8 +158,8 @@ function u0:0(i64, i64) -> i64 tail {
     sig1 = (i64, i64) -> i64 tail
     sig2 = (i64) system_v
     sig3 = (i64, i64) -> i64 tail
-    fn0 = u0:45 sig0
-    fn1 = u0:46 sig2
+    fn0 = u0:48 sig0
+    fn1 = u0:49 sig2
 
     block0(v0: i64, v1: i64):    ;; v0 :: any
     v2 = load.i64 notrap aligned v1+32    ;; v2 :: vec(u8) | vec(bit)

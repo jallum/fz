@@ -1566,8 +1566,22 @@ fn annotate_spec_ir(
     module: &crate::fz_ir::Module,
     module_types: &crate::ir_typer::ModuleTypes,
 ) {
-    // Mirror the codegen-side closure body picker (Prim::MakeClosure
-    // and closure_shapes builder share the same logic).
+    // fz-aiz.3e — closure body picker, the load-bearing decision for
+    // MakeClosure body_func_id storage.
+    //
+    // The split lives in `naturally_opaque`: a fn whose any-key was
+    // naturally seeded by the typer's reachability pass is opaque-
+    // dispatch reachable, so its closures store the any-key body
+    // (Tagged ABI). A fn that only earned an any-key via
+    // ensure_any_keys is direct-only — every call site statically
+    // resolves to a narrow spec, so the closure stores a canonical
+    // narrow body (RawInt ABI matches caller).
+    //
+    // Pre-fz-aiz.3e: this site called `resolve` with `[any; n] + caps`,
+    // exact-matching whichever any-key existed in specs. After
+    // ensure_any_keys made any-keys universal, that exact-match flipped
+    // direct-only fns from "narrow" to "any-key" and produced ABI
+    // mismatches at every direct-only closure call site.
     let closure_body_sid = |fn_id: crate::fz_ir::FnId,
                             captured: &[crate::fz_ir::Var]|
      -> Option<crate::fz_ir::SpecId> {
@@ -1584,12 +1598,48 @@ fn annotate_spec_ir(
                     .unwrap_or_else(crate::types::Descr::any);
             }
         }
-        spec_registry.resolve(fn_id, &key).or_else(|| {
-            spec_registry
-                .iter()
-                .find(|(s, fid, _)| *fid == fn_id && fn_ids.contains_key(&s.0))
-                .map(|(s, _, _)| s)
-        })
+        // First try resolve. If it returns an any-key for a direct-only
+        // fn, we substitute a narrow spec — the closure's stored
+        // body_func_id is unreachable at runtime for direct-only fns
+        // (every call site statically resolves) but must still point at
+        // a real emitted body with consistent ABI.
+        let resolved = spec_registry.resolve(fn_id, &key);
+        if module_types.naturally_opaque.contains(&fn_id) {
+            // Opaque-reachable: respect resolve. Any-key dispatch is
+            // both correct and required when opaque calls reach here.
+            resolved
+        } else {
+            // Direct-only: if resolve picked the any-key (because the
+            // query happens to be all-any — e.g. MakeClosure with zero
+            // captures), substitute with the first narrow spec.
+            // Concrete-capture queries fast-match the right narrow spec
+            // directly, no substitution needed.
+            let resolved_is_any_key = resolved.is_some_and(|sid| {
+                spec_registry
+                    .iter()
+                    .find(|(s, _, _)| *s == sid)
+                    .map(|(_, _, k)| {
+                        k.iter()
+                            .all(|d| d.is_equiv(&crate::types::Descr::any()))
+                    })
+                    .unwrap_or(false)
+            });
+            if resolved_is_any_key {
+                spec_registry
+                    .iter()
+                    .find(|(s, fid_o, key_o)| {
+                        *fid_o == fn_id
+                            && fn_ids.contains_key(&s.0)
+                            && !key_o
+                                .iter()
+                                .all(|d| d.is_equiv(&crate::types::Descr::any()))
+                    })
+                    .map(|(s, _, _)| s)
+                    .or(resolved)
+            } else {
+                resolved
+            }
+        }
     };
     // Mirror resolve_callee_sid_in (per-block-env narrowing).
     let callee_sid = |callee: crate::fz_ir::FnId,
@@ -2286,36 +2336,62 @@ pub fn compile_with_backend<B: Backend>(
                                 .unwrap_or_else(crate::types::Descr::any);
                         }
                     }
-                    // fz-ul4.29.10.3 — when the lambda's any-key was
-                    // dropped (closure-var is fully resolved via
-                    // fn_constants and the IR rewrite turned every
-                    // invocation into a direct Call), no covering spec
-                    // exists for `[any; n_params]`. The closure header
-                    // still needs `stub_fp`, but the stub is unreachable
-                    // — falling back to any registered narrow SpecId is
-                    // safe because nothing dispatches through it.
-                    let cl_sid = spec_registry
-                        .resolve(*lam_fn_id, &key)
-                        .map(|s| s.0)
-                        .or_else(|| {
+                    // fz-aiz.3e — same closure body picker as
+                    // annotate_spec_ir's `closure_body_sid`. The two MUST
+                    // agree: this builder seeds static_closure_targets
+                    // (Process.static_closures[cl_sid] = ptr), while
+                    // annotate_spec_ir populates the MakeClosure annotation
+                    // that the per-spec lowering reads to write the closure
+                    // value's body_func_id at +16. If they pick different
+                    // SpecIds for the same MakeClosure prim, the static
+                    // closure's registered fn mismatches what callers expect.
+                    //
+                    // naturally_opaque is the gate. Opaque-reachable fns
+                    // route to their any-key body (Tagged ABI). Direct-only
+                    // fns route to a canonical narrow body.
+                    // fz-aiz.3e — must match annotate_spec_ir's `closure_body_sid`
+                    // exactly. See the longer comment there.
+                    let resolved = spec_registry.resolve(*lam_fn_id, &key);
+                    let cl_sid_opt = if module_types.naturally_opaque.contains(lam_fn_id) {
+                        resolved.map(|s| s.0)
+                    } else {
+                        let resolved_is_any_key = resolved.is_some_and(|sid| {
                             spec_registry
                                 .iter()
-                                .find(|(s, fid, _)| {
-                                    *fid == *lam_fn_id && spec_fnidx[s.0 as usize].is_some()
+                                .find(|(s, _, _)| *s == sid)
+                                .map(|(_, _, k)| {
+                                    k.iter()
+                                        .all(|d| d.is_equiv(&crate::types::Descr::any()))
+                                })
+                                .unwrap_or(false)
+                        });
+                        if resolved_is_any_key {
+                            spec_registry
+                                .iter()
+                                .find(|(s, fid, k)| {
+                                    *fid == *lam_fn_id
+                                        && spec_fnidx[s.0 as usize].is_some()
+                                        && !k
+                                            .iter()
+                                            .all(|d| d.is_equiv(&crate::types::Descr::any()))
                                 })
                                 .map(|(s, _, _)| s.0)
-                        })
-                        .unwrap_or_else(|| {
-                            panic!(
-                                ".29.12.2: no live spec for closure target \
+                                .or_else(|| resolved.map(|s| s.0))
+                        } else {
+                            resolved.map(|s| s.0)
+                        }
+                    };
+                    let cl_sid = cl_sid_opt.unwrap_or_else(|| {
+                        panic!(
+                            ".29.12.2: no live spec for closure target \
                              FnId({}); registered keys: {:?}",
-                                lam_fn_id.0,
-                                spec_registry
-                                    .iter()
-                                    .map(|(s, fid, k)| (s.0, fid.0, k.to_vec()))
-                                    .collect::<Vec<_>>()
-                            )
-                        });
+                            lam_fn_id.0,
+                            spec_registry
+                                .iter()
+                                .map(|(s, fid, k)| (s.0, fid.0, k.to_vec()))
+                                .collect::<Vec<_>>()
+                        )
+                    });
                     closure_shapes.insert(cl_sid, captured.len());
                 }
             }
@@ -2834,10 +2910,36 @@ pub fn compile_with_backend<B: Backend>(
             let cont = match &blk.terminator {
                 Term::Call {
                     callee,
+                    args,
                     continuation,
                     ..
                 } => {
-                    if tagged_return_fns.contains(callee) {
+                    // fz-aiz.3e — per-callsite return-repr check rather than
+                    // FnId-coarse `tagged_return_fns` membership. With
+                    // ensure_any_keys populating an any-key for every
+                    // reachable fn, a fn now has both a RawInt-returning
+                    // narrow spec and a Tagged-returning any-key. The cont
+                    // at THIS call site receives the resolved spec's return,
+                    // not "some spec exists with Tagged return." Resolve
+                    // with arg Descrs, look up that SpecId's return_descr.
+                    let arg_descrs: Vec<crate::types::Descr> = args
+                        .iter()
+                        .map(|av| {
+                            caller_ft
+                                .vars
+                                .get(av)
+                                .cloned()
+                                .unwrap_or_else(crate::types::Descr::any)
+                        })
+                        .collect();
+                    let returns_tagged = spec_registry
+                        .resolve(*callee, &arg_descrs)
+                        .map(|sid| {
+                            ArgRepr::from_descr(&return_descrs[sid.0 as usize])
+                                == ArgRepr::Tagged
+                        })
+                        .unwrap_or_else(|| tagged_return_fns.contains(callee));
+                    if returns_tagged {
                         Some(continuation)
                     } else {
                         None
@@ -2941,6 +3043,7 @@ pub fn compile_with_backend<B: Backend>(
             .module_mut()
             .declare_function(&name, linkage, &fn_sigs[sid])
             .map_err(|e| CodegenError::new(format!("declare {}: {}", name, e)))?;
+        let fname = spec_fnidx[sid].map(|i| &module.fns[i].name);
         fn_ids.insert(sid as u32, id);
     }
 

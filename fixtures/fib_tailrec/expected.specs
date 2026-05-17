@@ -31,6 +31,22 @@
 ;              callee_key=[1]
 
 ; spec print(1) #fn=0
+;   key:    [any]
+;   return: nil
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: :function_clause
+;     Var(2) :: bool
+;   exits:
+;     blk0 Goto blk2()
+;     blk1 Halt Var(1)      :: :function_clause
+;     blk2 If Var(2) ? blk4 : blk3
+;     blk3 TailCall fn_clause_1#8(Var(0))
+;              callee_key=[any]
+;     blk4 TailCall fn_clause_0#7(Var(0))
+;              callee_key=[any]
+
+; spec print(1) #fn=0
 ;   key:    [int]
 ;   return: nil
 ;   vars:
@@ -60,6 +76,15 @@
 ;   return: nil
 ;   vars:
 ;     Var(0) :: 1
+;     Var(1) :: nil
+;   exits:
+;     blk0 Return Var(1)    :: nil
+
+; spec fn_clause_0(1) #fn=7
+;   key:    [any]
+;   return: nil
+;   vars:
+;     Var(0) :: any
 ;     Var(1) :: nil
 ;   exits:
 ;     blk0 Return Var(1)    :: nil
@@ -177,6 +202,30 @@
 ;              callee_key=[1]
 ;     blk6 TailCall fn_clause_2#15(Var(0), Var(1), Var(2))
 ;              callee_key=[20, 0, 1]
+
+; spec fib(3) #fn=11
+;   key:    [any, any, any]
+;   return: any
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: any
+;     Var(2) :: any
+;     Var(3) :: :function_clause
+;     Var(4) :: 0
+;     Var(5) :: bool
+;     Var(6) :: 1
+;     Var(7) :: bool
+;   exits:
+;     blk0 Goto blk2()
+;     blk1 Halt Var(3)      :: :function_clause
+;     blk2 If Var(5) ? blk3 : blk4
+;     blk3 TailCall fn_clause_0#13(Var(1))
+;              callee_key=[any]
+;     blk4 If Var(7) ? blk5 : blk6
+;     blk5 TailCall fn_clause_1#14(Var(2))
+;              callee_key=[any]
+;     blk6 TailCall fn_clause_2#15(Var(0), Var(1), Var(2))
+;              callee_key=[any, any, any]
 
 ; spec fib(3) #fn=11
 ;   key:    [int | float, 1, int]
@@ -306,6 +355,14 @@
 ;     blk0 Return Var(0)    :: 1
 
 ; spec fn_clause_0(1) #fn=13
+;   key:    [any]
+;   return: any
+;   vars:
+;     Var(0) :: any
+;   exits:
+;     blk0 Return Var(0)    :: any
+
+; spec fn_clause_0(1) #fn=13
 ;   key:    [int]
 ;   return: int
 ;   vars:
@@ -320,6 +377,14 @@
 ;     Var(0) :: 1
 ;   exits:
 ;     blk0 Return Var(0)    :: 1
+
+; spec fn_clause_1(1) #fn=14
+;   key:    [any]
+;   return: any
+;   vars:
+;     Var(0) :: any
+;   exits:
+;     blk0 Return Var(0)    :: any
 
 ; spec fn_clause_1(1) #fn=14
 ;   key:    [int]
@@ -370,6 +435,20 @@
 ;   exits:
 ;     blk0 TailCall fib#11(Var(4), Var(2), Var(5))
 ;              callee_key=[int | float, 1, int]
+
+; spec fn_clause_2(3) #fn=15
+;   key:    [any, any, any]
+;   return: none
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: any
+;     Var(2) :: any
+;     Var(3) :: 1
+;     Var(4) :: int | float
+;     Var(5) :: int | float
+;   exits:
+;     blk0 TailCall fib#11(Var(4), Var(2), Var(5))
+;              callee_key=[int | float, any, int | float]
 
 ; spec fn_clause_2(3) #fn=15
 ;   key:    [int \ {0, 1} | float, 1, int]
@@ -466,6 +545,31 @@
 ;              cont k_17#17 captured=[]
 ;              cont_key=[nil]
 
+; spec k_16(1) #fn=16
+;   key:    [any]
+;   return: nil
+;   vars:
+;     Var(0) :: any
+;   exits:
+;     blk0 Call print#0(Var(0))
+;              callee_key=[any]
+;              cont k_17#17 captured=[]
+;              cont_key=[nil]
+
+; spec k_17(1) #fn=17
+;   key:    [any]
+;   return: nil
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: 1
+;     Var(2) :: 0
+;     Var(3) :: 1
+;   exits:
+;     blk0 Call fib#11(Var(1), Var(2), Var(3))
+;              callee_key=[1, 0, 1]
+;              cont k_18#18 captured=[]
+;              cont_key=[1]
+
 ; spec k_17(1) #fn=17
 ;   key:    [nil]
 ;   return: nil
@@ -491,6 +595,31 @@
 ;              cont k_19#19 captured=[]
 ;              cont_key=[nil]
 
+; spec k_18(1) #fn=18
+;   key:    [any]
+;   return: nil
+;   vars:
+;     Var(0) :: any
+;   exits:
+;     blk0 Call print#0(Var(0))
+;              callee_key=[any]
+;              cont k_19#19 captured=[]
+;              cont_key=[nil]
+
+; spec k_19(1) #fn=19
+;   key:    [any]
+;   return: nil
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: 10
+;     Var(2) :: 0
+;     Var(3) :: 1
+;   exits:
+;     blk0 Call fib#11(Var(1), Var(2), Var(3))
+;              callee_key=[10, 0, 1]
+;              cont k_20#20 captured=[]
+;              cont_key=[int]
+
 ; spec k_19(1) #fn=19
 ;   key:    [nil]
 ;   return: nil
@@ -506,6 +635,17 @@
 ;              cont_key=[int]
 
 ; spec k_20(1) #fn=20
+;   key:    [any]
+;   return: nil
+;   vars:
+;     Var(0) :: any
+;   exits:
+;     blk0 Call print#0(Var(0))
+;              callee_key=[any]
+;              cont k_21#21 captured=[]
+;              cont_key=[nil]
+
+; spec k_20(1) #fn=20
 ;   key:    [int]
 ;   return: nil
 ;   vars:
@@ -515,6 +655,20 @@
 ;              callee_key=[int]
 ;              cont k_21#21 captured=[]
 ;              cont_key=[nil]
+
+; spec k_21(1) #fn=21
+;   key:    [any]
+;   return: nil
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: 20
+;     Var(2) :: 0
+;     Var(3) :: 1
+;   exits:
+;     blk0 Call fib#11(Var(1), Var(2), Var(3))
+;              callee_key=[20, 0, 1]
+;              cont k_22#22 captured=[]
+;              cont_key=[int]
 
 ; spec k_21(1) #fn=21
 ;   key:    [nil]
@@ -529,6 +683,15 @@
 ;              callee_key=[20, 0, 1]
 ;              cont k_22#22 captured=[]
 ;              cont_key=[int]
+
+; spec k_22(1) #fn=22
+;   key:    [any]
+;   return: nil
+;   vars:
+;     Var(0) :: any
+;   exits:
+;     blk0 TailCall print#0(Var(0))
+;              callee_key=[any]
 
 ; spec k_22(1) #fn=22
 ;   key:    [int]

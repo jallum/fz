@@ -15,6 +15,22 @@
 ;              callee_key=[42]
 
 ; spec print(1) #fn=0
+;   key:    [any]
+;   return: nil
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: :function_clause
+;     Var(2) :: bool
+;   exits:
+;     blk0 Goto blk2()
+;     blk1 Halt Var(1)      :: :function_clause
+;     blk2 If Var(2) ? blk4 : blk3
+;     blk3 TailCall fn_clause_1#8(Var(0))
+;              callee_key=[any]
+;     blk4 TailCall fn_clause_0#7(Var(0))
+;              callee_key=[any]
+
+; spec print(1) #fn=0
 ;   key:    [float]
 ;   return: nil
 ;   vars:
@@ -101,6 +117,15 @@
 ;              cont k_14#14 captured=[]
 ;              cont_key=[nil]
 ;     blk1 Halt Var(0)      :: :match_error
+
+; spec k_14(1) #fn=14
+;   key:    [any]
+;   return: none
+;   vars:
+;     Var(0) :: any
+;   exits:
+;     blk0 TailCall float_main#12()
+;              callee_key=[]
 
 ; spec k_14(1) #fn=14
 ;   key:    [nil]
