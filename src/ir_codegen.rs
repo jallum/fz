@@ -999,6 +999,11 @@ pub struct CompiledMetadata {
     pub atom_names: Vec<String>,
     pub bs_tuple_arity1_schema: Option<u32>,
     pub bs_tuple_arity3_schema: Option<u32>,
+    /// fz-ul4.38 — sorted list of tuple arities the program will allocate.
+    /// JIT ignores it (its runtime shares `user_schemas`); AOT bakes it
+    /// into a `.data` symbol so `fz_aot_setup` can re-register the same
+    /// `Tuple{N}` schemas in matching order.
+    pub tuple_arities: Vec<u32>,
     pub diagnostics: crate::diag::Diagnostics,
     /// FnId of fz user `main`, if present. AOT needs it to wire the C
     /// `main` shim; JIT keeps it as a convenience for the run path.
@@ -1395,6 +1400,38 @@ impl Backend for AotBackend {
             .declare_function("fz_aot_set_resume_shims", Linkage::Import, &set_shims_sig)
             .map_err(|e| CodegenError::new(format!("declare fz_aot_set_resume_shims: {}", e)))?;
 
+        // fz-ul4.38 — fz_aot_register_tuple_schemas(proc, arities_ptr, len)
+        // populates the AOT process's SchemaRegistry with one Tuple{N} entry
+        // per arity, in the order the array was emitted. That order matches
+        // the sorted iteration in compile_with_backend, so the schema ids
+        // baked into the CLIF (via tuple_schema_ids) resolve correctly.
+        let reg_tuples_sig = sig1(&[types::I64, types::I64, types::I32], &[]);
+        let reg_tuples_id = self
+            .omod
+            .declare_function("fz_aot_register_tuple_schemas", Linkage::Import, &reg_tuples_sig)
+            .map_err(|e| CodegenError::new(format!("declare fz_aot_register_tuple_schemas: {}", e)))?;
+
+        let (tuple_arities_data, tuple_arities_len): (Option<DataId>, u32) =
+            if meta.tuple_arities.is_empty() {
+                (None, 0)
+            } else {
+                let mut bytes: Vec<u8> = Vec::with_capacity(meta.tuple_arities.len() * 4);
+                for &a in &meta.tuple_arities {
+                    bytes.extend_from_slice(&a.to_ne_bytes());
+                }
+                let len = meta.tuple_arities.len() as u32;
+                let id = self
+                    .omod
+                    .declare_data("fz_aot_tuple_arities", Linkage::Local, false, false)
+                    .map_err(|e| CodegenError::new(format!("declare tuple arities: {}", e)))?;
+                let mut desc = DataDescription::new();
+                desc.define(bytes.into_boxed_slice());
+                self.omod
+                    .define_data(id, &desc)
+                    .map_err(|e| CodegenError::new(format!("define tuple arities: {}", e)))?;
+                (Some(id), len)
+            };
+
         let (atom_blob_data, atom_blob_len): (Option<DataId>, u32) = if meta.atom_names.is_empty() {
             (None, 0)
         } else {
@@ -1443,6 +1480,9 @@ impl Backend for AotBackend {
             run_id,
             &meta.mid_flight_resume_ids,
             set_shims_id,
+            reg_tuples_id,
+            tuple_arities_data,
+            tuple_arities_len,
         )?;
         Ok(())
     }
@@ -1752,7 +1792,10 @@ pub fn compile_with_backend<B: Backend>(
     // Also detect any bitstring prim so we can pre-register arity-1 / arity-3
     // schemas used by the reader / result tuples even if no MakeTuple uses
     // those arities directly.
-    let mut tuple_arities: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    // fz-ul4.38 — BTreeSet so iteration order is deterministic. Schema ids
+    // are assigned by registration order; the AOT runtime registers in the
+    // same sorted order so its ids match what codegen baked into the CLIF.
+    let mut tuple_arities: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
     let mut has_bs_prim = false;
     for f in &module.fns {
         for blk in &f.blocks {
@@ -1795,17 +1838,7 @@ pub fn compile_with_backend<B: Backend>(
     {
         let mut reg = user_schemas.borrow_mut();
         for &arity in &tuple_arities {
-            let s = Schema {
-                name: format!("Tuple{}", arity),
-                size: (arity * 8) as u32,
-                fields: (0..arity)
-                    .map(|i| FieldDescriptor {
-                        offset: (i * 8) as u32,
-                        kind: FieldKind::FzValue,
-                    })
-                    .collect(),
-            };
-            let id = reg.register(s);
+            let id = reg.register(Schema::tuple_of_arity(arity));
             tuple_schema_ids.insert(arity, id);
         }
     }
@@ -3044,6 +3077,7 @@ pub fn compile_with_backend<B: Backend>(
         atom_names: module.atom_names.clone(),
         bs_tuple_arity1_schema,
         bs_tuple_arity3_schema,
+        tuple_arities: tuple_arities.iter().map(|&a| a as u32).collect(),
         diagnostics,
         main_fn_id,
         static_closure_targets,
@@ -3099,6 +3133,9 @@ fn emit_aot_c_main<M: cranelift_module::Module>(
     run_id: FuncId,
     mid_flight_resume_ids: &[FuncId; 9],
     set_shims_id: FuncId,
+    reg_tuples_id: FuncId,
+    tuple_arities_data: Option<DataId>,
+    tuple_arities_len: u32,
 ) -> Result<(), CodegenError> {
     use cranelift_frontend::FunctionBuilder;
 
@@ -3146,6 +3183,25 @@ fn emit_aot_c_main<M: cranelift_module::Module>(
             ],
         );
         let proc_v = b.inst_results(setup_call)[0];
+
+        // fz-ul4.38 — register tuple schemas before any code that might
+        // allocate one (static closures use AllocStruct, not MakeTuple, but
+        // the order keeps schema setup adjacent to process setup).
+        {
+            let tuple_arities_addr = match tuple_arities_data {
+                Some(data_id) => {
+                    let gv = jmod.declare_data_in_func(data_id, b.func);
+                    b.ins().symbol_value(types::I64, gv)
+                }
+                None => b.ins().iconst(types::I64, 0),
+            };
+            let tuple_arities_len_v = b.ins().iconst(types::I32, tuple_arities_len as i64);
+            let reg_tuples_fref = jmod.declare_func_in_func(reg_tuples_id, b.func);
+            b.ins().call(
+                reg_tuples_fref,
+                &[proc_v, tuple_arities_addr, tuple_arities_len_v],
+            );
+        }
 
         // Register each static closure target.
         for (cl_sid, fn_id, body_func_id, halt_kind) in static_closure_targets {
