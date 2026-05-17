@@ -14,7 +14,7 @@
   "parent": "fz-q9g",
   "priority": 2,
   "status": "open",
-  "title": "fz-dps.F4: DPS for MakeList (cons construction)",
+  "title": "fz-dps.F4: DPS for known-length MakeList literals",
   "type": "task",
-  "updated_at": "2026-05-17T04:47:59Z"
+  "updated_at": "2026-05-17T16:27:35Z"
 }
