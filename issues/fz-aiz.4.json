@@ -12,9 +12,15 @@
   "id": "fz-aiz.4",
   "labels": [],
   "parent": "fz-aiz",
+  "comments": [
+    {
+      "text": "Subsumed by fz-aiz.3e: with `ensure_any_keys` total over every reachable\nFnId, the any-key (key = [any; n]) always covers any query via\nsubsumption (`q ⊆ any` is true for all q). `SpecRegistry::resolve`\ntherefore returns Some for every reachable FnId without code changes\nto spec_registry.rs — the policy change in the typer (the floor)\nmakes resolve total by construction.\n\nLikewise the .29.x panics in codegen were replaced by .expect() against\nthe annotation invariant in fz-aiz.3c; no runtime fallback emission is\nneeded because codegen no longer calls resolve at dispatch sites.",
+      "timestamp": "2026-05-17T18:21:17Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "fz-aiz.4: SpecRegistry::resolve falls back to any-key",
   "type": "task",
-  "updated_at": "2026-05-17T17:36:59Z"
+  "updated_at": "2026-05-17T18:21:17Z"
 }
