@@ -9,9 +9,15 @@
   "id": "fz-q9g.13",
   "labels": [],
   "parent": "fz-q9g",
+  "comments": [
+    {
+      "text": "subsumed by fz-q9g.3 (CD-bundle): emit_return cleanup is natural completion of Term::Return",
+      "timestamp": "2026-05-17T16:26:47Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "fz-dps.E2: drop uniform emit_return() for Dst specs",
   "type": "task",
-  "updated_at": "2026-05-17T04:47:55Z"
+  "updated_at": "2026-05-17T16:26:47Z"
 }
