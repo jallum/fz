@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-17T13:15:04Z",
+  "description": "# Generalize inline_tail_calls_once to handle pure-tail-caller cont fns\n\n## The smell\n\nis_inlinable requires is_leaf (no terminating Call/TailCall). So a cont\nfn whose body is just `compute pure stmts; TailCall(target, args')` —\nthe EXACT shape lower_multi_clause/case/with mint for recursive clause\nbodies — can never be merged back into its caller. This forces\nlower_multi_clause to keep an inline-body fast path (the fork +\nbody_might_cps_split walker, ~110 LOC).\n\nThe limitation is in the inliner, not in pattern lowering. Fix the\ninliner; the fork in lowering becomes unnecessary.\n\n## What changes\n\nIn src/ir_inline.rs:\n\nAdd `is_pure_tail_caller(f)`: single block, all stmts pure (whitelist:\nConst/BinOp/UnOp/TupleField/ListHead/ListTail/ListIsNil/TypeTest/\nMakeTuple/MakeList), terminator is TailCall (or TailCallClosure).\n\nExtend `inline_tail_calls_once`: when caller has `TailCall(K, args)`\nand K is_pure_tail_caller (and not closure-target, not self-recursive,\nwithin budget): substitute args into K's entry params, splice K's\nstmts before caller's terminator, replace caller's terminator with\nalpha-renamed K's TailCall.\n\n## What stays\n\n- All existing inliner predicates (is_leaf, is_inlinable)\n- Existing leaf-case path\n- closure_targets exclusion\n- self-recursion guard\n\n## What's removed\n\nNothing from the inliner. body_might_cps_split + the lowering fork\nget removed in D.1 (which depends on this ticket).\n\n## Acceptance\n\n- All fixtures pass (three-path parity)\n- CLIF tightens OR is byte-identical for any fixture that already has\n  always-cont-fn callsites (case-using, with-using, cond-using)\n- New unit test: pure-tail-caller cont fn gets merged\n- Budget respected (no callee with \u003eINLINE_BUDGET stmts merges)",
+  "id": "fz-ul4.43.12",
+  "labels": [],
+  "parent": "fz-ul4.43",
+  "priority": 1,
+  "status": "open",
+  "title": "fz-ul4.43.D.0: inliner crosses pure tail-calls",
+  "type": "task",
+  "updated_at": "2026-05-17T13:15:04Z"
+}
