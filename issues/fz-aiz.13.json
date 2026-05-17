@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-aiz.12"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-aiz.4"
+  ],
   "created": "2026-05-17T17:36:51Z",
   "description": "With annotations driving codegen, ensure_any_keys is safe to land. Direct-only fns get an any-key spec for inference; no codegen path is perturbed because no codegen path picks specs. naturally_opaque becomes typer-internal. Blocked by 3d.",
   "id": "fz-aiz.13",
