@@ -49,25 +49,15 @@ block0(v0: i64):
     ;   @abi    (RawInt, Tagged) -> Tagged
 function u0:0(i64, i64, i64) -> i64 tail {
     sig0 = (i64, i64, i64) -> i64 tail
-    sig1 = (i64, i64) -> i64 tail
     fn0 = colocated u0:43 sig0
-    fn1 = colocated u0:42 sig1
 
     block0(v0: i64, v1: i64, v2: i64):    ;; v0 :: 4, v1 :: pid
     v3 = iconst.i64 0    ;; v3 :: 0
     v4 = iconst.i64 19    ;; v4 :: :false
-    v5 = iconst.i64 3
-    v6 = iconst.i64 19
-    v7 = icmp ne v4, v5  ; v4 = 19, v5 = 3
-    v8 = icmp ne v4, v6  ; v4 = 19, v6 = 19
-    v9 = band v7, v8
-    brif v9, block2, block1
+    jump block1
 
 block1:
     return_call fn0(v0, v1, v2)
-
-block2:
-    return_call fn1(v1, v2)
 }
 
 ; fn relay_s10

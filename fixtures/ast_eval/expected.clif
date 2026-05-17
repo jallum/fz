@@ -216,9 +216,9 @@ function u0:0(i64) -> i64 tail {
     sig2 = (i32, i32, i32) -> i64 system_v
     sig3 = (i64, i64) -> i64 tail
     fn0 = u0:6 sig0
-    fn1 = colocated u0:58 sig1
+    fn1 = colocated u0:53 sig1
     fn2 = u0:27 sig2
-    fn3 = colocated u0:96 sig3
+    fn3 = colocated u0:71 sig3
 
 block0(v0: i64):
     v1 = iconst.i64 18                  ; @6:15
@@ -228,10 +228,10 @@ block0(v0: i64):
     store notrap aligned v1, v4+16  ; v1 = 18
     v5 = iconst.i64 337
     store notrap aligned v5, v4+24  ; v5 = 337
-    v6 = iconst.i32 66                  ; @6:9
+    v6 = iconst.i32 41                  ; @6:9
     v7 = iconst.i32 1                   ; @6:9
     v8 = iconst.i32 0                   ; @6:9
-    v9 = call fn2(v6, v7, v8)           ; @6:9  v6 = 66, v7 = 1, v8 = 0
+    v9 = call fn2(v6, v7, v8)           ; @6:9  v6 = 41, v7 = 1, v8 = 0
     v10 = func_addr.i64 fn3             ; @6:9
     store notrap aligned v10, v9+16     ; @6:9
     store notrap aligned v0, v9+24      ; @6:9
@@ -388,1527 +388,627 @@ block2:
     return_call_indirect sig3, v22(v10, v21)
 }
 
-; fn eval_s20
+; fn eval_s15
     ;   @spec   eval({:add, {:num, 1}, {:num, 2}}) -> int
     ;   @key    [{:add, {:num, 1}, {:num, 2}}]
     ;   @abi    (Tagged) -> RawInt
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64) system_v
     sig1 = (i64, i64) -> i64 tail
-    sig2 = (i64, i64) -> i64 tail
-    sig3 = (i32, i32, i32) -> i64 system_v
+    sig2 = (i32, i32, i32) -> i64 system_v
+    sig3 = (i64, i64) -> i64 tail
     sig4 = (i64, i64) -> i64 tail
-    sig5 = (i64, i64) -> i64 tail
-    sig6 = (i32, i32, i32) -> i64 system_v
-    sig7 = (i64, i64) -> i64 tail
+    sig5 = (i32, i32, i32) -> i64 system_v
+    sig6 = (i64, i64) -> i64 tail
     fn0 = u0:1 sig0
-    fn1 = colocated u0:55 sig2
-    fn2 = u0:27 sig3
-    fn3 = colocated u0:60 sig4
-    fn4 = colocated u0:55 sig5
-    fn5 = u0:27 sig6
-    fn6 = colocated u0:78 sig7
+    fn1 = colocated u0:50 sig1
+    fn2 = u0:27 sig2
+    fn3 = colocated u0:55 sig3
+    fn4 = colocated u0:50 sig4
+    fn5 = u0:27 sig5
+    fn6 = colocated u0:63 sig6
 
     block0(v0: i64, v1: i64):    ;; v0 :: {:add, {:num, 1}, {:num, 2}}
-    v2 = band_imm v0, 7
-    v3 = icmp_imm eq v2, 0
-    v5 = iconst.i8 0
-    brif v3, block10, block11(v5)  ; v5 = 0
-
-block10:
-    v6 = load.i16 notrap aligned v0
-    v7 = uextend.i64 v6
-    v8 = icmp_imm eq v7, 0
-    v9 = load.i32 notrap aligned v0+8
-    v10 = uextend.i64 v9
-    v11 = iconst.i64 0
-    v12 = icmp eq v10, v11  ; v11 = 0
-    v13 = band v8, v12
-    jump block11(v13)
-
-    block11(v4: i8):    ;; v4 :: :false
-    brif v4, block4, block1
+    v2 = iconst.i64 19    ;; v2 :: :false
+    jump block1
 
 block1:
-    v14 = band_imm.i64 v0, 7
-    v15 = icmp_imm eq v14, 0
-    v17 = iconst.i8 0
-    brif v15, block12, block13(v17)  ; v17 = 0
-
-block12:
-    v18 = load.i16 notrap aligned v0
-    v19 = uextend.i64 v18
-    v20 = icmp_imm eq v19, 0
-    v21 = load.i32 notrap aligned v0+8
-    v22 = uextend.i64 v21
-    v23 = iconst.i64 1
-    v24 = icmp eq v22, v23  ; v23 = 1
-    v25 = band v20, v24
-    jump block13(v25)
-
-    block13(v16: i8):    ;; v16 :: :true
-    brif v16, block6, block2
+    v3 = iconst.i64 11    ;; v3 :: :true
+    jump block4
 
 block2:
-    v26 = band_imm.i64 v0, 7
-    v27 = icmp_imm eq v26, 0
-    v29 = iconst.i8 0
-    brif v27, block14, block15(v29)  ; v29 = 0
-
-block14:
-    v30 = load.i16 notrap aligned v0
-    v31 = uextend.i64 v30
-    v32 = icmp_imm eq v31, 0
-    v33 = load.i32 notrap aligned v0+8
-    v34 = uextend.i64 v33
-    v35 = iconst.i64 1
-    v36 = icmp eq v34, v35  ; v35 = 1
-    v37 = band v32, v36
-    jump block15(v37)
-
-    block15(v28: i8):    ;; v28 :: :true
-    brif v28, block8, block3
+    v4 = iconst.i64 11    ;; v4 :: :true
+    jump block6
 
 block3:
-    v38 = iconst.i64 2    ;; v38 :: :function_clause
-    call fn0(v38)  ; v38 = 2
-    v39 = iconst.i64 0
-    return v39  ; v39 = 0
+    v5 = iconst.i64 2    ;; v5 :: :function_clause
+    call fn0(v5)  ; v5 = 2
+    v6 = iconst.i64 0
+    return v6  ; v6 = 0
 
 block4:
-    v40 = load.i64 aligned v0+16    ;; v40 :: :add
-    v41 = iconst.i64 18    ;; v41 :: :num
-    v42 = iconst.i64 19    ;; v42 :: bool
-    v43 = iconst.i64 3
-    v44 = iconst.i64 19
-    v45 = icmp ne v42, v43  ; v42 = 19, v43 = 3
-    v46 = icmp ne v42, v44  ; v42 = 19, v44 = 19
-    v47 = band v45, v46
-    brif v47, block5, block1
+    v7 = load.i64 aligned v0+16    ;; v7 :: :add
+    v8 = iconst.i64 26    ;; v8 :: :add
+    v9 = icmp eq v7, v8  ; v8 = 26    ;; v9 :: bool
+    brif v9, block5, block2
 
 block5:
-    v48 = load.i64 aligned v0+24    ;; v48 :: {:num, 1}
-    v49 = sshr_imm v48, 3
-    v50 = load.i64 notrap aligned v1+16
-    return_call_indirect sig1, v50(v49, v1)
+    v10 = load.i64 aligned v0+24    ;; v10 :: {:num, 1}
+    v11 = load.i64 aligned v0+32    ;; v11 :: {:num, 2}
+    v12 = iconst.i32 25
+    v13 = iconst.i32 3
+    v14 = iconst.i32 0
+    v15 = call fn2(v12, v13, v14)  ; v12 = 25, v13 = 3, v14 = 0
+    v16 = func_addr.i64 fn3
+    store notrap aligned v16, v15+16
+    store.i64 notrap aligned v1, v15+24
+    store notrap aligned v10, v15+32
+    store notrap aligned v11, v15+40
+    return_call fn1(v10, v15)
 
 block6:
-    v51 = load.i64 aligned v0+16    ;; v51 :: :add
-    v52 = iconst.i64 26    ;; v52 :: :add
-    v53 = icmp eq v51, v52  ; v52 = 26    ;; v53 :: bool
-    brif v53, block7, block2
+    v17 = load.i64 aligned v0+16    ;; v17 :: :add
+    v18 = iconst.i64 34    ;; v18 :: :mul
+    v19 = iconst.i64 19    ;; v19 :: bool
+    v20 = iconst.i64 3
+    v21 = iconst.i64 19
+    v22 = icmp ne v19, v20  ; v19 = 19, v20 = 3
+    v23 = icmp ne v19, v21  ; v19 = 19, v21 = 19
+    v24 = band v22, v23
+    brif v24, block7, block3
 
 block7:
-    v54 = load.i64 aligned v0+24    ;; v54 :: {:num, 1}
-    v55 = load.i64 aligned v0+32    ;; v55 :: {:num, 2}
-    v56 = iconst.i32 30
-    v57 = iconst.i32 3
-    v58 = iconst.i32 0
-    v59 = call fn2(v56, v57, v58)  ; v56 = 30, v57 = 3, v58 = 0
-    v60 = func_addr.i64 fn3
-    store notrap aligned v60, v59+16
-    store.i64 notrap aligned v1, v59+24
-    store notrap aligned v54, v59+32
-    store notrap aligned v55, v59+40
-    return_call fn1(v54, v59)
-
-block8:
-    v61 = load.i64 aligned v0+16    ;; v61 :: :add
-    v62 = iconst.i64 34    ;; v62 :: :mul
-    v63 = iconst.i64 19    ;; v63 :: bool
-    v64 = iconst.i64 3
-    v65 = iconst.i64 19
-    v66 = icmp ne v63, v64  ; v63 = 19, v64 = 3
-    v67 = icmp ne v63, v65  ; v63 = 19, v65 = 19
-    v68 = band v66, v67
-    brif v68, block9, block3
-
-block9:
-    v69 = load.i64 aligned v0+24    ;; v69 :: {:num, 1}
-    v70 = load.i64 aligned v0+32    ;; v70 :: {:num, 2}
-    v71 = iconst.i32 48
-    v72 = iconst.i32 3
-    v73 = iconst.i32 0
-    v74 = call fn5(v71, v72, v73)  ; v71 = 48, v72 = 3, v73 = 0
-    v75 = func_addr.i64 fn6
-    store notrap aligned v75, v74+16
-    store.i64 notrap aligned v1, v74+24
-    store notrap aligned v69, v74+32
-    store notrap aligned v70, v74+40
-    return_call fn4(v69, v74)
+    v25 = load.i64 aligned v0+24    ;; v25 :: {:num, 1}
+    v26 = load.i64 aligned v0+32    ;; v26 :: {:num, 2}
+    v27 = iconst.i32 33
+    v28 = iconst.i32 3
+    v29 = iconst.i32 0
+    v30 = call fn5(v27, v28, v29)  ; v27 = 33, v28 = 3, v29 = 0
+    v31 = func_addr.i64 fn6
+    store notrap aligned v31, v30+16
+    store.i64 notrap aligned v1, v30+24
+    store notrap aligned v25, v30+32
+    store notrap aligned v26, v30+40
+    return_call fn4(v25, v30)
 }
 
-; fn eval_s21
+; fn eval_s16
     ;   @spec   eval({:add, {:num, 2}, {:mul, {:num, 3}, {:num, 4}}}) -> int
     ;   @key    [{:add, {:num, 2}, {:mul, {:num, 3}, {:num, 4}}}]
     ;   @abi    (Tagged) -> RawInt
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64) system_v
     sig1 = (i64, i64) -> i64 tail
-    sig2 = (i64, i64) -> i64 tail
-    sig3 = (i32, i32, i32) -> i64 system_v
+    sig2 = (i32, i32, i32) -> i64 system_v
+    sig3 = (i64, i64) -> i64 tail
     sig4 = (i64, i64) -> i64 tail
-    sig5 = (i64, i64) -> i64 tail
-    sig6 = (i32, i32, i32) -> i64 system_v
-    sig7 = (i64, i64) -> i64 tail
+    sig5 = (i32, i32, i32) -> i64 system_v
+    sig6 = (i64, i64) -> i64 tail
     fn0 = u0:1 sig0
-    fn1 = colocated u0:56 sig2
-    fn2 = u0:27 sig3
-    fn3 = colocated u0:61 sig4
-    fn4 = colocated u0:56 sig5
-    fn5 = u0:27 sig6
-    fn6 = colocated u0:79 sig7
+    fn1 = colocated u0:51 sig1
+    fn2 = u0:27 sig2
+    fn3 = colocated u0:56 sig3
+    fn4 = colocated u0:51 sig4
+    fn5 = u0:27 sig5
+    fn6 = colocated u0:64 sig6
 
     block0(v0: i64, v1: i64):    ;; v0 :: {:add, {:num, 2}, {:mul, {:num, 3}, {:num, 4}}}
-    v2 = band_imm v0, 7
-    v3 = icmp_imm eq v2, 0
-    v5 = iconst.i8 0
-    brif v3, block10, block11(v5)  ; v5 = 0
-
-block10:
-    v6 = load.i16 notrap aligned v0
-    v7 = uextend.i64 v6
-    v8 = icmp_imm eq v7, 0
-    v9 = load.i32 notrap aligned v0+8
-    v10 = uextend.i64 v9
-    v11 = iconst.i64 0
-    v12 = icmp eq v10, v11  ; v11 = 0
-    v13 = band v8, v12
-    jump block11(v13)
-
-    block11(v4: i8):    ;; v4 :: :false
-    brif v4, block4, block1
+    v2 = iconst.i64 19    ;; v2 :: :false
+    jump block1
 
 block1:
-    v14 = band_imm.i64 v0, 7
-    v15 = icmp_imm eq v14, 0
-    v17 = iconst.i8 0
-    brif v15, block12, block13(v17)  ; v17 = 0
-
-block12:
-    v18 = load.i16 notrap aligned v0
-    v19 = uextend.i64 v18
-    v20 = icmp_imm eq v19, 0
-    v21 = load.i32 notrap aligned v0+8
-    v22 = uextend.i64 v21
-    v23 = iconst.i64 1
-    v24 = icmp eq v22, v23  ; v23 = 1
-    v25 = band v20, v24
-    jump block13(v25)
-
-    block13(v16: i8):    ;; v16 :: :true
-    brif v16, block6, block2
+    v3 = iconst.i64 11    ;; v3 :: :true
+    jump block4
 
 block2:
-    v26 = band_imm.i64 v0, 7
-    v27 = icmp_imm eq v26, 0
-    v29 = iconst.i8 0
-    brif v27, block14, block15(v29)  ; v29 = 0
-
-block14:
-    v30 = load.i16 notrap aligned v0
-    v31 = uextend.i64 v30
-    v32 = icmp_imm eq v31, 0
-    v33 = load.i32 notrap aligned v0+8
-    v34 = uextend.i64 v33
-    v35 = iconst.i64 1
-    v36 = icmp eq v34, v35  ; v35 = 1
-    v37 = band v32, v36
-    jump block15(v37)
-
-    block15(v28: i8):    ;; v28 :: :true
-    brif v28, block8, block3
+    v4 = iconst.i64 11    ;; v4 :: :true
+    jump block6
 
 block3:
-    v38 = iconst.i64 2    ;; v38 :: :function_clause
-    call fn0(v38)  ; v38 = 2
-    v39 = iconst.i64 0
-    return v39  ; v39 = 0
+    v5 = iconst.i64 2    ;; v5 :: :function_clause
+    call fn0(v5)  ; v5 = 2
+    v6 = iconst.i64 0
+    return v6  ; v6 = 0
 
 block4:
-    v40 = load.i64 aligned v0+16    ;; v40 :: :add
-    v41 = iconst.i64 18    ;; v41 :: :num
-    v42 = iconst.i64 19    ;; v42 :: bool
-    v43 = iconst.i64 3
-    v44 = iconst.i64 19
-    v45 = icmp ne v42, v43  ; v42 = 19, v43 = 3
-    v46 = icmp ne v42, v44  ; v42 = 19, v44 = 19
-    v47 = band v45, v46
-    brif v47, block5, block1
+    v7 = load.i64 aligned v0+16    ;; v7 :: :add
+    v8 = iconst.i64 26    ;; v8 :: :add
+    v9 = icmp eq v7, v8  ; v8 = 26    ;; v9 :: bool
+    brif v9, block5, block2
 
 block5:
-    v48 = load.i64 aligned v0+24    ;; v48 :: {:num, 2}
-    v49 = sshr_imm v48, 3
-    v50 = load.i64 notrap aligned v1+16
-    return_call_indirect sig1, v50(v49, v1)
+    v10 = load.i64 aligned v0+24    ;; v10 :: {:num, 2}
+    v11 = load.i64 aligned v0+32    ;; v11 :: {:mul, {:num, 3}, {:num, 4}}
+    v12 = iconst.i32 26
+    v13 = iconst.i32 3
+    v14 = iconst.i32 0
+    v15 = call fn2(v12, v13, v14)  ; v12 = 26, v13 = 3, v14 = 0
+    v16 = func_addr.i64 fn3
+    store notrap aligned v16, v15+16
+    store.i64 notrap aligned v1, v15+24
+    store notrap aligned v10, v15+32
+    store notrap aligned v11, v15+40
+    return_call fn1(v10, v15)
 
 block6:
-    v51 = load.i64 aligned v0+16    ;; v51 :: :add
-    v52 = iconst.i64 26    ;; v52 :: :add
-    v53 = icmp eq v51, v52  ; v52 = 26    ;; v53 :: bool
-    brif v53, block7, block2
+    v17 = load.i64 aligned v0+16    ;; v17 :: :add
+    v18 = iconst.i64 34    ;; v18 :: :mul
+    v19 = iconst.i64 19    ;; v19 :: bool
+    v20 = iconst.i64 3
+    v21 = iconst.i64 19
+    v22 = icmp ne v19, v20  ; v19 = 19, v20 = 3
+    v23 = icmp ne v19, v21  ; v19 = 19, v21 = 19
+    v24 = band v22, v23
+    brif v24, block7, block3
 
 block7:
-    v54 = load.i64 aligned v0+24    ;; v54 :: {:num, 2}
-    v55 = load.i64 aligned v0+32    ;; v55 :: {:mul, {:num, 3}, {:num, 4}}
-    v56 = iconst.i32 31
-    v57 = iconst.i32 3
-    v58 = iconst.i32 0
-    v59 = call fn2(v56, v57, v58)  ; v56 = 31, v57 = 3, v58 = 0
-    v60 = func_addr.i64 fn3
-    store notrap aligned v60, v59+16
-    store.i64 notrap aligned v1, v59+24
-    store notrap aligned v54, v59+32
-    store notrap aligned v55, v59+40
-    return_call fn1(v54, v59)
-
-block8:
-    v61 = load.i64 aligned v0+16    ;; v61 :: :add
-    v62 = iconst.i64 34    ;; v62 :: :mul
-    v63 = iconst.i64 19    ;; v63 :: bool
-    v64 = iconst.i64 3
-    v65 = iconst.i64 19
-    v66 = icmp ne v63, v64  ; v63 = 19, v64 = 3
-    v67 = icmp ne v63, v65  ; v63 = 19, v65 = 19
-    v68 = band v66, v67
-    brif v68, block9, block3
-
-block9:
-    v69 = load.i64 aligned v0+24    ;; v69 :: {:num, 2}
-    v70 = load.i64 aligned v0+32    ;; v70 :: {:mul, {:num, 3}, {:num, 4}}
-    v71 = iconst.i32 49
-    v72 = iconst.i32 3
-    v73 = iconst.i32 0
-    v74 = call fn5(v71, v72, v73)  ; v71 = 49, v72 = 3, v73 = 0
-    v75 = func_addr.i64 fn6
-    store notrap aligned v75, v74+16
-    store.i64 notrap aligned v1, v74+24
-    store notrap aligned v69, v74+32
-    store notrap aligned v70, v74+40
-    return_call fn4(v69, v74)
+    v25 = load.i64 aligned v0+24    ;; v25 :: {:num, 2}
+    v26 = load.i64 aligned v0+32    ;; v26 :: {:mul, {:num, 3}, {:num, 4}}
+    v27 = iconst.i32 34
+    v28 = iconst.i32 3
+    v29 = iconst.i32 0
+    v30 = call fn5(v27, v28, v29)  ; v27 = 34, v28 = 3, v29 = 0
+    v31 = func_addr.i64 fn6
+    store notrap aligned v31, v30+16
+    store.i64 notrap aligned v1, v30+24
+    store notrap aligned v25, v30+32
+    store notrap aligned v26, v30+40
+    return_call fn4(v25, v30)
 }
 
-; fn eval_s22
+; fn eval_s17
     ;   @spec   eval({:add, {:num, 3}, {:num, 4}}) -> int
     ;   @key    [{:add, {:num, 3}, {:num, 4}}]
     ;   @abi    (Tagged) -> RawInt
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64) system_v
     sig1 = (i64, i64) -> i64 tail
-    sig2 = (i64, i64) -> i64 tail
-    sig3 = (i32, i32, i32) -> i64 system_v
+    sig2 = (i32, i32, i32) -> i64 system_v
+    sig3 = (i64, i64) -> i64 tail
     sig4 = (i64, i64) -> i64 tail
-    sig5 = (i64, i64) -> i64 tail
-    sig6 = (i32, i32, i32) -> i64 system_v
-    sig7 = (i64, i64) -> i64 tail
+    sig5 = (i32, i32, i32) -> i64 system_v
+    sig6 = (i64, i64) -> i64 tail
     fn0 = u0:1 sig0
-    fn1 = colocated u0:57 sig2
-    fn2 = u0:27 sig3
-    fn3 = colocated u0:62 sig4
-    fn4 = colocated u0:57 sig5
-    fn5 = u0:27 sig6
-    fn6 = colocated u0:80 sig7
+    fn1 = colocated u0:52 sig1
+    fn2 = u0:27 sig2
+    fn3 = colocated u0:57 sig3
+    fn4 = colocated u0:52 sig4
+    fn5 = u0:27 sig5
+    fn6 = colocated u0:65 sig6
 
     block0(v0: i64, v1: i64):    ;; v0 :: {:add, {:num, 3}, {:num, 4}}
-    v2 = band_imm v0, 7
-    v3 = icmp_imm eq v2, 0
-    v5 = iconst.i8 0
-    brif v3, block10, block11(v5)  ; v5 = 0
-
-block10:
-    v6 = load.i16 notrap aligned v0
-    v7 = uextend.i64 v6
-    v8 = icmp_imm eq v7, 0
-    v9 = load.i32 notrap aligned v0+8
-    v10 = uextend.i64 v9
-    v11 = iconst.i64 0
-    v12 = icmp eq v10, v11  ; v11 = 0
-    v13 = band v8, v12
-    jump block11(v13)
-
-    block11(v4: i8):    ;; v4 :: :false
-    brif v4, block4, block1
+    v2 = iconst.i64 19    ;; v2 :: :false
+    jump block1
 
 block1:
-    v14 = band_imm.i64 v0, 7
-    v15 = icmp_imm eq v14, 0
-    v17 = iconst.i8 0
-    brif v15, block12, block13(v17)  ; v17 = 0
-
-block12:
-    v18 = load.i16 notrap aligned v0
-    v19 = uextend.i64 v18
-    v20 = icmp_imm eq v19, 0
-    v21 = load.i32 notrap aligned v0+8
-    v22 = uextend.i64 v21
-    v23 = iconst.i64 1
-    v24 = icmp eq v22, v23  ; v23 = 1
-    v25 = band v20, v24
-    jump block13(v25)
-
-    block13(v16: i8):    ;; v16 :: :true
-    brif v16, block6, block2
+    v3 = iconst.i64 11    ;; v3 :: :true
+    jump block4
 
 block2:
-    v26 = band_imm.i64 v0, 7
-    v27 = icmp_imm eq v26, 0
-    v29 = iconst.i8 0
-    brif v27, block14, block15(v29)  ; v29 = 0
-
-block14:
-    v30 = load.i16 notrap aligned v0
-    v31 = uextend.i64 v30
-    v32 = icmp_imm eq v31, 0
-    v33 = load.i32 notrap aligned v0+8
-    v34 = uextend.i64 v33
-    v35 = iconst.i64 1
-    v36 = icmp eq v34, v35  ; v35 = 1
-    v37 = band v32, v36
-    jump block15(v37)
-
-    block15(v28: i8):    ;; v28 :: :true
-    brif v28, block8, block3
+    v4 = iconst.i64 11    ;; v4 :: :true
+    jump block6
 
 block3:
-    v38 = iconst.i64 2    ;; v38 :: :function_clause
-    call fn0(v38)  ; v38 = 2
-    v39 = iconst.i64 0
-    return v39  ; v39 = 0
+    v5 = iconst.i64 2    ;; v5 :: :function_clause
+    call fn0(v5)  ; v5 = 2
+    v6 = iconst.i64 0
+    return v6  ; v6 = 0
 
 block4:
-    v40 = load.i64 aligned v0+16    ;; v40 :: :add
-    v41 = iconst.i64 18    ;; v41 :: :num
-    v42 = iconst.i64 19    ;; v42 :: bool
-    v43 = iconst.i64 3
-    v44 = iconst.i64 19
-    v45 = icmp ne v42, v43  ; v42 = 19, v43 = 3
-    v46 = icmp ne v42, v44  ; v42 = 19, v44 = 19
-    v47 = band v45, v46
-    brif v47, block5, block1
+    v7 = load.i64 aligned v0+16    ;; v7 :: :add
+    v8 = iconst.i64 26    ;; v8 :: :add
+    v9 = icmp eq v7, v8  ; v8 = 26    ;; v9 :: bool
+    brif v9, block5, block2
 
 block5:
-    v48 = load.i64 aligned v0+24    ;; v48 :: {:num, 3}
-    v49 = sshr_imm v48, 3
-    v50 = load.i64 notrap aligned v1+16
-    return_call_indirect sig1, v50(v49, v1)
+    v10 = load.i64 aligned v0+24    ;; v10 :: {:num, 3}
+    v11 = load.i64 aligned v0+32    ;; v11 :: {:num, 4}
+    v12 = iconst.i32 27
+    v13 = iconst.i32 3
+    v14 = iconst.i32 0
+    v15 = call fn2(v12, v13, v14)  ; v12 = 27, v13 = 3, v14 = 0
+    v16 = func_addr.i64 fn3
+    store notrap aligned v16, v15+16
+    store.i64 notrap aligned v1, v15+24
+    store notrap aligned v10, v15+32
+    store notrap aligned v11, v15+40
+    return_call fn1(v10, v15)
 
 block6:
-    v51 = load.i64 aligned v0+16    ;; v51 :: :add
-    v52 = iconst.i64 26    ;; v52 :: :add
-    v53 = icmp eq v51, v52  ; v52 = 26    ;; v53 :: bool
-    brif v53, block7, block2
+    v17 = load.i64 aligned v0+16    ;; v17 :: :add
+    v18 = iconst.i64 34    ;; v18 :: :mul
+    v19 = iconst.i64 19    ;; v19 :: bool
+    v20 = iconst.i64 3
+    v21 = iconst.i64 19
+    v22 = icmp ne v19, v20  ; v19 = 19, v20 = 3
+    v23 = icmp ne v19, v21  ; v19 = 19, v21 = 19
+    v24 = band v22, v23
+    brif v24, block7, block3
 
 block7:
-    v54 = load.i64 aligned v0+24    ;; v54 :: {:num, 3}
-    v55 = load.i64 aligned v0+32    ;; v55 :: {:num, 4}
-    v56 = iconst.i32 32
-    v57 = iconst.i32 3
-    v58 = iconst.i32 0
-    v59 = call fn2(v56, v57, v58)  ; v56 = 32, v57 = 3, v58 = 0
-    v60 = func_addr.i64 fn3
-    store notrap aligned v60, v59+16
-    store.i64 notrap aligned v1, v59+24
-    store notrap aligned v54, v59+32
-    store notrap aligned v55, v59+40
-    return_call fn1(v54, v59)
-
-block8:
-    v61 = load.i64 aligned v0+16    ;; v61 :: :add
-    v62 = iconst.i64 34    ;; v62 :: :mul
-    v63 = iconst.i64 19    ;; v63 :: bool
-    v64 = iconst.i64 3
-    v65 = iconst.i64 19
-    v66 = icmp ne v63, v64  ; v63 = 19, v64 = 3
-    v67 = icmp ne v63, v65  ; v63 = 19, v65 = 19
-    v68 = band v66, v67
-    brif v68, block9, block3
-
-block9:
-    v69 = load.i64 aligned v0+24    ;; v69 :: {:num, 3}
-    v70 = load.i64 aligned v0+32    ;; v70 :: {:num, 4}
-    v71 = iconst.i32 50
-    v72 = iconst.i32 3
-    v73 = iconst.i32 0
-    v74 = call fn5(v71, v72, v73)  ; v71 = 50, v72 = 3, v73 = 0
-    v75 = func_addr.i64 fn6
-    store notrap aligned v75, v74+16
-    store.i64 notrap aligned v1, v74+24
-    store notrap aligned v69, v74+32
-    store notrap aligned v70, v74+40
-    return_call fn4(v69, v74)
+    v25 = load.i64 aligned v0+24    ;; v25 :: {:num, 3}
+    v26 = load.i64 aligned v0+32    ;; v26 :: {:num, 4}
+    v27 = iconst.i32 35
+    v28 = iconst.i32 3
+    v29 = iconst.i32 0
+    v30 = call fn5(v27, v28, v29)  ; v27 = 35, v28 = 3, v29 = 0
+    v31 = func_addr.i64 fn6
+    store notrap aligned v31, v30+16
+    store.i64 notrap aligned v1, v30+24
+    store notrap aligned v25, v30+32
+    store notrap aligned v26, v30+40
+    return_call fn4(v25, v30)
 }
 
-; fn eval_s23
+; fn eval_s18
     ;   @spec   eval({:mul, {:add, {:num, 1}, {:num, 2}}, {:add, {:num, 3}, {:num, 4}}}) -> int
     ;   @key    [{:mul, {:add, {:num, 1}, {:num, 2}}, {:add, {:num, 3}, {:num, 4}}}]
     ;   @abi    (Tagged) -> RawInt
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64) system_v
     sig1 = (i64, i64) -> i64 tail
-    sig2 = (i64, i64) -> i64 tail
-    sig3 = (i32, i32, i32) -> i64 system_v
+    sig2 = (i32, i32, i32) -> i64 system_v
+    sig3 = (i64, i64) -> i64 tail
     sig4 = (i64, i64) -> i64 tail
-    sig5 = (i64, i64) -> i64 tail
-    sig6 = (i32, i32, i32) -> i64 system_v
-    sig7 = (i64, i64) -> i64 tail
+    sig5 = (i32, i32, i32) -> i64 system_v
+    sig6 = (i64, i64) -> i64 tail
     fn0 = u0:1 sig0
-    fn1 = colocated u0:50 sig2
-    fn2 = u0:27 sig3
-    fn3 = colocated u0:63 sig4
-    fn4 = colocated u0:50 sig5
-    fn5 = u0:27 sig6
-    fn6 = colocated u0:81 sig7
+    fn1 = colocated u0:45 sig1
+    fn2 = u0:27 sig2
+    fn3 = colocated u0:58 sig3
+    fn4 = colocated u0:45 sig4
+    fn5 = u0:27 sig5
+    fn6 = colocated u0:66 sig6
 
     block0(v0: i64, v1: i64):    ;; v0 :: {:mul, {:add, {:num, 1}, {:num, 2}}, {:add, {:num, 3}, {:num, 4}}}
-    v2 = band_imm v0, 7
-    v3 = icmp_imm eq v2, 0
-    v5 = iconst.i8 0
-    brif v3, block10, block11(v5)  ; v5 = 0
-
-block10:
-    v6 = load.i16 notrap aligned v0
-    v7 = uextend.i64 v6
-    v8 = icmp_imm eq v7, 0
-    v9 = load.i32 notrap aligned v0+8
-    v10 = uextend.i64 v9
-    v11 = iconst.i64 0
-    v12 = icmp eq v10, v11  ; v11 = 0
-    v13 = band v8, v12
-    jump block11(v13)
-
-    block11(v4: i8):    ;; v4 :: :false
-    brif v4, block4, block1
+    v2 = iconst.i64 19    ;; v2 :: :false
+    jump block1
 
 block1:
-    v14 = band_imm.i64 v0, 7
-    v15 = icmp_imm eq v14, 0
-    v17 = iconst.i8 0
-    brif v15, block12, block13(v17)  ; v17 = 0
-
-block12:
-    v18 = load.i16 notrap aligned v0
-    v19 = uextend.i64 v18
-    v20 = icmp_imm eq v19, 0
-    v21 = load.i32 notrap aligned v0+8
-    v22 = uextend.i64 v21
-    v23 = iconst.i64 1
-    v24 = icmp eq v22, v23  ; v23 = 1
-    v25 = band v20, v24
-    jump block13(v25)
-
-    block13(v16: i8):    ;; v16 :: :true
-    brif v16, block6, block2
+    v3 = iconst.i64 11    ;; v3 :: :true
+    jump block4
 
 block2:
-    v26 = band_imm.i64 v0, 7
-    v27 = icmp_imm eq v26, 0
-    v29 = iconst.i8 0
-    brif v27, block14, block15(v29)  ; v29 = 0
-
-block14:
-    v30 = load.i16 notrap aligned v0
-    v31 = uextend.i64 v30
-    v32 = icmp_imm eq v31, 0
-    v33 = load.i32 notrap aligned v0+8
-    v34 = uextend.i64 v33
-    v35 = iconst.i64 1
-    v36 = icmp eq v34, v35  ; v35 = 1
-    v37 = band v32, v36
-    jump block15(v37)
-
-    block15(v28: i8):    ;; v28 :: :true
-    brif v28, block8, block3
+    v4 = iconst.i64 11    ;; v4 :: :true
+    jump block6
 
 block3:
-    v38 = iconst.i64 2    ;; v38 :: :function_clause
-    call fn0(v38)  ; v38 = 2
-    v39 = iconst.i64 0
-    return v39  ; v39 = 0
+    v5 = iconst.i64 2    ;; v5 :: :function_clause
+    call fn0(v5)  ; v5 = 2
+    v6 = iconst.i64 0
+    return v6  ; v6 = 0
 
 block4:
-    v40 = load.i64 aligned v0+16    ;; v40 :: :mul
-    v41 = iconst.i64 18    ;; v41 :: :num
-    v42 = iconst.i64 19    ;; v42 :: bool
-    v43 = iconst.i64 3
-    v44 = iconst.i64 19
-    v45 = icmp ne v42, v43  ; v42 = 19, v43 = 3
-    v46 = icmp ne v42, v44  ; v42 = 19, v44 = 19
-    v47 = band v45, v46
-    brif v47, block5, block1
+    v7 = load.i64 aligned v0+16    ;; v7 :: :mul
+    v8 = iconst.i64 26    ;; v8 :: :add
+    v9 = iconst.i64 19    ;; v9 :: bool
+    v10 = iconst.i64 3
+    v11 = iconst.i64 19
+    v12 = icmp ne v9, v10  ; v9 = 19, v10 = 3
+    v13 = icmp ne v9, v11  ; v9 = 19, v11 = 19
+    v14 = band v12, v13
+    brif v14, block5, block2
 
 block5:
-    v48 = load.i64 aligned v0+24    ;; v48 :: {:add, {:num, 1}, {:num, 2}}
-    v49 = sshr_imm v48, 3
-    v50 = load.i64 notrap aligned v1+16
-    return_call_indirect sig1, v50(v49, v1)
+    v15 = load.i64 aligned v0+24    ;; v15 :: {:add, {:num, 1}, {:num, 2}}
+    v16 = load.i64 aligned v0+32    ;; v16 :: {:add, {:num, 3}, {:num, 4}}
+    v17 = iconst.i32 28
+    v18 = iconst.i32 3
+    v19 = iconst.i32 0
+    v20 = call fn2(v17, v18, v19)  ; v17 = 28, v18 = 3, v19 = 0
+    v21 = func_addr.i64 fn3
+    store notrap aligned v21, v20+16
+    store.i64 notrap aligned v1, v20+24
+    store notrap aligned v15, v20+32
+    store notrap aligned v16, v20+40
+    return_call fn1(v15, v20)
 
 block6:
-    v51 = load.i64 aligned v0+16    ;; v51 :: :mul
-    v52 = iconst.i64 26    ;; v52 :: :add
-    v53 = iconst.i64 19    ;; v53 :: bool
-    v54 = iconst.i64 3
-    v55 = iconst.i64 19
-    v56 = icmp ne v53, v54  ; v53 = 19, v54 = 3
-    v57 = icmp ne v53, v55  ; v53 = 19, v55 = 19
-    v58 = band v56, v57
-    brif v58, block7, block2
+    v22 = load.i64 aligned v0+16    ;; v22 :: :mul
+    v23 = iconst.i64 34    ;; v23 :: :mul
+    v24 = icmp eq v22, v23  ; v23 = 34    ;; v24 :: bool
+    brif v24, block7, block3
 
 block7:
-    v59 = load.i64 aligned v0+24    ;; v59 :: {:add, {:num, 1}, {:num, 2}}
-    v60 = load.i64 aligned v0+32    ;; v60 :: {:add, {:num, 3}, {:num, 4}}
-    v61 = iconst.i32 33
-    v62 = iconst.i32 3
-    v63 = iconst.i32 0
-    v64 = call fn2(v61, v62, v63)  ; v61 = 33, v62 = 3, v63 = 0
-    v65 = func_addr.i64 fn3
-    store notrap aligned v65, v64+16
-    store.i64 notrap aligned v1, v64+24
-    store notrap aligned v59, v64+32
-    store notrap aligned v60, v64+40
-    return_call fn1(v59, v64)
-
-block8:
-    v66 = load.i64 aligned v0+16    ;; v66 :: :mul
-    v67 = iconst.i64 34    ;; v67 :: :mul
-    v68 = icmp eq v66, v67  ; v67 = 34    ;; v68 :: bool
-    brif v68, block9, block3
-
-block9:
-    v69 = load.i64 aligned v0+24    ;; v69 :: {:add, {:num, 1}, {:num, 2}}
-    v70 = load.i64 aligned v0+32    ;; v70 :: {:add, {:num, 3}, {:num, 4}}
-    v71 = iconst.i32 51
-    v72 = iconst.i32 3
-    v73 = iconst.i32 0
-    v74 = call fn5(v71, v72, v73)  ; v71 = 51, v72 = 3, v73 = 0
-    v75 = func_addr.i64 fn6
-    store notrap aligned v75, v74+16
-    store.i64 notrap aligned v1, v74+24
-    store notrap aligned v69, v74+32
-    store notrap aligned v70, v74+40
-    return_call fn4(v69, v74)
+    v25 = load.i64 aligned v0+24    ;; v25 :: {:add, {:num, 1}, {:num, 2}}
+    v26 = load.i64 aligned v0+32    ;; v26 :: {:add, {:num, 3}, {:num, 4}}
+    v27 = iconst.i32 36
+    v28 = iconst.i32 3
+    v29 = iconst.i32 0
+    v30 = call fn5(v27, v28, v29)  ; v27 = 36, v28 = 3, v29 = 0
+    v31 = func_addr.i64 fn6
+    store notrap aligned v31, v30+16
+    store.i64 notrap aligned v1, v30+24
+    store notrap aligned v25, v30+32
+    store notrap aligned v26, v30+40
+    return_call fn4(v25, v30)
 }
 
-; fn eval_s24
+; fn eval_s19
     ;   @spec   eval({:mul, {:num, 3}, {:num, 4}}) -> int
     ;   @key    [{:mul, {:num, 3}, {:num, 4}}]
     ;   @abi    (Tagged) -> RawInt
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64) system_v
     sig1 = (i64, i64) -> i64 tail
-    sig2 = (i64, i64) -> i64 tail
-    sig3 = (i32, i32, i32) -> i64 system_v
+    sig2 = (i32, i32, i32) -> i64 system_v
+    sig3 = (i64, i64) -> i64 tail
     sig4 = (i64, i64) -> i64 tail
-    sig5 = (i64, i64) -> i64 tail
-    sig6 = (i32, i32, i32) -> i64 system_v
-    sig7 = (i64, i64) -> i64 tail
+    sig5 = (i32, i32, i32) -> i64 system_v
+    sig6 = (i64, i64) -> i64 tail
     fn0 = u0:1 sig0
-    fn1 = colocated u0:57 sig2
-    fn2 = u0:27 sig3
-    fn3 = colocated u0:62 sig4
-    fn4 = colocated u0:57 sig5
-    fn5 = u0:27 sig6
-    fn6 = colocated u0:80 sig7
+    fn1 = colocated u0:52 sig1
+    fn2 = u0:27 sig2
+    fn3 = colocated u0:57 sig3
+    fn4 = colocated u0:52 sig4
+    fn5 = u0:27 sig5
+    fn6 = colocated u0:65 sig6
 
     block0(v0: i64, v1: i64):    ;; v0 :: {:mul, {:num, 3}, {:num, 4}}
-    v2 = band_imm v0, 7
-    v3 = icmp_imm eq v2, 0
-    v5 = iconst.i8 0
-    brif v3, block10, block11(v5)  ; v5 = 0
-
-block10:
-    v6 = load.i16 notrap aligned v0
-    v7 = uextend.i64 v6
-    v8 = icmp_imm eq v7, 0
-    v9 = load.i32 notrap aligned v0+8
-    v10 = uextend.i64 v9
-    v11 = iconst.i64 0
-    v12 = icmp eq v10, v11  ; v11 = 0
-    v13 = band v8, v12
-    jump block11(v13)
-
-    block11(v4: i8):    ;; v4 :: :false
-    brif v4, block4, block1
+    v2 = iconst.i64 19    ;; v2 :: :false
+    jump block1
 
 block1:
-    v14 = band_imm.i64 v0, 7
-    v15 = icmp_imm eq v14, 0
-    v17 = iconst.i8 0
-    brif v15, block12, block13(v17)  ; v17 = 0
-
-block12:
-    v18 = load.i16 notrap aligned v0
-    v19 = uextend.i64 v18
-    v20 = icmp_imm eq v19, 0
-    v21 = load.i32 notrap aligned v0+8
-    v22 = uextend.i64 v21
-    v23 = iconst.i64 1
-    v24 = icmp eq v22, v23  ; v23 = 1
-    v25 = band v20, v24
-    jump block13(v25)
-
-    block13(v16: i8):    ;; v16 :: :true
-    brif v16, block6, block2
+    v3 = iconst.i64 11    ;; v3 :: :true
+    jump block4
 
 block2:
-    v26 = band_imm.i64 v0, 7
-    v27 = icmp_imm eq v26, 0
-    v29 = iconst.i8 0
-    brif v27, block14, block15(v29)  ; v29 = 0
-
-block14:
-    v30 = load.i16 notrap aligned v0
-    v31 = uextend.i64 v30
-    v32 = icmp_imm eq v31, 0
-    v33 = load.i32 notrap aligned v0+8
-    v34 = uextend.i64 v33
-    v35 = iconst.i64 1
-    v36 = icmp eq v34, v35  ; v35 = 1
-    v37 = band v32, v36
-    jump block15(v37)
-
-    block15(v28: i8):    ;; v28 :: :true
-    brif v28, block8, block3
+    v4 = iconst.i64 11    ;; v4 :: :true
+    jump block6
 
 block3:
-    v38 = iconst.i64 2    ;; v38 :: :function_clause
-    call fn0(v38)  ; v38 = 2
-    v39 = iconst.i64 0
-    return v39  ; v39 = 0
+    v5 = iconst.i64 2    ;; v5 :: :function_clause
+    call fn0(v5)  ; v5 = 2
+    v6 = iconst.i64 0
+    return v6  ; v6 = 0
 
 block4:
-    v40 = load.i64 aligned v0+16    ;; v40 :: :mul
-    v41 = iconst.i64 18    ;; v41 :: :num
-    v42 = iconst.i64 19    ;; v42 :: bool
-    v43 = iconst.i64 3
-    v44 = iconst.i64 19
-    v45 = icmp ne v42, v43  ; v42 = 19, v43 = 3
-    v46 = icmp ne v42, v44  ; v42 = 19, v44 = 19
-    v47 = band v45, v46
-    brif v47, block5, block1
+    v7 = load.i64 aligned v0+16    ;; v7 :: :mul
+    v8 = iconst.i64 26    ;; v8 :: :add
+    v9 = iconst.i64 19    ;; v9 :: bool
+    v10 = iconst.i64 3
+    v11 = iconst.i64 19
+    v12 = icmp ne v9, v10  ; v9 = 19, v10 = 3
+    v13 = icmp ne v9, v11  ; v9 = 19, v11 = 19
+    v14 = band v12, v13
+    brif v14, block5, block2
 
 block5:
-    v48 = load.i64 aligned v0+24    ;; v48 :: {:num, 3}
-    v49 = sshr_imm v48, 3
-    v50 = load.i64 notrap aligned v1+16
-    return_call_indirect sig1, v50(v49, v1)
+    v15 = load.i64 aligned v0+24    ;; v15 :: {:num, 3}
+    v16 = load.i64 aligned v0+32    ;; v16 :: {:num, 4}
+    v17 = iconst.i32 27
+    v18 = iconst.i32 3
+    v19 = iconst.i32 0
+    v20 = call fn2(v17, v18, v19)  ; v17 = 27, v18 = 3, v19 = 0
+    v21 = func_addr.i64 fn3
+    store notrap aligned v21, v20+16
+    store.i64 notrap aligned v1, v20+24
+    store notrap aligned v15, v20+32
+    store notrap aligned v16, v20+40
+    return_call fn1(v15, v20)
 
 block6:
-    v51 = load.i64 aligned v0+16    ;; v51 :: :mul
-    v52 = iconst.i64 26    ;; v52 :: :add
-    v53 = iconst.i64 19    ;; v53 :: bool
-    v54 = iconst.i64 3
-    v55 = iconst.i64 19
-    v56 = icmp ne v53, v54  ; v53 = 19, v54 = 3
-    v57 = icmp ne v53, v55  ; v53 = 19, v55 = 19
-    v58 = band v56, v57
-    brif v58, block7, block2
+    v22 = load.i64 aligned v0+16    ;; v22 :: :mul
+    v23 = iconst.i64 34    ;; v23 :: :mul
+    v24 = icmp eq v22, v23  ; v23 = 34    ;; v24 :: bool
+    brif v24, block7, block3
 
 block7:
-    v59 = load.i64 aligned v0+24    ;; v59 :: {:num, 3}
-    v60 = load.i64 aligned v0+32    ;; v60 :: {:num, 4}
-    v61 = iconst.i32 32
-    v62 = iconst.i32 3
-    v63 = iconst.i32 0
-    v64 = call fn2(v61, v62, v63)  ; v61 = 32, v62 = 3, v63 = 0
-    v65 = func_addr.i64 fn3
-    store notrap aligned v65, v64+16
-    store.i64 notrap aligned v1, v64+24
-    store notrap aligned v59, v64+32
-    store notrap aligned v60, v64+40
-    return_call fn1(v59, v64)
-
-block8:
-    v66 = load.i64 aligned v0+16    ;; v66 :: :mul
-    v67 = iconst.i64 34    ;; v67 :: :mul
-    v68 = icmp eq v66, v67  ; v67 = 34    ;; v68 :: bool
-    brif v68, block9, block3
-
-block9:
-    v69 = load.i64 aligned v0+24    ;; v69 :: {:num, 3}
-    v70 = load.i64 aligned v0+32    ;; v70 :: {:num, 4}
-    v71 = iconst.i32 50
-    v72 = iconst.i32 3
-    v73 = iconst.i32 0
-    v74 = call fn5(v71, v72, v73)  ; v71 = 50, v72 = 3, v73 = 0
-    v75 = func_addr.i64 fn6
-    store notrap aligned v75, v74+16
-    store.i64 notrap aligned v1, v74+24
-    store notrap aligned v69, v74+32
-    store notrap aligned v70, v74+40
-    return_call fn4(v69, v74)
+    v25 = load.i64 aligned v0+24    ;; v25 :: {:num, 3}
+    v26 = load.i64 aligned v0+32    ;; v26 :: {:num, 4}
+    v27 = iconst.i32 35
+    v28 = iconst.i32 3
+    v29 = iconst.i32 0
+    v30 = call fn5(v27, v28, v29)  ; v27 = 35, v28 = 3, v29 = 0
+    v31 = func_addr.i64 fn6
+    store notrap aligned v31, v30+16
+    store.i64 notrap aligned v1, v30+24
+    store notrap aligned v25, v30+32
+    store notrap aligned v26, v30+40
+    return_call fn4(v25, v30)
 }
 
-; fn eval_s25
+; fn eval_s20
     ;   @spec   eval({:num, 1}) -> 1
     ;   @key    [{:num, 1}]
     ;   @abi    (Tagged) -> RawInt
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64) system_v
     sig1 = (i64, i64) -> i64 tail
-    sig2 = (i64, i64) -> i64 tail
-    sig3 = (i32, i32, i32) -> i64 system_v
-    sig4 = (f64, i64) -> i64 tail
-    sig5 = (i64, i64) -> i64 tail
-    sig6 = (i32, i32, i32) -> i64 system_v
-    sig7 = (f64, i64) -> i64 tail
     fn0 = u0:1 sig0
-    fn1 = colocated u0:45 sig2
-    fn2 = u0:27 sig3
-    fn3 = colocated u0:64 sig4
-    fn4 = colocated u0:45 sig5
-    fn5 = u0:27 sig6
-    fn6 = colocated u0:82 sig7
 
     block0(v0: i64, v1: i64):    ;; v0 :: {:num, 1}
-    v2 = band_imm v0, 7
-    v3 = icmp_imm eq v2, 0
-    v5 = iconst.i8 0
-    brif v3, block10, block11(v5)  ; v5 = 0
-
-block10:
-    v6 = load.i16 notrap aligned v0
-    v7 = uextend.i64 v6
-    v8 = icmp_imm eq v7, 0
-    v9 = load.i32 notrap aligned v0+8
-    v10 = uextend.i64 v9
-    v11 = iconst.i64 0
-    v12 = icmp eq v10, v11  ; v11 = 0
-    v13 = band v8, v12
-    jump block11(v13)
-
-    block11(v4: i8):    ;; v4 :: :true
-    brif v4, block4, block1
+    v2 = iconst.i64 11    ;; v2 :: :true
+    jump block4
 
 block1:
-    v14 = band_imm.i64 v0, 7
-    v15 = icmp_imm eq v14, 0
-    v17 = iconst.i8 0
-    brif v15, block12, block13(v17)  ; v17 = 0
-
-block12:
-    v18 = load.i16 notrap aligned v0
-    v19 = uextend.i64 v18
-    v20 = icmp_imm eq v19, 0
-    v21 = load.i32 notrap aligned v0+8
-    v22 = uextend.i64 v21
-    v23 = iconst.i64 1
-    v24 = icmp eq v22, v23  ; v23 = 1
-    v25 = band v20, v24
-    jump block13(v25)
-
-    block13(v16: i8):    ;; v16 :: :false
-    brif v16, block6, block2
+    v3 = iconst.i64 19    ;; v3 :: :false
+    jump block2
 
 block2:
-    v26 = band_imm.i64 v0, 7
-    v27 = icmp_imm eq v26, 0
-    v29 = iconst.i8 0
-    brif v27, block14, block15(v29)  ; v29 = 0
-
-block14:
-    v30 = load.i16 notrap aligned v0
-    v31 = uextend.i64 v30
-    v32 = icmp_imm eq v31, 0
-    v33 = load.i32 notrap aligned v0+8
-    v34 = uextend.i64 v33
-    v35 = iconst.i64 1
-    v36 = icmp eq v34, v35  ; v35 = 1
-    v37 = band v32, v36
-    jump block15(v37)
-
-    block15(v28: i8):    ;; v28 :: :false
-    brif v28, block8, block3
+    v4 = iconst.i64 19    ;; v4 :: :false
+    jump block3
 
 block3:
-    v38 = iconst.i64 2    ;; v38 :: :function_clause
-    call fn0(v38)  ; v38 = 2
-    v39 = iconst.i64 0
-    return v39  ; v39 = 0
+    v5 = iconst.i64 2    ;; v5 :: :function_clause
+    call fn0(v5)  ; v5 = 2
+    v6 = iconst.i64 0
+    return v6  ; v6 = 0
 
 block4:
-    v40 = load.i64 aligned v0+16    ;; v40 :: :num
-    v41 = iconst.i64 18    ;; v41 :: :num
-    v42 = icmp eq v40, v41  ; v41 = 18    ;; v42 :: bool
-    brif v42, block5, block1
+    v7 = load.i64 aligned v0+16    ;; v7 :: :num
+    v8 = iconst.i64 18    ;; v8 :: :num
+    v9 = icmp eq v7, v8  ; v8 = 18    ;; v9 :: bool
+    brif v9, block5, block1
 
 block5:
-    v43 = load.i64 aligned v0+24    ;; v43 :: 1
-    v44 = sshr_imm v43, 3
-    v45 = load.i64 notrap aligned v1+16
-    return_call_indirect sig1, v45(v44, v1)
-
-block6:
-    v46 = load.i64 aligned v0+16    ;; v46 :: :num
-    v47 = iconst.i64 26    ;; v47 :: :add
-    v48 = iconst.i64 19    ;; v48 :: bool
-    v49 = iconst.i64 3
-    v50 = iconst.i64 19
-    v51 = icmp ne v48, v49  ; v48 = 19, v49 = 3
-    v52 = icmp ne v48, v50  ; v48 = 19, v50 = 19
-    v53 = band v51, v52
-    brif v53, block7, block2
-
-block7:
-    v54 = load.i64 aligned v0+24    ;; v54 :: 1
-    v55 = load.i64 aligned v0+32    ;; v55 :: any
-    v56 = sshr_imm v54, 3
-    v57 = iconst.i32 34
-    v58 = iconst.i32 3
-    v59 = iconst.i32 0
-    v60 = call fn2(v57, v58, v59)  ; v57 = 34, v58 = 3, v59 = 0
-    v61 = func_addr.i64 fn3
-    store notrap aligned v61, v60+16
-    store.i64 notrap aligned v1, v60+24
-    v62 = sshr_imm v54, 3
-    store notrap aligned v62, v60+32
-    store notrap aligned v55, v60+40
-    return_call fn1(v56, v60)
-
-block8:
-    v63 = load.i64 aligned v0+16    ;; v63 :: :num
-    v64 = iconst.i64 34    ;; v64 :: :mul
-    v65 = iconst.i64 19    ;; v65 :: bool
-    v66 = iconst.i64 3
-    v67 = iconst.i64 19
-    v68 = icmp ne v65, v66  ; v65 = 19, v66 = 3
-    v69 = icmp ne v65, v67  ; v65 = 19, v67 = 19
-    v70 = band v68, v69
-    brif v70, block9, block3
-
-block9:
-    v71 = load.i64 aligned v0+24    ;; v71 :: 1
-    v72 = load.i64 aligned v0+32    ;; v72 :: any
-    v73 = sshr_imm v71, 3
-    v74 = iconst.i32 52
-    v75 = iconst.i32 3
-    v76 = iconst.i32 0
-    v77 = call fn5(v74, v75, v76)  ; v74 = 52, v75 = 3, v76 = 0
-    v78 = func_addr.i64 fn6
-    store notrap aligned v78, v77+16
-    store.i64 notrap aligned v1, v77+24
-    v79 = sshr_imm v71, 3
-    store notrap aligned v79, v77+32
-    store notrap aligned v72, v77+40
-    return_call fn4(v73, v77)
+    v10 = load.i64 aligned v0+24    ;; v10 :: 1
+    v11 = sshr_imm v10, 3
+    v12 = load.i64 notrap aligned v1+16
+    return_call_indirect sig1, v12(v11, v1)
 }
 
-; fn eval_s26
+; fn eval_s21
     ;   @spec   eval({:num, 2}) -> 2
     ;   @key    [{:num, 2}]
     ;   @abi    (Tagged) -> RawInt
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64) system_v
     sig1 = (i64, i64) -> i64 tail
-    sig2 = (i64, i64) -> i64 tail
-    sig3 = (i32, i32, i32) -> i64 system_v
-    sig4 = (f64, i64) -> i64 tail
-    sig5 = (i64, i64) -> i64 tail
-    sig6 = (i32, i32, i32) -> i64 system_v
-    sig7 = (f64, i64) -> i64 tail
     fn0 = u0:1 sig0
-    fn1 = colocated u0:46 sig2
-    fn2 = u0:27 sig3
-    fn3 = colocated u0:65 sig4
-    fn4 = colocated u0:46 sig5
-    fn5 = u0:27 sig6
-    fn6 = colocated u0:83 sig7
 
     block0(v0: i64, v1: i64):    ;; v0 :: {:num, 2}
-    v2 = band_imm v0, 7
-    v3 = icmp_imm eq v2, 0
-    v5 = iconst.i8 0
-    brif v3, block10, block11(v5)  ; v5 = 0
-
-block10:
-    v6 = load.i16 notrap aligned v0
-    v7 = uextend.i64 v6
-    v8 = icmp_imm eq v7, 0
-    v9 = load.i32 notrap aligned v0+8
-    v10 = uextend.i64 v9
-    v11 = iconst.i64 0
-    v12 = icmp eq v10, v11  ; v11 = 0
-    v13 = band v8, v12
-    jump block11(v13)
-
-    block11(v4: i8):    ;; v4 :: :true
-    brif v4, block4, block1
+    v2 = iconst.i64 11    ;; v2 :: :true
+    jump block4
 
 block1:
-    v14 = band_imm.i64 v0, 7
-    v15 = icmp_imm eq v14, 0
-    v17 = iconst.i8 0
-    brif v15, block12, block13(v17)  ; v17 = 0
-
-block12:
-    v18 = load.i16 notrap aligned v0
-    v19 = uextend.i64 v18
-    v20 = icmp_imm eq v19, 0
-    v21 = load.i32 notrap aligned v0+8
-    v22 = uextend.i64 v21
-    v23 = iconst.i64 1
-    v24 = icmp eq v22, v23  ; v23 = 1
-    v25 = band v20, v24
-    jump block13(v25)
-
-    block13(v16: i8):    ;; v16 :: :false
-    brif v16, block6, block2
+    v3 = iconst.i64 19    ;; v3 :: :false
+    jump block2
 
 block2:
-    v26 = band_imm.i64 v0, 7
-    v27 = icmp_imm eq v26, 0
-    v29 = iconst.i8 0
-    brif v27, block14, block15(v29)  ; v29 = 0
-
-block14:
-    v30 = load.i16 notrap aligned v0
-    v31 = uextend.i64 v30
-    v32 = icmp_imm eq v31, 0
-    v33 = load.i32 notrap aligned v0+8
-    v34 = uextend.i64 v33
-    v35 = iconst.i64 1
-    v36 = icmp eq v34, v35  ; v35 = 1
-    v37 = band v32, v36
-    jump block15(v37)
-
-    block15(v28: i8):    ;; v28 :: :false
-    brif v28, block8, block3
+    v4 = iconst.i64 19    ;; v4 :: :false
+    jump block3
 
 block3:
-    v38 = iconst.i64 2    ;; v38 :: :function_clause
-    call fn0(v38)  ; v38 = 2
-    v39 = iconst.i64 0
-    return v39  ; v39 = 0
+    v5 = iconst.i64 2    ;; v5 :: :function_clause
+    call fn0(v5)  ; v5 = 2
+    v6 = iconst.i64 0
+    return v6  ; v6 = 0
 
 block4:
-    v40 = load.i64 aligned v0+16    ;; v40 :: :num
-    v41 = iconst.i64 18    ;; v41 :: :num
-    v42 = icmp eq v40, v41  ; v41 = 18    ;; v42 :: bool
-    brif v42, block5, block1
+    v7 = load.i64 aligned v0+16    ;; v7 :: :num
+    v8 = iconst.i64 18    ;; v8 :: :num
+    v9 = icmp eq v7, v8  ; v8 = 18    ;; v9 :: bool
+    brif v9, block5, block1
 
 block5:
-    v43 = load.i64 aligned v0+24    ;; v43 :: 2
-    v44 = sshr_imm v43, 3
-    v45 = load.i64 notrap aligned v1+16
-    return_call_indirect sig1, v45(v44, v1)
-
-block6:
-    v46 = load.i64 aligned v0+16    ;; v46 :: :num
-    v47 = iconst.i64 26    ;; v47 :: :add
-    v48 = iconst.i64 19    ;; v48 :: bool
-    v49 = iconst.i64 3
-    v50 = iconst.i64 19
-    v51 = icmp ne v48, v49  ; v48 = 19, v49 = 3
-    v52 = icmp ne v48, v50  ; v48 = 19, v50 = 19
-    v53 = band v51, v52
-    brif v53, block7, block2
-
-block7:
-    v54 = load.i64 aligned v0+24    ;; v54 :: 2
-    v55 = load.i64 aligned v0+32    ;; v55 :: any
-    v56 = sshr_imm v54, 3
-    v57 = iconst.i32 35
-    v58 = iconst.i32 3
-    v59 = iconst.i32 0
-    v60 = call fn2(v57, v58, v59)  ; v57 = 35, v58 = 3, v59 = 0
-    v61 = func_addr.i64 fn3
-    store notrap aligned v61, v60+16
-    store.i64 notrap aligned v1, v60+24
-    v62 = sshr_imm v54, 3
-    store notrap aligned v62, v60+32
-    store notrap aligned v55, v60+40
-    return_call fn1(v56, v60)
-
-block8:
-    v63 = load.i64 aligned v0+16    ;; v63 :: :num
-    v64 = iconst.i64 34    ;; v64 :: :mul
-    v65 = iconst.i64 19    ;; v65 :: bool
-    v66 = iconst.i64 3
-    v67 = iconst.i64 19
-    v68 = icmp ne v65, v66  ; v65 = 19, v66 = 3
-    v69 = icmp ne v65, v67  ; v65 = 19, v67 = 19
-    v70 = band v68, v69
-    brif v70, block9, block3
-
-block9:
-    v71 = load.i64 aligned v0+24    ;; v71 :: 2
-    v72 = load.i64 aligned v0+32    ;; v72 :: any
-    v73 = sshr_imm v71, 3
-    v74 = iconst.i32 53
-    v75 = iconst.i32 3
-    v76 = iconst.i32 0
-    v77 = call fn5(v74, v75, v76)  ; v74 = 53, v75 = 3, v76 = 0
-    v78 = func_addr.i64 fn6
-    store notrap aligned v78, v77+16
-    store.i64 notrap aligned v1, v77+24
-    v79 = sshr_imm v71, 3
-    store notrap aligned v79, v77+32
-    store notrap aligned v72, v77+40
-    return_call fn4(v73, v77)
+    v10 = load.i64 aligned v0+24    ;; v10 :: 2
+    v11 = sshr_imm v10, 3
+    v12 = load.i64 notrap aligned v1+16
+    return_call_indirect sig1, v12(v11, v1)
 }
 
-; fn eval_s27
+; fn eval_s22
     ;   @spec   eval({:num, 3}) -> 3
     ;   @key    [{:num, 3}]
     ;   @abi    (Tagged) -> RawInt
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64) system_v
     sig1 = (i64, i64) -> i64 tail
-    sig2 = (i64, i64) -> i64 tail
-    sig3 = (i32, i32, i32) -> i64 system_v
-    sig4 = (f64, i64) -> i64 tail
-    sig5 = (i64, i64) -> i64 tail
-    sig6 = (i32, i32, i32) -> i64 system_v
-    sig7 = (f64, i64) -> i64 tail
     fn0 = u0:1 sig0
-    fn1 = colocated u0:47 sig2
-    fn2 = u0:27 sig3
-    fn3 = colocated u0:66 sig4
-    fn4 = colocated u0:47 sig5
-    fn5 = u0:27 sig6
-    fn6 = colocated u0:84 sig7
 
     block0(v0: i64, v1: i64):    ;; v0 :: {:num, 3}
-    v2 = band_imm v0, 7
-    v3 = icmp_imm eq v2, 0
-    v5 = iconst.i8 0
-    brif v3, block10, block11(v5)  ; v5 = 0
-
-block10:
-    v6 = load.i16 notrap aligned v0
-    v7 = uextend.i64 v6
-    v8 = icmp_imm eq v7, 0
-    v9 = load.i32 notrap aligned v0+8
-    v10 = uextend.i64 v9
-    v11 = iconst.i64 0
-    v12 = icmp eq v10, v11  ; v11 = 0
-    v13 = band v8, v12
-    jump block11(v13)
-
-    block11(v4: i8):    ;; v4 :: :true
-    brif v4, block4, block1
+    v2 = iconst.i64 11    ;; v2 :: :true
+    jump block4
 
 block1:
-    v14 = band_imm.i64 v0, 7
-    v15 = icmp_imm eq v14, 0
-    v17 = iconst.i8 0
-    brif v15, block12, block13(v17)  ; v17 = 0
-
-block12:
-    v18 = load.i16 notrap aligned v0
-    v19 = uextend.i64 v18
-    v20 = icmp_imm eq v19, 0
-    v21 = load.i32 notrap aligned v0+8
-    v22 = uextend.i64 v21
-    v23 = iconst.i64 1
-    v24 = icmp eq v22, v23  ; v23 = 1
-    v25 = band v20, v24
-    jump block13(v25)
-
-    block13(v16: i8):    ;; v16 :: :false
-    brif v16, block6, block2
+    v3 = iconst.i64 19    ;; v3 :: :false
+    jump block2
 
 block2:
-    v26 = band_imm.i64 v0, 7
-    v27 = icmp_imm eq v26, 0
-    v29 = iconst.i8 0
-    brif v27, block14, block15(v29)  ; v29 = 0
-
-block14:
-    v30 = load.i16 notrap aligned v0
-    v31 = uextend.i64 v30
-    v32 = icmp_imm eq v31, 0
-    v33 = load.i32 notrap aligned v0+8
-    v34 = uextend.i64 v33
-    v35 = iconst.i64 1
-    v36 = icmp eq v34, v35  ; v35 = 1
-    v37 = band v32, v36
-    jump block15(v37)
-
-    block15(v28: i8):    ;; v28 :: :false
-    brif v28, block8, block3
+    v4 = iconst.i64 19    ;; v4 :: :false
+    jump block3
 
 block3:
-    v38 = iconst.i64 2    ;; v38 :: :function_clause
-    call fn0(v38)  ; v38 = 2
-    v39 = iconst.i64 0
-    return v39  ; v39 = 0
+    v5 = iconst.i64 2    ;; v5 :: :function_clause
+    call fn0(v5)  ; v5 = 2
+    v6 = iconst.i64 0
+    return v6  ; v6 = 0
 
 block4:
-    v40 = load.i64 aligned v0+16    ;; v40 :: :num
-    v41 = iconst.i64 18    ;; v41 :: :num
-    v42 = icmp eq v40, v41  ; v41 = 18    ;; v42 :: bool
-    brif v42, block5, block1
+    v7 = load.i64 aligned v0+16    ;; v7 :: :num
+    v8 = iconst.i64 18    ;; v8 :: :num
+    v9 = icmp eq v7, v8  ; v8 = 18    ;; v9 :: bool
+    brif v9, block5, block1
 
 block5:
-    v43 = load.i64 aligned v0+24    ;; v43 :: 3
-    v44 = sshr_imm v43, 3
-    v45 = load.i64 notrap aligned v1+16
-    return_call_indirect sig1, v45(v44, v1)
-
-block6:
-    v46 = load.i64 aligned v0+16    ;; v46 :: :num
-    v47 = iconst.i64 26    ;; v47 :: :add
-    v48 = iconst.i64 19    ;; v48 :: bool
-    v49 = iconst.i64 3
-    v50 = iconst.i64 19
-    v51 = icmp ne v48, v49  ; v48 = 19, v49 = 3
-    v52 = icmp ne v48, v50  ; v48 = 19, v50 = 19
-    v53 = band v51, v52
-    brif v53, block7, block2
-
-block7:
-    v54 = load.i64 aligned v0+24    ;; v54 :: 3
-    v55 = load.i64 aligned v0+32    ;; v55 :: any
-    v56 = sshr_imm v54, 3
-    v57 = iconst.i32 36
-    v58 = iconst.i32 3
-    v59 = iconst.i32 0
-    v60 = call fn2(v57, v58, v59)  ; v57 = 36, v58 = 3, v59 = 0
-    v61 = func_addr.i64 fn3
-    store notrap aligned v61, v60+16
-    store.i64 notrap aligned v1, v60+24
-    v62 = sshr_imm v54, 3
-    store notrap aligned v62, v60+32
-    store notrap aligned v55, v60+40
-    return_call fn1(v56, v60)
-
-block8:
-    v63 = load.i64 aligned v0+16    ;; v63 :: :num
-    v64 = iconst.i64 34    ;; v64 :: :mul
-    v65 = iconst.i64 19    ;; v65 :: bool
-    v66 = iconst.i64 3
-    v67 = iconst.i64 19
-    v68 = icmp ne v65, v66  ; v65 = 19, v66 = 3
-    v69 = icmp ne v65, v67  ; v65 = 19, v67 = 19
-    v70 = band v68, v69
-    brif v70, block9, block3
-
-block9:
-    v71 = load.i64 aligned v0+24    ;; v71 :: 3
-    v72 = load.i64 aligned v0+32    ;; v72 :: any
-    v73 = sshr_imm v71, 3
-    v74 = iconst.i32 54
-    v75 = iconst.i32 3
-    v76 = iconst.i32 0
-    v77 = call fn5(v74, v75, v76)  ; v74 = 54, v75 = 3, v76 = 0
-    v78 = func_addr.i64 fn6
-    store notrap aligned v78, v77+16
-    store.i64 notrap aligned v1, v77+24
-    v79 = sshr_imm v71, 3
-    store notrap aligned v79, v77+32
-    store notrap aligned v72, v77+40
-    return_call fn4(v73, v77)
+    v10 = load.i64 aligned v0+24    ;; v10 :: 3
+    v11 = sshr_imm v10, 3
+    v12 = load.i64 notrap aligned v1+16
+    return_call_indirect sig1, v12(v11, v1)
 }
 
-; fn eval_s28
+; fn eval_s23
     ;   @spec   eval({:num, 42}) -> 42
     ;   @key    [{:num, 42}]
     ;   @abi    (Tagged) -> RawInt
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64) system_v
     sig1 = (i64, i64) -> i64 tail
-    sig2 = (i64, i64) -> i64 tail
-    sig3 = (i32, i32, i32) -> i64 system_v
-    sig4 = (f64, i64) -> i64 tail
-    sig5 = (i64, i64) -> i64 tail
-    sig6 = (i32, i32, i32) -> i64 system_v
-    sig7 = (f64, i64) -> i64 tail
     fn0 = u0:1 sig0
-    fn1 = colocated u0:48 sig2
-    fn2 = u0:27 sig3
-    fn3 = colocated u0:68 sig4
-    fn4 = colocated u0:48 sig5
-    fn5 = u0:27 sig6
-    fn6 = colocated u0:86 sig7
 
     block0(v0: i64, v1: i64):    ;; v0 :: {:num, 42}
-    v2 = band_imm v0, 7
-    v3 = icmp_imm eq v2, 0
-    v5 = iconst.i8 0
-    brif v3, block10, block11(v5)  ; v5 = 0
-
-block10:
-    v6 = load.i16 notrap aligned v0
-    v7 = uextend.i64 v6
-    v8 = icmp_imm eq v7, 0
-    v9 = load.i32 notrap aligned v0+8
-    v10 = uextend.i64 v9
-    v11 = iconst.i64 0
-    v12 = icmp eq v10, v11  ; v11 = 0
-    v13 = band v8, v12
-    jump block11(v13)
-
-    block11(v4: i8):    ;; v4 :: :true
-    brif v4, block4, block1
+    v2 = iconst.i64 11    ;; v2 :: :true
+    jump block4
 
 block1:
-    v14 = band_imm.i64 v0, 7
-    v15 = icmp_imm eq v14, 0
-    v17 = iconst.i8 0
-    brif v15, block12, block13(v17)  ; v17 = 0
-
-block12:
-    v18 = load.i16 notrap aligned v0
-    v19 = uextend.i64 v18
-    v20 = icmp_imm eq v19, 0
-    v21 = load.i32 notrap aligned v0+8
-    v22 = uextend.i64 v21
-    v23 = iconst.i64 1
-    v24 = icmp eq v22, v23  ; v23 = 1
-    v25 = band v20, v24
-    jump block13(v25)
-
-    block13(v16: i8):    ;; v16 :: :false
-    brif v16, block6, block2
+    v3 = iconst.i64 19    ;; v3 :: :false
+    jump block2
 
 block2:
-    v26 = band_imm.i64 v0, 7
-    v27 = icmp_imm eq v26, 0
-    v29 = iconst.i8 0
-    brif v27, block14, block15(v29)  ; v29 = 0
-
-block14:
-    v30 = load.i16 notrap aligned v0
-    v31 = uextend.i64 v30
-    v32 = icmp_imm eq v31, 0
-    v33 = load.i32 notrap aligned v0+8
-    v34 = uextend.i64 v33
-    v35 = iconst.i64 1
-    v36 = icmp eq v34, v35  ; v35 = 1
-    v37 = band v32, v36
-    jump block15(v37)
-
-    block15(v28: i8):    ;; v28 :: :false
-    brif v28, block8, block3
+    v4 = iconst.i64 19    ;; v4 :: :false
+    jump block3
 
 block3:
-    v38 = iconst.i64 2    ;; v38 :: :function_clause
-    call fn0(v38)  ; v38 = 2
-    v39 = iconst.i64 0
-    return v39  ; v39 = 0
+    v5 = iconst.i64 2    ;; v5 :: :function_clause
+    call fn0(v5)  ; v5 = 2
+    v6 = iconst.i64 0
+    return v6  ; v6 = 0
 
 block4:
-    v40 = load.i64 aligned v0+16    ;; v40 :: :num
-    v41 = iconst.i64 18    ;; v41 :: :num
-    v42 = icmp eq v40, v41  ; v41 = 18    ;; v42 :: bool
-    brif v42, block5, block1
+    v7 = load.i64 aligned v0+16    ;; v7 :: :num
+    v8 = iconst.i64 18    ;; v8 :: :num
+    v9 = icmp eq v7, v8  ; v8 = 18    ;; v9 :: bool
+    brif v9, block5, block1
 
 block5:
-    v43 = load.i64 aligned v0+24    ;; v43 :: 42
-    v44 = sshr_imm v43, 3
-    v45 = load.i64 notrap aligned v1+16
-    return_call_indirect sig1, v45(v44, v1)
-
-block6:
-    v46 = load.i64 aligned v0+16    ;; v46 :: :num
-    v47 = iconst.i64 26    ;; v47 :: :add
-    v48 = iconst.i64 19    ;; v48 :: bool
-    v49 = iconst.i64 3
-    v50 = iconst.i64 19
-    v51 = icmp ne v48, v49  ; v48 = 19, v49 = 3
-    v52 = icmp ne v48, v50  ; v48 = 19, v50 = 19
-    v53 = band v51, v52
-    brif v53, block7, block2
-
-block7:
-    v54 = load.i64 aligned v0+24    ;; v54 :: 42
-    v55 = load.i64 aligned v0+32    ;; v55 :: any
-    v56 = sshr_imm v54, 3
-    v57 = iconst.i32 38
-    v58 = iconst.i32 3
-    v59 = iconst.i32 0
-    v60 = call fn2(v57, v58, v59)  ; v57 = 38, v58 = 3, v59 = 0
-    v61 = func_addr.i64 fn3
-    store notrap aligned v61, v60+16
-    store.i64 notrap aligned v1, v60+24
-    v62 = sshr_imm v54, 3
-    store notrap aligned v62, v60+32
-    store notrap aligned v55, v60+40
-    return_call fn1(v56, v60)
-
-block8:
-    v63 = load.i64 aligned v0+16    ;; v63 :: :num
-    v64 = iconst.i64 34    ;; v64 :: :mul
-    v65 = iconst.i64 19    ;; v65 :: bool
-    v66 = iconst.i64 3
-    v67 = iconst.i64 19
-    v68 = icmp ne v65, v66  ; v65 = 19, v66 = 3
-    v69 = icmp ne v65, v67  ; v65 = 19, v67 = 19
-    v70 = band v68, v69
-    brif v70, block9, block3
-
-block9:
-    v71 = load.i64 aligned v0+24    ;; v71 :: 42
-    v72 = load.i64 aligned v0+32    ;; v72 :: any
-    v73 = sshr_imm v71, 3
-    v74 = iconst.i32 56
-    v75 = iconst.i32 3
-    v76 = iconst.i32 0
-    v77 = call fn5(v74, v75, v76)  ; v74 = 56, v75 = 3, v76 = 0
-    v78 = func_addr.i64 fn6
-    store notrap aligned v78, v77+16
-    store.i64 notrap aligned v1, v77+24
-    v79 = sshr_imm v71, 3
-    store notrap aligned v79, v77+32
-    store notrap aligned v72, v77+40
-    return_call fn4(v73, v77)
+    v10 = load.i64 aligned v0+24    ;; v10 :: 42
+    v11 = sshr_imm v10, 3
+    v12 = load.i64 notrap aligned v1+16
+    return_call_indirect sig1, v12(v11, v1)
 }
 
-; fn eval_s29
+; fn eval_s24
     ;   @spec   eval({:num, 4}) -> 4
     ;   @key    [{:num, 4}]
     ;   @abi    (Tagged) -> RawInt
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64) system_v
     sig1 = (i64, i64) -> i64 tail
-    sig2 = (i64, i64) -> i64 tail
-    sig3 = (i32, i32, i32) -> i64 system_v
-    sig4 = (f64, i64) -> i64 tail
-    sig5 = (i64, i64) -> i64 tail
-    sig6 = (i32, i32, i32) -> i64 system_v
-    sig7 = (f64, i64) -> i64 tail
     fn0 = u0:1 sig0
-    fn1 = colocated u0:49 sig2
-    fn2 = u0:27 sig3
-    fn3 = colocated u0:67 sig4
-    fn4 = colocated u0:49 sig5
-    fn5 = u0:27 sig6
-    fn6 = colocated u0:85 sig7
 
     block0(v0: i64, v1: i64):    ;; v0 :: {:num, 4}
-    v2 = band_imm v0, 7
-    v3 = icmp_imm eq v2, 0
-    v5 = iconst.i8 0
-    brif v3, block10, block11(v5)  ; v5 = 0
-
-block10:
-    v6 = load.i16 notrap aligned v0
-    v7 = uextend.i64 v6
-    v8 = icmp_imm eq v7, 0
-    v9 = load.i32 notrap aligned v0+8
-    v10 = uextend.i64 v9
-    v11 = iconst.i64 0
-    v12 = icmp eq v10, v11  ; v11 = 0
-    v13 = band v8, v12
-    jump block11(v13)
-
-    block11(v4: i8):    ;; v4 :: :true
-    brif v4, block4, block1
+    v2 = iconst.i64 11    ;; v2 :: :true
+    jump block4
 
 block1:
-    v14 = band_imm.i64 v0, 7
-    v15 = icmp_imm eq v14, 0
-    v17 = iconst.i8 0
-    brif v15, block12, block13(v17)  ; v17 = 0
-
-block12:
-    v18 = load.i16 notrap aligned v0
-    v19 = uextend.i64 v18
-    v20 = icmp_imm eq v19, 0
-    v21 = load.i32 notrap aligned v0+8
-    v22 = uextend.i64 v21
-    v23 = iconst.i64 1
-    v24 = icmp eq v22, v23  ; v23 = 1
-    v25 = band v20, v24
-    jump block13(v25)
-
-    block13(v16: i8):    ;; v16 :: :false
-    brif v16, block6, block2
+    v3 = iconst.i64 19    ;; v3 :: :false
+    jump block2
 
 block2:
-    v26 = band_imm.i64 v0, 7
-    v27 = icmp_imm eq v26, 0
-    v29 = iconst.i8 0
-    brif v27, block14, block15(v29)  ; v29 = 0
-
-block14:
-    v30 = load.i16 notrap aligned v0
-    v31 = uextend.i64 v30
-    v32 = icmp_imm eq v31, 0
-    v33 = load.i32 notrap aligned v0+8
-    v34 = uextend.i64 v33
-    v35 = iconst.i64 1
-    v36 = icmp eq v34, v35  ; v35 = 1
-    v37 = band v32, v36
-    jump block15(v37)
-
-    block15(v28: i8):    ;; v28 :: :false
-    brif v28, block8, block3
+    v4 = iconst.i64 19    ;; v4 :: :false
+    jump block3
 
 block3:
-    v38 = iconst.i64 2    ;; v38 :: :function_clause
-    call fn0(v38)  ; v38 = 2
-    v39 = iconst.i64 0
-    return v39  ; v39 = 0
+    v5 = iconst.i64 2    ;; v5 :: :function_clause
+    call fn0(v5)  ; v5 = 2
+    v6 = iconst.i64 0
+    return v6  ; v6 = 0
 
 block4:
-    v40 = load.i64 aligned v0+16    ;; v40 :: :num
-    v41 = iconst.i64 18    ;; v41 :: :num
-    v42 = icmp eq v40, v41  ; v41 = 18    ;; v42 :: bool
-    brif v42, block5, block1
+    v7 = load.i64 aligned v0+16    ;; v7 :: :num
+    v8 = iconst.i64 18    ;; v8 :: :num
+    v9 = icmp eq v7, v8  ; v8 = 18    ;; v9 :: bool
+    brif v9, block5, block1
 
 block5:
-    v43 = load.i64 aligned v0+24    ;; v43 :: 4
-    v44 = sshr_imm v43, 3
-    v45 = load.i64 notrap aligned v1+16
-    return_call_indirect sig1, v45(v44, v1)
-
-block6:
-    v46 = load.i64 aligned v0+16    ;; v46 :: :num
-    v47 = iconst.i64 26    ;; v47 :: :add
-    v48 = iconst.i64 19    ;; v48 :: bool
-    v49 = iconst.i64 3
-    v50 = iconst.i64 19
-    v51 = icmp ne v48, v49  ; v48 = 19, v49 = 3
-    v52 = icmp ne v48, v50  ; v48 = 19, v50 = 19
-    v53 = band v51, v52
-    brif v53, block7, block2
-
-block7:
-    v54 = load.i64 aligned v0+24    ;; v54 :: 4
-    v55 = load.i64 aligned v0+32    ;; v55 :: any
-    v56 = sshr_imm v54, 3
-    v57 = iconst.i32 37
-    v58 = iconst.i32 3
-    v59 = iconst.i32 0
-    v60 = call fn2(v57, v58, v59)  ; v57 = 37, v58 = 3, v59 = 0
-    v61 = func_addr.i64 fn3
-    store notrap aligned v61, v60+16
-    store.i64 notrap aligned v1, v60+24
-    v62 = sshr_imm v54, 3
-    store notrap aligned v62, v60+32
-    store notrap aligned v55, v60+40
-    return_call fn1(v56, v60)
-
-block8:
-    v63 = load.i64 aligned v0+16    ;; v63 :: :num
-    v64 = iconst.i64 34    ;; v64 :: :mul
-    v65 = iconst.i64 19    ;; v65 :: bool
-    v66 = iconst.i64 3
-    v67 = iconst.i64 19
-    v68 = icmp ne v65, v66  ; v65 = 19, v66 = 3
-    v69 = icmp ne v65, v67  ; v65 = 19, v67 = 19
-    v70 = band v68, v69
-    brif v70, block9, block3
-
-block9:
-    v71 = load.i64 aligned v0+24    ;; v71 :: 4
-    v72 = load.i64 aligned v0+32    ;; v72 :: any
-    v73 = sshr_imm v71, 3
-    v74 = iconst.i32 55
-    v75 = iconst.i32 3
-    v76 = iconst.i32 0
-    v77 = call fn5(v74, v75, v76)  ; v74 = 55, v75 = 3, v76 = 0
-    v78 = func_addr.i64 fn6
-    store notrap aligned v78, v77+16
-    store.i64 notrap aligned v1, v77+24
-    v79 = sshr_imm v71, 3
-    store notrap aligned v79, v77+32
-    store notrap aligned v72, v77+40
-    return_call fn4(v73, v77)
+    v10 = load.i64 aligned v0+24    ;; v10 :: 4
+    v11 = sshr_imm v10, 3
+    v12 = load.i64 notrap aligned v1+16
+    return_call_indirect sig1, v12(v11, v1)
 }
 
-; fn k_11_s30
+; fn k_11_s25
     ;   @spec   k_11(1, {:num, 1}, {:num, 2}) -> int
     ;   @key    [1, {:num, 1}, {:num, 2}]
     ;   @abi    (RawInt, Tagged, Tagged) -> RawInt
@@ -1916,17 +1016,17 @@ function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64, i64) -> i64 tail
     sig1 = (i32, i32, i32) -> i64 system_v
     sig2 = (i64, i64) -> i64 tail
-    fn0 = colocated u0:56 sig0
+    fn0 = colocated u0:51 sig0
     fn1 = u0:27 sig1
-    fn2 = colocated u0:69 sig2
+    fn2 = colocated u0:59 sig2
 
     block0(v0: i64, v1: i64):    ;; v0 :: 1
     v2 = load.i64 notrap aligned v1+32    ;; v2 :: {:num, 1}
     v3 = load.i64 notrap aligned v1+40    ;; v3 :: {:num, 2}
-    v4 = iconst.i32 39                  ; @2:38
+    v4 = iconst.i32 29                  ; @2:38
     v5 = iconst.i32 4                   ; @2:38
     v6 = iconst.i32 0                   ; @2:38
-    v7 = call fn1(v4, v5, v6)           ; @2:38  v4 = 39, v5 = 4, v6 = 0
+    v7 = call fn1(v4, v5, v6)           ; @2:38  v4 = 29, v5 = 4, v6 = 0
     v8 = func_addr.i64 fn2              ; @2:38
     store notrap aligned v8, v7+16      ; @2:38
     v9 = load.i64 notrap aligned v1+24  ; @2:38
@@ -1937,7 +1037,7 @@ function u0:0(i64, i64) -> i64 tail {
     return_call fn0(v3, v7)             ; @2:38
 }
 
-; fn k_11_s31
+; fn k_11_s26
     ;   @spec   k_11(2, {:num, 2}, {:mul, {:num, 3}, {:num, 4}}) -> int
     ;   @key    [2, {:num, 2}, {:mul, {:num, 3}, {:num, 4}}]
     ;   @abi    (RawInt, Tagged, Tagged) -> RawInt
@@ -1945,17 +1045,17 @@ function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64, i64) -> i64 tail
     sig1 = (i32, i32, i32) -> i64 system_v
     sig2 = (i64, i64) -> i64 tail
-    fn0 = colocated u0:54 sig0
+    fn0 = colocated u0:49 sig0
     fn1 = u0:27 sig1
-    fn2 = colocated u0:77 sig2
+    fn2 = colocated u0:62 sig2
 
     block0(v0: i64, v1: i64):    ;; v0 :: 2
     v2 = load.i64 notrap aligned v1+32    ;; v2 :: {:num, 2}
     v3 = load.i64 notrap aligned v1+40    ;; v3 :: {:mul, {:num, 3}, {:num, 4}}
-    v4 = iconst.i32 47                  ; @2:38
+    v4 = iconst.i32 32                  ; @2:38
     v5 = iconst.i32 4                   ; @2:38
     v6 = iconst.i32 0                   ; @2:38
-    v7 = call fn1(v4, v5, v6)           ; @2:38  v4 = 47, v5 = 4, v6 = 0
+    v7 = call fn1(v4, v5, v6)           ; @2:38  v4 = 32, v5 = 4, v6 = 0
     v8 = func_addr.i64 fn2              ; @2:38
     store notrap aligned v8, v7+16      ; @2:38
     v9 = load.i64 notrap aligned v1+24  ; @2:38
@@ -1966,7 +1066,7 @@ function u0:0(i64, i64) -> i64 tail {
     return_call fn0(v3, v7)             ; @2:38
 }
 
-; fn k_11_s32
+; fn k_11_s27
     ;   @spec   k_11(3, {:num, 3}, {:num, 4}) -> int
     ;   @key    [3, {:num, 3}, {:num, 4}]
     ;   @abi    (RawInt, Tagged, Tagged) -> RawInt
@@ -1974,17 +1074,17 @@ function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64, i64) -> i64 tail
     sig1 = (i32, i32, i32) -> i64 system_v
     sig2 = (i64, i64) -> i64 tail
-    fn0 = colocated u0:59 sig0
+    fn0 = colocated u0:54 sig0
     fn1 = u0:27 sig1
-    fn2 = colocated u0:70 sig2
+    fn2 = colocated u0:60 sig2
 
     block0(v0: i64, v1: i64):    ;; v0 :: 3
     v2 = load.i64 notrap aligned v1+32    ;; v2 :: {:num, 3}
     v3 = load.i64 notrap aligned v1+40    ;; v3 :: {:num, 4}
-    v4 = iconst.i32 40                  ; @2:38
+    v4 = iconst.i32 30                  ; @2:38
     v5 = iconst.i32 4                   ; @2:38
     v6 = iconst.i32 0                   ; @2:38
-    v7 = call fn1(v4, v5, v6)           ; @2:38  v4 = 40, v5 = 4, v6 = 0
+    v7 = call fn1(v4, v5, v6)           ; @2:38  v4 = 30, v5 = 4, v6 = 0
     v8 = func_addr.i64 fn2              ; @2:38
     store notrap aligned v8, v7+16      ; @2:38
     v9 = load.i64 notrap aligned v1+24  ; @2:38
@@ -1995,7 +1095,7 @@ function u0:0(i64, i64) -> i64 tail {
     return_call fn0(v3, v7)             ; @2:38
 }
 
-; fn k_11_s33
+; fn k_11_s28
     ;   @spec   k_11(int, {:add, {:num, 1}, {:num, 2}}, {:add, {:num, 3}, {:num, 4}}) -> int
     ;   @key    [int, {:add, {:num, 1}, {:num, 2}}, {:add, {:num, 3}, {:num, 4}}]
     ;   @abi    (RawInt, Tagged, Tagged) -> RawInt
@@ -2003,17 +1103,17 @@ function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64, i64) -> i64 tail
     sig1 = (i32, i32, i32) -> i64 system_v
     sig2 = (i64, i64) -> i64 tail
-    fn0 = colocated u0:52 sig0
+    fn0 = colocated u0:47 sig0
     fn1 = u0:27 sig1
-    fn2 = colocated u0:76 sig2
+    fn2 = colocated u0:61 sig2
 
     block0(v0: i64, v1: i64):    ;; v0 :: int
     v2 = load.i64 notrap aligned v1+32    ;; v2 :: {:add, {:num, 1}, {:num, 2}}
     v3 = load.i64 notrap aligned v1+40    ;; v3 :: {:add, {:num, 3}, {:num, 4}}
-    v4 = iconst.i32 46                  ; @2:38
+    v4 = iconst.i32 31                  ; @2:38
     v5 = iconst.i32 4                   ; @2:38
     v6 = iconst.i32 0                   ; @2:38
-    v7 = call fn1(v4, v5, v6)           ; @2:38  v4 = 46, v5 = 4, v6 = 0
+    v7 = call fn1(v4, v5, v6)           ; @2:38  v4 = 31, v5 = 4, v6 = 0
     v8 = func_addr.i64 fn2              ; @2:38
     store notrap aligned v8, v7+16      ; @2:38
     v9 = load.i64 notrap aligned v1+24  ; @2:38
@@ -2024,7 +1124,7 @@ function u0:0(i64, i64) -> i64 tail {
     return_call fn0(v3, v7)             ; @2:38
 }
 
-; fn k_12_s39
+; fn k_12_s29
     ;   @spec   k_12(2, {:num, 1}, {:num, 2}, 1) -> int
     ;   @key    [2, {:num, 1}, {:num, 2}, 1]
     ;   @abi    (RawInt, Tagged, Tagged, RawInt) -> RawInt
@@ -2041,7 +1141,7 @@ function u0:0(i64, i64) -> i64 tail {
     return_call_indirect sig0, v7(v5, v6)
 }
 
-; fn k_12_s40
+; fn k_12_s30
     ;   @spec   k_12(4, {:num, 3}, {:num, 4}, 3) -> int
     ;   @key    [4, {:num, 3}, {:num, 4}, 3]
     ;   @abi    (RawInt, Tagged, Tagged, RawInt) -> RawInt
@@ -2058,7 +1158,7 @@ function u0:0(i64, i64) -> i64 tail {
     return_call_indirect sig0, v7(v5, v6)
 }
 
-; fn k_12_s46
+; fn k_12_s31
     ;   @spec   k_12(int, {:add, {:num, 1}, {:num, 2}}, {:add, {:num, 3}, {:num, 4}}, int) -> int
     ;   @key    [int, {:add, {:num, 1}, {:num, 2}}, {:add, {:num, 3}, {:num, 4}}, int]
     ;   @abi    (RawInt, Tagged, Tagged, RawInt) -> RawInt
@@ -2075,7 +1175,7 @@ function u0:0(i64, i64) -> i64 tail {
     return_call_indirect sig0, v7(v5, v6)
 }
 
-; fn k_12_s47
+; fn k_12_s32
     ;   @spec   k_12(int, {:num, 2}, {:mul, {:num, 3}, {:num, 4}}, 2) -> int
     ;   @key    [int, {:num, 2}, {:mul, {:num, 3}, {:num, 4}}, 2]
     ;   @abi    (RawInt, Tagged, Tagged, RawInt) -> RawInt
@@ -2092,7 +1192,7 @@ function u0:0(i64, i64) -> i64 tail {
     return_call_indirect sig0, v7(v5, v6)
 }
 
-; fn k_13_s48
+; fn k_13_s33
     ;   @spec   k_13(1, {:num, 1}, {:num, 2}) -> int
     ;   @key    [1, {:num, 1}, {:num, 2}]
     ;   @abi    (RawInt, Tagged, Tagged) -> RawInt
@@ -2100,17 +1200,17 @@ function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64, i64) -> i64 tail
     sig1 = (i32, i32, i32) -> i64 system_v
     sig2 = (i64, i64) -> i64 tail
-    fn0 = colocated u0:56 sig0
+    fn0 = colocated u0:51 sig0
     fn1 = u0:27 sig1
-    fn2 = colocated u0:87 sig2
+    fn2 = colocated u0:67 sig2
 
     block0(v0: i64, v1: i64):    ;; v0 :: 1
     v2 = load.i64 notrap aligned v1+32    ;; v2 :: {:num, 1}
     v3 = load.i64 notrap aligned v1+40    ;; v3 :: {:num, 2}
-    v4 = iconst.i32 57                  ; @3:38
+    v4 = iconst.i32 37                  ; @3:38
     v5 = iconst.i32 4                   ; @3:38
     v6 = iconst.i32 0                   ; @3:38
-    v7 = call fn1(v4, v5, v6)           ; @3:38  v4 = 57, v5 = 4, v6 = 0
+    v7 = call fn1(v4, v5, v6)           ; @3:38  v4 = 37, v5 = 4, v6 = 0
     v8 = func_addr.i64 fn2              ; @3:38
     store notrap aligned v8, v7+16      ; @3:38
     v9 = load.i64 notrap aligned v1+24  ; @3:38
@@ -2121,7 +1221,7 @@ function u0:0(i64, i64) -> i64 tail {
     return_call fn0(v3, v7)             ; @3:38
 }
 
-; fn k_13_s49
+; fn k_13_s34
     ;   @spec   k_13(2, {:num, 2}, {:mul, {:num, 3}, {:num, 4}}) -> int
     ;   @key    [2, {:num, 2}, {:mul, {:num, 3}, {:num, 4}}]
     ;   @abi    (RawInt, Tagged, Tagged) -> RawInt
@@ -2129,17 +1229,17 @@ function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64, i64) -> i64 tail
     sig1 = (i32, i32, i32) -> i64 system_v
     sig2 = (i64, i64) -> i64 tail
-    fn0 = colocated u0:54 sig0
+    fn0 = colocated u0:49 sig0
     fn1 = u0:27 sig1
-    fn2 = colocated u0:95 sig2
+    fn2 = colocated u0:70 sig2
 
     block0(v0: i64, v1: i64):    ;; v0 :: 2
     v2 = load.i64 notrap aligned v1+32    ;; v2 :: {:num, 2}
     v3 = load.i64 notrap aligned v1+40    ;; v3 :: {:mul, {:num, 3}, {:num, 4}}
-    v4 = iconst.i32 65                  ; @3:38
+    v4 = iconst.i32 40                  ; @3:38
     v5 = iconst.i32 4                   ; @3:38
     v6 = iconst.i32 0                   ; @3:38
-    v7 = call fn1(v4, v5, v6)           ; @3:38  v4 = 65, v5 = 4, v6 = 0
+    v7 = call fn1(v4, v5, v6)           ; @3:38  v4 = 40, v5 = 4, v6 = 0
     v8 = func_addr.i64 fn2              ; @3:38
     store notrap aligned v8, v7+16      ; @3:38
     v9 = load.i64 notrap aligned v1+24  ; @3:38
@@ -2150,7 +1250,7 @@ function u0:0(i64, i64) -> i64 tail {
     return_call fn0(v3, v7)             ; @3:38
 }
 
-; fn k_13_s50
+; fn k_13_s35
     ;   @spec   k_13(3, {:num, 3}, {:num, 4}) -> int
     ;   @key    [3, {:num, 3}, {:num, 4}]
     ;   @abi    (RawInt, Tagged, Tagged) -> RawInt
@@ -2158,17 +1258,17 @@ function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64, i64) -> i64 tail
     sig1 = (i32, i32, i32) -> i64 system_v
     sig2 = (i64, i64) -> i64 tail
-    fn0 = colocated u0:59 sig0
+    fn0 = colocated u0:54 sig0
     fn1 = u0:27 sig1
-    fn2 = colocated u0:88 sig2
+    fn2 = colocated u0:68 sig2
 
     block0(v0: i64, v1: i64):    ;; v0 :: 3
     v2 = load.i64 notrap aligned v1+32    ;; v2 :: {:num, 3}
     v3 = load.i64 notrap aligned v1+40    ;; v3 :: {:num, 4}
-    v4 = iconst.i32 58                  ; @3:38
+    v4 = iconst.i32 38                  ; @3:38
     v5 = iconst.i32 4                   ; @3:38
     v6 = iconst.i32 0                   ; @3:38
-    v7 = call fn1(v4, v5, v6)           ; @3:38  v4 = 58, v5 = 4, v6 = 0
+    v7 = call fn1(v4, v5, v6)           ; @3:38  v4 = 38, v5 = 4, v6 = 0
     v8 = func_addr.i64 fn2              ; @3:38
     store notrap aligned v8, v7+16      ; @3:38
     v9 = load.i64 notrap aligned v1+24  ; @3:38
@@ -2179,7 +1279,7 @@ function u0:0(i64, i64) -> i64 tail {
     return_call fn0(v3, v7)             ; @3:38
 }
 
-; fn k_13_s51
+; fn k_13_s36
     ;   @spec   k_13(int, {:add, {:num, 1}, {:num, 2}}, {:add, {:num, 3}, {:num, 4}}) -> int
     ;   @key    [int, {:add, {:num, 1}, {:num, 2}}, {:add, {:num, 3}, {:num, 4}}]
     ;   @abi    (RawInt, Tagged, Tagged) -> RawInt
@@ -2187,17 +1287,17 @@ function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64, i64) -> i64 tail
     sig1 = (i32, i32, i32) -> i64 system_v
     sig2 = (i64, i64) -> i64 tail
-    fn0 = colocated u0:52 sig0
+    fn0 = colocated u0:47 sig0
     fn1 = u0:27 sig1
-    fn2 = colocated u0:94 sig2
+    fn2 = colocated u0:69 sig2
 
     block0(v0: i64, v1: i64):    ;; v0 :: int
     v2 = load.i64 notrap aligned v1+32    ;; v2 :: {:add, {:num, 1}, {:num, 2}}
     v3 = load.i64 notrap aligned v1+40    ;; v3 :: {:add, {:num, 3}, {:num, 4}}
-    v4 = iconst.i32 64                  ; @3:38
+    v4 = iconst.i32 39                  ; @3:38
     v5 = iconst.i32 4                   ; @3:38
     v6 = iconst.i32 0                   ; @3:38
-    v7 = call fn1(v4, v5, v6)           ; @3:38  v4 = 64, v5 = 4, v6 = 0
+    v7 = call fn1(v4, v5, v6)           ; @3:38  v4 = 39, v5 = 4, v6 = 0
     v8 = func_addr.i64 fn2              ; @3:38
     store notrap aligned v8, v7+16      ; @3:38
     v9 = load.i64 notrap aligned v1+24  ; @3:38
@@ -2208,7 +1308,7 @@ function u0:0(i64, i64) -> i64 tail {
     return_call fn0(v3, v7)             ; @3:38
 }
 
-; fn k_14_s57
+; fn k_14_s37
     ;   @spec   k_14(2, {:num, 1}, {:num, 2}, 1) -> int
     ;   @key    [2, {:num, 1}, {:num, 2}, 1]
     ;   @abi    (RawInt, Tagged, Tagged, RawInt) -> RawInt
@@ -2225,7 +1325,7 @@ function u0:0(i64, i64) -> i64 tail {
     return_call_indirect sig0, v7(v5, v6)
 }
 
-; fn k_14_s58
+; fn k_14_s38
     ;   @spec   k_14(4, {:num, 3}, {:num, 4}, 3) -> int
     ;   @key    [4, {:num, 3}, {:num, 4}, 3]
     ;   @abi    (RawInt, Tagged, Tagged, RawInt) -> RawInt
@@ -2242,7 +1342,7 @@ function u0:0(i64, i64) -> i64 tail {
     return_call_indirect sig0, v7(v5, v6)
 }
 
-; fn k_14_s64
+; fn k_14_s39
     ;   @spec   k_14(int, {:add, {:num, 1}, {:num, 2}}, {:add, {:num, 3}, {:num, 4}}, int) -> int
     ;   @key    [int, {:add, {:num, 1}, {:num, 2}}, {:add, {:num, 3}, {:num, 4}}, int]
     ;   @abi    (RawInt, Tagged, Tagged, RawInt) -> RawInt
@@ -2259,7 +1359,7 @@ function u0:0(i64, i64) -> i64 tail {
     return_call_indirect sig0, v7(v5, v6)
 }
 
-; fn k_14_s65
+; fn k_14_s40
     ;   @spec   k_14(int, {:num, 2}, {:mul, {:num, 3}, {:num, 4}}, 2) -> int
     ;   @key    [int, {:num, 2}, {:mul, {:num, 3}, {:num, 4}}, 2]
     ;   @abi    (RawInt, Tagged, Tagged, RawInt) -> RawInt
@@ -2276,7 +1376,7 @@ function u0:0(i64, i64) -> i64 tail {
     return_call_indirect sig0, v7(v5, v6)
 }
 
-; fn k_15_s66
+; fn k_15_s41
     ;   @spec   k_15(42) -> nil
     ;   @key    [42]
     ;   @abi    (RawInt) -> Tagged
@@ -2290,15 +1390,15 @@ function u0:0(i64, i64) -> i64 tail {
     sig6 = (i64, i64) -> i64 tail
     sig7 = (i32, i32, i32) -> i64 system_v
     sig8 = (i64, i64) -> i64 tail
-    fn0 = u0:99 sig0
+    fn0 = u0:74 sig0
     fn1 = u0:6 sig1
     fn2 = u0:6 sig2
     fn3 = u0:6 sig3
     fn4 = u0:6 sig4
     fn5 = u0:6 sig5
-    fn6 = colocated u0:51 sig6
+    fn6 = colocated u0:46 sig6
     fn7 = u0:27 sig7
-    fn8 = colocated u0:97 sig8
+    fn8 = colocated u0:72 sig8
 
     block0(v0: i64, v1: i64):    ;; v0 :: 42
     call fn0(v0)
@@ -2333,10 +1433,10 @@ function u0:0(i64, i64) -> i64 tail {
     store notrap aligned v2, v20+16  ; v2 = 26
     store notrap aligned v6, v20+24
     store notrap aligned v18, v20+32
-    v21 = iconst.i32 67                 ; @6:3
+    v21 = iconst.i32 42                 ; @6:3
     v22 = iconst.i32 1                  ; @6:3
     v23 = iconst.i32 0                  ; @6:3
-    v24 = call fn7(v21, v22, v23)       ; @6:3  v21 = 67, v22 = 1, v23 = 0
+    v24 = call fn7(v21, v22, v23)       ; @6:3  v21 = 42, v22 = 1, v23 = 0
     v25 = func_addr.i64 fn8             ; @6:3
     store notrap aligned v25, v24+16    ; @6:3
     v26 = load.i64 notrap aligned v1+24 ; @6:3
@@ -2344,7 +1444,7 @@ function u0:0(i64, i64) -> i64 tail {
     return_call fn6(v20, v24)           ; @6:3
 }
 
-; fn k_17_s67
+; fn k_17_s42
     ;   @spec   k_17(int) -> nil
     ;   @key    [int]
     ;   @abi    (RawInt) -> Tagged
@@ -2360,7 +1460,7 @@ function u0:0(i64, i64) -> i64 tail {
     sig8 = (i64, i64) -> i64 tail
     sig9 = (i32, i32, i32) -> i64 system_v
     sig10 = (i64, i64) -> i64 tail
-    fn0 = u0:99 sig0
+    fn0 = u0:74 sig0
     fn1 = u0:6 sig1
     fn2 = u0:6 sig2
     fn3 = u0:6 sig3
@@ -2368,9 +1468,9 @@ function u0:0(i64, i64) -> i64 tail {
     fn5 = u0:6 sig5
     fn6 = u0:6 sig6
     fn7 = u0:6 sig7
-    fn8 = colocated u0:53 sig8
+    fn8 = colocated u0:48 sig8
     fn9 = u0:27 sig9
-    fn10 = colocated u0:98 sig10
+    fn10 = colocated u0:73 sig10
 
     block0(v0: i64, v1: i64):    ;; v0 :: int
     call fn0(v0)
@@ -2416,10 +1516,10 @@ function u0:0(i64, i64) -> i64 tail {
     store notrap aligned v2, v26+16  ; v2 = 34
     store notrap aligned v14, v26+24
     store notrap aligned v24, v26+32
-    v27 = iconst.i32 68                 ; @7:3
+    v27 = iconst.i32 43                 ; @7:3
     v28 = iconst.i32 1                  ; @7:3
     v29 = iconst.i32 0                  ; @7:3
-    v30 = call fn9(v27, v28, v29)       ; @7:3  v27 = 68, v28 = 1, v29 = 0
+    v30 = call fn9(v27, v28, v29)       ; @7:3  v27 = 43, v28 = 1, v29 = 0
     v31 = func_addr.i64 fn10            ; @7:3
     store notrap aligned v31, v30+16    ; @7:3
     v32 = load.i64 notrap aligned v1+24 ; @7:3
@@ -2427,14 +1527,14 @@ function u0:0(i64, i64) -> i64 tail {
     return_call fn8(v26, v30)           ; @7:3
 }
 
-; fn k_19_s68
+; fn k_19_s43
     ;   @spec   k_19(int) -> nil
     ;   @key    [int]
     ;   @abi    (RawInt) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64) system_v
     sig1 = (i64, i64) -> i64 tail
-    fn0 = u0:99 sig0
+    fn0 = u0:74 sig0
 
     block0(v0: i64, v1: i64):    ;; v0 :: int
     call fn0(v0)

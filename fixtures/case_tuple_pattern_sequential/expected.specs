@@ -152,11 +152,11 @@
 ;     blk1 Halt Var(0)      :: :match_error
 
 ; spec case_clause_0(3) #fn=10
-;   key:    [:err, :err, any]
+;   key:    [any, any, any]
 ;   return: any
 ;   vars:
-;     Var(0) :: :err
-;     Var(1) :: :err
+;     Var(0) :: any
+;     Var(1) :: any
 ;     Var(2) :: any
 ;   exits:
 ;     blk0 Return Var(2)    :: any

@@ -42,6 +42,17 @@ fn fold_fn(f: &mut FnIr, types: &ModuleTypes) {
     let Some(fn_types) = best_fn_types(f, types) else {
         return;
     };
+    fold_fn_with_types(f, fn_types);
+}
+
+/// fz-ul4.43.B — per-spec fold entry point.
+///
+/// Codegen calls this on a cloned FnIr per spec, passing that spec's
+/// FnTypes directly, so each spec gets folded against its own narrowed
+/// env. Avoids `fold_fn`'s `best_fn_types` fallback which bails when
+/// multiple narrow specs exist — exactly the case where per-spec fold
+/// is most valuable.
+pub fn fold_fn_with_types(f: &mut FnIr, fn_types: &FnTypes) {
     for block in &mut f.blocks {
         for stmt in &mut block.stmts {
             let Stmt::Let(dest, prim) = stmt;

@@ -842,10 +842,14 @@ fn tail_recursion_count_matches_cps_in_clif_section_8_1() {
         );
     }
 
-    // §8.1 block_done: load.i64 v_k+16; return_call_indirect.
+    // §8.1 block_done: tail-call the continuation. fz-ul4.43.B made
+    // per-spec fold more aggressive — when the cont is statically
+    // resolvable in this spec, the call becomes a direct `return_call`
+    // instead of `return_call_indirect`. Either form satisfies §8.1
+    // (no allocation, no return — pure tail call).
     assert!(
-        body.contains("return_call_indirect"),
-        "count_s2 base case must indirect-call cont via return_call_indirect:\n{}",
+        body.contains("return_call_indirect") || body.contains("return_call "),
+        "count_s2 base case must tail-call the cont (direct or indirect):\n{}",
         body,
     );
 }

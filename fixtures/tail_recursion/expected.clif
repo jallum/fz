@@ -32,7 +32,6 @@ function u0:0(i64, i64, i64) -> i64 tail {
     sig0 = (i64, i64, i64) -> i64 tail
     sig1 = () -> i64 system_v
     sig2 = (i64, i32) -> i64 system_v
-    sig3 = (i64, i64) -> i64 tail
     fn0 = colocated u0:41 sig0
     fn1 = u0:29 sig1
     fn2 = u0:30 sig2
@@ -40,41 +39,32 @@ function u0:0(i64, i64, i64) -> i64 tail {
     block0(v0: i64, v1: i64, v2: i64):    ;; v0 :: 100000, v1 :: 0
     v3 = iconst.i64 0    ;; v3 :: 0
     v4 = iconst.i64 19    ;; v4 :: :false
-    v5 = iconst.i64 3
-    v6 = iconst.i64 19
-    v7 = icmp ne v4, v5  ; v4 = 19, v5 = 3
-    v8 = icmp ne v4, v6  ; v4 = 19, v6 = 19
-    v9 = band v7, v8
-    brif v9, block2, block1
+    jump block1
 
 block1:
-    v10 = iconst.i64 1                  ; @2:33
-    v11 = isub.i64 v0, v10              ; @2:29  v10 = 1
-    v12 = iconst.i64 1                  ; @2:42
-    v13 = iadd.i64 v1, v12              ; @2:36  v12 = 1
-    v14 = global_value.i64 gv0          ; @2:23
-    v15 = load.i8 notrap aligned v14    ; @2:23
-    v16 = uextend.i64 v15               ; @2:23
-    v17 = iconst.i64 0                  ; @2:23
-    v18 = icmp ne v16, v17              ; @2:23  v17 = 0
-    brif v18, block3, block4            ; @2:23
-
-block3:
-    v19 = call fn1()                    ; @2:23
-    store.i64 notrap aligned v11, v19   ; @2:23
-    store.i64 notrap aligned v13, v19+8 ; @2:23
-    store.i64 notrap aligned v2, v19+16 ; @2:23
-    v20 = func_addr.i64 fn0             ; @2:23
-    v21 = iconst.i32 3                  ; @2:23
-    v22 = call fn2(v20, v21)            ; @2:23  v21 = 3
-    return v22                          ; @2:23
-
-block4:
-    return_call fn0(v11, v13, v2)       ; @2:23
+    v5 = iconst.i64 1                   ; @2:33
+    v6 = isub.i64 v0, v5                ; @2:29  v5 = 1
+    v7 = iconst.i64 1                   ; @2:42
+    v8 = iadd.i64 v1, v7                ; @2:36  v7 = 1
+    v9 = global_value.i64 gv0           ; @2:23
+    v10 = load.i8 notrap aligned v9     ; @2:23
+    v11 = uextend.i64 v10               ; @2:23
+    v12 = iconst.i64 0                  ; @2:23
+    v13 = icmp ne v11, v12              ; @2:23  v12 = 0
+    brif v13, block2, block3            ; @2:23
 
 block2:
-    v23 = load.i64 notrap aligned v2+16
-    return_call_indirect sig3, v23(v1, v2)
+    v14 = call fn1()                    ; @2:23
+    store.i64 notrap aligned v6, v14    ; @2:23
+    store.i64 notrap aligned v8, v14+8  ; @2:23
+    store.i64 notrap aligned v2, v14+16 ; @2:23
+    v15 = func_addr.i64 fn0             ; @2:23
+    v16 = iconst.i32 3                  ; @2:23
+    v17 = call fn2(v15, v16)            ; @2:23  v16 = 3
+    return v17                          ; @2:23
+
+block3:
+    return_call fn0(v6, v8, v2)         ; @2:23
 }
 
 ; fn count_s10
