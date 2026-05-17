@@ -55,3 +55,4 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `vr5a_cross_kind_eq/` | VR.5a — cross-kind `==` folds to constant + emits type/dead-binop lint | jit, interp, repl |
 | `vr5a_typed_eq/` | VR.5a — int-int / atom-atom equality lowers to a single icmp, no fz_value_eq dispatch | jit, interp, repl |
 | `vr5b_typed_print/` | VR.5b — print dispatches to typed FFI when the arg Descr narrows | jit, interp, repl |
+| `wildcard_then_specific/` | first-match-wins for wildcard-then-specific patterns (multi-clause fn and case) | jit, interp, aot, repl |

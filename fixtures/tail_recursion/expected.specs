@@ -47,9 +47,7 @@
 ;     blk2 If Var(4) ? blk3 : blk4
 ;     blk3 TailCall fn_clause_0#13(Var(1))
 ;              callee_key=[0]
-;     blk4 TailCall fn_clause_1#15(Var(0), Var(1))
-;              callee_key=[100000, 0]
-;     blk5 TailCall ?fn14#14(Var(0), Var(1))
+;     blk4 TailCall fn_clause_1#14(Var(0), Var(1))
 ;              callee_key=[100000, 0]
 
 ; spec count(2) #fn=11
@@ -67,9 +65,7 @@
 ;     blk2 If Var(4) ? blk3 : blk4
 ;     blk3 TailCall fn_clause_0#13(Var(1))
 ;              callee_key=[int]
-;     blk4 TailCall fn_clause_1#15(Var(0), Var(1))
-;              callee_key=[int, int]
-;     blk5 TailCall ?fn14#14(Var(0), Var(1))
+;     blk4 TailCall fn_clause_1#14(Var(0), Var(1))
 ;              callee_key=[int, int]
 
 ; spec main(0) #fn=12
@@ -82,7 +78,7 @@
 ;   exits:
 ;     blk0 Call count#11(Var(1), Var(2))
 ;              callee_key=[100000, 0]
-;              cont k_16#16 captured=[]
+;              cont k_15#15 captured=[]
 ;              cont_key=[int]
 ;     blk1 Halt Var(0)      :: :match_error
 
@@ -102,7 +98,7 @@
 ;   exits:
 ;     blk0 Return Var(0)    :: int
 
-; spec fn_clause_1(2) #fn=15
+; spec fn_clause_1(2) #fn=14
 ;   key:    [100000, 0]
 ;   return: int
 ;   vars:
@@ -116,7 +112,7 @@
 ;     blk0 TailCall count#11(Var(3), Var(5))
 ;              callee_key=[int, int]
 
-; spec fn_clause_1(2) #fn=15
+; spec fn_clause_1(2) #fn=14
 ;   key:    [int \ {0}, int]
 ;   return: int
 ;   vars:
@@ -130,7 +126,7 @@
 ;     blk0 TailCall count#11(Var(3), Var(5))
 ;              callee_key=[int, int]
 
-; spec k_16(1) #fn=16
+; spec k_15(1) #fn=15
 ;   key:    [int]
 ;   return: nil
 ;   vars:

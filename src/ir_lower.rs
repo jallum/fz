@@ -1051,6 +1051,34 @@ fn lower_pattern_matrix(
         }
         return Ok(());
     }
+    // fz-ul4.45 — first-match-wins short-circuit. If the first row is
+    // fully wildlike (Wildcard/Var/As across all subjects), it catches
+    // every input; later rows are unreachable and must NOT generate
+    // additional body_cb invocations (which would mint duplicate cont
+    // fns for the same body_id, orphaning the first cont's fn id
+    // referenced in already-emitted dispatch IR).
+    if matrix
+        .rows
+        .first()
+        .map(|r| r.patterns.iter().all(|p| is_wildlike_pat(&p.node)))
+        .unwrap_or(false)
+        && matrix
+            .rows
+            .first()
+            .is_some_and(|r| r.guard.is_none() && r.preconditions.is_empty())
+    {
+        let row = matrix.rows.into_iter().next().unwrap();
+        let bindings = collect_row_bindings(&row.patterns, &matrix.subjects);
+        body_cb(
+            ctx,
+            row.body_id,
+            bindings,
+            row.preconditions,
+            row.guard,
+            fail_block,
+        )?;
+        return Ok(());
+    }
     let col = pick_specialization_column(&matrix);
     if col.is_none() {
         let mut rows = matrix.rows;
@@ -1278,6 +1306,9 @@ fn lower_matrix_tuple_arity(
             dr.patterns.splice(col..=col, wilds);
             sub_rows.push(dr);
         }
+        // fz-ul4.45 — preserve source order across matching+default rows so
+        // first-match-wins semantics hold. body_id is monotonic with source.
+        sub_rows.sort_by_key(|r| r.body_id);
         lower_pattern_matrix(
             ctx,
             Matrix {
@@ -1383,6 +1414,7 @@ fn lower_matrix_list_cons(
             dr.patterns.remove(col);
             sub_rows.push(dr);
         }
+        sub_rows.sort_by_key(|r| r.body_id);
         lower_pattern_matrix(
             ctx,
             Matrix {
@@ -1512,6 +1544,7 @@ fn lower_matrix_atom_literal(
             dr.patterns.remove(col);
             sub_rows.push(dr);
         }
+        sub_rows.sort_by_key(|r| r.body_id);
         lower_pattern_matrix(
             ctx,
             Matrix {

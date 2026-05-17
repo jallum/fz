@@ -62,30 +62,30 @@
 ;   exits:
 ;     blk0 Call self#5()
 ;              callee_key=[]
-;              cont k_20#20 captured=[]
+;              cont k_19#19 captured=[]
 ;              cont_key=[pid]
 ;     blk1 Halt Var(0)      :: :match_error
 
-; spec k_20(1) #fn=20
+; spec k_19(1) #fn=19
 ;   key:    [pid]
 ;   return: none
 ;   vars:
 ;     Var(0) :: pid
 ;     Var(1) :: :match_error
-;     Var(2) :: &fn21[pid]:() -> any
-;     Var(3) :: &fn18[&fn21[pid]:() -> any]:() -> any
+;     Var(2) :: &fn20[pid]:() -> any
+;     Var(3) :: &fn17[&fn20[pid]:() -> any]:() -> any
 ;     Var(4) :: any
 ;     Var(5) :: :match_error
 ;     Var(6) :: 0
 ;   exits:
 ;     blk0 Call send#6(Var(4), Var(6))
 ;              callee_key=[any, 0]
-;              cont k_22#22 captured=[Var(0), Var(4)]
+;              cont k_21#21 captured=[Var(0), Var(4)]
 ;              cont_key=[any, pid, any]
 ;     blk1 Halt Var(1)      :: :match_error
 ;     blk2 Halt Var(5)      :: :match_error
 
-; spec k_22(3) #fn=22
+; spec k_21(3) #fn=21
 ;   key:    [any, pid, any]
 ;   return: none
 ;   vars:
@@ -93,10 +93,10 @@
 ;     Var(1) :: pid
 ;     Var(2) :: any
 ;   exits:
-;     blk0 Receive cont k_receive_23#23 captured=[Var(1), Var(2)]
+;     blk0 Receive cont k_receive_22#22 captured=[Var(1), Var(2)]
 ;              cont_key=[any, pid, any]
 
-; spec k_receive_23(3) #fn=23
+; spec k_receive_22(3) #fn=22
 ;   key:    [any, pid, any]
 ;   return: none
 ;   vars:

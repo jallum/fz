@@ -111,8 +111,8 @@ block4:
     return_call fn0(v7, v9, v2)
 }
 
-; fn k_16_s15
-    ;   @spec   k_16(int) -> nil
+; fn k_15
+    ;   @spec   k_15(int) -> nil
     ;   @key    [int]
     ;   @abi    (RawInt) -> Tagged
 function u0:0(i64, i64) -> i64 tail {

@@ -336,6 +336,8 @@ fn specialize_tuple_arity(m: Matrix, col: usize, subject: Var) -> Decision {
             dr.patterns.splice(col..=col, wilds);
             all_rows.push(dr);
         }
+        // fz-ul4.45 — first-match-wins source order preservation.
+        all_rows.sort_by_key(|r| r.body_id);
         // New subjects: same as before with `col` expanded by `arity` slots.
         let mut new_subjects = m.subjects.clone();
         let placeholders: Vec<Var> = (0..arity)
@@ -445,6 +447,7 @@ fn specialize_listcons(m: Matrix, col: usize, subject: Var) -> Decision {
         for d in &default_rows {
             rows.push(d.clone());
         }
+        rows.sort_by_key(|r| r.body_id);
         // For Cons subtrees we KEEP the column — caller's lowerer projects
         // head/tail. For Nil we removed it above.
         let new_subjects = if matches!(key, SwitchKey::Nil) {
@@ -545,6 +548,7 @@ where
             dr.patterns.remove(col);
             rows.push(dr);
         }
+        rows.sort_by_key(|r| r.body_id);
         let mut new_subjects = m.subjects.clone();
         new_subjects.remove(col);
         cases.push((
@@ -596,6 +600,61 @@ fn peel_to_inner_with_bind(pat: &Spanned<Pattern>, _subject: Var) -> (bool, Span
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// fz-ul4.45 — Exhaustiveness + unreachability analysis
+// ---------------------------------------------------------------------------
+
+/// Body ids that no path through the decision tree reaches. A row whose
+/// body_id is in this set is unreachable — earlier rows fully cover its
+/// matching space, OR its pattern conflicts with an earlier specialization.
+pub fn find_unreachable_rows(matrix: &Matrix) -> Vec<BodyId> {
+    let row_bodies: std::collections::BTreeSet<BodyId> =
+        matrix.rows.iter().map(|r| r.body_id).collect();
+    let decision = compile(matrix.clone());
+    let mut reached = std::collections::BTreeSet::new();
+    collect_reachable_bodies(&decision, &mut reached);
+    row_bodies.difference(&reached).copied().collect()
+}
+
+/// True if any path through the decision tree leads to Fail — i.e., the
+/// matrix doesn't cover all possible subject values. Lowerers like
+/// lower_case translate this to a runtime `:case_clause` halt; the warning
+/// surfaces the gap at compile time.
+pub fn is_inexhaustive(matrix: &Matrix) -> bool {
+    let decision = compile(matrix.clone());
+    has_reachable_fail(&decision)
+}
+
+fn collect_reachable_bodies(d: &Decision, out: &mut std::collections::BTreeSet<BodyId>) {
+    match d {
+        Decision::Fail => {}
+        Decision::Leaf { body_id, .. } => {
+            out.insert(*body_id);
+        }
+        Decision::Switch { cases, default, .. } => {
+            for (_, sub) in cases {
+                collect_reachable_bodies(sub, out);
+            }
+            collect_reachable_bodies(default, out);
+        }
+        Decision::PerRow { row, on_fail, .. } => {
+            out.insert(row.body_id);
+            collect_reachable_bodies(on_fail, out);
+        }
+    }
+}
+
+fn has_reachable_fail(d: &Decision) -> bool {
+    match d {
+        Decision::Fail => true,
+        Decision::Leaf { .. } => false,
+        Decision::Switch { cases, default, .. } => {
+            cases.iter().any(|(_, sub)| has_reachable_fail(sub)) || has_reachable_fail(default)
+        }
+        Decision::PerRow { on_fail, .. } => has_reachable_fail(on_fail),
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -768,5 +827,71 @@ mod tests {
             } => {}
             other => panic!("expected guarded leaf, got {:?}", other),
         }
+    }
+
+    // ── fz-ul4.45 — exhaustiveness + unreachability ─────────────────────
+
+    #[test]
+    fn unreachable_row_after_wildcard_detected() {
+        // Row 0 wildcard catches everything; row 1 unreachable.
+        let m = Matrix {
+            subjects: vec![Var(0)],
+            rows: vec![
+                row(vec![Pattern::Wildcard], 0),
+                row(vec![Pattern::Int(42)], 1),
+            ],
+        };
+        let dead = find_unreachable_rows(&m);
+        assert_eq!(dead, vec![1]);
+    }
+
+    #[test]
+    fn unreachable_row_after_full_atom_cover() {
+        // Two atoms exhaust... no, atom space is infinite via wildcard.
+        // Just check: row 0 matches :a, row 1 is :a too (unreachable).
+        let m = Matrix {
+            subjects: vec![Var(0)],
+            rows: vec![
+                row(vec![Pattern::Atom("a".to_string())], 0),
+                row(vec![Pattern::Atom("a".to_string())], 1),
+            ],
+        };
+        let dead = find_unreachable_rows(&m);
+        assert_eq!(dead, vec![1]);
+    }
+
+    #[test]
+    fn all_reachable_rows_no_warnings() {
+        let m = Matrix {
+            subjects: vec![Var(0)],
+            rows: vec![
+                row(vec![Pattern::Int(0)], 0),
+                row(vec![Pattern::Int(1)], 1),
+                row(vec![Pattern::Wildcard], 2),
+            ],
+        };
+        assert!(find_unreachable_rows(&m).is_empty());
+    }
+
+    #[test]
+    fn inexhaustive_no_wildcard_flagged() {
+        // Two specific ints, no wildcard → default reaches Fail.
+        let m = Matrix {
+            subjects: vec![Var(0)],
+            rows: vec![row(vec![Pattern::Int(0)], 0), row(vec![Pattern::Int(1)], 1)],
+        };
+        assert!(is_inexhaustive(&m));
+    }
+
+    #[test]
+    fn exhaustive_with_wildcard_not_flagged() {
+        let m = Matrix {
+            subjects: vec![Var(0)],
+            rows: vec![
+                row(vec![Pattern::Int(0)], 0),
+                row(vec![Pattern::Wildcard], 1),
+            ],
+        };
+        assert!(!is_inexhaustive(&m));
     }
 }

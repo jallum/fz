@@ -1,0 +1,16 @@
+fn catch(_), do: :anything
+fn catch(0), do: :zero
+
+fn cmatch(v) do
+  case v do
+    _ -> :anything
+    0 -> :zero
+  end
+end
+
+fn main() do
+  print(catch(0))
+  print(catch(7))
+  print(cmatch(0))
+  print(cmatch(99))
+end

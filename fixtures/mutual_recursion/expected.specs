@@ -96,9 +96,7 @@
 ;     blk2 If Var(3) ? blk3 : blk4
 ;     blk3 TailCall fn_clause_0#14()
 ;              callee_key=[]
-;     blk4 TailCall fn_clause_1#16(Var(0))
-;              callee_key=[0]
-;     blk5 TailCall ?fn15#15(Var(0))
+;     blk4 TailCall fn_clause_1#15(Var(0))
 ;              callee_key=[0]
 
 ; spec is_even(1) #fn=11
@@ -115,9 +113,7 @@
 ;     blk2 If Var(3) ? blk3 : blk4
 ;     blk3 TailCall fn_clause_0#14()
 ;              callee_key=[]
-;     blk4 TailCall fn_clause_1#16(Var(0))
-;              callee_key=[10]
-;     blk5 TailCall ?fn15#15(Var(0))
+;     blk4 TailCall fn_clause_1#15(Var(0))
 ;              callee_key=[10]
 
 ; spec is_even(1) #fn=11
@@ -134,9 +130,7 @@
 ;     blk2 If Var(3) ? blk3 : blk4
 ;     blk3 TailCall fn_clause_0#14()
 ;              callee_key=[]
-;     blk4 TailCall fn_clause_1#16(Var(0))
-;              callee_key=[int | float]
-;     blk5 TailCall ?fn15#15(Var(0))
+;     blk4 TailCall fn_clause_1#15(Var(0))
 ;              callee_key=[int | float]
 
 ; spec is_even(1) #fn=11
@@ -153,9 +147,7 @@
 ;     blk2 If Var(3) ? blk3 : blk4
 ;     blk3 TailCall fn_clause_0#14()
 ;              callee_key=[]
-;     blk4 TailCall fn_clause_1#16(Var(0))
-;              callee_key=[int]
-;     blk5 TailCall ?fn15#15(Var(0))
+;     blk4 TailCall fn_clause_1#15(Var(0))
 ;              callee_key=[int]
 
 ; spec is_odd(1) #fn=12
@@ -170,11 +162,9 @@
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(1)      :: :function_clause
 ;     blk2 If Var(3) ? blk3 : blk4
-;     blk3 TailCall fn_clause_0#17()
+;     blk3 TailCall fn_clause_0#16()
 ;              callee_key=[]
-;     blk4 TailCall fn_clause_1#19(Var(0))
-;              callee_key=[1]
-;     blk5 TailCall ?fn18#18(Var(0))
+;     blk4 TailCall fn_clause_1#17(Var(0))
 ;              callee_key=[1]
 
 ; spec is_odd(1) #fn=12
@@ -189,11 +179,9 @@
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(1)      :: :function_clause
 ;     blk2 If Var(3) ? blk3 : blk4
-;     blk3 TailCall fn_clause_0#17()
+;     blk3 TailCall fn_clause_0#16()
 ;              callee_key=[]
-;     blk4 TailCall fn_clause_1#19(Var(0))
-;              callee_key=[7]
-;     blk5 TailCall ?fn18#18(Var(0))
+;     blk4 TailCall fn_clause_1#17(Var(0))
 ;              callee_key=[7]
 
 ; spec is_odd(1) #fn=12
@@ -208,11 +196,9 @@
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(1)      :: :function_clause
 ;     blk2 If Var(3) ? blk3 : blk4
-;     blk3 TailCall fn_clause_0#17()
+;     blk3 TailCall fn_clause_0#16()
 ;              callee_key=[]
-;     blk4 TailCall fn_clause_1#19(Var(0))
-;              callee_key=[int | float]
-;     blk5 TailCall ?fn18#18(Var(0))
+;     blk4 TailCall fn_clause_1#17(Var(0))
 ;              callee_key=[int | float]
 
 ; spec is_odd(1) #fn=12
@@ -227,11 +213,9 @@
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(1)      :: :function_clause
 ;     blk2 If Var(3) ? blk3 : blk4
-;     blk3 TailCall fn_clause_0#17()
+;     blk3 TailCall fn_clause_0#16()
 ;              callee_key=[]
-;     blk4 TailCall fn_clause_1#19(Var(0))
-;              callee_key=[int]
-;     blk5 TailCall ?fn18#18(Var(0))
+;     blk4 TailCall fn_clause_1#17(Var(0))
 ;              callee_key=[int]
 
 ; spec main(0) #fn=13
@@ -243,7 +227,7 @@
 ;   exits:
 ;     blk0 Call is_even#11(Var(1))
 ;              callee_key=[10]
-;              cont k_20#20 captured=[]
+;              cont k_18#18 captured=[]
 ;              cont_key=[:false]
 ;     blk1 Halt Var(0)      :: :match_error
 
@@ -255,7 +239,7 @@
 ;   exits:
 ;     blk0 Return Var(0)    :: :true
 
-; spec fn_clause_1(1) #fn=16
+; spec fn_clause_1(1) #fn=15
 ;   key:    [10]
 ;   return: :false
 ;   vars:
@@ -266,7 +250,7 @@
 ;     blk0 TailCall is_odd#12(Var(2))
 ;              callee_key=[int]
 
-; spec fn_clause_1(1) #fn=16
+; spec fn_clause_1(1) #fn=15
 ;   key:    [any]
 ;   return: :false
 ;   vars:
@@ -277,7 +261,7 @@
 ;     blk0 TailCall is_odd#12(Var(2))
 ;              callee_key=[int | float]
 
-; spec fn_clause_1(1) #fn=16
+; spec fn_clause_1(1) #fn=15
 ;   key:    [int \ {0} | float]
 ;   return: :false
 ;   vars:
@@ -288,7 +272,7 @@
 ;     blk0 TailCall is_odd#12(Var(2))
 ;              callee_key=[int | float]
 
-; spec fn_clause_1(1) #fn=16
+; spec fn_clause_1(1) #fn=15
 ;   key:    [int \ {0}]
 ;   return: :false
 ;   vars:
@@ -299,7 +283,7 @@
 ;     blk0 TailCall is_odd#12(Var(2))
 ;              callee_key=[int]
 
-; spec fn_clause_1(1) #fn=16
+; spec fn_clause_1(1) #fn=15
 ;   key:    [int]
 ;   return: :false
 ;   vars:
@@ -310,7 +294,7 @@
 ;     blk0 TailCall is_odd#12(Var(2))
 ;              callee_key=[int]
 
-; spec fn_clause_0(0) #fn=17
+; spec fn_clause_0(0) #fn=16
 ;   key:    []
 ;   return: :false
 ;   vars:
@@ -318,7 +302,7 @@
 ;   exits:
 ;     blk0 Return Var(0)    :: :false
 
-; spec fn_clause_1(1) #fn=19
+; spec fn_clause_1(1) #fn=17
 ;   key:    [1]
 ;   return: :false | :true
 ;   vars:
@@ -329,7 +313,7 @@
 ;     blk0 TailCall is_even#11(Var(2))
 ;              callee_key=[int]
 
-; spec fn_clause_1(1) #fn=19
+; spec fn_clause_1(1) #fn=17
 ;   key:    [7]
 ;   return: :false | :true
 ;   vars:
@@ -340,7 +324,7 @@
 ;     blk0 TailCall is_even#11(Var(2))
 ;              callee_key=[int]
 
-; spec fn_clause_1(1) #fn=19
+; spec fn_clause_1(1) #fn=17
 ;   key:    [int \ {0} | float]
 ;   return: :true
 ;   vars:
@@ -351,7 +335,7 @@
 ;     blk0 TailCall is_even#11(Var(2))
 ;              callee_key=[int | float]
 
-; spec fn_clause_1(1) #fn=19
+; spec fn_clause_1(1) #fn=17
 ;   key:    [int \ {0}]
 ;   return: :false | :true
 ;   vars:
@@ -362,7 +346,7 @@
 ;     blk0 TailCall is_even#11(Var(2))
 ;              callee_key=[int]
 
-; spec k_20(1) #fn=20
+; spec k_18(1) #fn=18
 ;   key:    [:false]
 ;   return: nil
 ;   vars:
@@ -370,10 +354,10 @@
 ;   exits:
 ;     blk0 Call print#0(Var(0))
 ;              callee_key=[:false]
-;              cont k_21#21 captured=[]
+;              cont k_19#19 captured=[]
 ;              cont_key=[nil]
 
-; spec k_21(1) #fn=21
+; spec k_19(1) #fn=19
 ;   key:    [nil]
 ;   return: nil
 ;   vars:
@@ -382,10 +366,10 @@
 ;   exits:
 ;     blk0 Call is_odd#12(Var(1))
 ;              callee_key=[7]
-;              cont k_22#22 captured=[]
+;              cont k_20#20 captured=[]
 ;              cont_key=[:false | :true]
 
-; spec k_22(1) #fn=22
+; spec k_20(1) #fn=20
 ;   key:    [:false | :true]
 ;   return: nil
 ;   vars:
@@ -393,10 +377,10 @@
 ;   exits:
 ;     blk0 Call print#0(Var(0))
 ;              callee_key=[:false | :true]
-;              cont k_23#23 captured=[]
+;              cont k_21#21 captured=[]
 ;              cont_key=[nil]
 
-; spec k_23(1) #fn=23
+; spec k_21(1) #fn=21
 ;   key:    [nil]
 ;   return: nil
 ;   vars:
@@ -405,10 +389,10 @@
 ;   exits:
 ;     blk0 Call is_even#11(Var(1))
 ;              callee_key=[0]
-;              cont k_24#24 captured=[]
+;              cont k_22#22 captured=[]
 ;              cont_key=[:true]
 
-; spec k_24(1) #fn=24
+; spec k_22(1) #fn=22
 ;   key:    [:true]
 ;   return: nil
 ;   vars:
@@ -416,10 +400,10 @@
 ;   exits:
 ;     blk0 Call print#0(Var(0))
 ;              callee_key=[:true]
-;              cont k_25#25 captured=[]
+;              cont k_23#23 captured=[]
 ;              cont_key=[nil]
 
-; spec k_25(1) #fn=25
+; spec k_23(1) #fn=23
 ;   key:    [nil]
 ;   return: nil
 ;   vars:
@@ -428,10 +412,10 @@
 ;   exits:
 ;     blk0 Call is_odd#12(Var(1))
 ;              callee_key=[1]
-;              cont k_26#26 captured=[]
+;              cont k_24#24 captured=[]
 ;              cont_key=[:false | :true]
 
-; spec k_26(1) #fn=26
+; spec k_24(1) #fn=24
 ;   key:    [:false | :true]
 ;   return: nil
 ;   vars:

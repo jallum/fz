@@ -237,8 +237,8 @@ block4:
     return_call fn0(v7, v1)
 }
 
-; fn k_20_s22
-    ;   @spec   k_20(:false | :true) -> nil
+; fn k_18_s22
+    ;   @spec   k_18(:false | :true) -> nil
     ;   @key    [:false | :true]
     ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
@@ -265,8 +265,8 @@ function u0:0(i64, i64) -> i64 tail {
     return_call fn1(v2, v6)             ; @7:3  v2 = 7
 }
 
-; fn k_22_s23
-    ;   @spec   k_22(:false | :true) -> nil
+; fn k_20_s23
+    ;   @spec   k_20(:false | :true) -> nil
     ;   @key    [:false | :true]
     ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
@@ -293,8 +293,8 @@ function u0:0(i64, i64) -> i64 tail {
     return_call fn1(v2, v6)             ; @8:3  v2 = 0
 }
 
-; fn k_24
-    ;   @spec   k_24(:true) -> nil
+; fn k_22_s24
+    ;   @spec   k_22(:true) -> nil
     ;   @key    [:true]
     ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
@@ -321,8 +321,8 @@ function u0:0(i64, i64) -> i64 tail {
     return_call fn1(v2, v6)             ; @9:3  v2 = 1
 }
 
-; fn k_26_s25
-    ;   @spec   k_26(:false | :true) -> nil
+; fn k_24_s25
+    ;   @spec   k_24(:false | :true) -> nil
     ;   @key    [:false | :true]
     ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
