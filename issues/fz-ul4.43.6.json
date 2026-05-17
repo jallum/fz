@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-17T12:07:53Z",
+  "description": "# Heuristic-and-emission flip; pure CLIF improvement\n\n## What changes\n\nIn `lower_pattern_matrix`'s Decision::Switch handler:\n- if cases.len() \u003e= 3 AND keys are same kind AND key spread \u003c= 64,\n  emit `Term::Switch` directly\n- else emit chained `Prim::TypeTest + Term::If` (today's behavior).\n\nThat's it. The IR primitive landed in .E.1 with full test coverage.\n\n## What stays\n\n- The chained fallback (correct for sparse / small-N cases).\n- All matrix logic from .D.\n\n## What's removed\n\n- Chained `If(BinOp::Eq, ...)` for dense atom/int dispatch — replaced\n  by single `Term::Switch`.\n\n## Acceptance\n\n- Any fixture with ≥3-way atom or int dispatch: golden re-blessed,\n  strictly smaller (single Switch vs chained Ifs).\n- ast_eval has only 2-arity-groups so doesn't trigger this — but a\n  multi-clause fn with 3+ same-arity clauses (or 3+ atom-dispatching\n  case clauses) does.\n- New fixture (or extend existing) covering ≥3-way atom dispatch to\n  exercise the Switch emission path.\n- All other fixtures unchanged.\n- Three-path parity.\n\n## Risk\n\nThreshold tuning. Pick N=3, spread≤64 as starting point; revisit only\nif a real fixture shows degradation (unlikely — br_table on 3-4 keys is\nalready cheaper than 3-4 sequential compare-and-branch).\n\n## Why after D\n\nD establishes the matrix; E.2 is a peephole on top of it. Separating\nkeeps each ticket reviewable.",
+  "id": "fz-ul4.43.6",
+  "labels": [],
+  "parent": "fz-ul4.43",
+  "priority": 1,
+  "status": "open",
+  "title": "fz-ul4.43.E.2: matrix emits Term::Switch when dense",
+  "type": "task",
+  "updated_at": "2026-05-17T12:07:53Z"
+}
