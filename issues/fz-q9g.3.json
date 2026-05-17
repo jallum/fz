@@ -16,7 +16,7 @@
   "parent": "fz-q9g",
   "priority": 1,
   "status": "open",
-  "title": "fz-dps.C2: lower Term::Return under Dst ABI",
+  "title": "fz-dps.CD: wire ABI (Return/Call/TailCall) + MakeList DPS via TRMC",
   "type": "task",
-  "updated_at": "2026-05-17T16:03:04Z"
+  "updated_at": "2026-05-17T16:26:14Z"
 }
