@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-05-17T16:05:16Z",
@@ -8,8 +8,8 @@
   "labels": [],
   "parent": "fz-aiz",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "fz-aiz.0: fixture ast_eval_env (let-bound AST evaluator)",
   "type": "task",
-  "updated_at": "2026-05-17T16:05:16Z"
+  "updated_at": "2026-05-17T16:05:51Z"
 }
