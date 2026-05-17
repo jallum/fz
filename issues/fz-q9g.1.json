@@ -6,14 +6,15 @@
   "blocks": [
     "fz-q9g.2"
   ],
+  "closed_at": "2026-05-17T10:22:23Z",
   "created": "2026-05-17T04:46:30Z",
   "description": "Pure data extension. No behavior change.\n\nWhat: Add dst: Option\u003cDstSig\u003e to fz_ir::Cont. Define DstSig { kind: HeapKind, schema_id: Option\u003cu32\u003e }. Add ArgRepr::Dst(HeapKind) variant in ir_codegen. Wire defaults to None / never-emitted.\n\nWhy: Foundation. Every downstream ticket consumes one of these fields.\n\nCLIF impact: unchanged.\n\nRemoves: nothing.\n\nTests: existing IR + codegen + interp tests pass; one new test asserts default Cont construction yields dst=None.",
   "id": "fz-q9g.1",
   "labels": [],
   "parent": "fz-q9g",
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "fz-dps.A: Cont gains optional dst; ArgRepr gains Dst",
   "type": "task",
-  "updated_at": "2026-05-17T04:47:59Z"
+  "updated_at": "2026-05-17T10:22:23Z"
 }
