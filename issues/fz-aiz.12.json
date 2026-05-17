@@ -11,9 +11,15 @@
   "id": "fz-aiz.12",
   "labels": [],
   "parent": "fz-aiz",
+  "comments": [
+    {
+      "text": "Audit complete after 3c:\n- Dispatch-path resolves (emit_terminator x2, MakeClosure lower_prim): migrated.\n- .29.11 / .29.12.1 panics: gone (became .expect() against the annotation invariant).\n- or_else iter-find at MakeClosure lower_prim: gone.\n\nSurviving patterns (intentional — still in use):\n- closure_shapes builder (line 2275): walks module.fns to seed\n  static_closure_targets BEFORE the per-spec compile loop, so annotations\n  aren't available yet. Still uses resolve+or_else.\n- tagged_return_fns / tagged_return_specs / tagged_slot0_cont_specs:\n  analysis-only paths feeding the schema/ABI slot-0 decision; correct with\n  per-spec FnTypes and don't drive dispatch.\n- resolve_tcc_body and its 3 call sites: still used outside emit_terminator.\n- .29.12.2 panic at closure_shapes builder: live because the builder isn't\n  annotation-driven yet.\n\nSubsuming the closure_shapes migration into 3e — it has to happen before\nensure_any_keys can land, because otherwise the closure_shapes builder will\nexact-match the new any-keys for direct-only fns (the original\napply2-breaking conflation).",
+      "timestamp": "2026-05-17T18:03:25Z"
+    }
+  ],
   "priority": 1,
   "status": "in_progress",
   "title": "fz-aiz.3d: delete dangling patterns",
   "type": "task",
-  "updated_at": "2026-05-17T18:01:16Z"
+  "updated_at": "2026-05-17T18:03:25Z"
 }
