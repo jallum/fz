@@ -4,14 +4,15 @@
   "blocks": [
     "fz-i82.2"
   ],
+  "closed_at": "2026-05-17T11:01:23Z",
   "created": "2026-05-17T10:58:27Z",
   "description": "TDD lock for the fz-i82 arc. Adds a single fixture that exercises\nthe three failing cases from fz-i82 (forward, reversed, `with` form)\nalong the only path that's currently correct (interp).\n\nSubsequent fz-i82.2 lands the codegen fix AND promotes this fixture\nto jit + aot.\n\n## Scope\n\nAdd `fixtures/case_tuple_pattern_sequential/`:\n\n- `input.fz` — one module with two helpers:\n  - `f(v)` using `case` with `{:ok, x}` arm + `:err` literal arm\n  - `g(v)` using `with {:ok, x} \u003c- v` + `else :err -\u003e 0`\n  - `main()` calls both, both orders:\n      ```\n      print(f({:ok, 7}))   # 7\n      print(f(:err))       # 0\n      print(f(:err))       # 0\n      print(f({:ok, 7}))   # 7\n      print(g({:ok, 7}))   # 7\n      print(g(:err))       # 0\n      ```\n- `expected.txt` — `7\\n0\\n0\\n7\\n7\\n0\\n`\n- Frontmatter: `paths: [interp]` (jit and aot blocked by fz-i82.2).\n- README explaining the deferred jit/aot coverage.\n\nNO golden CLIF / specs at this stage — codegen behavior is wrong on\nthis fixture; locking it in now would just rebless on fz-i82.2.\n\n## Acceptance\n\n- `cargo test fixture_matrix` includes the new trial for the interp\n  path and it passes.\n- Other paths are visibly absent from the trial enumeration (not\n  failing — not enumerated).\n\n## Out of scope\n\n- Codegen fix (fz-i82.2).\n- jit/aot enablement (fz-i82.2).",
   "id": "fz-i82.1",
   "labels": [],
   "parent": "fz-i82",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "fz-i82.1: regression fixture — sequential tuple-pattern dispatch (interp-only)",
   "type": "task",
-  "updated_at": "2026-05-17T10:59:46Z"
+  "updated_at": "2026-05-17T11:01:23Z"
 }
