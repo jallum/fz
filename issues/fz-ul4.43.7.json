@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-ul4.43.5"
+  ],
   "blocks": [],
   "created": "2026-05-17T12:07:59Z",
   "description": "# Same play as .43.D, applied to lower_case\n\n## What changes\n\n`lower_case` (src/ir_lower.rs ~2252):\n- builds `Matrix { subjects: vec![subj_v], rows: clauses }` (1-column)\n- calls `lower_pattern_matrix` with body lowering callback\n- removes per-clause `try_blocks` cascade\n\nTests of guard handling, cont_fn body lift, etc. inherit from .D's\ninfrastructure.\n\n## What stays\n\n- The case body's cont_fn lift behavior (from fz-duq.3).\n- The `fail_block` semantics.\n\n## What's removed\n\n- Per-clause cascade in lower_case.\n- The duplication of cascade logic between lower_multi_clause (already\n  gone post-.D) and lower_case.\n\n## Acceptance\n\n- All case-using fixtures: golden byte-identical OR strictly smaller.\n- Three-path parity.\n- Existing lower_case unit tests pass unchanged.\n\n## Risk\n\nlower_case has been the trickiest call site historically (cont_fn lift\nwork). The matrix integration is mechanical at this point — same\ncallback pattern as .D.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "fz-ul4.43.F: wire lower_case onto matrix",
   "type": "task",
-  "updated_at": "2026-05-17T12:07:59Z"
+  "updated_at": "2026-05-17T12:08:35Z"
 }
