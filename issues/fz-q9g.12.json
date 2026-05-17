@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-17T04:47:20Z",
+  "description": "What: Grep all HeapKind::Float allocation sites. RawF64 in FieldKind already handles typed paths. If all remaining sites are polymorphic-edge re-boxes, delete the rest. If HeapKind::Float becomes unreachable, delete the variant.\n\nWhy: Confirm typed paths skip boxing; remove duplication if any exists.\n\nCLIF impact: removes one alloc_float per typed-float return site, if any remain.\n\nRemoves: up to one HeapKind variant + its allocator (audit-gated).\n\nTests: audit notes attached to ticket; deletions covered by existing float tests.",
+  "id": "fz-q9g.12",
+  "labels": [],
+  "parent": "fz-q9g",
+  "priority": 3,
+  "status": "open",
+  "title": "fz-dps.E1: audit + delete dead HeapKind::Float alloc sites",
+  "type": "task",
+  "updated_at": "2026-05-17T04:47:20Z"
+}
