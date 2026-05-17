@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-ul4.43.5"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-ul4.43.9"
+  ],
   "created": "2026-05-17T12:08:07Z",
   "description": "# Each \u003c- step's pattern part uses the matrix; sequential thread stays\n\n## What changes\n\n`lower_with` (src/ir_lower.rs ~2459):\n- the OUTER sequential thread (each `\u003c-` step) stays as-is — with is\n  not parallel matching\n- INSIDE each `\u003c-` step, the pattern-vs-value match becomes a 1-row\n  matrix (the success row) plus an explicit `else` clause row when the\n  with has an `else` block\n\nFor with's else-clause cascade (multiple else clauses, each matching\nthe unmatched value): build a multi-row matrix from the else clauses,\nsame as lower_case.\n\n## What stays\n\n- Sequential thread between `\u003c-` steps (unchanged).\n- `lower_with`'s `unmatched_v` plumbing for else clauses.\n- cont_fn lift from fz-duq.4.\n\n## What's removed\n\n- Per-clause cascade in lower_with's else-clause handling.\n\n## Acceptance\n\n- All with-using fixtures: byte-identical OR strictly smaller goldens.\n- Three-path parity.\n- Existing lower_with tests pass.\n\n## Risk\n\nlower_with's structure is the most complex of the three call sites.\nApproach: minimal change — only the else-clause cascade goes through\nthe matrix; the main `\u003c-` step keeps its current single-pattern\nlowering (still using lower_pattern_bind until .H replaces it).",
   "id": "fz-ul4.43.8",
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "fz-ul4.43.G: wire lower_with's pattern step onto matrix",
   "type": "task",
-  "updated_at": "2026-05-17T12:08:35Z"
+  "updated_at": "2026-05-17T12:08:36Z"
 }
