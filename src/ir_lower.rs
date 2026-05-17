@@ -1197,9 +1197,9 @@ fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -> Result<Va
         Expr::Lambda(params, body) => lower_lambda(ctx, params, body),
 
         Expr::Case(subject, clauses) => lower_case(ctx, subject, clauses, is_tail, sp),
-        Expr::Cond(arms) => lower_cond(ctx, arms, is_tail),
+        Expr::Cond(arms) => lower_cond(ctx, arms, is_tail, sp),
         Expr::With(bindings, body, else_clauses) => {
-            lower_with(ctx, bindings, body, else_clauses, is_tail)
+            lower_with(ctx, bindings, body, else_clauses, is_tail, sp)
         }
         Expr::Map(entries) => lower_map(ctx, entries),
         Expr::MapUpdate(base, entries) => lower_map_update(ctx, base, entries),
@@ -2190,9 +2190,17 @@ fn lower_cond(
     ctx: &mut LowerCtx,
     arms: &[(Spanned<Expr>, Spanned<Expr>)],
     is_tail: bool,
+    cond_span: Span,
 ) -> Result<Var, LowerError> {
-    // cond is right-associative: each arm is a fresh test/body; on test false,
-    // fall through to the next arm. If all fail, halt :cond_clause.
+    // fz-duq.4 — Per-arm continuation fns. Each arm fn evaluates its test
+    // and dispatches: true → lower body, finalize; false → TailCall the
+    // next arm fn (or the fail fn for the last arm). Because tests in
+    // cond can themselves contain calls (unlike `case` pattern bind),
+    // wrapping the entire arm in its own fn confines arm-internal
+    // CPS-splits — fixing the latent test-side analogue of fz-84m as well
+    // as the body side.
+    //
+    // The outer fn TailCalls the first arm. fail_cont halts `:cond_clause`.
     if arms.is_empty() {
         let cc = ctx.atoms.intern("cond_clause");
         let v = ctx.let_(Prim::Const(Const::Atom(cc)));
@@ -2201,43 +2209,72 @@ fn lower_cond(
         return Ok(Var(0));
     }
 
-    let join_param = ctx.cur_mut().fresh_var();
-    let join_b = ctx.cur_mut().block(vec![join_param]);
-    let arm_test_blocks: Vec<BlockId> = (0..arms.len())
-        .map(|_| ctx.cur_mut().block(vec![]))
+    let join_opt = if is_tail {
+        None
+    } else {
+        Some(mint_cont_fn(ctx, "cond_join", cond_span))
+    };
+
+    // Per-arm cont fns + fail cont.
+    let arm_conts: Vec<ContFn> = (0..arms.len())
+        .map(|i| mint_cont_fn(ctx, format!("cond_arm_{}", i), arms[i].0.span))
         .collect();
-    let fail_block = ctx.cur_mut().block(vec![]);
-    let saved_blk = ctx.cur_block();
-    ctx.cur_block = Some(fail_block);
+    let fail_cont = mint_cont_fn(ctx, "cond_fail", cond_span);
+
+    // Outer fn: TailCall first arm.
+    let captures = ctx.captured_snapshot();
+    let capture_vars: Vec<Var> = captures.iter().map(|(_, v)| *v).collect();
+    ctx.set_term(Term::TailCall {
+        callee: arm_conts[0].id,
+        args: capture_vars,
+        is_back_edge: false,
+    });
+
+    // Build each arm fn.
+    for (i, (test, body)) in arms.iter().enumerate() {
+        let next_id = arm_conts.get(i + 1).map(|c| c.id).unwrap_or(fail_cont.id);
+        let _ = switch_to_cont_fn(ctx, &arm_conts[i], 0);
+        let cv = lower_expr(ctx, test, false)?;
+
+        // body_b + fall_b in whatever fn ctx.cur is now (arm_conts[i] or
+        // a CPS-split descendant if the test contained a non-tail call).
+        let body_b = ctx.cur_mut().block(vec![]);
+        let fall_b = ctx.cur_mut().block(vec![]);
+        ctx.set_term(Term::If(cv, body_b, fall_b));
+
+        // fall_b: TailCall next arm (or fail). Captures are the current
+        // env, which includes the outer captures (rebound into the arm fn
+        // or its CPS-split descendant) plus any temps from test lowering.
+        let fall_captures = ctx.captured_snapshot();
+        let fall_capture_vars: Vec<Var> = fall_captures.iter().map(|(_, v)| *v).collect();
+        ctx.cur_block = Some(fall_b);
+        ctx.set_term(Term::TailCall {
+            callee: next_id,
+            args: fall_capture_vars,
+            is_back_edge: false,
+        });
+
+        // body_b: lower the body inline, finalize.
+        ctx.cur_block = Some(body_b);
+        ctx.terminated = false;
+        let result = lower_expr(ctx, body, /* is_tail */ true)?;
+        finalize_arm(ctx, result, join_opt.as_ref());
+    }
+
+    // Build fail_cont: halt :cond_clause.
+    let _ = switch_to_cont_fn(ctx, &fail_cont, 0);
     let cc = ctx.atoms.intern("cond_clause");
     let v = ctx.let_(Prim::Const(Const::Atom(cc)));
     ctx.set_term(Term::Halt(v));
-    ctx.cur_block = Some(saved_blk);
-    ctx.set_term(Term::Goto(arm_test_blocks[0], vec![]));
+    ctx.terminated = true;
 
-    let saved_env = ctx.env.clone();
-    let saved_order = ctx.env_order.clone();
-
-    for (i, (test, body)) in arms.iter().enumerate() {
-        let next = arm_test_blocks.get(i + 1).copied().unwrap_or(fail_block);
-        ctx.cur_block = Some(arm_test_blocks[i]);
-        ctx.env = saved_env.clone();
-        ctx.env_order = saved_order.clone();
-        ctx.terminated = false;
-        let cv = lower_expr(ctx, test, false)?;
-        let body_b = ctx.cur_mut().block(vec![]);
-        ctx.set_term(Term::If(cv, body_b, next));
-        ctx.cur_block = Some(body_b);
-        let result = lower_expr(ctx, body, is_tail)?;
-        if !ctx.terminated {
-            ctx.set_term(Term::Goto(join_b, vec![result]));
-        }
+    if let Some(join) = &join_opt {
+        let extras = switch_to_cont_fn(ctx, join, 1);
+        Ok(extras[0])
+    } else {
+        ctx.terminated = true;
+        Ok(Var(0))
     }
-
-    ctx.env = saved_env;
-    ctx.env_order = saved_order;
-    ctx.cur_block = Some(join_b);
-    Ok(join_param)
 }
 
 fn lower_with(
@@ -2246,70 +2283,40 @@ fn lower_with(
     body: &Spanned<Expr>,
     else_clauses: &[MatchClause],
     is_tail: bool,
+    with_span: Span,
 ) -> Result<Var, LowerError> {
-    // Plan: each binding in turn evaluates an expression. For Match(pat, expr):
-    //   evaluate expr; match pat against it; if mismatch, jump to a shared
-    //   "with_fail" join (carrying the unmatched value). If all match, evaluate
-    //   the body and goto join_b with its result. with_fail dispatches to
-    //   else_clauses (case-style on the unmatched value); if none match, halt
-    //   :with_clause.
-    let join_param = ctx.cur_mut().fresh_var();
-    let join_b = ctx.cur_mut().block(vec![join_param]);
+    // fz-duq.4 — `with` lowers into:
+    //   * Main path (in outer fn + CPS descendants): walk bindings.
+    //     Each Match binding emits a per-binding `mismatch_b` block whose
+    //     terminator TailCalls `with_fail_cont` (a continuation fn)
+    //     carrying the unmatched value plus the outer captures.
+    //   * `with_fail_cont` (cont fn): dispatches over else_clauses via
+    //     try_blocks + per-else-clause body cont fns. No else_clauses →
+    //     halt :with_clause.
+    //   * Main body: lowered inline at the end of the main path; on
+    //     fall-through (`!ctx.terminated`), finalize_arm emits either
+    //     Return (tail) or TailCall(with_join_cont, ...).
+    //
+    // The old design used a single `join_b` block + `with_fail` block in
+    // the outer fn; any CPS-split inside a binding/body/else-clause body
+    // stranded those blocks in a finalized fn. Continuation-fn shape
+    // makes the lowering robust to all CPS-split positions.
 
-    // with_fail receives the unmatched value as a block param, then dispatches.
-    let with_fail_param = ctx.cur_mut().fresh_var();
-    let with_fail = ctx.cur_mut().block(vec![with_fail_param]);
+    let join_opt = if is_tail {
+        None
+    } else {
+        Some(mint_cont_fn(ctx, "with_join", with_span))
+    };
+
+    // with_fail_cont: a continuation fn that receives (unmatched_value,
+    // ...outer_captures). Minted now so we know its FnId before walking
+    // bindings.
+    let with_fail_cont = mint_cont_fn(ctx, "with_fail", with_span);
 
     let saved_env = ctx.env.clone();
     let saved_order = ctx.env_order.clone();
 
-    // -- with_fail block: case-on the unmatched value.
-    {
-        let saved_blk = ctx.cur_block();
-        ctx.cur_block = Some(with_fail);
-        if else_clauses.is_empty() {
-            // No else: halt :with_clause (re-raise the unmatched value).
-            let cc = ctx.atoms.intern("with_clause");
-            let v = ctx.let_(Prim::Const(Const::Atom(cc)));
-            ctx.set_term(Term::Halt(v));
-        } else {
-            // Build try blocks + fail.
-            let try_blocks: Vec<BlockId> = (0..else_clauses.len())
-                .map(|_| ctx.cur_mut().block(vec![]))
-                .collect();
-            let else_fail = ctx.cur_mut().block(vec![]);
-            let saved_b2 = ctx.cur_block();
-            ctx.cur_block = Some(else_fail);
-            let cc = ctx.atoms.intern("with_clause");
-            let v = ctx.let_(Prim::Const(Const::Atom(cc)));
-            ctx.set_term(Term::Halt(v));
-            ctx.cur_block = Some(saved_b2);
-            ctx.set_term(Term::Goto(try_blocks[0], vec![]));
-            for (i, clause) in else_clauses.iter().enumerate() {
-                if let Some(_g) = &clause.guard {
-                    return Err(LowerError::Unsupported {
-                        span: clause.span,
-                        what: "with-else guard (deferred)".into(),
-                    });
-                }
-                let next = try_blocks.get(i + 1).copied().unwrap_or(else_fail);
-                ctx.cur_block = Some(try_blocks[i]);
-                ctx.env = saved_env.clone();
-                ctx.env_order = saved_order.clone();
-                ctx.terminated = false;
-                lower_pattern_bind(ctx, with_fail_param, &clause.pattern, next)?;
-                let result = lower_expr(ctx, &clause.body, is_tail)?;
-                if !ctx.terminated {
-                    ctx.set_term(Term::Goto(join_b, vec![result]));
-                }
-            }
-        }
-        ctx.cur_block = Some(saved_blk);
-        ctx.env = saved_env.clone();
-        ctx.env_order = saved_order.clone();
-    }
-
-    // -- main path: walk bindings.
+    // -- Main path: walk bindings.
     for binding in bindings {
         match binding {
             WithBinding::Bare(e) => {
@@ -2317,15 +2324,32 @@ fn lower_with(
             }
             WithBinding::Match(pat, e) => {
                 let v = lower_expr(ctx, e, false)?;
-                // Park v so that any CPS-split during pattern lowering rebinds it.
+                // Park v so any CPS-split during pattern lowering rebinds it.
                 let v_park = ctx.park(v);
-                // Custom mismatch path: build a per-binding "mismatch" block
-                // that gotos with_fail with the unmatched value.
+                // Per-binding mismatch block — TailCalls with_fail_cont
+                // with [unmatched, ...outer_captures]. Captures resolved
+                // by name (with_fail_cont's outer_captured) from current
+                // env, which may be a CPS-split descendant of outer.
                 let mismatch_b = ctx.cur_mut().block(vec![]);
                 let saved_blk = ctx.cur_block();
                 ctx.cur_block = Some(mismatch_b);
                 let v_in_mismatch = ctx.unpark(&v_park);
-                ctx.set_term(Term::Goto(with_fail, vec![v_in_mismatch]));
+                let mut args = Vec::with_capacity(1 + with_fail_cont.outer_captured.len());
+                args.push(v_in_mismatch);
+                for (name, _) in &with_fail_cont.outer_captured {
+                    let cv = ctx.env.get(name).copied().unwrap_or_else(|| {
+                        panic!(
+                            "lower_with: captured name `{}` not in env at mismatch",
+                            name
+                        )
+                    });
+                    args.push(cv);
+                }
+                ctx.set_term(Term::TailCall {
+                    callee: with_fail_cont.id,
+                    args,
+                    is_back_edge: false,
+                });
                 ctx.cur_block = Some(saved_blk);
                 let v_resolved = ctx.unpark(&v_park);
                 ctx.unbind(&v_park);
@@ -2334,15 +2358,78 @@ fn lower_with(
         }
     }
 
-    let result = lower_expr(ctx, body, is_tail)?;
-    if !ctx.terminated {
-        ctx.set_term(Term::Goto(join_b, vec![result]));
+    // Main body lowered inline. Finalize via join_opt or Return.
+    let result = lower_expr(ctx, body, /* is_tail */ true)?;
+    finalize_arm(ctx, result, join_opt.as_ref());
+
+    // -- Build with_fail_cont. Receives (unmatched_value, ...captures).
+    let extras = switch_to_cont_fn(ctx, &with_fail_cont, 1);
+    let unmatched_v = extras[0];
+
+    if else_clauses.is_empty() {
+        let cc = ctx.atoms.intern("with_clause");
+        let v = ctx.let_(Prim::Const(Const::Atom(cc)));
+        ctx.set_term(Term::Halt(v));
+        ctx.terminated = true;
+    } else {
+        // Inside with_fail_cont: try_blocks + else_fail block, intra-fn.
+        let try_blocks: Vec<BlockId> = (0..else_clauses.len())
+            .map(|_| ctx.cur_mut().block(vec![]))
+            .collect();
+        let else_fail = ctx.cur_mut().block(vec![]);
+        let saved_b = ctx.cur_block();
+        ctx.cur_block = Some(else_fail);
+        let cc = ctx.atoms.intern("with_clause");
+        let v = ctx.let_(Prim::Const(Const::Atom(cc)));
+        ctx.set_term(Term::Halt(v));
+        ctx.cur_block = Some(saved_b);
+        ctx.set_term(Term::Goto(try_blocks[0], vec![]));
+
+        let saved_env_2 = ctx.env.clone();
+        let saved_order_2 = ctx.env_order.clone();
+        let mut else_conts: Vec<ContFn> = Vec::with_capacity(else_clauses.len());
+        for (i, clause) in else_clauses.iter().enumerate() {
+            if let Some(_g) = &clause.guard {
+                return Err(LowerError::Unsupported {
+                    span: clause.span,
+                    what: "with-else guard (deferred)".into(),
+                });
+            }
+            let next = try_blocks.get(i + 1).copied().unwrap_or(else_fail);
+            ctx.cur_block = Some(try_blocks[i]);
+            ctx.env = saved_env_2.clone();
+            ctx.env_order = saved_order_2.clone();
+            lower_pattern_bind(ctx, unmatched_v, &clause.pattern, next)?;
+            // Mint per-else-clause cont with post-pattern-bind env.
+            let cont = mint_cont_fn(ctx, format!("with_else_{}", i), clause.span);
+            let captures = ctx.captured_snapshot();
+            let capture_vars: Vec<Var> = captures.iter().map(|(_, v)| *v).collect();
+            ctx.set_term(Term::TailCall {
+                callee: cont.id,
+                args: capture_vars,
+                is_back_edge: false,
+            });
+            else_conts.push(cont);
+        }
+
+        // Lower each else-clause body in its cont fn.
+        for (i, clause) in else_clauses.iter().enumerate() {
+            let _ = switch_to_cont_fn(ctx, &else_conts[i], 0);
+            let result = lower_expr(ctx, &clause.body, /* is_tail */ true)?;
+            finalize_arm(ctx, result, join_opt.as_ref());
+        }
     }
 
-    ctx.env = saved_env;
-    ctx.env_order = saved_order;
-    ctx.cur_block = Some(join_b);
-    Ok(join_param)
+    let _ = saved_env;
+    let _ = saved_order;
+
+    if let Some(join) = &join_opt {
+        let extras = switch_to_cont_fn(ctx, join, 1);
+        Ok(extras[0])
+    } else {
+        ctx.terminated = true;
+        Ok(Var(0))
+    }
 }
 
 #[cfg(test)]
@@ -2498,6 +2585,47 @@ mod tests {
         assert!(
             !s.contains("case_join"),
             "tail-position case should not need a join fn: {}",
+            s
+        );
+    }
+
+    #[test]
+    fn lower_cond_uses_per_arm_cont_fns() {
+        // fz-duq.4 — cond arms each lower into their own cont fn so that
+        // both test- and body-side CPS-splits stay confined.
+        let m = lower_src(
+            "fn helper(), do: 7\n\
+             fn route(n) do\n\
+               cond do\n\
+                 n == 0 -> helper()\n\
+                 true -> 99\n\
+               end\n\
+             end",
+        );
+        let s = format!("{}", m);
+        assert!(s.contains("cond_arm_0"), "expected arm cont: {}", s);
+        assert!(s.contains("cond_arm_1"), "expected arm cont: {}", s);
+        assert!(s.contains("cond_fail"), "expected fail cont: {}", s);
+    }
+
+    #[test]
+    fn lower_with_uses_continuation_fns() {
+        // fz-duq.4 — `with`'s mismatch funnel becomes a continuation fn
+        // (`with_fail`) and each else-clause body lives in its own cont fn.
+        let m = lower_src(
+            "fn f(v) do\n\
+               with :ok <- v do\n\
+                 1\n\
+               else\n\
+                 :err -> 2\n\
+               end\n\
+             end",
+        );
+        let s = format!("{}", m);
+        assert!(s.contains("with_fail"), "expected with_fail cont: {}", s);
+        assert!(
+            s.contains("with_else_0"),
+            "expected else clause cont: {}",
             s
         );
     }
