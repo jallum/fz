@@ -13,7 +13,6 @@
 ;              callee_key=[:other]
 ;     blk4 TailCall fn_clause_0#7(Var(0))
 ;              callee_key=[:other]
-;     blk5 Goto blk1()
 
 ; spec print(1) #fn=0
 ;   key:    [:zero]
@@ -30,7 +29,6 @@
 ;              callee_key=[:zero]
 ;     blk4 TailCall fn_clause_0#7(Var(0))
 ;              callee_key=[:zero]
-;     blk5 Goto blk1()
 
 ; spec fn_clause_0(1) #fn=7
 ;   key:    [any]
@@ -77,8 +75,6 @@
 ;              callee_key=[]
 ;     blk5 TailCall ?fn14#14()
 ;              callee_key=[]
-;     blk6 Goto blk1()
-;     blk7 Goto blk1()
 
 ; spec classify(1) #fn=11
 ;   key:    [7]
@@ -98,8 +94,6 @@
 ;              callee_key=[]
 ;     blk5 TailCall ?fn14#14()
 ;              callee_key=[]
-;     blk6 Goto blk1()
-;     blk7 Goto blk1()
 
 ; spec main(0) #fn=12
 ;   key:    []

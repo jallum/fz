@@ -13,7 +13,6 @@
 ;              callee_key=[7]
 ;     blk4 TailCall fn_clause_0#7(Var(0))
 ;              callee_key=[7]
-;     blk5 Goto blk1()
 
 ; spec print(1) #fn=0
 ;   key:    [99]
@@ -30,7 +29,6 @@
 ;              callee_key=[99]
 ;     blk4 TailCall fn_clause_0#7(Var(0))
 ;              callee_key=[99]
-;     blk5 Goto blk1()
 
 ; spec fn_clause_0(1) #fn=7
 ;   key:    [7]
@@ -87,8 +85,6 @@
 ;              callee_key=[]
 ;     blk5 TailCall ?fn15#15()
 ;              callee_key=[]
-;     blk6 Goto blk1()
-;     blk7 Goto blk1()
 
 ; spec classify(1) #fn=12
 ;   key:    [5]
@@ -108,8 +104,6 @@
 ;              callee_key=[]
 ;     blk5 TailCall ?fn15#15()
 ;              callee_key=[]
-;     blk6 Goto blk1()
-;     blk7 Goto blk1()
 
 ; spec main(0) #fn=13
 ;   key:    []

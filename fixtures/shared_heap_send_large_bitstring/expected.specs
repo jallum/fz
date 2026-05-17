@@ -13,7 +13,6 @@
 ;              callee_key=[any]
 ;     blk4 TailCall fn_clause_0#7(Var(0))
 ;              callee_key=[any]
-;     blk5 Goto blk1()
 
 ; spec send(2) #fn=6
 ;   key:    [1, vec(u8) | vec(bit)]

@@ -13,7 +13,6 @@
 ;              callee_key=[:false | :true]
 ;     blk4 TailCall fn_clause_0#7(Var(0))
 ;              callee_key=[:false | :true]
-;     blk5 Goto blk1()
 
 ; spec print(1) #fn=0
 ;   key:    [:false]
@@ -30,7 +29,6 @@
 ;              callee_key=[:false]
 ;     blk4 TailCall fn_clause_0#7(Var(0))
 ;              callee_key=[:false]
-;     blk5 Goto blk1()
 
 ; spec print(1) #fn=0
 ;   key:    [:true]
@@ -47,7 +45,6 @@
 ;              callee_key=[:true]
 ;     blk4 TailCall fn_clause_0#7(Var(0))
 ;              callee_key=[:true]
-;     blk5 Goto blk1()
 
 ; spec fn_clause_0(1) #fn=7
 ;   key:    [any]
@@ -103,8 +100,6 @@
 ;              callee_key=[0]
 ;     blk5 TailCall ?fn15#15(Var(0))
 ;              callee_key=[0]
-;     blk6 Goto blk1()
-;     blk7 Goto blk1()
 
 ; spec is_even(1) #fn=11
 ;   key:    [10]
@@ -124,8 +119,6 @@
 ;              callee_key=[10]
 ;     blk5 TailCall ?fn15#15(Var(0))
 ;              callee_key=[10]
-;     blk6 Goto blk1()
-;     blk7 Goto blk1()
 
 ; spec is_even(1) #fn=11
 ;   key:    [int | float]
@@ -145,8 +138,6 @@
 ;              callee_key=[int | float]
 ;     blk5 TailCall ?fn15#15(Var(0))
 ;              callee_key=[int | float]
-;     blk6 Goto blk1()
-;     blk7 Goto blk1()
 
 ; spec is_even(1) #fn=11
 ;   key:    [int]
@@ -166,8 +157,6 @@
 ;              callee_key=[int]
 ;     blk5 TailCall ?fn15#15(Var(0))
 ;              callee_key=[int]
-;     blk6 Goto blk1()
-;     blk7 Goto blk1()
 
 ; spec is_odd(1) #fn=12
 ;   key:    [1]
@@ -187,8 +176,6 @@
 ;              callee_key=[1]
 ;     blk5 TailCall ?fn18#18(Var(0))
 ;              callee_key=[1]
-;     blk6 Goto blk1()
-;     blk7 Goto blk1()
 
 ; spec is_odd(1) #fn=12
 ;   key:    [7]
@@ -208,8 +195,6 @@
 ;              callee_key=[7]
 ;     blk5 TailCall ?fn18#18(Var(0))
 ;              callee_key=[7]
-;     blk6 Goto blk1()
-;     blk7 Goto blk1()
 
 ; spec is_odd(1) #fn=12
 ;   key:    [int | float]
@@ -229,8 +214,6 @@
 ;              callee_key=[int | float]
 ;     blk5 TailCall ?fn18#18(Var(0))
 ;              callee_key=[int | float]
-;     blk6 Goto blk1()
-;     blk7 Goto blk1()
 
 ; spec is_odd(1) #fn=12
 ;   key:    [int]
@@ -250,8 +233,6 @@
 ;              callee_key=[int]
 ;     blk5 TailCall ?fn18#18(Var(0))
 ;              callee_key=[int]
-;     blk6 Goto blk1()
-;     blk7 Goto blk1()
 
 ; spec main(0) #fn=13
 ;   key:    []

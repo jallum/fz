@@ -1056,6 +1056,21 @@ fn lower_pattern_matrix(
         let mut rows = matrix.rows;
         let row = rows.remove(0);
         let bindings = collect_row_bindings(&row.patterns, &matrix.subjects);
+        if rows.is_empty() {
+            // Single-row leaf: body_cb owns the success block. Pass
+            // fail_block directly as the fall-through. Don't advance
+            // ctx.cur_block — caller may continue lowering in the
+            // success block (lower_pattern_bind via .H uses this).
+            body_cb(
+                ctx,
+                row.body_id,
+                bindings,
+                row.preconditions,
+                row.guard,
+                fail_block,
+            )?;
+            return Ok(());
+        }
         let fall_block_for_rest = ctx.cur_mut().block(vec![]);
         body_cb(
             ctx,
@@ -2457,13 +2472,13 @@ fn lower_pattern_bind(
         }
         Pattern::Tuple(elems) => {
             // fz-ben — TypeTest tuple-of-arity-N before projecting fields.
-            // Pre-fix this branch unconditionally emitted
-            // `Prim::TupleField(subject, i)`, which the codegen lowered to
-            // `load notrap aligned subject+offset`. For non-tuple subjects
-            // (e.g. an atom flowing into `{:ok, x} <- :err`), `notrap`
-            // suppresses the SIGSEGV but reads heap garbage; the program
-            // silently propagates corrupted values. Mirror the List case's
-            // discipline: gate projection on a type test.
+            // The matrix (.D.1, .F, .G) replaces this for multi-row sites;
+            // single-pattern positions (let, with `<-`, multi-head) still
+            // use this branch because lower_pattern_bind's contract leaves
+            // the success block un-terminated for the caller to continue
+            // inline, which the matrix's dispatch-terminating model can't
+            // express. Future ticket: extract this into a shared helper
+            // both lower_pattern_bind and matrix's leaf reach via callback.
             let n = elems.len();
             let tuple_descr = crate::types::Descr::tuple_of(
                 std::iter::repeat_with(crate::types::Descr::any)
