@@ -14,7 +14,7 @@ fn eval({:add, a, b}), do: eval(a) + eval(b)
 fn eval({:mul, a, b}), do: eval(a) * eval(b)
 ```
 
-This is the first fixture to combine:
+First fixture to combine:
 
 - multi-clause `fn` dispatch on a tuple subject (resolved at runtime
   via `Prim::TypeTest` reading `descr.tuples`, landed in fz-ul4.36),
@@ -23,9 +23,6 @@ This is the first fixture to combine:
   in fz-ul4.35; AOT schema registration in fz-ul4.38),
 - self-recursion through the runtime `TypeTest` (the typer can't
   fully specialize because the recursive arguments are typed `any`
-  inside each clause body).
-
-Single `print(eval(...))` rather than the more demonstrative
-two-or-more form — fz-i82 truncates main's CPS chain after the first
-tuple-returning call. A follow-up fixture can stretch to multi-print
-once that resolves.
+  inside each clause body),
+- multiple sequential `print(eval(...))` calls in `main` — the
+  original demo shape, unblocked once fz-i82 was fixed in PR #12.
