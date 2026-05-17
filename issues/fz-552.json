@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-17T01:09:36Z",
+  "description": "",
+  "id": "fz-552",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "fz-cg2.4: CodegenCache doc rewrite",
+  "type": "task",
+  "updated_at": "2026-05-17T01:09:36Z"
+}
