@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-17T16:04:28Z",
+  "description": "## Bug\n\n`parse_bp` (parser.rs:1245–1262) unconditionally appends a trailing `do … end`\nblock as the last arg of the preceding call. `parse_if` calls `parse_expr` for\nthe condition, so:\n\n```\nif pred(h) do\n  [h | filter(pred, t)]\nelse\n  filter(pred, t)\nend\n```\n\nparses `pred(h) do [h|…] end` as `pred(h, do_block)`, leaving the `else` token\nunexpected. Single-line `if n == 0 do … else … end` works only because `n == 0`\nis a binop, not a call.\n\n## Fix\n\nThread a `no_trailing_do_block` flag through `parse_bp` (e.g. via a wrapper\n`parse_cond_expr` or a new arg). Use it in:\n- `parse_if`'s cond\n- `parse_while`'s cond (search parser.rs for callers)\n- `case … do`'s scrutinee\n- the guard expression after `when`\n\nThe trailing-do-block sugar continues to apply in **statement** position\n(macro-call-with-block, item-level `test(\"…\") do … end`) — unchanged.\n\n## Tests\n\nAdd parser unit tests in `do_block_sugar_tests` (or sibling) covering:\n- `if pred(h) do BODY else BODY end` parses BODY as the if-arm\n- `if pred(h), do: e1, else: e2` keyword form still works\n- `case f(x) do … end` parses subject as `f(x)`, not `f(x, do_block)`\n- macro-call-with-block (`test(\"…\") do … end`) still parses unchanged\n\n## Independent of other children. Leaf.",
+  "id": "fz-aiz.1",
+  "labels": [],
+  "parent": "fz-aiz",
+  "priority": 1,
+  "status": "open",
+  "title": "fz-aiz.1: parser cond-context — suppress trailing-do sugar in cond position",
+  "type": "task",
+  "updated_at": "2026-05-17T16:04:28Z"
+}
