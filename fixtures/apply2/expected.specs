@@ -5,16 +5,35 @@
 ;     Var(0) :: int
 ;     Var(1) :: :function_clause
 ;     Var(2) :: :true
-;     Var(3) :: nil
-;     Var(4) :: nil
 ;   exits:
-;     blk0 Goto blk1()
-;     blk1 If Var(2) ? blk4 : blk2
-;     blk2 Return Var(4)    :: nil
-;     blk3 Halt Var(1)      :: :function_clause
-;     blk4 Return Var(3)    :: nil
+;     blk0 Goto blk2()
+;     blk1 Halt Var(1)      :: :function_clause
+;     blk2 If Var(2) ? blk4 : blk3
+;     blk3 TailCall fn_clause_1#8(Var(0))
+;              callee_key=[int]
+;     blk4 TailCall fn_clause_0#7(Var(0))
+;              callee_key=[int]
+;     blk5 Goto blk1()
 
-; spec double(1) #fn=7
+; spec fn_clause_0(1) #fn=7
+;   key:    [int]
+;   return: nil
+;   vars:
+;     Var(0) :: int
+;     Var(1) :: nil
+;   exits:
+;     blk0 Return Var(1)    :: nil
+
+; spec fn_clause_1(1) #fn=8
+;   key:    [any]
+;   return: nil
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: nil
+;   exits:
+;     blk0 Return Var(1)    :: nil
+
+; spec double(1) #fn=11
 ;   key:    [21]
 ;   return: int
 ;   vars:
@@ -26,7 +45,7 @@
 ;     blk0 Return Var(3)    :: int
 ;     blk1 Halt Var(1)      :: :match_error
 
-; spec neg(1) #fn=8
+; spec neg(1) #fn=12
 ;   key:    [7]
 ;   return: int
 ;   vars:
@@ -38,49 +57,49 @@
 ;     blk0 Return Var(3)    :: int
 ;     blk1 Halt Var(1)      :: :match_error
 
-; spec apply2(2) #fn=9
-;   key:    [&fn7[]:(any) -> any, 21]
+; spec apply2(2) #fn=13
+;   key:    [&fn11[]:(any) -> any, 21]
 ;   return: int
 ;   fn_constants:
-;     Var(0) = double#7
+;     Var(0) = double#11
 ;   vars:
-;     Var(0) :: &fn7[]:(any) -> any
+;     Var(0) :: &fn11[]:(any) -> any
 ;     Var(1) :: 21
 ;     Var(2) :: :match_error
 ;   exits:
-;     blk0 TailCallClosure Var(0)(Var(1)) [resolved=double#7]
+;     blk0 TailCallClosure Var(0)(Var(1)) [resolved=double#11]
 ;     blk1 Halt Var(2)      :: :match_error
 
-; spec apply2(2) #fn=9
-;   key:    [&fn8[]:(any) -> any, 7]
+; spec apply2(2) #fn=13
+;   key:    [&fn12[]:(any) -> any, 7]
 ;   return: int
 ;   fn_constants:
-;     Var(0) = neg#8
+;     Var(0) = neg#12
 ;   vars:
-;     Var(0) :: &fn8[]:(any) -> any
+;     Var(0) :: &fn12[]:(any) -> any
 ;     Var(1) :: 7
 ;     Var(2) :: :match_error
 ;   exits:
-;     blk0 TailCallClosure Var(0)(Var(1)) [resolved=neg#8]
+;     blk0 TailCallClosure Var(0)(Var(1)) [resolved=neg#12]
 ;     blk1 Halt Var(2)      :: :match_error
 
-; spec main(0) #fn=10
+; spec main(0) #fn=14
 ;   key:    []
 ;   return: nil
 ;   fn_constants:
-;     Var(1) = double#7
+;     Var(1) = double#11
 ;   vars:
 ;     Var(0) :: :match_error
-;     Var(1) :: &fn7[]:(any) -> any
+;     Var(1) :: &fn11[]:(any) -> any
 ;     Var(2) :: 21
 ;   exits:
-;     blk0 Call apply2#9(Var(1), Var(2))
-;              callee_key=[&fn7[]:(any) -> any, 21]
-;              cont k_11#11 captured=[]
+;     blk0 Call apply2#13(Var(1), Var(2))
+;              callee_key=[&fn11[]:(any) -> any, 21]
+;              cont k_15#15 captured=[]
 ;              cont_key=[int]
 ;     blk1 Halt Var(0)      :: :match_error
 
-; spec k_11(1) #fn=11
+; spec k_15(1) #fn=15
 ;   key:    [int]
 ;   return: nil
 ;   vars:
@@ -88,25 +107,25 @@
 ;   exits:
 ;     blk0 Call print#0(Var(0))
 ;              callee_key=[int]
-;              cont k_12#12 captured=[]
+;              cont k_16#16 captured=[]
 ;              cont_key=[nil]
 
-; spec k_12(1) #fn=12
+; spec k_16(1) #fn=16
 ;   key:    [nil]
 ;   return: nil
 ;   fn_constants:
-;     Var(1) = neg#8
+;     Var(1) = neg#12
 ;   vars:
 ;     Var(0) :: nil
-;     Var(1) :: &fn8[]:(any) -> any
+;     Var(1) :: &fn12[]:(any) -> any
 ;     Var(2) :: 7
 ;   exits:
-;     blk0 Call apply2#9(Var(1), Var(2))
-;              callee_key=[&fn8[]:(any) -> any, 7]
-;              cont k_13#13 captured=[]
+;     blk0 Call apply2#13(Var(1), Var(2))
+;              callee_key=[&fn12[]:(any) -> any, 7]
+;              cont k_17#17 captured=[]
 ;              cont_key=[int]
 
-; spec k_13(1) #fn=13
+; spec k_17(1) #fn=17
 ;   key:    [int]
 ;   return: nil
 ;   vars:

@@ -65,6 +65,11 @@ pub fn fold_fn_with_types(f: &mut FnIr, fn_types: &FnTypes) {
             if let Prim::BinOp(..) = prim {
                 if let Some(n) = d.as_int_singleton() {
                     *stmt = Stmt::Let(*dest, Prim::Const(Const::Int(n)));
+                } else if d.is_subtype(&Descr::atom_lit("true")) {
+                    // fz-ul4.43.D.1 — BinOp::Eq/Neq result narrowed to :true.
+                    *stmt = Stmt::Let(*dest, Prim::Const(Const::True));
+                } else if d.is_subtype(&Descr::atom_lit("false")) {
+                    *stmt = Stmt::Let(*dest, Prim::Const(Const::False));
                 }
             } else if let Prim::TypeTest(..) = prim {
                 if d.is_subtype(&Descr::atom_lit("true")) {

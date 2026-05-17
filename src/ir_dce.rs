@@ -93,7 +93,7 @@ pub fn dce_module(m: &mut Module) {
     }
 }
 
-fn dce_fn(f: &mut FnIr) {
+pub fn dce_fn(f: &mut FnIr) {
     loop {
         let used = collect_used(f);
         let mut changed = false;

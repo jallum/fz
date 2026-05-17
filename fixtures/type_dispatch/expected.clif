@@ -10,17 +10,13 @@ function u0:0(i64) -> i64 tail {
 
 block0(v0: i64):
     v1 = iconst.i64 18                  ; @5:15
-    v2 = iconst.i64 19    ;; v2 :: :false
-    jump block1                         ; @5:9
-
-block1:
     call fn0(v1)  ; v1 = 18
-    v3 = iconst.i64 3    ;; v3 :: nil
-    return_call fn1(v3, v0)  ; v3 = 3
+    v2 = iconst.i64 3    ;; v2 :: nil
+    return_call fn1(v2, v0)             ; @5:9  v2 = 3
 }
 
-; fn k_10_s9
-    ;   @spec   k_10(nil) -> nil
+; fn k_16_s13
+    ;   @spec   k_16(nil) -> nil
     ;   @key    [nil]
     ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {

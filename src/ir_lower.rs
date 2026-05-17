@@ -1027,6 +1027,481 @@ fn body_might_cps_split(body: &Spanned<Expr>) -> bool {
     walk(body, /* in_tail */ true)
 }
 
+// fz-ul4.43.D.1 — Pattern matrix lowering (re-applied for diagnostic).
+use crate::pattern_matrix::{BodyId, Matrix, Row};
+
+type BodyCb<'a> = &'a mut dyn FnMut(
+    &mut LowerCtx,
+    BodyId,
+    Vec<(String, Var)>,
+    Vec<(Var, crate::types::Descr)>,
+    Option<crate::ast::Spanned<crate::ast::Expr>>,
+    BlockId,
+) -> Result<(), LowerError>;
+
+fn lower_pattern_matrix(
+    ctx: &mut LowerCtx,
+    matrix: Matrix,
+    fail_block: BlockId,
+    body_cb: BodyCb<'_>,
+) -> Result<(), LowerError> {
+    if matrix.rows.is_empty() {
+        if !ctx.terminated {
+            ctx.set_term(Term::Goto(fail_block, vec![]));
+        }
+        return Ok(());
+    }
+    let col = pick_specialization_column(&matrix);
+    if col.is_none() {
+        let mut rows = matrix.rows;
+        let row = rows.remove(0);
+        let bindings = collect_row_bindings(&row.patterns, &matrix.subjects);
+        let fall_block_for_rest = ctx.cur_mut().block(vec![]);
+        body_cb(
+            ctx,
+            row.body_id,
+            bindings,
+            row.preconditions,
+            row.guard,
+            fall_block_for_rest,
+        )?;
+        ctx.cur_block = Some(fall_block_for_rest);
+        ctx.terminated = false;
+        return lower_pattern_matrix(
+            ctx,
+            Matrix {
+                subjects: matrix.subjects,
+                rows,
+            },
+            fail_block,
+            body_cb,
+        );
+    }
+    let col = col.unwrap();
+    if let Some(row_idx) = find_unspecializable_row(&matrix, col) {
+        let mut matrix = matrix;
+        let row = matrix.rows.remove(row_idx);
+        let row_body_id = row.body_id;
+        let row_preconds = row.preconditions.clone();
+        let row_guard = row.guard.clone();
+        let subject = matrix.subjects[col];
+        let rest_block = ctx.cur_mut().block(vec![]);
+        let env_before: std::collections::HashSet<String> = ctx.env.keys().cloned().collect();
+        lower_pattern_bind(ctx, subject, &row.patterns[col], rest_block)?;
+        let pat_bind_extras: Vec<(String, Var)> = ctx
+            .env
+            .iter()
+            .filter(|(k, _)| !env_before.contains(*k))
+            .map(|(k, v)| (k.clone(), *v))
+            .collect();
+        let mut r = row;
+        r.patterns.remove(col);
+        let mut subjects = matrix.subjects.clone();
+        subjects.remove(col);
+        let mut bindings = collect_row_bindings(&r.patterns, &subjects);
+        bindings.extend(pat_bind_extras);
+        body_cb(
+            ctx,
+            row_body_id,
+            bindings,
+            row_preconds,
+            row_guard,
+            rest_block,
+        )?;
+        ctx.cur_block = Some(rest_block);
+        ctx.terminated = false;
+        return lower_pattern_matrix(ctx, matrix, fail_block, body_cb);
+    }
+    let subject = matrix.subjects[col];
+    let kind = pick_kind_for_column(&matrix, col);
+    match kind {
+        MatrixKind::TupleArity => {
+            lower_matrix_tuple_arity(ctx, matrix, col, subject, fail_block, body_cb)
+        }
+        MatrixKind::ListCons => {
+            lower_matrix_list_cons(ctx, matrix, col, subject, fail_block, body_cb)
+        }
+        MatrixKind::AtomOrLiteral => {
+            lower_matrix_atom_literal(ctx, matrix, col, subject, fail_block, body_cb)
+        }
+    }
+}
+
+enum MatrixKind {
+    TupleArity,
+    ListCons,
+    AtomOrLiteral,
+}
+
+fn pick_specialization_column(m: &Matrix) -> Option<usize> {
+    (0..m.subjects.len()).find(|&col| {
+        m.rows
+            .iter()
+            .any(|r| !is_wildlike_pat(&r.patterns[col].node))
+    })
+}
+fn is_wildlike_pat(p: &Pattern) -> bool {
+    matches!(p, Pattern::Wildcard | Pattern::Var(_))
+        || matches!(p, Pattern::As(_, inner) if is_wildlike_pat(&inner.node))
+}
+fn peel_as_pat(p: &Spanned<Pattern>) -> &Spanned<Pattern> {
+    let mut cur = p;
+    while let Pattern::As(_, inner) = &cur.node {
+        cur = inner;
+    }
+    cur
+}
+fn find_unspecializable_row(m: &Matrix, col: usize) -> Option<usize> {
+    m.rows.iter().position(|r| {
+        matches!(
+            peel_as_pat(&r.patterns[col]).node,
+            Pattern::Map(_) | Pattern::Bitstring(_)
+        )
+    })
+}
+fn pick_kind_for_column(m: &Matrix, col: usize) -> MatrixKind {
+    for r in &m.rows {
+        match &peel_as_pat(&r.patterns[col]).node {
+            Pattern::Tuple(_) => return MatrixKind::TupleArity,
+            Pattern::List(_, _) | Pattern::Nil => return MatrixKind::ListCons,
+            Pattern::Atom(_)
+            | Pattern::Int(_)
+            | Pattern::Bool(_)
+            | Pattern::Float(_)
+            | Pattern::Str(_) => return MatrixKind::AtomOrLiteral,
+            _ => continue,
+        }
+    }
+    MatrixKind::AtomOrLiteral
+}
+fn collect_row_bindings(patterns: &[Spanned<Pattern>], subjects: &[Var]) -> Vec<(String, Var)> {
+    let mut out = Vec::new();
+    for (p, &v) in patterns.iter().zip(subjects.iter()) {
+        collect_one(&p.node, v, &mut out);
+    }
+    out
+}
+fn collect_one(p: &Pattern, v: Var, out: &mut Vec<(String, Var)>) {
+    match p {
+        Pattern::Var(name) => out.push((name.clone(), v)),
+        Pattern::As(name, inner) => {
+            out.push((name.clone(), v));
+            collect_one(&inner.node, v, out);
+        }
+        _ => {}
+    }
+}
+
+fn lower_matrix_tuple_arity(
+    ctx: &mut LowerCtx,
+    matrix: Matrix,
+    col: usize,
+    subject: Var,
+    fail_block: BlockId,
+    body_cb: BodyCb<'_>,
+) -> Result<(), LowerError> {
+    use std::collections::BTreeMap;
+    let mut by_arity: BTreeMap<u32, Vec<Row>> = BTreeMap::new();
+    let mut default_rows: Vec<Row> = Vec::new();
+    for row in matrix.rows {
+        let p = peel_as_pat(&row.patterns[col]);
+        match &p.node {
+            Pattern::Tuple(fields) => {
+                by_arity.entry(fields.len() as u32).or_default().push(row);
+            }
+            Pattern::Wildcard | Pattern::Var(_) => default_rows.push(row),
+            _ => {}
+        }
+    }
+    for (arity, rows) in by_arity {
+        let tuple_descr = crate::types::Descr::tuple_of(
+            std::iter::repeat_with(crate::types::Descr::any)
+                .take(arity as usize)
+                .collect::<Vec<_>>(),
+        );
+        let tt = ctx.let_(Prim::TypeTest(subject, Box::new(tuple_descr)));
+        let match_b = ctx.cur_mut().block(vec![]);
+        let next_b = ctx.cur_mut().block(vec![]);
+        ctx.set_term(Term::If(tt, match_b, next_b));
+        ctx.cur_block = Some(match_b);
+        ctx.terminated = false;
+        let field_vars: Vec<Var> = (0..arity)
+            .map(|i| ctx.let_(Prim::TupleField(subject, i)))
+            .collect();
+        let mut sub_subjects = matrix.subjects.clone();
+        sub_subjects.splice(col..=col, field_vars.iter().copied());
+        let mut sub_rows: Vec<Row> = Vec::with_capacity(rows.len() + default_rows.len());
+        for r in rows {
+            let mut nr = r;
+            let p = peel_as_pat(&nr.patterns[col]).clone();
+            let fields = if let Pattern::Tuple(f) = &p.node {
+                f.clone()
+            } else {
+                vec![]
+            };
+            nr.patterns.splice(col..=col, fields);
+            sub_rows.push(nr);
+        }
+        for d in &default_rows {
+            let mut dr = d.clone();
+            let span = dr.patterns[col].span;
+            let wilds: Vec<Spanned<Pattern>> = (0..arity)
+                .map(|_| Spanned::new(Pattern::Wildcard, span))
+                .collect();
+            dr.patterns.splice(col..=col, wilds);
+            sub_rows.push(dr);
+        }
+        lower_pattern_matrix(
+            ctx,
+            Matrix {
+                subjects: sub_subjects,
+                rows: sub_rows,
+            },
+            fail_block,
+            body_cb,
+        )?;
+        ctx.cur_block = Some(next_b);
+        ctx.terminated = false;
+    }
+    if default_rows.is_empty() {
+        if !ctx.terminated {
+            ctx.set_term(Term::Goto(fail_block, vec![]));
+        }
+        Ok(())
+    } else {
+        let mut sub_subjects = matrix.subjects.clone();
+        sub_subjects.remove(col);
+        let sub_rows: Vec<Row> = default_rows
+            .into_iter()
+            .map(|mut r| {
+                r.patterns.remove(col);
+                r
+            })
+            .collect();
+        lower_pattern_matrix(
+            ctx,
+            Matrix {
+                subjects: sub_subjects,
+                rows: sub_rows,
+            },
+            fail_block,
+            body_cb,
+        )
+    }
+}
+
+fn lower_matrix_list_cons(
+    ctx: &mut LowerCtx,
+    matrix: Matrix,
+    col: usize,
+    subject: Var,
+    fail_block: BlockId,
+    body_cb: BodyCb<'_>,
+) -> Result<(), LowerError> {
+    let mut nil_rows: Vec<Row> = Vec::new();
+    let mut cons_rows: Vec<Row> = Vec::new();
+    let mut default_rows: Vec<Row> = Vec::new();
+    for row in matrix.rows {
+        let p = peel_as_pat(&row.patterns[col]);
+        match &p.node {
+            Pattern::Nil => nil_rows.push(row),
+            Pattern::List(elems, _) if elems.is_empty() => nil_rows.push(row),
+            Pattern::List(_, _) => cons_rows.push(row),
+            Pattern::Wildcard | Pattern::Var(_) => default_rows.push(row),
+            _ => {}
+        }
+    }
+    let isnil = ctx.let_(Prim::ListIsNil(subject));
+    let nil_b = ctx.cur_mut().block(vec![]);
+    let cons_b = ctx.cur_mut().block(vec![]);
+    ctx.set_term(Term::If(isnil, nil_b, cons_b));
+    ctx.cur_block = Some(nil_b);
+    ctx.terminated = false;
+    if nil_rows.is_empty() && default_rows.is_empty() {
+        ctx.set_term(Term::Goto(fail_block, vec![]));
+    } else {
+        let mut sub_subjects = matrix.subjects.clone();
+        sub_subjects.remove(col);
+        let mut sub_rows: Vec<Row> = nil_rows
+            .into_iter()
+            .map(|mut r| {
+                r.patterns.remove(col);
+                r
+            })
+            .collect();
+        for d in &default_rows {
+            let mut dr = d.clone();
+            dr.patterns.remove(col);
+            sub_rows.push(dr);
+        }
+        lower_pattern_matrix(
+            ctx,
+            Matrix {
+                subjects: sub_subjects,
+                rows: sub_rows,
+            },
+            fail_block,
+            body_cb,
+        )?;
+    }
+    ctx.cur_block = Some(cons_b);
+    ctx.terminated = false;
+    for r in cons_rows {
+        let rest_block = ctx.cur_mut().block(vec![]);
+        let env_before: std::collections::HashSet<String> = ctx.env.keys().cloned().collect();
+        lower_pattern_bind(ctx, subject, &r.patterns[col], rest_block)?;
+        let pat_bind_extras: Vec<(String, Var)> = ctx
+            .env
+            .iter()
+            .filter(|(k, _)| !env_before.contains(*k))
+            .map(|(k, v)| (k.clone(), *v))
+            .collect();
+        let r_body_id = r.body_id;
+        let r_preconds = r.preconditions.clone();
+        let r_guard = r.guard.clone();
+        let mut r_clone = r;
+        r_clone.patterns.remove(col);
+        let mut sub_subjects = matrix.subjects.clone();
+        sub_subjects.remove(col);
+        let mut bindings = collect_row_bindings(&r_clone.patterns, &sub_subjects);
+        bindings.extend(pat_bind_extras);
+        body_cb(ctx, r_body_id, bindings, r_preconds, r_guard, rest_block)?;
+        ctx.cur_block = Some(rest_block);
+        ctx.terminated = false;
+    }
+    if default_rows.is_empty() {
+        if !ctx.terminated {
+            ctx.set_term(Term::Goto(fail_block, vec![]));
+        }
+        Ok(())
+    } else {
+        let mut sub_subjects = matrix.subjects.clone();
+        sub_subjects.remove(col);
+        let sub_rows: Vec<Row> = default_rows
+            .into_iter()
+            .map(|mut r| {
+                r.patterns.remove(col);
+                r
+            })
+            .collect();
+        lower_pattern_matrix(
+            ctx,
+            Matrix {
+                subjects: sub_subjects,
+                rows: sub_rows,
+            },
+            fail_block,
+            body_cb,
+        )
+    }
+}
+
+fn lower_matrix_atom_literal(
+    ctx: &mut LowerCtx,
+    matrix: Matrix,
+    col: usize,
+    subject: Var,
+    fail_block: BlockId,
+    body_cb: BodyCb<'_>,
+) -> Result<(), LowerError> {
+    use std::collections::BTreeMap;
+    let mut by_key: BTreeMap<String, Vec<Row>> = BTreeMap::new();
+    let mut key_prim: HashMap<String, Prim> = HashMap::new();
+    let mut default_rows: Vec<Row> = Vec::new();
+    for row in matrix.rows {
+        let p = peel_as_pat(&row.patterns[col]);
+        let (k, prim) = match &p.node {
+            Pattern::Atom(s) => {
+                let id = ctx.atoms.intern(s);
+                (format!("a:{}", s), Prim::Const(Const::Atom(id)))
+            }
+            Pattern::Int(n) => (format!("i:{}", n), Prim::Const(Const::Int(*n))),
+            Pattern::Bool(true) => ("b:t".to_string(), Prim::Const(Const::True)),
+            Pattern::Bool(false) => ("b:f".to_string(), Prim::Const(Const::False)),
+            Pattern::Nil => ("n".to_string(), Prim::Const(Const::Nil)),
+            Pattern::Str(s) => (format!("s:{}", s), Prim::Const(Const::Str(s.clone()))),
+            Pattern::Float(x) => (format!("f:{}", x), Prim::Const(Const::Float(*x))),
+            Pattern::Wildcard | Pattern::Var(_) => {
+                default_rows.push(row);
+                continue;
+            }
+            _ => continue,
+        };
+        key_prim.entry(k.clone()).or_insert(prim);
+        by_key.entry(k).or_default().push(row);
+    }
+    for (k, rows) in by_key {
+        let lit_v = ctx.let_(key_prim.remove(&k).unwrap());
+        let eq = ctx.let_(Prim::BinOp(BinOp::Eq, subject, lit_v));
+        let match_b = ctx.cur_mut().block(vec![]);
+        let next_b = ctx.cur_mut().block(vec![]);
+        ctx.set_term(Term::If(eq, match_b, next_b));
+        ctx.cur_block = Some(match_b);
+        ctx.terminated = false;
+        let mut sub_subjects = matrix.subjects.clone();
+        sub_subjects.remove(col);
+        let mut sub_rows: Vec<Row> = rows
+            .into_iter()
+            .map(|mut r| {
+                r.patterns.remove(col);
+                r
+            })
+            .collect();
+        for d in &default_rows {
+            let mut dr = d.clone();
+            dr.patterns.remove(col);
+            sub_rows.push(dr);
+        }
+        lower_pattern_matrix(
+            ctx,
+            Matrix {
+                subjects: sub_subjects,
+                rows: sub_rows,
+            },
+            fail_block,
+            body_cb,
+        )?;
+        ctx.cur_block = Some(next_b);
+        ctx.terminated = false;
+    }
+    if default_rows.is_empty() {
+        if !ctx.terminated {
+            ctx.set_term(Term::Goto(fail_block, vec![]));
+        }
+        Ok(())
+    } else {
+        let mut sub_subjects = matrix.subjects.clone();
+        sub_subjects.remove(col);
+        let sub_rows: Vec<Row> = default_rows
+            .into_iter()
+            .map(|mut r| {
+                r.patterns.remove(col);
+                r
+            })
+            .collect();
+        lower_pattern_matrix(
+            ctx,
+            Matrix {
+                subjects: sub_subjects,
+                rows: sub_rows,
+            },
+            fail_block,
+            body_cb,
+        )
+    }
+}
+
+fn bind_param_topname(ctx: &mut LowerCtx, pv: Var, pat: &Spanned<Pattern>) {
+    let mut cur = pat;
+    while let Pattern::As(name, inner) = &cur.node {
+        ctx.bind(name, pv);
+        cur = inner;
+    }
+    if let Pattern::Var(name) = &cur.node {
+        ctx.bind(name, pv);
+    }
+}
+
 fn lower_multi_clause(
     ctx: &mut LowerCtx,
     fn_def: &FnDef,
@@ -1049,52 +1524,78 @@ fn lower_multi_clause(
     // per-SCC fixpoint, and the recursive callsite's broadened key
     // (e.g. `[int, int]` for `count`'s tail) lands in the spec set.
 
-    // Allocate try blocks up front so terminators can reference them.
-    let try_blocks: Vec<BlockId> = (0..fn_def.clauses.len())
-        .map(|_| ctx.cur_mut().block(vec![]))
-        .collect();
+    // fz-ul4.43.D.1 (diagnostic) — matrix dispatch replaces cascade.
     let fail_block = ctx.cur_mut().block(vec![]);
-
-    // Seal fail_block.
     ctx.cur_block = Some(fail_block);
     let fc = ctx.atoms.intern("function_clause");
     let v = ctx.let_(Prim::Const(Const::Atom(fc)));
     ctx.set_term(Term::Halt(v));
 
-    // Entry -> first try block.
+    let matrix_entry = ctx.cur_mut().block(vec![]);
     ctx.cur_mut()
-        .set_terminator(entry, Term::Goto(try_blocks[0], vec![]));
+        .set_terminator(entry, Term::Goto(matrix_entry, vec![]));
+    ctx.cur_block = Some(matrix_entry);
+    ctx.terminated = false;
 
-    // Two-pass: first lower pattern bind + guard for each clause in its
-    // try_block. For clauses whose body CAN cps-split (contains Receive
-    // or a non-tail Call), mint a per-clause body cont fn — try_block
-    // TailCalls it. For "safe" clauses (body cps-split-free), lower the
-    // body inline in the try_block and finalize with Return — preserves
-    // the pre-fz-qbg.2 block-shape, so existing fixture goldens with
-    // pure-tail-call recursive multi-clause (fib_tailrec, count, etc.)
-    // remain byte-identical post-inline. The wrap is only paid by
-    // clauses that need it.
-    let mut clause_conts: Vec<Option<ContFn>> = Vec::with_capacity(fn_def.clauses.len());
-    for (i, clause) in fn_def.clauses.iter().enumerate() {
-        let next = try_blocks.get(i + 1).copied().unwrap_or(fail_block);
-        ctx.cur_block = Some(try_blocks[i]);
-        ctx.env.clear();
-        ctx.env_order.clear();
-        ctx.terminated = false;
-        for (pv, pat) in param_vars.iter().zip(&clause.params) {
-            lower_pattern_bind(ctx, *pv, pat, next)?;
+    let mut rows: Vec<Row> = Vec::with_capacity(fn_def.clauses.len());
+    for (i, c) in fn_def.clauses.iter().enumerate() {
+        let mut preconditions: Vec<(Var, crate::types::Descr)> = Vec::new();
+        for (pv, tok_opt) in param_vars.iter().zip(&c.param_annotations) {
+            if let Some(toks) = tok_opt
+                && let Ok((descr, _)) =
+                    crate::type_expr::parse_type_expr(&toks.0, &ctx.combined_type_env)
+            {
+                preconditions.push((*pv, descr));
+            }
         }
-        emit_param_type_guards(ctx, clause, param_vars, next)?;
-        if let Some(g) = &clause.guard {
-            let guard_var = lower_expr(ctx, g, false)?;
-            let body_b = ctx.cur_mut().block(vec![]);
-            ctx.set_term(Term::If(guard_var, body_b, next));
-            ctx.cur_block = Some(body_b);
-            ctx.terminated = false;
-        }
+        rows.push(Row {
+            patterns: c.params.clone(),
+            preconditions,
+            guard: c.guard.clone(),
+            body_id: i as BodyId,
+        });
+    }
+    let matrix = Matrix {
+        subjects: param_vars.to_vec(),
+        rows,
+    };
 
-        if body_might_cps_split(&clause.body) {
-            // Wrap in a cont fn: body lowers later, in its own fn.
+    let mut clause_conts: Vec<Option<ContFn>> = (0..fn_def.clauses.len()).map(|_| None).collect();
+    {
+        let fn_def_ref = fn_def;
+        let param_vars_ref = param_vars;
+        let clause_conts_ref = &mut clause_conts;
+        let mut cb = |ctx: &mut LowerCtx,
+                      body_id: BodyId,
+                      bindings: Vec<(String, Var)>,
+                      preconditions: Vec<(Var, crate::types::Descr)>,
+                      guard: Option<crate::ast::Spanned<crate::ast::Expr>>,
+                      fall_block: BlockId|
+         -> Result<(), LowerError> {
+            let i = body_id as usize;
+            let clause = &fn_def_ref.clauses[i];
+            ctx.env.clear();
+            ctx.env_order.clear();
+            for (pv, pat) in param_vars_ref.iter().zip(&clause.params) {
+                bind_param_topname(ctx, *pv, pat);
+            }
+            for (name, var) in &bindings {
+                ctx.bind(name, *var);
+            }
+            for (pv, descr) in &preconditions {
+                let tt = ctx.let_(Prim::TypeTest(*pv, Box::new(descr.clone())));
+                let pass_b = ctx.cur_mut().block(vec![]);
+                ctx.set_term(Term::If(tt, pass_b, fall_block));
+                ctx.cur_block = Some(pass_b);
+                ctx.terminated = false;
+            }
+            if let Some(g) = &guard {
+                let guard_var = lower_expr(ctx, g, false)?;
+                let body_b = ctx.cur_mut().block(vec![]);
+                ctx.set_term(Term::If(guard_var, body_b, fall_block));
+                ctx.cur_block = Some(body_b);
+                ctx.terminated = false;
+            }
             let cont = mint_cont_fn(ctx, format!("fn_clause_{}", i), clause.span);
             let captures = ctx.captured_snapshot();
             let capture_vars: Vec<Var> = captures.iter().map(|(_, v)| *v).collect();
@@ -1103,21 +1604,13 @@ fn lower_multi_clause(
                 args: capture_vars,
                 is_back_edge: false,
             });
-            clause_conts.push(Some(cont));
-        } else {
-            // Safe to lower inline (block-join). Body is finalised here
-            // with Return — the try_block becomes a leaf-ending block in
-            // the source-level fn.
-            let result = lower_expr(ctx, &clause.body, /* is_tail */ true)?;
-            if !ctx.terminated {
-                ctx.set_term(Term::Return(result));
-                ctx.terminated = true;
-            }
-            clause_conts.push(None);
-        }
+            ctx.terminated = true;
+            clause_conts_ref[i] = Some(cont);
+            Ok(())
+        };
+        lower_pattern_matrix(ctx, matrix, fail_block, &mut cb)?;
     }
 
-    // Lower each wrapped clause body in its cont fn.
     for (i, clause) in fn_def.clauses.iter().enumerate() {
         let Some(cont) = clause_conts[i].clone() else {
             continue;

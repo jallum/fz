@@ -2709,6 +2709,14 @@ pub fn compile_with_backend<B: Backend>(
         let f_owned: crate::fz_ir::FnIr = {
             let mut clone = module.fns[idx].clone();
             crate::ir_fold::fold_fn_with_types(&mut clone, ft);
+            // fz-ul4.43.D.1 — per-spec DCE + fuse after per-spec fold.
+            // Fold rewrites Term::If→Goto when cond folds; DCE removes the
+            // dead stmts and unreachable blocks; fuse_fn collapses the
+            // remaining Goto-chains so inline_tail_calls_once's
+            // is_pure_tail_caller predicate (single-block + TailCall) can
+            // see these tiny per-spec bodies as inlinable.
+            crate::ir_dce::dce_fn(&mut clone);
+            crate::ir_fuse::fuse_fn(&mut clone);
             clone
         };
         let f = &f_owned;

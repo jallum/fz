@@ -31,6 +31,10 @@ pub struct Row {
     /// at every step of compilation. Specialization may grow or shrink this
     /// vector (e.g. tuple-arity-3 specialization replaces one column with three).
     pub patterns: Vec<Spanned<Pattern>>,
+    /// `@spec` annotation tests evaluated at leaf-resolution time, before
+    /// the guard. Each (var, descr) emits `TypeTest(var, descr)`; on fail,
+    /// the matrix falls through to the next row.
+    pub preconditions: Vec<(Var, crate::types::Descr)>,
     pub guard: Option<Spanned<Expr>>,
     pub body_id: BodyId,
 }
@@ -607,6 +611,7 @@ mod tests {
     fn row(patterns: Vec<Pattern>, body_id: BodyId) -> Row {
         Row {
             patterns: patterns.into_iter().map(sp).collect(),
+            preconditions: Vec::new(),
             guard: None,
             body_id,
         }
@@ -750,6 +755,7 @@ mod tests {
             subjects: vec![Var(0)],
             rows: vec![Row {
                 patterns: vec![sp(Pattern::Wildcard)],
+                preconditions: Vec::new(),
                 guard: Some(sp(Expr::Bool(true))),
                 body_id: 5,
             }],

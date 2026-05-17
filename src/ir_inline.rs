@@ -49,7 +49,10 @@ pub fn is_pure_tail_caller(f: &FnIr) -> bool {
         return false;
     }
     let b = &f.blocks[0];
-    if !matches!(b.terminator, Term::TailCall { .. }) {
+    if !matches!(
+        b.terminator,
+        Term::TailCall { .. } | Term::TailCallClosure { .. }
+    ) {
         return false;
     }
     if stmt_count(f) > INLINE_BUDGET {
