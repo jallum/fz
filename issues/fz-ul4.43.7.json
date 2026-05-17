@@ -6,14 +6,15 @@
   "blocks": [
     "fz-ul4.43.9"
   ],
+  "closed_at": "2026-05-17T14:00:28Z",
   "created": "2026-05-17T12:07:59Z",
   "description": "# .43.F — lower_case body REPLACED by matrix dispatch (mechanical)\n\n## What changes\n\nlower_case (src/ir_lower.rs ~2252): same shape as .D.1, simpler.\n\n- case body is ALREADY always cont-fn-wrapped (no inline fast path\n  to worry about — .D.0 doesn't apply here)\n- Replace the per-clause try_blocks cascade with lower_pattern_matrix\n- Body callback wraps each leaf in mint_cont_fn (today's pattern)\n\n## What stays\n\n- Subject lowering + parking\n- join_opt for non-tail position\n- Per-clause cont_fn (minted inside body callback at each leaf)\n\n## What's removed\n\n- ~50 LOC of per-clause try_blocks cascade\n- One copy of the dispatch-by-cascade pattern (was three; .D.1 already\n  removed one)\n\n## Acceptance\n\n- case-using fixtures: meaningfully tighter OR equivalent\n- Three-path parity\n- Existing lower_case unit tests still pass (semantic invariants)\n\n## Risk\n\ncase currently errors on guards. v1 keeps that errors — matrix\nencounters a guarded row, the body callback errors with the same\n\\\"case guard (deferred)\\\" message. Future ticket: guard support.",
   "id": "fz-ul4.43.7",
   "labels": [],
   "parent": "fz-ul4.43",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "fz-ul4.43.F: wire lower_case onto matrix",
   "type": "task",
-  "updated_at": "2026-05-17T13:55:20Z"
+  "updated_at": "2026-05-17T14:00:28Z"
 }
