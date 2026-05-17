@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-ul4.37"
+  ],
   "created": "2026-05-17T04:47:31Z",
   "description": "# Interpreter tuple construction + projection\n\n`ir_interp.rs::eval_prim` handles `Const`, `BinOp`, `Extern`,\n`MakeBitstring`, `ConstBitstring`, `MakeClosure`, `TypeTest`,\nand falls through to a \"prim {:?} not yet supported (lands in\nfz-ul4.23.5.3+)\" error for everything else.\n\n## Symptom\n\n```fz\nfn main() do\n  e = {:num, 7}\n  print(e)\nend\n```\n\nOn `fz interp` errors with exit 75 and:\n`prim Discriminant(9) not yet supported (lands in fz-ul4.23.5.3+)`\n\n(`Discriminant(9)` = `Prim::MakeTuple` per the variant order\nin `src/fz_ir.rs:153`.)\n\n## Fix\n\nAdd arms to `ir_interp.rs::eval_prim`:\n\n- `Prim::MakeTuple(args)` — alloc a Struct heap value with N fields,\n  store each captured FzValue at offset HEADER + i * SLOT_BYTES.\n  Mirror the JIT codegen (`ir_codegen.rs` MakeTuple arm) for layout\n  agreement; both paths share `fz_runtime::heap`.\n- `Prim::TupleField(v, i)` — load FzValue at HEADER + i * SLOT_BYTES\n  from `v`'s unboxed pointer.\n\n## Acceptance\n\n- `fz interp` runs:\n  ```fz\n  fn main() do\n    e = {:num, 7}\n    print(e)\n    {a, b} = e\n    print(a)\n    print(b)\n  end\n  ```\n  with output `{:num, 7}\\n:num\\n7\\n`.\n- All existing fixtures still pass on the `interp` leg.\n- Standalone — does NOT yet enable multi-clause tuple dispatch; that\n  needs descr.tuples in TypeTest (separate ticket).",
   "id": "fz-ul4.35",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "ir_interp: implement Prim::MakeTuple + Prim::TupleField",
   "type": "task",
-  "updated_at": "2026-05-17T04:47:31Z"
+  "updated_at": "2026-05-17T04:48:34Z"
 }

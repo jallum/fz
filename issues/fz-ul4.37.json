@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-ul4.35"
+  ],
   "blocks": [],
   "created": "2026-05-17T04:48:27Z",
   "description": "# Stretch fixture: tagged-tuple AST evaluator\n\n## What\n\nAdd `fixtures/ast_eval/` — a multi-clause fn that pattern-matches\non tagged tuples `{:num, n}`, `{:add, a, b}`, `{:mul, a, b}` and\nrecursively evaluates the expression to an int. Classic Erlang/Elixir\n\"eval\" teaching shape; first fixture to exercise tagged-tuple\ndispatch end-to-end.\n\n```fz\nfn eval({:num, n}), do: n\nfn eval({:add, a, b}), do: eval(a) + eval(b)\nfn eval({:mul, a, b}), do: eval(a) * eval(b)\n\nfn main() do\n  print(eval({:num, 42}))\n  print(eval({:add, {:num, 2}, {:mul, {:num, 3}, {:num, 4}}}))\nend\n```\n\nExpected stdout: `42\\n14\\n`.\n\n## Why\n\nSurveying the existing fixture set: tail recursion, list primitives,\nHOFs, mutual recursion, multi-process relay are all covered. The gap\nis pattern-matching on user-shaped compound data — every existing\nfixture matches on scalars (ints/atoms/bools) or list cells. This\nfixture closes that gap with the smallest classic Erlang program\nthat exercises it.\n\n## Blocked by\n\n- fz-ul4.35 (interp MakeTuple + TupleField)\n- fz-ul4.36 (TypeTest reads descr.tuples)\n\nWithout those, JIT silently halts and interp errors with\n\"not yet supported\".\n\n## Paths\n\n`[jit, interp, aot]` minimum. Try `repl` last — if it lands\ncleanly, add it; if it doesn't, file the gap as its own ticket\nrather than dropping the path silently.\n\n## Acceptance\n\n- `fixtures/ast_eval/input.fz` + README.md with frontmatter (purpose,\n  paths) + expected.txt + blessed expected.specs + expected.clif.\n- `cargo test fixture_matrix` passes the new trials.\n- `cargo test fixture_index_up_to_date` regenerates with the new\n  row included.\n- All existing fixtures still pass.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "fixture: ast_eval — Erlang-style expression evaluator",
   "type": "task",
-  "updated_at": "2026-05-17T04:48:27Z"
+  "updated_at": "2026-05-17T04:48:34Z"
 }
