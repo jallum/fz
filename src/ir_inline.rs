@@ -1274,4 +1274,47 @@ mod tests {
     // visible and correct — is covered by the parity tests above, which run
     // all computations through the interpreter. The JIT-level GC stress test
     // is deferred to fz-ul4.11 as documented there.
+
+    // ----- fz-efb — inliner gate for fz-duq's tightness claim -----
+
+    /// fz-efb — fz-duq's lowering wraps each if/case/cond/with arm in a
+    /// per-arm continuation fn so arm-internal CPS-splits stay confined.
+    /// The "tightness" claim rests on the inliner collapsing tiny one-call
+    /// continuations back into their callers — otherwise the IR (and
+    /// golden CLIF) bloats. This test gates that property: for a simple
+    /// `if` with leaf arms, after `inline_module` + `dce_module_level`,
+    /// no `if_*` cont fns should survive in the module.
+    ///
+    /// If this test fails, it's evidence that the inliner can't collapse
+    /// the fz-duq cont-fn shape for some reason — investigate before
+    /// blessing any drifted goldens on real fixtures.
+    #[test]
+    fn fz_efb_leaf_arm_if_collapses_to_single_fn() {
+        // Single source-level fn `pos` with a tail-position if whose arms
+        // are pure literals (no calls, no Receive). fz-duq.2 mints
+        // `if_then`/`if_else` cont fns for both arms; the inliner should
+        // inline them back into pos and DCE should remove the now-dead
+        // fns.
+        let src = "fn pos(x), do: if x > 0, do: 1, else: -1\n\
+                   fn main(), do: print(pos(5))";
+        let mut m = lower_src(src);
+        crate::ir_inline::inline_module(&mut m);
+        crate::ir_dce::dce_module_level(&mut m);
+
+        let leftover: Vec<&str> = m
+            .fns
+            .iter()
+            .map(|f| f.name.as_str())
+            .filter(|n| {
+                n.starts_with("if_then") || n.starts_with("if_else") || n.starts_with("if_join")
+            })
+            .collect();
+
+        assert!(
+            leftover.is_empty(),
+            "expected fz-duq per-arm cont fns to be inlined+DCE'd away for leaf-arm if; \
+             found leftover: {:?}",
+            leftover,
+        );
+    }
 }
