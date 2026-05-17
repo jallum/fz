@@ -1,6 +1,7 @@
 {
   "assignee": "",
   "blocked_by": [
+    "fz-q9g.11",
     "fz-q9g.21"
   ],
   "blocks": [],
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "fz-dps.G3: FBIP rewrite — list rebuild in place",
   "type": "task",
-  "updated_at": "2026-05-17T04:47:58Z"
+  "updated_at": "2026-05-17T04:47:59Z"
 }

@@ -4,7 +4,9 @@
     "fz-6rw",
     "fz-q9g.5"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-q9g.23"
+  ],
   "created": "2026-05-17T04:46:53Z",
   "description": "What: When result Descr classifies to List, caller pre-allocates the cons chain in one bumped span (length-known) or falls back to non-DPS (length-unknown).\n\nBLOCKED BY fz-6rw: cell layout coordinates with the 16-byte cons target. If RC for cons proves infeasible at 16B, list FBIP defers and only contiguous-construction lands here.\n\nCLIF impact: strict reduction for length-known list construction.\n\nRemoves: per-cell alloc dispatch when contiguous.\n\nTests: golden CLIF on [a, b, c] construction.",
   "id": "fz-q9g.11",
@@ -14,5 +16,5 @@
   "status": "open",
   "title": "fz-dps.F4: DPS for MakeList (cons construction)",
   "type": "task",
-  "updated_at": "2026-05-17T04:47:56Z"
+  "updated_at": "2026-05-17T04:47:59Z"
 }
