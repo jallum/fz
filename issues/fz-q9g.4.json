@@ -13,9 +13,15 @@
   "id": "fz-q9g.4",
   "labels": [],
   "parent": "fz-q9g",
+  "comments": [
+    {
+      "text": "subsumed by fz-q9g.3 (CD-bundle): wire ABI cannot land without a constructor demonstrating it",
+      "timestamp": "2026-05-17T16:26:46Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "fz-dps.C3: lower Term::Call/CallClosure under Dst ABI",
   "type": "task",
-  "updated_at": "2026-05-17T04:47:57Z"
+  "updated_at": "2026-05-17T16:26:46Z"
 }
