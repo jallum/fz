@@ -2,13 +2,14 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-05-17T01:28:42Z",
   "created": "2026-05-17T01:09:36Z",
   "description": "",
   "id": "fz-h4q",
   "labels": [],
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "fz-cg2.3: ArgRepr::Condition — lazy bool_to_fz; remove cache.condition",
   "type": "task",
-  "updated_at": "2026-05-17T01:09:36Z"
+  "updated_at": "2026-05-17T01:28:42Z"
 }
