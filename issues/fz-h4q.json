@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-17T01:09:36Z",
+  "description": "",
+  "id": "fz-h4q",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "fz-cg2.3: ArgRepr::Condition — lazy bool_to_fz; remove cache.condition",
+  "type": "task",
+  "updated_at": "2026-05-17T01:09:36Z"
+}
