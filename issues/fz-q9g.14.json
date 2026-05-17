@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-17T04:47:21Z",
+  "description": "What: The Cheney tracer (runtime/src/heap.rs cheney_trace_children) has hand-written per-HeapKind arms. Where the arm only iterates the schema's FzValue fields, fold into the generic FieldKind-driven loop. Keep arms that have genuinely special structure (List spine, Closure captures).\n\nWhy: New HeapKinds inherit tracing for free; removes boilerplate.\n\nCLIF impact: runtime-only; no JIT CLIF impact.\n\nRemoves: repeated per-HeapKind tracer boilerplate.\n\nTests: existing GC tests pass under stress.",
+  "id": "fz-q9g.14",
+  "labels": [],
+  "parent": "fz-q9g",
+  "priority": 3,
+  "status": "open",
+  "title": "fz-dps.E3: collapse per-HeapKind tracer arms into FieldKind-driven loop",
+  "type": "task",
+  "updated_at": "2026-05-17T04:47:21Z"
+}
