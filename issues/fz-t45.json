@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-17T18:24:58Z",
+  "description": "Attempted as integration test for fz-aiz arc. With ensure_any_keys +\nannotation-driven dispatch, quicksort COMPILES cleanly (no .29.11\npanics, no ABI mismatch). But execution hits a separate bug — possibly\nlist-of-int handling under deep recursion, or a specific Var ABI\nmismatch in the recursive call's cont chain. Symptoms:\n\n  - quicksort([])    prints \"nil\"     (correct — empty list)\n  - quicksort([42])  prints \"[42]\"    (correct)\n  - quicksort([7])   prints \"[7]\"     (correct — recursion on empty)\n  - quicksort([2,1]) silent exit-0    (recursion on 1-element list breaks)\n  - quicksort([5,4,3,2,1]) SIGSEGV\n\nClosure-with-captures (`fn(x) -\u003e x \u003c p`) inside HOF also broken:\n\n  map(fn(x) -\u003e x + k, [1,2,3])  →  [false, #special\u003c0x1b\u003e, #special\u003c0x23\u003e]\n\nSo quicksort needs at least two more fixes outside the fz-aiz arc:\n(1) recursive-call cont seam for list-of-int when concat/recursion\nchain involves multiple specs; (2) closure-with-non-empty-captures\nABI at the call site.\n\nNot part of fz-aiz — its bug class (.29.x panics, MakeClosure ABI\nhazard, naturally_opaque vs any_key_specs conflation) IS fixed. apply2,\nhigher_order, curried_add, closure_typed_captures, actor_ring,\nthree_process_chain all green. quicksort exercises deeper closure /\nrecursive-cont machinery.",
+  "id": "fz-t45",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "quicksort fixture: deferred (post-arc bug surface)",
+  "type": "task",
+  "updated_at": "2026-05-17T18:24:58Z"
+}
