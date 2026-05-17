@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-q9g.3"
+  ],
   "blocks": [],
   "created": "2026-05-17T04:46:52Z",
   "description": "What: When the classifier (C1) sees a join cont reached from multiple arms with the same HeapKind, all arms share one caller-allocated dst. No per-arm allocation.\n\nFixture: case v do :a -\u003e {1,2} ; :b -\u003e {3,4} end (heap-result case; primitive-result cases like int already optimized via RawI64).\n\nGolden CLIF target: zero per-arm alloc_struct; one caller-side alloc; two stores per arm. N arm allocs reduce to 1 caller alloc.\n\nWhy: First headline composability win — continuations, destinations, and case all click together.\n\nCLIF impact: strict reduction: (N-1) fewer allocs per case.\n\nRemoves: (N-1) tuple allocations per case with N arms.\n\nTests: new golden CLIF fixture in fixtures/case_tuple_join/.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "fz-dps.D1: case-arm join into shared dst",
   "type": "task",
-  "updated_at": "2026-05-17T04:46:52Z"
+  "updated_at": "2026-05-17T04:47:54Z"
 }
