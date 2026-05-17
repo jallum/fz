@@ -1691,7 +1691,9 @@ pub fn compile_with_backend<B: Backend>(
                 //                               off 12 : _reserved (u32)
                 // flags low 14 bits = captured_count; high 2 bits = halt_kind.
                 let closure_raw = untag_ptr(b, closure);
-                let flags_u16 = b.ins().load(types::I16, MemFlags::trusted(), closure_raw, 2);
+                let flags_u16 = b
+                    .ins()
+                    .load(types::I16, MemFlags::trusted(), closure_raw, 2);
                 // Right-shift 14 to extract halt_kind (0..2), then widen to i32.
                 let hk16 = b.ins().ushr_imm(flags_u16, 14);
                 let kind = b.ins().uextend(types::I32, hk16);
@@ -1712,9 +1714,12 @@ pub fn compile_with_backend<B: Backend>(
                 // Load closure body addr at +16 and invoke as
                 // closure-target sig `(self, cont) tail` (zero user args).
                 let closure_raw_for_body = untag_ptr(b, closure);
-                let code = b
-                    .ins()
-                    .load(types::I64, MemFlags::trusted(), closure_raw_for_body, HEADER_SIZE);
+                let code = b.ins().load(
+                    types::I64,
+                    MemFlags::trusted(),
+                    closure_raw_for_body,
+                    HEADER_SIZE,
+                );
                 let mut closure_sig = Signature::new(CallConv::Tail);
                 closure_sig.params.push(AbiParam::new(types::I64)); // self
                 closure_sig.params.push(AbiParam::new(types::I64)); // cont
@@ -4697,9 +4702,9 @@ fn emit_terminator<M: cranelift_module::Module>(
                 // Existing indirect path (cl+16) for unresolved /
                 // union-of-lits / plain-arrow closures.
                 let cl_val_raw = untag_ptr(b, cl_val);
-                let body_fp = b
-                    .ins()
-                    .load(types::I64, MemFlags::trusted(), cl_val_raw, HEADER_SIZE);
+                let body_fp =
+                    b.ins()
+                        .load(types::I64, MemFlags::trusted(), cl_val_raw, HEADER_SIZE);
                 let mut sig = Signature::new(CallConv::Tail);
                 for _ in &arg_vals {
                     sig.params.push(AbiParam::new(types::I64));
