@@ -1,5 +1,5 @@
 ; fn first_relay
-    ;   @spec   first_relay() -> _
+    ;   @spec   first_relay() -> any
     ;   @key    []
     ;   @abi    () -> Tagged
 function u0:0(i64, i64) -> i64 tail {
@@ -25,7 +25,7 @@ block0(v0: i64, v1: i64):
 }
 
 ; fn second_relay
-    ;   @spec   second_relay() -> _
+    ;   @spec   second_relay() -> any
     ;   @key    []
     ;   @abi    () -> Tagged
 function u0:0(i64, i64) -> i64 tail {
@@ -51,7 +51,7 @@ block0(v0: i64, v1: i64):
 }
 
 ; fn main
-    ;   @spec   main() -> _
+    ;   @spec   main() -> nil
     ;   @key    []
     ;   @abi    () -> Tagged
 function u0:0(i64) -> i64 tail {
@@ -104,7 +104,7 @@ block0(v0: i64):
 }
 
 ; fn k_13
-    ;   @spec   k_13(any) -> _
+    ;   @spec   k_13(any) -> nil
     ;   @key    [any]
     ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
@@ -263,7 +263,7 @@ block2:
 }
 
 ; fn fz_spawn_thunk_s17
-    ;   @spec   fz_spawn_thunk(&fn7[]:() -> any) -> _
+    ;   @spec   fz_spawn_thunk(&fn7[]:() -> any) -> any
     ;   @key    [&fn7[]:() -> any]
     ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
@@ -276,7 +276,7 @@ block0(v0: i64, v1: i64):
 }
 
 ; fn fz_spawn_thunk_s18
-    ;   @spec   fz_spawn_thunk(&fn8[]:() -> any) -> _
+    ;   @spec   fz_spawn_thunk(&fn8[]:() -> any) -> any
     ;   @key    [&fn8[]:() -> any]
     ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {

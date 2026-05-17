@@ -209,6 +209,26 @@ pub struct Schema {
     pub fields: Vec<FieldDescriptor>,
 }
 
+impl Schema {
+    /// fz-ul4.38 — canonical `Tuple{N}` schema. N FzValue slots at offsets
+    /// 0, 8, 16, … Used by every path that registers tuple schemas: JIT
+    /// codegen (`ir_codegen::compile_with_backend`), interp lazy
+    /// registration (`ir_interp::interp_tuple_schema_id`), and the AOT
+    /// startup hook (`aot_shim::fz_aot_setup`). Single source of truth.
+    pub fn tuple_of_arity(arity: usize) -> Self {
+        Self {
+            name: format!("Tuple{}", arity),
+            size: (arity * 8) as u32,
+            fields: (0..arity)
+                .map(|i| FieldDescriptor {
+                    offset: (i * 8) as u32,
+                    kind: FieldKind::FzValue,
+                })
+                .collect(),
+        }
+    }
+}
+
 pub struct SchemaRegistry {
     schemas: Vec<Schema>,
 }

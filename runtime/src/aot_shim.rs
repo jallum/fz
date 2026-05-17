@@ -145,6 +145,49 @@ pub extern "C" fn fz_aot_setup(
     proc_ptr
 }
 
+/// fz-ul4.38 — register the program's tuple schemas with the AOT process,
+/// in the order baked into the `fz_aot_tuple_arities` data symbol. Codegen
+/// iterates arities in sorted order; this fn registers in that same order
+/// so the schema ids match what was iconst'd into the emitted CLIF.
+///
+/// `arities` may be null (no tuples in program); `len` is the element
+/// count (each element is a u32). When arities 1 and 3 are present, the
+/// per-process bs reader caches are populated to bring AOT to parity with
+/// JIT's CompiledModule wiring.
+///
+/// # Safety
+/// `proc` must be a process produced by `fz_aot_setup`. `arities` must
+/// point at `len` consecutive `u32`s when len > 0.
+#[unsafe(no_mangle)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn fz_aot_register_tuple_schemas(proc: *mut Process, arities: *const u32, len: u32) {
+    assert!(
+        !proc.is_null(),
+        "fz_aot_register_tuple_schemas: null process"
+    );
+    if len == 0 {
+        return;
+    }
+    assert!(
+        !arities.is_null(),
+        "fz_aot_register_tuple_schemas: null arities with len > 0"
+    );
+    let process = unsafe { &mut *proc };
+    let registry = process.heap.schemas_registry();
+    let mut reg = registry.borrow_mut();
+    for i in 0..len {
+        // Data section alignment isn't guaranteed on all platforms; read
+        // unaligned so we don't trip the alignment check on aarch64-darwin.
+        let arity = unsafe { std::ptr::read_unaligned(arities.add(i as usize)) };
+        let id = reg.register(crate::heap::Schema::tuple_of_arity(arity as usize));
+        match arity {
+            1 => process.bs_tuple_arity1_schema = Some(id),
+            3 => process.bs_tuple_arity3_schema = Some(id),
+            _ => {}
+        }
+    }
+}
+
 /// Register one static closure target. AOT codegen emits one call per
 /// `MakeClosure` with zero captures. `code_addr` is the body fn's
 /// address (Cranelift `func_addr` of the fz_fn_<body_id>).

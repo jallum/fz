@@ -1,5 +1,5 @@
 ; fn main
-    ;   @spec   main() -> _
+    ;   @spec   main() -> nil
     ;   @key    []
     ;   @abi    () -> Tagged
 function u0:0(i64) -> i64 tail {
@@ -25,7 +25,7 @@ block0(v0: i64):
 }
 
 ; fn fib_s9
-    ;   @spec   fib(0, 0, 1) -> 0 | 1
+    ;   @spec   fib(0, 0, 1) -> 0
     ;   @key    [0, 0, 1]
     ;   @abi    (RawInt, RawInt, RawInt) -> RawInt
 function u0:0(i64, i64, i64, i64) -> i64 tail {
@@ -91,7 +91,7 @@ block4:
 }
 
 ; fn fib_s10
-    ;   @spec   fib(1, 0, 1) -> 0 | 1
+    ;   @spec   fib(1, 0, 1) -> 1
     ;   @key    [1, 0, 1]
     ;   @abi    (RawInt, RawInt, RawInt) -> RawInt
 function u0:0(i64, i64, i64, i64) -> i64 tail {
@@ -157,7 +157,7 @@ block4:
 }
 
 ; fn fib_s11
-    ;   @spec   fib(10, 0, 1) -> 0 | 1
+    ;   @spec   fib(10, 0, 1) -> int
     ;   @key    [10, 0, 1]
     ;   @abi    (RawInt, RawInt, RawInt) -> RawInt
 function u0:0(i64, i64, i64, i64) -> i64 tail {
@@ -226,7 +226,7 @@ block4:
 }
 
 ; fn fib_s12
-    ;   @spec   fib(20, 0, 1) -> 0 | 1
+    ;   @spec   fib(20, 0, 1) -> int
     ;   @key    [20, 0, 1]
     ;   @abi    (RawInt, RawInt, RawInt) -> RawInt
 function u0:0(i64, i64, i64, i64) -> i64 tail {
@@ -295,7 +295,7 @@ block4:
 }
 
 ; fn fib_s13
-    ;   @spec   fib(int | float, 1, int) -> 1 | int
+    ;   @spec   fib(int | float, 1, int) -> int
     ;   @key    [int | float, 1, int]
     ;   @abi    (Tagged, RawInt, RawInt) -> RawInt
 function u0:0(i64, i64, i64, i64) -> i64 tail {
@@ -569,7 +569,7 @@ block4:
 }
 
 ; fn fib_s15
-    ;   @spec   fib(int, 1, int) -> 1 | int
+    ;   @spec   fib(int, 1, int) -> int
     ;   @key    [int, 1, int]
     ;   @abi    (RawInt, RawInt, RawInt) -> RawInt
 function u0:0(i64, i64, i64, i64) -> i64 tail {
@@ -687,7 +687,7 @@ block4:
 }
 
 ; fn k_9_s17
-    ;   @spec   k_9(0) -> _
+    ;   @spec   k_9(0) -> nil
     ;   @key    [0]
     ;   @abi    (RawInt) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
@@ -717,7 +717,7 @@ function u0:0(i64, i64) -> i64 tail {
 }
 
 ; fn k_11_s18
-    ;   @spec   k_11(1) -> _
+    ;   @spec   k_11(1) -> nil
     ;   @key    [1]
     ;   @abi    (RawInt) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
@@ -747,7 +747,7 @@ function u0:0(i64, i64) -> i64 tail {
 }
 
 ; fn k_13_s19
-    ;   @spec   k_13(int) -> _
+    ;   @spec   k_13(int) -> nil
     ;   @key    [int]
     ;   @abi    (RawInt) -> Tagged
 function u0:0(i64, i64) -> i64 tail {

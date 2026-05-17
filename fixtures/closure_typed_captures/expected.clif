@@ -1,5 +1,5 @@
 ; fn main
-    ;   @spec   main() -> _
+    ;   @spec   main() -> nil
     ;   @key    []
     ;   @abi    () -> Tagged
 function u0:0(i64) -> i64 tail {
@@ -37,7 +37,7 @@ block0(v0: i64):
 }
 
 ; fn apply1_s10
-    ;   @spec   apply1(&fn10[10, 20]:(any) -> any, 12) -> _
+    ;   @spec   apply1(&fn10[10, 20]:(any) -> any, 12) -> int
     ;   @key    [&fn10[10, 20]:(any) -> any, 12]
     ;   @abi    (Tagged, RawInt) -> RawInt
 function u0:0(i64, i64, i64) -> i64 tail {

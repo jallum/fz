@@ -2284,9 +2284,9 @@ pub fn cont_slot0_descr(
 /// fz-ul4.27.21.4 — JOIN of a spec's effective return Descrs, following
 /// every exit path. Each `Term::Return` contributes the returned var's
 /// Descr; each `Term::TailCall` recursively contributes the callee spec's
-/// effective return. Mirrors the codegen-side return-descr fixpoint at
-/// `src/ir_codegen.rs:2070-2107` so the typer's cont keying agrees with
-/// what the producer actually passes at runtime.
+/// effective return. fz-i82.2 retired the codegen-side mirror — codegen
+/// reads this map directly so the cont side and the producer side
+/// always agree.
 ///
 /// Without this, a fn whose only direct `Term::Return` is narrow (int)
 /// but whose `Term::TailCall` reaches a wider spec (Any/Tagged) appears

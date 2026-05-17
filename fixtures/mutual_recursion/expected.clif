@@ -1,5 +1,5 @@
 ; fn main
-    ;   @spec   main() -> _
+    ;   @spec   main() -> nil
     ;   @key    []
     ;   @abi    () -> Tagged
 function u0:0(i64) -> i64 tail {
@@ -72,7 +72,7 @@ block2:
 }
 
 ; fn is_even_s11
-    ;   @spec   is_even(10) -> :true
+    ;   @spec   is_even(10) -> :false | :true
     ;   @key    [10]
     ;   @abi    (RawInt) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
@@ -124,7 +124,7 @@ block2:
 }
 
 ; fn is_even_s12
-    ;   @spec   is_even(int | float) -> :true
+    ;   @spec   is_even(int | float) -> :false | :true
     ;   @key    [int | float]
     ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
@@ -225,7 +225,7 @@ block2:
 }
 
 ; fn is_even_s13
-    ;   @spec   is_even(int) -> :true
+    ;   @spec   is_even(int) -> :false | :true
     ;   @key    [int]
     ;   @abi    (RawInt) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
@@ -272,7 +272,7 @@ block2:
 }
 
 ; fn is_odd_s14
-    ;   @spec   is_odd(1) -> :false
+    ;   @spec   is_odd(1) -> :false | :true
     ;   @key    [1]
     ;   @abi    (RawInt) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
@@ -324,7 +324,7 @@ block2:
 }
 
 ; fn is_odd_s15
-    ;   @spec   is_odd(7) -> :false
+    ;   @spec   is_odd(7) -> :false | :true
     ;   @key    [7]
     ;   @abi    (RawInt) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
@@ -376,7 +376,7 @@ block2:
 }
 
 ; fn is_odd_s16
-    ;   @spec   is_odd(int | float) -> :false
+    ;   @spec   is_odd(int | float) -> :false | :true
     ;   @key    [int | float]
     ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
@@ -477,7 +477,7 @@ block2:
 }
 
 ; fn is_odd_s17
-    ;   @spec   is_odd(int) -> :false
+    ;   @spec   is_odd(int) -> :false | :true
     ;   @key    [int]
     ;   @abi    (RawInt) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
@@ -524,7 +524,7 @@ block2:
 }
 
 ; fn k_10_s18
-    ;   @spec   k_10(:false | :true) -> _
+    ;   @spec   k_10(:false | :true) -> nil
     ;   @key    [:false | :true]
     ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
@@ -552,7 +552,7 @@ function u0:0(i64, i64) -> i64 tail {
 }
 
 ; fn k_12_s19
-    ;   @spec   k_12(:false | :true) -> _
+    ;   @spec   k_12(:false | :true) -> nil
     ;   @key    [:false | :true]
     ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
@@ -580,7 +580,7 @@ function u0:0(i64, i64) -> i64 tail {
 }
 
 ; fn k_14_s20
-    ;   @spec   k_14(:true) -> _
+    ;   @spec   k_14(:true) -> nil
     ;   @key    [:true]
     ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {

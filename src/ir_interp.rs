@@ -66,6 +66,11 @@ thread_local! {
     static INTERP_NEXT_PID: Cell<u32> = const { Cell::new(2) };
     static INTERP_SCHEMAS: RefCell<Option<std::rc::Rc<std::cell::RefCell<fz_runtime::heap::SchemaRegistry>>>> =
         const { RefCell::new(None) };
+    /// fz-ul4.35 — per-run map from tuple arity to heap schema id.
+    /// Populated lazily by Prim::MakeTuple via interp_tuple_schema_id; cleared
+    /// at run_main / run_test_fn entry so each run starts fresh.
+    static INTERP_TUPLE_SCHEMA_IDS: RefCell<HashMap<usize, u32>> =
+        RefCell::new(HashMap::new());
     /// FIFO run-queue of pids ready to execute.
     static INTERP_RUN_QUEUE: RefCell<VecDeque<u32>> = const { RefCell::new(VecDeque::new()) };
     /// Per-task resume state: (resume_fn, cap_vals, after_chain).
@@ -74,6 +79,34 @@ thread_local! {
     /// invoke in order after resume_fn returns, passing each return value on.
     static INTERP_RESUME: RefCell<HashMap<u32, ResumeEntry>> =
         RefCell::new(HashMap::new());
+}
+
+/// fz-ul4.35 — get-or-register a heap schema for a tuple of `arity`,
+/// matching the JIT codegen layout in src/ir_codegen.rs (Tuple{N}, N*8
+/// payload bytes, N FzValue fields at offsets 0, 8, 16, ...).
+fn interp_tuple_schema_id(arity: usize) -> u32 {
+    INTERP_TUPLE_SCHEMA_IDS.with(|m| {
+        if let Some(&id) = m.borrow().get(&arity) {
+            return id;
+        }
+        use fz_runtime::heap::{FieldDescriptor, FieldKind, Schema};
+        let s = Schema {
+            name: format!("Tuple{}", arity),
+            size: (arity * 8) as u32,
+            fields: (0..arity)
+                .map(|i| FieldDescriptor {
+                    offset: (i * 8) as u32,
+                    kind: FieldKind::FzValue,
+                })
+                .collect(),
+        };
+        let registry = fz_runtime::process::current_process()
+            .heap
+            .schemas_registry();
+        let id = registry.borrow_mut().register(s);
+        m.borrow_mut().insert(arity, id);
+        id
+    })
 }
 
 fn interp_register_task(pid: u32, process: Box<Process>) -> *mut Process {
@@ -134,6 +167,7 @@ fn interp_reset_state() {
     INTERP_NEXT_PID.with(|n| n.set(2));
     INTERP_RUN_QUEUE.with(|q| q.borrow_mut().clear());
     INTERP_RESUME.with(|r| r.borrow_mut().clear());
+    INTERP_TUPLE_SCHEMA_IDS.with(|m| m.borrow_mut().clear());
 }
 
 /// Run `module`'s `main` fn through the interpreter.
@@ -558,6 +592,38 @@ fn eval_prim(module: &Module, prim: &Prim, env: &HashMap<Var, FzValue>) -> Resul
             }
             FzValue(p as u64)
         }
+        Prim::MakeTuple(elems) => {
+            // fz-ul4.35 — mirror src/ir_codegen.rs MakeTuple: alloc a heap
+            // Struct with `arity` FzValue slots and write each captured
+            // value at offset 16 + i*8 (after the 16-byte HeapHeader).
+            // Schemas are registered lazily on first use of each arity; the
+            // map is per-run (run_main / run_test_fn clear it), so schema
+            // ids are stable across spawned tasks that share the registry.
+            let arity = elems.len();
+            let schema_id = interp_tuple_schema_id(arity);
+            let p = fz_runtime::process::current_process()
+                .heap
+                .alloc_struct(schema_id);
+            for (i, v) in elems.iter().enumerate() {
+                let val = env_get(env, *v)?;
+                unsafe {
+                    let dst = (p as *mut u8).add(16 + i * 8) as *mut FzValue;
+                    std::ptr::write(dst, val);
+                }
+            }
+            FzValue(p as u64)
+        }
+        Prim::TupleField(c, idx) => {
+            let cv = env_get(env, *c)?;
+            let p = cv
+                .unbox_ptr()
+                .ok_or_else(|| "TupleField: subject is not a heap pointer".to_string())?;
+            let off = 16 + (*idx as usize) * 8;
+            unsafe {
+                let src = (p as *const u8).add(off) as *const FzValue;
+                std::ptr::read(src)
+            }
+        }
         Prim::TypeTest(v, descr) => {
             use crate::types::BasicBits;
             use fz_runtime::fz_value::{HeapKind, Tag};
@@ -580,13 +646,30 @@ fn eval_prim(module: &Module, prim: &Prim, env: &HashMap<Var, FzValue>) -> Resul
             if descr.basic.contains_all(BasicBits::BOOL) {
                 matched |= val.is_true() || val.is_false();
             }
+            // fz-ul4.36 — collect tuple arities, mirroring JIT codegen.
+            // pos TupleSig => match if value is HeapKind::Struct with
+            // size_bytes == arity * 8. neg clauses unsupported (assert).
+            let tuple_arities_to_check: Vec<usize> = descr
+                .tuples
+                .iter()
+                .flat_map(|conj| {
+                    assert!(
+                        conj.neg.is_empty(),
+                        "TypeTest: negated tuple clauses not yet supported"
+                    );
+                    conj.pos.iter().map(|sig| sig.elems.len())
+                })
+                .collect();
+
             let need_heap = !descr.floats.is_none()
                 || descr.basic.contains_all(BasicBits::VEC_I64)
                 || descr.basic.contains_all(BasicBits::VEC_F64)
                 || descr.basic.contains_all(BasicBits::VEC_U8)
-                || descr.basic.contains_all(BasicBits::VEC_BIT);
+                || descr.basic.contains_all(BasicBits::VEC_BIT)
+                || !tuple_arities_to_check.is_empty();
             if need_heap && let Some(ptr) = val.unbox_ptr() {
-                let hk = HeapKind::from_u16(unsafe { (*ptr).kind });
+                let header = unsafe { &*ptr };
+                let hk = HeapKind::from_u16(header.kind);
                 if !descr.floats.is_none() {
                     matched |= hk == Some(HeapKind::Float);
                 }
@@ -601,6 +684,19 @@ fn eval_prim(module: &Module, prim: &Prim, env: &HashMap<Var, FzValue>) -> Resul
                 }
                 if descr.basic.contains_all(BasicBits::VEC_BIT) {
                     matched |= hk == Some(HeapKind::VecBit);
+                }
+                if !tuple_arities_to_check.is_empty() && hk == Some(HeapKind::Struct) {
+                    // Compare schema_id — size_bytes alone isn't arity-unique
+                    // because alloc_struct aligns total size to 16 (arity 1
+                    // and arity 2 both yield 32 bytes; 3 and 4 both yield 48).
+                    let actual_schema = header.schema_id;
+                    for arity in &tuple_arities_to_check {
+                        let want_schema = interp_tuple_schema_id(*arity);
+                        if actual_schema == want_schema {
+                            matched = true;
+                            break;
+                        }
+                    }
                 }
             }
             if matched {

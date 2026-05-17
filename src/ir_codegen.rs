@@ -433,6 +433,7 @@ fn build_typer_header(
     f: &crate::fz_ir::FnIr,
     ft: &crate::ir_typer::FnTypes,
     spec_key: &[crate::types::Descr],
+    effective_return: &crate::types::Descr,
     param_reprs: &[ArgRepr],
     return_repr: ArgRepr,
 ) -> String {
@@ -445,24 +446,14 @@ fn build_typer_header(
             None => "?".to_string(),
         })
         .collect();
-    // Join return Descrs across all Term::Return sites in this fn.
-    let mut return_descrs: Vec<String> = Vec::new();
-    for blk in &f.blocks {
-        if let crate::fz_ir::Term::Return(v) = &blk.terminator {
-            let d = ft
-                .vars
-                .get(v)
-                .map(|d| format!("{}", d))
-                .unwrap_or_else(|| "?".into());
-            if !return_descrs.contains(&d) {
-                return_descrs.push(d);
-            }
-        }
-    }
-    let return_str = if return_descrs.is_empty() {
+    // fz-i82.2 — `@spec` reports the same effective return that drives
+    // `@abi` and the cont's slot-0 keying (`module_types.effective_returns`).
+    // Halt-only specs converge to `none` in the LFP; show `_` for those
+    // (matches the previous "no Term::Return found" rendering).
+    let return_str = if effective_return.is_subtype(&crate::types::Descr::none()) {
         "_".to_string()
     } else {
-        return_descrs.join(" | ")
+        format!("{}", effective_return)
     };
     let codegen_repr = |r: &ArgRepr| -> &'static str {
         match r {
@@ -999,6 +990,11 @@ pub struct CompiledMetadata {
     pub atom_names: Vec<String>,
     pub bs_tuple_arity1_schema: Option<u32>,
     pub bs_tuple_arity3_schema: Option<u32>,
+    /// fz-ul4.38 — sorted list of tuple arities the program will allocate.
+    /// JIT ignores it (its runtime shares `user_schemas`); AOT bakes it
+    /// into a `.data` symbol so `fz_aot_setup` can re-register the same
+    /// `Tuple{N}` schemas in matching order.
+    pub tuple_arities: Vec<u32>,
     pub diagnostics: crate::diag::Diagnostics,
     /// FnId of fz user `main`, if present. AOT needs it to wire the C
     /// `main` shim; JIT keeps it as a convenience for the run path.
@@ -1395,6 +1391,44 @@ impl Backend for AotBackend {
             .declare_function("fz_aot_set_resume_shims", Linkage::Import, &set_shims_sig)
             .map_err(|e| CodegenError::new(format!("declare fz_aot_set_resume_shims: {}", e)))?;
 
+        // fz-ul4.38 — fz_aot_register_tuple_schemas(proc, arities_ptr, len)
+        // populates the AOT process's SchemaRegistry with one Tuple{N} entry
+        // per arity, in the order the array was emitted. That order matches
+        // the sorted iteration in compile_with_backend, so the schema ids
+        // baked into the CLIF (via tuple_schema_ids) resolve correctly.
+        let reg_tuples_sig = sig1(&[types::I64, types::I64, types::I32], &[]);
+        let reg_tuples_id = self
+            .omod
+            .declare_function(
+                "fz_aot_register_tuple_schemas",
+                Linkage::Import,
+                &reg_tuples_sig,
+            )
+            .map_err(|e| {
+                CodegenError::new(format!("declare fz_aot_register_tuple_schemas: {}", e))
+            })?;
+
+        let (tuple_arities_data, tuple_arities_len): (Option<DataId>, u32) =
+            if meta.tuple_arities.is_empty() {
+                (None, 0)
+            } else {
+                let mut bytes: Vec<u8> = Vec::with_capacity(meta.tuple_arities.len() * 4);
+                for &a in &meta.tuple_arities {
+                    bytes.extend_from_slice(&a.to_ne_bytes());
+                }
+                let len = meta.tuple_arities.len() as u32;
+                let id = self
+                    .omod
+                    .declare_data("fz_aot_tuple_arities", Linkage::Local, false, false)
+                    .map_err(|e| CodegenError::new(format!("declare tuple arities: {}", e)))?;
+                let mut desc = DataDescription::new();
+                desc.define(bytes.into_boxed_slice());
+                self.omod
+                    .define_data(id, &desc)
+                    .map_err(|e| CodegenError::new(format!("define tuple arities: {}", e)))?;
+                (Some(id), len)
+            };
+
         let (atom_blob_data, atom_blob_len): (Option<DataId>, u32) = if meta.atom_names.is_empty() {
             (None, 0)
         } else {
@@ -1443,6 +1477,9 @@ impl Backend for AotBackend {
             run_id,
             &meta.mid_flight_resume_ids,
             set_shims_id,
+            reg_tuples_id,
+            tuple_arities_data,
+            tuple_arities_len,
         )?;
         Ok(())
     }
@@ -1752,7 +1789,10 @@ pub fn compile_with_backend<B: Backend>(
     // Also detect any bitstring prim so we can pre-register arity-1 / arity-3
     // schemas used by the reader / result tuples even if no MakeTuple uses
     // those arities directly.
-    let mut tuple_arities: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    // fz-ul4.38 — BTreeSet so iteration order is deterministic. Schema ids
+    // are assigned by registration order; the AOT runtime registers in the
+    // same sorted order so its ids match what codegen baked into the CLIF.
+    let mut tuple_arities: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
     let mut has_bs_prim = false;
     for f in &module.fns {
         for blk in &f.blocks {
@@ -1767,6 +1807,17 @@ pub fn compile_with_backend<B: Backend>(
                     | Prim::BitReadField { .. }
                     | Prim::BitReaderDone(_) => {
                         has_bs_prim = true;
+                    }
+                    // fz-ul4.36 — also register schemas for arities that
+                    // appear in TypeTest tuple descriptors. The runtime
+                    // check compares schema_id; without pre-registration
+                    // we'd have no id to compare against.
+                    Prim::TypeTest(_, descr) => {
+                        for conj in &descr.tuples {
+                            for sig in &conj.pos {
+                                tuple_arities.insert(sig.elems.len());
+                            }
+                        }
                     }
                     _ => {}
                 }
@@ -1784,17 +1835,7 @@ pub fn compile_with_backend<B: Backend>(
     {
         let mut reg = user_schemas.borrow_mut();
         for &arity in &tuple_arities {
-            let s = Schema {
-                name: format!("Tuple{}", arity),
-                size: (arity * 8) as u32,
-                fields: (0..arity)
-                    .map(|i| FieldDescriptor {
-                        offset: (i * 8) as u32,
-                        kind: FieldKind::FzValue,
-                    })
-                    .collect(),
-            };
-            let id = reg.register(s);
+            let id = reg.register(Schema::tuple_of_arity(arity));
             tuple_schema_ids.insert(arity, id);
         }
     }
@@ -2321,115 +2362,37 @@ pub fn compile_with_backend<B: Backend>(
     // frame-size dispatch fn). Indexed by SpecId.0.
     let frame_sizes: Vec<u32> = schemas.iter().map(|s| s.size).collect();
 
-    // Per-spec return Descrs (each spec's `Term::Return` join under its
-    // own typed view) — extended in fz-ul4.27.13 to propagate through
-    // `Term::TailCall` so a fn whose only exit is a tail call inherits
-    // the callee's return Descr instead of defaulting to `any`. Without
-    // this, a chain like `fn run(n), do twice(n)` (which lowers to a
-    // single tail call to `double`) would report `any` and force a
-    // tagged-FzValue boundary at the caller, undoing the .27.13 unbox
-    // win at every macro-style hop.
+    // fz-i82.2 — per-spec return Descr comes from the typer's LFP
+    // (`module_types.effective_returns`). That walk filters by
+    // `reachable_blocks` AND propagates through every exit terminator
+    // including `Term::Call` / `Term::CallClosure` / `Term::Receive`
+    // with a continuation; the cont side (`cont_slot0_descr`) already
+    // reads from the same map. Reading it here too means the producer
+    // abi and the cont's slot-0 abi agree by construction — the
+    // mismatch that fz-i82 manifested cannot recur.
     //
-    // Iterate to fixpoint: each pass folds in TailCall callees' current
-    // return Descrs through `spec_registry` resolution. Indexed by
-    // SpecId.0; sentinel slots get `any`.
-    // Seed: per-spec join of Term::Return val Descrs (None == no
-    // Term::Return yet). Sentinel slots seed to `any` (never reached).
-    let mut return_descrs: Vec<Option<crate::types::Descr>> = (0..spec_count)
-        .map(|sid| match spec_fnidx[sid] {
-            Some(idx) => {
-                let f = &module.fns[idx];
-                let ft = spec_fn_types[sid].expect("non-sentinel spec must have FnTypes");
-                let mut joined: Option<crate::types::Descr> = None;
-                for blk in &f.blocks {
-                    if let Term::Return(v) = &blk.terminator {
-                        let d = ft
-                            .vars
-                            .get(v)
-                            .cloned()
-                            .unwrap_or_else(crate::types::Descr::any);
-                        joined = Some(match joined {
-                            Some(p) => p.union(&d),
-                            None => d,
-                        });
-                    }
-                }
-                joined
+    // Halt-only specs converge to `Descr::none()` in the LFP; substitute
+    // `any` so `ArgRepr::from_descr` doesn't pick RawF64 (none is a
+    // subtype of every set, including float). The value never reaches
+    // anyone for a halt-only spec, but the abi must still be valid.
+    let return_descrs: Vec<crate::types::Descr> = spec_keys
+        .iter()
+        .enumerate()
+        .map(|(sid, (fid, key))| {
+            if spec_fnidx[sid].is_none() {
+                return crate::types::Descr::any();
             }
-            None => Some(crate::types::Descr::any()),
+            let d = module_types
+                .effective_returns
+                .get(&(*fid, key.clone()))
+                .cloned()
+                .unwrap_or_else(crate::types::Descr::any);
+            if d.is_subtype(&crate::types::Descr::none()) {
+                crate::types::Descr::any()
+            } else {
+                d
+            }
         })
-        .collect();
-    // Use semantic mutual-subtype check for fixpoint termination: the
-    // DNF Descr representation isn't canonical, so `prev.union(callee_d)`
-    // can produce a structurally-different but semantically-equal value
-    // (e.g. for recursive fns where callee_sid == sid and the value is
-    // already its own fixpoint). Cap iterations as a belt-and-braces
-    // bound — spec_count is small and the lattice has bounded height
-    // for fz's first-order Descrs.
-    let max_iters = spec_count.saturating_mul(spec_count).saturating_add(8);
-    for _ in 0..max_iters {
-        let mut changed = false;
-        for sid in 0..spec_count {
-            let Some(idx) = spec_fnidx[sid] else {
-                continue;
-            };
-            let f = &module.fns[idx];
-            let ft = spec_fn_types[sid].expect("non-sentinel spec must have FnTypes");
-            for blk in &f.blocks {
-                // Both Term::TailCall and a resolved-via-closure_lit
-                // Term::TailCallClosure feed the callee's return Descr
-                // into this spec's return Descr. Unresolved
-                // TailCallClosure stays opaque (any) — same as today.
-                let callee_sid_for_tc: Option<u32> = match &blk.terminator {
-                    Term::TailCall { callee, args, .. } => {
-                        let arg_descrs: Vec<crate::types::Descr> = args
-                            .iter()
-                            .map(|av| {
-                                ft.vars
-                                    .get(av)
-                                    .cloned()
-                                    .unwrap_or_else(crate::types::Descr::any)
-                            })
-                            .collect();
-                        spec_registry.resolve(*callee, &arg_descrs).map(|s| s.0)
-                    }
-                    Term::TailCallClosure { closure, args } => {
-                        // fz-ul4.27.22.12 — closure_lit-driven return
-                        // propagation. Mirrors the codegen direct-dispatch
-                        // resolution in TailCallClosure compile.
-                        resolve_tcc_body(closure, args, ft, module, &spec_registry)
-                            .map(|(_, sid)| sid)
-                    }
-                    _ => None,
-                };
-                let Some(callee_sid_v) = callee_sid_for_tc else {
-                    continue;
-                };
-                let callee_sid = callee_sid_v as usize;
-                let Some(callee_d) = return_descrs[callee_sid].clone() else {
-                    continue;
-                };
-                let new_d = match &return_descrs[sid] {
-                    Some(prev) => prev.union(&callee_d),
-                    None => callee_d,
-                };
-                let prev_eq_new = match &return_descrs[sid] {
-                    Some(prev) => prev.is_subtype(&new_d) && new_d.is_subtype(prev),
-                    None => false,
-                };
-                if !prev_eq_new {
-                    return_descrs[sid] = Some(new_d);
-                    changed = true;
-                }
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
-    let return_descrs: Vec<crate::types::Descr> = return_descrs
-        .into_iter()
-        .map(|opt| opt.unwrap_or_else(crate::types::Descr::any))
         .collect();
 
     // fz-ul4.27.13 — Per-spec entry-param ArgReprs + return ArgRepr.
@@ -2778,6 +2741,7 @@ pub fn compile_with_backend<B: Backend>(
                     f,
                     ft,
                     &spec_keys[sid].1,
+                    &return_descrs[sid],
                     &param_reprs[sid],
                     return_reprs[sid],
                 );
@@ -3033,6 +2997,7 @@ pub fn compile_with_backend<B: Backend>(
         atom_names: module.atom_names.clone(),
         bs_tuple_arity1_schema,
         bs_tuple_arity3_schema,
+        tuple_arities: tuple_arities.iter().map(|&a| a as u32).collect(),
         diagnostics,
         main_fn_id,
         static_closure_targets,
@@ -3088,6 +3053,9 @@ fn emit_aot_c_main<M: cranelift_module::Module>(
     run_id: FuncId,
     mid_flight_resume_ids: &[FuncId; 9],
     set_shims_id: FuncId,
+    reg_tuples_id: FuncId,
+    tuple_arities_data: Option<DataId>,
+    tuple_arities_len: u32,
 ) -> Result<(), CodegenError> {
     use cranelift_frontend::FunctionBuilder;
 
@@ -3135,6 +3103,25 @@ fn emit_aot_c_main<M: cranelift_module::Module>(
             ],
         );
         let proc_v = b.inst_results(setup_call)[0];
+
+        // fz-ul4.38 — register tuple schemas before any code that might
+        // allocate one (static closures use AllocStruct, not MakeTuple, but
+        // the order keeps schema setup adjacent to process setup).
+        {
+            let tuple_arities_addr = match tuple_arities_data {
+                Some(data_id) => {
+                    let gv = jmod.declare_data_in_func(data_id, b.func);
+                    b.ins().symbol_value(types::I64, gv)
+                }
+                None => b.ins().iconst(types::I64, 0),
+            };
+            let tuple_arities_len_v = b.ins().iconst(types::I32, tuple_arities_len as i64);
+            let reg_tuples_fref = jmod.declare_func_in_func(reg_tuples_id, b.func);
+            b.ins().call(
+                reg_tuples_fref,
+                &[proc_v, tuple_arities_addr, tuple_arities_len_v],
+            );
+        }
 
         // Register each static closure target.
         for (cl_sid, fn_id, body_func_id, halt_kind) in static_closure_targets {
@@ -6349,12 +6336,33 @@ fn lower_prim<M: cranelift_module::Module>(
                 or_scalar!(e);
             }
 
+            // fz-ul4.36 — collect tuple-shape arities to runtime-check. The
+            // lowering at src/ir_lower.rs:1949 emits Descr::tuple_of([any; n])
+            // for Pattern::Tuple gates; multi-arity unions could appear via
+            // typer joins. For each pos TupleSig, check the value is a
+            // HeapKind::Struct with size_bytes == arity * SLOT_BYTES.
+            // Per-field narrowing inside TupleSig and neg clauses aren't
+            // emitted by today's lowering (assert below to fail loud if that
+            // changes).
+            let tuple_arities_to_check: Vec<usize> = descr
+                .tuples
+                .iter()
+                .flat_map(|conj| {
+                    assert!(
+                        conj.neg.is_empty(),
+                        "TypeTest: negated tuple clauses not yet supported"
+                    );
+                    conj.pos.iter().map(|sig| sig.elems.len())
+                })
+                .collect();
+
             // Heap-kind checks: guard with is_ptr to avoid loading from a non-pointer.
             let need_heap = !descr.floats.is_none()
                 || descr.basic.contains_all(BasicBits::VEC_I64)
                 || descr.basic.contains_all(BasicBits::VEC_F64)
                 || descr.basic.contains_all(BasicBits::VEC_U8)
-                || descr.basic.contains_all(BasicBits::VEC_BIT);
+                || descr.basic.contains_all(BasicBits::VEC_BIT)
+                || !tuple_arities_to_check.is_empty();
 
             let heap: Option<ir::Value> = if need_heap {
                 let is_ptr = b.ins().icmp_imm(IntCC::Equal, tag3, 0i64);
@@ -6400,6 +6408,28 @@ fn lower_prim<M: cranelift_module::Module>(
                     if descr.basic.contains_all(bit) {
                         let c = b.ins().icmp_imm(IntCC::Equal, kind64, hk as i64);
                         or_heap!(c);
+                    }
+                }
+                // fz-ul4.36 — tuple arity check via schema_id comparison.
+                // size_bytes isn't arity-unique (alloc_struct aligns to 16:
+                // arity 1 and 2 both → 32, arity 3 and 4 both → 48), so use
+                // the pre-registered Tuple{N} schema_id at HeapHeader offset 8.
+                if !tuple_arities_to_check.is_empty() {
+                    let is_struct = b
+                        .ins()
+                        .icmp_imm(IntCC::Equal, kind64, HeapKind::Struct as i64);
+                    let schema_raw = b.ins().load(types::I32, MemFlags::trusted(), val, 8);
+                    let schema64 = b.ins().uextend(types::I64, schema_raw);
+                    for arity in &tuple_arities_to_check {
+                        if let Some(&sid) = env.tuple_schema_ids.get(arity) {
+                            let want = b.ins().iconst(types::I64, sid as i64);
+                            let schema_match = b.ins().icmp(IntCC::Equal, schema64, want);
+                            let combined = b.ins().band(is_struct, schema_match);
+                            or_heap!(combined);
+                        }
+                        // No schema id pre-registered for this arity → no
+                        // such tuple can exist at runtime; correctly
+                        // contributes nothing to the matched flag.
                     }
                 }
                 let hr = hf.unwrap_or_else(|| b.ins().iconst(types::I8, 0));

@@ -1,5 +1,5 @@
 ; fn main
-    ;   @spec   main() -> _
+    ;   @spec   main() -> nil
     ;   @key    []
     ;   @abi    () -> Tagged
 function u0:0(i64) -> i64 tail {
@@ -56,7 +56,7 @@ block2:
 }
 
 ; fn parent_s13
-    ;   @spec   parent(99) -> _
+    ;   @spec   parent(99) -> any
     ;   @key    [99]
     ;   @abi    (RawInt) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
@@ -126,7 +126,7 @@ block0(v0: i64, v1: i64):
 }
 
 ; fn fz_spawn_thunk_s15
-    ;   @spec   fz_spawn_thunk(&fn9[99]:() -> any) -> _
+    ;   @spec   fz_spawn_thunk(&fn9[99]:() -> any) -> any
     ;   @key    [&fn9[99]:() -> any]
     ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {

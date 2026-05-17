@@ -1,5 +1,5 @@
 ; fn main
-    ;   @spec   main() -> _
+    ;   @spec   main() -> nil
     ;   @key    []
     ;   @abi    () -> Tagged
 function u0:0(i64) -> i64 tail {
@@ -44,7 +44,7 @@ block0(v0: i64):
 }
 
 ; fn relay_s9
-    ;   @spec   relay(4, pid) -> _
+    ;   @spec   relay(4, pid) -> any
     ;   @key    [4, pid]
     ;   @abi    (RawInt, Tagged) -> Tagged
 function u0:0(i64, i64, i64) -> i64 tail {
@@ -71,7 +71,7 @@ block2:
 }
 
 ; fn relay_s10
-    ;   @spec   relay(int, pid) -> _
+    ;   @spec   relay(int, pid) -> any
     ;   @key    [int, pid]
     ;   @abi    (RawInt, Tagged) -> Tagged
 function u0:0(i64, i64, i64) -> i64 tail {
@@ -93,7 +93,7 @@ block2:
 }
 
 ; fn fn_clause_0_s11
-    ;   @spec   fn_clause_0(pid) -> _
+    ;   @spec   fn_clause_0(pid) -> any
     ;   @key    [pid]
     ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
@@ -119,7 +119,7 @@ function u0:0(i64, i64) -> i64 tail {
 }
 
 ; fn fn_clause_1_s12
-    ;   @spec   fn_clause_1(4, pid) -> _
+    ;   @spec   fn_clause_1(4, pid) -> any
     ;   @key    [4, pid]
     ;   @abi    (RawInt, Tagged) -> Tagged
 function u0:0(i64, i64, i64) -> i64 tail {
@@ -173,7 +173,7 @@ function u0:0(i64, i64, i64) -> i64 tail {
 }
 
 ; fn fn_clause_1_s13
-    ;   @spec   fn_clause_1(int \ {0}, pid) -> _
+    ;   @spec   fn_clause_1(int \ {0}, pid) -> any
     ;   @key    [int \ {0}, pid]
     ;   @abi    (RawInt, Tagged) -> Tagged
 function u0:0(i64, i64, i64) -> i64 tail {
@@ -277,7 +277,7 @@ block2:
 }
 
 ; fn lambda_12_s15
-    ;   @spec   lambda_12(4, pid) -> _
+    ;   @spec   lambda_12(4, pid) -> any
     ;   @key    [4, pid]
     ;   @abi    (RawInt, Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
@@ -293,7 +293,7 @@ block0(v0: i64, v1: i64):
 }
 
 ; fn lambda_12_s16
-    ;   @spec   lambda_12(int \ {0}, pid) -> _
+    ;   @spec   lambda_12(int \ {0}, pid) -> any
     ;   @key    [int \ {0}, pid]
     ;   @abi    (RawInt, Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
@@ -309,7 +309,7 @@ block0(v0: i64, v1: i64):
 }
 
 ; fn fz_spawn_thunk_s17
-    ;   @spec   fz_spawn_thunk(&fn12[4, pid]:() -> any) -> _
+    ;   @spec   fz_spawn_thunk(&fn12[4, pid]:() -> any) -> any
     ;   @key    [&fn12[4, pid]:() -> any]
     ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
@@ -322,7 +322,7 @@ block0(v0: i64, v1: i64):
 }
 
 ; fn fz_spawn_thunk_s18
-    ;   @spec   fz_spawn_thunk(&fn12[int \ {0}, pid]:() -> any) -> _
+    ;   @spec   fz_spawn_thunk(&fn12[int \ {0}, pid]:() -> any) -> any
     ;   @key    [&fn12[int \ {0}, pid]:() -> any]
     ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
@@ -335,7 +335,7 @@ block0(v0: i64, v1: i64):
 }
 
 ; fn fz_spawn_thunk_s19
-    ;   @spec   fz_spawn_thunk(&fn16[pid]:() -> any) -> _
+    ;   @spec   fz_spawn_thunk(&fn16[pid]:() -> any) -> any
     ;   @key    [&fn16[pid]:() -> any]
     ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
@@ -452,7 +452,7 @@ block2:
 }
 
 ; fn lambda_16_s22
-    ;   @spec   lambda_16(pid) -> _
+    ;   @spec   lambda_16(pid) -> any
     ;   @key    [pid]
     ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
@@ -466,7 +466,7 @@ block0(v0: i64, v1: i64):
 }
 
 ; fn k_17_s23
-    ;   @spec   k_17(any, pid, any) -> _
+    ;   @spec   k_17(any, pid, any) -> nil
     ;   @key    [any, pid, any]
     ;   @abi    (Tagged, Tagged, Tagged) -> Tagged
 function u0:0(i64, i64, i64, i64) -> i64 tail {
