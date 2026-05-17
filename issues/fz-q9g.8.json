@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-17T04:46:53Z",
+  "description": "What: Mechanical extension of D2 to the other monomorphic vec kinds.\n\nCLIF impact: strict reduction per destinationized call.\n\nRemoves: per-call vec alloc when destinationized.\n\nTests: golden CLIF parity per kind.",
+  "id": "fz-q9g.8",
+  "labels": [],
+  "parent": "fz-q9g",
+  "priority": 2,
+  "status": "open",
+  "title": "fz-dps.F1: DPS for VecF64 / VecU8 / VecBit",
+  "type": "task",
+  "updated_at": "2026-05-17T04:46:53Z"
+}
