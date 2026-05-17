@@ -11,9 +11,15 @@
   "id": "fz-q9g.5",
   "labels": [],
   "parent": "fz-q9g",
+  "comments": [
+    {
+      "text": "subsumed by fz-q9g.3 (CD-bundle): tail-forward dst meaningless without producer/consumer wire",
+      "timestamp": "2026-05-17T16:26:47Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "fz-dps.C4: lower Term::TailCall/TailCallClosure under Dst ABI",
   "type": "task",
-  "updated_at": "2026-05-17T15:34:49Z"
+  "updated_at": "2026-05-17T16:26:47Z"
 }
