@@ -929,6 +929,14 @@ fn lower_multi_clause(
     // available via Var ids that are stable within this FnIr). Entry Goto's
     // first try block. Each try block tests its patterns; on success, runs the
     // body and returns; on fail, Goto's the next try block (or fail block).
+    //
+    // KNOWN LIMITATION (fz-duq.4.5 follow-up): if a clause body CPS-splits
+    // (e.g. via `receive()` in `actor_ring`'s `relay(0, home)` clause),
+    // this lowering finalizes the outer fn with sibling try_blocks still
+    // empty, panicking on the next iteration. Same Bug-2 class as
+    // if/case/cond/with. The fix is structurally identical (per-clause
+    // body cont fns) but interacts with the typer's per-spec narrowing in
+    // ways that need separate work — see follow-up ticket.
 
     // Allocate try blocks up front so terminators can reference them.
     let try_blocks: Vec<BlockId> = (0..fn_def.clauses.len())
