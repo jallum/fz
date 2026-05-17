@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-17T04:47:37Z",
+  "description": "GATED ON G0. Implementation of uniqueness inference based on spike outcome.\n\nWhat: Production pass that marks each binding Unique | Shared | Unknown, riding on the Descr graph.\n\nCLIF impact: no direct change; consumed by G2+.\n\nTests: golden uniqueness annotations on a corpus of fixtures.",
+  "id": "fz-q9g.21",
+  "labels": [],
+  "parent": "fz-q9g",
+  "priority": 2,
+  "status": "open",
+  "title": "fz-dps.G1: uniqueness inference pass",
+  "type": "task",
+  "updated_at": "2026-05-17T04:47:37Z"
+}
