@@ -4,24 +4,18 @@
     ;   @abi    () -> Tagged
 function u0:0(i64) -> i64 tail {
     sig0 = (i64) system_v
-    sig1 = (i64) system_v
-    sig2 = (i64) system_v
-    sig3 = (i64, i64) -> i64 tail
-    fn0 = u0:1 sig0
-    fn1 = u0:1 sig1
-    fn2 = u0:1 sig2
+    sig1 = (i64, i64) -> i64 tail
+    fn0 = u0:40 sig0
 
 block0(v0: i64):
     v1 = iconst.i64 42                  ; @10:9
     call fn0(v1)                        ; @10:9  v1 = 42
-    v2 = iconst.i64 3                   ; @10:9
-    v3 = iconst.i64 42                  ; @10:9
-    call fn1(v3)                        ; @10:3  v3 = 42
-    v4 = iconst.i64 3                   ; @10:3
-    v5 = iconst.i64 41                  ; @11:9
-    call fn2(v5)                        ; @11:9  v5 = 41
-    v6 = iconst.i64 3                   ; @11:9
-    v7 = load.i64 notrap aligned v0+16
-    return_call_indirect sig3, v7(v6, v0)  ; v6 = 3
+    v2 = iconst.i64 42                  ; @10:9
+    call fn0(v2)  ; v2 = 42
+    v3 = iconst.i64 41    ;; v3 :: 41
+    call fn0(v3)  ; v3 = 41
+    v4 = iconst.i64 3    ;; v4 :: nil
+    v5 = load.i64 notrap aligned v0+16  ; @10:3
+    return_call_indirect sig1, v5(v4, v0) ; @10:3  v4 = 3
 }
 

@@ -1,4 +1,6 @@
 use crate::fz_ir::{BitSizeIr, Block, BlockId, Cont, FnId, FnIr, Module, Prim, Stmt, Term, Var};
+use crate::ir_fuse::{subst_stmt, subst_term};
+use crate::ir_typer::ModuleTypes;
 use std::collections::{HashMap, HashSet};
 
 /// (caller_fn_idx, block_idx, callee, callee_args, cont_fn_id, cont_captured)
@@ -83,7 +85,7 @@ fn max_var_in_prim(p: &Prim) -> u32 {
             v(*b);
         }
         Prim::UnOp(_, a) => v(*a),
-        Prim::AllocStruct(_, args) | Prim::Builtin(_, args) => args.iter().for_each(|x| v(*x)),
+        Prim::AllocStruct(_, args) | Prim::Extern(_, args) => args.iter().for_each(|x| v(*x)),
         Prim::ListCons(a, b) => {
             v(*a);
             v(*b);
@@ -128,6 +130,7 @@ fn max_var_in_prim(p: &Prim) -> u32 {
                 v(*sv);
             }
         }
+        Prim::TypeTest(a, _) => v(*a),
     }
     m
 }
@@ -167,15 +170,9 @@ fn max_var_in_term(t: &Term) -> u32 {
 /// Return a copy of `callee` with all Var and BlockId values shifted by
 /// `var_shift` and `block_shift` respectively. Also returns the forward maps
 /// (original → renamed) for callers that need to substitute entry params.
-pub fn alpha_rename(
-    callee: &FnIr,
-    caller: &FnIr,
-) -> (FnIr, HashMap<Var, Var>, HashMap<BlockId, BlockId>) {
+pub fn alpha_rename(callee: &FnIr, caller: &FnIr) -> FnIr {
     let var_shift = max_var(caller) + 1;
     let block_shift = max_block(caller) + 1;
-
-    let mut var_map: HashMap<Var, Var> = HashMap::new();
-    let mut block_map: HashMap<BlockId, BlockId> = HashMap::new();
 
     let shift_v = |v: Var| Var(v.0 + var_shift);
     let shift_b = |b: BlockId| BlockId(b.0 + block_shift);
@@ -189,7 +186,7 @@ pub fn alpha_rename(
             Prim::AllocStruct(sid, args) => {
                 Prim::AllocStruct(*sid, args.iter().map(|x| sv(*x)).collect())
             }
-            Prim::Builtin(bid, args) => Prim::Builtin(*bid, args.iter().map(|x| sv(*x)).collect()),
+            Prim::Extern(eid, args) => Prim::Extern(*eid, args.iter().map(|x| sv(*x)).collect()),
             Prim::ListCons(a, b) => Prim::ListCons(sv(*a), sv(*b)),
             Prim::ListHead(a) => Prim::ListHead(sv(*a)),
             Prim::ListTail(a) => Prim::ListTail(sv(*a)),
@@ -228,6 +225,7 @@ pub fn alpha_rename(
                     })
                     .collect(),
             ),
+            Prim::TypeTest(a, d) => Prim::TypeTest(sv(*a), d.clone()),
             Prim::BitReaderInit(a) => Prim::BitReaderInit(sv(*a)),
             Prim::BitReaderDone(a) => Prim::BitReaderDone(sv(*a)),
             Prim::BitReadField {
@@ -323,36 +321,56 @@ pub fn alpha_rename(
         })
         .collect();
 
-    // Build forward maps for callers that need param substitution.
-    for b in &callee.blocks {
-        for p in &b.params {
-            var_map.insert(*p, shift_v(*p));
-        }
-        for s in &b.stmts {
-            let Stmt::Let(v, _) = s;
-            var_map.insert(*v, shift_v(*v));
-        }
-        block_map.insert(b.id, shift_b(b.id));
-    }
-
-    let renamed = FnIr {
+    FnIr {
         id: callee.id,
         name: callee.name.clone(),
         frame_schema_id: 0,
         blocks,
         entry: shift_b(callee.entry),
-    };
-
-    (renamed, var_map, block_map)
+    }
 }
 
-// ---------- splice ----------
+// ---------- absorb ----------
 
-/// Move all blocks from `renamed` into `caller`; return the entry BlockId.
-pub fn splice_blocks(caller: &mut FnIr, renamed: FnIr) -> BlockId {
-    let entry = renamed.entry;
-    caller.blocks.extend(renamed.blocks);
-    entry
+/// Inline `callee` at block `bi` of `caller`.
+///
+/// Substitutes `args` for the callee's entry-block params, appends the entry
+/// block's stmts to caller's block, sets the caller terminator to the entry
+/// terminator, and splices in the remaining callee blocks — all without
+/// creating a Goto.  `callee` must already be alpha-renamed so its vars are
+/// disjoint from `caller`'s.
+pub fn absorb_callee(caller: &mut FnIr, bi: usize, mut callee: FnIr, args: &[Var]) {
+    let entry_id = callee.entry;
+    let entry_idx = callee
+        .blocks
+        .iter()
+        .position(|b| b.id == entry_id)
+        .expect("callee entry block missing");
+
+    let params: Vec<Var> = callee.blocks[entry_idx].params.clone();
+    debug_assert_eq!(
+        params.len(),
+        args.len(),
+        "absorb_callee: arity mismatch — {} params vs {} args",
+        params.len(),
+        args.len()
+    );
+
+    let subst: HashMap<Var, Var> = params.into_iter().zip(args.iter().copied()).collect();
+
+    if !subst.is_empty() {
+        for b in &mut callee.blocks {
+            b.stmts = b.stmts.iter().map(|s| subst_stmt(s, &subst)).collect();
+            b.terminator = subst_term(&b.terminator, &subst);
+        }
+    }
+
+    let entry_block = callee.blocks.remove(entry_idx);
+    // entry_block.params is now stale but we discard the block after splicing.
+
+    caller.blocks[bi].stmts.extend(entry_block.stmts);
+    caller.blocks[bi].terminator = entry_block.terminator;
+    caller.blocks.extend(callee.blocks);
 }
 
 // ---------- pass: inline_tail_calls_once ----------
@@ -401,22 +419,9 @@ pub fn inline_tail_calls_once(m: &mut Module) -> usize {
 
         let callee = m.fns[callee_idx].clone();
         let caller = &m.fns[fi];
-        let (renamed, _var_map, _block_map) = alpha_rename(&callee, caller);
+        let renamed = alpha_rename(&callee, caller);
 
-        // Entry params must match arg count — guaranteed by well-formed IR.
-        let entry_params: Vec<Var> = renamed
-            .blocks
-            .iter()
-            .find(|b| b.id == renamed.entry)
-            .expect("entry block")
-            .params
-            .clone();
-        debug_assert_eq!(entry_params.len(), args.len());
-
-        let entry = splice_blocks(&mut m.fns[fi], renamed);
-
-        // Replace TailCall with Goto(entry, args).
-        m.fns[fi].blocks[bi].terminator = Term::Goto(entry, args);
+        absorb_callee(&mut m.fns[fi], bi, renamed, &args);
         count += 1;
     }
 
@@ -477,7 +482,7 @@ pub fn inline_calls_once(m: &mut Module) -> usize {
 
         let callee = m.fns[callee_idx].clone();
         let caller = &m.fns[fi];
-        let (mut renamed, _var_map, _block_map) = alpha_rename(&callee, caller);
+        let mut renamed = alpha_rename(&callee, caller);
 
         // Rewrite each Return(v') in the renamed body to
         // TailCall(K, [v', cont_captured...]).
@@ -493,21 +498,212 @@ pub fn inline_calls_once(m: &mut Module) -> usize {
             }
         }
 
-        let entry_params: Vec<Var> = renamed
-            .blocks
-            .iter()
-            .find(|b| b.id == renamed.entry)
-            .expect("entry block")
-            .params
-            .clone();
-        debug_assert_eq!(entry_params.len(), args.len());
-
-        let entry = splice_blocks(&mut m.fns[fi], renamed);
-        m.fns[fi].blocks[bi].terminator = Term::Goto(entry, args);
+        absorb_callee(&mut m.fns[fi], bi, renamed, &args);
         count += 1;
     }
 
     count
+}
+
+// ---------- pass: inline_single_use_conts_once ----------
+
+/// One pass: for every continuation fn `k` that is:
+///   - the callee of exactly one `TailCall` (in fn F at block B), and
+///   - referenced by at most one `Cont { fn_id: k }` in some `Term::Call`
+///     with empty captures,
+///
+/// inline k's blocks into F (replacing the TailCall with a Goto), then:
+///   - if there was a `Term::Call { callee: G, continuation: Cont { fn_id: k } }`
+///     in some fn M, convert it to `TailCall { callee: G, args }` — the
+///     continuation has been absorbed into F.
+///   - remove k from the module.
+///
+/// This eliminates the CPS-overhead functions that fold+DCE produce when a
+/// `Term::If` becomes `Term::Goto`: the surviving single-path continuation
+/// chain collapses into one function.
+pub fn inline_single_use_conts_once(m: &mut Module, mt: &mut ModuleTypes) -> usize {
+    use std::collections::HashMap;
+    let closure_fns = closure_targets(m);
+
+    // Count non-back-edge TailCall sites per FnId.
+    let mut tc_sites: HashMap<FnId, Vec<(usize, usize)>> = HashMap::new();
+    // Count back-edge TailCall references per FnId (any function targeting k
+    // via a back-edge). Removing k while these exist would leave them dangling.
+    let mut be_tc_count: HashMap<FnId, usize> = HashMap::new();
+    for (fi, f) in m.fns.iter().enumerate() {
+        for (bi, b) in f.blocks.iter().enumerate() {
+            if let Term::TailCall {
+                callee,
+                is_back_edge,
+                ..
+            } = &b.terminator
+            {
+                if *is_back_edge {
+                    *be_tc_count.entry(*callee).or_insert(0) += 1;
+                } else {
+                    tc_sites.entry(*callee).or_default().push((fi, bi));
+                }
+            }
+        }
+    }
+
+    // Count Cont references per FnId.
+    let mut cont_sites: HashMap<FnId, Vec<(usize, usize)>> = HashMap::new();
+    // Count direct Term::Call callee references per FnId (not as continuation).
+    // A function appearing here as callee is a live use — inlining+removing it
+    // would leave those Call sites dangling.
+    let mut direct_call_sites: HashMap<FnId, usize> = HashMap::new();
+    for (fi, f) in m.fns.iter().enumerate() {
+        for (bi, b) in f.blocks.iter().enumerate() {
+            let k = match &b.terminator {
+                Term::Call {
+                    callee,
+                    continuation,
+                    ..
+                } => {
+                    *direct_call_sites.entry(*callee).or_insert(0) += 1;
+                    Some(continuation.fn_id)
+                }
+                Term::CallClosure { continuation, .. } => Some(continuation.fn_id),
+                Term::Receive { continuation } => Some(continuation.fn_id),
+                _ => None,
+            };
+            if let Some(kid) = k {
+                cont_sites.entry(kid).or_default().push((fi, bi));
+            }
+        }
+    }
+
+    for (k_id, tcs) in &tc_sites {
+        if tcs.len() != 1 {
+            continue;
+        }
+        let (caller_fi, caller_bi) = tcs[0];
+        if closure_fns.contains(k_id) {
+            continue;
+        }
+        // Skip if k appears as a direct callee in any Term::Call — removing it
+        // would leave those sites dangling (catches non-tail recursion and
+        // multi-site user functions like step(step(step(...)))).
+        if direct_call_sites.get(k_id).copied().unwrap_or(0) > 0 {
+            continue;
+        }
+        // Skip if any back-edge TailCall targets k (mutual or direct
+        // back-edge recursion — removing k would leave those sites dangling).
+        if be_tc_count.get(k_id).copied().unwrap_or(0) > 0 {
+            continue;
+        }
+        let k_idx = match m.fn_idx.get(k_id) {
+            Some(&i) => i,
+            None => continue,
+        };
+        if k_idx == caller_fi {
+            continue; // self-tail — skip
+        }
+        // No Receive inside k — runtime async boundary can't be inlined away.
+        if m.fns[k_idx]
+            .blocks
+            .iter()
+            .any(|b| matches!(b.terminator, Term::Receive { .. }))
+        {
+            continue;
+        }
+        // No self-references inside k — inlining removes k from the module,
+        // so any Term::Call/TailCall with callee==k_id would become dangling.
+        // This catches both back-edge tail-recursion and non-tail recursion.
+        if m.fns[k_idx].blocks.iter().any(|b| match &b.terminator {
+            Term::TailCall { callee, .. } | Term::Call { callee, .. } => callee == k_id,
+            _ => false,
+        }) {
+            continue;
+        }
+        // At most one Cont ref, and if so captured must be empty.
+        let conts = cont_sites.get(k_id).map(|v| v.as_slice()).unwrap_or(&[]);
+        if conts.len() > 1 {
+            continue;
+        }
+        let cont_site = conts.first().copied();
+        if let Some((m_fi, m_bi)) = cont_site {
+            let ok = match &m.fns[m_fi].blocks[m_bi].terminator {
+                Term::Call { continuation, .. } | Term::CallClosure { continuation, .. } => {
+                    continuation.fn_id == *k_id && continuation.captured.is_empty()
+                }
+                _ => false,
+            };
+            if !ok {
+                continue;
+            }
+        }
+
+        // Inline k into caller.
+        let tail_args = match &m.fns[caller_fi].blocks[caller_bi].terminator {
+            Term::TailCall { args, .. } => args.clone(),
+            _ => continue,
+        };
+        let k_fn = m.fns[k_idx].clone();
+        let renamed = alpha_rename(&k_fn, &m.fns[caller_fi]);
+        absorb_callee(&mut m.fns[caller_fi], caller_bi, renamed, &tail_args);
+
+        // Convert the Term::Call at the Cont site to TailCall.
+        if let Some((m_fi, m_bi)) = cont_site {
+            let new_term = match &m.fns[m_fi].blocks[m_bi].terminator {
+                Term::Call { callee, args, .. } => Some(Term::TailCall {
+                    callee: *callee,
+                    args: args.clone(),
+                    is_back_edge: false,
+                }),
+                Term::CallClosure { closure, args, .. } => Some(Term::TailCallClosure {
+                    closure: *closure,
+                    args: args.clone(),
+                }),
+                _ => None,
+            };
+            if let Some(t) = new_term {
+                m.fns[m_fi].blocks[m_bi].terminator = t;
+            }
+        }
+
+        // Remove k and rebuild the index.
+        let caller_id = m.fns[caller_fi].id;
+        m.fns.remove(k_idx);
+        m.fn_idx.clear();
+        for (i, f) in m.fns.iter().enumerate() {
+            m.fn_idx.insert(f.id, i);
+        }
+
+        // Surgical type refresh: re-type only the caller's specs; remove k's.
+        let caller_fi2 = m.fn_idx[&caller_id];
+        let caller_spec_keys: Vec<Vec<crate::types::Descr>> = mt
+            .specs
+            .keys()
+            .filter(|(fid, _)| *fid == caller_id)
+            .map(|(_, descrs)| descrs.clone())
+            .collect();
+        for descrs in caller_spec_keys {
+            let ft = crate::ir_typer::type_fn(&m.fns[caller_fi2], m, Some(&descrs));
+            mt.specs.insert((caller_id, descrs), ft);
+        }
+        mt.specs.retain(|(fid, _), _| *fid != *k_id);
+        mt.effective_returns.retain(|(fid, _), _| *fid != *k_id);
+        mt.any_key_specs.remove(k_id);
+        mt.scc_of.remove(k_id);
+        debug_assert!(
+            !mt.scc_of.contains_key(k_id),
+            "scc_of must not contain inlined k"
+        );
+
+        return 1; // restart — indices changed
+    }
+    0
+}
+
+/// Run single-use continuation inlining to fixed-point.
+pub fn inline_single_use_conts(m: &mut Module, mt: &mut ModuleTypes) {
+    loop {
+        if inline_single_use_conts_once(m, mt) == 0 {
+            break;
+        }
+    }
 }
 
 // ---------- driver ----------
@@ -685,7 +881,7 @@ mod tests {
     fn alpha_rename_shifts_vars_above_caller_max() {
         let callee = make_leaf_add1(); // vars 0,1,2; blocks 0
         let caller = make_caller_tail(FnId(1)); // vars 0; blocks 0
-        let (renamed, var_map, block_map) = alpha_rename(&callee, &caller);
+        let renamed = alpha_rename(&callee, &caller);
 
         // caller max_var = 0, so callee vars shift by 1
         // callee var 0 → 1, var 1 → 2, var 2 → 3
@@ -700,15 +896,13 @@ mod tests {
         }
         // block shift: caller max_block = 0, so callee block 0 → 1
         assert_eq!(renamed.entry.0, 1);
-        assert!(var_map.values().all(|v| v.0 >= 1));
-        assert!(block_map.values().all(|b| b.0 >= 1));
     }
 
     #[test]
     fn alpha_rename_no_var_collision_with_caller() {
         let callee = make_leaf_add1();
         let caller = make_caller_tail(FnId(1));
-        let (renamed, _, _) = alpha_rename(&callee, &caller);
+        let renamed = alpha_rename(&callee, &caller);
 
         let caller_vars: std::collections::HashSet<u32> = caller
             .blocks
@@ -726,7 +920,7 @@ mod tests {
     fn alpha_rename_prim_binop_vars_shifted() {
         let callee = make_leaf_add1(); // entry block has BinOp(Add, v0, v1)
         let caller = make_caller_tail(FnId(1)); // max_var = 0 → shift = 1
-        let (renamed, _, _) = alpha_rename(&callee, &caller);
+        let renamed = alpha_rename(&callee, &caller);
 
         let entry = renamed
             .blocks
@@ -754,7 +948,7 @@ mod tests {
         let callee = b.build();
 
         let caller = make_caller_tail(FnId(1)); // max_var = 0 → shift = 1
-        let (renamed, _, _) = alpha_rename(&callee, &caller);
+        let renamed = alpha_rename(&callee, &caller);
         let eb = renamed
             .blocks
             .iter()
@@ -769,27 +963,51 @@ mod tests {
         }
     }
 
-    // --- splice_blocks ---
+    // --- absorb_callee ---
 
     #[test]
-    fn splice_blocks_appends_and_returns_entry() {
-        let callee = make_leaf_add1();
-        let caller_fn = make_caller_tail(FnId(1));
-        let (renamed, _, _) = alpha_rename(&callee, &caller_fn);
-        let renamed_entry = renamed.entry;
+    fn absorb_callee_no_goto_no_params() {
+        // After absorb: the call-site block must NOT end with a Goto that still
+        // carries args (the old splice_blocks + Goto artifact).
+        let callee = make_leaf_add1(); // entry has 1 param `x`
+        let caller = make_caller_tail(FnId(1));
+        let renamed = alpha_rename(&callee, &caller);
 
-        let mut caller_mut = caller_fn.clone();
-        let orig_len = caller_mut.blocks.len();
-        let entry = splice_blocks(&mut caller_mut, renamed);
+        // The arg that was heading to the TailCall — pick caller's entry param.
+        let caller_entry = caller.blocks.iter().find(|b| b.id == caller.entry).unwrap();
+        let y = caller_entry.params[0];
 
-        assert_eq!(entry, renamed_entry);
-        assert_eq!(caller_mut.blocks.len(), orig_len + callee.blocks.len());
+        let mut caller_mut = caller;
+        // bi=0: the entry block index (only one block in caller)
+        absorb_callee(&mut caller_mut, 0, renamed, &[y]);
+
+        // The entry block must NOT be a Goto with args.
+        let entry = caller_mut
+            .blocks
+            .iter()
+            .find(|b| b.id == caller_mut.entry)
+            .unwrap();
+        if let Term::Goto(_, args) = &entry.terminator {
+            assert!(
+                args.is_empty(),
+                "absorb_callee must not leave a parameterized Goto; got args={args:?}"
+            );
+        }
+
+        // The entry block must have no params (callee entry params were consumed).
+        // (Caller's own params are on the block, but callee's were substituted away.)
+        // The callee add1 had stmts: let one=1, let s=x+one; check they were absorbed.
+        assert!(
+            entry.stmts.len() >= 2,
+            "callee stmts must be absorbed into caller entry; got {}",
+            entry.stmts.len()
+        );
     }
 
     // --- inline_tail_calls_once ---
 
     #[test]
-    fn inline_tail_calls_replaces_tailcall_with_goto() {
+    fn inline_tail_calls_absorbs_callee_no_goto() {
         let mut mb = ModuleBuilder::new();
         mb.add_fn(make_caller_tail(FnId(1)));
         mb.add_fn(make_leaf_add1());
@@ -798,10 +1016,19 @@ mod tests {
         let n = inline_tail_calls_once(&mut m);
         assert_eq!(n, 1);
 
-        // The call site block should now have a Goto terminator.
+        // absorb_callee: entry block must NOT be a Goto with args.
+        // The callee (add1) had 2 stmts; they must be present in the caller entry.
         let caller = m.fns.iter().find(|f| f.name == "caller").unwrap();
         let entry = caller.blocks.iter().find(|b| b.id == caller.entry).unwrap();
-        assert!(matches!(entry.terminator, Term::Goto(_, _)));
+        assert!(
+            !matches!(&entry.terminator, Term::Goto(_, args) if !args.is_empty()),
+            "must not leave a parameterized Goto after absorb"
+        );
+        assert!(
+            entry.stmts.len() >= 2,
+            "callee stmts must be absorbed into entry; got {}",
+            entry.stmts.len()
+        );
     }
 
     #[test]
@@ -1022,6 +1249,23 @@ mod tests {
             !has_call_to_double,
             "expected no Call to double after inlining, but one remains"
         );
+    }
+
+    #[test]
+    fn inline_single_use_conts_cleans_up_scc_of() {
+        // After inlining, every FnId in mt.scc_of must still exist in the module.
+        // This proves that scc_of has no stale entries for inlined CPS continuations.
+        let src = "fn add1(x), do: x + 1\nfn main(), do: add1(3)";
+        let mut m = lower_src(src);
+        let mut mt = crate::ir_typer::type_module(&m);
+        inline_single_use_conts(&mut m, &mut mt);
+        for fid in mt.scc_of.keys() {
+            assert!(
+                m.fn_idx.contains_key(fid),
+                "scc_of contains stale FnId {:?} not in module",
+                fid
+            );
+        }
     }
 
     // GC root invariant: no test-accessible GC trigger exists in the current

@@ -29,8 +29,7 @@
 //! `ir_codegen::compile()` continues to populate `CompiledModule.types`.
 
 use crate::fz_ir::{
-    BinOp, Block, BlockId, BuiltinId, BuiltinKind, Const, Cont, FnId, FnIr, Module, Prim, Stmt,
-    Term, UnOp, Var, VecKindIr,
+    BinOp, Block, BlockId, Const, Cont, FnId, FnIr, Module, Prim, Stmt, Term, UnOp, Var, VecKindIr,
 };
 use crate::types::{Descr, MapKey};
 use std::collections::{HashMap, HashSet};
@@ -412,20 +411,33 @@ fn opaque_consumer_arities(
                     arities.insert(args.len());
                 }
             }
-            // Stmt-level opaque dispatch: `Builtin(Spawn, [closure])`
-            // hands the closure to the runtime, which invokes it with
-            // zero args. Track as arity-0 opaque dispatch keyed off the
-            // closure operand's fn_constants.
+            // Stmt-level opaque dispatch: spawn calls hand the closure to
+            // the runtime, which invokes it with zero args. Track as
+            // arity-0 opaque dispatch keyed off the closure operand's
+            // fn_constants.
+            //
+            // fz-ext.7: spawn emits Prim::Extern(fz_spawn/fz_spawn_opt).
             for stmt in &b.stmts {
                 let Stmt::Let(_, prim) = stmt;
-                if let Prim::Builtin(bid, args) = prim
-                    && *bid == BuiltinKind::Spawn.id()
-                    && (args.len() == 1 || args.len() == 2)
-                {
-                    let cv = args[0];
-                    if !ft.fn_constants.contains_key(&cv) {
-                        arities.insert(0);
+                let spawn_cv: Option<Var> = match prim {
+                    Prim::Extern(eid, args)
+                        if (args.len() == 1 || args.len() == 2)
+                            && m.extern_idx
+                                .get(eid)
+                                .map(|&i| {
+                                    m.externs[i].symbol == "fz_spawn"
+                                        || m.externs[i].symbol == "fz_spawn_opt"
+                                })
+                                .unwrap_or(false) =>
+                    {
+                        Some(args[0])
                     }
+                    _ => None,
+                };
+                if let Some(cv) = spawn_cv
+                    && !ft.fn_constants.contains_key(&cv)
+                {
+                    arities.insert(0);
                 }
             }
         }
@@ -443,7 +455,14 @@ fn build_any_key_index(specs: &HashMap<(FnId, Vec<Descr>), FnTypes>) -> HashMap<
     idx
 }
 
+#[cfg(test)]
+thread_local! {
+    pub static TYPE_MODULE_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 pub fn type_module(m: &Module) -> ModuleTypes {
+    #[cfg(test)]
+    TYPE_MODULE_CALLS.with(|c| c.set(c.get() + 1));
     // fz-02r.4 — compute SCC once from the structural call graph. The call
     // graph structure is fixed (the module doesn't change during typing), so
     // we compute it here with an empty specs map — the same starting point
@@ -1618,14 +1637,23 @@ fn type_prim(
             Descr::closure_lit(*fn_id, capture_descrs, n_args)
         }
 
-        Prim::Builtin(bid, args) => {
-            // send(pid, msg) returns msg — passthrough on arg[1].
-            if matches!(BuiltinKind::from_id(*bid), Some(BuiltinKind::Send)) {
-                args.get(1)
-                    .map(|v| lookup(env, *v))
-                    .unwrap_or_else(Descr::any)
+        Prim::Extern(eid, _) => m
+            .extern_idx
+            .get(eid)
+            .map(|&i| m.externs[i].ret_descr.clone())
+            .unwrap_or_else(Descr::any),
+
+        Prim::TypeTest(v, descr) => {
+            let vt = lookup(env, *v);
+            // If vt ⊆ descr → always true; if vt ∩ descr = ∅ → always false;
+            // otherwise unknown bool. Branch pruning in the typer's If-rewriting
+            // pass then eliminates dead branches when the result is a singleton.
+            if vt.is_subtype(descr) {
+                Descr::atom_lit("true")
+            } else if vt.intersect(descr).is_empty() {
+                Descr::atom_lit("false")
             } else {
-                type_builtin(*bid)
+                Descr::bool_t()
             }
         }
 
@@ -1788,20 +1816,6 @@ fn numeric_result_fold(op: BinOp, a: &Descr, b: &Descr) -> Descr {
         }
     }
     numeric_result(a, b)
-}
-
-fn type_builtin(bid: BuiltinId) -> Descr {
-    match BuiltinKind::from_id(bid) {
-        Some(BuiltinKind::Print) => Descr::nil(),
-        Some(BuiltinKind::Assert) | Some(BuiltinKind::AssertEq) | Some(BuiltinKind::AssertNeq) => {
-            Descr::nil()
-        }
-        Some(BuiltinKind::VecGet) => Descr::int().union(&Descr::float()),
-        // fz-ul4.19.2: spawn/self both return a Pid (boxed Int for v1).
-        Some(BuiltinKind::Spawn) | Some(BuiltinKind::SelfPid) => Descr::int(),
-        Some(BuiltinKind::Send) => Descr::any(), // unreachable; handled in type_prim
-        None => Descr::any(),
-    }
 }
 
 fn lookup(env: &HashMap<Var, Descr>, v: Var) -> Descr {

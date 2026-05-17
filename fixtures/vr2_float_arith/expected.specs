@@ -1,4 +1,36 @@
-; spec main(0) #fn=0
+; spec print(1) #fn=0
+;   key:    [:true]
+;   return: nil
+;   vars:
+;     Var(0) :: :true
+;     Var(1) :: :function_clause
+;     Var(2) :: :false
+;     Var(3) :: nil
+;     Var(4) :: nil
+;   exits:
+;     blk0 Goto blk1()
+;     blk1 If Var(2) ? blk4 : blk2
+;     blk2 Return Var(4)    :: nil
+;     blk3 Halt Var(1)      :: :function_clause
+;     blk4 Return Var(3)    :: nil
+
+; spec print(1) #fn=0
+;   key:    [float]
+;   return: nil
+;   vars:
+;     Var(0) :: float
+;     Var(1) :: :function_clause
+;     Var(2) :: :false
+;     Var(3) :: nil
+;     Var(4) :: nil
+;   exits:
+;     blk0 Goto blk1()
+;     blk1 If Var(2) ? blk4 : blk2
+;     blk2 Return Var(4)    :: nil
+;     blk3 Halt Var(1)      :: :function_clause
+;     blk4 Return Var(3)    :: nil
+
+; spec main(0) #fn=7
 ;   key:    []
 ;   return: nil
 ;   vars:
@@ -6,20 +38,50 @@
 ;     Var(1) :: 1.5
 ;     Var(2) :: 2.5
 ;     Var(3) :: 4.0
-;     Var(4) :: nil
-;     Var(5) :: 10.0
-;     Var(6) :: 3.0
-;     Var(7) :: 7.0
-;     Var(8) :: nil
-;     Var(9) :: 2.5
-;     Var(10) :: 4.0
-;     Var(11) :: 10.0
-;     Var(12) :: nil
-;     Var(13) :: 1.0
-;     Var(14) :: 2.0
-;     Var(15) :: :true
-;     Var(16) :: nil
 ;   exits:
-;     blk0 Return Var(16)    :: nil
+;     blk0 Call print#0(Var(3))
+;              callee_key=[4.0]
+;              cont k_8#8 captured=[]
+;              cont_key=[nil]
 ;     blk1 Halt Var(0)      :: :match_error
+
+; spec k_8(1) #fn=8
+;   key:    [nil]
+;   return: nil
+;   vars:
+;     Var(0) :: nil
+;     Var(1) :: 10.0
+;     Var(2) :: 3.0
+;     Var(3) :: 7.0
+;   exits:
+;     blk0 Call print#0(Var(3))
+;              callee_key=[7.0]
+;              cont k_9#9 captured=[]
+;              cont_key=[nil]
+
+; spec k_9(1) #fn=9
+;   key:    [nil]
+;   return: nil
+;   vars:
+;     Var(0) :: nil
+;     Var(1) :: 2.5
+;     Var(2) :: 4.0
+;     Var(3) :: 10.0
+;   exits:
+;     blk0 Call print#0(Var(3))
+;              callee_key=[10.0]
+;              cont k_10#10 captured=[]
+;              cont_key=[nil]
+
+; spec k_10(1) #fn=10
+;   key:    [nil]
+;   return: nil
+;   vars:
+;     Var(0) :: nil
+;     Var(1) :: 1.0
+;     Var(2) :: 2.0
+;     Var(3) :: :true
+;   exits:
+;     blk0 TailCall print#0(Var(3))
+;              callee_key=[:true]
 

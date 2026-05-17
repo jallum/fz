@@ -1,4 +1,20 @@
-; spec dist(2) #fn=0
+; spec print(1) #fn=0
+;   key:    [float]
+;   return: nil
+;   vars:
+;     Var(0) :: float
+;     Var(1) :: :function_clause
+;     Var(2) :: :false
+;     Var(3) :: nil
+;     Var(4) :: nil
+;   exits:
+;     blk0 Goto blk1()
+;     blk1 If Var(2) ? blk4 : blk2
+;     blk2 Return Var(4)    :: nil
+;     blk3 Halt Var(1)      :: :function_clause
+;     blk4 Return Var(3)    :: nil
+
+; spec dist(2) #fn=7
 ;   key:    [1.5, 2.5]
 ;   return: float
 ;   vars:
@@ -12,7 +28,7 @@
 ;     blk0 Return Var(5)    :: float
 ;     blk1 Halt Var(2)      :: :match_error
 
-; spec main(0) #fn=1
+; spec main(0) #fn=8
 ;   key:    []
 ;   return: nil
 ;   vars:
@@ -20,18 +36,18 @@
 ;     Var(1) :: 1.5
 ;     Var(2) :: 2.5
 ;   exits:
-;     blk0 Call dist#0(Var(1), Var(2))
+;     blk0 Call dist#7(Var(1), Var(2))
 ;              callee_key=[1.5, 2.5]
-;              cont k_2#2 captured=[]
+;              cont k_9#9 captured=[]
 ;              cont_key=[float]
 ;     blk1 Halt Var(0)      :: :match_error
 
-; spec k_2(1) #fn=2
+; spec k_9(1) #fn=9
 ;   key:    [float]
 ;   return: nil
 ;   vars:
 ;     Var(0) :: float
-;     Var(1) :: nil
 ;   exits:
-;     blk0 Return Var(1)    :: nil
+;     blk0 TailCall print#0(Var(0))
+;              callee_key=[float]
 

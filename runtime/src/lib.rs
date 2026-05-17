@@ -61,3 +61,30 @@ pub unsafe extern "C" fn fz_panic(msg_ptr: *const u8, msg_len: usize) -> ! {
     eprintln!("fz panic: {}", s);
     std::process::abort();
 }
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_assert(cond: u64) {
+    let v = crate::fz_value::FzValue(cond);
+    if v.is_nil() || v.is_false() {
+        eprintln!("fz assert failed");
+        std::process::abort();
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_assert_eq(a: u64, b: u64) {
+    // fz_value_eq returns a FzValue-encoded bool (TRUE=10, FALSE=18), not 0/1.
+    if !crate::fz_value::FzValue(crate::ir_runtime::fz_value_eq(a, b)).is_true() {
+        eprintln!("fz assert_eq failed: values are not equal");
+        std::process::abort();
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_assert_neq(a: u64, b: u64) {
+    // fz_value_eq returns a FzValue-encoded bool (TRUE=10, FALSE=18), not 0/1.
+    if crate::fz_value::FzValue(crate::ir_runtime::fz_value_eq(a, b)).is_true() {
+        eprintln!("fz assert_neq failed: values are equal");
+        std::process::abort();
+    }
+}

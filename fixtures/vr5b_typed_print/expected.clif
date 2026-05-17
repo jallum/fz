@@ -4,21 +4,24 @@
     ;   @abi    () -> Tagged
 function u0:0(i64) -> i64 tail {
     sig0 = (i64) system_v
-    sig1 = (f64) system_v
-    sig2 = (i64, i64) -> i64 tail
-    fn0 = u0:1 sig0
-    fn1 = u0:2 sig1
+    sig1 = (i64) system_v
+    sig2 = (i64) -> i64 system_v
+    sig3 = (i64, i64) -> i64 tail
+    fn0 = u0:40 sig0
+    fn1 = u0:41 sig1
+    fn2 = u0:20 sig2
 
 block0(v0: i64):
     v1 = iconst.i64 42    ;; v1 :: 42
     call fn0(v1)  ; v1 = 42
-    v2 = iconst.i64 3    ;; v2 :: nil
-    v3 = f64const 0x1.8000000000000p0    ;; v3 :: 1.5
-    v4 = f64const 0x1.4000000000000p1    ;; v4 :: 2.5
-    v5 = fadd v3, v4  ; v3 = 0x1.8000000000000p0, v4 = 0x1.4000000000000p1    ;; v5 :: 4.0
-    call fn1(v5)
-    v6 = iconst.i64 3    ;; v6 :: nil
-    v7 = load.i64 notrap aligned v0+16  ; @10:3
-    return_call_indirect sig2, v7(v6, v0) ; @10:3  v6 = 3
+    v2 = f64const 0x1.8000000000000p0    ;; v2 :: 1.5
+    v3 = f64const 0x1.4000000000000p1    ;; v3 :: 2.5
+    v4 = fadd v2, v3  ; v2 = 0x1.8000000000000p0, v3 = 0x1.4000000000000p1    ;; v4 :: 4.0
+    v5 = bitcast.i64 v4
+    v6 = call fn2(v5)
+    call fn1(v6)
+    v7 = iconst.i64 3    ;; v7 :: nil
+    v8 = load.i64 notrap aligned v0+16  ; @10:3
+    return_call_indirect sig3, v8(v7, v0) ; @10:3  v7 = 3
 }
 

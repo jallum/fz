@@ -1,18 +1,46 @@
-; spec child(1) #fn=0
+; spec print(1) #fn=0
+;   key:    [any]
+;   return: nil
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: :function_clause
+;     Var(2) :: bool
+;     Var(3) :: nil
+;     Var(4) :: nil
+;   exits:
+;     blk0 Goto blk1()
+;     blk1 If Var(2) ? blk4 : blk2
+;     blk2 Return Var(4)    :: nil
+;     blk3 Halt Var(1)      :: :function_clause
+;     blk4 Return Var(3)    :: nil
+
+; spec send(2) #fn=6
+;   key:    [1, vec(u8) | vec(bit)]
+;   return: any
+;   vars:
+;     Var(0) :: 1
+;     Var(1) :: vec(u8) | vec(bit)
+;     Var(2) :: :match_error
+;     Var(3) :: any
+;   exits:
+;     blk0 Return Var(3)    :: any
+;     blk1 Halt Var(2)      :: :match_error
+
+; spec child(1) #fn=7
 ;   key:    [vec(u8) | vec(bit)]
-;   return: vec(u8) | vec(bit)
+;   return: any
 ;   vars:
 ;     Var(0) :: vec(u8) | vec(bit)
 ;     Var(1) :: :match_error
 ;     Var(2) :: 1
-;     Var(3) :: vec(u8) | vec(bit)
 ;   exits:
-;     blk0 Return Var(3)    :: vec(u8) | vec(bit)
+;     blk0 TailCall send#6(Var(2), Var(0))
+;              callee_key=[1, vec(u8) | vec(bit)]
 ;     blk1 Halt Var(1)      :: :match_error
 
-; spec main(0) #fn=1
+; spec main(0) #fn=8
 ;   key:    []
-;   return: none
+;   return: nil
 ;   vars:
 ;     Var(0) :: :match_error
 ;     Var(1) :: 1
@@ -87,41 +115,41 @@
 ;     Var(70) :: 70
 ;     Var(71) :: vec(u8) | vec(bit)
 ;     Var(72) :: :match_error
-;     Var(73) :: &fn2[vec(u8) | vec(bit)]:() -> any
-;     Var(74) :: &fn3[&fn2[vec(u8) | vec(bit)]:() -> any]:() -> any
-;     Var(75) :: int
+;     Var(73) :: &fn9[vec(u8) | vec(bit)]:() -> any
+;     Var(74) :: &fn10[&fn9[vec(u8) | vec(bit)]:() -> any]:() -> any
+;     Var(75) :: any
 ;   exits:
-;     blk0 Receive cont k_receive_4#4 captured=[Var(71)]
+;     blk0 Receive cont k_receive_11#11 captured=[Var(71)]
 ;              cont_key=[any, vec(u8) | vec(bit)]
 ;     blk1 Halt Var(0)      :: :match_error
 ;     blk2 Halt Var(72)      :: :match_error
 
-; spec lambda_2(1) #fn=2
+; spec lambda_9(1) #fn=9
 ;   key:    [vec(u8) | vec(bit)]
-;   return: vec(u8) | vec(bit)
+;   return: any
 ;   vars:
 ;     Var(0) :: vec(u8) | vec(bit)
 ;     Var(1) :: :match_error
 ;   exits:
-;     blk0 TailCall child#0(Var(0))
+;     blk0 TailCall child#7(Var(0))
 ;              callee_key=[vec(u8) | vec(bit)]
 ;     blk1 Halt Var(1)      :: :match_error
 
-; spec fz_spawn_thunk(1) #fn=3
-;   key:    [&fn2[vec(u8) | vec(bit)]:() -> any]
-;   return: vec(u8) | vec(bit)
+; spec fz_spawn_thunk(1) #fn=10
+;   key:    [&fn9[vec(u8) | vec(bit)]:() -> any]
+;   return: any
 ;   vars:
-;     Var(0) :: &fn2[vec(u8) | vec(bit)]:() -> any
+;     Var(0) :: &fn9[vec(u8) | vec(bit)]:() -> any
 ;   exits:
 ;     blk0 TailCallClosure Var(0)()
 
-; spec k_receive_4(2) #fn=4
+; spec k_receive_11(2) #fn=11
 ;   key:    [any, vec(u8) | vec(bit)]
-;   return: none
+;   return: nil
 ;   vars:
 ;     Var(0) :: any
 ;     Var(1) :: vec(u8) | vec(bit)
-;     Var(2) :: nil
 ;   exits:
-;     blk0 Halt Var(0)      :: any
+;     blk0 TailCall print#0(Var(0))
+;              callee_key=[any]
 

@@ -5,15 +5,15 @@
 function u0:0(i64) -> i64 tail {
     sig0 = (i64) system_v
     sig1 = (i64, i64) -> i64 tail
-    fn0 = u0:0 sig0
+    fn0 = u0:40 sig0
 
 block0(v0: i64):
     v1 = iconst.i64 1                   ; @2:9
-    v2 = iconst.i64 10                  ; @2:14
+    v2 = iconst.i64 18                  ; @2:14
     v3 = iconst.i64 19                  ; @2:9
-    call fn0(v3)                        ; @2:3  v3 = 19
-    v4 = iconst.i64 3                   ; @2:3
-    v5 = load.i64 notrap aligned v0+16
-    return_call_indirect sig1, v5(v4, v0)  ; v4 = 3
+    call fn0(v3)  ; v3 = 19
+    v4 = iconst.i64 3    ;; v4 :: nil
+    v5 = load.i64 notrap aligned v0+16  ; @2:3
+    return_call_indirect sig1, v5(v4, v0) ; @2:3  v4 = 3
 }
 

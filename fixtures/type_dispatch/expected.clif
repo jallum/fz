@@ -13,7 +13,7 @@ function u0:0(i64) -> i64 tail {
     fn3 = colocated u0:40 sig3
 
 block0(v0: i64):
-    v1 = iconst.i64 18                  ; @5:18
+    v1 = iconst.i64 18                  ; @5:15
     v2 = band_imm v1, 7  ; v1 = 18
     v3 = icmp_imm eq v2, 1    ;; v3 :: :false
     brif v3, block2, block1             ; @5:9
@@ -40,7 +40,7 @@ function u0:0(i64, i64) -> i64 tail {
     fn0 = u0:41 sig0
 
     block0(v0: i64, v1: i64):    ;; v0 :: nil
-    v2 = iconst.i64 26                  ; @6:18
+    v2 = iconst.i64 26                  ; @6:15
     call fn0(v2)  ; v2 = 26
     v3 = iconst.i64 3    ;; v3 :: nil
     v4 = load.i64 notrap aligned v1+16  ; @6:9

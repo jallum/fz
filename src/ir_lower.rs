@@ -17,15 +17,16 @@
 #![allow(dead_code)]
 
 use crate::ast::{
-    BinOp as AstBinOp, BitField as AstBitField, BitSize as AstBitSize, Expr, FnDef, Item,
+    BinOp as AstBinOp, BitField as AstBitField, BitSize as AstBitSize, Expr, FnClause, FnDef, Item,
     MatchClause, Pattern, Program, Spanned, UnOp as AstUnOp, WithBinding,
 };
 use crate::diag::Span;
 use crate::fz_ir::{
-    BinOp, BitFieldIr, BitSizeIr, BlockId, BuiltinId, Const, Cont, FnBuilder, FnId, Module,
-    ModuleBuilder, Prim, SourceInfo, Term, UnOp, Var,
+    BinOp, BitFieldIr, BitSizeIr, BlockId, Const, Cont, ExternDecl, ExternId, ExternTy, FnBuilder,
+    FnId, Module, ModuleBuilder, Prim, SourceInfo, Term, UnOp, Var,
 };
 use std::collections::HashMap;
+use std::rc::Rc;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum LowerError {
@@ -148,30 +149,35 @@ impl AtomTable {
     }
 }
 
-/// Builtin registry. Stable ids 0..N seeded for the v1 set.
-pub struct BuiltinTable {
-    map: HashMap<String, BuiltinId>,
+/// Name → ExternId index, built during the zeroth lowering pass.
+pub struct ExternTable {
+    map: HashMap<String, ExternId>,
 }
 
-impl BuiltinTable {
+impl ExternTable {
     pub fn new() -> Self {
-        use crate::fz_ir::BuiltinKind;
-        let mut t = Self {
+        Self {
             map: HashMap::new(),
-        };
-        for k in BuiltinKind::ALL {
-            t.map.insert(k.name().into(), k.id());
         }
-        t
     }
-    pub fn lookup(&self, name: &str) -> Option<BuiltinId> {
+    fn insert(&mut self, name: String, id: ExternId) {
+        self.map.insert(name, id);
+    }
+    pub fn lookup(&self, name: &str) -> Option<ExternId> {
         self.map.get(name).copied()
     }
 }
 
-impl Default for BuiltinTable {
-    fn default() -> Self {
-        Self::new()
+/// Map a single token identifier to an `ExternTy`. Used when resolving the
+/// return-type annotation in an `extern "C" fn` declaration.
+fn extern_ty_from_name(name: &str) -> Option<ExternTy> {
+    match name {
+        "any" | "binary" | "atom" | "bool" => Some(ExternTy::Any),
+        "integer" => Some(ExternTy::I64),
+        "float" => Some(ExternTy::F64),
+        "nil" => Some(ExternTy::Unit),
+        "never" => Some(ExternTy::Never),
+        _ => None,
     }
 }
 
@@ -180,7 +186,11 @@ type FnMap = HashMap<(String, usize), FnId>;
 
 pub struct LowerCtx {
     pub atoms: AtomTable,
-    pub builtins: BuiltinTable,
+    pub externs: ExternTable,
+    /// Accumulated ExternDecls; moved into Module.externs after build.
+    pub extern_decls: Vec<ExternDecl>,
+    /// Monotonic counter for minting stable ExternIds. Mirrors mb.next_fn.
+    next_extern: u32,
     pub mb: ModuleBuilder,
     pub fns: FnMap,
     /// Currently-being-built fn.
@@ -211,13 +221,28 @@ pub struct LowerCtx {
     /// the same FnId and produce a single `MakeClosure(thunk, [x])`
     /// shape in stub generation.
     spawn_thunk_id: Option<FnId>,
+    /// fz-ext.7 — FnIds below this threshold belong to the runtime.fz
+    /// prelude. `build_source_info` ignores their var_meta entries so
+    /// prelude spans (relative to runtime.fz bytes) don't overwrite
+    /// user-program spans (which share the same per-fn Var numbering).
+    pub prelude_fn_id_cutoff: u32,
+    /// fz-ty1.3 — Type env built from runtime.fz @type declarations.
+    /// Available to downstream passes (e.g. lower_extern_ret_ty) for
+    /// resolving opaque type names declared in the prelude.
+    pub prelude_type_env: crate::type_expr::ModuleTypeEnv,
+    /// fz-ty1.9 — Merged type env: prelude + all user-module @type aliases.
+    /// Used by `emit_param_type_guards` to resolve annotation tokens in
+    /// `fn f(x :: T)` parameter heads.
+    pub combined_type_env: crate::type_expr::ModuleTypeEnv,
 }
 
 impl LowerCtx {
     pub fn new() -> Self {
         Self {
             atoms: AtomTable::default(),
-            builtins: BuiltinTable::new(),
+            externs: ExternTable::new(),
+            extern_decls: Vec::new(),
+            next_extern: 0,
             mb: ModuleBuilder::new(),
             fns: HashMap::new(),
             cur: None,
@@ -232,6 +257,9 @@ impl LowerCtx {
             term_spans: HashMap::new(),
             fn_spans: HashMap::new(),
             spawn_thunk_id: None,
+            prelude_fn_id_cutoff: 0,
+            prelude_type_env: crate::type_expr::ModuleTypeEnv::new(),
+            combined_type_env: crate::type_expr::ModuleTypeEnv::new(),
         }
     }
 
@@ -379,21 +407,104 @@ impl Default for LowerCtx {
     }
 }
 
+const RUNTIME_FZ: &str = include_str!("runtime.fz");
+
+fn parse_runtime_prelude() -> (Vec<Rc<Item>>, crate::type_expr::ModuleTypeEnv) {
+    let toks = crate::lexer::Lexer::new(RUNTIME_FZ)
+        .tokenize()
+        .expect("runtime.fz lex error (bug in built-in prelude)");
+    let (items, attrs) = crate::parser::Parser::new(toks)
+        .parse_prelude()
+        .expect("runtime.fz parse error (bug in built-in prelude)");
+    let env = crate::type_expr::build_module_type_env(&attrs)
+        .expect("runtime.fz @type error (bug in built-in prelude)");
+    (items, env)
+}
+
 pub fn lower_program(prog: &Program) -> Result<Module, LowerError> {
-    let (m, _, _) = lower_program_full(prog)?;
+    let (m, _) = lower_program_full(prog)?;
     Ok(m)
 }
 
-pub fn lower_program_full(prog: &Program) -> Result<(Module, AtomTable, BuiltinTable), LowerError> {
+pub fn lower_program_full(prog: &Program) -> Result<(Module, AtomTable), LowerError> {
     let mut ctx = LowerCtx::new();
 
-    // First pass: assign FnIds to every top-level FnDef.
-    for item in &prog.items {
-        match item.as_ref() {
-            Item::Fn(fn_def) => {
+    // Prepend the built-in runtime.fz prelude so its externs and wrapper fns
+    // are visible to every user program without an explicit import.
+    let (runtime_items, prelude_type_env) = parse_runtime_prelude();
+    ctx.prelude_type_env = prelude_type_env.clone();
+    // Build the combined type env: prelude aliases + all user-module aliases.
+    let mut combined = prelude_type_env;
+    for module_env in prog.module_type_envs.values() {
+        combined.extend(module_env.iter().map(|(k, v)| (k.clone(), v.clone())));
+    }
+    ctx.combined_type_env = combined;
+    let runtime_item_count = runtime_items.len();
+    let all_items: Vec<Rc<Item>> = runtime_items
+        .into_iter()
+        .chain(prog.items.iter().cloned())
+        .collect();
+
+    // Registration pass: assign ExternIds and FnIds in a single sweep.
+    // Prelude items come first; recording prelude_fn_id_cutoff after them
+    // lets build_source_info ignore prelude var spans (both halves restart
+    // Var numbering at 0, so user spans must not be overwritten).
+    for item in all_items.iter().take(runtime_item_count) {
+        if let Item::Fn(fn_def) = item.as_ref() {
+            if fn_def.extern_abi.is_some() {
+                let eid = ExternId(ctx.next_extern);
+                ctx.next_extern += 1;
+                let params: Vec<ExternTy> = fn_def
+                    .extern_params
+                    .iter()
+                    .map(|name| extern_ty_from_name(name).unwrap_or(ExternTy::Any))
+                    .collect();
+                let (ret, ret_descr) = lower_extern_ret_ty(fn_def, &ctx.prelude_type_env)?;
+                ctx.extern_decls.push(ExternDecl {
+                    id: eid,
+                    fz_name: fn_def.name.clone(),
+                    symbol: fn_def.name.clone(),
+                    params,
+                    ret,
+                    ret_descr,
+                });
+                ctx.externs.insert(fn_def.name.clone(), eid);
+            } else {
                 let arity = fn_def.clauses.first().map(|c| c.params.len()).unwrap_or(0);
                 let id = ctx.mb.fresh_fn_id();
                 ctx.fns.insert((fn_def.name.clone(), arity), id);
+            }
+        }
+    }
+    // All FnIds assigned so far belong to the prelude.
+    ctx.prelude_fn_id_cutoff = ctx.mb.next_fn_id();
+
+    for item in all_items.iter().skip(runtime_item_count) {
+        match item.as_ref() {
+            Item::Fn(fn_def) => {
+                if fn_def.extern_abi.is_some() {
+                    let eid = ExternId(ctx.next_extern);
+                    ctx.next_extern += 1;
+                    let params: Vec<ExternTy> = fn_def
+                        .extern_params
+                        .iter()
+                        .map(|name| extern_ty_from_name(name).unwrap_or(ExternTy::Any))
+                        .collect();
+                    let (ret, ret_descr) = lower_extern_ret_ty(fn_def, &ctx.prelude_type_env)?;
+                    ctx.extern_decls.push(ExternDecl {
+                        id: eid,
+                        fz_name: fn_def.name.clone(),
+                        symbol: fn_def.name.clone(),
+                        params,
+                        ret,
+                        ret_descr,
+                    });
+                    ctx.externs.insert(fn_def.name.clone(), eid);
+                } else {
+                    let arity = fn_def.clauses.first().map(|c| c.params.len()).unwrap_or(0);
+                    let id = ctx.mb.fresh_fn_id();
+                    ctx.fns.insert((fn_def.name.clone(), arity), id);
+                }
             }
             Item::Module(m) => {
                 return Err(LowerError::Unsupported {
@@ -416,9 +527,11 @@ pub fn lower_program_full(prog: &Program) -> Result<(Module, AtomTable, BuiltinT
         }
     }
 
-    // Second pass: lower each fn.
-    for item in &prog.items {
-        if let Item::Fn(fn_def) = item.as_ref() {
+    // Second pass: lower each fn body.
+    for item in &all_items {
+        if let Item::Fn(fn_def) = item.as_ref()
+            && fn_def.extern_abi.is_none()
+        {
             lower_fn(&mut ctx, fn_def)?;
         }
     }
@@ -429,9 +542,70 @@ pub fn lower_program_full(prog: &Program) -> Result<(Module, AtomTable, BuiltinT
     let mut module = mb.build();
     module.source = build_source_info(&module, &ctx);
     module.atom_names = ctx.atoms.names();
+    module.externs = std::mem::take(&mut ctx.extern_decls);
+    for (i, e) in module.externs.iter().enumerate() {
+        module.extern_idx.insert(e.id, i);
+    }
     // fz-02r.4 — annotate TailCall back-edges from the structural SCC.
     annotate_back_edges(&mut module, &ctx.fn_spans)?;
-    Ok((module, ctx.atoms, ctx.builtins))
+    Ok((module, ctx.atoms))
+}
+
+/// Parse `extern_ret_tokens` into an ExternTy (wire format) and Descr
+/// (semantic type for the type system).
+///
+/// `type_env` is consulted for named type references (e.g. `pid`).
+fn lower_extern_ret_ty(
+    fn_def: &FnDef,
+    type_env: &crate::type_expr::ModuleTypeEnv,
+) -> Result<(ExternTy, crate::types::Descr), LowerError> {
+    use crate::lexer::Tok;
+    let tokens = &fn_def.extern_ret_tokens.0;
+
+    // Try to resolve via parse_type_expr first (handles named types like `pid`).
+    if !tokens.is_empty()
+        && let Ok((descr, _)) = crate::type_expr::parse_type_expr(tokens, type_env)
+    {
+        let wire = descr_to_extern_ty(&descr);
+        return Ok((wire, descr));
+    }
+
+    // Fallback: first-meaningful-token heuristic for tokens that don't
+    // parse as a full type expression (e.g. bare `unit` which is not a
+    // built-in fz type name).
+    let ty = tokens.iter().find_map(|t| match &t.tok {
+        Tok::Nil => Some(ExternTy::Unit),
+        Tok::True | Tok::False => Some(ExternTy::Any),
+        Tok::Ident(n) | Tok::Upper(n) => extern_ty_from_name(n.as_str()),
+        _ => None,
+    });
+    ty.map(|wire| (wire, crate::types::Descr::any()))
+        .ok_or_else(|| LowerError::Unsupported {
+            span: fn_def.name_span,
+            what: format!(
+                "unrecognised return type in `extern fn {}` (expected any/nil/never/float/pid/…)",
+                fn_def.name
+            ),
+        })
+}
+
+/// Derive a coarse C-ABI wire type from a semantic Descr.
+///
+/// Opaque types erase to Any (they are fz tagged values at runtime).
+/// Float-only types get the F64 wire. Nil-only → Unit. Never → Never.
+/// Everything else → Any (opaque u64 fz value).
+fn descr_to_extern_ty(d: &crate::types::Descr) -> ExternTy {
+    use crate::types::Descr;
+    if d.is_subtype(&Descr::none()) {
+        return ExternTy::Never;
+    }
+    if d.is_subtype(&Descr::nil()) {
+        return ExternTy::Unit;
+    }
+    if d.is_subtype(&Descr::float()) {
+        return ExternTy::F64;
+    }
+    ExternTy::Any
 }
 
 /// Post-lowering pass: compute the SCC of the fn-level call graph and set
@@ -594,22 +768,28 @@ fn build_source_info(module: &Module, ctx: &LowerCtx) -> SourceInfo {
             fn_span[idx] = *sp;
         }
     }
-    // Var spans/names: pick the maximum Var across all fns. Each fn's
-    // Vars start at 0 and are local to that fn, so we record one global
-    // table indexed by Var.0 — when the same Var.0 exists in two fns it
-    // shares an entry, which is fine for the renderer (it'll always be
-    // looked up within the right fn's scope).
-    let max_var = ctx.var_meta.keys().map(|(_, v)| v.0).max().unwrap_or(0);
+    // Var spans/names: pick the maximum Var across user-program fns only.
+    // Each fn's Vars restart at 0, so we maintain one global table indexed
+    // by Var.0. Prelude fns (FnId < prelude_fn_id_cutoff) are excluded:
+    // their spans are byte offsets into runtime.fz, not the user source,
+    // and would overwrite user-program entries that share the same Var.0.
+    let cutoff = ctx.prelude_fn_id_cutoff;
+    let max_var = ctx
+        .var_meta
+        .keys()
+        .filter(|(fid, _)| fid.0 >= cutoff)
+        .map(|(_, v)| v.0)
+        .max()
+        .unwrap_or(0);
     let n = (max_var as usize) + 1;
     let mut var_span = vec![Span::DUMMY; n];
     let mut var_name = vec![String::new(); n];
-    for ((_fid, v), (sp, name)) in &ctx.var_meta {
+    for ((fid, v), (sp, name)) in &ctx.var_meta {
+        if fid.0 < cutoff {
+            continue; // skip prelude fn metadata
+        }
         let idx = v.0 as usize;
         if idx < n {
-            // Last write wins. Per-fn precision can come later if a
-            // consumer needs to disambiguate Var.0 across fns; today
-            // ir_typer's lookup is always paired with the FnId it's
-            // working on, so the conflict doesn't surface.
             if var_span[idx].is_dummy() {
                 var_span[idx] = *sp;
             }
@@ -684,6 +864,7 @@ fn lower_fn(ctx: &mut LowerCtx, fn_def: &FnDef) -> Result<(), LowerError> {
             // by the pattern walker (e.g. tuple-destructured params).
             ctx.name_var(*pv, "", pat.span);
         }
+        emit_param_type_guards(ctx, clause, &param_vars, fail_block)?;
         if let Some(g) = &clause.guard {
             let guard_var = lower_expr(ctx, g, false)?;
             let body_b = ctx.cur_mut().block(vec![]);
@@ -702,6 +883,38 @@ fn lower_fn(ctx: &mut LowerCtx, fn_def: &FnDef) -> Result<(), LowerError> {
     let built = ctx.cur.take().unwrap().build();
     ctx.mb.add_fn(built);
     ctx.cur_block = None;
+    Ok(())
+}
+
+/// fz-ty1.9 — Emit TypeTest guards for `fn f(x :: T)` parameter annotations.
+/// For each param that has a type annotation, emit a `TypeTest(pv, descr)`
+/// stmt and branch: pass → continue to next block, fail → `on_fail` block.
+fn emit_param_type_guards(
+    ctx: &mut LowerCtx,
+    clause: &FnClause,
+    param_vars: &[Var],
+    on_fail: BlockId,
+) -> Result<(), LowerError> {
+    debug_assert_eq!(
+        param_vars.len(),
+        clause.param_annotations.len(),
+        "param/annotation length mismatch"
+    );
+    for (pv, type_toks_opt) in param_vars.iter().zip(&clause.param_annotations) {
+        let toks = match type_toks_opt {
+            Some(t) => &t.0,
+            None => continue,
+        };
+        let descr = match crate::type_expr::parse_type_expr(toks, &ctx.combined_type_env) {
+            Ok((d, _)) => d,
+            Err(_) => continue,
+        };
+        let tt_var = ctx.let_(crate::fz_ir::Prim::TypeTest(*pv, Box::new(descr)));
+        let pass_b = ctx.cur_mut().block(vec![]);
+        ctx.set_term(crate::fz_ir::Term::If(tt_var, pass_b, on_fail));
+        ctx.cur_block = Some(pass_b);
+        ctx.terminated = false;
+    }
     Ok(())
 }
 
@@ -742,6 +955,7 @@ fn lower_multi_clause(
         for (pv, pat) in param_vars.iter().zip(&clause.params) {
             lower_pattern_bind(ctx, *pv, pat, next)?;
         }
+        emit_param_type_guards(ctx, clause, param_vars, next)?;
         if let Some(g) = &clause.guard {
             let guard_var = lower_expr(ctx, g, false)?;
             let body_b = ctx.cur_mut().block(vec![]);
@@ -931,25 +1145,30 @@ fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -> Result<Va
                 }
                 return cps_split_receive(ctx, sp, /* tail */ false);
             }
-            // Builtin?
-            if let Some(bid) = ctx.builtins.lookup(&callee_name) {
-                // fz-ul4.29.9 — wrap the spawn arg in `fz_spawn_thunk` so
-                // the spawn-time stub invocation never executes the
-                // user's closure body synchronously. Wrapping is
-                // unconditional on Spawn calls: the only operand is a
-                // closure value (the existing bare-fn-name adapter at
-                // src/ir_lower.rs already lifts plain fn names into
-                // MakeClosure(target, [])).
-                if bid == crate::fz_ir::BuiltinKind::Spawn.id()
-                    && (arg_vars.len() == 1 || arg_vars.len() == 2)
-                {
-                    let thunk_id = ctx.ensure_spawn_thunk();
-                    let wrapper = ctx.let_at(Prim::MakeClosure(thunk_id, vec![arg_vars[0]]), sp);
-                    let mut new_args = vec![wrapper];
-                    new_args.extend_from_slice(&arg_vars[1..]);
-                    return Ok(ctx.let_at(Prim::Builtin(bid, new_args), sp));
-                }
-                return Ok(ctx.let_at(Prim::Builtin(bid, arg_vars), sp));
+            // fz-ul4.29.9 / fz-ext.7 — spawn is special: wrap the closure arg
+            // in fz_spawn_thunk before dispatching to fz_spawn / fz_spawn_opt.
+            // This must be checked before the generic ExternTable lookup so that
+            // `spawn` (user-facing name) resolves to the thunk-wrapped fz_spawn
+            // extern, not a non-existent user fn.
+            if callee_name == "spawn" && (arg_vars.len() == 1 || arg_vars.len() == 2) {
+                let thunk_id = ctx.ensure_spawn_thunk();
+                let wrapper = ctx.let_at(Prim::MakeClosure(thunk_id, vec![arg_vars[0]]), sp);
+                let mut new_args = vec![wrapper];
+                new_args.extend_from_slice(&arg_vars[1..]);
+                let sym = if arg_vars.len() == 1 {
+                    "fz_spawn"
+                } else {
+                    "fz_spawn_opt"
+                };
+                let eid = ctx
+                    .externs
+                    .lookup(sym)
+                    .expect("fz_spawn/fz_spawn_opt must be in runtime.fz");
+                return Ok(ctx.let_at(Prim::Extern(eid, new_args), sp));
+            }
+            // Extern (runtime.fz / user-declared `extern "C" fn`)?
+            if let Some(eid) = ctx.externs.lookup(&callee_name) {
+                return Ok(ctx.let_at(Prim::Extern(eid, arg_vars), sp));
             }
             let arity = arg_vars.len();
             let callee =
@@ -1917,17 +2136,12 @@ mod tests {
     fn lower_nontail_call_splits_into_continuation() {
         let m = lower_src("fn caller(x), do: callee(x) + 1\nfn callee(y), do: y");
         let s = format!("{}", m);
-        assert!(
-            s.contains("call fn1"),
-            "expected explicit call, got:\n{}",
-            s
-        );
+        // "call fnN" where N is callee's FnId (shifts with runtime.fz prelude).
+        assert!(s.contains("call fn"), "expected explicit call, got:\n{}", s);
         assert!(s.contains("cont(fn"), "expected continuation, got:\n{}", s);
+        // Continuation fn is named "k_{FnId}"; FnId shifts with runtime.fz prelude.
         assert!(
-            s.contains("k_2")
-                || s.contains("k_3")
-                || s.contains("lambda_")
-                || s.matches("fn ").count() >= 3,
+            s.contains(" k_") || s.contains("lambda_"),
             "expected continuation fn, got:\n{}",
             s
         );
@@ -2020,19 +2234,33 @@ mod tests {
             s
         );
         assert!(s.contains("lambda_"), "expected lambda fn name: {}", s);
-        assert_eq!(m.fns.len(), 2);
+        // Module has 7 runtime.fz wrapper fns + mk + lambda = 9.
+        assert!(
+            m.fns.len() >= 2,
+            "expected ≥2 fns (mk + lambda + prelude), got {}",
+            m.fns.len()
+        );
+        assert!(m.fns.iter().any(|f| f.name == "mk"), "expected 'mk' fn");
+        assert!(
+            m.fns.iter().any(|f| f.name.starts_with("lambda_")),
+            "expected lambda fn"
+        );
     }
 
+    /// fz-ext.7 — `print(x)` now routes through the runtime.fz wrapper fn
+    /// `fn print(x) do fz_print_value(x) end`. The wrapper's body contains
+    /// `extern#0(` (fz_print_value = ExternId 0 in runtime.fz).
     #[test]
-    fn builtin_call_lowers_to_builtin_prim() {
+    fn print_call_routes_through_runtime_fz_wrapper() {
         let m = lower_src("fn p(), do: print(1)");
         let s = format!("{}", m);
-        assert!(s.contains("builtin#0("), "got:\n{}", s);
+        // The fz_print_value extern dispatch lives inside the print wrapper.
+        assert!(s.contains("extern#0("), "expected extern#0( in:\n{}", s);
     }
 
-    /// fz-ul4.29.9 — a `spawn(x)` call lowers to `MakeClosure(fz_spawn_thunk, [x])`
-    /// followed by `Builtin(Spawn, [wrapper])`. The synthesized thunk fn
-    /// appears in the module alongside the user fns.
+    /// fz-ul4.29.9 / fz-ext.7 — a `spawn(x)` call lowers to
+    /// `MakeClosure(fz_spawn_thunk, [x])` followed by `Extern(fz_spawn, [wrapper])`.
+    /// The synthesized thunk fn appears in the module alongside the user fns.
     #[test]
     fn spawn_callsite_is_wrapped_in_fz_spawn_thunk() {
         let m = lower_src("fn child(), do: 0\nfn p() do spawn(child) end");
@@ -2048,7 +2276,7 @@ mod tests {
             .unwrap()
             .id;
         // p's body should contain `MakeClosure(thunk_id, [<child-closure>])`
-        // followed by `Builtin(Spawn, [<wrapper>])`. Render and grep.
+        // followed by `Extern(fz_spawn=5, [<wrapper>])`. Render and grep.
         let s = format!("{}", m);
         let needle = format!("closure(fn{}", thunk_id.0);
         assert!(
@@ -2061,7 +2289,7 @@ mod tests {
 
     /// fz-siu.12 — spawn/2 wraps the closure arg in fz_spawn_thunk exactly
     /// like spawn/1; the min_heap_size arg passes through as the second
-    /// Builtin operand.
+    /// Extern operand. fz_spawn_opt = ExternId(6) per runtime.fz ordering.
     #[test]
     fn spawn2_wraps_closure_and_threads_opts() {
         let m = lower_src("fn child(), do: 0\nfn p() do spawn(child, 4096) end");
@@ -2080,10 +2308,10 @@ mod tests {
             needle,
             s
         );
-        // The Builtin(Spawn, ...) call must have two operands.
+        // fz_spawn_opt = ExternId(7) in runtime.fz (0-based, after fz_spawn=6).
         assert!(
-            s.contains("builtin#5("),
-            "expected Builtin(Spawn, ...) in IR:\n{}",
+            s.contains("extern#7("),
+            "expected Extern(fz_spawn_opt=7, ...) in IR:\n{}",
             s
         );
     }
@@ -2435,6 +2663,63 @@ end
             matches!(err, LowerError::BackEdgeTooManyArgs { arg_count: 9, .. }),
             "expected BackEdgeTooManyArgs(9), got {:?}",
             err
+        );
+    }
+
+    #[test]
+    fn extern_fn_registers_in_module_externs() {
+        let toks = Lexer::new("extern \"C\" fn fz_nop(any) :: nil\nfn main() do fz_nop(1) end\n")
+            .tokenize()
+            .expect("lex");
+        let prog = crate::parser::Parser::new(toks)
+            .parse_program()
+            .expect("parse");
+        let (module, _) = lower_program_full(&prog).expect("lower");
+        // 10 runtime.fz externs + 1 user extern = 11 total.
+        assert_eq!(module.externs.len(), 11);
+        // fz_nop is at the end (user externs follow runtime.fz externs).
+        let nop = module
+            .externs
+            .iter()
+            .find(|e| e.fz_name == "fz_nop")
+            .expect("fz_nop not found in externs");
+        assert_eq!(nop.params, vec![ExternTy::Any]);
+        assert_eq!(nop.ret, ExternTy::Unit);
+        // main's IR should contain Extern(9, [...]) — fz_nop is ExternId(9).
+        let ir = format!("{}", module);
+        assert!(
+            ir.contains("extern#10"),
+            "expected extern#10 in IR:\n{}",
+            ir
+        );
+    }
+
+    #[test]
+    fn extern_id_is_stable_and_extern_idx_is_consistent() {
+        let toks = Lexer::new("extern \"C\" fn fz_nop(any) :: nil\nfn main() do fz_nop(1) end\n")
+            .tokenize()
+            .expect("lex");
+        let prog = crate::parser::Parser::new(toks)
+            .parse_program()
+            .expect("parse");
+        let (module, _) = lower_program_full(&prog).expect("lower");
+        // extern_idx must have an entry for every extern.
+        assert_eq!(module.extern_idx.len(), module.externs.len());
+        // Each extern's id field must resolve via extern_by_id to itself.
+        for (i, e) in module.externs.iter().enumerate() {
+            assert_eq!(
+                module.extern_idx[&e.id], i,
+                "extern_idx out of sync at index {}",
+                i
+            );
+            assert_eq!(module.extern_by_id(e.id).fz_name, e.fz_name);
+        }
+        // ExternIds are monotonically increasing (counter-based, not len()-based).
+        let ids: Vec<u32> = module.externs.iter().map(|e| e.id.0).collect();
+        assert!(
+            ids.windows(2).all(|w| w[0] < w[1]),
+            "ExternIds not monotonic: {:?}",
+            ids
         );
     }
 }

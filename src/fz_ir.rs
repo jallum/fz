@@ -88,68 +88,31 @@ pub struct BlockId(pub u32);
 pub struct Var(pub u32);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct BuiltinId(pub u32);
+pub struct ExternId(pub u32);
 
-/// Typed view of a `BuiltinId`. The discriminants match the registration
-/// order in `BuiltinTable::new` (single source of truth for that mapping
-/// is `BuiltinKind::name`). Codegen dispatches on this enum so the wire
-/// between ir_lower's name-based BuiltinTable and ir_codegen's per-builtin
-/// runtime fns stays type-checked.
-#[repr(u32)]
+/// C ABI wire type for `extern "C" fn` declarations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BuiltinKind {
-    Print = 0,
-    Assert = 1,
-    AssertEq = 2,
-    AssertNeq = 3,
-    VecGet = 4,
-    /// fz-ul4.19.2: spawn(closure) -> pid. Creates a new task at the
-    /// closure's entry fn and enqueues it. v1 restriction: closure must
-    /// have zero captures (no cross-heap arg passing yet — .19.3
-    /// territory). Pid returned as boxed Int for v1; struct-typed Pid
-    /// is a follow-up.
-    Spawn = 5,
-    /// fz-ul4.19.2: self() -> pid. Returns the current task's pid as a
-    /// boxed Int.
-    SelfPid = 6,
-    /// fz-ul4.19.3: send(pid, msg) -> msg. Deep-copies msg into receiver's
-    /// heap, enqueues into receiver's mailbox, wakes receiver if Blocked.
-    /// Returns the original msg (sender side) so the caller can chain.
-    Send = 7,
+pub enum ExternTy {
+    I64,
+    F64,
+    Any,   // opaque u64 fz value
+    Unit,  // maps to 0 on return
+    Never, // diverges
 }
 
-impl BuiltinKind {
-    pub const ALL: [BuiltinKind; 8] = [
-        Self::Print,
-        Self::Assert,
-        Self::AssertEq,
-        Self::AssertNeq,
-        Self::VecGet,
-        Self::Spawn,
-        Self::SelfPid,
-        Self::Send,
-    ];
-
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::Print => "print",
-            Self::Assert => "assert",
-            Self::AssertEq => "assert_eq",
-            Self::AssertNeq => "assert_neq",
-            Self::VecGet => "vec_get",
-            Self::Spawn => "spawn",
-            Self::SelfPid => "self",
-            Self::Send => "send",
-        }
-    }
-
-    pub fn from_id(id: BuiltinId) -> Option<Self> {
-        Self::ALL.iter().copied().find(|k| *k as u32 == id.0)
-    }
-
-    pub fn id(self) -> BuiltinId {
-        BuiltinId(self as u32)
-    }
+/// One resolved `extern "C" fn` declaration stored in `Module.externs`.
+#[derive(Debug, Clone)]
+pub struct ExternDecl {
+    pub id: ExternId,
+    pub fz_name: String,
+    /// C symbol name (same as fz_name for v1; override possible later).
+    pub symbol: String,
+    pub params: Vec<ExternTy>,
+    pub ret: ExternTy,
+    /// Semantic return type for the type system. Used by ir_typer to give
+    /// `Prim::Extern` calls their declared return type instead of `any`.
+    /// Defaults to `Descr::any()` when no return type is declared.
+    pub ret_descr: crate::types::Descr,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -192,7 +155,7 @@ pub enum Prim {
     BinOp(BinOp, Var, Var),
     UnOp(UnOp, Var),
     AllocStruct(u32, Vec<Var>),
-    Builtin(BuiltinId, Vec<Var>),
+    Extern(ExternId, Vec<Var>),
     ListCons(Var, Var),
     ListHead(Var),
     ListTail(Var),
@@ -242,6 +205,14 @@ pub enum Prim {
     },
     /// True if the reader has consumed all bits.
     BitReaderDone(Var),
+    /// Runtime type test: returns `true` if the value held in `Var` belongs
+    /// to the described type, `false` otherwise.
+    ///
+    /// For structural types (BasicBits, ints, etc.) this is a real runtime
+    /// tag check. For opaque types, the check is resolved to a constant by
+    /// the typer (opaque types have no runtime tag) — the branch is then
+    /// eliminated by DCE.
+    TypeTest(Var, Box<crate::types::Descr>),
 }
 
 #[derive(Debug, Clone)]
@@ -402,11 +373,19 @@ pub struct Module {
     /// O(1) index from FnId to position in `fns`. Kept in sync by
     /// `ModuleBuilder::add_fn`; never mutated after `build()`.
     pub fn_idx: HashMap<FnId, usize>,
+    /// All `extern "C" fn` declarations. Stable: ExternId is a counter, not a vec index.
+    pub externs: Vec<ExternDecl>,
+    /// O(1) index from ExternId to position in `externs`. Mirrors fn_idx.
+    pub extern_idx: HashMap<ExternId, usize>,
 }
 
 impl Module {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn extern_by_id(&self, eid: ExternId) -> &ExternDecl {
+        &self.externs[*self.extern_idx.get(&eid).expect("unknown extern id")]
     }
 
     pub fn fn_by_id(&self, id: FnId) -> &FnIr {
@@ -520,6 +499,12 @@ impl ModuleBuilder {
         id
     }
 
+    /// The FnId value that would be assigned by the next `fresh_fn_id` call.
+    /// Used to snapshot the prelude/user boundary in `lower_program_full`.
+    pub fn next_fn_id(&self) -> u32 {
+        self.next_fn
+    }
+
     pub fn add_fn(&mut self, fn_ir: FnIr) {
         self.fn_idx.insert(fn_ir.id, self.fns.len());
         self.fns.push(fn_ir);
@@ -538,6 +523,8 @@ impl ModuleBuilder {
             schemas: self.schemas,
             source: SourceInfo::default(),
             atom_names: Vec::new(),
+            externs: Vec::new(),
+            extern_idx: HashMap::new(),
         }
     }
 }
@@ -629,8 +616,8 @@ impl fmt::Display for Prim {
             Prim::AllocStruct(sid, args) => {
                 write!(f, "alloc_struct(schema={}, [{}])", sid, fmt_var_list(args))
             }
-            Prim::Builtin(b, args) => {
-                write!(f, "builtin#{}([{}])", b.0, fmt_var_list(args))
+            Prim::Extern(e, args) => {
+                write!(f, "extern#{}([{}])", e.0, fmt_var_list(args))
             }
             Prim::ListCons(h, t) => write!(f, "cons({}, {})", h, t),
             Prim::ListHead(l) => write!(f, "head({})", l),
@@ -685,6 +672,7 @@ impl fmt::Display for Prim {
             Prim::BitReaderInit(v) => write!(f, "bit_reader_init({})", v),
             Prim::BitReadField { reader, .. } => write!(f, "bit_read_field({})", reader),
             Prim::BitReaderDone(v) => write!(f, "bit_reader_done({})", v),
+            Prim::TypeTest(v, d) => write!(f, "type_test({}, {})", v, d),
         }
     }
 }

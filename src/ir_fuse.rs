@@ -170,7 +170,7 @@ fn subst_prim(p: &Prim, subst: &HashMap<Var, Var>) -> Prim {
         Prim::AllocStruct(sid, args) => {
             Prim::AllocStruct(*sid, args.iter().map(|x| sv(*x)).collect())
         }
-        Prim::Builtin(bid, args) => Prim::Builtin(*bid, args.iter().map(|x| sv(*x)).collect()),
+        Prim::Extern(eid, args) => Prim::Extern(*eid, args.iter().map(|x| sv(*x)).collect()),
         Prim::ListCons(a, b) => Prim::ListCons(sv(*a), sv(*b)),
         Prim::ListHead(a) => Prim::ListHead(sv(*a)),
         Prim::ListTail(a) => Prim::ListTail(sv(*a)),
@@ -231,6 +231,7 @@ fn subst_prim(p: &Prim, subst: &HashMap<Var, Var>) -> Prim {
             unit: *unit,
             is_last: *is_last,
         },
+        Prim::TypeTest(a, d) => Prim::TypeTest(sv(*a), d.clone()),
     }
 }
 
@@ -241,7 +242,7 @@ fn subst_cont(c: &Cont, subst: &HashMap<Var, Var>) -> Cont {
     }
 }
 
-fn subst_term(t: &Term, subst: &HashMap<Var, Var>) -> Term {
+pub(crate) fn subst_term(t: &Term, subst: &HashMap<Var, Var>) -> Term {
     let sv = |v: Var| subst_var(v, subst);
     match t {
         // BlockId targets are NOT substituted — only Var args are.
@@ -286,7 +287,7 @@ fn subst_term(t: &Term, subst: &HashMap<Var, Var>) -> Term {
     }
 }
 
-fn subst_stmt(s: &Stmt, subst: &HashMap<Var, Var>) -> Stmt {
+pub(crate) fn subst_stmt(s: &Stmt, subst: &HashMap<Var, Var>) -> Stmt {
     let Stmt::Let(v, p) = s;
     // The bound variable `v` is never substituted — it's a definition site,
     // not a use. Only Vars that appear as operands in `p` are substituted.

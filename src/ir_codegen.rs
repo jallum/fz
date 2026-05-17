@@ -469,6 +469,7 @@ fn build_typer_header(
             ArgRepr::Tagged => "Tagged",
             ArgRepr::RawInt => "RawInt",
             ArgRepr::RawF64 => "RawF64",
+            ArgRepr::Condition => "Condition",
         }
     };
     let codegen_params: Vec<String> = param_reprs
@@ -780,6 +781,10 @@ enum ArgRepr {
     Tagged,
     RawInt,
     RawF64,
+    /// Raw i1 from a comparison or TypeTest whose var is in `if_only_conds`
+    /// — the tagged form is never materialised unless tagged_get is called,
+    /// which emits bool_to_fz lazily at the use site (fz-h4q).
+    Condition,
 }
 
 impl ArgRepr {
@@ -806,6 +811,7 @@ impl ArgRepr {
     fn cl_type(&self) -> types::Type {
         match self {
             ArgRepr::RawF64 => types::F64,
+            ArgRepr::Condition => unreachable!("Condition vars are never block/fn params"),
             _ => types::I64,
         }
     }
@@ -815,6 +821,7 @@ impl ArgRepr {
             ArgRepr::Tagged => 0,
             ArgRepr::RawInt => 1,
             ArgRepr::RawF64 => 2,
+            ArgRepr::Condition => unreachable!("Condition vars never reach halt-cont"),
         }
     }
 }
@@ -852,6 +859,7 @@ fn halt_cont_body_id_for(runtime: &RuntimeRefs, repr: ArgRepr) -> FuncId {
         ArgRepr::Tagged => runtime.halt_cont_body_tagged_id,
         ArgRepr::RawInt => runtime.halt_cont_body_i64_id,
         ArgRepr::RawF64 => runtime.halt_cont_body_f64_id,
+        ArgRepr::Condition => unreachable!("Condition vars never reach halt-cont"),
     }
 }
 
@@ -1804,6 +1812,15 @@ pub fn compile_with_backend<B: Backend>(
     // Run the typer ahead of codegen so per-fn Var->Descr info is
     // available during lowering. .11.24.5 clones first so the typed-schema
     // rewrite can swap MakeVec(I64) → MakeVec(F64) where elements are Float.
+    //
+    // fz-wmy.6 research: rewrite_vec_kinds reads any_key_specs/ft.vars to find
+    // element types of MakeVec stmts. rewrite_known_target_closures reads
+    // specs/ft.fn_constants to find constant-closure CallClosure targets. The
+    // two reads are orthogonal (element types vs. fn_constants) and their
+    // writes are orthogonal (VecKindIr mutations vs. CallClosure→Call rewrites).
+    // A single type_module call CAN serve both — merging calls 1+2 would reduce
+    // the pipeline count from 3 to 2. Left as a future simplification; the
+    // type_module_called_exactly_three_times test pins the current count.
     let mut working = module.clone();
     let pre_types = crate::ir_typer::type_module(&working);
     crate::ir_typer::rewrite_vec_kinds(&mut working, &pre_types).map_err(CodegenError::new)?;
@@ -1820,12 +1837,19 @@ pub fn compile_with_backend<B: Backend>(
         crate::ir_inline::inline_module(&mut working);
     }
     crate::ir_fuse::fuse_blocks(&mut working);
-    let module_types = crate::ir_typer::type_module(&working);
+    let mut module_types = crate::ir_typer::type_module(&working);
     crate::ir_fold::fold_module(&mut working, &module_types);
     // fz-cty.8 — fold byte-literal MakeBitstring into ConstBitstring before
     // DCE so the per-byte Const(Int) operand stmts go dead in the same pass.
     crate::ir_const_bs::fold_module(&mut working);
     crate::ir_dce::dce_module(&mut working);
+    // fz-ty1.pip.1/2: pass &mut module_types so the inliner surgically
+    // re-types only affected caller specs and removes k's dead entries,
+    // eliminating the need for a full type_module recompute afterwards.
+    crate::ir_inline::inline_single_use_conts(&mut working, &mut module_types);
+    crate::ir_dce::dce_module(&mut working);
+    // fz-ul4.11.29: sweep IR fns unreachable from main after inlining.
+    crate::ir_dce::dce_module_level(&mut working);
     let module = &working;
 
     // fz-ul4.29.2.1 — Build the SpecRegistry.
@@ -3197,9 +3221,6 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
             .map_err(|e| CodegenError::new(format!("declare {}: {}", name, e)))
     };
 
-    let print_id = decl("fz_print_value", &[types::I64], &[])?;
-    let print_i64_id = decl("fz_print_i64", &[types::I64], &[])?;
-    let print_f64_id = decl("fz_print_f64", &[types::F64], &[])?;
     let halt_id = decl("fz_halt", &[types::I64, types::I64], &[])?;
     let halt_implicit_id = decl("fz_halt_implicit", &[types::I64], &[])?;
     // fz-ul4.27.22.3 — typed halt-implicit variants.
@@ -3278,17 +3299,11 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
     let vec_begin_id = decl("fz_vec_begin", &[types::I32], &[])?;
     let vec_push_id = decl("fz_vec_push", &[types::I64], &[])?;
     let vec_finalize_id = decl("fz_vec_finalize", &[], &[types::I64])?;
-    let vec_get_id = decl("fz_vec_get", &[types::I64, types::I64], &[types::I64])?;
-
     let alloc_closure_id = decl(
         "fz_alloc_closure",
         &[types::I32, types::I32, types::I32],
         &[types::I64],
     )?;
-    let spawn_id = decl("fz_spawn", &[types::I64], &[types::I64])?;
-    let spawn_opt_id = decl("fz_spawn_opt", &[types::I64, types::I64], &[types::I64])?;
-    let self_id = decl("fz_self", &[], &[types::I64])?;
-    let send_id = decl("fz_send", &[types::I64, types::I64], &[types::I64])?;
     // fz-cps.1.2 — receive cutover. Takes a cont closure ptr (i64),
     // stashes in Process::parked_cont, returns YIELD sentinel.
     let receive_park_id = decl("fz_receive_park", &[types::I64], &[types::I64])?;
@@ -3354,9 +3369,6 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         .map_err(|e| CodegenError::new(format!("declare fz_main_entry: {}", e)))?;
 
     Ok(RuntimeRefs {
-        print_id,
-        print_i64_id,
-        print_f64_id,
         halt_id,
         halt_implicit_id,
         halt_implicit_i64_id,
@@ -3387,12 +3399,7 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         vec_begin_id,
         vec_push_id,
         vec_finalize_id,
-        vec_get_id,
         alloc_closure_id,
-        spawn_id,
-        spawn_opt_id,
-        self_id,
-        send_id,
         receive_park_id,
         get_static_closure_id,
         get_halt_cont_id,
@@ -3476,11 +3483,37 @@ struct CodegenEnv<'a> {
     closure_n_captures: &'a std::collections::HashMap<crate::fz_ir::FnId, usize>,
 }
 
+/// Per-function mutable state threaded through `lower_prim` and
+/// `emit_terminator`. Holds five orthogonal caches:
+///
+/// - `const_cache`: per-block constant deduplication (avoids redundant iconst).
+/// - `raw_int_consts`: raw i64 value for RawInt vars (drives box-int const fold).
+/// - `extern_funcs`: FuncRef deduplicated per extern symbol per function.
+/// - `used_vars`: all var IDs that appear as operands anywhere in the function;
+///   unit-return extern results whose dest ID is absent skip the nil iconst.
+/// - `if_only_conds`: var IDs used exclusively as Term::If conditions; their
+///   boolean prims emit ArgRepr::Condition (raw i1) instead of bool_to_fz, so
+///   the tagged form is never materialised and brif consumes the i1 directly.
+#[derive(Default)]
+struct CodegenCache {
+    /// Cranelift values for small integer/atom constants, keyed by (block, value)
+    /// so entries from sibling blocks are never reused (fz-bwp).
+    const_cache: HashMap<(ir::Block, i64), ir::Value>,
+    /// Raw (unboxed) i64 values for integer constants keyed by Var ID (fz-zj3).
+    raw_int_consts: HashMap<u32, i64>,
+    /// FuncRef for each extern, deduplicated per function (fz-0uu).
+    extern_funcs: HashMap<crate::fz_ir::ExternId, ir::FuncRef>,
+    /// Var IDs referenced anywhere in the function's IR (fz-2tc). Unit-return
+    /// extern results whose dest ID is absent here can skip the nil iconst.
+    used_vars: std::collections::HashSet<u32>,
+    /// Var IDs used exclusively as Term::If conditions — eligible for lazy
+    /// bool_to_fz (stored as ArgRepr::Condition, materialised only if tagged_get
+    /// is called) (fz-h4q).
+    if_only_conds: std::collections::HashSet<u32>,
+}
+
 #[derive(Clone, Copy)]
 struct RuntimeRefs {
-    print_id: FuncId,
-    print_i64_id: FuncId,
-    print_f64_id: FuncId,
     halt_id: FuncId,
     halt_implicit_id: FuncId,
     halt_implicit_i64_id: FuncId,
@@ -3510,16 +3543,11 @@ struct RuntimeRefs {
     vec_begin_id: FuncId,
     vec_push_id: FuncId,
     vec_finalize_id: FuncId,
-    vec_get_id: FuncId,
     alloc_float_id: FuncId,
     promote_f64_id: FuncId,
     fmod_id: FuncId,
     value_eq_id: FuncId,
     alloc_closure_id: FuncId,
-    spawn_id: FuncId,
-    spawn_opt_id: FuncId,
-    self_id: FuncId,
-    send_id: FuncId,
     receive_park_id: FuncId,
     get_static_closure_id: FuncId,
     get_halt_cont_id: FuncId,
@@ -3865,6 +3893,7 @@ fn emit_terminator<M: cranelift_module::Module>(
     frame_ptr: Option<ir::Value>,
     host_ctx: Option<ir::Value>,
     cont_param: Option<ir::Value>,
+    cache: &mut CodegenCache,
 ) -> Result<(), CodegenError> {
     let runtime = env.runtime;
     let fn_types = env.fn_types;
@@ -3936,11 +3965,15 @@ fn emit_terminator<M: cranelift_module::Module>(
             b.ins().jump(tgt, &arg_vals);
         }
         Term::If(c, t, e) => {
-            let cv = var_env.get(&c.0).expect("unbound if cond").value;
+            let vb = var_env.get(&c.0).expect("unbound if cond");
             let t_b = *block_map.get(&t.0).unwrap();
             let e_b = *block_map.get(&e.0).unwrap();
             let no_args: Vec<BlockArg> = Vec::new();
-            let truthy = is_truthy(b, cv);
+            let truthy = if matches!(vb.repr, ArgRepr::Condition) {
+                vb.value
+            } else {
+                is_truthy(b, cache, vb.value)
+            };
             b.ins().brif(truthy, t_b, &no_args, e_b, &no_args);
         }
         Term::Halt(v) => {
@@ -4800,6 +4833,15 @@ fn compile_fn<M: cranelift_module::Module>(
         entry_cl,
     );
 
+    let mut cache = {
+        let (if_only, all_used) = crate::ir_dce::classify_var_uses(f);
+        CodegenCache {
+            if_only_conds: if_only.into_iter().map(|v| v.0).collect(),
+            used_vars: all_used.into_iter().map(|v| v.0).collect(),
+            ..CodegenCache::default()
+        }
+    };
+
     // Walk blocks in declared order with entry first. Unreachable
     // fz_ir blocks (fz-ul4.30) are filtered out — they have no
     // Cranelift counterpart.
@@ -4845,21 +4887,25 @@ fn compile_fn<M: cranelift_module::Module>(
                 .unwrap_or(crate::diag::Span::DUMMY);
             b.set_srcloc(span_to_srcloc(span));
             let Stmt::Let(v, prim) = stmt;
-            let out = lower_prim(&mut b, jmod, env, &var_env, prim, *v)?;
-            let repr = if out.is_raw_f64() {
-                ArgRepr::RawF64
-            } else if out.is_raw_i64() {
-                ArgRepr::RawInt
-            } else {
-                ArgRepr::Tagged
-            };
-            var_env.insert(
-                v.0,
-                VarBinding {
-                    value: out.value(),
-                    repr,
-                },
-            );
+            let out = lower_prim(&mut b, jmod, env, &var_env, prim, *v, &mut cache)?;
+            if !matches!(out, LowerOut::DeadUnit) {
+                let repr = if out.is_raw_f64() {
+                    ArgRepr::RawF64
+                } else if out.is_raw_i64() {
+                    ArgRepr::RawInt
+                } else if out.is_condition() {
+                    ArgRepr::Condition
+                } else {
+                    ArgRepr::Tagged
+                };
+                var_env.insert(
+                    v.0,
+                    VarBinding {
+                        value: out.value(),
+                        repr,
+                    },
+                );
+            }
         }
         // Terminator gets its own srcloc (often the same as the last
         // stmt for Return blocks; distinct for Call/Goto).
@@ -4933,12 +4979,17 @@ fn compile_fn<M: cranelift_module::Module>(
             Term::TailCall { callee, .. } => !callee_is_native(callee.0),
             Term::TailCallClosure { .. } => false,
             Term::Goto(..) => false, // handled per-arg below
+            Term::Receive { continuation } => !callee_is_native(continuation.fn_id.0),
             _ => true,
         };
         if needs_blanket_retag {
             let mut to_retag: Vec<(u32, ArgRepr)> = var_env
                 .iter()
-                .filter(|(rv, vb)| used_by_term.contains(rv) && vb.repr != ArgRepr::Tagged)
+                .filter(|(rv, vb)| {
+                    used_by_term.contains(rv)
+                        && vb.repr != ArgRepr::Tagged
+                        && vb.repr != ArgRepr::Condition
+                })
                 .map(|(&rv, vb)| (rv, vb.repr))
                 .collect();
             to_retag.sort_unstable_by_key(|(rv, _)| *rv);
@@ -4946,8 +4997,16 @@ fn compile_fn<M: cranelift_module::Module>(
                 let raw = var_env.get(&rv).expect("raw var dropped from env").value;
                 let boxed = match repr {
                     ArgRepr::RawF64 => box_float_native(&mut b, jmod, runtime, raw),
-                    ArgRepr::RawInt => box_int(&mut b, raw),
-                    ArgRepr::Tagged => unreachable!("Tagged in to_retag"),
+                    ArgRepr::RawInt => {
+                        if let Some(&n) = cache.raw_int_consts.get(&rv) {
+                            cached_iconst(&mut b, &mut cache, (n << 3) | TAG_INT)
+                        } else {
+                            box_int(&mut b, raw)
+                        }
+                    }
+                    ArgRepr::Tagged | ArgRepr::Condition => {
+                        unreachable!("Tagged/Condition in to_retag")
+                    }
                 };
                 var_env.insert(
                     rv,
@@ -5003,6 +5062,7 @@ fn compile_fn<M: cranelift_module::Module>(
             frame_ptr,
             host_ctx,
             cont_param,
+            &mut cache,
         )?;
     }
 
@@ -5331,12 +5391,22 @@ enum LowerOut {
     Tagged(ir::Value),
     RawF64(ir::Value),
     RawI64(ir::Value),
+    /// Unit-return extern whose dest var is dead — no CLIF value emitted (fz-2tc).
+    DeadUnit,
+    /// Raw i1 from a boolean prim whose var is in `if_only_conds`; tagged form is
+    /// never materialised unless tagged_get is called, which emits bool_to_fz lazily
+    /// at the use site (fz-h4q).
+    Condition(ir::Value),
 }
 
 impl LowerOut {
     fn value(&self) -> ir::Value {
         match self {
-            LowerOut::Tagged(v) | LowerOut::RawF64(v) | LowerOut::RawI64(v) => *v,
+            LowerOut::Tagged(v)
+            | LowerOut::RawF64(v)
+            | LowerOut::RawI64(v)
+            | LowerOut::Condition(v) => *v,
+            LowerOut::DeadUnit => panic!("DeadUnit has no ir::Value"),
         }
     }
     fn is_raw_f64(&self) -> bool {
@@ -5344,6 +5414,9 @@ impl LowerOut {
     }
     fn is_raw_i64(&self) -> bool {
         matches!(self, LowerOut::RawI64(_))
+    }
+    fn is_condition(&self) -> bool {
+        matches!(self, LowerOut::Condition(_))
     }
 }
 
@@ -5355,39 +5428,34 @@ fn lower_collection_prim<M: cranelift_module::Module>(
     env: &CodegenEnv<'_>,
     var_env: &HashMap<u32, VarBinding>,
     prim: &Prim,
+    cache: &mut CodegenCache,
 ) -> Result<ir::Value, CodegenError> {
     let runtime = env.runtime;
     let tuple_schema_ids = env.tuple_schema_ids;
     let v: ir::Value = match prim {
         Prim::ListCons(h, t) => {
-            let hv = tagged_get(var_env, b, jmod, runtime, h.0);
-            let tv = tagged_get(var_env, b, jmod, runtime, t.0);
+            let hv = tagged_get(var_env, b, jmod, runtime, h.0, cache);
+            let tv = tagged_get(var_env, b, jmod, runtime, t.0, cache);
             let fref = jmod.declare_func_in_func(runtime.alloc_cons_id, b.func);
             let inst = b.ins().call(fref, &[hv, tv]);
             b.inst_results(inst)[0]
         }
         Prim::ListHead(c) => {
-            let cv = tagged_get(var_env, b, jmod, runtime, c.0);
+            let cv = tagged_get(var_env, b, jmod, runtime, c.0, cache);
             b.ins().load(types::I64, MemFlags::trusted(), cv, 16)
         }
         Prim::ListTail(c) => {
-            let cv = tagged_get(var_env, b, jmod, runtime, c.0);
+            let cv = tagged_get(var_env, b, jmod, runtime, c.0, cache);
             b.ins().load(types::I64, MemFlags::trusted(), cv, 24)
-        }
-        Prim::ListIsNil(c) => {
-            let cv = tagged_get(var_env, b, jmod, runtime, c.0);
-            let nil_v = b.ins().iconst(types::I64, NIL_BITS);
-            let cmp = b.ins().icmp(IntCC::Equal, cv, nil_v);
-            bool_to_fz(b, cmp)
         }
         Prim::MakeList(elems, tail) => {
             let mut acc = match tail {
-                Some(t) => tagged_get(var_env, b, jmod, runtime, t.0),
-                None => b.ins().iconst(types::I64, NIL_BITS),
+                Some(t) => tagged_get(var_env, b, jmod, runtime, t.0, cache),
+                None => cached_iconst(b, cache, NIL_BITS),
             };
             let fref = jmod.declare_func_in_func(runtime.alloc_cons_id, b.func);
             for e in elems.iter().rev() {
-                let ev = tagged_get(var_env, b, jmod, runtime, e.0);
+                let ev = tagged_get(var_env, b, jmod, runtime, e.0, cache);
                 let inst = b.ins().call(fref, &[ev, acc]);
                 acc = b.inst_results(inst)[0];
             }
@@ -5406,14 +5474,14 @@ fn lower_collection_prim<M: cranelift_module::Module>(
             let inst = b.ins().call(fref, &[sid]);
             let p = b.inst_results(inst)[0];
             for (i, e) in elems.iter().enumerate() {
-                let ev = tagged_get(var_env, b, jmod, runtime, e.0);
+                let ev = tagged_get(var_env, b, jmod, runtime, e.0, cache);
                 let off = HEADER_SIZE + (i as i32) * SLOT_BYTES;
                 b.ins().store(MemFlags::trusted(), ev, p, off);
             }
             p
         }
         Prim::TupleField(c, idx) => {
-            let cv = tagged_get(var_env, b, jmod, runtime, c.0);
+            let cv = tagged_get(var_env, b, jmod, runtime, c.0, cache);
             let off = HEADER_SIZE + (*idx as i32) * SLOT_BYTES;
             b.ins().load(types::I64, MemFlags::trusted(), cv, off)
         }
@@ -5423,7 +5491,7 @@ fn lower_collection_prim<M: cranelift_module::Module>(
             let inst = b.ins().call(fref, &[sid]);
             let p = b.inst_results(inst)[0];
             for (i, fv) in fields.iter().enumerate() {
-                let v = tagged_get(var_env, b, jmod, runtime, fv.0);
+                let v = tagged_get(var_env, b, jmod, runtime, fv.0, cache);
                 let off = HEADER_SIZE + (i as i32) * SLOT_BYTES;
                 b.ins().store(MemFlags::trusted(), v, p, off);
             }
@@ -5434,7 +5502,7 @@ fn lower_collection_prim<M: cranelift_module::Module>(
             b.ins().call(begin, &[]);
             let write = jmod.declare_func_in_func(runtime.bs_write_id, b.func);
             for f in fields {
-                let value_v = tagged_get(var_env, b, jmod, runtime, f.value.0);
+                let value_v = tagged_get(var_env, b, jmod, runtime, f.value.0, cache);
                 let ty_tag = b.ins().iconst(types::I32, encode_bit_type(f.ty) as i64);
                 let unit = b
                     .ins()
@@ -5448,7 +5516,7 @@ fn lower_collection_prim<M: cranelift_module::Module>(
                         b.ins().iconst(types::I32, *n as i64),
                     ),
                     Some(crate::fz_ir::BitSizeIr::Var(v)) => {
-                        let raw = tagged_get(var_env, b, jmod, runtime, v.0);
+                        let raw = tagged_get(var_env, b, jmod, runtime, v.0, cache);
                         let unb = unbox_int(b, raw);
                         let truncated = b.ins().ireduce(types::I32, unb);
                         (b.ins().iconst(types::I32, 1), truncated)
@@ -5543,7 +5611,7 @@ fn lower_collection_prim<M: cranelift_module::Module>(
             }
         }
         Prim::BitReaderInit(v) => {
-            let vv = tagged_get(var_env, b, jmod, runtime, v.0);
+            let vv = tagged_get(var_env, b, jmod, runtime, v.0, cache);
             let fref = jmod.declare_func_in_func(runtime.bs_reader_init_id, b.func);
             let inst = b.ins().call(fref, &[vv]);
             b.inst_results(inst)[0]
@@ -5557,7 +5625,7 @@ fn lower_collection_prim<M: cranelift_module::Module>(
             unit,
             is_last,
         } => {
-            let rv = tagged_get(var_env, b, jmod, runtime, reader.0);
+            let rv = tagged_get(var_env, b, jmod, runtime, reader.0, cache);
             let ty_tag = b.ins().iconst(types::I32, encode_bit_type(*ty) as i64);
             let unit_v = b
                 .ins()
@@ -5572,7 +5640,7 @@ fn lower_collection_prim<M: cranelift_module::Module>(
                     b.ins().iconst(types::I32, *n as i64),
                 ),
                 Some(crate::fz_ir::BitSizeIr::Var(v)) => {
-                    let raw = tagged_get(var_env, b, jmod, runtime, v.0);
+                    let raw = tagged_get(var_env, b, jmod, runtime, v.0, cache);
                     let unb = unbox_int(b, raw);
                     let truncated = b.ins().ireduce(types::I32, unb);
                     (b.ins().iconst(types::I32, 1), truncated)
@@ -5594,20 +5662,13 @@ fn lower_collection_prim<M: cranelift_module::Module>(
             );
             b.inst_results(inst)[0]
         }
-        Prim::BitReaderDone(r) => {
-            let rv = tagged_get(var_env, b, jmod, runtime, r.0);
-            let bit_len_b = b.ins().load(types::I64, MemFlags::trusted(), rv, 24);
-            let pos_b = b.ins().load(types::I64, MemFlags::trusted(), rv, 32);
-            let cmp = b.ins().icmp(IntCC::Equal, bit_len_b, pos_b);
-            bool_to_fz(b, cmp)
-        }
         Prim::MakeMap(entries) => {
             let begin = jmod.declare_func_in_func(runtime.map_begin_id, b.func);
             b.ins().call(begin, &[]);
             let push = jmod.declare_func_in_func(runtime.map_push_id, b.func);
             for (k, v) in entries {
-                let kv = tagged_get(var_env, b, jmod, runtime, k.0);
-                let vv = tagged_get(var_env, b, jmod, runtime, v.0);
+                let kv = tagged_get(var_env, b, jmod, runtime, k.0, cache);
+                let vv = tagged_get(var_env, b, jmod, runtime, v.0, cache);
                 b.ins().call(push, &[kv, vv]);
             }
             let fin = jmod.declare_func_in_func(runtime.map_finalize_id, b.func);
@@ -5615,13 +5676,13 @@ fn lower_collection_prim<M: cranelift_module::Module>(
             b.inst_results(inst)[0]
         }
         Prim::MapUpdate(base, entries) => {
-            let bv = tagged_get(var_env, b, jmod, runtime, base.0);
+            let bv = tagged_get(var_env, b, jmod, runtime, base.0, cache);
             let cln = jmod.declare_func_in_func(runtime.map_clone_id, b.func);
             b.ins().call(cln, &[bv]);
             let push = jmod.declare_func_in_func(runtime.map_push_id, b.func);
             for (k, v) in entries {
-                let kv = tagged_get(var_env, b, jmod, runtime, k.0);
-                let vv = tagged_get(var_env, b, jmod, runtime, v.0);
+                let kv = tagged_get(var_env, b, jmod, runtime, k.0, cache);
+                let vv = tagged_get(var_env, b, jmod, runtime, v.0, cache);
                 b.ins().call(push, &[kv, vv]);
             }
             let fin = jmod.declare_func_in_func(runtime.map_finalize_id, b.func);
@@ -5629,8 +5690,8 @@ fn lower_collection_prim<M: cranelift_module::Module>(
             b.inst_results(inst)[0]
         }
         Prim::MapGet(m, k) => {
-            let mv = tagged_get(var_env, b, jmod, runtime, m.0);
-            let kv = tagged_get(var_env, b, jmod, runtime, k.0);
+            let mv = tagged_get(var_env, b, jmod, runtime, m.0, cache);
+            let kv = tagged_get(var_env, b, jmod, runtime, k.0, cache);
             let fref = jmod.declare_func_in_func(runtime.map_get_id, b.func);
             let inst = b.ins().call(fref, &[mv, kv]);
             b.inst_results(inst)[0]
@@ -5651,7 +5712,7 @@ fn lower_collection_prim<M: cranelift_module::Module>(
             b.ins().call(begin, &[kt]);
             let push = jmod.declare_func_in_func(runtime.vec_push_id, b.func);
             for ev in els {
-                let v = tagged_get(var_env, b, jmod, runtime, ev.0);
+                let v = tagged_get(var_env, b, jmod, runtime, ev.0, cache);
                 b.ins().call(push, &[v]);
             }
             let fin = jmod.declare_func_in_func(runtime.vec_finalize_id, b.func);
@@ -5670,6 +5731,7 @@ fn lower_prim<M: cranelift_module::Module>(
     var_env: &HashMap<u32, VarBinding>,
     prim: &Prim,
     dest_var: crate::fz_ir::Var,
+    cache: &mut CodegenCache,
 ) -> Result<LowerOut, CodegenError> {
     let runtime = env.runtime;
     let fn_types = env.fn_types;
@@ -5704,14 +5766,15 @@ fn lower_prim<M: cranelift_module::Module>(
                     .cloned()
                     .unwrap_or_else(crate::types::Descr::any);
                 if d.is_subtype(&crate::types::Descr::int()) {
+                    cache.raw_int_consts.insert(dest_var.0, *n);
                     return Ok(LowerOut::RawI64(b.ins().iconst(types::I64, *n)));
                 }
                 b.ins().iconst(types::I64, ((*n) << 3) | TAG_INT)
             }
-            Const::True => b.ins().iconst(types::I64, TRUE_BITS),
-            Const::False => b.ins().iconst(types::I64, FALSE_BITS),
-            Const::Nil => b.ins().iconst(types::I64, NIL_BITS),
-            Const::Atom(id) => b.ins().iconst(types::I64, ((*id as i64) << 3) | TAG_ATOM),
+            Const::True => cached_iconst(b, cache, TRUE_BITS),
+            Const::False => cached_iconst(b, cache, FALSE_BITS),
+            Const::Nil => cached_iconst(b, cache, NIL_BITS),
+            Const::Atom(id) => cached_iconst(b, cache, ((*id as i64) << 3) | TAG_ATOM),
             Const::Float(f) => {
                 // fz-ul4.27.15.2: emit a raw `f64const` when the consumer
                 // is float-monomorphic. Tagged consumers heap-alloc via
@@ -5748,12 +5811,12 @@ fn lower_prim<M: cranelift_module::Module>(
             // fallback) call `tag_a` / `tag_b` and pay the conversion.
             macro_rules! tag_a {
                 () => {
-                    tagged_get(var_env, b, jmod, runtime, a.0)
+                    tagged_get(var_env, b, jmod, runtime, a.0, cache)
                 };
             }
             macro_rules! tag_b {
                 () => {
-                    tagged_get(var_env, b, jmod, runtime, bv.0)
+                    tagged_get(var_env, b, jmod, runtime, bv.0, cache)
                 };
             }
             match op {
@@ -5858,7 +5921,10 @@ fn lower_prim<M: cranelift_module::Module>(
                         let af = as_raw_f64(var_env, b, a.0);
                         let bf = as_raw_f64(var_env, b, bv.0);
                         let cmp = b.ins().fcmp(f_cc, af, bf);
-                        return Ok(LowerOut::Tagged(bool_to_fz(b, cmp)));
+                        if cache.if_only_conds.contains(&dest_var.0) {
+                            return Ok(LowerOut::Condition(cmp));
+                        }
+                        return Ok(LowerOut::Tagged(bool_to_fz(b, cache, cmp)));
                     }
                     // Same-kind int: native icmp on raw i64. .5.3: must
                     // not mix raw and tagged operands — bit-eq is only
@@ -5867,7 +5933,10 @@ fn lower_prim<M: cranelift_module::Module>(
                         let ai = as_raw_i64(var_env, b, a.0);
                         let bi = as_raw_i64(var_env, b, bv.0);
                         let cmp = b.ins().icmp(int_cc, ai, bi);
-                        return Ok(LowerOut::Tagged(bool_to_fz(b, cmp)));
+                        if cache.if_only_conds.contains(&dest_var.0) {
+                            return Ok(LowerOut::Condition(cmp));
+                        }
+                        return Ok(LowerOut::Tagged(bool_to_fz(b, cache, cmp)));
                     }
                     let av = tag_a!();
                     let bvv = tag_b!();
@@ -5876,7 +5945,10 @@ fn lower_prim<M: cranelift_module::Module>(
                             && descr_is_nil_or_bool(fn_types, *bv))
                     {
                         let cmp = b.ins().icmp(int_cc, av, bvv);
-                        bool_to_fz(b, cmp)
+                        if cache.if_only_conds.contains(&dest_var.0) {
+                            return Ok(LowerOut::Condition(cmp));
+                        }
+                        bool_to_fz(b, cache, cmp)
                     } else {
                         // Original dispatch (unchanged): both_ptr=true -> slow.
                         let cond = both_ptr(b, av, bvv);
@@ -5890,7 +5962,7 @@ fn lower_prim<M: cranelift_module::Module>(
                         b.switch_to_block(fast_blk);
                         b.seal_block(fast_blk);
                         let cmp = b.ins().icmp(int_cc, av, bvv);
-                        let fast_v = bool_to_fz(b, cmp);
+                        let fast_v = bool_to_fz(b, cache, cmp);
                         b.ins().jump(join_blk, &[BlockArg::Value(fast_v)]);
 
                         b.switch_to_block(slow_blk);
@@ -5926,6 +5998,11 @@ fn lower_prim<M: cranelift_module::Module>(
                         _ => unreachable!(),
                     };
                     // Typed fast paths: float and int.
+                    // Safety: the two closures are mutually exclusive — only the
+                    // float arm fires for float operands and only the int arm fires
+                    // for int operands, so the two reborrow sites never alias.
+                    let dest_id = dest_var.0;
+                    let cache_ptr = cache as *mut CodegenCache;
                     if let Some(out) = try_typed_binop_fast_path(
                         fn_types,
                         *a,
@@ -5933,24 +6010,36 @@ fn lower_prim<M: cranelift_module::Module>(
                         b,
                         var_env,
                         |b, af, bf| {
-                            let v = b.ins().fcmp(fcc, af, bf);
-                            Some(LowerOut::Tagged(bool_to_fz(b, v)))
+                            let cmp = b.ins().fcmp(fcc, af, bf);
+                            let cache_ref = unsafe { &mut *cache_ptr };
+                            if cache_ref.if_only_conds.contains(&dest_id) {
+                                return Some(LowerOut::Condition(cmp));
+                            }
+                            Some(LowerOut::Tagged(bool_to_fz(b, cache_ref, cmp)))
                         },
                         |b, ai, bi| {
-                            let v = b.ins().icmp(icc, ai, bi);
-                            Some(LowerOut::Tagged(bool_to_fz(b, v)))
+                            let cmp = b.ins().icmp(icc, ai, bi);
+                            let cache_ref = unsafe { &mut *cache_ptr };
+                            if cache_ref.if_only_conds.contains(&dest_id) {
+                                return Some(LowerOut::Condition(cmp));
+                            }
+                            Some(LowerOut::Tagged(bool_to_fz(b, cache_ref, cmp)))
                         },
                     ) {
                         return Ok(out);
                     }
                     let av = tag_a!();
                     let bvv = tag_b!();
+                    // Safety: fast_int and slow_cmp run in blocks both dominated
+                    // by the current block, so SSA values from the cached iconst
+                    // are visible in both, and the two closures execute serially.
+                    let cache_ptr = cache as *mut CodegenCache;
                     let fast_int =
                         move |b: &mut FunctionBuilder<'_>, av: ir::Value, bv: ir::Value| {
                             let ai = unbox_int(b, av);
                             let bi = unbox_int(b, bv);
                             let cmp = b.ins().icmp(icc, ai, bi);
-                            bool_to_fz(b, cmp)
+                            bool_to_fz(b, unsafe { &mut *cache_ptr }, cmp)
                         };
                     // fz-ul4.27.9: inlined float-cmp slow path. Promote both
                     // operands to f64 and emit native fcmp.
@@ -5969,25 +6058,31 @@ fn lower_prim<M: cranelift_module::Module>(
                             let i1 = b.ins().call(pfref, &[bv]);
                             let bf = b.inst_results(i1)[0];
                             let cmp = b.ins().fcmp(fcc, af, bf);
-                            bool_to_fz(b, cmp)
+                            bool_to_fz(b, unsafe { &mut *cache_ptr }, cmp)
                         };
                     emit_dispatch_binop(b, av, bvv, fast_int, slow_cmp)
                 }
                 BinOp::And => {
                     let av = tag_a!();
                     let bvv = tag_b!();
-                    let at = is_truthy(b, av);
-                    let bt = is_truthy(b, bvv);
+                    let at = is_truthy(b, cache, av);
+                    let bt = is_truthy(b, cache, bvv);
                     let conj = b.ins().band(at, bt);
-                    bool_to_fz(b, conj)
+                    if cache.if_only_conds.contains(&dest_var.0) {
+                        return Ok(LowerOut::Condition(conj));
+                    }
+                    bool_to_fz(b, cache, conj)
                 }
                 BinOp::Or => {
                     let av = tag_a!();
                     let bvv = tag_b!();
-                    let at = is_truthy(b, av);
-                    let bt = is_truthy(b, bvv);
+                    let at = is_truthy(b, cache, av);
+                    let bt = is_truthy(b, cache, bvv);
                     let disj = b.ins().bor(at, bt);
-                    bool_to_fz(b, disj)
+                    if cache.if_only_conds.contains(&dest_var.0) {
+                        return Ok(LowerOut::Condition(disj));
+                    }
+                    bool_to_fz(b, cache, disj)
                 }
             }
         }
@@ -6000,104 +6095,91 @@ fn lower_prim<M: cranelift_module::Module>(
                     return Ok(LowerOut::RawI64(b.ins().ineg(xi)));
                 }
                 UnOp::Not => {
-                    let xv = tagged_get(var_env, b, jmod, runtime, x.0);
-                    let truthy = is_truthy(b, xv);
+                    let xv = tagged_get(var_env, b, jmod, runtime, x.0, cache);
+                    let truthy = is_truthy(b, cache, xv);
                     let zero = b.ins().iconst(types::I8, 0);
                     let inv = b.ins().icmp(IntCC::Equal, truthy, zero);
-                    bool_to_fz(b, inv)
+                    if cache.if_only_conds.contains(&dest_var.0) {
+                        return Ok(LowerOut::Condition(inv));
+                    }
+                    bool_to_fz(b, cache, inv)
                 }
             }
         }
-        Prim::Builtin(bid, args) => {
-            use crate::fz_ir::BuiltinKind;
-            let kind = BuiltinKind::from_id(*bid)
-                .ok_or_else(|| CodegenError::new(format!("unknown builtin id {}", bid.0)))?;
-            match kind {
-                BuiltinKind::Print => {
-                    if args.len() != 1 {
-                        return Err(CodegenError::new("print/1 expected"));
-                    }
-                    // VR.5b (fz-ul4.27.7): dispatch on the arg's Descr to a
-                    // typed print FFI when monomorphic. Saves the boxing
-                    // round-trip that the polymorphic fz_print_value needs.
-                    let a = args[0];
-                    if descr_is_int(fn_types, a) {
-                        let n = as_raw_i64(var_env, b, a.0);
-                        let fref = jmod.declare_func_in_func(runtime.print_i64_id, b.func);
-                        b.ins().call(fref, &[n]);
-                    } else if descr_is_float(fn_types, a) {
-                        let f = as_raw_f64(var_env, b, a.0);
-                        let fref = jmod.declare_func_in_func(runtime.print_f64_id, b.func);
-                        b.ins().call(fref, &[f]);
-                    } else {
-                        let av = tagged_get(var_env, b, jmod, runtime, a.0);
-                        let fref = jmod.declare_func_in_func(runtime.print_id, b.func);
-                        b.ins().call(fref, &[av]);
-                    }
-                    // print/1 returns FzValue::NIL — never raw 0 (which would
-                    // alias Tag::Ptr null and trip fz_halt's Ptr-deref path).
-                    b.ins().iconst(types::I64, NIL_BITS)
+        Prim::Extern(eid, args) => {
+            use crate::fz_ir::ExternTy;
+            let decl = env.module.extern_by_id(*eid);
+            let param_tys: Vec<ir::Type> = decl
+                .params
+                .iter()
+                .map(|t| match t {
+                    ExternTy::F64 => types::F64,
+                    _ => types::I64,
+                })
+                .collect();
+            let returns_value = !matches!(decl.ret, ExternTy::Unit | ExternTy::Never);
+            let ret_tys: &[ir::Type] = if returns_value {
+                match decl.ret {
+                    ExternTy::F64 => &[types::F64],
+                    _ => &[types::I64],
                 }
-                BuiltinKind::VecGet => {
-                    if args.len() != 2 {
-                        return Err(CodegenError::new("vec_get/2 expected"));
-                    }
-                    let vv = tagged_get(var_env, b, jmod, runtime, args[0].0);
-                    let iv = tagged_get(var_env, b, jmod, runtime, args[1].0);
-                    let fref = jmod.declare_func_in_func(runtime.vec_get_id, b.func);
-                    let inst = b.ins().call(fref, &[vv, iv]);
-                    b.inst_results(inst)[0]
-                }
-                BuiltinKind::Assert | BuiltinKind::AssertEq | BuiltinKind::AssertNeq => {
-                    return Err(CodegenError::new(format!(
-                        "builtin {} not yet wired through JIT",
-                        kind.name()
-                    )));
-                }
-                BuiltinKind::Spawn => match args.len() {
-                    1 => {
-                        let cv = tagged_get(var_env, b, jmod, runtime, args[0].0);
-                        let fref = jmod.declare_func_in_func(runtime.spawn_id, b.func);
-                        let inst = b.ins().call(fref, &[cv]);
-                        b.inst_results(inst)[0]
-                    }
-                    2 => {
-                        let cv = tagged_get(var_env, b, jmod, runtime, args[0].0);
-                        let mv = tagged_get(var_env, b, jmod, runtime, args[1].0);
-                        let fref = jmod.declare_func_in_func(runtime.spawn_opt_id, b.func);
-                        let inst = b.ins().call(fref, &[cv, mv]);
-                        b.inst_results(inst)[0]
-                    }
-                    n => {
-                        return Err(CodegenError::new(format!(
-                            "spawn/1 or spawn/2 expected, got {n} args"
-                        )));
-                    }
-                },
-                BuiltinKind::SelfPid => {
-                    if !args.is_empty() {
-                        return Err(CodegenError::new("self/0 expected"));
-                    }
-                    let fref = jmod.declare_func_in_func(runtime.self_id, b.func);
-                    let inst = b.ins().call(fref, &[]);
-                    b.inst_results(inst)[0]
-                }
-                BuiltinKind::Send => {
-                    if args.len() != 2 {
-                        return Err(CodegenError::new("send/2 expected"));
-                    }
-                    let pv = tagged_get(var_env, b, jmod, runtime, args[0].0);
-                    let mv = tagged_get(var_env, b, jmod, runtime, args[1].0);
-                    let fref = jmod.declare_func_in_func(runtime.send_id, b.func);
-                    let inst = b.ins().call(fref, &[pv, mv]);
-                    b.inst_results(inst)[0]
-                }
+            } else {
+                &[]
+            };
+            let sig = sig1(&param_tys, ret_tys);
+            let fref = if let Some(&cached) = cache.extern_funcs.get(eid) {
+                cached
+            } else {
+                let func_id = jmod
+                    .declare_function(&decl.symbol, Linkage::Import, &sig)
+                    .map_err(|e| {
+                        CodegenError::new(format!("declare extern `{}`: {}", decl.symbol, e))
+                    })?;
+                let fref = jmod.declare_func_in_func(func_id, b.func);
+                cache.extern_funcs.insert(*eid, fref);
+                fref
+            };
+            let param_kinds: Vec<ExternTy> = decl.params.clone();
+            let arg_vals: Vec<ir::Value> = args
+                .iter()
+                .zip(param_kinds.iter())
+                .map(|(v, ty)| match ty {
+                    ExternTy::I64 => as_raw_i64(var_env, b, v.0),
+                    ExternTy::F64 => as_raw_f64(var_env, b, v.0),
+                    _ => tagged_get(var_env, b, jmod, runtime, v.0, cache),
+                })
+                .collect();
+            let inst = b.ins().call(fref, &arg_vals);
+            if returns_value {
+                return Ok(LowerOut::Tagged(b.inst_results(inst)[0]));
             }
+            if cache.used_vars.contains(&dest_var.0) {
+                return Ok(LowerOut::Tagged(cached_iconst(b, cache, NIL_BITS)));
+            }
+            return Ok(LowerOut::DeadUnit);
+        }
+        Prim::ListIsNil(c) => {
+            let cv = tagged_get(var_env, b, jmod, runtime, c.0, cache);
+            let nil_v = cached_iconst(b, cache, NIL_BITS);
+            let cmp = b.ins().icmp(IntCC::Equal, cv, nil_v);
+            if cache.if_only_conds.contains(&dest_var.0) {
+                return Ok(LowerOut::Condition(cmp));
+            }
+            return Ok(LowerOut::Tagged(bool_to_fz(b, cache, cmp)));
+        }
+        Prim::BitReaderDone(r) => {
+            let rv = tagged_get(var_env, b, jmod, runtime, r.0, cache);
+            let bit_len_b = b.ins().load(types::I64, MemFlags::trusted(), rv, 24);
+            let pos_b = b.ins().load(types::I64, MemFlags::trusted(), rv, 32);
+            let cmp = b.ins().icmp(IntCC::Equal, bit_len_b, pos_b);
+            if cache.if_only_conds.contains(&dest_var.0) {
+                return Ok(LowerOut::Condition(cmp));
+            }
+            return Ok(LowerOut::Tagged(bool_to_fz(b, cache, cmp)));
         }
         Prim::ListCons(..)
         | Prim::ListHead(..)
         | Prim::ListTail(..)
-        | Prim::ListIsNil(..)
         | Prim::MakeList(..)
         | Prim::MakeTuple(..)
         | Prim::TupleField(..)
@@ -6106,13 +6188,12 @@ fn lower_prim<M: cranelift_module::Module>(
         | Prim::ConstBitstring(..)
         | Prim::BitReaderInit(..)
         | Prim::BitReadField { .. }
-        | Prim::BitReaderDone(..)
         | Prim::MakeMap(..)
         | Prim::MapUpdate(..)
         | Prim::MapGet(..)
         | Prim::MakeVec(..) => {
             return Ok(LowerOut::Tagged(lower_collection_prim(
-                b, jmod, env, var_env, prim,
+                b, jmod, env, var_env, prim, cache,
             )?));
         }
         Prim::MakeClosure(fn_id, captured) => {
@@ -6206,6 +6287,120 @@ fn lower_prim<M: cranelift_module::Module>(
             }
             cl_ptr
         }
+        Prim::TypeTest(v, descr) => {
+            use crate::types::BasicBits;
+            use fz_runtime::fz_value::HeapKind;
+
+            let val = tagged_get(var_env, b, jmod, runtime, v.0, cache);
+            let tag3 = b.ins().band_imm(val, 7);
+
+            // Scalar checks: safe unconditionally (no heap loads).
+            let mut scalar: Option<ir::Value> = None;
+            macro_rules! or_scalar {
+                ($f:expr) => {
+                    scalar = Some(match scalar.take() {
+                        None => $f,
+                        Some(p) => b.ins().bor(p, $f),
+                    });
+                };
+            }
+            if !descr.ints.is_none() {
+                let c = b.ins().icmp_imm(IntCC::Equal, tag3, TAG_INT);
+                or_scalar!(c);
+            }
+            if descr.atoms.is_any() {
+                let c = b.ins().icmp_imm(IntCC::Equal, tag3, TAG_ATOM);
+                or_scalar!(c);
+            } else if !descr.atoms.is_none() {
+                return Err(CodegenError::new(
+                    "TypeTest: specific atom literal sets require atom id lookup (not yet implemented)",
+                ));
+            }
+            if descr.basic.contains_all(BasicBits::NIL) {
+                let c = b.ins().icmp_imm(IntCC::Equal, val, NIL_BITS);
+                or_scalar!(c);
+            }
+            if descr.basic.contains_all(BasicBits::BOOL) {
+                let t = b.ins().icmp_imm(IntCC::Equal, val, TRUE_BITS);
+                let f = b.ins().icmp_imm(IntCC::Equal, val, FALSE_BITS);
+                let e = b.ins().bor(t, f);
+                or_scalar!(e);
+            }
+
+            // Heap-kind checks: guard with is_ptr to avoid loading from a non-pointer.
+            let need_heap = !descr.floats.is_none()
+                || descr.basic.contains_all(BasicBits::VEC_I64)
+                || descr.basic.contains_all(BasicBits::VEC_F64)
+                || descr.basic.contains_all(BasicBits::VEC_U8)
+                || descr.basic.contains_all(BasicBits::VEC_BIT);
+
+            let heap: Option<ir::Value> = if need_heap {
+                let is_ptr = b.ins().icmp_imm(IntCC::Equal, tag3, 0i64);
+                let heap_blk = b.create_block();
+                let join_blk = b.create_block();
+                b.append_block_param(join_blk, types::I8);
+                let no_args: Vec<BlockArg> = Vec::new();
+                let false8 = b.ins().iconst(types::I8, 0);
+                b.ins().brif(
+                    is_ptr,
+                    heap_blk,
+                    &no_args,
+                    join_blk,
+                    &[BlockArg::Value(false8)],
+                );
+
+                b.switch_to_block(heap_blk);
+                b.seal_block(heap_blk);
+                let kind_raw = b.ins().load(types::I16, MemFlags::trusted(), val, 0);
+                let kind64 = b.ins().uextend(types::I64, kind_raw);
+
+                let mut hf: Option<ir::Value> = None;
+                macro_rules! or_heap {
+                    ($f:expr) => {
+                        hf = Some(match hf.take() {
+                            None => $f,
+                            Some(p) => b.ins().bor(p, $f),
+                        });
+                    };
+                }
+                if !descr.floats.is_none() {
+                    let c = b
+                        .ins()
+                        .icmp_imm(IntCC::Equal, kind64, HeapKind::Float as i64);
+                    or_heap!(c);
+                }
+                for (bit, hk) in [
+                    (BasicBits::VEC_I64, HeapKind::VecI64),
+                    (BasicBits::VEC_F64, HeapKind::VecF64),
+                    (BasicBits::VEC_U8, HeapKind::VecU8),
+                    (BasicBits::VEC_BIT, HeapKind::VecBit),
+                ] {
+                    if descr.basic.contains_all(bit) {
+                        let c = b.ins().icmp_imm(IntCC::Equal, kind64, hk as i64);
+                        or_heap!(c);
+                    }
+                }
+                let hr = hf.unwrap_or_else(|| b.ins().iconst(types::I8, 0));
+                b.ins().jump(join_blk, &[BlockArg::Value(hr)]);
+
+                b.switch_to_block(join_blk);
+                b.seal_block(join_blk);
+                Some(b.block_params(join_blk)[0])
+            } else {
+                None
+            };
+
+            let flag = match (scalar, heap) {
+                (None, None) => b.ins().iconst(types::I8, 0),
+                (Some(s), None) => s,
+                (None, Some(h)) => h,
+                (Some(s), Some(h)) => b.ins().bor(s, h),
+            };
+            if cache.if_only_conds.contains(&dest_var.0) {
+                return Ok(LowerOut::Condition(flag));
+            }
+            bool_to_fz(b, cache, flag)
+        }
     };
     Ok(LowerOut::Tagged(v))
 }
@@ -6235,12 +6430,20 @@ fn tagged_get<M: cranelift_module::Module>(
     jmod: &mut M,
     runtime: &RuntimeRefs,
     v: u32,
+    cache: &mut CodegenCache,
 ) -> ir::Value {
     let vb = var_env.get(&v).expect("unbound var");
     match vb.repr {
         ArgRepr::RawF64 => box_float_native(b, jmod, runtime, vb.value),
-        ArgRepr::RawInt => box_int(b, vb.value),
+        ArgRepr::RawInt => {
+            if let Some(&n) = cache.raw_int_consts.get(&v) {
+                cached_iconst(b, cache, (n << 3) | TAG_INT)
+            } else {
+                box_int(b, vb.value)
+            }
+        }
         ArgRepr::Tagged => vb.value,
+        ArgRepr::Condition => bool_to_fz(b, cache, vb.value),
     }
 }
 
@@ -6427,6 +6630,9 @@ fn coerce_to<M: cranelift_module::Module>(
             let tagged = box_float_native(b, jmod, runtime, val);
             unbox_int(b, tagged)
         }
+        (ArgRepr::Condition, _) | (_, ArgRepr::Condition) => {
+            unreachable!("Condition vars are never coerced")
+        }
         (ArgRepr::Tagged, ArgRepr::Tagged)
         | (ArgRepr::RawInt, ArgRepr::RawInt)
         | (ArgRepr::RawF64, ArgRepr::RawF64) => {
@@ -6459,19 +6665,31 @@ fn box_float_native<M: cranelift_module::Module>(
     b.inst_results(inst)[0]
 }
 
+fn cached_iconst(b: &mut FunctionBuilder<'_>, cache: &mut CodegenCache, val: i64) -> ir::Value {
+    if let Some(blk) = b.current_block() {
+        if let Some(&v) = cache.const_cache.get(&(blk, val)) {
+            return v;
+        }
+        let v = b.ins().iconst(types::I64, val);
+        cache.const_cache.insert((blk, val), v);
+        return v;
+    }
+    b.ins().iconst(types::I64, val)
+}
+
 /// Returns an i8 (0/1) indicating whether `v` is truthy: not nil and not false.
-fn is_truthy(b: &mut FunctionBuilder<'_>, v: ir::Value) -> ir::Value {
-    let nil_v = b.ins().iconst(types::I64, NIL_BITS);
-    let false_v = b.ins().iconst(types::I64, FALSE_BITS);
+fn is_truthy(b: &mut FunctionBuilder<'_>, cache: &mut CodegenCache, v: ir::Value) -> ir::Value {
+    let nil_v = cached_iconst(b, cache, NIL_BITS);
+    let false_v = cached_iconst(b, cache, FALSE_BITS);
     let not_nil = b.ins().icmp(IntCC::NotEqual, v, nil_v);
     let not_false = b.ins().icmp(IntCC::NotEqual, v, false_v);
     b.ins().band(not_nil, not_false)
 }
 
 /// Convert an i8 cranelift bool to FzValue::TRUE / FzValue::FALSE.
-fn bool_to_fz(b: &mut FunctionBuilder<'_>, v: ir::Value) -> ir::Value {
-    let true_v = b.ins().iconst(types::I64, TRUE_BITS);
-    let false_v = b.ins().iconst(types::I64, FALSE_BITS);
+fn bool_to_fz(b: &mut FunctionBuilder<'_>, cache: &mut CodegenCache, v: ir::Value) -> ir::Value {
+    let true_v = cached_iconst(b, cache, TRUE_BITS);
+    let false_v = cached_iconst(b, cache, FALSE_BITS);
     b.ins().select(v, true_v, false_v)
 }
 
@@ -6756,7 +6974,9 @@ mod tests {
 
     #[test]
     fn atom_const_returns_atom_id() {
-        assert_eq!(run_main("fn main(), do: :ok"), 1); // match_error interns first.
+        // match_error (id=0) and function_clause (id=1) intern during prelude
+        // lowering; :ok is the next user atom (id=2).
+        assert_eq!(run_main("fn main(), do: :ok"), 2);
     }
 
     // ----- .11.8 frame-allocation tests -----
@@ -7556,5 +7776,224 @@ fn main(), do: loop_with(loop_with, 100000, 0)
             post_count,
             pre_count
         );
+    }
+
+    /// fz-zj3 — box_int constant fold: Const::Int(n) lowered as RawInt must be
+    /// retagged as a single iconst ((n<<3)|TAG_INT), not ishl_imm + bor_imm.
+    #[test]
+    fn box_int_const_fold_eliminates_ishl_bor() {
+        // send(2, 41) passes integer constants to an extern taking Tagged args.
+        // Before the fix: v9=iconst 2; ishl_imm v9,3; bor_imm result,1 (3 insns).
+        // After: v9=iconst 2; v11=iconst 17 — raw_int_consts hit in tagged_get.
+        let src = "fn relay(), do: send(1, receive() + 1)\n\
+                   fn main() do\n\
+                     spawn(relay)\n\
+                     send(2, 41)\n\
+                     print(receive())\n\
+                   end";
+        let m = lower_src(src);
+        ir_text_record_enable();
+        let _ = compile(&m).unwrap();
+        let ir = ir_text_record_take();
+        let main_ir = ir
+            .iter()
+            .find(|(n, _)| n == "main")
+            .map(|(_, s)| s.as_str())
+            .unwrap_or("");
+        // send(2, 41): the tagged forms of 2 and 41 are iconst 17 and iconst 329.
+        // The ishl_imm + bor_imm sequence should not appear for these constants.
+        assert!(
+            main_ir.contains("iconst.i64 17") && main_ir.contains("iconst.i64 329"),
+            "expected pre-tagged iconst 17 and 329 for send(2, 41):\n{}",
+            main_ir
+        );
+        assert!(
+            !main_ir.contains("ishl_imm"),
+            "spurious ishl_imm in main CLIF — box_int fold not applied:\n{}",
+            main_ir
+        );
+    }
+
+    /// fz-li4 — Term::Receive with a natively-callable continuation must not
+    /// emit a box→unbox roundtrip for raw-int captures. Before the fix,
+    /// needs_blanket_retag fell through to `_ => true` for Term::Receive,
+    /// forcing ishl_imm+bor_imm on every raw var immediately before the
+    /// fz_receive_park call — then the cont had to sshr_imm them back out.
+    #[test]
+    fn receive_native_cont_no_box_unbox_roundtrip() {
+        let src = "fn relay(), do: send(1, receive() + 1)\n\
+                   fn main() do\n\
+                     spawn(relay)\n\
+                     send(2, 41)\n\
+                     print(receive())\n\
+                   end";
+        let m = lower_src(src);
+        ir_text_record_enable();
+        let _ = compile(&m).unwrap();
+        let ir = ir_text_record_take();
+        let relay_ir = ir
+            .iter()
+            .find(|(n, _)| n == "relay")
+            .map(|(_, s)| s.as_str())
+            .unwrap_or("");
+        // The relay fn holds one raw-int capture (1). With the fix it is
+        // stored directly — no ishl_imm or bor_imm should appear in relay's
+        // block. (Arithmetic in the receive continuation is a different fn.)
+        assert!(
+            !relay_ir.contains("ishl_imm"),
+            "spurious box in relay CLIF — integer capture was re-tagged before Receive:\n{}",
+            relay_ir
+        );
+    }
+
+    /// fz-jiw — TypeTest i1 cached in `condition` map; Term::If consumes it
+    /// directly, bypassing bool_to_fz → is_truthy roundtrip.
+    /// Before the fix: brif was preceded by `icmp ne v, nil`, `icmp ne v, false`,
+    /// `band` (3 extra instructions decoding the tagged bool back to i1).
+    /// After: the i1 produced by `icmp_imm eq (v & 7), TAG_INT` is reused
+    /// directly — no `icmp ne` appears in the branching block.
+    #[test]
+    fn condition_cache_bypasses_is_truthy_in_type_dispatch() {
+        // check(42) dispatches on `x :: integer` — a TypeTest followed by Term::If.
+        let src = "fn check(x :: integer) do :is_int end\n\
+                   fn check(x) do :other end\n\
+                   fn main() do\n\
+                     print(check(42))\n\
+                     print(check(:foo))\n\
+                   end";
+        let m = lower_src(src);
+        ir_text_record_enable();
+        let _ = compile(&m).unwrap();
+        let ir = ir_text_record_take();
+        let main_ir = ir
+            .iter()
+            .find(|(n, _)| n == "main")
+            .map(|(_, s)| s.as_str())
+            .unwrap_or("");
+        // With the fix the TypeTest i1 goes straight to brif — no is_truthy decode.
+        assert!(
+            !main_ir.contains("icmp ne"),
+            "spurious is_truthy icmp ne in main CLIF — condition cache not applied:\n{}",
+            main_ir
+        );
+        // The brif must still be present.
+        assert!(
+            main_ir.contains("brif"),
+            "expected brif in main CLIF:\n{}",
+            main_ir
+        );
+    }
+
+    /// fz-h4q — ArgRepr::Condition: pure-branch TypeTest produces no `select`
+    /// instruction. Before the fix: every boolean prim emitted bool_to_fz eagerly
+    /// (select + two iconst for true/false), then is_truthy decoded it back to i1.
+    /// After: the i1 is stored as ArgRepr::Condition and fed directly to brif —
+    /// zero `select` instructions in the dispatching block.
+    #[test]
+    fn pure_branch_type_test_emits_no_select() {
+        let src = "fn check(x :: integer) do :is_int end\n\
+                   fn check(x) do :other end\n\
+                   fn main() do\n\
+                     print(check(42))\n\
+                     print(check(:foo))\n\
+                   end";
+        let m = lower_src(src);
+        ir_text_record_enable();
+        let _ = compile(&m).unwrap();
+        let ir = ir_text_record_take();
+        let main_ir = ir
+            .iter()
+            .find(|(n, _)| n == "main")
+            .map(|(_, s)| s.as_str())
+            .unwrap_or("");
+        assert!(
+            !main_ir.contains("select"),
+            "spurious select in main CLIF — bool_to_fz was emitted eagerly:\n{}",
+            main_ir
+        );
+        assert!(
+            main_ir.contains("brif"),
+            "expected brif in main CLIF:\n{}",
+            main_ir
+        );
+    }
+
+    /// fz-2tc — unit-return extern results whose dest var is unused emit no
+    /// iconst at all (DeadUnit path). Live results use cached_iconst so they
+    /// share an existing nil if the same block already holds one.
+    /// hello: print(42), print(:ok), print(true) are all unit-return externs
+    /// whose nil results are dead — only print(nil)'s result is live (passed
+    /// to the continuation). Before: 5 × `iconst.i64 3`. After: ≤ 2.
+    #[test]
+    fn dead_unit_extern_result_elided() {
+        let src = "fn main() do\n\
+                     print(40 + 2)\n\
+                     print(:ok)\n\
+                     print(true)\n\
+                     print(nil)\n\
+                   end";
+        let m = lower_src(src);
+        ir_text_record_enable();
+        let _ = compile(&m).unwrap();
+        let ir = ir_text_record_take();
+        let main_ir = ir
+            .iter()
+            .find(|(n, _)| n == "main")
+            .map(|(_, s)| s.as_str())
+            .unwrap_or("");
+        // Dead nil results are gone. Count occurrences of "iconst.i64 3".
+        let nil_count = main_ir.matches("iconst.i64 3").count();
+        assert!(
+            nil_count <= 2,
+            "expected ≤ 2 nil iconsts in main CLIF (got {}); dead unit results not elided:\n{}",
+            nil_count,
+            main_ir
+        );
+        // The live nil (used as continuation arg) must still be present.
+        assert!(
+            main_ir.contains("iconst.i64 3"),
+            "expected at least one nil iconst:\n{}",
+            main_ir
+        );
+    }
+
+    /// fz-o2g — Const::Nil/Bool/Atom through cached_iconst. The nil arg
+    /// to print(nil) and the live unit-extern result both call
+    /// cached_iconst(NIL_BITS) and must share the same SSA value — one
+    /// iconst.i64 3, not two.
+    #[test]
+    fn const_nil_bool_atom_deduplicated_within_block() {
+        let src = "fn main() do\n\
+                     print(nil)\n\
+                   end";
+        let m = lower_src(src);
+        ir_text_record_enable();
+        let _ = compile(&m).unwrap();
+        let ir = ir_text_record_take();
+        let main_ir = ir
+            .iter()
+            .find(|(n, _)| n == "main")
+            .map(|(_, s)| s.as_str())
+            .unwrap_or("");
+        let nil_count = main_ir.matches("iconst.i64 3").count();
+        assert_eq!(
+            nil_count, 1,
+            "expected exactly 1 nil iconst in main (Const::Nil and unit-extern result share via cached_iconst), got {}:\n{}",
+            nil_count, main_ir
+        );
+    }
+
+    /// fz-ty1.pip.3 — type_module must be called exactly 3 times in the
+    /// codegen pipeline. A 4th call was removed in fz-ty1.pip.1/2 by
+    /// threading &mut ModuleTypes through inline_single_use_conts so it
+    /// surgically re-types only affected specs.
+    #[test]
+    fn type_module_called_exactly_three_times_in_pipeline() {
+        let src = "fn main(), do: print(42)";
+        let m = lower_src(src);
+        crate::ir_typer::TYPE_MODULE_CALLS.with(|c| c.set(0));
+        compile(&m).expect("compile");
+        let count = crate::ir_typer::TYPE_MODULE_CALLS.with(|c| c.get());
+        assert_eq!(count, 3, "type_module called {} times, expected 3", count);
     }
 }

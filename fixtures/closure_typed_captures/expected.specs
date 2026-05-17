@@ -1,27 +1,43 @@
-; spec add_to(2) #fn=0
+; spec print(1) #fn=0
+;   key:    [int]
+;   return: nil
+;   vars:
+;     Var(0) :: int
+;     Var(1) :: :function_clause
+;     Var(2) :: :true
+;     Var(3) :: nil
+;     Var(4) :: nil
+;   exits:
+;     blk0 Goto blk1()
+;     blk1 If Var(2) ? blk4 : blk2
+;     blk2 Return Var(4)    :: nil
+;     blk3 Halt Var(1)      :: :function_clause
+;     blk4 Return Var(3)    :: nil
+
+; spec add_to(2) #fn=7
 ;   key:    [10, 20]
-;   return: &fn3[10, 20]:(any) -> any
+;   return: &fn10[10, 20]:(any) -> any
 ;   vars:
 ;     Var(0) :: 10
 ;     Var(1) :: 20
 ;     Var(2) :: :match_error
-;     Var(3) :: &fn3[10, 20]:(any) -> any
+;     Var(3) :: &fn10[10, 20]:(any) -> any
 ;   exits:
-;     blk0 Return Var(3)    :: &fn3[10, 20]:(any) -> any
+;     blk0 Return Var(3)    :: &fn10[10, 20]:(any) -> any
 ;     blk1 Halt Var(2)      :: :match_error
 
-; spec apply1(2) #fn=1
-;   key:    [&fn3[10, 20]:(any) -> any, 12]
+; spec apply1(2) #fn=8
+;   key:    [&fn10[10, 20]:(any) -> any, 12]
 ;   return: int
 ;   vars:
-;     Var(0) :: &fn3[10, 20]:(any) -> any
+;     Var(0) :: &fn10[10, 20]:(any) -> any
 ;     Var(1) :: 12
 ;     Var(2) :: :match_error
 ;   exits:
 ;     blk0 TailCallClosure Var(0)(Var(1))
 ;     blk1 Halt Var(2)      :: :match_error
 
-; spec main(0) #fn=2
+; spec main(0) #fn=9
 ;   key:    []
 ;   return: nil
 ;   vars:
@@ -29,13 +45,13 @@
 ;     Var(1) :: 10
 ;     Var(2) :: 20
 ;   exits:
-;     blk0 Call add_to#0(Var(1), Var(2))
+;     blk0 Call add_to#7(Var(1), Var(2))
 ;              callee_key=[10, 20]
-;              cont k_4#4 captured=[]
-;              cont_key=[&fn3[10, 20]:(any) -> any]
+;              cont k_11#11 captured=[]
+;              cont_key=[&fn10[10, 20]:(any) -> any]
 ;     blk1 Halt Var(0)      :: :match_error
 
-; spec lambda_3(3) #fn=3
+; spec lambda_10(3) #fn=10
 ;   key:    [10, 20, 12]
 ;   return: int
 ;   vars:
@@ -49,24 +65,24 @@
 ;     blk0 Return Var(5)    :: int
 ;     blk1 Halt Var(3)      :: :match_error
 
-; spec k_4(1) #fn=4
-;   key:    [&fn3[10, 20]:(any) -> any]
+; spec k_11(1) #fn=11
+;   key:    [&fn10[10, 20]:(any) -> any]
 ;   return: nil
 ;   vars:
-;     Var(0) :: &fn3[10, 20]:(any) -> any
+;     Var(0) :: &fn10[10, 20]:(any) -> any
 ;     Var(1) :: 12
 ;   exits:
-;     blk0 Call apply1#1(Var(0), Var(1))
-;              callee_key=[&fn3[10, 20]:(any) -> any, 12]
-;              cont k_5#5 captured=[]
+;     blk0 Call apply1#8(Var(0), Var(1))
+;              callee_key=[&fn10[10, 20]:(any) -> any, 12]
+;              cont k_12#12 captured=[]
 ;              cont_key=[int]
 
-; spec k_5(1) #fn=5
+; spec k_12(1) #fn=12
 ;   key:    [int]
 ;   return: nil
 ;   vars:
 ;     Var(0) :: int
-;     Var(1) :: nil
 ;   exits:
-;     blk0 Return Var(1)    :: nil
+;     blk0 TailCall print#0(Var(0))
+;              callee_key=[int]
 

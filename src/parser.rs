@@ -111,6 +111,43 @@ end
     }
 }
 
+#[cfg(test)]
+mod extern_parse_tests {
+    use super::*;
+    use crate::lexer::Lexer;
+
+    fn parse_extern(src: &str) -> FnDef {
+        let toks = Lexer::new(src).tokenize().unwrap();
+        let prog = Parser::new(toks).parse_program().unwrap();
+        match &*prog.items[0] {
+            Item::Fn(d) => d.clone(),
+            other => panic!("expected Item::Fn, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn extern_fn_no_params() {
+        let d = parse_extern("extern \"C\" fn fz_halt() :: never\n");
+        assert_eq!(d.name, "fz_halt");
+        assert_eq!(d.extern_abi, Some("C".into()));
+        assert_eq!(d.extern_params.len(), 0);
+        assert!(d.clauses.is_empty());
+    }
+
+    #[test]
+    fn extern_fn_one_param() {
+        let d = parse_extern("extern \"C\" fn fz_print(any) :: unit\n");
+        assert_eq!(d.extern_params.len(), 1);
+    }
+
+    #[test]
+    fn extern_fn_two_params() {
+        let d = parse_extern("extern \"C\" fn fz_assert_eq(any, any) :: unit\n");
+        assert_eq!(d.extern_params.len(), 2);
+        assert!(!d.extern_ret_tokens.0.is_empty());
+    }
+}
+
 /// Drain pending fn-clause groups into the items vec in declaration order.
 fn flush_fn_groups(
     items: &mut Vec<Rc<Item>>,
@@ -248,6 +285,14 @@ impl Parser {
         })
     }
 
+    /// Like `parse_program` but allows top-level `@type` declarations
+    /// (and returns them separately). Used for the built-in runtime.fz
+    /// prelude, which is not wrapped in a `defmodule`.
+    pub fn parse_prelude(&mut self) -> PR<(Vec<Rc<Item>>, Vec<crate::ast::Attribute>)> {
+        let (items, attrs) = self.parse_items_until(&[Tok::Eof])?;
+        Ok((items, attrs))
+    }
+
     fn parse_items_until(&mut self, terminators: &[Tok]) -> PR<(Vec<Rc<Item>>, Vec<Attribute>)> {
         let mut items: Vec<Rc<Item>> = Vec::new();
         let mut order: Vec<String> = Vec::new();
@@ -316,6 +361,14 @@ impl Parser {
                     let i = self.parse_import()?;
                     items.push(Rc::new(i));
                 }
+                Tok::Extern => {
+                    flush_fn_groups(&mut items, &mut order, &mut groups);
+                    let _attrs = std::mem::take(&mut pending_fn_attrs);
+                    self.bump(); // consume `extern`
+                    let def = self.parse_extern_item()?;
+                    order.push(def.name.clone());
+                    items.push(Rc::new(Item::Fn(def)));
+                }
                 Tok::Fn | Tok::Defmacro => {
                     let start = self.cur_span();
                     let (name, name_span, clause, is_macro) = self.parse_fn_clause()?;
@@ -355,6 +408,9 @@ impl Parser {
                             name_span,
                             clauses: vec![clause],
                             is_macro,
+                            extern_abi: None,
+                            extern_params: vec![],
+                            extern_ret_tokens: TypeExprBody(vec![]),
                             attrs,
                             span: start.merge(clause_span),
                         });
@@ -451,7 +507,7 @@ impl Parser {
                     }
                 };
                 self.expect(&Tok::LParen, "`(`")?;
-                let mut param_body_tokens: Vec<Vec<Token>> = Vec::new();
+                let mut param_body_tokens: Vec<TypeExprBody> = Vec::new();
                 if !matches!(self.peek(), Tok::RParen) {
                     loop {
                         let toks = self.collect_until_comma_or_rparen();
@@ -459,7 +515,7 @@ impl Parser {
                             return self
                                 .err("expected type expression in @spec param list".to_string());
                         }
-                        param_body_tokens.push(toks);
+                        param_body_tokens.push(TypeExprBody(toks));
                         if matches!(self.peek(), Tok::Comma) {
                             self.bump();
                             continue;
@@ -479,7 +535,7 @@ impl Parser {
                     name: spec_name,
                     name_span,
                     param_body_tokens,
-                    result_body_tokens,
+                    result_body_tokens: TypeExprBody(result_body_tokens),
                     span: start.merge(end_span),
                 }))
             }
@@ -505,7 +561,7 @@ impl Parser {
                 Ok(Attribute::TypeAlias(TypeAliasDecl {
                     name: alias_name,
                     name_span: alias_name_span,
-                    body_tokens,
+                    body_tokens: TypeExprBody(body_tokens),
                     span: start.merge(end_span),
                 }))
             }
@@ -554,6 +610,67 @@ impl Parser {
     /// newline / eof / module-end. Brackets, braces, and parens are
     /// balanced so a multi-line type body could in principle span lines
     /// inside brackets, but in v1 we only emit single-line bodies.
+    /// Collect type tokens for one function parameter annotation (`x :: T`).
+    /// Stops at `,` or `)` at depth 0 without consuming them.
+    fn collect_fn_param_annotations(&mut self) -> Vec<Token> {
+        let mut out: Vec<Token> = Vec::new();
+        let mut depth: i32 = 0;
+        loop {
+            match self.peek() {
+                Tok::Eof | Tok::End | Tok::Newline => break,
+                Tok::Comma if depth == 0 => break,
+                Tok::RParen if depth == 0 => break,
+                Tok::LParen | Tok::LBrack | Tok::LBrace => {
+                    depth += 1;
+                    out.push(self.toks[self.pos].clone());
+                    self.pos += 1;
+                }
+                Tok::RParen | Tok::RBrack | Tok::RBrace => {
+                    depth -= 1;
+                    out.push(self.toks[self.pos].clone());
+                    self.pos += 1;
+                }
+                _ => {
+                    out.push(self.toks[self.pos].clone());
+                    self.pos += 1;
+                }
+            }
+        }
+        out
+    }
+
+    /// Parse function parameter list with optional type annotations (`x :: T`).
+    /// Returns (patterns, per-param type token vecs). Called from `parse_fn_clause`.
+    #[allow(clippy::type_complexity)]
+    fn parse_fn_params(&mut self) -> PR<(Vec<Spanned<Pattern>>, Vec<Option<TypeExprBody>>)> {
+        let mut patterns = Vec::new();
+        let mut types: Vec<Option<TypeExprBody>> = Vec::new();
+        self.skip_newlines();
+        if matches!(self.peek(), Tok::RParen) {
+            return Ok((patterns, types));
+        }
+        loop {
+            patterns.push(self.parse_pattern()?);
+            self.skip_newlines();
+            let ty = if self.eat(&Tok::ColonColon) {
+                let toks = self.collect_fn_param_annotations();
+                if toks.is_empty() {
+                    return self.err("expected type expression after `::`");
+                }
+                Some(TypeExprBody(toks))
+            } else {
+                None
+            };
+            types.push(ty);
+            self.skip_newlines();
+            if !self.eat(&Tok::Comma) {
+                break;
+            }
+            self.skip_newlines();
+        }
+        Ok((patterns, types))
+    }
+
     fn collect_type_body_tokens(&mut self) -> Vec<Token> {
         let mut out: Vec<Token> = Vec::new();
         let mut depth: i32 = 0;
@@ -614,7 +731,7 @@ impl Parser {
             other => return self.err(format!("expected function name, got {:?}", other)),
         };
         self.expect(&Tok::LParen, "`(`")?;
-        let params = self.parse_pattern_list(&Tok::RParen)?;
+        let (params, param_annotations) = self.parse_fn_params()?;
         self.expect(&Tok::RParen, "`)`")?;
 
         let guard = if matches!(self.peek(), Tok::When) {
@@ -648,12 +765,103 @@ impl Parser {
             name_span,
             FnClause {
                 params,
+                param_annotations,
                 guard,
                 body,
                 span,
             },
             is_macro,
         ))
+    }
+
+    /// `extern "C" fn name(type, type) :: RetType`
+    /// Caller has already consumed `Tok::Extern`.
+    fn parse_extern_item(&mut self) -> PR<FnDef> {
+        let start = self.cur_span();
+        let abi = match self.bump() {
+            Tok::Str(s) => s,
+            other => {
+                return self.err(format!(
+                    "expected ABI string after `extern`, got {:?}",
+                    other
+                ));
+            }
+        };
+        self.expect(&Tok::Fn, "`fn` after extern ABI string")?;
+        let name_span = self.cur_span();
+        let name = match self.bump() {
+            Tok::Ident(n) => n,
+            other => return self.err(format!("expected function name, got {:?}", other)),
+        };
+        self.expect(&Tok::LParen, "`(`")?;
+        // Extern param types are always single identifiers (e.g. "any", "integer").
+        // Extract the name string at parse time; no need to carry token bundles.
+        let extern_params: Vec<String> = if matches!(self.peek(), Tok::RParen) {
+            vec![]
+        } else {
+            let mut params: Vec<String> = Vec::new();
+            let mut depth = 0usize;
+            let mut current_name: Option<String> = None;
+            loop {
+                match self.peek() {
+                    Tok::LParen | Tok::LBrace | Tok::LBrack => {
+                        depth += 1;
+                        self.bump();
+                    }
+                    Tok::RParen | Tok::RBrace | Tok::RBrack if depth > 0 => {
+                        depth -= 1;
+                        self.bump();
+                    }
+                    Tok::RParen => {
+                        params.push(current_name.take().unwrap_or_default());
+                        break;
+                    }
+                    Tok::Comma if depth == 0 => {
+                        params.push(current_name.take().unwrap_or_default());
+                        self.bump();
+                    }
+                    Tok::Eof | Tok::Newline => {
+                        return self.err("unexpected end of extern parameter list");
+                    }
+                    Tok::Nil => {
+                        if current_name.is_none() {
+                            current_name = Some("nil".into());
+                        }
+                        self.bump();
+                    }
+                    Tok::Ident(n) | Tok::Upper(n) => {
+                        let name = n.clone();
+                        if current_name.is_none() {
+                            current_name = Some(name);
+                        }
+                        self.bump();
+                    }
+                    _ => {
+                        self.bump();
+                    }
+                }
+            }
+            params
+        };
+        self.expect(&Tok::RParen, "`)`")?;
+        self.expect(&Tok::ColonColon, "`::`")?;
+        let mut extern_ret_tokens = Vec::new();
+        while !matches!(self.peek(), Tok::Newline | Tok::Eof) {
+            extern_ret_tokens.push(self.toks[self.pos].clone());
+            self.bump();
+        }
+        let span = self.finish(start);
+        Ok(FnDef {
+            name,
+            name_span,
+            clauses: vec![],
+            is_macro: false,
+            extern_abi: Some(abi),
+            extern_params,
+            extern_ret_tokens: TypeExprBody(extern_ret_tokens),
+            attrs: vec![],
+            span,
+        })
     }
 
     /// `alias A.B.C` or `alias A.B.C, as: D`.

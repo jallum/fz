@@ -592,6 +592,7 @@ impl Interp {
             Expr::Lambda(params, body) => Ok(Value::Closure(Rc::new(Closure {
                 name: None,
                 clauses: vec![FnClause {
+                    param_annotations: vec![None; params.len()],
                     params: params.clone(),
                     guard: None,
                     body: (**body).clone(),

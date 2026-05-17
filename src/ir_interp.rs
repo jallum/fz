@@ -9,7 +9,6 @@
 //! Scope at .5.2: minimal for fixtures/add1/input.fz —
 //!   Const::{Int, Atom, Nil, True, False}
 //!   BinOp::Add  (Int + Int)
-//!   Prim::Builtin(Print, ...)
 //!   Term::{Call, Return, Halt}
 //!
 //! Subsequent atoms expand the surface fixture by fixture:
@@ -23,7 +22,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 
-use crate::fz_ir::{BinOp, BuiltinKind, Const, FnId, Module, Prim, Stmt, Term, Var};
+use crate::fz_ir::{BinOp, Const, ExternId, ExternTy, FnId, Module, Prim, Stmt, Term, Var};
 use fz_runtime::fz_value::FzValue;
 use fz_runtime::process::Process;
 
@@ -461,9 +460,9 @@ fn eval_prim(module: &Module, prim: &Prim, env: &HashMap<Var, FzValue>) -> Resul
             let bv = env_get(env, *b)?;
             eval_binop(*op, av, bv)?
         }
-        Prim::Builtin(bid, args) => {
+        Prim::Extern(eid, args) => {
             let arg_vals = collect(env, args)?;
-            run_builtin(module, *bid, &arg_vals)?
+            call_extern(module, *eid, &arg_vals)?
         }
         Prim::MakeBitstring(fields) => {
             // fz-cty.7 — mirror src/ir_codegen.rs Prim::MakeBitstring: drive the
@@ -559,6 +558,57 @@ fn eval_prim(module: &Module, prim: &Prim, env: &HashMap<Var, FzValue>) -> Resul
             }
             FzValue(p as u64)
         }
+        Prim::TypeTest(v, descr) => {
+            use crate::types::BasicBits;
+            use fz_runtime::fz_value::{HeapKind, Tag};
+            let val = env_get(env, *v)?;
+            let tag = val.tag();
+            let mut matched = false;
+            if !descr.ints.is_none() {
+                matched |= tag == Tag::Int;
+            }
+            if descr.atoms.is_any() {
+                matched |= tag == Tag::Atom;
+            } else if !descr.atoms.is_none() {
+                return Err(
+                    "TypeTest: specific atom literal sets not yet supported in interpreter".into(),
+                );
+            }
+            if descr.basic.contains_all(BasicBits::NIL) {
+                matched |= val.is_nil();
+            }
+            if descr.basic.contains_all(BasicBits::BOOL) {
+                matched |= val.is_true() || val.is_false();
+            }
+            let need_heap = !descr.floats.is_none()
+                || descr.basic.contains_all(BasicBits::VEC_I64)
+                || descr.basic.contains_all(BasicBits::VEC_F64)
+                || descr.basic.contains_all(BasicBits::VEC_U8)
+                || descr.basic.contains_all(BasicBits::VEC_BIT);
+            if need_heap && let Some(ptr) = val.unbox_ptr() {
+                let hk = HeapKind::from_u16(unsafe { (*ptr).kind });
+                if !descr.floats.is_none() {
+                    matched |= hk == Some(HeapKind::Float);
+                }
+                if descr.basic.contains_all(BasicBits::VEC_I64) {
+                    matched |= hk == Some(HeapKind::VecI64);
+                }
+                if descr.basic.contains_all(BasicBits::VEC_F64) {
+                    matched |= hk == Some(HeapKind::VecF64);
+                }
+                if descr.basic.contains_all(BasicBits::VEC_U8) {
+                    matched |= hk == Some(HeapKind::VecU8);
+                }
+                if descr.basic.contains_all(BasicBits::VEC_BIT) {
+                    matched |= hk == Some(HeapKind::VecBit);
+                }
+            }
+            if matched {
+                FzValue::TRUE
+            } else {
+                FzValue::FALSE
+            }
+        }
         _ => {
             return Err(format!(
                 "interp .5.2: prim {:?} not yet supported (lands in fz-ul4.23.5.3+)",
@@ -648,38 +698,28 @@ fn eval_binop(op: BinOp, a: FzValue, b: FzValue) -> Result<FzValue, String> {
     }
 }
 
-fn run_builtin(
-    module: &Module,
-    bid: crate::fz_ir::BuiltinId,
-    args: &[FzValue],
-) -> Result<FzValue, String> {
-    let Some(kind) = BuiltinKind::from_id(bid) else {
-        return Err(format!("interp: unknown builtin id {}", bid.0));
-    };
-    match kind {
-        BuiltinKind::Print => {
+fn call_extern(module: &Module, eid: ExternId, args: &[FzValue]) -> Result<FzValue, String> {
+    let decl = module.extern_by_id(eid);
+    // Assert fns use std::process::abort on failure — fatal for the JIT/AOT
+    // path, but unusable in the interpreter where failures must return Err.
+    // Handle them inline with the same logic as run_builtin::Assert*.
+    match decl.symbol.as_str() {
+        "fz_assert" => {
             if args.len() != 1 {
-                return Err(format!("print/1 got {} args", args.len()));
+                return Err(format!("fz_assert/1 got {} args", args.len()));
             }
-            fz_runtime::ir_runtime::fz_print_value(args[0].0);
-            Ok(FzValue::NIL)
-        }
-        BuiltinKind::Assert => {
-            if args.len() != 1 {
-                return Err(format!("assert/1 got {} args", args.len()));
-            }
-            if is_truthy(args[0]) {
+            return if is_truthy(args[0]) {
                 Ok(FzValue::NIL)
             } else {
                 Err("assertion failed".into())
-            }
+            };
         }
-        BuiltinKind::AssertEq => {
+        "fz_assert_eq" => {
             if args.len() != 2 {
-                return Err(format!("assert_eq/2 got {} args", args.len()));
+                return Err(format!("fz_assert_eq/2 got {} args", args.len()));
             }
             let eq = FzValue(fz_runtime::ir_runtime::fz_value_eq(args[0].0, args[1].0));
-            if eq.is_true() {
+            return if eq.is_true() {
                 Ok(FzValue::NIL)
             } else {
                 Err(format!(
@@ -687,14 +727,14 @@ fn run_builtin(
                     fz_runtime::fz_value::debug::render(args[0].0),
                     fz_runtime::fz_value::debug::render(args[1].0),
                 ))
-            }
+            };
         }
-        BuiltinKind::AssertNeq => {
+        "fz_assert_neq" => {
             if args.len() != 2 {
-                return Err(format!("assert_neq/2 got {} args", args.len()));
+                return Err(format!("fz_assert_neq/2 got {} args", args.len()));
             }
             let eq = FzValue(fz_runtime::ir_runtime::fz_value_eq(args[0].0, args[1].0));
-            if eq.is_false() {
+            return if eq.is_false() {
                 Ok(FzValue::NIL)
             } else {
                 Err(format!(
@@ -702,50 +742,145 @@ fn run_builtin(
                     fz_runtime::fz_value::debug::render(args[0].0),
                     fz_runtime::fz_value::debug::render(args[1].0),
                 ))
-            }
+            };
         }
-        BuiltinKind::Spawn => {
-            // fz-ul4.29.5: lifted zero-captures restriction. Spawn deep-
-            // copies the closure (captures included) into the new task's
-            // heap; the body fn is invoked with the captures as its entry
-            // params (a spawned closure has zero call args, so the entry
-            // params are exactly the captures).
-            // fz-siu.12: spawn/2 accepts a min_heap_size hint (ignored by
-            // the interp — single shared heap, no per-process sizing).
-            if args.len() != 1 && args.len() != 2 {
-                return Err(format!("spawn/1 or spawn/2 got {} args", args.len()));
+        // Spawn/send/self need the interpreter's own scheduler — the C
+        // implementations require a Runtime spawn hook which is only
+        // installed on the JIT/AOT path.
+        "fz_spawn" | "fz_spawn_opt" => {
+            if args.is_empty() {
+                return Err(format!("{}/1+ got 0 args", &decl.symbol));
             }
+            // args[0] is the thunk closure (wrapping the user's closure);
+            // args[1] (fz_spawn_opt) is a min_heap_size hint — ignored here.
             let (fn_id, captured) = unpack_closure(args[0])?;
-            // Deep-copy the captured values into the child's heap is
-            // implicit: interp runs every task on the same heap (single
-            // shared SchemaRegistry, single Process model under the test
-            // harness). For correctness of cross-heap semantics under
-            // multi-task interp execution see .19's design — v1 interp
-            // uses a single heap, so captures are already there.
             let pid = interp_spawn(module, fn_id, captured)?;
-            Ok(FzValue::from_int(pid as i64))
+            return Ok(FzValue::from_int(pid as i64));
         }
-        BuiltinKind::SelfPid => Ok(FzValue::from_int(
-            fz_runtime::process::current_process().pid as i64,
-        )),
-        BuiltinKind::Send => {
+        "fz_self" => {
+            return Ok(FzValue::from_int(
+                fz_runtime::process::current_process().pid as i64,
+            ));
+        }
+        "fz_send" => {
             if args.len() != 2 {
-                return Err(format!("send/2 got {} args", args.len()));
+                return Err(format!("fz_send/2 got {} args", args.len()));
             }
             let receiver = args[0]
                 .unbox_int()
                 .ok_or_else(|| "send/2: pid must be Int".to_string())?
                 as u32;
             interp_send(receiver, args[1])?;
-            Ok(args[1])
+            return Ok(args[1]);
         }
-        BuiltinKind::VecGet => {
-            if args.len() != 2 {
-                return Err(format!("vec_get/2 got {} args", args.len()));
-            }
-            Ok(FzValue(fz_runtime::ir_runtime::fz_vec_get(
-                args[0].0, args[1].0,
-            )))
-        }
+        _ => {}
+    }
+    let fp = resolve_symbol(&decl.symbol)?;
+    let raw_args: Vec<u64> = args
+        .iter()
+        .zip(decl.params.iter())
+        .map(|(v, ty)| match ty {
+            ExternTy::I64 => v.unbox_int().unwrap_or(0) as u64,
+            _ => v.0,
+        })
+        .collect();
+    let returns_value = !matches!(decl.ret, ExternTy::Unit | ExternTy::Never);
+    let ret = if returns_value {
+        unsafe { dispatch_fn_returning(fp, &raw_args) }
+    } else {
+        unsafe { dispatch_fn_void(fp, &raw_args) };
+        0
+    };
+    Ok(FzValue(ret))
+}
+
+/// Return the function pointer for a named C symbol.
+///
+/// Checks the built-in native table first (all symbols declared in runtime.fz
+/// are registered here so that the interpreter finds them even when the runtime
+/// is statically linked and dlsym(RTLD_DEFAULT) cannot reach the symbols).
+/// Falls back to dlsym for any name not in the table.
+fn resolve_symbol(name: &str) -> Result<*const (), String> {
+    // Native table: every symbol declared in runtime.fz. These Rust functions
+    // are linked into the binary; using their address directly avoids relying
+    // on dlsym visibility, which is unreliable for statically-linked rlibs.
+    let native: Option<*const ()> = match name {
+        "fz_print_i64" => Some(fz_runtime::fz_print_i64 as *const ()),
+        "fz_print_value" => Some(fz_runtime::ir_runtime::fz_print_value as *const ()),
+        "fz_assert" => Some(fz_runtime::fz_assert as *const ()),
+        "fz_assert_eq" => Some(fz_runtime::fz_assert_eq as *const ()),
+        "fz_assert_neq" => Some(fz_runtime::fz_assert_neq as *const ()),
+        "fz_vec_get" => Some(fz_runtime::ir_runtime::fz_vec_get as *const ()),
+        "fz_spawn" => Some(fz_runtime::ir_runtime::fz_spawn as *const ()),
+        "fz_spawn_opt" => Some(fz_runtime::ir_runtime::fz_spawn_opt as *const ()),
+        "fz_self" => Some(fz_runtime::ir_runtime::fz_self as *const ()),
+        "fz_send" => Some(fz_runtime::ir_runtime::fz_send as *const ()),
+        _ => None,
+    };
+    if let Some(fp) = native {
+        return Ok(fp);
+    }
+    // Fallback: dlsym for user-declared externs not in the native table.
+    use std::ffi::CString;
+    let cname = CString::new(name).map_err(|e| format!("bad symbol name: {}", e))?;
+    #[cfg(unix)]
+    let ptr = unsafe { libc::dlsym(libc::RTLD_DEFAULT, cname.as_ptr()) };
+    #[cfg(not(unix))]
+    let ptr: *mut std::ffi::c_void = std::ptr::null_mut();
+    if ptr.is_null() {
+        return Err(format!("dlsym: symbol `{}` not found", name));
+    }
+    Ok(ptr as *const ())
+}
+
+unsafe fn dispatch_fn_returning(fp: *const (), args: &[u64]) -> u64 {
+    match args.len() {
+        0 => unsafe {
+            let f: unsafe extern "C" fn() -> u64 = std::mem::transmute(fp);
+            f()
+        },
+        1 => unsafe {
+            let f: unsafe extern "C" fn(u64) -> u64 = std::mem::transmute(fp);
+            f(args[0])
+        },
+        2 => unsafe {
+            let f: unsafe extern "C" fn(u64, u64) -> u64 = std::mem::transmute(fp);
+            f(args[0], args[1])
+        },
+        3 => unsafe {
+            let f: unsafe extern "C" fn(u64, u64, u64) -> u64 = std::mem::transmute(fp);
+            f(args[0], args[1], args[2])
+        },
+        4 => unsafe {
+            let f: unsafe extern "C" fn(u64, u64, u64, u64) -> u64 = std::mem::transmute(fp);
+            f(args[0], args[1], args[2], args[3])
+        },
+        n => panic!("extern arity {} not supported (max 4)", n),
+    }
+}
+
+unsafe fn dispatch_fn_void(fp: *const (), args: &[u64]) {
+    match args.len() {
+        0 => unsafe {
+            let f: unsafe extern "C" fn() = std::mem::transmute(fp);
+            f()
+        },
+        1 => unsafe {
+            let f: unsafe extern "C" fn(u64) = std::mem::transmute(fp);
+            f(args[0])
+        },
+        2 => unsafe {
+            let f: unsafe extern "C" fn(u64, u64) = std::mem::transmute(fp);
+            f(args[0], args[1])
+        },
+        3 => unsafe {
+            let f: unsafe extern "C" fn(u64, u64, u64) = std::mem::transmute(fp);
+            f(args[0], args[1], args[2])
+        },
+        4 => unsafe {
+            let f: unsafe extern "C" fn(u64, u64, u64, u64) = std::mem::transmute(fp);
+            f(args[0], args[1], args[2], args[3])
+        },
+        n => panic!("extern arity {} not supported (max 4)", n),
     }
 }

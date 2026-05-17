@@ -1,14 +1,95 @@
-//! fz-ul4.dce.4 — Dead stmt elimination.
+//! fz-ul4.dce.4 — Dead stmt elimination, dead block elimination, block fusion.
 //!
-//! Removes pure stmts whose dest var is not used anywhere in the fn.
+//! Dead stmts: removes pure stmts whose dest var is not used anywhere in the fn.
 //! Fixed-point loop handles chains of dead stmts.
+//!
+//! Dead blocks: after stmt DCE, prunes blocks unreachable from the entry block.
+//! Only Goto and If create intra-function block edges; all other terminators
+//! exit to a separate FnIr or terminate execution.
+//!
+//! Block fusion: merges a block that ends with a parameterless Goto into its
+//! single-predecessor target. Runs after dead block elimination so that only
+//! reachable blocks remain. Fixed-point loop handles chains.
 
-use crate::fz_ir::{FnIr, Module, Prim, Stmt, Term, Var};
+use crate::fz_ir::{BlockId, FnId, FnIr, Module, Prim, Stmt, Term, Var};
+use std::collections::HashMap;
 use std::collections::HashSet;
+
+/// Remove IR functions unreachable from `main`.
+///
+/// Walks from `main` via Term::Call/TailCall callee, Cont::fn_id, and
+/// Prim::MakeClosure. Keeps any fn transitively reachable. Sweeps the rest.
+/// FnIds are NOT renumbered — the codegen schemas vec is indexed by FnId.0
+/// and renumbering would require updating every call/cont/closure reference.
+pub fn dce_module_level(m: &mut Module) {
+    use crate::fz_ir::ExternId;
+
+    let Some(entry) = m.fn_by_name("main") else {
+        return;
+    };
+    let entry_id = entry.id;
+
+    let mut reachable: HashSet<FnId> = HashSet::new();
+    let mut reachable_externs: HashSet<ExternId> = HashSet::new();
+    let mut queue: Vec<FnId> = vec![entry_id];
+
+    while let Some(fid) = queue.pop() {
+        if !reachable.insert(fid) {
+            continue;
+        }
+        let Some(&fi) = m.fn_idx.get(&fid) else {
+            continue;
+        };
+        for block in &m.fns[fi].blocks {
+            match &block.terminator {
+                Term::Call {
+                    callee,
+                    continuation,
+                    ..
+                } => {
+                    queue.push(*callee);
+                    queue.push(continuation.fn_id);
+                }
+                Term::TailCall { callee, .. } => {
+                    queue.push(*callee);
+                }
+                Term::CallClosure { continuation, .. } => {
+                    queue.push(continuation.fn_id);
+                }
+                Term::Receive { continuation } => {
+                    queue.push(continuation.fn_id);
+                }
+                _ => {}
+            }
+            for stmt in &block.stmts {
+                match stmt {
+                    Stmt::Let(_, Prim::MakeClosure(fid, _)) => queue.push(*fid),
+                    Stmt::Let(_, Prim::Extern(eid, _)) => {
+                        reachable_externs.insert(*eid);
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    m.fns.retain(|f| reachable.contains(&f.id));
+    m.fn_idx.clear();
+    for (i, f) in m.fns.iter().enumerate() {
+        m.fn_idx.insert(f.id, i);
+    }
+
+    m.externs.retain(|e| reachable_externs.contains(&e.id));
+    m.extern_idx.clear();
+    for (i, e) in m.externs.iter().enumerate() {
+        m.extern_idx.insert(e.id, i);
+    }
+}
 
 pub fn dce_module(m: &mut Module) {
     for f in &mut m.fns {
         dce_fn(f);
+        fuse_fn(f);
     }
 }
 
@@ -28,18 +109,66 @@ fn dce_fn(f: &mut FnIr) {
             break;
         }
     }
+
+    // Dead block elimination: compute reachable set BEFORE retaining so that
+    // f.block(id) — which panics on unknown id — is still safe to call.
+    let reachable = reachable_from_entry(f);
+    f.blocks.retain(|b| reachable.contains(&b.id));
 }
 
-fn collect_used(f: &FnIr) -> HashSet<Var> {
-    let mut used = HashSet::new();
+fn reachable_from_entry(f: &FnIr) -> HashSet<BlockId> {
+    let mut seen = HashSet::new();
+    let mut work = vec![f.entry];
+    while let Some(bid) = work.pop() {
+        if !seen.insert(bid) {
+            continue;
+        }
+        match &f.block(bid).terminator {
+            Term::Goto(t, _) => work.push(*t),
+            Term::If(_, t, e) => {
+                work.push(*t);
+                work.push(*e);
+            }
+            _ => {}
+        }
+    }
+    seen
+}
+
+/// Returns `(if_only_conds, all_used)` in a single pass.
+///
+/// `if_only_conds`: vars used exclusively as Term::If conditions — no prim
+/// arg, no other terminator use. Boolean-producing prims whose dest is in
+/// this set can skip emitting a tagged form entirely (fz-cg2.3).
+///
+/// `all_used`: every var referenced in any prim arg or terminator arg;
+/// equivalent to the previous `collect_used` return value.
+pub fn classify_var_uses(f: &FnIr) -> (HashSet<Var>, HashSet<Var>) {
+    let mut if_conds: HashSet<Var> = HashSet::new();
+    let mut other_uses: HashSet<Var> = HashSet::new();
     for block in &f.blocks {
         for stmt in &block.stmts {
             let Stmt::Let(_, prim) = stmt;
-            collect_prim_vars(prim, &mut used);
+            collect_prim_vars(prim, &mut other_uses);
         }
-        collect_term_vars(&block.terminator, &mut used);
+        match &block.terminator {
+            Term::If(c, _, _) => {
+                if_conds.insert(*c);
+            }
+            t => collect_term_vars(t, &mut other_uses),
+        }
     }
-    used
+    let mut all_used = other_uses.clone();
+    all_used.extend(if_conds.iter().cloned());
+    let if_only_conds: HashSet<Var> = if_conds
+        .into_iter()
+        .filter(|v| !other_uses.contains(v))
+        .collect();
+    (if_only_conds, all_used)
+}
+
+pub fn collect_used(f: &FnIr) -> HashSet<Var> {
+    classify_var_uses(f).1
 }
 
 fn collect_prim_vars(p: &Prim, used: &mut HashSet<Var>) {
@@ -57,7 +186,7 @@ fn collect_prim_vars(p: &Prim, used: &mut HashSet<Var>) {
                 used.insert(*v);
             }
         }
-        Prim::Builtin(_, args) => {
+        Prim::Extern(_, args) => {
             for v in args {
                 used.insert(*v);
             }
@@ -134,6 +263,9 @@ fn collect_prim_vars(p: &Prim, used: &mut HashSet<Var>) {
                 used.insert(*sv);
             }
         }
+        Prim::TypeTest(v, _) => {
+            used.insert(*v);
+        }
     }
 }
 
@@ -195,17 +327,178 @@ fn collect_term_vars(t: &Term, used: &mut HashSet<Var>) {
 fn is_impure(p: &Prim) -> bool {
     matches!(
         p,
-        Prim::Builtin(..)
+        Prim::Extern(..)
             | Prim::BitReaderInit(_)
             | Prim::BitReadField { .. }
             | Prim::BitReaderDone(_)
     )
 }
 
+/// Merge a block that ends with a parameterless Goto into its single-predecessor
+/// target. Repeat until no more fusions are possible.
+fn fuse_fn(f: &mut FnIr) {
+    loop {
+        let mut in_degree: HashMap<BlockId, usize> = f.blocks.iter().map(|b| (b.id, 0)).collect();
+        for block in &f.blocks {
+            match &block.terminator {
+                Term::Goto(t, _) => *in_degree.entry(*t).or_insert(0) += 1,
+                Term::If(_, t, e) => {
+                    *in_degree.entry(*t).or_insert(0) += 1;
+                    *in_degree.entry(*e).or_insert(0) += 1;
+                }
+                _ => {}
+            }
+        }
+
+        let fuseable = f.blocks.iter().find_map(|block| {
+            if let Term::Goto(target, args) = &block.terminator
+                && args.is_empty()
+            {
+                let tb = f.blocks.iter().find(|b| b.id == *target)?;
+                if tb.params.is_empty() && in_degree.get(target) == Some(&1) {
+                    return Some((block.id, *target));
+                }
+            }
+            None
+        });
+
+        let Some((src_id, target_id)) = fuseable else {
+            break;
+        };
+
+        let target_pos = f.blocks.iter().position(|b| b.id == target_id).unwrap();
+        let target_block = f.blocks.remove(target_pos);
+        let src_block = f.blocks.iter_mut().find(|b| b.id == src_id).unwrap();
+        src_block.stmts.extend(target_block.stmts);
+        src_block.terminator = target_block.terminator;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::fz_ir::{BinOp, Const, Cont, FnBuilder, FnId, ModuleBuilder, Prim, Term};
+
+    fn build_two_fn_module(main_calls_leaf: bool) -> crate::fz_ir::Module {
+        let leaf_id = FnId(1);
+        let main_id = FnId(0);
+
+        let mut bm = FnBuilder::new(main_id, "main");
+        let entry = bm.block(vec![]);
+        if main_calls_leaf {
+            let nil_v = bm.let_(entry, Prim::Const(Const::Nil));
+            let leaf_cont_id = FnId(99); // dummy cont — not in module; tests only sweep fns
+            let cont = Cont {
+                fn_id: leaf_cont_id,
+                captured: vec![],
+            };
+            bm.set_terminator(
+                entry,
+                Term::Call {
+                    callee: leaf_id,
+                    args: vec![nil_v],
+                    continuation: cont,
+                },
+            );
+        } else {
+            let nil_v = bm.let_(entry, Prim::Const(Const::Nil));
+            bm.set_terminator(entry, Term::Return(nil_v));
+        }
+
+        let mut bl = FnBuilder::new(leaf_id, "leaf");
+        let lentry = bl.block(vec![]);
+        let lv = bl.let_(lentry, Prim::Const(Const::Nil));
+        bl.set_terminator(lentry, Term::Return(lv));
+
+        let mut mb = ModuleBuilder::new();
+        mb.add_fn(bm.build());
+        mb.add_fn(bl.build());
+        mb.build()
+    }
+
+    #[test]
+    fn dce_module_level_keeps_reachable_leaf() {
+        let mut m = build_two_fn_module(true);
+        assert_eq!(m.fns.len(), 2);
+        dce_module_level(&mut m);
+        // leaf is reachable via Term::Call from main; both kept (cont fn_id 99 missing from module, that's fine)
+        assert!(m.fns.iter().any(|f| f.name == "main"), "main must survive");
+        assert!(
+            m.fns.iter().any(|f| f.name == "leaf"),
+            "leaf reachable via Call must survive"
+        );
+    }
+
+    #[test]
+    fn dce_module_level_removes_unreachable_leaf() {
+        let mut m = build_two_fn_module(false);
+        assert_eq!(m.fns.len(), 2);
+        dce_module_level(&mut m);
+        assert!(m.fns.iter().any(|f| f.name == "main"), "main must survive");
+        assert!(
+            !m.fns.iter().any(|f| f.name == "leaf"),
+            "leaf unreachable must be removed"
+        );
+        assert_eq!(m.fns.len(), 1);
+    }
+
+    #[test]
+    fn dce_module_level_sweeps_unreachable_externs() {
+        use crate::fz_ir::{ExternDecl, ExternId, ExternTy};
+        // Build a module with two externs: used_ext (called from main) and dead_ext (never called).
+        let used_id = ExternId(0);
+        let dead_id = ExternId(1);
+
+        let mut b = FnBuilder::new(FnId(0), "main");
+        let entry = b.block(vec![]);
+        let nil = b.let_(entry, Prim::Const(Const::Nil));
+        let _ret = b.let_(entry, Prim::Extern(used_id, vec![nil]));
+        b.set_terminator(entry, Term::Return(nil));
+        let mut mb = ModuleBuilder::new();
+        mb.add_fn(b.build());
+        let mut m = mb.build();
+        let dead_descr = crate::types::Descr::any();
+        m.externs.push(ExternDecl {
+            id: used_id,
+            fz_name: "used_ext".into(),
+            symbol: "used_ext".into(),
+            params: vec![ExternTy::Any],
+            ret: ExternTy::Any,
+            ret_descr: dead_descr.clone(),
+        });
+        m.externs.push(ExternDecl {
+            id: dead_id,
+            fz_name: "dead_ext".into(),
+            symbol: "dead_ext".into(),
+            params: vec![],
+            ret: ExternTy::Unit,
+            ret_descr: dead_descr,
+        });
+        m.extern_idx.insert(used_id, 0);
+        m.extern_idx.insert(dead_id, 1);
+
+        dce_module_level(&mut m);
+
+        assert_eq!(m.externs.len(), 1, "dead extern must be swept");
+        assert_eq!(m.externs[0].fz_name, "used_ext");
+        assert_eq!(m.extern_idx.len(), 1);
+        assert!(m.extern_idx.contains_key(&used_id));
+        assert!(!m.extern_idx.contains_key(&dead_id));
+    }
+
+    #[test]
+    fn dce_module_level_always_keeps_main() {
+        let mut mb = ModuleBuilder::new();
+        let mut b = FnBuilder::new(FnId(0), "main");
+        let entry = b.block(vec![]);
+        let v = b.let_(entry, Prim::Const(Const::Nil));
+        b.set_terminator(entry, Term::Return(v));
+        mb.add_fn(b.build());
+        let mut m = mb.build();
+        dce_module_level(&mut m);
+        assert_eq!(m.fns.len(), 1);
+        assert_eq!(m.fns[0].name, "main");
+    }
 
     /// Test 1: Dead Const removed; live Const (used by a Call arg) kept.
     ///
@@ -234,18 +527,18 @@ mod tests {
         }
     }
 
-    /// Test 2: Builtin with unused dest kept (impure).
+    /// Test 2: Extern with unused dest kept (impure).
     ///
-    /// Build: entry has Builtin(Print, []) whose dest is never used.
-    /// DCE must keep it because Builtin is impure.
+    /// Build: entry has Extern(0, []) whose dest is never used.
+    /// DCE must keep it because Extern is impure.
     #[test]
-    fn impure_builtin_kept_even_if_unused() {
-        use crate::fz_ir::BuiltinId;
+    fn impure_extern_kept_even_if_unused() {
+        use crate::fz_ir::ExternId;
         let mut b = FnBuilder::new(FnId(0), "main");
         let entry = b.block(vec![]);
-        let nil_v = b.let_(entry, Prim::Const(Const::Nil)); // arg for print
-        // Builtin(Print) with nil as arg — dest is never used.
-        let _print_result = b.let_(entry, Prim::Builtin(BuiltinId(0), vec![nil_v]));
+        let nil_v = b.let_(entry, Prim::Const(Const::Nil)); // arg for extern call
+        // Extern(0) with nil as arg — dest is never used.
+        let _extern_result = b.let_(entry, Prim::Extern(ExternId(0), vec![nil_v]));
         b.set_terminator(entry, Term::Return(nil_v));
         let f = b.build();
 
@@ -256,16 +549,16 @@ mod tests {
         dce_module(&mut m);
 
         let block = m.fns[0].block(m.fns[0].entry);
-        // The Builtin stmt must remain (impure). nil_v is used by both Builtin and Return.
+        // The Extern stmt must remain (impure). nil_v is used by both Extern and Return.
         assert_eq!(
             block.stmts.len(),
             2,
-            "impure Builtin must be kept; stmts: {:?}",
+            "impure Extern must be kept; stmts: {:?}",
             block.stmts
         );
         assert!(
-            matches!(&block.stmts[1], Stmt::Let(_, Prim::Builtin(..))),
-            "second stmt should be Builtin, got {:?}",
+            matches!(&block.stmts[1], Stmt::Let(_, Prim::Extern(..))),
+            "second stmt should be Extern, got {:?}",
             block.stmts[1]
         );
     }
@@ -344,5 +637,157 @@ mod tests {
             Stmt::Let(_, Prim::Const(Const::Int(42))) => {}
             other => panic!("expected live Const(42), got {:?}", other),
         }
+    }
+
+    // ── Dead block elimination ────────────────────────────────────────────────
+
+    #[test]
+    fn unreachable_block_removed() {
+        // entry → Return(nil); orphan block exists but is never jumped to.
+        let mut b = FnBuilder::new(FnId(0), "main");
+        let entry = b.block(vec![]);
+        let orphan = b.block(vec![]);
+        let nil_e = b.let_(entry, Prim::Const(Const::Nil));
+        b.set_terminator(entry, Term::Return(nil_e));
+        let nil_o = b.let_(orphan, Prim::Const(Const::Nil));
+        b.set_terminator(orphan, Term::Return(nil_o));
+
+        let mut mb = ModuleBuilder::new();
+        mb.add_fn(b.build());
+        let mut m = mb.build();
+
+        assert_eq!(m.fns[0].blocks.len(), 2, "should start with 2 blocks");
+        dce_module(&mut m);
+        assert_eq!(m.fns[0].blocks.len(), 1, "orphan block should be removed");
+        assert_eq!(m.fns[0].blocks[0].id, entry);
+    }
+
+    #[test]
+    fn entry_always_retained() {
+        let mut b = FnBuilder::new(FnId(0), "main");
+        let entry = b.block(vec![]);
+        let nil = b.let_(entry, Prim::Const(Const::Nil));
+        b.set_terminator(entry, Term::Return(nil));
+
+        let mut mb = ModuleBuilder::new();
+        mb.add_fn(b.build());
+        let mut m = mb.build();
+        dce_module(&mut m);
+        assert_eq!(m.fns[0].blocks.len(), 1);
+        assert_eq!(m.fns[0].blocks[0].id, entry);
+    }
+
+    #[test]
+    fn both_if_branches_kept() {
+        let mut b = FnBuilder::new(FnId(0), "main");
+        let cond_v = b.fresh_var();
+        let entry = b.block(vec![cond_v]);
+        let then_b = b.block(vec![]);
+        let else_b = b.block(vec![]);
+        b.set_terminator(entry, Term::If(cond_v, then_b, else_b));
+        let n1 = b.let_(then_b, Prim::Const(Const::Nil));
+        b.set_terminator(then_b, Term::Return(n1));
+        let n2 = b.let_(else_b, Prim::Const(Const::Nil));
+        b.set_terminator(else_b, Term::Return(n2));
+
+        let mut mb = ModuleBuilder::new();
+        mb.add_fn(b.build());
+        let mut m = mb.build();
+        dce_module(&mut m);
+        assert_eq!(m.fns[0].blocks.len(), 3, "both If branches must be kept");
+    }
+
+    #[test]
+    fn dead_branch_removed_after_goto() {
+        // entry → Goto(then_b); else_b exists but is unreferenced.
+        let mut b = FnBuilder::new(FnId(0), "main");
+        let entry = b.block(vec![]);
+        let then_b = b.block(vec![]);
+        let else_b = b.block(vec![]);
+        b.set_terminator(entry, Term::Goto(then_b, vec![]));
+        let n1 = b.let_(then_b, Prim::Const(Const::Nil));
+        b.set_terminator(then_b, Term::Return(n1));
+        let n2 = b.let_(else_b, Prim::Const(Const::Nil));
+        b.set_terminator(else_b, Term::Return(n2));
+
+        let mut mb = ModuleBuilder::new();
+        mb.add_fn(b.build());
+        let mut m = mb.build();
+
+        assert_eq!(m.fns[0].blocks.len(), 3, "should start with 3 blocks");
+        dce_module(&mut m);
+        // else_b removed by dead block elimination; entry fused with then_b.
+        assert_eq!(
+            m.fns[0].blocks.len(),
+            1,
+            "else_b removed and entry+then_b fused"
+        );
+        assert_eq!(m.fns[0].blocks[0].id, entry);
+        assert!(matches!(m.fns[0].blocks[0].terminator, Term::Return(_)));
+    }
+
+    /// fz-jv2 — classify_var_uses correctness.
+    ///
+    /// Builds a function with:
+    ///   block0: let c = TypeTest(x); Term::If(c, b_t, b_f)
+    ///   block0 has no other use of c → c ∈ if_only_conds
+    ///
+    /// And a second function where c also appears in a prim arg:
+    ///   block0: let c = TypeTest(x); let _ = BinOp(And, c, c); Term::If(c, b_t, b_f)
+    ///   c ∈ all_used but c ∉ if_only_conds (dual-use)
+    #[test]
+    fn classify_var_uses_separates_pure_branch_from_dual_use() {
+        // --- pure-branch case ---
+        let mut bm = FnBuilder::new(FnId(0), "pure");
+        let x = bm.fresh_var();
+        let entry = bm.block(vec![x]);
+        let c = bm.let_(
+            entry,
+            Prim::TypeTest(x, Box::new(crate::types::Descr::int())),
+        );
+        let t_blk = bm.block(vec![]);
+        let f_blk = bm.block(vec![]);
+        bm.set_terminator(entry, Term::If(c, t_blk, f_blk));
+        let nil = bm.let_(t_blk, Prim::Const(Const::Nil));
+        bm.set_terminator(t_blk, Term::Return(nil));
+        let nil2 = bm.let_(f_blk, Prim::Const(Const::Nil));
+        bm.set_terminator(f_blk, Term::Return(nil2));
+        let pure_fn = bm.build();
+
+        let (if_only, all_used) = classify_var_uses(&pure_fn);
+        assert!(
+            if_only.contains(&c),
+            "pure-branch condition should be in if_only_conds"
+        );
+        assert!(
+            all_used.contains(&c),
+            "pure-branch condition should still be in all_used"
+        );
+        assert!(
+            all_used.contains(&x),
+            "TypeTest operand x should be in all_used"
+        );
+
+        // --- dual-use case ---
+        let mut bm2 = FnBuilder::new(FnId(1), "dual");
+        let x2 = bm2.fresh_var();
+        let e2 = bm2.block(vec![x2]);
+        let c2 = bm2.let_(e2, Prim::TypeTest(x2, Box::new(crate::types::Descr::int())));
+        // c2 used as prim arg → dual-use
+        let _ = bm2.let_(e2, Prim::BinOp(BinOp::And, c2, c2));
+        let t2 = bm2.block(vec![]);
+        let f2 = bm2.block(vec![]);
+        bm2.set_terminator(e2, Term::If(c2, t2, f2));
+        let n2 = bm2.let_(t2, Prim::Const(Const::Nil));
+        bm2.set_terminator(t2, Term::Return(n2));
+        let n3 = bm2.let_(f2, Prim::Const(Const::Nil));
+        bm2.set_terminator(f2, Term::Return(n3));
+        let dual_fn = bm2.build();
+
+        let (if_only2, _) = classify_var_uses(&dual_fn);
+        assert!(
+            !if_only2.contains(&c2),
+            "dual-use condition must NOT be in if_only_conds"
+        );
     }
 }

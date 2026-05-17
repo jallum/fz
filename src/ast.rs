@@ -1,6 +1,12 @@
 use crate::diag::{Span, SpanOrigin};
 use std::rc::Rc;
 
+/// A `Vec<Token>` representing a type expression whose resolution is deferred
+/// until the full module type environment is available. Used in five AST fields
+/// that are parsed eagerly but resolved later via `parse_type_expr`.
+#[derive(Debug, Clone)]
+pub struct TypeExprBody(pub Vec<crate::lexer::Token>);
+
 /// Wraps an AST node with the source span that produced it. Every Expr
 /// and Pattern reference in the AST is `Spanned<…>`; the outer enum
 /// values themselves are unwrapped so pattern matching stays clean.
@@ -263,6 +269,9 @@ pub enum Endian {
 #[derive(Debug, Clone)]
 pub struct FnClause {
     pub params: Vec<Spanned<Pattern>>,
+    /// fz-ty1.8: per-parameter type annotation tokens (`x :: T`).
+    /// `param_annotations.len() == params.len()`. `None` means unannotated.
+    pub param_annotations: Vec<Option<TypeExprBody>>,
     pub guard: Option<Spanned<Expr>>,
     pub body: Spanned<Expr>,
     /// Span of the whole clause: from the `fn`/`defmacro` keyword through
@@ -302,9 +311,9 @@ pub struct SpecDecl {
     pub name_span: Span,
     /// Per-parameter type-expression body tokens. `param_body_tokens.len()`
     /// gives the declared arity (used for parse-time arity-vs-fn checks).
-    pub param_body_tokens: Vec<Vec<crate::lexer::Token>>,
+    pub param_body_tokens: Vec<TypeExprBody>,
     /// Result type-expression body tokens.
-    pub result_body_tokens: Vec<crate::lexer::Token>,
+    pub result_body_tokens: TypeExprBody,
     /// Span of the whole `@spec ... :: ...` declaration. Used by .31.5
     /// diagnostics.
     #[allow(dead_code)]
@@ -317,7 +326,7 @@ pub struct TypeAliasDecl {
     pub name_span: Span,
     /// Raw type-expression tokens for the body, terminated by but not
     /// including the trailing newline / eof / end.
-    pub body_tokens: Vec<crate::lexer::Token>,
+    pub body_tokens: TypeExprBody,
     /// Span of the whole `@type ... :: ...` declaration.
     pub span: Span,
 }
@@ -329,6 +338,17 @@ pub struct FnDef {
     pub name_span: Span,
     pub clauses: Vec<FnClause>,
     pub is_macro: bool,
+    /// `Some("C")` for `extern "C" fn` declarations; `None` for regular fns.
+    #[allow(dead_code)] // read by ir_lower in T3
+    pub extern_abi: Option<String>,
+    /// Per-parameter type name strings for `extern "C" fn` declarations.
+    /// `extern_params.len()` gives the arity. Empty for regular fns.
+    #[allow(dead_code)] // read by ir_lower
+    pub extern_params: Vec<String>,
+    /// Raw return-type tokens from `:: RetType`. Empty for regular fns.
+    /// Kept as tokens because lowering consults the type_env alias table.
+    #[allow(dead_code)] // read by ir_lower
+    pub extern_ret_tokens: TypeExprBody,
     /// Attributes attached above the first clause of this fn. The REPL
     /// surfaces `Attribute::Doc` via `?<name>`. Empty when no `@…`
     /// preceded the fn.

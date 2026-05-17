@@ -128,7 +128,9 @@ pub fn run_script_str(src: &str) -> io::Result<()> {
         match try_eval("main()", &interp, &repl_env, /*interactive=*/ false) {
             Outcome::Ok => {}
             Outcome::Incomplete => {
-                return Err(io::Error::other("main() parsed as incomplete (unreachable)"));
+                return Err(io::Error::other(
+                    "main() parsed as incomplete (unreachable)",
+                ));
             }
             Outcome::Err(msg) => return Err(io::Error::other(msg)),
         }

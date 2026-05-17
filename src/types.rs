@@ -286,6 +286,12 @@ pub struct Descr {
     pub ints: IntSet,
     pub floats: FloatSet,
     pub strs: StrSet,
+    /// Nominal opaque-type tags. A value of opaque type `T` (declared as
+    /// `@type T :: opaque U`) has `opaques = {"T"}` AND the underlying `U`
+    /// axes populated. Opaque types are nominal: `T ⊄ U` even when the
+    /// underlying type of `T` is `U`, because the opaques axis is non-empty
+    /// and distinct from the plain-`U` descriptor (which has `opaques = ∅`).
+    pub opaques: LiteralSet<String>,
     /// DNF over tuple shapes. Empty Vec = no tuples ("false"); a single
     /// `Conj::top()` clause = every tuple ("true").
     pub tuples: Vec<Conj<TupleSig>>,
@@ -304,6 +310,7 @@ impl Descr {
             ints: IntSet::any(),
             floats: FloatSet::any(),
             strs: StrSet::any(),
+            opaques: LiteralSet::any(),
             tuples: vec![Conj::top()],
             lists: vec![Conj::top()],
             funcs: vec![Conj::top()],
@@ -318,11 +325,24 @@ impl Descr {
             ints: IntSet::none(),
             floats: FloatSet::none(),
             strs: StrSet::none(),
+            opaques: LiteralSet::none(),
             tuples: Vec::new(),
             lists: Vec::new(),
             funcs: Vec::new(),
             maps: Vec::new(),
         }
+    }
+
+    /// Create a nominal opaque type named `name`. The result is purely nominal:
+    /// no structural axes are populated, so `opaque("pid") ⊄ integer` and
+    /// `integer ⊄ opaque("pid")` — they are disjoint in the type lattice.
+    ///
+    /// At codegen, the wire type is determined separately from the declaration
+    /// site (see `ExternDecl.ret_descr`), not from this Descr.
+    pub fn opaque_of(name: impl Into<String>) -> Self {
+        let mut d = Self::none();
+        d.opaques = LiteralSet::lit(name.into());
+        d
     }
 
     // ---- basic types ----
@@ -520,6 +540,7 @@ impl Descr {
             && self.ints.is_none()
             && self.floats.is_none()
             && self.strs.is_none()
+            && self.opaques.is_none()
             && self.tuples.is_empty()
             && self.lists.is_empty()
             && self.funcs.is_empty()
@@ -557,6 +578,7 @@ impl Descr {
             && self.ints.is_any()
             && self.floats.is_any()
             && self.strs.is_any()
+            && self.opaques.is_any()
             && is_dnf_top(&self.tuples)
             && is_dnf_top(&self.lists)
             && is_dnf_top(&self.funcs)
@@ -595,6 +617,7 @@ impl Descr {
             ints: self.ints.union(&other.ints),
             floats: self.floats.union(&other.floats),
             strs: self.strs.union(&other.strs),
+            opaques: self.opaques.union(&other.opaques),
             tuples,
             lists,
             funcs,
@@ -609,6 +632,7 @@ impl Descr {
             ints: self.ints.intersect(&other.ints),
             floats: self.floats.intersect(&other.floats),
             strs: self.strs.intersect(&other.strs),
+            opaques: self.opaques.intersect(&other.opaques),
             tuples: dnf_intersect(&self.tuples, &other.tuples),
             lists: dnf_intersect(&self.lists, &other.lists),
             funcs: dnf_intersect(&self.funcs, &other.funcs),
@@ -623,6 +647,7 @@ impl Descr {
             ints: self.ints.neg(),
             floats: self.floats.neg(),
             strs: self.strs.neg(),
+            opaques: self.opaques.neg(),
             tuples: dnf_neg(&self.tuples),
             lists: dnf_neg(&self.lists),
             funcs: dnf_neg(&self.funcs),
@@ -672,6 +697,7 @@ impl Descr {
             && self.ints.is_none()
             && self.floats.is_none()
             && self.strs.is_none()
+            && self.opaques.is_none()
             && self.tuples.iter().all(|c| tuple_clause_empty(c, memo))
             && self.lists.iter().all(|c| list_clause_empty(c, memo))
             && self.funcs.iter().all(|c| func_clause_empty(c, memo))
@@ -1317,6 +1343,7 @@ impl fmt::Display for Descr {
         });
         format_lit_set(&mut parts, &self.strs, "str", |s| format!("{:?}", s));
         format_lit_set(&mut parts, &self.atoms, "atom", |a| format!(":{}", a));
+        format_lit_set(&mut parts, &self.opaques, "opaque", |n| n.clone());
 
         for c in &self.tuples {
             parts.push(format_tuple_clause(c));
@@ -1363,6 +1390,7 @@ impl Descr {
         });
         format_lit_set_capped(&mut parts, &self.strs, "str", CAP, |s| format!("{:?}", s));
         format_lit_set_capped(&mut parts, &self.atoms, "atom", CAP, |a| format!(":{}", a));
+        format_lit_set_capped(&mut parts, &self.opaques, "opaque", CAP, |n| n.clone());
 
         for c in &self.tuples {
             parts.push(format_tuple_clause(c));
@@ -2377,5 +2405,54 @@ mod tests {
             Descr::int(),
             "widen should drop int literals to int"
         );
+    }
+
+    // ---- opaque type tests ----
+
+    #[test]
+    fn opaque_renders_name() {
+        let pid = Descr::opaque_of("pid");
+        assert_eq!(pid.to_string(), "pid");
+    }
+
+    #[test]
+    fn opaque_is_not_subtype_of_underlying() {
+        let pid = Descr::opaque_of("pid");
+        let int = Descr::int();
+        assert!(
+            !pid.is_subtype(&int),
+            "pid should NOT be a subtype of integer"
+        );
+    }
+
+    #[test]
+    fn underlying_is_not_subtype_of_opaque() {
+        let pid = Descr::opaque_of("pid");
+        let int = Descr::int();
+        assert!(
+            !int.is_subtype(&pid),
+            "integer should NOT be a subtype of pid"
+        );
+    }
+
+    #[test]
+    fn opaque_is_subtype_of_itself() {
+        let pid = Descr::opaque_of("pid");
+        assert!(pid.is_subtype(&pid), "pid should be a subtype of itself");
+    }
+
+    #[test]
+    fn two_distinct_opaques_do_not_overlap() {
+        let pid = Descr::opaque_of("pid");
+        let ts = Descr::opaque_of("timestamp");
+        let i = pid.intersect(&ts);
+        assert!(i.is_empty(), "pid ∩ timestamp should be empty: got {}", i);
+    }
+
+    #[test]
+    fn opaque_union_with_any_becomes_any() {
+        let pid = Descr::opaque_of("pid");
+        let u = pid.union(&Descr::any());
+        assert!(u.looks_full(), "pid | any should be any: got {}", u);
     }
 }

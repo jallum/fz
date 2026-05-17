@@ -1,93 +1,155 @@
-; spec first_relay(0) #fn=0
-;   key:    []
-;   return: int | float
-;   vars:
-;     Var(0) :: :match_error
-;     Var(1) :: 3
-;   exits:
-;     blk0 Receive cont k_receive_3#3 captured=[Var(1)]
-;              cont_key=[any, 3]
-;     blk1 Halt Var(0)      :: :match_error
-
-; spec second_relay(0) #fn=1
-;   key:    []
-;   return: int | float
-;   vars:
-;     Var(0) :: :match_error
-;     Var(1) :: 1
-;   exits:
-;     blk0 Receive cont k_receive_4#4 captured=[Var(1)]
-;              cont_key=[any, 1]
-;     blk1 Halt Var(0)      :: :match_error
-
-; spec main(0) #fn=2
-;   key:    []
-;   return: nil
-;   fn_constants:
-;     Var(1) = first_relay#0
-;     Var(4) = second_relay#1
-;   vars:
-;     Var(0) :: :match_error
-;     Var(1) :: &fn0[]:() -> any
-;     Var(2) :: &fn5[&fn0[]:() -> any]:() -> any
-;     Var(3) :: int
-;     Var(4) :: &fn1[]:() -> any
-;     Var(5) :: &fn5[&fn1[]:() -> any]:() -> any
-;     Var(6) :: int
-;     Var(7) :: 2
-;     Var(8) :: 40
-;     Var(9) :: 40
-;   exits:
-;     blk0 Receive cont k_receive_6#6 captured=[]
-;              cont_key=[any]
-;     blk1 Halt Var(0)      :: :match_error
-
-; spec k_receive_3(2) #fn=3
-;   key:    [any, 3]
-;   return: int | float
-;   vars:
-;     Var(0) :: any
-;     Var(1) :: 3
-;     Var(2) :: 1
-;     Var(3) :: int | float
-;     Var(4) :: int | float
-;   exits:
-;     blk0 Return Var(4)    :: int | float
-
-; spec k_receive_4(2) #fn=4
-;   key:    [any, 1]
-;   return: int | float
-;   vars:
-;     Var(0) :: any
-;     Var(1) :: 1
-;     Var(2) :: 1
-;     Var(3) :: int | float
-;     Var(4) :: int | float
-;   exits:
-;     blk0 Return Var(4)    :: int | float
-
-; spec fz_spawn_thunk(1) #fn=5
-;   key:    [&fn0[]:() -> any]
-;   return: int | float
-;   vars:
-;     Var(0) :: &fn0[]:() -> any
-;   exits:
-;     blk0 TailCallClosure Var(0)()
-
-; spec fz_spawn_thunk(1) #fn=5
-;   key:    [&fn1[]:() -> any]
-;   return: int | float
-;   vars:
-;     Var(0) :: &fn1[]:() -> any
-;   exits:
-;     blk0 TailCallClosure Var(0)()
-
-; spec k_receive_6(1) #fn=6
+; spec print(1) #fn=0
 ;   key:    [any]
 ;   return: nil
 ;   vars:
 ;     Var(0) :: any
-;     Var(1) :: nil
+;     Var(1) :: :function_clause
+;     Var(2) :: bool
+;     Var(3) :: nil
+;     Var(4) :: nil
 ;   exits:
-;     blk0 Return Var(1)    :: nil
+;     blk0 Goto blk1()
+;     blk1 If Var(2) ? blk4 : blk2
+;     blk2 Return Var(4)    :: nil
+;     blk3 Halt Var(1)      :: :function_clause
+;     blk4 Return Var(3)    :: nil
+
+; spec send(2) #fn=6
+;   key:    [1, int | float]
+;   return: any
+;   vars:
+;     Var(0) :: 1
+;     Var(1) :: int | float
+;     Var(2) :: :match_error
+;     Var(3) :: any
+;   exits:
+;     blk0 Return Var(3)    :: any
+;     blk1 Halt Var(2)      :: :match_error
+
+; spec send(2) #fn=6
+;   key:    [2, 40]
+;   return: any
+;   vars:
+;     Var(0) :: 2
+;     Var(1) :: 40
+;     Var(2) :: :match_error
+;     Var(3) :: any
+;   exits:
+;     blk0 Return Var(3)    :: any
+;     blk1 Halt Var(2)      :: :match_error
+
+; spec send(2) #fn=6
+;   key:    [3, int | float]
+;   return: any
+;   vars:
+;     Var(0) :: 3
+;     Var(1) :: int | float
+;     Var(2) :: :match_error
+;     Var(3) :: any
+;   exits:
+;     blk0 Return Var(3)    :: any
+;     blk1 Halt Var(2)      :: :match_error
+
+; spec first_relay(0) #fn=7
+;   key:    []
+;   return: any
+;   vars:
+;     Var(0) :: :match_error
+;     Var(1) :: 3
+;   exits:
+;     blk0 Receive cont k_receive_10#10 captured=[Var(1)]
+;              cont_key=[any, 3]
+;     blk1 Halt Var(0)      :: :match_error
+
+; spec second_relay(0) #fn=8
+;   key:    []
+;   return: any
+;   vars:
+;     Var(0) :: :match_error
+;     Var(1) :: 1
+;   exits:
+;     blk0 Receive cont k_receive_11#11 captured=[Var(1)]
+;              cont_key=[any, 1]
+;     blk1 Halt Var(0)      :: :match_error
+
+; spec main(0) #fn=9
+;   key:    []
+;   return: nil
+;   fn_constants:
+;     Var(1) = first_relay#7
+;     Var(4) = second_relay#8
+;   vars:
+;     Var(0) :: :match_error
+;     Var(1) :: &fn7[]:() -> any
+;     Var(2) :: &fn12[&fn7[]:() -> any]:() -> any
+;     Var(3) :: any
+;     Var(4) :: &fn8[]:() -> any
+;     Var(5) :: &fn12[&fn8[]:() -> any]:() -> any
+;     Var(6) :: any
+;     Var(7) :: 2
+;     Var(8) :: 40
+;   exits:
+;     blk0 Call send#6(Var(7), Var(8))
+;              callee_key=[2, 40]
+;              cont k_13#13 captured=[]
+;              cont_key=[any]
+;     blk1 Halt Var(0)      :: :match_error
+
+; spec k_receive_10(2) #fn=10
+;   key:    [any, 3]
+;   return: any
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: 3
+;     Var(2) :: 1
+;     Var(3) :: int | float
+;   exits:
+;     blk0 TailCall send#6(Var(1), Var(3))
+;              callee_key=[3, int | float]
+
+; spec k_receive_11(2) #fn=11
+;   key:    [any, 1]
+;   return: any
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: 1
+;     Var(2) :: 1
+;     Var(3) :: int | float
+;   exits:
+;     blk0 TailCall send#6(Var(1), Var(3))
+;              callee_key=[1, int | float]
+
+; spec fz_spawn_thunk(1) #fn=12
+;   key:    [&fn7[]:() -> any]
+;   return: any
+;   vars:
+;     Var(0) :: &fn7[]:() -> any
+;   exits:
+;     blk0 TailCallClosure Var(0)()
+
+; spec fz_spawn_thunk(1) #fn=12
+;   key:    [&fn8[]:() -> any]
+;   return: any
+;   vars:
+;     Var(0) :: &fn8[]:() -> any
+;   exits:
+;     blk0 TailCallClosure Var(0)()
+
+; spec k_13(1) #fn=13
+;   key:    [any]
+;   return: nil
+;   vars:
+;     Var(0) :: any
+;   exits:
+;     blk0 Receive cont k_receive_14#14 captured=[]
+;              cont_key=[any]
+
+; spec k_receive_14(1) #fn=14
+;   key:    [any]
+;   return: nil
+;   vars:
+;     Var(0) :: any
+;   exits:
+;     blk0 TailCall print#0(Var(0))
+;              callee_key=[any]
 
