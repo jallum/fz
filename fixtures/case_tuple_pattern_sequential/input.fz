@@ -1,0 +1,19 @@
+fn f(v) do
+  case v do
+    {:ok, x} -> x
+    :err -> 0
+  end
+end
+
+fn g(v) do
+  with {:ok, x} <- v do x else :err -> 0 end
+end
+
+fn main() do
+  print(f({:ok, 7}))
+  print(f(:err))
+  print(f(:err))
+  print(f({:ok, 7}))
+  print(g({:ok, 7}))
+  print(g(:err))
+end
