@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-17T14:59:20Z",
+  "description": "What: fz-q9g.6 (D1: case-arm join into shared dst) was scoped against the pre-pattern-matrix case lowering. Main's PR #14 replaces bespoke case lowering with a unified pattern matrix compiler (src/pattern_matrix.rs +897, src/ir_lower.rs +1129). The notion of 'N case arms reach one join continuation, each allocating their own tuple' may have been restructured by the matrix compiler into a decision tree of If/Let with specialized leaves.\n\nThis ticket is investigation-only. Output: a written note attached here that either:\n  (a) confirms the join-cont shape survives in the new lowering — fz-q9g.6 proceeds as written; or\n  (b) describes the new shape and rewrites fz-q9g.6's plan (target node, fixture, success criterion) accordingly.\n\nApproach:\n1. Lower fixtures/case_tuple_pattern_sequential and fixtures/wildcard_then_specific to IR after rebase.\n2. Inspect: do multiple arms still call a shared cont with HeapKind-typed result, or has the matrix compiler specialized arms with no shared cont?\n3. Locate the alloc_struct / alloc_tuple call(s) per arm in the post-matrix CLIF.\n4. Decide whether 'share one caller-allocated dst across arms' is still a valid rewrite.\n\nWhy: 'No hidden surprises. All investigation required must be done up-front.' fz-q9g.6 cannot start until this lands.\n\nRemoves: nothing (pure investigation).\n\nTests: investigation note; no code changes.",
+  "id": "fz-q9g.25",
+  "labels": [],
+  "parent": "fz-q9g",
+  "priority": 1,
+  "status": "open",
+  "title": "fz-dps.D1.0: re-investigate case-arm join under pattern matrix",
+  "type": "task",
+  "updated_at": "2026-05-17T14:59:20Z"
+}
