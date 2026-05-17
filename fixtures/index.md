@@ -10,6 +10,7 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `alias/` | nested-module path aliasing — `alias Long.Path` and `alias Long.Path, as: LP` | jit, interp, repl |
 | `apply2/` | first-class fns — pass a fn into another fn and call it | jit, interp, repl |
 | `ast_eval/` | tagged-tuple AST evaluator — first fixture to exercise multi-clause tuple-pattern dispatch end-to-end | jit, interp, aot, repl |
+| `ast_eval_env/` | AST evaluator extended with variables and `let` — tagged-tuple dispatch + cons-list environment + recursive lookup + binding shadow | jit, interp, aot, repl |
 | `attributes/` | @moduledoc / @doc attributes parse and the module still executes | jit, interp, repl |
 | `case_tuple_pattern_sequential/` | sequential calls returning tuple-pattern results (fz-i82 regression) | interp, jit, aot |
 | `classify_two_clause/` | literal-vs-wildcard clause dispatch (`0` and `_`) | jit, interp, repl |

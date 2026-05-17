@@ -1,0 +1,33 @@
+fn lookup(name, [{n, v} | rest]) do
+  if name == n do v else lookup(name, rest) end
+end
+
+fn eval({:num, n}, _env), do: n
+fn eval({:var, name}, env), do: lookup(name, env)
+fn eval({:add, a, b}, env), do: eval(a, env) + eval(b, env)
+fn eval({:mul, a, b}, env), do: eval(a, env) * eval(b, env)
+fn eval({:let, name, expr, body}, env) do
+  v = eval(expr, env)
+  eval(body, [{name, v} | env])
+end
+
+fn main() do
+  empty = []
+
+  # let x = 5 in let y = 10 in x + y    => 15
+  e1 = {:let, :x, {:num, 5},
+        {:let, :y, {:num, 10},
+         {:add, {:var, :x}, {:var, :y}}}}
+  print(eval(e1, empty))
+
+  # let x = 3 in x * (x + 4)            => 21
+  e2 = {:let, :x, {:num, 3},
+        {:mul, {:var, :x}, {:add, {:var, :x}, {:num, 4}}}}
+  print(eval(e2, empty))
+
+  # let x = 1 in let x = 2 in x         => 2  (inner binding shadows outer)
+  e3 = {:let, :x, {:num, 1},
+        {:let, :x, {:num, 2},
+         {:var, :x}}}
+  print(eval(e3, empty))
+end
