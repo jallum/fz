@@ -1,7 +1,6 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-ag9",
     "fz-q9g.4"
   ],
   "blocks": [
@@ -16,5 +15,5 @@
   "status": "open",
   "title": "fz-dps.D2: DPS for MakeVec(VecI64, ...)",
   "type": "task",
-  "updated_at": "2026-05-17T16:39:56Z"
+  "updated_at": "2026-05-17T16:40:03Z"
 }
