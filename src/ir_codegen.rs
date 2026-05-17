@@ -3494,6 +3494,7 @@ struct CodegenEnv<'a> {
 /// - `if_only_conds`: var IDs used exclusively as Term::If conditions; their
 ///   boolean prims emit ArgRepr::Condition (raw i1) instead of bool_to_fz, so
 ///   the tagged form is never materialised and brif consumes the i1 directly.
+#[derive(Default)]
 struct CodegenCache {
     /// Cranelift values for small integer/atom constants, keyed by (block, value)
     /// so entries from sibling blocks are never reused (fz-bwp).
@@ -3509,18 +3510,6 @@ struct CodegenCache {
     /// bool_to_fz (stored as ArgRepr::Condition, materialised only if tagged_get
     /// is called) (fz-h4q).
     if_only_conds: std::collections::HashSet<u32>,
-}
-
-impl Default for CodegenCache {
-    fn default() -> Self {
-        Self {
-            const_cache: HashMap::new(),
-            raw_int_consts: HashMap::new(),
-            extern_funcs: HashMap::new(),
-            used_vars: std::collections::HashSet::new(),
-            if_only_conds: std::collections::HashSet::new(),
-        }
-    }
 }
 
 #[derive(Clone, Copy)]

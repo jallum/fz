@@ -987,12 +987,11 @@ mod tests {
             .iter()
             .find(|b| b.id == caller_mut.entry)
             .unwrap();
-        match &entry.terminator {
-            Term::Goto(_, args) => assert!(
+        if let Term::Goto(_, args) = &entry.terminator {
+            assert!(
                 args.is_empty(),
                 "absorb_callee must not leave a parameterized Goto; got args={args:?}"
-            ),
-            _ => {} // Return, TailCall, etc — all fine
+            );
         }
 
         // The entry block must have no params (callee entry params were consumed).
