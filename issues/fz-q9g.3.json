@@ -1,5 +1,5 @@
 {
-  "assignee": "Jason Allum",
+  "assignee": "",
   "blocked_by": [
     "fz-q9g.2",
     "fz-q9g.24"
@@ -15,8 +15,8 @@
   "labels": [],
   "parent": "fz-q9g",
   "priority": 1,
-  "status": "in_progress",
+  "status": "open",
   "title": "fz-dps.C2: lower Term::Return under Dst ABI",
   "type": "task",
-  "updated_at": "2026-05-17T15:53:56Z"
+  "updated_at": "2026-05-17T16:03:04Z"
 }
