@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-17T16:04:29Z",
+  "description": "## Policy change\n\nToday (ir_typer.rs:238–242): *\"the any-key only exists when the fn is\nclosure-reachable, entry-seeded, or genuinely needs the opaque-dispatch\nfallback. Direct-call-only fns have no any-key.\"*\n\nFlip the policy: **every reachable FnId gets an any-key spec.** Symmetric for\nreachable conts: every cont fn gets an any-key entry in the same registry\n(slot 0 = `Descr::any()`, captures = `Descr::any()`).\n\nThis is the floor. Narrowed specs continue to land above it as pure\noptimization.\n\n## Implementation sketch\n\nIn `type_module`, after the existing reachability-driven spec generation, walk\n`module.fns` and:\n- for each `f` with at least one registered spec (i.e. reachable), if the\n  any-key (`vec![Descr::any(); arity]`) is not present, type `f` once more\n  with that key and register.\n- same for conts (`module.fns` includes conts; check by `kind` or by\n  `is_cont_fn`).\n\n`any_key_specs` index becomes total over reachable FnIds — currently partial.\n\n## Tests\n\n- Spec-table golden test: every reachable FnId in a fixture has an any-key entry.\n- Unit test: a fn called only with `int` still gets an any-key spec registered.\n- Existing `expected.specs` goldens get blessed with the new any-key entries.\n- Spec count must not regress wildly: assert `n_specs_after \u003c= 1.5 * n_specs_before` on `ast_eval` and `list_primitives` fixtures (sanity).\n\n## Independent of (1) and (2). Blocks (4).",
+  "id": "fz-aiz.3",
+  "labels": [],
+  "parent": "fz-aiz",
+  "priority": 1,
+  "status": "open",
+  "title": "fz-aiz.3: mandatory any-key spec for every reachable FnId + Cont",
+  "type": "task",
+  "updated_at": "2026-05-17T16:04:29Z"
+}
