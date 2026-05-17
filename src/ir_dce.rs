@@ -131,16 +131,38 @@ fn reachable_from_entry(f: &FnIr) -> HashSet<BlockId> {
     seen
 }
 
-pub fn collect_used(f: &FnIr) -> HashSet<Var> {
-    let mut used = HashSet::new();
+/// Returns `(if_only_conds, all_used)` in a single pass.
+///
+/// `if_only_conds`: vars used exclusively as Term::If conditions — no prim
+/// arg, no other terminator use. Boolean-producing prims whose dest is in
+/// this set can skip emitting a tagged form entirely (fz-cg2.3).
+///
+/// `all_used`: every var referenced in any prim arg or terminator arg;
+/// equivalent to the previous `collect_used` return value.
+pub fn classify_var_uses(f: &FnIr) -> (HashSet<Var>, HashSet<Var>) {
+    let mut if_conds: HashSet<Var> = HashSet::new();
+    let mut other_uses: HashSet<Var> = HashSet::new();
     for block in &f.blocks {
         for stmt in &block.stmts {
             let Stmt::Let(_, prim) = stmt;
-            collect_prim_vars(prim, &mut used);
+            collect_prim_vars(prim, &mut other_uses);
         }
-        collect_term_vars(&block.terminator, &mut used);
+        match &block.terminator {
+            Term::If(c, _, _) => {
+                if_conds.insert(*c);
+            }
+            t => collect_term_vars(t, &mut other_uses),
+        }
     }
-    used
+    let mut all_used = other_uses.clone();
+    all_used.extend(if_conds.iter().cloned());
+    let if_only_conds: HashSet<Var> =
+        if_conds.into_iter().filter(|v| !other_uses.contains(v)).collect();
+    (if_only_conds, all_used)
+}
+
+pub fn collect_used(f: &FnIr) -> HashSet<Var> {
+    classify_var_uses(f).1
 }
 
 fn collect_prim_vars(p: &Prim, used: &mut HashSet<Var>) {
@@ -680,5 +702,67 @@ mod tests {
         );
         assert_eq!(m.fns[0].blocks[0].id, entry);
         assert!(matches!(m.fns[0].blocks[0].terminator, Term::Return(_)));
+    }
+
+    /// fz-jv2 — classify_var_uses correctness.
+    ///
+    /// Builds a function with:
+    ///   block0: let c = TypeTest(x); Term::If(c, b_t, b_f)
+    ///   block0 has no other use of c → c ∈ if_only_conds
+    ///
+    /// And a second function where c also appears in a prim arg:
+    ///   block0: let c = TypeTest(x); let _ = BinOp(And, c, c); Term::If(c, b_t, b_f)
+    ///   c ∈ all_used but c ∉ if_only_conds (dual-use)
+    #[test]
+    fn classify_var_uses_separates_pure_branch_from_dual_use() {
+        // --- pure-branch case ---
+        let mut bm = FnBuilder::new(FnId(0), "pure");
+        let x = bm.fresh_var();
+        let entry = bm.block(vec![x]);
+        let c = bm.let_(entry, Prim::TypeTest(x, Box::new(crate::types::Descr::int())));
+        let t_blk = bm.block(vec![]);
+        let f_blk = bm.block(vec![]);
+        bm.set_terminator(entry, Term::If(c, t_blk, f_blk));
+        let nil = bm.let_(t_blk, Prim::Const(Const::Nil));
+        bm.set_terminator(t_blk, Term::Return(nil));
+        let nil2 = bm.let_(f_blk, Prim::Const(Const::Nil));
+        bm.set_terminator(f_blk, Term::Return(nil2));
+        let pure_fn = bm.build();
+
+        let (if_only, all_used) = classify_var_uses(&pure_fn);
+        assert!(
+            if_only.contains(&c),
+            "pure-branch condition should be in if_only_conds"
+        );
+        assert!(
+            all_used.contains(&c),
+            "pure-branch condition should still be in all_used"
+        );
+        assert!(
+            all_used.contains(&x),
+            "TypeTest operand x should be in all_used"
+        );
+
+        // --- dual-use case ---
+        let mut bm2 = FnBuilder::new(FnId(1), "dual");
+        let x2 = bm2.fresh_var();
+        let e2 = bm2.block(vec![x2]);
+        let c2 = bm2.let_(e2, Prim::TypeTest(x2, Box::new(crate::types::Descr::int())));
+        // c2 used as prim arg → dual-use
+        let _ = bm2.let_(e2, Prim::BinOp(BinOp::And, c2, c2));
+        let t2 = bm2.block(vec![]);
+        let f2 = bm2.block(vec![]);
+        bm2.set_terminator(e2, Term::If(c2, t2, f2));
+        let n2 = bm2.let_(t2, Prim::Const(Const::Nil));
+        bm2.set_terminator(t2, Term::Return(n2));
+        let n3 = bm2.let_(f2, Prim::Const(Const::Nil));
+        bm2.set_terminator(f2, Term::Return(n3));
+        let dual_fn = bm2.build();
+
+        let (if_only2, _) = classify_var_uses(&dual_fn);
+        assert!(
+            !if_only2.contains(&c2),
+            "dual-use condition must NOT be in if_only_conds"
+        );
     }
 }
