@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-17T10:21:29Z",
+  "description": "# Tighten the IR's safety contract\n\n## Why\n\n`Pattern::Tuple` lowering (fz-ben, src/ir_lower.rs:1949) emits a\nTypeTest before any `Prim::TupleField` projection. The TypeTest is\ncorrect (fz-ul4.36 made it actually check tuple shape at runtime).\nThe projection's emitted load is therefore guaranteed safe — but\nthe codegen still emits `notrap aligned`, declaring \"this load\ncan't trap, don't generate trap metadata.\"\n\nfz-ben's comment explicitly leaves this as a follow-up:\n\"could be tightened to `trap` later as a separate cleanup, but\nnot in scope here.\"\n\nNow is later. The downstream chain (fz-ul4.36 schema-id TypeTest)\nis in place; `notrap` was historically a safety net for the pre-\nfz-ben unguarded projection, which no longer exists.\n\n## What changes\n\nTighten `MemFlags::trusted()` (which is aligned + notrap) to\n`MemFlags::new().with_aligned()` (aligned + trap) on:\n\n- The `load` in `Prim::TupleField` codegen\n  (src/ir_codegen.rs:5505-5509).\n- Any other load emitted for a TypeTest-gated projection.\n\nHonest behavior: if the IR ever emits a bad TupleField (it\nshouldn't post-fz-ben), the program SIGSEGVs at the bad load\ninstead of reading heap garbage and continuing with corrupt\nvalues.\n\n## What stays\n\n- Every other `MemFlags::trusted()` site (closures, headers,\n  bitstrings, etc.). Each was verified safe by its own ticket;\n  this ticket only touches tuple-field loads.\n- `aligned` — the loads ARE aligned by construction.\n\n## What's removed\n\n- The implicit \"silently corrupt on bad pattern\" failure mode\n  for tuple field projection.\n- A textually stale flag.\n- The fz-ben TODO note.\n\n## Atomic steps\n\n1. Identify every `load` emitted for Pattern::Tuple's\n   TupleField projection (one site today; verify).\n2. Change `MemFlags` accordingly.\n3. Re-bless every fixture golden CLIF — one `notrap aligned` →\n   `trap aligned` flag flip per tuple-field load. Most\n   fixtures will have zero changes (no tuple patterns).\n   ast_eval will have one flag change per field projection.\n4. Update fz-ben's now-obsolete comment.\n\n## Acceptance\n\n- All fixture matrix trials pass.\n- ast_eval and any other tuple-pattern fixture's CLIF flips\n  `notrap aligned` → `trap aligned` on the relevant loads.\n- No runtime behavior change for correct programs.\n\n## Sequence\n\nLand **last** in this arc (after fz-ul4.40/.41/.42/.43) so the\ngolden re-bless happens once on a stable spec/dispatch shape,\nnot against intermediate states.\n\n## Risk\n\n`notrap` may serve as a Cranelift speculation hint; switching to\n`trap` may marginally restrict instruction reordering. Negligible\nfor our workload; verify no perf regression on the bitstring\nmicrobench if we have one.",
+  "id": "fz-ul4.44",
+  "labels": [],
+  "parent": "fz-ul4",
+  "priority": 2,
+  "status": "open",
+  "title": "codegen: notrap → trap on TypeTest-gated tuple field loads",
+  "type": "task",
+  "updated_at": "2026-05-17T10:21:29Z"
+}
