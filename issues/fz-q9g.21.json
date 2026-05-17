@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-q9g.20"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-q9g.22"
+  ],
   "created": "2026-05-17T04:47:37Z",
   "description": "GATED ON G0. Implementation of uniqueness inference based on spike outcome.\n\nWhat: Production pass that marks each binding Unique | Shared | Unknown, riding on the Descr graph.\n\nCLIF impact: no direct change; consumed by G2+.\n\nTests: golden uniqueness annotations on a corpus of fixtures.",
   "id": "fz-q9g.21",
