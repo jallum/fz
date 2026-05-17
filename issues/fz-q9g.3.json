@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-q9g.2",
     "fz-q9g.24"
@@ -15,8 +15,8 @@
   "labels": [],
   "parent": "fz-q9g",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "fz-dps.CD: wire ABI (Return/Call/TailCall) + MakeList DPS via TRMC",
   "type": "task",
-  "updated_at": "2026-05-17T16:26:31Z"
+  "updated_at": "2026-05-17T16:27:39Z"
 }
