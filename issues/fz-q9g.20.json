@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-q9g.21"
+  ],
   "created": "2026-05-17T04:47:37Z",
   "description": "What: Prototype uniqueness inference on a small program. Joint with existing Descr inference in ir_typer. Report yes/no + cost model + integration sketch.\n\nWhy: FBIP-style reuse is the headline payoff of having RC at all. Spike before committing.\n\nCLIF impact: spike only — no production code.\n\nOutcome: a written report attached to this ticket. Decides whether G1+ proceed.\n\nTests: prototype demonstrates uniqueness inference on at least one non-trivial fixture (vec rebuild + list rebuild).",
   "id": "fz-q9g.20",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "fz-dps.G0: SPIKE — uniqueness lattice on Descr graph",
   "type": "task",
-  "updated_at": "2026-05-17T04:47:37Z"
+  "updated_at": "2026-05-17T04:47:58Z"
 }
