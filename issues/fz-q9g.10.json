@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-q9g.8"
+  ],
   "blocks": [],
   "created": "2026-05-17T04:46:53Z",
   "description": "What: MakeTuple([v1, v2]) writes into a caller-allocated tuple-of-arity-2 struct.\n\nCLIF impact: strict reduction per MakeTuple callsite that is destinationized.\n\nRemoves: per-call tuple alloc when destinationized.\n\nTests: golden CLIF on a small tuple-returning fn.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "fz-dps.F3: DPS for MakeTuple of known arity",
   "type": "task",
-  "updated_at": "2026-05-17T04:46:53Z"
+  "updated_at": "2026-05-17T04:47:55Z"
 }
