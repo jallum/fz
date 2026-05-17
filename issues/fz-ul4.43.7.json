@@ -7,7 +7,7 @@
     "fz-ul4.43.9"
   ],
   "created": "2026-05-17T12:07:59Z",
-  "description": "# .43.F — wire lower_case onto matrix (same shape as .43.D, simpler callback)\n\n## What changes\n\n`lower_case` (src/ir_lower.rs ~2252):\n- Same try_matrix_dispatch gate as .D\n- Callback is SIMPLER than D's: case body is ALWAYS cont-fn-wrapped\n  (no inline-body fast path), so no body_might_cps_split check\n- Cascade fallback preserved for ineligible cases\n\n## What stays\n\n- Subject lowering + parking (today)\n- join_opt (cont fn for non-tail) — handled by callback\n- Per-clause cont_fn (mint at leaf, after env rebind)\n- All semantics\n\n## What's removed\n\n- Per-clause try_blocks cascade for ELIGIBLE case-expressions\n- Cross-clause duplicate dispatch tests\n\n## Acceptance\n\n- case_tuple_pattern_sequential's golden: byte-identical OR strictly\n  smaller (depending on whether its clauses share constructors)\n- All other case-using fixtures: golden byte-identical\n- Three-path parity\n- Existing lower_case_uses_per_clause_cont_fns test passes unchanged\n\n## Risk\n\ncase currently errors on guards (line 2315). v1 keeps that — guard\nclauses fall back to cascade. Future ticket: matrix-handle case guards.",
+  "description": "# .43.F — lower_case body REPLACED by matrix dispatch (mechanical)\n\n## What changes\n\nlower_case (src/ir_lower.rs ~2252): same shape as .D.1, simpler.\n\n- case body is ALREADY always cont-fn-wrapped (no inline fast path\n  to worry about — .D.0 doesn't apply here)\n- Replace the per-clause try_blocks cascade with lower_pattern_matrix\n- Body callback wraps each leaf in mint_cont_fn (today's pattern)\n\n## What stays\n\n- Subject lowering + parking\n- join_opt for non-tail position\n- Per-clause cont_fn (minted inside body callback at each leaf)\n\n## What's removed\n\n- ~50 LOC of per-clause try_blocks cascade\n- One copy of the dispatch-by-cascade pattern (was three; .D.1 already\n  removed one)\n\n## Acceptance\n\n- case-using fixtures: meaningfully tighter OR equivalent\n- Three-path parity\n- Existing lower_case unit tests still pass (semantic invariants)\n\n## Risk\n\ncase currently errors on guards. v1 keeps that errors — matrix\nencounters a guarded row, the body callback errors with the same\n\\\"case guard (deferred)\\\" message. Future ticket: guard support.",
   "id": "fz-ul4.43.7",
   "labels": [],
   "parent": "fz-ul4.43",
@@ -15,5 +15,5 @@
   "status": "open",
   "title": "fz-ul4.43.F: wire lower_case onto matrix",
   "type": "task",
-  "updated_at": "2026-05-17T12:42:02Z"
+  "updated_at": "2026-05-17T12:58:45Z"
 }
