@@ -2,13 +2,14 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-05-17T01:16:33Z",
   "created": "2026-05-17T01:09:35Z",
   "description": "",
   "id": "fz-jv2",
   "labels": [],
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "fz-cg2.2: classify_var_uses in ir_dce — single-pass if_only_conds + all_used",
   "type": "task",
-  "updated_at": "2026-05-17T01:09:35Z"
+  "updated_at": "2026-05-17T01:16:33Z"
 }
