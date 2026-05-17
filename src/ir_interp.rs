@@ -646,13 +646,30 @@ fn eval_prim(module: &Module, prim: &Prim, env: &HashMap<Var, FzValue>) -> Resul
             if descr.basic.contains_all(BasicBits::BOOL) {
                 matched |= val.is_true() || val.is_false();
             }
+            // fz-ul4.36 — collect tuple arities, mirroring JIT codegen.
+            // pos TupleSig => match if value is HeapKind::Struct with
+            // size_bytes == arity * 8. neg clauses unsupported (assert).
+            let tuple_arities_to_check: Vec<usize> = descr
+                .tuples
+                .iter()
+                .flat_map(|conj| {
+                    assert!(
+                        conj.neg.is_empty(),
+                        "TypeTest: negated tuple clauses not yet supported"
+                    );
+                    conj.pos.iter().map(|sig| sig.elems.len())
+                })
+                .collect();
+
             let need_heap = !descr.floats.is_none()
                 || descr.basic.contains_all(BasicBits::VEC_I64)
                 || descr.basic.contains_all(BasicBits::VEC_F64)
                 || descr.basic.contains_all(BasicBits::VEC_U8)
-                || descr.basic.contains_all(BasicBits::VEC_BIT);
+                || descr.basic.contains_all(BasicBits::VEC_BIT)
+                || !tuple_arities_to_check.is_empty();
             if need_heap && let Some(ptr) = val.unbox_ptr() {
-                let hk = HeapKind::from_u16(unsafe { (*ptr).kind });
+                let header = unsafe { &*ptr };
+                let hk = HeapKind::from_u16(header.kind);
                 if !descr.floats.is_none() {
                     matched |= hk == Some(HeapKind::Float);
                 }
@@ -667,6 +684,19 @@ fn eval_prim(module: &Module, prim: &Prim, env: &HashMap<Var, FzValue>) -> Resul
                 }
                 if descr.basic.contains_all(BasicBits::VEC_BIT) {
                     matched |= hk == Some(HeapKind::VecBit);
+                }
+                if !tuple_arities_to_check.is_empty() && hk == Some(HeapKind::Struct) {
+                    // Compare schema_id — size_bytes alone isn't arity-unique
+                    // because alloc_struct aligns total size to 16 (arity 1
+                    // and arity 2 both yield 32 bytes; 3 and 4 both yield 48).
+                    let actual_schema = header.schema_id;
+                    for arity in &tuple_arities_to_check {
+                        let want_schema = interp_tuple_schema_id(*arity);
+                        if actual_schema == want_schema {
+                            matched = true;
+                            break;
+                        }
+                    }
                 }
             }
             if matched {

@@ -1768,6 +1768,17 @@ pub fn compile_with_backend<B: Backend>(
                     | Prim::BitReaderDone(_) => {
                         has_bs_prim = true;
                     }
+                    // fz-ul4.36 — also register schemas for arities that
+                    // appear in TypeTest tuple descriptors. The runtime
+                    // check compares schema_id; without pre-registration
+                    // we'd have no id to compare against.
+                    Prim::TypeTest(_, descr) => {
+                        for conj in &descr.tuples {
+                            for sig in &conj.pos {
+                                tuple_arities.insert(sig.elems.len());
+                            }
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -6349,12 +6360,33 @@ fn lower_prim<M: cranelift_module::Module>(
                 or_scalar!(e);
             }
 
+            // fz-ul4.36 — collect tuple-shape arities to runtime-check. The
+            // lowering at src/ir_lower.rs:1949 emits Descr::tuple_of([any; n])
+            // for Pattern::Tuple gates; multi-arity unions could appear via
+            // typer joins. For each pos TupleSig, check the value is a
+            // HeapKind::Struct with size_bytes == arity * SLOT_BYTES.
+            // Per-field narrowing inside TupleSig and neg clauses aren't
+            // emitted by today's lowering (assert below to fail loud if that
+            // changes).
+            let tuple_arities_to_check: Vec<usize> = descr
+                .tuples
+                .iter()
+                .flat_map(|conj| {
+                    assert!(
+                        conj.neg.is_empty(),
+                        "TypeTest: negated tuple clauses not yet supported"
+                    );
+                    conj.pos.iter().map(|sig| sig.elems.len())
+                })
+                .collect();
+
             // Heap-kind checks: guard with is_ptr to avoid loading from a non-pointer.
             let need_heap = !descr.floats.is_none()
                 || descr.basic.contains_all(BasicBits::VEC_I64)
                 || descr.basic.contains_all(BasicBits::VEC_F64)
                 || descr.basic.contains_all(BasicBits::VEC_U8)
-                || descr.basic.contains_all(BasicBits::VEC_BIT);
+                || descr.basic.contains_all(BasicBits::VEC_BIT)
+                || !tuple_arities_to_check.is_empty();
 
             let heap: Option<ir::Value> = if need_heap {
                 let is_ptr = b.ins().icmp_imm(IntCC::Equal, tag3, 0i64);
@@ -6400,6 +6432,28 @@ fn lower_prim<M: cranelift_module::Module>(
                     if descr.basic.contains_all(bit) {
                         let c = b.ins().icmp_imm(IntCC::Equal, kind64, hk as i64);
                         or_heap!(c);
+                    }
+                }
+                // fz-ul4.36 — tuple arity check via schema_id comparison.
+                // size_bytes isn't arity-unique (alloc_struct aligns to 16:
+                // arity 1 and 2 both → 32, arity 3 and 4 both → 48), so use
+                // the pre-registered Tuple{N} schema_id at HeapHeader offset 8.
+                if !tuple_arities_to_check.is_empty() {
+                    let is_struct = b
+                        .ins()
+                        .icmp_imm(IntCC::Equal, kind64, HeapKind::Struct as i64);
+                    let schema_raw = b.ins().load(types::I32, MemFlags::trusted(), val, 8);
+                    let schema64 = b.ins().uextend(types::I64, schema_raw);
+                    for arity in &tuple_arities_to_check {
+                        if let Some(&sid) = env.tuple_schema_ids.get(arity) {
+                            let want = b.ins().iconst(types::I64, sid as i64);
+                            let schema_match = b.ins().icmp(IntCC::Equal, schema64, want);
+                            let combined = b.ins().band(is_struct, schema_match);
+                            or_heap!(combined);
+                        }
+                        // No schema id pre-registered for this arity → no
+                        // such tuple can exist at runtime; correctly
+                        // contributes nothing to the matched flag.
                     }
                 }
                 let hr = hf.unwrap_or_else(|| b.ins().iconst(types::I8, 0));
