@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-17T01:09:35Z",
+  "description": "",
+  "id": "fz-o2g",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "fz-cg2.1: Const::Nil/Bool/Atom through cached_iconst — same constant, one wire",
+  "type": "task",
+  "updated_at": "2026-05-17T01:09:35Z"
+}
