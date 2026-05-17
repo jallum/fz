@@ -4,6 +4,7 @@
   "blocks": [
     "fz-ul4.43.2"
   ],
+  "closed_at": "2026-05-17T12:26:51Z",
   "created": "2026-05-17T12:06:32Z",
   "description": "# Tiny surgery; unblocks per-spec dead-arm elimination\n\n## The smell\n\n`ir_typer::narrow_for_cond` (~line 1390) refines envs across `If` branches\nfor `BinOp::And/Or/Eq/Neq` and `Prim::ListIsNil` — but NOT for\n`Prim::TypeTest`. After `If(TypeTest(v, D), then, else)`, v's descr in\nthen_env stays unchanged, so the existing `ir_fold` TypeTest folder never\nsees the singleton it would need to fold a redundant downstream test.\n\n## What changes\n\nAdd a `Prim::TypeTest(v, descr)` arm to `narrow_for_cond`:\n\n```rust\nPrim::TypeTest(v, descr) =\u003e {\n    let current = env.get(v).cloned().unwrap_or_else(Descr::any);\n    then_env.insert(*v, current.intersect(descr));\n    else_env.insert(*v, current.diff(descr));\n}\n```\n\n## What stays\n\nEverything else in narrow_for_cond. The And/Or/Eq/Neq/ListIsNil arms\nalready establish the pattern this follows.\n\n## What's removed\n\nNothing. Pure addition; correctness-only.\n\n## Acceptance\n\n- New unit test in ir_typer: build an FnIr with TypeTest+If; assert\n  then_env narrows v to D, else_env narrows v to current\\D.\n- All existing fixtures' goldens unchanged (no fold pass currently\n  consumes the narrowing for multi-spec fns; single-spec fns may\n  already benefit, monitor for byte-identical or strictly smaller).\n- All three execution paths still pass.\n\n## Risk\n\n`current.diff(\u0026D)` can produce `Descr::none()` when D fully covers\ncurrent. Verify no downstream pass crashes on a `none()` env entry\n(none() is the empty type and already exists, but worth tests).\n\n## Why it's first\n\nLowest LOC, lowest risk, no public API change. Strictly improves\ninformation available to all downstream passes. Compounds with .43.B.",
   "id": "fz-ul4.43.1",
@@ -16,8 +17,8 @@
     }
   ],
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "fz-ul4.43.A: narrow_for_cond handles Prim::TypeTest",
   "type": "task",
-  "updated_at": "2026-05-17T12:13:07Z"
+  "updated_at": "2026-05-17T12:26:51Z"
 }
