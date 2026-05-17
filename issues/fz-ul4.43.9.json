@@ -6,14 +6,15 @@
     "fz-ul4.43.8"
   ],
   "blocks": [],
+  "closed_at": "2026-05-17T14:18:14Z",
   "created": "2026-05-17T12:08:19Z",
   "description": "# .43.H — lower_pattern_bind becomes a 10-line wrapper\n\n## What changes\n\nTwo safe steps in one ticket:\n\n**Step 1 (no-op refactor)**: extract bitstring + map pattern lowering\nfrom lower_pattern_bind into reusable helpers:\n\n```rust\nfn lower_bitstring_pattern(ctx, subject, fields, fail_block) -\u003e Result;\nfn lower_map_pattern(ctx, subject, entries, fail_block) -\u003e Result;\n```\n\nThese contain today's BitReader-thread / MapGet logic verbatim. Verify\nfixtures byte-identical after this step (no-op refactor).\n\n**Step 2 (collapse)**: lower_pattern_bind body becomes:\n\n```rust\nfn lower_pattern_bind(ctx, subject, pat, fail_block) -\u003e Result {\n    let matrix = Matrix {\n        subjects: vec![subject],\n        rows: vec![Row {\n            patterns: vec![pat.clone()],\n            guard: None,\n            body_id: 0,\n        }],\n    };\n    lower_pattern_matrix(ctx, matrix, fail_block, |_, _, _| Ok(()))\n}\n```\n\nPerRow's lowering in lower_pattern_matrix calls\nlower_bitstring_pattern / lower_map_pattern directly for those shapes.\n\n## What stays\n\n- Function signature lower_pattern_bind(ctx, subject, pat, fail_block)\n- All call sites (multi-head match, with `\u003c-` binding, etc.)\n- All semantics\n\n## What's removed\n\n- ~200 LOC of lower_pattern_bind body\n- The standalone Pattern::Tuple Prim::TypeTest emission (line 1955) —\n  matrix's TupleArity Switch produces the equivalent shape, deduped\n  across clauses when applicable\n- next:BlockId threading inside pattern recursion (matrix knows)\n- Duplication between lower_pattern_bind's Pattern::Tuple branch and\n  the matrix's TupleArity handling\n\n## Acceptance\n\n- Single-pattern positions: tighter OR equivalent\n- Bitstring fixtures: byte-identical (Step 1's extraction is a no-op;\n  Step 2's PerRow → helper call produces same IR)\n- Map fixtures: byte-identical (same reason)\n- Three-path parity\n- Net LOC reduction in ir_lower.rs\n\n## Risk\n\nBitstring reader threading is the most fragile part (binding-visible-\nto-next-field semantics). Strategy: Step 1 first, verify NO golden\nchurn, then Step 2.\n\n## After .H\n\nir_lower.rs has ONE pattern entry point: lower_pattern_matrix.\nlower_pattern_bind is a 10-line wrapper. Three cascades are gone.\nTwo control-flow models for clause bodies are gone (D.0). Standalone\nPattern::Tuple TypeTest is gone.",
   "id": "fz-ul4.43.9",
   "labels": [],
   "parent": "fz-ul4.43",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "fz-ul4.43.H: lower_pattern_bind becomes 1-row matrix wrapper",
   "type": "task",
-  "updated_at": "2026-05-17T14:02:22Z"
+  "updated_at": "2026-05-17T14:18:14Z"
 }
