@@ -48,7 +48,8 @@ const TAG_INT: i64 = 0b000;
 const TAG_PTR: i64 = 0b001;
 const TAG_ATOM: i64 = 0b010;
 const PTR_UNTAG_MASK: i64 = !0b111; // -8; band before deref through a tagged ptr
-const NIL_BITS: i64 = (0 << 3) | TAG_ATOM;
+// Atom ids 0/1/2 reserved at AtomTable::default() for nil/true/false.
+const NIL_BITS: i64 = TAG_ATOM; // (0 << 3) | TAG_ATOM
 const TRUE_BITS: i64 = (1 << 3) | TAG_ATOM;
 const FALSE_BITS: i64 = (2 << 3) | TAG_ATOM;
 
