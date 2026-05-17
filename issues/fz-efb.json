@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-17T03:35:34Z",
+  "description": "Pure verification. Independent of any other ticket.\n\n## Motivation\n\nfz-duq.2's design rests on a claim: the inliner collapses per-arm\ncont fns back into the caller for branching constructs with leaf\narms, so post-inline CLIF matches the pre-fz-duq block-join shape.\nManual verification via `fz dump --emit clif` confirms this for\nsimple cases (verified during fz-duq design + post-merge), but\nthere's no test gate that catches a future inliner regression.\n\n## Add test\n\nIn `src/ir_inline.rs::tests` (or wherever inliner tests live):\n\n```rust\n#[test]\nfn branching_construct_with_leaf_arms_collapses_to_single_fn() {\n    use crate::ir_codegen::compile;\n    let m = lower_src(\"fn pos(x), do: if x \u003e 0, do: 1, else: -1\");\n    let compiled = compile(\u0026m).unwrap();\n    // Post-inline + post-DCE, `pos` should be one CLIF fn — the\n    // if_then / if_else cont fns inlined back. Test for absence of\n    // residual cont fns by name.\n    let module = compiled.debug_module(); // or however the compiled\n                                           // module exposes its fn list\n    let cont_fns: Vec\u003c_\u003e = module.fns.iter()\n        .filter(|f| f.name.starts_with(\"if_then\") || f.name.starts_with(\"if_else\") || f.name.starts_with(\"if_join\"))\n        .collect();\n    assert!(\n        cont_fns.is_empty(),\n        \"expected per-arm cont fns to be inlined away for leaf-arm if; found: {:?}\",\n        cont_fns.iter().map(|f| \u0026f.name).collect::\u003cVec\u003c_\u003e\u003e(),\n    );\n}\n```\n\n(API surface for \"what fns survive into the compiled module\" may\nneed a small accessor — fine; document the addition.)\n\n## What this adds, removes, replaces\n\n- **Adds:** one regression test.\n- **Removes:** nothing today.\n- **Replaces:** manual `fz dump --emit clif` spot-checking with an\n  automated gate.\n\n## Acceptance\n\n- Test passes today (verified manually for fz-duq.2).\n- If the inliner ever stops collapsing in the future, this test\n  fires before anyone notices the golden CLIF drift on real fixtures.\n\n## Out of scope\n\nExtending the gate to case/cond/with leaf arms. Same shape; do that\nas follow-up if this one catches anything useful.",
+  "id": "fz-efb",
+  "labels": [],
+  "priority": 3,
+  "status": "open",
+  "title": "inliner gate test: leaf-arm branching collapses to single fn post-inline",
+  "type": "task",
+  "updated_at": "2026-05-17T03:35:34Z"
+}
