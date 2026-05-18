@@ -11,9 +11,15 @@
   "id": "fz-jg5.9",
   "labels": [],
   "parent": "fz-jg5",
+  "comments": [
+    {
+      "text": "Empirical finding (attempted removal in this session): removing the closure_lit branch in walk_spec_for_discovery (src/ir_typer.rs:904-934) breaks RUNTIME tests for closure_typed_captures and curried_add (jit + aot paths) — the reducer dissolves the top-level CallClosure but the SURVIVING closure-body specs depend on per-(captures+args) narrow registration from the typer. The branch is therefore NOT dead. Safe removal requires either: (a) the reducer absorbing the narrow-spec discovery (e.g., when a CallClosure can't reduce, the reducer registers a spec request) or (b) confirming that closure_typed_captures' lowered IR doesn't need narrow specs (likely false). Reverted; ticket remains open.",
+      "timestamp": "2026-05-18T03:58:54Z"
+    }
+  ],
   "priority": 2,
   "status": "in_progress",
   "title": "fz-RED.8a REMOVE: per-callsite tuple-shape spec minting in walk_spec_for_discovery",
   "type": "task",
-  "updated_at": "2026-05-18T03:55:30Z"
+  "updated_at": "2026-05-18T03:58:54Z"
 }
