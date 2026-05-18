@@ -7,9 +7,15 @@
   "id": "fz-ul4.11.28",
   "labels": [],
   "parent": "fz-ul4",
+  "comments": [
+    {
+      "text": "Subsumed by fz-jg5.5 (RED.4 — recursive reduction with unroll budget). Close on RED.4 land with link.",
+      "timestamp": "2026-05-18T02:56:57Z"
+    }
+  ],
   "priority": 3,
   "status": "open",
   "title": "Bounded recursion unrolling",
   "type": "task",
-  "updated_at": "2026-05-15T19:42:40Z"
+  "updated_at": "2026-05-18T02:56:57Z"
 }
