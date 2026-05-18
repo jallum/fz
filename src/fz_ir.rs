@@ -404,6 +404,30 @@ pub struct Block {
     pub terminator: Term,
 }
 
+/// fz-f88.5 — origin of an FnIr, set at lowering time.
+///
+/// Lets downstream consumers (dump filtering, reachability accounting)
+/// answer "where did this fn come from?" without re-deriving from the
+/// `prelude_fn_id_cutoff` boundary or string-matching the `name`
+/// (`fn_clause_N`, `k_N`, `lambda_N`, etc.).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FnCategory {
+    /// Parsed from user source.
+    User,
+    /// `runtime.fz` builtins lowered alongside user code.
+    Prelude,
+    /// Per-clause continuation minted by `mint_cont_fn` — the
+    /// `fn_clause_N` family.
+    MultiClauseCont,
+    /// `lambda_N` — top-level body of a lifted closure.
+    LambdaLift,
+    /// CPS continuation: `k_N` or `k_receive_N`.
+    CpsCont,
+    /// Control-flow continuation: `if_then` / `if_else` /
+    /// `case_clause_N` / `cond_arm_N` / `with_else_N`.
+    ControlFlowCont,
+}
+
 #[derive(Debug, Clone)]
 pub struct FnIr {
     pub id: FnId,
@@ -412,6 +436,9 @@ pub struct FnIr {
     pub frame_schema_id: u32,
     pub blocks: Vec<Block>,
     pub entry: BlockId,
+    /// fz-f88.5 — origin tag set at lowering. Default `User` so
+    /// hand-built `FnBuilder` callers (tests) don't have to thread it.
+    pub category: FnCategory,
 }
 
 impl FnIr {
@@ -541,6 +568,7 @@ pub struct FnBuilder {
     next_block: u32,
     blocks: Vec<Block>,
     entry: Option<BlockId>,
+    category: FnCategory,
 }
 
 impl FnBuilder {
@@ -552,7 +580,14 @@ impl FnBuilder {
             next_block: 0,
             blocks: Vec::new(),
             entry: None,
+            category: FnCategory::User,
         }
+    }
+
+    /// fz-f88.5 — set the origin category. Default is `User`.
+    pub fn with_category(mut self, category: FnCategory) -> Self {
+        self.category = category;
+        self
     }
 
     pub fn fresh_var(&mut self) -> Var {
@@ -604,6 +639,7 @@ impl FnBuilder {
             frame_schema_id: 0,
             blocks: self.blocks,
             entry,
+            category: self.category,
         }
     }
 }

@@ -355,6 +355,7 @@ pub fn alpha_rename(callee: &FnIr, caller: &FnIr) -> FnIr {
         frame_schema_id: 0,
         blocks,
         entry: shift_b(callee.entry),
+        category: callee.category,
     }
 }
 
