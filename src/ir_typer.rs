@@ -938,11 +938,7 @@ fn process_worklist(
         let mut compute_reads: Vec<(FnId, Vec<Descr>)> = Vec::new();
         let new_ret =
             compute_return_for_spec(m, &spec_key, specs, effective_returns, &mut compute_reads);
-        for callee_key in result
-            .return_reads
-            .into_iter()
-            .chain(compute_reads.into_iter())
-        {
+        for callee_key in result.return_reads.into_iter().chain(compute_reads) {
             return_readers
                 .entry(callee_key)
                 .or_default()
