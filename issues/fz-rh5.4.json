@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-rh5.6"
+  ],
   "created": "2026-05-18T12:01:24Z",
   "description": "## The change\n\nAdd four \\`#[cfg(test)]\\` thread-local counters to \\`src/ir_typer.rs\\`,\nincremented at known sites:\n\n  - WORKLIST_POPS    — \\`process_worklist\\` pop iterations\n  - TYPE_FN_CALLS    — calls to \\`type_fn\\` from the worklist\n  - WALK_CALLS       — invocations of \\`walk_spec_for_discovery\\`\n  - (FINAL_SPEC_COUNT is just \\`mt.specs.len()\\` — no counter needed)\n\nPrecedent: \\`TYPE_MODULE_CALLS\\` (same file, line ~447). Zero\nrelease-build cost — gated on \\`#[cfg(test)]\\`.\n\nAdd a test pinning generous upper bounds on each metric for both\nast_eval (the worst-case spec-explosion fixture) and fib_tailrec\n(a baseline shape — recursive but flat). Pin bounds, not exact\nvalues: improvements stay green, regressions fail with a message\nidentifying which axis regressed.\n\n\\`\\`\\`rust\n#[test]\nfn ast_eval_typer_work_bounded() {\n    let m = lower_fixture(\"ast_eval\");\n    reset_typer_counters();\n    let mt = type_module(\u0026m);\n    let pops    = typer_counter(WORKLIST_POPS);\n    let walks   = typer_counter(WALK_CALLS);\n    let typefns = typer_counter(TYPE_FN_CALLS);\n    let specs   = mt.specs.len();\n\n    // Bounds are ~2× current observed values. Tighten on intentional\n    // improvements. Never reflex-bless on regression — investigate.\n    assert!(pops    \u003c  500, \"worklist pops regressed: {}\",   pops);\n    assert!(walks   \u003c  500, \"walk calls regressed: {}\",      walks);\n    assert!(typefns \u003c  150, \"type_fn calls regressed: {}\",   typefns);\n    assert!(specs   \u003c  100, \"final spec count regressed: {}\", specs);\n}\n\n#[test]\nfn fib_tailrec_typer_work_bounded() { /* same shape, tighter bounds */ }\n\\`\\`\\`\n\n## Why counters, not wall-clock\n\nWall-clock is brittle: CI runner speed varies, runs flake under\nload, generous margins catch only catastrophic regressions, tight\nmargins are forced to be loose for cross-machine portability.\n\nCounters are deterministic: independent of CPU, load, OS scheduler.\nA failure points at *which* axis regressed (worklist iterations vs.\ntype_fn count vs. final spec count), which is the diagnostic info\nyou actually want.\n\n## When to bless\n\nWhen PROV.6 lands and intentionally changes any counter (likely\n\\`worklist_pops\\` drops further), tighten the bound in the same\ncommit. Never bless reflexively in response to a red test.\n\n## Why now\n\nThis ticket lands BEFORE PROV.6 so the perf pin catches any\nunintended regression from the refactor. The bounds reflect\ncurrent values; PROV.6 will tighten them when it lands.\n\n## Acceptance\n\n- Four counters added, zero release-build cost.\n- Two tests pinning bounds for ast_eval + fib_tailrec.\n- Tests pass on current code.\n\n## Independent of\n\nAll other PROV tickets. Lands before PROV.6 by recommendation.",
   "id": "fz-rh5.4",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "fz-PROV.4: pin deterministic typer-work counters for ast_eval + fib_tailrec",
   "type": "task",
-  "updated_at": "2026-05-18T12:01:24Z"
+  "updated_at": "2026-05-18T12:02:43Z"
 }
