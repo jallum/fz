@@ -6,6 +6,7 @@
   "blocks": [
     "fz-9pr.7"
   ],
+  "closed_at": "2026-05-18T15:39:49Z",
   "created": "2026-05-18T15:01:59Z",
   "description": "Today: reduce_terminator's Term::Call branch already handles the case\nwhere the callee folds but the continuation doesn't — it rewrites to\n\\`TailCall(cont.fn_id, [literal_var, ...captured])\\`. That's already\ncorrect.\n\nThe failure happens DEEPER: when reduce_terminator's Term::Call calls\n\\`try_reduce_call\\`, that may succeed at the top callee but recurse\ninto the callee's body, where a NESTED Call/CallClosure's continuation\nfails to fold (e.g. apply1's TailCallClosure dispatches to fn14 → 42,\nbut THEN — wait, this is the top-level case. Re-investigation needed\nin B.2 game-walk.)\n\nThis ticket: investigate WHY closure_typed_captures' apply1 call\nfails to fold today. The Stalled outcome from B.2 captures the\nfailure point. Document in a comment. Decide if it's:\n(a) Already correct — the chain genuinely can't fold.\n(b) A reducer coverage bug — partial fold needed at a deeper layer.\n\nIf (b): implement the deeper partial fold. Acceptance: apply1's\ncallsite becomes Consumed, surviving bodies shrink.\n\n## Acceptance\n\n- One of:\n  (a) Doc-only: explanation of why partial fold can't help.\n  (b) closure_typed_captures: apply1 callsite is Consumed; fewer\n      surviving spec keys; runtime output unchanged.\n- All 842 tests green.\n\n## Removes\n\nNothing. Improves reducer coverage.",
   "id": "fz-9pr.6",
@@ -18,8 +19,8 @@
     }
   ],
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "fz-CO.C.1 — Partial fold for Term::Call when cont doesn't fold",
   "type": "task",
-  "updated_at": "2026-05-18T15:38:19Z"
+  "updated_at": "2026-05-18T15:39:49Z"
 }
