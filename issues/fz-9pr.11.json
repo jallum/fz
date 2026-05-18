@@ -6,6 +6,7 @@
   "blocks": [
     "fz-9pr.12"
   ],
+  "closed_at": "2026-05-18T16:27:11Z",
   "created": "2026-05-18T15:02:41Z",
   "description": "Add CallsiteOutcome::Inlined producer to the reducer. On a Stalled\ncallsite where:\n  - callee is in m.fn_by_id (not extern),\n  - callee body is is_inlinable (small leaf, not closure target),\n  - callee is NOT in boundary_fns,\n\nsplice the callee body into the caller at the callsite (mirror of\nir_inline::inline_calls_once or inline_tail_calls_once), mutate the\nIR in place, and write Inlined at the CallsiteId. Outcome transitions\nStalled → Inlined.\n\nFor now: copy ir_inline's is_inlinable + alpha_rename + absorb_callee\nhelpers into ir_reducer. Don't delete from ir_inline yet — parallel\noperation.\n\n## Acceptance\n\n- An new unit test: a small fn becomes Inlined when reducer can't\n  fold its arguments.\n- All 842 tests green.\n- Goldens may shift (the reducer now inlines what ir_inline did);\n  re-bless and review diff carefully.\n\n## Removes\n\nNothing yet — preparing for E.4.",
   "id": "fz-9pr.11",
@@ -26,8 +27,8 @@
     }
   ],
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "fz-CO.E.1 — Reducer learns inline criterion, writes Inlined outcome",
   "type": "task",
-  "updated_at": "2026-05-18T16:27:10Z"
+  "updated_at": "2026-05-18T16:27:11Z"
 }
