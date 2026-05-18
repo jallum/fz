@@ -191,21 +191,13 @@ pub struct FnTypes {
 
 /// Per-module type information.
 ///
-/// `by_fn_idx` is the legacy per-FnIr view (one FnTypes per fn, with entry
-/// params narrowed via lub-aggregation across direct callsites). External
-/// consumers index this view via `Index<usize>`; behavior is preserved
-/// from before fz-ul4.29.1.
-///
 /// `specs` is the per-callsite specialization map, keyed by
 /// `(FnId, input-Descr-tuple)`. Each distinct argument-Descr signature
 /// seen at any direct-call site produces a fresh FnTypes via
-/// `type_fn(f, m, Some(&input_descrs))`. The any-key specialization
-/// (`vec![Descr::any(); n_params]`) is unconditionally present for every
-/// fn so that closure / Spawn / Receive paths have a fallback target.
-///
-/// fz-ul4.29.1: `specs` is populated but not yet consumed by codegen.
-/// fz-ul4.29.2 will introduce a `SpecId` and re-key the codegen-internal
-/// structures against this map; `by_fn_idx` retires at that point.
+/// `type_fn(f, m, Some(&input_descrs))`. An any-key specialization
+/// (`vec![Descr::any(); n_params]`) is registered for fns that are
+/// closure-reachable, entry-seeded, or otherwise need the opaque-dispatch
+/// fallback; direct-call-only fns have no any-key (see fz-ul4.29.12.6).
 pub struct ModuleTypes {
     pub specs: HashMap<(FnId, Vec<Descr>), FnTypes>,
     /// fz-2yw.2 — Kleene LFP of every spec's effective return Descr.
@@ -590,8 +582,6 @@ fn type_module_pass(
     // Callsite fn-constants accumulated across walks (unified across
     // multiple callsites sharing the same (callee, key)).
     let mut callsite_fn_consts: HashMap<(FnId, Vec<Descr>), Vec<Option<FnId>>> = HashMap::new();
-    // LUB-narrowed entry-param Descrs per fn — built up across all
-    // direct callsites for the legacy by_fn_idx view.
 
     const WIDEN_AT: usize = 3;
     for scc in sccs.iter() {
@@ -3060,8 +3050,6 @@ mod tests {
 
     /// fz-pky.2 — test helper. Returns "the most narrow registered
     /// spec for fn at index i, or an ad-hoc any-key view if unregistered."
-    /// Replaces the legacy `mt[i]` access; the underlying by_fn_idx
-    /// field has been retired.
     fn fn_view(m: &Module, mt: &ModuleTypes, i: usize) -> FnTypes {
         let fid = m.fns[i].id;
         if let Some(ft) = mt.any_spec_for(fid) {
@@ -3599,14 +3587,13 @@ mod tests {
     fn closure_target_with_no_direct_callers_keeps_any_entry_params() {
         // fn worker(n), do: return n — packed into a closure by main but
         // never reached via a direct Term::Call/TailCall. With no visible
-        // direct caller, the lub view (by_fn_idx) leaves the entry param
-        // at the initial all-any. The any-key spec in `specs` (which is
-        // what closure-invoke dispatches into) is also `any` — same view.
+        // direct caller, the only registered spec is the any-key (which
+        // is what closure-invoke dispatches into), and its entry param
+        // stays at the initial all-any.
         //
         // fz-ul4.29.3 removed the typer's old `closure_reachable` skip;
-        // for closure targets that DO have direct callers, by_fn_idx now
-        // gets narrowed by the visible callers (a different test would
-        // exercise that), while the any-key spec remains all-any.
+        // for closure targets that DO have direct callers, a narrow spec
+        // is registered alongside the any-key (exercised below).
         let mut wb = FnBuilder::new(FnId(0), "worker");
         let n = wb.fresh_var();
         let wentry = wb.block(vec![n]);
@@ -3628,10 +3615,10 @@ mod tests {
     }
 
     #[test]
-    fn closure_target_with_direct_caller_narrows_by_fn_idx_and_drops_unused_any_key() {
+    fn closure_target_with_direct_caller_narrows_spec_and_drops_unused_any_key() {
         // fz-ul4.29.3 / .29.10.3: a fn that's both a MakeClosure target
-        // and called directly with a typed arg gets its by_fn_idx
-        // narrowed by the visible direct caller. Post-.29.10.3, the
+        // and called directly with a typed arg gets a narrow spec keyed
+        // by the visible direct caller's arg Descrs. Post-.29.10.3, the
         // unused closure-bound `_cl` is detected as fully resolvable
         // (no invocation), the MakeClosure any-key registration is
         // suppressed, and .29.12.6 drops worker's any-key.
@@ -3655,11 +3642,11 @@ mod tests {
 
         let m = build_module(vec![wb.build(), mb.build()]);
         let mt = type_module(&m);
-        // by_fn_idx for worker: n narrowed to the direct caller's int.
+        // worker's narrow spec: n narrowed to the direct caller's int.
         let nt = fn_view(&m, &mt, 0).vars.get(&n).cloned().unwrap();
         assert!(
             nt.is_subtype(&Descr::int()),
-            "worker's n in by_fn_idx must narrow to int (visible caller), got {}",
+            "worker's n must narrow to int (visible caller), got {}",
             nt
         );
         // any-key dropped: no callsite (direct or indirect) queries
@@ -3769,9 +3756,10 @@ mod tests {
     }
 
     #[test]
-    fn module_types_index_preserves_legacy_view() {
-        // The Index<usize> impl returns the lub-aggregated `by_fn_idx`
-        // entry — same shape consumers have always seen.
+    fn fn_view_returns_narrowed_spec_for_direct_caller() {
+        // `fn_view` (the post-.29 stand-in for the retired `mt[i]`
+        // access) returns the narrow spec produced by the direct
+        // callsite — id's entry param narrows to int.
         let mut a = FnBuilder::new(FnId(0), "id");
         let x = a.fresh_var();
         let aentry = a.block(vec![x]);
@@ -3793,7 +3781,6 @@ mod tests {
         let mt = type_module(&m);
 
         assert_eq!(mt.specs.len(), 2);
-        // Legacy view: index 0 → id's narrowed FnTypes.
         let id_x = fn_view(&m, &mt, 0).vars.get(&x).cloned().unwrap();
         assert!(
             id_x.is_subtype(&Descr::int()),
