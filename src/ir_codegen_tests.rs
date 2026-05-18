@@ -1280,16 +1280,17 @@ fn const_nil_bool_atom_deduplicated_within_block() {
     );
 }
 
-/// fz-ty1.pip.3 — type_module must be called exactly 3 times in the
-/// codegen pipeline. A 4th call was removed in fz-ty1.pip.1/2 by
-/// threading &mut ModuleTypes through inline_single_use_conts so it
-/// surgically re-types only affected specs.
+/// fz-5j5.2 — type_module is called exactly 2 times in the codegen
+/// pipeline. The earlier 3-call shape had a redundant middle call:
+/// rewrite_vec_kinds and rewrite_known_target_closures read/write
+/// orthogonal slices of ModuleTypes, so they share one pre-rewrite
+/// snapshot. Pre-rewrite + post-reduce = 2 genuinely distinct typings.
 #[test]
-fn type_module_called_exactly_three_times_in_pipeline() {
+fn type_module_called_exactly_twice_in_pipeline() {
     let src = "fn main(), do: print(42)";
     let m = lower_src(src);
     crate::ir_typer::TYPE_MODULE_CALLS.with(|c| c.set(0));
     compile(&m).expect("compile");
     let count = crate::ir_typer::TYPE_MODULE_CALLS.with(|c| c.get());
-    assert_eq!(count, 3, "type_module called {} times, expected 3", count);
+    assert_eq!(count, 2, "type_module called {} times, expected 2", count);
 }

@@ -1854,14 +1854,11 @@ pub fn compile_with_backend<B: Backend>(
     // available during lowering. .11.24.5 clones first so the typed-schema
     // rewrite can swap MakeVec(I64) → MakeVec(F64) where elements are Float.
     //
-    // fz-wmy.6 research: rewrite_vec_kinds reads any_key_specs/ft.vars to find
-    // element types of MakeVec stmts. rewrite_known_target_closures reads
-    // specs/ft.fn_constants to find constant-closure CallClosure targets. The
-    // two reads are orthogonal (element types vs. fn_constants) and their
-    // writes are orthogonal (VecKindIr mutations vs. CallClosure→Call rewrites).
-    // A single type_module call CAN serve both — merging calls 1+2 would reduce
-    // the pipeline count from 3 to 2. Left as a future simplification; the
-    // type_module_called_exactly_three_times test pins the current count.
+    // fz-5j5.2 — one pre-rewrite typing serves both
+    // rewrite_vec_kinds and rewrite_known_target_closures. The reads are
+    // orthogonal (element types vs. fn_constants) and the writes are
+    // orthogonal (VecKindIr mutations vs. CallClosure→Call rewrites);
+    // neither rewrite invalidates what the other reads.
     let mut working = module.clone();
     let pre_types = crate::ir_typer::type_module(&working);
     crate::ir_typer::rewrite_vec_kinds(&mut working, &pre_types).map_err(CodegenError::new)?;
@@ -1869,8 +1866,14 @@ pub fn compile_with_backend<B: Backend>(
     // to direct Call / TailCall. After this, the final type_module sees
     // direct dispatch where the closure-stub used to live, and
     // .29.12.6's any-key drop logic can remove the now-dead any-key.
-    let mid_types = crate::ir_typer::type_module(&working);
-    crate::ir_typer::rewrite_known_target_closures(&mut working, &mid_types);
+    //
+    // fz-5j5.2 — uses the same `pre_types` as rewrite_vec_kinds above.
+    // The two rewrites are orthogonal: rewrite_vec_kinds mutates
+    // `Prim::MakeVec` kind tags; `fn_constants` tracks Vars bound to
+    // `Prim::Const(Value::Fn)` / `Prim::MakeClosure`, neither of which
+    // is touched. So `pre_types.fn_constants` is identical to whatever
+    // a re-type would produce. No separate `mid_types` call needed.
+    crate::ir_typer::rewrite_known_target_closures(&mut working, &pre_types);
     #[cfg(not(test))]
     crate::ir_inline::inline_module(&mut working);
     #[cfg(test)]
