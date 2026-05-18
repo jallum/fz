@@ -77,16 +77,9 @@ pub fn as_str_lit(d: &Descr) -> Option<&str> {
 
 /// `nil` and only nil.
 pub fn is_nil_only(d: &Descr) -> bool {
-    d.basic == crate::types::BasicBits::NIL
-        && d.atoms.is_none()
-        && d.ints.is_none()
-        && d.floats.is_none()
-        && d.strs.is_none()
-        && d.tuples.is_empty()
-        && d.lists.is_empty()
-        && d.funcs.is_empty()
-        && d.maps.is_empty()
-        && d.opaques.is_none()
+    // fz-yan.2 — `nil` is the `:nil` atom literal; check the atoms axis,
+    // not BasicBits.
+    as_atom_lit(d) == Some("nil")
 }
 
 /// Single bool literal. Returns Some(true) for `atom_lit("true")` only,

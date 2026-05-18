@@ -60,10 +60,10 @@
 ;     blk0 Return Var(1)    :: nil
 
 ; spec fn_clause_1(1) #fn=8
-;   key:    [nil | bool | vec(i64) | vec(f64) | vec(u8) | vec(bit) | float | str | atom | opaque | tuple | list | fn | map]
+;   key:    [vec(i64) | vec(f64) | vec(u8) | vec(bit) | float | str | atom | opaque | tuple | list | fn | map]
 ;   return: nil
 ;   vars:
-;     Var(0) :: nil | bool | vec(i64) | vec(f64) | vec(u8) | vec(bit) | float | str | atom | opaque | tuple | list | fn | map
+;     Var(0) :: vec(i64) | vec(f64) | vec(u8) | vec(bit) | float | str | atom | opaque | tuple | list | fn | map
 ;     Var(1) :: nil
 ;   exits:
 ;     blk0 Return Var(1)    :: nil

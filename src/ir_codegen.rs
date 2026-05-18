@@ -6416,23 +6416,35 @@ fn lower_prim<M: cranelift_module::Module>(
                 let c = b.ins().icmp_imm(IntCC::Equal, tag3, TAG_INT);
                 or_scalar!(c);
             }
+            // fz-yan.2 — atoms axis covers what BasicBits::NIL and ::BOOL used
+            // to cover (Descr::nil() and Descr::bool_t() are now atom literal
+            // sets). For literal sets we icmp against each (id << 3) | TAG_ATOM.
             if descr.atoms.is_any() {
                 let c = b.ins().icmp_imm(IntCC::Equal, tag3, TAG_ATOM);
                 or_scalar!(c);
             } else if !descr.atoms.is_none() {
-                return Err(CodegenError::new(
-                    "TypeTest: specific atom literal sets require atom id lookup (not yet implemented)",
-                ));
-            }
-            if descr.basic.contains_all(BasicBits::NIL) {
-                let c = b.ins().icmp_imm(IntCC::Equal, val, NIL_BITS);
-                or_scalar!(c);
-            }
-            if descr.basic.contains_all(BasicBits::BOOL) {
-                let t = b.ins().icmp_imm(IntCC::Equal, val, TRUE_BITS);
-                let f = b.ins().icmp_imm(IntCC::Equal, val, FALSE_BITS);
-                let e = b.ins().bor(t, f);
-                or_scalar!(e);
+                if descr.atoms.cofinite {
+                    return Err(CodegenError::new(
+                        "TypeTest: cofinite atom literal sets not yet implemented",
+                    ));
+                }
+                let name_to_id: std::collections::HashMap<&str, u32> = module
+                    .atom_names
+                    .iter()
+                    .enumerate()
+                    .map(|(i, n)| (n.as_str(), i as u32))
+                    .collect();
+                for name in &descr.atoms.set {
+                    let Some(id) = name_to_id.get(name.as_str()).copied() else {
+                        // The pattern wants an atom the module never interns
+                        // → no value of the running module can match it. The
+                        // disjunction simply doesn't contribute a true.
+                        continue;
+                    };
+                    let bits = ((id as i64) << 3) | TAG_ATOM;
+                    let c = b.ins().icmp_imm(IntCC::Equal, val, bits);
+                    or_scalar!(c);
+                }
             }
 
             // fz-ul4.36 — collect tuple-shape arities to runtime-check. The

@@ -621,18 +621,29 @@ fn eval_prim(module: &Module, prim: &Prim, env: &HashMap<Var, FzValue>) -> Resul
             if !descr.ints.is_none() {
                 matched |= tag == Tag::Int;
             }
+            // fz-yan.2 — atoms axis subsumes BasicBits::NIL / ::BOOL. For a
+            // literal set, look up each name's atom id in the module and
+            // check val == atom-tagged(id).
             if descr.atoms.is_any() {
                 matched |= tag == Tag::Atom;
             } else if !descr.atoms.is_none() {
-                return Err(
-                    "TypeTest: specific atom literal sets not yet supported in interpreter".into(),
-                );
-            }
-            if descr.basic.contains_all(BasicBits::NIL) {
-                matched |= val.is_nil();
-            }
-            if descr.basic.contains_all(BasicBits::BOOL) {
-                matched |= val.is_true() || val.is_false();
+                if descr.atoms.cofinite {
+                    return Err(
+                        "TypeTest: cofinite atom literal sets not yet supported in interpreter"
+                            .into(),
+                    );
+                }
+                if tag == Tag::Atom {
+                    let id = val.unbox_atom().expect("atom-tagged");
+                    for name in &descr.atoms.set {
+                        if let Some(pos) = module.atom_names.iter().position(|n| n == name)
+                            && pos as u32 == id
+                        {
+                            matched = true;
+                            break;
+                        }
+                    }
+                }
             }
             // fz-ul4.36 — collect tuple arities, mirroring JIT codegen.
             // pos TupleSig => match if value is HeapKind::Struct with

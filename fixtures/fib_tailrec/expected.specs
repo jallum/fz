@@ -4,7 +4,7 @@
 ;   vars:
 ;     Var(0) :: 0
 ;     Var(1) :: :function_clause
-;     Var(2) :: :true
+;     Var(2) :: true
 ;   exits:
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(1)      :: :function_clause
@@ -20,7 +20,7 @@
 ;   vars:
 ;     Var(0) :: 1
 ;     Var(1) :: :function_clause
-;     Var(2) :: :true
+;     Var(2) :: true
 ;   exits:
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(1)      :: :function_clause
@@ -36,7 +36,7 @@
 ;   vars:
 ;     Var(0) :: int
 ;     Var(1) :: :function_clause
-;     Var(2) :: :true
+;     Var(2) :: true
 ;   exits:
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(1)      :: :function_clause
@@ -91,7 +91,7 @@
 ;     Var(2) :: 1
 ;     Var(3) :: :function_clause
 ;     Var(4) :: 0
-;     Var(5) :: :true
+;     Var(5) :: true
 ;     Var(6) :: 1
 ;     Var(7) :: bool
 ;   exits:
@@ -115,9 +115,9 @@
 ;     Var(2) :: 1
 ;     Var(3) :: :function_clause
 ;     Var(4) :: 0
-;     Var(5) :: :false
+;     Var(5) :: false
 ;     Var(6) :: 1
-;     Var(7) :: :true
+;     Var(7) :: true
 ;   exits:
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(3)      :: :function_clause
@@ -139,9 +139,9 @@
 ;     Var(2) :: 1
 ;     Var(3) :: :function_clause
 ;     Var(4) :: 0
-;     Var(5) :: :false
+;     Var(5) :: false
 ;     Var(6) :: 1
-;     Var(7) :: :false
+;     Var(7) :: false
 ;   exits:
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(3)      :: :function_clause
@@ -163,9 +163,9 @@
 ;     Var(2) :: 1
 ;     Var(3) :: :function_clause
 ;     Var(4) :: 0
-;     Var(5) :: :false
+;     Var(5) :: false
 ;     Var(6) :: 1
-;     Var(7) :: :false
+;     Var(7) :: false
 ;   exits:
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(3)      :: :function_clause
@@ -428,10 +428,10 @@
 ;              callee_key=[int, int, int]
 
 ; spec fn_clause_2(3) #fn=15
-;   key:    [nil | bool | vec(i64) | vec(f64) | vec(u8) | vec(bit) | int \ {1} | float | str | atom | opaque | tuple | list | fn | map, 0, 1]
+;   key:    [vec(i64) | vec(f64) | vec(u8) | vec(bit) | int \ {1} | float | str | atom | opaque | tuple | list | fn | map, 0, 1]
 ;   return: int
 ;   vars:
-;     Var(0) :: nil | bool | vec(i64) | vec(f64) | vec(u8) | vec(bit) | int \ {1} | float | str | atom | opaque | tuple | list | fn | map
+;     Var(0) :: vec(i64) | vec(f64) | vec(u8) | vec(bit) | int \ {1} | float | str | atom | opaque | tuple | list | fn | map
 ;     Var(1) :: 0
 ;     Var(2) :: 1
 ;     Var(3) :: 1

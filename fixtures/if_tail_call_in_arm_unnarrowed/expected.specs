@@ -4,7 +4,7 @@
 ;   vars:
 ;     Var(0) :: 7
 ;     Var(1) :: :function_clause
-;     Var(2) :: :true
+;     Var(2) :: true
 ;   exits:
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(1)      :: :function_clause
@@ -20,7 +20,7 @@
 ;   vars:
 ;     Var(0) :: 99
 ;     Var(1) :: :function_clause
-;     Var(2) :: :true
+;     Var(2) :: true
 ;   exits:
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(1)      :: :function_clause
@@ -74,7 +74,7 @@
 ;     Var(0) :: 0
 ;     Var(1) :: :match_error
 ;     Var(2) :: 0
-;     Var(3) :: :false
+;     Var(3) :: false
 ;   exits:
 ;     blk0 If Var(3) ? blk2 : blk3
 ;     blk1 Halt Var(1)      :: :match_error
@@ -90,7 +90,7 @@
 ;     Var(0) :: 5
 ;     Var(1) :: :match_error
 ;     Var(2) :: 0
-;     Var(3) :: :true
+;     Var(3) :: true
 ;   exits:
 ;     blk0 If Var(3) ? blk2 : blk3
 ;     blk1 Halt Var(1)      :: :match_error

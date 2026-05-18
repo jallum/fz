@@ -36,15 +36,14 @@ pub struct BasicBits(u32);
 impl BasicBits {
     // Kinds without value-level distinctions (or where we choose not to track
     // them). int/float/str/atom moved into their own LiteralSet axes.
-    pub const NIL: BasicBits = BasicBits(1 << 0);
-    pub const BOOL: BasicBits = BasicBits(1 << 1);
-    pub const VEC_I64: BasicBits = BasicBits(1 << 2);
-    pub const VEC_F64: BasicBits = BasicBits(1 << 3);
-    pub const VEC_U8: BasicBits = BasicBits(1 << 4);
-    pub const VEC_BIT: BasicBits = BasicBits(1 << 5);
+    // fz-yan.2 — NIL/BOOL bits removed; both live in the atoms axis now.
+    pub const VEC_I64: BasicBits = BasicBits(1 << 0);
+    pub const VEC_F64: BasicBits = BasicBits(1 << 1);
+    pub const VEC_U8: BasicBits = BasicBits(1 << 2);
+    pub const VEC_BIT: BasicBits = BasicBits(1 << 3);
 
     pub const NONE: BasicBits = BasicBits(0);
-    pub const ALL: BasicBits = BasicBits((1 << 6) - 1);
+    pub const ALL: BasicBits = BasicBits((1 << 4) - 1);
     pub const fn contains_all(self, o: BasicBits) -> bool {
         (self.0 & o.0) == o.0
     }
@@ -60,8 +59,6 @@ impl fmt::Debug for BasicBits {
 }
 
 const BASIC_NAMES: &[(BasicBits, &str)] = &[
-    (BasicBits::NIL, "nil"),
-    (BasicBits::BOOL, "bool"),
     (BasicBits::VEC_I64, "vec(i64)"),
     (BasicBits::VEC_F64, "vec(f64)"),
     (BasicBits::VEC_U8, "vec(u8)"),
@@ -352,11 +349,17 @@ impl Descr {
         d.basic = b;
         d
     }
+    /// fz-yan.2 — `nil` is the reserved atom literal `nil`. Pre-yan it
+    /// lived in its own BasicBits axis; with the runtime split it's a
+    /// plain atom, so the lattice tracks it via `AtomSet` like any other.
     pub fn nil() -> Self {
-        Self::from_basic(BasicBits::NIL)
+        Self::atom_lit("nil")
     }
+    /// fz-yan.2 — `bool` is exactly `:true | :false`. Pre-yan this used
+    /// BasicBits::BOOL; runtime-side, both are atom-tagged values, so
+    /// the type narrowing matches reality now.
     pub fn bool_t() -> Self {
-        Self::from_basic(BasicBits::BOOL)
+        Self::atom_lit("true").union(&Self::atom_lit("false"))
     }
     /// All atom literals (no other axis). Used by VR.5a (typed equality) to
     /// recognise atom-monomorphic operands and lower `==` to a single icmp
@@ -1352,7 +1355,14 @@ impl fmt::Display for Descr {
             }
         });
         format_lit_set(&mut parts, &self.strs, "str", |s| format!("{:?}", s));
-        format_lit_set(&mut parts, &self.atoms, "atom", |a| format!(":{}", a));
+        // fz-yan.3 — the reserved atoms render without the `:` sigil to
+        // preserve the conventional `nil`/`true`/`false` rendering and
+        // collapse `:true | :false` to `bool` for `Descr::bool_t()`.
+        if let Some(s) = render_reserved_atom_set(&self.atoms) {
+            parts.push(s);
+        } else {
+            format_lit_set(&mut parts, &self.atoms, "atom", |a| format!(":{}", a));
+        }
         format_lit_set(&mut parts, &self.opaques, "opaque", |n| n.clone());
 
         for c in &self.tuples {
@@ -1399,7 +1409,11 @@ impl Descr {
             format!("{}", f.get())
         });
         format_lit_set_capped(&mut parts, &self.strs, "str", CAP, |s| format!("{:?}", s));
-        format_lit_set_capped(&mut parts, &self.atoms, "atom", CAP, |a| format!(":{}", a));
+        if let Some(s) = render_reserved_atom_set(&self.atoms) {
+            parts.push(s);
+        } else {
+            format_lit_set_capped(&mut parts, &self.atoms, "atom", CAP, |a| format!(":{}", a));
+        }
         format_lit_set_capped(&mut parts, &self.opaques, "opaque", CAP, |n| n.clone());
 
         for c in &self.tuples {
@@ -1455,6 +1469,44 @@ impl fmt::Debug for Descr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self)
     }
+}
+
+/// fz-yan.3 — render `AtomSet`s containing only reserved atom literals
+/// (`nil`, `true`, `false`) with bareword/`bool` forms instead of the
+/// generic `:atom` syntax. Returns `None` if the set contains any other
+/// atom name (or is `cofinite`); the caller falls back to the generic
+/// renderer.
+fn render_reserved_atom_set(s: &AtomSet) -> Option<String> {
+    if s.is_none() || s.is_any() || s.cofinite {
+        return None;
+    }
+    let mut has_nil = false;
+    let mut has_true = false;
+    let mut has_false = false;
+    let mut other = false;
+    for name in &s.set {
+        match name.as_str() {
+            "nil" => has_nil = true,
+            "true" => has_true = true,
+            "false" => has_false = true,
+            _ => other = true,
+        }
+    }
+    if other {
+        return None;
+    }
+    let mut parts: Vec<&str> = Vec::new();
+    if has_nil {
+        parts.push("nil");
+    }
+    if has_true && has_false {
+        parts.push("bool");
+    } else if has_true {
+        parts.push("true");
+    } else if has_false {
+        parts.push("false");
+    }
+    Some(parts.join(" | "))
 }
 
 fn format_lit_set<T: Ord + Clone>(
@@ -2233,8 +2285,6 @@ mod tests {
     #[test]
     fn basic_bits_flags_are_disjoint() {
         let bits = [
-            BasicBits::NIL,
-            BasicBits::BOOL,
             BasicBits::VEC_I64,
             BasicBits::VEC_F64,
             BasicBits::VEC_U8,

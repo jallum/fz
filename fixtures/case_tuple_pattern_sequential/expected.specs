@@ -4,7 +4,7 @@
 ;   vars:
 ;     Var(0) :: 0 | 7
 ;     Var(1) :: :function_clause
-;     Var(2) :: :true
+;     Var(2) :: true
 ;   exits:
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(1)      :: :function_clause
@@ -20,7 +20,7 @@
 ;   vars:
 ;     Var(0) :: 0
 ;     Var(1) :: :function_clause
-;     Var(2) :: :true
+;     Var(2) :: true
 ;   exits:
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(1)      :: :function_clause
@@ -36,7 +36,7 @@
 ;   vars:
 ;     Var(0) :: 7
 ;     Var(1) :: :function_clause
-;     Var(2) :: :true
+;     Var(2) :: true
 ;   exits:
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(1)      :: :function_clause
@@ -89,7 +89,7 @@
 ;     Var(0) :: :err
 ;     Var(1) :: :match_error
 ;     Var(2) :: :case_clause
-;     Var(3) :: :false
+;     Var(3) :: false
 ;     Var(4) :: any
 ;     Var(5) :: any
 ;     Var(6) :: :ok
@@ -117,7 +117,7 @@
 ;     Var(0) :: {:ok, 7}
 ;     Var(1) :: :match_error
 ;     Var(2) :: :case_clause
-;     Var(3) :: :true
+;     Var(3) :: true
 ;     Var(4) :: :ok
 ;     Var(5) :: 7
 ;     Var(6) :: :ok
@@ -144,7 +144,7 @@
 ;   vars:
 ;     Var(0) :: :err
 ;     Var(1) :: :match_error
-;     Var(2) :: :false
+;     Var(2) :: false
 ;     Var(3) :: any
 ;     Var(4) :: :ok
 ;     Var(5) :: bool
@@ -163,7 +163,7 @@
 ;   vars:
 ;     Var(0) :: {:ok, 7}
 ;     Var(1) :: :match_error
-;     Var(2) :: :true
+;     Var(2) :: true
 ;     Var(3) :: :ok
 ;     Var(4) :: :ok
 ;     Var(5) :: bool

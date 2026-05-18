@@ -191,6 +191,23 @@ fn atom_identity_preserved_across_processes_from_same_module() {
     );
 }
 
+/// fz-yan.4 — `nil`, `true`, and `false` are reserved at atom IDs 0/1/2
+/// in every module. AtomTable::new() pre-interns these so the reserved
+/// IDs are stable and downstream codegen / runtime can rely on them
+/// (see fz_runtime::fz_value::{NIL,TRUE,FALSE}_ATOM_ID). Pin the halt
+/// values against the named constants so any future re-shuffling of
+/// the intern order is caught at this layer.
+#[test]
+fn reserved_atom_ids_are_stable() {
+    use fz_runtime::fz_value::{FALSE_ATOM_ID, NIL_ATOM_ID, TRUE_ATOM_ID};
+    assert_eq!(NIL_ATOM_ID, 0);
+    assert_eq!(TRUE_ATOM_ID, 1);
+    assert_eq!(FALSE_ATOM_ID, 2);
+    assert_eq!(run_main("fn main(), do: nil"), NIL_ATOM_ID as i64);
+    assert_eq!(run_main("fn main(), do: true"), TRUE_ATOM_ID as i64);
+    assert_eq!(run_main("fn main(), do: false"), FALSE_ATOM_ID as i64);
+}
+
 // ----- fz-ul4.11.32: per-Process state isolation -----
 
 /// Two Processes built from the same CompiledModule run independent
