@@ -1,18 +1,17 @@
 {
-  "assignee": "Jason Allum",
+  "assignee": "",
   "blocked_by": [],
   "blocks": [
     "fz-q9g.3"
   ],
-  "closed_at": "2026-05-17T15:19:49Z",
   "created": "2026-05-17T14:59:06Z",
   "description": "What: After rebasing fz-dps-arc on origin/main (which adds +445 lines to ir_codegen.rs across PRs #12/#13/#14, primarily the pattern matrix arc), audit every new load/store site for the load/store-from-tagged-pointer pattern. The fz-o0u tag rewrite requires every heap deref to be preceded by untag_ptr (mask with PTR_UNTAG_MASK = !0b111) — any site main introduced before our rebase will SIGBUS on misaligned pointers.\n\nApproach:\n1. After rebase, diff src/ir_codegen.rs HEAD vs the pre-rebase tip on main: identify new b.ins().load and b.ins().store sites.\n2. For each, determine whether the base value is a tagged FzValue pointer (TAG_PTR low bit set) or already-raw.\n3. Output: either \"no new tagged-base load sites\" OR a list of file:line that need untag_ptr fixup.\n\nWhy: Without this audit, downstream tickets (fz-q9g.3 / C2 onward) risk SIGBUS in code regions we did not author. Investigate up front — no hidden surprises.\n\nRemoves: nothing (pure investigation).\n\nTests: re-run fixture matrix + full cargo test post-fixup; assert no SIGBUS regressions.\n\nNote: this ticket is the natural sibling of fz-o0u — it extends the tag rewrite's discipline across newly-landed code.",
   "id": "fz-q9g.24",
   "labels": [],
   "parent": "fz-q9g",
   "priority": 1,
-  "status": "closed",
+  "status": "open",
   "title": "fz-dps.rebase: post-merge codegen audit for untag_ptr coverage",
   "type": "task",
-  "updated_at": "2026-05-17T15:19:49Z"
+  "updated_at": "2026-05-18T19:29:29Z"
 }
