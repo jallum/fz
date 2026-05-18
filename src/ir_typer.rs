@@ -829,6 +829,34 @@ pub fn apply_callsite_outcomes(m: &mut Module, mt: &ModuleTypes) {
             }
         }
     }
+    #[cfg(debug_assertions)]
+    assert_every_emitted_has_provenance(m, mt);
+}
+
+/// fz-9pr.9 — debug invariant: after typer convergence + outcome
+/// merge, every `Emitted { target }` outcome in
+/// `module.callsite_outcomes` points at a target that exists in
+/// `mt.specs`. An Emitted with no matching spec is a "ghost" —
+/// either the typer dropped the spec during the reachability prune
+/// but kept the outcome, or some other phase wrote a bogus target.
+/// Both are bugs we want to catch loud.
+///
+/// `holders` is worklist-internal and isn't reachable from
+/// `ModuleTypes`; spec-presence is the strongest invariant available
+/// from the public API and covers the ghost-spec case the ticket
+/// names.
+#[cfg(debug_assertions)]
+fn assert_every_emitted_has_provenance(m: &Module, mt: &ModuleTypes) {
+    for (cid, outcome) in &m.callsite_outcomes {
+        if let CallsiteOutcome::Emitted { target } = outcome {
+            assert!(
+                mt.specs.contains_key(target),
+                "fz-9pr.9: Emitted outcome at {:?} targets unregistered spec {:?}",
+                cid,
+                target
+            );
+        }
+    }
 }
 
 const WIDEN_AT: usize = 3;
