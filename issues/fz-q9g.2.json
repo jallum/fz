@@ -8,6 +8,7 @@
     "fz-q9g.3",
     "fz-q9g.4"
   ],
+  "closed_at": "2026-05-18T20:28:33Z",
   "created": "2026-05-17T04:46:31Z",
   "description": "**fz-dps.C1**: per-spec result Descr → HeapKind classifier, gated.\n\n**What**: implement `Descr -\u003e Option\u003cHeapKind\u003e` that pins iff the Descr is a single concrete shape (Tuple{N}, VecI64, ProcBin, …). Polymorphic / any / halt-only → None. Wire it into the `return_reprs` construction loop (src/ir_codegen.rs:2627–2635), but **gate emission so Dst never appears in default builds**. A boolean (compile-time const or `cfg(test)`-only switch) controls whether the classifier's `Some(k)` actually flips a `return_reprs[sid]` to `ArgRepr::Dst(k)` or downgrades to `Tagged`. Default off. q9g.3 flips the gate as part of activation.\n\n**Invariants (from q9g.26 audit)**:\n\n  - **Closure-body specs are never Dst-classified.** `MakeClosure` (ir_codegen.rs:6386) calls `.halt_kind()` on the body's return repr and would panic on Dst. The classifier must skip closure-target specs. This composes with — but is independent of — the epic's \"RC for Closure deferred\" decision.\n  - **`HeapKind::Closure` itself is never a Dst classification output.** Distinct from the previous invariant: the classifier never emits `Dst(Closure)` for *any* spec, closure-body or otherwise. Closures aren't a DPS target in v1.\n\n**Why gated**: every consumer of `return_reprs` (halt_cont_body_id_for, halt_kind, coerce, tagged_get, retag-on-cont-fire, codegen_repr) currently traps on Dst with `unreachable!()`. Until q9g.4/.5/.3 land the handlers that actually need to handle Dst in real lowering paths, emitting Dst would crash codegen. The gate decouples \"classify correctly\" from \"consume it.\"\n\n**Source of result Descr**: `module_types.effective_returns[(fn_id, spec_key)]` (already consumed at src/ir_codegen.rs:2413). No duplication of the join logic.\n\n**Invariant**: never emitted on extern signatures (asserted at the build_fn_signature seam).\n\n**Tests**:\n- Unit: classifier behavior — pins on single-shape Descrs, None on unions/any/halt-only.\n- Unit: with the gate forced on under `cfg(test)`, a synthesized fn-types fixture yields Dst in `return_reprs`. Default-off build path produces no Dst.\n- Assertion: externs never receive Dst regardless of gate state.\n\n**CLIF impact**: zero — gate off in default build.\n\n**Out of scope**: any lowering that consumes Dst (q9g.4/.5/.3).\n\n**Precondition**: fz-q9g.26 (RES) — the audit must enumerate the consumer surface before we light up a producer.",
   "id": "fz-q9g.2",
@@ -20,8 +21,8 @@
     }
   ],
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "fz-dps.C1: per-spec result Descr -\u003e HeapKind classifier",
   "type": "task",
-  "updated_at": "2026-05-18T20:24:57Z"
+  "updated_at": "2026-05-18T20:28:33Z"
 }
