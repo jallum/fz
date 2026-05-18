@@ -517,7 +517,7 @@ fn walk_block(
                 ctx.note(StalledReason::OpaqueArg);
                 return None;
             };
-            if is_scalar_literal(&d) {
+            if is_materializable(&d) {
                 Some(d)
             } else {
                 ctx.note(StalledReason::CalleeBodyShape);
@@ -737,16 +737,44 @@ fn is_scalar_literal(d: &Descr) -> bool {
 /// materialized literal, after pushing the necessary stmts into the
 /// target block. None if `d` is not materializable.
 ///
-/// Scaffold (this ticket): scalar arm only — delegates to
-/// `literal_to_const`. Arcs .2 / .3 widen with closure_lit, tuple_lit,
-/// and empty-list arms.
+/// Arms:
+/// - scalar (f88.1): delegates to `literal_to_const`.
+/// - closure_lit (f88.2): materializes captures recursively, then
+///   pushes `Prim::MakeClosure(fn_id, cap_vars)`.
 fn descr_to_materialize(d: &Descr, m: &mut Module, fn_idx: usize, bid: BlockId) -> Option<Var> {
-    let const_val = literal_to_const(d, m)?;
-    let v = fresh_var(&m.fns[fn_idx]);
-    block_mut(&mut m.fns[fn_idx], bid)
-        .stmts
-        .push(Stmt::Let(v, Prim::Const(const_val)));
-    Some(v)
+    if let Some(const_val) = literal_to_const(d, m) {
+        let v = fresh_var(&m.fns[fn_idx]);
+        block_mut(&mut m.fns[fn_idx], bid)
+            .stmts
+            .push(Stmt::Let(v, Prim::Const(const_val)));
+        return Some(v);
+    }
+    if let Some(cl) = d.as_closure_lit() {
+        let cl = cl.clone();
+        let mut cap_vars = Vec::with_capacity(cl.captures.len());
+        for c in &cl.captures {
+            cap_vars.push(descr_to_materialize(c, m, fn_idx, bid)?);
+        }
+        let v = fresh_var(&m.fns[fn_idx]);
+        block_mut(&mut m.fns[fn_idx], bid)
+            .stmts
+            .push(Stmt::Let(v, Prim::MakeClosure(cl.fn_id, cap_vars)));
+        return Some(v);
+    }
+    None
+}
+
+/// fz-f88.2 — Predicate paired with `descr_to_materialize`: true iff
+/// the materializer would accept this Descr. Used to widen the
+/// walk_block Return gate beyond scalar-only.
+fn is_materializable(d: &Descr) -> bool {
+    if is_scalar_literal(d) {
+        return true;
+    }
+    if let Some(cl) = d.as_closure_lit() {
+        return cl.captures.iter().all(is_materializable);
+    }
+    false
 }
 
 /// Convert a scalar-literal Descr back to a `Const`. Atoms are interned in

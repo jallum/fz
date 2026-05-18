@@ -12,7 +12,7 @@ apply1:
   blk0 ClosureLit(0,0) -> Emitted (lambda_14#14 [10, 20, 12])
 
 main:
-  blk0 Direct -> Emitted (add_to#11 [10, 20])
+  blk0 Direct -> Consumed (&fn14[10, 20]:() -> any)
 
 k_15:
   blk0 Direct -> Emitted (apply1#12 [&fn14[10, 20]:(any) -> any, 12])
