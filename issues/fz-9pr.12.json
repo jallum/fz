@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-9pr.11"
+  ],
   "blocks": [],
   "created": "2026-05-18T15:02:42Z",
   "description": "Investigation ticket. Run the codegen pipeline twice:\n  (a) Old path: ir_inline runs, reducer runs without Inlined producer.\n  (b) New path: reducer runs with Inlined producer, ir_inline disabled.\n\nFor each fixture, diff the surviving IR. Document:\n  - Where new path differs from old path.\n  - For each difference, is it correct? (runtime parity, golden\n    matches, spec set equivalence)\n\nIf new path is provably equivalent or strictly better: proceed to E.3.\nIf gaps: E.1 needs more work before E.3 can land.\n\n## Acceptance\n\n- A doc artifact in docs/walkthroughs/inline-handoff-audit.md\n  enumerating per-fixture before/after.\n- Decision: proceed (link to E.3) or iterate on E.1.\n\n## Removes\n\nNothing — investigation only.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "fz-CO.E.2 — Audit: reducer's Inlined matches ir_inline's inlinings",
   "type": "task",
-  "updated_at": "2026-05-18T15:02:42Z"
+  "updated_at": "2026-05-18T15:02:43Z"
 }
