@@ -44,6 +44,10 @@ const TAG_ATOM: i64 = 0b010;
 const NIL_BITS: i64 = 0b011;
 const TRUE_BITS: i64 = (1 << 3) | 0b011;
 const FALSE_BITS: i64 = (2 << 3) | 0b011;
+/// fz-s9y.2 — empty-list sentinel. TAG_PTR with payload 1 → bit pattern
+/// 0x8. Sits in unmapped page 0 so no allocator collides with it.
+/// Distinct from NIL_BITS (the nil atom-like value).
+const EMPTY_LIST_BITS: i64 = 1 << 3;
 
 /// Errors from `compile()`. Backend-plumbing failures (cranelift
 /// `declare_function` / `define_function` / `finalize_definitions`) carry
@@ -5526,9 +5530,12 @@ fn lower_collection_prim<M: cranelift_module::Module>(
             b.ins().load(types::I64, MemFlags::trusted(), cv, 24)
         }
         Prim::MakeList(elems, tail) => {
+            // fz-s9y.2 — the default tail of a list-literal is the empty
+            // list (`[]`), NOT the nil atom value. They have distinct
+            // runtime bit patterns now.
             let mut acc = match tail {
                 Some(t) => tagged_get(var_env, b, jmod, runtime, t.0, cache),
-                None => cached_iconst(b, cache, NIL_BITS),
+                None => cached_iconst(b, cache, EMPTY_LIST_BITS),
             };
             let fref = jmod.declare_func_in_func(runtime.alloc_cons_id, b.func);
             for e in elems.iter().rev() {
@@ -6247,9 +6254,12 @@ fn lower_prim<M: cranelift_module::Module>(
             return Ok(LowerOut::DeadUnit);
         }
         Prim::IsEmptyList(c) => {
+            // fz-s9y.2 — compares to EMPTY_LIST_BITS (was NIL_BITS).
+            // The empty list and the nil atom value are now distinct
+            // bit patterns.
             let cv = tagged_get(var_env, b, jmod, runtime, c.0, cache);
-            let nil_v = cached_iconst(b, cache, NIL_BITS);
-            let cmp = b.ins().icmp(IntCC::Equal, cv, nil_v);
+            let empty_list_v = cached_iconst(b, cache, EMPTY_LIST_BITS);
+            let cmp = b.ins().icmp(IntCC::Equal, cv, empty_list_v);
             if cache.if_only_conds.contains(&dest_var.0) {
                 return Ok(LowerOut::Condition(cmp));
             }

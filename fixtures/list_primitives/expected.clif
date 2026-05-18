@@ -18,9 +18,9 @@ block0(v0: i64):
     v3 = iconst.i64 3                   ; @18:15
     v4 = iconst.i64 4                   ; @18:18
     v5 = iconst.i64 5                   ; @18:21
-    v6 = iconst.i64 3
+    v6 = iconst.i64 8
     v7 = iconst.i64 41
-    v8 = call fn0(v7, v6)  ; v7 = 41, v6 = 3
+    v8 = call fn0(v7, v6)  ; v7 = 41, v6 = 8
     v9 = iconst.i64 33
     v10 = call fn0(v9, v8)  ; v9 = 33
     v11 = iconst.i64 25
@@ -56,8 +56,8 @@ function u0:0(i64, i64) -> i64 tail {
     fn3 = colocated u0:52 sig4
 
     block0(v0: i64, v1: i64):    ;; v0 :: list(1 | 2 | 3 | 4 | 5)
-    v2 = iconst.i64 3
-    v3 = icmp eq v0, v2  ; v2 = 3    ;; v3 :: bool
+    v2 = iconst.i64 8
+    v3 = icmp eq v0, v2  ; v2 = 8    ;; v3 :: bool
     brif v3, block1, block2
 
 block1:
@@ -66,8 +66,8 @@ block1:
     return_call_indirect sig0, v5(v4, v1)  ; v4 = 0
 
 block2:
-    v6 = iconst.i64 3
-    v7 = icmp.i64 eq v0, v6  ; v6 = 3    ;; v7 :: bool
+    v6 = iconst.i64 8
+    v7 = icmp.i64 eq v0, v6  ; v6 = 8    ;; v7 :: bool
     brif v7, block3, block4
 
 block3:
@@ -107,8 +107,8 @@ function u0:0(i64, i64) -> i64 tail {
     fn3 = colocated u0:52 sig4
 
     block0(v0: i64, v1: i64):    ;; v0 :: nil | list(int)
-    v2 = iconst.i64 3
-    v3 = icmp eq v0, v2  ; v2 = 3    ;; v3 :: bool
+    v2 = iconst.i64 8
+    v3 = icmp eq v0, v2  ; v2 = 8    ;; v3 :: bool
     brif v3, block1, block2
 
 block1:
@@ -117,8 +117,8 @@ block1:
     return_call_indirect sig0, v5(v4, v1)  ; v4 = 0
 
 block2:
-    v6 = iconst.i64 3
-    v7 = icmp.i64 eq v0, v6  ; v6 = 3    ;; v7 :: bool
+    v6 = iconst.i64 8
+    v7 = icmp.i64 eq v0, v6  ; v6 = 8    ;; v7 :: bool
     brif v7, block3, block4
 
 block3:
@@ -153,8 +153,8 @@ function u0:0(i64, i64) -> i64 tail {
     fn1 = colocated u0:43 sig1
 
     block0(v0: i64, v1: i64):    ;; v0 :: list(1 | 2 | 3 | 4 | 5)
-    v2 = iconst.i64 3    ;; v2 :: list(none)
-    return_call fn1(v0, v2, v1)         ; @4:21  v2 = 3
+    v2 = iconst.i64 8    ;; v2 :: list(none)
+    return_call fn1(v0, v2, v1)         ; @4:21  v2 = 8
 }
 
 ; fn reverse_acc_s22
@@ -176,8 +176,8 @@ function u0:0(i64, i64, i64) -> i64 tail {
     fn4 = u0:30 sig5
 
     block0(v0: i64, v1: i64, v2: i64):    ;; v0 :: list(1 | 2 | 3 | 4 | 5), v1 :: list(none)
-    v3 = iconst.i64 3
-    v4 = icmp eq v0, v3  ; v3 = 3    ;; v4 :: bool
+    v3 = iconst.i64 8
+    v4 = icmp eq v0, v3  ; v3 = 8    ;; v4 :: bool
     brif v4, block1, block2
 
 block1:
@@ -185,8 +185,8 @@ block1:
     return_call_indirect sig0, v5(v1, v2)
 
 block2:
-    v6 = iconst.i64 3
-    v7 = icmp.i64 eq v0, v6  ; v6 = 3    ;; v7 :: bool
+    v6 = iconst.i64 8
+    v7 = icmp.i64 eq v0, v6  ; v6 = 8    ;; v7 :: bool
     brif v7, block3, block4
 
 block3:
@@ -239,8 +239,8 @@ function u0:0(i64, i64, i64) -> i64 tail {
     fn4 = u0:30 sig5
 
     block0(v0: i64, v1: i64, v2: i64):    ;; v0 :: nil | list(1 | 2 | 3 | 4 | 5), v1 :: list(1 | 2 | 3 | 4 | 5)
-    v3 = iconst.i64 3
-    v4 = icmp eq v0, v3  ; v3 = 3    ;; v4 :: bool
+    v3 = iconst.i64 8
+    v4 = icmp eq v0, v3  ; v3 = 8    ;; v4 :: bool
     brif v4, block1, block2
 
 block1:
@@ -248,8 +248,8 @@ block1:
     return_call_indirect sig0, v5(v1, v2)
 
 block2:
-    v6 = iconst.i64 3
-    v7 = icmp.i64 eq v0, v6  ; v6 = 3    ;; v7 :: bool
+    v6 = iconst.i64 8
+    v7 = icmp.i64 eq v0, v6  ; v6 = 8    ;; v7 :: bool
     brif v7, block3, block4
 
 block3:
@@ -303,18 +303,18 @@ function u0:0(i64, i64, i64) -> i64 tail {
     fn5 = colocated u0:53 sig6
 
     block0(v0: i64, v1: i64, v2: i64):    ;; v0 :: &fn16[]:(any) -> any, v1 :: list(1 | 2 | 3 | 4 | 5)
-    v3 = iconst.i64 3
-    v4 = icmp eq v1, v3  ; v3 = 3    ;; v4 :: bool
+    v3 = iconst.i64 8
+    v4 = icmp eq v1, v3  ; v3 = 8    ;; v4 :: bool
     brif v4, block1, block2
 
 block1:
-    v5 = iconst.i64 3    ;; v5 :: list(none)
+    v5 = iconst.i64 8    ;; v5 :: list(none)
     v6 = load.i64 notrap aligned v2+16
-    return_call_indirect sig1, v6(v5, v2)  ; v5 = 3
+    return_call_indirect sig1, v6(v5, v2)  ; v5 = 8
 
 block2:
-    v7 = iconst.i64 3
-    v8 = icmp.i64 eq v1, v7  ; v7 = 3    ;; v8 :: bool
+    v7 = iconst.i64 8
+    v8 = icmp.i64 eq v1, v7  ; v7 = 8    ;; v8 :: bool
     brif v8, block3, block4
 
 block3:
@@ -363,18 +363,18 @@ function u0:0(i64, i64, i64) -> i64 tail {
     fn5 = colocated u0:53 sig6
 
     block0(v0: i64, v1: i64, v2: i64):    ;; v0 :: &fn16[]:(any) -> any, v1 :: nil | list(int)
-    v3 = iconst.i64 3
-    v4 = icmp eq v1, v3  ; v3 = 3    ;; v4 :: bool
+    v3 = iconst.i64 8
+    v4 = icmp eq v1, v3  ; v3 = 8    ;; v4 :: bool
     brif v4, block1, block2
 
 block1:
-    v5 = iconst.i64 3    ;; v5 :: list(none)
+    v5 = iconst.i64 8    ;; v5 :: list(none)
     v6 = load.i64 notrap aligned v2+16
-    return_call_indirect sig1, v6(v5, v2)  ; v5 = 3
+    return_call_indirect sig1, v6(v5, v2)  ; v5 = 8
 
 block2:
-    v7 = iconst.i64 3
-    v8 = icmp.i64 eq v1, v7  ; v7 = 3    ;; v8 :: bool
+    v7 = iconst.i64 8
+    v8 = icmp.i64 eq v1, v7  ; v7 = 8    ;; v8 :: bool
     brif v8, block3, block4
 
 block3:
@@ -421,8 +421,8 @@ function u0:0(i64, i64, i64, i64) -> i64 tail {
     fn4 = colocated u0:55 sig5
 
     block0(v0: i64, v1: i64, v2: i64, v3: i64):    ;; v0 :: &fn17[]:(any, any) -> any, v1 :: 0, v2 :: list(1 | 2 | 3 | 4 | 5)
-    v4 = iconst.i64 3
-    v5 = icmp eq v2, v4  ; v4 = 3    ;; v5 :: bool
+    v4 = iconst.i64 8
+    v5 = icmp eq v2, v4  ; v4 = 8    ;; v5 :: bool
     brif v5, block1, block2
 
 block1:
@@ -430,8 +430,8 @@ block1:
     return_call_indirect sig0, v6(v1, v3)
 
 block2:
-    v7 = iconst.i64 3
-    v8 = icmp.i64 eq v2, v7  ; v7 = 3    ;; v8 :: bool
+    v7 = iconst.i64 8
+    v8 = icmp.i64 eq v2, v7  ; v7 = 8    ;; v8 :: bool
     brif v8, block3, block4
 
 block3:
@@ -480,8 +480,8 @@ function u0:0(i64, i64, i64, i64) -> i64 tail {
     fn4 = colocated u0:56 sig5
 
     block0(v0: i64, v1: i64, v2: i64, v3: i64):    ;; v0 :: &fn17[]:(any, any) -> any, v1 :: int, v2 :: nil | list(1 | 2 | 3 | 4 | 5)
-    v4 = iconst.i64 3
-    v5 = icmp eq v2, v4  ; v4 = 3    ;; v5 :: bool
+    v4 = iconst.i64 8
+    v5 = icmp eq v2, v4  ; v4 = 8    ;; v5 :: bool
     brif v5, block1, block2
 
 block1:
@@ -489,8 +489,8 @@ block1:
     return_call_indirect sig0, v6(v1, v3)
 
 block2:
-    v7 = iconst.i64 3
-    v8 = icmp.i64 eq v2, v7  ; v7 = 3    ;; v8 :: bool
+    v7 = iconst.i64 8
+    v8 = icmp.i64 eq v2, v7  ; v7 = 8    ;; v8 :: bool
     brif v8, block3, block4
 
 block3:
