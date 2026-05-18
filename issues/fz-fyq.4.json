@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-fyq.2"
+  ],
   "blocks": [],
   "created": "2026-05-18T20:02:30Z",
   "description": "## Goal\nLock destructuring's three-path-plus-repl parity behind the fixture matrix so regressions can't sneak back in.\n\n## Depends on\n- T2 (so irrefutable destructures don't trip warnings-as-errors).\n- T3 (so the interp leg passes for list-cons).\n\n## Scope\nAdd fixture-matrix entries (`tests/fixture_matrix.rs`) exercising:\n- Irrefutable tuple destructure: `{a, b} = pair()`.\n- Refutable list-cons destructure: `[h | t] = xs` (with `match_error` path tested where applicable).\n- Mixed nested: `{[h | t], y} = e`.\n\nEach fixture runs across all four legs: interp, run (JIT), build (AOT), repl.\n\n## Done when\n- New fixtures exist with `input.fz` plus the expected.* snapshots required by the matrix.\n- `tests/fixture_matrix.rs` exercises them across all four legs and they pass.\n- Refutable destructure runtime `match_error` is asserted in at least one fixture per leg.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "T4: fixture-matrix parity for destructuring (all four legs)",
   "type": "task",
-  "updated_at": "2026-05-18T20:02:30Z"
+  "updated_at": "2026-05-18T20:02:31Z"
 }
