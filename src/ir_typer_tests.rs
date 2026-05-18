@@ -138,12 +138,12 @@ fn list_head_yields_element_type() {
 }
 
 #[test]
-fn if_list_is_nil_narrows_v_to_nil_in_then_branch() {
+fn if_is_empty_list_narrows_v_to_empty_list_in_then_branch() {
     // Build:
     //   entry(l):
     //     c = IsEmptyList(l)
     //     if c then then_b else else_b
-    //   then_b: return l   (l narrowed to nil here)
+    //   then_b: return l   (l narrowed to empty list here)
     //   else_b: return l   (l narrowed to list_top here)
     let mut b = FnBuilder::new(FnId(0), "f");
     let l = b.fresh_var();
@@ -157,13 +157,17 @@ fn if_list_is_nil_narrows_v_to_nil_in_then_branch() {
     let m = build_module(vec![b.build()]);
     let mt = type_module(&m);
 
-    // In then_b's entry env, l should be narrowed to nil.
+    // fz-s9y.3 — in then_b's entry env, l is narrowed to the empty
+    // list, encoded in the lattice as list_of(none()). Pre-s9y.3 this
+    // narrowed to Descr::nil() (the nil atom-like value), reflecting
+    // the now-obsolete runtime conflation.
     let ft = fn_view(&m, &mt, 0);
     let then_env = ft.block_envs.get(&then_b).unwrap();
     let l_then = then_env.get(&l).cloned().unwrap();
+    let empty_list = Descr::list_of(Descr::none());
     assert!(
-        l_then.is_subtype(&Descr::nil()) && Descr::nil().is_subtype(&l_then),
-        "l in then-branch should be nil: {}",
+        l_then.is_subtype(&empty_list) && empty_list.is_subtype(&l_then),
+        "l in then-branch should be the empty list (list(none)): {}",
         l_then
     );
 
