@@ -29,7 +29,8 @@
 //! `ir_codegen::compile()` continues to populate `CompiledModule.types`.
 
 use crate::fz_ir::{
-    BinOp, Block, BlockId, Const, Cont, FnId, FnIr, Module, Prim, Stmt, Term, UnOp, Var, VecKindIr,
+    BinOp, Block, BlockId, CallsiteId, Const, Cont, EmitSlot, FnId, FnIr, Module, Prim, Stmt, Term,
+    UnOp, Var, VecKindIr,
 };
 use crate::types::{Descr, MapKey};
 use std::collections::{HashMap, HashSet};
@@ -548,31 +549,11 @@ pub fn reset_typer_counters() {
     WALK_CALLS.with(|c| c.set(0));
 }
 
-/// fz-rh5.6 — disambiguates *which kind of emit* a spec produces
-/// within one (caller_spec, block). A single block can be the source
-/// of multiple emits (e.g., a `Term::Call` block produces both a
-/// `Direct` callee target and a `Cont` target).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum EmitSlot {
-    /// `Term::Call` / `Term::TailCall` callee.
-    Direct,
-    /// The continuation of `Term::Call` / `Term::CallClosure` /
-    /// `Term::Receive` — i.e., (cont.fn_id, [slot0, captures...]).
-    Cont,
-    /// `Term::CallClosure` / `Term::TailCallClosure` target resolved
-    /// via `fn_constants`. Distinct from `Direct` because the same
-    /// block can also produce a `Cont` (separate slot, same block).
-    CallClosureKnown,
-    /// `(clause_idx, sig_idx)` of a `closure_lit`-resolved CallClosure
-    /// target. Multiple lit clauses ⇒ multiple emits per block.
-    ClosureLit(usize, usize),
-    /// `Prim::MakeClosure` at this `stmt_idx` in the block. Emitted
-    /// only when the lambda's opaque-invocation arity is in
-    /// `opaque_arities`; otherwise stashed in
-    /// `pending_makeclosure_arity[arity]` until that arity activates.
-    MakeClosure(usize),
-}
-
+/// fz-9pr.1 — re-exports the slot's `MakeClosure` doc note: emitted
+/// only when the lambda's opaque-invocation arity is in
+/// `opaque_arities`; otherwise stashed in
+/// `pending_makeclosure_arity[arity]` until that arity activates.
+///
 /// fz-rh5.6 — the unique identity of a place that emits a spec.
 ///
 /// Provenance is the invariant that fz-5j5 lacked: every spec in
@@ -589,6 +570,38 @@ pub struct EmitterSite {
     pub caller: (FnId, Vec<Descr>),
     pub block: BlockId,
     pub slot: EmitSlot,
+}
+
+impl EmitterSite {
+    /// fz-9pr.1 — project out the spec-aware `EmitterSite` to a
+    /// spec-agnostic `CallsiteId`. The caller's spec-key is dropped;
+    /// the (FnId, BlockId, EmitSlot) triple survives. Round-trips with
+    /// `CallsiteId::with_spec_key`. Wired into ir_typer's outcome
+    /// writer in fz-9pr.B/D; pre-wire users are tests only.
+    #[allow(dead_code)]
+    pub fn callsite_id(&self) -> CallsiteId {
+        CallsiteId {
+            caller: self.caller.0,
+            block: self.block,
+            slot: self.slot,
+        }
+    }
+}
+
+impl CallsiteId {
+    /// fz-9pr.1 — re-attach a spec-key to recover the full
+    /// `EmitterSite`. The new site's FnId is asserted to match the
+    /// CallsiteId's caller; only the input-Descr tuple is supplied
+    /// fresh. Pre-wire users are tests only; see `EmitterSite::callsite_id`.
+    #[allow(dead_code)]
+    pub fn with_spec_key(self, spec_key: (FnId, Vec<Descr>)) -> EmitterSite {
+        debug_assert_eq!(self.caller, spec_key.0);
+        EmitterSite {
+            caller: spec_key,
+            block: self.block,
+            slot: self.slot,
+        }
+    }
 }
 
 /// fz-rh5.6 — worklist-internal type aliases. Spec keys, the reverse

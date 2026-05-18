@@ -1765,3 +1765,28 @@ fn narrow_for_cond_and_narrows_both_operands_in_then_branch() {
         "else: y should not be pinned to 1"
     );
 }
+
+/// fz-9pr.1 — EmitterSite ↔ CallsiteId round-trip. Drops then re-attaches
+/// a spec-key, recovering the original site exactly. Guards the
+/// projection used by reducer / ir_inline / typer to share one
+/// callsite vocabulary.
+#[test]
+fn callsite_id_round_trip() {
+    use crate::fz_ir::{BlockId, CallsiteId, EmitSlot};
+    use crate::types::Descr;
+
+    let spec_key = (FnId(7), vec![Descr::any(), Descr::int_lit(3)]);
+    let site = EmitterSite {
+        caller: spec_key.clone(),
+        block: BlockId(2),
+        slot: EmitSlot::ClosureLit(1, 0),
+    };
+
+    let cid: CallsiteId = site.callsite_id();
+    assert_eq!(cid.caller, FnId(7));
+    assert_eq!(cid.block, BlockId(2));
+    assert_eq!(cid.slot, EmitSlot::ClosureLit(1, 0));
+
+    let round = cid.with_spec_key(spec_key);
+    assert_eq!(round, site);
+}

@@ -84,6 +84,69 @@ pub struct SpecId(pub u32);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct BlockId(pub u32);
 
+/// fz-9pr.1 — disambiguates *which kind of emit* a given block produces.
+///
+/// A single block can be the source of multiple callsite emits (e.g., a
+/// `Term::Call` block produces both a `Direct` callee target and a
+/// `Cont` target). The slot value names which one. Mirrors the
+/// `EmitSlot` used by ir_typer's discovery walker — by hosting it in
+/// fz_ir we make `CallsiteId` independent of typer internals.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum EmitSlot {
+    /// `Term::Call` / `Term::TailCall` callee.
+    Direct,
+    /// The continuation of `Term::Call` / `Term::CallClosure` /
+    /// `Term::Receive` — i.e., (cont.fn_id, [slot0, captures...]).
+    Cont,
+    /// `Term::CallClosure` / `Term::TailCallClosure` target resolved
+    /// via `fn_constants`. Distinct from `Direct` because the same
+    /// block can also produce a `Cont` (separate slot, same block).
+    CallClosureKnown,
+    /// `(clause_idx, sig_idx)` of a `closure_lit`-resolved CallClosure
+    /// target. Multiple lit clauses ⇒ multiple emits per block.
+    ClosureLit(usize, usize),
+    /// `Prim::MakeClosure` at this `stmt_idx` in the block.
+    MakeClosure(usize),
+}
+
+/// fz-9pr.1 — the address of one callsite in the module.
+///
+/// `(caller, block, slot)` uniquely names a place that can produce a
+/// callee target. Identical in shape to the (caller, block, slot)
+/// triple of `EmitterSite`, minus the spec-key — phases that don't
+/// distinguish between caller specs (the reducer, ir_inline) use
+/// `CallsiteId`; the typer's spec-aware discovery walk uses
+/// `EmitterSite` and round-trips through `with_spec_key` / `callsite_id`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct CallsiteId {
+    pub caller: FnId,
+    pub block: BlockId,
+    pub slot: EmitSlot,
+}
+
+/// fz-9pr.1 — what happened at a callsite, as recorded on the Module.
+///
+/// Four outcomes, three writers (reducer, ir_inline, typer), one
+/// table. See the fz-9pr epic for the unified model. `Consumed`'s
+/// `Descr` is boxed and `Emitted`'s tuple is heap-tailed already, so
+/// the enum stays compact (one word + tag).
+#[derive(Clone, Debug, PartialEq)]
+pub enum CallsiteOutcome {
+    /// Reducer folded the call away. Result Descr is what the
+    /// continuation will see in slot 0.
+    Consumed { result: Box<crate::types::Descr> },
+    /// Callee body was spliced into the caller (ir_inline today,
+    /// reducer once fz-9pr.E lands).
+    Inlined,
+    /// Typer minted a spec for this callsite's target.
+    Emitted {
+        target: (FnId, Vec<crate::types::Descr>),
+    },
+    /// Provisional — nobody has decided yet. Debug invariant
+    /// (fz-9pr.5): no `Stalled` may survive end of pipeline.
+    Stalled,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Var(pub u32);
 
