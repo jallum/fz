@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-9pr.10"
   ],
@@ -18,8 +18,8 @@
     }
   ],
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "fz-CO.E.1 — Reducer learns inline criterion, writes Inlined outcome",
   "type": "task",
-  "updated_at": "2026-05-18T15:25:01Z"
+  "updated_at": "2026-05-18T16:06:44Z"
 }
