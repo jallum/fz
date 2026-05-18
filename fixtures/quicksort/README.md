@@ -1,0 +1,35 @@
+---
+purpose: "closing fixture of the destructure-up-through-quicksort arc — `{lo, hi} = partition(...)` on the hot path of a recursive sort"
+paths: [jit, interp, aot, repl]
+---
+
+# quicksort
+
+The fixture that closes [[fz-fyq]]. Sorts `[3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5]`
+via classic divide-and-conquer:
+
+- `partition/4` splits the rest of the list around the pivot, returning a
+  `{lo, hi}` tuple of the two sub-lists.
+- `qsort/1` destructures that tuple — `{lo, hi} = partition(...)` — on
+  the hot path of every recursive call.
+- `append/2` glues the recursively-sorted halves back together.
+
+This is the program destructuring exists for: a tuple-returning helper
+whose two results need to flow into the next call, where without `=`-bind
+you would either write nested calls (`f(snd(partition(...)), fst(...))`)
+or build accessor helpers per arity. The fact that
+`{lo, hi} = partition(p, rest, [], [])` is one line, irrefutable, and
+folds to pure tuple projection in CLIF is the whole point.
+
+## Notes
+
+`append/2` is body-recursive — fine for the 11-element demo input, would
+blow the stack on a million-element list. This fixture is a
+feature-coverage smoke, not a perf benchmark; the tail-recursive
+formulation is a worthwhile exercise but unrelated to what's being
+proved here.
+
+The `qsort` clauses (`[]` and `[p | rest]`) cover every list but the
+pattern checker doesn't (yet) prove exhaustivity at that granularity —
+a benign `type/no-matching-clause` warning fires for both `qsort` and
+`partition`. Out of scope for this fixture.

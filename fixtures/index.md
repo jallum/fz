@@ -40,6 +40,7 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `mutual_recursion/` | mutual recursion — is_even/is_odd call each other; exercises cross-function recursive dispatch | jit, interp, aot, repl |
 | `nested_modules/` | inner module addressed both fully-qualified (`Outer.Inner.f`) and via outer-local reference | jit, interp, repl |
 | `polymorphic/` | parametric `id` exercised over int, atom, and bool | jit, interp, repl |
+| `quicksort/` | closing fixture of the destructure-up-through-quicksort arc — `{lo, hi} = partition(...)` on the hot path of a recursive sort | jit, interp, aot, repl |
 | `relay/` | one-hop relay — spawned child blocks on receive before parent sends; exercises non-blocking spawn + receive-parks semantics | jit, interp, aot |
 | `sample_tests/` | `test()` macro from the prelude — assert_eq / assert_neq / assert | jit |
 | `sample_tests_module/` | `test()` inside a defmodule body | jit |
