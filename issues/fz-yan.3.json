@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-yan.2"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-yan.4"
+  ],
   "created": "2026-05-18T18:15:54Z",
   "description": "## The change\n\nAfter NA.1+NA.2, the atoms named \"nil\"/\"true\"/\"false\" with reserved\nIDs 0/1/2 are technically just atoms — naive print would render\nthem as \":nil\"/\":true\"/\":false\". But the source-level convention\n(and existing `print(nil)` output, pinned by fixtures) is to render\nthem bareword. Re-establish that as an explicit rendering rule for\nthe three reserved IDs.\n\n### Update\n\n  runtime/src/fz_value.rs:\n    `debug::render_atom`:\n      Before formatting `:atom_N` / `:name`, check if the atom ID\n      equals one of the three reserved IDs. If so, render bareword:\n        atom_id == NIL_ATOM_ID   → \"nil\"\n        atom_id == TRUE_ATOM_ID  → \"true\"\n        atom_id == FALSE_ATOM_ID → \"false\"\n      Other atoms render `:name` as today.\n\n  src/types.rs:\n    Descr Display impl:\n      atom_lit(\"nil\") renders as `nil` (not `:nil`).\n      atom_lit(\"true\") renders as `true`.\n      atom_lit(\"false\") renders as `false`.\n      Other atom literals render `:name` as today.\n      bool_t() may render as `true | false` or `bool` — pick the\n      shorter convention; document.\n\n### Why these three are special-cased\n\nDocument the rationale in a doc comment near the rendering site:\nthe three are reserved at compile time because the language has\nkeywords for them (`nil`, `true`, `false`) and source/print\nsymmetry is the design intent. Other atoms have no keyword; the\nleading colon distinguishes the atom literal from a Var or call.\n\n### Goldens\n\nSpec / CLIF goldens may shift if any Display impl rendered atom\nliterals differently. expected.txt should NOT change — the\nruntime's render path was already producing \"nil\"/\"true\"/\"false\"\nfor those values pre-epic; this re-establishes that after NA.1\nchanged the underlying representation.\n\n## Removes\n\nNothing structural. Adds three branches in the rendering match.\n\n## Depends on\n\nNA.2.\n\n## Hazards\n\n  - If a user writes `:nil` (atom literal with leading colon)\n    expecting it to be a different value from `nil` (the keyword),\n    after this epic they're the same value and print the same.\n    Audit fixtures: none use `:nil` / `:true` / `:false` (per\n    pre-flight grep). Safe.\n  - Any test asserting specific render strings for atom IDs 0/1/2\n    needs updating.",
   "id": "fz-yan.3",
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "fz-NA.3: pretty-print — reserved atoms render without colon",
   "type": "task",
-  "updated_at": "2026-05-18T18:16:32Z"
+  "updated_at": "2026-05-18T18:16:33Z"
 }
