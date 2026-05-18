@@ -25,7 +25,10 @@
 //! - Non-tail `Term::Call` inside callee bodies (needs cont
 //!   reasoning — RED.5+).
 
-use crate::fz_ir::{Block, BlockId, Const, FnId, FnIr, Module, Prim, Stmt, Term, Var};
+use crate::fz_ir::{
+    Block, BlockId, CallsiteId, CallsiteOutcome, Const, EmitSlot, FnId, FnIr, Module, Prim, Stmt,
+    Term, Var,
+};
 use crate::reducer::{
     as_atom_lit, as_bool_lit, as_float_lit, as_int_lit, as_str_lit, fold_prim, is_literal,
     is_nil_only,
@@ -126,6 +129,7 @@ fn reduce_terminator(
                 stack: Vec::new(),
             };
             let lit = try_reduce_call(&mut ctx, *callee, args, env)?;
+            record_consumed(m, fn_idx, bid, EmitSlot::Direct, lit.clone());
             let new_var = fresh_var(&m.fns[fn_idx]);
             let const_val = literal_to_const(&lit, m)?;
             block_mut(&mut m.fns[fn_idx], bid)
@@ -144,6 +148,7 @@ fn reduce_terminator(
                 stack: Vec::new(),
             };
             let lit = try_reduce_call(&mut ctx, *callee, args, env)?;
+            record_consumed(m, fn_idx, bid, EmitSlot::Direct, lit.clone());
             let new_var = fresh_var(&m.fns[fn_idx]);
             let const_val = literal_to_const(&lit, m)?;
             block_mut(&mut m.fns[fn_idx], bid)
@@ -170,6 +175,7 @@ fn reduce_terminator(
                 stack: Vec::new(),
             };
             let lit = try_reduce_call_with_descrs(&mut ctx, cl_lit.fn_id, &all_descrs)?;
+            record_consumed(m, fn_idx, bid, EmitSlot::ClosureLit(0, 0), lit.clone());
             let new_var = fresh_var(&m.fns[fn_idx]);
             let const_val = literal_to_const(&lit, m)?;
             block_mut(&mut m.fns[fn_idx], bid)
@@ -193,6 +199,7 @@ fn reduce_terminator(
                 stack: Vec::new(),
             };
             let lit = try_reduce_call_with_descrs(&mut ctx, cl_lit.fn_id, &all_descrs)?;
+            record_consumed(m, fn_idx, bid, EmitSlot::ClosureLit(0, 0), lit.clone());
             let new_var = fresh_var(&m.fns[fn_idx]);
             let const_val = literal_to_const(&lit, m)?;
             block_mut(&mut m.fns[fn_idx], bid)
@@ -208,6 +215,25 @@ fn reduce_terminator(
         }
         _ => None,
     }
+}
+
+/// fz-9pr.3 — write a `CallsiteOutcome::Consumed` entry to the
+/// module's outcome table. The reducer's job is to write; nobody
+/// reads these yet (readers land in fz-9pr.D). Idempotent: identical
+/// repeated reductions overwrite with the same value.
+fn record_consumed(m: &mut Module, fn_idx: usize, block: BlockId, slot: EmitSlot, result: Descr) {
+    let caller = m.fns[fn_idx].id;
+    let cid = CallsiteId {
+        caller,
+        block,
+        slot,
+    };
+    m.callsite_outcomes.insert(
+        cid,
+        CallsiteOutcome::Consumed {
+            result: Box::new(result),
+        },
+    );
 }
 
 /// fz-jg5.5 — Default unroll budget per top-level callsite. Counts
@@ -989,6 +1015,49 @@ mod tests {
                 }
             }
             other => panic!("expected Return, got {:?}", other),
+        }
+    }
+
+    /// fz-9pr.3 — every successful reducer rewrite must publish a
+    /// `Consumed` outcome at the right `CallsiteId`. This test builds
+    /// the same identity-call module as `reduces_identity_call_with_int_literal`
+    /// and asserts main's TailCall site is recorded as
+    /// `Consumed { result: int_lit(42) }`.
+    #[test]
+    fn reducer_publishes_consumed_outcome() {
+        let mut id_b = FnBuilder::new(FnId(0), "id");
+        let x = id_b.fresh_var();
+        let entry = id_b.block(vec![x]);
+        id_b.set_terminator(entry, Term::Return(x));
+
+        let mut main_b = FnBuilder::new(FnId(1), "main");
+        let m_entry = main_b.block(vec![]);
+        let c42 = main_b.let_(m_entry, Prim::Const(Const::Int(42)));
+        main_b.set_terminator(
+            m_entry,
+            Term::TailCall {
+                callee: FnId(0),
+                args: vec![c42],
+                is_back_edge: false,
+            },
+        );
+
+        let mut mb = ModuleBuilder::new();
+        mb.add_fn(id_b.build());
+        mb.add_fn(main_b.build());
+        let mut m = mb.build();
+        reduce_module(&mut m);
+
+        let cid = CallsiteId {
+            caller: FnId(1),
+            block: m_entry,
+            slot: EmitSlot::Direct,
+        };
+        match m.callsite_outcomes.get(&cid) {
+            Some(CallsiteOutcome::Consumed { result }) => {
+                assert_eq!(**result, Descr::int_lit(42));
+            }
+            other => panic!("expected Consumed outcome, got {:?}", other),
         }
     }
 }
