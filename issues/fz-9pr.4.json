@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-9pr.3"
   ],
@@ -12,8 +12,8 @@
   "labels": [],
   "parent": "fz-9pr",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "fz-CO.B.2 — Reducer publishes Stalled outcomes",
   "type": "task",
-  "updated_at": "2026-05-18T15:01:42Z"
+  "updated_at": "2026-05-18T15:35:38Z"
 }
