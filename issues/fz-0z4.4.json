@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-18T18:53:43Z",
+  "description": "## Scope\n\nAfter fz-0z4.2 (B) and fz-0z4.3 (C), `ModuleTypes.reachable_specs`\nhas no consumers. Delete:\n\n- The field declaration at ir_typer.rs:238.\n- The construction at ir_typer.rs:826 (`let reachable_specs: ... =\n  specs.keys().cloned().collect();`).\n- The struct field assignment at ir_typer.rs:833.\n- The parity test `module_types_exposes_reachable_specs` at\n  ir_typer_tests.rs:1856–1890 (asserts the field mirrors\n  `specs.keys()`; obsolete once the field is gone).\n\nCompiler enforces completeness — if any other reader exists, deletion\nerrors and reveals it.\n\n## Why a separate atom from C\n\nC migrates one consumer; B migrates the other. D is the field\ndeletion that becomes possible once both are migrated. Keeping the\ndeletion as its own commit makes the \"no more readers\" point\nexplicit in history.\n\n## Depends on\n\nfz-0z4.2 (B) and fz-0z4.3 (C).\n\n## Acceptance\n\n- `cargo build` clean.\n- All tests pass.\n- `grep -rn reachable_specs src/` shows only the unrelated\n  `pub fn ir_typer::reachable_specs(...)` codegen function (line\n  2877).",
+  "id": "fz-0z4.4",
+  "labels": [],
+  "parent": "fz-0z4",
+  "priority": 1,
+  "status": "open",
+  "title": "Delete ModuleTypes.reachable_specs field, construction, parity test",
+  "type": "task",
+  "updated_at": "2026-05-18T18:53:43Z"
+}
