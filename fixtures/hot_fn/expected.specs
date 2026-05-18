@@ -46,7 +46,7 @@
 
 ; spec main(0) #fn=12
 ;   key:    []
-;   return: none
+;   return: nil
 ;   vars:
 ;     Var(0) :: :match_error
 ;     Var(1) :: 0
@@ -59,7 +59,7 @@
 
 ; spec k_13(1) #fn=13
 ;   key:    [int]
-;   return: none
+;   return: nil
 ;   vars:
 ;     Var(0) :: int
 ;   exits:
@@ -70,7 +70,7 @@
 
 ; spec k_14(1) #fn=14
 ;   key:    [nil]
-;   return: none
+;   return: nil
 ;   vars:
 ;     Var(0) :: nil
 ;     Var(1) :: 0
@@ -82,7 +82,7 @@
 
 ; spec k_15(1) #fn=15
 ;   key:    [int]
-;   return: none
+;   return: nil
 ;   vars:
 ;     Var(0) :: int
 ;   exits:
@@ -93,7 +93,7 @@
 
 ; spec k_16(1) #fn=16
 ;   key:    [nil]
-;   return: none
+;   return: nil
 ;   vars:
 ;     Var(0) :: nil
 ;     Var(1) :: 0
@@ -105,7 +105,7 @@
 
 ; spec k_17(1) #fn=17
 ;   key:    [int]
-;   return: none
+;   return: nil
 ;   vars:
 ;     Var(0) :: int
 ;   exits:
@@ -116,7 +116,7 @@
 
 ; spec k_18(1) #fn=18
 ;   key:    [nil]
-;   return: none
+;   return: nil
 ;   vars:
 ;     Var(0) :: nil
 ;     Var(1) :: 0
@@ -128,7 +128,7 @@
 
 ; spec k_19(1) #fn=19
 ;   key:    [int]
-;   return: none
+;   return: nil
 ;   vars:
 ;     Var(0) :: int
 ;   exits:
@@ -139,7 +139,7 @@
 
 ; spec k_20(1) #fn=20
 ;   key:    [nil]
-;   return: none
+;   return: nil
 ;   vars:
 ;     Var(0) :: nil
 ;     Var(1) :: 0
@@ -151,7 +151,7 @@
 
 ; spec k_21(1) #fn=21
 ;   key:    [int]
-;   return: none
+;   return: nil
 ;   vars:
 ;     Var(0) :: int
 ;   exits:
@@ -162,7 +162,7 @@
 
 ; spec k_22(1) #fn=22
 ;   key:    [nil]
-;   return: none
+;   return: nil
 ;   vars:
 ;     Var(0) :: nil
 ;     Var(1) :: 0
@@ -174,7 +174,7 @@
 
 ; spec k_23(1) #fn=23
 ;   key:    [int]
-;   return: none
+;   return: nil
 ;   vars:
 ;     Var(0) :: int
 ;   exits:
@@ -185,7 +185,7 @@
 
 ; spec k_24(1) #fn=24
 ;   key:    [nil]
-;   return: none
+;   return: nil
 ;   vars:
 ;     Var(0) :: nil
 ;     Var(1) :: 0
@@ -197,7 +197,7 @@
 
 ; spec k_25(1) #fn=25
 ;   key:    [int]
-;   return: none
+;   return: nil
 ;   vars:
 ;     Var(0) :: int
 ;   exits:
@@ -208,7 +208,7 @@
 
 ; spec k_26(1) #fn=26
 ;   key:    [nil]
-;   return: none
+;   return: nil
 ;   vars:
 ;     Var(0) :: nil
 ;     Var(1) :: 0
@@ -220,7 +220,7 @@
 
 ; spec k_27(1) #fn=27
 ;   key:    [int]
-;   return: none
+;   return: nil
 ;   vars:
 ;     Var(0) :: int
 ;   exits:
@@ -228,4 +228,48 @@
 ;              callee_key=[int]
 ;              cont k_28#28 captured=[]
 ;              cont_key=[nil]
+
+; spec k_28(1) #fn=28
+;   key:    [nil]
+;   return: nil
+;   vars:
+;     Var(0) :: nil
+;     Var(1) :: 0
+;   exits:
+;     blk0 Call hot#11(Var(1))
+;              callee_key=[0]
+;              cont k_29#29 captured=[]
+;              cont_key=[int]
+
+; spec k_29(1) #fn=29
+;   key:    [int]
+;   return: nil
+;   vars:
+;     Var(0) :: int
+;   exits:
+;     blk0 Call print#0(Var(0))
+;              callee_key=[int]
+;              cont k_30#30 captured=[]
+;              cont_key=[nil]
+
+; spec k_30(1) #fn=30
+;   key:    [nil]
+;   return: nil
+;   vars:
+;     Var(0) :: nil
+;     Var(1) :: 0
+;   exits:
+;     blk0 Call hot#11(Var(1))
+;              callee_key=[0]
+;              cont k_31#31 captured=[]
+;              cont_key=[int]
+
+; spec k_31(1) #fn=31
+;   key:    [int]
+;   return: nil
+;   vars:
+;     Var(0) :: int
+;   exits:
+;     blk0 TailCall print#0(Var(0))
+;              callee_key=[int]
 
