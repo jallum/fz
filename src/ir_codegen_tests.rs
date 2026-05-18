@@ -38,9 +38,10 @@ fn join_return_descrs(
 /// pointer-identical results. See docs/cps-in-clif.md §8.2.
 #[test]
 fn static_closure_targets_registered_for_zero_cap_make_closure() {
-    // `f` and `g` each appear as a zero-cap closure target via
-    // `apply(f, 1)` / `apply(g, 2)` — partial-eval / typer wraps the
-    // top-level fns in `MakeClosure(_, [])` at the call site.
+    // fz-jg5.6: the reducer would dissolve this program to constants
+    // (no MakeClosure survives). Disable it so this test exercises the
+    // codegen infrastructure that handles closures *the reducer can't
+    // dissolve* — opaque/runtime-driven uses.
     let src = "fn f(x), do: x + 1\n\
                fn g(x), do: x * 2\n\
                fn apply(h, x), do: h(x)\n\
@@ -49,7 +50,7 @@ fn static_closure_targets_registered_for_zero_cap_make_closure() {
                  print(apply(g, 2))\n\
                end";
     let m = lower_src(src);
-    let compiled = compile(&m).expect("compile");
+    let compiled = crate::ir_codegen::with_reducer_disabled(|| compile(&m).expect("compile"));
     let targets = compiled.static_closure_targets();
     // At minimum, `f` and `g` are registered.
     assert!(
@@ -88,7 +89,8 @@ fn static_closure_lookup_returns_singleton_pointer() {
                fn apply(h, x), do: h(x)\n\
                fn main() do print(apply(f, 1)) end";
     let m = lower_src(src);
-    let compiled = compile(&m).expect("compile");
+    // fz-jg5.6: reducer-disabled — see note on the sibling test above.
+    let compiled = crate::ir_codegen::with_reducer_disabled(|| compile(&m).expect("compile"));
     let targets = compiled.static_closure_targets();
     let (cl_sid, _, _, _) = *targets.first().expect("at least one static closure target");
     let mut p = compiled.make_process();

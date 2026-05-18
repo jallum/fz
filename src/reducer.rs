@@ -170,6 +170,11 @@ pub fn fold_prim(
         // lattice's `list_of(elem)` loses length info. `ListIsNil` is the
         // exception — Descr-level subtyping is enough.
         Prim::ListIsNil(v) => fold_list_is_nil(*v, env),
+        // fz-jg5.6: closure_lit fold — when MakeClosure's captures are
+        // all literal, the closure Var has a closure_lit(F, captures) Descr.
+        // The reducer's walk_block uses this to dispatch CallClosure /
+        // TailCallClosure to F directly.
+        Prim::MakeClosure(fn_id, captured) => fold_make_closure(*fn_id, captured, env),
         // Other Prims are not foldable via the Descr lattice in v1.
         Prim::Extern(..)
         | Prim::AllocStruct(..)
@@ -177,7 +182,6 @@ pub fn fold_prim(
         | Prim::ListHead(..)
         | Prim::ListTail(..)
         | Prim::MakeList(..)
-        | Prim::MakeClosure(..)
         | Prim::MakeMap(..)
         | Prim::MapUpdate(..)
         | Prim::MapGet(..)
@@ -358,6 +362,30 @@ fn fold_type_test(v: Var, descr: &Descr, env: &HashMap<Var, Descr>) -> Option<De
     } else {
         None
     }
+}
+
+/// fz-jg5.6: produce a `closure_lit(F, [literal captures])` Descr when
+/// every captured Var has a literal Descr in `env`. The reducer then
+/// dispatches calls through this closure to `F` directly.
+fn fold_make_closure(
+    fn_id: crate::fz_ir::FnId,
+    captured: &[Var],
+    env: &HashMap<Var, Descr>,
+) -> Option<Descr> {
+    let mut cap_descrs: Vec<Descr> = Vec::with_capacity(captured.len());
+    for cv in captured {
+        let d = env.get(cv)?.clone();
+        if !is_literal(&d) {
+            return None;
+        }
+        cap_descrs.push(d);
+    }
+    // n_args is the closure's apparent post-capture arity. We don't
+    // know it here without consulting Module.fn_by_id; passing 0 means
+    // downstream consumers must look up the body's true arity. The
+    // reducer's call-dispatch path consults the body directly, so this
+    // 0 placeholder is fine.
+    Some(Descr::closure_lit(fn_id, cap_descrs, 0))
 }
 
 fn fold_list_is_nil(v: Var, env: &HashMap<Var, Descr>) -> Option<Descr> {

@@ -1882,7 +1882,12 @@ pub fn compile_with_backend<B: Backend>(
     // return is statically known; reduces If-on-bool-literal to Goto.
     // Plugs in after ir_inline + ir_fuse so it sees a cleaner call graph.
     // See docs/bodies-are-boundaries.md.
+    #[cfg(not(test))]
     crate::ir_reducer::reduce_module(&mut working);
+    #[cfg(test)]
+    if !REDUCER_DISABLED.with(|d| d.get()) {
+        crate::ir_reducer::reduce_module(&mut working);
+    }
     let mut module_types = crate::ir_typer::type_module(&working);
     crate::ir_fold::fold_module(&mut working, &module_types);
     // fz-cty.8 — fold byte-literal MakeBitstring into ConstBitstring before
@@ -6819,6 +6824,12 @@ fn bool_to_fz(b: &mut FunctionBuilder<'_>, cache: &mut CodegenCache, v: ir::Valu
 #[cfg(test)]
 thread_local! {
     static INLINE_DISABLED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// fz-jg5.6 — disable the compile-time reducer for tests that
+    /// exercise codegen infrastructure (static_closure_targets,
+    /// stub_fp paths, etc.) whose triggering inputs the reducer would
+    /// dissolve. Parallel to INLINE_DISABLED.
+    pub(crate) static REDUCER_DISABLED: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
 }
 
 #[cfg(test)]
@@ -6826,6 +6837,14 @@ fn with_inline_disabled<F: FnOnce() -> R, R>(f: F) -> R {
     INLINE_DISABLED.with(|d| d.set(true));
     let r = f();
     INLINE_DISABLED.with(|d| d.set(false));
+    r
+}
+
+#[cfg(test)]
+pub(crate) fn with_reducer_disabled<F: FnOnce() -> R, R>(f: F) -> R {
+    REDUCER_DISABLED.with(|d| d.set(true));
+    let r = f();
+    REDUCER_DISABLED.with(|d| d.set(false));
     r
 }
 

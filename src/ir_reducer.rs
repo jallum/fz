@@ -157,6 +157,51 @@ fn reduce_terminator(
                 is_back_edge: false,
             })
         }
+        // fz-jg5.6: top-level closure-call reduction (mirror of walk_block).
+        Term::TailCallClosure { closure, args } => {
+            let cl_lit = env.get(closure)?.as_closure_lit()?.clone();
+            let mut all_descrs = cl_lit.captures.clone();
+            for a in args {
+                all_descrs.push(env.get(a).cloned()?);
+            }
+            let mut ctx = ReduceCtx {
+                module: m,
+                budget: UNROLL_BUDGET_DEFAULT,
+                stack: Vec::new(),
+            };
+            let lit = try_reduce_call_with_descrs(&mut ctx, cl_lit.fn_id, &all_descrs)?;
+            let new_var = fresh_var(&m.fns[fn_idx]);
+            let const_val = literal_to_const(&lit, m)?;
+            block_mut(&mut m.fns[fn_idx], bid)
+                .stmts
+                .push(Stmt::Let(new_var, Prim::Const(const_val)));
+            Some(Term::Return(new_var))
+        }
+        Term::CallClosure { closure, args, continuation } => {
+            let cl_lit = env.get(closure)?.as_closure_lit()?.clone();
+            let mut all_descrs = cl_lit.captures.clone();
+            for a in args {
+                all_descrs.push(env.get(a).cloned()?);
+            }
+            let mut ctx = ReduceCtx {
+                module: m,
+                budget: UNROLL_BUDGET_DEFAULT,
+                stack: Vec::new(),
+            };
+            let lit = try_reduce_call_with_descrs(&mut ctx, cl_lit.fn_id, &all_descrs)?;
+            let new_var = fresh_var(&m.fns[fn_idx]);
+            let const_val = literal_to_const(&lit, m)?;
+            block_mut(&mut m.fns[fn_idx], bid)
+                .stmts
+                .push(Stmt::Let(new_var, Prim::Const(const_val)));
+            let mut tail_args = vec![new_var];
+            tail_args.extend(continuation.captured.iter().copied());
+            Some(Term::TailCall {
+                callee: continuation.fn_id,
+                args: tail_args,
+                is_back_edge: false,
+            })
+        }
         _ => None,
     }
 }
@@ -304,24 +349,50 @@ fn walk_block(
         // taking [callee_result, ...captures] and reduce it too.
         Term::Call { callee: c_callee, args: c_args, continuation } => {
             let inner_result = try_reduce_call(ctx, *c_callee, c_args, &env)?;
-            // Build the cont's input Descrs: slot 0 = callee result,
-            // remaining slots = literal Descrs of captured Vars.
-            let mut cont_descrs: Vec<Descr> = Vec::with_capacity(1 + continuation.captured.len());
-            cont_descrs.push(inner_result);
-            for cap in &continuation.captured {
-                let d = env.get(cap).cloned()?;
-                if !is_literal(&d) {
-                    return None;
-                }
-                cont_descrs.push(d);
-            }
-            try_reduce_call_with_descrs(ctx, continuation.fn_id, &cont_descrs)
+            feed_cont(ctx, continuation, inner_result, &env)
         }
-        Term::CallClosure { .. }
-        | Term::TailCallClosure { .. }
-        | Term::Receive { .. }
-        | Term::Halt(_) => None,
+        // fz-jg5.6: closure-call reduction. When the closure operand has
+        // a closure_lit(F, captures) Descr, dispatch to F directly with
+        // [captures..., args...] as its input Descrs.
+        Term::TailCallClosure { closure, args } => {
+            let cl_lit = env.get(closure)?.as_closure_lit()?.clone();
+            let mut all_descrs = cl_lit.captures;
+            for a in args {
+                all_descrs.push(env.get(a).cloned()?);
+            }
+            try_reduce_call_with_descrs(ctx, cl_lit.fn_id, &all_descrs)
+        }
+        Term::CallClosure { closure, args, continuation } => {
+            let cl_lit = env.get(closure)?.as_closure_lit()?.clone();
+            let mut all_descrs = cl_lit.captures;
+            for a in args {
+                all_descrs.push(env.get(a).cloned()?);
+            }
+            let inner_result = try_reduce_call_with_descrs(ctx, cl_lit.fn_id, &all_descrs)?;
+            feed_cont(ctx, continuation, inner_result, &env)
+        }
+        Term::Receive { .. } | Term::Halt(_) => None,
     }
+}
+
+/// Build the cont's input Descrs `[result, ...captures]` and reduce
+/// through it. Shared by Term::Call and Term::CallClosure.
+fn feed_cont(
+    ctx: &mut ReduceCtx,
+    continuation: &crate::fz_ir::Cont,
+    result: Descr,
+    env: &HashMap<Var, Descr>,
+) -> Option<Descr> {
+    let mut cont_descrs: Vec<Descr> = Vec::with_capacity(1 + continuation.captured.len());
+    cont_descrs.push(result);
+    for cap in &continuation.captured {
+        let d = env.get(cap).cloned()?;
+        if !is_literal(&d) {
+            return None;
+        }
+        cont_descrs.push(d);
+    }
+    try_reduce_call_with_descrs(ctx, continuation.fn_id, &cont_descrs)
 }
 
 fn prim_is_reducible(p: &Prim) -> bool {
