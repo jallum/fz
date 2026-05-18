@@ -11,9 +11,15 @@
   "id": "fz-jg5.2",
   "labels": [],
   "parent": "fz-jg5",
+  "comments": [
+    {
+      "text": "Findings from extended walkthroughs (docs/walkthroughs/FINDINGS.md): expand fold-prim's coverage to include kind-disjoint Eq/Neq (folds even on non-literal operands when kinds are disjoint). Name closure_lit(F, [literal captures]) and literal cons cells explicitly as fold-prim outputs alongside int_lit / float_lit / bool_lit / atom_lit / nil. Test matrix must include each literal form.",
+      "timestamp": "2026-05-18T03:17:55Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "fz-RED.1: pattern reduction primitive (pure fn)",
   "type": "task",
-  "updated_at": "2026-05-18T02:56:54Z"
+  "updated_at": "2026-05-18T03:17:55Z"
 }
