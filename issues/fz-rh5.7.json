@@ -4,14 +4,15 @@
     "fz-rh5.6"
   ],
   "blocks": [],
+  "closed_at": "2026-05-18T12:42:23Z",
   "created": "2026-05-18T12:02:33Z",
   "description": "## The change\n\nDocument termination of \\`type_module\\`'s worklist in a doc-comment\nblock. Add a \\`debug_assert!\\` tripwire keyed off the per-spec visit\ncount.\n\n## The proof (goes in the doc comment above \\`type_module\\`)\n\nThe worklist terminates because:\n\n  (a) \\`effective_returns\\` updates only via \\`Descr::union\\`, which is\n      monotone w.r.t. inclusion. Therefore \\`effective_returns\\` is\n      monotonically non-decreasing in the product Descr lattice.\n\n  (b) The Descr lattice has finite height H, bounded by the count of\n      distinct type-axis values in the program (finite set of atoms,\n      ints, floats, tuple arities, list shapes, etc).\n\n  (c) A spec is enqueued only under three conditions:\n       1. First emission (occurs at most once per spec key).\n       2. A callee's effective_return that this spec reads has\n          changed (occurs at most H times per (spec, callee-edge) pair).\n       3. An opaque arity newly entered \\`opaque_arities\\`, triggering\n          drain of a pending MakeClosure stmt (occurs at most |arities|\n          times per affected spec).\n\n  (d) Spec keys for SCC-internal recursion converge within \\`WIDEN_AT\\`\n      iterations via \\`crate::typer::widen\\`.\n\n  Therefore the total number of worklist pops is bounded by\n\n      O( |specs| · (1 + H · |return-edges per spec|) )\n\n  which is finite.\n\n## The tripwire\n\n\\`\\`\\`rust\nconst VISIT_HARD_BOUND: usize = 4096;\n// Debug-only safety net. The termination proof above means we can\n// never reach this in practice; a hit is a contract violation\n// (likely non-monotone Descr op or a missing fast-path miss). Not\n// a safety margin — it's a tripwire.\ndebug_assert!(\n    *visit_count.get(\u0026spec_key).unwrap_or(\u00260) \u003c VISIT_HARD_BOUND,\n    \"spec {:?} visited {} times — termination invariant violated\",\n    spec_key,\n    visit_count[\u0026spec_key],\n);\n\\`\\`\\`\n\n## Why a constant, not a counter-bound test\n\nPROV.4's counter bounds are *behavioral* tests — they assert \"the\ntyper doesn't regress on a specific program.\" This is a *contract*\nassertion — \"the algorithm itself terminates.\" The two are\ncomplementary:\n\n  - PROV.4 catches \"you introduced an inefficiency.\"\n  - PROV.7 catches \"you broke an invariant the algorithm depends on.\"\n\nThe hard bound is generous (4096) because no real program should\nget anywhere near it. A trip is a bug, not noise.\n\n## Acceptance\n\n- Doc comment above \\`type_module\\` contains the four-clause proof.\n- \\`debug_assert!\\` in \\`process_worklist\\` keyed off visit_count.\n- Zero release-build cost (debug_assert compiles out).\n- All tests pass; PROV.4 counters well under the hard bound.\n\n## Independent of\n\nPROV.1-5. Depends on PROV.6 (the proof is about the unified worklist\nshape, not the current shape).",
   "id": "fz-rh5.7",
   "labels": [],
   "parent": "fz-rh5",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "fz-PROV.7: termination proof + debug-build counter-bound tripwire",
   "type": "task",
-  "updated_at": "2026-05-18T12:39:58Z"
+  "updated_at": "2026-05-18T12:42:23Z"
 }
