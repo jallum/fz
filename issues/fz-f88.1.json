@@ -4,14 +4,15 @@
   "blocks": [
     "fz-f88.2"
   ],
+  "closed_at": "2026-05-18T17:31:25Z",
   "created": "2026-05-18T17:21:46Z",
   "description": "Introduce a single materializer fn that owns the descr→stmts vocabulary.\n\n## Shape\n\n```rust\nfn descr_to_materialize(\n    d: \u0026Descr,\n    m: \u0026mut Module,\n    fn_idx: usize,\n    bid: BlockId,\n) -\u003e Option\u003cVar\u003e\n```\n\nReturns a fresh Var bound to the literal value, after pushing the necessary stmts into the block. None if d isn't materializable.\n\nFirst arm: scalars (delegates to existing literal_to_const → Const). No new capabilities yet.\n\n## Wire up\n\nRoute all four current `literal_to_const` call sites through `descr_to_materialize`:\n- src/ir_reducer.rs:130 (Term::Call rewrite)\n- src/ir_reducer.rs:148 (Term::TailCall rewrite)\n- src/ir_reducer.rs:174 (Term::Call → Term::Return)\n- src/ir_reducer.rs:197 (Term::Return rewrite)\n\nEach call site shrinks: instead of `literal_to_const` + `fresh_var` + `Stmt::Let(Const)` push, just `descr_to_materialize(...)?` returns the Var.\n\n## What to verify\n\n- No behavior change. All existing fixtures + tests pass byte-identical.\n- `literal_to_const` becomes a private helper of the materializer (or stays as-is, called from inside).\n- `is_scalar_literal` unchanged in this ticket — Arc .2 widens it.\n\n## Blocks\n\nfz-f88.2 (closure arm), fz-f88.3 (tuple/empty-list arms).",
   "id": "fz-f88.1",
   "labels": [],
   "parent": "fz-f88",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "fz-RS.1 — descr_to_materialize() scaffold, scalar arm only",
   "type": "task",
-  "updated_at": "2026-05-18T17:29:55Z"
+  "updated_at": "2026-05-18T17:31:25Z"
 }
