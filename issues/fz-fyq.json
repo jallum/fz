@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-18T20:01:21Z",
+  "description": "Destructuring (`{a,b} = e`, `[h|t] = e`) flows through parser→resolve→ir_lower→ir_typer end to end already. The gaps are:\n\n1. The typer correctly proves the synthesized fail block of an irrefutable destructure is dead, then emits `type/unreachable-arm`. With warnings-as-errors, this makes any real destructure unshippable.\n2. The interp leg is missing the list-cons `Discriminant` primitive — interp diverges from JIT/AOT on `[h|t] = e`.\n3. No fixture exercises destructuring in a non-trivial setting.\n\nApproach: data-model up.\n\nDAG:\n\n    T1 --\u003e T2 --+\n                +--\u003e T4 --\u003e T5\n    T3 --------+\n\n- T1 — Outcome variant for \"exhaustive match arm\" + ir_typer publishes it.\n- T2 — Reducer consumer elides synthesized pattern-bind fail blocks; refutable binds keep them (BEAM-conform `match_error`).\n- T3 — Interp parity: implement list-cons Discriminant in ir_interp.\n- T4 — Parity matrix entries: irrefutable tuple, refutable list-cons, mixed nested, across all four legs.\n- T5 — fixtures/quicksort/ as the closing artefact. `{lo, hi} = partition(...)` on the hot path of a recursive sort; expected.clif should show pure projection (visible proof T2 did its job).\n\nConstraints:\n- BEAM-conform: `[h|t] = []` is a runtime `match_error`, not compile-time refusal.\n- Three-path parity required (interp, JIT, AOT) + repl leg.\n- Clean/simple/elegant; no shortcuts.",
+  "id": "fz-fyq",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "Destructuring: data-model-up, with quicksort as the closing fixture",
+  "type": "epic",
+  "updated_at": "2026-05-18T20:01:21Z"
+}
