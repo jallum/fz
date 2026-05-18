@@ -4,14 +4,15 @@
     "fz-qbg.2"
   ],
   "blocks": [],
+  "closed_at": "2026-05-18T00:28:35Z",
   "created": "2026-05-17T03:34:37Z",
   "description": "Depends on fz-qbg.2.\n\n## New fixtures\n\n### `fixtures/actor_ring/`\n\nAlready drafted (input.fz + README.md exist in the fz-duq branch's\nworktree history; or recreate from below). Multi-clause `relay`/2\nthat recursively spawns successors capturing `self()`, then forwards\nan incremented token home. Demonstrates spawn-with-captures +\nself()-capture + multi-clause CPS-split-in-body.\n\n```fz\nfn relay(0, home) do\n  send(home, receive() + 1)\nend\n\nfn relay(n, home) do\n  next = spawn(fn() -\u003e relay(n - 1, home))\n  send(next, receive() + 1)\nend\n\nfn main() do\n  home = self()\n  head = spawn(fn() -\u003e relay(4, home))\n  send(head, 0)\n  print(receive())\nend\n```\n\nExpected stdout: `5`. Paths: `[jit, interp, aot]`.\n\n### `fixtures/multi_clause_body_with_call/`\n\nMinimum repro for the multi-clause Bug-2 class — clause body contains\na non-tail call:\n\n```fz\nfn helper(), do: 7\n\nfn classify(0), do: helper()\nfn classify(_), do: 99\n\nfn main() do\n  print(classify(0))\n  print(classify(5))\nend\n```\n\nExpected stdout: `7\\n99`. Paths: `[jit, interp]` initially; `aot`\nonce a single pass confirms parity.\n\n## Acceptance\n\n- `BLESS=1 BLESS_SPECS=1 cargo test --workspace --test\n  fixture_matrix` succeeds and creates the four new sidecar files\n  per fixture (expected.txt, expected.clif, expected.specs, +\n  README.md/input.fz committed).\n- Subsequent `cargo test --workspace` (no BLESS) green.\n- Manually verify both fixtures run end-to-end via `fz run`.\n\n## What's removed\n\n- The \"Out of scope (deferred to fz-g8v)\" paragraph in fz-duq.5's\n  commit message becomes obsolete history.\n- Ticket fz-g8v gets closed with a forward pointer to fz-qbg.",
   "id": "fz-qbg.3",
   "labels": [],
   "parent": "fz-qbg",
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "fz-qbg.3: graduate actor_ring + multi-clause body-call fixtures",
   "type": "task",
-  "updated_at": "2026-05-17T03:35:44Z"
+  "updated_at": "2026-05-18T00:28:35Z"
 }
