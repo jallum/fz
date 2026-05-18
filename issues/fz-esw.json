@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-05-18T15:31:38Z",
@@ -7,8 +7,8 @@
   "id": "fz-esw",
   "labels": [],
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "scheduler hooks: thread-local slots so parallel Runtimes don't race",
   "type": "bug",
-  "updated_at": "2026-05-18T15:31:38Z"
+  "updated_at": "2026-05-18T15:31:46Z"
 }
