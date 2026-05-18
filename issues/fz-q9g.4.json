@@ -17,11 +17,15 @@
     {
       "text": "subsumed by fz-q9g.3 (CD-bundle): wire ABI cannot land without a constructor demonstrating it",
       "timestamp": "2026-05-17T16:26:46Z"
+    },
+    {
+      "text": "Rewritten 2026-05-18: split out of the old CD-bundle. Lands the C3 handler against the q9g.2 gate (still off in production); test exercises it by cfg(test)-toggling the gate. Eligibility lookup rides Module.callsite_outcomes from fz-9pr/fz-f88.",
+      "timestamp": "2026-05-18T20:03:49Z"
     }
   ],
   "priority": 1,
   "status": "open",
   "title": "fz-dps.C3: lower Term::Call/CallClosure under Dst ABI",
   "type": "task",
-  "updated_at": "2026-05-18T20:03:36Z"
+  "updated_at": "2026-05-18T20:03:49Z"
 }
