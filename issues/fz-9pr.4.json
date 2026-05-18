@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-9pr.3"
+  ],
   "blocks": [],
   "created": "2026-05-18T15:01:41Z",
   "description": "When try_reduce_call returns None and the call survives unchanged\n(no rewrite from reduce_terminator), write \\`Stalled\\` at the same\nCallsiteId.\n\nThis includes:\n- Calls to boundary fns (\\`@spec\\`'d) — Stalled by policy.\n- Calls where args aren't all literal-Descr.\n- Calls where the recursive walk fails (e.g. closure_typed_captures'\n  apply1 call surviving today — write Stalled).\n\nCont slots (EmitSlot::Cont) are NOT written by the reducer in this\nticket; they remain typer-only emissions (per game-walk finding).\n\n## Acceptance\n\n- closure_typed_captures: callsite_outcomes has Stalled entries for\n  add_to(10,20), apply1(closure_lit, 12) callsites.\n- fib_tailrec: Stalled for fib(20, 0, 1).\n- ast_eval: Stalled for the print callsites (print never folds).\n- All 842 tests green.\n\n## Removes\n\nNothing yet.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "fz-CO.B.2 — Reducer publishes Stalled outcomes",
   "type": "task",
-  "updated_at": "2026-05-18T15:01:41Z"
+  "updated_at": "2026-05-18T15:01:42Z"
 }
