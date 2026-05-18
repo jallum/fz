@@ -11,9 +11,15 @@
   "id": "fz-jg5.4",
   "labels": [],
   "parent": "fz-jg5",
+  "comments": [
+    {
+      "text": "Findings (docs/walkthroughs/FINDINGS.md): Implement two named rules: closure-inline (callee Var has Descr closure_lit(F, captures) → rewrite to F(captures++args) and dispatch on F) and if-fold (If(bool_lit, T, E) → Goto). Substitute must handle multi-occurrence binders and unit-return calls at statement position (vr5b_typed_print). The original 'recurse' rule splits into 'descend' (any nested call, no decrease check) and 'recurse-self' (same-callee, decrease required). Counter is per-top-level-callsite.",
+      "timestamp": "2026-05-18T03:17:55Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "fz-RED.3: reducer pass scaffold (single-clause inline)",
   "type": "task",
-  "updated_at": "2026-05-18T02:56:55Z"
+  "updated_at": "2026-05-18T03:17:55Z"
 }
