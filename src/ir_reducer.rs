@@ -74,8 +74,8 @@ use crate::fz_ir::{
     StalledReason, Stmt, Term, Var,
 };
 use crate::reducer::{
-    as_atom_lit, as_bool_lit, as_float_lit, as_int_lit, as_str_lit, fold_prim, is_literal,
-    is_nil_only,
+    as_atom_lit, as_bool_lit, as_float_lit, as_int_lit, as_str_lit, as_tuple_lit, fold_prim,
+    is_literal, is_nil_only,
 };
 use crate::types::Descr;
 use std::collections::HashMap;
@@ -741,6 +741,12 @@ fn is_scalar_literal(d: &Descr) -> bool {
 /// - scalar (f88.1): delegates to `literal_to_const`.
 /// - closure_lit (f88.2): materializes captures recursively, then
 ///   pushes `Prim::MakeClosure(fn_id, cap_vars)`.
+/// - tuple_lit (f88.3): materializes elements recursively, then
+///   pushes `Prim::MakeTuple(elem_vars)`.
+/// - empty list (f88.3): pushes `Prim::MakeList(vec![], None)`.
+///
+/// Non-empty list literal folding stays out of scope (L1 follow-up
+/// fz-4lo): the `list_of(elem)` lattice loses length info.
 fn descr_to_materialize(d: &Descr, m: &mut Module, fn_idx: usize, bid: BlockId) -> Option<Var> {
     if let Some(const_val) = literal_to_const(d, m) {
         let v = fresh_var(&m.fns[fn_idx]);
@@ -761,6 +767,25 @@ fn descr_to_materialize(d: &Descr, m: &mut Module, fn_idx: usize, bid: BlockId) 
             .push(Stmt::Let(v, Prim::MakeClosure(cl.fn_id, cap_vars)));
         return Some(v);
     }
+    if let Some(elems) = as_tuple_lit(d) {
+        let elems: Vec<Descr> = elems.to_vec();
+        let mut elem_vars = Vec::with_capacity(elems.len());
+        for e in &elems {
+            elem_vars.push(descr_to_materialize(e, m, fn_idx, bid)?);
+        }
+        let v = fresh_var(&m.fns[fn_idx]);
+        block_mut(&mut m.fns[fn_idx], bid)
+            .stmts
+            .push(Stmt::Let(v, Prim::MakeTuple(elem_vars)));
+        return Some(v);
+    }
+    if is_empty_list_lit(d) {
+        let v = fresh_var(&m.fns[fn_idx]);
+        block_mut(&mut m.fns[fn_idx], bid)
+            .stmts
+            .push(Stmt::Let(v, Prim::MakeList(vec![], None)));
+        return Some(v);
+    }
     None
 }
 
@@ -774,7 +799,21 @@ fn is_materializable(d: &Descr) -> bool {
     if let Some(cl) = d.as_closure_lit() {
         return cl.captures.iter().all(is_materializable);
     }
+    if let Some(elems) = as_tuple_lit(d) {
+        return elems.iter().all(is_materializable);
+    }
+    if is_empty_list_lit(d) {
+        return true;
+    }
     false
+}
+
+/// fz-f88.3 — exact match for the empty-list literal: `list_of(none())`
+/// and nothing else. Post-fz-s9y, `[]` is a distinct value at the
+/// runtime level; this predicate keeps the materializer honest about
+/// what it claims.
+fn is_empty_list_lit(d: &Descr) -> bool {
+    *d == Descr::list_of(Descr::none())
 }
 
 /// Convert a scalar-literal Descr back to a `Const`. Atoms are interned in
@@ -1349,6 +1388,109 @@ mod tests {
                 assert_eq!(**result, Descr::int_lit(42));
             }
             other => panic!("expected Consumed outcome, got {:?}", other),
+        }
+    }
+
+    /// fz-f88.3 — `fn pair(x, y), do: {x, y}` then `main(): pair(1, 2)`.
+    /// After reduction, main returns a fresh MakeTuple whose elements
+    /// resolve to Const(Int(1)) and Const(Int(2)).
+    #[test]
+    fn reduces_call_returning_tuple_lit() {
+        let mut pair_b = FnBuilder::new(FnId(0), "pair");
+        let x = pair_b.fresh_var();
+        let y = pair_b.fresh_var();
+        let entry = pair_b.block(vec![x, y]);
+        let t = pair_b.let_(entry, Prim::MakeTuple(vec![x, y]));
+        pair_b.set_terminator(entry, Term::Return(t));
+
+        let mut main_b = FnBuilder::new(FnId(1), "main");
+        let m_entry = main_b.block(vec![]);
+        let c1 = main_b.let_(m_entry, Prim::Const(Const::Int(1)));
+        let c2 = main_b.let_(m_entry, Prim::Const(Const::Int(2)));
+        main_b.set_terminator(
+            m_entry,
+            Term::TailCall {
+                callee: FnId(0),
+                args: vec![c1, c2],
+                is_back_edge: false,
+            },
+        );
+
+        let mut mb = ModuleBuilder::new();
+        mb.add_fn(pair_b.build());
+        mb.add_fn(main_b.build());
+        let mut m = mb.build();
+        reduce_module(&mut m);
+
+        let main_fn = m.fns.iter().find(|f| f.name == "main").unwrap();
+        let blk = &main_fn.blocks[0];
+        let returned = match &blk.terminator {
+            Term::Return(v) => *v,
+            other => panic!("expected Return, got {:?}", other),
+        };
+        let bound = blk
+            .stmts
+            .iter()
+            .find_map(|Stmt::Let(bv, prim)| if *bv == returned { Some(prim) } else { None })
+            .expect("returned var should be bound in main");
+        match bound {
+            Prim::MakeTuple(elems) => {
+                assert_eq!(elems.len(), 2);
+                let lookup = |v: Var| -> Option<&Prim> {
+                    blk.stmts.iter().find_map(|Stmt::Let(bv, prim)| {
+                        if *bv == v { Some(prim) } else { None }
+                    })
+                };
+                assert!(matches!(lookup(elems[0]), Some(Prim::Const(Const::Int(1)))));
+                assert!(matches!(lookup(elems[1]), Some(Prim::Const(Const::Int(2)))));
+            }
+            other => panic!("expected MakeTuple, got {:?}", other),
+        }
+    }
+
+    /// fz-f88.3 — `fn empty(), do: []` then `main(): empty()`. After
+    /// reduction, main's Return points at a fresh `MakeList(vec![], None)`.
+    #[test]
+    fn reduces_call_returning_empty_list() {
+        let mut e_b = FnBuilder::new(FnId(0), "empty");
+        let entry = e_b.block(vec![]);
+        let nil_list = e_b.let_(entry, Prim::MakeList(vec![], None));
+        e_b.set_terminator(entry, Term::Return(nil_list));
+
+        let mut main_b = FnBuilder::new(FnId(1), "main");
+        let m_entry = main_b.block(vec![]);
+        main_b.set_terminator(
+            m_entry,
+            Term::TailCall {
+                callee: FnId(0),
+                args: vec![],
+                is_back_edge: false,
+            },
+        );
+
+        let mut mb = ModuleBuilder::new();
+        mb.add_fn(e_b.build());
+        mb.add_fn(main_b.build());
+        let mut m = mb.build();
+        reduce_module(&mut m);
+
+        let main_fn = m.fns.iter().find(|f| f.name == "main").unwrap();
+        let blk = &main_fn.blocks[0];
+        let returned = match &blk.terminator {
+            Term::Return(v) => *v,
+            other => panic!("expected Return, got {:?}", other),
+        };
+        let bound = blk
+            .stmts
+            .iter()
+            .find_map(|Stmt::Let(bv, prim)| if *bv == returned { Some(prim) } else { None })
+            .expect("returned var should be bound in main");
+        match bound {
+            Prim::MakeList(elems, tail) => {
+                assert!(elems.is_empty());
+                assert!(tail.is_none());
+            }
+            other => panic!("expected MakeList([], None), got {:?}", other),
         }
     }
 }

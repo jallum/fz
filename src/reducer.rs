@@ -174,6 +174,11 @@ pub fn fold_prim(prim: &Prim, env: &HashMap<Var, Descr>, atom_names: &[String]) 
         // lattice's `list_of(elem)` loses length info. `IsEmptyList` is the
         // exception — Descr-level subtyping is enough.
         Prim::IsEmptyList(v) => fold_list_is_nil(*v, env),
+        // fz-f88.3 — empty list literal folds to `list_of(none())`. Non-empty
+        // MakeList still loses length info (L1 follow-up fz-4lo).
+        Prim::MakeList(elems, tail) if elems.is_empty() && tail.is_none() => {
+            Some(Descr::list_of(Descr::none()))
+        }
         // fz-jg5.6: closure_lit fold — when MakeClosure's captures are
         // all literal, the closure Var has a closure_lit(F, captures) Descr.
         // The reducer's walk_block uses this to dispatch CallClosure /
