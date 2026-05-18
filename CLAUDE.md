@@ -1,13 +1,13 @@
-- Elegance and simplicity are what we push for.
-- Warnings are errors.
+- Research thoroughly, eli5, plan out work in discrete steps that form a DAG that builds to the goal. 
+- Hard things are tractable if broken into steps. This pattern is fractal. A difficult step can be broken down further.
+- Elegance, simplicity and correctness are what we push for.
+- Always ask yourself: What am I not proud of?
+- Warnings are errors if it's something we control.
 - Tests must pass.
-- TDD is the norm.
-- Prove things work the way you say they do.
+- TDD is the law. Prove things work the way you say they do.
 - Deferrals and omissions require authorization.
-- Tickets are memory; `bw --help`.
+- Tickets are persistent memory beyond context; `bw --help`.
 - One ticket == one commit.
-- Research thoroughly, plan out work.
-- All hard things are tractable if we break them into atomic, testable steps and put those steps in a DAG that builds towards the final goal. This pattern is fractal.
 - Tickets free us from the worry of context.
 - No hidden surprises. All investigation required must be done up-front, so that there are no surprises as we work.
-- Refrain from time-based estimations. I worry about time.
+- Refrain from estimating time to accomplish work. I worry about time.

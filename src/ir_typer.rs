@@ -184,7 +184,7 @@ pub struct FnTypes {
     pub fn_constants: HashMap<Var, FnId>,
     /// Blocks provably reachable from the entry under the inferred types.
     /// If terminators whose condition is a singleton bool prune the dead
-    /// branch. Used by `compute_effective_returns` to ignore returns that
+    /// branch. Used by `compute_return_for_spec` to ignore returns that
     /// can never execute.
     pub reachable_blocks: HashSet<BlockId>,
 }
@@ -201,10 +201,11 @@ pub struct FnTypes {
 pub struct ModuleTypes {
     pub specs: HashMap<(FnId, Vec<Descr>), FnTypes>,
     /// fz-2yw.2 — Kleene LFP of every spec's effective return Descr.
-    /// Populated once at the end of `type_module` via
-    /// `compute_effective_returns`. Consumers (cont_slot0_descr,
-    /// pretty_module_types, walker slot0_descr) read here instead of
-    /// recursing on demand.
+    /// Maintained incrementally by the worklist (fz-5j5.3): each spec's
+    /// return is recomputed (via `compute_return_for_spec`) after every
+    /// visit, and changes re-enqueue the spec's `return_readers`.
+    /// Consumers (cont_slot0_descr, pretty_module_types, walker
+    /// slot0_descr) read here instead of recursing on demand.
     pub effective_returns: HashMap<(FnId, Vec<Descr>), Descr>,
     /// fz-afs.12 — secondary index: FnId → all-any key for that fn.
     /// Populated in `type_module` from the final specs map. Enables O(1)
@@ -1210,16 +1211,17 @@ fn walk_spec_for_discovery(
         // Cont keying. Slot 0 = callee's effective return (Call only);
         // any (CallClosure / Receive). Slots 1+ = per-spec captures.
         //
-        // fz-3zx — slot 0 reads from the LFP cache `effective_returns`
-        // (carried across outer type_module iterations via fz-8ki's
-        // InferredReturn discipline). A missing entry == Unknown ==
-        // "we don't know yet, defer the cont push until next outer
-        // iter." Genuinely opaque sites (unresolved CallClosure /
-        // Receive) still use `any` directly — they're not LFP-bottom,
-        // they're proven-cannot-narrow.
+        // Slot 0 reads from `effective_returns` (maintained incrementally
+        // by the worklist; fz-5j5.3). A missing entry means "we don't
+        // know yet" — the cont push is deferred. The caller spec is
+        // recorded in `return_readers[callee]` so when the callee's
+        // return is computed, this spec is re-enqueued and the cont
+        // push happens then. Genuinely opaque sites (unresolved
+        // CallClosure / Receive) still use `any` directly — they're
+        // not deferrable, they're proven-cannot-narrow.
         //
         // fz-vw4.5d — also defer when the callee spec itself is not
-        // yet registered. Both conditions are fixpoint deferrals;
+        // yet registered. Both conditions are propagation deferrals;
         // either landing this iter pushes a polluting wide spec
         // alongside the narrower one the next iter would produce.
         let cont = match &b.terminator {

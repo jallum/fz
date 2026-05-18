@@ -2002,8 +2002,8 @@ pub fn compile_with_backend<B: Backend>(
     // distinct lambda SpecIds → distinct stubs). The key fed to
     // `spec_registry.resolve` is `[capture_descrs..., any, ...]` —
     // padded to the lambda's full arity. The .29.12.2 typer change
-    // (in `ir_typer::type_module`'s fixed-point loop) registers a
-    // narrow spec for every MakeClosure's capture-Descr tuple, so
+    // (in `ir_typer::type_module`'s worklist) registers a narrow
+    // spec for every MakeClosure's capture-Descr tuple, so
     // exact-match resolve succeeds; the any-key remains a subsumption
     // backstop. Value = capture count (== `captured.len()`); needed
     // to split entry params into `[captures..., args...]` at stub
