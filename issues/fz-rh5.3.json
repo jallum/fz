@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-18T12:01:04Z",
+  "description": "## The change\n\nIn \\`src/ir_typer.rs\\`, \\`process_worklist\\` does:\n\n\\`\\`\\`rust\nlet caller_ft = specs.get(\u0026spec_key).unwrap().clone();\n\\`\\`\\`\n\nper worklist iteration, then passes \\`\u0026caller_ft\\` to the walk and\nto compute_return_for_spec. The clone is defensive paranoia — both\nconsumers take \\`\u0026specs\\` (immutable) too, so the borrow checker is\nhappy with a plain reference. The only mutations in the iter body\nare to \\`effective_returns\\` (a different HashMap) and to \\`specs\\`\nONLY at the top via \\`specs.insert(spec_key.clone(), ft)\\` BEFORE\nthe \\`caller_ft\\` borrow would begin.\n\nReplace with:\n\n\\`\\`\\`rust\nlet caller_ft = specs.get(\u0026spec_key).unwrap();\n\\`\\`\\`\n\nIf the borrow checker complains, the right fix is to restructure\n(e.g., insert into \\`specs\\` last), not to re-add the clone.\n\n## Why this matters\n\n\\`FnTypes\\` contains \\`block_envs: HashMap\u003cBlockId, HashMap\u003cVar, Descr\u003e\u003e\\`\nand \\`vars: HashMap\u003cVar, Descr\u003e\\` — cloned per worklist iter is\nsubstantial waste. For a 100-pop worklist on ast_eval that's ~100\nunnecessary HashMap clones per type_module invocation.\n\n## Acceptance\n\nThe clone is gone. Tests pass. ast_eval typer perf either stays the\nsame (if clones weren't on the critical path) or improves (if they\nwere). PROV.4's counters unchanged.\n\n## Independent of\n\nAll other PROV tickets.",
+  "id": "fz-rh5.3",
+  "labels": [],
+  "parent": "fz-rh5",
+  "priority": 2,
+  "status": "open",
+  "title": "fz-PROV.3: remove unnecessary caller_ft.clone() in process_worklist",
+  "type": "task",
+  "updated_at": "2026-05-18T12:01:04Z"
+}
