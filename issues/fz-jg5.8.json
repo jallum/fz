@@ -9,9 +9,15 @@
   "id": "fz-jg5.8",
   "labels": [],
   "parent": "fz-jg5",
+  "comments": [
+    {
+      "text": "Findings (docs/walkthroughs/FINDINGS.md): For spawn(named_fn), preserve user's name as body identifier in diagnostic. For spawn(fn () -\u003e ...), flatten anonymous to synthetic thunk named for the spawn site. Both correct; consistency is the diagnostic property.",
+      "timestamp": "2026-05-18T03:17:56Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "fz-RED.7: --explain-bodies diagnostic",
   "type": "task",
-  "updated_at": "2026-05-18T02:56:56Z"
+  "updated_at": "2026-05-18T03:17:56Z"
 }
