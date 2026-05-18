@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
   "created": "2026-05-18T12:00:51Z",
@@ -8,8 +8,8 @@
   "labels": [],
   "parent": "fz-rh5",
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "fz-PROV.2: investigate why type_module is called 4x under fz run",
   "type": "task",
-  "updated_at": "2026-05-18T12:00:51Z"
+  "updated_at": "2026-05-18T12:05:13Z"
 }
