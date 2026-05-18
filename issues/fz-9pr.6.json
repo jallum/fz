@@ -11,9 +11,15 @@
   "id": "fz-9pr.6",
   "labels": [],
   "parent": "fz-9pr",
+  "comments": [
+    {
+      "text": "Game-walk on closure_typed_captures: main's Term::Call(apply1, [c, twelve], k2) appears to have all the ingredients to fold (closure_lit captures literal, args literal, fn14 body folds to 42), but the survivor list shows apply1 still called. Investigation hypothesis: apply1's entry block has a structure (perhaps a dispatcher with match_error fail-block) that walk_block can't navigate. Confirm by reading the actual lowered IR; document why; decide if partial fold helps or if the issue is somewhere else.",
+      "timestamp": "2026-05-18T15:25:01Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "fz-CO.C.1 — Partial fold for Term::Call when cont doesn't fold",
   "type": "task",
-  "updated_at": "2026-05-18T15:01:59Z"
+  "updated_at": "2026-05-18T15:25:01Z"
 }
