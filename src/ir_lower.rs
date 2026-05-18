@@ -3773,6 +3773,43 @@ mod tests {
         assert!(s.contains("return v0"), "got:\n{}", s);
     }
 
+    /// fz-fyq.2 — `ModuleTypes::dead_branches` publishes one entry per
+    /// provably-dead branch under cross-spec consensus, and stays silent
+    /// for polymorphic-recursion functions where some spec leaves the
+    /// branch live (e.g. a `sum`-style fn typed `[]` vs `[h | t]`).
+    #[test]
+    fn dead_branches_published_for_destructure_but_not_polymorphic_sum() {
+        use crate::fz_ir::DeadBranch;
+        // Irrefutable destructure on a known-2-tuple — the typer proves
+        // the synthesized fail edge dead under the one live spec.
+        let m = lower_src("fn main() do\n  {a, b} = {1, 2}\n  a + b\nend\n");
+        let mt = crate::ir_typer::type_module(&m);
+        assert!(
+            mt.dead_branches.values().any(|d| matches!(d, DeadBranch::Else)),
+            "expected an Else dead branch for {{a,b}} = {{1,2}}; got {:?}",
+            mt.dead_branches,
+        );
+
+        // Polymorphic sum — every spec needs both branches alive
+        // (the `[]` arm is dead in the leaf spec but live in the
+        // recursive spec). Nothing should be published.
+        let m2 = lower_src(concat!(
+            "fn sum([]), do: 0\n",
+            "fn sum([h | t]), do: h + sum(t)\n",
+            "fn main(), do: sum([1, 2, 3])\n",
+        ));
+        let mt2 = crate::ir_typer::type_module(&m2);
+        // The destructure inside main may itself produce dead branches,
+        // but sum's clause-dispatch Ifs must not.
+        let sum_fid = m2.fn_by_name("sum").expect("sum exists").id;
+        for ((fid, _bid), _which) in &mt2.dead_branches {
+            assert_ne!(
+                *fid, sum_fid,
+                "sum/1 is polymorphically recursive; no branch should be published dead",
+            );
+        }
+    }
+
     /// fz-fyq.1 — every lowering path that synthesizes a `Term::If` tags it
     /// with the right `BranchOrigin`. Cover one source program that exercises
     /// each origin and assert the right set appears in the lowered module.

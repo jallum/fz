@@ -348,6 +348,24 @@ pub struct Cont {
     pub captured: Vec<Var>,
 }
 
+/// fz-fyq.2 — which branch of a `Term::If` is provably never taken.
+///
+/// Published per `(FnId, BlockId)` by `ir_typer` in `ModuleTypes::dead_branches`.
+/// Cross-spec consensus: a branch is `Dead` only if every live spec of the
+/// enclosing fn agreed the scrutinee narrows to `none` on that side. A
+/// branch dead under some specs and live under others is source-reachable
+/// and must not appear here (e.g. `sum`'s `[]` arm — dead in the narrow
+/// `[list(int_set)]` spec but live in the recursive `[nil | list(int_set)]`
+/// spec).
+///
+/// Both-branches-dead means the enclosing If is unreachable; out of scope
+/// here and handled by block-level DCE. So at most one variant per If.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DeadBranch {
+    Then,
+    Else,
+}
+
 /// fz-fyq.1 — origin of a `Term::If`, set at lowering time.
 ///
 /// Distinguishes user-authored conditionals (`if`/`case`/`with`/guards in

@@ -165,6 +165,14 @@ pub struct ModuleTypes {
     /// CallClosureKnown emit whose `CallsiteId` is `Stalled` (or
     /// absent). Apply with `apply_callsite_outcomes`.
     pub callsite_outcome_updates: HashMap<CallsiteId, CallsiteOutcome>,
+    /// fz-fyq.2 — per-If dead-branch facts under cross-spec consensus.
+    /// Populated at the end of `type_module` by `compute_dead_branches`.
+    /// Keyed by `(FnId, BlockId)` where the block ends in a `Term::If`;
+    /// value names which branch is provably never taken. Read by the
+    /// dead-branch fold (fz-fyq.4) and by `collect_diagnostics` (fz-fyq.3).
+    /// Only covers registered-spec fns — the diagnostic re-runs analysis
+    /// on its own ad-hoc spec typing for fns with no registered spec.
+    pub dead_branches: HashMap<(FnId, crate::fz_ir::BlockId), crate::fz_ir::DeadBranch>,
 }
 
 impl ModuleTypes {
@@ -730,13 +738,78 @@ pub fn type_module(m: &Module) -> ModuleTypes {
         }
     }
 
-    ModuleTypes {
+    let mut mt = ModuleTypes {
         specs,
         effective_returns,
         any_key_specs,
         scc_of,
         callsite_outcome_updates,
+        dead_branches: HashMap::new(),
+    };
+    mt.dead_branches = compute_dead_branches(m, &mt);
+    mt
+}
+
+/// fz-fyq.2 — for every `Term::If` in a registered-spec fn, decide whether
+/// the typer can prove one branch unreachable under cross-spec consensus.
+/// A branch is published as `Dead` only when every spec of the enclosing
+/// fn agreed the scrutinee narrows to `none` on that side; the rule
+/// matches `collect_diagnostics` (fz-pky.1) which is what made the
+/// `unreachable-arm` warning sound. Consumers: `ir_branch_fold`
+/// (fz-fyq.4) and the unreachable-arm diagnostic (fz-fyq.3).
+fn compute_dead_branches(
+    m: &Module,
+    mt: &ModuleTypes,
+) -> HashMap<(FnId, crate::fz_ir::BlockId), crate::fz_ir::DeadBranch> {
+    let mut specs_by_fn: HashMap<FnId, Vec<Vec<Descr>>> = HashMap::new();
+    for (fid, key) in mt.specs.keys() {
+        specs_by_fn.entry(*fid).or_default().push(key.clone());
     }
+
+    let mut out: HashMap<(FnId, crate::fz_ir::BlockId), crate::fz_ir::DeadBranch> =
+        HashMap::new();
+
+    for f in &m.fns {
+        let Some(keys) = specs_by_fn.get(&f.id) else {
+            continue;
+        };
+        let total = keys.len();
+        if total == 0 {
+            continue;
+        }
+        for b in &f.blocks {
+            let Term::If { cond, .. } = b.terminator else {
+                continue;
+            };
+            let mut dead_then = 0usize;
+            let mut dead_else = 0usize;
+            for key in keys {
+                let Some(ft) = mt.specs.get(&(f.id, key.clone())) else {
+                    continue;
+                };
+                let mut env = ft.block_envs.get(&b.id).cloned().unwrap_or_default();
+                for stmt in &b.stmts {
+                    let Stmt::Let(v, prim) = stmt;
+                    let t = type_prim(prim, &env, m, &HashSet::new());
+                    env.insert(*v, t);
+                }
+                let (then_env, else_env) = narrow_for_if(&env, cond, &b.stmts);
+                if find_emptied_var(&env, &then_env).is_some() {
+                    dead_then += 1;
+                }
+                if find_emptied_var(&env, &else_env).is_some() {
+                    dead_else += 1;
+                }
+            }
+            // Both-dead means the If itself is unreachable — leave to DCE.
+            if dead_then == total && dead_else < total {
+                out.insert((f.id, b.id), crate::fz_ir::DeadBranch::Then);
+            } else if dead_else == total && dead_then < total {
+                out.insert((f.id, b.id), crate::fz_ir::DeadBranch::Else);
+            }
+        }
+    }
+    out
 }
 
 /// fz-9pr.8 — merge a `ModuleTypes`' outcome updates into
