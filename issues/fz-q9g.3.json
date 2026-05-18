@@ -22,11 +22,15 @@
     {
       "text": "Rewritten 2026-05-18 to (a) name Module.callsite_outcomes (fz-9pr/fz-f88) as the eligibility source for C3, (b) correct MakeList base case to empty-list sentinel (bit pattern 1) rather than NIL_BITS — post fz-s9y/fz-yan [] and nil are distinct, (c) note that the as-shipped fz-o0u (TAG_PTR=0b000) makes the q9g.24 untag concern moot.",
       "timestamp": "2026-05-18T19:39:30Z"
+    },
+    {
+      "text": "Rewritten 2026-05-18 (second pass): scope is now C2 (Return-under-Dst) + D2' (MakeList TRMC) + flip the q9g.2 gate + rebless CLIF. C3 and C4 moved back out into their own tickets (q9g.4, q9g.5) so the C-arc lands atomically rather than as a single CD-bundle. This ticket is the activation step that makes the whole chain observable.",
+      "timestamp": "2026-05-18T20:03:49Z"
     }
   ],
   "priority": 1,
   "status": "in_progress",
   "title": "fz-dps.CD: native-path wire ABI (Return/Call/TailCall) + MakeList DPS via TRMC",
   "type": "task",
-  "updated_at": "2026-05-18T20:03:37Z"
+  "updated_at": "2026-05-18T20:03:49Z"
 }
