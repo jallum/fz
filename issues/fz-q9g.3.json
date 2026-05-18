@@ -2,7 +2,8 @@
   "assignee": "Jason Allum",
   "blocked_by": [
     "fz-q9g.2",
-    "fz-q9g.24"
+    "fz-q9g.24",
+    "fz-q9g.5"
   ],
   "blocks": [
     "fz-q9g.6"
@@ -26,5 +27,5 @@
   "status": "in_progress",
   "title": "fz-dps.CD: native-path wire ABI (Return/Call/TailCall) + MakeList DPS via TRMC",
   "type": "task",
-  "updated_at": "2026-05-18T20:01:59Z"
+  "updated_at": "2026-05-18T20:02:00Z"
 }
