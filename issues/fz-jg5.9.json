@@ -7,6 +7,7 @@
     "fz-jg5.10"
   ],
   "created": "2026-05-18T02:56:44Z",
+  "defer_until": "2026-06-01",
   "description": "# Delete the per-callsite tuple-shape spec discovery code\n\n## Goal\n\nAfter the reducer has dissolved the calls that previously forced\nper-tuple-shape spec minting, the discovery walk in\n`ir_typer::walk_spec_for_discovery` is operating on a much smaller\ninput. The code paths that registered narrow specs per distinct\ninput-Descr tuple are now dead.\n\nDelete them. Goldens from RED.6 must remain byte-identical.\n\n## Specifics to remove\n\nIn `src/ir_typer.rs`:\n- The closure_lit propagation path in `walk_spec_for_discovery` that\n  pushes per-(captures + args) keys to `pending`.\n- The `callsite_fn_consts` merge logic for inputs that don't survive\n  reduction.\n- Any helpers exclusively consumed by the above.\n\n(Exact lines are best identified during implementation; the test is\n'all goldens unchanged'.)\n\n## Acceptance\n\n- All goldens byte-identical to RED.6's blessed state.\n- Cargo test green.\n- LOC reduction: hundreds of lines from `ir_typer.rs`.\n\n## Removals\n\nThis **is** the removal ticket.",
   "id": "fz-jg5.9",
   "labels": [],
@@ -18,8 +19,8 @@
     }
   ],
   "priority": 2,
-  "status": "in_progress",
+  "status": "deferred",
   "title": "fz-RED.8a REMOVE: per-callsite tuple-shape spec minting in walk_spec_for_discovery",
   "type": "task",
-  "updated_at": "2026-05-18T03:58:54Z"
+  "updated_at": "2026-05-18T03:58:55Z"
 }
