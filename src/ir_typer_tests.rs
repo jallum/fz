@@ -138,17 +138,17 @@ fn list_head_yields_element_type() {
 }
 
 #[test]
-fn if_list_is_nil_narrows_v_to_nil_in_then_branch() {
+fn if_is_empty_list_narrows_v_to_empty_list_in_then_branch() {
     // Build:
     //   entry(l):
-    //     c = ListIsNil(l)
+    //     c = IsEmptyList(l)
     //     if c then then_b else else_b
-    //   then_b: return l   (l narrowed to nil here)
+    //   then_b: return l   (l narrowed to empty list here)
     //   else_b: return l   (l narrowed to list_top here)
     let mut b = FnBuilder::new(FnId(0), "f");
     let l = b.fresh_var();
     let entry = b.block(vec![l]);
-    let c = b.let_(entry, Prim::ListIsNil(l));
+    let c = b.let_(entry, Prim::IsEmptyList(l));
     let then_b = b.block(vec![]);
     let else_b = b.block(vec![]);
     b.set_terminator(entry, Term::If(c, then_b, else_b));
@@ -157,13 +157,17 @@ fn if_list_is_nil_narrows_v_to_nil_in_then_branch() {
     let m = build_module(vec![b.build()]);
     let mt = type_module(&m);
 
-    // In then_b's entry env, l should be narrowed to nil.
+    // fz-s9y.3 — in then_b's entry env, l is narrowed to the empty
+    // list, encoded in the lattice as list_of(none()). Pre-s9y.3 this
+    // narrowed to Descr::nil() (the nil atom-like value), reflecting
+    // the now-obsolete runtime conflation.
     let ft = fn_view(&m, &mt, 0);
     let then_env = ft.block_envs.get(&then_b).unwrap();
     let l_then = then_env.get(&l).cloned().unwrap();
+    let empty_list = Descr::list_of(Descr::none());
     assert!(
-        l_then.is_subtype(&Descr::nil()) && Descr::nil().is_subtype(&l_then),
-        "l in then-branch should be nil: {}",
+        l_then.is_subtype(&empty_list) && empty_list.is_subtype(&l_then),
+        "l in then-branch should be the empty list (list(none)): {}",
         l_then
     );
 
@@ -237,14 +241,14 @@ fn nested_tuple_projection() {
 fn list_is_nil_on_int_var_flags_both_branches_unreachable() {
     // entry():
     //   five = 5
-    //   c = ListIsNil(five)    -- predicate over an int -> both branches empty
+    //   c = IsEmptyList(five)    -- predicate over an int -> both branches empty
     //   if c then then_b else else_b
     // then_b: halt five    -- env[five] narrowed to int_lit(5) ∩ nil = empty
     // else_b: halt five    -- env[five] narrowed to int_lit(5) ∩ list = empty
     let mut b = FnBuilder::new(FnId(0), "f");
     let entry = b.block(vec![]);
     let five = b.let_(entry, Prim::Const(Const::Int(5)));
-    let c = b.let_(entry, Prim::ListIsNil(five));
+    let c = b.let_(entry, Prim::IsEmptyList(five));
     let then_b = b.block(vec![]);
     let else_b = b.block(vec![]);
     b.set_terminator(entry, Term::If(c, then_b, else_b));

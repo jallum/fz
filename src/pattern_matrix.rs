@@ -68,7 +68,15 @@ pub enum SwitchKey {
     AtomName(String),
     Int(i64),
     Bool(bool),
+    /// The `nil` atom-like value. Distinct from `EmptyList` — fz-s9y
+    /// splits the runtime representations; the matrix tracks them as
+    /// separate constructors so `Pattern::Nil` and `Pattern::List([],None)`
+    /// don't silently collapse.
     Nil,
+    /// The empty list value (`[]` literal). After fz-s9y.2 it has a
+    /// distinct runtime bit pattern from `Nil`; the matrix already
+    /// treats it as a distinct constructor so the bug class can't recur.
+    EmptyList,
     Cons,
 }
 
@@ -427,15 +435,27 @@ fn specialize_listcons(m: Matrix, col: usize, subject: Var) -> Decision {
                 r.patterns.remove(col);
                 by_key.entry(SwitchKey::Nil).or_default().push(r);
             }
-            Pattern::List(elems, _tail) => {
-                if elems.is_empty() {
-                    // [| tail] form — degenerate. Treat as cons with wildcard
-                    // head + tail-pat. Skip for .C scope.
+            Pattern::List(elems, tail) => {
+                if elems.is_empty() && tail.is_none() {
+                    // `[]` literal — distinct from `nil` after fz-s9y.2's
+                    // runtime split. Pre-fz-s9y.1 this was a `continue`
+                    // that silently dropped the row, surfacing as bogus
+                    // "unreachable arm" + "inexhaustive" diagnostics on
+                    // every nil/cons fn definition. Route to its own
+                    // SwitchKey so the decision tree is well-formed.
+                    let mut r = row.clone();
+                    r.patterns.remove(col);
+                    by_key.entry(SwitchKey::EmptyList).or_default().push(r);
+                } else if elems.is_empty() {
+                    // `[| tail]` form — parser disallows (must parse ≥1
+                    // pattern before `|`); kept here as a defensive
+                    // unreachable branch.
                     continue;
+                } else {
+                    // Cons-form: keep the row but drop column (PerRow
+                    // handles the inner head/tail bindings).
+                    by_key.entry(SwitchKey::Cons).or_default().push(row);
                 }
-                // Cons-form: keep the row but drop column (PerRow handles
-                // the inner head/tail bindings in .D).
-                by_key.entry(SwitchKey::Cons).or_default().push(row);
             }
             Pattern::Wildcard | Pattern::Var(_) => default_rows.push(row),
             _ => {}
@@ -448,16 +468,19 @@ fn specialize_listcons(m: Matrix, col: usize, subject: Var) -> Decision {
             rows.push(d.clone());
         }
         rows.sort_by_key(|r| r.body_id);
-        // For Cons subtrees we KEEP the column — caller's lowerer projects
-        // head/tail. For Nil we removed it above.
-        let new_subjects = if matches!(key, SwitchKey::Nil) {
+        // Nil / EmptyList sub-decisions: the pattern matched a leaf value,
+        // no head/tail to project — column already removed above. Cons
+        // sub-decisions: drop the column here so PerRow can project
+        // head/tail.
+        let column_already_removed = matches!(key, SwitchKey::Nil | SwitchKey::EmptyList);
+        let new_subjects = if column_already_removed {
             let mut s = m.subjects.clone();
             s.remove(col);
             s
         } else {
             m.subjects.clone()
         };
-        let rows = if matches!(key, SwitchKey::Nil) {
+        let rows = if column_already_removed {
             rows
         } else {
             // Drop column for cons-rows too: per-row will project.
@@ -468,7 +491,7 @@ fn specialize_listcons(m: Matrix, col: usize, subject: Var) -> Decision {
                 })
                 .collect()
         };
-        let sub_subjects = if !matches!(key, SwitchKey::Nil) {
+        let sub_subjects = if !column_already_removed {
             let mut s = m.subjects.clone();
             s.remove(col);
             s

@@ -13,7 +13,7 @@
 //!
 //! Branch narrowing (fz-ul4.11.24.3):
 //!   * `Term::If(cond, t, e)` inspects the stmt that bound `cond`. If it was
-//!     `ListIsNil(v)`, the truthy branch refines `v` to `nil`; the falsy
+//!     `IsEmptyList(v)`, the truthy branch refines `v` to `nil`; the falsy
 //!     branch keeps the list shape. If it was `BinOp::Eq(a, b)` and either
 //!     operand is a singleton literal, the truthy branch intersects the other
 //!     operand with that singleton.
@@ -1942,9 +1942,17 @@ fn narrow_for_cond(
             let (_, else_ab) = narrow_for_cond(*b, &else_a, stmts);
             return (union_envs(then_a, &then_b), else_ab);
         }
-        Prim::ListIsNil(v) => {
+        Prim::IsEmptyList(v) => {
+            // fz-s9y.3 — when IsEmptyList returns true, the value is the
+            // empty list `[]`, represented in the lattice as
+            // `list_of(none())` (a list whose element type is uninhabited
+            // — so only the empty list itself is in that set). Pre-s9y.3
+            // this narrowed to `Descr::nil()`, which is the nil atom-like
+            // value — at the time it was harmless because nil and [] shared
+            // bits at runtime, but it produced `nil | list(X)` artifacts
+            // throughout inferred spec types.
             let current = env.get(v).cloned().unwrap_or_else(Descr::any);
-            let then_t = current.intersect(&Descr::nil());
+            let then_t = current.intersect(&Descr::list_of(Descr::none()));
             let else_t = current.intersect(&Descr::list_of(Descr::any()));
             then_env.insert(*v, then_t);
             else_env.insert(*v, else_t);
@@ -2079,12 +2087,17 @@ fn type_prim(
         }
         Prim::ListHead(l) => crate::typer::list_element_type(&lookup(env, *l)),
         Prim::ListTail(l) => {
+            // fz-s9y.3 — the tail of a list is a list (possibly empty).
+            // `Descr::list_of(elem)` covers the empty list via the
+            // list_of(none()) subtype rule (see types::list_clause_empty);
+            // no `| nil` union needed. Pre-s9y.3 we unioned with
+            // `Descr::nil()` because empty list and nil shared bits, but
+            // that artifact polluted inferred spec types with `nil | list(_)`.
             let lt = lookup(env, *l);
             let elem = crate::typer::list_element_type(&lt);
-            // Tail is either a (possibly empty) list of the same elem, or nil.
-            Descr::list_of(elem).union(&Descr::nil())
+            Descr::list_of(elem)
         }
-        Prim::ListIsNil(_) => Descr::bool_t(),
+        Prim::IsEmptyList(_) => Descr::bool_t(),
 
         Prim::MakeMap(entries) => {
             let mut fields = std::collections::BTreeMap::new();

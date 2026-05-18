@@ -24,6 +24,13 @@ const SPECIAL_NIL: u64 = (0 << TAG_BITS) | TAG_SPECIAL;
 const SPECIAL_TRUE: u64 = (1 << TAG_BITS) | TAG_SPECIAL;
 const SPECIAL_FALSE: u64 = (2 << TAG_BITS) | TAG_SPECIAL;
 
+/// fz-s9y.2 — the empty-list sentinel. TAG_PTR tag (0b000) with payload
+/// value 1 (so the full bit pattern is `0x8`). Address 0x8 sits inside
+/// page 0, which the OS reserves as unmapped — no allocator ever returns
+/// it, so the sentinel can't collide with a real heap pointer.
+/// Distinct from `SPECIAL_NIL`: `[]` and `nil` are different values.
+pub(crate) const EMPTY_LIST: u64 = 1 << TAG_BITS;
+
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum Tag {
     Ptr,
@@ -41,6 +48,8 @@ impl FzValue {
     pub const NIL: FzValue = FzValue(SPECIAL_NIL);
     pub const TRUE: FzValue = FzValue(SPECIAL_TRUE);
     pub const FALSE: FzValue = FzValue(SPECIAL_FALSE);
+    /// fz-s9y.2 — the empty list `[]`. Distinct from `NIL`.
+    pub const EMPTY_LIST: FzValue = FzValue(EMPTY_LIST);
 
     pub const fn from_int(n: i64) -> FzValue {
         // Sign-preserving shift left by 3, OR in tag.
@@ -90,6 +99,11 @@ impl FzValue {
         if self.0 == SPECIAL_NIL || self.0 == SPECIAL_TRUE || self.0 == SPECIAL_FALSE {
             return None;
         }
+        if self.0 == EMPTY_LIST {
+            // fz-s9y.2 — the empty list is TAG_PTR-tagged but its "pointer"
+            // is a sentinel into unmapped memory. Do not dereference.
+            return None;
+        }
         if self.0 & TAG_MASK == TAG_PTR {
             Some(self.0 as *mut HeapHeader)
         } else {
@@ -99,6 +113,9 @@ impl FzValue {
 
     pub fn is_nil(self) -> bool {
         self.0 == SPECIAL_NIL
+    }
+    pub fn is_empty_list(self) -> bool {
+        self.0 == EMPTY_LIST
     }
     pub fn is_true(self) -> bool {
         self.0 == SPECIAL_TRUE
@@ -121,6 +138,7 @@ impl std::fmt::Debug for FzValue {
             Tag::Special if self.is_true() => write!(f, "FzValue::True"),
             Tag::Special if self.is_false() => write!(f, "FzValue::False"),
             Tag::Special => write!(f, "FzValue::Special({:#x})", self.0),
+            Tag::Ptr if self.is_empty_list() => write!(f, "FzValue::EmptyList"),
             Tag::Ptr => write!(f, "FzValue::Ptr({:#x})", self.0),
             Tag::Reserved => write!(f, "FzValue::Reserved({:#x})", self.0),
         }
@@ -496,6 +514,12 @@ pub mod debug {
                 }
             }
             Tag::Ptr => {
+                // fz-s9y.2 — the empty list `[]` is TAG_PTR-tagged but its
+                // "pointer" is the EMPTY_LIST sentinel pointing into unmapped
+                // memory. Detect before any dereference.
+                if v.is_empty_list() {
+                    return "[]".into();
+                }
                 let p = v.unbox_ptr().unwrap();
                 let kind = unsafe { (*p).kind };
                 match HeapKind::from_u16(kind) {
@@ -629,7 +653,10 @@ pub mod debug {
         let mut tail_render: Option<String> = None;
         loop {
             let cv = FzValue(cur_bits);
-            if cv.is_nil() {
+            // fz-s9y.2 — terminate on the empty-list sentinel, not on nil.
+            // A list ending in `nil` (atom-like value) is an improper list;
+            // it renders as `[a, b | nil]` via the tail_render path below.
+            if cv.is_empty_list() {
                 break;
             }
             let cp = match cv.unbox_ptr() {

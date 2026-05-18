@@ -171,9 +171,9 @@ pub fn fold_prim(prim: &Prim, env: &HashMap<Var, Descr>, atom_names: &[String]) 
         Prim::TupleField(v, i) => fold_tuple_field(*v, *i as usize, env),
         Prim::TypeTest(v, descr) => fold_type_test(*v, descr, env),
         // List structural folding requires IR-walking (RED.3+); the Descr
-        // lattice's `list_of(elem)` loses length info. `ListIsNil` is the
+        // lattice's `list_of(elem)` loses length info. `IsEmptyList` is the
         // exception — Descr-level subtyping is enough.
-        Prim::ListIsNil(v) => fold_list_is_nil(*v, env),
+        Prim::IsEmptyList(v) => fold_list_is_nil(*v, env),
         // fz-jg5.6: closure_lit fold — when MakeClosure's captures are
         // all literal, the closure Var has a closure_lit(F, captures) Descr.
         // The reducer's walk_block uses this to dispatch CallClosure /
@@ -990,14 +990,14 @@ mod tests {
     #[test]
     fn fold_list_is_nil_on_nil() {
         let env = env(&[(0, Descr::nil())]);
-        let r = fold_prim(&Prim::ListIsNil(v(0)), &env, &[]).unwrap();
+        let r = fold_prim(&Prim::IsEmptyList(v(0)), &env, &[]).unwrap();
         assert_eq!(as_bool_lit(&r), Some(true));
     }
 
     #[test]
     fn fold_list_is_nil_on_list_of_int() {
         let env = env(&[(0, Descr::list_of(Descr::int_lit(1)))]);
-        let r = fold_prim(&Prim::ListIsNil(v(0)), &env, &[]).unwrap();
+        let r = fold_prim(&Prim::IsEmptyList(v(0)), &env, &[]).unwrap();
         assert_eq!(as_bool_lit(&r), Some(false));
     }
 
@@ -1005,7 +1005,7 @@ mod tests {
     fn fold_list_is_nil_on_maybe_empty_returns_none() {
         // list_of(int) | nil — could be either.
         let env = env(&[(0, Descr::list_of(Descr::int_lit(1)).union(&Descr::nil()))]);
-        assert!(fold_prim(&Prim::ListIsNil(v(0)), &env, &[]).is_none());
+        assert!(fold_prim(&Prim::IsEmptyList(v(0)), &env, &[]).is_none());
     }
 
     // ---- non-foldable prims explicitly return None ----

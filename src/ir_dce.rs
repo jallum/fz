@@ -195,7 +195,7 @@ fn collect_prim_vars(p: &Prim, used: &mut HashSet<Var>) {
             used.insert(*a);
             used.insert(*b);
         }
-        Prim::ListHead(a) | Prim::ListTail(a) | Prim::ListIsNil(a) => {
+        Prim::ListHead(a) | Prim::ListTail(a) | Prim::IsEmptyList(a) => {
             used.insert(*a);
         }
         Prim::MakeTuple(args) => {

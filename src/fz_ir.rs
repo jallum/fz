@@ -272,7 +272,7 @@ pub enum Prim {
     ListCons(Var, Var),
     ListHead(Var),
     ListTail(Var),
-    ListIsNil(Var),
+    IsEmptyList(Var),
     /// Build a tuple (struct with the canonical tuple-of-arity-N schema).
     MakeTuple(Vec<Var>),
     /// Project the i-th element of a tuple.
@@ -749,7 +749,7 @@ impl fmt::Display for Prim {
             Prim::ListCons(h, t) => write!(f, "cons({}, {})", h, t),
             Prim::ListHead(l) => write!(f, "head({})", l),
             Prim::ListTail(l) => write!(f, "tail({})", l),
-            Prim::ListIsNil(l) => write!(f, "is_nil({})", l),
+            Prim::IsEmptyList(l) => write!(f, "is_nil({})", l),
             Prim::MakeTuple(args) => write!(f, "tuple([{}])", fmt_var_list(args)),
             Prim::TupleField(v, i) => write!(f, "tuple_field({}, {})", v, i),
             Prim::MakeList(els, tail) => match tail {
@@ -1114,7 +1114,7 @@ mod tests {
         let l = b.let_(entry, Prim::ListCons(one, nil));
         let h = b.let_(entry, Prim::ListHead(l));
         let _t = b.let_(entry, Prim::ListTail(l));
-        let _z = b.let_(entry, Prim::ListIsNil(l));
+        let _z = b.let_(entry, Prim::IsEmptyList(l));
         b.set_terminator(entry, Term::Return(h));
         let s = format!("{}", b.build());
         assert!(s.contains("cons(v1, v0)"));
