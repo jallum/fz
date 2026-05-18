@@ -33,75 +33,15 @@ use crate::fz_ir::{
     BinOp, Block, BlockId, CallsiteId, CallsiteOutcome, Const, Cont, EmitSlot, FnId, FnIr, Module,
     Prim, Stmt, Term, UnOp, Var, VecKindIr,
 };
+use crate::ir_callgraph::{build_call_graph, entry_seeds};
 use crate::types::{Descr, MapKey};
 use std::collections::{HashMap, HashSet};
 
 // ============================================================================
-// fz-210 — Call-graph + Tarjan SCC for bottom-up spec discovery.
+// fz-210 — Tarjan SCC for bottom-up spec discovery. Call-graph construction
+// + entry-seed selection live in `crate::ir_callgraph` (fz-0z4.1) so
+// reachability is no longer tangled with type inference.
 // ============================================================================
-
-/// Build the static call graph for the module under the supplied any-key
-/// specs (bootstrap). Edges captured:
-///   - direct Term::Call / Term::TailCall callee
-///   - continuation fn_id from Term::Call / Term::CallClosure / Term::Receive
-///   - Prim::MakeClosure(fn_id, ...) target lambda
-///   - fn_constants-resolved Term::CallClosure / TailCallClosure target
-///
-/// Edges skipped: Term::Return / Term::Halt (dynamic dispatch, no static
-/// edge), unknown CallClosure (any-key spec is the fallback).
-/// fz-qbg.1: purely structural call graph derived from terminator
-/// shape + `Prim::MakeClosure` edges. Previously coupled to any-key
-/// spec registration — that coupling silently regressed SCC analysis
-/// whenever new fns were introduced mid-lowering (cps_split_call's
-/// continuations, fz-duq's per-arm cont fns, fz-qbg.2's per-clause
-/// body cont fns). The lower pass already does structural-only
-/// graph building in `annotate_back_edges` (src/ir_lower.rs:615);
-/// the typer now matches that discipline.
-///
-/// Closure call edges become continuation-only (the call's
-/// continuation fn). The closure *target* isn't resolved here — it
-/// was resolved via `fn_constants`, which required an any-key spec
-/// that may not exist yet at graph-build time. Recursion through
-/// closures (Y-combinator-style) gets a looser SCC; not a concern
-/// for current fz code. If it becomes one, structural
-/// over-approximation via `Prim::MakeClosure` edges (already
-/// included here) covers the common case.
-fn build_call_graph(m: &Module) -> HashMap<FnId, HashSet<FnId>> {
-    let mut g: HashMap<FnId, HashSet<FnId>> = HashMap::new();
-    for f in &m.fns {
-        let edges = g.entry(f.id).or_default();
-        for b in &f.blocks {
-            for stmt in &b.stmts {
-                let Stmt::Let(_, prim) = stmt;
-                if let Prim::MakeClosure(lam_fn_id, _) = prim {
-                    edges.insert(*lam_fn_id);
-                }
-            }
-            match &b.terminator {
-                Term::Call {
-                    callee,
-                    continuation,
-                    ..
-                } => {
-                    edges.insert(*callee);
-                    edges.insert(continuation.fn_id);
-                }
-                Term::TailCall { callee, .. } => {
-                    edges.insert(*callee);
-                }
-                Term::CallClosure { continuation, .. } => {
-                    edges.insert(continuation.fn_id);
-                }
-                Term::TailCallClosure { .. } => {}
-                Term::Receive { continuation } => {
-                    edges.insert(continuation.fn_id);
-                }
-                _ => {}
-            }
-        }
-    }
-    g
-}
 
 /// Tarjan strongly-connected components. Returns SCCs in
 /// reverse-topological order (leaves first) — caller reverses for
@@ -424,28 +364,6 @@ pub fn resolve_closure_return(
         }
     }
     Some(acc)
-}
-
-/// Type a whole module. Iterates type_fn to a fixed point, propagating
-/// call-site arg Descrs into callee entry-param Descrs after each pass.
-/// fz-ul4.27.10: replaces the previous one-shot `map`. Fns with no direct
-/// caller (main, closure-only targets) keep entry params at `any`.
-/// fz-vw4 step 1 — explicit reachability roots for the spec set.
-///
-/// Today only `main` is invoked from Rust without an IR caller
-/// (`Runtime::spawn(main_fn)` in main.rs). Other fns become reachable
-/// by IR-level discovery: direct callsites, MakeClosure / Spawn (via
-/// the lambda's any-key), and Receive cont sites.
-///
-/// Wired in alongside the existing unconditional bootstrap; step 2
-/// replaces the bootstrap with these seeds alone.
-fn entry_seeds(m: &Module) -> Vec<(FnId, Vec<Descr>)> {
-    let mut seeds = Vec::new();
-    if let Some(main) = m.fns.iter().find(|f| f.name == "main") {
-        let n_params = main.block(main.entry).params.len();
-        seeds.push((main.id, vec![Descr::any(); n_params]));
-    }
-    seeds
 }
 
 /// fz-vw4.5a — scan converged specs for unresolved closure dispatch.
