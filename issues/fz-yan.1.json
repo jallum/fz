@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
     "fz-yan.2"
@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-yan",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "fz-NA.1: runtime — reserve atom IDs, redefine *_BITS as atom-tagged",
   "type": "task",
-  "updated_at": "2026-05-18T18:16:32Z"
+  "updated_at": "2026-05-18T18:18:01Z"
 }
