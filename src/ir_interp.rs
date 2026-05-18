@@ -709,6 +709,53 @@ fn eval_prim(module: &Module, prim: &Prim, env: &HashMap<Var, FzValue>) -> Resul
                 FzValue::FALSE
             }
         }
+        // fz-fyq.5 — list primitives. Same runtime helpers and memory
+        // layout as ir_codegen's JIT/AOT paths use (cons cells: header
+        // at 0..16, head at 16, tail at 24); the empty list is the
+        // single bit pattern `FzValue::EMPTY_LIST`. Until this lands,
+        // every interp run of a program containing a list literal
+        // exited 75 "Deferred" and the fixture matrix silently skipped
+        // it.
+        Prim::ListCons(h, t) => {
+            let hv = env_get(env, *h)?;
+            let tv = env_get(env, *t)?;
+            FzValue(fz_runtime::ir_runtime::fz_alloc_list_cons(hv.0, tv.0))
+        }
+        Prim::ListHead(c) => {
+            let cv = env_get(env, *c)?;
+            let p = cv
+                .unbox_ptr()
+                .ok_or_else(|| "ListHead: subject is not a heap pointer".to_string())?;
+            FzValue(unsafe { std::ptr::read((p as *const u8).add(16) as *const u64) })
+        }
+        Prim::ListTail(c) => {
+            let cv = env_get(env, *c)?;
+            let p = cv
+                .unbox_ptr()
+                .ok_or_else(|| "ListTail: subject is not a heap pointer".to_string())?;
+            FzValue(unsafe { std::ptr::read((p as *const u8).add(24) as *const u64) })
+        }
+        Prim::IsEmptyList(c) => {
+            let cv = env_get(env, *c)?;
+            if cv.is_empty_list() {
+                FzValue::TRUE
+            } else {
+                FzValue::FALSE
+            }
+        }
+        Prim::MakeList(elems, tail) => {
+            // Mirror ir_codegen: fold cons from right, starting with
+            // `tail` (defaulted to the empty list).
+            let mut acc = match tail {
+                Some(t) => env_get(env, *t)?,
+                None => FzValue::EMPTY_LIST,
+            };
+            for e in elems.iter().rev() {
+                let ev = env_get(env, *e)?;
+                acc = FzValue(fz_runtime::ir_runtime::fz_alloc_list_cons(ev.0, acc.0));
+            }
+            acc
+        }
         _ => {
             return Err(format!(
                 "interp .5.2: prim {:?} not yet supported (lands in fz-ul4.23.5.3+)",
