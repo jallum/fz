@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-o0u"
   ],
@@ -12,8 +12,8 @@
   "labels": [],
   "parent": "fz-q9g",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "fz-dps.A: Cont gains optional dst; ArgRepr gains Dst",
   "type": "task",
-  "updated_at": "2026-05-18T19:29:25Z"
+  "updated_at": "2026-05-18T19:42:33Z"
 }
