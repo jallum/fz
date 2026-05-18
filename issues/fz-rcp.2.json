@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-18T19:32:07Z",
+  "description": "Port of fz-aiz.2 from the unmerged `fz-aiz/any-key-floor` branch.\n\n## Repro (errors today)\n\n```fz\nfn f([h | rest]) when h \u003e 0, do: rest\nfn f([h | rest]), do: [h | rest]\nfn main() do\n  print(f([-1, 2, 3]))\nend\n```\n\nErrors with `error[lower/unbound]: unbound: h`.\n\n## Two coordinated bugs\n\nThe pattern-check false positive masks the lower-side bug, so fixing\nonly one breaks fixtures.\n\n### (a) `pattern_matrix::find_unreachable_rows` ignores guards\n\npattern_matrix.rs:634. Today: compiles the whole matrix, walks the\ndecision tree, returns BodyIds not reached. Guards are a Row field\nthat the unreachable check ignores. So clause 2 (`[h | rest]`) is\nmarked unreachable because clause 1's guarded `[h | rest]` \"covers\"\nit — but a guard can reject at runtime, so this is wrong.\n\nFix: fast path when no row has a guard (preserves single-compile\ncost). With guards: walk rows in order, test each against the\nprefix of *unguarded* rows only. Standard ML/Erlang semantics.\n\n### (b) `ir_lower::lower_matrix_list_cons` env leak\n\nir_lower.rs:1426. Snapshot `env_before` taken at line 1485, used to\nfilter `pat_bind_extras`. But `ctx.env` / `ctx.env_order` are never\nrestored across loop iterations — clause N's `h`/`rest` bindings\nleak into clause N+1's `env_before`, get filtered out of\n`pat_bind_extras`, and lowering emits an unbound reference.\n\nFix: snapshot `ctx.env` / `ctx.env_order` before the cons-rows loop;\nrestore before each iteration; final restore after the loop.\n\n## Why both at once\n\n`find_unreachable_rows`'s false positive marks clause 2 unreachable\nbefore lowering tries to emit it — so the lower bug is invisible\nuntil the pattern_check fix lands. Conversely, fixing only the\nlower bug leaves the false unreachable warning. Land together.\n\n## Acceptance\n\n- Repro runs and prints `[-1, 2, 3]`.\n- pattern_matrix unit tests cover three guard-aware cases:\n  1. Guarded prefix doesn't dominate later rows.\n  2. Unguarded wildcard still dominates later rows.\n  3. Guarded row itself unreachable when its pattern is covered by\n     an unguarded predecessor.\n- 618 unit + 166 fixture-matrix tests green.\n- No goldens shift.",
+  "id": "fz-rcp.2",
+  "labels": [],
+  "parent": "fz-rcp",
+  "priority": 1,
+  "status": "open",
+  "title": "fz-rcp.2: pattern_matrix guards + ir_lower env restore (two-bug couple)",
+  "type": "bug",
+  "updated_at": "2026-05-18T19:32:07Z"
+}
