@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-jg5.6"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-jg5.8"
+  ],
   "created": "2026-05-18T02:56:00Z",
   "description": "# Update every expected.clif / expected.specs across fixtures\n\n## Goal\n\nWalk the `fixtures/` tree. For every fixture, regenerate the\ngolden files against the post-reducer output and review each diff.\nThe diff should be **reviewable as 'this output is reasonable for\nthis source'** — the agent-review checkpoint the design promises\nin lieu of a numeric predictor.\n\n## Per-fixture review checklist\n\nFor each fixture:\n- Runtime output (`expected.txt`) UNCHANGED.\n- `expected.clif` reflects the reduced IR. Diff should be:\n  - Fewer specs (often by 10x+ for pattern-matching fixtures).\n  - No vestigial cont specs from singleton-input cascade.\n  - main may collapse to constants for fully-static programs.\n- `expected.specs` reflects the smaller spec set.\n\n## Fixtures expected to change dramatically\n\n`polymorphic`, `higher_order`, `closure_typed_captures`,\n`curried_add`, `ast_eval`, `mutual_recursion`, `fib_tailrec`,\n`list_primitives`, `spawn2_basic`, `spawn_with_captures`.\n\n## Fixtures expected to change minimally\n\n`tail_recursion` (count_100k — budget caps unrolling),\n`concurrency_ping_pong` (receive boundary stays),\n`relay` (receive boundary stays).\n\n## Acceptance\n\n- `cargo test` green.\n- All three paths (interp + JIT + AOT) produce identical output\n  for every fixture.\n- ast_eval CLIF specifically drops from ~1400 lines to under 100\n  (the headline metric).\n\n## Removals\n\nNone.",
   "id": "fz-jg5.7",
