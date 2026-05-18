@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-18T20:41:43Z",
+  "description": "## Goal\n`collect_diagnostics` reads `ModuleTypes::dead_branches` and emits `type/unreachable-arm` only when the dead branch's `BranchOrigin` is `User`. Synthetic Ifs (pattern-bind, fn-clause dispatch, param guards) are silent.\n\nThis is the ticket that unblocks destructure on every path — interp, JIT, AOT, repl — because all four share `run_frontend_gates_or_exit`.\n\n## Depends on\n- E1 (`BranchOrigin` tag).\n- E2 (`dead_branches` consensus map).\n\n## Behaviour change\n- `is_synthetic_match_error_block` retired — superseded by the explicit `BranchOrigin::User` filter.\n- The in-place `find_emptied_var` re-scan in `collect_diagnostics` retires too — it reads `dead_branches` instead.\n- `unreachable-arm` warnings still fire on dead arms the user actually wrote (the `User` case in fixtures like `if_tail_call_in_arm_unnarrowed`).\n\n## Out of scope\n- The fold (E4) is what actually removes the dead blocks from codegen IR; this ticket only suppresses the noise.\n\n## Done when\n- After this ticket, the destructure probe (`{a,b} = pair()`, `[h|t] = xs`) compiles silently and runs on all four legs.\n- Existing user-authored dead-arm warnings still fire (verified by `if_tail_call_in_arm_unnarrowed` and similar fixtures).\n- `is_synthetic_match_error_block` is gone.\n- All tests pass.",
+  "id": "fz-fyq.3",
+  "labels": [],
+  "parent": "fz-fyq",
+  "priority": 2,
+  "status": "open",
+  "title": "E3: diagnostics consume dead_branches + BranchOrigin filter (unblocks destructure)",
+  "type": "task",
+  "updated_at": "2026-05-18T20:41:43Z"
+}
