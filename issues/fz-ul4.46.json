@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-18T12:06:29Z",
+  "description": "fz-rh5.2 surfaced this. \\`fz run\\` calls \\`type_module\\` 4× over the\nlifetime of a single compile. Call #1 (in \\`validate_specs_or_exit\\`,\n\\`src/main.rs:47\\`) and call #3 (in \\`ir_codegen::compile\\`'s\npre-rewrites typing) type structurally-identical inputs (the raw\nlowered module). Threading call #1's result through into\n\\`ir_codegen::compile\\` removes one full \\`type_module\\` invocation.\n\n## Why it's its own ticket\n\nCrosses two crate boundaries (main + ir_codegen) and changes\n\\`compile()\\` signature. Worth its own diff so the API change is\nvisible in git blame. fz-rh5.2 is just investigation + docs.\n\n## Acceptance\n\n- \\`compile()\\` (or a new \\`compile_with_types()\\` variant) accepts an\n  optional pre-typed \\`ModuleTypes\\`.\n- \\`run_jit_src\\` / \\`run_build\\` / \\`run_aot\\` paths thread the\n  validate-time types through.\n- \\`fz run\\` type_module call count drops from 4 to 3.\n- PROV.4's perf counters tighten by ~25% in compile pipeline (not\n  in the in-typer counters, which are per-call).",
+  "id": "fz-ul4.46",
+  "labels": [],
+  "parent": "fz-ul4",
+  "priority": 2,
+  "status": "open",
+  "title": "thread validate_specs_or_exit's ModuleTypes through into ir_codegen::compile",
+  "type": "task",
+  "updated_at": "2026-05-18T12:06:29Z"
+}
