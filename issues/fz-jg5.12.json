@@ -9,9 +9,15 @@
   "id": "fz-jg5.12",
   "labels": [],
   "parent": "fz-jg5",
+  "comments": [
+    {
+      "text": "Findings (docs/walkthroughs/FINDINGS.md): Ratify the 'trivially inlinable' criterion: an @spec'd fn is trivially inlinable iff its body is one block with one non-control statement plus Return. add1 qualifies (BinOp + Return). Multi-stmt / branching / recursive fns are firewalls. Per-callsite override (@inline :always / :never) is a follow-up not blocking the contract.",
+      "timestamp": "2026-05-18T03:17:57Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "fz-RED.9: @spec as downstream-narrowing contract",
   "type": "task",
-  "updated_at": "2026-05-18T02:56:56Z"
+  "updated_at": "2026-05-18T03:17:57Z"
 }
