@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-jg5.4"
   ],
@@ -18,8 +18,8 @@
     }
   ],
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "fz-RED.4: recursive reduction with unroll budget (subsumes fz-ul4.11.28)",
   "type": "task",
-  "updated_at": "2026-05-18T03:17:56Z"
+  "updated_at": "2026-05-18T03:40:24Z"
 }
