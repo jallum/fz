@@ -2197,12 +2197,27 @@ fn lower_if(
 
     let cv = lower_expr(ctx, cond, false)?;
 
-    let then_cont = mint_cont_fn(ctx, "if_then", if_span, crate::fz_ir::FnCategory::ControlFlowCont);
-    let else_cont = mint_cont_fn(ctx, "if_else", if_span, crate::fz_ir::FnCategory::ControlFlowCont);
+    let then_cont = mint_cont_fn(
+        ctx,
+        "if_then",
+        if_span,
+        crate::fz_ir::FnCategory::ControlFlowCont,
+    );
+    let else_cont = mint_cont_fn(
+        ctx,
+        "if_else",
+        if_span,
+        crate::fz_ir::FnCategory::ControlFlowCont,
+    );
     let join_opt = if is_tail {
         None
     } else {
-        Some(mint_cont_fn(ctx, "if_join", if_span, crate::fz_ir::FnCategory::ControlFlowCont))
+        Some(mint_cont_fn(
+            ctx,
+            "if_join",
+            if_span,
+            crate::fz_ir::FnCategory::ControlFlowCont,
+        ))
     };
 
     // Allocate arm blocks in the outer (current) fn.
@@ -3082,12 +3097,14 @@ fn lower_cond(
 
     // Per-arm cont fns + fail cont.
     let arm_conts: Vec<ContFn> = (0..arms.len())
-        .map(|i| mint_cont_fn(
-            ctx,
-            format!("cond_arm_{}", i),
-            arms[i].0.span,
-            crate::fz_ir::FnCategory::ControlFlowCont,
-        ))
+        .map(|i| {
+            mint_cont_fn(
+                ctx,
+                format!("cond_arm_{}", i),
+                arms[i].0.span,
+                crate::fz_ir::FnCategory::ControlFlowCont,
+            )
+        })
         .collect();
     let fail_cont = mint_cont_fn(
         ctx,

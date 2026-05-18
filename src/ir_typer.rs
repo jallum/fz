@@ -246,7 +246,6 @@ impl ModuleTypes {
         self.specs.get(&(fn_id, input_descrs.to_vec()))
     }
 
-
     /// fz-pky.2 — return the any-key spec for `fn_id` if registered.
     /// Under the reachability-driven model (fz-vw4), the any-key only
     /// exists when the fn is closure-reachable, entry-seeded, or

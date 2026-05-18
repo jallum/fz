@@ -1437,9 +1437,11 @@ mod tests {
             Prim::MakeTuple(elems) => {
                 assert_eq!(elems.len(), 2);
                 let lookup = |v: Var| -> Option<&Prim> {
-                    blk.stmts.iter().find_map(|Stmt::Let(bv, prim)| {
-                        if *bv == v { Some(prim) } else { None }
-                    })
+                    blk.stmts.iter().find_map(
+                        |Stmt::Let(bv, prim)| {
+                            if *bv == v { Some(prim) } else { None }
+                        },
+                    )
                 };
                 assert!(matches!(lookup(elems[0]), Some(Prim::Const(Const::Int(1)))));
                 assert!(matches!(lookup(elems[1]), Some(Prim::Const(Const::Int(2)))));
