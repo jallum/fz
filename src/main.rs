@@ -44,6 +44,13 @@ use std::io::{IsTerminal, Read};
 /// the `run` / `jit` / `aot` drivers immediately after `lower_program`
 /// so all three paths produce identical accept/reject verdicts.
 fn validate_specs_or_exit(prog: &ast::Program, module: &fz_ir::Module, sm: &diag::SourceMap) {
+    // fz-rh5.2 — type_module call #1 of 4 in `fz run`. Distinct inputs:
+    //   #1 (here):              raw lowered module — for @spec diagnostics
+    //   #2 (compute_survivors): reducer-applied module — for pattern_check
+    //   #3 (ir_codegen::compile): pre-rewrites clone — for codegen rewrites
+    //   #4 (ir_codegen::compile): post-inline/fuse/reduce — final codegen
+    // #1 and #3 type structurally-identical inputs; threading the result
+    // through would save one full call (follow-up filed).
     let mt = ir_typer::type_module(module);
     let mut diags = spec_check::validate_specs(prog, module, &mt);
     // fz-ul4.45 — pattern-match correctness analysis. Unreachable clauses
