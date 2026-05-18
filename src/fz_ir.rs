@@ -187,8 +187,15 @@ pub enum CallsiteOutcome {
     /// reducer once fz-9pr.E lands).
     Inlined,
     /// Typer minted a spec for this callsite's target.
+    ///
+    /// `came_from` carries the prior `Stalled` reason when the typer
+    /// promoted a `Stalled` entry to `Emitted` (fz-f88.4). `None` when
+    /// the typer discovered the callsite without a prior reducer
+    /// record. Lets `fz dump --emit outcomes` explain *why* the
+    /// reducer stopped short of folding even when the typer succeeds.
     Emitted {
         target: (FnId, Vec<crate::types::Descr>),
+        came_from: Option<StalledReason>,
     },
     /// Reducer left the call in place. `reason` says why, so
     /// `fz dump --emit outcomes` can explain coverage gaps.

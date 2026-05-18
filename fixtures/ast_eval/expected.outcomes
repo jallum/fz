@@ -1,8 +1,8 @@
 outcomes for fixtures/ast_eval/input.fz
 
 print:
-  blk3 Direct -> Emitted (fn_clause_1#8 [any])
-  blk4 Direct -> Emitted (fn_clause_0#7 [42])
+  blk3 Direct -> Emitted (fn_clause_1#8 [any]) via OpaqueArg
+  blk4 Direct -> Emitted (fn_clause_0#7 [42]) via OpaqueArg
 
 vec_get:
   blk3 Direct -> Stalled (OpaqueArg)
@@ -29,16 +29,16 @@ main:
   blk0 Direct -> Consumed (42)
 
 k_20:
-  blk0 Direct -> Emitted (print#0 [42])
+  blk0 Direct -> Emitted (print#0 [42]) via OpaqueArg
 
 k_21:
   blk0 Direct -> Consumed (14)
 
 k_22:
-  blk0 Direct -> Emitted (print#0 [14])
+  blk0 Direct -> Emitted (print#0 [14]) via OpaqueArg
 
 k_23:
   blk0 Direct -> Consumed (21)
 
 k_24:
-  blk0 Direct -> Emitted (print#0 [21])
+  blk0 Direct -> Emitted (print#0 [21]) via OpaqueArg

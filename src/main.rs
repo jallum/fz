@@ -854,14 +854,18 @@ fn dump_outcomes_pipeline(src: String, source_name: String) -> String {
                     format!("Consumed ({})", result)
                 }
                 CallsiteOutcome::Inlined => "Inlined".to_string(),
-                CallsiteOutcome::Emitted { target } => {
+                CallsiteOutcome::Emitted { target, came_from } => {
                     let (tfid, tkey) = target;
-                    format!(
+                    let head = format!(
                         "Emitted ({}#{} {})",
                         fn_name(*tfid),
                         tfid.0,
                         descrs_str(tkey)
-                    )
+                    );
+                    match came_from {
+                        Some(r) => format!("{} via {}", head, r),
+                        None => head,
+                    }
                 }
                 CallsiteOutcome::Stalled { reason } => {
                     format!("Stalled ({})", reason)

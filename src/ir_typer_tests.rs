@@ -1833,7 +1833,7 @@ fn typer_publishes_emitted_outcome_updates_for_direct() {
         slot: EmitSlot::Direct,
     };
     match mt.callsite_outcome_updates.get(&cid) {
-        Some(CallsiteOutcome::Emitted { target: (fid, key) }) => {
+        Some(CallsiteOutcome::Emitted { target: (fid, key), .. }) => {
             assert_eq!(*fid, FnId(0));
             assert_eq!(key.len(), 1);
             // Key carries the literal Descr from the callsite.

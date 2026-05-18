@@ -804,6 +804,7 @@ pub fn type_module(m: &Module) -> ModuleTypes {
                     cid,
                     CallsiteOutcome::Emitted {
                         target: target.clone(),
+                        came_from: None,
                     },
                 );
             }
@@ -830,8 +831,22 @@ pub fn type_module(m: &Module) -> ModuleTypes {
 pub fn apply_callsite_outcomes(m: &mut Module, mt: &ModuleTypes) {
     for (cid, outcome) in &mt.callsite_outcome_updates {
         match m.callsite_outcomes.get(cid) {
-            None | Some(CallsiteOutcome::Stalled { .. }) => {
+            None => {
                 m.callsite_outcomes.insert(*cid, outcome.clone());
+            }
+            Some(CallsiteOutcome::Stalled { reason }) => {
+                // fz-f88.4 — carry the reducer's reason forward into the
+                // promoted Emitted so the dump can explain *why* the
+                // reducer stalled even when the typer succeeded.
+                let prior_reason = *reason;
+                let promoted = match outcome {
+                    CallsiteOutcome::Emitted { target, .. } => CallsiteOutcome::Emitted {
+                        target: target.clone(),
+                        came_from: Some(prior_reason),
+                    },
+                    other => other.clone(),
+                };
+                m.callsite_outcomes.insert(*cid, promoted);
             }
             Some(CallsiteOutcome::Consumed { .. })
             | Some(CallsiteOutcome::Inlined)
@@ -863,7 +878,7 @@ pub fn apply_callsite_outcomes(m: &mut Module, mt: &ModuleTypes) {
 #[cfg(debug_assertions)]
 fn assert_every_emitted_has_provenance(m: &Module, mt: &ModuleTypes) {
     for (cid, outcome) in &m.callsite_outcomes {
-        if let CallsiteOutcome::Emitted { target } = outcome {
+        if let CallsiteOutcome::Emitted { target, .. } = outcome {
             assert!(
                 mt.specs.contains_key(target),
                 "fz-9pr.9: Emitted outcome at {:?} targets unregistered spec {:?}",
