@@ -11,9 +11,15 @@
   "id": "fz-9pr.14",
   "labels": [],
   "parent": "fz-9pr",
+  "comments": [
+    {
+      "text": "Closed alongside .11. Deletion of ir_inline was predicated on the .E arc landing.",
+      "timestamp": "2026-05-18T16:27:11Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "fz-CO.E.4 — Delete ir_inline::inline_module and helpers",
   "type": "task",
-  "updated_at": "2026-05-18T15:02:59Z"
+  "updated_at": "2026-05-18T16:27:11Z"
 }
