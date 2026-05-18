@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-9pr.12"
+  ],
   "blocks": [],
   "created": "2026-05-18T15:02:42Z",
   "description": "In ir_codegen.rs compile_pipeline, replace:\n\n```rust\ncrate::ir_inline::inline_module(\u0026mut working);\ncrate::ir_fuse::fuse_blocks(\u0026mut working);\ncrate::ir_reducer::reduce_module(\u0026mut working);\n```\n\nwith:\n\n```rust\ncrate::ir_fuse::fuse_blocks(\u0026mut working);\ncrate::ir_reducer::reduce_module(\u0026mut working);  // now also writes Inlined outcomes\n```\n\nir_inline::inline_single_use_conts stays — it's a typer-output-driven\noptimization, distinct from this arc.\n\n## Acceptance\n\n- Goldens identical (or intentionally re-blessed per E.2 audit).\n- All 842 tests green.\n\n## Removes\n\n- The ir_inline::inline_module call from compile_pipeline.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "fz-CO.E.3 — Pipeline: reducer-with-Inlined replaces ir_inline::inline_module",
   "type": "task",
-  "updated_at": "2026-05-18T15:02:42Z"
+  "updated_at": "2026-05-18T15:02:43Z"
 }
