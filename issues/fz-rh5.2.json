@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-18T12:00:51Z",
+  "description": "## The question\n\n\\`fz-5j5.2\\` brought the codegen pipeline from 3 \\`type_module\\` calls\nto 2. Under \\`fz run\\`, debug instrumentation showed type_module\nfiring 4 times for ast_eval — not 2. The extra 2 calls are\nunaccounted for.\n\n## Scope\n\nInvestigation only. No code change in this ticket; outcome is one\nof:\n\n  (a) Find a redundant call path → file a follow-up fix ticket.\n  (b) Find a legitimate second consumer (e.g., \\`spec_check.rs\\`\n      validating after compile; \\`test_runner.rs\\` re-typing for\n      its parity matrix) → document why in a comment near the\n      additional call site.\n\n## How to investigate\n\n\\`\\`\\`\ngit grep -nE 'type_module|compile_pipeline|ir_codegen::compile' \\\\\n  src/main.rs src/test_runner.rs src/repl.rs src/runtime.rs \\\\\n  src/spec_check.rs src/ir_fold.rs src/ir_inline.rs\n\\`\\`\\`\n\nThen add a stacktrace-on-entry temporarily to \\`type_module\\` and\nrun \\`./target/release/fz run fixtures/ast_eval/input.fz\\` once.\nIdentify the four callers, classify, document or file.\n\n## Acceptance\n\nEither a follow-up ticket exists for a redundant call, or a comment\nnear each call site explains why it's necessary. The count is no\nlonger mysterious.\n\n## Independent of\n\nAll other PROV tickets.",
+  "id": "fz-rh5.2",
+  "labels": [],
+  "parent": "fz-rh5",
+  "priority": 2,
+  "status": "open",
+  "title": "fz-PROV.2: investigate why type_module is called 4x under fz run",
+  "type": "task",
+  "updated_at": "2026-05-18T12:00:51Z"
+}
