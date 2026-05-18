@@ -8,8 +8,6 @@
     "fz-q9g.5",
     "fz-q9g.7"
   ],
-  "closed_at": "2026-05-17T16:26:46Z",
-  "close_reason": "subsumed by fz-q9g.3 (CD-bundle)",
   "created": "2026-05-17T04:46:31Z",
   "description": "What: When callee spec is Dst(k), caller emits alloc(k) from Cheney (RC arena lands later in B-arc), passes dst as extra arg, cont receives dst. Both Call and CallClosure terminators.\n\nWhy: Owns destination lifetime at the caller frame.\n\nCLIF impact: adds call alloc_X + dst arg threading. For 'alloc-and-return' callees: the alloc just moves from callee to caller — net same.\n\nRemoves: callee's now-redundant return-value materialization.\n\nTests: golden CLIF parity across one Call and one CallClosure site.",
   "id": "fz-q9g.4",
@@ -22,8 +20,8 @@
     }
   ],
   "priority": 1,
-  "status": "closed",
+  "status": "open",
   "title": "fz-dps.C3: lower Term::Call/CallClosure under Dst ABI",
   "type": "task",
-  "updated_at": "2026-05-17T16:26:46Z"
+  "updated_at": "2026-05-18T19:55:36Z"
 }
