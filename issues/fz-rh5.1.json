@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-18T12:00:39Z",
+  "description": "## The change\n\nfz-5j5.3 silently fixed a real pre-existing bug in\n\\`cont_key_for_spec\\` (\\`src/ir_typer.rs\\`): the CallClosure branch\nhandled the fn_constants-resolved slot-0 path but fell back to\n\\`Descr::any\\` for closure_lit-typed closures. The walker\n\\`walk_spec_for_discovery\\` handled both paths via\n\\`resolve_closure_return\\`. Under the old whole-graph-rebuild typer\nthe disagreement was invisible — both functions ran under the same\nwrong logic at every iter — but under fz-5j5.3's split between\nworklist (walker) and reachability sweep (cont_key_for_spec), keys\ndiverged: the sweep computed [any, ...] for cont specs the walker\nhad registered as [int, ...], orphaning them.\n\nThis ticket extracts the fix into its own commit so \\`git blame\\`\nattributes it to \"closure_lit cont keying bug\" rather than \"typer\nrefactor,\" and adds a focused regression test.\n\nThe fix itself is already in tree (\\`src/ir_typer.rs\\`,\n\\`cont_key_for_spec\\`, the \\`Term::CallClosure\\` arm).\n\n## What to add\n\nA focused regression test in \\`src/ir_typer_tests.rs\\`. Minimal shape:\n\n\\`\\`\\`fz\nfn add_to(x), do: fn (y) -\u003e x + y\nfn use_it(g) do\n  r = g(1)\n  r + 100\nend\nfn main() do\n  print(use_it(add_to(7)))\nend\n\\`\\`\\`\n\n\\`use_it\\` receives g as an opaque param. Inside, \\`g(1)\\` is a\nCallClosure with a closure_lit Descr (forwarded from add_to's\nreturn). The cont after \\`g(1)\\` reads \\`r\\` and adds 100. The\ncont's slot-0 must be the lambda's return Descr (int), not \\`any\\`.\nAssert the cont spec's key starts with \\`int\\`, not \\`any\\`.\n\n## Out of scope\n\nDon't refactor \\`cont_key_for_spec\\` further. PROV.6 deletes it\nentirely (replaces with provenance-tracked emit/diff).\n\n## Independent of\n\nAll other PROV tickets. Lands first to clean repo of bugs before\nstructural refactor.",
+  "id": "fz-rh5.1",
+  "labels": [],
+  "parent": "fz-rh5",
+  "priority": 1,
+  "status": "open",
+  "title": "fz-PROV.1: backfill closure_lit cont_key_for_spec fix as its own commit + test",
+  "type": "task",
+  "updated_at": "2026-05-18T12:00:39Z"
+}
