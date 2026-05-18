@@ -11,9 +11,15 @@
   "id": "fz-9pr.11",
   "labels": [],
   "parent": "fz-9pr",
+  "comments": [
+    {
+      "text": "Open question: ir_inline::inline_module iterates to fixpoint (up to 32 rounds, capped by GROWTH_CAP). The reducer is single-pass. E.1 either introduces a fixpoint loop OR accepts single-pass inlining; if the latter, E.2's audit must measure the coverage loss. Default to single-pass and add loop only if E.2 surfaces real regressions.",
+      "timestamp": "2026-05-18T15:25:01Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "fz-CO.E.1 — Reducer learns inline criterion, writes Inlined outcome",
   "type": "task",
-  "updated_at": "2026-05-18T15:02:43Z"
+  "updated_at": "2026-05-18T15:25:01Z"
 }
