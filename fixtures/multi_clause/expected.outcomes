@@ -1,25 +1,5 @@
 outcomes for fixtures/multi_clause/input.fz
 
-print:
-  blk3 Direct -> Emitted (fn_clause_1#8 [any]) via OpaqueArg
-  blk4 Direct -> Emitted (fn_clause_0#7 [any]) via OpaqueArg
-
-vec_get:
-  blk3 Direct -> Stalled (OpaqueArg)
-  blk4 Direct -> Stalled (OpaqueArg)
-
-classify:
-  blk3 Direct -> Consumed (:zero)
-  blk5 Direct -> Consumed (:negative)
-  blk6 Direct -> Stalled (OpaqueArg)
-
-fact:
-  blk3 Direct -> Consumed (1)
-  blk4 Direct -> Stalled (OpaqueArg)
-
-fn_clause_1:
-  blk0 Direct -> Stalled (OpaqueArg)
-
 main:
   blk0 Direct -> Consumed (:zero)
 

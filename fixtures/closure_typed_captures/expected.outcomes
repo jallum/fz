@@ -1,13 +1,5 @@
 outcomes for fixtures/closure_typed_captures/input.fz
 
-print:
-  blk3 Direct -> Emitted (fn_clause_1#8 [any]) via OpaqueArg
-  blk4 Direct -> Emitted (fn_clause_0#7 [int]) via OpaqueArg
-
-vec_get:
-  blk3 Direct -> Stalled (OpaqueArg)
-  blk4 Direct -> Stalled (OpaqueArg)
-
 apply1:
   blk0 ClosureLit(0,0) -> Emitted (lambda_14#14 [10, 20, 12]) via NoClosureLitTarget
 

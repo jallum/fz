@@ -462,6 +462,7 @@ fn run_dump(args: &[String]) {
     let mut path: Option<String> = None;
     let mut fn_filter: Option<String> = None;
     let mut emit = "clif".to_string();
+    let mut show_all = false;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -480,6 +481,8 @@ fn run_dump(args: &[String]) {
                     std::process::exit(2);
                 }
             }
+            // fz-f88.7 — bypass dump_outcomes filtering (prelude + dead bodies).
+            "--all" => show_all = true,
             a if !a.starts_with("--") && path.is_none() => path = Some(a.to_string()),
             a => {
                 eprintln!("fz dump: unknown arg `{}`", a);
@@ -534,7 +537,7 @@ fn run_dump(args: &[String]) {
         if fn_filter.is_some() {
             eprintln!("fz dump: --fn is ignored with --emit outcomes");
         }
-        print!("{}", dump_outcomes_pipeline(src, path.clone()));
+        print!("{}", dump_outcomes_pipeline(src, path.clone(), show_all));
         return;
     }
 
@@ -760,7 +763,15 @@ fn dump_bodies_pipeline(src: String, source_name: String) -> String {
 /// Use this to answer "why didn't X fold?" without a debugger — every
 /// `Stalled` carries a `StalledReason`, every `Emitted` shows the
 /// resolved spec key.
-fn dump_outcomes_pipeline(src: String, source_name: String) -> String {
+///
+/// fz-f88.7 — by default, two classes of caller are hidden so the
+/// signal stays focused on user-program code:
+///   - callers whose `FnIr.category == Prelude` (vec_get/print noise
+///     that's the same in every fixture);
+///   - callers whose `FnId` no longer has any reachable spec after
+///     reduction (the body is dead-coded).
+/// Pass `show_all=true` (CLI `--all`) to bypass both filters.
+fn dump_outcomes_pipeline(src: String, source_name: String, show_all: bool) -> String {
     use crate::fz_ir::{CallsiteId, CallsiteOutcome, EmitSlot};
     let mut sm = diag::SourceMap::new();
     let file_id = sm.add_file(source_name.clone(), src.clone());
@@ -840,8 +851,24 @@ fn dump_outcomes_pipeline(src: String, source_name: String) -> String {
         out.push_str("  (no callsites — program is callsite-free)\n");
         return out;
     }
+    // fz-f88.7 — default filter: hide prelude callers and any caller
+    // whose body has no surviving spec post-reduction. `--all` bypasses.
+    let reachable_fids: std::collections::HashSet<fz_ir::FnId> =
+        mt.reachable_specs.iter().map(|(fid, _)| *fid).collect();
+    let should_show = |f: &fz_ir::FnIr| -> bool {
+        if show_all {
+            return true;
+        }
+        if f.category == fz_ir::FnCategory::Prelude {
+            return false;
+        }
+        reachable_fids.contains(&f.id)
+    };
     // Iterate in module-fn declaration order so output mirrors source.
     for f in &module.fns {
+        if !should_show(f) {
+            continue;
+        }
         let Some(entries) = by_caller.get(&f.id.0) else {
             continue;
         };
