@@ -8,6 +8,12 @@
   "id": "fz-rcp.3",
   "labels": [],
   "parent": "fz-rcp",
+  "comments": [
+    {
+      "text": "Closed in favor of fz-rcp.5's architecture. The any-key floor was scaffolding to make resolve total; the right fix is to stop having codegen call resolve at all (read the typer's published outcome). See fz-rcp epic comment for the reasoning. The naturally_opaque routing field, the closure-body-picker coupling, and the cont-ABI hazards all dissolve when codegen reads outcomes directly.",
+      "timestamp": "2026-05-18T20:21:55Z"
+    }
+  ],
   "priority": 1,
   "status": "closed",
   "title": "fz-rcp.3: ensure_any_keys soundness floor + naturally_opaque split",
