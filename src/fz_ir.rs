@@ -446,6 +446,12 @@ pub struct Module {
     /// body is a stable unit, so reduction does not cross into it (except
     /// for trivially-inlinable single-stmt bodies, which carry no risk).
     pub boundary_fns: HashSet<FnId>,
+    /// fz-9pr.2 — unified callsite outcome table. Three writers
+    /// (reducer, ir_inline, typer) and several readers all share this
+    /// one map. Empty on a freshly-built module; populated as phases
+    /// decide each callsite's fate. See `CallsiteOutcome` for the
+    /// shape of each entry and the fz-9pr epic for the design.
+    pub callsite_outcomes: HashMap<CallsiteId, CallsiteOutcome>,
 }
 
 impl Module {
@@ -595,6 +601,7 @@ impl ModuleBuilder {
             externs: Vec::new(),
             extern_idx: HashMap::new(),
             boundary_fns: HashSet::new(),
+            callsite_outcomes: HashMap::new(),
         }
     }
 }
@@ -1076,6 +1083,12 @@ mod tests {
         b.set_terminator(entry, Term::Return(s_));
         let s = format!("{}", b.build());
         assert!(s.contains("alloc_struct(schema=3, [v0, v1])"));
+    }
+
+    #[test]
+    fn fresh_module_has_empty_callsite_outcomes() {
+        let m = ModuleBuilder::new().build();
+        assert!(m.callsite_outcomes.is_empty());
     }
 
     #[test]
