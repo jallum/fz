@@ -46,10 +46,10 @@ use std::io::{IsTerminal, Read};
 /// so all three paths produce identical accept/reject verdicts.
 fn validate_specs_or_exit(prog: &ast::Program, module: &fz_ir::Module, sm: &diag::SourceMap) {
     // fz-rh5.2 — type_module call #1 of 4 in `fz run`. Distinct inputs:
-    //   #1 (here):              raw lowered module — for @spec diagnostics
-    //   #2 (compute_survivors): reducer-applied module — for pattern_check
-    //   #3 (ir_codegen::compile): pre-rewrites clone — for codegen rewrites
-    //   #4 (ir_codegen::compile): post-inline/fuse/reduce — final codegen
+    //   #1 (here):                  raw lowered module — for @spec diagnostics
+    //   #2 (reduced clone below):   reducer-applied module — for pattern_check
+    //   #3 (ir_codegen::compile):   pre-rewrites clone — for codegen rewrites
+    //   #4 (ir_codegen::compile):   post-inline/fuse/reduce — final codegen
     // #1 and #3 type structurally-identical inputs; threading the result
     // through would save one full call (follow-up filed).
     let mt = ir_typer::type_module(module);
@@ -59,10 +59,28 @@ fn validate_specs_or_exit(prog: &ast::Program, module: &fz_ir::Module, sm: &diag
     // pattern checker is gated to fns that actually survive the reducer:
     // a `:function_clause` halt the warning worries about can only fire
     // from a body that exists at runtime, and a fn that fully dissolves
-    // (e.g. ast_eval's `eval`) has no such body. Compute the survivor
-    // set on a reduced clone of the module so warnings track what
-    // codegen will actually emit.
-    let survivors = compute_survivors(module);
+    // (e.g. ast_eval's `eval`) has no such body.
+    //
+    // fz-f88.8 — survivor set sourced from `ModuleTypes.reachable_specs`
+    // (the typer's authoritative view of "did any callsite still
+    // resolve to this fn after reduction?"), replacing the prior
+    // hand-rolled `compute_survivors` that was a third independent
+    // derivation of the same idea. The reduce-then-type step lives
+    // here because reachability changes after the reducer folds
+    // callsites away.
+    let mut reduced = module.clone();
+    ir_reducer::reduce_module(&mut reduced);
+    let mt_reduced = ir_typer::type_module(&reduced);
+    let survivors: std::collections::HashSet<(String, usize)> = mt_reduced
+        .reachable_specs
+        .iter()
+        .filter_map(|(fid, _)| {
+            let &idx = reduced.fn_idx.get(fid)?;
+            let f = &reduced.fns[idx];
+            let arity = f.block(f.entry).params.len();
+            Some((f.name.clone(), arity))
+        })
+        .collect();
     diags.extend(pattern_check::check_program(prog, Some(&survivors)));
     let has_error = diags.iter().any(|d| d.severity == diag::Severity::Error);
     for d in &diags {
@@ -71,25 +89,6 @@ fn validate_specs_or_exit(prog: &ast::Program, module: &fz_ir::Module, sm: &diag
     if has_error {
         std::process::exit(1);
     }
-}
-
-/// Names + arities of user fns whose body survives the reducer — i.e.
-/// the typer registers at least one spec for them on a reduced module.
-/// Used by `validate_specs_or_exit` to skip pattern_check warnings on
-/// fully-dissolved fns.
-fn compute_survivors(module: &fz_ir::Module) -> std::collections::HashSet<(String, usize)> {
-    let mut reduced = module.clone();
-    ir_reducer::reduce_module(&mut reduced);
-    let mt = ir_typer::type_module(&reduced);
-    let mut out = std::collections::HashSet::new();
-    for (fid, _) in mt.specs.keys() {
-        if let Some(&idx) = reduced.fn_idx.get(fid) {
-            let f = &reduced.fns[idx];
-            let arity = f.block(f.entry).params.len();
-            out.insert((f.name.clone(), arity));
-        }
-    }
-    out
 }
 
 fn main() {

@@ -233,8 +233,8 @@ pub struct ModuleTypes {
     /// still accessed via `specs[key].reachable_blocks` (one source of
     /// truth — no second copy).
     ///
-    /// First consumer lands in fz-f88.8 (`compute_survivors` deletion).
-    #[allow(dead_code)]
+    /// Consumed by `validate_specs_or_exit` to drive `pattern_check`'s
+    /// survivor gate (fz-f88.8).
     pub reachable_specs: HashSet<(FnId, Vec<Descr>)>,
 }
 
@@ -246,17 +246,6 @@ impl ModuleTypes {
         self.specs.get(&(fn_id, input_descrs.to_vec()))
     }
 
-    /// fz-f88.6 — does the typer have any registered spec for `fn_id`?
-    /// True iff the fn appeared at a callsite (or as a seed/closure
-    /// target) the typer walked under one or more input-Descr keys.
-    /// Use this in place of duplicating the reduce-then-type pass to
-    /// derive "which user fns survived".
-    ///
-    /// First consumer lands in fz-f88.8 (`compute_survivors` deletion).
-    #[allow(dead_code)]
-    pub fn fn_has_any_spec(&self, fn_id: FnId) -> bool {
-        self.reachable_specs.iter().any(|(fid, _)| *fid == fn_id)
-    }
 
     /// fz-pky.2 — return the any-key spec for `fn_id` if registered.
     /// Under the reachability-driven model (fz-vw4), the any-key only
