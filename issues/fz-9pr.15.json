@@ -6,6 +6,7 @@
   "blocks": [
     "fz-9pr.16"
   ],
+  "closed_at": "2026-05-18T16:27:12Z",
   "created": "2026-05-18T15:02:59Z",
   "description": "Today \\`boundary_fns\\` is consulted by:\n- ir_reducer::try_reduce_call_with_descrs (via is_trivially_inlinable)\n- ir_inline::inline_calls_once\n- ir_inline::inline_tail_calls_once\n\nAfter Phase E the latter two are gone. Verify only the reducer\nconsults boundary_fns. The typer-side narrowing decision (whether\nto widen to declared spec) stays untouched — that's a separate\nconcern logged when RED.9 landed.\n\n## Acceptance\n\n- grep boundary_fns shows callers only in ir_reducer (and ir_lower\n  for population) and a debug formatter or two.\n- All tests + goldens green.\n\n## Removes\n\nThe duplicated boundary checks (already gone after Phase E; this\nticket is the verification + comment cleanup).",
   "id": "fz-9pr.15",
@@ -18,8 +19,8 @@
     }
   ],
   "priority": 2,
-  "status": "open",
+  "status": "closed",
   "title": "fz-CO.F.1 — Boundary uniformity: one consultation site",
   "type": "task",
-  "updated_at": "2026-05-18T16:27:11Z"
+  "updated_at": "2026-05-18T16:27:12Z"
 }
