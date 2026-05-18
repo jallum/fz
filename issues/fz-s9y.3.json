@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-s9y.2"
+  ],
   "blocks": [],
   "created": "2026-05-18T16:04:09Z",
   "description": "## The change\n\nUpdate pattern narrowing in `src/ir_typer.rs` so matching `[]` produces\n`Descr::list_of(Descr::none())` (the lattice's empty-list witness)\ninstead of `Descr::nil()`. This collapses the spurious `nil | list(X)`\nunions that pollute spec types today.\n\n### Why\n\nThe lattice already has the right representation:\n\n```rust\n// src/types.rs:1990 (test, currently passing)\nfn list_of_none_is_subtype_of_any_list() {\n    // list(none) only contains nil, so it's a subtype of every list type.\n    let nil_only = Descr::list_of(Descr::none());\n    assert!(nil_only.is_subtype(\u0026Descr::list_of(Descr::int())));\n}\n```\n\nBut `ir_typer`'s pattern narrowing on `[]` produces `Descr::nil()`,\nnot `Descr::list_of(Descr::none())`. The union arithmetic then produces\n`nil | list(int)` for tail-narrowed types throughout. Today this\n\"works\" because runtime conflates nil and []; after EL.2 it would be\nwrong (a `nil | list(int)` spec would mean \"accepts either the nil\natom OR a list,\" but only `[]` was ever intended).\n\n### Change\n\n  - In ir_typer's pattern narrowing for `[]` pattern: produce\n    `Descr::list_of(Descr::none())` as the narrow type, not\n    `Descr::nil()`.\n  - Symmetrically, list-tail narrowing on `[h | t]` produces `t :\n    list(elem)` — already includes the empty list via list(none)\n    being a subtype; no `| nil` union needed.\n\n### REMOVES\n\n  - Spurious `nil |` artifacts in spec types throughout the codebase.\n  - The user-facing confusion of \"why does my length() function's\n    signature mention nil when I never said nil anywhere?\"\n\n## Expected effect\n\n  - Spec dumps change extensively:\n      reverse_acc(nil | list(1|2|3|4|5), ...) → reverse_acc(list(1|2|3|4|5), ...)\n      foldl(..., int, nil | list(1|2|3|4|5))  → foldl(..., int, list(1|2|3|4|5))\n      k_21(int, nil | list(int), 1)            → k_21(int, list(int), 1)\n  - Re-bless `expected.specs` across affected fixtures.\n  - CLIF spec annotations re-bless.\n  - `expected.txt` unchanged.\n  - All 842 tests pass.\n  - Spec dump sizes shrink modestly.\n\n## Depends on\n\nEL.2 (the runtime split has to land first; if narrowing used\n`list_of(none())` before runtime split, the resulting types would\ndisagree with the runtime's still-conflated semantics).\n\n## Walkthrough hazards\n\n  - Find the precise narrowing site. Search for where `Pattern::List`\n    or `Pattern::Nil` causes Descr narrowing in ir_typer (likely in\n    type_fn's block-env narrowing or pattern_check.rs's matrix\n    walking).\n  - Tests asserting spec types include `nil |`: need updates.\n  - Any caller that constructs `Descr::nil()` to mean \"empty list\"\n    needs a sweep. Grep for `Descr::nil()` and audit intent.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "fz-EL.3: typer pattern-narrowing simplification",
   "type": "task",
-  "updated_at": "2026-05-18T16:04:09Z"
+  "updated_at": "2026-05-18T16:04:41Z"
 }
