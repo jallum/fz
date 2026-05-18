@@ -15,6 +15,7 @@
 //! non-literal operands; `closure_lit(F, [literal captures])` is a
 //! first-class literal Descr.
 
+use crate::ast::{self, Pattern, Spanned};
 use crate::fz_ir::{BinOp, Const, Prim, UnOp, Var};
 use crate::types::{Descr, F64Bits};
 use std::collections::HashMap;
@@ -376,6 +377,295 @@ fn bool_descr(b: bool) -> Descr {
 }
 
 // ---------------------------------------------------------------------------
+// fz-jg5.3 (RED.2) — Clause dispatch via pattern matrix
+// ---------------------------------------------------------------------------
+
+/// A clause for the reducer's dispatcher. Mirrors `pattern_matrix::Row` but
+/// is matrix-uniform — usable for fn-clauses, `case`, and `with` matrices.
+pub struct Clause<'a> {
+    /// One pattern per subject. `patterns.len()` must equal the dispatcher's
+    /// `subject_descrs.len()`.
+    pub patterns: &'a [Spanned<Pattern>],
+    /// Optional guard. Evaluated under the row's bindings; must fold to a
+    /// bool literal for the clause to be selected statically.
+    pub guard: Option<&'a Spanned<ast::Expr>>,
+}
+
+/// Outcome of dispatching a list of clauses against subject Descrs.
+#[derive(Debug, Clone)]
+pub enum Dispatch {
+    /// `row_idx` is the lowest-index row whose patterns and guard match
+    /// the subject Descrs (first-match-wins). `bindings` carries the
+    /// source-name → literal-Descr map the row's body sees.
+    MatchedRow {
+        row_idx: usize,
+        bindings: HashMap<String, Descr>,
+    },
+    /// Every row has provably-disjoint patterns or a provably-false guard.
+    /// Runtime would raise function_clause / match_error. The reducer
+    /// should leave the call in place.
+    NoMatch,
+    /// Cannot statically pick a row. Reducer emits a body for the callee.
+    Opaque,
+}
+
+/// First-match-wins dispatch of `clauses` against `subject_descrs`.
+///
+/// Algorithm:
+/// - For each row in source order, try to match every pattern against the
+///   corresponding subject Descr (`match_pattern`).
+/// - If all patterns match and the guard (if any) folds to `true`, return
+///   `MatchedRow`.
+/// - If any pattern is provably-disjoint, OR a guard folds to `false`,
+///   skip the row.
+/// - If any pattern OR the guard is indeterminate (Opaque), return Opaque
+///   immediately — we cannot prove this row is OR isn't selected; trying
+///   later rows would be unsound since this row might match at runtime.
+/// - If every row is skipped (NoMatch), return NoMatch.
+pub fn dispatch_clauses(
+    clauses: &[Clause<'_>],
+    subject_descrs: &[Descr],
+    atom_names: &[String],
+) -> Dispatch {
+    for (idx, row) in clauses.iter().enumerate() {
+        if row.patterns.len() != subject_descrs.len() {
+            return Dispatch::Opaque; // arity mismatch is the caller's bug
+        }
+        let mut bindings: HashMap<String, Descr> = HashMap::new();
+        let mut all_match = true;
+        let mut row_opaque = false;
+        for (pat, d) in row.patterns.iter().zip(subject_descrs.iter()) {
+            match match_pattern(&pat.node, d, &mut bindings, atom_names) {
+                Match::Yes => {}
+                Match::No => {
+                    all_match = false;
+                    break;
+                }
+                Match::Opaque => {
+                    row_opaque = true;
+                    break;
+                }
+            }
+        }
+        if row_opaque {
+            return Dispatch::Opaque;
+        }
+        if !all_match {
+            continue;
+        }
+        // Patterns matched — try guard.
+        if let Some(guard) = row.guard {
+            match fold_expr(&guard.node, &bindings, atom_names) {
+                Some(d) => match as_bool_lit(&d) {
+                    Some(true) => return Dispatch::MatchedRow { row_idx: idx, bindings },
+                    Some(false) => continue, // guard rejects row; try next
+                    None => return Dispatch::Opaque, // guard folded but not to bool — give up
+                },
+                None => return Dispatch::Opaque, // guard didn't fold
+            }
+        }
+        return Dispatch::MatchedRow { row_idx: idx, bindings };
+    }
+    Dispatch::NoMatch
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Match {
+    Yes,
+    No,
+    Opaque,
+}
+
+/// Match a single AST `Pattern` against a subject `Descr`. On `Match::Yes`,
+/// any `Pattern::Var(name)` and `Pattern::As(name, _)` records bind `name`
+/// to the (sub-)Descr of the subject.
+fn match_pattern(
+    pat: &Pattern,
+    d: &Descr,
+    bindings: &mut HashMap<String, Descr>,
+    atom_names: &[String],
+) -> Match {
+    use Pattern::*;
+    match pat {
+        Wildcard => Match::Yes,
+        Var(name) => {
+            bindings.insert(name.clone(), d.clone());
+            Match::Yes
+        }
+        As(name, inner) => {
+            bindings.insert(name.clone(), d.clone());
+            match_pattern(&inner.node, d, bindings, atom_names)
+        }
+        Int(n) => match_literal(d, &Descr::int_lit(*n)),
+        Float(f) => match_literal(d, &Descr::float_lit(*f)),
+        Str(s) => match_literal(d, &Descr::str_lit(s.clone())),
+        Atom(name) => match_literal(d, &Descr::atom_lit(name)),
+        Bool(b) => match_literal(d, &Descr::atom_lit(if *b { "true" } else { "false" })),
+        Nil => match_literal(d, &Descr::nil()),
+        Tuple(elems) => match_tuple_pattern(elems, d, bindings, atom_names),
+        // List patterns require IR-level reasoning (lists' Descrs lose length
+        // information — see RED.1 note). Return Opaque so the reducer keeps
+        // the call; RED.3+ may extend this.
+        List(_, _) => Match::Opaque,
+        // Map and Bitstring patterns: defer to a per-row IR-walking fallback
+        // (the matrix's `PerRow` decision) — for the reducer, treat as opaque.
+        Map(_) | Bitstring(_) => Match::Opaque,
+    }
+}
+
+/// A pattern that demands a specific literal value. Returns Yes if `d` is
+/// equal to `expected` (both are singleton-literal of the same shape), No if
+/// they're disjoint, Opaque otherwise.
+fn match_literal(d: &Descr, expected: &Descr) -> Match {
+    if is_literal(d) {
+        if d == expected {
+            Match::Yes
+        } else if d.intersect(expected).is_empty() {
+            Match::No
+        } else {
+            // Both literal but not equal yet not disjoint — shouldn't happen
+            // for the literal forms we support. Be conservative.
+            Match::Opaque
+        }
+    } else if d.intersect(expected).is_empty() {
+        Match::No
+    } else if d.is_subtype(expected) {
+        // Subject's Descr is narrower than `expected` and contained — match.
+        Match::Yes
+    } else {
+        Match::Opaque
+    }
+}
+
+fn match_tuple_pattern(
+    elems: &[Spanned<Pattern>],
+    d: &Descr,
+    bindings: &mut HashMap<String, Descr>,
+    atom_names: &[String],
+) -> Match {
+    // Need d to be a single positive tuple clause of matching arity.
+    // It need NOT have literal elements — elements can be wide Descrs
+    // matched by Var/Wildcard patterns.
+    if d.tuples.len() != 1 {
+        // Multi-clause tuple Descrs (union of shapes) are indeterminate.
+        return if d.tuples.is_empty() {
+            Match::No
+        } else {
+            Match::Opaque
+        };
+    }
+    let conj = &d.tuples[0];
+    if !conj.neg.is_empty() || conj.pos.len() != 1 {
+        return Match::Opaque;
+    }
+    let sig = &conj.pos[0];
+    if sig.elems.len() != elems.len() {
+        return Match::No;
+    }
+    // Must not have other axes populated — otherwise subject is a union.
+    let only_tuple = d.basic.is_empty()
+        && d.atoms.is_none()
+        && d.ints.is_none()
+        && d.floats.is_none()
+        && d.strs.is_none()
+        && d.lists.is_empty()
+        && d.funcs.is_empty()
+        && d.maps.is_empty()
+        && d.opaques.is_none();
+    if !only_tuple {
+        return Match::Opaque;
+    }
+    let mut saw_opaque = false;
+    for (p, ed) in elems.iter().zip(sig.elems.iter()) {
+        match match_pattern(&p.node, ed, bindings, atom_names) {
+            Match::Yes => {}
+            Match::No => return Match::No,
+            Match::Opaque => saw_opaque = true,
+        }
+    }
+    if saw_opaque { Match::Opaque } else { Match::Yes }
+}
+
+/// Fold an AST `Expr` to a literal Descr under `bindings`. Used for guards.
+/// Conservative — handles Var lookup, scalar literals, BinOp, UnOp.
+/// Anything else returns None (Opaque guard).
+pub fn fold_expr(
+    expr: &ast::Expr,
+    bindings: &HashMap<String, Descr>,
+    atom_names: &[String],
+) -> Option<Descr> {
+    use ast::Expr;
+    match expr {
+        Expr::Var(name) => bindings.get(name).cloned(),
+        Expr::Int(n) => Some(Descr::int_lit(*n)),
+        Expr::Float(f) => Some(Descr::float_lit(*f)),
+        Expr::Str(s) => Some(Descr::str_lit(s.clone())),
+        Expr::Atom(s) => Some(Descr::atom_lit(s)),
+        Expr::Bool(b) => Some(bool_descr(*b)),
+        Expr::Nil => Some(Descr::nil()),
+        Expr::BinOp(op, a, b) => {
+            let ad = fold_expr(&a.node, bindings, atom_names)?;
+            let bd = fold_expr(&b.node, bindings, atom_names)?;
+            ast_binop_fold(*op, &ad, &bd)
+        }
+        Expr::UnOp(op, v) => {
+            let vd = fold_expr(&v.node, bindings, atom_names)?;
+            ast_unop_fold(*op, &vd)
+        }
+        _ => None,
+    }
+}
+
+fn ast_binop_fold(op: ast::BinOp, ad: &Descr, bd: &Descr) -> Option<Descr> {
+    use ast::BinOp::*;
+    let ir_op = match op {
+        Add => BinOp::Add,
+        Sub => BinOp::Sub,
+        Mul => BinOp::Mul,
+        Div => BinOp::Div,
+        Rem => BinOp::Mod,
+        Eq => BinOp::Eq,
+        Neq => BinOp::Neq,
+        Lt => BinOp::Lt,
+        LtEq => BinOp::Le,
+        Gt => BinOp::Gt,
+        GtEq => BinOp::Ge,
+        And => BinOp::And,
+        Or => BinOp::Or,
+        // Pipe and Cons aren't fold-prim-able in the same shape.
+        Pipe | Cons => return None,
+    };
+    match ir_op {
+        BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
+            fold_arith(ir_op, ad, bd)
+        }
+        BinOp::Eq | BinOp::Neq => fold_eq(ir_op, ad, bd),
+        BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => fold_cmp(ir_op, ad, bd),
+        BinOp::And | BinOp::Or => fold_logical(ir_op, ad, bd),
+    }
+}
+
+fn ast_unop_fold(op: ast::UnOp, d: &Descr) -> Option<Descr> {
+    use ast::UnOp::*;
+    let ir_op = match op {
+        Neg => UnOp::Neg,
+        Not => UnOp::Not,
+    };
+    match ir_op {
+        UnOp::Neg => {
+            if let Some(n) = as_int_lit(d) {
+                return Some(Descr::int_lit(n.checked_neg()?));
+            }
+            if let Some(f) = as_float_lit(d) {
+                return Some(Descr::float_lit(-f.get()));
+            }
+            None
+        }
+        UnOp::Not => as_bool_lit(d).map(|b| bool_descr(!b)),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -706,4 +996,265 @@ mod tests {
     // Bitstring construction / reader prims aren't foldable in v1; covered
     // by the explicit None-returning match arms in `fold_prim`. ConstBitstring
     // and friends are exercised by the wider codegen tests, not here.
+
+    // ============================================================
+    // fz-jg5.3 — Dispatch tests
+    // ============================================================
+
+    use crate::ast::{Expr, Pattern, Spanned};
+
+    fn pat(p: Pattern) -> Spanned<Pattern> {
+        Spanned::dummy(p)
+    }
+
+    fn expr(e: Expr) -> Spanned<Expr> {
+        Spanned::dummy(e)
+    }
+
+    // ---- single-clause matching ----
+
+    #[test]
+    fn dispatch_wildcard_always_matches() {
+        let patterns = vec![pat(Pattern::Wildcard)];
+        let clauses = vec![Clause { patterns: &patterns, guard: None }];
+        let result = dispatch_clauses(&clauses, &[Descr::any()], &[]);
+        assert!(matches!(result, Dispatch::MatchedRow { row_idx: 0, .. }));
+    }
+
+    #[test]
+    fn dispatch_var_binds_subject_descr() {
+        let patterns = vec![pat(Pattern::Var("n".to_string()))];
+        let clauses = vec![Clause { patterns: &patterns, guard: None }];
+        let result = dispatch_clauses(&clauses, &[Descr::int_lit(42)], &[]);
+        match result {
+            Dispatch::MatchedRow { row_idx: 0, bindings } => {
+                assert_eq!(as_int_lit(bindings.get("n").unwrap()), Some(42));
+            }
+            other => panic!("expected MatchedRow, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn dispatch_int_literal_match() {
+        let patterns = vec![pat(Pattern::Int(0))];
+        let clauses = vec![Clause { patterns: &patterns, guard: None }];
+        let result = dispatch_clauses(&clauses, &[Descr::int_lit(0)], &[]);
+        assert!(matches!(result, Dispatch::MatchedRow { row_idx: 0, .. }));
+    }
+
+    #[test]
+    fn dispatch_int_literal_no_match() {
+        let patterns = vec![pat(Pattern::Int(0))];
+        let clauses = vec![Clause { patterns: &patterns, guard: None }];
+        let result = dispatch_clauses(&clauses, &[Descr::int_lit(7)], &[]);
+        assert!(matches!(result, Dispatch::NoMatch));
+    }
+
+    #[test]
+    fn dispatch_int_literal_opaque_against_wide_int() {
+        // Literal pattern against wide int Descr — indeterminate at compile time.
+        let patterns = vec![pat(Pattern::Int(0))];
+        let clauses = vec![Clause { patterns: &patterns, guard: None }];
+        let result = dispatch_clauses(&clauses, &[Descr::int()], &[]);
+        assert!(matches!(result, Dispatch::Opaque));
+    }
+
+    // ---- multi-clause dispatch (ast_eval-shape) ----
+
+    #[test]
+    fn dispatch_ast_eval_num_clause() {
+        // Three clauses of eval, simplified: {:num,n} / {:add,a,b} / {:mul,a,b}.
+        let num_pat = pat(Pattern::Tuple(vec![
+            pat(Pattern::Atom("num".to_string())),
+            pat(Pattern::Var("n".to_string())),
+        ]));
+        let add_pat = pat(Pattern::Tuple(vec![
+            pat(Pattern::Atom("add".to_string())),
+            pat(Pattern::Var("a".to_string())),
+            pat(Pattern::Var("b".to_string())),
+        ]));
+        let mul_pat = pat(Pattern::Tuple(vec![
+            pat(Pattern::Atom("mul".to_string())),
+            pat(Pattern::Var("a".to_string())),
+            pat(Pattern::Var("b".to_string())),
+        ]));
+        let clause_num = vec![num_pat.clone()];
+        let clause_add = vec![add_pat];
+        let clause_mul = vec![mul_pat];
+        let clauses = vec![
+            Clause { patterns: &clause_num, guard: None },
+            Clause { patterns: &clause_add, guard: None },
+            Clause { patterns: &clause_mul, guard: None },
+        ];
+
+        let subject = Descr::tuple_of([Descr::atom_lit("num"), Descr::int_lit(42)]);
+        match dispatch_clauses(&clauses, &[subject], &[]) {
+            Dispatch::MatchedRow { row_idx, bindings } => {
+                assert_eq!(row_idx, 0);
+                assert_eq!(as_int_lit(bindings.get("n").unwrap()), Some(42));
+            }
+            other => panic!("expected num-clause match, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn dispatch_ast_eval_add_clause() {
+        let num_pat = pat(Pattern::Tuple(vec![
+            pat(Pattern::Atom("num".to_string())),
+            pat(Pattern::Var("n".to_string())),
+        ]));
+        let add_pat = pat(Pattern::Tuple(vec![
+            pat(Pattern::Atom("add".to_string())),
+            pat(Pattern::Var("a".to_string())),
+            pat(Pattern::Var("b".to_string())),
+        ]));
+        let c0 = vec![num_pat];
+        let c1 = vec![add_pat];
+        let clauses = vec![
+            Clause { patterns: &c0, guard: None },
+            Clause { patterns: &c1, guard: None },
+        ];
+
+        let inner_a = Descr::tuple_of([Descr::atom_lit("num"), Descr::int_lit(2)]);
+        let inner_b = Descr::tuple_of([Descr::atom_lit("num"), Descr::int_lit(3)]);
+        let subject = Descr::tuple_of([Descr::atom_lit("add"), inner_a.clone(), inner_b.clone()]);
+        match dispatch_clauses(&clauses, &[subject], &[]) {
+            Dispatch::MatchedRow { row_idx, bindings } => {
+                assert_eq!(row_idx, 1);
+                assert_eq!(bindings.get("a").unwrap(), &inner_a);
+                assert_eq!(bindings.get("b").unwrap(), &inner_b);
+            }
+            other => panic!("expected add-clause match, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn dispatch_ast_eval_opaque_on_any() {
+        let num_pat = pat(Pattern::Tuple(vec![
+            pat(Pattern::Atom("num".to_string())),
+            pat(Pattern::Var("n".to_string())),
+        ]));
+        let c0 = vec![num_pat];
+        let clauses = vec![Clause { patterns: &c0, guard: None }];
+        let result = dispatch_clauses(&clauses, &[Descr::any()], &[]);
+        assert!(matches!(result, Dispatch::Opaque));
+    }
+
+    // ---- first-match-wins (wildcard_then_specific) ----
+
+    #[test]
+    fn dispatch_first_match_wins_over_specific() {
+        // Wildcard clause first, then a specific clause that would also match —
+        // wildcard wins per source order.
+        let wild = vec![pat(Pattern::Wildcard)];
+        let specific = vec![pat(Pattern::Int(0))];
+        let clauses = vec![
+            Clause { patterns: &wild, guard: None },
+            Clause { patterns: &specific, guard: None },
+        ];
+        let result = dispatch_clauses(&clauses, &[Descr::int_lit(0)], &[]);
+        assert!(matches!(result, Dispatch::MatchedRow { row_idx: 0, .. }));
+    }
+
+    // ---- guard handling (multi_clause-shape) ----
+
+    #[test]
+    fn dispatch_guard_true_selects_clause() {
+        // classify(n) when n > 0 — bind n := 7, guard `n > 0` folds to true.
+        let p = vec![pat(Pattern::Var("n".to_string()))];
+        let guard = expr(Expr::BinOp(
+            ast::BinOp::Gt,
+            Box::new(expr(Expr::Var("n".to_string()))),
+            Box::new(expr(Expr::Int(0))),
+        ));
+        let clauses = vec![Clause { patterns: &p, guard: Some(&guard) }];
+        let result = dispatch_clauses(&clauses, &[Descr::int_lit(7)], &[]);
+        assert!(matches!(result, Dispatch::MatchedRow { row_idx: 0, .. }));
+    }
+
+    #[test]
+    fn dispatch_guard_false_skips_clause() {
+        // Two clauses: first with `n > 0` guard, second without.
+        // Subject n := -3 — guard fails, second clause selected.
+        let p0 = vec![pat(Pattern::Var("n".to_string()))];
+        let p1 = vec![pat(Pattern::Var("n".to_string()))];
+        let guard = expr(Expr::BinOp(
+            ast::BinOp::Gt,
+            Box::new(expr(Expr::Var("n".to_string()))),
+            Box::new(expr(Expr::Int(0))),
+        ));
+        let clauses = vec![
+            Clause { patterns: &p0, guard: Some(&guard) },
+            Clause { patterns: &p1, guard: None },
+        ];
+        let result = dispatch_clauses(&clauses, &[Descr::int_lit(-3)], &[]);
+        assert!(matches!(result, Dispatch::MatchedRow { row_idx: 1, .. }));
+    }
+
+    #[test]
+    fn dispatch_guard_indeterminate_returns_opaque() {
+        // Guard refers to n :: int (wide); cannot fold. Opaque.
+        let p = vec![pat(Pattern::Var("n".to_string()))];
+        let guard = expr(Expr::BinOp(
+            ast::BinOp::Gt,
+            Box::new(expr(Expr::Var("n".to_string()))),
+            Box::new(expr(Expr::Int(0))),
+        ));
+        let clauses = vec![Clause { patterns: &p, guard: Some(&guard) }];
+        let result = dispatch_clauses(&clauses, &[Descr::int()], &[]);
+        assert!(matches!(result, Dispatch::Opaque));
+    }
+
+    // ---- list patterns are opaque in v1 ----
+
+    #[test]
+    fn dispatch_list_pattern_opaque() {
+        let pat_list = vec![pat(Pattern::List(vec![pat(Pattern::Wildcard)], None))];
+        let clauses = vec![Clause { patterns: &pat_list, guard: None }];
+        let result = dispatch_clauses(
+            &clauses,
+            &[Descr::list_of(Descr::int_lit(1))],
+            &[],
+        );
+        assert!(matches!(result, Dispatch::Opaque));
+    }
+
+    // ---- As-patterns ----
+
+    #[test]
+    fn dispatch_as_pattern_binds_outer_and_matches_inner() {
+        // `whole = {:num, n}` — bind `whole` to the tuple, `n` to the int.
+        let inner = pat(Pattern::Tuple(vec![
+            pat(Pattern::Atom("num".to_string())),
+            pat(Pattern::Var("n".to_string())),
+        ]));
+        let outer = vec![pat(Pattern::As("whole".to_string(), Box::new(inner)))];
+        let clauses = vec![Clause { patterns: &outer, guard: None }];
+        let subject = Descr::tuple_of([Descr::atom_lit("num"), Descr::int_lit(42)]);
+        match dispatch_clauses(&clauses, &[subject.clone()], &[]) {
+            Dispatch::MatchedRow { bindings, .. } => {
+                assert_eq!(bindings.get("whole").unwrap(), &subject);
+                assert_eq!(as_int_lit(bindings.get("n").unwrap()), Some(42));
+            }
+            other => panic!("expected match, got {:?}", other),
+        }
+    }
+
+    // ---- no-match across multiple clauses ----
+
+    #[test]
+    fn dispatch_no_match_when_every_clause_disjoint() {
+        // Three clauses each demanding specific int literals; subject is a
+        // different int literal.
+        let p0 = vec![pat(Pattern::Int(0))];
+        let p1 = vec![pat(Pattern::Int(1))];
+        let p2 = vec![pat(Pattern::Int(2))];
+        let clauses = vec![
+            Clause { patterns: &p0, guard: None },
+            Clause { patterns: &p1, guard: None },
+            Clause { patterns: &p2, guard: None },
+        ];
+        let result = dispatch_clauses(&clauses, &[Descr::int_lit(7)], &[]);
+        assert!(matches!(result, Dispatch::NoMatch));
+    }
 }
