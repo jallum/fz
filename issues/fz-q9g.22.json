@@ -1,8 +1,6 @@
 {
   "assignee": "",
-  "blocked_by": [
-    "fz-q9g.21"
-  ],
+  "blocked_by": [],
   "blocks": [],
   "created": "2026-05-17T04:47:37Z",
   "description": "GATED ON G1 + B5.\n\nWhat: When vec_map's input is a uniquely-owned VecI64 in the RC arena, mutate in place instead of allocating a fresh vec.\n\nCLIF impact: strict reduction — removes one VecI64 alloc per uniquely-owned vec_map call.\n\nRemoves: redundant fresh allocation when input is unique.\n\nTests: golden CLIF on vec_map(unique_vec, f); fallback path tested for shared vecs.",
