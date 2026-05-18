@@ -12,9 +12,15 @@
   "id": "fz-jg5.3",
   "labels": [],
   "parent": "fz-jg5",
+  "comments": [
+    {
+      "text": "Findings (docs/walkthroughs/FINDINGS.md): Dispatch returns MatchedClause(min_idx, bindings) — first-match-wins is load-bearing (wildcard_then_specific). Guards (when ...) are part of dispatch decision — a guard that fold-prims to false rejects the clause. Dispatcher operates uniformly on fn / case / with matrices post fz-ul4.43.",
+      "timestamp": "2026-05-18T03:17:55Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "fz-RED.2: clause dispatch via pattern matrix",
   "type": "task",
-  "updated_at": "2026-05-18T02:56:55Z"
+  "updated_at": "2026-05-18T03:17:55Z"
 }
