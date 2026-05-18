@@ -6,8 +6,6 @@
   "blocks": [
     "fz-q9g.11"
   ],
-  "closed_at": "2026-05-17T16:26:47Z",
-  "close_reason": "subsumed by fz-q9g.3 (CD-bundle)",
   "created": "2026-05-17T04:46:31Z",
   "description": "What: Forward our own dst to the tail callee. No new alloc.\n\nWhy: Tail recursion must not allocate per iteration; this is what makes DPS pay off in loops.\n\nCLIF impact: strict reduction — removes one alloc per loop iteration in DPS-shaped tail-recursive constructors.\n\nRemoves: per-iteration accumulator alloc in tail-recursive constructors.\n\nINTERACTION (fz-q9g.25): Main's fz-ul4.43.D.0 added is_pure_tail_caller inlining (src/ir_inline.rs:36). For the specific small-K shape `K(x) -\u003e TailCall(target, [box(x)])`, the inliner already eats the K hop before C4 sees it. C4 still fires when:\n  - K is larger than INLINE_BUDGET (10 stmts)\n  - K is shared across multiple call sites (inlining would duplicate)\n  - K is recursive or referenced by MakeClosure\nFixture choice: pick a multi-callsite or above-budget K so the demonstration isn't pre-empted by is_pure_tail_caller. A naive single-callsite small-K builder will show zero improvement.\n\nTests: golden CLIF on a tail-recursive list/vec builder fixture where is_pure_tail_caller has NOT already fired (assert via a pre-check on the post-inliner IR). Assert zero allocs in the loop body. Also: a regression assertion that the small-K case is still correctly handled by is_pure_tail_caller upstream.",
   "id": "fz-q9g.5",
@@ -20,8 +18,8 @@
     }
   ],
   "priority": 1,
-  "status": "closed",
+  "status": "open",
   "title": "fz-dps.C4: lower Term::TailCall/TailCallClosure under Dst ABI",
   "type": "task",
-  "updated_at": "2026-05-17T16:26:47Z"
+  "updated_at": "2026-05-18T19:55:37Z"
 }
