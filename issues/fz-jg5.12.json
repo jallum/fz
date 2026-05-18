@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-jg5.7"
+  ],
   "blocks": [],
   "created": "2026-05-18T02:56:45Z",
   "description": "# Make declared @spec narrow downstream callers and gate reduction\n\n## Goal\n\n`fz-ul4.31` shipped @spec parsing + validation\n(`spec_check::validate_specs` enforces `inferred ⊆ declared`).\nWhat's missing:\n\n1. **Downstream callers see declared return.** When the typer types\n   a callsite `g(x)` and `g` has a declared `@spec`, the inferred\n   return Descr at that callsite is the declared return — not a\n   walk of `g`'s body.\n2. **Reducer treats @spec'd fns as boundaries by default.** The\n   user opted into emitting `g` as a body by declaring its spec;\n   downstream callers see the narrow declared return without\n   triggering reduction into `g`.\n\n## What this buys\n\n- A library author writes `@spec` once. Downstream callers reason\n  about the function via the spec, not the body. Mirrors the\n  user-facing contract: annotations are firewalls.\n- Compile time: reducer doesn't recurse into `@spec`'d bodies.\n- Code shape: `@spec`'d fns get one body each (the declared shape),\n  not per-callsite specializations.\n\n## Acceptance\n\n- A fixture demonstrating: a function `f` with `@spec :: int → int`,\n  called from main with `f(42)` and `f(some_runtime_int)`. After\n  this ticket, `f` has 1 body; both callers see return type `int`.\n- `fixtures/spec_ok` passes unchanged (it already declares `@spec`).\n- `spec_check::validate_specs` still passes for every fixture (the\n  declared bound is still a bound).\n\n## Removals\n\nNone directly. Reducer logic gains an early-stop branch for @spec'd\ncallees.\n\n## Future\n\n- Typed receive (`fz-ul4.19`) extends this story: a typed mailbox\n  is a boundary annotation with the same shape.\n- Typed externs already declare return Descrs; reducer can already\n  use them.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "fz-RED.9: @spec as downstream-narrowing contract",
   "type": "task",
-  "updated_at": "2026-05-18T02:56:45Z"
+  "updated_at": "2026-05-18T02:56:56Z"
 }
