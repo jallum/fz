@@ -225,6 +225,17 @@ pub struct ModuleTypes {
     /// CallClosureKnown emit whose `CallsiteId` is `Stalled` (or
     /// absent). Apply with `apply_callsite_outcomes`.
     pub callsite_outcome_updates: HashMap<CallsiteId, CallsiteOutcome>,
+    /// fz-f88.6 — module-level reachable-spec keys. This is `specs.keys()`
+    /// materialized into a HashSet so consumers can express
+    /// "is this spec reachable?" as a set lookup without re-deriving
+    /// reachability or cloning the value side of `specs`. Populated by
+    /// `type_module`. Per-block reachability inside a reachable spec is
+    /// still accessed via `specs[key].reachable_blocks` (one source of
+    /// truth — no second copy).
+    ///
+    /// Consumed by `validate_specs_or_exit` to drive `pattern_check`'s
+    /// survivor gate (fz-f88.8).
+    pub reachable_specs: HashSet<(FnId, Vec<Descr>)>,
 }
 
 impl ModuleTypes {
@@ -804,6 +815,7 @@ pub fn type_module(m: &Module) -> ModuleTypes {
                     cid,
                     CallsiteOutcome::Emitted {
                         target: target.clone(),
+                        came_from: None,
                     },
                 );
             }
@@ -811,12 +823,14 @@ pub fn type_module(m: &Module) -> ModuleTypes {
         }
     }
 
+    let reachable_specs: HashSet<(FnId, Vec<Descr>)> = specs.keys().cloned().collect();
     ModuleTypes {
         specs,
         effective_returns,
         any_key_specs,
         scc_of,
         callsite_outcome_updates,
+        reachable_specs,
     }
 }
 
@@ -830,8 +844,22 @@ pub fn type_module(m: &Module) -> ModuleTypes {
 pub fn apply_callsite_outcomes(m: &mut Module, mt: &ModuleTypes) {
     for (cid, outcome) in &mt.callsite_outcome_updates {
         match m.callsite_outcomes.get(cid) {
-            None | Some(CallsiteOutcome::Stalled { .. }) => {
+            None => {
                 m.callsite_outcomes.insert(*cid, outcome.clone());
+            }
+            Some(CallsiteOutcome::Stalled { reason }) => {
+                // fz-f88.4 — carry the reducer's reason forward into the
+                // promoted Emitted so the dump can explain *why* the
+                // reducer stalled even when the typer succeeded.
+                let prior_reason = *reason;
+                let promoted = match outcome {
+                    CallsiteOutcome::Emitted { target, .. } => CallsiteOutcome::Emitted {
+                        target: target.clone(),
+                        came_from: Some(prior_reason),
+                    },
+                    other => other.clone(),
+                };
+                m.callsite_outcomes.insert(*cid, promoted);
             }
             Some(CallsiteOutcome::Consumed { .. })
             | Some(CallsiteOutcome::Inlined)
@@ -863,7 +891,7 @@ pub fn apply_callsite_outcomes(m: &mut Module, mt: &ModuleTypes) {
 #[cfg(debug_assertions)]
 fn assert_every_emitted_has_provenance(m: &Module, mt: &ModuleTypes) {
     for (cid, outcome) in &m.callsite_outcomes {
-        if let CallsiteOutcome::Emitted { target } = outcome {
+        if let CallsiteOutcome::Emitted { target, .. } = outcome {
             assert!(
                 mt.specs.contains_key(target),
                 "fz-9pr.9: Emitted outcome at {:?} targets unregistered spec {:?}",

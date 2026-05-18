@@ -287,7 +287,11 @@ impl LowerCtx {
             return id;
         }
         let id = self.mb.fresh_fn_id();
-        let mut tb = FnBuilder::new(id, "fz_spawn_thunk".to_string());
+        // fz_spawn_thunk is a runtime helper synthesized at lowering time —
+        // conceptually part of the prelude, just constructed in Rust rather
+        // than parsed from runtime.fz.
+        let mut tb = FnBuilder::new(id, "fz_spawn_thunk".to_string())
+            .with_category(crate::fz_ir::FnCategory::Prelude);
         let c = tb.fresh_var();
         let entry = tb.block(vec![c]);
         tb.set_terminator(
@@ -492,7 +496,7 @@ pub fn lower_program_full(prog: &Program) -> Result<(Module, AtomTable), LowerEr
         if let Item::Fn(fn_def) = item.as_ref()
             && fn_def.extern_abi.is_none()
         {
-            lower_fn(&mut ctx, fn_def)?;
+            lower_fn(&mut ctx, fn_def, crate::fz_ir::FnCategory::Prelude)?;
         }
     }
     ctx.prelude_fn_id_cutoff = ctx.mb.next_fn_id();
@@ -561,7 +565,7 @@ pub fn lower_program_full(prog: &Program) -> Result<(Module, AtomTable), LowerEr
         if let Item::Fn(fn_def) = item.as_ref()
             && fn_def.extern_abi.is_none()
         {
-            lower_fn(&mut ctx, fn_def)?;
+            lower_fn(&mut ctx, fn_def, crate::fz_ir::FnCategory::User)?;
         }
     }
 
@@ -837,7 +841,11 @@ fn build_source_info(module: &Module, ctx: &LowerCtx) -> SourceInfo {
     }
 }
 
-fn lower_fn(ctx: &mut LowerCtx, fn_def: &FnDef) -> Result<(), LowerError> {
+fn lower_fn(
+    ctx: &mut LowerCtx,
+    fn_def: &FnDef,
+    category: crate::fz_ir::FnCategory,
+) -> Result<(), LowerError> {
     if fn_def.is_macro {
         // Macros are consumed by expansion before lowering.
         return Ok(());
@@ -851,7 +859,7 @@ fn lower_fn(ctx: &mut LowerCtx, fn_def: &FnDef) -> Result<(), LowerError> {
             name: format!("fn {}/{}", fn_def.name, arity),
         })?;
 
-    let mut builder = FnBuilder::new(fn_id, fn_def.name.clone());
+    let mut builder = FnBuilder::new(fn_id, fn_def.name.clone()).with_category(category);
     // Mint param vars for the entry block.
     let param_vars: Vec<Var> = (0..arity).map(|_| builder.fresh_var()).collect();
     let entry = builder.block(param_vars.clone());
@@ -1704,7 +1712,12 @@ fn lower_multi_clause(
                 ctx.cur_block = Some(body_b);
                 ctx.terminated = false;
             }
-            let cont = mint_cont_fn(ctx, format!("fn_clause_{}", i), clause.span);
+            let cont = mint_cont_fn(
+                ctx,
+                format!("fn_clause_{}", i),
+                clause.span,
+                crate::fz_ir::FnCategory::MultiClauseCont,
+            );
             let captures = ctx.captured_snapshot();
             let capture_vars: Vec<Var> = captures.iter().map(|(_, v)| *v).collect();
             ctx.set_term(Term::TailCall {
@@ -2027,12 +2040,19 @@ struct ContFn {
     /// constructing the TailCall args into this fn).
     outer_captured: Vec<(String, Var)>,
     span: Span,
+    /// fz-f88.5 — origin tag baked in at mint time.
+    category: crate::fz_ir::FnCategory,
 }
 
 /// Mint a fresh continuation FnId, snapshot the outer env at this point,
 /// and record the span for diagnostics. The builder is created lazily by
 /// `switch_to_cont_fn`.
-fn mint_cont_fn(ctx: &mut LowerCtx, name: impl Into<String>, span: Span) -> ContFn {
+fn mint_cont_fn(
+    ctx: &mut LowerCtx,
+    name: impl Into<String>,
+    span: Span,
+    category: crate::fz_ir::FnCategory,
+) -> ContFn {
     let id = ctx.mb.fresh_fn_id();
     ctx.fn_spans.insert(id, span);
     ContFn {
@@ -2040,6 +2060,7 @@ fn mint_cont_fn(ctx: &mut LowerCtx, name: impl Into<String>, span: Span) -> Cont
         name: name.into(),
         outer_captured: ctx.captured_snapshot(),
         span,
+        category,
     }
 }
 
@@ -2060,7 +2081,7 @@ fn switch_to_cont_fn(ctx: &mut LowerCtx, cont: &ContFn, extra_param_count: usize
     ctx.mb.add_fn(done);
 
     // Build new fn.
-    let mut kbuilder = FnBuilder::new(cont.id, cont.name.clone());
+    let mut kbuilder = FnBuilder::new(cont.id, cont.name.clone()).with_category(cont.category);
 
     // Entry params: extras (e.g. join_param) first, then captured renames.
     let extras: Vec<Var> = (0..extra_param_count)
@@ -2176,12 +2197,27 @@ fn lower_if(
 
     let cv = lower_expr(ctx, cond, false)?;
 
-    let then_cont = mint_cont_fn(ctx, "if_then", if_span);
-    let else_cont = mint_cont_fn(ctx, "if_else", if_span);
+    let then_cont = mint_cont_fn(
+        ctx,
+        "if_then",
+        if_span,
+        crate::fz_ir::FnCategory::ControlFlowCont,
+    );
+    let else_cont = mint_cont_fn(
+        ctx,
+        "if_else",
+        if_span,
+        crate::fz_ir::FnCategory::ControlFlowCont,
+    );
     let join_opt = if is_tail {
         None
     } else {
-        Some(mint_cont_fn(ctx, "if_join", if_span))
+        Some(mint_cont_fn(
+            ctx,
+            "if_join",
+            if_span,
+            crate::fz_ir::FnCategory::ControlFlowCont,
+        ))
     };
 
     // Allocate arm blocks in the outer (current) fn.
@@ -2256,7 +2292,8 @@ fn lower_lambda(
     let saved_env = std::mem::take(&mut ctx.env);
     let saved_order = std::mem::take(&mut ctx.env_order);
 
-    let mut lam_builder = FnBuilder::new(lam_id, format!("lambda_{}", lam_id.0));
+    let mut lam_builder = FnBuilder::new(lam_id, format!("lambda_{}", lam_id.0))
+        .with_category(crate::fz_ir::FnCategory::LambdaLift);
     // Entry params = captured + lambda params.
     let cap_params: Vec<Var> = captured.iter().map(|_| lam_builder.fresh_var()).collect();
     let lam_param_vars: Vec<Var> = params.iter().map(|_| lam_builder.fresh_var()).collect();
@@ -2324,7 +2361,8 @@ fn cps_split_call_closure(
     let done = ctx.cur.take().unwrap().build();
     ctx.mb.add_fn(done);
 
-    let mut kbuilder = FnBuilder::new(cont_id, format!("k_{}", cont_id.0));
+    let mut kbuilder = FnBuilder::new(cont_id, format!("k_{}", cont_id.0))
+        .with_category(crate::fz_ir::FnCategory::CpsCont);
     let result_param = kbuilder.fresh_var();
     let cap_params: Vec<Var> = captured.iter().map(|_| kbuilder.fresh_var()).collect();
     let mut params = vec![result_param];
@@ -2380,7 +2418,8 @@ fn cps_split_receive(
 
     // Build the continuation fn. Same shape as cps_split_call's cont:
     // entry params = [result_param, captured...].
-    let mut kbuilder = FnBuilder::new(cont_id, format!("k_receive_{}", cont_id.0));
+    let mut kbuilder = FnBuilder::new(cont_id, format!("k_receive_{}", cont_id.0))
+        .with_category(crate::fz_ir::FnCategory::CpsCont);
     let result_param = kbuilder.fresh_var();
     let cap_params: Vec<Var> = captured.iter().map(|_| kbuilder.fresh_var()).collect();
     let mut params = vec![result_param];
@@ -2437,7 +2476,8 @@ fn cps_split_call(
     ctx.mb.add_fn(done);
 
     // Start the continuation fn.
-    let mut kbuilder = FnBuilder::new(cont_id, format!("k_{}", cont_id.0));
+    let mut kbuilder = FnBuilder::new(cont_id, format!("k_{}", cont_id.0))
+        .with_category(crate::fz_ir::FnCategory::CpsCont);
     let result_param = kbuilder.fresh_var();
     let cap_params: Vec<Var> = captured.iter().map(|_| kbuilder.fresh_var()).collect();
     let mut params = vec![result_param];
@@ -2929,7 +2969,12 @@ fn lower_case(
     let join_opt = if is_tail {
         None
     } else {
-        Some(mint_cont_fn(ctx, "case_join", case_span))
+        Some(mint_cont_fn(
+            ctx,
+            "case_join",
+            case_span,
+            crate::fz_ir::FnCategory::ControlFlowCont,
+        ))
     };
 
     let matrix = Matrix {
@@ -2978,7 +3023,12 @@ fn lower_case(
                 ctx.cur_block = Some(body_b);
                 ctx.terminated = false;
             }
-            let clause_cont = mint_cont_fn(ctx, format!("case_clause_{}", i), clause.span);
+            let clause_cont = mint_cont_fn(
+                ctx,
+                format!("case_clause_{}", i),
+                clause.span,
+                crate::fz_ir::FnCategory::ControlFlowCont,
+            );
             let captures = ctx.captured_snapshot();
             let capture_vars: Vec<Var> = captures.iter().map(|(_, v)| *v).collect();
             ctx.set_term(Term::TailCall {
@@ -3037,14 +3087,31 @@ fn lower_cond(
     let join_opt = if is_tail {
         None
     } else {
-        Some(mint_cont_fn(ctx, "cond_join", cond_span))
+        Some(mint_cont_fn(
+            ctx,
+            "cond_join",
+            cond_span,
+            crate::fz_ir::FnCategory::ControlFlowCont,
+        ))
     };
 
     // Per-arm cont fns + fail cont.
     let arm_conts: Vec<ContFn> = (0..arms.len())
-        .map(|i| mint_cont_fn(ctx, format!("cond_arm_{}", i), arms[i].0.span))
+        .map(|i| {
+            mint_cont_fn(
+                ctx,
+                format!("cond_arm_{}", i),
+                arms[i].0.span,
+                crate::fz_ir::FnCategory::ControlFlowCont,
+            )
+        })
         .collect();
-    let fail_cont = mint_cont_fn(ctx, "cond_fail", cond_span);
+    let fail_cont = mint_cont_fn(
+        ctx,
+        "cond_fail",
+        cond_span,
+        crate::fz_ir::FnCategory::ControlFlowCont,
+    );
 
     // Outer fn: TailCall first arm.
     let captures = ctx.captured_snapshot();
@@ -3130,13 +3197,23 @@ fn lower_with(
     let join_opt = if is_tail {
         None
     } else {
-        Some(mint_cont_fn(ctx, "with_join", with_span))
+        Some(mint_cont_fn(
+            ctx,
+            "with_join",
+            with_span,
+            crate::fz_ir::FnCategory::ControlFlowCont,
+        ))
     };
 
     // with_fail_cont: a continuation fn that receives (unmatched_value,
     // ...outer_captures). Minted now so we know its FnId before walking
     // bindings.
-    let with_fail_cont = mint_cont_fn(ctx, "with_fail", with_span);
+    let with_fail_cont = mint_cont_fn(
+        ctx,
+        "with_fail",
+        with_span,
+        crate::fz_ir::FnCategory::ControlFlowCont,
+    );
 
     let saved_env = ctx.env.clone();
     let saved_order = ctx.env_order.clone();
@@ -3256,7 +3333,12 @@ fn lower_with(
                     ctx.cur_block = Some(body_b);
                     ctx.terminated = false;
                 }
-                let cont = mint_cont_fn(ctx, format!("with_else_{}", i), clause.span);
+                let cont = mint_cont_fn(
+                    ctx,
+                    format!("with_else_{}", i),
+                    clause.span,
+                    crate::fz_ir::FnCategory::ControlFlowCont,
+                );
                 let captures = ctx.captured_snapshot();
                 let capture_vars: Vec<Var> = captures.iter().map(|(_, v)| *v).collect();
                 ctx.set_term(Term::TailCall {
@@ -4145,5 +4227,62 @@ end
             "ExternIds not monotonic: {:?}",
             ids
         );
+    }
+
+    /// fz-f88.5 — every lowered FnIr carries an origin category. This
+    /// test pins the contract: prelude fns are `Prelude`, user fns are
+    /// `User`, and the well-known synthesized cont families
+    /// (fn_clause_, k_, lambda_, if_, case_) map to their respective
+    /// variants based on name prefix.
+    #[test]
+    fn fn_category_tags_match_origin() {
+        use crate::fz_ir::FnCategory;
+        // Mix user fns covering: multi-clause dispatch (-> MultiClauseCont),
+        // CPS-split via non-tail call (-> CpsCont), and lambda lifting
+        // (-> LambdaLift).
+        let src = "\
+fn id(x), do: x
+fn pick(:a), do: 1
+fn pick(:b), do: 2
+fn make_adder(x), do: fn (z) -> x + z
+
+fn main() do
+  id(pick(:a))
+  make_adder(1)
+end
+";
+        let toks = Lexer::new(src).tokenize().expect("lex");
+        let prog = crate::parser::Parser::new(toks)
+            .parse_program()
+            .expect("parse");
+        let (module, _) = lower_program_full(&prog).expect("lower");
+
+        let user_names = ["id", "pick", "make_adder", "main"];
+        for f in &module.fns {
+            let expected = if user_names.contains(&f.name.as_str()) {
+                FnCategory::User
+            } else if f.name.starts_with("fn_clause_") {
+                FnCategory::MultiClauseCont
+            } else if f.name.starts_with("lambda_") {
+                FnCategory::LambdaLift
+            } else if f.name.starts_with("k_") {
+                FnCategory::CpsCont
+            } else if f.name.starts_with("if_")
+                || f.name.starts_with("case_")
+                || f.name.starts_with("cond_")
+                || f.name.starts_with("with_")
+            {
+                FnCategory::ControlFlowCont
+            } else {
+                // Anything else must be prelude (lowered from runtime.fz or
+                // synthesized helpers like fz_spawn_thunk).
+                FnCategory::Prelude
+            };
+            assert_eq!(
+                f.category, expected,
+                "{} (id {}) categorized as {:?}, expected {:?}",
+                f.name, f.id.0, f.category, expected,
+            );
+        }
     }
 }

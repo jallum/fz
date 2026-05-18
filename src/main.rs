@@ -46,10 +46,10 @@ use std::io::{IsTerminal, Read};
 /// so all three paths produce identical accept/reject verdicts.
 fn validate_specs_or_exit(prog: &ast::Program, module: &fz_ir::Module, sm: &diag::SourceMap) {
     // fz-rh5.2 — type_module call #1 of 4 in `fz run`. Distinct inputs:
-    //   #1 (here):              raw lowered module — for @spec diagnostics
-    //   #2 (compute_survivors): reducer-applied module — for pattern_check
-    //   #3 (ir_codegen::compile): pre-rewrites clone — for codegen rewrites
-    //   #4 (ir_codegen::compile): post-inline/fuse/reduce — final codegen
+    //   #1 (here):                  raw lowered module — for @spec diagnostics
+    //   #2 (reduced clone below):   reducer-applied module — for pattern_check
+    //   #3 (ir_codegen::compile):   pre-rewrites clone — for codegen rewrites
+    //   #4 (ir_codegen::compile):   post-inline/fuse/reduce — final codegen
     // #1 and #3 type structurally-identical inputs; threading the result
     // through would save one full call (follow-up filed).
     let mt = ir_typer::type_module(module);
@@ -59,10 +59,28 @@ fn validate_specs_or_exit(prog: &ast::Program, module: &fz_ir::Module, sm: &diag
     // pattern checker is gated to fns that actually survive the reducer:
     // a `:function_clause` halt the warning worries about can only fire
     // from a body that exists at runtime, and a fn that fully dissolves
-    // (e.g. ast_eval's `eval`) has no such body. Compute the survivor
-    // set on a reduced clone of the module so warnings track what
-    // codegen will actually emit.
-    let survivors = compute_survivors(module);
+    // (e.g. ast_eval's `eval`) has no such body.
+    //
+    // fz-f88.8 — survivor set sourced from `ModuleTypes.reachable_specs`
+    // (the typer's authoritative view of "did any callsite still
+    // resolve to this fn after reduction?"), replacing the prior
+    // hand-rolled `compute_survivors` that was a third independent
+    // derivation of the same idea. The reduce-then-type step lives
+    // here because reachability changes after the reducer folds
+    // callsites away.
+    let mut reduced = module.clone();
+    ir_reducer::reduce_module(&mut reduced);
+    let mt_reduced = ir_typer::type_module(&reduced);
+    let survivors: std::collections::HashSet<(String, usize)> = mt_reduced
+        .reachable_specs
+        .iter()
+        .filter_map(|(fid, _)| {
+            let &idx = reduced.fn_idx.get(fid)?;
+            let f = &reduced.fns[idx];
+            let arity = f.block(f.entry).params.len();
+            Some((f.name.clone(), arity))
+        })
+        .collect();
     diags.extend(pattern_check::check_program(prog, Some(&survivors)));
     let has_error = diags.iter().any(|d| d.severity == diag::Severity::Error);
     for d in &diags {
@@ -71,25 +89,6 @@ fn validate_specs_or_exit(prog: &ast::Program, module: &fz_ir::Module, sm: &diag
     if has_error {
         std::process::exit(1);
     }
-}
-
-/// Names + arities of user fns whose body survives the reducer — i.e.
-/// the typer registers at least one spec for them on a reduced module.
-/// Used by `validate_specs_or_exit` to skip pattern_check warnings on
-/// fully-dissolved fns.
-fn compute_survivors(module: &fz_ir::Module) -> std::collections::HashSet<(String, usize)> {
-    let mut reduced = module.clone();
-    ir_reducer::reduce_module(&mut reduced);
-    let mt = ir_typer::type_module(&reduced);
-    let mut out = std::collections::HashSet::new();
-    for (fid, _) in mt.specs.keys() {
-        if let Some(&idx) = reduced.fn_idx.get(fid) {
-            let f = &reduced.fns[idx];
-            let arity = f.block(f.entry).params.len();
-            out.insert((f.name.clone(), arity));
-        }
-    }
-    out
 }
 
 fn main() {
@@ -463,6 +462,7 @@ fn run_dump(args: &[String]) {
     let mut path: Option<String> = None;
     let mut fn_filter: Option<String> = None;
     let mut emit = "clif".to_string();
+    let mut show_all = false;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -481,6 +481,8 @@ fn run_dump(args: &[String]) {
                     std::process::exit(2);
                 }
             }
+            // fz-f88.7 — bypass dump_outcomes filtering (prelude + dead bodies).
+            "--all" => show_all = true,
             a if !a.starts_with("--") && path.is_none() => path = Some(a.to_string()),
             a => {
                 eprintln!("fz dump: unknown arg `{}`", a);
@@ -535,7 +537,7 @@ fn run_dump(args: &[String]) {
         if fn_filter.is_some() {
             eprintln!("fz dump: --fn is ignored with --emit outcomes");
         }
-        print!("{}", dump_outcomes_pipeline(src, path.clone()));
+        print!("{}", dump_outcomes_pipeline(src, path.clone(), show_all));
         return;
     }
 
@@ -761,7 +763,16 @@ fn dump_bodies_pipeline(src: String, source_name: String) -> String {
 /// Use this to answer "why didn't X fold?" without a debugger — every
 /// `Stalled` carries a `StalledReason`, every `Emitted` shows the
 /// resolved spec key.
-fn dump_outcomes_pipeline(src: String, source_name: String) -> String {
+///
+/// fz-f88.7 — by default, two classes of caller are hidden so the
+/// signal stays focused on user-program code:
+///   - callers whose `FnIr.category == Prelude` (vec_get/print noise
+///     that's the same in every fixture);
+///   - callers whose `FnId` no longer has any reachable spec after
+///     reduction (the body is dead-coded).
+///
+/// Pass `show_all=true` (CLI `--all`) to bypass both filters.
+fn dump_outcomes_pipeline(src: String, source_name: String, show_all: bool) -> String {
     use crate::fz_ir::{CallsiteId, CallsiteOutcome, EmitSlot};
     let mut sm = diag::SourceMap::new();
     let file_id = sm.add_file(source_name.clone(), src.clone());
@@ -841,8 +852,24 @@ fn dump_outcomes_pipeline(src: String, source_name: String) -> String {
         out.push_str("  (no callsites — program is callsite-free)\n");
         return out;
     }
+    // fz-f88.7 — default filter: hide prelude callers and any caller
+    // whose body has no surviving spec post-reduction. `--all` bypasses.
+    let reachable_fids: std::collections::HashSet<fz_ir::FnId> =
+        mt.reachable_specs.iter().map(|(fid, _)| *fid).collect();
+    let should_show = |f: &fz_ir::FnIr| -> bool {
+        if show_all {
+            return true;
+        }
+        if f.category == fz_ir::FnCategory::Prelude {
+            return false;
+        }
+        reachable_fids.contains(&f.id)
+    };
     // Iterate in module-fn declaration order so output mirrors source.
     for f in &module.fns {
+        if !should_show(f) {
+            continue;
+        }
         let Some(entries) = by_caller.get(&f.id.0) else {
             continue;
         };
@@ -854,14 +881,18 @@ fn dump_outcomes_pipeline(src: String, source_name: String) -> String {
                     format!("Consumed ({})", result)
                 }
                 CallsiteOutcome::Inlined => "Inlined".to_string(),
-                CallsiteOutcome::Emitted { target } => {
+                CallsiteOutcome::Emitted { target, came_from } => {
                     let (tfid, tkey) = target;
-                    format!(
+                    let head = format!(
                         "Emitted ({}#{} {})",
                         fn_name(*tfid),
                         tfid.0,
                         descrs_str(tkey)
-                    )
+                    );
+                    match came_from {
+                        Some(r) => format!("{} via {}", head, r),
+                        None => head,
+                    }
                 }
                 CallsiteOutcome::Stalled { reason } => {
                     format!("Stalled ({})", reason)
