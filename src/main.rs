@@ -770,6 +770,7 @@ fn dump_bodies_pipeline(src: String, source_name: String) -> String {
 ///     that's the same in every fixture);
 ///   - callers whose `FnId` no longer has any reachable spec after
 ///     reduction (the body is dead-coded).
+///
 /// Pass `show_all=true` (CLI `--all`) to bypass both filters.
 fn dump_outcomes_pipeline(src: String, source_name: String, show_all: bool) -> String {
     use crate::fz_ir::{CallsiteId, CallsiteOutcome, EmitSlot};
