@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-fyq.3"
+  ],
   "blocks": [],
   "created": "2026-05-18T20:41:44Z",
   "description": "## Goal\nLock destructuring's parity gates across all four legs (interp, run, build, repl).\n\n## Depends on\n- E3 (so irrefutable destructures don't trip warnings-as-errors).\n- E5 (so the interp leg passes for list primitives).\n\n## Fixtures to add\n- Irrefutable tuple destructure: `{a, b} = pair()`.\n- Refutable list-cons destructure: `[h | t] = xs` on success path (mismatch crash is not parity-tested via matrix — see note).\n- Mixed nested: `{[h | t], y} = e`.\n\nEach runs through all four legs and asserts identical stdout.\n\n## Note on runtime-crash testing\nThe fixture matrix only asserts exit 0 (`RunOutcome::Ok`). It has no infrastructure for \"this fixture should crash with `:match_error`.\" Refutable destructure's crash semantics are verified informally during E5's interp probes, not via the matrix. A separate ticket can add matrix support for runtime-crash fixtures if needed (out of scope here).\n\n## Done when\n- New fixtures live under `fixtures/` with `input.fz` + matrix-required snapshots.\n- All four legs pass for each fixture.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "E6: fixture-matrix parity for destructuring (all four legs)",
   "type": "task",
-  "updated_at": "2026-05-18T20:41:44Z"
+  "updated_at": "2026-05-18T20:41:46Z"
 }
