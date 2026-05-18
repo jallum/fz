@@ -4,7 +4,7 @@
 ;   vars:
 ;     Var(0) :: :is_int
 ;     Var(1) :: :function_clause
-;     Var(2) :: :false
+;     Var(2) :: false
 ;   exits:
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(1)      :: :function_clause
@@ -20,7 +20,7 @@
 ;   vars:
 ;     Var(0) :: :other
 ;     Var(1) :: :function_clause
-;     Var(2) :: :false
+;     Var(2) :: false
 ;   exits:
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(1)      :: :function_clause
@@ -63,7 +63,7 @@
 ;   vars:
 ;     Var(0) :: 42
 ;     Var(1) :: :function_clause
-;     Var(2) :: :true
+;     Var(2) :: true
 ;   exits:
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(1)      :: :function_clause
@@ -79,7 +79,7 @@
 ;   vars:
 ;     Var(0) :: :foo
 ;     Var(1) :: :function_clause
-;     Var(2) :: :false
+;     Var(2) :: false
 ;   exits:
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(1)      :: :function_clause

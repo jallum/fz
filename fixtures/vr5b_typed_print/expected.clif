@@ -20,8 +20,8 @@ block0(v0: i64):
     v5 = bitcast.i64 v4
     v6 = call fn2(v5)
     call fn1(v6)
-    v7 = iconst.i64 3    ;; v7 :: nil
+    v7 = iconst.i64 2    ;; v7 :: nil
     v8 = load.i64 notrap aligned v0+16  ; @10:3
-    return_call_indirect sig3, v8(v7, v0) ; @10:3  v7 = 3
+    return_call_indirect sig3, v8(v7, v0) ; @10:3  v7 = 2
 }
 

@@ -4,7 +4,7 @@
 ;   vars:
 ;     Var(0) :: int
 ;     Var(1) :: :function_clause
-;     Var(2) :: :true
+;     Var(2) :: true
 ;   exits:
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(1)      :: :function_clause
@@ -40,7 +40,7 @@
 ;     Var(1) :: 0
 ;     Var(2) :: :function_clause
 ;     Var(3) :: 0
-;     Var(4) :: :false
+;     Var(4) :: false
 ;   exits:
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(2)      :: :function_clause

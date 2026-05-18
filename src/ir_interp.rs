@@ -305,21 +305,9 @@ fn value_to_halt(v: FzValue) -> i64 {
     use fz_runtime::fz_value::Tag;
     match v.tag() {
         Tag::Int => v.unbox_int().unwrap(),
+        // fz-yan.1 — see ir_runtime::fz_halt for the same shape.
+        // nil/true/false flow through this atom arm now.
         Tag::Atom => v.unbox_atom().unwrap() as i64,
-        Tag::Special => {
-            // Tag::Special has three inhabitants: true → 1, false → 0,
-            // nil → 0. The else branch asserts the only remaining
-            // possibility; a new Special variant landing here would
-            // surface in debug builds.
-            if v.is_true() {
-                1
-            } else if v.is_false() {
-                0
-            } else {
-                debug_assert!(v.is_nil(), "value_to_halt: unrecognized Tag::Special bits");
-                0
-            }
-        }
         Tag::Ptr | Tag::Reserved => v.0 as i64,
     }
 }
@@ -633,18 +621,29 @@ fn eval_prim(module: &Module, prim: &Prim, env: &HashMap<Var, FzValue>) -> Resul
             if !descr.ints.is_none() {
                 matched |= tag == Tag::Int;
             }
+            // fz-yan.2 — atoms axis subsumes BasicBits::NIL / ::BOOL. For a
+            // literal set, look up each name's atom id in the module and
+            // check val == atom-tagged(id).
             if descr.atoms.is_any() {
                 matched |= tag == Tag::Atom;
             } else if !descr.atoms.is_none() {
-                return Err(
-                    "TypeTest: specific atom literal sets not yet supported in interpreter".into(),
-                );
-            }
-            if descr.basic.contains_all(BasicBits::NIL) {
-                matched |= val.is_nil();
-            }
-            if descr.basic.contains_all(BasicBits::BOOL) {
-                matched |= val.is_true() || val.is_false();
+                if descr.atoms.cofinite {
+                    return Err(
+                        "TypeTest: cofinite atom literal sets not yet supported in interpreter"
+                            .into(),
+                    );
+                }
+                if tag == Tag::Atom {
+                    let id = val.unbox_atom().expect("atom-tagged");
+                    for name in &descr.atoms.set {
+                        if let Some(pos) = module.atom_names.iter().position(|n| n == name)
+                            && pos as u32 == id
+                        {
+                            matched = true;
+                            break;
+                        }
+                    }
+                }
             }
             // fz-ul4.36 — collect tuple arities, mirroring JIT codegen.
             // pos TupleSig => match if value is HeapKind::Struct with

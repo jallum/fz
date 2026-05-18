@@ -11,8 +11,8 @@ function u0:0(i64) -> i64 tail {
 block0(v0: i64):
     v1 = iconst.i64 7                   ; @8:14
     call fn0(v1)  ; v1 = 7
-    v2 = iconst.i64 3    ;; v2 :: nil
-    return_call fn1(v2, v0)             ; @8:9  v2 = 3
+    v2 = iconst.i64 2    ;; v2 :: nil
+    return_call fn1(v2, v0)             ; @8:9  v2 = 2
 }
 
 ; fn k_17_s14
@@ -27,8 +27,8 @@ function u0:0(i64, i64) -> i64 tail {
     block0(v0: i64, v1: i64):    ;; v0 :: nil
     v2 = iconst.i64 99                  ; @9:14
     call fn0(v2)  ; v2 = 99
-    v3 = iconst.i64 3    ;; v3 :: nil
+    v3 = iconst.i64 2    ;; v3 :: nil
     v4 = load.i64 notrap aligned v1+16  ; @9:9
-    return_call_indirect sig1, v4(v3, v1) ; @9:9  v3 = 3
+    return_call_indirect sig1, v4(v3, v1) ; @9:9  v3 = 2
 }
 

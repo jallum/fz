@@ -4,7 +4,7 @@
 ;   vars:
 ;     Var(0) :: 42
 ;     Var(1) :: :function_clause
-;     Var(2) :: :true
+;     Var(2) :: true
 ;   exits:
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(1)      :: :function_clause
@@ -20,7 +20,7 @@
 ;   vars:
 ;     Var(0) :: int
 ;     Var(1) :: :function_clause
-;     Var(2) :: :true
+;     Var(2) :: true
 ;   exits:
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(1)      :: :function_clause
@@ -100,12 +100,12 @@
 ;   vars:
 ;     Var(0) :: {:add, {:num, 2}, {:mul, {:num, 3}, {:num, 4}}}
 ;     Var(1) :: :function_clause
-;     Var(2) :: :false
+;     Var(2) :: false
 ;     Var(3) :: any
 ;     Var(4) :: any
 ;     Var(5) :: :num
 ;     Var(6) :: bool
-;     Var(7) :: :true
+;     Var(7) :: true
 ;     Var(8) :: :add
 ;     Var(9) :: {:num, 2}
 ;     Var(10) :: {:mul, {:num, 3}, {:num, 4}}
@@ -137,12 +137,12 @@
 ;   vars:
 ;     Var(0) :: {:add, {:num, int}, {:num, int}}
 ;     Var(1) :: :function_clause
-;     Var(2) :: :false
+;     Var(2) :: false
 ;     Var(3) :: any
 ;     Var(4) :: any
 ;     Var(5) :: :num
 ;     Var(6) :: bool
-;     Var(7) :: :true
+;     Var(7) :: true
 ;     Var(8) :: :add
 ;     Var(9) :: {:num, int}
 ;     Var(10) :: {:num, int}
@@ -174,12 +174,12 @@
 ;   vars:
 ;     Var(0) :: {:mul, {:add, {:num, 1}, {:num, 2}}, {:add, {:num, 3}, {:num, 4}}}
 ;     Var(1) :: :function_clause
-;     Var(2) :: :false
+;     Var(2) :: false
 ;     Var(3) :: any
 ;     Var(4) :: any
 ;     Var(5) :: :num
 ;     Var(6) :: bool
-;     Var(7) :: :true
+;     Var(7) :: true
 ;     Var(8) :: :mul
 ;     Var(9) :: {:add, {:num, 1}, {:num, 2}}
 ;     Var(10) :: {:add, {:num, 3}, {:num, 4}}
@@ -211,12 +211,12 @@
 ;   vars:
 ;     Var(0) :: {:mul, {:num, int}, {:num, int}}
 ;     Var(1) :: :function_clause
-;     Var(2) :: :false
+;     Var(2) :: false
 ;     Var(3) :: any
 ;     Var(4) :: any
 ;     Var(5) :: :num
 ;     Var(6) :: bool
-;     Var(7) :: :true
+;     Var(7) :: true
 ;     Var(8) :: :mul
 ;     Var(9) :: {:num, int}
 ;     Var(10) :: {:num, int}
@@ -248,7 +248,7 @@
 ;   vars:
 ;     Var(0) :: {:num, 42}
 ;     Var(1) :: :function_clause
-;     Var(2) :: :true
+;     Var(2) :: true
 ;     Var(3) :: :num
 ;     Var(4) :: 42
 ;     Var(5) :: :num
@@ -285,7 +285,7 @@
 ;   vars:
 ;     Var(0) :: {:num, int}
 ;     Var(1) :: :function_clause
-;     Var(2) :: :true
+;     Var(2) :: true
 ;     Var(3) :: :num
 ;     Var(4) :: int
 ;     Var(5) :: :num
