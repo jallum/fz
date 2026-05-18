@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-18T12:01:36Z",
+  "description": "## The change\n\nfz-5j5 removed substantial machinery (outer 0..16 LFP loop, phase\n1/2 split, 0..64 / 0..16 caps, prev_returns hashmap, InferredReturn\nenum, compute_effective_returns). Comments throughout the codebase\nmay still reference these by name as authoritative wisdom.\n\n## How to find them\n\n\\`\\`\\`\ngit grep -nE 'prev_returns|outer fixpoint|phase 1|phase 2|0\\.\\.16|0\\.\\.64|0\\.\\.\\(N|InferredReturn|compute_effective_returns|type_module_pass|drain_and_register' \\\\\n  src/ docs/\n\\`\\`\\`\n\nCategorize each hit:\n\n  - Stale and misleading → delete or rewrite.\n  - Historical context (commit messages, design docs) → leave alone.\n  - References a thing that DOES still exist (e.g. \\`prev_returns\\`\n    might be a local in some other function) → leave alone.\n\n## Acceptance\n\nA single commit updating or deleting stale prose. No code-behavior\nchange. \\`git grep\\` for the above terms in \\`src/\\` returns only\nhistorical / still-live references.\n\n## Independent of\n\nAll other PROV tickets.",
+  "id": "fz-rh5.5",
+  "labels": [],
+  "parent": "fz-rh5",
+  "priority": 3,
+  "status": "open",
+  "title": "fz-PROV.5: audit stale comments referencing old typer machinery",
+  "type": "task",
+  "updated_at": "2026-05-18T12:01:36Z"
+}
