@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-18T19:31:51Z",
+  "description": "Port of fz-aiz.1 from the unmerged `fz-aiz/any-key-floor` branch.\n\n## Repro (errors today)\n\n```fz\nfn pred(x), do: x \u003e 0\nfn filter(_, []), do: []\nfn filter(pred, [h | t]) do\n  if pred(h) do\n    [h | filter(pred, t)]\n  else\n    filter(pred, t)\n  end\nend\nfn main() do\n  print(filter(fn(x) -\u003e x \u003e 0, [-1, 2, -3, 4]))\nend\n```\n\nErrors with `parse/expected-token: unexpected token Else at expression start`.\n\n## Cause\n\n`parse_bp` (parser.rs:1249) unconditionally appends a trailing\n`do … end` block as the last arg of the preceding call. `parse_if`\nparses the cond via `parse_expr`, so `pred(h) do … end` parses as\n`pred(h, do_block)`, leaving `else` unexpected. Single-line\n`if n == 0 do … end` only works because `n == 0` isn't a call.\n\n## Fix\n\nAdd `suppress_trailing_do: bool` to `Parser` (parser.rs:192).\nGate the call-postfix sugar at parser.rs:1249–1261 on the flag.\nAdd `with_no_trailing_do` helper. Enable it at cond-position parsers:\n- `parse_if` cond (1536)\n- `parse_case` scrutinee (1576)\n- `parse_cond` clause heads (1613)\n- `parse_with` source (1717)\n- `when`-guard expressions: `parse_fn_clause`:737, `parse_case`:1586,\n  `parse_with`:1769\n\nStatement-position trailing-do (macro DSL forms like `test(\"…\") do … end`)\nmust continue to work — only cond contexts suppress.\n\n## Acceptance\n\n- Above repro parses and runs.\n- 618 unit + 166 fixture-matrix tests green.\n- No goldens shift.",
+  "id": "fz-rcp.1",
+  "labels": [],
+  "parent": "fz-rcp",
+  "priority": 1,
+  "status": "open",
+  "title": "fz-rcp.1: parser cond-context — suppress trailing-do in cond position",
+  "type": "bug",
+  "updated_at": "2026-05-18T19:31:51Z"
+}
