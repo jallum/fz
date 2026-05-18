@@ -1906,6 +1906,9 @@ pub fn compile_with_backend<B: Backend>(
     // Stalled before; the merge promotes Stalled → Emitted in place
     // and leaves Consumed / Inlined / pre-existing Emitted alone.
     crate::ir_typer::apply_callsite_outcomes(&mut working, &module_types);
+    // fz-fyq.4 — fold one-sided-dead Ifs to Gotos; DCE below removes
+    // the orphaned blocks and the now-unused TypeTest stmts.
+    crate::ir_branch_fold::fold_module(&mut working, &module_types);
     crate::ir_fold::fold_module(&mut working, &module_types);
     // fz-cty.8 — fold byte-literal MakeBitstring into ConstBitstring before
     // DCE so the per-byte Const(Int) operand stmts go dead in the same pass.

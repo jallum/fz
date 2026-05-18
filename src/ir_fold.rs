@@ -80,8 +80,12 @@ pub fn fold_fn_with_types(f: &mut FnIr, fn_types: &FnTypes) {
             }
         }
 
-        // Fold Term::If when cond is a provably-singleton truthy/falsy value.
-        // Compute the new terminator first to avoid a borrow conflict on block.
+        // Per-spec cond-singleton `Term::If` fold. Acts on this spec's
+        // own `fn_types.vars`, so it catches singleton-cond cases that
+        // hold for THIS spec even when other specs leave the cond
+        // generic — exactly the case `ir_branch_fold` (cross-spec
+        // consensus) must skip for soundness. Sibling to the BinOp /
+        // TypeTest folds above, which are also strictly per-spec.
         let new_term = if let Term::If {
             cond,
             then_b,
@@ -117,6 +121,11 @@ mod tests {
         mb.add_fn(f);
         let mut m = mb.build();
         let types = crate::ir_typer::type_module(&m);
+        // fz-fyq.4 — `ir_codegen::compile` runs `ir_branch_fold` before
+        // `ir_fold`; mirror that order in the test pipeline so the
+        // If-fold tests below (which used to depend on `ir_fold`'s own
+        // cond-singleton fold) see the same end-state as production.
+        crate::ir_branch_fold::fold_module(&mut m, &types);
         fold_module(&mut m, &types);
         m
     }

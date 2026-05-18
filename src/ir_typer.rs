@@ -794,10 +794,24 @@ fn compute_dead_branches(
                     env.insert(*v, t);
                 }
                 let (then_env, else_env) = narrow_for_if(&env, cond, &b.stmts);
-                if find_emptied_var(&env, &then_env).is_some() {
+                let mut then_dead = find_emptied_var(&env, &then_env).is_some();
+                let mut else_dead = find_emptied_var(&env, &else_env).is_some();
+                // Fallback: when cond's own type is a singleton truthy/
+                // falsy value, the opposite branch is unreachable even if
+                // narrow_for_cond didn't fire (e.g. cond bound directly
+                // to a `Const::True`/`Const::False`/`Const::Nil`). This
+                // subsumes the cond-singleton fold ir_fold used to do.
+                let ct = env.get(&cond).cloned().unwrap_or_else(Descr::any);
+                if ct.is_subtype(&Descr::atom_lit("true")) {
+                    else_dead = true;
+                } else if ct.is_subtype(&Descr::atom_lit("false")) || ct.is_subtype(&Descr::nil())
+                {
+                    then_dead = true;
+                }
+                if then_dead {
                     dead_then += 1;
                 }
-                if find_emptied_var(&env, &else_env).is_some() {
+                if else_dead {
                     dead_else += 1;
                 }
             }
