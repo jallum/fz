@@ -1,8 +1,6 @@
 {
   "assignee": "",
-  "blocked_by": [
-    "fz-q9g.8"
-  ],
+  "blocked_by": [],
   "blocks": [],
   "created": "2026-05-17T04:46:53Z",
   "description": "What: When total bit length is statically computable (literal sizes, or compile-time-known var sizes), allocate bitstring at caller and write fields directly into dst. Coordinates with the existing ConstBitstring constant-folding path.\n\nCLIF impact: strict reduction for sized bitstrings.\n\nRemoves: builder-pattern allocation for sized bitstrings.\n\nTests: golden CLIF on fixed-size bitstring construction; non-sized bitstrings still use existing path.",
