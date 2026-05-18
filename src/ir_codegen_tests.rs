@@ -1293,3 +1293,44 @@ fn type_module_called_exactly_twice_in_pipeline() {
     let count = crate::ir_typer::TYPE_MODULE_CALLS.with(|c| c.get());
     assert_eq!(count, 2, "type_module called {} times, expected 2", count);
 }
+
+// ===== fz-s9y.4 — empty list ≠ nil =====
+
+/// fz-s9y.4 — `fn f([])` does NOT match a `nil` argument. Pre-fz-s9y,
+/// `nil` and `[]` shared a runtime bit pattern, so this call would
+/// have matched the `[]` clause and returned 1. After the split,
+/// `nil` falls through to `:function_clause` halt.
+#[test]
+fn nil_does_not_match_empty_list_pattern() {
+    // function_clause is intern id 1 (see prelude in ir_lower).
+    let halt = run_main("fn f([]), do: 1\nfn main(), do: f(nil)");
+    // Halt value of the atom :function_clause is its id (1).
+    // Confirmed by the existing atom_const_returns_atom_id test.
+    assert_eq!(
+        halt, 1,
+        "expected :function_clause halt (id=1); got {}",
+        halt
+    );
+}
+
+/// fz-s9y.4 — `fn f(nil)` does NOT match an `[]` argument. Symmetric
+/// to the above. Pre-fz-s9y the call would have matched the `nil`
+/// clause via conflation.
+#[test]
+fn empty_list_does_not_match_nil_pattern() {
+    let halt = run_main("fn f(nil), do: 1\nfn main(), do: f([])");
+    assert_eq!(
+        halt, 1,
+        "expected :function_clause halt (id=1); got {}",
+        halt
+    );
+}
+
+/// fz-s9y.4 — `print(nil)` and `print([])` render as distinct strings.
+/// The fixtures/empty_list_distinct_from_nil fixture exercises this
+/// end-to-end; this is the focused codegen-level pin.
+#[test]
+fn print_distinguishes_nil_from_empty_list() {
+    let lines = capture_main("fn main() do\n  print(nil)\n  print([])\nend");
+    assert_eq!(lines, vec!["nil".to_string(), "[]".to_string()]);
+}

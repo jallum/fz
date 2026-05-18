@@ -818,7 +818,12 @@ fn list_clause_empty(c: &Conj<ListSig>, memo: &mut Memo) -> bool {
         t
     };
     if c.neg.is_empty() {
-        return false; // list(t) is non-empty (contains nil)
+        // list(t) is non-empty: it always contains the empty list,
+        // structurally encoded as list_of(none()) — a list whose
+        // element type is uninhabited, so only the empty list itself
+        // is in that set. Distinct from `Descr::nil()` (the nil
+        // atom-like value); see fz-s9y.
+        return false;
     }
     // exists j: t ⊆ N_j
     c.neg.iter().any(|n| t.diff(&n.elem).is_empty_memo(memo))
@@ -1988,10 +1993,14 @@ mod tests {
 
     #[test]
     fn list_of_none_is_subtype_of_any_list() {
-        // list(none) only contains nil, so it's a subtype of every list type.
-        let nil_only = Descr::list_of(Descr::none());
-        assert!(nil_only.is_subtype(&Descr::list_of(Descr::int())));
-        assert!(nil_only.is_subtype(&Descr::list_of(Descr::atom_top())));
+        // list(none) is the empty list — a list whose element type is
+        // uninhabited, so only the empty list itself is in that set.
+        // It's a subtype of every list type. Distinct from `Descr::nil()`
+        // (the nil atom-like value), which has its own runtime bit
+        // pattern after fz-s9y.
+        let empty_list = Descr::list_of(Descr::none());
+        assert!(empty_list.is_subtype(&Descr::list_of(Descr::int())));
+        assert!(empty_list.is_subtype(&Descr::list_of(Descr::atom_top())));
     }
 
     #[test]
