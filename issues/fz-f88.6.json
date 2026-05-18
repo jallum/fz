@@ -5,14 +5,15 @@
     "fz-f88.7",
     "fz-f88.8"
   ],
+  "closed_at": "2026-05-18T18:01:57Z",
   "created": "2026-05-18T17:22:32Z",
   "description": "Expose the typer's per-spec reachability (`FnTypes.reachable_blocks` at src/ir_typer.rs:1741-1772) at module level so other passes don't have to re-derive it.\n\n## Why\n\nToday reachability lives inside per-spec FnTypes; the dump and pattern_check both need it but can't see it cleanly. main.rs `compute_survivors` (line 80-92) is a third independent derivation of the same idea.\n\n## Shape\n\nAdd to Module (or ModuleTypes):\n\n```rust\nreachable_specs: HashSet\u003cSpecKey\u003e,\nreachable_blocks_per_spec: HashMap\u003cSpecKey, HashSet\u003cBlockId\u003e\u003e,\n```\n\nPopulated by the typer at the same point it currently computes `reachable_blocks` internally. No new analysis — just promote what's already computed to a public structure.\n\n## Verify\n\n- No behavior change.\n- Add a unit test pinning reachable_specs for a small fixture (e.g. multi_clause: classify+fact bodies should not be in reachable_specs if main fully folds — wait, they ARE reachable as user fns; reachability is about call graph, not \"did the reducer consume me.\" Clarify in the ticket comment if needed.)\n- Actually two reachability notions exist: (a) the typer's branch-deadness inside a spec; (b) post-reduction \"is there any caller left for this fn.\" Decide whether the field captures (a), (b), or both, and name accordingly.\n\n## Independent\n\nNo dependencies. Blocks .7 and .8.",
   "id": "fz-f88.6",
   "labels": [],
   "parent": "fz-f88",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "fz-RS.6 — Lift typer reachability to module level",
   "type": "task",
-  "updated_at": "2026-05-18T17:58:04Z"
+  "updated_at": "2026-05-18T18:01:57Z"
 }
