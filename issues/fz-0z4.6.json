@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-18T18:54:03Z",
+  "description": "## Scope\n\nRetire `validate_specs_or_exit` (main.rs:47). Replace with two pure\nanalysis functions:\n\n```rust\npub fn check_specs(prog: \u0026Program, module: \u0026Module) -\u003e Vec\u003cDiagnostic\u003e {\n    let mt = ir_typer::type_module(module);\n    spec_check::validate_specs(prog, module, \u0026mt)\n}\n\npub fn check_patterns(prog: \u0026Program, module: \u0026Module) -\u003e Vec\u003cDiagnostic\u003e {\n    let mut reduced = module.clone();\n    ir_reducer::reduce_module(\u0026mut reduced);\n    let reachable = ir_callgraph::reachable_fns(\u0026reduced);\n    let survivors: HashSet\u003c(String, usize)\u003e = reachable\n        .iter()\n        .filter_map(|fid| {\n            let \u0026idx = reduced.fn_idx.get(fid)?;\n            let f = \u0026reduced.fns[idx];\n            let arity = f.block(f.entry).params.len();\n            Some((f.name.clone(), arity))\n        })\n        .collect();\n    pattern_check::check_program(prog, Some(\u0026survivors))\n}\n```\n\nEach is pure: takes inputs, returns diagnostics, no I/O, no exit.\n\n## Driver migration\n\nEach of the four driver sites (main.rs:243, 348, 656, 933) becomes:\n\n```rust\nlet mut diags = check_specs(\u0026prog, \u0026module);\ndiags.extend(check_patterns(\u0026prog, \u0026module));\ndiag::report_or_exit(\u0026diags, \u0026sm);\n```\n\nDiagnostic ordering (spec errors before pattern warnings) is\npreserved by `extend` order. Exit semantics preserved: any error\nacross either gate halts after both rendered.\n\n## What gets removed\n\n- The `validate_specs_or_exit` function and its callers.\n- The fused-three-concerns shape at this gate. Analysis, presentation,\n  and control flow each have their own home now.\n\n## Testability dividend\n\n`check_specs` and `check_patterns` become unit-testable without\nprocess::exit shenanigans. Currently no unit tests exist for the\ngate's analysis — only integration tests via fixtures. After this\nticket, gate-level unit tests become trivial. (Adding such tests is\noptional follow-up, not required by acceptance.)\n\n## Depends on\n\nfz-0z4.3 (C — no second type_module to bundle) and fz-0z4.5 (E1 —\nthe sink it calls).\n\n## Acceptance\n\n- `cargo build` clean.\n- All four driver paths (run, jit, dump, build/aot) produce\n  byte-identical diagnostic output across the fixture matrix.\n- `validate_specs_or_exit` no longer appears in the codebase.\n- Exit behavior identical: any error halts; warnings print and\n  continue.",
+  "id": "fz-0z4.6",
+  "labels": [],
+  "parent": "fz-0z4",
+  "priority": 1,
+  "status": "open",
+  "title": "Replace validate_specs_or_exit with pure checks + diag::report_or_exit",
+  "type": "task",
+  "updated_at": "2026-05-18T18:54:03Z"
+}
