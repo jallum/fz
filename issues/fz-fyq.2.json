@@ -4,7 +4,8 @@
     "fz-fyq.1"
   ],
   "blocks": [
-    "fz-fyq.3"
+    "fz-fyq.3",
+    "fz-fyq.4"
   ],
   "created": "2026-05-18T20:41:43Z",
   "description": "## Goal\nPublish `ModuleTypes::dead_branches` — the cross-spec consensus that a specific branch of a specific `Term::If` is provably never taken.\n\n## Depends on\n- E1 (no functional dependency, but the tag exists before the producer that downstream consumers will read alongside it).\n\n## Shape\n```rust\nenum DeadBranch { Then, Else }\nModuleTypes {\n    ...\n    dead_branches: HashMap\u003c(FnId, BlockId), DeadBranch\u003e,\n}\n```\n\nAt most one branch per If can land here under the union (both-branches-dead means the If is unreachable; out of scope for this ticket, handled by block-level DCE).\n\n## Producer\n`ir_typer` after typing all specs. Reuse the existing `find_emptied_var` logic. For each `Term::If(cond, then_b, else_b)`:\n- For each spec, narrow the operand on each branch and record whether the branch narrowed to `none`.\n- A branch is `Dead` iff every live spec found it dead. (Same rule `collect_diagnostics` already uses for `unreachable-arm`.)\n- Insert into `module_types.dead_branches`.\n\n## Soundness\nCross-spec consensus is required. A branch dead under some specs and live under others is reachable in source (e.g. `sum`'s `[]` arm). Tests must include at least one fixture with multi-spec polymorphism (`sum`-style) to verify the join doesn't over-fire.\n\n## Out of scope\n- Consumers: E3 (diagnostic) and E4 (fold) will read this in their tickets.\n\n## Done when\n- `ModuleTypes::dead_branches` populated by `ir_typer::type_module`.\n- Unit test: irrefutable destructure → entry yields `Else`. Refutable list pattern (typed `list(...)`) → no entry. Multi-spec polymorphic fn where branch is dead in some specs only → no entry.\n- All existing tests pass.",
@@ -15,5 +16,5 @@
   "status": "open",
   "title": "E2: ModuleTypes::dead_branches — ir_typer publishes cross-spec consensus",
   "type": "task",
-  "updated_at": "2026-05-18T20:41:45Z"
+  "updated_at": "2026-05-18T20:41:46Z"
 }
