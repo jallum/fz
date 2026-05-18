@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-jg5.3"
+  ],
   "blocks": [],
   "created": "2026-05-18T02:55:59Z",
   "description": "# New ir_reducer pass; walks from roots and inlines static single-clause calls\n\n## Goal\n\nA new module `crate::ir_reducer` exporting `reduce_module(\u0026mut Module)`.\nWalks the call graph from program roots (`main` + every fn passed to\n`spawn` + every exported entry). For each callsite:\n\n- If callee is a single non-recursive clause AND every input is\n  statically known (literal Descr / closure_lit / etc.):\n  inline the callee's body with bindings substituted; constant-fold\n  the result using fz-RED.1's primitive.\n- Otherwise: leave the call in place.\n\n**No recursion across calls yet** — that lands in RED.4. This\nticket scaffolds the pass and proves the single-clause case.\n\n## Pipeline integration\n\n```\nAST → ir_lower → ir_inline → ir_fold → ir_dce → ir_fuse\n   → ir_reducer (NEW)\n   → typer → codegen\n```\n\nReducer runs AFTER existing inline/fold/dce/fuse so it sees a\nclean call graph. The typer then sees the reduced Module.\n\n## Acceptance\n\n- `polymorphic` fixture: 0 `id` bodies emitted (was 3+ specs).\n- `higher_order` fixture: `apply2(double, 21)` reduces to `42`\n  (when `double` is a single-clause leaf and `apply2` is too).\n- `closure_typed_captures` and `curried_add` partially reduce\n  (full reduction lands in RED.5).\n- All other fixtures unchanged.\n- `cargo test` green; per-fixture golden goldens re-blessed only\n  for fixtures explicitly listed above (otherwise must be byte-\n  identical).\n- Interp + JIT + AOT agree on output (three-path parity).\n\n## Removals\n\nNone yet. `ir_inline` continues to run; RED.8c removes it once\nRED.4 and RED.5 have absorbed its work.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "fz-RED.3: reducer pass scaffold (single-clause inline)",
   "type": "task",
-  "updated_at": "2026-05-18T02:55:59Z"
+  "updated_at": "2026-05-18T02:56:54Z"
 }

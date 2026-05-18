@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-jg5.2"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-jg5.4"
+  ],
   "created": "2026-05-18T02:55:14Z",
   "description": "# Dispatch a multi-clause call statically using the pattern matrix\n\n## Goal\n\nGiven a multi-clause `FnIr` and a tuple of input Descrs, select the\nclause whose pattern matches, or report that no clause can be\nstatically selected (the Descr is too wide).\n\nUses the pattern compiler matrix from `fz-ul4.43` — does NOT\nreinvent dispatch logic.\n\n## What lands\n\n```rust\npub enum Dispatch {\n    /// Clause selected; the substituted bindings.\n    MatchedClause { clause_idx: usize, bindings: HashMap\u003cVar, Descr\u003e },\n    /// No clause statically matches (input is opaque).\n    StopOpaque,\n    /// Input is admissible but multiple clauses overlap statically\n    /// (e.g. union of patterns) — caller may still inline if it\n    /// emits a runtime test, but reducer treats as a stop in v1.\n    StopAmbiguous,\n}\n\npub fn dispatch(fn_ir: \u0026FnIr, inputs: \u0026[Descr]) -\u003e Dispatch;\n```\n\n## Acceptance\n\n- Unit tests on ast_eval's `eval` clauses:\n  - `dispatch(eval, [{:num, 42}])` → `MatchedClause(0, {n: 42})`.\n  - `dispatch(eval, [{:add, X, Y}])` → `MatchedClause(1, {a: X, b: Y})`.\n  - `dispatch(eval, [any])` → `StopOpaque`.\n  - `dispatch(eval, [int])` → `StopOpaque` (no clause matches a bare int).\n- Same for `list_primitives` (length, map, foldl).\n- Same for `mutual_recursion` (is_even/is_odd with int_lit vs int).\n- No production caller yet.\n\n## Removals\n\nNone.\n\n## Depends on\n\n`fz-ul4.43` (pattern matrix). The matrix is the dispatcher; this\nticket only adapts the matrix to consume a Descr tuple instead of\na runtime value.",
   "id": "fz-jg5.3",
