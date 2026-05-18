@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-18T20:02:30Z",
+  "description": "## Goal\nBring the interp leg to parity with JIT/AOT for list-cons destructure. Today `fz interp` on `[h | t] = xs` fails with `interp .5.2: prim Discriminant(11) not yet supported (lands in fz-ul4.23.5.3+)`.\n\n## Independence\nThis is independent of T1/T2 and can land in parallel — it's a pure interp gap.\n\n## Scope\n- Implement the `Discriminant` primitive in `src/ir_interp.rs` for list values (distinguishes `[]` from `[h|t]`).\n- Mirror the semantics used by JIT/AOT — same prim, same dispatch.\n- No changes to lowering, typer, or codegen.\n\n## Acceptance probe\n```\nfn main() do\n  [h | t] = [10, 20, 30]\n  print(h)\n  print(t)\nend\n```\n`fz interp` produces the same output as `fz run` and `fz build`.\n\nAlso: a probe on `[h | t] = []` runtime-fails with `match_error` in interp the same way it would in JIT/AOT (BEAM-conform).\n\n## Done when\n- `Discriminant` for list values works in `ir_interp`.\n- The fixture-matrix legs no longer skip/fail interp for list-cons destructure.\n- All tests pass.",
+  "id": "fz-fyq.3",
+  "labels": [],
+  "parent": "fz-fyq",
+  "priority": 2,
+  "status": "open",
+  "title": "T3: interp parity — list-cons Discriminant",
+  "type": "task",
+  "updated_at": "2026-05-18T20:02:30Z"
+}
