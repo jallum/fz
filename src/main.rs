@@ -462,8 +462,13 @@ fn run_dump(args: &[String]) {
     let emit_clif = matches!(emit.as_str(), "clif" | "both");
     let emit_asm = matches!(emit.as_str(), "asm" | "both");
     let emit_specs = emit.as_str() == "specs";
-    if !emit_clif && !emit_asm && !emit_specs {
-        eprintln!("fz dump: --emit must be one of `clif`, `asm`, `both`, `specs`");
+    // fz-jg5.8 (RED.7) — user-facing diagnostic: list every emitted body
+    // and (in v1) its source spec key. Boundary attribution per-call is a
+    // follow-on; this v1 prints the spec set and a single-line summary so
+    // the user can see "0 user fns" for fully-reduced programs.
+    let emit_bodies = emit.as_str() == "bodies";
+    if !emit_clif && !emit_asm && !emit_specs && !emit_bodies {
+        eprintln!("fz dump: --emit must be one of `clif`, `asm`, `both`, `specs`, `bodies`");
         std::process::exit(2);
     }
     let src = std::fs::read_to_string(&path).unwrap_or_else(|e| {
@@ -477,6 +482,14 @@ fn run_dump(args: &[String]) {
         }
         let dump = dump_specs_pipeline(src, path.clone());
         print!("{}", dump);
+        return;
+    }
+
+    if emit_bodies {
+        if fn_filter.is_some() {
+            eprintln!("fz dump: --fn is ignored with --emit bodies");
+        }
+        print!("{}", dump_bodies_pipeline(src, path.clone()));
         return;
     }
 
@@ -597,6 +610,91 @@ fn dump_specs_pipeline(src: String, source_name: String) -> String {
     validate_specs_or_exit(&prog, &module, &sm);
     let mt = ir_typer::type_module(&module);
     ir_typer::pretty_module_types(&module, &mt)
+}
+
+/// fz-jg5.8 (RED.7) — `fz dump --emit bodies`: print every user fn that
+/// survives the reducer with the spec keys codegen emits for it. A
+/// program that fully reduces shows `bodies emitted: 0 user functions
+/// (no boundaries — program fully reduces)`.
+///
+/// Each entry is `<fn_name>: <N> spec(s) [<key_1>] [<key_2>] ...`. The
+/// dump runs the full compile pipeline (including the reducer); the
+/// surviving fns and their spec keys are read out of `ModuleTypes`.
+fn dump_bodies_pipeline(src: String, source_name: String) -> String {
+    use crate::ir_typer::ModuleTypes;
+    let mut sm = diag::SourceMap::new();
+    let file_id = sm.add_file(source_name, src.clone());
+    let toks = lexer::Lexer::with_file(&src, file_id)
+        .tokenize()
+        .unwrap_or_else(|e| {
+            diag::render_one_to_stderr(&sm, &e.to_diagnostic());
+            std::process::exit(1);
+        });
+    let prog = Parser::new(toks).parse_program().unwrap_or_else(|e| {
+        diag::render_one_to_stderr(&sm, &e.to_diagnostic());
+        std::process::exit(1);
+    });
+    let mut prog = resolve::flatten_modules(prog).unwrap_or_else(|e| {
+        diag::render_one_to_stderr(&sm, &e.to_diagnostic());
+        std::process::exit(1);
+    });
+    if let Err(e) = macros::expand_program(&mut prog) {
+        diag::render_one_to_stderr(&sm, &e.to_diagnostic());
+        std::process::exit(1);
+    }
+    let mut module = ir_lower::lower_program(&prog).unwrap_or_else(|e| {
+        diag::render_one_to_stderr(&sm, &e.to_diagnostic());
+        std::process::exit(1);
+    });
+    // Run the reducer pass directly so the bodies dump reflects what
+    // codegen would see, without going all the way to JIT.
+    ir_reducer::reduce_module(&mut module);
+    let mt: ModuleTypes = ir_typer::type_module(&module);
+
+    // Group surviving specs by user-fn name. Skip the conventional
+    // synthetic helpers (k_*, fn_clause_*, lambda_*) — they're
+    // continuations or pattern-clause bodies, not user fns.
+    let mut by_name: std::collections::BTreeMap<String, Vec<&Vec<crate::types::Descr>>> =
+        std::collections::BTreeMap::new();
+    for ((fid, key), _) in &mt.specs {
+        let Some(&idx) = module.fn_idx.get(fid) else {
+            continue;
+        };
+        let name = &module.fns[idx].name;
+        if name.starts_with("k_")
+            || name.starts_with("fn_clause_")
+            || name.starts_with("lambda_")
+            || name == "main"
+        {
+            continue;
+        }
+        by_name.entry(name.clone()).or_default().push(key);
+    }
+
+    let mut out = String::new();
+    if by_name.is_empty() {
+        out.push_str("bodies emitted: 0 user functions\n");
+        out.push_str("  (no boundaries — program fully reduces)\n");
+        return out;
+    }
+    out.push_str(&format!(
+        "bodies emitted: {} user function{}\n",
+        by_name.len(),
+        if by_name.len() == 1 { "" } else { "s" }
+    ));
+    for (name, keys) in by_name {
+        out.push_str(&format!(
+            "  {}: {} spec{}\n",
+            name,
+            keys.len(),
+            if keys.len() == 1 { "" } else { "s" }
+        ));
+        for key in keys {
+            let parts: Vec<String> = key.iter().map(|d| format!("{}", d)).collect();
+            out.push_str(&format!("    [{}]\n", parts.join(", ")));
+        }
+    }
+    out
 }
 
 fn compile_pipeline(src: String, source_name: String) -> Compiled {
