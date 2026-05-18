@@ -36,10 +36,7 @@ pub fn fold_module(m: &mut Module, mt: &ModuleTypes) {
             let Some(block) = f.blocks.iter_mut().find(|b| b.id == *bid) else {
                 continue;
             };
-            let Term::If {
-                then_b, else_b, ..
-            } = block.terminator
-            else {
+            let Term::If { then_b, else_b, .. } = block.terminator else {
                 continue;
             };
             let live = match which {

@@ -47,9 +47,7 @@ fn fuse_one_pass(f: &mut FnIr) -> bool {
             Term::Goto(target, _) => {
                 *pred_count.entry(*target).or_insert(0) += 1;
             }
-            Term::If {
-                then_b, else_b, ..
-            } => {
+            Term::If { then_b, else_b, .. } => {
                 *pred_count.entry(*then_b).or_insert(0) += 1;
                 *pred_count.entry(*else_b).or_insert(0) += 1;
             }

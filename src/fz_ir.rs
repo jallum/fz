@@ -1092,9 +1092,7 @@ mod tests {
         assert_eq!(fn_ir.blocks.len(), 3);
         let entry = fn_ir.block(fn_ir.entry);
         match entry.terminator {
-            Term::If {
-                then_b, else_b, ..
-            } => {
+            Term::If { then_b, else_b, .. } => {
                 assert_ne!(then_b, else_b);
                 assert_eq!(then_b, BlockId(1));
                 assert_eq!(else_b, BlockId(2));

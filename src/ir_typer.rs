@@ -766,8 +766,7 @@ fn compute_dead_branches(
         specs_by_fn.entry(*fid).or_default().push(key.clone());
     }
 
-    let mut out: HashMap<(FnId, crate::fz_ir::BlockId), crate::fz_ir::DeadBranch> =
-        HashMap::new();
+    let mut out: HashMap<(FnId, crate::fz_ir::BlockId), crate::fz_ir::DeadBranch> = HashMap::new();
 
     for f in &m.fns {
         let Some(keys) = specs_by_fn.get(&f.id) else {
@@ -804,8 +803,7 @@ fn compute_dead_branches(
                 let ct = env.get(&cond).cloned().unwrap_or_else(Descr::any);
                 if ct.is_subtype(&Descr::atom_lit("true")) {
                     else_dead = true;
-                } else if ct.is_subtype(&Descr::atom_lit("false")) || ct.is_subtype(&Descr::nil())
-                {
+                } else if ct.is_subtype(&Descr::atom_lit("false")) || ct.is_subtype(&Descr::nil()) {
                     then_dead = true;
                 }
                 if then_dead {
@@ -1693,9 +1691,7 @@ fn topo_order(f: &FnIr) -> Vec<BlockId> {
         let if_pair;
         let succs: &[BlockId] = match &b.terminator {
             Term::Goto(t, _) => std::slice::from_ref(t),
-            Term::If {
-                then_b, else_b, ..
-            } => {
+            Term::If { then_b, else_b, .. } => {
                 if_pair = [*then_b, *else_b];
                 &if_pair
             }
@@ -2408,7 +2404,6 @@ fn var_as_map_key(v: Var, env: &HashMap<Var, Descr>) -> Option<MapKey> {
 // Suppress unused imports under cfg(not(test)).
 #[allow(dead_code)]
 fn _suppress_block(_: &Block) {}
-
 
 /// fz-pky.1 — within ONE spec's narrowed env, find the first Var
 /// whose type became empty post-narrowing. Returns (Var, old_t, new_t)

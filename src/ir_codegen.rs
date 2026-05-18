@@ -4841,9 +4841,7 @@ fn compile_fn<M: cranelift_module::Module>(
             };
             match &blk.terminator {
                 Term::Goto(t, _) => stack.push(t.0),
-                Term::If {
-                    then_b, else_b, ..
-                } => {
+                Term::If { then_b, else_b, .. } => {
                     stack.push(then_b.0);
                     stack.push(else_b.0);
                 }

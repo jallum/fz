@@ -3814,7 +3814,9 @@ mod tests {
         let m = lower_src("fn main() do\n  {a, b} = {1, 2}\n  a + b\nend\n");
         let mt = crate::ir_typer::type_module(&m);
         assert!(
-            mt.dead_branches.values().any(|d| matches!(d, DeadBranch::Else)),
+            mt.dead_branches
+                .values()
+                .any(|d| matches!(d, DeadBranch::Else)),
             "expected an Else dead branch for {{a,b}} = {{1,2}}; got {:?}",
             mt.dead_branches,
         );
@@ -3859,8 +3861,7 @@ mod tests {
             // User: hand-written `if`.
             "fn i(n), do: if n > 0, do: 1, else: 0\n",
         ));
-        let mut seen: std::collections::HashSet<BranchOrigin> =
-            std::collections::HashSet::new();
+        let mut seen: std::collections::HashSet<BranchOrigin> = std::collections::HashSet::new();
         for f in &m.fns {
             for b in &f.blocks {
                 if let crate::fz_ir::Term::If { origin, .. } = &b.terminator {
@@ -3868,7 +3869,11 @@ mod tests {
                 }
             }
         }
-        assert!(seen.contains(&BranchOrigin::User), "missing User: {:?}", seen);
+        assert!(
+            seen.contains(&BranchOrigin::User),
+            "missing User: {:?}",
+            seen
+        );
         assert!(
             seen.contains(&BranchOrigin::PatternBind),
             "missing PatternBind: {:?}",

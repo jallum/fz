@@ -125,9 +125,7 @@ fn reachable_from_entry(f: &FnIr) -> HashSet<BlockId> {
         }
         match &f.block(bid).terminator {
             Term::Goto(t, _) => work.push(*t),
-            Term::If {
-                then_b, else_b, ..
-            } => {
+            Term::If { then_b, else_b, .. } => {
                 work.push(*then_b);
                 work.push(*else_b);
             }
@@ -344,9 +342,7 @@ fn fuse_fn(f: &mut FnIr) {
         for block in &f.blocks {
             match &block.terminator {
                 Term::Goto(t, _) => *in_degree.entry(*t).or_insert(0) += 1,
-                Term::If {
-                    then_b, else_b, ..
-                } => {
+                Term::If { then_b, else_b, .. } => {
                     *in_degree.entry(*then_b).or_insert(0) += 1;
                     *in_degree.entry(*else_b).or_insert(0) += 1;
                 }
