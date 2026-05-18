@@ -15,11 +15,15 @@
     {
       "text": "Also remove the closure_lit branch in ir_codegen.rs::cont_slot0_descr (the closure_d.arrow_join_return() path). After RED.5 dissolves resolvable closure_lits, the surviving CallClosure sites are genuinely opaque and this branch is dead too.",
       "timestamp": "2026-05-18T02:59:05Z"
+    },
+    {
+      "text": "Superseded by fz-9pr (callsite outcomes). The .8a/b/c removals were predicated on the closure_lit branch being dead — that's not the right framing. The new epic reframes: those branches become OUTPUTS of a unified callsite-outcome producer (the reducer-with-Inlined), and the typer's discovery walk shrinks because outcomes are first-class data on the Module. See docs/callsite-outcomes.md.",
+      "timestamp": "2026-05-18T15:03:07Z"
     }
   ],
   "priority": 2,
   "status": "open",
   "title": "fz-RED.8b REMOVE: closure_lit return chain in compute_effective_returns",
   "type": "task",
-  "updated_at": "2026-05-18T02:59:05Z"
+  "updated_at": "2026-05-18T15:03:07Z"
 }
