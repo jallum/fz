@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [
     "fz-q9g.2"
@@ -10,8 +10,8 @@
   "labels": [],
   "parent": "fz-q9g",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "fz-dps.RES: Dst-handling surface audit",
   "type": "task",
-  "updated_at": "2026-05-18T20:01:59Z"
+  "updated_at": "2026-05-18T20:04:32Z"
 }
