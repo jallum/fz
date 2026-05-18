@@ -20,7 +20,7 @@
 //!   4. After `run_until_idle`, binary clears the hooks (so a later call
 //!      from outside a Runtime fails loudly).
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::cell::Cell;
 
 /// Non-pointer trampoline sentinel: fz_receive_attempt returns this when
 /// the mailbox is empty so the JIT trampoline parks the task instead of
@@ -47,45 +47,52 @@ pub type SpawnOptHook = extern "C" fn(closure_bits: u64, min_heap_size: u32) -> 
 /// handles the deep-copy into the receiver's heap and the wake-up.
 pub type SendHook = extern "C" fn(receiver_pid: u32, msg_bits: u64);
 
-// Hook storage. AtomicUsize-backed globals instead of thread_local —
-// the thread_local form turned out to expose a subtle issue where the
-// `SPAWN_HOOK.with(...)` accessor in install / dispatch sites ended up
-// resolving to different TLS slots in AOT-linked binaries (multiple
-// `__ZN...SPAWN_HOOK..._tlv$init` symbols with different hashes), so
-// install would write into one and dispatch would read from another,
-// always-None. A regular static is single-threaded by construction
-// (v1 AOT/JIT runtime is single-worker per fz-ul4.19.1) and dodges
-// the TLS-instance issue entirely.
-static SPAWN_HOOK: AtomicUsize = AtomicUsize::new(0);
-static SPAWN_OPT_HOOK: AtomicUsize = AtomicUsize::new(0);
-static SEND_HOOK: AtomicUsize = AtomicUsize::new(0);
+// Per-thread hook storage. A Runtime is single-worker by design
+// (fz-ul4.19.1) and "the current Runtime" is a per-thread concept — same
+// shape as CURRENT_PROCESS (runtime/src/process.rs) and CURRENT_RUNTIME
+// (src/runtime.rs). Storing the hooks per-thread lets independent
+// Runtimes run on independent threads (e.g. cargo's parallel test
+// harness) without clobbering each other's dispatch table.
+//
+// fz-esw: an earlier attempt at thread_local! produced duplicate
+// __ZN…_tlv$init symbols in AOT-linked binaries, so install and dispatch
+// resolved to different slots. That bug was caused by the slot being
+// defined in the binary crate and crossing the staticlib boundary
+// through extern "C". The .23.10 move lifted scheduler_hooks into this
+// crate; CURRENT_PROCESS demonstrates that runtime-crate TLS works fine
+// under AOT.
+thread_local! {
+    static SPAWN_HOOK: Cell<usize> = const { Cell::new(0) };
+    static SPAWN_OPT_HOOK: Cell<usize> = const { Cell::new(0) };
+    static SEND_HOOK: Cell<usize> = const { Cell::new(0) };
+}
 
 pub fn install_spawn_hook(hook: SpawnHook) {
-    SPAWN_HOOK.store(hook as usize, Ordering::SeqCst);
+    SPAWN_HOOK.with(|c| c.set(hook as usize));
 }
 
 pub fn clear_spawn_hook() {
-    SPAWN_HOOK.store(0, Ordering::SeqCst);
+    SPAWN_HOOK.with(|c| c.set(0));
 }
 
 pub fn install_spawn_opt_hook(hook: SpawnOptHook) {
-    SPAWN_OPT_HOOK.store(hook as usize, Ordering::SeqCst);
+    SPAWN_OPT_HOOK.with(|c| c.set(hook as usize));
 }
 
 pub fn clear_spawn_opt_hook() {
-    SPAWN_OPT_HOOK.store(0, Ordering::SeqCst);
+    SPAWN_OPT_HOOK.with(|c| c.set(0));
 }
 
 pub fn install_send_hook(hook: SendHook) {
-    SEND_HOOK.store(hook as usize, Ordering::SeqCst);
+    SEND_HOOK.with(|c| c.set(hook as usize));
 }
 
 pub fn clear_send_hook() {
-    SEND_HOOK.store(0, Ordering::SeqCst);
+    SEND_HOOK.with(|c| c.set(0));
 }
 
 pub(crate) fn dispatch_spawn(closure_bits: u64) -> u32 {
-    let raw = SPAWN_HOOK.load(Ordering::SeqCst);
+    let raw = SPAWN_HOOK.with(|c| c.get());
     if raw == 0 {
         panic!(
             "fz_spawn called outside a Runtime — install_spawn_hook \
@@ -97,7 +104,7 @@ pub(crate) fn dispatch_spawn(closure_bits: u64) -> u32 {
 }
 
 pub(crate) fn dispatch_spawn_opt(closure_bits: u64, min_heap_size: u32) -> u32 {
-    let raw = SPAWN_OPT_HOOK.load(Ordering::SeqCst);
+    let raw = SPAWN_OPT_HOOK.with(|c| c.get());
     if raw == 0 {
         panic!(
             "fz_spawn_opt called outside a Runtime — install_spawn_opt_hook \
@@ -109,7 +116,7 @@ pub(crate) fn dispatch_spawn_opt(closure_bits: u64, min_heap_size: u32) -> u32 {
 }
 
 pub(crate) fn dispatch_send(receiver_pid: u32, msg_bits: u64) {
-    let raw = SEND_HOOK.load(Ordering::SeqCst);
+    let raw = SEND_HOOK.with(|c| c.get());
     if raw == 0 {
         panic!(
             "fz_send called outside a Runtime — install_send_hook \
