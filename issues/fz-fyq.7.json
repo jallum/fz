@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-18T20:41:45Z",
+  "description": "## Goal\n`fixtures/quicksort/` as the closing fixture for the epic. Quicksort surfaced the need to destructure; this fixture proves the arc landed.\n\n## Depends on\n- E6 (parity gates already in place).\n\n## Fixture content\nStandard `fixtures/quicksort/` layout (mirrors `fib_tailrec/`): `input.fz`, `README.md`, `expected.txt`, `expected.clif`, `expected.specs`, `expected.outcomes`.\n\n```\nfn append([], ys), do: ys\nfn append([h | t], ys), do: [h | append(t, ys)]\n\nfn partition(_, [], lo, hi), do: {lo, hi}\nfn partition(p, [h | t], lo, hi) do\n  if h \u003c p do partition(p, t, [h | lo], hi)\n  else partition(p, t, lo, [h | hi]) end\nend\n\nfn qsort([]), do: []\nfn qsort([p | rest]) do\n  {lo, hi} = partition(p, rest, [], [])\n  append(qsort(lo), [p | qsort(hi)])\nend\n\nfn main() do\n  print(qsort([3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5]))\nend\n```\n\n## Acceptance — three windows on the same arc\n- **Functional**: output is sorted; all four legs agree.\n- **CLIF**: `expected.clif` shows projection-only lowering at the `{lo, hi} = partition(...)` site — no synthesized `match_error` halt, no dead block. Visible proof E4 (`ir_branch_fold`) did its job on a real recursive program.\n- **Specs / outcomes**: `expected.specs` records the polymorphic specs `qsort` and `partition` resolve to; `expected.outcomes` records the callsite outcomes published by the typer.\n\n## Note on `append/2`\nNot tail-recursive (`[h | append(t, ys)]`). Fine for an 11-element demo. The fixture is feature coverage, not a performance benchmark. README states this.\n\n## Done when\n- Fixture exists with all required snapshots.\n- All four legs pass.\n- `expected.clif` visibly demonstrates branch-fold cleanup at the destructure site (no `match_error` halt block, no `Halt(:match_error)` term anywhere in qsort/partition CLIF).",
+  "id": "fz-fyq.7",
+  "labels": [],
+  "parent": "fz-fyq",
+  "priority": 2,
+  "status": "open",
+  "title": "E7: fixtures/quicksort/ — closing fixture, expected.clif proves the arc",
+  "type": "task",
+  "updated_at": "2026-05-18T20:41:45Z"
+}
