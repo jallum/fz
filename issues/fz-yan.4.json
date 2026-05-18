@@ -4,14 +4,15 @@
     "fz-yan.3"
   ],
   "blocks": [],
+  "closed_at": "2026-05-18T18:54:59Z",
   "created": "2026-05-18T18:16:12Z",
   "description": "## The change\n\nPin the new equivalences in tests; sweep up stale comments left over\nfrom fz-s9y and from BasicBits::NIL/BOOL removal.\n\n### Add pinning tests (ir_codegen::tests)\n\n  `nil_keyword_equals_atom_nil`:\n    fn main() do\n      if nil == :nil, do: 1, else: 0\n    end\n    expected halt: 1\n\n  `true_keyword_equals_atom_true`:\n    Symmetric for `true == :true`.\n\n  `false_keyword_equals_atom_false`:\n    Symmetric.\n\n  `empty_list_does_not_equal_nil_atom`:\n    fn main() do\n      if [] == nil, do: 1, else: 0\n    end\n    expected halt: 0     # preserves fz-s9y\n\n  `print_renders_reserved_atoms_without_colon`:\n    A capture_main test confirming that print of `:nil`/`:true`/\n    `:false` (atom-literal source) renders bareword.\n\n### Add fixture\n\n  fixtures/reserved_atom_keywords_equivalence/\n    input.fz exercising `nil == :nil`, `true == :true`, etc.\n    expected.txt pinning the equivalence.\n\n### Sweep\n\n  src/ir_typer.rs:22 — the stale comment \"ListTail types the tail\n    as the list shape itself (possibly empty -\u003e list_of(elem) ∪\n    nil; we union with nil)\". This was the lurker noted in the\n    post-fz-s9y audit. Remove the `∪ nil` claim.\n\n  Grep for any remaining \"treats X as Y\" prose that's stale after\n  NA.1-NA.3:\n    - \"contains nil\" (already updated in fz-s9y.4 — re-check)\n    - \"BOOL basic bit\" / \"NIL basic bit\"\n    - \"TAG_SPECIAL\"\n    - \"SPECIAL_NIL\" / \"SPECIAL_TRUE\" / \"SPECIAL_FALSE\"\n  Update or remove each.\n\n### Audit\n\n  Grep for any remaining special-case branches in lattice ops,\n  codegen, or pattern matching that referenced the basic-bit\n  versions. Remove or rewrite.\n\n## Removes\n\n  - Stale ir_typer.rs:22 comment.\n  - Whatever else the audit surfaces.\n\n## Depends on\n\nNA.3.",
   "id": "fz-yan.4",
   "labels": [],
   "parent": "fz-yan",
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "fz-NA.4: pinning tests + stale-comment sweep",
   "type": "task",
-  "updated_at": "2026-05-18T18:16:33Z"
+  "updated_at": "2026-05-18T18:54:59Z"
 }
