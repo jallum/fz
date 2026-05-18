@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-18T17:22:54Z",
+  "description": "`fold_prim` at src/reducer.rs:188 explicitly skips `Prim::MakeList`:\n\n\u003e List structural folding requires IR-walking (RED.3+); the Descr lattice's `list_of(elem)` loses length info.\n\nThis is a real structural problem, not an oversight. The Descr lattice can't carry \"list of length N with these specific elements\" — `list_of(int)` is the most precise it gets. So unlike tuples/closures, list literal folding can't ride on top of fold_prim → materializer; it needs a different mechanism.\n\n## Possible shapes\n\n- A side-channel \"literal list shape\" carried alongside Descr in the env, populated by the reducer when it sees `Prim::MakeList(literal_vars, None)`.\n- A richer Descr variant `list_lit(elems)` extending the lattice (heavyweight; affects subtyping).\n- IR-walking inside the reducer: when folding a Term::Call, materialize literal list args by walking back to the MakeList stmt.\n\n## Out of scope until designed\n\nSister/follow-up to the materializer epic (fz-f88) but not part of it — needs its own design pass.\n\n## Surfaces\n\nAny fn that returns a list with literal elements, called with literal args. E.g., `fn pair_list(a, b), do: [a, b]` — currently never folds.",
+  "id": "fz-4lo",
+  "labels": [],
+  "priority": 2,
+  "status": "open",
+  "title": "fz: enable list literal folding (IR-walking per RED.3+ deferred comment)",
+  "type": "task",
+  "updated_at": "2026-05-18T17:22:54Z"
+}
