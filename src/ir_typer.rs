@@ -165,22 +165,6 @@ pub struct ModuleTypes {
     /// CallClosureKnown emit whose `CallsiteId` is `Stalled` (or
     /// absent). Apply with `apply_callsite_outcomes`.
     pub callsite_outcome_updates: HashMap<CallsiteId, CallsiteOutcome>,
-    /// fz-f88.6 — module-level reachable-spec keys. This is `specs.keys()`
-    /// materialized into a HashSet so consumers can express
-    /// "is this spec reachable?" as a set lookup without re-deriving
-    /// reachability or cloning the value side of `specs`. Populated by
-    /// `type_module`. Per-block reachability inside a reachable spec is
-    /// still accessed via `specs[key].reachable_blocks` (one source of
-    /// truth — no second copy).
-    ///
-    /// Consumed by `validate_specs_or_exit` to drive `pattern_check`'s
-    /// survivor gate (fz-f88.8).
-    //
-    // fz-0z4.3 — last reader migrated off this field. Retained for one
-    // more commit so fz-0z4.4 can delete the field, construction, and
-    // parity test together in a single atomic change.
-    #[allow(dead_code)]
-    pub reachable_specs: HashSet<(FnId, Vec<Descr>)>,
 }
 
 impl ModuleTypes {
@@ -746,14 +730,12 @@ pub fn type_module(m: &Module) -> ModuleTypes {
         }
     }
 
-    let reachable_specs: HashSet<(FnId, Vec<Descr>)> = specs.keys().cloned().collect();
     ModuleTypes {
         specs,
         effective_returns,
         any_key_specs,
         scc_of,
         callsite_outcome_updates,
-        reachable_specs,
     }
 }
 
