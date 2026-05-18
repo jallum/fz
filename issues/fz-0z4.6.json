@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-0z4.3"
+    "fz-0z4.3",
+    "fz-0z4.5"
   ],
   "blocks": [],
   "created": "2026-05-18T18:54:03Z",
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "Replace validate_specs_or_exit with pure checks + diag::report_or_exit",
   "type": "task",
-  "updated_at": "2026-05-18T18:54:10Z"
+  "updated_at": "2026-05-18T18:54:11Z"
 }

@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-0z4.6"
+  ],
   "created": "2026-05-18T18:53:51Z",
   "description": "## Scope\n\nAdd to the `diag` module:\n\n```rust\npub fn report_or_exit(diags: \u0026[Diagnostic], sm: \u0026SourceMap);\n```\n\nBehavior:\n- Render every diagnostic via the existing renderer (prefer\n  `Renderer::emit_all` for batch; fall back to per-diag\n  `render_one_to_stderr` if simpler).\n- If any diagnostic has `Severity::Error`, `process::exit(1)` after\n  rendering.\n- Otherwise return normally (warnings still printed).\n\n## Why\n\nToday main.rs has ~18 sites of `render_one_to_stderr(...)` immediately\nfollowed by `process::exit(1)`. The fused render+exit pattern has no\nshared helper. fz-0z4.6 (E2) is the first consumer; subsequent\nmigrations land as fz-0z4.E3 follow-up (out of arc).\n\n## Independent\n\nNo upstream dependencies. Can land first or last in the arc; the\nconsumer ticket (fz-0z4.6) takes the dependency edge.\n\n## Tests\n\n- Unit test: empty diag list → returns normally, no output.\n- Unit test: warnings only → renders to provided sink, returns\n  normally.\n- Unit test: any error → renders, then exits 1. (Test via a wrapper\n  that catches exit, or factor the predicate into a testable helper\n  and exit at the wrapper level.)\n\n## Acceptance\n\n- `cargo build` clean.\n- New unit tests pass.",
   "id": "fz-0z4.5",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Add diag::report_or_exit shared sink",
   "type": "task",
-  "updated_at": "2026-05-18T18:53:51Z"
+  "updated_at": "2026-05-18T18:54:11Z"
 }
