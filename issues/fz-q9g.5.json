@@ -8,7 +8,7 @@
     "fz-q9g.3"
   ],
   "created": "2026-05-17T04:46:31Z",
-  "description": "What: Forward our own dst to the tail callee. No new alloc.\n\nWhy: Tail recursion must not allocate per iteration; this is what makes DPS pay off in loops.\n\nCLIF impact: strict reduction — removes one alloc per loop iteration in DPS-shaped tail-recursive constructors.\n\nRemoves: per-iteration accumulator alloc in tail-recursive constructors.\n\nINTERACTION (fz-q9g.25): Main's fz-ul4.43.D.0 added is_pure_tail_caller inlining (src/ir_inline.rs:36). For the specific small-K shape `K(x) -\u003e TailCall(target, [box(x)])`, the inliner already eats the K hop before C4 sees it. C4 still fires when:\n  - K is larger than INLINE_BUDGET (10 stmts)\n  - K is shared across multiple call sites (inlining would duplicate)\n  - K is recursive or referenced by MakeClosure\nFixture choice: pick a multi-callsite or above-budget K so the demonstration isn't pre-empted by is_pure_tail_caller. A naive single-callsite small-K builder will show zero improvement.\n\nTests: golden CLIF on a tail-recursive list/vec builder fixture where is_pure_tail_caller has NOT already fired (assert via a pre-check on the post-inliner IR). Assert zero allocs in the loop body. Also: a regression assertion that the small-K case is still correctly handled by is_pure_tail_caller upstream.",
+  "description": "**fz-dps.C4**: lower Term::TailCall / Term::TailCallClosure under Dst ABI.\n\n**What**: at a tail callsite where caller's own return-repr is `Dst(k)` and tail callee's return-repr is the same `Dst(k)`, forward caller's dst arg unchanged to callee. No new alloc.\n\n**Why this lands before q9g.3**: tail recursion in DPS-shaped constructors (the canonical TRMC pattern) requires per-iteration dst forwarding. Without C4, the recursive arm of `map`/`reverse_acc` cannot complete the chain when q9g.3 flips the gate.\n\n**Interaction with `is_pure_tail_caller`** (src/ir_inline.rs:36, landed in PR #14): for small-K shapes `K(x) -\u003e TailCall(target, [box(x)])`, the inliner already eats the K hop before C4 sees it. C4 still fires for: K above INLINE_BUDGET, K shared across multiple callsites, K recursive or referenced by MakeClosure. Test fixture must pick a multi-callsite or above-budget K so the demonstration isn't pre-empted upstream.\n\n**Testability without classifier output**: same shape as q9g.4 — test toggles q9g.2's gate under `cfg(test)`, synthesizes a Dst spec with a tail-recursive call, asserts the lowered TailCall forwards the dst arg.\n\n**CLIF impact**: zero in production builds; test-only assertions verify lowering shape.\n\n**Precondition**: q9g.4 (C3 must exist — the non-tail path is the regression baseline TailCall measures against).",
   "id": "fz-q9g.5",
   "labels": [],
   "parent": "fz-q9g",
@@ -22,5 +22,5 @@
   "status": "open",
   "title": "fz-dps.C4: lower Term::TailCall/TailCallClosure under Dst ABI",
   "type": "task",
-  "updated_at": "2026-05-18T20:02:00Z"
+  "updated_at": "2026-05-18T20:03:36Z"
 }
