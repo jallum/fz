@@ -6,14 +6,15 @@
   "blocks": [
     "fz-9pr.9"
   ],
+  "closed_at": "2026-05-18T15:43:36Z",
   "created": "2026-05-18T15:02:15Z",
   "description": "Where walk_spec_for_discovery emits a target spec for a Direct /\nClosureLit / CallClosureKnown slot, look up the matching CallsiteId\nin module.callsite_outcomes first. If Stalled, promote to\nEmitted { target } in place (within callsite_outcomes); keep the\nexisting out.emits.push as a no-op shadow for now.\n\nBehavior unchanged — this is structural plumbing.\n\n## Acceptance\n\n- After type_module on any fixture, every Stalled outcome with a\n  slot in {Direct, ClosureLit, CallClosureKnown} has been promoted\n  to Emitted.\n- Goldens byte-identical.\n- All 842 tests green.\n\n## Removes\n\nNothing yet.",
   "id": "fz-9pr.8",
   "labels": [],
   "parent": "fz-9pr",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "fz-CO.D.1 — Typer reads Stalled, promotes to Emitted",
   "type": "task",
-  "updated_at": "2026-05-18T15:40:43Z"
+  "updated_at": "2026-05-18T15:43:36Z"
 }
