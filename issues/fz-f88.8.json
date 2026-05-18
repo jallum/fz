@@ -4,14 +4,15 @@
     "fz-f88.6"
   ],
   "blocks": [],
+  "closed_at": "2026-05-18T18:04:32Z",
   "created": "2026-05-18T17:22:45Z",
   "description": "The final removal. `compute_survivors` in main.rs (line 80-92) is a third independent derivation of \"what's reachable post-reduction\" — duplicating the typer's analysis. Replace it with a read of `module.reachable_specs` from .6.\n\n## Steps\n\n1. Delete `compute_survivors` from src/main.rs.\n2. Update `validate_specs_or_exit` (and any other callers) to read `module.reachable_specs` directly.\n3. pattern_check::check_program's `survivors: Option\u003c\u0026HashSet\u003c(String, usize)\u003e\u003e` parameter: either pass `\u0026reachable_specs` (after a name/arity → SpecKey reconciliation) or change the parameter shape to take SpecKeys directly.\n4. Consider whether `prelude_fn_id_cutoff` can also go now that `FnIr.category == Prelude` carries the same information cleanly.\n\n## Verify\n\n- pattern_check warnings byte-identical on every fixture.\n- No new false-positives or missing warnings on `list_primitives` etc.\n- Module's view of \"what's reachable\" is now sourced from exactly one place.\n\n## Blocked by\n\nfz-f88.6",
   "id": "fz-f88.8",
   "labels": [],
   "parent": "fz-f88",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "fz-RS.8 — Delete compute_survivors; route pattern_check through module reachability",
   "type": "task",
-  "updated_at": "2026-05-18T18:02:06Z"
+  "updated_at": "2026-05-18T18:04:32Z"
 }
