@@ -13,9 +13,15 @@
   "id": "fz-jg5.7",
   "labels": [],
   "parent": "fz-jg5",
+  "comments": [
+    {
+      "text": "Findings (docs/walkthroughs/FINDINGS.md): Skip errors/ subfixtures — they fail in lex/lower/macro/resolve before reducer runs. RED.6 checklist must call them out as N/A. Expected body counts per fixture are tabulated in FINDINGS.md headline section.",
+      "timestamp": "2026-05-18T03:17:56Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "fz-RED.6: re-bless every fixture golden",
   "type": "task",
-  "updated_at": "2026-05-18T02:56:56Z"
+  "updated_at": "2026-05-18T03:17:56Z"
 }
