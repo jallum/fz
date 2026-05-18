@@ -4,14 +4,15 @@
     "fz-s9y.3"
   ],
   "blocks": [],
+  "closed_at": "2026-05-18T16:31:58Z",
   "created": "2026-05-18T16:04:32Z",
   "description": "## The change\n\nFinal polish + invariant-pinning tests. Make the new semantics\nexplicit in code, prose, and tests.\n\n### Update prose / comments\n\n  - `src/types.rs:821` — `list_clause_empty` comment: \"list(t) is\n    non-empty (contains nil)\" → \"non-empty (contains the empty list,\n    encoded as list(none()))\".\n  - `src/types.rs:1991` — test name comment `list_of_none_is_subtype_of_any_list`:\n    \"list(none) only contains nil\" → \"list(none) only contains the\n    empty list\".\n  - Anywhere else \"contains nil\" appears as a load-bearing claim about\n    list types, update.\n\n### Update display\n\n  - `print(nil)` shows \"nil\" — unchanged.\n  - `print([])` shows \"[]\" — new; previously showed \"nil\" via conflation.\n  - Ensure print's value-formatter inspects bits, distinguishes\n    EMPTY_LIST from NIL.\n\n### Add pinning tests\n\n  - `nil_does_not_match_empty_list_pattern`:\n      ```\n      fn f([]), do: :empty\n      fn main(), do: f(nil)   # halts :function_clause\n      ```\n  - `empty_list_does_not_match_nil_pattern`:\n      ```\n      fn f(nil), do: :nil\n      fn main(), do: f([])    # halts :function_clause\n      ```\n  - `print_distinguishes_nil_and_empty_list`: a fixture with\n    `print(nil); print([])` produces two distinct lines: `nil\\n[]\\n`.\n\n### Audit / remove\n\n  - Grep `Pattern::Nil` and `Pattern::List(vec![], None)` — any branch\n    that handles them identically and shouldn't (their semantics now\n    diverge).\n  - Grep `Const::Nil` and `Const::EmptyList` — same audit on\n    consumer side.\n  - Grep \"nil\" in comments referring to \"empty list\" — update.\n  - Remove any dead-code that exists only because of the old conflation.\n\n### REMOVES\n\n  - Conflation-era comments asserting \"contains nil\" where \"contains\n    the empty list\" was meant.\n  - Any branch that handles Pattern::Nil and Pattern::List(vec![],None)\n    interchangeably (their behavior now diverges).\n  - Possibly dead helpers like `is_nil_only` if they meant \"is empty\n    list.\"\n\n## Expected effect\n\n  - Goldens stable from EL.3 forward; only the new pinning fixtures\n    add `.txt` / `.specs` files.\n  - Code reads as if `nil` and `[]` were always distinct concepts.\n  - Future contributors don't have to wonder \"are these the same?\"\n\n## Depends on\n\nEL.3.\n\n## Walkthrough hazards\n\n  - print() implementation: does it use `is_nil()`? After EL.2, that's\n    only true for the nil atom value; the empty list won't be caught.\n    Need to add an `is_empty_list()` arm in the print formatter that\n    walks the list (length-0 list → \"[]\").",
   "id": "fz-s9y.4",
   "labels": [],
   "parent": "fz-s9y",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "fz-EL.4: sweep + cleanup — comments, display, pinning tests",
   "type": "task",
-  "updated_at": "2026-05-18T16:26:36Z"
+  "updated_at": "2026-05-18T16:31:58Z"
 }
