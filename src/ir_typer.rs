@@ -778,8 +778,22 @@ pub fn type_module(m: &Module) -> ModuleTypes {
     // to a (CallsiteId, target). We propose Emitted{target}; the
     // driver merges with whatever the reducer (Consumed/Stalled)
     // already wrote.
+    // fz-9pr.16 — the same `(caller_fn, block, slot)` CallsiteId can
+    // be produced from multiple `EmitterSite`s (different caller spec
+    // keys all dispatch through the same callsite to the same callee
+    // with their own arg Descrs). HashMap iteration order would make
+    // "last write wins" non-deterministic; sort by (target_fn,
+    // target_key_repr) so the published outcome is stable across runs.
     let mut callsite_outcome_updates: HashMap<CallsiteId, CallsiteOutcome> = HashMap::new();
-    for (site, target) in &produces {
+    let mut produces_sorted: Vec<(&EmitterSite, &(FnId, Vec<Descr>))> = produces.iter().collect();
+    produces_sorted.sort_by(|(_, a), (_, b)| {
+        let key_str = |t: &(FnId, Vec<Descr>)| -> String {
+            let parts: Vec<String> = t.1.iter().map(|d| format!("{}", d)).collect();
+            format!("{}:{}", t.0.0, parts.join(","))
+        };
+        key_str(a).cmp(&key_str(b))
+    });
+    for (site, target) in produces_sorted {
         if !reachable.contains(&site.caller) {
             continue;
         }
@@ -816,7 +830,7 @@ pub fn type_module(m: &Module) -> ModuleTypes {
 pub fn apply_callsite_outcomes(m: &mut Module, mt: &ModuleTypes) {
     for (cid, outcome) in &mt.callsite_outcome_updates {
         match m.callsite_outcomes.get(cid) {
-            None | Some(CallsiteOutcome::Stalled) => {
+            None | Some(CallsiteOutcome::Stalled { .. }) => {
                 m.callsite_outcomes.insert(*cid, outcome.clone());
             }
             Some(CallsiteOutcome::Consumed { .. })

@@ -124,6 +124,54 @@ pub struct CallsiteId {
     pub slot: EmitSlot,
 }
 
+/// fz-9pr.16 — why the reducer left a callsite alone. Threaded through
+/// every None-returning branch of `try_reduce_call` / `walk_block` so
+/// `fz dump --emit outcomes` can answer "why didn't X fold?" without
+/// a debugger.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StalledReason {
+    /// At least one argument's Descr was not a literal — the reducer
+    /// can only fold under fully-concrete arg Descrs.
+    OpaqueArg,
+    /// Per-top-level-callsite unroll budget hit before the recursive
+    /// walk could find a literal return.
+    BudgetExhausted,
+    /// Callee body contains a non-reducible prim (Extern, MakeMap,
+    /// MapUpdate, MakeBitstring, BitReader*, AllocStruct).
+    NonReduciblePrim,
+    /// Callee is in `module.boundary_fns` and the body isn't trivially
+    /// inlinable — `@spec`'d fns are reduction firewalls.
+    BoundaryFn,
+    /// `Term::(Tail)CallClosure`, but the closure operand's Descr
+    /// doesn't carry a `closure_lit` — no statically-known target.
+    NoClosureLitTarget,
+    /// Same-callee recursive call without provable structural
+    /// argument decrease — would risk non-termination if walked.
+    StructuralDecrease,
+    /// Callee body shape rejects the walk: `Term::Halt`, `Term::Receive`,
+    /// pathological Goto depth, parameter-arity mismatch, or a Return
+    /// of a non-scalar-literal Descr (tuple / list / closure_lit return).
+    CalleeBodyShape,
+    /// Catch-all for paths not yet classified. Should be rare; expand
+    /// the enum rather than reach for this.
+    Other,
+}
+
+impl std::fmt::Display for StalledReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            StalledReason::OpaqueArg => "OpaqueArg",
+            StalledReason::BudgetExhausted => "BudgetExhausted",
+            StalledReason::NonReduciblePrim => "NonReduciblePrim",
+            StalledReason::BoundaryFn => "BoundaryFn",
+            StalledReason::NoClosureLitTarget => "NoClosureLitTarget",
+            StalledReason::StructuralDecrease => "StructuralDecrease",
+            StalledReason::CalleeBodyShape => "CalleeBodyShape",
+            StalledReason::Other => "Other",
+        })
+    }
+}
+
 /// fz-9pr.1 — what happened at a callsite, as recorded on the Module.
 ///
 /// Four outcomes, three writers (reducer, ir_inline, typer), one
@@ -142,9 +190,11 @@ pub enum CallsiteOutcome {
     Emitted {
         target: (FnId, Vec<crate::types::Descr>),
     },
-    /// Provisional — nobody has decided yet. Debug invariant
-    /// (fz-9pr.5): no `Stalled` may survive end of pipeline.
-    Stalled,
+    /// Reducer left the call in place. `reason` says why, so
+    /// `fz dump --emit outcomes` can explain coverage gaps.
+    /// Debug invariant (fz-9pr.5): no `Stalled` may survive end of
+    /// pipeline.
+    Stalled { reason: StalledReason },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
