@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-9pr.13"
+  ],
   "blocks": [],
   "created": "2026-05-18T15:02:42Z",
   "description": "With E.3 landed, the following in ir_inline.rs are unused (only\ninline_single_use_conts family remains):\n\n- pub fn inline_module\n- pub fn inline_calls_once\n- pub fn inline_tail_calls_once\n- pub fn is_inlinable\n- pub fn is_pure_tail_caller\n- pub fn alpha_rename\n- pub fn absorb_callee\n- helpers consumed only by the above\n\nDelete them. ir_inline.rs becomes a thin module containing only\ninline_single_use_conts and its helpers.\n\n## Acceptance\n\n- ir_inline.rs LOC drops by ~70%.\n- No external references to the deleted fns.\n- All 842 tests + goldens green.\n\n## Removes\n\nThe bulk of ir_inline.rs.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "fz-CO.E.4 — Delete ir_inline::inline_module and helpers",
   "type": "task",
-  "updated_at": "2026-05-18T15:02:42Z"
+  "updated_at": "2026-05-18T15:02:43Z"
 }
