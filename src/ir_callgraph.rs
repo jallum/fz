@@ -83,11 +83,6 @@ pub fn entry_seeds(m: &Module) -> Vec<(FnId, Vec<Descr>)> {
 ///
 /// Distinct from `ir_typer::reachable_specs(..)`, which is a
 /// SpecId-level analysis used by codegen for trap-stub gating.
-//
-// First production consumer wired in fz-0z4.3 (pattern_check survivor
-// gate). Until then, only the in-module tests exercise this fn — the
-// `allow(dead_code)` rides through the gap between A and C.
-#[allow(dead_code)]
 pub fn reachable_fns(m: &Module) -> HashSet<FnId> {
     let graph = build_call_graph(m);
     let mut reached: HashSet<FnId> = HashSet::new();

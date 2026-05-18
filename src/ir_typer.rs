@@ -175,6 +175,11 @@ pub struct ModuleTypes {
     ///
     /// Consumed by `validate_specs_or_exit` to drive `pattern_check`'s
     /// survivor gate (fz-f88.8).
+    //
+    // fz-0z4.3 — last reader migrated off this field. Retained for one
+    // more commit so fz-0z4.4 can delete the field, construction, and
+    // parity test together in a single atomic change.
+    #[allow(dead_code)]
     pub reachable_specs: HashSet<(FnId, Vec<Descr>)>,
 }
 

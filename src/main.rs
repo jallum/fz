@@ -46,12 +46,12 @@ use std::io::{IsTerminal, Read};
 /// the `run` / `jit` / `aot` drivers immediately after `lower_program`
 /// so all three paths produce identical accept/reject verdicts.
 fn validate_specs_or_exit(prog: &ast::Program, module: &fz_ir::Module, sm: &diag::SourceMap) {
-    // fz-rh5.2 — type_module call #1 of 4 in `fz run`. Distinct inputs:
+    // fz-rh5.2 — type_module call #1 of 3 in `fz run` (was 4; fz-0z4.3
+    // retired the pattern_check pass). Distinct inputs:
     //   #1 (here):                  raw lowered module — for @spec diagnostics
-    //   #2 (reduced clone below):   reducer-applied module — for pattern_check
-    //   #3 (ir_codegen::compile):   pre-rewrites clone — for codegen rewrites
-    //   #4 (ir_codegen::compile):   post-inline/fuse/reduce — final codegen
-    // #1 and #3 type structurally-identical inputs; threading the result
+    //   #2 (ir_codegen::compile):   pre-rewrites clone — for codegen rewrites
+    //   #3 (ir_codegen::compile):   post-inline/fuse/reduce — final codegen
+    // #1 and #2 type structurally-identical inputs; threading the result
     // through would save one full call (follow-up filed).
     let mt = ir_typer::type_module(module);
     let mut diags = spec_check::validate_specs(prog, module, &mt);
@@ -62,20 +62,17 @@ fn validate_specs_or_exit(prog: &ast::Program, module: &fz_ir::Module, sm: &diag
     // from a body that exists at runtime, and a fn that fully dissolves
     // (e.g. ast_eval's `eval`) has no such body.
     //
-    // fz-f88.8 — survivor set sourced from `ModuleTypes.reachable_specs`
-    // (the typer's authoritative view of "did any callsite still
-    // resolve to this fn after reduction?"), replacing the prior
-    // hand-rolled `compute_survivors` that was a third independent
-    // derivation of the same idea. The reduce-then-type step lives
-    // here because reachability changes after the reducer folds
-    // callsites away.
+    // fz-0z4.3 — survivor set sourced from a pure call-graph BFS over
+    // the reduced module (`ir_callgraph::reachable_fns`). Replaces a
+    // full `type_module` pass on the reduced clone whose only output
+    // pattern_check ever consumed was `reachable_specs` projected to
+    // FnIds. Reachability is a call-graph fact, not a typing fact.
     let mut reduced = module.clone();
     ir_reducer::reduce_module(&mut reduced);
-    let mt_reduced = ir_typer::type_module(&reduced);
-    let survivors: std::collections::HashSet<(String, usize)> = mt_reduced
-        .reachable_specs
+    let reachable = ir_callgraph::reachable_fns(&reduced);
+    let survivors: std::collections::HashSet<(String, usize)> = reachable
         .iter()
-        .filter_map(|(fid, _)| {
+        .filter_map(|fid| {
             let &idx = reduced.fn_idx.get(fid)?;
             let f = &reduced.fns[idx];
             let arity = f.block(f.entry).params.len();
