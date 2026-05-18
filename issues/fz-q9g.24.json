@@ -9,9 +9,15 @@
   "id": "fz-q9g.24",
   "labels": [],
   "parent": "fz-q9g",
+  "comments": [
+    {
+      "text": "Audit conclusion (2026-05-18): premise invalidated by as-shipped fz-o0u. The ticket assumed TAG_PTR=0b001 requiring untag_ptr before heap deref; the actually-landed scheme uses TAG_PTR=0b000 (runtime/src/fz_value.rs:18), so tagged pointer values are raw pointers and loads work directly. Surveyed all load/store sites added to src/ir_codegen.rs since 004d1b0b (pre-q9g baseline) — only two new load sites (ir_codegen.rs:5591 Prim::TupleField and ir_codegen.rs:6532 tuple-arity TypeTest schema_id read); both load through TAG_PTR=0 pointers and are clean. No PTR_UNTAG_MASK exists in the tree because it is unnecessary. Closing as superseded — q9g.3 is no longer gated by this audit.",
+      "timestamp": "2026-05-18T19:39:35Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "fz-dps.rebase: post-merge codegen audit for untag_ptr coverage",
   "type": "task",
-  "updated_at": "2026-05-18T19:29:29Z"
+  "updated_at": "2026-05-18T19:39:35Z"
 }
