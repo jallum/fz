@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-18T02:56:44Z",
+  "description": "# User-facing diagnostic — show every body and the boundary that forced it\n\n## Goal\n\nA diagnostic mode (`fz dump --emit bodies` or similar) that prints,\nfor each user function with a body in the compiled output, the\nsource location of the **boundary** that forced the body to exist.\n\n## Example output shape\n\n```\n$ fz dump --emit bodies fixtures/ast_eval/input.fz\nbodies emitted: 0 user functions\n  (no boundaries — program fully reduces)\n\n$ fz dump --emit bodies fixtures/tail_recursion/input.fz\nbodies emitted: 1 user function\n  count: 1 body (input Descr: (int, int))\n    forced by: unroll budget exceeded at main:5:9 (count(100000, 0))\n    → raise @unroll(N) on main or count, or rewrite to terminate\n\n$ fz dump --emit bodies fixtures/concurrency_ping_pong/input.fz\nbodies emitted: 2 user functions\n  child: 1 body (zero-capture thunk)\n    forced by: spawn at main:6:3\n  k_main_print_cont: 1 body (input Descr: any)\n    forced by: untyped receive at main:7:9 (receive())\n    → declare a typed mailbox to narrow this body\n```\n\n## Acceptance\n\n- Reports correct body counts for every fixture in the table from\n  `docs/bodies-are-boundaries.md` § \"What success looks like\".\n- Boundary attribution is correct (the listed source location is\n  the one that forced the body).\n- For boundaries that have a known fix (typed receive, raising the\n  unroll budget, etc.), include a one-line suggestion.\n\n## Removals\n\nNone.",
+  "id": "fz-jg5.8",
+  "labels": [],
+  "parent": "fz-jg5",
+  "priority": 2,
+  "status": "open",
+  "title": "fz-RED.7: --explain-bodies diagnostic",
+  "type": "task",
+  "updated_at": "2026-05-18T02:56:44Z"
+}
