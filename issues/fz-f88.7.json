@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-f88.5"
+    "fz-f88.5",
+    "fz-f88.6"
   ],
   "blocks": [],
   "created": "2026-05-18T17:22:39Z",
@@ -13,5 +14,5 @@
   "status": "open",
   "title": "fz-RS.7 — dump_outcomes_pipeline filters by category + reachability",
   "type": "task",
-  "updated_at": "2026-05-18T17:23:00Z"
+  "updated_at": "2026-05-18T17:23:01Z"
 }
