@@ -6,14 +6,15 @@
   "blocks": [
     "fz-9pr.4"
   ],
+  "closed_at": "2026-05-18T15:35:31Z",
   "created": "2026-05-18T15:01:41Z",
   "description": "On every successful terminator rewrite in reduce_terminator, write\n`Consumed { result }` to module.callsite_outcomes at the corresponding\nCallsiteId.\n\nSlots covered:\n- Term::TailCall → EmitSlot::Direct\n- Term::Call → EmitSlot::Direct (cont's slot handled in B.2)\n- Term::TailCallClosure → EmitSlot::ClosureLit(0, 0) (the resolved one)\n- Term::CallClosure → ClosureLit(0, 0) or CallClosureKnown depending on path\n\nFor now: outcome is written but no one reads it. Pure lineage data.\n\n## Acceptance\n\n- ast_eval: after reduce_module, callsite_outcomes has 3 Consumed\n  entries (the three main eval calls).\n- fib_tailrec: callsite_outcomes has Consumed entries for fib(0,0,1),\n  fib(1,0,1), fib(10,0,1) — NOT fib(20,0,1).\n- multi_clause: callsite_outcomes has Consumed for every classify/fact\n  call in main.\n- New unit test: hand-built module → reduce → assert outcomes count.\n- All 842 tests green.\n\n## Removes\n\nNothing yet.",
   "id": "fz-9pr.3",
   "labels": [],
   "parent": "fz-9pr",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "fz-CO.B.1 — Reducer publishes Consumed outcomes",
   "type": "task",
-  "updated_at": "2026-05-18T15:33:39Z"
+  "updated_at": "2026-05-18T15:35:31Z"
 }
