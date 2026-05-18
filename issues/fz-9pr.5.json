@@ -6,14 +6,15 @@
   "blocks": [
     "fz-9pr.6"
   ],
+  "closed_at": "2026-05-18T15:38:01Z",
   "created": "2026-05-18T15:01:41Z",
   "description": "After reduce_module, every call-terminator in module.fns has a\nmatching CallsiteId in callsite_outcomes.\n\nDebug-build assertion at the end of reduce_module. Iterate every fn,\nevery block, every call-bearing terminator; assert presence in the\noutcomes table.\n\n## Acceptance\n\n- Debug build of cargo test passes with the assertion enabled.\n- Release build: assertion stripped (cfg(debug_assertions)).\n- Failure modes:\n  - A call-terminator with no outcome → bug in B.1/B.2 coverage.\n  - An outcome for a callsite that doesn't exist → write-after-rewrite\n    bug or stale outcome.\n\n## Removes\n\nNothing yet.",
   "id": "fz-9pr.5",
   "labels": [],
   "parent": "fz-9pr",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "fz-CO.B.3 — Debug-build invariant: every callsite has an outcome",
   "type": "task",
-  "updated_at": "2026-05-18T15:37:14Z"
+  "updated_at": "2026-05-18T15:38:01Z"
 }
