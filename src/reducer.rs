@@ -382,6 +382,7 @@ fn bool_descr(b: bool) -> Descr {
 
 /// A clause for the reducer's dispatcher. Mirrors `pattern_matrix::Row` but
 /// is matrix-uniform — usable for fn-clauses, `case`, and `with` matrices.
+#[allow(dead_code)] // wired by RED.4+ when the reducer can dispatch multi-clause fns at AST level.
 pub struct Clause<'a> {
     /// One pattern per subject. `patterns.len()` must equal the dispatcher's
     /// `subject_descrs.len()`.
@@ -393,6 +394,7 @@ pub struct Clause<'a> {
 
 /// Outcome of dispatching a list of clauses against subject Descrs.
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // wired by RED.4+.
 pub enum Dispatch {
     /// `row_idx` is the lowest-index row whose patterns and guard match
     /// the subject Descrs (first-match-wins). `bindings` carries the
@@ -422,6 +424,7 @@ pub enum Dispatch {
 ///   immediately — we cannot prove this row is OR isn't selected; trying
 ///   later rows would be unsound since this row might match at runtime.
 /// - If every row is skipped (NoMatch), return NoMatch.
+#[allow(dead_code)] // wired by RED.4+.
 pub fn dispatch_clauses(
     clauses: &[Clause<'_>],
     subject_descrs: &[Descr],
@@ -479,6 +482,7 @@ enum Match {
 /// Match a single AST `Pattern` against a subject `Descr`. On `Match::Yes`,
 /// any `Pattern::Var(name)` and `Pattern::As(name, _)` records bind `name`
 /// to the (sub-)Descr of the subject.
+#[allow(dead_code)] // helpers for dispatch_clauses.
 fn match_pattern(
     pat: &Pattern,
     d: &Descr,
@@ -516,6 +520,7 @@ fn match_pattern(
 /// A pattern that demands a specific literal value. Returns Yes if `d` is
 /// equal to `expected` (both are singleton-literal of the same shape), No if
 /// they're disjoint, Opaque otherwise.
+#[allow(dead_code)]
 fn match_literal(d: &Descr, expected: &Descr) -> Match {
     if is_literal(d) {
         if d == expected {
@@ -537,6 +542,7 @@ fn match_literal(d: &Descr, expected: &Descr) -> Match {
     }
 }
 
+#[allow(dead_code)]
 fn match_tuple_pattern(
     elems: &[Spanned<Pattern>],
     d: &Descr,
@@ -589,6 +595,7 @@ fn match_tuple_pattern(
 /// Fold an AST `Expr` to a literal Descr under `bindings`. Used for guards.
 /// Conservative — handles Var lookup, scalar literals, BinOp, UnOp.
 /// Anything else returns None (Opaque guard).
+#[allow(dead_code)] // pub for fz-jg5.3's dispatcher; called by fold_expr; main bin's call graph doesn't reach it yet (RED.3+).
 pub fn fold_expr(
     expr: &ast::Expr,
     bindings: &HashMap<String, Descr>,
@@ -616,6 +623,7 @@ pub fn fold_expr(
     }
 }
 
+#[allow(dead_code)] // used via fold_expr; cf. RED.3+ wiring.
 fn ast_binop_fold(op: ast::BinOp, ad: &Descr, bd: &Descr) -> Option<Descr> {
     use ast::BinOp::*;
     let ir_op = match op {
@@ -645,6 +653,7 @@ fn ast_binop_fold(op: ast::BinOp, ad: &Descr, bd: &Descr) -> Option<Descr> {
     }
 }
 
+#[allow(dead_code)] // used via fold_expr.
 fn ast_unop_fold(op: ast::UnOp, d: &Descr) -> Option<Descr> {
     use ast::UnOp::*;
     let ir_op = match op {

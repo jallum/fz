@@ -1878,6 +1878,11 @@ pub fn compile_with_backend<B: Backend>(
         crate::ir_inline::inline_module(&mut working);
     }
     crate::ir_fuse::fuse_blocks(&mut working);
+    // fz-jg5.4 (RED.3) — compile-time reducer pass. Folds calls whose
+    // return is statically known; reduces If-on-bool-literal to Goto.
+    // Plugs in after ir_inline + ir_fuse so it sees a cleaner call graph.
+    // See docs/bodies-are-boundaries.md.
+    crate::ir_reducer::reduce_module(&mut working);
     let mut module_types = crate::ir_typer::type_module(&working);
     crate::ir_fold::fold_module(&mut working, &module_types);
     // fz-cty.8 — fold byte-literal MakeBitstring into ConstBitstring before

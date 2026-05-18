@@ -17,6 +17,7 @@ mod ir_fold;
 mod ir_fuse;
 mod ir_inline;
 mod ir_lower;
+mod ir_reducer;
 mod ir_typer;
 mod lexer;
 mod macros;
