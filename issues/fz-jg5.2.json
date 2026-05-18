@@ -6,6 +6,7 @@
   "blocks": [
     "fz-jg5.3"
   ],
+  "closed_at": "2026-05-18T03:24:22Z",
   "created": "2026-05-18T02:55:14Z",
   "description": "# Extract a callable constant-folding primitive\n\n## Goal\n\nA pure function: given a `Prim` whose inputs are all literal Descrs,\nreturn the literal Descr of its output (or `None` if not foldable).\nThis is the constant-fold core of `ir_fold`, exposed as a reusable\nprimitive the reducer will call from every clause-body it walks.\n\n## What lands\n\nA new module (or function added to an existing module) — likely\n`crate::reducer::fold_prim(prim: \u0026Prim, env: \u0026HashMap\u003cVar, Descr\u003e) -\u003e Option\u003cDescr\u003e`\nor similar shape. Pure; no Module mutation.\n\nUnit tests cover:\n- `BinOp(Add, int_lit(3), int_lit(4))` → `int_lit(7)`\n- Float arithmetic\n- BinOp comparison folding (already in typer; mirror to reducer)\n- `MakeTuple` of literal elems → literal tuple Descr\n- `ListCons`/`MakeList` of literals → literal list Descr\n- TupleField projection on a literal tuple → the element\n- ListHead/ListTail on a literal list\n- Unfoldable inputs (any var with non-literal Descr) → `None`\n\n## Acceptance\n\n- Unit tests pass.\n- No production caller yet — primitive is dead code at this point,\n  picked up by RED.3.\n\n## Removals\n\nNone yet. `ir_fold` keeps its block-level driver. RED.8c may absorb\nthis work later.",
   "id": "fz-jg5.2",
@@ -18,8 +19,8 @@
     }
   ],
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "fz-RED.1: pattern reduction primitive (pure fn)",
   "type": "task",
-  "updated_at": "2026-05-18T03:19:10Z"
+  "updated_at": "2026-05-18T03:24:22Z"
 }
