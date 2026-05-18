@@ -18,11 +18,15 @@
     {
       "text": "Scope refined per user: native-path only. Uniform-path DPS deferred to fz-ag9 (CD.2).",
       "timestamp": "2026-05-17T16:39:56Z"
+    },
+    {
+      "text": "Rewritten 2026-05-18 to (a) name Module.callsite_outcomes (fz-9pr/fz-f88) as the eligibility source for C3, (b) correct MakeList base case to empty-list sentinel (bit pattern 1) rather than NIL_BITS — post fz-s9y/fz-yan [] and nil are distinct, (c) note that the as-shipped fz-o0u (TAG_PTR=0b000) makes the q9g.24 untag concern moot.",
+      "timestamp": "2026-05-18T19:39:30Z"
     }
   ],
   "priority": 1,
   "status": "in_progress",
   "title": "fz-dps.CD: native-path wire ABI (Return/Call/TailCall) + MakeList DPS via TRMC",
   "type": "task",
-  "updated_at": "2026-05-18T19:39:24Z"
+  "updated_at": "2026-05-18T19:39:30Z"
 }
