@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-jg5.10"
+  ],
   "blocks": [],
   "created": "2026-05-18T02:56:45Z",
   "description": "# Delete ir_inline and inline_single_use_conts; reducer subsumes both\n\n## Goal\n\nAfter RED.3-RED.5, the reducer inlines:\n- Single-clause non-recursive callees with known inputs.\n- Recursive callees within the unroll budget.\n- Closures with statically-known captures.\n- Continuation fns with single use sites.\n\nThat's the full surface area of `ir_inline.rs` and the cont-fusion\nhelper. Delete both.\n\n## Specifics to remove\n\n- `src/ir_inline.rs` (entire file).\n- All call sites in `compile_with_backend` and the AOT path.\n- The pipeline ordering wrapper if it exists.\n\n## Acceptance\n\n- All goldens byte-identical to RED.6's blessed state.\n- Cargo test green.\n- LOC reduction: ~1400+ lines from `ir_inline.rs` plus call sites.\n\n## Removals\n\nThis **is** the removal ticket. Largest single removal in the arc.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "fz-RED.8c REMOVE: ir_inline as a separate pass",
   "type": "task",
-  "updated_at": "2026-05-18T02:56:45Z"
+  "updated_at": "2026-05-18T02:56:57Z"
 }

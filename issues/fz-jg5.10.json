@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-jg5.9"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-jg5.11"
+  ],
   "created": "2026-05-18T02:56:45Z",
   "description": "# Delete the closure_lit-driven return LFP machinery\n\n## Goal\n\n`compute_effective_returns` (in `src/ir_typer.rs`) currently includes\na closure_lit-driven branch for `Term::TailCallClosure` that walks\neach lit clause's resolved body and joins the return.\n`resolve_closure_return` is the matching helper.\n\nAfter the reducer has resolved closure_lits at compile time (RED.5),\nthese LFP branches are dead. Delete them.\n\n## Specifics to remove\n\n- The `Term::TailCallClosure` closure_lit branch in\n  `compute_effective_returns`.\n- `resolve_closure_return` (if no other live caller remains; check\n  `cont_slot0_descr` and `walk_spec_for_discovery`).\n- Related helpers if exclusively consumed.\n\n## Acceptance\n\n- All goldens byte-identical to RED.6's blessed state.\n- Cargo test green.\n- LOC reduction: ~50-100 lines from `ir_typer.rs`.\n\n## Removals\n\nThis **is** the removal ticket.",
   "id": "fz-jg5.10",
