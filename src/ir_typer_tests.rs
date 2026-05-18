@@ -1210,6 +1210,63 @@ end
     );
 }
 
+/// fz-rh5.1 — at a `CallClosure` whose closure operand resolves
+/// via `closure_lit` (not `fn_constants`), the continuation's slot 0
+/// must be the lambda's narrow return Descr — NOT `Descr::any()`.
+///
+/// Pre-fz-5j5.3, `cont_key_for_spec` and `walk_spec_for_discovery`
+/// computed slot 0 via different code paths: the walker handled the
+/// closure_lit case via `resolve_closure_return`; the cont-key helper
+/// fell back to `any`. Under the old whole-graph-rebuild typer the
+/// disagreement was invisible (both functions ran under the same
+/// wrong logic at every iter); under fz-5j5.3's worklist + reachability
+/// sweep split, keys diverged and cont specs went stale.
+///
+/// This test pins the post-fix behavior: a cont after a CallClosure
+/// on a closure_lit-typed value has slot 0 = the lambda's narrow return.
+#[test]
+fn cont_slot0_after_closure_lit_callclosure_is_narrow_not_any() {
+    let (m, mt) = pipeline(
+        r#"
+fn add_to(x), do: fn (y) -> x + y
+fn main() do
+  f = add_to(7)
+  r = f(1)
+  print(r + 100)
+end
+"#,
+    );
+
+    // The cont after `f(1)` receives an `int`. Find the k_ cont fn
+    // whose key starts with an int Descr (the lambda's return).
+    let int_d = Descr::int();
+    let k_specs: Vec<&Vec<Descr>> = mt
+        .specs
+        .iter()
+        .filter(|((fid, _), _)| {
+            m.fns
+                .iter()
+                .find(|f| f.id == *fid)
+                .is_some_and(|f| f.name.starts_with("k_"))
+        })
+        .map(|((_, k), _)| k)
+        .collect();
+
+    // At least one k_* cont must have a narrow int-subtype slot 0.
+    // If slot 0 were `any`, this assertion would fail — which was
+    // the pre-fix behavior under the worklist/sweep split.
+    let has_narrow_int_slot0 = k_specs.iter().any(|k| {
+        k.first()
+            .is_some_and(|d| d.is_subtype(&int_d) && !d.is_equiv(&Descr::any()))
+    });
+    assert!(
+        has_narrow_int_slot0,
+        "expected at least one k_* cont spec with narrow int slot 0 \
+         from closure_lit-resolved CallClosure; got keys: {:?}",
+        k_specs
+    );
+}
+
 /// Helper's slot 0 for CallClosure / Receive is `Descr::any()` per
 /// the typer's opaque-callee rule.
 #[test]
