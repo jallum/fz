@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-9pr.10"
+  ],
   "created": "2026-05-18T15:55:37Z",
   "description": "The deeper smell named while landing .10: three passes (reducer,\ntyper's walk_spec_for_discovery, ir_inline) each re-implement the\nmapping from a block's terminator to \"what callsites does it\nproduce, in which slots, with which targets/keys.\" The outcomes\ntable unified the *answers*; this ticket unifies the *question*.\n\n## What to add\n\nA single enumerator in a new module (likely `src/callsite_walk.rs`)\nor as a method on `Block`:\n\n```rust\npub struct Callsite\u003c'a\u003e {\n    pub id: CallsiteId,           // (caller_fn, block, slot)\n    pub target: FnId,\n    pub args: \u0026'a [Var],\n    pub captures: \u0026'a [Descr],    // empty for non-closure_lit slots\n}\n\npub fn block_callsites\u003c'a\u003e(\n    block: \u0026'a Block,\n    caller: FnId,\n    env: \u0026'a HashMap\u003cVar, Descr\u003e,\n) -\u003e impl Iterator\u003cItem = Callsite\u003c'a\u003e\u003e\n```\n\nOne match site that knows:\n- `Term::Call`        → `Direct` + `Cont`\n- `Term::TailCall`    → `Direct`\n- `Term::CallClosure` → `ClosureLit(c,s)` per resolved sig OR\n                        `CallClosureKnown` (via fn_constants) + `Cont`\n- `Term::TailCallClosure` → same as above without `Cont`\n- `Prim::MakeClosure` (per stmt) → `MakeClosure(stmt_idx)`,\n                        gated on opaque-arity liveness (deferred to\n                        caller — `block_callsites` may not have this)\n\nThe enumerator stays close to current `walk_spec_for_discovery`\nstructure — same Descr-key derivation logic, just hoisted out.\n\n## What to refactor (mechanical)\n\n- `ir_reducer::reduce_block` calls `block_callsites` to find calls,\n  attempts fold per-item.\n- `walk_spec_for_discovery`'s per-block terminator scan calls\n  `block_callsites` to find emit targets. The env-building and\n  Descr-keying logic stays in the typer (it consumes the\n  enumerator's items + its own `block_envs`).\n- `ir_inline` — out of scope here; absorbed under .E.\n\n## Acceptance\n\n- Every golden in `fixtures/` is byte-identical to current main.\n- All 842 tests green; CI lint + clippy clean.\n- New unit tests on `block_callsites` covering each terminator kind.\n- `ir_reducer.rs` and `ir_typer.rs` have the per-Term::* match arms\n  replaced by `for cs in block_callsites(...) { ... }`.\n\n## What this unblocks\n\n- `.10` becomes mechanical (typer just iterates).\n- `.E` (reducer learns inline) is a single branch in the\n  enumeration consumer.\n- `.F.1` (boundary uniformity) is a one-line check inside\n  `block_callsites` (\"if `target ∈ boundary_fns` then yield Stalled\n  hint\").\n- `Cont` slots become first-class outcomes (no longer awkward\n  second-class).\n\n## What dies\n\nDirect walks-of-terminators in `reduce_block` / `reduce_terminator`\nand `walk_spec_for_discovery`. The match-on-Term logic collapses\ninto one site.",
   "id": "fz-9pr.17",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "fz-CO.D.0 — Extract block_callsites enumerator (shared by reducer/typer)",
   "type": "task",
-  "updated_at": "2026-05-18T15:55:37Z"
+  "updated_at": "2026-05-18T15:55:43Z"
 }

@@ -1,6 +1,7 @@
 {
   "assignee": "Jason Allum",
   "blocked_by": [
+    "fz-9pr.17",
     "fz-9pr.9"
   ],
   "blocks": [
@@ -25,5 +26,5 @@
   "status": "in_progress",
   "title": "fz-CO.D.3 — Typer reads outcomes; remove per-block scan for Direct/ClosureLit/Known",
   "type": "task",
-  "updated_at": "2026-05-18T15:45:48Z"
+  "updated_at": "2026-05-18T15:55:43Z"
 }
