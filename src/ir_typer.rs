@@ -524,10 +524,10 @@ pub fn type_module(m: &Module) -> ModuleTypes {
         for spec_key in snapshot {
             let (fid, _) = &spec_key;
             let Some(&j) = m.fn_idx.get(fid) else { continue };
-            let caller_ft = specs.get(&spec_key).unwrap().clone();
+            let caller_ft = specs.get(&spec_key).unwrap();
             sweep_makeclosure(
                 &m.fns[j],
-                &caller_ft,
+                caller_ft,
                 m,
                 &opaque_arities,
                 &specs,
@@ -626,12 +626,17 @@ fn process_worklist(
         // Walk to discover dependencies. cont_return_deps captures every
         // (callee_key) whose effective_return this walk consulted at a
         // cont-site slot-0 — folded below into the reverse readers index.
-        let caller_ft = specs.get(&spec_key).unwrap().clone();
+        //
+        // fz-rh5.3 — no clone of caller_ft needed. The walk takes
+        // &specs (immutable) and the only mutations in this iter body
+        // are to effective_returns (different HashMap) and to specs at
+        // the TOP of the loop (already completed before this borrow).
+        let caller_ft = specs.get(&spec_key).unwrap();
         let mut pending: HashMap<FnId, std::collections::HashSet<Vec<Descr>>> = HashMap::new();
         let mut cont_return_deps: Vec<(FnId, Vec<Descr>)> = Vec::new();
         walk_spec_for_discovery(
             &m.fns[j],
-            &caller_ft,
+            caller_ft,
             m,
             specs,
             effective_returns,
