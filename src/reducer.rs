@@ -279,7 +279,7 @@ fn fold_eq(op: BinOp, ad: &Descr, bd: &Descr) -> Option<Descr> {
     // Kind-disjoint (intersection empty): result is definitively
     // false-for-Eq / true-for-Neq even without both being literal.
     if !ad.is_empty() && !bd.is_empty() && ad.intersect(bd).is_empty() {
-        return Some(bool_descr(if is_eq { false } else { true }));
+        return Some(bool_descr(!is_eq));
     }
 
     None
@@ -304,7 +304,7 @@ fn fold_cmp(op: BinOp, ad: &Descr, bd: &Descr) -> Option<Descr> {
             Lt => af < bf,
             Le => af <= bf,
             Gt => af > bf,
-            Ge => af > bf || af == bf,
+            Ge => af >= bf,
             _ => return None,
         };
         return Some(bool_descr(b));
@@ -639,7 +639,9 @@ fn match_tuple_pattern(
 /// Fold an AST `Expr` to a literal Descr under `bindings`. Used for guards.
 /// Conservative — handles Var lookup, scalar literals, BinOp, UnOp.
 /// Anything else returns None (Opaque guard).
-#[allow(dead_code)] // pub for fz-jg5.3's dispatcher; called by fold_expr; main bin's call graph doesn't reach it yet (RED.3+).
+#[allow(dead_code)]
+// pub for fz-jg5.3's dispatcher; called by fold_expr; main bin's call graph doesn't reach it yet (RED.3+).
+#[allow(clippy::only_used_in_recursion)] // atom_names threaded for API symmetry with siblings; future Expr arms may consult it.
 pub fn fold_expr(
     expr: &ast::Expr,
     bindings: &HashMap<String, Descr>,
@@ -736,6 +738,7 @@ mod tests {
     // ---- is_literal predicates ----
 
     #[test]
+    #[allow(clippy::approx_constant)] // 3.14 here is just a float literal, not π.
     fn is_literal_recognizes_scalar_singletons() {
         assert!(is_literal(&Descr::int_lit(42)));
         assert!(is_literal(&Descr::float_lit(3.14)));
@@ -1315,7 +1318,7 @@ mod tests {
             guard: None,
         }];
         let subject = Descr::tuple_of([Descr::atom_lit("num"), Descr::int_lit(42)]);
-        match dispatch_clauses(&clauses, &[subject.clone()], &[]) {
+        match dispatch_clauses(&clauses, std::slice::from_ref(&subject), &[]) {
             Dispatch::MatchedRow { bindings, .. } => {
                 assert_eq!(bindings.get("whole").unwrap(), &subject);
                 assert_eq!(as_int_lit(bindings.get("n").unwrap()), Some(42));

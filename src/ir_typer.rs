@@ -591,6 +591,20 @@ pub struct EmitterSite {
     pub slot: EmitSlot,
 }
 
+/// fz-rh5.6 — worklist-internal type aliases. Spec keys, the reverse
+/// `return_readers` index, the `holders`/`emits_by_caller` indices,
+/// and the `callsite_fn_consts` map all share these shapes; aliasing
+/// satisfies clippy::type_complexity without sacrificing readability.
+pub(crate) type SpecKey = (FnId, Vec<Descr>);
+pub(crate) type SpecKeySet = std::collections::HashSet<SpecKey>;
+pub(crate) type ReturnReaders = HashMap<SpecKey, SpecKeySet>;
+pub(crate) type CallsiteFnConsts = HashMap<SpecKey, Vec<Option<FnId>>>;
+pub(crate) type EmitterSiteSet = std::collections::HashSet<EmitterSite>;
+pub(crate) type HoldersMap = HashMap<SpecKey, EmitterSiteSet>;
+pub(crate) type EmitsByCaller = HashMap<SpecKey, EmitterSiteSet>;
+pub(crate) type ProducesMap = HashMap<EmitterSite, SpecKey>;
+pub(crate) type PendingMakeClosureByArity = HashMap<usize, EmitterSiteSet>;
+
 /// fz-rh5.6 — output of one discovery walk. The driver folds this
 /// into worklist state.
 #[derive(Default)]
@@ -680,24 +694,18 @@ pub fn type_module(m: &Module) -> ModuleTypes {
         scc_members.insert(i, mset);
     }
 
-    let mut specs: HashMap<(FnId, Vec<Descr>), FnTypes> = HashMap::new();
-    let mut effective_returns: HashMap<(FnId, Vec<Descr>), Descr> = HashMap::new();
-    let mut callsite_fn_consts: HashMap<(FnId, Vec<Descr>), Vec<Option<FnId>>> = HashMap::new();
-    let mut return_readers: HashMap<
-        (FnId, Vec<Descr>),
-        std::collections::HashSet<(FnId, Vec<Descr>)>,
-    > = HashMap::new();
-    let mut visit_count: HashMap<(FnId, Vec<Descr>), usize> = HashMap::new();
+    let mut specs: HashMap<SpecKey, FnTypes> = HashMap::new();
+    let mut effective_returns: HashMap<SpecKey, Descr> = HashMap::new();
+    let mut callsite_fn_consts: CallsiteFnConsts = HashMap::new();
+    let mut return_readers: ReturnReaders = HashMap::new();
+    let mut visit_count: HashMap<SpecKey, usize> = HashMap::new();
 
     // fz-rh5.6 — provenance state.
-    let mut produces: HashMap<EmitterSite, (FnId, Vec<Descr>)> = HashMap::new();
-    let mut holders: HashMap<(FnId, Vec<Descr>), std::collections::HashSet<EmitterSite>> =
-        HashMap::new();
-    let mut emits_by_caller: HashMap<(FnId, Vec<Descr>), std::collections::HashSet<EmitterSite>> =
-        HashMap::new();
+    let mut produces: ProducesMap = HashMap::new();
+    let mut holders: HoldersMap = HashMap::new();
+    let mut emits_by_caller: EmitsByCaller = HashMap::new();
     let mut opaque_arities: std::collections::HashSet<usize> = std::collections::HashSet::new();
-    let mut pending_makeclosure_arity: HashMap<usize, std::collections::HashSet<EmitterSite>> =
-        HashMap::new();
+    let mut pending_makeclosure_arity: PendingMakeClosureByArity = HashMap::new();
 
     let mut work: std::collections::VecDeque<(FnId, Vec<Descr>)> =
         entry_seeds(m).into_iter().collect();
@@ -786,17 +794,17 @@ fn process_worklist(
     scc_of: &HashMap<FnId, usize>,
     scc_members: &HashMap<usize, std::collections::HashSet<FnId>>,
     work: &mut std::collections::VecDeque<(FnId, Vec<Descr>)>,
-    in_work: &mut std::collections::HashSet<(FnId, Vec<Descr>)>,
-    specs: &mut HashMap<(FnId, Vec<Descr>), FnTypes>,
-    effective_returns: &mut HashMap<(FnId, Vec<Descr>), Descr>,
-    callsite_fn_consts: &mut HashMap<(FnId, Vec<Descr>), Vec<Option<FnId>>>,
-    return_readers: &mut HashMap<(FnId, Vec<Descr>), std::collections::HashSet<(FnId, Vec<Descr>)>>,
-    visit_count: &mut HashMap<(FnId, Vec<Descr>), usize>,
-    produces: &mut HashMap<EmitterSite, (FnId, Vec<Descr>)>,
-    holders: &mut HashMap<(FnId, Vec<Descr>), std::collections::HashSet<EmitterSite>>,
-    emits_by_caller: &mut HashMap<(FnId, Vec<Descr>), std::collections::HashSet<EmitterSite>>,
+    in_work: &mut SpecKeySet,
+    specs: &mut HashMap<SpecKey, FnTypes>,
+    effective_returns: &mut HashMap<SpecKey, Descr>,
+    callsite_fn_consts: &mut CallsiteFnConsts,
+    return_readers: &mut ReturnReaders,
+    visit_count: &mut HashMap<SpecKey, usize>,
+    produces: &mut ProducesMap,
+    holders: &mut HoldersMap,
+    emits_by_caller: &mut EmitsByCaller,
     opaque_arities: &mut std::collections::HashSet<usize>,
-    pending_makeclosure_arity: &mut HashMap<usize, std::collections::HashSet<EmitterSite>>,
+    pending_makeclosure_arity: &mut PendingMakeClosureByArity,
 ) {
     while let Some(spec_key) = work.pop_front() {
         in_work.remove(&spec_key);

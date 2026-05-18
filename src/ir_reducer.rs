@@ -275,10 +275,10 @@ fn try_reduce_call_with_descrs(
         }
     }
     // Same-callee structural-decrease guard.
-    if let Some((_, parent)) = ctx.stack.iter().rfind(|(fid, _)| *fid == callee) {
-        if !strictly_smaller_args(arg_descrs, parent) {
-            return None;
-        }
+    if let Some((_, parent)) = ctx.stack.iter().rfind(|(fid, _)| *fid == callee)
+        && !strictly_smaller_args(arg_descrs, parent)
+    {
+        return None;
     }
     ctx.stack.push((callee, arg_descrs.to_vec()));
     let result = walk_fn_body(ctx, callee, arg_descrs);

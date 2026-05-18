@@ -689,7 +689,7 @@ fn dump_bodies_pipeline(src: String, source_name: String) -> String {
     // continuations or pattern-clause bodies, not user fns.
     let mut by_name: std::collections::BTreeMap<String, Vec<&Vec<crate::types::Descr>>> =
         std::collections::BTreeMap::new();
-    for ((fid, key), _) in &mt.specs {
+    for (fid, key) in mt.specs.keys() {
         let Some(&idx) = module.fn_idx.get(fid) else {
             continue;
         };
