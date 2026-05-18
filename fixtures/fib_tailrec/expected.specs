@@ -428,20 +428,6 @@
 ;              callee_key=[int, int, int]
 
 ; spec fn_clause_2(3) #fn=15
-;   key:    [int | float, int, int]
-;   return: int
-;   vars:
-;     Var(0) :: int | float
-;     Var(1) :: int
-;     Var(2) :: int
-;     Var(3) :: 1
-;     Var(4) :: int | float
-;     Var(5) :: int
-;   exits:
-;     blk0 TailCall fib#11(Var(4), Var(2), Var(5))
-;              callee_key=[int | float, int, int]
-
-; spec fn_clause_2(3) #fn=15
 ;   key:    [nil | bool | vec(i64) | vec(f64) | vec(u8) | vec(bit) | int \ {1} | float | str | atom | opaque | tuple | list | fn | map, 0, 1]
 ;   return: int
 ;   vars:

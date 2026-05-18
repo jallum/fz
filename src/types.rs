@@ -679,8 +679,13 @@ impl Descr {
     }
 
     /// Mutual subtyping.
+    ///
+    /// Structural equality is a sufficient (not necessary) condition for
+    /// semantic equivalence — two `Descr` values with identical fields
+    /// denote the same set, so `self == other` short-circuits the
+    /// set-theoretic kernel. Misses fall through to the slow path.
     pub fn is_equiv(&self, other: &Descr) -> bool {
-        self.is_subtype(other) && other.is_subtype(self)
+        self == other || (self.is_subtype(other) && other.is_subtype(self))
     }
 
     fn is_empty_memo(&self, memo: &mut Memo) -> bool {

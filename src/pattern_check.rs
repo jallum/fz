@@ -15,13 +15,31 @@ use crate::ast::{
 use crate::diag::{Diagnostic, codes};
 use crate::fz_ir::Var;
 use crate::pattern_matrix::{BodyId, Matrix, Row, find_unreachable_rows, is_inexhaustive};
+use std::collections::HashSet;
 
 /// Walk `prog` and return one `Diagnostic` per unreachable clause and
 /// per inexhaustive match. Empty when everything checks.
-pub fn check_program(prog: &Program) -> Vec<Diagnostic> {
+///
+/// `survivors` is the set of `(name, arity)` pairs for fns whose body
+/// is actually emitted by codegen — i.e. survives the reducer. Pattern
+/// concerns inside a fully-dissolved fn are dead-code questions: the
+/// `:function_clause` halt the inexhaustive warning worries about can
+/// only fire from a body that exists at runtime. Pass `None` to warn
+/// for every fn (used by unit tests that don't run the reducer).
+pub fn check_program(
+    prog: &Program,
+    survivors: Option<&HashSet<(String, usize)>>,
+) -> Vec<Diagnostic> {
     let mut diags: Vec<Diagnostic> = Vec::new();
     for item in &prog.items {
         if let Item::Fn(fn_def) = &**item {
+            let arity = fn_def.clauses.first().map(|c| c.params.len()).unwrap_or(0);
+            let emitted = survivors
+                .map(|s| s.contains(&(fn_def.name.clone(), arity)))
+                .unwrap_or(true);
+            if !emitted {
+                continue;
+            }
             check_fn_def(fn_def, &mut diags);
         }
     }
@@ -367,7 +385,7 @@ mod tests {
              fn classify(0), do: :zero\n\
              fn main(), do: classify(7)",
         );
-        let diags = check_program(&prog);
+        let diags = check_program(&prog, None);
         assert!(
             diags.iter().any(|d| d.code == codes::TYPE_UNREACHABLE_ARM),
             "expected unreachable-arm diag, got {:?}",
@@ -386,7 +404,7 @@ mod tests {
              end\n\
              fn main(), do: f(7)",
         );
-        let diags = check_program(&prog);
+        let diags = check_program(&prog, None);
         assert!(diags.iter().any(|d| d.code == codes::TYPE_UNREACHABLE_ARM));
     }
 
@@ -397,7 +415,7 @@ mod tests {
              fn classify(_), do: :other\n\
              fn main(), do: classify(7)",
         );
-        let diags = check_program(&prog);
+        let diags = check_program(&prog, None);
         assert!(
             diags.is_empty(),
             "should not warn when specific-then-wildcard: {:?}",
@@ -412,7 +430,7 @@ mod tests {
              fn classify(1), do: :one\n\
              fn main(), do: classify(7)",
         );
-        let diags = check_program(&prog);
+        let diags = check_program(&prog, None);
         assert!(
             diags
                 .iter()
@@ -433,7 +451,7 @@ mod tests {
              end\n\
              fn main(), do: f(7)",
         );
-        let diags = check_program(&prog);
+        let diags = check_program(&prog, None);
         assert!(
             diags
                 .iter()
@@ -448,7 +466,7 @@ mod tests {
              fn classify(_), do: :other\n\
              fn main(), do: classify(7)",
         );
-        let diags = check_program(&prog);
+        let diags = check_program(&prog, None);
         assert!(
             !diags
                 .iter()

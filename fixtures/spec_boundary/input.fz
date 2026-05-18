@@ -1,0 +1,10 @@
+@spec twice(integer) :: integer
+fn twice(n) do
+  x = n + n
+  x + 1
+end
+
+fn main() do
+  print(twice(10))
+  print(twice(21))
+end

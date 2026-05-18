@@ -124,6 +124,18 @@
 ;     blk1 Halt Var(2)      :: :match_error
 
 ; spec lambda_14(2) #fn=14
+;   key:    [1, any]
+;   return: &fn15[1, any]:(any) -> any
+;   vars:
+;     Var(0) :: 1
+;     Var(1) :: any
+;     Var(2) :: :match_error
+;     Var(3) :: &fn15[1, any]:(any) -> any
+;   exits:
+;     blk0 Return Var(3)    :: &fn15[1, any]:(any) -> any
+;     blk1 Halt Var(2)      :: :match_error
+
+; spec lambda_14(2) #fn=14
 ;   key:    [10, 20]
 ;   return: &fn15[10, 20]:(any) -> any
 ;   vars:
@@ -133,6 +145,18 @@
 ;     Var(3) :: &fn15[10, 20]:(any) -> any
 ;   exits:
 ;     blk0 Return Var(3)    :: &fn15[10, 20]:(any) -> any
+;     blk1 Halt Var(2)      :: :match_error
+
+; spec lambda_14(2) #fn=14
+;   key:    [10, any]
+;   return: &fn15[10, any]:(any) -> any
+;   vars:
+;     Var(0) :: 10
+;     Var(1) :: any
+;     Var(2) :: :match_error
+;     Var(3) :: &fn15[10, any]:(any) -> any
+;   exits:
+;     blk0 Return Var(3)    :: &fn15[10, any]:(any) -> any
 ;     blk1 Halt Var(2)      :: :match_error
 
 ; spec lambda_15(3) #fn=15
@@ -150,6 +174,34 @@
 ;     blk1 Halt Var(3)      :: :match_error
 
 ; spec lambda_15(3) #fn=15
+;   key:    [1, 2, any]
+;   return: int | float
+;   vars:
+;     Var(0) :: 1
+;     Var(1) :: 2
+;     Var(2) :: any
+;     Var(3) :: :match_error
+;     Var(4) :: int
+;     Var(5) :: int | float
+;   exits:
+;     blk0 Return Var(5)    :: int | float
+;     blk1 Halt Var(3)      :: :match_error
+
+; spec lambda_15(3) #fn=15
+;   key:    [1, any, any]
+;   return: int | float
+;   vars:
+;     Var(0) :: 1
+;     Var(1) :: any
+;     Var(2) :: any
+;     Var(3) :: :match_error
+;     Var(4) :: int | float
+;     Var(5) :: int | float
+;   exits:
+;     blk0 Return Var(5)    :: int | float
+;     blk1 Halt Var(3)      :: :match_error
+
+; spec lambda_15(3) #fn=15
 ;   key:    [10, 20, 12]
 ;   return: int
 ;   vars:
@@ -161,6 +213,34 @@
 ;     Var(5) :: int
 ;   exits:
 ;     blk0 Return Var(5)    :: int
+;     blk1 Halt Var(3)      :: :match_error
+
+; spec lambda_15(3) #fn=15
+;   key:    [10, 20, any]
+;   return: int | float
+;   vars:
+;     Var(0) :: 10
+;     Var(1) :: 20
+;     Var(2) :: any
+;     Var(3) :: :match_error
+;     Var(4) :: int
+;     Var(5) :: int | float
+;   exits:
+;     blk0 Return Var(5)    :: int | float
+;     blk1 Halt Var(3)      :: :match_error
+
+; spec lambda_15(3) #fn=15
+;   key:    [10, any, any]
+;   return: int | float
+;   vars:
+;     Var(0) :: 10
+;     Var(1) :: any
+;     Var(2) :: any
+;     Var(3) :: :match_error
+;     Var(4) :: int | float
+;     Var(5) :: int | float
+;   exits:
+;     blk0 Return Var(5)    :: int | float
 ;     blk1 Halt Var(3)      :: :match_error
 
 ; spec k_16(1) #fn=16

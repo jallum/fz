@@ -140,7 +140,7 @@
 
 ; spec g(1) #fn=12
 ;   key:    [:err]
-;   return: none
+;   return: 0
 ;   vars:
 ;     Var(0) :: :err
 ;     Var(1) :: :match_error
@@ -178,7 +178,7 @@
 
 ; spec main(0) #fn=13
 ;   key:    []
-;   return: none
+;   return: nil
 ;   vars:
 ;     Var(0) :: :match_error
 ;     Var(1) :: :ok
@@ -219,6 +219,23 @@
 ;     blk0 Return Var(1)    :: 0
 
 ; spec with_fail(2) #fn=16
+;   key:    [:err, :err]
+;   return: 0
+;   vars:
+;     Var(0) :: :err
+;     Var(1) :: :err
+;     Var(2) :: :with_clause
+;     Var(3) :: :err
+;     Var(4) :: bool
+;   exits:
+;     blk0 Goto blk2()
+;     blk1 Halt Var(2)      :: :with_clause
+;     blk2 If Var(4) ? blk3 : blk4
+;     blk3 TailCall with_else_0#17(Var(1))
+;              callee_key=[:err]
+;     blk4 Goto blk1()
+
+; spec with_fail(2) #fn=16
 ;   key:    [{:ok, 7}, {:ok, 7}]
 ;   return: 0
 ;   vars:
@@ -236,6 +253,15 @@
 ;     blk4 Goto blk1()
 
 ; spec with_else_0(1) #fn=17
+;   key:    [:err]
+;   return: 0
+;   vars:
+;     Var(0) :: :err
+;     Var(1) :: 0
+;   exits:
+;     blk0 Return Var(1)    :: 0
+
+; spec with_else_0(1) #fn=17
 ;   key:    [{:ok, 7}]
 ;   return: 0
 ;   vars:
@@ -246,7 +272,7 @@
 
 ; spec k_18(1) #fn=18
 ;   key:    [7]
-;   return: none
+;   return: nil
 ;   vars:
 ;     Var(0) :: 7
 ;   exits:
@@ -257,7 +283,7 @@
 
 ; spec k_19(1) #fn=19
 ;   key:    [nil]
-;   return: none
+;   return: nil
 ;   vars:
 ;     Var(0) :: nil
 ;     Var(1) :: :err
@@ -269,7 +295,7 @@
 
 ; spec k_20(1) #fn=20
 ;   key:    [0]
-;   return: none
+;   return: nil
 ;   vars:
 ;     Var(0) :: 0
 ;   exits:
@@ -280,7 +306,7 @@
 
 ; spec k_21(1) #fn=21
 ;   key:    [nil]
-;   return: none
+;   return: nil
 ;   vars:
 ;     Var(0) :: nil
 ;     Var(1) :: :err
@@ -292,7 +318,7 @@
 
 ; spec k_22(1) #fn=22
 ;   key:    [0]
-;   return: none
+;   return: nil
 ;   vars:
 ;     Var(0) :: 0
 ;   exits:
@@ -303,7 +329,7 @@
 
 ; spec k_23(1) #fn=23
 ;   key:    [nil]
-;   return: none
+;   return: nil
 ;   vars:
 ;     Var(0) :: nil
 ;     Var(1) :: :ok
@@ -317,7 +343,7 @@
 
 ; spec k_24(1) #fn=24
 ;   key:    [7]
-;   return: none
+;   return: nil
 ;   vars:
 ;     Var(0) :: 7
 ;   exits:
@@ -328,7 +354,7 @@
 
 ; spec k_25(1) #fn=25
 ;   key:    [nil]
-;   return: none
+;   return: nil
 ;   vars:
 ;     Var(0) :: nil
 ;     Var(1) :: :ok
@@ -342,7 +368,7 @@
 
 ; spec k_26(1) #fn=26
 ;   key:    [0 | 7]
-;   return: none
+;   return: nil
 ;   vars:
 ;     Var(0) :: 0 | 7
 ;   exits:
@@ -353,7 +379,7 @@
 
 ; spec k_27(1) #fn=27
 ;   key:    [nil]
-;   return: none
+;   return: nil
 ;   vars:
 ;     Var(0) :: nil
 ;     Var(1) :: :err
@@ -361,5 +387,14 @@
 ;     blk0 Call g#12(Var(1))
 ;              callee_key=[:err]
 ;              cont k_28#28 captured=[]
-;              cont_key=[none]
+;              cont_key=[0]
+
+; spec k_28(1) #fn=28
+;   key:    [0]
+;   return: nil
+;   vars:
+;     Var(0) :: 0
+;   exits:
+;     blk0 TailCall print#0(Var(0))
+;              callee_key=[0]
 

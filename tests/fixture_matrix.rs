@@ -131,10 +131,13 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             "tail_recursion_count_matches_cps_in_clif_section_8_1",
             tail_recursion_count_matches_cps_in_clif_section_8_1,
         ),
-        (
-            "higher_order_compose_matches_cps_in_clif_section_8_2",
-            higher_order_compose_matches_cps_in_clif_section_8_2,
-        ),
+        // fz-jg5.6: compose dissolves under the reducer; the §8.2 ABI
+        // invariant no longer applies because no compose body is emitted.
+        // The function is left in place for revival in RED.6 if needed.
+        // (
+        //     "higher_order_compose_matches_cps_in_clif_section_8_2",
+        //     higher_order_compose_matches_cps_in_clif_section_8_2,
+        // ),
         (
             "closure_typed_captures_matches_cps_in_clif_section_8_3",
             closure_typed_captures_matches_cps_in_clif_section_8_3,
@@ -861,6 +864,14 @@ fn tail_recursion_count_matches_cps_in_clif_section_8_1() {
 /// `func_addr` + outer-cont + captures, then `return_call_indirect`
 /// through `g+16` with `(x, g, kg)`. No `fz_closure_invoke` runtime
 /// helper referenced.
+// fz-jg5.6: under the compile-time reducer (fz-jg5.4/.5), `compose` in
+// fixtures/higher_order/input.fz dissolves entirely at every callsite
+// (static-input full reduction → constants in main). This test's
+// invariant — checking the cps-in-clif §8.2 ABI shape of an emitted
+// compose body — no longer applies because no body is emitted.
+// Re-bless / repurpose lands in fz-jg5.7 (RED.6); the function is kept
+// in place but not registered in `register_trials`.
+#[allow(dead_code)]
 fn higher_order_compose_matches_cps_in_clif_section_8_2() {
     let out = Command::new(FZ_BIN)
         .args([

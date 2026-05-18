@@ -17,6 +17,7 @@ mod ir_fold;
 mod ir_fuse;
 mod ir_inline;
 mod ir_lower;
+mod ir_reducer;
 mod ir_typer;
 mod lexer;
 mod macros;
@@ -24,6 +25,7 @@ mod parking;
 mod parser;
 mod pattern_check;
 mod pattern_matrix;
+mod reducer;
 mod repl;
 mod resolve;
 mod runtime;
@@ -42,11 +44,25 @@ use std::io::{IsTerminal, Read};
 /// the `run` / `jit` / `aot` drivers immediately after `lower_program`
 /// so all three paths produce identical accept/reject verdicts.
 fn validate_specs_or_exit(prog: &ast::Program, module: &fz_ir::Module, sm: &diag::SourceMap) {
+    // fz-rh5.2 — type_module call #1 of 4 in `fz run`. Distinct inputs:
+    //   #1 (here):              raw lowered module — for @spec diagnostics
+    //   #2 (compute_survivors): reducer-applied module — for pattern_check
+    //   #3 (ir_codegen::compile): pre-rewrites clone — for codegen rewrites
+    //   #4 (ir_codegen::compile): post-inline/fuse/reduce — final codegen
+    // #1 and #3 type structurally-identical inputs; threading the result
+    // through would save one full call (follow-up filed).
     let mt = ir_typer::type_module(module);
     let mut diags = spec_check::validate_specs(prog, module, &mt);
     // fz-ul4.45 — pattern-match correctness analysis. Unreachable clauses
-    // and inexhaustive matches surface as warnings here (non-fatal).
-    diags.extend(pattern_check::check_program(prog));
+    // and inexhaustive matches surface as warnings here (non-fatal). The
+    // pattern checker is gated to fns that actually survive the reducer:
+    // a `:function_clause` halt the warning worries about can only fire
+    // from a body that exists at runtime, and a fn that fully dissolves
+    // (e.g. ast_eval's `eval`) has no such body. Compute the survivor
+    // set on a reduced clone of the module so warnings track what
+    // codegen will actually emit.
+    let survivors = compute_survivors(module);
+    diags.extend(pattern_check::check_program(prog, Some(&survivors)));
     let has_error = diags.iter().any(|d| d.severity == diag::Severity::Error);
     for d in &diags {
         diag::render_one_to_stderr(sm, d);
@@ -54,6 +70,25 @@ fn validate_specs_or_exit(prog: &ast::Program, module: &fz_ir::Module, sm: &diag
     if has_error {
         std::process::exit(1);
     }
+}
+
+/// Names + arities of user fns whose body survives the reducer — i.e.
+/// the typer registers at least one spec for them on a reduced module.
+/// Used by `validate_specs_or_exit` to skip pattern_check warnings on
+/// fully-dissolved fns.
+fn compute_survivors(module: &fz_ir::Module) -> std::collections::HashSet<(String, usize)> {
+    let mut reduced = module.clone();
+    ir_reducer::reduce_module(&mut reduced);
+    let mt = ir_typer::type_module(&reduced);
+    let mut out = std::collections::HashSet::new();
+    for (fid, _) in mt.specs.keys() {
+        if let Some(&idx) = reduced.fn_idx.get(fid) {
+            let f = &reduced.fns[idx];
+            let arity = f.block(f.entry).params.len();
+            out.insert((f.name.clone(), arity));
+        }
+    }
+    out
 }
 
 fn main() {
@@ -460,8 +495,13 @@ fn run_dump(args: &[String]) {
     let emit_clif = matches!(emit.as_str(), "clif" | "both");
     let emit_asm = matches!(emit.as_str(), "asm" | "both");
     let emit_specs = emit.as_str() == "specs";
-    if !emit_clif && !emit_asm && !emit_specs {
-        eprintln!("fz dump: --emit must be one of `clif`, `asm`, `both`, `specs`");
+    // fz-jg5.8 (RED.7) — user-facing diagnostic: list every emitted body
+    // and (in v1) its source spec key. Boundary attribution per-call is a
+    // follow-on; this v1 prints the spec set and a single-line summary so
+    // the user can see "0 user fns" for fully-reduced programs.
+    let emit_bodies = emit.as_str() == "bodies";
+    if !emit_clif && !emit_asm && !emit_specs && !emit_bodies {
+        eprintln!("fz dump: --emit must be one of `clif`, `asm`, `both`, `specs`, `bodies`");
         std::process::exit(2);
     }
     let src = std::fs::read_to_string(&path).unwrap_or_else(|e| {
@@ -475,6 +515,14 @@ fn run_dump(args: &[String]) {
         }
         let dump = dump_specs_pipeline(src, path.clone());
         print!("{}", dump);
+        return;
+    }
+
+    if emit_bodies {
+        if fn_filter.is_some() {
+            eprintln!("fz dump: --fn is ignored with --emit bodies");
+        }
+        print!("{}", dump_bodies_pipeline(src, path.clone()));
         return;
     }
 
@@ -595,6 +643,91 @@ fn dump_specs_pipeline(src: String, source_name: String) -> String {
     validate_specs_or_exit(&prog, &module, &sm);
     let mt = ir_typer::type_module(&module);
     ir_typer::pretty_module_types(&module, &mt)
+}
+
+/// fz-jg5.8 (RED.7) — `fz dump --emit bodies`: print every user fn that
+/// survives the reducer with the spec keys codegen emits for it. A
+/// program that fully reduces shows `bodies emitted: 0 user functions
+/// (no boundaries — program fully reduces)`.
+///
+/// Each entry is `<fn_name>: <N> spec(s) [<key_1>] [<key_2>] ...`. The
+/// dump runs the full compile pipeline (including the reducer); the
+/// surviving fns and their spec keys are read out of `ModuleTypes`.
+fn dump_bodies_pipeline(src: String, source_name: String) -> String {
+    use crate::ir_typer::ModuleTypes;
+    let mut sm = diag::SourceMap::new();
+    let file_id = sm.add_file(source_name, src.clone());
+    let toks = lexer::Lexer::with_file(&src, file_id)
+        .tokenize()
+        .unwrap_or_else(|e| {
+            diag::render_one_to_stderr(&sm, &e.to_diagnostic());
+            std::process::exit(1);
+        });
+    let prog = Parser::new(toks).parse_program().unwrap_or_else(|e| {
+        diag::render_one_to_stderr(&sm, &e.to_diagnostic());
+        std::process::exit(1);
+    });
+    let mut prog = resolve::flatten_modules(prog).unwrap_or_else(|e| {
+        diag::render_one_to_stderr(&sm, &e.to_diagnostic());
+        std::process::exit(1);
+    });
+    if let Err(e) = macros::expand_program(&mut prog) {
+        diag::render_one_to_stderr(&sm, &e.to_diagnostic());
+        std::process::exit(1);
+    }
+    let mut module = ir_lower::lower_program(&prog).unwrap_or_else(|e| {
+        diag::render_one_to_stderr(&sm, &e.to_diagnostic());
+        std::process::exit(1);
+    });
+    // Run the reducer pass directly so the bodies dump reflects what
+    // codegen would see, without going all the way to JIT.
+    ir_reducer::reduce_module(&mut module);
+    let mt: ModuleTypes = ir_typer::type_module(&module);
+
+    // Group surviving specs by user-fn name. Skip the conventional
+    // synthetic helpers (k_*, fn_clause_*, lambda_*) — they're
+    // continuations or pattern-clause bodies, not user fns.
+    let mut by_name: std::collections::BTreeMap<String, Vec<&Vec<crate::types::Descr>>> =
+        std::collections::BTreeMap::new();
+    for (fid, key) in mt.specs.keys() {
+        let Some(&idx) = module.fn_idx.get(fid) else {
+            continue;
+        };
+        let name = &module.fns[idx].name;
+        if name.starts_with("k_")
+            || name.starts_with("fn_clause_")
+            || name.starts_with("lambda_")
+            || name == "main"
+        {
+            continue;
+        }
+        by_name.entry(name.clone()).or_default().push(key);
+    }
+
+    let mut out = String::new();
+    if by_name.is_empty() {
+        out.push_str("bodies emitted: 0 user functions\n");
+        out.push_str("  (no boundaries — program fully reduces)\n");
+        return out;
+    }
+    out.push_str(&format!(
+        "bodies emitted: {} user function{}\n",
+        by_name.len(),
+        if by_name.len() == 1 { "" } else { "s" }
+    ));
+    for (name, keys) in by_name {
+        out.push_str(&format!(
+            "  {}: {} spec{}\n",
+            name,
+            keys.len(),
+            if keys.len() == 1 { "" } else { "s" }
+        ));
+        for key in keys {
+            let parts: Vec<String> = key.iter().map(|d| format!("{}", d)).collect();
+            out.push_str(&format!("    [{}]\n", parts.join(", ")));
+        }
+    }
+    out
 }
 
 fn compile_pipeline(src: String, source_name: String) -> Compiled {
