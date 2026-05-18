@@ -551,41 +551,383 @@ user-facing contract, is novel as a coherent package.
 
 # Status
 
-This document captures **design intent** as agreed in discussion. No
-tickets are committed. The intended next step is a tractable prototype:
+This document captures **design intent** as agreed in discussion.
+Part 2 (allocations / reuse) has its own in-flight epic in `fz-q9g`;
+we defer to it. This section nails down Part 1 (reduction) into an
+atomic ticket DAG with explicit removals.
 
-> Write `effective_return_for(fn, input_descrs) -> Descr` as a pure
-> query that uses the canonical body's typing rules to answer "what
-> does `fn` return for input `D`" without minting a body. Implement
-> on ast_eval only. Compare against today's per-spec returns. If it
-> matches everywhere, the load-bearing piece of Part 1 works and the
-> rest of the epic is engineering.
+## What we know about the existing pipeline
 
-If that prototype succeeds, a rough ticket DAG follows:
+After researching the codebase, the relevant existing work is:
 
-## Part 1: reduction
+- **fz-ul4.40 (closed)** introduced a payoff predicate that drops
+  narrowings whose Descr change is a no-op for codegen (ABI, TypeTest
+  fold, fast-path eligibility). This is partial — it can't reduce
+  *across* calls; ast_eval still ships 13 `eval` specs after .40.
+- **fz-ul4.41 (closed)** fixed recursive return Descrs.
+- **fz-ul4.42 (closed)** added `reachable_specs` BFS to skip emitting
+  unreachable specs.
+- **fz-ul4.43 (in flight)** unifies pattern matching into a single
+  matrix compiler. This is the **load-bearing dependency** for the
+  reducer — clause dispatch goes through the matrix.
+- **fz-ul4.31 (closed)** implemented `@spec` parsing + validation
+  (`spec_check::validate_specs`). The contract surface exists; what's
+  missing is "downstream callers see declared return as ground truth."
+- **fz-ul4.11.28 (open, speculative)** was bounded recursion unrolling
+  as a standalone idea. It gets **subsumed** by the reducer's
+  budget-bounded reduction.
+- **`ir_inline`, `ir_fold`, `ir_dce`, `ir_fuse`** each do pieces of
+  what a unified reducer would do. We keep them; the reducer is a
+  new pass that subsumes their sequencing logic and adds
+  cross-callsite structural reduction.
+- **The interp walks `Module` directly with no spec dependency.** This
+  is decisive: a Module-level reducer pass preserves three-path parity
+  by construction — interp consumes the same reduced IR codegen sees.
 
-1. Codegen-equivalence relation for Descrs / specs (pure analysis).
-2. Reducer at callsites; spec-minting gated on stops.
-3. Decouple per-callsite return queries from body-spec existence.
-4. Typed receive (surface syntax + typer integration).
-5. Send-site mailbox-type check.
-6. `@spec` parse / verify / consume.
-7. Diagnostic: "function `f` has N bodies because…"
+## The architectural refinement
 
-## Part 2: reuse
+After research, the cleanest shape is:
 
-8. Reference-count tracking through the typed IR (RC-aware lowering).
-9. Reuse analysis (Perceus algorithm adapted to fz IR).
-10. DPS rewrite (turn alloc-then-write into write-into-destination).
-11. Diagnostic: "allocation at `f:L` was reused because the source at
-    `g:M` is unique" / "could not be reused because…"
+> **The reducer is a `Module → Module` pass** in the existing pipeline.
+> It plugs in before the typer. The typer sees a smaller call graph;
+> existing payoff-gating + reachable-spec pruning then handle the
+> residual without further changes.
 
-Parts 1 and 2 can land in either order; they're independent in
-implementation. Landing Part 1 first is preferred because it shrinks
-the surface area Part 2 has to analyze.
+This is much simpler than "rewire the typer's discovery walk." It's a
+single new pass; existing machinery (inline, fold, dce, fuse, typer,
+codegen) continues to compose. Three-path parity falls out for free.
 
-If the Part 1 prototype fails — if there's a case where the
-return query can't be answered without minting a body — that's the
-hopeless issue worth finding before any code lands. The cost of
-finding it that way is one focused experiment.
+## Reducer policy: all-or-nothing per callsite
+
+The reducer attempts each top-level callsite in a scratch buffer.
+Either reduction terminates within budget (commit) or it doesn't
+(discard the partial unrolling, leave the original call). No partial
+commits — this keeps the residual IR predictable and the diagnostic
+honest. `count(100000, 0)` therefore stays a single call to a single
+body, not a 32-step prefix plus a tail.
+
+## The ticket DAG
+
+```mermaid
+graph TD
+    R0[fz-RED.0 SPIKE: hand-walk ast_eval through paper reducer]
+    R1[fz-RED.1: pattern reduction primitive — pure fn]
+    R2[fz-RED.2: clause dispatch via pattern matrix]
+    R3[fz-RED.3: reducer pass scaffold — single-clause inline]
+    R4[fz-RED.4: recursive reduction with unroll budget]
+    R5[fz-RED.5: closure_lit reduction]
+    R6[fz-RED.6: re-bless every fixture golden]
+    R7[fz-RED.7: --explain-bodies diagnostic]
+    R8a[fz-RED.8a REMOVE: per-callsite tuple-shape spec minting in walk_spec_for_discovery]
+    R8b[fz-RED.8b REMOVE: closure_lit return chain in compute_effective_returns]
+    R8c[fz-RED.8c REMOVE: ir_inline as a separate pass — reducer subsumes]
+    R9[fz-RED.9: @spec as downstream-narrowing contract]
+
+    UL43[fz-ul4.43 pattern matrix - prerequisite]
+    UL11_28[fz-ul4.11.28 bounded unrolling - SUBSUMED, close on RED.4 land]
+
+    R0 --> R1
+    UL43 --> R2
+    R1 --> R2
+    R2 --> R3
+    R3 --> R4
+    R4 --> R5
+    R5 --> R6
+    R6 --> R7
+    R6 --> R8a
+    R8a --> R8b
+    R8b --> R8c
+    R6 --> R9
+```
+
+## Each ticket, ELI5
+
+### fz-RED.0 — SPIKE: hand-walk ast_eval through a paper reducer
+
+**Goal:** Verify the algorithm before any code lands. Walk each `eval`
+call in main through the reducer rules by hand (pattern dispatch,
+substitute, recurse on subtrees, fold arithmetic). Confirm we land at
+`42`, `14`, `21`.
+
+**What lands:** A test file (or markdown) recording the walk step by
+step. No production code.
+
+**Stop condition for the arc:** If the walk hits a step that requires
+a judgment call we haven't named, that's the hopeless issue. We stop
+the arc here and re-design.
+
+**Removals:** None.
+
+---
+
+### fz-RED.1 — Pattern reduction primitive
+
+**Goal:** A pure function that, given a `Prim` whose inputs are all
+literal Descrs, returns the literal Descr of its output. Plain
+constant folding, exposed as a reusable primitive. `ir_fold` already
+does the equivalent for blocks; we extract its core into a callable
+shape.
+
+**What lands:** `crate::reducer::fold_prim(prim, env) -> Option<Const>`
+or similar. Tests in isolation.
+
+**Removals:** None yet; `ir_fold` keeps its block-level driver.
+
+---
+
+### fz-RED.2 — Clause dispatch via the pattern matrix
+
+**Goal:** Given a multi-clause `FnIr` and an input Descr, select the
+clause whose pattern matches, or return `Stop` if the Descr is too
+wide to dispatch statically. Uses the pattern matrix from fz-ul4.43.
+
+**What lands:** `crate::reducer::dispatch(fn, input_descr) -> Dispatch`
+where `Dispatch = MatchedClause(idx, bindings) | StopOpaque`. Tests on
+ast_eval clauses, list_primitives, mutual_recursion.
+
+**Removals:** None.
+
+**Depends on:** fz-ul4.43 landing first (the matrix is the dispatcher).
+
+---
+
+### fz-RED.3 — Reducer pass scaffold
+
+**Goal:** A new `ir_reducer` pass that walks the Module from roots
+(main + spawned fns), tries to reduce each callsite, and replaces
+calls with their reduced bodies *only* when the callee is a single
+non-recursive clause and the call's inputs are statically known.
+Pipeline integration: runs after `ir_inline`, before the typer.
+
+**What lands:** `crate::ir_reducer::reduce_module(&mut Module)`. Tests:
+polymorphic (0 `id` bodies), higher_order with `apply2(double, 21)`
+(0 user bodies), closure_typed_captures, curried_add.
+
+**Removals:** None yet. `ir_inline` still runs.
+
+---
+
+### fz-RED.4 — Recursive reduction with unroll budget
+
+**Goal:** Extend the reducer to descend into recursive calls. Tracks
+an unroll counter (default 32). All-or-nothing per top-level callsite:
+if recursion terminates within budget, commit; otherwise discard the
+partial work and leave the original call in place.
+
+**What lands:** Recursion logic in `ir_reducer`. A config knob
+`UNROLL_BUDGET` (default 32, override via env or attribute later).
+Tests: ast_eval reduces to constants, fib_tailrec(20) reduces,
+mutual_recursion reduces, list_primitives reduces, `count(100000, 0)`
+stays a call.
+
+**Removals:** `fz-ul4.11.28` (bounded recursion unrolling) is now
+subsumed; close it on this ticket's land with a link.
+
+---
+
+### fz-RED.5 — Closure_lit reduction
+
+**Goal:** When `f := closure_lit(F, [captures])` and the captures
+reduce to literals, inline F's body with captures substituted. Uses
+the existing `closure_lit` Descr machinery.
+
+**What lands:** Closure-reduction logic in `ir_reducer`. Tests:
+spawn2_basic and spawn_with_captures with literal captures reduce
+the closure away; opaque-capture forms keep the closure.
+
+**Removals:** None yet.
+
+---
+
+### fz-RED.6 — Re-bless every fixture golden
+
+**Goal:** Update `expected.clif` and `expected.specs` across every
+fixture to reflect the reduced IR. Verify runtime output unchanged.
+Per-fixture review: each diff should be reviewable as "this output is
+reasonable for this source." This is the agent-review checkpoint the
+design promises in lieu of a numeric predictor.
+
+**What lands:** Updated golden files; CI green.
+
+**Removals:** None.
+
+---
+
+### fz-RED.7 — `--explain-bodies` diagnostic
+
+**Goal:** A diagnostic mode that prints, for each user function, the
+number of bodies emitted and the source location of the boundary that
+forced each. User-facing pedagogy; makes the contract teachable.
+
+**What lands:** `fz dump --emit bodies` (or similar). Per-fixture
+golden output.
+
+**Removals:** None.
+
+---
+
+### fz-RED.8a — REMOVE: per-callsite tuple-shape spec minting
+
+**Goal:** The reducer has already eliminated the calls that would have
+forced per-tuple-shape specs to be minted. The discovery walk in
+`walk_spec_for_discovery` can be simplified: specs come only from
+calls that survived reduction. Delete the per-tuple-shape narrowing
+loop that's now dead.
+
+**What lands:** Reduced surface area in `ir_typer.rs`. Tests still
+green; goldens unchanged from RED.6.
+
+**Removals:** Several hundred lines in the typer's discovery walk.
+
+---
+
+### fz-RED.8b — REMOVE: closure_lit return chain in `compute_effective_returns`
+
+**Goal:** Once the reducer has propagated closure_lit returns at
+compile time, the typer's runtime LFP no longer needs the
+closure_lit-driven return chain. Delete the closure_lit branches in
+`compute_effective_returns` and the `resolve_closure_return` helper.
+
+**What lands:** Reduced LFP code in `ir_typer.rs`. Goldens unchanged.
+
+**Removals:** ~50-100 lines of LFP cont-key cascade.
+
+---
+
+### fz-RED.8c — REMOVE: `ir_inline` as a separate pass
+
+**Goal:** The reducer subsumes non-recursive inlining (it inlines any
+known-body, statically-known-input call). `ir_inline` and
+`inline_single_use_conts` become redundant. Delete them; the reducer
+handles all inlining.
+
+**What lands:** `ir_inline.rs` deleted (or stub). Pipeline simpler.
+Goldens unchanged (the reducer was already doing this work).
+
+**Removals:** ~1400 lines of `ir_inline.rs` + the related call sites.
+
+---
+
+### fz-RED.9 — `@spec` as downstream-narrowing contract
+
+**Goal:** When a function has a declared `@spec`, callers infer its
+return as the declared Descr (not by walking the body). The reducer
+treats `@spec`'d functions as boundaries by default — the user opted
+into emitting a body for it.
+
+**What lands:** Typer change: callsite return Descr query consults
+declared `@spec` first. Reducer change: stop at `@spec`'d calls
+unless they're trivially inlinable. Tests: a fixture demonstrating
+that `@spec` narrows downstream inference.
+
+**Removals:** None.
+
+**Depends on:** RED.6 stable (existing fixtures unchanged).
+
+## The walkthrough — surfacing issues
+
+### Issue 1: pattern matrix dependency
+
+RED.2 depends on `fz-ul4.43` (pattern compiler matrix). The matrix is
+in-flight as `[in_progress]`. RED.0 and RED.1 can proceed in parallel
+to .43; RED.2 waits.
+
+**Resolution:** Sequencing is explicit in the DAG. No blocker that
+isn't already tracked.
+
+### Issue 2: `effective_return_for` query — needed or not?
+
+The original doc proposed `effective_return_for(fn, input_descrs)` as
+the load-bearing prototype. After the Module-transformation refinement,
+**we don't need it as a separate query**. The reducer reduces the call
+to a literal IR expression; the literal *is* the answer. For calls
+that don't fully reduce, the typer handles return Descrs as it does
+today on the residual.
+
+**Resolution:** Drop the `effective_return_for` framing. RED.0 (the
+spike) verifies the reducer rules on paper; that's the load-bearing
+check.
+
+### Issue 3: all-or-nothing reduction could surprise
+
+If a callsite *almost* fits in budget but blows it at the last step,
+the user gets a body call instead of the unrolled code they might have
+expected. Fix: the diagnostic (RED.7) shows which callsites hit the
+budget — the user can raise `UNROLL_BUDGET` for the file or fn if they
+want more unrolling.
+
+**Resolution:** Visibility, not policy. The default is conservative;
+the user has a knob.
+
+### Issue 4: closure with mixed static/opaque captures
+
+`fn(x) -> static_val + opaque_capture + x` — one capture literal, one
+opaque. Can we partially reduce? Yes — substitute the literal capture,
+leave the opaque one as a parameter. The reduced body is "smaller" but
+not fully gone. Adds one new shape to the closure heap object: the
+opaque-captures-only form.
+
+**Resolution:** Reducer handles partial closure capture substitution
+naturally. Tests in RED.5 cover the mixed case.
+
+### Issue 5: receive with downstream call
+
+`receive { msg -> eval(msg) }` — `msg :: any`. The reducer stops at
+`eval(msg)` because the input is opaque. `eval` gets a body, callable
+with any AST union. main's static calls to `eval(...)` still reduce
+fully because they're separate callsites with known inputs.
+
+**Resolution:** The "two universes" property holds. Static callers
+get reduced code; opaque callers get a body. Same fn, different
+treatment by callsite — exactly the design contract.
+
+### Issue 6: spec_check (the `@spec` validator) currently walks specs
+
+`validate_specs` checks `inferred ⊆ declared` across the typer's
+spec set. With fewer specs after reduction, this check operates on a
+smaller surface. Should keep working without change — the residual
+specs still need to satisfy declared bounds.
+
+**Resolution:** No change needed. Verify in RED.6 that
+`spec_ok` fixture and `spec_check` tests pass.
+
+### Issue 7: removals could cascade
+
+RED.8a, .8b, .8c remove machinery that the rest of the codebase
+references. Each is its own atomic step with its own test verification.
+Order matters: .8a first (removes the now-dead walk code), then .8b
+(removes the now-dead LFP code), then .8c (removes ir_inline once both
+typer simplifications are stable).
+
+**Resolution:** Sequenced in the DAG.
+
+### Issue 8: AOT path
+
+AOT compiles the same Module as JIT (per the `cps-in-clif.md` and
+existing `compile_with_backend` design). The reducer pass runs once;
+both backends consume the reduced Module. Three-path parity (interp +
+JIT + AOT) is preserved by construction.
+
+**Resolution:** Verified by inspection of the existing pipeline.
+
+## Acceptance for the whole arc
+
+- **ast_eval CLIF drops from ~1400 lines to under 100.**
+- **ast_eval spec count drops from 50+ to ≤ 3.**
+- **All existing fixtures pass three-path parity** (interp + JIT + AOT
+  agree on output).
+- **`fz dump --emit bodies` produces correct attributions** on each
+  fixture in the table above.
+- **Removed code is gone** — not stubbed, not commented out. The
+  reducer subsumes what it replaces.
+
+## What we explicitly defer
+
+- **Typed receive** (depends on `fz-ul4.19` processes work).
+- **Send-site mailbox-type check** (depends on typed receive).
+- **All of Part 2** (allocations / reuse / DPS) — `fz-q9g` handles it.
+- **Cross-module inlining** (`fz-ul4.11.27`) — orthogonal.
+- **`@no_inline`** (`fz-ul4.11.26`) — orthogonal; can defer until a
+  hot caller actually wants opt-out.
+
+Each deferral has a tracked ticket. None of them block the arc.
