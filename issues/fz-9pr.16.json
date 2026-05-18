@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-9pr.15"
+  ],
   "blocks": [],
   "created": "2026-05-18T15:02:59Z",
   "description": "Add \\`--emit outcomes\\` to fz dump. Prints the callsite_outcomes\ntable grouped by caller fn:\n\n```\noutcomes: 12 callsites\n  main:\n    blk0 Direct → Consumed(42)\n    blk1 Direct → Stalled         // print(42), Extern blocks fold\n    blk2 ClosureLit(0,0) → Inlined\n  apply1:\n    blk0 ClosureLit(0,0) → Emitted(fn14, [10, 20, 12])\n```\n\nA debugging hatch: \\\"why didn't this callsite fold?\\\" becomes a\ntable lookup.\n\n## Acceptance\n\n- New main.rs path: dump_outcomes_pipeline.\n- Output is stable / golden-able for fixtures.\n- One example walkthrough in docs/.\n\n## Removes\n\nNothing. Adds a diagnostic.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "fz-CO.F.2 — Optional: fz dump --emit outcomes",
   "type": "task",
-  "updated_at": "2026-05-18T15:02:59Z"
+  "updated_at": "2026-05-18T15:03:00Z"
 }
