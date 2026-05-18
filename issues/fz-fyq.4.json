@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-18T20:41:44Z",
+  "description": "## Goal\nNew pass `ir_branch_fold` inside `ir_codegen::compile`'s post-type chain. Consumes `ModuleTypes::dead_branches`; rewrites each `Term::If(cond, then_b, else_b)` whose entry says `DeadBranch::Else` to `Term::Goto(then_b, vec![])` (and symmetrically for `Then`). Standard DCE then removes the now-orphaned blocks and unused TypeTest stmts.\n\n## Depends on\n- E2 (`dead_branches` published).\n- E1 transitively (lowering tag — though the fold itself doesn't read origin; it acts on any dead branch the typer proves, including user-authored ones; E1 only gates the diagnostic in E3).\n\n## Slot in the pipeline\nInside `ir_codegen::compile`, after `apply_callsite_outcomes` and before `ir_fold::fold_module` (or replacing ir_fold's If branch — see retirement note below). Standard `ir_dce::dce_module` runs after, as it does today, and cleans up.\n\n## Retirements\n- `ir_fold`'s `Term::If` cond-singleton fold (ir_fold.rs:83–98) is subsumed. When `cond` has type `:true`/`:false`, narrowing on the dead branch trivially empties the operand — E2 records it as `DeadBranch`. Remove the cond-singleton case from `ir_fold` once `ir_branch_fold` is in place. ir_fold keeps its BinOp/TypeTest folds.\n\n## Cascade\nThe fold acts on *any* dead branch the typer proves, not just destructure. Expect snapshot changes in:\n- fn-clause dispatch with exhaustively-typed inputs (e.g. `fib_tailrec`, `list_primitives`)\n- existing fixtures with provably-true type tests\n- anywhere ir_fold's cond-singleton fold used to fire (same outcome via the new path)\n\nUpdate `expected.clif` snapshots in the same commit. The diff is the *intended* improvement — cleaner CLIF, fewer dead blocks.\n\n## Convergence\nDead-branch elision strictly narrows block-entry types (fewer join predecessors → tighter shapes). No re-typing needed before codegen because codegen reads `ModuleTypes` from before the fold for emit; types stay sound, just slightly looser than they could be. (Future ticket: re-type after fold to enable cascade folds. Out of scope here.)\n\n## Done when\n- `ir_branch_fold` lives at `src/ir_branch_fold.rs` and is wired into `ir_codegen::compile`.\n- `ir_fold`'s If-fold case is removed.\n- Quicksort and existing fixtures' `expected.clif` updated to reflect the cleaner shape.\n- All tests pass.",
+  "id": "fz-fyq.4",
+  "labels": [],
+  "parent": "fz-fyq",
+  "priority": 2,
+  "status": "open",
+  "title": "E4: ir_branch_fold pass — consume dead_branches, fold If→Goto",
+  "type": "task",
+  "updated_at": "2026-05-18T20:41:44Z"
+}
