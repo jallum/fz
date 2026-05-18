@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-18T20:41:44Z",
+  "description": "## Goal\nBring `ir_interp` to parity with JIT/AOT for list primitives. Today every program with a list literal exits 75 (\"Deferred\") in interp, silently bypassing matrix gates.\n\n## Independent of the rest of the epic\nThe interp leg runs raw IR (no reducer, no typer, no folds). This ticket has no functional dependency on E1–E4; can land in parallel.\n\n## Gap\n`ir_interp` wires `Prim::MakeTuple` and `Prim::TupleField` but is missing:\n- `Prim::MakeList`\n- `Prim::ListCons`\n- `Prim::ListHead`\n- `Prim::ListTail`\n- `Prim::IsEmptyList`\n\nThe error surfaces as `interp .5.2: prim Discriminant(11) not yet supported` (the discriminant is Rust's `std::mem::discriminant`; variant 11 of `Prim` is `MakeList`).\n\n## Runtime support exists\n`runtime/src/fz_value.rs` already provides `ListCons` cells (header + head + tail = 32 bytes), `HeapKind::List`, and `Tag::Ptr` empty-list encoding. This is plumbing, not design.\n\n## Done when\n- Five prims wired in `ir_interp` against the existing runtime cell layout.\n- `fixtures/list_primitives` runs on the interp leg with the same output as JIT/AOT.\n- A probe of `[h | t] = []` raises `match_error` in interp identical in shape to JIT/AOT (BEAM-conform).\n- All tests pass; the matrix's `interp` leg no longer reports `Deferred` for list-using fixtures.",
+  "id": "fz-fyq.5",
+  "labels": [],
+  "parent": "fz-fyq",
+  "priority": 2,
+  "status": "open",
+  "title": "E5: interp parity — list primitives (MakeList, ListCons, ListHead, ListTail, IsEmptyList)",
+  "type": "task",
+  "updated_at": "2026-05-18T20:41:44Z"
+}
