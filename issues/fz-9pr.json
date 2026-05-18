@@ -2,13 +2,14 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-05-18T18:27:54Z",
   "created": "2026-05-18T15:01:04Z",
   "description": "# Callsite outcomes — unify the three callsite walks\n\nThree passes walk every callsite today (`ir_reducer`, `ir_inline`,\n`walk_spec_for_discovery`), each makes a partial decision, none of\nthem tell the others what they did. The reducer fails silently; the\ntyper re-derives what the reducer already saw; `ir_inline` decides\nstructurally with no Descr knowledge; `boundary_fns` is consulted by\nsome passes and not others.\n\nThis epic makes the callsite outcome first-class data on the Module:\n\n```\nstruct CallsiteId { caller: FnId, block: BlockId, slot: EmitSlot }\nenum CallsiteOutcome {\n    Consumed { result: Descr },   // reducer folded it\n    Inlined,                       // body spliced (subsumes ir_inline)\n    Emitted  { target: SpecKey },  // typer minted a spec\n    Stalled,                       // provisional: nobody decided\n}\nModule.callsite_outcomes: HashMap\u003cCallsiteId, CallsiteOutcome\u003e\n```\n\nThree passes become readers and writers of one table. Same shape,\nshared vocabulary. Removals follow.\n\nSee `docs/callsite-outcomes.md` for the full design, game-walk, and\nfindings. The DAG below is the order to land the work in.\n\n## What dies\n\n- `ir_inline::inline_module` and its three sub-passes (after Phase E).\n- `walk_spec_for_discovery`'s direct/closure_lit/closure_known emit\n  paths (after Phase F).\n- The reducer's silent failure mode.\n- The duplicated `boundary_fns` checks across passes.\n\n## What survives\n\n- `ir_reducer` (rebadged as the outcomes writer).\n- `ir_typer` (now a reader of `Emitted` outcomes + spec body typer +\n  effective_returns + SCC widening).\n- `inline_single_use_conts` (typer-output-driven, unrelated).\n- `Module.boundary_fns` and the new `Module.callsite_outcomes`.\n\n## Supersedes\n\nThis epic supersedes the deferred / blocked tail of fz-jg5:\n\n- fz-jg5.9  — RED.8a (the closure_lit branch wasn't dead; the new\n  framing absorbs it as an outcome producer rather than removing it\n  outright)\n- fz-jg5.10 — RED.8b (depended on .9)\n- fz-jg5.11 — RED.8c (delete ir_inline; achieved cleanly via\n  Phase E here)\n\nThose tickets get a comment pointing here, then are closed as\nsuperseded.",
   "id": "fz-9pr",
   "labels": [],
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "[EPIC] Callsite outcomes — one model for fold/inline/emit/stall",
   "type": "task",
-  "updated_at": "2026-05-18T15:01:04Z"
+  "updated_at": "2026-05-18T18:27:54Z"
 }
