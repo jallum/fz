@@ -26,7 +26,10 @@ use std::collections::HashSet;
 /// `:function_clause` halt the inexhaustive warning worries about can
 /// only fire from a body that exists at runtime. Pass `None` to warn
 /// for every fn (used by unit tests that don't run the reducer).
-pub fn check_program(prog: &Program, survivors: Option<&HashSet<(String, usize)>>) -> Vec<Diagnostic> {
+pub fn check_program(
+    prog: &Program,
+    survivors: Option<&HashSet<(String, usize)>>,
+) -> Vec<Diagnostic> {
     let mut diags: Vec<Diagnostic> = Vec::new();
     for item in &prog.items {
         if let Item::Fn(fn_def) = &**item {

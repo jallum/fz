@@ -852,8 +852,7 @@ fn signature_native_arity_matches_entry_params_plus_cont() {
     // float-only → AbiParam(f64). Return joins every Term::Return val
     // Descr; here that's float-only → f64.
     // fz-cps.1.a (fz-siu.1.1): trailing cont:i64 per §2.1.
-    let m =
-        lower_src("fn dist(x, y) do x * x + y * y end\nfn main() do print(dist(1.5, 2.5)) end");
+    let m = lower_src("fn dist(x, y) do x * x + y * y end\nfn main() do print(dist(1.5, 2.5)) end");
     let mt = crate::ir_typer::type_module(&m);
     let dist_idx = m.fns.iter().position(|f| f.name == "dist").unwrap();
     let ft = mt

@@ -779,8 +779,7 @@ fn observe_typer_work(src: &str) -> (usize, usize, usize, usize) {
 
 #[test]
 fn typer_work_bounds_ast_eval() {
-    let src = std::fs::read_to_string("fixtures/ast_eval/input.fz")
-        .expect("read ast_eval fixture");
+    let src = std::fs::read_to_string("fixtures/ast_eval/input.fz").expect("read ast_eval fixture");
     let (pops, walks, typefns, specs) = observe_typer_work(&src);
     eprintln!(
         "ast_eval: pops={} walks={} type_fns={} specs={}",
@@ -791,14 +790,18 @@ fn typer_work_bounds_ast_eval() {
     // crosses them.
     assert!(pops < 500, "ast_eval worklist pops regressed: {}", pops);
     assert!(walks < 500, "ast_eval walks regressed: {}", walks);
-    assert!(typefns < 150, "ast_eval type_fn calls regressed: {}", typefns);
+    assert!(
+        typefns < 150,
+        "ast_eval type_fn calls regressed: {}",
+        typefns
+    );
     assert!(specs < 100, "ast_eval spec count regressed: {}", specs);
 }
 
 #[test]
 fn typer_work_bounds_fib_tailrec() {
-    let src = std::fs::read_to_string("fixtures/fib_tailrec/input.fz")
-        .expect("read fib_tailrec fixture");
+    let src =
+        std::fs::read_to_string("fixtures/fib_tailrec/input.fz").expect("read fib_tailrec fixture");
     let (pops, walks, typefns, specs) = observe_typer_work(&src);
     eprintln!(
         "fib_tailrec: pops={} walks={} type_fns={} specs={}",
@@ -806,7 +809,11 @@ fn typer_work_bounds_fib_tailrec() {
     );
     assert!(pops < 200, "fib_tailrec worklist pops regressed: {}", pops);
     assert!(walks < 200, "fib_tailrec walks regressed: {}", walks);
-    assert!(typefns < 80, "fib_tailrec type_fn calls regressed: {}", typefns);
+    assert!(
+        typefns < 80,
+        "fib_tailrec type_fn calls regressed: {}",
+        typefns
+    );
     assert!(specs < 60, "fib_tailrec spec count regressed: {}", specs);
 }
 

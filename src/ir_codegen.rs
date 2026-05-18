@@ -6851,7 +6851,6 @@ pub(crate) fn with_reducer_disabled<F: FnOnce() -> R, R>(f: F) -> R {
     r
 }
 
-
 #[cfg(test)]
 #[path = "ir_codegen_tests.rs"]
 mod tests;

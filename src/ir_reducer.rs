@@ -177,7 +177,11 @@ fn reduce_terminator(
                 .push(Stmt::Let(new_var, Prim::Const(const_val)));
             Some(Term::Return(new_var))
         }
-        Term::CallClosure { closure, args, continuation } => {
+        Term::CallClosure {
+            closure,
+            args,
+            continuation,
+        } => {
             let cl_lit = env.get(closure)?.as_closure_lit()?.clone();
             let mut all_descrs = cl_lit.captures.clone();
             for a in args {
@@ -282,11 +286,7 @@ fn try_reduce_call_with_descrs(
     result
 }
 
-fn walk_fn_body(
-    ctx: &mut ReduceCtx,
-    callee: FnId,
-    arg_descrs: &[Descr],
-) -> Option<Descr> {
+fn walk_fn_body(ctx: &mut ReduceCtx, callee: FnId, arg_descrs: &[Descr]) -> Option<Descr> {
     let f: &FnIr = ctx.module.fn_by_id(callee);
     let entry = f.block(f.entry);
     if entry.params.len() != arg_descrs.len() {
@@ -349,13 +349,19 @@ fn walk_block(
             let b = as_bool_lit(cd)?;
             walk_block(ctx, f, if b { *t } else { *e }, env, goto_depth + 1)
         }
-        Term::TailCall { callee: tc_callee, args: tc_args, .. } => {
-            try_reduce_call(ctx, *tc_callee, tc_args, &env)
-        }
+        Term::TailCall {
+            callee: tc_callee,
+            args: tc_args,
+            ..
+        } => try_reduce_call(ctx, *tc_callee, tc_args, &env),
         // fz-jg5.5: Call+Cont reduction. When callee folds to a literal,
         // its result feeds the cont as slot 0; treat the cont as a fn
         // taking [callee_result, ...captures] and reduce it too.
-        Term::Call { callee: c_callee, args: c_args, continuation } => {
+        Term::Call {
+            callee: c_callee,
+            args: c_args,
+            continuation,
+        } => {
             let inner_result = try_reduce_call(ctx, *c_callee, c_args, &env)?;
             feed_cont(ctx, continuation, inner_result, &env)
         }
@@ -370,7 +376,11 @@ fn walk_block(
             }
             try_reduce_call_with_descrs(ctx, cl_lit.fn_id, &all_descrs)
         }
-        Term::CallClosure { closure, args, continuation } => {
+        Term::CallClosure {
+            closure,
+            args,
+            continuation,
+        } => {
             let cl_lit = env.get(closure)?.as_closure_lit()?.clone();
             let mut all_descrs = cl_lit.captures;
             for a in args {
@@ -492,9 +502,7 @@ fn is_scalar_literal(d: &Descr) -> bool {
         return false;
     }
     // Tuple / closure_lit literals are "structural" — defer.
-    if d.tuples.iter().any(|c| !c.pos.is_empty())
-        || d.funcs.iter().any(|c| !c.pos.is_empty())
-    {
+    if d.tuples.iter().any(|c| !c.pos.is_empty()) || d.funcs.iter().any(|c| !c.pos.is_empty()) {
         return false;
     }
     true
@@ -764,9 +772,11 @@ mod tests {
         let blk = &main_fn.blocks[0];
         match &blk.terminator {
             Term::Return(v) => {
-                let bound = blk.stmts.iter().find_map(|Stmt::Let(bv, prim)| {
-                    if bv == v { Some(prim) } else { None }
-                });
+                let bound = blk.stmts.iter().find_map(
+                    |Stmt::Let(bv, prim)| {
+                        if bv == v { Some(prim) } else { None }
+                    },
+                );
                 match bound {
                     Some(Prim::Const(Const::Int(n))) => assert_eq!(*n, 0),
                     other => panic!("expected Const(Int(0)), got {:?}", other),
@@ -904,9 +914,11 @@ mod tests {
         let blk = &main_fn.blocks[0];
         match &blk.terminator {
             Term::Return(v) => {
-                let bound = blk.stmts.iter().find_map(|Stmt::Let(bv, prim)| {
-                    if bv == v { Some(prim) } else { None }
-                });
+                let bound = blk.stmts.iter().find_map(
+                    |Stmt::Let(bv, prim)| {
+                        if bv == v { Some(prim) } else { None }
+                    },
+                );
                 match bound {
                     // is_even(4) → is_odd(3) → is_even(2) → is_odd(1) → is_even(0) → true.
                     Some(Prim::Const(Const::True)) => {}
@@ -966,9 +978,11 @@ mod tests {
         let blk = &main_fn.blocks[0];
         match &blk.terminator {
             Term::Return(v) => {
-                let bound = blk.stmts.iter().find_map(|Stmt::Let(bv, prim)| {
-                    if bv == v { Some(prim) } else { None }
-                });
+                let bound = blk.stmts.iter().find_map(
+                    |Stmt::Let(bv, prim)| {
+                        if bv == v { Some(prim) } else { None }
+                    },
+                );
                 match bound {
                     Some(Prim::Const(Const::Int(5))) => {}
                     other => panic!("expected Const(Int(5)), got {:?}", other),

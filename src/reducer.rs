@@ -140,8 +140,16 @@ fn other_axes_empty_except(axis: &str, d: &Descr) -> bool {
     let funcs_ok = axis == "funcs" || d.funcs.is_empty();
     let maps_ok = d.maps.is_empty();
     let opaques_ok = d.opaques.is_none();
-    bits_ok && atoms_ok && ints_ok && floats_ok && strs_ok && tuples_ok && lists_ok && funcs_ok
-        && maps_ok && opaques_ok
+    bits_ok
+        && atoms_ok
+        && ints_ok
+        && floats_ok
+        && strs_ok
+        && tuples_ok
+        && lists_ok
+        && funcs_ok
+        && maps_ok
+        && opaques_ok
 }
 
 // ---------------------------------------------------------------------------
@@ -154,11 +162,7 @@ fn other_axes_empty_except(axis: &str, d: &Descr) -> bool {
 /// `atom_names` is the module's atom interner; `Const::Atom(id)` resolves
 /// to `atom_lit(atom_names[id])`. Pass `&[]` if unused (Const::Atom will
 /// return None).
-pub fn fold_prim(
-    prim: &Prim,
-    env: &HashMap<Var, Descr>,
-    atom_names: &[String],
-) -> Option<Descr> {
+pub fn fold_prim(prim: &Prim, env: &HashMap<Var, Descr>, atom_names: &[String]) -> Option<Descr> {
     match prim {
         Prim::Const(c) => fold_const(c, atom_names),
         Prim::BinOp(op, a, b) => fold_binop(*op, *a, *b, env),
@@ -488,14 +492,22 @@ pub fn dispatch_clauses(
         if let Some(guard) = row.guard {
             match fold_expr(&guard.node, &bindings, atom_names) {
                 Some(d) => match as_bool_lit(&d) {
-                    Some(true) => return Dispatch::MatchedRow { row_idx: idx, bindings },
+                    Some(true) => {
+                        return Dispatch::MatchedRow {
+                            row_idx: idx,
+                            bindings,
+                        };
+                    }
                     Some(false) => continue, // guard rejects row; try next
                     None => return Dispatch::Opaque, // guard folded but not to bool — give up
                 },
                 None => return Dispatch::Opaque, // guard didn't fold
             }
         }
-        return Dispatch::MatchedRow { row_idx: idx, bindings };
+        return Dispatch::MatchedRow {
+            row_idx: idx,
+            bindings,
+        };
     }
     Dispatch::NoMatch
 }
@@ -617,7 +629,11 @@ fn match_tuple_pattern(
             Match::Opaque => saw_opaque = true,
         }
     }
-    if saw_opaque { Match::Opaque } else { Match::Yes }
+    if saw_opaque {
+        Match::Opaque
+    } else {
+        Match::Yes
+    }
 }
 
 /// Fold an AST `Expr` to a literal Descr under `bindings`. Used for guards.
@@ -672,9 +688,7 @@ fn ast_binop_fold(op: ast::BinOp, ad: &Descr, bd: &Descr) -> Option<Descr> {
         Pipe | Cons => return None,
     };
     match ir_op {
-        BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
-            fold_arith(ir_op, ad, bd)
-        }
+        BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => fold_arith(ir_op, ad, bd),
         BinOp::Eq | BinOp::Neq => fold_eq(ir_op, ad, bd),
         BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => fold_cmp(ir_op, ad, bd),
         BinOp::And | BinOp::Or => fold_logical(ir_op, ad, bd),
@@ -878,10 +892,7 @@ mod tests {
 
     #[test]
     fn fold_and_bool_lits() {
-        let env = env(&[
-            (0, Descr::atom_lit("true")),
-            (1, Descr::atom_lit("false")),
-        ]);
+        let env = env(&[(0, Descr::atom_lit("true")), (1, Descr::atom_lit("false"))]);
         let r = fold_prim(&Prim::BinOp(BinOp::And, v(0), v(1)), &env, &[]).unwrap();
         assert_eq!(as_bool_lit(&r), Some(false));
         let env = env_with_true();
@@ -890,10 +901,7 @@ mod tests {
     }
 
     fn env_with_true() -> HashMap<Var, Descr> {
-        env(&[
-            (0, Descr::atom_lit("true")),
-            (1, Descr::atom_lit("false")),
-        ])
+        env(&[(0, Descr::atom_lit("true")), (1, Descr::atom_lit("false"))])
     }
 
     // ---- unary ----
@@ -952,12 +960,7 @@ mod tests {
     #[test]
     fn fold_type_test_proves_true() {
         let env = env(&[(0, Descr::int_lit(42))]);
-        let r = fold_prim(
-            &Prim::TypeTest(v(0), Box::new(Descr::int())),
-            &env,
-            &[],
-        )
-        .unwrap();
+        let r = fold_prim(&Prim::TypeTest(v(0), Box::new(Descr::int())), &env, &[]).unwrap();
         assert_eq!(as_bool_lit(&r), Some(true));
     }
 
@@ -976,12 +979,7 @@ mod tests {
     #[test]
     fn fold_type_test_undecidable_returns_none() {
         let env = env(&[(0, Descr::any())]);
-        assert!(fold_prim(
-            &Prim::TypeTest(v(0), Box::new(Descr::int())),
-            &env,
-            &[]
-        )
-        .is_none());
+        assert!(fold_prim(&Prim::TypeTest(v(0), Box::new(Descr::int())), &env, &[]).is_none());
     }
 
     // ---- list_is_nil ----
@@ -1013,14 +1011,7 @@ mod tests {
     fn fold_extern_returns_none() {
         use crate::fz_ir::ExternId;
         let env = HashMap::new();
-        assert!(
-            fold_prim(
-                &Prim::Extern(ExternId(0), vec![]),
-                &env,
-                &[],
-            )
-            .is_none()
-        );
+        assert!(fold_prim(&Prim::Extern(ExternId(0), vec![]), &env, &[],).is_none());
     }
 
     #[test]
@@ -1053,7 +1044,10 @@ mod tests {
     #[test]
     fn dispatch_wildcard_always_matches() {
         let patterns = vec![pat(Pattern::Wildcard)];
-        let clauses = vec![Clause { patterns: &patterns, guard: None }];
+        let clauses = vec![Clause {
+            patterns: &patterns,
+            guard: None,
+        }];
         let result = dispatch_clauses(&clauses, &[Descr::any()], &[]);
         assert!(matches!(result, Dispatch::MatchedRow { row_idx: 0, .. }));
     }
@@ -1061,10 +1055,16 @@ mod tests {
     #[test]
     fn dispatch_var_binds_subject_descr() {
         let patterns = vec![pat(Pattern::Var("n".to_string()))];
-        let clauses = vec![Clause { patterns: &patterns, guard: None }];
+        let clauses = vec![Clause {
+            patterns: &patterns,
+            guard: None,
+        }];
         let result = dispatch_clauses(&clauses, &[Descr::int_lit(42)], &[]);
         match result {
-            Dispatch::MatchedRow { row_idx: 0, bindings } => {
+            Dispatch::MatchedRow {
+                row_idx: 0,
+                bindings,
+            } => {
                 assert_eq!(as_int_lit(bindings.get("n").unwrap()), Some(42));
             }
             other => panic!("expected MatchedRow, got {:?}", other),
@@ -1074,7 +1074,10 @@ mod tests {
     #[test]
     fn dispatch_int_literal_match() {
         let patterns = vec![pat(Pattern::Int(0))];
-        let clauses = vec![Clause { patterns: &patterns, guard: None }];
+        let clauses = vec![Clause {
+            patterns: &patterns,
+            guard: None,
+        }];
         let result = dispatch_clauses(&clauses, &[Descr::int_lit(0)], &[]);
         assert!(matches!(result, Dispatch::MatchedRow { row_idx: 0, .. }));
     }
@@ -1082,7 +1085,10 @@ mod tests {
     #[test]
     fn dispatch_int_literal_no_match() {
         let patterns = vec![pat(Pattern::Int(0))];
-        let clauses = vec![Clause { patterns: &patterns, guard: None }];
+        let clauses = vec![Clause {
+            patterns: &patterns,
+            guard: None,
+        }];
         let result = dispatch_clauses(&clauses, &[Descr::int_lit(7)], &[]);
         assert!(matches!(result, Dispatch::NoMatch));
     }
@@ -1091,7 +1097,10 @@ mod tests {
     fn dispatch_int_literal_opaque_against_wide_int() {
         // Literal pattern against wide int Descr — indeterminate at compile time.
         let patterns = vec![pat(Pattern::Int(0))];
-        let clauses = vec![Clause { patterns: &patterns, guard: None }];
+        let clauses = vec![Clause {
+            patterns: &patterns,
+            guard: None,
+        }];
         let result = dispatch_clauses(&clauses, &[Descr::int()], &[]);
         assert!(matches!(result, Dispatch::Opaque));
     }
@@ -1119,9 +1128,18 @@ mod tests {
         let clause_add = vec![add_pat];
         let clause_mul = vec![mul_pat];
         let clauses = vec![
-            Clause { patterns: &clause_num, guard: None },
-            Clause { patterns: &clause_add, guard: None },
-            Clause { patterns: &clause_mul, guard: None },
+            Clause {
+                patterns: &clause_num,
+                guard: None,
+            },
+            Clause {
+                patterns: &clause_add,
+                guard: None,
+            },
+            Clause {
+                patterns: &clause_mul,
+                guard: None,
+            },
         ];
 
         let subject = Descr::tuple_of([Descr::atom_lit("num"), Descr::int_lit(42)]);
@@ -1148,8 +1166,14 @@ mod tests {
         let c0 = vec![num_pat];
         let c1 = vec![add_pat];
         let clauses = vec![
-            Clause { patterns: &c0, guard: None },
-            Clause { patterns: &c1, guard: None },
+            Clause {
+                patterns: &c0,
+                guard: None,
+            },
+            Clause {
+                patterns: &c1,
+                guard: None,
+            },
         ];
 
         let inner_a = Descr::tuple_of([Descr::atom_lit("num"), Descr::int_lit(2)]);
@@ -1172,7 +1196,10 @@ mod tests {
             pat(Pattern::Var("n".to_string())),
         ]));
         let c0 = vec![num_pat];
-        let clauses = vec![Clause { patterns: &c0, guard: None }];
+        let clauses = vec![Clause {
+            patterns: &c0,
+            guard: None,
+        }];
         let result = dispatch_clauses(&clauses, &[Descr::any()], &[]);
         assert!(matches!(result, Dispatch::Opaque));
     }
@@ -1186,8 +1213,14 @@ mod tests {
         let wild = vec![pat(Pattern::Wildcard)];
         let specific = vec![pat(Pattern::Int(0))];
         let clauses = vec![
-            Clause { patterns: &wild, guard: None },
-            Clause { patterns: &specific, guard: None },
+            Clause {
+                patterns: &wild,
+                guard: None,
+            },
+            Clause {
+                patterns: &specific,
+                guard: None,
+            },
         ];
         let result = dispatch_clauses(&clauses, &[Descr::int_lit(0)], &[]);
         assert!(matches!(result, Dispatch::MatchedRow { row_idx: 0, .. }));
@@ -1204,7 +1237,10 @@ mod tests {
             Box::new(expr(Expr::Var("n".to_string()))),
             Box::new(expr(Expr::Int(0))),
         ));
-        let clauses = vec![Clause { patterns: &p, guard: Some(&guard) }];
+        let clauses = vec![Clause {
+            patterns: &p,
+            guard: Some(&guard),
+        }];
         let result = dispatch_clauses(&clauses, &[Descr::int_lit(7)], &[]);
         assert!(matches!(result, Dispatch::MatchedRow { row_idx: 0, .. }));
     }
@@ -1221,8 +1257,14 @@ mod tests {
             Box::new(expr(Expr::Int(0))),
         ));
         let clauses = vec![
-            Clause { patterns: &p0, guard: Some(&guard) },
-            Clause { patterns: &p1, guard: None },
+            Clause {
+                patterns: &p0,
+                guard: Some(&guard),
+            },
+            Clause {
+                patterns: &p1,
+                guard: None,
+            },
         ];
         let result = dispatch_clauses(&clauses, &[Descr::int_lit(-3)], &[]);
         assert!(matches!(result, Dispatch::MatchedRow { row_idx: 1, .. }));
@@ -1237,7 +1279,10 @@ mod tests {
             Box::new(expr(Expr::Var("n".to_string()))),
             Box::new(expr(Expr::Int(0))),
         ));
-        let clauses = vec![Clause { patterns: &p, guard: Some(&guard) }];
+        let clauses = vec![Clause {
+            patterns: &p,
+            guard: Some(&guard),
+        }];
         let result = dispatch_clauses(&clauses, &[Descr::int()], &[]);
         assert!(matches!(result, Dispatch::Opaque));
     }
@@ -1247,12 +1292,11 @@ mod tests {
     #[test]
     fn dispatch_list_pattern_opaque() {
         let pat_list = vec![pat(Pattern::List(vec![pat(Pattern::Wildcard)], None))];
-        let clauses = vec![Clause { patterns: &pat_list, guard: None }];
-        let result = dispatch_clauses(
-            &clauses,
-            &[Descr::list_of(Descr::int_lit(1))],
-            &[],
-        );
+        let clauses = vec![Clause {
+            patterns: &pat_list,
+            guard: None,
+        }];
+        let result = dispatch_clauses(&clauses, &[Descr::list_of(Descr::int_lit(1))], &[]);
         assert!(matches!(result, Dispatch::Opaque));
     }
 
@@ -1266,7 +1310,10 @@ mod tests {
             pat(Pattern::Var("n".to_string())),
         ]));
         let outer = vec![pat(Pattern::As("whole".to_string(), Box::new(inner)))];
-        let clauses = vec![Clause { patterns: &outer, guard: None }];
+        let clauses = vec![Clause {
+            patterns: &outer,
+            guard: None,
+        }];
         let subject = Descr::tuple_of([Descr::atom_lit("num"), Descr::int_lit(42)]);
         match dispatch_clauses(&clauses, &[subject.clone()], &[]) {
             Dispatch::MatchedRow { bindings, .. } => {
@@ -1287,9 +1334,18 @@ mod tests {
         let p1 = vec![pat(Pattern::Int(1))];
         let p2 = vec![pat(Pattern::Int(2))];
         let clauses = vec![
-            Clause { patterns: &p0, guard: None },
-            Clause { patterns: &p1, guard: None },
-            Clause { patterns: &p2, guard: None },
+            Clause {
+                patterns: &p0,
+                guard: None,
+            },
+            Clause {
+                patterns: &p1,
+                guard: None,
+            },
+            Clause {
+                patterns: &p2,
+                guard: None,
+            },
         ];
         let result = dispatch_clauses(&clauses, &[Descr::int_lit(7)], &[]);
         assert!(matches!(result, Dispatch::NoMatch));

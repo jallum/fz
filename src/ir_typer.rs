@@ -330,8 +330,16 @@ impl ModuleTypes {
                 })
             };
         covers.sort_by(|a, b| {
-            let as_: String = a.1.iter().map(|d| format!("{}", d)).collect::<Vec<_>>().join(",");
-            let bs: String = b.1.iter().map(|d| format!("{}", d)).collect::<Vec<_>>().join(",");
+            let as_: String =
+                a.1.iter()
+                    .map(|d| format!("{}", d))
+                    .collect::<Vec<_>>()
+                    .join(",");
+            let bs: String =
+                b.1.iter()
+                    .map(|d| format!("{}", d))
+                    .collect::<Vec<_>>()
+                    .join(",");
             as_.cmp(&bs)
         });
         for spec_key in &covers {
@@ -685,18 +693,15 @@ pub fn type_module(m: &Module) -> ModuleTypes {
     let mut produces: HashMap<EmitterSite, (FnId, Vec<Descr>)> = HashMap::new();
     let mut holders: HashMap<(FnId, Vec<Descr>), std::collections::HashSet<EmitterSite>> =
         HashMap::new();
-    let mut emits_by_caller: HashMap<
-        (FnId, Vec<Descr>),
-        std::collections::HashSet<EmitterSite>,
-    > = HashMap::new();
+    let mut emits_by_caller: HashMap<(FnId, Vec<Descr>), std::collections::HashSet<EmitterSite>> =
+        HashMap::new();
     let mut opaque_arities: std::collections::HashSet<usize> = std::collections::HashSet::new();
     let mut pending_makeclosure_arity: HashMap<usize, std::collections::HashSet<EmitterSite>> =
         HashMap::new();
 
     let mut work: std::collections::VecDeque<(FnId, Vec<Descr>)> =
         entry_seeds(m).into_iter().collect();
-    let mut in_work: std::collections::HashSet<(FnId, Vec<Descr>)> =
-        work.iter().cloned().collect();
+    let mut in_work: std::collections::HashSet<(FnId, Vec<Descr>)> = work.iter().cloned().collect();
 
     process_worklist(
         m,
@@ -799,7 +804,9 @@ fn process_worklist(
         WORKLIST_POPS.with(|c| c.set(c.get() + 1));
 
         let (fid, key) = spec_key.clone();
-        let Some(&j) = m.fn_idx.get(&fid) else { continue };
+        let Some(&j) = m.fn_idx.get(&fid) else {
+            continue;
+        };
 
         // type_fn is pure in (FnIr, entry_key) — cache by spec_key.
         if !specs.contains_key(&spec_key) {
@@ -921,14 +928,13 @@ fn process_worklist(
         // return_reads, that's the full set of edges whose change
         // affects this spec.
         let mut compute_reads: Vec<(FnId, Vec<Descr>)> = Vec::new();
-        let new_ret = compute_return_for_spec(
-            m,
-            &spec_key,
-            specs,
-            effective_returns,
-            &mut compute_reads,
-        );
-        for callee_key in result.return_reads.into_iter().chain(compute_reads.into_iter()) {
+        let new_ret =
+            compute_return_for_spec(m, &spec_key, specs, effective_returns, &mut compute_reads);
+        for callee_key in result
+            .return_reads
+            .into_iter()
+            .chain(compute_reads.into_iter())
+        {
             return_readers
                 .entry(callee_key)
                 .or_default()
@@ -968,7 +974,10 @@ fn compute_return_for_spec(
     reads: &mut Vec<(FnId, Vec<Descr>)>,
 ) -> Descr {
     let mut lookup = |k: (FnId, Vec<Descr>)| -> Descr {
-        let v = effective_returns.get(&k).cloned().unwrap_or_else(Descr::none);
+        let v = effective_returns
+            .get(&k)
+            .cloned()
+            .unwrap_or_else(Descr::none);
         reads.push(k);
         v
     };
@@ -1028,9 +1037,7 @@ fn compute_return_for_spec(
                             let np = target_fn.block(target_fn.entry).params.len();
                             let mut full_key: Vec<Descr> = lit.captures.clone();
                             for av in args.iter() {
-                                full_key.push(
-                                    ft.vars.get(av).cloned().unwrap_or_else(Descr::any),
-                                );
+                                full_key.push(ft.vars.get(av).cloned().unwrap_or_else(Descr::any));
                             }
                             while full_key.len() < np {
                                 full_key.push(Descr::any());
@@ -1186,19 +1193,17 @@ fn walk_spec_for_discovery(
         }
     };
 
-    let emit = |slot: EmitSlot,
-                block: BlockId,
-                target: (FnId, Vec<Descr>),
-                out: &mut WalkResult| {
-        out.emits.push((
-            EmitterSite {
-                caller: caller_spec_key.clone(),
-                block,
-                slot,
-            },
-            target,
-        ));
-    };
+    let emit =
+        |slot: EmitSlot, block: BlockId, target: (FnId, Vec<Descr>), out: &mut WalkResult| {
+            out.emits.push((
+                EmitterSite {
+                    caller: caller_spec_key.clone(),
+                    block,
+                    slot,
+                },
+                target,
+            ));
+        };
 
     for b in &f.blocks {
         let mut env = caller_ft.block_envs.get(&b.id).cloned().unwrap_or_default();
@@ -2706,7 +2711,6 @@ pub fn cont_slot0_descr(
     }
 }
 
-
 /// fz-ul4.42 — compute the set of SpecIds reachable at runtime from
 /// `main` (plus closure-dispatched any-key specs as a conservative catch).
 ///
@@ -3155,7 +3159,6 @@ pub fn pretty_module_types(m: &Module, t: &ModuleTypes) -> String {
 // ----------------------------------------------------------------------
 // Tests
 // ----------------------------------------------------------------------
-
 
 #[cfg(test)]
 #[path = "ir_typer_tests.rs"]
