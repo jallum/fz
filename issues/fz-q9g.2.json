@@ -13,9 +13,15 @@
   "id": "fz-q9g.2",
   "labels": [],
   "parent": "fz-q9g",
+  "comments": [
+    {
+      "text": "Rewritten 2026-05-18: classifier now lands gated — emission deferred to q9g.3's activation step. Decouples 'classify correctly' from 'consume correctly' so each Dst-handling ticket (q9g.4, .5, .3) can ship atomically without crashing codegen via unreachable!() on Dst.",
+      "timestamp": "2026-05-18T20:03:49Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "fz-dps.C1: per-spec result Descr -\u003e HeapKind classifier",
   "type": "task",
-  "updated_at": "2026-05-18T20:03:36Z"
+  "updated_at": "2026-05-18T20:03:49Z"
 }
