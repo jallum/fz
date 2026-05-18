@@ -125,9 +125,9 @@ fn reachable_from_entry(f: &FnIr) -> HashSet<BlockId> {
         }
         match &f.block(bid).terminator {
             Term::Goto(t, _) => work.push(*t),
-            Term::If(_, t, e) => {
-                work.push(*t);
-                work.push(*e);
+            Term::If { then_b, else_b, .. } => {
+                work.push(*then_b);
+                work.push(*else_b);
             }
             _ => {}
         }
@@ -152,8 +152,8 @@ pub fn classify_var_uses(f: &FnIr) -> (HashSet<Var>, HashSet<Var>) {
             collect_prim_vars(prim, &mut other_uses);
         }
         match &block.terminator {
-            Term::If(c, _, _) => {
-                if_conds.insert(*c);
+            Term::If { cond, .. } => {
+                if_conds.insert(*cond);
             }
             t => collect_term_vars(t, &mut other_uses),
         }
@@ -276,7 +276,7 @@ fn collect_term_vars(t: &Term, used: &mut HashSet<Var>) {
                 used.insert(*v);
             }
         }
-        Term::If(cond, _, _) => {
+        Term::If { cond, .. } => {
             used.insert(*cond);
         }
         Term::Call {
@@ -342,9 +342,9 @@ fn fuse_fn(f: &mut FnIr) {
         for block in &f.blocks {
             match &block.terminator {
                 Term::Goto(t, _) => *in_degree.entry(*t).or_insert(0) += 1,
-                Term::If(_, t, e) => {
-                    *in_degree.entry(*t).or_insert(0) += 1;
-                    *in_degree.entry(*e).or_insert(0) += 1;
+                Term::If { then_b, else_b, .. } => {
+                    *in_degree.entry(*then_b).or_insert(0) += 1;
+                    *in_degree.entry(*else_b).or_insert(0) += 1;
                 }
                 _ => {}
             }
@@ -684,7 +684,7 @@ mod tests {
         let entry = b.block(vec![cond_v]);
         let then_b = b.block(vec![]);
         let else_b = b.block(vec![]);
-        b.set_terminator(entry, Term::If(cond_v, then_b, else_b));
+        b.set_terminator(entry, Term::if_user(cond_v, then_b, else_b));
         let n1 = b.let_(then_b, Prim::Const(Const::Nil));
         b.set_terminator(then_b, Term::Return(n1));
         let n2 = b.let_(else_b, Prim::Const(Const::Nil));
@@ -729,11 +729,11 @@ mod tests {
     /// fz-jv2 — classify_var_uses correctness.
     ///
     /// Builds a function with:
-    ///   block0: let c = TypeTest(x); Term::If(c, b_t, b_f)
+    ///   block0: let c = TypeTest(x); Term::if_user(c, b_t, b_f)
     ///   block0 has no other use of c → c ∈ if_only_conds
     ///
     /// And a second function where c also appears in a prim arg:
-    ///   block0: let c = TypeTest(x); let _ = BinOp(And, c, c); Term::If(c, b_t, b_f)
+    ///   block0: let c = TypeTest(x); let _ = BinOp(And, c, c); Term::if_user(c, b_t, b_f)
     ///   c ∈ all_used but c ∉ if_only_conds (dual-use)
     #[test]
     fn classify_var_uses_separates_pure_branch_from_dual_use() {
@@ -747,7 +747,7 @@ mod tests {
         );
         let t_blk = bm.block(vec![]);
         let f_blk = bm.block(vec![]);
-        bm.set_terminator(entry, Term::If(c, t_blk, f_blk));
+        bm.set_terminator(entry, Term::if_user(c, t_blk, f_blk));
         let nil = bm.let_(t_blk, Prim::Const(Const::Nil));
         bm.set_terminator(t_blk, Term::Return(nil));
         let nil2 = bm.let_(f_blk, Prim::Const(Const::Nil));
@@ -777,7 +777,7 @@ mod tests {
         let _ = bm2.let_(e2, Prim::BinOp(BinOp::And, c2, c2));
         let t2 = bm2.block(vec![]);
         let f2 = bm2.block(vec![]);
-        bm2.set_terminator(e2, Term::If(c2, t2, f2));
+        bm2.set_terminator(e2, Term::if_user(c2, t2, f2));
         let n2 = bm2.let_(t2, Prim::Const(Const::Nil));
         bm2.set_terminator(t2, Term::Return(n2));
         let n3 = bm2.let_(f2, Prim::Const(Const::Nil));

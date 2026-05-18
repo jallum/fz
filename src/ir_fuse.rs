@@ -47,9 +47,9 @@ fn fuse_one_pass(f: &mut FnIr) -> bool {
             Term::Goto(target, _) => {
                 *pred_count.entry(*target).or_insert(0) += 1;
             }
-            Term::If(_, t, e) => {
-                *pred_count.entry(*t).or_insert(0) += 1;
-                *pred_count.entry(*e).or_insert(0) += 1;
+            Term::If { then_b, else_b, .. } => {
+                *pred_count.entry(*then_b).or_insert(0) += 1;
+                *pred_count.entry(*else_b).or_insert(0) += 1;
             }
             // All other terminators are external handoffs (Call, TailCall,
             // Return, Halt, Receive, CallClosure, TailCallClosure) — they
@@ -247,7 +247,17 @@ pub(crate) fn subst_term(t: &Term, subst: &HashMap<Var, Var>) -> Term {
     match t {
         // BlockId targets are NOT substituted — only Var args are.
         Term::Goto(b, args) => Term::Goto(*b, args.iter().map(|x| sv(*x)).collect()),
-        Term::If(cond, then_b, else_b) => Term::If(sv(*cond), *then_b, *else_b),
+        Term::If {
+            cond,
+            then_b,
+            else_b,
+            origin,
+        } => Term::If {
+            cond: sv(*cond),
+            then_b: *then_b,
+            else_b: *else_b,
+            origin: *origin,
+        },
         Term::Call {
             callee,
             args,
@@ -374,7 +384,7 @@ mod tests {
 
         let zero = fb.let_(entry, Prim::Const(Const::Int(0))); // v1
         let cond = fb.let_(entry, Prim::BinOp(BinOp::Eq, x, zero)); // v2
-        fb.set_terminator(entry, Term::If(cond, then_b, else_b));
+        fb.set_terminator(entry, Term::if_user(cond, then_b, else_b));
 
         let t = fb.let_(then_b, Prim::Const(Const::Int(1))); // v3
         fb.set_terminator(then_b, Term::Return(t));

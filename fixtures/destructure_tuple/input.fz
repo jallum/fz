@@ -1,0 +1,8 @@
+fn pair(), do: {1, 2}
+
+fn main() do
+  {a, b} = pair()
+  print(a)
+  print(b)
+  print(a + b)
+end

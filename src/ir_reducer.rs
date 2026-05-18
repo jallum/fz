@@ -7,7 +7,7 @@
 //! Scope (post-RED.4):
 //! - Fold every `Prim` via `reducer::fold_prim`. When a Var has a
 //!   scalar-literal Descr, record it.
-//! - Fold `Term::If(cond, T, E)` when `cond` is a bool literal.
+//! - Fold `Term::if_user(cond, T, E)` when `cond` is a bool literal.
 //! - Rewrite `Term::TailCall(callee, args)` to `Term::Return(lit)` when
 //!   the callee walks to a scalar-literal return under arg Descrs.
 //! - Rewrite `Term::Call(callee, args, cont)` to a `Term::TailCall(cont,
@@ -194,10 +194,15 @@ fn reduce_terminator(
     let slot = slot_for_term(term);
     match term {
         // fz-jg5.4: if-fold (named explicit rule per FINDINGS.md).
-        Term::If(cond, t, e) => {
+        Term::If {
+            cond,
+            then_b,
+            else_b,
+            ..
+        } => {
             let cd = env.get(cond)?;
             let b = as_bool_lit(cd)?;
-            Some(Term::Goto(if b { *t } else { *e }, vec![]))
+            Some(Term::Goto(if b { *then_b } else { *else_b }, vec![]))
         }
         Term::TailCall { callee, args, .. } => {
             // fz-jg5.5: each top-level callsite gets a fresh ReduceCtx
@@ -540,7 +545,12 @@ fn walk_block(
             }
             walk_block(ctx, f, *target, next_env, goto_depth + 1)
         }
-        Term::If(cond, t, e) => {
+        Term::If {
+            cond,
+            then_b,
+            else_b,
+            ..
+        } => {
             let Some(cd) = env.get(cond) else {
                 ctx.note(StalledReason::OpaqueArg);
                 return None;
@@ -549,7 +559,13 @@ fn walk_block(
                 ctx.note(StalledReason::OpaqueArg);
                 return None;
             };
-            walk_block(ctx, f, if b { *t } else { *e }, env, goto_depth + 1)
+            walk_block(
+                ctx,
+                f,
+                if b { *then_b } else { *else_b },
+                env,
+                goto_depth + 1,
+            )
         }
         Term::TailCall {
             callee: tc_callee,
@@ -982,7 +998,7 @@ mod tests {
         }
     }
 
-    /// `Term::If(cond, T, E)` with cond bound to Const(True) → Goto(T).
+    /// `Term::if_user(cond, T, E)` with cond bound to Const(True) → Goto(T).
     #[test]
     fn folds_if_on_literal_true_to_goto() {
         let mut b = FnBuilder::new(FnId(0), "main");
@@ -990,7 +1006,7 @@ mod tests {
         let t_blk = b.block(vec![]);
         let e_blk = b.block(vec![]);
         let cond = b.let_(entry, Prim::Const(Const::True));
-        b.set_terminator(entry, Term::If(cond, t_blk, e_blk));
+        b.set_terminator(entry, Term::if_user(cond, t_blk, e_blk));
         let nil = b.let_(t_blk, Prim::Const(Const::Nil));
         b.set_terminator(t_blk, Term::Return(nil));
         let nil2 = b.let_(e_blk, Prim::Const(Const::Nil));
@@ -1042,7 +1058,7 @@ mod tests {
         let recur = b.block(vec![]);
         let c0 = b.let_(entry, Prim::Const(Const::Int(0)));
         let eq = b.let_(entry, Prim::BinOp(BinOp::Eq, n, c0));
-        b.set_terminator(entry, Term::If(eq, base, recur));
+        b.set_terminator(entry, Term::if_user(eq, base, recur));
         // base: Return(n) (always 0 when reached)
         b.set_terminator(base, Term::Return(n));
         // recur: n - 1; tail call count(n - 1)
@@ -1105,7 +1121,7 @@ mod tests {
         let recur = b.block(vec![]);
         let c0 = b.let_(entry, Prim::Const(Const::Int(0)));
         let eq = b.let_(entry, Prim::BinOp(BinOp::Eq, n, c0));
-        b.set_terminator(entry, Term::If(eq, base, recur));
+        b.set_terminator(entry, Term::if_user(eq, base, recur));
         b.set_terminator(base, Term::Return(n));
         let c1 = b.let_(recur, Prim::Const(Const::Int(1)));
         let dec = b.let_(recur, Prim::BinOp(BinOp::Sub, n, c1));
@@ -1163,7 +1179,7 @@ mod tests {
         let e_odd = e.block(vec![]);
         let c0_e = e.let_(e_entry, Prim::Const(Const::Int(0)));
         let eq_e = e.let_(e_entry, Prim::BinOp(BinOp::Eq, n_e, c0_e));
-        e.set_terminator(e_entry, Term::If(eq_e, e_true, e_odd));
+        e.set_terminator(e_entry, Term::if_user(eq_e, e_true, e_odd));
         let true_v = e.let_(e_true, Prim::Const(Const::True));
         e.set_terminator(e_true, Term::Return(true_v));
         let c1_e = e.let_(e_odd, Prim::Const(Const::Int(1)));
@@ -1185,7 +1201,7 @@ mod tests {
         let o_even = o.block(vec![]);
         let c0_o = o.let_(o_entry, Prim::Const(Const::Int(0)));
         let eq_o = o.let_(o_entry, Prim::BinOp(BinOp::Eq, n_o, c0_o));
-        o.set_terminator(o_entry, Term::If(eq_o, o_false, o_even));
+        o.set_terminator(o_entry, Term::if_user(eq_o, o_false, o_even));
         let false_v = o.let_(o_false, Prim::Const(Const::False));
         o.set_terminator(o_false, Term::Return(false_v));
         let c1_o = o.let_(o_even, Prim::Const(Const::Int(1)));

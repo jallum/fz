@@ -182,7 +182,7 @@ pub fn block_callsites<'a>(
                 },
             });
         }
-        Term::If(..) | Term::Goto(..) | Term::Return(..) | Term::Halt(..) => {}
+        Term::If { .. } | Term::Goto(..) | Term::Return(..) | Term::Halt(..) => {}
     }
     out
 }
@@ -256,7 +256,9 @@ mod tests {
         let env = empty_env();
         let fc = empty_fc();
         assert!(block_callsites(&Term::Goto(BlockId(0), vec![]), &env, &fc).is_empty());
-        assert!(block_callsites(&Term::If(Var(0), BlockId(0), BlockId(1)), &env, &fc).is_empty());
+        assert!(
+            block_callsites(&Term::if_user(Var(0), BlockId(0), BlockId(1)), &env, &fc).is_empty()
+        );
         assert!(block_callsites(&Term::Return(Var(0)), &env, &fc).is_empty());
         assert!(block_callsites(&Term::Halt(Var(0)), &env, &fc).is_empty());
     }

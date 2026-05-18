@@ -85,7 +85,7 @@ fn goto_joins_param_types_across_predecessors() {
     let bb2 = b.block(vec![]);
     let joined = Var(99);
     let bb3 = b.block(vec![joined]);
-    b.set_terminator(entry, Term::If(zero, bb1, bb2));
+    b.set_terminator(entry, Term::if_user(zero, bb1, bb2));
     let one = b.let_(bb1, Prim::Const(Const::Int(1)));
     b.set_terminator(bb1, Term::Goto(bb3, vec![one]));
     let two = b.let_(bb2, Prim::Const(Const::Int(2)));
@@ -151,7 +151,7 @@ fn if_is_empty_list_narrows_v_to_empty_list_in_then_branch() {
     let c = b.let_(entry, Prim::IsEmptyList(l));
     let then_b = b.block(vec![]);
     let else_b = b.block(vec![]);
-    b.set_terminator(entry, Term::If(c, then_b, else_b));
+    b.set_terminator(entry, Term::if_user(c, then_b, else_b));
     b.set_terminator(then_b, Term::Return(l));
     b.set_terminator(else_b, Term::Return(l));
     let m = build_module(vec![b.build()]);
@@ -195,7 +195,7 @@ fn if_eq_with_int_singleton_narrows_var_in_then_branch() {
     let c = b.let_(entry, Prim::BinOp(BinOp::Eq, x, z));
     let then_b = b.block(vec![]);
     let else_b = b.block(vec![]);
-    b.set_terminator(entry, Term::If(c, then_b, else_b));
+    b.set_terminator(entry, Term::if_user(c, then_b, else_b));
     b.set_terminator(then_b, Term::Return(x));
     b.set_terminator(else_b, Term::Return(x));
     let m = build_module(vec![b.build()]);
@@ -251,7 +251,7 @@ fn list_is_nil_on_int_var_flags_both_branches_unreachable() {
     let c = b.let_(entry, Prim::IsEmptyList(five));
     let then_b = b.block(vec![]);
     let else_b = b.block(vec![]);
-    b.set_terminator(entry, Term::If(c, then_b, else_b));
+    b.set_terminator(entry, Term::if_user(c, then_b, else_b));
     b.set_terminator(then_b, Term::Halt(five));
     b.set_terminator(else_b, Term::Halt(five));
     let m = build_module(vec![b.build()]);
@@ -302,13 +302,13 @@ fn eq_then_eq_dup_clause_flags_second_arm_unreachable() {
     let c1 = b.let_(entry, Prim::BinOp(BinOp::Eq, x, z));
     let halt_b = b.block(vec![]);
     let next_check = b.block(vec![]);
-    b.set_terminator(entry, Term::If(c1, halt_b, next_check));
+    b.set_terminator(entry, Term::if_user(c1, halt_b, next_check));
     b.set_terminator(halt_b, Term::Halt(x));
     let z2 = b.let_(next_check, Prim::Const(Const::Int(0)));
     let c2 = b.let_(next_check, Prim::BinOp(BinOp::Eq, x, z2));
     let dead_b = b.block(vec![]);
     let fallback = b.block(vec![]);
-    b.set_terminator(next_check, Term::If(c2, dead_b, fallback));
+    b.set_terminator(next_check, Term::if_user(c2, dead_b, fallback));
     b.set_terminator(dead_b, Term::Halt(x));
     b.set_terminator(fallback, Term::Halt(x));
 
@@ -424,13 +424,13 @@ fn unreachable_arm_diagnostic_includes_type_vocabulary() {
     let c1 = b.let_(entry, Prim::BinOp(BinOp::Eq, x, z));
     let halt_b = b.block(vec![]);
     let next_check = b.block(vec![]);
-    b.set_terminator(entry, Term::If(c1, halt_b, next_check));
+    b.set_terminator(entry, Term::if_user(c1, halt_b, next_check));
     b.set_terminator(halt_b, Term::Halt(x));
     let z2 = b.let_(next_check, Prim::Const(Const::Int(0)));
     let c2 = b.let_(next_check, Prim::BinOp(BinOp::Eq, x, z2));
     let dead_b = b.block(vec![]);
     let fallback = b.block(vec![]);
-    b.set_terminator(next_check, Term::If(c2, dead_b, fallback));
+    b.set_terminator(next_check, Term::if_user(c2, dead_b, fallback));
     b.set_terminator(dead_b, Term::Halt(x));
     b.set_terminator(fallback, Term::Halt(x));
 

@@ -268,6 +268,13 @@ pub struct LowerCtx {
     /// into `Module.boundary_fns` after build. The reducer treats these as
     /// firewalls so a declared spec is honored as a contract.
     pub boundary_fns: HashSet<crate::fz_ir::FnId>,
+    /// fz-fyq.1 — `BranchOrigin` tag for any `Term::If` synthesized in the
+    /// current lowering scope. Defaults to `User`; entry points that
+    /// initiate generated dispatch (fn-clause selection, pattern-bind,
+    /// param guards) save the previous value, set their origin for the
+    /// scope, and restore on exit. Matrix helpers and `lower_pattern_bind`
+    /// read this when emitting their Ifs.
+    pub branch_origin: crate::fz_ir::BranchOrigin,
 }
 
 impl LowerCtx {
@@ -295,7 +302,22 @@ impl LowerCtx {
             prelude_type_env: crate::type_expr::ModuleTypeEnv::new(),
             combined_type_env: crate::type_expr::ModuleTypeEnv::new(),
             boundary_fns: HashSet::new(),
+            branch_origin: crate::fz_ir::BranchOrigin::User,
         }
+    }
+
+    /// Helper: emit an If terminator on the current block using the active
+    /// `branch_origin`. Lowering paths that synthesize Ifs use this rather
+    /// than constructing `Term::If` directly, so origin propagation is
+    /// uniform.
+    pub fn set_if_term(&mut self, cond: crate::fz_ir::Var, then_b: BlockId, else_b: BlockId) {
+        let origin = self.branch_origin;
+        self.set_term(crate::fz_ir::Term::If {
+            cond,
+            then_b,
+            else_b,
+            origin,
+        });
     }
 
     /// fz-ul4.29.9 — return the FnId of the program-wide `fz_spawn_thunk`,
@@ -926,20 +948,25 @@ fn lower_fn(
         ctx.set_term(Term::Halt(mev));
         ctx.cur_block = Some(entry);
 
+        let prev_origin = ctx.branch_origin;
+        ctx.branch_origin = crate::fz_ir::BranchOrigin::ClauseDispatch;
         for (pv, pat) in param_vars.iter().zip(&clause.params) {
             lower_pattern_bind(ctx, *pv, pat, fail_block)?;
             // Record the pattern's span on the param Var if not yet named
             // by the pattern walker (e.g. tuple-destructured params).
             ctx.name_var(*pv, "", pat.span);
         }
+        ctx.branch_origin = crate::fz_ir::BranchOrigin::ParamGuard;
         emit_param_type_guards(ctx, clause, &param_vars, fail_block)?;
+        ctx.branch_origin = crate::fz_ir::BranchOrigin::ClauseDispatch;
         if let Some(g) = &clause.guard {
             let guard_var = lower_expr(ctx, g, false)?;
             let body_b = ctx.cur_mut().block(vec![]);
-            ctx.set_term(Term::If(guard_var, body_b, fail_block));
+            ctx.set_if_term(guard_var, body_b, fail_block);
             ctx.cur_block = Some(body_b);
             ctx.terminated = false;
         }
+        ctx.branch_origin = prev_origin;
         let result = lower_expr(ctx, &clause.body, /* is_tail */ true)?;
         if !ctx.terminated {
             ctx.set_term(Term::Return(result));
@@ -979,7 +1006,7 @@ fn emit_param_type_guards(
         };
         let tt_var = ctx.let_(crate::fz_ir::Prim::TypeTest(*pv, Box::new(descr)));
         let pass_b = ctx.cur_mut().block(vec![]);
-        ctx.set_term(crate::fz_ir::Term::If(tt_var, pass_b, on_fail));
+        ctx.set_if_term(tt_var, pass_b, on_fail);
         ctx.cur_block = Some(pass_b);
         ctx.terminated = false;
     }
@@ -1330,7 +1357,7 @@ fn lower_matrix_tuple_arity(
         let tt = ctx.let_(Prim::TypeTest(subject, Box::new(tuple_descr)));
         let match_b = ctx.cur_mut().block(vec![]);
         let next_b = ctx.cur_mut().block(vec![]);
-        ctx.set_term(Term::If(tt, match_b, next_b));
+        ctx.set_if_term(tt, match_b, next_b);
         ctx.cur_block = Some(match_b);
         ctx.terminated = false;
         let field_vars: Vec<Var> = (0..arity)
@@ -1447,7 +1474,7 @@ fn lower_matrix_list_cons(
     let isnil = ctx.let_(Prim::IsEmptyList(subject));
     let nil_b = ctx.cur_mut().block(vec![]);
     let cons_b = ctx.cur_mut().block(vec![]);
-    ctx.set_term(Term::If(isnil, nil_b, cons_b));
+    ctx.set_if_term(isnil, nil_b, cons_b);
     ctx.cur_block = Some(nil_b);
     ctx.terminated = false;
     if nil_rows.is_empty() && default_rows.is_empty() {
@@ -1580,7 +1607,7 @@ fn lower_matrix_atom_literal(
         let eq = ctx.let_(Prim::BinOp(BinOp::Eq, subject, lit_v));
         let match_b = ctx.cur_mut().block(vec![]);
         let next_b = ctx.cur_mut().block(vec![]);
-        ctx.set_term(Term::If(eq, match_b, next_b));
+        ctx.set_if_term(eq, match_b, next_b);
         ctx.cur_block = Some(match_b);
         ctx.terminated = false;
         let mut sub_subjects = matrix.subjects.clone();
@@ -1707,6 +1734,8 @@ fn lower_multi_clause(
     };
 
     let mut clause_conts: Vec<Option<ContFn>> = (0..fn_def.clauses.len()).map(|_| None).collect();
+    let prev_origin = ctx.branch_origin;
+    ctx.branch_origin = crate::fz_ir::BranchOrigin::ClauseDispatch;
     {
         let fn_def_ref = fn_def;
         let param_vars_ref = param_vars;
@@ -1731,14 +1760,14 @@ fn lower_multi_clause(
             for (pv, descr) in &preconditions {
                 let tt = ctx.let_(Prim::TypeTest(*pv, Box::new(descr.clone())));
                 let pass_b = ctx.cur_mut().block(vec![]);
-                ctx.set_term(Term::If(tt, pass_b, fall_block));
+                ctx.set_if_term(tt, pass_b, fall_block);
                 ctx.cur_block = Some(pass_b);
                 ctx.terminated = false;
             }
             if let Some(g) = &guard {
                 let guard_var = lower_expr(ctx, g, false)?;
                 let body_b = ctx.cur_mut().block(vec![]);
-                ctx.set_term(Term::If(guard_var, body_b, fall_block));
+                ctx.set_if_term(guard_var, body_b, fall_block);
                 ctx.cur_block = Some(body_b);
                 ctx.terminated = false;
             }
@@ -1761,6 +1790,7 @@ fn lower_multi_clause(
         };
         lower_pattern_matrix(ctx, matrix, fail_block, &mut cb)?;
     }
+    ctx.branch_origin = prev_origin;
 
     for (i, clause) in fn_def.clauses.iter().enumerate() {
         let Some(cont) = clause_conts[i].clone() else {
@@ -1859,7 +1889,11 @@ fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -> Result<Va
         Expr::Match(pat, expr) => {
             let v = lower_expr(ctx, expr, false)?;
             let fail_block = ctx.cur_mut().block(vec![]);
-            lower_pattern_bind(ctx, v, pat, fail_block)?;
+            let prev_origin = ctx.branch_origin;
+            ctx.branch_origin = crate::fz_ir::BranchOrigin::PatternBind;
+            let res = lower_pattern_bind(ctx, v, pat, fail_block);
+            ctx.branch_origin = prev_origin;
+            res?;
             // After match, control is in current_block; result is the matched value.
             // Set fail block (only reached on dynamic mismatch).
             let saved = ctx.cur_block();
@@ -2253,7 +2287,7 @@ fn lower_if(
     // Allocate arm blocks in the outer (current) fn.
     let then_b = ctx.cur_mut().block(vec![]);
     let else_b = ctx.cur_mut().block(vec![]);
-    ctx.set_term(Term::If(cv, then_b, else_b));
+    ctx.set_if_term(cv, then_b, else_b);
 
     // Wire each arm block: TailCall its arm fn with the outer captures.
     // Captures are snapshotted from the outer env *now*; they're the
@@ -2642,7 +2676,7 @@ fn match_tuple(
     );
     let test = ctx.let_(Prim::TypeTest(subject, Box::new(tuple_descr)));
     let project_b = ctx.cur_mut().block(vec![]);
-    ctx.set_term(Term::If(test, project_b, fail_block));
+    ctx.set_if_term(test, project_b, fail_block);
     ctx.cur_block = Some(project_b);
     for (i, elem_pat) in elems.iter().enumerate() {
         let fv = ctx.let_(Prim::TupleField(subject, i as u32));
@@ -2662,7 +2696,7 @@ fn match_list(
     for elem_pat in elems {
         let isnil = ctx.let_(Prim::IsEmptyList(cur));
         let cont_b = ctx.cur_mut().block(vec![]);
-        ctx.set_term(Term::If(isnil, fail_block, cont_b));
+        ctx.set_if_term(isnil, fail_block, cont_b);
         ctx.cur_block = Some(cont_b);
         let h = ctx.let_(Prim::ListHead(cur));
         let t = ctx.let_(Prim::ListTail(cur));
@@ -2675,7 +2709,7 @@ fn match_list(
             // Must end with nil.
             let isnil = ctx.let_(Prim::IsEmptyList(cur));
             let cont_b = ctx.cur_mut().block(vec![]);
-            ctx.set_term(Term::If(isnil, cont_b, fail_block));
+            ctx.set_if_term(isnil, cont_b, fail_block);
             ctx.cur_block = Some(cont_b);
             Ok(())
         }
@@ -2694,7 +2728,7 @@ fn match_map(
         let nil_v = ctx.let_(Prim::Const(Const::Nil));
         let is_nil = ctx.let_(Prim::BinOp(BinOp::Eq, got, nil_v));
         let cont_b = ctx.cur_mut().block(vec![]);
-        ctx.set_term(Term::If(is_nil, fail_block, cont_b));
+        ctx.set_if_term(is_nil, fail_block, cont_b);
         ctx.cur_block = Some(cont_b);
         lower_pattern_bind(ctx, got, val_pat, fail_block)?;
     }
@@ -2728,7 +2762,7 @@ fn match_bitstring(
         });
         let ok = ctx.let_(Prim::TupleField(result, 0));
         let cont_b = ctx.cur_mut().block(vec![]);
-        ctx.set_term(Term::If(ok, cont_b, fail_block));
+        ctx.set_if_term(ok, cont_b, fail_block);
         ctx.cur_block = Some(cont_b);
         let extracted = ctx.let_(Prim::TupleField(result, 1));
         let next_reader = ctx.let_(Prim::TupleField(result, 2));
@@ -2740,7 +2774,7 @@ fn match_bitstring(
     }
     let done = ctx.let_(Prim::BitReaderDone(reader));
     let cont_b = ctx.cur_mut().block(vec![]);
-    ctx.set_term(Term::If(done, cont_b, fail_block));
+    ctx.set_if_term(done, cont_b, fail_block);
     ctx.cur_block = Some(cont_b);
     Ok(())
 }
@@ -2798,7 +2832,7 @@ fn emit_eq_check(
     let lit_v = ctx.let_(lit);
     let eq_v = ctx.let_(Prim::BinOp(BinOp::Eq, subject, lit_v));
     let cont_b = ctx.cur_mut().block(vec![]);
-    ctx.set_term(Term::If(eq_v, cont_b, fail_block));
+    ctx.set_if_term(eq_v, cont_b, fail_block);
     ctx.cur_block = Some(cont_b);
     Ok(())
 }
@@ -3025,6 +3059,8 @@ fn lower_case(
     let saved_order = ctx.env_order.clone();
 
     let mut clause_conts: Vec<Option<ContFn>> = (0..clauses.len()).map(|_| None).collect();
+    let prev_origin = ctx.branch_origin;
+    ctx.branch_origin = crate::fz_ir::BranchOrigin::ClauseDispatch;
     {
         let clauses_ref = clauses;
         let clause_conts_ref = &mut clause_conts;
@@ -3049,7 +3085,7 @@ fn lower_case(
             if let Some(g) = &guard {
                 let guard_var = lower_expr(ctx, g, false)?;
                 let body_b = ctx.cur_mut().block(vec![]);
-                ctx.set_term(Term::If(guard_var, body_b, fall_block));
+                ctx.set_if_term(guard_var, body_b, fall_block);
                 ctx.cur_block = Some(body_b);
                 ctx.terminated = false;
             }
@@ -3072,6 +3108,7 @@ fn lower_case(
         };
         lower_pattern_matrix(ctx, matrix, fail_block, &mut cb)?;
     }
+    ctx.branch_origin = prev_origin;
 
     for (i, clause) in clauses.iter().enumerate() {
         let Some(cont) = clause_conts[i].clone() else {
@@ -3162,7 +3199,10 @@ fn lower_cond(
         // a CPS-split descendant if the test contained a non-tail call).
         let body_b = ctx.cur_mut().block(vec![]);
         let fall_b = ctx.cur_mut().block(vec![]);
-        ctx.set_term(Term::If(cv, body_b, fall_b));
+        let prev_origin = ctx.branch_origin;
+        ctx.branch_origin = crate::fz_ir::BranchOrigin::ClauseDispatch;
+        ctx.set_if_term(cv, body_b, fall_b);
+        ctx.branch_origin = prev_origin;
 
         // fall_b: TailCall next arm (or fail). Captures are the current
         // env, which includes the outer captures (rebound into the arm fn
@@ -3285,7 +3325,11 @@ fn lower_with(
                 ctx.cur_block = Some(saved_blk);
                 let v_resolved = ctx.unpark(&v_park);
                 ctx.unbind(&v_park);
-                lower_pattern_bind(ctx, v_resolved, pat, mismatch_b)?;
+                let prev_origin = ctx.branch_origin;
+                ctx.branch_origin = crate::fz_ir::BranchOrigin::PatternBind;
+                let res = lower_pattern_bind(ctx, v_resolved, pat, mismatch_b);
+                ctx.branch_origin = prev_origin;
+                res?;
             }
         }
     }
@@ -3337,6 +3381,8 @@ fn lower_with(
         };
 
         let mut else_conts: Vec<Option<ContFn>> = (0..else_clauses.len()).map(|_| None).collect();
+        let prev_origin_with = ctx.branch_origin;
+        ctx.branch_origin = crate::fz_ir::BranchOrigin::ClauseDispatch;
         {
             let else_clauses_ref = else_clauses;
             let else_conts_ref = &mut else_conts;
@@ -3359,7 +3405,7 @@ fn lower_with(
                 if let Some(g) = &guard {
                     let guard_var = lower_expr(ctx, g, false)?;
                     let body_b = ctx.cur_mut().block(vec![]);
-                    ctx.set_term(Term::If(guard_var, body_b, fall_block));
+                    ctx.set_if_term(guard_var, body_b, fall_block);
                     ctx.cur_block = Some(body_b);
                     ctx.terminated = false;
                 }
@@ -3382,6 +3428,7 @@ fn lower_with(
             };
             lower_pattern_matrix(ctx, matrix, else_fail, &mut cb)?;
         }
+        ctx.branch_origin = prev_origin_with;
 
         for (i, clause) in else_clauses.iter().enumerate() {
             let Some(cont) = else_conts[i].clone() else {
@@ -3724,6 +3771,124 @@ mod tests {
         let m = lower_src("fn m(p) do\n  x = p\n  x\nend");
         let s = format!("{}", m);
         assert!(s.contains("return v0"), "got:\n{}", s);
+    }
+
+    /// fz-fyq.3 — `collect_diagnostics` filters `unreachable-arm` to
+    /// `BranchOrigin::User`. A destructure (`{a,b} = ...`) and a fn-clause
+    /// dispatch both synthesize Ifs the typer can prove dead-edged; neither
+    /// should warn. User-authored Ifs whose dead branch the typer can
+    /// prove (here: `if true do A else B` where the else is structurally
+    /// unreachable) still do.
+    #[test]
+    fn unreachable_arm_silenced_on_synthesized_ifs() {
+        let m = lower_src(concat!(
+            "fn fst(0), do: :zero\n",
+            "fn fst(_), do: :other\n",
+            "fn main() do\n",
+            "  {a, b} = {1, 2}\n",
+            "  fst(a + b)\n",
+            "end\n",
+        ));
+        let mt = crate::ir_typer::type_module(&m);
+        let diags = crate::ir_typer::collect_diagnostics(&m, &mt);
+        let unreachable: Vec<_> = diags
+            .iter()
+            .filter(|d| d.code == crate::diag::codes::TYPE_UNREACHABLE_ARM)
+            .collect();
+        assert!(
+            unreachable.is_empty(),
+            "synthesized dispatch Ifs must not warn; got {:?}",
+            unreachable,
+        );
+    }
+
+    /// fz-fyq.2 — `ModuleTypes::dead_branches` publishes one entry per
+    /// provably-dead branch under cross-spec consensus, and stays silent
+    /// for polymorphic-recursion functions where some spec leaves the
+    /// branch live (e.g. a `sum`-style fn typed `[]` vs `[h | t]`).
+    #[test]
+    fn dead_branches_published_for_destructure_but_not_polymorphic_sum() {
+        use crate::fz_ir::DeadBranch;
+        // Irrefutable destructure on a known-2-tuple — the typer proves
+        // the synthesized fail edge dead under the one live spec.
+        let m = lower_src("fn main() do\n  {a, b} = {1, 2}\n  a + b\nend\n");
+        let mt = crate::ir_typer::type_module(&m);
+        assert!(
+            mt.dead_branches
+                .values()
+                .any(|d| matches!(d, DeadBranch::Else)),
+            "expected an Else dead branch for {{a,b}} = {{1,2}}; got {:?}",
+            mt.dead_branches,
+        );
+
+        // Polymorphic sum — every spec needs both branches alive
+        // (the `[]` arm is dead in the leaf spec but live in the
+        // recursive spec). Nothing should be published.
+        let m2 = lower_src(concat!(
+            "fn sum([]), do: 0\n",
+            "fn sum([h | t]), do: h + sum(t)\n",
+            "fn main(), do: sum([1, 2, 3])\n",
+        ));
+        let mt2 = crate::ir_typer::type_module(&m2);
+        // The destructure inside main may itself produce dead branches,
+        // but sum's clause-dispatch Ifs must not.
+        let sum_fid = m2.fn_by_name("sum").expect("sum exists").id;
+        for (fid, _bid) in mt2.dead_branches.keys() {
+            assert_ne!(
+                *fid, sum_fid,
+                "sum/1 is polymorphically recursive; no branch should be published dead",
+            );
+        }
+    }
+
+    /// fz-fyq.1 — every lowering path that synthesizes a `Term::If` tags it
+    /// with the right `BranchOrigin`. Cover one source program that exercises
+    /// each origin and assert the right set appears in the lowered module.
+    #[test]
+    fn branch_origin_tagged_per_lowering_path() {
+        use crate::fz_ir::BranchOrigin;
+        let m = lower_src(concat!(
+            // ParamGuard: typed param synthesizes a TypeTest If.
+            "fn f(x :: integer), do: x\n",
+            // ClauseDispatch (multi-clause): two clauses on a literal.
+            "fn g(0), do: :zero\n",
+            "fn g(_), do: :other\n",
+            // PatternBind: `{a, b} = ...` synthesizes Ifs that check tuple arity.
+            "fn h() do\n",
+            "  {a, b} = {1, 2}\n",
+            "  a + b\n",
+            "end\n",
+            // User: hand-written `if`.
+            "fn i(n), do: if n > 0, do: 1, else: 0\n",
+        ));
+        let mut seen: std::collections::HashSet<BranchOrigin> = std::collections::HashSet::new();
+        for f in &m.fns {
+            for b in &f.blocks {
+                if let crate::fz_ir::Term::If { origin, .. } = &b.terminator {
+                    seen.insert(*origin);
+                }
+            }
+        }
+        assert!(
+            seen.contains(&BranchOrigin::User),
+            "missing User: {:?}",
+            seen
+        );
+        assert!(
+            seen.contains(&BranchOrigin::PatternBind),
+            "missing PatternBind: {:?}",
+            seen,
+        );
+        assert!(
+            seen.contains(&BranchOrigin::ClauseDispatch),
+            "missing ClauseDispatch: {:?}",
+            seen,
+        );
+        assert!(
+            seen.contains(&BranchOrigin::ParamGuard),
+            "missing ParamGuard: {:?}",
+            seen,
+        );
     }
 
     #[test]

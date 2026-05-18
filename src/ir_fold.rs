@@ -80,9 +80,19 @@ pub fn fold_fn_with_types(f: &mut FnIr, fn_types: &FnTypes) {
             }
         }
 
-        // Fold Term::If when cond is a provably-singleton truthy/falsy value.
-        // Compute the new terminator first to avoid a borrow conflict on block.
-        let new_term = if let Term::If(cond, then_b, else_b) = &block.terminator {
+        // Per-spec cond-singleton `Term::If` fold. Acts on this spec's
+        // own `fn_types.vars`, so it catches singleton-cond cases that
+        // hold for THIS spec even when other specs leave the cond
+        // generic — exactly the case `ir_branch_fold` (cross-spec
+        // consensus) must skip for soundness. Sibling to the BinOp /
+        // TypeTest folds above, which are also strictly per-spec.
+        let new_term = if let Term::If {
+            cond,
+            then_b,
+            else_b,
+            ..
+        } = &block.terminator
+        {
             let ct = fn_types.vars.get(cond).cloned().unwrap_or_else(Descr::any);
             if ct.is_subtype(&Descr::atom_lit("true")) {
                 Some(Term::Goto(*then_b, vec![]))
@@ -111,6 +121,11 @@ mod tests {
         mb.add_fn(f);
         let mut m = mb.build();
         let types = crate::ir_typer::type_module(&m);
+        // fz-fyq.4 — `ir_codegen::compile` runs `ir_branch_fold` before
+        // `ir_fold`; mirror that order in the test pipeline so the
+        // If-fold tests below (which used to depend on `ir_fold`'s own
+        // cond-singleton fold) see the same end-state as production.
+        crate::ir_branch_fold::fold_module(&mut m, &types);
         fold_module(&mut m, &types);
         m
     }
@@ -222,7 +237,7 @@ mod tests {
         // TypeTest(42, integer) → always true
         let c42 = b.let_(entry, Prim::Const(Const::Int(42)));
         let tt = b.let_(entry, Prim::TypeTest(c42, Box::new(Descr::int())));
-        b.set_terminator(entry, Term::If(tt, then_b, else_b));
+        b.set_terminator(entry, Term::if_user(tt, then_b, else_b));
         let nil1 = b.let_(then_b, Prim::Const(Const::Nil));
         b.set_terminator(then_b, Term::Return(nil1));
         let nil2 = b.let_(else_b, Prim::Const(Const::Nil));
@@ -243,7 +258,7 @@ mod tests {
         // TypeTest(nil, integer) → always false
         let nil_c = b.let_(entry, Prim::Const(Const::Nil));
         let tt = b.let_(entry, Prim::TypeTest(nil_c, Box::new(Descr::int())));
-        b.set_terminator(entry, Term::If(tt, then_b, else_b));
+        b.set_terminator(entry, Term::if_user(tt, then_b, else_b));
         let nil1 = b.let_(then_b, Prim::Const(Const::Nil));
         b.set_terminator(then_b, Term::Return(nil1));
         let nil2 = b.let_(else_b, Prim::Const(Const::Nil));
@@ -263,7 +278,7 @@ mod tests {
         let then_b = b.block(vec![]);
         let else_b = b.block(vec![]);
         let nil_c = b.let_(entry, Prim::Const(Const::Nil));
-        b.set_terminator(entry, Term::If(nil_c, then_b, else_b));
+        b.set_terminator(entry, Term::if_user(nil_c, then_b, else_b));
         let n1 = b.let_(then_b, Prim::Const(Const::Nil));
         b.set_terminator(then_b, Term::Return(n1));
         let n2 = b.let_(else_b, Prim::Const(Const::Nil));
@@ -284,14 +299,18 @@ mod tests {
         let then_b = b.block(vec![]);
         let else_b = b.block(vec![]);
         let tt = b.let_(entry, Prim::TypeTest(param, Box::new(Descr::int())));
-        b.set_terminator(entry, Term::If(tt, then_b, else_b));
+        b.set_terminator(entry, Term::if_user(tt, then_b, else_b));
         let n1 = b.let_(then_b, Prim::Const(Const::Nil));
         b.set_terminator(then_b, Term::Return(n1));
         let n2 = b.let_(else_b, Prim::Const(Const::Nil));
         b.set_terminator(else_b, Term::Return(n2));
         let m = run_fold(b.build());
         match &m.fns[0].block(entry).terminator {
-            Term::If(_, t, e) if *t == then_b && *e == else_b => {}
+            Term::If {
+                then_b: t,
+                else_b: e,
+                ..
+            } if *t == then_b && *e == else_b => {}
             other => panic!("expected Term::If unchanged, got {:?}", other),
         }
     }
