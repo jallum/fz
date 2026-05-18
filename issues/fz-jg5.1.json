@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-jg5.2"
+  ],
   "created": "2026-05-18T02:55:13Z",
   "description": "# Verify the reducer algorithm on paper, before any production code lands\n\n## Goal\n\nWalk every callsite in `fixtures/ast_eval/input.fz`'s main through\nthe reducer rules **by hand**, step by step. Confirm we land at\n`42`, `14`, `21` with zero `eval` bodies needed.\n\n## What lands\n\nA test file or markdown doc under `docs/walkthroughs/` (or similar)\nrecording the reduction sequence. Example shape:\n\n```\neval({:num, 42})\n  match clause 1 → bind n := 42 → return 42  ✓\n\neval({:add, {:num, 2}, {:mul, {:num, 3}, {:num, 4}}})\n  match clause 2 → bind a := {:num,2}, b := {:mul,...}\n  → eval({:num, 2}) + eval({:mul, ...})\n  → 2 + (eval({:num, 3}) * eval({:num, 4}))\n  → 2 + (3 * 4)\n  → 14  ✓\n```\n\nNo production code. This is the **stop point**: if the walk hits a\nstep that needs a judgment call we haven't named, we surface it\nhere and re-design before committing to RED.1+.\n\n## Acceptance\n\n- Walk lands at the correct values on all three callsites.\n- Every reduction step is mechanical (matches one of the named\n  rules: pattern dispatch, substitute binding, fold arithmetic,\n  recurse on smaller arg, stop on opaque, stop on budget).\n- If a non-mechanical step appears, stop and report — the arc\n  re-designs from that finding.\n\n## Removals\n\nNone.",
   "id": "fz-jg5.1",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "fz-RED.0 SPIKE: hand-walk ast_eval through paper reducer",
   "type": "task",
-  "updated_at": "2026-05-18T02:55:13Z"
+  "updated_at": "2026-05-18T02:56:54Z"
 }
