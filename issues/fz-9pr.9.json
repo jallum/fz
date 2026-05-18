@@ -6,14 +6,15 @@
   "blocks": [
     "fz-9pr.10"
   ],
+  "closed_at": "2026-05-18T15:44:27Z",
   "created": "2026-05-18T15:02:15Z",
   "description": "Debug-build invariant: after typer convergence, every Emitted outcome\nin callsite_outcomes corresponds to:\n  - a SpecKey in module_types.specs, AND\n  - at least one EmitterSite in module_types.holders[target].\n\nIf either is missing, the Emitted is orphaned and the assertion fires.\n\n## Acceptance\n\n- Debug-build cargo test passes.\n- Release build: assertion stripped.\n\n## Removes\n\nNothing yet.",
   "id": "fz-9pr.9",
   "labels": [],
   "parent": "fz-9pr",
   "priority": 2,
-  "status": "in_progress",
+  "status": "closed",
   "title": "fz-CO.D.2 — Invariant: every Emitted has provenance",
   "type": "task",
-  "updated_at": "2026-05-18T15:43:43Z"
+  "updated_at": "2026-05-18T15:44:27Z"
 }
