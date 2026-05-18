@@ -2221,7 +2221,7 @@ pub fn compile_with_backend<B: Backend>(
                 continue;
             }
             let body_ok = f.blocks.iter().all(|b| match &b.terminator {
-                Term::Return(_) | Term::Halt(_) | Term::Goto(_, _) | Term::If(_, _, _) => true,
+                Term::Return(_) | Term::Halt(_) | Term::Goto(_, _) | Term::If { .. } => true,
                 Term::Call {
                     callee,
                     continuation,
@@ -4055,7 +4055,12 @@ fn emit_terminator<M: cranelift_module::Module>(
                 .collect();
             b.ins().jump(tgt, &arg_vals);
         }
-        Term::If(c, t, e) => {
+        Term::If {
+            cond: c,
+            then_b: t,
+            else_b: e,
+            ..
+        } => {
             let vb = var_env.get(&c.0).expect("unbound if cond");
             let t_b = *block_map.get(&t.0).unwrap();
             let e_b = *block_map.get(&e.0).unwrap();
@@ -4833,9 +4838,11 @@ fn compile_fn<M: cranelift_module::Module>(
             };
             match &blk.terminator {
                 Term::Goto(t, _) => stack.push(t.0),
-                Term::If(_, t, e) => {
-                    stack.push(t.0);
-                    stack.push(e.0);
+                Term::If {
+                    then_b, else_b, ..
+                } => {
+                    stack.push(then_b.0);
+                    stack.push(else_b.0);
                 }
                 // Return / TailCall / Halt / Call / CallClosure /
                 // TailCallClosure / Receive don't pass control to other
@@ -5021,8 +5028,8 @@ fn compile_fn<M: cranelift_module::Module>(
         };
         match &blk.terminator {
             Term::Goto(_, args) => note(args, &mut used_by_term),
-            Term::If(c, _, _) => {
-                used_by_term.insert(c.0);
+            Term::If { cond, .. } => {
+                used_by_term.insert(cond.0);
             }
             Term::Halt(v) | Term::Return(v) => {
                 used_by_term.insert(v.0);

@@ -350,9 +350,14 @@ fn run_fn(module: &Module, mut fn_id: FnId, mut args: Vec<FzValue>) -> Result<In
                     }
                     cur = *b;
                 }
-                Term::If(c, t, e) => {
-                    let cv = env_get(&env, *c)?;
-                    cur = if is_truthy(cv) { *t } else { *e };
+                Term::If {
+                    cond,
+                    then_b,
+                    else_b,
+                    ..
+                } => {
+                    let cv = env_get(&env, *cond)?;
+                    cur = if is_truthy(cv) { *then_b } else { *else_b };
                 }
                 Term::Call {
                     callee,

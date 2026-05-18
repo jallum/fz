@@ -145,7 +145,7 @@ pub fn natively_callable(m: &Module, parking: &HashSet<FnId>) -> HashSet<FnId> {
                 continue;
             }
             let body_ok = f.blocks.iter().all(|b| match &b.terminator {
-                Term::Return(_) | Term::Halt(_) | Term::Goto(_, _) | Term::If(_, _, _) => true,
+                Term::Return(_) | Term::Halt(_) | Term::Goto(_, _) | Term::If { .. } => true,
                 Term::Call {
                     callee,
                     continuation,

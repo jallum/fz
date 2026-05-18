@@ -168,7 +168,7 @@ fn max_var_in_term(t: &Term) -> u32 {
     let mut v = |x: Var| m = m.max(x.0);
     match t {
         Term::Goto(_, args) => args.iter().for_each(|x| v(*x)),
-        Term::If(c, _, _) => v(*c),
+        Term::If { cond, .. } => v(*cond),
         Term::Call {
             args, continuation, ..
         } => {
@@ -291,7 +291,17 @@ pub fn alpha_rename(callee: &FnIr, caller: &FnIr) -> FnIr {
         let sb = shift_b;
         match t {
             Term::Goto(b, args) => Term::Goto(sb(*b), args.iter().map(|x| sv(*x)).collect()),
-            Term::If(c, then_b, else_b) => Term::If(sv(*c), sb(*then_b), sb(*else_b)),
+            Term::If {
+                cond,
+                then_b,
+                else_b,
+                origin,
+            } => Term::If {
+                cond: sv(*cond),
+                then_b: sb(*then_b),
+                else_b: sb(*else_b),
+                origin: *origin,
+            },
             Term::Call {
                 callee,
                 args,

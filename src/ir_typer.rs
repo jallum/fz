@@ -1112,7 +1112,7 @@ fn compute_return_for_spec(
                 let cont_k = cont_key_for_spec(b, continuation, ft, module, effective_returns);
                 joined = joined.union(&lookup((continuation.fn_id, cont_k)));
             }
-            Term::Halt(_) | Term::Goto(_, _) | Term::If(_, _, _) => {}
+            Term::Halt(_) | Term::Goto(_, _) | Term::If { .. } => {}
         }
     }
     joined
@@ -1603,9 +1603,15 @@ fn topo_order(f: &FnIr) -> Vec<BlockId> {
     while let Some(bid) = queue.pop_front() {
         order.push(bid);
         let b = f.block(bid);
+        let if_pair;
         let succs: &[BlockId] = match &b.terminator {
             Term::Goto(t, _) => std::slice::from_ref(t),
-            Term::If(_, t, e) => &[*t, *e],
+            Term::If {
+                then_b, else_b, ..
+            } => {
+                if_pair = [*then_b, *else_b];
+                &if_pair
+            }
             _ => &[],
         };
         for &s in succs {
@@ -1722,7 +1728,12 @@ pub fn type_fn(f: &FnIr, m: &Module, entry_param_types: Option<&[Descr]>) -> FnT
                         }
                     }
                 }
-                Term::If(cond, then_b, else_b) => {
+                Term::If {
+                    cond,
+                    then_b,
+                    else_b,
+                    ..
+                } => {
                     let (then_env, else_env) = narrow_for_if(&env, *cond, &b.stmts);
                     if merge_into(&mut block_envs, *then_b, &then_env) {
                         changed = true;
@@ -1777,7 +1788,12 @@ pub fn type_fn(f: &FnIr, m: &Module, entry_param_types: Option<&[Descr]>) -> FnT
         let b = f.block(bid);
         match &b.terminator {
             Term::Goto(target, _) => worklist.push(*target),
-            Term::If(cond, then_b, else_b) => {
+            Term::If {
+                cond,
+                then_b,
+                else_b,
+                ..
+            } => {
                 // Re-evaluate stmts to get the env at the terminator.
                 let mut env = block_envs[&bid].clone();
                 for stmt in &b.stmts {
@@ -2476,7 +2492,13 @@ pub fn collect_diagnostics(module: &Module, types: &ModuleTypes) -> crate::diag:
         let mut blocks_sorted: Vec<&crate::fz_ir::Block> = f.blocks.iter().collect();
         blocks_sorted.sort_by_key(|b| b.id.0);
         for b in blocks_sorted {
-            let Term::If(cond, then_b, else_b) = b.terminator else {
+            let Term::If {
+                cond,
+                then_b,
+                else_b,
+                ..
+            } = b.terminator
+            else {
                 continue;
             };
 
@@ -3190,10 +3212,15 @@ pub fn pretty_module_types(m: &Module, t: &ModuleTypes) -> String {
                         arg_vars.join(", ")
                     ));
                 }
-                Term::If(cond, t_blk, e_blk) => {
+                Term::If {
+                    cond,
+                    then_b,
+                    else_b,
+                    ..
+                } => {
                     out.push_str(&format!(
                         ";     blk{} If Var({}) ? blk{} : blk{}\n",
-                        bid, cond.0, t_blk.0, e_blk.0
+                        bid, cond.0, then_b.0, else_b.0
                     ));
                 }
             }
