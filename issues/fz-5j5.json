@@ -1,0 +1,14 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-18T11:01:26Z",
+  "description": "# fz-TYP: Typer perf — kill nested fixpoints, expose data-flow\n\n## The thing in one sentence\n\nThe typer is doing standard data-flow analysis using three nested\nwhole-graph fixpoints where one worklist would do; the per-iteration\ncost is dominated by `is_equiv` calls that lack an O(1) trivial-case\ncheck; and the pipeline runs `type_module` an extra time for a\nmutation nobody downstream reads. Fix each at the root.\n\n## Why now\n\n`ast_eval` compiles in ~530 ms; ~510 ms of that is the typer. A\n9-line program. The slowness isn't accidental complexity — it's\nstructural: the current implementation is a brute-force version of\nalgorithms the code is already trying to be.\n\n## Concrete acceptance\n\n- `ast_eval` end-to-end compile drops from ~530 ms to under 50 ms.\n- `type_module` call count in the codegen pipeline drops from 3 to 2.\n- Within one `type_module` call, no `for _ in 0..N` whole-graph\n  rebuilds remain — worklist drives termination.\n- Every existing fixture passes three-path parity (interp + JIT + AOT).\n- Every existing typer test passes unchanged.\n\n## What this is NOT\n\n- A rewrite of `Descr` operations or the set-theoretic core.\n- A change to specialization policy (per-callsite keying stays).\n- A change to `type_fn` (per-spec body typing stays).\n- An attempt to make `Descr` operations produce canonical forms.\n\n## Removals are first-class\n\nEach ticket explicitly enumerates what comes out:\n\n- TYP.2 removes the second `type_module` call from the pipeline and\n  the `type_module_called_exactly_three_times` test pin.\n- TYP.3 removes the outer `0..16` LFP loop, the `0..64 / 0..16` phase-2\n  caps, all `specs.keys().cloned().collect()` snapshots, the\n  phase-1/phase-2 split, `compute_effective_returns`'s separate\n  `0..(N*4+16)` loop, and the `prev_returns` outer-iter cache.\n\nThe arc only finishes when the dead machinery is gone.\n\n## DAG\n\n```\nTYP.1  is_equiv structural fast-path\n       (one-line shortcut inside the kernel)\nTYP.2  Delete redundant type_module call #2\n       (rewrites are orthogonal — code comment already says so)\nTYP.3  Replace nested fixpoints with one worklist\n       (standard data-flow with a callee→callers reverse index)\n```\n\nNo edges between the three. Each lands independently and verifiably.\n\n## Background\n\nSee conversation 2026-05-18 for the measurement that exposed this:\n- ~388 µs/type_fn call on ast_eval (vs ~65 µs on fib_tailrec) → TYP.1\n- 3 type_module calls, middle one identical to first for ast_eval → TYP.2\n- 11 outer fixpoint iters, 3357 walks for 58 specs → TYP.3",
+  "id": "fz-5j5",
+  "labels": [],
+  "priority": 1,
+  "status": "open",
+  "title": "[EPIC] Typer perf: kill nested fixpoints, expose data-flow",
+  "type": "epic",
+  "updated_at": "2026-05-18T11:01:26Z"
+}
