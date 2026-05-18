@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-rh5.4"
   ],
@@ -12,8 +12,8 @@
   "labels": [],
   "parent": "fz-rh5",
   "priority": 1,
-  "status": "open",
+  "status": "in_progress",
   "title": "fz-PROV.6: provenance-based spec lifetime — EmitterSite + holders + unified worklist",
   "type": "task",
-  "updated_at": "2026-05-18T13:06:59Z"
+  "updated_at": "2026-05-18T13:07:04Z"
 }
