@@ -174,7 +174,7 @@ fn subst_prim(p: &Prim, subst: &HashMap<Var, Var>) -> Prim {
         Prim::ListCons(a, b) => Prim::ListCons(sv(*a), sv(*b)),
         Prim::ListHead(a) => Prim::ListHead(sv(*a)),
         Prim::ListTail(a) => Prim::ListTail(sv(*a)),
-        Prim::ListIsNil(a) => Prim::ListIsNil(sv(*a)),
+        Prim::IsEmptyList(a) => Prim::IsEmptyList(sv(*a)),
         Prim::MakeTuple(args) => Prim::MakeTuple(args.iter().map(|x| sv(*x)).collect()),
         Prim::TupleField(a, i) => Prim::TupleField(sv(*a), *i),
         Prim::MakeList(els, tail) => {
