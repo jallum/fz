@@ -1,5 +1,5 @@
 {
-  "assignee": "",
+  "assignee": "Jason Allum",
   "blocked_by": [
     "fz-jg5.7"
   ],
@@ -16,8 +16,8 @@
     }
   ],
   "priority": 2,
-  "status": "open",
+  "status": "in_progress",
   "title": "fz-RED.9: @spec as downstream-narrowing contract",
   "type": "task",
-  "updated_at": "2026-05-18T03:17:57Z"
+  "updated_at": "2026-05-18T04:01:07Z"
 }
