@@ -5,14 +5,15 @@
     "fz-f88.6"
   ],
   "blocks": [],
+  "closed_at": "2026-05-18T18:07:34Z",
   "created": "2026-05-18T17:22:39Z",
   "description": "Use the new tags from .5 and .6 to filter the outcomes dump.\n\n## Default behavior\n\nHide:\n- `Prelude` category (vec_get noise everyone sees in every fixture).\n- Bodies whose fn isn't in `reachable_specs` (post-reduction dead bodies — e.g., classify/fact bodies in fixtures/multi_clause where main fully folds).\n\nShow:\n- Everything else, grouped by caller as today.\n\n## Flags\n\nAdd CLI flags to widen:\n- `--all` — show prelude + dead bodies too.\n- (Optional) `--category=user,k,...` filter, deferred unless trivial.\n\n## Verify\n\n- Re-run ast_eval, multi_clause, fib_tailrec, closure_typed_captures dumps. They should be visibly cleaner: no vec_get, no dead-code body chatter. The signal-to-noise ratio jumps.\n- Fixture goldens for `expected.outcomes` shrink — BLESS=1 to re-record.\n- Spot-check: nothing user-relevant disappears.\n\n## Blocked by\n\nfz-f88.5, fz-f88.6",
   "id": "fz-f88.7",
   "labels": [],
   "parent": "fz-f88",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "fz-RS.7 — dump_outcomes_pipeline filters by category + reachability",
   "type": "task",
-  "updated_at": "2026-05-18T18:04:37Z"
+  "updated_at": "2026-05-18T18:07:34Z"
 }
