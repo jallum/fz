@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-f88.7"
+  ],
   "created": "2026-05-18T17:22:22Z",
   "description": "Tag every FnIr with its origin at lowering time. No consumers yet — just the field.\n\n## Shape\n\n```rust\nenum FnCategory {\n    User,              // parsed from user source\n    Prelude,           // runtime.fz builtins\n    MultiClauseCont,   // fn_clause_N\n    LambdaLift,        // lambda_N from closure lifting\n    CpsCont,           // k_N, k_receive_N\n    ControlFlowCont,   // if_then/if_else/case_clause_N/cond_arm_N/with_else_N\n}\n\nstruct FnIr {\n    // ...existing fields...\n    category: FnCategory,\n}\n```\n\n## Recording sites\n\nSet the category at every place a FnIr is added to the module:\n- User: src/ir_lower.rs:500-520 (user items after prelude)\n- Prelude: src/ir_lower.rs:457-498 (runtime.fz items)\n- MultiClauseCont: src/ir_lower.rs:1707 (`mint_cont_fn(..., \"fn_clause_{i}\")`)\n- LambdaLift: src/ir_lower.rs:2259 (`FnBuilder::new(lam_id, format!(\"lambda_{}\", ...))`)\n- CpsCont: src/ir_lower.rs:2327, 2383, 2440 (`k_{}`/`k_receive_{}`)\n- ControlFlowCont: src/ir_lower.rs:2179-2184, 2932, 2981, 3045 (if/case/cond)\n\n## Verify\n\n- No behavior change. No consumer reads `category` yet. Just the field landing cleanly.\n- `prelude_fn_id_cutoff` can stay for now; .8 will consider removing it once `category == Prelude` subsumes its only use.\n\n## Independent\n\nNo dependencies. Can land in parallel with Arc 1 and .4.",
   "id": "fz-f88.5",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "fz-RS.5 — FnIr.category: FnCategory field, set at lowering",
   "type": "task",
-  "updated_at": "2026-05-18T17:22:22Z"
+  "updated_at": "2026-05-18T17:23:00Z"
 }
