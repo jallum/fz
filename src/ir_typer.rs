@@ -13,7 +13,7 @@
 //!
 //! Branch narrowing (fz-ul4.11.24.3):
 //!   * `Term::If(cond, t, e)` inspects the stmt that bound `cond`. If it was
-//!     `ListIsNil(v)`, the truthy branch refines `v` to `nil`; the falsy
+//!     `IsEmptyList(v)`, the truthy branch refines `v` to `nil`; the falsy
 //!     branch keeps the list shape. If it was `BinOp::Eq(a, b)` and either
 //!     operand is a singleton literal, the truthy branch intersects the other
 //!     operand with that singleton.
@@ -1845,7 +1845,7 @@ fn narrow_for_cond(
             let (_, else_ab) = narrow_for_cond(*b, &else_a, stmts);
             return (union_envs(then_a, &then_b), else_ab);
         }
-        Prim::ListIsNil(v) => {
+        Prim::IsEmptyList(v) => {
             let current = env.get(v).cloned().unwrap_or_else(Descr::any);
             let then_t = current.intersect(&Descr::nil());
             let else_t = current.intersect(&Descr::list_of(Descr::any()));
@@ -1987,7 +1987,7 @@ fn type_prim(
             // Tail is either a (possibly empty) list of the same elem, or nil.
             Descr::list_of(elem).union(&Descr::nil())
         }
-        Prim::ListIsNil(_) => Descr::bool_t(),
+        Prim::IsEmptyList(_) => Descr::bool_t(),
 
         Prim::MakeMap(entries) => {
             let mut fields = std::collections::BTreeMap::new();

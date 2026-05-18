@@ -118,7 +118,7 @@ fn max_var_in_prim(p: &Prim) -> u32 {
             v(*a);
             v(*b);
         }
-        Prim::ListHead(a) | Prim::ListTail(a) | Prim::ListIsNil(a) => v(*a),
+        Prim::ListHead(a) | Prim::ListTail(a) | Prim::IsEmptyList(a) => v(*a),
         Prim::MakeTuple(args) => args.iter().for_each(|x| v(*x)),
         Prim::TupleField(a, _) => v(*a),
         Prim::MakeList(els, tail) => {
@@ -218,7 +218,7 @@ pub fn alpha_rename(callee: &FnIr, caller: &FnIr) -> FnIr {
             Prim::ListCons(a, b) => Prim::ListCons(sv(*a), sv(*b)),
             Prim::ListHead(a) => Prim::ListHead(sv(*a)),
             Prim::ListTail(a) => Prim::ListTail(sv(*a)),
-            Prim::ListIsNil(a) => Prim::ListIsNil(sv(*a)),
+            Prim::IsEmptyList(a) => Prim::IsEmptyList(sv(*a)),
             Prim::MakeTuple(args) => Prim::MakeTuple(args.iter().map(|x| sv(*x)).collect()),
             Prim::TupleField(a, i) => Prim::TupleField(sv(*a), *i),
             Prim::MakeList(els, tail) => {

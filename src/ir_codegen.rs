@@ -6246,7 +6246,7 @@ fn lower_prim<M: cranelift_module::Module>(
             }
             return Ok(LowerOut::DeadUnit);
         }
-        Prim::ListIsNil(c) => {
+        Prim::IsEmptyList(c) => {
             let cv = tagged_get(var_env, b, jmod, runtime, c.0, cache);
             let nil_v = cached_iconst(b, cache, NIL_BITS);
             let cmp = b.ins().icmp(IntCC::Equal, cv, nil_v);

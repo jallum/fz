@@ -1406,7 +1406,7 @@ fn lower_matrix_list_cons(
             _ => {}
         }
     }
-    let isnil = ctx.let_(Prim::ListIsNil(subject));
+    let isnil = ctx.let_(Prim::IsEmptyList(subject));
     let nil_b = ctx.cur_mut().block(vec![]);
     let cons_b = ctx.cur_mut().block(vec![]);
     ctx.set_term(Term::If(isnil, nil_b, cons_b));
@@ -2590,7 +2590,7 @@ fn match_list(
 ) -> Result<(), LowerError> {
     let mut cur = subject;
     for elem_pat in elems {
-        let isnil = ctx.let_(Prim::ListIsNil(cur));
+        let isnil = ctx.let_(Prim::IsEmptyList(cur));
         let cont_b = ctx.cur_mut().block(vec![]);
         ctx.set_term(Term::If(isnil, fail_block, cont_b));
         ctx.cur_block = Some(cont_b);
@@ -2603,7 +2603,7 @@ fn match_list(
         Some(tail_pat) => lower_pattern_bind(ctx, cur, tail_pat, fail_block),
         None => {
             // Must end with nil.
-            let isnil = ctx.let_(Prim::ListIsNil(cur));
+            let isnil = ctx.let_(Prim::IsEmptyList(cur));
             let cont_b = ctx.cur_mut().block(vec![]);
             ctx.set_term(Term::If(isnil, cont_b, fail_block));
             ctx.cur_block = Some(cont_b);
