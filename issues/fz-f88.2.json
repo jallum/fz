@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-18T17:21:55Z",
+  "description": "Add the closure arm to descr_to_materialize and widen the walk_block return filter so closure_lit results aren't thrown away.\n\n## Why\n\nReducer can compute that `add_to(10, 20)` returns `closure_lit(fn14, [10, 20])` (fold_make_closure at src/reducer.rs:374). But:\n- walk_block filter at src/ir_reducer.rs:333 rejects via `is_scalar_literal` (line 500).\n- Even if it passed, literal_to_const has no arm.\n\n## Shape\n\nMaterializer new arm: when `d` is a closure_lit Descr, push `Stmt::Let(v, Prim::MakeClosure(fn_id, cap_vars))`. Captures are guaranteed in scope as literal-bearing Vars by fold_make_closure's invariant — reuse them.\n\nwalk_block gate widens to: \"is the materializer willing to take this?\" (replace narrow `is_scalar_literal` check at line 333 with a materializer-driven predicate, OR introduce `is_materializable` that overlaps cleanly).\n\n## Verify\n\n- `fixtures/closure_typed_captures` outcomes dump: `main:blk0 Direct → add_to#11` should flip from Emitted to Consumed. Same for downstream k_15 calling apply1, which should now resolve. The whole chain should fold.\n- `expected.outcomes` golden updates (BLESS=1).\n- No CLIF regressions on fixtures that already worked.\n- Watch for second-order effects on @spec boundary fns (closure_lit fold across a boundary should still emit, not fold).\n\n## Blocked by\n\nfz-f88.1",
+  "id": "fz-f88.2",
+  "labels": [],
+  "parent": "fz-f88",
+  "priority": 1,
+  "status": "open",
+  "title": "fz-RS.2 — materializer closure_lit arm; widen walk_block gate",
+  "type": "task",
+  "updated_at": "2026-05-18T17:21:55Z"
+}
