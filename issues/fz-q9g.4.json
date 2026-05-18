@@ -1,8 +1,6 @@
 {
   "assignee": "",
-  "blocked_by": [
-    "fz-q9g.3"
-  ],
+  "blocked_by": [],
   "blocks": [
     "fz-q9g.19",
     "fz-q9g.5",
@@ -23,5 +21,5 @@
   "status": "open",
   "title": "fz-dps.C3: lower Term::Call/CallClosure under Dst ABI",
   "type": "task",
-  "updated_at": "2026-05-18T19:55:36Z"
+  "updated_at": "2026-05-18T20:01:59Z"
 }

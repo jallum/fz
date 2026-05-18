@@ -6,7 +6,6 @@
   ],
   "blocks": [
     "fz-q9g.13",
-    "fz-q9g.4",
     "fz-q9g.6"
   ],
   "created": "2026-05-17T04:46:31Z",
@@ -28,5 +27,5 @@
   "status": "in_progress",
   "title": "fz-dps.CD: native-path wire ABI (Return/Call/TailCall) + MakeList DPS via TRMC",
   "type": "task",
-  "updated_at": "2026-05-18T19:39:30Z"
+  "updated_at": "2026-05-18T20:01:59Z"
 }
