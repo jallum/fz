@@ -24,6 +24,32 @@
 //! - Tuple / list return values (need MakeTuple / cons rewriting).
 //! - Non-tail `Term::Call` inside callee bodies (needs cont
 //!   reasoning — RED.5+).
+//!
+//! ## fz-9pr.6 — partial fold for Term::Call when cont doesn't fold
+//!
+//! Investigation: `reduce_terminator`'s `Term::Call` branch already
+//! handles "callee folds, cont doesn't" by rewriting to
+//! `TailCall(cont.fn_id, [literal_var, ...captures])`. And `walk_block`
+//! at the recursive layer already calls `feed_cont` when an inner Call's
+//! callee folds. So a "partial fold" at the Term::Call level wouldn't
+//! help: the existing two paths already cover everything the current
+//! reducer can fold.
+//!
+//! The reason `closure_typed_captures`'s `apply1(add_to(10, 20), 12)`
+//! survives is *deeper*: `add_to(10, 20)` returns a `closure_lit(fn14,
+//! [10, 20])` — a STRUCTURAL literal. `walk_block`'s Return arm gates
+//! on `is_scalar_literal`, so the walk returns None and the entire
+//! chain stalls at main's outermost `Call add_to`. Fixing this requires
+//! teaching the reducer to rewrite a `Call` whose result is a
+//! `closure_lit` Descr — i.e., emit a `Prim::MakeClosure(fn14, [c10, c20])`
+//! and feed THAT Var into the cont. That's a much bigger feature
+//! (per-Descr-shape Const reconstruction; see `literal_to_const`'s
+//! current scalar-only scope), and is out of fz-9pr's epic.
+//!
+//! Resolution: fz-9pr.6 is doc-only. apply1's callsite remains
+//! `Stalled`; the typer (fz-9pr.D) will Emit it. The follow-up that
+//! could lift this is a fz-jg5 successor — "closure-typed return"
+//! reduction.
 
 use crate::fz_ir::{
     Block, BlockId, CallsiteId, CallsiteOutcome, Const, EmitSlot, FnId, FnIr, Module, Prim, Stmt,
