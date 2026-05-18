@@ -1,7 +1,8 @@
 {
   "assignee": "",
   "blocked_by": [
-    "fz-jg5.2"
+    "fz-jg5.2",
+    "fz-ul4.43"
   ],
   "blocks": [
     "fz-jg5.4"
@@ -15,5 +16,5 @@
   "status": "open",
   "title": "fz-RED.2: clause dispatch via pattern matrix",
   "type": "task",
-  "updated_at": "2026-05-18T02:56:54Z"
+  "updated_at": "2026-05-18T02:56:55Z"
 }
