@@ -11,9 +11,15 @@
   "id": "fz-jg5.5",
   "labels": [],
   "parent": "fz-jg5",
+  "comments": [
+    {
+      "text": "Findings (docs/walkthroughs/FINDINGS.md): Ratify structural-decrease explicitly: tuple projection, list cons→tail, AND literal-int decrement when start is a literal int. Opaque-int decrement does NOT qualify (count_100k touchstone). Counter shared across mutual recursion via the per-top-level-callsite scope. mutual_recursion(10), fib_tailrec(20), list_primitives(5) all unroll under budget; tail_recursion(100000) blows budget → 1 body via stop-budget.",
+      "timestamp": "2026-05-18T03:17:56Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "fz-RED.4: recursive reduction with unroll budget (subsumes fz-ul4.11.28)",
   "type": "task",
-  "updated_at": "2026-05-18T02:56:55Z"
+  "updated_at": "2026-05-18T03:17:56Z"
 }
