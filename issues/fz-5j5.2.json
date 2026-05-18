@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-18T11:01:57Z",
+  "description": "## The change\n\nIn `src/ir_codegen.rs:1865-1873`, today:\n\n```rust\nlet pre_types = type_module(\u0026working);\nrewrite_vec_kinds(\u0026mut working, \u0026pre_types)?;\nlet mid_types = type_module(\u0026working);                // ← delete\nrewrite_known_target_closures(\u0026mut working, \u0026mid_types);\n```\n\nAfter:\n\n```rust\nlet pre_types = type_module(\u0026working);\nrewrite_vec_kinds(\u0026mut working, \u0026pre_types)?;\nrewrite_known_target_closures(\u0026mut working, \u0026pre_types);\n```\n\nThe third `type_module` call at line 1891 stays — it sees the\npost-inline / post-fuse / post-reduce IR and is genuinely a\ndifferent computation.\n\n## Why this is correct\n\nThe code comment at `ir_codegen.rs:1857-1864` already documents the\northogonality:\n\n\u003e rewrite_vec_kinds reads any_key_specs/ft.vars to find element\n\u003e types of MakeVec stmts. rewrite_known_target_closures reads\n\u003e specs/ft.fn_constants to find constant-closure CallClosure\n\u003e targets. The two reads are orthogonal (element types vs.\n\u003e fn_constants) and their writes are orthogonal (VecKindIr\n\u003e mutations vs. CallClosure→Call rewrites). A single type_module\n\u003e call CAN serve both — merging calls 1+2 would reduce the\n\u003e pipeline count from 3 to 2.\n\nThe author observed the invariant and stopped at \"left as a future\nsimplification.\" This ticket is that simplification.\n\nWhy the writes really are orthogonal: `rewrite_vec_kinds` mutates\n`Prim::MakeVec` kind tags (I64→F64). `fn_constants` tracks Vars\nbound to `Prim::Const(Value::Fn)` and `Prim::MakeClosure` — neither\nprim type is touched. So `pre_types.fn_constants ==\nmid_types.fn_constants`, identically, on every module.\n\n## Removals\n\n- The `let mid_types = type_module(\u0026working);` line.\n- The `type_module_called_exactly_three_times_in_pipeline` test\n  in `src/ir_codegen_tests.rs:1288`. Replace with\n  `type_module_called_exactly_twice_in_pipeline` asserting `== 2`.\n  No \"≤ 3\" softening — the count is now a fixed invariant of the\n  pipeline shape.\n\n## Acceptance\n\n- One typer call removed from the pipeline.\n- Updated test asserts exactly 2 calls.\n- `ast_eval` end-to-end compile drops by ~170 ms.\n- Every fixture passes three-path parity.\n\n## Independent of\n\nTYP.1 and TYP.3.",
+  "id": "fz-5j5.2",
+  "labels": [],
+  "parent": "fz-5j5",
+  "priority": 1,
+  "status": "open",
+  "title": "fz-TYP.2: Delete redundant type_module call in codegen pipeline",
+  "type": "task",
+  "updated_at": "2026-05-18T11:01:57Z"
+}
