@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-0z4.3"
+  ],
   "created": "2026-05-18T18:53:11Z",
   "description": "## Scope\n\nNew `src/ir_callgraph.rs`. Move `build_call_graph` (ir_typer.rs:69) and\n`entry_seeds` (ir_typer.rs:442) out of ir_typer; ir_typer's Tarjan SCC\nanalysis re-imports them. Add:\n\n```rust\npub fn reachable_fns(module: \u0026Module) -\u003e HashSet\u003cFnId\u003e;\n```\n\nPure BFS from `entry_seeds(module)` over `build_call_graph(module)`.\nNo type information consumed.\n\n## Why here, not in ir_typer\n\nir_typer currently owns the only call-graph walker, but reachability\nisn't a typing fact — it's pure call-graph BFS. Putting it in\nir_typer would perpetuate the conflation we're correcting. One\nmodule owns \"what counts as a call edge\" (Call, TailCall,\nCallClosure cont, Receive cont, MakeClosure target); typer and the\nnew consumers both import from it.\n\n## Tests\n\n- Trivial graph (one fn): reaches itself.\n- Recursive cycle (a→b→a): both reachable, terminates.\n- MakeClosure edge: `main` builds a closure over F → F reachable\n  even if never directly called.\n- Orphan fn: defined in module but unreachable from `main` →\n  excluded.\n- Continuation edge: Call's continuation.fn_id reaches the cont fn.\n\n## Out of scope\n\n- Adding new roots beyond `entry_seeds` (currently just `main`). The\n  existing seeds match what the typer uses; matching that surface is\n  the parity bar.\n- Touching the standalone `ir_typer::reachable_specs(...)` function\n  (different, SpecId-level, codegen-specific).\n\n## Acceptance\n\n- `cargo build` clean (warnings = errors per CLAUDE.md).\n- ir_typer's SCC analysis unchanged in behavior (existing typer tests\n  pass).\n- New unit tests for `reachable_fns` pass.",
   "id": "fz-0z4.1",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "Extract ir_callgraph module — move build_call_graph + entry_seeds, add reachable_fns",
   "type": "task",
-  "updated_at": "2026-05-18T18:53:11Z"
+  "updated_at": "2026-05-18T18:54:10Z"
 }

@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-0z4.1"
+  ],
   "blocks": [
     "fz-0z4.4"
   ],
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "Pattern_check uses reachable_fns on the reduced module — drop second type_module",
   "type": "task",
-  "updated_at": "2026-05-18T18:54:09Z"
+  "updated_at": "2026-05-18T18:54:10Z"
 }
