@@ -3,6 +3,11 @@ use crate::ir_lower::lower_program;
 use crate::lexer::Lexer;
 use crate::parser::Parser;
 
+// fz-yan.1 — after the runtime split, false halts as its reserved
+// atom ID (2). Tests previously asserted 0 from the special-bits
+// derivation; the named constant makes the new semantics explicit.
+const FALSE_HALT: i64 = fz_runtime::fz_value::FALSE_ATOM_ID as i64;
+
 fn lower_src(src: &str) -> Module {
     let toks = Lexer::new(src).tokenize().expect("lex");
     let prog = Parser::new(toks).parse_program().expect("parse");
@@ -266,9 +271,11 @@ fn unop_neg_runs() {
 
 #[test]
 fn atom_const_returns_atom_id() {
-    // match_error (id=0) and function_clause (id=1) intern during prelude
-    // lowering; :ok is the next user atom (id=2).
-    assert_eq!(run_main("fn main(), do: :ok"), 2);
+    // fz-yan.1 — AtomTable reserves ids 0/1/2 for nil/true/false at
+    // construction. match_error (id=3) and function_clause (id=4)
+    // intern during prelude lowering; :ok is the next user atom
+    // (id=5).
+    assert_eq!(run_main("fn main(), do: :ok"), 5);
 }
 
 // ----- .11.8 frame-allocation tests -----
@@ -576,7 +583,7 @@ fn list_structural_eq_same_content_distinct_allocations() {
 
 #[test]
 fn list_structural_eq_length_mismatch_is_false() {
-    assert_eq!(run_main("fn main(), do: [1, 2] == [1, 2, 3]"), 0);
+    assert_eq!(run_main("fn main(), do: [1, 2] == [1, 2, 3]"), FALSE_HALT);
 }
 
 #[test]
@@ -586,7 +593,7 @@ fn tuple_structural_eq_same_arity_and_content() {
 
 #[test]
 fn tuple_eq_different_arity_is_false() {
-    assert_eq!(run_main("fn main(), do: {1, 2} == {1, 2, 3}"), 0);
+    assert_eq!(run_main("fn main(), do: {1, 2} == {1, 2, 3}"), FALSE_HALT);
 }
 
 #[test]
@@ -601,12 +608,15 @@ fn map_structural_eq_ignores_construction_order() {
 
 #[test]
 fn map_eq_different_value_is_false() {
-    assert_eq!(run_main("fn main(), do: %{a: 1, b: 2} == %{a: 1, b: 3}"), 0);
+    assert_eq!(
+        run_main("fn main(), do: %{a: 1, b: 2} == %{a: 1, b: 3}"),
+        FALSE_HALT
+    );
 }
 
 #[test]
 fn heterogeneous_kinds_compare_unequal() {
-    assert_eq!(run_main("fn main(), do: [1, 2] == {1, 2}"), 0);
+    assert_eq!(run_main("fn main(), do: [1, 2] == {1, 2}"), FALSE_HALT);
 }
 
 #[test]
@@ -616,7 +626,7 @@ fn nested_map_with_list_structural_eq() {
 
 #[test]
 fn neq_inverts_structural_eq() {
-    assert_eq!(run_main("fn main(), do: [1, 2] != [1, 2]"), 0);
+    assert_eq!(run_main("fn main(), do: [1, 2] != [1, 2]"), FALSE_HALT);
     assert_eq!(run_main("fn main(), do: [1, 2] != [1, 3]"), 1);
 }
 
@@ -648,7 +658,7 @@ fn mixed_int_float_arithmetic_promotes() {
 
 #[test]
 fn mixed_int_float_eq_does_not_promote() {
-    assert_eq!(run_main("fn main(), do: 1 == 1.0"), 0);
+    assert_eq!(run_main("fn main(), do: 1 == 1.0"), FALSE_HALT);
 }
 
 #[test]
@@ -1219,7 +1229,7 @@ fn pure_branch_type_test_emits_no_select() {
 /// share an existing nil if the same block already holds one.
 /// hello: print(42), print(:ok), print(true) are all unit-return externs
 /// whose nil results are dead — only print(nil)'s result is live (passed
-/// to the continuation). Before: 5 × `iconst.i64 3`. After: ≤ 2.
+/// to the continuation). Before: 5 × `iconst.i64 2`. After: ≤ 2.
 #[test]
 fn dead_unit_extern_result_elided() {
     let src = "fn main() do\n\
@@ -1237,8 +1247,8 @@ fn dead_unit_extern_result_elided() {
         .find(|(n, _)| n == "main")
         .map(|(_, s)| s.as_str())
         .unwrap_or("");
-    // Dead nil results are gone. Count occurrences of "iconst.i64 3".
-    let nil_count = main_ir.matches("iconst.i64 3").count();
+    // Dead nil results are gone. Count occurrences of "iconst.i64 2".
+    let nil_count = main_ir.matches("iconst.i64 2").count();
     assert!(
         nil_count <= 2,
         "expected ≤ 2 nil iconsts in main CLIF (got {}); dead unit results not elided:\n{}",
@@ -1247,7 +1257,7 @@ fn dead_unit_extern_result_elided() {
     );
     // The live nil (used as continuation arg) must still be present.
     assert!(
-        main_ir.contains("iconst.i64 3"),
+        main_ir.contains("iconst.i64 2"),
         "expected at least one nil iconst:\n{}",
         main_ir
     );
@@ -1256,7 +1266,7 @@ fn dead_unit_extern_result_elided() {
 /// fz-o2g — Const::Nil/Bool/Atom through cached_iconst. The nil arg
 /// to print(nil) and the live unit-extern result both call
 /// cached_iconst(NIL_BITS) and must share the same SSA value — one
-/// iconst.i64 3, not two.
+/// iconst.i64 2, not two.
 #[test]
 fn const_nil_bool_atom_deduplicated_within_block() {
     let src = "fn main() do\n\
@@ -1271,7 +1281,7 @@ fn const_nil_bool_atom_deduplicated_within_block() {
         .find(|(n, _)| n == "main")
         .map(|(_, s)| s.as_str())
         .unwrap_or("");
-    let nil_count = main_ir.matches("iconst.i64 3").count();
+    let nil_count = main_ir.matches("iconst.i64 2").count();
     assert_eq!(
         nil_count, 1,
         "expected exactly 1 nil iconst in main (Const::Nil and unit-extern result share via cached_iconst), got {}:\n{}",
@@ -1306,9 +1316,12 @@ fn nil_does_not_match_empty_list_pattern() {
     let halt = run_main("fn f([]), do: 1\nfn main(), do: f(nil)");
     // Halt value of the atom :function_clause is its id (1).
     // Confirmed by the existing atom_const_returns_atom_id test.
+    // fz-yan.1 — function_clause atom id is 4 (nil=0, true=1,
+    // false=2 reserve the first three slots; match_error=3,
+    // function_clause=4).
     assert_eq!(
-        halt, 1,
-        "expected :function_clause halt (id=1); got {}",
+        halt, 4,
+        "expected :function_clause halt (id=4); got {}",
         halt
     );
 }
@@ -1319,9 +1332,12 @@ fn nil_does_not_match_empty_list_pattern() {
 #[test]
 fn empty_list_does_not_match_nil_pattern() {
     let halt = run_main("fn f(nil), do: 1\nfn main(), do: f([])");
+    // fz-yan.1 — function_clause atom id is 4 (nil=0, true=1,
+    // false=2 reserve the first three slots; match_error=3,
+    // function_clause=4).
     assert_eq!(
-        halt, 1,
-        "expected :function_clause halt (id=1); got {}",
+        halt, 4,
+        "expected :function_clause halt (id=4); got {}",
         halt
     );
 }

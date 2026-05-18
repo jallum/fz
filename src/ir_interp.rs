@@ -305,21 +305,9 @@ fn value_to_halt(v: FzValue) -> i64 {
     use fz_runtime::fz_value::Tag;
     match v.tag() {
         Tag::Int => v.unbox_int().unwrap(),
+        // fz-yan.1 — see ir_runtime::fz_halt for the same shape.
+        // nil/true/false flow through this atom arm now.
         Tag::Atom => v.unbox_atom().unwrap() as i64,
-        Tag::Special => {
-            // Tag::Special has three inhabitants: true → 1, false → 0,
-            // nil → 0. The else branch asserts the only remaining
-            // possibility; a new Special variant landing here would
-            // surface in debug builds.
-            if v.is_true() {
-                1
-            } else if v.is_false() {
-                0
-            } else {
-                debug_assert!(v.is_nil(), "value_to_halt: unrecognized Tag::Special bits");
-                0
-            }
-        }
         Tag::Ptr | Tag::Reserved => v.0 as i64,
     }
 }

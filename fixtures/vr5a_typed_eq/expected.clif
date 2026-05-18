@@ -8,19 +8,19 @@ function u0:0(i64) -> i64 tail {
     fn0 = u0:40 sig0
 
 block0(v0: i64):
-    v1 = iconst.i64 19                  ; @2:9
-    call fn0(v1)                        ; @2:14  v1 = 19
-    v2 = iconst.i64 11                  ; @2:9
-    call fn0(v2)  ; v2 = 11
-    v3 = iconst.i64 18    ;; v3 :: :ok
-    v4 = iconst.i64 26    ;; v4 :: :err
-    v5 = iconst.i64 19    ;; v5 :: bool
-    call fn0(v5)  ; v5 = 19
-    v6 = icmp eq v3, v3  ; v3 = 18, v3 = 18
-    v7 = select v6, v2, v1  ; v2 = 11, v1 = 19    ;; v7 :: bool
+    v1 = iconst.i64 18                  ; @2:9
+    call fn0(v1)                        ; @2:14  v1 = 18
+    v2 = iconst.i64 10                  ; @2:9
+    call fn0(v2)  ; v2 = 10
+    v3 = iconst.i64 42    ;; v3 :: :ok
+    v4 = iconst.i64 50    ;; v4 :: :err
+    v5 = iconst.i64 18    ;; v5 :: bool
+    call fn0(v5)  ; v5 = 18
+    v6 = icmp eq v3, v3  ; v3 = 42, v3 = 42
+    v7 = select v6, v2, v1  ; v2 = 10, v1 = 18    ;; v7 :: bool
     call fn0(v7)
-    v8 = iconst.i64 3    ;; v8 :: nil
+    v8 = iconst.i64 2    ;; v8 :: nil
     v9 = load.i64 notrap aligned v0+16  ; @2:3
-    return_call_indirect sig1, v9(v8, v0) ; @2:3  v8 = 3
+    return_call_indirect sig1, v9(v8, v0) ; @2:3  v8 = 2
 }
 

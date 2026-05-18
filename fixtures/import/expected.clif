@@ -10,8 +10,8 @@ function u0:0(i64) -> i64 tail {
 block0(v0: i64):
     v1 = iconst.i64 42                  ; @13:19
     call fn0(v1)                        ; @13:23  v1 = 42
-    v2 = iconst.i64 3                   ; @13:23
+    v2 = iconst.i64 2                   ; @13:23
     v3 = load.i64 notrap aligned v0+16  ; @13:9
-    return_call_indirect sig1, v3(v2, v0) ; @13:9  v2 = 3
+    return_call_indirect sig1, v3(v2, v0) ; @13:9  v2 = 2
 }
 

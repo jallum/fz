@@ -399,11 +399,19 @@ fn fold_make_closure(
 
 fn fold_list_is_nil(v: Var, env: &HashMap<Var, Descr>) -> Option<Descr> {
     let d = env.get(&v)?;
+    // fz-yan.1 — post-fz-s9y, `nil` (the atom) and `[]` (the empty list
+    // sentinel) are distinct bit patterns. `IsEmptyList` tests for the
+    // EMPTY_LIST sentinel, so a value provably equal to `nil` folds to
+    // `false`, not `true` as it did pre-s9y. The `list_of(none())` case
+    // — i.e. provably the empty list — still folds to `true`.
     if is_nil_only(d) {
-        Some(bool_descr(true))
-    } else if d.intersect(&Descr::nil()).is_empty() && !d.lists.is_empty() {
-        // Provably a cons (non-empty list) — not nil.
         Some(bool_descr(false))
+    } else if d.intersect(&Descr::nil()).is_empty() && !d.lists.is_empty() {
+        // Disjoint from `nil` and has a non-empty `lists` axis: this is
+        // either `[]` or a cons. Without a finer "non-empty list" track
+        // in the lattice we can't separate the two, so we leave the
+        // fold to the runtime.
+        None
     } else {
         None
     }
@@ -994,16 +1002,19 @@ mod tests {
 
     #[test]
     fn fold_list_is_nil_on_nil() {
+        // fz-yan.1 — post-fz-s9y, `nil` ≠ `[]`. A provably-nil value is
+        // NOT the empty-list sentinel, so IsEmptyList folds to `false`.
         let env = env(&[(0, Descr::nil())]);
         let r = fold_prim(&Prim::IsEmptyList(v(0)), &env, &[]).unwrap();
-        assert_eq!(as_bool_lit(&r), Some(true));
+        assert_eq!(as_bool_lit(&r), Some(false));
     }
 
     #[test]
-    fn fold_list_is_nil_on_list_of_int() {
+    fn fold_list_is_nil_on_list_of_int_is_unknown() {
+        // fz-yan.1 — post-fz-s9y, `list_of(int)` includes the empty list,
+        // so we can no longer fold to `false`. Leave the test to runtime.
         let env = env(&[(0, Descr::list_of(Descr::int_lit(1)))]);
-        let r = fold_prim(&Prim::IsEmptyList(v(0)), &env, &[]).unwrap();
-        assert_eq!(as_bool_lit(&r), Some(false));
+        assert!(fold_prim(&Prim::IsEmptyList(v(0)), &env, &[]).is_none());
     }
 
     #[test]

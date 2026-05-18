@@ -90,21 +90,13 @@ pub extern "C" fn fz_halt(_ctx: *mut u8, fz_bits: u64) {
     let v = FzValue(fz_bits);
     let i: i64 = match v.tag() {
         Tag::Int => v.unbox_int().unwrap(),
+        // fz-yan.1 — nil/true/false are atoms with reserved IDs
+        // (0/1/2), so they flow through this arm uniformly. Pre-yan
+        // the Tag::Special branch returned true→1, false→0, nil→0;
+        // post-yan they return their atom IDs (true→1 unchanged,
+        // false→2 changed, nil→0 unchanged). Tests that asserted on
+        // false's halt value need to assert 2 instead of 0.
         Tag::Atom => v.unbox_atom().unwrap() as i64,
-        Tag::Special => {
-            // Tag::Special has three inhabitants: true → 1, false → 0,
-            // nil → 0. The else branch asserts the only remaining
-            // possibility; a new Special variant landing here would
-            // surface in debug builds.
-            if v.is_true() {
-                1
-            } else if v.is_false() {
-                0
-            } else {
-                debug_assert!(v.is_nil(), "fz_halt: unrecognized Tag::Special bits");
-                0
-            }
-        }
         Tag::Ptr => {
             let p = v.unbox_ptr().unwrap();
             // Null Ptr-tagged value (e.g. 0): nothing to read, return raw bits.

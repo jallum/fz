@@ -18,17 +18,33 @@ const TAG_MASK: u64 = 0b111;
 const TAG_PTR: u64 = 0b000;
 const TAG_INT: u64 = 0b001;
 const TAG_ATOM: u64 = 0b010;
-const TAG_SPECIAL: u64 = 0b011;
+// fz-yan.1 — TAG_SPECIAL (0b011) is reserved/unused. The former
+// occupants (nil/true/false) are now regular atoms with reserved
+// compile-time IDs; see NIL_ATOM_ID etc. below.
 
-const SPECIAL_NIL: u64 = (0 << TAG_BITS) | TAG_SPECIAL;
-const SPECIAL_TRUE: u64 = (1 << TAG_BITS) | TAG_SPECIAL;
-const SPECIAL_FALSE: u64 = (2 << TAG_BITS) | TAG_SPECIAL;
+/// fz-yan.1 — reserved atom IDs. `AtomTable::new()` pre-interns
+/// "nil"/"true"/"false" in this order at module construction time,
+/// so every module has these well-known IDs available. The
+/// `*_BITS` constants below are atom-tagged FzValue encodings of
+/// these IDs; consumers reference the named constants and don't
+/// need to know about the reservation.
+pub const NIL_ATOM_ID: u32 = 0;
+pub const TRUE_ATOM_ID: u32 = 1;
+pub const FALSE_ATOM_ID: u32 = 2;
+
+/// fz-yan.1 — public bit patterns. Atom-tagged FzValue encodings
+/// of the three reserved IDs. Kept as named constants so call sites
+/// throughout codegen / runtime are unchanged from the pre-fz-yan
+/// world; only the definitions move.
+pub const NIL_BITS: u64 = (NIL_ATOM_ID as u64) << TAG_BITS | TAG_ATOM;
+pub const TRUE_BITS: u64 = (TRUE_ATOM_ID as u64) << TAG_BITS | TAG_ATOM;
+pub const FALSE_BITS: u64 = (FALSE_ATOM_ID as u64) << TAG_BITS | TAG_ATOM;
 
 /// fz-s9y.2 — the empty-list sentinel. TAG_PTR tag (0b000) with payload
 /// value 1 (so the full bit pattern is `0x8`). Address 0x8 sits inside
 /// page 0, which the OS reserves as unmapped — no allocator ever returns
 /// it, so the sentinel can't collide with a real heap pointer.
-/// Distinct from `SPECIAL_NIL`: `[]` and `nil` are different values.
+/// Distinct from `NIL_BITS`: `[]` and `nil` are different values.
 pub(crate) const EMPTY_LIST: u64 = 1 << TAG_BITS;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -36,7 +52,6 @@ pub enum Tag {
     Ptr,
     Int,
     Atom,
-    Special,
     Reserved,
 }
 
@@ -45,9 +60,9 @@ pub enum Tag {
 pub struct FzValue(pub u64);
 
 impl FzValue {
-    pub const NIL: FzValue = FzValue(SPECIAL_NIL);
-    pub const TRUE: FzValue = FzValue(SPECIAL_TRUE);
-    pub const FALSE: FzValue = FzValue(SPECIAL_FALSE);
+    pub const NIL: FzValue = FzValue(NIL_BITS);
+    pub const TRUE: FzValue = FzValue(TRUE_BITS);
+    pub const FALSE: FzValue = FzValue(FALSE_BITS);
     /// fz-s9y.2 — the empty list `[]`. Distinct from `NIL`.
     pub const EMPTY_LIST: FzValue = FzValue(EMPTY_LIST);
 
@@ -73,7 +88,6 @@ impl FzValue {
             TAG_PTR => Tag::Ptr,
             TAG_INT => Tag::Int,
             TAG_ATOM => Tag::Atom,
-            TAG_SPECIAL => Tag::Special,
             _ => Tag::Reserved,
         }
     }
@@ -96,9 +110,6 @@ impl FzValue {
     }
 
     pub fn unbox_ptr(self) -> Option<*mut HeapHeader> {
-        if self.0 == SPECIAL_NIL || self.0 == SPECIAL_TRUE || self.0 == SPECIAL_FALSE {
-            return None;
-        }
         if self.0 == EMPTY_LIST {
             // fz-s9y.2 — the empty list is TAG_PTR-tagged but its "pointer"
             // is a sentinel into unmapped memory. Do not dereference.
@@ -111,17 +122,20 @@ impl FzValue {
         }
     }
 
+    // fz-yan.1 — nil/true/false are atoms with reserved IDs. The
+    // predicates are now atom-id checks; their public signatures are
+    // preserved so consumers don't notice the representation move.
     pub fn is_nil(self) -> bool {
-        self.0 == SPECIAL_NIL
+        self.unbox_atom() == Some(NIL_ATOM_ID)
     }
     pub fn is_empty_list(self) -> bool {
         self.0 == EMPTY_LIST
     }
     pub fn is_true(self) -> bool {
-        self.0 == SPECIAL_TRUE
+        self.unbox_atom() == Some(TRUE_ATOM_ID)
     }
     pub fn is_false(self) -> bool {
-        self.0 == SPECIAL_FALSE
+        self.unbox_atom() == Some(FALSE_ATOM_ID)
     }
 
     /// Range of valid 61-bit signed ints.
@@ -133,11 +147,12 @@ impl std::fmt::Debug for FzValue {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.tag() {
             Tag::Int => write!(f, "FzValue::Int({})", self.unbox_int().unwrap()),
+            // fz-yan.1 — the reserved-ID atoms get their conventional
+            // names in debug output; other atoms render as their id.
+            Tag::Atom if self.is_nil() => write!(f, "FzValue::Nil"),
+            Tag::Atom if self.is_true() => write!(f, "FzValue::True"),
+            Tag::Atom if self.is_false() => write!(f, "FzValue::False"),
             Tag::Atom => write!(f, "FzValue::Atom({})", self.unbox_atom().unwrap()),
-            Tag::Special if self.is_nil() => write!(f, "FzValue::Nil"),
-            Tag::Special if self.is_true() => write!(f, "FzValue::True"),
-            Tag::Special if self.is_false() => write!(f, "FzValue::False"),
-            Tag::Special => write!(f, "FzValue::Special({:#x})", self.0),
             Tag::Ptr if self.is_empty_list() => write!(f, "FzValue::EmptyList"),
             Tag::Ptr => write!(f, "FzValue::Ptr({:#x})", self.0),
             Tag::Reserved => write!(f, "FzValue::Reserved({:#x})", self.0),
@@ -364,9 +379,13 @@ mod tests {
         assert!(n.is_nil() && !n.is_true() && !n.is_false());
         assert!(!t.is_nil() && t.is_true() && !t.is_false());
         assert!(!f.is_nil() && !f.is_true() && f.is_false());
-        assert_eq!(n.tag(), Tag::Special);
-        assert_eq!(t.tag(), Tag::Special);
-        assert_eq!(f.tag(), Tag::Special);
+        // fz-yan.1 — nil/true/false are atoms with reserved IDs.
+        assert_eq!(n.tag(), Tag::Atom);
+        assert_eq!(t.tag(), Tag::Atom);
+        assert_eq!(f.tag(), Tag::Atom);
+        assert_eq!(n.unbox_atom(), Some(NIL_ATOM_ID));
+        assert_eq!(t.unbox_atom(), Some(TRUE_ATOM_ID));
+        assert_eq!(f.unbox_atom(), Some(FALSE_ATOM_ID));
         assert_ne!(n.0, t.0);
         assert_ne!(n.0, f.0);
         assert_ne!(t.0, f.0);
@@ -501,18 +520,13 @@ pub mod debug {
         let v = FzValue(bits);
         match v.tag() {
             Tag::Int => v.unbox_int().unwrap().to_string(),
+            // fz-yan.1 — the reserved-ID atoms (nil/true/false) render
+            // bareword, matching their source-level keyword spelling.
+            // Other atoms get the leading colon via `render_atom`.
+            Tag::Atom if v.is_nil() => "nil".into(),
+            Tag::Atom if v.is_true() => "true".into(),
+            Tag::Atom if v.is_false() => "false".into(),
             Tag::Atom => render_atom(v.unbox_atom().unwrap()),
-            Tag::Special => {
-                if v.is_nil() {
-                    "nil".into()
-                } else if v.is_true() {
-                    "true".into()
-                } else if v.is_false() {
-                    "false".into()
-                } else {
-                    format!("#special<{:#x}>", bits)
-                }
-            }
             Tag::Ptr => {
                 // fz-s9y.2 — the empty list `[]` is TAG_PTR-tagged but its
                 // "pointer" is the EMPTY_LIST sentinel pointing into unmapped

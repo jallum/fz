@@ -41,9 +41,13 @@ const SLOT_BYTES: i32 = 8;
 // FzValue tag scheme (matches src/fz_value.rs).
 const TAG_INT: i64 = 0b001;
 const TAG_ATOM: i64 = 0b010;
-const NIL_BITS: i64 = 0b011;
-const TRUE_BITS: i64 = (1 << 3) | 0b011;
-const FALSE_BITS: i64 = (2 << 3) | 0b011;
+// fz-yan.1 — nil/true/false are atoms with reserved compile-time IDs.
+// The bit-pattern constants are preserved so codegen call sites are
+// unchanged; only the definitions move (from `TAG_SPECIAL`-tagged to
+// `TAG_ATOM`-tagged). See runtime/src/fz_value.rs.
+const NIL_BITS: i64 = fz_runtime::fz_value::NIL_BITS as i64;
+const TRUE_BITS: i64 = fz_runtime::fz_value::TRUE_BITS as i64;
+const FALSE_BITS: i64 = fz_runtime::fz_value::FALSE_BITS as i64;
 /// fz-s9y.2 — empty-list sentinel. TAG_PTR with payload 1 → bit pattern
 /// 0x8. Sits in unmapped page 0 so no allocator collides with it.
 /// Distinct from NIL_BITS (the nil atom-like value).

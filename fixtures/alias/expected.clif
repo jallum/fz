@@ -12,8 +12,8 @@ block0(v0: i64):
     call fn0(v1)  ; v1 = 1040
     v2 = iconst.i64 1041    ;; v2 :: 1041
     call fn0(v2)  ; v2 = 1041
-    v3 = iconst.i64 3    ;; v3 :: nil
+    v3 = iconst.i64 2    ;; v3 :: nil
     v4 = load.i64 notrap aligned v0+16  ; @16:9
-    return_call_indirect sig1, v4(v3, v0) ; @16:9  v3 = 3
+    return_call_indirect sig1, v4(v3, v0) ; @16:9  v3 = 2
 }
 
