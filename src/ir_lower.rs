@@ -3833,7 +3833,7 @@ mod tests {
         // The destructure inside main may itself produce dead branches,
         // but sum's clause-dispatch Ifs must not.
         let sum_fid = m2.fn_by_name("sum").expect("sum exists").id;
-        for ((fid, _bid), _which) in &mt2.dead_branches {
+        for (fid, _bid) in mt2.dead_branches.keys() {
             assert_ne!(
                 *fid, sum_fid,
                 "sum/1 is polymorphically recursive; no branch should be published dead",
