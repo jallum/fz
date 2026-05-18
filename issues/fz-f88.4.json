@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-18T17:22:10Z",
+  "description": "Trace-shape the Stalled→Emitted promotion so the reducer's reason survives.\n\n## Shape\n\n```rust\nCallsiteOutcome::Emitted {\n    target: SpecKey,\n    came_from: Option\u003cStalledReason\u003e,  // None if typer-discovered without prior Stalled\n}\n```\n\n## Wire up\n\n- Update enum in src/fz_ir.rs (~line 182).\n- ir_typer.rs `apply_callsite_outcomes` (~line 830): when replacing an entry that was `Stalled { reason }`, populate `came_from: Some(reason)`. When the prior entry was None/Consumed (shouldn't happen per current invariants but defensive), leave `came_from: None`.\n- main.rs dump_outcomes_pipeline (~line 857): print `Emitted (target) via Reason` when came_from is Some.\n- Test goldens: pattern matches in ir_typer_tests.rs and any expected.outcomes that mention Emitted need updating (BLESS=1).\n\n## Single ticket because\n\nEnum + propagation + dump are tightly coupled; splitting introduces a half-broken intermediate state.\n\n## Independent of Arc 1\n\nNo dependency on fz-f88.1-3. Can land in parallel.",
+  "id": "fz-f88.4",
+  "labels": [],
+  "parent": "fz-f88",
+  "priority": 1,
+  "status": "open",
+  "title": "fz-RS.4 — Emitted carries Option\u003cStalledReason\u003e; dump prints via Reason",
+  "type": "task",
+  "updated_at": "2026-05-18T17:22:10Z"
+}
