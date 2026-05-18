@@ -6,14 +6,15 @@
   "blocks": [
     "fz-s9y.3"
   ],
+  "closed_at": "2026-05-18T16:22:08Z",
   "created": "2026-05-18T16:03:48Z",
   "description": "## The change\n\nNow that the IR distinguishes `[]` from `nil` (EL.1), give them\ndistinct runtime bit patterns. This is the foundational behavior\nchange of the epic.\n\n### Add\n\n  - `EMPTY_LIST_BITS = 0x8` in `runtime/src/fz_value.rs` (TAG_PTR space,\n    unmapped low-address sentinel — no malloc ever returns 0x8).\n  - `FzValue::EMPTY_LIST` constant.\n  - `FzValue::is_empty_list(self) -\u003e bool` predicate.\n  - `EMPTY_LIST_BITS` constant in `src/ir_codegen.rs`.\n\n### Change\n\n  - `Const::EmptyList` codegen → `iconst EMPTY_LIST_BITS` (was NIL_BITS).\n  - `Prim::IsEmptyList` codegen → compare to `EMPTY_LIST_BITS` (was NIL_BITS).\n  - `Prim::MakeList(vec![], None)` codegen → `EMPTY_LIST_BITS` (was NIL_BITS).\n  - `ir_interp` parallel: equality + empty-list checks against new bits.\n  - Pretty-print: print `[]` for `EMPTY_LIST` (distinct from `nil`).\n  - Equality fold: `Descr::list_of(none()).is_equiv(Descr::nil())` —\n    audit and fix if it returned true under conflation.\n\n### REMOVES\n\n  - `NIL_BITS` as the canonical empty-list representation in codegen +\n    runtime + interp paths.\n  - Any silent assumption that walking a cons list terminates at\n    `is_nil` (now must be `is_empty_list`).\n\n## Expected effect\n\n  - After this commit, `nil != []` at the value level. A function\n    expecting a list rejects `nil` at @spec validation time. A\n    function pattern-matching on `nil` doesn't match `[]`. Etc.\n  - CLIF goldens shift (different iconst values). Re-bless.\n  - `expected.txt` unchanged everywhere — every fixture's observable\n    runtime output preserved.\n  - All 842 tests pass.\n\n## Depends on\n\nEL.1.\n\n## Walkthrough hazards\n\n  - **0x8 as sentinel**: must verify no `alloc_cons` (or any\n    allocator) ever returns 0x8. On modern OSes the entire first\n    page (addresses 0–4095) is unmapped — any attempt to access\n    triggers a SEGV. Sentinel value is safe.\n  - **List traversal**: every cons-walking loop must check\n    `is_empty_list(cur)` before dereferencing. The rename in EL.1\n    threaded `IsEmptyList` everywhere; this ticket just changes what\n    bits that check compares against. Grep for any DIRECT\n    `== NIL_BITS` for list-end (likely none after EL.1).\n  - **print() for list values**: `print([1, 2, 3])` walks cons cells,\n    stops when `cur == EMPTY_LIST_BITS`. Update from the previous\n    `cur == NIL_BITS` termination. Distinct from `print(nil)` which\n    sees `cur == NIL_BITS` and prints \"nil\".\n  - **fz_runtime stub for `nil` halt value**: at scheduler-halt, the\n    halt value may be inspected; ensure `is_nil()` and `is_empty_list()`\n    are not confused.",
   "id": "fz-s9y.2",
   "labels": [],
   "parent": "fz-s9y",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "fz-EL.2: runtime bit-pattern split — EMPTY_LIST sentinel",
   "type": "task",
-  "updated_at": "2026-05-18T16:12:43Z"
+  "updated_at": "2026-05-18T16:22:08Z"
 }
