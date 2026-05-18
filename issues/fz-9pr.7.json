@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-9pr.6"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-9pr.8"
+  ],
   "created": "2026-05-18T15:01:59Z",
   "description": "Mirror C.1 for Term::CallClosure: when closure_lit operand resolves\nand the inner call folds to a literal, even if the surrounding cont\nchain doesn't fold, rewrite the call to \\`TailCall(cont, [literal,\n...])\\` rather than giving up.\n\nAlready partially handled (lines 180-208 of ir_reducer.rs); the gap\nis the recursive-walk failure case.\n\n## Acceptance\n\n- curried_add: at least one of the apply chains' callsites becomes\n  Consumed.\n- All 842 tests green; runtime output unchanged.\n\n## Removes\n\nNothing. Improves reducer coverage.",
   "id": "fz-9pr.7",
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "fz-CO.C.2 — Partial fold for Term::CallClosure when cont doesn't fold",
   "type": "task",
-  "updated_at": "2026-05-18T15:01:59Z"
+  "updated_at": "2026-05-18T15:02:16Z"
 }
