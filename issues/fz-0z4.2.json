@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-18T18:53:18Z",
+  "description": "## Scope\n\nmain.rs:858 (`dump_outcomes_pipeline` default filter) currently reads\n`mt.reachable_specs.iter().map(|(fid, _)| *fid).collect()` to gate\nwhich caller fns to show. Replace with:\n\n```rust\nlet reachable_fids: HashSet\u003cFnId\u003e =\n    mt.specs.keys().map(|(fid, _)| *fid).collect();\n```\n\n`mt` is already in scope at line 802. No new function call needed.\n\n## Why independent of atom A\n\nThe field today is just `specs.keys().collect()` — projecting from\n`mt.specs.keys()` is semantically identical and requires nothing new.\nDecouples B's progress from A's; either can land first.\n\n## Tests\n\n- Golden test for the outcomes dump: byte-identical output across the\n  fixture matrix.\n\n## Acceptance\n\n- `cargo build` clean.\n- Outcomes dump byte-identical pre/post on all fixtures.",
+  "id": "fz-0z4.2",
+  "labels": [],
+  "parent": "fz-0z4",
+  "priority": 2,
+  "status": "open",
+  "title": "Dump outcomes filter projects from mt.specs.keys()",
+  "type": "task",
+  "updated_at": "2026-05-18T18:53:18Z"
+}
