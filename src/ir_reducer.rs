@@ -210,15 +210,11 @@ fn reduce_terminator(
                 record_stalled(m, fn_idx, bid, slot, reason);
                 return None;
             };
-            let new_var = fresh_var(&m.fns[fn_idx]);
-            let Some(const_val) = literal_to_const(&lit, m) else {
+            let Some(new_var) = descr_to_materialize(&lit, m, fn_idx, bid) else {
                 record_stalled(m, fn_idx, bid, slot, StalledReason::CalleeBodyShape);
                 return None;
             };
             record_consumed(m, fn_idx, bid, slot, lit);
-            block_mut(&mut m.fns[fn_idx], bid)
-                .stmts
-                .push(Stmt::Let(new_var, Prim::Const(const_val)));
             Some(Term::Return(new_var))
         }
         Term::Call {
@@ -233,15 +229,11 @@ fn reduce_terminator(
                 record_stalled(m, fn_idx, bid, slot, reason);
                 return None;
             };
-            let new_var = fresh_var(&m.fns[fn_idx]);
-            let Some(const_val) = literal_to_const(&lit, m) else {
+            let Some(new_var) = descr_to_materialize(&lit, m, fn_idx, bid) else {
                 record_stalled(m, fn_idx, bid, slot, StalledReason::CalleeBodyShape);
                 return None;
             };
             record_consumed(m, fn_idx, bid, slot, lit);
-            block_mut(&mut m.fns[fn_idx], bid)
-                .stmts
-                .push(Stmt::Let(new_var, Prim::Const(const_val)));
             let mut tail_args = vec![new_var];
             tail_args.extend(continuation.captured.iter().copied());
             Some(Term::TailCall {
@@ -271,15 +263,11 @@ fn reduce_terminator(
                 record_stalled(m, fn_idx, bid, slot, reason);
                 return None;
             };
-            let new_var = fresh_var(&m.fns[fn_idx]);
-            let Some(const_val) = literal_to_const(&lit, m) else {
+            let Some(new_var) = descr_to_materialize(&lit, m, fn_idx, bid) else {
                 record_stalled(m, fn_idx, bid, slot, StalledReason::CalleeBodyShape);
                 return None;
             };
             record_consumed(m, fn_idx, bid, slot, lit);
-            block_mut(&mut m.fns[fn_idx], bid)
-                .stmts
-                .push(Stmt::Let(new_var, Prim::Const(const_val)));
             Some(Term::Return(new_var))
         }
         Term::CallClosure {
@@ -306,15 +294,11 @@ fn reduce_terminator(
                 record_stalled(m, fn_idx, bid, slot, reason);
                 return None;
             };
-            let new_var = fresh_var(&m.fns[fn_idx]);
-            let Some(const_val) = literal_to_const(&lit, m) else {
+            let Some(new_var) = descr_to_materialize(&lit, m, fn_idx, bid) else {
                 record_stalled(m, fn_idx, bid, slot, StalledReason::CalleeBodyShape);
                 return None;
             };
             record_consumed(m, fn_idx, bid, slot, lit);
-            block_mut(&mut m.fns[fn_idx], bid)
-                .stmts
-                .push(Stmt::Let(new_var, Prim::Const(const_val)));
             let mut tail_args = vec![new_var];
             tail_args.extend(continuation.captured.iter().copied());
             Some(Term::TailCall {
@@ -745,6 +729,24 @@ fn is_scalar_literal(d: &Descr) -> bool {
         return false;
     }
     true
+}
+
+/// fz-f88.1 — Single materializer for descr → block stmts.
+///
+/// Owns the descr→stmts vocabulary. Returns a fresh Var bound to the
+/// materialized literal, after pushing the necessary stmts into the
+/// target block. None if `d` is not materializable.
+///
+/// Scaffold (this ticket): scalar arm only — delegates to
+/// `literal_to_const`. Arcs .2 / .3 widen with closure_lit, tuple_lit,
+/// and empty-list arms.
+fn descr_to_materialize(d: &Descr, m: &mut Module, fn_idx: usize, bid: BlockId) -> Option<Var> {
+    let const_val = literal_to_const(d, m)?;
+    let v = fresh_var(&m.fns[fn_idx]);
+    block_mut(&mut m.fns[fn_idx], bid)
+        .stmts
+        .push(Stmt::Let(v, Prim::Const(const_val)));
+    Some(v)
 }
 
 /// Convert a scalar-literal Descr back to a `Const`. Atoms are interned in
