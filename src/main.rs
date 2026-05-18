@@ -47,8 +47,15 @@ fn validate_specs_or_exit(prog: &ast::Program, module: &fz_ir::Module, sm: &diag
     let mt = ir_typer::type_module(module);
     let mut diags = spec_check::validate_specs(prog, module, &mt);
     // fz-ul4.45 — pattern-match correctness analysis. Unreachable clauses
-    // and inexhaustive matches surface as warnings here (non-fatal).
-    diags.extend(pattern_check::check_program(prog));
+    // and inexhaustive matches surface as warnings here (non-fatal). The
+    // pattern checker is gated to fns that actually survive the reducer:
+    // a `:function_clause` halt the warning worries about can only fire
+    // from a body that exists at runtime, and a fn that fully dissolves
+    // (e.g. ast_eval's `eval`) has no such body. Compute the survivor
+    // set on a reduced clone of the module so warnings track what
+    // codegen will actually emit.
+    let survivors = compute_survivors(module);
+    diags.extend(pattern_check::check_program(prog, Some(&survivors)));
     let has_error = diags.iter().any(|d| d.severity == diag::Severity::Error);
     for d in &diags {
         diag::render_one_to_stderr(sm, d);
@@ -56,6 +63,25 @@ fn validate_specs_or_exit(prog: &ast::Program, module: &fz_ir::Module, sm: &diag
     if has_error {
         std::process::exit(1);
     }
+}
+
+/// Names + arities of user fns whose body survives the reducer — i.e.
+/// the typer registers at least one spec for them on a reduced module.
+/// Used by `validate_specs_or_exit` to skip pattern_check warnings on
+/// fully-dissolved fns.
+fn compute_survivors(module: &fz_ir::Module) -> std::collections::HashSet<(String, usize)> {
+    let mut reduced = module.clone();
+    ir_reducer::reduce_module(&mut reduced);
+    let mt = ir_typer::type_module(&reduced);
+    let mut out = std::collections::HashSet::new();
+    for (fid, _) in mt.specs.keys() {
+        if let Some(&idx) = reduced.fn_idx.get(fid) {
+            let f = &reduced.fns[idx];
+            let arity = f.block(f.entry).params.len();
+            out.insert((f.name.clone(), arity));
+        }
+    }
+    out
 }
 
 fn main() {
