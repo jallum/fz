@@ -1,6 +1,7 @@
 mod ast;
 mod ast_value;
 mod bitstr;
+mod callsite_walk;
 mod diag;
 mod eval;
 mod fz_ir;
@@ -489,7 +490,7 @@ fn run_dump(args: &[String]) {
         i += 1;
     }
     let path = path.unwrap_or_else(|| {
-        eprintln!("fz dump <src.fz> [--emit clif] [--fn <name>]");
+        eprintln!("fz dump <src.fz> [--emit clif|asm|both|specs|bodies|outcomes] [--fn <name>]");
         std::process::exit(2);
     });
     let emit_clif = matches!(emit.as_str(), "clif" | "both");
@@ -500,8 +501,12 @@ fn run_dump(args: &[String]) {
     // follow-on; this v1 prints the spec set and a single-line summary so
     // the user can see "0 user fns" for fully-reduced programs.
     let emit_bodies = emit.as_str() == "bodies";
-    if !emit_clif && !emit_asm && !emit_specs && !emit_bodies {
-        eprintln!("fz dump: --emit must be one of `clif`, `asm`, `both`, `specs`, `bodies`");
+    // fz-9pr.16 — `outcomes`: per-callsite reducer/typer verdict diary.
+    let emit_outcomes = emit.as_str() == "outcomes";
+    if !emit_clif && !emit_asm && !emit_specs && !emit_bodies && !emit_outcomes {
+        eprintln!(
+            "fz dump: --emit must be one of `clif`, `asm`, `both`, `specs`, `bodies`, `outcomes`"
+        );
         std::process::exit(2);
     }
     let src = std::fs::read_to_string(&path).unwrap_or_else(|e| {
@@ -523,6 +528,14 @@ fn run_dump(args: &[String]) {
             eprintln!("fz dump: --fn is ignored with --emit bodies");
         }
         print!("{}", dump_bodies_pipeline(src, path.clone()));
+        return;
+    }
+
+    if emit_outcomes {
+        if fn_filter.is_some() {
+            eprintln!("fz dump: --fn is ignored with --emit outcomes");
+        }
+        print!("{}", dump_outcomes_pipeline(src, path.clone()));
         return;
     }
 
@@ -725,6 +738,136 @@ fn dump_bodies_pipeline(src: String, source_name: String) -> String {
         for key in keys {
             let parts: Vec<String> = key.iter().map(|d| format!("{}", d)).collect();
             out.push_str(&format!("    [{}]\n", parts.join(", ")));
+        }
+    }
+    out
+}
+
+/// fz-9pr.16 — `fz dump --emit outcomes`: per-callsite verdict diary.
+///
+/// Runs the codegen front half (lex → parse → resolve → macros →
+/// ir_lower → reduce_module → type_module + apply_callsite_outcomes)
+/// and prints every entry in `module.callsite_outcomes`, grouped by
+/// caller fn. Output shape:
+///
+/// ```text
+/// outcomes for <source>
+///
+/// <caller_fn>:
+///   blk<id> <slot> -> <verdict>[ (<reason or target>)]
+///   ...
+/// ```
+///
+/// Use this to answer "why didn't X fold?" without a debugger — every
+/// `Stalled` carries a `StalledReason`, every `Emitted` shows the
+/// resolved spec key.
+fn dump_outcomes_pipeline(src: String, source_name: String) -> String {
+    use crate::fz_ir::{CallsiteId, CallsiteOutcome, EmitSlot};
+    let mut sm = diag::SourceMap::new();
+    let file_id = sm.add_file(source_name.clone(), src.clone());
+    let toks = lexer::Lexer::with_file(&src, file_id)
+        .tokenize()
+        .unwrap_or_else(|e| {
+            diag::render_one_to_stderr(&sm, &e.to_diagnostic());
+            std::process::exit(1);
+        });
+    let prog = Parser::new(toks).parse_program().unwrap_or_else(|e| {
+        diag::render_one_to_stderr(&sm, &e.to_diagnostic());
+        std::process::exit(1);
+    });
+    let mut prog = resolve::flatten_modules(prog).unwrap_or_else(|e| {
+        diag::render_one_to_stderr(&sm, &e.to_diagnostic());
+        std::process::exit(1);
+    });
+    if let Err(e) = macros::expand_program(&mut prog) {
+        diag::render_one_to_stderr(&sm, &e.to_diagnostic());
+        std::process::exit(1);
+    }
+    let mut module = ir_lower::lower_program(&prog).unwrap_or_else(|e| {
+        diag::render_one_to_stderr(&sm, &e.to_diagnostic());
+        std::process::exit(1);
+    });
+    ir_reducer::reduce_module(&mut module);
+    let mt = ir_typer::type_module(&module);
+    ir_typer::apply_callsite_outcomes(&mut module, &mt);
+
+    let fn_name = |fid: fz_ir::FnId| -> String {
+        module
+            .fns
+            .iter()
+            .find(|f| f.id == fid)
+            .map(|f| f.name.clone())
+            .unwrap_or_else(|| format!("?fn{}", fid.0))
+    };
+
+    let slot_str = |s: EmitSlot| -> String {
+        match s {
+            EmitSlot::Direct => "Direct".to_string(),
+            EmitSlot::Cont => "Cont".to_string(),
+            EmitSlot::CallClosureKnown => "CallClosureKnown".to_string(),
+            EmitSlot::ClosureLit(c, sig) => format!("ClosureLit({},{})", c, sig),
+            EmitSlot::MakeClosure(idx) => format!("MakeClosure({})", idx),
+        }
+    };
+
+    let descrs_str = |ds: &[crate::types::Descr]| -> String {
+        let parts: Vec<String> = ds.iter().map(|d| format!("{}", d)).collect();
+        format!("[{}]", parts.join(", "))
+    };
+
+    // Group by caller fn id, preserving module-declared order for fns.
+    // Within a caller, sort by (block, slot-stringification) so output
+    // is stable across HashMap iteration order.
+    let mut by_caller: std::collections::BTreeMap<u32, Vec<(&CallsiteId, &CallsiteOutcome)>> =
+        std::collections::BTreeMap::new();
+    for (cid, outcome) in &module.callsite_outcomes {
+        by_caller
+            .entry(cid.caller.0)
+            .or_default()
+            .push((cid, outcome));
+    }
+    for entries in by_caller.values_mut() {
+        entries.sort_by(|(a, _), (b, _)| {
+            a.block
+                .0
+                .cmp(&b.block.0)
+                .then_with(|| slot_str(a.slot).cmp(&slot_str(b.slot)))
+        });
+    }
+
+    let mut out = String::new();
+    out.push_str(&format!("outcomes for {}\n", source_name));
+    if module.callsite_outcomes.is_empty() {
+        out.push_str("  (no callsites — program is callsite-free)\n");
+        return out;
+    }
+    // Iterate in module-fn declaration order so output mirrors source.
+    for f in &module.fns {
+        let Some(entries) = by_caller.get(&f.id.0) else {
+            continue;
+        };
+        out.push_str(&format!("\n{}:\n", f.name));
+        for (cid, outcome) in entries {
+            let lhs = format!("  blk{} {}", cid.block.0, slot_str(cid.slot));
+            let rhs = match outcome {
+                CallsiteOutcome::Consumed { result } => {
+                    format!("Consumed ({})", result)
+                }
+                CallsiteOutcome::Inlined => "Inlined".to_string(),
+                CallsiteOutcome::Emitted { target } => {
+                    let (tfid, tkey) = target;
+                    format!(
+                        "Emitted ({}#{} {})",
+                        fn_name(*tfid),
+                        tfid.0,
+                        descrs_str(tkey)
+                    )
+                }
+                CallsiteOutcome::Stalled { reason } => {
+                    format!("Stalled ({})", reason)
+                }
+            };
+            out.push_str(&format!("{} -> {}\n", lhs, rhs));
         }
     }
     out

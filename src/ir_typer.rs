@@ -28,8 +28,10 @@
 //! Consumers are still not wired (.11.24.4-.7). The pipeline hook at
 //! `ir_codegen::compile()` continues to populate `CompiledModule.types`.
 
+use crate::callsite_walk::{BlockCallsite, CallsiteKind, ContSource, block_callsites};
 use crate::fz_ir::{
-    BinOp, Block, BlockId, Const, Cont, FnId, FnIr, Module, Prim, Stmt, Term, UnOp, Var, VecKindIr,
+    BinOp, Block, BlockId, CallsiteId, CallsiteOutcome, Const, Cont, EmitSlot, FnId, FnIr, Module,
+    Prim, Stmt, Term, UnOp, Var, VecKindIr,
 };
 use crate::types::{Descr, MapKey};
 use std::collections::{HashMap, HashSet};
@@ -217,6 +219,12 @@ pub struct ModuleTypes {
     /// start of `type_module` from the initial Tarjan run; stable thereafter.
     #[allow(dead_code)] // consumed by ir_codegen back-edge check (fz-02r.5)
     pub scc_of: HashMap<FnId, usize>,
+    /// fz-9pr.8 — pending `CallsiteOutcome` writes the typer wants the
+    /// driver to merge into `Module.callsite_outcomes`. Populated
+    /// during `type_module` for every Direct / ClosureLit /
+    /// CallClosureKnown emit whose `CallsiteId` is `Stalled` (or
+    /// absent). Apply with `apply_callsite_outcomes`.
+    pub callsite_outcome_updates: HashMap<CallsiteId, CallsiteOutcome>,
 }
 
 impl ModuleTypes {
@@ -548,31 +556,11 @@ pub fn reset_typer_counters() {
     WALK_CALLS.with(|c| c.set(0));
 }
 
-/// fz-rh5.6 — disambiguates *which kind of emit* a spec produces
-/// within one (caller_spec, block). A single block can be the source
-/// of multiple emits (e.g., a `Term::Call` block produces both a
-/// `Direct` callee target and a `Cont` target).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum EmitSlot {
-    /// `Term::Call` / `Term::TailCall` callee.
-    Direct,
-    /// The continuation of `Term::Call` / `Term::CallClosure` /
-    /// `Term::Receive` — i.e., (cont.fn_id, [slot0, captures...]).
-    Cont,
-    /// `Term::CallClosure` / `Term::TailCallClosure` target resolved
-    /// via `fn_constants`. Distinct from `Direct` because the same
-    /// block can also produce a `Cont` (separate slot, same block).
-    CallClosureKnown,
-    /// `(clause_idx, sig_idx)` of a `closure_lit`-resolved CallClosure
-    /// target. Multiple lit clauses ⇒ multiple emits per block.
-    ClosureLit(usize, usize),
-    /// `Prim::MakeClosure` at this `stmt_idx` in the block. Emitted
-    /// only when the lambda's opaque-invocation arity is in
-    /// `opaque_arities`; otherwise stashed in
-    /// `pending_makeclosure_arity[arity]` until that arity activates.
-    MakeClosure(usize),
-}
-
+/// fz-9pr.1 — re-exports the slot's `MakeClosure` doc note: emitted
+/// only when the lambda's opaque-invocation arity is in
+/// `opaque_arities`; otherwise stashed in
+/// `pending_makeclosure_arity[arity]` until that arity activates.
+///
 /// fz-rh5.6 — the unique identity of a place that emits a spec.
 ///
 /// Provenance is the invariant that fz-5j5 lacked: every spec in
@@ -589,6 +577,38 @@ pub struct EmitterSite {
     pub caller: (FnId, Vec<Descr>),
     pub block: BlockId,
     pub slot: EmitSlot,
+}
+
+impl EmitterSite {
+    /// fz-9pr.1 — project out the spec-aware `EmitterSite` to a
+    /// spec-agnostic `CallsiteId`. The caller's spec-key is dropped;
+    /// the (FnId, BlockId, EmitSlot) triple survives. Round-trips with
+    /// `CallsiteId::with_spec_key`. Wired into ir_typer's outcome
+    /// writer in fz-9pr.B/D; pre-wire users are tests only.
+    #[allow(dead_code)]
+    pub fn callsite_id(&self) -> CallsiteId {
+        CallsiteId {
+            caller: self.caller.0,
+            block: self.block,
+            slot: self.slot,
+        }
+    }
+}
+
+impl CallsiteId {
+    /// fz-9pr.1 — re-attach a spec-key to recover the full
+    /// `EmitterSite`. The new site's FnId is asserted to match the
+    /// CallsiteId's caller; only the input-Descr tuple is supplied
+    /// fresh. Pre-wire users are tests only; see `EmitterSite::callsite_id`.
+    #[allow(dead_code)]
+    pub fn with_spec_key(self, spec_key: (FnId, Vec<Descr>)) -> EmitterSite {
+        debug_assert_eq!(self.caller, spec_key.0);
+        EmitterSite {
+            caller: spec_key,
+            block: self.block,
+            slot: self.slot,
+        }
+    }
 }
 
 /// fz-rh5.6 — worklist-internal type aliases. Spec keys, the reverse
@@ -752,11 +772,105 @@ pub fn type_module(m: &Module) -> ModuleTypes {
     effective_returns.retain(|k, _| reachable.contains(k));
 
     let any_key_specs = build_any_key_index(&specs);
+
+    // fz-9pr.8 — build the outcome-update map for Direct / ClosureLit /
+    // CallClosureKnown emits. Each EmitterSite in `produces` projects
+    // to a (CallsiteId, target). We propose Emitted{target}; the
+    // driver merges with whatever the reducer (Consumed/Stalled)
+    // already wrote.
+    // fz-9pr.16 — the same `(caller_fn, block, slot)` CallsiteId can
+    // be produced from multiple `EmitterSite`s (different caller spec
+    // keys all dispatch through the same callsite to the same callee
+    // with their own arg Descrs). HashMap iteration order would make
+    // "last write wins" non-deterministic; sort by (target_fn,
+    // target_key_repr) so the published outcome is stable across runs.
+    let mut callsite_outcome_updates: HashMap<CallsiteId, CallsiteOutcome> = HashMap::new();
+    let mut produces_sorted: Vec<(&EmitterSite, &(FnId, Vec<Descr>))> = produces.iter().collect();
+    produces_sorted.sort_by(|(_, a), (_, b)| {
+        let key_str = |t: &(FnId, Vec<Descr>)| -> String {
+            let parts: Vec<String> = t.1.iter().map(|d| format!("{}", d)).collect();
+            format!("{}:{}", t.0.0, parts.join(","))
+        };
+        key_str(a).cmp(&key_str(b))
+    });
+    for (site, target) in produces_sorted {
+        if !reachable.contains(&site.caller) {
+            continue;
+        }
+        match site.slot {
+            EmitSlot::Direct | EmitSlot::ClosureLit(..) | EmitSlot::CallClosureKnown => {
+                let cid = site.callsite_id();
+                callsite_outcome_updates.insert(
+                    cid,
+                    CallsiteOutcome::Emitted {
+                        target: target.clone(),
+                    },
+                );
+            }
+            EmitSlot::Cont | EmitSlot::MakeClosure(_) => {}
+        }
+    }
+
     ModuleTypes {
         specs,
         effective_returns,
         any_key_specs,
         scc_of,
+        callsite_outcome_updates,
+    }
+}
+
+/// fz-9pr.8 — merge a `ModuleTypes`' outcome updates into
+/// `module.callsite_outcomes`. The typer cannot mutate the module
+/// directly (it takes `&Module`), so the driver applies the writes
+/// after typing. Merge rule: promote `Stalled` → `Emitted`; leave
+/// `Consumed` / `Inlined` alone (the reducer/inliner already decided);
+/// insert if absent. Multi-callable: idempotent on repeat application
+/// with the same updates.
+pub fn apply_callsite_outcomes(m: &mut Module, mt: &ModuleTypes) {
+    for (cid, outcome) in &mt.callsite_outcome_updates {
+        match m.callsite_outcomes.get(cid) {
+            None | Some(CallsiteOutcome::Stalled { .. }) => {
+                m.callsite_outcomes.insert(*cid, outcome.clone());
+            }
+            Some(CallsiteOutcome::Consumed { .. })
+            | Some(CallsiteOutcome::Inlined)
+            | Some(CallsiteOutcome::Emitted { .. }) => {
+                // Leave reducer/inliner/typer-previous decisions
+                // intact. A second type_module pass over the same
+                // module is the only realistic source of an
+                // already-Emitted entry, and the target matches by
+                // construction.
+            }
+        }
+    }
+    #[cfg(debug_assertions)]
+    assert_every_emitted_has_provenance(m, mt);
+}
+
+/// fz-9pr.9 — debug invariant: after typer convergence + outcome
+/// merge, every `Emitted { target }` outcome in
+/// `module.callsite_outcomes` points at a target that exists in
+/// `mt.specs`. An Emitted with no matching spec is a "ghost" —
+/// either the typer dropped the spec during the reachability prune
+/// but kept the outcome, or some other phase wrote a bogus target.
+/// Both are bugs we want to catch loud.
+///
+/// `holders` is worklist-internal and isn't reachable from
+/// `ModuleTypes`; spec-presence is the strongest invariant available
+/// from the public API and covers the ghost-spec case the ticket
+/// names.
+#[cfg(debug_assertions)]
+fn assert_every_emitted_has_provenance(m: &Module, mt: &ModuleTypes) {
+    for (cid, outcome) in &m.callsite_outcomes {
+        if let CallsiteOutcome::Emitted { target } = outcome {
+            assert!(
+                mt.specs.contains_key(target),
+                "fz-9pr.9: Emitted outcome at {:?} targets unregistered spec {:?}",
+                cid,
+                target
+            );
+        }
     }
 }
 
@@ -1262,10 +1376,43 @@ fn walk_spec_for_discovery(
             env.insert(*v, type_prim(prim, &env, m, &HashSet::new()));
         }
 
-        // Direct Call / TailCall.
-        match &b.terminator {
-            Term::Call { callee, args, .. } | Term::TailCall { callee, args, .. } => {
-                if let Some(&j) = m.fn_idx.get(callee) {
+        // fz-9pr.17 — opaque-arity detection for unresolved closure
+        // calls. The enumerator yields zero items for such terminators;
+        // we still need to flag the arity as opaque so MakeClosure-side
+        // any-keys get emitted. Kept here (not in callsite_walk) because
+        // "fully_lit" is stricter than "has a lit" — only every-sig-lit
+        // counts as resolved.
+        if let Term::CallClosure { closure, args, .. } | Term::TailCallClosure { closure, args } =
+            &b.terminator
+        {
+            let cv_descr = env.get(closure);
+            let fn_constants_resolved = caller_ft.fn_constants.contains_key(closure);
+            let fully_lit = cv_descr.is_some_and(|d| {
+                !d.funcs.is_empty()
+                    && d.funcs.iter().all(|c| {
+                        c.neg.is_empty()
+                            && !c.pos.is_empty()
+                            && c.pos.iter().all(|s| s.lit.is_some())
+                    })
+            });
+            if !fn_constants_resolved && !fully_lit {
+                out.opaque_arities_seen.insert(args.len());
+            }
+        }
+
+        // fz-9pr.17 — terminator-derived callsites. One match site
+        // (callsite_walk::block_callsites) replaces the four arms that
+        // used to live here (Direct, CallClosureKnown, ClosureLit,
+        // Cont). Per-spec key building and callsite_fn_consts tracking
+        // stay typer-side because they depend on caller_ft.block_envs
+        // and caller_ft.fn_constants.
+        let cs_list = block_callsites(&b.terminator, &env, &caller_ft.fn_constants);
+        for BlockCallsite { slot, kind } in cs_list {
+            match kind {
+                CallsiteKind::Direct { callee, args } => {
+                    let Some(&j) = m.fn_idx.get(&callee) else {
+                        continue;
+                    };
                     let callee_fn = &m.fns[j];
                     let n_params = callee_fn.block(callee_fn.entry).params.len();
                     let mut key: Vec<Descr> = args
@@ -1276,7 +1423,7 @@ fn walk_spec_for_discovery(
                         key.push(Descr::any());
                     }
                     key.truncate(n_params);
-                    let key = widen_direct(key, *callee);
+                    let key = widen_direct(key, callee);
                     let mut per_arg: Vec<Option<FnId>> = args
                         .iter()
                         .map(|av| caller_ft.fn_constants.get(av).copied())
@@ -1285,7 +1432,7 @@ fn walk_spec_for_discovery(
                         per_arg.push(None);
                     }
                     per_arg.truncate(n_params);
-                    let entry_key = (*callee, key.clone());
+                    let entry_key = (callee, key.clone());
                     match callsite_fn_consts.get(&entry_key) {
                         None => {
                             callsite_fn_consts.insert(entry_key.clone(), per_arg);
@@ -1299,194 +1446,144 @@ fn walk_spec_for_discovery(
                             callsite_fn_consts.insert(entry_key.clone(), merged);
                         }
                     }
-                    emit(EmitSlot::Direct, b.id, (*callee, key), out);
+                    emit(slot, b.id, (callee, key), out);
                 }
-            }
-            _ => {}
-        }
-
-        // CallClosure / TailCallClosure: track opaque arity + emit
-        // resolved targets (fn_constants and closure_lit paths).
-        let (closure_var, closure_args): (Option<Var>, &[Var]) = match &b.terminator {
-            Term::CallClosure { closure, args, .. } | Term::TailCallClosure { closure, args } => {
-                (Some(*closure), args.as_slice())
-            }
-            _ => (None, &[]),
-        };
-        if let Some(cv) = closure_var {
-            let cv_descr = env.get(&cv).cloned();
-            let fn_constants_resolved = caller_ft.fn_constants.contains_key(&cv);
-            let fully_lit = cv_descr.as_ref().is_some_and(|d| {
-                !d.funcs.is_empty()
-                    && d.funcs.iter().all(|c| {
-                        c.neg.is_empty()
-                            && !c.pos.is_empty()
-                            && c.pos.iter().all(|s| s.lit.is_some())
-                    })
-            });
-            if !fn_constants_resolved && !fully_lit {
-                out.opaque_arities_seen.insert(closure_args.len());
-            }
-            // fn_constants path.
-            if let Some(&target_fn) = caller_ft.fn_constants.get(&cv)
-                && let Some(&j) = m.fn_idx.get(&target_fn)
-            {
-                let target = &m.fns[j];
-                let n_params = target.block(target.entry).params.len();
-                let mut key: Vec<Descr> = closure_args
-                    .iter()
-                    .map(|av| env.get(av).cloned().unwrap_or_else(Descr::any))
-                    .collect();
-                while key.len() < n_params {
-                    key.push(Descr::any());
-                }
-                key.truncate(n_params);
-                let key = widen_direct(key, target_fn);
-                emit(EmitSlot::CallClosureKnown, b.id, (target_fn, key), out);
-            }
-            // closure_lit path — narrow per (clause_idx, sig_idx).
-            if let Some(cv_descr) = cv_descr.as_ref() {
-                let arg_descrs: Vec<Descr> = closure_args
-                    .iter()
-                    .map(|av| env.get(av).cloned().unwrap_or_else(Descr::any))
-                    .collect();
-                for (c_idx, clause) in cv_descr.funcs.iter().enumerate() {
-                    if !clause.neg.is_empty() {
+                CallsiteKind::CallClosureKnown { target, args } => {
+                    let Some(&j) = m.fn_idx.get(&target) else {
                         continue;
-                    }
-                    for (s_idx, sig) in clause.pos.iter().enumerate() {
-                        let Some(lit) = &sig.lit else {
-                            continue;
-                        };
-                        let Some(&j) = m.fn_idx.get(&lit.fn_id) else {
-                            continue;
-                        };
-                        let target = &m.fns[j];
-                        let n_params = target.block(target.entry).params.len();
-                        let mut key: Vec<Descr> = lit.captures.clone();
-                        key.extend(arg_descrs.iter().cloned());
-                        while key.len() < n_params {
-                            key.push(Descr::any());
-                        }
-                        key.truncate(n_params);
-                        let key = widen_direct(key, lit.fn_id);
-                        emit(
-                            EmitSlot::ClosureLit(c_idx, s_idx),
-                            b.id,
-                            (lit.fn_id, key),
-                            out,
-                        );
-                    }
-                }
-            }
-        }
-
-        // Cont keying. Slot 0 = callee's effective_return (read live).
-        // If the lookup misses, the cont is *deferred* (not emitted)
-        // — return_readers will re-enqueue this caller when the
-        // callee's return arrives, and the re-walk will emit then.
-        // Genuinely opaque slot 0 (Receive, unresolved CallClosure)
-        // is `any`.
-        let cont = match &b.terminator {
-            Term::Call { continuation, .. } => Some(continuation),
-            Term::CallClosure { continuation, .. } => Some(continuation),
-            Term::Receive { continuation } => Some(continuation),
-            _ => None,
-        };
-        let slot0_descr: Option<Descr> = match &b.terminator {
-            Term::Call { callee, args, .. } => {
-                let arg_descrs: Vec<Descr> = args
-                    .iter()
-                    .map(|av| env.get(av).cloned().unwrap_or_else(Descr::any))
-                    .collect();
-                let callee_key = (*callee, arg_descrs);
-                out.return_reads.push(callee_key.clone());
-                effective_returns.get(&callee_key).cloned()
-            }
-            Term::CallClosure { closure, args, .. } => {
-                if let Some(&target) = caller_ft.fn_constants.get(closure) {
-                    let target_fn = m.fn_by_id(target);
+                    };
+                    let target_fn = &m.fns[j];
                     let n_params = target_fn.block(target_fn.entry).params.len();
-                    let mut arg_descrs: Vec<Descr> = args
+                    let mut key: Vec<Descr> = args
                         .iter()
                         .map(|av| env.get(av).cloned().unwrap_or_else(Descr::any))
                         .collect();
-                    while arg_descrs.len() < n_params {
-                        arg_descrs.push(Descr::any());
+                    while key.len() < n_params {
+                        key.push(Descr::any());
                     }
-                    arg_descrs.truncate(n_params);
-                    let callee_key = (target, arg_descrs);
-                    out.return_reads.push(callee_key.clone());
-                    effective_returns.get(&callee_key).cloned()
-                } else if let Some(cv_descr) = env.get(closure) {
-                    let arg_descrs: Vec<Descr> = args
+                    key.truncate(n_params);
+                    let key = widen_direct(key, target);
+                    emit(slot, b.id, (target, key), out);
+                }
+                CallsiteKind::ClosureLit { lit, args } => {
+                    let Some(&j) = m.fn_idx.get(&lit.fn_id) else {
+                        continue;
+                    };
+                    let target_fn = &m.fns[j];
+                    let n_params = target_fn.block(target_fn.entry).params.len();
+                    let mut key: Vec<Descr> = lit.captures.clone();
+                    let arg_descrs = args
                         .iter()
-                        .map(|av| env.get(av).cloned().unwrap_or_else(Descr::any))
-                        .collect();
-                    for c in &cv_descr.funcs {
-                        if !c.neg.is_empty() {
-                            continue;
+                        .map(|av| env.get(av).cloned().unwrap_or_else(Descr::any));
+                    key.extend(arg_descrs);
+                    while key.len() < n_params {
+                        key.push(Descr::any());
+                    }
+                    key.truncate(n_params);
+                    let key = widen_direct(key, lit.fn_id);
+                    emit(slot, b.id, (lit.fn_id, key), out);
+                }
+                CallsiteKind::Cont { cont, source } => {
+                    // slot 0 derivation by Cont source. Receive is
+                    // opaque (`any`); Call reads effective_returns;
+                    // CallClosure either reads effective_returns of
+                    // the fn_constants-resolved target or resolves
+                    // via the closure-lit lattice.
+                    let slot0_descr: Option<Descr> = match source {
+                        ContSource::Call { callee, args } => {
+                            let arg_descrs: Vec<Descr> = args
+                                .iter()
+                                .map(|av| env.get(av).cloned().unwrap_or_else(Descr::any))
+                                .collect();
+                            let callee_key = (callee, arg_descrs);
+                            out.return_reads.push(callee_key.clone());
+                            effective_returns.get(&callee_key).cloned()
                         }
-                        for sig in &c.pos {
-                            if let Some(lit) = &sig.lit
-                                && sig.args.len() == arg_descrs.len()
-                            {
-                                let mut full_key: Vec<Descr> = lit.captures.clone();
-                                full_key.extend_from_slice(&arg_descrs);
-                                out.return_reads.push((lit.fn_id, full_key));
+                        ContSource::CallClosure { closure, args } => {
+                            if let Some(&target) = caller_ft.fn_constants.get(&closure) {
+                                let target_fn = m.fn_by_id(target);
+                                let n_params = target_fn.block(target_fn.entry).params.len();
+                                let mut arg_descrs: Vec<Descr> = args
+                                    .iter()
+                                    .map(|av| env.get(av).cloned().unwrap_or_else(Descr::any))
+                                    .collect();
+                                while arg_descrs.len() < n_params {
+                                    arg_descrs.push(Descr::any());
+                                }
+                                arg_descrs.truncate(n_params);
+                                let callee_key = (target, arg_descrs);
+                                out.return_reads.push(callee_key.clone());
+                                effective_returns.get(&callee_key).cloned()
+                            } else if let Some(cv_descr) = env.get(&closure) {
+                                let arg_descrs: Vec<Descr> = args
+                                    .iter()
+                                    .map(|av| env.get(av).cloned().unwrap_or_else(Descr::any))
+                                    .collect();
+                                for c in &cv_descr.funcs {
+                                    if !c.neg.is_empty() {
+                                        continue;
+                                    }
+                                    for sig in &c.pos {
+                                        if let Some(lit) = &sig.lit
+                                            && sig.args.len() == arg_descrs.len()
+                                        {
+                                            let mut full_key: Vec<Descr> = lit.captures.clone();
+                                            full_key.extend_from_slice(&arg_descrs);
+                                            out.return_reads.push((lit.fn_id, full_key));
+                                        }
+                                    }
+                                }
+                                resolve_closure_return(cv_descr, effective_returns, &arg_descrs)
+                            } else {
+                                Some(Descr::any())
                             }
                         }
+                        ContSource::Receive => Some(Descr::any()),
+                    };
+                    let Some(slot0) = slot0_descr else {
+                        // Deferred: return_readers will re-enqueue
+                        // this caller when the callee return arrives.
+                        continue;
+                    };
+                    let Some(&j) = m.fn_idx.get(&cont.fn_id) else {
+                        continue;
+                    };
+                    let cont_fn = &m.fns[j];
+                    let n_params = cont_fn.block(cont_fn.entry).params.len();
+                    let mut key: Vec<Descr> = vec![Descr::any(); n_params];
+                    if !key.is_empty() {
+                        key[0] = slot0;
                     }
-                    resolve_closure_return(cv_descr, effective_returns, &arg_descrs)
-                } else {
-                    Some(Descr::any())
+                    for (k, cvv) in cont.captured.iter().enumerate() {
+                        if let Some(p) = key.get_mut(k + 1) {
+                            *p = env.get(cvv).cloned().unwrap_or_else(Descr::any);
+                        }
+                    }
+                    // fz-rh5.6 — do NOT widen cont keys. See pre-refactor
+                    // commentary preserved in callsite_walk docs.
+                    let mut per_param: Vec<Option<FnId>> = vec![None; n_params];
+                    for (k, cvv) in cont.captured.iter().enumerate() {
+                        if let Some(p) = per_param.get_mut(k + 1) {
+                            *p = caller_ft.fn_constants.get(cvv).copied();
+                        }
+                    }
+                    let entry_key = (cont.fn_id, key.clone());
+                    match callsite_fn_consts.get(&entry_key) {
+                        None => {
+                            callsite_fn_consts.insert(entry_key.clone(), per_param);
+                        }
+                        Some(prev) => {
+                            let merged: Vec<Option<FnId>> = prev
+                                .iter()
+                                .zip(per_param.iter())
+                                .map(|(a, b)| if a == b { *a } else { None })
+                                .collect();
+                            callsite_fn_consts.insert(entry_key.clone(), merged);
+                        }
+                    }
+                    emit(slot, b.id, (cont.fn_id, key), out);
                 }
             }
-            Term::Receive { .. } => Some(Descr::any()),
-            _ => None,
-        };
-        if let (Some(cont), Some(slot0)) = (cont, slot0_descr)
-            && let Some(&j) = m.fn_idx.get(&cont.fn_id)
-        {
-            let cont_fn = &m.fns[j];
-            let n_params = cont_fn.block(cont_fn.entry).params.len();
-            let mut key: Vec<Descr> = vec![Descr::any(); n_params];
-            if !key.is_empty() {
-                key[0] = slot0;
-            }
-            for (k, cvv) in cont.captured.iter().enumerate() {
-                if let Some(p) = key.get_mut(k + 1) {
-                    *p = env.get(cvv).cloned().unwrap_or_else(Descr::any);
-                }
-            }
-            // fz-rh5.6 — do NOT widen cont keys. Under provenance,
-            // widening replaces (evicts) the narrow key codegen wants.
-            // Cont keys come from caller-frame captures and slot-0
-            // (a callee return); both live in the finite Descr lattice,
-            // so termination doesn't require widening here. Widening
-            // remains on Direct/CallClosureKnown/ClosureLit where
-            // shrinking-arg recursion can spawn unbounded specs.
-            let mut per_param: Vec<Option<FnId>> = vec![None; n_params];
-            for (k, cvv) in cont.captured.iter().enumerate() {
-                if let Some(slot) = per_param.get_mut(k + 1) {
-                    *slot = caller_ft.fn_constants.get(cvv).copied();
-                }
-            }
-            let entry_key = (cont.fn_id, key.clone());
-            match callsite_fn_consts.get(&entry_key) {
-                None => {
-                    callsite_fn_consts.insert(entry_key.clone(), per_param);
-                }
-                Some(prev) => {
-                    let merged: Vec<Option<FnId>> = prev
-                        .iter()
-                        .zip(per_param.iter())
-                        .map(|(a, b)| if a == b { *a } else { None })
-                        .collect();
-                    callsite_fn_consts.insert(entry_key.clone(), merged);
-                }
-            }
-            emit(EmitSlot::Cont, b.id, (cont.fn_id, key), out);
         }
     }
 }

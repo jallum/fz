@@ -152,6 +152,7 @@ fn static_tests() -> Vec<(&'static str, fn())> {
         ),
         ("golden_clif", golden_clif),
         ("golden_specs", golden_specs),
+        ("golden_outcomes", golden_outcomes),
     ]
 }
 
@@ -1035,6 +1036,10 @@ fn concurrency_ping_pong_matches_cps_in_clif_section_8_4() {
 enum Emit {
     Clif,
     Specs,
+    /// fz-9pr.16 — per-callsite outcome diary. Only fixtures with a
+    /// pre-existing `expected.outcomes` sidecar participate; the
+    /// helper otherwise skips so we don't blanket-bless every fixture.
+    Outcomes,
 }
 
 impl Emit {
@@ -1042,19 +1047,27 @@ impl Emit {
         match self {
             Emit::Clif => "clif",
             Emit::Specs => "specs",
+            Emit::Outcomes => "outcomes",
         }
     }
     fn sidecar(self) -> &'static str {
         match self {
             Emit::Clif => "expected.clif",
             Emit::Specs => "expected.specs",
+            Emit::Outcomes => "expected.outcomes",
         }
     }
     fn bless_env(self) -> &'static str {
         match self {
             Emit::Clif => "BLESS",
             Emit::Specs => "BLESS_SPECS",
+            Emit::Outcomes => "BLESS_OUTCOMES",
         }
+    }
+    /// fz-9pr.16 — Outcomes goldens are opt-in per fixture. Other
+    /// emits cover the whole non-deferred corpus.
+    fn opt_in_per_fixture(self) -> bool {
+        matches!(self, Emit::Outcomes)
     }
 }
 
@@ -1086,6 +1099,14 @@ fn check_goldens(emit: Emit) {
         let src_path = dir.join("input.fz");
         let golden_path = dir.join(emit.sidecar());
         let name = dir.file_name().unwrap().to_string_lossy().into_owned();
+
+        // fz-9pr.16 — opt-in goldens (outcomes) only check (and bless)
+        // fixtures that already carry the sidecar. To add a new fixture
+        // to the set: `touch fixtures/<name>/expected.outcomes` first,
+        // then run `BLESS_OUTCOMES=1 cargo test golden_outcomes`.
+        if emit.opt_in_per_fixture() && !golden_path.exists() {
+            continue;
+        }
 
         let out = Command::new(FZ_BIN)
             .args(["dump", "--emit", emit.flag()])
@@ -1191,4 +1212,13 @@ fn golden_clif() {
 
 fn golden_specs() {
     check_goldens(Emit::Specs);
+}
+
+/// fz-9pr.16 — `expected.outcomes` goldens. Opt-in: only fixtures
+/// that ship an `expected.outcomes` sidecar are checked. Bless with
+/// `BLESS_OUTCOMES=1 cargo test golden_outcomes` after touching the
+/// sidecar in for a new fixture (or just on first creation, since
+/// bless writes regardless of file existence).
+fn golden_outcomes() {
+    check_goldens(Emit::Outcomes);
 }

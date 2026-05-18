@@ -24,8 +24,55 @@
 //! - Tuple / list return values (need MakeTuple / cons rewriting).
 //! - Non-tail `Term::Call` inside callee bodies (needs cont
 //!   reasoning — RED.5+).
+//!
+//! ## fz-9pr.6 — partial fold for Term::Call when cont doesn't fold
+//!
+//! Investigation: `reduce_terminator`'s `Term::Call` branch already
+//! handles "callee folds, cont doesn't" by rewriting to
+//! `TailCall(cont.fn_id, [literal_var, ...captures])`. And `walk_block`
+//! at the recursive layer already calls `feed_cont` when an inner Call's
+//! callee folds. So a "partial fold" at the Term::Call level wouldn't
+//! help: the existing two paths already cover everything the current
+//! reducer can fold.
+//!
+//! The reason `closure_typed_captures`'s `apply1(add_to(10, 20), 12)`
+//! survives is *deeper*: `add_to(10, 20)` returns a `closure_lit(fn14,
+//! [10, 20])` — a STRUCTURAL literal. `walk_block`'s Return arm gates
+//! on `is_scalar_literal`, so the walk returns None and the entire
+//! chain stalls at main's outermost `Call add_to`. Fixing this requires
+//! teaching the reducer to rewrite a `Call` whose result is a
+//! `closure_lit` Descr — i.e., emit a `Prim::MakeClosure(fn14, [c10, c20])`
+//! and feed THAT Var into the cont. That's a much bigger feature
+//! (per-Descr-shape Const reconstruction; see `literal_to_const`'s
+//! current scalar-only scope), and is out of fz-9pr's epic.
+//!
+//! Resolution: fz-9pr.6 is doc-only. apply1's callsite remains
+//! `Stalled`; the typer (fz-9pr.D) will Emit it. The follow-up that
+//! could lift this is a fz-jg5 successor — "closure-typed return"
+//! reduction.
+//!
+//! ## fz-9pr.7 — partial fold for Term::CallClosure when cont doesn't fold
+//!
+//! `Term::CallClosure` mirrors `Term::Call` exactly here: the
+//! top-level branch (`reduce_terminator`) handles "closure_lit operand,
+//! inner call folds, but cont doesn't" by rewriting to TailCall(cont,
+//! [literal_var, ...captures]); the recursive layer (`walk_block`)
+//! handles inner CallClosure via the same `feed_cont` helper as Call.
+//! Same blocker: `walk_block`'s Return arm gates on
+//! `is_scalar_literal`, so a callee that returns a closure_lit (e.g.
+//! `curried_add`'s `add3(10)` ⇒ `closure_lit(fn_outer, [10])`) fails
+//! the walk. The fix is the same Const-reconstruction for closure_lit
+//! results, and is out of fz-9pr's scope.
+//!
+//! Resolution: fz-9pr.7 is doc-only. `curried_add`'s `apply(...)`
+//! callsites remain `Stalled`; the typer Emits them. Runtime
+//! behaviour and spec set unchanged.
 
-use crate::fz_ir::{Block, BlockId, Const, FnId, FnIr, Module, Prim, Stmt, Term, Var};
+use crate::callsite_walk::slot_for_term;
+use crate::fz_ir::{
+    Block, BlockId, CallsiteId, CallsiteOutcome, Const, EmitSlot, FnId, FnIr, Module, Prim,
+    StalledReason, Stmt, Term, Var,
+};
 use crate::reducer::{
     as_atom_lit, as_bool_lit, as_float_lit, as_int_lit, as_str_lit, fold_prim, is_literal,
     is_nil_only,
@@ -68,6 +115,37 @@ pub fn reduce_module(m: &mut Module) {
     for fid in fn_ids {
         reduce_fn(m, fid);
     }
+    #[cfg(debug_assertions)]
+    assert_every_callsite_has_outcome(m);
+}
+
+/// fz-9pr.5 — debug invariant: after `reduce_module`, every surviving
+/// call-terminator in the module must have a corresponding entry in
+/// `callsite_outcomes`. A surviving call means the reducer either
+/// Stalled it (left as-is for the typer to Emit) or — once fz-9pr.E
+/// lands — Inlined it. `Consumed` outcomes refer to callsites that
+/// were rewritten away; their original terminators are gone, so they
+/// are not part of this scan.
+#[cfg(debug_assertions)]
+fn assert_every_callsite_has_outcome(m: &Module) {
+    for f in &m.fns {
+        for b in &f.blocks {
+            if let Some(slot) = slot_for_term(&b.terminator) {
+                let cid = CallsiteId {
+                    caller: f.id,
+                    block: b.id,
+                    slot,
+                };
+                assert!(
+                    m.callsite_outcomes.contains_key(&cid),
+                    "fz-9pr.5: missing callsite outcome for {:?} in fn {} block {:?}",
+                    slot,
+                    f.name,
+                    b.id
+                );
+            }
+        }
+    }
 }
 
 fn reduce_fn(m: &mut Module, fid: FnId) {
@@ -109,6 +187,11 @@ fn reduce_terminator(
     term: &Term,
     env: &HashMap<Var, Descr>,
 ) -> Option<Term> {
+    // fz-9pr.17 — slot vocabulary lives in callsite_walk::slot_for_term;
+    // every record_* call below routes through this single source of
+    // truth, replacing the four duplicated EmitSlot literals that used
+    // to live in each match arm.
+    let slot = slot_for_term(term);
     match term {
         // fz-jg5.4: if-fold (named explicit rule per FINDINGS.md).
         Term::If(cond, t, e) => {
@@ -120,14 +203,19 @@ fn reduce_terminator(
             // fz-jg5.5: each top-level callsite gets a fresh ReduceCtx
             // with full budget. All-or-nothing: if try_reduce_call returns
             // None, no rewrite is committed.
-            let mut ctx = ReduceCtx {
-                module: m,
-                budget: UNROLL_BUDGET_DEFAULT,
-                stack: Vec::new(),
+            let slot = slot.unwrap();
+            let mut ctx = fresh_ctx(m);
+            let Some(lit) = try_reduce_call(&mut ctx, *callee, args, env) else {
+                let reason = ctx.last_reason.unwrap_or(StalledReason::Other);
+                record_stalled(m, fn_idx, bid, slot, reason);
+                return None;
             };
-            let lit = try_reduce_call(&mut ctx, *callee, args, env)?;
             let new_var = fresh_var(&m.fns[fn_idx]);
-            let const_val = literal_to_const(&lit, m)?;
+            let Some(const_val) = literal_to_const(&lit, m) else {
+                record_stalled(m, fn_idx, bid, slot, StalledReason::CalleeBodyShape);
+                return None;
+            };
+            record_consumed(m, fn_idx, bid, slot, lit);
             block_mut(&mut m.fns[fn_idx], bid)
                 .stmts
                 .push(Stmt::Let(new_var, Prim::Const(const_val)));
@@ -138,14 +226,19 @@ fn reduce_terminator(
             args,
             continuation,
         } => {
-            let mut ctx = ReduceCtx {
-                module: m,
-                budget: UNROLL_BUDGET_DEFAULT,
-                stack: Vec::new(),
+            let slot = slot.unwrap();
+            let mut ctx = fresh_ctx(m);
+            let Some(lit) = try_reduce_call(&mut ctx, *callee, args, env) else {
+                let reason = ctx.last_reason.unwrap_or(StalledReason::Other);
+                record_stalled(m, fn_idx, bid, slot, reason);
+                return None;
             };
-            let lit = try_reduce_call(&mut ctx, *callee, args, env)?;
             let new_var = fresh_var(&m.fns[fn_idx]);
-            let const_val = literal_to_const(&lit, m)?;
+            let Some(const_val) = literal_to_const(&lit, m) else {
+                record_stalled(m, fn_idx, bid, slot, StalledReason::CalleeBodyShape);
+                return None;
+            };
+            record_consumed(m, fn_idx, bid, slot, lit);
             block_mut(&mut m.fns[fn_idx], bid)
                 .stmts
                 .push(Stmt::Let(new_var, Prim::Const(const_val)));
@@ -159,19 +252,31 @@ fn reduce_terminator(
         }
         // fz-jg5.6: top-level closure-call reduction (mirror of walk_block).
         Term::TailCallClosure { closure, args } => {
-            let cl_lit = env.get(closure)?.as_closure_lit()?.clone();
+            let slot = slot.unwrap();
+            let Some(cl_lit) = env.get(closure).and_then(|d| d.as_closure_lit()).cloned() else {
+                record_stalled(m, fn_idx, bid, slot, StalledReason::NoClosureLitTarget);
+                return None;
+            };
             let mut all_descrs = cl_lit.captures.clone();
             for a in args {
-                all_descrs.push(env.get(a).cloned()?);
+                let Some(d) = env.get(a).cloned() else {
+                    record_stalled(m, fn_idx, bid, slot, StalledReason::OpaqueArg);
+                    return None;
+                };
+                all_descrs.push(d);
             }
-            let mut ctx = ReduceCtx {
-                module: m,
-                budget: UNROLL_BUDGET_DEFAULT,
-                stack: Vec::new(),
+            let mut ctx = fresh_ctx(m);
+            let Some(lit) = try_reduce_call_with_descrs(&mut ctx, cl_lit.fn_id, &all_descrs) else {
+                let reason = ctx.last_reason.unwrap_or(StalledReason::Other);
+                record_stalled(m, fn_idx, bid, slot, reason);
+                return None;
             };
-            let lit = try_reduce_call_with_descrs(&mut ctx, cl_lit.fn_id, &all_descrs)?;
             let new_var = fresh_var(&m.fns[fn_idx]);
-            let const_val = literal_to_const(&lit, m)?;
+            let Some(const_val) = literal_to_const(&lit, m) else {
+                record_stalled(m, fn_idx, bid, slot, StalledReason::CalleeBodyShape);
+                return None;
+            };
+            record_consumed(m, fn_idx, bid, slot, lit);
             block_mut(&mut m.fns[fn_idx], bid)
                 .stmts
                 .push(Stmt::Let(new_var, Prim::Const(const_val)));
@@ -182,19 +287,31 @@ fn reduce_terminator(
             args,
             continuation,
         } => {
-            let cl_lit = env.get(closure)?.as_closure_lit()?.clone();
+            let slot = slot.unwrap();
+            let Some(cl_lit) = env.get(closure).and_then(|d| d.as_closure_lit()).cloned() else {
+                record_stalled(m, fn_idx, bid, slot, StalledReason::NoClosureLitTarget);
+                return None;
+            };
             let mut all_descrs = cl_lit.captures.clone();
             for a in args {
-                all_descrs.push(env.get(a).cloned()?);
+                let Some(d) = env.get(a).cloned() else {
+                    record_stalled(m, fn_idx, bid, slot, StalledReason::OpaqueArg);
+                    return None;
+                };
+                all_descrs.push(d);
             }
-            let mut ctx = ReduceCtx {
-                module: m,
-                budget: UNROLL_BUDGET_DEFAULT,
-                stack: Vec::new(),
+            let mut ctx = fresh_ctx(m);
+            let Some(lit) = try_reduce_call_with_descrs(&mut ctx, cl_lit.fn_id, &all_descrs) else {
+                let reason = ctx.last_reason.unwrap_or(StalledReason::Other);
+                record_stalled(m, fn_idx, bid, slot, reason);
+                return None;
             };
-            let lit = try_reduce_call_with_descrs(&mut ctx, cl_lit.fn_id, &all_descrs)?;
             let new_var = fresh_var(&m.fns[fn_idx]);
-            let const_val = literal_to_const(&lit, m)?;
+            let Some(const_val) = literal_to_const(&lit, m) else {
+                record_stalled(m, fn_idx, bid, slot, StalledReason::CalleeBodyShape);
+                return None;
+            };
+            record_consumed(m, fn_idx, bid, slot, lit);
             block_mut(&mut m.fns[fn_idx], bid)
                 .stmts
                 .push(Stmt::Let(new_var, Prim::Const(const_val)));
@@ -208,6 +325,51 @@ fn reduce_terminator(
         }
         _ => None,
     }
+}
+
+/// fz-9pr.4 / fz-9pr.16 — record that the reducer left a callsite
+/// unchanged, with a reason. The call survives in the IR; the typer
+/// (in fz-9pr.D) will promote the entry to `Emitted` once it mints
+/// the spec. Idempotent: re-recording uses the first reason written.
+fn record_stalled(
+    m: &mut Module,
+    fn_idx: usize,
+    block: BlockId,
+    slot: EmitSlot,
+    reason: StalledReason,
+) {
+    let caller = m.fns[fn_idx].id;
+    let cid = CallsiteId {
+        caller,
+        block,
+        slot,
+    };
+    // Do not overwrite a Consumed already published by this pass —
+    // that would lose lineage. In practice the Stalled writers all
+    // early-return before any Consumed write, so this is defence in
+    // depth.
+    m.callsite_outcomes
+        .entry(cid)
+        .or_insert(CallsiteOutcome::Stalled { reason });
+}
+
+/// fz-9pr.3 — write a `CallsiteOutcome::Consumed` entry to the
+/// module's outcome table. The reducer's job is to write; nobody
+/// reads these yet (readers land in fz-9pr.D). Idempotent: identical
+/// repeated reductions overwrite with the same value.
+fn record_consumed(m: &mut Module, fn_idx: usize, block: BlockId, slot: EmitSlot, result: Descr) {
+    let caller = m.fns[fn_idx].id;
+    let cid = CallsiteId {
+        caller,
+        block,
+        slot,
+    };
+    m.callsite_outcomes.insert(
+        cid,
+        CallsiteOutcome::Consumed {
+            result: Box::new(result),
+        },
+    );
 }
 
 /// fz-jg5.5 — Default unroll budget per top-level callsite. Counts
@@ -227,6 +389,30 @@ struct ReduceCtx<'m> {
     /// current reduction. Same-callee re-entry checks structural
     /// decrease against the most-recent matching ancestor.
     stack: Vec<(FnId, Vec<Descr>)>,
+    /// fz-9pr.16 — first stall reason hit on the current top-level
+    /// reduction attempt. Innermost-set-wins: a deep `OpaqueArg`
+    /// leaf survives all the way back to `reduce_terminator` where
+    /// it is published in `CallsiteOutcome::Stalled { reason }`.
+    last_reason: Option<StalledReason>,
+}
+
+impl<'m> ReduceCtx<'m> {
+    fn note(&mut self, r: StalledReason) {
+        if self.last_reason.is_none() {
+            self.last_reason = Some(r);
+        }
+    }
+}
+
+/// Build a fresh `ReduceCtx` at top-level callsite entry. Centralises
+/// the boilerplate that used to live in each `reduce_terminator` arm.
+fn fresh_ctx(m: &Module) -> ReduceCtx<'_> {
+    ReduceCtx {
+        module: m,
+        budget: UNROLL_BUDGET_DEFAULT,
+        stack: Vec::new(),
+        last_reason: None,
+    }
 }
 
 /// Try to compute the literal return of `callee(args)` under the caller's
@@ -244,10 +430,14 @@ fn try_reduce_call(
     args: &[Var],
     env: &HashMap<Var, Descr>,
 ) -> Option<Descr> {
-    let arg_descrs: Vec<Descr> = args
-        .iter()
-        .map(|a| env.get(a).cloned())
-        .collect::<Option<Vec<_>>>()?;
+    let mut arg_descrs: Vec<Descr> = Vec::with_capacity(args.len());
+    for a in args {
+        let Some(d) = env.get(a).cloned() else {
+            ctx.note(StalledReason::OpaqueArg);
+            return None;
+        };
+        arg_descrs.push(d);
+    }
     try_reduce_call_with_descrs(ctx, callee, &arg_descrs)
 }
 
@@ -257,6 +447,7 @@ fn try_reduce_call_with_descrs(
     arg_descrs: &[Descr],
 ) -> Option<Descr> {
     if ctx.budget == 0 {
+        ctx.note(StalledReason::BudgetExhausted);
         return None;
     }
     ctx.budget -= 1;
@@ -266,11 +457,13 @@ fn try_reduce_call_with_descrs(
     // carry no semantic risk, so we still fold them per the FINDINGS.md
     // ratification.
     if ctx.module.boundary_fns.contains(&callee) && !is_trivially_inlinable(ctx.module, callee) {
+        ctx.note(StalledReason::BoundaryFn);
         return None;
     }
     // Every arg must be literal-Descr.
     for d in arg_descrs {
         if !is_scalar_literal(d) && !is_literal(d) {
+            ctx.note(StalledReason::OpaqueArg);
             return None;
         }
     }
@@ -278,6 +471,7 @@ fn try_reduce_call_with_descrs(
     if let Some((_, parent)) = ctx.stack.iter().rfind(|(fid, _)| *fid == callee)
         && !strictly_smaller_args(arg_descrs, parent)
     {
+        ctx.note(StalledReason::StructuralDecrease);
         return None;
     }
     ctx.stack.push((callee, arg_descrs.to_vec()));
@@ -290,6 +484,7 @@ fn walk_fn_body(ctx: &mut ReduceCtx, callee: FnId, arg_descrs: &[Descr]) -> Opti
     let f: &FnIr = ctx.module.fn_by_id(callee);
     let entry = f.block(f.entry);
     if entry.params.len() != arg_descrs.len() {
+        ctx.note(StalledReason::CalleeBodyShape);
         return None;
     }
     let mut env: HashMap<Var, Descr> = HashMap::new();
@@ -311,6 +506,7 @@ fn walk_block(
     goto_depth: u32,
 ) -> Option<Descr> {
     if goto_depth > 64 {
+        ctx.note(StalledReason::CalleeBodyShape);
         return None;
     }
     let block = f.block(bid);
@@ -318,35 +514,57 @@ fn walk_block(
     for stmt in &block.stmts {
         let Stmt::Let(_, prim) = stmt;
         if !prim_is_reducible(prim) {
+            ctx.note(StalledReason::NonReduciblePrim);
             return None;
         }
     }
     // Fold stmts.
     for stmt in &block.stmts {
         let Stmt::Let(v, prim) = stmt;
-        let d = fold_prim(prim, &env, &ctx.module.atom_names)?;
+        let Some(d) = fold_prim(prim, &env, &ctx.module.atom_names) else {
+            ctx.note(StalledReason::OpaqueArg);
+            return None;
+        };
         env.insert(*v, d);
     }
     match &block.terminator {
         Term::Return(v) => {
-            let d = env.get(v).cloned()?;
-            if is_scalar_literal(&d) { Some(d) } else { None }
+            let Some(d) = env.get(v).cloned() else {
+                ctx.note(StalledReason::OpaqueArg);
+                return None;
+            };
+            if is_scalar_literal(&d) {
+                Some(d)
+            } else {
+                ctx.note(StalledReason::CalleeBodyShape);
+                None
+            }
         }
         Term::Goto(target, args) => {
             let target_block = f.block(*target);
             if target_block.params.len() != args.len() {
+                ctx.note(StalledReason::CalleeBodyShape);
                 return None;
             }
             let mut next_env = env.clone();
             for (p, a) in target_block.params.iter().zip(args.iter()) {
-                let d = env.get(a)?.clone();
+                let Some(d) = env.get(a).cloned() else {
+                    ctx.note(StalledReason::OpaqueArg);
+                    return None;
+                };
                 next_env.insert(*p, d);
             }
             walk_block(ctx, f, *target, next_env, goto_depth + 1)
         }
         Term::If(cond, t, e) => {
-            let cd = env.get(cond)?;
-            let b = as_bool_lit(cd)?;
+            let Some(cd) = env.get(cond) else {
+                ctx.note(StalledReason::OpaqueArg);
+                return None;
+            };
+            let Some(b) = as_bool_lit(cd) else {
+                ctx.note(StalledReason::OpaqueArg);
+                return None;
+            };
             walk_block(ctx, f, if b { *t } else { *e }, env, goto_depth + 1)
         }
         Term::TailCall {
@@ -369,10 +587,17 @@ fn walk_block(
         // a closure_lit(F, captures) Descr, dispatch to F directly with
         // [captures..., args...] as its input Descrs.
         Term::TailCallClosure { closure, args } => {
-            let cl_lit = env.get(closure)?.as_closure_lit()?.clone();
+            let Some(cl_lit) = env.get(closure).and_then(|d| d.as_closure_lit()).cloned() else {
+                ctx.note(StalledReason::NoClosureLitTarget);
+                return None;
+            };
             let mut all_descrs = cl_lit.captures;
             for a in args {
-                all_descrs.push(env.get(a).cloned()?);
+                let Some(d) = env.get(a).cloned() else {
+                    ctx.note(StalledReason::OpaqueArg);
+                    return None;
+                };
+                all_descrs.push(d);
             }
             try_reduce_call_with_descrs(ctx, cl_lit.fn_id, &all_descrs)
         }
@@ -381,15 +606,25 @@ fn walk_block(
             args,
             continuation,
         } => {
-            let cl_lit = env.get(closure)?.as_closure_lit()?.clone();
+            let Some(cl_lit) = env.get(closure).and_then(|d| d.as_closure_lit()).cloned() else {
+                ctx.note(StalledReason::NoClosureLitTarget);
+                return None;
+            };
             let mut all_descrs = cl_lit.captures;
             for a in args {
-                all_descrs.push(env.get(a).cloned()?);
+                let Some(d) = env.get(a).cloned() else {
+                    ctx.note(StalledReason::OpaqueArg);
+                    return None;
+                };
+                all_descrs.push(d);
             }
             let inner_result = try_reduce_call_with_descrs(ctx, cl_lit.fn_id, &all_descrs)?;
             feed_cont(ctx, continuation, inner_result, &env)
         }
-        Term::Receive { .. } | Term::Halt(_) => None,
+        Term::Receive { .. } | Term::Halt(_) => {
+            ctx.note(StalledReason::CalleeBodyShape);
+            None
+        }
     }
 }
 
@@ -404,8 +639,12 @@ fn feed_cont(
     let mut cont_descrs: Vec<Descr> = Vec::with_capacity(1 + continuation.captured.len());
     cont_descrs.push(result);
     for cap in &continuation.captured {
-        let d = env.get(cap).cloned()?;
+        let Some(d) = env.get(cap).cloned() else {
+            ctx.note(StalledReason::OpaqueArg);
+            return None;
+        };
         if !is_literal(&d) {
+            ctx.note(StalledReason::OpaqueArg);
             return None;
         }
         cont_descrs.push(d);
@@ -989,6 +1228,97 @@ mod tests {
                 }
             }
             other => panic!("expected Return, got {:?}", other),
+        }
+    }
+
+    /// fz-9pr.4 — every callsite the reducer can't fold must publish a
+    /// `Stalled` outcome. Build a module that calls `id(x)` where x is
+    /// a Var (not a literal); the reducer can't fold the call, so it
+    /// must record `Stalled` at the Direct slot.
+    #[test]
+    fn reducer_publishes_stalled_outcome_when_args_nonliteral() {
+        let mut id_b = FnBuilder::new(FnId(0), "id");
+        let x = id_b.fresh_var();
+        let entry = id_b.block(vec![x]);
+        id_b.set_terminator(entry, Term::Return(x));
+
+        // main(x): TailCall id(x). x is a param, not a literal.
+        let mut main_b = FnBuilder::new(FnId(1), "main");
+        let x_main = main_b.fresh_var();
+        let m_entry = main_b.block(vec![x_main]);
+        main_b.set_terminator(
+            m_entry,
+            Term::TailCall {
+                callee: FnId(0),
+                args: vec![x_main],
+                is_back_edge: false,
+            },
+        );
+
+        let mut mb = ModuleBuilder::new();
+        mb.add_fn(id_b.build());
+        mb.add_fn(main_b.build());
+        let mut m = mb.build();
+        reduce_module(&mut m);
+
+        let cid = CallsiteId {
+            caller: FnId(1),
+            block: m_entry,
+            slot: EmitSlot::Direct,
+        };
+        assert!(matches!(
+            m.callsite_outcomes.get(&cid),
+            Some(CallsiteOutcome::Stalled { .. })
+        ));
+
+        // And main's terminator should be unchanged (still TailCall).
+        let main_fn = m.fns.iter().find(|f| f.name == "main").unwrap();
+        assert!(matches!(
+            main_fn.blocks[0].terminator,
+            Term::TailCall { .. }
+        ));
+    }
+
+    /// fz-9pr.3 — every successful reducer rewrite must publish a
+    /// `Consumed` outcome at the right `CallsiteId`. This test builds
+    /// the same identity-call module as `reduces_identity_call_with_int_literal`
+    /// and asserts main's TailCall site is recorded as
+    /// `Consumed { result: int_lit(42) }`.
+    #[test]
+    fn reducer_publishes_consumed_outcome() {
+        let mut id_b = FnBuilder::new(FnId(0), "id");
+        let x = id_b.fresh_var();
+        let entry = id_b.block(vec![x]);
+        id_b.set_terminator(entry, Term::Return(x));
+
+        let mut main_b = FnBuilder::new(FnId(1), "main");
+        let m_entry = main_b.block(vec![]);
+        let c42 = main_b.let_(m_entry, Prim::Const(Const::Int(42)));
+        main_b.set_terminator(
+            m_entry,
+            Term::TailCall {
+                callee: FnId(0),
+                args: vec![c42],
+                is_back_edge: false,
+            },
+        );
+
+        let mut mb = ModuleBuilder::new();
+        mb.add_fn(id_b.build());
+        mb.add_fn(main_b.build());
+        let mut m = mb.build();
+        reduce_module(&mut m);
+
+        let cid = CallsiteId {
+            caller: FnId(1),
+            block: m_entry,
+            slot: EmitSlot::Direct,
+        };
+        match m.callsite_outcomes.get(&cid) {
+            Some(CallsiteOutcome::Consumed { result }) => {
+                assert_eq!(**result, Descr::int_lit(42));
+            }
+            other => panic!("expected Consumed outcome, got {:?}", other),
         }
     }
 }

@@ -84,6 +84,119 @@ pub struct SpecId(pub u32);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct BlockId(pub u32);
 
+/// fz-9pr.1 — disambiguates *which kind of emit* a given block produces.
+///
+/// A single block can be the source of multiple callsite emits (e.g., a
+/// `Term::Call` block produces both a `Direct` callee target and a
+/// `Cont` target). The slot value names which one. Mirrors the
+/// `EmitSlot` used by ir_typer's discovery walker — by hosting it in
+/// fz_ir we make `CallsiteId` independent of typer internals.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum EmitSlot {
+    /// `Term::Call` / `Term::TailCall` callee.
+    Direct,
+    /// The continuation of `Term::Call` / `Term::CallClosure` /
+    /// `Term::Receive` — i.e., (cont.fn_id, [slot0, captures...]).
+    Cont,
+    /// `Term::CallClosure` / `Term::TailCallClosure` target resolved
+    /// via `fn_constants`. Distinct from `Direct` because the same
+    /// block can also produce a `Cont` (separate slot, same block).
+    CallClosureKnown,
+    /// `(clause_idx, sig_idx)` of a `closure_lit`-resolved CallClosure
+    /// target. Multiple lit clauses ⇒ multiple emits per block.
+    ClosureLit(usize, usize),
+    /// `Prim::MakeClosure` at this `stmt_idx` in the block.
+    MakeClosure(usize),
+}
+
+/// fz-9pr.1 — the address of one callsite in the module.
+///
+/// `(caller, block, slot)` uniquely names a place that can produce a
+/// callee target. Identical in shape to the (caller, block, slot)
+/// triple of `EmitterSite`, minus the spec-key — phases that don't
+/// distinguish between caller specs (the reducer, ir_inline) use
+/// `CallsiteId`; the typer's spec-aware discovery walk uses
+/// `EmitterSite` and round-trips through `with_spec_key` / `callsite_id`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct CallsiteId {
+    pub caller: FnId,
+    pub block: BlockId,
+    pub slot: EmitSlot,
+}
+
+/// fz-9pr.16 — why the reducer left a callsite alone. Threaded through
+/// every None-returning branch of `try_reduce_call` / `walk_block` so
+/// `fz dump --emit outcomes` can answer "why didn't X fold?" without
+/// a debugger.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StalledReason {
+    /// At least one argument's Descr was not a literal — the reducer
+    /// can only fold under fully-concrete arg Descrs.
+    OpaqueArg,
+    /// Per-top-level-callsite unroll budget hit before the recursive
+    /// walk could find a literal return.
+    BudgetExhausted,
+    /// Callee body contains a non-reducible prim (Extern, MakeMap,
+    /// MapUpdate, MakeBitstring, BitReader*, AllocStruct).
+    NonReduciblePrim,
+    /// Callee is in `module.boundary_fns` and the body isn't trivially
+    /// inlinable — `@spec`'d fns are reduction firewalls.
+    BoundaryFn,
+    /// `Term::(Tail)CallClosure`, but the closure operand's Descr
+    /// doesn't carry a `closure_lit` — no statically-known target.
+    NoClosureLitTarget,
+    /// Same-callee recursive call without provable structural
+    /// argument decrease — would risk non-termination if walked.
+    StructuralDecrease,
+    /// Callee body shape rejects the walk: `Term::Halt`, `Term::Receive`,
+    /// pathological Goto depth, parameter-arity mismatch, or a Return
+    /// of a non-scalar-literal Descr (tuple / list / closure_lit return).
+    CalleeBodyShape,
+    /// Catch-all for paths not yet classified. Should be rare; expand
+    /// the enum rather than reach for this.
+    Other,
+}
+
+impl std::fmt::Display for StalledReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            StalledReason::OpaqueArg => "OpaqueArg",
+            StalledReason::BudgetExhausted => "BudgetExhausted",
+            StalledReason::NonReduciblePrim => "NonReduciblePrim",
+            StalledReason::BoundaryFn => "BoundaryFn",
+            StalledReason::NoClosureLitTarget => "NoClosureLitTarget",
+            StalledReason::StructuralDecrease => "StructuralDecrease",
+            StalledReason::CalleeBodyShape => "CalleeBodyShape",
+            StalledReason::Other => "Other",
+        })
+    }
+}
+
+/// fz-9pr.1 — what happened at a callsite, as recorded on the Module.
+///
+/// Four outcomes, three writers (reducer, ir_inline, typer), one
+/// table. See the fz-9pr epic for the unified model. `Consumed`'s
+/// `Descr` is boxed and `Emitted`'s tuple is heap-tailed already, so
+/// the enum stays compact (one word + tag).
+#[derive(Clone, Debug, PartialEq)]
+pub enum CallsiteOutcome {
+    /// Reducer folded the call away. Result Descr is what the
+    /// continuation will see in slot 0.
+    Consumed { result: Box<crate::types::Descr> },
+    /// Callee body was spliced into the caller (ir_inline today,
+    /// reducer once fz-9pr.E lands).
+    Inlined,
+    /// Typer minted a spec for this callsite's target.
+    Emitted {
+        target: (FnId, Vec<crate::types::Descr>),
+    },
+    /// Reducer left the call in place. `reason` says why, so
+    /// `fz dump --emit outcomes` can explain coverage gaps.
+    /// Debug invariant (fz-9pr.5): no `Stalled` may survive end of
+    /// pipeline.
+    Stalled { reason: StalledReason },
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Var(pub u32);
 
@@ -383,6 +496,12 @@ pub struct Module {
     /// body is a stable unit, so reduction does not cross into it (except
     /// for trivially-inlinable single-stmt bodies, which carry no risk).
     pub boundary_fns: HashSet<FnId>,
+    /// fz-9pr.2 — unified callsite outcome table. Three writers
+    /// (reducer, ir_inline, typer) and several readers all share this
+    /// one map. Empty on a freshly-built module; populated as phases
+    /// decide each callsite's fate. See `CallsiteOutcome` for the
+    /// shape of each entry and the fz-9pr epic for the design.
+    pub callsite_outcomes: HashMap<CallsiteId, CallsiteOutcome>,
 }
 
 impl Module {
@@ -532,6 +651,7 @@ impl ModuleBuilder {
             externs: Vec::new(),
             extern_idx: HashMap::new(),
             boundary_fns: HashSet::new(),
+            callsite_outcomes: HashMap::new(),
         }
     }
 }
@@ -1013,6 +1133,12 @@ mod tests {
         b.set_terminator(entry, Term::Return(s_));
         let s = format!("{}", b.build());
         assert!(s.contains("alloc_struct(schema=3, [v0, v1])"));
+    }
+
+    #[test]
+    fn fresh_module_has_empty_callsite_outcomes() {
+        let m = ModuleBuilder::new().build();
+        assert!(m.callsite_outcomes.is_empty());
     }
 
     #[test]
