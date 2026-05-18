@@ -50,6 +50,23 @@
 //! `Stalled`; the typer (fz-9pr.D) will Emit it. The follow-up that
 //! could lift this is a fz-jg5 successor — "closure-typed return"
 //! reduction.
+//!
+//! ## fz-9pr.7 — partial fold for Term::CallClosure when cont doesn't fold
+//!
+//! `Term::CallClosure` mirrors `Term::Call` exactly here: the
+//! top-level branch (`reduce_terminator`) handles "closure_lit operand,
+//! inner call folds, but cont doesn't" by rewriting to TailCall(cont,
+//! [literal_var, ...captures]); the recursive layer (`walk_block`)
+//! handles inner CallClosure via the same `feed_cont` helper as Call.
+//! Same blocker: `walk_block`'s Return arm gates on
+//! `is_scalar_literal`, so a callee that returns a closure_lit (e.g.
+//! `curried_add`'s `add3(10)` ⇒ `closure_lit(fn_outer, [10])`) fails
+//! the walk. The fix is the same Const-reconstruction for closure_lit
+//! results, and is out of fz-9pr's scope.
+//!
+//! Resolution: fz-9pr.7 is doc-only. `curried_add`'s `apply(...)`
+//! callsites remain `Stalled`; the typer Emits them. Runtime
+//! behaviour and spec set unchanged.
 
 use crate::fz_ir::{
     Block, BlockId, CallsiteId, CallsiteOutcome, Const, EmitSlot, FnId, FnIr, Module, Prim, Stmt,
