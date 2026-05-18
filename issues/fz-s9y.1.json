@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-s9y.2"
+  ],
   "created": "2026-05-18T16:03:23Z",
   "description": "## The change\n\nAdd the new variants and route lowering through them, but keep the\nruntime bit pattern unchanged. After this commit, `[]` and `nil` are\ndistinct at the IR level but produce identical runtime values.\n\n### Add\n\n  - `Const::EmptyList` in `src/fz_ir.rs`.\n  - `Prim::IsEmptyList` in `src/fz_ir.rs` — RENAMED from `Prim::ListIsNil`.\n    (No caller anywhere meant \"is this the nil atom value.\" Every\n    consumer wanted \"is this the empty list / end-of-list sentinel.\"\n    The rename corrects a misleading name.)\n  - `pattern_matrix::SwitchKey::EmptyList` distinct from\n    `pattern_matrix::SwitchKey::Nil`.\n\n### Route\n\n  - `Pattern::List(vec![], None)` (the `[]` literal pattern) lowers to\n    a check via `Prim::IsEmptyList` and routes to `SwitchKey::EmptyList`\n    in both matrix implementations (`src/ir_lower.rs` and\n    `src/pattern_matrix.rs`).\n  - `Pattern::Nil` (the `nil` keyword pattern) keeps routing to\n    `Prim::Const(Const::Nil)` + `emit_eq_check`, and to\n    `SwitchKey::Nil`.\n  - `Expr::List(vec![], None)` / `Prim::MakeList(vec![], None)` produce\n    `Const::EmptyList` semantics.\n\n### Codegen (stays on NIL_BITS for this ticket)\n\n  - `Const::EmptyList` emits the SAME bits as `Const::Nil` (NIL_BITS).\n  - `Prim::IsEmptyList` compares against the SAME constant (NIL_BITS).\n  - This makes EL.1 zero-behavior-change.\n\n### REMOVES\n\n  - The `if elems.is_empty() { continue }` branch in\n    `pattern_matrix::specialize_listcons` (the bug surface).\n  - The \"[| tail] form — degenerate\" comment.\n  - The implicit \"Pattern::Nil and Pattern::List(vec![], None) are\n    interchangeable\" assumption in pattern consumers — they're now\n    structurally split (even if runtime hasn't split yet).\n\n## Expected effect\n\n  - 4 spurious pattern_check warnings in `list_primitives` (and the\n    same for any future `nil | cons` fn) disappear.\n  - Spec dumps (`expected.specs`) show `IsEmptyList` instead of\n    `ListIsNil`. Re-bless.\n  - CLIF goldens may show prim-name annotations differ. Re-bless.\n  - `expected.txt` unchanged everywhere.\n  - All 842 tests pass.\n\n## Independent of\n\nEL.2-EL.4. Strictly precedes them.\n\n## Walkthrough hazards\n\n  - Rename touches every caller of `Prim::ListIsNil`: ir_lower,\n    ir_codegen, ir_interp, fold_prim, reducer, tests. CI lint pass\n    catches misses (clippy + cargo check).\n  - Pattern_matrix.rs's specialize_listcons gets a new SwitchKey\n    variant. Any code that exhaustively matches on SwitchKey\n    (`Nil | Cons` arms) needs an `EmptyList` arm. Grep before commit.\n  - fold_prim / reducer pattern matching: `match_pattern` on\n    Pattern::Nil vs Pattern::List(vec![], None) — today they're handled\n    identically (both check is_nil). After EL.1: split prims but same\n    runtime check. After EL.2: different prims AND different runtime\n    checks.",
   "id": "fz-s9y.1",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "fz-EL.1: IR scaffold — Const::EmptyList, Prim::IsEmptyList, SwitchKey::EmptyList",
   "type": "task",
-  "updated_at": "2026-05-18T16:03:23Z"
+  "updated_at": "2026-05-18T16:04:41Z"
 }
