@@ -715,19 +715,23 @@ pub fn type_module(m: &Module) -> ModuleTypes {
         if !reachable.contains(&site.caller) {
             continue;
         }
-        match site.slot {
-            EmitSlot::Direct | EmitSlot::ClosureLit(..) | EmitSlot::CallClosureKnown => {
-                let cid = site.callsite_id();
-                callsite_outcome_updates.insert(
-                    cid,
-                    CallsiteOutcome::Emitted {
-                        target: target.clone(),
-                        came_from: None,
-                    },
-                );
-            }
-            EmitSlot::Cont | EmitSlot::MakeClosure(_) => {}
-        }
+        // fz-rcp.4 — publish Emitted outcomes for every dispatch-shaped
+        // slot the typer discovers a target for. The previously skipped
+        // EmitSlot::Cont and EmitSlot::MakeClosure variants need their
+        // outcomes published so fz-rcp.5's codegen-reads-outcomes
+        // cutover has a populated table at every dispatch site (cont
+        // resolves at Term::Call.continuation / CallClosure.continuation
+        // / Receive.continuation; body picker at Prim::MakeClosure).
+        // Pure data plumbing — codegen at this point still calls
+        // spec_registry.resolve and ignores the new outcome entries.
+        let cid = site.callsite_id();
+        callsite_outcome_updates.insert(
+            cid,
+            CallsiteOutcome::Emitted {
+                target: target.clone(),
+                came_from: None,
+            },
+        );
     }
 
     ModuleTypes {

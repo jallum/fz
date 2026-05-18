@@ -12,21 +12,25 @@ main:
   blk0 Direct -> Consumed (0)
 
 k_16:
+  blk0 Cont -> Emitted (k_17#17 [nil])
   blk0 Direct -> Emitted (print#0 [0]) via OpaqueArg
 
 k_17:
   blk0 Direct -> Consumed (1)
 
 k_18:
+  blk0 Cont -> Emitted (k_19#19 [nil])
   blk0 Direct -> Emitted (print#0 [1]) via OpaqueArg
 
 k_19:
   blk0 Direct -> Consumed (55)
 
 k_20:
+  blk0 Cont -> Emitted (k_21#21 [nil])
   blk0 Direct -> Emitted (print#0 [55]) via OpaqueArg
 
 k_21:
+  blk0 Cont -> Emitted (k_22#22 [int])
   blk0 Direct -> Emitted (fib#11 [20, 0, 1]) via BudgetExhausted
 
 k_22:
