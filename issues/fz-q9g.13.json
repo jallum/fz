@@ -5,7 +5,7 @@
   ],
   "blocks": [],
   "created": "2026-05-17T04:47:20Z",
-  "description": "What: The uniform return path (writes to frame slot 1, returns frame pointer) stays alive for any-typed specs. Dst specs go through C2 and never use it — remove the dead branch in their codegen.\n\nCLIF impact: compiler-side reduction. Runtime CLIF for Dst specs is set by C2.\n\nRemoves: one conditional branch in emit_terminator for Dst specs.\n\nTests: existing tests pass; assert any-typed specs still use uniform path.",
+  "description": "**fz-dps.E2**: drop uniform `emit_return()` branch for Dst specs.\n\n**What**: once q9g.3 has activated Dst classification, the uniform return path (writes frame slot 1, returns frame ptr) is only used by non-Dst specs. The `if return_reprs[my_sid] == Dst(...)` branch in `emit_return` for Dst specs is now dead — collapse the conditional. The uniform path stays for Tagged/RawInt/RawF64 specs.\n\n**CLIF impact**: compiler-side reduction (one fewer branch in emit_terminator). Runtime CLIF unchanged — it's already set by C2 inside q9g.3.\n\n**Removes**: the dead Dst arm in `emit_return` (or equivalent — exact site to be confirmed during landing).\n\n**Tests**: existing tests pass; assert any-typed (non-Dst) specs still use the uniform path; Dst specs continue producing the store-through-dst form from q9g.3.\n\n**Precondition**: q9g.3 — must have shipped Dst specs to production for this dead-branch removal to be safe.",
   "id": "fz-q9g.13",
   "labels": [],
   "parent": "fz-q9g",
@@ -19,5 +19,5 @@
   "status": "open",
   "title": "fz-dps.E2: drop uniform emit_return() for Dst specs",
   "type": "task",
-  "updated_at": "2026-05-18T20:02:00Z"
+  "updated_at": "2026-05-18T20:03:37Z"
 }
