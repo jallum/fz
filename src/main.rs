@@ -855,8 +855,11 @@ fn dump_outcomes_pipeline(src: String, source_name: String, show_all: bool) -> S
     }
     // fz-f88.7 — default filter: hide prelude callers and any caller
     // whose body has no surviving spec post-reduction. `--all` bypasses.
+    // fz-0z4.2 — project from `mt.specs.keys()` directly; the prior
+    // `mt.reachable_specs` field was just `specs.keys().cloned().collect()`
+    // and is being retired in fz-0z4.4.
     let reachable_fids: std::collections::HashSet<fz_ir::FnId> =
-        mt.reachable_specs.iter().map(|(fid, _)| *fid).collect();
+        mt.specs.keys().map(|(fid, _)| *fid).collect();
     let should_show = |f: &fz_ir::FnIr| -> bool {
         if show_all {
             return true;
