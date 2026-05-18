@@ -485,6 +485,36 @@ pub fn reset_typer_counters() {
 /// opaque-consumed lambdas, the worklist re-drains; over-specialized
 /// stale specs that the walks accumulate are pruned by a final
 /// reachability sweep keyed off the converged effective_returns.
+///
+/// ## Termination (fz-rh5.7)
+///
+/// The worklist terminates because:
+///
+///   (a) `effective_returns` is updated only via `Descr::union`,
+///       which is monotone w.r.t. lattice inclusion. So
+///       `effective_returns` is monotonically non-decreasing in
+///       the product Descr lattice.
+///
+///   (b) The Descr lattice has finite height H, bounded by the
+///       count of distinct type-axis values in the program
+///       (atoms, ints, floats, tuple shapes, list shapes, etc —
+///       all finite for a closed program).
+///
+///   (c) A spec is enqueued only on:
+///         (i)   First emission — happens at most once per spec key.
+///         (ii)  A callee's effective return that this spec reads
+///               has changed — happens at most H× per
+///               (spec, return-edge) pair, by (a) and (b).
+///
+///   (d) SCC-internal recursive spec keys (where args could shrink
+///       structurally each iteration) are widened via
+///       `crate::typer::widen` after `WIDEN_AT` visits, forcing
+///       convergence within a bounded number of iterations.
+///
+/// Therefore total worklist pops is bounded by
+///   O(|specs| · (1 + H · |return-edges per spec|))
+/// which is finite. `VISIT_HARD_BOUND` below is a debug-only
+/// tripwire for invariant violation, NOT a release safety net.
 pub fn type_module(m: &Module) -> ModuleTypes {
     #[cfg(test)]
     TYPE_MODULE_CALLS.with(|c| c.set(c.get() + 1));
@@ -598,6 +628,15 @@ pub fn type_module(m: &Module) -> ModuleTypes {
 
 const WIDEN_AT: usize = 3;
 
+/// fz-rh5.7 — debug-only termination tripwire. The proof above
+/// (see `type_module`'s doc) shows the worklist terminates in
+/// O(|specs| · H · |edges|) pops. This bound is comfortably above
+/// any realistic program — a hit indicates a violated invariant
+/// (non-monotone Descr op, an `is_equiv` slow-path returning false
+/// on inputs that should be equiv, a missing WIDEN_AT trigger),
+/// not a too-tight margin. Zero release-build cost.
+const VISIT_HARD_BOUND: usize = 4096;
+
 #[allow(clippy::too_many_arguments)]
 fn process_worklist(
     m: &Module,
@@ -638,6 +677,14 @@ fn process_worklist(
 
         let count = visit_count.entry(spec_key.clone()).or_insert(0);
         *count += 1;
+        // fz-rh5.7 — termination invariant tripwire. See proof in
+        // `type_module`'s doc comment.
+        debug_assert!(
+            *count < VISIT_HARD_BOUND,
+            "spec {:?} visited {} times — termination invariant violated",
+            spec_key,
+            *count
+        );
         let scc_id = scc_of.get(&fid).copied().unwrap_or(usize::MAX);
         let scc_set = scc_members
             .get(&scc_id)
