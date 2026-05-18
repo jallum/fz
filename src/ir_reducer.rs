@@ -71,6 +71,44 @@ pub fn reduce_module(m: &mut Module) {
     for fid in fn_ids {
         reduce_fn(m, fid);
     }
+    #[cfg(debug_assertions)]
+    assert_every_callsite_has_outcome(m);
+}
+
+/// fz-9pr.5 — debug invariant: after `reduce_module`, every surviving
+/// call-terminator in the module must have a corresponding entry in
+/// `callsite_outcomes`. A surviving call means the reducer either
+/// Stalled it (left as-is for the typer to Emit) or — once fz-9pr.E
+/// lands — Inlined it. `Consumed` outcomes refer to callsites that
+/// were rewritten away; their original terminators are gone, so they
+/// are not part of this scan.
+#[cfg(debug_assertions)]
+fn assert_every_callsite_has_outcome(m: &Module) {
+    for f in &m.fns {
+        for b in &f.blocks {
+            let slot = match &b.terminator {
+                Term::Call { .. } | Term::TailCall { .. } => Some(EmitSlot::Direct),
+                Term::CallClosure { .. } | Term::TailCallClosure { .. } => {
+                    Some(EmitSlot::ClosureLit(0, 0))
+                }
+                _ => None,
+            };
+            if let Some(slot) = slot {
+                let cid = CallsiteId {
+                    caller: f.id,
+                    block: b.id,
+                    slot,
+                };
+                assert!(
+                    m.callsite_outcomes.contains_key(&cid),
+                    "fz-9pr.5: missing callsite outcome for {:?} in fn {} block {:?}",
+                    slot,
+                    f.name,
+                    b.id
+                );
+            }
+        }
+    }
 }
 
 fn reduce_fn(m: &mut Module, fid: FnId) {
