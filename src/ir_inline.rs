@@ -434,6 +434,10 @@ pub fn inline_tail_calls_once(m: &mut Module) -> usize {
         if closure_fns.contains(&callee_id) {
             continue; // closure target — must stay callable, don't inline
         }
+        // fz-jg5.12 (RED.9): @spec'd fns are reduction boundaries.
+        if m.boundary_fns.contains(&callee_id) {
+            continue;
+        }
         let callee_idx = match m.fn_idx.get(&callee_id) {
             Some(&i) => i,
             None => continue,
@@ -495,6 +499,12 @@ pub fn inline_calls_once(m: &mut Module) -> usize {
 
     for (fi, bi, callee_id, args, cont_fn, cont_captured) in work {
         if closure_fns.contains(&callee_id) {
+            continue;
+        }
+        // fz-jg5.12 (RED.9): @spec'd fns are reduction boundaries. The
+        // user signed a contract by declaring the spec; honor it across
+        // every "inline" pass, not just the reducer.
+        if m.boundary_fns.contains(&callee_id) {
             continue;
         }
         let callee_idx = match m.fn_idx.get(&callee_id) {

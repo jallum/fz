@@ -256,6 +256,14 @@ fn try_reduce_call_with_descrs(
         return None;
     }
     ctx.budget -= 1;
+    // fz-jg5.12 (RED.9): @spec'd fns are reduction boundaries. The user
+    // signed a contract by declaring the spec; honor it. Exception:
+    // trivially-inlinable bodies (one block, ≤1 stmt, Return terminator)
+    // carry no semantic risk, so we still fold them per the FINDINGS.md
+    // ratification.
+    if ctx.module.boundary_fns.contains(&callee) && !is_trivially_inlinable(ctx.module, callee) {
+        return None;
+    }
     // Every arg must be literal-Descr.
     for d in arg_descrs {
         if !is_scalar_literal(d) && !is_literal(d) {
@@ -393,6 +401,22 @@ fn feed_cont(
         cont_descrs.push(d);
     }
     try_reduce_call_with_descrs(ctx, continuation.fn_id, &cont_descrs)
+}
+
+/// fz-jg5.12 (RED.9) — `@spec`'d fn carries no risk to fold across if
+/// the body is one block with at most one non-control stmt + Return.
+/// Per FINDINGS.md ratification: `add1(x) = x + 1` qualifies; anything
+/// branching, multi-block, or recursive is a firewall.
+fn is_trivially_inlinable(m: &Module, fid: FnId) -> bool {
+    let f = m.fn_by_id(fid);
+    if f.blocks.len() != 1 {
+        return false;
+    }
+    let b = f.block(f.entry);
+    if b.stmts.len() > 1 {
+        return false;
+    }
+    matches!(b.terminator, Term::Return(_))
 }
 
 fn prim_is_reducible(p: &Prim) -> bool {

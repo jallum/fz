@@ -25,7 +25,7 @@ use crate::fz_ir::{
     BinOp, BitFieldIr, BitSizeIr, BlockId, Const, Cont, ExternDecl, ExternId, ExternTy, FnBuilder,
     FnId, Module, ModuleBuilder, Prim, SourceInfo, Term, UnOp, Var,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -234,6 +234,10 @@ pub struct LowerCtx {
     /// Used by `emit_param_type_guards` to resolve annotation tokens in
     /// `fn f(x :: T)` parameter heads.
     pub combined_type_env: crate::type_expr::ModuleTypeEnv,
+    /// fz-jg5.12 (RED.9) — FnIds of user fns that carry an `@spec`. Copied
+    /// into `Module.boundary_fns` after build. The reducer treats these as
+    /// firewalls so a declared spec is honored as a contract.
+    pub boundary_fns: HashSet<crate::fz_ir::FnId>,
 }
 
 impl LowerCtx {
@@ -260,6 +264,7 @@ impl LowerCtx {
             prelude_fn_id_cutoff: 0,
             prelude_type_env: crate::type_expr::ModuleTypeEnv::new(),
             combined_type_env: crate::type_expr::ModuleTypeEnv::new(),
+            boundary_fns: HashSet::new(),
         }
     }
 
@@ -517,6 +522,15 @@ pub fn lower_program_full(prog: &Program) -> Result<(Module, AtomTable), LowerEr
                     let arity = fn_def.clauses.first().map(|c| c.params.len()).unwrap_or(0);
                     let id = ctx.mb.fresh_fn_id();
                     ctx.fns.insert((fn_def.name.clone(), arity), id);
+                    // fz-jg5.12 (RED.9): a user fn with an @spec is a
+                    // reduction boundary — the spec is a signed contract.
+                    if fn_def
+                        .attrs
+                        .iter()
+                        .any(|a| matches!(a, crate::ast::Attribute::Spec(_)))
+                    {
+                        ctx.boundary_fns.insert(id);
+                    }
                 }
             }
             Item::Module(m) => {
@@ -561,6 +575,7 @@ pub fn lower_program_full(prog: &Program) -> Result<(Module, AtomTable), LowerEr
     for (i, e) in module.externs.iter().enumerate() {
         module.extern_idx.insert(e.id, i);
     }
+    module.boundary_fns = std::mem::take(&mut ctx.boundary_fns);
     // fz-02r.4 — annotate TailCall back-edges from the structural SCC.
     annotate_back_edges(&mut module, &ctx.fn_spans)?;
     Ok((module, ctx.atoms))

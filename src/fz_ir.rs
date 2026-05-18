@@ -22,7 +22,7 @@
 use crate::ast::{BitType, Endian, Pattern};
 use crate::diag::Span;
 use fz_runtime::heap::Schema;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 /// Element-kind for a heap-allocated vector. The AST-level `VecKind` (Numeric
@@ -377,6 +377,12 @@ pub struct Module {
     pub externs: Vec<ExternDecl>,
     /// O(1) index from ExternId to position in `externs`. Mirrors fn_idx.
     pub extern_idx: HashMap<ExternId, usize>,
+    /// fz-jg5.12 (RED.9) — Fns marked as reduction boundaries. Populated
+    /// by ir_lower from `@spec` declarations. The reducer treats these as
+    /// firewalls: a declared spec is the user's signed contract that the
+    /// body is a stable unit, so reduction does not cross into it (except
+    /// for trivially-inlinable single-stmt bodies, which carry no risk).
+    pub boundary_fns: HashSet<FnId>,
 }
 
 impl Module {
@@ -525,6 +531,7 @@ impl ModuleBuilder {
             atom_names: Vec::new(),
             externs: Vec::new(),
             extern_idx: HashMap::new(),
+            boundary_fns: HashSet::new(),
         }
     }
 }
