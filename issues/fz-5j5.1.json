@@ -2,14 +2,15 @@
   "assignee": "Jason Allum",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-05-18T11:05:16Z",
   "created": "2026-05-18T11:01:42Z",
   "description": "## The change\n\nOne line in `src/types.rs`:\n\n```rust\npub fn is_equiv(\u0026self, other: \u0026Descr) -\u003e bool {\n    self == other || (self.is_subtype(other) \u0026\u0026 other.is_subtype(self))\n}\n```\n\nStructural equality (`self == other`, via the derived `PartialEq`)\nis a *sufficient* condition for semantic equivalence: two `Descr`\nvalues with identical fields denote the same set of values. So\nshort-circuiting to `true` on structural match is sound by\nconstruction — we only ever return `true` earlier than before,\nnever wrongly.\n\n## Why this is the right shape\n\nThe fast-path goes inside the kernel, not at the callsites. Every\nexisting caller (`type_fn`'s var-level fixpoint at `ir_typer.rs:1220`,\nenv propagation at `:1255`, block-level join at `:1359`,\n`compute_effective_returns` at `:2548`, the four other scattered\nsites) benefits automatically. No `is_same_value()` helper, no\nparallel cheap-check at each callsite, no leak of \"this is an\noptimization\" into surrounding code.\n\n## Why this is huge\n\nMeasured on `ast_eval`: per-`type_fn` cost is ~388 µs vs ~65 µs on\n`fib_tailrec`. The 6× difference is `is_equiv` doing semantic\nsubtyping (DNF intersection-with-negation, coinductive emptiness\nwalk) on tuple-shaped Descrs that are *bit-identical* across iters\nin the common case — the inner fixpoint is converging, which means\n\"unchanged\" is the common answer.\n\n## Acceptance\n\n- One-line change in `Descr::is_equiv`.\n- All existing typer tests pass unchanged.\n- `ast_eval` `type_module` single-call time drops from ~172 ms to\n  the ballpark of 25 ms (measure before/after with a release build).\n\n## Out of scope\n\n- Canonicalizing `Descr` operations to make structural equality\n  match semantic equality more often. Fast-path misses still fall\n  through to the slow path — correctness is unaffected.\n- Fast-paths inside `is_subtype` / `is_empty` (separate question).\n\n## Independent of\n\nTYP.2 and TYP.3. Lands first because it's the smallest verifiable\nwin and unlocks better measurements for the other two.",
   "id": "fz-5j5.1",
   "labels": [],
   "parent": "fz-5j5",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "fz-TYP.1: Descr::is_equiv structural fast-path",
   "type": "task",
-  "updated_at": "2026-05-18T11:03:39Z"
+  "updated_at": "2026-05-18T11:05:16Z"
 }
