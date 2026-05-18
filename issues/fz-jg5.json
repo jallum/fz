@@ -2,13 +2,14 @@
   "assignee": "",
   "blocked_by": [],
   "blocks": [],
+  "closed_at": "2026-05-18T15:03:24Z",
   "created": "2026-05-18T02:54:41Z",
   "description": "# fz-RED: Reduce-at-callsite, mint at boundary\n\nSee `docs/bodies-are-boundaries.md` for the full design.\n\n## The thing in one sentence\n\nReplace the current \"mint a spec per distinct callsite Descr tuple\"\ndiscovery loop with a **Module → Module reducer pass** that walks\nfrom program roots (`main`, spawned fns), reduces each callsite\nwhere possible, and leaves a call in place only at opacity\nboundaries. The typer then types the *reduced* call graph, and the\nspec hot mess disappears as a side effect.\n\n## Concrete acceptance\n\n- `ast_eval` expected.clif drops from ~1400 lines to under 100.\n- `ast_eval` spec count drops from 50+ to ≤ 3.\n- Every existing fixture passes three-path parity (interp + JIT + AOT).\n- `fz dump --emit bodies` correctly attributes each body to a\n  source-visible opacity boundary.\n- Code that becomes dead is **deleted**, not stubbed.\n\n## What this is NOT\n\n- **Part 2 (allocations / reuse / DPS)** is `fz-q9g`, in flight\n  separately. This epic does not touch allocation strategy.\n- **Typed receive / send-site mailbox check** is gated on `fz-ul4.19`.\n  Not in this epic.\n- **Cross-module inlining** (`fz-ul4.11.27`) is orthogonal.\n\n## Removals are first-class tickets\n\n`fz-RED.8a/.8b/.8c` are explicit deletion tickets. The arc only\nfinishes when the now-dead machinery is gone.\n\n## DAG\n\n```\nRED.0 SPIKE\n   │\n   ▼\nRED.1 pattern reduction primitive\n   │\n   ▼  (also requires fz-ul4.43 pattern matrix landing)\nRED.2 clause dispatch\n   │\n   ▼\nRED.3 reducer scaffold (single-clause)\n   │\n   ▼\nRED.4 recursive reduction with unroll budget\n   │       └─ subsumes fz-ul4.11.28\n   ▼\nRED.5 closure_lit reduction\n   │\n   ▼\nRED.6 re-bless every fixture golden\n   │\n   ├──► RED.7 --explain-bodies diagnostic\n   ├──► RED.9 @spec as narrowing contract\n   └──► RED.8a REMOVE per-callsite spec minting\n          │\n          ▼\n        RED.8b REMOVE closure_lit return chain\n          │\n          ▼\n        RED.8c REMOVE ir_inline as separate pass\n```",
   "id": "fz-jg5",
   "labels": [],
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "Reduce-at-callsite, mint at boundary",
   "type": "epic",
-  "updated_at": "2026-05-18T02:54:41Z"
+  "updated_at": "2026-05-18T15:03:24Z"
 }
