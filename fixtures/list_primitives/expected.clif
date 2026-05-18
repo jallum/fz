@@ -92,8 +92,8 @@ block4:
 }
 
 ; fn length_s20
-    ;   @spec   length(nil | list(1 | 2 | 3 | 4 | 5)) -> int
-    ;   @key    [nil | list(1 | 2 | 3 | 4 | 5)]
+    ;   @spec   length(nil | list(int)) -> int
+    ;   @key    [nil | list(int)]
     ;   @abi    (Tagged) -> RawInt
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64, i64) -> i64 tail
@@ -106,7 +106,7 @@ function u0:0(i64, i64) -> i64 tail {
     fn2 = u0:27 sig3
     fn3 = colocated u0:52 sig4
 
-    block0(v0: i64, v1: i64):    ;; v0 :: nil | list(1 | 2 | 3 | 4 | 5)
+    block0(v0: i64, v1: i64):    ;; v0 :: nil | list(int)
     v2 = iconst.i64 3
     v3 = icmp eq v0, v2  ; v2 = 3    ;; v3 :: bool
     brif v3, block1, block2
@@ -128,7 +128,7 @@ block3:
     return v9  ; v9 = 0
 
 block4:
-    v10 = load.i64 notrap aligned v0+24    ;; v10 :: nil | list(1 | 2 | 3 | 4 | 5)
+    v10 = load.i64 notrap aligned v0+24    ;; v10 :: nil | list(int)
     v11 = iconst.i64 1    ;; v11 :: 1
     v12 = iconst.i32 31
     v13 = iconst.i32 3
@@ -344,8 +344,8 @@ block4:
 }
 
 ; fn map_s25
-    ;   @spec   map(&fn16[]:(any) -> any, nil | list(1 | 2 | 3 | 4 | 5)) -> list(int)
-    ;   @key    [&fn16[]:(any) -> any, nil | list(1 | 2 | 3 | 4 | 5)]
+    ;   @spec   map(&fn16[]:(any) -> any, nil | list(int)) -> list(int)
+    ;   @key    [&fn16[]:(any) -> any, nil | list(int)]
     ;   @abi    (Tagged, Tagged) -> Tagged
 function u0:0(i64, i64, i64) -> i64 tail {
     sig0 = (i64, i64) -> i64 system_v
@@ -362,7 +362,7 @@ function u0:0(i64, i64, i64) -> i64 tail {
     fn4 = u0:27 sig5
     fn5 = colocated u0:53 sig6
 
-    block0(v0: i64, v1: i64, v2: i64):    ;; v0 :: &fn16[]:(any) -> any, v1 :: nil | list(1 | 2 | 3 | 4 | 5)
+    block0(v0: i64, v1: i64, v2: i64):    ;; v0 :: &fn16[]:(any) -> any, v1 :: nil | list(int)
     v3 = iconst.i64 3
     v4 = icmp eq v1, v3  ; v3 = 3    ;; v4 :: bool
     brif v4, block1, block2
@@ -384,8 +384,8 @@ block3:
     return v10  ; v10 = 0
 
 block4:
-    v11 = load.i64 notrap aligned v1+16    ;; v11 :: 1 | 2 | 3 | 4 | 5
-    v12 = load.i64 notrap aligned v1+24    ;; v12 :: nil | list(1 | 2 | 3 | 4 | 5)
+    v11 = load.i64 notrap aligned v1+16    ;; v11 :: int
+    v12 = load.i64 notrap aligned v1+24    ;; v12 :: nil | list(int)
     v13 = sshr_imm v11, 3
     v14 = iconst.i32 16
     v15 = call fn3(v14)  ; v14 = 16
@@ -522,13 +522,13 @@ block4:
 }
 
 ; fn double_s28
-    ;   @spec   double(1 | 2 | 3 | 4 | 5) -> int
-    ;   @key    [1 | 2 | 3 | 4 | 5]
+    ;   @spec   double(int) -> int
+    ;   @key    [int]
     ;   @abi    (RawInt) -> RawInt
 function u0:0(i64, i64, i64) -> i64 tail {
     sig0 = (i64, i64) -> i64 tail
 
-    block0(v0: i64, v1: i64, v2: i64):    ;; v0 :: 1 | 2 | 3 | 4 | 5
+    block0(v0: i64, v1: i64, v2: i64):    ;; v0 :: int
     v3 = iconst.i64 2                   ; @14:23
     v4 = imul v0, v3                    ; @14:19  v3 = 2
     v5 = load.i64 notrap aligned v2+16
@@ -562,14 +562,14 @@ function u0:0(i64, i64, i64, i64) -> i64 tail {
 }
 
 ; fn k_21_s31
-    ;   @spec   k_21(int, nil | list(1 | 2 | 3 | 4 | 5), 1) -> int
-    ;   @key    [int, nil | list(1 | 2 | 3 | 4 | 5), 1]
+    ;   @spec   k_21(int, nil | list(int), 1) -> int
+    ;   @key    [int, nil | list(int), 1]
     ;   @abi    (RawInt, Tagged, RawInt) -> RawInt
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64, i64) -> i64 tail
 
     block0(v0: i64, v1: i64):    ;; v0 :: int
-    v2 = load.i64 notrap aligned v1+32    ;; v2 :: nil | list(1 | 2 | 3 | 4 | 5)
+    v2 = load.i64 notrap aligned v1+32    ;; v2 :: nil | list(int)
     v3 = load.i64 notrap aligned v1+40    ;; v3 :: 1
     v4 = iadd v3, v0                    ; @2:25
     v5 = load.i64 notrap aligned v1+24
@@ -578,8 +578,8 @@ function u0:0(i64, i64) -> i64 tail {
 }
 
 ; fn k_26_s32
-    ;   @spec   k_26(int, &fn16[]:(any) -> any, 1 | 2 | 3 | 4 | 5, nil | list(1 | 2 | 3 | 4 | 5)) -> list(int)
-    ;   @key    [int, &fn16[]:(any) -> any, 1 | 2 | 3 | 4 | 5, nil | list(1 | 2 | 3 | 4 | 5)]
+    ;   @spec   k_26(int, &fn16[]:(any) -> any, int, nil | list(int)) -> list(int)
+    ;   @key    [int, &fn16[]:(any) -> any, int, nil | list(int)]
     ;   @abi    (RawInt, Tagged, RawInt, Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64, i64, i64) -> i64 tail
@@ -591,8 +591,8 @@ function u0:0(i64, i64) -> i64 tail {
 
     block0(v0: i64, v1: i64):    ;; v0 :: int
     v2 = load.i64 notrap aligned v1+32    ;; v2 :: &fn16[]:(any) -> any
-    v3 = load.i64 notrap aligned v1+40    ;; v3 :: 1 | 2 | 3 | 4 | 5
-    v4 = load.i64 notrap aligned v1+48    ;; v4 :: nil | list(1 | 2 | 3 | 4 | 5)
+    v3 = load.i64 notrap aligned v1+40    ;; v3 :: int
+    v4 = load.i64 notrap aligned v1+48    ;; v4 :: nil | list(int)
     v5 = iconst.i32 33                  ; @9:33
     v6 = iconst.i32 5                   ; @9:33
     v7 = iconst.i32 0                   ; @9:33
@@ -609,8 +609,8 @@ function u0:0(i64, i64) -> i64 tail {
 }
 
 ; fn k_27_s33
-    ;   @spec   k_27(list(int), &fn16[]:(any) -> any, 1 | 2 | 3 | 4 | 5, nil | list(1 | 2 | 3 | 4 | 5), int) -> list(int)
-    ;   @key    [list(int), &fn16[]:(any) -> any, 1 | 2 | 3 | 4 | 5, nil | list(1 | 2 | 3 | 4 | 5), int]
+    ;   @spec   k_27(list(int), &fn16[]:(any) -> any, int, nil | list(int), int) -> list(int)
+    ;   @key    [list(int), &fn16[]:(any) -> any, int, nil | list(int), int]
     ;   @abi    (Tagged, Tagged, RawInt, Tagged, RawInt) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64, i64) -> i64 system_v
@@ -619,8 +619,8 @@ function u0:0(i64, i64) -> i64 tail {
 
     block0(v0: i64, v1: i64):    ;; v0 :: list(int)
     v2 = load.i64 notrap aligned v1+32    ;; v2 :: &fn16[]:(any) -> any
-    v3 = load.i64 notrap aligned v1+40    ;; v3 :: 1 | 2 | 3 | 4 | 5
-    v4 = load.i64 notrap aligned v1+48    ;; v4 :: nil | list(1 | 2 | 3 | 4 | 5)
+    v3 = load.i64 notrap aligned v1+40    ;; v3 :: int
+    v4 = load.i64 notrap aligned v1+48    ;; v4 :: nil | list(int)
     v5 = load.i64 notrap aligned v1+56    ;; v5 :: int
     v6 = ishl_imm v5, 3
     v7 = bor_imm v6, 1
