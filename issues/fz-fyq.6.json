@@ -2,7 +2,8 @@
   "assignee": "",
   "blocked_by": [
     "fz-fyq.3",
-    "fz-fyq.4"
+    "fz-fyq.4",
+    "fz-fyq.5"
   ],
   "blocks": [],
   "created": "2026-05-18T20:41:44Z",
@@ -14,5 +15,5 @@
   "status": "open",
   "title": "E6: fixture-matrix parity for destructuring (all four legs)",
   "type": "task",
-  "updated_at": "2026-05-18T20:41:46Z"
+  "updated_at": "2026-05-18T20:41:47Z"
 }
