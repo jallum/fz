@@ -3773,6 +3773,35 @@ mod tests {
         assert!(s.contains("return v0"), "got:\n{}", s);
     }
 
+    /// fz-fyq.3 — `collect_diagnostics` filters `unreachable-arm` to
+    /// `BranchOrigin::User`. A destructure (`{a,b} = ...`) and a fn-clause
+    /// dispatch both synthesize Ifs the typer can prove dead-edged; neither
+    /// should warn. User-authored Ifs whose dead branch the typer can
+    /// prove (here: `if true do A else B` where the else is structurally
+    /// unreachable) still do.
+    #[test]
+    fn unreachable_arm_silenced_on_synthesized_ifs() {
+        let m = lower_src(concat!(
+            "fn fst(0), do: :zero\n",
+            "fn fst(_), do: :other\n",
+            "fn main() do\n",
+            "  {a, b} = {1, 2}\n",
+            "  fst(a + b)\n",
+            "end\n",
+        ));
+        let mt = crate::ir_typer::type_module(&m);
+        let diags = crate::ir_typer::collect_diagnostics(&m, &mt);
+        let unreachable: Vec<_> = diags
+            .iter()
+            .filter(|d| d.code == crate::diag::codes::TYPE_UNREACHABLE_ARM)
+            .collect();
+        assert!(
+            unreachable.is_empty(),
+            "synthesized dispatch Ifs must not warn; got {:?}",
+            unreachable,
+        );
+    }
+
     /// fz-fyq.2 — `ModuleTypes::dead_branches` publishes one entry per
     /// provably-dead branch under cross-spec consensus, and stays silent
     /// for polymorphic-recursion functions where some spec leaves the

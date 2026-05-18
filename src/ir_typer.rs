@@ -2395,38 +2395,6 @@ fn var_as_map_key(v: Var, env: &HashMap<Var, Descr>) -> Option<MapKey> {
 #[allow(dead_code)]
 fn _suppress_block(_: &Block) {}
 
-/// fz-l01 — synthetic match-error halt block detector. ir_lower
-/// inserts a fail block that does `Halt(:match_error)` as the
-/// pattern-match-failure landing pad. When the typer proves no clause
-/// fails (every input is covered), that block becomes unreachable,
-/// triggering an unreachable-arm warning attributed to a source
-/// position the user didn't directly write. Suppress those.
-///
-/// Shape: a single-stmt block where the Let binds an atom Const
-/// named `"match_error"`, and the terminator Halts that Var.
-fn is_synthetic_match_error_block(f: &FnIr, bid: BlockId) -> bool {
-    let b = f.block(bid);
-    let Term::Halt(halt_var) = &b.terminator else {
-        return false;
-    };
-    for stmt in &b.stmts {
-        let Stmt::Let(v, prim) = stmt;
-        if v != halt_var {
-            continue;
-        }
-        // The atom Const for match_error carries an interned atom ID,
-        // not a string. We can't compare names without an atom table.
-        // Use a weaker but sufficient check: the block is a 1-stmt
-        // block whose Let binds an Atom Const and is the Halt operand.
-        // Real user code halting on an atom never goes through this
-        // exact shape (CPS lowering wouldn't put the atom literal in
-        // the same block as the Halt without intervening structure).
-        if matches!(prim, Prim::Const(Const::Atom(_))) && b.stmts.len() == 1 {
-            return true;
-        }
-    }
-    false
-}
 
 /// fz-pky.1 — within ONE spec's narrowed env, find the first Var
 /// whose type became empty post-narrowing. Returns (Var, old_t, new_t)
@@ -2569,11 +2537,20 @@ pub fn collect_diagnostics(module: &Module, types: &ModuleTypes) -> crate::diag:
                 cond,
                 then_b,
                 else_b,
-                ..
+                origin,
             } = b.terminator
             else {
                 continue;
             };
+
+            // fz-fyq.3 — only warn on user-authored Ifs. Synthesized
+            // dispatch (pattern-bind, fn-clause selection, param guards)
+            // is scaffolding the programmer didn't write; the typer can
+            // prove some of its branches dead, but that's a property of
+            // the lowering, not a bug in the source.
+            if !matches!(origin, crate::fz_ir::BranchOrigin::User) {
+                continue;
+            }
 
             let term_span = module
                 .source
@@ -2608,17 +2585,13 @@ pub fn collect_diagnostics(module: &Module, types: &ModuleTypes) -> crate::diag:
                 }
             }
 
-            // Emit only when EVERY spec found the branch dead AND
-            // the target block isn't a synthetic match-error halt
-            // (lowering inserts those defensively; when the typer
-            // proves no clause fails, the warning is just noise about
-            // a check the user didn't write).
-            if dead_then.len() == total_specs && !is_synthetic_match_error_block(f, then_b) {
+            // Emit only when EVERY spec found the branch dead.
+            if dead_then.len() == total_specs {
                 out.push(emit_unreachable(
                     module, &f.name, term_span, "then", then_b, &dead_then,
                 ));
             }
-            if dead_else.len() == total_specs && !is_synthetic_match_error_block(f, else_b) {
+            if dead_else.len() == total_specs {
                 out.push(emit_unreachable(
                     module, &f.name, term_span, "else", else_b, &dead_else,
                 ));
