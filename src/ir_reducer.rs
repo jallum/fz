@@ -68,6 +68,7 @@
 //! callsites remain `Stalled`; the typer Emits them. Runtime
 //! behaviour and spec set unchanged.
 
+use crate::callsite_walk::slot_for_term;
 use crate::fz_ir::{
     Block, BlockId, CallsiteId, CallsiteOutcome, Const, EmitSlot, FnId, FnIr, Module, Prim, Stmt,
     Term, Var,
@@ -129,14 +130,7 @@ pub fn reduce_module(m: &mut Module) {
 fn assert_every_callsite_has_outcome(m: &Module) {
     for f in &m.fns {
         for b in &f.blocks {
-            let slot = match &b.terminator {
-                Term::Call { .. } | Term::TailCall { .. } => Some(EmitSlot::Direct),
-                Term::CallClosure { .. } | Term::TailCallClosure { .. } => {
-                    Some(EmitSlot::ClosureLit(0, 0))
-                }
-                _ => None,
-            };
-            if let Some(slot) = slot {
+            if let Some(slot) = slot_for_term(&b.terminator) {
                 let cid = CallsiteId {
                     caller: f.id,
                     block: b.id,
@@ -193,6 +187,11 @@ fn reduce_terminator(
     term: &Term,
     env: &HashMap<Var, Descr>,
 ) -> Option<Term> {
+    // fz-9pr.17 — slot vocabulary lives in callsite_walk::slot_for_term;
+    // every record_* call below routes through this single source of
+    // truth, replacing the four duplicated EmitSlot literals that used
+    // to live in each match arm.
+    let slot = slot_for_term(term);
     match term {
         // fz-jg5.4: if-fold (named explicit rule per FINDINGS.md).
         Term::If(cond, t, e) => {
@@ -204,21 +203,22 @@ fn reduce_terminator(
             // fz-jg5.5: each top-level callsite gets a fresh ReduceCtx
             // with full budget. All-or-nothing: if try_reduce_call returns
             // None, no rewrite is committed.
+            let slot = slot.unwrap();
             let mut ctx = ReduceCtx {
                 module: m,
                 budget: UNROLL_BUDGET_DEFAULT,
                 stack: Vec::new(),
             };
             let Some(lit) = try_reduce_call(&mut ctx, *callee, args, env) else {
-                record_stalled(m, fn_idx, bid, EmitSlot::Direct);
+                record_stalled(m, fn_idx, bid, slot);
                 return None;
             };
             let new_var = fresh_var(&m.fns[fn_idx]);
             let Some(const_val) = literal_to_const(&lit, m) else {
-                record_stalled(m, fn_idx, bid, EmitSlot::Direct);
+                record_stalled(m, fn_idx, bid, slot);
                 return None;
             };
-            record_consumed(m, fn_idx, bid, EmitSlot::Direct, lit);
+            record_consumed(m, fn_idx, bid, slot, lit);
             block_mut(&mut m.fns[fn_idx], bid)
                 .stmts
                 .push(Stmt::Let(new_var, Prim::Const(const_val)));
@@ -229,21 +229,22 @@ fn reduce_terminator(
             args,
             continuation,
         } => {
+            let slot = slot.unwrap();
             let mut ctx = ReduceCtx {
                 module: m,
                 budget: UNROLL_BUDGET_DEFAULT,
                 stack: Vec::new(),
             };
             let Some(lit) = try_reduce_call(&mut ctx, *callee, args, env) else {
-                record_stalled(m, fn_idx, bid, EmitSlot::Direct);
+                record_stalled(m, fn_idx, bid, slot);
                 return None;
             };
             let new_var = fresh_var(&m.fns[fn_idx]);
             let Some(const_val) = literal_to_const(&lit, m) else {
-                record_stalled(m, fn_idx, bid, EmitSlot::Direct);
+                record_stalled(m, fn_idx, bid, slot);
                 return None;
             };
-            record_consumed(m, fn_idx, bid, EmitSlot::Direct, lit);
+            record_consumed(m, fn_idx, bid, slot, lit);
             block_mut(&mut m.fns[fn_idx], bid)
                 .stmts
                 .push(Stmt::Let(new_var, Prim::Const(const_val)));
@@ -257,14 +258,15 @@ fn reduce_terminator(
         }
         // fz-jg5.6: top-level closure-call reduction (mirror of walk_block).
         Term::TailCallClosure { closure, args } => {
+            let slot = slot.unwrap();
             let Some(cl_lit) = env.get(closure).and_then(|d| d.as_closure_lit()).cloned() else {
-                record_stalled(m, fn_idx, bid, EmitSlot::ClosureLit(0, 0));
+                record_stalled(m, fn_idx, bid, slot);
                 return None;
             };
             let mut all_descrs = cl_lit.captures.clone();
             for a in args {
                 let Some(d) = env.get(a).cloned() else {
-                    record_stalled(m, fn_idx, bid, EmitSlot::ClosureLit(0, 0));
+                    record_stalled(m, fn_idx, bid, slot);
                     return None;
                 };
                 all_descrs.push(d);
@@ -275,15 +277,15 @@ fn reduce_terminator(
                 stack: Vec::new(),
             };
             let Some(lit) = try_reduce_call_with_descrs(&mut ctx, cl_lit.fn_id, &all_descrs) else {
-                record_stalled(m, fn_idx, bid, EmitSlot::ClosureLit(0, 0));
+                record_stalled(m, fn_idx, bid, slot);
                 return None;
             };
             let new_var = fresh_var(&m.fns[fn_idx]);
             let Some(const_val) = literal_to_const(&lit, m) else {
-                record_stalled(m, fn_idx, bid, EmitSlot::ClosureLit(0, 0));
+                record_stalled(m, fn_idx, bid, slot);
                 return None;
             };
-            record_consumed(m, fn_idx, bid, EmitSlot::ClosureLit(0, 0), lit);
+            record_consumed(m, fn_idx, bid, slot, lit);
             block_mut(&mut m.fns[fn_idx], bid)
                 .stmts
                 .push(Stmt::Let(new_var, Prim::Const(const_val)));
@@ -294,14 +296,15 @@ fn reduce_terminator(
             args,
             continuation,
         } => {
+            let slot = slot.unwrap();
             let Some(cl_lit) = env.get(closure).and_then(|d| d.as_closure_lit()).cloned() else {
-                record_stalled(m, fn_idx, bid, EmitSlot::ClosureLit(0, 0));
+                record_stalled(m, fn_idx, bid, slot);
                 return None;
             };
             let mut all_descrs = cl_lit.captures.clone();
             for a in args {
                 let Some(d) = env.get(a).cloned() else {
-                    record_stalled(m, fn_idx, bid, EmitSlot::ClosureLit(0, 0));
+                    record_stalled(m, fn_idx, bid, slot);
                     return None;
                 };
                 all_descrs.push(d);
@@ -312,15 +315,15 @@ fn reduce_terminator(
                 stack: Vec::new(),
             };
             let Some(lit) = try_reduce_call_with_descrs(&mut ctx, cl_lit.fn_id, &all_descrs) else {
-                record_stalled(m, fn_idx, bid, EmitSlot::ClosureLit(0, 0));
+                record_stalled(m, fn_idx, bid, slot);
                 return None;
             };
             let new_var = fresh_var(&m.fns[fn_idx]);
             let Some(const_val) = literal_to_const(&lit, m) else {
-                record_stalled(m, fn_idx, bid, EmitSlot::ClosureLit(0, 0));
+                record_stalled(m, fn_idx, bid, slot);
                 return None;
             };
-            record_consumed(m, fn_idx, bid, EmitSlot::ClosureLit(0, 0), lit);
+            record_consumed(m, fn_idx, bid, slot, lit);
             block_mut(&mut m.fns[fn_idx], bid)
                 .stmts
                 .push(Stmt::Let(new_var, Prim::Const(const_val)));

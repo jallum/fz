@@ -1,6 +1,7 @@
 mod ast;
 mod ast_value;
 mod bitstr;
+mod callsite_walk;
 mod diag;
 mod eval;
 mod fz_ir;
