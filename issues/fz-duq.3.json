@@ -6,14 +6,15 @@
   "blocks": [
     "fz-duq.5"
   ],
+  "closed_at": "2026-05-18T00:28:59Z",
   "created": "2026-05-17T02:04:09Z",
   "description": "Mechanical application of the pattern proven in fz-duq.2. Depends on\nfz-duq.2 landing first (helpers + lower_if + golden-CLIF discipline\nall proven there).\n\n## Replace `lower_case` (`src/ir_lower.rs:1854`)\n\nSame two-shape pattern as lower_if:\n\n- **Tail position:** allocate try_blocks + fail_block, lower each\n  clause body with `is_tail=true`, finalize with `Return(v)` if not\n  already terminated. No join fn.\n- **Non-tail position:** mint a join fn upfront via\n  `branching_join_fn`. Each clause body lowered with `is_tail=true`,\n  finalize with `TailCall(join_fn, [v, ...captured])` if not already\n  terminated. After all clauses, `switch_to_join_fn` and return\n  `join_param`.\n\nPattern-bind code (lower_pattern_bind) stays the same — it operates\nwithin the try_block and only uses the per-block `next` BlockId for\nmismatch routing (these `next` blocks are reached only by direct\nGoto from within the same fn, so they don't have the CPS-split\nhazard).\n\nThe synthetic `case_clause` halt at `fail_block` stays as-is — it's\na self-terminating Halt, no join needed.\n\n## Test\n\nAdd a case-with-call-in-clause-body test mirroring fz-duq.2's repros:\n\n```fz\nfn helper(), do: 7\nfn classify(n) do\n  case n do\n    0 -\u003e helper()\n    _ -\u003e 99\n  end\nend\nfn main() do\n  print(classify(0))\n  print(classify(5))\nend\n```\n\nExpected stdout: `7\\n99\\n`. Today silently broken via the same Bug 2.\n\n## Acceptance\n\n- `cargo test --workspace` green.\n- `cargo test --workspace golden_clif` zero drift.\n- New case-fixture passes via interp + JIT.\n\n## Removes\n\n- `lower_case`'s `join_b` allocation (`src/ir_lower.rs:1874-1875`).\n- `lower_case`'s `Goto(join_b, ...)` at `:1910`.\n- Per-clause `saved_env` / `saved_order` / `ctx.terminated = false`\n  boilerplate now subsumed by the arm-finalizer helper.",
   "id": "fz-duq.3",
   "labels": [],
   "parent": "fz-duq",
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "fz-duq.3: lower_case uses continuation-fn join",
   "type": "task",
-  "updated_at": "2026-05-17T02:04:52Z"
+  "updated_at": "2026-05-18T00:28:59Z"
 }
