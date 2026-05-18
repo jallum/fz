@@ -24,6 +24,7 @@ mod parking;
 mod parser;
 mod pattern_check;
 mod pattern_matrix;
+mod reducer;
 mod repl;
 mod resolve;
 mod runtime;
