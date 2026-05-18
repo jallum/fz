@@ -109,6 +109,53 @@ end
         let Expr::Call(_, args) = e else { panic!() };
         assert_eq!(args.len(), 2);
     }
+
+    /// fz-rcp.1 — call-postfix `do … end` sugar must be suppressed in
+    /// cond position; otherwise `if pred(h) do … end` parses the
+    /// then-arm as a second arg to `pred`, leaving `else`/`end`
+    /// floating.
+    #[test]
+    fn cond_call_in_if_does_not_swallow_do_block() {
+        let e = parse_fn_body(
+            r#"if pred(h) do
+                1
+            else
+                2
+            end"#,
+        );
+        let Expr::If(cond, _, els) = e else {
+            panic!("expected If, got {:?}", e);
+        };
+        // cond must be `pred(h)` with exactly one arg, not `pred(h, then_block)`.
+        let Expr::Call(_, args) = &cond.node else {
+            panic!("expected cond to be a Call");
+        };
+        assert_eq!(args.len(), 1, "cond Call ate the then-arm as an arg");
+        assert!(els.is_some(), "else branch lost");
+    }
+
+    /// case scrutinee, cond test, with binding source, and when-guard
+    /// are all cond-position and must suppress the sugar.
+    #[test]
+    fn cond_call_in_case_when_guard_does_not_swallow_do_block() {
+        // when-guard pred(h) followed by `->` body that itself contains
+        // a do-block. The guard expr must stop at the body's `->`.
+        let e = parse_fn_body(
+            r#"case x do
+                _ when pred(h) -> f() do
+                    1
+                end
+            end"#,
+        );
+        let Expr::Case(_, clauses) = e else {
+            panic!("expected Case");
+        };
+        let guard = clauses[0].guard.as_ref().expect("guard parsed");
+        let Expr::Call(_, args) = &guard.node else {
+            panic!("expected guard to be a Call");
+        };
+        assert_eq!(args.len(), 1, "guard Call ate the body do-block");
+    }
 }
 
 #[cfg(test)]
@@ -192,13 +239,34 @@ impl ParseError {
 pub struct Parser {
     toks: Vec<Token>,
     pos: usize,
+    /// fz-rcp.1 — when true, the call-postfix `do … end` (and `,do:`)
+    /// sugar in `parse_bp` is suppressed. Enabled by `with_no_trailing_do`
+    /// around cond-position expressions: `if`/`case`/`cond`/`with`
+    /// sources and `when`-guards. Without this, `if pred(h) do … end`
+    /// parses `pred(h) do … end` as `pred(h, do_block)` and the
+    /// surrounding `else`/`end` becomes unexpected.
+    suppress_trailing_do: bool,
 }
 
 type PR<T> = Result<T, ParseError>;
 
 impl Parser {
     pub fn new(toks: Vec<Token>) -> Self {
-        Self { toks, pos: 0 }
+        Self {
+            toks,
+            pos: 0,
+            suppress_trailing_do: false,
+        }
+    }
+
+    /// Run `f` with the call-postfix trailing-do sugar suppressed.
+    /// Restores the prior flag value on return (so nesting works).
+    fn with_no_trailing_do<T>(&mut self, f: impl FnOnce(&mut Self) -> PR<T>) -> PR<T> {
+        let prev = self.suppress_trailing_do;
+        self.suppress_trailing_do = true;
+        let r = f(self);
+        self.suppress_trailing_do = prev;
+        r
     }
 
     // --- token helpers ---
@@ -736,7 +804,7 @@ impl Parser {
 
         let guard = if matches!(self.peek(), Tok::When) {
             self.bump();
-            Some(self.parse_expr()?)
+            Some(self.with_no_trailing_do(|p| p.parse_expr())?)
         } else {
             None
         };
@@ -1246,13 +1314,14 @@ impl Parser {
                     self.bump();
                     let mut args = self.parse_expr_list(&Tok::RParen)?;
                     self.expect(&Tok::RParen, "`)`")?;
-                    if matches!(self.peek(), Tok::Do) {
+                    if !self.suppress_trailing_do && matches!(self.peek(), Tok::Do) {
                         self.bump();
                         self.skip_newlines();
                         let body = self.parse_block_until(&[Tok::End])?;
                         self.expect(&Tok::End, "`end`")?;
                         args.push(body);
-                    } else if matches!(self.peek(), Tok::Comma)
+                    } else if !self.suppress_trailing_do
+                        && matches!(self.peek(), Tok::Comma)
                         && matches!(self.peek_at(1), Tok::KwKey(s) if s == "do")
                     {
                         self.bump();
@@ -1536,7 +1605,7 @@ impl Parser {
     fn parse_if(&mut self) -> PR<Spanned<Expr>> {
         let start = self.cur_span();
         self.expect(&Tok::If, "`if`")?;
-        let cond = self.parse_expr()?;
+        let cond = self.with_no_trailing_do(|p| p.parse_expr())?;
         if matches!(self.peek(), Tok::Comma)
             && matches!(self.peek_at(1), Tok::KwKey(s) if s == "do")
         {
@@ -1576,7 +1645,7 @@ impl Parser {
     fn parse_case(&mut self) -> PR<Spanned<Expr>> {
         let start = self.cur_span();
         self.expect(&Tok::Case, "`case`")?;
-        let scrut = self.parse_expr()?;
+        let scrut = self.with_no_trailing_do(|p| p.parse_expr())?;
         self.expect(&Tok::Do, "`do`")?;
         self.skip_newlines();
         let mut clauses = Vec::new();
@@ -1585,7 +1654,7 @@ impl Parser {
             let pat = self.parse_pattern()?;
             let guard = if matches!(self.peek(), Tok::When) {
                 self.bump();
-                Some(self.parse_expr()?)
+                Some(self.with_no_trailing_do(|p| p.parse_expr())?)
             } else {
                 None
             };
@@ -1617,7 +1686,7 @@ impl Parser {
         self.skip_newlines();
         let mut arms: Vec<(Spanned<Expr>, Spanned<Expr>)> = Vec::new();
         while !matches!(self.peek(), Tok::End | Tok::Eof) {
-            let test = self.parse_expr()?;
+            let test = self.with_no_trailing_do(|p| p.parse_expr())?;
             self.expect(&Tok::Arrow, "`->`")?;
             self.skip_newlines();
             let body = self.parse_expr()?;
@@ -1725,16 +1794,16 @@ impl Parser {
             if let Ok(pat) = try_pat {
                 if matches!(self.peek(), Tok::LArrow) {
                     self.bump();
-                    let e = self.parse_expr()?;
+                    let e = self.with_no_trailing_do(|p| p.parse_expr())?;
                     bindings.push(WithBinding::Match(pat, e));
                 } else {
                     self.pos = saved;
-                    let e = self.parse_expr()?;
+                    let e = self.with_no_trailing_do(|p| p.parse_expr())?;
                     bindings.push(WithBinding::Bare(e));
                 }
             } else {
                 self.pos = saved;
-                let e = self.parse_expr()?;
+                let e = self.with_no_trailing_do(|p| p.parse_expr())?;
                 bindings.push(WithBinding::Bare(e));
             }
             self.skip_newlines();
@@ -1768,7 +1837,7 @@ impl Parser {
                     let pat = self.parse_pattern()?;
                     let guard = if matches!(self.peek(), Tok::When) {
                         self.bump();
-                        Some(self.parse_expr()?)
+                        Some(self.with_no_trailing_do(|p| p.parse_expr())?)
                     } else {
                         None
                     };
