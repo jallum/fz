@@ -11,9 +11,15 @@
   "id": "fz-9pr.15",
   "labels": [],
   "parent": "fz-9pr",
+  "comments": [
+    {
+      "text": "Closed not-actually-duplication. After .17 (block_callsites enumerator), the boundary check still lives in two sites because ir_inline and ir_reducer make DIFFERENT decisions about boundaries: ir_reducer has a trivially-inlinable exception (one-block, ≤1 stmt + Return); ir_inline never inlines a boundary. Centralizing would homogenize behavior we deliberately want differentiated. Not duplication of logic, just policy applied consistently at each decision site.",
+      "timestamp": "2026-05-18T16:27:11Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "fz-CO.F.1 — Boundary uniformity: one consultation site",
   "type": "task",
-  "updated_at": "2026-05-18T15:03:00Z"
+  "updated_at": "2026-05-18T16:27:11Z"
 }
