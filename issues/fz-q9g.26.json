@@ -1,0 +1,15 @@
+{
+  "assignee": "",
+  "blocked_by": [],
+  "blocks": [],
+  "created": "2026-05-18T20:01:36Z",
+  "description": "**fz-dps.RES**: Dst-handling surface audit — research only.\n\nInvestigation-only. Output: a written note as the closing comment; downstream tickets pick up that note as their precondition.\n\n**Why**: The C-arc (q9g.2/.4/.5, then q9g.3) adds a new ArgRepr variant (Dst) that flows through `return_reprs` and `param_reprs`. Today every site that consumes those arrays handles {Tagged, RawInt, RawF64, Condition}; Dst lands as `unreachable!()`. Before any C-arc ticket emits Dst into a real spec, we need to know the complete surface and the legal contract per site (handle / trap-as-bug / illegal-by-construction).\n\n**Scope** — enumerate and classify each site:\n\n1. **Producers of return_reprs / param_reprs / Cont.dst**\n   - `build_fn_signature` (src/ir_codegen.rs:895)\n   - `build_param_reprs` (src/ir_codegen.rs:874)\n   - the `return_reprs` construction loop (src/ir_codegen.rs:2627–2635)\n   - all Cont constructions (now defaulting `dst: None`)\n\n2. **Consumers — each must have a defined Dst contract**\n   - `ArgRepr::cl_type` (src/ir_codegen.rs:810)\n   - `ArgRepr::halt_kind` (src/ir_codegen.rs:818)\n   - `halt_cont_body_id_for` (src/ir_codegen.rs:865)\n   - `tagged_get` (src/ir_codegen.rs:6608)\n   - `coerce` (src/ir_codegen.rs:6792)\n   - the retag-on-cont-fire loop (src/ir_codegen.rs:5098)\n   - `codegen_repr` (src/ir_codegen.rs:466)\n   - every `match repr` / `match vb.repr` in compile_fn\n   - `for_block_param` (src/ir_codegen.rs:804)\n   - `from_descr` (src/ir_codegen.rs:790) — does NOT return Dst today; classifier in q9g.2 will\n\n3. **Module.callsite_outcomes contract** (fz-9pr/fz-f88): for each `Emitted { target }`, document how codegen resolves the callsite to a spec id and reads `return_reprs[sid]`. This is the eligibility path that q9g.3 will ride.\n\n4. **Externs invariant**: confirm no path through extern signature construction can produce Dst (`fz_ir.rs` extern declaration → `build_fn_signature`).\n\n5. **Halt-cont path**: confirm Dst specs cannot be invoked from halt-cont position. (Today they panic; document why this is structurally impossible, or expose a real path that needs handling.)\n\n**Per-site output**: legal-and-real (handler needed) / legal-and-trap-as-bug (unreachable!) / illegal-by-construction (assertion at the producer).\n\n**Deliverable**: closing comment with the per-site table plus any newly-discovered surprises that should become tickets of their own.\n\n**Tests**: none — pure investigation.\n\n**Blocks**: fz-q9g.2 (classifier emission cannot turn on safely until the surface is mapped).",
+  "id": "fz-q9g.26",
+  "labels": [],
+  "parent": "fz-q9g",
+  "priority": 1,
+  "status": "open",
+  "title": "fz-dps.RES: Dst-handling surface audit",
+  "type": "task",
+  "updated_at": "2026-05-18T20:01:36Z"
+}
