@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-jg5.4"
+  ],
   "blocks": [],
   "created": "2026-05-18T02:55:59Z",
   "description": "# Extend reducer to descend into recursive calls under a budget\n\n## Goal\n\nExtend `ir_reducer` to follow recursive calls. Tracks an unroll\ncounter per top-level callsite; default budget = 32 reduction steps.\n\n**All-or-nothing per top-level callsite:**\n- If recursion terminates within budget → commit reduced IR.\n- If budget is exceeded → discard partial work, leave the original\n  call in place. The body stays a single call to a single body.\n\nThe all-or-nothing policy makes the residual predictable: no\nhalf-unrolled tail-recursion artifacts; either fully reduced or\nthe original call.\n\n## Stop conditions, by precedence\n\n1. Input is opaque (Descr too wide; pattern matrix returns\n   `StopOpaque` / `StopAmbiguous`).\n2. Recursive call where structural decrease cannot be proven (the\n   argument's Descr is not strictly smaller than the parent call's).\n3. Recursive call where decrease IS provable but budget exceeded.\n\nConditions 1 and 2 take precedence over budget — budget is the\nlast resort, not the first.\n\n## What structural decrease means\n\nProvable shrinkage in at least one of:\n- Tuple arity (fewer fields after projection).\n- List length (cons step).\n- Integer value monotonically toward a clause base (e.g. `n - 1`\n  with literal `n \u003e 0`).\n\nIf the argument is an opaque integer or a wide list type, decrease\nis NOT provable — stop.\n\n## Acceptance\n\n- `ast_eval`: full reduction. main → `print(42); print(14); print(21)`.\n  Zero `eval` bodies. (Or, if we keep per-clause splitting, ≤ 3.)\n- `fib_tailrec(0|1|10|20)`: full reduction. Zero `fib` bodies.\n- `mutual_recursion(0|1|7|10)`: full reduction. Zero `is_even`/`is_odd`\n  bodies.\n- `list_primitives` over the static `[1,2,3,4,5]`: full reduction.\n  Zero `length`/`reverse`/`map`/`foldl` bodies.\n- `tail_recursion` (count_100k): unchanged — 1 `count` body emitted.\n  Budget exceeded → call left in place.\n\n## Removals\n\n`fz-ul4.11.28` (bounded recursion unrolling) is **subsumed**. Close\nit with a link to this ticket on land.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "fz-RED.4: recursive reduction with unroll budget (subsumes fz-ul4.11.28)",
   "type": "task",
-  "updated_at": "2026-05-18T02:55:59Z"
+  "updated_at": "2026-05-18T02:56:55Z"
 }
