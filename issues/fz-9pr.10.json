@@ -11,9 +11,15 @@
   "id": "fz-9pr.10",
   "labels": [],
   "parent": "fz-9pr",
+  "comments": [
+    {
+      "text": "Game-walk note: not every typer-side spec comes from a callsite — some come from SCC widening of existing specs (fib_tailrec emits [int, int, int] and [int, 1, int] this way). Those are NOT callsite outcomes. Keep walk_spec_for_discovery's SCC widening logic; only remove the per-Term::Call/CallClosure scanning.",
+      "timestamp": "2026-05-18T15:25:01Z"
+    }
+  ],
   "priority": 1,
   "status": "open",
   "title": "fz-CO.D.3 — Typer reads outcomes; remove per-block scan for Direct/ClosureLit/Known",
   "type": "task",
-  "updated_at": "2026-05-18T15:02:43Z"
+  "updated_at": "2026-05-18T15:25:01Z"
 }
