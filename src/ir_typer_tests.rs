@@ -1850,3 +1850,45 @@ fn typer_publishes_emitted_outcome_updates_for_direct() {
         Some(CallsiteOutcome::Emitted { .. })
     ));
 }
+
+/// fz-f88.6 — `ModuleTypes.reachable_specs` mirrors `specs.keys()`,
+/// and `fn_has_any_spec` answers the "did the typer keep anything for
+/// this fn?" question without recomputing.
+///
+/// Build `fn id(x), do: x` and `fn main(): id(42)`; the typer registers
+/// one spec per fn under the propagated input descrs. Assert both fns
+/// are reflected in `reachable_specs` and `fn_has_any_spec`.
+#[test]
+fn module_types_exposes_reachable_specs() {
+    let mut id_b = FnBuilder::new(FnId(0), "id");
+    let x = id_b.fresh_var();
+    let entry = id_b.block(vec![x]);
+    id_b.set_terminator(entry, Term::Return(x));
+
+    let mut main_b = FnBuilder::new(FnId(1), "main");
+    let m_entry = main_b.block(vec![]);
+    let c42 = main_b.let_(m_entry, Prim::Const(Const::Int(42)));
+    main_b.set_terminator(
+        m_entry,
+        Term::TailCall {
+            callee: FnId(0),
+            args: vec![c42],
+            is_back_edge: false,
+        },
+    );
+
+    let m = build_module(vec![id_b.build(), main_b.build()]);
+    let mt = type_module(&m);
+
+    // reachable_specs is a HashSet view of specs.keys().
+    assert_eq!(mt.reachable_specs.len(), mt.specs.len());
+    for k in mt.specs.keys() {
+        assert!(mt.reachable_specs.contains(k));
+    }
+
+    // Both fns have at least one spec.
+    assert!(mt.fn_has_any_spec(FnId(0)));
+    assert!(mt.fn_has_any_spec(FnId(1)));
+    // A non-existent fn does not.
+    assert!(!mt.fn_has_any_spec(FnId(99)));
+}

@@ -225,6 +225,17 @@ pub struct ModuleTypes {
     /// CallClosureKnown emit whose `CallsiteId` is `Stalled` (or
     /// absent). Apply with `apply_callsite_outcomes`.
     pub callsite_outcome_updates: HashMap<CallsiteId, CallsiteOutcome>,
+    /// fz-f88.6 — module-level reachable-spec keys. This is `specs.keys()`
+    /// materialized into a HashSet so consumers can express
+    /// "is this spec reachable?" as a set lookup without re-deriving
+    /// reachability or cloning the value side of `specs`. Populated by
+    /// `type_module`. Per-block reachability inside a reachable spec is
+    /// still accessed via `specs[key].reachable_blocks` (one source of
+    /// truth — no second copy).
+    ///
+    /// First consumer lands in fz-f88.8 (`compute_survivors` deletion).
+    #[allow(dead_code)]
+    pub reachable_specs: HashSet<(FnId, Vec<Descr>)>,
 }
 
 impl ModuleTypes {
@@ -233,6 +244,18 @@ impl ModuleTypes {
     #[allow(dead_code)]
     pub fn spec(&self, fn_id: FnId, input_descrs: &[Descr]) -> Option<&FnTypes> {
         self.specs.get(&(fn_id, input_descrs.to_vec()))
+    }
+
+    /// fz-f88.6 — does the typer have any registered spec for `fn_id`?
+    /// True iff the fn appeared at a callsite (or as a seed/closure
+    /// target) the typer walked under one or more input-Descr keys.
+    /// Use this in place of duplicating the reduce-then-type pass to
+    /// derive "which user fns survived".
+    ///
+    /// First consumer lands in fz-f88.8 (`compute_survivors` deletion).
+    #[allow(dead_code)]
+    pub fn fn_has_any_spec(&self, fn_id: FnId) -> bool {
+        self.reachable_specs.iter().any(|(fid, _)| *fid == fn_id)
     }
 
     /// fz-pky.2 — return the any-key spec for `fn_id` if registered.
@@ -812,12 +835,14 @@ pub fn type_module(m: &Module) -> ModuleTypes {
         }
     }
 
+    let reachable_specs: HashSet<(FnId, Vec<Descr>)> = specs.keys().cloned().collect();
     ModuleTypes {
         specs,
         effective_returns,
         any_key_specs,
         scc_of,
         callsite_outcome_updates,
+        reachable_specs,
     }
 }
 
