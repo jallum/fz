@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-fyq.2"
+  ],
   "created": "2026-05-18T20:02:29Z",
   "description": "## Goal\nIntroduce the vocabulary for \"this synthesized pattern-bind fail edge is unreachable\" as a first-class outcome. Producer: `ir_typer` (it already computes the proof to emit `type/unreachable-arm`). No codegen changes in this ticket — the consumer comes in T2.\n\n## Background\nToday `Expr::Match(pat, rhs)` lowers to `lower_pattern_bind` which always synthesizes a fail block with `Halt(match_error)` (`src/ir_lower.rs:1859`). When the inferred scrutinee type makes that fail edge dead, the typer emits `type/unreachable-arm`. With warnings-as-errors, every irrefutable destructure is unshippable.\n\nRecent commits (`fz-9pr`, `fz-f88`) established the callsite-outcomes pattern: data-model + producer + reader, with diagnostics as readers. This ticket extends that vocabulary.\n\n## Scope\n- Add an outcome variant naming \"exhaustive match arm\" (or similar — pick the spelling that fits the existing lattice).\n- Tag the synthesized arm at `ir_lower` time so producers/consumers can identify it (vs. user-written `case`/`with` arms).\n- `ir_typer` publishes the outcome when narrowing proves the fail edge has scrutinee type `none`.\n- Suppress `type/unreachable-arm` for synthesized arms (the outcome is the real signal; the warning was a stand-in).\n- Optional dump-side surface so the outcome is inspectable in `expected.outcomes` snapshots.\n\n## Out of scope (later tickets)\n- T2: a reducer pass actually elides the fail block based on this outcome.\n- T3: interp Discriminant for list-cons.\n\n## BEAM-conform invariant to preserve\nRefutable binds (e.g. `[h|t] = e` where `e` may be `[]`) MUST keep the fail block and produce a runtime `match_error`. The outcome only fires when the typer can prove exhaustivity.\n\n## Done when\n- New outcome variant exists and is published by `ir_typer` for synthesized arms with provably-dead fail edges.\n- `type/unreachable-arm` no longer fires on synthesized `Expr::Match` arms.\n- Existing fixtures unchanged in their `expected.txt`; relevant ones gain `expected.outcomes` lines for the new outcome.\n- All tests pass.",
   "id": "fz-fyq.1",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "T1: outcome variant + ir_typer producer for exhaustive match arms",
   "type": "task",
-  "updated_at": "2026-05-18T20:02:29Z"
+  "updated_at": "2026-05-18T20:02:31Z"
 }
