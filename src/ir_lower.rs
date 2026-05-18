@@ -13,6 +13,19 @@
 //! are [result_var, ...captured_vars]. Captured = all in-scope locals at the
 //! call site (conservative; .11.6 liveness narrows later). Tail-position
 //! calls use Term::TailCall.
+//!
+//! ## Unique-cont invariant (fz-uwq.1)
+//!
+//! "Fresh continuation per call site" is load-bearing, not just convenient.
+//! Every `Cont.fn_id` referenced by a `Term::Call` / `Term::CallClosure` /
+//! `Term::Receive` must be unique across the whole module — no two
+//! call-shaped terminators may share a continuation fn. The post-type
+//! `inline_single_use_conts` pass relies on this to safely inline `K`
+//! into its single caller; the fz-uwq epic moves that pass pre-typer,
+//! which keeps the same dependency. `debug_assert_unique_conts` at the
+//! end of `lower_program_full` pins the invariant down so a regression
+//! in this file (or a future corner case) panics in debug rather than
+//! corrupting downstream passes.
 
 #![allow(dead_code)]
 
@@ -634,7 +647,63 @@ pub fn lower_program_full(prog: &Program) -> Result<(Module, AtomTable), LowerEr
     module.boundary_fns = std::mem::take(&mut ctx.boundary_fns);
     // fz-02r.4 — annotate TailCall back-edges from the structural SCC.
     annotate_back_edges(&mut module, &ctx.fn_spans)?;
+    // fz-uwq.1 — verify the unique-cont invariant the post-type pipeline
+    // depends on. See `debug_assert_unique_conts` for the contract.
+    debug_assert_unique_conts(&module);
     Ok((module, ctx.atoms))
+}
+
+/// fz-uwq.1 — verify the **unique-cont invariant**: every `Cont.fn_id`
+/// referenced by a `Term::Call` / `Term::CallClosure` / `Term::Receive`
+/// appears as the continuation of **exactly one** such terminator across
+/// the whole module.
+///
+/// ## Why this is load-bearing
+///
+/// `ir_codegen::compile` runs `inline_single_use_conts` before codegen,
+/// and the fz-uwq epic moves that pass to run **pre-typer**. The pass
+/// is safe to inline a continuation fn `K` into its caller only when `K`
+/// is referenced exactly once as a continuation — otherwise inlining
+/// would either duplicate `K`'s body across two call sites (losing
+/// sharing the source author may rely on) or leave a dangling reference.
+///
+/// The lowerer guarantees uniqueness structurally: `lower_expr` and
+/// friends mint a **fresh** continuation FnIr for each non-tail call
+/// they CPS-split. No path in `ir_lower` produces two terminators that
+/// share the same `Cont.fn_id`. This assertion pins the structural
+/// guarantee down so a future change to the lowerer (or a corner case
+/// not yet exercised) cannot silently break the downstream pipeline.
+///
+/// See `docs/dispatch-as-typer-output.md` (Worry 1) for the stress-test
+/// that named this invariant.
+///
+/// Debug-build only — the check is O(blocks) but redundant in release
+/// when the lowerer is correct. If it ever fires in debug, the lowerer
+/// is wrong (or a new corner case needs the invariant documented away).
+fn debug_assert_unique_conts(module: &Module) {
+    if !cfg!(debug_assertions) {
+        return;
+    }
+    use crate::fz_ir::FnId;
+    let mut seen: HashMap<FnId, (FnId, BlockId)> = HashMap::new();
+    for f in &module.fns {
+        for b in &f.blocks {
+            let cont_fn = match &b.terminator {
+                Term::Call { continuation, .. }
+                | Term::CallClosure { continuation, .. }
+                | Term::Receive { continuation } => continuation.fn_id,
+                _ => continue,
+            };
+            if let Some(prev) = seen.insert(cont_fn, (f.id, b.id)) {
+                panic!(
+                    "fz-uwq.1 invariant violated: cont fn {:?} referenced by two terminators: \
+                     {:?}:{:?} and {:?}:{:?}. The lowerer must mint a fresh continuation \
+                     FnIr per call site; sharing breaks inline_single_use_conts.",
+                    cont_fn, prev.0, prev.1, f.id, b.id
+                );
+            }
+        }
+    }
 }
 
 /// Parse `extern_ret_tokens` into an ExternTy (wire format) and Descr
