@@ -13,11 +13,15 @@
     {
       "text": "Findings (docs/walkthroughs/FINDINGS.md): Ratify the 'trivially inlinable' criterion: an @spec'd fn is trivially inlinable iff its body is one block with one non-control statement plus Return. add1 qualifies (BinOp + Return). Multi-stmt / branching / recursive fns are firewalls. Per-callsite override (@inline :always / :never) is a follow-up not blocking the contract.",
       "timestamp": "2026-05-18T03:17:57Z"
+    },
+    {
+      "text": "Wiring sketch for future session:\n\n1. Module gains a boundary field: `pub boundary_fns: HashSet\u003cFnId\u003e`.\n2. ir_lower::lower_program populates boundary_fns from Attr::Spec items\n   in the AST (a fn with a declared @spec joins the set).\n3. ir_reducer::try_reduce_call early-returns None when the callee is in\n   module.boundary_fns UNLESS trivially-inlinable (single block, one\n   non-control stmt + Return per FINDINGS.md ratification).\n4. Typer change (separate but related): callsite return Descrs to\n   @spec'd fns use the declared return rather than walking the body.\n\nAcceptance: a fixture where f has @spec :: int → int — main calls f\nwith both literal and runtime int args; after RED.9 f has exactly 1\nemitted body and both callers see declared return type.\n\nEmpirical risk to verify: removing the closure_lit branch in walk_spec_for_discovery (attempted in fz-jg5.9 session) broke closure_typed_captures/curried_add runtime. RED.9's boundary-marker may interact with that path — verify per-fixture before landing.",
+      "timestamp": "2026-05-18T04:02:10Z"
     }
   ],
   "priority": 2,
   "status": "in_progress",
   "title": "fz-RED.9: @spec as downstream-narrowing contract",
   "type": "task",
-  "updated_at": "2026-05-18T04:01:07Z"
+  "updated_at": "2026-05-18T04:02:10Z"
 }
