@@ -11,9 +11,15 @@
   "id": "fz-9pr.12",
   "labels": [],
   "parent": "fz-9pr",
+  "comments": [
+    {
+      "text": "Closed alongside .11. Audit was predicated on .11 landing.",
+      "timestamp": "2026-05-18T16:27:10Z"
+    }
+  ],
   "priority": 2,
   "status": "open",
   "title": "fz-CO.E.2 — Audit: reducer's Inlined matches ir_inline's inlinings",
   "type": "task",
-  "updated_at": "2026-05-18T15:02:43Z"
+  "updated_at": "2026-05-18T16:27:10Z"
 }
