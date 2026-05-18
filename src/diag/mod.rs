@@ -23,6 +23,8 @@ pub mod style;
 
 pub use diagnostic::{Diagnostic, Diagnostics, Severity};
 pub use driver::{render_one_to_stderr, render_to_stderr};
+// `report_or_exit` is re-exported when its first call site lands
+// (fz-0z4.6). Until then, callers can reach it via `diag::driver`.
 pub use source_map::SourceMap;
 pub use span::{FileId, Span, SpanOrigin};
 
