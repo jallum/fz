@@ -3,7 +3,9 @@
   "blocked_by": [
     "fz-jg5.5"
   ],
-  "blocks": [],
+  "blocks": [
+    "fz-jg5.7"
+  ],
   "created": "2026-05-18T02:55:59Z",
   "description": "# Inline closures whose function identity and captures are statically known\n\n## Goal\n\nExtend `ir_reducer` so that when a Var has Descr\n`closure_lit(F, [capture_descrs])` and the captures reduce to\nliterals (or to other closure_lits whose captures are literal,\ntransitively), a call through that closure inlines F's body with\nthe captures substituted.\n\nMixed cases (some captures literal, some opaque) reduce partially:\nthe literal captures dissolve into substituted constants; the\nopaque ones remain as parameters.\n\n## Acceptance\n\n- `closure_typed_captures` fixture: full reduction → `print(42)`.\n  Zero closure heap objects allocated at runtime.\n- `curried_add` fixture: full reduction → `print(42); print(6)`.\n- `spawn2_basic` fixture: lambda body reduces; spawn target is the\n  literal `send(1, 42); halt` thunk. Zero `child` body.\n- `spawn_with_captures` fixture (when called with literal arg):\n  closure dissolves to a static thunk with no heap allocation.\n- `higher_order`: full reduction of `apply2`, `compose`.\n\n## Removals\n\nNone yet.",
   "id": "fz-jg5.6",
@@ -13,5 +15,5 @@
   "status": "open",
   "title": "fz-RED.5: closure_lit reduction",
   "type": "task",
-  "updated_at": "2026-05-18T02:56:55Z"
+  "updated_at": "2026-05-18T02:56:56Z"
 }
