@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-9pr.9"
+  ],
   "blocks": [],
   "created": "2026-05-18T15:02:16Z",
   "description": "Replace walk_spec_for_discovery's per-block terminator scan for the\nthree callsite slots (Direct, ClosureLit, CallClosureKnown) with an\niteration over Stalled outcomes for the caller fn. For each:\n  - Compute the target spec key from caller_ft.block_envs at\n    (caller, block).\n  - Emit (EmitterSite, target_key) into out.emits.\n\nCont and MakeClosure slots stay on their existing per-block paths\n(per game-walk: they're not 1-to-1 with reducer callsites).\n\n## Acceptance\n\n- Goldens byte-identical.\n- Typer LOC drops noticeably.\n- All 842 tests green.\n\n## Removes\n\n- walk_spec_for_discovery's per-Term::Call/TailCall/CallClosure/\n  TailCallClosure scanning code in the discovery walk.",
