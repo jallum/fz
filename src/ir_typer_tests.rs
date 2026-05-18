@@ -763,6 +763,53 @@ fn pipeline(src: &str) -> (Module, ModuleTypes) {
     (ir, mt)
 }
 
+/// fz-rh5.4 — pin upper bounds on deterministic typer-work counters.
+/// Bounds are deliberately generous (~2× current observed); failures
+/// force the question "is this regression or improvement?" rather
+/// than reflex-bless. Tighten in the same commit that lands an
+/// intentional improvement.
+fn observe_typer_work(src: &str) -> (usize, usize, usize, usize) {
+    crate::ir_typer::reset_typer_counters();
+    let (_, mt) = pipeline(src);
+    let pops = crate::ir_typer::WORKLIST_POPS.with(|c| c.get());
+    let walks = crate::ir_typer::WALK_CALLS.with(|c| c.get());
+    let typefns = crate::ir_typer::TYPE_FN_CALLS.with(|c| c.get());
+    (pops, walks, typefns, mt.specs.len())
+}
+
+#[test]
+fn typer_work_bounds_ast_eval() {
+    let src = std::fs::read_to_string("fixtures/ast_eval/input.fz")
+        .expect("read ast_eval fixture");
+    let (pops, walks, typefns, specs) = observe_typer_work(&src);
+    eprintln!(
+        "ast_eval: pops={} walks={} type_fns={} specs={}",
+        pops, walks, typefns, specs
+    );
+    // Bounds are ~2× current observed (Nov 2026). Tighten on
+    // intentional improvements; investigate any regression that
+    // crosses them.
+    assert!(pops < 500, "ast_eval worklist pops regressed: {}", pops);
+    assert!(walks < 500, "ast_eval walks regressed: {}", walks);
+    assert!(typefns < 150, "ast_eval type_fn calls regressed: {}", typefns);
+    assert!(specs < 100, "ast_eval spec count regressed: {}", specs);
+}
+
+#[test]
+fn typer_work_bounds_fib_tailrec() {
+    let src = std::fs::read_to_string("fixtures/fib_tailrec/input.fz")
+        .expect("read fib_tailrec fixture");
+    let (pops, walks, typefns, specs) = observe_typer_work(&src);
+    eprintln!(
+        "fib_tailrec: pops={} walks={} type_fns={} specs={}",
+        pops, walks, typefns, specs
+    );
+    assert!(pops < 200, "fib_tailrec worklist pops regressed: {}", pops);
+    assert!(walks < 200, "fib_tailrec walks regressed: {}", walks);
+    assert!(typefns < 80, "fib_tailrec type_fn calls regressed: {}", typefns);
+    assert!(specs < 60, "fib_tailrec spec count regressed: {}", specs);
+}
+
 /// fz-2yw.1 — recursive sum's effective return must be the LFP
 /// (`int`, joined from base case 0 plus recursive case h + sum(t))
 /// — NOT just the base case (0) which is what cycle-cut would give.

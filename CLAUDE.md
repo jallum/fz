@@ -1,13 +1,12 @@
-- Research thoroughly, eli5, plan out work in discrete steps that form a DAG that builds to the goal. 
+- Understand a task thoroughly, eli5, plan out work in discrete steps that form a DAG that builds to the goal. Steps that must be done together are one step. No hidden surprises.
 - Hard things are tractable if broken into steps. This pattern is fractal. A difficult step can be broken down further.
 - Elegance, simplicity and correctness are what we push for.
 - Always ask yourself: What am I not proud of?
-- Warnings are errors if it's something we control.
-- Tests must pass.
 - TDD is the law. Prove things work the way you say they do.
+- Tests must pass.
 - Deferrals and omissions require authorization.
+- Warnings are errors if it's something we control.
 - Tickets are persistent memory beyond context; `bw --help`.
 - One ticket == one commit.
 - Tickets free us from the worry of context.
-- No hidden surprises. All investigation required must be done up-front, so that there are no surprises as we work.
 - Refrain from estimating time to accomplish work. I worry about time.

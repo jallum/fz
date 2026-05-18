@@ -446,6 +446,23 @@ fn build_any_key_index(specs: &HashMap<(FnId, Vec<Descr>), FnTypes>) -> HashMap<
 #[cfg(test)]
 thread_local! {
     pub static TYPE_MODULE_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// fz-rh5.4 — worklist pops in `process_worklist`. Each pop = one
+    /// walk + one return-recompute. The single best proxy for "how
+    /// much the typer churned" on a given program.
+    pub static WORKLIST_POPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// fz-rh5.4 — calls to `type_fn` from the worklist (= unique specs
+    /// registered, since type_fn results are cached one-per-spec).
+    pub static TYPE_FN_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// fz-rh5.4 — invocations of `walk_spec_for_discovery`.
+    pub static WALK_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub fn reset_typer_counters() {
+    TYPE_MODULE_CALLS.with(|c| c.set(0));
+    WORKLIST_POPS.with(|c| c.set(0));
+    TYPE_FN_CALLS.with(|c| c.set(0));
+    WALK_CALLS.with(|c| c.set(0));
 }
 
 /// fz-5j5.3 — type a module via one worklist over `(FnId, Vec<Descr>)`
@@ -596,12 +613,16 @@ fn process_worklist(
 ) {
     while let Some(spec_key) = work.pop_front() {
         in_work.remove(&spec_key);
+        #[cfg(test)]
+        WORKLIST_POPS.with(|c| c.set(c.get() + 1));
 
         let (fid, key) = spec_key.clone();
         let Some(&j) = m.fn_idx.get(&fid) else { continue };
 
         // type_fn is pure in (FnIr, entry_key) — cache by spec_key.
         if !specs.contains_key(&spec_key) {
+            #[cfg(test)]
+            TYPE_FN_CALLS.with(|c| c.set(c.get() + 1));
             let mut ft = type_fn(&m.fns[j], m, Some(&key));
             if let Some(arg_consts) = callsite_fn_consts.get(&spec_key) {
                 let entry = m.fns[j].entry;
@@ -1074,6 +1095,8 @@ fn walk_spec_for_discovery(
     // a callee's return later changes, only its readers get re-walked.
     cont_return_deps: &mut Vec<(FnId, Vec<Descr>)>,
 ) {
+    #[cfg(test)]
+    WALK_CALLS.with(|c| c.set(c.get() + 1));
     let maybe_widen = |k: Vec<Descr>, callee: FnId| -> Vec<Descr> {
         if widen_now && caller_scc.contains(&callee) {
             k.into_iter().map(|d| crate::typer::widen(&d)).collect()
