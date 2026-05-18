@@ -21,8 +21,11 @@ pub mod source_map;
 pub mod span;
 pub mod style;
 
-pub use diagnostic::{Diagnostic, Diagnostics, Severity};
-pub use driver::{render_one_to_stderr, render_to_stderr};
+pub use diagnostic::{Diagnostic, Diagnostics};
+// fz-0z4.6 — `Severity` re-export retired alongside validate_specs_or_exit;
+// `diag::report_or_exit` now encapsulates the error-vs-warning decision so
+// no external caller needs to inspect it directly.
+pub use driver::{render_one_to_stderr, render_to_stderr, report_or_exit};
 pub use source_map::SourceMap;
 pub use span::{FileId, Span, SpanOrigin};
 

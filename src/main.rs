@@ -5,6 +5,7 @@ mod callsite_walk;
 mod diag;
 mod eval;
 mod fz_ir;
+mod ir_callgraph;
 mod ir_codegen;
 mod ir_interp;
 // ir_liveness removed (fz-ul4.11.31 subsumes .11.30): frame schemas are
@@ -40,55 +41,52 @@ mod value;
 use parser::Parser;
 use std::io::{IsTerminal, Read};
 
-/// fz-ul4.31.6 — Run `@spec` validation against the lowered IR. Prints
-/// every diagnostic and exits non-zero if any are errors. Called by
-/// the `run` / `jit` / `aot` drivers immediately after `lower_program`
-/// so all three paths produce identical accept/reject verdicts.
-fn validate_specs_or_exit(prog: &ast::Program, module: &fz_ir::Module, sm: &diag::SourceMap) {
-    // fz-rh5.2 — type_module call #1 of 4 in `fz run`. Distinct inputs:
-    //   #1 (here):                  raw lowered module — for @spec diagnostics
-    //   #2 (reduced clone below):   reducer-applied module — for pattern_check
-    //   #3 (ir_codegen::compile):   pre-rewrites clone — for codegen rewrites
-    //   #4 (ir_codegen::compile):   post-inline/fuse/reduce — final codegen
-    // #1 and #3 type structurally-identical inputs; threading the result
-    // through would save one full call (follow-up filed).
+/// fz-0z4.6 — `@spec` validation as a pure analysis. Returns a
+/// diagnostic vec; the caller decides whether to render or exit
+/// (typically via `diag::report_or_exit`).
+///
+/// fz-rh5.2 — types the raw lowered module (`type_module` call #1 of 2
+/// in `fz run`; the other is `ir_codegen::compile`'s post-reduce pass).
+fn check_specs(prog: &ast::Program, module: &fz_ir::Module) -> Vec<diag::Diagnostic> {
     let mt = ir_typer::type_module(module);
-    let mut diags = spec_check::validate_specs(prog, module, &mt);
-    // fz-ul4.45 — pattern-match correctness analysis. Unreachable clauses
-    // and inexhaustive matches surface as warnings here (non-fatal). The
-    // pattern checker is gated to fns that actually survive the reducer:
-    // a `:function_clause` halt the warning worries about can only fire
-    // from a body that exists at runtime, and a fn that fully dissolves
-    // (e.g. ast_eval's `eval`) has no such body.
-    //
-    // fz-f88.8 — survivor set sourced from `ModuleTypes.reachable_specs`
-    // (the typer's authoritative view of "did any callsite still
-    // resolve to this fn after reduction?"), replacing the prior
-    // hand-rolled `compute_survivors` that was a third independent
-    // derivation of the same idea. The reduce-then-type step lives
-    // here because reachability changes after the reducer folds
-    // callsites away.
+    spec_check::validate_specs(prog, module, &mt)
+}
+
+/// fz-ul4.45 — pattern-match correctness analysis. Unreachable clauses
+/// and inexhaustive matches surface as warnings (non-fatal). The
+/// pattern checker is gated to fns that actually survive the reducer:
+/// a `:function_clause` halt the warning worries about can only fire
+/// from a body that exists at runtime, and a fn that fully dissolves
+/// (e.g. ast_eval's `eval`) has no such body.
+///
+/// fz-0z4.3 — survivor set sourced from a pure call-graph BFS over
+/// the reduced module (`ir_callgraph::reachable_fns`). No typer pass
+/// on the reduced module — reachability is a call-graph fact.
+fn check_patterns(prog: &ast::Program, module: &fz_ir::Module) -> Vec<diag::Diagnostic> {
     let mut reduced = module.clone();
     ir_reducer::reduce_module(&mut reduced);
-    let mt_reduced = ir_typer::type_module(&reduced);
-    let survivors: std::collections::HashSet<(String, usize)> = mt_reduced
-        .reachable_specs
+    let reachable = ir_callgraph::reachable_fns(&reduced);
+    let survivors: std::collections::HashSet<(String, usize)> = reachable
         .iter()
-        .filter_map(|(fid, _)| {
+        .filter_map(|fid| {
             let &idx = reduced.fn_idx.get(fid)?;
             let f = &reduced.fns[idx];
             let arity = f.block(f.entry).params.len();
             Some((f.name.clone(), arity))
         })
         .collect();
-    diags.extend(pattern_check::check_program(prog, Some(&survivors)));
-    let has_error = diags.iter().any(|d| d.severity == diag::Severity::Error);
-    for d in &diags {
-        diag::render_one_to_stderr(sm, d);
-    }
-    if has_error {
-        std::process::exit(1);
-    }
+    pattern_check::check_program(prog, Some(&survivors))
+}
+
+/// fz-ul4.31.6 — front-end diagnostic gate run by every driver
+/// (`run` / `jit` / `aot` / `dump`) immediately after `lower_program`,
+/// so all paths produce identical accept/reject verdicts. Spec errors
+/// halt; pattern warnings print and continue. Diagnostic order:
+/// spec checks before pattern checks, preserved by `extend` order.
+fn run_frontend_gates_or_exit(prog: &ast::Program, module: &fz_ir::Module, sm: &diag::SourceMap) {
+    let mut diags = check_specs(prog, module);
+    diags.extend(check_patterns(prog, module));
+    diag::report_or_exit(&diags, sm);
 }
 
 fn main() {
@@ -240,7 +238,7 @@ fn run_build(args: &[String]) {
         diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         std::process::exit(1);
     });
-    validate_specs_or_exit(&prog, &module, &sm);
+    run_frontend_gates_or_exit(&prog, &module, &sm);
     let obj_name = std::path::Path::new(&src_path)
         .file_stem()
         .and_then(|s| s.to_str())
@@ -345,7 +343,7 @@ fn run_interp(args: &[String]) {
         diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         std::process::exit(1);
     });
-    validate_specs_or_exit(&prog, &module, &sm);
+    run_frontend_gates_or_exit(&prog, &module, &sm);
     match ir_interp::run_main(&module) {
         Ok(_halt) => {}
         Err(msg) => {
@@ -655,7 +653,7 @@ fn dump_specs_pipeline(src: String, source_name: String) -> String {
         diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         std::process::exit(1);
     });
-    validate_specs_or_exit(&prog, &module, &sm);
+    run_frontend_gates_or_exit(&prog, &module, &sm);
     let mt = ir_typer::type_module(&module);
     ir_typer::pretty_module_types(&module, &mt)
 }
@@ -854,8 +852,11 @@ fn dump_outcomes_pipeline(src: String, source_name: String, show_all: bool) -> S
     }
     // fz-f88.7 — default filter: hide prelude callers and any caller
     // whose body has no surviving spec post-reduction. `--all` bypasses.
+    // fz-0z4.2 — project from `mt.specs.keys()` directly; the prior
+    // `mt.reachable_specs` field was just `specs.keys().cloned().collect()`
+    // and is being retired in fz-0z4.4.
     let reachable_fids: std::collections::HashSet<fz_ir::FnId> =
-        mt.reachable_specs.iter().map(|(fid, _)| *fid).collect();
+        mt.specs.keys().map(|(fid, _)| *fid).collect();
     let should_show = |f: &fz_ir::FnIr| -> bool {
         if show_all {
             return true;
@@ -930,7 +931,7 @@ fn compile_pipeline(src: String, source_name: String) -> Compiled {
         diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         std::process::exit(1);
     });
-    validate_specs_or_exit(&prog, &module, &sm);
+    run_frontend_gates_or_exit(&prog, &module, &sm);
     let main_fn = module.fn_by_name("main").map(|f| f.id);
     let cm = ir_codegen::compile(&module).unwrap_or_else(|e| {
         diag::render_one_to_stderr(&sm, &e.to_diagnostic());
