@@ -1,7 +1,9 @@
 {
   "assignee": "",
   "blocked_by": [],
-  "blocks": [],
+  "blocks": [
+    "fz-9pr.2"
+  ],
   "created": "2026-05-18T15:01:15Z",
   "description": "Define the two data types in fz_ir:\n\n```rust\npub struct CallsiteId {\n    pub caller: FnId,\n    pub block: BlockId,\n    pub slot: EmitSlot,\n}\n\npub enum CallsiteOutcome {\n    Consumed { result: Descr },\n    Inlined,\n    Emitted { target: (FnId, Vec\u003cDescr\u003e) },\n    Stalled,\n}\n```\n\nAdd round-trip helpers:\n- `EmitterSite::callsite_id()` → drops the spec_key.\n- `CallsiteId::with_spec_key(SpecKey)` → adds it back.\n\n## Acceptance\n\n- Types compile; no other code references them yet.\n- Unit test: round-trip an EmitterSite ↔ CallsiteId.\n- All 842 tests green.\n\n## Removes\n\nNothing yet.",
   "id": "fz-9pr.1",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "fz-CO.A.1 — CallsiteId + CallsiteOutcome types",
   "type": "task",
-  "updated_at": "2026-05-18T15:01:15Z"
+  "updated_at": "2026-05-18T15:01:21Z"
 }

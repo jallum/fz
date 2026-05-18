@@ -1,6 +1,8 @@
 {
   "assignee": "",
-  "blocked_by": [],
+  "blocked_by": [
+    "fz-9pr.1"
+  ],
   "blocks": [],
   "created": "2026-05-18T15:01:15Z",
   "description": "Add the field to Module:\n\n```rust\npub callsite_outcomes: HashMap\u003cCallsiteId, CallsiteOutcome\u003e,\n```\n\nDefault empty. ModuleBuilder::build() initializes empty.\n\n## Acceptance\n\n- Field exists, Default impl OK.\n- Unit test: fresh Module's outcomes table is empty.\n- All tests green.\n\n## Removes\n\nNothing yet.",
@@ -11,5 +13,5 @@
   "status": "open",
   "title": "fz-CO.A.2 — Module.callsite_outcomes field",
   "type": "task",
-  "updated_at": "2026-05-18T15:01:15Z"
+  "updated_at": "2026-05-18T15:01:21Z"
 }
