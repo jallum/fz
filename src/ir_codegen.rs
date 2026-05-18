@@ -3996,8 +3996,9 @@ fn emit_terminator<M: cranelift_module::Module>(
             block: blk.id,
             slot: EmitSlot::Cont,
         };
-        if let Some(CallsiteOutcome::Emitted { target: (fid, key), .. }) =
-            module.callsite_outcomes.get(&cid)
+        if let Some(CallsiteOutcome::Emitted {
+            target: (fid, key), ..
+        }) = module.callsite_outcomes.get(&cid)
             && *fid == continuation.fn_id
             && let Some(sid) = spec_registry.resolve(*fid, key)
         {
@@ -4012,9 +4013,7 @@ fn emit_terminator<M: cranelift_module::Module>(
             .unwrap_or_else(|| {
                 spec_registry
                     .iter()
-                    .find(|(s, fid, _)| {
-                        *fid == continuation.fn_id && fn_ids.contains_key(&s.0)
-                    })
+                    .find(|(s, fid, _)| *fid == continuation.fn_id && fn_ids.contains_key(&s.0))
                     .map(|(s, _, _)| s.0)
                     .unwrap_or_else(|| {
                         panic!(
@@ -4045,8 +4044,9 @@ fn emit_terminator<M: cranelift_module::Module>(
             block: block_id,
             slot: EmitSlot::Direct,
         };
-        if let Some(CallsiteOutcome::Emitted { target: (fid, key), .. }) =
-            module.callsite_outcomes.get(&cid)
+        if let Some(CallsiteOutcome::Emitted {
+            target: (fid, key), ..
+        }) = module.callsite_outcomes.get(&cid)
             && *fid == callee
             && let Some(sid) = spec_registry.resolve(*fid, key)
         {
