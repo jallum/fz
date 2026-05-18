@@ -1790,3 +1790,59 @@ fn callsite_id_round_trip() {
     let round = cid.with_spec_key(spec_key);
     assert_eq!(round, site);
 }
+
+/// fz-9pr.8 — `type_module` populates `callsite_outcome_updates` with
+/// an `Emitted` entry for each surviving Direct callsite. Build a
+/// trivial 2-fn module (main → id), assert the typer proposes an
+/// Emitted update at main's Direct slot keyed by `id` plus the arg
+/// Descr.
+#[test]
+fn typer_publishes_emitted_outcome_updates_for_direct() {
+    use crate::fz_ir::{BlockId, CallsiteId, CallsiteOutcome, EmitSlot};
+
+    let mut id_b = crate::fz_ir::FnBuilder::new(FnId(0), "id");
+    let x = id_b.fresh_var();
+    let entry = id_b.block(vec![x]);
+    id_b.set_terminator(entry, crate::fz_ir::Term::Return(x));
+
+    let mut main_b = crate::fz_ir::FnBuilder::new(FnId(1), "main");
+    let m_entry = main_b.block(vec![]);
+    let c42 = main_b.let_(m_entry, Prim::Const(Const::Int(42)));
+    main_b.set_terminator(
+        m_entry,
+        crate::fz_ir::Term::TailCall {
+            callee: FnId(0),
+            args: vec![c42],
+            is_back_edge: false,
+        },
+    );
+
+    let mut mb = crate::fz_ir::ModuleBuilder::new();
+    mb.add_fn(id_b.build());
+    mb.add_fn(main_b.build());
+    let m = mb.build();
+    let mt = type_module(&m);
+
+    let cid = CallsiteId {
+        caller: FnId(1),
+        block: BlockId(0),
+        slot: EmitSlot::Direct,
+    };
+    match mt.callsite_outcome_updates.get(&cid) {
+        Some(CallsiteOutcome::Emitted { target: (fid, key) }) => {
+            assert_eq!(*fid, FnId(0));
+            assert_eq!(key.len(), 1);
+            // Key carries the literal Descr from the callsite.
+            assert_eq!(key[0], Descr::int_lit(42));
+        }
+        other => panic!("expected Emitted outcome update, got {:?}", other),
+    }
+
+    // apply_callsite_outcomes merges the update into m.callsite_outcomes.
+    let mut m2 = m.clone();
+    crate::ir_typer::apply_callsite_outcomes(&mut m2, &mt);
+    assert!(matches!(
+        m2.callsite_outcomes.get(&cid),
+        Some(CallsiteOutcome::Emitted { .. })
+    ));
+}

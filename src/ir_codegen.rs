@@ -1892,6 +1892,12 @@ pub fn compile_with_backend<B: Backend>(
         crate::ir_reducer::reduce_module(&mut working);
     }
     let mut module_types = crate::ir_typer::type_module(&working);
+    // fz-9pr.8 — merge the typer's outcome updates (Emitted entries
+    // for each surviving Direct / ClosureLit / CallClosureKnown spec)
+    // into `working.callsite_outcomes`. The reducer wrote Consumed /
+    // Stalled before; the merge promotes Stalled → Emitted in place
+    // and leaves Consumed / Inlined / pre-existing Emitted alone.
+    crate::ir_typer::apply_callsite_outcomes(&mut working, &module_types);
     crate::ir_fold::fold_module(&mut working, &module_types);
     // fz-cty.8 — fold byte-literal MakeBitstring into ConstBitstring before
     // DCE so the per-byte Const(Int) operand stmts go dead in the same pass.

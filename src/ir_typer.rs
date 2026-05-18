@@ -29,8 +29,8 @@
 //! `ir_codegen::compile()` continues to populate `CompiledModule.types`.
 
 use crate::fz_ir::{
-    BinOp, Block, BlockId, CallsiteId, Const, Cont, EmitSlot, FnId, FnIr, Module, Prim, Stmt, Term,
-    UnOp, Var, VecKindIr,
+    BinOp, Block, BlockId, CallsiteId, CallsiteOutcome, Const, Cont, EmitSlot, FnId, FnIr, Module,
+    Prim, Stmt, Term, UnOp, Var, VecKindIr,
 };
 use crate::types::{Descr, MapKey};
 use std::collections::{HashMap, HashSet};
@@ -218,6 +218,12 @@ pub struct ModuleTypes {
     /// start of `type_module` from the initial Tarjan run; stable thereafter.
     #[allow(dead_code)] // consumed by ir_codegen back-edge check (fz-02r.5)
     pub scc_of: HashMap<FnId, usize>,
+    /// fz-9pr.8 — pending `CallsiteOutcome` writes the typer wants the
+    /// driver to merge into `Module.callsite_outcomes`. Populated
+    /// during `type_module` for every Direct / ClosureLit /
+    /// CallClosureKnown emit whose `CallsiteId` is `Stalled` (or
+    /// absent). Apply with `apply_callsite_outcomes`.
+    pub callsite_outcome_updates: HashMap<CallsiteId, CallsiteOutcome>,
 }
 
 impl ModuleTypes {
@@ -765,11 +771,63 @@ pub fn type_module(m: &Module) -> ModuleTypes {
     effective_returns.retain(|k, _| reachable.contains(k));
 
     let any_key_specs = build_any_key_index(&specs);
+
+    // fz-9pr.8 — build the outcome-update map for Direct / ClosureLit /
+    // CallClosureKnown emits. Each EmitterSite in `produces` projects
+    // to a (CallsiteId, target). We propose Emitted{target}; the
+    // driver merges with whatever the reducer (Consumed/Stalled)
+    // already wrote.
+    let mut callsite_outcome_updates: HashMap<CallsiteId, CallsiteOutcome> = HashMap::new();
+    for (site, target) in &produces {
+        if !reachable.contains(&site.caller) {
+            continue;
+        }
+        match site.slot {
+            EmitSlot::Direct | EmitSlot::ClosureLit(..) | EmitSlot::CallClosureKnown => {
+                let cid = site.callsite_id();
+                callsite_outcome_updates.insert(
+                    cid,
+                    CallsiteOutcome::Emitted {
+                        target: target.clone(),
+                    },
+                );
+            }
+            EmitSlot::Cont | EmitSlot::MakeClosure(_) => {}
+        }
+    }
+
     ModuleTypes {
         specs,
         effective_returns,
         any_key_specs,
         scc_of,
+        callsite_outcome_updates,
+    }
+}
+
+/// fz-9pr.8 — merge a `ModuleTypes`' outcome updates into
+/// `module.callsite_outcomes`. The typer cannot mutate the module
+/// directly (it takes `&Module`), so the driver applies the writes
+/// after typing. Merge rule: promote `Stalled` → `Emitted`; leave
+/// `Consumed` / `Inlined` alone (the reducer/inliner already decided);
+/// insert if absent. Multi-callable: idempotent on repeat application
+/// with the same updates.
+pub fn apply_callsite_outcomes(m: &mut Module, mt: &ModuleTypes) {
+    for (cid, outcome) in &mt.callsite_outcome_updates {
+        match m.callsite_outcomes.get(cid) {
+            None | Some(CallsiteOutcome::Stalled) => {
+                m.callsite_outcomes.insert(*cid, outcome.clone());
+            }
+            Some(CallsiteOutcome::Consumed { .. })
+            | Some(CallsiteOutcome::Inlined)
+            | Some(CallsiteOutcome::Emitted { .. }) => {
+                // Leave reducer/inliner/typer-previous decisions
+                // intact. A second type_module pass over the same
+                // module is the only realistic source of an
+                // already-Emitted entry, and the target matches by
+                // construction.
+            }
+        }
     }
 }
 
