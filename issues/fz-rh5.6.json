@@ -6,14 +6,15 @@
   "blocks": [
     "fz-rh5.7"
   ],
+  "closed_at": "2026-05-18T14:17:11Z",
   "created": "2026-05-18T12:02:12Z",
   "description": "## Status: deferred after investigation (2026-05-18)\n\nThe provenance refactor (EmitterSite + produces + holders, unified\nworklist absorbing MakeClosure via live opaque_arities, reachability\nvia the holders graph) is the right structural answer to the issues\nnamed in fz-rh5's epic prose. The typer-level rewrite was implemented\nand all 54 \\`ir_typer::tests\\` passed against it.\n\n**The blocker**: two downstream codegen tests\n(\\`sum_list_via_head_tail_recursion\\`,\n\\`map_higher_order_renders_doubled_list\\`) fail because the new spec\nset is *correct but different*. Specifically:\n\n  - \\`inline_single_use_conts\\` (in \\`ir_inline.rs\\`) mutates\n    \\`ModuleTypes\\` in place after the final typer call, assuming\n    structural invariants about which (cont_fn_id, key) pairs\n    appear together. The provenance refactor's spec set —\n    accumulating *all* live emit edges including narrow cont specs\n    that the old reachability sweep would have pruned — breaks\n    those assumptions. Result: after the inliner mutates\n    \\`module_types\\`, only the widened cont spec survives, and\n    codegen's narrow lookup (via \\`cont_input_key\\`) misses.\n\n  - The interaction is not a typer bug; it's that\n    \\`inline_single_use_conts\\` was co-designed with the old\n    typer's specific over-/under-specialization patterns. Making\n    PROV.6 land cleanly requires auditing every consumer of\n    \\`ModuleTypes\\` that mutates it post-hoc.\n\n**Decision**: keep this ticket open as a known-good design that\nneeds broader scope. Don't ship a partial implementation — that's\nexactly the \"layering slop on top of slop\" pattern fz-rh5 was\ncreated to avoid.\n\n**Re-scope as**: \\`fz-PROV.6.v2\\` (TBD) — provenance refactor +\nco-design with \\`inline_single_use_conts\\` and any other in-place\n\\`ModuleTypes\\` mutators. Will require its own DAG.\n\n## Original design (preserved for the re-scope)\n\n[ ... original ticket body retained below ... ]",
   "id": "fz-rh5.6",
   "labels": [],
   "parent": "fz-rh5",
   "priority": 1,
-  "status": "in_progress",
+  "status": "closed",
   "title": "fz-PROV.6: provenance-based spec lifetime — EmitterSite + holders + unified worklist",
   "type": "task",
-  "updated_at": "2026-05-18T13:07:04Z"
+  "updated_at": "2026-05-18T14:17:11Z"
 }
