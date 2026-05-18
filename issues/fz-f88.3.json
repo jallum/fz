@@ -4,14 +4,15 @@
     "fz-f88.2"
   ],
   "blocks": [],
+  "closed_at": "2026-05-18T17:48:47Z",
   "created": "2026-05-18T17:22:03Z",
   "description": "Extend descr_to_materialize with tuple and empty-list arms.\n\n## Tuple\n\n`fold_make_tuple` (src/reducer.rs:342) produces `Descr::tuple_of(elems)` when all args are literal. is_scalar_literal at ir_reducer.rs:500 currently rejects it (`d.tuples.iter().any(|c| !c.pos.is_empty())`). Materializer arm: push `Stmt::Let(v, Prim::MakeTuple(elem_vars))`. Element vars reused from env.\n\n## Empty list\n\nPost-fz-s9y, `[]` is `EMPTY_LIST = 0x8`, a zero-alloc sentinel like nil. Add an arm that pushes `Stmt::Let(v, Prim::MakeList(vec![], None))` for an empty-list Descr. Alternatively a `Const::EmptyList` variant could be added (see Const enum at src/fz_ir.rs:119) — pick whichever feels less invasive after looking at both shapes.\n\n## Verify\n\n- New minimal fixture: tuple-returning fn called with literals → should Consume end-to-end.\n- New minimal fixture (or existing): empty-list-returning fn with literal args → Consumes.\n- closure_typed_captures outcomes already cleaner from .2; .3 shouldn't regress.\n\n## Out of scope\n\nNon-empty list literal folding. `fold_prim` skips `Prim::MakeList` at src/reducer.rs:188 because `list_of(elem)` loses length info. Tracked separately as the L1 follow-up.\n\n## Blocked by\n\nfz-f88.2",
   "id": "fz-f88.3",
   "labels": [],
   "parent": "fz-f88",
   "priority": 1,
-  "status": "open",
+  "status": "closed",
   "title": "fz-RS.3 — materializer tuple_lit + empty-list arms",
   "type": "task",
-  "updated_at": "2026-05-18T17:43:42Z"
+  "updated_at": "2026-05-18T17:48:47Z"
 }
