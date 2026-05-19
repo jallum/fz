@@ -133,8 +133,8 @@
 ;     Var(70) :: 70
 ;     Var(71) :: vec(u8) | vec(bit)
 ;     Var(72) :: :match_error
-;     Var(73) :: &fn13[vec(u8) | vec(bit)]:() -> any
-;     Var(74) :: &fn14[&fn13[vec(u8) | vec(bit)]:() -> any]:() -> any
+;     Var(73) :: &fn13[vec(u8) | vec(bit)]:() -> α895
+;     Var(74) :: &fn14[&fn13[vec(u8) | vec(bit)]:() -> α895]:() -> α959
 ;     Var(75) :: any
 ;   exits:
 ;     blk0 Receive cont k_receive_15#15 captured=[Var(71)]

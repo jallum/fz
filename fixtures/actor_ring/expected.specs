@@ -129,8 +129,8 @@
 ;   vars:
 ;     Var(0) :: 4
 ;     Var(1) :: any
-;     Var(2) :: &fn16[4, any]:() -> any
-;     Var(3) :: &fn17[&fn16[4, any]:() -> any]:() -> any
+;     Var(2) :: &fn16[4, any]:() -> α1087
+;     Var(3) :: &fn17[&fn16[4, any]:() -> α1087]:() -> α1151
 ;     Var(4) :: any
 ;     Var(5) :: :match_error
 ;   exits:
@@ -144,8 +144,8 @@
 ;   vars:
 ;     Var(0) :: int \ {0} | float
 ;     Var(1) :: any
-;     Var(2) :: &fn16[int \ {0} | float, any]:() -> any
-;     Var(3) :: &fn17[&fn16[int \ {0} | float, any]:() -> any]:() -> any
+;     Var(2) :: &fn16[int \ {0} | float, any]:() -> α1087
+;     Var(3) :: &fn17[&fn16[int \ {0} | float, any]:() -> α1087]:() -> α1151
 ;     Var(4) :: any
 ;     Var(5) :: :match_error
 ;   exits:
@@ -224,8 +224,8 @@
 ;   vars:
 ;     Var(0) :: pid
 ;     Var(1) :: :match_error
-;     Var(2) :: &fn20[pid]:() -> any
-;     Var(3) :: &fn17[&fn20[pid]:() -> any]:() -> any
+;     Var(2) :: &fn20[pid]:() -> α1343
+;     Var(3) :: &fn17[&fn20[pid]:() -> α1343]:() -> α1151
 ;     Var(4) :: any
 ;     Var(5) :: :match_error
 ;     Var(6) :: 0

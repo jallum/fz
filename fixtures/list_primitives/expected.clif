@@ -319,8 +319,8 @@ block6:
 }
 
 ; fn map_s24
-    ;   @spec   map(&fn16[]:(any) -> any, list(1 | 2 | 3 | 4 | 5)) -> list(int)
-    ;   @key    [&fn16[]:(any) -> any, list(1 | 2 | 3 | 4 | 5)]
+    ;   @spec   map(&fn16[]:(α1024) -> α1087, list(1 | 2 | 3 | 4 | 5)) -> list(int)
+    ;   @key    [&fn16[]:(α1024) -> α1087, list(1 | 2 | 3 | 4 | 5)]
     ;   @abi    (Tagged, Tagged) -> Tagged
 function u0:0(i64, i64, i64) -> i64 tail {
     sig0 = (i64, i64) -> i64 system_v
@@ -337,7 +337,7 @@ function u0:0(i64, i64, i64) -> i64 tail {
     fn4 = u0:27 sig5
     fn5 = colocated u0:57 sig6
 
-    block0(v0: i64, v1: i64, v2: i64):    ;; v0 :: &fn16[]:(any) -> any, v1 :: list(1 | 2 | 3 | 4 | 5)
+    block0(v0: i64, v1: i64, v2: i64):    ;; v0 :: &fn16[]:(α1024) -> α1087, v1 :: list(1 | 2 | 3 | 4 | 5)
     v3 = iconst.i64 8
     v4 = icmp eq v1, v3  ; v3 = 8    ;; v4 :: bool
     brif v4, block1, block2
@@ -379,8 +379,8 @@ block4:
 }
 
 ; fn foldl_s26
-    ;   @spec   foldl(&fn17[]:(any, any) -> any, 0, list(1 | 2 | 3 | 4 | 5)) -> int
-    ;   @key    [&fn17[]:(any, any) -> any, 0, list(1 | 2 | 3 | 4 | 5)]
+    ;   @spec   foldl(&fn17[]:(α1088, α1089) -> α1151, 0, list(1 | 2 | 3 | 4 | 5)) -> int
+    ;   @key    [&fn17[]:(α1088, α1089) -> α1151, 0, list(1 | 2 | 3 | 4 | 5)]
     ;   @abi    (Tagged, RawInt, Tagged) -> Tagged
 function u0:0(i64, i64, i64, i64) -> i64 tail {
     sig0 = (i64, i64) -> i64 tail
@@ -395,7 +395,7 @@ function u0:0(i64, i64, i64, i64) -> i64 tail {
     fn3 = u0:27 sig4
     fn4 = colocated u0:61 sig5
 
-    block0(v0: i64, v1: i64, v2: i64, v3: i64):    ;; v0 :: &fn17[]:(any, any) -> any, v1 :: 0, v2 :: list(1 | 2 | 3 | 4 | 5)
+    block0(v0: i64, v1: i64, v2: i64, v3: i64):    ;; v0 :: &fn17[]:(α1088, α1089) -> α1151, v1 :: 0, v2 :: list(1 | 2 | 3 | 4 | 5)
     v4 = iconst.i64 8
     v5 = icmp eq v2, v4  ; v4 = 8    ;; v5 :: bool
     brif v5, block1, block2
@@ -440,8 +440,8 @@ block4:
 }
 
 ; fn foldl_s27
-    ;   @spec   foldl(&fn17[]:(any, any) -> any, int, list(1 | 2 | 3 | 4 | 5)) -> int
-    ;   @key    [&fn17[]:(any, any) -> any, int, list(1 | 2 | 3 | 4 | 5)]
+    ;   @spec   foldl(&fn17[]:(α1088, α1089) -> α1151, int, list(1 | 2 | 3 | 4 | 5)) -> int
+    ;   @key    [&fn17[]:(α1088, α1089) -> α1151, int, list(1 | 2 | 3 | 4 | 5)]
     ;   @abi    (Tagged, RawInt, Tagged) -> Tagged
 function u0:0(i64, i64, i64, i64) -> i64 tail {
     sig0 = (i64, i64) -> i64 tail
@@ -456,7 +456,7 @@ function u0:0(i64, i64, i64, i64) -> i64 tail {
     fn3 = u0:27 sig4
     fn4 = colocated u0:62 sig5
 
-    block0(v0: i64, v1: i64, v2: i64, v3: i64):    ;; v0 :: &fn17[]:(any, any) -> any, v1 :: int, v2 :: list(1 | 2 | 3 | 4 | 5)
+    block0(v0: i64, v1: i64, v2: i64, v3: i64):    ;; v0 :: &fn17[]:(α1088, α1089) -> α1151, v1 :: int, v2 :: list(1 | 2 | 3 | 4 | 5)
     v4 = iconst.i64 8
     v5 = icmp eq v2, v4  ; v4 = 8    ;; v5 :: bool
     brif v5, block1, block2
@@ -579,8 +579,8 @@ function u0:0(i64, i64) -> i64 tail {
 }
 
 ; fn k_26_s34
-    ;   @spec   k_26(int, &fn16[]:(any) -> any, 1 | 2 | 3 | 4 | 5, list(1 | 2 | 3 | 4 | 5)) -> list(int)
-    ;   @key    [int, &fn16[]:(any) -> any, 1 | 2 | 3 | 4 | 5, list(1 | 2 | 3 | 4 | 5)]
+    ;   @spec   k_26(int, &fn16[]:(α1024) -> α1087, 1 | 2 | 3 | 4 | 5, list(1 | 2 | 3 | 4 | 5)) -> list(int)
+    ;   @key    [int, &fn16[]:(α1024) -> α1087, 1 | 2 | 3 | 4 | 5, list(1 | 2 | 3 | 4 | 5)]
     ;   @abi    (Tagged, Tagged, RawInt, Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64, i64, i64) -> i64 tail
@@ -591,7 +591,7 @@ function u0:0(i64, i64) -> i64 tail {
     fn2 = colocated u0:59 sig2
 
     block0(v0: i64, v1: i64):    ;; v0 :: int
-    v2 = load.i64 notrap aligned v1+32    ;; v2 :: &fn16[]:(any) -> any
+    v2 = load.i64 notrap aligned v1+32    ;; v2 :: &fn16[]:(α1024) -> α1087
     v3 = load.i64 notrap aligned v1+40    ;; v3 :: 1 | 2 | 3 | 4 | 5
     v4 = load.i64 notrap aligned v1+48    ;; v4 :: list(1 | 2 | 3 | 4 | 5)
     v5 = iconst.i32 36                  ; @9:33
@@ -611,8 +611,8 @@ function u0:0(i64, i64) -> i64 tail {
 }
 
 ; fn k_27_s36
-    ;   @spec   k_27(list(int), &fn16[]:(any) -> any, 1 | 2 | 3 | 4 | 5, list(1 | 2 | 3 | 4 | 5), int) -> list(int)
-    ;   @key    [list(int), &fn16[]:(any) -> any, 1 | 2 | 3 | 4 | 5, list(1 | 2 | 3 | 4 | 5), int]
+    ;   @spec   k_27(list(int), &fn16[]:(α1024) -> α1087, 1 | 2 | 3 | 4 | 5, list(1 | 2 | 3 | 4 | 5), int) -> list(int)
+    ;   @key    [list(int), &fn16[]:(α1024) -> α1087, 1 | 2 | 3 | 4 | 5, list(1 | 2 | 3 | 4 | 5), int]
     ;   @abi    (Tagged, Tagged, RawInt, Tagged, RawInt) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64, i64) -> i64 system_v
@@ -620,7 +620,7 @@ function u0:0(i64, i64) -> i64 tail {
     fn0 = u0:5 sig0
 
     block0(v0: i64, v1: i64):    ;; v0 :: list(int)
-    v2 = load.i64 notrap aligned v1+32    ;; v2 :: &fn16[]:(any) -> any
+    v2 = load.i64 notrap aligned v1+32    ;; v2 :: &fn16[]:(α1024) -> α1087
     v3 = load.i64 notrap aligned v1+40    ;; v3 :: 1 | 2 | 3 | 4 | 5
     v4 = load.i64 notrap aligned v1+48    ;; v4 :: list(1 | 2 | 3 | 4 | 5)
     v5 = load.i64 notrap aligned v1+56    ;; v5 :: int
@@ -633,38 +633,38 @@ function u0:0(i64, i64) -> i64 tail {
 }
 
 ; fn k_30_s38
-    ;   @spec   k_30(int, &fn17[]:(any, any) -> any, 0, 1 | 2 | 3 | 4 | 5, list(1 | 2 | 3 | 4 | 5), &fn17[]:(any, any) -> any) -> int
-    ;   @key    [int, &fn17[]:(any, any) -> any, 0, 1 | 2 | 3 | 4 | 5, list(1 | 2 | 3 | 4 | 5), &fn17[]:(any, any) -> any]
+    ;   @spec   k_30(int, &fn17[]:(α1088, α1089) -> α1151, 0, 1 | 2 | 3 | 4 | 5, list(1 | 2 | 3 | 4 | 5), &fn17[]:(α1088, α1089) -> α1151) -> int
+    ;   @key    [int, &fn17[]:(α1088, α1089) -> α1151, 0, 1 | 2 | 3 | 4 | 5, list(1 | 2 | 3 | 4 | 5), &fn17[]:(α1088, α1089) -> α1151]
     ;   @abi    (Tagged, Tagged, RawInt, RawInt, Tagged, Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64, i64, i64, i64) -> i64 tail
     fn0 = colocated u0:50 sig0
 
     block0(v0: i64, v1: i64):    ;; v0 :: int
-    v2 = load.i64 notrap aligned v1+32    ;; v2 :: &fn17[]:(any, any) -> any
+    v2 = load.i64 notrap aligned v1+32    ;; v2 :: &fn17[]:(α1088, α1089) -> α1151
     v3 = load.i64 notrap aligned v1+40    ;; v3 :: 0
     v4 = load.i64 notrap aligned v1+48    ;; v4 :: 1 | 2 | 3 | 4 | 5
     v5 = load.i64 notrap aligned v1+56    ;; v5 :: list(1 | 2 | 3 | 4 | 5)
-    v6 = load.i64 notrap aligned v1+64    ;; v6 :: &fn17[]:(any, any) -> any
+    v6 = load.i64 notrap aligned v1+64    ;; v6 :: &fn17[]:(α1088, α1089) -> α1151
     v7 = sshr_imm v0, 3                 ; @12:32
     v8 = load.i64 notrap aligned v1+24  ; @12:32
     return_call fn0(v6, v7, v5, v8)     ; @12:32
 }
 
 ; fn k_30_s39
-    ;   @spec   k_30(int, &fn17[]:(any, any) -> any, int, 1 | 2 | 3 | 4 | 5, list(1 | 2 | 3 | 4 | 5), &fn17[]:(any, any) -> any) -> int
-    ;   @key    [int, &fn17[]:(any, any) -> any, int, 1 | 2 | 3 | 4 | 5, list(1 | 2 | 3 | 4 | 5), &fn17[]:(any, any) -> any]
+    ;   @spec   k_30(int, &fn17[]:(α1088, α1089) -> α1151, int, 1 | 2 | 3 | 4 | 5, list(1 | 2 | 3 | 4 | 5), &fn17[]:(α1088, α1089) -> α1151) -> int
+    ;   @key    [int, &fn17[]:(α1088, α1089) -> α1151, int, 1 | 2 | 3 | 4 | 5, list(1 | 2 | 3 | 4 | 5), &fn17[]:(α1088, α1089) -> α1151]
     ;   @abi    (Tagged, Tagged, RawInt, RawInt, Tagged, Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64, i64, i64, i64) -> i64 tail
     fn0 = colocated u0:50 sig0
 
     block0(v0: i64, v1: i64):    ;; v0 :: int
-    v2 = load.i64 notrap aligned v1+32    ;; v2 :: &fn17[]:(any, any) -> any
+    v2 = load.i64 notrap aligned v1+32    ;; v2 :: &fn17[]:(α1088, α1089) -> α1151
     v3 = load.i64 notrap aligned v1+40    ;; v3 :: int
     v4 = load.i64 notrap aligned v1+48    ;; v4 :: 1 | 2 | 3 | 4 | 5
     v5 = load.i64 notrap aligned v1+56    ;; v5 :: list(1 | 2 | 3 | 4 | 5)
-    v6 = load.i64 notrap aligned v1+64    ;; v6 :: &fn17[]:(any, any) -> any
+    v6 = load.i64 notrap aligned v1+64    ;; v6 :: &fn17[]:(α1088, α1089) -> α1151
     v7 = sshr_imm v0, 3                 ; @12:32
     v8 = load.i64 notrap aligned v1+24  ; @12:32
     return_call fn0(v6, v7, v5, v8)     ; @12:32

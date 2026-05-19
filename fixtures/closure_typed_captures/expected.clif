@@ -20,7 +20,7 @@ block0(v0: i64):
     v3 = iconst.i32 14
     v4 = iconst.i32 2
     v5 = iconst.i32 0
-    v6 = call fn0(v3, v4, v5)  ; v3 = 14, v4 = 2, v5 = 0    ;; v6 :: &fn14[10, 20]:(any) -> any
+    v6 = call fn0(v3, v4, v5)  ; v3 = 14, v4 = 2, v5 = 0    ;; v6 :: &fn14[10, 20]:(α896) -> α959
     v7 = func_addr.i64 fn1
     store notrap aligned v7, v6+16
     v8 = ishl_imm v1, 3  ; v1 = 10
@@ -115,14 +115,14 @@ block5:
 }
 
 ; fn apply1_s15
-    ;   @spec   apply1(&fn14[10, 20]:(any) -> any, 12) -> int
-    ;   @key    [&fn14[10, 20]:(any) -> any, 12]
+    ;   @spec   apply1(&fn14[10, 20]:(α896) -> α959, 12) -> int
+    ;   @key    [&fn14[10, 20]:(α896) -> α959, 12]
     ;   @abi    (Tagged, RawInt) -> Tagged
 function u0:0(i64, i64, i64) -> i64 tail {
     sig0 = (i64, i64, i64) -> i64 tail
     fn0 = colocated u0:42 sig0
 
-    block0(v0: i64, v1: i64, v2: i64):    ;; v0 :: &fn14[10, 20]:(any) -> any, v1 :: 12
+    block0(v0: i64, v1: i64, v2: i64):    ;; v0 :: &fn14[10, 20]:(α896) -> α959, v1 :: 12
     return_call fn0(v1, v0, v2)         ; @2:22
 }
 

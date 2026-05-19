@@ -50,8 +50,8 @@
 ;   vars:
 ;     Var(0) :: 99
 ;     Var(1) :: :match_error
-;     Var(2) :: &fn13[99]:() -> any
-;     Var(3) :: &fn14[&fn13[99]:() -> any]:() -> any
+;     Var(2) :: &fn13[99]:() -> α895
+;     Var(3) :: &fn14[&fn13[99]:() -> α895]:() -> α959
 ;     Var(4) :: any
 ;   exits:
 ;     blk0 Receive cont k_receive_15#15 captured=[Var(0)]

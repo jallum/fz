@@ -1297,7 +1297,14 @@ end
 /// Helper's slot 0 for CallClosure / Receive is `Descr::any()` per
 /// the typer's opaque-callee rule.
 #[test]
-fn cont_slot0_is_any_for_call_closure() {
+fn cont_slot0_is_broad_for_call_closure() {
+    // fz-try.7 — cont_slot0_descr uses arrow_join_return without effective_returns
+    // context, so the closure's apparent return passes through unrefined. Pre-C3
+    // this was `any` (untyped stub); post-C3 it's a parametric type variable
+    // (Var(β) where β is fn_id-keyed). Either way, the helper does NOT narrow —
+    // refinement requires effective_returns at the walk site, not this helper.
+    // The invariant is "no narrowing here," and the test enforces it by
+    // requiring the result to NOT be a concrete narrow type (int specifically).
     let (m, mt) = pipeline(
         r#"
 fn apply(f, x) do
@@ -1322,9 +1329,17 @@ end
     for blk in &apply_fn.blocks {
         if matches!(&blk.terminator, Term::CallClosure { .. }) {
             let s0 = cont_slot0_descr(blk, caller_ft, &m, &mt);
+            // The helper must not narrow to `int` here — that's refinement
+            // work which requires effective_returns. The post-C3 result is
+            // Var(β); pre-C3 was `any`. Both are broad/unresolved.
             assert!(
-                s0.is_equiv(&Descr::any()),
-                "CallClosure slot 0 must be `any`, got {}",
+                !s0.is_equiv(&Descr::int()),
+                "CallClosure slot 0 must not be narrowed; got {}",
+                s0
+            );
+            assert!(
+                s0.is_equiv(&Descr::any()) || s0.has_vars(),
+                "CallClosure slot 0 must be broad (any) or parametric (var); got {}",
                 s0
             );
             saw_cc = true;

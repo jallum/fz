@@ -206,6 +206,42 @@ impl fmt::Display for TypeVarId {
 
 pub type VarSet = LiteralSet<TypeVarId>;
 
+/// fz-try.7 — deterministic var-id allocation for a closure's surface arrow.
+/// Vars in a closure's `(α₀, …, αₙ₋₁) -> β` signature are keyed by `(fn_id,
+/// position)`. Arg positions occupy `0..MAX_CLOSURE_ARG_VAR`; ret occupies
+/// the dedicated slot at `MAX_CLOSURE_ARG_VAR`.
+///
+/// Determinism is required for typer fixpoint convergence: re-typing the
+/// same MakeClosure during iteration must produce the same Descr. Distinct
+/// closure-handles of the same lambda share their vars by construction —
+/// they are parametric over the same body.
+///
+/// The ret slot is dedicated (not just "one past the last arg") so that a
+/// closure rendered at multiple apparent arities produces a consistent ret
+/// var — e.g., the value-form `&fn14:() -> ret` and the called-form
+/// `&fn14:(α₀) -> ret` share the same `ret` id rather than aliasing across
+/// arg positions.
+const MAX_CLOSURE_ARG_VAR: u32 = 63;
+const VAR_STRIDE_PER_FN: u32 = MAX_CLOSURE_ARG_VAR + 1;
+pub fn closure_var_id(fn_id: crate::fz_ir::FnId, position: usize) -> TypeVarId {
+    let pos = position as u32;
+    assert!(
+        pos < VAR_STRIDE_PER_FN,
+        "closure_var_id: position {} exceeds stride ({})",
+        pos,
+        VAR_STRIDE_PER_FN,
+    );
+    TypeVarId(fn_id.0 * VAR_STRIDE_PER_FN + pos)
+}
+
+/// fz-try.7 — the dedicated return-var slot for a closure's surface arrow.
+/// Reserved at position `MAX_CLOSURE_ARG_VAR` so it does not alias arg
+/// positions when the same closure is rendered at different apparent
+/// arities (value-form vs called-form).
+pub fn closure_ret_var_id(fn_id: crate::fz_ir::FnId) -> TypeVarId {
+    TypeVarId(fn_id.0 * VAR_STRIDE_PER_FN + MAX_CLOSURE_ARG_VAR)
+}
+
 /// Bit-pattern wrapper around a non-NaN `f64` so we can put floats in
 /// ordered/hashed sets. Two distinct bit patterns are considered distinct
 /// values. `+0.0` and `-0.0` are distinct (matches IEEE bit equality but not
@@ -776,9 +812,24 @@ impl Descr {
     /// `resolve_closure_return`).
     #[allow(dead_code)] // Used by unit tests now; production callers land in fz-ul4.27.22.10.
     pub fn closure_lit(fn_id: crate::fz_ir::FnId, captures: Vec<Descr>, n_args: usize) -> Self {
+        // fz-try.7 — type variables at the closure's surface signature
+        // instead of `Descr::any()` stubs. The arrow becomes `(α₀, …, αₙ₋₁) -> β`
+        // where each αᵢ and β are *deterministic* ids derived from `fn_id`
+        // and position. Determinism is load-bearing: re-typing the same
+        // MakeClosure during fixpoint iteration must produce the same Descr,
+        // or convergence fails. Two distinct closure-handles of the same
+        // lambda (same fn_id, different captures) share their vars by
+        // construction — they are parametric over the same body.
+        //
+        // The principle from fz-try.5 lives here: vars are nominal placeholders
+        // the lattice cannot distinguish from opaques; the *substitution
+        // contract* at call sites is what gives them meaning. Built by
+        // closure_lit, consumed by resolve_closure_return via instantiate.
+        let arg_var = |pos: usize| Descr::var(closure_var_id(fn_id, pos));
+        let ret_var = Descr::var(closure_ret_var_id(fn_id));
         let sig = ArrowSig {
-            args: vec![Descr::any(); n_args],
-            ret: Box::new(Descr::any()),
+            args: (0..n_args).map(arg_var).collect(),
+            ret: Box::new(ret_var),
             lit: Some(ClosureLit { fn_id, captures }),
         };
         let mut d = Self::none();

@@ -63,9 +63,9 @@
 ;     Var(1) = lambda_13#13
 ;   vars:
 ;     Var(0) :: :match_error
-;     Var(1) :: &fn13[]:() -> any
+;     Var(1) :: &fn13[]:() -> α895
 ;     Var(2) :: 4096
-;     Var(3) :: &fn14[&fn13[]:() -> any]:() -> any
+;     Var(3) :: &fn14[&fn13[]:() -> α895]:() -> α959
 ;     Var(4) :: any
 ;   exits:
 ;     blk0 Receive cont k_receive_15#15 captured=[]

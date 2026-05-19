@@ -63,8 +63,8 @@
 ;     Var(1) = child#11
 ;   vars:
 ;     Var(0) :: :match_error
-;     Var(1) :: &fn11[]:() -> any
-;     Var(2) :: &fn13[&fn11[]:() -> any]:() -> any
+;     Var(1) :: &fn11[]:() -> α767
+;     Var(2) :: &fn13[&fn11[]:() -> α767]:() -> α895
 ;     Var(3) :: any
 ;   exits:
 ;     blk0 Receive cont k_receive_14#14 captured=[]

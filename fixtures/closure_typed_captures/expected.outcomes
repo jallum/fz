@@ -4,12 +4,12 @@ apply1:
   @0:62-66 ClosureLit(0,0) -> Emitted (lambda_14#14 [10, 20, 12]) via NoClosureLitTarget
 
 main:
-  @0:96-110 Direct -> Consumed (&fn14[10, 20]:() -> any)
-  @0:96-110 Direct -> Emitted (k_15#15 [&fn14[10, 20]:(any) -> any])
+  @0:96-110 Direct -> Consumed (&fn14[10, 20]:() -> α959)
+  @0:96-110 Direct -> Emitted (k_15#15 [&fn14[10, 20]:(α896) -> α959])
 
 k_15:
   @0:89-115 Cont -> Emitted (k_16#16 [int])
-  @0:89-115 Direct -> Emitted (apply1#12 [&fn14[10, 20]:(any) -> any, 12]) via OpaqueArg
+  @0:89-115 Direct -> Emitted (apply1#12 [&fn14[10, 20]:(α896) -> α959, 12]) via OpaqueArg
 
 k_16:
   @0:83-116 Direct -> Emitted (print#0 [int]) via OpaqueArg

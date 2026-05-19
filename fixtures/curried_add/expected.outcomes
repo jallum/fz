@@ -1,38 +1,38 @@
 outcomes for fixtures/curried_add/input.fz
 
 apply:
-  @0:64-68 ClosureLit(0,0) -> Emitted (lambda_14#14 [1, 2]) via NoClosureLitTarget [under apply[&fn14[1]:(any) -> any, 2]]
-  @0:64-68 ClosureLit(0,0) -> Emitted (lambda_14#14 [10, 20]) via NoClosureLitTarget [under apply[&fn14[10]:(any) -> any, 20]]
-  @0:64-68 ClosureLit(0,0) -> Emitted (lambda_15#15 [1, 2, 3]) via NoClosureLitTarget [under apply[&fn15[1, 2]:(any) -> any, 3]]
-  @0:64-68 ClosureLit(0,0) -> Emitted (lambda_15#15 [10, 20, 12]) via NoClosureLitTarget [under apply[&fn15[10, 20]:(any) -> any, 12]]
+  @0:64-68 ClosureLit(0,0) -> Emitted (lambda_14#14 [1, 2]) via NoClosureLitTarget [under apply[&fn14[1]:(α896) -> α959, 2]]
+  @0:64-68 ClosureLit(0,0) -> Emitted (lambda_14#14 [10, 20]) via NoClosureLitTarget [under apply[&fn14[10]:(α896) -> α959, 20]]
+  @0:64-68 ClosureLit(0,0) -> Emitted (lambda_15#15 [1, 2, 3]) via NoClosureLitTarget [under apply[&fn15[1, 2]:(α960) -> α1023, 3]]
+  @0:64-68 ClosureLit(0,0) -> Emitted (lambda_15#15 [10, 20, 12]) via NoClosureLitTarget [under apply[&fn15[10, 20]:(α960) -> α1023, 12]]
 
 main:
-  @0:103-111 Direct -> Consumed (&fn14[10]:() -> any)
-  @0:103-111 Direct -> Emitted (k_16#16 [&fn14[10]:(any) -> any])
+  @0:103-111 Direct -> Consumed (&fn14[10]:() -> α959)
+  @0:103-111 Direct -> Emitted (k_16#16 [&fn14[10]:(α896) -> α959])
 
 k_16:
-  @0:97-116 Cont -> Emitted (k_17#17 [&fn15[10, 20]:(any) -> any])
-  @0:97-116 Direct -> Emitted (apply#12 [&fn14[10]:(any) -> any, 20]) via OpaqueArg
+  @0:97-116 Cont -> Emitted (k_17#17 [&fn15[10, 20]:(α960) -> α1023])
+  @0:97-116 Direct -> Emitted (apply#12 [&fn14[10]:(α896) -> α959, 20]) via OpaqueArg
 
 k_17:
   @0:91-121 Cont -> Emitted (k_18#18 [int])
-  @0:91-121 Direct -> Emitted (apply#12 [&fn15[10, 20]:(any) -> any, 12]) via OpaqueArg
+  @0:91-121 Direct -> Emitted (apply#12 [&fn15[10, 20]:(α960) -> α1023, 12]) via OpaqueArg
 
 k_18:
   @0:85-122 Cont -> Emitted (k_19#19 [nil])
   @0:85-122 Direct -> Emitted (print#0 [int]) via OpaqueArg
 
 k_19:
-  @0:143-150 Direct -> Consumed (&fn14[1]:() -> any)
-  @0:143-150 Direct -> Emitted (k_20#20 [&fn14[1]:(any) -> any])
+  @0:143-150 Direct -> Consumed (&fn14[1]:() -> α959)
+  @0:143-150 Direct -> Emitted (k_20#20 [&fn14[1]:(α896) -> α959])
 
 k_20:
-  @0:137-154 Cont -> Emitted (k_21#21 [&fn15[1, 2]:(any) -> any])
-  @0:137-154 Direct -> Emitted (apply#12 [&fn14[1]:(any) -> any, 2]) via OpaqueArg
+  @0:137-154 Cont -> Emitted (k_21#21 [&fn15[1, 2]:(α960) -> α1023])
+  @0:137-154 Direct -> Emitted (apply#12 [&fn14[1]:(α896) -> α959, 2]) via OpaqueArg
 
 k_21:
   @0:131-158 Cont -> Emitted (k_22#22 [int])
-  @0:131-158 Direct -> Emitted (apply#12 [&fn15[1, 2]:(any) -> any, 3]) via OpaqueArg
+  @0:131-158 Direct -> Emitted (apply#12 [&fn15[1, 2]:(α960) -> α1023, 3]) via OpaqueArg
 
 k_22:
   @0:125-159 Direct -> Emitted (print#0 [int]) via OpaqueArg

@@ -98,11 +98,11 @@
 ;     Var(4) = second_relay#12
 ;   vars:
 ;     Var(0) :: :match_error
-;     Var(1) :: &fn11[]:() -> any
-;     Var(2) :: &fn16[&fn11[]:() -> any]:() -> any
+;     Var(1) :: &fn11[]:() -> α767
+;     Var(2) :: &fn16[&fn11[]:() -> α767]:() -> α1087
 ;     Var(3) :: any
-;     Var(4) :: &fn12[]:() -> any
-;     Var(5) :: &fn16[&fn12[]:() -> any]:() -> any
+;     Var(4) :: &fn12[]:() -> α831
+;     Var(5) :: &fn16[&fn12[]:() -> α831]:() -> α1087
 ;     Var(6) :: any
 ;     Var(7) :: 2
 ;     Var(8) :: 40
