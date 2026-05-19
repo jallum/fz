@@ -2446,6 +2446,13 @@ pub fn compile_with_backend<B: Backend>(
                     } => {
                         s.insert(continuation.fn_id);
                     }
+                    // fz-70q.5: ReceiveMatched body/guard/after fns are
+                    // NOT inserted here. They get their own cont-closure
+                    // stub (uniform SystemV) emitted in fz-70q.5.3 and
+                    // tracked via a dedicated set. Inserting them into
+                    // `cont_fns` would force the legacy `(result, self)`
+                    // Tail-CC sig on a fn that may need to tail-call
+                    // uniform callees — the bug that surfaced in 70q.4.
                     _ => {}
                 }
             }
@@ -3114,10 +3121,16 @@ pub fn compile_with_backend<B: Backend>(
     //     terminator arm can take a `func_addr` of an as-yet-unemitted
     //     symbol; the body is emitted in a post-fn-loop pass below.
     //   * `cont_extras_count`: per-clause-body / guard / after-body fn
-    //     extras count (Tail-CC inputs ahead of `self`). Build / guard
-    //     fns take `bound_arity` extras; after fns take 0.
+    //     extras count consumed by build_entry_harness today (Tail-CC
+    //     inputs ahead of `self`).
     //
-    // Both maps are consumed by the per-fn `CodegenEnv` below.
+    // fz-70q.5: the cont_extras_count map is on death row — fz-70q.5.6
+    // rewires the entry harness to read bound args from the runtime's
+    // resume_args slab instead of typed block_params, and the cont fn
+    // sig collapses to uniform SystemV. Until then the map still feeds
+    // the legacy harness. (Today's earlier attempt to thread it through
+    // build_fn_signature was reverted in fz-70q.5.1: forcing a Tail-CC
+    // sig on a uniform body fn breaks the dispatch seam.)
     let mut matcher_fn_ids: HashMap<(u32, u32), FuncId> = HashMap::new();
     let mut cont_extras_count: HashMap<crate::fz_ir::FnId, usize> = HashMap::new();
     let mut receive_matched_sites: Vec<(crate::fz_ir::FnId, crate::fz_ir::BlockId)> = Vec::new();

@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>fz-70q.5 — eli5: two kinds of closures, one stub each</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 760px; margin: 2rem auto; padding: 0 1rem; line-height: 1.55; color: #222; }
+  h1 { font-size: 1.6rem; }
+  h2 { margin-top: 2rem; border-bottom: 1px solid #ddd; padding-bottom: 0.25rem; }
+  .box { background: #f6f8fa; border-left: 4px solid #888; padding: 0.75rem 1rem; margin: 1rem 0; }
+  .good { border-color: #2a9d4a; background: #effaf1; }
+  .bad  { border-color: #c0392b; background: #fdecea; }
+  code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  pre { background: #2d2d2d; color: #f8f8f2; padding: 0.75rem; border-radius: 4px; overflow-x: auto; font-size: 0.85rem; }
+  table { border-collapse: collapse; margin: 1rem 0; }
+  th, td { border: 1px solid #ccc; padding: 0.4rem 0.8rem; text-align: left; }
+  th { background: #eee; }
+  .ascii { white-space: pre; font-family: ui-monospace, monospace; background: #f6f8fa; padding: 1rem; border-radius: 4px; font-size: 0.85rem; }
+</style>
+</head>
+<body>
+
+<h1>eli5: why we built nine shims, and the one move that deletes them all</h1>
+
+<p>
+Imagine the fz runtime is a <strong>restaurant kitchen</strong>. Each running task is a chef.
+Functions are recipes. Calling a function is "follow that recipe."
+</p>
+
+<h2>The two kinds of "function call"</h2>
+
+<p>There are really two completely different kinds of function call in fz:</p>
+
+<div class="box">
+<strong>Hot path: chef-to-chef handoff.</strong><br>
+The chef is mid-recipe and needs to call another recipe. They shout the ingredients across the counter — "<em>onion, garlic, two cups stock!</em>" — and the next recipe takes those ingredients directly from the air (registers).
+Fast, no waiting, no notepad.
+</div>
+
+<div class="box">
+<strong>Cold path: scheduler hands a chef a ticket.</strong><br>
+The chef was waiting for an order to come in (<code>receive</code>). The order finally arrives. The maitre d' (scheduler) walks over, hands the chef a written ticket: "<em>resume the &lsquo;reply&rsquo; recipe, here are your ingredients on a clipboard.</em>"
+The chef picks up the clipboard and reads it.
+</div>
+
+<p>
+The two situations are different in nature. In the hot path, both sides are <em>right there</em> — you can hand ingredients directly.
+In the cold path, time has passed, the chef was asleep, and the maitre d' is the one who knows what's happening; the chef has to <em>read</em> the situation from somewhere.
+</p>
+
+<h2>What we did wrong</h2>
+
+<p>
+We tried to use the <em>same physical handoff style</em> for both situations. The maitre d' was trying to shout ingredients ("ONION! GARLIC! STOCK!") just like a chef-to-chef handoff.
+</p>
+
+<p>
+But there are lots of recipes, with different numbers of ingredients. Receive clauses might bind 0, 1, 2, 3, &hellip; up to 8 values. So we had to teach the maitre d' nine different shout-patterns:
+</p>
+
+<pre>fz_resume_matched_0(cont)
+fz_resume_matched_1(arg0, cont)
+fz_resume_matched_2(arg0, arg1, cont)
+fz_resume_matched_3(arg0, arg1, arg2, cont)
+fz_resume_matched_4(arg0, arg1, arg2, arg3, cont)
+...
+fz_resume_matched_8(arg0, ..., arg7, cont)</pre>
+
+<p>
+Worse: the recipe (clause body) had to be written in "I am being shouted at" style, which restricts what other recipes it can hand off to. In our fixture, that style was incompatible with the recipe the body wanted to call next (<code>handle_get</code>, which itself parks). The kitchen literally just <strong>silently ate the order</strong> — the chef received an unreadable signal and stopped cooking.
+</p>
+
+<h2>The elegant move</h2>
+
+<p>
+Different handoff styles for different situations:
+</p>
+
+<table>
+<tr><th>Closure kind</th><th>Stub style</th><th>How args travel</th></tr>
+<tr><td><strong>Value closure</strong> (passed around, called by user code)</td><td>Tail-CC, register-passing</td><td>Shouted across the counter</td></tr>
+<tr><td><strong>Continuation closure</strong> (scheduler-resumed)</td><td>SystemV, single argument: <code>self</code></td><td>Read from a clipboard (<code>process-&gt;resume_args</code>)</td></tr>
+</table>
+
+<p>
+One bit in the closure header says which kind. They coexist peacefully because their use cases never overlap: nobody calls a continuation in the hot path; nobody schedules a value closure.
+</p>
+
+<h2>What the cold path looks like after</h2>
+
+<div class="ascii">scheduler                        closure                       body
+---------                        -------                       ----
+1. matcher hit returns           [stub_fp | outer_cont |       (knows N=3 bound args
+   (clause_idx, [r, f, k])         cap0 | cap1 | ...]            at compile time)
+2. process-&gt;resume_args = [r,f,k]
+3. fz_resume(closure)  --------&gt; stub(self) ---------&gt;        load resume_args[0..3]
+                                                              load captures from self+32+
+                                                              load outer_cont from self+24
+                                                              ... run body ...
+                                                              tail-call outer_cont(result)</div>
+
+<p>
+<strong>One shim. One stub shape. No N-family.</strong> The matcher already produces a <code>Vec&lt;FzValue&gt;</code> — we just leave it where it is and let the body pick it up. We were marshalling a runtime-shaped thing (variable-arity bound values) through a compile-time-shaped channel (Cranelift signatures). That was the original sin.
+</p>
+
+<h2>Why the fixture broke (concretely)</h2>
+
+<p>The fixture has this server loop:</p>
+
+<pre>fn handle_get(ref, from, key) do
+  send(from, {:reply, ref, key})
+  server()                       # tail-calls back into server
+end
+
+fn server() do
+  receive do
+    {:get, ref, from, key} -&gt; handle_get(ref, from, key)
+    {:stop} -&gt; nil
+  end
+end</pre>
+
+<p>
+Because <code>server</code> contains <code>receive</code>, it must be uniform-ABI (heap-resident frame, so the scheduler can park it). Because <code>handle_get</code> tail-calls <code>server</code>, it must also be uniform. Because the clause body tail-calls <code>handle_get</code>, it too must be uniform.
+</p>
+
+<p>But our <em>shim</em> insisted on calling the body Tail-CC. The body was uniform. Mismatch. Silent stop.</p>
+
+<div class="box good">
+<strong>Insight:</strong> the body wanting to be uniform isn't a bug — it's the truth. Continuations <em>are</em> heap-resident dispatchables. The Tail-CC sig we forced on them was the lie.
+</div>
+
+<h2>Five things this deletes or shrinks</h2>
+
+<ol>
+<li><strong>The nine-shim family</strong> (<code>fz_resume_matched_0..8</code>) and the parallel-evolution risk of <code>mid_flight_resume_N</code>.</li>
+<li><strong>The <code>cont_extras_count</code> plumbing</strong> we added today in <code>build_fn_signature</code> — moot, cont sigs are uniform.</li>
+<li><strong>The trampoline's <code>match n { ... }</code> arm in <code>run_quantum</code></strong> — collapses to one branch.</li>
+<li><strong>The parking-analysis "cont must be native" constraint</strong> — conts are uniform by construction; no compatibility check needed.</li>
+<li><strong>B4 (AOT shim for ResumeMatched)</strong> — there's no family to emit, so most of the ticket evaporates.</li>
+</ol>
+
+<h2>What stays the same</h2>
+
+<ul>
+<li>Value closures keep their Tail-CC fast stub.</li>
+<li>The matcher fn itself (<code>(msg, pinned, out) -&gt; clause_idx</code>) is unchanged — it's already SystemV.</li>
+<li>Today's runtime-side fixes (initial-scan branch, scheduler's <code>parked_matched</code> check, <code>PendingResumeMatched</code>) all carry over verbatim.</li>
+</ul>
+
+<h2>The new ticket</h2>
+
+<p>
+<code>fz-70q.5 — collapse cont-closure stubs to uniform ABI.</code>
+</p>
+<p>
+Decomposition will go in <code>bw</code>; high-level shape:
+</p>
+<ol>
+<li>Add cont-stub emitter (one stub per cont fn, sig <code>(self) -&gt; *mut u8</code> SystemV).</li>
+<li>Add <code>process-&gt;resume_args</code> slab + setter.</li>
+<li>Rewire <code>build_cont_closure</code> to store cont-stub addr at <code>+16</code>, mark <code>ContKind</code> flag.</li>
+<li>Replace <code>fz_resume_park</code> + <code>fz_resume_matched_N</code> family with one <code>fz_resume</code>.</li>
+<li>Body-fn entry harness: load bound args from <code>resume_args</code> instead of block_params.</li>
+<li>Revert today's <code>cont_extras_count</code> sig plumbing.</li>
+<li>End-to-end fixture goes green; bless.</li>
+</ol>
+
+</body>
+</html>
