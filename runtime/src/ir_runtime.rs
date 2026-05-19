@@ -153,6 +153,22 @@ pub extern "C" fn fz_spawn_opt(closure_bits: u64, min_heap_size_bits: u64) -> u6
     FzValue::from_int(pid as i64).0
 }
 
+/// fz-swt.10 — `make_resource(payload, dtor)` runtime BIF, callable from
+/// the JIT/AOT path. `payload` is the raw FzValue bits to hand back to the
+/// user-supplied dtor; `dtor_closure_bits` is the closure value produced
+/// by the `&name/arity` form. Returns the FzValue bits of the resource
+/// handle (a `HeapKind::Resource` stub on the current process heap).
+///
+/// Dtor resolution requires walking the closure body's IR to find the
+/// underlying `Prim::Extern`, so we delegate to the binary-side hook
+/// (the runtime crate has no IR Module). The same hook is installed for
+/// both interp and JIT/AOT execution — the symbol path is therefore
+/// uniform across all three legs (see fz-swt.10's `MakeResourceHook`).
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_make_resource(payload: u64, dtor_closure_bits: u64) -> u64 {
+    crate::scheduler_hooks::dispatch_make_resource(payload, dtor_closure_bits)
+}
+
 /// fz_self() -> pid_bits. Returns the currently-running task's pid as a
 /// boxed FzValue Int.
 #[unsafe(no_mangle)]

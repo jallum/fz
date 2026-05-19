@@ -51,6 +51,12 @@ pub struct Runtime<'a> {
     /// Configured worker count. v1 only supports 1. Stored so the API
     /// shape doesn't change when multi-worker lands.
     workers: usize,
+    /// fz-swt.10 — optional IR `Module` the `MakeResourceHook` thunk
+    /// walks to resolve dtor closures. Set via `with_module(&m)` before
+    /// `run_until_idle`. None means programs that call `make_resource`
+    /// will panic with a clear "no module attached" message — fine for
+    /// programs that don't use resources.
+    module: Option<&'a crate::fz_ir::Module>,
 }
 
 thread_local! {
@@ -82,6 +88,62 @@ extern "C" fn spawn_opt_hook_thunk(closure_bits: u64, _min_heap_size: u32) -> u3
 
 extern "C" fn send_hook_thunk(receiver_pid: u32, msg_bits: u64) {
     send_via_current_runtime(receiver_pid, FzValue(msg_bits));
+}
+
+// fz-swt.10 — `MakeResourceHook` installed by the binary so the runtime
+// crate's `fz_make_resource` BIF (callable from JIT/AOT-emitted code) can
+// resolve the user-supplied dtor closure. The thunk reads the IR Module
+// pointer the binary stashed in `CURRENT_MODULE` (set/cleared with the
+// same lifetime as the running task) and delegates to the shared helper
+// in `ir_interp::make_resource_in_current_process`. The helper walks the
+// closure's wrapper-fn body to find the underlying `Prim::Extern` and
+// resolves its symbol — uniform across all three legs.
+extern "C" fn make_resource_hook_thunk(payload: u64, dtor_closure_bits: u64) -> u64 {
+    let raw = CURRENT_MODULE.with(|c| c.get());
+    assert!(
+        !raw.is_null(),
+        "fz_make_resource called outside a scope that installed the IR Module \
+         (use `install_make_resource_hook_with_module` before driving the task)"
+    );
+    let module: &crate::fz_ir::Module = unsafe { &*(raw as *const crate::fz_ir::Module) };
+    let res = crate::ir_interp::make_resource_in_current_process(
+        module,
+        payload,
+        FzValue(dtor_closure_bits),
+    );
+    match res {
+        Ok(v) => v.0,
+        // Mirror the assertion/extern-error contract used elsewhere: a
+        // resolution failure on the JIT/AOT path is unrecoverable (the
+        // generated code expects a value back and has no error channel),
+        // so we panic with a clear message rather than handing back NIL.
+        Err(msg) => panic!("fz_make_resource: {}", msg),
+    }
+}
+
+thread_local! {
+    /// fz-swt.10 — `*const fz_ir::Module` the `make_resource_hook_thunk`
+    /// reads to walk the dtor closure's IR body. Set/cleared by
+    /// `install_make_resource_hook_with_module` / `clear_*` (called once
+    /// per Runtime::run_until_idle, and also by JIT unit tests that
+    /// drive `CompiledModule::run` directly).
+    pub(crate) static CURRENT_MODULE: std::cell::Cell<*const ()> =
+        const { std::cell::Cell::new(std::ptr::null()) };
+}
+
+/// fz-swt.10 — install the runtime's `MakeResourceHook` and stash `module`
+/// as the IR source the thunk walks. The caller MUST keep `module` alive
+/// until `clear_make_resource_hook_with_module` runs. Returns the previous
+/// module pointer (typically null) so callers can nest scopes if needed.
+pub fn install_make_resource_hook_with_module(module: &crate::fz_ir::Module) -> *const () {
+    let prev = CURRENT_MODULE.with(|c| c.replace(module as *const _ as *const ()));
+    fz_runtime::scheduler_hooks::install_make_resource_hook(make_resource_hook_thunk);
+    prev
+}
+
+pub fn clear_make_resource_hook_with_module(prev: *const ()) {
+    fz_runtime::scheduler_hooks::clear_make_resource_hook();
+    CURRENT_MODULE.with(|c| c.set(prev));
 }
 
 /// fz-ul4.29.5: called from fz_spawn (runtime FFI) to enqueue a new task
@@ -198,7 +260,16 @@ impl<'a> Runtime<'a> {
             run_queue: VecDeque::new(),
             next_pid: 1,
             workers,
+            module: None,
         }
+    }
+
+    /// fz-swt.10 — attach the IR Module so the `MakeResourceHook` thunk
+    /// can walk dtor closures during `make_resource(_, &name/arity)`
+    /// calls. The Module must outlive `run_until_idle`.
+    pub fn with_module(mut self, module: &'a crate::fz_ir::Module) -> Self {
+        self.module = Some(module);
+        self
     }
 
     pub fn worker_count(&self) -> usize {
@@ -292,6 +363,15 @@ impl<'a> Runtime<'a> {
         fz_runtime::scheduler_hooks::install_spawn_hook(spawn_hook_thunk);
         fz_runtime::scheduler_hooks::install_spawn_opt_hook(spawn_opt_hook_thunk);
         fz_runtime::scheduler_hooks::install_send_hook(send_hook_thunk);
+        // fz-swt.10 — install the resource-allocation hook if a Module
+        // has been attached via `with_module`. Programs that never call
+        // `make_resource` leave it clear; calls in that mode panic with
+        // the "no module attached" message from the thunk.
+        let prev_module = if let Some(m) = self.module {
+            install_make_resource_hook_with_module(m)
+        } else {
+            std::ptr::null()
+        };
         while let Some(pid) = self.run_queue.pop_front() {
             let mut task = self
                 .tasks
@@ -377,6 +457,9 @@ impl<'a> Runtime<'a> {
         fz_runtime::scheduler_hooks::clear_spawn_hook();
         fz_runtime::scheduler_hooks::clear_spawn_opt_hook();
         fz_runtime::scheduler_hooks::clear_send_hook();
+        if self.module.is_some() {
+            clear_make_resource_hook_with_module(prev_module);
+        }
     }
 
     /// Read-only access to a task (for tests / inspection).

@@ -1197,6 +1197,14 @@ impl JitBackend {
         );
         builder.symbol("fz_self", fz_runtime::ir_runtime::fz_self as *const u8);
         builder.symbol("fz_send", fz_runtime::ir_runtime::fz_send as *const u8);
+        // fz-swt.10 — `make_resource(value, &dtor/1)` lowers to an extern
+        // call on `fz_make_resource`. The runtime symbol delegates to a
+        // `MakeResourceHook` the binary installs before driving any task
+        // that uses resources (see `src/runtime.rs`).
+        builder.symbol(
+            "fz_make_resource",
+            fz_runtime::ir_runtime::fz_make_resource as *const u8,
+        );
         builder.symbol(
             "fz_receive_attempt",
             fz_runtime::ir_runtime::fz_receive_attempt as *const u8,
@@ -1225,6 +1233,14 @@ impl JitBackend {
         builder.symbol(
             "FZ_SHOULD_YIELD",
             (&fz_runtime::yield_flag::FZ_SHOULD_YIELD) as *const _ as *const u8,
+        );
+        // fz-swt.10 (test only) — register test externs (e.g. the
+        // `_resource_test_dtor` counter used by the JIT-leg resource
+        // lifecycle tests). Production paths see no extra symbols.
+        #[cfg(test)]
+        builder.symbol(
+            "_resource_test_dtor",
+            crate::ir_interp::tests_support_test_dtor_addr(),
         );
         Self {
             jmod: JITModule::new(builder),

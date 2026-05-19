@@ -47,6 +47,15 @@ pub type SpawnOptHook = extern "C" fn(closure_bits: u64, min_heap_size: u32) -> 
 /// handles the deep-copy into the receiver's heap and the wake-up.
 pub type SendHook = extern "C" fn(receiver_pid: u32, msg_bits: u64);
 
+/// fz-swt.10 — `fz_make_resource(payload, dtor_closure)` FFI signature on
+/// the binary side. The runtime crate forwards through this hook so the
+/// binary can resolve the dtor C-ABI fn pointer from the closure value
+/// (the binary holds the IR `Module` and can walk the closure's body to
+/// find the underlying `Prim::Extern`). The hook allocates the off-heap
+/// `Resource` + on-heap stub on the current process heap and returns the
+/// resulting FzValue bits.
+pub type MakeResourceHook = extern "C" fn(payload: u64, dtor_closure_bits: u64) -> u64;
+
 // Per-thread hook storage. A Runtime is single-worker by design
 // (fz-ul4.19.1) and "the current Runtime" is a per-thread concept — same
 // shape as CURRENT_PROCESS (runtime/src/process.rs) and CURRENT_RUNTIME
@@ -65,6 +74,7 @@ thread_local! {
     static SPAWN_HOOK: Cell<usize> = const { Cell::new(0) };
     static SPAWN_OPT_HOOK: Cell<usize> = const { Cell::new(0) };
     static SEND_HOOK: Cell<usize> = const { Cell::new(0) };
+    static MAKE_RESOURCE_HOOK: Cell<usize> = const { Cell::new(0) };
 }
 
 pub fn install_spawn_hook(hook: SpawnHook) {
@@ -125,4 +135,24 @@ pub(crate) fn dispatch_send(receiver_pid: u32, msg_bits: u64) {
     }
     let hook: SendHook = unsafe { std::mem::transmute(raw) };
     hook(receiver_pid, msg_bits);
+}
+
+pub fn install_make_resource_hook(hook: MakeResourceHook) {
+    MAKE_RESOURCE_HOOK.with(|c| c.set(hook as usize));
+}
+
+pub fn clear_make_resource_hook() {
+    MAKE_RESOURCE_HOOK.with(|c| c.set(0));
+}
+
+pub(crate) fn dispatch_make_resource(payload: u64, dtor_closure_bits: u64) -> u64 {
+    let raw = MAKE_RESOURCE_HOOK.with(|c| c.get());
+    if raw == 0 {
+        panic!(
+            "fz_make_resource called outside a Runtime — \
+             install_make_resource_hook must be called before driving any task"
+        );
+    }
+    let hook: MakeResourceHook = unsafe { std::mem::transmute(raw) };
+    hook(payload, dtor_closure_bits)
 }

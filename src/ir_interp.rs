@@ -864,20 +864,28 @@ fn eval_binop(op: BinOp, a: FzValue, b: FzValue) -> Result<FzValue, String> {
     }
 }
 
-/// fz-swt.7 — given a closure FzValue produced by `&name/arity`, resolve
-/// the C-ABI fn pointer to install as the resource's dtor.
+/// fz-swt.7 / fz-swt.10 — given a closure FzValue produced by
+/// `&name/arity`, resolve the C-ABI fn pointer to install as the
+/// resource's dtor.
 ///
-/// JIT/AOT closures carry the dtor in the `stub_fp` slot at offset +16 of
-/// the closure heap object. Interp closures leave that slot null
-/// (Prim::MakeClosure interp lowering), so we walk the closure's IR fn
-/// body to find the wrapped `Prim::Extern(eid, _)` call and resolve that
-/// extern's symbol via the same machinery `call_extern` uses below.
+/// Both interp and JIT/AOT closures store the wrapper fn's `FnId` in the
+/// `_reserved` field of the on-heap `HeapKind::Closure` header. The
+/// closure's `+16` slot holds different things depending on the leg
+/// (interp: null; JIT/AOT: the body's func_addr in closure-target sig,
+/// which is NOT a C-ABI `fn(u64)` and cannot be called directly), so we
+/// uniformly ignore `+16` and resolve the dtor by walking the wrapper
+/// fn's IR to find its underlying `Prim::Extern(eid, _)` call. That
+/// extern's symbol is then resolved through the same machinery
+/// `call_extern` uses below.
 ///
-/// Pattern recognised: a single-block fn whose terminator is `Return(v)`
-/// of a `Let(v, Prim::Extern(eid, _))` — i.e., the canonical
-/// `fn wrap(x), do: some_extern(x)` shape. Anything more complex would
-/// require running the body, which fz-swt.9 will handle properly.
-fn resolve_dtor_from_closure(
+/// Pattern recognised: any block in the fn body that contains
+/// `Let(_, Prim::Extern(eid, _))` — i.e., the canonical
+/// `fn wrap(x), do: some_extern(x)` shape (and any single-extern
+/// wrapper whose CPS lowering produces an Extern stmt anywhere). Richer
+/// dtor wrappers (multiple externs, branching) require evaluating the
+/// closure body, which is out of scope for v0; the contract is "fz-side
+/// dtor must be a thin wrapper around a single C extern."
+pub(crate) fn resolve_dtor_from_closure(
     module: &Module,
     closure: FzValue,
 ) -> Result<unsafe extern "C" fn(u64), String> {
@@ -889,23 +897,8 @@ fn resolve_dtor_from_closure(
     if HeapKind::from_u16(header.kind) != Some(HeapKind::Closure) {
         return Err("make_resource: dtor arg is not a closure".into());
     }
-    // Prefer the stub_fp if present (JIT/AOT closures).
-    let stub_fp = unsafe { std::ptr::read((p as *const u8).add(16) as *const u64) };
-    if stub_fp != 0 {
-        // SAFETY: stub_fp is a code pointer with the C-ABI shape every
-        // closure stub uses (u64 payload in, ignored return).
-        let f: unsafe extern "C" fn(u64) = unsafe { std::mem::transmute(stub_fp as *const ()) };
-        return Ok(f);
-    }
-    // Interp path: walk the closure's IR fn body.
     let fn_id = crate::fz_ir::FnId(header._reserved);
     let fnir = module.fn_by_id(fn_id);
-    // Find any Prim::Extern call across the closure's blocks. The shape
-    // we expect for a v0 dtor wrapper is `fn d(x), do: some_extern(x)`,
-    // which lowers to two blocks (entry + CPS continuation) where the
-    // entry calls the extern. Anything more complex (multiple externs,
-    // branching) is out of scope until fz-swt.9 stands up real interp
-    // dtor execution.
     let eid = fnir.blocks.iter().find_map(|b| {
         b.stmts.iter().find_map(|s| match s {
             Stmt::Let(_, Prim::Extern(eid, _)) => Some(*eid),
@@ -914,7 +907,7 @@ fn resolve_dtor_from_closure(
     });
     let eid = eid.ok_or_else(|| {
         format!(
-            "make_resource: interp dtor closure for `{}` has no Prim::Extern in body",
+            "make_resource: dtor closure for `{}` has no Prim::Extern in body",
             fnir.name
         )
     })?;
@@ -924,6 +917,22 @@ fn resolve_dtor_from_closure(
     // module; ExternTy constraints guarantee u64-wide scalar params.
     let f: unsafe extern "C" fn(u64) = unsafe { std::mem::transmute(fp) };
     Ok(f)
+}
+
+/// fz-swt.10 — shared work behind both the interp `fz_make_resource` BIF
+/// and the JIT/AOT `MakeResourceHook` thunk: resolve the dtor, allocate
+/// an off-heap `Resource` + on-heap stub on the current process heap,
+/// return the FzValue bits of the stub.
+pub(crate) fn make_resource_in_current_process(
+    module: &Module,
+    payload: u64,
+    dtor_closure: FzValue,
+) -> Result<FzValue, String> {
+    let dtor = resolve_dtor_from_closure(module, dtor_closure)?;
+    let handle = fz_runtime::resource::ResourceHandle::new(payload, dtor);
+    let heap = &mut fz_runtime::process::current_process().heap;
+    let stub = fz_runtime::resource::alloc_resource(heap, handle);
+    Ok(FzValue::from_ptr(stub.as_raw()))
 }
 
 fn call_extern(module: &Module, eid: ExternId, args: &[FzValue]) -> Result<FzValue, String> {
@@ -1002,23 +1011,14 @@ fn call_extern(module: &Module, eid: ExternId, args: &[FzValue]) -> Result<FzVal
             return Ok(args[1]);
         }
         "fz_make_resource" => {
-            // fz-swt.7 — interp BIF: allocate an off-heap Resource and an
-            // on-heap HeapKind::Resource stub. args[0] is the payload (any
-            // FzValue, stored as a u64); args[1] is a closure produced by
-            // `&name/arity` (fz-swt.5). The closure's stub_fp is the C-ABI
-            // dtor pointer. In the interp stub_fp is always null (see
-            // `Prim::MakeClosure` lowering), so we walk the closure's IR
-            // fn body to find the underlying `Prim::Extern(eid, _)` call
-            // and resolve that extern's symbol to a real C fn ptr.
+            // fz-swt.7 / fz-swt.10 — interp BIF: routes through the same
+            // shared helper used by the runtime's `MakeResourceHook` for
+            // the JIT/AOT legs, so dtor-resolution semantics are uniform
+            // across paths.
             if args.len() != 2 {
                 return Err(format!("fz_make_resource/2 got {} args", args.len()));
             }
-            let payload = args[0].0;
-            let dtor = resolve_dtor_from_closure(module, args[1])?;
-            let handle = fz_runtime::resource::ResourceHandle::new(payload, dtor);
-            let heap = &mut fz_runtime::process::current_process().heap;
-            let stub = fz_runtime::resource::alloc_resource(heap, handle);
-            return Ok(FzValue::from_ptr(stub.as_raw()));
+            return make_resource_in_current_process(module, args[0].0, args[1]);
         }
         _ => {}
     }
@@ -1138,6 +1138,43 @@ unsafe fn dispatch_fn_void(fp: *const (), args: &[u64]) {
 
 // ===== Test-only symbol registry (fz-swt.7) ================================
 
+/// fz-swt.10 — expose the test counter dtor's raw address so JIT-leg
+/// fixture tests can register it with the `JITBuilder`. Lives in this
+/// module to share the `DTOR_FIRED` / `DTOR_LAST_PAYLOAD` statics with
+/// the interp-leg tests below.
+#[cfg(test)]
+pub(crate) fn tests_support_test_dtor_addr() -> *const u8 {
+    tests_support::_resource_test_dtor as *const u8
+}
+
+/// fz-swt.10 — accessors for the test dtor counters, used by both the
+/// interp-leg tests in this file and the JIT-leg tests in
+/// `ir_codegen_tests.rs`.
+#[cfg(test)]
+pub(crate) fn tests_support_dtor_reset() {
+    use std::sync::atomic::Ordering;
+    tests_support::DTOR_FIRED.store(0, Ordering::Relaxed);
+    tests_support::DTOR_LAST_PAYLOAD.store(0, Ordering::Relaxed);
+}
+
+#[cfg(test)]
+pub(crate) fn tests_support_dtor_fired() -> usize {
+    tests_support::DTOR_FIRED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+#[cfg(test)]
+pub(crate) fn tests_support_dtor_last_payload() -> u64 {
+    tests_support::DTOR_LAST_PAYLOAD.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// fz-swt.10 — shared lock so JIT-leg and interp-leg resource tests
+/// don't race on the static `DTOR_*` counters.
+#[cfg(test)]
+pub(crate) fn tests_support_lock() -> &'static std::sync::Mutex<()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    &LOCK
+}
+
 #[cfg(test)]
 mod tests_support {
     use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -1178,15 +1215,11 @@ mod resource_bif_tests {
     /// in `tests_support`, allocates an off-heap Resource, and returns a
     /// `HeapKind::Resource` stub. The process heap is dropped at test
     /// scope exit; MSO sweep invokes the dtor on the payload exactly once.
-    /// Serialises tests in this module that share static dtor counters
-    /// across fz-swt.7 / fz-swt.8. The crate doesn't ship `serial_test`;
-    /// a plain `Mutex` is sufficient since these tests are few and
-    /// short.
-    static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     #[test]
     fn make_resource_bif_round_trip() {
-        let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = super::tests_support_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         tests_support::DTOR_FIRED.store(0, Ordering::Relaxed);
         tests_support::DTOR_LAST_PAYLOAD.store(0, Ordering::Relaxed);
 
@@ -1229,7 +1262,9 @@ end
     /// payload), and not twice (we'd be double-freeing).
     #[test]
     fn aliasing_in_one_process_fires_dtor_once() {
-        let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = super::tests_support_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         tests_support::DTOR_FIRED.store(0, Ordering::Relaxed);
         tests_support::DTOR_LAST_PAYLOAD.store(0, Ordering::Relaxed);
 
@@ -1265,7 +1300,9 @@ end
     /// when it contains more than one Resource stub.
     #[test]
     fn two_distinct_resources_each_fire_once() {
-        let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = super::tests_support_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         tests_support::DTOR_FIRED.store(0, Ordering::Relaxed);
         tests_support::DTOR_LAST_PAYLOAD.store(0, Ordering::Relaxed);
 
@@ -1297,7 +1334,9 @@ end
     /// after `.value` the interp must read back the raw `99` payload.
     #[test]
     fn value_accessor_round_trip_in_interp() {
-        let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = super::tests_support_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         tests_support::DTOR_FIRED.store(0, Ordering::Relaxed);
         tests_support::DTOR_LAST_PAYLOAD.store(0, Ordering::Relaxed);
 
