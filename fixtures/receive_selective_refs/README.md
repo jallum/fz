@@ -1,7 +1,7 @@
 ---
 purpose: "fz-recv epic acceptance — selective receive across two pinned refs with out-of-order replies + after timeout"
-paths: []
-defer: "Pending fz-recv.B1 (interp) + fz-recv.B3 (jit) + fz-recv.B4 (aot) — needs new receive do…end syntax and matcher codegen. Blessed under fz-recv.A1."
+paths: [interp, jit]
+defer: "AOT path still on the legacy trampoline pattern; tracked under the fz-xx8 (B4) follow-up. fz-70q.5 collapsed the JIT shim family, so B4 mostly evaporates — it just needs to wire the singular fz_resume into the AOT scheduler."
 ---
 
 # receive_selective_refs
