@@ -3131,4 +3131,145 @@ mod tests {
         assert!(sigma[&TypeVarId(0)].is_equiv(&Descr::int()));
         assert!(sigma[&TypeVarId(1)].is_equiv(&Descr::bool_t()));
     }
+
+    // ------------------------------------------------------------------
+    // fz-try.9 — algebra audit: type variables in every lattice operation
+    //
+    // Verifies that the structural lattice algebra (union, intersect, neg,
+    // diff, is_subtype) handles the `vars` axis correctly and composes
+    // with the other axes. The semantic "join law" from the design doc
+    // (Var ⊔ Var = Any, Var ⊔ Concrete = Concrete via substitution) is a
+    // distinct operation realized at substitution sites (instantiate),
+    // not in the structural union — see docs/descr-cleanup.md §Join law.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn algebra_audit_union_with_var_is_componentwise() {
+        // Structural union: var ∪ int produces a Descr with both axes set.
+        // (The design's "join with substitution" is operational and lives
+        // at instantiate() — not here.)
+        let a = Descr::var(TypeVarId(0));
+        let u = a.union(&Descr::int());
+        assert!(!u.vars.is_none(), "var axis must survive union");
+        assert!(u.ints.is_any() || !u.ints.is_none(), "int axis must survive union");
+        // Subtypes both witnesses.
+        assert!(a.is_subtype(&u));
+        assert!(Descr::int().is_subtype(&u));
+    }
+
+    #[test]
+    fn algebra_audit_union_distinct_vars_keeps_both() {
+        let a = Descr::var(TypeVarId(0));
+        let b = Descr::var(TypeVarId(1));
+        let u = a.union(&b);
+        // Both var ids are members of the union's `vars` axis.
+        assert!(a.is_subtype(&u));
+        assert!(b.is_subtype(&u));
+    }
+
+    #[test]
+    fn algebra_audit_intersect_preserves_var_disjointness() {
+        // var(α) ∩ int = none — vars are nominally disjoint from concrete.
+        let a = Descr::var(TypeVarId(0));
+        let i = a.intersect(&Descr::int());
+        assert!(i.is_empty(), "var ∩ int must be empty, got {}", i);
+        // var(α) ∩ var(α) = var(α).
+        let i2 = a.intersect(&a);
+        assert!(i2.is_equiv(&a));
+        // var(α) ∩ var(β) = none.
+        let b = Descr::var(TypeVarId(1));
+        let i3 = a.intersect(&b);
+        assert!(i3.is_empty());
+    }
+
+    #[test]
+    fn algebra_audit_neg_complement_correct() {
+        // ¬var(α) is the universe minus α. Its union with α is the universe.
+        let a = Descr::var(TypeVarId(0));
+        let nota = a.neg();
+        let universe = a.union(&nota);
+        assert!(
+            universe.looks_full() || universe.is_equiv(&Descr::any()),
+            "α ∪ ¬α must be the universe, got {}",
+            universe
+        );
+        // α ∩ ¬α = none.
+        let mt = a.intersect(&nota);
+        assert!(mt.is_empty(), "α ∩ ¬α must be empty, got {}", mt);
+    }
+
+    #[test]
+    fn algebra_audit_diff_extracts_var_correctly() {
+        // (α ∪ int) \ int = α (var portion remains; int portion removed).
+        let mixed = Descr::var(TypeVarId(0)).union(&Descr::int());
+        let just_var = mixed.diff(&Descr::int());
+        assert!(
+            just_var.is_equiv(&Descr::var(TypeVarId(0))),
+            "(α ∪ int) \\ int should be α, got {}",
+            just_var
+        );
+    }
+
+    #[test]
+    fn algebra_audit_subtype_var_relationships() {
+        let a = Descr::var(TypeVarId(0));
+        let b = Descr::var(TypeVarId(1));
+        // α ⊆ α
+        assert!(a.is_subtype(&a));
+        // α ⊆ any
+        assert!(a.is_subtype(&Descr::any()));
+        // none ⊆ α
+        assert!(Descr::none().is_subtype(&a));
+        // α ⊄ int (vars and ints are disjoint)
+        assert!(!a.is_subtype(&Descr::int()));
+        // int ⊄ α (same reason)
+        assert!(!Descr::int().is_subtype(&a));
+        // α ⊄ β (distinct vars, both nominal)
+        assert!(!a.is_subtype(&b));
+    }
+
+    #[test]
+    fn algebra_audit_var_in_list_element() {
+        // list(α) ⊆ list(any); list(α) ⊄ list(int).
+        let la = Descr::list_of(Descr::var(TypeVarId(0)));
+        let la_any = Descr::list_of(Descr::any());
+        let la_int = Descr::list_of(Descr::int());
+        assert!(la.is_subtype(&la_any), "list(α) ⊆ list(any)");
+        assert!(!la.is_subtype(&la_int), "list(α) ⊄ list(int)");
+    }
+
+    #[test]
+    fn algebra_audit_instantiate_then_union_distributes() {
+        // For any σ, instantiate(d1 ∪ d2, σ) ≡ instantiate(d1, σ) ∪
+        // instantiate(d2, σ). Verified on a representative case.
+        let d1 = Descr::var(TypeVarId(0));
+        let d2 = Descr::var(TypeVarId(1));
+        let sigma: std::collections::HashMap<TypeVarId, Descr> = [
+            (TypeVarId(0), Descr::int()),
+            (TypeVarId(1), Descr::bool_t()),
+        ]
+        .into_iter()
+        .collect();
+        let lhs = d1.union(&d2).instantiate(&sigma);
+        let rhs = d1.instantiate(&sigma).union(&d2.instantiate(&sigma));
+        assert!(lhs.is_equiv(&rhs), "{} ≢ {}", lhs, rhs);
+    }
+
+    #[test]
+    fn algebra_audit_no_var_axis_pollution_in_concrete_round_trip() {
+        // A Descr constructed without any var-axis manipulation must NOT
+        // gain vars through any algebraic operation that doesn't introduce
+        // them. Regression guard for accidental cross-axis bleed.
+        let i = Descr::int();
+        let s = Descr::str_t();
+        let u = i.union(&s);
+        assert!(u.vars.is_none(), "union of concrete descrs has no vars");
+        let int_ = i.intersect(&s);
+        assert!(int_.vars.is_none(), "intersect of concrete descrs has no vars");
+        let n = i.neg();
+        // ¬int has saturated vars (cofinite) — that's correct; "not int"
+        // includes vars in the universe. But has_vars() reports false
+        // because there are no NAMED ids.
+        assert!(!n.has_vars(), "¬int has no named vars to substitute");
+    }
 }

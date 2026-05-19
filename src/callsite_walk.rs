@@ -26,9 +26,11 @@
 //!
 //! ## What it does NOT yield
 //!
-//! - `MakeClosure(stmt_idx)` — stmt-level, lives on its own per-block
-//!   loop because it's gated on opaque-arity liveness (typer-only).
-//! - The opaque-arity bookkeeping that feeds `opaque_arities_seen`.
+//! - `MakeClosure(stmt_idx)` — stmt-level, handled separately because
+//!   it's a closure-value construction event, not a body-spec dispatch
+//!   site. The typer registers a `(fn_id, captures)` handle in
+//!   `ModuleTypes.closure_handles` and emits the lambda's any-key body
+//!   spec; no per-callsite slot fires for it.
 //! - Per-spec Descr keys — consumers build those from the structural
 //!   payload + their own env.
 //!
