@@ -67,6 +67,16 @@
 ;     blk0 Return Var(0)    :: 5
 ;     blk1 Halt Var(1)      :: :match_error
 
+; spec id(1) #fn=11
+;   key:    [any]
+;   return: any
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: :match_error
+;   exits:
+;     blk0 Return Var(0)    :: any
+;     blk1 Halt Var(1)      :: :match_error
+
 ; spec route(2) #fn=12
 ;   key:    [&fn11[]:(any) -> any, 5]
 ;   return: 5
@@ -145,6 +155,18 @@
 ;     Var(3) :: int
 ;   exits:
 ;     blk0 Return Var(3)    :: int
+;     blk1 Halt Var(1)      :: :match_error
+
+; spec lambda_16(1) #fn=16
+;   key:    [any]
+;   return: int | float
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: :match_error
+;     Var(2) :: 2
+;     Var(3) :: int | float
+;   exits:
+;     blk0 Return Var(3)    :: int | float
 ;     blk1 Halt Var(1)      :: :match_error
 
 ; spec k_17(1) #fn=17

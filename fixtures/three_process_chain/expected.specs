@@ -138,18 +138,10 @@
 ;              callee_key=[1, int | float]
 
 ; spec fz_spawn_thunk(1) #fn=16
-;   key:    [&fn11[]:() -> any]
+;   key:    [any]
 ;   return: any
 ;   vars:
-;     Var(0) :: &fn11[]:() -> any
-;   exits:
-;     blk0 TailCallClosure Var(0)()
-
-; spec fz_spawn_thunk(1) #fn=16
-;   key:    [&fn12[]:() -> any]
-;   return: any
-;   vars:
-;     Var(0) :: &fn12[]:() -> any
+;     Var(0) :: any
 ;   exits:
 ;     blk0 TailCallClosure Var(0)()
 

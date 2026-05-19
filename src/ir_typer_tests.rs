@@ -590,13 +590,17 @@ fn closure_target_with_no_direct_callers_keeps_any_entry_params() {
 }
 
 #[test]
-fn closure_target_with_direct_caller_narrows_spec_and_drops_unused_any_key() {
-    // fz-ul4.29.3 / .29.10.3: a fn that's both a MakeClosure target
-    // and called directly with a typed arg gets a narrow spec keyed
-    // by the visible direct caller's arg Descrs. Post-.29.10.3, the
-    // unused closure-bound `_cl` is detected as fully resolvable
-    // (no invocation), the MakeClosure any-key registration is
-    // suppressed, and .29.12.6 drops worker's any-key.
+fn closure_target_with_direct_caller_narrows_spec_and_keeps_any_key_body() {
+    // fz-ul4.29.3: a fn that's both a MakeClosure target and called
+    // directly with a typed arg gets a narrow spec keyed by the
+    // direct caller's arg Descrs.
+    //
+    // fz-try B1+B2: under the new design, the closure-target lambda
+    // also has an any-key body — it IS the body, since the
+    // closure-target ABI seam speaks uniform Tagged (fz-try.15) and
+    // doesn't synchronize via spec keys. The .29.10.3 "drop unused
+    // any-key" optimization is structurally subsumed: the any-key
+    // body is the canonical compiled body for the closure target.
     let mut wb = FnBuilder::new(FnId(0), "worker");
     let n = wb.fresh_var();
     let wentry = wb.block(vec![n]);
@@ -625,23 +629,34 @@ fn closure_target_with_direct_caller_narrows_spec_and_drops_unused_any_key() {
 
     let m = build_module(vec![wb.build(), mb.build()]);
     let mt = type_module(&m);
-    // worker's narrow spec: n narrowed to the direct caller's int.
-    let nt = fn_view(&m, &mt, 0).vars.get(&n).cloned().unwrap();
+    // worker's narrow spec exists with n=int.
+    let narrow_spec = mt
+        .spec(FnId(0), &[Descr::int_lit(42)])
+        .or_else(|| mt.spec(FnId(0), &[Descr::int()]))
+        .expect("worker's narrow spec (from direct call) must be registered");
+    let nt_narrow = narrow_spec.vars.get(&n).cloned().unwrap();
     assert!(
-        nt.is_subtype(&Descr::int()),
-        "worker's n must narrow to int (visible caller), got {}",
-        nt
+        nt_narrow.is_subtype(&Descr::int()),
+        "worker's narrow-spec n must narrow to int, got {}",
+        nt_narrow
     );
-    // any-key dropped: no callsite (direct or indirect) queries
-    // worker with [any].
+    // any-key body also exists: the MakeClosure(worker, []) registers
+    // worker as a closure target, so its any-key body is the canonical
+    // compiled body.
     assert!(
-        mt.spec(FnId(0), &[Descr::any()]).is_none(),
-        "worker's any-key must be dropped — only narrow [int_lit(42)] callsite exists; \
+        mt.spec(FnId(0), &[Descr::any()]).is_some(),
+        "worker's any-key body must be registered (worker is a closure target); \
          specs: {:?}",
         mt.specs
             .keys()
             .filter(|(fid, _)| *fid == FnId(0))
             .collect::<Vec<_>>()
+    );
+    // handle entry: (worker, []) — zero-capture closure handle.
+    assert!(
+        mt.closure_handles.contains(&(FnId(0), vec![])),
+        "expected (worker, []) handle entry; handles: {:?}",
+        mt.closure_handles
     );
 }
 
@@ -883,98 +898,6 @@ fn main(), do: print(sum([1, 2, 3, 4, 5]))
     }
 }
 
-/// fz-vw4.5a — when every closure-dispatch site resolves via
-/// fn_constants (or there are no closures at all), the
-/// opaque-consumer arity set is empty. Under step 5c this means
-/// MakeClosure-side any-key registration can be skipped for the
-/// fixture's closure targets.
-#[test]
-fn opaque_consumer_arities_empty_when_no_opaque_dispatch() {
-    let (m, mt) = pipeline(
-        r#"
-fn add1(n), do: n + 1
-fn main(), do: print(add1(40) + 2)
-"#,
-    );
-    let arities = opaque_consumer_arities(&m, &mt.specs);
-    assert!(
-        arities.is_empty(),
-        "expected no opaque consumers (only direct calls), got {:?}",
-        arities
-    );
-}
-
-/// fz-vw4.5a — when a closure flows through Receive (message from
-/// an unknown sender), invoking it produces an unresolved
-/// TailCallClosure. The analysis must surface its arity. Built
-/// directly in IR since fz lacks a from-message lambda invocation
-/// surface syntax.
-#[test]
-fn opaque_consumer_arities_picks_up_receive_dispatched_closure() {
-    // Build:
-    //   fn lam(x), do: x       (FnId 0, arity 1)
-    //   fn dispatcher() do
-    //     receive(); cont k_recv(f) { TailCallClosure(f, [const(7)]) }
-    //   end
-    //   fn main(): TailCall dispatcher
-    let mut lam = FnBuilder::new(FnId(0), "lam");
-    let x = lam.fresh_var();
-    let le = lam.block(vec![x]);
-    lam.set_terminator(le, Term::Return(x));
-
-    let mut k_recv = FnBuilder::new(FnId(1), "k_recv");
-    let f = k_recv.fresh_var();
-    let kre = k_recv.block(vec![f]);
-    let seven = k_recv.let_(kre, Prim::Const(Const::Int(7)));
-    k_recv.set_terminator(
-        kre,
-        Term::TailCallClosure {
-            ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
-            closure: f,
-            args: vec![seven],
-        },
-    );
-
-    let mut disp = FnBuilder::new(FnId(2), "dispatcher");
-    let de = disp.block(vec![]);
-    disp.set_terminator(
-        de,
-        Term::Receive {
-            ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
-            continuation: crate::fz_ir::Cont {
-                fn_id: FnId(1),
-                captured: vec![],
-            },
-        },
-    );
-
-    let mut main_b = FnBuilder::new(FnId(3), "main");
-    let me = main_b.block(vec![]);
-    main_b.set_terminator(
-        me,
-        Term::TailCall {
-            ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
-            callee: FnId(2),
-            args: vec![],
-            is_back_edge: false,
-        },
-    );
-
-    let m = build_module(vec![
-        lam.build(),
-        k_recv.build(),
-        disp.build(),
-        main_b.build(),
-    ]);
-    let mt = type_module(&m);
-    let arities = opaque_consumer_arities(&m, &mt.specs);
-    assert!(
-        arities.contains(&1),
-        "expected arity-1 opaque consumer from receive-dispatched closure, got {:?}",
-        arities
-    );
-}
-
 /// Helper output for a Call-site Cont must match a key the typer
 /// registered in `module_types.specs` under `cont.fn_id`. This is
 /// the load-bearing invariant for fz-ul4.29.12.1's SpecRegistry
@@ -1056,17 +979,20 @@ fn main(), do: print(add1(40) + 2)
     assert!(narrow_found, "test premise: main should have a direct Call");
 }
 
-/// fz-ul4.29.10 — when a top-level fn is passed as a closure value
+/// fz-ul4.29.10: when a top-level fn is passed as a closure value
 /// (`apply2(double, …)`), `ir_lower` synthesizes
 /// `MakeClosure(double, [])`. .29.10.1 propagates `fn_constants[f]
 /// = double` into apply2's spec; .29.10.2 registers double's narrow
-/// spec for the typed arg from apply2's CallClosure; .29.10.3
-/// suppresses the MakeClosure-side any-key registration (because
-/// main's closure-var is fully resolvable) and rewrites apply2's
-/// `CallClosure` into a direct `Call(double, …)`. Net result:
-/// double's any-key is dropped.
+/// spec for the typed arg from apply2's CallClosure; the CallClosure
+/// is rewritten into a direct `Call(double, …)`.
+///
+/// fz-try B1+B2: under the new design, double also has an any-key
+/// body — it's a closure target (via `MakeClosure(double, [])`), so
+/// its any-key body is the canonical compiled body. The narrow spec
+/// for the direct-call path coexists. The handle entry
+/// `(double, [])` records the zero-capture closure value.
 #[test]
-fn higher_order_callee_drops_any_key_for_fn_as_value() {
+fn higher_order_callee_registers_any_key_body_and_narrow_spec() {
     let (m, mt) = pipeline(
         r#"
 fn double(x), do: x * 2
@@ -1079,13 +1005,34 @@ end
     let double = m.fns.iter().find(|f| f.name == "double").unwrap();
     let any_key: Vec<Descr> = vec![Descr::any(); 1];
     assert!(
-        !mt.specs.contains_key(&(double.id, any_key)),
-        "expected double's any-key to be dropped post-.29.10.3; \
+        mt.specs.contains_key(&(double.id, any_key.clone())),
+        "expected double's any-key body to be registered (double is a closure target); \
          registered specs for double: {:?}",
         mt.specs
             .keys()
             .filter(|(fid, _)| *fid == double.id)
             .collect::<Vec<_>>()
+    );
+    // Narrow spec from the direct-call path also exists.
+    let narrow_count = mt
+        .specs
+        .keys()
+        .filter(|(fid, k)| *fid == double.id && !k.iter().all(|d| d.is_equiv(&Descr::any())))
+        .count();
+    assert!(
+        narrow_count >= 1,
+        "expected ≥1 narrow spec for double from the direct-call path; \
+         registered specs for double: {:?}",
+        mt.specs
+            .keys()
+            .filter(|(fid, _)| *fid == double.id)
+            .collect::<Vec<_>>()
+    );
+    // Handle entry from MakeClosure(double, []).
+    assert!(
+        mt.closure_handles.contains(&(double.id, vec![])),
+        "expected (double, []) handle entry; handles: {:?}",
+        mt.closure_handles
     );
 }
 

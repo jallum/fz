@@ -7,7 +7,7 @@ function u0:0(i64, i64) -> i64 tail {
     sig1 = (i64, i64) -> i64 tail
     sig2 = (i64) -> i64 system_v
     fn0 = u0:27 sig0
-    fn1 = colocated u0:43 sig1
+    fn1 = colocated u0:44 sig1
     fn2 = u0:28 sig2
 
 block0(v0: i64, v1: i64):
@@ -37,10 +37,10 @@ function u0:0(i64) -> i64 tail {
     sig5 = (i64, i64) -> i64 tail
     fn0 = u0:31 sig0
     fn1 = u0:27 sig1
-    fn2 = colocated u0:44 sig2
+    fn2 = colocated u0:41 sig2
     fn3 = u0:45 sig3
     fn4 = u0:46 sig4
-    fn5 = colocated u0:41 sig5
+    fn5 = colocated u0:42 sig5
 
 block0(v0: i64):
     v1 = iconst.i32 11                  ; @4:9
@@ -61,6 +61,19 @@ block0(v0: i64):
     return_call fn5(v13, v0)            ; @5:3
 }
 
+; fn fz_spawn_thunk
+    ;   @spec   fz_spawn_thunk(any) -> any
+    ;   @key    [any]
+    ;   @abi    (Tagged) -> Tagged
+function u0:0(i64, i64) -> i64 tail {
+    sig0 = (i64, i64) -> i64 tail
+
+block0(v0: i64, v1: i64):
+    v2 = load.i64 notrap aligned v0+24    ;; v2 :: any
+    v3 = load.i64 notrap aligned v2+16
+    return_call_indirect sig0, v3(v2, v1)
+}
+
 ; fn k_15
     ;   @spec   k_15(any) -> nil
     ;   @key    [any]
@@ -70,7 +83,7 @@ function u0:0(i64, i64) -> i64 tail {
     sig1 = (i64, i64) -> i64 tail
     sig2 = (i64) -> i64 system_v
     fn0 = u0:27 sig0
-    fn1 = colocated u0:42 sig1
+    fn1 = colocated u0:43 sig1
     fn2 = u0:28 sig2
 
     block0(v0: i64, v1: i64):    ;; v0 :: any
@@ -167,18 +180,5 @@ block2:
     v24 = load.i64 notrap aligned v1+24 ; @1:17
     v25 = load.i64 notrap aligned v24+16 ; @1:17
     return_call_indirect sig4, v25(v23, v24) ; @1:17
-}
-
-; fn fz_spawn_thunk_s18
-    ;   @spec   fz_spawn_thunk(&fn11[]:() -> any) -> any
-    ;   @key    [&fn11[]:() -> any]
-    ;   @abi    (Tagged) -> Tagged
-function u0:0(i64, i64) -> i64 tail {
-    sig0 = (i64, i64) -> i64 tail
-    fn0 = colocated u0:39 sig0
-
-block0(v0: i64, v1: i64):
-    v2 = load.i64 notrap aligned v0+24    ;; v2 :: &fn11[]:() -> any
-    return_call fn0(v2, v1)
 }
 

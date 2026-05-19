@@ -15,7 +15,7 @@ block0(v0: i64):
     return_call fn1(v2, v0)             ; @7:9  v2 = 2
 }
 
-; fn k_18_s16
+; fn k_18
     ;   @spec   k_18(nil) -> nil
     ;   @key    [nil]
     ;   @abi    (Tagged) -> Tagged
@@ -32,7 +32,7 @@ function u0:0(i64, i64) -> i64 tail {
     return_call fn1(v3, v1)             ; @8:9  v3 = 2
 }
 
-; fn k_20_s17
+; fn k_20_s19
     ;   @spec   k_20(nil) -> nil
     ;   @key    [nil]
     ;   @abi    (Tagged) -> Tagged

@@ -84,10 +84,10 @@
 ;     blk1 Halt Var(0)      :: :match_error
 
 ; spec fz_spawn_thunk(1) #fn=14
-;   key:    [&fn13[]:() -> any]
+;   key:    [any]
 ;   return: any
 ;   vars:
-;     Var(0) :: &fn13[]:() -> any
+;     Var(0) :: any
 ;   exits:
 ;     blk0 TailCallClosure Var(0)()
 

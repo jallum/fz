@@ -7,7 +7,7 @@ function u0:0(i64, i64) -> i64 tail {
     sig1 = (i64, i64) -> i64 tail
     sig2 = (i64) -> i64 system_v
     fn0 = u0:27 sig0
-    fn1 = colocated u0:44 sig1
+    fn1 = colocated u0:45 sig1
     fn2 = u0:28 sig2
 
 block0(v0: i64, v1: i64):
@@ -33,7 +33,7 @@ function u0:0(i64, i64) -> i64 tail {
     sig1 = (i64, i64) -> i64 tail
     sig2 = (i64) -> i64 system_v
     fn0 = u0:27 sig0
-    fn1 = colocated u0:45 sig1
+    fn1 = colocated u0:46 sig1
     fn2 = u0:28 sig2
 
 block0(v0: i64, v1: i64):
@@ -66,13 +66,13 @@ function u0:0(i64) -> i64 tail {
     sig8 = (i64, i64) -> i64 tail
     fn0 = u0:31 sig0
     fn1 = u0:27 sig1
-    fn2 = colocated u0:46 sig2
-    fn3 = u0:48 sig3
+    fn2 = colocated u0:42 sig2
+    fn3 = u0:47 sig3
     fn4 = u0:31 sig4
     fn5 = u0:27 sig5
-    fn6 = colocated u0:47 sig6
-    fn7 = u0:49 sig7
-    fn8 = colocated u0:42 sig8
+    fn6 = colocated u0:42 sig6
+    fn7 = u0:48 sig7
+    fn8 = colocated u0:43 sig8
 
 block0(v0: i64):
     v1 = iconst.i32 11                  ; @10:9
@@ -103,6 +103,19 @@ block0(v0: i64):
     return_call fn8(v21, v0)            ; @12:3
 }
 
+; fn fz_spawn_thunk
+    ;   @spec   fz_spawn_thunk(any) -> any
+    ;   @key    [any]
+    ;   @abi    (Tagged) -> Tagged
+function u0:0(i64, i64) -> i64 tail {
+    sig0 = (i64, i64) -> i64 tail
+
+block0(v0: i64, v1: i64):
+    v2 = load.i64 notrap aligned v0+24    ;; v2 :: any
+    v3 = load.i64 notrap aligned v2+16
+    return_call_indirect sig0, v3(v2, v1)
+}
+
 ; fn k_17
     ;   @spec   k_17(any) -> nil
     ;   @key    [any]
@@ -112,7 +125,7 @@ function u0:0(i64, i64) -> i64 tail {
     sig1 = (i64, i64) -> i64 tail
     sig2 = (i64) -> i64 system_v
     fn0 = u0:27 sig0
-    fn1 = colocated u0:43 sig1
+    fn1 = colocated u0:44 sig1
     fn2 = u0:28 sig2
 
     block0(v0: i64, v1: i64):    ;; v0 :: any
@@ -136,8 +149,8 @@ function u0:0(i64, i64) -> i64 tail {
     sig1 = (i64, i64) -> i64 tail
     sig2 = (i64) system_v
     sig3 = (i64, i64) -> i64 tail
-    fn0 = u0:50 sig0
-    fn1 = u0:51 sig2
+    fn0 = u0:49 sig0
+    fn1 = u0:50 sig2
 
     block0(v0: i64, v1: i64):    ;; v0 :: any
     v2 = band_imm v0, 7
@@ -173,7 +186,7 @@ function u0:0(i64, i64) -> i64 tail {
     fn0 = u0:21 sig0
     fn1 = u0:20 sig1
     fn2 = u0:22 sig2
-    fn3 = u0:49 sig3
+    fn3 = u0:48 sig3
 
     block0(v0: i64, v1: i64):    ;; v0 :: any
     v2 = load.i64 notrap aligned v1+32    ;; v2 :: 3
@@ -224,7 +237,7 @@ function u0:0(i64, i64) -> i64 tail {
     fn0 = u0:21 sig0
     fn1 = u0:20 sig1
     fn2 = u0:22 sig2
-    fn3 = u0:49 sig3
+    fn3 = u0:48 sig3
 
     block0(v0: i64, v1: i64):    ;; v0 :: any
     v2 = load.i64 notrap aligned v1+32    ;; v2 :: 1
@@ -260,31 +273,5 @@ block2:
     v24 = load.i64 notrap aligned v1+24 ; @6:3
     v25 = load.i64 notrap aligned v24+16 ; @6:3
     return_call_indirect sig4, v25(v23, v24) ; @6:3
-}
-
-; fn fz_spawn_thunk_s21
-    ;   @spec   fz_spawn_thunk(&fn11[]:() -> any) -> any
-    ;   @key    [&fn11[]:() -> any]
-    ;   @abi    (Tagged) -> Tagged
-function u0:0(i64, i64) -> i64 tail {
-    sig0 = (i64, i64) -> i64 tail
-    fn0 = colocated u0:39 sig0
-
-block0(v0: i64, v1: i64):
-    v2 = load.i64 notrap aligned v0+24    ;; v2 :: &fn11[]:() -> any
-    return_call fn0(v2, v1)
-}
-
-; fn fz_spawn_thunk_s22
-    ;   @spec   fz_spawn_thunk(&fn12[]:() -> any) -> any
-    ;   @key    [&fn12[]:() -> any]
-    ;   @abi    (Tagged) -> Tagged
-function u0:0(i64, i64) -> i64 tail {
-    sig0 = (i64, i64) -> i64 tail
-    fn0 = colocated u0:40 sig0
-
-block0(v0: i64, v1: i64):
-    v2 = load.i64 notrap aligned v0+24    ;; v2 :: &fn12[]:() -> any
-    return_call fn0(v2, v1)
 }
 

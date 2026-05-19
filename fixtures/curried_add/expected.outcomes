@@ -1,11 +1,5 @@
 outcomes for fixtures/curried_add/input.fz
 
-lambda_14:
-  @0:25-43 MakeClosure -> Emitted (lambda_15#15 [1, 2, any]) [under lambda_14[1, 2]]
-  @0:25-43 MakeClosure -> Emitted (lambda_15#15 [1, any, any]) [under lambda_14[1, any]]
-  @0:25-43 MakeClosure -> Emitted (lambda_15#15 [10, 20, any]) [under lambda_14[10, 20]]
-  @0:25-43 MakeClosure -> Emitted (lambda_15#15 [10, any, any]) [under lambda_14[10, any]]
-
 apply:
   @0:64-68 ClosureLit(0,0) -> Emitted (lambda_14#14 [1, 2]) via NoClosureLitTarget [under apply[&fn14[1]:(any) -> any, 2]]
   @0:64-68 ClosureLit(0,0) -> Emitted (lambda_14#14 [10, 20]) via NoClosureLitTarget [under apply[&fn14[10]:(any) -> any, 20]]
@@ -15,7 +9,6 @@ apply:
 main:
   @0:103-111 Direct -> Consumed (&fn14[10]:() -> any)
   @0:103-111 Direct -> Emitted (k_16#16 [&fn14[10]:(any) -> any])
-  @0:103-111 MakeClosure -> Emitted (lambda_14#14 [10, any])
 
 k_16:
   @0:97-116 Cont -> Emitted (k_17#17 [&fn15[10, 20]:(any) -> any])
@@ -32,7 +25,6 @@ k_18:
 k_19:
   @0:143-150 Direct -> Consumed (&fn14[1]:() -> any)
   @0:143-150 Direct -> Emitted (k_20#20 [&fn14[1]:(any) -> any])
-  @0:143-150 MakeClosure -> Emitted (lambda_14#14 [1, any])
 
 k_20:
   @0:137-154 Cont -> Emitted (k_21#21 [&fn15[1, 2]:(any) -> any])

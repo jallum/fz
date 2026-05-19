@@ -288,6 +288,18 @@
 ;              callee_key=[&fn17[]:(any, any) -> any, int, 1 | 2 | 3 | 4 | 5, list(1 | 2 | 3 | 4 | 5)]
 
 ; spec double(1) #fn=16
+;   key:    [any]
+;   return: int | float
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: :match_error
+;     Var(2) :: 2
+;     Var(3) :: int | float
+;   exits:
+;     blk0 Return Var(3)    :: int | float
+;     blk1 Halt Var(1)      :: :match_error
+
+; spec double(1) #fn=16
 ;   key:    [int]
 ;   return: int
 ;   vars:
@@ -309,6 +321,18 @@
 ;     Var(3) :: int
 ;   exits:
 ;     blk0 Return Var(3)    :: int
+;     blk1 Halt Var(2)      :: :match_error
+
+; spec add(2) #fn=17
+;   key:    [any, any]
+;   return: int | float
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: any
+;     Var(2) :: :match_error
+;     Var(3) :: int | float
+;   exits:
+;     blk0 Return Var(3)    :: int | float
 ;     blk1 Halt Var(2)      :: :match_error
 
 ; spec add(2) #fn=17

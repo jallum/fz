@@ -2057,48 +2057,33 @@ pub fn compile_with_backend<B: Backend>(
         for blk in &f.blocks {
             for stmt in blk.stmts.iter() {
                 let Stmt::Let(_, prim) = stmt;
-                if let Prim::MakeClosure(ident, lam_fn_id, captured) = prim {
-                    // fz-uwq.7 — read the per-spec MakeClosure dispatch
-                    // fact straight from the typer. fz-uwq.6 made the
-                    // MakeClosure picker do this; closure_shapes is the
-                    // sister consumer that catalogs the same answer for
-                    // the static-closure-target seed list.
-                    let mk_cid = crate::fz_ir::CallsiteId {
-                        caller: f.id,
-                        ident: ident.clone(),
-                        slot: crate::fz_ir::EmitSlot::MakeClosure,
-                    };
-                    let ft = spec_fn_types[sid].expect("sid has fn_types (just checked above)");
-                    let cl_sid_via_dispatches = ft
-                        .dispatches
-                        .get(&mk_cid)
-                        .and_then(|t| spec_registry.resolve(t.0, &t.1).map(|s| s.0));
-                    let Some(cl_sid) = cl_sid_via_dispatches.or_else(|| {
-                        let lam = module.fn_by_id(*lam_fn_id);
-                        let n_params = lam.block(lam.entry).params.len();
-                        let mut key: Vec<crate::types::Descr> =
-                            vec![crate::types::Descr::any(); n_params];
-                        for (k, cv) in captured.iter().enumerate() {
-                            if let Some(slot) = key.get_mut(k) {
-                                *slot = ft
-                                    .vars
-                                    .get(cv)
-                                    .cloned()
-                                    .unwrap_or_else(crate::types::Descr::any);
-                            }
-                        }
+                if let Prim::MakeClosure(_ident, lam_fn_id, captured) = prim {
+                    // fz-try B1+B2 — the lambda body is the any-key
+                    // body spec (SpecId.0 == FnId.0 via
+                    // register_any_key_at). MakeClosure is construction,
+                    // not dispatch — look up the body directly.
+                    // When the any-key was dropped (.29.12.6), fall back
+                    // to any registered narrow spec for this FnId; if
+                    // none, the closure value has no live call target
+                    // (every invocation got inlined to direct Call) —
+                    // skip; the null-stub path in MakeClosure prim
+                    // codegen handles allocation.
+                    let cl_sid = if spec_fnidx
+                        .get(lam_fn_id.0 as usize)
+                        .copied()
+                        .flatten()
+                        .is_some()
+                    {
+                        Some(lam_fn_id.0)
+                    } else {
                         spec_registry
-                            .resolve(*lam_fn_id, &key)
-                            .map(|s| s.0)
-                            .or_else(|| {
-                                spec_registry
-                                    .iter()
-                                    .find(|(s, fid, _)| {
-                                        *fid == *lam_fn_id && spec_fnidx[s.0 as usize].is_some()
-                                    })
-                                    .map(|(s, _, _)| s.0)
+                            .iter()
+                            .find(|(s, fid, _)| {
+                                *fid == *lam_fn_id && spec_fnidx[s.0 as usize].is_some()
                             })
-                    }) else {
+                            .map(|(s, _, _)| s.0)
+                    };
+                    let Some(cl_sid) = cl_sid else {
                         continue;
                     };
                     closure_shapes.insert(cl_sid, captured.len());
@@ -3729,7 +3714,7 @@ struct EntryHarnessOut {
 
 fn build_entry_harness<M: cranelift_module::Module>(
     b: &mut FunctionBuilder<'_>,
-    _jmod: &mut M,
+    jmod: &mut M,
     env: &CodegenEnv<'_>,
     schemas: &[Schema],
     f: &crate::fz_ir::FnIr,
@@ -3739,6 +3724,7 @@ fn build_entry_harness<M: cranelift_module::Module>(
     closure_target_n_caps: Option<usize>,
     entry_cl: ir::Block,
 ) -> EntryHarnessOut {
+    let runtime = env.runtime;
     let param_reprs = env.param_reprs;
     let entry_blk = f.blocks.iter().find(|blk| blk.id == f.entry).unwrap();
     let mut var_env: HashMap<u32, VarBinding> = HashMap::new();
@@ -3819,10 +3805,16 @@ fn build_entry_harness<M: cranelift_module::Module>(
             let self_val = params[n_args];
             let cont_val = params[n_args + 1];
             // Captures: fz_params[0..n_caps] ← load from self+24+8*k.
+            // fz-try.15+B1+B2 — closure capture-storage ABI is uniform
+            // Tagged at the seam (same principle as the return seam:
+            // every body invokable via stub_fp must agree on
+            // wire-format, regardless of its typed view). The body
+            // loads i64 Tagged from self+24+8*k and coerces to its
+            // narrow capture repr internally.
             for (k, p) in entry_blk.params.iter().enumerate().take(n_caps) {
                 let off = HEADER_SIZE + SLOT_BYTES + (k as i32) * SLOT_BYTES;
-                let cl_ty = my_param_reprs[k].cl_type();
-                let v = b.ins().load(cl_ty, MemFlags::trusted(), self_val, off);
+                let raw = b.ins().load(types::I64, MemFlags::trusted(), self_val, off);
+                let v = coerce_to(b, jmod, runtime, raw, ArgRepr::Tagged, my_param_reprs[k]);
                 var_env.insert(
                     p.0,
                     VarBinding {
@@ -6455,35 +6447,21 @@ fn lower_prim<M: cranelift_module::Module>(
             // from caller's `fn_types`, args = `any`); pick the typed
             // stub keyed by that SpecId.
             let n_caps = captured.len();
-            let lam = module.fn_by_id(*fn_id);
-            let n_params = lam.block(lam.entry).params.len();
-            let mut key: Vec<crate::types::Descr> = vec![crate::types::Descr::any(); n_params];
-            for (k, cv) in captured.iter().enumerate() {
-                if let Some(slot) = key.get_mut(k) {
-                    *slot = fn_types
-                        .vars
-                        .get(cv)
-                        .cloned()
-                        .unwrap_or_else(crate::types::Descr::any);
-                }
-            }
-            let _ = (block_id, stmt_idx); // fz-kgk: ident now intrinsic to the Prim.
-            let mk_cid = crate::fz_ir::CallsiteId {
-                caller: _caller_fn_id,
-                ident: mk_ident.clone(),
-                slot: crate::fz_ir::EmitSlot::MakeClosure,
+            // fz-try B1+B2 — the lambda body is the any-key body spec
+            // (SpecId.0 == FnId.0). Look up directly; fall back to any
+            // registered narrow spec for this FnId when the any-key
+            // was dropped; emit a null-stub closure when neither
+            // exists (value is constructable but unreachable as a call
+            // target).
+            let _ = (block_id, stmt_idx, mk_ident); // fz-kgk: ident now intrinsic to the Prim.
+            let cl_sid_opt = if fn_ids.contains_key(&fn_id.0) {
+                Some(fn_id.0)
+            } else {
+                spec_registry
+                    .iter()
+                    .find(|(s, fid, _)| *fid == *fn_id && fn_ids.contains_key(&s.0))
+                    .map(|(s, _, _)| s.0)
             };
-            let cl_sid_opt = fn_types
-                .dispatches
-                .get(&mk_cid)
-                .and_then(|t| spec_registry.resolve(t.0, &t.1).map(|s| s.0))
-                .or_else(|| spec_registry.resolve(*fn_id, &key).map(|s| s.0))
-                .or_else(|| {
-                    spec_registry
-                        .iter()
-                        .find(|(s, fid, _)| *fid == *fn_id && fn_ids.contains_key(&s.0))
-                        .map(|(s, _, _)| s.0)
-                });
             let Some(cl_sid) = cl_sid_opt else {
                 // Null-stub closure: alloc, write null at +16, leave
                 // capture slots uninitialized (the body that would read
@@ -6534,17 +6512,18 @@ fn lower_prim<M: cranelift_module::Module>(
             let body_addr = fn_addr(jmod, body_func_id, b);
             b.ins()
                 .store(MemFlags::trusted(), body_addr, cl_ptr, HEADER_SIZE);
-            // fz-ul4.27.22.5: store each capture in the body's narrow
-            // param_repr (body's entry harness at line ~3406 loads via
-            // my_param_reprs[k].cl_type()). Mirrors fz-ul4.27.21.2's
-            // typed-capture seam for cont closures.
-            let body_param_reprs = &param_reprs[cl_sid as usize];
+            // fz-try.15+B1+B2 — closure capture-storage ABI is uniform
+            // Tagged at the seam. The body's entry harness loads i64
+            // from self+24+8*k and coerces to its narrow capture repr
+            // internally; storage must agree. (Same principle as the
+            // return seam: bodies invokable via stub_fp can't agree on
+            // narrow reprs, so the wire format is fixed.)
+            let _ = &param_reprs; // capture-side now uses uniform Tagged
             for (i, cv) in captured.iter().enumerate() {
                 let vb = var_env
                     .get(&cv.0)
                     .expect("MakeClosure: captured var unbound");
-                let to = body_param_reprs[i];
-                let val = coerce_to(b, jmod, runtime, vb.value, vb.repr, to);
+                let val = coerce_to(b, jmod, runtime, vb.value, vb.repr, ArgRepr::Tagged);
                 let off = HEADER_SIZE + SLOT_BYTES + (i as i32) * SLOT_BYTES;
                 b.ins().store(MemFlags::trusted(), val, cl_ptr, off);
             }
