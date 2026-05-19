@@ -1146,4 +1146,70 @@ fn main(), do: sum(10, 0, nil)";
         assert!(pending.args.is_empty(), "after body takes captures only");
         assert!(rt.run_queue.iter().any(|p| *p == receiver_pid));
     }
+
+    /// fz-70q (B3 step A+B) — run_quantum's 4th branch picks up
+    /// `pending_resume_matched`, dispatches via `fz_resume_matched_N`
+    /// indexed by `args.len()`, and the SystemV→Tail bridge loads
+    /// `cont+16` and Tail-CC calls the body with `(args..., cont)`.
+    ///
+    /// Trick: we reuse the `halt_cont` singleton as the clause-body
+    /// closure. Its code_ptr at +16 is `fz_halt_cont_body_tagged`, so
+    /// the shim dispatch effectively becomes `halt_implicit(args[0])`,
+    /// which writes through to `process.halt_value`. A real clause-body
+    /// closure (fz-70q.3 work) has a richer body, but the dispatch
+    /// machinery is the same — that's what this test exercises.
+    #[test]
+    fn run_quantum_dispatches_pending_resume_matched_via_shim() {
+        use fz_runtime::fz_value::FzValue;
+        use fz_runtime::park::PendingResumeMatched;
+        use fz_runtime::process::CURRENT_PROCESS;
+
+        let src = "fn main(), do: 0";
+        let m = lower_src(src);
+        let compiled = compile(&m).unwrap();
+        let main_id = m.fn_by_name("main").unwrap().id;
+        let mut rt = Runtime::new(&compiled, 1);
+        let pid = rt.spawn(main_id);
+        rt.run_queue.clear();
+        let task = rt.task_mut(pid).unwrap();
+
+        // Halt-cont singleton (Tagged repr): code_ptr at +16 is
+        // fz_halt_cont_body_tagged. The shim will load that and Tail-CC
+        // call it with (FzValue(7), halt_cont).
+        let halt_cl = task.halt_cont_singletons[0];
+        assert!(!halt_cl.is_null(), "halt_cont singleton present");
+        let arg = FzValue::from_int(7);
+        task.pending_resume_matched = Some(PendingResumeMatched {
+            cont: halt_cl,
+            args: vec![arg],
+        });
+        // The halt fn body reads CURRENT_PROCESS to find where to write
+        // halt_value; install for the duration of run_quantum.
+        let ptr: *mut fz_runtime::process::Process = task as *mut _;
+        let prev = CURRENT_PROCESS.with(|c| c.replace(ptr));
+        compiled.run_quantum(task);
+        CURRENT_PROCESS.with(|c| c.set(prev));
+
+        // Pending resume cleared, body ran, halt_value carries the
+        // unboxed int (fz_halt_implicit → fz_halt → unbox_int).
+        assert!(task.pending_resume_matched.is_none(), "pending cleared");
+        assert_eq!(task.halt_value, 7, "halt-cont body ran via shim");
+    }
+
+    /// fz-70q (B3 step A+B) — the 9 resume_matched shim addresses are
+    /// resolved at JIT finalize time, one per bound-arg count 0..=8.
+    /// `run_quantum` indexes the table by `args.len()` so a missing slot
+    /// would null-deref. Smoke check ensures the family is fully wired.
+    #[test]
+    fn resume_matched_addrs_finalized_for_arity_zero_through_eight() {
+        let m = lower_src("fn main(), do: 0");
+        let compiled = compile(&m).unwrap();
+        for (n, addr) in compiled.resume_matched_addrs.iter().enumerate() {
+            assert!(
+                !addr.is_null(),
+                "resume_matched shim N={} should be finalized",
+                n
+            );
+        }
+    }
 }

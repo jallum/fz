@@ -164,6 +164,15 @@ pub struct CompiledModule {
     /// `call_indirect Tail fn_ptr(arg0, ..., argN-1)`. Generated
     /// unconditionally; unused entries are never called.
     pub(crate) mid_flight_resume_addrs: [*const u8; 9],
+    /// fz-70q (B3 step A+B) — SystemV shims for resuming a selective-
+    /// receive matcher hit. Indexed by clause bound-arg count (0..=8).
+    /// Shim N sig: `(a0:i64, ..., aN-1:i64, cont:i64) -> i64 system_v`.
+    /// Body: `load cont+16 -> code; call_indirect Tail code(a0..aN-1,
+    /// cont); return result`. Same SystemV→Tail bridge pattern as
+    /// `fz_resume_park` but with N variable bound args instead of one
+    /// fixed message arg. `run_quantum` picks shim N by `args.len()`
+    /// from `Process::pending_resume_matched`.
+    pub(crate) resume_matched_addrs: [*const u8; 9],
 }
 
 impl CompiledModule {
@@ -244,6 +253,132 @@ impl CompiledModule {
             fz_runtime::yield_flag::FZ_SHOULD_YIELD.store(0, std::sync::atomic::Ordering::Relaxed);
         }
 
+        // fz-70q (B3 A) — selective-receive wakeup. Set by the sender-
+        // probe in `send_via_current_runtime` (or the after-timer fire in
+        // `drain_expired_timers`) when a matcher hit picked the winning
+        // clause; the message has already been consumed and the bound
+        // values extracted, so no mailbox poll. Dispatch by bound-arg
+        // count via the matching fz_resume_matched_N shim. The shim
+        // cross-CCs into the clause-body closure
+        // (`load cont+16; call_indirect Tail (args..., cont)`).
+        // Mutually exclusive with parked_cont (different park kinds); we
+        // check it first so a stale parked_cont check doesn't shadow a
+        // freshly-set resume request.
+        if let Some(resume) = process.pending_resume_matched.take() {
+            let cont_ptr = resume.cont;
+            let n = resume.args.len();
+            assert!(
+                n < self.resume_matched_addrs.len(),
+                "fz-70q: pending_resume_matched bound_arity {} exceeds shim family max {}",
+                n,
+                self.resume_matched_addrs.len() - 1
+            );
+            let shim = self.resume_matched_addrs[n];
+            // Variable-arity FFI dispatch — bounded by the shim family
+            // (N=0..=8) so an exhaustive match stays readable. Each arm
+            // transmutes to the SystemV signature emitted above and
+            // invokes the shim. The shim handles the SystemV→Tail bridge
+            // into the clause-body closure.
+            unsafe {
+                match n {
+                    0 => {
+                        type F0 = extern "C" fn(u64) -> i64;
+                        let f: F0 = std::mem::transmute(shim);
+                        let _ = f(cont_ptr as u64);
+                    }
+                    1 => {
+                        type F1 = extern "C" fn(u64, u64) -> i64;
+                        let f: F1 = std::mem::transmute(shim);
+                        let _ = f(resume.args[0].0, cont_ptr as u64);
+                    }
+                    2 => {
+                        type F2 = extern "C" fn(u64, u64, u64) -> i64;
+                        let f: F2 = std::mem::transmute(shim);
+                        let _ = f(resume.args[0].0, resume.args[1].0, cont_ptr as u64);
+                    }
+                    3 => {
+                        type F3 = extern "C" fn(u64, u64, u64, u64) -> i64;
+                        let f: F3 = std::mem::transmute(shim);
+                        let _ = f(
+                            resume.args[0].0,
+                            resume.args[1].0,
+                            resume.args[2].0,
+                            cont_ptr as u64,
+                        );
+                    }
+                    4 => {
+                        type F4 = extern "C" fn(u64, u64, u64, u64, u64) -> i64;
+                        let f: F4 = std::mem::transmute(shim);
+                        let _ = f(
+                            resume.args[0].0,
+                            resume.args[1].0,
+                            resume.args[2].0,
+                            resume.args[3].0,
+                            cont_ptr as u64,
+                        );
+                    }
+                    5 => {
+                        type F5 = extern "C" fn(u64, u64, u64, u64, u64, u64) -> i64;
+                        let f: F5 = std::mem::transmute(shim);
+                        let _ = f(
+                            resume.args[0].0,
+                            resume.args[1].0,
+                            resume.args[2].0,
+                            resume.args[3].0,
+                            resume.args[4].0,
+                            cont_ptr as u64,
+                        );
+                    }
+                    6 => {
+                        type F6 = extern "C" fn(u64, u64, u64, u64, u64, u64, u64) -> i64;
+                        let f: F6 = std::mem::transmute(shim);
+                        let _ = f(
+                            resume.args[0].0,
+                            resume.args[1].0,
+                            resume.args[2].0,
+                            resume.args[3].0,
+                            resume.args[4].0,
+                            resume.args[5].0,
+                            cont_ptr as u64,
+                        );
+                    }
+                    7 => {
+                        type F7 = extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64) -> i64;
+                        let f: F7 = std::mem::transmute(shim);
+                        let _ = f(
+                            resume.args[0].0,
+                            resume.args[1].0,
+                            resume.args[2].0,
+                            resume.args[3].0,
+                            resume.args[4].0,
+                            resume.args[5].0,
+                            resume.args[6].0,
+                            cont_ptr as u64,
+                        );
+                    }
+                    8 => {
+                        type F8 =
+                            extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64, u64) -> i64;
+                        let f: F8 = std::mem::transmute(shim);
+                        let _ = f(
+                            resume.args[0].0,
+                            resume.args[1].0,
+                            resume.args[2].0,
+                            resume.args[3].0,
+                            resume.args[4].0,
+                            resume.args[5].0,
+                            resume.args[6].0,
+                            resume.args[7].0,
+                            cont_ptr as u64,
+                        );
+                    }
+                    _ => unreachable!(),
+                }
+            }
+            process.next_frame = std::ptr::null_mut();
+            park_time_gc(process);
+            return;
+        }
         // fz-cps.1.11 — wakeup path: if the task has a parked_cont and
         // a message waiting, dispatch via the SystemV→Tail-CC
         // fz_resume_park shim. The shim cross-CC calls the cont closure
@@ -1041,6 +1176,10 @@ pub struct CompiledMetadata {
     pub fn_halt_kinds: HashMap<u32, u32>,
     /// fz-02r.5 — FuncIds for the 9 mid-flight resume shims (arg count 0..=8).
     pub mid_flight_resume_ids: [FuncId; 9],
+    /// fz-70q (B3 step A+B) — FuncIds for the 9 selective-receive resume
+    /// shims, one per bound-arg count (0..=8). See
+    /// `CompiledModule::resume_matched_addrs` for body shape.
+    pub resume_matched_ids: [FuncId; 9],
 }
 
 /// fz-ul4.29.2 — Two-way mapping between (FnId, input-Descr-tuple) and
@@ -1301,6 +1440,13 @@ impl Backend for JitBackend {
             }
             arr
         };
+        let resume_matched_addrs = {
+            let mut arr = [std::ptr::null::<u8>(); 9];
+            for (i, fid) in meta.resume_matched_ids.iter().enumerate() {
+                arr[i] = jmod.get_finalized_function(*fid);
+            }
+            arr
+        };
         Ok(CompiledModule {
             module: jmod,
             fn_ptrs,
@@ -1317,6 +1463,7 @@ impl Backend for JitBackend {
             halt_cont_body_addrs,
             fn_halt_kinds: meta.fn_halt_kinds,
             mid_flight_resume_addrs,
+            resume_matched_addrs,
         })
     }
 }
@@ -3148,6 +3295,62 @@ pub fn compile_with_backend<B: Backend>(
         }
         ids
     };
+    // fz-70q (B3 step A+B) — generate 9 selective-receive resume shims
+    // (one per clause bound-arg count 0..=8). Each shim is SystemV
+    // `(a0:i64, ..., aN-1:i64, cont:i64) -> i64` and tail-calls the
+    // closure body at `cont+16` with the same args, switching to Tail-CC
+    // across the SystemV→Tail seam. Same pattern as fz_resume_park
+    // (1-arg msg version) but with variable N bound args.
+    let resume_matched_ids: [FuncId; 9] = {
+        let mut ids = [runtime.mid_flight_roots_ptr_id; 9]; // placeholder; overwritten below
+        for (n, id_slot) in ids.iter_mut().enumerate() {
+            let shim_name = format!("fz_resume_matched_{}", n);
+            let mut shim_sig = Signature::new(CallConv::SystemV);
+            for _ in 0..n {
+                shim_sig.params.push(AbiParam::new(types::I64));
+            }
+            shim_sig.params.push(AbiParam::new(types::I64)); // cont
+            shim_sig.returns.push(AbiParam::new(types::I64));
+            let shim_id = backend
+                .module_mut()
+                .declare_function(&shim_name, Linkage::Local, &shim_sig)
+                .map_err(|e| CodegenError::new(format!("declare {}: {}", shim_name, e)))?;
+            *id_slot = shim_id;
+            emit_fn_body(
+                backend.module_mut(),
+                &mut fbctx,
+                shim_sig,
+                shim_id,
+                move |_m, b| {
+                    let entry = b.create_block();
+                    b.append_block_params_for_function_params(entry);
+                    b.switch_to_block(entry);
+                    b.seal_block(entry);
+                    let mut args: Vec<ir::Value> = Vec::with_capacity(n + 1);
+                    for i in 0..n {
+                        args.push(b.block_params(entry)[i]);
+                    }
+                    let cont = b.block_params(entry)[n];
+                    args.push(cont);
+                    let code =
+                        b.ins()
+                            .load(types::I64, MemFlags::trusted(), cont, HEADER_SIZE);
+                    let mut tail_sig = Signature::new(CallConv::Tail);
+                    for _ in 0..(n + 1) {
+                        tail_sig.params.push(AbiParam::new(types::I64));
+                    }
+                    tail_sig.returns.push(AbiParam::new(types::I64));
+                    let sig_ref = b.func.import_signature(tail_sig);
+                    let inst = b.ins().call_indirect(sig_ref, code, &args);
+                    let r = b.inst_results(inst)[0];
+                    b.ins().return_(&[r]);
+                },
+            )
+            .map_err(|e| CodegenError::new(format!("define {}: {}", shim_name, e)))?;
+        }
+        ids
+    };
+
     let metadata = CompiledMetadata {
         fn_ids,
         user_schemas,
@@ -3169,6 +3372,7 @@ pub fn compile_with_backend<B: Backend>(
         ],
         fn_halt_kinds,
         mid_flight_resume_ids,
+        resume_matched_ids,
     };
 
     // Backend-specific metadata carriers (no-op for JIT; dispatch + main
