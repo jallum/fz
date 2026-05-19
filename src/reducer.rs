@@ -50,29 +50,17 @@ pub fn as_int_lit(d: &Descr) -> Option<i64> {
 
 /// Singleton float.
 pub fn as_float_lit(d: &Descr) -> Option<F64Bits> {
-    if other_axes_empty_except("floats", d) && !d.floats.cofinite && d.floats.set.len() == 1 {
-        d.floats.set.iter().next().copied()
-    } else {
-        None
-    }
+    d.as_float_singleton()
 }
 
 /// Singleton atom name.
 pub fn as_atom_lit(d: &Descr) -> Option<&str> {
-    if other_axes_empty_except("atoms", d) && !d.atoms.cofinite && d.atoms.set.len() == 1 {
-        d.atoms.set.iter().next().map(String::as_str)
-    } else {
-        None
-    }
+    d.as_atom_singleton()
 }
 
 /// Singleton string.
 pub fn as_str_lit(d: &Descr) -> Option<&str> {
-    if other_axes_empty_except("strs", d) && !d.strs.cofinite && d.strs.set.len() == 1 {
-        d.strs.set.iter().next().map(String::as_str)
-    } else {
-        None
-    }
+    d.as_str_singleton()
 }
 
 /// `nil` and only nil.
@@ -95,19 +83,9 @@ pub fn as_bool_lit(d: &Descr) -> Option<bool> {
 /// Tuple of literal elements. Returns the element Descrs in order if every
 /// element is literal; None otherwise.
 pub fn as_tuple_lit(d: &Descr) -> Option<&[Descr]> {
-    if !other_axes_empty_except("tuples", d) {
-        return None;
-    }
-    if d.tuples.len() != 1 {
-        return None;
-    }
-    let conj = &d.tuples[0];
-    if !conj.neg.is_empty() || conj.pos.len() != 1 {
-        return None;
-    }
-    let sig = &conj.pos[0];
-    if sig.elems.iter().all(is_literal) {
-        Some(&sig.elems)
+    let elems = d.as_tuple_singleton()?;
+    if elems.iter().all(is_literal) {
+        Some(elems)
     } else {
         None
     }
@@ -119,30 +97,6 @@ fn is_closure_lit_literal(d: &Descr) -> bool {
         Some(lit) => lit.captures.iter().all(is_literal),
         None => false,
     }
-}
-
-/// Helper: every axis except the named one is empty.
-fn other_axes_empty_except(axis: &str, d: &Descr) -> bool {
-    let bits_ok = d.basic.is_empty();
-    let atoms_ok = axis == "atoms" || d.atoms.is_none();
-    let ints_ok = axis == "ints" || d.ints.is_none();
-    let floats_ok = axis == "floats" || d.floats.is_none();
-    let strs_ok = axis == "strs" || d.strs.is_none();
-    let tuples_ok = axis == "tuples" || d.tuples.is_empty();
-    let lists_ok = d.lists.is_empty();
-    let funcs_ok = axis == "funcs" || d.funcs.is_empty();
-    let maps_ok = d.maps.is_empty();
-    let opaques_ok = d.opaques.is_none();
-    bits_ok
-        && atoms_ok
-        && ints_ok
-        && floats_ok
-        && strs_ok
-        && tuples_ok
-        && lists_ok
-        && funcs_ok
-        && maps_ok
-        && opaques_ok
 }
 
 // ---------------------------------------------------------------------------
@@ -399,7 +353,10 @@ fn fold_list_is_nil(v: Var, env: &HashMap<Var, Descr>) -> Option<Descr> {
     // — i.e. provably the empty list — still folds to `true`.
     if is_nil_only(d) {
         Some(bool_descr(false))
-    } else if d.intersect(&Descr::nil()).is_empty() && !d.lists.is_empty() {
+    } else if d.intersect(&Descr::nil()).is_empty()
+        && d.components()
+            .any(|c| matches!(c, crate::types::Component::Lists(_)))
+    {
         // Disjoint from `nil` and has a non-empty `lists` axis: this is
         // either `[]` or a cons. Without a finer "non-empty list" track
         // in the lattice we can't separate the two, so we leave the
@@ -595,40 +552,25 @@ fn match_tuple_pattern(
     bindings: &mut HashMap<String, Descr>,
     atom_names: &[String],
 ) -> Match {
-    // Need d to be a single positive tuple clause of matching arity.
-    // It need NOT have literal elements — elements can be wide Descrs
-    // matched by Var/Wildcard patterns.
-    if d.tuples.len() != 1 {
-        // Multi-clause tuple Descrs (union of shapes) are indeterminate.
-        return if d.tuples.is_empty() {
-            Match::No
-        } else {
-            Match::Opaque
-        };
-    }
-    let conj = &d.tuples[0];
-    if !conj.neg.is_empty() || conj.pos.len() != 1 {
-        return Match::Opaque;
-    }
-    let sig = &conj.pos[0];
-    if sig.elems.len() != elems.len() {
+    // Need d to be a single-shape tuple (one positive clause, one sig, no
+    // negations, no other axes populated). Elements need NOT be literal —
+    // they can be wide Descrs matched by Var/Wildcard.
+    //
+    // If d admits no tuples at all, it's a definite No. If it admits tuples
+    // but not as a single shape (multi-clause, mixed axes, negations), it's
+    // Opaque.
+    use crate::types::Component;
+    let admits_tuple = d
+        .components()
+        .any(|c| matches!(c, Component::Tuples(_)));
+    let Some(sig_elems) = d.as_tuple_singleton() else {
+        return if admits_tuple { Match::Opaque } else { Match::No };
+    };
+    if sig_elems.len() != elems.len() {
         return Match::No;
     }
-    // Must not have other axes populated — otherwise subject is a union.
-    let only_tuple = d.basic.is_empty()
-        && d.atoms.is_none()
-        && d.ints.is_none()
-        && d.floats.is_none()
-        && d.strs.is_none()
-        && d.lists.is_empty()
-        && d.funcs.is_empty()
-        && d.maps.is_empty()
-        && d.opaques.is_none();
-    if !only_tuple {
-        return Match::Opaque;
-    }
     let mut saw_opaque = false;
-    for (p, ed) in elems.iter().zip(sig.elems.iter()) {
+    for (p, ed) in elems.iter().zip(sig_elems.iter()) {
         match match_pattern(&p.node, ed, bindings, atom_names) {
             Match::Yes => {}
             Match::No => return Match::No,

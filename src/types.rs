@@ -727,21 +727,69 @@ impl Descr {
     /// integer value with all other type axes empty), return that integer.
     /// Used by ir_fold to detect BinOp results the typer proved to a constant.
     pub fn as_int_singleton(&self) -> Option<i64> {
-        if !self.ints.cofinite
-            && self.ints.set.len() == 1
-            && self.atoms.is_none()
-            && self.floats.is_none()
-            && self.strs.is_none()
-            && self.basic.is_empty()
-            && self.tuples.is_empty()
-            && self.lists.is_empty()
-            && self.funcs.is_empty()
-            && self.maps.is_empty()
-        {
-            self.ints.set.iter().next().copied()
-        } else {
-            None
+        match self.single_component()? {
+            Component::Ints(v) => v.singleton(),
+            _ => None,
         }
+    }
+
+    /// Singleton float. None if any other axis is non-empty or the float
+    /// axis isn't a singleton finite set.
+    pub fn as_float_singleton(&self) -> Option<F64Bits> {
+        match self.single_component()? {
+            Component::Floats(v) => {
+                if !v.cofinite() && !v.is_any() {
+                    self.floats.set.iter().next().copied()
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// Singleton atom name.
+    pub fn as_atom_singleton(&self) -> Option<&str> {
+        match self.single_component()? {
+            Component::Atoms(v) => {
+                let mut it = v.finite()?;
+                let first = it.next()?;
+                if it.next().is_none() { Some(first) } else { None }
+            }
+            _ => None,
+        }
+    }
+
+    /// Singleton string.
+    pub fn as_str_singleton(&self) -> Option<&str> {
+        match self.single_component()? {
+            Component::Strs(v) => v.singleton(),
+            _ => None,
+        }
+    }
+
+    /// Single-shape tuple: exactly one positive clause with one positive sig
+    /// and no negations, and no other axis populated. Returns the element
+    /// Descr slice. Elements may be wide — caller decides if it cares.
+    pub fn as_tuple_singleton(&self) -> Option<&[Descr]> {
+        match self.single_component()? {
+            Component::Tuples(_) => {
+                if self.tuples.len() != 1 { return None; }
+                let conj = &self.tuples[0];
+                if !conj.neg.is_empty() || conj.pos.len() != 1 { return None; }
+                Some(&conj.pos[0].elems)
+            }
+            _ => None,
+        }
+    }
+
+    /// Returns the single present Component, or None if zero or more than
+    /// one is present. Used by the `as_*_singleton` accessors to enforce
+    /// "exactly one axis populated."
+    fn single_component(&self) -> Option<Component<'_>> {
+        let mut it = self.components();
+        let first = it.next()?;
+        if it.next().is_some() { None } else { Some(first) }
     }
 
     /// Top of the string/binary axis. Promoted from test-only in
