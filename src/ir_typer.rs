@@ -365,7 +365,28 @@ pub fn resolve_closure_return(
         }
         for sig in &c.pos {
             match &sig.lit {
-                None => acc = acc.union(&sig.ret),
+                None => {
+                    // fz-try.6 — if the arrow signature carries unsubstituted
+                    // type vars (after C3, closure_lit() stubs use Var(α)/Var(β)
+                    // instead of any()/any()), build σ positionally from
+                    // sig.args ⇄ arg_descrs and instantiate sig.ret. Vars not
+                    // pinned by the args pass through; downstream emptiness
+                    // checks surface inconsistent witnesses.
+                    if sig.ret.has_vars() || sig.args.iter().any(|d| d.has_vars()) {
+                        if sig.args.len() == arg_descrs.len() {
+                            let mut sigma = HashMap::new();
+                            for (pat, wit) in sig.args.iter().zip(arg_descrs.iter()) {
+                                Descr::collect_subst_into(pat, wit, &mut sigma);
+                            }
+                            acc = acc.union(&sig.ret.instantiate(&sigma));
+                        } else {
+                            // Arity mismatch — fall through to broad join.
+                            acc = acc.union(&sig.ret);
+                        }
+                    } else {
+                        acc = acc.union(&sig.ret);
+                    }
+                }
                 Some(lit) => {
                     if sig.args.len() != arg_descrs.len() {
                         // Arity mismatch (shouldn't happen if MakeClosure

@@ -414,6 +414,219 @@ impl Descr {
         d
     }
 
+    /// fz-try.6 — does this Descr (or any nested Descr in its structural
+    /// axes) carry at least one *named* type variable id (one a substitution
+    /// could bind)? Pure read; substitution can be skipped when this is false.
+    ///
+    /// Note: `Descr::any()` has `vars: cofinite-empty` (the *universe* of all
+    /// vars). That is not a substitutable pattern — σ binds specific ids, not
+    /// "every var" — so `Descr::any().has_vars() == false`.
+    pub fn has_vars(&self) -> bool {
+        if !self.vars.set.is_empty() {
+            return true;
+        }
+        let dnf_any = |dnf: &[Conj<ArrowSig>]| {
+            dnf.iter().any(|c| {
+                c.pos
+                    .iter()
+                    .chain(c.neg.iter())
+                    .any(|sig| sig.args.iter().any(|d| d.has_vars()) || sig.ret.has_vars())
+            })
+        };
+        let tuple_any = self.tuples.iter().any(|c| {
+            c.pos
+                .iter()
+                .chain(c.neg.iter())
+                .any(|sig| sig.elems.iter().any(|d| d.has_vars()))
+        });
+        let list_any = self.lists.iter().any(|c| {
+            c.pos
+                .iter()
+                .chain(c.neg.iter())
+                .any(|sig| sig.elem.has_vars())
+        });
+        let map_any = self.maps.iter().any(|c| {
+            c.pos
+                .iter()
+                .chain(c.neg.iter())
+                .any(|sig| sig.fields.values().any(|d| d.has_vars()))
+        });
+        tuple_any || list_any || dnf_any(&self.funcs) || map_any
+    }
+
+    /// fz-try.6 — call-site substitution. Walks the descriptor and replaces
+    /// every occurrence of `Var(id)` in `self.vars` (or any nested Descr)
+    /// with `σ[id]`. Vars not in σ pass through unchanged. The walk is
+    /// structural and pure — no algebra changes, no fresh-var introduction,
+    /// no recursion guard needed (Descr trees terminate).
+    ///
+    /// This is the realization of the principle named in
+    /// `docs/descr-cleanup.md`: lattice axes are uniform; substitution is
+    /// operational. The lattice does not know which of its names
+    /// substitute — that's a property of the caller. This walk is the
+    /// caller.
+    pub fn instantiate(&self, sigma: &std::collections::HashMap<TypeVarId, Descr>) -> Descr {
+        if !self.has_vars() {
+            return self.clone();
+        }
+        // Split this Descr's vars axis into "covered by σ" and "passes through."
+        let mut substituted = Descr::none();
+        let mut passthrough_vars = self.vars.clone();
+        if !self.vars.cofinite {
+            // Finite set of explicit var ids — substitute each that σ covers.
+            let mut new_set = std::collections::BTreeSet::new();
+            for id in &self.vars.set {
+                match sigma.get(id) {
+                    Some(replacement) => {
+                        substituted = substituted.union(replacement);
+                    }
+                    None => {
+                        new_set.insert(*id);
+                    }
+                }
+            }
+            passthrough_vars = LiteralSet {
+                set: new_set,
+                cofinite: false,
+            };
+        }
+        // Build the substituted-Descr with concrete axes preserved, vars
+        // partitioned, and nested Descrs in structural axes recursively
+        // instantiated. Then union the substitution-produced material.
+        let walked_tuples: Vec<Conj<TupleSig>> = self
+            .tuples
+            .iter()
+            .map(|c| Conj {
+                pos: c
+                    .pos
+                    .iter()
+                    .map(|sig| TupleSig {
+                        elems: sig.elems.iter().map(|d| d.instantiate(sigma)).collect(),
+                    })
+                    .collect(),
+                neg: c
+                    .neg
+                    .iter()
+                    .map(|sig| TupleSig {
+                        elems: sig.elems.iter().map(|d| d.instantiate(sigma)).collect(),
+                    })
+                    .collect(),
+            })
+            .collect();
+        let walked_lists: Vec<Conj<ListSig>> = self
+            .lists
+            .iter()
+            .map(|c| Conj {
+                pos: c
+                    .pos
+                    .iter()
+                    .map(|sig| ListSig {
+                        elem: Box::new(sig.elem.instantiate(sigma)),
+                    })
+                    .collect(),
+                neg: c
+                    .neg
+                    .iter()
+                    .map(|sig| ListSig {
+                        elem: Box::new(sig.elem.instantiate(sigma)),
+                    })
+                    .collect(),
+            })
+            .collect();
+        let walked_funcs: Vec<Conj<ArrowSig>> = self
+            .funcs
+            .iter()
+            .map(|c| Conj {
+                pos: c
+                    .pos
+                    .iter()
+                    .map(|sig| ArrowSig {
+                        args: sig.args.iter().map(|d| d.instantiate(sigma)).collect(),
+                        ret: Box::new(sig.ret.instantiate(sigma)),
+                        lit: sig.lit.clone(),
+                    })
+                    .collect(),
+                neg: c
+                    .neg
+                    .iter()
+                    .map(|sig| ArrowSig {
+                        args: sig.args.iter().map(|d| d.instantiate(sigma)).collect(),
+                        ret: Box::new(sig.ret.instantiate(sigma)),
+                        lit: sig.lit.clone(),
+                    })
+                    .collect(),
+            })
+            .collect();
+        let walked_maps: Vec<Conj<MapSig>> = self
+            .maps
+            .iter()
+            .map(|c| Conj {
+                pos: c
+                    .pos
+                    .iter()
+                    .map(|sig| MapSig {
+                        fields: sig
+                            .fields
+                            .iter()
+                            .map(|(k, v)| (k.clone(), v.instantiate(sigma)))
+                            .collect(),
+                    })
+                    .collect(),
+                neg: c
+                    .neg
+                    .iter()
+                    .map(|sig| MapSig {
+                        fields: sig
+                            .fields
+                            .iter()
+                            .map(|(k, v)| (k.clone(), v.instantiate(sigma)))
+                            .collect(),
+                    })
+                    .collect(),
+            })
+            .collect();
+        let base = Descr {
+            basic: self.basic,
+            atoms: self.atoms.clone(),
+            ints: self.ints.clone(),
+            floats: self.floats.clone(),
+            strs: self.strs.clone(),
+            opaques: self.opaques.clone(),
+            vars: passthrough_vars,
+            tuples: walked_tuples,
+            lists: walked_lists,
+            funcs: walked_funcs,
+            maps: walked_maps,
+        };
+        base.union(&substituted)
+    }
+
+    /// fz-try.6 — extract a substitution σ from positionally matching
+    /// `pattern` (a Descr with vars) against `witness` (a concrete Descr).
+    /// For each Var(α) appearing in `pattern`'s top-level `vars` axis, bind
+    /// α → witness. Vars buried inside structural axes do not contribute
+    /// (call-site σ-construction is positional, not structural — the
+    /// witness's shape there can't be matched without unification, which
+    /// the design rejects).
+    ///
+    /// If σ would bind the same id to incompatible witnesses, later bindings
+    /// win — call sites supplying inconsistent witnesses are caller bugs,
+    /// surfaced by the typer's downstream emptiness checks.
+    pub fn collect_subst_into(
+        pattern: &Descr,
+        witness: &Descr,
+        sigma: &mut std::collections::HashMap<TypeVarId, Descr>,
+    ) {
+        if pattern.vars.cofinite {
+            // pattern.vars is "any var" — meaningless as a binding source;
+            // skip. (This shape arises only from Descr::any() patterns.)
+            return;
+        }
+        for id in &pattern.vars.set {
+            sigma.insert(*id, witness.clone());
+        }
+    }
+
     // ---- basic types ----
 
     fn from_basic(b: BasicBits) -> Self {
@@ -2716,5 +2929,155 @@ mod tests {
         let o = Descr::opaque_of("alpha");
         let i = a.intersect(&o);
         assert!(i.is_empty(), "α and opaque(\"alpha\") must not overlap");
+    }
+
+    // ------------------------------------------------------------------
+    // fz-try.6 — instantiation and σ-collection
+    // ------------------------------------------------------------------
+
+    fn sigma_of(bindings: &[(u32, Descr)]) -> std::collections::HashMap<TypeVarId, Descr> {
+        bindings
+            .iter()
+            .map(|(id, d)| (TypeVarId(*id), d.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn has_vars_distinguishes_concrete_from_polymorphic() {
+        assert!(!Descr::int().has_vars(), "int has no vars");
+        assert!(
+            !Descr::any().has_vars(),
+            "any (cofinite-empty vars) has no specific vars"
+        );
+        assert!(Descr::var(TypeVarId(0)).has_vars(), "var(α0) has vars");
+    }
+
+    #[test]
+    fn instantiate_replaces_top_level_var() {
+        let pattern = Descr::var(TypeVarId(0));
+        let result = pattern.instantiate(&sigma_of(&[(0, Descr::int())]));
+        assert!(
+            result.is_equiv(&Descr::int()),
+            "α[α→int] = int, got {}",
+            result
+        );
+    }
+
+    #[test]
+    fn instantiate_is_identity_when_no_vars_match() {
+        let pattern = Descr::var(TypeVarId(0));
+        let result = pattern.instantiate(&sigma_of(&[(1, Descr::int())]));
+        // α0 not in σ; passes through unchanged.
+        assert!(result.is_equiv(&pattern), "α0[α1→int] = α0, got {}", result);
+    }
+
+    #[test]
+    fn instantiate_walks_into_lists() {
+        // list of α → list of int under σ.
+        let list_of_var = Descr::list_of(Descr::var(TypeVarId(0)));
+        let result = list_of_var.instantiate(&sigma_of(&[(0, Descr::int())]));
+        let list_of_int = Descr::list_of(Descr::int());
+        assert!(
+            result.is_equiv(&list_of_int),
+            "list(α)[α→int] = list(int), got {}",
+            result
+        );
+    }
+
+    #[test]
+    fn instantiate_walks_into_tuples() {
+        // tuple(α, β) → tuple(int, str) under σ.
+        let t = Descr::tuple_of(vec![Descr::var(TypeVarId(0)), Descr::var(TypeVarId(1))]);
+        let result = t.instantiate(&sigma_of(&[(0, Descr::int()), (1, Descr::str_t())]));
+        let expected = Descr::tuple_of(vec![Descr::int(), Descr::str_t()]);
+        assert!(
+            result.is_equiv(&expected),
+            "tuple(α,β)[α→int,β→str] = tuple(int,str), got {}",
+            result
+        );
+    }
+
+    #[test]
+    fn instantiate_walks_into_arrow_args_and_ret() {
+        // (α) -> β under σ = {α→int, β→bool} becomes (int) -> bool.
+        let arrow = Descr {
+            funcs: vec![Conj::pos_of(ArrowSig {
+                args: vec![Descr::var(TypeVarId(0))],
+                ret: Box::new(Descr::var(TypeVarId(1))),
+                lit: None,
+            })],
+            ..Descr::none()
+        };
+        let result = arrow.instantiate(&sigma_of(&[(0, Descr::int()), (1, Descr::bool_t())]));
+        // Pull the (single) clause and check its shape.
+        assert_eq!(result.funcs.len(), 1);
+        let clause = &result.funcs[0];
+        assert_eq!(clause.pos.len(), 1);
+        let sig = &clause.pos[0];
+        assert!(sig.args[0].is_equiv(&Descr::int()), "arg should be int");
+        assert!(sig.ret.is_equiv(&Descr::bool_t()), "ret should be bool");
+    }
+
+    #[test]
+    fn instantiate_preserves_lit_tag_on_arrow() {
+        let lit = ClosureLit {
+            fn_id: crate::fz_ir::FnId(42),
+            captures: vec![],
+        };
+        let arrow = Descr {
+            funcs: vec![Conj::pos_of(ArrowSig {
+                args: vec![Descr::var(TypeVarId(0))],
+                ret: Box::new(Descr::int()),
+                lit: Some(lit.clone()),
+            })],
+            ..Descr::none()
+        };
+        let result = arrow.instantiate(&sigma_of(&[(0, Descr::int())]));
+        // The lit tag must survive the walk so closure-identity tracking
+        // downstream still resolves to the same closure value.
+        assert!(result.funcs[0].pos[0].lit.is_some());
+        let preserved = result.funcs[0].pos[0].lit.as_ref().unwrap();
+        assert_eq!(preserved.fn_id, lit.fn_id);
+        assert_eq!(preserved.captures, lit.captures);
+    }
+
+    #[test]
+    fn collect_subst_binds_top_level_var_to_witness() {
+        let mut sigma = std::collections::HashMap::new();
+        Descr::collect_subst_into(&Descr::var(TypeVarId(0)), &Descr::int(), &mut sigma);
+        assert_eq!(sigma.len(), 1);
+        assert!(sigma[&TypeVarId(0)].is_equiv(&Descr::int()));
+    }
+
+    #[test]
+    fn collect_subst_is_noop_on_concrete_pattern() {
+        let mut sigma = std::collections::HashMap::new();
+        Descr::collect_subst_into(&Descr::int(), &Descr::int(), &mut sigma);
+        assert!(sigma.is_empty(), "no vars in pattern means no bindings");
+    }
+
+    #[test]
+    fn collect_subst_then_instantiate_is_identity_on_concrete_args() {
+        // The canonical call-site flow: pattern (Var α) ⇄ witness (int)
+        // produces σ = {α→int}; instantiating the *return* pattern Var(α)
+        // with σ yields the witness back.
+        let pat_arg = Descr::var(TypeVarId(0));
+        let pat_ret = Descr::var(TypeVarId(0));
+        let witness = Descr::int();
+        let mut sigma = std::collections::HashMap::new();
+        Descr::collect_subst_into(&pat_arg, &witness, &mut sigma);
+        let resolved_ret = pat_ret.instantiate(&sigma);
+        assert!(resolved_ret.is_equiv(&Descr::int()));
+    }
+
+    #[test]
+    fn collect_subst_distinct_vars_bind_independently() {
+        // (α, β) ⇄ (int, bool) ⇒ σ = {α→int, β→bool}.
+        let mut sigma = std::collections::HashMap::new();
+        Descr::collect_subst_into(&Descr::var(TypeVarId(0)), &Descr::int(), &mut sigma);
+        Descr::collect_subst_into(&Descr::var(TypeVarId(1)), &Descr::bool_t(), &mut sigma);
+        assert_eq!(sigma.len(), 2);
+        assert!(sigma[&TypeVarId(0)].is_equiv(&Descr::int()));
+        assert!(sigma[&TypeVarId(1)].is_equiv(&Descr::bool_t()));
     }
 }
