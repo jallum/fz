@@ -592,6 +592,62 @@ pub enum Term {
         ident: CallsiteIdent,
         continuation: Cont,
     },
+    /// fz-yxs — selective `receive do … after … end` (see
+    /// `docs/receive-matched.md §7`). Each `ReceiveClause` carries the
+    /// pattern AST verbatim plus the FnId for its body (and optional
+    /// guard). Backends materialise the matcher from the pattern AST;
+    /// the body/guard fns receive bound pattern vars (source order)
+    /// followed by `captures`. Body fns tail-call the join cont set
+    /// up by lowering — Term::ReceiveMatched is itself a terminator.
+    ///
+    /// `pinned` carries the outer-scope vars referenced via `^name`
+    /// inside any clause's pattern (snapshotted at the receive site);
+    /// `captures` carries the outer-scope vars threaded into every
+    /// body/guard/after fn so they can keep evaluating in scope.
+    ReceiveMatched {
+        ident: CallsiteIdent,
+        clauses: Vec<ReceiveClause>,
+        after: Option<ReceiveAfter>,
+        /// Outer-scope vars referenced by `^name` patterns across all
+        /// clauses, paired with their source names so backends can
+        /// resolve `^name` lookups when materialising the matcher.
+        /// Deduplicated by name at lowering time.
+        pinned: Vec<(String, Var)>,
+        captures: Vec<Var>,
+    },
+}
+
+/// fz-yxs — one arm of a `Term::ReceiveMatched`.
+#[derive(Debug, Clone)]
+pub struct ReceiveClause {
+    /// Source pattern. Backends compile this into the leaf matcher.
+    pub pattern: crate::ast::Spanned<crate::ast::Pattern>,
+    /// Names of the pattern's bound vars in source order. The body
+    /// and guard fns take these as their first `bound_names.len()`
+    /// parameters; the rest of their params are the captures.
+    pub bound_names: Vec<String>,
+    /// Optional guard fn. Params = bound vars ++ captures. Returns
+    /// bool. Pure-codegen restricted (verified by ir_typer via F3).
+    pub guard: Option<FnId>,
+    /// Clause body fn. Params = bound vars ++ captures. Body tail-
+    /// calls the join cont set up by ir_lower.
+    pub body: FnId,
+    /// Span of the whole `pattern when guard -> body` clause.
+    pub span: Span,
+}
+
+/// fz-yxs — optional `after timeout -> body` tail clause.
+#[derive(Debug, Clone)]
+pub struct ReceiveAfter {
+    /// Timeout value, computed into a Var before the ReceiveMatched
+    /// term. Interpreted at runtime as milliseconds, or the atom
+    /// `:infinity` for "no timer".
+    pub timeout: Var,
+    /// After body fn. Params = captures only (no message). Tail-calls
+    /// the join cont set up by ir_lower.
+    pub body: FnId,
+    /// Span of the `after … -> …` clause.
+    pub span: Span,
 }
 
 impl Term {
@@ -618,7 +674,8 @@ impl Term {
             | Term::TailCall { ident, .. }
             | Term::CallClosure { ident, .. }
             | Term::TailCallClosure { ident, .. }
-            | Term::Receive { ident, .. } => Some(ident),
+            | Term::Receive { ident, .. }
+            | Term::ReceiveMatched { ident, .. } => Some(ident),
             _ => None,
         }
     }
@@ -641,7 +698,8 @@ impl Term {
             | Term::TailCall { ident, .. }
             | Term::CallClosure { ident, .. }
             | Term::TailCallClosure { ident, .. }
-            | Term::Receive { ident, .. } => *ident = new_ident,
+            | Term::Receive { ident, .. }
+            | Term::ReceiveMatched { ident, .. } => *ident = new_ident,
             _ => {}
         }
     }
@@ -1208,6 +1266,29 @@ impl fmt::Display for Term {
             Term::Return(v) => write!(f, "return {}", v),
             Term::Halt(v) => write!(f, "halt {}", v),
             Term::Receive { continuation, .. } => write!(f, "receive -> {}", continuation),
+            Term::ReceiveMatched {
+                clauses,
+                after,
+                pinned,
+                captures,
+                ..
+            } => {
+                let pin_strs: Vec<String> = pinned
+                    .iter()
+                    .map(|(n, v)| format!("^{}={}", n, v))
+                    .collect();
+                write!(
+                    f,
+                    "receive_matched [{} clauses] pinned=[{}] caps=[{}]",
+                    clauses.len(),
+                    pin_strs.join(", "),
+                    fmt_var_list(captures),
+                )?;
+                if let Some(a) = after {
+                    write!(f, " after({} -> fn{})", a.timeout, a.body.0)?;
+                }
+                Ok(())
+            }
         }
     }
 }

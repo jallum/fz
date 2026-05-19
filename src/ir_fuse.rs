@@ -313,6 +313,26 @@ pub(crate) fn subst_term(t: &Term, subst: &HashMap<Var, Var>) -> Term {
             ident: ident.clone(),
             continuation: subst_cont(continuation, subst),
         },
+        // fz-yxs — pinned/captures Vars are substituted; the timeout Var
+        // (if present on an after clause) is substituted too. Clause and
+        // after body/guard FnIds are not Vars and pass through unchanged.
+        Term::ReceiveMatched {
+            ident,
+            clauses,
+            after,
+            pinned,
+            captures,
+        } => Term::ReceiveMatched {
+            ident: ident.clone(),
+            clauses: clauses.clone(),
+            after: after.as_ref().map(|a| crate::fz_ir::ReceiveAfter {
+                timeout: sv(a.timeout),
+                body: a.body,
+                span: a.span,
+            }),
+            pinned: pinned.iter().map(|(n, v)| (n.clone(), sv(*v))).collect(),
+            captures: captures.iter().map(|x| sv(*x)).collect(),
+        },
     }
 }
 

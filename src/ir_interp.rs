@@ -467,6 +467,17 @@ fn run_fn(module: &Module, mut fn_id: FnId, mut args: Vec<FzValue>) -> Result<In
                         }
                     }
                 }
+                // fz-yxs — IR landed in E2; interpreter evaluation lands
+                // in fz-2v3 (B1). Surface a clean unimplemented error
+                // rather than panicking so any path that reaches a
+                // ReceiveMatched without B1 wired tells the user where
+                // the next ticket lives.
+                Term::ReceiveMatched { .. } => {
+                    return Err(
+                        "Term::ReceiveMatched: interpreter evaluation lands in fz-recv.B1 (fz-2v3)"
+                            .to_string(),
+                    );
+                }
             }
         }
     }

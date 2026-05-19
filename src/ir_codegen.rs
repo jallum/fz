@@ -2264,6 +2264,9 @@ pub fn compile_with_backend<B: Backend>(
                     continuation,
                     ident: _,
                 } => natively_callable.contains(&continuation.fn_id),
+                // fz-yxs — ReceiveMatched parks via the runtime ABI; never
+                // native. Excluding here matches the parking pass.
+                Term::ReceiveMatched { .. } => false,
             });
             if !body_ok {
                 to_remove.push(f.id);
@@ -4880,6 +4883,17 @@ fn emit_terminator<M: cranelift_module::Module>(
                 b.ins().return_(&[yield_sentinel]);
             }
         }
+        // fz-yxs — IR landed in E2; JIT codegen (matcher / park site /
+        // clause framing) lands in fz-recv.B3 (fz-70q). The codegen path
+        // is unreachable today because no module compiles to ReceiveMatched
+        // without further lowering, but failing fast here makes the
+        // "haven't wired B3 yet" boundary explicit.
+        Term::ReceiveMatched { .. } => {
+            return Err(CodegenError::new(format!(
+                "Term::ReceiveMatched at block={:?}: JIT codegen lands in fz-recv.B3 (fz-70q)",
+                blk.id
+            )));
+        }
     }
     Ok(())
 }
@@ -5174,6 +5188,23 @@ fn compile_fn<M: cranelift_module::Module>(
                 ident: _,
             } => {
                 note(&continuation.captured, &mut used_by_term);
+            }
+            // fz-yxs — every Var the matcher / clause-body shim will
+            // read at runtime: pinned, captures, the timeout (if any).
+            // Clause/after body FnIds are not Vars.
+            Term::ReceiveMatched {
+                pinned,
+                captures,
+                after,
+                ..
+            } => {
+                for (_, v) in pinned {
+                    used_by_term.insert(v.0);
+                }
+                note(captures, &mut used_by_term);
+                if let Some(a) = after {
+                    used_by_term.insert(a.timeout.0);
+                }
             }
         }
         // fz-ul4.27.13 — Pre-terminator retag pass. Terminators that expect

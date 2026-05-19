@@ -1043,6 +1043,43 @@ fn compute_return_for_spec(
                 let cont_k = cont_key_for_spec(b, continuation, ft, module, effective_returns);
                 joined = joined.union(&lookup((continuation.fn_id, cont_k)));
             }
+            // fz-yxs — selective receive: union over each clause body's
+            // return Descr (called with arg key [bound_anys..., captures...])
+            // and the after body if present (called with captures only).
+            // Pattern bindings can't be narrowed without per-message info,
+            // so each bound param defaults to `any` for the key.
+            Term::ReceiveMatched {
+                clauses,
+                after,
+                captures,
+                ..
+            } => {
+                let cap_descrs: Vec<Descr> = captures
+                    .iter()
+                    .map(|cv| ft.vars.get(cv).cloned().unwrap_or_else(Descr::any))
+                    .collect();
+                for c in clauses {
+                    let body_fn = module.fn_by_id(c.body);
+                    let np = body_fn.block(body_fn.entry).params.len();
+                    let mut key: Vec<Descr> = vec![Descr::any(); c.bound_names.len()];
+                    key.extend(cap_descrs.iter().cloned());
+                    while key.len() < np {
+                        key.push(Descr::any());
+                    }
+                    key.truncate(np);
+                    joined = joined.union(&lookup((c.body, key)));
+                }
+                if let Some(a) = after {
+                    let body_fn = module.fn_by_id(a.body);
+                    let np = body_fn.block(body_fn.entry).params.len();
+                    let mut key = cap_descrs.clone();
+                    while key.len() < np {
+                        key.push(Descr::any());
+                    }
+                    key.truncate(np);
+                    joined = joined.union(&lookup((a.body, key)));
+                }
+            }
             Term::Halt(_) | Term::Goto(_, _) | Term::If { .. } => {}
         }
     }
@@ -1700,7 +1737,8 @@ pub fn type_fn(f: &FnIr, m: &Module, entry_param_types: Option<&[Descr]>) -> FnT
                 | Term::TailCallClosure { .. }
                 | Term::Return(_)
                 | Term::Halt(_)
-                | Term::Receive { .. } => {
+                | Term::Receive { .. }
+                | Term::ReceiveMatched { .. } => {
                     // Inter-fn flow goes through separate FnIr continuations;
                     // intra-fn flow stops here.
                 }
@@ -2546,6 +2584,74 @@ pub fn collect_diagnostics(module: &Module, types: &ModuleTypes) -> crate::diag:
         }
     }
 
+    // fz-yxs — pure-codegen invariant for receive matchers and guards.
+    // Walk every Term::ReceiveMatched; for each clause's guard FnId, walk
+    // every block in the guard fn body and reject any impure Prim or
+    // impure terminator (Call / Receive / Halt). The matcher itself is
+    // backend-materialised from the pattern AST in B3, so there is nothing
+    // to check at the IR level for patterns today; the pattern AST
+    // grammar already forbids fn calls inside patterns, so the second
+    // acceptance bullet ("typer rejects impure pattern") is vacuously
+    // satisfied at parse/lowering.
+    for f in &module.fns {
+        for b in &f.blocks {
+            let Term::ReceiveMatched { clauses, .. } = &b.terminator else {
+                continue;
+            };
+            for c in clauses {
+                let Some(g_fid) = c.guard else { continue };
+                let g_fn = module.fn_by_id(g_fid);
+                let guard_span = c.span;
+                let mut impure: Option<String> = None;
+                for gb in &g_fn.blocks {
+                    if let Err(e) = check_pure_codegen(&gb.stmts) {
+                        impure = Some(match e {
+                            ImpureError::Stmt { kind, .. } => match kind {
+                                ImpureKind::Allocates(what) => {
+                                    format!("guard expression allocates via `{}`", what)
+                                }
+                                ImpureKind::Extern => {
+                                    "guard expression calls an extern".into()
+                                }
+                            },
+                            ImpureError::Term(_) => unreachable!(),
+                        });
+                        break;
+                    }
+                    if let Err(e) = check_pure_term(&gb.terminator) {
+                        impure = Some(match e {
+                            ImpureError::Term(ImpureTerm::Call) => {
+                                "guard expression invokes a function (calls are not allowed)".into()
+                            }
+                            ImpureError::Term(ImpureTerm::Receive) => {
+                                "guard expression contains a `receive` (not allowed)".into()
+                            }
+                            ImpureError::Term(ImpureTerm::Halt) => {
+                                "guard expression halts (not allowed)".into()
+                            }
+                            ImpureError::Stmt { .. } => unreachable!(),
+                        });
+                        break;
+                    }
+                }
+                if let Some(reason) = impure {
+                    let d = Diagnostic::error(
+                        crate::diag::codes::TYPE_IMPURE_RECEIVE_GUARD,
+                        reason,
+                        guard_span,
+                    )
+                    .with_label(format!("in fn `{}`", f.name))
+                    .with_note(
+                        "guards in `receive` must stay in the pure-codegen subset: \
+                         constants, comparisons, type tests, and accessors — \
+                         no function calls or allocations",
+                    );
+                    out.push(d);
+                }
+            }
+        }
+    }
+
     out
 }
 
@@ -3141,6 +3247,49 @@ pub fn pretty_module_types(m: &Module, t: &ModuleTypes) -> String {
                     ));
                     out.push_str(&format!(";              cont_key={}\n", descrs_str(&ck)));
                 }
+                // fz-yxs — selective receive: render clauses (with body
+                // fn ids + bound names) and the after clause if present.
+                Term::ReceiveMatched {
+                    clauses,
+                    after,
+                    pinned,
+                    captures,
+                    ..
+                } => {
+                    let pin_vars: Vec<String> = pinned
+                        .iter()
+                        .map(|(n, v)| format!("^{}=Var({})", n, v.0))
+                        .collect();
+                    let cap_vars: Vec<String> =
+                        captures.iter().map(|v| format!("Var({})", v.0)).collect();
+                    out.push_str(&format!(
+                        ";     blk{} ReceiveMatched pinned=[{}] caps=[{}]\n",
+                        bid,
+                        pin_vars.join(", "),
+                        cap_vars.join(", "),
+                    ));
+                    for (i, c) in clauses.iter().enumerate() {
+                        out.push_str(&format!(
+                            ";              clause[{}] body={}#{} bound=[{}]{}\n",
+                            i,
+                            fn_name(c.body),
+                            c.body.0,
+                            c.bound_names.join(", "),
+                            match c.guard {
+                                Some(g) => format!(" guard={}#{}", fn_name(g), g.0),
+                                None => String::new(),
+                            },
+                        ));
+                    }
+                    if let Some(a) = after {
+                        out.push_str(&format!(
+                            ";              after timeout=Var({}) body={}#{}\n",
+                            a.timeout.0,
+                            fn_name(a.body),
+                            a.body.0,
+                        ));
+                    }
+                }
                 Term::Goto(target, args) => {
                     let arg_vars: Vec<String> =
                         args.iter().map(|v| format!("Var({})", v.0)).collect();
@@ -3184,11 +3333,9 @@ pub fn pretty_module_types(m: &Module, t: &ModuleTypes) -> String {
 // runs strictly on the IR produced by lowering. fz-yxs (E2) wires the
 // check into the `Term::ReceiveMatched` typer rule.
 //
-// The API below carries `#[allow(dead_code)]` because the production
-// caller lands in fz-yxs. Removing the allow when E2 lands is part of
-// that ticket's acceptance.
+// The API below is consumed by `collect_diagnostics`' Term::ReceiveMatched
+// guard scan (fz-yxs).
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ImpureKind {
     /// The prim allocates on the per-process heap. Variant name is the
@@ -3200,7 +3347,6 @@ pub enum ImpureKind {
     Extern,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ImpureTerm {
     /// `Call` / `TailCall` / `CallClosure` / `TailCallClosure` — invoke
@@ -3212,7 +3358,6 @@ pub enum ImpureTerm {
     Halt,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ImpureError {
     Stmt { index: usize, kind: ImpureKind },
@@ -3222,7 +3367,6 @@ pub enum ImpureError {
 /// True iff `p` is in the pure-codegen subset. See module-level comment
 /// for the rationale; see `docs/receive-matched.md §2.3` for the design
 /// constraint this enforces.
-#[allow(dead_code)]
 pub fn prim_is_pure(p: &crate::fz_ir::Prim) -> Result<(), ImpureKind> {
     use crate::fz_ir::Prim::*;
     match p {
@@ -3255,7 +3399,6 @@ pub fn prim_is_pure(p: &crate::fz_ir::Prim) -> Result<(), ImpureKind> {
 }
 
 /// Walk every Let-bound Prim in `stmts`; first offender wins.
-#[allow(dead_code)]
 pub fn check_pure_codegen(stmts: &[crate::fz_ir::Stmt]) -> Result<(), ImpureError> {
     use crate::fz_ir::Stmt;
     for (i, s) in stmts.iter().enumerate() {
@@ -3266,7 +3409,6 @@ pub fn check_pure_codegen(stmts: &[crate::fz_ir::Stmt]) -> Result<(), ImpureErro
 }
 
 /// Only Goto / If / Return are allowed in matcher / guard lowering.
-#[allow(dead_code)]
 pub fn check_pure_term(term: &crate::fz_ir::Term) -> Result<(), ImpureError> {
     use crate::fz_ir::Term::*;
     match term {
@@ -3274,7 +3416,7 @@ pub fn check_pure_term(term: &crate::fz_ir::Term) -> Result<(), ImpureError> {
         Call { .. } | TailCall { .. } | CallClosure { .. } | TailCallClosure { .. } => {
             Err(ImpureError::Term(ImpureTerm::Call))
         }
-        Receive { .. } => Err(ImpureError::Term(ImpureTerm::Receive)),
+        Receive { .. } | ReceiveMatched { .. } => Err(ImpureError::Term(ImpureTerm::Receive)),
         Halt(_) => Err(ImpureError::Term(ImpureTerm::Halt)),
     }
 }

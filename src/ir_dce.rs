@@ -63,6 +63,22 @@ pub fn dce_module_level(m: &mut Module) {
                 } => {
                     queue.push(continuation.fn_id);
                 }
+                // fz-yxs — module-level DCE: enqueue every body/guard/after
+                // fn referenced by a ReceiveMatched so they survive to the
+                // backend stage.
+                Term::ReceiveMatched {
+                    clauses, after, ..
+                } => {
+                    for c in clauses {
+                        queue.push(c.body);
+                        if let Some(g) = c.guard {
+                            queue.push(g);
+                        }
+                    }
+                    if let Some(a) = after {
+                        queue.push(a.body);
+                    }
+                }
                 _ => {}
             }
             for stmt in &block.stmts {
@@ -334,6 +350,25 @@ fn collect_term_vars(t: &Term, used: &mut HashSet<Var>) {
         } => {
             for v in &continuation.captured {
                 used.insert(*v);
+            }
+        }
+        // fz-yxs — Vars referenced by ReceiveMatched: pinned and captures
+        // are live (passed to matcher / clause-body fns), as is the
+        // computed timeout Var if there's an after clause.
+        Term::ReceiveMatched {
+            pinned,
+            captures,
+            after,
+            ..
+        } => {
+            for (_, v) in pinned {
+                used.insert(*v);
+            }
+            for v in captures {
+                used.insert(*v);
+            }
+            if let Some(a) = after {
+                used.insert(a.timeout);
             }
         }
     }

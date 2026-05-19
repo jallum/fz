@@ -61,6 +61,12 @@ pub const TYPE_NO_MATCHING_CLAUSE: DiagCode = DiagCode("type/no-matching-clause"
 pub const TYPE_DEAD_BINOP: DiagCode = DiagCode("type/dead-binop");
 pub const TYPE_SPEC_QUALITY: DiagCode = DiagCode("type/spec-quality");
 
+// fz-yxs — selective receive: matcher / guard impurity. The codegen'd
+// matcher and any guard expression must stay in the pure-codegen subset
+// (no allocation, no externs, no calls). See docs/receive-matched.md §2.3.
+pub const TYPE_IMPURE_RECEIVE_GUARD: DiagCode = DiagCode("type/impure-receive-guard");
+pub const TYPE_IMPURE_RECEIVE_PATTERN: DiagCode = DiagCode("type/impure-receive-pattern");
+
 // ----- codegen -----
 
 pub const CODEGEN_SCHEMA_MISSING: DiagCode = DiagCode("codegen/schema-missing");
