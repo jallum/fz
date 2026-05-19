@@ -65,6 +65,14 @@ pub struct Process {
     /// (JIT/AOT, B3/B4) reads this on resume, clears it, and tail-
     /// calls `cont(args..., halt_cont)`.
     pub pending_resume_matched: Option<crate::park::PendingResumeMatched>,
+    /// fz-70q.5.2 — runtime slab holding the bound-arg `FzValue`s that
+    /// the next cont-stub dispatch should expose to its body. Written by
+    /// the trampoline immediately before invoking the cont stub (which
+    /// reads via `fz_resume_args_ptr` from cont-stub-emitted code).
+    /// Stale entries are harmless — bodies only read indices < their
+    /// compile-time bound_arity, and the slab is overwritten on each
+    /// dispatch. Empty in the default state.
+    pub resume_args: Vec<crate::fz_value::FzValue>,
     /// fz-ul4.27.22.3 — per-Process halt-cont singletons indexed by
     /// repr kind (0=Tagged, 1=RawInt, 2=RawF64). Each slot holds a
     /// 24-byte closure whose +16 slot points at the matching
@@ -164,6 +172,7 @@ impl Process {
             parked_cont: std::ptr::null_mut(),
             parked_matched: None,
             pending_resume_matched: None,
+            resume_args: Vec::new(),
             halt_cont_singletons: [std::ptr::null_mut(); 3],
             pending_closure_entry: std::ptr::null_mut(),
             pending_main_entry: std::ptr::null_mut(),

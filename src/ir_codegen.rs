@@ -214,6 +214,7 @@ impl CompiledModule {
             parked_cont: std::ptr::null_mut(),
             parked_matched: None,
             pending_resume_matched: None,
+            resume_args: Vec::new(),
             halt_cont_singletons: [std::ptr::null_mut(); 3],
             pending_closure_entry: std::ptr::null_mut(),
             pending_main_entry: std::ptr::null_mut(),
