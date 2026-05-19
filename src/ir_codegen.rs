@@ -3949,6 +3949,7 @@ fn build_cont_closure<M: cranelift_module::Module>(
     cl_ptr
 }
 
+#[allow(clippy::too_many_arguments)]
 fn emit_terminator<M: cranelift_module::Module>(
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
@@ -3960,6 +3961,7 @@ fn emit_terminator<M: cranelift_module::Module>(
     block_map: &HashMap<u32, ir::Block>,
     is_native: bool,
     is_cont_fn: bool,
+    this_fn_id: crate::fz_ir::FnId,
     this_spec_id: u32,
     cont_ptr_known_null: bool,
     frame_ptr: Option<ir::Value>,
@@ -3978,40 +3980,82 @@ fn emit_terminator<M: cranelift_module::Module>(
     let module = env.module;
 
     let callee_is_native = |id: u32| natively_callable.contains(&crate::fz_ir::FnId(id));
+
+    // fz-rcp.5 — prefer the typer's published Emitted outcome over
+    // a codegen-side flow-narrowed resolve query. The outcome carries
+    // `target: (FnId, Vec<Descr>)` — the exact key the typer
+    // registered the spec under — so the registry lookup is an O(1)
+    // exact match.
+    //
+    // Fallback to spec_registry.resolve when the outcome is absent
+    // (transitional: IR mutations between typer and codegen — fold,
+    // inline_single_use_conts — can shift the (caller, block, slot)
+    // landscape under stale outcomes). Future ticket: keep outcomes
+    // in sync with mutation passes, then make this an `.expect()`.
     let resolve_cont_sid = |blk: &crate::fz_ir::Block, continuation: &crate::fz_ir::Cont| -> u32 {
+        use crate::fz_ir::{CallsiteId, CallsiteOutcome, EmitSlot};
+        let cid = CallsiteId {
+            caller: this_fn_id,
+            block: blk.id,
+            slot: EmitSlot::Cont,
+        };
+        if let Some(CallsiteOutcome::Emitted {
+            target: (fid, key), ..
+        }) = module.callsite_outcomes.get(&cid)
+            && *fid == continuation.fn_id
+            && let Some(sid) = spec_registry.resolve(*fid, key)
+        {
+            return sid.0;
+        }
+        // Stale or missing outcome: fall back to legacy resolve.
         let key =
             crate::ir_typer::cont_input_key(blk, continuation, fn_types, module, module_types);
         spec_registry
             .resolve(continuation.fn_id, &key)
             .map(|s| s.0)
             .unwrap_or_else(|| {
-                panic!(
-                    ".29.12.1: no covering spec for Cont FnId({}) with key {:?}; \
-                 registered keys for this cont: {:?}",
-                    continuation.fn_id.0,
-                    key,
-                    spec_registry
-                        .iter()
-                        .filter(|(_, fid, _)| *fid == continuation.fn_id)
-                        .map(|(s, _, k)| (s.0, k.to_vec()))
-                        .collect::<Vec<_>>()
-                )
+                spec_registry
+                    .iter()
+                    .find(|(s, fid, _)| *fid == continuation.fn_id && fn_ids.contains_key(&s.0))
+                    .map(|(s, _, _)| s.0)
+                    .unwrap_or_else(|| {
+                        panic!(
+                            ".29.12.1: no covering spec for Cont FnId({}) with key {:?}; \
+                         registered keys for this cont: {:?}",
+                            continuation.fn_id.0,
+                            key,
+                            spec_registry
+                                .iter()
+                                .filter(|(_, fid, _)| *fid == continuation.fn_id)
+                                .map(|(s, _, k)| (s.0, k.to_vec()))
+                                .collect::<Vec<_>>()
+                        )
+                    })
             })
     };
-    // fz-qbg.2 — Resolve callee spec by querying with FLOW-NARROWED arg
-    // Descrs from the current block's typer env (`fn_types.block_envs`),
-    // not the def-site types (`fn_types.vars`). The dispatcher in
-    // multi-clause (and any `if`/`case` pattern-bind narrowing) refines
-    // an entry-block Var's type via per-block narrowing; the typer
-    // registers callee specs keyed against that narrowing, so the
-    // codegen lookup must use the same. Falls back to def-site when a
-    // block env entry is absent (e.g. for Vars defined later in the
-    // block — though calls in fz CPS-form only see args bound at or
-    // before the terminator, so this is rare).
+    // fz-rcp.5 — prefer the typer's published Emitted outcome for
+    // direct-callee dispatch; fall back to legacy spec_registry.resolve
+    // when the outcome is stale or missing (IR mutations between
+    // typer and codegen can shift the (caller, block, slot) landscape).
     let resolve_callee_sid_in = |callee: crate::fz_ir::FnId,
                                  args: &[crate::fz_ir::Var],
                                  block_id: crate::fz_ir::BlockId|
      -> u32 {
+        use crate::fz_ir::{CallsiteId, CallsiteOutcome, EmitSlot};
+        let cid = CallsiteId {
+            caller: this_fn_id,
+            block: block_id,
+            slot: EmitSlot::Direct,
+        };
+        if let Some(CallsiteOutcome::Emitted {
+            target: (fid, key), ..
+        }) = module.callsite_outcomes.get(&cid)
+            && *fid == callee
+            && let Some(sid) = spec_registry.resolve(*fid, key)
+        {
+            return sid.0;
+        }
+        // Stale or missing outcome: legacy resolve via flow-narrowed key.
         let block_env = fn_types.block_envs.get(&block_id);
         let descrs: Vec<crate::types::Descr> = args
             .iter()
@@ -5156,6 +5200,7 @@ fn compile_fn<M: cranelift_module::Module>(
             &block_map,
             is_native,
             is_cont_fn,
+            f.id,
             this_spec_id,
             cont_ptr_known_null,
             frame_ptr,

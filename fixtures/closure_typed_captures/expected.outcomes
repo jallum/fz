@@ -7,6 +7,7 @@ main:
   blk0 Direct -> Consumed (&fn14[10, 20]:() -> any)
 
 k_15:
+  blk0 Cont -> Emitted (k_16#16 [int])
   blk0 Direct -> Emitted (apply1#12 [&fn14[10, 20]:(any) -> any, 12]) via OpaqueArg
 
 k_16:

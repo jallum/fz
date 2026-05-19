@@ -4,18 +4,21 @@ main:
   blk0 Direct -> Consumed (:zero)
 
 k_20:
+  blk0 Cont -> Emitted (k_21#21 [nil])
   blk0 Direct -> Emitted (print#0 [:zero]) via OpaqueArg
 
 k_21:
   blk0 Direct -> Consumed (:positive)
 
 k_22:
+  blk0 Cont -> Emitted (k_23#23 [nil])
   blk0 Direct -> Emitted (print#0 [:positive]) via OpaqueArg
 
 k_23:
   blk0 Direct -> Consumed (:negative)
 
 k_24:
+  blk0 Cont -> Emitted (k_25#25 [nil])
   blk0 Direct -> Emitted (print#0 [:negative]) via OpaqueArg
 
 k_25:

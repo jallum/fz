@@ -1852,3 +1852,135 @@ fn typer_publishes_emitted_outcome_updates_for_direct() {
         Some(CallsiteOutcome::Emitted { .. })
     ));
 }
+
+/// fz-rcp.6 — Wspec-quality diagnostic. Synthesize a module where a
+/// callsite's published Emitted outcome targets the any-key while a
+/// narrower spec exists for the same callee. Tests the walker
+/// directly via `collect_spec_quality_diags_for_test` to avoid
+/// parallel-test env-var races; the env-var gate is enforced at
+/// `collect_diagnostics`'s top level.
+#[test]
+fn wspec_quality_warns_on_any_key_dispatch_with_narrow_specs_available() {
+    use crate::fz_ir::{CallsiteId, CallsiteOutcome, EmitSlot};
+
+    // f(x), do: x  (id-style; arity 1)
+    // call sites would normally produce a Direct outcome via the typer;
+    // we synthesize one directly to force the any-key target shape.
+    let mut fb = FnBuilder::new(FnId(0), "f");
+    let x = fb.fresh_var();
+    let fentry = fb.block(vec![x]);
+    fb.set_terminator(fentry, Term::Return(x));
+
+    let mut mb = FnBuilder::new(FnId(1), "main");
+    let mentry = mb.block(vec![]);
+    let lit = mb.let_(mentry, Prim::Const(Const::Int(42)));
+    mb.set_terminator(
+        mentry,
+        Term::TailCall {
+            callee: FnId(0),
+            args: vec![lit],
+            is_back_edge: false,
+        },
+    );
+
+    let mut m = build_module(vec![fb.build(), mb.build()]);
+
+    // Synthesize: f has both narrow [int_lit(42)] and any-key [any]
+    // registered; main's callsite outcome points at the any-key.
+    let mut mt = type_module(&m);
+    // Force the any-key into specs if not present.
+    let any_key: Vec<Descr> = vec![Descr::any(); 1];
+    if let std::collections::hash_map::Entry::Vacant(e) = mt.specs.entry((FnId(0), any_key.clone()))
+    {
+        let ft = type_fn(&m.fns[0], &m, Some(&any_key));
+        e.insert(ft);
+    }
+    let cid = CallsiteId {
+        caller: FnId(1),
+        block: BlockId(0),
+        slot: EmitSlot::Direct,
+    };
+    m.callsite_outcomes.insert(
+        cid,
+        CallsiteOutcome::Emitted {
+            target: (FnId(0), any_key),
+            came_from: None,
+        },
+    );
+
+    let diags = crate::ir_typer::collect_spec_quality_diags_for_test(&m, &mt);
+    let spec_quality: Vec<_> = diags
+        .iter()
+        .filter(|d| d.code == crate::diag::codes::TYPE_SPEC_QUALITY)
+        .collect();
+    assert_eq!(
+        spec_quality.len(),
+        1,
+        "expected 1 spec-quality diagnostic, got {:?}",
+        diags
+    );
+    let d = spec_quality[0];
+    assert!(
+        d.message.contains("call to `f` from `main`"),
+        "diagnostic message: {}",
+        d.message
+    );
+    assert!(
+        d.message.contains("any-key"),
+        "diagnostic should mention any-key, got: {}",
+        d.message
+    );
+}
+
+/// Negative case: when no narrower spec exists, the diagnostic
+/// stays silent (the any-key IS the only spec; no specialization
+/// quality issue to report).
+#[test]
+fn wspec_quality_silent_when_only_any_key_exists() {
+    use crate::fz_ir::{CallsiteId, CallsiteOutcome, EmitSlot};
+
+    let mut fb = FnBuilder::new(FnId(0), "f");
+    let x = fb.fresh_var();
+    let fentry = fb.block(vec![x]);
+    fb.set_terminator(fentry, Term::Return(x));
+
+    let mut mb = FnBuilder::new(FnId(1), "main");
+    let mentry = mb.block(vec![]);
+    let lit = mb.let_(mentry, Prim::Const(Const::Int(42)));
+    mb.set_terminator(
+        mentry,
+        Term::TailCall {
+            callee: FnId(0),
+            args: vec![lit],
+            is_back_edge: false,
+        },
+    );
+
+    let mut m = build_module(vec![fb.build(), mb.build()]);
+    let mut mt = type_module(&m);
+    let any_key: Vec<Descr> = vec![Descr::any(); 1];
+
+    // Force f to have only the any-key.
+    mt.specs.retain(|(fid, _), _| *fid != FnId(0));
+    let ft = type_fn(&m.fns[0], &m, Some(&any_key));
+    mt.specs.insert((FnId(0), any_key.clone()), ft);
+
+    m.callsite_outcomes.insert(
+        CallsiteId {
+            caller: FnId(1),
+            block: BlockId(0),
+            slot: EmitSlot::Direct,
+        },
+        CallsiteOutcome::Emitted {
+            target: (FnId(0), any_key),
+            came_from: None,
+        },
+    );
+
+    let diags = crate::ir_typer::collect_spec_quality_diags_for_test(&m, &mt);
+    assert!(
+        diags.is_empty(),
+        "no narrower spec exists for f → no diagnostic, got {:?}",
+        diags
+    );
+}

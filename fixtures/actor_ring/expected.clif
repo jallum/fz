@@ -122,7 +122,7 @@ function u0:0(i64, i64, i64) -> i64 tail {
     fn3 = colocated u0:48 sig3
     fn4 = u0:57 sig4
     fn5 = u0:27 sig5
-    fn6 = colocated u0:51 sig6
+    fn6 = colocated u0:52 sig6
     fn7 = u0:28 sig7
 
     block0(v0: i64, v1: i64, v2: i64):    ;; v0 :: 4, v1 :: pid
@@ -142,10 +142,10 @@ function u0:0(i64, i64, i64) -> i64 tail {
     store notrap aligned v12, v11+16    ; @6:30
     store notrap aligned v6, v11+24     ; @6:30
     v13 = call fn4(v11)    ;; v13 :: any
-    v14 = iconst.i32 24                 ; @7:14
+    v14 = iconst.i32 25                 ; @7:14
     v15 = iconst.i32 5                  ; @7:14
     v16 = iconst.i32 0                  ; @7:14
-    v17 = call fn5(v14, v15, v16)       ; @7:14  v14 = 24, v15 = 5, v16 = 0
+    v17 = call fn5(v14, v15, v16)       ; @7:14  v14 = 25, v15 = 5, v16 = 0
     v18 = func_addr.i64 fn6             ; @7:14
     store notrap aligned v18, v17+16    ; @7:14
     store notrap aligned v2, v17+24     ; @7:14

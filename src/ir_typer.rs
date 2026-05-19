@@ -723,19 +723,23 @@ pub fn type_module(m: &Module) -> ModuleTypes {
         if !reachable.contains(&site.caller) {
             continue;
         }
-        match site.slot {
-            EmitSlot::Direct | EmitSlot::ClosureLit(..) | EmitSlot::CallClosureKnown => {
-                let cid = site.callsite_id();
-                callsite_outcome_updates.insert(
-                    cid,
-                    CallsiteOutcome::Emitted {
-                        target: target.clone(),
-                        came_from: None,
-                    },
-                );
-            }
-            EmitSlot::Cont | EmitSlot::MakeClosure(_) => {}
-        }
+        // fz-rcp.4 — publish Emitted outcomes for every dispatch-shaped
+        // slot the typer discovers a target for. The previously skipped
+        // EmitSlot::Cont and EmitSlot::MakeClosure variants need their
+        // outcomes published so fz-rcp.5's codegen-reads-outcomes
+        // cutover has a populated table at every dispatch site (cont
+        // resolves at Term::Call.continuation / CallClosure.continuation
+        // / Receive.continuation; body picker at Prim::MakeClosure).
+        // Pure data plumbing — codegen at this point still calls
+        // spec_registry.resolve and ignores the new outcome entries.
+        let cid = site.callsite_id();
+        callsite_outcome_updates.insert(
+            cid,
+            CallsiteOutcome::Emitted {
+                target: target.clone(),
+                came_from: None,
+            },
+        );
     }
 
     let mut mt = ModuleTypes {
@@ -2676,7 +2680,130 @@ pub fn collect_diagnostics(module: &Module, types: &ModuleTypes) -> crate::diag:
         }
     }
 
+    // fz-rcp.6 — opt-in spec-quality diagnostic. Walks the published
+    // callsite outcomes; warns when a callsite's Emitted target uses
+    // the any-key (`[Descr::any(); arity]`) while ≥1 narrower spec
+    // exists for the same callee.
+    //
+    // Gated behind `FZ_WSPEC_QUALITY=1` so it doesn't disturb the
+    // standard build output. CI can opt in on curated fixtures.
+    if std::env::var("FZ_WSPEC_QUALITY").is_ok() {
+        collect_spec_quality_diags(module, types, &mut out);
+    }
+
     out
+}
+
+#[cfg(test)]
+pub(crate) fn collect_spec_quality_diags_for_test(
+    module: &Module,
+    types: &ModuleTypes,
+) -> crate::diag::Diagnostics {
+    let mut out = crate::diag::Diagnostics::new();
+    collect_spec_quality_diags(module, types, &mut out);
+    out
+}
+
+/// fz-rcp.6 — emit `type/spec-quality` warnings for callsites whose
+/// typer-published outcome targets the any-key of a fn that also has
+/// narrower specs registered.
+///
+/// The diagnostic is purely informational — the call runs correctly
+/// through the generic body, but pays the runtime-dispatch cost the
+/// narrow specs would avoid. Surfacing it lets the user (or CI)
+/// catch specialization-quality regressions early.
+fn collect_spec_quality_diags(
+    module: &Module,
+    types: &ModuleTypes,
+    out: &mut crate::diag::Diagnostics,
+) {
+    use crate::diag::codes::TYPE_SPEC_QUALITY;
+    use crate::diag::{Diagnostic, Span};
+    use crate::fz_ir::CallsiteOutcome;
+
+    // Group specs by callee FnId so we can count narrower specs in O(1).
+    let mut narrow_keys_by_fn: HashMap<crate::fz_ir::FnId, Vec<Vec<Descr>>> = HashMap::new();
+    for (fid, key) in types.specs.keys() {
+        let is_any = key.iter().all(|d| d.is_equiv(&Descr::any()));
+        if !is_any {
+            narrow_keys_by_fn.entry(*fid).or_default().push(key.clone());
+        }
+    }
+
+    let mut entries: Vec<(crate::fz_ir::CallsiteId, (crate::fz_ir::FnId, Vec<Descr>))> = module
+        .callsite_outcomes
+        .iter()
+        .filter_map(|(cid, outcome)| match outcome {
+            CallsiteOutcome::Emitted { target, .. } => Some((*cid, target.clone())),
+            _ => None,
+        })
+        .collect();
+    // Deterministic ordering for stable diagnostic output.
+    entries.sort_by_key(|(cid, _)| (cid.caller.0, cid.block.0));
+
+    for (cid, (target_fid, target_key)) in entries {
+        let arity = target_key.len();
+        let any_key: Vec<Descr> = vec![Descr::any(); arity];
+        if target_key != any_key {
+            continue;
+        }
+        let Some(narrow) = narrow_keys_by_fn.get(&target_fid) else {
+            continue;
+        };
+        if narrow.is_empty() {
+            continue;
+        }
+
+        let callee_name = module
+            .fns
+            .iter()
+            .find(|f| f.id == target_fid)
+            .map(|f| f.name.as_str())
+            .unwrap_or("?");
+        let caller_name = module
+            .fns
+            .iter()
+            .find(|f| f.id == cid.caller)
+            .map(|f| f.name.as_str())
+            .unwrap_or("?");
+        let span = module
+            .source
+            .term_span
+            .get(&(cid.caller, cid.block))
+            .copied()
+            .unwrap_or(Span::DUMMY);
+
+        let mut narrow_repr: Vec<String> = narrow
+            .iter()
+            .map(|k| {
+                let parts: Vec<String> = k.iter().map(|d| format!("{}", d)).collect();
+                format!("[{}]", parts.join(", "))
+            })
+            .collect();
+        narrow_repr.sort();
+
+        let message = format!(
+            "call to `{}` from `{}` dispatches to the any-key (generic) spec",
+            callee_name, caller_name
+        );
+        let note = format!(
+            "{} narrower spec{} of `{}` registered for other call sites:\n        {}",
+            narrow.len(),
+            if narrow.len() == 1 { "" } else { "s" },
+            callee_name,
+            narrow_repr.join("\n        ")
+        );
+        let help = "the call runs correctly through the generic body, but pays \
+             the runtime-dispatch cost the narrower specializations avoid. \
+             either widen one of the narrow specs to cover this site, or \
+             add a `@spec` annotation to the caller to force narrowing here."
+            .to_string();
+        let d = Diagnostic::warning(TYPE_SPEC_QUALITY, message, span)
+            .with_label(format!("in fn `{}`", caller_name))
+            .with_note(note)
+            .with_help(help);
+        out.push(d);
+    }
 }
 
 /// True iff `a` and `b` have at least one axis (basic-kind bit, atoms,
