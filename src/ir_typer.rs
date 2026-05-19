@@ -575,7 +575,25 @@ pub(crate) type PendingMakeClosureByArity = HashMap<usize, EmitterSiteSet>;
 struct WalkResult {
     /// Every `(site, target_spec_key)` this walk emits. The driver
     /// diffs against `produces[site]` to detect transitions.
+    ///
+    /// fz-uwq.3+ note: `target` here is the **enqueue key** — possibly
+    /// widened by `widen_direct` for recursive calls. This is the key
+    /// the worklist enqueues for typing so the fixpoint terminates.
+    /// It is *not* the dispatch fact a downstream consumer should
+    /// resolve at codegen time; see `dispatch_targets`.
     emits: Vec<(EmitterSite, (FnId, Vec<Descr>))>,
+    /// fz-uwq.3+ — per-callsite **dispatch fact**: the un-widened
+    /// `(callee_fn, callee_key)` the typer would resolve at this site
+    /// using `block_env` alone, with no worklist-control widening.
+    /// This is the same key codegen recomputes from `block_envs`, so
+    /// `spec_registry.resolve(target.0, &target.1)` lands on the same
+    /// SpecId from either side — making `FnTypes.dispatches` and the
+    /// codegen path agree by construction.
+    ///
+    /// Only populated for dispatch-shaped slots
+    /// (`Direct` / `ClosureLit` / `CallClosureKnown`). `Cont` slot
+    /// inputs are tracked through `cont_input_key` and aren't widened.
+    dispatch_targets: HashMap<crate::fz_ir::CallsiteId, (FnId, Vec<Descr>)>,
     /// `callee_key`s whose `effective_return` was consulted (for
     /// cont slot-0 keying or closure_lit return-join). Driver folds
     /// into the `return_readers` reverse index so changes
@@ -718,42 +736,46 @@ pub fn type_module(m: &Module) -> ModuleTypes {
     let any_key_specs = build_any_key_index(&specs);
 
     // fz-9pr.8 — build the outcome-update map for Direct / ClosureLit /
-    // CallClosureKnown emits. Each EmitterSite in `produces` projects
-    // to a (CallsiteId, target). We propose Emitted{target}; the
-    // driver merges with whatever the reducer (Consumed/Stalled)
-    // already wrote.
-    // fz-9pr.16 — the same `(caller_fn, block, slot)` CallsiteId can
-    // be produced from multiple `EmitterSite`s (different caller spec
-    // keys all dispatch through the same callsite to the same callee
-    // with their own arg Descrs). HashMap iteration order would make
-    // "last write wins" non-deterministic; sort by (target_fn,
-    // target_key_repr) so the published outcome is stable across runs.
+    // CallClosureKnown emits.
+    //
+    // fz-uwq.3+ — projects from `specs[spec_key].dispatches` (un-widened
+    // dispatch facts) rather than `produces` (widened enqueue keys), so
+    // the outcome's `target` matches what codegen will resolve at the
+    // callsite. The per-spec `dispatches` view is collapsed to one
+    // outcome per `CallsiteId`; multiple specs sharing a `CallsiteId`
+    // would last-write-win, so we sort deterministically by the
+    // (spec_key, target) pair to make the choice stable across runs.
     let mut callsite_outcome_updates: HashMap<CallsiteId, CallsiteOutcome> = HashMap::new();
-    let mut produces_sorted: Vec<(&EmitterSite, &(FnId, Vec<Descr>))> = produces.iter().collect();
-    produces_sorted.sort_by(|(_, a), (_, b)| {
+    let mut dispatches_flat: Vec<(SpecKey, CallsiteId, (FnId, Vec<Descr>))> = Vec::new();
+    for (spec_key, ft) in &specs {
+        if !reachable.contains(spec_key) {
+            continue;
+        }
+        for (cid, target) in &ft.dispatches {
+            dispatches_flat.push((spec_key.clone(), *cid, target.clone()));
+        }
+    }
+    dispatches_flat.sort_by(|(sa, _, ta), (sb, _, tb)| {
         let key_str = |t: &(FnId, Vec<Descr>)| -> String {
             let parts: Vec<String> = t.1.iter().map(|d| format!("{}", d)).collect();
             format!("{}:{}", t.0.0, parts.join(","))
         };
-        key_str(a).cmp(&key_str(b))
+        let spec_str = |s: &SpecKey| -> String {
+            let parts: Vec<String> = s.1.iter().map(|d| format!("{}", d)).collect();
+            format!("{}:{}", s.0.0, parts.join(","))
+        };
+        spec_str(sa)
+            .cmp(&spec_str(sb))
+            .then_with(|| key_str(ta).cmp(&key_str(tb)))
     });
-    for (site, target) in produces_sorted {
-        if !reachable.contains(&site.caller) {
-            continue;
-        }
-        match site.slot {
-            EmitSlot::Direct | EmitSlot::ClosureLit(..) | EmitSlot::CallClosureKnown => {
-                let cid = site.callsite_id();
-                callsite_outcome_updates.insert(
-                    cid,
-                    CallsiteOutcome::Emitted {
-                        target: target.clone(),
-                        came_from: None,
-                    },
-                );
-            }
-            EmitSlot::Cont | EmitSlot::MakeClosure(_) => {}
-        }
+    for (_spec, cid, target) in dispatches_flat {
+        callsite_outcome_updates.insert(
+            cid,
+            CallsiteOutcome::Emitted {
+                target,
+                came_from: None,
+            },
+        );
     }
 
     let mut mt = ModuleTypes {
@@ -1047,23 +1069,15 @@ fn process_worklist(
         // Diff emits against this caller's prior emit set. Transitions
         // update produces + holders + emits_by_caller.
         //
-        // fz-uwq.3 — also rebuild this spec's `FnTypes.dispatches`:
-        // clear then re-populate from `result.emits` for the
-        // dispatch-shaped slots (Direct / ClosureLit / CallClosureKnown).
-        // Cont and MakeClosure slots aren't dispatches.
+        // fz-uwq.3 — install this spec's `FnTypes.dispatches` from
+        // `result.dispatch_targets` (un-widened dispatch facts; see
+        // `WalkResult.dispatch_targets` for why these differ from
+        // `result.emits`'s widened enqueue keys).
         let prev_sites = emits_by_caller.remove(&spec_key).unwrap_or_default();
         let mut new_sites: std::collections::HashSet<EmitterSite> =
             std::collections::HashSet::new();
-        let mut new_dispatches: HashMap<crate::fz_ir::CallsiteId, (FnId, Vec<Descr>)> =
-            HashMap::new();
         for (site, target) in result.emits {
             new_sites.insert(site.clone());
-            match site.slot {
-                EmitSlot::Direct | EmitSlot::ClosureLit(..) | EmitSlot::CallClosureKnown => {
-                    new_dispatches.insert(site.callsite_id(), target.clone());
-                }
-                EmitSlot::Cont | EmitSlot::MakeClosure(_) => {}
-            }
             match produces.get(&site).cloned() {
                 Some(prev_target) if prev_target == target => {
                     // Stable — no transition.
@@ -1092,7 +1106,7 @@ fn process_worklist(
             }
         }
         if let Some(ft) = specs.get_mut(&spec_key) {
-            ft.dispatches = new_dispatches;
+            ft.dispatches = result.dispatch_targets;
         }
         // Sites present in prev but absent in new: this walk no longer
         // emits them. Detach from holders; clear produces.
@@ -1498,15 +1512,25 @@ fn walk_spec_for_discovery(
                     };
                     let callee_fn = &m.fns[j];
                     let n_params = callee_fn.block(callee_fn.entry).params.len();
-                    let mut key: Vec<Descr> = args
+                    let mut dispatch_key: Vec<Descr> = args
                         .iter()
                         .map(|av| env.get(av).cloned().unwrap_or_else(Descr::any))
                         .collect();
-                    while key.len() < n_params {
-                        key.push(Descr::any());
+                    while dispatch_key.len() < n_params {
+                        dispatch_key.push(Descr::any());
                     }
-                    key.truncate(n_params);
-                    let key = widen_direct(key, callee);
+                    dispatch_key.truncate(n_params);
+                    // fz-uwq.3+ — record the dispatch fact (un-widened)
+                    // before widening for the worklist enqueue key.
+                    out.dispatch_targets.insert(
+                        crate::fz_ir::CallsiteId {
+                            caller: caller_spec_key.0,
+                            block: b.id,
+                            slot,
+                        },
+                        (callee, dispatch_key.clone()),
+                    );
+                    let enqueue_key = widen_direct(dispatch_key, callee);
                     let mut per_arg: Vec<Option<FnId>> = args
                         .iter()
                         .map(|av| caller_ft.fn_constants.get(av).copied())
@@ -1515,7 +1539,7 @@ fn walk_spec_for_discovery(
                         per_arg.push(None);
                     }
                     per_arg.truncate(n_params);
-                    let entry_key = (callee, key.clone());
+                    let entry_key = (callee, enqueue_key.clone());
                     match callsite_fn_consts.get(&entry_key) {
                         None => {
                             callsite_fn_consts.insert(entry_key.clone(), per_arg);
@@ -1529,7 +1553,7 @@ fn walk_spec_for_discovery(
                             callsite_fn_consts.insert(entry_key.clone(), merged);
                         }
                     }
-                    emit(slot, b.id, (callee, key), out);
+                    emit(slot, b.id, (callee, enqueue_key), out);
                 }
                 CallsiteKind::CallClosureKnown { target, args } => {
                     let Some(&j) = m.fn_idx.get(&target) else {
@@ -1537,16 +1561,24 @@ fn walk_spec_for_discovery(
                     };
                     let target_fn = &m.fns[j];
                     let n_params = target_fn.block(target_fn.entry).params.len();
-                    let mut key: Vec<Descr> = args
+                    let mut dispatch_key: Vec<Descr> = args
                         .iter()
                         .map(|av| env.get(av).cloned().unwrap_or_else(Descr::any))
                         .collect();
-                    while key.len() < n_params {
-                        key.push(Descr::any());
+                    while dispatch_key.len() < n_params {
+                        dispatch_key.push(Descr::any());
                     }
-                    key.truncate(n_params);
-                    let key = widen_direct(key, target);
-                    emit(slot, b.id, (target, key), out);
+                    dispatch_key.truncate(n_params);
+                    out.dispatch_targets.insert(
+                        crate::fz_ir::CallsiteId {
+                            caller: caller_spec_key.0,
+                            block: b.id,
+                            slot,
+                        },
+                        (target, dispatch_key.clone()),
+                    );
+                    let enqueue_key = widen_direct(dispatch_key, target);
+                    emit(slot, b.id, (target, enqueue_key), out);
                 }
                 CallsiteKind::ClosureLit { lit, args } => {
                     let Some(&j) = m.fn_idx.get(&lit.fn_id) else {
@@ -1554,17 +1586,25 @@ fn walk_spec_for_discovery(
                     };
                     let target_fn = &m.fns[j];
                     let n_params = target_fn.block(target_fn.entry).params.len();
-                    let mut key: Vec<Descr> = lit.captures.clone();
+                    let mut dispatch_key: Vec<Descr> = lit.captures.clone();
                     let arg_descrs = args
                         .iter()
                         .map(|av| env.get(av).cloned().unwrap_or_else(Descr::any));
-                    key.extend(arg_descrs);
-                    while key.len() < n_params {
-                        key.push(Descr::any());
+                    dispatch_key.extend(arg_descrs);
+                    while dispatch_key.len() < n_params {
+                        dispatch_key.push(Descr::any());
                     }
-                    key.truncate(n_params);
-                    let key = widen_direct(key, lit.fn_id);
-                    emit(slot, b.id, (lit.fn_id, key), out);
+                    dispatch_key.truncate(n_params);
+                    out.dispatch_targets.insert(
+                        crate::fz_ir::CallsiteId {
+                            caller: caller_spec_key.0,
+                            block: b.id,
+                            slot,
+                        },
+                        (lit.fn_id, dispatch_key.clone()),
+                    );
+                    let enqueue_key = widen_direct(dispatch_key, lit.fn_id);
+                    emit(slot, b.id, (lit.fn_id, enqueue_key), out);
                 }
                 CallsiteKind::Cont { cont, source } => {
                     // slot 0 derivation by Cont source. Receive is
