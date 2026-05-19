@@ -178,9 +178,8 @@ pub struct MatchClause {
 pub struct AfterClause {
     pub timeout: Spanned<Expr>,
     pub body: Spanned<Expr>,
-    /// fz-yxs (E2) consumes this for diagnostic spans on the after-cont
-    /// closure; #[allow] until then to satisfy warnings-as-errors.
-    #[allow(dead_code)]
+    /// Span of the full `after <expr> -> <body>` clause; threaded into
+    /// `ReceiveAfter.span` for diagnostics.
     pub span: Span,
 }
 

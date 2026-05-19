@@ -2166,12 +2166,11 @@ fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -> Result<Va
         Expr::With(bindings, body, else_clauses) => {
             lower_with(ctx, bindings, body, else_clauses, is_tail, sp)
         }
-        // fz-5vj — parser-level node only at this point; fz-yxs (E2)
-        // lands the lowering to Term::ReceiveMatched.
-        Expr::Receive { .. } => Err(LowerError::Unsupported {
-            span: sp,
-            what: "receive do…end lowering lands in fz-yxs (E2)".into(),
-        }),
+        // fz-yxs — selective receive: lower into Term::ReceiveMatched with
+        // per-clause body/guard fns and an optional after body fn.
+        Expr::Receive { clauses, after } => {
+            lower_receive(ctx, clauses, after.as_deref(), is_tail, sp)
+        }
         Expr::Map(entries) => lower_map(ctx, entries),
         Expr::MapUpdate(base, entries) => lower_map_update(ctx, base, entries),
         Expr::Index(map, key) => lower_index(ctx, map, key),
@@ -2648,6 +2647,281 @@ fn cps_split_receive(
         ctx.terminated = true;
     }
     Ok(result_param)
+}
+
+/// fz-yxs — collect the names a pattern would bind, in source-traversal
+/// order. Mirrors `collect_one` but emits only the names; the matcher
+/// (B3) consumes the same source pattern AST and lines its extracted
+/// slots up with this same order, so each clause body fn's first
+/// `bound_names.len()` params receive the bound values positionally.
+fn collect_pattern_bound_names(p: &Pattern, out: &mut Vec<String>) {
+    match p {
+        Pattern::Wildcard
+        | Pattern::Int(_)
+        | Pattern::Float(_)
+        | Pattern::Str(_)
+        | Pattern::Atom(_)
+        | Pattern::Bool(_)
+        | Pattern::Nil
+        | Pattern::Pinned(_) => {}
+        Pattern::Var(name) => out.push(name.clone()),
+        Pattern::As(name, inner) => {
+            out.push(name.clone());
+            collect_pattern_bound_names(&inner.node, out);
+        }
+        Pattern::Tuple(elems) => {
+            for e in elems {
+                collect_pattern_bound_names(&e.node, out);
+            }
+        }
+        Pattern::List(elems, tail) => {
+            for e in elems {
+                collect_pattern_bound_names(&e.node, out);
+            }
+            if let Some(t) = tail {
+                collect_pattern_bound_names(&t.node, out);
+            }
+        }
+        Pattern::Map(entries) => {
+            for (_k, v) in entries {
+                collect_pattern_bound_names(&v.node, out);
+            }
+        }
+        Pattern::Bitstring(_) => {
+            // fz-yxs note: bitstring patterns inside receive land alongside
+            // the matcher codegen (B3). For now, pattern_check rejects them
+            // here so lowering never sees one.
+        }
+    }
+}
+
+/// fz-yxs — collect every `^name` reference appearing in a pattern.
+fn collect_pattern_pinned_names(p: &Pattern, out: &mut Vec<String>) {
+    match p {
+        Pattern::Pinned(name) => out.push(name.clone()),
+        Pattern::Wildcard
+        | Pattern::Var(_)
+        | Pattern::Int(_)
+        | Pattern::Float(_)
+        | Pattern::Str(_)
+        | Pattern::Atom(_)
+        | Pattern::Bool(_)
+        | Pattern::Nil => {}
+        Pattern::As(_, inner) => collect_pattern_pinned_names(&inner.node, out),
+        Pattern::Tuple(elems) => {
+            for e in elems {
+                collect_pattern_pinned_names(&e.node, out);
+            }
+        }
+        Pattern::List(elems, tail) => {
+            for e in elems {
+                collect_pattern_pinned_names(&e.node, out);
+            }
+            if let Some(t) = tail {
+                collect_pattern_pinned_names(&t.node, out);
+            }
+        }
+        Pattern::Map(entries) => {
+            for (k, v) in entries {
+                collect_pattern_pinned_names(&k.node, out);
+                collect_pattern_pinned_names(&v.node, out);
+            }
+        }
+        Pattern::Bitstring(_) => {}
+    }
+}
+
+/// fz-yxs — lower `receive do … after … end` into a Term::ReceiveMatched.
+///
+/// Each clause body becomes its own fn with params
+/// `[bound_var_0, …, bound_var_N-1, capture_0, …, capture_M-1]`. The
+/// matcher (materialised by the backend from the pattern AST) extracts
+/// bindings into the bound slots; the body tail-calls the join cont
+/// with its result. Guards (if present) are sibling fns with the same
+/// param shape that return a bool. The optional `after` body fn takes
+/// captures only (no bound vars).
+fn lower_receive(
+    ctx: &mut LowerCtx,
+    clauses: &[MatchClause],
+    after: Option<&crate::ast::AfterClause>,
+    is_tail: bool,
+    rx_span: Span,
+) -> Result<Var, LowerError> {
+    if clauses.is_empty() && after.is_none() {
+        return Err(LowerError::Unsupported {
+            span: rx_span,
+            what: "receive with no clauses and no after".into(),
+        });
+    }
+
+    // After's timeout is lowered into the caller fn first because a
+    // non-tail Call inside the timeout expression CPS-splits the current
+    // fn — every Var snapshot that follows must come from the post-split
+    // env so they belong to the right fn.
+    let timeout_var = match after {
+        Some(a) => Some(lower_expr(ctx, &a.timeout, false)?),
+        None => None,
+    };
+
+    // Resolve `^name` references against the (possibly post-CPS-split)
+    // outer scope. Dedupe by name; preserve first-seen order so backends
+    // see a stable layout.
+    let mut seen_pinned: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut pinned: Vec<(String, Var)> = Vec::new();
+    for clause in clauses {
+        let mut names: Vec<String> = Vec::new();
+        collect_pattern_pinned_names(&clause.pattern.node, &mut names);
+        for name in names {
+            if !seen_pinned.insert(name.clone()) {
+                continue;
+            }
+            let v = ctx.env.get(&name).copied().ok_or_else(|| LowerError::Unbound {
+                span: clause.pattern.span,
+                name: format!("^{}", name),
+            })?;
+            pinned.push((name, v));
+        }
+    }
+
+    // Join cont (post-receive code resumes here); skipped in tail position.
+    let join_opt = if is_tail {
+        None
+    } else {
+        Some(mint_cont_fn(
+            ctx,
+            "receive_join",
+            rx_span,
+            crate::fz_ir::FnCategory::ControlFlowCont,
+        ))
+    };
+
+    // Mint per-clause body / guard fns, and the after body fn.
+    struct ClauseSlots {
+        bound_names: Vec<String>,
+        body: ContFn,
+        guard: Option<ContFn>,
+    }
+    let mut clause_slots: Vec<ClauseSlots> = Vec::with_capacity(clauses.len());
+    for (i, clause) in clauses.iter().enumerate() {
+        let mut bound_names: Vec<String> = Vec::new();
+        collect_pattern_bound_names(&clause.pattern.node, &mut bound_names);
+        let body = mint_cont_fn(
+            ctx,
+            format!("rx_clause_{}_body", i),
+            clause.span,
+            crate::fz_ir::FnCategory::ControlFlowCont,
+        );
+        let guard = if clause.guard.is_some() {
+            Some(mint_cont_fn(
+                ctx,
+                format!("rx_clause_{}_guard", i),
+                clause.span,
+                crate::fz_ir::FnCategory::ControlFlowCont,
+            ))
+        } else {
+            None
+        };
+        clause_slots.push(ClauseSlots {
+            bound_names,
+            body,
+            guard,
+        });
+    }
+
+    let after_slot: Option<(ContFn, &crate::ast::AfterClause)> = after.map(|a| {
+        let body = mint_cont_fn(
+            ctx,
+            "rx_after_body",
+            a.span,
+            crate::fz_ir::FnCategory::ControlFlowCont,
+        );
+        (body, a)
+    });
+
+    // Captures: outer-scope vars threaded into every body/guard/after fn.
+    // Snapshot once here; every mint_cont_fn above took the same snapshot
+    // (env hasn't changed between mints), so the body fns' capture-param
+    // shapes match this list.
+    let captures_snap = ctx.captured_snapshot();
+    let captures_vars: Vec<Var> = captures_snap.iter().map(|(_, v)| *v).collect();
+
+    // Build the IR clauses now that we have all the FnIds.
+    let ir_clauses: Vec<crate::fz_ir::ReceiveClause> = clauses
+        .iter()
+        .zip(clause_slots.iter())
+        .map(|(c, slot)| crate::fz_ir::ReceiveClause {
+            pattern: c.pattern.clone(),
+            bound_names: slot.bound_names.clone(),
+            guard: slot.guard.as_ref().map(|g| g.id),
+            body: slot.body.id,
+            span: c.span,
+        })
+        .collect();
+
+    let ir_after = after_slot.as_ref().map(|(cont, a)| crate::fz_ir::ReceiveAfter {
+        timeout: timeout_var.expect("timeout lowered when after is Some"),
+        body: cont.id,
+        span: a.span,
+    });
+
+    // Terminate the caller fn's current block with the ReceiveMatched.
+    ctx.set_term_at(
+        Term::ReceiveMatched {
+            ident: crate::fz_ir::CallsiteIdent::from_source(Span::DUMMY),
+            clauses: ir_clauses,
+            after: ir_after,
+            pinned,
+            captures: captures_vars,
+        },
+        rx_span,
+    );
+
+    // Lower each clause body (and any guard) into its own fn. `switch_to_
+    // cont_fn` finalises the previously-current fn and switches into the
+    // newly-named one; calling it in sequence chains the build-finalise
+    // pattern through every body fn.
+    let clauses_iter = clauses.iter().zip(clause_slots.into_iter());
+    for (clause, slot) in clauses_iter {
+        if let Some(g_cont) = &slot.guard {
+            let extras = switch_to_cont_fn(ctx, g_cont, slot.bound_names.len());
+            for (name, &v) in slot.bound_names.iter().zip(extras.iter()) {
+                ctx.bind(name, v);
+            }
+            let g_val = lower_expr(
+                ctx,
+                clause.guard.as_ref().expect("guard cont implies guard expr"),
+                /* is_tail */ true,
+            )?;
+            // Guards return their value to the matcher caller (B3 will
+            // synthesise the dispatch). Use Term::Return so the value
+            // appears as the guard fn's result.
+            if !ctx.terminated {
+                ctx.set_term_at(Term::Return(g_val), clause.span);
+                ctx.terminated = true;
+            }
+        }
+
+        let extras = switch_to_cont_fn(ctx, &slot.body, slot.bound_names.len());
+        for (name, &v) in slot.bound_names.iter().zip(extras.iter()) {
+            ctx.bind(name, v);
+        }
+        let result = lower_expr(ctx, &clause.body, /* is_tail */ true)?;
+        finalize_arm(ctx, result, join_opt.as_ref());
+    }
+
+    if let Some((cont, a)) = after_slot {
+        let _extras = switch_to_cont_fn(ctx, &cont, 0);
+        let result = lower_expr(ctx, &a.body, /* is_tail */ true)?;
+        finalize_arm(ctx, result, join_opt.as_ref());
+    }
+
+    if let Some(join) = &join_opt {
+        let extras = switch_to_cont_fn(ctx, join, 1);
+        Ok(extras[0])
+    } else {
+        ctx.terminated = true;
+        Ok(Var(0))
+    }
 }
 
 fn cps_split_call(
@@ -4639,5 +4913,140 @@ end
                 f.name, f.id.0, f.category, expected,
             );
         }
+    }
+
+    // ----- fz-yxs (E2) — selective receive lowering -----
+
+    #[test]
+    fn lower_receive_one_clause_emits_receive_matched() {
+        let src = "fn loop_one() do
+              receive do
+                {:ping, sender} -> :pong
+              end
+            end";
+        let m = lower_src(src);
+        let s = format!("{}", m);
+        assert!(
+            s.contains("receive_matched [1 clauses]"),
+            "expected Term::ReceiveMatched, got:\n{}",
+            s
+        );
+        assert!(
+            s.contains("rx_clause_0_body"),
+            "expected clause body fn name, got:\n{}",
+            s
+        );
+    }
+
+    #[test]
+    fn lower_receive_after_clause_emits_after_body() {
+        let src = "fn rx_timeout() do
+              receive do
+                {:done, x} -> x
+              after 100 -> :timeout
+              end
+            end";
+        let m = lower_src(src);
+        let s = format!("{}", m);
+        assert!(
+            s.contains("rx_after_body"),
+            "expected after body fn, got:\n{}",
+            s
+        );
+        assert!(
+            s.contains("after("),
+            "expected after annotation on terminator, got:\n{}",
+            s
+        );
+    }
+
+    #[test]
+    fn lower_receive_pinned_resolves_outer_scope() {
+        let src = "fn rx_pinned(want) do
+              receive do
+                {^want, payload} -> payload
+              end
+            end";
+        let m = lower_src(src);
+        let s = format!("{}", m);
+        assert!(
+            s.contains("pinned=[^want="),
+            "expected pinned `want` resolved against outer scope, got:\n{}",
+            s
+        );
+    }
+
+    #[test]
+    fn lower_receive_pinned_unbound_is_error() {
+        let src = "fn rx() do
+              receive do
+                {^nope, _} -> 0
+              end
+            end";
+        let err = lower_src_err(src);
+        match err {
+            LowerError::Unbound { name, .. } => {
+                assert_eq!(name, "^nope");
+            }
+            other => panic!("expected Unbound(^nope), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn lower_receive_typer_accepts_well_formed() {
+        // Acceptance bullet: typer accepts well-formed selective receive.
+        let src = "fn rx() do
+              receive do
+                {:ping, _} -> 1
+                {:pong, _} -> 2
+              end
+            end";
+        let m = lower_src(src);
+        // Typing must not panic and must produce a ModuleTypes for the
+        // module. We don't pin the return Descr — that depends on the
+        // body return type which the bodies set to const ints.
+        let mt = crate::ir_typer::type_module(&m);
+        // No diagnostics from the pure-guard / pure-pattern pass either.
+        let diags = crate::ir_typer::collect_diagnostics(&m, &mt);
+        let impure: Vec<_> = diags
+            .iter()
+            .filter(|d| {
+                d.code == crate::diag::codes::TYPE_IMPURE_RECEIVE_GUARD
+                    || d.code == crate::diag::codes::TYPE_IMPURE_RECEIVE_PATTERN
+            })
+            .collect();
+        assert!(impure.is_empty(), "unexpected purity diags: {:?}", impure);
+    }
+
+    #[test]
+    fn lower_receive_typer_rejects_impure_guard() {
+        // Acceptance bullet: typer rejects impure guard. `helper()` is a
+        // fn call, which is impure (matcher / guard must stay in the
+        // pure-codegen subset). Lowering succeeds; the typer's
+        // collect_diagnostics emits TYPE_IMPURE_RECEIVE_GUARD.
+        let src = "fn helper(), do: true
+            fn rx() do
+              receive do
+                {:foo, _} when helper() -> 0
+              end
+            end";
+        let m = lower_src(src);
+        let mt = crate::ir_typer::type_module(&m);
+        let diags = crate::ir_typer::collect_diagnostics(&m, &mt);
+        let impure: Vec<_> = diags
+            .iter()
+            .filter(|d| d.code == crate::diag::codes::TYPE_IMPURE_RECEIVE_GUARD)
+            .collect();
+        assert_eq!(
+            impure.len(),
+            1,
+            "expected exactly one impure-guard diag, got {:?}",
+            diags
+        );
+        assert!(
+            impure[0].message.contains("invokes a function"),
+            "expected message to call out the fn call, got: {}",
+            impure[0].message
+        );
     }
 }

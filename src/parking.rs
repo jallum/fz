@@ -90,6 +90,21 @@ pub fn natively_callable(m: &Module, parking: &HashSet<FnId>) -> HashSet<FnId> {
                 Term::CallClosure { continuation, .. } | Term::Receive { continuation, .. } => {
                     used_as_cont.insert(continuation.fn_id);
                 }
+                // fz-yxs — each ReceiveMatched body/after fn is a parking-
+                // capable rendezvous target; treat the same way as a cont.
+                // Guards are pure (F3-checked) but the body fns may park,
+                // so they must not be admitted to the native fast path.
+                Term::ReceiveMatched { clauses, after, .. } => {
+                    for c in clauses {
+                        used_as_cont.insert(c.body);
+                        if let Some(g) = c.guard {
+                            used_as_cont.insert(g);
+                        }
+                    }
+                    if let Some(a) = after {
+                        used_as_cont.insert(a.body);
+                    }
+                }
                 _ => {}
             }
             for stmt in &b.stmts {
@@ -175,6 +190,10 @@ pub fn natively_callable(m: &Module, parking: &HashSet<FnId>) -> HashSet<FnId> {
                     continuation,
                     ident: _,
                 } => set.contains(&continuation.fn_id),
+                // fz-yxs — ReceiveMatched parks via the runtime ABI; never
+                // native. Excluded from `set` here so its enclosing fn is
+                // never lowered as native either.
+                Term::ReceiveMatched { .. } => false,
             });
             // A cont must only be reachable from native Term::Call sites.
             // If any of its Term::Call callers has a callee that's not in
@@ -211,7 +230,10 @@ pub fn parking_reachable(m: &Module) -> HashSet<FnId> {
         for b in &f.blocks {
             if matches!(
                 b.terminator,
-                Term::Receive { .. } | Term::CallClosure { .. } | Term::TailCallClosure { .. }
+                Term::Receive { .. }
+                    | Term::ReceiveMatched { .. }
+                    | Term::CallClosure { .. }
+                    | Term::TailCallClosure { .. }
             ) {
                 seed = true;
                 break;

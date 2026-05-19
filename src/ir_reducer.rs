@@ -708,7 +708,7 @@ fn walk_block(
             let inner_result = try_reduce_call_with_descrs(ctx, cl_lit.fn_id, &all_descrs)?;
             feed_cont(ctx, continuation, inner_result, &env)
         }
-        Term::Receive { .. } | Term::Halt(_) => {
+        Term::Receive { .. } | Term::ReceiveMatched { .. } | Term::Halt(_) => {
             ctx.note(StalledReason::CalleeBodyShape);
             None
         }

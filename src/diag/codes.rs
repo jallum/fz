@@ -66,6 +66,12 @@ pub const TYPE_SPEC_QUALITY: DiagCode = DiagCode("type/spec-quality");
 /// `crate::typer::check_opaque_visibility`.
 pub const TYPE_OPAQUE_VISIBILITY: DiagCode = DiagCode("type/opaque-visibility");
 
+// fz-yxs — selective receive: matcher / guard impurity. The codegen'd
+// matcher and any guard expression must stay in the pure-codegen subset
+// (no allocation, no externs, no calls). See docs/receive-matched.md §2.3.
+pub const TYPE_IMPURE_RECEIVE_GUARD: DiagCode = DiagCode("type/impure-receive-guard");
+pub const TYPE_IMPURE_RECEIVE_PATTERN: DiagCode = DiagCode("type/impure-receive-pattern");
+
 // ----- codegen -----
 
 pub const CODEGEN_SCHEMA_MISSING: DiagCode = DiagCode("codegen/schema-missing");

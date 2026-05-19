@@ -193,6 +193,12 @@ pub fn block_callsites<'a>(
                 },
             });
         }
+        // fz-yxs — ReceiveMatched's clause/after bodies are FnId fields, not
+        // call-shaped continuations; they're reached via callgraph_edges.
+        // The bodies internally TailCall the join cont, so the join cont's
+        // slot-0 type is learned through those tail calls (already enumerated
+        // when each body fn is visited). Nothing to yield here.
+        Term::ReceiveMatched { .. } => {}
         Term::If { .. } | Term::Goto(..) | Term::Return(..) | Term::Halt(..) => {}
     }
     out
