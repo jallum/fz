@@ -2038,22 +2038,23 @@ pub fn compile_with_backend<B: Backend>(
             continue;
         };
         for blk in &f.blocks {
-            for stmt in &blk.stmts {
+            for (stmt_idx, stmt) in blk.stmts.iter().enumerate() {
                 let Stmt::Let(_, prim) = stmt;
                 if let Prim::MakeClosure(lam_fn_id, captured) = prim {
-                    let lam = module.fn_by_id(*lam_fn_id);
-                    let n_params = lam.block(lam.entry).params.len();
-                    let mut key: Vec<crate::types::Descr> =
-                        vec![crate::types::Descr::any(); n_params];
-                    for (k, cv) in captured.iter().enumerate() {
-                        if let Some(slot) = key.get_mut(k) {
-                            *slot = ft
-                                .vars
-                                .get(cv)
-                                .cloned()
-                                .unwrap_or_else(crate::types::Descr::any);
-                        }
-                    }
+                    // fz-uwq.7 — read the per-spec MakeClosure dispatch
+                    // fact straight from the typer. fz-uwq.6 made the
+                    // MakeClosure picker do this; closure_shapes is the
+                    // sister consumer that catalogs the same answer for
+                    // the static-closure-target seed list.
+                    let mk_cid = crate::fz_ir::CallsiteId {
+                        caller: f.id,
+                        block: blk.id,
+                        slot: crate::fz_ir::EmitSlot::MakeClosure(stmt_idx),
+                    };
+                    let cl_sid_via_dispatches = ft
+                        .dispatches
+                        .get(&mk_cid)
+                        .and_then(|t| spec_registry.resolve(t.0, &t.1).map(|s| s.0));
                     // fz-ul4.29.10.3 — when the lambda's any-key was
                     // dropped (closure-var is fully resolved via
                     // fn_constants and the IR rewrite turned every
@@ -2070,18 +2071,33 @@ pub fn compile_with_backend<B: Backend>(
                     // rewrote to direct Call and inlined). Skip the
                     // closure_shapes entry; `MakeClosure` codegen emits
                     // a null-stub closure that traps if ever invoked.
-                    let Some(cl_sid) = spec_registry
-                        .resolve(*lam_fn_id, &key)
-                        .map(|s| s.0)
-                        .or_else(|| {
-                            spec_registry
-                                .iter()
-                                .find(|(s, fid, _)| {
-                                    *fid == *lam_fn_id && spec_fnidx[s.0 as usize].is_some()
-                                })
-                                .map(|(s, _, _)| s.0)
-                        })
-                    else {
+                    let Some(cl_sid) = cl_sid_via_dispatches.or_else(|| {
+                        let lam = module.fn_by_id(*lam_fn_id);
+                        let n_params = lam.block(lam.entry).params.len();
+                        let mut key: Vec<crate::types::Descr> =
+                            vec![crate::types::Descr::any(); n_params];
+                        for (k, cv) in captured.iter().enumerate() {
+                            if let Some(slot) = key.get_mut(k) {
+                                *slot = ft
+                                    .vars
+                                    .get(cv)
+                                    .cloned()
+                                    .unwrap_or_else(crate::types::Descr::any);
+                            }
+                        }
+                        spec_registry
+                            .resolve(*lam_fn_id, &key)
+                            .map(|s| s.0)
+                            .or_else(|| {
+                                spec_registry
+                                    .iter()
+                                    .find(|(s, fid, _)| {
+                                        *fid == *lam_fn_id
+                                            && spec_fnidx[s.0 as usize].is_some()
+                                    })
+                                    .map(|(s, _, _)| s.0)
+                            })
+                    }) else {
                         continue;
                     };
                     closure_shapes.insert(cl_sid, captured.len());
