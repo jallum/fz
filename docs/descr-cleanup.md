@@ -104,31 +104,71 @@ enum Descr {
 `Pending` and `Opaque` are not variants. They were never types; they
 were positions in the IR or surface using `Descr::any()` as a stand-in.
 
-### MakeClosure spec key (B1, B2, B3)
+### MakeClosure spec keys (B1, B2, B3)
+
+**Refinement after investigation: two separate spec kinds, not one.**
+
+The current code registers a single full-arity spec at the MakeClosure
+event, padded with `Descr::any()` for the unbound parameter positions.
+Reading `src/spec_registry.rs` revealed that this padded spec serves
+two distinct roles today:
+
+1. It records that a handle of shape `(fn_id, captures)` exists.
+2. It serves as the **any-key body spec** — the canonical compiled
+   body for the lambda that indirect dispatch (`stub_fp` path) falls
+   through to when a `ClosureCall` can't resolve to a closure literal.
+
+The any-key body role is load-bearing: `register_any_key_at` in
+`spec_registry.rs:51` aligns `SpecId.0 == fn_id.0` precisely so the
+indirect dispatch path has a stable target. fz-uwq.6 specifically
+protected this. Simply removing the padding would break indirect
+dispatch.
+
+So the cleanup separates the two roles into two registry entries:
 
 ```
-// before
-SpecKey { fn_id: FnId, args: [capture_0, …, capture_n, Pending, …, Pending] }
+// before — one padded spec, two roles overloaded
+SpecKey { fn_id, args: [cap_0, …, cap_n, Pending, …, Pending] }
 
-// after
-SpecKey { fn_id: FnId, args: [capture_0, …, capture_n] }
+// after — handle spec (new) + any-key body spec (existing)
+HandleSpec { fn_id, captures: [cap_0, …, cap_n] }
+BodySpec   { fn_id, args: [α_0, …, α_n, α_n+1, …, α_n+m] }  // any-key body
 ```
 
-The key carries exactly the captures. No padding. At a `ClosureCall`
-site, the body spec is minted by combining the handle's captures with
-the call site's arg descriptors:
+The `HandleSpec` records "a handle of shape (fn_id, captures) exists
+in some caller's environment." It has arity `captures.len()` and is
+*not* a body-dispatch target — indirect dispatch never looks up by
+handle shape. It is consumed by the formatter (to render handle
+identity in outcomes) and by C3's polymorphism work (the handle's
+arrow signature carries type variables; the captures pin which type
+variables get instantiated where).
 
-```
-body_spec_key = SpecKey {
-    fn_id: handle.fn_id,
-    args: handle.captures.concat(call_site.arg_descrs)
-}
-```
+The `BodySpec` is the existing any-key body, unchanged in role. Under
+B1+C3, its argument descriptors become type variables (`Var(α_i)`)
+instead of `Descr::any()`, so the arrow signature is polymorphic by
+construction rather than ad-hoc-opaque. Indirect dispatch still
+resolves to it via the any-key (or, after C4, via type-variable
+subsumption).
 
-The current `pending_makeclosure_arity` gate (which uses opaque-arity
-liveness as a proxy for "all slots pending or concrete") becomes
-either unnecessary (B2's minting handles the cases) or simplifies to
-an explicit "all captures concrete" check.
+This separation means:
+
+- The registry gets a new entry kind (`HandleSpec`) or grows a marker
+  distinguishing handle records from body records. B1's implementation
+  decides which.
+- Body specs at concrete call sites continue to be minted as today —
+  combine captures + arg descrs, look up in the registry, mint if
+  absent. B2's job is to make this minting not depend on reading any
+  Descr::any() padding from elsewhere.
+- The `pending_makeclosure_arity` gate keeps doing its job for body
+  specs — body specs depend on opaque arity. The gate stops being
+  responsible for the handle spec, which is a separate registration
+  that doesn't need arity gating.
+
+**This refinement changes B1's surface area.** The original B1 ticket
+proposed removing padding from a single key shape. The refined B1
+maintains two key shapes (handle + any-key body) with a clear
+contract for each. The work is comparable in size; the design is
+more honest.
 
 ### Type variables (C1–C5)
 
@@ -369,6 +409,14 @@ make the migrations and prove the audit by grep + tests.
   compiler-enforced via exhaustiveness on `match descr`.
 
 ## Open questions resolved here
+
+0. **The any-key body role is not retired by B1.** Discovered during
+   the up-front investigation when reading `spec_registry.rs`. The
+   MakeClosure-side padded spec serves two roles today; B1 splits
+   them into a new handle spec + the existing any-key body spec.
+   The any-key body spec stays load-bearing for indirect dispatch
+   (the `stub_fp` path fz-uwq.6 protected). See "MakeClosure spec
+   keys (B1, B2, B3)" above for the refined contract.
 
 1. **Type variable representation: `Descr::Var(TypeVarId)` vs separate
    type-scheme layer.** Resolved: `Descr::Var(TypeVarId)`. The
