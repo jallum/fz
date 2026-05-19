@@ -36,22 +36,26 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 pub(crate) const HEADER_SIZE: i32 = 16;
-const SLOT_BYTES: i32 = 8;
+pub(crate) const SLOT_BYTES: i32 = 8;
 
 // FzValue tag scheme (matches src/fz_value.rs).
-const TAG_INT: i64 = 0b001;
-const TAG_ATOM: i64 = 0b010;
+pub(crate) const TAG_INT: i64 = 0b001;
+pub(crate) const TAG_ATOM: i64 = 0b010;
+#[allow(dead_code)] // consumed by ir_codegen_receive; retracts when fz-70q.3 lands park-site
+pub(crate) const TAG_PTR: i64 = 0b000;
+#[allow(dead_code)]
+pub(crate) const TAG_MASK: i64 = 0b111;
 // fz-yan.1 — nil/true/false are atoms with reserved compile-time IDs.
 // The bit-pattern constants are preserved so codegen call sites are
 // unchanged; only the definitions move (from `TAG_SPECIAL`-tagged to
 // `TAG_ATOM`-tagged). See runtime/src/fz_value.rs.
-const NIL_BITS: i64 = fz_runtime::fz_value::NIL_BITS as i64;
-const TRUE_BITS: i64 = fz_runtime::fz_value::TRUE_BITS as i64;
-const FALSE_BITS: i64 = fz_runtime::fz_value::FALSE_BITS as i64;
+pub(crate) const NIL_BITS: i64 = fz_runtime::fz_value::NIL_BITS as i64;
+pub(crate) const TRUE_BITS: i64 = fz_runtime::fz_value::TRUE_BITS as i64;
+pub(crate) const FALSE_BITS: i64 = fz_runtime::fz_value::FALSE_BITS as i64;
 /// fz-s9y.2 — empty-list sentinel. TAG_PTR with payload 1 → bit pattern
 /// 0x8. Sits in unmapped page 0 so no allocator collides with it.
 /// Distinct from NIL_BITS (the nil atom-like value).
-const EMPTY_LIST_BITS: i64 = 1 << 3;
+pub(crate) const EMPTY_LIST_BITS: i64 = 1 << 3;
 
 /// Errors from `compile()`. Backend-plumbing failures (cranelift
 /// `declare_function` / `define_function` / `finalize_definitions`) carry
@@ -1850,7 +1854,7 @@ fn resolve_tcc_body(
 /// Emit a single Cranelift function: make_context → set sig → build body →
 /// finalize → define_function → clear_context. Eliminates the boilerplate
 /// repeated for every runtime shim (fz_main_entry, fz_spawn_entry, etc.).
-fn emit_fn_body<M: cranelift_module::Module>(
+pub(crate) fn emit_fn_body<M: cranelift_module::Module>(
     module: &mut M,
     fbctx: &mut FunctionBuilderContext,
     sig: Signature,
