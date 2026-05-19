@@ -1172,41 +1172,35 @@ fn walk_spec_for_discovery(
         // value event, not a body-spec dispatch.
         for stmt in b.stmts.iter() {
             let Stmt::Let(v, prim) = stmt;
-            match prim {
-                Prim::MakeClosure(mk_ident, lam_fn_id, captured) => {
-                    // fz-try B1+B2 — MakeClosure is closure-value
-                    // construction. Two effects:
-                    //   (a) Register a handle `(lam_fn_id, captures)`
-                    //       — closure-value identity, disjoint from
-                    //       body specs.
-                    //   (b) Emit the lambda's any-key body spec onto
-                    //       the worklist — uniform across every
-                    //       MakeClosure site of the same lambda, no
-                    //       captures-padding. The emit drives the
-                    //       typer to type the body; codegen registers
-                    //       one compiled body per closure-target at
-                    //       SpecId.0 == FnId.0. The closure-target
-                    //       ABI seam speaks Tagged (fz-try.15), so no
-                    //       per-capture body specialization is needed
-                    //       for wire-format synchronization.
-                    if let Some(&jj) = m.fn_idx.get(lam_fn_id) {
-                        let lam = &m.fns[jj];
-                        let n_params = lam.block(lam.entry).params.len();
-                        let captures: Vec<Descr> = captured
-                            .iter()
-                            .map(|cv| env.get(cv).cloned().unwrap_or_else(Descr::any))
-                            .collect();
-                        out.closure_handles.insert((*lam_fn_id, captures));
-                        let any_key: Vec<Descr> = vec![Descr::any(); n_params];
-                        let site = EmitterSite {
-                            caller: caller_spec_key.clone(),
-                            ident: mk_ident.clone(),
-                            slot: EmitSlot::MakeClosure,
-                        };
-                        out.emits.push((site, (*lam_fn_id, any_key)));
-                    }
-                }
-                _ => {}
+            // fz-try B1+B2 — MakeClosure is closure-value construction. Two
+            // effects:
+            //   (a) Register a handle `(lam_fn_id, captures)` — closure-value
+            //       identity, disjoint from body specs.
+            //   (b) Emit the lambda's any-key body spec onto the worklist —
+            //       uniform across every MakeClosure site of the same lambda,
+            //       no captures-padding. The emit drives the typer to type
+            //       the body; codegen registers one compiled body per
+            //       closure-target at SpecId.0 == FnId.0. The closure-target
+            //       ABI seam speaks Tagged (fz-try.15), so no per-capture
+            //       body specialization is needed for wire-format
+            //       synchronization.
+            if let Prim::MakeClosure(mk_ident, lam_fn_id, captured) = prim
+                && let Some(&jj) = m.fn_idx.get(lam_fn_id)
+            {
+                let lam = &m.fns[jj];
+                let n_params = lam.block(lam.entry).params.len();
+                let captures: Vec<Descr> = captured
+                    .iter()
+                    .map(|cv| env.get(cv).cloned().unwrap_or_else(Descr::any))
+                    .collect();
+                out.closure_handles.insert((*lam_fn_id, captures));
+                let any_key: Vec<Descr> = vec![Descr::any(); n_params];
+                let site = EmitterSite {
+                    caller: caller_spec_key.clone(),
+                    ident: mk_ident.clone(),
+                    slot: EmitSlot::MakeClosure,
+                };
+                out.emits.push((site, (*lam_fn_id, any_key)));
             }
             env.insert(*v, type_prim(prim, &env, m, &HashSet::new()));
         }
