@@ -420,7 +420,15 @@ impl<'a> Runtime<'a> {
                 self.tasks.insert(pid, task);
                 self.run_queue.push_back(pid);
                 continue;
-            } else if task.next_frame.is_null() && task.parked_cont.is_null() {
+            } else if task.next_frame.is_null()
+                && task.parked_cont.is_null()
+                && task.parked_matched.is_none()
+            {
+                // fz-70q.4 — `parked_matched` is the selective-receive park
+                // record; like `parked_cont`, its presence means the task is
+                // suspended on a receive, not finished. Without this check
+                // the run loop would mis-classify the receiver as Exited and
+                // never call its initial-scan branch.
                 task.state = ProcessState::Exited;
                 task.quiet_quanta = task.quiet_quanta.saturating_add(1);
             } else if task.state == ProcessState::Blocked {

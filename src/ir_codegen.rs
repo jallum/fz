@@ -257,6 +257,59 @@ impl CompiledModule {
             fz_runtime::yield_flag::FZ_SHOULD_YIELD.store(0, std::sync::atomic::Ordering::Relaxed);
         }
 
+        // fz-70q.6 — selective-receive initial scan. When the task wakes
+        // Ready with a `parked_matched` (typical for a receiver whose
+        // mailbox already had messages when it first parked, or for one
+        // whose mailbox grew while the sender side hadn't been told the
+        // matcher), walk the mailbox in arrival order trying the matcher
+        // on each message. On a hit, splice that message out, restore the
+        // rejected prefix, and stash a `pending_resume_matched` so the
+        // dispatch branch below fires. On no hit, the task stays Blocked
+        // (mailbox is left intact). Erlang-style "save queue" semantics:
+        // non-matching messages keep their relative order.
+        if process.parked_matched.is_some() && !process.mailbox.is_empty() {
+            let mut hit: Option<(usize, Vec<fz_runtime::fz_value::FzValue>)> = None;
+            let mut scanned: std::collections::VecDeque<fz_runtime::fz_value::FzValue> =
+                std::collections::VecDeque::new();
+            while let Some(msg) = process.mailbox.pop_front() {
+                let park = process.parked_matched.as_ref().expect("checked above");
+                match park.try_match(msg) {
+                    Some(h) => {
+                        hit = Some(h);
+                        break;
+                    }
+                    None => scanned.push_back(msg),
+                }
+            }
+            // Restore non-matching messages to the front, preserving the
+            // original order: scanned holds them oldest-first.
+            while let Some(m) = scanned.pop_back() {
+                process.mailbox.push_front(m);
+            }
+            if let Some((clause_idx, bound_vals)) = hit {
+                let park = process.parked_matched.as_ref().expect("checked above");
+                let cont = park.clause_bodies[clause_idx];
+                let timer_id = park.after_timer_id;
+                process.parked_matched = None;
+                if let Some(_id) = timer_id {
+                    // Timer cancellation goes through the scheduler hook; from
+                    // run_quantum we don't hold the Runtime, so leave the timer
+                    // to fire harmlessly — its drain ignores tasks whose
+                    // parked_matched is None.
+                }
+                process.pending_resume_matched =
+                    Some(fz_runtime::park::PendingResumeMatched {
+                        cont,
+                        args: bound_vals,
+                    });
+                // Fall through to the dispatch branch below.
+            } else {
+                // No match — block until a send fires the sender-probe.
+                process.state = fz_runtime::process::ProcessState::Blocked;
+                process.next_frame = std::ptr::null_mut();
+                return;
+            }
+        }
         // fz-70q (B3 A) — selective-receive wakeup. Set by the sender-
         // probe in `send_via_current_runtime` (or the after-timer fire in
         // `drain_expired_timers`) when a matcher hit picked the winning
