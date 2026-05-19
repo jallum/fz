@@ -298,11 +298,10 @@ impl CompiledModule {
                     // to fire harmlessly — its drain ignores tasks whose
                     // parked_matched is None.
                 }
-                process.pending_resume_matched =
-                    Some(fz_runtime::park::PendingResumeMatched {
-                        cont,
-                        args: bound_vals,
-                    });
+                process.pending_resume_matched = Some(fz_runtime::park::PendingResumeMatched {
+                    cont,
+                    args: bound_vals,
+                });
                 // Fall through to the dispatch branch below.
             } else {
                 // No match — block until a send fires the sender-probe.
@@ -415,8 +414,7 @@ impl CompiledModule {
                         );
                     }
                     8 => {
-                        type F8 =
-                            extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64, u64) -> i64;
+                        type F8 = extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64, u64) -> i64;
                         let f: F8 = std::mem::transmute(shim);
                         let _ = f(
                             resume.args[0].0,
@@ -3137,12 +3135,7 @@ pub fn compile_with_backend<B: Backend>(
     let mut receive_matched_sites: Vec<(crate::fz_ir::FnId, crate::fz_ir::BlockId)> = Vec::new();
     for f in &module.fns {
         for blk in &f.blocks {
-            let Term::ReceiveMatched {
-                clauses,
-                after,
-                ..
-            } = &blk.terminator
-            else {
+            let Term::ReceiveMatched { clauses, after, .. } = &blk.terminator else {
                 continue;
             };
             let name = format!("fz_matcher_fn_{}_b{}", f.id.0, blk.id.0);
@@ -3325,9 +3318,7 @@ pub fn compile_with_backend<B: Backend>(
         let f = module.fn_by_id(*fn_id);
         let blk = f.blocks.iter().find(|b| b.id == *blk_id).unwrap();
         let Term::ReceiveMatched {
-            clauses,
-            pinned,
-            ..
+            clauses, pinned, ..
         } = &blk.terminator
         else {
             unreachable!("receive_matched_sites holds only Term::ReceiveMatched terms");
@@ -3623,9 +3614,9 @@ pub fn compile_with_backend<B: Backend>(
                     }
                     let cont = b.block_params(entry)[n];
                     args.push(cont);
-                    let code =
-                        b.ins()
-                            .load(types::I64, MemFlags::trusted(), cont, HEADER_SIZE);
+                    let code = b
+                        .ins()
+                        .load(types::I64, MemFlags::trusted(), cont, HEADER_SIZE);
                     let mut tail_sig = Signature::new(CallConv::Tail);
                     for _ in 0..(n + 1) {
                         tail_sig.params.push(AbiParam::new(types::I64));
@@ -3990,6 +3981,11 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
     )?;
     // fz-02r.5 — mid-flight back-edge yield helpers.
     let mid_flight_roots_ptr_id = decl("fz_mid_flight_roots_ptr", &[], &[types::I64])?;
+    // fz-70q.5.2 — cont-stub helper. Returns a raw `*const u64` to the
+    // current process's resume_args slab (or null when empty). Cont stubs
+    // (fz-70q.5.3) call this and read the first N u64s where N is the
+    // body fn's compile-time bound_arity.
+    let resume_args_ptr_id = decl("fz_resume_args_ptr", &[], &[types::I64])?;
     let yield_back_edge_id = decl(
         "fz_yield_back_edge",
         &[types::I64, types::I32],
@@ -4089,6 +4085,7 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         spawn_entry_id,
         main_entry_id,
         mid_flight_roots_ptr_id,
+        resume_args_ptr_id,
         yield_back_edge_id,
         should_yield_data_id,
     })
@@ -4255,6 +4252,12 @@ struct RuntimeRefs {
     main_entry_id: FuncId,
     // fz-02r.5 — mid-flight back-edge yield helpers.
     mid_flight_roots_ptr_id: FuncId,
+    /// fz-70q.5.2 — `fz_resume_args_ptr() -> i64 systemv`. Cont stubs
+    /// (fz-70q.5.3) call this to obtain the runtime slab pointer.
+    /// fz-70q.5.4 wires it into the per-cont-fn stub emission pass and
+    /// retires this allow.
+    #[allow(dead_code)]
+    resume_args_ptr_id: FuncId,
     yield_back_edge_id: FuncId,
     should_yield_data_id: DataId,
 }
@@ -4332,11 +4335,7 @@ fn build_entry_harness<M: cranelift_module::Module>(
             // Receive cont) but ReceiveMatched lowering overrides via
             // `cont_extras_count`: body / guard fns set it to
             // bound_arity; after-body sets 0.
-            let extras_count = env
-                .cont_extras_count
-                .get(&f.id)
-                .copied()
-                .unwrap_or(1);
+            let extras_count = env.cont_extras_count.get(&f.id).copied().unwrap_or(1);
             // fz-ul4.27.22.3: cont sig matches my_param_reprs[i]'s
             // Cranelift type directly. Producer's Term::Return uses the
             // same sig (return_reprs[producer_sid] = my_param_reprs[0]
@@ -4359,9 +4358,7 @@ fn build_entry_harness<M: cranelift_module::Module>(
                 // repr at the builder (param_reprs[cont_sid][i]); load with
                 // the matching Cranelift type. No tag/untag round-trip when
                 // the capture is narrow.
-                let off = HEADER_SIZE
-                    + SLOT_BYTES * 2
-                    + ((i - extras_count) as i32) * SLOT_BYTES;
+                let off = HEADER_SIZE + SLOT_BYTES * 2 + ((i - extras_count) as i32) * SLOT_BYTES;
                 let cl_ty = my_param_reprs[i].cl_type();
                 let v = b.ins().load(cl_ty, MemFlags::trusted(), self_val, off);
                 var_env.insert(
@@ -5602,7 +5599,13 @@ fn emit_terminator<M: cranelift_module::Module>(
             // FnId.0 == any-key SpecId invariant does not apply here.
             let body_cap_descrs: Vec<crate::types::Descr> = captures
                 .iter()
-                .map(|cv| fn_types.vars.get(cv).cloned().unwrap_or_else(crate::types::Descr::any))
+                .map(|cv| {
+                    fn_types
+                        .vars
+                        .get(cv)
+                        .cloned()
+                        .unwrap_or_else(crate::types::Descr::any)
+                })
                 .collect();
             let resolve_body_sid = |body: crate::fz_ir::FnId, bound_arity: usize| -> u32 {
                 let body_fn = env.module.fn_by_id(body);
@@ -5653,9 +5656,7 @@ fn emit_terminator<M: cranelift_module::Module>(
             let (after_deadline_v, after_cont_v) = match after {
                 Some(a) => {
                     let cont_sid = resolve_body_sid(a.body, 0);
-                    let cont_fid = *fn_ids
-                        .get(&cont_sid)
-                        .expect("after body sid has no FuncId");
+                    let cont_fid = *fn_ids.get(&cont_sid).expect("after body sid has no FuncId");
                     let cl_ptr = build_cont_closure(
                         jmod,
                         b,
@@ -5687,8 +5688,7 @@ fn emit_terminator<M: cranelift_module::Module>(
             let n_clauses_v = b.ins().iconst(types::I64, n_clauses as i64);
             let bound_arity_v = b.ins().iconst(types::I32, bound_arity as i64);
 
-            let park_fref =
-                jmod.declare_func_in_func(runtime.receive_park_matched_id, b.func);
+            let park_fref = jmod.declare_func_in_func(runtime.receive_park_matched_id, b.func);
             let park_inst = b.ins().call(
                 park_fref,
                 &[
@@ -5814,11 +5814,7 @@ fn compile_fn<M: cranelift_module::Module>(
             // `(extra_0, ..., extra_{N-1}, self:i64) tail`. Captures
             // never appear as Tail params — they're loaded from the
             // closure inside the body (see entry harness).
-            let extras_count = env
-                .cont_extras_count
-                .get(&f.id)
-                .copied()
-                .unwrap_or(1);
+            let extras_count = env.cont_extras_count.get(&f.id).copied().unwrap_or(1);
             for r in &my_param_reprs[..extras_count] {
                 b.append_block_param(entry_cl, r.cl_type());
             }

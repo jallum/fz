@@ -1564,11 +1564,7 @@ fn walk_spec_for_discovery(
                 }
             }
             if let Some(a) = after {
-                enq(
-                    a.body,
-                    0,
-                    crate::fz_ir::CallsiteIdent::from_source(a.span),
-                );
+                enq(a.body, 0, crate::fz_ir::CallsiteIdent::from_source(a.span));
             }
         }
     }
@@ -2703,9 +2699,7 @@ pub fn collect_diagnostics(module: &Module, types: &ModuleTypes) -> crate::diag:
                                 ImpureKind::Allocates(what) => {
                                     format!("guard expression allocates via `{}`", what)
                                 }
-                                ImpureKind::Extern => {
-                                    "guard expression calls an extern".into()
-                                }
+                                ImpureKind::Extern => "guard expression calls an extern".into(),
                             },
                             ImpureError::Term(_) => unreachable!(),
                         });
@@ -3125,25 +3119,23 @@ pub fn reachable_specs(
                         .iter()
                         .map(|cv| ft.vars.get(cv).cloned().unwrap_or_else(Descr::any))
                         .collect();
-                    let enq = |fid: FnId,
-                               bound_arity: usize,
-                               cap_descrs: &[Descr],
-                               wl: &mut Vec<u32>| {
-                        let Some(&j) = module.fn_idx.get(&fid) else {
-                            return;
+                    let enq =
+                        |fid: FnId, bound_arity: usize, cap_descrs: &[Descr], wl: &mut Vec<u32>| {
+                            let Some(&j) = module.fn_idx.get(&fid) else {
+                                return;
+                            };
+                            let body = &module.fns[j];
+                            let np = body.block(body.entry).params.len();
+                            let mut key: Vec<Descr> = vec![Descr::any(); bound_arity];
+                            key.extend(cap_descrs.iter().cloned());
+                            while key.len() < np {
+                                key.push(Descr::any());
+                            }
+                            key.truncate(np);
+                            if let Some(sid) = spec_registry.resolve(fid, &key) {
+                                wl.push(sid.0);
+                            }
                         };
-                        let body = &module.fns[j];
-                        let np = body.block(body.entry).params.len();
-                        let mut key: Vec<Descr> = vec![Descr::any(); bound_arity];
-                        key.extend(cap_descrs.iter().cloned());
-                        while key.len() < np {
-                            key.push(Descr::any());
-                        }
-                        key.truncate(np);
-                        if let Some(sid) = spec_registry.resolve(fid, &key) {
-                            wl.push(sid.0);
-                        }
-                    };
                     for c in clauses {
                         enq(c.body, c.bound_names.len(), &cap_descrs, &mut worklist);
                         if let Some(g) = c.guard {
@@ -3635,7 +3627,10 @@ mod purity_tests {
     #[test]
     fn alloc_struct_rejected() {
         match check_pure_codegen(&[s(Prim::AllocStruct(0, vec![]))]) {
-            Err(ImpureError::Stmt { index: 0, kind: ImpureKind::Allocates("AllocStruct") }) => {}
+            Err(ImpureError::Stmt {
+                index: 0,
+                kind: ImpureKind::Allocates("AllocStruct"),
+            }) => {}
             other => panic!("expected AllocStruct rejection, got {:?}", other),
         }
     }
@@ -3644,7 +3639,10 @@ mod purity_tests {
     fn make_tuple_rejected() {
         assert!(matches!(
             check_pure_codegen(&[s(Prim::MakeTuple(vec![v(1), v(2)]))]),
-            Err(ImpureError::Stmt { kind: ImpureKind::Allocates("MakeTuple"), .. })
+            Err(ImpureError::Stmt {
+                kind: ImpureKind::Allocates("MakeTuple"),
+                ..
+            })
         ));
     }
 
@@ -3652,7 +3650,10 @@ mod purity_tests {
     fn make_list_rejected() {
         assert!(matches!(
             check_pure_codegen(&[s(Prim::MakeList(vec![v(1)], None))]),
-            Err(ImpureError::Stmt { kind: ImpureKind::Allocates("MakeList"), .. })
+            Err(ImpureError::Stmt {
+                kind: ImpureKind::Allocates("MakeList"),
+                ..
+            })
         ));
     }
 
@@ -3660,7 +3661,10 @@ mod purity_tests {
     fn list_cons_rejected() {
         assert!(matches!(
             check_pure_codegen(&[s(Prim::ListCons(v(1), v(2)))]),
-            Err(ImpureError::Stmt { kind: ImpureKind::Allocates("ListCons"), .. })
+            Err(ImpureError::Stmt {
+                kind: ImpureKind::Allocates("ListCons"),
+                ..
+            })
         ));
     }
 
@@ -3668,11 +3672,17 @@ mod purity_tests {
     fn make_map_and_update_rejected() {
         assert!(matches!(
             check_pure_codegen(&[s(Prim::MakeMap(vec![]))]),
-            Err(ImpureError::Stmt { kind: ImpureKind::Allocates("MakeMap"), .. })
+            Err(ImpureError::Stmt {
+                kind: ImpureKind::Allocates("MakeMap"),
+                ..
+            })
         ));
         assert!(matches!(
             check_pure_codegen(&[s(Prim::MapUpdate(v(1), vec![]))]),
-            Err(ImpureError::Stmt { kind: ImpureKind::Allocates("MapUpdate"), .. })
+            Err(ImpureError::Stmt {
+                kind: ImpureKind::Allocates("MapUpdate"),
+                ..
+            })
         ));
     }
 
@@ -3680,7 +3690,10 @@ mod purity_tests {
     fn make_bitstring_rejected() {
         assert!(matches!(
             check_pure_codegen(&[s(Prim::MakeBitstring(vec![]))]),
-            Err(ImpureError::Stmt { kind: ImpureKind::Allocates("MakeBitstring"), .. })
+            Err(ImpureError::Stmt {
+                kind: ImpureKind::Allocates("MakeBitstring"),
+                ..
+            })
         ));
     }
 
@@ -3688,7 +3701,10 @@ mod purity_tests {
     fn extern_rejected_even_if_harmless() {
         assert!(matches!(
             check_pure_codegen(&[s(Prim::Extern(ExternId(0), vec![]))]),
-            Err(ImpureError::Stmt { kind: ImpureKind::Extern, .. })
+            Err(ImpureError::Stmt {
+                kind: ImpureKind::Extern,
+                ..
+            })
         ));
     }
 
@@ -3710,13 +3726,15 @@ mod purity_tests {
     fn term_goto_if_return_accepted() {
         assert!(check_pure_term(&Term::Goto(BlockId(0), vec![])).is_ok());
         assert!(check_pure_term(&Term::Return(v(0))).is_ok());
-        assert!(check_pure_term(&Term::If {
-            cond: v(0),
-            then_b: BlockId(0),
-            else_b: BlockId(1),
-            origin: BranchOrigin::PatternBind,
-        })
-        .is_ok());
+        assert!(
+            check_pure_term(&Term::If {
+                cond: v(0),
+                then_b: BlockId(0),
+                else_b: BlockId(1),
+                origin: BranchOrigin::PatternBind,
+            })
+            .is_ok()
+        );
     }
 
     #[test]

@@ -63,9 +63,7 @@ pub fn build_call_graph(m: &Module) -> HashMap<FnId, HashSet<FnId>> {
                 // Same shape as the Receive cont edge: backends need
                 // them in the spec discovery + reachability graph or
                 // codegen never sees a body FuncId.
-                Term::ReceiveMatched {
-                    clauses, after, ..
-                } => {
+                Term::ReceiveMatched { clauses, after, .. } => {
                     for c in clauses {
                         edges.insert(c.body);
                         if let Some(g) = c.guard {

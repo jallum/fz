@@ -2775,10 +2775,14 @@ fn lower_receive(
             if !seen_pinned.insert(name.clone()) {
                 continue;
             }
-            let v = ctx.env.get(&name).copied().ok_or_else(|| LowerError::Unbound {
-                span: clause.pattern.span,
-                name: format!("^{}", name),
-            })?;
+            let v = ctx
+                .env
+                .get(&name)
+                .copied()
+                .ok_or_else(|| LowerError::Unbound {
+                    span: clause.pattern.span,
+                    name: format!("^{}", name),
+                })?;
             pinned.push((name, v));
         }
     }
@@ -2858,11 +2862,13 @@ fn lower_receive(
         })
         .collect();
 
-    let ir_after = after_slot.as_ref().map(|(cont, a)| crate::fz_ir::ReceiveAfter {
-        timeout: timeout_var.expect("timeout lowered when after is Some"),
-        body: cont.id,
-        span: a.span,
-    });
+    let ir_after = after_slot
+        .as_ref()
+        .map(|(cont, a)| crate::fz_ir::ReceiveAfter {
+            timeout: timeout_var.expect("timeout lowered when after is Some"),
+            body: cont.id,
+            span: a.span,
+        });
 
     // Terminate the caller fn's current block with the ReceiveMatched.
     ctx.set_term_at(
@@ -2889,7 +2895,10 @@ fn lower_receive(
             }
             let g_val = lower_expr(
                 ctx,
-                clause.guard.as_ref().expect("guard cont implies guard expr"),
+                clause
+                    .guard
+                    .as_ref()
+                    .expect("guard cont implies guard expr"),
                 /* is_tail */ true,
             )?;
             // Guards return their value to the matcher caller (B3 will
@@ -4821,12 +4830,7 @@ end
         let last_extern_idx = module.externs.len() - 1;
         let ir = format!("{}", module);
         let needle = format!("extern#{}", last_extern_idx);
-        assert!(
-            ir.contains(&needle),
-            "expected {} in IR:\n{}",
-            needle,
-            ir
-        );
+        assert!(ir.contains(&needle), "expected {} in IR:\n{}", needle, ir);
     }
 
     #[test]

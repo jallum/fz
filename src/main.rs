@@ -7,6 +7,7 @@ mod eval;
 mod fz_ir;
 mod ir_callgraph;
 mod ir_codegen;
+mod ir_codegen_cont_stub;
 mod ir_codegen_invariants;
 mod ir_codegen_receive;
 mod ir_interp;

@@ -66,9 +66,7 @@ pub fn dce_module_level(m: &mut Module) {
                 // fz-yxs — module-level DCE: enqueue every body/guard/after
                 // fn referenced by a ReceiveMatched so they survive to the
                 // backend stage.
-                Term::ReceiveMatched {
-                    clauses, after, ..
-                } => {
+                Term::ReceiveMatched { clauses, after, .. } => {
                     for c in clauses {
                         queue.push(c.body);
                         if let Some(g) = c.guard {
