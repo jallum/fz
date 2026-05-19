@@ -9,9 +9,9 @@
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(1)      :: :function_clause
 ;     blk2 If Var(2) ? blk4 : blk3
-;     blk3 TailCall fn_clause_1#9(Var(0))
+;     blk3 TailCall fn_clause_1#10(Var(0))
 ;              callee_key=[7]
-;     blk4 TailCall fn_clause_0#8(Var(0))
+;     blk4 TailCall fn_clause_0#9(Var(0))
 ;              callee_key=[7]
 
 ; spec print(1) #fn=0
@@ -25,12 +25,12 @@
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(1)      :: :function_clause
 ;     blk2 If Var(2) ? blk4 : blk3
-;     blk3 TailCall fn_clause_1#9(Var(0))
+;     blk3 TailCall fn_clause_1#10(Var(0))
 ;              callee_key=[99]
-;     blk4 TailCall fn_clause_0#8(Var(0))
+;     blk4 TailCall fn_clause_0#9(Var(0))
 ;              callee_key=[99]
 
-; spec fn_clause_0(1) #fn=8
+; spec fn_clause_0(1) #fn=9
 ;   key:    [7]
 ;   return: nil
 ;   vars:
@@ -39,7 +39,7 @@
 ;   exits:
 ;     blk0 Return Var(1)    :: nil
 
-; spec fn_clause_0(1) #fn=8
+; spec fn_clause_0(1) #fn=9
 ;   key:    [99]
 ;   return: nil
 ;   vars:
@@ -48,7 +48,7 @@
 ;   exits:
 ;     blk0 Return Var(1)    :: nil
 
-; spec fn_clause_1(1) #fn=9
+; spec fn_clause_1(1) #fn=10
 ;   key:    [any]
 ;   return: nil
 ;   vars:
@@ -57,7 +57,7 @@
 ;   exits:
 ;     blk0 Return Var(1)    :: nil
 
-; spec helper(0) #fn=12
+; spec helper(0) #fn=13
 ;   key:    []
 ;   return: 7
 ;   vars:
@@ -67,7 +67,7 @@
 ;     blk0 Return Var(1)    :: 7
 ;     blk1 Halt Var(0)      :: :match_error
 
-; spec pick(1) #fn=13
+; spec pick(1) #fn=14
 ;   key:    [0]
 ;   return: 99
 ;   vars:
@@ -78,12 +78,12 @@
 ;   exits:
 ;     blk0 If Var(3) ? blk2 : blk3
 ;     blk1 Halt Var(1)      :: :match_error
-;     blk2 TailCall if_then#15(Var(0))
+;     blk2 TailCall if_then#16(Var(0))
 ;              callee_key=[0]
-;     blk3 TailCall if_else#16(Var(0))
+;     blk3 TailCall if_else#17(Var(0))
 ;              callee_key=[0]
 
-; spec pick(1) #fn=13
+; spec pick(1) #fn=14
 ;   key:    [5]
 ;   return: 7
 ;   vars:
@@ -94,43 +94,43 @@
 ;   exits:
 ;     blk0 If Var(3) ? blk2 : blk3
 ;     blk1 Halt Var(1)      :: :match_error
-;     blk2 TailCall if_then#15(Var(0))
+;     blk2 TailCall if_then#16(Var(0))
 ;              callee_key=[5]
-;     blk3 TailCall if_else#16(Var(0))
+;     blk3 TailCall if_else#17(Var(0))
 ;              callee_key=[5]
 
-; spec main(0) #fn=14
+; spec main(0) #fn=15
 ;   key:    []
 ;   return: nil
 ;   vars:
 ;     Var(0) :: :match_error
 ;     Var(1) :: 5
 ;   exits:
-;     blk0 Call pick#13(Var(1))
+;     blk0 Call pick#14(Var(1))
 ;              callee_key=[5]
-;              cont k_17#17 captured=[]
+;              cont k_18#18 captured=[]
 ;              cont_key=[7]
 ;     blk1 Halt Var(0)      :: :match_error
 
-; spec if_then(1) #fn=15
+; spec if_then(1) #fn=16
 ;   key:    [0]
 ;   return: 7
 ;   vars:
 ;     Var(0) :: 0
 ;   exits:
-;     blk0 TailCall helper#12()
+;     blk0 TailCall helper#13()
 ;              callee_key=[]
 
-; spec if_then(1) #fn=15
+; spec if_then(1) #fn=16
 ;   key:    [5]
 ;   return: 7
 ;   vars:
 ;     Var(0) :: 5
 ;   exits:
-;     blk0 TailCall helper#12()
+;     blk0 TailCall helper#13()
 ;              callee_key=[]
 
-; spec if_else(1) #fn=16
+; spec if_else(1) #fn=17
 ;   key:    [0]
 ;   return: 99
 ;   vars:
@@ -139,7 +139,7 @@
 ;   exits:
 ;     blk0 Return Var(1)    :: 99
 
-; spec if_else(1) #fn=16
+; spec if_else(1) #fn=17
 ;   key:    [5]
 ;   return: 99
 ;   vars:
@@ -148,7 +148,7 @@
 ;   exits:
 ;     blk0 Return Var(1)    :: 99
 
-; spec k_17(1) #fn=17
+; spec k_18(1) #fn=18
 ;   key:    [7]
 ;   return: nil
 ;   vars:
@@ -156,22 +156,22 @@
 ;   exits:
 ;     blk0 Call print#0(Var(0))
 ;              callee_key=[7]
-;              cont k_18#18 captured=[]
+;              cont k_19#19 captured=[]
 ;              cont_key=[nil]
 
-; spec k_18(1) #fn=18
+; spec k_19(1) #fn=19
 ;   key:    [nil]
 ;   return: nil
 ;   vars:
 ;     Var(0) :: nil
 ;     Var(1) :: 0
 ;   exits:
-;     blk0 Call pick#13(Var(1))
+;     blk0 Call pick#14(Var(1))
 ;              callee_key=[0]
-;              cont k_19#19 captured=[]
+;              cont k_20#20 captured=[]
 ;              cont_key=[99]
 
-; spec k_19(1) #fn=19
+; spec k_20(1) #fn=20
 ;   key:    [99]
 ;   return: nil
 ;   vars:

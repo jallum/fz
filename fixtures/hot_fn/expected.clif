@@ -15,8 +15,8 @@ block0(v0: i64):
     return_call fn1(v2, v0)             ; @4:9  v2 = 2
 }
 
-; fn k_15_s14
-    ;   @spec   k_15(nil) -> nil
+; fn k_16_s15
+    ;   @spec   k_16(nil) -> nil
     ;   @key    [nil]
     ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
@@ -32,8 +32,8 @@ function u0:0(i64, i64) -> i64 tail {
     return_call fn1(v3, v1)             ; @5:9  v3 = 2
 }
 
-; fn k_17_s15
-    ;   @spec   k_17(nil) -> nil
+; fn k_18_s16
+    ;   @spec   k_18(nil) -> nil
     ;   @key    [nil]
     ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
@@ -49,8 +49,8 @@ function u0:0(i64, i64) -> i64 tail {
     return_call fn1(v3, v1)             ; @6:9  v3 = 2
 }
 
-; fn k_19_s16
-    ;   @spec   k_19(nil) -> nil
+; fn k_20_s17
+    ;   @spec   k_20(nil) -> nil
     ;   @key    [nil]
     ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
@@ -66,8 +66,8 @@ function u0:0(i64, i64) -> i64 tail {
     return_call fn1(v3, v1)             ; @7:9  v3 = 2
 }
 
-; fn k_21_s17
-    ;   @spec   k_21(nil) -> nil
+; fn k_22_s18
+    ;   @spec   k_22(nil) -> nil
     ;   @key    [nil]
     ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
@@ -83,8 +83,8 @@ function u0:0(i64, i64) -> i64 tail {
     return_call fn1(v3, v1)             ; @8:9  v3 = 2
 }
 
-; fn k_23_s18
-    ;   @spec   k_23(nil) -> nil
+; fn k_24_s19
+    ;   @spec   k_24(nil) -> nil
     ;   @key    [nil]
     ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
@@ -100,8 +100,8 @@ function u0:0(i64, i64) -> i64 tail {
     return_call fn1(v3, v1)             ; @9:9  v3 = 2
 }
 
-; fn k_25_s19
-    ;   @spec   k_25(nil) -> nil
+; fn k_26_s20
+    ;   @spec   k_26(nil) -> nil
     ;   @key    [nil]
     ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
@@ -117,8 +117,8 @@ function u0:0(i64, i64) -> i64 tail {
     return_call fn1(v3, v1)             ; @10:9  v3 = 2
 }
 
-; fn k_27_s20
-    ;   @spec   k_27(nil) -> nil
+; fn k_28_s21
+    ;   @spec   k_28(nil) -> nil
     ;   @key    [nil]
     ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
@@ -134,8 +134,8 @@ function u0:0(i64, i64) -> i64 tail {
     return_call fn1(v3, v1)             ; @11:9  v3 = 2
 }
 
-; fn k_29_s21
-    ;   @spec   k_29(nil) -> nil
+; fn k_30_s22
+    ;   @spec   k_30(nil) -> nil
     ;   @key    [nil]
     ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {

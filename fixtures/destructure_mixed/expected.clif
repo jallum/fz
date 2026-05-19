@@ -53,8 +53,8 @@ block2:
     return_call fn4(v23, v24, v20, v25, v0)  ; v23 = 2
 }
 
-; fn k_15_s14
-    ;   @spec   k_15(nil, 1 | 2 | 3, list(1 | 2 | 3), 99) -> nil
+; fn k_16_s15
+    ;   @spec   k_16(nil, 1 | 2 | 3, list(1 | 2 | 3), 99) -> nil
     ;   @key    [nil, 1 | 2 | 3, list(1 | 2 | 3), 99]
     ;   @abi    (Tagged, RawInt, Tagged, RawInt) -> Tagged
 function u0:0(i64, i64, i64, i64, i64) -> i64 tail {

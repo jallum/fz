@@ -20,7 +20,7 @@
 ;     blk0 Return Var(1)    :: ref
 ;     blk1 Halt Var(0)      :: :match_error
 
-; spec main(0) #fn=12
+; spec main(0) #fn=13
 ;   key:    []
 ;   return: nil
 ;   vars:
@@ -28,11 +28,11 @@
 ;   exits:
 ;     blk0 Call make_ref#7()
 ;              callee_key=[]
-;              cont k_13#13 captured=[]
+;              cont k_14#14 captured=[]
 ;              cont_key=[ref]
 ;     blk1 Halt Var(0)      :: :match_error
 
-; spec k_13(1) #fn=13
+; spec k_14(1) #fn=14
 ;   key:    [ref]
 ;   return: nil
 ;   vars:
@@ -41,11 +41,11 @@
 ;   exits:
 ;     blk0 Call make_ref#7()
 ;              callee_key=[]
-;              cont k_14#14 captured=[Var(0)]
+;              cont k_15#15 captured=[Var(0)]
 ;              cont_key=[ref, ref]
 ;     blk1 Halt Var(1)      :: :match_error
 
-; spec k_14(2) #fn=14
+; spec k_15(2) #fn=15
 ;   key:    [ref, ref]
 ;   return: nil
 ;   vars:

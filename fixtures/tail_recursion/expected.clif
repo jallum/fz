@@ -13,17 +13,17 @@ function u0:0(i64) -> i64 tail {
 block0(v0: i64):
     v1 = iconst.i64 0x0001_86a0         ; @5:15
     v2 = iconst.i64 0                   ; @5:23
-    v3 = iconst.i32 16                  ; @5:9
+    v3 = iconst.i32 17                  ; @5:9
     v4 = iconst.i32 1                   ; @5:9
     v5 = iconst.i32 0                   ; @5:9
-    v6 = call fn1(v3, v4, v5)           ; @5:9  v3 = 16, v4 = 1, v5 = 0
+    v6 = call fn1(v3, v4, v5)           ; @5:9  v3 = 17, v4 = 1, v5 = 0
     v7 = func_addr.i64 fn2              ; @5:9
     store notrap aligned v7, v6+16      ; @5:9
     store notrap aligned v0, v6+24      ; @5:9
     return_call fn0(v1, v2, v6)         ; @5:9  v1 = 0x0001_86a0, v2 = 0
 }
 
-; fn count_s14
+; fn count_s15
     ;   @spec   count(100000, 0) -> int
     ;   @key    [100000, 0]
     ;   @abi    (RawInt, RawInt) -> RawInt
@@ -62,7 +62,7 @@ block2:
     return_call fn0(v4, v6, v2)
 }
 
-; fn count_s15
+; fn count_s16
     ;   @spec   count(int, int) -> int
     ;   @key    [int, int]
     ;   @abi    (RawInt, RawInt) -> RawInt
@@ -111,8 +111,8 @@ block4:
     return_call fn0(v7, v9, v2)
 }
 
-; fn k_16
-    ;   @spec   k_16(int) -> nil
+; fn k_17
+    ;   @spec   k_17(int) -> nil
     ;   @key    [int]
     ;   @abi    (RawInt) -> Tagged
 function u0:0(i64, i64) -> i64 tail {

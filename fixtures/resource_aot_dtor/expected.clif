@@ -5,7 +5,7 @@
 function u0:0(i64, i64, i64) -> i64 tail {
     sig0 = (i64) system_v
     sig1 = (i64, i64) -> i64 tail
-    fn0 = u0:41 sig0
+    fn0 = u0:43 sig0
 
     block0(v0: i64, v1: i64, v2: i64):    ;; v0 :: any
     v3 = sshr_imm v0, 3                 ; @3:18
@@ -26,26 +26,26 @@ function u0:0(i64) -> i64 tail {
     sig3 = (i32) -> i64 system_v
     sig4 = (i64) system_v
     sig5 = (i64, i64) -> i64 tail
-    fn0 = u0:31 sig0
-    fn1 = u0:42 sig1
-    fn2 = u0:31 sig2
-    fn3 = u0:31 sig3
-    fn4 = u0:43 sig4
+    fn0 = u0:33 sig0
+    fn1 = u0:44 sig1
+    fn2 = u0:33 sig2
+    fn3 = u0:33 sig3
+    fn4 = u0:45 sig4
 
 block0(v0: i64):
     v1 = iconst.i64 10                  ; @6:22
-    v2 = iconst.i32 12                  ; @6:26
-    v3 = call fn0(v2)                   ; @6:26  v2 = 12
+    v2 = iconst.i32 13                  ; @6:26
+    v3 = call fn0(v2)                   ; @6:26  v2 = 13
     v4 = iconst.i64 81
     v5 = call fn1(v4, v3)  ; v4 = 81    ;; v5 :: any
     v6 = iconst.i64 20    ;; v6 :: 20
-    v7 = iconst.i32 12
-    v8 = call fn2(v7)  ; v7 = 12    ;; v8 :: &fn12[]:(α768) -> α831
+    v7 = iconst.i32 13
+    v8 = call fn2(v7)  ; v7 = 13    ;; v8 :: &fn13[]:(α832) -> α895
     v9 = iconst.i64 161
     v10 = call fn1(v9, v8)  ; v9 = 161    ;; v10 :: any
     v11 = iconst.i64 30    ;; v11 :: 30
-    v12 = iconst.i32 12
-    v13 = call fn3(v12)  ; v12 = 12    ;; v13 :: &fn12[]:(α768) -> α831
+    v12 = iconst.i32 13
+    v13 = call fn3(v12)  ; v12 = 13    ;; v13 :: &fn13[]:(α832) -> α895
     v14 = iconst.i64 241
     v15 = call fn1(v14, v13)  ; v14 = 241    ;; v15 :: any
     v16 = iconst.i64 42    ;; v16 :: :before

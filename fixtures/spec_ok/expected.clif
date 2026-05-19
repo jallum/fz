@@ -12,17 +12,17 @@ function u0:0(i64) -> i64 tail {
 
 block0(v0: i64):
     v1 = iconst.i64 41                  ; @6:29
-    v2 = iconst.i32 15                  ; @6:22
+    v2 = iconst.i32 16                  ; @6:22
     v3 = iconst.i32 1                   ; @6:22
     v4 = iconst.i32 0                   ; @6:22
-    v5 = call fn1(v2, v3, v4)           ; @6:22  v2 = 15, v3 = 1, v4 = 0
+    v5 = call fn1(v2, v3, v4)           ; @6:22  v2 = 16, v3 = 1, v4 = 0
     v6 = func_addr.i64 fn2              ; @6:22
     store notrap aligned v6, v5+16      ; @6:22
     store notrap aligned v0, v5+24      ; @6:22
     return_call fn0(v1, v5)             ; @6:22  v1 = 41
 }
 
-; fn M.add1_s14
+; fn M.add1_s15
     ;   @spec   M.add1(41) -> int
     ;   @key    [41]
     ;   @abi    (RawInt) -> RawInt
@@ -36,8 +36,8 @@ function u0:0(i64, i64) -> i64 tail {
     return_call_indirect sig0, v4(v3, v1)
 }
 
-; fn k_14_s15
-    ;   @spec   k_14(int) -> nil
+; fn k_15_s16
+    ;   @spec   k_15(int) -> nil
     ;   @key    [int]
     ;   @abi    (RawInt) -> Tagged
 function u0:0(i64, i64) -> i64 tail {

@@ -1454,6 +1454,11 @@ impl JitBackend {
             "fz_mid_flight_roots_ptr",
             fz_runtime::ir_runtime::fz_mid_flight_roots_ptr as *const u8,
         );
+        // fz-70q.5.2 — cont stubs read bound args from this slab.
+        builder.symbol(
+            "fz_resume_args_ptr",
+            fz_runtime::ir_runtime::fz_resume_args_ptr as *const u8,
+        );
         builder.symbol(
             "fz_yield_back_edge",
             fz_runtime::ir_runtime::fz_yield_back_edge as *const u8,
@@ -3155,6 +3160,119 @@ pub fn compile_with_backend<B: Backend>(
         }
     }
 
+    // fz-70q.5.4 — declare one cont stub per body spec used by any
+    // ReceiveMatched site. The stub bridges the scheduler's SystemV
+    // resume seam into the body fn's uniform `(frame, host_ctx) -> i64
+    // systemv` entry. See ir_codegen_cont_stub for the body shape.
+    //
+    // Resolution must mirror the park-site's `resolve_body_sid` exactly
+    // — same key construction (`[any; bound_arity] ++ cap_descrs`),
+    // same spec_registry lookup — so the FuncId stored at closure+16
+    // at park-site emission time agrees with what got emitted. Cap
+    // descrs depend on the ENCLOSING caller's per-spec FnTypes, so we
+    // iterate every (caller_fn × caller_spec × matched_block × clause)
+    // tuple and dedup by body spec.
+    //
+    // Stub body emission (which needs spec frame_sizes / schema_ids) is
+    // a post-fn-loop pass, alongside matcher body emission. We capture
+    // (body_fid, body_spec_id, n_captures, bound_arity) here so the
+    // post pass can read them back without re-resolving.
+    struct ContStubDecl {
+        stub_id: FuncId,
+        body_spec_id: u32,
+        n_captures: u16,
+        bound_arity: u16,
+    }
+    let mut cont_stub_ids: HashMap<u32 /*body_spec_id*/, FuncId> = HashMap::new();
+    let mut cont_stub_decls: Vec<ContStubDecl> = Vec::new();
+    for (caller_fid, blk_id) in &receive_matched_sites {
+        let caller_f = module.fn_by_id(*caller_fid);
+        let caller_idx = module
+            .fn_idx
+            .get(caller_fid)
+            .copied()
+            .expect("caller fn missing from fn_idx");
+        // Every spec of the caller may resolve to a different body spec
+        // (per-capture-type narrowing). Walk them all.
+        let blk = caller_f
+            .blocks
+            .iter()
+            .find(|b| b.id == *blk_id)
+            .expect("matched block missing");
+        let Term::ReceiveMatched {
+            clauses,
+            after,
+            captures,
+            ..
+        } = &blk.terminator
+        else {
+            unreachable!()
+        };
+        for caller_sid in 0..spec_count {
+            // Skip specs that don't belong to this caller fn.
+            if spec_fnidx[caller_sid] != Some(caller_idx) {
+                continue;
+            }
+            let Some(caller_ft) = spec_fn_types[caller_sid] else {
+                continue;
+            };
+            let cap_descrs: Vec<crate::types::Descr> = captures
+                .iter()
+                .map(|cv| {
+                    caller_ft
+                        .vars
+                        .get(cv)
+                        .cloned()
+                        .unwrap_or_else(crate::types::Descr::any)
+                })
+                .collect();
+            let mut resolve = |body: crate::fz_ir::FnId, bound_arity: usize| {
+                let body_fn = module.fn_by_id(body);
+                let np = body_fn.block(body_fn.entry).params.len();
+                let mut key: Vec<crate::types::Descr> =
+                    vec![crate::types::Descr::any(); bound_arity];
+                key.extend(cap_descrs.iter().cloned());
+                while key.len() < np {
+                    key.push(crate::types::Descr::any());
+                }
+                key.truncate(np);
+                let Some(body_spec_id) = spec_registry.resolve(body, &key).map(|sid| sid.0) else {
+                    return;
+                };
+                if let std::collections::hash_map::Entry::Vacant(e) =
+                    cont_stub_ids.entry(body_spec_id)
+                {
+                    let name = format!("fz_cont_stub_{}", body_spec_id);
+                    let stub_id = crate::ir_codegen_cont_stub::declare_cont_stub(
+                        backend.module_mut(),
+                        &name,
+                    )
+                    .map_err(CodegenError::new);
+                    // Propagate decl errors up; using a small helper to
+                    // bubble through the closure boundary cleanly.
+                    let stub_id = stub_id.expect("cont stub decl");
+                    e.insert(stub_id);
+                    let n_caps = np.saturating_sub(bound_arity);
+                    cont_stub_decls.push(ContStubDecl {
+                        stub_id,
+                        body_spec_id,
+                        n_captures: n_caps as u16,
+                        bound_arity: bound_arity as u16,
+                    });
+                }
+            };
+            for c in clauses {
+                resolve(c.body, c.bound_names.len());
+                if let Some(g) = c.guard {
+                    resolve(g, c.bound_names.len());
+                }
+            }
+            if let Some(a) = after {
+                resolve(a.body, 0);
+            }
+        }
+    }
+
     for sid in 0..spec_count {
         let Some(idx) = spec_fnidx[sid] else {
             continue;
@@ -3227,6 +3345,7 @@ pub fn compile_with_backend<B: Backend>(
             closure_n_captures: &closure_n_captures,
             cont_extras_count: &cont_extras_count,
             matcher_fn_ids: &matcher_fn_ids,
+            cont_stub_ids: &cont_stub_ids,
         };
         compile_fn(
             backend.module_mut(),
@@ -3333,6 +3452,48 @@ pub fn compile_with_backend<B: Backend>(
             pinned.as_slice(),
             clauses.as_slice(),
         )?;
+    }
+
+    // fz-70q.5.4 — emit cont-stub bodies for each (body_spec_id) we
+    // declared in the pre-pass. Each stub bridges the scheduler resume
+    // (SystemV `(self)`) into the body fn's uniform `(frame, host_ctx)
+    // -> i64 systemv` entry. See ir_codegen_cont_stub for the body
+    // shape; here we just feed it the body's FuncId + frame size +
+    // schema_id (everything else came from the decl pass).
+    let cont_stub_rt = crate::ir_codegen_cont_stub::ContStubRuntimeRefs {
+        alloc_frame_id: runtime.alloc_id,
+        resume_args_ptr_id: runtime.resume_args_ptr_id,
+    };
+    for decl in &cont_stub_decls {
+        let body_fid = *fn_ids
+            .get(&decl.body_spec_id)
+            .expect("cont stub body spec must have a FuncId");
+        let body_frame_size_bytes = frame_sizes
+            .get(decl.body_spec_id as usize)
+            .copied()
+            .unwrap_or(0);
+        // Body's frame schema id matches the caller's iconst at the
+        // park-site call to fz_alloc_frame for the body — which today
+        // is the fn_id's `.0` (any-key spec). Use the same convention
+        // here so heap allocator + schema registry agree.
+        let body_schema_id = spec_keys[decl.body_spec_id as usize].0.0;
+        crate::ir_codegen_cont_stub::emit_cont_stub_body(
+            backend.module_mut(),
+            &mut fbctx,
+            decl.stub_id,
+            crate::ir_codegen_cont_stub::ContStubLayout {
+                n_captures: decl.n_captures,
+                bound_arity: decl.bound_arity,
+                body_frame_size_bytes,
+                body_schema_id,
+            },
+            cont_stub_rt,
+            |m, b| {
+                let body_fref = m.declare_func_in_func(body_fid, b.func);
+                b.ins().func_addr(types::I64, body_fref)
+            },
+        )
+        .map_err(CodegenError::new)?;
     }
 
     let main_fn_id = module.fn_by_name("main").map(|f| f.id);
@@ -4174,6 +4335,12 @@ struct CodegenEnv<'a> {
     /// `compile_with_backend` and consumed by the Term::ReceiveMatched
     /// arm in `compile_block_terminator` (`fn_addr` → call site arg).
     matcher_fn_ids: &'a std::collections::HashMap<(u32, u32), FuncId>,
+    /// fz-70q.5.4 — cont-stub FuncId keyed by body_spec_id. Populated
+    /// alongside `matcher_fn_ids` in compile_with_backend's pre-pass.
+    /// Consumed by the Term::ReceiveMatched arm to install the right
+    /// stub address at each clause-body / guard / after closure's
+    /// `stub_fp` slot (+16). See ir_codegen_cont_stub.
+    cont_stub_ids: &'a std::collections::HashMap<u32, FuncId>,
 }
 
 /// Per-function mutable state threaded through `lower_prim` and
@@ -4550,6 +4717,16 @@ fn resolve_outer_cont<M: cranelift_module::Module>(
 /// 1..N are captures. For a ReceiveMatched clause body
 /// (`(bound_0, ..., bound_{N-1}, self)`) it's `bound_arity`: the first
 /// N slots are bound vars, captures follow.
+///
+/// fz-70q.5.4 — when `cont_stub_fid` is `Some`, the closure's `stub_fp`
+/// slot (+16) is populated with the cont-stub address rather than the
+/// body fn's direct address. This is the path used by ReceiveMatched
+/// clause-body / guard / after closures: the scheduler resume seam
+/// dispatches them through their cont stub (SystemV), which bridges
+/// into the body's uniform `(frame, host_ctx) -> i64 systemv` entry.
+/// `None` keeps the legacy direct-dispatch behavior (Term::Receive
+/// cont, Term::Call cont, etc.) until those paths migrate too.
+#[allow(clippy::too_many_arguments)]
 fn build_cont_closure<M: cranelift_module::Module>(
     jmod: &mut M,
     b: &mut FunctionBuilder<'_>,
@@ -4563,6 +4740,7 @@ fn build_cont_closure<M: cranelift_module::Module>(
     cont_fid: FuncId,
     cap_bindings: &[(ir::Value, ArgRepr)],
     captures_offset: usize,
+    cont_stub_fid: Option<FuncId>,
 ) -> ir::Value {
     let acl_fref = jmod.declare_func_in_func(runtime.alloc_closure_id, b.func);
     let cl_fid_v = b.ins().iconst(types::I32, cont_sid as i64);
@@ -4571,7 +4749,8 @@ fn build_cont_closure<M: cranelift_module::Module>(
     let zero_hk = b.ins().iconst(types::I32, 0);
     let cl_inst = b.ins().call(acl_fref, &[cl_fid_v, n_caps_v, zero_hk]);
     let cl_ptr = b.inst_results(cl_inst)[0];
-    let cont_code_addr = fn_addr(jmod, cont_fid, b);
+    let stub_target_fid = cont_stub_fid.unwrap_or(cont_fid);
+    let cont_code_addr = fn_addr(jmod, stub_target_fid, b);
     b.ins()
         .store(MemFlags::trusted(), cont_code_addr, cl_ptr, HEADER_SIZE);
     let my_outer_cont = resolve_outer_cont(
@@ -4916,7 +5095,7 @@ fn emit_terminator<M: cranelift_module::Module>(
                         cont_sid,
                         cont_fid,
                         &cap_bindings,
-                        /* captures_offset */ 1,
+                        /* captures_offset */ 1, /* cont_stub_fid */ None,
                     ))
                 } else {
                     None
@@ -5245,7 +5424,7 @@ fn emit_terminator<M: cranelift_module::Module>(
                 cont_sid,
                 cont_fid,
                 &cap_bindings,
-                /* captures_offset */ 1,
+                /* captures_offset */ 1, /* cont_stub_fid */ None,
             );
             // fz-t45 — singleton closure-lit fast path for non-tail
             // closure calls. If this spec types `closure` as a single
@@ -5488,7 +5667,7 @@ fn emit_terminator<M: cranelift_module::Module>(
                 cont_sid,
                 cont_fid,
                 &cap_bindings,
-                /* captures_offset */ 1,
+                /* captures_offset */ 1, /* cont_stub_fid */ None,
             );
 
             // fz_receive_park(cl_ptr) — stash + yield.
@@ -5646,6 +5825,7 @@ fn emit_terminator<M: cranelift_module::Module>(
                     cont_fid,
                     &cap_bindings,
                     /* captures_offset */ c.bound_names.len(),
+                    env.cont_stub_ids.get(&cont_sid).copied(),
                 );
                 b.ins().stack_store(cl_ptr, bodies_slot, (i * 8) as i32);
             }
@@ -5670,6 +5850,7 @@ fn emit_terminator<M: cranelift_module::Module>(
                         cont_fid,
                         &cap_bindings,
                         /* captures_offset */ 0,
+                        env.cont_stub_ids.get(&cont_sid).copied(),
                     );
                     // Timeout is a tagged FzValue::Int — shift right
                     // by 3 to recover the unboxed ms value.
