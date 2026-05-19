@@ -292,14 +292,24 @@ pub extern "C" fn fz_receive_park_matched(
     use crate::{process::ProcessState, scheduler_hooks::YIELD_PTR};
 
     let matcher_fn: MatcherFn = unsafe { std::mem::transmute(matcher_fn_bits as usize) };
-    let pinned: Vec<u64> = unsafe {
-        std::slice::from_raw_parts(pinned_ptr, n_pinned as usize).to_vec()
+    // fz-70q.3 — codegen passes `null` for `pinned_ptr` / `clause_bodies_ptr`
+    // when the corresponding count is 0. `slice::from_raw_parts` rejects
+    // null even with len 0 (its safety contract requires a valid aligned
+    // pointer), so guard the zero-len case explicitly.
+    let pinned: Vec<u64> = if n_pinned == 0 {
+        Vec::new()
+    } else {
+        unsafe { std::slice::from_raw_parts(pinned_ptr, n_pinned as usize).to_vec() }
     };
-    let clause_bodies: Vec<*mut u8> = unsafe {
-        std::slice::from_raw_parts(clause_bodies_ptr, n_clauses as usize)
-            .iter()
-            .map(|b| *b as *mut u8)
-            .collect()
+    let clause_bodies: Vec<*mut u8> = if n_clauses == 0 {
+        Vec::new()
+    } else {
+        unsafe {
+            std::slice::from_raw_parts(clause_bodies_ptr, n_clauses as usize)
+                .iter()
+                .map(|b| *b as *mut u8)
+                .collect()
+        }
     };
     let after_deadline_ms = if after_deadline_or_neg1 < 0 {
         None
