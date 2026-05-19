@@ -17,6 +17,7 @@ pub mod process;
 pub mod resource;
 pub mod scheduler_hooks;
 pub mod sync;
+pub mod timer;
 pub mod yield_flag;
 
 // ---------------------------------------------------------------------------
