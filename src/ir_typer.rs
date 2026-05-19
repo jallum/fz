@@ -1498,6 +1498,71 @@ fn walk_spec_for_discovery(
                 }
             }
         }
+
+        // fz-70q.3 — selective-receive bodies aren't expressed in
+        // `block_callsites` (they're FnId fields on the terminator,
+        // not Cont structs). Walk them inline so the typer's spec
+        // worklist seeds (FnId, key) for each clause body / guard /
+        // after; without this codegen never sees their FuncIds and
+        // the park-site fn_addr lookup faults.
+        //
+        // Key shape mirrors `compute_return_for_spec`'s lookup at
+        // line ~1064: `[any; bound_arity] ++ cap_descrs`, padded to
+        // the body fn's entry-block arity. After bodies take 0
+        // bound vars (captures only).
+        if let Term::ReceiveMatched {
+            clauses,
+            after,
+            captures,
+            ..
+        } = &b.terminator
+        {
+            let cap_descrs: Vec<Descr> = captures
+                .iter()
+                .map(|cv| env.get(cv).cloned().unwrap_or_else(Descr::any))
+                .collect();
+            let mut enq = |fid: FnId, bound_arity: usize, ident: crate::fz_ir::CallsiteIdent| {
+                let Some(&j) = m.fn_idx.get(&fid) else {
+                    return;
+                };
+                let body = &m.fns[j];
+                let np = body.block(body.entry).params.len();
+                let mut key: Vec<Descr> = vec![Descr::any(); bound_arity];
+                key.extend(cap_descrs.iter().cloned());
+                while key.len() < np {
+                    key.push(Descr::any());
+                }
+                key.truncate(np);
+                emit(EmitSlot::Cont, ident, (fid, key), out);
+            };
+            // EmitterSite is keyed (caller, ident, slot); a single
+            // ReceiveMatched term has N clause/after sub-targets but
+            // shares one term_ident, so we synthesize per-target
+            // idents from each body fn's span. Without this the
+            // `produces` HashMap collapses to the last emit and
+            // earlier targets fall out of reachability.
+            for c in clauses {
+                enq(
+                    c.body,
+                    c.bound_names.len(),
+                    crate::fz_ir::CallsiteIdent::from_source(c.span),
+                );
+                if let Some(g) = c.guard {
+                    enq(
+                        g,
+                        c.bound_names.len(),
+                        crate::fz_ir::CallsiteIdent::from_source(c.span),
+                    );
+                }
+            }
+            if let Some(a) = after {
+                enq(
+                    a.body,
+                    0,
+                    crate::fz_ir::CallsiteIdent::from_source(a.span),
+                );
+            }
+        }
     }
 }
 
@@ -2995,6 +3060,53 @@ pub fn reachable_specs(
                     let cont_key = cont_input_key(blk, continuation, ft, module, module_types);
                     if let Some(sid) = spec_registry.resolve(continuation.fn_id, &cont_key) {
                         worklist.push(sid.0);
+                    }
+                }
+                Term::ReceiveMatched {
+                    clauses,
+                    after,
+                    captures,
+                    ..
+                } => {
+                    // fz-70q.3 — clause body / guard / after fns are
+                    // reached only through the selective-receive
+                    // dispatch (matcher hit → trampoline → fz_resume_
+                    // matched_N). The typer registers a spec per body
+                    // at key = [any; bound_arity] ++ cap_descrs (see
+                    // walker / lookup at line ~1064); reproduce that
+                    // shape here so resolve() lands on the same spec.
+                    let cap_descrs: Vec<Descr> = captures
+                        .iter()
+                        .map(|cv| ft.vars.get(cv).cloned().unwrap_or_else(Descr::any))
+                        .collect();
+                    let enq = |fid: FnId,
+                               bound_arity: usize,
+                               cap_descrs: &[Descr],
+                               wl: &mut Vec<u32>| {
+                        let Some(&j) = module.fn_idx.get(&fid) else {
+                            return;
+                        };
+                        let body = &module.fns[j];
+                        let np = body.block(body.entry).params.len();
+                        let mut key: Vec<Descr> = vec![Descr::any(); bound_arity];
+                        key.extend(cap_descrs.iter().cloned());
+                        while key.len() < np {
+                            key.push(Descr::any());
+                        }
+                        key.truncate(np);
+                        if let Some(sid) = spec_registry.resolve(fid, &key) {
+                            wl.push(sid.0);
+                        }
+                    };
+                    for c in clauses {
+                        enq(c.body, c.bound_names.len(), &cap_descrs, &mut worklist);
+                        if let Some(g) = c.guard {
+                            enq(g, c.bound_names.len(), &cap_descrs, &mut worklist);
+                        }
+                    }
+                    if let Some(a) = after {
+                        // After body takes no bound vars — just captures.
+                        enq(a.body, 0, &cap_descrs, &mut worklist);
                     }
                 }
                 _ => {}

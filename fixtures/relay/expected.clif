@@ -7,7 +7,7 @@ function u0:0(i64, i64) -> i64 tail {
     sig1 = (i64, i64) -> i64 tail
     sig2 = (i64) -> i64 system_v
     fn0 = u0:27 sig0
-    fn1 = colocated u0:44 sig1
+    fn1 = colocated u0:45 sig1
     fn2 = u0:28 sig2
 
 block0(v0: i64, v1: i64):
@@ -35,12 +35,12 @@ function u0:0(i64) -> i64 tail {
     sig3 = (i64) -> i64 system_v
     sig4 = (i64, i64) -> i64 system_v
     sig5 = (i64, i64) -> i64 tail
-    fn0 = u0:31 sig0
+    fn0 = u0:32 sig0
     fn1 = u0:27 sig1
-    fn2 = colocated u0:41 sig2
-    fn3 = u0:45 sig3
-    fn4 = u0:46 sig4
-    fn5 = colocated u0:42 sig5
+    fn2 = colocated u0:42 sig2
+    fn3 = u0:46 sig3
+    fn4 = u0:47 sig4
+    fn5 = colocated u0:43 sig5
 
 block0(v0: i64):
     v1 = iconst.i32 12                  ; @4:9
@@ -83,7 +83,7 @@ function u0:0(i64, i64) -> i64 tail {
     sig1 = (i64, i64) -> i64 tail
     sig2 = (i64) -> i64 system_v
     fn0 = u0:27 sig0
-    fn1 = colocated u0:43 sig1
+    fn1 = colocated u0:44 sig1
     fn2 = u0:28 sig2
 
     block0(v0: i64, v1: i64):    ;; v0 :: any
@@ -107,8 +107,8 @@ function u0:0(i64, i64) -> i64 tail {
     sig1 = (i64, i64) -> i64 tail
     sig2 = (i64) system_v
     sig3 = (i64, i64) -> i64 tail
-    fn0 = u0:47 sig0
-    fn1 = u0:48 sig2
+    fn0 = u0:48 sig0
+    fn1 = u0:49 sig2
 
     block0(v0: i64, v1: i64):    ;; v0 :: any
     v2 = band_imm v0, 7
@@ -144,7 +144,7 @@ function u0:0(i64, i64) -> i64 tail {
     fn0 = u0:21 sig0
     fn1 = u0:20 sig1
     fn2 = u0:22 sig2
-    fn3 = u0:46 sig3
+    fn3 = u0:47 sig3
 
     block0(v0: i64, v1: i64):    ;; v0 :: any
     v2 = load.i64 notrap aligned v1+32    ;; v2 :: 1
