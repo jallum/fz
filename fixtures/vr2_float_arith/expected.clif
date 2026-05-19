@@ -6,9 +6,9 @@ function u0:0(i64) -> i64 tail {
     sig0 = (i64) system_v
     sig1 = (i64) -> i64 system_v
     sig2 = (i64, i64) -> i64 tail
-    fn0 = u0:42 sig0
-    fn1 = u0:20 sig1
-    fn2 = colocated u0:40 sig2
+    fn0 = u0:44 sig0
+    fn1 = u0:22 sig1
+    fn2 = colocated u0:42 sig2
 
 block0(v0: i64):
     v1 = f64const 0x1.8000000000000p0   ; @2:9
@@ -29,9 +29,9 @@ function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64) system_v
     sig1 = (i64) -> i64 system_v
     sig2 = (i64, i64) -> i64 tail
-    fn0 = u0:42 sig0
-    fn1 = u0:20 sig1
-    fn2 = colocated u0:41 sig2
+    fn0 = u0:44 sig0
+    fn1 = u0:22 sig1
+    fn2 = colocated u0:43 sig2
 
     block0(v0: i64, v1: i64):    ;; v0 :: nil
     v2 = f64const 0x1.4000000000000p3   ; @3:9
@@ -52,8 +52,8 @@ function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64) system_v
     sig1 = (i64) -> i64 system_v
     sig2 = (i64, i64) -> i64 tail
-    fn0 = u0:42 sig0
-    fn1 = u0:20 sig1
+    fn0 = u0:44 sig0
+    fn1 = u0:22 sig1
 
     block0(v0: i64, v1: i64):    ;; v0 :: nil
     v2 = f64const 0x1.4000000000000p1   ; @4:9

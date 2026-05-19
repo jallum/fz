@@ -1,0 +1,45 @@
+; fn main
+    ;   @spec   main() -> nil
+    ;   @key    []
+    ;   @abi    () -> Tagged
+function u0:0(i64) -> i64 tail {
+    gv0 = symbol colocated userextname0
+    gv1 = symbol colocated userextname4
+    sig0 = (i64, i64, i64) -> i64 system_v
+    sig1 = (i64) -> i64 system_v
+    sig2 = (i64) -> i64 system_v
+    sig3 = (i64, i64, i64) -> i64 system_v
+    sig4 = (i64, i64, i64) -> i64 system_v
+    sig5 = (i64) -> i64 system_v
+    sig6 = (i64) system_v
+    sig7 = (i64, i64) -> i64 tail
+    fn0 = u0:10 sig0
+    fn1 = u0:42 sig1
+    fn2 = u0:14 sig2
+    fn3 = u0:10 sig3
+    fn4 = u0:43 sig4
+    fn5 = u0:13 sig5
+    fn6 = u0:44 sig6
+
+block0(v0: i64):
+    v1 = symbol_value.i64 gv0           ; @6:12
+    v2 = iconst.i64 9                   ; @6:12
+    v3 = iconst.i64 72                  ; @6:12
+    v4 = call fn0(v1, v2, v3)           ; @6:12  v2 = 9, v3 = 72
+    v5 = call fn2(v4)                   ; @6:16
+    v6 = call fn1(v5)                   ; @6:16
+    v7 = symbol_value.i64 gv1           ; @6:21
+    v8 = iconst.i64 5                   ; @6:21
+    v9 = iconst.i64 40                  ; @6:21
+    v10 = call fn3(v7, v8, v9)          ; @6:21  v8 = 5, v9 = 40
+    v11 = iconst.i64 5                  ; @6:26
+    v12 = sshr_imm v6, 3                ; @6:31
+    v13 = call fn5(v10)                 ; @6:31
+    v14 = call fn4(v12, v13, v11)       ; @6:31  v11 = 5
+    v15 = sshr_imm v14, 3               ; @6:35
+    call fn6(v15)                       ; @6:35
+    v16 = iconst.i64 2                  ; @6:35
+    v17 = load.i64 notrap aligned v0+16 ; @11:3
+    return_call_indirect sig7, v17(v16, v0) ; @11:3  v16 = 2
+}
+

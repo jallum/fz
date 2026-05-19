@@ -527,7 +527,10 @@ impl Heap {
             let handle = SharedBinHandle::from_bytes(bytes, bit_len);
             return alloc_procbin(self, handle).as_raw();
         }
-        let total = (16 + 8 + bytes.len() + 15) & !15;
+        // fz-wu9 — reserve at least 1 byte past the payload for the
+        // invisible trailing NUL. The pad-zeroing below guarantees it reads
+        // as 0; bytes_len / bit_len are unchanged.
+        let total = (16 + 8 + bytes.len() + 1 + 15) & !15;
         let p = self.alloc(total);
         unsafe {
             std::ptr::write(
@@ -1386,6 +1389,36 @@ mod tests {
         assert_eq!(id_b, 1);
         assert_eq!(reg.get(id_a).name, "A");
         assert_eq!(reg.get(id_b).name, "Pair");
+    }
+
+    /// fz-wu9 — every inline `HeapKind::Bitstring` allocation reserves
+    /// at least one zero byte past its payload at offset
+    /// `bytes_ptr + ceil(bit_len/8)`. Mirrors the SharedBin invariant
+    /// covered by procbin.rs::shared_bin_alloc_has_trailing_nul.
+    #[test]
+    fn alloc_bitstring_inline_has_trailing_nul() {
+        let mut h = Heap::new(1024, empty_registry());
+        // Cover lengths around the 16-byte-alignment boundary so the
+        // formerly-zero pad cases get exercised.
+        for n in [0usize, 1, 7, 8, 9, 15, 16, 17, 24, 25] {
+            let bytes: Vec<u8> = (0..n).map(|i| (i as u8) ^ 0xff).collect();
+            let bit_len = (n as u64) * 8;
+            let p = h.alloc_bitstring(&bytes, bit_len);
+            unsafe {
+                assert_eq!((*p).kind, HeapKind::Bitstring as u16);
+                let payload = (p as *const u8).add(24);
+                for i in 0..n {
+                    assert_eq!(*payload.add(i), bytes[i], "payload byte {} at len {}", i, n);
+                }
+                assert_eq!(
+                    *payload.add(n),
+                    0,
+                    "trailing NUL at offset {} for payload len {}",
+                    n,
+                    n
+                );
+            }
+        }
     }
 
     #[test]

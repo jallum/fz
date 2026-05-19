@@ -1138,6 +1138,24 @@ impl JitBackend {
             "shared_bin_destructor_noop",
             fz_runtime::procbin::shared_bin_destructor_noop as *const u8,
         );
+        // fz-9ss — extern binary marshal helpers.
+        builder.symbol(
+            "fz_binary_as_ptr",
+            fz_runtime::extern_binary::fz_binary_as_ptr as *const u8,
+        );
+        builder.symbol(
+            "fz_binary_as_cstring",
+            fz_runtime::extern_binary::fz_binary_as_cstring as *const u8,
+        );
+        // fz-vw1 — libc shims used by the extern-binary integration fixture.
+        builder.symbol(
+            "fz_test_open_writeonly",
+            fz_runtime::libc_io::fz_test_open_writeonly as *const u8,
+        );
+        builder.symbol(
+            "fz_test_write_close",
+            fz_runtime::libc_io::fz_test_write_close as *const u8,
+        );
         builder.symbol(
             "fz_bs_reader_init",
             fz_runtime::ir_runtime::fz_bs_reader_init as *const u8,
@@ -3563,6 +3581,9 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
     // function-address relocation. Matches the runtime's `extern "C" fn
     // (*mut SharedBin)` signature exactly.
     let shared_bin_destructor_noop_id = decl("shared_bin_destructor_noop", &[types::I64], &[])?;
+    // fz-9ss — extern binary marshal helpers.
+    let binary_as_ptr_id = decl("fz_binary_as_ptr", &[types::I64], &[types::I64])?;
+    let binary_as_cstring_id = decl("fz_binary_as_cstring", &[types::I64], &[types::I64])?;
     let bs_reader_init_id = decl("fz_bs_reader_init", &[types::I64], &[types::I64])?;
     let bs_read_field_id = decl(
         "fz_bs_read_field",
@@ -3684,6 +3705,8 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         alloc_bitstring_const_id,
         alloc_procbin_from_static_id,
         shared_bin_destructor_noop_id,
+        binary_as_ptr_id,
+        binary_as_cstring_id,
         bs_reader_init_id,
         bs_read_field_id,
         map_begin_id,
@@ -3832,6 +3855,10 @@ struct RuntimeRefs {
     alloc_procbin_from_static_id: FuncId,
     // fz-q8d.2 — noop destructor address relocated into static SharedBins.
     shared_bin_destructor_noop_id: FuncId,
+    // fz-9ss — binary/cstring extern marshal helpers. Both have signature
+    // `(i64 FzValue bits) -> i64 *const u8` from Cranelift's perspective.
+    binary_as_ptr_id: FuncId,
+    binary_as_cstring_id: FuncId,
     bs_reader_init_id: FuncId,
     bs_read_field_id: FuncId,
     map_begin_id: FuncId,
@@ -5973,7 +6000,12 @@ fn lower_collection_prim<M: cranelift_module::Module>(
                         .declare_data(&bytes_name, Linkage::Local, false, false)
                         .map_err(|e| CodegenError::new(format!("declare {}: {}", bytes_name, e)))?;
                     let mut desc = DataDescription::new();
-                    desc.define(bytes.clone().into_boxed_slice());
+                    // fz-wu9 — append invisible trailing NUL; not counted in
+                    // the static SharedBin's bytes_len field. Underwrites the
+                    // cstring extern marshal contract for literal binaries.
+                    let mut payload: Vec<u8> = bytes.clone();
+                    payload.push(0);
+                    desc.define(payload.into_boxed_slice());
                     desc.set_align(1);
                     jmod.define_data(bytes_id, &desc)
                         .map_err(|e| CodegenError::new(format!("define {}: {}", bytes_name, e)))?;
@@ -6552,6 +6584,20 @@ fn lower_prim<M: cranelift_module::Module>(
                 .map(|(v, ty)| match ty {
                     ExternTy::I64 => as_raw_i64(var_env, b, v.0),
                     ExternTy::F64 => as_raw_f64(var_env, b, v.0),
+                    // fz-2yf — Binary/CString: call the runtime helper from
+                    // [[fz-9ss]] with the tagged FzValue bits and use its
+                    // returned `*const u8` as the C arg. Helper aborts on
+                    // non-binary or non-byte-aligned bitstring.
+                    ExternTy::Binary | ExternTy::CString => {
+                        let helper_id = match ty {
+                            ExternTy::CString => runtime.binary_as_cstring_id,
+                            _ => runtime.binary_as_ptr_id,
+                        };
+                        let helper_fref = jmod.declare_func_in_func(helper_id, b.func);
+                        let bits = tagged_get(var_env, b, jmod, runtime, v.0, cache);
+                        let call = b.ins().call(helper_fref, &[bits]);
+                        b.inst_results(call)[0]
+                    }
                     _ => tagged_get(var_env, b, jmod, runtime, v.0, cache),
                 })
                 .collect();

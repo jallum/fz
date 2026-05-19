@@ -359,6 +359,14 @@ pub enum ExternTy {
     Any,   // opaque u64 fz value
     Unit,  // maps to 0 on return
     Never, // diverges
+    /// fz-0cv — pass `*const u8` to the bytes of a binary; length is the
+    /// caller's responsibility (typically a separate `integer` arg, libc
+    /// `write(fd, buf, len)` style). No NUL guarantee.
+    Binary,
+    /// fz-0cv — pass `*const u8` to the bytes of a binary with a
+    /// guaranteed trailing NUL (libc `open(path, flags)` style). Relies
+    /// on the +1-NUL invariant from [[fz-wu9]].
+    CString,
 }
 
 /// One resolved `extern "C" fn` declaration stored in `Module.externs`.

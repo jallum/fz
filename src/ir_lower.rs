@@ -215,11 +215,15 @@ impl ExternTable {
 /// return-type annotation in an `extern "C" fn` declaration.
 fn extern_ty_from_name(name: &str) -> Option<ExternTy> {
     match name {
-        "any" | "binary" | "atom" | "bool" => Some(ExternTy::Any),
+        "any" | "atom" | "bool" => Some(ExternTy::Any),
         "integer" => Some(ExternTy::I64),
         "float" => Some(ExternTy::F64),
         "nil" => Some(ExternTy::Unit),
         "never" => Some(ExternTy::Never),
+        // fz-0cv — binary marshal classes; one fz binary arg → one
+        // `*const u8` C arg. See [[fz-9ss]] for the runtime helpers.
+        "binary" => Some(ExternTy::Binary),
+        "cstring" => Some(ExternTy::CString),
         _ => None,
     }
 }
@@ -4531,6 +4535,39 @@ end
             "expected extern#11 in IR:\n{}",
             ir
         );
+    }
+
+    /// fz-0cv — `binary` lowers to ExternTy::Binary; `cstring` lowers to
+    /// ExternTy::CString. Both are distinct from ExternTy::Any.
+    #[test]
+    fn binary_and_cstring_lower_to_distinct_extern_tys() {
+        let src = "\
+extern \"C\" fn fz_open(cstring, integer) :: integer
+extern \"C\" fn fz_write(integer, binary, integer) :: integer
+fn main() do fz_open(\"x\", 0) end
+";
+        let toks = Lexer::new(src).tokenize().expect("lex");
+        let prog = crate::parser::Parser::new(toks)
+            .parse_program()
+            .expect("parse");
+        let (module, _) = lower_program_full(&prog).expect("lower");
+        let open = module
+            .externs
+            .iter()
+            .find(|e| e.fz_name == "fz_open")
+            .expect("fz_open missing");
+        assert_eq!(open.params, vec![ExternTy::CString, ExternTy::I64]);
+        let write = module
+            .externs
+            .iter()
+            .find(|e| e.fz_name == "fz_write")
+            .expect("fz_write missing");
+        assert_eq!(
+            write.params,
+            vec![ExternTy::I64, ExternTy::Binary, ExternTy::I64]
+        );
+        // Sanity: previous `binary` → ExternTy::Any mapping is gone.
+        assert_ne!(write.params[1], ExternTy::Any);
     }
 
     #[test]

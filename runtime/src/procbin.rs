@@ -60,10 +60,12 @@ unsafe impl Sync for SharedBin {}
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn shared_bin_destructor_heap(p: *mut SharedBin) {
     let bin = unsafe { Box::from_raw(p) };
+    // The buffer was overallocated by 1 for the invisible trailing NUL
+    // ([[fz-wu9]]). Free the full allocation.
     let bytes = unsafe {
         Box::from_raw(std::ptr::slice_from_raw_parts_mut(
             bin.bytes_ptr as *mut u8,
-            bin.bytes_len,
+            bin.bytes_len + 1,
         ))
     };
     drop(bytes);
@@ -91,8 +93,15 @@ pub unsafe extern "C" fn shared_bin_destructor_noop(_p: *mut SharedBin) {}
 /// destructor installed. Bytes are leaked separately as a `Box<[u8]>` so
 /// the destructor can reconstruct both boxes independently.
 pub fn shared_bin_alloc(bytes: &[u8], bit_len: u64) -> *mut SharedBin {
-    let buf: Box<[u8]> = bytes.to_vec().into_boxed_slice();
-    let bytes_len = buf.len();
+    // fz-wu9 — overallocate one byte beyond bytes_len and zero it.
+    // The trailing NUL is invisible to the language (bytes_len/bit_len
+    // unchanged) and underwrites the cstring extern marshal contract.
+    let bytes_len = bytes.len();
+    let mut v: Vec<u8> = Vec::with_capacity(bytes_len + 1);
+    v.extend_from_slice(bytes);
+    v.push(0);
+    debug_assert_eq!(v.len(), bytes_len + 1);
+    let buf: Box<[u8]> = v.into_boxed_slice();
     let bytes_ptr: *const u8 = Box::leak(buf).as_ptr();
     let bin = Box::new(SharedBin {
         refcount: AtomicUsize::new(1),
@@ -538,6 +547,40 @@ mod tests {
         }
         unsafe {
             assert_eq!((*p).refcount.load(Ordering::Relaxed), 1);
+            shared_bin_release(p);
+        }
+    }
+
+    /// fz-wu9 — every heap-allocated SharedBin's buffer has a trailing
+    /// zero byte at offset `bytes_len` (not counted toward bytes_len /
+    /// bit_len). Underwrites the cstring extern marshal contract.
+    #[test]
+    #[serial_test::serial]
+    fn shared_bin_alloc_has_trailing_nul() {
+        let _g = LiveCountGuard::snap();
+        // Non-empty payload.
+        let p = shared_bin_alloc(b"hello", 40);
+        unsafe {
+            assert_eq!((*p).bytes_len, 5);
+            assert_eq!(*(*p).bytes_ptr.add(5), 0, "trailing NUL after 'hello'");
+            shared_bin_release(p);
+        }
+        // Empty payload — still gets a trailing zero at offset 0.
+        let p = shared_bin_alloc(b"", 0);
+        unsafe {
+            assert_eq!((*p).bytes_len, 0);
+            assert_eq!(*(*p).bytes_ptr, 0, "trailing NUL on empty payload");
+            shared_bin_release(p);
+        }
+        // Payload containing internal zeros (rare but legal).
+        let p = shared_bin_alloc(&[1u8, 0, 2, 0, 3], 40);
+        unsafe {
+            assert_eq!((*p).bytes_len, 5);
+            assert_eq!(
+                *(*p).bytes_ptr.add(5),
+                0,
+                "trailing NUL after embedded-zero payload"
+            );
             shared_bin_release(p);
         }
     }

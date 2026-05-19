@@ -7,9 +7,10 @@ edition = "2024"
 crate-type = ["staticlib", "rlib"]
 
 [dependencies]
-# fz-swt.13 — `fz_test_open_tmpfile` / `fz_test_close_fd` use mkstemp/
-# unlink/fcntl/close. The host crate (`fz`) already depends on libc;
-# adding it here keeps these runtime-side test helpers self-contained.
+# Used by runtime-side libc shims (resource lifecycle helpers in
+# fz-swt.13, plus the extern-binary integration fixture in fz-vw1).
+# The host crate (`fz`) also depends on libc; having it here keeps the
+# runtime-side helpers self-contained.
 libc = "0.2"
 
 [dev-dependencies]
