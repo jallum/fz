@@ -2,114 +2,146 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>fz-70q.5 — eli5: two kinds of closures, one stub each</title>
+<title>eli5: how fz's selective receive actually works</title>
 <style>
-  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 760px; margin: 2rem auto; padding: 0 1rem; line-height: 1.55; color: #222; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 800px; margin: 2rem auto; padding: 0 1rem; line-height: 1.55; color: #222; }
   h1 { font-size: 1.6rem; }
-  h2 { margin-top: 2rem; border-bottom: 1px solid #ddd; padding-bottom: 0.25rem; }
+  h2 { margin-top: 2.2rem; border-bottom: 1px solid #ddd; padding-bottom: 0.3rem; }
+  h3 { margin-top: 1.4rem; }
   .box { background: #f6f8fa; border-left: 4px solid #888; padding: 0.75rem 1rem; margin: 1rem 0; }
   .good { border-color: #2a9d4a; background: #effaf1; }
-  .bad  { border-color: #c0392b; background: #fdecea; }
+  .key  { border-color: #b8860b; background: #fff7df; }
   code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-  pre { background: #2d2d2d; color: #f8f8f2; padding: 0.75rem; border-radius: 4px; overflow-x: auto; font-size: 0.85rem; }
+  pre { background: #2d2d2d; color: #f8f8f2; padding: 0.75rem; border-radius: 4px; overflow-x: auto; font-size: 0.82rem; }
   table { border-collapse: collapse; margin: 1rem 0; }
-  th, td { border: 1px solid #ccc; padding: 0.4rem 0.8rem; text-align: left; }
+  th, td { border: 1px solid #ccc; padding: 0.4rem 0.8rem; text-align: left; vertical-align: top; font-size: 0.95rem; }
   th { background: #eee; }
-  .ascii { white-space: pre; font-family: ui-monospace, monospace; background: #f6f8fa; padding: 1rem; border-radius: 4px; font-size: 0.85rem; }
+  .ascii { white-space: pre; font-family: ui-monospace, monospace; background: #f6f8fa; padding: 1rem; border-radius: 4px; font-size: 0.82rem; overflow-x: auto; }
+  .step { background: #fafafa; border-left: 3px solid #ccc; padding: 0.5rem 1rem; margin: 0.6rem 0; }
 </style>
 </head>
 <body>
 
-<h1>eli5: why we built nine shims, and the one move that deletes them all</h1>
+<h1>How fz's selective receive actually works</h1>
 
 <p>
-Imagine the fz runtime is a <strong>restaurant kitchen</strong>. Each running task is a chef.
-Functions are recipes. Calling a function is "follow that recipe."
+This is the shipped design. The previous eli5 was the <em>proposal</em>; what
+landed has the same spirit but a different mechanical shape. The
+proposal said "cont stubs are SystemV all the way through, body fns are
+uniform." Reality forced a cleaner answer: <strong>cont stubs are a
+SystemV→Tail-CC bridge, and body fns are native (Tail-CC) all the way.</strong>
+Same insight — the per-arity shim family was the smell — but a tighter
+factoring.
 </p>
 
-<h2>The two kinds of "function call"</h2>
+<h2>The two-ABI world (a 90-second refresher)</h2>
 
-<p>There are really two completely different kinds of function call in fz:</p>
-
-<div class="box">
-<strong>Hot path: chef-to-chef handoff.</strong><br>
-The chef is mid-recipe and needs to call another recipe. They shout the ingredients across the counter — "<em>onion, garlic, two cups stock!</em>" — and the next recipe takes those ingredients directly from the air (registers).
-Fast, no waiting, no notepad.
-</div>
-
-<div class="box">
-<strong>Cold path: scheduler hands a chef a ticket.</strong><br>
-The chef was waiting for an order to come in (<code>receive</code>). The order finally arrives. The maitre d' (scheduler) walks over, hands the chef a written ticket: "<em>resume the &lsquo;reply&rsquo; recipe, here are your ingredients on a clipboard.</em>"
-The chef picks up the clipboard and reads it.
-</div>
-
-<p>
-The two situations are different in nature. In the hot path, both sides are <em>right there</em> — you can hand ingredients directly.
-In the cold path, time has passed, the chef was asleep, and the maitre d' is the one who knows what's happening; the chef has to <em>read</em> the situation from somewhere.
-</p>
-
-<h2>What we did wrong</h2>
-
-<p>
-We tried to use the <em>same physical handoff style</em> for both situations. The maitre d' was trying to shout ingredients ("ONION! GARLIC! STOCK!") just like a chef-to-chef handoff.
-</p>
-
-<p>
-But there are lots of recipes, with different numbers of ingredients. Receive clauses might bind 0, 1, 2, 3, &hellip; up to 8 values. So we had to teach the maitre d' nine different shout-patterns:
-</p>
-
-<pre>fz_resume_matched_0(cont)
-fz_resume_matched_1(arg0, cont)
-fz_resume_matched_2(arg0, arg1, cont)
-fz_resume_matched_3(arg0, arg1, arg2, cont)
-fz_resume_matched_4(arg0, arg1, arg2, arg3, cont)
-...
-fz_resume_matched_8(arg0, ..., arg7, cont)</pre>
-
-<p>
-Worse: the recipe (clause body) had to be written in "I am being shouted at" style, which restricts what other recipes it can hand off to. In our fixture, that style was incompatible with the recipe the body wanted to call next (<code>handle_get</code>, which itself parks). The kitchen literally just <strong>silently ate the order</strong> — the chef received an unreadable signal and stopped cooking.
-</p>
-
-<h2>The elegant move</h2>
-
-<p>
-Different handoff styles for different situations:
-</p>
+<p>fz has two function calling conventions:</p>
 
 <table>
-<tr><th>Closure kind</th><th>Stub style</th><th>How args travel</th></tr>
-<tr><td><strong>Value closure</strong> (passed around, called by user code)</td><td>Tail-CC, register-passing</td><td>Shouted across the counter</td></tr>
-<tr><td><strong>Continuation closure</strong> (scheduler-resumed)</td><td>SystemV, single argument: <code>self</code></td><td>Read from a clipboard (<code>process-&gt;resume_args</code>)</td></tr>
+<tr><th>ABI</th><th>Sig shape</th><th>Where args live</th><th>Used for</th></tr>
+<tr><td><strong>Native (Tail-CC)</strong></td>
+    <td><code>(arg₀, …, argₙ₋₁, self_or_cont) -> i64 tail</code></td>
+    <td>Registers / stack (Cranelift's <code>tail</code> conv)</td>
+    <td>Almost every fz fn. Hot path. Supports <code>return_call</code> so tail calls don't grow the stack.</td></tr>
+<tr><td><strong>Uniform</strong></td>
+    <td><code>(frame_ptr, host_ctx) -> i64 systemv</code></td>
+    <td>Heap-allocated frame slots</td>
+    <td>Legacy escape hatch for fns whose chain wasn't admissible as native. Rare after fz-70q.5.</td></tr>
 </table>
 
 <p>
-One bit in the closure header says which kind. They coexist peacefully because their use cases never overlap: nobody calls a continuation in the hot path; nobody schedules a value closure.
+Whether a fn is native or uniform is decided by <code>parking::natively_callable</code>:
+a fixed-point analysis over the call graph. A fn is native iff every fn it
+direct-calls or tail-calls is also native, recursively. Externs and a few
+seam fns are admitted as terminals.
 </p>
 
-<h2>What the cold path looks like after</h2>
-
-<div class="ascii">scheduler                        closure                       body
----------                        -------                       ----
-1. matcher hit returns           [stub_fp | outer_cont |       (knows N=3 bound args
-   (clause_idx, [r, f, k])         cap0 | cap1 | ...]            at compile time)
-2. process-&gt;resume_args = [r,f,k]
-3. fz_resume(closure)  --------&gt; stub(self) ---------&gt;        load resume_args[0..3]
-                                                              load captures from self+32+
-                                                              load outer_cont from self+24
-                                                              ... run body ...
-                                                              tail-call outer_cont(result)</div>
+<h2>Two roles a closure can play</h2>
 
 <p>
-<strong>One shim. One stub shape. No N-family.</strong> The matcher already produces a <code>Vec&lt;FzValue&gt;</code> — we just leave it where it is and let the body pick it up. We were marshalling a runtime-shaped thing (variable-arity bound values) through a compile-time-shaped channel (Cranelift signatures). That was the original sin.
+A closure is just <code>{HeapHeader | stub_fp | outer_cont | cap₀ | cap₁ | …}</code> on the
+process heap. But the same closure object can be used in two completely
+different ways:
 </p>
 
-<h2>Why the fixture broke (concretely)</h2>
+<div class="box">
+<strong>As a value</strong> — passed around as a first-class thing, called by user
+code at <code>TailCallClosure</code> sites. Stub at <code>+16</code> is Tail-CC
+<code>(args…, self, cont) -> i64 tail</code>. Register-passed args, hot path.
+</div>
 
-<p>The fixture has this server loop:</p>
+<div class="box">
+<strong>As a continuation</strong> — handed to the scheduler so it can wake the task
+later. Stub at <code>+16</code> is SystemV <code>(self) -> i64 systemv</code>. Args
+come from a runtime slab, not from registers. Cold path.
+</div>
+
+<p>
+These two roles never overlap in use — user code doesn't directly invoke
+continuations, and the scheduler doesn't see value closures. So the same
+header layout serves both, with the <em>stub kind</em> determined at allocation
+time by which builder created it: <code>MakeClosure</code> for values,
+<code>build_cont_closure</code> for continuations.
+</p>
+
+<div class="box key">
+<strong>Why a SystemV stub for continuations?</strong> The scheduler invokes the cont
+across a quantum boundary, so it always goes through one runtime entry
+point. A SystemV thunk fits the C ABI the scheduler already lives in and
+lets us put <em>one</em> shim (<code>fz_resume</code>) at the seam regardless of
+clause arity. Bound args travel as runtime data (the <code>resume_args</code> slab),
+not as compile-time signature shape — which is why the proposal could
+delete the nine <code>fz_resume_matched_N</code> shims.
+</div>
+
+<h2>The receive ABI in one diagram</h2>
+
+<div class="ascii">
+  user code                runtime data                    JIT-emitted code
+  ─────────                ────────────                    ────────────────
+
+  receive do            ParkRecord on Process              matcher fn (SystemV pure leaf)
+    {:reply, ^r, v}     {                                  ┌─────────────────────────────┐
+       -> body          │ matcher_fn ─────────────────────►│ try each clause's pattern   │
+    after T -> after_b  │ pinned: [^r bits, …]             │ on the candidate message    │
+  end                   │ clause_bodies: [cl₀, cl₁, …]     │ on hit: write bound vals    │
+                        │ after_cont: closure*             │  to out[]; return k+1       │
+   ↓ park-site CLIF     │ after_deadline_ms: …             │ on miss: return 0           │
+                        │ }                                └─────────────────────────────┘
+
+  WAKE PATH 1: sender-probe (most common)                  cont stub (one per body spec)
+   sender's send() copies msg into receiver heap,          ┌─────────────────────────────┐
+   runs matcher_fn against parked_matched, on hit:         │ load N args from            │
+     - resume_args = [bound vals]                          │   process.resume_args slab  │
+     - pending_resume_matched = (cont, args)               │ tail-call body Tail-CC      │
+     - flip receiver Ready, enqueue                        │   (args…, self) -> i64      │
+                                                           └─────────────────────────────┘
+  WAKE PATH 2: receiver initial-scan                                 ▲
+   receiver gets a quantum with parked_matched + non-empty           │
+   mailbox; walks mailbox in arrival order, restores                 │
+   non-matching ones (Erlang save-queue semantics).                  │
+                                                           fz_resume (one shim)
+  WAKE PATH 3: after-timer                                 ┌─────────────────────────────┐
+   TimerWheel fires; pending_resume_matched =              │ load cont+16                │
+   (after_cont, []); enqueue.                              │ call_indirect SystemV(cont) │
+                                                           │ return result               │
+   ↓                                                       └─────────────────────────────┘
+  trampoline: process.resume_args = bound;                            ▲
+              fz_resume(cont); clear slab.                            │
+                                                            scheduler trampoline branch
+</div>
+
+<h2>Walking the acceptance fixture</h2>
+
+<p>
+The fixture (<code>fixtures/receive_selective_refs/input.fz</code>) is a real
+end-to-end exercise of all three wake paths in one trace.
+</p>
 
 <pre>fn handle_get(ref, from, key) do
   send(from, {:reply, ref, key})
-  server()                       # tail-calls back into server
+  server()
 end
 
 fn server() do
@@ -117,53 +149,239 @@ fn server() do
     {:get, ref, from, key} -&gt; handle_get(ref, from, key)
     {:stop} -&gt; nil
   end
+end
+
+fn main() do
+  s = spawn(server)
+  ref_a = make_ref()
+  ref_b = make_ref()
+  me = self()
+
+  send(s, {:get, ref_a, me, :k_a})
+  send(s, {:get, ref_b, me, :k_b})
+
+  val_b = receive do
+    {:reply, ^ref_b, v} -&gt; v
+  after
+    500 -&gt; :timeout
+  end
+
+  val_a = receive do
+    {:reply, ^ref_a, v} -&gt; v
+  end
+
+  print({val_a, val_b})
+  send(s, {:stop})
 end</pre>
 
 <p>
-Because <code>server</code> contains <code>receive</code>, it must be uniform-ABI (heap-resident frame, so the scheduler can park it). Because <code>handle_get</code> tail-calls <code>server</code>, it must also be uniform. Because the clause body tail-calls <code>handle_get</code>, it too must be uniform.
+The asks of this fixture: the server processes requests in arrival order
+(ref_a's reply first), but <code>main</code> wants ref_b's reply first. So
+sender-probe must <em>miss</em> on ref_a's reply, <em>hit</em> on ref_b's,
+and the receiver-side scan must later pick ref_a's reply out of the
+mailbox without parking.
 </p>
 
-<p>But our <em>shim</em> insisted on calling the body Tail-CC. The body was uniform. Mismatch. Silent stop.</p>
+<h3>Trace (with which path fires)</h3>
 
-<div class="box good">
-<strong>Insight:</strong> the body wanting to be uniform isn't a bug — it's the truth. Continuations <em>are</em> heap-resident dispatchables. The Tail-CC sig we forced on them was the lie.
+<div class="step">
+<strong>1.</strong> <code>main</code> runs, sends both requests to server, parks on
+<code>receive {:reply, ^ref_b, v}</code>. <code>fz_receive_park_matched</code> installs
+the <code>ParkRecord</code> with the matcher fn for clause 0, pinned = <code>[ref_b]</code>,
+clause bodies, after timer (500ms). main goes <strong>Blocked</strong>.
 </div>
 
-<h2>Five things this deletes or shrinks</h2>
+<div class="step">
+<strong>2.</strong> Scheduler picks <code>server</code>. server runs to its
+<code>receive</code>. <code>fz_receive_park_matched</code> installs server's
+ParkRecord (no pinned, no after) and notices the mailbox already has two
+messages. Sets state <strong>Ready</strong> and yields.
+</div>
 
-<ol>
-<li><strong>The nine-shim family</strong> (<code>fz_resume_matched_0..8</code>) and the parallel-evolution risk of <code>mid_flight_resume_N</code>.</li>
-<li><strong>The <code>cont_extras_count</code> plumbing</strong> we added today in <code>build_fn_signature</code> — moot, cont sigs are uniform.</li>
-<li><strong>The trampoline's <code>match n { ... }</code> arm in <code>run_quantum</code></strong> — collapses to one branch.</li>
-<li><strong>The parking-analysis "cont must be native" constraint</strong> — conts are uniform by construction; no compatibility check needed.</li>
-<li><strong>B4 (AOT shim for ResumeMatched)</strong> — there's no family to emit, so most of the ticket evaporates.</li>
-</ol>
+<div class="step">
+<strong>3.</strong> Scheduler picks server again. <code>run_quantum</code>'s
+<strong>initial-scan branch</strong> fires: walks the mailbox, tries the matcher
+on <code>{:get, ref_a, me, :k_a}</code>, hits clause 0. Splices the message out,
+extracts bound vars <code>[ref_a, me, :k_a]</code>, stashes a
+<code>PendingResumeMatched</code>.
+</div>
 
-<h2>What stays the same</h2>
+<div class="step">
+<strong>4.</strong> Falls through to the dispatch branch: writes
+<code>process.resume_args = [ref_a, me, :k_a]</code>; calls <code>fz_resume(body_cl)</code>;
+clears the slab.
+<br><br>
+Inside <code>fz_resume</code>: <code>load cont+16</code> → cont stub addr.
+<code>call_indirect SystemV(cont)</code> → enters the stub.
+<br><br>
+Inside the stub: <code>fz_resume_args_ptr()</code> returns the slab pointer.
+Loads 3 bound i64s. Tail-CC calls <code>body(ref_a, me, :k_a, self)</code>.
+</div>
+
+<div class="step">
+<strong>5.</strong> Body is the inlined-with-handle_get fn. Its CLIF reads bound
+args from Tail-CC block_params (positions 0..3) and captures from
+<code>self+32+i*8</code> (none in this case — server is top-level). Runs
+<code>send(me, {:reply, ref_a, :k_a})</code>, then tail-calls <code>server()</code>.
+<br><br>
+The <code>send</code> fires <code>fz_send</code>, which routes to
+<code>send_via_current_runtime</code>. main has <code>parked_matched</code>;
+the sender-probe tries the matcher against <code>{:reply, ref_a, :k_a}</code>.
+Pinned says ref_b; <strong>miss</strong>. Message lands in main's mailbox.
+</div>
+
+<div class="step">
+<strong>6.</strong> server's recursive tail call into <code>server()</code> returns to the
+top, which calls <code>receive</code> again — and parks. Server's
+<code>parked_matched</code> is now set with mailbox holding the ref_b
+request still waiting.
+</div>
+
+<div class="step">
+<strong>7.</strong> Scheduler picks server. Initial-scan finds
+<code>{:get, ref_b, me, :k_b}</code>, hit, dispatch.
+Body runs <code>send(me, {:reply, ref_b, :k_b})</code>.
+<br><br>
+Sender-probe on main fires: matcher tries the reply.
+<code>^ref_b</code> matches; <strong>hit</strong>. Bound vals = <code>[:k_b]</code>
+(v). main's after-timer is cancelled. main flips Ready,
+<code>pending_resume_matched = (cl₀, [:k_b])</code>.
+</div>
+
+<div class="step">
+<strong>8.</strong> Scheduler picks main. <code>run_quantum</code>'s dispatch branch
+fires: <code>resume_args = [:k_b]</code>, call <code>fz_resume</code>.
+Cont stub forwards <code>:k_b</code> as the Tail-CC bound arg.
+Body returns <code>:k_b</code> to its outer cont — main resumes
+with <code>val_b = :k_b</code>.
+</div>
+
+<div class="step">
+<strong>9.</strong> main's second receive parks again
+(<code>{:reply, ^ref_a, v}</code>). Mailbox already holds ref_a's reply (parked
+there at step 5). Initial-scan walks the mailbox on the next quantum, hits,
+dispatches, body returns <code>:k_a</code>. <code>val_a = :k_a</code>.
+</div>
+
+<div class="step">
+<strong>10.</strong> <code>print({val_a, val_b})</code> → <strong>{:k_a, :k_b}</strong>.
+main sends stop; halts.
+</div>
+
+<div class="box good">
+<strong>All three wake paths exercised:</strong> sender-probe miss (step 5),
+sender-probe hit (step 7), receiver-side initial scan (steps 3, 9).
+</div>
+
+<h2>The cont stub, concretely</h2>
+
+<p>For a clause body with bound_arity=3 (e.g. server's <code>{:get, ref, from, key} -&gt; …</code>):</p>
+
+<pre>; emitted by ir_codegen_cont_stub::emit_cont_stub_body
+fn fz_cont_stub_&lt;body_spec_id&gt;(self: i64) -&gt; i64 systemv {
+  block0(v0: i64):
+    v1 = call fz_resume_args_ptr()  ; -&gt; *const u64
+    v2 = load.i64 v1+0              ; bound[0]  = ref
+    v3 = load.i64 v1+8              ; bound[1]  = from
+    v4 = load.i64 v1+16             ; bound[2]  = key
+    v5 = call_indirect.i64 body(v2, v3, v4, v0) tail
+    return v5
+}</pre>
+
+<p>And for bound_arity=0 (after-clause body):</p>
+
+<pre>fn fz_cont_stub_&lt;after_spec_id&gt;(self: i64) -&gt; i64 systemv {
+  block0(v0: i64):
+    v1 = call_indirect.i64 body(v0) tail   ; just self; no args fetch
+    return v1
+}</pre>
+
+<p>
+Captures aren't forwarded as args — they live at <code>self+32+i*8</code> in
+the closure heap object, and the body's existing entry harness loads them
+from there as it always has. The stub only deals with the bound args (the
+new thing that comes from the scheduler at wake time).
+</p>
+
+<h2>The pieces, mapped to source</h2>
+
+<table>
+<tr><th>Concept</th><th>Where it lives</th></tr>
+<tr><td>Park record + pending resume</td><td><code>runtime/src/park.rs</code></td></tr>
+<tr><td><code>Process::resume_args</code> slab + <code>fz_resume_args_ptr</code> FFI</td>
+    <td><code>runtime/src/process.rs</code>, <code>runtime/src/ir_runtime.rs</code></td></tr>
+<tr><td><code>fz_receive_park_matched</code> entry point</td>
+    <td><code>runtime/src/ir_runtime.rs</code></td></tr>
+<tr><td>Sender-probe (<code>send_via_current_runtime</code>)</td>
+    <td><code>src/runtime.rs</code></td></tr>
+<tr><td>After-timer fire (<code>drain_expired_timers</code>)</td>
+    <td><code>src/runtime.rs</code></td></tr>
+<tr><td>Initial-scan branch + dispatch branch</td>
+    <td><code>src/ir_codegen.rs</code> in <code>CompiledModule::run_quantum</code></td></tr>
+<tr><td>Matcher fn emitter (pure leaf, F3-checked)</td>
+    <td><code>src/ir_codegen_receive.rs</code></td></tr>
+<tr><td>Cont stub emitter (SystemV→Tail-CC bridge)</td>
+    <td><code>src/ir_codegen_cont_stub.rs</code></td></tr>
+<tr><td>Park-site CLIF (Term::ReceiveMatched arm)</td>
+    <td><code>src/ir_codegen.rs</code> in <code>emit_terminator</code></td></tr>
+<tr><td>The single <code>fz_resume</code> shim</td>
+    <td><code>src/ir_codegen.rs</code> in <code>compile_with_backend</code></td></tr>
+<tr><td>Parking-analysis admit-ReceiveMatched rule</td>
+    <td><code>src/parking.rs</code> + the local re-shrink in <code>src/ir_codegen.rs</code></td></tr>
+</table>
+
+<h2>What this design buys downstream</h2>
 
 <ul>
-<li>Value closures keep their Tail-CC fast stub.</li>
-<li>The matcher fn itself (<code>(msg, pinned, out) -&gt; clause_idx</code>) is unchanged — it's already SystemV.</li>
-<li>Today's runtime-side fixes (initial-scan branch, scheduler's <code>parked_matched</code> check, <code>PendingResumeMatched</code>) all carry over verbatim.</li>
+<li><strong>One shim, not nine.</strong> The arity family is gone. New clause
+shapes don't extend a shim family — they just produce a new cont stub.</li>
+<li><strong>Bound arity is runtime data.</strong> Sized at match time, not compile
+time. Means we could push past 8 bound vars without ABI surgery.</li>
+<li><strong>Cont closures and value closures co-exist cleanly.</strong> Same header,
+different stub kind picked by which builder allocated. No discriminator
+needed at dispatch — each role only meets one side.</li>
+<li><strong>B4 (AOT) shrinks.</strong> AOT doesn't need to re-emit nine shim variants;
+it just needs to wire the singular <code>fz_resume</code> into its scheduler.</li>
+<li><strong>The "ReceiveMatched is never native" exclusion is gone.</strong> Bodies that
+park can still chain into other parking fns natively, because the seam at
+the closure boundary handles the ABI step. That's the change that finally
+let the fixture run.</li>
 </ul>
 
-<h2>The new ticket</h2>
+<h2>What changed vs. the proposal</h2>
 
 <p>
-<code>fz-70q.5 — collapse cont-closure stubs to uniform ABI.</code>
+The proposal had cont stubs do <code>SystemV → uniform body</code>: allocate a
+frame, populate it, call body uniformly. Two problems surfaced when we
+implemented it:
 </p>
-<p>
-Decomposition will go in <code>bw</code>; high-level shape:
-</p>
+
 <ol>
-<li>Add cont-stub emitter (one stub per cont fn, sig <code>(self) -&gt; *mut u8</code> SystemV).</li>
-<li>Add <code>process-&gt;resume_args</code> slab + setter.</li>
-<li>Rewire <code>build_cont_closure</code> to store cont-stub addr at <code>+16</code>, mark <code>ContKind</code> flag.</li>
-<li>Replace <code>fz_resume_park</code> + <code>fz_resume_matched_N</code> family with one <code>fz_resume</code>.</li>
-<li>Body-fn entry harness: load bound args from <code>resume_args</code> instead of block_params.</li>
-<li>Revert today's <code>cont_extras_count</code> sig plumbing.</li>
-<li>End-to-end fixture goes green; bless.</li>
+<li>The body's CLIF (legacy uniform tail-call lowering) emits <em>alloc next
+frame + return frame ptr</em> and expects a trampoline loop to drive the chain.
+The fz-cps.5 commit had removed that loop on the assumption that no
+uniform fns existed anymore. So a uniform body in a tail-call chain just
+returned a half-built frame ptr that nobody dispatched.</li>
+<li>Forcing the body uniform meant every fn the body could tail-call also had
+to be uniform. The chain back into <code>server</code> (via <code>handle_get</code>)
+infected everything.</li>
 </ol>
+
+<p>
+Lifting the <code>parking::natively_callable</code> exclusion on
+<code>Term::ReceiveMatched</code> (mirroring how <code>Term::Receive</code> was
+already admitted) flipped the body to Tail-CC native. The cont stub then
+just had to bridge SystemV → Tail-CC at the seam, which is structurally
+identical to the pre-existing <code>fz_resume_park</code> shim but parameterized
+by bound arity. End-to-end fixture went green.
+</p>
+
+<div class="box good">
+<strong>Moral:</strong> the right factoring usually moves <em>more</em> work to where it
+naturally lives — bound args to the scheduler, bridge code to a per-fn
+stub, body code to native Tail-CC — rather than papering over the seam.
+The nine-shim family was a paper-over. The cont stub is the lift.
+</div>
 
 </body>
 </html>
