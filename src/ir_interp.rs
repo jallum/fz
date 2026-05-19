@@ -1220,6 +1220,74 @@ end
         );
     }
 
+    /// fz-swt.9 acceptance — aliasing inside a single process.
+    ///
+    /// `r2 = r1` copies the FzValue tag bits; both names refer to the
+    /// same on-heap stub which holds a single refcount edge to the
+    /// off-heap Resource. The dtor must fire **exactly once** when the
+    /// process heap drops — not zero times (we'd be leaking the
+    /// payload), and not twice (we'd be double-freeing).
+    #[test]
+    fn aliasing_in_one_process_fires_dtor_once() {
+        let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        tests_support::DTOR_FIRED.store(0, Ordering::Relaxed);
+        tests_support::DTOR_LAST_PAYLOAD.store(0, Ordering::Relaxed);
+
+        let src = r#"
+extern "C" fn _resource_test_dtor(integer) :: nil
+fn dwrap(x), do: _resource_test_dtor(x)
+fn test_alias_once() do
+  r1 = make_resource(7, &dwrap/1)
+  r2 = r1
+  r3 = r2
+  # Three names, one off-heap Resource. Until heap drop, refcount is 1.
+  assert(true)
+end
+"#;
+        test_runner::run_str(src).expect("test_runner run_str succeeded");
+        super::interp_reset_state();
+
+        assert_eq!(
+            tests_support::DTOR_FIRED.load(Ordering::Relaxed),
+            1,
+            "aliasing three bindings must still produce exactly one dtor call",
+        );
+        assert_eq!(
+            tests_support::DTOR_LAST_PAYLOAD.load(Ordering::Relaxed),
+            fz_runtime::fz_value::FzValue::from_int(7).0,
+            "dtor receives the stored FzValue.0 bits of payload 7",
+        );
+    }
+
+    /// fz-swt.9 acceptance — two *distinct* `make_resource` calls each
+    /// fire their dtor exactly once. Confirms we're counting allocations,
+    /// not bindings, and that the MSO sweep walks the chain correctly
+    /// when it contains more than one Resource stub.
+    #[test]
+    fn two_distinct_resources_each_fire_once() {
+        let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        tests_support::DTOR_FIRED.store(0, Ordering::Relaxed);
+        tests_support::DTOR_LAST_PAYLOAD.store(0, Ordering::Relaxed);
+
+        let src = r#"
+extern "C" fn _resource_test_dtor(integer) :: nil
+fn dwrap(x), do: _resource_test_dtor(x)
+fn test_two_resources() do
+  a = make_resource(11, &dwrap/1)
+  b = make_resource(22, &dwrap/1)
+  assert(true)
+end
+"#;
+        test_runner::run_str(src).expect("test_runner run_str succeeded");
+        super::interp_reset_state();
+
+        assert_eq!(
+            tests_support::DTOR_FIRED.load(Ordering::Relaxed),
+            2,
+            "two distinct make_resource calls must each fire their dtor once",
+        );
+    }
+
     /// fz-swt.8 acceptance — `.value` round-trip through the interp.
     ///
     /// `get/1` lives in module `R` (the declaring module of the opaque

@@ -21,6 +21,36 @@
 //!
 //! Refcount ordering uses the same canonical Arc pattern as procbin:
 //! Relaxed on retain, Release on dec, Acquire fence + dtor on 1→0.
+//!
+//! # Lifetime contract (fz-swt.9 — interp leg)
+//!
+//! fz is value-semantics + immutable: an `FzValue` is a tagged 64-bit
+//! word. Let-binding a resource handle (`r2 = r1`) copies the tag bits;
+//! both names refer to the *same* on-heap stub, which holds exactly one
+//! edge to the off-heap `Resource`. No per-binding retain is needed —
+//! the MSO chain pins the stub for as long as its owning heap is alive.
+//!
+//! Ownership boundaries — points where the runtime *does* need to
+//! retain — are exactly those where `Heap::deep_copy_value` runs:
+//!   * `send/2` from one process to another (handled at heap.rs:1308).
+//!   * `spawn/1` capturing a resource into the child's heap.
+//!
+//! Both go through `ResourceHandle::retain_from_raw` + `alloc_resource`
+//! in the destination heap, producing a second stub that holds its own
+//! refcount edge. Aliasing inside a single process does **not** cross a
+//! boundary and so does **not** retain.
+//!
+//! Release happens via the per-heap MSO sweep (post-Cheney for live
+//! processes; `mso_drop_all` at heap drop). On 1→0 we run the user dtor
+//! exactly once with the stored payload and free the wrapper. The dtor
+//! therefore fires:
+//!   * when the owning process exits and its heap is dropped, or
+//!   * earlier if a GC sweep finds the stub unreachable from the roots.
+//!
+//! For the interpreter today (no incremental GC of live processes), the
+//! practical observation is "at process heap drop." Multiple aliases
+//! within a process collapse to a single 1→0 transition — the dtor
+//! fires exactly once per `make_resource` call, regardless of aliasing.
 
 use crate::fz_value::{HeapHeader, HeapKind};
 use crate::sync::{AtomicUsize, Ordering, fence};
