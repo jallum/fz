@@ -453,6 +453,29 @@ reason   ::= BudgetExhausted
 `Stalled` rows where the arg is genuine `Any` (widening fixpoint), not
 when the arg is a closure handle (that's `Indirect` now).
 
+## Three-path parity note
+
+The interpreter (`src/ir_interp.rs`) and the AST evaluator
+(`src/eval.rs`) do not use `Descr` for runtime dispatch. They dispatch
+purely on runtime values: pattern-matching at clause heads, dynamic
+arity checks, dynamic primitive dispatch. The typer's authoritative
+dispatch (spec_registry + Descr keys) is consumed by the JIT and AOT
+paths only.
+
+This is a deliberate design choice, not a parity gap. The interp paths
+predate the typer-authoritative-dispatch work (see
+`docs/typer-authoritative-dispatch.md`) and run as a simpler reference
+semantics — exactly what's wanted for parity verification: comparing
+"what the program means by reading values" against "what the typer +
+codegen produces from Descr-keyed dispatch."
+
+Three-path parity verification (fz-try.13) runs the full fixture
+matrix across interp / JIT / AOT / repl backends per fixture (175
+matrix tests in the current suite). All-green = parity holds. The C-arc
+tightened claims in Descr-space (the typer's view); the interp view
+sees runtime values whose shapes the typer's claims now describe more
+precisely. Both views agreeing on every fixture is the parity property.
+
 ## What this dissolves
 
 Walking the six smells identified in the closure_typed_captures
