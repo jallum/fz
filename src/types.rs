@@ -2238,6 +2238,11 @@ impl<'a> TupleView<'a> {
     pub fn is_any(&self) -> bool {
         self.inner.len() == 1 && self.inner[0].pos.is_empty() && self.inner[0].neg.is_empty()
     }
+    /// True iff any clause contains a negation. Consumers that don't yet
+    /// support DNF with negations check this to preserve invariants.
+    pub fn has_negations(&self) -> bool {
+        self.inner.iter().any(|c| !c.neg.is_empty())
+    }
     /// Distinct arities admitted by any positive clause. Empty iterator
     /// if the only clauses are negations-of-top.
     pub fn arities(&self) -> impl Iterator<Item = usize> {
