@@ -1321,6 +1321,178 @@ fn type_module_called_exactly_twice_in_pipeline() {
     assert_eq!(count, 2, "type_module called {} times, expected 2", count);
 }
 
+#[test]
+fn resolve_tcc_body_handles_callclosure_with_captures() {
+    let src = r#"
+fn each(_, []), do: nil
+fn each(f, [h | t]) do
+  f(h)
+  each(f, t)
+end
+
+fn main() do
+  k = 10
+  each(fn(x) -> print(x + k), [1, 2, 3])
+end
+"#;
+    let m = lower_src(src);
+    let mt = crate::ir_typer::type_module(&m);
+    let mut reg = SpecRegistry::new();
+    let mut spec_keys: Vec<(FnId, Vec<crate::types::Descr>)> = mt
+        .specs
+        .keys()
+        .map(|(fid, key)| (*fid, key.clone()))
+        .collect();
+    spec_keys.sort_by(|a, b| {
+        a.0.0
+            .cmp(&b.0.0)
+            .then_with(|| format!("{:?}", a.1).cmp(&format!("{:?}", b.1)))
+    });
+    for (fid, key) in spec_keys {
+        reg.register(fid, key);
+    }
+
+    let mut found = None;
+    for ((fid, key), ft) in &mt.specs {
+        for f in &m.fns {
+            for blk in &f.blocks {
+                if let Term::CallClosure { closure, args, .. } = &blk.terminator
+                    && ft
+                        .vars
+                        .get(closure)
+                        .and_then(crate::types::Descr::as_closure_lit)
+                        .is_some()
+                    && *fid == f.id
+                {
+                    found = Some((f.id, key.clone(), *closure, args.clone(), ft));
+                    break;
+                }
+            }
+            if found.is_some() {
+                break;
+            }
+        }
+        if found.is_some() {
+            break;
+        }
+    }
+
+    let (caller_fid, caller_key, closure, args, ft) =
+        found.expect("expected a typed CallClosure over a singleton closure-lit");
+    let (body_fid, body_sid) =
+        resolve_tcc_body(&closure, &args, ft, &m, &reg).expect("closure body should resolve");
+    assert_eq!(m.fn_by_id(caller_fid).name, "fn_clause_1");
+    assert_eq!(
+        caller_key,
+        vec![
+            crate::types::Descr::closure_lit(FnId(17), vec![crate::types::Descr::int_lit(10)], 1),
+            crate::types::Descr::int_lit(1)
+                .union(&crate::types::Descr::int_lit(2))
+                .union(&crate::types::Descr::int_lit(3)),
+            crate::types::Descr::list_of(
+                crate::types::Descr::int_lit(1)
+                    .union(&crate::types::Descr::int_lit(2))
+                    .union(&crate::types::Descr::int_lit(3))
+            ),
+        ],
+        "expected the narrow fn_clause_1 spec, not the any-key fallback"
+    );
+    assert_eq!(m.fn_by_id(body_fid).name, "lambda_17");
+    let resolved_key = reg
+        .iter()
+        .find(|(sid, _, _)| sid.0 == body_sid)
+        .map(|(_, _, key)| key.to_vec())
+        .expect("resolved sid registered");
+    assert_eq!(
+        resolved_key,
+        vec![
+            crate::types::Descr::int_lit(10),
+            crate::types::Descr::int_lit(1)
+                .union(&crate::types::Descr::int_lit(2))
+                .union(&crate::types::Descr::int_lit(3)),
+        ],
+        "resolved body key should preserve the capture-first closure key"
+    );
+}
+
+#[test]
+fn tailcall_closure_capture_repro_emits_live_cont_body() {
+    let src = r#"
+fn each(_, []), do: nil
+fn each(f, [h | t]) do
+  f(h)
+  each(f, t)
+end
+
+fn main() do
+  k = 10
+  each(fn(x) -> print(x + k), [1, 2, 3])
+end
+"#;
+    let m = lower_src(src);
+    ir_text_record_enable();
+    let _ = compile(&m).expect("compile");
+    let ir = ir_text_record_take();
+    let names: Vec<String> = ir.iter().map(|(name, _)| name.clone()).collect();
+    let cont_body = ir
+        .iter()
+        .find(|(name, _)| name.starts_with("k_16"))
+        .map(|(_, body)| body.as_str())
+        .unwrap_or_else(|| panic!("expected emitted k_16 body, saw {:?}", names));
+    assert!(
+        !cont_body.contains("trap user"),
+        "k_16 should not compile as an unreached trap stub:\n{}",
+        cont_body
+    );
+    assert!(
+        cont_body.contains("load.i64 notrap aligned v1+32")
+            && cont_body.contains("load.i64 notrap aligned v1+48"),
+        "k_16 should load its tagged captures from the continuation closure payload:\n{}",
+        cont_body
+    );
+}
+
+#[test]
+fn tailcall_closure_capture_repro_marks_cont_spec_reachable() {
+    let src = r#"
+fn each(_, []), do: nil
+fn each(f, [h | t]) do
+  f(h)
+  each(f, t)
+end
+
+fn main() do
+  k = 10
+  each(fn(x) -> print(x + k), [1, 2, 3])
+end
+"#;
+    let m = lower_src(src);
+    let mt = crate::ir_typer::type_module(&m);
+    let mut reg = SpecRegistry::new();
+    let mut spec_keys: Vec<(FnId, Vec<crate::types::Descr>)> = mt
+        .specs
+        .keys()
+        .map(|(fid, key)| (*fid, key.clone()))
+        .collect();
+    spec_keys.sort_by(|a, b| {
+        a.0.0
+            .cmp(&b.0.0)
+            .then_with(|| format!("{:?}", a.1).cmp(&format!("{:?}", b.1)))
+    });
+    let mut cont_sid = None;
+    for (fid, key) in spec_keys {
+        let sid = reg.register(fid, key.clone());
+        if m.fn_by_id(fid).name == "k_16" {
+            cont_sid = Some(sid.0);
+        }
+    }
+    let reachable = crate::ir_typer::reachable_specs(&m, &reg, &mt, [17]);
+    assert!(
+        reachable.contains(&cont_sid.expect("expected k_16 spec")),
+        "reachable specs should include k_16 continuation"
+    );
+}
+
 // ===== fz-s9y.4 — empty list ≠ nil =====
 
 /// fz-s9y.4 — `fn f([])` does NOT match a `nil` argument. Pre-fz-s9y,
