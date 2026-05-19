@@ -129,6 +129,24 @@ pub struct FnTypes {
     /// branch. Used by `compute_return_for_spec` to ignore returns that
     /// can never execute.
     pub reachable_blocks: HashSet<BlockId>,
+    /// fz-uwq.3 — per-callsite dispatch table for this spec.
+    ///
+    /// For every `Direct` / `ClosureLit` / `CallClosureKnown` callsite
+    /// in this spec's reachable IR, records the `(callee_fn, callee_key)`
+    /// the typer elected to dispatch to. Empty for `Cont` and
+    /// `MakeClosure` slots — those aren't dispatch sites.
+    ///
+    /// This is the same information the typer already publishes to
+    /// `Module.callsite_outcomes` as `Emitted` entries, but kept
+    /// per-spec rather than projected to the spec-agnostic `CallsiteId`.
+    /// Two caller specs can dispatch the *same* `CallsiteId` to
+    /// *different* targets; outcomes collapse to a single winner per
+    /// `CallsiteId`, dispatches retain both views.
+    ///
+    /// Populated during the worklist diff in `type_module`. Read by the
+    /// fz-uwq.5+ codegen migration. See `docs/typer-authoritative-
+    /// dispatch.md` for the broader rationale.
+    pub dispatches: HashMap<crate::fz_ir::CallsiteId, (FnId, Vec<Descr>)>,
 }
 
 /// Per-module type information.
@@ -864,6 +882,8 @@ pub fn apply_callsite_outcomes(m: &mut Module, mt: &ModuleTypes) {
     }
     #[cfg(debug_assertions)]
     assert_every_emitted_has_provenance(m, mt);
+    #[cfg(debug_assertions)]
+    assert_every_emitted_has_matching_dispatch(m, mt);
 }
 
 /// fz-9pr.9 — debug invariant: after typer convergence + outcome
@@ -889,6 +909,35 @@ fn assert_every_emitted_has_provenance(m: &Module, mt: &ModuleTypes) {
                 target
             );
         }
+    }
+}
+
+/// fz-uwq.3 — debug invariant: every `Emitted` outcome in
+/// `module.callsite_outcomes` has a matching entry in **some** spec's
+/// `FnTypes.dispatches`. This is the data-model equivalence that licenses
+/// the fz-uwq.5+ consumer migration to read dispatches instead of
+/// outcomes.
+///
+/// The reverse doesn't hold: `dispatches` is strictly more information
+/// (per-spec), while `outcomes` collapses to one winner per `CallsiteId`.
+/// The check is therefore "for every outcome, some dispatch agrees" —
+/// not strict equality.
+#[cfg(debug_assertions)]
+fn assert_every_emitted_has_matching_dispatch(m: &Module, mt: &ModuleTypes) {
+    for (cid, outcome) in &m.callsite_outcomes {
+        let CallsiteOutcome::Emitted { target, .. } = outcome else {
+            continue;
+        };
+        let found = mt
+            .specs
+            .values()
+            .any(|ft| ft.dispatches.get(cid).is_some_and(|t| t == target));
+        assert!(
+            found,
+            "fz-uwq.3: Emitted outcome at {:?} → {:?} has no matching \
+             FnTypes.dispatches entry in any spec",
+            cid, target
+        );
     }
 }
 
@@ -997,11 +1046,24 @@ fn process_worklist(
 
         // Diff emits against this caller's prior emit set. Transitions
         // update produces + holders + emits_by_caller.
+        //
+        // fz-uwq.3 — also rebuild this spec's `FnTypes.dispatches`:
+        // clear then re-populate from `result.emits` for the
+        // dispatch-shaped slots (Direct / ClosureLit / CallClosureKnown).
+        // Cont and MakeClosure slots aren't dispatches.
         let prev_sites = emits_by_caller.remove(&spec_key).unwrap_or_default();
         let mut new_sites: std::collections::HashSet<EmitterSite> =
             std::collections::HashSet::new();
+        let mut new_dispatches: HashMap<crate::fz_ir::CallsiteId, (FnId, Vec<Descr>)> =
+            HashMap::new();
         for (site, target) in result.emits {
             new_sites.insert(site.clone());
+            match site.slot {
+                EmitSlot::Direct | EmitSlot::ClosureLit(..) | EmitSlot::CallClosureKnown => {
+                    new_dispatches.insert(site.callsite_id(), target.clone());
+                }
+                EmitSlot::Cont | EmitSlot::MakeClosure(_) => {}
+            }
             match produces.get(&site).cloned() {
                 Some(prev_target) if prev_target == target => {
                     // Stable — no transition.
@@ -1028,6 +1090,9 @@ fn process_worklist(
             if !specs.contains_key(&target) && in_work.insert(target.clone()) {
                 work.push_back(target);
             }
+        }
+        if let Some(ft) = specs.get_mut(&spec_key) {
+            ft.dispatches = new_dispatches;
         }
         // Sites present in prev but absent in new: this walk no longer
         // emits them. Detach from holders; clear produces.
@@ -1905,6 +1970,7 @@ pub fn type_fn(f: &FnIr, m: &Module, entry_param_types: Option<&[Descr]>) -> FnT
         block_envs,
         fn_constants,
         reachable_blocks,
+        dispatches: HashMap::new(),
     }
 }
 
