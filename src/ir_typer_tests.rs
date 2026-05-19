@@ -479,6 +479,7 @@ fn entry_param_narrows_to_caller_arg_type() {
     mb.set_terminator(
         mentry,
         Term::TailCall {
+            ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
             callee: FnId(0),
             args: vec![v],
             is_back_edge: false,
@@ -511,6 +512,7 @@ fn entry_param_unions_across_multiple_callers() {
     a.set_terminator(
         aentry,
         Term::TailCall {
+            ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
             callee: FnId(0),
             args: vec![one],
             is_back_edge: false,
@@ -524,6 +526,7 @@ fn entry_param_unions_across_multiple_callers() {
     bb.set_terminator(
         bentry,
         Term::TailCall {
+            ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
             callee: FnId(0),
             args: vec![ok],
             is_back_edge: false,
@@ -566,7 +569,14 @@ fn closure_target_with_no_direct_callers_keeps_any_entry_params() {
 
     let mut mb = FnBuilder::new(FnId(1), "main");
     let mentry = mb.block(vec![]);
-    let cl = mb.let_(mentry, Prim::MakeClosure(FnId(0), vec![]));
+    let cl = mb.let_(
+        mentry,
+        Prim::MakeClosure(
+            crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
+            FnId(0),
+            vec![],
+        ),
+    );
     mb.set_terminator(mentry, Term::Halt(cl));
 
     let m = build_module(vec![wb.build(), mb.build()]);
@@ -580,13 +590,17 @@ fn closure_target_with_no_direct_callers_keeps_any_entry_params() {
 }
 
 #[test]
-fn closure_target_with_direct_caller_narrows_spec_and_drops_unused_any_key() {
-    // fz-ul4.29.3 / .29.10.3: a fn that's both a MakeClosure target
-    // and called directly with a typed arg gets a narrow spec keyed
-    // by the visible direct caller's arg Descrs. Post-.29.10.3, the
-    // unused closure-bound `_cl` is detected as fully resolvable
-    // (no invocation), the MakeClosure any-key registration is
-    // suppressed, and .29.12.6 drops worker's any-key.
+fn closure_target_with_direct_caller_narrows_spec_and_keeps_any_key_body() {
+    // fz-ul4.29.3: a fn that's both a MakeClosure target and called
+    // directly with a typed arg gets a narrow spec keyed by the
+    // direct caller's arg Descrs.
+    //
+    // fz-try B1+B2: under the new design, the closure-target lambda
+    // also has an any-key body — it IS the body, since the
+    // closure-target ABI seam speaks uniform Tagged (fz-try.15) and
+    // doesn't synchronize via spec keys. The .29.10.3 "drop unused
+    // any-key" optimization is structurally subsumed: the any-key
+    // body is the canonical compiled body for the closure target.
     let mut wb = FnBuilder::new(FnId(0), "worker");
     let n = wb.fresh_var();
     let wentry = wb.block(vec![n]);
@@ -594,11 +608,19 @@ fn closure_target_with_direct_caller_narrows_spec_and_drops_unused_any_key() {
 
     let mut mb = FnBuilder::new(FnId(1), "main");
     let mentry = mb.block(vec![]);
-    let _cl = mb.let_(mentry, Prim::MakeClosure(FnId(0), vec![]));
+    let _cl = mb.let_(
+        mentry,
+        Prim::MakeClosure(
+            crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
+            FnId(0),
+            vec![],
+        ),
+    );
     let lit = mb.let_(mentry, Prim::Const(Const::Int(42)));
     mb.set_terminator(
         mentry,
         Term::TailCall {
+            ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
             callee: FnId(0),
             args: vec![lit],
             is_back_edge: false,
@@ -607,23 +629,34 @@ fn closure_target_with_direct_caller_narrows_spec_and_drops_unused_any_key() {
 
     let m = build_module(vec![wb.build(), mb.build()]);
     let mt = type_module(&m);
-    // worker's narrow spec: n narrowed to the direct caller's int.
-    let nt = fn_view(&m, &mt, 0).vars.get(&n).cloned().unwrap();
+    // worker's narrow spec exists with n=int.
+    let narrow_spec = mt
+        .spec(FnId(0), &[Descr::int_lit(42)])
+        .or_else(|| mt.spec(FnId(0), &[Descr::int()]))
+        .expect("worker's narrow spec (from direct call) must be registered");
+    let nt_narrow = narrow_spec.vars.get(&n).cloned().unwrap();
     assert!(
-        nt.is_subtype(&Descr::int()),
-        "worker's n must narrow to int (visible caller), got {}",
-        nt
+        nt_narrow.is_subtype(&Descr::int()),
+        "worker's narrow-spec n must narrow to int, got {}",
+        nt_narrow
     );
-    // any-key dropped: no callsite (direct or indirect) queries
-    // worker with [any].
+    // any-key body also exists: the MakeClosure(worker, []) registers
+    // worker as a closure target, so its any-key body is the canonical
+    // compiled body.
     assert!(
-        mt.spec(FnId(0), &[Descr::any()]).is_none(),
-        "worker's any-key must be dropped — only narrow [int_lit(42)] callsite exists; \
+        mt.spec(FnId(0), &[Descr::any()]).is_some(),
+        "worker's any-key body must be registered (worker is a closure target); \
          specs: {:?}",
         mt.specs
             .keys()
             .filter(|(fid, _)| *fid == FnId(0))
             .collect::<Vec<_>>()
+    );
+    // handle entry: (worker, []) — zero-capture closure handle.
+    assert!(
+        mt.closure_handles.contains(&(FnId(0), vec![])),
+        "expected (worker, []) handle entry; handles: {:?}",
+        mt.closure_handles
     );
 }
 
@@ -648,6 +681,7 @@ fn entry_points_keep_any_key_callees_with_typed_callsites_drop() {
     b.set_terminator(
         bentry,
         Term::TailCall {
+            ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
             callee: FnId(0),
             args: vec![lit],
             is_back_edge: false,
@@ -692,6 +726,7 @@ fn specs_records_narrow_int_callsite() {
     b.set_terminator(
         bentry,
         Term::TailCall {
+            ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
             callee: FnId(0),
             args: vec![lit],
             is_back_edge: false,
@@ -736,6 +771,7 @@ fn fn_view_returns_narrowed_spec_for_direct_caller() {
     b.set_terminator(
         bentry,
         Term::TailCall {
+            ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
             callee: FnId(0),
             args: vec![lit],
             is_back_edge: false,
@@ -862,95 +898,6 @@ fn main(), do: print(sum([1, 2, 3, 4, 5]))
     }
 }
 
-/// fz-vw4.5a — when every closure-dispatch site resolves via
-/// fn_constants (or there are no closures at all), the
-/// opaque-consumer arity set is empty. Under step 5c this means
-/// MakeClosure-side any-key registration can be skipped for the
-/// fixture's closure targets.
-#[test]
-fn opaque_consumer_arities_empty_when_no_opaque_dispatch() {
-    let (m, mt) = pipeline(
-        r#"
-fn add1(n), do: n + 1
-fn main(), do: print(add1(40) + 2)
-"#,
-    );
-    let arities = opaque_consumer_arities(&m, &mt.specs);
-    assert!(
-        arities.is_empty(),
-        "expected no opaque consumers (only direct calls), got {:?}",
-        arities
-    );
-}
-
-/// fz-vw4.5a — when a closure flows through Receive (message from
-/// an unknown sender), invoking it produces an unresolved
-/// TailCallClosure. The analysis must surface its arity. Built
-/// directly in IR since fz lacks a from-message lambda invocation
-/// surface syntax.
-#[test]
-fn opaque_consumer_arities_picks_up_receive_dispatched_closure() {
-    // Build:
-    //   fn lam(x), do: x       (FnId 0, arity 1)
-    //   fn dispatcher() do
-    //     receive(); cont k_recv(f) { TailCallClosure(f, [const(7)]) }
-    //   end
-    //   fn main(): TailCall dispatcher
-    let mut lam = FnBuilder::new(FnId(0), "lam");
-    let x = lam.fresh_var();
-    let le = lam.block(vec![x]);
-    lam.set_terminator(le, Term::Return(x));
-
-    let mut k_recv = FnBuilder::new(FnId(1), "k_recv");
-    let f = k_recv.fresh_var();
-    let kre = k_recv.block(vec![f]);
-    let seven = k_recv.let_(kre, Prim::Const(Const::Int(7)));
-    k_recv.set_terminator(
-        kre,
-        Term::TailCallClosure {
-            closure: f,
-            args: vec![seven],
-        },
-    );
-
-    let mut disp = FnBuilder::new(FnId(2), "dispatcher");
-    let de = disp.block(vec![]);
-    disp.set_terminator(
-        de,
-        Term::Receive {
-            continuation: crate::fz_ir::Cont {
-                fn_id: FnId(1),
-                captured: vec![],
-            },
-        },
-    );
-
-    let mut main_b = FnBuilder::new(FnId(3), "main");
-    let me = main_b.block(vec![]);
-    main_b.set_terminator(
-        me,
-        Term::TailCall {
-            callee: FnId(2),
-            args: vec![],
-            is_back_edge: false,
-        },
-    );
-
-    let m = build_module(vec![
-        lam.build(),
-        k_recv.build(),
-        disp.build(),
-        main_b.build(),
-    ]);
-    let mt = type_module(&m);
-    let arities = opaque_consumer_arities(&m, &mt.specs);
-    assert!(
-        arities.contains(&1),
-        "expected arity-1 opaque consumer from receive-dispatched closure, got {:?}",
-        arities
-    );
-}
-
 /// Helper output for a Call-site Cont must match a key the typer
 /// registered in `module_types.specs` under `cont.fn_id`. This is
 /// the load-bearing invariant for fz-ul4.29.12.1's SpecRegistry
@@ -1032,17 +979,20 @@ fn main(), do: print(add1(40) + 2)
     assert!(narrow_found, "test premise: main should have a direct Call");
 }
 
-/// fz-ul4.29.10 — when a top-level fn is passed as a closure value
+/// fz-ul4.29.10: when a top-level fn is passed as a closure value
 /// (`apply2(double, …)`), `ir_lower` synthesizes
 /// `MakeClosure(double, [])`. .29.10.1 propagates `fn_constants[f]
 /// = double` into apply2's spec; .29.10.2 registers double's narrow
-/// spec for the typed arg from apply2's CallClosure; .29.10.3
-/// suppresses the MakeClosure-side any-key registration (because
-/// main's closure-var is fully resolvable) and rewrites apply2's
-/// `CallClosure` into a direct `Call(double, …)`. Net result:
-/// double's any-key is dropped.
+/// spec for the typed arg from apply2's CallClosure; the CallClosure
+/// is rewritten into a direct `Call(double, …)`.
+///
+/// fz-try B1+B2: under the new design, double also has an any-key
+/// body — it's a closure target (via `MakeClosure(double, [])`), so
+/// its any-key body is the canonical compiled body. The narrow spec
+/// for the direct-call path coexists. The handle entry
+/// `(double, [])` records the zero-capture closure value.
 #[test]
-fn higher_order_callee_drops_any_key_for_fn_as_value() {
+fn higher_order_callee_registers_any_key_body_and_narrow_spec() {
     let (m, mt) = pipeline(
         r#"
 fn double(x), do: x * 2
@@ -1055,13 +1005,34 @@ end
     let double = m.fns.iter().find(|f| f.name == "double").unwrap();
     let any_key: Vec<Descr> = vec![Descr::any(); 1];
     assert!(
-        !mt.specs.contains_key(&(double.id, any_key)),
-        "expected double's any-key to be dropped post-.29.10.3; \
+        mt.specs.contains_key(&(double.id, any_key.clone())),
+        "expected double's any-key body to be registered (double is a closure target); \
          registered specs for double: {:?}",
         mt.specs
             .keys()
             .filter(|(fid, _)| *fid == double.id)
             .collect::<Vec<_>>()
+    );
+    // Narrow spec from the direct-call path also exists.
+    let narrow_count = mt
+        .specs
+        .keys()
+        .filter(|(fid, k)| *fid == double.id && !k.iter().all(|d| d.is_equiv(&Descr::any())))
+        .count();
+    assert!(
+        narrow_count >= 1,
+        "expected ≥1 narrow spec for double from the direct-call path; \
+         registered specs for double: {:?}",
+        mt.specs
+            .keys()
+            .filter(|(fid, _)| *fid == double.id)
+            .collect::<Vec<_>>()
+    );
+    // Handle entry from MakeClosure(double, []).
+    assert!(
+        mt.closure_handles.contains(&(double.id, vec![])),
+        "expected (double, []) handle entry; handles: {:?}",
+        mt.closure_handles
     );
 }
 
@@ -1134,7 +1105,7 @@ end
     let waiter = m.fns.iter().find(|f| f.name == "waiter").unwrap();
     let mut cont_fn_ids: Vec<FnId> = Vec::new();
     for b in &waiter.blocks {
-        if let Term::Receive { continuation } = &b.terminator {
+        if let Term::Receive { continuation, .. } = &b.terminator {
             cont_fn_ids.push(continuation.fn_id);
         }
     }
@@ -1203,16 +1174,19 @@ end
 "#,
     );
     let thunk = m.fns.iter().find(|f| f.name == "fz_spawn_thunk").unwrap();
-    let narrow: Vec<&Vec<Descr>> = mt
-        .specs
+    // fz-try B1+B2 — MakeClosure now registers in ModuleTypes.closure_handles,
+    // not as a padded body spec. A handle entry with non-any captures
+    // proves the spawn thunk's captures were typed.
+    let handles_for_thunk: Vec<&Vec<Descr>> = mt
+        .closure_handles
         .iter()
-        .filter(|((fid, _), _)| *fid == thunk.id)
-        .map(|((_, k), _)| k)
-        .filter(|k| !k.iter().all(|d| d.is_equiv(&Descr::any())))
+        .filter(|(fid, _)| *fid == thunk.id)
+        .map(|(_, caps)| caps)
+        .filter(|caps| !caps.is_empty() && !caps.iter().all(|d| d.is_equiv(&Descr::any())))
         .collect();
     assert!(
-        !narrow.is_empty(),
-        "expected ≥1 narrow fz_spawn_thunk spec, got 0 (only any-key)"
+        !handles_for_thunk.is_empty(),
+        "expected ≥1 fz_spawn_thunk handle with typed captures, got 0"
     );
 }
 
@@ -1245,26 +1219,21 @@ end
         .iter()
         .find(|f| f.name.starts_with("lambda_"))
         .expect("expected a lambda fn");
-    let registered_keys: Vec<&Vec<Descr>> = mt
-        .specs
+    // fz-try B1+B2 — distinct capture Descrs now produce distinct
+    // closure-handle entries (not distinct body specs). The lambda has
+    // one compiled body (any-key); the two handles describe the two
+    // closure *values* (one captures int, one captures float).
+    let handles: Vec<&Vec<Descr>> = mt
+        .closure_handles
         .iter()
-        .filter(|((fid, _), _)| *fid == lam.id)
-        .map(|((_, k), _)| k)
-        .collect();
-    // fz-vw4.2: any-key is no longer unconditionally registered for
-    // every fn — it's only present when reachability demands. The
-    // two narrow specs (one per distinct capture Descr) are what
-    // codegen actually keys off; that's what this test guards.
-    let narrow: Vec<&Vec<Descr>> = registered_keys
-        .iter()
-        .filter(|k| !k.iter().all(|d| d.is_equiv(&Descr::any())))
-        .copied()
+        .filter(|(fid, _)| *fid == lam.id)
+        .map(|(_, caps)| caps)
         .collect();
     assert!(
-        narrow.len() >= 2,
-        "expected ≥2 narrow specs for the lambda, got {}: {:?}",
-        narrow.len(),
-        narrow
+        handles.len() >= 2,
+        "expected ≥2 closure-handle entries for the lambda, got {}: {:?}",
+        handles.len(),
+        handles
     );
 }
 
@@ -1328,7 +1297,14 @@ end
 /// Helper's slot 0 for CallClosure / Receive is `Descr::any()` per
 /// the typer's opaque-callee rule.
 #[test]
-fn cont_slot0_is_any_for_call_closure() {
+fn cont_slot0_is_broad_for_call_closure() {
+    // fz-try.7 — cont_slot0_descr uses arrow_join_return without effective_returns
+    // context, so the closure's apparent return passes through unrefined. Pre-C3
+    // this was `any` (untyped stub); post-C3 it's a parametric type variable
+    // (Var(β) where β is fn_id-keyed). Either way, the helper does NOT narrow —
+    // refinement requires effective_returns at the walk site, not this helper.
+    // The invariant is "no narrowing here," and the test enforces it by
+    // requiring the result to NOT be a concrete narrow type (int specifically).
     let (m, mt) = pipeline(
         r#"
 fn apply(f, x) do
@@ -1353,9 +1329,17 @@ end
     for blk in &apply_fn.blocks {
         if matches!(&blk.terminator, Term::CallClosure { .. }) {
             let s0 = cont_slot0_descr(blk, caller_ft, &m, &mt);
+            // The helper must not narrow to `int` here — that's refinement
+            // work which requires effective_returns. The post-C3 result is
+            // Var(β); pre-C3 was `any`. Both are broad/unresolved.
             assert!(
-                s0.is_equiv(&Descr::any()),
-                "CallClosure slot 0 must be `any`, got {}",
+                !s0.is_equiv(&Descr::int()),
+                "CallClosure slot 0 must not be narrowed; got {}",
+                s0
+            );
+            assert!(
+                s0.is_equiv(&Descr::any()) || s0.has_vars(),
+                "CallClosure slot 0 must be broad (any) or parametric (var); got {}",
                 s0
             );
             saw_cc = true;
@@ -1387,7 +1371,7 @@ end
     for b in &main.blocks {
         for stmt in &b.stmts {
             let Stmt::Let(v, prim) = stmt;
-            if let Prim::MakeClosure(fid, captured) = prim
+            if let Prim::MakeClosure(_, fid, captured) = prim
                 && *fid == double.id
                 && captured.is_empty()
             {
@@ -1435,7 +1419,7 @@ end
     for b in &main.blocks {
         for stmt in &b.stmts {
             let Stmt::Let(v, prim) = stmt;
-            if let Prim::MakeClosure(_, captured) = prim
+            if let Prim::MakeClosure(_, _, captured) = prim
                 && !captured.is_empty()
             {
                 closure_var = Some(*v);
@@ -1780,29 +1764,30 @@ fn callsite_id_round_trip() {
     use crate::types::Descr;
 
     let spec_key = (FnId(7), vec![Descr::any(), Descr::int_lit(3)]);
+    let _ = BlockId(2); // legacy positional fixture data; ident is now intrinsic.
+    let test_ident = crate::fz_ir::CallsiteIdent::synthetic();
     let site = EmitterSite {
         caller: spec_key.clone(),
-        block: BlockId(2),
-        slot: EmitSlot::ClosureLit(1, 0),
+        ident: test_ident.clone(),
+        slot: EmitSlot::ClosureCall,
     };
 
     let cid: CallsiteId = site.callsite_id();
     assert_eq!(cid.caller, FnId(7));
-    assert_eq!(cid.block, BlockId(2));
-    assert_eq!(cid.slot, EmitSlot::ClosureLit(1, 0));
+    assert_eq!(cid.ident, test_ident);
+    assert_eq!(cid.slot, EmitSlot::ClosureCall);
 
     let round = cid.with_spec_key(spec_key);
     assert_eq!(round, site);
 }
 
-/// fz-9pr.8 — `type_module` populates `callsite_outcome_updates` with
-/// an `Emitted` entry for each surviving Direct callsite. Build a
-/// trivial 2-fn module (main → id), assert the typer proposes an
-/// Emitted update at main's Direct slot keyed by `id` plus the arg
-/// Descr.
+/// fz-uwq.3/.11 — `type_module` populates `FnTypes.dispatches` with
+/// the per-spec dispatch target for each Direct callsite. Build a
+/// trivial 2-fn module (main → id), assert the dispatch entry exists
+/// at main's spec keyed by `id` plus the literal arg Descr.
 #[test]
-fn typer_publishes_emitted_outcome_updates_for_direct() {
-    use crate::fz_ir::{BlockId, CallsiteId, CallsiteOutcome, EmitSlot};
+fn typer_publishes_dispatches_for_direct_call() {
+    use crate::fz_ir::{BlockId, CallsiteId, EmitSlot};
 
     let mut id_b = crate::fz_ir::FnBuilder::new(FnId(0), "id");
     let x = id_b.fresh_var();
@@ -1812,14 +1797,17 @@ fn typer_publishes_emitted_outcome_updates_for_direct() {
     let mut main_b = crate::fz_ir::FnBuilder::new(FnId(1), "main");
     let m_entry = main_b.block(vec![]);
     let c42 = main_b.let_(m_entry, Prim::Const(Const::Int(42)));
+    let tc_ident = crate::fz_ir::CallsiteIdent::synthetic();
     main_b.set_terminator(
         m_entry,
         crate::fz_ir::Term::TailCall {
+            ident: tc_ident.clone(),
             callee: FnId(0),
             args: vec![c42],
             is_back_edge: false,
         },
     );
+    let _ = (BlockId(0), m_entry); // legacy positional fixture data.
 
     let mut mb = crate::fz_ir::ModuleBuilder::new();
     mb.add_fn(id_b.build());
@@ -1829,158 +1817,18 @@ fn typer_publishes_emitted_outcome_updates_for_direct() {
 
     let cid = CallsiteId {
         caller: FnId(1),
-        block: BlockId(0),
+        ident: tc_ident,
         slot: EmitSlot::Direct,
     };
-    match mt.callsite_outcome_updates.get(&cid) {
-        Some(CallsiteOutcome::Emitted {
-            target: (fid, key), ..
-        }) => {
-            assert_eq!(*fid, FnId(0));
-            assert_eq!(key.len(), 1);
-            // Key carries the literal Descr from the callsite.
-            assert_eq!(key[0], Descr::int_lit(42));
-        }
-        other => panic!("expected Emitted outcome update, got {:?}", other),
-    }
-
-    // apply_callsite_outcomes merges the update into m.callsite_outcomes.
-    let mut m2 = m.clone();
-    crate::ir_typer::apply_callsite_outcomes(&mut m2, &mt);
-    assert!(matches!(
-        m2.callsite_outcomes.get(&cid),
-        Some(CallsiteOutcome::Emitted { .. })
-    ));
-}
-
-/// fz-rcp.6 — Wspec-quality diagnostic. Synthesize a module where a
-/// callsite's published Emitted outcome targets the any-key while a
-/// narrower spec exists for the same callee. Tests the walker
-/// directly via `collect_spec_quality_diags_for_test` to avoid
-/// parallel-test env-var races; the env-var gate is enforced at
-/// `collect_diagnostics`'s top level.
-#[test]
-fn wspec_quality_warns_on_any_key_dispatch_with_narrow_specs_available() {
-    use crate::fz_ir::{CallsiteId, CallsiteOutcome, EmitSlot};
-
-    // f(x), do: x  (id-style; arity 1)
-    // call sites would normally produce a Direct outcome via the typer;
-    // we synthesize one directly to force the any-key target shape.
-    let mut fb = FnBuilder::new(FnId(0), "f");
-    let x = fb.fresh_var();
-    let fentry = fb.block(vec![x]);
-    fb.set_terminator(fentry, Term::Return(x));
-
-    let mut mb = FnBuilder::new(FnId(1), "main");
-    let mentry = mb.block(vec![]);
-    let lit = mb.let_(mentry, Prim::Const(Const::Int(42)));
-    mb.set_terminator(
-        mentry,
-        Term::TailCall {
-            callee: FnId(0),
-            args: vec![lit],
-            is_back_edge: false,
-        },
-    );
-
-    let mut m = build_module(vec![fb.build(), mb.build()]);
-
-    // Synthesize: f has both narrow [int_lit(42)] and any-key [any]
-    // registered; main's callsite outcome points at the any-key.
-    let mut mt = type_module(&m);
-    // Force the any-key into specs if not present.
-    let any_key: Vec<Descr> = vec![Descr::any(); 1];
-    if let std::collections::hash_map::Entry::Vacant(e) = mt.specs.entry((FnId(0), any_key.clone()))
-    {
-        let ft = type_fn(&m.fns[0], &m, Some(&any_key));
-        e.insert(ft);
-    }
-    let cid = CallsiteId {
-        caller: FnId(1),
-        block: BlockId(0),
-        slot: EmitSlot::Direct,
-    };
-    m.callsite_outcomes.insert(
-        cid,
-        CallsiteOutcome::Emitted {
-            target: (FnId(0), any_key),
-            came_from: None,
-        },
-    );
-
-    let diags = crate::ir_typer::collect_spec_quality_diags_for_test(&m, &mt);
-    let spec_quality: Vec<_> = diags
-        .iter()
-        .filter(|d| d.code == crate::diag::codes::TYPE_SPEC_QUALITY)
-        .collect();
-    assert_eq!(
-        spec_quality.len(),
-        1,
-        "expected 1 spec-quality diagnostic, got {:?}",
-        diags
-    );
-    let d = spec_quality[0];
-    assert!(
-        d.message.contains("call to `f` from `main`"),
-        "diagnostic message: {}",
-        d.message
-    );
-    assert!(
-        d.message.contains("any-key"),
-        "diagnostic should mention any-key, got: {}",
-        d.message
-    );
-}
-
-/// Negative case: when no narrower spec exists, the diagnostic
-/// stays silent (the any-key IS the only spec; no specialization
-/// quality issue to report).
-#[test]
-fn wspec_quality_silent_when_only_any_key_exists() {
-    use crate::fz_ir::{CallsiteId, CallsiteOutcome, EmitSlot};
-
-    let mut fb = FnBuilder::new(FnId(0), "f");
-    let x = fb.fresh_var();
-    let fentry = fb.block(vec![x]);
-    fb.set_terminator(fentry, Term::Return(x));
-
-    let mut mb = FnBuilder::new(FnId(1), "main");
-    let mentry = mb.block(vec![]);
-    let lit = mb.let_(mentry, Prim::Const(Const::Int(42)));
-    mb.set_terminator(
-        mentry,
-        Term::TailCall {
-            callee: FnId(0),
-            args: vec![lit],
-            is_back_edge: false,
-        },
-    );
-
-    let mut m = build_module(vec![fb.build(), mb.build()]);
-    let mut mt = type_module(&m);
-    let any_key: Vec<Descr> = vec![Descr::any(); 1];
-
-    // Force f to have only the any-key.
-    mt.specs.retain(|(fid, _), _| *fid != FnId(0));
-    let ft = type_fn(&m.fns[0], &m, Some(&any_key));
-    mt.specs.insert((FnId(0), any_key.clone()), ft);
-
-    m.callsite_outcomes.insert(
-        CallsiteId {
-            caller: FnId(1),
-            block: BlockId(0),
-            slot: EmitSlot::Direct,
-        },
-        CallsiteOutcome::Emitted {
-            target: (FnId(0), any_key),
-            came_from: None,
-        },
-    );
-
-    let diags = crate::ir_typer::collect_spec_quality_diags_for_test(&m, &mt);
-    assert!(
-        diags.is_empty(),
-        "no narrower spec exists for f → no diagnostic, got {:?}",
-        diags
-    );
+    let main_spec = mt
+        .specs
+        .get(&(FnId(1), vec![]))
+        .expect("main's empty-key spec must exist");
+    let (fid, key) = main_spec
+        .dispatches
+        .get(&cid)
+        .expect("dispatches should record main's Direct call to id");
+    assert_eq!(*fid, FnId(0));
+    assert_eq!(key.len(), 1);
+    assert_eq!(key[0], Descr::int_lit(42));
 }

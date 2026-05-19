@@ -164,6 +164,84 @@ pub type IntSet = LiteralSet<i64>;
 pub type StrSet = LiteralSet<String>;
 pub type FloatSet = LiteralSet<F64Bits>;
 
+/// fz-try.5 — parametric type-variable identifier. Vars are nominal placeholders
+/// distinguished only by id; the lattice cannot tell them apart from opaques.
+/// The difference is at use sites: opaques are fixed (the name *is* the type);
+/// vars are substituted at instantiation sites (fz-try.6 onward).
+///
+/// Fresh ids are allocated by `TypeVarId::fresh()` from a process-global atomic
+/// counter. This is intentionally simple — per-function scoping is handled by
+/// the typer (which renames at function-typing entry to ensure α-equivalence
+/// across signatures); the id itself carries no scope.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct TypeVarId(pub u32);
+
+impl TypeVarId {
+    /// Allocate a fresh id from the process-global counter. Tests that need
+    /// stable ids should construct `TypeVarId(n)` directly rather than calling
+    /// `fresh()`.
+    ///
+    /// Consumed by fz-try.6 (call-site instantiation) and fz-try.7
+    /// (`closure_lit()` stub replacement). Tests in this module exercise the
+    /// counter; the main binary will start using it in C2.
+    #[allow(dead_code)]
+    pub fn fresh() -> Self {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static NEXT: AtomicU32 = AtomicU32::new(0);
+        TypeVarId(NEXT.fetch_add(1, Ordering::Relaxed))
+    }
+}
+
+impl fmt::Debug for TypeVarId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "α{}", self.0)
+    }
+}
+
+impl fmt::Display for TypeVarId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "α{}", self.0)
+    }
+}
+
+pub type VarSet = LiteralSet<TypeVarId>;
+
+/// fz-try.7 — deterministic var-id allocation for a closure's surface arrow.
+/// Vars in a closure's `(α₀, …, αₙ₋₁) -> β` signature are keyed by `(fn_id,
+/// position)`. Arg positions occupy `0..MAX_CLOSURE_ARG_VAR`; ret occupies
+/// the dedicated slot at `MAX_CLOSURE_ARG_VAR`.
+///
+/// Determinism is required for typer fixpoint convergence: re-typing the
+/// same MakeClosure during iteration must produce the same Descr. Distinct
+/// closure-handles of the same lambda share their vars by construction —
+/// they are parametric over the same body.
+///
+/// The ret slot is dedicated (not just "one past the last arg") so that a
+/// closure rendered at multiple apparent arities produces a consistent ret
+/// var — e.g., the value-form `&fn14:() -> ret` and the called-form
+/// `&fn14:(α₀) -> ret` share the same `ret` id rather than aliasing across
+/// arg positions.
+const MAX_CLOSURE_ARG_VAR: u32 = 63;
+const VAR_STRIDE_PER_FN: u32 = MAX_CLOSURE_ARG_VAR + 1;
+pub fn closure_var_id(fn_id: crate::fz_ir::FnId, position: usize) -> TypeVarId {
+    let pos = position as u32;
+    assert!(
+        pos < VAR_STRIDE_PER_FN,
+        "closure_var_id: position {} exceeds stride ({})",
+        pos,
+        VAR_STRIDE_PER_FN,
+    );
+    TypeVarId(fn_id.0 * VAR_STRIDE_PER_FN + pos)
+}
+
+/// fz-try.7 — the dedicated return-var slot for a closure's surface arrow.
+/// Reserved at position `MAX_CLOSURE_ARG_VAR` so it does not alias arg
+/// positions when the same closure is rendered at different apparent
+/// arities (value-form vs called-form).
+pub fn closure_ret_var_id(fn_id: crate::fz_ir::FnId) -> TypeVarId {
+    TypeVarId(fn_id.0 * VAR_STRIDE_PER_FN + MAX_CLOSURE_ARG_VAR)
+}
+
 /// Bit-pattern wrapper around a non-NaN `f64` so we can put floats in
 /// ordered/hashed sets. Two distinct bit patterns are considered distinct
 /// values. `+0.0` and `-0.0` are distinct (matches IEEE bit equality but not
@@ -289,6 +367,19 @@ pub struct Descr {
     /// underlying type of `T` is `U`, because the opaques axis is non-empty
     /// and distinct from the plain-`U` descriptor (which has `opaques = ∅`).
     pub opaques: LiteralSet<String>,
+    /// fz-try.5 — parametric type variables. Operationally identical to
+    /// `opaques`: a finite-or-cofinite set of nominal names with
+    /// component-wise union/intersect/neg. Semantically distinguished only
+    /// by the use-site contract — vars are *substituted* at instantiation
+    /// sites (fz-try.6 onward); opaques are fixed. The lattice cannot tell
+    /// them apart.
+    ///
+    /// Vars enter the lattice via `Descr::var(id)` at fresh-var introduction
+    /// sites (function-typing entry for unconstrained parameters,
+    /// `closure_lit()` stubs after fz-try.7). Until C2 lands, this axis is
+    /// only constructed in tests; the rest of the codebase still uses
+    /// `Descr::any()` stubs.
+    pub vars: VarSet,
     /// DNF over tuple shapes. Empty Vec = no tuples ("false"); a single
     /// `Conj::top()` clause = every tuple ("true").
     pub tuples: Vec<Conj<TupleSig>>,
@@ -308,6 +399,7 @@ impl Descr {
             floats: FloatSet::any(),
             strs: StrSet::any(),
             opaques: LiteralSet::any(),
+            vars: VarSet::any(),
             tuples: vec![Conj::top()],
             lists: vec![Conj::top()],
             funcs: vec![Conj::top()],
@@ -323,6 +415,7 @@ impl Descr {
             floats: FloatSet::none(),
             strs: StrSet::none(),
             opaques: LiteralSet::none(),
+            vars: VarSet::none(),
             tuples: Vec::new(),
             lists: Vec::new(),
             funcs: Vec::new(),
@@ -340,6 +433,234 @@ impl Descr {
         let mut d = Self::none();
         d.opaques = LiteralSet::lit(name.into());
         d
+    }
+
+    /// fz-try.5 — construct a Descr that is exactly the type variable `id`.
+    /// The result has all concrete axes empty and `vars = {id}`. Lattice
+    /// operations treat the result like a nominal opaque; substitution
+    /// (fz-try.6) replaces it with a concrete Descr at instantiation sites.
+    ///
+    /// Consumed by fz-try.7 (`closure_lit()` stub replacement) and fz-try.6
+    /// (typer fresh-var introduction). Tests in this module exercise the
+    /// constructor; the main binary will start using it in C2.
+    #[allow(dead_code)]
+    pub fn var(id: TypeVarId) -> Self {
+        let mut d = Self::none();
+        d.vars = LiteralSet::lit(id);
+        d
+    }
+
+    /// fz-try.6 — does this Descr (or any nested Descr in its structural
+    /// axes) carry at least one *named* type variable id (one a substitution
+    /// could bind)? Pure read; substitution can be skipped when this is false.
+    ///
+    /// Note: `Descr::any()` has `vars: cofinite-empty` (the *universe* of all
+    /// vars). That is not a substitutable pattern — σ binds specific ids, not
+    /// "every var" — so `Descr::any().has_vars() == false`.
+    pub fn has_vars(&self) -> bool {
+        if !self.vars.set.is_empty() {
+            return true;
+        }
+        let dnf_any = |dnf: &[Conj<ArrowSig>]| {
+            dnf.iter().any(|c| {
+                c.pos
+                    .iter()
+                    .chain(c.neg.iter())
+                    .any(|sig| sig.args.iter().any(|d| d.has_vars()) || sig.ret.has_vars())
+            })
+        };
+        let tuple_any = self.tuples.iter().any(|c| {
+            c.pos
+                .iter()
+                .chain(c.neg.iter())
+                .any(|sig| sig.elems.iter().any(|d| d.has_vars()))
+        });
+        let list_any = self.lists.iter().any(|c| {
+            c.pos
+                .iter()
+                .chain(c.neg.iter())
+                .any(|sig| sig.elem.has_vars())
+        });
+        let map_any = self.maps.iter().any(|c| {
+            c.pos
+                .iter()
+                .chain(c.neg.iter())
+                .any(|sig| sig.fields.values().any(|d| d.has_vars()))
+        });
+        tuple_any || list_any || dnf_any(&self.funcs) || map_any
+    }
+
+    /// fz-try.6 — call-site substitution. Walks the descriptor and replaces
+    /// every occurrence of `Var(id)` in `self.vars` (or any nested Descr)
+    /// with `σ[id]`. Vars not in σ pass through unchanged. The walk is
+    /// structural and pure — no algebra changes, no fresh-var introduction,
+    /// no recursion guard needed (Descr trees terminate).
+    ///
+    /// This is the realization of the principle named in
+    /// `docs/descr-cleanup.md`: lattice axes are uniform; substitution is
+    /// operational. The lattice does not know which of its names
+    /// substitute — that's a property of the caller. This walk is the
+    /// caller.
+    pub fn instantiate(&self, sigma: &std::collections::HashMap<TypeVarId, Descr>) -> Descr {
+        if !self.has_vars() {
+            return self.clone();
+        }
+        // Split this Descr's vars axis into "covered by σ" and "passes through."
+        let mut substituted = Descr::none();
+        let mut passthrough_vars = self.vars.clone();
+        if !self.vars.cofinite {
+            // Finite set of explicit var ids — substitute each that σ covers.
+            let mut new_set = std::collections::BTreeSet::new();
+            for id in &self.vars.set {
+                match sigma.get(id) {
+                    Some(replacement) => {
+                        substituted = substituted.union(replacement);
+                    }
+                    None => {
+                        new_set.insert(*id);
+                    }
+                }
+            }
+            passthrough_vars = LiteralSet {
+                set: new_set,
+                cofinite: false,
+            };
+        }
+        // Build the substituted-Descr with concrete axes preserved, vars
+        // partitioned, and nested Descrs in structural axes recursively
+        // instantiated. Then union the substitution-produced material.
+        let walked_tuples: Vec<Conj<TupleSig>> = self
+            .tuples
+            .iter()
+            .map(|c| Conj {
+                pos: c
+                    .pos
+                    .iter()
+                    .map(|sig| TupleSig {
+                        elems: sig.elems.iter().map(|d| d.instantiate(sigma)).collect(),
+                    })
+                    .collect(),
+                neg: c
+                    .neg
+                    .iter()
+                    .map(|sig| TupleSig {
+                        elems: sig.elems.iter().map(|d| d.instantiate(sigma)).collect(),
+                    })
+                    .collect(),
+            })
+            .collect();
+        let walked_lists: Vec<Conj<ListSig>> = self
+            .lists
+            .iter()
+            .map(|c| Conj {
+                pos: c
+                    .pos
+                    .iter()
+                    .map(|sig| ListSig {
+                        elem: Box::new(sig.elem.instantiate(sigma)),
+                    })
+                    .collect(),
+                neg: c
+                    .neg
+                    .iter()
+                    .map(|sig| ListSig {
+                        elem: Box::new(sig.elem.instantiate(sigma)),
+                    })
+                    .collect(),
+            })
+            .collect();
+        let walked_funcs: Vec<Conj<ArrowSig>> = self
+            .funcs
+            .iter()
+            .map(|c| Conj {
+                pos: c
+                    .pos
+                    .iter()
+                    .map(|sig| ArrowSig {
+                        args: sig.args.iter().map(|d| d.instantiate(sigma)).collect(),
+                        ret: Box::new(sig.ret.instantiate(sigma)),
+                        lit: sig.lit.clone(),
+                    })
+                    .collect(),
+                neg: c
+                    .neg
+                    .iter()
+                    .map(|sig| ArrowSig {
+                        args: sig.args.iter().map(|d| d.instantiate(sigma)).collect(),
+                        ret: Box::new(sig.ret.instantiate(sigma)),
+                        lit: sig.lit.clone(),
+                    })
+                    .collect(),
+            })
+            .collect();
+        let walked_maps: Vec<Conj<MapSig>> = self
+            .maps
+            .iter()
+            .map(|c| Conj {
+                pos: c
+                    .pos
+                    .iter()
+                    .map(|sig| MapSig {
+                        fields: sig
+                            .fields
+                            .iter()
+                            .map(|(k, v)| (k.clone(), v.instantiate(sigma)))
+                            .collect(),
+                    })
+                    .collect(),
+                neg: c
+                    .neg
+                    .iter()
+                    .map(|sig| MapSig {
+                        fields: sig
+                            .fields
+                            .iter()
+                            .map(|(k, v)| (k.clone(), v.instantiate(sigma)))
+                            .collect(),
+                    })
+                    .collect(),
+            })
+            .collect();
+        let base = Descr {
+            basic: self.basic,
+            atoms: self.atoms.clone(),
+            ints: self.ints.clone(),
+            floats: self.floats.clone(),
+            strs: self.strs.clone(),
+            opaques: self.opaques.clone(),
+            vars: passthrough_vars,
+            tuples: walked_tuples,
+            lists: walked_lists,
+            funcs: walked_funcs,
+            maps: walked_maps,
+        };
+        base.union(&substituted)
+    }
+
+    /// fz-try.6 — extract a substitution σ from positionally matching
+    /// `pattern` (a Descr with vars) against `witness` (a concrete Descr).
+    /// For each Var(α) appearing in `pattern`'s top-level `vars` axis, bind
+    /// α → witness. Vars buried inside structural axes do not contribute
+    /// (call-site σ-construction is positional, not structural — the
+    /// witness's shape there can't be matched without unification, which
+    /// the design rejects).
+    ///
+    /// If σ would bind the same id to incompatible witnesses, later bindings
+    /// win — call sites supplying inconsistent witnesses are caller bugs,
+    /// surfaced by the typer's downstream emptiness checks.
+    pub fn collect_subst_into(
+        pattern: &Descr,
+        witness: &Descr,
+        sigma: &mut std::collections::HashMap<TypeVarId, Descr>,
+    ) {
+        if pattern.vars.cofinite {
+            // pattern.vars is "any var" — meaningless as a binding source;
+            // skip. (This shape arises only from Descr::any() patterns.)
+            return;
+        }
+        for id in &pattern.vars.set {
+            sigma.insert(*id, witness.clone());
+        }
     }
 
     // ---- basic types ----
@@ -491,9 +812,24 @@ impl Descr {
     /// `resolve_closure_return`).
     #[allow(dead_code)] // Used by unit tests now; production callers land in fz-ul4.27.22.10.
     pub fn closure_lit(fn_id: crate::fz_ir::FnId, captures: Vec<Descr>, n_args: usize) -> Self {
+        // fz-try.7 — type variables at the closure's surface signature
+        // instead of `Descr::any()` stubs. The arrow becomes `(α₀, …, αₙ₋₁) -> β`
+        // where each αᵢ and β are *deterministic* ids derived from `fn_id`
+        // and position. Determinism is load-bearing: re-typing the same
+        // MakeClosure during fixpoint iteration must produce the same Descr,
+        // or convergence fails. Two distinct closure-handles of the same
+        // lambda (same fn_id, different captures) share their vars by
+        // construction — they are parametric over the same body.
+        //
+        // The principle from fz-try.5 lives here: vars are nominal placeholders
+        // the lattice cannot distinguish from opaques; the *substitution
+        // contract* at call sites is what gives them meaning. Built by
+        // closure_lit, consumed by resolve_closure_return via instantiate.
+        let arg_var = |pos: usize| Descr::var(closure_var_id(fn_id, pos));
+        let ret_var = Descr::var(closure_ret_var_id(fn_id));
         let sig = ArrowSig {
-            args: vec![Descr::any(); n_args],
-            ret: Box::new(Descr::any()),
+            args: (0..n_args).map(arg_var).collect(),
+            ret: Box::new(ret_var),
             lit: Some(ClosureLit { fn_id, captures }),
         };
         let mut d = Self::none();
@@ -544,6 +880,7 @@ impl Descr {
             && self.floats.is_none()
             && self.strs.is_none()
             && self.opaques.is_none()
+            && self.vars.is_none()
             && self.tuples.is_empty()
             && self.lists.is_empty()
             && self.funcs.is_empty()
@@ -582,6 +919,7 @@ impl Descr {
             && self.floats.is_any()
             && self.strs.is_any()
             && self.opaques.is_any()
+            && self.vars.is_any()
             && is_dnf_top(&self.tuples)
             && is_dnf_top(&self.lists)
             && is_dnf_top(&self.funcs)
@@ -621,6 +959,7 @@ impl Descr {
             floats: self.floats.union(&other.floats),
             strs: self.strs.union(&other.strs),
             opaques: self.opaques.union(&other.opaques),
+            vars: self.vars.union(&other.vars),
             tuples,
             lists,
             funcs,
@@ -636,6 +975,7 @@ impl Descr {
             floats: self.floats.intersect(&other.floats),
             strs: self.strs.intersect(&other.strs),
             opaques: self.opaques.intersect(&other.opaques),
+            vars: self.vars.intersect(&other.vars),
             tuples: dnf_intersect(&self.tuples, &other.tuples),
             lists: dnf_intersect(&self.lists, &other.lists),
             funcs: dnf_intersect(&self.funcs, &other.funcs),
@@ -651,6 +991,7 @@ impl Descr {
             floats: self.floats.neg(),
             strs: self.strs.neg(),
             opaques: self.opaques.neg(),
+            vars: self.vars.neg(),
             tuples: dnf_neg(&self.tuples),
             lists: dnf_neg(&self.lists),
             funcs: dnf_neg(&self.funcs),
@@ -706,6 +1047,7 @@ impl Descr {
             && self.floats.is_none()
             && self.strs.is_none()
             && self.opaques.is_none()
+            && self.vars.is_none()
             && self.tuples.iter().all(|c| tuple_clause_empty(c, memo))
             && self.lists.iter().all(|c| list_clause_empty(c, memo))
             && self.funcs.iter().all(|c| func_clause_empty(c, memo))
@@ -1364,6 +1706,9 @@ impl fmt::Display for Descr {
             format_lit_set(&mut parts, &self.atoms, "atom", |a| format!(":{}", a));
         }
         format_lit_set(&mut parts, &self.opaques, "opaque", |n| n.clone());
+        // fz-try.5 — render type variables as `α<id>`. A per-signature
+        // greek-letter remap (α, β, γ, …) lands in fz-try.11 (formatter).
+        format_lit_set(&mut parts, &self.vars, "var", |v| format!("{}", v));
 
         for c in &self.tuples {
             parts.push(format_tuple_clause(c));
@@ -1415,6 +1760,7 @@ impl Descr {
             format_lit_set_capped(&mut parts, &self.atoms, "atom", CAP, |a| format!(":{}", a));
         }
         format_lit_set_capped(&mut parts, &self.opaques, "opaque", CAP, |n| n.clone());
+        format_lit_set_capped(&mut parts, &self.vars, "var", CAP, |v| format!("{}", v));
 
         for c in &self.tuples {
             parts.push(format_tuple_clause(c));
@@ -2518,5 +2864,418 @@ mod tests {
         let pid = Descr::opaque_of("pid");
         let u = pid.union(&Descr::any());
         assert!(u.looks_full(), "pid | any should be any: got {}", u);
+    }
+
+    // ------------------------------------------------------------------
+    // fz-try.5 — type-variable axis
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn type_var_id_displays_as_alpha_indexed() {
+        assert_eq!(format!("{}", TypeVarId(0)), "α0");
+        assert_eq!(format!("{}", TypeVarId(7)), "α7");
+        assert_eq!(format!("{:?}", TypeVarId(0)), "α0");
+    }
+
+    #[test]
+    fn type_var_id_fresh_yields_distinct_ids() {
+        let a = TypeVarId::fresh();
+        let b = TypeVarId::fresh();
+        assert_ne!(a, b, "TypeVarId::fresh() must produce distinct ids");
+    }
+
+    #[test]
+    fn descr_var_round_trips_via_axis() {
+        let v = Descr::var(TypeVarId(0));
+        assert!(!v.is_empty(), "var(α0) should not be empty");
+        assert!(!v.looks_full(), "var(α0) should not look full");
+        // The only non-default axis is `vars` itself.
+        assert!(v.basic.is_empty());
+        assert!(v.atoms.is_none());
+        assert!(v.ints.is_none());
+        assert!(v.opaques.is_none());
+        assert!(!v.vars.is_none(), "vars axis must carry the id");
+    }
+
+    #[test]
+    fn descr_var_renders_as_alpha_id() {
+        let v = Descr::var(TypeVarId(3));
+        assert_eq!(format!("{}", v), "α3");
+    }
+
+    #[test]
+    fn var_is_subtype_of_itself() {
+        let a = Descr::var(TypeVarId(0));
+        assert!(a.is_subtype(&a), "α should be a subtype of itself");
+    }
+
+    #[test]
+    fn distinct_vars_do_not_overlap() {
+        let a = Descr::var(TypeVarId(0));
+        let b = Descr::var(TypeVarId(1));
+        let i = a.intersect(&b);
+        assert!(i.is_empty(), "α0 ∩ α1 must be empty: got {}", i);
+    }
+
+    #[test]
+    fn same_var_intersection_preserves_var() {
+        let a = Descr::var(TypeVarId(0));
+        let i = a.intersect(&a);
+        assert!(i.is_equiv(&a), "α0 ∩ α0 must equal α0: got {}", i);
+    }
+
+    #[test]
+    fn var_union_with_int_keeps_both() {
+        let a = Descr::var(TypeVarId(0));
+        let i = Descr::int();
+        let u = a.union(&i);
+        assert!(!u.is_empty());
+        assert!(!u.vars.is_none(), "union must retain the type variable");
+        assert!(u.ints.is_any(), "and the int axis must be saturated");
+        // The union is the sum: members of α OR members of int.
+        assert!(a.is_subtype(&u), "α ⊆ (α ∪ int)");
+        assert!(i.is_subtype(&u), "int ⊆ (α ∪ int)");
+    }
+
+    #[test]
+    fn var_union_with_any_becomes_any() {
+        let a = Descr::var(TypeVarId(0));
+        let u = a.union(&Descr::any());
+        assert!(u.looks_full(), "α ∪ any should be any: got {}", u);
+    }
+
+    #[test]
+    fn any_contains_all_vars() {
+        // Descr::any() includes the entire vars axis (cofinite empty).
+        let any = Descr::any();
+        assert!(
+            any.vars.is_any(),
+            "Descr::any().vars must be the full universe"
+        );
+        let a = Descr::var(TypeVarId(0));
+        assert!(a.is_subtype(&any), "α ⊆ any");
+    }
+
+    #[test]
+    fn none_excludes_all_vars() {
+        let none = Descr::none();
+        assert!(none.vars.is_none(), "Descr::none().vars must be empty");
+    }
+
+    #[test]
+    fn var_neg_excludes_only_that_var() {
+        // ¬α0 covers everything except α0. So α0 ⊄ ¬α0, but α1 ⊆ ¬α0.
+        let a = Descr::var(TypeVarId(0));
+        let b = Descr::var(TypeVarId(1));
+        let not_a = a.neg();
+        assert!(!a.is_subtype(&not_a), "α0 must not be a subtype of ¬α0");
+        assert!(b.is_subtype(&not_a), "α1 ⊆ ¬α0 (different name)");
+    }
+
+    #[test]
+    fn var_is_not_opaque() {
+        // Vars and opaques live in distinct axes — the lattice distinguishes
+        // them structurally even though they share operational shape.
+        let a = Descr::var(TypeVarId(0));
+        let o = Descr::opaque_of("alpha");
+        let i = a.intersect(&o);
+        assert!(i.is_empty(), "α and opaque(\"alpha\") must not overlap");
+    }
+
+    // ------------------------------------------------------------------
+    // fz-try.6 — instantiation and σ-collection
+    // ------------------------------------------------------------------
+
+    fn sigma_of(bindings: &[(u32, Descr)]) -> std::collections::HashMap<TypeVarId, Descr> {
+        bindings
+            .iter()
+            .map(|(id, d)| (TypeVarId(*id), d.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn has_vars_distinguishes_concrete_from_polymorphic() {
+        assert!(!Descr::int().has_vars(), "int has no vars");
+        assert!(
+            !Descr::any().has_vars(),
+            "any (cofinite-empty vars) has no specific vars"
+        );
+        assert!(Descr::var(TypeVarId(0)).has_vars(), "var(α0) has vars");
+    }
+
+    #[test]
+    fn instantiate_replaces_top_level_var() {
+        let pattern = Descr::var(TypeVarId(0));
+        let result = pattern.instantiate(&sigma_of(&[(0, Descr::int())]));
+        assert!(
+            result.is_equiv(&Descr::int()),
+            "α[α→int] = int, got {}",
+            result
+        );
+    }
+
+    #[test]
+    fn instantiate_is_identity_when_no_vars_match() {
+        let pattern = Descr::var(TypeVarId(0));
+        let result = pattern.instantiate(&sigma_of(&[(1, Descr::int())]));
+        // α0 not in σ; passes through unchanged.
+        assert!(result.is_equiv(&pattern), "α0[α1→int] = α0, got {}", result);
+    }
+
+    #[test]
+    fn instantiate_walks_into_lists() {
+        // list of α → list of int under σ.
+        let list_of_var = Descr::list_of(Descr::var(TypeVarId(0)));
+        let result = list_of_var.instantiate(&sigma_of(&[(0, Descr::int())]));
+        let list_of_int = Descr::list_of(Descr::int());
+        assert!(
+            result.is_equiv(&list_of_int),
+            "list(α)[α→int] = list(int), got {}",
+            result
+        );
+    }
+
+    #[test]
+    fn instantiate_walks_into_tuples() {
+        // tuple(α, β) → tuple(int, str) under σ.
+        let t = Descr::tuple_of(vec![Descr::var(TypeVarId(0)), Descr::var(TypeVarId(1))]);
+        let result = t.instantiate(&sigma_of(&[(0, Descr::int()), (1, Descr::str_t())]));
+        let expected = Descr::tuple_of(vec![Descr::int(), Descr::str_t()]);
+        assert!(
+            result.is_equiv(&expected),
+            "tuple(α,β)[α→int,β→str] = tuple(int,str), got {}",
+            result
+        );
+    }
+
+    #[test]
+    fn instantiate_walks_into_arrow_args_and_ret() {
+        // (α) -> β under σ = {α→int, β→bool} becomes (int) -> bool.
+        let arrow = Descr {
+            funcs: vec![Conj::pos_of(ArrowSig {
+                args: vec![Descr::var(TypeVarId(0))],
+                ret: Box::new(Descr::var(TypeVarId(1))),
+                lit: None,
+            })],
+            ..Descr::none()
+        };
+        let result = arrow.instantiate(&sigma_of(&[(0, Descr::int()), (1, Descr::bool_t())]));
+        // Pull the (single) clause and check its shape.
+        assert_eq!(result.funcs.len(), 1);
+        let clause = &result.funcs[0];
+        assert_eq!(clause.pos.len(), 1);
+        let sig = &clause.pos[0];
+        assert!(sig.args[0].is_equiv(&Descr::int()), "arg should be int");
+        assert!(sig.ret.is_equiv(&Descr::bool_t()), "ret should be bool");
+    }
+
+    #[test]
+    fn instantiate_preserves_lit_tag_on_arrow() {
+        let lit = ClosureLit {
+            fn_id: crate::fz_ir::FnId(42),
+            captures: vec![],
+        };
+        let arrow = Descr {
+            funcs: vec![Conj::pos_of(ArrowSig {
+                args: vec![Descr::var(TypeVarId(0))],
+                ret: Box::new(Descr::int()),
+                lit: Some(lit.clone()),
+            })],
+            ..Descr::none()
+        };
+        let result = arrow.instantiate(&sigma_of(&[(0, Descr::int())]));
+        // The lit tag must survive the walk so closure-identity tracking
+        // downstream still resolves to the same closure value.
+        assert!(result.funcs[0].pos[0].lit.is_some());
+        let preserved = result.funcs[0].pos[0].lit.as_ref().unwrap();
+        assert_eq!(preserved.fn_id, lit.fn_id);
+        assert_eq!(preserved.captures, lit.captures);
+    }
+
+    #[test]
+    fn collect_subst_binds_top_level_var_to_witness() {
+        let mut sigma = std::collections::HashMap::new();
+        Descr::collect_subst_into(&Descr::var(TypeVarId(0)), &Descr::int(), &mut sigma);
+        assert_eq!(sigma.len(), 1);
+        assert!(sigma[&TypeVarId(0)].is_equiv(&Descr::int()));
+    }
+
+    #[test]
+    fn collect_subst_is_noop_on_concrete_pattern() {
+        let mut sigma = std::collections::HashMap::new();
+        Descr::collect_subst_into(&Descr::int(), &Descr::int(), &mut sigma);
+        assert!(sigma.is_empty(), "no vars in pattern means no bindings");
+    }
+
+    #[test]
+    fn collect_subst_then_instantiate_is_identity_on_concrete_args() {
+        // The canonical call-site flow: pattern (Var α) ⇄ witness (int)
+        // produces σ = {α→int}; instantiating the *return* pattern Var(α)
+        // with σ yields the witness back.
+        let pat_arg = Descr::var(TypeVarId(0));
+        let pat_ret = Descr::var(TypeVarId(0));
+        let witness = Descr::int();
+        let mut sigma = std::collections::HashMap::new();
+        Descr::collect_subst_into(&pat_arg, &witness, &mut sigma);
+        let resolved_ret = pat_ret.instantiate(&sigma);
+        assert!(resolved_ret.is_equiv(&Descr::int()));
+    }
+
+    #[test]
+    fn collect_subst_distinct_vars_bind_independently() {
+        // (α, β) ⇄ (int, bool) ⇒ σ = {α→int, β→bool}.
+        let mut sigma = std::collections::HashMap::new();
+        Descr::collect_subst_into(&Descr::var(TypeVarId(0)), &Descr::int(), &mut sigma);
+        Descr::collect_subst_into(&Descr::var(TypeVarId(1)), &Descr::bool_t(), &mut sigma);
+        assert_eq!(sigma.len(), 2);
+        assert!(sigma[&TypeVarId(0)].is_equiv(&Descr::int()));
+        assert!(sigma[&TypeVarId(1)].is_equiv(&Descr::bool_t()));
+    }
+
+    // ------------------------------------------------------------------
+    // fz-try.9 — algebra audit: type variables in every lattice operation
+    //
+    // Verifies that the structural lattice algebra (union, intersect, neg,
+    // diff, is_subtype) handles the `vars` axis correctly and composes
+    // with the other axes. The semantic "join law" from the design doc
+    // (Var ⊔ Var = Any, Var ⊔ Concrete = Concrete via substitution) is a
+    // distinct operation realized at substitution sites (instantiate),
+    // not in the structural union — see docs/descr-cleanup.md §Join law.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn algebra_audit_union_with_var_is_componentwise() {
+        // Structural union: var ∪ int produces a Descr with both axes set.
+        // (The design's "join with substitution" is operational and lives
+        // at instantiate() — not here.)
+        let a = Descr::var(TypeVarId(0));
+        let u = a.union(&Descr::int());
+        assert!(!u.vars.is_none(), "var axis must survive union");
+        assert!(
+            u.ints.is_any() || !u.ints.is_none(),
+            "int axis must survive union"
+        );
+        // Subtypes both witnesses.
+        assert!(a.is_subtype(&u));
+        assert!(Descr::int().is_subtype(&u));
+    }
+
+    #[test]
+    fn algebra_audit_union_distinct_vars_keeps_both() {
+        let a = Descr::var(TypeVarId(0));
+        let b = Descr::var(TypeVarId(1));
+        let u = a.union(&b);
+        // Both var ids are members of the union's `vars` axis.
+        assert!(a.is_subtype(&u));
+        assert!(b.is_subtype(&u));
+    }
+
+    #[test]
+    fn algebra_audit_intersect_preserves_var_disjointness() {
+        // var(α) ∩ int = none — vars are nominally disjoint from concrete.
+        let a = Descr::var(TypeVarId(0));
+        let i = a.intersect(&Descr::int());
+        assert!(i.is_empty(), "var ∩ int must be empty, got {}", i);
+        // var(α) ∩ var(α) = var(α).
+        let i2 = a.intersect(&a);
+        assert!(i2.is_equiv(&a));
+        // var(α) ∩ var(β) = none.
+        let b = Descr::var(TypeVarId(1));
+        let i3 = a.intersect(&b);
+        assert!(i3.is_empty());
+    }
+
+    #[test]
+    fn algebra_audit_neg_complement_correct() {
+        // ¬var(α) is the universe minus α. Its union with α is the universe.
+        let a = Descr::var(TypeVarId(0));
+        let nota = a.neg();
+        let universe = a.union(&nota);
+        assert!(
+            universe.looks_full() || universe.is_equiv(&Descr::any()),
+            "α ∪ ¬α must be the universe, got {}",
+            universe
+        );
+        // α ∩ ¬α = none.
+        let mt = a.intersect(&nota);
+        assert!(mt.is_empty(), "α ∩ ¬α must be empty, got {}", mt);
+    }
+
+    #[test]
+    fn algebra_audit_diff_extracts_var_correctly() {
+        // (α ∪ int) \ int = α (var portion remains; int portion removed).
+        let mixed = Descr::var(TypeVarId(0)).union(&Descr::int());
+        let just_var = mixed.diff(&Descr::int());
+        assert!(
+            just_var.is_equiv(&Descr::var(TypeVarId(0))),
+            "(α ∪ int) \\ int should be α, got {}",
+            just_var
+        );
+    }
+
+    #[test]
+    fn algebra_audit_subtype_var_relationships() {
+        let a = Descr::var(TypeVarId(0));
+        let b = Descr::var(TypeVarId(1));
+        // α ⊆ α
+        assert!(a.is_subtype(&a));
+        // α ⊆ any
+        assert!(a.is_subtype(&Descr::any()));
+        // none ⊆ α
+        assert!(Descr::none().is_subtype(&a));
+        // α ⊄ int (vars and ints are disjoint)
+        assert!(!a.is_subtype(&Descr::int()));
+        // int ⊄ α (same reason)
+        assert!(!Descr::int().is_subtype(&a));
+        // α ⊄ β (distinct vars, both nominal)
+        assert!(!a.is_subtype(&b));
+    }
+
+    #[test]
+    fn algebra_audit_var_in_list_element() {
+        // list(α) ⊆ list(any); list(α) ⊄ list(int).
+        let la = Descr::list_of(Descr::var(TypeVarId(0)));
+        let la_any = Descr::list_of(Descr::any());
+        let la_int = Descr::list_of(Descr::int());
+        assert!(la.is_subtype(&la_any), "list(α) ⊆ list(any)");
+        assert!(!la.is_subtype(&la_int), "list(α) ⊄ list(int)");
+    }
+
+    #[test]
+    fn algebra_audit_instantiate_then_union_distributes() {
+        // For any σ, instantiate(d1 ∪ d2, σ) ≡ instantiate(d1, σ) ∪
+        // instantiate(d2, σ). Verified on a representative case.
+        let d1 = Descr::var(TypeVarId(0));
+        let d2 = Descr::var(TypeVarId(1));
+        let sigma: std::collections::HashMap<TypeVarId, Descr> = [
+            (TypeVarId(0), Descr::int()),
+            (TypeVarId(1), Descr::bool_t()),
+        ]
+        .into_iter()
+        .collect();
+        let lhs = d1.union(&d2).instantiate(&sigma);
+        let rhs = d1.instantiate(&sigma).union(&d2.instantiate(&sigma));
+        assert!(lhs.is_equiv(&rhs), "{} ≢ {}", lhs, rhs);
+    }
+
+    #[test]
+    fn algebra_audit_no_var_axis_pollution_in_concrete_round_trip() {
+        // A Descr constructed without any var-axis manipulation must NOT
+        // gain vars through any algebraic operation that doesn't introduce
+        // them. Regression guard for accidental cross-axis bleed.
+        let i = Descr::int();
+        let s = Descr::str_t();
+        let u = i.union(&s);
+        assert!(u.vars.is_none(), "union of concrete descrs has no vars");
+        let int_ = i.intersect(&s);
+        assert!(
+            int_.vars.is_none(),
+            "intersect of concrete descrs has no vars"
+        );
+        let n = i.neg();
+        // ¬int has saturated vars (cofinite) — that's correct; "not int"
+        // includes vars in the universe. But has_vars() reports false
+        // because there are no NAMED ids.
+        assert!(!n.has_vars(), "¬int has no named vars to substitute");
     }
 }

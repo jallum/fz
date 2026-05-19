@@ -34,21 +34,21 @@
 
 ; spec add_to(2) #fn=11
 ;   key:    [10, 20]
-;   return: &fn14[10, 20]:(any) -> any
+;   return: &fn14[10, 20]:(α896) -> α959
 ;   vars:
 ;     Var(0) :: 10
 ;     Var(1) :: 20
 ;     Var(2) :: :match_error
-;     Var(3) :: &fn14[10, 20]:(any) -> any
+;     Var(3) :: &fn14[10, 20]:(α896) -> α959
 ;   exits:
-;     blk0 Return Var(3)    :: &fn14[10, 20]:(any) -> any
+;     blk0 Return Var(3)    :: &fn14[10, 20]:(α896) -> α959
 ;     blk1 Halt Var(2)      :: :match_error
 
 ; spec apply1(2) #fn=12
-;   key:    [&fn14[10, 20]:(any) -> any, 12]
+;   key:    [&fn14[10, 20]:(α896) -> α959, 12]
 ;   return: int
 ;   vars:
-;     Var(0) :: &fn14[10, 20]:(any) -> any
+;     Var(0) :: &fn14[10, 20]:(α896) -> α959
 ;     Var(1) :: 12
 ;     Var(2) :: :match_error
 ;   exits:
@@ -66,7 +66,7 @@
 ;     blk0 Call add_to#11(Var(1), Var(2))
 ;              callee_key=[10, 20]
 ;              cont k_15#15 captured=[]
-;              cont_key=[&fn14[10, 20]:(any) -> any]
+;              cont_key=[&fn14[10, 20]:(α896) -> α959]
 ;     blk1 Halt Var(0)      :: :match_error
 
 ; spec lambda_14(3) #fn=14
@@ -83,15 +83,29 @@
 ;     blk0 Return Var(5)    :: int
 ;     blk1 Halt Var(3)      :: :match_error
 
+; spec lambda_14(3) #fn=14
+;   key:    [any, any, any]
+;   return: int | float
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: any
+;     Var(2) :: any
+;     Var(3) :: :match_error
+;     Var(4) :: int | float
+;     Var(5) :: int | float
+;   exits:
+;     blk0 Return Var(5)    :: int | float
+;     blk1 Halt Var(3)      :: :match_error
+
 ; spec k_15(1) #fn=15
-;   key:    [&fn14[10, 20]:(any) -> any]
+;   key:    [&fn14[10, 20]:(α896) -> α959]
 ;   return: nil
 ;   vars:
-;     Var(0) :: &fn14[10, 20]:(any) -> any
+;     Var(0) :: &fn14[10, 20]:(α896) -> α959
 ;     Var(1) :: 12
 ;   exits:
 ;     blk0 Call apply1#12(Var(0), Var(1))
-;              callee_key=[&fn14[10, 20]:(any) -> any, 12]
+;              callee_key=[&fn14[10, 20]:(α896) -> α959, 12]
 ;              cont k_16#16 captured=[]
 ;              cont_key=[int]
 

@@ -1,21 +1,22 @@
 outcomes for fixtures/ast_eval/input.fz
 
-main:
-  blk0 Direct -> Consumed (42)
+main[]:
+  @0:138-154 Direct -> Folded(42)
+  @0:138-154 Direct -> Static(k_20#20 [42])
 
-k_20:
-  blk0 Cont -> Emitted (k_21#21 [nil])
-  blk0 Direct -> Emitted (print#0 [42]) via OpaqueArg
+k_20[42]:
+  @0:132-155 Cont -> Static(k_21#21 [nil])
+  @0:132-155 Direct -> Static(print#0 [42])
 
-k_21:
-  blk0 Direct -> Consumed (14)
+k_21[nil]:
+  @0:164-217 Direct -> Static(k_22#22 [14])
 
-k_22:
-  blk0 Cont -> Emitted (k_23#23 [nil])
-  blk0 Direct -> Emitted (print#0 [14]) via OpaqueArg
+k_22[14]:
+  @0:158-218 Cont -> Static(k_23#23 [nil])
+  @0:158-218 Direct -> Static(print#0 [14])
 
-k_23:
-  blk0 Direct -> Consumed (21)
+k_23[nil]:
+  @0:227-299 Direct -> Static(k_24#24 [21])
 
-k_24:
-  blk0 Direct -> Emitted (print#0 [21]) via OpaqueArg
+k_24[21]:
+  @0:221-300 Direct -> Static(print#0 [21])

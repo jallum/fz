@@ -1,37 +1,54 @@
 outcomes for fixtures/fib_tailrec/input.fz
 
-fib:
-  blk3 Direct -> Emitted (fn_clause_0#13 [int]) via OpaqueArg
-  blk5 Direct -> Emitted (fn_clause_1#14 [int]) via OpaqueArg
-  blk6 Direct -> Emitted (fn_clause_2#15 [int \ {0, 1}, int, int]) via OpaqueArg
+fib[20, 0, 1]:
+  @0:0-22 Direct -> Static(fn_clause_0#13 [0])
+  @0:23-45 Direct -> Static(fn_clause_1#14 [1])
+  @0:46-87 Direct -> Static(fn_clause_2#15 [20, 0, 1])
 
-fn_clause_2:
-  blk0 Direct -> Emitted (fib#11 [int, int, int]) via OpaqueArg
+fib[int, 1, int]:
+  @0:0-22 Direct -> Static(fn_clause_0#13 [1])
+  @0:23-45 Direct -> Static(fn_clause_1#14 [int])
+  @0:46-87 Direct -> Static(fn_clause_2#15 [int \ {0, 1}, 1, int])
 
-main:
-  blk0 Direct -> Consumed (0)
+fib[int, int, int]:
+  @0:0-22 Direct -> Static(fn_clause_0#13 [int])
+  @0:23-45 Direct -> Static(fn_clause_1#14 [int])
+  @0:46-87 Direct -> Static(fn_clause_2#15 [int \ {0, 1}, int, int])
 
-k_16:
-  blk0 Cont -> Emitted (k_17#17 [nil])
-  blk0 Direct -> Emitted (print#0 [0]) via OpaqueArg
+fn_clause_2[20, 0, 1]:
+  @0:67-87 Direct -> Static(fib#11 [int, 1, int])
 
-k_17:
-  blk0 Direct -> Consumed (1)
+fn_clause_2[int \ {0, 1}, 1, int]:
+  @0:67-87 Direct -> Static(fib#11 [int, int, int])
 
-k_18:
-  blk0 Cont -> Emitted (k_19#19 [nil])
-  blk0 Direct -> Emitted (print#0 [1]) via OpaqueArg
+fn_clause_2[int \ {0, 1}, int, int]:
+  @0:67-87 Direct -> Static(fib#11 [int, int, int])
 
-k_19:
-  blk0 Direct -> Consumed (55)
+main[]:
+  @0:110-122 Direct -> Folded(0)
+  @0:110-122 Direct -> Static(k_16#16 [0])
 
-k_20:
-  blk0 Cont -> Emitted (k_21#21 [nil])
-  blk0 Direct -> Emitted (print#0 [55]) via OpaqueArg
+k_16[0]:
+  @0:104-123 Cont -> Static(k_17#17 [nil])
+  @0:104-123 Direct -> Static(print#0 [0])
 
-k_21:
-  blk0 Cont -> Emitted (k_22#22 [int])
-  blk0 Direct -> Emitted (fib#11 [20, 0, 1]) via BudgetExhausted
+k_17[nil]:
+  @0:132-144 Direct -> Static(k_18#18 [1])
 
-k_22:
-  blk0 Direct -> Emitted (print#0 [int]) via OpaqueArg
+k_18[1]:
+  @0:126-145 Cont -> Static(k_19#19 [nil])
+  @0:126-145 Direct -> Static(print#0 [1])
+
+k_19[nil]:
+  @0:154-167 Direct -> Static(k_20#20 [55])
+
+k_20[55]:
+  @0:148-168 Cont -> Static(k_21#21 [nil])
+  @0:148-168 Direct -> Static(print#0 [55])
+
+k_21[nil]:
+  @0:177-190 Cont -> Static(k_22#22 [int])
+  @0:177-190 Direct -> Static(fib#11 [20, 0, 1])
+
+k_22[int]:
+  @0:171-191 Direct -> Static(print#0 [int])

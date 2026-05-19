@@ -36,10 +36,10 @@
 ;     blk0 Return Var(1)    :: nil
 
 ; spec fn_clause_1(1) #fn=8
-;   key:    [vec(i64) | vec(f64) | vec(u8) | vec(bit) | float | str | atom | opaque | tuple | list | fn | map]
+;   key:    [vec(i64) | vec(f64) | vec(u8) | vec(bit) | float | str | atom | opaque | var | tuple | list | fn | map]
 ;   return: nil
 ;   vars:
-;     Var(0) :: vec(i64) | vec(f64) | vec(u8) | vec(bit) | float | str | atom | opaque | tuple | list | fn | map
+;     Var(0) :: vec(i64) | vec(f64) | vec(u8) | vec(bit) | float | str | atom | opaque | var | tuple | list | fn | map
 ;     Var(1) :: nil
 ;   exits:
 ;     blk0 Return Var(1)    :: nil
@@ -63,8 +63,8 @@
 ;     Var(1) = child#11
 ;   vars:
 ;     Var(0) :: :match_error
-;     Var(1) :: &fn11[]:() -> any
-;     Var(2) :: &fn13[&fn11[]:() -> any]:() -> any
+;     Var(1) :: &fn11[]:() -> α767
+;     Var(2) :: &fn13[&fn11[]:() -> α767]:() -> α895
 ;     Var(3) :: any
 ;   exits:
 ;     blk0 Receive cont k_receive_14#14 captured=[]
@@ -72,10 +72,10 @@
 ;     blk1 Halt Var(0)      :: :match_error
 
 ; spec fz_spawn_thunk(1) #fn=13
-;   key:    [&fn11[]:() -> any]
+;   key:    [any]
 ;   return: any
 ;   vars:
-;     Var(0) :: &fn11[]:() -> any
+;     Var(0) :: any
 ;   exits:
 ;     blk0 TailCallClosure Var(0)()
 

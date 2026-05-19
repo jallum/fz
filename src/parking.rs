@@ -69,6 +69,7 @@ pub fn natively_callable(m: &Module, parking: &HashSet<FnId>) -> HashSet<FnId> {
         for b in &f.blocks {
             match &b.terminator {
                 Term::Call {
+                    ident: _,
                     callee,
                     continuation,
                     ..
@@ -86,14 +87,14 @@ pub fn natively_callable(m: &Module, parking: &HashSet<FnId>) -> HashSet<FnId> {
                 // fz-cps.1.8: closures are heap-resident with body_addr@+16
                 // (closure-target sig Tail). Their conts can be native —
                 // no longer cont_blocked.
-                Term::CallClosure { continuation, .. } | Term::Receive { continuation } => {
+                Term::CallClosure { continuation, .. } | Term::Receive { continuation, .. } => {
                     used_as_cont.insert(continuation.fn_id);
                 }
                 _ => {}
             }
             for stmt in &b.stmts {
                 let Stmt::Let(_, prim) = stmt;
-                if let Prim::MakeClosure(fid, _) = prim {
+                if let Prim::MakeClosure(_, fid, _) = prim {
                     used_as_closure_target.insert(*fid);
                 }
             }
@@ -147,6 +148,7 @@ pub fn natively_callable(m: &Module, parking: &HashSet<FnId>) -> HashSet<FnId> {
             let body_ok = f.blocks.iter().all(|b| match &b.terminator {
                 Term::Return(_) | Term::Halt(_) | Term::Goto(_, _) | Term::If { .. } => true,
                 Term::Call {
+                    ident: _,
                     callee,
                     continuation,
                     ..
@@ -169,7 +171,10 @@ pub fn natively_callable(m: &Module, parking: &HashSet<FnId>) -> HashSet<FnId> {
                 // the cont (if any) is also native.
                 Term::CallClosure { continuation, .. } => set.contains(&continuation.fn_id),
                 Term::TailCallClosure { .. } => true,
-                Term::Receive { continuation } => set.contains(&continuation.fn_id),
+                Term::Receive {
+                    continuation,
+                    ident: _,
+                } => set.contains(&continuation.fn_id),
             });
             // A cont must only be reachable from native Term::Call sites.
             // If any of its Term::Call callers has a callee that's not in
@@ -213,7 +218,7 @@ pub fn parking_reachable(m: &Module) -> HashSet<FnId> {
             }
             for stmt in &b.stmts {
                 let Stmt::Let(_, prim) = stmt;
-                if matches!(prim, Prim::MakeClosure(_, _)) {
+                if matches!(prim, Prim::MakeClosure(_, _, _)) {
                     seed = true;
                     break;
                 }
@@ -279,6 +284,7 @@ mod tests {
         b.set_terminator(
             entry,
             Term::Receive {
+                ident: crate::fz_ir::CallsiteIdent::synthetic(),
                 continuation: Cont {
                     fn_id: FnId(0),
                     captured: vec![],
@@ -309,6 +315,7 @@ mod tests {
         g.set_terminator(
             g_entry,
             Term::Receive {
+                ident: crate::fz_ir::CallsiteIdent::synthetic(),
                 continuation: Cont {
                     fn_id: FnId(2),
                     captured: vec![],
@@ -321,6 +328,7 @@ mod tests {
         f.set_terminator(
             f_entry,
             Term::TailCall {
+                ident: crate::fz_ir::CallsiteIdent::synthetic(),
                 callee: FnId(0),
                 args: vec![],
                 is_back_edge: false,
@@ -358,7 +366,10 @@ mod tests {
         // the closure might be invoked at a parking-reachable site.
         let mut b = FnBuilder::new(FnId(0), "packer");
         let entry = b.block(vec![]);
-        let cl = b.let_(entry, Prim::MakeClosure(FnId(1), vec![]));
+        let cl = b.let_(
+            entry,
+            Prim::MakeClosure(crate::fz_ir::CallsiteIdent::synthetic(), FnId(1), vec![]),
+        );
         b.set_terminator(entry, Term::Halt(cl));
         // Dummy target fn.
         let mut t = FnBuilder::new(FnId(1), "target");
@@ -376,10 +387,14 @@ mod tests {
         // the set — the closure target is opaque to this analysis.
         let mut b = FnBuilder::new(FnId(0), "invoker");
         let entry = b.block(vec![]);
-        let cl = b.let_(entry, Prim::MakeClosure(FnId(1), vec![]));
+        let cl = b.let_(
+            entry,
+            Prim::MakeClosure(crate::fz_ir::CallsiteIdent::synthetic(), FnId(1), vec![]),
+        );
         b.set_terminator(
             entry,
             Term::TailCallClosure {
+                ident: crate::fz_ir::CallsiteIdent::synthetic(),
                 closure: cl,
                 args: vec![],
             },
@@ -412,6 +427,7 @@ mod tests {
         main_b.set_terminator(
             m_entry,
             Term::TailCall {
+                ident: crate::fz_ir::CallsiteIdent::synthetic(),
                 callee: FnId(1),
                 args: vec![],
                 is_back_edge: false,
@@ -435,6 +451,7 @@ mod tests {
         rx.set_terminator(
             entry,
             Term::Receive {
+                ident: crate::fz_ir::CallsiteIdent::synthetic(),
                 continuation: Cont {
                     fn_id: FnId(1),
                     captured: vec![],
@@ -461,6 +478,7 @@ mod tests {
         f.set_terminator(
             entry,
             Term::Call {
+                ident: crate::fz_ir::CallsiteIdent::synthetic(),
                 callee: FnId(1),
                 args: vec![],
                 continuation: Cont {
@@ -478,6 +496,7 @@ mod tests {
         outer.set_terminator(
             o_entry,
             Term::TailCall {
+                ident: crate::fz_ir::CallsiteIdent::synthetic(),
                 callee: FnId(0),
                 args: vec![],
                 is_back_edge: false,
@@ -517,6 +536,7 @@ mod tests {
         g.set_terminator(
             g_entry,
             Term::Receive {
+                ident: crate::fz_ir::CallsiteIdent::synthetic(),
                 continuation: Cont {
                     fn_id: FnId(2),
                     captured: vec![],
@@ -529,6 +549,7 @@ mod tests {
         f.set_terminator(
             f_entry,
             Term::TailCall {
+                ident: crate::fz_ir::CallsiteIdent::synthetic(),
                 callee: FnId(0),
                 args: vec![],
                 is_back_edge: false,
@@ -558,6 +579,7 @@ mod tests {
         f.set_terminator(
             entry,
             Term::Call {
+                ident: crate::fz_ir::CallsiteIdent::synthetic(),
                 callee: FnId(1),
                 args: vec![],
                 continuation: Cont {

@@ -7,13 +7,12 @@ function u0:0(i64) -> i64 tail {
     sig1 = (i32) -> i64 system_v
     sig2 = (i64) system_v
     sig3 = (i64) system_v
-    sig4 = (i64) system_v
-    sig5 = (i64, i64) -> i64 tail
+    sig4 = (i64, i64, i64, i64, i64) -> i64 tail
     fn0 = u0:5 sig0
     fn1 = u0:6 sig1
     fn2 = u0:1 sig2
-    fn3 = u0:40 sig3
-    fn4 = u0:41 sig4
+    fn3 = u0:42 sig3
+    fn4 = colocated u0:40 sig4
 
 block0(v0: i64):
     v1 = iconst.i64 1    ;; v1 :: 1
@@ -48,11 +47,28 @@ block2:
     v21 = load.i64 aligned v13+24    ;; v21 :: 99
     v22 = sshr_imm v19, 3
     call fn3(v22)
-    call fn4(v20)
-    v23 = sshr_imm v21, 3
-    call fn3(v23)
-    v24 = iconst.i64 2    ;; v24 :: nil
-    v25 = load.i64 notrap aligned v0+16
-    return_call_indirect sig5, v25(v24, v0)  ; v24 = 2
+    v23 = iconst.i64 2    ;; v23 :: nil
+    v24 = sshr_imm v19, 3
+    v25 = sshr_imm v21, 3
+    return_call fn4(v23, v24, v20, v25, v0)  ; v23 = 2
+}
+
+; fn k_14_s13
+    ;   @spec   k_14(nil, 1 | 2 | 3, list(1 | 2 | 3), 99) -> nil
+    ;   @key    [nil, 1 | 2 | 3, list(1 | 2 | 3), 99]
+    ;   @abi    (Tagged, RawInt, Tagged, RawInt) -> Tagged
+function u0:0(i64, i64, i64, i64, i64) -> i64 tail {
+    sig0 = (i64) system_v
+    sig1 = (i64) system_v
+    sig2 = (i64, i64) -> i64 tail
+    fn0 = u0:43 sig0
+    fn1 = u0:42 sig1
+
+    block0(v0: i64, v1: i64, v2: i64, v3: i64, v4: i64):    ;; v0 :: nil, v1 :: 1 | 2 | 3, v2 :: list(1 | 2 | 3), v3 :: 99
+    call fn0(v2)
+    call fn1(v3)
+    v5 = iconst.i64 2    ;; v5 :: nil
+    v6 = load.i64 notrap aligned v4+16  ; @6:3
+    return_call_indirect sig2, v6(v5, v4) ; @6:3  v5 = 2
 }
 

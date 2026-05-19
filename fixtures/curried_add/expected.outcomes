@@ -1,38 +1,43 @@
 outcomes for fixtures/curried_add/input.fz
 
-lambda_14:
-  blk0 MakeClosure(0) -> Emitted (lambda_15#15 [10, any, any])
+apply[&fn14[10]:(α896) -> α959, 20]:
+  @0:64-68 ClosureCall -> Indirect(lambda_14#14 [10, 20])
 
-apply:
-  blk0 ClosureLit(0,0) -> Emitted (lambda_15#15 [10, 20, 12]) via NoClosureLitTarget
+apply[&fn14[1]:(α896) -> α959, 2]:
+  @0:64-68 ClosureCall -> Indirect(lambda_14#14 [1, 2])
 
-main:
-  blk0 Direct -> Consumed (&fn14[10]:() -> any)
-  blk0 MakeClosure(2) -> Emitted (lambda_14#14 [10, any])
+apply[&fn15[1, 2]:(α960) -> α1023, 3]:
+  @0:64-68 ClosureCall -> Indirect(lambda_15#15 [1, 2, 3])
 
-k_16:
-  blk0 Cont -> Emitted (k_17#17 [&fn15[10, 20]:(any) -> any])
-  blk0 Direct -> Emitted (apply#12 [&fn14[10]:(any) -> any, 20]) via OpaqueArg
+apply[&fn15[10, 20]:(α960) -> α1023, 12]:
+  @0:64-68 ClosureCall -> Indirect(lambda_15#15 [10, 20, 12])
 
-k_17:
-  blk0 Cont -> Emitted (k_18#18 [int])
-  blk0 Direct -> Emitted (apply#12 [&fn15[10, 20]:(any) -> any, 12]) via OpaqueArg
+main[]:
+  @0:103-111 Direct -> Folded(&fn14[10]:() -> α959)
+  @0:103-111 Direct -> Static(k_16#16 [&fn14[10]:(α896) -> α959])
 
-k_18:
-  blk0 Cont -> Emitted (k_19#19 [nil])
-  blk0 Direct -> Emitted (print#0 [int]) via OpaqueArg
+k_16[&fn14[10]:(α896) -> α959]:
+  @0:97-116 Cont -> Static(k_17#17 [&fn15[10, 20]:(α960) -> α1023])
+  @0:97-116 Direct -> Static(apply#12 [&fn14[10]:(α896) -> α959, 20])
 
-k_19:
-  blk0 Direct -> Consumed (&fn14[1]:() -> any)
-  blk0 MakeClosure(2) -> Emitted (lambda_14#14 [1, any])
+k_17[&fn15[10, 20]:(α960) -> α1023]:
+  @0:91-121 Cont -> Static(k_18#18 [int])
+  @0:91-121 Direct -> Static(apply#12 [&fn15[10, 20]:(α960) -> α1023, 12])
 
-k_20:
-  blk0 Cont -> Emitted (k_21#21 [&fn15[1, 2]:(any) -> any])
-  blk0 Direct -> Emitted (apply#12 [&fn14[1]:(any) -> any, 2]) via OpaqueArg
+k_18[int]:
+  @0:85-122 Cont -> Static(k_19#19 [nil])
+  @0:85-122 Direct -> Static(print#0 [int])
 
-k_21:
-  blk0 Cont -> Emitted (k_22#22 [int])
-  blk0 Direct -> Emitted (apply#12 [&fn15[1, 2]:(any) -> any, 3]) via OpaqueArg
+k_19[nil]:
+  @0:143-150 Direct -> Static(k_20#20 [&fn14[1]:(α896) -> α959])
 
-k_22:
-  blk0 Direct -> Emitted (print#0 [int]) via OpaqueArg
+k_20[&fn14[1]:(α896) -> α959]:
+  @0:137-154 Cont -> Static(k_21#21 [&fn15[1, 2]:(α960) -> α1023])
+  @0:137-154 Direct -> Static(apply#12 [&fn14[1]:(α896) -> α959, 2])
+
+k_21[&fn15[1, 2]:(α960) -> α1023]:
+  @0:131-158 Cont -> Static(k_22#22 [int])
+  @0:131-158 Direct -> Static(apply#12 [&fn15[1, 2]:(α960) -> α1023, 3])
+
+k_22[int]:
+  @0:125-159 Direct -> Static(print#0 [int])

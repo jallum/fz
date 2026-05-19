@@ -360,6 +360,7 @@ fn run_fn(module: &Module, mut fn_id: FnId, mut args: Vec<FzValue>) -> Result<In
                     cur = if is_truthy(cv) { *then_b } else { *else_b };
                 }
                 Term::Call {
+                    ident: _,
                     callee,
                     args: call_args,
                     continuation,
@@ -383,6 +384,7 @@ fn run_fn(module: &Module, mut fn_id: FnId, mut args: Vec<FzValue>) -> Result<In
                     }
                 }
                 Term::TailCall {
+                    ident: _,
                     callee,
                     args: call_args,
                     is_back_edge,
@@ -410,6 +412,7 @@ fn run_fn(module: &Module, mut fn_id: FnId, mut args: Vec<FzValue>) -> Result<In
                     continue 'tail;
                 }
                 Term::CallClosure {
+                    ident: _,
                     closure,
                     args: call_args,
                     continuation,
@@ -433,6 +436,7 @@ fn run_fn(module: &Module, mut fn_id: FnId, mut args: Vec<FzValue>) -> Result<In
                     }
                 }
                 Term::TailCallClosure {
+                    ident: _,
                     closure,
                     args: call_args,
                 } => {
@@ -445,7 +449,10 @@ fn run_fn(module: &Module, mut fn_id: FnId, mut args: Vec<FzValue>) -> Result<In
                 }
                 Term::Return(v) => return Ok(InterpStep::Done(env_get(&env, *v)?)),
                 Term::Halt(v) => return Ok(InterpStep::Done(env_get(&env, *v)?)),
-                Term::Receive { continuation } => {
+                Term::Receive {
+                    continuation,
+                    ident: _,
+                } => {
                     let cap_vals = collect(&env, &continuation.captured)?;
                     match fz_runtime::process::current_process().mailbox.pop_front() {
                         Some(msg) => {
@@ -564,7 +571,7 @@ fn eval_prim(module: &Module, prim: &Prim, env: &HashMap<Var, FzValue>) -> Resul
                 *bit_len,
             ))
         }
-        Prim::MakeClosure(fn_id, captured) => {
+        Prim::MakeClosure(_, fn_id, captured) => {
             // fz-ul4.29.5: new closure layout — header (16) + stub_fp (8) +
             // captures. The interp has no compiled stub for the closure;
             // it dispatches via the body fn id stored in header._reserved

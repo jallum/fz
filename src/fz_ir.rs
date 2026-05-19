@@ -24,6 +24,124 @@ use crate::diag::Span;
 use fz_runtime::heap::Schema;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
+use std::hash::{Hash, Hasher};
+use std::rc::Rc;
+
+/// fz-kgk — intrinsic identity for a callsite (call-shape terminator
+/// or `Prim::MakeClosure` stmt).
+///
+/// Carries the source `Span` (for diagnostics) and a `CallsiteOrigin`
+/// chain (for the divergence narrative). Identity is **pointer
+/// equality on the inner `Rc`**: two `CallsiteIdent` values are equal
+/// iff their `Rc`s alias the same allocation.
+///
+/// ## Identity discipline
+///
+/// - `from_source(span)` — lower-time construction. One per source
+///   call expression.
+/// - `clone()` — preserves identity. Cloning a `Term` shares the
+///   ident; "same callsite, different position." Used by fuse / dce
+///   / fold / per-spec body cloning.
+/// - `fork_inlined(parent, into_fn)` — `ir_inline` clones a `Term`
+///   into a *new caller's* body. The cloned callsite is genuinely
+///   distinct; same span, fresh `Rc` → new identity. Origin records
+///   the parent for the dump's divergence narrative.
+/// - `synthesize_from_return(call_parent, span)` — `ir_inline` rewrites
+///   a callee's `Return(v)` into `TailCall(K, [v, ...captures])` while
+///   splicing. The new TailCall is a *new* callsite; origin records
+///   the synthesis.
+/// - `synthetic()` — test-only. `FnBuilder` mints these so tests don't
+///   thread spans manually.
+///
+/// ## Hashing
+///
+/// Hash uses the `Rc`'s pointer address. Stable within a single
+/// process; not reproducible across runs. Golden dumps must render
+/// by `(span, origin)`, not by raw pointer.
+#[derive(Clone, Debug)]
+pub struct CallsiteIdent(Rc<CallsiteIdentInner>);
+
+#[derive(Debug)]
+pub struct CallsiteIdentInner {
+    pub span: Span,
+    pub origin: CallsiteOrigin,
+}
+
+#[derive(Debug)]
+pub enum CallsiteOrigin {
+    /// Born at lower time, directly from this source span.
+    Source,
+    /// `ir_inline` cloned the parent into a new caller's body.
+    /// Chain is finite — bounded by `inline_module`'s MAX_ITERATIONS
+    /// and GROWTH_CAP.
+    InlinedFrom {
+        parent: CallsiteIdent,
+        into_fn: FnId,
+    },
+    /// `ir_inline` synthesized this terminator from a non-call source
+    /// (callee's `Return(v)` rewritten to `TailCall(K, [v, ...captures])`
+    /// when splicing). The span is the original Return's source span;
+    /// `call_parent` is the enclosing `Term::Call` whose continuation K
+    /// we're invoking explicitly.
+    SynthesizedFromReturn { call_parent: CallsiteIdent },
+    /// Test-only: ad-hoc Term built via FnBuilder without a real span.
+    Synthetic,
+}
+
+impl PartialEq for CallsiteIdent {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+impl Eq for CallsiteIdent {}
+impl Hash for CallsiteIdent {
+    fn hash<H: Hasher>(&self, h: &mut H) {
+        (Rc::as_ptr(&self.0) as usize).hash(h);
+    }
+}
+
+impl CallsiteIdent {
+    pub fn from_source(span: Span) -> Self {
+        Self(Rc::new(CallsiteIdentInner {
+            span,
+            origin: CallsiteOrigin::Source,
+        }))
+    }
+
+    pub fn synthetic() -> Self {
+        Self(Rc::new(CallsiteIdentInner {
+            span: Span::DUMMY,
+            origin: CallsiteOrigin::Synthetic,
+        }))
+    }
+
+    pub fn fork_inlined(parent: &Self, into_fn: FnId) -> Self {
+        Self(Rc::new(CallsiteIdentInner {
+            span: parent.0.span,
+            origin: CallsiteOrigin::InlinedFrom {
+                parent: parent.clone(),
+                into_fn,
+            },
+        }))
+    }
+
+    pub fn synthesize_from_return(call_parent: &Self, span: Span) -> Self {
+        Self(Rc::new(CallsiteIdentInner {
+            span,
+            origin: CallsiteOrigin::SynthesizedFromReturn {
+                call_parent: call_parent.clone(),
+            },
+        }))
+    }
+
+    pub fn span(&self) -> Span {
+        self.0.span
+    }
+
+    pub fn origin(&self) -> &CallsiteOrigin {
+        &self.0.origin
+    }
+}
 
 /// Element-kind for a heap-allocated vector. The AST-level `VecKind` (Numeric
 /// / Bytes / Bits) is a sigil-shape; lowering bifurcates `Numeric` into I64
@@ -98,29 +216,73 @@ pub enum EmitSlot {
     /// The continuation of `Term::Call` / `Term::CallClosure` /
     /// `Term::Receive` — i.e., (cont.fn_id, [slot0, captures...]).
     Cont,
-    /// `Term::CallClosure` / `Term::TailCallClosure` target resolved
-    /// via `fn_constants`. Distinct from `Direct` because the same
-    /// block can also produce a `Cont` (separate slot, same block).
-    CallClosureKnown,
-    /// `(clause_idx, sig_idx)` of a `closure_lit`-resolved CallClosure
-    /// target. Multiple lit clauses ⇒ multiple emits per block.
-    ClosureLit(usize, usize),
-    /// `Prim::MakeClosure` at this `stmt_idx` in the block.
-    MakeClosure(usize),
+    /// fz-try.11: `Term::CallClosure` / `Term::TailCallClosure` callsite.
+    /// Purely structural — identifies *where* in the IR the closure
+    /// dispatch happens, not which clause of the closure's arrow DNF
+    /// resolves. Multi-target fan-out (multiple lit clauses, or
+    /// fn_constants-resolved alongside lit-resolved combinations) lives
+    /// on the `Dispatch` enum at row time, not on the slot. Pre-fz-try.11
+    /// this was split into `CallClosureKnown` and `ClosureLit(c, s)`;
+    /// the design wanted slots to be structural ("where") while dispatch
+    /// shapes the variation ("what").
+    ClosureCall,
+    /// `Prim::MakeClosure` stmt. Per fz-kgk, the per-stmt index is no
+    /// longer needed — the `CallsiteIdent` on the Prim disambiguates
+    /// multiple MakeClosures in the same block.
+    MakeClosure,
 }
 
-/// fz-9pr.1 — the address of one callsite in the module.
+/// fz-try.11 — outcome of dispatch resolution at a single callsite, used
+/// by the outcomes formatter. Pre-fz-try.11 the outcome was implicit in
+/// the verb-Word in outcome rows (Emitted/Consumed/Stalled); now it's a
+/// first-class enum so each row carries (cid, Dispatch) and the formatter
+/// renders verb + payload from the enum without parsing verb strings.
 ///
-/// `(caller, block, slot)` uniquely names a place that can produce a
-/// callee target. Identical in shape to the (caller, block, slot)
-/// triple of `EmitterSite`, minus the spec-key — phases that don't
-/// distinguish between caller specs (the reducer, ir_inline) use
-/// `CallsiteId`; the typer's spec-aware discovery walk uses
-/// `EmitterSite` and round-trips through `with_spec_key` / `callsite_id`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+/// `Folded` means the reducer rewrote the callsite to a value (was
+/// "Consumed"). `Static` means the typer determined a target body at a
+/// direct-call or cont slot — statically resolvable. `Indirect` means
+/// the typer determined a closure-call target — structurally indirect
+/// (goes through the closure handle at runtime), even when
+/// fn_constants makes it statically resolvable for codegen. `Stalled`
+/// means nothing resolved (was "Stalled (reason)").
+///
+/// Currently used by the outcomes formatter only — the underlying
+/// `FnTypes.dispatches` HashMap shape is unchanged. A follow-up could
+/// promote this to a first-class field on FnTypes (filed as fz-1m6).
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[allow(clippy::large_enum_variant)] // Descr-bearing variants dominate the
+// common case; boxing would penalize that hot path to flatten Stalled's
+// smaller size. The enum is short-lived per-row in the outcomes formatter.
+pub enum Dispatch {
+    /// Reducer folded the callsite to a concrete value (was "Consumed").
+    Folded(crate::types::Descr),
+    /// Typer resolved this callsite to a single statically-known target.
+    /// Used at `EmitSlot::Direct` and `EmitSlot::Cont`.
+    Static(FnId, Vec<crate::types::Descr>),
+    /// Closure call — structurally indirect (target body resolved via
+    /// the closure handle at runtime). Used at `EmitSlot::ClosureCall`.
+    Indirect(FnId, Vec<crate::types::Descr>),
+    /// Nothing resolved here. Reason carries why (BudgetExhausted,
+    /// UnresolvedTypeVar, OpaqueArg, NoClosureLitTarget, …).
+    Stalled(StalledReason),
+}
+
+/// fz-kgk — the identity of one callsite in the module.
+///
+/// `(caller, ident, slot)` uniquely names a place that can produce a
+/// callee target. `ident` is the intrinsic identity carried on the
+/// `Term` (or `Prim::MakeClosure`); see [`CallsiteIdent`] for the
+/// fork-vs-inherit rules.
+///
+/// Previously keyed by `(caller, block, slot)` where slot's MakeClosure
+/// variant carried a `stmt_idx`. The positional keys broke under
+/// post-typer passes that renumber blocks (per-spec fuse, dce_module's
+/// internal fuse). The ident is intrinsic to the IR object and
+/// survives all positional moves.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct CallsiteId {
     pub caller: FnId,
-    pub block: BlockId,
+    pub ident: CallsiteIdent,
     pub slot: EmitSlot,
 }
 
@@ -131,8 +293,18 @@ pub struct CallsiteId {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StalledReason {
     /// At least one argument's Descr was not a literal — the reducer
-    /// can only fold under fully-concrete arg Descrs.
+    /// can only fold under fully-concrete arg Descrs. Specifically: the
+    /// arg is genuine `Any` (widening fixpoint, missing-info default,
+    /// etc.). Vars are surfaced as `UnresolvedTypeVar` instead.
     OpaqueArg,
+    /// fz-try.10 — at least one argument's Descr is a parametric type
+    /// variable (`Descr::var(_)` or a compound containing one). Distinct
+    /// from `OpaqueArg`: an unresolved type variable is a *parametric*
+    /// claim ("specialize me at a call site"), not a *widening* one
+    /// ("we don't know"). Surfaced separately so outcome rows can
+    /// distinguish "this fold needs a concrete witness" from "this fold
+    /// needs better type info."
+    UnresolvedTypeVar,
     /// Per-top-level-callsite unroll budget hit before the recursive
     /// walk could find a literal return.
     BudgetExhausted,
@@ -161,6 +333,7 @@ impl std::fmt::Display for StalledReason {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             StalledReason::OpaqueArg => "OpaqueArg",
+            StalledReason::UnresolvedTypeVar => "UnresolvedTypeVar",
             StalledReason::BudgetExhausted => "BudgetExhausted",
             StalledReason::NonReduciblePrim => "NonReduciblePrim",
             StalledReason::BoundaryFn => "BoundaryFn",
@@ -170,38 +343,6 @@ impl std::fmt::Display for StalledReason {
             StalledReason::Other => "Other",
         })
     }
-}
-
-/// fz-9pr.1 — what happened at a callsite, as recorded on the Module.
-///
-/// Four outcomes, three writers (reducer, ir_inline, typer), one
-/// table. See the fz-9pr epic for the unified model. `Consumed`'s
-/// `Descr` is boxed and `Emitted`'s tuple is heap-tailed already, so
-/// the enum stays compact (one word + tag).
-#[derive(Clone, Debug, PartialEq)]
-pub enum CallsiteOutcome {
-    /// Reducer folded the call away. Result Descr is what the
-    /// continuation will see in slot 0.
-    Consumed { result: Box<crate::types::Descr> },
-    /// Callee body was spliced into the caller (ir_inline today,
-    /// reducer once fz-9pr.E lands).
-    Inlined,
-    /// Typer minted a spec for this callsite's target.
-    ///
-    /// `came_from` carries the prior `Stalled` reason when the typer
-    /// promoted a `Stalled` entry to `Emitted` (fz-f88.4). `None` when
-    /// the typer discovered the callsite without a prior reducer
-    /// record. Lets `fz dump --emit outcomes` explain *why* the
-    /// reducer stopped short of folding even when the typer succeeds.
-    Emitted {
-        target: (FnId, Vec<crate::types::Descr>),
-        came_from: Option<StalledReason>,
-    },
-    /// Reducer left the call in place. `reason` says why, so
-    /// `fz dump --emit outcomes` can explain coverage gaps.
-    /// Debug invariant (fz-9pr.5): no `Stalled` may survive end of
-    /// pipeline.
-    Stalled { reason: StalledReason },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -288,7 +429,7 @@ pub enum Prim {
     MakeList(Vec<Var>, Option<Var>),
     /// Allocate a closure: a struct holding the IR fn id of the lambda body
     /// plus the captured environment locals.
-    MakeClosure(FnId, Vec<Var>),
+    MakeClosure(CallsiteIdent, FnId, Vec<Var>),
     /// Build a map from (key, value) pairs in insertion order.
     MakeMap(Vec<(Var, Var)>),
     /// Functional update of `base` map: every key in entries must exist.
@@ -405,11 +546,13 @@ pub enum Term {
         origin: BranchOrigin,
     },
     Call {
+        ident: CallsiteIdent,
         callee: FnId,
         args: Vec<Var>,
         continuation: Cont,
     },
     TailCall {
+        ident: CallsiteIdent,
         callee: FnId,
         args: Vec<Var>,
         /// True when the callee is in the same SCC as the caller — i.e., this
@@ -422,11 +565,13 @@ pub enum Term {
     /// Invoke a closure value (Var holding a Value::IrClosure). The closure's
     /// captured slots are spliced ahead of `args` when entering the lambda's fn.
     CallClosure {
+        ident: CallsiteIdent,
         closure: Var,
         args: Vec<Var>,
         continuation: Cont,
     },
     TailCallClosure {
+        ident: CallsiteIdent,
         closure: Var,
         args: Vec<Var>,
     },
@@ -444,6 +589,7 @@ pub enum Term {
     /// `callee` field because receive has no source-language callee; it's
     /// a scheduler-mediated rendezvous point.
     Receive {
+        ident: CallsiteIdent,
         continuation: Cont,
     },
 }
@@ -460,6 +606,106 @@ impl Term {
             then_b,
             else_b,
             origin: BranchOrigin::User,
+        }
+    }
+
+    /// fz-kgk — the `CallsiteIdent` if this Term is a call-shape
+    /// terminator, else `None`. `Goto` / `If` / `Return` / `Halt` are
+    /// not callsites; the others all carry an ident.
+    pub fn ident(&self) -> Option<&CallsiteIdent> {
+        match self {
+            Term::Call { ident, .. }
+            | Term::TailCall { ident, .. }
+            | Term::CallClosure { ident, .. }
+            | Term::TailCallClosure { ident, .. }
+            | Term::Receive { ident, .. } => Some(ident),
+            _ => None,
+        }
+    }
+
+    /// fz-rrh — overwrite this Term's `CallsiteIdent` with a fresh one
+    /// keyed by `span`. No-op for non-call-shape terminators and for
+    /// DUMMY spans (preserves whatever the term already has).
+    ///
+    /// Lets `LowerCtx::set_term_at` auto-upgrade idents whose
+    /// per-construction span was missing — most ir_lower call sites
+    /// already pass the real span to `set_term_at`, so this hoists
+    /// the span into the intrinsic identity without per-site edits.
+    pub fn set_source_span(&mut self, span: Span) {
+        if span.is_dummy() {
+            return;
+        }
+        let new_ident = CallsiteIdent::from_source(span);
+        match self {
+            Term::Call { ident, .. }
+            | Term::TailCall { ident, .. }
+            | Term::CallClosure { ident, .. }
+            | Term::TailCallClosure { ident, .. }
+            | Term::Receive { ident, .. } => *ident = new_ident,
+            _ => {}
+        }
+    }
+
+    /// fz-kgk — convenience constructors that mint a `CallsiteIdent`
+    /// from the source span. `ir_lower` uses these; other passes that
+    /// transform terms (`ir_reducer`, `ir_inline`) construct variants
+    /// directly with explicit `ident:` field per the fork-vs-inherit
+    /// rules.
+    pub fn call(span: Span, callee: FnId, args: Vec<Var>, continuation: Cont) -> Self {
+        Term::Call {
+            ident: CallsiteIdent::from_source(span),
+            callee,
+            args,
+            continuation,
+        }
+    }
+    pub fn tail_call(span: Span, callee: FnId, args: Vec<Var>, is_back_edge: bool) -> Self {
+        Term::TailCall {
+            ident: CallsiteIdent::from_source(span),
+            callee,
+            args,
+            is_back_edge,
+        }
+    }
+    pub fn call_closure(span: Span, closure: Var, args: Vec<Var>, continuation: Cont) -> Self {
+        Term::CallClosure {
+            ident: CallsiteIdent::from_source(span),
+            closure,
+            args,
+            continuation,
+        }
+    }
+    pub fn tail_call_closure(span: Span, closure: Var, args: Vec<Var>) -> Self {
+        Term::TailCallClosure {
+            ident: CallsiteIdent::from_source(span),
+            closure,
+            args,
+        }
+    }
+    pub fn receive(span: Span, continuation: Cont) -> Self {
+        Term::Receive {
+            ident: CallsiteIdent::from_source(span),
+            continuation,
+        }
+    }
+}
+
+impl Prim {
+    /// fz-kgk — convenience constructor for the only Prim variant
+    /// that is a callsite.
+    pub fn make_closure(span: Span, fn_id: FnId, captured: Vec<Var>) -> Self {
+        Prim::MakeClosure(CallsiteIdent::from_source(span), fn_id, captured)
+    }
+
+    /// fz-rrh — overwrite the `CallsiteIdent` on a `MakeClosure` prim
+    /// with a fresh one keyed by `span`. No-op for other prims and
+    /// for DUMMY spans. Mirror of `Term::set_source_span`.
+    pub fn set_source_span(&mut self, span: Span) {
+        if span.is_dummy() {
+            return;
+        }
+        if let Prim::MakeClosure(ident, _, _) = self {
+            *ident = CallsiteIdent::from_source(span);
         }
     }
 }
@@ -598,12 +844,6 @@ pub struct Module {
     /// body is a stable unit, so reduction does not cross into it (except
     /// for trivially-inlinable single-stmt bodies, which carry no risk).
     pub boundary_fns: HashSet<FnId>,
-    /// fz-9pr.2 — unified callsite outcome table. Three writers
-    /// (reducer, ir_inline, typer) and several readers all share this
-    /// one map. Empty on a freshly-built module; populated as phases
-    /// decide each callsite's fate. See `CallsiteOutcome` for the
-    /// shape of each entry and the fz-9pr epic for the design.
-    pub callsite_outcomes: HashMap<CallsiteId, CallsiteOutcome>,
 }
 
 impl Module {
@@ -762,7 +1002,6 @@ impl ModuleBuilder {
             externs: Vec::new(),
             extern_idx: HashMap::new(),
             boundary_fns: HashSet::new(),
-            callsite_outcomes: HashMap::new(),
         }
     }
 }
@@ -867,7 +1106,7 @@ impl fmt::Display for Prim {
                 Some(t) => write!(f, "list([{}] | {})", fmt_var_list(els), t),
                 None => write!(f, "list([{}])", fmt_var_list(els)),
             },
-            Prim::MakeClosure(fid, captured) => {
+            Prim::MakeClosure(_ident, fid, captured) => {
                 write!(f, "closure({}, captured=[{}])", fid, fmt_var_list(captured))
             }
             Prim::MakeMap(entries) => {
@@ -940,6 +1179,7 @@ impl fmt::Display for Term {
                 callee,
                 args,
                 continuation,
+                ..
             } => write!(
                 f,
                 "call {}([{}]) -> {}",
@@ -954,6 +1194,7 @@ impl fmt::Display for Term {
                 closure,
                 args,
                 continuation,
+                ..
             } => write!(
                 f,
                 "call_closure {}([{}]) -> {}",
@@ -961,12 +1202,12 @@ impl fmt::Display for Term {
                 fmt_var_list(args),
                 continuation
             ),
-            Term::TailCallClosure { closure, args } => {
+            Term::TailCallClosure { closure, args, .. } => {
                 write!(f, "tail_call_closure {}([{}])", closure, fmt_var_list(args))
             }
             Term::Return(v) => write!(f, "return {}", v),
             Term::Halt(v) => write!(f, "halt {}", v),
-            Term::Receive { continuation } => write!(f, "receive -> {}", continuation),
+            Term::Receive { continuation, .. } => write!(f, "receive -> {}", continuation),
         }
     }
 }
@@ -1180,6 +1421,7 @@ mod tests {
         b.set_terminator(
             entry,
             Term::Call {
+                ident: CallsiteIdent::synthetic(),
                 callee: FnId(0),
                 args: vec![x],
                 continuation: Cont {
@@ -1201,6 +1443,7 @@ mod tests {
         b.set_terminator(
             entry,
             Term::TailCall {
+                ident: CallsiteIdent::synthetic(),
                 callee: FnId(0),
                 args: vec![x],
                 is_back_edge: false,
@@ -1249,12 +1492,6 @@ mod tests {
         b.set_terminator(entry, Term::Return(s_));
         let s = format!("{}", b.build());
         assert!(s.contains("alloc_struct(schema=3, [v0, v1])"));
-    }
-
-    #[test]
-    fn fresh_module_has_empty_callsite_outcomes() {
-        let m = ModuleBuilder::new().build();
-        assert!(m.callsite_outcomes.is_empty());
     }
 
     #[test]

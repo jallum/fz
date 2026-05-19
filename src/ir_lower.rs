@@ -13,6 +13,19 @@
 //! are [result_var, ...captured_vars]. Captured = all in-scope locals at the
 //! call site (conservative; .11.6 liveness narrows later). Tail-position
 //! calls use Term::TailCall.
+//!
+//! ## Unique-cont invariant (fz-uwq.1)
+//!
+//! "Fresh continuation per call site" is load-bearing, not just convenient.
+//! Every `Cont.fn_id` referenced by a `Term::Call` / `Term::CallClosure` /
+//! `Term::Receive` must be unique across the whole module — no two
+//! call-shaped terminators may share a continuation fn. The post-type
+//! `inline_single_use_conts` pass relies on this to safely inline `K`
+//! into its single caller; the fz-uwq epic moves that pass pre-typer,
+//! which keeps the same dependency. `debug_assert_unique_conts` at the
+//! end of `lower_program_full` pins the invariant down so a regression
+//! in this file (or a future corner case) panics in debug rather than
+//! corrupting downstream passes.
 
 #![allow(dead_code)]
 
@@ -349,6 +362,7 @@ impl LowerCtx {
         tb.set_terminator(
             entry,
             Term::TailCallClosure {
+                ident: crate::fz_ir::CallsiteIdent::from_source(Span::DUMMY),
                 closure: c,
                 args: vec![],
             },
@@ -419,7 +433,11 @@ impl LowerCtx {
     /// The resulting Var's metadata defaults to `(span, "")` — anonymous
     /// temp. Callers that bind the Var to a source name follow up with
     /// `name_var(v, name, name_span)`.
-    fn let_at(&mut self, prim: Prim, span: Span) -> Var {
+    fn let_at(&mut self, mut prim: Prim, span: Span) -> Var {
+        // fz-rrh — same pattern as set_term_at: hoist the source span
+        // into the prim's intrinsic ident (only `Prim::MakeClosure`
+        // is a callsite; other prims are no-op).
+        prim.set_source_span(span);
         let blk = self.cur_block();
         let fn_id = self.cur_fn_id.expect("no current fn");
         let v = self.cur_mut().let_(blk, prim);
@@ -452,7 +470,14 @@ impl LowerCtx {
         self.set_term_at(term, Span::DUMMY);
     }
 
-    fn set_term_at(&mut self, term: Term, span: Span) {
+    fn set_term_at(&mut self, mut term: Term, span: Span) {
+        // fz-rrh — hoist the source span into the term's intrinsic
+        // CallsiteIdent. Most ir_lower constructions used DUMMY at the
+        // struct-literal site because the span isn't typed-in scope at
+        // every Term::* literal; setting it here means every
+        // set_term_at caller gets pristine spans on the ident for
+        // free. No-op when span is DUMMY (synthetic).
+        term.set_source_span(span);
         let blk = self.cur_block();
         let fn_id = self.cur_fn_id.expect("no current fn");
         self.cur_mut().set_terminator(blk, term);
@@ -634,7 +659,66 @@ pub fn lower_program_full(prog: &Program) -> Result<(Module, AtomTable), LowerEr
     module.boundary_fns = std::mem::take(&mut ctx.boundary_fns);
     // fz-02r.4 — annotate TailCall back-edges from the structural SCC.
     annotate_back_edges(&mut module, &ctx.fn_spans)?;
+    // fz-uwq.1 — verify the unique-cont invariant the post-type pipeline
+    // depends on. See `debug_assert_unique_conts` for the contract.
+    debug_assert_unique_conts(&module);
     Ok((module, ctx.atoms))
+}
+
+/// fz-uwq.1 — verify the **unique-cont invariant**: every `Cont.fn_id`
+/// referenced by a `Term::Call` / `Term::CallClosure` / `Term::Receive`
+/// appears as the continuation of **exactly one** such terminator across
+/// the whole module.
+///
+/// ## Why this is load-bearing
+///
+/// `ir_codegen::compile` runs `inline_single_use_conts` before codegen,
+/// and the fz-uwq epic moves that pass to run **pre-typer**. The pass
+/// is safe to inline a continuation fn `K` into its caller only when `K`
+/// is referenced exactly once as a continuation — otherwise inlining
+/// would either duplicate `K`'s body across two call sites (losing
+/// sharing the source author may rely on) or leave a dangling reference.
+///
+/// The lowerer guarantees uniqueness structurally: `lower_expr` and
+/// friends mint a **fresh** continuation FnIr for each non-tail call
+/// they CPS-split. No path in `ir_lower` produces two terminators that
+/// share the same `Cont.fn_id`. This assertion pins the structural
+/// guarantee down so a future change to the lowerer (or a corner case
+/// not yet exercised) cannot silently break the downstream pipeline.
+///
+/// See `docs/dispatch-as-typer-output.md` (Worry 1) for the stress-test
+/// that named this invariant.
+///
+/// Debug-build only — the check is O(blocks) but redundant in release
+/// when the lowerer is correct. If it ever fires in debug, the lowerer
+/// is wrong (or a new corner case needs the invariant documented away).
+fn debug_assert_unique_conts(module: &Module) {
+    if !cfg!(debug_assertions) {
+        return;
+    }
+    use crate::fz_ir::FnId;
+    let mut seen: HashMap<FnId, (FnId, BlockId)> = HashMap::new();
+    for f in &module.fns {
+        for b in &f.blocks {
+            let cont_fn = match &b.terminator {
+                Term::Call { continuation, .. }
+                | Term::CallClosure { continuation, .. }
+                | Term::Receive {
+                    continuation,
+                    ident: _,
+                } => continuation.fn_id,
+                _ => continue,
+            };
+            if let Some(prev) = seen.insert(cont_fn, (f.id, b.id)) {
+                panic!(
+                    "fz-uwq.1 invariant violated: cont fn {:?} referenced by two terminators: \
+                     {:?}:{:?} and {:?}:{:?}. The lowerer must mint a fresh continuation \
+                     FnIr per call site; sharing breaks inline_single_use_conts.",
+                    cont_fn, prev.0, prev.1, f.id, b.id
+                );
+            }
+        }
+    }
 }
 
 /// Parse `extern_ret_tokens` into an ExternTy (wire format) and Descr
@@ -818,6 +902,7 @@ fn annotate_back_edges(
             .unwrap_or(crate::diag::Span::DUMMY);
         for block in &mut f.blocks {
             if let Term::TailCall {
+                ident: _,
                 callee,
                 args,
                 is_back_edge,
@@ -1797,6 +1882,7 @@ fn lower_multi_clause(
             let captures = ctx.captured_snapshot();
             let capture_vars: Vec<Var> = captures.iter().map(|(_, v)| *v).collect();
             ctx.set_term(Term::TailCall {
+                ident: crate::fz_ir::CallsiteIdent::from_source(clause.span),
                 callee: cont.id,
                 args: capture_vars,
                 is_back_edge: false,
@@ -1852,7 +1938,7 @@ fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -> Result<Va
                 .find(|((n, _), _)| n == name)
                 .map(|(k, v)| (k.clone(), *v))
             {
-                return Ok(ctx.let_(Prim::MakeClosure(fn_id, vec![])));
+                return Ok(ctx.let_at(Prim::make_closure(sp, fn_id, vec![]), sp));
             }
             Err(LowerError::Unbound {
                 span: sp,
@@ -1971,6 +2057,7 @@ fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -> Result<Va
                 if is_tail {
                     ctx.set_term_at(
                         Term::TailCallClosure {
+                            ident: crate::fz_ir::CallsiteIdent::from_source(sp),
                             closure: local_var,
                             args: arg_vars,
                         },
@@ -2008,7 +2095,7 @@ fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -> Result<Va
             // extern, not a non-existent user fn.
             if callee_name == "spawn" && (arg_vars.len() == 1 || arg_vars.len() == 2) {
                 let thunk_id = ctx.ensure_spawn_thunk();
-                let wrapper = ctx.let_at(Prim::MakeClosure(thunk_id, vec![arg_vars[0]]), sp);
+                let wrapper = ctx.let_at(Prim::make_closure(sp, thunk_id, vec![arg_vars[0]]), sp);
                 let mut new_args = vec![wrapper];
                 new_args.extend_from_slice(&arg_vars[1..]);
                 let sym = if arg_vars.len() == 1 {
@@ -2037,6 +2124,7 @@ fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -> Result<Va
             if is_tail {
                 ctx.set_term_at(
                     Term::TailCall {
+                        ident: crate::fz_ir::CallsiteIdent::from_source(Span::DUMMY),
                         callee,
                         args: arg_vars,
                         is_back_edge: false, // annotate_back_edges fills this in post-lowering
@@ -2050,7 +2138,7 @@ fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -> Result<Va
             }
         }
 
-        Expr::Lambda(params, body) => lower_lambda(ctx, params, body),
+        Expr::Lambda(params, body) => lower_lambda(ctx, params, body, sp),
 
         Expr::Case(subject, clauses) => lower_case(ctx, subject, clauses, is_tail, sp),
         Expr::Cond(arms) => lower_cond(ctx, arms, is_tail, sp),
@@ -2231,6 +2319,7 @@ fn finalize_arm(ctx: &mut LowerCtx, arm_value: Var, join: Option<&ContFn>) {
             tail_args.push(v);
         }
         ctx.set_term(Term::TailCall {
+            ident: crate::fz_ir::CallsiteIdent::from_source(Span::DUMMY),
             callee: join.id,
             args: tail_args,
             is_back_edge: false,
@@ -2315,12 +2404,14 @@ fn lower_if(
 
     ctx.cur_block = Some(then_b);
     ctx.set_term(Term::TailCall {
+        ident: crate::fz_ir::CallsiteIdent::from_source(Span::DUMMY),
         callee: then_cont.id,
         args: capture_vars.clone(),
         is_back_edge: false,
     });
     ctx.cur_block = Some(else_b);
     ctx.set_term(Term::TailCall {
+        ident: crate::fz_ir::CallsiteIdent::from_source(Span::DUMMY),
         callee: else_cont.id,
         args: capture_vars,
         is_back_edge: false,
@@ -2359,6 +2450,7 @@ fn lower_lambda(
     ctx: &mut LowerCtx,
     params: &[Spanned<Pattern>],
     body: &Spanned<Expr>,
+    span: Span,
 ) -> Result<Var, LowerError> {
     // Capture all in-scope locals.
     let captured = ctx.captured_snapshot();
@@ -2414,7 +2506,7 @@ fn lower_lambda(
     ctx.env = saved_env;
     ctx.env_order = saved_order;
 
-    Ok(ctx.let_(Prim::MakeClosure(lam_id, captured_vars)))
+    Ok(ctx.let_at(Prim::make_closure(span, lam_id, captured_vars), span))
 }
 
 fn cps_split_call_closure(
@@ -2429,6 +2521,7 @@ fn cps_split_call_closure(
 
     ctx.set_term_at(
         Term::CallClosure {
+            ident: crate::fz_ir::CallsiteIdent::from_source(Span::DUMMY),
             closure: closure_var,
             args: arg_vars,
             continuation: Cont {
@@ -2485,6 +2578,7 @@ fn cps_split_receive(
     // Terminate current block with Term::Receive.
     ctx.set_term_at(
         Term::Receive {
+            ident: crate::fz_ir::CallsiteIdent::from_source(Span::DUMMY),
             continuation: Cont {
                 fn_id: cont_id,
                 captured: captured_vars.clone(),
@@ -2542,6 +2636,7 @@ fn cps_split_call(
     // Terminate current block with the call.
     ctx.set_term_at(
         Term::Call {
+            ident: crate::fz_ir::CallsiteIdent::from_source(Span::DUMMY),
             callee,
             args: arg_vars,
             continuation: Cont {
@@ -3115,6 +3210,7 @@ fn lower_case(
             let captures = ctx.captured_snapshot();
             let capture_vars: Vec<Var> = captures.iter().map(|(_, v)| *v).collect();
             ctx.set_term(Term::TailCall {
+                ident: crate::fz_ir::CallsiteIdent::from_source(Span::DUMMY),
                 callee: clause_cont.id,
                 args: capture_vars,
                 is_back_edge: false,
@@ -3201,6 +3297,7 @@ fn lower_cond(
     let captures = ctx.captured_snapshot();
     let capture_vars: Vec<Var> = captures.iter().map(|(_, v)| *v).collect();
     ctx.set_term(Term::TailCall {
+        ident: crate::fz_ir::CallsiteIdent::from_source(Span::DUMMY),
         callee: arm_conts[0].id,
         args: capture_vars,
         is_back_edge: false,
@@ -3228,6 +3325,7 @@ fn lower_cond(
         let fall_capture_vars: Vec<Var> = fall_captures.iter().map(|(_, v)| *v).collect();
         ctx.cur_block = Some(fall_b);
         ctx.set_term(Term::TailCall {
+            ident: crate::fz_ir::CallsiteIdent::from_source(Span::DUMMY),
             callee: next_id,
             args: fall_capture_vars,
             is_back_edge: false,
@@ -3335,6 +3433,7 @@ fn lower_with(
                     args.push(cv);
                 }
                 ctx.set_term(Term::TailCall {
+                    ident: crate::fz_ir::CallsiteIdent::from_source(Span::DUMMY),
                     callee: with_fail_cont.id,
                     args,
                     is_back_edge: false,
@@ -3435,6 +3534,7 @@ fn lower_with(
                 let captures = ctx.captured_snapshot();
                 let capture_vars: Vec<Var> = captures.iter().map(|(_, v)| *v).collect();
                 ctx.set_term(Term::TailCall {
+                    ident: crate::fz_ir::CallsiteIdent::from_source(Span::DUMMY),
                     callee: cont.id,
                     args: capture_vars,
                     is_back_edge: false,
@@ -4312,6 +4412,7 @@ end
         for f in &m.fns {
             for b in &f.blocks {
                 if let Term::TailCall {
+                    ident: _,
                     callee,
                     is_back_edge,
                     ..
@@ -4337,6 +4438,7 @@ end
             .iter()
             .find_map(|b| {
                 if let Term::TailCall {
+                    ident: _,
                     callee,
                     is_back_edge,
                     ..

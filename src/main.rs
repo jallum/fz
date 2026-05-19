@@ -7,6 +7,7 @@ mod eval;
 mod fz_ir;
 mod ir_callgraph;
 mod ir_codegen;
+mod ir_codegen_invariants;
 mod ir_interp;
 // ir_liveness removed (fz-ul4.11.31 subsumes .11.30): frame schemas are
 // uniformly `[cont_ptr, ...entry_params]` with every Var slot FzValue;
@@ -65,7 +66,7 @@ fn check_specs(prog: &ast::Program, module: &fz_ir::Module) -> Vec<diag::Diagnos
 /// on the reduced module — reachability is a call-graph fact.
 fn check_patterns(prog: &ast::Program, module: &fz_ir::Module) -> Vec<diag::Diagnostic> {
     let mut reduced = module.clone();
-    ir_reducer::reduce_module(&mut reduced);
+    let _ = ir_reducer::reduce_module(&mut reduced);
     let reachable = ir_callgraph::reachable_fns(&reduced);
     let survivors: std::collections::HashSet<(String, usize)> = reachable
         .iter()
@@ -695,7 +696,7 @@ fn dump_bodies_pipeline(src: String, source_name: String) -> String {
     });
     // Run the reducer pass directly so the bodies dump reflects what
     // codegen would see, without going all the way to JIT.
-    ir_reducer::reduce_module(&mut module);
+    let _ = ir_reducer::reduce_module(&mut module);
     let mt: ModuleTypes = ir_typer::type_module(&module);
 
     // Group surviving specs by user-fn name. Skip the conventional
@@ -747,9 +748,9 @@ fn dump_bodies_pipeline(src: String, source_name: String) -> String {
 /// fz-9pr.16 — `fz dump --emit outcomes`: per-callsite verdict diary.
 ///
 /// Runs the codegen front half (lex → parse → resolve → macros →
-/// ir_lower → reduce_module → type_module + apply_callsite_outcomes)
-/// and prints every entry in `module.callsite_outcomes`, grouped by
-/// caller fn. Output shape:
+/// ir_lower → reduce_module → type_module) and prints every dispatch
+/// entry in `mt.specs[*].dispatches` plus the reducer's
+/// Consumed / Stalled log entries, grouped by caller fn. Output shape:
 ///
 /// ```text
 /// outcomes for <source>
@@ -772,7 +773,8 @@ fn dump_bodies_pipeline(src: String, source_name: String) -> String {
 ///
 /// Pass `show_all=true` (CLI `--all`) to bypass both filters.
 fn dump_outcomes_pipeline(src: String, source_name: String, show_all: bool) -> String {
-    use crate::fz_ir::{CallsiteId, CallsiteOutcome, EmitSlot};
+    use crate::fz_ir::{CallsiteId, EmitSlot, FnId};
+    use crate::types::Descr;
     let mut sm = diag::SourceMap::new();
     let file_id = sm.add_file(source_name.clone(), src.clone());
     let toks = lexer::Lexer::with_file(&src, file_id)
@@ -797,9 +799,8 @@ fn dump_outcomes_pipeline(src: String, source_name: String, show_all: bool) -> S
         diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         std::process::exit(1);
     });
-    ir_reducer::reduce_module(&mut module);
+    let reducer_log = ir_reducer::reduce_module(&mut module);
     let mt = ir_typer::type_module(&module);
-    ir_typer::apply_callsite_outcomes(&mut module, &mt);
 
     let fn_name = |fid: fz_ir::FnId| -> String {
         module
@@ -810,13 +811,19 @@ fn dump_outcomes_pipeline(src: String, source_name: String, show_all: bool) -> S
             .unwrap_or_else(|| format!("?fn{}", fid.0))
     };
 
-    let slot_str = |s: EmitSlot| -> String {
+    let slot_str = |s: EmitSlot| -> &'static str {
         match s {
-            EmitSlot::Direct => "Direct".to_string(),
-            EmitSlot::Cont => "Cont".to_string(),
-            EmitSlot::CallClosureKnown => "CallClosureKnown".to_string(),
-            EmitSlot::ClosureLit(c, sig) => format!("ClosureLit({},{})", c, sig),
-            EmitSlot::MakeClosure(idx) => format!("MakeClosure({})", idx),
+            EmitSlot::Direct => "Direct",
+            EmitSlot::Cont => "Cont",
+            EmitSlot::ClosureCall => "ClosureCall",
+            EmitSlot::MakeClosure => "MakeClosure",
+        }
+    };
+    let render_span = |sp: crate::diag::Span| -> String {
+        if sp.is_dummy() {
+            "<generated>".to_string()
+        } else {
+            format!("{}:{}-{}", sp.file.0, sp.start, sp.end)
         }
     };
 
@@ -825,37 +832,133 @@ fn dump_outcomes_pipeline(src: String, source_name: String, show_all: bool) -> S
         format!("[{}]", parts.join(", "))
     };
 
-    // Group by caller fn id, preserving module-declared order for fns.
-    // Within a caller, sort by (block, slot-stringification) so output
-    // is stable across HashMap iteration order.
-    let mut by_caller: std::collections::BTreeMap<u32, Vec<(&CallsiteId, &CallsiteOutcome)>> =
-        std::collections::BTreeMap::new();
-    for (cid, outcome) in &module.callsite_outcomes {
-        by_caller
-            .entry(cid.caller.0)
-            .or_default()
-            .push((cid, outcome));
+    // fz-try.11 — rows are computed per (caller_spec) so section headers
+    // can carry the spec inline (`apply1[α=int, β=int]:`) instead of the
+    // pre-fz-try.11 `apply1:` + per-row `[under apply1[...]]` annotation.
+    // The Dispatch enum separates the structural slot (where) from the
+    // dispatch outcome (what).
+    use fz_ir::Dispatch;
+    let render_key = |k: &[crate::types::Descr]| descrs_str(k);
+    let render_target = |fid: FnId, key: &[Descr]| -> String {
+        format!("{}#{} {}", fn_name(fid), fid.0, render_key(key))
+    };
+    let render_dispatch = |d: &Dispatch| -> String {
+        match d {
+            Dispatch::Folded(v) => format!("Folded({})", v),
+            Dispatch::Static(fid, key) => format!("Static({})", render_target(*fid, key)),
+            Dispatch::Indirect(fid, key) => format!("Indirect({})", render_target(*fid, key)),
+            Dispatch::Stalled(reason) => format!("Stalled({})", reason),
+        }
+    };
+
+    // Rows grouped by (caller_fid, caller_key) → list of (cid, Dispatch).
+    type SpecKey = (FnId, Vec<Descr>);
+    type Section = (SpecKey, Vec<(CallsiteId, Dispatch)>);
+    type SortKey = (u32, String);
+    type RowsBySpec = std::collections::BTreeMap<SortKey, Section>;
+    let mut rows_by_spec: RowsBySpec = std::collections::BTreeMap::new();
+
+    // Pre-collect cids that any spec dispatched, so reducer Stalled rows
+    // at those cids are suppressed (their reason already rode through as
+    // a spec-side decision — no point double-reporting).
+    let mut spec_cids: std::collections::HashSet<CallsiteId> = std::collections::HashSet::new();
+    for ft in mt.specs.values() {
+        for cid in ft.dispatches.keys() {
+            spec_cids.insert(cid.clone());
+        }
     }
-    for entries in by_caller.values_mut() {
-        entries.sort_by(|(a, _), (b, _)| {
-            a.block
-                .0
-                .cmp(&b.block.0)
-                .then_with(|| slot_str(a.slot).cmp(&slot_str(b.slot)))
+
+    let push_row = |rows_by_spec: &mut RowsBySpec,
+                    caller_fid: FnId,
+                    caller_key: &[Descr],
+                    cid: CallsiteId,
+                    dispatch: Dispatch| {
+        let sort_key = (caller_fid.0, render_key(caller_key));
+        let entry = rows_by_spec
+            .entry(sort_key)
+            .or_insert_with(|| ((caller_fid, caller_key.to_vec()), Vec::new()));
+        entry.1.push((cid, dispatch));
+    };
+
+    // Per-caller-spec dispatch rows (Static for Direct/Cont; Indirect for
+    // ClosureCall).
+    for ((caller_fid, caller_key), ft) in &mt.specs {
+        for (cid, target) in ft.dispatches.iter() {
+            let dispatch = match cid.slot {
+                EmitSlot::ClosureCall => Dispatch::Indirect(target.0, target.1.clone()),
+                _ => Dispatch::Static(target.0, target.1.clone()),
+            };
+            push_row(
+                &mut rows_by_spec,
+                *caller_fid,
+                caller_key,
+                cid.clone(),
+                dispatch,
+            );
+        }
+    }
+
+    // Reducer Folded rows. The reducer doesn't track which caller spec a
+    // fold attached to — folds happen on the IR before per-spec typing.
+    // Attach Folded rows to the any-key spec of the cid.caller (the body
+    // the reducer rewrote). This mirrors pre-fz-try.11 grouping by
+    // caller fn.
+    let any_key_for = |fid: FnId| -> Option<SpecKey> {
+        mt.specs
+            .keys()
+            .find(|(f, k)| *f == fid && k.iter().all(|d| d.is_equiv(&Descr::any())))
+            .cloned()
+    };
+    for (cid, result) in &reducer_log.consumed {
+        let Some(key) = any_key_for(cid.caller) else {
+            continue;
+        };
+        push_row(
+            &mut rows_by_spec,
+            cid.caller,
+            &key.1,
+            cid.clone(),
+            Dispatch::Folded(result.clone()),
+        );
+    }
+    // Reducer Stalled rows — only when no typer-spec dispatched the cid.
+    for (cid, reason) in &reducer_log.stalled {
+        if spec_cids.contains(cid) {
+            continue;
+        }
+        let Some(key) = any_key_for(cid.caller) else {
+            continue;
+        };
+        push_row(
+            &mut rows_by_spec,
+            cid.caller,
+            &key.1,
+            cid.clone(),
+            Dispatch::Stalled(*reason),
+        );
+    }
+
+    // Stable per-section row ordering: span_start, then slot, then
+    // serialized dispatch (deterministic across runs).
+    for (_, rows) in rows_by_spec.values_mut() {
+        rows.sort_by(|a, b| {
+            a.0.ident
+                .span()
+                .start
+                .cmp(&b.0.ident.span().start)
+                .then_with(|| slot_str(a.0.slot).cmp(slot_str(b.0.slot)))
+                .then_with(|| render_dispatch(&a.1).cmp(&render_dispatch(&b.1)))
         });
     }
 
     let mut out = String::new();
     out.push_str(&format!("outcomes for {}\n", source_name));
-    if module.callsite_outcomes.is_empty() {
+    if rows_by_spec.is_empty() {
         out.push_str("  (no callsites — program is callsite-free)\n");
         return out;
     }
     // fz-f88.7 — default filter: hide prelude callers and any caller
     // whose body has no surviving spec post-reduction. `--all` bypasses.
-    // fz-0z4.2 — project from `mt.specs.keys()` directly; the prior
-    // `mt.reachable_specs` field was just `specs.keys().cloned().collect()`
-    // and is being retired in fz-0z4.4.
     let reachable_fids: std::collections::HashSet<fz_ir::FnId> =
         mt.specs.keys().map(|(fid, _)| *fid).collect();
     let should_show = |f: &fz_ir::FnIr| -> bool {
@@ -867,40 +970,42 @@ fn dump_outcomes_pipeline(src: String, source_name: String, show_all: bool) -> S
         }
         reachable_fids.contains(&f.id)
     };
-    // Iterate in module-fn declaration order so output mirrors source.
-    for f in &module.fns {
+    let module_fn_order: std::collections::HashMap<fz_ir::FnId, usize> = module
+        .fns
+        .iter()
+        .enumerate()
+        .map(|(i, f)| (f.id, i))
+        .collect();
+    type SectionRef<'a> = (SortKey, &'a SpecKey, &'a Vec<(CallsiteId, Dispatch)>);
+    let mut sections: Vec<SectionRef<'_>> = rows_by_spec
+        .iter()
+        .map(|(k, (sk, rs))| (k.clone(), sk, rs))
+        .collect();
+    sections.sort_by_key(|(k, _, _)| {
+        (
+            module_fn_order
+                .get(&FnId(k.0))
+                .copied()
+                .unwrap_or(usize::MAX),
+            k.1.clone(),
+        )
+    });
+    for (_, (caller_fid, caller_key), rows) in sections {
+        let Some(f) = module.fns.iter().find(|f| f.id == *caller_fid) else {
+            continue;
+        };
         if !should_show(f) {
             continue;
         }
-        let Some(entries) = by_caller.get(&f.id.0) else {
-            continue;
-        };
-        out.push_str(&format!("\n{}:\n", f.name));
-        for (cid, outcome) in entries {
-            let lhs = format!("  blk{} {}", cid.block.0, slot_str(cid.slot));
-            let rhs = match outcome {
-                CallsiteOutcome::Consumed { result } => {
-                    format!("Consumed ({})", result)
-                }
-                CallsiteOutcome::Inlined => "Inlined".to_string(),
-                CallsiteOutcome::Emitted { target, came_from } => {
-                    let (tfid, tkey) = target;
-                    let head = format!(
-                        "Emitted ({}#{} {})",
-                        fn_name(*tfid),
-                        tfid.0,
-                        descrs_str(tkey)
-                    );
-                    match came_from {
-                        Some(r) => format!("{} via {}", head, r),
-                        None => head,
-                    }
-                }
-                CallsiteOutcome::Stalled { reason } => {
-                    format!("Stalled ({})", reason)
-                }
-            };
-            out.push_str(&format!("{} -> {}\n", lhs, rhs));
+        // fz-try.11 — section header carries the caller spec inline.
+        out.push_str(&format!("\n{}{}:\n", f.name, render_key(caller_key)));
+        for (cid, dispatch) in rows {
+            out.push_str(&format!(
+                "  @{} {} -> {}\n",
+                render_span(cid.ident.span()),
+                slot_str(cid.slot),
+                render_dispatch(dispatch),
+            ));
         }
     }
     out

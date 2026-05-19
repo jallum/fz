@@ -36,10 +36,10 @@
 ;     blk0 Return Var(1)    :: nil
 
 ; spec fn_clause_1(1) #fn=8
-;   key:    [vec(i64) | vec(f64) | vec(u8) | vec(bit) | float | str | atom | opaque | tuple | list | fn | map]
+;   key:    [vec(i64) | vec(f64) | vec(u8) | vec(bit) | float | str | atom | opaque | var | tuple | list | fn | map]
 ;   return: nil
 ;   vars:
-;     Var(0) :: vec(i64) | vec(f64) | vec(u8) | vec(bit) | float | str | atom | opaque | tuple | list | fn | map
+;     Var(0) :: vec(i64) | vec(f64) | vec(u8) | vec(bit) | float | str | atom | opaque | var | tuple | list | fn | map
 ;     Var(1) :: nil
 ;   exits:
 ;     blk0 Return Var(1)    :: nil
@@ -63,9 +63,9 @@
 ;     Var(1) = lambda_13#13
 ;   vars:
 ;     Var(0) :: :match_error
-;     Var(1) :: &fn13[]:() -> any
+;     Var(1) :: &fn13[]:() -> α895
 ;     Var(2) :: 4096
-;     Var(3) :: &fn14[&fn13[]:() -> any]:() -> any
+;     Var(3) :: &fn14[&fn13[]:() -> α895]:() -> α959
 ;     Var(4) :: any
 ;   exits:
 ;     blk0 Receive cont k_receive_15#15 captured=[]
@@ -84,10 +84,10 @@
 ;     blk1 Halt Var(0)      :: :match_error
 
 ; spec fz_spawn_thunk(1) #fn=14
-;   key:    [&fn13[]:() -> any]
+;   key:    [any]
 ;   return: any
 ;   vars:
-;     Var(0) :: &fn13[]:() -> any
+;     Var(0) :: any
 ;   exits:
 ;     blk0 TailCallClosure Var(0)()
 

@@ -1,5 +1,86 @@
 use crate::fz_ir::{FnId, SpecId};
+use crate::types::{Descr, TypeVarId};
 use std::collections::HashMap;
+
+/// fz-try.8 — subsumption-with-type-var-binding at a single key position.
+/// Implements the truth table in `docs/descr-cleanup.md`:
+///
+/// | q        | k        | result | binding produced |
+/// |----------|----------|--------|------------------|
+/// | Any      | Any      | yes    | none             |
+/// | Concrete | Any      | yes    | none             |
+/// | Var α    | Any      | yes    | none             |
+/// | Concrete | Concrete | iff q ⊆ k | none          |
+/// | Concrete | Var α    | yes    | α ↦ Concrete     |
+/// | Var α    | Var α    | yes    | none             |
+/// | Var α    | Var β    | yes    | α ↦ Var β        |
+/// | Var α    | Concrete | no     | —                |
+/// | Any      | Concrete | no     | —                |
+/// | Any      | Var α    | no     | —                |
+///
+/// Mutates `sigma` with any new binding; returns `false` if a binding
+/// would conflict with an existing one (positionally inconsistent
+/// instantiation — the candidate fails to cover).
+///
+/// "Pure-var" means a Descr whose only non-empty axis is the top-level
+/// `vars` set. Structural vars (vars inside arrows/tuples/lists/maps)
+/// are not bound here — the lattice's structural is_subtype handles
+/// those once positionally outer vars are bound. This matches the
+/// design's "monomorphize per call, no recursive unification."
+fn subsumes_with(q: &Descr, k: &Descr, sigma: &mut HashMap<TypeVarId, Descr>) -> bool {
+    let k_is_any = k.looks_full();
+    if k_is_any {
+        return true;
+    }
+    let k_pure_var = is_pure_var(k);
+    if k_pure_var {
+        // k carries one (or more) named var ids and nothing else. Bind each
+        // to the witness q; check consistency with existing σ.
+        // For single-var keys (overwhelming majority), this is one binding.
+        for alpha in &k.vars.set {
+            match sigma.get(alpha) {
+                None => {
+                    sigma.insert(*alpha, q.clone());
+                }
+                Some(existing) => {
+                    if !existing.is_equiv(q) {
+                        return false; // positionally inconsistent
+                    }
+                }
+            }
+        }
+        return true;
+    }
+    // k is concrete (no named vars at the top level). q must structurally
+    // subtype k. The lattice's is_subtype already handles this — including
+    // q-has-vars-vs-k-concrete, which produces false because vars are
+    // disjoint from concrete axes.
+    q.is_subtype(k)
+}
+
+/// Does `d` carry named type vars and nothing else? (Empty basic/atoms/
+/// ints/floats/strs/opaques/tuples/lists/funcs/maps.)
+fn is_pure_var(d: &Descr) -> bool {
+    !d.vars.set.is_empty()
+        && d.basic.is_empty()
+        && d.atoms.is_none()
+        && d.ints.is_none()
+        && d.floats.is_none()
+        && d.strs.is_none()
+        && d.opaques.is_none()
+        && d.tuples.is_empty()
+        && d.lists.is_empty()
+        && d.funcs.is_empty()
+        && d.maps.is_empty()
+}
+
+/// Count of named type vars at the top level of `key`. Used by the
+/// most-specific-wins ordering: fewer named vars = more concrete = more
+/// specific. The Castagna set-theoretic order says concrete > some-Var >
+/// all-Var; this count is the proxy.
+fn key_var_count(key: &[Descr]) -> usize {
+    key.iter().map(|d| d.vars.set.len()).sum()
+}
 
 #[derive(Clone, Default)]
 pub struct SpecRegistry {
@@ -96,7 +177,10 @@ impl SpecRegistry {
         if let Some(&id) = self.lookup.get(&fn_id).and_then(|m| m.get(input_descrs)) {
             return Some(id);
         }
-        // Slow path: subsumption search.
+        // Slow path: subsumption search with type-var binding.
+        // fz-try.8 — each candidate is filtered via `subsumes_with` per
+        // position, building a per-candidate σ. A candidate covers iff
+        // every position matches AND σ is positionally consistent.
         let sids = self.by_fn.get(&fn_id)?;
         let arity = input_descrs.len();
         let mut covers: Vec<SpecId> = sids
@@ -104,20 +188,33 @@ impl SpecRegistry {
             .copied()
             .filter(|sid| {
                 let key = &self.keys[sid.0 as usize].1;
-                key.len() == arity
-                    && input_descrs
-                        .iter()
-                        .zip(key.iter())
-                        .all(|(q, k)| q.is_subtype(k))
+                if key.len() != arity {
+                    return false;
+                }
+                let mut sigma: HashMap<TypeVarId, Descr> = HashMap::new();
+                input_descrs
+                    .iter()
+                    .zip(key.iter())
+                    .all(|(q, k)| subsumes_with(q, k, &mut sigma))
             })
             .collect();
         if covers.is_empty() {
             return None;
         }
-        // Pick subtype-minimal: a candidate is "minimal" if no other
-        // candidate is a strict subtype of it on every axis. Tiebreak by
-        // lowest SpecId so the choice is deterministic across runs.
-        let key_of = |sid: SpecId| -> &Vec<crate::types::Descr> { &self.keys[sid.0 as usize].1 };
+        // Most-specific-wins ordering (Castagna set-theoretic order):
+        // concrete > some-Var > all-Var. The proxy is named-var count at
+        // the top level — fewer vars in the key = more specific.
+        //
+        // Within the same var-count tier, fall back to lattice subsumption
+        // (a candidate is "minimal" if no other candidate is a strict
+        // subtype on every axis), then SpecId for stable tiebreak.
+        let key_of = |sid: SpecId| -> &Vec<Descr> { &self.keys[sid.0 as usize].1 };
+        let min_var_count = covers
+            .iter()
+            .map(|s| key_var_count(key_of(*s)))
+            .min()
+            .unwrap_or(0);
+        covers.retain(|s| key_var_count(key_of(*s)) == min_var_count);
         let strictly_subsumed_by_other = |sid: SpecId, others: &[SpecId]| -> bool {
             let k = key_of(sid);
             others.iter().any(|&other| {
@@ -128,8 +225,6 @@ impl SpecRegistry {
                 if ok.len() != k.len() {
                     return false;
                 }
-                // Single-pass fold: require all ok[i] ⊆ k[i] and at least
-                // one strictly so (i.e. k[i] ⊄ ok[i]).
                 ok.iter()
                     .zip(k.iter())
                     .fold((true, false), |(all_le, any_strict), (o, kk)| {
@@ -144,7 +239,6 @@ impl SpecRegistry {
                 return Some(*sid);
             }
         }
-        // Mutually subtype-equivalent set — pick lowest SpecId.
         covers.into_iter().min_by_key(|s| s.0)
     }
 
@@ -172,5 +266,110 @@ impl SpecRegistry {
             .get(&fn_id)
             .and_then(|m| m.get(key.as_slice()))
             .expect("any-key spec must always be registered for every fn")
+    }
+}
+
+// ----------------------------------------------------------------------
+// fz-try.8 — subsumption-with-vars tests
+// ----------------------------------------------------------------------
+
+#[cfg(test)]
+mod var_subsumption_tests {
+    use super::*;
+    use crate::types::Descr;
+
+    fn fid(n: u32) -> FnId {
+        FnId(n)
+    }
+
+    #[test]
+    fn concrete_query_matches_var_key_with_binding() {
+        let mut reg = SpecRegistry::new();
+        let sid = reg.register(fid(7), vec![Descr::var(TypeVarId(0))]);
+        let got = reg.resolve(fid(7), &[Descr::int()]);
+        assert_eq!(got, Some(sid), "concrete query int must cover var key α");
+    }
+
+    #[test]
+    fn var_query_matches_same_var_key() {
+        let mut reg = SpecRegistry::new();
+        let sid = reg.register(fid(7), vec![Descr::var(TypeVarId(0))]);
+        let got = reg.resolve(fid(7), &[Descr::var(TypeVarId(0))]);
+        assert_eq!(got, Some(sid), "Var α covers Var α");
+    }
+
+    #[test]
+    fn var_query_matches_different_var_key_via_binding() {
+        let mut reg = SpecRegistry::new();
+        let sid = reg.register(fid(7), vec![Descr::var(TypeVarId(0))]);
+        let got = reg.resolve(fid(7), &[Descr::var(TypeVarId(5))]);
+        // Var β covers Var α with binding α ↦ Var β.
+        assert_eq!(got, Some(sid));
+    }
+
+    #[test]
+    fn var_query_does_not_match_concrete_key() {
+        let mut reg = SpecRegistry::new();
+        let _ = reg.register(fid(7), vec![Descr::int()]);
+        let got = reg.resolve(fid(7), &[Descr::var(TypeVarId(0))]);
+        // Var α NOT a subtype of int — no covering candidate.
+        assert_eq!(got, None);
+    }
+
+    #[test]
+    fn most_specific_wins_concrete_over_var() {
+        // Both a concrete-keyed spec and a var-keyed spec cover an `int`
+        // query. Dispatch must pick the concrete (most specific).
+        let mut reg = SpecRegistry::new();
+        let var_sid = reg.register(fid(7), vec![Descr::var(TypeVarId(0))]);
+        let int_sid = reg.register(fid(7), vec![Descr::int()]);
+        let got = reg.resolve(fid(7), &[Descr::int()]);
+        assert_eq!(got, Some(int_sid), "concrete > var; got {:?}", got);
+        assert_ne!(got, Some(var_sid), "must not return the var-form");
+    }
+
+    #[test]
+    fn positionally_inconsistent_binding_fails() {
+        // Key: (α, α). Query: (int, str). Single α can't bind both → no cover.
+        let mut reg = SpecRegistry::new();
+        let _ = reg.register(
+            fid(7),
+            vec![Descr::var(TypeVarId(0)), Descr::var(TypeVarId(0))],
+        );
+        let got = reg.resolve(fid(7), &[Descr::int(), Descr::str_t()]);
+        assert_eq!(got, None, "α cannot bind to both int and str");
+    }
+
+    #[test]
+    fn positionally_consistent_binding_succeeds() {
+        // Key: (α, α). Query: (int, int). Single α binds to int consistently.
+        let mut reg = SpecRegistry::new();
+        let sid = reg.register(
+            fid(7),
+            vec![Descr::var(TypeVarId(0)), Descr::var(TypeVarId(0))],
+        );
+        let got = reg.resolve(fid(7), &[Descr::int(), Descr::int()]);
+        assert_eq!(got, Some(sid));
+    }
+
+    #[test]
+    fn any_query_still_does_not_match_concrete_key() {
+        // Pre-fz-try.8 invariant preserved: a saturated `any` query never
+        // covers a concrete key (would be unsafe — body assumes narrow inputs).
+        let mut reg = SpecRegistry::new();
+        let _ = reg.register(fid(7), vec![Descr::int()]);
+        let got = reg.resolve(fid(7), &[Descr::any()]);
+        assert_eq!(got, None);
+    }
+
+    #[test]
+    fn pure_var_helper_discriminates_correctly() {
+        assert!(is_pure_var(&Descr::var(TypeVarId(0))));
+        assert!(!is_pure_var(&Descr::int()));
+        assert!(!is_pure_var(&Descr::any()));
+        assert!(!is_pure_var(&Descr::none()));
+        // int ∪ Var(α) is concrete-with-vars; NOT pure-var.
+        let mixed = Descr::int().union(&Descr::var(TypeVarId(0)));
+        assert!(!is_pure_var(&mixed));
     }
 }

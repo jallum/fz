@@ -180,8 +180,10 @@ fn subst_prim(p: &Prim, subst: &HashMap<Var, Var>) -> Prim {
         Prim::MakeList(els, tail) => {
             Prim::MakeList(els.iter().map(|x| sv(*x)).collect(), tail.map(sv))
         }
-        Prim::MakeClosure(fid, caps) => {
-            Prim::MakeClosure(*fid, caps.iter().map(|x| sv(*x)).collect())
+        // fz-kgk — subst_prim rewrites Var operands only; the MakeClosure
+        // callsite identity stays.
+        Prim::MakeClosure(ident, fid, caps) => {
+            Prim::MakeClosure(ident.clone(), *fid, caps.iter().map(|x| sv(*x)).collect())
         }
         Prim::MakeMap(entries) => {
             Prim::MakeMap(entries.iter().map(|(k, v)| (sv(*k), sv(*v))).collect())
@@ -258,40 +260,57 @@ pub(crate) fn subst_term(t: &Term, subst: &HashMap<Var, Var>) -> Term {
             else_b: *else_b,
             origin: *origin,
         },
+        // fz-kgk — subst_term rewrites internals (Var substitution); the
+        // wrapping callsite identity stays.
         Term::Call {
+            ident,
             callee,
             args,
             continuation,
         } => Term::Call {
+            ident: ident.clone(),
             callee: *callee,
             args: args.iter().map(|x| sv(*x)).collect(),
             continuation: subst_cont(continuation, subst),
         },
         Term::TailCall {
+            ident,
             callee,
             args,
             is_back_edge,
         } => Term::TailCall {
+            ident: ident.clone(),
             callee: *callee,
             args: args.iter().map(|x| sv(*x)).collect(),
             is_back_edge: *is_back_edge,
         },
         Term::CallClosure {
+            ident,
             closure,
             args,
             continuation,
         } => Term::CallClosure {
+            ident: ident.clone(),
             closure: sv(*closure),
             args: args.iter().map(|x| sv(*x)).collect(),
             continuation: subst_cont(continuation, subst),
         },
-        Term::TailCallClosure { closure, args } => Term::TailCallClosure {
+        Term::TailCallClosure {
+            closure,
+            args,
+            ident,
+        } => Term::TailCallClosure {
+            ident: ident.clone(),
             closure: sv(*closure),
             args: args.iter().map(|x| sv(*x)).collect(),
         },
         Term::Return(a) => Term::Return(sv(*a)),
         Term::Halt(a) => Term::Halt(sv(*a)),
-        Term::Receive { continuation } => Term::Receive {
+        Term::Receive {
+            continuation,
+            ident,
+        } => Term::Receive {
+            ident: ident.clone(),
             continuation: subst_cont(continuation, subst),
         },
     }

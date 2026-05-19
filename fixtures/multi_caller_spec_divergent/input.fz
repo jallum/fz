@@ -1,0 +1,6 @@
+fn id(x), do: x
+fn route(f, n), do: f(n)
+fn main() do
+  print(route(id, 5))
+  print(route(fn(x) -> x * 2, 5))
+end
