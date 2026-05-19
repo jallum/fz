@@ -844,6 +844,15 @@ pub struct Module {
     /// body is a stable unit, so reduction does not cross into it (except
     /// for trivially-inlinable single-stmt bodies, which carry no risk).
     pub boundary_fns: HashSet<FnId>,
+    /// fz-swt.8 — Inner-type map for opaque aliases declared anywhere
+    /// in the program. Keyed by the module-qualified opaque tag (as
+    /// stored on `Descr::opaque_of(...)`); value is the parsed body
+    /// `T` following the `opaque` keyword. The typer reads this at
+    /// `Prim::MapGet(handle, :value)` sites to type `handle.value` as
+    /// `T` instead of falling back to the generic map-lookup result.
+    /// Populated by `ir_lower::lower_program_full` from the resolved
+    /// `Program.opaque_inners`.
+    pub opaque_inners: HashMap<String, crate::types::Descr>,
 }
 
 impl Module {
@@ -1002,6 +1011,7 @@ impl ModuleBuilder {
             externs: Vec::new(),
             extern_idx: HashMap::new(),
             boundary_fns: HashSet::new(),
+            opaque_inners: HashMap::new(),
         }
     }
 }

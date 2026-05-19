@@ -766,6 +766,20 @@ impl Descr {
         }
     }
 
+    /// fz-swt.6 — singleton opaque tag. Returns `Some(name)` iff this
+    /// Descr's only non-empty axis is `opaques` and it names exactly one
+    /// qualified opaque type. Consumers (visibility gating, future
+    /// `.value` accessor in fz-swt.8) pair this with
+    /// `crate::type_expr::opaque_owner_module` to find the declaring
+    /// module.
+    #[allow(dead_code)] // tests use it now; fz-swt.8 wires it into MapGet typing.
+    pub fn as_opaque_singleton(&self) -> Option<&str> {
+        match self.single_component()? {
+            Component::Opaques(v) => v.singleton(),
+            _ => None,
+        }
+    }
+
     /// Single-shape tuple: exactly one positive clause with one positive sig
     /// and no negations, and no other axis populated. Returns the element
     /// Descr slice. Elements may be wide — caller decides if it cares.
@@ -2345,9 +2359,21 @@ pub struct OpaqueView<'a> {
 }
 
 impl<'a> OpaqueView<'a> {
-    // Currently no consumer needs OpaqueView methods; the variant exists
-    // for exhaustive matching. Methods will be added when an opaque-aware
-    // consumer arrives.
+    /// fz-swt.6 — if this view names exactly one opaque type (the common
+    /// case for an opaque-alias value), return its qualified tag.
+    /// Returns `None` for cofinite sets (`Descr::any()`'s opaques axis is
+    /// "every opaque", not a substitutable pattern) and for empty / many-
+    /// tag sets. Consumers pair this with
+    /// `crate::type_expr::opaque_owner_module` to discover the declaring
+    /// module for visibility gating.
+    #[allow(dead_code)] // exercised via Descr::as_opaque_singleton in tests; .8 wires it into typing.
+    pub fn singleton(&self) -> Option<&'a str> {
+        if !self.inner.cofinite && self.inner.set.len() == 1 {
+            self.inner.set.iter().next().map(String::as_str)
+        } else {
+            None
+        }
+    }
 }
 
 #[derive(Clone, Copy)]

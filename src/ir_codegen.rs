@@ -1039,6 +1039,15 @@ pub struct CompiledMetadata {
     pub fn_halt_kinds: HashMap<u32, u32>,
     /// fz-02r.5 — FuncIds for the 9 mid-flight resume shims (arg count 0..=8).
     pub mid_flight_resume_ids: [FuncId; 9],
+    /// fz-swt.11 — AOT dtor lookup table source. One row per zero-cap
+    /// closure-target body whose IR is a thin wrapper around a single
+    /// `Prim::Extern` (the same shape `resolve_dtor_from_closure`
+    /// recognises). Each entry is `(closure body fn_id, extern C
+    /// symbol name)`; AOT codegen declares the symbol as Import and
+    /// bakes a function-address relocation into the emitted
+    /// `fz_aot_dtor_table` data symbol so the runtime hook can look up
+    /// the dtor at `make_resource` time without an IR Module.
+    pub aot_dtor_targets: Vec<(u32, String)>,
 }
 
 /// fz-ul4.29.2 — Two-way mapping between (FnId, input-Descr-tuple) and
@@ -1197,6 +1206,34 @@ impl JitBackend {
         );
         builder.symbol("fz_self", fz_runtime::ir_runtime::fz_self as *const u8);
         builder.symbol("fz_send", fz_runtime::ir_runtime::fz_send as *const u8);
+        // fz-swt.10 — `make_resource(value, &dtor/1)` lowers to an extern
+        // call on `fz_make_resource`. The runtime symbol delegates to a
+        // `MakeResourceHook` the binary installs before driving any task
+        // that uses resources (see `src/runtime.rs`).
+        builder.symbol(
+            "fz_make_resource",
+            fz_runtime::ir_runtime::fz_make_resource as *const u8,
+        );
+        // fz-swt.11 — runtime-exported fixture/test dtor. Always bound to
+        // the JIT (not gated on cfg(test)) so any `fz dump --emit clif`
+        // or `fz run` over a fixture that uses it resolves cleanly — the
+        // golden-CLIF harness compiles every non-deferred fixture.
+        builder.symbol(
+            "fz_resource_test_print_dtor",
+            fz_runtime::resource::fz_resource_test_print_dtor as *const u8,
+        );
+        // fz-swt.13 — File-module test helpers exported by the runtime
+        // crate. Same wiring contract as the print-dtor symbol above:
+        // bound unconditionally so any JIT-driven dump/run resolves the
+        // names cleanly.
+        builder.symbol(
+            "fz_test_open_tmpfile",
+            fz_runtime::resource::fz_test_open_tmpfile as *const u8,
+        );
+        builder.symbol(
+            "fz_test_close_fd",
+            fz_runtime::resource::fz_test_close_fd as *const u8,
+        );
         builder.symbol(
             "fz_receive_attempt",
             fz_runtime::ir_runtime::fz_receive_attempt as *const u8,
@@ -1225,6 +1262,14 @@ impl JitBackend {
         builder.symbol(
             "FZ_SHOULD_YIELD",
             (&fz_runtime::yield_flag::FZ_SHOULD_YIELD) as *const _ as *const u8,
+        );
+        // fz-swt.10 (test only) — register test externs (e.g. the
+        // `_resource_test_dtor` counter used by the JIT-leg resource
+        // lifecycle tests). Production paths see no extra symbols.
+        #[cfg(test)]
+        builder.symbol(
+            "_resource_test_dtor",
+            crate::ir_interp::tests_support_test_dtor_addr(),
         );
         Self {
             jmod: JITModule::new(builder),
@@ -1444,6 +1489,65 @@ impl Backend for AotBackend {
                 (Some(id), len)
             };
 
+        // fz-swt.11 — dtor lookup table. One 16-byte row per recognised
+        // thin-extern-wrapper closure body: `u32 fn_id, u32 _pad, u64
+        // fn_ptr` (fn_ptr written via function-address relocation so the
+        // linker resolves it to the underlying extern's address at link
+        // time). The runtime reads this in `fz_aot_register_dtor_table`.
+        // Declare the registration FFI even when the table is empty so
+        // the C main can emit a `(null, 0)` call uniformly.
+        let reg_dtor_table_sig = sig1(&[types::I64, types::I32], &[]);
+        let reg_dtor_table_id = self
+            .omod
+            .declare_function(
+                "fz_aot_register_dtor_table",
+                Linkage::Import,
+                &reg_dtor_table_sig,
+            )
+            .map_err(|e| CodegenError::new(format!("declare fz_aot_register_dtor_table: {}", e)))?;
+        let (dtor_table_data, dtor_table_len): (Option<DataId>, u32) =
+            if meta.aot_dtor_targets.is_empty() {
+                (None, 0)
+            } else {
+                let table_id = self
+                    .omod
+                    .declare_data("fz_aot_dtor_table", Linkage::Local, false, false)
+                    .map_err(|e| CodegenError::new(format!("declare dtor table: {}", e)))?;
+                // 16 bytes per row: u32 fn_id + 4 pad + 8 fn_ptr.
+                let row_bytes = 16;
+                let mut buf: Vec<u8> = vec![0u8; meta.aot_dtor_targets.len() * row_bytes];
+                for (i, (fn_id, _sym)) in meta.aot_dtor_targets.iter().enumerate() {
+                    let off = i * row_bytes;
+                    buf[off..off + 4].copy_from_slice(&fn_id.to_le_bytes());
+                    // fn_ptr placeholder at [off+8..off+16] — patched
+                    // below by write_function_addr.
+                }
+                let mut desc = DataDescription::new();
+                desc.define(buf.into_boxed_slice());
+                desc.set_align(8);
+                for (i, (_fn_id, sym)) in meta.aot_dtor_targets.iter().enumerate() {
+                    // Declare the extern as Import so the linker resolves
+                    // it. Sig is (i64)->() to match the runtime dtor
+                    // contract (`unsafe extern "C" fn(payload: u64)`).
+                    // Cranelift only needs *some* signature here to track
+                    // the FuncRef; the linker emits a plain address.
+                    let dtor_sig = sig1(&[types::I64], &[]);
+                    let func_id = self
+                        .omod
+                        .declare_function(sym, Linkage::Import, &dtor_sig)
+                        .map_err(|e| {
+                            CodegenError::new(format!("declare dtor extern `{}`: {}", sym, e))
+                        })?;
+                    let fref = self.omod.declare_func_in_data(func_id, &mut desc);
+                    let off = (i * row_bytes + 8) as u32;
+                    desc.write_function_addr(off, fref);
+                }
+                self.omod
+                    .define_data(table_id, &desc)
+                    .map_err(|e| CodegenError::new(format!("define dtor table: {}", e)))?;
+                (Some(table_id), meta.aot_dtor_targets.len() as u32)
+            };
+
         let (atom_blob_data, atom_blob_len): (Option<DataId>, u32) = if meta.atom_names.is_empty() {
             (None, 0)
         } else {
@@ -1495,6 +1599,9 @@ impl Backend for AotBackend {
             reg_tuples_id,
             tuple_arities_data,
             tuple_arities_len,
+            reg_dtor_table_id,
+            dtor_table_data,
+            dtor_table_len,
         )?;
         Ok(())
     }
@@ -3135,6 +3242,44 @@ pub fn compile_with_backend<B: Backend>(
         }
         ids
     };
+    // fz-swt.11 — scan each zero-cap closure body for the thin-extern-
+    // wrapper shape that `resolve_dtor_from_closure` accepts AND whose
+    // extern matches the dtor C-ABI contract `unsafe extern "C" fn(u64)`.
+    // Recording both the fn_id (matches the closure header's `_reserved`
+    // at runtime) and the extern's C symbol name lets the AOT backend
+    // emit a static dtor lookup table with function-address relocations.
+    //
+    // Sig filter: 1 u64-wide param (I64 or Any), no return (Unit or
+    // Never). Externs that don't match — e.g. `&fz_send/3` taking
+    // (i64,i64) and returning i64 — can never be valid dtors at runtime;
+    // including them in the table would force AOT to redeclare the
+    // extern with a wrong signature (Cranelift rejects sig conflicts)
+    // and would crash at dtor-fire time anyway. Skipping here is safe:
+    // if a user actually tries `make_resource(_, &fz_send/3)`, the
+    // runtime hook reports "no dtor table entry" and aborts — clearer
+    // than a silent calling-convention mismatch.
+    let aot_dtor_targets: Vec<(u32, String)> = static_closure_targets
+        .iter()
+        .filter_map(|(_cl_sid, fn_id, _body_fid, _halt_kind)| {
+            let fnir = module.fn_by_id(FnId(*fn_id));
+            let eid = fnir.blocks.iter().find_map(|b| {
+                b.stmts.iter().find_map(|s| match s {
+                    Stmt::Let(_, Prim::Extern(eid, _)) => Some(*eid),
+                    _ => None,
+                })
+            })?;
+            let decl = module.extern_by_id(eid);
+            use crate::fz_ir::ExternTy;
+            let dtor_shaped = decl.params.len() == 1
+                && matches!(decl.params[0], ExternTy::I64 | ExternTy::Any)
+                && matches!(decl.ret, ExternTy::Unit | ExternTy::Never);
+            if !dtor_shaped {
+                return None;
+            }
+            Some((*fn_id, decl.symbol.clone()))
+        })
+        .collect();
+
     let metadata = CompiledMetadata {
         fn_ids,
         user_schemas,
@@ -3156,6 +3301,7 @@ pub fn compile_with_backend<B: Backend>(
         ],
         fn_halt_kinds,
         mid_flight_resume_ids,
+        aot_dtor_targets,
     };
 
     // Backend-specific metadata carriers (no-op for JIT; dispatch + main
@@ -3201,6 +3347,9 @@ fn emit_aot_c_main<M: cranelift_module::Module>(
     reg_tuples_id: FuncId,
     tuple_arities_data: Option<DataId>,
     tuple_arities_len: u32,
+    reg_dtor_table_id: FuncId,
+    dtor_table_data: Option<DataId>,
+    dtor_table_len: u32,
 ) -> Result<(), CodegenError> {
     use cranelift_frontend::FunctionBuilder;
 
@@ -3266,6 +3415,24 @@ fn emit_aot_c_main<M: cranelift_module::Module>(
                 reg_tuples_fref,
                 &[proc_v, tuple_arities_addr, tuple_arities_len_v],
             );
+        }
+
+        // fz-swt.11 — register the dtor lookup table (populated by codegen
+        // above with one row per zero-cap closure-target body recognised
+        // as a thin extern wrapper). Always emit the call so the runtime
+        // can clear any prior state; pass null + 0 when the table is
+        // empty.
+        {
+            let table_addr = match dtor_table_data {
+                Some(data_id) => {
+                    let gv = jmod.declare_data_in_func(data_id, b.func);
+                    b.ins().symbol_value(types::I64, gv)
+                }
+                None => b.ins().iconst(types::I64, 0),
+            };
+            let len_v = b.ins().iconst(types::I32, dtor_table_len as i64);
+            let reg_dtor_fref = jmod.declare_func_in_func(reg_dtor_table_id, b.func);
+            b.ins().call(reg_dtor_fref, &[table_addr, len_v]);
         }
 
         // Register each static closure target.

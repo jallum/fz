@@ -191,6 +191,7 @@ fn walk_expr(e: &Spanned<Expr>, diags: &mut Vec<Diagnostic>) {
         | Expr::Bool(_)
         | Expr::Nil
         | Expr::Var(_)
+        | Expr::FnRef { .. }
         | Expr::Quote(_)
         | Expr::Unquote(_) => {}
         Expr::Block(items) => items.iter().for_each(|i| walk_expr(i, diags)),

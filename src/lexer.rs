@@ -77,7 +77,8 @@ pub enum Tok {
     Bang,
     AndAnd,
     OrOr,
-    At, // @ — for module attributes (@doc, @moduledoc)
+    At,  // @ — for module attributes (@doc, @moduledoc)
+    Amp, // & — for explicit function references (`&name/arity`, fz-swt.5)
 
     Newline,
     Eof,
@@ -480,11 +481,18 @@ impl<'a> Lexer<'a> {
                     Tok::Bar
                 }
             },
-            b'&' if self.peek(1) == Some(b'&') => {
-                self.bump();
-                self.bump();
-                Tok::AndAnd
-            }
+            b'&' => match self.peek(1) {
+                Some(b'&') => {
+                    self.bump();
+                    self.bump();
+                    Tok::AndAnd
+                }
+                // fz-swt.5: bare `&` introduces an explicit fn-ref (`&name/arity`).
+                _ => {
+                    self.bump();
+                    Tok::Amp
+                }
+            },
             b'=' => match self.peek(1) {
                 Some(b'=') => {
                     self.bump();

@@ -87,9 +87,43 @@ pub fn resolve_spec_decl(
 /// `attrs` is expected to be a `ModuleDef.attrs` (or `Program`-level
 /// equivalent). Non-TypeAlias attributes are ignored. Duplicate alias
 /// names within `attrs` are an error.
+///
+/// Equivalent to `build_module_type_env_for(attrs, "")` — used when the
+/// module path is not available (top-level, runtime prelude, unit tests).
+/// Opaque names declared via the empty path are unqualified, which means
+/// they have no module owner for visibility purposes (see fz-swt.6).
 pub fn build_module_type_env(
     attrs: &[crate::ast::Attribute],
 ) -> Result<ModuleTypeEnv, TypeExprError> {
+    build_module_type_env_for(attrs, "").map(|(env, _inners)| env)
+}
+
+/// fz-swt.8 — Inner-type map for opaque aliases declared in one
+/// module. Keyed by the qualified opaque tag (matches the tag stored
+/// on `Descr::opaque_of(...)`); value is the parsed body following
+/// the `opaque` keyword — i.e., the inner type `T` for
+/// `@type t :: opaque T` (or `opaque resource(T)`, etc.).
+///
+/// The typer consumes this map at `Prim::MapGet(handle, :value)` sites
+/// to type `handle.value` as `T` instead of falling back to the generic
+/// map-lookup result. Visibility gating already lives in
+/// `crate::typer::check_opaque_visibility`; the inner-type map is the
+/// payload the gate guards.
+pub type OpaqueInnerTypes = HashMap<String, Descr>;
+
+/// fz-swt.6 — like `build_module_type_env`, but threads the enclosing
+/// module's qualified path so opaque-type declarations record their
+/// declaring module. The opaque tag in the resulting `Descr` is
+/// `format!("{module_path}::{alias}")` when `module_path` is non-empty,
+/// and just `alias` otherwise.
+///
+/// Visibility gating consults `Descr::opaque_singleton()` /
+/// `crate::typer::check_opaque_visibility` to compare the declaring
+/// module against the using module.
+pub fn build_module_type_env_for(
+    attrs: &[crate::ast::Attribute],
+    module_path: &str,
+) -> Result<(ModuleTypeEnv, OpaqueInnerTypes), TypeExprError> {
     use crate::ast::Attribute;
     // Collect aliases keyed by name; reject duplicates.
     let mut pending: HashMap<String, &crate::ast::TypeAliasDecl> = HashMap::new();
@@ -107,9 +141,13 @@ pub fn build_module_type_env(
         }
     }
     if pending.is_empty() {
-        return Ok(ModuleTypeEnv::new());
+        return Ok((ModuleTypeEnv::new(), OpaqueInnerTypes::new()));
     }
     let mut env: ModuleTypeEnv = ModuleTypeEnv::new();
+    // fz-swt.8 — Side map: qualified opaque tag → inner T parsed from
+    // the body following `opaque`. Populated alongside `env` so the
+    // typer's `.value` lowering can look up T without re-parsing.
+    let mut opaque_inners: OpaqueInnerTypes = OpaqueInnerTypes::new();
     // Fixed-point resolve: keep walking until no progress.
     loop {
         let mut progressed = false;
@@ -119,8 +157,10 @@ pub fn build_module_type_env(
             }
             let decl = pending[name];
             // `@type Foo :: opaque T` — purely nominal; create an opaque
-            // Descr keyed by the alias name. The underlying type T is not
-            // stored in the Descr (opaque types are nominal, not structural).
+            // Descr keyed by the (module-qualified) alias name. The
+            // underlying type T is not stored in the Descr (opaque types
+            // are nominal, not structural), but we still parse it to
+            // validate the body and to allow forms like `resource(T)`.
             let is_opaque = decl
                 .body_tokens
                 .0
@@ -128,7 +168,48 @@ pub fn build_module_type_env(
                 .map(|t| matches!(&t.tok, Tok::Ident(n) if n == "opaque"))
                 .unwrap_or(false);
             if is_opaque {
-                env.insert(name.clone(), Descr::opaque_of(name.as_str()));
+                // Parse the body after `opaque` and record T in the
+                // side map so the `.value` accessor (fz-swt.8) can
+                // type the access as T. Failure to parse defers (like
+                // the non-opaque branch) so forward references inside
+                // `opaque ...` still resolve.
+                //
+                // Special case: `opaque resource(T)` is the standard
+                // shape for refcounted resources (fz-swt). The body
+                // would otherwise resolve to the unqualified built-in
+                // opaque `Descr::opaque_of("resource")` — which
+                // discards T. We peel the `resource(...)` layer here
+                // so `opaque_inners` records the user's actual T (the
+                // payload's type), not the resource wrapper itself.
+                let body_after_opaque = &decl.body_tokens.0[1..];
+                let inner = if body_after_opaque.is_empty() {
+                    // `opaque` with no body — no inner type to record.
+                    None
+                } else if is_resource_ctor_body(body_after_opaque) {
+                    // Reparse just the `(T)` payload — `parse_resource`
+                    // throws T away and returns the wrapper tag.
+                    match parse_resource_inner(body_after_opaque, &env) {
+                        Ok(d) => Some(d),
+                        Err(_) => continue,
+                    }
+                } else {
+                    match parse_type_expr(body_after_opaque, &env) {
+                        Ok((d, _)) => Some(d),
+                        Err(_) => {
+                            // Body isn't valid yet (likely a forward
+                            // reference); try again in the next fixed-
+                            // point iteration. The post-loop unresolved-
+                            // handler will surface the real error if it
+                            // never resolves.
+                            continue;
+                        }
+                    }
+                };
+                let qualified = qualify_opaque_name(module_path, name);
+                env.insert(name.clone(), Descr::opaque_of(qualified.clone()));
+                if let Some(t) = inner {
+                    opaque_inners.insert(qualified, t);
+                }
                 progressed = true;
                 continue;
             }
@@ -181,7 +262,70 @@ pub fn build_module_type_env(
             }
         }
     }
-    Ok(env)
+    Ok((env, opaque_inners))
+}
+
+/// fz-swt.6 — build the module-qualified opaque tag stored on a
+/// `Descr::opaque_of(...)`. When `module_path` is empty, the result is
+/// just `alias` (top-level / runtime-prelude opaques have no module
+/// owner). Otherwise the tag has the form `"Mod.Path::alias"`. The `::`
+/// separator is chosen so it can't collide with module-path `.`
+/// segments or with parametric forms like `resource<integer>`.
+pub fn qualify_opaque_name(module_path: &str, alias: &str) -> String {
+    if module_path.is_empty() {
+        alias.to_string()
+    } else {
+        format!("{}::{}", module_path, alias)
+    }
+}
+
+/// fz-swt.8 — recognise the literal `resource(...)` body shape so we
+/// can extract the payload type T rather than the wrapper opaque tag.
+/// Pure tokenwise match; semantic resolution still goes through
+/// `parse_resource_inner` below.
+fn is_resource_ctor_body(toks: &[crate::lexer::Token]) -> bool {
+    use crate::lexer::Tok;
+    matches!(toks.first().map(|t| &t.tok), Some(Tok::Ident(n)) if n == "resource")
+        && matches!(toks.get(1).map(|t| &t.tok), Some(Tok::LParen))
+        && toks
+            .last()
+            .map(|t| matches!(&t.tok, Tok::RParen))
+            .unwrap_or(false)
+}
+
+/// fz-swt.8 — parse the `(T)` payload from a `resource(T)` body.
+/// Returns T directly, *not* the wrapper opaque tag. Used to populate
+/// the per-program `opaque_inners` side map so the typer's `.value`
+/// accessor sees the user's intended payload type rather than the
+/// unqualified built-in `"resource"` opaque.
+fn parse_resource_inner(
+    toks: &[crate::lexer::Token],
+    env: &ModuleTypeEnv,
+) -> Result<Descr, TypeExprError> {
+    // Drop the leading `resource (` and the trailing `)`. Caller has
+    // already verified the shape via `is_resource_ctor_body`, so the
+    // slice arithmetic is safe.
+    debug_assert!(is_resource_ctor_body(toks));
+    let inner_toks = &toks[2..toks.len() - 1];
+    let (d, consumed) = parse_type_expr(inner_toks, env)?;
+    if consumed != inner_toks.len() {
+        return Err(TypeExprError {
+            msg: "unexpected trailing tokens in resource(T)".to_string(),
+            span: inner_toks
+                .get(consumed)
+                .map(|t| t.span)
+                .unwrap_or(crate::diag::Span::DUMMY),
+        });
+    }
+    Ok(d)
+}
+
+/// fz-swt.6 — invert `qualify_opaque_name`: extract the declaring
+/// module path from a qualified opaque tag. Returns `None` for
+/// unqualified built-in opaques (`"resource"`) — they have no owner
+/// and are visible from every module.
+pub fn opaque_owner_module(qualified: &str) -> Option<&str> {
+    qualified.find("::").map(|i| &qualified[..i])
 }
 
 /// Scan `tokens` and return the user-visible names referenced (any
@@ -194,7 +338,7 @@ fn referenced_names(tokens: &[crate::lexer::Token]) -> Vec<String> {
         .filter_map(|t| match &t.tok {
             Tok::Ident(n) | Tok::Upper(n) => match n.as_str() {
                 "nil" | "bool" | "integer" | "float" | "binary" | "atom" | "any" | "never"
-                | "opaque" | "vector" | "u8" | "bit" => None,
+                | "opaque" | "vector" | "u8" | "bit" | "resource" => None,
                 _ => Some(n.clone()),
             },
             _ => None,
@@ -313,6 +457,8 @@ impl<'a> TypeExprParser<'a> {
                 self.bump();
                 if name == "vector" {
                     self.parse_vector()
+                } else if name == "resource" {
+                    self.parse_resource()
                 } else {
                     self.lookup_named(&name)
                 }
@@ -348,6 +494,27 @@ impl<'a> TypeExprParser<'a> {
                 other
             ))),
         }
+    }
+
+    /// fz-swt.6 — `resource(T)` is a parametric opaque ctor: the
+    /// "wrapped host value" type from the refcounted-resources epic
+    /// (fz-swt). The element type `T` is parsed and validated, but the
+    /// returned `Descr` is a built-in unqualified opaque tag
+    /// (`"resource"`) — visible from every module on its own. The
+    /// per-module visibility gate comes from the *outer* `opaque`
+    /// alias that wraps it (e.g. `@type t :: opaque resource(integer)`):
+    /// the alias's qualified opaque tag (`"Mod::t"`) is what enforces
+    /// module ownership.
+    ///
+    /// Storing `T` structurally in the Descr is left to fz-swt.8 (the
+    /// `.value` accessor) — at this layer the parameter exists only to
+    /// validate the type-expr and to document intent.
+    fn parse_resource(&mut self) -> Result<Descr, TypeExprError> {
+        // `resource` already consumed. Parse `(T)`.
+        self.expect(&Tok::LParen, "`(` after `resource`")?;
+        let _inner = self.parse_union()?;
+        self.expect(&Tok::RParen, "`)` after resource element type")?;
+        Ok(Descr::opaque_of("resource"))
     }
 
     fn parse_list(&mut self) -> Result<Descr, TypeExprError> {
@@ -862,6 +1029,57 @@ mod tests {
         assert!(
             !Descr::int().is_subtype(pid),
             "integer should NOT be a subtype of pid"
+        );
+    }
+
+    // ---- resource(T) (fz-swt.6) ----
+
+    #[test]
+    fn resource_integer_parses_to_builtin_opaque_tag() {
+        // `resource(T)` is a parametric opaque ctor. The result has the
+        // unqualified built-in tag `"resource"`; visibility for user
+        // aliases (`@type t :: opaque resource(integer)`) comes from
+        // the *outer* opaque alias, not from this tag.
+        let d = parse_one("resource(integer)").unwrap();
+        assert_eq!(d.as_opaque_singleton(), Some("resource"));
+    }
+
+    #[test]
+    fn resource_inner_type_is_validated() {
+        let r = parse_one("resource(nonesuch)");
+        assert!(r.is_err(), "unknown inner type must error; got {:?}", r);
+    }
+
+    #[test]
+    fn build_env_opaque_resource_alias_qualifies_with_module() {
+        // The design example: `@type t :: opaque resource(integer)`.
+        // Built under module "File", the alias should carry the
+        // qualified tag `"File::t"`.
+        let attrs = vec![type_alias_attr("t", "opaque resource(integer)")];
+        let (env, _inners) = build_module_type_env_for(&attrs, "File").unwrap();
+        let t = env.get("t").expect("alias resolved");
+        assert_eq!(t.as_opaque_singleton(), Some("File::t"));
+    }
+
+    #[test]
+    fn build_env_opaque_alias_unqualified_at_top_level() {
+        // Top-level (no enclosing module) preserves the legacy
+        // unqualified tag — these opaques have no owner.
+        let attrs = vec![type_alias_attr("pid", "opaque integer")];
+        let env = build_module_type_env(&attrs).unwrap();
+        let pid = env.get("pid").unwrap();
+        assert_eq!(pid.as_opaque_singleton(), Some("pid"));
+    }
+
+    #[test]
+    fn build_env_opaque_alias_rejects_bad_body() {
+        // `opaque <body>` parses the body; an unknown name surfaces.
+        let attrs = vec![type_alias_attr("t", "opaque nonesuch")];
+        let err = build_module_type_env_for(&attrs, "M").unwrap_err();
+        assert!(
+            err.msg.contains("unknown type name"),
+            "expected unknown-name diag from opaque body, got: {}",
+            err.msg,
         );
     }
 

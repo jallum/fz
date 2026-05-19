@@ -625,6 +625,9 @@ struct Compiled {
     /// SourceMap surfaced so `fz dump` can resolve Cranelift's `@<hex>`
     /// srclocs back to `file:line:col`. fz-ul4.23.7.
     sm: diag::SourceMap,
+    /// fz-swt.10 — IR Module kept alive past codegen so the runtime's
+    /// `MakeResourceHook` thunk can walk dtor closure bodies.
+    module: fz_ir::Module,
 }
 
 /// fz-73m — drive a source string through lex → parse → resolve → macros
@@ -1044,7 +1047,12 @@ fn compile_pipeline(src: String, source_name: String) -> Compiled {
         std::process::exit(1);
     });
     diag::render_to_stderr(&sm, cm.warnings());
-    Compiled { cm, main_fn, sm }
+    Compiled {
+        cm,
+        main_fn,
+        sm,
+        module,
+    }
 }
 
 /// `fz run <path>` (and the no-argument stdin route) — compile, then drive
@@ -1062,7 +1070,9 @@ fn run_jit_src(src: String, source_name: String) {
         diag::render_one_to_stderr(&sm, &d);
         std::process::exit(1);
     };
-    let mut rt = runtime::Runtime::new(&compiled.cm, 1);
+    // fz-swt.10 — attach the IR Module so `fz_make_resource` (callable
+    // from JIT'd code) can resolve dtor closures.
+    let mut rt = runtime::Runtime::new(&compiled.cm, 1).with_module(&compiled.module);
     let _main_pid = rt.spawn(main_fn);
     rt.run_until_idle();
 }

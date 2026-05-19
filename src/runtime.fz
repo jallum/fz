@@ -30,6 +30,10 @@ fn self(), do: fz_self()
 @spec send(pid, any) :: any
 fn send(pid, msg), do: fz_send(pid, msg)
 
+@doc "Wraps `value` in an opaque resource; `dtor` is invoked exactly once when the last reference becomes unreachable (interp: at GC sweep / process heap drop)."
+@spec make_resource(any, any) :: any
+fn make_resource(value, dtor), do: fz_make_resource(value, dtor)
+
 extern "C" fn fz_print_i64(integer) :: nil
 extern "C" fn fz_print_value(any) :: nil
 extern "C" fn fz_assert(any) :: nil
@@ -40,3 +44,4 @@ extern "C" fn fz_spawn(any) :: any
 extern "C" fn fz_spawn_opt(any, any) :: any
 extern "C" fn fz_self() :: pid
 extern "C" fn fz_send(pid, any) :: any
+extern "C" fn fz_make_resource(any, any) :: any

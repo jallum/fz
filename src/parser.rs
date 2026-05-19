@@ -136,6 +136,75 @@ end
 
     /// case scrutinee, cond test, with binding source, and when-guard
     /// are all cond-position and must suppress the sugar.
+    // fz-swt.5 — explicit `&name/arity` fn references.
+
+    #[test]
+    fn fn_ref_bare_name_parses() {
+        let e = parse_fn_body("&foo/1");
+        match e {
+            Expr::FnRef { name, arity } => {
+                assert_eq!(name, "foo");
+                assert_eq!(arity, 1);
+            }
+            other => panic!("expected FnRef, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn fn_ref_zero_arity_parses() {
+        let e = parse_fn_body("&do_it/0");
+        match e {
+            Expr::FnRef { name, arity } => {
+                assert_eq!(name, "do_it");
+                assert_eq!(arity, 0);
+            }
+            other => panic!("expected FnRef, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn fn_ref_module_qualified_parses() {
+        // `&Mod.fun/2` captures the full dotted path as the name.
+        let e = parse_fn_body("&Mod.fun/2");
+        match e {
+            Expr::FnRef { name, arity } => {
+                assert_eq!(name, "Mod.fun");
+                assert_eq!(arity, 2);
+            }
+            other => panic!("expected FnRef, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn fn_ref_nested_module_qualified_parses() {
+        let e = parse_fn_body("&A.B.run/3");
+        match e {
+            Expr::FnRef { name, arity } => {
+                assert_eq!(name, "A.B.run");
+                assert_eq!(arity, 3);
+            }
+            other => panic!("expected FnRef, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn fn_ref_as_call_arg_parses() {
+        // Ensures &name/arity composes naturally inside argument lists.
+        let e = parse_fn_body("apply(&foo/1, 7)");
+        let Expr::Call(_, args) = e else { panic!() };
+        assert_eq!(args.len(), 2);
+        assert!(matches!(&args[0].node, Expr::FnRef { name, arity }
+            if name == "foo" && *arity == 1));
+    }
+
+    #[test]
+    fn double_ampersand_is_still_andand() {
+        // Defensive: adding bare `&` to the lexer must not break `&&`.
+        let e = parse_fn_body("true && false");
+        let Expr::BinOp(op, _, _) = e else { panic!() };
+        assert!(matches!(op, BinOp::And));
+    }
+
     #[test]
     fn cond_call_in_case_when_guard_does_not_swallow_do_block() {
         // when-guard pred(h) followed by `->` body that itself contains
@@ -350,6 +419,7 @@ impl Parser {
             items,
             module_docs: Default::default(),
             module_type_envs: Default::default(),
+            opaque_inners: Default::default(),
         })
     }
 
@@ -1437,6 +1507,46 @@ impl Parser {
                 self.bump();
                 let e = self.parse_bp(80)?;
                 Expr::UnOp(UnOp::Not, Box::new(e))
+            }
+            // fz-swt.5: `&name/arity` or `&Mod.Sub.name/arity` — explicit
+            // first-class function reference. `name` is captured as a
+            // dotted string so the resolver/lowerer can do `(name, arity)`
+            // lookup the same way Call does.
+            Tok::Amp => {
+                self.bump();
+                let mut parts: Vec<String> = Vec::new();
+                match self.bump() {
+                    Tok::Ident(n) | Tok::Upper(n) => parts.push(n),
+                    other => {
+                        return self.err(format!("expected name after `&`, got {:?}", other));
+                    }
+                }
+                while matches!(self.peek(), Tok::Dot) {
+                    self.bump();
+                    match self.bump() {
+                        Tok::Ident(n) | Tok::Upper(n) => parts.push(n),
+                        other => {
+                            return self.err(format!(
+                                "expected name after `.` in `&...`, got {:?}",
+                                other
+                            ));
+                        }
+                    }
+                }
+                self.expect(&Tok::Slash, "`/` after name in `&name/arity`")?;
+                let arity = match self.bump() {
+                    Tok::Int(n) if n >= 0 => n as usize,
+                    other => {
+                        return self.err(format!(
+                            "expected non-negative integer arity after `/`, got {:?}",
+                            other
+                        ));
+                    }
+                };
+                Expr::FnRef {
+                    name: parts.join("."),
+                    arity,
+                }
             }
             Tok::LParen => {
                 self.bump();

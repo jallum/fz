@@ -314,22 +314,34 @@ pub fn alloc_procbin(heap: &mut Heap, handle: SharedBinHandle) -> ProcBin {
 /// the to-space copy and the surviving chain is rebuilt; dead entries
 /// have their SharedBin refcount released.
 pub fn mso_sweep(heap: &mut Heap) {
+    use crate::resource::{ResourceStub, fz_resource_release};
     let mut new_head: *mut HeapHeader = std::ptr::null_mut();
     let mut cur = heap.mso_head;
     while !cur.is_null() {
         // Read next link BEFORE potentially overwriting from-space copy.
+        // ProcBin and Resource share the same 32-byte layout for header +
+        // shared_ptr + mso_next, so ProcBin's accessors work for either
+        // kind here (we only touch the mso_next slot).
         let pb_from = unsafe { ProcBin::from_raw(cur) };
         let next = pb_from.mso_next();
         let kind = unsafe { (*cur).kind };
         if kind == crate::heap::FORWARDED_KIND {
             let to_p = unsafe { std::ptr::read((cur as *const u8).add(8) as *const u64) }
                 as *mut HeapHeader;
+            // Same observation: ProcBin's mso_next_set works on Resource
+            // stubs too because the offset is identical.
             let pb_to = unsafe { ProcBin::from_raw(to_p) };
             pb_to.mso_next_set(new_head);
             new_head = to_p;
         } else {
-            debug_assert_eq!(kind, HeapKind::ProcBin as u16);
-            unsafe { shared_bin_release(pb_from.shared_raw()) };
+            match HeapKind::from_u16(kind) {
+                Some(HeapKind::ProcBin) => unsafe { shared_bin_release(pb_from.shared_raw()) },
+                Some(HeapKind::Resource) => {
+                    let rs = unsafe { ResourceStub::from_raw(cur) };
+                    unsafe { fz_resource_release(rs.shared_raw()) };
+                }
+                other => panic!("mso_sweep: unexpected MSO kind: {:?}", other),
+            }
         }
         cur = next;
     }
@@ -339,11 +351,22 @@ pub fn mso_sweep(heap: &mut Heap) {
 /// Drop every ProcBin in `heap.mso_head`'s chain, releasing each
 /// SharedBin reference. Called from `Heap::drop` before pool reclaim.
 pub fn mso_drop_all(heap: &mut Heap) {
+    use crate::resource::{ResourceStub, fz_resource_release};
     let mut cur = heap.mso_head;
     while !cur.is_null() {
+        // ProcBin's `mso_next` accessor reads offset +24, which is the
+        // same slot in a Resource stub; safe for either kind.
         let pb = unsafe { ProcBin::from_raw(cur) };
         let next = pb.mso_next();
-        unsafe { shared_bin_release(pb.shared_raw()) };
+        let kind = unsafe { (*cur).kind };
+        match HeapKind::from_u16(kind) {
+            Some(HeapKind::ProcBin) => unsafe { shared_bin_release(pb.shared_raw()) },
+            Some(HeapKind::Resource) => {
+                let rs = unsafe { ResourceStub::from_raw(cur) };
+                unsafe { fz_resource_release(rs.shared_raw()) };
+            }
+            other => panic!("mso_drop_all: unexpected MSO kind: {:?}", other),
+        }
         cur = next;
     }
     heap.mso_head = std::ptr::null_mut();

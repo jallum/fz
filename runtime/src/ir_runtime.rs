@@ -153,6 +153,22 @@ pub extern "C" fn fz_spawn_opt(closure_bits: u64, min_heap_size_bits: u64) -> u6
     FzValue::from_int(pid as i64).0
 }
 
+/// fz-swt.10 — `make_resource(payload, dtor)` runtime BIF, callable from
+/// the JIT/AOT path. `payload` is the raw FzValue bits to hand back to the
+/// user-supplied dtor; `dtor_closure_bits` is the closure value produced
+/// by the `&name/arity` form. Returns the FzValue bits of the resource
+/// handle (a `HeapKind::Resource` stub on the current process heap).
+///
+/// Dtor resolution requires walking the closure body's IR to find the
+/// underlying `Prim::Extern`, so we delegate to the binary-side hook
+/// (the runtime crate has no IR Module). The same hook is installed for
+/// both interp and JIT/AOT execution — the symbol path is therefore
+/// uniform across all three legs (see fz-swt.10's `MakeResourceHook`).
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_make_resource(payload: u64, dtor_closure_bits: u64) -> u64 {
+    crate::scheduler_hooks::dispatch_make_resource(payload, dtor_closure_bits)
+}
+
 /// fz_self() -> pid_bits. Returns the currently-running task's pid as a
 /// boxed FzValue Int.
 #[unsafe(no_mangle)]
@@ -956,6 +972,28 @@ pub extern "C" fn fz_map_get(map_bits: u64, key_bits: u64) -> u64 {
         .unbox_ptr()
         .expect("fz_map_get on non-ptr");
     let header = unsafe { &*p };
+    // fz-swt.8 — `handle.value` on a resource handle. The typer accepts
+    // `.value` on opaque-typed handles (gated by declaring-module
+    // visibility); the lowering reuses `m.k` → `Prim::MapGet`. At
+    // runtime, a resource stub answers `:value` with its payload —
+    // no map dispatch.
+    //
+    // We don't peek at `key_bits` here: the typer has already rejected
+    // any non-`:value` access on a resource (no `.foo` exists), so the
+    // runtime can return the payload unconditionally for Resource
+    // subjects. If a future feature wants to grow more resource
+    // accessors, this is where the dispatch would split.
+    if HeapKind::from_u16(header.kind) == Some(HeapKind::Resource) {
+        let _ = key_bits;
+        // The 32-byte stub stores the off-heap Resource pointer at
+        // offset +16 (mirrors `ResourceStub::shared_raw`); the
+        // `payload` field on the Resource itself sits at offset +16
+        // of the off-heap struct (see `Resource` layout assertion).
+        let shared = unsafe {
+            std::ptr::read((p as *const u8).add(16) as *const *mut crate::resource::Resource)
+        };
+        return unsafe { (*shared).payload };
+    }
     if HeapKind::from_u16(header.kind) != Some(HeapKind::Map) {
         panic!("fz_map_get on non-Map");
     }

@@ -483,7 +483,8 @@ pub fn expand_expr(
         | Expr::Atom(_)
         | Expr::Bool(_)
         | Expr::Nil
-        | Expr::Var(_) => {}
+        | Expr::Var(_)
+        | Expr::FnRef { .. } => {}
 
         Expr::List(xs, tail) => {
             for x in xs {
@@ -598,7 +599,8 @@ fn stamp_expanded(e: &mut Spanned<Expr>, macro_call: Span, definition: Option<Sp
         | Expr::Atom(_)
         | Expr::Bool(_)
         | Expr::Nil
-        | Expr::Var(_) => {}
+        | Expr::Var(_)
+        | Expr::FnRef { .. } => {}
         Expr::List(xs, tail) => {
             for x in xs {
                 stamp_expanded(x, macro_call, definition);

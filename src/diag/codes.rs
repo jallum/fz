@@ -60,6 +60,11 @@ pub const TYPE_EMPTY_NARROWING: DiagCode = DiagCode("type/empty-narrowing");
 pub const TYPE_NO_MATCHING_CLAUSE: DiagCode = DiagCode("type/no-matching-clause");
 pub const TYPE_DEAD_BINOP: DiagCode = DiagCode("type/dead-binop");
 pub const TYPE_SPEC_QUALITY: DiagCode = DiagCode("type/spec-quality");
+/// fz-swt.6 — access to a field of an opaque type from outside the
+/// declaring module. Emitted by the future `.value` accessor (fz-swt.8)
+/// and any other opaque-field accessor that consults
+/// `crate::typer::check_opaque_visibility`.
+pub const TYPE_OPAQUE_VISIBILITY: DiagCode = DiagCode("type/opaque-visibility");
 
 // ----- codegen -----
 
@@ -104,6 +109,7 @@ mod tests {
             TYPE_UNREACHABLE_ARM,
             TYPE_EMPTY_NARROWING,
             TYPE_SPEC_QUALITY,
+            TYPE_OPAQUE_VISIBILITY,
             CODEGEN_SCHEMA_MISSING,
             RUNTIME_ASSERTION_FAILED,
             INTERNAL_POST_RESOLUTION_LEFTOVER,

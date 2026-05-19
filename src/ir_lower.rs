@@ -657,6 +657,9 @@ pub fn lower_program_full(prog: &Program) -> Result<(Module, AtomTable), LowerEr
         module.extern_idx.insert(e.id, i);
     }
     module.boundary_fns = std::mem::take(&mut ctx.boundary_fns);
+    // fz-swt.8 — carry the resolver's opaque-inner-type map onto the
+    // Module so the typer can resolve `handle.value` accesses to T.
+    module.opaque_inners = prog.opaque_inners.clone();
     // fz-02r.4 — annotate TailCall back-edges from the structural SCC.
     annotate_back_edges(&mut module, &ctx.fn_spans)?;
     // fz-uwq.1 — verify the unique-cont invariant the post-type pipeline
@@ -1128,6 +1131,7 @@ fn body_might_cps_split(body: &Spanned<Expr>) -> bool {
             | Expr::Bool(_)
             | Expr::Nil
             | Expr::Var(_)
+            | Expr::FnRef { .. }
             | Expr::Lambda(_, _)
             | Expr::Quote(_)
             | Expr::Unquote(_) => false,
@@ -1929,9 +1933,10 @@ fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -> Result<Va
                 return Ok(v);
             }
             // Fall back: bare top-level fn name used as a value -> 0-captured
-            // closure pointing at the fn's IR id. Picks the first matching
-            // arity if the source has multiple (fz currently has no syntax
-            // to disambiguate `&name/arity`; the first defined wins).
+            // closure pointing at the fn's IR id. With no explicit arity in
+            // the bare-name form, picks the first matching name (overloads
+            // disambiguate via the explicit `&name/arity` form — see the
+            // `Expr::FnRef` arm).
             if let Some((_, fn_id)) = ctx
                 .fns
                 .iter()
@@ -1943,6 +1948,19 @@ fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -> Result<Va
             Err(LowerError::Unbound {
                 span: sp,
                 name: name.clone(),
+            })
+        }
+
+        // fz-swt.5: `&name/arity` — explicit, arity-aware fn reference.
+        // Direct (name, arity) lookup in the same fn map Call uses, so an
+        // overloaded name resolves unambiguously to the requested clause.
+        Expr::FnRef { name, arity } => {
+            if let Some(&fn_id) = ctx.fns.get(&(name.clone(), *arity)) {
+                return Ok(ctx.let_at(Prim::make_closure(sp, fn_id, vec![]), sp));
+            }
+            Err(LowerError::Unbound {
+                span: sp,
+                name: format!("fn {}/{}", name, arity),
             })
         }
 
@@ -4495,8 +4513,9 @@ end
             .parse_program()
             .expect("parse");
         let (module, _) = lower_program_full(&prog).expect("lower");
-        // 10 runtime.fz externs + 1 user extern = 11 total.
-        assert_eq!(module.externs.len(), 11);
+        // 11 runtime.fz externs + 1 user extern = 12 total.
+        // (fz-swt.7 added `fz_make_resource`.)
+        assert_eq!(module.externs.len(), 12);
         // fz_nop is at the end (user externs follow runtime.fz externs).
         let nop = module
             .externs
@@ -4505,11 +4524,11 @@ end
             .expect("fz_nop not found in externs");
         assert_eq!(nop.params, vec![ExternTy::Any]);
         assert_eq!(nop.ret, ExternTy::Unit);
-        // main's IR should contain Extern(9, [...]) — fz_nop is ExternId(9).
+        // main's IR should contain Extern(11, [...]) — fz_nop is now ExternId(11).
         let ir = format!("{}", module);
         assert!(
-            ir.contains("extern#10"),
-            "expected extern#10 in IR:\n{}",
+            ir.contains("extern#11"),
+            "expected extern#11 in IR:\n{}",
             ir
         );
     }

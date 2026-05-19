@@ -23,6 +23,8 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `destructure_tuple/` | irrefutable tuple destructure in a let-style bind — first fixture to exercise `{a, b} = expr` across all four legs | jit, interp, aot, repl |
 | `empty_list_distinct_from_nil/` | pin fz-s9y semantics — `nil` and `[]` print as distinct strings | jit, aot, interp, repl |
 | `fib_tailrec/` | fibonacci via two-accumulator tail recursion — three-clause dispatch + tail-call forwarding under load | jit, interp, aot, repl |
+| `file_resource_lifecycle/` | fz-swt.13 — File module wraps an fd in a resource; the dtor closes the fd at heap drop (interp/JIT/AOT parity). | interp, jit, aot |
+| `fn_ref_ampersand/` | &name/arity parses as an explicit function reference, disambiguating overloaded names by arity | jit, interp |
 | `hello/` | print each scalar shape — int, atom, bool, nil | jit, interp, repl |
 | `higher_order/` | higher-order patterns — apply2, compose | jit, interp, aot, repl |
 | `hot_fn/` | same call repeated — historical JIT tier-up trigger; today every call is JIT | jit, interp, repl |
@@ -43,6 +45,8 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `polymorphic/` | parametric `id` exercised over int, atom, and bool | jit, interp, repl |
 | `quicksort/` | closing fixture of the destructure-up-through-quicksort arc — `{lo, hi} = partition(...)` on the hot path of a recursive sort | jit, interp, aot, repl |
 | `relay/` | one-hop relay — spawned child blocks on receive before parent sends; exercises non-blocking spawn + receive-parks semantics | jit, interp, aot |
+| `resource_aot_dtor/` | AOT-compiled binary fires user-supplied resource dtors at heap drop | aot |
+| `resource_lifecycle/` | fz-swt.12 — resource lifecycle (make_resource + .value + dtor) is observably identical across interp, JIT, AOT | interp, jit, aot |
 | `sample_tests/` | `test()` macro from the prelude — assert_eq / assert_neq / assert | jit |
 | `sample_tests_module/` | `test()` inside a defmodule body | jit |
 | `shared_heap_send_large_bitstring/` | fz-cty.6 — sending a >64-byte bitstring via spawn-and-send rounds through ProcBin/SharedBin under JIT and AOT | jit, interp, aot |

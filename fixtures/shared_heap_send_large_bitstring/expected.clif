@@ -26,25 +26,25 @@ function u0:0(i64) -> i64 tail {
 block0(v0: i64):
     v1 = symbol_value.i64 gv0           ; @6:10
     v2 = call fn0(v1)                   ; @6:10
-    v3 = iconst.i32 13                  ; @6:13
+    v3 = iconst.i32 14                  ; @6:13
     v4 = iconst.i32 1                   ; @6:13
     v5 = iconst.i32 0                   ; @6:13
-    v6 = call fn1(v3, v4, v5)           ; @6:13  v3 = 13, v4 = 1, v5 = 0
+    v6 = call fn1(v3, v4, v5)           ; @6:13  v3 = 14, v4 = 1, v5 = 0
     v7 = func_addr.i64 fn2              ; @6:13
     store notrap aligned v7, v6+16      ; @6:13
     store notrap aligned v2, v6+24      ; @6:13
-    v8 = iconst.i32 14                  ; @6:16
+    v8 = iconst.i32 15                  ; @6:16
     v9 = iconst.i32 1                   ; @6:16
     v10 = iconst.i32 0                  ; @6:16
-    v11 = call fn3(v8, v9, v10)         ; @6:16  v8 = 14, v9 = 1, v10 = 0
+    v11 = call fn3(v8, v9, v10)         ; @6:16  v8 = 15, v9 = 1, v10 = 0
     v12 = func_addr.i64 fn4             ; @6:16
     store notrap aligned v12, v11+16    ; @6:16
     store notrap aligned v6, v11+24     ; @6:16
     v13 = call fn5(v11)                 ; @6:19
-    v14 = iconst.i32 15                 ; @8:9
+    v14 = iconst.i32 16                 ; @8:9
     v15 = iconst.i32 2                  ; @8:9
     v16 = iconst.i32 0                  ; @8:9
-    v17 = call fn6(v14, v15, v16)       ; @8:9  v14 = 15, v15 = 2, v16 = 0
+    v17 = call fn6(v14, v15, v16)       ; @8:9  v14 = 16, v15 = 2, v16 = 0
     v18 = func_addr.i64 fn7             ; @8:9
     store notrap aligned v18, v17+16    ; @8:9
     store notrap aligned v0, v17+24     ; @8:9
@@ -53,8 +53,8 @@ block0(v0: i64):
     return v19                          ; @8:9
 }
 
-; fn lambda_13
-    ;   @spec   lambda_13(any) -> any
+; fn lambda_14
+    ;   @spec   lambda_14(any) -> any
     ;   @key    [any]
     ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
@@ -84,8 +84,8 @@ block0(v0: i64, v1: i64):
     return_call_indirect sig0, v3(v2, v1)
 }
 
-; fn k_receive_15
-    ;   @spec   k_receive_15(any, vec(u8) | vec(bit)) -> nil
+; fn k_receive_16
+    ;   @spec   k_receive_16(any, vec(u8) | vec(bit)) -> nil
     ;   @key    [any, vec(u8) | vec(bit)]
     ;   @abi    (Tagged, Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {

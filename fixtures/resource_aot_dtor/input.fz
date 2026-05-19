@@ -1,0 +1,11 @@
+extern "C" fn fz_resource_test_print_dtor(integer) :: nil
+
+fn dwrap(x), do: fz_resource_test_print_dtor(x)
+
+fn main() do
+  _a = make_resource(10, &dwrap/1)
+  _b = make_resource(20, &dwrap/1)
+  _c = make_resource(30, &dwrap/1)
+  _alias = _c
+  print(:before)
+end

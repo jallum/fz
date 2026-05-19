@@ -1839,3 +1839,158 @@ fn typer_publishes_dispatches_for_direct_call() {
     assert_eq!(key.len(), 1);
     assert_eq!(key[0], Descr::int_lit(42));
 }
+
+// ---- fz-swt.8 — `.value` accessor: typing + visibility gating ----
+
+/// Inside the declaring module, `handle.value` typechecks as the inner
+/// `T` recorded on the opaque alias — not as the generic
+/// `Descr::any().union(&Descr::nil())` map-lookup fallback. The handle
+/// here is a fn parameter typed as `A.t` (where `A` declares
+/// `@type t :: opaque resource(integer)`), and the body returns
+/// `h.value`. The inferred return must be a subtype of `integer`.
+#[test]
+fn value_accessor_inside_declaring_module_types_as_inner() {
+    // Param uses the `x :: T` annotation form so ir_lower emits a
+    // `TypeTest` guard; the typer's narrowing then pins the param to
+    // `A::t` along the pass-branch entry block. Without the
+    // annotation, the param would be `any` and the `.value` accessor
+    // would fall through to the generic map-lookup result. The
+    // top-level `main` exists only to seed the typer entry — without
+    // a caller, `A.get/1` has no registered spec.
+    let src = r#"
+defmodule A do
+  @type t :: opaque resource(integer)
+
+  fn get(h :: t), do: h.value
+end
+
+fn main() do
+  h = make_resource(7, &print/1)
+  A.get(h)
+end
+"#;
+    let (m, mt) = pipeline(src);
+    let f = m.fn_by_name("A.get").expect("A.get exists post-lower");
+    let ft = mt.any_spec_for(f.id).unwrap_or_else(|| {
+        let keys: Vec<_> = mt.specs.keys().filter(|(fid, _)| *fid == f.id).collect();
+        panic!("no spec for A.get/1; have keys: {:?}", keys);
+    });
+    // The fn body lowers `h.value` to a `Prim::MapGet(h, :value)`
+    // (TypeTest dispatch wraps it in a few blocks). Find that stmt's
+    // result var and check its inferred type — it must be a subtype
+    // of integer once the typer reads `m.opaque_inners["A::t"]`.
+    let mut found = false;
+    for b in &f.blocks {
+        for stmt in &b.stmts {
+            let crate::fz_ir::Stmt::Let(v, prim) = stmt;
+            if matches!(prim, Prim::MapGet(_, _))
+                && let Some(rt) = ft.vars.get(v)
+            {
+                assert!(
+                    rt.is_subtype(&Descr::int()),
+                    "h.value should type as integer (inner T), got `{}`",
+                    rt,
+                );
+                found = true;
+            }
+        }
+    }
+    assert!(found, "expected at least one MapGet stmt in A.get");
+}
+
+/// Outside the declaring module, `handle.value` is rejected with a
+/// `type/opaque-visibility` diagnostic. We build the failure scenario
+/// directly at the IR layer: a tiny module-with-opaques table, an
+/// `A.get`-style fn renamed to live in module `B`, and a synthetic
+/// `Module.opaque_inners["A::t"] -> integer` entry. This bypasses the
+/// surface-syntax gap that module-qualified type annotations like
+/// `h :: A.t` aren't yet resolvable (`type_expr::lookup_named` keys
+/// the env on bare alias names), and instead exercises exactly the
+/// thing the gate is meant to police: a value already typed as an
+/// opaque declared elsewhere.
+#[test]
+fn value_accessor_outside_declaring_module_emits_diagnostic() {
+    use crate::fz_ir::{Const, FnBuilder, FnId, ModuleBuilder, Prim, Term};
+    // Module name `B` (post-resolve dotted form: `"B.peek"`).
+    // The fn typechecks under a narrow spec where param is `A::t`.
+    let mut b = FnBuilder::new(FnId(0), "B.peek");
+    let h = b.fresh_var();
+    let entry = b.block(vec![h]);
+    // key var `:value`
+    let key = b.let_(entry, Prim::Const(Const::Atom(0)));
+    let v = b.let_(entry, Prim::MapGet(h, key));
+    b.set_terminator(entry, Term::Return(v));
+    let mut mb = ModuleBuilder::new();
+    mb.add_fn(b.build());
+    let mut m = mb.build();
+    // Atom 0 is `:value`. (atom_names is empty by default; populate
+    // index 0 so `var_as_map_key` returns the right key.)
+    m.atom_names = vec!["value".to_string()];
+    // Record the inner type for the opaque "A::t" alias declared in
+    // module A.
+    m.opaque_inners.insert("A::t".to_string(), Descr::int());
+
+    // Drive the typer under a narrow spec that pins `h` to A::t.
+    let narrow_key = vec![Descr::opaque_of("A::t")];
+    let ft = crate::ir_typer::type_fn(&m.fns[0], &m, Some(&narrow_key));
+    // Register the spec so collect_diagnostics picks it up.
+    let mut mt = crate::ir_typer::type_module(&m);
+    mt.specs.insert((FnId(0), narrow_key), ft);
+
+    let diags = crate::ir_typer::collect_diagnostics(&m, &mt);
+    let visibility = diags
+        .iter()
+        .find(|d| d.code == crate::diag::codes::TYPE_OPAQUE_VISIBILITY)
+        .unwrap_or_else(|| {
+            panic!(
+                "expected a type/opaque-visibility diagnostic; got: {:?}",
+                diags
+                    .iter()
+                    .map(|d| (d.code, &d.message))
+                    .collect::<Vec<_>>(),
+            )
+        });
+    assert!(
+        visibility.message.contains("A::t"),
+        "diag should mention the qualified opaque tag `A::t`; got: {}",
+        visibility.message,
+    );
+    assert!(
+        visibility
+            .message
+            .contains("not accessible from module `B`"),
+        "diag should mention the using module `B`; got: {}",
+        visibility.message,
+    );
+    assert!(
+        visibility.message.contains("declared in module `A`"),
+        "diag should mention the declaring module `A`; got: {}",
+        visibility.message,
+    );
+}
+
+/// Sibling fns in the declaring module reach `.value` without any
+/// diagnostic. Pairs with the rejecting test above to prove the gate
+/// is module-scoped, not whole-program.
+#[test]
+fn value_accessor_inside_declaring_module_emits_no_diagnostic() {
+    let src = r#"
+defmodule A do
+  @type t :: opaque resource(integer)
+
+  fn get(h :: t), do: h.value
+end
+"#;
+    let (m, mt) = pipeline(src);
+    let diags = crate::ir_typer::collect_diagnostics(&m, &mt);
+    assert!(
+        !diags
+            .iter()
+            .any(|d| d.code == crate::diag::codes::TYPE_OPAQUE_VISIBILITY),
+        "no opaque-visibility diag should fire from inside the declaring module; got: {:?}",
+        diags
+            .iter()
+            .map(|d| (d.code, &d.message))
+            .collect::<Vec<_>>(),
+    );
+}

@@ -50,6 +50,18 @@ pub fn expr_to_value(e: &Spanned<Expr>) -> Result<Value, String> {
 
         Expr::Var(name) => ast_node(name, &[], Some(atom(USER_CTX))),
 
+        // fz-swt.5: `&name/arity` reifies as `:&(:name, :arity)` — an
+        // AST node so it round-trips through quote/unquote like any other
+        // leaf. The decode side is not implemented for this v1 reifier.
+        Expr::FnRef { name, arity } => ast_node(
+            "&",
+            &[],
+            Some(Value::List(Rc::new(vec![
+                Value::Atom(Rc::from(name.as_str())),
+                Value::Int(*arity as i64),
+            ]))),
+        ),
+
         Expr::List(xs, tail) => {
             if tail.is_some() {
                 return Err("quote: list cons-tail not yet supported".into());

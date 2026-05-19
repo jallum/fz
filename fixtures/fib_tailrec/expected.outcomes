@@ -1,54 +1,54 @@
 outcomes for fixtures/fib_tailrec/input.fz
 
 fib[20, 0, 1]:
-  @0:0-22 Direct -> Static(fn_clause_0#13 [0])
-  @0:23-45 Direct -> Static(fn_clause_1#14 [1])
-  @0:46-87 Direct -> Static(fn_clause_2#15 [20, 0, 1])
+  @0:0-22 Direct -> Static(fn_clause_0#14 [0])
+  @0:23-45 Direct -> Static(fn_clause_1#15 [1])
+  @0:46-87 Direct -> Static(fn_clause_2#16 [20, 0, 1])
 
 fib[int, 1, int]:
-  @0:0-22 Direct -> Static(fn_clause_0#13 [1])
-  @0:23-45 Direct -> Static(fn_clause_1#14 [int])
-  @0:46-87 Direct -> Static(fn_clause_2#15 [int \ {0, 1}, 1, int])
+  @0:0-22 Direct -> Static(fn_clause_0#14 [1])
+  @0:23-45 Direct -> Static(fn_clause_1#15 [int])
+  @0:46-87 Direct -> Static(fn_clause_2#16 [int \ {0, 1}, 1, int])
 
 fib[int, int, int]:
-  @0:0-22 Direct -> Static(fn_clause_0#13 [int])
-  @0:23-45 Direct -> Static(fn_clause_1#14 [int])
-  @0:46-87 Direct -> Static(fn_clause_2#15 [int \ {0, 1}, int, int])
+  @0:0-22 Direct -> Static(fn_clause_0#14 [int])
+  @0:23-45 Direct -> Static(fn_clause_1#15 [int])
+  @0:46-87 Direct -> Static(fn_clause_2#16 [int \ {0, 1}, int, int])
 
 fn_clause_2[20, 0, 1]:
-  @0:67-87 Direct -> Static(fib#11 [int, 1, int])
+  @0:67-87 Direct -> Static(fib#12 [int, 1, int])
 
 fn_clause_2[int \ {0, 1}, 1, int]:
-  @0:67-87 Direct -> Static(fib#11 [int, int, int])
+  @0:67-87 Direct -> Static(fib#12 [int, int, int])
 
 fn_clause_2[int \ {0, 1}, int, int]:
-  @0:67-87 Direct -> Static(fib#11 [int, int, int])
+  @0:67-87 Direct -> Static(fib#12 [int, int, int])
 
 main[]:
   @0:110-122 Direct -> Folded(0)
-  @0:110-122 Direct -> Static(k_16#16 [0])
+  @0:110-122 Direct -> Static(k_17#17 [0])
 
-k_16[0]:
-  @0:104-123 Cont -> Static(k_17#17 [nil])
+k_17[0]:
+  @0:104-123 Cont -> Static(k_18#18 [nil])
   @0:104-123 Direct -> Static(print#0 [0])
 
-k_17[nil]:
-  @0:132-144 Direct -> Static(k_18#18 [1])
+k_18[nil]:
+  @0:132-144 Direct -> Static(k_19#19 [1])
 
-k_18[1]:
-  @0:126-145 Cont -> Static(k_19#19 [nil])
+k_19[1]:
+  @0:126-145 Cont -> Static(k_20#20 [nil])
   @0:126-145 Direct -> Static(print#0 [1])
 
-k_19[nil]:
-  @0:154-167 Direct -> Static(k_20#20 [55])
+k_20[nil]:
+  @0:154-167 Direct -> Static(k_21#21 [55])
 
-k_20[55]:
-  @0:148-168 Cont -> Static(k_21#21 [nil])
+k_21[55]:
+  @0:148-168 Cont -> Static(k_22#22 [nil])
   @0:148-168 Direct -> Static(print#0 [55])
 
-k_21[nil]:
-  @0:177-190 Cont -> Static(k_22#22 [int])
-  @0:177-190 Direct -> Static(fib#11 [20, 0, 1])
+k_22[nil]:
+  @0:177-190 Cont -> Static(k_23#23 [int])
+  @0:177-190 Direct -> Static(fib#12 [20, 0, 1])
 
-k_22[int]:
+k_23[int]:
   @0:171-191 Direct -> Static(print#0 [int])

@@ -1,0 +1,51 @@
+; fn main
+    ;   @spec   main() -> nil
+    ;   @key    []
+    ;   @abi    () -> Tagged
+function u0:0(i64) -> i64 tail {
+    sig0 = (i64) system_v
+    sig1 = (i64, i64) -> i64 tail
+    fn0 = u0:42 sig0
+    fn1 = colocated u0:40 sig1
+
+block0(v0: i64):
+    v1 = iconst.i64 42                  ; @11:16
+    call fn0(v1)                        ; @11:27  v1 = 42
+    v2 = iconst.i64 2                   ; @11:27
+    return_call fn1(v2, v0)             ; @11:9  v2 = 2
+}
+
+; fn k_19_s21
+    ;   @spec   k_19(nil) -> nil
+    ;   @key    [nil]
+    ;   @abi    (Tagged) -> Tagged
+function u0:0(i64, i64) -> i64 tail {
+    sig0 = (i64) system_v
+    sig1 = (i64, i64) -> i64 tail
+    fn0 = u0:42 sig0
+    fn1 = colocated u0:41 sig1
+
+    block0(v0: i64, v1: i64):    ;; v0 :: nil
+    v2 = iconst.i64 -7                  ; @12:16
+    call fn0(v2)                        ; @12:24  v2 = -7
+    v3 = iconst.i64 2                   ; @12:24
+    return_call fn1(v3, v1)             ; @12:9  v3 = 2
+}
+
+; fn k_21_s22
+    ;   @spec   k_21(nil) -> nil
+    ;   @key    [nil]
+    ;   @abi    (Tagged) -> Tagged
+function u0:0(i64, i64) -> i64 tail {
+    sig0 = (i64) system_v
+    sig1 = (i64, i64) -> i64 tail
+    fn0 = u0:42 sig0
+
+    block0(v0: i64, v1: i64):    ;; v0 :: nil
+    v2 = iconst.i64 42                  ; @13:16
+    call fn0(v2)                        ; @13:24  v2 = 42
+    v3 = iconst.i64 2                   ; @13:24
+    v4 = load.i64 notrap aligned v1+16  ; @13:9
+    return_call_indirect sig1, v4(v3, v1) ; @13:9  v3 = 2
+}
+

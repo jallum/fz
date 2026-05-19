@@ -104,7 +104,8 @@ pub fn flatten_modules(prog: Program) -> Result<Program, ResolveError> {
     // builtins only.
     let mut module_type_envs: HashMap<String, crate::type_expr::ModuleTypeEnv> = HashMap::new();
     module_type_envs.insert(String::new(), crate::type_expr::ModuleTypeEnv::new());
-    collect_module_type_envs(&prog, "", &mut module_type_envs)?;
+    let mut opaque_inners: HashMap<String, crate::types::Descr> = HashMap::new();
+    collect_module_type_envs(&prog, "", &mut module_type_envs, &mut opaque_inners)?;
     let no_aliases: HashMap<String, String> = HashMap::new();
     let no_imports: HashMap<(String, usize), String> = HashMap::new();
     for item in &prog.items {
@@ -179,6 +180,7 @@ pub fn flatten_modules(prog: Program) -> Result<Program, ResolveError> {
         items: out,
         module_docs,
         module_type_envs,
+        opaque_inners,
     })
 }
 
@@ -186,14 +188,21 @@ pub fn flatten_modules(prog: Program) -> Result<Program, ResolveError> {
 /// nested modules) and build its `@type` env. Errors from
 /// `build_module_type_env` (duplicate alias, cycle, unknown ref)
 /// surface as `ResolveError::TypeAliasError`.
+///
+/// fz-swt.8 — also accumulates the per-module opaque-inner-type map
+/// into a single program-wide map. Tags are already module-qualified
+/// (e.g. `"Mod::t"`) so cross-module collisions cannot happen except
+/// for the unqualified built-in `"resource"` tag, which carries no
+/// inner type at this layer.
 fn collect_module_type_envs(
     prog: &Program,
     parent: &str,
     out: &mut HashMap<String, crate::type_expr::ModuleTypeEnv>,
+    inners: &mut HashMap<String, crate::types::Descr>,
 ) -> Result<(), ResolveError> {
     for item in &prog.items {
         if let Item::Module(m) = &**item {
-            collect_module_type_envs_recursive(m, parent, out)?;
+            collect_module_type_envs_recursive(m, parent, out, inners)?;
         }
     }
     Ok(())
@@ -203,22 +212,23 @@ fn collect_module_type_envs_recursive(
     m: &ModuleDef,
     parent: &str,
     out: &mut HashMap<String, crate::type_expr::ModuleTypeEnv>,
+    inners: &mut HashMap<String, crate::types::Descr>,
 ) -> Result<(), ResolveError> {
     let path = if parent.is_empty() {
         m.name.clone()
     } else {
         format!("{}.{}", parent, m.name)
     };
-    let env = crate::type_expr::build_module_type_env(&m.attrs).map_err(|e| {
-        ResolveError::TypeAliasError {
+    let (env, opaque_inners) = crate::type_expr::build_module_type_env_for(&m.attrs, &path)
+        .map_err(|e| ResolveError::TypeAliasError {
             msg: format!("module `{}`: {}", path, e.msg),
             span: e.span,
-        }
-    })?;
+        })?;
     out.insert(path.clone(), env);
+    inners.extend(opaque_inners);
     for item in &m.items {
         if let Item::Module(inner) = &**item {
-            collect_module_type_envs_recursive(inner, &path, out)?;
+            collect_module_type_envs_recursive(inner, &path, out, inners)?;
         }
     }
     Ok(())
@@ -480,6 +490,34 @@ fn rewrite_expr(
         Expr::Var(n) => {
             if siblings.contains(n) && !intro.contains(n) {
                 *n = format!("{}.{}", module_path, n);
+            }
+        }
+        // fz-swt.5: `&name/arity` follows the same name-resolution rules
+        // as a bare call target — sibling rewriting, then import
+        // resolution, then alias-qualified paths. We treat the `name`
+        // string identically: if it's a bare ident matching a sibling,
+        // prefix the module path; if it's a bare ident matching an
+        // arity-specific import, prefix the import target; if it's a
+        // dotted path with a leading alias, expand the alias.
+        Expr::FnRef { name, arity } => {
+            // Bare names get sibling / import treatment.
+            if !name.contains('.') && !intro.contains(name) {
+                if siblings.contains(name) {
+                    *name = format!("{}.{}", module_path, name);
+                } else if let Some(target) = imports.get(&(name.clone(), *arity)) {
+                    *name = format!("{}.{}", target, name);
+                }
+            } else if name.contains('.') {
+                // Dotted: split, expand leading alias if present.
+                let parts: Vec<&str> = name.split('.').collect();
+                if let Some(full) = aliases.get(parts[0]) {
+                    let rest = parts[1..].join(".");
+                    *name = if rest.is_empty() {
+                        full.clone()
+                    } else {
+                        format!("{}.{}", full, rest)
+                    };
+                }
             }
         }
         Expr::Call(callee, args) => {

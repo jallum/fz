@@ -1367,3 +1367,129 @@ fn print_distinguishes_nil_from_empty_list() {
     let lines = capture_main("fn main() do\n  print(nil)\n  print([])\nend");
     assert_eq!(lines, vec!["nil".to_string(), "[]".to_string()]);
 }
+
+// ===== fz-swt.10 — refcount + dtor on the JIT path =========================
+//
+// Same shape as the interp-leg tests in `ir_interp::resource_bif_tests` but
+// run through the JIT path: `compile(&module).run(main_fn)`. The JIT lowers
+// the `make_resource(payload, &dwrap/1)` call to an extern call against the
+// `fz_make_resource` symbol bound in `JitBackend::new()`; that symbol
+// dispatches through the `MakeResourceHook` we install for the duration of
+// the test (the helper takes a `&Module` so the hook thunk can walk the
+// dtor closure's IR body — see `src/runtime.rs`).
+//
+// Dtor firing relies on the per-process MSO sweep running at heap drop. The
+// `heap_reset_for_test` call between tests drops the previous test's
+// DEFAULT_PROCESS heap (and so fires any unrooted Resource dtors from
+// earlier runs into a fresh counter snapshot).
+
+mod resource_jit_tests {
+    use super::*;
+    use crate::ir_interp::{
+        tests_support_dtor_fired, tests_support_dtor_last_payload, tests_support_dtor_reset,
+        tests_support_lock,
+    };
+
+    /// Drive `main` through the JIT with the `MakeResourceHook` wired up
+    /// to walk `module`. Returns after the heap has been dropped so the
+    /// dtor counters reflect every Resource the run produced.
+    fn run_jit_with_resources(src: &str) {
+        let module = lower_src(src);
+        let entry = module.fn_by_name("main").expect("main fn").id;
+        let compiled = compile(&module).expect("compile");
+        // Install the make-resource hook against this module so the JIT-
+        // emitted call into `fz_make_resource` resolves the dtor closure.
+        let prev = crate::runtime::install_make_resource_hook_with_module(&module);
+        heap_reset_for_test();
+        let _ = compiled.run(entry);
+        // Drop the per-test DEFAULT_PROCESS to fire MSO sweep + dtors.
+        heap_reset_for_test();
+        crate::runtime::clear_make_resource_hook_with_module(prev);
+    }
+
+    /// fz-swt.10 acceptance — JIT-leg round trip mirroring
+    /// `make_resource_bif_round_trip` from the interp leg.
+    #[test]
+    fn make_resource_round_trip_in_jit() {
+        let _g = tests_support_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        tests_support_dtor_reset();
+        let src = r#"
+extern "C" fn _resource_test_dtor(integer) :: nil
+fn dwrap(x), do: _resource_test_dtor(x)
+fn main() do
+  r = make_resource(42, &dwrap/1)
+  nil
+end
+"#;
+        run_jit_with_resources(src);
+        assert_eq!(
+            tests_support_dtor_fired(),
+            1,
+            "JIT-built resource must fire its dtor exactly once at heap drop",
+        );
+        assert_eq!(
+            tests_support_dtor_last_payload(),
+            fz_runtime::fz_value::FzValue::from_int(42).0,
+            "dtor receives the raw FzValue bits of the boxed payload 42",
+        );
+    }
+
+    /// fz-swt.10 acceptance — aliasing inside one JIT-run process still
+    /// produces exactly one dtor invocation. Mirrors the interp leg's
+    /// `aliasing_in_one_process_fires_dtor_once`.
+    #[test]
+    fn aliasing_in_one_jit_process_fires_dtor_once() {
+        let _g = tests_support_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        tests_support_dtor_reset();
+        let src = r#"
+extern "C" fn _resource_test_dtor(integer) :: nil
+fn dwrap(x), do: _resource_test_dtor(x)
+fn main() do
+  r1 = make_resource(7, &dwrap/1)
+  r2 = r1
+  r3 = r2
+  nil
+end
+"#;
+        run_jit_with_resources(src);
+        assert_eq!(
+            tests_support_dtor_fired(),
+            1,
+            "three JIT-bound aliases of one resource must still produce one dtor call",
+        );
+        assert_eq!(
+            tests_support_dtor_last_payload(),
+            fz_runtime::fz_value::FzValue::from_int(7).0,
+        );
+    }
+
+    /// fz-swt.10 acceptance — two distinct `make_resource` calls each
+    /// fire once. Mirrors the interp leg's
+    /// `two_distinct_resources_each_fire_once`.
+    #[test]
+    fn two_distinct_resources_in_jit_each_fire_once() {
+        let _g = tests_support_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        tests_support_dtor_reset();
+        let src = r#"
+extern "C" fn _resource_test_dtor(integer) :: nil
+fn dwrap(x), do: _resource_test_dtor(x)
+fn main() do
+  a = make_resource(11, &dwrap/1)
+  b = make_resource(22, &dwrap/1)
+  nil
+end
+"#;
+        run_jit_with_resources(src);
+        assert_eq!(
+            tests_support_dtor_fired(),
+            2,
+            "two distinct JIT-built resources must each fire their dtor exactly once",
+        );
+    }
+}

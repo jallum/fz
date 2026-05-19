@@ -1073,10 +1073,11 @@ fn cheney_trace_children(
         | HeapKind::VecF64
         | HeapKind::VecU8
         | HeapKind::VecBit
-        | HeapKind::ProcBin => {
-            // Raw payload, no FzValue children. For ProcBin the +16
-            // payload is a *mut SharedBin into the off-heap zone; the
-            // MSO sweep handles those edges separately.
+        | HeapKind::ProcBin
+        | HeapKind::Resource => {
+            // Raw payload, no FzValue children. For ProcBin and Resource
+            // the +16 payload is a refcounted off-heap pointer; the MSO
+            // sweep handles those edges separately.
         }
     }
 }
@@ -1301,6 +1302,18 @@ pub fn deep_copy_value(
             let src_pb = unsafe { ProcBin::from_raw(sp) };
             let handle = unsafe { SharedBinHandle::retain_from_raw(src_pb.shared_raw()) };
             let new_p = alloc_procbin(dst_heap, handle).as_raw();
+            forwarding.insert(sp, new_p);
+            return FzValue(new_p as u64);
+        }
+        HeapKind::Resource => {
+            // fz-swt.7 — cross-heap deep_copy shares the Resource via retain,
+            // mirroring the ProcBin path. The new handle holds a fresh
+            // refcount edge that alloc_resource transfers into the
+            // destination stub / MSO chain.
+            use crate::resource::{ResourceHandle, ResourceStub, alloc_resource};
+            let src_rs = unsafe { ResourceStub::from_raw(sp) };
+            let handle = unsafe { ResourceHandle::retain_from_raw(src_rs.shared_raw()) };
+            let new_p = alloc_resource(dst_heap, handle).as_raw();
             forwarding.insert(sp, new_p);
             return FzValue(new_p as u64);
         }
