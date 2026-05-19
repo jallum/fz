@@ -3170,6 +3170,265 @@ pub fn pretty_module_types(m: &Module, t: &ModuleTypes) -> String {
 }
 
 // ----------------------------------------------------------------------
+// fz-e4u — pure-codegen subset check
+// ----------------------------------------------------------------------
+//
+// Used by fz-recv to enforce that pattern arms and guard expressions in
+// `receive do … end` lower only to read-only / non-allocating primitives.
+// When this property holds for an expression, its compiled matcher can be
+// invoked from the sender thread (per docs/receive-matched.md §2.3,
+// §3.4) with no allocator interaction, no FFI re-entry, and no GC race.
+//
+// The check is a pure structural walk over `&[Stmt]` and an optional
+// terminator. It does **not** consult the typer's worklist results; it
+// runs strictly on the IR produced by lowering. fz-yxs (E2) wires the
+// check into the `Term::ReceiveMatched` typer rule.
+//
+// The API below carries `#[allow(dead_code)]` because the production
+// caller lands in fz-yxs. Removing the allow when E2 lands is part of
+// that ticket's acceptance.
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ImpureKind {
+    /// The prim allocates on the per-process heap. Variant name is the
+    /// offending Prim's variant label for diagnostics.
+    Allocates(&'static str),
+    /// `Prim::Extern(_)` — any FFI call. Even a side-effect-free FFI is
+    /// rejected because the check has no way to verify its body, and a
+    /// rogue FFI can allocate, send, receive, or re-enter the scheduler.
+    Extern,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ImpureTerm {
+    /// `Call` / `TailCall` / `CallClosure` / `TailCallClosure` — invoke
+    /// arbitrary user code with arbitrary effects.
+    Call,
+    /// `Receive` — a matcher invoking receive would deadlock the scheduler.
+    Receive,
+    /// `Halt` — exits the task; meaningless inside a matcher.
+    Halt,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ImpureError {
+    Stmt { index: usize, kind: ImpureKind },
+    Term(ImpureTerm),
+}
+
+/// True iff `p` is in the pure-codegen subset. See module-level comment
+/// for the rationale; see `docs/receive-matched.md §2.3` for the design
+/// constraint this enforces.
+#[allow(dead_code)]
+pub fn prim_is_pure(p: &crate::fz_ir::Prim) -> Result<(), ImpureKind> {
+    use crate::fz_ir::Prim::*;
+    match p {
+        Const(_)
+        | BinOp(_, _, _)
+        | UnOp(_, _)
+        | ListHead(_)
+        | ListTail(_)
+        | IsEmptyList(_)
+        | TupleField(_, _)
+        | MapGet(_, _)
+        | BitReaderInit(_)
+        | BitReadField { .. }
+        | BitReaderDone(_)
+        | TypeTest(_, _) => Ok(()),
+
+        AllocStruct(_, _) => Err(ImpureKind::Allocates("AllocStruct")),
+        ListCons(_, _) => Err(ImpureKind::Allocates("ListCons")),
+        MakeTuple(_) => Err(ImpureKind::Allocates("MakeTuple")),
+        MakeList(_, _) => Err(ImpureKind::Allocates("MakeList")),
+        MakeClosure(_, _, _) => Err(ImpureKind::Allocates("MakeClosure")),
+        MakeMap(_) => Err(ImpureKind::Allocates("MakeMap")),
+        MapUpdate(_, _) => Err(ImpureKind::Allocates("MapUpdate")),
+        MakeVec(_, _) => Err(ImpureKind::Allocates("MakeVec")),
+        MakeBitstring(_) => Err(ImpureKind::Allocates("MakeBitstring")),
+        ConstBitstring(_, _) => Err(ImpureKind::Allocates("ConstBitstring")),
+
+        Extern(_, _) => Err(ImpureKind::Extern),
+    }
+}
+
+/// Walk every Let-bound Prim in `stmts`; first offender wins.
+#[allow(dead_code)]
+pub fn check_pure_codegen(stmts: &[crate::fz_ir::Stmt]) -> Result<(), ImpureError> {
+    use crate::fz_ir::Stmt;
+    for (i, s) in stmts.iter().enumerate() {
+        let Stmt::Let(_, p) = s;
+        prim_is_pure(p).map_err(|kind| ImpureError::Stmt { index: i, kind })?;
+    }
+    Ok(())
+}
+
+/// Only Goto / If / Return are allowed in matcher / guard lowering.
+#[allow(dead_code)]
+pub fn check_pure_term(term: &crate::fz_ir::Term) -> Result<(), ImpureError> {
+    use crate::fz_ir::Term::*;
+    match term {
+        Goto(_, _) | If { .. } | Return(_) => Ok(()),
+        Call { .. } | TailCall { .. } | CallClosure { .. } | TailCallClosure { .. } => {
+            Err(ImpureError::Term(ImpureTerm::Call))
+        }
+        Receive { .. } => Err(ImpureError::Term(ImpureTerm::Receive)),
+        Halt(_) => Err(ImpureError::Term(ImpureTerm::Halt)),
+    }
+}
+
+#[cfg(test)]
+mod purity_tests {
+    use super::*;
+    use crate::fz_ir::{BinOp, BlockId, BranchOrigin, Const, ExternId, Prim, Stmt, Term, Var};
+    use crate::types::Descr;
+
+    fn v(n: u32) -> Var {
+        Var(n)
+    }
+    fn s(p: Prim) -> Stmt {
+        Stmt::Let(v(0), p)
+    }
+
+    #[test]
+    fn pure_const_int_accepted() {
+        assert!(check_pure_codegen(&[s(Prim::Const(Const::Int(42)))]).is_ok());
+    }
+
+    #[test]
+    fn pure_tuple_field_accepted() {
+        assert!(check_pure_codegen(&[s(Prim::TupleField(v(1), 0))]).is_ok());
+    }
+
+    #[test]
+    fn pure_list_head_tail_is_empty_accepted() {
+        let stmts = vec![
+            s(Prim::ListHead(v(1))),
+            s(Prim::ListTail(v(1))),
+            s(Prim::IsEmptyList(v(1))),
+        ];
+        assert!(check_pure_codegen(&stmts).is_ok());
+    }
+
+    #[test]
+    fn pure_binop_unop_accepted() {
+        let stmts = vec![
+            s(Prim::BinOp(BinOp::Eq, v(1), v(2))),
+            s(Prim::BinOp(BinOp::Add, v(1), v(2))),
+        ];
+        assert!(check_pure_codegen(&stmts).is_ok());
+    }
+
+    #[test]
+    fn pure_type_test_accepted() {
+        let stmts = vec![s(Prim::TypeTest(v(1), Box::new(Descr::int())))];
+        assert!(check_pure_codegen(&stmts).is_ok());
+    }
+
+    #[test]
+    fn pure_map_get_accepted() {
+        assert!(check_pure_codegen(&[s(Prim::MapGet(v(1), v(2)))]).is_ok());
+    }
+
+    #[test]
+    fn alloc_struct_rejected() {
+        match check_pure_codegen(&[s(Prim::AllocStruct(0, vec![]))]) {
+            Err(ImpureError::Stmt { index: 0, kind: ImpureKind::Allocates("AllocStruct") }) => {}
+            other => panic!("expected AllocStruct rejection, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn make_tuple_rejected() {
+        assert!(matches!(
+            check_pure_codegen(&[s(Prim::MakeTuple(vec![v(1), v(2)]))]),
+            Err(ImpureError::Stmt { kind: ImpureKind::Allocates("MakeTuple"), .. })
+        ));
+    }
+
+    #[test]
+    fn make_list_rejected() {
+        assert!(matches!(
+            check_pure_codegen(&[s(Prim::MakeList(vec![v(1)], None))]),
+            Err(ImpureError::Stmt { kind: ImpureKind::Allocates("MakeList"), .. })
+        ));
+    }
+
+    #[test]
+    fn list_cons_rejected() {
+        assert!(matches!(
+            check_pure_codegen(&[s(Prim::ListCons(v(1), v(2)))]),
+            Err(ImpureError::Stmt { kind: ImpureKind::Allocates("ListCons"), .. })
+        ));
+    }
+
+    #[test]
+    fn make_map_and_update_rejected() {
+        assert!(matches!(
+            check_pure_codegen(&[s(Prim::MakeMap(vec![]))]),
+            Err(ImpureError::Stmt { kind: ImpureKind::Allocates("MakeMap"), .. })
+        ));
+        assert!(matches!(
+            check_pure_codegen(&[s(Prim::MapUpdate(v(1), vec![]))]),
+            Err(ImpureError::Stmt { kind: ImpureKind::Allocates("MapUpdate"), .. })
+        ));
+    }
+
+    #[test]
+    fn make_bitstring_rejected() {
+        assert!(matches!(
+            check_pure_codegen(&[s(Prim::MakeBitstring(vec![]))]),
+            Err(ImpureError::Stmt { kind: ImpureKind::Allocates("MakeBitstring"), .. })
+        ));
+    }
+
+    #[test]
+    fn extern_rejected_even_if_harmless() {
+        assert!(matches!(
+            check_pure_codegen(&[s(Prim::Extern(ExternId(0), vec![]))]),
+            Err(ImpureError::Stmt { kind: ImpureKind::Extern, .. })
+        ));
+    }
+
+    #[test]
+    fn first_impure_stmt_index_reported() {
+        let stmts = vec![
+            s(Prim::Const(Const::Int(1))),
+            s(Prim::TupleField(v(1), 0)),
+            s(Prim::MakeTuple(vec![v(1)])),
+            s(Prim::MakeList(vec![v(1)], None)),
+        ];
+        match check_pure_codegen(&stmts) {
+            Err(ImpureError::Stmt { index, .. }) => assert_eq!(index, 2),
+            other => panic!("expected Stmt error at index 2, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn term_goto_if_return_accepted() {
+        assert!(check_pure_term(&Term::Goto(BlockId(0), vec![])).is_ok());
+        assert!(check_pure_term(&Term::Return(v(0))).is_ok());
+        assert!(check_pure_term(&Term::If {
+            cond: v(0),
+            then_b: BlockId(0),
+            else_b: BlockId(1),
+            origin: BranchOrigin::PatternBind,
+        })
+        .is_ok());
+    }
+
+    #[test]
+    fn term_halt_rejected() {
+        assert!(matches!(
+            check_pure_term(&Term::Halt(v(0))),
+            Err(ImpureError::Term(ImpureTerm::Halt))
+        ));
+    }
+}
+
+// ----------------------------------------------------------------------
 // Tests
 // ----------------------------------------------------------------------
 
