@@ -460,4 +460,12 @@ pub struct Program {
     /// empty env stored under "".
     #[allow(dead_code)] // .31.6 wires validate_specs into the drivers.
     pub module_type_envs: std::collections::HashMap<String, crate::type_expr::ModuleTypeEnv>,
+    /// fz-swt.8 — Inner-type map for `opaque` aliases across every
+    /// module in the program. Keyed by the qualified opaque tag (as
+    /// stored on `Descr::opaque_of(...)`); value is the parsed body
+    /// `T` following the `opaque` keyword. Used by the typer to type
+    /// `handle.value` accesses (a `Prim::MapGet` with key `:value` on
+    /// a singleton-opaque subject) as `T` rather than the generic
+    /// map-lookup fallback.
+    pub opaque_inners: std::collections::HashMap<String, crate::types::Descr>,
 }

@@ -95,8 +95,21 @@ pub fn resolve_spec_decl(
 pub fn build_module_type_env(
     attrs: &[crate::ast::Attribute],
 ) -> Result<ModuleTypeEnv, TypeExprError> {
-    build_module_type_env_for(attrs, "")
+    build_module_type_env_for(attrs, "").map(|(env, _inners)| env)
 }
+
+/// fz-swt.8 — Inner-type map for opaque aliases declared in one
+/// module. Keyed by the qualified opaque tag (matches the tag stored
+/// on `Descr::opaque_of(...)`); value is the parsed body following
+/// the `opaque` keyword — i.e., the inner type `T` for
+/// `@type t :: opaque T` (or `opaque resource(T)`, etc.).
+///
+/// The typer consumes this map at `Prim::MapGet(handle, :value)` sites
+/// to type `handle.value` as `T` instead of falling back to the generic
+/// map-lookup result. Visibility gating already lives in
+/// `crate::typer::check_opaque_visibility`; the inner-type map is the
+/// payload the gate guards.
+pub type OpaqueInnerTypes = HashMap<String, Descr>;
 
 /// fz-swt.6 — like `build_module_type_env`, but threads the enclosing
 /// module's qualified path so opaque-type declarations record their
@@ -110,7 +123,7 @@ pub fn build_module_type_env(
 pub fn build_module_type_env_for(
     attrs: &[crate::ast::Attribute],
     module_path: &str,
-) -> Result<ModuleTypeEnv, TypeExprError> {
+) -> Result<(ModuleTypeEnv, OpaqueInnerTypes), TypeExprError> {
     use crate::ast::Attribute;
     // Collect aliases keyed by name; reject duplicates.
     let mut pending: HashMap<String, &crate::ast::TypeAliasDecl> = HashMap::new();
@@ -128,9 +141,13 @@ pub fn build_module_type_env_for(
         }
     }
     if pending.is_empty() {
-        return Ok(ModuleTypeEnv::new());
+        return Ok((ModuleTypeEnv::new(), OpaqueInnerTypes::new()));
     }
     let mut env: ModuleTypeEnv = ModuleTypeEnv::new();
+    // fz-swt.8 — Side map: qualified opaque tag → inner T parsed from
+    // the body following `opaque`. Populated alongside `env` so the
+    // typer's `.value` lowering can look up T without re-parsing.
+    let mut opaque_inners: OpaqueInnerTypes = OpaqueInnerTypes::new();
     // Fixed-point resolve: keep walking until no progress.
     loop {
         let mut progressed = false;
@@ -151,21 +168,48 @@ pub fn build_module_type_env_for(
                 .map(|t| matches!(&t.tok, Tok::Ident(n) if n == "opaque"))
                 .unwrap_or(false);
             if is_opaque {
-                // Parse and discard the body after `opaque`. Failure to
-                // parse defers (like the non-opaque branch) so forward
-                // references inside `opaque ...` still resolve.
+                // Parse the body after `opaque` and record T in the
+                // side map so the `.value` accessor (fz-swt.8) can
+                // type the access as T. Failure to parse defers (like
+                // the non-opaque branch) so forward references inside
+                // `opaque ...` still resolve.
+                //
+                // Special case: `opaque resource(T)` is the standard
+                // shape for refcounted resources (fz-swt). The body
+                // would otherwise resolve to the unqualified built-in
+                // opaque `Descr::opaque_of("resource")` — which
+                // discards T. We peel the `resource(...)` layer here
+                // so `opaque_inners` records the user's actual T (the
+                // payload's type), not the resource wrapper itself.
                 let body_after_opaque = &decl.body_tokens.0[1..];
-                if !body_after_opaque.is_empty()
-                    && parse_type_expr(body_after_opaque, &env).is_err()
-                {
-                    // Body isn't valid yet (likely a forward reference);
-                    // try again in the next fixed-point iteration. The
-                    // post-loop unresolved-handler will surface the real
-                    // error if it never resolves.
-                    continue;
-                }
+                let inner = if body_after_opaque.is_empty() {
+                    // `opaque` with no body — no inner type to record.
+                    None
+                } else if is_resource_ctor_body(body_after_opaque) {
+                    // Reparse just the `(T)` payload — `parse_resource`
+                    // throws T away and returns the wrapper tag.
+                    match parse_resource_inner(body_after_opaque, &env) {
+                        Ok(d) => Some(d),
+                        Err(_) => continue,
+                    }
+                } else {
+                    match parse_type_expr(body_after_opaque, &env) {
+                        Ok((d, _)) => Some(d),
+                        Err(_) => {
+                            // Body isn't valid yet (likely a forward
+                            // reference); try again in the next fixed-
+                            // point iteration. The post-loop unresolved-
+                            // handler will surface the real error if it
+                            // never resolves.
+                            continue;
+                        }
+                    }
+                };
                 let qualified = qualify_opaque_name(module_path, name);
-                env.insert(name.clone(), Descr::opaque_of(qualified));
+                env.insert(name.clone(), Descr::opaque_of(qualified.clone()));
+                if let Some(t) = inner {
+                    opaque_inners.insert(qualified, t);
+                }
                 progressed = true;
                 continue;
             }
@@ -218,7 +262,7 @@ pub fn build_module_type_env_for(
             }
         }
     }
-    Ok(env)
+    Ok((env, opaque_inners))
 }
 
 /// fz-swt.6 — build the module-qualified opaque tag stored on a
@@ -233,6 +277,47 @@ pub fn qualify_opaque_name(module_path: &str, alias: &str) -> String {
     } else {
         format!("{}::{}", module_path, alias)
     }
+}
+
+/// fz-swt.8 — recognise the literal `resource(...)` body shape so we
+/// can extract the payload type T rather than the wrapper opaque tag.
+/// Pure tokenwise match; semantic resolution still goes through
+/// `parse_resource_inner` below.
+fn is_resource_ctor_body(toks: &[crate::lexer::Token]) -> bool {
+    use crate::lexer::Tok;
+    matches!(toks.first().map(|t| &t.tok), Some(Tok::Ident(n)) if n == "resource")
+        && matches!(toks.get(1).map(|t| &t.tok), Some(Tok::LParen))
+        && toks
+            .last()
+            .map(|t| matches!(&t.tok, Tok::RParen))
+            .unwrap_or(false)
+}
+
+/// fz-swt.8 — parse the `(T)` payload from a `resource(T)` body.
+/// Returns T directly, *not* the wrapper opaque tag. Used to populate
+/// the per-program `opaque_inners` side map so the typer's `.value`
+/// accessor sees the user's intended payload type rather than the
+/// unqualified built-in `"resource"` opaque.
+fn parse_resource_inner(
+    toks: &[crate::lexer::Token],
+    env: &ModuleTypeEnv,
+) -> Result<Descr, TypeExprError> {
+    // Drop the leading `resource (` and the trailing `)`. Caller has
+    // already verified the shape via `is_resource_ctor_body`, so the
+    // slice arithmetic is safe.
+    debug_assert!(is_resource_ctor_body(toks));
+    let inner_toks = &toks[2..toks.len() - 1];
+    let (d, consumed) = parse_type_expr(inner_toks, env)?;
+    if consumed != inner_toks.len() {
+        return Err(TypeExprError {
+            msg: "unexpected trailing tokens in resource(T)".to_string(),
+            span: inner_toks
+                .get(consumed)
+                .map(|t| t.span)
+                .unwrap_or(crate::diag::Span::DUMMY),
+        });
+    }
+    Ok(d)
 }
 
 /// fz-swt.6 — invert `qualify_opaque_name`: extract the declaring
@@ -971,7 +1056,7 @@ mod tests {
         // Built under module "File", the alias should carry the
         // qualified tag `"File::t"`.
         let attrs = vec![type_alias_attr("t", "opaque resource(integer)")];
-        let env = build_module_type_env_for(&attrs, "File").unwrap();
+        let (env, _inners) = build_module_type_env_for(&attrs, "File").unwrap();
         let t = env.get("t").expect("alias resolved");
         assert_eq!(t.as_opaque_singleton(), Some("File::t"));
     }

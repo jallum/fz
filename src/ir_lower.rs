@@ -657,6 +657,9 @@ pub fn lower_program_full(prog: &Program) -> Result<(Module, AtomTable), LowerEr
         module.extern_idx.insert(e.id, i);
     }
     module.boundary_fns = std::mem::take(&mut ctx.boundary_fns);
+    // fz-swt.8 — carry the resolver's opaque-inner-type map onto the
+    // Module so the typer can resolve `handle.value` accesses to T.
+    module.opaque_inners = prog.opaque_inners.clone();
     // fz-02r.4 — annotate TailCall back-edges from the structural SCC.
     annotate_back_edges(&mut module, &ctx.fn_spans)?;
     // fz-uwq.1 — verify the unique-cont invariant the post-type pipeline

@@ -2034,6 +2034,22 @@ fn type_prim(
         }
         Prim::MapGet(map, k) => {
             let mt = lookup(env, *map);
+            // fz-swt.8 — `handle.value` on an opaque-typed handle.
+            // When the subject is a singleton opaque and the key is
+            // the atom `:value`, the typer answers with the inner
+            // type T recorded for that opaque tag at alias
+            // resolution. Visibility gating (declaring module vs
+            // using module) is a *separate* concern surfaced in
+            // `collect_diagnostics`; the lookup itself is unconditional
+            // so out-of-module access reads its true T in the dead
+            // path before the diagnostic fires.
+            if let (Some(tag), Some(MapKey::Atom(key))) =
+                (mt.as_opaque_singleton(), var_as_map_key(*k, env).as_ref())
+                && key == "value"
+                && let Some(inner) = m.opaque_inners.get(tag)
+            {
+                return inner.clone();
+            }
             if let Some(mk) = var_as_map_key(*k, env) {
                 crate::typer::map_field_lookup(&mt, &mk)
                     .unwrap_or_else(|| Descr::any().union(&Descr::nil()))
@@ -2524,6 +2540,34 @@ pub fn collect_diagnostics(module: &Module, types: &ModuleTypes) -> crate::diag:
                         out.push(d);
                     }
                 }
+                // fz-swt.8 — `handle.value` outside the declaring
+                // module is a type error. Detect at MapGet sites where
+                // the subject is a singleton opaque, the key is the
+                // atom `:value`, the opaque has a recorded inner type
+                // (i.e. was declared via `@type t :: opaque T`), and
+                // the enclosing fn's module isn't the declaring module.
+                if let Prim::MapGet(map_v, key_v) = prim {
+                    let mt = env.get(map_v).cloned().unwrap_or_else(Descr::any);
+                    if let (Some(tag), Some(MapKey::Atom(key))) = (
+                        mt.as_opaque_singleton(),
+                        var_as_map_key(*key_v, &env).as_ref(),
+                    ) && key == "value"
+                        && module.opaque_inners.contains_key(tag)
+                        && let Err(err) =
+                            crate::typer::check_opaque_visibility(&mt, fn_module_of(&f.name))
+                    {
+                        let span = spans
+                            .and_then(|s| s.get(sidx).copied())
+                            .unwrap_or(Span::DUMMY);
+                        let d = Diagnostic::error(
+                            crate::diag::codes::TYPE_OPAQUE_VISIBILITY,
+                            format!("{}", err),
+                            span,
+                        )
+                        .with_label(format!("in fn `{}`", f.name));
+                        out.push(d);
+                    }
+                }
                 let t = type_prim(prim, &env, module, &HashSet::new());
                 env.insert(*v, t);
             }
@@ -2531,6 +2575,19 @@ pub fn collect_diagnostics(module: &Module, types: &ModuleTypes) -> crate::diag:
     }
 
     out
+}
+
+/// fz-swt.8 — module path of a qualified fn name. The IR-side
+/// `FnIr.name` is dotted (`"Mod.fname"` or `"A.B.fname"`); the typer's
+/// opaque-visibility gate compares against the `"Mod"` prefix of the
+/// alias's qualified tag (which uses `::` to separate the module from
+/// the alias). Top-level fns return the empty string, matching the
+/// owner-module convention for top-level / runtime-prelude opaques.
+fn fn_module_of(fn_name: &str) -> &str {
+    match fn_name.rfind('.') {
+        Some(i) => &fn_name[..i],
+        None => "",
+    }
 }
 
 /// True iff `a` and `b` have at least one axis on which both are

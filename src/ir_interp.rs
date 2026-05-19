@@ -752,6 +752,16 @@ fn eval_prim(module: &Module, prim: &Prim, env: &HashMap<Var, FzValue>) -> Resul
                 FzValue::FALSE
             }
         }
+        Prim::MapGet(m, k) => {
+            // fz-swt.8 — route through the same runtime helper the JIT
+            // and AOT use. That helper recognises `HeapKind::Resource`
+            // stubs and returns the payload (the `.value` accessor on
+            // resource handles); generic map subjects fall through to
+            // the regular linear-scan path.
+            let mv = env_get(env, *m)?;
+            let kv = env_get(env, *k)?;
+            FzValue(fz_runtime::ir_runtime::fz_map_get(mv.0, kv.0))
+        }
         Prim::MakeList(elems, tail) => {
             // Mirror ir_codegen: fold cons from right, starting with
             // `tail` (defaulted to the empty list).
@@ -1168,8 +1178,15 @@ mod resource_bif_tests {
     /// in `tests_support`, allocates an off-heap Resource, and returns a
     /// `HeapKind::Resource` stub. The process heap is dropped at test
     /// scope exit; MSO sweep invokes the dtor on the payload exactly once.
+    /// Serialises tests in this module that share static dtor counters
+    /// across fz-swt.7 / fz-swt.8. The crate doesn't ship `serial_test`;
+    /// a plain `Mutex` is sufficient since these tests are few and
+    /// short.
+    static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn make_resource_bif_round_trip() {
+        let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         tests_support::DTOR_FIRED.store(0, Ordering::Relaxed);
         tests_support::DTOR_LAST_PAYLOAD.store(0, Ordering::Relaxed);
 
@@ -1200,6 +1217,68 @@ end
             tests_support::DTOR_LAST_PAYLOAD.load(Ordering::Relaxed),
             fz_runtime::fz_value::FzValue::from_int(42).0,
             "dtor receives the stored FzValue.0 bits of payload 42",
+        );
+    }
+
+    /// fz-swt.8 acceptance — `.value` round-trip through the interp.
+    ///
+    /// `get/1` lives in module `R` (the declaring module of the opaque
+    /// alias `t`) and returns `h.value`. The test invokes it from a
+    /// `test_*` fn — also in `R` — to satisfy the opaque-visibility
+    /// gate. The handle is constructed via `make_resource(99, ...)`;
+    /// after `.value` the interp must read back the raw `99` payload.
+    #[test]
+    fn value_accessor_round_trip_in_interp() {
+        let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        tests_support::DTOR_FIRED.store(0, Ordering::Relaxed);
+        tests_support::DTOR_LAST_PAYLOAD.store(0, Ordering::Relaxed);
+
+        // Note: test fns must live at top level (the test_runner only
+        // discovers `test_*` fns by their FINAL segment). We therefore
+        // keep the dtor wrapper, the resource ctor wrapper, the
+        // accessor and the assertion at top-level too, and rely on
+        // the opaque alias being a top-level (unqualified) tag — its
+        // visibility gate trivially passes (no owner module). This
+        // exercises the runtime read path (`fz_map_get` recognising
+        // `HeapKind::Resource`) end-to-end; the visibility gate is
+        // covered by the typer-side unit tests above.
+        // Declaring module `R` wraps the opaque alias + accessor; the
+        // dtor wrapper and the `test_*` entry stay at top level (the
+        // test_runner only discovers `test_*` fns by their FINAL
+        // segment, and item-macros inside a `defmodule` body produce
+        // bare-named fns per fz-ul4.16.5). `get_value` lives inside
+        // `R`, where the visibility gate accepts the `.value` access.
+        // `test_value_round_trip` calls `R.get_value` from top level
+        // — visibility is irrelevant on the call site, only on the
+        // `.value` syntax itself.
+        let src = r#"
+defmodule R do
+  @type t :: opaque resource(integer)
+
+  fn get_value(h), do: h.value
+end
+
+extern "C" fn _resource_test_dtor(integer) :: nil
+fn dwrap(x), do: _resource_test_dtor(x)
+
+fn test_value_round_trip() do
+  r = make_resource(99, &dwrap/1)
+  assert_eq(R.get_value(r), 99)
+end
+"#;
+        crate::test_runner::run_str(src).expect("test_runner run_str succeeded");
+        // Clean up; verify the dtor fired exactly once with payload 99
+        // (FzValue bits) once the process heap drops.
+        super::interp_reset_state();
+        assert_eq!(
+            tests_support::DTOR_FIRED.load(Ordering::Relaxed),
+            1,
+            "dtor fires once on heap drop",
+        );
+        assert_eq!(
+            tests_support::DTOR_LAST_PAYLOAD.load(Ordering::Relaxed),
+            fz_runtime::fz_value::FzValue::from_int(99).0,
+            "dtor receives the stored FzValue.0 bits of payload 99",
         );
     }
 }

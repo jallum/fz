@@ -419,6 +419,7 @@ impl Parser {
             items,
             module_docs: Default::default(),
             module_type_envs: Default::default(),
+            opaque_inners: Default::default(),
         })
     }
 

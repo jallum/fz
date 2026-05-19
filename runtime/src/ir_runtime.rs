@@ -956,6 +956,28 @@ pub extern "C" fn fz_map_get(map_bits: u64, key_bits: u64) -> u64 {
         .unbox_ptr()
         .expect("fz_map_get on non-ptr");
     let header = unsafe { &*p };
+    // fz-swt.8 — `handle.value` on a resource handle. The typer accepts
+    // `.value` on opaque-typed handles (gated by declaring-module
+    // visibility); the lowering reuses `m.k` → `Prim::MapGet`. At
+    // runtime, a resource stub answers `:value` with its payload —
+    // no map dispatch.
+    //
+    // We don't peek at `key_bits` here: the typer has already rejected
+    // any non-`:value` access on a resource (no `.foo` exists), so the
+    // runtime can return the payload unconditionally for Resource
+    // subjects. If a future feature wants to grow more resource
+    // accessors, this is where the dispatch would split.
+    if HeapKind::from_u16(header.kind) == Some(HeapKind::Resource) {
+        let _ = key_bits;
+        // The 32-byte stub stores the off-heap Resource pointer at
+        // offset +16 (mirrors `ResourceStub::shared_raw`); the
+        // `payload` field on the Resource itself sits at offset +16
+        // of the off-heap struct (see `Resource` layout assertion).
+        let shared = unsafe {
+            std::ptr::read((p as *const u8).add(16) as *const *mut crate::resource::Resource)
+        };
+        return unsafe { (*shared).payload };
+    }
     if HeapKind::from_u16(header.kind) != Some(HeapKind::Map) {
         panic!("fz_map_get on non-Map");
     }
