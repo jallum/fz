@@ -51,6 +51,7 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `spec_boundary/` | fz-jg5.12 (RED.9) — @spec is a reduction boundary; fact has 1 body, not 0 | jit, interp |
 | `spec_ok/` | fz-ul4.31.6 — declared @spec matches inferred behavior; | jit, interp, repl |
 | `tail_recursion/` | 100k-deep self-recursion must TCO — exits cleanly with the accumulated count | jit, interp, aot |
+| `tailcall_closure_captures/` | TailCallClosure with captured singleton closure-lit preserves narrow arg ABI through recursive HOF | jit, interp, aot, repl |
 | `three_process_chain/` | two-hop process relay — main → first_relay → second_relay → main; exercises multi-process message chaining | jit, interp, aot |
 | `type_dispatch/` | multi-clause fn dispatches on parameter type at runtime (fz-ty1.8/1.9) | interp, jit, aot |
 | `vr1_int_arith/` | VR.1 — int-literal arithmetic elides the tag-check fast/slow path | jit, interp, repl |

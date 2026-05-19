@@ -2668,13 +2668,27 @@ pub fn cont_slot0_descr(
                 .unwrap_or_else(Descr::any)
         }
         // fz-ul4.27.22.6 — at a CallClosure seam, the closure's static
-        // Descr names the body's possible return shapes. JOIN the return
-        // Descrs across positive arrow clauses; this is the value the
-        // body's Term::Return passes to the cont's slot 0.
-        Term::CallClosure { closure, .. } => {
+        // Descr names the body's possible return shapes. For singleton
+        // closure-lits, resolve against the registered body spec using
+        // [captures..., arg_descrs...]; otherwise fall back to the
+        // structural arrow-return join. This is the value the body's
+        // Term::Return passes to the cont's slot 0.
+        Term::CallClosure { closure, args, .. } => {
             let env = env_at_terminator(caller_ft, block, module);
             let closure_d = env.get(closure).cloned().unwrap_or_else(Descr::any);
-            closure_d.arrow_join_return()
+            if closure_d
+                .as_closure_lit()
+                .is_some_and(|lit| !lit.captures.is_empty())
+            {
+                let arg_descrs: Vec<Descr> = args
+                    .iter()
+                    .map(|av| env.get(av).cloned().unwrap_or_else(Descr::any))
+                    .collect();
+                resolve_closure_return(&closure_d, &module_types.effective_returns, &arg_descrs)
+                    .unwrap_or_else(|| closure_d.arrow_join_return())
+            } else {
+                closure_d.arrow_join_return()
+            }
         }
         _ => Descr::any(),
     }
