@@ -1910,6 +1910,17 @@ pub fn compile_with_backend<B: Backend>(
     // `docs/dispatch-as-typer-output.md` (Worry 1).
     crate::ir_inline::inline_single_use_conts(&mut working);
     let module_types = crate::ir_typer::type_module(&working);
+    // fz-uwq.14 — snapshot per-fn call-shape multisets right after the
+    // typer commits to specs. The post-typer passes (branch_fold, fold,
+    // const_bs::fold, dce_module, dce_module_level) may FOLD calls away
+    // (Direct → Return when the reducer would have done it; If → Goto
+    // when a branch collapses) but must never INVENT new ones — the
+    // typer's spec set wouldn't cover invented calls. The assertion at
+    // the end of this pipeline pins the invariant: every fn's
+    // call-shape multiset post-codegen is a subset (per-kind) of the
+    // post-typer multiset.
+    #[cfg(debug_assertions)]
+    let call_shapes_pre = crate::ir_codegen_invariants::snapshot_call_shapes(&working);
     // fz-fyq.4 — fold one-sided-dead Ifs to Gotos; DCE below removes
     // the orphaned blocks and the now-unused TypeTest stmts.
     crate::ir_branch_fold::fold_module(&mut working, &module_types);
@@ -1920,6 +1931,8 @@ pub fn compile_with_backend<B: Backend>(
     crate::ir_dce::dce_module(&mut working);
     // fz-ul4.11.29: sweep IR fns unreachable from main after inlining.
     crate::ir_dce::dce_module_level(&mut working);
+    #[cfg(debug_assertions)]
+    crate::ir_codegen_invariants::assert_no_new_call_shapes(&working, &call_shapes_pre);
     let module = &working;
 
     // fz-ul4.29.2.1 — Build the SpecRegistry.
