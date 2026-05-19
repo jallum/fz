@@ -747,9 +747,9 @@ fn dump_bodies_pipeline(src: String, source_name: String) -> String {
 /// fz-9pr.16 — `fz dump --emit outcomes`: per-callsite verdict diary.
 ///
 /// Runs the codegen front half (lex → parse → resolve → macros →
-/// ir_lower → reduce_module → type_module + apply_callsite_outcomes)
-/// and prints every entry in `module.callsite_outcomes`, grouped by
-/// caller fn. Output shape:
+/// ir_lower → reduce_module → type_module) and prints every dispatch
+/// entry in `mt.specs[*].dispatches` plus the reducer's
+/// Consumed / Stalled log entries, grouped by caller fn. Output shape:
 ///
 /// ```text
 /// outcomes for <source>
@@ -825,7 +825,7 @@ fn dump_outcomes_pipeline(src: String, source_name: String, show_all: bool) -> S
     };
 
     // fz-uwq.10 — per-callsite outcome rows are computed from two
-    // sources, no longer via `Module.callsite_outcomes`:
+    // first-class sources:
     //   - `mt.specs[caller_spec].dispatches` → Emitted entries
     //     (per caller spec; divergent dispatches surface as multiple
     //     rows for the same `CallsiteId`).

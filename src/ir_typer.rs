@@ -30,7 +30,7 @@
 
 use crate::callsite_walk::{BlockCallsite, CallsiteKind, ContSource, block_callsites};
 use crate::fz_ir::{
-    BinOp, Block, BlockId, CallsiteId, CallsiteOutcome, Const, Cont, EmitSlot, FnId, FnIr, Module,
+    BinOp, Block, BlockId, CallsiteId, Const, Cont, EmitSlot, FnId, FnIr, Module,
     Prim, Stmt, Term, UnOp, Var, VecKindIr,
 };
 use crate::ir_callgraph::{build_call_graph, entry_seeds};
@@ -136,12 +136,9 @@ pub struct FnTypes {
     /// the typer elected to dispatch to. Empty for `Cont` and
     /// `MakeClosure` slots — those aren't dispatch sites.
     ///
-    /// This is the same information the typer already publishes to
-    /// `Module.callsite_outcomes` as `Emitted` entries, but kept
-    /// per-spec rather than projected to the spec-agnostic `CallsiteId`.
-    /// Two caller specs can dispatch the *same* `CallsiteId` to
-    /// *different* targets; outcomes collapse to a single winner per
-    /// `CallsiteId`, dispatches retain both views.
+    /// Authoritative source for codegen's dispatch decisions. Two
+    /// caller specs can dispatch the *same* `CallsiteId` to *different*
+    /// targets — this table keeps both views distinct.
     ///
     /// Populated during the worklist diff in `type_module`. Read by the
     /// fz-uwq.5+ codegen migration. See `docs/typer-authoritative-
@@ -177,12 +174,6 @@ pub struct ModuleTypes {
     /// start of `type_module` from the initial Tarjan run; stable thereafter.
     #[allow(dead_code)] // consumed by ir_codegen back-edge check (fz-02r.5)
     pub scc_of: HashMap<FnId, usize>,
-    /// fz-9pr.8 — pending `CallsiteOutcome` writes the typer wants the
-    /// driver to merge into `Module.callsite_outcomes`. Populated
-    /// during `type_module` for every Direct / ClosureLit /
-    /// CallClosureKnown emit whose `CallsiteId` is `Stalled` (or
-    /// absent). Apply with `apply_callsite_outcomes`.
-    pub callsite_outcome_updates: HashMap<CallsiteId, CallsiteOutcome>,
     /// fz-fyq.2 — per-If dead-branch facts under cross-spec consensus.
     /// Populated at the end of `type_module` by `compute_dead_branches`.
     /// Keyed by `(FnId, BlockId)` where the block ends in a `Term::If`;
@@ -735,64 +726,11 @@ pub fn type_module(m: &Module) -> ModuleTypes {
 
     let any_key_specs = build_any_key_index(&specs);
 
-    // fz-9pr.8 — build the outcome-update map for Direct / ClosureLit /
-    // CallClosureKnown emits.
-    //
-    // fz-uwq.3+ — projects from `specs[spec_key].dispatches` (un-widened
-    // dispatch facts) rather than `produces` (widened enqueue keys), so
-    // the outcome's `target` matches what codegen will resolve at the
-    // callsite. The per-spec `dispatches` view is collapsed to one
-    // outcome per `CallsiteId`; multiple specs sharing a `CallsiteId`
-    // would last-write-win, so we sort deterministically by the
-    // (spec_key, target) pair to make the choice stable across runs.
-    let mut callsite_outcome_updates: HashMap<CallsiteId, CallsiteOutcome> = HashMap::new();
-    let mut dispatches_flat: Vec<(SpecKey, CallsiteId, (FnId, Vec<Descr>))> = Vec::new();
-    for (spec_key, ft) in &specs {
-        if !reachable.contains(spec_key) {
-            continue;
-        }
-        for (cid, target) in &ft.dispatches {
-            // Outcomes cover only Direct / ClosureLit / CallClosureKnown
-            // — the dispatch sites the reducer also writes Consumed /
-            // Stalled for. MakeClosure dispatch is recorded only in
-            // `dispatches` (fz-uwq.6 reads it there directly).
-            match cid.slot {
-                EmitSlot::Direct | EmitSlot::ClosureLit(..) | EmitSlot::CallClosureKnown => {
-                    dispatches_flat.push((spec_key.clone(), *cid, target.clone()));
-                }
-                EmitSlot::Cont | EmitSlot::MakeClosure(_) => {}
-            }
-        }
-    }
-    dispatches_flat.sort_by(|(sa, _, ta), (sb, _, tb)| {
-        let key_str = |t: &(FnId, Vec<Descr>)| -> String {
-            let parts: Vec<String> = t.1.iter().map(|d| format!("{}", d)).collect();
-            format!("{}:{}", t.0.0, parts.join(","))
-        };
-        let spec_str = |s: &SpecKey| -> String {
-            let parts: Vec<String> = s.1.iter().map(|d| format!("{}", d)).collect();
-            format!("{}:{}", s.0.0, parts.join(","))
-        };
-        spec_str(sa)
-            .cmp(&spec_str(sb))
-            .then_with(|| key_str(ta).cmp(&key_str(tb)))
-    });
-    for (_spec, cid, target) in dispatches_flat {
-        callsite_outcome_updates.insert(
-            cid,
-            CallsiteOutcome::Emitted {
-                target,
-                came_from: None,
-            },
-        );
-    }
-
     let mut mt = ModuleTypes {
         specs,
         effective_returns,
         any_key_specs,
         scc_of,
-        callsite_outcome_updates,
         dead_branches: HashMap::new(),
     };
     mt.dead_branches = compute_dead_branches(m, &mt);
@@ -871,108 +809,6 @@ fn compute_dead_branches(
         }
     }
     out
-}
-
-/// fz-9pr.8 — merge a `ModuleTypes`' outcome updates into
-/// `module.callsite_outcomes`. The typer cannot mutate the module
-/// directly (it takes `&Module`), so the driver applies the writes
-/// after typing. Merge rule: promote `Stalled` → `Emitted`; leave
-/// `Consumed` / `Inlined` alone (the reducer/inliner already decided);
-/// insert if absent. Multi-callable: idempotent on repeat application
-/// with the same updates.
-pub fn apply_callsite_outcomes(
-    m: &mut Module,
-    mt: &ModuleTypes,
-    reducer_log: &crate::ir_reducer::ReducerLog,
-) {
-    for (cid, outcome) in &mt.callsite_outcome_updates {
-        // fz-uwq.9 — `Stalled` lineage lives in the `ReducerLog` now,
-        // not in `m.callsite_outcomes`. The typer's Emitted outcomes
-        // still get the `came_from` annotation so dumps can explain
-        // "why did the reducer stall before the typer emitted?"
-        let came_from = reducer_log.stalled.get(cid).copied();
-        match m.callsite_outcomes.get(cid) {
-            None => {
-                let entry = match outcome {
-                    CallsiteOutcome::Emitted { target, .. } => CallsiteOutcome::Emitted {
-                        target: target.clone(),
-                        came_from,
-                    },
-                    other => other.clone(),
-                };
-                m.callsite_outcomes.insert(*cid, entry);
-            }
-            Some(CallsiteOutcome::Consumed { .. })
-            | Some(CallsiteOutcome::Inlined)
-            | Some(CallsiteOutcome::Emitted { .. })
-            | Some(CallsiteOutcome::Stalled { .. }) => {
-                // Leave any pre-existing outcome alone. Pre-uwq.9 the
-                // reducer wrote Stalled here; post-uwq.9 the typer is
-                // the only writer of `callsite_outcomes` and a second
-                // type_module pass would land on the same Emitted by
-                // construction.
-            }
-        }
-    }
-    #[cfg(debug_assertions)]
-    assert_every_emitted_has_provenance(m, mt);
-    #[cfg(debug_assertions)]
-    assert_every_emitted_has_matching_dispatch(m, mt);
-}
-
-/// fz-9pr.9 — debug invariant: after typer convergence + outcome
-/// merge, every `Emitted { target }` outcome in
-/// `module.callsite_outcomes` points at a target that exists in
-/// `mt.specs`. An Emitted with no matching spec is a "ghost" —
-/// either the typer dropped the spec during the reachability prune
-/// but kept the outcome, or some other phase wrote a bogus target.
-/// Both are bugs we want to catch loud.
-///
-/// `holders` is worklist-internal and isn't reachable from
-/// `ModuleTypes`; spec-presence is the strongest invariant available
-/// from the public API and covers the ghost-spec case the ticket
-/// names.
-#[cfg(debug_assertions)]
-fn assert_every_emitted_has_provenance(m: &Module, mt: &ModuleTypes) {
-    for (cid, outcome) in &m.callsite_outcomes {
-        if let CallsiteOutcome::Emitted { target, .. } = outcome {
-            assert!(
-                mt.specs.contains_key(target),
-                "fz-9pr.9: Emitted outcome at {:?} targets unregistered spec {:?}",
-                cid,
-                target
-            );
-        }
-    }
-}
-
-/// fz-uwq.3 — debug invariant: every `Emitted` outcome in
-/// `module.callsite_outcomes` has a matching entry in **some** spec's
-/// `FnTypes.dispatches`. This is the data-model equivalence that licenses
-/// the fz-uwq.5+ consumer migration to read dispatches instead of
-/// outcomes.
-///
-/// The reverse doesn't hold: `dispatches` is strictly more information
-/// (per-spec), while `outcomes` collapses to one winner per `CallsiteId`.
-/// The check is therefore "for every outcome, some dispatch agrees" —
-/// not strict equality.
-#[cfg(debug_assertions)]
-fn assert_every_emitted_has_matching_dispatch(m: &Module, mt: &ModuleTypes) {
-    for (cid, outcome) in &m.callsite_outcomes {
-        let CallsiteOutcome::Emitted { target, .. } = outcome else {
-            continue;
-        };
-        let found = mt
-            .specs
-            .values()
-            .any(|ft| ft.dispatches.get(cid).is_some_and(|t| t == target));
-        assert!(
-            found,
-            "fz-uwq.3: Emitted outcome at {:?} → {:?} has no matching \
-             FnTypes.dispatches entry in any spec",
-            cid, target
-        );
-    }
 }
 
 const WIDEN_AT: usize = 3;

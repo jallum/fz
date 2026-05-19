@@ -89,17 +89,12 @@ use std::collections::HashMap;
 ///   away. The original call-shaped terminator is gone, replaced
 ///   by a Return / TailCall that delivers `result`.
 /// - `stalled[cid] = reason` — the reducer left the callsite alone
-///   and recorded why. The typer (in `apply_callsite_outcomes`)
-///   promotes the stalled reason into the `Emitted` outcome's
-///   `came_from` field, so dumps can still answer "why didn't this
-///   fold even though the typer succeeded?"
+///   and recorded why. The dump pipeline renders the reason as a
+///   `via <reason>` annotation on the typer's Emitted line at the
+///   same `CallsiteId`, so coverage gaps stay legible.
 ///
-/// Pre-uwq.9 these lived as `CallsiteOutcome::Consumed` / `Stalled`
-/// entries in `Module.callsite_outcomes` — but that table is
-/// authoritative for the *typer's* `Emitted` decisions. Mixing
-/// reducer diagnostics into it forced consumers to filter by
-/// variant. Splitting cleans up the data model: codegen reads
-/// `FnTypes.dispatches`; dumps read both halves explicitly.
+/// Codegen dispatches via `FnTypes.dispatches`; dumps read both this
+/// log and the typer's per-spec dispatch tables.
 #[derive(Debug, Default, Clone)]
 pub struct ReducerLog {
     pub consumed: HashMap<CallsiteId, Descr>,
@@ -136,9 +131,8 @@ fn fresh_var(f: &FnIr) -> Var {
 /// as running once (within the limits of v1's single-callsite scope).
 ///
 /// fz-uwq.9 — returns a [`ReducerLog`] of every Consumed / Stalled
-/// fact instead of mutating `Module.callsite_outcomes`. Callers that
-/// want the diagnostic facts pass the log on to consumers (dump,
-/// `apply_callsite_outcomes`); callers that don't care can drop it.
+/// fact. Callers that want the diagnostic pass the log to the dump
+/// pipeline; codegen drops it.
 pub fn reduce_module(m: &mut Module) -> ReducerLog {
     let mut log = ReducerLog::default();
     let fn_ids: Vec<FnId> = m.fns.iter().map(|f| f.id).collect();
@@ -420,7 +414,7 @@ struct ReduceCtx<'m> {
     /// fz-9pr.16 — first stall reason hit on the current top-level
     /// reduction attempt. Innermost-set-wins: a deep `OpaqueArg`
     /// leaf survives all the way back to `reduce_terminator` where
-    /// it is published in `CallsiteOutcome::Stalled { reason }`.
+    /// it is published into `ReducerLog.stalled`.
     last_reason: Option<StalledReason>,
 }
 

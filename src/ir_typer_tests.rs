@@ -1795,14 +1795,13 @@ fn callsite_id_round_trip() {
     assert_eq!(round, site);
 }
 
-/// fz-9pr.8 — `type_module` populates `callsite_outcome_updates` with
-/// an `Emitted` entry for each surviving Direct callsite. Build a
-/// trivial 2-fn module (main → id), assert the typer proposes an
-/// Emitted update at main's Direct slot keyed by `id` plus the arg
-/// Descr.
+/// fz-uwq.3/.11 — `type_module` populates `FnTypes.dispatches` with
+/// the per-spec dispatch target for each Direct callsite. Build a
+/// trivial 2-fn module (main → id), assert the dispatch entry exists
+/// at main's spec keyed by `id` plus the literal arg Descr.
 #[test]
-fn typer_publishes_emitted_outcome_updates_for_direct() {
-    use crate::fz_ir::{BlockId, CallsiteId, CallsiteOutcome, EmitSlot};
+fn typer_publishes_dispatches_for_direct_call() {
+    use crate::fz_ir::{BlockId, CallsiteId, EmitSlot};
 
     let mut id_b = crate::fz_ir::FnBuilder::new(FnId(0), "id");
     let x = id_b.fresh_var();
@@ -1832,24 +1831,15 @@ fn typer_publishes_emitted_outcome_updates_for_direct() {
         block: BlockId(0),
         slot: EmitSlot::Direct,
     };
-    match mt.callsite_outcome_updates.get(&cid) {
-        Some(CallsiteOutcome::Emitted {
-            target: (fid, key), ..
-        }) => {
-            assert_eq!(*fid, FnId(0));
-            assert_eq!(key.len(), 1);
-            // Key carries the literal Descr from the callsite.
-            assert_eq!(key[0], Descr::int_lit(42));
-        }
-        other => panic!("expected Emitted outcome update, got {:?}", other),
-    }
-
-    // apply_callsite_outcomes merges the update into m.callsite_outcomes.
-    let mut m2 = m.clone();
-    let log = crate::ir_reducer::ReducerLog::default();
-    crate::ir_typer::apply_callsite_outcomes(&mut m2, &mt, &log);
-    assert!(matches!(
-        m2.callsite_outcomes.get(&cid),
-        Some(CallsiteOutcome::Emitted { .. })
-    ));
+    let main_spec = mt
+        .specs
+        .get(&(FnId(1), vec![]))
+        .expect("main's empty-key spec must exist");
+    let (fid, key) = main_spec
+        .dispatches
+        .get(&cid)
+        .expect("dispatches should record main's Direct call to id");
+    assert_eq!(*fid, FnId(0));
+    assert_eq!(key.len(), 1);
+    assert_eq!(key[0], Descr::int_lit(42));
 }

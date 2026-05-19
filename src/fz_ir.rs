@@ -172,38 +172,6 @@ impl std::fmt::Display for StalledReason {
     }
 }
 
-/// fz-9pr.1 — what happened at a callsite, as recorded on the Module.
-///
-/// Four outcomes, three writers (reducer, ir_inline, typer), one
-/// table. See the fz-9pr epic for the unified model. `Consumed`'s
-/// `Descr` is boxed and `Emitted`'s tuple is heap-tailed already, so
-/// the enum stays compact (one word + tag).
-#[derive(Clone, Debug, PartialEq)]
-pub enum CallsiteOutcome {
-    /// Reducer folded the call away. Result Descr is what the
-    /// continuation will see in slot 0.
-    Consumed { result: Box<crate::types::Descr> },
-    /// Callee body was spliced into the caller (ir_inline today,
-    /// reducer once fz-9pr.E lands).
-    Inlined,
-    /// Typer minted a spec for this callsite's target.
-    ///
-    /// `came_from` carries the prior `Stalled` reason when the typer
-    /// promoted a `Stalled` entry to `Emitted` (fz-f88.4). `None` when
-    /// the typer discovered the callsite without a prior reducer
-    /// record. Lets `fz dump --emit outcomes` explain *why* the
-    /// reducer stopped short of folding even when the typer succeeds.
-    Emitted {
-        target: (FnId, Vec<crate::types::Descr>),
-        came_from: Option<StalledReason>,
-    },
-    /// Reducer left the call in place. `reason` says why, so
-    /// `fz dump --emit outcomes` can explain coverage gaps.
-    /// Debug invariant (fz-9pr.5): no `Stalled` may survive end of
-    /// pipeline.
-    Stalled { reason: StalledReason },
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Var(pub u32);
 
@@ -598,12 +566,6 @@ pub struct Module {
     /// body is a stable unit, so reduction does not cross into it (except
     /// for trivially-inlinable single-stmt bodies, which carry no risk).
     pub boundary_fns: HashSet<FnId>,
-    /// fz-9pr.2 — unified callsite outcome table. Three writers
-    /// (reducer, ir_inline, typer) and several readers all share this
-    /// one map. Empty on a freshly-built module; populated as phases
-    /// decide each callsite's fate. See `CallsiteOutcome` for the
-    /// shape of each entry and the fz-9pr epic for the design.
-    pub callsite_outcomes: HashMap<CallsiteId, CallsiteOutcome>,
 }
 
 impl Module {
@@ -762,7 +724,6 @@ impl ModuleBuilder {
             externs: Vec::new(),
             extern_idx: HashMap::new(),
             boundary_fns: HashSet::new(),
-            callsite_outcomes: HashMap::new(),
         }
     }
 }
@@ -1249,12 +1210,6 @@ mod tests {
         b.set_terminator(entry, Term::Return(s_));
         let s = format!("{}", b.build());
         assert!(s.contains("alloc_struct(schema=3, [v0, v1])"));
-    }
-
-    #[test]
-    fn fresh_module_has_empty_callsite_outcomes() {
-        let m = ModuleBuilder::new().build();
-        assert!(m.callsite_outcomes.is_empty());
     }
 
     #[test]
