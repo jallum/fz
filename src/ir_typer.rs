@@ -2872,29 +2872,25 @@ pub fn reachable_specs(
         Some(&module.fns[j])
     };
 
-    // Seed: main + every registered any-key spec.
+    // fz-uwq.13 — the blanket any-key seed is retired. Pre-uwq the
+    // typer marked every registered any-key spec as reachable, a
+    // conservative bias that protected codegen's
+    // `spec_registry.resolve` fallback. With codegen reading
+    // `FnTypes.dispatches` (fz-uwq.5-8) and the fallback dropped
+    // (fz-uwq.12/fz-kgk), the blanket seed has no consumer. The seeds
+    // that remain are the genuinely-opaque entry channels:
     //
-    // The any-key seed is the conservative bias for v1: any spec keyed by
-    // `[any; n]` represents the wide-callable form of its fn — invocable
-    // through opaque closure dispatch, spawn entry, mid-flight resume
-    // shim, scheduler hook, MakeClosure consumer, or test entry. We don't
-    // model each of those source-of-entry channels precisely; we just
-    // declare every any-key reachable and let downstream callsite BFS
-    // pick up the narrow specs.
+    //   - main (the program entry, seeded just below).
+    //   - `extra_seeds` (caller-supplied — closure_shapes, spawn
+    //     thunks, scheduler hooks, anything codegen knows is an entry
+    //     point the IR-body BFS can't see).
+    //   - Closure-target fns (any spec of any fn whose id appears in
+    //     a `Prim::MakeClosure`, seeded below).
     //
-    // This still drops every value-narrowed spec that no callsite
-    // resolves to — the actual fz-ul4.42 win — because narrow specs
-    // require an explicit `resolve(fid, narrow_key)` match somewhere in
-    // a reachable body to be marked.
-    for (sid, fid, key) in spec_registry.iter() {
-        let is_any_key = key
-            .iter()
-            .all(|d| d.is_subtype(&Descr::any()) && Descr::any().is_subtype(d));
-        let _ = fid;
-        if is_any_key {
-            worklist.push(sid.0);
-        }
-    }
+    // Narrow specs become reachable only when some reachable body
+    // explicitly resolves into them via `spec_registry.resolve`. The
+    // value-narrow dead-spec win (fz-ul4.42) deepens: previously-
+    // reachable any-keys for narrow-only fns now drop too.
     if let Some(main_fn) = module.fns.iter().find(|f| f.name == "main") {
         let n_params = main_fn.block(main_fn.entry).params.len();
         let key: Vec<Descr> = vec![Descr::any(); n_params];
