@@ -161,6 +161,27 @@ pub extern "C" fn fz_self() -> u64 {
     FzValue::from_int(current_process().pid as i64).0
 }
 
+/// fz-ht5 — process-global monotonic counter feeding `fz_make_ref`.
+/// Starts at 1 so 0 can remain a "no ref" sentinel if a future ticket
+/// needs one. AtomicU64 + Relaxed is sufficient under single-worker
+/// today and remains correct under future multi-worker.
+static FZ_NEXT_REF: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// fz_make_ref() -> ref_bits. Mints a fresh opaque ref by atomically
+/// incrementing the process-global counter and tagging the result as a
+/// boxed FzValue Int. The 61-bit Int range (FzValue::INT_MAX ≈ 1.15e18)
+/// is the practical capacity; debug builds assert before tagging.
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_make_ref() -> u64 {
+    use crate::fz_value::FzValue;
+    let id = FZ_NEXT_REF.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    debug_assert!(
+        id <= FzValue::INT_MAX as u64,
+        "fz_make_ref: exhausted 61-bit ref space"
+    );
+    FzValue::from_int(id as i64).0
+}
+
 /// fz_send(receiver_pid_bits, msg_bits) -> msg_bits.
 ///
 /// Deep-copies msg into the receiver's heap, enqueues into receiver's

@@ -1,0 +1,59 @@
+; spec assert_neq(2) #fn=3
+;   key:    [ref, ref]
+;   return: nil
+;   vars:
+;     Var(0) :: ref
+;     Var(1) :: ref
+;     Var(2) :: :match_error
+;     Var(3) :: nil
+;   exits:
+;     blk0 Return Var(3)    :: nil
+;     blk1 Halt Var(2)      :: :match_error
+
+; spec make_ref(0) #fn=7
+;   key:    []
+;   return: ref
+;   vars:
+;     Var(0) :: :match_error
+;     Var(1) :: ref
+;   exits:
+;     blk0 Return Var(1)    :: ref
+;     blk1 Halt Var(0)      :: :match_error
+
+; spec main(0) #fn=12
+;   key:    []
+;   return: nil
+;   vars:
+;     Var(0) :: :match_error
+;   exits:
+;     blk0 Call make_ref#7()
+;              callee_key=[]
+;              cont k_13#13 captured=[]
+;              cont_key=[ref]
+;     blk1 Halt Var(0)      :: :match_error
+
+; spec k_13(1) #fn=13
+;   key:    [ref]
+;   return: nil
+;   vars:
+;     Var(0) :: ref
+;     Var(1) :: :match_error
+;   exits:
+;     blk0 Call make_ref#7()
+;              callee_key=[]
+;              cont k_14#14 captured=[Var(0)]
+;              cont_key=[ref, ref]
+;     blk1 Halt Var(1)      :: :match_error
+
+; spec k_14(2) #fn=14
+;   key:    [ref, ref]
+;   return: nil
+;   vars:
+;     Var(0) :: ref
+;     Var(1) :: ref
+;     Var(2) :: :match_error
+;   exits:
+;     blk0 TailCall assert_neq#3(Var(1), Var(0))
+;              callee_key=[ref, ref]
+;     blk1 Halt Var(2)      :: :match_error
+

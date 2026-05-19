@@ -1196,6 +1196,10 @@ impl JitBackend {
             fz_runtime::ir_runtime::fz_spawn_opt as *const u8,
         );
         builder.symbol("fz_self", fz_runtime::ir_runtime::fz_self as *const u8);
+        builder.symbol(
+            "fz_make_ref",
+            fz_runtime::ir_runtime::fz_make_ref as *const u8,
+        );
         builder.symbol("fz_send", fz_runtime::ir_runtime::fz_send as *const u8);
         builder.symbol(
             "fz_receive_attempt",

@@ -1,4 +1,5 @@
 @type pid :: opaque integer
+@type ref :: opaque integer
 
 @doc "Prints x to standard output."
 @spec print(any) :: nil
@@ -30,6 +31,10 @@ fn self(), do: fz_self()
 @spec send(pid, any) :: any
 fn send(pid, msg), do: fz_send(pid, msg)
 
+@doc "Mints a fresh opaque reference unique within this runtime process."
+@spec make_ref() :: ref
+fn make_ref(), do: fz_make_ref()
+
 extern "C" fn fz_print_i64(integer) :: nil
 extern "C" fn fz_print_value(any) :: nil
 extern "C" fn fz_assert(any) :: nil
@@ -40,3 +45,4 @@ extern "C" fn fz_spawn(any) :: any
 extern "C" fn fz_spawn_opt(any, any) :: any
 extern "C" fn fz_self() :: pid
 extern "C" fn fz_send(pid, any) :: any
+extern "C" fn fz_make_ref() :: ref

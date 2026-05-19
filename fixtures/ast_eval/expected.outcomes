@@ -2,21 +2,21 @@ outcomes for fixtures/ast_eval/input.fz
 
 main[]:
   @0:138-154 Direct -> Folded(42)
-  @0:138-154 Direct -> Static(k_20#20 [42])
+  @0:138-154 Direct -> Static(k_21#21 [42])
 
-k_20[42]:
-  @0:132-155 Cont -> Static(k_21#21 [nil])
+k_21[42]:
+  @0:132-155 Cont -> Static(k_22#22 [nil])
   @0:132-155 Direct -> Static(print#0 [42])
 
-k_21[nil]:
-  @0:164-217 Direct -> Static(k_22#22 [14])
+k_22[nil]:
+  @0:164-217 Direct -> Static(k_23#23 [14])
 
-k_22[14]:
-  @0:158-218 Cont -> Static(k_23#23 [nil])
+k_23[14]:
+  @0:158-218 Cont -> Static(k_24#24 [nil])
   @0:158-218 Direct -> Static(print#0 [14])
 
-k_23[nil]:
-  @0:227-299 Direct -> Static(k_24#24 [21])
+k_24[nil]:
+  @0:227-299 Direct -> Static(k_25#25 [21])
 
-k_24[21]:
+k_25[21]:
   @0:221-300 Direct -> Static(print#0 [21])

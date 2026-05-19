@@ -9,12 +9,12 @@
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(1)      :: :function_clause
 ;     blk2 If Var(2) ? blk4 : blk3
-;     blk3 TailCall fn_clause_1#8(Var(0))
+;     blk3 TailCall fn_clause_1#9(Var(0))
 ;              callee_key=[int]
-;     blk4 TailCall fn_clause_0#7(Var(0))
+;     blk4 TailCall fn_clause_0#8(Var(0))
 ;              callee_key=[int]
 
-; spec fn_clause_0(1) #fn=7
+; spec fn_clause_0(1) #fn=8
 ;   key:    [int]
 ;   return: nil
 ;   vars:
@@ -23,7 +23,7 @@
 ;   exits:
 ;     blk0 Return Var(1)    :: nil
 
-; spec fn_clause_1(1) #fn=8
+; spec fn_clause_1(1) #fn=9
 ;   key:    [any]
 ;   return: nil
 ;   vars:
@@ -32,7 +32,7 @@
 ;   exits:
 ;     blk0 Return Var(1)    :: nil
 
-; spec Long.Path.greet(1) #fn=11
+; spec Long.Path.greet(1) #fn=12
 ;   key:    [40]
 ;   return: int
 ;   vars:
@@ -44,7 +44,7 @@
 ;     blk0 Return Var(3)    :: int
 ;     blk1 Halt Var(1)      :: :match_error
 
-; spec Long.Path.greet(1) #fn=11
+; spec Long.Path.greet(1) #fn=12
 ;   key:    [41]
 ;   return: int
 ;   vars:
@@ -56,42 +56,42 @@
 ;     blk0 Return Var(3)    :: int
 ;     blk1 Halt Var(1)      :: :match_error
 
-; spec User.nick_name(1) #fn=12
+; spec User.nick_name(1) #fn=13
 ;   key:    [40]
 ;   return: int
 ;   vars:
 ;     Var(0) :: 40
 ;     Var(1) :: :match_error
 ;   exits:
-;     blk0 TailCall Long.Path.greet#11(Var(0))
+;     blk0 TailCall Long.Path.greet#12(Var(0))
 ;              callee_key=[40]
 ;     blk1 Halt Var(1)      :: :match_error
 
-; spec User.renamed(1) #fn=13
+; spec User.renamed(1) #fn=14
 ;   key:    [41]
 ;   return: int
 ;   vars:
 ;     Var(0) :: 41
 ;     Var(1) :: :match_error
 ;   exits:
-;     blk0 TailCall Long.Path.greet#11(Var(0))
+;     blk0 TailCall Long.Path.greet#12(Var(0))
 ;              callee_key=[41]
 ;     blk1 Halt Var(1)      :: :match_error
 
-; spec main(0) #fn=14
+; spec main(0) #fn=15
 ;   key:    []
 ;   return: nil
 ;   vars:
 ;     Var(0) :: :match_error
 ;     Var(1) :: 40
 ;   exits:
-;     blk0 Call User.nick_name#12(Var(1))
+;     blk0 Call User.nick_name#13(Var(1))
 ;              callee_key=[40]
-;              cont k_15#15 captured=[]
+;              cont k_16#16 captured=[]
 ;              cont_key=[int]
 ;     blk1 Halt Var(0)      :: :match_error
 
-; spec k_15(1) #fn=15
+; spec k_16(1) #fn=16
 ;   key:    [int]
 ;   return: nil
 ;   vars:
@@ -99,22 +99,22 @@
 ;   exits:
 ;     blk0 Call print#0(Var(0))
 ;              callee_key=[int]
-;              cont k_16#16 captured=[]
+;              cont k_17#17 captured=[]
 ;              cont_key=[nil]
 
-; spec k_16(1) #fn=16
+; spec k_17(1) #fn=17
 ;   key:    [nil]
 ;   return: nil
 ;   vars:
 ;     Var(0) :: nil
 ;     Var(1) :: 41
 ;   exits:
-;     blk0 Call User.renamed#13(Var(1))
+;     blk0 Call User.renamed#14(Var(1))
 ;              callee_key=[41]
-;              cont k_17#17 captured=[]
+;              cont k_18#18 captured=[]
 ;              cont_key=[int]
 
-; spec k_17(1) #fn=17
+; spec k_18(1) #fn=18
 ;   key:    [int]
 ;   return: nil
 ;   vars:
