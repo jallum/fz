@@ -48,6 +48,57 @@ of them silently. The fz-kgk experience already taught us that
 positional encoding of identity breaks under IR transformations; this
 is the same lesson at the type-system layer.
 
+## The principle: specialization is body-internal; ABI is seam-external
+
+Before the type-theory framing, a load-bearing engineering principle —
+the one the implementation of fz-try.2 surfaced after the initial
+design doc had already been written. Naming it here so future work
+reaches for it the moment a similar conflation tries to creep back in.
+
+**Type specialization** is what the typer and codegen do *inside a
+compiled body*: given narrower inputs, type the body's vars more
+precisely, emit narrower CLIF. It's a body-internal optimization.
+Spec keys are about typing — `(FnId, arg-Descrs)` says "I know these
+args have these types; type the body accordingly."
+
+**ABI coherence** is what *the wire format between separately-compiled
+sites* requires: caller and callee must agree on bit-layout for
+parameters and returns. The agreement lives in the call/return
+signature at the seam, not in either side's understanding of types.
+
+Across a direct call, these two notions can ride together — the
+caller knows the callee's typed sig, so it can use a narrow ABI that
+matches the callee's narrow body. They look like the same thing.
+
+Across an *indirect* call (closure dispatch through `stub_fp`), they
+come apart hard. The caller cannot know the callee's typed sig at
+compile time — that's the whole point of indirection. The ABI at the
+seam must therefore be uniform, independent of either side's typing.
+
+Conflating them — using spec keys to synchronize ABI at the indirect
+seam — is what made the MakeClosure-side padded body spec
+load-bearing in a way the original design didn't see. It was a
+*specialization* (a typing artifact) doing duty as an *ABI handshake*
+(a wire-format artifact). Removing it desynced the seam.
+
+**The rule:**
+
+> Specialization is body-internal; ABI is seam-external.
+> Don't use spec keys to coordinate wire format across an indirect
+> dispatch — the seam itself owns its ABI.
+
+For closures, this means: the closure-target ABI is structurally
+uniform `Tagged`. Every closure-target body has sig `(args…, self,
+cont) -> Tagged`, regardless of the body's typed return. The body
+coerces its narrow return to `Tagged` at `Term::Return`. The seam
+speaks Tagged. Specialization remains the typer's job *inside* the
+body; it stops trying to thread its decisions through the wire.
+
+The same rule generalizes to any future seam: continuation slots,
+extern call boundaries, AOT cross-module calls, interpreter→JIT
+trampolines. Whenever there's an indirect dispatch, the ABI is
+uniform; spec keys describe typing only.
+
 ## The framing: set-theoretic types
 
 The fz type system draws on the set-theoretic typing tradition —
