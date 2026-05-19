@@ -772,7 +772,7 @@ fn dump_bodies_pipeline(src: String, source_name: String) -> String {
 ///
 /// Pass `show_all=true` (CLI `--all`) to bypass both filters.
 fn dump_outcomes_pipeline(src: String, source_name: String, show_all: bool) -> String {
-    use crate::fz_ir::{CallsiteId, CallsiteOutcome, EmitSlot};
+    use crate::fz_ir::{CallsiteId, EmitSlot};
     let mut sm = diag::SourceMap::new();
     let file_id = sm.add_file(source_name.clone(), src.clone());
     let toks = lexer::Lexer::with_file(&src, file_id)
@@ -799,7 +799,6 @@ fn dump_outcomes_pipeline(src: String, source_name: String, show_all: bool) -> S
     });
     let reducer_log = ir_reducer::reduce_module(&mut module);
     let mt = ir_typer::type_module(&module);
-    ir_typer::apply_callsite_outcomes(&mut module, &mt, &reducer_log);
 
     let fn_name = |fid: fz_ir::FnId| -> String {
         module
@@ -825,37 +824,105 @@ fn dump_outcomes_pipeline(src: String, source_name: String, show_all: bool) -> S
         format!("[{}]", parts.join(", "))
     };
 
-    // Group by caller fn id, preserving module-declared order for fns.
-    // Within a caller, sort by (block, slot-stringification) so output
-    // is stable across HashMap iteration order.
-    let mut by_caller: std::collections::BTreeMap<u32, Vec<(&CallsiteId, &CallsiteOutcome)>> =
+    // fz-uwq.10 — per-callsite outcome rows are computed from two
+    // sources, no longer via `Module.callsite_outcomes`:
+    //   - `mt.specs[caller_spec].dispatches` → Emitted entries
+    //     (per caller spec; divergent dispatches surface as multiple
+    //     rows for the same `CallsiteId`).
+    //   - `reducer_log.consumed` / `.stalled` → Consumed / Stalled
+    //     diagnostic rows. A Stalled row is suppressed when the typer
+    //     later Emitted at the same `CallsiteId` — the `via <reason>`
+    //     annotation on the Emitted row carries that lineage.
+    let render_key = |k: &[crate::types::Descr]| descrs_str(k);
+    let mut emitted_cids: std::collections::HashSet<CallsiteId> =
+        std::collections::HashSet::new();
+    let mut rows: Vec<(CallsiteId, String, String)> = Vec::new();
+    // Group dispatches by cid, then by target, with the set of callers
+    // that picked each target. One row per (cid, target). When more
+    // than one (cid, target) row exists for the same cid, annotate
+    // each row with the caller spec key so the divergence is visible.
+    let mut grouped: std::collections::HashMap<
+        CallsiteId,
+        std::collections::BTreeMap<
+            String,
+            std::collections::BTreeSet<String>,
+        >,
+    > = std::collections::HashMap::new();
+    for ((caller_fid, caller_key), ft) in &mt.specs {
+        for (cid, target) in &ft.dispatches {
+            emitted_cids.insert(*cid);
+            let tgt_repr =
+                format!("{}#{} {}", fn_name(target.0), target.0.0, render_key(&target.1));
+            let caller_repr = format!("{}{}", fn_name(*caller_fid), render_key(caller_key));
+            grouped
+                .entry(*cid)
+                .or_default()
+                .entry(tgt_repr)
+                .or_default()
+                .insert(caller_repr);
+        }
+    }
+    for (cid, targets) in &grouped {
+        let divergent = targets.len() > 1;
+        for (tgt_repr, callers) in targets {
+            let via = reducer_log
+                .stalled
+                .get(cid)
+                .map(|r| format!(" via {}", r))
+                .unwrap_or_default();
+            let under = if divergent {
+                let parts: Vec<String> = callers.iter().cloned().collect();
+                format!(" [under {}]", parts.join(", "))
+            } else {
+                String::new()
+            };
+            let lhs = format!("  blk{} {}", cid.block.0, slot_str(cid.slot));
+            let rhs = format!("Emitted ({}){}{}", tgt_repr, via, under);
+            rows.push((*cid, lhs, rhs));
+        }
+    }
+    // Consumed rows (always shown — the reducer rewrote these away).
+    for (cid, result) in &reducer_log.consumed {
+        let lhs = format!("  blk{} {}", cid.block.0, slot_str(cid.slot));
+        let rhs = format!("Consumed ({})", result);
+        rows.push((*cid, lhs, rhs));
+    }
+    // Stalled rows (only when no Emitted at the same cid — otherwise
+    // the reason already rode in as `via <reason>` above).
+    for (cid, reason) in &reducer_log.stalled {
+        if emitted_cids.contains(cid) {
+            continue;
+        }
+        let lhs = format!("  blk{} {}", cid.block.0, slot_str(cid.slot));
+        let rhs = format!("Stalled ({})", reason);
+        rows.push((*cid, lhs, rhs));
+    }
+
+    // Group by caller fn for output, sorted within each caller by
+    // (block, slot-string, rhs).
+    let mut by_caller: std::collections::BTreeMap<u32, Vec<(CallsiteId, String, String)>> =
         std::collections::BTreeMap::new();
-    for (cid, outcome) in &module.callsite_outcomes {
-        by_caller
-            .entry(cid.caller.0)
-            .or_default()
-            .push((cid, outcome));
+    for row in rows {
+        by_caller.entry(row.0.caller.0).or_default().push(row);
     }
     for entries in by_caller.values_mut() {
-        entries.sort_by(|(a, _), (b, _)| {
-            a.block
+        entries.sort_by(|a, b| {
+            a.0.block
                 .0
-                .cmp(&b.block.0)
-                .then_with(|| slot_str(a.slot).cmp(&slot_str(b.slot)))
+                .cmp(&b.0.block.0)
+                .then_with(|| slot_str(a.0.slot).cmp(&slot_str(b.0.slot)))
+                .then_with(|| a.2.cmp(&b.2))
         });
     }
 
     let mut out = String::new();
     out.push_str(&format!("outcomes for {}\n", source_name));
-    if module.callsite_outcomes.is_empty() {
+    if by_caller.is_empty() {
         out.push_str("  (no callsites — program is callsite-free)\n");
         return out;
     }
     // fz-f88.7 — default filter: hide prelude callers and any caller
     // whose body has no surviving spec post-reduction. `--all` bypasses.
-    // fz-0z4.2 — project from `mt.specs.keys()` directly; the prior
-    // `mt.reachable_specs` field was just `specs.keys().cloned().collect()`
-    // and is being retired in fz-0z4.4.
     let reachable_fids: std::collections::HashSet<fz_ir::FnId> =
         mt.specs.keys().map(|(fid, _)| *fid).collect();
     let should_show = |f: &fz_ir::FnIr| -> bool {
@@ -876,35 +943,13 @@ fn dump_outcomes_pipeline(src: String, source_name: String, show_all: bool) -> S
             continue;
         };
         out.push_str(&format!("\n{}:\n", f.name));
-        for (cid, outcome) in entries {
-            let lhs = format!("  blk{} {}", cid.block.0, slot_str(cid.slot));
-            let rhs = match outcome {
-                CallsiteOutcome::Consumed { result } => {
-                    format!("Consumed ({})", result)
-                }
-                CallsiteOutcome::Inlined => "Inlined".to_string(),
-                CallsiteOutcome::Emitted { target, came_from } => {
-                    let (tfid, tkey) = target;
-                    let head = format!(
-                        "Emitted ({}#{} {})",
-                        fn_name(*tfid),
-                        tfid.0,
-                        descrs_str(tkey)
-                    );
-                    match came_from {
-                        Some(r) => format!("{} via {}", head, r),
-                        None => head,
-                    }
-                }
-                CallsiteOutcome::Stalled { reason } => {
-                    format!("Stalled ({})", reason)
-                }
-            };
+        for (_, lhs, rhs) in entries {
             out.push_str(&format!("{} -> {}\n", lhs, rhs));
         }
     }
     out
 }
+
 
 fn compile_pipeline(src: String, source_name: String) -> Compiled {
     let mut sm = diag::SourceMap::new();
