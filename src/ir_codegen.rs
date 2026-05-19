@@ -145,6 +145,12 @@ pub struct CompiledModule {
     /// Tail-CC indirect-calls main with `(halt_cont)`. Used by
     /// `Runtime::spawn(fn_id)` / `CompiledModule::run_internal`.
     pub(crate) main_entry_addr: *const u8,
+    /// fz-4mk.3a — finalized address of the SystemV scheduler shim
+    /// `fz_drain_dtor_entry(closure, payload) -> i64`. The scheduler
+    /// calls this once per entry on `process.heap.pending_dtors` at
+    /// task-exit; the shim Tail-CC dispatches the closure body with
+    /// payload + a fresh Tagged halt-cont.
+    pub(crate) drain_dtor_entry_addr: *const u8,
     /// fz-ul4.27.22.3 — finalized addresses of the three Cranelift-emitted
     /// `fz_halt_cont_body_{tagged,i64,f64}` Tail-CC fns, indexed by repr
     /// kind (0=Tagged, 1=RawInt, 2=RawF64). `make_process` seeds matching
@@ -1028,6 +1034,8 @@ pub struct CompiledMetadata {
     pub spawn_entry_id: FuncId,
     /// fz-cps.5 — fz_main_entry scheduler-launch shim FuncId.
     pub main_entry_id: FuncId,
+    /// fz-4mk.3a — fz_drain_dtor_entry scheduler-drain shim FuncId.
+    pub drain_dtor_entry_id: FuncId,
     /// fz-ul4.27.22.3 — three fz_halt_cont_body fns indexed by repr
     /// kind (0=Tagged, 1=RawInt, 2=RawF64). Sigs: (Tagged|i64|f64, i64)
     /// -> i64 tail. Bodies call the matching halt_implicit_* and return 0.
@@ -1334,6 +1342,7 @@ impl Backend for JitBackend {
         let resume_park_addr = jmod.get_finalized_function(meta.resume_park_id);
         let spawn_entry_addr = jmod.get_finalized_function(meta.spawn_entry_id);
         let main_entry_addr = jmod.get_finalized_function(meta.main_entry_id);
+        let drain_dtor_entry_addr = jmod.get_finalized_function(meta.drain_dtor_entry_id);
         let halt_cont_body_addrs = [
             jmod.get_finalized_function(meta.halt_cont_body_ids[0]),
             jmod.get_finalized_function(meta.halt_cont_body_ids[1]),
@@ -1359,6 +1368,7 @@ impl Backend for JitBackend {
             resume_park_addr,
             spawn_entry_addr,
             main_entry_addr,
+            drain_dtor_entry_addr,
             halt_cont_body_addrs,
             fn_halt_kinds: meta.fn_halt_kinds,
             mid_flight_resume_addrs,
@@ -1775,6 +1785,58 @@ pub fn compile_with_backend<B: Backend>(
             },
         )
         .map_err(|e| CodegenError::new(format!("define fz_main_entry: {}", e)))?;
+    }
+
+    // fz-4mk.3a — emit fz_drain_dtor_entry. SystemV scheduler-callable
+    // shim that invokes a 1-arg resource dtor closure with its payload.
+    // Body: pick a Tagged halt-cont via fz_get_halt_cont, load the body
+    // addr at closure+16, and Tail-CC indirect-call
+    // `(closure, payload, halt_cl)`. Result is discarded by the caller.
+    // Sig: `(closure:i64, payload:i64) -> i64 system_v`.
+    {
+        let mut sig = Signature::new(CallConv::SystemV);
+        sig.params.push(AbiParam::new(types::I64));
+        sig.params.push(AbiParam::new(types::I64));
+        sig.returns.push(AbiParam::new(types::I64));
+        emit_fn_body(
+            backend.module_mut(),
+            &mut fbctx,
+            sig,
+            runtime.drain_dtor_entry_id,
+            |m, b| {
+                let entry = b.create_block();
+                b.append_block_params_for_function_params(entry);
+                b.switch_to_block(entry);
+                b.seal_block(entry);
+                let closure = b.block_params(entry)[0];
+                let payload = b.block_params(entry)[1];
+                // Tagged halt-cont (kind=0). Dtor return is discarded;
+                // Tagged is harmless and avoids RawInt/F64 unboxing.
+                let tagged_addr = fn_addr(m, runtime.halt_cont_body_tagged_id, b);
+                let zero = b.ins().iconst(types::I32, 0);
+                let ghc_fref = m.declare_func_in_func(runtime.get_halt_cont_id, b.func);
+                let halt_inst = b.ins().call(ghc_fref, &[tagged_addr, zero]);
+                let halt_cl = b.inst_results(halt_inst)[0];
+                let code = b
+                    .ins()
+                    .load(types::I64, MemFlags::trusted(), closure, HEADER_SIZE);
+                // fz-cps.1.2 §2.1 closure-target body sig: `(args..., self,
+                // cont) tail -> i64`. For a 1-arg dtor wrapper that's
+                // `(x, self, cont)`.
+                let mut closure_sig = Signature::new(CallConv::Tail);
+                closure_sig.params.push(AbiParam::new(types::I64)); // x (payload)
+                closure_sig.params.push(AbiParam::new(types::I64)); // self
+                closure_sig.params.push(AbiParam::new(types::I64)); // cont
+                closure_sig.returns.push(AbiParam::new(types::I64));
+                let sig_ref = b.func.import_signature(closure_sig);
+                let inst = b
+                    .ins()
+                    .call_indirect(sig_ref, code, &[payload, closure, halt_cl]);
+                let r = b.inst_results(inst)[0];
+                b.ins().return_(&[r]);
+            },
+        )
+        .map_err(|e| CodegenError::new(format!("define fz_drain_dtor_entry: {}", e)))?;
     }
 
     // fz-cps.1.11 — emit fz_spawn_entry. SystemV scheduler-callable shim
@@ -3317,6 +3379,7 @@ pub fn compile_with_backend<B: Backend>(
         resume_park_id: runtime.resume_park_id,
         spawn_entry_id: runtime.spawn_entry_id,
         main_entry_id: runtime.main_entry_id,
+        drain_dtor_entry_id: runtime.drain_dtor_entry_id,
         halt_cont_body_ids: [
             runtime.halt_cont_body_tagged_id,
             runtime.halt_cont_body_i64_id,
@@ -3692,6 +3755,18 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
     let main_entry_id = jmod
         .declare_function("fz_main_entry", Linkage::Local, &me_sig)
         .map_err(|e| CodegenError::new(format!("declare fz_main_entry: {}", e)))?;
+    // fz-4mk.3a — fz_drain_dtor_entry: SystemV entry the scheduler calls
+    // per pending dtor at task-exit. Sig: `(closure:i64, payload:i64) ->
+    // i64 system_v`. Body loads closure+16 (body addr), allocates a
+    // Tagged halt-cont via fz_get_halt_cont, and Tail-CC indirect-calls
+    // the closure body with `(self, payload, halt_cl)`.
+    let mut dd_sig = Signature::new(CallConv::SystemV);
+    dd_sig.params.push(AbiParam::new(types::I64));
+    dd_sig.params.push(AbiParam::new(types::I64));
+    dd_sig.returns.push(AbiParam::new(types::I64));
+    let drain_dtor_entry_id = jmod
+        .declare_function("fz_drain_dtor_entry", Linkage::Local, &dd_sig)
+        .map_err(|e| CodegenError::new(format!("declare fz_drain_dtor_entry: {}", e)))?;
 
     Ok(RuntimeRefs {
         halt_id,
@@ -3733,6 +3808,7 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         resume_park_id,
         spawn_entry_id,
         main_entry_id,
+        drain_dtor_entry_id,
         mid_flight_roots_ptr_id,
         yield_back_edge_id,
         should_yield_data_id,
@@ -3885,6 +3961,14 @@ struct RuntimeRefs {
     resume_park_id: FuncId,
     spawn_entry_id: FuncId,
     main_entry_id: FuncId,
+    /// fz-4mk.3a — fz_drain_dtor_entry: SystemV→Tail-CC shim for invoking
+    /// a resource dtor closure with its payload. Sig: `(closure:i64,
+    /// payload:i64) -> i64 system_v`. Loads body addr at closure+16 and
+    /// indirect-calls (closure, payload, halt_cl) via Tail-CC; result
+    /// discarded. Scheduler drains `pending_dtors` through this shim at
+    /// task-exit, replacing the legacy `resolve_dtor_from_closure` C
+    /// extraction path.
+    drain_dtor_entry_id: FuncId,
     // fz-02r.5 — mid-flight back-edge yield helpers.
     mid_flight_roots_ptr_id: FuncId,
     yield_back_edge_id: FuncId,
