@@ -499,6 +499,17 @@ fn try_reduce_call(
     try_reduce_call_with_descrs(ctx, callee, &arg_descrs)
 }
 
+// fz-try.10 — explicit reason for "arg is not a literal." Distinguishes
+// parametric vars from genuine any so outcome rows tell the truth about
+// what's blocking the fold.
+fn stall_reason_for_non_literal(d: &Descr) -> StalledReason {
+    if d.has_vars() {
+        StalledReason::UnresolvedTypeVar
+    } else {
+        StalledReason::OpaqueArg
+    }
+}
+
 fn try_reduce_call_with_descrs(
     ctx: &mut ReduceCtx,
     callee: FnId,
@@ -521,7 +532,7 @@ fn try_reduce_call_with_descrs(
     // Every arg must be literal-Descr.
     for d in arg_descrs {
         if !is_scalar_literal(d) && !is_literal(d) {
-            ctx.note(StalledReason::OpaqueArg);
+            ctx.note(stall_reason_for_non_literal(d));
             return None;
         }
     }
@@ -625,7 +636,7 @@ fn walk_block(
                 return None;
             };
             let Some(b) = as_bool_lit(cd) else {
-                ctx.note(StalledReason::OpaqueArg);
+                ctx.note(stall_reason_for_non_literal(cd));
                 return None;
             };
             walk_block(
@@ -720,7 +731,7 @@ fn feed_cont(
             return None;
         };
         if !is_literal(&d) {
-            ctx.note(StalledReason::OpaqueArg);
+            ctx.note(stall_reason_for_non_literal(&d));
             return None;
         }
         cont_descrs.push(d);
@@ -1612,5 +1623,56 @@ mod tests {
             }
             other => panic!("expected MakeList([], None), got {:?}", other),
         }
+    }
+
+    // ------------------------------------------------------------------
+    // fz-try.10 — explicit Var vs Any stall reasons
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn stall_reason_for_var_descr_is_unresolved_type_var() {
+        // A pure-var Descr surfaces as UnresolvedTypeVar — a parametric
+        // claim, not a widening one.
+        let v = Descr::var(crate::types::TypeVarId(7));
+        let r = stall_reason_for_non_literal(&v);
+        assert_eq!(r, StalledReason::UnresolvedTypeVar);
+    }
+
+    #[test]
+    fn stall_reason_for_mixed_descr_is_unresolved_type_var() {
+        // A descriptor with both concrete and var content is still an
+        // unresolved type variable case — the var blocks the fold; the
+        // concrete part alone would have folded.
+        let mixed = Descr::int().union(&Descr::var(crate::types::TypeVarId(7)));
+        let r = stall_reason_for_non_literal(&mixed);
+        assert_eq!(r, StalledReason::UnresolvedTypeVar);
+    }
+
+    #[test]
+    fn stall_reason_for_any_descr_is_opaque_arg() {
+        // Genuine `any` (no info, widening fixpoint) surfaces as OpaqueArg.
+        let r = stall_reason_for_non_literal(&Descr::any());
+        assert_eq!(r, StalledReason::OpaqueArg);
+    }
+
+    #[test]
+    fn stall_reason_for_non_literal_concrete_is_opaque_arg() {
+        // A concrete-but-non-singleton descriptor (e.g., `int` as a top
+        // type, not an int_lit) is OpaqueArg — we lack precision, not
+        // parametricity.
+        let r = stall_reason_for_non_literal(&Descr::int());
+        assert_eq!(r, StalledReason::OpaqueArg);
+    }
+
+    #[test]
+    fn unresolved_type_var_renders_distinctly() {
+        // Display impl exists and renders distinctly from OpaqueArg so
+        // outcome rows can tell them apart.
+        assert_eq!(format!("{}", StalledReason::UnresolvedTypeVar), "UnresolvedTypeVar");
+        assert_eq!(format!("{}", StalledReason::OpaqueArg), "OpaqueArg");
+        assert_ne!(
+            format!("{}", StalledReason::UnresolvedTypeVar),
+            format!("{}", StalledReason::OpaqueArg),
+        );
     }
 }
