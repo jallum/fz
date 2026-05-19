@@ -263,6 +263,22 @@ fn walk_expr(e: &Spanned<Expr>, diags: &mut Vec<Diagnostic>) {
             }
         }
         Expr::Bitstring(fields) => fields.iter().for_each(|f| walk_expr(&f.value, diags)),
+        // fz-5vj — receive has no scrutinee; just walk each clause's
+        // guard + body and the after expr/body. Per-receive exhaustiveness
+        // is intentionally not checked: unmatched messages stay in the
+        // mailbox by design (selective receive).
+        Expr::Receive { clauses, after } => {
+            for c in clauses {
+                if let Some(g) = &c.guard {
+                    walk_expr(g, diags);
+                }
+                walk_expr(&c.body, diags);
+            }
+            if let Some(af) = after {
+                walk_expr(&af.timeout, diags);
+                walk_expr(&af.body, diags);
+            }
+        }
     }
 }
 

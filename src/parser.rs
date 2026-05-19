@@ -134,6 +134,137 @@ end
         assert!(els.is_some(), "else branch lost");
     }
 
+    // ──────────────────────────────────────────────────────────────
+    // fz-5vj — `receive do … after … end` parser tests
+    // ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn receive_single_clause_no_after_parses() {
+        let e = parse_fn_body(
+            r#"receive do
+                msg -> msg
+            end"#,
+        );
+        let Expr::Receive { clauses, after } = e else {
+            panic!("expected Receive, got {:?}", e);
+        };
+        assert_eq!(clauses.len(), 1);
+        assert!(after.is_none());
+        assert!(matches!(clauses[0].pattern.node, Pattern::Var(ref n) if n == "msg"));
+        assert!(clauses[0].guard.is_none());
+    }
+
+    #[test]
+    fn receive_multi_clause_parses() {
+        let e = parse_fn_body(
+            r#"receive do
+                {:get, k} -> 1
+                {:put, k, v} -> 2
+                :stop -> 3
+            end"#,
+        );
+        let Expr::Receive { clauses, after } = e else {
+            panic!("expected Receive, got {:?}", e);
+        };
+        assert_eq!(clauses.len(), 3);
+        assert!(after.is_none());
+    }
+
+    #[test]
+    fn receive_clause_with_guard_parses() {
+        let e = parse_fn_body(
+            r#"receive do
+                n when n > 0 -> n
+            end"#,
+        );
+        let Expr::Receive { clauses, after } = e else {
+            panic!("expected Receive");
+        };
+        assert!(after.is_none());
+        assert!(clauses[0].guard.is_some());
+    }
+
+    #[test]
+    fn receive_with_after_parses() {
+        let e = parse_fn_body(
+            r#"receive do
+                msg -> msg
+            after
+                500 -> :timeout
+            end"#,
+        );
+        let Expr::Receive { clauses, after } = e else {
+            panic!("expected Receive");
+        };
+        assert_eq!(clauses.len(), 1);
+        let af = after.expect("after clause parsed");
+        assert!(matches!(af.timeout.node, Expr::Int(500)));
+        assert!(matches!(af.body.node, Expr::Atom(ref a) if a == "timeout"));
+    }
+
+    #[test]
+    fn receive_with_after_zero_parses() {
+        // `after 0` is the peek form.
+        let e = parse_fn_body(
+            r#"receive do
+                msg -> msg
+            after
+                0 -> nil
+            end"#,
+        );
+        let Expr::Receive { clauses: _, after } = e else {
+            panic!("expected Receive");
+        };
+        let af = after.expect("after clause parsed");
+        assert!(matches!(af.timeout.node, Expr::Int(0)));
+    }
+
+    #[test]
+    fn receive_with_after_infinity_parses() {
+        let e = parse_fn_body(
+            r#"receive do
+                msg -> msg
+            after
+                :infinity -> :never
+            end"#,
+        );
+        let Expr::Receive { clauses: _, after } = e else {
+            panic!("expected Receive");
+        };
+        let af = after.expect("after clause parsed");
+        assert!(matches!(af.timeout.node, Expr::Atom(ref a) if a == "infinity"));
+    }
+
+    #[test]
+    fn receive_pinned_pattern_var_parses() {
+        let e = parse_fn_body(
+            r#"receive do
+                {:reply, ^ref, v} -> v
+            end"#,
+        );
+        let Expr::Receive { clauses, .. } = e else {
+            panic!("expected Receive");
+        };
+        let Pattern::Tuple(elems) = &clauses[0].pattern.node else {
+            panic!("expected tuple pattern");
+        };
+        assert_eq!(elems.len(), 3);
+        assert!(matches!(elems[0].node, Pattern::Atom(ref a) if a == "reply"));
+        assert!(matches!(elems[1].node, Pattern::Pinned(ref n) if n == "ref"));
+        assert!(matches!(elems[2].node, Pattern::Var(ref v) if v == "v"));
+    }
+
+    #[test]
+    fn legacy_receive_call_still_parses() {
+        // fz-5vj keeps the old `receive()` form working until fz-recv.A2.
+        let e = parse_fn_body("receive()");
+        let Expr::Call(callee, args) = e else {
+            panic!("expected Call, got {:?}", e);
+        };
+        assert!(matches!(callee.node, Expr::Var(ref n) if n == "receive"));
+        assert!(args.is_empty());
+    }
+
     /// case scrutinee, cond test, with binding source, and when-guard
     /// are all cond-position and must suppress the sugar.
     #[test]
@@ -1139,6 +1270,19 @@ impl Parser {
                 self.bump();
                 Pattern::Wildcard
             }
+            Tok::Caret => {
+                // fz-5vj — `^name` pinned pattern var.
+                self.bump();
+                match self.bump() {
+                    Tok::Ident(n) => Pattern::Pinned(n),
+                    other => {
+                        return self.err(format!(
+                            "expected identifier after `^` in pattern, got {:?}",
+                            other
+                        ));
+                    }
+                }
+            }
             Tok::Ident(n) => {
                 self.bump();
                 Pattern::Var(n)
@@ -1481,6 +1625,18 @@ impl Parser {
             Tok::Case => return self.parse_case(),
             Tok::Cond => return self.parse_cond(),
             Tok::With => return self.parse_with(),
+            // fz-5vj — contextual: `receive do …` parses the new form;
+            // `receive(...)` keeps working as a zero-arg function call
+            // by emitting Expr::Var("receive") and letting postfix do
+            // the call (legacy lowering at src/ir_lower.rs:1111 still
+            // recognises the name). fz-recv.A2 removes the legacy form.
+            Tok::Receive => {
+                self.bump();
+                if matches!(self.peek(), Tok::Do) {
+                    return self.parse_receive_do(start);
+                }
+                Expr::Var("receive".to_string())
+            }
             Tok::Do => {
                 self.bump();
                 self.skip_newlines();
@@ -1673,6 +1829,60 @@ impl Parser {
         self.expect(&Tok::End, "`end`")?;
         Ok(Spanned::new(
             Expr::Case(Box::new(scrut), clauses),
+            self.finish(start),
+        ))
+    }
+
+    /// fz-5vj — `receive do <pat> [when <g>] -> <body>; … [after <t> ->
+    /// <body>] end`. Caller has already consumed `Tok::Receive`; `start`
+    /// is the span of that token (so the resulting node spans the full
+    /// `receive…end`). No scrutinee — clauses match against messages
+    /// popped from the mailbox.
+    fn parse_receive_do(&mut self, start: Span) -> PR<Spanned<Expr>> {
+        self.expect(&Tok::Do, "`do`")?;
+        self.skip_newlines();
+        let mut clauses = Vec::new();
+        // Clauses run until we hit `after` (optional tail) or `end`.
+        while !matches!(self.peek(), Tok::After | Tok::End | Tok::Eof) {
+            let cl_start = self.cur_span();
+            let pat = self.parse_pattern()?;
+            let guard = if matches!(self.peek(), Tok::When) {
+                self.bump();
+                Some(self.with_no_trailing_do(|p| p.parse_expr())?)
+            } else {
+                None
+            };
+            self.expect(&Tok::Arrow, "`->`")?;
+            self.skip_newlines();
+            let body = self.parse_expr()?;
+            let cspan = self.finish(cl_start);
+            clauses.push(MatchClause {
+                pattern: pat,
+                guard,
+                body,
+                span: cspan,
+            });
+            self.skip_newlines();
+        }
+        let after = if self.eat(&Tok::After) {
+            self.skip_newlines();
+            let af_start = self.cur_span();
+            let timeout = self.with_no_trailing_do(|p| p.parse_expr())?;
+            self.expect(&Tok::Arrow, "`->` after timeout expr in `after`")?;
+            self.skip_newlines();
+            let body = self.parse_expr()?;
+            self.skip_newlines();
+            Some(Box::new(AfterClause {
+                timeout,
+                body,
+                span: self.finish(af_start),
+            }))
+        } else {
+            None
+        };
+        self.expect(&Tok::End, "`end`")?;
+        Ok(Spanned::new(
+            Expr::Receive { clauses, after },
             self.finish(start),
         ))
     }

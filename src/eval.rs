@@ -541,6 +541,11 @@ impl Interp {
                 Err(format!("no case clause matched: {}", sv))
             }
             Expr::Cond(_) => Err("cond not implemented".into()),
+            Expr::Receive { .. } => Err(
+                "receive do…end is not supported by the AST evaluator; \
+                 run under interp/JIT/AOT (fz-recv.B1 lands interp support)"
+                    .into(),
+            ),
             Expr::With(bindings, body, else_clauses) => {
                 let frame = env.child();
                 for b in bindings {

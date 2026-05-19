@@ -36,6 +36,11 @@ pub enum Tok {
     Quote,
     Unquote,
     Type,
+    // fz-5vj — selective `receive do … after … end` syntax. `Receive`
+    // is contextual: bare `receive(...)` (postfix call) still parses
+    // through Expr::Var until fz-recv.A2 drops the legacy form.
+    Receive,
+    After,
 
     // punctuation
     LParen,
@@ -59,6 +64,7 @@ pub enum Tok {
     LArrow,   // <-
     Pipe,     // |>
     Bar,      // |  (cons / pattern alt)
+    Caret,    // ^  (pinned pattern var, fz-5vj)
     Underscore,
 
     // operators
@@ -326,6 +332,8 @@ impl<'a> Lexer<'a> {
             "cond" => Tok::Cond,
             "when" => Tok::When,
             "with" => Tok::With,
+            "receive" => Tok::Receive,
+            "after" => Tok::After,
             "quote" => Tok::Quote,
             "unquote" => Tok::Unquote,
             "type" => Tok::Type,
@@ -480,6 +488,10 @@ impl<'a> Lexer<'a> {
                     Tok::Bar
                 }
             },
+            b'^' => {
+                self.bump();
+                Tok::Caret
+            }
             b'&' if self.peek(1) == Some(b'&') => {
                 self.bump();
                 self.bump();

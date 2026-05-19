@@ -560,6 +560,9 @@ fn match_pattern(
         // Map and Bitstring patterns: defer to a per-row IR-walking fallback
         // (the matrix's `PerRow` decision) — for the reducer, treat as opaque.
         Map(_) | Bitstring(_) => Match::Opaque,
+        // fz-5vj — `^name` compares against an outer binding's runtime value.
+        // The reducer doesn't see runtime values, so this is always Opaque.
+        Pinned(_) => Match::Opaque,
     }
 }
 

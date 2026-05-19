@@ -124,6 +124,7 @@ pub fn expr_to_value(e: &Spanned<Expr>) -> Result<Value, String> {
         Expr::Case(_, _)
         | Expr::Cond(_)
         | Expr::With(_, _, _)
+        | Expr::Receive { .. }
         | Expr::Lambda(_, _)
         | Expr::Map(_)
         | Expr::MapUpdate(_, _)
