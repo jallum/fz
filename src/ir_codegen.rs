@@ -4828,6 +4828,46 @@ fn emit_terminator<M: cranelift_module::Module>(
                 cont_fid,
                 &cap_bindings,
             );
+            // fz-t45 — singleton closure-lit fast path for non-tail
+            // closure calls. If this spec types `closure` as a single
+            // closure_lit(F, K), resolve F's narrow body spec at
+            // [K..., arg_descrs...] and call it directly with the
+            // body's narrow ABI, threading the synthesized cont closure
+            // as the callee's `cont` argument. Opaque / polymorphic
+            // closures still fall back to the all-Tagged indirect seam.
+            let lit_resolved: Option<(u32, FuncId, usize)> = (|| {
+                let (body_fn_id, body_sid) =
+                    resolve_tcc_body(closure, args, fn_types, module, spec_registry)?;
+                let body_fid = *fn_ids.get(&body_sid)?;
+                let n_caps = closure_n_captures.get(&body_fn_id).copied().unwrap_or(0);
+                Some((body_sid, body_fid, n_caps))
+            })();
+            if let Some((body_sid, body_fid, n_caps)) = lit_resolved {
+                let body_param_reprs = &param_reprs[body_sid as usize];
+                let body_fref = jmod.declare_func_in_func(body_fid, b.func);
+                let mut direct_args: Vec<ir::Value> = Vec::with_capacity(arg_vals.len() + 2);
+                for (i, v) in arg_vals.iter().enumerate() {
+                    let from = var_env
+                        .get(&args[i].0)
+                        .map_or(ArgRepr::Tagged, |vb| vb.repr);
+                    let to = body_param_reprs
+                        .get(n_caps + i)
+                        .copied()
+                        .unwrap_or(ArgRepr::Tagged);
+                    direct_args.push(coerce_to(b, jmod, runtime, *v, from, to));
+                }
+                direct_args.push(cl_val);
+                direct_args.push(cf);
+                let _ = host_ctx;
+                if is_native {
+                    b.ins().return_call(body_fref, &direct_args);
+                } else {
+                    let call_inst = b.ins().call(body_fref, &direct_args);
+                    let result = b.inst_results(call_inst)[0];
+                    b.ins().return_(&[result]);
+                }
+                return Ok(());
+            }
             // fz-cps.1.8 — load body's func_addr from cl+16 and Tail-CC
             // indirect-call with closure-target sig `(args..., self,
             // cont) -> i64 tail`. All-Tagged params. Native callers
