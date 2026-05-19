@@ -927,19 +927,45 @@ impl Parser {
         };
         self.expect(&Tok::Fn, "`fn` after extern ABI string")?;
         let name_span = self.cur_span();
-        let name = match self.bump() {
+        // fz-y3k — accept an optional single `lib::` prefix on the extern name.
+        // The full string ("libc::open") is the fz-visible identifier; the
+        // bare last segment ("open") is what `ir_lower` records as the C
+        // symbol. Anything more elaborate (multi-segment paths, generics)
+        // is rejected here.
+        let first = match self.bump() {
             Tok::Ident(n) => n,
             other => return self.err(format!("expected function name, got {:?}", other)),
         };
+        let name = if matches!(self.peek(), Tok::ColonColon) {
+            self.bump();
+            match self.bump() {
+                Tok::Ident(n) => format!("{}::{}", first, n),
+                other => {
+                    return self.err(format!(
+                        "expected extern symbol name after `{}::`, got {:?}",
+                        first, other
+                    ));
+                }
+            }
+        } else {
+            first
+        };
         self.expect(&Tok::LParen, "`(`")?;
-        // Extern param types are always single identifiers (e.g. "any", "integer").
-        // Extract the name string at parse time; no need to carry token bundles.
+        // Extern param types are identifiers. Two accepted shapes per param:
+        //   - bare type:        `cstring`
+        //   - named:            `path :: cstring`  (the name is documentation
+        //                                          only — it's discarded)
+        // The collected `params` Vec holds the *type* name for each slot.
+        // Type expressions that themselves contain brackets (e.g. `vector(int)`)
+        // still capture the first ident as the type — the depth counter avoids
+        // bracketed inner idents overriding the outer type.
         let extern_params: Vec<String> = if matches!(self.peek(), Tok::RParen) {
             vec![]
         } else {
             let mut params: Vec<String> = Vec::new();
             let mut depth = 0usize;
             let mut current_name: Option<String> = None;
+            let mut after_dbl_colon = false;
             loop {
                 match self.peek() {
                     Tok::LParen | Tok::LBrace | Tok::LBrack => {
@@ -956,21 +982,31 @@ impl Parser {
                     }
                     Tok::Comma if depth == 0 => {
                         params.push(current_name.take().unwrap_or_default());
+                        after_dbl_colon = false;
+                        self.bump();
+                    }
+                    Tok::ColonColon if depth == 0 => {
+                        // fz-y3k — named-typed param: `<name> :: <type>`. The
+                        // ident we already captured is the param name; the
+                        // next top-level ident is the type and overrides.
+                        after_dbl_colon = true;
                         self.bump();
                     }
                     Tok::Eof | Tok::Newline => {
                         return self.err("unexpected end of extern parameter list");
                     }
                     Tok::Nil => {
-                        if current_name.is_none() {
+                        if depth == 0 && (current_name.is_none() || after_dbl_colon) {
                             current_name = Some("nil".into());
+                            after_dbl_colon = false;
                         }
                         self.bump();
                     }
                     Tok::Ident(n) | Tok::Upper(n) => {
                         let name = n.clone();
-                        if current_name.is_none() {
+                        if depth == 0 && (current_name.is_none() || after_dbl_colon) {
                             current_name = Some(name);
+                            after_dbl_colon = false;
                         }
                         self.bump();
                     }
@@ -1492,7 +1528,21 @@ impl Parser {
             }
             Tok::Ident(n) => {
                 self.bump();
-                Expr::Var(n)
+                // fz-y3k — `libc::open` in expression position resolves to
+                // a Var whose name matches the extern's fz_name in the
+                // module's externs table.
+                if matches!(self.peek(), Tok::ColonColon) {
+                    self.bump();
+                    match self.bump() {
+                        Tok::Ident(s) => Expr::Var(format!("{}::{}", n, s)),
+                        other => {
+                            return self
+                                .err(format!("expected name after `{}::`, got {:?}", n, other));
+                        }
+                    }
+                } else {
+                    Expr::Var(n)
+                }
             }
             Tok::Upper(n) => {
                 self.bump();

@@ -213,6 +213,13 @@ impl ExternTable {
 
 /// Map a single token identifier to an `ExternTy`. Used when resolving the
 /// return-type annotation in an `extern "C" fn` declaration.
+/// fz-y3k — split an extern's fz-visible name into the C symbol it resolves
+/// to. A `lib::name` prefix is fz-side documentation/namespacing only; the
+/// linker sees just the bare suffix. Single-segment names round-trip.
+fn extern_symbol_from_name(fz_name: &str) -> &str {
+    fz_name.rsplit_once("::").map(|(_, sym)| sym).unwrap_or(fz_name)
+}
+
 fn extern_ty_from_name(name: &str) -> Option<ExternTy> {
     match name {
         "any" | "atom" | "bool" => Some(ExternTy::Any),
@@ -553,7 +560,7 @@ pub fn lower_program_full(prog: &Program) -> Result<(Module, AtomTable), LowerEr
                 ctx.extern_decls.push(ExternDecl {
                     id: eid,
                     fz_name: fn_def.name.clone(),
-                    symbol: fn_def.name.clone(),
+                    symbol: extern_symbol_from_name(&fn_def.name).to_string(),
                     params,
                     ret,
                     ret_descr,
@@ -597,7 +604,7 @@ pub fn lower_program_full(prog: &Program) -> Result<(Module, AtomTable), LowerEr
                     ctx.extern_decls.push(ExternDecl {
                         id: eid,
                         fz_name: fn_def.name.clone(),
-                        symbol: fn_def.name.clone(),
+                        symbol: extern_symbol_from_name(&fn_def.name).to_string(),
                         params,
                         ret,
                         ret_descr,
@@ -4568,6 +4575,30 @@ fn main() do fz_open(\"x\", 0) end
         );
         // Sanity: previous `binary` → ExternTy::Any mapping is gone.
         assert_ne!(write.params[1], ExternTy::Any);
+    }
+
+    /// fz-y3k — `extern "C" fn libc::open(path :: cstring, integer) :: integer`
+    /// produces an extern whose fz_name carries the `libc::` prefix while
+    /// the linker-visible symbol is the bare last segment. Named-typed
+    /// params (`path :: cstring`) parse identically to positional ones.
+    #[test]
+    fn extern_with_library_prefix_splits_fz_name_from_symbol() {
+        let src = "\
+extern \"C\" fn libc::open(path :: cstring, integer) :: integer
+fn main() do libc::open(\"x\", 0) end
+";
+        let toks = Lexer::new(src).tokenize().expect("lex");
+        let prog = crate::parser::Parser::new(toks)
+            .parse_program()
+            .expect("parse");
+        let (module, _) = lower_program_full(&prog).expect("lower");
+        let open = module
+            .externs
+            .iter()
+            .find(|e| e.fz_name == "libc::open")
+            .expect("libc::open missing from module.externs");
+        assert_eq!(open.symbol, "open", "linker symbol is the bare suffix");
+        assert_eq!(open.params, vec![ExternTy::CString, ExternTy::I64]);
     }
 
     #[test]
