@@ -1385,7 +1385,7 @@ end
     assert_eq!(
         caller_key,
         vec![
-            crate::types::Descr::closure_lit(FnId(16), vec![crate::types::Descr::int_lit(10)], 1),
+            crate::types::Descr::closure_lit(FnId(17), vec![crate::types::Descr::int_lit(10)], 1),
             crate::types::Descr::int_lit(1)
                 .union(&crate::types::Descr::int_lit(2))
                 .union(&crate::types::Descr::int_lit(3)),
@@ -1397,7 +1397,7 @@ end
         ],
         "expected the narrow fn_clause_1 spec, not the any-key fallback"
     );
-    assert_eq!(m.fn_by_id(body_fid).name, "lambda_16");
+    assert_eq!(m.fn_by_id(body_fid).name, "lambda_17");
     let resolved_key = reg
         .iter()
         .find(|(sid, _, _)| sid.0 == body_sid)
@@ -1436,18 +1436,18 @@ end
     let names: Vec<String> = ir.iter().map(|(name, _)| name.clone()).collect();
     let cont_body = ir
         .iter()
-        .find(|(name, _)| name.starts_with("k_15"))
+        .find(|(name, _)| name.starts_with("k_16"))
         .map(|(_, body)| body.as_str())
-        .unwrap_or_else(|| panic!("expected emitted k_15 body, saw {:?}", names));
+        .unwrap_or_else(|| panic!("expected emitted k_16 body, saw {:?}", names));
     assert!(
         !cont_body.contains("trap user"),
-        "k_15 should not compile as an unreached trap stub:\n{}",
+        "k_16 should not compile as an unreached trap stub:\n{}",
         cont_body
     );
     assert!(
         cont_body.contains("load.i64 notrap aligned v1+32")
             && cont_body.contains("load.i64 notrap aligned v1+48"),
-        "k_15 should load its tagged captures from the continuation closure payload:\n{}",
+        "k_16 should load its tagged captures from the continuation closure payload:\n{}",
         cont_body
     );
 }
@@ -1482,14 +1482,14 @@ end
     let mut cont_sid = None;
     for (fid, key) in spec_keys {
         let sid = reg.register(fid, key.clone());
-        if m.fn_by_id(fid).name == "k_15" {
+        if m.fn_by_id(fid).name == "k_16" {
             cont_sid = Some(sid.0);
         }
     }
-    let reachable = crate::ir_typer::reachable_specs(&m, &reg, &mt, [16]);
+    let reachable = crate::ir_typer::reachable_specs(&m, &reg, &mt, [17]);
     assert!(
-        reachable.contains(&cont_sid.expect("expected k_15 spec")),
-        "reachable specs should include k_15 continuation"
+        reachable.contains(&cont_sid.expect("expected k_16 spec")),
+        "reachable specs should include k_16 continuation"
     );
 }
 
