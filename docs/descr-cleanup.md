@@ -561,6 +561,35 @@ proof-on-paper, by node:
 | S4    | `lambda_14#14 [10, 20, any]` Pending in MakeClosure spec | B1 (spec key captures-only) |
 | S5    | `via OpaqueArg` on closure-handle-arg call | D + E (verb carries no-fold information) |
 | S6    | `via OpaqueArg` inherited downstream | D + E (verb carries no-fold information) |
+| S7    | "Every consumer re-learns the rules" — implicit positional reasoning over axis fields spread across 11+ files | fz-68x (Component view API + sealed axis fields; exhaustive `match Component` enforces three-path parity at compile time) |
+
+## Sealing landed (fz-68x — 2026-05-19)
+
+The Component view API is now the consumer-facing surface; axis
+fields on `Descr` and clause fields on `Conj<T>` are sealed at
+`pub(crate)`. The cleanup-doc promise that
+
+> Three-path parity (interpreter / JIT / AOT) becomes compiler-enforced
+> via exhaustiveness on `match descr`.
+
+is realized — every consumer that used to read `descr.basic` /
+`descr.atoms` / etc. (interp's TypeTest, codegen's TypeTest + repr
+selection, the reducer's literal extraction, the typer's projections
++ widening, spec_registry's pure-var detection, callsite_walk's
+closure-lit enumeration) now dispatches through
+`for c in descr.components() { match c { Component::Ints(view) =>
+…, … } }`. Adding a new axis tomorrow breaks every consumer at
+compile time.
+
+The View boundary keeps internal representation private — Elixir is
+mid-migration from DNF to BDD with hash-consing (#15332), and fz can
+follow that direction internally without rippling through consumers.
+
+`fz-1m5` (the proposed top-level `Descr = Var | Concrete` enum split)
+was closed obsolete in this arc. Componentwise algebra over a `vars`
+axis is the Castagna primitive; the seal + Component API delivered
+the compiler-enforced parity win without the algebraic cost the enum
+form would have imposed.
 
 ## Acceptance & audit
 
