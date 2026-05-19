@@ -278,6 +278,35 @@ pub unsafe extern "C" fn fz_resource_release(p: *mut Resource) {
     }
 }
 
+/// fz-4mk — release variant for the deferred-dispatch path.
+///
+/// Decrements the refcount, frees the wrapper if this was the final ref,
+/// and returns the payload (so the caller can enqueue it onto a per-heap
+/// `pending_dtors` queue for fz-side dispatch later). Does **not** invoke
+/// the stored C destructor — the new contract is "the closure runs the
+/// dtor as fz code at the next scheduler boundary."
+///
+/// Returns `Some(payload)` on the final-ref transition (1 → 0), `None`
+/// otherwise (another stub still holds the resource alive).
+///
+/// # Safety
+/// `p` must point at a live Resource. After `Some(_)` returns the caller
+/// must not dereference `p` again — the wrapper has been freed.
+pub unsafe fn fz_resource_release_deferred(p: *mut Resource) -> Option<u64> {
+    debug_assert!(!p.is_null());
+    let r = unsafe { &*p };
+    if r.refcount.fetch_sub(1, Ordering::Release) == 1 {
+        fence(Ordering::Acquire);
+        let payload = r.payload;
+        let _wrapper = unsafe { Box::from_raw(p) };
+        #[cfg(not(loom))]
+        LIVE_COUNT.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+        Some(payload)
+    } else {
+        None
+    }
+}
+
 // ===== Live-count gauge =====================================================
 
 static LIVE_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);

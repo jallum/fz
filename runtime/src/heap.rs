@@ -327,6 +327,13 @@ pub struct Heap {
     /// their to-space copies; `Heap::drop` calls `procbin::mso_drop_all`
     /// before pool reclaim so SharedBin references are balanced.
     pub mso_head: *mut HeapHeader,
+    /// fz-4mk — pending dtor invocations. When an MSO sweep finds a
+    /// `HeapKind::Resource` stub whose off-heap refcount transitioned to
+    /// zero, instead of firing the dtor inline (which would mean running
+    /// fz code from inside the GC pause), we enqueue
+    /// `(closure_bits, payload)` here and the scheduler drains the queue
+    /// at the next quantum boundary. See ticket fz-4mk.
+    pub pending_dtors: std::collections::VecDeque<(u64, u64)>,
     /// fz-q8d.4 — fragment list. Oversized allocations (above the
     /// largest size_class) live here as their own system-allocator
     /// backed singletons. GC marks them via the `mark` bit; survivors
@@ -361,6 +368,7 @@ impl Heap {
             gc_run_count: 0,
             alloc_count: 0,
             mso_head: std::ptr::null_mut(),
+            pending_dtors: std::collections::VecDeque::new(),
             fragments: Vec::new(),
         }
     }

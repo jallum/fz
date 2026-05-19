@@ -360,6 +360,43 @@ pub fn mso_sweep(heap: &mut Heap) {
     heap.mso_head = new_head;
 }
 
+/// fz-4mk — deferred variant of `mso_drop_all`. Walks the MSO chain at
+/// process shutdown and, for each dead resource, instead of invoking the
+/// stored C destructor inline, snapshots the closure value and payload
+/// onto `heap.pending_dtors` so the scheduler can dispatch the dtor as
+/// real fz code while the process is still alive. ProcBin entries
+/// continue to release synchronously (their dtor is owned by the runtime,
+/// not user fz code, and has nothing to print or branch on).
+///
+/// Currently called only by the interpreter leg's shutdown path; the
+/// JIT/AOT scheduler loops still use the inline `mso_drop_all` until
+/// phase 3 wires their drain. After this returns, the MSO chain is
+/// empty and `Heap::drop` -> `mso_drop_all` is a no-op.
+pub fn mso_drop_all_deferred(heap: &mut Heap) {
+    use crate::resource::{ResourceStub, fz_resource_release_deferred};
+    let mut cur = heap.mso_head;
+    while !cur.is_null() {
+        let kind = unsafe { (*cur).kind };
+        let (next, _) = mso_read_next(cur, kind);
+        match HeapKind::from_u16(kind) {
+            Some(HeapKind::ProcBin) => {
+                let pb = unsafe { ProcBin::from_raw(cur) };
+                unsafe { shared_bin_release(pb.shared_raw()) };
+            }
+            Some(HeapKind::Resource) => {
+                let rs = unsafe { ResourceStub::from_raw(cur) };
+                let closure = rs.closure_ptr();
+                if let Some(payload) = unsafe { fz_resource_release_deferred(rs.shared_raw()) } {
+                    heap.pending_dtors.push_back((closure.0, payload));
+                }
+            }
+            other => panic!("mso_drop_all_deferred: unexpected MSO kind: {:?}", other),
+        }
+        cur = next;
+    }
+    heap.mso_head = std::ptr::null_mut();
+}
+
 /// Read the `mso_next` link from an MSO chain entry. ProcBin and Resource
 /// stubs disagree on the slot's offset (24 vs 32) since fz-4mk grew the
 /// Resource stub for the dtor-closure slot. `FORWARDED_KIND` headers keep

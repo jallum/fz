@@ -217,6 +217,18 @@ pub fn run_main(module: &Module) -> Result<i64, String> {
                         step = run_fn(module, next_fn, next_args);
                         // loop continues
                     } else {
+                        // fz-4mk — shutdown drain: walk the MSO chain to
+                        // enqueue every still-live resource's dtor, then
+                        // dispatch each as a real fz call while the process
+                        // is still alive (CURRENT_PROCESS is `proc_ptr`,
+                        // heap is intact, scheduler can drive callbacks
+                        // into externs the dtor body invokes).
+                        unsafe {
+                            fz_runtime::procbin::mso_drop_all_deferred(&mut (*proc_ptr).heap);
+                        }
+                        if let Err(e) = drain_pending_dtors_interp(module) {
+                            eprintln!("fz-4mk: dtor drain failed: {}", e);
+                        }
                         fz_runtime::process::CURRENT_PROCESS.with(|c| c.set(prev));
                         INTERP_TASKS.with(|t| {
                             if let Some(p) = t.borrow_mut().get_mut(&pid) {
@@ -272,6 +284,15 @@ pub fn run_test_fn(module: &Module, fn_id: FnId) -> Result<(), String> {
     let task_ptr = interp_register_task(1, task);
     let prev = fz_runtime::process::CURRENT_PROCESS.with(|c| c.replace(task_ptr));
     let result = run_fn(module, fn_id, Vec::new());
+    // fz-4mk — shutdown drain mirrors run_main's exit path: enqueue every
+    // surviving resource's dtor and dispatch each as a real fz call while
+    // CURRENT_PROCESS is still pointing at the test task's heap.
+    unsafe {
+        fz_runtime::procbin::mso_drop_all_deferred(&mut (*task_ptr).heap);
+    }
+    if let Err(e) = drain_pending_dtors_interp(module) {
+        eprintln!("fz-4mk: dtor drain failed in test fn: {}", e);
+    }
     fz_runtime::process::CURRENT_PROCESS.with(|c| c.set(prev));
     INTERP_SCHEMAS.with(|s| *s.borrow_mut() = None);
     match result {
@@ -787,6 +808,44 @@ fn eval_prim(module: &Module, prim: &Prim, env: &HashMap<Var, FzValue>) -> Resul
 /// Read an interp-side closure value. fz-ul4.29.5 layout:
 ///   header (16) + stub_fp (8) + captured: [FzValue; n] (offset 24+)
 ///   header._reserved = callee FnId; header.flags = captured count.
+/// fz-4mk — interpreter-leg drain of `Heap::pending_dtors`. Pops each
+/// `(closure_bits, payload)` enqueued by `mso_sweep`/`mso_drop_all`,
+/// unpacks the closure to its body FnId + captures, and runs the body
+/// as a fully fz-side call via `run_fn`. The dtor's return value is
+/// discarded. Errors from the dtor body propagate to the caller; the
+/// run-loop logs and continues.
+///
+/// Pre-conditions: `CURRENT_PROCESS` is set to the heap owning the
+/// queue. Closures in the queue point into that heap.
+fn drain_pending_dtors_interp(module: &Module) -> Result<(), String> {
+    loop {
+        let entry = {
+            let p = fz_runtime::process::current_process();
+            p.heap.pending_dtors.pop_front()
+        };
+        let Some((closure_bits, payload)) = entry else {
+            break;
+        };
+        let closure = FzValue(closure_bits);
+        let (fn_id, captured) = match unpack_closure(closure) {
+            Ok(x) => x,
+            Err(e) => {
+                eprintln!("fz-4mk drain: bad dtor closure (skipping): {}", e);
+                continue;
+            }
+        };
+        let mut args = captured;
+        args.push(FzValue(payload));
+        match run_fn(module, fn_id, args)? {
+            InterpStep::Done(_) => {}
+            InterpStep::Blocked(_, _, _) => {
+                return Err("fz-4mk drain: dtor blocked on receive (unsupported in v1)".into());
+            }
+        }
+    }
+    Ok(())
+}
+
 fn unpack_closure(v: FzValue) -> Result<(FnId, Vec<FzValue>), String> {
     use fz_runtime::fz_value::HeapKind;
     let p = v.unbox_ptr().ok_or_else(|| {
@@ -1274,14 +1333,14 @@ end
             1,
             "dtor must fire exactly once after process heap drop"
         );
-        // The dtor receives the raw FzValue bits of the payload we stored
-        // (the BIF stores args[0].0 verbatim). For Int 42, FzValue.0 is
-        // `42 << 4 | INT_TAG` (Int tag = 0), i.e. 672.
-        // FzValue Int encoding: (n << 3) | TAG_INT (=1). For n=42 → 337.
+        // fz-4mk — the dtor body runs as ordinary fz code through
+        // dispatched closure; the extern's `:: integer` marshal class
+        // unboxes the payload before the C fn sees it. So the C dtor
+        // receives the *unboxed* int 42, not the tagged FzValue bits.
         assert_eq!(
             tests_support::DTOR_LAST_PAYLOAD.load(Ordering::Relaxed),
-            fz_runtime::fz_value::FzValue::from_int(42).0,
-            "dtor receives the stored FzValue.0 bits of payload 42",
+            42,
+            "dtor (called via fz dispatch + extern unboxing) receives the unboxed int payload"
         );
     }
 
@@ -1319,10 +1378,12 @@ end
             1,
             "aliasing three bindings must still produce exactly one dtor call",
         );
+        // fz-4mk — dtor dispatches as fz code, extern unboxes (see
+        // make_resource_bif_round_trip).
         assert_eq!(
             tests_support::DTOR_LAST_PAYLOAD.load(Ordering::Relaxed),
-            fz_runtime::fz_value::FzValue::from_int(7).0,
-            "dtor receives the stored FzValue.0 bits of payload 7",
+            7,
+            "dtor receives the unboxed int payload",
         );
     }
 
@@ -1414,10 +1475,11 @@ end
             1,
             "dtor fires once on heap drop",
         );
+        // fz-4mk — see make_resource_bif_round_trip; dtor sees unboxed.
         assert_eq!(
             tests_support::DTOR_LAST_PAYLOAD.load(Ordering::Relaxed),
-            fz_runtime::fz_value::FzValue::from_int(99).0,
-            "dtor receives the stored FzValue.0 bits of payload 99",
+            99,
+            "dtor receives the unboxed int payload",
         );
     }
 }
