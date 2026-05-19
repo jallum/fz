@@ -12,6 +12,7 @@ pub mod bitstr;
 pub mod fz_value;
 pub mod heap;
 pub mod ir_runtime;
+pub mod park;
 pub mod procbin;
 pub mod process;
 pub mod resource;

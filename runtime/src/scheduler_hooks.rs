@@ -56,6 +56,20 @@ pub type SendHook = extern "C" fn(receiver_pid: u32, msg_bits: u64);
 /// resulting FzValue bits.
 pub type MakeResourceHook = extern "C" fn(payload: u64, dtor_closure_bits: u64) -> u64;
 
+/// fz-yxs/fz-st5 — after-timer schedule hook. Called by
+/// `fz_receive_park_matched` when the park record carries a non-`None`
+/// after_deadline_ms. The binary owns the `Runtime` (and its
+/// `TimerWheel`) so the actual schedule lives there; this hook is the
+/// crossing through the staticlib boundary. Returns the fresh
+/// `TimerId` (u64) so the FFI can stash it on the park record for
+/// later cancellation.
+pub type TimerScheduleHook = extern "C" fn(pid: u32, after_ms: u64) -> u64;
+
+/// fz-yxs/fz-st5 — counterpart cancel hook, fired when a matcher hit
+/// (sender-probe or initial-scan) wakes the receiver before the timer
+/// expires. No-op when `timer_id` is unknown (already fired).
+pub type TimerCancelHook = extern "C" fn(timer_id: u64);
+
 // Per-thread hook storage. A Runtime is single-worker by design
 // (fz-ul4.19.1) and "the current Runtime" is a per-thread concept — same
 // shape as CURRENT_PROCESS (runtime/src/process.rs) and CURRENT_RUNTIME
@@ -75,6 +89,8 @@ thread_local! {
     static SPAWN_OPT_HOOK: Cell<usize> = const { Cell::new(0) };
     static SEND_HOOK: Cell<usize> = const { Cell::new(0) };
     static MAKE_RESOURCE_HOOK: Cell<usize> = const { Cell::new(0) };
+    static TIMER_SCHEDULE_HOOK: Cell<usize> = const { Cell::new(0) };
+    static TIMER_CANCEL_HOOK: Cell<usize> = const { Cell::new(0) };
 }
 
 pub fn install_spawn_hook(hook: SpawnHook) {
@@ -99,6 +115,50 @@ pub fn install_send_hook(hook: SendHook) {
 
 pub fn clear_send_hook() {
     SEND_HOOK.with(|c| c.set(0));
+}
+
+pub fn install_timer_schedule_hook(hook: TimerScheduleHook) {
+    TIMER_SCHEDULE_HOOK.with(|c| c.set(hook as usize));
+}
+
+pub fn clear_timer_schedule_hook() {
+    TIMER_SCHEDULE_HOOK.with(|c| c.set(0));
+}
+
+pub fn install_timer_cancel_hook(hook: TimerCancelHook) {
+    TIMER_CANCEL_HOOK.with(|c| c.set(hook as usize));
+}
+
+pub fn clear_timer_cancel_hook() {
+    TIMER_CANCEL_HOOK.with(|c| c.set(0));
+}
+
+/// Crate-internal dispatchers. Return `None` when the hook is not
+/// installed — the caller decides whether absence is fatal. The
+/// after-timer path treats absence as "no timer wired" (interp-style
+/// indefinite park) so the runtime keeps working in test contexts
+/// that don't stand up a Runtime.
+pub(crate) fn dispatch_timer_schedule(pid: u32, after_ms: u64) -> Option<u64> {
+    let raw = TIMER_SCHEDULE_HOOK.with(|c| c.get());
+    if raw == 0 {
+        return None;
+    }
+    let hook: TimerScheduleHook = unsafe { std::mem::transmute(raw) };
+    Some(hook(pid, after_ms))
+}
+
+/// fz-yxs/fz-st5 — public cancel dispatcher. Called by the binary's
+/// sender-probe path (and by the after-timer fire path if a follow-up
+/// landing wires it that way) to retire a previously scheduled timer
+/// when a matcher hit gets there first. No-op if the hook isn't
+/// installed (e.g. unit tests that don't drive a Runtime).
+pub fn dispatch_timer_cancel(timer_id: u64) {
+    let raw = TIMER_CANCEL_HOOK.with(|c| c.get());
+    if raw == 0 {
+        return;
+    }
+    let hook: TimerCancelHook = unsafe { std::mem::transmute(raw) };
+    hook(timer_id);
 }
 
 pub(crate) fn dispatch_spawn(closure_bits: u64) -> u32 {

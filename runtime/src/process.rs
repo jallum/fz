@@ -54,6 +54,17 @@ pub struct Process {
     /// resuming the chain. Pointer because the closure lives in this
     /// Process's heap; layout per `Heap::alloc_closure`.
     pub parked_cont: *mut u8,
+    /// fz-yxs/fz-st5 — selective receive: the park record snapshot
+    /// stashed while the task is `Blocked` on a `Term::ReceiveMatched`.
+    /// Coexists with `parked_cont` until A2 retires the legacy path;
+    /// at most one of the two is non-empty at any moment.
+    pub parked_matched: Option<Box<crate::park::ParkRecord>>,
+    /// fz-yxs/fz-st5 — set by the sender-probe path (and by the after-
+    /// timer dispatch) when the scheduler has resolved which clause
+    /// body to invoke and with what bound-var args. The trampoline
+    /// (JIT/AOT, B3/B4) reads this on resume, clears it, and tail-
+    /// calls `cont(args..., halt_cont)`.
+    pub pending_resume_matched: Option<crate::park::PendingResumeMatched>,
     /// fz-ul4.27.22.3 — per-Process halt-cont singletons indexed by
     /// repr kind (0=Tagged, 1=RawInt, 2=RawF64). Each slot holds a
     /// 24-byte closure whose +16 slot points at the matching
@@ -151,6 +162,8 @@ impl Process {
             next_frame: std::ptr::null_mut(),
             mailbox: std::collections::VecDeque::new(),
             parked_cont: std::ptr::null_mut(),
+            parked_matched: None,
+            pending_resume_matched: None,
             halt_cont_singletons: [std::ptr::null_mut(); 3],
             pending_closure_entry: std::ptr::null_mut(),
             pending_main_entry: std::ptr::null_mut(),
