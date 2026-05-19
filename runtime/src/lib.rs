@@ -16,6 +16,7 @@ pub mod procbin;
 pub mod process;
 pub mod scheduler_hooks;
 pub mod sync;
+pub mod timer;
 pub mod yield_flag;
 
 // ---------------------------------------------------------------------------
