@@ -44,6 +44,7 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `polymorphic/` | parametric `id` exercised over int, atom, and bool | jit, interp, repl |
 | `quicksort/` | closing fixture of the destructure-up-through-quicksort arc — `{lo, hi} = partition(...)` on the hot path of a recursive sort | jit, interp, aot, repl |
 | `relay/` | one-hop relay — spawned child blocks on receive before parent sends; exercises non-blocking spawn + receive-parks semantics | jit, interp, aot |
+| `resource_aot_dtor/` | AOT-compiled binary fires user-supplied resource dtors at heap drop | aot |
 | `sample_tests/` | `test()` macro from the prelude — assert_eq / assert_neq / assert | jit |
 | `sample_tests_module/` | `test()` inside a defmodule body | jit |
 | `shared_heap_send_large_bitstring/` | fz-cty.6 — sending a >64-byte bitstring via spawn-and-send rounds through ProcBin/SharedBin under JIT and AOT | jit, interp, aot |

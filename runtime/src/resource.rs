@@ -88,6 +88,27 @@ unsafe impl Sync for Resource {}
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fz_resource_destructor_noop(_payload: u64) {}
 
+/// fz-swt.11 — test/fixture dtor: prints `dtor:<n>` to stdout where `n`
+/// is the unboxed integer carried in `payload` (a tagged `FzValue`).
+/// Always exported (not `cfg(test)`) so AOT-linked fixtures can name it
+/// in an `extern "C" fn` declaration and observe dtor invocation through
+/// the linked binary's stdout. Stable, documented sink — usable both
+/// by the in-process JIT tests (via the existing test-symbol registration
+/// hook) and by AOT fixtures (via the regular extern path).
+///
+/// # Safety
+/// `payload` must be the tagged bits of an `FzValue::Int`. Non-int
+/// payloads print `dtor:?` rather than crash so a misuse stays
+/// debuggable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fz_resource_test_print_dtor(payload: u64) {
+    let v = crate::fz_value::FzValue(payload);
+    match v.unbox_int() {
+        Some(n) => println!("dtor:{}", n),
+        None => println!("dtor:?"),
+    }
+}
+
 // ===== Allocation + refcount primitives ====================================
 
 /// Allocate a fresh `Resource` with refcount = 1 carrying `payload` and

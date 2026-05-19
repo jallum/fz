@@ -21,7 +21,7 @@
 //! Blocked / Ready); `aot_send_hook` wakes Blocked receivers. This matches
 //! the JIT's `run_until_idle` semantics.
 
-use crate::fz_value::FzValue;
+use crate::fz_value::{FzValue, HeapHeader, HeapKind};
 use crate::heap::SchemaRegistry;
 use crate::process::{CURRENT_PROCESS, Process, ProcessState};
 use std::cell::{Cell, RefCell};
@@ -54,6 +54,20 @@ thread_local! {
     /// a process that yielded at a back-edge after gc_mid_flight.
     static AOT_RESUME_SHIMS: Cell<[*const u8; 9]> =
         const { Cell::new([std::ptr::null(); 9]) };
+    /// fz-swt.11 — dtor lookup table baked into the AOT binary at codegen
+    /// time. Each entry is `(FnId of a zero-cap closure body, C-ABI fn ptr
+    /// of the underlying extern)`. AOT codegen scans the IR module for
+    /// closure-target bodies that are thin extern wrappers (the same
+    /// shape `resolve_dtor_from_closure` recognises in interp/JIT) and
+    /// emits one row per match into a data symbol with function-address
+    /// relocations on the fn-ptr slot. `fz_aot_register_dtor_table`
+    /// copies the rows into this thread-local table; the AOT
+    /// `MakeResourceHook` (`aot_make_resource_hook`) reads the closure
+    /// header's `_reserved` field (= fn_id) and does a linear lookup
+    /// here, then calls `resource::resource_alloc` + `alloc_resource`
+    /// against the current process's heap.
+    static AOT_DTOR_TABLE: RefCell<Vec<(u32, *const u8)>> =
+        const { RefCell::new(Vec::new()) };
 }
 
 /// Decode an atom-name blob emitted by AOT codegen into a `Vec<String>`.
@@ -141,8 +155,93 @@ pub extern "C" fn fz_aot_setup(
     crate::scheduler_hooks::install_spawn_hook(aot_spawn_hook);
     crate::scheduler_hooks::install_spawn_opt_hook(aot_spawn_opt_hook);
     crate::scheduler_hooks::install_send_hook(aot_send_hook);
+    // fz-swt.11 — AOT MakeResourceHook. The dtor lookup table is populated
+    // later via `fz_aot_register_dtor_table` (called from the AOT-emitted
+    // C main between setup and run_main); the hook itself reads from it
+    // each time `fz_make_resource` is called from emitted code.
+    crate::scheduler_hooks::install_make_resource_hook(aot_make_resource_hook);
 
     proc_ptr
+}
+
+/// fz-swt.11 — populate the AOT dtor lookup table from a data symbol
+/// emitted by AOT codegen. The data block is a packed array of `count`
+/// 16-byte rows: `u32 fn_id, u32 _pad, u64 fn_ptr`. `fn_ptr` was
+/// emitted as a function-address relocation by `desc.write_function_addr`
+/// (see `define_aot_dtor_table` in `ir_codegen.rs`), so the linker
+/// already filled in the absolute address of the underlying extern.
+///
+/// Idempotent: replaces the prior table contents. `table` may be null
+/// when `count == 0` (program has no zero-cap closure-target wrappers).
+///
+/// # Safety
+/// `table` must point to `count * 16` bytes of validly-relocated rows
+/// when `count > 0`. Called only from the AOT-emitted C main.
+#[unsafe(no_mangle)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn fz_aot_register_dtor_table(table: *const u8, count: u32) {
+    let mut rows: Vec<(u32, *const u8)> = Vec::with_capacity(count as usize);
+    if count > 0 {
+        assert!(
+            !table.is_null(),
+            "fz_aot_register_dtor_table: null table with count > 0"
+        );
+        for i in 0..count as usize {
+            // Read unaligned: the data section's start is 8-byte aligned by
+            // `set_align(8)` in codegen, and each 16-byte row is naturally
+            // aligned, but stay defensive on aarch64.
+            let base = unsafe { table.add(i * 16) };
+            let fn_id = unsafe { std::ptr::read_unaligned(base as *const u32) };
+            let fn_ptr = unsafe { std::ptr::read_unaligned(base.add(8) as *const *const u8) };
+            rows.push((fn_id, fn_ptr));
+        }
+    }
+    AOT_DTOR_TABLE.with(|c| *c.borrow_mut() = rows);
+}
+
+/// fz-swt.11 — AOT `MakeResourceHook` body. Reads the dtor closure's
+/// `_reserved` field (set by `fz_alloc_closure` / `init_static_closures`
+/// to the closure body's `FnId`), looks the fn_id up in the AOT dtor
+/// table populated at startup, and allocates a fresh `Resource` on the
+/// current process's heap.
+extern "C" fn aot_make_resource_hook(payload: u64, dtor_closure_bits: u64) -> u64 {
+    let closure = FzValue(dtor_closure_bits);
+    let p = closure.unbox_ptr().unwrap_or_else(|| {
+        eprintln!("fz_make_resource (AOT): dtor arg is not a heap value");
+        std::process::abort();
+    });
+    let header: &HeapHeader = unsafe { &*p };
+    if HeapKind::from_u16(header.kind) != Some(HeapKind::Closure) {
+        eprintln!("fz_make_resource (AOT): dtor arg is not a closure");
+        std::process::abort();
+    }
+    let fn_id = header._reserved;
+    let dtor_addr = AOT_DTOR_TABLE.with(|c| {
+        c.borrow()
+            .iter()
+            .find_map(|(fid, addr)| if *fid == fn_id { Some(*addr) } else { None })
+    });
+    let dtor_addr = dtor_addr.unwrap_or_else(|| {
+        eprintln!(
+            "fz_make_resource (AOT): no dtor table entry for closure fn_id {} \
+             — the closure body is not recognised as a thin extern wrapper",
+            fn_id
+        );
+        std::process::abort();
+    });
+    // SAFETY: dtor_addr was emitted by AOT codegen as a function-address
+    // relocation against an `extern "C"` symbol declared in the IR
+    // module. ExternTy constraints guarantee a u64-wide scalar parameter.
+    let dtor: unsafe extern "C" fn(u64) = unsafe { std::mem::transmute(dtor_addr) };
+    let handle = crate::resource::ResourceHandle::new(payload, dtor);
+    let proc_ptr = CURRENT_PROCESS.with(|c| c.get());
+    assert!(
+        !proc_ptr.is_null(),
+        "fz_make_resource (AOT): no current process"
+    );
+    let heap = unsafe { &mut (*proc_ptr).heap };
+    let stub = crate::resource::alloc_resource(heap, handle);
+    FzValue::from_ptr(stub.as_raw()).0
 }
 
 /// fz-ul4.38 — register the program's tuple schemas with the AOT process,
@@ -329,6 +428,8 @@ pub extern "C" fn fz_aot_run_main(
     // Teardown.
     crate::scheduler_hooks::clear_spawn_hook();
     crate::scheduler_hooks::clear_send_hook();
+    crate::scheduler_hooks::clear_make_resource_hook();
+    AOT_DTOR_TABLE.with(|c| c.borrow_mut().clear());
     AOT_SPAWN_ENTRY.with(|c| c.set(std::ptr::null()));
     AOT_RESUME_PARK.with(|c| c.set(std::ptr::null()));
     AOT_MAIN_ENTRY.with(|c| c.set(std::ptr::null()));

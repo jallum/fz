@@ -1066,6 +1066,13 @@ fn resolve_symbol(name: &str) -> Result<*const (), String> {
         "fz_spawn_opt" => Some(fz_runtime::ir_runtime::fz_spawn_opt as *const ()),
         "fz_self" => Some(fz_runtime::ir_runtime::fz_self as *const ()),
         "fz_send" => Some(fz_runtime::ir_runtime::fz_send as *const ()),
+        // fz-swt.11 — fixture/test dtor exported from the runtime crate.
+        // Bound here so interp-leg invocations of fixtures using this
+        // symbol (e.g. when `fz interp` is run by hand on the AOT-only
+        // fixture) reach the same Rust fn the AOT-linked binary uses.
+        "fz_resource_test_print_dtor" => {
+            Some(fz_runtime::resource::fz_resource_test_print_dtor as *const ())
+        }
         _ => None,
     };
     if let Some(fp) = native {
