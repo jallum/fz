@@ -278,10 +278,14 @@ pub struct LowerCtx {
     /// the same FnId and produce a single `MakeClosure(thunk, [x])`
     /// shape in stub generation.
     spawn_thunk_id: Option<FnId>,
-    /// fz-eol — lazily synthesized fn wrappers around extern calls, keyed
-    /// by ExternId. `&libc::close/1` produces a closure pointing at the
-    /// wrapper; the runtime's `resolve_dtor_from_closure` walks the
-    /// wrapper's IR and finds the canonical `Prim::Extern(eid, _)` inside.
+    /// fz-eol — lazily synthesized top-level fn wrappers around extern
+    /// calls, keyed by ExternId. `&libc::close/1` produces a closure
+    /// pointing at the wrapper. The wrapper is a true top-level fn (not
+    /// a lambda) so it has *zero captures*, which is what
+    /// `static_closure_targets` requires for the AOT dtor table.
+    /// (Why not desugar to a lambda? The lambda lifter today captures
+    /// every in-scope local indiscriminately — see `lower_lambda` —
+    /// which would push the closure past the n_caps==0 filter.)
     extern_wrappers: HashMap<ExternId, FnId>,
     /// fz-ext.7 — FnIds below this threshold belong to the runtime.fz
     /// prelude. `build_source_info` ignores their var_meta entries so
@@ -395,13 +399,13 @@ impl LowerCtx {
         id
     }
 
-    /// fz-eol — get-or-build a fn that forwards its args to the named
-    /// extern. Used by `&libc::close/1` (and any other `&<extern>/<arity>`)
+    /// fz-eol — get-or-build a top-level fn that forwards its args to the
+    /// named extern. Used by `&libc::close/1` (and any `&<extern>/<arity>`)
     /// so the resulting closure has a real `FnId` whose IR carries the
-    /// canonical `Prim::Extern` for `resolve_dtor_from_closure` to find.
-    ///
-    /// The wrapper takes `arity` Vars, binds one `Prim::Extern(eid, args)`
-    /// and returns the result (or `Const::Nil` for unit-returning externs).
+    /// canonical `Prim::Extern` for `resolve_dtor_from_closure` to find,
+    /// and — crucially — *zero captures* so the AOT static dtor table
+    /// can resolve it. See [[fz-9rs]] for the underlying lifter limitation
+    /// that prevents the simpler "desugar to lambda" approach.
     fn ensure_extern_wrapper(&mut self, eid: ExternId) -> FnId {
         if let Some(id) = self.extern_wrappers.get(&eid) {
             return *id;
@@ -426,7 +430,6 @@ impl LowerCtx {
         let ret_var = if returns_value {
             tb.let_(entry, Prim::Extern(eid, params))
         } else {
-            // Sequence the side-effecting call, then return nil.
             let _ = tb.let_(entry, Prim::Extern(eid, params));
             tb.let_(entry, Prim::Const(Const::Nil))
         };
@@ -2024,9 +2027,9 @@ fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -> Result<Va
             if let Some(&fn_id) = ctx.fns.get(&(name.clone(), *arity)) {
                 return Ok(ctx.let_at(Prim::make_closure(sp, fn_id, vec![]), sp));
             }
-            // fz-eol — `&libc::close/1`: synthesize (and cache) a wrapper fn
-            // that forwards its args to the named extern, then return a
-            // closure pointing at that wrapper.
+            // fz-eol — `&libc::close/1`: synthesize (and cache) a top-level
+            // wrapper fn that forwards its args to the named extern, then
+            // return a closure pointing at that wrapper.
             if let Some(eid) = ctx.externs.lookup(name) {
                 let decl = ctx
                     .extern_decls
@@ -4646,10 +4649,13 @@ fn main() do fz_open(\"x\", 0) end
         assert_ne!(write.params[1], ExternTy::Any);
     }
 
-    /// fz-eol — `&libc::close/1` resolves to a synthesized wrapper fn
-    /// whose body contains a single `Prim::Extern` call. This is the
-    /// canonical shape `resolve_dtor_from_closure` walks at runtime so
-    /// `make_resource(_, &libc::close/1)` resolves to libc::close.
+    /// fz-eol — `&libc::close/1` resolves to a synthesized top-level
+    /// wrapper fn whose body contains a single `Prim::Extern` call. This
+    /// is the canonical shape `resolve_dtor_from_closure` walks at
+    /// runtime so `make_resource(_, &libc::close/1)` resolves to
+    /// libc::close. The wrapper has zero captures so the AOT static dtor
+    /// table accepts it. See [[fz-9rs]] for why the simpler "desugar to
+    /// lambda" approach doesn't yet work.
     #[test]
     fn fn_ref_to_extern_synthesizes_wrapper() {
         use crate::fz_ir::{Prim, Stmt};
