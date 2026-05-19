@@ -199,6 +199,8 @@ impl CompiledModule {
             next_frame: std::ptr::null_mut(),
             mailbox: std::collections::VecDeque::new(),
             parked_cont: std::ptr::null_mut(),
+            parked_matched: None,
+            pending_resume_matched: None,
             halt_cont_singletons: [std::ptr::null_mut(); 3],
             pending_closure_entry: std::ptr::null_mut(),
             pending_main_entry: std::ptr::null_mut(),
@@ -1208,6 +1210,12 @@ impl JitBackend {
         builder.symbol(
             "fz_receive_park",
             fz_runtime::ir_runtime::fz_receive_park as *const u8,
+        );
+        // fz-yxs/fz-st5 — selective receive park entry. Used by B3's
+        // JIT codegen at the Term::ReceiveMatched seam.
+        builder.symbol(
+            "fz_receive_park_matched",
+            fz_runtime::ir_runtime::fz_receive_park_matched as *const u8,
         );
         builder.symbol(
             "fz_mid_flight_roots_ptr",

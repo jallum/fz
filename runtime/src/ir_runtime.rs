@@ -242,6 +242,84 @@ pub extern "C" fn fz_receive_park(cont_closure_bits: u64) -> *mut u8 {
     YIELD_PTR as *mut u8
 }
 
+/// fz-yxs/fz-st5 — selective receive park entry. Called by JIT/AOT
+/// codegen at the `Term::ReceiveMatched` seam after the matcher fn,
+/// pinned snapshot, clause-body table, and (optional) after-cont
+/// closure have been laid out by `build_park_record` (B3).
+///
+/// Args:
+/// - `matcher_fn_bits`: raw pointer to the codegen'd matcher fn.
+/// - `pinned_ptr` / `n_pinned`: array of pinned `FzValue` bits.
+/// - `clause_bodies_ptr` / `n_clauses`: array of clause-body closure
+///   pointers (one per source clause, in declaration order).
+/// - `bound_arity`: max bound-var count across clauses.
+/// - `after_deadline_or_neg1`: absolute deadline in millis, or `-1`
+///   when there is no after (no timer; matcher hit is the only way
+///   the receiver wakes).
+/// - `after_cont_bits`: after-body closure pointer, or `0` when no
+///   after clause.
+///
+/// Returns the YIELD sentinel so the trampoline parks the task.
+#[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
+pub extern "C" fn fz_receive_park_matched(
+    matcher_fn_bits: u64,
+    pinned_ptr: *const u64,
+    n_pinned: u64,
+    clause_bodies_ptr: *const u64,
+    n_clauses: u64,
+    bound_arity: u32,
+    after_deadline_or_neg1: i64,
+    after_cont_bits: u64,
+) -> *mut u8 {
+    use crate::park::{MatcherFn, ParkRecord};
+    use crate::{process::ProcessState, scheduler_hooks::YIELD_PTR};
+
+    let matcher_fn: MatcherFn = unsafe { std::mem::transmute(matcher_fn_bits as usize) };
+    let pinned: Vec<u64> = unsafe {
+        std::slice::from_raw_parts(pinned_ptr, n_pinned as usize).to_vec()
+    };
+    let clause_bodies: Vec<*mut u8> = unsafe {
+        std::slice::from_raw_parts(clause_bodies_ptr, n_clauses as usize)
+            .iter()
+            .map(|b| *b as *mut u8)
+            .collect()
+    };
+    let after_deadline_ms = if after_deadline_or_neg1 < 0 {
+        None
+    } else {
+        Some(after_deadline_or_neg1 as u64)
+    };
+
+    let p = current_process();
+    let after_timer_id = match after_deadline_ms {
+        Some(after_ms) => crate::scheduler_hooks::dispatch_timer_schedule(p.pid, after_ms),
+        None => None,
+    };
+
+    let park = ParkRecord {
+        matcher_fn,
+        pinned,
+        clause_bodies,
+        bound_arity: bound_arity as u16,
+        after_deadline_ms,
+        after_cont: after_cont_bits as *mut u8,
+        after_timer_id,
+    };
+
+    p.parked_matched = Some(Box::new(park));
+    // Symmetric to fz_receive_park: if any message is already in the
+    // mailbox we mark Ready so the scheduler runs an initial scan via
+    // the matcher path. The actual scan happens in the scheduler when
+    // it sees parked_matched.is_some() on a Ready task.
+    p.state = if p.mailbox.is_empty() {
+        ProcessState::Blocked
+    } else {
+        ProcessState::Ready
+    };
+    YIELD_PTR as *mut u8
+}
+
 /// # Safety
 /// `cont_frame_ptr` must point at a valid cont closure heap object
 /// (built by codegen at the Receive seam). Called only from JIT/AOT-

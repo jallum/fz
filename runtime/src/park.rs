@@ -1,0 +1,150 @@
+//! fz-yxs/fz-st5 — selective-receive park record.
+//!
+//! Holds the snapshot the receiver needs when it parks on a selective
+//! `receive do … end`. Lives on `Process::parked_matched` while the
+//! task is `Blocked`; cleared (and re-emitted as a `pending_resume_matched`
+//! resume request) the moment a matcher hit fires.
+//!
+//! See `docs/receive-matched.md §2.5` / §2.6 for the design rationale.
+
+use crate::fz_value::FzValue;
+
+/// fz-yxs/fz-st5 — matcher ABI.
+///
+/// Called from both fz-compiled code (sender's `fz_send`, receiver's
+/// initial scan) and runtime code. Pure leaf function — no allocation,
+/// no extern, no `receive`. F3's `check_pure_codegen` is the static
+/// invariant that proves this.
+///
+/// - `msg`: the candidate message (as raw `FzValue` bits).
+/// - `pinned`: pointer to a `[u64; n_pinned]` slice with each pinned
+///   value's bits, in the order they appear in `ParkRecord::pinned`.
+/// - `out`: pointer to a caller-supplied `[u64; bound_arity]` scratch
+///   buffer the matcher fills with the bound-variable values for the
+///   winning clause. Untouched on a miss.
+///
+/// Return: `k = 0` on miss; `k > 0` is the 1-based clause index the
+/// caller's clause-body table indexes into via `cont = bodies[k-1]`.
+pub type MatcherFn = extern "C" fn(msg: u64, pinned: *const u64, out: *mut u64) -> u32;
+
+/// Park record stashed on `Process::parked_matched` while a task is
+/// blocked on a selective receive. Cleared on a matcher hit (sender-
+/// probe or after-timer fire); persists across mailbox arrivals that
+/// the matcher rejects.
+pub struct ParkRecord {
+    pub matcher_fn: MatcherFn,
+    /// Pinned-value snapshot, in the order the matcher fn reads them.
+    pub pinned: Vec<u64>,
+    /// One closure pointer per clause body, in source order. `k-1`
+    /// from the matcher's return indexes here.
+    pub clause_bodies: Vec<*mut u8>,
+    /// Maximum bound-var count across clauses — sizes the `out`
+    /// buffer the prober supplies to `matcher_fn`.
+    pub bound_arity: u16,
+    /// Absolute wall-clock deadline (millis since some epoch the
+    /// `Runtime`'s `TimerWheel` understands). `None` means no timer
+    /// (`after :infinity` or no `after` clause at all).
+    pub after_deadline_ms: Option<u64>,
+    /// After-body closure pointer; null when there is no `after`.
+    pub after_cont: *mut u8,
+    /// Timer wheel id, if a timer was scheduled. The scheduler clears
+    /// this when the timer fires or when a matcher-hit cancels.
+    pub after_timer_id: Option<crate::timer::TimerId>,
+}
+
+impl ParkRecord {
+    /// Try the registered matcher against `msg`. On a hit, returns
+    /// `Some((clause_idx, bound_vals))` where `bound_vals.len() ==
+    /// bound_arity`. On a miss, returns `None`.
+    pub fn try_match(&self, msg: FzValue) -> Option<(usize, Vec<FzValue>)> {
+        let mut out_buf: Vec<u64> = vec![0u64; self.bound_arity as usize];
+        let k = (self.matcher_fn)(msg.0, self.pinned.as_ptr(), out_buf.as_mut_ptr());
+        if k == 0 {
+            None
+        } else {
+            let clause_idx = (k - 1) as usize;
+            let bound_vals: Vec<FzValue> = out_buf.into_iter().map(FzValue).collect();
+            Some((clause_idx, bound_vals))
+        }
+    }
+}
+
+/// A pending resume request stashed on a Process when the scheduler
+/// matches a parked receive and needs the trampoline to dispatch the
+/// clause body next quantum. The trampoline (JIT and AOT, B3/B4) reads
+/// this on wakeup, clears it, and tail-calls `cont(args..., halt_cont)`.
+pub struct PendingResumeMatched {
+    pub cont: *mut u8,
+    pub args: Vec<FzValue>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A deterministic mock matcher used by the runtime tests. Layout:
+    ///   pinned[0]: expected message bits.
+    ///   out[0]: copy of msg.
+    ///   out[1..bound_arity]: zeros.
+    /// Returns 1 if `msg == pinned[0]`, else 0.
+    extern "C" fn mock_eq_matcher(msg: u64, pinned: *const u64, out: *mut u64) -> u32 {
+        let want = unsafe { *pinned };
+        if msg == want {
+            unsafe {
+                *out = msg;
+            }
+            1
+        } else {
+            0
+        }
+    }
+
+    #[test]
+    fn park_record_holds_matcher_and_pinned() {
+        let p = ParkRecord {
+            matcher_fn: mock_eq_matcher,
+            pinned: vec![42],
+            clause_bodies: vec![std::ptr::null_mut()],
+            bound_arity: 1,
+            after_deadline_ms: None,
+            after_cont: std::ptr::null_mut(),
+            after_timer_id: None,
+        };
+        assert_eq!(p.pinned, vec![42]);
+        assert_eq!(p.bound_arity, 1);
+        assert!(p.after_timer_id.is_none());
+    }
+
+    #[test]
+    fn try_match_hit_returns_clause_and_bound_vals() {
+        let p = ParkRecord {
+            matcher_fn: mock_eq_matcher,
+            pinned: vec![99],
+            clause_bodies: vec![std::ptr::null_mut()],
+            bound_arity: 1,
+            after_deadline_ms: None,
+            after_cont: std::ptr::null_mut(),
+            after_timer_id: None,
+        };
+        let hit = p.try_match(FzValue(99));
+        assert!(hit.is_some());
+        let (idx, vals) = hit.unwrap();
+        assert_eq!(idx, 0);
+        assert_eq!(vals.len(), 1);
+        assert_eq!(vals[0].0, 99);
+    }
+
+    #[test]
+    fn try_match_miss_returns_none() {
+        let p = ParkRecord {
+            matcher_fn: mock_eq_matcher,
+            pinned: vec![99],
+            clause_bodies: vec![std::ptr::null_mut()],
+            bound_arity: 1,
+            after_deadline_ms: None,
+            after_cont: std::ptr::null_mut(),
+            after_timer_id: None,
+        };
+        assert!(p.try_match(FzValue(100)).is_none());
+    }
+}
