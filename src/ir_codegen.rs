@@ -6645,8 +6645,9 @@ fn lower_prim<M: cranelift_module::Module>(
                     use crate::types::Component;
                     match component {
                         Component::Floats(_) => {
-                            let c =
-                                b.ins().icmp_imm(IntCC::Equal, kind64, HeapKind::Float as i64);
+                            let c = b
+                                .ins()
+                                .icmp_imm(IntCC::Equal, kind64, HeapKind::Float as i64);
                             or_heap!(c);
                         }
                         Component::Basic(bits) => {
@@ -6674,11 +6675,9 @@ fn lower_prim<M: cranelift_module::Module>(
                             );
                             let arities: Vec<usize> = view.arities().collect();
                             if !arities.is_empty() {
-                                let is_struct = b.ins().icmp_imm(
-                                    IntCC::Equal,
-                                    kind64,
-                                    HeapKind::Struct as i64,
-                                );
+                                let is_struct =
+                                    b.ins()
+                                        .icmp_imm(IntCC::Equal, kind64, HeapKind::Struct as i64);
                                 let schema_raw =
                                     b.ins().load(types::I32, MemFlags::trusted(), val, 8);
                                 let schema64 = b.ins().uextend(types::I64, schema_raw);

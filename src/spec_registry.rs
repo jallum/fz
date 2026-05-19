@@ -71,7 +71,11 @@ fn pure_var_ids(d: &Descr) -> Option<Vec<TypeVarId>> {
     match only {
         crate::types::Component::Vars(view) => {
             let finite: Vec<TypeVarId> = view.finite()?.collect();
-            if finite.is_empty() { None } else { Some(finite) }
+            if finite.is_empty() {
+                None
+            } else {
+                Some(finite)
+            }
         }
         _ => None,
     }

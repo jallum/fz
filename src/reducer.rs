@@ -560,11 +560,13 @@ fn match_tuple_pattern(
     // but not as a single shape (multi-clause, mixed axes, negations), it's
     // Opaque.
     use crate::types::Component;
-    let admits_tuple = d
-        .components()
-        .any(|c| matches!(c, Component::Tuples(_)));
+    let admits_tuple = d.components().any(|c| matches!(c, Component::Tuples(_)));
     let Some(sig_elems) = d.as_tuple_singleton() else {
-        return if admits_tuple { Match::Opaque } else { Match::No };
+        return if admits_tuple {
+            Match::Opaque
+        } else {
+            Match::No
+        };
     };
     if sig_elems.len() != elems.len() {
         return Match::No;

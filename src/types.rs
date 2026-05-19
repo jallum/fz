@@ -748,7 +748,11 @@ impl Descr {
             Component::Atoms(v) => {
                 let mut it = v.finite()?;
                 let first = it.next()?;
-                if it.next().is_none() { Some(first) } else { None }
+                if it.next().is_none() {
+                    Some(first)
+                } else {
+                    None
+                }
             }
             _ => None,
         }
@@ -768,9 +772,13 @@ impl Descr {
     pub fn as_tuple_singleton(&self) -> Option<&[Descr]> {
         match self.single_component()? {
             Component::Tuples(_) => {
-                if self.tuples.len() != 1 { return None; }
+                if self.tuples.len() != 1 {
+                    return None;
+                }
                 let conj = &self.tuples[0];
-                if !conj.neg.is_empty() || conj.pos.len() != 1 { return None; }
+                if !conj.neg.is_empty() || conj.pos.len() != 1 {
+                    return None;
+                }
                 Some(&conj.pos[0].elems)
             }
             _ => None,
@@ -783,7 +791,11 @@ impl Descr {
     fn single_component(&self) -> Option<Component<'_>> {
         let mut it = self.components();
         let first = it.next()?;
-        if it.next().is_some() { None } else { Some(first) }
+        if it.next().is_some() {
+            None
+        } else {
+            Some(first)
+        }
     }
 
     /// Max depth of nested Descrs reachable through structural axes. A leaf
@@ -841,15 +853,17 @@ impl Descr {
                 Component::Basic(_) => false, // handled above
                 Component::Atoms(_) => other.components().any(|d| matches!(d, Component::Atoms(_))),
                 Component::Ints(_) => other.components().any(|d| matches!(d, Component::Ints(_))),
-                Component::Floats(_) => {
-                    other.components().any(|d| matches!(d, Component::Floats(_)))
-                }
+                Component::Floats(_) => other
+                    .components()
+                    .any(|d| matches!(d, Component::Floats(_))),
                 Component::Strs(_) => other.components().any(|d| matches!(d, Component::Strs(_))),
-                Component::Opaques(_) => {
-                    other.components().any(|d| matches!(d, Component::Opaques(_)))
-                }
+                Component::Opaques(_) => other
+                    .components()
+                    .any(|d| matches!(d, Component::Opaques(_))),
                 Component::Vars(_) => other.components().any(|d| matches!(d, Component::Vars(_))),
-                Component::Tuples(_) => other.components().any(|d| matches!(d, Component::Tuples(_))),
+                Component::Tuples(_) => other
+                    .components()
+                    .any(|d| matches!(d, Component::Tuples(_))),
                 Component::Lists(_) => other.components().any(|d| matches!(d, Component::Lists(_))),
                 Component::Funcs(_) => other.components().any(|d| matches!(d, Component::Funcs(_))),
                 Component::Maps(_) => other.components().any(|d| matches!(d, Component::Maps(_))),
@@ -2580,29 +2594,31 @@ impl Descr {
     /// `match` rather than rely on order.
     pub fn components(&self) -> impl Iterator<Item = Component<'_>> + '_ {
         let basic = (!self.basic.is_empty()).then_some(Component::Basic(self.basic));
-        let atoms = (!self.atoms.is_none())
-            .then_some(Component::Atoms(AtomView { inner: &self.atoms }));
-        let ints = (!self.ints.is_none())
-            .then_some(Component::Ints(IntView { inner: &self.ints }));
-        let floats = (!self.floats.is_none())
-            .then_some(Component::Floats(FloatView { inner: &self.floats }));
-        let strs = (!self.strs.is_none())
-            .then_some(Component::Strs(StrView { inner: &self.strs }));
-        let opaques = (!self.opaques.is_none())
-            .then_some(Component::Opaques(OpaqueView { inner: &self.opaques }));
-        let vars = (!self.vars.is_none())
-            .then_some(Component::Vars(VarView { inner: &self.vars }));
-        let tuples =
-            (!self.tuples.is_empty()).then_some(Component::Tuples(TupleView { inner: &self.tuples }));
+        let atoms =
+            (!self.atoms.is_none()).then_some(Component::Atoms(AtomView { inner: &self.atoms }));
+        let ints = (!self.ints.is_none()).then_some(Component::Ints(IntView { inner: &self.ints }));
+        let floats = (!self.floats.is_none()).then_some(Component::Floats(FloatView {
+            inner: &self.floats,
+        }));
+        let strs = (!self.strs.is_none()).then_some(Component::Strs(StrView { inner: &self.strs }));
+        let opaques = (!self.opaques.is_none()).then_some(Component::Opaques(OpaqueView {
+            inner: &self.opaques,
+        }));
+        let vars = (!self.vars.is_none()).then_some(Component::Vars(VarView { inner: &self.vars }));
+        let tuples = (!self.tuples.is_empty()).then_some(Component::Tuples(TupleView {
+            inner: &self.tuples,
+        }));
         let lists =
             (!self.lists.is_empty()).then_some(Component::Lists(ListView { inner: &self.lists }));
         let funcs =
             (!self.funcs.is_empty()).then_some(Component::Funcs(FuncView { inner: &self.funcs }));
         let maps =
             (!self.maps.is_empty()).then_some(Component::Maps(MapView { inner: &self.maps }));
-        [basic, atoms, ints, floats, strs, opaques, vars, tuples, lists, funcs, maps]
-            .into_iter()
-            .flatten()
+        [
+            basic, atoms, ints, floats, strs, opaques, vars, tuples, lists, funcs, maps,
+        ]
+        .into_iter()
+        .flatten()
     }
 }
 

@@ -652,8 +652,7 @@ fn eval_prim(module: &Module, prim: &Prim, env: &HashMap<Var, FzValue>) -> Resul
                         } else if tag == Tag::Atom {
                             let id = val.unbox_atom().expect("atom-tagged");
                             for name in view.finite().expect("finite (non-cofinite)") {
-                                if let Some(pos) =
-                                    module.atom_names.iter().position(|n| n == name)
+                                if let Some(pos) = module.atom_names.iter().position(|n| n == name)
                                     && pos as u32 == id
                                 {
                                     matched = true;
@@ -669,19 +668,16 @@ fn eval_prim(module: &Module, prim: &Prim, env: &HashMap<Var, FzValue>) -> Resul
                     }
                     Component::Basic(bits) => {
                         if let Some((_, Some(hk))) = heap {
-                            if bits.contains_all(BasicBits::VEC_I64) && hk == HeapKind::VecI64
-                            {
+                            if bits.contains_all(BasicBits::VEC_I64) && hk == HeapKind::VecI64 {
                                 matched = true;
                             }
-                            if bits.contains_all(BasicBits::VEC_F64) && hk == HeapKind::VecF64
-                            {
+                            if bits.contains_all(BasicBits::VEC_F64) && hk == HeapKind::VecF64 {
                                 matched = true;
                             }
                             if bits.contains_all(BasicBits::VEC_U8) && hk == HeapKind::VecU8 {
                                 matched = true;
                             }
-                            if bits.contains_all(BasicBits::VEC_BIT) && hk == HeapKind::VecBit
-                            {
+                            if bits.contains_all(BasicBits::VEC_BIT) && hk == HeapKind::VecBit {
                                 matched = true;
                             }
                         }
