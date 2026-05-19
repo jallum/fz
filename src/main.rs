@@ -8,6 +8,7 @@ mod fz_ir;
 mod ir_callgraph;
 mod ir_codegen;
 mod ir_codegen_invariants;
+mod ir_codegen_receive;
 mod ir_interp;
 // ir_liveness removed (fz-ul4.11.31 subsumes .11.30): frame schemas are
 // uniformly `[cont_ptr, ...entry_params]` with every Var slot FzValue;
