@@ -182,6 +182,20 @@ pub struct ModuleTypes {
     /// Only covers registered-spec fns — the diagnostic re-runs analysis
     /// on its own ad-hoc spec typing for fns with no registered spec.
     pub dead_branches: HashMap<(FnId, crate::fz_ir::BlockId), crate::fz_ir::DeadBranch>,
+    /// fz-try B1+B2 — closure-handle registry. Records every distinct
+    /// `(lambda FnId, captures)` shape that any reachable MakeClosure
+    /// can produce. Separate from `specs` (which is body specs only);
+    /// handles describe closure *values*, not compiled bodies.
+    ///
+    /// Consumers: the outcomes formatter renders handle identity for
+    /// MakeClosure callsites; C3 will hang a polymorphic arrow
+    /// signature off each entry.
+    ///
+    /// Codegen does *not* read this — it resolves the lambda body via
+    /// `SpecId.0 == FnId.0` alignment for the any-key body spec.
+    #[allow(dead_code)]
+    // consumed by tests + future formatter (E-arc); unused in release codegen
+    pub closure_handles: std::collections::HashSet<(FnId, Vec<Descr>)>,
 }
 
 impl ModuleTypes {
@@ -495,11 +509,6 @@ pub fn reset_typer_counters() {
     WALK_CALLS.with(|c| c.set(0));
 }
 
-/// fz-9pr.1 — re-exports the slot's `MakeClosure` doc note: emitted
-/// only when the lambda's opaque-invocation arity is in
-/// `opaque_arities`; otherwise stashed in
-/// `pending_makeclosure_arity[arity]` until that arity activates.
-///
 /// fz-rh5.6 — the unique identity of a place that emits a spec.
 ///
 /// Provenance is the invariant that fz-5j5 lacked: every spec in
@@ -601,6 +610,10 @@ struct WalkResult {
     /// stashes in `pending_makeclosure_arity` so they activate
     /// retroactively when the arity becomes opaque.
     pending_makeclosures: Vec<(EmitterSite, usize)>,
+    /// fz-try B1+B2 — closure handles produced by MakeClosure in this
+    /// walk, as `(lambda FnId, captures-Descrs)`. Driver folds into
+    /// `ModuleTypes.closure_handles`.
+    closure_handles: HashSet<(FnId, Vec<Descr>)>,
 }
 
 /// fz-5j5.3 — type a module via one worklist over `(FnId, Vec<Descr>)`
@@ -682,6 +695,8 @@ pub fn type_module(m: &Module) -> ModuleTypes {
     let mut emits_by_caller: EmitsByCaller = HashMap::new();
     let mut opaque_arities: std::collections::HashSet<usize> = std::collections::HashSet::new();
     let mut pending_makeclosure_arity: PendingMakeClosureByArity = HashMap::new();
+    let mut closure_handles: std::collections::HashSet<(FnId, Vec<Descr>)> =
+        std::collections::HashSet::new();
 
     let mut work: std::collections::VecDeque<(FnId, Vec<Descr>)> =
         entry_seeds(m).into_iter().collect();
@@ -703,6 +718,7 @@ pub fn type_module(m: &Module) -> ModuleTypes {
         &mut emits_by_caller,
         &mut opaque_arities,
         &mut pending_makeclosure_arity,
+        &mut closure_handles,
     );
 
     // Forward reachability from entry_seeds via emits_by_caller +
@@ -735,6 +751,7 @@ pub fn type_module(m: &Module) -> ModuleTypes {
         any_key_specs,
         scc_of,
         dead_branches: HashMap::new(),
+        closure_handles,
     };
     mt.dead_branches = compute_dead_branches(m, &mt);
     mt
@@ -833,14 +850,9 @@ const VISIT_HARD_BOUND: usize = 4096;
 ///   3. Diff `result.emits` against the spec's prior emits
 ///      (`emits_by_caller[spec_key]`). Transition `produces` and
 ///      `holders`. Enqueue new target specs.
-///   4. Stash `result.pending_makeclosures` into
-///      `pending_makeclosure_arity`.
-///   5. For each newly-discovered opaque arity in
-///      `result.opaque_arities_seen`: insert into live
-///      `opaque_arities`; on first insertion, drain
-///      `pending_makeclosure_arity[K]` and re-enqueue those
-///      callers so their re-walks emit the now-permitted lambdas.
-///   6. Recompute this spec's effective return. If changed, enqueue
+///   4. Fold `result.closure_handles` into the module-level handle
+///      set (fz-try B1+B2).
+///   5. Recompute this spec's effective return. If changed, enqueue
 ///      every spec in `return_readers[spec]`.
 #[allow(clippy::too_many_arguments)]
 fn process_worklist(
@@ -859,6 +871,7 @@ fn process_worklist(
     emits_by_caller: &mut EmitsByCaller,
     opaque_arities: &mut std::collections::HashSet<usize>,
     pending_makeclosure_arity: &mut PendingMakeClosureByArity,
+    closure_handles: &mut std::collections::HashSet<(FnId, Vec<Descr>)>,
 ) {
     while let Some(spec_key) = work.pop_front() {
         in_work.remove(&spec_key);
@@ -901,7 +914,7 @@ fn process_worklist(
         let scc_set = scc_members.get(&scc_id).cloned().unwrap_or_default();
         let widen_now = *count > WIDEN_AT;
 
-        // Walk → emits + return_reads + opaque_arities_seen + pending_makeclosures.
+        // Walk → emits + return_reads + opaque_arities_seen + pending_makeclosures + closure_handles.
         let caller_ft = specs.get(&spec_key).unwrap();
         let mut result = WalkResult::default();
         walk_spec_for_discovery(
@@ -971,8 +984,6 @@ fn process_worklist(
         emits_by_caller.insert(spec_key.clone(), new_sites);
 
         // Stash pending MakeClosures whose opaque_arity isn't yet known.
-        // When the arity later activates, the caller is re-enqueued
-        // and this walk re-emits (now permitted).
         for (site, arity) in result.pending_makeclosures {
             pending_makeclosure_arity
                 .entry(arity)
@@ -991,6 +1002,11 @@ fn process_worklist(
                     }
                 }
             }
+        }
+
+        // fz-try B1+B2 — accumulate handle registrations from this walk.
+        for handle in result.closure_handles {
+            closure_handles.insert(handle);
         }
 
         // Recompute effective return. compute_return_for_spec records
@@ -1227,15 +1243,12 @@ fn cont_key_for_spec(
 ///   - `EmitSlot::ClosureLit(c, s)` per `(clause, sig)` of the
 ///     closure's Descr.funcs DNF at a CallClosure site.
 ///   - `EmitSlot::Cont` for the continuation of Call/CallClosure/Receive.
-///   - `EmitSlot::MakeClosure(stmt_idx)` for `Prim::MakeClosure` in
-///     this block, gated on `opaque_arities` containing the lambda's
-///     opaque-invocation arity. Otherwise stashed in
-///     `out.pending_makeclosures`.
 ///
-/// Unresolved CallClosure / `spawn` extern sites contribute their
-/// arity to `out.opaque_arities_seen`. The driver folds those into
-/// live `opaque_arities`; newly-opaque arities retroactively activate
-/// pending MakeClosures by re-enqueueing their caller specs.
+/// `Prim::MakeClosure` is *not* an emit kind — it constructs a closure
+/// value (a *handle*), recorded in `out.closure_handles`. The lambda's
+/// compiled body is the any-key body spec (SpecId.0 == FnId.0); codegen
+/// resolves it directly without indirection through a MakeClosure-side
+/// padded spec.
 ///
 /// `caller_scc` + `widen_now`: SCC-internal recursive Direct args
 /// are per-element `widen()`-ed after `WIDEN_AT` visits to force
@@ -1283,21 +1296,36 @@ fn walk_spec_for_discovery(
     for b in &f.blocks {
         let mut env = caller_ft.block_envs.get(&b.id).cloned().unwrap_or_default();
 
-        // Stmt-level emits: MakeClosure-side any-key, gated on
-        // opaque_arities. Also tracks spawn-extern arity-0 opaque
-        // consumption.
+        // Stmt-level work: MakeClosure handle registration (fz-try
+        // B1+B2). No stmt-level emits — closure construction is a
+        // value event, not a body-spec dispatch.
         for stmt in b.stmts.iter() {
             let Stmt::Let(v, prim) = stmt;
             match prim {
                 Prim::MakeClosure(mk_ident, lam_fn_id, captured) => {
+                    // fz-try B1+B2 (partial): introduce the handle
+                    // channel — closure-value identity recorded as
+                    // (lam_fn_id, captures). Additive only; the
+                    // existing narrow body spec emit below stays in
+                    // place because it carries the closure-target
+                    // narrow return_repr that indirect-dispatch chain
+                    // analysis reads. Collapsing into a single
+                    // any-key body needs a parallel closure-target
+                    // return-repr canonicalization step (follow-on
+                    // ticket). See docs/descr-cleanup.md.
                     if let Some(&jj) = m.fn_idx.get(lam_fn_id) {
                         let lam = &m.fns[jj];
                         let n_params = lam.block(lam.entry).params.len();
                         let opaque_arity = n_params.saturating_sub(captured.len());
+                        let captures: Vec<Descr> = captured
+                            .iter()
+                            .map(|cv| env.get(cv).cloned().unwrap_or_else(Descr::any))
+                            .collect();
+                        out.closure_handles.insert((*lam_fn_id, captures.clone()));
                         let mut k: Vec<Descr> = vec![Descr::any(); n_params];
-                        for (i, cv) in captured.iter().enumerate() {
+                        for (i, cd) in captures.iter().enumerate() {
                             if let Some(slot) = k.get_mut(i) {
-                                *slot = env.get(cv).cloned().unwrap_or_else(Descr::any);
+                                *slot = cd.clone();
                             }
                         }
                         let site = EmitterSite {
@@ -1305,9 +1333,6 @@ fn walk_spec_for_discovery(
                             ident: mk_ident.clone(),
                             slot: EmitSlot::MakeClosure,
                         };
-                        // fz-uwq.6 — record the dispatch fact for every
-                        // MakeClosure regardless of arity-gate; codegen's
-                        // body picker reads this directly.
                         out.dispatch_targets.insert(
                             crate::fz_ir::CallsiteId {
                                 caller: caller_spec_key.0,
@@ -1347,26 +1372,10 @@ fn walk_spec_for_discovery(
         // fz-9pr.17 — opaque-arity detection for unresolved closure
         // calls. The enumerator yields zero items for such terminators;
         // we still need to flag the arity as opaque so MakeClosure-side
-        // any-keys get emitted. Kept here (not in callsite_walk) because
-        // "fully_lit" is stricter than "has a lit" — only every-sig-lit
-        // counts as resolved.
+        // any-keys get emitted.
         if let Term::CallClosure { closure, args, .. }
         | Term::TailCallClosure { closure, args, .. } = &b.terminator
         {
-            // fz-uwq.6 — a closure invocation is "indirect at runtime"
-            // (and thus requires the lambda's `stub_fp` to point at an
-            // ABI-correct body) unless `rewrite_known_target_closures`
-            // will rewrite the terminator into a direct `Term::Call` —
-            // which happens only when the closure operand is in
-            // `fn_constants`. Fully-lit closures are *resolved for
-            // typing* (we know the target's signature) but still go
-            // through the closure-stub indirect path at runtime, so
-            // their arity must be flagged as opaque-on-the-wire to
-            // gate MakeClosure-side stub-body registration. The
-            // previous `&& !fully_lit` guard conflated "the typer
-            // knows the target" with "the runtime doesn't go through
-            // stub_fp" — fz-t45 was the canonical wire-ABI mismatch
-            // that surfaced when they came apart.
             let fn_constants_resolved = caller_ft.fn_constants.contains_key(closure);
             if !fn_constants_resolved {
                 out.opaque_arities_seen.insert(args.len());

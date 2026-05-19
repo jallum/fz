@@ -2044,7 +2044,7 @@ pub fn compile_with_backend<B: Backend>(
             continue;
         };
         let f = &module.fns[idx];
-        let Some(ft) = spec_fn_types[sid] else {
+        let Some(_) = spec_fn_types[sid] else {
             continue;
         };
         for blk in &f.blocks {
@@ -2061,26 +2061,11 @@ pub fn compile_with_backend<B: Backend>(
                         ident: ident.clone(),
                         slot: crate::fz_ir::EmitSlot::MakeClosure,
                     };
+                    let ft = spec_fn_types[sid].expect("sid has fn_types (just checked above)");
                     let cl_sid_via_dispatches = ft
                         .dispatches
                         .get(&mk_cid)
                         .and_then(|t| spec_registry.resolve(t.0, &t.1).map(|s| s.0));
-                    // fz-ul4.29.10.3 — when the lambda's any-key was
-                    // dropped (closure-var is fully resolved via
-                    // fn_constants and the IR rewrite turned every
-                    // invocation into a direct Call), no covering spec
-                    // exists for `[any; n_params]`. The closure header
-                    // still needs `stub_fp`, but the stub is unreachable
-                    // — falling back to any registered narrow SpecId is
-                    // safe because nothing dispatches through it.
-                    //
-                    // fz-uwq.2 — when neither resolves, the closure
-                    // target has NO live spec at all. MakeClosure is
-                    // construction, not dispatch: the closure value can
-                    // exist without an invocation path (every CallClosure
-                    // rewrote to direct Call and inlined). Skip the
-                    // closure_shapes entry; `MakeClosure` codegen emits
-                    // a null-stub closure that traps if ever invoked.
                     let Some(cl_sid) = cl_sid_via_dispatches.or_else(|| {
                         let lam = module.fn_by_id(*lam_fn_id);
                         let n_params = lam.block(lam.entry).params.len();
@@ -5949,10 +5934,11 @@ fn lower_prim<M: cranelift_module::Module>(
     prim: &Prim,
     dest_var: crate::fz_ir::Var,
     cache: &mut CodegenCache,
-    // fz-uwq.6 — `(caller_fn_id, block_id, stmt_idx)` lets the
-    // MakeClosure body picker look up `fn_types.dispatches[cid]` for
-    // the per-spec target the typer chose.
-    caller_fn_id: crate::fz_ir::FnId,
+    // fz-try B1+B2 — kept for call-site signature stability while we
+    // route through the simplified MakeClosure lowering. The picker no
+    // longer needs (caller, block, stmt) since the lambda body is
+    // resolved directly by FnId.0 alignment.
+    _caller_fn_id: crate::fz_ir::FnId,
     block_id: crate::fz_ir::BlockId,
     stmt_idx: usize,
 ) -> Result<LowerOut, CodegenError> {
@@ -6445,17 +6431,9 @@ fn lower_prim<M: cranelift_module::Module>(
                         .unwrap_or_else(crate::types::Descr::any);
                 }
             }
-            // fz-uwq.6 — the typer recorded the per-spec MakeClosure
-            // target in `fn_types.dispatches`. Read it first; the
-            // body's ABI matches what we'll write at the captures
-            // offsets because both sides used the same (un-widened)
-            // key. Falls through to the legacy resolve+any-registered
-            // fallback (fz-ul4.29.10.3) only if the typer didn't
-            // publish — and then to the null-stub closure (fz-uwq.2)
-            // if even the fallback finds nothing.
             let _ = (block_id, stmt_idx); // fz-kgk: ident now intrinsic to the Prim.
             let mk_cid = crate::fz_ir::CallsiteId {
-                caller: caller_fn_id,
+                caller: _caller_fn_id,
                 ident: mk_ident.clone(),
                 slot: crate::fz_ir::EmitSlot::MakeClosure,
             };

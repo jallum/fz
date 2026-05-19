@@ -1227,16 +1227,19 @@ end
 "#,
     );
     let thunk = m.fns.iter().find(|f| f.name == "fz_spawn_thunk").unwrap();
-    let narrow: Vec<&Vec<Descr>> = mt
-        .specs
+    // fz-try B1+B2 — MakeClosure now registers in ModuleTypes.closure_handles,
+    // not as a padded body spec. A handle entry with non-any captures
+    // proves the spawn thunk's captures were typed.
+    let handles_for_thunk: Vec<&Vec<Descr>> = mt
+        .closure_handles
         .iter()
-        .filter(|((fid, _), _)| *fid == thunk.id)
-        .map(|((_, k), _)| k)
-        .filter(|k| !k.iter().all(|d| d.is_equiv(&Descr::any())))
+        .filter(|(fid, _)| *fid == thunk.id)
+        .map(|(_, caps)| caps)
+        .filter(|caps| !caps.is_empty() && !caps.iter().all(|d| d.is_equiv(&Descr::any())))
         .collect();
     assert!(
-        !narrow.is_empty(),
-        "expected ≥1 narrow fz_spawn_thunk spec, got 0 (only any-key)"
+        !handles_for_thunk.is_empty(),
+        "expected ≥1 fz_spawn_thunk handle with typed captures, got 0"
     );
 }
 
@@ -1269,26 +1272,21 @@ end
         .iter()
         .find(|f| f.name.starts_with("lambda_"))
         .expect("expected a lambda fn");
-    let registered_keys: Vec<&Vec<Descr>> = mt
-        .specs
+    // fz-try B1+B2 — distinct capture Descrs now produce distinct
+    // closure-handle entries (not distinct body specs). The lambda has
+    // one compiled body (any-key); the two handles describe the two
+    // closure *values* (one captures int, one captures float).
+    let handles: Vec<&Vec<Descr>> = mt
+        .closure_handles
         .iter()
-        .filter(|((fid, _), _)| *fid == lam.id)
-        .map(|((_, k), _)| k)
-        .collect();
-    // fz-vw4.2: any-key is no longer unconditionally registered for
-    // every fn — it's only present when reachability demands. The
-    // two narrow specs (one per distinct capture Descr) are what
-    // codegen actually keys off; that's what this test guards.
-    let narrow: Vec<&Vec<Descr>> = registered_keys
-        .iter()
-        .filter(|k| !k.iter().all(|d| d.is_equiv(&Descr::any())))
-        .copied()
+        .filter(|(fid, _)| *fid == lam.id)
+        .map(|(_, caps)| caps)
         .collect();
     assert!(
-        narrow.len() >= 2,
-        "expected ≥2 narrow specs for the lambda, got {}: {:?}",
-        narrow.len(),
-        narrow
+        handles.len() >= 2,
+        "expected ≥2 closure-handle entries for the lambda, got {}: {:?}",
+        handles.len(),
+        handles
     );
 }
 

@@ -170,6 +170,40 @@ maintains two key shapes (handle + any-key body) with a clear
 contract for each. The work is comparable in size; the design is
 more honest.
 
+**Second refinement after implementation (fz-try.15).** Implementation
+of B1+B2 surfaced a *fourth* role of the MakeClosure-side padded body
+spec that this section initially missed: it carries the per-capture
+narrow `return_repr` that the indirect-dispatch `chain_repr`
+analysis in `ir_codegen` reads to canonicalize the seam ABI between
+a `TailCallClosure` caller and its lambda body. Without the narrow
+body spec, the chain sees Tagged at the seam, but the lambda body
+(typed at any-key) returns its narrow `ret_repr` — ABI mismatch
+surfaces as wrong halt values at runtime
+(`spawn_enqueues_child_task` was the canonical repro).
+
+The clean resolution is to canonicalize closure-target body return to
+`Tagged` unconditionally — coerce at `Term::Return`, match at
+`Term::TailCall` to closure-target callees, match at the cont sig of
+the indirect seam. That canonicalization is the prerequisite (filed
+as `fz-try.15`) for the full structural collapse envisioned here.
+
+**What lands now (partial B1+B2):**
+
+- The handle channel exists: `ModuleTypes.closure_handles` is
+  populated at every reachable MakeClosure site with `(lam_fn_id,
+  captures-Descrs)`. Test consumers read it directly.
+
+**What's deferred behind `fz-try.15`:**
+
+- Deletion of MakeClosure's body-spec emit (still emits the padded
+  `[captures, Any, ..., Any]` so chain_repr sees narrow seam types).
+- Deletion of `opaque_arities` / `pending_makeclosure_arity`
+  machinery (still gating the body-spec emit so the .29.10.3
+  optimization keeps dropping unreached any-keys).
+- Reroute of `closure_shapes` / `MakeClosure` prim codegen to
+  `FnId.0` alignment (still goes through dispatch_targets).
+- Drop of `dispatch_targets[MakeClosure]` (still written/read).
+
 ### Type variables (C1–C5)
 
 A function's typed signature gains type variables wherever it has a
