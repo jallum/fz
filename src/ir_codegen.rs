@@ -5019,7 +5019,9 @@ fn compile_fn<M: cranelift_module::Module>(
                 .unwrap_or(crate::diag::Span::DUMMY);
             b.set_srcloc(span_to_srcloc(span));
             let Stmt::Let(v, prim) = stmt;
-            let out = lower_prim(&mut b, jmod, env, &var_env, prim, *v, &mut cache)?;
+            let out = lower_prim(
+                &mut b, jmod, env, &var_env, prim, *v, &mut cache, f.id, blk.id, idx,
+            )?;
             if !matches!(out, LowerOut::DeadUnit) {
                 let repr = if out.is_raw_f64() {
                     ArgRepr::RawF64
@@ -5871,6 +5873,7 @@ fn lower_collection_prim<M: cranelift_module::Module>(
     Ok(v)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn lower_prim<M: cranelift_module::Module>(
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
@@ -5879,6 +5882,12 @@ fn lower_prim<M: cranelift_module::Module>(
     prim: &Prim,
     dest_var: crate::fz_ir::Var,
     cache: &mut CodegenCache,
+    // fz-uwq.6 — `(caller_fn_id, block_id, stmt_idx)` lets the
+    // MakeClosure body picker look up `fn_types.dispatches[cid]` for
+    // the per-spec target the typer chose.
+    caller_fn_id: crate::fz_ir::FnId,
+    block_id: crate::fz_ir::BlockId,
+    stmt_idx: usize,
 ) -> Result<LowerOut, CodegenError> {
     let runtime = env.runtime;
     let fn_types = env.fn_types;
@@ -6369,18 +6378,24 @@ fn lower_prim<M: cranelift_module::Module>(
                         .unwrap_or_else(crate::types::Descr::any);
                 }
             }
-            // fz-ul4.29.10.3 — fall back to any registered SpecId for
-            // the lambda when the any-key was dropped (closure unreachable
-            // post-rewrite).
-            //
-            // fz-uwq.2 — when neither resolves, the lambda has no live
-            // spec at all. MakeClosure is construction, not dispatch:
-            // emit a heap closure whose `stub_fp` is null. If the value
-            // is ever invoked (it shouldn't be — the typer proved no
-            // CallClosure reaches it), the null deref traps loudly.
-            let cl_sid_opt = spec_registry
-                .resolve(*fn_id, &key)
-                .map(|s| s.0)
+            // fz-uwq.6 — the typer recorded the per-spec MakeClosure
+            // target in `fn_types.dispatches`. Read it first; the
+            // body's ABI matches what we'll write at the captures
+            // offsets because both sides used the same (un-widened)
+            // key. Falls through to the legacy resolve+any-registered
+            // fallback (fz-ul4.29.10.3) only if the typer didn't
+            // publish — and then to the null-stub closure (fz-uwq.2)
+            // if even the fallback finds nothing.
+            let mk_cid = crate::fz_ir::CallsiteId {
+                caller: caller_fn_id,
+                block: block_id,
+                slot: crate::fz_ir::EmitSlot::MakeClosure(stmt_idx),
+            };
+            let cl_sid_opt = fn_types
+                .dispatches
+                .get(&mk_cid)
+                .and_then(|t| spec_registry.resolve(t.0, &t.1).map(|s| s.0))
+                .or_else(|| spec_registry.resolve(*fn_id, &key).map(|s| s.0))
                 .or_else(|| {
                     spec_registry
                         .iter()

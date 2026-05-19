@@ -752,7 +752,16 @@ pub fn type_module(m: &Module) -> ModuleTypes {
             continue;
         }
         for (cid, target) in &ft.dispatches {
-            dispatches_flat.push((spec_key.clone(), *cid, target.clone()));
+            // Outcomes cover only Direct / ClosureLit / CallClosureKnown
+            // — the dispatch sites the reducer also writes Consumed /
+            // Stalled for. MakeClosure dispatch is recorded only in
+            // `dispatches` (fz-uwq.6 reads it there directly).
+            match cid.slot {
+                EmitSlot::Direct | EmitSlot::ClosureLit(..) | EmitSlot::CallClosureKnown => {
+                    dispatches_flat.push((spec_key.clone(), *cid, target.clone()));
+                }
+                EmitSlot::Cont | EmitSlot::MakeClosure(_) => {}
+            }
         }
     }
     dispatches_flat.sort_by(|(sa, _, ta), (sb, _, tb)| {
@@ -1445,6 +1454,17 @@ fn walk_spec_for_discovery(
                             block: b.id,
                             slot: EmitSlot::MakeClosure(stmt_idx),
                         };
+                        // fz-uwq.6 — record the dispatch fact for every
+                        // MakeClosure regardless of arity-gate; codegen's
+                        // body picker reads this directly.
+                        out.dispatch_targets.insert(
+                            crate::fz_ir::CallsiteId {
+                                caller: caller_spec_key.0,
+                                block: b.id,
+                                slot: EmitSlot::MakeClosure(stmt_idx),
+                            },
+                            (*lam_fn_id, k.clone()),
+                        );
                         if opaque_arities.contains(&opaque_arity) {
                             out.emits.push((site, (*lam_fn_id, k)));
                         } else {
@@ -1482,17 +1502,22 @@ fn walk_spec_for_discovery(
         if let Term::CallClosure { closure, args, .. } | Term::TailCallClosure { closure, args } =
             &b.terminator
         {
-            let cv_descr = env.get(closure);
+            // fz-uwq.6 — a closure invocation is "indirect at runtime"
+            // (and thus requires the lambda's `stub_fp` to point at an
+            // ABI-correct body) unless `rewrite_known_target_closures`
+            // will rewrite the terminator into a direct `Term::Call` —
+            // which happens only when the closure operand is in
+            // `fn_constants`. Fully-lit closures are *resolved for
+            // typing* (we know the target's signature) but still go
+            // through the closure-stub indirect path at runtime, so
+            // their arity must be flagged as opaque-on-the-wire to
+            // gate MakeClosure-side stub-body registration. The
+            // previous `&& !fully_lit` guard conflated "the typer
+            // knows the target" with "the runtime doesn't go through
+            // stub_fp" — fz-t45 was the canonical wire-ABI mismatch
+            // that surfaced when they came apart.
             let fn_constants_resolved = caller_ft.fn_constants.contains_key(closure);
-            let fully_lit = cv_descr.is_some_and(|d| {
-                !d.funcs.is_empty()
-                    && d.funcs.iter().all(|c| {
-                        c.neg.is_empty()
-                            && !c.pos.is_empty()
-                            && c.pos.iter().all(|s| s.lit.is_some())
-                    })
-            });
-            if !fn_constants_resolved && !fully_lit {
+            if !fn_constants_resolved {
                 out.opaque_arities_seen.insert(args.len());
             }
         }
@@ -1704,6 +1729,17 @@ fn walk_spec_for_discovery(
                             callsite_fn_consts.insert(entry_key.clone(), merged);
                         }
                     }
+                    // fz-uwq.5+ — Cont keys aren't widened, so the
+                    // dispatch fact equals the emit key. Record it for
+                    // codegen's `resolve_cont_sid` to read.
+                    out.dispatch_targets.insert(
+                        crate::fz_ir::CallsiteId {
+                            caller: caller_spec_key.0,
+                            block: b.id,
+                            slot,
+                        },
+                        (cont.fn_id, key.clone()),
+                    );
                     emit(slot, b.id, (cont.fn_id, key), out);
                 }
             }
