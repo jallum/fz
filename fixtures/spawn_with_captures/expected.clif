@@ -85,13 +85,13 @@ function u0:0(i64, i64) -> i64 tail {
     v6 = func_addr.i64 fn1              ; @2:23
     store notrap aligned v6, v5+16      ; @2:23
     store notrap aligned v0, v5+24      ; @2:23
-    v7 = iconst.i32 14
-    v8 = iconst.i32 1
-    v9 = iconst.i32 0
-    v10 = call fn2(v7, v8, v9)  ; v7 = 14, v8 = 1, v9 = 0    ;; v10 :: &fn14[&fn13[99]:() -> any]:() -> any
-    v11 = func_addr.i64 fn3
-    store notrap aligned v11, v10+16
-    store notrap aligned v5, v10+24
+    v7 = iconst.i32 14                  ; @2:9
+    v8 = iconst.i32 1                   ; @2:9
+    v9 = iconst.i32 0                   ; @2:9
+    v10 = call fn2(v7, v8, v9)          ; @2:9  v7 = 14, v8 = 1, v9 = 0
+    v11 = func_addr.i64 fn3             ; @2:9
+    store notrap aligned v11, v10+16    ; @2:9
+    store notrap aligned v5, v10+24     ; @2:9
     v12 = call fn4(v10)                 ; @2:3
     v13 = iconst.i32 20                 ; @3:3
     v14 = iconst.i32 2                  ; @3:3

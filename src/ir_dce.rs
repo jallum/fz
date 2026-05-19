@@ -398,7 +398,7 @@ mod tests {
             bm.set_terminator(
                 entry,
                 Term::Call {
-                    ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
+                    ident: crate::fz_ir::CallsiteIdent::synthetic(),
                     callee: leaf_id,
                     args: vec![nil_v],
                     continuation: cont,
@@ -614,7 +614,7 @@ mod tests {
         b.set_terminator(
             entry,
             Term::Call {
-                ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
+                ident: crate::fz_ir::CallsiteIdent::synthetic(),
                 callee: cont_fn,
                 args: vec![live],
                 continuation: Cont {

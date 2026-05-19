@@ -75,8 +75,8 @@ function u0:0(i64) -> i64 tail {
     fn8 = colocated u0:42 sig8
 
 block0(v0: i64):
-    v1 = iconst.i32 11
-    v2 = call fn0(v1)  ; v1 = 11    ;; v2 :: &fn11[]:() -> any
+    v1 = iconst.i32 11                  ; @10:9
+    v2 = call fn0(v1)                   ; @10:9  v1 = 11
     v3 = iconst.i32 16                  ; @10:3
     v4 = iconst.i32 1                   ; @10:3
     v5 = iconst.i32 0                   ; @10:3
@@ -85,8 +85,8 @@ block0(v0: i64):
     store notrap aligned v7, v6+16      ; @10:3
     store notrap aligned v2, v6+24      ; @10:3
     v8 = call fn3(v6)                   ; @10:3
-    v9 = iconst.i32 12
-    v10 = call fn4(v9)  ; v9 = 12    ;; v10 :: &fn12[]:() -> any
+    v9 = iconst.i32 12                  ; @11:9
+    v10 = call fn4(v9)                  ; @11:9  v9 = 12
     v11 = iconst.i32 16                 ; @11:3
     v12 = iconst.i32 1                  ; @11:3
     v13 = iconst.i32 0                  ; @11:3

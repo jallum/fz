@@ -139,7 +139,7 @@ mod tests {
         b.set_terminator(
             entry,
             Term::TailCall {
-                ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
+                ident: crate::fz_ir::CallsiteIdent::synthetic(),
                 callee: FnId(target),
                 args: vec![],
                 is_back_edge: false,
@@ -179,7 +179,7 @@ mod tests {
         main_b.set_terminator(
             entry,
             Term::Call {
-                ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
+                ident: crate::fz_ir::CallsiteIdent::synthetic(),
                 callee: FnId(1),
                 args: vec![],
                 continuation: Cont {
@@ -198,7 +198,7 @@ mod tests {
     fn make_closure_edge_followed() {
         let mut main_b = FnBuilder::new(FnId(0), "main");
         let entry = main_b.block(vec![]);
-        main_b.let_(entry, Prim::MakeClosure(crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY), FnId(1), vec![]));
+        main_b.let_(entry, Prim::MakeClosure(crate::fz_ir::CallsiteIdent::synthetic(), FnId(1), vec![]));
         main_b.set_terminator(entry, Term::Halt(Var(0)));
         let m = finish(vec![main_b, fn_halting(1, "lambda")]);
         let r = reachable_fns(&m);

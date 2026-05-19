@@ -9,7 +9,7 @@ function u0:0(i64) -> i64 tail {
     fn1 = colocated u0:40 sig1
 
 block0(v0: i64):
-    v1 = iconst.i64 42    ;; v1 :: 42
+    v1 = iconst.i64 42                  ; @6:16
     call fn0(v1)                        ; @6:24  v1 = 42
     v2 = iconst.i64 2                   ; @6:24
     return_call fn1(v2, v0)             ; @6:9  v2 = 2
@@ -25,7 +25,7 @@ function u0:0(i64, i64) -> i64 tail {
     fn0 = u0:41 sig0
 
     block0(v0: i64, v1: i64):    ;; v0 :: nil
-    v2 = iconst.i64 -7    ;; v2 :: -7
+    v2 = iconst.i64 -7                  ; @7:16
     call fn0(v2)                        ; @7:21  v2 = -7
     v3 = iconst.i64 2                   ; @7:21
     v4 = load.i64 notrap aligned v1+16  ; @7:9

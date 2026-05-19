@@ -252,7 +252,7 @@ fn reduce_terminator(
                 record_stalled(m, fn_idx, ident, slot, reason, log);
                 return None;
             };
-            let Some(new_var) = descr_to_materialize(&lit, m, fn_idx, bid) else {
+            let Some(new_var) = descr_to_materialize(&lit, m, fn_idx, bid, ident.span()) else {
                 record_stalled(m, fn_idx, ident, slot, StalledReason::CalleeBodyShape, log);
                 return None;
             };
@@ -272,7 +272,7 @@ fn reduce_terminator(
                 record_stalled(m, fn_idx, ident, slot, reason, log);
                 return None;
             };
-            let Some(new_var) = descr_to_materialize(&lit, m, fn_idx, bid) else {
+            let Some(new_var) = descr_to_materialize(&lit, m, fn_idx, bid, ident.span()) else {
                 record_stalled(m, fn_idx, ident, slot, StalledReason::CalleeBodyShape, log);
                 return None;
             };
@@ -309,7 +309,7 @@ fn reduce_terminator(
                 record_stalled(m, fn_idx, ident, slot, reason, log);
                 return None;
             };
-            let Some(new_var) = descr_to_materialize(&lit, m, fn_idx, bid) else {
+            let Some(new_var) = descr_to_materialize(&lit, m, fn_idx, bid, ident.span()) else {
                 record_stalled(m, fn_idx, ident, slot, StalledReason::CalleeBodyShape, log);
                 return None;
             };
@@ -341,7 +341,7 @@ fn reduce_terminator(
                 record_stalled(m, fn_idx, ident, slot, reason, log);
                 return None;
             };
-            let Some(new_var) = descr_to_materialize(&lit, m, fn_idx, bid) else {
+            let Some(new_var) = descr_to_materialize(&lit, m, fn_idx, bid, ident.span()) else {
                 record_stalled(m, fn_idx, ident, slot, StalledReason::CalleeBodyShape, log);
                 return None;
             };
@@ -812,7 +812,13 @@ fn is_scalar_literal(d: &Descr) -> bool {
 ///
 /// Non-empty list literal folding stays out of scope (L1 follow-up
 /// fz-4lo): the `list_of(elem)` lattice loses length info.
-fn descr_to_materialize(d: &Descr, m: &mut Module, fn_idx: usize, bid: BlockId) -> Option<Var> {
+fn descr_to_materialize(
+    d: &Descr,
+    m: &mut Module,
+    fn_idx: usize,
+    bid: BlockId,
+    at_span: crate::diag::Span,
+) -> Option<Var> {
     if let Some(const_val) = literal_to_const(d, m) {
         let v = fresh_var(&m.fns[fn_idx]);
         block_mut(&mut m.fns[fn_idx], bid)
@@ -824,19 +830,23 @@ fn descr_to_materialize(d: &Descr, m: &mut Module, fn_idx: usize, bid: BlockId) 
         let cl = cl.clone();
         let mut cap_vars = Vec::with_capacity(cl.captures.len());
         for c in &cl.captures {
-            cap_vars.push(descr_to_materialize(c, m, fn_idx, bid)?);
+            cap_vars.push(descr_to_materialize(c, m, fn_idx, bid, at_span)?);
         }
         let v = fresh_var(&m.fns[fn_idx]);
+        // fz-rrh — synthesized MakeClosure: the closure_lit Descr was
+        // folded by the reducer. Tag the ident with the triggering
+        // callsite's span so the dump points at where the reduction
+        // fired.
         block_mut(&mut m.fns[fn_idx], bid)
             .stmts
-            .push(Stmt::Let(v, Prim::MakeClosure(crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY), cl.fn_id, cap_vars)));
+            .push(Stmt::Let(v, Prim::make_closure(at_span, cl.fn_id, cap_vars)));
         return Some(v);
     }
     if let Some(elems) = as_tuple_lit(d) {
         let elems: Vec<Descr> = elems.to_vec();
         let mut elem_vars = Vec::with_capacity(elems.len());
         for e in &elems {
-            elem_vars.push(descr_to_materialize(e, m, fn_idx, bid)?);
+            elem_vars.push(descr_to_materialize(e, m, fn_idx, bid, at_span)?);
         }
         let v = fresh_var(&m.fns[fn_idx]);
         block_mut(&mut m.fns[fn_idx], bid)
@@ -937,7 +947,7 @@ mod tests {
         main_b.set_terminator(
             m_entry,
             Term::TailCall {
-                ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
+                ident: crate::fz_ir::CallsiteIdent::synthetic(),
                 callee: FnId(0),
                 args: vec![c42],
                 is_back_edge: false,
@@ -986,7 +996,7 @@ mod tests {
         main_b.set_terminator(
             m_entry,
             Term::TailCall {
-                ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
+                ident: crate::fz_ir::CallsiteIdent::synthetic(),
                 callee: FnId(0),
                 args: vec![c21],
                 is_back_edge: false,
@@ -1030,7 +1040,7 @@ mod tests {
         main_b.set_terminator(
             m_entry,
             Term::TailCall {
-                ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
+                ident: crate::fz_ir::CallsiteIdent::synthetic(),
                 callee: FnId(0),
                 args: vec![p],
                 is_back_edge: false,
@@ -1119,7 +1129,7 @@ mod tests {
         b.set_terminator(
             recur,
             Term::TailCall {
-                ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
+                ident: crate::fz_ir::CallsiteIdent::synthetic(),
                 callee: FnId(0),
                 args: vec![dec],
                 is_back_edge: false,
@@ -1132,7 +1142,7 @@ mod tests {
         main_b.set_terminator(
             m_entry,
             Term::TailCall {
-                ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
+                ident: crate::fz_ir::CallsiteIdent::synthetic(),
                 callee: FnId(0),
                 args: vec![c5],
                 is_back_edge: false,
@@ -1182,7 +1192,7 @@ mod tests {
         b.set_terminator(
             recur,
             Term::TailCall {
-                ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
+                ident: crate::fz_ir::CallsiteIdent::synthetic(),
                 callee: FnId(0),
                 args: vec![dec],
                 is_back_edge: false,
@@ -1195,7 +1205,7 @@ mod tests {
         main_b.set_terminator(
             m_entry,
             Term::TailCall {
-                ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
+                ident: crate::fz_ir::CallsiteIdent::synthetic(),
                 callee: FnId(0),
                 args: vec![c100k],
                 is_back_edge: false,
@@ -1243,7 +1253,7 @@ mod tests {
         e.set_terminator(
             e_odd,
             Term::TailCall {
-                ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
+                ident: crate::fz_ir::CallsiteIdent::synthetic(),
                 callee: FnId(1),
                 args: vec![dec_e],
                 is_back_edge: false,
@@ -1266,7 +1276,7 @@ mod tests {
         o.set_terminator(
             o_even,
             Term::TailCall {
-                ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
+                ident: crate::fz_ir::CallsiteIdent::synthetic(),
                 callee: FnId(0),
                 args: vec![dec_o],
                 is_back_edge: false,
@@ -1279,7 +1289,7 @@ mod tests {
         main_b.set_terminator(
             m_entry,
             Term::TailCall {
-                ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
+                ident: crate::fz_ir::CallsiteIdent::synthetic(),
                 callee: FnId(0),
                 args: vec![c4],
                 is_back_edge: false,
@@ -1331,7 +1341,7 @@ mod tests {
         f_b.set_terminator(
             f_entry,
             Term::TailCall {
-                ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
+                ident: crate::fz_ir::CallsiteIdent::synthetic(),
                 callee: FnId(0),
                 args: vec![x_f],
                 is_back_edge: false,
@@ -1344,7 +1354,7 @@ mod tests {
         main_b.set_terminator(
             m_entry,
             Term::TailCall {
-                ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
+                ident: crate::fz_ir::CallsiteIdent::synthetic(),
                 callee: FnId(1),
                 args: vec![c5],
                 is_back_edge: false,
@@ -1488,7 +1498,7 @@ mod tests {
         main_b.set_terminator(
             m_entry,
             Term::TailCall {
-                ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
+                ident: crate::fz_ir::CallsiteIdent::synthetic(),
                 callee: FnId(0),
                 args: vec![c1, c2],
                 is_back_edge: false,
@@ -1543,7 +1553,7 @@ mod tests {
         main_b.set_terminator(
             m_entry,
             Term::TailCall {
-                ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
+                ident: crate::fz_ir::CallsiteIdent::synthetic(),
                 callee: FnId(0),
                 args: vec![],
                 is_back_edge: false,

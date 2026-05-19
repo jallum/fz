@@ -180,8 +180,10 @@ fn subst_prim(p: &Prim, subst: &HashMap<Var, Var>) -> Prim {
         Prim::MakeList(els, tail) => {
             Prim::MakeList(els.iter().map(|x| sv(*x)).collect(), tail.map(sv))
         }
-        Prim::MakeClosure(_, fid, caps) => {
-            Prim::MakeClosure(crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY), *fid, caps.iter().map(|x| sv(*x)).collect())
+        // fz-kgk — subst_prim rewrites Var operands only; the MakeClosure
+        // callsite identity stays.
+        Prim::MakeClosure(ident, fid, caps) => {
+            Prim::MakeClosure(ident.clone(), *fid, caps.iter().map(|x| sv(*x)).collect())
         }
         Prim::MakeMap(entries) => {
             Prim::MakeMap(entries.iter().map(|(k, v)| (sv(*k), sv(*v))).collect())

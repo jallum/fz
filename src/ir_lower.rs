@@ -433,7 +433,11 @@ impl LowerCtx {
     /// The resulting Var's metadata defaults to `(span, "")` — anonymous
     /// temp. Callers that bind the Var to a source name follow up with
     /// `name_var(v, name, name_span)`.
-    fn let_at(&mut self, prim: Prim, span: Span) -> Var {
+    fn let_at(&mut self, mut prim: Prim, span: Span) -> Var {
+        // fz-rrh — same pattern as set_term_at: hoist the source span
+        // into the prim's intrinsic ident (only `Prim::MakeClosure`
+        // is a callsite; other prims are no-op).
+        prim.set_source_span(span);
         let blk = self.cur_block();
         let fn_id = self.cur_fn_id.expect("no current fn");
         let v = self.cur_mut().let_(blk, prim);
@@ -466,7 +470,14 @@ impl LowerCtx {
         self.set_term_at(term, Span::DUMMY);
     }
 
-    fn set_term_at(&mut self, term: Term, span: Span) {
+    fn set_term_at(&mut self, mut term: Term, span: Span) {
+        // fz-rrh — hoist the source span into the term's intrinsic
+        // CallsiteIdent. Most ir_lower constructions used DUMMY at the
+        // struct-literal site because the span isn't typed-in scope at
+        // every Term::* literal; setting it here means every
+        // set_term_at caller gets pristine spans on the ident for
+        // free. No-op when span is DUMMY (synthetic).
+        term.set_source_span(span);
         let blk = self.cur_block();
         let fn_id = self.cur_fn_id.expect("no current fn");
         self.cur_mut().set_terminator(blk, term);
@@ -1851,7 +1862,7 @@ fn lower_multi_clause(
             let captures = ctx.captured_snapshot();
             let capture_vars: Vec<Var> = captures.iter().map(|(_, v)| *v).collect();
             ctx.set_term(Term::TailCall {
-                ident: crate::fz_ir::CallsiteIdent::from_source(Span::DUMMY),
+                ident: crate::fz_ir::CallsiteIdent::from_source(clause.span),
                 callee: cont.id,
                 args: capture_vars,
                 is_back_edge: false,
@@ -1907,7 +1918,7 @@ fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -> Result<Va
                 .find(|((n, _), _)| n == name)
                 .map(|(k, v)| (k.clone(), *v))
             {
-                return Ok(ctx.let_(Prim::MakeClosure(crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY), fn_id, vec![])));
+                return Ok(ctx.let_at(Prim::make_closure(sp, fn_id, vec![]), sp));
             }
             Err(LowerError::Unbound {
                 span: sp,
@@ -2026,7 +2037,7 @@ fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -> Result<Va
                 if is_tail {
                     ctx.set_term_at(
                         Term::TailCallClosure {
-                            ident: crate::fz_ir::CallsiteIdent::from_source(Span::DUMMY),
+                            ident: crate::fz_ir::CallsiteIdent::from_source(sp),
                             closure: local_var,
                             args: arg_vars,
                         },
@@ -2064,7 +2075,7 @@ fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -> Result<Va
             // extern, not a non-existent user fn.
             if callee_name == "spawn" && (arg_vars.len() == 1 || arg_vars.len() == 2) {
                 let thunk_id = ctx.ensure_spawn_thunk();
-                let wrapper = ctx.let_at(Prim::MakeClosure(crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY), thunk_id, vec![arg_vars[0]]), sp);
+                let wrapper = ctx.let_at(Prim::make_closure(sp, thunk_id, vec![arg_vars[0]]), sp);
                 let mut new_args = vec![wrapper];
                 new_args.extend_from_slice(&arg_vars[1..]);
                 let sym = if arg_vars.len() == 1 {
@@ -2107,7 +2118,7 @@ fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -> Result<Va
             }
         }
 
-        Expr::Lambda(params, body) => lower_lambda(ctx, params, body),
+        Expr::Lambda(params, body) => lower_lambda(ctx, params, body, sp),
 
         Expr::Case(subject, clauses) => lower_case(ctx, subject, clauses, is_tail, sp),
         Expr::Cond(arms) => lower_cond(ctx, arms, is_tail, sp),
@@ -2419,6 +2430,7 @@ fn lower_lambda(
     ctx: &mut LowerCtx,
     params: &[Spanned<Pattern>],
     body: &Spanned<Expr>,
+    span: Span,
 ) -> Result<Var, LowerError> {
     // Capture all in-scope locals.
     let captured = ctx.captured_snapshot();
@@ -2474,7 +2486,7 @@ fn lower_lambda(
     ctx.env = saved_env;
     ctx.env_order = saved_order;
 
-    Ok(ctx.let_(Prim::MakeClosure(crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY), lam_id, captured_vars)))
+    Ok(ctx.let_at(Prim::make_closure(span, lam_id, captured_vars), span))
 }
 
 fn cps_split_call_closure(

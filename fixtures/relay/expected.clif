@@ -43,8 +43,8 @@ function u0:0(i64) -> i64 tail {
     fn5 = colocated u0:41 sig5
 
 block0(v0: i64):
-    v1 = iconst.i32 11
-    v2 = call fn0(v1)  ; v1 = 11    ;; v2 :: &fn11[]:() -> any
+    v1 = iconst.i32 11                  ; @4:9
+    v2 = call fn0(v1)                   ; @4:9  v1 = 11
     v3 = iconst.i32 14                  ; @4:3
     v4 = iconst.i32 1                   ; @4:3
     v5 = iconst.i32 0                   ; @4:3

@@ -1,16 +1,16 @@
 outcomes for fixtures/closure_typed_captures/input.fz
 
 apply1:
-  @<generated> ClosureLit(0,0) -> Emitted (lambda_14#14 [10, 20, 12]) via NoClosureLitTarget
+  @0:62-66 ClosureLit(0,0) -> Emitted (lambda_14#14 [10, 20, 12]) via NoClosureLitTarget
 
 main:
-  @<generated> Direct -> Consumed (&fn14[10, 20]:() -> any)
-  @<generated> Direct -> Emitted (k_15#15 [&fn14[10, 20]:(any) -> any])
-  @<generated> MakeClosure -> Emitted (lambda_14#14 [10, 20, any])
+  @0:96-110 Direct -> Consumed (&fn14[10, 20]:() -> any)
+  @0:96-110 Direct -> Emitted (k_15#15 [&fn14[10, 20]:(any) -> any])
+  @0:96-110 MakeClosure -> Emitted (lambda_14#14 [10, 20, any])
 
 k_15:
-  @<generated> Cont -> Emitted (k_16#16 [int])
-  @<generated> Direct -> Emitted (apply1#12 [&fn14[10, 20]:(any) -> any, 12]) via OpaqueArg
+  @0:89-115 Cont -> Emitted (k_16#16 [int])
+  @0:89-115 Direct -> Emitted (apply1#12 [&fn14[10, 20]:(any) -> any, 12]) via OpaqueArg
 
 k_16:
-  @<generated> Direct -> Emitted (print#0 [int]) via OpaqueArg
+  @0:83-116 Direct -> Emitted (print#0 [int]) via OpaqueArg

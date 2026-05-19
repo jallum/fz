@@ -576,6 +576,29 @@ impl Term {
         }
     }
 
+    /// fz-rrh — overwrite this Term's `CallsiteIdent` with a fresh one
+    /// keyed by `span`. No-op for non-call-shape terminators and for
+    /// DUMMY spans (preserves whatever the term already has).
+    ///
+    /// Lets `LowerCtx::set_term_at` auto-upgrade idents whose
+    /// per-construction span was missing — most ir_lower call sites
+    /// already pass the real span to `set_term_at`, so this hoists
+    /// the span into the intrinsic identity without per-site edits.
+    pub fn set_source_span(&mut self, span: Span) {
+        if span.is_dummy() {
+            return;
+        }
+        let new_ident = CallsiteIdent::from_source(span);
+        match self {
+            Term::Call { ident, .. }
+            | Term::TailCall { ident, .. }
+            | Term::CallClosure { ident, .. }
+            | Term::TailCallClosure { ident, .. }
+            | Term::Receive { ident, .. } => *ident = new_ident,
+            _ => {}
+        }
+    }
+
     /// fz-kgk — convenience constructors that mint a `CallsiteIdent`
     /// from the source span. `ir_lower` uses these; other passes that
     /// transform terms (`ir_reducer`, `ir_inline`) construct variants
@@ -625,6 +648,18 @@ impl Prim {
     /// that is a callsite.
     pub fn make_closure(span: Span, fn_id: FnId, captured: Vec<Var>) -> Self {
         Prim::MakeClosure(CallsiteIdent::from_source(span), fn_id, captured)
+    }
+
+    /// fz-rrh — overwrite the `CallsiteIdent` on a `MakeClosure` prim
+    /// with a fresh one keyed by `span`. No-op for other prims and
+    /// for DUMMY spans. Mirror of `Term::set_source_span`.
+    pub fn set_source_span(&mut self, span: Span) {
+        if span.is_dummy() {
+            return;
+        }
+        if let Prim::MakeClosure(ident, _, _) = self {
+            *ident = CallsiteIdent::from_source(span);
+        }
     }
 }
 

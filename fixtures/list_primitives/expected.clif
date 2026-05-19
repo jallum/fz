@@ -644,8 +644,8 @@ function u0:0(i64, i64, i64) -> i64 tail {
     fn3 = colocated u0:65 sig3
 
     block0(v0: i64, v1: i64, v2: i64):    ;; v0 :: nil, v1 :: list(1 | 2 | 3 | 4 | 5)
-    v3 = iconst.i32 28
-    v4 = call fn0(v3)  ; v3 = 28    ;; v4 :: &fn16[]:(any) -> any
+    v3 = iconst.i32 28                  ; @21:13
+    v4 = call fn0(v3)                   ; @21:13  v3 = 28
     v5 = iconst.i32 44                  ; @21:9
     v6 = iconst.i32 2                   ; @21:9
     v7 = iconst.i32 0                   ; @21:9
@@ -690,8 +690,8 @@ function u0:0(i64, i64, i64) -> i64 tail {
     fn3 = colocated u0:67 sig3
 
     block0(v0: i64, v1: i64, v2: i64):    ;; v0 :: nil, v1 :: list(1 | 2 | 3 | 4 | 5)
-    v3 = iconst.i32 30
-    v4 = call fn0(v3)  ; v3 = 30    ;; v4 :: &fn17[]:(any, any) -> any
+    v3 = iconst.i32 30                  ; @22:15
+    v4 = call fn0(v3)                   ; @22:15  v3 = 30
     v5 = iconst.i64 0                   ; @22:20
     v6 = iconst.i32 46                  ; @22:9
     v7 = iconst.i32 2                   ; @22:9

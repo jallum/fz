@@ -831,7 +831,7 @@ mod tests {
         b.set_terminator(
             entry,
             Term::TailCall {
-                ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
+                ident: crate::fz_ir::CallsiteIdent::synthetic(),
                 callee,
                 args: vec![y],
                 is_back_edge: false,
@@ -849,7 +849,7 @@ mod tests {
         b.set_terminator(
             entry,
             Term::Call {
-                ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
+                ident: crate::fz_ir::CallsiteIdent::synthetic(),
                 callee,
                 args: vec![y],
                 continuation: Cont {
@@ -887,7 +887,7 @@ mod tests {
         b.set_terminator(
             entry,
             Term::Receive {
-                ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
+                ident: crate::fz_ir::CallsiteIdent::synthetic(),
                 continuation: Cont {
                     fn_id: FnId(7),
                     captured: vec![],
@@ -905,7 +905,7 @@ mod tests {
         b.set_terminator(
             entry,
             Term::CallClosure {
-                ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
+                ident: crate::fz_ir::CallsiteIdent::synthetic(),
                 closure: cl,
                 args: vec![],
                 continuation: Cont {
@@ -925,7 +925,7 @@ mod tests {
         b.set_terminator(
             entry,
             Term::TailCallClosure {
-                ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
+                ident: crate::fz_ir::CallsiteIdent::synthetic(),
                 closure: cl,
                 args: vec![],
             },
@@ -1127,7 +1127,7 @@ mod tests {
         b.set_terminator(
             entry,
             Term::TailCall {
-                ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
+                ident: crate::fz_ir::CallsiteIdent::synthetic(),
                 callee: target,
                 args: vec![v],
                 is_back_edge: false,
@@ -1193,7 +1193,7 @@ mod tests {
         b.set_terminator(
             entry,
             Term::Call {
-                ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
+                ident: crate::fz_ir::CallsiteIdent::synthetic(),
                 callee: FnId(1),
                 args: vec![y],
                 continuation: Cont {

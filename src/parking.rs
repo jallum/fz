@@ -281,7 +281,7 @@ mod tests {
         b.set_terminator(
             entry,
             Term::Receive {
-                ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
+                ident: crate::fz_ir::CallsiteIdent::synthetic(),
                 continuation: Cont {
                     fn_id: FnId(0),
                     captured: vec![],
@@ -312,7 +312,7 @@ mod tests {
         g.set_terminator(
             g_entry,
             Term::Receive {
-                ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
+                ident: crate::fz_ir::CallsiteIdent::synthetic(),
                 continuation: Cont {
                     fn_id: FnId(2),
                     captured: vec![],
@@ -325,7 +325,7 @@ mod tests {
         f.set_terminator(
             f_entry,
             Term::TailCall {
-                ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
+                ident: crate::fz_ir::CallsiteIdent::synthetic(),
                 callee: FnId(0),
                 args: vec![],
                 is_back_edge: false,
@@ -363,7 +363,7 @@ mod tests {
         // the closure might be invoked at a parking-reachable site.
         let mut b = FnBuilder::new(FnId(0), "packer");
         let entry = b.block(vec![]);
-        let cl = b.let_(entry, Prim::MakeClosure(crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY), FnId(1), vec![]));
+        let cl = b.let_(entry, Prim::MakeClosure(crate::fz_ir::CallsiteIdent::synthetic(), FnId(1), vec![]));
         b.set_terminator(entry, Term::Halt(cl));
         // Dummy target fn.
         let mut t = FnBuilder::new(FnId(1), "target");
@@ -381,11 +381,11 @@ mod tests {
         // the set — the closure target is opaque to this analysis.
         let mut b = FnBuilder::new(FnId(0), "invoker");
         let entry = b.block(vec![]);
-        let cl = b.let_(entry, Prim::MakeClosure(crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY), FnId(1), vec![]));
+        let cl = b.let_(entry, Prim::MakeClosure(crate::fz_ir::CallsiteIdent::synthetic(), FnId(1), vec![]));
         b.set_terminator(
             entry,
             Term::TailCallClosure {
-                ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
+                ident: crate::fz_ir::CallsiteIdent::synthetic(),
                 closure: cl,
                 args: vec![],
             },
@@ -418,7 +418,7 @@ mod tests {
         main_b.set_terminator(
             m_entry,
             Term::TailCall {
-                ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
+                ident: crate::fz_ir::CallsiteIdent::synthetic(),
                 callee: FnId(1),
                 args: vec![],
                 is_back_edge: false,
@@ -442,7 +442,7 @@ mod tests {
         rx.set_terminator(
             entry,
             Term::Receive {
-                ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
+                ident: crate::fz_ir::CallsiteIdent::synthetic(),
                 continuation: Cont {
                     fn_id: FnId(1),
                     captured: vec![],
@@ -469,7 +469,7 @@ mod tests {
         f.set_terminator(
             entry,
             Term::Call {
-                ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
+                ident: crate::fz_ir::CallsiteIdent::synthetic(),
                 callee: FnId(1),
                 args: vec![],
                 continuation: Cont {
@@ -487,7 +487,7 @@ mod tests {
         outer.set_terminator(
             o_entry,
             Term::TailCall {
-                ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
+                ident: crate::fz_ir::CallsiteIdent::synthetic(),
                 callee: FnId(0),
                 args: vec![],
                 is_back_edge: false,
@@ -527,7 +527,7 @@ mod tests {
         g.set_terminator(
             g_entry,
             Term::Receive {
-                ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
+                ident: crate::fz_ir::CallsiteIdent::synthetic(),
                 continuation: Cont {
                     fn_id: FnId(2),
                     captured: vec![],
@@ -540,7 +540,7 @@ mod tests {
         f.set_terminator(
             f_entry,
             Term::TailCall {
-                ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
+                ident: crate::fz_ir::CallsiteIdent::synthetic(),
                 callee: FnId(0),
                 args: vec![],
                 is_back_edge: false,
@@ -570,7 +570,7 @@ mod tests {
         f.set_terminator(
             entry,
             Term::Call {
-                ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
+                ident: crate::fz_ir::CallsiteIdent::synthetic(),
                 callee: FnId(1),
                 args: vec![],
                 continuation: Cont {

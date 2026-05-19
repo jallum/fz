@@ -1,46 +1,46 @@
 outcomes for fixtures/fib_tailrec/input.fz
 
 fib:
-  @<generated> Direct -> Emitted (fn_clause_0#13 [0]) via OpaqueArg [under fib[20, 0, 1]]
-  @<generated> Direct -> Emitted (fn_clause_0#13 [1]) via OpaqueArg [under fib[int, 1, int]]
-  @<generated> Direct -> Emitted (fn_clause_0#13 [int]) via OpaqueArg [under fib[int, int, int]]
-  @<generated> Direct -> Emitted (fn_clause_1#14 [1]) via OpaqueArg [under fib[20, 0, 1]]
-  @<generated> Direct -> Emitted (fn_clause_1#14 [int]) via OpaqueArg [under fib[int, 1, int], fib[int, int, int]]
-  @<generated> Direct -> Emitted (fn_clause_2#15 [20, 0, 1]) via OpaqueArg [under fib[20, 0, 1]]
-  @<generated> Direct -> Emitted (fn_clause_2#15 [int \ {0, 1}, 1, int]) via OpaqueArg [under fib[int, 1, int]]
-  @<generated> Direct -> Emitted (fn_clause_2#15 [int \ {0, 1}, int, int]) via OpaqueArg [under fib[int, int, int]]
+  @0:0-22 Direct -> Emitted (fn_clause_0#13 [0]) via OpaqueArg [under fib[20, 0, 1]]
+  @0:0-22 Direct -> Emitted (fn_clause_0#13 [1]) via OpaqueArg [under fib[int, 1, int]]
+  @0:0-22 Direct -> Emitted (fn_clause_0#13 [int]) via OpaqueArg [under fib[int, int, int]]
+  @0:23-45 Direct -> Emitted (fn_clause_1#14 [1]) via OpaqueArg [under fib[20, 0, 1]]
+  @0:23-45 Direct -> Emitted (fn_clause_1#14 [int]) via OpaqueArg [under fib[int, 1, int], fib[int, int, int]]
+  @0:46-87 Direct -> Emitted (fn_clause_2#15 [20, 0, 1]) via OpaqueArg [under fib[20, 0, 1]]
+  @0:46-87 Direct -> Emitted (fn_clause_2#15 [int \ {0, 1}, 1, int]) via OpaqueArg [under fib[int, 1, int]]
+  @0:46-87 Direct -> Emitted (fn_clause_2#15 [int \ {0, 1}, int, int]) via OpaqueArg [under fib[int, int, int]]
 
 fn_clause_2:
-  @<generated> Direct -> Emitted (fib#11 [int, 1, int]) via OpaqueArg [under fn_clause_2[20, 0, 1]]
-  @<generated> Direct -> Emitted (fib#11 [int, int, int]) via OpaqueArg [under fn_clause_2[int \ {0, 1}, 1, int], fn_clause_2[int \ {0, 1}, int, int]]
+  @0:67-87 Direct -> Emitted (fib#11 [int, 1, int]) via OpaqueArg [under fn_clause_2[20, 0, 1]]
+  @0:67-87 Direct -> Emitted (fib#11 [int, int, int]) via OpaqueArg [under fn_clause_2[int \ {0, 1}, 1, int], fn_clause_2[int \ {0, 1}, int, int]]
 
 main:
-  @<generated> Direct -> Consumed (0)
-  @<generated> Direct -> Emitted (k_16#16 [0])
+  @0:110-122 Direct -> Consumed (0)
+  @0:110-122 Direct -> Emitted (k_16#16 [0])
 
 k_16:
-  @<generated> Cont -> Emitted (k_17#17 [nil])
-  @<generated> Direct -> Emitted (print#0 [0]) via OpaqueArg
+  @0:104-123 Cont -> Emitted (k_17#17 [nil])
+  @0:104-123 Direct -> Emitted (print#0 [0]) via OpaqueArg
 
 k_17:
-  @<generated> Direct -> Consumed (1)
-  @<generated> Direct -> Emitted (k_18#18 [1])
+  @0:132-144 Direct -> Consumed (1)
+  @0:132-144 Direct -> Emitted (k_18#18 [1])
 
 k_18:
-  @<generated> Cont -> Emitted (k_19#19 [nil])
-  @<generated> Direct -> Emitted (print#0 [1]) via OpaqueArg
+  @0:126-145 Cont -> Emitted (k_19#19 [nil])
+  @0:126-145 Direct -> Emitted (print#0 [1]) via OpaqueArg
 
 k_19:
-  @<generated> Direct -> Consumed (55)
-  @<generated> Direct -> Emitted (k_20#20 [55])
+  @0:154-167 Direct -> Consumed (55)
+  @0:154-167 Direct -> Emitted (k_20#20 [55])
 
 k_20:
-  @<generated> Cont -> Emitted (k_21#21 [nil])
-  @<generated> Direct -> Emitted (print#0 [55]) via OpaqueArg
+  @0:148-168 Cont -> Emitted (k_21#21 [nil])
+  @0:148-168 Direct -> Emitted (print#0 [55]) via OpaqueArg
 
 k_21:
-  @<generated> Cont -> Emitted (k_22#22 [int])
-  @<generated> Direct -> Emitted (fib#11 [20, 0, 1]) via BudgetExhausted
+  @0:177-190 Cont -> Emitted (k_22#22 [int])
+  @0:177-190 Direct -> Emitted (fib#11 [20, 0, 1]) via BudgetExhausted
 
 k_22:
-  @<generated> Direct -> Emitted (print#0 [int]) via OpaqueArg
+  @0:171-191 Direct -> Emitted (print#0 [int]) via OpaqueArg
