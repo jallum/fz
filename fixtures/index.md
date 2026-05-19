@@ -35,6 +35,7 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `interp_only_main/` | tiny module with a single helper and a main — historical interp-tier-0 smoke test | jit, interp, repl |
 | `list_primitives/` | list primitives from scratch — length / reverse / map / foldl exercising cons-pattern dispatch and first-class fns | jit, interp |
 | `macro_inc/` | defmacro + quote/unquote round-trip — two macros, one nested in the other | jit, interp, repl |
+| `make_ref_distinct/` | fz-ht5 — make_ref() returns a distinct opaque ref on every call | jit, interp, aot |
 | `modules/` | cross-module qualified calls — `M.double`, `M.quad`, `N.helper` | jit, interp, repl |
 | `multi_caller_spec_divergent/` | fz-uwq.4 regression — divergent dispatch across two caller specs of the same higher-order fn | jit, interp, aot, repl |
 | `multi_clause/` | multi-clause dispatch with a guard clause (`when n > 0`), plus recursive `fact` | jit, interp, repl |
@@ -44,6 +45,7 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `nested_modules/` | inner module addressed both fully-qualified (`Outer.Inner.f`) and via outer-local reference | jit, interp, repl |
 | `polymorphic/` | parametric `id` exercised over int, atom, and bool | jit, interp, repl |
 | `quicksort/` | closing fixture of the destructure-up-through-quicksort arc — `{lo, hi} = partition(...)` on the hot path of a recursive sort | jit, interp, aot, repl |
+| `receive_selective_refs/` | fz-recv epic acceptance — selective receive across two pinned refs with out-of-order replies + after timeout | _(deferred: Pending fz-recv.B1 (interp) + fz-recv.B3 (jit) + fz-recv.B4 (aot) — needs new receive do…end syntax and matcher codegen. Blessed under fz-recv.A1.)_ |
 | `relay/` | one-hop relay — spawned child blocks on receive before parent sends; exercises non-blocking spawn + receive-parks semantics | jit, interp, aot |
 | `resource_aot_dtor/` | AOT-compiled binary fires user-supplied resource dtors at heap drop | aot |
 | `resource_lifecycle/` | fz-swt.12 — resource lifecycle (make_resource + .value + dtor) is observably identical across interp, JIT, AOT | interp, jit, aot |

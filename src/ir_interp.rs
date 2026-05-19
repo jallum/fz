@@ -999,6 +999,13 @@ fn call_extern(module: &Module, eid: ExternId, args: &[FzValue]) -> Result<FzVal
                 fz_runtime::process::current_process().pid as i64,
             ));
         }
+        "fz_make_ref" => {
+            // fz-ht5 — route through the runtime FFI so interp and JIT
+            // share the same counter; otherwise an interp run followed
+            // by a JIT run in the same process could collide.
+            let bits = fz_runtime::ir_runtime::fz_make_ref();
+            return Ok(FzValue(bits));
+        }
         "fz_send" => {
             if args.len() != 2 {
                 return Err(format!("fz_send/2 got {} args", args.len()));
@@ -1065,6 +1072,7 @@ fn resolve_symbol(name: &str) -> Result<*const (), String> {
         "fz_spawn" => Some(fz_runtime::ir_runtime::fz_spawn as *const ()),
         "fz_spawn_opt" => Some(fz_runtime::ir_runtime::fz_spawn_opt as *const ()),
         "fz_self" => Some(fz_runtime::ir_runtime::fz_self as *const ()),
+        "fz_make_ref" => Some(fz_runtime::ir_runtime::fz_make_ref as *const ()),
         "fz_send" => Some(fz_runtime::ir_runtime::fz_send as *const ()),
         // fz-swt.11 — fixture/test dtor exported from the runtime crate.
         // Bound here so interp-leg invocations of fixtures using this

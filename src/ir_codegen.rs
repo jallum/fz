@@ -1205,6 +1205,10 @@ impl JitBackend {
             fz_runtime::ir_runtime::fz_spawn_opt as *const u8,
         );
         builder.symbol("fz_self", fz_runtime::ir_runtime::fz_self as *const u8);
+        builder.symbol(
+            "fz_make_ref",
+            fz_runtime::ir_runtime::fz_make_ref as *const u8,
+        );
         builder.symbol("fz_send", fz_runtime::ir_runtime::fz_send as *const u8);
         // fz-swt.10 — `make_resource(value, &dtor/1)` lowers to an extern
         // call on `fz_make_resource`. The runtime symbol delegates to a

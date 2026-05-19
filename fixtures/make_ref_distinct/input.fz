@@ -1,0 +1,5 @@
+fn main() do
+  a = make_ref()
+  b = make_ref()
+  assert_neq(a, b)
+end
