@@ -1128,6 +1128,7 @@ fn body_might_cps_split(body: &Spanned<Expr>) -> bool {
             | Expr::Bool(_)
             | Expr::Nil
             | Expr::Var(_)
+            | Expr::FnRef { .. }
             | Expr::Lambda(_, _)
             | Expr::Quote(_)
             | Expr::Unquote(_) => false,
@@ -1929,9 +1930,10 @@ fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -> Result<Va
                 return Ok(v);
             }
             // Fall back: bare top-level fn name used as a value -> 0-captured
-            // closure pointing at the fn's IR id. Picks the first matching
-            // arity if the source has multiple (fz currently has no syntax
-            // to disambiguate `&name/arity`; the first defined wins).
+            // closure pointing at the fn's IR id. With no explicit arity in
+            // the bare-name form, picks the first matching name (overloads
+            // disambiguate via the explicit `&name/arity` form — see the
+            // `Expr::FnRef` arm).
             if let Some((_, fn_id)) = ctx
                 .fns
                 .iter()
@@ -1943,6 +1945,19 @@ fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -> Result<Va
             Err(LowerError::Unbound {
                 span: sp,
                 name: name.clone(),
+            })
+        }
+
+        // fz-swt.5: `&name/arity` — explicit, arity-aware fn reference.
+        // Direct (name, arity) lookup in the same fn map Call uses, so an
+        // overloaded name resolves unambiguously to the requested clause.
+        Expr::FnRef { name, arity } => {
+            if let Some(&fn_id) = ctx.fns.get(&(name.clone(), *arity)) {
+                return Ok(ctx.let_at(Prim::make_closure(sp, fn_id, vec![]), sp));
+            }
+            Err(LowerError::Unbound {
+                span: sp,
+                name: format!("fn {}/{}", name, arity),
             })
         }
 

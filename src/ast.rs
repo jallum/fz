@@ -57,6 +57,15 @@ pub enum Expr {
     // identifier reference
     Var(String),
 
+    /// Explicit function reference: `&name/arity` (fz-swt.5).
+    /// `name` may be dotted (`Mod.fun`). Lowers to a zero-capture
+    /// `Prim::MakeClosure` over the fn matching `(name, arity)` exactly,
+    /// rather than the bare-name path's "first defined wins".
+    FnRef {
+        name: String,
+        arity: usize,
+    },
+
     // collections
     List(Vec<Spanned<Expr>>, Option<Box<Spanned<Expr>>>), // [a, b, c | tail]
     Tuple(Vec<Spanned<Expr>>),

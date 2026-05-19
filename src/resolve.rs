@@ -482,6 +482,34 @@ fn rewrite_expr(
                 *n = format!("{}.{}", module_path, n);
             }
         }
+        // fz-swt.5: `&name/arity` follows the same name-resolution rules
+        // as a bare call target — sibling rewriting, then import
+        // resolution, then alias-qualified paths. We treat the `name`
+        // string identically: if it's a bare ident matching a sibling,
+        // prefix the module path; if it's a bare ident matching an
+        // arity-specific import, prefix the import target; if it's a
+        // dotted path with a leading alias, expand the alias.
+        Expr::FnRef { name, arity } => {
+            // Bare names get sibling / import treatment.
+            if !name.contains('.') && !intro.contains(name) {
+                if siblings.contains(name) {
+                    *name = format!("{}.{}", module_path, name);
+                } else if let Some(target) = imports.get(&(name.clone(), *arity)) {
+                    *name = format!("{}.{}", target, name);
+                }
+            } else if name.contains('.') {
+                // Dotted: split, expand leading alias if present.
+                let parts: Vec<&str> = name.split('.').collect();
+                if let Some(full) = aliases.get(parts[0]) {
+                    let rest = parts[1..].join(".");
+                    *name = if rest.is_empty() {
+                        full.clone()
+                    } else {
+                        format!("{}.{}", full, rest)
+                    };
+                }
+            }
+        }
         Expr::Call(callee, args) => {
             if let Some(q) = qualify_callee(callee, intro, module_path, module_paths, aliases) {
                 callee.node = Expr::Var(q);

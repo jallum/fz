@@ -1,0 +1,14 @@
+fn double(x), do: x * 2
+fn neg(x), do: 0 - x
+fn add(x, y), do: x + y
+
+fn apply1(f, x), do: f(x)
+fn apply2(f, x, y), do: f(x, y)
+
+fn main() do
+  # Explicit &name/arity passes the disambiguated function reference
+  # through `apply1`/`apply2` and back into a call site.
+  print(apply1(&double/1, 21))
+  print(apply1(&neg/1, 7))
+  print(apply2(&add/2, 30, 12))
+end

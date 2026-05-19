@@ -384,6 +384,12 @@ impl Interp {
             Expr::Bool(b) => Ok(Value::Bool(*b)),
             Expr::Nil => Ok(Value::Nil),
             Expr::Var(n) => env.lookup(n).ok_or_else(|| format!("undefined: {}", n)),
+            // fz-swt.5: explicit fn reference resolves through the same
+            // global-name lookup as a bare name. The arity check lives in
+            // call-site dispatch on the resulting Closure.
+            Expr::FnRef { name, arity: _ } => env
+                .lookup(name)
+                .ok_or_else(|| format!("undefined: {}", name)),
             Expr::List(xs, tail) => {
                 let mut out = Vec::with_capacity(xs.len());
                 for x in xs {
