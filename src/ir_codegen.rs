@@ -3951,6 +3951,7 @@ fn build_cont_closure<M: cranelift_module::Module>(
     cl_ptr
 }
 
+#[allow(clippy::too_many_arguments)]
 fn emit_terminator<M: cranelift_module::Module>(
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
@@ -3963,6 +3964,7 @@ fn emit_terminator<M: cranelift_module::Module>(
     is_native: bool,
     is_cont_fn: bool,
     this_spec_id: u32,
+    caller_fn_id: crate::fz_ir::FnId,
     cont_ptr_known_null: bool,
     frame_ptr: Option<ir::Value>,
     host_ctx: Option<ir::Value>,
@@ -3980,7 +3982,23 @@ fn emit_terminator<M: cranelift_module::Module>(
     let module = env.module;
 
     let callee_is_native = |id: u32| natively_callable.contains(&crate::fz_ir::FnId(id));
+    // fz-uwq.5 — Cont dispatch reads from `fn_types.dispatches[cid]`
+    // (per-spec dispatch fact; un-widened by fz-uwq.3+, so the SpecId
+    // landed on by `spec_registry.resolve` matches what the codegen
+    // recompute would land on by construction). The legacy registry-
+    // recompute path is the fallback for the rare case where the
+    // typer didn't record a dispatch for this cid.
     let resolve_cont_sid = |blk: &crate::fz_ir::Block, continuation: &crate::fz_ir::Cont| -> u32 {
+        let cid = crate::fz_ir::CallsiteId {
+            caller: caller_fn_id,
+            block: blk.id,
+            slot: crate::fz_ir::EmitSlot::Cont,
+        };
+        if let Some(target) = fn_types.dispatches.get(&cid)
+            && let Some(sid) = spec_registry.resolve(target.0, &target.1).map(|s| s.0)
+        {
+            return sid;
+        }
         let key =
             crate::ir_typer::cont_input_key(blk, continuation, fn_types, module, module_types);
         spec_registry
@@ -4014,6 +4032,19 @@ fn emit_terminator<M: cranelift_module::Module>(
                                  args: &[crate::fz_ir::Var],
                                  block_id: crate::fz_ir::BlockId|
      -> u32 {
+        // fz-uwq.5 — see resolve_cont_sid for the rationale. Direct
+        // callee dispatch reads `fn_types.dispatches` first; legacy
+        // block_env-driven recompute is the fallback.
+        let cid = crate::fz_ir::CallsiteId {
+            caller: caller_fn_id,
+            block: block_id,
+            slot: crate::fz_ir::EmitSlot::Direct,
+        };
+        if let Some(target) = fn_types.dispatches.get(&cid)
+            && let Some(sid) = spec_registry.resolve(target.0, &target.1).map(|s| s.0)
+        {
+            return sid;
+        }
         let block_env = fn_types.block_envs.get(&block_id);
         let descrs: Vec<crate::types::Descr> = args
             .iter()
@@ -5159,6 +5190,7 @@ fn compile_fn<M: cranelift_module::Module>(
             is_native,
             is_cont_fn,
             this_spec_id,
+            f.id,
             cont_ptr_known_null,
             frame_ptr,
             host_ctx,
