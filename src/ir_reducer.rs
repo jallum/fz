@@ -795,29 +795,7 @@ fn is_strictly_smaller(a: &Descr, p: &Descr) -> bool {
 }
 
 fn descr_depth(d: &Descr) -> usize {
-    let mut max_d = 0;
-    for conj in &d.tuples {
-        for sig in &conj.pos {
-            for e in &sig.elems {
-                max_d = max_d.max(1 + descr_depth(e));
-            }
-        }
-    }
-    for conj in &d.lists {
-        for sig in &conj.pos {
-            max_d = max_d.max(1 + descr_depth(&sig.elem));
-        }
-    }
-    for conj in &d.funcs {
-        for sig in &conj.pos {
-            if let Some(lit) = &sig.lit {
-                for c in &lit.captures {
-                    max_d = max_d.max(1 + descr_depth(c));
-                }
-            }
-        }
-    }
-    max_d
+    d.depth()
 }
 
 /// Scalar-literal predicate. Tuples/lists/closure_lits are out of scope
@@ -828,8 +806,12 @@ fn is_scalar_literal(d: &Descr) -> bool {
         return false;
     }
     // Tuple / closure_lit literals are "structural" — defer.
-    if d.tuples.iter().any(|c| !c.pos.is_empty()) || d.funcs.iter().any(|c| !c.pos.is_empty()) {
-        return false;
+    for c in d.components() {
+        match c {
+            crate::types::Component::Tuples(v) if v.arities().next().is_some() => return false,
+            crate::types::Component::Funcs(v) if v.arities().next().is_some() => return false,
+            _ => {}
+        }
     }
     true
 }

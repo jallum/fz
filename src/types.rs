@@ -327,8 +327,8 @@ pub enum MapKey {
 /// One conjunctive clause inside a DNF: `⋀ pos  ∧  ⋀ (¬neg)`.
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct Conj<T> {
-    pub pos: Vec<T>,
-    pub neg: Vec<T>,
+    pub(crate) pos: Vec<T>,
+    pub(crate) neg: Vec<T>,
 }
 
 impl<T> Conj<T> {
@@ -356,17 +356,17 @@ impl<T: Clone> Conj<T> {
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct Descr {
-    pub basic: BasicBits,
-    pub atoms: AtomSet,
-    pub ints: IntSet,
-    pub floats: FloatSet,
-    pub strs: StrSet,
+    pub(crate) basic: BasicBits,
+    pub(crate) atoms: AtomSet,
+    pub(crate) ints: IntSet,
+    pub(crate) floats: FloatSet,
+    pub(crate) strs: StrSet,
     /// Nominal opaque-type tags. A value of opaque type `T` (declared as
     /// `@type T :: opaque U`) has `opaques = {"T"}` AND the underlying `U`
     /// axes populated. Opaque types are nominal: `T ⊄ U` even when the
     /// underlying type of `T` is `U`, because the opaques axis is non-empty
     /// and distinct from the plain-`U` descriptor (which has `opaques = ∅`).
-    pub opaques: LiteralSet<String>,
+    pub(crate) opaques: LiteralSet<String>,
     /// fz-try.5 — parametric type variables. Operationally identical to
     /// `opaques`: a finite-or-cofinite set of nominal names with
     /// component-wise union/intersect/neg. Semantically distinguished only
@@ -379,13 +379,13 @@ pub struct Descr {
     /// `closure_lit()` stubs after fz-try.7). Until C2 lands, this axis is
     /// only constructed in tests; the rest of the codebase still uses
     /// `Descr::any()` stubs.
-    pub vars: VarSet,
+    pub(crate) vars: VarSet,
     /// DNF over tuple shapes. Empty Vec = no tuples ("false"); a single
     /// `Conj::top()` clause = every tuple ("true").
-    pub tuples: Vec<Conj<TupleSig>>,
-    pub lists: Vec<Conj<ListSig>>,
-    pub funcs: Vec<Conj<ArrowSig>>,
-    pub maps: Vec<Conj<MapSig>>,
+    pub(crate) tuples: Vec<Conj<TupleSig>>,
+    pub(crate) lists: Vec<Conj<ListSig>>,
+    pub(crate) funcs: Vec<Conj<ArrowSig>>,
+    pub(crate) maps: Vec<Conj<MapSig>>,
 }
 
 impl Descr {
@@ -737,13 +737,7 @@ impl Descr {
     /// axis isn't a singleton finite set.
     pub fn as_float_singleton(&self) -> Option<F64Bits> {
         match self.single_component()? {
-            Component::Floats(v) => {
-                if !v.cofinite() && !v.is_any() {
-                    self.floats.set.iter().next().copied()
-                } else {
-                    None
-                }
-            }
+            Component::Floats(v) => v.singleton(),
             _ => None,
         }
     }
@@ -790,6 +784,117 @@ impl Descr {
         let mut it = self.components();
         let first = it.next()?;
         if it.next().is_some() { None } else { Some(first) }
+    }
+
+    /// Max depth of nested Descrs reachable through structural axes. A leaf
+    /// (basic, atoms, ints, floats, strs, opaques, vars) has depth 0; a
+    /// tuple/list adds 1 to its element depth; a closure_lit adds 1 to its
+    /// capture depths. Used by ir_reducer for materialization-depth checks.
+    pub fn depth(&self) -> usize {
+        let mut max_d = 0;
+        for c in self.components() {
+            match c {
+                Component::Tuples(view) => {
+                    for conj in view.inner {
+                        for sig in &conj.pos {
+                            for e in &sig.elems {
+                                max_d = max_d.max(1 + e.depth());
+                            }
+                        }
+                    }
+                }
+                Component::Lists(view) => {
+                    for conj in view.inner {
+                        for sig in &conj.pos {
+                            max_d = max_d.max(1 + sig.elem.depth());
+                        }
+                    }
+                }
+                Component::Funcs(view) => {
+                    for conj in view.inner {
+                        for sig in &conj.pos {
+                            if let Some(lit) = &sig.lit {
+                                for cap in &lit.captures {
+                                    max_d = max_d.max(1 + cap.depth());
+                                }
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        max_d
+    }
+
+    /// True iff `self` and `other` share at least one axis on which both
+    /// are non-empty (basic bits overlap; literal axes both populated;
+    /// structural axes both non-empty). Used by ir_typer's VR.5a lint to
+    /// distinguish "different kinds" from "same kind, narrowed to disjoint
+    /// literals." Cheaper than full `intersect`.
+    pub fn kinds_overlap(&self, other: &Descr) -> bool {
+        if !self.basic.intersect(other.basic).is_empty() {
+            return true;
+        }
+        for c in self.components() {
+            let overlap = match c {
+                Component::Basic(_) => false, // handled above
+                Component::Atoms(_) => other.components().any(|d| matches!(d, Component::Atoms(_))),
+                Component::Ints(_) => other.components().any(|d| matches!(d, Component::Ints(_))),
+                Component::Floats(_) => {
+                    other.components().any(|d| matches!(d, Component::Floats(_)))
+                }
+                Component::Strs(_) => other.components().any(|d| matches!(d, Component::Strs(_))),
+                Component::Opaques(_) => {
+                    other.components().any(|d| matches!(d, Component::Opaques(_)))
+                }
+                Component::Vars(_) => other.components().any(|d| matches!(d, Component::Vars(_))),
+                Component::Tuples(_) => other.components().any(|d| matches!(d, Component::Tuples(_))),
+                Component::Lists(_) => other.components().any(|d| matches!(d, Component::Lists(_))),
+                Component::Funcs(_) => other.components().any(|d| matches!(d, Component::Funcs(_))),
+                Component::Maps(_) => other.components().any(|d| matches!(d, Component::Maps(_))),
+            };
+            if overlap {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Returns the largest arity of any positive tuple clause, or 0 if
+    /// there are no positive tuple clauses. Used for tuple-field projection
+    /// when the field index might exceed some clauses' arities.
+    pub fn max_tuple_arity(&self) -> usize {
+        for c in self.components() {
+            if let Component::Tuples(view) = c {
+                return view.arities().max().unwrap_or(0);
+            }
+        }
+        0
+    }
+
+    /// True iff this descriptor extracts to a singleton literal on some
+    /// scalar axis (int, atom, str, float).
+    pub fn is_singleton_literal(&self) -> bool {
+        self.as_int_singleton().is_some()
+            || self.as_atom_singleton().is_some()
+            || self.as_str_singleton().is_some()
+            || self.as_float_singleton().is_some()
+    }
+
+    /// If this descriptor is a singleton scalar that can serve as a
+    /// MapKey (int, atom, or str literal), return it.
+    pub fn as_map_key(&self) -> Option<MapKey> {
+        if let Some(n) = self.as_int_singleton() {
+            return Some(MapKey::Int(n));
+        }
+        if let Some(s) = self.as_atom_singleton() {
+            return Some(MapKey::Atom(s.to_string()));
+        }
+        if let Some(s) = self.as_str_singleton() {
+            return Some(MapKey::Str(s.to_string()));
+        }
+        None
     }
 
     /// Refine every positive map clause so that field `key` has value type
@@ -2147,12 +2252,10 @@ pub enum Component<'a> {
 // ---- literal-set views ----
 
 #[derive(Clone, Copy)]
-#[allow(dead_code)]
 pub struct AtomView<'a> {
     inner: &'a AtomSet,
 }
 
-#[allow(dead_code)]
 impl<'a> AtomView<'a> {
     pub fn is_any(&self) -> bool {
         self.inner.is_any()
@@ -2161,8 +2264,8 @@ impl<'a> AtomView<'a> {
         self.inner.cofinite
     }
     /// Iterator over finite members; `None` if the set is cofinite ("any
-    /// atom except these"). Callers that need cofinite handling check
-    /// `cofinite()` and iterate the exclusions via `excluded()`.
+    /// atom except these"). Callers that handle cofinite check
+    /// `cofinite()` first.
     pub fn finite(&self) -> Option<impl Iterator<Item = &'a str> + 'a> {
         if self.inner.cofinite {
             None
@@ -2170,31 +2273,14 @@ impl<'a> AtomView<'a> {
             Some(self.inner.set.iter().map(String::as_str))
         }
     }
-    /// Cofinite exclusions ("any atom except these"). Empty iterator if
-    /// the set is finite — caller should check `cofinite()` first.
-    pub fn excluded(&self) -> impl Iterator<Item = &'a str> + 'a {
-        self.inner.set.iter().map(String::as_str)
-    }
-    pub fn contains(&self, name: &str) -> bool {
-        let in_set = self.inner.set.iter().any(|s| s == name);
-        if self.inner.cofinite { !in_set } else { in_set }
-    }
 }
 
 #[derive(Clone, Copy)]
-#[allow(dead_code)]
 pub struct IntView<'a> {
     inner: &'a IntSet,
 }
 
-#[allow(dead_code)]
 impl<'a> IntView<'a> {
-    pub fn is_any(&self) -> bool {
-        self.inner.is_any()
-    }
-    pub fn cofinite(&self) -> bool {
-        self.inner.cofinite
-    }
     /// Returns the single integer if this view is exactly `{n}`; `None`
     /// otherwise (any, cofinite, multi-element, or empty).
     pub fn singleton(&self) -> Option<i64> {
@@ -2204,75 +2290,36 @@ impl<'a> IntView<'a> {
             None
         }
     }
-    pub fn finite(&self) -> Option<impl Iterator<Item = i64> + 'a> {
-        if self.inner.cofinite {
-            None
-        } else {
-            Some(self.inner.set.iter().copied())
-        }
-    }
-    pub fn contains(&self, v: i64) -> bool {
-        let in_set = self.inner.set.contains(&v);
-        if self.inner.cofinite { !in_set } else { in_set }
-    }
 }
 
 #[derive(Clone, Copy)]
-#[allow(dead_code)]
 pub struct FloatView<'a> {
     inner: &'a FloatSet,
 }
 
-#[allow(dead_code)]
 impl<'a> FloatView<'a> {
-    pub fn is_any(&self) -> bool {
-        self.inner.is_any()
-    }
-    pub fn cofinite(&self) -> bool {
-        self.inner.cofinite
-    }
-    pub fn singleton(&self) -> Option<f64> {
+    /// Returns the single F64Bits if this view is exactly `{b}`; `None`
+    /// otherwise. Bit-level precision — callers wanting `f64` call `.get()`.
+    pub fn singleton(&self) -> Option<F64Bits> {
         if !self.inner.cofinite && self.inner.set.len() == 1 {
-            self.inner.set.iter().next().map(|b| b.get())
+            self.inner.set.iter().next().copied()
         } else {
             None
-        }
-    }
-    pub fn finite(&self) -> Option<impl Iterator<Item = f64> + 'a> {
-        if self.inner.cofinite {
-            None
-        } else {
-            Some(self.inner.set.iter().map(|b| b.get()))
         }
     }
 }
 
 #[derive(Clone, Copy)]
-#[allow(dead_code)]
 pub struct StrView<'a> {
     inner: &'a StrSet,
 }
 
-#[allow(dead_code)]
 impl<'a> StrView<'a> {
-    pub fn is_any(&self) -> bool {
-        self.inner.is_any()
-    }
-    pub fn cofinite(&self) -> bool {
-        self.inner.cofinite
-    }
     pub fn singleton(&self) -> Option<&'a str> {
         if !self.inner.cofinite && self.inner.set.len() == 1 {
             self.inner.set.iter().next().map(String::as_str)
         } else {
             None
-        }
-    }
-    pub fn finite(&self) -> Option<impl Iterator<Item = &'a str> + 'a> {
-        if self.inner.cofinite {
-            None
-        } else {
-            Some(self.inner.set.iter().map(String::as_str))
         }
     }
 }
@@ -2283,38 +2330,20 @@ pub struct OpaqueView<'a> {
     inner: &'a LiteralSet<String>,
 }
 
-#[allow(dead_code)]
 impl<'a> OpaqueView<'a> {
-    pub fn cofinite(&self) -> bool {
-        self.inner.cofinite
-    }
-    /// Finite members; None if cofinite.
-    pub fn finite(&self) -> Option<impl Iterator<Item = &'a str> + 'a> {
-        if self.inner.cofinite {
-            None
-        } else {
-            Some(self.inner.set.iter().map(String::as_str))
-        }
-    }
-    pub fn contains(&self, name: &str) -> bool {
-        let in_set = self.inner.set.iter().any(|s| s == name);
-        if self.inner.cofinite { !in_set } else { in_set }
-    }
+    // Currently no consumer needs OpaqueView methods; the variant exists
+    // for exhaustive matching. Methods will be added when an opaque-aware
+    // consumer arrives.
 }
 
 #[derive(Clone, Copy)]
-#[allow(dead_code)]
 pub struct VarView<'a> {
     inner: &'a VarSet,
 }
 
-#[allow(dead_code)]
 impl<'a> VarView<'a> {
-    pub fn cofinite(&self) -> bool {
-        self.inner.cofinite
-    }
-    /// Named finite var ids; None if cofinite (e.g. `Descr::any()`'s vars axis
-    /// is "every var" — not a substitutable pattern).
+    /// Named finite var ids; None if cofinite (e.g. `Descr::any()`'s vars
+    /// axis is "every var" — not a substitutable pattern).
     pub fn finite(&self) -> Option<impl Iterator<Item = TypeVarId> + 'a> {
         if self.inner.cofinite {
             None
@@ -2322,19 +2351,14 @@ impl<'a> VarView<'a> {
             Some(self.inner.set.iter().copied())
         }
     }
-    /// Count of named finite var ids; None if cofinite. Useful for the
-    /// most-specific-wins ordering in spec dispatch (fewer named vars =
-    /// more specific).
+    /// Count of named finite var ids; None if cofinite. Used by the
+    /// most-specific-wins ordering in spec dispatch.
     pub fn finite_len(&self) -> Option<usize> {
         if self.inner.cofinite {
             None
         } else {
             Some(self.inner.set.len())
         }
-    }
-    pub fn contains(&self, id: TypeVarId) -> bool {
-        let in_set = self.inner.set.contains(&id);
-        if self.inner.cofinite { !in_set } else { in_set }
     }
 }
 
@@ -2346,17 +2370,12 @@ impl<'a> VarView<'a> {
 // tuples", "what's the joined element type?", etc.
 
 #[derive(Clone, Copy)]
-#[allow(dead_code)]
 pub struct TupleView<'a> {
     inner: &'a [Conj<TupleSig>],
 }
 
-#[allow(dead_code)]
 impl<'a> TupleView<'a> {
     /// True iff this view admits every tuple (single `Conj::top()` clause).
-    pub fn is_any(&self) -> bool {
-        self.inner.len() == 1 && self.inner[0].pos.is_empty() && self.inner[0].neg.is_empty()
-    }
     /// True iff any clause contains a negation. Consumers that don't yet
     /// support DNF with negations check this to preserve invariants.
     pub fn has_negations(&self) -> bool {
@@ -2404,25 +2423,14 @@ impl<'a> TupleView<'a> {
         }
         if found { Some(comps) } else { None }
     }
-    /// Project a single element at `(arity, idx)`. Convenience wrapper.
-    pub fn project(&self, arity: usize, idx: usize) -> Descr {
-        self.project_all(arity)
-            .and_then(|v| v.get(idx).cloned())
-            .unwrap_or_else(Descr::none)
-    }
 }
 
 #[derive(Clone, Copy)]
-#[allow(dead_code)]
 pub struct ListView<'a> {
     inner: &'a [Conj<ListSig>],
 }
 
-#[allow(dead_code)]
 impl<'a> ListView<'a> {
-    pub fn is_any(&self) -> bool {
-        self.inner.len() == 1 && self.inner[0].pos.is_empty() && self.inner[0].neg.is_empty()
-    }
     /// Element type across all positive list clauses, following fz-dhd
     /// DNF semantics: sigs within a Conj are intersected; results union
     /// across Conjs. For `list(int) & list(any)` (one Conj, two sigs),
@@ -2450,15 +2458,22 @@ impl<'a> ListView<'a> {
 }
 
 #[derive(Clone, Copy)]
-#[allow(dead_code)]
 pub struct FuncView<'a> {
     inner: &'a [Conj<ArrowSig>],
 }
 
-#[allow(dead_code)]
 impl<'a> FuncView<'a> {
-    pub fn is_any(&self) -> bool {
-        self.inner.len() == 1 && self.inner[0].pos.is_empty() && self.inner[0].neg.is_empty()
+    /// True iff any clause carries negations. Consumers that don't yet
+    /// support DNF with negations check this to preserve invariants
+    /// (ir_typer closure dispatch falls back to `any` when this is true).
+    pub fn has_negations(&self) -> bool {
+        self.inner.iter().any(|c| !c.neg.is_empty())
+    }
+    /// True iff every clause has at least one positive arrow signature.
+    /// When false, some clause is purely negative (e.g. `not arrow(...)`),
+    /// which ir_typer treats as "give up; fall through to `any`."
+    pub fn all_clauses_have_pos(&self) -> bool {
+        self.inner.iter().all(|c| !c.pos.is_empty())
     }
     /// Arrows admitted by positive clauses. Each arrow exposes args/ret
     /// via `ArrowView`. Negations are not yielded — consumers reasoning
@@ -2466,6 +2481,16 @@ impl<'a> FuncView<'a> {
     pub fn arrows(&self) -> impl Iterator<Item = ArrowView<'a>> {
         self.inner
             .iter()
+            .flat_map(|conj| conj.pos.iter().map(|sig| ArrowView { inner: sig }))
+    }
+    /// Arrows from clauses that have NO negations. Used by sites that
+    /// want to enumerate dispatch targets safely: a clause `arrow1 ∧
+    /// ¬arrow2` is too complex to flatten without losing the negation,
+    /// so the consumer skips it entirely.
+    pub fn arrows_from_pure_clauses(&self) -> impl Iterator<Item = ArrowView<'a>> {
+        self.inner
+            .iter()
+            .filter(|c| c.neg.is_empty())
             .flat_map(|conj| conj.pos.iter().map(|sig| ArrowView { inner: sig }))
     }
     /// Distinct arities admitted by positive clauses.
@@ -2481,12 +2506,10 @@ impl<'a> FuncView<'a> {
 }
 
 #[derive(Clone, Copy)]
-#[allow(dead_code)]
 pub struct ArrowView<'a> {
     inner: &'a ArrowSig,
 }
 
-#[allow(dead_code)]
 impl<'a> ArrowView<'a> {
     pub fn args(&self) -> &'a [Descr] {
         &self.inner.args
@@ -2500,16 +2523,11 @@ impl<'a> ArrowView<'a> {
 }
 
 #[derive(Clone, Copy)]
-#[allow(dead_code)]
 pub struct MapView<'a> {
     inner: &'a [Conj<MapSig>],
 }
 
-#[allow(dead_code)]
 impl<'a> MapView<'a> {
-    pub fn is_any(&self) -> bool {
-        self.inner.len() == 1 && self.inner[0].pos.is_empty() && self.inner[0].neg.is_empty()
-    }
     /// Look up the value type for `key` across all positive map clauses,
     /// following Castagna open-map semantics (fz-dhd): pos sigs within a
     /// Conj are intersected (a missing field in a sig contributes
@@ -2547,23 +2565,10 @@ impl<'a> MapView<'a> {
         }
         if found { Some(acc) } else { None }
     }
-    /// Distinct keys mentioned by any positive clause.
-    pub fn keys(&self) -> impl Iterator<Item = &'a MapKey> {
-        let mut seen = std::collections::BTreeSet::new();
-        for conj in self.inner {
-            for sig in &conj.pos {
-                for k in sig.fields.keys() {
-                    seen.insert(k);
-                }
-            }
-        }
-        seen.into_iter()
-    }
 }
 
 // ---- iterator ----
 
-#[allow(dead_code)]
 impl Descr {
     /// Iterate the present components of this descriptor. An axis is
     /// "present" iff it is non-empty (matches Elixir's sparse-map
@@ -3970,8 +3975,6 @@ mod tests {
                     seen_atom = true;
                     let names: Vec<&str> = v.finite().unwrap().collect();
                     assert_eq!(names, vec!["ok"]);
-                    assert!(v.contains("ok"));
-                    assert!(!v.contains("error"));
                 }
                 _ => panic!("unexpected component for atom_lit"),
             }
@@ -3987,13 +3990,13 @@ mod tests {
             match c {
                 Component::Tuples(v) => {
                     seen = true;
-                    assert!(!v.is_any());
                     let arities: Vec<usize> = v.arities().collect();
                     assert_eq!(arities, vec![2]);
-                    assert_eq!(v.project(2, 0).as_int_singleton(), Some(1));
-                    assert_eq!(v.project(2, 1).as_int_singleton(), Some(2));
-                    // Out-of-band projections return none().
-                    assert!(v.project(3, 0).is_empty());
+                    let elems = v.project_all(2).unwrap();
+                    assert_eq!(elems[0].as_int_singleton(), Some(1));
+                    assert_eq!(elems[1].as_int_singleton(), Some(2));
+                    // Out-of-band projections return None.
+                    assert!(v.project_all(3).is_none());
                 }
                 _ => panic!("unexpected component for tuple_of"),
             }
@@ -4009,7 +4012,6 @@ mod tests {
             match c {
                 Component::Lists(v) => {
                     seen = true;
-                    assert!(!v.is_any());
                     let et = v.element_type();
                     assert!(et.is_equiv(&Descr::int()));
                 }
@@ -4051,8 +4053,6 @@ mod tests {
                     seen = true;
                     let ids: Vec<TypeVarId> = v.finite().unwrap().collect();
                     assert_eq!(ids, vec![TypeVarId(7)]);
-                    assert!(v.contains(TypeVarId(7)));
-                    assert!(!v.contains(TypeVarId(8)));
                 }
                 _ => panic!("unexpected component for var"),
             }
@@ -4133,13 +4133,17 @@ mod tests {
     }
 
     #[test]
-    fn components_int_view_is_any() {
-        let d = Descr::int();
-        for c in d.components() {
+    fn components_int_singleton_extraction_works() {
+        // For wide int, singleton returns None.
+        for c in Descr::int().components() {
             if let Component::Ints(v) = c {
-                assert!(v.is_any());
                 assert!(v.singleton().is_none());
-                assert!(v.finite().is_none());
+            }
+        }
+        // For int_lit(42), singleton returns Some(42).
+        for c in Descr::int_lit(42).components() {
+            if let Component::Ints(v) = c {
+                assert_eq!(v.singleton(), Some(42));
             }
         }
     }
