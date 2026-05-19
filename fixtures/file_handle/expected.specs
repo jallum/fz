@@ -50,7 +50,7 @@
 ;   key:    [int, &fn14[]:(α896) -> α959]
 ;   return: any
 ;   fn_constants:
-;     Var(1) = __extern_wrap__libc::close#14
+;     Var(1) = __extern_wrap__fz_test_close_fd#14
 ;   vars:
 ;     Var(0) :: int
 ;     Var(1) :: &fn14[]:(α896) -> α959
@@ -109,7 +109,7 @@
 ;   key:    [int]
 ;   return: any
 ;   fn_constants:
-;     Var(2) = __extern_wrap__libc::close#14
+;     Var(2) = __extern_wrap__fz_test_close_fd#14
 ;   vars:
 ;     Var(0) :: int
 ;     Var(1) :: :match_error
@@ -150,14 +150,15 @@
 ;     blk2 Halt Var(13)      :: :match_error
 ;     blk3 Halt Var(16)      :: :match_error
 
-; spec __extern_wrap__libc::close(1) #fn=14
+; spec __extern_wrap__fz_test_close_fd(1) #fn=14
 ;   key:    [any]
-;   return: int
+;   return: nil
 ;   vars:
 ;     Var(0) :: any
-;     Var(1) :: int
+;     Var(1) :: nil
+;     Var(2) :: nil
 ;   exits:
-;     blk0 Return Var(1)    :: int
+;     blk0 Return Var(2)    :: nil
 
 ; spec k_15(3) #fn=15
 ;   key:    [nil, vec(u8) | vec(bit), int]
