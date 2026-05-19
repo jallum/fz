@@ -842,7 +842,7 @@ fn signature_uniform_when_not_native() {
     let ft = mt.any_spec_for(m.fns[add_idx].id).expect("registered spec");
     let rd = join_return_descrs(&m.fns[add_idx], ft);
     let prs = build_param_reprs(&m.fns[add_idx], ft);
-    let sig = build_fn_signature(&prs, ArgRepr::from_descr(&rd), false, true, None);
+    let sig = build_fn_signature(&prs, ArgRepr::from_descr(&rd), false, true, None, None);
     assert_eq!(sig.params.len(), 2);
     assert_eq!(sig.returns.len(), 1);
     assert_eq!(sig.params[0].value_type, types::I64);
@@ -862,7 +862,7 @@ fn signature_native_uses_typed_params_and_cont() {
     let ft = mt.any_spec_for(m.fns[add_idx].id).expect("registered spec");
     let rd = join_return_descrs(&m.fns[add_idx], ft);
     let prs = build_param_reprs(&m.fns[add_idx], ft);
-    let sig = build_fn_signature(&prs, ArgRepr::from_descr(&rd), true, false, None);
+    let sig = build_fn_signature(&prs, ArgRepr::from_descr(&rd), true, false, None, None);
     // 2 entry params + cont.
     assert_eq!(sig.params.len(), 3);
     assert_eq!(sig.returns.len(), 1);
@@ -887,7 +887,7 @@ fn signature_native_arity_matches_entry_params_plus_cont() {
         .expect("registered spec");
     let rd = join_return_descrs(&m.fns[dist_idx], ft);
     let prs = build_param_reprs(&m.fns[dist_idx], ft);
-    let sig = build_fn_signature(&prs, ArgRepr::from_descr(&rd), true, false, None);
+    let sig = build_fn_signature(&prs, ArgRepr::from_descr(&rd), true, false, None, None);
     // 2 entry params + cont.
     assert_eq!(sig.params.len(), 3);
     assert_eq!(sig.params[0].value_type, types::F64);

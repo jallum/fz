@@ -172,11 +172,12 @@ pub struct CompiledModule {
     /// receive matcher hit. Indexed by clause bound-arg count (0..=8).
     /// Shim N sig: `(a0:i64, ..., aN-1:i64, cont:i64) -> i64 system_v`.
     /// Body: `load cont+16 -> code; call_indirect Tail code(a0..aN-1,
-    /// cont); return result`. Same SystemV→Tail bridge pattern as
-    /// `fz_resume_park` but with N variable bound args instead of one
-    /// fixed message arg. `run_quantum` picks shim N by `args.len()`
-    /// from `Process::pending_resume_matched`.
-    pub(crate) resume_matched_addrs: [*const u8; 9],
+    /// fz-70q.5.5 — single `fz_resume(cont) -> i64` SystemV shim.
+    /// Loads `cont+16` and `call_indirect SystemV(cont)` into the cont
+    /// stub. Bound args travel via `Process::resume_args` (written by
+    /// the trampoline before dispatch), so arity is invisible to the
+    /// shim. Replaces the nine `fz_resume_matched_N` siblings.
+    pub(crate) resume_addr: *const u8,
 }
 
 impl CompiledModule {
@@ -310,127 +311,31 @@ impl CompiledModule {
                 return;
             }
         }
-        // fz-70q (B3 A) — selective-receive wakeup. Set by the sender-
-        // probe in `send_via_current_runtime` (or the after-timer fire in
-        // `drain_expired_timers`) when a matcher hit picked the winning
-        // clause; the message has already been consumed and the bound
-        // values extracted, so no mailbox poll. Dispatch by bound-arg
-        // count via the matching fz_resume_matched_N shim. The shim
-        // cross-CCs into the clause-body closure
-        // (`load cont+16; call_indirect Tail (args..., cont)`).
-        // Mutually exclusive with parked_cont (different park kinds); we
-        // check it first so a stale parked_cont check doesn't shadow a
+        // fz-70q.5.5 — selective-receive wakeup. Set by the sender-probe
+        // in `send_via_current_runtime` (or the after-timer fire in
+        // `drain_expired_timers`, or the initial-scan branch above)
+        // when a matcher hit picked the winning clause; the message has
+        // already been consumed and the bound values extracted.
+        //
+        // Stash the bound args in the runtime resume_args slab (the
+        // cont stub at cont+16 reads them via fz_resume_args_ptr) and
+        // dispatch through the single SystemV `fz_resume(cont)` shim.
+        // The shim does `load cont+16; call_indirect SystemV(cont)` —
+        // arity is invisible to the seam.
+        //
+        // Mutually exclusive with parked_cont (different park kinds);
+        // we check it first so a stale parked_cont doesn't shadow a
         // freshly-set resume request.
         if let Some(resume) = process.pending_resume_matched.take() {
             let cont_ptr = resume.cont;
-            let n = resume.args.len();
-            assert!(
-                n < self.resume_matched_addrs.len(),
-                "fz-70q: pending_resume_matched bound_arity {} exceeds shim family max {}",
-                n,
-                self.resume_matched_addrs.len() - 1
-            );
-            let shim = self.resume_matched_addrs[n];
-            // Variable-arity FFI dispatch — bounded by the shim family
-            // (N=0..=8) so an exhaustive match stays readable. Each arm
-            // transmutes to the SystemV signature emitted above and
-            // invokes the shim. The shim handles the SystemV→Tail bridge
-            // into the clause-body closure.
-            unsafe {
-                match n {
-                    0 => {
-                        type F0 = extern "C" fn(u64) -> i64;
-                        let f: F0 = std::mem::transmute(shim);
-                        let _ = f(cont_ptr as u64);
-                    }
-                    1 => {
-                        type F1 = extern "C" fn(u64, u64) -> i64;
-                        let f: F1 = std::mem::transmute(shim);
-                        let _ = f(resume.args[0].0, cont_ptr as u64);
-                    }
-                    2 => {
-                        type F2 = extern "C" fn(u64, u64, u64) -> i64;
-                        let f: F2 = std::mem::transmute(shim);
-                        let _ = f(resume.args[0].0, resume.args[1].0, cont_ptr as u64);
-                    }
-                    3 => {
-                        type F3 = extern "C" fn(u64, u64, u64, u64) -> i64;
-                        let f: F3 = std::mem::transmute(shim);
-                        let _ = f(
-                            resume.args[0].0,
-                            resume.args[1].0,
-                            resume.args[2].0,
-                            cont_ptr as u64,
-                        );
-                    }
-                    4 => {
-                        type F4 = extern "C" fn(u64, u64, u64, u64, u64) -> i64;
-                        let f: F4 = std::mem::transmute(shim);
-                        let _ = f(
-                            resume.args[0].0,
-                            resume.args[1].0,
-                            resume.args[2].0,
-                            resume.args[3].0,
-                            cont_ptr as u64,
-                        );
-                    }
-                    5 => {
-                        type F5 = extern "C" fn(u64, u64, u64, u64, u64, u64) -> i64;
-                        let f: F5 = std::mem::transmute(shim);
-                        let _ = f(
-                            resume.args[0].0,
-                            resume.args[1].0,
-                            resume.args[2].0,
-                            resume.args[3].0,
-                            resume.args[4].0,
-                            cont_ptr as u64,
-                        );
-                    }
-                    6 => {
-                        type F6 = extern "C" fn(u64, u64, u64, u64, u64, u64, u64) -> i64;
-                        let f: F6 = std::mem::transmute(shim);
-                        let _ = f(
-                            resume.args[0].0,
-                            resume.args[1].0,
-                            resume.args[2].0,
-                            resume.args[3].0,
-                            resume.args[4].0,
-                            resume.args[5].0,
-                            cont_ptr as u64,
-                        );
-                    }
-                    7 => {
-                        type F7 = extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64) -> i64;
-                        let f: F7 = std::mem::transmute(shim);
-                        let _ = f(
-                            resume.args[0].0,
-                            resume.args[1].0,
-                            resume.args[2].0,
-                            resume.args[3].0,
-                            resume.args[4].0,
-                            resume.args[5].0,
-                            resume.args[6].0,
-                            cont_ptr as u64,
-                        );
-                    }
-                    8 => {
-                        type F8 = extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64, u64) -> i64;
-                        let f: F8 = std::mem::transmute(shim);
-                        let _ = f(
-                            resume.args[0].0,
-                            resume.args[1].0,
-                            resume.args[2].0,
-                            resume.args[3].0,
-                            resume.args[4].0,
-                            resume.args[5].0,
-                            resume.args[6].0,
-                            resume.args[7].0,
-                            cont_ptr as u64,
-                        );
-                    }
-                    _ => unreachable!(),
-                }
-            }
+            process.resume_args = resume.args;
+            type Resume = extern "C" fn(u64) -> i64;
+            let f: Resume = unsafe { std::mem::transmute(self.resume_addr) };
+            let _ = f(cont_ptr as u64);
+            // Clear the slab after dispatch — stale entries from this
+            // resume could be misread by the *next* resume if its body
+            // bound_arity is larger than this one's slab length.
+            process.resume_args.clear();
             process.next_frame = std::ptr::null_mut();
             park_time_gc(process);
             return;
@@ -1091,6 +996,11 @@ fn build_fn_signature(
     is_native: bool,
     is_cont_fn: bool,
     closure_target_n_caps: Option<usize>,
+    // fz-70q.5.5 — when the cont fn is a ReceiveMatched clause body /
+    // guard, override the default 1-input shape with bound_arity. After
+    // bodies set this to 0. `None` falls back to legacy `(result, self)`
+    // for Term::Receive / Call / CallClosure continuations.
+    cont_extras_override: Option<usize>,
 ) -> Signature {
     if !is_native {
         // Uniform fns always include host_ctx — the trampoline ABI is
@@ -1115,7 +1025,14 @@ fn build_fn_signature(
         // Tagged=i64). Producer's Term::Return sig matches via
         // return_reprs[producer_spec_id]; typer's effective_return walk
         // ensures producer and consumer agree at the seam.
-        sig.params.push(AbiParam::new(param_reprs[0].cl_type())); // result
+        //
+        // fz-70q.5.5 — ReceiveMatched body/guard fns take N typed bound
+        // args up front (override default of 1). After-body fns set the
+        // override to 0 — captures only, read from self+32+i*8.
+        let extras = cont_extras_override.unwrap_or(1);
+        for r in param_reprs.iter().take(extras) {
+            sig.params.push(AbiParam::new(r.cl_type()));
+        }
         sig.params.push(AbiParam::new(types::I64)); // self
     } else if let Some(n_caps) = closure_target_n_caps {
         // fz-cps.1.2 closure-target fn sig per §2.1:
@@ -1242,10 +1159,9 @@ pub struct CompiledMetadata {
     /// the dtor at `make_resource` time without an IR Module.
     pub aot_dtor_targets: Vec<(u32, String)>,
 
-    /// fz-70q (B3 step A+B) — FuncIds for the 9 selective-receive resume
-    /// shims, one per bound-arg count (0..=8). See
-    /// `CompiledModule::resume_matched_addrs` for body shape.
-    pub resume_matched_ids: [FuncId; 9],
+    /// fz-70q.5.5 — single `fz_resume` SystemV shim FuncId. See
+    /// `CompiledModule::resume_addr`.
+    pub resume_id: FuncId,
 }
 
 /// fz-ul4.29.2 — Two-way mapping between (FnId, input-Descr-tuple) and
@@ -1547,13 +1463,7 @@ impl Backend for JitBackend {
             }
             arr
         };
-        let resume_matched_addrs = {
-            let mut arr = [std::ptr::null::<u8>(); 9];
-            for (i, fid) in meta.resume_matched_ids.iter().enumerate() {
-                arr[i] = jmod.get_finalized_function(*fid);
-            }
-            arr
-        };
+        let resume_addr = jmod.get_finalized_function(meta.resume_id);
         Ok(CompiledModule {
             module: jmod,
             fn_ptrs,
@@ -1570,7 +1480,7 @@ impl Backend for JitBackend {
             halt_cont_body_addrs,
             fn_halt_kinds: meta.fn_halt_kinds,
             mid_flight_resume_addrs,
-            resume_matched_addrs,
+            resume_addr,
         })
     }
 }
@@ -2450,13 +2360,25 @@ pub fn compile_with_backend<B: Backend>(
                     } => {
                         s.insert(continuation.fn_id);
                     }
-                    // fz-70q.5: ReceiveMatched body/guard/after fns are
-                    // NOT inserted here. They get their own cont-closure
-                    // stub (uniform SystemV) emitted in fz-70q.5.3 and
-                    // tracked via a dedicated set. Inserting them into
-                    // `cont_fns` would force the legacy `(result, self)`
-                    // Tail-CC sig on a fn that may need to tail-call
-                    // uniform callees — the bug that surfaced in 70q.4.
+                    // fz-70q.5.5 — clause body / guard / after fns are
+                    // dispatched (via cont stub) into their Tail-CC entry,
+                    // so they must wear the cont-fn sig shape. The
+                    // companion `cont_extras_count` map then overrides the
+                    // single-input default with each fn's bound_arity so
+                    // the sig is `(bound..., self) tail`. Captures live
+                    // INSIDE the closure (read from self+32+i*8 by the
+                    // entry harness), so they're not Cranelift params.
+                    Term::ReceiveMatched { clauses, after, .. } => {
+                        for c in clauses {
+                            s.insert(c.body);
+                            if let Some(g) = c.guard {
+                                s.insert(g);
+                            }
+                        }
+                        if let Some(a) = after {
+                            s.insert(a.body);
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -2597,9 +2519,23 @@ pub fn compile_with_backend<B: Backend>(
                     continuation,
                     ident: _,
                 } => natively_callable.contains(&continuation.fn_id),
-                // fz-yxs — ReceiveMatched parks via the runtime ABI; never
-                // native. Excluding here matches the parking pass.
-                Term::ReceiveMatched { .. } => false,
+                // fz-70q.5.5 — admit ReceiveMatched on the same terms
+                // as parking.rs's natively_callable: native iff every
+                // body / guard / after fn is native. Cont-stub seam
+                // bridges the Tail-CC body into the SystemV scheduler
+                // resume path so the enclosing fn's ABI is unconstrained.
+                Term::ReceiveMatched {
+                    clauses, after, ..
+                } => {
+                    let body_ok = clauses.iter().all(|c| {
+                        natively_callable.contains(&c.body)
+                            && c.guard.is_none_or(|g| natively_callable.contains(&g))
+                    });
+                    let after_ok = after
+                        .as_ref()
+                        .is_none_or(|a| natively_callable.contains(&a.body));
+                    body_ok && after_ok
+                }
             });
             if !body_ok {
                 to_remove.push(f.id);
@@ -3043,6 +2979,30 @@ pub fn compile_with_backend<B: Backend>(
         })
         .collect();
 
+    // fz-70q.5.5 — collect per-cont-fn bound_arity (clause body / guard
+    // / after) BEFORE fn_sigs so build_fn_signature can size the sig's
+    // typed extras correctly. Same walk we'll later repeat in the
+    // matcher pre-pass; cheap to duplicate, and putting it here keeps
+    // the sig construction order-independent of the matcher decl.
+    let mut cont_extras_count: HashMap<crate::fz_ir::FnId, usize> = HashMap::new();
+    for f in &module.fns {
+        for blk in &f.blocks {
+            let Term::ReceiveMatched { clauses, after, .. } = &blk.terminator else {
+                continue;
+            };
+            for c in clauses {
+                let n = c.bound_names.len();
+                cont_extras_count.insert(c.body, n);
+                if let Some(g) = c.guard {
+                    cont_extras_count.insert(g, n);
+                }
+            }
+            if let Some(a) = after {
+                cont_extras_count.insert(a.body, 0);
+            }
+        }
+    }
+
     // fz-ul4.27.6.2.2/.3 — Per-spec Cranelift Signature. Native fns get
     // typed-arity i64s + host_ctx; uniform fns get (i64, i64) -> i64.
     // Sentinel slots get the uniform sig — they're never declared.
@@ -3064,6 +3024,7 @@ pub fn compile_with_backend<B: Backend>(
                     } else {
                         None
                     },
+                    cont_extras_count.get(&f.id).copied(),
                 )
             }
             None => {
@@ -3128,34 +3089,17 @@ pub fn compile_with_backend<B: Backend>(
     //     extras count consumed by build_entry_harness today (Tail-CC
     //     inputs ahead of `self`).
     //
-    // fz-70q.5: the cont_extras_count map is on death row — fz-70q.5.6
-    // rewires the entry harness to read bound args from the runtime's
-    // resume_args slab instead of typed block_params, and the cont fn
-    // sig collapses to uniform SystemV. Until then the map still feeds
-    // the legacy harness. (Today's earlier attempt to thread it through
-    // build_fn_signature was reverted in fz-70q.5.1: forcing a Tail-CC
-    // sig on a uniform body fn breaks the dispatch seam.)
+    // (`cont_extras_count` is now built up-front above, before fn_sigs.)
     let mut matcher_fn_ids: HashMap<(u32, u32), FuncId> = HashMap::new();
-    let mut cont_extras_count: HashMap<crate::fz_ir::FnId, usize> = HashMap::new();
     let mut receive_matched_sites: Vec<(crate::fz_ir::FnId, crate::fz_ir::BlockId)> = Vec::new();
     for f in &module.fns {
         for blk in &f.blocks {
-            let Term::ReceiveMatched { clauses, after, .. } = &blk.terminator else {
+            if !matches!(&blk.terminator, Term::ReceiveMatched { .. }) {
                 continue;
-            };
+            }
             let name = format!("fz_matcher_fn_{}_b{}", f.id.0, blk.id.0);
             let m_id = crate::ir_codegen_receive::declare_matcher(backend.module_mut(), &name)?;
             matcher_fn_ids.insert((f.id.0, blk.id.0), m_id);
-            for c in clauses {
-                let n = c.bound_names.len();
-                cont_extras_count.insert(c.body, n);
-                if let Some(g) = c.guard {
-                    cont_extras_count.insert(g, n);
-                }
-            }
-            if let Some(a) = after {
-                cont_extras_count.insert(a.body, 0);
-            }
             receive_matched_sites.push((f.id, blk.id));
         }
     }
@@ -3180,7 +3124,6 @@ pub fn compile_with_backend<B: Backend>(
     struct ContStubDecl {
         stub_id: FuncId,
         body_spec_id: u32,
-        n_captures: u16,
         bound_arity: u16,
     }
     let mut cont_stub_ids: HashMap<u32 /*body_spec_id*/, FuncId> = HashMap::new();
@@ -3252,11 +3195,9 @@ pub fn compile_with_backend<B: Backend>(
                     // bubble through the closure boundary cleanly.
                     let stub_id = stub_id.expect("cont stub decl");
                     e.insert(stub_id);
-                    let n_caps = np.saturating_sub(bound_arity);
                     cont_stub_decls.push(ContStubDecl {
                         stub_id,
                         body_spec_id,
-                        n_captures: n_caps as u16,
                         bound_arity: bound_arity as u16,
                     });
                 }
@@ -3455,37 +3396,24 @@ pub fn compile_with_backend<B: Backend>(
     }
 
     // fz-70q.5.4 — emit cont-stub bodies for each (body_spec_id) we
-    // declared in the pre-pass. Each stub bridges the scheduler resume
-    // (SystemV `(self)`) into the body fn's uniform `(frame, host_ctx)
-    // -> i64 systemv` entry. See ir_codegen_cont_stub for the body
-    // shape; here we just feed it the body's FuncId + frame size +
-    // schema_id (everything else came from the decl pass).
+    // declared in the pre-pass. Each stub does a SystemV → Tail-CC
+    // bridge: read N bound args from process->resume_args via
+    // fz_resume_args_ptr, then call body Tail-CC `(args..., self)`.
+    // Captures stay inside the closure (loaded by body's entry harness
+    // from self+32+i*8), so we don't forward them as Cranelift params.
     let cont_stub_rt = crate::ir_codegen_cont_stub::ContStubRuntimeRefs {
-        alloc_frame_id: runtime.alloc_id,
         resume_args_ptr_id: runtime.resume_args_ptr_id,
     };
     for decl in &cont_stub_decls {
         let body_fid = *fn_ids
             .get(&decl.body_spec_id)
             .expect("cont stub body spec must have a FuncId");
-        let body_frame_size_bytes = frame_sizes
-            .get(decl.body_spec_id as usize)
-            .copied()
-            .unwrap_or(0);
-        // Body's frame schema id matches the caller's iconst at the
-        // park-site call to fz_alloc_frame for the body — which today
-        // is the fn_id's `.0` (any-key spec). Use the same convention
-        // here so heap allocator + schema registry agree.
-        let body_schema_id = spec_keys[decl.body_spec_id as usize].0.0;
         crate::ir_codegen_cont_stub::emit_cont_stub_body(
             backend.module_mut(),
             &mut fbctx,
             decl.stub_id,
             crate::ir_codegen_cont_stub::ContStubLayout {
-                n_captures: decl.n_captures,
                 bound_arity: decl.bound_arity,
-                body_frame_size_bytes,
-                body_schema_id,
             },
             cont_stub_rt,
             |m, b| {
@@ -3740,58 +3668,52 @@ pub fn compile_with_backend<B: Backend>(
 
     // fz-70q (B3 step A+B) — generate 9 selective-receive resume shims
     // (one per clause bound-arg count 0..=8). Each shim is SystemV
-    // `(a0:i64, ..., aN-1:i64, cont:i64) -> i64` and tail-calls the
-    // closure body at `cont+16` with the same args, switching to Tail-CC
-    // across the SystemV→Tail seam. Same pattern as fz_resume_park
-    // (1-arg msg version) but with variable N bound args.
-    let resume_matched_ids: [FuncId; 9] = {
-        let mut ids = [runtime.mid_flight_roots_ptr_id; 9]; // placeholder; overwritten below
-        for (n, id_slot) in ids.iter_mut().enumerate() {
-            let shim_name = format!("fz_resume_matched_{}", n);
-            let mut shim_sig = Signature::new(CallConv::SystemV);
-            for _ in 0..n {
-                shim_sig.params.push(AbiParam::new(types::I64));
-            }
-            shim_sig.params.push(AbiParam::new(types::I64)); // cont
-            shim_sig.returns.push(AbiParam::new(types::I64));
-            let shim_id = backend
-                .module_mut()
-                .declare_function(&shim_name, Linkage::Local, &shim_sig)
-                .map_err(|e| CodegenError::new(format!("declare {}: {}", shim_name, e)))?;
-            *id_slot = shim_id;
-            emit_fn_body(
-                backend.module_mut(),
-                &mut fbctx,
-                shim_sig,
-                shim_id,
-                move |_m, b| {
-                    let entry = b.create_block();
-                    b.append_block_params_for_function_params(entry);
-                    b.switch_to_block(entry);
-                    b.seal_block(entry);
-                    let mut args: Vec<ir::Value> = Vec::with_capacity(n + 1);
-                    for i in 0..n {
-                        args.push(b.block_params(entry)[i]);
-                    }
-                    let cont = b.block_params(entry)[n];
-                    args.push(cont);
-                    let code = b
-                        .ins()
-                        .load(types::I64, MemFlags::trusted(), cont, HEADER_SIZE);
-                    let mut tail_sig = Signature::new(CallConv::Tail);
-                    for _ in 0..(n + 1) {
-                        tail_sig.params.push(AbiParam::new(types::I64));
-                    }
-                    tail_sig.returns.push(AbiParam::new(types::I64));
-                    let sig_ref = b.func.import_signature(tail_sig);
-                    let inst = b.ins().call_indirect(sig_ref, code, &args);
-                    let r = b.inst_results(inst)[0];
-                    b.ins().return_(&[r]);
-                },
-            )
-            .map_err(|e| CodegenError::new(format!("define {}: {}", shim_name, e)))?;
-        }
-        ids
+    // fz-70q.5.5 — single SystemV `fz_resume(cont) -> i64` shim. Replaces
+    // the nine `fz_resume_matched_N` siblings. Bound args travel via the
+    // runtime `resume_args` slab (written by the trampoline before
+    // dispatch), not through register passing — so the shim sig is fixed
+    // regardless of clause arity. Body:
+    //     load cont+16    ; cont stub addr (SystemV)
+    //     call_indirect SystemV(cont) -> i64
+    //     return result
+    // The cont stub itself (ir_codegen_cont_stub) reads resume_args via
+    // fz_resume_args_ptr inside its body. Legacy Term::Receive still
+    // uses fz_resume_park (Tail-CC into the cont body); migrating it to
+    // share this seam is a follow-up once Receive cont bodies switch to
+    // cont stubs too.
+    let resume_id: FuncId = {
+        let mut sig = Signature::new(CallConv::SystemV);
+        sig.params.push(AbiParam::new(types::I64)); // cont
+        sig.returns.push(AbiParam::new(types::I64));
+        let id = backend
+            .module_mut()
+            .declare_function("fz_resume", Linkage::Local, &sig)
+            .map_err(|e| CodegenError::new(format!("declare fz_resume: {}", e)))?;
+        emit_fn_body(
+            backend.module_mut(),
+            &mut fbctx,
+            sig,
+            id,
+            |_m, b| {
+                let entry = b.create_block();
+                b.append_block_params_for_function_params(entry);
+                b.switch_to_block(entry);
+                b.seal_block(entry);
+                let cont = b.block_params(entry)[0];
+                let code = b
+                    .ins()
+                    .load(types::I64, MemFlags::trusted(), cont, HEADER_SIZE);
+                let mut stub_sig = Signature::new(CallConv::SystemV);
+                stub_sig.params.push(AbiParam::new(types::I64)); // self
+                stub_sig.returns.push(AbiParam::new(types::I64));
+                let sig_ref = b.func.import_signature(stub_sig);
+                let inst = b.ins().call_indirect(sig_ref, code, &[cont]);
+                let r = b.inst_results(inst)[0];
+                b.ins().return_(&[r]);
+            },
+        )
+        .map_err(|e| CodegenError::new(format!("define fz_resume: {}", e)))?;
+        id
     };
 
     let metadata = CompiledMetadata {
@@ -3816,7 +3738,7 @@ pub fn compile_with_backend<B: Backend>(
         fn_halt_kinds,
         mid_flight_resume_ids,
         aot_dtor_targets,
-        resume_matched_ids,
+        resume_id,
     };
 
     // Backend-specific metadata carriers (no-op for JIT; dispatch + main
@@ -4655,14 +4577,29 @@ fn resolve_outer_cont<M: cranelift_module::Module>(
     cont_sid: u32,
 ) -> ir::Value {
     if is_cont_fn {
-        let self_val = cont_param.expect("cont fn binds self via cont_param");
-        b.ins().load(
-            types::I64,
-            MemFlags::trusted(),
-            self_val,
-            HEADER_SIZE + SLOT_BYTES,
-        )
-    } else {
+        // Native cont fn: `self` is the closure ptr; outer_cont sits at
+        // self+24 by closure layout (HEADER_SIZE + SLOT_BYTES).
+        //
+        // fz-70q.5.5 — uniform cont fn (cont fn whose enclosing chain
+        // forced a uniform frame ABI): there is no `self` closure ptr
+        // — the caller dispatched through the legacy trampoline using a
+        // heap frame. The outer_cont in that case lives in frame slot 0
+        // (frame+16), same layout the entry harness already uses for
+        // the uniform path. Fall through to the legacy frame-slot load
+        // below so the same site can build cont closures whether it
+        // got entered via the cont-stub seam or via a uniform call.
+        if let Some(self_val) = cont_param {
+            return b.ins().load(
+                types::I64,
+                MemFlags::trusted(),
+                self_val,
+                HEADER_SIZE + SLOT_BYTES,
+            );
+        }
+        // else fall through to the uniform frame-slot branch below.
+    }
+    {
+        let _ = is_cont_fn; // consumed above when cont_param was Some
         match cont_param {
             Some(c) => c,
             None => {
