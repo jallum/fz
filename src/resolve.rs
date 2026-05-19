@@ -897,6 +897,57 @@ fn rewrite_expr(
             aliases,
             imports,
         ),
+        // fz-5vj — receive: each clause introduces pattern vars into a
+        // nested scope (bound names from the pattern, including the names
+        // shadowed by `^name` pins which are *not* binding sites — they
+        // reference the outer scope). After parses in the outer scope
+        // (no pattern), but its body sees no bound vars either.
+        Expr::Receive { clauses, after } => {
+            for arm in clauses {
+                let mut nested = intro.clone();
+                collect_pattern_vars(&arm.pattern.node, &mut nested);
+                if let Some(g) = &mut arm.guard {
+                    rewrite_expr(
+                        g,
+                        module_path,
+                        siblings,
+                        &mut nested,
+                        module_paths,
+                        aliases,
+                        imports,
+                    );
+                }
+                rewrite_expr(
+                    &mut arm.body,
+                    module_path,
+                    siblings,
+                    &mut nested,
+                    module_paths,
+                    aliases,
+                    imports,
+                );
+            }
+            if let Some(af) = after {
+                rewrite_expr(
+                    &mut af.timeout,
+                    module_path,
+                    siblings,
+                    intro,
+                    module_paths,
+                    aliases,
+                    imports,
+                );
+                rewrite_expr(
+                    &mut af.body,
+                    module_path,
+                    siblings,
+                    intro,
+                    module_paths,
+                    aliases,
+                    imports,
+                );
+            }
+        }
         Expr::Int(_)
         | Expr::Float(_)
         | Expr::Str(_)

@@ -571,6 +571,21 @@ pub fn expand_expr(
         }
         Expr::Match(_, rhs) => expand_expr(rhs, interp, macros, depth)?,
         Expr::Lambda(_, body) => expand_expr(body, interp, macros, depth)?,
+        // fz-5vj — recurse into receive clauses' bodies/guards and the
+        // after timeout/body. Patterns are leaves at expansion time
+        // (no macro-call positions inside patterns).
+        Expr::Receive { clauses, after } => {
+            for arm in clauses {
+                expand_expr(&mut arm.body, interp, macros, depth)?;
+                if let Some(g) = &mut arm.guard {
+                    expand_expr(g, interp, macros, depth)?;
+                }
+            }
+            if let Some(af) = after {
+                expand_expr(&mut af.timeout, interp, macros, depth)?;
+                expand_expr(&mut af.body, interp, macros, depth)?;
+            }
+        }
 
         Expr::Quote(_) | Expr::Unquote(_) => {}
     }
@@ -699,6 +714,20 @@ fn stamp_expanded(e: &mut Spanned<Expr>, macro_call: Span, definition: Option<Sp
             }
             stamp_expanded(body, macro_call, definition);
         }
+        // fz-5vj — stamp through receive clauses + after.
+        Expr::Receive { clauses, after } => {
+            for arm in clauses {
+                stamp_pattern(&mut arm.pattern, macro_call, definition);
+                stamp_expanded(&mut arm.body, macro_call, definition);
+                if let Some(g) = &mut arm.guard {
+                    stamp_expanded(g, macro_call, definition);
+                }
+            }
+            if let Some(af) = after {
+                stamp_expanded(&mut af.timeout, macro_call, definition);
+                stamp_expanded(&mut af.body, macro_call, definition);
+            }
+        }
         Expr::Quote(inner) | Expr::Unquote(inner) => stamp_expanded(inner, macro_call, definition),
     }
 }
@@ -715,6 +744,7 @@ fn stamp_pattern(p: &mut Spanned<Pattern>, macro_call: Span, definition: Option<
     match &mut p.node {
         Pattern::Wildcard
         | Pattern::Var(_)
+        | Pattern::Pinned(_) // fz-5vj — `^name`; leaf, name resolves outward
         | Pattern::Int(_)
         | Pattern::Float(_)
         | Pattern::Str(_)

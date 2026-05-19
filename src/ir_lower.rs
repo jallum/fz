@@ -1160,6 +1160,9 @@ fn body_might_cps_split(body: &Spanned<Expr>) -> bool {
                         c.guard.as_ref().is_some_and(|g| walk(g, false)) || walk(&c.body, in_tail)
                     })
             }
+            // fz-5vj — `receive do … end` always cps-splits (the park
+            // itself is an escape point per docs/receive-matched.md §4).
+            Expr::Receive { .. } => true,
             Expr::Cond(arms) => arms
                 .iter()
                 .any(|(test, body)| walk(test, false) || walk(body, in_tail)),
@@ -2163,6 +2166,12 @@ fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -> Result<Va
         Expr::With(bindings, body, else_clauses) => {
             lower_with(ctx, bindings, body, else_clauses, is_tail, sp)
         }
+        // fz-5vj — parser-level node only at this point; fz-yxs (E2)
+        // lands the lowering to Term::ReceiveMatched.
+        Expr::Receive { .. } => Err(LowerError::Unsupported {
+            span: sp,
+            what: "receive do…end lowering lands in fz-yxs (E2)".into(),
+        }),
         Expr::Map(entries) => lower_map(ctx, entries),
         Expr::MapUpdate(base, entries) => lower_map_update(ctx, base, entries),
         Expr::Index(map, key) => lower_index(ctx, map, key),
@@ -2755,6 +2764,14 @@ fn lower_pattern_bind(
             ctx.name_var(subject, name, pat_span);
             Ok(())
         }
+        // fz-5vj — `^name` pinned pattern. Lowering lands in fz-yxs (E2)
+        // alongside Term::ReceiveMatched. Outside `receive` the typer
+        // should already have rejected `^name` per the receive-only
+        // syntactic role; reaching here is a planning bug.
+        Pattern::Pinned(name) => Err(LowerError::Unsupported {
+            span: pat_span,
+            what: format!("pinned pattern `^{}` lowering lands in fz-yxs (E2)", name),
+        }),
         Pattern::Int(n) => emit_eq_check(ctx, subject, Prim::Const(Const::Int(*n)), fail_block),
         Pattern::Float(x) => emit_eq_check(ctx, subject, Prim::Const(Const::Float(*x)), fail_block),
         Pattern::Str(s) => {

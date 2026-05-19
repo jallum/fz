@@ -98,6 +98,14 @@ pub enum Expr {
     Case(Box<Spanned<Expr>>, Vec<MatchClause>),
     Cond(Vec<(Spanned<Expr>, Spanned<Expr>)>),
     With(Vec<WithBinding>, Box<Spanned<Expr>>, Vec<MatchClause>),
+    /// fz-5vj — selective `receive do … after … end`. Each clause matches
+    /// against a message popped from the mailbox; the optional `after`
+    /// clause fires when no message matches within `timeout` milliseconds.
+    /// See `docs/receive-matched.md §6, §7`.
+    Receive {
+        clauses: Vec<MatchClause>,
+        after: Option<Box<AfterClause>>,
+    },
 
     // bindings
     // pattern = expr (rebinds names; immutable, just shadows)
@@ -161,6 +169,21 @@ pub struct MatchClause {
     pub span: Span,
 }
 
+/// fz-5vj — `after <timeout_ms> -> <body>` tail clause on a `receive`.
+/// `timeout` is an arbitrary expression so users can write `after 0`,
+/// `after 500`, `after some_var`, etc. Semantics: `0` skips parking
+/// entirely (peek-only); `infinity` (an atom, checked by the runtime)
+/// means no timer.
+#[derive(Debug, Clone)]
+pub struct AfterClause {
+    pub timeout: Spanned<Expr>,
+    pub body: Spanned<Expr>,
+    /// fz-yxs (E2) consumes this for diagnostic spans on the after-cont
+    /// closure; #[allow] until then to satisfy warnings-as-errors.
+    #[allow(dead_code)]
+    pub span: Span,
+}
+
 #[derive(Debug, Clone)]
 pub enum WithBinding {
     /// pattern <- expr
@@ -182,7 +205,10 @@ pub enum Pattern {
     Tuple(Vec<Spanned<Pattern>>),
     List(Vec<Spanned<Pattern>>, Option<Box<Spanned<Pattern>>>), // [a, b | rest]
     Map(Vec<(Spanned<Pattern>, Spanned<Pattern>)>),
-    /// pinned/literal pattern — `^name` would go here (deferred)
+    /// fz-5vj — `^name` pinned variable. The matcher compares the
+    /// scrutinee against the value bound to `name` in the enclosing
+    /// scope (snapshotted at pattern-match time for `receive`).
+    Pinned(String),
     /// As-pattern: name = pattern (Elixir lets you write it both ways)
     As(String, Box<Spanned<Pattern>>),
     /// Bitstring pattern: `<< field, field, ... >>`. Each field's `value` is a
