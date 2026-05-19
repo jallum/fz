@@ -353,10 +353,15 @@ After C3:
 ```rust
 // after
 ArrowSig {
-    args: (0..n_args).map(|_| Descr::Var(fresh_var())).collect(),
-    ret: Box::new(Descr::Var(fresh_var())),
+    args: (0..n_args).map(|i| Descr::var(closure_var_id(fn_id, i))).collect(),
+    ret: Box::new(Descr::var(closure_ret_var_id(fn_id))),
 }
 ```
+
+(Note: `Descr::var(_)` is the lowercase constructor for the vars-axis
+form that actually landed. Earlier drafts of this doc showed
+`Descr::Var(_)` capitalized as an enum variant — that framing was
+retracted along with Note 1; see "Join law" above.)
 
 A closure handle constructed at `add_to(10, 20)` has arrow `(α) -> β`
 at construction time. When it flows into `apply1(handle, 12)`, the
@@ -367,31 +372,98 @@ own representation.
 
 ## Join law
 
-The lattice's join (least upper bound) on the cleaned-up `Descr`:
+The lattice's join (least upper bound) on `Descr`:
 
-| left  | right        | result        | rationale                                  |
-|-------|--------------|---------------|--------------------------------------------|
-| Any   | x            | Any           | Top absorbs.                               |
-| x     | Any          | Any           | Top absorbs.                               |
-| Var α | Var α        | Var α         | Alpha-equivalent variables join trivially. |
-| Var α | Var β (α≠β)  | Any           | Distinct variables have no common upper bound less than top. (See note 1.) |
-| Var α | Concrete c   | Concrete c    | Variable is a constraint; concrete is a witness. The join is the witness; α is recorded as bound to c. (See note 2.) |
-| C1    | C2 (ground)  | C1 ∪ C2       | Set-theoretic union on ground types — unchanged. |
+| left  | right        | result                  | rationale                                  |
+|-------|--------------|-------------------------|--------------------------------------------|
+| Any   | x            | Any                     | Top absorbs.                               |
+| x     | Any          | Any                     | Top absorbs.                               |
+| Var α | Var α        | Var α                   | Alpha-equivalent variables join trivially. |
+| Var α | Var β (α≠β)  | `vars = {α, β}`         | Componentwise on the vars axis. (See note 1.) |
+| Var α | Concrete c   | mixed: `vars ∪ concrete` | Componentwise — vars axis retains α; concrete axes accumulate c. (See note 2.) |
+| C1    | C2 (ground)  | C1 ∪ C2                 | Set-theoretic union on ground types — unchanged. |
 
-**Note 1: distinct variables join to Any.** This is the conservative
-choice. It means that if two control-flow paths produce two
-type-variable-typed values from different polymorphic functions, the
-join discards the polymorphism. The alternative would be to introduce
-a join variable bound by both, which moves us toward proper HM
-inference; out of scope. Practically, distinct-variable joins happen
-only in pathological code paths, and falling to Any is observable
-(the goldens show it) rather than silent.
+**Note 1: distinct variables join componentwise.** Earlier drafts of
+this doc proposed that distinct variables join to `Any` as a
+conservative choice, framed around a planned `Descr` enum split
+(`Var(α) | Concrete(_)`). That framing has been **retracted**.
 
-**Note 2: var ⊔ concrete = concrete (with binding).** This is the
-substitution rule. When a type variable meets a concrete witness in a
-join, the variable is *instantiated* to the witness at that
-specialization scope. The join result is the witness. This is what
-makes monomorphization work without unification.
+The landed lattice keeps `vars` as a finite-or-cofinite literal-set
+axis operationally identical to `opaques`. Distinct-variable join is
+componentwise:
+
+```
+Var(α) ∪ Var(β)  →  Descr { vars = {α, β}, ... = empty }
+```
+
+Pinned by `algebra_audit_union_distinct_vars_keeps_both` at
+`src/types.rs:3164`. The decision aligns the lattice with Castagna's
+framework — vars are nominal names with set-theoretic algebra,
+substitution is *operational* (a separate walk at instantiation
+sites), not encoded into the join.
+
+The enum-split refactor that motivated the original Note 1 (filed as
+fz-1m5) is being retired in favor of sealing the axis fields and
+exposing a `Component` view API — see fz-68x. That work preserves
+componentwise algebra unchanged.
+
+**Note 2: var ⊔ concrete is componentwise.** Earlier drafts described
+this as "the join result is the witness; α is recorded as bound to c."
+That was substitution-at-join semantics, also tied to the enum-split
+framing. **Retracted.**
+
+The landed lattice keeps both axes populated:
+
+```
+Var(α) ∪ int  →  Descr { vars = {α}, ints = any, ... = empty }
+```
+
+Pinned by `algebra_audit_union_int_var_keeps_both` at `src/types.rs`.
+Substitution happens at instantiation sites (`Descr::instantiate`),
+not at lattice join. The vars axis is closed under union/intersect/neg
+componentwise; binding is a separate operational concern.
+
+The corresponding intersection rule is also componentwise — vars are
+nominally disjoint from concrete axes, so `Var(α) ∩ int = none`
+(pinned by `algebra_audit_intersect_preserves_var_disjointness`).
+
+## Trajectory annex (2026-05-19)
+
+This annex records where the broader set-theoretic typing community
+is heading, so future fz decisions can stay aligned without
+re-deriving the same conclusions.
+
+**Elixir's `Module.Types.Descr`** is the closest production
+precedent — same authors as the Castagna/Petrucciani/Lanvin 2024
+working group paper this doc cites. As of May 2026 the implementation
+is actively evolving:
+
+- **DNF → BDD with hash-consing.** Structural axes (currently `fun`
+  and `list` in Elixir; tuple/map being optimized next) are migrating
+  from disjunctive-normal-form clause lists to binary decision
+  diagrams. Hash-consing gives O(1) equality, structural sharing, and
+  canonicalization. Recent landings: PRs #15287, #15332, May 2026.
+- **Parametric polymorphism is on the roadmap (#13881) but
+  unsolved.** Their `:dynamic` component handles gradual typing, not
+  parametric. fz is ahead of them on this front; the C-arc of this
+  doc is original work, not a port.
+- **Sparse-map representation.** Elixir represents an empty axis as
+  an absent map key (`none = %{}`), not a zero-valued field. fz's
+  struct-of-axes pays a small constant for always-present axes —
+  acceptable today, optimizable later if it becomes load-bearing.
+
+**Implication for fz-68x (descr-sealing).** The Component view API is
+designed so that internal representation changes (DNF → BDD,
+hash-consing, sparse encoding) are invisible to consumers. Views
+expose only the questions consumers ask — arities, projections,
+element types, field lookups — not the raw clause lists. Following
+Elixir's BDD migration later becomes an internal change to
+`src/types.rs`, not a codebase-wide ripple.
+
+**What stays put.** Componentwise algebra. Vars as a nominal-name
+axis. Substitution as an operational walk separate from the lattice.
+These are the Castagna primitives, and the trajectory confirms they
+are the right primitives.
 
 ## Subsumption rules (for spec_registry dispatch)
 
