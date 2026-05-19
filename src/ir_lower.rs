@@ -217,7 +217,10 @@ impl ExternTable {
 /// to. A `lib::name` prefix is fz-side documentation/namespacing only; the
 /// linker sees just the bare suffix. Single-segment names round-trip.
 fn extern_symbol_from_name(fz_name: &str) -> &str {
-    fz_name.rsplit_once("::").map(|(_, sym)| sym).unwrap_or(fz_name)
+    fz_name
+        .rsplit_once("::")
+        .map(|(_, sym)| sym)
+        .unwrap_or(fz_name)
 }
 
 fn extern_ty_from_name(name: &str) -> Option<ExternTy> {
@@ -413,8 +416,7 @@ impl LowerCtx {
         // Name carries the fz-visible name verbatim (with `::` if any) so
         // dumps render `&libc::close/1` recognisably.
         let name = format!("__extern_wrap__{}", decl.fz_name);
-        let mut tb =
-            FnBuilder::new(id, name).with_category(crate::fz_ir::FnCategory::Prelude);
+        let mut tb = FnBuilder::new(id, name).with_category(crate::fz_ir::FnCategory::Prelude);
         let params: Vec<Var> = (0..decl.params.len()).map(|_| tb.fresh_var()).collect();
         let entry = tb.block(params.clone());
         let returns_value = !matches!(

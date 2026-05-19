@@ -1,0 +1,120 @@
+; fn main
+    ;   @spec   main() -> nil
+    ;   @key    []
+    ;   @abi    () -> Tagged
+function u0:0(i64) -> i64 tail {
+    gv0 = symbol colocated userextname0
+    sig0 = (i64, i64, i64) -> i64 system_v
+    sig1 = (i64, i64) -> i64 system_v
+    sig2 = (i64) -> i64 system_v
+    sig3 = (i64) system_v
+    sig4 = (i64, i64, i64, i64) -> i64 tail
+    fn0 = u0:10 sig0
+    fn1 = u0:49 sig1
+    fn2 = u0:14 sig2
+    fn3 = u0:50 sig3
+    fn4 = colocated u0:44 sig4
+
+block0(v0: i64):
+    v1 = symbol_value.i64 gv0           ; @14:12
+    v2 = iconst.i64 11                  ; @14:12
+    v3 = iconst.i64 88                  ; @14:12
+    v4 = call fn0(v1, v2, v3)           ; @14:12  v2 = 11, v3 = 88
+    v5 = iconst.i64 420                 ; @14:16
+    v6 = call fn2(v4)                   ; @14:21
+    v7 = call fn1(v6, v5)               ; @14:21  v5 = 420
+    v8 = ishl_imm v7, 3                 ; @14:21
+    v9 = bor_imm v8, 1                  ; @14:21
+    v10 = iconst.i64 42                 ; @14:26
+    call fn3(v10)                       ; @14:31  v10 = 42
+    v11 = iconst.i64 2                  ; @14:31
+    v12 = sshr_imm v9, 3                ; @16:3
+    return_call fn4(v11, v4, v12, v0)   ; @16:3  v11 = 2
+}
+
+; fn __extern_wrap__libc::close
+    ;   @spec   __extern_wrap__libc::close(any) -> int
+    ;   @key    [any]
+    ;   @abi    (Tagged) -> Tagged
+function u0:0(i64, i64, i64) -> i64 tail {
+    sig0 = (i64) -> i64 system_v
+    sig1 = (i64, i64) -> i64 tail
+    fn0 = u0:51 sig0
+
+    block0(v0: i64, v1: i64, v2: i64):    ;; v0 :: any
+    v3 = sshr_imm v0, 3
+    v4 = call fn0(v3)
+    v5 = ishl_imm v4, 3
+    v6 = bor_imm v5, 1    ;; v6 :: int
+    v7 = load.i64 notrap aligned v2+16
+    return_call_indirect sig1, v7(v6, v2)
+}
+
+; fn k_15_s16
+    ;   @spec   k_15(nil, vec(u8) | vec(bit), int) -> nil
+    ;   @key    [nil, vec(u8) | vec(bit), int]
+    ;   @abi    (Tagged, Tagged, RawInt) -> Tagged
+function u0:0(i64, i64, i64, i64) -> i64 tail {
+    gv0 = symbol colocated userextname0
+    sig0 = (i64, i64, i64) -> i64 system_v
+    sig1 = (i64, i64, i64) -> i64 system_v
+    sig2 = (i64) -> i64 system_v
+    sig3 = (i64) system_v
+    sig4 = (i64, i64, i64, i64, i64) -> i64 tail
+    fn0 = u0:10 sig0
+    fn1 = u0:52 sig1
+    fn2 = u0:13 sig2
+    fn3 = u0:53 sig3
+    fn4 = colocated u0:48 sig4
+
+    block0(v0: i64, v1: i64, v2: i64, v3: i64):    ;; v0 :: nil, v1 :: vec(u8) | vec(bit), v2 :: int
+    v4 = symbol_value.i64 gv0           ; @18:25
+    v5 = iconst.i64 3                   ; @18:25
+    v6 = iconst.i64 24                  ; @18:25
+    v7 = call fn0(v4, v5, v6)           ; @18:25  v5 = 3, v6 = 24
+    v8 = iconst.i64 3                   ; @18:30
+    v9 = call fn2(v7)                   ; @18:35
+    v10 = call fn1(v2, v9, v8)          ; @18:35  v8 = 3
+    v11 = ishl_imm v10, 3               ; @18:35
+    v12 = bor_imm v11, 1                ; @18:35
+    v13 = sshr_imm v12, 3
+    call fn3(v13)
+    v14 = iconst.i64 2    ;; v14 :: nil
+    v15 = sshr_imm v12, 3               ; @19:3
+    return_call fn4(v14, v1, v2, v15, v3) ; @19:3  v14 = 2
+}
+
+; fn k_16_s20
+    ;   @spec   k_16(nil, vec(u8) | vec(bit), int, int) -> nil
+    ;   @key    [nil, vec(u8) | vec(bit), int, int]
+    ;   @abi    (Tagged, Tagged, RawInt, RawInt) -> Tagged
+function u0:0(i64, i64, i64, i64, i64) -> i64 tail {
+    sig0 = (i32) -> i64 system_v
+    sig1 = (i64, i64) -> i64 system_v
+    sig2 = (i64) -> i64 system_v
+    sig3 = (i64) -> i64 system_v
+    sig4 = (i64) system_v
+    sig5 = (i64, i64) -> i64 tail
+    fn0 = u0:33 sig0
+    fn1 = u0:54 sig1
+    fn2 = u0:55 sig2
+    fn3 = u0:14 sig3
+    fn4 = u0:50 sig4
+
+    block0(v0: i64, v1: i64, v2: i64, v3: i64, v4: i64):    ;; v0 :: nil, v1 :: vec(u8) | vec(bit), v2 :: int, v3 :: int
+    v5 = iconst.i32 14
+    v6 = call fn0(v5)  ; v5 = 14    ;; v6 :: &fn14[]:(α896) -> α959
+    v7 = ishl_imm v2, 3
+    v8 = bor_imm v7, 1
+    v9 = call fn1(v8, v6)    ;; v9 :: any
+    v10 = call fn3(v1)
+    v11 = call fn2(v10)
+    v12 = ishl_imm v11, 3
+    v13 = bor_imm v12, 1    ;; v13 :: int
+    v14 = iconst.i64 50    ;; v14 :: :done
+    call fn4(v14)  ; v14 = 50
+    v15 = iconst.i64 2    ;; v15 :: nil
+    v16 = load.i64 notrap aligned v4+16 ; @20:8
+    return_call_indirect sig5, v16(v15, v4) ; @20:8  v15 = 2
+}
+

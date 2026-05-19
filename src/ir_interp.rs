@@ -1093,9 +1093,6 @@ fn resolve_symbol(name: &str) -> Result<*const (), String> {
         // matrix self-contained, no dlsym dependence.
         "fz_test_open_tmpfile" => Some(fz_runtime::resource::fz_test_open_tmpfile as *const ()),
         "fz_test_close_fd" => Some(fz_runtime::resource::fz_test_close_fd as *const ()),
-        // fz-vw1 — libc shims for the extern-binary integration fixture.
-        "fz_test_open_writeonly" => Some(fz_runtime::libc_io::fz_test_open_writeonly as *const ()),
-        "fz_test_write_close" => Some(fz_runtime::libc_io::fz_test_write_close as *const ()),
         _ => None,
     };
     if let Some(fp) = native {

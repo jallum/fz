@@ -13,7 +13,6 @@ pub mod extern_binary;
 pub mod fz_value;
 pub mod heap;
 pub mod ir_runtime;
-pub mod libc_io;
 pub mod procbin;
 pub mod process;
 pub mod resource;

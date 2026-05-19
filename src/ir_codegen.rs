@@ -1047,7 +1047,10 @@ pub struct CompiledMetadata {
     /// bakes a function-address relocation into the emitted
     /// `fz_aot_dtor_table` data symbol so the runtime hook can look up
     /// the dtor at `make_resource` time without an IR Module.
-    pub aot_dtor_targets: Vec<(u32, String)>,
+    /// (closure_fn_id, C symbol, has_return) — the third element matches
+    /// the call-site Cranelift signature so the AOT module's two
+    /// declarations of the same symbol don't conflict.
+    pub aot_dtor_targets: Vec<(u32, String, bool)>,
 }
 
 /// fz-ul4.29.2 — Two-way mapping between (FnId, input-Descr-tuple) and
@@ -1146,15 +1149,6 @@ impl JitBackend {
         builder.symbol(
             "fz_binary_as_cstring",
             fz_runtime::extern_binary::fz_binary_as_cstring as *const u8,
-        );
-        // fz-vw1 — libc shims used by the extern-binary integration fixture.
-        builder.symbol(
-            "fz_test_open_writeonly",
-            fz_runtime::libc_io::fz_test_open_writeonly as *const u8,
-        );
-        builder.symbol(
-            "fz_test_write_close",
-            fz_runtime::libc_io::fz_test_write_close as *const u8,
         );
         builder.symbol(
             "fz_bs_reader_init",
@@ -1534,7 +1528,7 @@ impl Backend for AotBackend {
                 // 16 bytes per row: u32 fn_id + 4 pad + 8 fn_ptr.
                 let row_bytes = 16;
                 let mut buf: Vec<u8> = vec![0u8; meta.aot_dtor_targets.len() * row_bytes];
-                for (i, (fn_id, _sym)) in meta.aot_dtor_targets.iter().enumerate() {
+                for (i, (fn_id, _sym, _has_ret)) in meta.aot_dtor_targets.iter().enumerate() {
                     let off = i * row_bytes;
                     buf[off..off + 4].copy_from_slice(&fn_id.to_le_bytes());
                     // fn_ptr placeholder at [off+8..off+16] — patched
@@ -1543,13 +1537,19 @@ impl Backend for AotBackend {
                 let mut desc = DataDescription::new();
                 desc.define(buf.into_boxed_slice());
                 desc.set_align(8);
-                for (i, (_fn_id, sym)) in meta.aot_dtor_targets.iter().enumerate() {
-                    // Declare the extern as Import so the linker resolves
-                    // it. Sig is (i64)->() to match the runtime dtor
-                    // contract (`unsafe extern "C" fn(payload: u64)`).
-                    // Cranelift only needs *some* signature here to track
-                    // the FuncRef; the linker emits a plain address.
-                    let dtor_sig = sig1(&[types::I64], &[]);
+                for (i, (_fn_id, sym, has_ret)) in meta.aot_dtor_targets.iter().enumerate() {
+                    // fz-x5m — match the call-site signature: `(i64) -> i64`
+                    // for C functions that return a value (like libc::close),
+                    // `(i64) -> ()` for those that don't. Cranelift refuses
+                    // a second declaration of the same symbol with a
+                    // conflicting sig; the dtor invocation transmutes
+                    // through `extern "C" fn(u64)` either way and ignores
+                    // any return value.
+                    let dtor_sig = if *has_ret {
+                        sig1(&[types::I64], &[types::I64])
+                    } else {
+                        sig1(&[types::I64], &[])
+                    };
                     let func_id = self
                         .omod
                         .declare_function(sym, Linkage::Import, &dtor_sig)
@@ -3276,7 +3276,7 @@ pub fn compile_with_backend<B: Backend>(
     // if a user actually tries `make_resource(_, &fz_send/3)`, the
     // runtime hook reports "no dtor table entry" and aborts — clearer
     // than a silent calling-convention mismatch.
-    let aot_dtor_targets: Vec<(u32, String)> = static_closure_targets
+    let aot_dtor_targets: Vec<(u32, String, bool)> = static_closure_targets
         .iter()
         .filter_map(|(_cl_sid, fn_id, _body_fid, _halt_kind)| {
             let fnir = module.fn_by_id(FnId(*fn_id));
@@ -3288,13 +3288,18 @@ pub fn compile_with_backend<B: Backend>(
             })?;
             let decl = module.extern_by_id(eid);
             use crate::fz_ir::ExternTy;
-            let dtor_shaped = decl.params.len() == 1
-                && matches!(decl.params[0], ExternTy::I64 | ExternTy::Any)
-                && matches!(decl.ret, ExternTy::Unit | ExternTy::Never);
+            // fz-x5m — a dtor wrapper forwards one u64-wide param to a C
+            // function. The C fn may return a value (e.g. libc::close
+            // returns int); aot_make_resource_hook transmutes through
+            // `extern "C" fn(u64)` and ignores whatever it returns. Filter
+            // is therefore only on the param shape, not the return.
+            let dtor_shaped =
+                decl.params.len() == 1 && matches!(decl.params[0], ExternTy::I64 | ExternTy::Any);
             if !dtor_shaped {
                 return None;
             }
-            Some((*fn_id, decl.symbol.clone()))
+            let has_return = !matches!(decl.ret, ExternTy::Unit | ExternTy::Never);
+            Some((*fn_id, decl.symbol.clone(), has_return))
         })
         .collect();
 
