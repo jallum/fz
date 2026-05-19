@@ -344,15 +344,19 @@ impl Drop for ResourceHandle {
     }
 }
 
-// ===== ResourceStub (on-heap 32-byte stub) =================================
+// ===== ResourceStub (on-heap 40-byte stub) =================================
 
-/// Per-heap stub referencing a `Resource`. 32 bytes total:
-///   offset  0..16  HeapHeader { kind = Resource, size_bytes = 32 }
-///   offset 16..24  shared_ptr: *mut Resource
-///   offset 24..32  mso_next:   *mut HeapHeader   (intrusive MSO link)
+/// Per-heap stub referencing a `Resource`. 40 bytes total:
+///   offset  0..16  HeapHeader { kind = Resource, size_bytes = 40 }
+///   offset 16..24  shared_ptr:  *mut Resource     (off-heap, refcounted)
+///   offset 24..32  closure_ptr: FzValue           (on-heap dtor closure;
+///                                                  fz-4mk — runs as fz code
+///                                                  when refcount hits zero)
+///   offset 32..40  mso_next:    *mut HeapHeader   (intrusive MSO link)
 ///
-/// Layout matches `ProcBin` exactly so the MSO sweep code can treat both
-/// uniformly when reading the `mso_next` link.
+/// Note: this layout DIVERGES from `ProcBin` (which is 32 bytes, mso_next at
+/// +24). The MSO sweep dispatches on `kind` *before* reading the next-link
+/// slot so each kind's accessor is used correctly.
 #[repr(transparent)]
 #[derive(Clone, Copy)]
 pub struct ResourceStub(NonNull<HeapHeader>);
@@ -379,14 +383,31 @@ impl ResourceStub {
         }
     }
 
+    /// fz-4mk — the dtor closure tagged FzValue. Filled in by
+    /// `alloc_resource` and traced by Cheney like any other heap edge.
+    pub fn closure_ptr(&self) -> crate::fz_value::FzValue {
+        unsafe {
+            std::ptr::read((self.as_raw() as *const u8).add(24) as *const crate::fz_value::FzValue)
+        }
+    }
+
+    pub(crate) fn closure_ptr_set(&self, v: crate::fz_value::FzValue) {
+        unsafe {
+            std::ptr::write(
+                (self.as_raw() as *mut u8).add(24) as *mut crate::fz_value::FzValue,
+                v,
+            );
+        }
+    }
+
     pub fn mso_next(&self) -> *mut HeapHeader {
-        unsafe { std::ptr::read((self.as_raw() as *const u8).add(24) as *const *mut HeapHeader) }
+        unsafe { std::ptr::read((self.as_raw() as *const u8).add(32) as *const *mut HeapHeader) }
     }
 
     pub(crate) fn mso_next_set(&self, next: *mut HeapHeader) {
         unsafe {
             std::ptr::write(
-                (self.as_raw() as *mut u8).add(24) as *mut *mut HeapHeader,
+                (self.as_raw() as *mut u8).add(32) as *mut *mut HeapHeader,
                 next,
             );
         }
@@ -409,24 +430,30 @@ impl ResourceStub {
 
 use crate::heap::Heap;
 
-/// Allocate a 32-byte Resource stub on `heap`, taking ownership of the
-/// Resource reference encapsulated in `handle`. The new stub is pushed
-/// onto `heap.mso_head` as the new chain head.
-pub fn alloc_resource(heap: &mut Heap, handle: ResourceHandle) -> ResourceStub {
-    let p = heap.alloc(32);
+/// Allocate a 40-byte Resource stub on `heap`, taking ownership of the
+/// Resource reference encapsulated in `handle`. `closure` is the dtor
+/// closure value — recorded for fz-4mk's deferred fz-side dispatch. The
+/// new stub is pushed onto `heap.mso_head` as the new chain head.
+pub fn alloc_resource(
+    heap: &mut Heap,
+    handle: ResourceHandle,
+    closure: crate::fz_value::FzValue,
+) -> ResourceStub {
+    let p = heap.alloc(40);
     unsafe {
         std::ptr::write(
             p,
             HeapHeader {
                 kind: HeapKind::Resource as u16,
                 flags: 0,
-                size_bytes: 32,
+                size_bytes: 40,
                 schema_id: 0,
                 _reserved: 0,
             },
         );
     }
     let rs = unsafe { ResourceStub::from_raw(p) };
+    rs.closure_ptr_set(closure);
     rs.shared_raw_set(handle.into_raw());
     rs.mso_next_set(heap.mso_head);
     heap.mso_head = p;
@@ -574,9 +601,9 @@ mod tests {
         {
             let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
             let handle = ResourceHandle::new(0xabcd, counting_dtor);
-            let rs = alloc_resource(&mut h, handle);
+            let rs = alloc_resource(&mut h, handle, crate::fz_value::FzValue::NIL);
             assert_eq!(unsafe { (*rs.as_raw()).kind }, HeapKind::Resource as u16);
-            assert_eq!(unsafe { (*rs.as_raw()).size_bytes }, 32);
+            assert_eq!(unsafe { (*rs.as_raw()).size_bytes }, 40);
             assert_eq!(h.mso_head, rs.as_raw());
             assert_eq!(rs.mso_next(), std::ptr::null_mut());
             assert_eq!(rs.payload(), 0xabcd);
@@ -599,7 +626,11 @@ mod tests {
         let _g = LiveCountGuard::snap();
         reset_counters();
         let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
-        let _ = alloc_resource(&mut h, ResourceHandle::new(0x55, counting_dtor));
+        let _ = alloc_resource(
+            &mut h,
+            ResourceHandle::new(0x55, counting_dtor),
+            crate::fz_value::FzValue::NIL,
+        );
         let mut root: *mut u8 = std::ptr::null_mut();
         h.gc(&mut root);
         assert!(h.mso_head.is_null(), "dead Resource swept from MSO");
@@ -621,9 +652,17 @@ mod tests {
         {
             let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
             let _ = alloc_procbin(&mut h, SharedBinHandle::from_bytes(&[1, 2, 3], 24));
-            let _ = alloc_resource(&mut h, ResourceHandle::new(0xfeed, counting_dtor));
+            let _ = alloc_resource(
+                &mut h,
+                ResourceHandle::new(0xfeed, counting_dtor),
+                crate::fz_value::FzValue::NIL,
+            );
             let _ = alloc_procbin(&mut h, SharedBinHandle::from_bytes(&[4, 5], 16));
-            let _ = alloc_resource(&mut h, ResourceHandle::new(0xbeef, counting_dtor));
+            let _ = alloc_resource(
+                &mut h,
+                ResourceHandle::new(0xbeef, counting_dtor),
+                crate::fz_value::FzValue::NIL,
+            );
         }
         // Both resources fired their dtors exactly once each.
         assert_eq!(DTOR_FIRED.load(std::sync::atomic::Ordering::Relaxed), 2);

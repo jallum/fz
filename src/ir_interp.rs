@@ -931,7 +931,12 @@ pub(crate) fn make_resource_in_current_process(
     let dtor = resolve_dtor_from_closure(module, dtor_closure)?;
     let handle = fz_runtime::resource::ResourceHandle::new(payload, dtor);
     let heap = &mut fz_runtime::process::current_process().heap;
-    let stub = fz_runtime::resource::alloc_resource(heap, handle);
+    // fz-4mk — also stash the closure value in the stub so phase 2 can
+    // dispatch the dtor body as fz code at scheduler boundaries. Currently
+    // unused for dispatch — the extracted C fn pointer above is still what
+    // fires at refcount→0 — but Cheney already traces this field so the
+    // closure survives GC for when phase 2 wires up the deferred drain.
+    let stub = fz_runtime::resource::alloc_resource(heap, handle, dtor_closure);
     Ok(FzValue::from_ptr(stub.as_raw()))
 }
 

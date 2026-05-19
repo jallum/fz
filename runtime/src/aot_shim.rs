@@ -240,7 +240,9 @@ extern "C" fn aot_make_resource_hook(payload: u64, dtor_closure_bits: u64) -> u6
         "fz_make_resource (AOT): no current process"
     );
     let heap = unsafe { &mut (*proc_ptr).heap };
-    let stub = crate::resource::alloc_resource(heap, handle);
+    // fz-4mk — stash the dtor closure value alongside the extracted fn ptr
+    // so phase 2 can dispatch the dtor as fz code at scheduler boundaries.
+    let stub = crate::resource::alloc_resource(heap, handle, FzValue(dtor_closure_bits));
     FzValue::from_ptr(stub.as_raw()).0
 }
 

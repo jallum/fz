@@ -327,24 +327,27 @@ pub fn mso_sweep(heap: &mut Heap) {
     let mut new_head: *mut HeapHeader = std::ptr::null_mut();
     let mut cur = heap.mso_head;
     while !cur.is_null() {
-        // Read next link BEFORE potentially overwriting from-space copy.
-        // ProcBin and Resource share the same 32-byte layout for header +
-        // shared_ptr + mso_next, so ProcBin's accessors work for either
-        // kind here (we only touch the mso_next slot).
-        let pb_from = unsafe { ProcBin::from_raw(cur) };
-        let next = pb_from.mso_next();
+        // Read kind FIRST so we use the right accessor for the next link.
+        // ProcBin has mso_next at +24; Resource stubs (fz-4mk grew them to
+        // 40 bytes for the dtor closure slot) keep mso_next at +32.
         let kind = unsafe { (*cur).kind };
+        let (next, _) = mso_read_next(cur, kind);
         if kind == crate::heap::FORWARDED_KIND {
             let to_p = unsafe { std::ptr::read((cur as *const u8).add(8) as *const u64) }
                 as *mut HeapHeader;
-            // Same observation: ProcBin's mso_next_set works on Resource
-            // stubs too because the offset is identical.
-            let pb_to = unsafe { ProcBin::from_raw(to_p) };
-            pb_to.mso_next_set(new_head);
+            // The from-header's original kind is gone (overwritten by
+            // FORWARDED_KIND in slot 0..2 plus the to-ptr in slot 8..16).
+            // The to-space copy's kind tells us which accessor to call
+            // for mso_next_set.
+            let to_kind = unsafe { (*to_p).kind };
+            mso_set_next(to_p, to_kind, new_head);
             new_head = to_p;
         } else {
             match HeapKind::from_u16(kind) {
-                Some(HeapKind::ProcBin) => unsafe { shared_bin_release(pb_from.shared_raw()) },
+                Some(HeapKind::ProcBin) => {
+                    let pb = unsafe { ProcBin::from_raw(cur) };
+                    unsafe { shared_bin_release(pb.shared_raw()) };
+                }
                 Some(HeapKind::Resource) => {
                     let rs = unsafe { ResourceStub::from_raw(cur) };
                     unsafe { fz_resource_release(rs.shared_raw()) };
@@ -357,19 +360,58 @@ pub fn mso_sweep(heap: &mut Heap) {
     heap.mso_head = new_head;
 }
 
+/// Read the `mso_next` link from an MSO chain entry. ProcBin and Resource
+/// stubs disagree on the slot's offset (24 vs 32) since fz-4mk grew the
+/// Resource stub for the dtor-closure slot. `FORWARDED_KIND` headers keep
+/// the original chain link at the same offset the from-header used; we
+/// follow whichever offset the *original* kind dictated.
+///
+/// Returns the next link and the *byte size of the entry* (so the caller
+/// has a one-stop shape lookup if it later wants to scrub or step).
+fn mso_read_next(p: *mut HeapHeader, kind: u16) -> (*mut HeapHeader, usize) {
+    // The from-header has been clobbered with FORWARDED_KIND in low bits,
+    // but the original size_bytes lives further into the header at +4
+    // (untouched by forwarding). We use it to pick the offset.
+    let size = unsafe { (*p).size_bytes } as usize;
+    let off = match size {
+        32 => 24, // ProcBin
+        40 => 32, // Resource (fz-4mk)
+        other => panic!(
+            "mso_read_next: unexpected MSO entry size {}, kind {}",
+            other, kind
+        ),
+    };
+    let next = unsafe { std::ptr::read((p as *const u8).add(off) as *const *mut HeapHeader) };
+    (next, size)
+}
+
+fn mso_set_next(p: *mut HeapHeader, _kind: u16, next: *mut HeapHeader) {
+    let size = unsafe { (*p).size_bytes } as usize;
+    let off = match size {
+        32 => 24,
+        40 => 32,
+        other => panic!("mso_set_next: unexpected MSO entry size {}", other),
+    };
+    unsafe {
+        std::ptr::write((p as *mut u8).add(off) as *mut *mut HeapHeader, next);
+    }
+}
+
 /// Drop every ProcBin in `heap.mso_head`'s chain, releasing each
 /// SharedBin reference. Called from `Heap::drop` before pool reclaim.
 pub fn mso_drop_all(heap: &mut Heap) {
     use crate::resource::{ResourceStub, fz_resource_release};
     let mut cur = heap.mso_head;
     while !cur.is_null() {
-        // ProcBin's `mso_next` accessor reads offset +24, which is the
-        // same slot in a Resource stub; safe for either kind.
-        let pb = unsafe { ProcBin::from_raw(cur) };
-        let next = pb.mso_next();
         let kind = unsafe { (*cur).kind };
+        // ProcBin: mso_next at +24. Resource (fz-4mk): mso_next at +32.
+        // `mso_read_next` consults size_bytes to pick the right offset.
+        let (next, _) = mso_read_next(cur, kind);
         match HeapKind::from_u16(kind) {
-            Some(HeapKind::ProcBin) => unsafe { shared_bin_release(pb.shared_raw()) },
+            Some(HeapKind::ProcBin) => {
+                let pb = unsafe { ProcBin::from_raw(cur) };
+                unsafe { shared_bin_release(pb.shared_raw()) };
+            }
             Some(HeapKind::Resource) => {
                 let rs = unsafe { ResourceStub::from_raw(cur) };
                 unsafe { fz_resource_release(rs.shared_raw()) };

@@ -1076,11 +1076,24 @@ fn cheney_trace_children(
         | HeapKind::VecF64
         | HeapKind::VecU8
         | HeapKind::VecBit
-        | HeapKind::ProcBin
-        | HeapKind::Resource => {
-            // Raw payload, no FzValue children. For ProcBin and Resource
-            // the +16 payload is a refcounted off-heap pointer; the MSO
-            // sweep handles those edges separately.
+        | HeapKind::ProcBin => {
+            // Raw payload, no FzValue children. For ProcBin the +16 payload
+            // is a refcounted off-heap pointer; the MSO sweep handles that
+            // edge separately.
+        }
+        HeapKind::Resource => {
+            // Off-heap refcounted shared_ptr at +16 (handled by MSO sweep).
+            // fz-4mk — dtor closure FzValue at +24; trace like any other
+            // heap edge so the closure survives Cheney for deferred dispatch.
+            let closure_slot = unsafe { (obj as *mut u8).add(24) as *mut FzValue };
+            forward_field(
+                closure_slot,
+                from_ranges,
+                fragments,
+                frag_queue,
+                free,
+                to_end,
+            );
         }
     }
 }
@@ -1313,10 +1326,14 @@ pub fn deep_copy_value(
             // mirroring the ProcBin path. The new handle holds a fresh
             // refcount edge that alloc_resource transfers into the
             // destination stub / MSO chain.
+            // fz-4mk — also deep-copy the dtor closure into dst_heap so the
+            // destination stub points at a closure native to its own heap.
             use crate::resource::{ResourceHandle, ResourceStub, alloc_resource};
             let src_rs = unsafe { ResourceStub::from_raw(sp) };
             let handle = unsafe { ResourceHandle::retain_from_raw(src_rs.shared_raw()) };
-            let new_p = alloc_resource(dst_heap, handle).as_raw();
+            let src_closure = src_rs.closure_ptr();
+            let dst_closure = deep_copy_value(src_closure, src_heap, dst_heap, forwarding);
+            let new_p = alloc_resource(dst_heap, handle, dst_closure).as_raw();
             forwarding.insert(sp, new_p);
             return FzValue(new_p as u64);
         }
