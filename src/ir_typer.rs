@@ -403,7 +403,7 @@ fn opaque_consumer_arities(
             // Terminator-level opaque dispatch.
             let (closure_var, args): (Option<Var>, &[Var]) = match &b.terminator {
                 Term::CallClosure { closure, args, .. }
-                | Term::TailCallClosure { closure, args } => (Some(*closure), args.as_slice()),
+                | Term::TailCallClosure { closure, args, ident: _ } => (Some(*closure), args.as_slice()),
                 _ => (None, &[]),
             };
             if let Some(cv) = closure_var
@@ -510,21 +510,20 @@ pub fn reset_typer_counters() {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct EmitterSite {
     pub caller: (FnId, Vec<Descr>),
-    pub block: BlockId,
+    pub ident: crate::fz_ir::CallsiteIdent,
     pub slot: EmitSlot,
 }
 
 impl EmitterSite {
     /// fz-9pr.1 — project out the spec-aware `EmitterSite` to a
     /// spec-agnostic `CallsiteId`. The caller's spec-key is dropped;
-    /// the (FnId, BlockId, EmitSlot) triple survives. Round-trips with
-    /// `CallsiteId::with_spec_key`. Wired into ir_typer's outcome
-    /// writer in fz-9pr.B/D; pre-wire users are tests only.
+    /// the `(FnId, CallsiteIdent, EmitSlot)` triple survives. Round-trips
+    /// with `CallsiteId::with_spec_key`.
     #[allow(dead_code)]
     pub fn callsite_id(&self) -> CallsiteId {
         CallsiteId {
             caller: self.caller.0,
-            block: self.block,
+            ident: self.ident.clone(),
             slot: self.slot,
         }
     }
@@ -540,7 +539,7 @@ impl CallsiteId {
         debug_assert_eq!(self.caller, spec_key.0);
         EmitterSite {
             caller: spec_key,
-            block: self.block,
+            ident: self.ident,
             slot: self.slot,
         }
     }
@@ -1070,7 +1069,7 @@ fn compute_return_for_spec(
                     .collect();
                 joined = joined.union(&lookup((*callee, arg_descrs)));
             }
-            Term::TailCallClosure { closure, args } => {
+            Term::TailCallClosure { closure, args, ident: _ } => {
                 if let Some(&target) = ft.fn_constants.get(closure) {
                     let target_fn = module.fn_by_id(target);
                     let np = target_fn.block(target_fn.entry).params.len();
@@ -1120,7 +1119,7 @@ fn compute_return_for_spec(
             }
             Term::Call { continuation, .. }
             | Term::CallClosure { continuation, .. }
-            | Term::Receive { continuation } => {
+            | Term::Receive { continuation, ident: _ } => {
                 let cont_k = cont_key_for_spec(b, continuation, ft, module, effective_returns);
                 joined = joined.union(&lookup((continuation.fn_id, cont_k)));
             }
@@ -1256,17 +1255,19 @@ fn walk_spec_for_discovery(
         }
     };
 
-    let emit =
-        |slot: EmitSlot, block: BlockId, target: (FnId, Vec<Descr>), out: &mut WalkResult| {
-            out.emits.push((
-                EmitterSite {
-                    caller: caller_spec_key.clone(),
-                    block,
-                    slot,
-                },
-                target,
-            ));
-        };
+    let emit = |slot: EmitSlot,
+                ident: crate::fz_ir::CallsiteIdent,
+                target: (FnId, Vec<Descr>),
+                out: &mut WalkResult| {
+        out.emits.push((
+            EmitterSite {
+                caller: caller_spec_key.clone(),
+                ident,
+                slot,
+            },
+            target,
+        ));
+    };
 
     for b in &f.blocks {
         let mut env = caller_ft.block_envs.get(&b.id).cloned().unwrap_or_default();
@@ -1274,10 +1275,10 @@ fn walk_spec_for_discovery(
         // Stmt-level emits: MakeClosure-side any-key, gated on
         // opaque_arities. Also tracks spawn-extern arity-0 opaque
         // consumption.
-        for (stmt_idx, stmt) in b.stmts.iter().enumerate() {
+        for stmt in b.stmts.iter() {
             let Stmt::Let(v, prim) = stmt;
             match prim {
-                Prim::MakeClosure(lam_fn_id, captured) => {
+                Prim::MakeClosure(mk_ident, lam_fn_id, captured) => {
                     if let Some(&jj) = m.fn_idx.get(lam_fn_id) {
                         let lam = &m.fns[jj];
                         let n_params = lam.block(lam.entry).params.len();
@@ -1290,8 +1291,8 @@ fn walk_spec_for_discovery(
                         }
                         let site = EmitterSite {
                             caller: caller_spec_key.clone(),
-                            block: b.id,
-                            slot: EmitSlot::MakeClosure(stmt_idx),
+                            ident: mk_ident.clone(),
+                            slot: EmitSlot::MakeClosure,
                         };
                         // fz-uwq.6 — record the dispatch fact for every
                         // MakeClosure regardless of arity-gate; codegen's
@@ -1299,8 +1300,8 @@ fn walk_spec_for_discovery(
                         out.dispatch_targets.insert(
                             crate::fz_ir::CallsiteId {
                                 caller: caller_spec_key.0,
-                                block: b.id,
-                                slot: EmitSlot::MakeClosure(stmt_idx),
+                                ident: mk_ident.clone(),
+                                slot: EmitSlot::MakeClosure,
                             },
                             (*lam_fn_id, k.clone()),
                         );
@@ -1338,7 +1339,7 @@ fn walk_spec_for_discovery(
         // any-keys get emitted. Kept here (not in callsite_walk) because
         // "fully_lit" is stricter than "has a lit" — only every-sig-lit
         // counts as resolved.
-        if let Term::CallClosure { closure, args, .. } | Term::TailCallClosure { closure, args } =
+        if let Term::CallClosure { closure, args, .. } | Term::TailCallClosure { closure, args, .. } =
             &b.terminator
         {
             // fz-uwq.6 — a closure invocation is "indirect at runtime"
@@ -1367,6 +1368,13 @@ fn walk_spec_for_discovery(
         // Cont). Per-spec key building and callsite_fn_consts tracking
         // stay typer-side because they depend on caller_ft.block_envs
         // and caller_ft.fn_constants.
+        // fz-kgk — every slot in `block_callsites` shares the
+        // terminator's intrinsic ident; non-call terminators have no
+        // callsites and don't reach here.
+        let term_ident = match b.terminator.ident() {
+            Some(i) => i.clone(),
+            None => continue,
+        };
         let cs_list = block_callsites(&b.terminator, &env, &caller_ft.fn_constants);
         for BlockCallsite { slot, kind } in cs_list {
             match kind {
@@ -1389,7 +1397,7 @@ fn walk_spec_for_discovery(
                     out.dispatch_targets.insert(
                         crate::fz_ir::CallsiteId {
                             caller: caller_spec_key.0,
-                            block: b.id,
+                            ident: term_ident.clone(),
                             slot,
                         },
                         (callee, dispatch_key.clone()),
@@ -1417,7 +1425,7 @@ fn walk_spec_for_discovery(
                             callsite_fn_consts.insert(entry_key.clone(), merged);
                         }
                     }
-                    emit(slot, b.id, (callee, enqueue_key), out);
+                    emit(slot, term_ident.clone(), (callee, enqueue_key), out);
                 }
                 CallsiteKind::CallClosureKnown { target, args } => {
                     let Some(&j) = m.fn_idx.get(&target) else {
@@ -1436,13 +1444,13 @@ fn walk_spec_for_discovery(
                     out.dispatch_targets.insert(
                         crate::fz_ir::CallsiteId {
                             caller: caller_spec_key.0,
-                            block: b.id,
+                            ident: term_ident.clone(),
                             slot,
                         },
                         (target, dispatch_key.clone()),
                     );
                     let enqueue_key = widen_direct(dispatch_key, target);
-                    emit(slot, b.id, (target, enqueue_key), out);
+                    emit(slot, term_ident.clone(), (target, enqueue_key), out);
                 }
                 CallsiteKind::ClosureLit { lit, args } => {
                     let Some(&j) = m.fn_idx.get(&lit.fn_id) else {
@@ -1462,13 +1470,13 @@ fn walk_spec_for_discovery(
                     out.dispatch_targets.insert(
                         crate::fz_ir::CallsiteId {
                             caller: caller_spec_key.0,
-                            block: b.id,
+                            ident: term_ident.clone(),
                             slot,
                         },
                         (lit.fn_id, dispatch_key.clone()),
                     );
                     let enqueue_key = widen_direct(dispatch_key, lit.fn_id);
-                    emit(slot, b.id, (lit.fn_id, enqueue_key), out);
+                    emit(slot, term_ident.clone(), (lit.fn_id, enqueue_key), out);
                 }
                 CallsiteKind::Cont { cont, source } => {
                     // slot 0 derivation by Cont source. Receive is
@@ -1574,12 +1582,12 @@ fn walk_spec_for_discovery(
                     out.dispatch_targets.insert(
                         crate::fz_ir::CallsiteId {
                             caller: caller_spec_key.0,
-                            block: b.id,
+                            ident: term_ident.clone(),
                             slot,
                         },
                         (cont.fn_id, key.clone()),
                     );
-                    emit(slot, b.id, (cont.fn_id, key), out);
+                    emit(slot, term_ident.clone(), (cont.fn_id, key), out);
                 }
             }
         }
@@ -1620,12 +1628,14 @@ pub fn rewrite_known_target_closures(module: &mut Module, types: &ModuleTypes) {
         for b in &mut f.blocks {
             let new_term = match &b.terminator {
                 Term::CallClosure {
+                    ident: _,
                     closure,
                     args,
                     continuation,
                 } => {
                     if let Some(Some(target)) = map.get(closure).copied() {
                         Some(Term::Call {
+                            ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
                             callee: target,
                             args: args.clone(),
                             continuation: continuation.clone(),
@@ -1634,9 +1644,10 @@ pub fn rewrite_known_target_closures(module: &mut Module, types: &ModuleTypes) {
                         None
                     }
                 }
-                Term::TailCallClosure { closure, args } => {
+                Term::TailCallClosure { closure, args, ident: _ } => {
                     if let Some(Some(target)) = map.get(closure).copied() {
                         Some(Term::TailCall {
+                            ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
                             callee: target,
                             args: args.clone(),
                             is_back_edge: false,
@@ -1830,7 +1841,7 @@ pub fn type_fn(f: &FnIr, m: &Module, entry_param_types: Option<&[Descr]>) -> FnT
     for b in &f.blocks {
         for stmt in &b.stmts {
             let Stmt::Let(v, prim) = stmt;
-            if let Prim::MakeClosure(fid, captured) = prim
+            if let Prim::MakeClosure(_, fid, captured) = prim
                 && captured.is_empty()
             {
                 fn_constants.insert(*v, *fid);
@@ -2164,7 +2175,7 @@ fn type_prim(
         Prim::MakeBitstring(_) => Descr::vec_u8().union(&Descr::vec_bit()),
         Prim::ConstBitstring(_, _) => Descr::vec_u8().union(&Descr::vec_bit()),
 
-        Prim::MakeClosure(fn_id, captured) => {
+        Prim::MakeClosure(_, fn_id, captured) => {
             // fz-ul4.27.22.10 — type MakeClosure's result as a closure
             // literal: a singleton-typed arrow tagged with (fn_id,
             // capture_descrs). Downstream consumers (cont_slot0_descr,
@@ -2908,7 +2919,7 @@ pub fn reachable_specs(
         for blk in &f.blocks {
             for stmt in &blk.stmts {
                 let Stmt::Let(_, prim) = stmt;
-                if let Prim::MakeClosure(lam_id, _) = prim {
+                if let Prim::MakeClosure(_, lam_id, _) = prim {
                     closure_target_fns.insert(*lam_id);
                 }
             }
@@ -2948,6 +2959,7 @@ pub fn reachable_specs(
             };
             match &blk.terminator {
                 Term::Call {
+                    ident: _,
                     callee,
                     args,
                     continuation,
@@ -2968,6 +2980,7 @@ pub fn reachable_specs(
                     }
                 }
                 Term::CallClosure {
+                    ident: _,
                     closure,
                     args,
                     continuation,
@@ -2983,7 +2996,7 @@ pub fn reachable_specs(
                         worklist.push(sid.0);
                     }
                 }
-                Term::TailCallClosure { closure, args } => {
+                Term::TailCallClosure { closure, args, ident: _ } => {
                     if let Some(&target) = ft.fn_constants.get(closure) {
                         let key = pad_to_arity(target, arg_descrs(args));
                         if let Some(sid) = spec_registry.resolve(target, &key) {
@@ -2991,7 +3004,7 @@ pub fn reachable_specs(
                         }
                     }
                 }
-                Term::Receive { continuation } => {
+                Term::Receive { continuation, ident: _ } => {
                     let cont_key = cont_input_key(blk, continuation, ft, module, module_types);
                     if let Some(sid) = spec_registry.resolve(continuation.fn_id, &cont_key) {
                         worklist.push(sid.0);
@@ -3138,6 +3151,7 @@ pub fn pretty_module_types(m: &Module, t: &ModuleTypes) -> String {
                     ));
                 }
                 Term::Call {
+                    ident: _,
                     callee,
                     args,
                     continuation,
@@ -3174,6 +3188,7 @@ pub fn pretty_module_types(m: &Module, t: &ModuleTypes) -> String {
                     out.push_str(&format!(";              cont_key={}\n", descrs_str(&ck)));
                 }
                 Term::CallClosure {
+                    ident: _,
                     closure,
                     args,
                     continuation,
@@ -3206,7 +3221,7 @@ pub fn pretty_module_types(m: &Module, t: &ModuleTypes) -> String {
                     ));
                     out.push_str(&format!(";              cont_key={}\n", descrs_str(&ck)));
                 }
-                Term::TailCallClosure { closure, args } => {
+                Term::TailCallClosure { closure, args, ident: _ } => {
                     let arg_vars: Vec<String> =
                         args.iter().map(|v| format!("Var({})", v.0)).collect();
                     let target = ft.fn_constants.get(closure).copied();
@@ -3222,7 +3237,7 @@ pub fn pretty_module_types(m: &Module, t: &ModuleTypes) -> String {
                         target_str
                     ));
                 }
-                Term::Receive { continuation } => {
+                Term::Receive { continuation, ident: _ } => {
                     let cap_vars: Vec<String> = continuation
                         .captured
                         .iter()

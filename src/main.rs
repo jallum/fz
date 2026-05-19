@@ -816,7 +816,14 @@ fn dump_outcomes_pipeline(src: String, source_name: String, show_all: bool) -> S
             EmitSlot::Cont => "Cont".to_string(),
             EmitSlot::CallClosureKnown => "CallClosureKnown".to_string(),
             EmitSlot::ClosureLit(c, sig) => format!("ClosureLit({},{})", c, sig),
-            EmitSlot::MakeClosure(idx) => format!("MakeClosure({})", idx),
+            EmitSlot::MakeClosure => "MakeClosure".to_string(),
+        }
+    };
+    let render_span = |sp: crate::diag::Span| -> String {
+        if sp.is_dummy() {
+            "<generated>".to_string()
+        } else {
+            format!("{}:{}-{}", sp.file.0, sp.start, sp.end)
         }
     };
 
@@ -851,12 +858,12 @@ fn dump_outcomes_pipeline(src: String, source_name: String, show_all: bool) -> S
     > = std::collections::HashMap::new();
     for ((caller_fid, caller_key), ft) in &mt.specs {
         for (cid, target) in &ft.dispatches {
-            emitted_cids.insert(*cid);
+            emitted_cids.insert(cid.clone());
             let tgt_repr =
                 format!("{}#{} {}", fn_name(target.0), target.0.0, render_key(&target.1));
             let caller_repr = format!("{}{}", fn_name(*caller_fid), render_key(caller_key));
             grouped
-                .entry(*cid)
+                .entry(cid.clone())
                 .or_default()
                 .entry(tgt_repr)
                 .or_default()
@@ -877,16 +884,16 @@ fn dump_outcomes_pipeline(src: String, source_name: String, show_all: bool) -> S
             } else {
                 String::new()
             };
-            let lhs = format!("  blk{} {}", cid.block.0, slot_str(cid.slot));
+            let lhs = format!("  @{} {}", render_span(cid.ident.span()), slot_str(cid.slot));
             let rhs = format!("Emitted ({}){}{}", tgt_repr, via, under);
-            rows.push((*cid, lhs, rhs));
+            rows.push((cid.clone(), lhs, rhs));
         }
     }
     // Consumed rows (always shown — the reducer rewrote these away).
     for (cid, result) in &reducer_log.consumed {
-        let lhs = format!("  blk{} {}", cid.block.0, slot_str(cid.slot));
+        let lhs = format!("  @{} {}", render_span(cid.ident.span()), slot_str(cid.slot));
         let rhs = format!("Consumed ({})", result);
-        rows.push((*cid, lhs, rhs));
+        rows.push((cid.clone(), lhs, rhs));
     }
     // Stalled rows (only when no Emitted at the same cid — otherwise
     // the reason already rode in as `via <reason>` above).
@@ -894,13 +901,14 @@ fn dump_outcomes_pipeline(src: String, source_name: String, show_all: bool) -> S
         if emitted_cids.contains(cid) {
             continue;
         }
-        let lhs = format!("  blk{} {}", cid.block.0, slot_str(cid.slot));
+        let lhs = format!("  @{} {}", render_span(cid.ident.span()), slot_str(cid.slot));
         let rhs = format!("Stalled ({})", reason);
-        rows.push((*cid, lhs, rhs));
+        rows.push((cid.clone(), lhs, rhs));
     }
 
     // Group by caller fn for output, sorted within each caller by
-    // (block, slot-string, rhs).
+    // (span_start, slot-string, rhs) — span gives deterministic order
+    // across runs, unlike the Rc pointer used for identity.
     let mut by_caller: std::collections::BTreeMap<u32, Vec<(CallsiteId, String, String)>> =
         std::collections::BTreeMap::new();
     for row in rows {
@@ -908,9 +916,10 @@ fn dump_outcomes_pipeline(src: String, source_name: String, show_all: bool) -> S
     }
     for entries in by_caller.values_mut() {
         entries.sort_by(|a, b| {
-            a.0.block
-                .0
-                .cmp(&b.0.block.0)
+            a.0.ident
+                .span()
+                .start
+                .cmp(&b.0.ident.span().start)
                 .then_with(|| slot_str(a.0.slot).cmp(&slot_str(b.0.slot)))
                 .then_with(|| a.2.cmp(&b.2))
         });

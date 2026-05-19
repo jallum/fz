@@ -362,6 +362,7 @@ impl LowerCtx {
         tb.set_terminator(
             entry,
             Term::TailCallClosure {
+                ident: crate::fz_ir::CallsiteIdent::from_source(Span::DUMMY),
                 closure: c,
                 args: vec![],
             },
@@ -691,7 +692,7 @@ fn debug_assert_unique_conts(module: &Module) {
             let cont_fn = match &b.terminator {
                 Term::Call { continuation, .. }
                 | Term::CallClosure { continuation, .. }
-                | Term::Receive { continuation } => continuation.fn_id,
+                | Term::Receive { continuation, ident: _ } => continuation.fn_id,
                 _ => continue,
             };
             if let Some(prev) = seen.insert(cont_fn, (f.id, b.id)) {
@@ -887,6 +888,7 @@ fn annotate_back_edges(
             .unwrap_or(crate::diag::Span::DUMMY);
         for block in &mut f.blocks {
             if let Term::TailCall {
+                ident: _,
                 callee,
                 args,
                 is_back_edge,
@@ -1849,6 +1851,7 @@ fn lower_multi_clause(
             let captures = ctx.captured_snapshot();
             let capture_vars: Vec<Var> = captures.iter().map(|(_, v)| *v).collect();
             ctx.set_term(Term::TailCall {
+                ident: crate::fz_ir::CallsiteIdent::from_source(Span::DUMMY),
                 callee: cont.id,
                 args: capture_vars,
                 is_back_edge: false,
@@ -1904,7 +1907,7 @@ fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -> Result<Va
                 .find(|((n, _), _)| n == name)
                 .map(|(k, v)| (k.clone(), *v))
             {
-                return Ok(ctx.let_(Prim::MakeClosure(fn_id, vec![])));
+                return Ok(ctx.let_(Prim::MakeClosure(crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY), fn_id, vec![])));
             }
             Err(LowerError::Unbound {
                 span: sp,
@@ -2023,6 +2026,7 @@ fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -> Result<Va
                 if is_tail {
                     ctx.set_term_at(
                         Term::TailCallClosure {
+                            ident: crate::fz_ir::CallsiteIdent::from_source(Span::DUMMY),
                             closure: local_var,
                             args: arg_vars,
                         },
@@ -2060,7 +2064,7 @@ fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -> Result<Va
             // extern, not a non-existent user fn.
             if callee_name == "spawn" && (arg_vars.len() == 1 || arg_vars.len() == 2) {
                 let thunk_id = ctx.ensure_spawn_thunk();
-                let wrapper = ctx.let_at(Prim::MakeClosure(thunk_id, vec![arg_vars[0]]), sp);
+                let wrapper = ctx.let_at(Prim::MakeClosure(crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY), thunk_id, vec![arg_vars[0]]), sp);
                 let mut new_args = vec![wrapper];
                 new_args.extend_from_slice(&arg_vars[1..]);
                 let sym = if arg_vars.len() == 1 {
@@ -2089,6 +2093,7 @@ fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -> Result<Va
             if is_tail {
                 ctx.set_term_at(
                     Term::TailCall {
+                        ident: crate::fz_ir::CallsiteIdent::from_source(Span::DUMMY),
                         callee,
                         args: arg_vars,
                         is_back_edge: false, // annotate_back_edges fills this in post-lowering
@@ -2283,6 +2288,7 @@ fn finalize_arm(ctx: &mut LowerCtx, arm_value: Var, join: Option<&ContFn>) {
             tail_args.push(v);
         }
         ctx.set_term(Term::TailCall {
+            ident: crate::fz_ir::CallsiteIdent::from_source(Span::DUMMY),
             callee: join.id,
             args: tail_args,
             is_back_edge: false,
@@ -2367,12 +2373,14 @@ fn lower_if(
 
     ctx.cur_block = Some(then_b);
     ctx.set_term(Term::TailCall {
+        ident: crate::fz_ir::CallsiteIdent::from_source(Span::DUMMY),
         callee: then_cont.id,
         args: capture_vars.clone(),
         is_back_edge: false,
     });
     ctx.cur_block = Some(else_b);
     ctx.set_term(Term::TailCall {
+        ident: crate::fz_ir::CallsiteIdent::from_source(Span::DUMMY),
         callee: else_cont.id,
         args: capture_vars,
         is_back_edge: false,
@@ -2466,7 +2474,7 @@ fn lower_lambda(
     ctx.env = saved_env;
     ctx.env_order = saved_order;
 
-    Ok(ctx.let_(Prim::MakeClosure(lam_id, captured_vars)))
+    Ok(ctx.let_(Prim::MakeClosure(crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY), lam_id, captured_vars)))
 }
 
 fn cps_split_call_closure(
@@ -2481,6 +2489,7 @@ fn cps_split_call_closure(
 
     ctx.set_term_at(
         Term::CallClosure {
+            ident: crate::fz_ir::CallsiteIdent::from_source(Span::DUMMY),
             closure: closure_var,
             args: arg_vars,
             continuation: Cont {
@@ -2537,6 +2546,7 @@ fn cps_split_receive(
     // Terminate current block with Term::Receive.
     ctx.set_term_at(
         Term::Receive {
+            ident: crate::fz_ir::CallsiteIdent::from_source(Span::DUMMY),
             continuation: Cont {
                 fn_id: cont_id,
                 captured: captured_vars.clone(),
@@ -2594,6 +2604,7 @@ fn cps_split_call(
     // Terminate current block with the call.
     ctx.set_term_at(
         Term::Call {
+            ident: crate::fz_ir::CallsiteIdent::from_source(Span::DUMMY),
             callee,
             args: arg_vars,
             continuation: Cont {
@@ -3167,6 +3178,7 @@ fn lower_case(
             let captures = ctx.captured_snapshot();
             let capture_vars: Vec<Var> = captures.iter().map(|(_, v)| *v).collect();
             ctx.set_term(Term::TailCall {
+                ident: crate::fz_ir::CallsiteIdent::from_source(Span::DUMMY),
                 callee: clause_cont.id,
                 args: capture_vars,
                 is_back_edge: false,
@@ -3253,6 +3265,7 @@ fn lower_cond(
     let captures = ctx.captured_snapshot();
     let capture_vars: Vec<Var> = captures.iter().map(|(_, v)| *v).collect();
     ctx.set_term(Term::TailCall {
+        ident: crate::fz_ir::CallsiteIdent::from_source(Span::DUMMY),
         callee: arm_conts[0].id,
         args: capture_vars,
         is_back_edge: false,
@@ -3280,6 +3293,7 @@ fn lower_cond(
         let fall_capture_vars: Vec<Var> = fall_captures.iter().map(|(_, v)| *v).collect();
         ctx.cur_block = Some(fall_b);
         ctx.set_term(Term::TailCall {
+            ident: crate::fz_ir::CallsiteIdent::from_source(Span::DUMMY),
             callee: next_id,
             args: fall_capture_vars,
             is_back_edge: false,
@@ -3387,6 +3401,7 @@ fn lower_with(
                     args.push(cv);
                 }
                 ctx.set_term(Term::TailCall {
+                    ident: crate::fz_ir::CallsiteIdent::from_source(Span::DUMMY),
                     callee: with_fail_cont.id,
                     args,
                     is_back_edge: false,
@@ -3487,6 +3502,7 @@ fn lower_with(
                 let captures = ctx.captured_snapshot();
                 let capture_vars: Vec<Var> = captures.iter().map(|(_, v)| *v).collect();
                 ctx.set_term(Term::TailCall {
+                    ident: crate::fz_ir::CallsiteIdent::from_source(Span::DUMMY),
                     callee: cont.id,
                     args: capture_vars,
                     is_back_edge: false,
@@ -4364,6 +4380,7 @@ end
         for f in &m.fns {
             for b in &f.blocks {
                 if let Term::TailCall {
+                    ident: _,
                     callee,
                     is_back_edge,
                     ..
@@ -4389,6 +4406,7 @@ end
             .iter()
             .find_map(|b| {
                 if let Term::TailCall {
+                    ident: _,
                     callee,
                     is_back_edge,
                     ..

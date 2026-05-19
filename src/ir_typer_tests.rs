@@ -479,6 +479,7 @@ fn entry_param_narrows_to_caller_arg_type() {
     mb.set_terminator(
         mentry,
         Term::TailCall {
+            ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
             callee: FnId(0),
             args: vec![v],
             is_back_edge: false,
@@ -511,6 +512,7 @@ fn entry_param_unions_across_multiple_callers() {
     a.set_terminator(
         aentry,
         Term::TailCall {
+            ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
             callee: FnId(0),
             args: vec![one],
             is_back_edge: false,
@@ -524,6 +526,7 @@ fn entry_param_unions_across_multiple_callers() {
     bb.set_terminator(
         bentry,
         Term::TailCall {
+            ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
             callee: FnId(0),
             args: vec![ok],
             is_back_edge: false,
@@ -566,7 +569,7 @@ fn closure_target_with_no_direct_callers_keeps_any_entry_params() {
 
     let mut mb = FnBuilder::new(FnId(1), "main");
     let mentry = mb.block(vec![]);
-    let cl = mb.let_(mentry, Prim::MakeClosure(FnId(0), vec![]));
+    let cl = mb.let_(mentry, Prim::MakeClosure(crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY), FnId(0), vec![]));
     mb.set_terminator(mentry, Term::Halt(cl));
 
     let m = build_module(vec![wb.build(), mb.build()]);
@@ -594,11 +597,12 @@ fn closure_target_with_direct_caller_narrows_spec_and_drops_unused_any_key() {
 
     let mut mb = FnBuilder::new(FnId(1), "main");
     let mentry = mb.block(vec![]);
-    let _cl = mb.let_(mentry, Prim::MakeClosure(FnId(0), vec![]));
+    let _cl = mb.let_(mentry, Prim::MakeClosure(crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY), FnId(0), vec![]));
     let lit = mb.let_(mentry, Prim::Const(Const::Int(42)));
     mb.set_terminator(
         mentry,
         Term::TailCall {
+            ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
             callee: FnId(0),
             args: vec![lit],
             is_back_edge: false,
@@ -648,6 +652,7 @@ fn entry_points_keep_any_key_callees_with_typed_callsites_drop() {
     b.set_terminator(
         bentry,
         Term::TailCall {
+            ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
             callee: FnId(0),
             args: vec![lit],
             is_back_edge: false,
@@ -692,6 +697,7 @@ fn specs_records_narrow_int_callsite() {
     b.set_terminator(
         bentry,
         Term::TailCall {
+            ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
             callee: FnId(0),
             args: vec![lit],
             is_back_edge: false,
@@ -736,6 +742,7 @@ fn fn_view_returns_narrowed_spec_for_direct_caller() {
     b.set_terminator(
         bentry,
         Term::TailCall {
+            ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
             callee: FnId(0),
             args: vec![lit],
             is_back_edge: false,
@@ -908,6 +915,7 @@ fn opaque_consumer_arities_picks_up_receive_dispatched_closure() {
     k_recv.set_terminator(
         kre,
         Term::TailCallClosure {
+            ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
             closure: f,
             args: vec![seven],
         },
@@ -918,6 +926,7 @@ fn opaque_consumer_arities_picks_up_receive_dispatched_closure() {
     disp.set_terminator(
         de,
         Term::Receive {
+            ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
             continuation: crate::fz_ir::Cont {
                 fn_id: FnId(1),
                 captured: vec![],
@@ -930,6 +939,7 @@ fn opaque_consumer_arities_picks_up_receive_dispatched_closure() {
     main_b.set_terminator(
         me,
         Term::TailCall {
+            ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
             callee: FnId(2),
             args: vec![],
             is_back_edge: false,
@@ -1134,7 +1144,7 @@ end
     let waiter = m.fns.iter().find(|f| f.name == "waiter").unwrap();
     let mut cont_fn_ids: Vec<FnId> = Vec::new();
     for b in &waiter.blocks {
-        if let Term::Receive { continuation } = &b.terminator {
+        if let Term::Receive { continuation, .. } = &b.terminator {
             cont_fn_ids.push(continuation.fn_id);
         }
     }
@@ -1387,7 +1397,7 @@ end
     for b in &main.blocks {
         for stmt in &b.stmts {
             let Stmt::Let(v, prim) = stmt;
-            if let Prim::MakeClosure(fid, captured) = prim
+            if let Prim::MakeClosure(_, fid, captured) = prim
                 && *fid == double.id
                 && captured.is_empty()
             {
@@ -1435,7 +1445,7 @@ end
     for b in &main.blocks {
         for stmt in &b.stmts {
             let Stmt::Let(v, prim) = stmt;
-            if let Prim::MakeClosure(_, captured) = prim
+            if let Prim::MakeClosure(_, _, captured) = prim
                 && !captured.is_empty()
             {
                 closure_var = Some(*v);
@@ -1780,15 +1790,17 @@ fn callsite_id_round_trip() {
     use crate::types::Descr;
 
     let spec_key = (FnId(7), vec![Descr::any(), Descr::int_lit(3)]);
+    let _ = BlockId(2); // legacy positional fixture data; ident is now intrinsic.
+    let test_ident = crate::fz_ir::CallsiteIdent::synthetic();
     let site = EmitterSite {
         caller: spec_key.clone(),
-        block: BlockId(2),
+        ident: test_ident.clone(),
         slot: EmitSlot::ClosureLit(1, 0),
     };
 
     let cid: CallsiteId = site.callsite_id();
     assert_eq!(cid.caller, FnId(7));
-    assert_eq!(cid.block, BlockId(2));
+    assert_eq!(cid.ident, test_ident);
     assert_eq!(cid.slot, EmitSlot::ClosureLit(1, 0));
 
     let round = cid.with_spec_key(spec_key);
@@ -1811,14 +1823,17 @@ fn typer_publishes_dispatches_for_direct_call() {
     let mut main_b = crate::fz_ir::FnBuilder::new(FnId(1), "main");
     let m_entry = main_b.block(vec![]);
     let c42 = main_b.let_(m_entry, Prim::Const(Const::Int(42)));
+    let tc_ident = crate::fz_ir::CallsiteIdent::synthetic();
     main_b.set_terminator(
         m_entry,
         crate::fz_ir::Term::TailCall {
+            ident: tc_ident.clone(),
             callee: FnId(0),
             args: vec![c42],
             is_back_edge: false,
         },
     );
+    let _ = (BlockId(0), m_entry); // legacy positional fixture data.
 
     let mut mb = crate::fz_ir::ModuleBuilder::new();
     mb.add_fn(id_b.build());
@@ -1828,7 +1843,7 @@ fn typer_publishes_dispatches_for_direct_call() {
 
     let cid = CallsiteId {
         caller: FnId(1),
-        block: BlockId(0),
+        ident: tc_ident,
         slot: EmitSlot::Direct,
     };
     let main_spec = mt

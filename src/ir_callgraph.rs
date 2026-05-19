@@ -31,12 +31,13 @@ pub fn build_call_graph(m: &Module) -> HashMap<FnId, HashSet<FnId>> {
         for b in &f.blocks {
             for stmt in &b.stmts {
                 let Stmt::Let(_, prim) = stmt;
-                if let Prim::MakeClosure(lam_fn_id, _) = prim {
+                if let Prim::MakeClosure(_, lam_fn_id, _) = prim {
                     edges.insert(*lam_fn_id);
                 }
             }
             match &b.terminator {
                 Term::Call {
+                    ident: _,
                     callee,
                     continuation,
                     ..
@@ -51,7 +52,7 @@ pub fn build_call_graph(m: &Module) -> HashMap<FnId, HashSet<FnId>> {
                     edges.insert(continuation.fn_id);
                 }
                 Term::TailCallClosure { .. } => {}
-                Term::Receive { continuation } => {
+                Term::Receive { continuation, ident: _ } => {
                     edges.insert(continuation.fn_id);
                 }
                 _ => {}
@@ -138,6 +139,7 @@ mod tests {
         b.set_terminator(
             entry,
             Term::TailCall {
+                ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
                 callee: FnId(target),
                 args: vec![],
                 is_back_edge: false,
@@ -177,6 +179,7 @@ mod tests {
         main_b.set_terminator(
             entry,
             Term::Call {
+                ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
                 callee: FnId(1),
                 args: vec![],
                 continuation: Cont {
@@ -195,7 +198,7 @@ mod tests {
     fn make_closure_edge_followed() {
         let mut main_b = FnBuilder::new(FnId(0), "main");
         let entry = main_b.block(vec![]);
-        main_b.let_(entry, Prim::MakeClosure(FnId(1), vec![]));
+        main_b.let_(entry, Prim::MakeClosure(crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY), FnId(1), vec![]));
         main_b.set_terminator(entry, Term::Halt(Var(0)));
         let m = finish(vec![main_b, fn_halting(1, "lambda")]);
         let r = reachable_fns(&m);

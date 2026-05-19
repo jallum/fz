@@ -2,9 +2,6 @@ use crate::fz_ir::{BitSizeIr, Block, BlockId, Cont, FnId, FnIr, Module, Prim, St
 use crate::ir_fuse::{subst_stmt, subst_term};
 use std::collections::{HashMap, HashSet};
 
-/// (caller_fn_idx, block_idx, callee, callee_args, cont_fn_id, cont_captured)
-type InlineWork = Vec<(usize, usize, FnId, Vec<Var>, FnId, Vec<Var>)>;
-
 const INLINE_BUDGET: usize = 8;
 const MAX_ITERATIONS: usize = 3;
 const GROWTH_CAP: usize = 4;
@@ -70,7 +67,7 @@ fn closure_targets(m: &Module) -> HashSet<FnId> {
     for f in &m.fns {
         for b in &f.blocks {
             for s in &b.stmts {
-                let Stmt::Let(_, Prim::MakeClosure(fid, _)) = s else {
+                let Stmt::Let(_, Prim::MakeClosure(_, fid, _)) = s else {
                     continue;
                 };
                 set.insert(*fid);
@@ -126,7 +123,7 @@ fn max_var_in_prim(p: &Prim) -> u32 {
                 v(*t);
             }
         }
-        Prim::MakeClosure(_, caps) => caps.iter().for_each(|x| v(*x)),
+        Prim::MakeClosure(_, _, caps) => caps.iter().for_each(|x| v(*x)),
         Prim::MakeMap(entries) => entries.iter().for_each(|(k, val)| {
             v(*k);
             v(*val);
@@ -169,6 +166,7 @@ fn max_var_in_term(t: &Term) -> u32 {
         Term::Goto(_, args) => args.iter().for_each(|x| v(*x)),
         Term::If { cond, .. } => v(*cond),
         Term::Call {
+            ident: _,
             args, continuation, ..
         } => {
             args.iter().for_each(|x| v(*x));
@@ -176,6 +174,7 @@ fn max_var_in_term(t: &Term) -> u32 {
         }
         Term::TailCall { args, .. } => args.iter().for_each(|x| v(*x)),
         Term::CallClosure {
+            ident: _,
             closure,
             args,
             continuation,
@@ -184,12 +183,12 @@ fn max_var_in_term(t: &Term) -> u32 {
             args.iter().for_each(|x| v(*x));
             continuation.captured.iter().for_each(|x| v(*x));
         }
-        Term::TailCallClosure { closure, args } => {
+        Term::TailCallClosure { closure, args, ident: _ } => {
             v(*closure);
             args.iter().for_each(|x| v(*x));
         }
         Term::Return(a) | Term::Halt(a) => v(*a),
-        Term::Receive { continuation } => continuation.captured.iter().for_each(|x| v(*x)),
+        Term::Receive { continuation, ident: _ } => continuation.captured.iter().for_each(|x| v(*x)),
     }
     m
 }
@@ -200,9 +199,18 @@ fn max_var_in_term(t: &Term) -> u32 {
 pub fn alpha_rename(callee: &FnIr, caller: &FnIr) -> FnIr {
     let var_shift = max_var(caller) + 1;
     let block_shift = max_block(caller) + 1;
+    let into_fn = caller.id;
 
     let shift_v = |v: Var| Var(v.0 + var_shift);
     let shift_b = |b: BlockId| BlockId(b.0 + block_shift);
+
+    // fz-kgk — when alpha-renaming a callee body into a caller, every
+    // call-shape Term and every MakeClosure stmt gets a FRESH ident via
+    // `fork_inlined`. Same source span, new identity. The cloned
+    // callsite is a distinct dispatch in the caller's per-spec view.
+    let fork = |parent: &crate::fz_ir::CallsiteIdent| -> crate::fz_ir::CallsiteIdent {
+        crate::fz_ir::CallsiteIdent::fork_inlined(parent, into_fn)
+    };
 
     let rename_prim = |p: &Prim| -> Prim {
         let sv = |v: Var| Var(v.0 + var_shift);
@@ -223,8 +231,8 @@ pub fn alpha_rename(callee: &FnIr, caller: &FnIr) -> FnIr {
             Prim::MakeList(els, tail) => {
                 Prim::MakeList(els.iter().map(|x| sv(*x)).collect(), tail.map(sv))
             }
-            Prim::MakeClosure(fid, caps) => {
-                Prim::MakeClosure(*fid, caps.iter().map(|x| sv(*x)).collect())
+            Prim::MakeClosure(ident, fid, caps) => {
+                Prim::MakeClosure(fork(ident), *fid, caps.iter().map(|x| sv(*x)).collect())
             }
             Prim::MakeMap(entries) => {
                 Prim::MakeMap(entries.iter().map(|(k, v)| (sv(*k), sv(*v))).collect())
@@ -302,39 +310,47 @@ pub fn alpha_rename(callee: &FnIr, caller: &FnIr) -> FnIr {
                 origin: *origin,
             },
             Term::Call {
+                ident,
                 callee,
                 args,
                 continuation,
             } => Term::Call {
+                ident: fork(ident),
                 callee: *callee,
                 args: args.iter().map(|x| sv(*x)).collect(),
                 continuation: rename_cont(continuation),
             },
             Term::TailCall {
+                ident,
                 callee,
                 args,
                 is_back_edge,
             } => Term::TailCall {
+                ident: fork(ident),
                 callee: *callee,
                 args: args.iter().map(|x| sv(*x)).collect(),
                 is_back_edge: *is_back_edge,
             },
             Term::CallClosure {
+                ident,
                 closure,
                 args,
                 continuation,
             } => Term::CallClosure {
+                ident: fork(ident),
                 closure: sv(*closure),
                 args: args.iter().map(|x| sv(*x)).collect(),
                 continuation: rename_cont(continuation),
             },
-            Term::TailCallClosure { closure, args } => Term::TailCallClosure {
+            Term::TailCallClosure { closure, args, ident } => Term::TailCallClosure {
+                ident: fork(ident),
                 closure: sv(*closure),
                 args: args.iter().map(|x| sv(*x)).collect(),
             },
             Term::Return(a) => Term::Return(sv(*a)),
             Term::Halt(a) => Term::Halt(sv(*a)),
-            Term::Receive { continuation } => Term::Receive {
+            Term::Receive { continuation, ident } => Term::Receive {
+                ident: fork(ident),
                 continuation: rename_cont(continuation),
             },
         }
@@ -480,13 +496,23 @@ pub fn inline_calls_once(m: &mut Module) -> usize {
     let mut count = 0;
     let closure_fns = closure_targets(m);
 
-    let work: InlineWork = m
+    type InlineWorkItem = (
+        usize,
+        usize,
+        FnId,
+        Vec<Var>,
+        FnId,
+        Vec<Var>,
+        crate::fz_ir::CallsiteIdent,
+    );
+    let work: Vec<InlineWorkItem> = m
         .fns
         .iter()
         .enumerate()
         .flat_map(|(fi, f)| {
             f.blocks.iter().enumerate().filter_map(move |(bi, b)| {
                 if let Term::Call {
+                    ident,
                     callee,
                     args,
                     continuation,
@@ -499,6 +525,7 @@ pub fn inline_calls_once(m: &mut Module) -> usize {
                         args.clone(),
                         continuation.fn_id,
                         continuation.captured.clone(),
+                        ident.clone(),
                     ))
                 } else {
                     None
@@ -507,7 +534,7 @@ pub fn inline_calls_once(m: &mut Module) -> usize {
         })
         .collect();
 
-    for (fi, bi, callee_id, args, cont_fn, cont_captured) in work {
+    for (fi, bi, callee_id, args, cont_fn, cont_captured, call_ident) in work {
         if closure_fns.contains(&callee_id) {
             continue;
         }
@@ -534,11 +561,20 @@ pub fn inline_calls_once(m: &mut Module) -> usize {
 
         // Rewrite each Return(v') in the renamed body to
         // TailCall(K, [v', cont_captured...]).
+        //
+        // fz-kgk — Each rewritten TailCall is a NEW callsite (didn't
+        // exist before inline-splice). Mint a synthesized ident whose
+        // origin records the parent Call's identity, so the divergence
+        // narrative can name which Call's splice introduced this site.
         for b in &mut renamed.blocks {
             if let Term::Return(ret_val) = b.terminator {
                 let mut tail_args = vec![ret_val];
                 tail_args.extend_from_slice(&cont_captured);
                 b.terminator = Term::TailCall {
+                    ident: crate::fz_ir::CallsiteIdent::synthesize_from_return(
+                        &call_ident,
+                        call_ident.span(),
+                    ),
                     callee: cont_fn,
                     args: tail_args,
                     is_back_edge: false,
@@ -581,6 +617,7 @@ pub fn inline_single_use_conts_once(m: &mut Module) -> usize {
     for (fi, f) in m.fns.iter().enumerate() {
         for (bi, b) in f.blocks.iter().enumerate() {
             if let Term::TailCall {
+                ident: _,
                 callee,
                 is_back_edge,
                 ..
@@ -605,6 +642,7 @@ pub fn inline_single_use_conts_once(m: &mut Module) -> usize {
         for (bi, b) in f.blocks.iter().enumerate() {
             let k = match &b.terminator {
                 Term::Call {
+                    ident: _,
                     callee,
                     continuation,
                     ..
@@ -613,7 +651,7 @@ pub fn inline_single_use_conts_once(m: &mut Module) -> usize {
                     Some(continuation.fn_id)
                 }
                 Term::CallClosure { continuation, .. } => Some(continuation.fn_id),
-                Term::Receive { continuation } => Some(continuation.fn_id),
+                Term::Receive { continuation, ident: _ } => Some(continuation.fn_id),
                 _ => None,
             };
             if let Some(kid) = k {
@@ -693,14 +731,21 @@ pub fn inline_single_use_conts_once(m: &mut Module) -> usize {
         absorb_callee(&mut m.fns[caller_fi], caller_bi, renamed, &tail_args);
 
         // Convert the Term::Call at the Cont site to TailCall.
+        //
+        // fz-kgk — INHERIT the original Call/CallClosure's ident on the
+        // new TailCall/TailCallClosure. Same callsite, transformed
+        // terminator shape (cont was absorbed into caller, so the call
+        // can now hand its result back directly via TailCall).
         if let Some((m_fi, m_bi)) = cont_site {
             let new_term = match &m.fns[m_fi].blocks[m_bi].terminator {
-                Term::Call { callee, args, .. } => Some(Term::TailCall {
+                Term::Call { ident, callee, args, .. } => Some(Term::TailCall {
+                    ident: ident.clone(),
                     callee: *callee,
                     args: args.clone(),
                     is_back_edge: false,
                 }),
-                Term::CallClosure { closure, args, .. } => Some(Term::TailCallClosure {
+                Term::CallClosure { ident, closure, args, .. } => Some(Term::TailCallClosure {
+                    ident: ident.clone(),
                     closure: *closure,
                     args: args.clone(),
                 }),
@@ -786,6 +831,7 @@ mod tests {
         b.set_terminator(
             entry,
             Term::TailCall {
+                ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
                 callee,
                 args: vec![y],
                 is_back_edge: false,
@@ -803,6 +849,7 @@ mod tests {
         b.set_terminator(
             entry,
             Term::Call {
+                ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
                 callee,
                 args: vec![y],
                 continuation: Cont {
@@ -840,6 +887,7 @@ mod tests {
         b.set_terminator(
             entry,
             Term::Receive {
+                ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
                 continuation: Cont {
                     fn_id: FnId(7),
                     captured: vec![],
@@ -857,6 +905,7 @@ mod tests {
         b.set_terminator(
             entry,
             Term::CallClosure {
+                ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
                 closure: cl,
                 args: vec![],
                 continuation: Cont {
@@ -876,6 +925,7 @@ mod tests {
         b.set_terminator(
             entry,
             Term::TailCallClosure {
+                ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
                 closure: cl,
                 args: vec![],
             },
@@ -1077,6 +1127,7 @@ mod tests {
         b.set_terminator(
             entry,
             Term::TailCall {
+                ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
                 callee: target,
                 args: vec![v],
                 is_back_edge: false,
@@ -1142,6 +1193,7 @@ mod tests {
         b.set_terminator(
             entry,
             Term::Call {
+                ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
                 callee: FnId(1),
                 args: vec![y],
                 continuation: Cont {

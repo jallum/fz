@@ -157,9 +157,14 @@ fn assert_every_surviving_call_in_log(m: &Module, log: &ReducerLog) {
     for f in &m.fns {
         for b in &f.blocks {
             if let Some(slot) = slot_for_term(&b.terminator) {
+                let term_ident = b
+                    .terminator
+                    .ident()
+                    .expect("slot_for_term gave Some → terminator has ident")
+                    .clone();
                 let cid = CallsiteId {
                     caller: f.id,
-                    block: b.id,
+                    ident: term_ident,
                     slot,
                 };
                 // Stalled (reducer left this terminator alone) OR
@@ -236,7 +241,7 @@ fn reduce_terminator(
             let b = as_bool_lit(cd)?;
             Some(Term::Goto(if b { *then_b } else { *else_b }, vec![]))
         }
-        Term::TailCall { callee, args, .. } => {
+        Term::TailCall { ident, callee, args, .. } => {
             // fz-jg5.5: each top-level callsite gets a fresh ReduceCtx
             // with full budget. All-or-nothing: if try_reduce_call returns
             // None, no rewrite is committed.
@@ -244,17 +249,18 @@ fn reduce_terminator(
             let mut ctx = fresh_ctx(m);
             let Some(lit) = try_reduce_call(&mut ctx, *callee, args, env) else {
                 let reason = ctx.last_reason.unwrap_or(StalledReason::Other);
-                record_stalled(m, fn_idx, bid, slot, reason, log);
+                record_stalled(m, fn_idx, ident, slot, reason, log);
                 return None;
             };
             let Some(new_var) = descr_to_materialize(&lit, m, fn_idx, bid) else {
-                record_stalled(m, fn_idx, bid, slot, StalledReason::CalleeBodyShape, log);
+                record_stalled(m, fn_idx, ident, slot, StalledReason::CalleeBodyShape, log);
                 return None;
             };
-            record_consumed(m, fn_idx, bid, slot, lit, log);
+            record_consumed(m, fn_idx, ident, slot, lit, log);
             Some(Term::Return(new_var))
         }
         Term::Call {
+            ident,
             callee,
             args,
             continuation,
@@ -263,33 +269,36 @@ fn reduce_terminator(
             let mut ctx = fresh_ctx(m);
             let Some(lit) = try_reduce_call(&mut ctx, *callee, args, env) else {
                 let reason = ctx.last_reason.unwrap_or(StalledReason::Other);
-                record_stalled(m, fn_idx, bid, slot, reason, log);
+                record_stalled(m, fn_idx, ident, slot, reason, log);
                 return None;
             };
             let Some(new_var) = descr_to_materialize(&lit, m, fn_idx, bid) else {
-                record_stalled(m, fn_idx, bid, slot, StalledReason::CalleeBodyShape, log);
+                record_stalled(m, fn_idx, ident, slot, StalledReason::CalleeBodyShape, log);
                 return None;
             };
-            record_consumed(m, fn_idx, bid, slot, lit, log);
+            record_consumed(m, fn_idx, ident, slot, lit, log);
             let mut tail_args = vec![new_var];
             tail_args.extend(continuation.captured.iter().copied());
+            // fz-kgk — INHERIT the Call's ident on the new TailCall;
+            // same callsite, transformed terminator shape.
             Some(Term::TailCall {
+                ident: ident.clone(),
                 callee: continuation.fn_id,
                 args: tail_args,
                 is_back_edge: false,
             })
         }
         // fz-jg5.6: top-level closure-call reduction (mirror of walk_block).
-        Term::TailCallClosure { closure, args } => {
+        Term::TailCallClosure { ident, closure, args } => {
             let slot = slot.unwrap();
             let Some(cl_lit) = env.get(closure).and_then(|d| d.as_closure_lit()).cloned() else {
-                record_stalled(m, fn_idx, bid, slot, StalledReason::NoClosureLitTarget, log);
+                record_stalled(m, fn_idx, ident, slot, StalledReason::NoClosureLitTarget, log);
                 return None;
             };
             let mut all_descrs = cl_lit.captures.clone();
             for a in args {
                 let Some(d) = env.get(a).cloned() else {
-                    record_stalled(m, fn_idx, bid, slot, StalledReason::OpaqueArg, log);
+                    record_stalled(m, fn_idx, ident, slot, StalledReason::OpaqueArg, log);
                     return None;
                 };
                 all_descrs.push(d);
@@ -297,30 +306,31 @@ fn reduce_terminator(
             let mut ctx = fresh_ctx(m);
             let Some(lit) = try_reduce_call_with_descrs(&mut ctx, cl_lit.fn_id, &all_descrs) else {
                 let reason = ctx.last_reason.unwrap_or(StalledReason::Other);
-                record_stalled(m, fn_idx, bid, slot, reason, log);
+                record_stalled(m, fn_idx, ident, slot, reason, log);
                 return None;
             };
             let Some(new_var) = descr_to_materialize(&lit, m, fn_idx, bid) else {
-                record_stalled(m, fn_idx, bid, slot, StalledReason::CalleeBodyShape, log);
+                record_stalled(m, fn_idx, ident, slot, StalledReason::CalleeBodyShape, log);
                 return None;
             };
-            record_consumed(m, fn_idx, bid, slot, lit, log);
+            record_consumed(m, fn_idx, ident, slot, lit, log);
             Some(Term::Return(new_var))
         }
         Term::CallClosure {
+            ident,
             closure,
             args,
             continuation,
         } => {
             let slot = slot.unwrap();
             let Some(cl_lit) = env.get(closure).and_then(|d| d.as_closure_lit()).cloned() else {
-                record_stalled(m, fn_idx, bid, slot, StalledReason::NoClosureLitTarget, log);
+                record_stalled(m, fn_idx, ident, slot, StalledReason::NoClosureLitTarget, log);
                 return None;
             };
             let mut all_descrs = cl_lit.captures.clone();
             for a in args {
                 let Some(d) = env.get(a).cloned() else {
-                    record_stalled(m, fn_idx, bid, slot, StalledReason::OpaqueArg, log);
+                    record_stalled(m, fn_idx, ident, slot, StalledReason::OpaqueArg, log);
                     return None;
                 };
                 all_descrs.push(d);
@@ -328,17 +338,20 @@ fn reduce_terminator(
             let mut ctx = fresh_ctx(m);
             let Some(lit) = try_reduce_call_with_descrs(&mut ctx, cl_lit.fn_id, &all_descrs) else {
                 let reason = ctx.last_reason.unwrap_or(StalledReason::Other);
-                record_stalled(m, fn_idx, bid, slot, reason, log);
+                record_stalled(m, fn_idx, ident, slot, reason, log);
                 return None;
             };
             let Some(new_var) = descr_to_materialize(&lit, m, fn_idx, bid) else {
-                record_stalled(m, fn_idx, bid, slot, StalledReason::CalleeBodyShape, log);
+                record_stalled(m, fn_idx, ident, slot, StalledReason::CalleeBodyShape, log);
                 return None;
             };
-            record_consumed(m, fn_idx, bid, slot, lit, log);
+            record_consumed(m, fn_idx, ident, slot, lit, log);
             let mut tail_args = vec![new_var];
             tail_args.extend(continuation.captured.iter().copied());
+            // fz-kgk — INHERIT the CallClosure's ident on the new
+            // TailCall; same callsite, transformed terminator shape.
             Some(Term::TailCall {
+                ident: ident.clone(),
                 callee: continuation.fn_id,
                 args: tail_args,
                 is_back_edge: false,
@@ -355,7 +368,7 @@ fn reduce_terminator(
 fn record_stalled(
     m: &Module,
     fn_idx: usize,
-    block: BlockId,
+    ident: &crate::fz_ir::CallsiteIdent,
     slot: EmitSlot,
     reason: StalledReason,
     log: &mut ReducerLog,
@@ -363,7 +376,7 @@ fn record_stalled(
     let caller = m.fns[fn_idx].id;
     let cid = CallsiteId {
         caller,
-        block,
+        ident: ident.clone(),
         slot,
     };
     // Do not overwrite if a Consumed/Stalled entry is already there —
@@ -380,7 +393,7 @@ fn record_stalled(
 fn record_consumed(
     m: &Module,
     fn_idx: usize,
-    block: BlockId,
+    ident: &crate::fz_ir::CallsiteIdent,
     slot: EmitSlot,
     result: Descr,
     log: &mut ReducerLog,
@@ -388,7 +401,7 @@ fn record_consumed(
     let caller = m.fns[fn_idx].id;
     let cid = CallsiteId {
         caller,
-        block,
+        ident: ident.clone(),
         slot,
     };
     log.consumed.insert(cid, result);
@@ -601,6 +614,7 @@ fn walk_block(
             )
         }
         Term::TailCall {
+            ident: _,
             callee: tc_callee,
             args: tc_args,
             ..
@@ -609,6 +623,7 @@ fn walk_block(
         // its result feeds the cont as slot 0; treat the cont as a fn
         // taking [callee_result, ...captures] and reduce it too.
         Term::Call {
+            ident: _,
             callee: c_callee,
             args: c_args,
             continuation,
@@ -619,7 +634,7 @@ fn walk_block(
         // fz-jg5.6: closure-call reduction. When the closure operand has
         // a closure_lit(F, captures) Descr, dispatch to F directly with
         // [captures..., args...] as its input Descrs.
-        Term::TailCallClosure { closure, args } => {
+        Term::TailCallClosure { closure, args, ident: _ } => {
             let Some(cl_lit) = env.get(closure).and_then(|d| d.as_closure_lit()).cloned() else {
                 ctx.note(StalledReason::NoClosureLitTarget);
                 return None;
@@ -635,6 +650,7 @@ fn walk_block(
             try_reduce_call_with_descrs(ctx, cl_lit.fn_id, &all_descrs)
         }
         Term::CallClosure {
+            ident: _,
             closure,
             args,
             continuation,
@@ -813,7 +829,7 @@ fn descr_to_materialize(d: &Descr, m: &mut Module, fn_idx: usize, bid: BlockId) 
         let v = fresh_var(&m.fns[fn_idx]);
         block_mut(&mut m.fns[fn_idx], bid)
             .stmts
-            .push(Stmt::Let(v, Prim::MakeClosure(cl.fn_id, cap_vars)));
+            .push(Stmt::Let(v, Prim::MakeClosure(crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY), cl.fn_id, cap_vars)));
         return Some(v);
     }
     if let Some(elems) = as_tuple_lit(d) {
@@ -921,6 +937,7 @@ mod tests {
         main_b.set_terminator(
             m_entry,
             Term::TailCall {
+                ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
                 callee: FnId(0),
                 args: vec![c42],
                 is_back_edge: false,
@@ -969,6 +986,7 @@ mod tests {
         main_b.set_terminator(
             m_entry,
             Term::TailCall {
+                ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
                 callee: FnId(0),
                 args: vec![c21],
                 is_back_edge: false,
@@ -1012,6 +1030,7 @@ mod tests {
         main_b.set_terminator(
             m_entry,
             Term::TailCall {
+                ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
                 callee: FnId(0),
                 args: vec![p],
                 is_back_edge: false,
@@ -1100,6 +1119,7 @@ mod tests {
         b.set_terminator(
             recur,
             Term::TailCall {
+                ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
                 callee: FnId(0),
                 args: vec![dec],
                 is_back_edge: false,
@@ -1112,6 +1132,7 @@ mod tests {
         main_b.set_terminator(
             m_entry,
             Term::TailCall {
+                ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
                 callee: FnId(0),
                 args: vec![c5],
                 is_back_edge: false,
@@ -1161,6 +1182,7 @@ mod tests {
         b.set_terminator(
             recur,
             Term::TailCall {
+                ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
                 callee: FnId(0),
                 args: vec![dec],
                 is_back_edge: false,
@@ -1173,6 +1195,7 @@ mod tests {
         main_b.set_terminator(
             m_entry,
             Term::TailCall {
+                ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
                 callee: FnId(0),
                 args: vec![c100k],
                 is_back_edge: false,
@@ -1220,6 +1243,7 @@ mod tests {
         e.set_terminator(
             e_odd,
             Term::TailCall {
+                ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
                 callee: FnId(1),
                 args: vec![dec_e],
                 is_back_edge: false,
@@ -1242,6 +1266,7 @@ mod tests {
         o.set_terminator(
             o_even,
             Term::TailCall {
+                ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
                 callee: FnId(0),
                 args: vec![dec_o],
                 is_back_edge: false,
@@ -1254,6 +1279,7 @@ mod tests {
         main_b.set_terminator(
             m_entry,
             Term::TailCall {
+                ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
                 callee: FnId(0),
                 args: vec![c4],
                 is_back_edge: false,
@@ -1305,6 +1331,7 @@ mod tests {
         f_b.set_terminator(
             f_entry,
             Term::TailCall {
+                ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
                 callee: FnId(0),
                 args: vec![x_f],
                 is_back_edge: false,
@@ -1317,6 +1344,7 @@ mod tests {
         main_b.set_terminator(
             m_entry,
             Term::TailCall {
+                ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
                 callee: FnId(1),
                 args: vec![c5],
                 is_back_edge: false,
@@ -1364,9 +1392,11 @@ mod tests {
         let mut main_b = FnBuilder::new(FnId(1), "main");
         let x_main = main_b.fresh_var();
         let m_entry = main_b.block(vec![x_main]);
+        let stall_ident = crate::fz_ir::CallsiteIdent::synthetic();
         main_b.set_terminator(
             m_entry,
             Term::TailCall {
+                ident: stall_ident.clone(),
                 callee: FnId(0),
                 args: vec![x_main],
                 is_back_edge: false,
@@ -1381,7 +1411,7 @@ mod tests {
 
         let cid = CallsiteId {
             caller: FnId(1),
-            block: m_entry,
+            ident: stall_ident,
             slot: EmitSlot::Direct,
         };
         assert!(log.stalled.contains_key(&cid));
@@ -1409,9 +1439,11 @@ mod tests {
         let mut main_b = FnBuilder::new(FnId(1), "main");
         let m_entry = main_b.block(vec![]);
         let c42 = main_b.let_(m_entry, Prim::Const(Const::Int(42)));
+        let consumed_ident = crate::fz_ir::CallsiteIdent::synthetic();
         main_b.set_terminator(
             m_entry,
             Term::TailCall {
+                ident: consumed_ident.clone(),
                 callee: FnId(0),
                 args: vec![c42],
                 is_back_edge: false,
@@ -1426,7 +1458,7 @@ mod tests {
 
         let cid = CallsiteId {
             caller: FnId(1),
-            block: m_entry,
+            ident: consumed_ident,
             slot: EmitSlot::Direct,
         };
         match log.consumed.get(&cid) {
@@ -1456,6 +1488,7 @@ mod tests {
         main_b.set_terminator(
             m_entry,
             Term::TailCall {
+                ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
                 callee: FnId(0),
                 args: vec![c1, c2],
                 is_back_edge: false,
@@ -1510,6 +1543,7 @@ mod tests {
         main_b.set_terminator(
             m_entry,
             Term::TailCall {
+                ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
                 callee: FnId(0),
                 args: vec![],
                 is_back_edge: false,

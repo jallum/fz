@@ -122,6 +122,7 @@ pub fn block_callsites<'a>(
     let mut out: Vec<BlockCallsite<'a>> = Vec::new();
     match term {
         Term::Call {
+            ident: _,
             callee,
             args,
             continuation,
@@ -154,6 +155,7 @@ pub fn block_callsites<'a>(
             });
         }
         Term::CallClosure {
+            ident: _,
             closure,
             args,
             continuation,
@@ -170,10 +172,10 @@ pub fn block_callsites<'a>(
                 },
             });
         }
-        Term::TailCallClosure { closure, args } => {
+        Term::TailCallClosure { closure, args, ident: _ } => {
             push_closure_call(&mut out, *closure, args, env, fn_constants);
         }
-        Term::Receive { continuation } => {
+        Term::Receive { continuation, ident: _ } => {
             out.push(BlockCallsite {
                 slot: EmitSlot::Cont,
                 kind: CallsiteKind::Cont {
@@ -266,6 +268,7 @@ mod tests {
     #[test]
     fn tail_call_yields_direct_only() {
         let t = Term::TailCall {
+            ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
             callee: FnId(7),
             args: vec![Var(1), Var(2)],
             is_back_edge: false,
@@ -287,6 +290,7 @@ mod tests {
     #[test]
     fn call_yields_direct_then_cont() {
         let t = Term::Call {
+            ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
             callee: FnId(5),
             args: vec![Var(1)],
             continuation: Cont {
@@ -315,6 +319,7 @@ mod tests {
     #[test]
     fn tail_call_closure_unresolved_yields_nothing() {
         let t = Term::TailCallClosure {
+            ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
             closure: Var(3),
             args: vec![Var(1)],
         };
@@ -327,6 +332,7 @@ mod tests {
     #[test]
     fn tail_call_closure_fn_constants_yields_known() {
         let t = Term::TailCallClosure {
+            ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
             closure: Var(3),
             args: vec![Var(1)],
         };
@@ -341,6 +347,7 @@ mod tests {
     #[test]
     fn call_closure_yields_cont_when_closure_unresolved() {
         let t = Term::CallClosure {
+            ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
             closure: Var(3),
             args: vec![Var(1)],
             continuation: Cont {
@@ -358,6 +365,7 @@ mod tests {
     #[test]
     fn receive_yields_cont_with_receive_source() {
         let t = Term::Receive {
+            ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
             continuation: Cont {
                 fn_id: FnId(9),
                 captured: vec![],
@@ -380,6 +388,7 @@ mod tests {
     fn slot_for_term_routes_each_kind() {
         assert!(matches!(
             slot_for_term(&Term::TailCall {
+                ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
                 callee: FnId(0),
                 args: vec![],
                 is_back_edge: false
@@ -388,6 +397,7 @@ mod tests {
         ));
         assert!(matches!(
             slot_for_term(&Term::TailCallClosure {
+                ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
                 closure: Var(0),
                 args: vec![]
             }),

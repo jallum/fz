@@ -176,7 +176,7 @@ pub fn fold_prim(prim: &Prim, env: &HashMap<Var, Descr>, atom_names: &[String]) 
         // all literal, the closure Var has a closure_lit(F, captures) Descr.
         // The reducer's walk_block uses this to dispatch CallClosure /
         // TailCallClosure to F directly.
-        Prim::MakeClosure(fn_id, captured) => fold_make_closure(*fn_id, captured, env),
+        Prim::MakeClosure(_, fn_id, captured) => fold_make_closure(*fn_id, captured, env),
         // Other Prims are not foldable via the Descr lattice in v1.
         Prim::Extern(..)
         | Prim::AllocStruct(..)

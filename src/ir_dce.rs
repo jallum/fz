@@ -43,6 +43,7 @@ pub fn dce_module_level(m: &mut Module) {
         for block in &m.fns[fi].blocks {
             match &block.terminator {
                 Term::Call {
+                    ident: _,
                     callee,
                     continuation,
                     ..
@@ -56,14 +57,14 @@ pub fn dce_module_level(m: &mut Module) {
                 Term::CallClosure { continuation, .. } => {
                     queue.push(continuation.fn_id);
                 }
-                Term::Receive { continuation } => {
+                Term::Receive { continuation, ident: _ } => {
                     queue.push(continuation.fn_id);
                 }
                 _ => {}
             }
             for stmt in &block.stmts {
                 match stmt {
-                    Stmt::Let(_, Prim::MakeClosure(fid, _)) => queue.push(*fid),
+                    Stmt::Let(_, Prim::MakeClosure(_, fid, _)) => queue.push(*fid),
                     Stmt::Let(_, Prim::Extern(eid, _)) => {
                         reachable_externs.insert(*eid);
                     }
@@ -214,7 +215,7 @@ fn collect_prim_vars(p: &Prim, used: &mut HashSet<Var>) {
                 used.insert(*t);
             }
         }
-        Prim::MakeClosure(_, caps) => {
+        Prim::MakeClosure(_, _, caps) => {
             for v in caps {
                 used.insert(*v);
             }
@@ -280,6 +281,7 @@ fn collect_term_vars(t: &Term, used: &mut HashSet<Var>) {
             used.insert(*cond);
         }
         Term::Call {
+            ident: _,
             args, continuation, ..
         } => {
             for v in args {
@@ -295,6 +297,7 @@ fn collect_term_vars(t: &Term, used: &mut HashSet<Var>) {
             }
         }
         Term::CallClosure {
+            ident: _,
             closure,
             args,
             continuation,
@@ -307,7 +310,7 @@ fn collect_term_vars(t: &Term, used: &mut HashSet<Var>) {
                 used.insert(*v);
             }
         }
-        Term::TailCallClosure { closure, args } => {
+        Term::TailCallClosure { closure, args, ident: _ } => {
             used.insert(*closure);
             for v in args {
                 used.insert(*v);
@@ -316,7 +319,7 @@ fn collect_term_vars(t: &Term, used: &mut HashSet<Var>) {
         Term::Return(a) | Term::Halt(a) => {
             used.insert(*a);
         }
-        Term::Receive { continuation } => {
+        Term::Receive { continuation, ident: _ } => {
             for v in &continuation.captured {
                 used.insert(*v);
             }
@@ -395,6 +398,7 @@ mod tests {
             bm.set_terminator(
                 entry,
                 Term::Call {
+                    ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
                     callee: leaf_id,
                     args: vec![nil_v],
                     continuation: cont,
@@ -610,6 +614,7 @@ mod tests {
         b.set_terminator(
             entry,
             Term::Call {
+                ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
                 callee: cont_fn,
                 args: vec![live],
                 continuation: Cont {
