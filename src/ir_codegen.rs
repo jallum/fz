@@ -2602,36 +2602,44 @@ pub fn compile_with_backend<B: Backend>(
     // fn also force the cont's slot 0 to FzValue.
     let mut tagged_slot0_cont_specs: std::collections::HashSet<u32> =
         std::collections::HashSet::new();
+    // fz-uwq.8 — read the producer→cont dispatch facts from
+    // `FnTypes.dispatches[Cont]` instead of re-walking terminators and
+    // calling `cont_input_key` + `spec_registry.resolve`. The typer
+    // already named which `(cont_fn, cont_key)` each Cont site
+    // dispatches to (per spec); we just need to know which of those
+    // producers are Tagged-returning, then look up the cont's SpecId.
     for sid_caller in 0..spec_count {
         let Some(caller_idx) = spec_fnidx[sid_caller] else {
             continue;
         };
         let caller = &module.fns[caller_idx];
-        let caller_ft = spec_fn_types[sid_caller].expect("non-sentinel spec must have FnTypes");
+        // Sentinel slots (closure-target floor with no typer body)
+        // have no dispatches.
+        let Some(caller_ft) = spec_fn_types[sid_caller] else {
+            continue;
+        };
         for blk in &caller.blocks {
-            let cont = match &blk.terminator {
-                Term::Call {
-                    callee,
-                    continuation,
-                    ..
-                } => {
-                    if tagged_return_fns.contains(callee) {
-                        Some(continuation)
-                    } else {
-                        None
-                    }
-                }
-                Term::CallClosure { continuation, .. } | Term::Receive { continuation } => {
-                    Some(continuation)
-                }
-                _ => None,
+            // Which terminators produce a Tagged value into their cont's
+            // slot 0? CallClosure / Receive always (opaque closure /
+            // mailbox produce Tagged); Call only when the callee is in
+            // `tagged_return_fns` (fz-ntz).
+            let produces_tagged_slot0 = match &blk.terminator {
+                Term::Call { callee, .. } => tagged_return_fns.contains(callee),
+                Term::CallClosure { .. } | Term::Receive { .. } => true,
+                _ => false,
             };
-            if let Some(cont) = cont {
-                let key =
-                    crate::ir_typer::cont_input_key(blk, cont, caller_ft, module, &module_types);
-                if let Some(sid) = spec_registry.resolve(cont.fn_id, &key) {
-                    tagged_slot0_cont_specs.insert(sid.0);
-                }
+            if !produces_tagged_slot0 {
+                continue;
+            }
+            let cid = crate::fz_ir::CallsiteId {
+                caller: caller.id,
+                block: blk.id,
+                slot: crate::fz_ir::EmitSlot::Cont,
+            };
+            if let Some((cont_fn, cont_key)) = caller_ft.dispatches.get(&cid)
+                && let Some(sid) = spec_registry.resolve(*cont_fn, cont_key)
+            {
+                tagged_slot0_cont_specs.insert(sid.0);
             }
         }
     }
