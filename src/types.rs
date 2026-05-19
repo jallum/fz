@@ -792,6 +792,91 @@ impl Descr {
         if it.next().is_some() { None } else { Some(first) }
     }
 
+    /// Widen literal-set axes (ints / floats / strs) to their cofinite top.
+    /// Singleton values become their respective universes (`int_lit(42)`
+    /// becomes `int()`, etc.); structural axes are untouched.
+    ///
+    /// Atoms intentionally are NOT widened — atom values are nominal
+    /// singletons, not points in a numeric universe; widening them would
+    /// erase identity that downstream consumers depend on. Likewise basic,
+    /// opaques, and vars (nominal axes).
+    ///
+    /// For deep widening across nested Descrs inside tuples/lists/funcs/
+    /// maps, compose with `map_nested_descrs` and a recursive callback.
+    pub fn widen_literals(&self) -> Descr {
+        let mut out = self.clone();
+        if !out.ints.is_none() && !out.ints.is_any() {
+            out.ints = IntSet::any();
+        }
+        if !out.floats.is_none() && !out.floats.is_any() {
+            out.floats = FloatSet::any();
+        }
+        if !out.strs.is_none() && !out.strs.is_any() {
+            out.strs = StrSet::any();
+        }
+        out
+    }
+
+    /// Apply `f` to every nested `Descr` reachable through this Descr's
+    /// structural axes (tuple elements, list element, arrow args/ret,
+    /// closure captures, map values). The structural shape itself is
+    /// preserved; only the contained Descrs are transformed.
+    ///
+    /// Consuming receiver to avoid an extra clone when composed with
+    /// `widen_literals` (typical caller: `d.widen_literals().map_nested_descrs(...)`).
+    pub fn map_nested_descrs(mut self, f: &impl Fn(&Descr) -> Descr) -> Descr {
+        let map_tuple_sig = |s: TupleSig| TupleSig {
+            elems: s.elems.iter().map(f).collect(),
+        };
+        let map_list_sig = |s: ListSig| ListSig {
+            elem: Box::new(f(&s.elem)),
+        };
+        let map_arrow_sig = |s: ArrowSig| ArrowSig {
+            args: s.args.iter().map(f).collect(),
+            ret: Box::new(f(&s.ret)),
+            lit: s.lit.map(|l| ClosureLit {
+                fn_id: l.fn_id,
+                captures: l.captures.iter().map(f).collect(),
+            }),
+        };
+        let map_map_sig = |s: MapSig| MapSig {
+            fields: s.fields.into_iter().map(|(k, v)| (k, f(&v))).collect(),
+        };
+        self.tuples = self
+            .tuples
+            .into_iter()
+            .map(|c| Conj {
+                pos: c.pos.into_iter().map(map_tuple_sig).collect(),
+                neg: c.neg.into_iter().map(map_tuple_sig).collect(),
+            })
+            .collect();
+        self.lists = self
+            .lists
+            .into_iter()
+            .map(|c| Conj {
+                pos: c.pos.into_iter().map(map_list_sig).collect(),
+                neg: c.neg.into_iter().map(map_list_sig).collect(),
+            })
+            .collect();
+        self.funcs = self
+            .funcs
+            .into_iter()
+            .map(|c| Conj {
+                pos: c.pos.into_iter().map(map_arrow_sig).collect(),
+                neg: c.neg.into_iter().map(map_arrow_sig).collect(),
+            })
+            .collect();
+        self.maps = self
+            .maps
+            .into_iter()
+            .map(|c| Conj {
+                pos: c.pos.into_iter().map(map_map_sig).collect(),
+                neg: c.neg.into_iter().map(map_map_sig).collect(),
+            })
+            .collect();
+        self
+    }
+
     /// Top of the string/binary axis. Promoted from test-only in
     /// fz-ul4.31.1 to let the type-expression parser lower `binary` to
     /// the correct Descr. (`dead_code` allowed: production consumers

@@ -132,85 +132,15 @@ pub fn list_element_type(scrut: &Descr) -> Descr {
 // Widening (for fixed-point termination)
 // ----------------------------------------------------------------------
 
+/// Widen a Descr toward the fixed point: literal-set axes widen to
+/// their cofinite tops (`int_lit(42)` → `int()`); structural axes
+/// preserve shape and their nested Descrs are widened recursively.
+/// Atoms are intentionally not widened — they are nominal singletons.
+///
+/// fz-ul4.27.22.8 — closure captures widen elementwise via
+/// `map_nested_descrs`; the FnId identity is preserved, so widening at
+/// SCC fixpoints loses literal precision but keeps the closure-target
+/// FnId for per-callsite singleton resolution post-widen.
 pub fn widen(d: &Descr) -> Descr {
-    let mut out = d.clone();
-    if !out.ints.is_none() && !out.ints.is_any() {
-        out.ints = IntSet::any();
-    }
-    if !out.floats.is_none() && !out.floats.is_any() {
-        out.floats = FloatSet::any();
-    }
-    if !out.strs.is_none() && !out.strs.is_any() {
-        out.strs = StrSet::any();
-    }
-    out.tuples = out.tuples.into_iter().map(widen_tuple).collect();
-    out.lists = out.lists.into_iter().map(widen_list).collect();
-    out.funcs = out.funcs.into_iter().map(widen_func).collect();
-    out.maps = out.maps.into_iter().map(widen_map).collect();
-    out
-}
-fn widen_map_sig(s: MapSig) -> MapSig {
-    MapSig {
-        fields: s.fields.into_iter().map(|(k, v)| (k, widen(&v))).collect(),
-    }
-}
-fn widen_map(c: Conj<MapSig>) -> Conj<MapSig> {
-    Conj {
-        pos: c.pos.into_iter().map(widen_map_sig).collect(),
-        neg: c.neg.into_iter().map(widen_map_sig).collect(),
-    }
-}
-fn widen_tuple(c: Conj<TupleSig>) -> Conj<TupleSig> {
-    Conj {
-        pos: c
-            .pos
-            .into_iter()
-            .map(|s| TupleSig {
-                elems: s.elems.iter().map(widen).collect(),
-            })
-            .collect(),
-        neg: c
-            .neg
-            .into_iter()
-            .map(|s| TupleSig {
-                elems: s.elems.iter().map(widen).collect(),
-            })
-            .collect(),
-    }
-}
-fn widen_list(c: Conj<ListSig>) -> Conj<ListSig> {
-    Conj {
-        pos: c
-            .pos
-            .into_iter()
-            .map(|s| ListSig {
-                elem: Box::new(widen(&s.elem)),
-            })
-            .collect(),
-        neg: c
-            .neg
-            .into_iter()
-            .map(|s| ListSig {
-                elem: Box::new(widen(&s.elem)),
-            })
-            .collect(),
-    }
-}
-fn widen_func(c: Conj<ArrowSig>) -> Conj<ArrowSig> {
-    let widen_sig = |s: ArrowSig| ArrowSig {
-        args: s.args.iter().map(widen).collect(),
-        ret: Box::new(widen(&s.ret)),
-        // fz-ul4.27.22.8 — widen capture Descrs elementwise; preserve
-        // FnId identity. Widening at SCC fixpoints loses literal precision
-        // (int_lit(21) → int) but keeps the closure-target FnId, so
-        // per-callsite singleton resolution still fires post-widen.
-        lit: s.lit.map(|l| crate::types::ClosureLit {
-            fn_id: l.fn_id,
-            captures: l.captures.iter().map(widen).collect(),
-        }),
-    };
-    Conj {
-        pos: c.pos.into_iter().map(widen_sig).collect(),
-        neg: c.neg.into_iter().map(widen_sig).collect(),
-    }
+    d.widen_literals().map_nested_descrs(&widen)
 }
