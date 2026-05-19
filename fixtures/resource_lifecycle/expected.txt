@@ -1,0 +1,7 @@
+10
+20
+30
+:before
+dtor:30
+dtor:20
+dtor:10
