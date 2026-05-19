@@ -842,8 +842,7 @@ fn dump_outcomes_pipeline(src: String, source_name: String, show_all: bool) -> S
     //     later Emitted at the same `CallsiteId` — the `via <reason>`
     //     annotation on the Emitted row carries that lineage.
     let render_key = |k: &[crate::types::Descr]| descrs_str(k);
-    let mut emitted_cids: std::collections::HashSet<CallsiteId> =
-        std::collections::HashSet::new();
+    let mut emitted_cids: std::collections::HashSet<CallsiteId> = std::collections::HashSet::new();
     let mut rows: Vec<(CallsiteId, String, String)> = Vec::new();
     // Group dispatches by cid, then by target, with the set of callers
     // that picked each target. One row per (cid, target). When more
@@ -851,16 +850,17 @@ fn dump_outcomes_pipeline(src: String, source_name: String, show_all: bool) -> S
     // each row with the caller spec key so the divergence is visible.
     let mut grouped: std::collections::HashMap<
         CallsiteId,
-        std::collections::BTreeMap<
-            String,
-            std::collections::BTreeSet<String>,
-        >,
+        std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
     > = std::collections::HashMap::new();
     for ((caller_fid, caller_key), ft) in &mt.specs {
         for (cid, target) in &ft.dispatches {
             emitted_cids.insert(cid.clone());
-            let tgt_repr =
-                format!("{}#{} {}", fn_name(target.0), target.0.0, render_key(&target.1));
+            let tgt_repr = format!(
+                "{}#{} {}",
+                fn_name(target.0),
+                target.0.0,
+                render_key(&target.1)
+            );
             let caller_repr = format!("{}{}", fn_name(*caller_fid), render_key(caller_key));
             grouped
                 .entry(cid.clone())
@@ -884,14 +884,22 @@ fn dump_outcomes_pipeline(src: String, source_name: String, show_all: bool) -> S
             } else {
                 String::new()
             };
-            let lhs = format!("  @{} {}", render_span(cid.ident.span()), slot_str(cid.slot));
+            let lhs = format!(
+                "  @{} {}",
+                render_span(cid.ident.span()),
+                slot_str(cid.slot)
+            );
             let rhs = format!("Emitted ({}){}{}", tgt_repr, via, under);
             rows.push((cid.clone(), lhs, rhs));
         }
     }
     // Consumed rows (always shown — the reducer rewrote these away).
     for (cid, result) in &reducer_log.consumed {
-        let lhs = format!("  @{} {}", render_span(cid.ident.span()), slot_str(cid.slot));
+        let lhs = format!(
+            "  @{} {}",
+            render_span(cid.ident.span()),
+            slot_str(cid.slot)
+        );
         let rhs = format!("Consumed ({})", result);
         rows.push((cid.clone(), lhs, rhs));
     }
@@ -901,7 +909,11 @@ fn dump_outcomes_pipeline(src: String, source_name: String, show_all: bool) -> S
         if emitted_cids.contains(cid) {
             continue;
         }
-        let lhs = format!("  @{} {}", render_span(cid.ident.span()), slot_str(cid.slot));
+        let lhs = format!(
+            "  @{} {}",
+            render_span(cid.ident.span()),
+            slot_str(cid.slot)
+        );
         let rhs = format!("Stalled ({})", reason);
         rows.push((cid.clone(), lhs, rhs));
     }
@@ -959,7 +971,6 @@ fn dump_outcomes_pipeline(src: String, source_name: String, show_all: bool) -> S
     }
     out
 }
-
 
 fn compile_pipeline(src: String, source_name: String) -> Compiled {
     let mut sm = diag::SourceMap::new();

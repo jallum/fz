@@ -167,7 +167,9 @@ fn max_var_in_term(t: &Term) -> u32 {
         Term::If { cond, .. } => v(*cond),
         Term::Call {
             ident: _,
-            args, continuation, ..
+            args,
+            continuation,
+            ..
         } => {
             args.iter().for_each(|x| v(*x));
             continuation.captured.iter().for_each(|x| v(*x));
@@ -183,12 +185,19 @@ fn max_var_in_term(t: &Term) -> u32 {
             args.iter().for_each(|x| v(*x));
             continuation.captured.iter().for_each(|x| v(*x));
         }
-        Term::TailCallClosure { closure, args, ident: _ } => {
+        Term::TailCallClosure {
+            closure,
+            args,
+            ident: _,
+        } => {
             v(*closure);
             args.iter().for_each(|x| v(*x));
         }
         Term::Return(a) | Term::Halt(a) => v(*a),
-        Term::Receive { continuation, ident: _ } => continuation.captured.iter().for_each(|x| v(*x)),
+        Term::Receive {
+            continuation,
+            ident: _,
+        } => continuation.captured.iter().for_each(|x| v(*x)),
     }
     m
 }
@@ -342,14 +351,21 @@ pub fn alpha_rename(callee: &FnIr, caller: &FnIr) -> FnIr {
                 args: args.iter().map(|x| sv(*x)).collect(),
                 continuation: rename_cont(continuation),
             },
-            Term::TailCallClosure { closure, args, ident } => Term::TailCallClosure {
+            Term::TailCallClosure {
+                closure,
+                args,
+                ident,
+            } => Term::TailCallClosure {
                 ident: fork(ident),
                 closure: sv(*closure),
                 args: args.iter().map(|x| sv(*x)).collect(),
             },
             Term::Return(a) => Term::Return(sv(*a)),
             Term::Halt(a) => Term::Halt(sv(*a)),
-            Term::Receive { continuation, ident } => Term::Receive {
+            Term::Receive {
+                continuation,
+                ident,
+            } => Term::Receive {
                 ident: fork(ident),
                 continuation: rename_cont(continuation),
             },
@@ -651,7 +667,10 @@ pub fn inline_single_use_conts_once(m: &mut Module) -> usize {
                     Some(continuation.fn_id)
                 }
                 Term::CallClosure { continuation, .. } => Some(continuation.fn_id),
-                Term::Receive { continuation, ident: _ } => Some(continuation.fn_id),
+                Term::Receive {
+                    continuation,
+                    ident: _,
+                } => Some(continuation.fn_id),
                 _ => None,
             };
             if let Some(kid) = k {
@@ -738,13 +757,23 @@ pub fn inline_single_use_conts_once(m: &mut Module) -> usize {
         // can now hand its result back directly via TailCall).
         if let Some((m_fi, m_bi)) = cont_site {
             let new_term = match &m.fns[m_fi].blocks[m_bi].terminator {
-                Term::Call { ident, callee, args, .. } => Some(Term::TailCall {
+                Term::Call {
+                    ident,
+                    callee,
+                    args,
+                    ..
+                } => Some(Term::TailCall {
                     ident: ident.clone(),
                     callee: *callee,
                     args: args.clone(),
                     is_back_edge: false,
                 }),
-                Term::CallClosure { ident, closure, args, .. } => Some(Term::TailCallClosure {
+                Term::CallClosure {
+                    ident,
+                    closure,
+                    args,
+                    ..
+                } => Some(Term::TailCallClosure {
                     ident: ident.clone(),
                     closure: *closure,
                     args: args.clone(),

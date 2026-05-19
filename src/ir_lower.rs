@@ -703,7 +703,10 @@ fn debug_assert_unique_conts(module: &Module) {
             let cont_fn = match &b.terminator {
                 Term::Call { continuation, .. }
                 | Term::CallClosure { continuation, .. }
-                | Term::Receive { continuation, ident: _ } => continuation.fn_id,
+                | Term::Receive {
+                    continuation,
+                    ident: _,
+                } => continuation.fn_id,
                 _ => continue,
             };
             if let Some(prev) = seen.insert(cont_fn, (f.id, b.id)) {

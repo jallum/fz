@@ -30,8 +30,8 @@
 
 use crate::callsite_walk::{BlockCallsite, CallsiteKind, ContSource, block_callsites};
 use crate::fz_ir::{
-    BinOp, Block, BlockId, CallsiteId, Const, Cont, EmitSlot, FnId, FnIr, Module,
-    Prim, Stmt, Term, UnOp, Var, VecKindIr,
+    BinOp, Block, BlockId, CallsiteId, Const, Cont, EmitSlot, FnId, FnIr, Module, Prim, Stmt, Term,
+    UnOp, Var, VecKindIr,
 };
 use crate::ir_callgraph::{build_call_graph, entry_seeds};
 use crate::types::{Descr, MapKey};
@@ -403,7 +403,11 @@ fn opaque_consumer_arities(
             // Terminator-level opaque dispatch.
             let (closure_var, args): (Option<Var>, &[Var]) = match &b.terminator {
                 Term::CallClosure { closure, args, .. }
-                | Term::TailCallClosure { closure, args, ident: _ } => (Some(*closure), args.as_slice()),
+                | Term::TailCallClosure {
+                    closure,
+                    args,
+                    ident: _,
+                } => (Some(*closure), args.as_slice()),
                 _ => (None, &[]),
             };
             if let Some(cv) = closure_var
@@ -1069,7 +1073,11 @@ fn compute_return_for_spec(
                     .collect();
                 joined = joined.union(&lookup((*callee, arg_descrs)));
             }
-            Term::TailCallClosure { closure, args, ident: _ } => {
+            Term::TailCallClosure {
+                closure,
+                args,
+                ident: _,
+            } => {
                 if let Some(&target) = ft.fn_constants.get(closure) {
                     let target_fn = module.fn_by_id(target);
                     let np = target_fn.block(target_fn.entry).params.len();
@@ -1119,7 +1127,10 @@ fn compute_return_for_spec(
             }
             Term::Call { continuation, .. }
             | Term::CallClosure { continuation, .. }
-            | Term::Receive { continuation, ident: _ } => {
+            | Term::Receive {
+                continuation,
+                ident: _,
+            } => {
                 let cont_k = cont_key_for_spec(b, continuation, ft, module, effective_returns);
                 joined = joined.union(&lookup((continuation.fn_id, cont_k)));
             }
@@ -1339,8 +1350,8 @@ fn walk_spec_for_discovery(
         // any-keys get emitted. Kept here (not in callsite_walk) because
         // "fully_lit" is stricter than "has a lit" — only every-sig-lit
         // counts as resolved.
-        if let Term::CallClosure { closure, args, .. } | Term::TailCallClosure { closure, args, .. } =
-            &b.terminator
+        if let Term::CallClosure { closure, args, .. }
+        | Term::TailCallClosure { closure, args, .. } = &b.terminator
         {
             // fz-uwq.6 — a closure invocation is "indirect at runtime"
             // (and thus requires the lambda's `stub_fp` to point at an
@@ -1635,7 +1646,9 @@ pub fn rewrite_known_target_closures(module: &mut Module, types: &ModuleTypes) {
                 } => {
                     if let Some(Some(target)) = map.get(closure).copied() {
                         Some(Term::Call {
-                            ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
+                            ident: crate::fz_ir::CallsiteIdent::from_source(
+                                crate::diag::Span::DUMMY,
+                            ),
                             callee: target,
                             args: args.clone(),
                             continuation: continuation.clone(),
@@ -1644,10 +1657,16 @@ pub fn rewrite_known_target_closures(module: &mut Module, types: &ModuleTypes) {
                         None
                     }
                 }
-                Term::TailCallClosure { closure, args, ident: _ } => {
+                Term::TailCallClosure {
+                    closure,
+                    args,
+                    ident: _,
+                } => {
                     if let Some(Some(target)) = map.get(closure).copied() {
                         Some(Term::TailCall {
-                            ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
+                            ident: crate::fz_ir::CallsiteIdent::from_source(
+                                crate::diag::Span::DUMMY,
+                            ),
                             callee: target,
                             args: args.clone(),
                             is_back_edge: false,
@@ -2992,7 +3011,11 @@ pub fn reachable_specs(
                         worklist.push(sid.0);
                     }
                 }
-                Term::TailCallClosure { closure, args, ident: _ } => {
+                Term::TailCallClosure {
+                    closure,
+                    args,
+                    ident: _,
+                } => {
                     if let Some(&target) = ft.fn_constants.get(closure) {
                         let key = pad_to_arity(target, arg_descrs(args));
                         if let Some(sid) = spec_registry.resolve(target, &key) {
@@ -3000,7 +3023,10 @@ pub fn reachable_specs(
                         }
                     }
                 }
-                Term::Receive { continuation, ident: _ } => {
+                Term::Receive {
+                    continuation,
+                    ident: _,
+                } => {
                     let cont_key = cont_input_key(blk, continuation, ft, module, module_types);
                     if let Some(sid) = spec_registry.resolve(continuation.fn_id, &cont_key) {
                         worklist.push(sid.0);
@@ -3217,7 +3243,11 @@ pub fn pretty_module_types(m: &Module, t: &ModuleTypes) -> String {
                     ));
                     out.push_str(&format!(";              cont_key={}\n", descrs_str(&ck)));
                 }
-                Term::TailCallClosure { closure, args, ident: _ } => {
+                Term::TailCallClosure {
+                    closure,
+                    args,
+                    ident: _,
+                } => {
                     let arg_vars: Vec<String> =
                         args.iter().map(|v| format!("Var({})", v.0)).collect();
                     let target = ft.fn_constants.get(closure).copied();
@@ -3233,7 +3263,10 @@ pub fn pretty_module_types(m: &Module, t: &ModuleTypes) -> String {
                         target_str
                     ));
                 }
-                Term::Receive { continuation, ident: _ } => {
+                Term::Receive {
+                    continuation,
+                    ident: _,
+                } => {
                     let cap_vars: Vec<String> = continuation
                         .captured
                         .iter()

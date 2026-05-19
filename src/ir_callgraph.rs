@@ -52,7 +52,10 @@ pub fn build_call_graph(m: &Module) -> HashMap<FnId, HashSet<FnId>> {
                     edges.insert(continuation.fn_id);
                 }
                 Term::TailCallClosure { .. } => {}
-                Term::Receive { continuation, ident: _ } => {
+                Term::Receive {
+                    continuation,
+                    ident: _,
+                } => {
                     edges.insert(continuation.fn_id);
                 }
                 _ => {}
@@ -198,7 +201,10 @@ mod tests {
     fn make_closure_edge_followed() {
         let mut main_b = FnBuilder::new(FnId(0), "main");
         let entry = main_b.block(vec![]);
-        main_b.let_(entry, Prim::MakeClosure(crate::fz_ir::CallsiteIdent::synthetic(), FnId(1), vec![]));
+        main_b.let_(
+            entry,
+            Prim::MakeClosure(crate::fz_ir::CallsiteIdent::synthetic(), FnId(1), vec![]),
+        );
         main_b.set_terminator(entry, Term::Halt(Var(0)));
         let m = finish(vec![main_b, fn_halting(1, "lambda")]);
         let r = reachable_fns(&m);

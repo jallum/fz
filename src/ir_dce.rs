@@ -57,7 +57,10 @@ pub fn dce_module_level(m: &mut Module) {
                 Term::CallClosure { continuation, .. } => {
                     queue.push(continuation.fn_id);
                 }
-                Term::Receive { continuation, ident: _ } => {
+                Term::Receive {
+                    continuation,
+                    ident: _,
+                } => {
                     queue.push(continuation.fn_id);
                 }
                 _ => {}
@@ -282,7 +285,9 @@ fn collect_term_vars(t: &Term, used: &mut HashSet<Var>) {
         }
         Term::Call {
             ident: _,
-            args, continuation, ..
+            args,
+            continuation,
+            ..
         } => {
             for v in args {
                 used.insert(*v);
@@ -310,7 +315,11 @@ fn collect_term_vars(t: &Term, used: &mut HashSet<Var>) {
                 used.insert(*v);
             }
         }
-        Term::TailCallClosure { closure, args, ident: _ } => {
+        Term::TailCallClosure {
+            closure,
+            args,
+            ident: _,
+        } => {
             used.insert(*closure);
             for v in args {
                 used.insert(*v);
@@ -319,7 +328,10 @@ fn collect_term_vars(t: &Term, used: &mut HashSet<Var>) {
         Term::Return(a) | Term::Halt(a) => {
             used.insert(*a);
         }
-        Term::Receive { continuation, ident: _ } => {
+        Term::Receive {
+            continuation,
+            ident: _,
+        } => {
             for v in &continuation.captured {
                 used.insert(*v);
             }

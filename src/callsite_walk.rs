@@ -172,10 +172,17 @@ pub fn block_callsites<'a>(
                 },
             });
         }
-        Term::TailCallClosure { closure, args, ident: _ } => {
+        Term::TailCallClosure {
+            closure,
+            args,
+            ident: _,
+        } => {
             push_closure_call(&mut out, *closure, args, env, fn_constants);
         }
-        Term::Receive { continuation, ident: _ } => {
+        Term::Receive {
+            continuation,
+            ident: _,
+        } => {
             out.push(BlockCallsite {
                 slot: EmitSlot::Cont,
                 kind: CallsiteKind::Cont {

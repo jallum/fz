@@ -83,9 +83,7 @@ pub enum CallsiteOrigin {
     /// when splicing). The span is the original Return's source span;
     /// `call_parent` is the enclosing `Term::Call` whose continuation K
     /// we're invoking explicitly.
-    SynthesizedFromReturn {
-        call_parent: CallsiteIdent,
-    },
+    SynthesizedFromReturn { call_parent: CallsiteIdent },
     /// Test-only: ad-hoc Term built via FnBuilder without a real span.
     Synthetic,
 }

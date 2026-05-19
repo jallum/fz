@@ -241,7 +241,12 @@ fn reduce_terminator(
             let b = as_bool_lit(cd)?;
             Some(Term::Goto(if b { *then_b } else { *else_b }, vec![]))
         }
-        Term::TailCall { ident, callee, args, .. } => {
+        Term::TailCall {
+            ident,
+            callee,
+            args,
+            ..
+        } => {
             // fz-jg5.5: each top-level callsite gets a fresh ReduceCtx
             // with full budget. All-or-nothing: if try_reduce_call returns
             // None, no rewrite is committed.
@@ -289,10 +294,21 @@ fn reduce_terminator(
             })
         }
         // fz-jg5.6: top-level closure-call reduction (mirror of walk_block).
-        Term::TailCallClosure { ident, closure, args } => {
+        Term::TailCallClosure {
+            ident,
+            closure,
+            args,
+        } => {
             let slot = slot.unwrap();
             let Some(cl_lit) = env.get(closure).and_then(|d| d.as_closure_lit()).cloned() else {
-                record_stalled(m, fn_idx, ident, slot, StalledReason::NoClosureLitTarget, log);
+                record_stalled(
+                    m,
+                    fn_idx,
+                    ident,
+                    slot,
+                    StalledReason::NoClosureLitTarget,
+                    log,
+                );
                 return None;
             };
             let mut all_descrs = cl_lit.captures.clone();
@@ -324,7 +340,14 @@ fn reduce_terminator(
         } => {
             let slot = slot.unwrap();
             let Some(cl_lit) = env.get(closure).and_then(|d| d.as_closure_lit()).cloned() else {
-                record_stalled(m, fn_idx, ident, slot, StalledReason::NoClosureLitTarget, log);
+                record_stalled(
+                    m,
+                    fn_idx,
+                    ident,
+                    slot,
+                    StalledReason::NoClosureLitTarget,
+                    log,
+                );
                 return None;
             };
             let mut all_descrs = cl_lit.captures.clone();
@@ -634,7 +657,11 @@ fn walk_block(
         // fz-jg5.6: closure-call reduction. When the closure operand has
         // a closure_lit(F, captures) Descr, dispatch to F directly with
         // [captures..., args...] as its input Descrs.
-        Term::TailCallClosure { closure, args, ident: _ } => {
+        Term::TailCallClosure {
+            closure,
+            args,
+            ident: _,
+        } => {
             let Some(cl_lit) = env.get(closure).and_then(|d| d.as_closure_lit()).cloned() else {
                 ctx.note(StalledReason::NoClosureLitTarget);
                 return None;
@@ -837,9 +864,10 @@ fn descr_to_materialize(
         // folded by the reducer. Tag the ident with the triggering
         // callsite's span so the dump points at where the reduction
         // fired.
-        block_mut(&mut m.fns[fn_idx], bid)
-            .stmts
-            .push(Stmt::Let(v, Prim::make_closure(at_span, cl.fn_id, cap_vars)));
+        block_mut(&mut m.fns[fn_idx], bid).stmts.push(Stmt::Let(
+            v,
+            Prim::make_closure(at_span, cl.fn_id, cap_vars),
+        ));
         return Some(v);
     }
     if let Some(elems) = as_tuple_lit(d) {

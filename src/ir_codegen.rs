@@ -2102,8 +2102,7 @@ pub fn compile_with_backend<B: Backend>(
                                 spec_registry
                                     .iter()
                                     .find(|(s, fid, _)| {
-                                        *fid == *lam_fn_id
-                                            && spec_fnidx[s.0 as usize].is_some()
+                                        *fid == *lam_fn_id && spec_fnidx[s.0 as usize].is_some()
                                     })
                                     .map(|(s, _, _)| s.0)
                             })
@@ -2138,7 +2137,10 @@ pub fn compile_with_backend<B: Backend>(
                 match &b.terminator {
                     Term::Call { continuation, .. }
                     | Term::CallClosure { continuation, .. }
-                    | Term::Receive { continuation, ident: _ } => {
+                    | Term::Receive {
+                        continuation,
+                        ident: _,
+                    } => {
                         s.insert(continuation.fn_id);
                     }
                     _ => {}
@@ -2277,7 +2279,10 @@ pub fn compile_with_backend<B: Backend>(
                     natively_callable.contains(&continuation.fn_id)
                 }
                 Term::TailCallClosure { .. } => true,
-                Term::Receive { continuation, ident: _ } => natively_callable.contains(&continuation.fn_id),
+                Term::Receive {
+                    continuation,
+                    ident: _,
+                } => natively_callable.contains(&continuation.fn_id),
             });
             if !body_ok {
                 to_remove.push(f.id);
@@ -2530,7 +2535,11 @@ pub fn compile_with_backend<B: Backend>(
             };
             let f = &module.fns[idx];
             for b in &f.blocks {
-                if let Term::TailCallClosure { closure, args, ident: _ } = &b.terminator
+                if let Term::TailCallClosure {
+                    closure,
+                    args,
+                    ident: _,
+                } = &b.terminator
                     && tcc_sid(sid, closure, args).is_none()
                 {
                     set.insert(sid as u32);
@@ -2568,7 +2577,11 @@ pub fn compile_with_backend<B: Backend>(
                         .unwrap_or(callee.0);
                         set.contains(&csid)
                     }
-                    Term::TailCallClosure { closure, args, ident: _ } => {
+                    Term::TailCallClosure {
+                        closure,
+                        args,
+                        ident: _,
+                    } => {
                         match tcc_sid(sid, closure, args) {
                             Some(body_sid) => set.contains(&body_sid),
                             None => true, // unresolved is tagged by definition
@@ -2576,7 +2589,10 @@ pub fn compile_with_backend<B: Backend>(
                     }
                     Term::Call { continuation, .. }
                     | Term::CallClosure { continuation, .. }
-                    | Term::Receive { continuation, ident: _ } => {
+                    | Term::Receive {
+                        continuation,
+                        ident: _,
+                    } => {
                         // Cont's any-key spec id == continuation.fn_id.0.
                         set.contains(&continuation.fn_id.0)
                     }
@@ -2987,7 +3003,10 @@ pub fn compile_with_backend<B: Backend>(
                         }
                         Term::Call { continuation, .. }
                         | Term::CallClosure { continuation, .. }
-                        | Term::Receive { continuation, ident: _ } => {
+                        | Term::Receive {
+                            continuation,
+                            ident: _,
+                        } => {
                             // Cont's chain: under the caller's per-spec
                             // env, the cont's resolved sid via the typer's
                             // cont_input_key (already done elsewhere) —
@@ -2998,7 +3017,11 @@ pub fn compile_with_backend<B: Backend>(
                                 contributions.push(c);
                             }
                         }
-                        Term::TailCallClosure { closure, args, ident: _ } => {
+                        Term::TailCallClosure {
+                            closure,
+                            args,
+                            ident: _,
+                        } => {
                             // fz-ul4.27.22.12 — closure_lit-driven chain
                             // resolution. When this spec's env types the
                             // closure as `closure_lit(F, K)`, the resolved
@@ -4658,7 +4681,11 @@ fn emit_terminator<M: cranelift_module::Module>(
                 b.ins().return_(&[result]);
             }
         }
-        Term::TailCallClosure { closure, args, ident: _ } => {
+        Term::TailCallClosure {
+            closure,
+            args,
+            ident: _,
+        } => {
             // fz-cps.1.8 — Tail-CC indirect-call through cl+16 with
             // the caller's own cont (TCO via return_call_indirect).
             // Closure-target sig `(args..., self, cont) -> i64 tail`.
@@ -4787,7 +4814,10 @@ fn emit_terminator<M: cranelift_module::Module>(
                 }
             }
         }
-        Term::Receive { continuation, ident: _ } => {
+        Term::Receive {
+            continuation,
+            ident: _,
+        } => {
             // fz-cps.1.2 Receive cutover per docs/cps-in-clif.md §4.
             // Build the cont closure (kind=Closure, code_ptr at +16,
             // synthetic outer_cont at +24, user captures from +32),
@@ -5096,7 +5126,9 @@ fn compile_fn<M: cranelift_module::Module>(
             }
             Term::Call {
                 ident: _,
-                args, continuation, ..
+                args,
+                continuation,
+                ..
             } => {
                 note(args, &mut used_by_term);
                 note(&continuation.captured, &mut used_by_term);
@@ -5112,11 +5144,18 @@ fn compile_fn<M: cranelift_module::Module>(
                 note(args, &mut used_by_term);
                 note(&continuation.captured, &mut used_by_term);
             }
-            Term::TailCallClosure { closure, args, ident: _ } => {
+            Term::TailCallClosure {
+                closure,
+                args,
+                ident: _,
+            } => {
                 used_by_term.insert(closure.0);
                 note(args, &mut used_by_term);
             }
-            Term::Receive { continuation, ident: _ } => {
+            Term::Receive {
+                continuation,
+                ident: _,
+            } => {
                 note(&continuation.captured, &mut used_by_term);
             }
         }
@@ -5139,7 +5178,10 @@ fn compile_fn<M: cranelift_module::Module>(
             Term::TailCall { callee, .. } => !callee_is_native(callee.0),
             Term::TailCallClosure { .. } => false,
             Term::Goto(..) => false, // handled per-arg below
-            Term::Receive { continuation, ident: _ } => !callee_is_native(continuation.fn_id.0),
+            Term::Receive {
+                continuation,
+                ident: _,
+            } => !callee_is_native(continuation.fn_id.0),
             _ => true,
         };
         if needs_blanket_retag {
@@ -6440,7 +6482,8 @@ fn lower_prim<M: cranelift_module::Module>(
                 let inst = b.ins().call(alloc_fref, &[fid_v, nc_v, hk_v]);
                 let cl_ptr = b.inst_results(inst)[0];
                 let null = b.ins().iconst(types::I64, 0);
-                b.ins().store(MemFlags::trusted(), null, cl_ptr, HEADER_SIZE);
+                b.ins()
+                    .store(MemFlags::trusted(), null, cl_ptr, HEADER_SIZE);
                 return Ok(LowerOut::Tagged(cl_ptr));
             };
             // fz-cps.1.7 — zero-capture MakeClosure: look up the

@@ -171,7 +171,10 @@ pub fn natively_callable(m: &Module, parking: &HashSet<FnId>) -> HashSet<FnId> {
                 // the cont (if any) is also native.
                 Term::CallClosure { continuation, .. } => set.contains(&continuation.fn_id),
                 Term::TailCallClosure { .. } => true,
-                Term::Receive { continuation, ident: _ } => set.contains(&continuation.fn_id),
+                Term::Receive {
+                    continuation,
+                    ident: _,
+                } => set.contains(&continuation.fn_id),
             });
             // A cont must only be reachable from native Term::Call sites.
             // If any of its Term::Call callers has a callee that's not in
@@ -363,7 +366,10 @@ mod tests {
         // the closure might be invoked at a parking-reachable site.
         let mut b = FnBuilder::new(FnId(0), "packer");
         let entry = b.block(vec![]);
-        let cl = b.let_(entry, Prim::MakeClosure(crate::fz_ir::CallsiteIdent::synthetic(), FnId(1), vec![]));
+        let cl = b.let_(
+            entry,
+            Prim::MakeClosure(crate::fz_ir::CallsiteIdent::synthetic(), FnId(1), vec![]),
+        );
         b.set_terminator(entry, Term::Halt(cl));
         // Dummy target fn.
         let mut t = FnBuilder::new(FnId(1), "target");
@@ -381,7 +387,10 @@ mod tests {
         // the set — the closure target is opaque to this analysis.
         let mut b = FnBuilder::new(FnId(0), "invoker");
         let entry = b.block(vec![]);
-        let cl = b.let_(entry, Prim::MakeClosure(crate::fz_ir::CallsiteIdent::synthetic(), FnId(1), vec![]));
+        let cl = b.let_(
+            entry,
+            Prim::MakeClosure(crate::fz_ir::CallsiteIdent::synthetic(), FnId(1), vec![]),
+        );
         b.set_terminator(
             entry,
             Term::TailCallClosure {

@@ -569,7 +569,14 @@ fn closure_target_with_no_direct_callers_keeps_any_entry_params() {
 
     let mut mb = FnBuilder::new(FnId(1), "main");
     let mentry = mb.block(vec![]);
-    let cl = mb.let_(mentry, Prim::MakeClosure(crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY), FnId(0), vec![]));
+    let cl = mb.let_(
+        mentry,
+        Prim::MakeClosure(
+            crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
+            FnId(0),
+            vec![],
+        ),
+    );
     mb.set_terminator(mentry, Term::Halt(cl));
 
     let m = build_module(vec![wb.build(), mb.build()]);
@@ -597,7 +604,14 @@ fn closure_target_with_direct_caller_narrows_spec_and_drops_unused_any_key() {
 
     let mut mb = FnBuilder::new(FnId(1), "main");
     let mentry = mb.block(vec![]);
-    let _cl = mb.let_(mentry, Prim::MakeClosure(crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY), FnId(0), vec![]));
+    let _cl = mb.let_(
+        mentry,
+        Prim::MakeClosure(
+            crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
+            FnId(0),
+            vec![],
+        ),
+    );
     let lit = mb.let_(mentry, Prim::Const(Const::Int(42)));
     mb.set_terminator(
         mentry,

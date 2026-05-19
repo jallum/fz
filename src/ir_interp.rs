@@ -449,7 +449,10 @@ fn run_fn(module: &Module, mut fn_id: FnId, mut args: Vec<FzValue>) -> Result<In
                 }
                 Term::Return(v) => return Ok(InterpStep::Done(env_get(&env, *v)?)),
                 Term::Halt(v) => return Ok(InterpStep::Done(env_get(&env, *v)?)),
-                Term::Receive { continuation, ident: _ } => {
+                Term::Receive {
+                    continuation,
+                    ident: _,
+                } => {
                     let cap_vals = collect(&env, &continuation.captured)?;
                     match fz_runtime::process::current_process().mailbox.pop_front() {
                         Some(msg) => {

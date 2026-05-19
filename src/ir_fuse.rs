@@ -295,14 +295,21 @@ pub(crate) fn subst_term(t: &Term, subst: &HashMap<Var, Var>) -> Term {
             args: args.iter().map(|x| sv(*x)).collect(),
             continuation: subst_cont(continuation, subst),
         },
-        Term::TailCallClosure { closure, args, ident } => Term::TailCallClosure {
+        Term::TailCallClosure {
+            closure,
+            args,
+            ident,
+        } => Term::TailCallClosure {
             ident: ident.clone(),
             closure: sv(*closure),
             args: args.iter().map(|x| sv(*x)).collect(),
         },
         Term::Return(a) => Term::Return(sv(*a)),
         Term::Halt(a) => Term::Halt(sv(*a)),
-        Term::Receive { continuation, ident } => Term::Receive {
+        Term::Receive {
+            continuation,
+            ident,
+        } => Term::Receive {
             ident: ident.clone(),
             continuation: subst_cont(continuation, subst),
         },
