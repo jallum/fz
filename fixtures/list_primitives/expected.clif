@@ -295,7 +295,7 @@ block4:
 ; fn foldl_s26
     ;   @spec   foldl(&fn17[]:(any, any) -> any, 0, list(1 | 2 | 3 | 4 | 5)) -> int
     ;   @key    [&fn17[]:(any, any) -> any, 0, list(1 | 2 | 3 | 4 | 5)]
-    ;   @abi    (Tagged, RawInt, Tagged) -> RawInt
+    ;   @abi    (Tagged, RawInt, Tagged) -> Tagged
 function u0:0(i64, i64, i64, i64) -> i64 tail {
     sig0 = (i64, i64) -> i64 tail
     sig1 = (i64) system_v
@@ -315,46 +315,48 @@ function u0:0(i64, i64, i64, i64) -> i64 tail {
     brif v5, block1, block2
 
 block1:
-    v6 = load.i64 notrap aligned v3+16
-    return_call_indirect sig0, v6(v1, v3)
+    v6 = ishl_imm.i64 v1, 3
+    v7 = bor_imm v6, 1
+    v8 = load.i64 notrap aligned v3+16
+    return_call_indirect sig0, v8(v7, v3)
 
 block2:
-    v7 = iconst.i64 8
-    v8 = icmp.i64 eq v2, v7  ; v7 = 8    ;; v8 :: bool
-    brif v8, block3, block4
+    v9 = iconst.i64 8
+    v10 = icmp.i64 eq v2, v9  ; v9 = 8    ;; v10 :: bool
+    brif v10, block3, block4
 
 block3:
-    v9 = iconst.i64 26    ;; v9 :: :function_clause
-    call fn0(v9)  ; v9 = 26
-    v10 = iconst.i64 0
-    return v10  ; v10 = 0
+    v11 = iconst.i64 26    ;; v11 :: :function_clause
+    call fn0(v11)  ; v11 = 26
+    v12 = iconst.i64 0
+    return v12  ; v12 = 0
 
 block4:
-    v11 = load.i64 notrap aligned v2+16    ;; v11 :: 1 | 2 | 3 | 4 | 5
-    v12 = load.i64 notrap aligned v2+24    ;; v12 :: list(1 | 2 | 3 | 4 | 5)
-    v13 = sshr_imm v11, 3
-    v14 = iconst.i32 17
-    v15 = call fn2(v14)  ; v14 = 17
-    v16 = iconst.i32 38
-    v17 = iconst.i32 6
-    v18 = iconst.i32 0
-    v19 = call fn3(v16, v17, v18)  ; v16 = 38, v17 = 6, v18 = 0
-    v20 = func_addr.i64 fn4
-    store notrap aligned v20, v19+16
-    store.i64 notrap aligned v3, v19+24
-    store.i64 notrap aligned v0, v19+32
-    store.i64 notrap aligned v1, v19+40
-    v21 = sshr_imm v11, 3
-    store notrap aligned v21, v19+48
-    store notrap aligned v12, v19+56
-    store.i64 notrap aligned v0, v19+64
-    return_call fn1(v1, v13, v15, v19)
+    v13 = load.i64 notrap aligned v2+16    ;; v13 :: 1 | 2 | 3 | 4 | 5
+    v14 = load.i64 notrap aligned v2+24    ;; v14 :: list(1 | 2 | 3 | 4 | 5)
+    v15 = sshr_imm v13, 3
+    v16 = iconst.i32 17
+    v17 = call fn2(v16)  ; v16 = 17
+    v18 = iconst.i32 38
+    v19 = iconst.i32 6
+    v20 = iconst.i32 0
+    v21 = call fn3(v18, v19, v20)  ; v18 = 38, v19 = 6, v20 = 0
+    v22 = func_addr.i64 fn4
+    store notrap aligned v22, v21+16
+    store.i64 notrap aligned v3, v21+24
+    store.i64 notrap aligned v0, v21+32
+    store.i64 notrap aligned v1, v21+40
+    v23 = sshr_imm v13, 3
+    store notrap aligned v23, v21+48
+    store notrap aligned v14, v21+56
+    store.i64 notrap aligned v0, v21+64
+    return_call fn1(v1, v15, v17, v21)
 }
 
 ; fn foldl_s27
     ;   @spec   foldl(&fn17[]:(any, any) -> any, int, list(1 | 2 | 3 | 4 | 5)) -> int
     ;   @key    [&fn17[]:(any, any) -> any, int, list(1 | 2 | 3 | 4 | 5)]
-    ;   @abi    (Tagged, RawInt, Tagged) -> RawInt
+    ;   @abi    (Tagged, RawInt, Tagged) -> Tagged
 function u0:0(i64, i64, i64, i64) -> i64 tail {
     sig0 = (i64, i64) -> i64 tail
     sig1 = (i64) system_v
@@ -374,94 +376,104 @@ function u0:0(i64, i64, i64, i64) -> i64 tail {
     brif v5, block1, block2
 
 block1:
-    v6 = load.i64 notrap aligned v3+16
-    return_call_indirect sig0, v6(v1, v3)
+    v6 = ishl_imm.i64 v1, 3
+    v7 = bor_imm v6, 1
+    v8 = load.i64 notrap aligned v3+16
+    return_call_indirect sig0, v8(v7, v3)
 
 block2:
-    v7 = iconst.i64 8
-    v8 = icmp.i64 eq v2, v7  ; v7 = 8    ;; v8 :: bool
-    brif v8, block3, block4
+    v9 = iconst.i64 8
+    v10 = icmp.i64 eq v2, v9  ; v9 = 8    ;; v10 :: bool
+    brif v10, block3, block4
 
 block3:
-    v9 = iconst.i64 26    ;; v9 :: :function_clause
-    call fn0(v9)  ; v9 = 26
-    v10 = iconst.i64 0
-    return v10  ; v10 = 0
+    v11 = iconst.i64 26    ;; v11 :: :function_clause
+    call fn0(v11)  ; v11 = 26
+    v12 = iconst.i64 0
+    return v12  ; v12 = 0
 
 block4:
-    v11 = load.i64 notrap aligned v2+16    ;; v11 :: 1 | 2 | 3 | 4 | 5
-    v12 = load.i64 notrap aligned v2+24    ;; v12 :: list(1 | 2 | 3 | 4 | 5)
-    v13 = sshr_imm v11, 3
-    v14 = iconst.i32 17
-    v15 = call fn2(v14)  ; v14 = 17
-    v16 = iconst.i32 39
-    v17 = iconst.i32 6
-    v18 = iconst.i32 0
-    v19 = call fn3(v16, v17, v18)  ; v16 = 39, v17 = 6, v18 = 0
-    v20 = func_addr.i64 fn4
-    store notrap aligned v20, v19+16
-    store.i64 notrap aligned v3, v19+24
-    store.i64 notrap aligned v0, v19+32
-    store.i64 notrap aligned v1, v19+40
-    v21 = sshr_imm v11, 3
-    store notrap aligned v21, v19+48
-    store notrap aligned v12, v19+56
-    store.i64 notrap aligned v0, v19+64
-    return_call fn1(v1, v13, v15, v19)
+    v13 = load.i64 notrap aligned v2+16    ;; v13 :: 1 | 2 | 3 | 4 | 5
+    v14 = load.i64 notrap aligned v2+24    ;; v14 :: list(1 | 2 | 3 | 4 | 5)
+    v15 = sshr_imm v13, 3
+    v16 = iconst.i32 17
+    v17 = call fn2(v16)  ; v16 = 17
+    v18 = iconst.i32 39
+    v19 = iconst.i32 6
+    v20 = iconst.i32 0
+    v21 = call fn3(v18, v19, v20)  ; v18 = 39, v19 = 6, v20 = 0
+    v22 = func_addr.i64 fn4
+    store notrap aligned v22, v21+16
+    store.i64 notrap aligned v3, v21+24
+    store.i64 notrap aligned v0, v21+32
+    store.i64 notrap aligned v1, v21+40
+    v23 = sshr_imm v13, 3
+    store notrap aligned v23, v21+48
+    store notrap aligned v14, v21+56
+    store.i64 notrap aligned v0, v21+64
+    return_call fn1(v1, v15, v17, v21)
 }
 
 ; fn double_s28
     ;   @spec   double(1 | 2 | 3 | 4 | 5) -> int
     ;   @key    [1 | 2 | 3 | 4 | 5]
-    ;   @abi    (RawInt) -> RawInt
+    ;   @abi    (RawInt) -> Tagged
 function u0:0(i64, i64, i64) -> i64 tail {
     sig0 = (i64, i64) -> i64 tail
 
     block0(v0: i64, v1: i64, v2: i64):    ;; v0 :: 1 | 2 | 3 | 4 | 5
     v3 = iconst.i64 2                   ; @14:23
     v4 = imul v0, v3                    ; @14:19  v3 = 2
-    v5 = load.i64 notrap aligned v2+16
-    return_call_indirect sig0, v5(v4, v2)
+    v5 = ishl_imm v4, 3
+    v6 = bor_imm v5, 1
+    v7 = load.i64 notrap aligned v2+16
+    return_call_indirect sig0, v7(v6, v2)
 }
 
 ; fn double_s29
     ;   @spec   double(int) -> int
     ;   @key    [int]
-    ;   @abi    (RawInt) -> RawInt
+    ;   @abi    (RawInt) -> Tagged
 function u0:0(i64, i64, i64) -> i64 tail {
     sig0 = (i64, i64) -> i64 tail
 
     block0(v0: i64, v1: i64, v2: i64):    ;; v0 :: int
     v3 = iconst.i64 2                   ; @14:23
     v4 = imul v0, v3                    ; @14:19  v3 = 2
-    v5 = load.i64 notrap aligned v2+16
-    return_call_indirect sig0, v5(v4, v2)
+    v5 = ishl_imm v4, 3
+    v6 = bor_imm v5, 1
+    v7 = load.i64 notrap aligned v2+16
+    return_call_indirect sig0, v7(v6, v2)
 }
 
 ; fn add_s30
     ;   @spec   add(0, 1 | 2 | 3 | 4 | 5) -> int
     ;   @key    [0, 1 | 2 | 3 | 4 | 5]
-    ;   @abi    (RawInt, RawInt) -> RawInt
+    ;   @abi    (RawInt, RawInt) -> Tagged
 function u0:0(i64, i64, i64, i64) -> i64 tail {
     sig0 = (i64, i64) -> i64 tail
 
     block0(v0: i64, v1: i64, v2: i64, v3: i64):    ;; v0 :: 0, v1 :: 1 | 2 | 3 | 4 | 5
     v4 = iadd v0, v1                    ; @15:19
-    v5 = load.i64 notrap aligned v3+16
-    return_call_indirect sig0, v5(v4, v3)
+    v5 = ishl_imm v4, 3
+    v6 = bor_imm v5, 1
+    v7 = load.i64 notrap aligned v3+16
+    return_call_indirect sig0, v7(v6, v3)
 }
 
 ; fn add_s31
     ;   @spec   add(int, 1 | 2 | 3 | 4 | 5) -> int
     ;   @key    [int, 1 | 2 | 3 | 4 | 5]
-    ;   @abi    (RawInt, RawInt) -> RawInt
+    ;   @abi    (RawInt, RawInt) -> Tagged
 function u0:0(i64, i64, i64, i64) -> i64 tail {
     sig0 = (i64, i64) -> i64 tail
 
     block0(v0: i64, v1: i64, v2: i64, v3: i64):    ;; v0 :: int, v1 :: 1 | 2 | 3 | 4 | 5
     v4 = iadd v0, v1                    ; @15:19
-    v5 = load.i64 notrap aligned v3+16
-    return_call_indirect sig0, v5(v4, v3)
+    v5 = ishl_imm v4, 3
+    v6 = bor_imm v5, 1
+    v7 = load.i64 notrap aligned v3+16
+    return_call_indirect sig0, v7(v6, v3)
 }
 
 ; fn k_21_s32
@@ -483,7 +495,7 @@ function u0:0(i64, i64) -> i64 tail {
 ; fn k_26_s34
     ;   @spec   k_26(int, &fn16[]:(any) -> any, 1 | 2 | 3 | 4 | 5, list(1 | 2 | 3 | 4 | 5)) -> list(int)
     ;   @key    [int, &fn16[]:(any) -> any, 1 | 2 | 3 | 4 | 5, list(1 | 2 | 3 | 4 | 5)]
-    ;   @abi    (RawInt, Tagged, RawInt, Tagged) -> Tagged
+    ;   @abi    (Tagged, Tagged, RawInt, Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64, i64, i64) -> i64 tail
     sig1 = (i32, i32, i32) -> i64 system_v
@@ -507,7 +519,8 @@ function u0:0(i64, i64) -> i64 tail {
     store notrap aligned v2, v8+32      ; @9:33
     store notrap aligned v3, v8+40      ; @9:33
     store notrap aligned v4, v8+48      ; @9:33
-    store notrap aligned v0, v8+56      ; @9:33
+    v11 = sshr_imm v0, 3                ; @9:33
+    store notrap aligned v11, v8+56     ; @9:33
     return_call fn0(v2, v4, v8)         ; @9:33
 }
 
@@ -536,7 +549,7 @@ function u0:0(i64, i64) -> i64 tail {
 ; fn k_30_s38
     ;   @spec   k_30(int, &fn17[]:(any, any) -> any, 0, 1 | 2 | 3 | 4 | 5, list(1 | 2 | 3 | 4 | 5), &fn17[]:(any, any) -> any) -> int
     ;   @key    [int, &fn17[]:(any, any) -> any, 0, 1 | 2 | 3 | 4 | 5, list(1 | 2 | 3 | 4 | 5), &fn17[]:(any, any) -> any]
-    ;   @abi    (RawInt, Tagged, RawInt, RawInt, Tagged, Tagged) -> RawInt
+    ;   @abi    (Tagged, Tagged, RawInt, RawInt, Tagged, Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64, i64, i64, i64) -> i64 tail
     fn0 = colocated u0:48 sig0
@@ -547,14 +560,15 @@ function u0:0(i64, i64) -> i64 tail {
     v4 = load.i64 notrap aligned v1+48    ;; v4 :: 1 | 2 | 3 | 4 | 5
     v5 = load.i64 notrap aligned v1+56    ;; v5 :: list(1 | 2 | 3 | 4 | 5)
     v6 = load.i64 notrap aligned v1+64    ;; v6 :: &fn17[]:(any, any) -> any
-    v7 = load.i64 notrap aligned v1+24  ; @12:32
-    return_call fn0(v6, v0, v5, v7)     ; @12:32
+    v7 = sshr_imm v0, 3                 ; @12:32
+    v8 = load.i64 notrap aligned v1+24  ; @12:32
+    return_call fn0(v6, v7, v5, v8)     ; @12:32
 }
 
 ; fn k_30_s39
     ;   @spec   k_30(int, &fn17[]:(any, any) -> any, int, 1 | 2 | 3 | 4 | 5, list(1 | 2 | 3 | 4 | 5), &fn17[]:(any, any) -> any) -> int
     ;   @key    [int, &fn17[]:(any, any) -> any, int, 1 | 2 | 3 | 4 | 5, list(1 | 2 | 3 | 4 | 5), &fn17[]:(any, any) -> any]
-    ;   @abi    (RawInt, Tagged, RawInt, RawInt, Tagged, Tagged) -> RawInt
+    ;   @abi    (Tagged, Tagged, RawInt, RawInt, Tagged, Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64, i64, i64, i64) -> i64 tail
     fn0 = colocated u0:48 sig0
@@ -565,8 +579,9 @@ function u0:0(i64, i64) -> i64 tail {
     v4 = load.i64 notrap aligned v1+48    ;; v4 :: 1 | 2 | 3 | 4 | 5
     v5 = load.i64 notrap aligned v1+56    ;; v5 :: list(1 | 2 | 3 | 4 | 5)
     v6 = load.i64 notrap aligned v1+64    ;; v6 :: &fn17[]:(any, any) -> any
-    v7 = load.i64 notrap aligned v1+24  ; @12:32
-    return_call fn0(v6, v0, v5, v7)     ; @12:32
+    v7 = sshr_imm v0, 3                 ; @12:32
+    v8 = load.i64 notrap aligned v1+24  ; @12:32
+    return_call fn0(v6, v7, v5, v8)     ; @12:32
 }
 
 ; fn k_31_s40
@@ -707,7 +722,7 @@ function u0:0(i64, i64, i64) -> i64 tail {
 ; fn k_37_s46
     ;   @spec   k_37(int, list(1 | 2 | 3 | 4 | 5)) -> nil
     ;   @key    [int, list(1 | 2 | 3 | 4 | 5)]
-    ;   @abi    (RawInt, Tagged) -> Tagged
+    ;   @abi    (Tagged, Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64) system_v
     sig1 = (i64, i64) -> i64 tail
@@ -715,10 +730,11 @@ function u0:0(i64, i64) -> i64 tail {
 
     block0(v0: i64, v1: i64):    ;; v0 :: int
     v2 = load.i64 notrap aligned v1+32    ;; v2 :: list(1 | 2 | 3 | 4 | 5)
-    call fn0(v0)
-    v3 = iconst.i64 2    ;; v3 :: nil
-    v4 = load.i64 notrap aligned v1+24  ; @22:3
-    v5 = load.i64 notrap aligned v4+16  ; @22:3
-    return_call_indirect sig1, v5(v3, v4) ; @22:3  v3 = 2
+    v3 = sshr_imm v0, 3
+    call fn0(v3)
+    v4 = iconst.i64 2    ;; v4 :: nil
+    v5 = load.i64 notrap aligned v1+24  ; @22:3
+    v6 = load.i64 notrap aligned v5+16  ; @22:3
+    return_call_indirect sig1, v6(v4, v5) ; @22:3  v4 = 2
 }
 

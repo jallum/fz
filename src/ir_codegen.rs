@@ -946,6 +946,13 @@ fn build_fn_signature(
         // ret_repr. Term::Return is `return_call_indirect sig(i64,i64)->i64
         // tail`; coercion happens at the return site.
         sig.returns.push(AbiParam::new(types::I64));
+    } else if closure_target_n_caps.is_some() {
+        // fz-try.15 — closure-target ABI is structurally uniform Tagged.
+        // The indirect-dispatch seam (stub_fp) can't carry typed return
+        // info to its caller, so the wire format is fixed. Specialization
+        // is body-internal; ABI is seam-external — the body coerces its
+        // narrow return to Tagged at Term::Return.
+        sig.returns.push(AbiParam::new(types::I64));
     } else {
         sig.returns.push(AbiParam::new(ret_repr.cl_type()));
     }
@@ -2530,6 +2537,23 @@ pub fn compile_with_backend<B: Backend>(
                     set.insert(sid as u32);
                     break;
                 }
+            }
+        }
+        // fz-try.15 — also seed: spec's body is a closure-target body.
+        // Closure-target ABI is structurally uniform Tagged (the seam
+        // can't carry typed returns); the body coerces at Term::Return,
+        // and every spec of a closure-target fn that's reachable via
+        // the closure-target sig returns Tagged on the wire. Direct
+        // callers of zero-cap closure-targets (.siu.1.8 invariant) go
+        // through the same body and receive Tagged too — they unbox
+        // locally if they want narrow.
+        for (sid, &entry) in spec_fnidx.iter().enumerate() {
+            let Some(idx) = entry else {
+                continue;
+            };
+            let fid = module.fns[idx].id;
+            if closure_target_fns.contains(&fid) {
+                set.insert(sid as u32);
             }
         }
         // Propagation: spec's terminator chains into a tagged spec.
@@ -4179,7 +4203,19 @@ fn emit_terminator<M: cranelift_module::Module>(
                 // chosen at construction time to match (per fz-ul4.27.22.3
                 // halt-cont typing + cont-seam narrowing in
                 // build_fn_signature).
-                let my_return_repr = return_reprs[this_spec_id as usize];
+                //
+                // fz-try.15 — closure-target bodies coerce to Tagged
+                // unconditionally to match the seam ABI (matches
+                // build_fn_signature's closure-target return = i64).
+                // Cont fns retain narrow return_repr — they're not at
+                // the indirect seam.
+                let is_closure_target_body =
+                    closure_n_captures.contains_key(&caller_fn_id) && !is_cont_fn;
+                let my_return_repr = if is_closure_target_body {
+                    ArgRepr::Tagged
+                } else {
+                    return_reprs[this_spec_id as usize]
+                };
                 let from = var_env.get(&v.0).map_or(ArgRepr::Tagged, |vb| vb.repr);
                 let val_typed = coerce_to(b, jmod, runtime, val, from, my_return_repr);
                 let cont_val = if is_cont_fn {
