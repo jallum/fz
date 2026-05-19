@@ -34,6 +34,7 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `list_primitives/` | list primitives from scratch — length / reverse / map / foldl exercising cons-pattern dispatch and first-class fns | jit, interp |
 | `macro_inc/` | defmacro + quote/unquote round-trip — two macros, one nested in the other | jit, interp, repl |
 | `modules/` | cross-module qualified calls — `M.double`, `M.quad`, `N.helper` | jit, interp, repl |
+| `multi_caller_spec_divergent/` | fz-uwq.4 regression — divergent dispatch across two caller specs of the same higher-order fn | jit, interp, aot, repl |
 | `multi_clause/` | multi-clause dispatch with a guard clause (`when n > 0`), plus recursive `fact` | jit, interp, repl |
 | `multi_clause_body_with_call/` | minimal multi-clause Bug-2 repro — clause body has a Call. Pre-fz-qbg.2 panicked at fz_ir.rs:453; now lowers correctly via the per-clause body cont-fn path | jit, interp |
 | `multi_relay/` | two workers both block on receive simultaneously; exercises scheduler managing multiple Blocked processes | jit, interp, aot |
