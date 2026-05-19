@@ -32,15 +32,14 @@ fn subsumes_with(q: &Descr, k: &Descr, sigma: &mut HashMap<TypeVarId, Descr>) ->
     if k_is_any {
         return true;
     }
-    let k_pure_var = is_pure_var(k);
-    if k_pure_var {
+    if let Some(alphas) = pure_var_ids(k) {
         // k carries one (or more) named var ids and nothing else. Bind each
         // to the witness q; check consistency with existing σ.
         // For single-var keys (overwhelming majority), this is one binding.
-        for alpha in &k.vars.set {
-            match sigma.get(alpha) {
+        for alpha in alphas {
+            match sigma.get(&alpha) {
                 None => {
-                    sigma.insert(*alpha, q.clone());
+                    sigma.insert(alpha, q.clone());
                 }
                 Some(existing) => {
                     if !existing.is_equiv(q) {
@@ -58,20 +57,24 @@ fn subsumes_with(q: &Descr, k: &Descr, sigma: &mut HashMap<TypeVarId, Descr>) ->
     q.is_subtype(k)
 }
 
-/// Does `d` carry named type vars and nothing else? (Empty basic/atoms/
-/// ints/floats/strs/opaques/tuples/lists/funcs/maps.)
-fn is_pure_var(d: &Descr) -> bool {
-    !d.vars.set.is_empty()
-        && d.basic.is_empty()
-        && d.atoms.is_none()
-        && d.ints.is_none()
-        && d.floats.is_none()
-        && d.strs.is_none()
-        && d.opaques.is_none()
-        && d.tuples.is_empty()
-        && d.lists.is_empty()
-        && d.funcs.is_empty()
-        && d.maps.is_empty()
+/// If `d` is a "pure var" descriptor — carrying named type vars on the
+/// vars axis and nothing else (no basic/atoms/ints/floats/strs/opaques/
+/// tuples/lists/funcs/maps) — return the finite list of var ids. Else
+/// None. Cofinite-vars (e.g. `Descr::any()`'s vars axis = "every var")
+/// is NOT pure-var, because σ can't bind "every var" to a witness.
+fn pure_var_ids(d: &Descr) -> Option<Vec<TypeVarId>> {
+    let mut comps = d.components();
+    let only = comps.next()?;
+    if comps.next().is_some() {
+        return None;
+    }
+    match only {
+        crate::types::Component::Vars(view) => {
+            let finite: Vec<TypeVarId> = view.finite()?.collect();
+            if finite.is_empty() { None } else { Some(finite) }
+        }
+        _ => None,
+    }
 }
 
 /// Count of named type vars at the top level of `key`. Used by the
@@ -79,7 +82,16 @@ fn is_pure_var(d: &Descr) -> bool {
 /// specific. The Castagna set-theoretic order says concrete > some-Var >
 /// all-Var; this count is the proxy.
 fn key_var_count(key: &[Descr]) -> usize {
-    key.iter().map(|d| d.vars.set.len()).sum()
+    key.iter()
+        .map(|d| {
+            d.components()
+                .filter_map(|c| match c {
+                    crate::types::Component::Vars(v) => v.finite_len(),
+                    _ => None,
+                })
+                .sum::<usize>()
+        })
+        .sum()
 }
 
 #[derive(Clone, Default)]
@@ -364,12 +376,13 @@ mod var_subsumption_tests {
 
     #[test]
     fn pure_var_helper_discriminates_correctly() {
-        assert!(is_pure_var(&Descr::var(TypeVarId(0))));
-        assert!(!is_pure_var(&Descr::int()));
-        assert!(!is_pure_var(&Descr::any()));
-        assert!(!is_pure_var(&Descr::none()));
+        assert!(pure_var_ids(&Descr::var(TypeVarId(0))).is_some());
+        assert!(pure_var_ids(&Descr::int()).is_none());
+        // `Descr::any()` is cofinite on vars (every var) — not substitutable.
+        assert!(pure_var_ids(&Descr::any()).is_none());
+        assert!(pure_var_ids(&Descr::none()).is_none());
         // int ∪ Var(α) is concrete-with-vars; NOT pure-var.
         let mixed = Descr::int().union(&Descr::var(TypeVarId(0)));
-        assert!(!is_pure_var(&mixed));
+        assert!(pure_var_ids(&mixed).is_none());
     }
 }

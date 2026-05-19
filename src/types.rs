@@ -792,6 +792,19 @@ impl Descr {
         if it.next().is_some() { None } else { Some(first) }
     }
 
+    /// Refine every positive map clause so that field `key` has value type
+    /// `vt`. Negations and non-map axes are unchanged. Used by the typer
+    /// for narrowing under map-pattern matches.
+    pub fn refine_map_field(&self, key: &MapKey, vt: &Descr) -> Descr {
+        let mut out = self.clone();
+        for clause in &mut out.maps {
+            for sig in &mut clause.pos {
+                sig.fields.insert(key.clone(), vt.clone());
+            }
+        }
+        out
+    }
+
     /// Widen literal-set axes (ints / floats / strs) to their cofinite top.
     /// Singleton values become their respective universes (`int_lit(42)`
     /// becomes `int()`, etc.); structural axes are untouched.
@@ -2275,8 +2288,13 @@ impl<'a> OpaqueView<'a> {
     pub fn cofinite(&self) -> bool {
         self.inner.cofinite
     }
-    pub fn iter(&self) -> impl Iterator<Item = &'a str> + 'a {
-        self.inner.set.iter().map(String::as_str)
+    /// Finite members; None if cofinite.
+    pub fn finite(&self) -> Option<impl Iterator<Item = &'a str> + 'a> {
+        if self.inner.cofinite {
+            None
+        } else {
+            Some(self.inner.set.iter().map(String::as_str))
+        }
     }
     pub fn contains(&self, name: &str) -> bool {
         let in_set = self.inner.set.iter().any(|s| s == name);
@@ -2295,8 +2313,24 @@ impl<'a> VarView<'a> {
     pub fn cofinite(&self) -> bool {
         self.inner.cofinite
     }
-    pub fn iter(&self) -> impl Iterator<Item = TypeVarId> + 'a {
-        self.inner.set.iter().copied()
+    /// Named finite var ids; None if cofinite (e.g. `Descr::any()`'s vars axis
+    /// is "every var" — not a substitutable pattern).
+    pub fn finite(&self) -> Option<impl Iterator<Item = TypeVarId> + 'a> {
+        if self.inner.cofinite {
+            None
+        } else {
+            Some(self.inner.set.iter().copied())
+        }
+    }
+    /// Count of named finite var ids; None if cofinite. Useful for the
+    /// most-specific-wins ordering in spec dispatch (fewer named vars =
+    /// more specific).
+    pub fn finite_len(&self) -> Option<usize> {
+        if self.inner.cofinite {
+            None
+        } else {
+            Some(self.inner.set.len())
+        }
     }
     pub fn contains(&self, id: TypeVarId) -> bool {
         let in_set = self.inner.set.contains(&id);
@@ -2339,19 +2373,42 @@ impl<'a> TupleView<'a> {
         }
         seen.into_iter()
     }
-    /// Join of element types at position `idx` across all positive
-    /// clauses of the given arity. Returns `Descr::none()` if no such
-    /// clause exists.
-    pub fn project(&self, arity: usize, idx: usize) -> Descr {
-        let mut acc = Descr::none();
+    /// Project the full element-Descr vector at the given arity, following
+    /// Castagna DNF semantics (fz-dhd): positive sigs within a Conj are
+    /// intersected per-position; results union across Conjs. Returns None
+    /// if no Conj has the requested arity. Vector length equals `arity`.
+    pub fn project_all(&self, arity: usize) -> Option<Vec<Descr>> {
+        let mut comps = vec![Descr::none(); arity];
+        let mut found = false;
         for conj in self.inner {
+            let mut clause_comps: Option<Vec<Descr>> = None;
             for sig in &conj.pos {
-                if sig.elems.len() == arity && idx < sig.elems.len() {
-                    acc = acc.union(&sig.elems[idx]);
+                if sig.elems.len() != arity {
+                    continue;
                 }
+                clause_comps = Some(match clause_comps {
+                    None => sig.elems.clone(),
+                    Some(prev) => prev
+                        .iter()
+                        .zip(sig.elems.iter())
+                        .map(|(p, s)| p.intersect(s))
+                        .collect(),
+                });
+            }
+            if let Some(cs) = clause_comps {
+                for i in 0..arity {
+                    comps[i] = comps[i].union(&cs[i]);
+                }
+                found = true;
             }
         }
-        acc
+        if found { Some(comps) } else { None }
+    }
+    /// Project a single element at `(arity, idx)`. Convenience wrapper.
+    pub fn project(&self, arity: usize, idx: usize) -> Descr {
+        self.project_all(arity)
+            .and_then(|v| v.get(idx).cloned())
+            .unwrap_or_else(Descr::none)
     }
 }
 
@@ -2366,16 +2423,29 @@ impl<'a> ListView<'a> {
     pub fn is_any(&self) -> bool {
         self.inner.len() == 1 && self.inner[0].pos.is_empty() && self.inner[0].neg.is_empty()
     }
-    /// Joined element type across all positive list clauses.
-    /// `Descr::none()` if the view admits no concrete lists.
+    /// Element type across all positive list clauses, following fz-dhd
+    /// DNF semantics: sigs within a Conj are intersected; results union
+    /// across Conjs. For `list(int) & list(any)` (one Conj, two sigs),
+    /// the element is `int ∩ any = int`, not `int ∪ any = any`. Returns
+    /// `Descr::any()` when the view admits no concrete lists (matches
+    /// typer's prior fallback).
     pub fn element_type(&self) -> Descr {
-        let mut acc = Descr::none();
+        let mut elem = Descr::none();
+        let mut found = false;
         for conj in self.inner {
+            let mut clause_elem: Option<Descr> = None;
             for sig in &conj.pos {
-                acc = acc.union(&sig.elem);
+                clause_elem = Some(match clause_elem {
+                    None => sig.elem.as_ref().clone(),
+                    Some(prev) => prev.intersect(&sig.elem),
+                });
+            }
+            if let Some(e) = clause_elem {
+                elem = elem.union(&e);
+                found = true;
             }
         }
-        acc
+        if found { elem } else { Descr::any() }
     }
 }
 
@@ -2440,21 +2510,42 @@ impl<'a> MapView<'a> {
     pub fn is_any(&self) -> bool {
         self.inner.len() == 1 && self.inner[0].pos.is_empty() && self.inner[0].neg.is_empty()
     }
-    /// Joined value type for `key` across all positive map clauses.
-    /// `None` if no clause defines this key.
-    pub fn field(&self, key: &MapKey) -> Option<Descr> {
-        let mut acc: Option<Descr> = None;
+    /// Look up the value type for `key` across all positive map clauses,
+    /// following Castagna open-map semantics (fz-dhd): pos sigs within a
+    /// Conj are intersected (a missing field in a sig contributes
+    /// `any | nil` because open maps don't constrain unmentioned keys);
+    /// results union across Conjs. A Conj with `pos.is_empty()` (e.g. a
+    /// pure negation of map-top) contributes `any | nil`. Returns None
+    /// if the view has no clauses.
+    pub fn lookup(&self, key: &MapKey) -> Option<Descr> {
+        if self.inner.is_empty() {
+            return None;
+        }
+        let mut found = false;
+        let mut acc = Descr::none();
         for conj in self.inner {
+            if conj.pos.is_empty() {
+                acc = acc.union(&Descr::any()).union(&Descr::nil());
+                found = true;
+                continue;
+            }
+            let mut clause_v: Option<Descr> = None;
             for sig in &conj.pos {
-                if let Some(v) = sig.fields.get(key) {
-                    acc = Some(match acc {
-                        Some(prev) => prev.union(v),
-                        None => v.clone(),
-                    });
-                }
+                let sig_v = match sig.fields.get(key) {
+                    Some(t) => t.clone(),
+                    None => Descr::any().union(&Descr::nil()),
+                };
+                clause_v = Some(match clause_v {
+                    None => sig_v,
+                    Some(prev) => prev.intersect(&sig_v),
+                });
+            }
+            if let Some(v) = clause_v {
+                acc = acc.union(&v);
+                found = true;
             }
         }
-        acc
+        if found { Some(acc) } else { None }
     }
     /// Distinct keys mentioned by any positive clause.
     pub fn keys(&self) -> impl Iterator<Item = &'a MapKey> {
@@ -3958,7 +4049,7 @@ mod tests {
             match c {
                 Component::Vars(v) => {
                     seen = true;
-                    let ids: Vec<TypeVarId> = v.iter().collect();
+                    let ids: Vec<TypeVarId> = v.finite().unwrap().collect();
                     assert_eq!(ids, vec![TypeVarId(7)]);
                     assert!(v.contains(TypeVarId(7)));
                     assert!(!v.contains(TypeVarId(8)));
@@ -3998,7 +4089,7 @@ mod tests {
             match c {
                 Component::Vars(v) => {
                     count += 1;
-                    let ids: Vec<TypeVarId> = v.iter().collect();
+                    let ids: Vec<TypeVarId> = v.finite().unwrap().collect();
                     assert_eq!(ids, vec![TypeVarId(0), TypeVarId(1)]);
                 }
                 _ => panic!("unexpected component for var ∪ var"),
@@ -4032,9 +4123,11 @@ mod tests {
         let m = Descr::map_of(fields);
         for c in m.components() {
             if let Component::Maps(v) = c {
-                let got = v.field(&MapKey::Atom("k".into()));
+                let got = v.lookup(&MapKey::Atom("k".into()));
                 assert_eq!(got.and_then(|d| d.as_int_singleton()), Some(1));
-                assert!(v.field(&MapKey::Atom("missing".into())).is_none());
+                // "missing" on an open_map is `any | nil`, not None.
+                let missing = v.lookup(&MapKey::Atom("missing".into())).unwrap();
+                assert!(Descr::nil().is_subtype(&missing));
             }
         }
     }
