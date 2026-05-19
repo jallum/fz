@@ -109,6 +109,121 @@ pub unsafe extern "C" fn fz_resource_test_print_dtor(payload: u64) {
     }
 }
 
+// ===== fz-swt.13: File-module test helpers =================================
+//
+// These exist so the `file_resource_lifecycle` fixture can prove the
+// resource dtor mechanism really closes a real Unix fd in all three
+// paths (interp/JIT/AOT) without taking on the cstring/binary FFI work
+// blocked behind fz-wu9 + fz-0cv. They are NOT a public stdlib surface:
+// `File.open(path, mode)` is the v1 entry point and lands once those
+// tickets ship.
+//
+// All three live in the runtime crate (same as `fz_resource_test_print_dtor`)
+// so AOT-linked binaries can name them directly via `extern "C"`, the JIT
+// can resolve them through the symbol table installed in
+// `src/ir_codegen.rs::setup_runtime_module`, and the interpreter reaches
+// them through the native table in `src/ir_interp.rs::resolve_symbol`.
+
+/// fz-swt.13 — open an unnamed tmpfile and return its fd as a boxed
+/// `FzValue::Int`. The path is `unlink`ed before return so the file is
+/// reclaimed automatically by the OS no matter how/whether the fz-side
+/// dtor fires. The returned fd is otherwise an ordinary writable fd.
+///
+/// Returns the tagged bits of `FzValue::from_int(fd)`, matching the
+/// "extern returns are already tagged" convention used by `fz_self` and
+/// every other runtime extern declared to fz as `:: integer` / `:: any`.
+///
+/// # Safety
+/// Spawns a real fd; the caller is expected to eventually close it.
+/// Aborts on `mkstemp`/`unlink` failure — the fixture has no recovery
+/// path and silent leaks would defeat the test's purpose.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fz_test_open_tmpfile() -> u64 {
+    use std::ffi::CString;
+    // `mkstemp` mutates its template buffer in place; the template must
+    // be writable and outlive the call. Use a fixed prefix in $TMPDIR
+    // (or /tmp) — the file is unlinked immediately so the name doesn't
+    // matter.
+    let dir = std::env::temp_dir();
+    let template = dir.join("fz_swt13_XXXXXX");
+    let template_bytes = template.to_string_lossy().into_owned();
+    let cstr = CString::new(template_bytes).expect("fz_test_open_tmpfile: bad template");
+    let mut buf: Vec<libc::c_char> = cstr
+        .as_bytes_with_nul()
+        .iter()
+        .map(|&b| b as libc::c_char)
+        .collect();
+    let fd = unsafe { libc::mkstemp(buf.as_mut_ptr()) };
+    if fd < 0 {
+        panic!(
+            "fz_test_open_tmpfile: mkstemp failed: {}",
+            std::io::Error::last_os_error()
+        );
+    }
+    // Unlink immediately; the fd stays valid until closed.
+    if unsafe { libc::unlink(buf.as_ptr()) } != 0 {
+        // Already-open fd will outlive a failed unlink, but a leaked
+        // pathname on disk would surface as test flakiness. Abort.
+        panic!(
+            "fz_test_open_tmpfile: unlink failed: {}",
+            std::io::Error::last_os_error()
+        );
+    }
+    crate::fz_value::FzValue::from_int(fd as i64).0
+}
+
+/// fz-swt.13 — resource dtor for fds produced by `fz_test_open_tmpfile`.
+/// Verifies the fd is open *before* the close (catches double-close /
+/// stale payload), closes it, and re-checks with `fcntl` that the
+/// kernel now reports `EBADF`. Prints exactly one line:
+///
+///   * `dtor:closed` — every check passed.
+///   * `dtor:failed(<reason>)` — at least one check failed; the reason
+///     identifies which kernel call disagreed with us so a regression
+///     surfaces in the golden diff rather than silently passing.
+///
+/// # Safety
+/// `payload` must be the tagged bits of an `FzValue::Int` holding a
+/// fd previously returned by `fz_test_open_tmpfile` (or any other
+/// open-for-close fd). Misuse prints a diagnostic; it does not crash.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fz_test_close_fd(payload: u64) {
+    let fd = match crate::fz_value::FzValue(payload).unbox_int() {
+        Some(n) => n as libc::c_int,
+        None => {
+            println!("dtor:failed(payload-not-int)");
+            return;
+        }
+    };
+    // 1. Must be open before we close it.
+    let pre = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+    if pre == -1 {
+        println!("dtor:failed(fd-already-closed)");
+        return;
+    }
+    // 2. close() must succeed.
+    let rc = unsafe { libc::close(fd) };
+    if rc != 0 {
+        println!(
+            "dtor:failed(close-rc={},errno={})",
+            rc,
+            std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
+        );
+        return;
+    }
+    // 3. Kernel must agree the fd is now closed.
+    let post = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+    let post_errno = std::io::Error::last_os_error().raw_os_error();
+    if post != -1 || post_errno != Some(libc::EBADF) {
+        println!(
+            "dtor:failed(fd-still-open post={},errno={:?})",
+            post, post_errno
+        );
+        return;
+    }
+    println!("dtor:closed");
+}
+
 // ===== Allocation + refcount primitives ====================================
 
 /// Allocate a fresh `Resource` with refcount = 1 carrying `payload` and

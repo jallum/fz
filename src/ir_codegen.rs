@@ -1222,6 +1222,18 @@ impl JitBackend {
             "fz_resource_test_print_dtor",
             fz_runtime::resource::fz_resource_test_print_dtor as *const u8,
         );
+        // fz-swt.13 — File-module test helpers exported by the runtime
+        // crate. Same wiring contract as the print-dtor symbol above:
+        // bound unconditionally so any JIT-driven dump/run resolves the
+        // names cleanly.
+        builder.symbol(
+            "fz_test_open_tmpfile",
+            fz_runtime::resource::fz_test_open_tmpfile as *const u8,
+        );
+        builder.symbol(
+            "fz_test_close_fd",
+            fz_runtime::resource::fz_test_close_fd as *const u8,
+        );
         builder.symbol(
             "fz_receive_attempt",
             fz_runtime::ir_runtime::fz_receive_attempt as *const u8,

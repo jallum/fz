@@ -1073,6 +1073,11 @@ fn resolve_symbol(name: &str) -> Result<*const (), String> {
         "fz_resource_test_print_dtor" => {
             Some(fz_runtime::resource::fz_resource_test_print_dtor as *const ())
         }
+        // fz-swt.13 — File-module test helpers. Same rationale as the
+        // print-dtor binding above: keep the interp leg of the fixture
+        // matrix self-contained, no dlsym dependence.
+        "fz_test_open_tmpfile" => Some(fz_runtime::resource::fz_test_open_tmpfile as *const ()),
+        "fz_test_close_fd" => Some(fz_runtime::resource::fz_test_close_fd as *const ()),
         _ => None,
     };
     if let Some(fp) = native {

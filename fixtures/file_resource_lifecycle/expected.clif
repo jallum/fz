@@ -1,0 +1,63 @@
+; fn File.dtor
+    ;   @spec   File.dtor(any) -> nil
+    ;   @key    [any]
+    ;   @abi    (Tagged) -> Tagged
+function u0:0(i64, i64, i64) -> i64 tail {
+    sig0 = (i64) system_v
+    sig1 = (i64, i64) -> i64 tail
+    fn0 = u0:43 sig0
+
+    block0(v0: i64, v1: i64, v2: i64):    ;; v0 :: any
+    call fn0(v0)                        ; @7:20
+    v3 = iconst.i64 2                   ; @7:20
+    v4 = load.i64 notrap aligned v2+16
+    return_call_indirect sig1, v4(v3, v2)  ; v3 = 2
+}
+
+; fn main
+    ;   @spec   main() -> nil
+    ;   @key    []
+    ;   @abi    () -> Tagged
+function u0:0(i64) -> i64 tail {
+    sig0 = () -> i64 system_v
+    sig1 = (i64) system_v
+    sig2 = (i64, i64, i64) -> i64 tail
+    fn0 = u0:44 sig0
+    fn1 = u0:45 sig1
+    fn2 = colocated u0:42 sig2
+
+block0(v0: i64):
+    v1 = call fn0()                     ; @14:8
+    v2 = iconst.i64 50                  ; @15:9
+    call fn1(v2)  ; v2 = 50
+    v3 = iconst.i64 2    ;; v3 :: nil
+    v4 = sshr_imm v1, 3                 ; @15:3
+    return_call fn2(v3, v4, v0)         ; @15:3  v3 = 2
+}
+
+; fn k_16_s17
+    ;   @spec   k_16(nil, int) -> nil
+    ;   @key    [nil, int]
+    ;   @abi    (Tagged, RawInt) -> Tagged
+function u0:0(i64, i64, i64) -> i64 tail {
+    sig0 = (i32) -> i64 system_v
+    sig1 = (i64, i64) -> i64 system_v
+    sig2 = (i64) system_v
+    sig3 = (i64, i64) -> i64 tail
+    fn0 = u0:31 sig0
+    fn1 = u0:46 sig1
+    fn2 = u0:45 sig2
+
+    block0(v0: i64, v1: i64, v2: i64):    ;; v0 :: nil, v1 :: int
+    v3 = iconst.i32 12
+    v4 = call fn0(v3)  ; v3 = 12    ;; v4 :: &fn12[]:(α768) -> α831
+    v5 = ishl_imm v1, 3
+    v6 = bor_imm v5, 1
+    v7 = call fn1(v6, v4)    ;; v7 :: any
+    v8 = iconst.i64 58    ;; v8 :: :before
+    call fn2(v8)  ; v8 = 58
+    v9 = iconst.i64 2    ;; v9 :: nil
+    v10 = load.i64 notrap aligned v2+16 ; @16:8
+    return_call_indirect sig3, v10(v9, v2) ; @16:8  v9 = 2
+}
+

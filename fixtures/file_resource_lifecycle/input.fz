@@ -1,0 +1,18 @@
+extern "C" fn fz_test_open_tmpfile() :: integer
+extern "C" fn fz_test_close_fd(any) :: nil
+
+defmodule File do
+  @type t :: opaque resource(integer)
+
+  fn dtor(fd), do: fz_test_close_fd(fd)
+
+  fn wrap_fd(fd), do: make_resource(fd, &dtor/1)
+  fn fd_of(h), do: h.value
+end
+
+fn main() do
+  fd = fz_test_open_tmpfile()
+  print(:opened)
+  _h = File.wrap_fd(fd)
+  print(:before)
+end
