@@ -1564,21 +1564,32 @@ impl Parser {
             // lookup the same way Call does.
             Tok::Amp => {
                 self.bump();
-                let mut parts: Vec<String> = Vec::new();
-                match self.bump() {
-                    Tok::Ident(n) | Tok::Upper(n) => parts.push(n),
+                let mut name = match self.bump() {
+                    Tok::Ident(n) | Tok::Upper(n) => n,
                     other => {
                         return self.err(format!("expected name after `&`, got {:?}", other));
                     }
-                }
-                while matches!(self.peek(), Tok::Dot) {
+                };
+                // Either a dotted name (`&Mod.Sub.fun/n`) or a library-
+                // prefixed extern (`&libc::close/1`). Both join into a
+                // single string that matches the entry in `ctx.fns` or
+                // `ctx.externs` respectively.
+                loop {
+                    let sep = match self.peek() {
+                        Tok::Dot => ".",
+                        Tok::ColonColon => "::",
+                        _ => break,
+                    };
                     self.bump();
                     match self.bump() {
-                        Tok::Ident(n) | Tok::Upper(n) => parts.push(n),
+                        Tok::Ident(n) | Tok::Upper(n) => {
+                            name.push_str(sep);
+                            name.push_str(&n);
+                        }
                         other => {
                             return self.err(format!(
-                                "expected name after `.` in `&...`, got {:?}",
-                                other
+                                "expected name after `{}` in `&...`, got {:?}",
+                                sep, other
                             ));
                         }
                     }
@@ -1593,10 +1604,7 @@ impl Parser {
                         ));
                     }
                 };
-                Expr::FnRef {
-                    name: parts.join("."),
-                    arity,
-                }
+                Expr::FnRef { name, arity }
             }
             Tok::LParen => {
                 self.bump();
