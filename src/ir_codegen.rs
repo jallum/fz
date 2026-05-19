@@ -1899,7 +1899,14 @@ pub fn compile_with_backend<B: Backend>(
     if !REDUCER_DISABLED.with(|d| d.get()) {
         crate::ir_reducer::reduce_module(&mut working);
     }
-    let mut module_types = crate::ir_typer::type_module(&working);
+    // fz-uwq.2 — single-use cont collapse runs pre-typer, alongside the
+    // other call-shape mutations (`fuse_blocks`, `reduce_module`). The
+    // `debug_assert_unique_conts` check at the end of `ir_lower` (fz-uwq.1)
+    // guarantees this pass sees each continuation fn exactly once, so it
+    // can be applied before the typer commits to specs. See
+    // `docs/dispatch-as-typer-output.md` (Worry 1).
+    crate::ir_inline::inline_single_use_conts(&mut working);
+    let module_types = crate::ir_typer::type_module(&working);
     // fz-9pr.8 — merge the typer's outcome updates (Emitted entries
     // for each surviving Direct / ClosureLit / CallClosureKnown spec)
     // into `working.callsite_outcomes`. The reducer wrote Consumed /
@@ -1913,11 +1920,6 @@ pub fn compile_with_backend<B: Backend>(
     // fz-cty.8 — fold byte-literal MakeBitstring into ConstBitstring before
     // DCE so the per-byte Const(Int) operand stmts go dead in the same pass.
     crate::ir_const_bs::fold_module(&mut working);
-    crate::ir_dce::dce_module(&mut working);
-    // fz-ty1.pip.1/2: pass &mut module_types so the inliner surgically
-    // re-types only affected caller specs and removes k's dead entries,
-    // eliminating the need for a full type_module recompute afterwards.
-    crate::ir_inline::inline_single_use_conts(&mut working, &mut module_types);
     crate::ir_dce::dce_module(&mut working);
     // fz-ul4.11.29: sweep IR fns unreachable from main after inlining.
     crate::ir_dce::dce_module_level(&mut working);
@@ -2060,7 +2062,15 @@ pub fn compile_with_backend<B: Backend>(
                     // still needs `stub_fp`, but the stub is unreachable
                     // — falling back to any registered narrow SpecId is
                     // safe because nothing dispatches through it.
-                    let cl_sid = spec_registry
+                    //
+                    // fz-uwq.2 — when neither resolves, the closure
+                    // target has NO live spec at all. MakeClosure is
+                    // construction, not dispatch: the closure value can
+                    // exist without an invocation path (every CallClosure
+                    // rewrote to direct Call and inlined). Skip the
+                    // closure_shapes entry; `MakeClosure` codegen emits
+                    // a null-stub closure that traps if ever invoked.
+                    let Some(cl_sid) = spec_registry
                         .resolve(*lam_fn_id, &key)
                         .map(|s| s.0)
                         .or_else(|| {
@@ -2071,17 +2081,9 @@ pub fn compile_with_backend<B: Backend>(
                                 })
                                 .map(|(s, _, _)| s.0)
                         })
-                        .unwrap_or_else(|| {
-                            panic!(
-                                ".29.12.2: no live spec for closure target \
-                             FnId({}); registered keys: {:?}",
-                                lam_fn_id.0,
-                                spec_registry
-                                    .iter()
-                                    .map(|(s, fid, k)| (s.0, fid.0, k.to_vec()))
-                                    .collect::<Vec<_>>()
-                            )
-                        });
+                    else {
+                        continue;
+                    };
                     closure_shapes.insert(cl_sid, captured.len());
                 }
             }
@@ -2730,26 +2732,6 @@ pub fn compile_with_backend<B: Backend>(
         let Some(idx) = spec_fnidx[sid] else {
             continue;
         };
-        let ft = spec_fn_types[sid].expect("non-sentinel spec must have FnTypes");
-        // fz-ul4.43.B — per-spec fold. Clone the FnIr and fold against this
-        // spec's FnTypes so dead arms (TypeTests whose subject is provably
-        // inside/outside the test descr in THIS spec's env) collapse before
-        // codegen. The pre-codegen `fold_module` already folds the any-key
-        // case; this is the multi-spec case it bails on.
-        let f_owned: crate::fz_ir::FnIr = {
-            let mut clone = module.fns[idx].clone();
-            crate::ir_fold::fold_fn_with_types(&mut clone, ft);
-            // fz-ul4.43.D.1 — per-spec DCE + fuse after per-spec fold.
-            // Fold rewrites Term::If→Goto when cond folds; DCE removes the
-            // dead stmts and unreachable blocks; fuse_fn collapses the
-            // remaining Goto-chains so inline_tail_calls_once's
-            // is_pure_tail_caller predicate (single-block + TailCall) can
-            // see these tiny per-spec bodies as inlinable.
-            crate::ir_dce::dce_fn(&mut clone);
-            crate::ir_fuse::fuse_fn(&mut clone);
-            clone
-        };
-        let f = &f_owned;
         let func_id = *fn_ids.get(&(sid as u32)).unwrap();
         let mut ctx = backend.module_mut().make_context();
         ctx.func.signature = fn_sigs[sid].clone();
@@ -2777,6 +2759,26 @@ pub fn compile_with_backend<B: Backend>(
             backend.module_mut().clear_context(&mut ctx);
             continue;
         }
+        let ft = spec_fn_types[sid].expect("non-sentinel spec must have FnTypes");
+        // fz-ul4.43.B — per-spec fold. Clone the FnIr and fold against this
+        // spec's FnTypes so dead arms (TypeTests whose subject is provably
+        // inside/outside the test descr in THIS spec's env) collapse before
+        // codegen. The pre-codegen `fold_module` already folds the any-key
+        // case; this is the multi-spec case it bails on.
+        let f_owned: crate::fz_ir::FnIr = {
+            let mut clone = module.fns[idx].clone();
+            crate::ir_fold::fold_fn_with_types(&mut clone, ft);
+            // fz-ul4.43.D.1 — per-spec DCE + fuse after per-spec fold.
+            // Fold rewrites Term::If→Goto when cond folds; DCE removes the
+            // dead stmts and unreachable blocks; fuse_fn collapses the
+            // remaining Goto-chains so inline_tail_calls_once's
+            // is_pure_tail_caller predicate (single-block + TailCall) can
+            // see these tiny per-spec bodies as inlinable.
+            crate::ir_dce::dce_fn(&mut clone);
+            crate::ir_fuse::fuse_fn(&mut clone);
+            clone
+        };
+        let f = &f_owned;
 
         let want_asm = ASM_RECORD.with(|c| c.borrow().is_some());
         if want_asm {
@@ -6338,7 +6340,13 @@ fn lower_prim<M: cranelift_module::Module>(
             // fz-ul4.29.10.3 — fall back to any registered SpecId for
             // the lambda when the any-key was dropped (closure unreachable
             // post-rewrite).
-            let cl_sid = spec_registry
+            //
+            // fz-uwq.2 — when neither resolves, the lambda has no live
+            // spec at all. MakeClosure is construction, not dispatch:
+            // emit a heap closure whose `stub_fp` is null. If the value
+            // is ever invoked (it shouldn't be — the typer proved no
+            // CallClosure reaches it), the null deref traps loudly.
+            let cl_sid_opt = spec_registry
                 .resolve(*fn_id, &key)
                 .map(|s| s.0)
                 .or_else(|| {
@@ -6346,13 +6354,22 @@ fn lower_prim<M: cranelift_module::Module>(
                         .iter()
                         .find(|(s, fid, _)| *fid == *fn_id && fn_ids.contains_key(&s.0))
                         .map(|(s, _, _)| s.0)
-                })
-                .ok_or_else(|| {
-                    CodegenError::new(format!(
-                        ".29.12.2: no live spec for closure target FnId({})",
-                        fn_id.0
-                    ))
-                })?;
+                });
+            let Some(cl_sid) = cl_sid_opt else {
+                // Null-stub closure: alloc, write null at +16, leave
+                // capture slots uninitialized (the body that would read
+                // them doesn't exist). halt_kind is irrelevant for an
+                // un-invoked closure; pick 0.
+                let alloc_fref = jmod.declare_func_in_func(runtime.alloc_closure_id, b.func);
+                let fid_v = b.ins().iconst(types::I32, fn_id.0 as i64);
+                let nc_v = b.ins().iconst(types::I32, n_caps as i64);
+                let hk_v = b.ins().iconst(types::I32, 0);
+                let inst = b.ins().call(alloc_fref, &[fid_v, nc_v, hk_v]);
+                let cl_ptr = b.inst_results(inst)[0];
+                let null = b.ins().iconst(types::I64, 0);
+                b.ins().store(MemFlags::trusted(), null, cl_ptr, HEADER_SIZE);
+                return Ok(LowerOut::Tagged(cl_ptr));
+            };
             // fz-cps.1.7 — zero-capture MakeClosure: look up the
             // per-Process static singleton instead of allocating per call
             // site. fz-cps.1.8 — singleton's +16 holds the body's
