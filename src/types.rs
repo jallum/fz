@@ -327,8 +327,8 @@ pub enum MapKey {
 /// One conjunctive clause inside a DNF: `⋀ pos  ∧  ⋀ (¬neg)`.
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct Conj<T> {
-    pub pos: Vec<T>,
-    pub neg: Vec<T>,
+    pub(crate) pos: Vec<T>,
+    pub(crate) neg: Vec<T>,
 }
 
 impl<T> Conj<T> {
@@ -356,17 +356,17 @@ impl<T: Clone> Conj<T> {
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct Descr {
-    pub basic: BasicBits,
-    pub atoms: AtomSet,
-    pub ints: IntSet,
-    pub floats: FloatSet,
-    pub strs: StrSet,
+    pub(crate) basic: BasicBits,
+    pub(crate) atoms: AtomSet,
+    pub(crate) ints: IntSet,
+    pub(crate) floats: FloatSet,
+    pub(crate) strs: StrSet,
     /// Nominal opaque-type tags. A value of opaque type `T` (declared as
     /// `@type T :: opaque U`) has `opaques = {"T"}` AND the underlying `U`
     /// axes populated. Opaque types are nominal: `T ⊄ U` even when the
     /// underlying type of `T` is `U`, because the opaques axis is non-empty
     /// and distinct from the plain-`U` descriptor (which has `opaques = ∅`).
-    pub opaques: LiteralSet<String>,
+    pub(crate) opaques: LiteralSet<String>,
     /// fz-try.5 — parametric type variables. Operationally identical to
     /// `opaques`: a finite-or-cofinite set of nominal names with
     /// component-wise union/intersect/neg. Semantically distinguished only
@@ -379,13 +379,13 @@ pub struct Descr {
     /// `closure_lit()` stubs after fz-try.7). Until C2 lands, this axis is
     /// only constructed in tests; the rest of the codebase still uses
     /// `Descr::any()` stubs.
-    pub vars: VarSet,
+    pub(crate) vars: VarSet,
     /// DNF over tuple shapes. Empty Vec = no tuples ("false"); a single
     /// `Conj::top()` clause = every tuple ("true").
-    pub tuples: Vec<Conj<TupleSig>>,
-    pub lists: Vec<Conj<ListSig>>,
-    pub funcs: Vec<Conj<ArrowSig>>,
-    pub maps: Vec<Conj<MapSig>>,
+    pub(crate) tuples: Vec<Conj<TupleSig>>,
+    pub(crate) lists: Vec<Conj<ListSig>>,
+    pub(crate) funcs: Vec<Conj<ArrowSig>>,
+    pub(crate) maps: Vec<Conj<MapSig>>,
 }
 
 impl Descr {
@@ -727,21 +727,286 @@ impl Descr {
     /// integer value with all other type axes empty), return that integer.
     /// Used by ir_fold to detect BinOp results the typer proved to a constant.
     pub fn as_int_singleton(&self) -> Option<i64> {
-        if !self.ints.cofinite
-            && self.ints.set.len() == 1
-            && self.atoms.is_none()
-            && self.floats.is_none()
-            && self.strs.is_none()
-            && self.basic.is_empty()
-            && self.tuples.is_empty()
-            && self.lists.is_empty()
-            && self.funcs.is_empty()
-            && self.maps.is_empty()
-        {
-            self.ints.set.iter().next().copied()
-        } else {
-            None
+        match self.single_component()? {
+            Component::Ints(v) => v.singleton(),
+            _ => None,
         }
+    }
+
+    /// Singleton float. None if any other axis is non-empty or the float
+    /// axis isn't a singleton finite set.
+    pub fn as_float_singleton(&self) -> Option<F64Bits> {
+        match self.single_component()? {
+            Component::Floats(v) => v.singleton(),
+            _ => None,
+        }
+    }
+
+    /// Singleton atom name.
+    pub fn as_atom_singleton(&self) -> Option<&str> {
+        match self.single_component()? {
+            Component::Atoms(v) => {
+                let mut it = v.finite()?;
+                let first = it.next()?;
+                if it.next().is_none() {
+                    Some(first)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// Singleton string.
+    pub fn as_str_singleton(&self) -> Option<&str> {
+        match self.single_component()? {
+            Component::Strs(v) => v.singleton(),
+            _ => None,
+        }
+    }
+
+    /// Single-shape tuple: exactly one positive clause with one positive sig
+    /// and no negations, and no other axis populated. Returns the element
+    /// Descr slice. Elements may be wide — caller decides if it cares.
+    pub fn as_tuple_singleton(&self) -> Option<&[Descr]> {
+        match self.single_component()? {
+            Component::Tuples(_) => {
+                if self.tuples.len() != 1 {
+                    return None;
+                }
+                let conj = &self.tuples[0];
+                if !conj.neg.is_empty() || conj.pos.len() != 1 {
+                    return None;
+                }
+                Some(&conj.pos[0].elems)
+            }
+            _ => None,
+        }
+    }
+
+    /// Returns the single present Component, or None if zero or more than
+    /// one is present. Used by the `as_*_singleton` accessors to enforce
+    /// "exactly one axis populated."
+    fn single_component(&self) -> Option<Component<'_>> {
+        let mut it = self.components();
+        let first = it.next()?;
+        if it.next().is_some() {
+            None
+        } else {
+            Some(first)
+        }
+    }
+
+    /// Max depth of nested Descrs reachable through structural axes. A leaf
+    /// (basic, atoms, ints, floats, strs, opaques, vars) has depth 0; a
+    /// tuple/list adds 1 to its element depth; a closure_lit adds 1 to its
+    /// capture depths. Used by ir_reducer for materialization-depth checks.
+    pub fn depth(&self) -> usize {
+        let mut max_d = 0;
+        for c in self.components() {
+            match c {
+                Component::Tuples(view) => {
+                    for conj in view.inner {
+                        for sig in &conj.pos {
+                            for e in &sig.elems {
+                                max_d = max_d.max(1 + e.depth());
+                            }
+                        }
+                    }
+                }
+                Component::Lists(view) => {
+                    for conj in view.inner {
+                        for sig in &conj.pos {
+                            max_d = max_d.max(1 + sig.elem.depth());
+                        }
+                    }
+                }
+                Component::Funcs(view) => {
+                    for conj in view.inner {
+                        for sig in &conj.pos {
+                            if let Some(lit) = &sig.lit {
+                                for cap in &lit.captures {
+                                    max_d = max_d.max(1 + cap.depth());
+                                }
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        max_d
+    }
+
+    /// True iff `self` and `other` share at least one axis on which both
+    /// are non-empty (basic bits overlap; literal axes both populated;
+    /// structural axes both non-empty). Used by ir_typer's VR.5a lint to
+    /// distinguish "different kinds" from "same kind, narrowed to disjoint
+    /// literals." Cheaper than full `intersect`.
+    pub fn kinds_overlap(&self, other: &Descr) -> bool {
+        if !self.basic.intersect(other.basic).is_empty() {
+            return true;
+        }
+        for c in self.components() {
+            let overlap = match c {
+                Component::Basic(_) => false, // handled above
+                Component::Atoms(_) => other.components().any(|d| matches!(d, Component::Atoms(_))),
+                Component::Ints(_) => other.components().any(|d| matches!(d, Component::Ints(_))),
+                Component::Floats(_) => other
+                    .components()
+                    .any(|d| matches!(d, Component::Floats(_))),
+                Component::Strs(_) => other.components().any(|d| matches!(d, Component::Strs(_))),
+                Component::Opaques(_) => other
+                    .components()
+                    .any(|d| matches!(d, Component::Opaques(_))),
+                Component::Vars(_) => other.components().any(|d| matches!(d, Component::Vars(_))),
+                Component::Tuples(_) => other
+                    .components()
+                    .any(|d| matches!(d, Component::Tuples(_))),
+                Component::Lists(_) => other.components().any(|d| matches!(d, Component::Lists(_))),
+                Component::Funcs(_) => other.components().any(|d| matches!(d, Component::Funcs(_))),
+                Component::Maps(_) => other.components().any(|d| matches!(d, Component::Maps(_))),
+            };
+            if overlap {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Returns the largest arity of any positive tuple clause, or 0 if
+    /// there are no positive tuple clauses. Used for tuple-field projection
+    /// when the field index might exceed some clauses' arities.
+    pub fn max_tuple_arity(&self) -> usize {
+        for c in self.components() {
+            if let Component::Tuples(view) = c {
+                return view.arities().max().unwrap_or(0);
+            }
+        }
+        0
+    }
+
+    /// True iff this descriptor extracts to a singleton literal on some
+    /// scalar axis (int, atom, str, float).
+    pub fn is_singleton_literal(&self) -> bool {
+        self.as_int_singleton().is_some()
+            || self.as_atom_singleton().is_some()
+            || self.as_str_singleton().is_some()
+            || self.as_float_singleton().is_some()
+    }
+
+    /// If this descriptor is a singleton scalar that can serve as a
+    /// MapKey (int, atom, or str literal), return it.
+    pub fn as_map_key(&self) -> Option<MapKey> {
+        if let Some(n) = self.as_int_singleton() {
+            return Some(MapKey::Int(n));
+        }
+        if let Some(s) = self.as_atom_singleton() {
+            return Some(MapKey::Atom(s.to_string()));
+        }
+        if let Some(s) = self.as_str_singleton() {
+            return Some(MapKey::Str(s.to_string()));
+        }
+        None
+    }
+
+    /// Refine every positive map clause so that field `key` has value type
+    /// `vt`. Negations and non-map axes are unchanged. Used by the typer
+    /// for narrowing under map-pattern matches.
+    pub fn refine_map_field(&self, key: &MapKey, vt: &Descr) -> Descr {
+        let mut out = self.clone();
+        for clause in &mut out.maps {
+            for sig in &mut clause.pos {
+                sig.fields.insert(key.clone(), vt.clone());
+            }
+        }
+        out
+    }
+
+    /// Widen literal-set axes (ints / floats / strs) to their cofinite top.
+    /// Singleton values become their respective universes (`int_lit(42)`
+    /// becomes `int()`, etc.); structural axes are untouched.
+    ///
+    /// Atoms intentionally are NOT widened — atom values are nominal
+    /// singletons, not points in a numeric universe; widening them would
+    /// erase identity that downstream consumers depend on. Likewise basic,
+    /// opaques, and vars (nominal axes).
+    ///
+    /// For deep widening across nested Descrs inside tuples/lists/funcs/
+    /// maps, compose with `map_nested_descrs` and a recursive callback.
+    pub fn widen_literals(&self) -> Descr {
+        let mut out = self.clone();
+        if !out.ints.is_none() && !out.ints.is_any() {
+            out.ints = IntSet::any();
+        }
+        if !out.floats.is_none() && !out.floats.is_any() {
+            out.floats = FloatSet::any();
+        }
+        if !out.strs.is_none() && !out.strs.is_any() {
+            out.strs = StrSet::any();
+        }
+        out
+    }
+
+    /// Apply `f` to every nested `Descr` reachable through this Descr's
+    /// structural axes (tuple elements, list element, arrow args/ret,
+    /// closure captures, map values). The structural shape itself is
+    /// preserved; only the contained Descrs are transformed.
+    ///
+    /// Consuming receiver to avoid an extra clone when composed with
+    /// `widen_literals` (typical caller: `d.widen_literals().map_nested_descrs(...)`).
+    pub fn map_nested_descrs(mut self, f: &impl Fn(&Descr) -> Descr) -> Descr {
+        let map_tuple_sig = |s: TupleSig| TupleSig {
+            elems: s.elems.iter().map(f).collect(),
+        };
+        let map_list_sig = |s: ListSig| ListSig {
+            elem: Box::new(f(&s.elem)),
+        };
+        let map_arrow_sig = |s: ArrowSig| ArrowSig {
+            args: s.args.iter().map(f).collect(),
+            ret: Box::new(f(&s.ret)),
+            lit: s.lit.map(|l| ClosureLit {
+                fn_id: l.fn_id,
+                captures: l.captures.iter().map(f).collect(),
+            }),
+        };
+        let map_map_sig = |s: MapSig| MapSig {
+            fields: s.fields.into_iter().map(|(k, v)| (k, f(&v))).collect(),
+        };
+        self.tuples = self
+            .tuples
+            .into_iter()
+            .map(|c| Conj {
+                pos: c.pos.into_iter().map(map_tuple_sig).collect(),
+                neg: c.neg.into_iter().map(map_tuple_sig).collect(),
+            })
+            .collect();
+        self.lists = self
+            .lists
+            .into_iter()
+            .map(|c| Conj {
+                pos: c.pos.into_iter().map(map_list_sig).collect(),
+                neg: c.neg.into_iter().map(map_list_sig).collect(),
+            })
+            .collect();
+        self.funcs = self
+            .funcs
+            .into_iter()
+            .map(|c| Conj {
+                pos: c.pos.into_iter().map(map_arrow_sig).collect(),
+                neg: c.neg.into_iter().map(map_arrow_sig).collect(),
+            })
+            .collect();
+        self.maps = self
+            .maps
+            .into_iter()
+            .map(|c| Conj {
+                pos: c.pos.into_iter().map(map_map_sig).collect(),
+                neg: c.neg.into_iter().map(map_map_sig).collect(),
+            })
+            .collect();
+        self
     }
 
     /// Top of the string/binary axis. Promoted from test-only in
@@ -1953,6 +2218,407 @@ fn join_clause(pos: &[String], neg: &[String], top: &str) -> String {
         top.to_string()
     } else {
         all.join(" & ")
+    }
+}
+
+// ----------------------------------------------------------------------
+// Component view API (fz-68x)
+// ----------------------------------------------------------------------
+//
+// The consumer-facing surface for code that needs to *destructure* a
+// `Descr` axis-by-axis (interp TypeTest, codegen repr selection, typer
+// projections, reducer literal extraction). Today the consumers reach
+// into the public axis fields directly; this is the API they migrate
+// to in fz-68x.{3..7}, after which the axis fields seal (fz-68x.8).
+//
+// The boundary lets the internal representation evolve — Elixir's
+// `Module.Types.Descr` is migrating DNF → BDD with hash-consing, and
+// fz can follow without rippling through every consumer.
+//
+// `Descr::components()` yields only *present* components, mirroring
+// Elixir's sparse-map representation. Consumers `match` on the
+// `Component` variant; the compiler enforces exhaustiveness, which
+// turns the three-path-parity promise of `docs/descr-cleanup.md`
+// into a load-bearing invariant rather than an aspiration.
+
+// API-in-waiting: the Component types and most View methods are
+// unused until fz-68x.{3..7} migrate consumers. Allow dead_code only
+// on this section; do not propagate the allow upward.
+
+/// The kinds of value-sets a `Descr` admits, one per axis. Yielded by
+/// `Descr::components()`. Only present (non-empty) axes appear.
+#[allow(dead_code)]
+#[derive(Clone, Copy)]
+pub enum Component<'a> {
+    Basic(BasicBits),
+    Atoms(AtomView<'a>),
+    Ints(IntView<'a>),
+    Floats(FloatView<'a>),
+    Strs(StrView<'a>),
+    Opaques(OpaqueView<'a>),
+    Vars(VarView<'a>),
+    Tuples(TupleView<'a>),
+    Lists(ListView<'a>),
+    Funcs(FuncView<'a>),
+    Maps(MapView<'a>),
+}
+
+// ---- literal-set views ----
+
+#[derive(Clone, Copy)]
+pub struct AtomView<'a> {
+    inner: &'a AtomSet,
+}
+
+impl<'a> AtomView<'a> {
+    pub fn is_any(&self) -> bool {
+        self.inner.is_any()
+    }
+    pub fn cofinite(&self) -> bool {
+        self.inner.cofinite
+    }
+    /// Iterator over finite members; `None` if the set is cofinite ("any
+    /// atom except these"). Callers that handle cofinite check
+    /// `cofinite()` first.
+    pub fn finite(&self) -> Option<impl Iterator<Item = &'a str> + 'a> {
+        if self.inner.cofinite {
+            None
+        } else {
+            Some(self.inner.set.iter().map(String::as_str))
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct IntView<'a> {
+    inner: &'a IntSet,
+}
+
+impl<'a> IntView<'a> {
+    /// Returns the single integer if this view is exactly `{n}`; `None`
+    /// otherwise (any, cofinite, multi-element, or empty).
+    pub fn singleton(&self) -> Option<i64> {
+        if !self.inner.cofinite && self.inner.set.len() == 1 {
+            self.inner.set.iter().next().copied()
+        } else {
+            None
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct FloatView<'a> {
+    inner: &'a FloatSet,
+}
+
+impl<'a> FloatView<'a> {
+    /// Returns the single F64Bits if this view is exactly `{b}`; `None`
+    /// otherwise. Bit-level precision — callers wanting `f64` call `.get()`.
+    pub fn singleton(&self) -> Option<F64Bits> {
+        if !self.inner.cofinite && self.inner.set.len() == 1 {
+            self.inner.set.iter().next().copied()
+        } else {
+            None
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct StrView<'a> {
+    inner: &'a StrSet,
+}
+
+impl<'a> StrView<'a> {
+    pub fn singleton(&self) -> Option<&'a str> {
+        if !self.inner.cofinite && self.inner.set.len() == 1 {
+            self.inner.set.iter().next().map(String::as_str)
+        } else {
+            None
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+#[allow(dead_code)]
+pub struct OpaqueView<'a> {
+    inner: &'a LiteralSet<String>,
+}
+
+impl<'a> OpaqueView<'a> {
+    // Currently no consumer needs OpaqueView methods; the variant exists
+    // for exhaustive matching. Methods will be added when an opaque-aware
+    // consumer arrives.
+}
+
+#[derive(Clone, Copy)]
+pub struct VarView<'a> {
+    inner: &'a VarSet,
+}
+
+impl<'a> VarView<'a> {
+    /// Named finite var ids; None if cofinite (e.g. `Descr::any()`'s vars
+    /// axis is "every var" — not a substitutable pattern).
+    pub fn finite(&self) -> Option<impl Iterator<Item = TypeVarId> + 'a> {
+        if self.inner.cofinite {
+            None
+        } else {
+            Some(self.inner.set.iter().copied())
+        }
+    }
+    /// Count of named finite var ids; None if cofinite. Used by the
+    /// most-specific-wins ordering in spec dispatch.
+    pub fn finite_len(&self) -> Option<usize> {
+        if self.inner.cofinite {
+            None
+        } else {
+            Some(self.inner.set.len())
+        }
+    }
+}
+
+// ---- structural views ----
+//
+// Each wraps a `&[Conj<Sig>]` slice but exposes only View methods. The
+// DNF / clause representation is private to types.rs; consumers ask
+// "what arities does this admit?", "project element i of arity-n
+// tuples", "what's the joined element type?", etc.
+
+#[derive(Clone, Copy)]
+pub struct TupleView<'a> {
+    inner: &'a [Conj<TupleSig>],
+}
+
+impl<'a> TupleView<'a> {
+    /// True iff this view admits every tuple (single `Conj::top()` clause).
+    /// True iff any clause contains a negation. Consumers that don't yet
+    /// support DNF with negations check this to preserve invariants.
+    pub fn has_negations(&self) -> bool {
+        self.inner.iter().any(|c| !c.neg.is_empty())
+    }
+    /// Distinct arities admitted by any positive clause. Empty iterator
+    /// if the only clauses are negations-of-top.
+    pub fn arities(&self) -> impl Iterator<Item = usize> {
+        let mut seen = std::collections::BTreeSet::new();
+        for conj in self.inner {
+            for sig in &conj.pos {
+                seen.insert(sig.elems.len());
+            }
+        }
+        seen.into_iter()
+    }
+    /// Project the full element-Descr vector at the given arity, following
+    /// Castagna DNF semantics (fz-dhd): positive sigs within a Conj are
+    /// intersected per-position; results union across Conjs. Returns None
+    /// if no Conj has the requested arity. Vector length equals `arity`.
+    pub fn project_all(&self, arity: usize) -> Option<Vec<Descr>> {
+        let mut comps = vec![Descr::none(); arity];
+        let mut found = false;
+        for conj in self.inner {
+            let mut clause_comps: Option<Vec<Descr>> = None;
+            for sig in &conj.pos {
+                if sig.elems.len() != arity {
+                    continue;
+                }
+                clause_comps = Some(match clause_comps {
+                    None => sig.elems.clone(),
+                    Some(prev) => prev
+                        .iter()
+                        .zip(sig.elems.iter())
+                        .map(|(p, s)| p.intersect(s))
+                        .collect(),
+                });
+            }
+            if let Some(cs) = clause_comps {
+                for i in 0..arity {
+                    comps[i] = comps[i].union(&cs[i]);
+                }
+                found = true;
+            }
+        }
+        if found { Some(comps) } else { None }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct ListView<'a> {
+    inner: &'a [Conj<ListSig>],
+}
+
+impl<'a> ListView<'a> {
+    /// Element type across all positive list clauses, following fz-dhd
+    /// DNF semantics: sigs within a Conj are intersected; results union
+    /// across Conjs. For `list(int) & list(any)` (one Conj, two sigs),
+    /// the element is `int ∩ any = int`, not `int ∪ any = any`. Returns
+    /// `Descr::any()` when the view admits no concrete lists (matches
+    /// typer's prior fallback).
+    pub fn element_type(&self) -> Descr {
+        let mut elem = Descr::none();
+        let mut found = false;
+        for conj in self.inner {
+            let mut clause_elem: Option<Descr> = None;
+            for sig in &conj.pos {
+                clause_elem = Some(match clause_elem {
+                    None => sig.elem.as_ref().clone(),
+                    Some(prev) => prev.intersect(&sig.elem),
+                });
+            }
+            if let Some(e) = clause_elem {
+                elem = elem.union(&e);
+                found = true;
+            }
+        }
+        if found { elem } else { Descr::any() }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct FuncView<'a> {
+    inner: &'a [Conj<ArrowSig>],
+}
+
+impl<'a> FuncView<'a> {
+    /// True iff any clause carries negations. Consumers that don't yet
+    /// support DNF with negations check this to preserve invariants
+    /// (ir_typer closure dispatch falls back to `any` when this is true).
+    pub fn has_negations(&self) -> bool {
+        self.inner.iter().any(|c| !c.neg.is_empty())
+    }
+    /// True iff every clause has at least one positive arrow signature.
+    /// When false, some clause is purely negative (e.g. `not arrow(...)`),
+    /// which ir_typer treats as "give up; fall through to `any`."
+    pub fn all_clauses_have_pos(&self) -> bool {
+        self.inner.iter().all(|c| !c.pos.is_empty())
+    }
+    /// Arrows admitted by positive clauses. Each arrow exposes args/ret
+    /// via `ArrowView`. Negations are not yielded — consumers reasoning
+    /// about full DNF use the algebra (intersect/diff), not this view.
+    pub fn arrows(&self) -> impl Iterator<Item = ArrowView<'a>> {
+        self.inner
+            .iter()
+            .flat_map(|conj| conj.pos.iter().map(|sig| ArrowView { inner: sig }))
+    }
+    /// Arrows from clauses that have NO negations. Used by sites that
+    /// want to enumerate dispatch targets safely: a clause `arrow1 ∧
+    /// ¬arrow2` is too complex to flatten without losing the negation,
+    /// so the consumer skips it entirely.
+    pub fn arrows_from_pure_clauses(&self) -> impl Iterator<Item = ArrowView<'a>> {
+        self.inner
+            .iter()
+            .filter(|c| c.neg.is_empty())
+            .flat_map(|conj| conj.pos.iter().map(|sig| ArrowView { inner: sig }))
+    }
+    /// Distinct arities admitted by positive clauses.
+    pub fn arities(&self) -> impl Iterator<Item = usize> {
+        let mut seen = std::collections::BTreeSet::new();
+        for conj in self.inner {
+            for sig in &conj.pos {
+                seen.insert(sig.args.len());
+            }
+        }
+        seen.into_iter()
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct ArrowView<'a> {
+    inner: &'a ArrowSig,
+}
+
+impl<'a> ArrowView<'a> {
+    pub fn args(&self) -> &'a [Descr] {
+        &self.inner.args
+    }
+    pub fn ret(&self) -> &'a Descr {
+        &self.inner.ret
+    }
+    pub fn closure_lit(&self) -> Option<&'a ClosureLit> {
+        self.inner.lit.as_ref()
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct MapView<'a> {
+    inner: &'a [Conj<MapSig>],
+}
+
+impl<'a> MapView<'a> {
+    /// Look up the value type for `key` across all positive map clauses,
+    /// following Castagna open-map semantics (fz-dhd): pos sigs within a
+    /// Conj are intersected (a missing field in a sig contributes
+    /// `any | nil` because open maps don't constrain unmentioned keys);
+    /// results union across Conjs. A Conj with `pos.is_empty()` (e.g. a
+    /// pure negation of map-top) contributes `any | nil`. Returns None
+    /// if the view has no clauses.
+    pub fn lookup(&self, key: &MapKey) -> Option<Descr> {
+        if self.inner.is_empty() {
+            return None;
+        }
+        let mut found = false;
+        let mut acc = Descr::none();
+        for conj in self.inner {
+            if conj.pos.is_empty() {
+                acc = acc.union(&Descr::any()).union(&Descr::nil());
+                found = true;
+                continue;
+            }
+            let mut clause_v: Option<Descr> = None;
+            for sig in &conj.pos {
+                let sig_v = match sig.fields.get(key) {
+                    Some(t) => t.clone(),
+                    None => Descr::any().union(&Descr::nil()),
+                };
+                clause_v = Some(match clause_v {
+                    None => sig_v,
+                    Some(prev) => prev.intersect(&sig_v),
+                });
+            }
+            if let Some(v) = clause_v {
+                acc = acc.union(&v);
+                found = true;
+            }
+        }
+        if found { Some(acc) } else { None }
+    }
+}
+
+// ---- iterator ----
+
+impl Descr {
+    /// Iterate the present components of this descriptor. An axis is
+    /// "present" iff it is non-empty (matches Elixir's sparse-map
+    /// convention). `Descr::any()` yields one component per axis;
+    /// `Descr::none()` yields none.
+    ///
+    /// The order is canonical (basic, atoms, ints, floats, strs,
+    /// opaques, vars, tuples, lists, funcs, maps) but consumers should
+    /// `match` rather than rely on order.
+    pub fn components(&self) -> impl Iterator<Item = Component<'_>> + '_ {
+        let basic = (!self.basic.is_empty()).then_some(Component::Basic(self.basic));
+        let atoms =
+            (!self.atoms.is_none()).then_some(Component::Atoms(AtomView { inner: &self.atoms }));
+        let ints = (!self.ints.is_none()).then_some(Component::Ints(IntView { inner: &self.ints }));
+        let floats = (!self.floats.is_none()).then_some(Component::Floats(FloatView {
+            inner: &self.floats,
+        }));
+        let strs = (!self.strs.is_none()).then_some(Component::Strs(StrView { inner: &self.strs }));
+        let opaques = (!self.opaques.is_none()).then_some(Component::Opaques(OpaqueView {
+            inner: &self.opaques,
+        }));
+        let vars = (!self.vars.is_none()).then_some(Component::Vars(VarView { inner: &self.vars }));
+        let tuples = (!self.tuples.is_empty()).then_some(Component::Tuples(TupleView {
+            inner: &self.tuples,
+        }));
+        let lists =
+            (!self.lists.is_empty()).then_some(Component::Lists(ListView { inner: &self.lists }));
+        let funcs =
+            (!self.funcs.is_empty()).then_some(Component::Funcs(FuncView { inner: &self.funcs }));
+        let maps =
+            (!self.maps.is_empty()).then_some(Component::Maps(MapView { inner: &self.maps }));
+        [
+            basic, atoms, ints, floats, strs, opaques, vars, tuples, lists, funcs, maps,
+        ]
+        .into_iter()
+        .flatten()
     }
 }
 
@@ -3277,5 +3943,224 @@ mod tests {
         // includes vars in the universe. But has_vars() reports false
         // because there are no NAMED ids.
         assert!(!n.has_vars(), "¬int has no named vars to substitute");
+    }
+
+    // ------------------------------------------------------------------
+    // fz-68x.2 — Component view API
+    // ------------------------------------------------------------------
+
+    fn count_components(d: &Descr) -> usize {
+        d.components().count()
+    }
+
+    #[test]
+    fn components_none_yields_nothing() {
+        assert_eq!(count_components(&Descr::none()), 0);
+    }
+
+    #[test]
+    fn components_any_yields_one_per_axis() {
+        // 11 axes: basic, atoms, ints, floats, strs, opaques, vars,
+        // tuples, lists, funcs, maps.
+        assert_eq!(count_components(&Descr::any()), 11);
+    }
+
+    #[test]
+    fn components_int_lit_yields_only_ints() {
+        let d = Descr::int_lit(42);
+        let mut found = None;
+        for c in d.components() {
+            match c {
+                Component::Ints(v) => {
+                    assert!(found.is_none(), "multiple Ints components");
+                    found = v.singleton();
+                }
+                _ => panic!("unexpected component for int_lit(42)"),
+            }
+        }
+        assert_eq!(found, Some(42));
+    }
+
+    #[test]
+    fn components_atom_lit_yields_only_atoms() {
+        let d = Descr::atom_lit("ok");
+        let mut seen_atom = false;
+        for c in d.components() {
+            match c {
+                Component::Atoms(v) => {
+                    seen_atom = true;
+                    let names: Vec<&str> = v.finite().unwrap().collect();
+                    assert_eq!(names, vec!["ok"]);
+                }
+                _ => panic!("unexpected component for atom_lit"),
+            }
+        }
+        assert!(seen_atom);
+    }
+
+    #[test]
+    fn components_tuple_of_yields_only_tuples_with_correct_arity_and_projection() {
+        let d = Descr::tuple_of(vec![Descr::int_lit(1), Descr::int_lit(2)]);
+        let mut seen = false;
+        for c in d.components() {
+            match c {
+                Component::Tuples(v) => {
+                    seen = true;
+                    let arities: Vec<usize> = v.arities().collect();
+                    assert_eq!(arities, vec![2]);
+                    let elems = v.project_all(2).unwrap();
+                    assert_eq!(elems[0].as_int_singleton(), Some(1));
+                    assert_eq!(elems[1].as_int_singleton(), Some(2));
+                    // Out-of-band projections return None.
+                    assert!(v.project_all(3).is_none());
+                }
+                _ => panic!("unexpected component for tuple_of"),
+            }
+        }
+        assert!(seen);
+    }
+
+    #[test]
+    fn components_list_of_yields_only_lists_with_joined_element_type() {
+        let d = Descr::list_of(Descr::int());
+        let mut seen = false;
+        for c in d.components() {
+            match c {
+                Component::Lists(v) => {
+                    seen = true;
+                    let et = v.element_type();
+                    assert!(et.is_equiv(&Descr::int()));
+                }
+                _ => panic!("unexpected component for list_of"),
+            }
+        }
+        assert!(seen);
+    }
+
+    #[test]
+    fn components_arrow_yields_funcs_and_exposes_args_ret() {
+        let d = Descr::arrow(vec![Descr::int()], Descr::str_t());
+        let mut seen = false;
+        for c in d.components() {
+            match c {
+                Component::Funcs(v) => {
+                    seen = true;
+                    let arrows: Vec<_> = v.arrows().collect();
+                    assert_eq!(arrows.len(), 1);
+                    let a = arrows[0];
+                    assert_eq!(a.args().len(), 1);
+                    assert!(a.args()[0].is_equiv(&Descr::int()));
+                    assert!(a.ret().is_equiv(&Descr::str_t()));
+                    assert!(a.closure_lit().is_none());
+                }
+                _ => panic!("unexpected component for arrow"),
+            }
+        }
+        assert!(seen);
+    }
+
+    #[test]
+    fn components_var_yields_only_vars_axis() {
+        let d = Descr::var(TypeVarId(7));
+        let mut seen = false;
+        for c in d.components() {
+            match c {
+                Component::Vars(v) => {
+                    seen = true;
+                    let ids: Vec<TypeVarId> = v.finite().unwrap().collect();
+                    assert_eq!(ids, vec![TypeVarId(7)]);
+                }
+                _ => panic!("unexpected component for var"),
+            }
+        }
+        assert!(seen);
+    }
+
+    #[test]
+    fn components_var_union_int_yields_both_axes() {
+        // Pins the trajectory: vars and concrete coexist in a single Descr
+        // (matches algebra_audit_union_int_var_keeps_both); both components
+        // must surface independently.
+        let d = Descr::var(TypeVarId(0)).union(&Descr::int());
+        let mut saw_vars = false;
+        let mut saw_ints = false;
+        for c in d.components() {
+            match c {
+                Component::Vars(_) => saw_vars = true,
+                Component::Ints(_) => saw_ints = true,
+                _ => panic!("unexpected component for var ∪ int"),
+            }
+        }
+        assert!(saw_vars && saw_ints);
+    }
+
+    #[test]
+    fn components_distinct_vars_collapse_to_one_vars_component() {
+        // α ∪ β lives in a single vars-axis (finite set {α, β}). The
+        // iterator yields ONE Component::Vars containing both ids — not
+        // two separate var components.
+        let d = Descr::var(TypeVarId(0)).union(&Descr::var(TypeVarId(1)));
+        let mut count = 0;
+        for c in d.components() {
+            match c {
+                Component::Vars(v) => {
+                    count += 1;
+                    let ids: Vec<TypeVarId> = v.finite().unwrap().collect();
+                    assert_eq!(ids, vec![TypeVarId(0), TypeVarId(1)]);
+                }
+                _ => panic!("unexpected component for var ∪ var"),
+            }
+        }
+        assert_eq!(count, 1, "vars axis surfaces as exactly one component");
+    }
+
+    #[test]
+    fn components_basic_vec_kinds_surface_as_basic_with_bits() {
+        let d = Descr::vec_i64();
+        let mut seen = false;
+        for c in d.components() {
+            match c {
+                Component::Basic(bits) => {
+                    seen = true;
+                    assert!(bits.contains_all(BasicBits::VEC_I64));
+                    assert!(!bits.contains_all(BasicBits::VEC_F64));
+                }
+                _ => panic!("unexpected component for vec(i64)"),
+            }
+        }
+        assert!(seen);
+    }
+
+    #[test]
+    fn components_map_field_lookup_joins_across_clauses() {
+        // Single-clause map: open_map with one field. field() returns the value.
+        let mut fields = std::collections::BTreeMap::new();
+        fields.insert(MapKey::Atom("k".into()), Descr::int_lit(1));
+        let m = Descr::map_of(fields);
+        for c in m.components() {
+            if let Component::Maps(v) = c {
+                let got = v.lookup(&MapKey::Atom("k".into()));
+                assert_eq!(got.and_then(|d| d.as_int_singleton()), Some(1));
+                // "missing" on an open_map is `any | nil`, not None.
+                let missing = v.lookup(&MapKey::Atom("missing".into())).unwrap();
+                assert!(Descr::nil().is_subtype(&missing));
+            }
+        }
+    }
+
+    #[test]
+    fn components_int_singleton_extraction_works() {
+        // For wide int, singleton returns None.
+        for c in Descr::int().components() {
+            if let Component::Ints(v) = c {
+                assert!(v.singleton().is_none());
+            }
+        }
+        // For int_lit(42), singleton returns Some(42).
+        for c in Descr::int_lit(42).components() {
+            if let Component::Ints(v) = c {
+                assert_eq!(v.singleton(), Some(42));
+            }
+        }
     }
 }

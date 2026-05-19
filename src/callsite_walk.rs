@@ -215,15 +215,16 @@ fn push_closure_call<'a>(
             kind: CallsiteKind::CallClosureKnown { target, args },
         });
     }
-    if let Some(cv_descr) = env.get(&closure) {
-        for clause in cv_descr.funcs.iter() {
-            if !clause.neg.is_empty() {
-                continue;
-            }
-            for sig in clause.pos.iter() {
-                let Some(lit) = &sig.lit else {
-                    continue;
-                };
+    if let Some(cv_descr) = env.get(&closure)
+        && let Some(view) = cv_descr.components().find_map(|c| match c {
+            crate::types::Component::Funcs(v) => Some(v),
+            _ => None,
+        })
+    {
+        // Skip clauses with negations (consumer can't flatten ¬arrow safely);
+        // emit one Callsite per positive closure-lit signature.
+        for arrow in view.arrows_from_pure_clauses() {
+            if let Some(lit) = arrow.closure_lit() {
                 out.push(BlockCallsite {
                     slot: EmitSlot::ClosureCall,
                     kind: CallsiteKind::ClosureLit { lit, args },

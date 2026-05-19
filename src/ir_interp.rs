@@ -625,89 +625,91 @@ fn eval_prim(module: &Module, prim: &Prim, env: &HashMap<Var, FzValue>) -> Resul
             }
         }
         Prim::TypeTest(v, descr) => {
-            use crate::types::BasicBits;
+            use crate::types::{BasicBits, Component};
             use fz_runtime::fz_value::{HeapKind, Tag};
             let val = env_get(env, *v)?;
             let tag = val.tag();
-            let mut matched = false;
-            if !descr.ints.is_none() {
-                matched |= tag == Tag::Int;
-            }
-            // fz-yan.2 — atoms axis subsumes BasicBits::NIL / ::BOOL. For a
-            // literal set, look up each name's atom id in the module and
-            // check val == atom-tagged(id).
-            if descr.atoms.is_any() {
-                matched |= tag == Tag::Atom;
-            } else if !descr.atoms.is_none() {
-                if descr.atoms.cofinite {
-                    return Err(
-                        "TypeTest: cofinite atom literal sets not yet supported in interpreter"
-                            .into(),
-                    );
-                }
-                if tag == Tag::Atom {
-                    let id = val.unbox_atom().expect("atom-tagged");
-                    for name in &descr.atoms.set {
-                        if let Some(pos) = module.atom_names.iter().position(|n| n == name)
-                            && pos as u32 == id
-                        {
-                            matched = true;
-                            break;
-                        }
-                    }
-                }
-            }
-            // fz-ul4.36 — collect tuple arities, mirroring JIT codegen.
-            // pos TupleSig => match if value is HeapKind::Struct with
-            // size_bytes == arity * 8. neg clauses unsupported (assert).
-            let tuple_arities_to_check: Vec<usize> = descr
-                .tuples
-                .iter()
-                .flat_map(|conj| {
-                    assert!(
-                        conj.neg.is_empty(),
-                        "TypeTest: negated tuple clauses not yet supported"
-                    );
-                    conj.pos.iter().map(|sig| sig.elems.len())
-                })
-                .collect();
-
-            let need_heap = !descr.floats.is_none()
-                || descr.basic.contains_all(BasicBits::VEC_I64)
-                || descr.basic.contains_all(BasicBits::VEC_F64)
-                || descr.basic.contains_all(BasicBits::VEC_U8)
-                || descr.basic.contains_all(BasicBits::VEC_BIT)
-                || !tuple_arities_to_check.is_empty();
-            if need_heap && let Some(ptr) = val.unbox_ptr() {
+            // Hoist heap inspection — many Component arms need (header, kind).
+            let heap = val.unbox_ptr().map(|ptr| {
                 let header = unsafe { &*ptr };
-                let hk = HeapKind::from_u16(header.kind);
-                if !descr.floats.is_none() {
-                    matched |= hk == Some(HeapKind::Float);
-                }
-                if descr.basic.contains_all(BasicBits::VEC_I64) {
-                    matched |= hk == Some(HeapKind::VecI64);
-                }
-                if descr.basic.contains_all(BasicBits::VEC_F64) {
-                    matched |= hk == Some(HeapKind::VecF64);
-                }
-                if descr.basic.contains_all(BasicBits::VEC_U8) {
-                    matched |= hk == Some(HeapKind::VecU8);
-                }
-                if descr.basic.contains_all(BasicBits::VEC_BIT) {
-                    matched |= hk == Some(HeapKind::VecBit);
-                }
-                if !tuple_arities_to_check.is_empty() && hk == Some(HeapKind::Struct) {
-                    // Compare schema_id — size_bytes alone isn't arity-unique
-                    // because alloc_struct aligns total size to 16 (arity 1
-                    // and arity 2 both yield 32 bytes; 3 and 4 both yield 48).
-                    let actual_schema = header.schema_id;
-                    for arity in &tuple_arities_to_check {
-                        let want_schema = interp_tuple_schema_id(*arity);
-                        if actual_schema == want_schema {
-                            matched = true;
-                            break;
+                (header, HeapKind::from_u16(header.kind))
+            });
+            let mut matched = false;
+            for component in descr.components() {
+                match component {
+                    Component::Ints(_) => {
+                        matched |= tag == Tag::Int;
+                    }
+                    Component::Atoms(view) => {
+                        // fz-yan.2 — atoms axis subsumes BasicBits::NIL / ::BOOL.
+                        if view.is_any() {
+                            matched |= tag == Tag::Atom;
+                        } else if view.cofinite() {
+                            return Err(
+                                "TypeTest: cofinite atom literal sets not yet supported in interpreter"
+                                    .into(),
+                            );
+                        } else if tag == Tag::Atom {
+                            let id = val.unbox_atom().expect("atom-tagged");
+                            for name in view.finite().expect("finite (non-cofinite)") {
+                                if let Some(pos) = module.atom_names.iter().position(|n| n == name)
+                                    && pos as u32 == id
+                                {
+                                    matched = true;
+                                    break;
+                                }
+                            }
                         }
                     }
+                    Component::Floats(_) => {
+                        if let Some((_, Some(HeapKind::Float))) = heap {
+                            matched = true;
+                        }
+                    }
+                    Component::Basic(bits) => {
+                        if let Some((_, Some(hk))) = heap {
+                            if bits.contains_all(BasicBits::VEC_I64) && hk == HeapKind::VecI64 {
+                                matched = true;
+                            }
+                            if bits.contains_all(BasicBits::VEC_F64) && hk == HeapKind::VecF64 {
+                                matched = true;
+                            }
+                            if bits.contains_all(BasicBits::VEC_U8) && hk == HeapKind::VecU8 {
+                                matched = true;
+                            }
+                            if bits.contains_all(BasicBits::VEC_BIT) && hk == HeapKind::VecBit {
+                                matched = true;
+                            }
+                        }
+                    }
+                    Component::Tuples(view) => {
+                        // fz-ul4.36 — match if value is HeapKind::Struct with
+                        // matching schema_id. Negated tuple clauses unsupported.
+                        assert!(
+                            !view.has_negations(),
+                            "TypeTest: negated tuple clauses not yet supported"
+                        );
+                        if let Some((header, Some(HeapKind::Struct))) = heap {
+                            let actual_schema = header.schema_id;
+                            for arity in view.arities() {
+                                let want_schema = interp_tuple_schema_id(arity);
+                                if actual_schema == want_schema {
+                                    matched = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    // Unhandled axes — silent no-match. The pre-Component
+                    // implementation ignored these too. Compiler-enforced
+                    // exhaustiveness means any future axis addition surfaces
+                    // this gap explicitly rather than silently mis-typing.
+                    Component::Strs(_)
+                    | Component::Opaques(_)
+                    | Component::Vars(_)
+                    | Component::Lists(_)
+                    | Component::Funcs(_)
+                    | Component::Maps(_) => {}
                 }
             }
             if matched {

@@ -1655,7 +1655,14 @@ fn resolve_closure_return_union_of_singletons_joins() {
     let a = Descr::closure_lit(fid(7), vec![], 1);
     let b = Descr::closure_lit(fid(8), vec![], 1);
     let descr = a.union(&b);
-    assert_eq!(descr.funcs.len(), 2, "expect two clauses: {}", descr);
+    let n_clauses = descr
+        .components()
+        .find_map(|c| match c {
+            crate::types::Component::Funcs(v) => Some(v.arrows().count()),
+            _ => None,
+        })
+        .unwrap_or(0);
+    assert_eq!(n_clauses, 2, "expect two clauses: {}", descr);
     let mut er: HashMap<(FnId, Vec<Descr>), Descr> = HashMap::new();
     er.insert((fid(7), vec![Descr::int_lit(21)]), Descr::int());
     er.insert((fid(8), vec![Descr::int_lit(21)]), Descr::atom_lit("ok"));

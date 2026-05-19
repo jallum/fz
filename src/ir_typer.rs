@@ -355,51 +355,54 @@ pub fn resolve_closure_return(
     effective_returns: &HashMap<(FnId, Vec<Descr>), Descr>,
     arg_descrs: &[Descr],
 ) -> Option<Descr> {
-    if closure_descr.funcs.is_empty() {
+    let Some(funcs_view) = closure_descr.components().find_map(|c| match c {
+        crate::types::Component::Funcs(v) => Some(v),
+        _ => None,
+    }) else {
+        return Some(Descr::any());
+    };
+    if funcs_view.has_negations() || !funcs_view.all_clauses_have_pos() {
         return Some(Descr::any());
     }
     let mut acc = Descr::none();
-    for c in &closure_descr.funcs {
-        if !c.neg.is_empty() || c.pos.is_empty() {
-            return Some(Descr::any());
-        }
-        for sig in &c.pos {
-            match &sig.lit {
-                None => {
-                    // fz-try.6 — if the arrow signature carries unsubstituted
-                    // type vars (after C3, closure_lit() stubs use Var(α)/Var(β)
-                    // instead of any()/any()), build σ positionally from
-                    // sig.args ⇄ arg_descrs and instantiate sig.ret. Vars not
-                    // pinned by the args pass through; downstream emptiness
-                    // checks surface inconsistent witnesses.
-                    if sig.ret.has_vars() || sig.args.iter().any(|d| d.has_vars()) {
-                        if sig.args.len() == arg_descrs.len() {
-                            let mut sigma = HashMap::new();
-                            for (pat, wit) in sig.args.iter().zip(arg_descrs.iter()) {
-                                Descr::collect_subst_into(pat, wit, &mut sigma);
-                            }
-                            acc = acc.union(&sig.ret.instantiate(&sigma));
-                        } else {
-                            // Arity mismatch — fall through to broad join.
-                            acc = acc.union(&sig.ret);
+    for arrow in funcs_view.arrows() {
+        let sig_args = arrow.args();
+        let sig_ret = arrow.ret();
+        match arrow.closure_lit() {
+            None => {
+                // fz-try.6 — if the arrow signature carries unsubstituted
+                // type vars (after C3, closure_lit() stubs use Var(α)/Var(β)
+                // instead of any()/any()), build σ positionally from
+                // sig.args ⇄ arg_descrs and instantiate sig.ret. Vars not
+                // pinned by the args pass through; downstream emptiness
+                // checks surface inconsistent witnesses.
+                if sig_ret.has_vars() || sig_args.iter().any(|d| d.has_vars()) {
+                    if sig_args.len() == arg_descrs.len() {
+                        let mut sigma = HashMap::new();
+                        for (pat, wit) in sig_args.iter().zip(arg_descrs.iter()) {
+                            Descr::collect_subst_into(pat, wit, &mut sigma);
                         }
+                        acc = acc.union(&sig_ret.instantiate(&sigma));
                     } else {
-                        acc = acc.union(&sig.ret);
+                        // Arity mismatch — fall through to broad join.
+                        acc = acc.union(sig_ret);
                     }
+                } else {
+                    acc = acc.union(sig_ret);
                 }
-                Some(lit) => {
-                    if sig.args.len() != arg_descrs.len() {
-                        // Arity mismatch (shouldn't happen if MakeClosure
-                        // typing is consistent); fall back broad rather
-                        // than miss-look-up.
-                        return Some(Descr::any());
-                    }
-                    let mut full_key: Vec<Descr> = lit.captures.clone();
-                    full_key.extend_from_slice(arg_descrs);
-                    match effective_returns.get(&(lit.fn_id, full_key)) {
-                        Some(r) => acc = acc.union(r),
-                        None => return None, // defer to next fixpoint iter
-                    }
+            }
+            Some(lit) => {
+                if sig_args.len() != arg_descrs.len() {
+                    // Arity mismatch (shouldn't happen if MakeClosure
+                    // typing is consistent); fall back broad rather
+                    // than miss-look-up.
+                    return Some(Descr::any());
+                }
+                let mut full_key: Vec<Descr> = lit.captures.clone();
+                full_key.extend_from_slice(arg_descrs);
+                match effective_returns.get(&(lit.fn_id, full_key)) {
+                    Some(r) => acc = acc.union(r),
+                    None => return None, // defer to next fixpoint iter
                 }
             }
         }
@@ -1000,29 +1003,34 @@ fn compute_return_for_spec(
                     ad.truncate(np);
                     joined = joined.union(&lookup((target, ad)));
                 } else if let Some(cv_descr) = ft.vars.get(closure) {
-                    let mut all_lit = !cv_descr.funcs.is_empty();
+                    let funcs_view = cv_descr.components().find_map(|c| match c {
+                        crate::types::Component::Funcs(v) => Some(v),
+                        _ => None,
+                    });
+                    let mut all_lit = funcs_view.is_some();
                     let mut acc = Descr::none();
-                    'clauses: for c in &cv_descr.funcs {
-                        if !c.neg.is_empty() || c.pos.is_empty() {
+                    if let Some(view) = funcs_view {
+                        if view.has_negations() || !view.all_clauses_have_pos() {
                             all_lit = false;
-                            break 'clauses;
-                        }
-                        for sig in &c.pos {
-                            let Some(lit) = &sig.lit else {
-                                all_lit = false;
-                                break 'clauses;
-                            };
-                            let target_fn = module.fn_by_id(lit.fn_id);
-                            let np = target_fn.block(target_fn.entry).params.len();
-                            let mut full_key: Vec<Descr> = lit.captures.clone();
-                            for av in args.iter() {
-                                full_key.push(ft.vars.get(av).cloned().unwrap_or_else(Descr::any));
+                        } else {
+                            for arrow in view.arrows() {
+                                let Some(lit) = arrow.closure_lit() else {
+                                    all_lit = false;
+                                    break;
+                                };
+                                let target_fn = module.fn_by_id(lit.fn_id);
+                                let np = target_fn.block(target_fn.entry).params.len();
+                                let mut full_key: Vec<Descr> = lit.captures.clone();
+                                for av in args.iter() {
+                                    full_key
+                                        .push(ft.vars.get(av).cloned().unwrap_or_else(Descr::any));
+                                }
+                                while full_key.len() < np {
+                                    full_key.push(Descr::any());
+                                }
+                                full_key.truncate(np);
+                                acc = acc.union(&lookup((lit.fn_id, full_key)));
                             }
-                            while full_key.len() < np {
-                                full_key.push(Descr::any());
-                            }
-                            full_key.truncate(np);
-                            acc = acc.union(&lookup((lit.fn_id, full_key)));
                         }
                     }
                     if all_lit {
@@ -1384,13 +1392,13 @@ fn walk_spec_for_discovery(
                                     .iter()
                                     .map(|av| env.get(av).cloned().unwrap_or_else(Descr::any))
                                     .collect();
-                                for c in &cv_descr.funcs {
-                                    if !c.neg.is_empty() {
-                                        continue;
-                                    }
-                                    for sig in &c.pos {
-                                        if let Some(lit) = &sig.lit
-                                            && sig.args.len() == arg_descrs.len()
+                                if let Some(view) = cv_descr.components().find_map(|c| match c {
+                                    crate::types::Component::Funcs(v) => Some(v),
+                                    _ => None,
+                                }) {
+                                    for arrow in view.arrows_from_pure_clauses() {
+                                        if let Some(lit) = arrow.closure_lit()
+                                            && arrow.args().len() == arg_descrs.len()
                                         {
                                             let mut full_key: Vec<Descr> = lit.captures.clone();
                                             full_key.extend_from_slice(&arg_descrs);
@@ -1908,10 +1916,7 @@ fn narrow_for_if(
 }
 
 fn is_singleton_lit(d: &Descr) -> bool {
-    (!d.ints.cofinite && d.ints.set.len() == 1)
-        || (!d.atoms.cofinite && d.atoms.set.len() == 1)
-        || (!d.strs.cofinite && d.strs.set.len() == 1)
-        || (!d.floats.cofinite && d.floats.set.len() == 1)
+    d.is_singleton_literal()
 }
 
 fn type_prim(
@@ -1952,14 +1957,7 @@ fn type_prim(
             // Find the widest arity in v's tuple clauses that covers index i;
             // project that component. Falls back to any when there's no
             // matching tuple shape.
-            let mut max_arity = 0usize;
-            for cl in &vt.tuples {
-                for sig in &cl.pos {
-                    if sig.elems.len() > max_arity {
-                        max_arity = sig.elems.len();
-                    }
-                }
-            }
+            let max_arity = vt.max_tuple_arity();
             if (*i as usize) < max_arity {
                 let comps = crate::typer::tuple_projections(&vt, max_arity);
                 comps
@@ -2149,11 +2147,7 @@ fn type_binop(op: BinOp, a: &Descr, b: &Descr, fold: bool) -> Descr {
 }
 
 fn float_singleton(d: &Descr) -> Option<f64> {
-    if !d.floats.cofinite && d.floats.set.len() == 1 {
-        d.floats.set.iter().next().map(|f| f.get())
-    } else {
-        None
-    }
+    d.as_float_singleton().map(|b| b.get())
 }
 
 fn compare_result(op: BinOp, a: &Descr, b: &Descr) -> Descr {
@@ -2258,17 +2252,7 @@ fn lookup(env: &HashMap<Var, Descr>, v: Var) -> Descr {
 }
 
 fn var_as_map_key(v: Var, env: &HashMap<Var, Descr>) -> Option<MapKey> {
-    let d = env.get(&v)?;
-    if !d.ints.cofinite && d.ints.set.len() == 1 {
-        return Some(MapKey::Int(*d.ints.set.iter().next().unwrap()));
-    }
-    if !d.atoms.cofinite && d.atoms.set.len() == 1 {
-        return Some(MapKey::Atom(d.atoms.set.iter().next().unwrap().clone()));
-    }
-    if !d.strs.cofinite && d.strs.set.len() == 1 {
-        return Some(MapKey::Str(d.strs.set.iter().next().unwrap().clone()));
-    }
-    None
+    env.get(&v)?.as_map_key()
 }
 
 // Suppress unused imports under cfg(not(test)).
@@ -2549,21 +2533,12 @@ pub fn collect_diagnostics(module: &Module, types: &ModuleTypes) -> crate::diag:
     out
 }
 
-/// True iff `a` and `b` have at least one axis (basic-kind bit, atoms,
-/// ints, floats, strs, tuples, lists, funcs, maps) on which both are
+/// True iff `a` and `b` have at least one axis on which both are
 /// non-empty. Used by the VR.5a `type/dead-binop` lint to distinguish
 /// "different kinds" (worth surfacing) from "same kind, narrowed to
 /// disjoint literals" (silent fold).
 fn axes_overlap(a: &Descr, b: &Descr) -> bool {
-    !a.basic.intersect(b.basic).is_empty()
-        || (!a.atoms.is_none() && !b.atoms.is_none())
-        || (!a.ints.is_none() && !b.ints.is_none())
-        || (!a.floats.is_none() && !b.floats.is_none())
-        || (!a.strs.is_none() && !b.strs.is_none())
-        || (!a.tuples.is_empty() && !b.tuples.is_empty())
-        || (!a.lists.is_empty() && !b.lists.is_empty())
-        || (!a.funcs.is_empty() && !b.funcs.is_empty())
-        || (!a.maps.is_empty() && !b.maps.is_empty())
+    a.kinds_overlap(b)
 }
 
 /// .11.24.5: refine `MakeVec(I64, els)` to `MakeVec(F64, els)` when any
