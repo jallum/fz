@@ -880,33 +880,36 @@ fn compute_dead_branches(
 /// `Consumed` / `Inlined` alone (the reducer/inliner already decided);
 /// insert if absent. Multi-callable: idempotent on repeat application
 /// with the same updates.
-pub fn apply_callsite_outcomes(m: &mut Module, mt: &ModuleTypes) {
+pub fn apply_callsite_outcomes(
+    m: &mut Module,
+    mt: &ModuleTypes,
+    reducer_log: &crate::ir_reducer::ReducerLog,
+) {
     for (cid, outcome) in &mt.callsite_outcome_updates {
+        // fz-uwq.9 — `Stalled` lineage lives in the `ReducerLog` now,
+        // not in `m.callsite_outcomes`. The typer's Emitted outcomes
+        // still get the `came_from` annotation so dumps can explain
+        // "why did the reducer stall before the typer emitted?"
+        let came_from = reducer_log.stalled.get(cid).copied();
         match m.callsite_outcomes.get(cid) {
             None => {
-                m.callsite_outcomes.insert(*cid, outcome.clone());
-            }
-            Some(CallsiteOutcome::Stalled { reason }) => {
-                // fz-f88.4 — carry the reducer's reason forward into the
-                // promoted Emitted so the dump can explain *why* the
-                // reducer stalled even when the typer succeeded.
-                let prior_reason = *reason;
-                let promoted = match outcome {
+                let entry = match outcome {
                     CallsiteOutcome::Emitted { target, .. } => CallsiteOutcome::Emitted {
                         target: target.clone(),
-                        came_from: Some(prior_reason),
+                        came_from,
                     },
                     other => other.clone(),
                 };
-                m.callsite_outcomes.insert(*cid, promoted);
+                m.callsite_outcomes.insert(*cid, entry);
             }
             Some(CallsiteOutcome::Consumed { .. })
             | Some(CallsiteOutcome::Inlined)
-            | Some(CallsiteOutcome::Emitted { .. }) => {
-                // Leave reducer/inliner/typer-previous decisions
-                // intact. A second type_module pass over the same
-                // module is the only realistic source of an
-                // already-Emitted entry, and the target matches by
+            | Some(CallsiteOutcome::Emitted { .. })
+            | Some(CallsiteOutcome::Stalled { .. }) => {
+                // Leave any pre-existing outcome alone. Pre-uwq.9 the
+                // reducer wrote Stalled here; post-uwq.9 the typer is
+                // the only writer of `callsite_outcomes` and a second
+                // type_module pass would land on the same Emitted by
                 // construction.
             }
         }

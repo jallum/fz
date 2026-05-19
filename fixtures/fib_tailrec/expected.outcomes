@@ -9,19 +9,19 @@ fn_clause_2:
   blk0 Direct -> Emitted (fib#11 [int, int, int]) via OpaqueArg
 
 main:
-  blk0 Direct -> Consumed (0)
+  blk0 Direct -> Emitted (k_16#16 [0])
 
 k_16:
   blk0 Direct -> Emitted (print#0 [0]) via OpaqueArg
 
 k_17:
-  blk0 Direct -> Consumed (1)
+  blk0 Direct -> Emitted (k_18#18 [1])
 
 k_18:
   blk0 Direct -> Emitted (print#0 [1]) via OpaqueArg
 
 k_19:
-  blk0 Direct -> Consumed (55)
+  blk0 Direct -> Emitted (k_20#20 [55])
 
 k_20:
   blk0 Direct -> Emitted (print#0 [55]) via OpaqueArg

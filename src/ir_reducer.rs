@@ -70,8 +70,8 @@
 
 use crate::callsite_walk::slot_for_term;
 use crate::fz_ir::{
-    Block, BlockId, CallsiteId, CallsiteOutcome, Const, EmitSlot, FnId, FnIr, Module, Prim,
-    StalledReason, Stmt, Term, Var,
+    Block, BlockId, CallsiteId, Const, EmitSlot, FnId, FnIr, Module, Prim, StalledReason, Stmt,
+    Term, Var,
 };
 use crate::reducer::{
     as_atom_lit, as_bool_lit, as_float_lit, as_int_lit, as_str_lit, as_tuple_lit, fold_prim,
@@ -79,6 +79,32 @@ use crate::reducer::{
 };
 use crate::types::Descr;
 use std::collections::HashMap;
+
+/// fz-uwq.9 — per-pass diagnostic record of what the reducer did at
+/// each callsite. Returned from [`reduce_module`] alongside the
+/// rewritten `Module`. These facts are **diagnostic** — `fz dump
+/// --emit outcomes` reads them — and not load-bearing for codegen.
+///
+/// - `consumed[cid] = result` — the reducer rewrote this callsite
+///   away. The original call-shaped terminator is gone, replaced
+///   by a Return / TailCall that delivers `result`.
+/// - `stalled[cid] = reason` — the reducer left the callsite alone
+///   and recorded why. The typer (in `apply_callsite_outcomes`)
+///   promotes the stalled reason into the `Emitted` outcome's
+///   `came_from` field, so dumps can still answer "why didn't this
+///   fold even though the typer succeeded?"
+///
+/// Pre-uwq.9 these lived as `CallsiteOutcome::Consumed` / `Stalled`
+/// entries in `Module.callsite_outcomes` — but that table is
+/// authoritative for the *typer's* `Emitted` decisions. Mixing
+/// reducer diagnostics into it forced consumers to filter by
+/// variant. Splitting cleans up the data model: codegen reads
+/// `FnTypes.dispatches`; dumps read both halves explicitly.
+#[derive(Debug, Default, Clone)]
+pub struct ReducerLog {
+    pub consumed: HashMap<CallsiteId, Descr>,
+    pub stalled: HashMap<CallsiteId, StalledReason>,
+}
 
 /// Helper: get a `&mut Block` by id within an `FnIr`. FnIr exposes
 /// `block(&self)` but not the mutable variant — fz_ir's `block_mut` is
@@ -108,26 +134,32 @@ fn fresh_var(f: &FnIr) -> Var {
 
 /// Reduce every function in `m`. Idempotent: running twice is the same
 /// as running once (within the limits of v1's single-callsite scope).
-pub fn reduce_module(m: &mut Module) {
+///
+/// fz-uwq.9 — returns a [`ReducerLog`] of every Consumed / Stalled
+/// fact instead of mutating `Module.callsite_outcomes`. Callers that
+/// want the diagnostic facts pass the log on to consumers (dump,
+/// `apply_callsite_outcomes`); callers that don't care can drop it.
+pub fn reduce_module(m: &mut Module) -> ReducerLog {
+    let mut log = ReducerLog::default();
     let fn_ids: Vec<FnId> = m.fns.iter().map(|f| f.id).collect();
     // Single sweep: each fn's body is reduced in place. RED.3 does not
     // iterate to a fixpoint across fns; later tickets may.
     for fid in fn_ids {
-        reduce_fn(m, fid);
+        reduce_fn(m, fid, &mut log);
     }
     #[cfg(debug_assertions)]
-    assert_every_callsite_has_outcome(m);
+    assert_every_surviving_call_in_log(m, &log);
+    log
 }
 
 /// fz-9pr.5 — debug invariant: after `reduce_module`, every surviving
 /// call-terminator in the module must have a corresponding entry in
-/// `callsite_outcomes`. A surviving call means the reducer either
-/// Stalled it (left as-is for the typer to Emit) or — once fz-9pr.E
-/// lands — Inlined it. `Consumed` outcomes refer to callsites that
-/// were rewritten away; their original terminators are gone, so they
-/// are not part of this scan.
+/// the reducer log. A surviving call means the reducer Stalled it
+/// (left as-is for the typer to Emit). `Consumed` entries refer to
+/// callsites that were rewritten away; their original terminators
+/// are gone, so they are not part of this scan.
 #[cfg(debug_assertions)]
-fn assert_every_callsite_has_outcome(m: &Module) {
+fn assert_every_surviving_call_in_log(m: &Module, log: &ReducerLog) {
     for f in &m.fns {
         for b in &f.blocks {
             if let Some(slot) = slot_for_term(&b.terminator) {
@@ -136,9 +168,14 @@ fn assert_every_callsite_has_outcome(m: &Module) {
                     block: b.id,
                     slot,
                 };
+                // Stalled (reducer left this terminator alone) OR
+                // Consumed (reducer rewrote a Call into a TailCall at
+                // the same slot — the new terminator is still a
+                // callsite even though the old one was consumed).
                 assert!(
-                    m.callsite_outcomes.contains_key(&cid),
-                    "fz-9pr.5: missing callsite outcome for {:?} in fn {} block {:?}",
+                    log.stalled.contains_key(&cid) || log.consumed.contains_key(&cid),
+                    "fz-9pr.5: surviving callsite {:?} in fn {} block {:?} has no Stalled or \
+                     Consumed entry in ReducerLog",
                     slot,
                     f.name,
                     b.id
@@ -148,17 +185,17 @@ fn assert_every_callsite_has_outcome(m: &Module) {
     }
 }
 
-fn reduce_fn(m: &mut Module, fid: FnId) {
+fn reduce_fn(m: &mut Module, fid: FnId, log: &mut ReducerLog) {
     let Some(&fn_idx) = m.fn_idx.get(&fid) else {
         return;
     };
     let block_ids: Vec<BlockId> = m.fns[fn_idx].blocks.iter().map(|b| b.id).collect();
     for bid in block_ids {
-        reduce_block(m, fn_idx, bid);
+        reduce_block(m, fn_idx, bid, log);
     }
 }
 
-fn reduce_block(m: &mut Module, fn_idx: usize, bid: BlockId) {
+fn reduce_block(m: &mut Module, fn_idx: usize, bid: BlockId, log: &mut ReducerLog) {
     // Build a per-block env of Var → literal Descr by folding each stmt.
     let mut env: HashMap<Var, Descr> = HashMap::new();
     let atom_names = m.atom_names.clone();
@@ -174,7 +211,7 @@ fn reduce_block(m: &mut Module, fn_idx: usize, bid: BlockId) {
 
     // Now consider the terminator.
     let term = m.fns[fn_idx].block(bid).terminator.clone();
-    let new_term = reduce_terminator(m, fn_idx, bid, &term, &env);
+    let new_term = reduce_terminator(m, fn_idx, bid, &term, &env, log);
     if let Some(nt) = new_term {
         block_mut(&mut m.fns[fn_idx], bid).terminator = nt;
     }
@@ -186,6 +223,7 @@ fn reduce_terminator(
     bid: BlockId,
     term: &Term,
     env: &HashMap<Var, Descr>,
+    log: &mut ReducerLog,
 ) -> Option<Term> {
     // fz-9pr.17 — slot vocabulary lives in callsite_walk::slot_for_term;
     // every record_* call below routes through this single source of
@@ -212,14 +250,14 @@ fn reduce_terminator(
             let mut ctx = fresh_ctx(m);
             let Some(lit) = try_reduce_call(&mut ctx, *callee, args, env) else {
                 let reason = ctx.last_reason.unwrap_or(StalledReason::Other);
-                record_stalled(m, fn_idx, bid, slot, reason);
+                record_stalled(m, fn_idx, bid, slot, reason, log);
                 return None;
             };
             let Some(new_var) = descr_to_materialize(&lit, m, fn_idx, bid) else {
-                record_stalled(m, fn_idx, bid, slot, StalledReason::CalleeBodyShape);
+                record_stalled(m, fn_idx, bid, slot, StalledReason::CalleeBodyShape, log);
                 return None;
             };
-            record_consumed(m, fn_idx, bid, slot, lit);
+            record_consumed(m, fn_idx, bid, slot, lit, log);
             Some(Term::Return(new_var))
         }
         Term::Call {
@@ -231,14 +269,14 @@ fn reduce_terminator(
             let mut ctx = fresh_ctx(m);
             let Some(lit) = try_reduce_call(&mut ctx, *callee, args, env) else {
                 let reason = ctx.last_reason.unwrap_or(StalledReason::Other);
-                record_stalled(m, fn_idx, bid, slot, reason);
+                record_stalled(m, fn_idx, bid, slot, reason, log);
                 return None;
             };
             let Some(new_var) = descr_to_materialize(&lit, m, fn_idx, bid) else {
-                record_stalled(m, fn_idx, bid, slot, StalledReason::CalleeBodyShape);
+                record_stalled(m, fn_idx, bid, slot, StalledReason::CalleeBodyShape, log);
                 return None;
             };
-            record_consumed(m, fn_idx, bid, slot, lit);
+            record_consumed(m, fn_idx, bid, slot, lit, log);
             let mut tail_args = vec![new_var];
             tail_args.extend(continuation.captured.iter().copied());
             Some(Term::TailCall {
@@ -251,13 +289,13 @@ fn reduce_terminator(
         Term::TailCallClosure { closure, args } => {
             let slot = slot.unwrap();
             let Some(cl_lit) = env.get(closure).and_then(|d| d.as_closure_lit()).cloned() else {
-                record_stalled(m, fn_idx, bid, slot, StalledReason::NoClosureLitTarget);
+                record_stalled(m, fn_idx, bid, slot, StalledReason::NoClosureLitTarget, log);
                 return None;
             };
             let mut all_descrs = cl_lit.captures.clone();
             for a in args {
                 let Some(d) = env.get(a).cloned() else {
-                    record_stalled(m, fn_idx, bid, slot, StalledReason::OpaqueArg);
+                    record_stalled(m, fn_idx, bid, slot, StalledReason::OpaqueArg, log);
                     return None;
                 };
                 all_descrs.push(d);
@@ -265,14 +303,14 @@ fn reduce_terminator(
             let mut ctx = fresh_ctx(m);
             let Some(lit) = try_reduce_call_with_descrs(&mut ctx, cl_lit.fn_id, &all_descrs) else {
                 let reason = ctx.last_reason.unwrap_or(StalledReason::Other);
-                record_stalled(m, fn_idx, bid, slot, reason);
+                record_stalled(m, fn_idx, bid, slot, reason, log);
                 return None;
             };
             let Some(new_var) = descr_to_materialize(&lit, m, fn_idx, bid) else {
-                record_stalled(m, fn_idx, bid, slot, StalledReason::CalleeBodyShape);
+                record_stalled(m, fn_idx, bid, slot, StalledReason::CalleeBodyShape, log);
                 return None;
             };
-            record_consumed(m, fn_idx, bid, slot, lit);
+            record_consumed(m, fn_idx, bid, slot, lit, log);
             Some(Term::Return(new_var))
         }
         Term::CallClosure {
@@ -282,13 +320,13 @@ fn reduce_terminator(
         } => {
             let slot = slot.unwrap();
             let Some(cl_lit) = env.get(closure).and_then(|d| d.as_closure_lit()).cloned() else {
-                record_stalled(m, fn_idx, bid, slot, StalledReason::NoClosureLitTarget);
+                record_stalled(m, fn_idx, bid, slot, StalledReason::NoClosureLitTarget, log);
                 return None;
             };
             let mut all_descrs = cl_lit.captures.clone();
             for a in args {
                 let Some(d) = env.get(a).cloned() else {
-                    record_stalled(m, fn_idx, bid, slot, StalledReason::OpaqueArg);
+                    record_stalled(m, fn_idx, bid, slot, StalledReason::OpaqueArg, log);
                     return None;
                 };
                 all_descrs.push(d);
@@ -296,14 +334,14 @@ fn reduce_terminator(
             let mut ctx = fresh_ctx(m);
             let Some(lit) = try_reduce_call_with_descrs(&mut ctx, cl_lit.fn_id, &all_descrs) else {
                 let reason = ctx.last_reason.unwrap_or(StalledReason::Other);
-                record_stalled(m, fn_idx, bid, slot, reason);
+                record_stalled(m, fn_idx, bid, slot, reason, log);
                 return None;
             };
             let Some(new_var) = descr_to_materialize(&lit, m, fn_idx, bid) else {
-                record_stalled(m, fn_idx, bid, slot, StalledReason::CalleeBodyShape);
+                record_stalled(m, fn_idx, bid, slot, StalledReason::CalleeBodyShape, log);
                 return None;
             };
-            record_consumed(m, fn_idx, bid, slot, lit);
+            record_consumed(m, fn_idx, bid, slot, lit, log);
             let mut tail_args = vec![new_var];
             tail_args.extend(continuation.captured.iter().copied());
             Some(Term::TailCall {
@@ -321,11 +359,12 @@ fn reduce_terminator(
 /// (in fz-9pr.D) will promote the entry to `Emitted` once it mints
 /// the spec. Idempotent: re-recording uses the first reason written.
 fn record_stalled(
-    m: &mut Module,
+    m: &Module,
     fn_idx: usize,
     block: BlockId,
     slot: EmitSlot,
     reason: StalledReason,
+    log: &mut ReducerLog,
 ) {
     let caller = m.fns[fn_idx].id;
     let cid = CallsiteId {
@@ -333,32 +372,32 @@ fn record_stalled(
         block,
         slot,
     };
-    // Do not overwrite a Consumed already published by this pass —
+    // Do not overwrite if a Consumed/Stalled entry is already there —
     // that would lose lineage. In practice the Stalled writers all
-    // early-return before any Consumed write, so this is defence in
-    // depth.
-    m.callsite_outcomes
-        .entry(cid)
-        .or_insert(CallsiteOutcome::Stalled { reason });
+    // early-return before any Consumed write within the same pass,
+    // so this is defence in depth.
+    log.stalled.entry(cid).or_insert(reason);
 }
 
-/// fz-9pr.3 — write a `CallsiteOutcome::Consumed` entry to the
-/// module's outcome table. The reducer's job is to write; nobody
-/// reads these yet (readers land in fz-9pr.D). Idempotent: identical
-/// repeated reductions overwrite with the same value.
-fn record_consumed(m: &mut Module, fn_idx: usize, block: BlockId, slot: EmitSlot, result: Descr) {
+/// fz-9pr.3 — record a Consumed (reducer rewrote this callsite away)
+/// in the [`ReducerLog`]. Diagnostic-only; codegen no longer reads
+/// these (it reads `FnTypes.dispatches` for `Emitted` decisions and
+/// computes its own arg / cont keys at call sites).
+fn record_consumed(
+    m: &Module,
+    fn_idx: usize,
+    block: BlockId,
+    slot: EmitSlot,
+    result: Descr,
+    log: &mut ReducerLog,
+) {
     let caller = m.fns[fn_idx].id;
     let cid = CallsiteId {
         caller,
         block,
         slot,
     };
-    m.callsite_outcomes.insert(
-        cid,
-        CallsiteOutcome::Consumed {
-            result: Box::new(result),
-        },
-    );
+    log.consumed.insert(cid, result);
 }
 
 /// fz-jg5.5 — Default unroll budget per top-level callsite. Counts
@@ -1344,17 +1383,14 @@ mod tests {
         mb.add_fn(id_b.build());
         mb.add_fn(main_b.build());
         let mut m = mb.build();
-        reduce_module(&mut m);
+        let log = reduce_module(&mut m);
 
         let cid = CallsiteId {
             caller: FnId(1),
             block: m_entry,
             slot: EmitSlot::Direct,
         };
-        assert!(matches!(
-            m.callsite_outcomes.get(&cid),
-            Some(CallsiteOutcome::Stalled { .. })
-        ));
+        assert!(log.stalled.contains_key(&cid));
 
         // And main's terminator should be unchanged (still TailCall).
         let main_fn = m.fns.iter().find(|f| f.name == "main").unwrap();
@@ -1392,18 +1428,18 @@ mod tests {
         mb.add_fn(id_b.build());
         mb.add_fn(main_b.build());
         let mut m = mb.build();
-        reduce_module(&mut m);
+        let log = reduce_module(&mut m);
 
         let cid = CallsiteId {
             caller: FnId(1),
             block: m_entry,
             slot: EmitSlot::Direct,
         };
-        match m.callsite_outcomes.get(&cid) {
-            Some(CallsiteOutcome::Consumed { result }) => {
-                assert_eq!(**result, Descr::int_lit(42));
+        match log.consumed.get(&cid) {
+            Some(result) => {
+                assert_eq!(*result, Descr::int_lit(42));
             }
-            other => panic!("expected Consumed outcome, got {:?}", other),
+            None => panic!("expected Consumed log entry, got {:?}", log.consumed),
         }
     }
 

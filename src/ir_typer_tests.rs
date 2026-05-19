@@ -1846,7 +1846,8 @@ fn typer_publishes_emitted_outcome_updates_for_direct() {
 
     // apply_callsite_outcomes merges the update into m.callsite_outcomes.
     let mut m2 = m.clone();
-    crate::ir_typer::apply_callsite_outcomes(&mut m2, &mt);
+    let log = crate::ir_reducer::ReducerLog::default();
+    crate::ir_typer::apply_callsite_outcomes(&mut m2, &mt, &log);
     assert!(matches!(
         m2.callsite_outcomes.get(&cid),
         Some(CallsiteOutcome::Emitted { .. })

@@ -4,7 +4,7 @@ apply:
   blk0 ClosureLit(0,0) -> Emitted (lambda_15#15 [10, 20, 12]) via NoClosureLitTarget
 
 main:
-  blk0 Direct -> Consumed (&fn14[10]:() -> any)
+  blk0 Direct -> Emitted (k_16#16 [&fn14[10]:(any) -> any])
 
 k_16:
   blk0 Direct -> Emitted (apply#12 [&fn14[10]:(any) -> any, 20]) via OpaqueArg
@@ -16,7 +16,7 @@ k_18:
   blk0 Direct -> Emitted (print#0 [int]) via OpaqueArg
 
 k_19:
-  blk0 Direct -> Consumed (&fn14[1]:() -> any)
+  blk0 Direct -> Emitted (k_20#20 [&fn14[1]:(any) -> any])
 
 k_20:
   blk0 Direct -> Emitted (apply#12 [&fn14[1]:(any) -> any, 2]) via OpaqueArg

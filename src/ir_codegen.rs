@@ -1893,12 +1893,19 @@ pub fn compile_with_backend<B: Backend>(
     // return is statically known; reduces If-on-bool-literal to Goto.
     // Plugs in after ir_inline + ir_fuse so it sees a cleaner call graph.
     // See docs/bodies-are-boundaries.md.
+    // fz-uwq.9 — reducer returns a ReducerLog (Consumed / Stalled
+    // facts) instead of mutating `Module.callsite_outcomes`. The log
+    // is threaded into `apply_callsite_outcomes` so the typer can
+    // carry stalled lineage forward into Emitted entries' `came_from`
+    // annotation.
     #[cfg(not(test))]
-    crate::ir_reducer::reduce_module(&mut working);
+    let reducer_log = crate::ir_reducer::reduce_module(&mut working);
     #[cfg(test)]
-    if !REDUCER_DISABLED.with(|d| d.get()) {
-        crate::ir_reducer::reduce_module(&mut working);
-    }
+    let reducer_log = if !REDUCER_DISABLED.with(|d| d.get()) {
+        crate::ir_reducer::reduce_module(&mut working)
+    } else {
+        crate::ir_reducer::ReducerLog::default()
+    };
     // fz-uwq.2 — single-use cont collapse runs pre-typer, alongside the
     // other call-shape mutations (`fuse_blocks`, `reduce_module`). The
     // `debug_assert_unique_conts` check at the end of `ir_lower` (fz-uwq.1)
@@ -1909,10 +1916,9 @@ pub fn compile_with_backend<B: Backend>(
     let module_types = crate::ir_typer::type_module(&working);
     // fz-9pr.8 — merge the typer's outcome updates (Emitted entries
     // for each surviving Direct / ClosureLit / CallClosureKnown spec)
-    // into `working.callsite_outcomes`. The reducer wrote Consumed /
-    // Stalled before; the merge promotes Stalled → Emitted in place
-    // and leaves Consumed / Inlined / pre-existing Emitted alone.
-    crate::ir_typer::apply_callsite_outcomes(&mut working, &module_types);
+    // into `working.callsite_outcomes`. Stalled lineage comes from the
+    // reducer log.
+    crate::ir_typer::apply_callsite_outcomes(&mut working, &module_types, &reducer_log);
     // fz-fyq.4 — fold one-sided-dead Ifs to Gotos; DCE below removes
     // the orphaned blocks and the now-unused TypeTest stmts.
     crate::ir_branch_fold::fold_module(&mut working, &module_types);

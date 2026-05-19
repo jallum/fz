@@ -65,7 +65,7 @@ fn check_specs(prog: &ast::Program, module: &fz_ir::Module) -> Vec<diag::Diagnos
 /// on the reduced module — reachability is a call-graph fact.
 fn check_patterns(prog: &ast::Program, module: &fz_ir::Module) -> Vec<diag::Diagnostic> {
     let mut reduced = module.clone();
-    ir_reducer::reduce_module(&mut reduced);
+    let _ = ir_reducer::reduce_module(&mut reduced);
     let reachable = ir_callgraph::reachable_fns(&reduced);
     let survivors: std::collections::HashSet<(String, usize)> = reachable
         .iter()
@@ -695,7 +695,7 @@ fn dump_bodies_pipeline(src: String, source_name: String) -> String {
     });
     // Run the reducer pass directly so the bodies dump reflects what
     // codegen would see, without going all the way to JIT.
-    ir_reducer::reduce_module(&mut module);
+    let _ = ir_reducer::reduce_module(&mut module);
     let mt: ModuleTypes = ir_typer::type_module(&module);
 
     // Group surviving specs by user-fn name. Skip the conventional
@@ -797,9 +797,9 @@ fn dump_outcomes_pipeline(src: String, source_name: String, show_all: bool) -> S
         diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         std::process::exit(1);
     });
-    ir_reducer::reduce_module(&mut module);
+    let reducer_log = ir_reducer::reduce_module(&mut module);
     let mt = ir_typer::type_module(&module);
-    ir_typer::apply_callsite_outcomes(&mut module, &mt);
+    ir_typer::apply_callsite_outcomes(&mut module, &mt, &reducer_log);
 
     let fn_name = |fid: fz_ir::FnId| -> String {
         module
