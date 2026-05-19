@@ -257,6 +257,57 @@ as `fz-try.15`) for the full structural collapse envisioned here.
 
 ### Type variables (C1–C5)
 
+**Why this matters (the load-bearing reason).** `(any) -> any` is a
+maximally permissive claim. It says "this function accepts any input."
+That's structurally fine, but epistemically lazy — it makes the typer,
+spec_registry, and subsumption all incapable of distinguishing "we
+know this is unconstrained" from "we haven't figured out the
+constraint yet." Both render the same. Both behave the same. Both
+pass.
+
+In a young codebase, that conflation is exactly where bugs hide.
+
+`(α) -> β` is a sharper claim. It says "this function's input and
+output are linked — whatever flows in as α, the same α flows wherever
+α appears, and β is its own thing." The moment a call site provides
+incompatible witnesses for α, *something must reject it*. With `any`,
+that rejection point doesn't exist. With type variables, the type
+system has a place to *say* the program is wrong.
+
+This is the principle the C-arc realizes:
+
+> **Tighter claims surface bugs that loose claims hide.** A type
+> system's value isn't in being expressive enough to *describe*
+> programs; it's in being precise enough to *reject* the wrong ones.
+> `any` is the absence of a claim. `α` is a claim with structure. The
+> difference isn't cosmetic — it's where the type system gets its
+> leverage.
+
+The C-arc's value is therefore diagnostic, not aesthetic. Every place
+the codebase renders `any` today is a place where a real constraint
+exists but isn't expressed, and where a wrong program might pass
+silently. C-arc tightens those claims, and tighter claims push bugs
+into the open. The expected dividend is not "cleaner output"; it is
+"discovering correctness issues that have been hiding."
+
+**Representational note.** Type variables enter the lattice as a new
+nominal axis (`vars: LiteralSet<TypeVarId>`), mirroring `opaques` in
+operational shape. Algebra is component-wise. The sibling principle
+for the lattice:
+
+> **Lattice axes are uniform; substitution is operational.** Opaques
+> and vars are both nominal names with finite-or-cofinite set
+> semantics — the lattice cannot tell them apart. The difference is at
+> use sites: opaques are fixed; vars are substituted at instantiation.
+> Don't encode the substitution contract into the algebra; let the
+> algebra stay pure and let substitution sites own their walk.
+
+The design doc's earlier prose framed type variables as a `Descr`
+variant (enum-style). That framing is the right *long-term* shape —
+correct by construction, memory-efficient — but a struct→enum refactor
+of `Descr` is independent of the C-arc's diagnostic value and is
+filed as **fz-1m5**, gated behind this epic's completion.
+
 A function's typed signature gains type variables wherever it has a
 parameter whose type is not pinned by its use within the body. For
 example:

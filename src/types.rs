@@ -164,6 +164,48 @@ pub type IntSet = LiteralSet<i64>;
 pub type StrSet = LiteralSet<String>;
 pub type FloatSet = LiteralSet<F64Bits>;
 
+/// fz-try.5 — parametric type-variable identifier. Vars are nominal placeholders
+/// distinguished only by id; the lattice cannot tell them apart from opaques.
+/// The difference is at use sites: opaques are fixed (the name *is* the type);
+/// vars are substituted at instantiation sites (fz-try.6 onward).
+///
+/// Fresh ids are allocated by `TypeVarId::fresh()` from a process-global atomic
+/// counter. This is intentionally simple — per-function scoping is handled by
+/// the typer (which renames at function-typing entry to ensure α-equivalence
+/// across signatures); the id itself carries no scope.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct TypeVarId(pub u32);
+
+impl TypeVarId {
+    /// Allocate a fresh id from the process-global counter. Tests that need
+    /// stable ids should construct `TypeVarId(n)` directly rather than calling
+    /// `fresh()`.
+    ///
+    /// Consumed by fz-try.6 (call-site instantiation) and fz-try.7
+    /// (`closure_lit()` stub replacement). Tests in this module exercise the
+    /// counter; the main binary will start using it in C2.
+    #[allow(dead_code)]
+    pub fn fresh() -> Self {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static NEXT: AtomicU32 = AtomicU32::new(0);
+        TypeVarId(NEXT.fetch_add(1, Ordering::Relaxed))
+    }
+}
+
+impl fmt::Debug for TypeVarId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "α{}", self.0)
+    }
+}
+
+impl fmt::Display for TypeVarId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "α{}", self.0)
+    }
+}
+
+pub type VarSet = LiteralSet<TypeVarId>;
+
 /// Bit-pattern wrapper around a non-NaN `f64` so we can put floats in
 /// ordered/hashed sets. Two distinct bit patterns are considered distinct
 /// values. `+0.0` and `-0.0` are distinct (matches IEEE bit equality but not
@@ -289,6 +331,19 @@ pub struct Descr {
     /// underlying type of `T` is `U`, because the opaques axis is non-empty
     /// and distinct from the plain-`U` descriptor (which has `opaques = ∅`).
     pub opaques: LiteralSet<String>,
+    /// fz-try.5 — parametric type variables. Operationally identical to
+    /// `opaques`: a finite-or-cofinite set of nominal names with
+    /// component-wise union/intersect/neg. Semantically distinguished only
+    /// by the use-site contract — vars are *substituted* at instantiation
+    /// sites (fz-try.6 onward); opaques are fixed. The lattice cannot tell
+    /// them apart.
+    ///
+    /// Vars enter the lattice via `Descr::var(id)` at fresh-var introduction
+    /// sites (function-typing entry for unconstrained parameters,
+    /// `closure_lit()` stubs after fz-try.7). Until C2 lands, this axis is
+    /// only constructed in tests; the rest of the codebase still uses
+    /// `Descr::any()` stubs.
+    pub vars: VarSet,
     /// DNF over tuple shapes. Empty Vec = no tuples ("false"); a single
     /// `Conj::top()` clause = every tuple ("true").
     pub tuples: Vec<Conj<TupleSig>>,
@@ -308,6 +363,7 @@ impl Descr {
             floats: FloatSet::any(),
             strs: StrSet::any(),
             opaques: LiteralSet::any(),
+            vars: VarSet::any(),
             tuples: vec![Conj::top()],
             lists: vec![Conj::top()],
             funcs: vec![Conj::top()],
@@ -323,6 +379,7 @@ impl Descr {
             floats: FloatSet::none(),
             strs: StrSet::none(),
             opaques: LiteralSet::none(),
+            vars: VarSet::none(),
             tuples: Vec::new(),
             lists: Vec::new(),
             funcs: Vec::new(),
@@ -339,6 +396,21 @@ impl Descr {
     pub fn opaque_of(name: impl Into<String>) -> Self {
         let mut d = Self::none();
         d.opaques = LiteralSet::lit(name.into());
+        d
+    }
+
+    /// fz-try.5 — construct a Descr that is exactly the type variable `id`.
+    /// The result has all concrete axes empty and `vars = {id}`. Lattice
+    /// operations treat the result like a nominal opaque; substitution
+    /// (fz-try.6) replaces it with a concrete Descr at instantiation sites.
+    ///
+    /// Consumed by fz-try.7 (`closure_lit()` stub replacement) and fz-try.6
+    /// (typer fresh-var introduction). Tests in this module exercise the
+    /// constructor; the main binary will start using it in C2.
+    #[allow(dead_code)]
+    pub fn var(id: TypeVarId) -> Self {
+        let mut d = Self::none();
+        d.vars = LiteralSet::lit(id);
         d
     }
 
@@ -544,6 +616,7 @@ impl Descr {
             && self.floats.is_none()
             && self.strs.is_none()
             && self.opaques.is_none()
+            && self.vars.is_none()
             && self.tuples.is_empty()
             && self.lists.is_empty()
             && self.funcs.is_empty()
@@ -582,6 +655,7 @@ impl Descr {
             && self.floats.is_any()
             && self.strs.is_any()
             && self.opaques.is_any()
+            && self.vars.is_any()
             && is_dnf_top(&self.tuples)
             && is_dnf_top(&self.lists)
             && is_dnf_top(&self.funcs)
@@ -621,6 +695,7 @@ impl Descr {
             floats: self.floats.union(&other.floats),
             strs: self.strs.union(&other.strs),
             opaques: self.opaques.union(&other.opaques),
+            vars: self.vars.union(&other.vars),
             tuples,
             lists,
             funcs,
@@ -636,6 +711,7 @@ impl Descr {
             floats: self.floats.intersect(&other.floats),
             strs: self.strs.intersect(&other.strs),
             opaques: self.opaques.intersect(&other.opaques),
+            vars: self.vars.intersect(&other.vars),
             tuples: dnf_intersect(&self.tuples, &other.tuples),
             lists: dnf_intersect(&self.lists, &other.lists),
             funcs: dnf_intersect(&self.funcs, &other.funcs),
@@ -651,6 +727,7 @@ impl Descr {
             floats: self.floats.neg(),
             strs: self.strs.neg(),
             opaques: self.opaques.neg(),
+            vars: self.vars.neg(),
             tuples: dnf_neg(&self.tuples),
             lists: dnf_neg(&self.lists),
             funcs: dnf_neg(&self.funcs),
@@ -706,6 +783,7 @@ impl Descr {
             && self.floats.is_none()
             && self.strs.is_none()
             && self.opaques.is_none()
+            && self.vars.is_none()
             && self.tuples.iter().all(|c| tuple_clause_empty(c, memo))
             && self.lists.iter().all(|c| list_clause_empty(c, memo))
             && self.funcs.iter().all(|c| func_clause_empty(c, memo))
@@ -1364,6 +1442,9 @@ impl fmt::Display for Descr {
             format_lit_set(&mut parts, &self.atoms, "atom", |a| format!(":{}", a));
         }
         format_lit_set(&mut parts, &self.opaques, "opaque", |n| n.clone());
+        // fz-try.5 — render type variables as `α<id>`. A per-signature
+        // greek-letter remap (α, β, γ, …) lands in fz-try.11 (formatter).
+        format_lit_set(&mut parts, &self.vars, "var", |v| format!("{}", v));
 
         for c in &self.tuples {
             parts.push(format_tuple_clause(c));
@@ -1415,6 +1496,7 @@ impl Descr {
             format_lit_set_capped(&mut parts, &self.atoms, "atom", CAP, |a| format!(":{}", a));
         }
         format_lit_set_capped(&mut parts, &self.opaques, "opaque", CAP, |n| n.clone());
+        format_lit_set_capped(&mut parts, &self.vars, "var", CAP, |v| format!("{}", v));
 
         for c in &self.tuples {
             parts.push(format_tuple_clause(c));
@@ -2518,5 +2600,121 @@ mod tests {
         let pid = Descr::opaque_of("pid");
         let u = pid.union(&Descr::any());
         assert!(u.looks_full(), "pid | any should be any: got {}", u);
+    }
+
+    // ------------------------------------------------------------------
+    // fz-try.5 — type-variable axis
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn type_var_id_displays_as_alpha_indexed() {
+        assert_eq!(format!("{}", TypeVarId(0)), "α0");
+        assert_eq!(format!("{}", TypeVarId(7)), "α7");
+        assert_eq!(format!("{:?}", TypeVarId(0)), "α0");
+    }
+
+    #[test]
+    fn type_var_id_fresh_yields_distinct_ids() {
+        let a = TypeVarId::fresh();
+        let b = TypeVarId::fresh();
+        assert_ne!(a, b, "TypeVarId::fresh() must produce distinct ids");
+    }
+
+    #[test]
+    fn descr_var_round_trips_via_axis() {
+        let v = Descr::var(TypeVarId(0));
+        assert!(!v.is_empty(), "var(α0) should not be empty");
+        assert!(!v.looks_full(), "var(α0) should not look full");
+        // The only non-default axis is `vars` itself.
+        assert!(v.basic.is_empty());
+        assert!(v.atoms.is_none());
+        assert!(v.ints.is_none());
+        assert!(v.opaques.is_none());
+        assert!(!v.vars.is_none(), "vars axis must carry the id");
+    }
+
+    #[test]
+    fn descr_var_renders_as_alpha_id() {
+        let v = Descr::var(TypeVarId(3));
+        assert_eq!(format!("{}", v), "α3");
+    }
+
+    #[test]
+    fn var_is_subtype_of_itself() {
+        let a = Descr::var(TypeVarId(0));
+        assert!(a.is_subtype(&a), "α should be a subtype of itself");
+    }
+
+    #[test]
+    fn distinct_vars_do_not_overlap() {
+        let a = Descr::var(TypeVarId(0));
+        let b = Descr::var(TypeVarId(1));
+        let i = a.intersect(&b);
+        assert!(i.is_empty(), "α0 ∩ α1 must be empty: got {}", i);
+    }
+
+    #[test]
+    fn same_var_intersection_preserves_var() {
+        let a = Descr::var(TypeVarId(0));
+        let i = a.intersect(&a);
+        assert!(i.is_equiv(&a), "α0 ∩ α0 must equal α0: got {}", i);
+    }
+
+    #[test]
+    fn var_union_with_int_keeps_both() {
+        let a = Descr::var(TypeVarId(0));
+        let i = Descr::int();
+        let u = a.union(&i);
+        assert!(!u.is_empty());
+        assert!(!u.vars.is_none(), "union must retain the type variable");
+        assert!(u.ints.is_any(), "and the int axis must be saturated");
+        // The union is the sum: members of α OR members of int.
+        assert!(a.is_subtype(&u), "α ⊆ (α ∪ int)");
+        assert!(i.is_subtype(&u), "int ⊆ (α ∪ int)");
+    }
+
+    #[test]
+    fn var_union_with_any_becomes_any() {
+        let a = Descr::var(TypeVarId(0));
+        let u = a.union(&Descr::any());
+        assert!(u.looks_full(), "α ∪ any should be any: got {}", u);
+    }
+
+    #[test]
+    fn any_contains_all_vars() {
+        // Descr::any() includes the entire vars axis (cofinite empty).
+        let any = Descr::any();
+        assert!(
+            any.vars.is_any(),
+            "Descr::any().vars must be the full universe"
+        );
+        let a = Descr::var(TypeVarId(0));
+        assert!(a.is_subtype(&any), "α ⊆ any");
+    }
+
+    #[test]
+    fn none_excludes_all_vars() {
+        let none = Descr::none();
+        assert!(none.vars.is_none(), "Descr::none().vars must be empty");
+    }
+
+    #[test]
+    fn var_neg_excludes_only_that_var() {
+        // ¬α0 covers everything except α0. So α0 ⊄ ¬α0, but α1 ⊆ ¬α0.
+        let a = Descr::var(TypeVarId(0));
+        let b = Descr::var(TypeVarId(1));
+        let not_a = a.neg();
+        assert!(!a.is_subtype(&not_a), "α0 must not be a subtype of ¬α0");
+        assert!(b.is_subtype(&not_a), "α1 ⊆ ¬α0 (different name)");
+    }
+
+    #[test]
+    fn var_is_not_opaque() {
+        // Vars and opaques live in distinct axes — the lattice distinguishes
+        // them structurally even though they share operational shape.
+        let a = Descr::var(TypeVarId(0));
+        let o = Descr::opaque_of("alpha");
+        let i = a.intersect(&o);
+        assert!(i.is_empty(), "α and opaque(\"alpha\") must not overlap");
     }
 }
