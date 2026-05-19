@@ -3151,7 +3151,10 @@ mod tests {
         let a = Descr::var(TypeVarId(0));
         let u = a.union(&Descr::int());
         assert!(!u.vars.is_none(), "var axis must survive union");
-        assert!(u.ints.is_any() || !u.ints.is_none(), "int axis must survive union");
+        assert!(
+            u.ints.is_any() || !u.ints.is_none(),
+            "int axis must survive union"
+        );
         // Subtypes both witnesses.
         assert!(a.is_subtype(&u));
         assert!(Descr::int().is_subtype(&u));
@@ -3265,7 +3268,10 @@ mod tests {
         let u = i.union(&s);
         assert!(u.vars.is_none(), "union of concrete descrs has no vars");
         let int_ = i.intersect(&s);
-        assert!(int_.vars.is_none(), "intersect of concrete descrs has no vars");
+        assert!(
+            int_.vars.is_none(),
+            "intersect of concrete descrs has no vars"
+        );
         let n = i.neg();
         // ¬int has saturated vars (cofinite) — that's correct; "not int"
         // includes vars in the universe. But has_vars() reports false

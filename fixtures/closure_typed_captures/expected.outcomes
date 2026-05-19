@@ -1,15 +1,15 @@
 outcomes for fixtures/closure_typed_captures/input.fz
 
-apply1:
-  @0:62-66 ClosureLit(0,0) -> Emitted (lambda_14#14 [10, 20, 12]) via NoClosureLitTarget
+apply1[&fn14[10, 20]:(α896) -> α959, 12]:
+  @0:62-66 ClosureCall -> Indirect(lambda_14#14 [10, 20, 12])
 
-main:
-  @0:96-110 Direct -> Consumed (&fn14[10, 20]:() -> α959)
-  @0:96-110 Direct -> Emitted (k_15#15 [&fn14[10, 20]:(α896) -> α959])
+main[]:
+  @0:96-110 Direct -> Folded(&fn14[10, 20]:() -> α959)
+  @0:96-110 Direct -> Static(k_15#15 [&fn14[10, 20]:(α896) -> α959])
 
-k_15:
-  @0:89-115 Cont -> Emitted (k_16#16 [int])
-  @0:89-115 Direct -> Emitted (apply1#12 [&fn14[10, 20]:(α896) -> α959, 12]) via OpaqueArg
+k_15[&fn14[10, 20]:(α896) -> α959]:
+  @0:89-115 Cont -> Static(k_16#16 [int])
+  @0:89-115 Direct -> Static(apply1#12 [&fn14[10, 20]:(α896) -> α959, 12])
 
-k_16:
-  @0:83-116 Direct -> Emitted (print#0 [int]) via OpaqueArg
+k_16[int]:
+  @0:83-116 Direct -> Static(print#0 [int])

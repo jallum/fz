@@ -1131,10 +1131,11 @@ fn cont_key_for_spec(
 ///
 /// Emit kinds:
 ///   - `EmitSlot::Direct` for `Term::Call` / `Term::TailCall`.
-///   - `EmitSlot::CallClosureKnown` when fn_constants resolves the
-///     closure of a CallClosure/TailCallClosure.
-///   - `EmitSlot::ClosureLit(c, s)` per `(clause, sig)` of the
-///     closure's Descr.funcs DNF at a CallClosure site.
+///   - `EmitSlot::ClosureCall` for `Term::CallClosure` / `Term::TailCallClosure`
+///     callsites. Pre-fz-try.11 this was split into `CallClosureKnown`
+///     (fn_constants resolved) and `ClosureLit(c, s)` (per closure-lit
+///     clause); now both paths share the uniform structural slot and
+///     dispatch variation lives on the Dispatch enum at row time.
 ///   - `EmitSlot::Cont` for the continuation of Call/CallClosure/Receive.
 ///
 /// `Prim::MakeClosure` is *not* an emit kind — it constructs a closure

@@ -1769,13 +1769,13 @@ fn callsite_id_round_trip() {
     let site = EmitterSite {
         caller: spec_key.clone(),
         ident: test_ident.clone(),
-        slot: EmitSlot::ClosureLit(1, 0),
+        slot: EmitSlot::ClosureCall,
     };
 
     let cid: CallsiteId = site.callsite_id();
     assert_eq!(cid.caller, FnId(7));
     assert_eq!(cid.ident, test_ident);
-    assert_eq!(cid.slot, EmitSlot::ClosureLit(1, 0));
+    assert_eq!(cid.slot, EmitSlot::ClosureCall);
 
     let round = cid.with_spec_key(spec_key);
     assert_eq!(round, site);

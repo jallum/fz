@@ -42,7 +42,7 @@
 //! decision is exactly `block_callsites`'s `slot` field — so the
 //! reducer asks the enumerator (via `slot_for_term`) for that one
 //! piece of vocabulary, killing the four duplicated `EmitSlot::Direct`
-//! / `EmitSlot::ClosureLit(0, 0)` literals scattered across the four
+//! / `EmitSlot::ClosureCall` literals scattered across the four
 //! arms of `reduce_terminator`.
 
 use crate::fz_ir::{Cont, EmitSlot, FnId, Term, Var};
@@ -205,27 +205,27 @@ fn push_closure_call<'a>(
     env: &'a HashMap<Var, Descr>,
     fn_constants: &HashMap<Var, FnId>,
 ) {
-    // fn_constants path — emits CallClosureKnown.
+    // fz-try.11 — both fn_constants and closure_lit paths share the same
+    // structural slot `EmitSlot::ClosureCall`. Variation between
+    // statically-resolvable (fn_constants) and runtime-resolved (lit)
+    // dispatch lives on the Dispatch enum at row time, not on the slot.
     if let Some(&target) = fn_constants.get(&closure) {
         out.push(BlockCallsite {
-            slot: EmitSlot::CallClosureKnown,
+            slot: EmitSlot::ClosureCall,
             kind: CallsiteKind::CallClosureKnown { target, args },
         });
     }
-    // closure_lit path — one callsite per (clause_idx, sig_idx) with
-    // a lit. Same iteration order as `walk_spec_for_discovery`'s
-    // pre-refactor body; goldens depend on it.
     if let Some(cv_descr) = env.get(&closure) {
-        for (c_idx, clause) in cv_descr.funcs.iter().enumerate() {
+        for clause in cv_descr.funcs.iter() {
             if !clause.neg.is_empty() {
                 continue;
             }
-            for (s_idx, sig) in clause.pos.iter().enumerate() {
+            for sig in clause.pos.iter() {
                 let Some(lit) = &sig.lit else {
                     continue;
                 };
                 out.push(BlockCallsite {
-                    slot: EmitSlot::ClosureLit(c_idx, s_idx),
+                    slot: EmitSlot::ClosureCall,
                     kind: CallsiteKind::ClosureLit { lit, args },
                 });
             }
@@ -237,15 +237,13 @@ fn push_closure_call<'a>(
 /// against when its fold attempt at a block's terminator succeeds or
 /// stalls. Returns `None` for non-call terminators.
 ///
-/// The reducer used to spell `EmitSlot::Direct` / `EmitSlot::ClosureLit(0, 0)`
-/// inline at four match arms; this routes those through one site.
-/// `ClosureLit(0, 0)` mirrors the pre-refactor reducer's choice (the
-/// reducer doesn't distinguish per-(c, s) because it only ever folds a
-/// single closure-call site per block).
+/// Post-fz-try.11: closure-call terminators map to the uniform
+/// `EmitSlot::ClosureCall`; clause-fanout variation moves to the
+/// Dispatch enum at row time.
 pub fn slot_for_term(term: &Term) -> Option<EmitSlot> {
     match term {
         Term::Call { .. } | Term::TailCall { .. } => Some(EmitSlot::Direct),
-        Term::CallClosure { .. } | Term::TailCallClosure { .. } => Some(EmitSlot::ClosureLit(0, 0)),
+        Term::CallClosure { .. } | Term::TailCallClosure { .. } => Some(EmitSlot::ClosureCall),
         _ => None,
     }
 }
@@ -350,7 +348,7 @@ mod tests {
         fc.insert(Var(3), FnId(11));
         let cs = block_callsites(&t, &env, &fc);
         assert_eq!(cs.len(), 1);
-        assert!(matches!(cs[0].slot, EmitSlot::CallClosureKnown));
+        assert!(matches!(cs[0].slot, EmitSlot::ClosureCall));
     }
 
     #[test]
@@ -410,7 +408,7 @@ mod tests {
                 closure: Var(0),
                 args: vec![]
             }),
-            Some(EmitSlot::ClosureLit(0, 0))
+            Some(EmitSlot::ClosureCall)
         ));
         assert!(slot_for_term(&Term::Halt(Var(0))).is_none());
     }

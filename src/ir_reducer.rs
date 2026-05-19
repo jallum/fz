@@ -1668,7 +1668,10 @@ mod tests {
     fn unresolved_type_var_renders_distinctly() {
         // Display impl exists and renders distinctly from OpaqueArg so
         // outcome rows can tell them apart.
-        assert_eq!(format!("{}", StalledReason::UnresolvedTypeVar), "UnresolvedTypeVar");
+        assert_eq!(
+            format!("{}", StalledReason::UnresolvedTypeVar),
+            "UnresolvedTypeVar"
+        );
         assert_eq!(format!("{}", StalledReason::OpaqueArg), "OpaqueArg");
         assert_ne!(
             format!("{}", StalledReason::UnresolvedTypeVar),

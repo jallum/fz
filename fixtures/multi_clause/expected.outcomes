@@ -1,32 +1,29 @@
 outcomes for fixtures/multi_clause/input.fz
 
-main:
-  @0:170-181 Direct -> Consumed (:zero)
-  @0:170-181 Direct -> Emitted (k_20#20 [:zero])
+main[]:
+  @0:170-181 Direct -> Folded(:zero)
+  @0:170-181 Direct -> Static(k_20#20 [:zero])
 
-k_20:
-  @0:164-182 Cont -> Emitted (k_21#21 [nil])
-  @0:164-182 Direct -> Emitted (print#0 [:zero]) via OpaqueArg
+k_20[:zero]:
+  @0:164-182 Cont -> Static(k_21#21 [nil])
+  @0:164-182 Direct -> Static(print#0 [:zero])
 
-k_21:
-  @0:191-202 Direct -> Consumed (:positive)
-  @0:191-202 Direct -> Emitted (k_22#22 [:positive])
+k_21[nil]:
+  @0:191-202 Direct -> Static(k_22#22 [:positive])
 
-k_22:
-  @0:185-203 Cont -> Emitted (k_23#23 [nil])
-  @0:185-203 Direct -> Emitted (print#0 [:positive]) via OpaqueArg
+k_22[:positive]:
+  @0:185-203 Cont -> Static(k_23#23 [nil])
+  @0:185-203 Direct -> Static(print#0 [:positive])
 
-k_23:
-  @0:212-224 Direct -> Consumed (:negative)
-  @0:212-224 Direct -> Emitted (k_24#24 [:negative])
+k_23[nil]:
+  @0:212-224 Direct -> Static(k_24#24 [:negative])
 
-k_24:
-  @0:206-225 Cont -> Emitted (k_25#25 [nil])
-  @0:206-225 Direct -> Emitted (print#0 [:negative]) via OpaqueArg
+k_24[:negative]:
+  @0:206-225 Cont -> Static(k_25#25 [nil])
+  @0:206-225 Direct -> Static(print#0 [:negative])
 
-k_25:
-  @0:234-241 Direct -> Consumed (120)
-  @0:234-241 Direct -> Emitted (k_26#26 [120])
+k_25[nil]:
+  @0:234-241 Direct -> Static(k_26#26 [120])
 
-k_26:
-  @0:228-242 Direct -> Emitted (print#0 [120]) via OpaqueArg
+k_26[120]:
+  @0:228-242 Direct -> Static(print#0 [120])

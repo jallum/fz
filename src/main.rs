@@ -773,7 +773,8 @@ fn dump_bodies_pipeline(src: String, source_name: String) -> String {
 ///
 /// Pass `show_all=true` (CLI `--all`) to bypass both filters.
 fn dump_outcomes_pipeline(src: String, source_name: String, show_all: bool) -> String {
-    use crate::fz_ir::{CallsiteId, EmitSlot};
+    use crate::fz_ir::{CallsiteId, EmitSlot, FnId};
+    use crate::types::Descr;
     let mut sm = diag::SourceMap::new();
     let file_id = sm.add_file(source_name.clone(), src.clone());
     let toks = lexer::Lexer::with_file(&src, file_id)
@@ -810,13 +811,12 @@ fn dump_outcomes_pipeline(src: String, source_name: String, show_all: bool) -> S
             .unwrap_or_else(|| format!("?fn{}", fid.0))
     };
 
-    let slot_str = |s: EmitSlot| -> String {
+    let slot_str = |s: EmitSlot| -> &'static str {
         match s {
-            EmitSlot::Direct => "Direct".to_string(),
-            EmitSlot::Cont => "Cont".to_string(),
-            EmitSlot::CallClosureKnown => "CallClosureKnown".to_string(),
-            EmitSlot::ClosureLit(c, sig) => format!("ClosureLit({},{})", c, sig),
-            EmitSlot::MakeClosure => "MakeClosure".to_string(),
+            EmitSlot::Direct => "Direct",
+            EmitSlot::Cont => "Cont",
+            EmitSlot::ClosureCall => "ClosureCall",
+            EmitSlot::MakeClosure => "MakeClosure",
         }
     };
     let render_span = |sp: crate::diag::Span| -> String {
@@ -832,114 +832,128 @@ fn dump_outcomes_pipeline(src: String, source_name: String, show_all: bool) -> S
         format!("[{}]", parts.join(", "))
     };
 
-    // fz-uwq.10 — per-callsite outcome rows are computed from two
-    // first-class sources:
-    //   - `mt.specs[caller_spec].dispatches` → Emitted entries
-    //     (per caller spec; divergent dispatches surface as multiple
-    //     rows for the same `CallsiteId`).
-    //   - `reducer_log.consumed` / `.stalled` → Consumed / Stalled
-    //     diagnostic rows. A Stalled row is suppressed when the typer
-    //     later Emitted at the same `CallsiteId` — the `via <reason>`
-    //     annotation on the Emitted row carries that lineage.
+    // fz-try.11 — rows are computed per (caller_spec) so section headers
+    // can carry the spec inline (`apply1[α=int, β=int]:`) instead of the
+    // pre-fz-try.11 `apply1:` + per-row `[under apply1[...]]` annotation.
+    // The Dispatch enum separates the structural slot (where) from the
+    // dispatch outcome (what).
+    use fz_ir::Dispatch;
     let render_key = |k: &[crate::types::Descr]| descrs_str(k);
-    let mut emitted_cids: std::collections::HashSet<CallsiteId> = std::collections::HashSet::new();
-    let mut rows: Vec<(CallsiteId, String, String)> = Vec::new();
-    // Group dispatches by cid, then by target, with the set of callers
-    // that picked each target. One row per (cid, target). When more
-    // than one (cid, target) row exists for the same cid, annotate
-    // each row with the caller spec key so the divergence is visible.
-    let mut grouped: std::collections::HashMap<
-        CallsiteId,
-        std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
-    > = std::collections::HashMap::new();
-    for ((caller_fid, caller_key), ft) in &mt.specs {
-        for (cid, target) in &ft.dispatches {
-            emitted_cids.insert(cid.clone());
-            let tgt_repr = format!(
-                "{}#{} {}",
-                fn_name(target.0),
-                target.0.0,
-                render_key(&target.1)
-            );
-            let caller_repr = format!("{}{}", fn_name(*caller_fid), render_key(caller_key));
-            grouped
-                .entry(cid.clone())
-                .or_default()
-                .entry(tgt_repr)
-                .or_default()
-                .insert(caller_repr);
+    let render_target = |fid: FnId, key: &[Descr]| -> String {
+        format!("{}#{} {}", fn_name(fid), fid.0, render_key(key))
+    };
+    let render_dispatch = |d: &Dispatch| -> String {
+        match d {
+            Dispatch::Folded(v) => format!("Folded({})", v),
+            Dispatch::Static(fid, key) => format!("Static({})", render_target(*fid, key)),
+            Dispatch::Indirect(fid, key) => format!("Indirect({})", render_target(*fid, key)),
+            Dispatch::Stalled(reason) => format!("Stalled({})", reason),
         }
-    }
-    for (cid, targets) in &grouped {
-        let divergent = targets.len() > 1;
-        for (tgt_repr, callers) in targets {
-            let via = reducer_log
-                .stalled
-                .get(cid)
-                .map(|r| format!(" via {}", r))
-                .unwrap_or_default();
-            let under = if divergent {
-                let parts: Vec<String> = callers.iter().cloned().collect();
-                format!(" [under {}]", parts.join(", "))
-            } else {
-                String::new()
-            };
-            let lhs = format!(
-                "  @{} {}",
-                render_span(cid.ident.span()),
-                slot_str(cid.slot)
-            );
-            let rhs = format!("Emitted ({}){}{}", tgt_repr, via, under);
-            rows.push((cid.clone(), lhs, rhs));
+    };
+
+    // Rows grouped by (caller_fid, caller_key) → list of (cid, Dispatch).
+    type SpecKey = (FnId, Vec<Descr>);
+    type Section = (SpecKey, Vec<(CallsiteId, Dispatch)>);
+    type SortKey = (u32, String);
+    type RowsBySpec = std::collections::BTreeMap<SortKey, Section>;
+    let mut rows_by_spec: RowsBySpec = std::collections::BTreeMap::new();
+
+    // Pre-collect cids that any spec dispatched, so reducer Stalled rows
+    // at those cids are suppressed (their reason already rode through as
+    // a spec-side decision — no point double-reporting).
+    let mut spec_cids: std::collections::HashSet<CallsiteId> = std::collections::HashSet::new();
+    for ft in mt.specs.values() {
+        for cid in ft.dispatches.keys() {
+            spec_cids.insert(cid.clone());
         }
-    }
-    // Consumed rows (always shown — the reducer rewrote these away).
-    for (cid, result) in &reducer_log.consumed {
-        let lhs = format!(
-            "  @{} {}",
-            render_span(cid.ident.span()),
-            slot_str(cid.slot)
-        );
-        let rhs = format!("Consumed ({})", result);
-        rows.push((cid.clone(), lhs, rhs));
-    }
-    // Stalled rows (only when no Emitted at the same cid — otherwise
-    // the reason already rode in as `via <reason>` above).
-    for (cid, reason) in &reducer_log.stalled {
-        if emitted_cids.contains(cid) {
-            continue;
-        }
-        let lhs = format!(
-            "  @{} {}",
-            render_span(cid.ident.span()),
-            slot_str(cid.slot)
-        );
-        let rhs = format!("Stalled ({})", reason);
-        rows.push((cid.clone(), lhs, rhs));
     }
 
-    // Group by caller fn for output, sorted within each caller by
-    // (span_start, slot-string, rhs) — span gives deterministic order
-    // across runs, unlike the Rc pointer used for identity.
-    let mut by_caller: std::collections::BTreeMap<u32, Vec<(CallsiteId, String, String)>> =
-        std::collections::BTreeMap::new();
-    for row in rows {
-        by_caller.entry(row.0.caller.0).or_default().push(row);
+    let push_row = |rows_by_spec: &mut RowsBySpec,
+                    caller_fid: FnId,
+                    caller_key: &[Descr],
+                    cid: CallsiteId,
+                    dispatch: Dispatch| {
+        let sort_key = (caller_fid.0, render_key(caller_key));
+        let entry = rows_by_spec
+            .entry(sort_key)
+            .or_insert_with(|| ((caller_fid, caller_key.to_vec()), Vec::new()));
+        entry.1.push((cid, dispatch));
+    };
+
+    // Per-caller-spec dispatch rows (Static for Direct/Cont; Indirect for
+    // ClosureCall).
+    for ((caller_fid, caller_key), ft) in &mt.specs {
+        for (cid, target) in ft.dispatches.iter() {
+            let dispatch = match cid.slot {
+                EmitSlot::ClosureCall => Dispatch::Indirect(target.0, target.1.clone()),
+                _ => Dispatch::Static(target.0, target.1.clone()),
+            };
+            push_row(
+                &mut rows_by_spec,
+                *caller_fid,
+                caller_key,
+                cid.clone(),
+                dispatch,
+            );
+        }
     }
-    for entries in by_caller.values_mut() {
-        entries.sort_by(|a, b| {
+
+    // Reducer Folded rows. The reducer doesn't track which caller spec a
+    // fold attached to — folds happen on the IR before per-spec typing.
+    // Attach Folded rows to the any-key spec of the cid.caller (the body
+    // the reducer rewrote). This mirrors pre-fz-try.11 grouping by
+    // caller fn.
+    let any_key_for = |fid: FnId| -> Option<SpecKey> {
+        mt.specs
+            .keys()
+            .find(|(f, k)| *f == fid && k.iter().all(|d| d.is_equiv(&Descr::any())))
+            .cloned()
+    };
+    for (cid, result) in &reducer_log.consumed {
+        let Some(key) = any_key_for(cid.caller) else {
+            continue;
+        };
+        push_row(
+            &mut rows_by_spec,
+            cid.caller,
+            &key.1,
+            cid.clone(),
+            Dispatch::Folded(result.clone()),
+        );
+    }
+    // Reducer Stalled rows — only when no typer-spec dispatched the cid.
+    for (cid, reason) in &reducer_log.stalled {
+        if spec_cids.contains(cid) {
+            continue;
+        }
+        let Some(key) = any_key_for(cid.caller) else {
+            continue;
+        };
+        push_row(
+            &mut rows_by_spec,
+            cid.caller,
+            &key.1,
+            cid.clone(),
+            Dispatch::Stalled(*reason),
+        );
+    }
+
+    // Stable per-section row ordering: span_start, then slot, then
+    // serialized dispatch (deterministic across runs).
+    for (_, rows) in rows_by_spec.values_mut() {
+        rows.sort_by(|a, b| {
             a.0.ident
                 .span()
                 .start
                 .cmp(&b.0.ident.span().start)
-                .then_with(|| slot_str(a.0.slot).cmp(&slot_str(b.0.slot)))
-                .then_with(|| a.2.cmp(&b.2))
+                .then_with(|| slot_str(a.0.slot).cmp(slot_str(b.0.slot)))
+                .then_with(|| render_dispatch(&a.1).cmp(&render_dispatch(&b.1)))
         });
     }
 
     let mut out = String::new();
     out.push_str(&format!("outcomes for {}\n", source_name));
-    if by_caller.is_empty() {
+    if rows_by_spec.is_empty() {
         out.push_str("  (no callsites — program is callsite-free)\n");
         return out;
     }
@@ -956,17 +970,42 @@ fn dump_outcomes_pipeline(src: String, source_name: String, show_all: bool) -> S
         }
         reachable_fids.contains(&f.id)
     };
-    // Iterate in module-fn declaration order so output mirrors source.
-    for f in &module.fns {
+    let module_fn_order: std::collections::HashMap<fz_ir::FnId, usize> = module
+        .fns
+        .iter()
+        .enumerate()
+        .map(|(i, f)| (f.id, i))
+        .collect();
+    type SectionRef<'a> = (SortKey, &'a SpecKey, &'a Vec<(CallsiteId, Dispatch)>);
+    let mut sections: Vec<SectionRef<'_>> = rows_by_spec
+        .iter()
+        .map(|(k, (sk, rs))| (k.clone(), sk, rs))
+        .collect();
+    sections.sort_by_key(|(k, _, _)| {
+        (
+            module_fn_order
+                .get(&FnId(k.0))
+                .copied()
+                .unwrap_or(usize::MAX),
+            k.1.clone(),
+        )
+    });
+    for (_, (caller_fid, caller_key), rows) in sections {
+        let Some(f) = module.fns.iter().find(|f| f.id == *caller_fid) else {
+            continue;
+        };
         if !should_show(f) {
             continue;
         }
-        let Some(entries) = by_caller.get(&f.id.0) else {
-            continue;
-        };
-        out.push_str(&format!("\n{}:\n", f.name));
-        for (_, lhs, rhs) in entries {
-            out.push_str(&format!("{} -> {}\n", lhs, rhs));
+        // fz-try.11 — section header carries the caller spec inline.
+        out.push_str(&format!("\n{}{}:\n", f.name, render_key(caller_key)));
+        for (cid, dispatch) in rows {
+            out.push_str(&format!(
+                "  @{} {} -> {}\n",
+                render_span(cid.ident.span()),
+                slot_str(cid.slot),
+                render_dispatch(dispatch),
+            ));
         }
     }
     out

@@ -209,7 +209,11 @@ impl SpecRegistry {
         // (a candidate is "minimal" if no other candidate is a strict
         // subtype on every axis), then SpecId for stable tiebreak.
         let key_of = |sid: SpecId| -> &Vec<Descr> { &self.keys[sid.0 as usize].1 };
-        let min_var_count = covers.iter().map(|s| key_var_count(key_of(*s))).min().unwrap_or(0);
+        let min_var_count = covers
+            .iter()
+            .map(|s| key_var_count(key_of(*s)))
+            .min()
+            .unwrap_or(0);
         covers.retain(|s| key_var_count(key_of(*s)) == min_var_count);
         let strictly_subsumed_by_other = |sid: SpecId, others: &[SpecId]| -> bool {
             let k = key_of(sid);
