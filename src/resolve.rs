@@ -209,7 +209,7 @@ fn collect_module_type_envs_recursive(
     } else {
         format!("{}.{}", parent, m.name)
     };
-    let env = crate::type_expr::build_module_type_env(&m.attrs).map_err(|e| {
+    let env = crate::type_expr::build_module_type_env_for(&m.attrs, &path).map_err(|e| {
         ResolveError::TypeAliasError {
             msg: format!("module `{}`: {}", path, e.msg),
             span: e.span,
