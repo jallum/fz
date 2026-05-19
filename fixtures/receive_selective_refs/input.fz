@@ -1,15 +1,18 @@
-; fz-recv.fixture — selective receive acceptance.
-;
-; Two replies arrive in the opposite order from the receives that want
-; them. Exercises sender-side matcher miss, sender-side matcher hit, and
-; receiver-side scan hit in a single trace. See
-; docs/receive-matched-stress-test.html for the step-by-step.
+# fz-recv.fixture -- selective receive acceptance.
+#
+# Two replies arrive in the opposite order from the receives that want
+# them. Exercises sender-side matcher miss, sender-side matcher hit, and
+# receiver-side scan hit in a single trace. See
+# docs/receive-matched-stress-test.html for the step-by-step.
+
+fn handle_get(ref, from, key) do
+  send(from, {:reply, ref, key})
+  server()
+end
 
 fn server() do
   receive do
-    {:get, ref, from, key} ->
-      send(from, {:reply, ref, key})
-      server()
+    {:get, ref, from, key} -> handle_get(ref, from, key)
     {:stop} -> nil
   end
 end
@@ -20,9 +23,9 @@ fn main() do
   ref_b = make_ref()
   me = self()
 
-  ; Server processes in arrival order, so ref_a's reply will arrive
-  ; first. But we receive on ref_b first — the sender-side matcher must
-  ; reject ref_a's reply and accept ref_b's.
+  # Server processes in arrival order, so ref_a's reply will arrive
+  # first. But we receive on ref_b first -- the sender-side matcher must
+  # reject ref_a's reply and accept ref_b's.
   send(s, {:get, ref_a, me, :k_a})
   send(s, {:get, ref_b, me, :k_b})
 
@@ -32,8 +35,8 @@ fn main() do
     500 -> :timeout
   end
 
-  ; ref_a's reply has been sitting in the mailbox the whole time.
-  ; This receive's initial scan finds it without parking.
+  # ref_a's reply has been sitting in the mailbox the whole time.
+  # This receive's initial scan finds it without parking.
   val_a = receive do
     {:reply, ^ref_a, v} -> v
   end
