@@ -1,15 +1,15 @@
 outcomes for fixtures/closure_typed_captures/input.fz
 
-apply1[&fn14[10, 20]:(α896) -> α959, 12]:
-  @0:62-66 ClosureCall -> Indirect(lambda_14#14 [10, 20, 12])
+apply1[&fn15[10, 20]:(α960) -> α1023, 12]:
+  @0:62-66 ClosureCall -> Indirect(lambda_15#15 [10, 20, 12])
 
 main[]:
-  @0:96-110 Direct -> Folded(&fn14[10, 20]:() -> α959)
-  @0:96-110 Direct -> Static(k_15#15 [&fn14[10, 20]:(α896) -> α959])
+  @0:96-110 Direct -> Folded(&fn15[10, 20]:() -> α1023)
+  @0:96-110 Direct -> Static(k_16#16 [&fn15[10, 20]:(α960) -> α1023])
 
-k_15[&fn14[10, 20]:(α896) -> α959]:
-  @0:89-115 Cont -> Static(k_16#16 [int])
-  @0:89-115 Direct -> Static(apply1#12 [&fn14[10, 20]:(α896) -> α959, 12])
+k_16[&fn15[10, 20]:(α960) -> α1023]:
+  @0:89-115 Cont -> Static(k_17#17 [int])
+  @0:89-115 Direct -> Static(apply1#13 [&fn15[10, 20]:(α960) -> α1023, 12])
 
-k_16[int]:
+k_17[int]:
   @0:83-116 Direct -> Static(print#0 [int])

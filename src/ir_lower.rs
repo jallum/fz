@@ -4510,8 +4510,9 @@ end
             .parse_program()
             .expect("parse");
         let (module, _) = lower_program_full(&prog).expect("lower");
-        // 10 runtime.fz externs + 1 user extern = 11 total.
-        assert_eq!(module.externs.len(), 11);
+        // 11 runtime.fz externs + 1 user extern = 12 total.
+        // (fz-swt.7 added `fz_make_resource`.)
+        assert_eq!(module.externs.len(), 12);
         // fz_nop is at the end (user externs follow runtime.fz externs).
         let nop = module
             .externs
@@ -4520,11 +4521,11 @@ end
             .expect("fz_nop not found in externs");
         assert_eq!(nop.params, vec![ExternTy::Any]);
         assert_eq!(nop.ret, ExternTy::Unit);
-        // main's IR should contain Extern(9, [...]) — fz_nop is ExternId(9).
+        // main's IR should contain Extern(11, [...]) — fz_nop is now ExternId(11).
         let ir = format!("{}", module);
         assert!(
-            ir.contains("extern#10"),
-            "expected extern#10 in IR:\n{}",
+            ir.contains("extern#11"),
+            "expected extern#11 in IR:\n{}",
             ir
         );
     }

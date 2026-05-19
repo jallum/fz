@@ -1,0 +1,463 @@
+//! fz-swt.7 — refcounted off-heap opaque resource with user-supplied dtor.
+//!
+//! Structurally a copy of `procbin.rs`: an off-heap refcounted object
+//! (`Resource`) with an on-heap 32-byte stub (`HeapKind::Resource`)
+//! threaded into the per-heap intrusive MSO chain. The MSO sweep handles
+//! retain/release across GC exactly the same way it does for ProcBin.
+//!
+//! Divergence from `SharedBin`/`ProcBin`:
+//!   * The dtor is **user-supplied at allocation time**, not one of two
+//!     fixed dtors. Every Resource carries its own
+//!     `unsafe extern "C" fn(payload: u64)` pointer.
+//!   * The dtor receives the **payload only**, not the wrapper. The
+//!     runtime frees the wrapper (Box::from_raw drop) after the dtor
+//!     returns. This keeps fz-side externs ergonomic
+//!     (`extern fn fd_close(integer)` rather than wrapping/unwrapping).
+//!
+//! FFI constraint for v0: payload must fit in u64. That covers every
+//! existing `ExternTy` variant (I64/F64/Any/Unit/Never — Any is a
+//! tagged FzValue, also u64-wide). Non-scalar payloads wait on
+//! fz-0cv/fz-9ss FFI extensions.
+//!
+//! Refcount ordering uses the same canonical Arc pattern as procbin:
+//! Relaxed on retain, Release on dec, Acquire fence + dtor on 1→0.
+
+use crate::fz_value::{HeapHeader, HeapKind};
+use crate::sync::{AtomicUsize, Ordering, fence};
+use std::ptr::NonNull;
+
+// ===== Resource layout ======================================================
+
+/// Off-heap refcounted resource. `refcount` controls lifetime; `destructor`
+/// is invoked exactly once with `payload` when the refcount transitions to
+/// zero. The runtime frees the wrapper itself after the dtor returns.
+#[repr(C)]
+pub struct Resource {
+    pub refcount: AtomicUsize,                          // offset 0..8
+    pub destructor: unsafe extern "C" fn(payload: u64), // offset 8..16
+    pub payload: u64,                                   // offset 16..24
+}
+
+const _: () = {
+    assert!(std::mem::size_of::<Resource>() == 24);
+};
+
+// Safety: refcount is atomic; payload is an opaque u64 chosen by the host
+// (typically an integer fd, an FzValue, or an extern pointer). Send/Sync
+// liveness is the host author's responsibility — NIF-style trust model.
+unsafe impl Send for Resource {}
+unsafe impl Sync for Resource {}
+
+// ===== Built-in dtors =======================================================
+
+/// No-op destructor. Useful as a sentinel for tests and for callers who
+/// want a Resource whose payload requires no cleanup.
+///
+/// # Safety
+/// `_payload` is unused; signature matches the `destructor` field type.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fz_resource_destructor_noop(_payload: u64) {}
+
+// ===== Allocation + refcount primitives ====================================
+
+/// Allocate a fresh `Resource` with refcount = 1 carrying `payload` and
+/// `dtor`. Returns the raw pointer; caller owns one refcount edge.
+pub fn resource_alloc(payload: u64, dtor: unsafe extern "C" fn(u64)) -> *mut Resource {
+    let r = Box::new(Resource {
+        refcount: AtomicUsize::new(1),
+        destructor: dtor,
+        payload,
+    });
+    LIVE_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    Box::into_raw(r)
+}
+
+/// Increment the refcount on an already-owned Resource.
+///
+/// # Safety
+/// `p` must point at a live Resource (refcount > 0).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fz_resource_retain(p: *mut Resource) {
+    debug_assert!(!p.is_null());
+    let r = unsafe { &*p };
+    let old = r.refcount.fetch_add(1, Ordering::Relaxed);
+    debug_assert!(old < usize::MAX / 2, "Resource refcount overflow");
+}
+
+/// Decrement the refcount and run the destructor + free the wrapper if
+/// this was the last reference. Release ordering on the decrement;
+/// Acquire fence on final drop synchronises with every other releaser.
+///
+/// # Safety
+/// `p` must point at a live Resource. After calling, the caller must not
+/// dereference `p` again.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fz_resource_release(p: *mut Resource) {
+    debug_assert!(!p.is_null());
+    let r = unsafe { &*p };
+    if r.refcount.fetch_sub(1, Ordering::Release) == 1 {
+        fence(Ordering::Acquire);
+        let dtor = r.destructor;
+        let payload = r.payload;
+        // SAFETY: refcount went 1 → 0, so we own the unique reference.
+        // Reconstruct the Box BEFORE invoking the dtor so the wrapper is
+        // reclaimed even if the dtor panics (Box::from_raw drop is in the
+        // scope; we've already snapshotted payload/dtor above).
+        let _wrapper = unsafe { Box::from_raw(p) };
+        unsafe { dtor(payload) };
+        #[cfg(not(loom))]
+        LIVE_COUNT.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+// ===== Live-count gauge =====================================================
+
+static LIVE_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Number of currently-live heap-allocated Resource objects.
+#[cfg(test)]
+pub(crate) fn live_count() -> usize {
+    LIVE_COUNT.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+// ===== ResourceHandle =======================================================
+
+/// Owning handle to a Resource. `Drop` releases. `Clone` retains.
+pub struct ResourceHandle(NonNull<Resource>);
+
+impl ResourceHandle {
+    /// Allocate a new heap-backed Resource and wrap the initial refcount.
+    pub fn new(payload: u64, dtor: unsafe extern "C" fn(u64)) -> Self {
+        let p = resource_alloc(payload, dtor);
+        Self(NonNull::new(p).expect("resource_alloc returned null"))
+    }
+
+    /// Retain `p` and wrap the new reference.
+    ///
+    /// # Safety
+    /// `p` must point at a live Resource.
+    pub unsafe fn retain_from_raw(p: *mut Resource) -> Self {
+        unsafe { fz_resource_retain(p) };
+        Self(NonNull::new(p).expect("retain_from_raw: null ptr"))
+    }
+
+    /// Wrap `p` without retaining. Caller transfers their existing
+    /// refcount edge to the handle.
+    ///
+    /// # Safety
+    /// `p` must point at a live Resource; caller must own exactly one
+    /// refcount edge that they relinquish to the handle.
+    pub unsafe fn from_raw_already_retained(p: *mut Resource) -> Self {
+        Self(NonNull::new(p).expect("from_raw_already_retained: null ptr"))
+    }
+
+    pub fn as_raw(&self) -> *mut Resource {
+        self.0.as_ptr()
+    }
+
+    /// Consume the handle without releasing. The caller now owns one
+    /// refcount edge represented by the returned pointer.
+    pub fn into_raw(self) -> *mut Resource {
+        let p = self.0.as_ptr();
+        std::mem::forget(self);
+        p
+    }
+}
+
+impl Clone for ResourceHandle {
+    fn clone(&self) -> Self {
+        unsafe { Self::retain_from_raw(self.as_raw()) }
+    }
+}
+
+impl Drop for ResourceHandle {
+    fn drop(&mut self) {
+        unsafe { fz_resource_release(self.as_raw()) };
+    }
+}
+
+// ===== ResourceStub (on-heap 32-byte stub) =================================
+
+/// Per-heap stub referencing a `Resource`. 32 bytes total:
+///   offset  0..16  HeapHeader { kind = Resource, size_bytes = 32 }
+///   offset 16..24  shared_ptr: *mut Resource
+///   offset 24..32  mso_next:   *mut HeapHeader   (intrusive MSO link)
+///
+/// Layout matches `ProcBin` exactly so the MSO sweep code can treat both
+/// uniformly when reading the `mso_next` link.
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+pub struct ResourceStub(NonNull<HeapHeader>);
+
+impl ResourceStub {
+    /// # Safety
+    /// `p` must point at a live HeapKind::Resource object.
+    pub unsafe fn from_raw(p: *mut HeapHeader) -> Self {
+        debug_assert!(!p.is_null());
+        Self(NonNull::new(p).expect("ResourceStub::from_raw: null"))
+    }
+
+    pub fn as_raw(&self) -> *mut HeapHeader {
+        self.0.as_ptr()
+    }
+
+    pub fn shared_raw(&self) -> *mut Resource {
+        unsafe { std::ptr::read((self.as_raw() as *const u8).add(16) as *const *mut Resource) }
+    }
+
+    fn shared_raw_set(&self, p: *mut Resource) {
+        unsafe {
+            std::ptr::write((self.as_raw() as *mut u8).add(16) as *mut *mut Resource, p);
+        }
+    }
+
+    pub fn mso_next(&self) -> *mut HeapHeader {
+        unsafe { std::ptr::read((self.as_raw() as *const u8).add(24) as *const *mut HeapHeader) }
+    }
+
+    pub(crate) fn mso_next_set(&self, next: *mut HeapHeader) {
+        unsafe {
+            std::ptr::write(
+                (self.as_raw() as *mut u8).add(24) as *mut *mut HeapHeader,
+                next,
+            );
+        }
+    }
+
+    pub fn payload(&self) -> u64 {
+        unsafe { (*self.shared_raw()).payload }
+    }
+
+    pub fn destructor(&self) -> unsafe extern "C" fn(u64) {
+        unsafe { (*self.shared_raw()).destructor }
+    }
+
+    pub fn refcount(&self) -> usize {
+        unsafe { (*self.shared_raw()).refcount.load(Ordering::Relaxed) }
+    }
+}
+
+// ===== Allocation on a per-process heap =====================================
+
+use crate::heap::Heap;
+
+/// Allocate a 32-byte Resource stub on `heap`, taking ownership of the
+/// Resource reference encapsulated in `handle`. The new stub is pushed
+/// onto `heap.mso_head` as the new chain head.
+pub fn alloc_resource(heap: &mut Heap, handle: ResourceHandle) -> ResourceStub {
+    let p = heap.alloc(32);
+    unsafe {
+        std::ptr::write(
+            p,
+            HeapHeader {
+                kind: HeapKind::Resource as u16,
+                flags: 0,
+                size_bytes: 32,
+                schema_id: 0,
+                _reserved: 0,
+            },
+        );
+    }
+    let rs = unsafe { ResourceStub::from_raw(p) };
+    rs.shared_raw_set(handle.into_raw());
+    rs.mso_next_set(heap.mso_head);
+    heap.mso_head = p;
+    rs
+}
+
+// ===== Tests ================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::heap::{Heap, SIZE_TABLE, SchemaRegistry};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    fn empty_registry() -> Rc<RefCell<SchemaRegistry>> {
+        Rc::new(RefCell::new(SchemaRegistry::new()))
+    }
+
+    pub(crate) struct LiveCountGuard {
+        baseline: usize,
+    }
+    impl LiveCountGuard {
+        pub(crate) fn snap() -> Self {
+            Self {
+                baseline: live_count(),
+            }
+        }
+        pub(crate) fn baseline(&self) -> usize {
+            self.baseline
+        }
+    }
+    impl Drop for LiveCountGuard {
+        fn drop(&mut self) {
+            assert_eq!(
+                live_count(),
+                self.baseline,
+                "LiveCountGuard: live_count did not return to baseline"
+            );
+        }
+    }
+
+    static DTOR_FIRED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    static DTOR_LAST_PAYLOAD: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    unsafe extern "C" fn counting_dtor(payload: u64) {
+        DTOR_FIRED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        DTOR_LAST_PAYLOAD.store(payload, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn reset_counters() {
+        DTOR_FIRED.store(0, std::sync::atomic::Ordering::Relaxed);
+        DTOR_LAST_PAYLOAD.store(0, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    #[test]
+    fn resource_is_24_bytes() {
+        assert_eq!(std::mem::size_of::<Resource>(), 24);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn alloc_retain_release_pattern() {
+        let _g = LiveCountGuard::snap();
+        reset_counters();
+        let p = resource_alloc(42, counting_dtor);
+        unsafe {
+            fz_resource_retain(p);
+            fz_resource_retain(p);
+            assert_eq!((*p).refcount.load(Ordering::Relaxed), 3);
+            fz_resource_release(p);
+            fz_resource_release(p);
+            assert_eq!((*p).refcount.load(Ordering::Relaxed), 1);
+            assert_eq!(DTOR_FIRED.load(std::sync::atomic::Ordering::Relaxed), 0);
+            fz_resource_release(p);
+        }
+        assert_eq!(DTOR_FIRED.load(std::sync::atomic::Ordering::Relaxed), 1);
+        assert_eq!(
+            DTOR_LAST_PAYLOAD.load(std::sync::atomic::Ordering::Relaxed),
+            42
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn alloc_release_immediately_fires_dtor() {
+        let _g = LiveCountGuard::snap();
+        reset_counters();
+        let p = resource_alloc(0xdeadbeef, counting_dtor);
+        unsafe { fz_resource_release(p) };
+        assert_eq!(DTOR_FIRED.load(std::sync::atomic::Ordering::Relaxed), 1);
+        assert_eq!(
+            DTOR_LAST_PAYLOAD.load(std::sync::atomic::Ordering::Relaxed),
+            0xdeadbeef
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn handle_drop_releases() {
+        let _g = LiveCountGuard::snap();
+        reset_counters();
+        {
+            let _h = ResourceHandle::new(99, counting_dtor);
+            assert_eq!(DTOR_FIRED.load(std::sync::atomic::Ordering::Relaxed), 0);
+        }
+        assert_eq!(DTOR_FIRED.load(std::sync::atomic::Ordering::Relaxed), 1);
+        assert_eq!(
+            DTOR_LAST_PAYLOAD.load(std::sync::atomic::Ordering::Relaxed),
+            99
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn handle_clone_balanced_drops_fire_once() {
+        let _g = LiveCountGuard::snap();
+        reset_counters();
+        let h = ResourceHandle::new(7, counting_dtor);
+        let h2 = h.clone();
+        assert_eq!(unsafe { (*h.as_raw()).refcount.load(Ordering::Relaxed) }, 2);
+        drop(h);
+        assert_eq!(DTOR_FIRED.load(std::sync::atomic::Ordering::Relaxed), 0);
+        drop(h2);
+        assert_eq!(DTOR_FIRED.load(std::sync::atomic::Ordering::Relaxed), 1);
+        assert_eq!(
+            DTOR_LAST_PAYLOAD.load(std::sync::atomic::Ordering::Relaxed),
+            7
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn noop_dtor_is_safe() {
+        let _g = LiveCountGuard::snap();
+        let p = resource_alloc(123, fz_resource_destructor_noop);
+        unsafe { fz_resource_release(p) };
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn alloc_resource_pushes_into_mso_chain() {
+        let g = LiveCountGuard::snap();
+        reset_counters();
+        {
+            let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
+            let handle = ResourceHandle::new(0xabcd, counting_dtor);
+            let rs = alloc_resource(&mut h, handle);
+            assert_eq!(unsafe { (*rs.as_raw()).kind }, HeapKind::Resource as u16);
+            assert_eq!(unsafe { (*rs.as_raw()).size_bytes }, 32);
+            assert_eq!(h.mso_head, rs.as_raw());
+            assert_eq!(rs.mso_next(), std::ptr::null_mut());
+            assert_eq!(rs.payload(), 0xabcd);
+            assert_eq!(rs.refcount(), 1);
+            assert_eq!(live_count(), g.baseline() + 1);
+        }
+        // Heap::drop -> mso_drop_all -> fz_resource_release -> dtor fires.
+        assert_eq!(DTOR_FIRED.load(std::sync::atomic::Ordering::Relaxed), 1);
+        assert_eq!(
+            DTOR_LAST_PAYLOAD.load(std::sync::atomic::Ordering::Relaxed),
+            0xabcd
+        );
+    }
+
+    /// Force a GC with no root: the Resource stub becomes unreachable;
+    /// MSO sweep must invoke the dtor exactly once and clear the chain.
+    #[test]
+    #[serial_test::serial]
+    fn unrooted_resource_dies_in_gc_and_sweep_fires_dtor() {
+        let _g = LiveCountGuard::snap();
+        reset_counters();
+        let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
+        let _ = alloc_resource(&mut h, ResourceHandle::new(0x55, counting_dtor));
+        let mut root: *mut u8 = std::ptr::null_mut();
+        h.gc(&mut root);
+        assert!(h.mso_head.is_null(), "dead Resource swept from MSO");
+        assert_eq!(DTOR_FIRED.load(std::sync::atomic::Ordering::Relaxed), 1);
+        assert_eq!(
+            DTOR_LAST_PAYLOAD.load(std::sync::atomic::Ordering::Relaxed),
+            0x55
+        );
+    }
+
+    /// Mixed chain: ProcBin and Resource on the same heap. Both kinds
+    /// must be swept correctly when the heap is dropped.
+    #[test]
+    #[serial_test::serial]
+    fn mixed_mso_chain_with_procbin_and_resource() {
+        use crate::procbin::{SharedBinHandle, alloc_procbin};
+        let _g = LiveCountGuard::snap();
+        reset_counters();
+        {
+            let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
+            let _ = alloc_procbin(&mut h, SharedBinHandle::from_bytes(&[1, 2, 3], 24));
+            let _ = alloc_resource(&mut h, ResourceHandle::new(0xfeed, counting_dtor));
+            let _ = alloc_procbin(&mut h, SharedBinHandle::from_bytes(&[4, 5], 16));
+            let _ = alloc_resource(&mut h, ResourceHandle::new(0xbeef, counting_dtor));
+        }
+        // Both resources fired their dtors exactly once each.
+        assert_eq!(DTOR_FIRED.load(std::sync::atomic::Ordering::Relaxed), 2);
+    }
+}

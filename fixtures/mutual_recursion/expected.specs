@@ -9,9 +9,9 @@
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(1)      :: :function_clause
 ;     blk2 If Var(2) ? blk4 : blk3
-;     blk3 TailCall fn_clause_1#8(Var(0))
+;     blk3 TailCall fn_clause_1#9(Var(0))
 ;              callee_key=[false]
-;     blk4 TailCall fn_clause_0#7(Var(0))
+;     blk4 TailCall fn_clause_0#8(Var(0))
 ;              callee_key=[false]
 
 ; spec print(1) #fn=0
@@ -25,12 +25,12 @@
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(1)      :: :function_clause
 ;     blk2 If Var(2) ? blk4 : blk3
-;     blk3 TailCall fn_clause_1#8(Var(0))
+;     blk3 TailCall fn_clause_1#9(Var(0))
 ;              callee_key=[true]
-;     blk4 TailCall fn_clause_0#7(Var(0))
+;     blk4 TailCall fn_clause_0#8(Var(0))
 ;              callee_key=[true]
 
-; spec fn_clause_0(1) #fn=7
+; spec fn_clause_0(1) #fn=8
 ;   key:    [any]
 ;   return: nil
 ;   vars:
@@ -39,7 +39,7 @@
 ;   exits:
 ;     blk0 Return Var(1)    :: nil
 
-; spec fn_clause_1(1) #fn=8
+; spec fn_clause_1(1) #fn=9
 ;   key:    [false]
 ;   return: nil
 ;   vars:
@@ -48,7 +48,7 @@
 ;   exits:
 ;     blk0 Return Var(1)    :: nil
 
-; spec fn_clause_1(1) #fn=8
+; spec fn_clause_1(1) #fn=9
 ;   key:    [true]
 ;   return: nil
 ;   vars:
@@ -57,7 +57,7 @@
 ;   exits:
 ;     blk0 Return Var(1)    :: nil
 
-; spec is_even(1) #fn=11
+; spec is_even(1) #fn=12
 ;   key:    [0]
 ;   return: true
 ;   vars:
@@ -69,12 +69,12 @@
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(1)      :: :function_clause
 ;     blk2 If Var(3) ? blk3 : blk4
-;     blk3 TailCall fn_clause_0#14()
+;     blk3 TailCall fn_clause_0#15()
 ;              callee_key=[]
-;     blk4 TailCall fn_clause_1#15(Var(0))
+;     blk4 TailCall fn_clause_1#16(Var(0))
 ;              callee_key=[0]
 
-; spec is_even(1) #fn=11
+; spec is_even(1) #fn=12
 ;   key:    [10]
 ;   return: false
 ;   vars:
@@ -86,12 +86,12 @@
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(1)      :: :function_clause
 ;     blk2 If Var(3) ? blk3 : blk4
-;     blk3 TailCall fn_clause_0#14()
+;     blk3 TailCall fn_clause_0#15()
 ;              callee_key=[]
-;     blk4 TailCall fn_clause_1#15(Var(0))
+;     blk4 TailCall fn_clause_1#16(Var(0))
 ;              callee_key=[10]
 
-; spec is_even(1) #fn=11
+; spec is_even(1) #fn=12
 ;   key:    [int | float]
 ;   return: true
 ;   vars:
@@ -103,12 +103,12 @@
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(1)      :: :function_clause
 ;     blk2 If Var(3) ? blk3 : blk4
-;     blk3 TailCall fn_clause_0#14()
+;     blk3 TailCall fn_clause_0#15()
 ;              callee_key=[]
-;     blk4 TailCall fn_clause_1#15(Var(0))
+;     blk4 TailCall fn_clause_1#16(Var(0))
 ;              callee_key=[int | float]
 
-; spec is_even(1) #fn=11
+; spec is_even(1) #fn=12
 ;   key:    [int]
 ;   return: true
 ;   vars:
@@ -120,12 +120,12 @@
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(1)      :: :function_clause
 ;     blk2 If Var(3) ? blk3 : blk4
-;     blk3 TailCall fn_clause_0#14()
+;     blk3 TailCall fn_clause_0#15()
 ;              callee_key=[]
-;     blk4 TailCall fn_clause_1#15(Var(0))
+;     blk4 TailCall fn_clause_1#16(Var(0))
 ;              callee_key=[int]
 
-; spec is_odd(1) #fn=12
+; spec is_odd(1) #fn=13
 ;   key:    [1]
 ;   return: true
 ;   vars:
@@ -137,12 +137,12 @@
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(1)      :: :function_clause
 ;     blk2 If Var(3) ? blk3 : blk4
-;     blk3 TailCall fn_clause_0#16()
+;     blk3 TailCall fn_clause_0#17()
 ;              callee_key=[]
-;     blk4 TailCall fn_clause_1#17(Var(0))
+;     blk4 TailCall fn_clause_1#18(Var(0))
 ;              callee_key=[1]
 
-; spec is_odd(1) #fn=12
+; spec is_odd(1) #fn=13
 ;   key:    [7]
 ;   return: true
 ;   vars:
@@ -154,12 +154,12 @@
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(1)      :: :function_clause
 ;     blk2 If Var(3) ? blk3 : blk4
-;     blk3 TailCall fn_clause_0#16()
+;     blk3 TailCall fn_clause_0#17()
 ;              callee_key=[]
-;     blk4 TailCall fn_clause_1#17(Var(0))
+;     blk4 TailCall fn_clause_1#18(Var(0))
 ;              callee_key=[7]
 
-; spec is_odd(1) #fn=12
+; spec is_odd(1) #fn=13
 ;   key:    [int | float]
 ;   return: false
 ;   vars:
@@ -171,12 +171,12 @@
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(1)      :: :function_clause
 ;     blk2 If Var(3) ? blk3 : blk4
-;     blk3 TailCall fn_clause_0#16()
+;     blk3 TailCall fn_clause_0#17()
 ;              callee_key=[]
-;     blk4 TailCall fn_clause_1#17(Var(0))
+;     blk4 TailCall fn_clause_1#18(Var(0))
 ;              callee_key=[int | float]
 
-; spec is_odd(1) #fn=12
+; spec is_odd(1) #fn=13
 ;   key:    [int]
 ;   return: false
 ;   vars:
@@ -188,25 +188,25 @@
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(1)      :: :function_clause
 ;     blk2 If Var(3) ? blk3 : blk4
-;     blk3 TailCall fn_clause_0#16()
+;     blk3 TailCall fn_clause_0#17()
 ;              callee_key=[]
-;     blk4 TailCall fn_clause_1#17(Var(0))
+;     blk4 TailCall fn_clause_1#18(Var(0))
 ;              callee_key=[int]
 
-; spec main(0) #fn=13
+; spec main(0) #fn=14
 ;   key:    []
 ;   return: nil
 ;   vars:
 ;     Var(0) :: :match_error
 ;     Var(1) :: 10
 ;   exits:
-;     blk0 Call is_even#11(Var(1))
+;     blk0 Call is_even#12(Var(1))
 ;              callee_key=[10]
-;              cont k_18#18 captured=[]
+;              cont k_19#19 captured=[]
 ;              cont_key=[false]
 ;     blk1 Halt Var(0)      :: :match_error
 
-; spec fn_clause_0(0) #fn=14
+; spec fn_clause_0(0) #fn=15
 ;   key:    []
 ;   return: true
 ;   vars:
@@ -214,7 +214,7 @@
 ;   exits:
 ;     blk0 Return Var(0)    :: true
 
-; spec fn_clause_1(1) #fn=15
+; spec fn_clause_1(1) #fn=16
 ;   key:    [10]
 ;   return: false
 ;   vars:
@@ -222,10 +222,10 @@
 ;     Var(1) :: 1
 ;     Var(2) :: int
 ;   exits:
-;     blk0 TailCall is_odd#12(Var(2))
+;     blk0 TailCall is_odd#13(Var(2))
 ;              callee_key=[int]
 
-; spec fn_clause_1(1) #fn=15
+; spec fn_clause_1(1) #fn=16
 ;   key:    [any]
 ;   return: false
 ;   vars:
@@ -233,10 +233,10 @@
 ;     Var(1) :: 1
 ;     Var(2) :: int | float
 ;   exits:
-;     blk0 TailCall is_odd#12(Var(2))
+;     blk0 TailCall is_odd#13(Var(2))
 ;              callee_key=[int | float]
 
-; spec fn_clause_1(1) #fn=15
+; spec fn_clause_1(1) #fn=16
 ;   key:    [int \ {0} | float]
 ;   return: false
 ;   vars:
@@ -244,10 +244,10 @@
 ;     Var(1) :: 1
 ;     Var(2) :: int | float
 ;   exits:
-;     blk0 TailCall is_odd#12(Var(2))
+;     blk0 TailCall is_odd#13(Var(2))
 ;              callee_key=[int | float]
 
-; spec fn_clause_1(1) #fn=15
+; spec fn_clause_1(1) #fn=16
 ;   key:    [int \ {0}]
 ;   return: false
 ;   vars:
@@ -255,10 +255,10 @@
 ;     Var(1) :: 1
 ;     Var(2) :: int
 ;   exits:
-;     blk0 TailCall is_odd#12(Var(2))
+;     blk0 TailCall is_odd#13(Var(2))
 ;              callee_key=[int]
 
-; spec fn_clause_0(0) #fn=16
+; spec fn_clause_0(0) #fn=17
 ;   key:    []
 ;   return: false
 ;   vars:
@@ -266,7 +266,7 @@
 ;   exits:
 ;     blk0 Return Var(0)    :: false
 
-; spec fn_clause_1(1) #fn=17
+; spec fn_clause_1(1) #fn=18
 ;   key:    [1]
 ;   return: true
 ;   vars:
@@ -274,10 +274,10 @@
 ;     Var(1) :: 1
 ;     Var(2) :: int
 ;   exits:
-;     blk0 TailCall is_even#11(Var(2))
+;     blk0 TailCall is_even#12(Var(2))
 ;              callee_key=[int]
 
-; spec fn_clause_1(1) #fn=17
+; spec fn_clause_1(1) #fn=18
 ;   key:    [7]
 ;   return: true
 ;   vars:
@@ -285,10 +285,10 @@
 ;     Var(1) :: 1
 ;     Var(2) :: int
 ;   exits:
-;     blk0 TailCall is_even#11(Var(2))
+;     blk0 TailCall is_even#12(Var(2))
 ;              callee_key=[int]
 
-; spec fn_clause_1(1) #fn=17
+; spec fn_clause_1(1) #fn=18
 ;   key:    [int \ {0} | float]
 ;   return: true
 ;   vars:
@@ -296,10 +296,10 @@
 ;     Var(1) :: 1
 ;     Var(2) :: int | float
 ;   exits:
-;     blk0 TailCall is_even#11(Var(2))
+;     blk0 TailCall is_even#12(Var(2))
 ;              callee_key=[int | float]
 
-; spec fn_clause_1(1) #fn=17
+; spec fn_clause_1(1) #fn=18
 ;   key:    [int \ {0}]
 ;   return: true
 ;   vars:
@@ -307,10 +307,10 @@
 ;     Var(1) :: 1
 ;     Var(2) :: int
 ;   exits:
-;     blk0 TailCall is_even#11(Var(2))
+;     blk0 TailCall is_even#12(Var(2))
 ;              callee_key=[int]
 
-; spec k_18(1) #fn=18
+; spec k_19(1) #fn=19
 ;   key:    [false]
 ;   return: nil
 ;   vars:
@@ -318,22 +318,22 @@
 ;   exits:
 ;     blk0 Call print#0(Var(0))
 ;              callee_key=[false]
-;              cont k_19#19 captured=[]
+;              cont k_20#20 captured=[]
 ;              cont_key=[nil]
 
-; spec k_19(1) #fn=19
+; spec k_20(1) #fn=20
 ;   key:    [nil]
 ;   return: nil
 ;   vars:
 ;     Var(0) :: nil
 ;     Var(1) :: 7
 ;   exits:
-;     blk0 Call is_odd#12(Var(1))
+;     blk0 Call is_odd#13(Var(1))
 ;              callee_key=[7]
-;              cont k_20#20 captured=[]
+;              cont k_21#21 captured=[]
 ;              cont_key=[true]
 
-; spec k_20(1) #fn=20
+; spec k_21(1) #fn=21
 ;   key:    [true]
 ;   return: nil
 ;   vars:
@@ -341,22 +341,22 @@
 ;   exits:
 ;     blk0 Call print#0(Var(0))
 ;              callee_key=[true]
-;              cont k_21#21 captured=[]
+;              cont k_22#22 captured=[]
 ;              cont_key=[nil]
 
-; spec k_21(1) #fn=21
+; spec k_22(1) #fn=22
 ;   key:    [nil]
 ;   return: nil
 ;   vars:
 ;     Var(0) :: nil
 ;     Var(1) :: 0
 ;   exits:
-;     blk0 Call is_even#11(Var(1))
+;     blk0 Call is_even#12(Var(1))
 ;              callee_key=[0]
-;              cont k_22#22 captured=[]
+;              cont k_23#23 captured=[]
 ;              cont_key=[true]
 
-; spec k_22(1) #fn=22
+; spec k_23(1) #fn=23
 ;   key:    [true]
 ;   return: nil
 ;   vars:
@@ -364,22 +364,22 @@
 ;   exits:
 ;     blk0 Call print#0(Var(0))
 ;              callee_key=[true]
-;              cont k_23#23 captured=[]
+;              cont k_24#24 captured=[]
 ;              cont_key=[nil]
 
-; spec k_23(1) #fn=23
+; spec k_24(1) #fn=24
 ;   key:    [nil]
 ;   return: nil
 ;   vars:
 ;     Var(0) :: nil
 ;     Var(1) :: 1
 ;   exits:
-;     blk0 Call is_odd#12(Var(1))
+;     blk0 Call is_odd#13(Var(1))
 ;              callee_key=[1]
-;              cont k_24#24 captured=[]
+;              cont k_25#25 captured=[]
 ;              cont_key=[true]
 
-; spec k_24(1) #fn=24
+; spec k_25(1) #fn=25
 ;   key:    [true]
 ;   return: nil
 ;   vars:

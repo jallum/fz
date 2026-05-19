@@ -854,6 +854,68 @@ fn eval_binop(op: BinOp, a: FzValue, b: FzValue) -> Result<FzValue, String> {
     }
 }
 
+/// fz-swt.7 — given a closure FzValue produced by `&name/arity`, resolve
+/// the C-ABI fn pointer to install as the resource's dtor.
+///
+/// JIT/AOT closures carry the dtor in the `stub_fp` slot at offset +16 of
+/// the closure heap object. Interp closures leave that slot null
+/// (Prim::MakeClosure interp lowering), so we walk the closure's IR fn
+/// body to find the wrapped `Prim::Extern(eid, _)` call and resolve that
+/// extern's symbol via the same machinery `call_extern` uses below.
+///
+/// Pattern recognised: a single-block fn whose terminator is `Return(v)`
+/// of a `Let(v, Prim::Extern(eid, _))` — i.e., the canonical
+/// `fn wrap(x), do: some_extern(x)` shape. Anything more complex would
+/// require running the body, which fz-swt.9 will handle properly.
+fn resolve_dtor_from_closure(
+    module: &Module,
+    closure: FzValue,
+) -> Result<unsafe extern "C" fn(u64), String> {
+    use fz_runtime::fz_value::HeapKind;
+    let p = closure
+        .unbox_ptr()
+        .ok_or_else(|| "make_resource: dtor arg is not a heap value".to_string())?;
+    let header = unsafe { &*p };
+    if HeapKind::from_u16(header.kind) != Some(HeapKind::Closure) {
+        return Err("make_resource: dtor arg is not a closure".into());
+    }
+    // Prefer the stub_fp if present (JIT/AOT closures).
+    let stub_fp = unsafe { std::ptr::read((p as *const u8).add(16) as *const u64) };
+    if stub_fp != 0 {
+        // SAFETY: stub_fp is a code pointer with the C-ABI shape every
+        // closure stub uses (u64 payload in, ignored return).
+        let f: unsafe extern "C" fn(u64) = unsafe { std::mem::transmute(stub_fp as *const ()) };
+        return Ok(f);
+    }
+    // Interp path: walk the closure's IR fn body.
+    let fn_id = crate::fz_ir::FnId(header._reserved);
+    let fnir = module.fn_by_id(fn_id);
+    // Find any Prim::Extern call across the closure's blocks. The shape
+    // we expect for a v0 dtor wrapper is `fn d(x), do: some_extern(x)`,
+    // which lowers to two blocks (entry + CPS continuation) where the
+    // entry calls the extern. Anything more complex (multiple externs,
+    // branching) is out of scope until fz-swt.9 stands up real interp
+    // dtor execution.
+    let eid = fnir.blocks.iter().find_map(|b| {
+        b.stmts.iter().find_map(|s| match s {
+            Stmt::Let(_, Prim::Extern(eid, _)) => Some(*eid),
+            _ => None,
+        })
+    });
+    let eid = eid.ok_or_else(|| {
+        format!(
+            "make_resource: interp dtor closure for `{}` has no Prim::Extern in body",
+            fnir.name
+        )
+    })?;
+    let decl = module.extern_by_id(eid);
+    let fp = resolve_symbol(&decl.symbol)?;
+    // SAFETY: resolved fn pointer for a C-ABI extern declared in the
+    // module; ExternTy constraints guarantee u64-wide scalar params.
+    let f: unsafe extern "C" fn(u64) = unsafe { std::mem::transmute(fp) };
+    Ok(f)
+}
+
 fn call_extern(module: &Module, eid: ExternId, args: &[FzValue]) -> Result<FzValue, String> {
     let decl = module.extern_by_id(eid);
     // Assert fns use std::process::abort on failure — fatal for the JIT/AOT
@@ -929,6 +991,25 @@ fn call_extern(module: &Module, eid: ExternId, args: &[FzValue]) -> Result<FzVal
             interp_send(receiver, args[1])?;
             return Ok(args[1]);
         }
+        "fz_make_resource" => {
+            // fz-swt.7 — interp BIF: allocate an off-heap Resource and an
+            // on-heap HeapKind::Resource stub. args[0] is the payload (any
+            // FzValue, stored as a u64); args[1] is a closure produced by
+            // `&name/arity` (fz-swt.5). The closure's stub_fp is the C-ABI
+            // dtor pointer. In the interp stub_fp is always null (see
+            // `Prim::MakeClosure` lowering), so we walk the closure's IR
+            // fn body to find the underlying `Prim::Extern(eid, _)` call
+            // and resolve that extern's symbol to a real C fn ptr.
+            if args.len() != 2 {
+                return Err(format!("fz_make_resource/2 got {} args", args.len()));
+            }
+            let payload = args[0].0;
+            let dtor = resolve_dtor_from_closure(module, args[1])?;
+            let handle = fz_runtime::resource::ResourceHandle::new(payload, dtor);
+            let heap = &mut fz_runtime::process::current_process().heap;
+            let stub = fz_runtime::resource::alloc_resource(heap, handle);
+            return Ok(FzValue::from_ptr(stub.as_raw()));
+        }
         _ => {}
     }
     let fp = resolve_symbol(&decl.symbol)?;
@@ -960,6 +1041,10 @@ fn resolve_symbol(name: &str) -> Result<*const (), String> {
     // Native table: every symbol declared in runtime.fz. These Rust functions
     // are linked into the binary; using their address directly avoids relying
     // on dlsym visibility, which is unreliable for statically-linked rlibs.
+    #[cfg(test)]
+    if let Some(fp) = tests_support::lookup_test_symbol(name) {
+        return Ok(fp);
+    }
     let native: Option<*const ()> = match name {
         "fz_print_i64" => Some(fz_runtime::fz_print_i64 as *const ()),
         "fz_print_value" => Some(fz_runtime::ir_runtime::fz_print_value as *const ()),
@@ -1038,5 +1123,83 @@ unsafe fn dispatch_fn_void(fp: *const (), args: &[u64]) {
             f(args[0], args[1], args[2], args[3])
         },
         n => panic!("extern arity {} not supported (max 4)", n),
+    }
+}
+
+// ===== Test-only symbol registry (fz-swt.7) ================================
+
+#[cfg(test)]
+mod tests_support {
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+
+    pub static DTOR_FIRED: AtomicUsize = AtomicUsize::new(0);
+    pub static DTOR_LAST_PAYLOAD: AtomicU64 = AtomicU64::new(0);
+
+    /// Counter-bumping dtor. Used by the fz-side test as the
+    /// `&_resource_test_dtor/1` wrapped extern: bumps a global counter
+    /// and records the payload it received. Verifies that the BIF stored
+    /// the right C-ABI fn ptr and that MSO sweep invoked it on the right
+    /// payload.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn _resource_test_dtor(payload: u64) {
+        DTOR_FIRED.fetch_add(1, Ordering::Relaxed);
+        DTOR_LAST_PAYLOAD.store(payload, Ordering::Relaxed);
+    }
+
+    pub fn lookup_test_symbol(name: &str) -> Option<*const ()> {
+        match name {
+            "_resource_test_dtor" => Some(_resource_test_dtor as *const ()),
+            _ => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod resource_bif_tests {
+    use super::*;
+    use crate::test_runner;
+    use std::sync::atomic::Ordering;
+
+    /// fz-swt.7 acceptance — interp BIF round-trip.
+    ///
+    /// User-level fz source declares a wrapper around a C extern and uses
+    /// `make_resource(payload, &wrapper/1)`. The interp BIF walks the
+    /// closure's IR body, resolves the extern symbol to the C fn pointer
+    /// in `tests_support`, allocates an off-heap Resource, and returns a
+    /// `HeapKind::Resource` stub. The process heap is dropped at test
+    /// scope exit; MSO sweep invokes the dtor on the payload exactly once.
+    #[test]
+    fn make_resource_bif_round_trip() {
+        tests_support::DTOR_FIRED.store(0, Ordering::Relaxed);
+        tests_support::DTOR_LAST_PAYLOAD.store(0, Ordering::Relaxed);
+
+        let src = r#"
+extern "C" fn _resource_test_dtor(integer) :: nil
+fn dwrap(x), do: _resource_test_dtor(x)
+fn test_make_resource() do
+  r = make_resource(42, &dwrap/1)
+  assert(true)
+end
+"#;
+        test_runner::run_str(src).expect("test_runner run_str succeeded");
+
+        // Force the interp's task registry to drop. Process drop drops
+        // its Heap, which fires `mso_drop_all` and invokes our dtor.
+        super::interp_reset_state();
+
+        assert_eq!(
+            tests_support::DTOR_FIRED.load(Ordering::Relaxed),
+            1,
+            "dtor must fire exactly once after process heap drop"
+        );
+        // The dtor receives the raw FzValue bits of the payload we stored
+        // (the BIF stores args[0].0 verbatim). For Int 42, FzValue.0 is
+        // `42 << 4 | INT_TAG` (Int tag = 0), i.e. 672.
+        // FzValue Int encoding: (n << 3) | TAG_INT (=1). For n=42 → 337.
+        assert_eq!(
+            tests_support::DTOR_LAST_PAYLOAD.load(Ordering::Relaxed),
+            fz_runtime::fz_value::FzValue::from_int(42).0,
+            "dtor receives the stored FzValue.0 bits of payload 42",
+        );
     }
 }

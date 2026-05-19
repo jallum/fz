@@ -14,6 +14,7 @@ pub mod heap;
 pub mod ir_runtime;
 pub mod procbin;
 pub mod process;
+pub mod resource;
 pub mod scheduler_hooks;
 pub mod sync;
 pub mod yield_flag;

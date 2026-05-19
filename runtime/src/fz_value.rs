@@ -177,6 +177,12 @@ pub enum HeapKind {
     /// off-heap `SharedBin`. Cheney trace is a no-op; the per-heap MSO
     /// list governs retain/release across GC.
     ProcBin = 10,
+    /// fz-swt.7 — 32-byte stub on a per-process heap that references an
+    /// off-heap refcounted `Resource` (user-supplied destructor). Same
+    /// 32-byte layout as ProcBin (HeapHeader + shared_ptr + mso_next),
+    /// threaded onto the same MSO chain. Cheney trace is a no-op; the
+    /// MSO sweep dispatches on kind to invoke `fz_resource_release`.
+    Resource = 11,
 }
 
 impl HeapKind {
@@ -193,6 +199,7 @@ impl HeapKind {
             8 => Some(HeapKind::Closure),
             9 => Some(HeapKind::Float),
             10 => Some(HeapKind::ProcBin),
+            11 => Some(HeapKind::Resource),
             _ => None,
         }
     }
@@ -476,6 +483,7 @@ mod tests {
             HeapKind::Closure,
             HeapKind::Float,
             HeapKind::ProcBin,
+            HeapKind::Resource,
         ] {
             assert_eq!(HeapKind::from_u16(k as u16), Some(k));
         }

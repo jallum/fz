@@ -9,12 +9,12 @@
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(1)      :: :function_clause
 ;     blk2 If Var(2) ? blk4 : blk3
-;     blk3 TailCall fn_clause_1#8(Var(0))
+;     blk3 TailCall fn_clause_1#9(Var(0))
 ;              callee_key=[int]
-;     blk4 TailCall fn_clause_0#7(Var(0))
+;     blk4 TailCall fn_clause_0#8(Var(0))
 ;              callee_key=[int]
 
-; spec fn_clause_0(1) #fn=7
+; spec fn_clause_0(1) #fn=8
 ;   key:    [int]
 ;   return: nil
 ;   vars:
@@ -23,7 +23,7 @@
 ;   exits:
 ;     blk0 Return Var(1)    :: nil
 
-; spec fn_clause_1(1) #fn=8
+; spec fn_clause_1(1) #fn=9
 ;   key:    [any]
 ;   return: nil
 ;   vars:
@@ -32,122 +32,122 @@
 ;   exits:
 ;     blk0 Return Var(1)    :: nil
 
-; spec add3(1) #fn=11
+; spec add3(1) #fn=12
 ;   key:    [10]
-;   return: &fn14[10]:(α896) -> α959
+;   return: &fn15[10]:(α960) -> α1023
 ;   vars:
 ;     Var(0) :: 10
 ;     Var(1) :: :match_error
-;     Var(2) :: &fn14[10]:(α896) -> α959
+;     Var(2) :: &fn15[10]:(α960) -> α1023
 ;   exits:
-;     blk0 Return Var(2)    :: &fn14[10]:(α896) -> α959
+;     blk0 Return Var(2)    :: &fn15[10]:(α960) -> α1023
 ;     blk1 Halt Var(1)      :: :match_error
 
-; spec add3(1) #fn=11
+; spec add3(1) #fn=12
 ;   key:    [1]
-;   return: &fn14[1]:(α896) -> α959
+;   return: &fn15[1]:(α960) -> α1023
 ;   vars:
 ;     Var(0) :: 1
 ;     Var(1) :: :match_error
-;     Var(2) :: &fn14[1]:(α896) -> α959
+;     Var(2) :: &fn15[1]:(α960) -> α1023
 ;   exits:
-;     blk0 Return Var(2)    :: &fn14[1]:(α896) -> α959
+;     blk0 Return Var(2)    :: &fn15[1]:(α960) -> α1023
 ;     blk1 Halt Var(1)      :: :match_error
 
-; spec apply(2) #fn=12
-;   key:    [&fn14[10]:(α896) -> α959, 20]
-;   return: &fn15[10, 20]:(α960) -> α1023
+; spec apply(2) #fn=13
+;   key:    [&fn15[10]:(α960) -> α1023, 20]
+;   return: &fn16[10, 20]:(α1024) -> α1087
 ;   vars:
-;     Var(0) :: &fn14[10]:(α896) -> α959
+;     Var(0) :: &fn15[10]:(α960) -> α1023
 ;     Var(1) :: 20
 ;     Var(2) :: :match_error
 ;   exits:
 ;     blk0 TailCallClosure Var(0)(Var(1))
 ;     blk1 Halt Var(2)      :: :match_error
 
-; spec apply(2) #fn=12
-;   key:    [&fn14[1]:(α896) -> α959, 2]
-;   return: &fn15[1, 2]:(α960) -> α1023
+; spec apply(2) #fn=13
+;   key:    [&fn15[1]:(α960) -> α1023, 2]
+;   return: &fn16[1, 2]:(α1024) -> α1087
 ;   vars:
-;     Var(0) :: &fn14[1]:(α896) -> α959
+;     Var(0) :: &fn15[1]:(α960) -> α1023
 ;     Var(1) :: 2
 ;     Var(2) :: :match_error
 ;   exits:
 ;     blk0 TailCallClosure Var(0)(Var(1))
 ;     blk1 Halt Var(2)      :: :match_error
 
-; spec apply(2) #fn=12
-;   key:    [&fn15[1, 2]:(α960) -> α1023, 3]
+; spec apply(2) #fn=13
+;   key:    [&fn16[1, 2]:(α1024) -> α1087, 3]
 ;   return: int
 ;   vars:
-;     Var(0) :: &fn15[1, 2]:(α960) -> α1023
+;     Var(0) :: &fn16[1, 2]:(α1024) -> α1087
 ;     Var(1) :: 3
 ;     Var(2) :: :match_error
 ;   exits:
 ;     blk0 TailCallClosure Var(0)(Var(1))
 ;     blk1 Halt Var(2)      :: :match_error
 
-; spec apply(2) #fn=12
-;   key:    [&fn15[10, 20]:(α960) -> α1023, 12]
+; spec apply(2) #fn=13
+;   key:    [&fn16[10, 20]:(α1024) -> α1087, 12]
 ;   return: int
 ;   vars:
-;     Var(0) :: &fn15[10, 20]:(α960) -> α1023
+;     Var(0) :: &fn16[10, 20]:(α1024) -> α1087
 ;     Var(1) :: 12
 ;     Var(2) :: :match_error
 ;   exits:
 ;     blk0 TailCallClosure Var(0)(Var(1))
 ;     blk1 Halt Var(2)      :: :match_error
 
-; spec main(0) #fn=13
+; spec main(0) #fn=14
 ;   key:    []
 ;   return: nil
 ;   vars:
 ;     Var(0) :: :match_error
 ;     Var(1) :: 10
 ;   exits:
-;     blk0 Call add3#11(Var(1))
+;     blk0 Call add3#12(Var(1))
 ;              callee_key=[10]
-;              cont k_16#16 captured=[]
-;              cont_key=[&fn14[10]:(α896) -> α959]
+;              cont k_17#17 captured=[]
+;              cont_key=[&fn15[10]:(α960) -> α1023]
 ;     blk1 Halt Var(0)      :: :match_error
 
-; spec lambda_14(2) #fn=14
+; spec lambda_15(2) #fn=15
 ;   key:    [1, 2]
-;   return: &fn15[1, 2]:(α960) -> α1023
+;   return: &fn16[1, 2]:(α1024) -> α1087
 ;   vars:
 ;     Var(0) :: 1
 ;     Var(1) :: 2
 ;     Var(2) :: :match_error
-;     Var(3) :: &fn15[1, 2]:(α960) -> α1023
+;     Var(3) :: &fn16[1, 2]:(α1024) -> α1087
 ;   exits:
-;     blk0 Return Var(3)    :: &fn15[1, 2]:(α960) -> α1023
+;     blk0 Return Var(3)    :: &fn16[1, 2]:(α1024) -> α1087
 ;     blk1 Halt Var(2)      :: :match_error
 
-; spec lambda_14(2) #fn=14
+; spec lambda_15(2) #fn=15
 ;   key:    [10, 20]
-;   return: &fn15[10, 20]:(α960) -> α1023
+;   return: &fn16[10, 20]:(α1024) -> α1087
 ;   vars:
 ;     Var(0) :: 10
 ;     Var(1) :: 20
 ;     Var(2) :: :match_error
-;     Var(3) :: &fn15[10, 20]:(α960) -> α1023
+;     Var(3) :: &fn16[10, 20]:(α1024) -> α1087
 ;   exits:
-;     blk0 Return Var(3)    :: &fn15[10, 20]:(α960) -> α1023
+;     blk0 Return Var(3)    :: &fn16[10, 20]:(α1024) -> α1087
 ;     blk1 Halt Var(2)      :: :match_error
 
-; spec lambda_14(2) #fn=14
+; spec lambda_15(2) #fn=15
 ;   key:    [any, any]
-;   return: &fn15[any, any]:(α960) -> α1023
+;   return: &fn16[any, any]:(α1024) -> α1087
 ;   vars:
 ;     Var(0) :: any
 ;     Var(1) :: any
 ;     Var(2) :: :match_error
-;     Var(3) :: &fn15[any, any]:(α960) -> α1023
+;     Var(3) :: &fn16[any, any]:(α1024) -> α1087
 ;   exits:
-;     blk0 Return Var(3)    :: &fn15[any, any]:(α960) -> α1023
+;     blk0 Return Var(3)    :: &fn16[any, any]:(α1024) -> α1087
 ;     blk1 Halt Var(2)      :: :match_error
 
-; spec lambda_15(3) #fn=15
+; spec lambda_16(3) #fn=16
 ;   key:    [1, 2, 3]
 ;   return: int
 ;   vars:
@@ -161,7 +161,7 @@
 ;     blk0 Return Var(5)    :: int
 ;     blk1 Halt Var(3)      :: :match_error
 
-; spec lambda_15(3) #fn=15
+; spec lambda_16(3) #fn=16
 ;   key:    [10, 20, 12]
 ;   return: int
 ;   vars:
@@ -175,7 +175,7 @@
 ;     blk0 Return Var(5)    :: int
 ;     blk1 Halt Var(3)      :: :match_error
 
-; spec lambda_15(3) #fn=15
+; spec lambda_16(3) #fn=16
 ;   key:    [any, any, any]
 ;   return: int | float
 ;   vars:
@@ -189,31 +189,31 @@
 ;     blk0 Return Var(5)    :: int | float
 ;     blk1 Halt Var(3)      :: :match_error
 
-; spec k_16(1) #fn=16
-;   key:    [&fn14[10]:(α896) -> α959]
+; spec k_17(1) #fn=17
+;   key:    [&fn15[10]:(α960) -> α1023]
 ;   return: nil
 ;   vars:
-;     Var(0) :: &fn14[10]:(α896) -> α959
+;     Var(0) :: &fn15[10]:(α960) -> α1023
 ;     Var(1) :: 20
 ;   exits:
-;     blk0 Call apply#12(Var(0), Var(1))
-;              callee_key=[&fn14[10]:(α896) -> α959, 20]
-;              cont k_17#17 captured=[]
-;              cont_key=[&fn15[10, 20]:(α960) -> α1023]
-
-; spec k_17(1) #fn=17
-;   key:    [&fn15[10, 20]:(α960) -> α1023]
-;   return: nil
-;   vars:
-;     Var(0) :: &fn15[10, 20]:(α960) -> α1023
-;     Var(1) :: 12
-;   exits:
-;     blk0 Call apply#12(Var(0), Var(1))
-;              callee_key=[&fn15[10, 20]:(α960) -> α1023, 12]
+;     blk0 Call apply#13(Var(0), Var(1))
+;              callee_key=[&fn15[10]:(α960) -> α1023, 20]
 ;              cont k_18#18 captured=[]
-;              cont_key=[int]
+;              cont_key=[&fn16[10, 20]:(α1024) -> α1087]
 
 ; spec k_18(1) #fn=18
+;   key:    [&fn16[10, 20]:(α1024) -> α1087]
+;   return: nil
+;   vars:
+;     Var(0) :: &fn16[10, 20]:(α1024) -> α1087
+;     Var(1) :: 12
+;   exits:
+;     blk0 Call apply#13(Var(0), Var(1))
+;              callee_key=[&fn16[10, 20]:(α1024) -> α1087, 12]
+;              cont k_19#19 captured=[]
+;              cont_key=[int]
+
+; spec k_19(1) #fn=19
 ;   key:    [int]
 ;   return: nil
 ;   vars:
@@ -221,46 +221,46 @@
 ;   exits:
 ;     blk0 Call print#0(Var(0))
 ;              callee_key=[int]
-;              cont k_19#19 captured=[]
+;              cont k_20#20 captured=[]
 ;              cont_key=[nil]
 
-; spec k_19(1) #fn=19
+; spec k_20(1) #fn=20
 ;   key:    [nil]
 ;   return: nil
 ;   vars:
 ;     Var(0) :: nil
 ;     Var(1) :: 1
 ;   exits:
-;     blk0 Call add3#11(Var(1))
+;     blk0 Call add3#12(Var(1))
 ;              callee_key=[1]
-;              cont k_20#20 captured=[]
-;              cont_key=[&fn14[1]:(α896) -> α959]
-
-; spec k_20(1) #fn=20
-;   key:    [&fn14[1]:(α896) -> α959]
-;   return: nil
-;   vars:
-;     Var(0) :: &fn14[1]:(α896) -> α959
-;     Var(1) :: 2
-;   exits:
-;     blk0 Call apply#12(Var(0), Var(1))
-;              callee_key=[&fn14[1]:(α896) -> α959, 2]
 ;              cont k_21#21 captured=[]
-;              cont_key=[&fn15[1, 2]:(α960) -> α1023]
+;              cont_key=[&fn15[1]:(α960) -> α1023]
 
 ; spec k_21(1) #fn=21
-;   key:    [&fn15[1, 2]:(α960) -> α1023]
+;   key:    [&fn15[1]:(α960) -> α1023]
 ;   return: nil
 ;   vars:
-;     Var(0) :: &fn15[1, 2]:(α960) -> α1023
-;     Var(1) :: 3
+;     Var(0) :: &fn15[1]:(α960) -> α1023
+;     Var(1) :: 2
 ;   exits:
-;     blk0 Call apply#12(Var(0), Var(1))
-;              callee_key=[&fn15[1, 2]:(α960) -> α1023, 3]
+;     blk0 Call apply#13(Var(0), Var(1))
+;              callee_key=[&fn15[1]:(α960) -> α1023, 2]
 ;              cont k_22#22 captured=[]
-;              cont_key=[int]
+;              cont_key=[&fn16[1, 2]:(α1024) -> α1087]
 
 ; spec k_22(1) #fn=22
+;   key:    [&fn16[1, 2]:(α1024) -> α1087]
+;   return: nil
+;   vars:
+;     Var(0) :: &fn16[1, 2]:(α1024) -> α1087
+;     Var(1) :: 3
+;   exits:
+;     blk0 Call apply#13(Var(0), Var(1))
+;              callee_key=[&fn16[1, 2]:(α1024) -> α1087, 3]
+;              cont k_23#23 captured=[]
+;              cont_key=[int]
+
+; spec k_23(1) #fn=23
 ;   key:    [int]
 ;   return: nil
 ;   vars:
