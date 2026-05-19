@@ -1046,7 +1046,14 @@ fn call_extern(module: &Module, eid: ExternId, args: &[FzValue]) -> Result<FzVal
         unsafe { dispatch_fn_void(fp, &raw_args) };
         0
     };
-    Ok(FzValue(ret))
+    // fz-rb8 — `:: integer` returns a raw signed 64-bit value from C;
+    // auto-box to FzValue::Int. Other return classes treat the bits as
+    // an already-tagged FzValue.
+    let boxed = match decl.ret {
+        ExternTy::I64 => FzValue::from_int(ret as i64).0,
+        _ => ret,
+    };
+    Ok(FzValue(boxed))
 }
 
 /// Return the function pointer for a named C symbol.

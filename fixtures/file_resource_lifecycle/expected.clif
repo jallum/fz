@@ -28,11 +28,13 @@ function u0:0(i64) -> i64 tail {
 
 block0(v0: i64):
     v1 = call fn0()                     ; @14:8
-    v2 = iconst.i64 50                  ; @15:9
-    call fn1(v2)  ; v2 = 50
-    v3 = iconst.i64 2    ;; v3 :: nil
-    v4 = sshr_imm v1, 3                 ; @15:3
-    return_call fn2(v3, v4, v0)         ; @15:3  v3 = 2
+    v2 = ishl_imm v1, 3                 ; @14:8
+    v3 = bor_imm v2, 1                  ; @14:8
+    v4 = iconst.i64 50                  ; @15:9
+    call fn1(v4)  ; v4 = 50
+    v5 = iconst.i64 2    ;; v5 :: nil
+    v6 = sshr_imm v3, 3                 ; @15:3
+    return_call fn2(v5, v6, v0)         ; @15:3  v5 = 2
 }
 
 ; fn k_16_s17

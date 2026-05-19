@@ -169,7 +169,9 @@ pub unsafe extern "C" fn fz_test_open_tmpfile() -> u64 {
             std::io::Error::last_os_error()
         );
     }
-    crate::fz_value::FzValue::from_int(fd as i64).0
+    // fz-rb8 — `:: integer` returns raw i64; the runtime boxes on receive.
+    // Cast through u64 to preserve the bit pattern (fds are non-negative).
+    fd as u64
 }
 
 /// fz-swt.13 — resource dtor for fds produced by `fz_test_open_tmpfile`.

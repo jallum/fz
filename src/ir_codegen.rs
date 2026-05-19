@@ -6603,7 +6603,16 @@ fn lower_prim<M: cranelift_module::Module>(
                 .collect();
             let inst = b.ins().call(fref, &arg_vals);
             if returns_value {
-                return Ok(LowerOut::Tagged(b.inst_results(inst)[0]));
+                let raw = b.inst_results(inst)[0];
+                // fz-rb8 — `:: integer` returns a raw signed 64-bit C int;
+                // box as a tagged FzValue::Int (`(n << 3) | TAG_INT`).
+                let boxed = if matches!(decl.ret, ExternTy::I64) {
+                    let shifted = b.ins().ishl_imm(raw, 3);
+                    b.ins().bor_imm(shifted, TAG_INT)
+                } else {
+                    raw
+                };
+                return Ok(LowerOut::Tagged(boxed));
             }
             if cache.used_vars.contains(&dest_var.0) {
                 return Ok(LowerOut::Tagged(cached_iconst(b, cache, NIL_BITS)));

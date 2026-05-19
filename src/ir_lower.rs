@@ -789,6 +789,11 @@ fn descr_to_extern_ty(d: &crate::types::Descr) -> ExternTy {
     if d.is_subtype(&Descr::float()) {
         return ExternTy::F64;
     }
+    // fz-rb8 — `:: integer` returns a raw 64-bit signed C int; runtime
+    // auto-boxes to FzValue::Int on receive (interp + JIT).
+    if d.is_subtype(&Descr::int()) {
+        return ExternTy::I64;
+    }
     ExternTy::Any
 }
 
