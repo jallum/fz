@@ -35,7 +35,9 @@ use crate::ir_codegen::{
     CodegenError, EMPTY_LIST_BITS, HEADER_SIZE, NIL_BITS, SLOT_BYTES, TAG_ATOM, TAG_INT, TAG_MASK,
     TAG_PTR, TRUE_BITS, emit_fn_body,
 };
-use cranelift_codegen::ir::{self, AbiParam, InstBuilder, MemFlags, Signature, condcodes::IntCC, types};
+use cranelift_codegen::ir::{
+    self, AbiParam, InstBuilder, MemFlags, Signature, condcodes::IntCC, types,
+};
 use cranelift_codegen::isa::CallConv;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_module::{FuncId, Linkage};
@@ -101,77 +103,71 @@ pub(crate) fn emit_matcher_body<M: cranelift_module::Module>(
     }
 
     let mut compile_err: Option<CodegenError> = None;
-    emit_fn_body(
-        module,
-        fbctx,
-        matcher_signature(),
-        matcher_id,
-        |_m, b| {
-            let entry = b.create_block();
-            b.append_block_params_for_function_params(entry);
-            b.switch_to_block(entry);
-            b.seal_block(entry);
-            let msg = b.block_params(entry)[0];
-            let pinned_ptr = b.block_params(entry)[1];
-            let out_ptr = b.block_params(entry)[2];
+    emit_fn_body(module, fbctx, matcher_signature(), matcher_id, |_m, b| {
+        let entry = b.create_block();
+        b.append_block_params_for_function_params(entry);
+        b.switch_to_block(entry);
+        b.seal_block(entry);
+        let msg = b.block_params(entry)[0];
+        let pinned_ptr = b.block_params(entry)[1];
+        let out_ptr = b.block_params(entry)[2];
 
-            // miss_block: shared fall-through used by every clause's
-            // fail path AND by the final fallthrough from the last
-            // clause. Returns 0 (the matcher-miss sentinel).
-            let miss_block = b.create_block();
+        // miss_block: shared fall-through used by every clause's
+        // fail path AND by the final fallthrough from the last
+        // clause. Returns 0 (the matcher-miss sentinel).
+        let miss_block = b.create_block();
 
-            // For each clause, create a fail block (== the next
-            // clause's entry, or miss_block for the last clause).
-            let mut fail_blocks: Vec<ir::Block> = Vec::with_capacity(clauses.len() + 1);
-            for _ in 0..clauses.len() {
-                fail_blocks.push(b.create_block());
+        // For each clause, create a fail block (== the next
+        // clause's entry, or miss_block for the last clause).
+        let mut fail_blocks: Vec<ir::Block> = Vec::with_capacity(clauses.len() + 1);
+        for _ in 0..clauses.len() {
+            fail_blocks.push(b.create_block());
+        }
+        // The last clause's "next" target is the miss block.
+        fail_blocks.push(miss_block);
+
+        // Each clause: switch to its entry, compile pattern with
+        // fail_blocks[i+1] as the fail target, on success build a
+        // return-i+1 instruction.
+        for (i, c) in clauses.iter().enumerate() {
+            if i == 0 {
+                b.ins().jump(fail_blocks[0], &[]);
             }
-            // The last clause's "next" target is the miss block.
-            fail_blocks.push(miss_block);
+            let try_block = fail_blocks[i];
+            let fail_block = fail_blocks[i + 1];
+            b.switch_to_block(try_block);
+            b.seal_block(try_block);
 
-            // Each clause: switch to its entry, compile pattern with
-            // fail_blocks[i+1] as the fail target, on success build a
-            // return-i+1 instruction.
-            for (i, c) in clauses.iter().enumerate() {
-                if i == 0 {
-                    b.ins().jump(fail_blocks[0], &[]);
-                }
-                let try_block = fail_blocks[i];
-                let fail_block = fail_blocks[i + 1];
-                b.switch_to_block(try_block);
-                b.seal_block(try_block);
+            let bound_indices: HashMap<&str, usize> = c
+                .bound_names
+                .iter()
+                .enumerate()
+                .map(|(idx, name)| (name.as_str(), idx))
+                .collect();
 
-                let bound_indices: HashMap<&str, usize> = c
-                    .bound_names
-                    .iter()
-                    .enumerate()
-                    .map(|(idx, name)| (name.as_str(), idx))
-                    .collect();
-
-                let ctx = PatternCtx {
-                    fz_module,
-                    tuple_schema_ids,
-                    bound_indices: &bound_indices,
-                    pinned_indices: &pinned_indices,
-                    pinned_ptr,
-                    out_ptr,
-                };
-                if let Err(e) = compile_pattern(b, &ctx, msg, &c.pattern.node, fail_block) {
-                    compile_err = Some(e);
-                    return;
-                }
-                // Pattern matched: return clause index + 1.
-                let k = b.ins().iconst(types::I32, (i + 1) as i64);
-                b.ins().return_(&[k]);
+            let ctx = PatternCtx {
+                fz_module,
+                tuple_schema_ids,
+                bound_indices: &bound_indices,
+                pinned_indices: &pinned_indices,
+                pinned_ptr,
+                out_ptr,
+            };
+            if let Err(e) = compile_pattern(b, &ctx, msg, &c.pattern.node, fail_block) {
+                compile_err = Some(e);
+                return;
             }
+            // Pattern matched: return clause index + 1.
+            let k = b.ins().iconst(types::I32, (i + 1) as i64);
+            b.ins().return_(&[k]);
+        }
 
-            // miss_block: every fail path lands here; return 0.
-            b.switch_to_block(miss_block);
-            b.seal_block(miss_block);
-            let zero = b.ins().iconst(types::I32, 0);
-            b.ins().return_(&[zero]);
-        },
-    )
+        // miss_block: every fail path lands here; return 0.
+        b.switch_to_block(miss_block);
+        b.seal_block(miss_block);
+        let zero = b.ins().iconst(types::I32, 0);
+        b.ins().return_(&[zero]);
+    })
     .map_err(|e| CodegenError::new(format!("define matcher fn: {}", e)))?;
     if let Some(e) = compile_err {
         return Err(e);
@@ -213,10 +209,7 @@ fn compile_pattern(
         }
         Pattern::Pinned(name) => {
             let &idx = ctx.pinned_indices.get(name.as_str()).ok_or_else(|| {
-                CodegenError::new(format!(
-                    "pinned ^{} not in matcher's pinned table",
-                    name
-                ))
+                CodegenError::new(format!("pinned ^{} not in matcher's pinned table", name))
             })?;
             let want = b.ins().load(
                 types::I64,
@@ -240,7 +233,9 @@ fn compile_pattern(
         }
         Pattern::Bool(false) => {
             // fz-yan.1 — `false` is the atom with reserved id 2.
-            let want = b.ins().iconst(types::I64, fz_runtime::fz_value::FALSE_BITS as i64);
+            let want = b
+                .ins()
+                .iconst(types::I64, fz_runtime::fz_value::FALSE_BITS as i64);
             brif_neq(b, val, want, fail);
             Ok(())
         }
@@ -443,7 +438,10 @@ mod tests {
         let pinned: Vec<(String, Var)> = Vec::new();
         let clauses = vec![clause_with(AstPattern::Wildcard, vec![])];
         let fid = declare_matcher(&mut jmod, "matcher_wildcard").unwrap();
-        emit_matcher_body(&mut jmod, &mut fbctx, fid, &m, &tuple_ids, &pinned, &clauses).unwrap();
+        emit_matcher_body(
+            &mut jmod, &mut fbctx, fid, &m, &tuple_ids, &pinned, &clauses,
+        )
+        .unwrap();
         let f = finalize_and_get(jmod, fid);
         let mut out = [0u64; 0];
         let pin: [u64; 0] = [];
@@ -460,7 +458,10 @@ mod tests {
         let pinned: Vec<(String, Var)> = Vec::new();
         let clauses = vec![clause_with(AstPattern::Int(42), vec![])];
         let fid = declare_matcher(&mut jmod, "matcher_int_42").unwrap();
-        emit_matcher_body(&mut jmod, &mut fbctx, fid, &m, &tuple_ids, &pinned, &clauses).unwrap();
+        emit_matcher_body(
+            &mut jmod, &mut fbctx, fid, &m, &tuple_ids, &pinned, &clauses,
+        )
+        .unwrap();
         let f = finalize_and_get(jmod, fid);
         let pin: [u64; 0] = [];
         let mut out = [0u64; 0];
@@ -480,7 +481,10 @@ mod tests {
         let pinned: Vec<(String, Var)> = Vec::new();
         let clauses = vec![clause_with(AstPattern::Var("x".into()), vec!["x".into()])];
         let fid = declare_matcher(&mut jmod, "matcher_var_x").unwrap();
-        emit_matcher_body(&mut jmod, &mut fbctx, fid, &m, &tuple_ids, &pinned, &clauses).unwrap();
+        emit_matcher_body(
+            &mut jmod, &mut fbctx, fid, &m, &tuple_ids, &pinned, &clauses,
+        )
+        .unwrap();
         let f = finalize_and_get(jmod, fid);
         let pin: [u64; 0] = [];
         let mut out = [0u64; 1];
@@ -498,7 +502,10 @@ mod tests {
         let pinned = vec![("p".to_string(), Var(0))];
         let clauses = vec![clause_with(AstPattern::Pinned("p".into()), vec![])];
         let fid = declare_matcher(&mut jmod, "matcher_pinned_p").unwrap();
-        emit_matcher_body(&mut jmod, &mut fbctx, fid, &m, &tuple_ids, &pinned, &clauses).unwrap();
+        emit_matcher_body(
+            &mut jmod, &mut fbctx, fid, &m, &tuple_ids, &pinned, &clauses,
+        )
+        .unwrap();
         let f = finalize_and_get(jmod, fid);
         let mut out = [0u64; 0];
         let pin = [0x1234_5678u64];
@@ -517,7 +524,10 @@ mod tests {
         let pinned: Vec<(String, Var)> = Vec::new();
         let clauses = vec![clause_with(AstPattern::Atom("k_a".into()), vec![])];
         let fid = declare_matcher(&mut jmod, "matcher_atom_k_a").unwrap();
-        emit_matcher_body(&mut jmod, &mut fbctx, fid, &m, &tuple_ids, &pinned, &clauses).unwrap();
+        emit_matcher_body(
+            &mut jmod, &mut fbctx, fid, &m, &tuple_ids, &pinned, &clauses,
+        )
+        .unwrap();
         let f = finalize_and_get(jmod, fid);
         let pin: [u64; 0] = [];
         let mut out = [0u64; 0];
@@ -540,7 +550,10 @@ mod tests {
             clause_with(AstPattern::Wildcard, vec![]),
         ];
         let fid = declare_matcher(&mut jmod, "matcher_multi").unwrap();
-        emit_matcher_body(&mut jmod, &mut fbctx, fid, &m, &tuple_ids, &pinned, &clauses).unwrap();
+        emit_matcher_body(
+            &mut jmod, &mut fbctx, fid, &m, &tuple_ids, &pinned, &clauses,
+        )
+        .unwrap();
         let f = finalize_and_get(jmod, fid);
         let pin: [u64; 0] = [];
         let mut out = [0u64; 0];
@@ -573,7 +586,10 @@ mod tests {
         ]);
         let clauses = vec![clause_with(pat, vec!["v".into()])];
         let fid = declare_matcher(&mut jmod, "matcher_tuple_reply").unwrap();
-        emit_matcher_body(&mut jmod, &mut fbctx, fid, &m, &tuple_ids, &pinned, &clauses).unwrap();
+        emit_matcher_body(
+            &mut jmod, &mut fbctx, fid, &m, &tuple_ids, &pinned, &clauses,
+        )
+        .unwrap();
         let f = finalize_and_get(jmod, fid);
 
         // Build a heap-shaped tuple: HeapHeader (16 bytes) + 3 FzValue slots.
@@ -629,7 +645,8 @@ mod tests {
         )
         .unwrap_err();
         assert!(
-            err.to_string().contains("guard inlining lands in fz-70q.2.2"),
+            err.to_string()
+                .contains("guard inlining lands in fz-70q.2.2"),
             "error message points at the guard ticket: {}",
             err
         );

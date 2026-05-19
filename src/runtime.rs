@@ -222,11 +222,10 @@ pub fn send_via_current_runtime(receiver_pid: PidId, msg: FzValue) {
                 if let Some(id) = timer_id {
                     rt.timers.cancel(id);
                 }
-                receiver.pending_resume_matched =
-                    Some(fz_runtime::park::PendingResumeMatched {
-                        cont,
-                        args: bound_vals,
-                    });
+                receiver.pending_resume_matched = Some(fz_runtime::park::PendingResumeMatched {
+                    cont,
+                    args: bound_vals,
+                });
                 receiver.state = ProcessState::Ready;
                 rt.run_queue.push_back(receiver_pid);
                 return;

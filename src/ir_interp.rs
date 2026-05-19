@@ -305,7 +305,8 @@ fn interp_send(module: &Module, receiver_pid: u32, msg: FzValue) -> Result<(), S
                 let mut args = bound_vals;
                 args.extend(park.captures.iter().copied());
                 INTERP_RESUME.with(|r| {
-                    r.borrow_mut().insert(receiver_pid, (body, args, after_chain));
+                    r.borrow_mut()
+                        .insert(receiver_pid, (body, args, after_chain));
                 });
                 INTERP_TASKS.with(|t| {
                     if let Some(task) = t.borrow_mut().get_mut(&receiver_pid) {
@@ -709,9 +710,7 @@ fn run_fn(module: &Module, mut fn_id: FnId, mut args: Vec<FzValue>) -> Result<In
                 } => {
                     let pinned_map: HashMap<String, FzValue> = pinned
                         .iter()
-                        .map(|(name, var)| {
-                            env_get(&env, *var).map(|v| (name.clone(), v))
-                        })
+                        .map(|(name, var)| env_get(&env, *var).map(|v| (name.clone(), v)))
                         .collect::<Result<_, _>>()?;
                     let capture_vals: Vec<FzValue> = collect(&env, captures)?;
 
@@ -726,8 +725,7 @@ fn run_fn(module: &Module, mut fn_id: FnId, mut args: Vec<FzValue>) -> Result<In
                         .collect();
 
                     // Initial mailbox scan.
-                    let mailbox_len =
-                        fz_runtime::process::current_process().mailbox.len();
+                    let mailbox_len = fz_runtime::process::current_process().mailbox.len();
                     let mut hit: Option<(usize, usize, Vec<FzValue>)> = None;
                     for mb_idx in 0..mailbox_len {
                         let msg = fz_runtime::process::current_process().mailbox[mb_idx];
@@ -1357,7 +1355,6 @@ unsafe fn dispatch_fn_void(fp: *const (), args: &[u64]) {
     }
 }
 
-
 // ----- fz-yxs/fz-2v3 — selective receive interp tests -----
 
 #[cfg(test)]
@@ -1432,7 +1429,11 @@ mod receive_tests {
             end
         "#;
         let out = run_and_capture(src).expect("interp run");
-        assert!(out.contains(":timed_out"), "expected :timed_out, got: {}", out);
+        assert!(
+            out.contains(":timed_out"),
+            "expected :timed_out, got: {}",
+            out
+        );
     }
 
     /// Receiver-side scan finds a message left in the mailbox by an

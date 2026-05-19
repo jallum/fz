@@ -58,9 +58,7 @@ impl TimerWheel {
         };
         let pos = self
             .entries
-            .binary_search_by(|e| {
-                e.deadline.cmp(&entry.deadline).then(e.id.cmp(&entry.id))
-            })
+            .binary_search_by(|e| e.deadline.cmp(&entry.deadline).then(e.id.cmp(&entry.id)))
             .unwrap_or_else(|i| i);
         self.entries.insert(pos, entry);
         id
