@@ -236,13 +236,13 @@ fn fold_eq<T: Types>(t: &mut T, op: BinOp, ad: &Descr, bd: &Descr) -> Option<T::
     // Both literal: exact compare.
     if is_literal(ad) && is_literal(bd) {
         let equal = ad == bd;
-        return Some(t.from_descr(&bool_descr(if is_eq { equal } else { !equal })));
+        return Some(t.bool_lit(if is_eq { equal } else { !equal }));
     }
 
     // Kind-disjoint (intersection empty): result is definitively
     // false-for-Eq / true-for-Neq even without both being literal.
     if !ad.is_empty() && !bd.is_empty() && ad.intersect(bd).is_empty() {
-        return Some(t.from_descr(&bool_descr(!is_eq)));
+        return Some(t.bool_lit(!is_eq));
     }
 
     None
@@ -258,7 +258,7 @@ fn fold_cmp<T: Types>(t: &mut T, op: BinOp, ad: &Descr, bd: &Descr) -> Option<T:
             Ge => ai >= bi,
             _ => return None,
         };
-        return Some(t.from_descr(&bool_descr(b)));
+        return Some(t.bool_lit(b));
     }
     if let (Some(af), Some(bf)) = (as_float_lit(ad), as_float_lit(bd)) {
         let af = af.get();
@@ -270,7 +270,7 @@ fn fold_cmp<T: Types>(t: &mut T, op: BinOp, ad: &Descr, bd: &Descr) -> Option<T:
             Ge => af >= bf,
             _ => return None,
         };
-        return Some(t.from_descr(&bool_descr(b)));
+        return Some(t.bool_lit(b));
     }
     None
 }
@@ -283,7 +283,7 @@ fn fold_logical<T: Types>(t: &mut T, op: BinOp, ad: &Descr, bd: &Descr) -> Optio
         BinOp::Or => ab || bb,
         _ => return None,
     };
-    Some(t.from_descr(&bool_descr(r)))
+    Some(t.bool_lit(r))
 }
 
 fn fold_unop<T: Types>(
@@ -389,7 +389,7 @@ fn fold_list_is_nil<T: Types>(
     // `false`, not `true` as it did pre-s9y. The `list_of(none())` case
     // — i.e. provably the empty list — still folds to `true`.
     if is_nil_only(d) {
-        Some(t.from_descr(&bool_descr(false)))
+        Some(t.bool_lit(false))
     } else if d.intersect(&Descr::nil()).is_empty()
         && d.components()
             .any(|c| matches!(c, crate::types::Component::Lists(_)))
