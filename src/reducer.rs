@@ -511,7 +511,13 @@ fn match_pattern(
         }
         Int(n) => match_literal(d, &Descr::int_lit(*n)),
         Float(f) => match_literal(d, &Descr::float_lit(*f)),
-        Str(s) => match_literal(d, &Descr::str_lit(s.clone())),
+        Str(bytes) => {
+            // fz-axu.10 (L2) shim: Descr::str_lit takes a String; decode
+            // until K7's Const::Str retirement collapses this path.
+            let s = std::str::from_utf8(bytes)
+                .expect("L2 reducer: non-UTF-8 pattern str before L3");
+            match_literal(d, &Descr::str_lit(s))
+        }
         Atom(name) => match_literal(d, &Descr::atom_lit(name)),
         Bool(b) => match_literal(d, &Descr::atom_lit(if *b { "true" } else { "false" })),
         Nil => match_literal(d, &Descr::nil()),
@@ -611,7 +617,10 @@ pub fn fold_expr(
         Expr::Var(name) => bindings.get(name).cloned(),
         Expr::Int(n) => Some(Descr::int_lit(*n)),
         Expr::Float(f) => Some(Descr::float_lit(*f)),
-        Expr::Str(s) => Some(Descr::str_lit(s.clone())),
+        Expr::Str(bytes) => {
+            let s = std::str::from_utf8(bytes).ok()?;
+            Some(Descr::str_lit(s))
+        }
         Expr::Atom(s) => Some(Descr::atom_lit(s)),
         Expr::Bool(b) => Some(bool_descr(*b)),
         Expr::Nil => Some(Descr::nil()),

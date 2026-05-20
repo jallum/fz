@@ -1801,7 +1801,13 @@ fn lower_matrix_atom_literal(
             Pattern::Bool(true) => ("b:t".to_string(), Prim::Const(Const::True)),
             Pattern::Bool(false) => ("b:f".to_string(), Prim::Const(Const::False)),
             Pattern::Nil => ("n".to_string(), Prim::Const(Const::Nil)),
-            Pattern::Str(s) => (format!("s:{}", s), Prim::Const(Const::Str(s.clone()))),
+            Pattern::Str(bytes) => {
+                // fz-axu.10 (L2) — shim: decode for Const::Str until K7
+                // retires Const::Str entirely (post-L3 desugaring).
+                let s = std::str::from_utf8(bytes)
+                    .expect("L2 ir_lower: non-UTF-8 pattern str before L3");
+                (format!("s:{}", s), Prim::Const(Const::Str(s.to_string())))
+            }
             Pattern::Float(x) => (format!("f:{}", x), Prim::Const(Const::Float(*x))),
             Pattern::Wildcard | Pattern::Var(_) => {
                 default_rows.push(row);
@@ -2023,7 +2029,14 @@ fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -> Result<Va
     match &e.node {
         Expr::Int(n) => Ok(ctx.let_at(Prim::Const(Const::Int(*n)), sp)),
         Expr::Float(x) => Ok(ctx.let_at(Prim::Const(Const::Float(*x)), sp)),
-        Expr::Str(s) => Ok(ctx.let_at(Prim::Const(Const::Str(s.clone())), sp)),
+        Expr::Str(bytes) => {
+            // fz-axu.10 (L2) — shim until L3 desugars to bitstring+Brand.
+            let s = std::str::from_utf8(bytes).map_err(|_| LowerError::Unsupported {
+                span: sp,
+                what: "non-UTF-8 string literal (lands once L3 desugaring is in)".into(),
+            })?;
+            Ok(ctx.let_at(Prim::Const(Const::Str(s.to_string())), sp))
+        }
         Expr::Atom(s) => {
             let id = ctx.atoms.intern(s);
             Ok(ctx.let_at(Prim::Const(Const::Atom(id)), sp))
@@ -3172,8 +3185,11 @@ fn lower_pattern_bind(
         }),
         Pattern::Int(n) => emit_eq_check(ctx, subject, Prim::Const(Const::Int(*n)), fail_block),
         Pattern::Float(x) => emit_eq_check(ctx, subject, Prim::Const(Const::Float(*x)), fail_block),
-        Pattern::Str(s) => {
-            emit_eq_check(ctx, subject, Prim::Const(Const::Str(s.clone())), fail_block)
+        Pattern::Str(bytes) => {
+            // fz-axu.10 (L2) — shim: decode for Const::Str until K7.
+            let s = std::str::from_utf8(bytes)
+                .expect("L2 ir_lower: non-UTF-8 pattern str before L3");
+            emit_eq_check(ctx, subject, Prim::Const(Const::Str(s.to_string())), fail_block)
         }
         Pattern::Atom(s) => {
             let id = ctx.atoms.intern(s);
@@ -3330,7 +3346,12 @@ fn lower_pattern_as_key_expr(ctx: &mut LowerCtx, sp: &Spanned<Pattern>) -> Resul
     Ok(match &sp.node {
         Pattern::Int(n) => ctx.let_(Prim::Const(Const::Int(*n))),
         Pattern::Float(x) => ctx.let_(Prim::Const(Const::Float(*x))),
-        Pattern::Str(s) => ctx.let_(Prim::Const(Const::Str(s.clone()))),
+        Pattern::Str(bytes) => {
+            // fz-axu.10 (L2) shim: decode for Const::Str until K7.
+            let s = std::str::from_utf8(bytes)
+                .expect("L2 ir_lower: non-UTF-8 pattern str before L3");
+            ctx.let_(Prim::Const(Const::Str(s.to_string())))
+        }
         Pattern::Atom(s) => {
             let id = ctx.atoms.intern(s);
             ctx.let_(Prim::Const(Const::Atom(id)))

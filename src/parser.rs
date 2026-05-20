@@ -67,7 +67,7 @@ end
         let (name, args) = mc.expect("expected an Item::MacroCall");
         assert_eq!(name, "test");
         assert_eq!(args.len(), 2, "name + body");
-        assert!(matches!(args[0].node, Expr::Str(ref s) if s == "addition"));
+        assert!(matches!(args[0].node, Expr::Str(ref s) if s == b"addition"));
         match &args[1].node {
             Expr::Block(_) | Expr::BinOp(_, _, _) => {}
             other => panic!("unexpected body shape: {:?}", other),
@@ -1420,18 +1420,9 @@ impl Parser {
             }
             Tok::Str(bytes) => {
                 self.bump();
-                // fz-axu.9 (L1) — Pattern::Str still carries String until
-                // L2 widens it. Decode here; surface bad UTF-8 as a
-                // parse error so future-utf8 patterns get clean diags.
-                match String::from_utf8(bytes) {
-                    Ok(s) => Pattern::Str(s),
-                    Err(e) => {
-                        return self.err(format!(
-                            "string pattern must be valid UTF-8: {}",
-                            e
-                        ));
-                    }
-                }
+                // fz-axu.10 (L2) — Pattern::Str carries raw bytes; L3
+                // validates UTF-8 and brands when the subject is utf8.
+                Pattern::Str(bytes)
             }
             Tok::Atom(a) => {
                 self.bump();
@@ -1680,17 +1671,9 @@ impl Parser {
             }
             Tok::Str(bytes) => {
                 self.bump();
-                // fz-axu.9 (L1) — Expr::Str still carries String until
-                // L2 widens it. Decode here; bad UTF-8 → parse error.
-                match String::from_utf8(bytes) {
-                    Ok(s) => Expr::Str(s),
-                    Err(e) => {
-                        return self.err(format!(
-                            "string literal must be valid UTF-8: {}",
-                            e
-                        ));
-                    }
-                }
+                // fz-axu.10 (L2) — Expr::Str carries raw bytes; L3
+                // validates UTF-8 and mints the utf8 brand.
+                Expr::Str(bytes)
             }
             Tok::Atom(a) => {
                 self.bump();

@@ -302,7 +302,12 @@ fn pattern_to_value(p: &Pattern) -> Option<Value> {
         Pattern::Atom(a) => Value::Atom(Rc::from(a.as_str())),
         Pattern::Int(n) => Value::Int(*n),
         Pattern::Float(f) => Value::Float(*f),
-        Pattern::Str(s) => Value::Str(Rc::from(s.as_str())),
+        Pattern::Str(bytes) => {
+            // fz-axu.10 (L2) shim: decode for Value::Str (String-backed)
+            // until L3 desugars all string literals to bitstrings.
+            let s = std::str::from_utf8(bytes).ok()?;
+            Value::Str(Rc::from(s))
+        }
         Pattern::Bool(b) => Value::Bool(*b),
         Pattern::Nil => Value::Nil,
         _ => return None,
@@ -347,7 +352,7 @@ pub fn match_pattern(pat: &Pattern, v: &Value, env: &Env) -> bool {
         }
         (Pattern::Int(a), Value::Int(b)) => a == b,
         (Pattern::Float(a), Value::Float(b)) => a == b,
-        (Pattern::Str(a), Value::Str(b)) => a.as_str() == b.as_ref(),
+        (Pattern::Str(a), Value::Str(b)) => a.as_slice() == b.as_bytes(),
         (Pattern::Atom(a), Value::Atom(b)) => a.as_str() == b.as_ref(),
         (Pattern::Bool(a), Value::Bool(b)) => a == b,
         (Pattern::Nil, Value::Nil) => true,

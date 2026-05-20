@@ -46,7 +46,15 @@ pub fn expr_to_value(e: &Spanned<Expr>) -> Result<Value, String> {
         Expr::Bool(b) => Value::Bool(*b),
         Expr::Nil => Value::Nil,
         Expr::Atom(s) => Value::Atom(Rc::from(s.as_str())),
-        Expr::Str(s) => Value::Str(Rc::from(s.as_str())),
+        Expr::Str(bytes) => {
+            // fz-axu.10 (L2) — interim: ast_value still uses Value::Str
+            // (a String-backed alias). Pre-L3 the bytes were already
+            // UTF-8 (L1 lexer escapes don't introduce non-UTF-8). L3
+            // will retire this path entirely.
+            let s = std::str::from_utf8(bytes)
+                .expect("L2 ast_value: non-UTF-8 string before L3 lands");
+            Value::Str(Rc::from(s))
+        }
 
         Expr::Var(name) => ast_node(name, &[], Some(atom(USER_CTX))),
 
@@ -165,7 +173,7 @@ fn value_to_expr_inner(v: &Value) -> Result<Expr, String> {
         Value::Bool(b) => Ok(Expr::Bool(*b)),
         Value::Nil => Ok(Expr::Nil),
         Value::Atom(s) => Ok(Expr::Atom(s.to_string())),
-        Value::Str(s) => Ok(Expr::Str(s.to_string())),
+        Value::Str(s) => Ok(Expr::Str(s.as_bytes().to_vec())),
 
         Value::List(xs) => {
             let exprs = xs
