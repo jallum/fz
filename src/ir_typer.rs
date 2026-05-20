@@ -2109,16 +2109,18 @@ fn type_prim<T: crate::types_seam::Types>(
             let at = lookup(env, *a);
             let bt = lookup(env, *b);
             let fold = const_vars.contains(a) && const_vars.contains(b);
-            type_binop(*op, &at, &bt, fold)
+            type_binop(t, *op, &at, &bt, fold)
         }
         Prim::UnOp(op, v) => {
             let vt = lookup(env, *v);
             match op {
                 UnOp::Neg => {
                     if const_vars.contains(v) {
-                        numeric_result_fold(BinOp::Sub, &Descr::int_lit(0), &vt)
+                        use crate::types_seam::AsDescr;
+                        let zero = t.int_lit(0).as_descr();
+                        numeric_result_fold(t, BinOp::Sub, &zero, &vt)
                     } else {
-                        numeric_result(&vt, &vt)
+                        numeric_result(t, &vt, &vt)
                     }
                 }
                 UnOp::Not => Descr::bool_t(),
@@ -2345,18 +2347,29 @@ fn type_const<T: crate::types_seam::Types>(
     }
 }
 
-fn type_binop(op: BinOp, a: &Descr, b: &Descr, fold: bool) -> Descr {
+fn type_binop<T: crate::types_seam::Types>(
+    t: &mut T,
+    op: BinOp,
+    a: &Descr,
+    b: &Descr,
+    fold: bool,
+) -> Descr {
     use BinOp::*;
     match op {
         Add | Sub | Mul | Div | Mod => {
             if fold {
-                numeric_result_fold(op, a, b)
+                numeric_result_fold(t, op, a, b)
             } else {
-                numeric_result(a, b)
+                numeric_result(t, a, b)
             }
         }
-        Eq | Neq | Lt | Le | Gt | Ge => compare_result(op, a, b),
-        And | Or => a.union(b),
+        Eq | Neq | Lt | Le | Gt | Ge => compare_result(t, op, a, b),
+        And | Or => {
+            use crate::types_seam::AsDescr;
+            let ay = t.from_descr(a);
+            let by = t.from_descr(b);
+            t.union(ay, by).as_descr()
+        }
     }
 }
 
@@ -2364,8 +2377,14 @@ fn float_singleton(d: &Descr) -> Option<f64> {
     d.as_float_singleton().map(|b| b.get())
 }
 
-fn compare_result(op: BinOp, a: &Descr, b: &Descr) -> Descr {
+fn compare_result<T: crate::types_seam::Types>(
+    t: &mut T,
+    op: BinOp,
+    a: &Descr,
+    b: &Descr,
+) -> Descr {
     use BinOp::*;
+    use crate::types_seam::AsDescr;
     if let (Some(ai), Some(bi)) = (a.as_int_singleton(), b.as_int_singleton()) {
         let result = match op {
             Eq => ai == bi,
@@ -2374,12 +2393,12 @@ fn compare_result(op: BinOp, a: &Descr, b: &Descr) -> Descr {
             Le => ai <= bi,
             Gt => ai > bi,
             Ge => ai >= bi,
-            _ => return Descr::bool_t(),
+            _ => return t.bool().as_descr(),
         };
         return if result {
-            Descr::atom_lit("true")
+            t.atom_lit("true").as_descr()
         } else {
-            Descr::atom_lit("false")
+            t.atom_lit("false").as_descr()
         };
     }
     if let (Some(af), Some(bf)) = (float_singleton(a), float_singleton(b)) {
@@ -2390,36 +2409,45 @@ fn compare_result(op: BinOp, a: &Descr, b: &Descr) -> Descr {
             Le => af <= bf,
             Gt => af > bf,
             Ge => af >= bf,
-            _ => return Descr::bool_t(),
+            _ => return t.bool().as_descr(),
         };
         return if result {
-            Descr::atom_lit("true")
+            t.atom_lit("true").as_descr()
         } else {
-            Descr::atom_lit("false")
+            t.atom_lit("false").as_descr()
         };
     }
-    Descr::bool_t()
+    t.bool().as_descr()
 }
 
-fn numeric_result(a: &Descr, b: &Descr) -> Descr {
-    let int = Descr::int();
-    let float = Descr::float();
-    let both_int = a.is_subtype(&int) && b.is_subtype(&int);
-    let both_float = a.is_subtype(&float) && b.is_subtype(&float);
+fn numeric_result<T: crate::types_seam::Types>(t: &mut T, a: &Descr, b: &Descr) -> Descr {
+    use crate::types_seam::AsDescr;
+    let int_ty = t.int();
+    let float_ty = t.float();
+    let ay = t.from_descr(a);
+    let by = t.from_descr(b);
+    let both_int = t.is_subtype(&ay, &int_ty) && t.is_subtype(&by, &int_ty);
+    let both_float = t.is_subtype(&ay, &float_ty) && t.is_subtype(&by, &float_ty);
     if both_int {
-        int
+        int_ty.as_descr()
     } else if both_float {
-        float
+        float_ty.as_descr()
     } else {
-        int.union(&float)
+        t.union(int_ty, float_ty).as_descr()
     }
 }
 
 /// Like `numeric_result` but folds singleton operands to a literal result.
 /// Only called when both operands are known IR-level constants (const_vars),
 /// so the result cannot cascade into new narrow spec keys (fz-1pq.6).
-fn numeric_result_fold(op: BinOp, a: &Descr, b: &Descr) -> Descr {
+fn numeric_result_fold<T: crate::types_seam::Types>(
+    t: &mut T,
+    op: BinOp,
+    a: &Descr,
+    b: &Descr,
+) -> Descr {
     use BinOp::*;
+    use crate::types_seam::AsDescr;
     if let (Some(ai), Some(bi)) = (a.as_int_singleton(), b.as_int_singleton()) {
         let result = match op {
             Add => ai.checked_add(bi),
@@ -2442,7 +2470,7 @@ fn numeric_result_fold(op: BinOp, a: &Descr, b: &Descr) -> Descr {
             _ => None,
         };
         if let Some(r) = result {
-            return Descr::int_lit(r);
+            return t.int_lit(r).as_descr();
         }
     }
     if let (Some(af), Some(bf)) = (float_singleton(a), float_singleton(b)) {
@@ -2455,10 +2483,10 @@ fn numeric_result_fold(op: BinOp, a: &Descr, b: &Descr) -> Descr {
             _ => None,
         };
         if let Some(r) = result {
-            return Descr::float_lit(r);
+            return t.float_lit(r).as_descr();
         }
     }
-    numeric_result(a, b)
+    numeric_result(t, a, b)
 }
 
 fn lookup(env: &HashMap<Var, Descr>, v: Var) -> Descr {
