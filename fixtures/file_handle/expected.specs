@@ -162,31 +162,20 @@
 ;   return: nil
 ;   vars:
 ;     Var(0) :: :match_error
-;     Var(1) :: 47
-;     Var(2) :: 116
-;     Var(3) :: 109
-;     Var(4) :: 112
-;     Var(5) :: 47
-;     Var(6) :: 102
-;     Var(7) :: 122
-;     Var(8) :: 45
-;     Var(9) :: 120
-;     Var(10) :: 53
-;     Var(11) :: 109
-;     Var(12) :: binary
-;     Var(13) :: :match_error
-;     Var(14) :: 420
-;     Var(15) :: int
-;     Var(16) :: :match_error
-;     Var(17) :: :opened
+;     Var(1) :: binary
+;     Var(3) :: :match_error
+;     Var(4) :: 420
+;     Var(5) :: int
+;     Var(6) :: :match_error
+;     Var(7) :: :opened
 ;   exits:
-;     blk0 Call print#4(Var(17))
+;     blk0 Call print#4(Var(7))
 ;              callee_key=[:opened]
-;              cont k_25#25 captured=[Var(12), Var(15)]
+;              cont k_25#25 captured=[Var(1), Var(5)]
 ;              cont_key=[nil, binary, int]
 ;     blk1 Halt Var(0)      :: :match_error
-;     blk2 Halt Var(13)      :: :match_error
-;     blk3 Halt Var(16)      :: :match_error
+;     blk2 Halt Var(3)      :: :match_error
+;     blk3 Halt Var(6)      :: :match_error
 
 ; spec k_25(3) #fn=25
 ;   key:    [nil, binary, int]

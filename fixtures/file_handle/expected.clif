@@ -39,18 +39,18 @@ function u0:0(i64) -> i64 tail {
     fn4 = colocated u0:47 sig4
 
 block0(v0: i64):
-    v1 = symbol_value.i64 gv0           ; @22:12
-    v2 = iconst.i64 11                  ; @22:12
-    v3 = iconst.i64 88                  ; @22:12
-    v4 = call fn0(v1, v2, v3)           ; @22:12  v2 = 11, v3 = 88
-    v5 = iconst.i64 420                 ; @22:16
-    v6 = call fn2(v4)                   ; @22:21
-    v7 = call fn1(v6, v5)               ; @22:21  v5 = 420
-    v8 = ishl_imm v7, 3                 ; @22:21
-    v9 = bor_imm v8, 1                  ; @22:21
-    v10 = iconst.i64 74                 ; @22:26
-    call fn3(v10)                       ; @22:31  v10 = 74
-    v11 = iconst.i64 2                  ; @22:31
+    v1 = symbol_value.i64 gv0           ; @22:10
+    v2 = iconst.i64 11                  ; @22:10
+    v3 = iconst.i64 88                  ; @22:10
+    v4 = call fn0(v1, v2, v3)           ; @22:10  v2 = 11, v3 = 88
+    v5 = iconst.i64 420                 ; @22:10
+    v6 = call fn2(v4)                   ; @23:26
+    v7 = call fn1(v6, v5)               ; @23:26  v5 = 420
+    v8 = ishl_imm v7, 3                 ; @23:26
+    v9 = bor_imm v8, 1                  ; @23:26
+    v10 = iconst.i64 74                 ; @23:8
+    call fn3(v10)                       ; @24:9  v10 = 74
+    v11 = iconst.i64 2                  ; @24:9
     v12 = sshr_imm v9, 3                ; @24:3
     return_call fn4(v11, v4, v12, v0)   ; @24:3  v11 = 2
 }
