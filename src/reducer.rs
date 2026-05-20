@@ -141,17 +141,12 @@ pub fn fold_prim(prim: &Prim, env: &HashMap<Var, Descr>, atom_names: &[String]) 
         | Prim::BitReaderInit(..)
         | Prim::BitReadField { .. }
         | Prim::BitReaderDone(..) => None,
-        // fz-axu.7 (K6) — brand-transparent fold. Look up the source's
-        // already-folded Descr (if any) and overlay the brand tag on
-        // top. This means a const-singleton source (e.g. a string
-        // literal whose bytes the reducer knows) survives the brand
-        // wrap intact, so downstream eq folds (and any other reducer
-        // consumers) keep working.
-        Prim::Brand(v, name) => {
-            let mut d = env.get(v).cloned()?;
-            d.brands = crate::types::LiteralSet::lit(name.clone());
-            Some(d)
-        }
+        // fz-axu.23 (M2) — lower_program_full erases Prim::Brand
+        // before the reducer runs. Surface a stray Brand instead of
+        // silently re-introducing brand-transparent fold logic.
+        Prim::Brand(_, _) => unreachable!(
+            "Prim::Brand reached reducer — erasure should run inside lower_program_full"
+        ),
     }
 }
 

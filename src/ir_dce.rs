@@ -284,9 +284,9 @@ fn collect_prim_vars(p: &Prim, used: &mut HashSet<Var>) {
         Prim::TypeTest(v, _) => {
             used.insert(*v);
         }
-        Prim::Brand(v, _) => {
-            used.insert(*v);
-        }
+        Prim::Brand(_, _) => unreachable!(
+            "Prim::Brand reached DCE — erasure should run inside lower_program_full"
+        ),
     }
 }
 

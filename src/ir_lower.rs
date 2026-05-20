@@ -762,6 +762,14 @@ pub fn lower_program_full(prog: &Program) -> Result<(Module, AtomTable), LowerEr
     module.brand_inners.extend(prelude.brand_inners.clone());
     // fz-02r.4 — annotate TailCall back-edges from the structural SCC.
     annotate_back_edges(&mut module, &ctx.fn_spans)?;
+    // fz-axu.23 (M2) — brand erasure is the final lowering phase. The
+    // Module returned from lower_program_full has the invariant: no
+    // Prim::Brand survives in any FnIr. Downstream passes (typer,
+    // reducer, codegen, interp, DCE) can treat that as a precondition,
+    // and their Brand match arms become `unreachable!()` rather than
+    // silent identity-fallbacks. Callers that need to inspect Brand
+    // (e.g., a future visibility gate) must hook in before this point.
+    crate::ir_brand_erase::erase_brands(&mut module);
     // fz-uwq.1 — verify the unique-cont invariant the post-type pipeline
     // depends on. See `debug_assert_unique_conts` for the contract.
     debug_assert_unique_conts(&module);

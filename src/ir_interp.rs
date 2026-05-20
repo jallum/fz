@@ -1109,10 +1109,12 @@ fn eval_prim(module: &Module, prim: &Prim, env: &HashMap<Var, FzValue>) -> Resul
             }
             acc
         }
-        // fz-axu.4 (K3) — brand-mint is identity at runtime: the source
-        // value passes through unchanged. The type system carries the
-        // brand tag; the runtime sees just the underlying bytes.
-        Prim::Brand(v, _) => env_get(env, *v)?,
+        // fz-axu.23 (M2) — lower_program_full erases Prim::Brand
+        // before the interp sees the module. Surface a stray Brand
+        // instead of silently aliasing.
+        Prim::Brand(_, _) => unreachable!(
+            "Prim::Brand reached interp — erasure should run inside lower_program_full"
+        ),
         _ => {
             return Err(format!(
                 "interp .5.2: prim {:?} not yet supported (lands in fz-ul4.23.5.3+)",

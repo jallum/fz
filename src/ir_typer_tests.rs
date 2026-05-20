@@ -2023,6 +2023,11 @@ fn make_bitstring_types_as_str_t() {
 
 #[test]
 fn string_literal_lowers_to_utf8_branded_bitstring() {
+    // fz-axu.23 (M2) — lower_program_full erases Brand prims as its
+    // final phase. The post-erasure invariant is that the ConstBitstring
+    // survives and Module.brand_inners still names utf8 (so the type
+    // system can recover the brand context when needed), but no
+    // Prim::Brand stmt remains in any FnIr.
     let src = r#"fn main(), do: "hi""#;
     let toks = crate::lexer::Lexer::new(src).tokenize().expect("lex");
     let prog = crate::parser::Parser::new(toks)
@@ -2030,25 +2035,29 @@ fn string_literal_lowers_to_utf8_branded_bitstring() {
         .expect("parse");
     let prog = crate::resolve::flatten_modules(prog).expect("resolve");
     let m = crate::ir_lower::lower_program(&prog).expect("lower");
-    // The user's main fn must contain a Prim::Brand stmt naming `utf8`
-    // applied to the result of a Prim::ConstBitstring.
     let main = m.fn_by_name("main").expect("main");
-    let mut saw_brand = false;
     let mut saw_const_bs = false;
     for block in &main.blocks {
         for stmt in &block.stmts {
             let crate::fz_ir::Stmt::Let(_, prim) = stmt;
-            match prim {
-                Prim::Brand(_, name) if name == "utf8" => saw_brand = true,
-                Prim::ConstBitstring(bytes, bit_len) if bytes == b"hi" && *bit_len == 16 => {
-                    saw_const_bs = true;
-                }
-                _ => {}
+            assert!(
+                !matches!(prim, Prim::Brand(..)),
+                "Prim::Brand survived lowering: {:?}",
+                prim,
+            );
+            if let Prim::ConstBitstring(bytes, bit_len) = prim
+                && bytes == b"hi"
+                && *bit_len == 16
+            {
+                saw_const_bs = true;
             }
         }
     }
     assert!(saw_const_bs, "expected ConstBitstring(b\"hi\", 16)");
-    assert!(saw_brand, "expected Prim::Brand(_, \"utf8\")");
+    assert!(
+        m.brand_inners.contains_key("utf8"),
+        "Module.brand_inners must still name utf8 after erasure",
+    );
 }
 
 // fz-axu.4 (K3) — Prim::Brand(v, name) overlays the brand tag on the
