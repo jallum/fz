@@ -111,7 +111,7 @@ pub fn fold_prim<T: Types>(
     atom_names: &[String],
 ) -> Option<T::Ty> {
     let d: Option<Descr> = match prim {
-        Prim::Const(c) => fold_const(c, atom_names),
+        Prim::Const(c) => return fold_const(t, c, atom_names),
         Prim::BinOp(op, a, b) => fold_binop(*op, *a, *b, env),
         Prim::UnOp(op, v) => fold_unop(*op, *v, env),
         Prim::MakeTuple(vs) => fold_make_tuple(vs, env),
@@ -157,7 +157,7 @@ pub fn fold_prim<T: Types>(
     d.map(|d| t.from_descr(&d))
 }
 
-fn fold_const(c: &Const, atom_names: &[String]) -> Option<Descr> {
+fn fold_const<T: Types>(t: &mut T, c: &Const, atom_names: &[String]) -> Option<T::Ty> {
     let d = match c {
         Const::Int(n) => Descr::int_lit(*n),
         Const::Float(f) => Descr::float_lit(*f),
@@ -169,7 +169,7 @@ fn fold_const(c: &Const, atom_names: &[String]) -> Option<Descr> {
             Descr::atom_lit(name)
         }
     };
-    Some(d)
+    Some(t.from_descr(&d))
 }
 
 fn fold_binop(op: BinOp, a: Var, b: Var, env: &HashMap<Var, Descr>) -> Option<Descr> {
