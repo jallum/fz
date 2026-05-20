@@ -2273,8 +2273,14 @@ fn type_prim<T: crate::types_seam::Types>(
         // top (`str_t()`). Branded subset types (e.g. `utf8`) will layer on top
         // of this in later tickets. vec_u8/vec_bit remain reserved for explicit
         // vector(u8)/vector(bit) values.
-        Prim::MakeBitstring(_) => Descr::str_t(),
-        Prim::ConstBitstring(_, _) => Descr::str_t(),
+        Prim::MakeBitstring(_) => {
+            use crate::types_seam::AsDescr;
+            t.str_t().as_descr()
+        }
+        Prim::ConstBitstring(_, _) => {
+            use crate::types_seam::AsDescr;
+            t.str_t().as_descr()
+        }
 
         Prim::MakeClosure(_, fn_id, captured) => {
             // fz-ul4.27.22.10 — type MakeClosure's result as a closure
