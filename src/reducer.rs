@@ -422,13 +422,13 @@ pub struct Clause<'a> {
 /// Outcome of dispatching a list of clauses against subject Descrs.
 #[derive(Debug, Clone)]
 #[allow(dead_code)] // wired by RED.4+.
-pub enum Dispatch {
+pub enum Dispatch<T: Types> {
     /// `row_idx` is the lowest-index row whose patterns and guard match
     /// the subject Descrs (first-match-wins). `bindings` carries the
-    /// source-name → literal-Descr map the row's body sees.
+    /// source-name → literal-Ty map the row's body sees.
     MatchedRow {
         row_idx: usize,
-        bindings: HashMap<String, Descr>,
+        bindings: HashMap<String, T::Ty>,
     },
     /// Every row has provably-disjoint patterns or a provably-false guard.
     /// Runtime would raise function_clause / match_error. The reducer
@@ -457,16 +457,16 @@ pub fn dispatch_clauses<T: Types>(
     clauses: &[Clause<'_>],
     subject_descrs: &[Descr],
     atom_names: &[String],
-) -> Dispatch {
+) -> Dispatch<T> {
     for (idx, row) in clauses.iter().enumerate() {
         if row.patterns.len() != subject_descrs.len() {
             return Dispatch::Opaque; // arity mismatch is the caller's bug
         }
-        let mut bindings: HashMap<String, Descr> = HashMap::new();
+        let mut bindings: HashMap<String, T::Ty> = HashMap::new();
         let mut all_match = true;
         let mut row_opaque = false;
         for (pat, d) in row.patterns.iter().zip(subject_descrs.iter()) {
-            match match_pattern(&pat.node, d, &mut bindings, atom_names) {
+            match match_pattern(t, &pat.node, d, &mut bindings, atom_names) {
                 Match::Yes => {}
                 Match::No => {
                     all_match = false;
@@ -519,22 +519,23 @@ enum Match {
 /// any `Pattern::Var(name)` and `Pattern::As(name, _)` records bind `name`
 /// to the (sub-)Descr of the subject.
 #[allow(dead_code)] // helpers for dispatch_clauses.
-fn match_pattern(
+fn match_pattern<T: Types>(
+    t: &mut T,
     pat: &Pattern,
     d: &Descr,
-    bindings: &mut HashMap<String, Descr>,
+    bindings: &mut HashMap<String, T::Ty>,
     atom_names: &[String],
 ) -> Match {
     use Pattern::*;
     match pat {
         Wildcard => Match::Yes,
         Var(name) => {
-            bindings.insert(name.clone(), d.clone());
+            bindings.insert(name.clone(), t.from_descr(d));
             Match::Yes
         }
         As(name, inner) => {
-            bindings.insert(name.clone(), d.clone());
-            match_pattern(&inner.node, d, bindings, atom_names)
+            bindings.insert(name.clone(), t.from_descr(d));
+            match_pattern(t, &inner.node, d, bindings, atom_names)
         }
         Int(n) => match_literal(d, &Descr::int_lit(*n)),
         Float(f) => match_literal(d, &Descr::float_lit(*f)),
@@ -548,7 +549,7 @@ fn match_pattern(
         Atom(name) => match_literal(d, &Descr::atom_lit(name)),
         Bool(b) => match_literal(d, &Descr::atom_lit(if *b { "true" } else { "false" })),
         Nil => match_literal(d, &Descr::nil()),
-        Tuple(elems) => match_tuple_pattern(elems, d, bindings, atom_names),
+        Tuple(elems) => match_tuple_pattern(t, elems, d, bindings, atom_names),
         // List patterns require IR-level reasoning (lists' Descrs lose length
         // information — see RED.1 note). Return Opaque so the reducer keeps
         // the call; RED.3+ may extend this.
@@ -588,10 +589,11 @@ fn match_literal(d: &Descr, expected: &Descr) -> Match {
 }
 
 #[allow(dead_code)]
-fn match_tuple_pattern(
+fn match_tuple_pattern<T: Types>(
+    t: &mut T,
     elems: &[Spanned<Pattern>],
     d: &Descr,
-    bindings: &mut HashMap<String, Descr>,
+    bindings: &mut HashMap<String, T::Ty>,
     atom_names: &[String],
 ) -> Match {
     // Need d to be a single-shape tuple (one positive clause, one sig, no
@@ -615,7 +617,7 @@ fn match_tuple_pattern(
     }
     let mut saw_opaque = false;
     for (p, ed) in elems.iter().zip(sig_elems.iter()) {
-        match match_pattern(&p.node, ed, bindings, atom_names) {
+        match match_pattern(t, &p.node, ed, bindings, atom_names) {
             Match::Yes => {}
             Match::No => return Match::No,
             Match::Opaque => saw_opaque = true,
@@ -637,12 +639,12 @@ fn match_tuple_pattern(
 pub fn fold_expr<T: Types>(
     t: &mut T,
     expr: &ast::Expr,
-    bindings: &HashMap<String, Descr>,
+    bindings: &HashMap<String, T::Ty>,
     atom_names: &[String],
 ) -> Option<T::Ty> {
     use ast::Expr;
     match expr {
-        Expr::Var(name) => bindings.get(name).cloned().map(|d| t.from_descr(&d)),
+        Expr::Var(name) => bindings.get(name).cloned(),
         Expr::Int(n) => Some(t.int_lit(*n)),
         Expr::Float(f) => Some(t.float_lit(*f)),
         Expr::Str(_) => {
@@ -1076,7 +1078,7 @@ mod tests {
                 row_idx: 0,
                 bindings,
             } => {
-                assert_eq!(as_int_lit(bindings.get("n").unwrap()), Some(42));
+                assert_eq!(as_int_lit(&bindings.get("n").unwrap().as_descr()), Some(42));
             }
             other => panic!("expected MatchedRow, got {:?}", other),
         }
@@ -1157,7 +1159,7 @@ mod tests {
         match dispatch_clauses(&mut ct(), &clauses, &[subject], &[]) {
             Dispatch::MatchedRow { row_idx, bindings } => {
                 assert_eq!(row_idx, 0);
-                assert_eq!(as_int_lit(bindings.get("n").unwrap()), Some(42));
+                assert_eq!(as_int_lit(&bindings.get("n").unwrap().as_descr()), Some(42));
             }
             other => panic!("expected num-clause match, got {:?}", other),
         }
@@ -1193,8 +1195,8 @@ mod tests {
         match dispatch_clauses(&mut ct(), &clauses, &[subject], &[]) {
             Dispatch::MatchedRow { row_idx, bindings } => {
                 assert_eq!(row_idx, 1);
-                assert_eq!(bindings.get("a").unwrap(), &inner_a);
-                assert_eq!(bindings.get("b").unwrap(), &inner_b);
+                assert_eq!(bindings.get("a").unwrap().as_descr(), inner_a);
+                assert_eq!(bindings.get("b").unwrap().as_descr(), inner_b);
             }
             other => panic!("expected add-clause match, got {:?}", other),
         }
@@ -1328,8 +1330,8 @@ mod tests {
         let subject = Descr::tuple_of([Descr::atom_lit("num"), Descr::int_lit(42)]);
         match dispatch_clauses(&mut ct(), &clauses, std::slice::from_ref(&subject), &[]) {
             Dispatch::MatchedRow { bindings, .. } => {
-                assert_eq!(bindings.get("whole").unwrap(), &subject);
-                assert_eq!(as_int_lit(bindings.get("n").unwrap()), Some(42));
+                assert_eq!(bindings.get("whole").unwrap().as_descr(), subject);
+                assert_eq!(as_int_lit(&bindings.get("n").unwrap().as_descr()), Some(42));
             }
             other => panic!("expected match, got {:?}", other),
         }

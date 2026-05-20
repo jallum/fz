@@ -25,7 +25,7 @@ use crate::types::{Descr, MapKey, TypeVarId};
 /// Opaque handle to a type. Inner representation is private and is
 /// expected to change (interned id, BDD root, ...) without consumer
 /// impact. Consumers must go through `Types` for every operation.
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Ty(Arc<Descr>);
 
 impl Ty {
@@ -249,6 +249,7 @@ pub trait Types {
 /// Day-one implementation: thin wrapper around `Descr`. Zero fields —
 /// it's an oracle, not a store. Future implementations will hold
 /// interning tables, memo caches, or BDD nodes.
+#[derive(Debug)]
 pub struct ConcreteTypes;
 
 impl Types for ConcreteTypes {
