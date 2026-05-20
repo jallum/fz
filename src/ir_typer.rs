@@ -2288,6 +2288,7 @@ fn type_prim<T: crate::types_seam::Types>(
         }
 
         Prim::MakeClosure(_, fn_id, captured) => {
+            use crate::types_seam::AsDescr;
             // fz-ul4.27.22.10 — type MakeClosure's result as a closure
             // literal: a singleton-typed arrow tagged with (fn_id,
             // capture_descrs). Downstream consumers (cont_slot0_descr,
@@ -2299,11 +2300,14 @@ fn type_prim<T: crate::types_seam::Types>(
             let arity = entry.params.len();
             let n_caps = captured.len();
             let n_args = arity.saturating_sub(n_caps);
-            let capture_descrs: Vec<Descr> = captured
+            let captures: Vec<T::Ty> = captured
                 .iter()
-                .map(|cv| env.get(cv).cloned().unwrap_or_else(Descr::any))
+                .map(|cv| match env.get(cv) {
+                    Some(d) => t.from_descr(d),
+                    None => t.any(),
+                })
                 .collect();
-            Descr::closure_lit(*fn_id, capture_descrs, n_args)
+            t.closure_lit(*fn_id, captures, n_args).as_descr()
         }
 
         Prim::Extern(eid, _) => {

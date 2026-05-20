@@ -106,6 +106,12 @@ pub trait Types {
     fn vec_bit(&mut self) -> Self::Ty;
     fn str_t(&mut self) -> Self::Ty;
     fn map_top(&mut self) -> Self::Ty;
+    fn closure_lit(
+        &mut self,
+        fn_id: crate::fz_ir::FnId,
+        captures: Vec<Self::Ty>,
+        n_args: usize,
+    ) -> Self::Ty;
 
     // ---- lattice ops ---------------------------------------------------
 
@@ -277,6 +283,15 @@ impl Types for ConcreteTypes {
     }
     fn map_top(&mut self) -> Ty {
         Ty::from_descr(Descr::map_top())
+    }
+    fn closure_lit(
+        &mut self,
+        fn_id: crate::fz_ir::FnId,
+        captures: Vec<Ty>,
+        n_args: usize,
+    ) -> Ty {
+        let capture_descrs: Vec<Descr> = captures.into_iter().map(|c| c.descr().clone()).collect();
+        Ty::from_descr(Descr::closure_lit(fn_id, capture_descrs, n_args))
     }
 
     fn union(&mut self, a: Ty, b: Ty) -> Ty {
