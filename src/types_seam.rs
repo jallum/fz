@@ -134,6 +134,16 @@ pub trait Types {
     /// rejection, opaque-visibility checks).
     fn opaque_singleton(&self, a: &Self::Ty) -> Option<String>;
 
+    /// Check whether `a` (treated as an opaque-nominal type) is
+    /// visible from `using_module`. If `a` is not a pure opaque, or is
+    /// a built-in opaque with no owner module, the check trivially
+    /// succeeds.
+    fn check_opaque_visibility(
+        &self,
+        a: &Self::Ty,
+        using_module: &str,
+    ) -> Result<(), crate::typer::OpaqueVisibilityError>;
+
     /// Render `a` for user-facing diagnostics. Owned-string return
     /// day-one; consumers `format!("{}", t.display(&ty))`-style.
     fn display(&self, a: &Self::Ty) -> String;
@@ -279,6 +289,14 @@ impl Types for ConcreteTypes {
 
     fn opaque_singleton(&self, a: &Ty) -> Option<String> {
         a.descr().as_opaque_singleton().map(String::from)
+    }
+
+    fn check_opaque_visibility(
+        &self,
+        a: &Ty,
+        using_module: &str,
+    ) -> Result<(), crate::typer::OpaqueVisibilityError> {
+        crate::typer::check_opaque_visibility(a.descr(), using_module)
     }
 
     fn display(&self, a: &Ty) -> String {

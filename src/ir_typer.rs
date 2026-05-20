@@ -2772,17 +2772,18 @@ pub fn collect_diagnostics<T: crate::types_seam::Types>(
                 // (i.e. was declared via `@type t :: opaque T`), and
                 // the enclosing fn's module isn't the declaring module.
                 if let Prim::MapGet(map_v, key_v) = prim {
-                    let mt = env
-                        .get(map_v)
-                        .cloned()
-                        .unwrap_or_else(|| t.any().as_descr());
+                    let mt_ty: T::Ty = match env.get(map_v) {
+                        Some(d) => t.from_descr(d),
+                        None => t.any(),
+                    };
+                    let opaque_tag = t.opaque_singleton(&mt_ty);
                     if let (Some(tag), Some(MapKey::Atom(key))) = (
-                        mt.as_opaque_singleton(),
+                        opaque_tag.as_ref(),
                         var_as_map_key(*key_v, &env).as_ref(),
                     ) && key == "value"
-                        && module.opaque_inners.contains_key(tag)
+                        && module.opaque_inners.contains_key(tag.as_str())
                         && let Err(err) =
-                            crate::typer::check_opaque_visibility(&mt, fn_module_of(&f.name))
+                            t.check_opaque_visibility(&mt_ty, fn_module_of(&f.name))
                     {
                         let span = spans
                             .and_then(|s| s.get(sidx).copied())
