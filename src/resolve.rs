@@ -105,6 +105,7 @@ pub fn flatten_modules(prog: Program) -> Result<Program, ResolveError> {
     let mut module_type_envs: HashMap<String, crate::type_expr::ModuleTypeEnv> = HashMap::new();
     module_type_envs.insert(String::new(), crate::type_expr::ModuleTypeEnv::new());
     let mut opaque_inners: HashMap<String, crate::types::Descr> = HashMap::new();
+    let brand_inners: HashMap<String, crate::types::Descr> = HashMap::new();
     collect_module_type_envs(&prog, "", &mut module_type_envs, &mut opaque_inners)?;
     let no_aliases: HashMap<String, String> = HashMap::new();
     let no_imports: HashMap<(String, usize), String> = HashMap::new();
@@ -181,6 +182,7 @@ pub fn flatten_modules(prog: Program) -> Result<Program, ResolveError> {
         module_docs,
         module_type_envs,
         opaque_inners,
+        brand_inners,
     })
 }
 

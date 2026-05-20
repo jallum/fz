@@ -919,6 +919,13 @@ pub struct Module {
     /// Populated by `ir_lower::lower_program_full` from the resolved
     /// `Program.opaque_inners`.
     pub opaque_inners: HashMap<String, crate::types::Descr>,
+    /// fz-axu.2 (K1) — Inner-type map for `refines` brand declarations,
+    /// parallel to `opaque_inners`. Keyed by the qualified brand tag
+    /// (as stored on `Descr::brand_of(...)`); value is the parsed body
+    /// `T` following the `refines` keyword. Populated by
+    /// `ir_lower::lower_program_full` from the resolved
+    /// `Program.brand_inners`.
+    pub brand_inners: HashMap<String, crate::types::Descr>,
 }
 
 impl Module {
@@ -1078,6 +1085,7 @@ impl ModuleBuilder {
             extern_idx: HashMap::new(),
             boundary_fns: HashSet::new(),
             opaque_inners: HashMap::new(),
+            brand_inners: HashMap::new(),
         }
     }
 }

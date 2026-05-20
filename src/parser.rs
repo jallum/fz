@@ -551,6 +551,7 @@ impl Parser {
             module_docs: Default::default(),
             module_type_envs: Default::default(),
             opaque_inners: Default::default(),
+            brand_inners: Default::default(),
         })
     }
 

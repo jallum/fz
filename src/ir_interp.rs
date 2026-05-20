@@ -1039,6 +1039,7 @@ fn eval_prim(module: &Module, prim: &Prim, env: &HashMap<Var, FzValue>) -> Resul
                     // this gap explicitly rather than silently mis-typing.
                     Component::Strs(_)
                     | Component::Opaques(_)
+                    | Component::Brands(_)
                     | Component::Vars(_)
                     | Component::Lists(_)
                     | Component::Funcs(_)

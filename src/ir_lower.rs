@@ -725,6 +725,9 @@ pub fn lower_program_full(prog: &Program) -> Result<(Module, AtomTable), LowerEr
     // fz-swt.8 — carry the resolver's opaque-inner-type map onto the
     // Module so the typer can resolve `handle.value` accesses to T.
     module.opaque_inners = prog.opaque_inners.clone();
+    // fz-axu.2 (K1) — likewise carry the brand-inner-type map for the K4
+    // is_subtype rule and K5 erasure to consult at typing/codegen.
+    module.brand_inners = prog.brand_inners.clone();
     // fz-02r.4 — annotate TailCall back-edges from the structural SCC.
     annotate_back_edges(&mut module, &ctx.fn_spans)?;
     // fz-uwq.1 — verify the unique-cont invariant the post-type pipeline

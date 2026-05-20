@@ -367,6 +367,15 @@ pub struct Descr {
     /// underlying type of `T` is `U`, because the opaques axis is non-empty
     /// and distinct from the plain-`U` descriptor (which has `opaques = ∅`).
     pub(crate) opaques: LiteralSet<String>,
+    /// fz-axu.2 (K1) — nominal brand tags. A value of brand `B` (declared
+    /// as `@type B :: refines U`) has `brands = {"B"}` AND the underlying
+    /// `U` axes populated. Unlike opaques, brands are a *proper subset* of
+    /// `U`: `B ⊆ U` holds because the brand-stripped Descr (drop `brands`,
+    /// keep the structural axes) is structurally `U`. The is_subtype rule
+    /// that makes this work lands in K4; K1 only adds the axis to the
+    /// lattice. brand_inners on Module/Program registers the underlying
+    /// type for each tag (analogous to opaque_inners).
+    pub(crate) brands: LiteralSet<String>,
     /// fz-try.5 — parametric type variables. Operationally identical to
     /// `opaques`: a finite-or-cofinite set of nominal names with
     /// component-wise union/intersect/neg. Semantically distinguished only
@@ -399,6 +408,7 @@ impl Descr {
             floats: FloatSet::any(),
             strs: StrSet::any(),
             opaques: LiteralSet::any(),
+            brands: LiteralSet::any(),
             vars: VarSet::any(),
             tuples: vec![Conj::top()],
             lists: vec![Conj::top()],
@@ -415,6 +425,7 @@ impl Descr {
             floats: FloatSet::none(),
             strs: StrSet::none(),
             opaques: LiteralSet::none(),
+            brands: LiteralSet::none(),
             vars: VarSet::none(),
             tuples: Vec::new(),
             lists: Vec::new(),
@@ -432,6 +443,19 @@ impl Descr {
     pub fn opaque_of(name: impl Into<String>) -> Self {
         let mut d = Self::none();
         d.opaques = LiteralSet::lit(name.into());
+        d
+    }
+
+    /// fz-axu.2 (K1) — construct a Descr that names exactly the brand
+    /// `name`. Only the brands axis is populated. K1 does not yet thread
+    /// the underlying type through; the K4 is_subtype rule consults
+    /// `Module.brand_inners[name]` at use sites to recognise
+    /// `brand(name) ⊆ inner`. Until K4, this Descr is treated as a pure
+    /// nominal tag, like `opaque_of`.
+    #[allow(dead_code)] // K2 wires it into the `refines` declaration; K3 mints values.
+    pub fn brand_of(name: impl Into<String>) -> Self {
+        let mut d = Self::none();
+        d.brands = LiteralSet::lit(name.into());
         d
     }
 
@@ -628,6 +652,7 @@ impl Descr {
             floats: self.floats.clone(),
             strs: self.strs.clone(),
             opaques: self.opaques.clone(),
+            brands: self.brands.clone(),
             vars: passthrough_vars,
             tuples: walked_tuples,
             lists: walked_lists,
@@ -780,6 +805,23 @@ impl Descr {
         }
     }
 
+    /// fz-axu.2 (K1) — singleton brand tag. Returns `Some(name)` iff this
+    /// Descr's only non-empty axis is `brands` and it names exactly one
+    /// qualified brand. Consumers (K4 visibility gating, K5 erasure)
+    /// pair this with `Module.brand_inners` to resolve the underlying
+    /// type. Note: a *minted* brand value has both `brands = {name}` AND
+    /// the underlying structural axes populated — `as_brand_singleton`
+    /// will NOT match those. K4 brand-membership checks use a different
+    /// predicate that ignores the structural axes once a brand tag is
+    /// present.
+    #[allow(dead_code)] // K3 mint typing wires it in.
+    pub fn as_brand_singleton(&self) -> Option<&str> {
+        match self.single_component()? {
+            Component::Brands(v) => v.singleton(),
+            _ => None,
+        }
+    }
+
     /// Single-shape tuple: exactly one positive clause with one positive sig
     /// and no negations, and no other axis populated. Returns the element
     /// Descr slice. Elements may be wide — caller decides if it cares.
@@ -874,6 +916,9 @@ impl Descr {
                 Component::Opaques(_) => other
                     .components()
                     .any(|d| matches!(d, Component::Opaques(_))),
+                Component::Brands(_) => other
+                    .components()
+                    .any(|d| matches!(d, Component::Brands(_))),
                 Component::Vars(_) => other.components().any(|d| matches!(d, Component::Vars(_))),
                 Component::Tuples(_) => other
                     .components()
@@ -1159,6 +1204,7 @@ impl Descr {
             && self.floats.is_none()
             && self.strs.is_none()
             && self.opaques.is_none()
+            && self.brands.is_none()
             && self.vars.is_none()
             && self.tuples.is_empty()
             && self.lists.is_empty()
@@ -1198,6 +1244,7 @@ impl Descr {
             && self.floats.is_any()
             && self.strs.is_any()
             && self.opaques.is_any()
+            && self.brands.is_any()
             && self.vars.is_any()
             && is_dnf_top(&self.tuples)
             && is_dnf_top(&self.lists)
@@ -1238,6 +1285,7 @@ impl Descr {
             floats: self.floats.union(&other.floats),
             strs: self.strs.union(&other.strs),
             opaques: self.opaques.union(&other.opaques),
+            brands: self.brands.union(&other.brands),
             vars: self.vars.union(&other.vars),
             tuples,
             lists,
@@ -1254,6 +1302,7 @@ impl Descr {
             floats: self.floats.intersect(&other.floats),
             strs: self.strs.intersect(&other.strs),
             opaques: self.opaques.intersect(&other.opaques),
+            brands: self.brands.intersect(&other.brands),
             vars: self.vars.intersect(&other.vars),
             tuples: dnf_intersect(&self.tuples, &other.tuples),
             lists: dnf_intersect(&self.lists, &other.lists),
@@ -1270,6 +1319,7 @@ impl Descr {
             floats: self.floats.neg(),
             strs: self.strs.neg(),
             opaques: self.opaques.neg(),
+            brands: self.brands.neg(),
             vars: self.vars.neg(),
             tuples: dnf_neg(&self.tuples),
             lists: dnf_neg(&self.lists),
@@ -1326,6 +1376,7 @@ impl Descr {
             && self.floats.is_none()
             && self.strs.is_none()
             && self.opaques.is_none()
+            && self.brands.is_none()
             && self.vars.is_none()
             && self.tuples.iter().all(|c| tuple_clause_empty(c, memo))
             && self.lists.iter().all(|c| list_clause_empty(c, memo))
@@ -1985,6 +2036,10 @@ impl fmt::Display for Descr {
             format_lit_set(&mut parts, &self.atoms, "atom", |a| format!(":{}", a));
         }
         format_lit_set(&mut parts, &self.opaques, "opaque", |n| n.clone());
+        // fz-axu.2 (K1) — brands render as `brand <name>` (singular) or
+        // `brand <name1> | brand <name2>` (multi). Matches the user-facing
+        // `refines` declaration syntax conceptually; tests rely on it.
+        format_lit_set(&mut parts, &self.brands, "brand", |n| n.clone());
         // fz-try.5 — render type variables as `α<id>`. A per-signature
         // greek-letter remap (α, β, γ, …) lands in fz-try.11 (formatter).
         format_lit_set(&mut parts, &self.vars, "var", |v| format!("{}", v));
@@ -2039,6 +2094,7 @@ impl Descr {
             format_lit_set_capped(&mut parts, &self.atoms, "atom", CAP, |a| format!(":{}", a));
         }
         format_lit_set_capped(&mut parts, &self.opaques, "opaque", CAP, |n| n.clone());
+        format_lit_set_capped(&mut parts, &self.brands, "brand", CAP, |n| n.clone());
         format_lit_set_capped(&mut parts, &self.vars, "var", CAP, |v| format!("{}", v));
 
         for c in &self.tuples {
@@ -2270,6 +2326,7 @@ pub enum Component<'a> {
     Floats(FloatView<'a>),
     Strs(StrView<'a>),
     Opaques(OpaqueView<'a>),
+    Brands(BrandView<'a>),
     Vars(VarView<'a>),
     Tuples(TupleView<'a>),
     Lists(ListView<'a>),
@@ -2367,6 +2424,28 @@ impl<'a> OpaqueView<'a> {
     /// `crate::type_expr::opaque_owner_module` to discover the declaring
     /// module for visibility gating.
     #[allow(dead_code)] // exercised via Descr::as_opaque_singleton in tests; .8 wires it into typing.
+    pub fn singleton(&self) -> Option<&'a str> {
+        if !self.inner.cofinite && self.inner.set.len() == 1 {
+            self.inner.set.iter().next().map(String::as_str)
+        } else {
+            None
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+#[allow(dead_code)]
+pub struct BrandView<'a> {
+    inner: &'a LiteralSet<String>,
+}
+
+impl<'a> BrandView<'a> {
+    /// fz-axu.2 (K1) — if this view names exactly one brand tag (the
+    /// common case for a freshly minted brand value), return its
+    /// qualified name. Returns `None` for cofinite sets and for empty
+    /// or many-tag sets. Consumers (K4 visibility gating, K5 erasure)
+    /// pair this with brand_inners to resolve the underlying Descr.
+    #[allow(dead_code)] // K3 wires this into brand-mint typing.
     pub fn singleton(&self) -> Option<&'a str> {
         if !self.inner.cofinite && self.inner.set.len() == 1 {
             self.inner.set.iter().next().map(String::as_str)
@@ -2630,6 +2709,9 @@ impl Descr {
         let opaques = (!self.opaques.is_none()).then_some(Component::Opaques(OpaqueView {
             inner: &self.opaques,
         }));
+        let brands = (!self.brands.is_none()).then_some(Component::Brands(BrandView {
+            inner: &self.brands,
+        }));
         let vars = (!self.vars.is_none()).then_some(Component::Vars(VarView { inner: &self.vars }));
         let tuples = (!self.tuples.is_empty()).then_some(Component::Tuples(TupleView {
             inner: &self.tuples,
@@ -2641,7 +2723,7 @@ impl Descr {
         let maps =
             (!self.maps.is_empty()).then_some(Component::Maps(MapView { inner: &self.maps }));
         [
-            basic, atoms, ints, floats, strs, opaques, vars, tuples, lists, funcs, maps,
+            basic, atoms, ints, floats, strs, opaques, brands, vars, tuples, lists, funcs, maps,
         ]
         .into_iter()
         .flatten()
@@ -3543,6 +3625,109 @@ mod tests {
         assert!(pid.is_subtype(&pid), "pid should be a subtype of itself");
     }
 
+    // ------------------------------------------------------------------
+    // fz-axu.2 (K1) — brands axis
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn brand_of_is_non_empty_and_distinguishable() {
+        let utf8 = Descr::brand_of("utf8");
+        assert!(!utf8.is_empty(), "brand_of must not be empty");
+        assert!(!utf8.looks_full(), "brand_of must not look full");
+        // Only the brands axis is populated.
+        assert!(utf8.basic.is_empty());
+        assert!(utf8.atoms.is_none());
+        assert!(utf8.ints.is_none());
+        assert!(utf8.strs.is_none());
+        assert!(utf8.opaques.is_none(), "brands and opaques are distinct axes");
+        assert!(utf8.vars.is_none());
+        assert!(!utf8.brands.is_none(), "brands axis must carry the tag");
+    }
+
+    #[test]
+    fn brand_is_subtype_of_itself() {
+        let utf8 = Descr::brand_of("utf8");
+        assert!(utf8.is_subtype(&utf8), "utf8 ⊆ utf8");
+    }
+
+    #[test]
+    fn two_distinct_brands_do_not_overlap() {
+        let a = Descr::brand_of("utf8");
+        let b = Descr::brand_of("ascii");
+        let i = a.intersect(&b);
+        assert!(i.is_empty(), "utf8 ∩ ascii must be empty: got {}", i);
+    }
+
+    #[test]
+    fn brand_union_with_any_becomes_any() {
+        let utf8 = Descr::brand_of("utf8");
+        let u = utf8.union(&Descr::any());
+        assert!(u.looks_full(), "utf8 ∪ any must be any: got {}", u);
+    }
+
+    #[test]
+    fn brand_is_disjoint_from_same_name_opaque() {
+        // Brands and opaques live in different axes — even if the tag
+        // text matches, they don't overlap. K4's is_subtype rule reads
+        // the inner; K1 only proves the lattice keeps them separate.
+        let b = Descr::brand_of("X");
+        let o = Descr::opaque_of("X");
+        let i = b.intersect(&o);
+        assert!(i.is_empty(), "brand(X) ∩ opaque(X) must be empty");
+    }
+
+    #[test]
+    fn brand_renders_finite_as_bare_name() {
+        // Matches the opaque-display convention: finite singletons render
+        // just the tag; the "brand" keyword shows up only in cofinite
+        // forms (e.g. `brand \ {utf8}`).
+        let utf8 = Descr::brand_of("utf8");
+        assert_eq!(format!("{}", utf8), "utf8");
+        // Cofinite case: ¬utf8 still belongs to the brands axis at top.
+        let cofinite = utf8.neg();
+        let s = format!("{}", cofinite);
+        assert!(s.contains("brand \\ {utf8}"), "cofinite rendering: {}", s);
+    }
+
+    #[test]
+    fn any_contains_all_brands() {
+        let any = Descr::any();
+        assert!(any.brands.is_any(), "Descr::any().brands must be universe");
+        let utf8 = Descr::brand_of("utf8");
+        assert!(utf8.is_subtype(&any), "brand(utf8) ⊆ any");
+    }
+
+    #[test]
+    fn brand_singleton_extracts_the_tag() {
+        let utf8 = Descr::brand_of("utf8");
+        assert_eq!(utf8.as_brand_singleton(), Some("utf8"));
+        let two = utf8.union(&Descr::brand_of("ascii"));
+        assert_eq!(
+            two.as_brand_singleton(),
+            None,
+            "multi-tag set has no singleton"
+        );
+        assert_eq!(
+            Descr::any().as_brand_singleton(),
+            None,
+            "cofinite has no singleton"
+        );
+        assert_eq!(
+            Descr::int().as_brand_singleton(),
+            None,
+            "non-brand axes don't yield a brand singleton"
+        );
+    }
+
+    #[test]
+    fn brand_neg_excludes_only_that_brand() {
+        let a = Descr::brand_of("utf8");
+        let b = Descr::brand_of("ascii");
+        let not_a = a.neg();
+        assert!(!a.is_subtype(&not_a), "utf8 ⊄ ¬utf8");
+        assert!(b.is_subtype(&not_a), "ascii ⊆ ¬utf8");
+    }
+
     #[test]
     fn two_distinct_opaques_do_not_overlap() {
         let pid = Descr::opaque_of("pid");
@@ -3986,9 +4171,9 @@ mod tests {
 
     #[test]
     fn components_any_yields_one_per_axis() {
-        // 11 axes: basic, atoms, ints, floats, strs, opaques, vars,
-        // tuples, lists, funcs, maps.
-        assert_eq!(count_components(&Descr::any()), 11);
+        // 12 axes (fz-axu.2 added `brands`): basic, atoms, ints, floats,
+        // strs, opaques, brands, vars, tuples, lists, funcs, maps.
+        assert_eq!(count_components(&Descr::any()), 12);
     }
 
     #[test]

@@ -428,10 +428,10 @@
 ;              callee_key=[int, int, int]
 
 ; spec fn_clause_2(3) #fn=17
-;   key:    [vec(i64) | vec(f64) | vec(u8) | vec(bit) | int \ {1} | float | str | atom | opaque | var | tuple | list | fn | map, 0, 1]
+;   key:    [vec(i64) | vec(f64) | vec(u8) | vec(bit) | int \ {1} | float | str | atom | opaque | brand | var | tuple | list | fn | map, 0, 1]
 ;   return: int
 ;   vars:
-;     Var(0) :: vec(i64) | vec(f64) | vec(u8) | vec(bit) | int \ {1} | float | str | atom | opaque | var | tuple | list | fn | map
+;     Var(0) :: vec(i64) | vec(f64) | vec(u8) | vec(bit) | int \ {1} | float | str | atom | opaque | brand | var | tuple | list | fn | map
 ;     Var(1) :: 0
 ;     Var(2) :: 1
 ;     Var(3) :: 1

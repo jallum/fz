@@ -7606,6 +7606,7 @@ fn lower_prim<M: cranelift_module::Module>(
                     // future axis additions surface this gap.
                     Component::Strs(_)
                     | Component::Opaques(_)
+                    | Component::Brands(_)
                     | Component::Vars(_)
                     | Component::Lists(_)
                     | Component::Funcs(_)
@@ -7710,6 +7711,7 @@ fn lower_prim<M: cranelift_module::Module>(
                         // Untyped-by-codegen axes — silent no-match.
                         Component::Strs(_)
                         | Component::Opaques(_)
+                        | Component::Brands(_)
                         | Component::Vars(_)
                         | Component::Lists(_)
                         | Component::Funcs(_)
