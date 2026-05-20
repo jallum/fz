@@ -2571,20 +2571,17 @@ fn find_emptied_var<T: crate::types_seam::Types>(
     t: &mut T,
     pre_env: &HashMap<crate::fz_ir::Var, Descr>,
     branch_env: &HashMap<crate::fz_ir::Var, Descr>,
-) -> Option<(crate::fz_ir::Var, Descr, Descr)> {
-    use crate::types_seam::AsDescr;
+) -> Option<(crate::fz_ir::Var, T::Ty, T::Ty)> {
     let mut keys: Vec<crate::fz_ir::Var> = branch_env.keys().copied().collect();
     keys.sort_by_key(|v| v.0);
     for v in keys {
-        let new_t = branch_env.get(&v).unwrap();
-        let old_t = match pre_env.get(&v) {
-            Some(d) => d.clone(),
-            None => t.any().as_descr(),
+        let new_ty = t.from_descr(branch_env.get(&v).unwrap());
+        let old_ty = match pre_env.get(&v) {
+            Some(d) => t.from_descr(d),
+            None => t.any(),
         };
-        let new_ty = t.from_descr(new_t);
-        let old_ty = t.from_descr(&old_t);
         if !t.is_equivalent(&new_ty, &old_ty) && t.is_empty(&new_ty) && !t.is_empty(&old_ty) {
-            return Some((v, old_t, new_t.clone()));
+            return Some((v, old_ty, new_ty));
         }
     }
     None
@@ -2602,7 +2599,7 @@ fn emit_unreachable<T: crate::types_seam::Types>(
     term_span: crate::diag::Span,
     tag: &str,
     bb_id: crate::fz_ir::BlockId,
-    dead_records: &[(crate::fz_ir::Var, Descr, Descr)],
+    dead_records: &[(crate::fz_ir::Var, T::Ty, T::Ty)],
 ) -> crate::diag::Diagnostic {
     use crate::diag::{Diagnostic, codes::TYPE_UNREACHABLE_ARM};
     // Pick the lowest-id Var across all records for label attribution
@@ -2614,8 +2611,7 @@ fn emit_unreachable<T: crate::types_seam::Types>(
     let mut joined_old = t.none();
     for (vv, ot, _) in dead_records {
         if *vv == *v {
-            let ot_ty = t.from_descr(ot);
-            joined_old = t.union(joined_old, ot_ty);
+            joined_old = t.union(joined_old, ot.clone());
         }
     }
     let var_name = module.source.var_name_of(*v);
@@ -2744,8 +2740,8 @@ pub fn collect_diagnostics<T: crate::types_seam::Types>(
             // For each spec, narrow this If and record whether each
             // branch is dead (and which Var made it dead, for the
             // diagnostic note).
-            let mut dead_then: Vec<(crate::fz_ir::Var, Descr, Descr)> = Vec::new();
-            let mut dead_else: Vec<(crate::fz_ir::Var, Descr, Descr)> = Vec::new();
+            let mut dead_then: Vec<(crate::fz_ir::Var, T::Ty, T::Ty)> = Vec::new();
+            let mut dead_else: Vec<(crate::fz_ir::Var, T::Ty, T::Ty)> = Vec::new();
             for key in keys {
                 let ft = types
                     .specs
