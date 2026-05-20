@@ -125,6 +125,35 @@ pub fn check_opaque_visibility(d: &Descr, using_module: &str) -> Result<(), Opaq
     }
 }
 
+/// fz-axu.5 (K4) — brand visibility. A *brand mint* (the L3 desugaring
+/// pass emits `Prim::Brand(_, B)`) requires the using module to own B.
+/// Reads and reads-as-inner are unrestricted: a value already carrying
+/// brand B is freely usable as its inner T from any module — that is
+/// the K4 subtype rule. Only the act of *creating* a B value is gated.
+///
+/// `using_module` is the qualified module path of the call site;
+/// `brand_tag` is the qualified brand name from the mint IR.
+#[allow(dead_code)] // wiring at brand-mint type-check site lands in downstream tickets.
+pub fn check_brand_mint_visibility(
+    brand_tag: &str,
+    using_module: &str,
+) -> Result<(), OpaqueVisibilityError> {
+    let Some(owner) = crate::type_expr::opaque_owner_module(brand_tag) else {
+        // Unqualified built-in brand (e.g. `utf8` in runtime.fz) — no
+        // owner; mint is allowed from every module.
+        return Ok(());
+    };
+    if owner == using_module {
+        Ok(())
+    } else {
+        Err(OpaqueVisibilityError {
+            opaque: brand_tag.to_string(),
+            owner_module: owner.to_string(),
+            using_module: using_module.to_string(),
+        })
+    }
+}
+
 // ----------------------------------------------------------------------
 // Widening (for fixed-point termination)
 // ----------------------------------------------------------------------
@@ -259,6 +288,28 @@ mod opaque_visibility_tests {
         assert!(check_opaque_visibility(ta, "B").is_err());
         assert!(check_opaque_visibility(tb, "B").is_ok());
         assert!(check_opaque_visibility(tb, "A").is_err());
+    }
+
+    // fz-axu.5 (K4) — brand-mint visibility parallels opaque visibility.
+
+    #[test]
+    fn brand_mint_visibility_module_qualified() {
+        // `@type B :: refines integer` declared in module `M` qualifies
+        // the brand tag as `M::B`. Mint is allowed from M, rejected
+        // from other modules.
+        assert!(check_brand_mint_visibility("M::B", "M").is_ok());
+        let err = check_brand_mint_visibility("M::B", "N").expect_err("must reject");
+        assert_eq!(err.opaque, "M::B");
+        assert_eq!(err.owner_module, "M");
+        assert_eq!(err.using_module, "N");
+    }
+
+    #[test]
+    fn brand_mint_visibility_unqualified_is_global() {
+        // Runtime-prelude brands (`@type utf8 :: refines binary`) have
+        // no module owner — mintable from any module.
+        assert!(check_brand_mint_visibility("utf8", "AnyModule").is_ok());
+        assert!(check_brand_mint_visibility("utf8", "").is_ok());
     }
 
     #[test]

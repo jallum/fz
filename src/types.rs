@@ -1351,6 +1351,71 @@ impl Descr {
         self.diff(other).is_empty()
     }
 
+    /// fz-axu.5 (K4) — brand-aware subtype check. Resolves every brand
+    /// tag in `self.brands` against `brand_inners` to discharge those
+    /// that fit structurally into `other`. Then runs the standard
+    /// `is_subtype` on the discharged Descr.
+    ///
+    /// The rule that this ratifies: `brand_value: brands={B} ∧ T` is a
+    /// subtype of `T'` whenever `brand_inners[B] <: T'` AND the
+    /// structural axes of the value satisfy `<: T'`. The brand tag is a
+    /// label, not a membership barrier — once the inner accepts T', the
+    /// label is irrelevant for the comparison.
+    ///
+    /// `is_subtype` (no inners) is conservative: it treats brand tags
+    /// as a hard axis, so the value-fully-tagged ⊆ untagged-type case
+    /// returns false. Use `is_subtype_under` whenever a Module context
+    /// is available (the typer, codegen, spec dispatch).
+    pub fn is_subtype_under(
+        &self,
+        other: &Descr,
+        brand_inners: &std::collections::HashMap<String, Descr>,
+    ) -> bool {
+        // Rule (i): if `other` insists on a brand (finite, non-cofinite
+        // brands axis with at least one tag), then `self` must already
+        // carry at least one of those tags. A bare-structural value
+        // (`brands=none`) cannot satisfy a brand-restricted target —
+        // the standard `is_subtype` misses this because the brands
+        // axis collapses to "none" in the diff. K4 reinstates it.
+        let other_requires_brand =
+            !other.brands.cofinite && !other.brands.set.is_empty();
+        if other_requires_brand && self.brands.is_none() {
+            return false;
+        }
+        if self.brands.is_none() || self.brands.cofinite {
+            // No finite brand tags to discharge (none / "any brand").
+            return self.is_subtype(other);
+        }
+        // Rule (ii): for each finite tag whose inner ⊆ other, discharge
+        // it. If every tag is dischargeable, drop the brands axis
+        // entirely for the comparison so the standard lattice no
+        // longer trips on the brand-axis mismatch.
+        let mut remaining = self.brands.clone();
+        let tags: Vec<String> = remaining.set.iter().cloned().collect();
+        for tag in &tags {
+            if let Some(inner) = brand_inners.get(tag)
+                && inner.is_subtype(other)
+            {
+                remaining.set.remove(tag);
+            }
+        }
+        let mut adjusted = self.clone();
+        adjusted.brands = remaining;
+        adjusted.is_subtype(other)
+    }
+
+    /// fz-axu.5 (K4) — brand-aware equivalence: mutual `is_subtype_under`.
+    #[allow(dead_code)] // wiring lands in downstream tickets that use it.
+    pub fn is_equiv_under(
+        &self,
+        other: &Descr,
+        brand_inners: &std::collections::HashMap<String, Descr>,
+    ) -> bool {
+        self == other
+            || (self.is_subtype_under(other, brand_inners)
+                && other.is_subtype_under(self, brand_inners))
+    }
+
     /// Mutual subtyping.
     ///
     /// Structural equality is a sufficient (not necessary) condition for
@@ -3717,6 +3782,76 @@ mod tests {
             None,
             "non-brand axes don't yield a brand singleton"
         );
+    }
+
+    // fz-axu.5 (K4) — brand-aware subtype rule. A minted brand value
+    // (brands={B} ∧ structural T) is a subtype of T when brand_inners
+    // ratifies that B's inner is structurally T.
+
+    fn brand_inners(items: &[(&str, Descr)]) -> std::collections::HashMap<String, Descr> {
+        items
+            .iter()
+            .map(|(n, d)| (n.to_string(), d.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn is_subtype_under_discharges_brand_when_inner_fits() {
+        // utf8 :: refines binary. A value typed `brands={utf8} ∧ str_t`
+        // is a subtype of str_t under brand_inners[utf8 → str_t].
+        let inners = brand_inners(&[("utf8", Descr::str_t())]);
+        let mut minted = Descr::str_t();
+        minted.brands = LiteralSet::lit("utf8".to_string());
+        assert!(
+            !minted.is_subtype(&Descr::str_t()),
+            "strict lattice keeps the brand tag — minted is NOT a subtype without K4",
+        );
+        assert!(
+            minted.is_subtype_under(&Descr::str_t(), &inners),
+            "K4 rule: brand-tagged binary IS a subtype of binary",
+        );
+    }
+
+    #[test]
+    fn is_subtype_under_keeps_brand_when_inner_does_not_fit() {
+        // utf8 :: refines binary. A utf8 value is NOT a subtype of int,
+        // because the inner is binary, not int.
+        let inners = brand_inners(&[("utf8", Descr::str_t())]);
+        let mut minted = Descr::str_t();
+        minted.brands = LiteralSet::lit("utf8".to_string());
+        assert!(
+            !minted.is_subtype_under(&Descr::int(), &inners),
+            "K4 rule must not discharge the brand when the inner doesn't fit",
+        );
+    }
+
+    #[test]
+    fn is_subtype_under_no_brand_inners_falls_back_to_strict() {
+        // Empty brand_inners → no tag can be discharged. Behavior is
+        // identical to the strict lattice.
+        let inners = brand_inners(&[]);
+        let mut minted = Descr::str_t();
+        minted.brands = LiteralSet::lit("utf8".to_string());
+        assert_eq!(
+            minted.is_subtype(&Descr::str_t()),
+            minted.is_subtype_under(&Descr::str_t(), &inners),
+            "with no brand_inners the helper degenerates to is_subtype",
+        );
+    }
+
+    #[test]
+    fn is_subtype_under_target_with_brand_restriction_still_works() {
+        // utf8 ⊆ utf8: brand-aware lookup leaves the tag in place when
+        // the target also restricts to that brand. Verifies the K4 rule
+        // doesn't drop tags that the target still wants.
+        let inners = brand_inners(&[("utf8", Descr::str_t())]);
+        let mut minted = Descr::str_t();
+        minted.brands = LiteralSet::lit("utf8".to_string());
+        let mut target = Descr::str_t();
+        target.brands = LiteralSet::lit("utf8".to_string());
+        assert!(minted.is_subtype_under(&target, &inners));
+        // And the inverse: a plain binary (brands=none) is NOT a utf8.
+        assert!(!Descr::str_t().is_subtype_under(&target, &inners));
     }
 
     #[test]
