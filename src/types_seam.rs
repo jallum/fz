@@ -131,6 +131,14 @@ pub trait Types {
     /// `a` has no tuple axis.
     fn max_tuple_arity(&self, a: &Self::Ty) -> usize;
 
+    /// Refine `a`'s map-axis by overlaying `(key, v)`. Used by
+    /// MapUpdate to type the result of `m | { k => v }`.
+    fn refine_map_field(&mut self, a: &Self::Ty, key: &MapKey, v: &Self::Ty) -> Self::Ty;
+
+    /// Look up `key` in `a`'s map axis, returning the field's type
+    /// if statically known.
+    fn map_field_lookup(&mut self, a: &Self::Ty, key: &MapKey) -> Option<Self::Ty>;
+
     // ---- lattice ops ---------------------------------------------------
 
     fn union(&mut self, a: Self::Ty, b: Self::Ty) -> Self::Ty;
@@ -337,6 +345,18 @@ impl Types for ConcreteTypes {
 
     fn max_tuple_arity(&self, a: &Ty) -> usize {
         a.descr().max_tuple_arity()
+    }
+
+    fn refine_map_field(&mut self, a: &Ty, key: &MapKey, v: &Ty) -> Ty {
+        Ty::from_descr(crate::typer::refine_map_field(
+            a.descr(),
+            key,
+            v.descr(),
+        ))
+    }
+
+    fn map_field_lookup(&mut self, a: &Ty, key: &MapKey) -> Option<Ty> {
+        crate::typer::map_field_lookup(a.descr(), key).map(Ty::from_descr)
     }
 
     fn union(&mut self, a: Ty, b: Ty) -> Ty {

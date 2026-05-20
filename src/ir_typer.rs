@@ -2300,14 +2300,16 @@ fn type_prim<T: crate::types_seam::Types>(
             }
         }
         Prim::MapUpdate(base, entries) => {
-            let mut d = lookup(t, env, *base);
+            let base_d = lookup(t, env, *base);
+            let mut dy = t.from_descr(&base_d);
             for (k, v) in entries {
                 let vt = lookup(t, env, *v);
                 if let Some(mk) = var_as_map_key(*k, env) {
-                    d = crate::typer::refine_map_field(&d, &mk, &vt);
+                    let vt_ty = t.from_descr(&vt);
+                    dy = t.refine_map_field(&dy, &mk, &vt_ty);
                 }
             }
-            t.from_descr(&d)
+            dy
         }
         Prim::MapGet(map, k) => {
             let mt = lookup(t, env, *map);
@@ -2327,14 +2329,12 @@ fn type_prim<T: crate::types_seam::Types>(
             {
                 return t.from_descr(inner);
             }
+            let mt_ty = t.from_descr(&mt);
             let a = t.any();
             let n = t.nil();
             let fallback = t.union(a, n);
             if let Some(mk) = var_as_map_key(*k, env) {
-                match crate::typer::map_field_lookup(&mt, &mk) {
-                    Some(d) => t.from_descr(&d),
-                    None => fallback,
-                }
+                t.map_field_lookup(&mt_ty, &mk).unwrap_or(fallback)
             } else {
                 fallback
             }
