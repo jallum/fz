@@ -3663,7 +3663,10 @@ mod tests {
         assert!(utf8.basic.is_empty());
         assert!(utf8.atoms.is_none());
         assert!(utf8.ints.is_none());
-        assert!(utf8.opaques.is_none(), "brands and opaques are distinct axes");
+        assert!(
+            utf8.opaques.is_none(),
+            "brands and opaques are distinct axes"
+        );
         assert!(utf8.vars.is_none());
         assert!(!utf8.brands.is_none(), "brands axis must carry the tag");
     }

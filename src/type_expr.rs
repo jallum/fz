@@ -200,10 +200,7 @@ pub fn build_module_type_env_for(
                 let body_after_refines = &decl.body_tokens.0[1..];
                 if body_after_refines.is_empty() {
                     return Err(TypeExprError {
-                        msg: format!(
-                            "`@type {} :: refines T` requires an inner type T",
-                            name
-                        ),
+                        msg: format!("`@type {} :: refines T` requires an inner type T", name),
                         span: decl.span,
                     });
                 }

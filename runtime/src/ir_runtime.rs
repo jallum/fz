@@ -1618,7 +1618,10 @@ mod tests {
     /// Brand-mint is identity at the bits level.
     #[test]
     fn fz_brand_bitstring_as_utf8_is_identity() {
-        assert_eq!(fz_brand_bitstring_as_utf8(0x1234_5678_9abc_def0), 0x1234_5678_9abc_def0);
+        assert_eq!(
+            fz_brand_bitstring_as_utf8(0x1234_5678_9abc_def0),
+            0x1234_5678_9abc_def0
+        );
         assert_eq!(fz_brand_bitstring_as_utf8(0), 0);
     }
 

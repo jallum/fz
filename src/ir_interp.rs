@@ -1431,6 +1431,16 @@ fn resolve_symbol(name: &str) -> Result<*const (), String> {
         // the print-dtor binding above: keep the interp leg of the fixture
         // matrix self-contained, no dlsym dependence.
         "fz_test_open_tmpfile" => Some(fz_runtime::resource::fz_test_open_tmpfile as *const ()),
+        // fz-axu.14 (R1) — utf8 runtime support. Bound here so the
+        // interp leg of the matrix can resolve them without relying on
+        // dlsym; statically-linked rlibs don't expose these via
+        // RTLD_DEFAULT on Linux.
+        "fz_bitstring_valid_utf8" => {
+            Some(fz_runtime::ir_runtime::fz_bitstring_valid_utf8 as *const ())
+        }
+        "fz_brand_bitstring_as_utf8" => {
+            Some(fz_runtime::ir_runtime::fz_brand_bitstring_as_utf8 as *const ())
+        }
         _ => None,
     };
     if let Some(fp) = native {

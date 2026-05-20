@@ -684,10 +684,7 @@ pub mod debug {
         for c in s.chars() {
             let cp = c as u32;
             // Whitelisted control codepoints (Elixir-compatible).
-            if matches!(
-                cp,
-                0x07 | 0x08 | 0x09 | 0x0A | 0x0B | 0x0C | 0x0D | 0x1B
-            ) {
+            if matches!(cp, 0x07 | 0x08 | 0x09 | 0x0A | 0x0B | 0x0C | 0x0D | 0x1B) {
                 continue;
             }
             if cp < 0x20 || (0x7F..=0x9F).contains(&cp) {

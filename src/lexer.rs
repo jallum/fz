@@ -721,9 +721,7 @@ mod tests {
 
     #[test]
     fn str_literal_handles_canonical_escapes() {
-        let toks = Lexer::new(r#""a\nb\tc\\d\"e""#)
-            .tokenize()
-            .expect("lex");
+        let toks = Lexer::new(r#""a\nb\tc\\d\"e""#).tokenize().expect("lex");
         match &toks[0].tok {
             Tok::Str(b) => assert_eq!(b, b"a\nb\tc\\d\"e"),
             _ => panic!("expected Tok::Str"),
@@ -750,10 +748,10 @@ mod tests {
     #[test]
     fn str_tokens_are_invariantly_utf8() {
         let inputs = [
-            r#""""#,             // empty
-            r#""hello""#,        // ASCII
-            r#""héllo""#,        // multi-byte UTF-8 codepoint
-            r#""日本語""#,       // three-byte CJK
+            r#""""#,              // empty
+            r#""hello""#,         // ASCII
+            r#""héllo""#,         // multi-byte UTF-8 codepoint
+            r#""日本語""#,        // three-byte CJK
             r#""a\nb\tc\\d\"e""#, // all canonical escapes
         ];
         for src in inputs {

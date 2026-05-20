@@ -856,20 +856,15 @@ fn check_brand_visibility(
     fn_spans: &HashMap<FnId, Span>,
 ) -> Result<(), LowerError> {
     for f in &module.fns {
-        let using_module = f
-            .name
-            .rfind('.')
-            .map(|i| &f.name[..i])
-            .unwrap_or("");
+        let using_module = f.name.rfind('.').map(|i| &f.name[..i]).unwrap_or("");
         for block in &f.blocks {
             let spans = stmt_spans.get(&(f.id, block.id));
             for (i, stmt) in block.stmts.iter().enumerate() {
                 let crate::fz_ir::Stmt::Let(_, prim) = stmt;
                 if let crate::fz_ir::Prim::Brand(_, brand_tag) = prim {
-                    if let Err(e) = crate::typer::check_brand_mint_visibility(
-                        brand_tag,
-                        using_module,
-                    ) {
+                    if let Err(e) =
+                        crate::typer::check_brand_mint_visibility(brand_tag, using_module)
+                    {
                         let span = spans
                             .and_then(|v| v.get(i).copied())
                             .or_else(|| fn_spans.get(&f.id).copied())
@@ -5431,7 +5426,10 @@ end
     fn module_with_brand_in_fn(
         fn_name: &str,
         brand_tag: &str,
-    ) -> (Module, HashMap<(crate::fz_ir::FnId, crate::fz_ir::BlockId), Vec<Span>>) {
+    ) -> (
+        Module,
+        HashMap<(crate::fz_ir::FnId, crate::fz_ir::BlockId), Vec<Span>>,
+    ) {
         use crate::fz_ir::{FnBuilder, FnId, ModuleBuilder, Prim, Term};
         let mut b = FnBuilder::new(FnId(0), fn_name);
         let entry = b.block(vec![]);
@@ -5458,8 +5456,7 @@ end
         // = "Mail") is fine — same owner.
         let (m, spans) = module_with_brand_in_fn("Mail.send", "Mail::Email");
         let fn_spans = HashMap::new();
-        check_brand_visibility(&m, &spans, &fn_spans)
-            .expect("same-module mint must be allowed");
+        check_brand_visibility(&m, &spans, &fn_spans).expect("same-module mint must be allowed");
     }
 
     #[test]

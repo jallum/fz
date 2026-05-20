@@ -149,10 +149,7 @@ mod tests {
         let a = b.let_(entry, Prim::Const(Const::Int(1)));
         let _branded = b.let_(entry, Prim::Brand(a, "X".to_string()));
         // Build BinOp referring to the brand
-        let sum = b.let_(
-            entry,
-            Prim::BinOp(crate::fz_ir::BinOp::Add, a, _branded),
-        );
+        let sum = b.let_(entry, Prim::BinOp(crate::fz_ir::BinOp::Add, a, _branded));
         b.set_terminator(entry, Term::Halt(sum));
         let mut m = build_module(vec![b.build()]);
         let n = erase_brands(&mut m);

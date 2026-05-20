@@ -752,10 +752,7 @@ impl Parser {
                     Tok::Str(bytes) => match String::from_utf8(bytes) {
                         Ok(s) => s,
                         Err(e) => {
-                            return self.err(format!(
-                                "@{} requires UTF-8 text: {}",
-                                name, e
-                            ));
+                            return self.err(format!("@{} requires UTF-8 text: {}", name, e));
                         }
                     },
                     other => {
@@ -1060,10 +1057,7 @@ impl Parser {
             Tok::Str(bytes) => match String::from_utf8(bytes) {
                 Ok(s) => s,
                 Err(e) => {
-                    return self.err(format!(
-                        "extern ABI string must be valid UTF-8: {}",
-                        e
-                    ));
+                    return self.err(format!("extern ABI string must be valid UTF-8: {}", e));
                 }
             },
             other => {
