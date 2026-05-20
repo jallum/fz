@@ -985,37 +985,40 @@ fn compute_return_for_spec<T: crate::types_seam::Types>(
     effective_returns: &HashMap<(FnId, Vec<Descr>), Descr>,
     reads: &mut Vec<(FnId, Vec<Descr>)>,
 ) -> Descr {
+    use crate::types_seam::AsDescr;
+    let any_d = t.any().as_descr();
+    let none_d = t.none().as_descr();
     let mut lookup = |k: (FnId, Vec<Descr>)| -> Descr {
         let v = effective_returns
             .get(&k)
             .cloned()
-            .unwrap_or_else(Descr::none);
+            .unwrap_or_else(|| none_d.clone());
         reads.push(k);
         v
     };
     let (fid, _) = spec_key;
     let Some(&j) = module.fn_idx.get(fid) else {
-        return Descr::none();
+        return none_d.clone();
     };
     let Some(ft) = specs.get(spec_key) else {
-        return Descr::none();
+        return none_d.clone();
     };
     let f = &module.fns[j];
 
-    let mut joined = Descr::none();
+    let mut joined = none_d.clone();
     for b in &f.blocks {
         if !ft.reachable_blocks.contains(&b.id) {
             continue;
         }
         match &b.terminator {
             Term::Return(rv) => {
-                let d = ft.vars.get(rv).cloned().unwrap_or_else(Descr::any);
+                let d = ft.vars.get(rv).cloned().unwrap_or_else(|| any_d.clone());
                 joined = joined.union(&d);
             }
             Term::TailCall { callee, args, .. } => {
                 let arg_descrs: Vec<Descr> = args
                     .iter()
-                    .map(|av| ft.vars.get(av).cloned().unwrap_or_else(Descr::any))
+                    .map(|av| ft.vars.get(av).cloned().unwrap_or_else(|| any_d.clone()))
                     .collect();
                 joined = joined.union(&lookup((*callee, arg_descrs)));
             }
@@ -1029,10 +1032,10 @@ fn compute_return_for_spec<T: crate::types_seam::Types>(
                     let np = target_fn.block(target_fn.entry).params.len();
                     let mut ad: Vec<Descr> = args
                         .iter()
-                        .map(|av| ft.vars.get(av).cloned().unwrap_or_else(Descr::any))
+                        .map(|av| ft.vars.get(av).cloned().unwrap_or_else(|| any_d.clone()))
                         .collect();
                     while ad.len() < np {
-                        ad.push(Descr::any());
+                        ad.push(any_d.clone());
                     }
                     ad.truncate(np);
                     joined = joined.union(&lookup((target, ad)));
@@ -1042,7 +1045,7 @@ fn compute_return_for_spec<T: crate::types_seam::Types>(
                         _ => None,
                     });
                     let mut all_lit = funcs_view.is_some();
-                    let mut acc = Descr::none();
+                    let mut acc = none_d.clone();
                     if let Some(view) = funcs_view {
                         if view.has_negations() || !view.all_clauses_have_pos() {
                             all_lit = false;
@@ -1057,10 +1060,10 @@ fn compute_return_for_spec<T: crate::types_seam::Types>(
                                 let mut full_key: Vec<Descr> = lit.captures.clone();
                                 for av in args.iter() {
                                     full_key
-                                        .push(ft.vars.get(av).cloned().unwrap_or_else(Descr::any));
+                                        .push(ft.vars.get(av).cloned().unwrap_or_else(|| any_d.clone()));
                                 }
                                 while full_key.len() < np {
-                                    full_key.push(Descr::any());
+                                    full_key.push(any_d.clone());
                                 }
                                 full_key.truncate(np);
                                 acc = acc.union(&lookup((lit.fn_id, full_key)));
@@ -1070,10 +1073,10 @@ fn compute_return_for_spec<T: crate::types_seam::Types>(
                     if all_lit {
                         joined = joined.union(&acc);
                     } else {
-                        joined = joined.union(&Descr::any());
+                        joined = joined.union(&any_d);
                     }
                 } else {
-                    joined = joined.union(&Descr::any());
+                    joined = joined.union(&any_d);
                 }
             }
             Term::Call { continuation, .. }
@@ -1098,15 +1101,15 @@ fn compute_return_for_spec<T: crate::types_seam::Types>(
             } => {
                 let cap_descrs: Vec<Descr> = captures
                     .iter()
-                    .map(|cv| ft.vars.get(cv).cloned().unwrap_or_else(Descr::any))
+                    .map(|cv| ft.vars.get(cv).cloned().unwrap_or_else(|| any_d.clone()))
                     .collect();
                 for c in clauses {
                     let body_fn = module.fn_by_id(c.body);
                     let np = body_fn.block(body_fn.entry).params.len();
-                    let mut key: Vec<Descr> = vec![Descr::any(); c.bound_names.len()];
+                    let mut key: Vec<Descr> = vec![any_d.clone(); c.bound_names.len()];
                     key.extend(cap_descrs.iter().cloned());
                     while key.len() < np {
-                        key.push(Descr::any());
+                        key.push(any_d.clone());
                     }
                     key.truncate(np);
                     joined = joined.union(&lookup((c.body, key)));
@@ -1116,7 +1119,7 @@ fn compute_return_for_spec<T: crate::types_seam::Types>(
                     let np = body_fn.block(body_fn.entry).params.len();
                     let mut key = cap_descrs.clone();
                     while key.len() < np {
-                        key.push(Descr::any());
+                        key.push(any_d.clone());
                     }
                     key.truncate(np);
                     joined = joined.union(&lookup((a.body, key)));
