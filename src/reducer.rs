@@ -208,7 +208,7 @@ fn fold_arith<T: Types>(t: &mut T, op: BinOp, ad: &Descr, bd: &Descr) -> Option<
             }
             _ => return None,
         };
-        return Some(t.from_descr(&Descr::int_lit(r)));
+        return Some(t.int_lit(r));
     }
     if let (Some(af), Some(bf)) = (as_float_lit(ad), as_float_lit(bd)) {
         let af = af.get();
@@ -224,7 +224,7 @@ fn fold_arith<T: Types>(t: &mut T, op: BinOp, ad: &Descr, bd: &Descr) -> Option<
         if r.is_nan() {
             return None;
         }
-        return Some(t.from_descr(&Descr::float_lit(r)));
+        return Some(t.float_lit(r));
     }
     None
 }
