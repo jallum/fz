@@ -270,6 +270,7 @@ fn reduce_terminator<T: crate::types_seam::Types>(
                 record_stalled(m, fn_idx, ident, slot, reason, log);
                 return None;
             };
+            let lit = lit.as_descr();
             let Some(new_var) = descr_to_materialize(&lit, m, fn_idx, bid, ident.span()) else {
                 record_stalled(m, fn_idx, ident, slot, StalledReason::CalleeBodyShape, log);
                 return None;
@@ -290,6 +291,7 @@ fn reduce_terminator<T: crate::types_seam::Types>(
                 record_stalled(m, fn_idx, ident, slot, reason, log);
                 return None;
             };
+            let lit = lit.as_descr();
             let Some(new_var) = descr_to_materialize(&lit, m, fn_idx, bid, ident.span()) else {
                 record_stalled(m, fn_idx, ident, slot, StalledReason::CalleeBodyShape, log);
                 return None;
@@ -339,6 +341,7 @@ fn reduce_terminator<T: crate::types_seam::Types>(
                 record_stalled(m, fn_idx, ident, slot, reason, log);
                 return None;
             };
+            let lit = lit.as_descr();
             let Some(new_var) = descr_to_materialize(&lit, m, fn_idx, bid, ident.span()) else {
                 record_stalled(m, fn_idx, ident, slot, StalledReason::CalleeBodyShape, log);
                 return None;
@@ -379,6 +382,7 @@ fn reduce_terminator<T: crate::types_seam::Types>(
                 record_stalled(m, fn_idx, ident, slot, reason, log);
                 return None;
             };
+            let lit = lit.as_descr();
             let Some(new_var) = descr_to_materialize(&lit, m, fn_idx, bid, ident.span()) else {
                 record_stalled(m, fn_idx, ident, slot, StalledReason::CalleeBodyShape, log);
                 return None;
@@ -506,7 +510,7 @@ fn try_reduce_call<T: crate::types_seam::Types>(
     callee: FnId,
     args: &[Var],
     env: &HashMap<Var, T::Ty>,
-) -> Option<Descr> {
+) -> Option<T::Ty> {
     let mut arg_tys: Vec<T::Ty> = Vec::with_capacity(args.len());
     for a in args {
         let Some(ty) = env.get(a).cloned() else {
@@ -533,7 +537,7 @@ fn try_reduce_call_with_descrs<T: crate::types_seam::Types>(
     ctx: &mut ReduceCtx<'_, T>,
     callee: FnId,
     arg_tys: &[T::Ty],
-) -> Option<Descr> {
+) -> Option<T::Ty> {
     if ctx.budget == 0 {
         ctx.note(StalledReason::BudgetExhausted);
         return None;
@@ -575,7 +579,7 @@ fn walk_fn_body<T: crate::types_seam::Types>(
     ctx: &mut ReduceCtx<'_, T>,
     callee: FnId,
     arg_tys: &[T::Ty],
-) -> Option<Descr> {
+) -> Option<T::Ty> {
     let f: &FnIr = ctx.module.fn_by_id(callee);
     let entry = f.block(f.entry);
     if entry.params.len() != arg_tys.len() {
@@ -599,7 +603,7 @@ fn walk_block<T: crate::types_seam::Types>(
     bid: BlockId,
     mut env: HashMap<Var, T::Ty>,
     goto_depth: u32,
-) -> Option<Descr> {
+) -> Option<T::Ty> {
     if goto_depth > 64 {
         ctx.note(StalledReason::CalleeBodyShape);
         return None;
@@ -624,12 +628,12 @@ fn walk_block<T: crate::types_seam::Types>(
     }
     match &block.terminator {
         Term::Return(v) => {
-            let Some(d) = env.get(v).map(|ty| ty.as_descr()) else {
+            let Some(ty) = env.get(v).cloned() else {
                 ctx.note(StalledReason::OpaqueArg);
                 return None;
             };
-            if is_materializable(&d) {
-                Some(d)
+            if is_materializable(&ty.as_descr()) {
+                Some(ty)
             } else {
                 ctx.note(StalledReason::CalleeBodyShape);
                 None
@@ -689,8 +693,7 @@ fn walk_block<T: crate::types_seam::Types>(
             continuation,
         } => {
             let inner_result = try_reduce_call(ctx, *c_callee, c_args, &env)?;
-            let inner_ty = ctx.t.from_descr(&inner_result);
-            feed_cont(ctx, continuation, inner_ty, &env)
+            feed_cont(ctx, continuation, inner_result, &env)
         }
         // fz-jg5.6: closure-call reduction. When the closure operand has
         // a closure_lit(F, captures) Descr, dispatch to F directly with
@@ -735,8 +738,7 @@ fn walk_block<T: crate::types_seam::Types>(
                 all_tys.push(ty);
             }
             let inner_result = try_reduce_call_with_descrs(ctx, cl_lit.fn_id, &all_tys)?;
-            let inner_ty = ctx.t.from_descr(&inner_result);
-            feed_cont(ctx, continuation, inner_ty, &env)
+            feed_cont(ctx, continuation, inner_result, &env)
         }
         Term::Receive { .. } | Term::ReceiveMatched { .. } | Term::Halt(_) => {
             ctx.note(StalledReason::CalleeBodyShape);
@@ -752,7 +754,7 @@ fn feed_cont<T: crate::types_seam::Types>(
     continuation: &crate::fz_ir::Cont,
     result: T::Ty,
     env: &HashMap<Var, T::Ty>,
-) -> Option<Descr> {
+) -> Option<T::Ty> {
     let mut cont_tys: Vec<T::Ty> = Vec::with_capacity(1 + continuation.captured.len());
     cont_tys.push(result);
     for cap in &continuation.captured {
