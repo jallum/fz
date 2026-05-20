@@ -2717,16 +2717,16 @@ pub fn collect_diagnostics<T: crate::types_seam::Types>(
                         BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod
                     )
                 {
-                    let ta = env
-                        .get(lhs)
-                        .cloned()
-                        .unwrap_or_else(|| t.any().as_descr());
-                    let tb = env
-                        .get(rhs)
-                        .cloned()
-                        .unwrap_or_else(|| t.any().as_descr());
-                    let lhs_opaque = ta.as_opaque_singleton();
-                    let rhs_opaque = tb.as_opaque_singleton();
+                    let ta_ty: T::Ty = match env.get(lhs) {
+                        Some(d) => t.from_descr(d),
+                        None => t.any(),
+                    };
+                    let tb_ty: T::Ty = match env.get(rhs) {
+                        Some(d) => t.from_descr(d),
+                        None => t.any(),
+                    };
+                    let lhs_opaque = t.opaque_singleton(&ta_ty);
+                    let rhs_opaque = t.opaque_singleton(&tb_ty);
                     if lhs_opaque.is_some() || rhs_opaque.is_some() {
                         let span = spans
                             .and_then(|s| s.get(sidx).copied())
@@ -2739,9 +2739,9 @@ pub fn collect_diagnostics<T: crate::types_seam::Types>(
                             BinOp::Mod => "%",
                             _ => unreachable!(),
                         };
-                        let (which, tag) = match (lhs_opaque, rhs_opaque) {
-                            (Some(name), _) => ("left", name),
-                            (_, Some(name)) => ("right", name),
+                        let (which, tag) = match (&lhs_opaque, &rhs_opaque) {
+                            (Some(name), _) => ("left", name.as_str()),
+                            (_, Some(name)) => ("right", name.as_str()),
                             _ => unreachable!(),
                         };
                         let message = format!(
@@ -2753,11 +2753,7 @@ pub fn collect_diagnostics<T: crate::types_seam::Types>(
                              disjoint from `int` and `float`. Use `==` / `!=` for \
                              identity comparison.",
                             which,
-                            if which == "left" {
-                                ta.display_for_diag()
-                            } else {
-                                tb.display_for_diag()
-                            },
+                            t.display_for_diag(if which == "left" { &ta_ty } else { &tb_ty }),
                         );
                         let d = Diagnostic::error(
                             crate::diag::codes::TYPE_OPAQUE_ARITHMETIC,

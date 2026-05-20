@@ -127,6 +127,13 @@ pub trait Types {
     /// without firing on within-axis literal-disjoint cases (`1 == 2`).
     fn kinds_overlap(&self, a: &Self::Ty, b: &Self::Ty) -> bool;
 
+    /// If `a` is a pure opaque-nominal type — a singleton on the
+    /// `opaques` axis with every other axis empty — return the opaque
+    /// tag name. Otherwise None. Used by lints that need to know
+    /// "is this value an opaque, and which one?" (opaque-arithmetic
+    /// rejection, opaque-visibility checks).
+    fn opaque_singleton(&self, a: &Self::Ty) -> Option<String>;
+
     /// Render `a` for user-facing diagnostics. Owned-string return
     /// day-one; consumers `format!("{}", t.display(&ty))`-style.
     fn display(&self, a: &Self::Ty) -> String;
@@ -268,6 +275,10 @@ impl Types for ConcreteTypes {
 
     fn kinds_overlap(&self, a: &Ty, b: &Ty) -> bool {
         a.descr().kinds_overlap(b.descr())
+    }
+
+    fn opaque_singleton(&self, a: &Ty) -> Option<String> {
+        a.descr().as_opaque_singleton().map(String::from)
     }
 
     fn display(&self, a: &Ty) -> String {
