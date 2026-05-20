@@ -1245,8 +1245,10 @@ fn walk_spec_for_discovery<T: crate::types_seam::Types>(
     callsite_fn_consts: &mut HashMap<(FnId, Vec<Descr>), Vec<Option<FnId>>>,
     out: &mut WalkResult,
 ) {
+    use crate::types_seam::AsDescr;
     #[cfg(test)]
     WALK_CALLS.with(|c| c.set(c.get() + 1));
+    let any_d = t.any().as_descr();
     let widen_direct = |k: Vec<Descr>, callee: FnId| -> Vec<Descr> {
         if widen_now && caller_scc.contains(&callee) {
             k.into_iter().map(|d| crate::typer::widen(&d)).collect()
@@ -1303,7 +1305,7 @@ fn walk_spec_for_discovery<T: crate::types_seam::Types>(
                     })
                     .collect();
                 out.closure_handles.insert((*lam_fn_id, captures));
-                let any_key: Vec<Descr> = vec![Descr::any(); n_params];
+                let any_key: Vec<Descr> = vec![any_d.clone(); n_params];
                 let site = EmitterSite {
                     caller: caller_spec_key.clone(),
                     ident: mk_ident.clone(),
@@ -1339,10 +1341,10 @@ fn walk_spec_for_discovery<T: crate::types_seam::Types>(
                     let n_params = callee_fn.block(callee_fn.entry).params.len();
                     let mut dispatch_key: Vec<Descr> = args
                         .iter()
-                        .map(|av| env.get(av).cloned().unwrap_or_else(Descr::any))
+                        .map(|av| env.get(av).cloned().unwrap_or_else(|| any_d.clone()))
                         .collect();
                     while dispatch_key.len() < n_params {
-                        dispatch_key.push(Descr::any());
+                        dispatch_key.push(any_d.clone());
                     }
                     dispatch_key.truncate(n_params);
                     // fz-uwq.3+ — record the dispatch fact (un-widened)
@@ -1388,10 +1390,10 @@ fn walk_spec_for_discovery<T: crate::types_seam::Types>(
                     let n_params = target_fn.block(target_fn.entry).params.len();
                     let mut dispatch_key: Vec<Descr> = args
                         .iter()
-                        .map(|av| env.get(av).cloned().unwrap_or_else(Descr::any))
+                        .map(|av| env.get(av).cloned().unwrap_or_else(|| any_d.clone()))
                         .collect();
                     while dispatch_key.len() < n_params {
-                        dispatch_key.push(Descr::any());
+                        dispatch_key.push(any_d.clone());
                     }
                     dispatch_key.truncate(n_params);
                     out.dispatch_targets.insert(
@@ -1414,10 +1416,10 @@ fn walk_spec_for_discovery<T: crate::types_seam::Types>(
                     let mut dispatch_key: Vec<Descr> = lit.captures.clone();
                     let arg_descrs = args
                         .iter()
-                        .map(|av| env.get(av).cloned().unwrap_or_else(Descr::any));
+                        .map(|av| env.get(av).cloned().unwrap_or_else(|| any_d.clone()));
                     dispatch_key.extend(arg_descrs);
                     while dispatch_key.len() < n_params {
-                        dispatch_key.push(Descr::any());
+                        dispatch_key.push(any_d.clone());
                     }
                     dispatch_key.truncate(n_params);
                     out.dispatch_targets.insert(
@@ -1441,7 +1443,7 @@ fn walk_spec_for_discovery<T: crate::types_seam::Types>(
                         ContSource::Call { callee, args } => {
                             let arg_descrs: Vec<Descr> = args
                                 .iter()
-                                .map(|av| env.get(av).cloned().unwrap_or_else(Descr::any))
+                                .map(|av| env.get(av).cloned().unwrap_or_else(|| any_d.clone()))
                                 .collect();
                             let callee_key = (callee, arg_descrs);
                             out.return_reads.push(callee_key.clone());
@@ -1453,10 +1455,10 @@ fn walk_spec_for_discovery<T: crate::types_seam::Types>(
                                 let n_params = target_fn.block(target_fn.entry).params.len();
                                 let mut arg_descrs: Vec<Descr> = args
                                     .iter()
-                                    .map(|av| env.get(av).cloned().unwrap_or_else(Descr::any))
+                                    .map(|av| env.get(av).cloned().unwrap_or_else(|| any_d.clone()))
                                     .collect();
                                 while arg_descrs.len() < n_params {
-                                    arg_descrs.push(Descr::any());
+                                    arg_descrs.push(any_d.clone());
                                 }
                                 arg_descrs.truncate(n_params);
                                 let callee_key = (target, arg_descrs);
@@ -1465,7 +1467,7 @@ fn walk_spec_for_discovery<T: crate::types_seam::Types>(
                             } else if let Some(cv_descr) = env.get(&closure) {
                                 let arg_descrs: Vec<Descr> = args
                                     .iter()
-                                    .map(|av| env.get(av).cloned().unwrap_or_else(Descr::any))
+                                    .map(|av| env.get(av).cloned().unwrap_or_else(|| any_d.clone()))
                                     .collect();
                                 if let Some(view) = cv_descr.components().find_map(|c| match c {
                                     crate::types::Component::Funcs(v) => Some(v),
@@ -1483,10 +1485,10 @@ fn walk_spec_for_discovery<T: crate::types_seam::Types>(
                                 }
                                 resolve_closure_return(t, cv_descr, effective_returns, &arg_descrs)
                             } else {
-                                Some(Descr::any())
+                                Some(any_d.clone())
                             }
                         }
-                        ContSource::Receive => Some(Descr::any()),
+                        ContSource::Receive => Some(any_d.clone()),
                     };
                     let Some(slot0) = slot0_descr else {
                         // Deferred: return_readers will re-enqueue
@@ -1498,13 +1500,13 @@ fn walk_spec_for_discovery<T: crate::types_seam::Types>(
                     };
                     let cont_fn = &m.fns[j];
                     let n_params = cont_fn.block(cont_fn.entry).params.len();
-                    let mut key: Vec<Descr> = vec![Descr::any(); n_params];
+                    let mut key: Vec<Descr> = vec![any_d.clone(); n_params];
                     if !key.is_empty() {
                         key[0] = slot0;
                     }
                     for (k, cvv) in cont.captured.iter().enumerate() {
                         if let Some(p) = key.get_mut(k + 1) {
-                            *p = env.get(cvv).cloned().unwrap_or_else(Descr::any);
+                            *p = env.get(cvv).cloned().unwrap_or_else(|| any_d.clone());
                         }
                     }
                     // fz-rh5.6 — do NOT widen cont keys. See pre-refactor
@@ -1565,7 +1567,7 @@ fn walk_spec_for_discovery<T: crate::types_seam::Types>(
         {
             let cap_descrs: Vec<Descr> = captures
                 .iter()
-                .map(|cv| env.get(cv).cloned().unwrap_or_else(Descr::any))
+                .map(|cv| env.get(cv).cloned().unwrap_or_else(|| any_d.clone()))
                 .collect();
             let mut enq = |fid: FnId, bound_arity: usize, ident: crate::fz_ir::CallsiteIdent| {
                 let Some(&j) = m.fn_idx.get(&fid) else {
@@ -1573,10 +1575,10 @@ fn walk_spec_for_discovery<T: crate::types_seam::Types>(
                 };
                 let body = &m.fns[j];
                 let np = body.block(body.entry).params.len();
-                let mut key: Vec<Descr> = vec![Descr::any(); bound_arity];
+                let mut key: Vec<Descr> = vec![any_d.clone(); bound_arity];
                 key.extend(cap_descrs.iter().cloned());
                 while key.len() < np {
-                    key.push(Descr::any());
+                    key.push(any_d.clone());
                 }
                 key.truncate(np);
                 emit(EmitSlot::Cont, ident, (fid, key), out);
