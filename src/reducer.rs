@@ -157,18 +157,17 @@ pub fn fold_prim<T: Types>(
 }
 
 fn fold_const<T: Types>(t: &mut T, c: &Const, atom_names: &[String]) -> Option<T::Ty> {
-    let d = match c {
-        Const::Int(n) => Descr::int_lit(*n),
-        Const::Float(f) => Descr::float_lit(*f),
-        Const::Nil => Descr::nil(),
-        Const::True => Descr::atom_lit("true"),
-        Const::False => Descr::atom_lit("false"),
+    Some(match c {
+        Const::Int(n) => t.int_lit(*n),
+        Const::Float(f) => t.float_lit(*f),
+        Const::Nil => t.nil(),
+        Const::True => t.bool_lit(true),
+        Const::False => t.bool_lit(false),
         Const::Atom(id) => {
             let name = atom_names.get(*id as usize)?;
-            Descr::atom_lit(name)
+            t.atom_lit(name)
         }
-    };
-    Some(t.from_descr(&d))
+    })
 }
 
 fn fold_binop<T: Types>(
@@ -293,19 +292,18 @@ fn fold_unop<T: Types>(
     env: &HashMap<Var, Descr>,
 ) -> Option<T::Ty> {
     let d = env.get(&v)?;
-    let r: Descr = match op {
+    match op {
         UnOp::Neg => {
             if let Some(n) = as_int_lit(d) {
-                Descr::int_lit(n.checked_neg()?)
+                Some(t.int_lit(n.checked_neg()?))
             } else if let Some(f) = as_float_lit(d) {
-                Descr::float_lit(-f.get())
+                Some(t.float_lit(-f.get()))
             } else {
-                return None;
+                None
             }
         }
-        UnOp::Not => bool_descr(!as_bool_lit(d)?),
-    };
-    Some(t.from_descr(&r))
+        UnOp::Not => Some(t.bool_lit(!as_bool_lit(d)?)),
+    }
 }
 
 fn fold_make_tuple<T: Types>(
@@ -342,14 +340,13 @@ fn fold_type_test<T: Types>(
     env: &HashMap<Var, Descr>,
 ) -> Option<T::Ty> {
     let vd = env.get(&v)?;
-    let r = if vd.is_subtype(descr) {
-        bool_descr(true)
+    if vd.is_subtype(descr) {
+        Some(t.bool_lit(true))
     } else if vd.intersect(descr).is_empty() {
-        bool_descr(false)
+        Some(t.bool_lit(false))
     } else {
-        return None;
-    };
-    Some(t.from_descr(&r))
+        None
+    }
 }
 
 /// fz-jg5.6: produce a `closure_lit(F, [literal captures])` Descr when
