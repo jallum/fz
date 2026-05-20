@@ -1479,7 +1479,7 @@ pub extern "C" fn fz_bitstring_valid_utf8(bs_bits: u64) -> i64 {
         return 0;
     }
     let bit_len = unsafe { crate::procbin::bitstring_bit_len(p) } as usize;
-    if bit_len % 8 != 0 {
+    if !bit_len.is_multiple_of(8) {
         return 0;
     }
     let byte_len = bit_len / 8;

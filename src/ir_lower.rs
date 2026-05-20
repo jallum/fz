@@ -861,21 +861,20 @@ fn check_brand_visibility(
             let spans = stmt_spans.get(&(f.id, block.id));
             for (i, stmt) in block.stmts.iter().enumerate() {
                 let crate::fz_ir::Stmt::Let(_, prim) = stmt;
-                if let crate::fz_ir::Prim::Brand(_, brand_tag) = prim {
-                    if let Err(e) =
+                if let crate::fz_ir::Prim::Brand(_, brand_tag) = prim
+                    && let Err(e) =
                         crate::typer::check_brand_mint_visibility(brand_tag, using_module)
-                    {
-                        let span = spans
-                            .and_then(|v| v.get(i).copied())
-                            .or_else(|| fn_spans.get(&f.id).copied())
-                            .unwrap_or(crate::diag::Span::DUMMY);
-                        return Err(LowerError::BrandMintVisibility {
-                            span,
-                            brand: e.opaque,
-                            owner_module: e.owner_module,
-                            using_module: e.using_module,
-                        });
-                    }
+                {
+                    let span = spans
+                        .and_then(|v| v.get(i).copied())
+                        .or_else(|| fn_spans.get(&f.id).copied())
+                        .unwrap_or(crate::diag::Span::DUMMY);
+                    return Err(LowerError::BrandMintVisibility {
+                        span,
+                        brand: e.opaque,
+                        owner_module: e.owner_module,
+                        using_module: e.using_module,
+                    });
                 }
             }
         }
