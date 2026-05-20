@@ -147,12 +147,17 @@ pub fn fold_prim(prim: &Prim, env: &HashMap<Var, Descr>, atom_names: &[String]) 
         | Prim::BitReaderInit(..)
         | Prim::BitReadField { .. }
         | Prim::BitReaderDone(..) => None,
-        // fz-axu.4 (K3) — brand-mint. The reducer's job is constant
-        // folding; brand-mint is not foldable to a constant (the value
-        // is the source variable's runtime value, just relabelled in
-        // the type system). K6 (fz-axu.7) makes the reducer see through
-        // Brand so a literal source still folds; for now, decline.
-        Prim::Brand(..) => None,
+        // fz-axu.7 (K6) — brand-transparent fold. Look up the source's
+        // already-folded Descr (if any) and overlay the brand tag on
+        // top. This means a const-singleton source (e.g. a string
+        // literal whose bytes the reducer knows) survives the brand
+        // wrap intact, so downstream eq folds (and any other reducer
+        // consumers) keep working.
+        Prim::Brand(v, name) => {
+            let mut d = env.get(v).cloned()?;
+            d.brands = crate::types::LiteralSet::lit(name.clone());
+            Some(d)
+        }
     }
 }
 
