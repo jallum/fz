@@ -139,6 +139,12 @@ pub trait Types {
     /// if statically known.
     fn map_field_lookup(&mut self, a: &Self::Ty, key: &MapKey) -> Option<Self::Ty>;
 
+    /// fz-rh5.6 — widen `a` for use as a recursive-call spec key.
+    /// Idempotent, monotone, height-bounded; the worklist's termination
+    /// proof depends on `widen` collapsing nested structural depth after
+    /// `WIDEN_AT` visits.
+    fn widen(&mut self, a: &Self::Ty) -> Self::Ty;
+
     // ---- lattice ops ---------------------------------------------------
 
     fn union(&mut self, a: Self::Ty, b: Self::Ty) -> Self::Ty;
@@ -357,6 +363,10 @@ impl Types for ConcreteTypes {
 
     fn map_field_lookup(&mut self, a: &Ty, key: &MapKey) -> Option<Ty> {
         crate::typer::map_field_lookup(a.descr(), key).map(Ty::from_descr)
+    }
+
+    fn widen(&mut self, a: &Ty) -> Ty {
+        Ty::from_descr(crate::typer::widen(a.descr()))
     }
 
     fn union(&mut self, a: Ty, b: Ty) -> Ty {

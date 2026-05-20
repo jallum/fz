@@ -1294,13 +1294,25 @@ fn walk_spec_for_discovery<T: crate::types_seam::Types>(
     #[cfg(test)]
     WALK_CALLS.with(|c| c.set(c.get() + 1));
     let any_d = t.any().as_descr();
-    let widen_direct = |k: Vec<Descr>, callee: FnId| -> Vec<Descr> {
+    fn widen_direct<T: crate::types_seam::Types>(
+        t: &mut T,
+        widen_now: bool,
+        caller_scc: &std::collections::HashSet<FnId>,
+        k: Vec<Descr>,
+        callee: FnId,
+    ) -> Vec<Descr> {
+        use crate::types_seam::AsDescr;
         if widen_now && caller_scc.contains(&callee) {
-            k.into_iter().map(|d| crate::typer::widen(&d)).collect()
+            k.into_iter()
+                .map(|d| {
+                    let ty = t.from_descr(&d);
+                    t.widen(&ty).as_descr()
+                })
+                .collect()
         } else {
             k
         }
-    };
+    }
 
     let emit = |slot: EmitSlot,
                 ident: crate::fz_ir::CallsiteIdent,
@@ -1402,7 +1414,7 @@ fn walk_spec_for_discovery<T: crate::types_seam::Types>(
                         },
                         (callee, dispatch_key.clone()),
                     );
-                    let enqueue_key = widen_direct(dispatch_key, callee);
+                    let enqueue_key = widen_direct(t, widen_now, caller_scc, dispatch_key, callee);
                     let mut per_arg: Vec<Option<FnId>> = args
                         .iter()
                         .map(|av| caller_ft.fn_constants.get(av).copied())
@@ -1449,7 +1461,7 @@ fn walk_spec_for_discovery<T: crate::types_seam::Types>(
                         },
                         (target, dispatch_key.clone()),
                     );
-                    let enqueue_key = widen_direct(dispatch_key, target);
+                    let enqueue_key = widen_direct(t, widen_now, caller_scc, dispatch_key, target);
                     emit(slot, term_ident.clone(), (target, enqueue_key), out);
                 }
                 CallsiteKind::ClosureLit { lit, args } => {
@@ -1475,7 +1487,7 @@ fn walk_spec_for_discovery<T: crate::types_seam::Types>(
                         },
                         (lit.fn_id, dispatch_key.clone()),
                     );
-                    let enqueue_key = widen_direct(dispatch_key, lit.fn_id);
+                    let enqueue_key = widen_direct(t, widen_now, caller_scc, dispatch_key, lit.fn_id);
                     emit(slot, term_ident.clone(), (lit.fn_id, enqueue_key), out);
                 }
                 CallsiteKind::Cont { cont, source } => {
