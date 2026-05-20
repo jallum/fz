@@ -458,7 +458,8 @@ pub enum Dispatch {
 ///   later rows would be unsound since this row might match at runtime.
 /// - If every row is skipped (NoMatch), return NoMatch.
 #[allow(dead_code)] // wired by RED.4+.
-pub fn dispatch_clauses(
+pub fn dispatch_clauses<T: Types>(
+    t: &mut T,
     clauses: &[Clause<'_>],
     subject_descrs: &[Descr],
     atom_names: &[String],
@@ -491,7 +492,7 @@ pub fn dispatch_clauses(
         }
         // Patterns matched — try guard.
         if let Some(guard) = row.guard {
-            match fold_expr(&guard.node, &bindings, atom_names) {
+            match fold_expr(t, &guard.node, &bindings, atom_names) {
                 Some(d) => match as_bool_lit(&d) {
                     Some(true) => {
                         return Dispatch::MatchedRow {
@@ -639,7 +640,8 @@ fn match_tuple_pattern(
 #[allow(dead_code)]
 // pub for fz-jg5.3's dispatcher; called by fold_expr; main bin's call graph doesn't reach it yet (RED.3+).
 #[allow(clippy::only_used_in_recursion)] // atom_names threaded for API symmetry with siblings; future Expr arms may consult it.
-pub fn fold_expr(
+pub fn fold_expr<T: Types>(
+    t: &mut T,
     expr: &ast::Expr,
     bindings: &HashMap<String, Descr>,
     atom_names: &[String],
@@ -659,20 +661,20 @@ pub fn fold_expr(
         Expr::Bool(b) => Some(bool_descr(*b)),
         Expr::Nil => Some(Descr::nil()),
         Expr::BinOp(op, a, b) => {
-            let ad = fold_expr(&a.node, bindings, atom_names)?;
-            let bd = fold_expr(&b.node, bindings, atom_names)?;
-            ast_binop_fold(*op, &ad, &bd)
+            let ad = fold_expr(t, &a.node, bindings, atom_names)?;
+            let bd = fold_expr(t, &b.node, bindings, atom_names)?;
+            ast_binop_fold(t, *op, &ad, &bd)
         }
         Expr::UnOp(op, v) => {
-            let vd = fold_expr(&v.node, bindings, atom_names)?;
-            ast_unop_fold(*op, &vd)
+            let vd = fold_expr(t, &v.node, bindings, atom_names)?;
+            ast_unop_fold(t, *op, &vd)
         }
         _ => None,
     }
 }
 
 #[allow(dead_code)] // used via fold_expr; cf. RED.3+ wiring.
-fn ast_binop_fold(op: ast::BinOp, ad: &Descr, bd: &Descr) -> Option<Descr> {
+fn ast_binop_fold<T: Types>(_t: &mut T, op: ast::BinOp, ad: &Descr, bd: &Descr) -> Option<Descr> {
     use ast::BinOp::*;
     let ir_op = match op {
         Add => BinOp::Add,
@@ -700,7 +702,7 @@ fn ast_binop_fold(op: ast::BinOp, ad: &Descr, bd: &Descr) -> Option<Descr> {
 }
 
 #[allow(dead_code)] // used via fold_expr.
-fn ast_unop_fold(op: ast::UnOp, d: &Descr) -> Option<Descr> {
+fn ast_unop_fold<T: Types>(_t: &mut T, op: ast::UnOp, d: &Descr) -> Option<Descr> {
     use ast::UnOp::*;
     let ir_op = match op {
         Neg => UnOp::Neg,
@@ -1060,7 +1062,7 @@ mod tests {
             patterns: &patterns,
             guard: None,
         }];
-        let result = dispatch_clauses(&clauses, &[Descr::any()], &[]);
+        let result = dispatch_clauses(&mut ct(), &clauses, &[Descr::any()], &[]);
         assert!(matches!(result, Dispatch::MatchedRow { row_idx: 0, .. }));
     }
 
@@ -1071,7 +1073,7 @@ mod tests {
             patterns: &patterns,
             guard: None,
         }];
-        let result = dispatch_clauses(&clauses, &[Descr::int_lit(42)], &[]);
+        let result = dispatch_clauses(&mut ct(), &clauses, &[Descr::int_lit(42)], &[]);
         match result {
             Dispatch::MatchedRow {
                 row_idx: 0,
@@ -1090,7 +1092,7 @@ mod tests {
             patterns: &patterns,
             guard: None,
         }];
-        let result = dispatch_clauses(&clauses, &[Descr::int_lit(0)], &[]);
+        let result = dispatch_clauses(&mut ct(), &clauses, &[Descr::int_lit(0)], &[]);
         assert!(matches!(result, Dispatch::MatchedRow { row_idx: 0, .. }));
     }
 
@@ -1101,7 +1103,7 @@ mod tests {
             patterns: &patterns,
             guard: None,
         }];
-        let result = dispatch_clauses(&clauses, &[Descr::int_lit(7)], &[]);
+        let result = dispatch_clauses(&mut ct(), &clauses, &[Descr::int_lit(7)], &[]);
         assert!(matches!(result, Dispatch::NoMatch));
     }
 
@@ -1113,7 +1115,7 @@ mod tests {
             patterns: &patterns,
             guard: None,
         }];
-        let result = dispatch_clauses(&clauses, &[Descr::int()], &[]);
+        let result = dispatch_clauses(&mut ct(), &clauses, &[Descr::int()], &[]);
         assert!(matches!(result, Dispatch::Opaque));
     }
 
@@ -1155,7 +1157,7 @@ mod tests {
         ];
 
         let subject = Descr::tuple_of([Descr::atom_lit("num"), Descr::int_lit(42)]);
-        match dispatch_clauses(&clauses, &[subject], &[]) {
+        match dispatch_clauses(&mut ct(), &clauses, &[subject], &[]) {
             Dispatch::MatchedRow { row_idx, bindings } => {
                 assert_eq!(row_idx, 0);
                 assert_eq!(as_int_lit(bindings.get("n").unwrap()), Some(42));
@@ -1191,7 +1193,7 @@ mod tests {
         let inner_a = Descr::tuple_of([Descr::atom_lit("num"), Descr::int_lit(2)]);
         let inner_b = Descr::tuple_of([Descr::atom_lit("num"), Descr::int_lit(3)]);
         let subject = Descr::tuple_of([Descr::atom_lit("add"), inner_a.clone(), inner_b.clone()]);
-        match dispatch_clauses(&clauses, &[subject], &[]) {
+        match dispatch_clauses(&mut ct(), &clauses, &[subject], &[]) {
             Dispatch::MatchedRow { row_idx, bindings } => {
                 assert_eq!(row_idx, 1);
                 assert_eq!(bindings.get("a").unwrap(), &inner_a);
@@ -1212,7 +1214,7 @@ mod tests {
             patterns: &c0,
             guard: None,
         }];
-        let result = dispatch_clauses(&clauses, &[Descr::any()], &[]);
+        let result = dispatch_clauses(&mut ct(), &clauses, &[Descr::any()], &[]);
         assert!(matches!(result, Dispatch::Opaque));
     }
 
@@ -1234,7 +1236,7 @@ mod tests {
                 guard: None,
             },
         ];
-        let result = dispatch_clauses(&clauses, &[Descr::int_lit(0)], &[]);
+        let result = dispatch_clauses(&mut ct(), &clauses, &[Descr::int_lit(0)], &[]);
         assert!(matches!(result, Dispatch::MatchedRow { row_idx: 0, .. }));
     }
 
@@ -1253,7 +1255,7 @@ mod tests {
             patterns: &p,
             guard: Some(&guard),
         }];
-        let result = dispatch_clauses(&clauses, &[Descr::int_lit(7)], &[]);
+        let result = dispatch_clauses(&mut ct(), &clauses, &[Descr::int_lit(7)], &[]);
         assert!(matches!(result, Dispatch::MatchedRow { row_idx: 0, .. }));
     }
 
@@ -1278,7 +1280,7 @@ mod tests {
                 guard: None,
             },
         ];
-        let result = dispatch_clauses(&clauses, &[Descr::int_lit(-3)], &[]);
+        let result = dispatch_clauses(&mut ct(), &clauses, &[Descr::int_lit(-3)], &[]);
         assert!(matches!(result, Dispatch::MatchedRow { row_idx: 1, .. }));
     }
 
@@ -1295,7 +1297,7 @@ mod tests {
             patterns: &p,
             guard: Some(&guard),
         }];
-        let result = dispatch_clauses(&clauses, &[Descr::int()], &[]);
+        let result = dispatch_clauses(&mut ct(), &clauses, &[Descr::int()], &[]);
         assert!(matches!(result, Dispatch::Opaque));
     }
 
@@ -1308,7 +1310,7 @@ mod tests {
             patterns: &pat_list,
             guard: None,
         }];
-        let result = dispatch_clauses(&clauses, &[Descr::list_of(Descr::int_lit(1))], &[]);
+        let result = dispatch_clauses(&mut ct(), &clauses, &[Descr::list_of(Descr::int_lit(1))], &[]);
         assert!(matches!(result, Dispatch::Opaque));
     }
 
@@ -1327,7 +1329,7 @@ mod tests {
             guard: None,
         }];
         let subject = Descr::tuple_of([Descr::atom_lit("num"), Descr::int_lit(42)]);
-        match dispatch_clauses(&clauses, std::slice::from_ref(&subject), &[]) {
+        match dispatch_clauses(&mut ct(), &clauses, std::slice::from_ref(&subject), &[]) {
             Dispatch::MatchedRow { bindings, .. } => {
                 assert_eq!(bindings.get("whole").unwrap(), &subject);
                 assert_eq!(as_int_lit(bindings.get("n").unwrap()), Some(42));
@@ -1359,7 +1361,7 @@ mod tests {
                 guard: None,
             },
         ];
-        let result = dispatch_clauses(&clauses, &[Descr::int_lit(7)], &[]);
+        let result = dispatch_clauses(&mut ct(), &clauses, &[Descr::int_lit(7)], &[]);
         assert!(matches!(result, Dispatch::NoMatch));
     }
 }
