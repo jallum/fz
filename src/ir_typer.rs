@@ -1795,7 +1795,7 @@ pub fn type_fn<T: crate::types_seam::Types>(
                             delta.insert(p, at.clone());
                         }
                     }
-                    if merge_into(&mut block_envs, *target, &delta) {
+                    if merge_into(t, &mut block_envs, *target, &delta) {
                         changed = true;
                     }
                     // Update vars for target's params via union across all
@@ -1824,10 +1824,10 @@ pub fn type_fn<T: crate::types_seam::Types>(
                     ..
                 } => {
                     let (then_env, else_env) = narrow_for_if(&env, *cond, &b.stmts);
-                    if merge_into(&mut block_envs, *then_b, &then_env) {
+                    if merge_into(t, &mut block_envs, *then_b, &then_env) {
                         changed = true;
                     }
-                    if merge_into(&mut block_envs, *else_b, &else_env) {
+                    if merge_into(t, &mut block_envs, *else_b, &else_env) {
                         changed = true;
                     }
                 }
@@ -1922,18 +1922,24 @@ pub fn type_fn<T: crate::types_seam::Types>(
 }
 
 /// Union `delta` into `block_envs[target]`. Returns true if anything changed.
-fn merge_into(
+fn merge_into<T: crate::types_seam::Types>(
+    t: &mut T,
     block_envs: &mut HashMap<BlockId, HashMap<Var, Descr>>,
     target: BlockId,
     delta: &HashMap<Var, Descr>,
 ) -> bool {
+    use crate::types_seam::AsDescr;
     let env = block_envs.entry(target).or_default();
     let mut changed = false;
-    for (v, t) in delta {
-        let prev = env.get(v).cloned().unwrap_or_else(Descr::none);
-        let unioned = prev.union(t);
-        if !unioned.is_equiv(&prev) {
-            env.insert(*v, unioned);
+    for (v, dt) in delta {
+        let prev_ty: T::Ty = match env.get(v) {
+            Some(d) => t.from_descr(d),
+            None => t.none(),
+        };
+        let dt_ty = t.from_descr(dt);
+        let unioned = t.union(prev_ty.clone(), dt_ty);
+        if !t.is_equivalent(&unioned, &prev_ty) {
+            env.insert(*v, unioned.as_descr());
             changed = true;
         }
     }
