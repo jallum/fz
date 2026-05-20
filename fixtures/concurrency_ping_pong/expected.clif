@@ -38,20 +38,20 @@ function u0:0(i64) -> i64 tail {
     fn6 = u0:30 sig6
 
 block0(v0: i64):
-    v1 = iconst.i32 13                  ; @4:9
-    v2 = call fn0(v1)                   ; @4:9  v1 = 13
-    v3 = iconst.i32 15                  ; @4:3
+    v1 = iconst.i32 22                  ; @4:9
+    v2 = call fn0(v1)                   ; @4:9  v1 = 22
+    v3 = iconst.i32 24                  ; @4:3
     v4 = iconst.i32 1                   ; @4:3
     v5 = iconst.i32 0                   ; @4:3
-    v6 = call fn1(v3, v4, v5)           ; @4:3  v3 = 15, v4 = 1, v5 = 0
+    v6 = call fn1(v3, v4, v5)           ; @4:3  v3 = 24, v4 = 1, v5 = 0
     v7 = func_addr.i64 fn2              ; @4:3
     store notrap aligned v7, v6+16      ; @4:3
     store notrap aligned v2, v6+24      ; @4:3
     v8 = call fn3(v6)                   ; @4:3
-    v9 = iconst.i32 16                  ; @5:9
+    v9 = iconst.i32 25                  ; @5:9
     v10 = iconst.i32 1                  ; @5:9
     v11 = iconst.i32 0                  ; @5:9
-    v12 = call fn4(v9, v10, v11)        ; @5:9  v9 = 16, v10 = 1, v11 = 0
+    v12 = call fn4(v9, v10, v11)        ; @5:9  v9 = 25, v10 = 1, v11 = 0
     v13 = func_addr.i64 fn5             ; @5:9
     store notrap aligned v13, v12+16    ; @5:9
     store notrap aligned v0, v12+24     ; @5:9
@@ -72,8 +72,8 @@ block0(v0: i64, v1: i64):
     return_call_indirect sig0, v3(v2, v1)
 }
 
-; fn k_receive_16
-    ;   @spec   k_receive_16(any) -> nil
+; fn k_receive_25
+    ;   @spec   k_receive_25(any) -> nil
     ;   @key    [any]
     ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {

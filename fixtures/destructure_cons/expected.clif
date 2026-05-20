@@ -28,8 +28,8 @@ block0(v0: i64):
     brif v11, block1, block2
 
 block1:
-    v12 = iconst.i64 34    ;; v12 :: :match_error
-    call fn1(v12)  ; v12 = 34
+    v12 = iconst.i64 26    ;; v12 :: :match_error
+    call fn1(v12)  ; v12 = 26
     v13 = iconst.i64 0
     return v13  ; v13 = 0
 

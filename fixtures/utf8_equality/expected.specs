@@ -1,0 +1,75 @@
+; spec print(1) #fn=4
+;   key:    [bool]
+;   return: nil
+;   vars:
+;     Var(0) :: bool
+;     Var(1) :: :function_clause
+;     Var(2) :: false
+;   exits:
+;     blk0 Goto blk2()
+;     blk1 Halt Var(1)      :: :function_clause
+;     blk2 If Var(2) ? blk4 : blk3
+;     blk3 TailCall fn_clause_1#19(Var(0))
+;              callee_key=[bool]
+;     blk4 TailCall fn_clause_0#18(Var(0))
+;              callee_key=[bool]
+
+; spec fn_clause_0(1) #fn=18
+;   key:    [any]
+;   return: nil
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: nil
+;   exits:
+;     blk0 Return Var(1)    :: nil
+
+; spec fn_clause_1(1) #fn=19
+;   key:    [bool]
+;   return: nil
+;   vars:
+;     Var(0) :: bool
+;     Var(1) :: nil
+;   exits:
+;     blk0 Return Var(1)    :: nil
+
+; spec main(0) #fn=22
+;   key:    []
+;   return: nil
+;   vars:
+;     Var(0) :: :match_error
+;     Var(1) :: str
+;     Var(3) :: str
+;     Var(5) :: bool
+;   exits:
+;     blk0 Call print#4(Var(5))
+;              callee_key=[bool]
+;              cont k_23#23 captured=[]
+;              cont_key=[nil]
+;     blk1 Halt Var(0)      :: :match_error
+
+; spec k_23(1) #fn=23
+;   key:    [nil]
+;   return: nil
+;   vars:
+;     Var(0) :: nil
+;     Var(1) :: str
+;     Var(3) :: str
+;     Var(5) :: bool
+;   exits:
+;     blk0 Call print#4(Var(5))
+;              callee_key=[bool]
+;              cont k_24#24 captured=[]
+;              cont_key=[nil]
+
+; spec k_24(1) #fn=24
+;   key:    [nil]
+;   return: nil
+;   vars:
+;     Var(0) :: nil
+;     Var(1) :: str
+;     Var(3) :: str
+;     Var(5) :: bool
+;   exits:
+;     blk0 TailCall print#4(Var(5))
+;              callee_key=[bool]
+

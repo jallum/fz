@@ -40,22 +40,22 @@ function u0:0(i64) -> i64 tail {
 
 block0(v0: i64):
     v1 = iconst.i64 10                  ; @12:21
-    v2 = iconst.i32 14                  ; @12:25
-    v3 = call fn0(v2)                   ; @12:25  v2 = 14
+    v2 = iconst.i32 23                  ; @12:25
+    v3 = call fn0(v2)                   ; @12:25  v2 = 23
     v4 = iconst.i64 81
     v5 = call fn1(v4, v3)  ; v4 = 81    ;; v5 :: any
     v6 = iconst.i64 20    ;; v6 :: 20
-    v7 = iconst.i32 14
-    v8 = call fn2(v7)  ; v7 = 14    ;; v8 :: &fn14[]:(α896) -> α959
+    v7 = iconst.i32 23
+    v8 = call fn2(v7)  ; v7 = 23    ;; v8 :: &fn23[]:(α1472) -> α1535
     v9 = iconst.i64 161
     v10 = call fn1(v9, v8)  ; v9 = 161    ;; v10 :: any
     v11 = iconst.i64 30    ;; v11 :: 30
-    v12 = iconst.i32 14
-    v13 = call fn3(v12)  ; v12 = 14    ;; v13 :: &fn14[]:(α896) -> α959
+    v12 = iconst.i32 23
+    v13 = call fn3(v12)  ; v12 = 23    ;; v13 :: &fn23[]:(α1472) -> α1535
     v14 = iconst.i64 241
     v15 = call fn1(v14, v13)  ; v14 = 241    ;; v15 :: any
-    v16 = iconst.i64 42    ;; v16 :: :value
-    v17 = call fn4(v5, v16)  ; v16 = 42    ;; v17 :: any
+    v16 = iconst.i64 66    ;; v16 :: :value
+    v17 = call fn4(v5, v16)  ; v16 = 66    ;; v17 :: any
     v18 = band_imm v17, 7
     v19 = icmp_imm eq v18, 1    ;; v19 :: bool
     brif v19, block2, block1            ; @12:7
@@ -72,8 +72,8 @@ block2:
     return_call fn8(v22, v5, v10, v15, v15, v0)  ; v22 = 2
 }
 
-; fn k_20_s16
-    ;   @spec   k_20(nil, any, any, any, any) -> nil
+; fn k_29_s25
+    ;   @spec   k_29(nil, any, any, any, any) -> nil
     ;   @key    [nil, any, any, any, any]
     ;   @abi    (Tagged, Tagged, Tagged, Tagged, Tagged) -> Tagged
 function u0:0(i64, i64, i64, i64, i64, i64) -> i64 tail {
@@ -89,8 +89,8 @@ function u0:0(i64, i64, i64, i64, i64, i64) -> i64 tail {
     fn4 = colocated u0:47 sig4
 
     block0(v0: i64, v1: i64, v2: i64, v3: i64, v4: i64, v5: i64):    ;; v0 :: nil, v1 :: any, v2 :: any, v3 :: any, v4 :: any
-    v6 = iconst.i64 42    ;; v6 :: :value
-    v7 = call fn0(v2, v6)  ; v6 = 42    ;; v7 :: any
+    v6 = iconst.i64 66    ;; v6 :: :value
+    v7 = call fn0(v2, v6)  ; v6 = 66    ;; v7 :: any
     v8 = band_imm v7, 7
     v9 = icmp_imm eq v8, 1    ;; v9 :: bool
     brif v9, block2, block1             ; @23:9
@@ -107,8 +107,8 @@ block2:
     return_call fn4(v12, v1, v2, v3, v4, v5)  ; v12 = 2
 }
 
-; fn k_22_s17
-    ;   @spec   k_22(nil, any, any, any, any) -> nil
+; fn k_31_s26
+    ;   @spec   k_31(nil, any, any, any, any) -> nil
     ;   @key    [nil, any, any, any, any]
     ;   @abi    (Tagged, Tagged, Tagged, Tagged, Tagged) -> Tagged
 function u0:0(i64, i64, i64, i64, i64, i64) -> i64 tail {
@@ -122,16 +122,16 @@ function u0:0(i64, i64, i64, i64, i64, i64) -> i64 tail {
     fn2 = u0:51 sig3
 
     block0(v0: i64, v1: i64, v2: i64, v3: i64, v4: i64, v5: i64):    ;; v0 :: nil, v1 :: any, v2 :: any, v3 :: any, v4 :: any
-    v6 = iconst.i64 42    ;; v6 :: :value
-    v7 = call fn0(v3, v6)  ; v6 = 42    ;; v7 :: any
+    v6 = iconst.i64 66    ;; v6 :: :value
+    v7 = call fn0(v3, v6)  ; v6 = 66    ;; v7 :: any
     v8 = band_imm v7, 7
     v9 = icmp_imm eq v8, 1    ;; v9 :: bool
     brif v9, block2, block1             ; @24:9
 
 block1:
     call fn1(v7)
-    v10 = iconst.i64 50    ;; v10 :: :before
-    call fn1(v10)  ; v10 = 50
+    v10 = iconst.i64 74    ;; v10 :: :before
+    call fn1(v10)  ; v10 = 74
     v11 = iconst.i64 2    ;; v11 :: nil
     v12 = load.i64 notrap aligned v5+16
     return_call_indirect sig2, v12(v11, v5)  ; v11 = 2
@@ -139,8 +139,8 @@ block1:
 block2:
     v13 = sshr_imm.i64 v7, 3
     call fn2(v13)
-    v14 = iconst.i64 50    ;; v14 :: :before
-    call fn1(v14)  ; v14 = 50
+    v14 = iconst.i64 74    ;; v14 :: :before
+    call fn1(v14)  ; v14 = 74
     v15 = iconst.i64 2    ;; v15 :: nil
     v16 = load.i64 notrap aligned v5+16
     return_call_indirect sig4, v16(v15, v5)  ; v15 = 2

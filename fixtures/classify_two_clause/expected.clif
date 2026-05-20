@@ -7,12 +7,12 @@ function u0:0(i64) -> i64 tail {
     fn0 = colocated u0:46 sig0
 
 block0(v0: i64):
-    v1 = iconst.i64 42                  ; @5:18
-    return_call fn0(v1, v0)             ; @5:9  v1 = 42
+    v1 = iconst.i64 66                  ; @5:18
+    return_call fn0(v1, v0)             ; @5:9  v1 = 66
 }
 
-; fn k_17_s16
-    ;   @spec   k_17(:zero) -> nil
+; fn k_26_s25
+    ;   @spec   k_26(:zero) -> nil
     ;   @key    [:zero]
     ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
@@ -27,8 +27,8 @@ function u0:0(i64, i64) -> i64 tail {
     return_call fn1(v2, v1)             ; @5:3  v2 = 2
 }
 
-; fn k_18_s17
-    ;   @spec   k_18(nil) -> nil
+; fn k_27_s26
+    ;   @spec   k_27(nil) -> nil
     ;   @key    [nil]
     ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
@@ -37,8 +37,8 @@ function u0:0(i64, i64) -> i64 tail {
     fn0 = u0:48 sig0
 
     block0(v0: i64, v1: i64):    ;; v0 :: nil
-    v2 = iconst.i64 50                  ; @6:18
-    call fn0(v2)  ; v2 = 50
+    v2 = iconst.i64 74                  ; @6:18
+    call fn0(v2)  ; v2 = 74
     v3 = iconst.i64 2    ;; v3 :: nil
     v4 = load.i64 notrap aligned v1+16  ; @6:9
     return_call_indirect sig1, v4(v3, v1) ; @6:9  v3 = 2

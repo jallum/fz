@@ -582,7 +582,20 @@ fn parse_runtime_prelude() -> (
         .expect("runtime.fz parse error (bug in built-in prelude)");
     let (env, o_inners, b_inners) = crate::type_expr::build_module_type_env_for(&attrs, "")
         .expect("runtime.fz @type error (bug in built-in prelude)");
-    (items, env, o_inners, b_inners)
+    // fz-axu.13 (S2) — runtime.fz now declares `defmodule Utf8`. Flatten
+    // module-nested fns to qualified-name top-level fns so call sites
+    // like `Utf8.valid?(…)` resolve. Pre-S2 the prelude had no
+    // defmodule, so this step is a no-op for the legacy items.
+    let prelude_prog = crate::ast::Program {
+        items,
+        module_docs: Default::default(),
+        module_type_envs: Default::default(),
+        opaque_inners: Default::default(),
+        brand_inners: Default::default(),
+    };
+    let flat = crate::resolve::flatten_modules(prelude_prog)
+        .expect("runtime.fz module flatten error (bug in built-in prelude)");
+    (flat.items, env, o_inners, b_inners)
 }
 
 pub fn lower_program(prog: &Program) -> Result<Module, LowerError> {
@@ -1787,44 +1800,70 @@ fn lower_matrix_atom_literal(
     body_cb: BodyCb<'_>,
 ) -> Result<(), LowerError> {
     use std::collections::BTreeMap;
+    // fz-axu.11 (L3) — string patterns need a two-stmt materialisation
+    // (ConstBitstring + Brand) whereas other constants are single-Prim.
+    // `KeyLit` lets both shapes share the dispatch table.
+    enum KeyLit {
+        Single(Prim),
+        Utf8(Vec<u8>),
+    }
     let mut by_key: BTreeMap<String, Vec<Row>> = BTreeMap::new();
-    let mut key_prim: HashMap<String, Prim> = HashMap::new();
+    let mut key_lit: HashMap<String, KeyLit> = HashMap::new();
     let mut default_rows: Vec<Row> = Vec::new();
     for row in matrix.rows {
         let p = peel_as_pat(&row.patterns[col]);
-        let (k, prim) = match &p.node {
+        let (k, kl) = match &p.node {
             Pattern::Atom(s) => {
                 let id = ctx.atoms.intern(s);
-                (format!("a:{}", s), Prim::Const(Const::Atom(id)))
+                (
+                    format!("a:{}", s),
+                    KeyLit::Single(Prim::Const(Const::Atom(id))),
+                )
             }
-            Pattern::Int(n) => (format!("i:{}", n), Prim::Const(Const::Int(*n))),
-            Pattern::Bool(true) => ("b:t".to_string(), Prim::Const(Const::True)),
-            Pattern::Bool(false) => ("b:f".to_string(), Prim::Const(Const::False)),
-            Pattern::Nil => ("n".to_string(), Prim::Const(Const::Nil)),
-            Pattern::Str(_) => {
-                // fz-axu.11 (L3) — string patterns now lower to a
-                // two-stmt (ConstBitstring, Brand) sequence; the
-                // matrix dispatch's key/Prim shape can only carry one
-                // Prim. Fall through to the row-by-row lowering at
-                // `lower_pattern_match`, which handles the L3 form
-                // directly. The dispatch optimisation is forfeit for
-                // string columns; nothing in the fixture suite hits
-                // this path today, so the perf loss is theoretical.
-                default_rows.push(row);
-                continue;
+            Pattern::Int(n) => (
+                format!("i:{}", n),
+                KeyLit::Single(Prim::Const(Const::Int(*n))),
+            ),
+            Pattern::Bool(true) => ("b:t".to_string(), KeyLit::Single(Prim::Const(Const::True))),
+            Pattern::Bool(false) => ("b:f".to_string(), KeyLit::Single(Prim::Const(Const::False))),
+            Pattern::Nil => ("n".to_string(), KeyLit::Single(Prim::Const(Const::Nil))),
+            Pattern::Str(bytes) => {
+                // fz-axu.11 (L3) — same shape as Expr::Str: utf8 brand
+                // over a const bitstring. UTF-8 validation surfaces as
+                // a LowerError at the matrix entry; non-UTF-8 string
+                // patterns are rejected at compile time.
+                if std::str::from_utf8(bytes).is_err() {
+                    return Err(LowerError::Unsupported {
+                        span: p.span,
+                        what: "non-UTF-8 string pattern (use `<<…>>` for raw bytes)"
+                            .into(),
+                    });
+                }
+                let key = format!("s:{}", String::from_utf8(bytes.clone()).unwrap());
+                (key, KeyLit::Utf8(bytes.clone()))
             }
-            Pattern::Float(x) => (format!("f:{}", x), Prim::Const(Const::Float(*x))),
+            Pattern::Float(x) => (
+                format!("f:{}", x),
+                KeyLit::Single(Prim::Const(Const::Float(*x))),
+            ),
             Pattern::Wildcard | Pattern::Var(_) => {
                 default_rows.push(row);
                 continue;
             }
             _ => continue,
         };
-        key_prim.entry(k.clone()).or_insert(prim);
+        key_lit.entry(k.clone()).or_insert(kl);
         by_key.entry(k).or_default().push(row);
     }
     for (k, rows) in by_key {
-        let lit_v = ctx.let_(key_prim.remove(&k).unwrap());
+        let lit_v = match key_lit.remove(&k).unwrap() {
+            KeyLit::Single(p) => ctx.let_(p),
+            KeyLit::Utf8(bytes) => {
+                let bit_len = (bytes.len() * 8) as u64;
+                let bs = ctx.let_(Prim::ConstBitstring(bytes, bit_len));
+                ctx.let_(Prim::Brand(bs, "utf8".to_string()))
+            }
+        };
         let eq = ctx.let_(Prim::BinOp(BinOp::Eq, subject, lit_v));
         let match_b = ctx.cur_mut().block(vec![]);
         let next_b = ctx.cur_mut().block(vec![]);
@@ -4839,11 +4878,17 @@ end
         let m = lower_program(&prog).expect("lower");
         let caller = m.fn_by_name("caller").unwrap();
         // The continuation fn is the one whose name starts with "k_".
+        // Filter out continuations from the runtime.fz prelude (e.g.
+        // Utf8.from_bytes also CPS-splits) by checking FnCategory.
         let k = m
             .fns
             .iter()
-            .find(|f| f.name.starts_with("k_"))
-            .expect("expected a continuation fn");
+            .find(|f| {
+                f.name.starts_with("k_")
+                    && f.category == crate::fz_ir::FnCategory::CpsCont
+                    && f.id.0 >= caller.id.0
+            })
+            .expect("expected a continuation fn in user code");
         let cont_span = m.source.fn_span_of(k.id);
         assert!(!cont_span.is_dummy());
         // The originating call is `callee(x)` inside `caller`'s body.

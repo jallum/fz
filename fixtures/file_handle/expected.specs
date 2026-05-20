@@ -1,4 +1,4 @@
-; spec print(1) #fn=0
+; spec print(1) #fn=4
 ;   key:    [:done]
 ;   return: nil
 ;   vars:
@@ -9,12 +9,12 @@
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(1)      :: :function_clause
 ;     blk2 If Var(2) ? blk4 : blk3
-;     blk3 TailCall fn_clause_1#10(Var(0))
+;     blk3 TailCall fn_clause_1#19(Var(0))
 ;              callee_key=[:done]
-;     blk4 TailCall fn_clause_0#9(Var(0))
+;     blk4 TailCall fn_clause_0#18(Var(0))
 ;              callee_key=[:done]
 
-; spec print(1) #fn=0
+; spec print(1) #fn=4
 ;   key:    [:dtor_closed]
 ;   return: nil
 ;   vars:
@@ -25,12 +25,12 @@
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(1)      :: :function_clause
 ;     blk2 If Var(2) ? blk4 : blk3
-;     blk3 TailCall fn_clause_1#10(Var(0))
+;     blk3 TailCall fn_clause_1#19(Var(0))
 ;              callee_key=[:dtor_closed]
-;     blk4 TailCall fn_clause_0#9(Var(0))
+;     blk4 TailCall fn_clause_0#18(Var(0))
 ;              callee_key=[:dtor_closed]
 
-; spec print(1) #fn=0
+; spec print(1) #fn=4
 ;   key:    [:opened]
 ;   return: nil
 ;   vars:
@@ -41,12 +41,12 @@
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(1)      :: :function_clause
 ;     blk2 If Var(2) ? blk4 : blk3
-;     blk3 TailCall fn_clause_1#10(Var(0))
+;     blk3 TailCall fn_clause_1#19(Var(0))
 ;              callee_key=[:opened]
-;     blk4 TailCall fn_clause_0#9(Var(0))
+;     blk4 TailCall fn_clause_0#18(Var(0))
 ;              callee_key=[:opened]
 
-; spec print(1) #fn=0
+; spec print(1) #fn=4
 ;   key:    [int]
 ;   return: nil
 ;   vars:
@@ -57,26 +57,26 @@
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(1)      :: :function_clause
 ;     blk2 If Var(2) ? blk4 : blk3
-;     blk3 TailCall fn_clause_1#10(Var(0))
+;     blk3 TailCall fn_clause_1#19(Var(0))
 ;              callee_key=[int]
-;     blk4 TailCall fn_clause_0#9(Var(0))
+;     blk4 TailCall fn_clause_0#18(Var(0))
 ;              callee_key=[int]
 
-; spec make_resource(2) #fn=8
-;   key:    [int, &fn13[]:(α832) -> α895]
+; spec make_resource(2) #fn=12
+;   key:    [int, &fn22[]:(α1408) -> α1471]
 ;   return: any
 ;   fn_constants:
-;     Var(1) = close_observable#13
+;     Var(1) = close_observable#22
 ;   vars:
 ;     Var(0) :: int
-;     Var(1) :: &fn13[]:(α832) -> α895
+;     Var(1) :: &fn22[]:(α1408) -> α1471
 ;     Var(2) :: :match_error
 ;     Var(3) :: any
 ;   exits:
 ;     blk0 Return Var(3)    :: any
 ;     blk1 Halt Var(2)      :: :match_error
 
-; spec fn_clause_0(1) #fn=9
+; spec fn_clause_0(1) #fn=18
 ;   key:    [any]
 ;   return: nil
 ;   vars:
@@ -85,7 +85,7 @@
 ;   exits:
 ;     blk0 Return Var(1)    :: nil
 
-; spec fn_clause_0(1) #fn=9
+; spec fn_clause_0(1) #fn=18
 ;   key:    [int]
 ;   return: nil
 ;   vars:
@@ -94,7 +94,7 @@
 ;   exits:
 ;     blk0 Return Var(1)    :: nil
 
-; spec fn_clause_1(1) #fn=10
+; spec fn_clause_1(1) #fn=19
 ;   key:    [:done]
 ;   return: nil
 ;   vars:
@@ -103,7 +103,7 @@
 ;   exits:
 ;     blk0 Return Var(1)    :: nil
 
-; spec fn_clause_1(1) #fn=10
+; spec fn_clause_1(1) #fn=19
 ;   key:    [:dtor_closed]
 ;   return: nil
 ;   vars:
@@ -112,7 +112,7 @@
 ;   exits:
 ;     blk0 Return Var(1)    :: nil
 
-; spec fn_clause_1(1) #fn=10
+; spec fn_clause_1(1) #fn=19
 ;   key:    [:opened]
 ;   return: nil
 ;   vars:
@@ -121,7 +121,7 @@
 ;   exits:
 ;     blk0 Return Var(1)    :: nil
 
-; spec fn_clause_1(1) #fn=10
+; spec fn_clause_1(1) #fn=19
 ;   key:    [any]
 ;   return: nil
 ;   vars:
@@ -130,7 +130,7 @@
 ;   exits:
 ;     blk0 Return Var(1)    :: nil
 
-; spec close_observable(1) #fn=13
+; spec close_observable(1) #fn=22
 ;   key:    [any]
 ;   return: nil
 ;   vars:
@@ -139,25 +139,25 @@
 ;     Var(2) :: int
 ;     Var(3) :: :dtor_closed
 ;   exits:
-;     blk0 TailCall print#0(Var(3))
+;     blk0 TailCall print#4(Var(3))
 ;              callee_key=[:dtor_closed]
 ;     blk1 Halt Var(1)      :: :match_error
 
-; spec FileHandle.from_fd(1) #fn=14
+; spec FileHandle.from_fd(1) #fn=23
 ;   key:    [int]
 ;   return: any
 ;   fn_constants:
-;     Var(2) = close_observable#13
+;     Var(2) = close_observable#22
 ;   vars:
 ;     Var(0) :: int
 ;     Var(1) :: :match_error
-;     Var(2) :: &fn13[]:(α832) -> α895
+;     Var(2) :: &fn22[]:(α1408) -> α1471
 ;   exits:
-;     blk0 TailCall make_resource#8(Var(0), Var(2))
-;              callee_key=[int, &fn13[]:(α832) -> α895]
+;     blk0 TailCall make_resource#12(Var(0), Var(2))
+;              callee_key=[int, &fn22[]:(α1408) -> α1471]
 ;     blk1 Halt Var(1)      :: :match_error
 
-; spec main(0) #fn=15
+; spec main(0) #fn=24
 ;   key:    []
 ;   return: nil
 ;   vars:
@@ -180,15 +180,15 @@
 ;     Var(16) :: :match_error
 ;     Var(17) :: :opened
 ;   exits:
-;     blk0 Call print#0(Var(17))
+;     blk0 Call print#4(Var(17))
 ;              callee_key=[:opened]
-;              cont k_16#16 captured=[Var(12), Var(15)]
+;              cont k_25#25 captured=[Var(12), Var(15)]
 ;              cont_key=[nil, str, int]
 ;     blk1 Halt Var(0)      :: :match_error
 ;     blk2 Halt Var(13)      :: :match_error
 ;     blk3 Halt Var(16)      :: :match_error
 
-; spec k_16(3) #fn=16
+; spec k_25(3) #fn=25
 ;   key:    [nil, str, int]
 ;   return: nil
 ;   vars:
@@ -203,13 +203,13 @@
 ;     Var(8) :: int
 ;     Var(9) :: :match_error
 ;   exits:
-;     blk0 Call print#0(Var(8))
+;     blk0 Call print#4(Var(8))
 ;              callee_key=[int]
-;              cont k_17#17 captured=[Var(1), Var(2), Var(8)]
+;              cont k_26#26 captured=[Var(1), Var(2), Var(8)]
 ;              cont_key=[nil, str, int, int]
 ;     blk1 Halt Var(9)      :: :match_error
 
-; spec k_17(4) #fn=17
+; spec k_26(4) #fn=26
 ;   key:    [nil, str, int, int]
 ;   return: nil
 ;   vars:
@@ -218,12 +218,12 @@
 ;     Var(2) :: int
 ;     Var(3) :: int
 ;   exits:
-;     blk0 Call FileHandle.from_fd#14(Var(2))
+;     blk0 Call FileHandle.from_fd#23(Var(2))
 ;              callee_key=[int]
-;              cont k_18#18 captured=[Var(1), Var(2), Var(3)]
+;              cont k_27#27 captured=[Var(1), Var(2), Var(3)]
 ;              cont_key=[any, str, int, int]
 
-; spec k_18(4) #fn=18
+; spec k_27(4) #fn=27
 ;   key:    [any, str, int, int]
 ;   return: nil
 ;   vars:
@@ -235,7 +235,7 @@
 ;     Var(5) :: int
 ;     Var(6) :: :done
 ;   exits:
-;     blk0 TailCall print#0(Var(6))
+;     blk0 TailCall print#4(Var(6))
 ;              callee_key=[:done]
 ;     blk1 Halt Var(4)      :: :match_error
 

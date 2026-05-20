@@ -1361,6 +1361,15 @@ impl JitBackend {
             "fz_make_resource",
             fz_runtime::ir_runtime::fz_make_resource as *const u8,
         );
+        // fz-axu.14 (R1) / .13 (S2) — utf8 brand support.
+        builder.symbol(
+            "fz_bitstring_valid_utf8",
+            fz_runtime::ir_runtime::fz_bitstring_valid_utf8 as *const u8,
+        );
+        builder.symbol(
+            "fz_brand_bitstring_as_utf8",
+            fz_runtime::ir_runtime::fz_brand_bitstring_as_utf8 as *const u8,
+        );
         // fz-swt.11 — runtime-exported fixture/test dtor. Always bound to
         // the JIT (not gated on cfg(test)) so any `fz dump --emit clif`
         // or `fz run` over a fixture that uses it resolves cleanly — the

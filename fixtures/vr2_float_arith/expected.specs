@@ -1,4 +1,4 @@
-; spec print(1) #fn=0
+; spec print(1) #fn=4
 ;   key:    [float]
 ;   return: nil
 ;   vars:
@@ -9,12 +9,12 @@
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(1)      :: :function_clause
 ;     blk2 If Var(2) ? blk4 : blk3
-;     blk3 TailCall fn_clause_1#10(Var(0))
+;     blk3 TailCall fn_clause_1#19(Var(0))
 ;              callee_key=[float]
-;     blk4 TailCall fn_clause_0#9(Var(0))
+;     blk4 TailCall fn_clause_0#18(Var(0))
 ;              callee_key=[float]
 
-; spec print(1) #fn=0
+; spec print(1) #fn=4
 ;   key:    [true]
 ;   return: nil
 ;   vars:
@@ -25,12 +25,12 @@
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(1)      :: :function_clause
 ;     blk2 If Var(2) ? blk4 : blk3
-;     blk3 TailCall fn_clause_1#10(Var(0))
+;     blk3 TailCall fn_clause_1#19(Var(0))
 ;              callee_key=[true]
-;     blk4 TailCall fn_clause_0#9(Var(0))
+;     blk4 TailCall fn_clause_0#18(Var(0))
 ;              callee_key=[true]
 
-; spec fn_clause_0(1) #fn=9
+; spec fn_clause_0(1) #fn=18
 ;   key:    [any]
 ;   return: nil
 ;   vars:
@@ -39,7 +39,7 @@
 ;   exits:
 ;     blk0 Return Var(1)    :: nil
 
-; spec fn_clause_1(1) #fn=10
+; spec fn_clause_1(1) #fn=19
 ;   key:    [float]
 ;   return: nil
 ;   vars:
@@ -48,7 +48,7 @@
 ;   exits:
 ;     blk0 Return Var(1)    :: nil
 
-; spec fn_clause_1(1) #fn=10
+; spec fn_clause_1(1) #fn=19
 ;   key:    [true]
 ;   return: nil
 ;   vars:
@@ -57,7 +57,7 @@
 ;   exits:
 ;     blk0 Return Var(1)    :: nil
 
-; spec main(0) #fn=13
+; spec main(0) #fn=22
 ;   key:    []
 ;   return: nil
 ;   vars:
@@ -66,13 +66,13 @@
 ;     Var(2) :: 2.5
 ;     Var(3) :: 4.0
 ;   exits:
-;     blk0 Call print#0(Var(3))
+;     blk0 Call print#4(Var(3))
 ;              callee_key=[4.0]
-;              cont k_14#14 captured=[]
+;              cont k_23#23 captured=[]
 ;              cont_key=[nil]
 ;     blk1 Halt Var(0)      :: :match_error
 
-; spec k_14(1) #fn=14
+; spec k_23(1) #fn=23
 ;   key:    [nil]
 ;   return: nil
 ;   vars:
@@ -81,12 +81,12 @@
 ;     Var(2) :: 3.0
 ;     Var(3) :: 7.0
 ;   exits:
-;     blk0 Call print#0(Var(3))
+;     blk0 Call print#4(Var(3))
 ;              callee_key=[7.0]
-;              cont k_15#15 captured=[]
+;              cont k_24#24 captured=[]
 ;              cont_key=[nil]
 
-; spec k_15(1) #fn=15
+; spec k_24(1) #fn=24
 ;   key:    [nil]
 ;   return: nil
 ;   vars:
@@ -95,12 +95,12 @@
 ;     Var(2) :: 4.0
 ;     Var(3) :: 10.0
 ;   exits:
-;     blk0 Call print#0(Var(3))
+;     blk0 Call print#4(Var(3))
 ;              callee_key=[10.0]
-;              cont k_16#16 captured=[]
+;              cont k_25#25 captured=[]
 ;              cont_key=[nil]
 
-; spec k_16(1) #fn=16
+; spec k_25(1) #fn=25
 ;   key:    [nil]
 ;   return: nil
 ;   vars:
@@ -109,6 +109,6 @@
 ;     Var(2) :: 2.0
 ;     Var(3) :: true
 ;   exits:
-;     blk0 TailCall print#0(Var(3))
+;     blk0 TailCall print#4(Var(3))
 ;              callee_key=[true]
 

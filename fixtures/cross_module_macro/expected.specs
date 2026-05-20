@@ -1,4 +1,4 @@
-; spec print(1) #fn=0
+; spec print(1) #fn=4
 ;   key:    [int]
 ;   return: nil
 ;   vars:
@@ -9,12 +9,12 @@
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(1)      :: :function_clause
 ;     blk2 If Var(2) ? blk4 : blk3
-;     blk3 TailCall fn_clause_1#10(Var(0))
+;     blk3 TailCall fn_clause_1#19(Var(0))
 ;              callee_key=[int]
-;     blk4 TailCall fn_clause_0#9(Var(0))
+;     blk4 TailCall fn_clause_0#18(Var(0))
 ;              callee_key=[int]
 
-; spec fn_clause_0(1) #fn=9
+; spec fn_clause_0(1) #fn=18
 ;   key:    [int]
 ;   return: nil
 ;   vars:
@@ -23,7 +23,7 @@
 ;   exits:
 ;     blk0 Return Var(1)    :: nil
 
-; spec fn_clause_1(1) #fn=10
+; spec fn_clause_1(1) #fn=19
 ;   key:    [any]
 ;   return: nil
 ;   vars:
@@ -32,7 +32,7 @@
 ;   exits:
 ;     blk0 Return Var(1)    :: nil
 
-; spec Helpers.double(1) #fn=13
+; spec Helpers.double(1) #fn=22
 ;   key:    [21]
 ;   return: int
 ;   vars:
@@ -44,36 +44,36 @@
 ;     blk0 Return Var(3)    :: int
 ;     blk1 Halt Var(1)      :: :match_error
 
-; spec App.run(1) #fn=15
+; spec App.run(1) #fn=24
 ;   key:    [21]
 ;   return: int
 ;   vars:
 ;     Var(0) :: 21
 ;     Var(1) :: :match_error
 ;   exits:
-;     blk0 TailCall Helpers.double#13(Var(0))
+;     blk0 TailCall Helpers.double#22(Var(0))
 ;              callee_key=[21]
 ;     blk1 Halt Var(1)      :: :match_error
 
-; spec main(0) #fn=16
+; spec main(0) #fn=25
 ;   key:    []
 ;   return: nil
 ;   vars:
 ;     Var(0) :: :match_error
 ;     Var(1) :: 21
 ;   exits:
-;     blk0 Call App.run#15(Var(1))
+;     blk0 Call App.run#24(Var(1))
 ;              callee_key=[21]
-;              cont k_17#17 captured=[]
+;              cont k_26#26 captured=[]
 ;              cont_key=[int]
 ;     blk1 Halt Var(0)      :: :match_error
 
-; spec k_17(1) #fn=17
+; spec k_26(1) #fn=26
 ;   key:    [int]
 ;   return: nil
 ;   vars:
 ;     Var(0) :: int
 ;   exits:
-;     blk0 TailCall print#0(Var(0))
+;     blk0 TailCall print#4(Var(0))
 ;              callee_key=[int]
 
