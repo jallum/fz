@@ -181,16 +181,15 @@ fn fold_binop<T: Types>(
     let ad = env.get(&a)?;
     let bd = env.get(&b)?;
     use BinOp::*;
-    let d = match op {
-        Add | Sub | Mul | Div | Mod => fold_arith(op, ad, bd),
-        Eq | Neq => fold_eq(op, ad, bd),
-        Lt | Le | Gt | Ge => fold_cmp(op, ad, bd),
-        And | Or => fold_logical(op, ad, bd),
-    }?;
-    Some(t.from_descr(&d))
+    match op {
+        Add | Sub | Mul | Div | Mod => fold_arith(t, op, ad, bd),
+        Eq | Neq => fold_eq(t, op, ad, bd),
+        Lt | Le | Gt | Ge => fold_cmp(t, op, ad, bd),
+        And | Or => fold_logical(t, op, ad, bd),
+    }
 }
 
-fn fold_arith(op: BinOp, ad: &Descr, bd: &Descr) -> Option<Descr> {
+fn fold_arith<T: Types>(t: &mut T, op: BinOp, ad: &Descr, bd: &Descr) -> Option<T::Ty> {
     if let (Some(ai), Some(bi)) = (as_int_lit(ad), as_int_lit(bd)) {
         let r = match op {
             BinOp::Add => ai.checked_add(bi)?,
@@ -210,7 +209,7 @@ fn fold_arith(op: BinOp, ad: &Descr, bd: &Descr) -> Option<Descr> {
             }
             _ => return None,
         };
-        return Some(Descr::int_lit(r));
+        return Some(t.from_descr(&Descr::int_lit(r)));
     }
     if let (Some(af), Some(bf)) = (as_float_lit(ad), as_float_lit(bd)) {
         let af = af.get();
@@ -226,30 +225,30 @@ fn fold_arith(op: BinOp, ad: &Descr, bd: &Descr) -> Option<Descr> {
         if r.is_nan() {
             return None;
         }
-        return Some(Descr::float_lit(r));
+        return Some(t.from_descr(&Descr::float_lit(r)));
     }
     None
 }
 
-fn fold_eq(op: BinOp, ad: &Descr, bd: &Descr) -> Option<Descr> {
+fn fold_eq<T: Types>(t: &mut T, op: BinOp, ad: &Descr, bd: &Descr) -> Option<T::Ty> {
     let is_eq = matches!(op, BinOp::Eq);
 
     // Both literal: exact compare.
     if is_literal(ad) && is_literal(bd) {
         let equal = ad == bd;
-        return Some(bool_descr(if is_eq { equal } else { !equal }));
+        return Some(t.from_descr(&bool_descr(if is_eq { equal } else { !equal })));
     }
 
     // Kind-disjoint (intersection empty): result is definitively
     // false-for-Eq / true-for-Neq even without both being literal.
     if !ad.is_empty() && !bd.is_empty() && ad.intersect(bd).is_empty() {
-        return Some(bool_descr(!is_eq));
+        return Some(t.from_descr(&bool_descr(!is_eq)));
     }
 
     None
 }
 
-fn fold_cmp(op: BinOp, ad: &Descr, bd: &Descr) -> Option<Descr> {
+fn fold_cmp<T: Types>(t: &mut T, op: BinOp, ad: &Descr, bd: &Descr) -> Option<T::Ty> {
     use BinOp::*;
     if let (Some(ai), Some(bi)) = (as_int_lit(ad), as_int_lit(bd)) {
         let b = match op {
@@ -259,7 +258,7 @@ fn fold_cmp(op: BinOp, ad: &Descr, bd: &Descr) -> Option<Descr> {
             Ge => ai >= bi,
             _ => return None,
         };
-        return Some(bool_descr(b));
+        return Some(t.from_descr(&bool_descr(b)));
     }
     if let (Some(af), Some(bf)) = (as_float_lit(ad), as_float_lit(bd)) {
         let af = af.get();
@@ -271,12 +270,12 @@ fn fold_cmp(op: BinOp, ad: &Descr, bd: &Descr) -> Option<Descr> {
             Ge => af >= bf,
             _ => return None,
         };
-        return Some(bool_descr(b));
+        return Some(t.from_descr(&bool_descr(b)));
     }
     None
 }
 
-fn fold_logical(op: BinOp, ad: &Descr, bd: &Descr) -> Option<Descr> {
+fn fold_logical<T: Types>(t: &mut T, op: BinOp, ad: &Descr, bd: &Descr) -> Option<T::Ty> {
     let ab = as_bool_lit(ad)?;
     let bb = as_bool_lit(bd)?;
     let r = match op {
@@ -284,7 +283,7 @@ fn fold_logical(op: BinOp, ad: &Descr, bd: &Descr) -> Option<Descr> {
         BinOp::Or => ab || bb,
         _ => return None,
     };
-    Some(bool_descr(r))
+    Some(t.from_descr(&bool_descr(r)))
 }
 
 fn fold_unop<T: Types>(
@@ -694,13 +693,12 @@ fn ast_binop_fold<T: Types>(t: &mut T, op: ast::BinOp, ad: &Descr, bd: &Descr) -
         // Pipe and Cons aren't fold-prim-able in the same shape.
         Pipe | Cons => return None,
     };
-    let d = match ir_op {
-        BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => fold_arith(ir_op, ad, bd),
-        BinOp::Eq | BinOp::Neq => fold_eq(ir_op, ad, bd),
-        BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => fold_cmp(ir_op, ad, bd),
-        BinOp::And | BinOp::Or => fold_logical(ir_op, ad, bd),
-    }?;
-    Some(t.from_descr(&d))
+    match ir_op {
+        BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => fold_arith(t, ir_op, ad, bd),
+        BinOp::Eq | BinOp::Neq => fold_eq(t, ir_op, ad, bd),
+        BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => fold_cmp(t, ir_op, ad, bd),
+        BinOp::And | BinOp::Or => fold_logical(t, ir_op, ad, bd),
+    }
 }
 
 #[allow(dead_code)] // used via fold_expr.
