@@ -124,7 +124,8 @@ pub fn fold_prim<T: Types>(
         // fz-f88.3 — empty list literal folds to `list_of(none())`. Non-empty
         // MakeList still loses length info (L1 follow-up fz-4lo).
         Prim::MakeList(elems, tail_v) if elems.is_empty() && tail_v.is_none() => {
-            Some(t.from_descr(&Descr::list_of(Descr::none())))
+            let n = t.none();
+            Some(t.list(n))
         }
         // fz-jg5.6: closure_lit fold — when MakeClosure's captures are
         // all literal, the closure Var has a closure_lit(F, captures) Descr.
@@ -311,15 +312,15 @@ fn fold_make_tuple<T: Types>(
     vs: &[Var],
     env: &HashMap<Var, Descr>,
 ) -> Option<T::Ty> {
-    let mut elems = Vec::with_capacity(vs.len());
+    let mut elems: Vec<T::Ty> = Vec::with_capacity(vs.len());
     for v in vs {
         let d = env.get(v)?;
         if !is_literal(d) {
             return None;
         }
-        elems.push(d.clone());
+        elems.push(t.from_descr(d));
     }
-    Some(t.from_descr(&Descr::tuple_of(elems)))
+    Some(t.tuple(&elems))
 }
 
 fn fold_tuple_field<T: Types>(
@@ -358,20 +359,20 @@ fn fold_make_closure<T: Types>(
     captured: &[Var],
     env: &HashMap<Var, Descr>,
 ) -> Option<T::Ty> {
-    let mut cap_descrs: Vec<Descr> = Vec::with_capacity(captured.len());
+    let mut caps: Vec<T::Ty> = Vec::with_capacity(captured.len());
     for cv in captured {
-        let d = env.get(cv)?.clone();
-        if !is_literal(&d) {
+        let d = env.get(cv)?;
+        if !is_literal(d) {
             return None;
         }
-        cap_descrs.push(d);
+        caps.push(t.from_descr(d));
     }
     // n_args is the closure's apparent post-capture arity. We don't
     // know it here without consulting Module.fn_by_id; passing 0 means
     // downstream consumers must look up the body's true arity. The
     // reducer's call-dispatch path consults the body directly, so this
     // 0 placeholder is fine.
-    Some(t.from_descr(&Descr::closure_lit(fn_id, cap_descrs, 0)))
+    Some(t.closure_lit(fn_id, caps, 0))
 }
 
 fn fold_list_is_nil<T: Types>(
