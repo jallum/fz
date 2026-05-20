@@ -122,6 +122,15 @@ pub trait Types {
     /// no list axis or the list axis is unconstrained.
     fn list_element_type(&mut self, a: &Self::Ty) -> Self::Ty;
 
+    /// Project `a`'s tuple-axis components at `arity`. Returns a vector
+    /// of length `arity`; positions with no matching shape default to
+    /// `any`.
+    fn tuple_projections(&mut self, a: &Self::Ty, arity: usize) -> Vec<Self::Ty>;
+
+    /// The widest arity present in `a`'s tuple-axis clauses, or 0 if
+    /// `a` has no tuple axis.
+    fn max_tuple_arity(&self, a: &Self::Ty) -> usize;
+
     // ---- lattice ops ---------------------------------------------------
 
     fn union(&mut self, a: Self::Ty, b: Self::Ty) -> Self::Ty;
@@ -317,6 +326,17 @@ impl Types for ConcreteTypes {
 
     fn list_element_type(&mut self, a: &Ty) -> Ty {
         Ty::from_descr(crate::typer::list_element_type(a.descr()))
+    }
+
+    fn tuple_projections(&mut self, a: &Ty, arity: usize) -> Vec<Ty> {
+        crate::typer::tuple_projections(a.descr(), arity)
+            .into_iter()
+            .map(Ty::from_descr)
+            .collect()
+    }
+
+    fn max_tuple_arity(&self, a: &Ty) -> usize {
+        a.descr().max_tuple_arity()
     }
 
     fn union(&mut self, a: Ty, b: Ty) -> Ty {

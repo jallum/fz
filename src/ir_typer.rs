@@ -2219,16 +2219,14 @@ fn type_prim<T: crate::types_seam::Types>(
         }
         Prim::TupleField(v, i) => {
             let vt = lookup(t, env, *v);
+            let vt_ty = t.from_descr(&vt);
             // Find the widest arity in v's tuple clauses that covers index i;
             // project that component. Falls back to any when there's no
             // matching tuple shape.
-            let max_arity = vt.max_tuple_arity();
+            let max_arity = t.max_tuple_arity(&vt_ty);
             if (*i as usize) < max_arity {
-                let comps = crate::typer::tuple_projections(&vt, max_arity);
-                match comps.into_iter().nth(*i as usize) {
-                    Some(d) => t.from_descr(&d),
-                    None => t.any(),
-                }
+                let comps = t.tuple_projections(&vt_ty, max_arity);
+                comps.into_iter().nth(*i as usize).unwrap_or_else(|| t.any())
             } else {
                 t.any()
             }
