@@ -1109,6 +1109,10 @@ fn eval_prim(module: &Module, prim: &Prim, env: &HashMap<Var, FzValue>) -> Resul
             }
             acc
         }
+        // fz-axu.4 (K3) — brand-mint is identity at runtime: the source
+        // value passes through unchanged. The type system carries the
+        // brand tag; the runtime sees just the underlying bytes.
+        Prim::Brand(v, _) => env_get(env, *v)?,
         _ => {
             return Err(format!(
                 "interp .5.2: prim {:?} not yet supported (lands in fz-ul4.23.5.3+)",

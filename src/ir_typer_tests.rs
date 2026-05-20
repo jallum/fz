@@ -2016,6 +2016,66 @@ fn make_bitstring_types_as_str_t() {
     );
 }
 
+// fz-axu.4 (K3) — Prim::Brand(v, name) overlays the brand tag on the
+// source's structural type. The runtime sees identity; the type system
+// records the brand membership.
+
+#[test]
+fn brand_overlays_brand_tag_on_source_type() {
+    let mut b = FnBuilder::new(FnId(0), "main");
+    let entry = b.block(vec![]);
+    let bs = b.let_(entry, Prim::ConstBitstring(vec![104, 105], 16));
+    let branded = b.let_(entry, Prim::Brand(bs, "utf8".to_string()));
+    b.set_terminator(entry, Term::Halt(branded));
+    let m = build_module(vec![b.build()]);
+    let mt = type_module(&m);
+    let t = fn_view(&m, &mt, 0).vars.get(&branded).unwrap().clone();
+    // Brand tag is present.
+    assert!(
+        !t.brands.is_none(),
+        "branded value must carry the brand tag; got {}",
+        t,
+    );
+    // Underlying axes (strs / str_t) survive — the value is still a
+    // bitstring at runtime; the K4 is_subtype rule lets it stand in
+    // for the inner type.
+    assert!(
+        Descr::str_t().is_subtype(&Descr {
+            brands: crate::types::LiteralSet::none(),
+            ..t.clone()
+        }),
+        "brand-stripped type must subsume str_t(); got {}",
+        t,
+    );
+}
+
+#[test]
+fn brand_does_not_change_underlying_runtime_shape() {
+    // Sanity: typing of Brand(v, _) preserves the source's non-brand
+    // axes. Distinct from the above by stripping the source from a
+    // singleton bitstring const.
+    let mut b = FnBuilder::new(FnId(0), "main");
+    let entry = b.block(vec![]);
+    let bs = b.let_(entry, Prim::MakeBitstring(vec![]));
+    let branded = b.let_(entry, Prim::Brand(bs, "ascii".to_string()));
+    b.set_terminator(entry, Term::Halt(branded));
+    let m = build_module(vec![b.build()]);
+    let mt = type_module(&m);
+    let source_t = fn_view(&m, &mt, 0).vars.get(&bs).unwrap().clone();
+    let branded_t = fn_view(&m, &mt, 0).vars.get(&branded).unwrap().clone();
+    // Same structural axes; brand tag is the only difference.
+    let stripped = Descr {
+        brands: crate::types::LiteralSet::none(),
+        ..branded_t.clone()
+    };
+    assert!(
+        stripped.is_equiv(&source_t),
+        "Brand must preserve source axes; source={}, branded={}",
+        source_t,
+        branded_t,
+    );
+}
+
 #[test]
 fn const_bitstring_types_as_str_t() {
     let mut b = FnBuilder::new(FnId(0), "main");

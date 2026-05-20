@@ -147,6 +147,12 @@ pub fn fold_prim(prim: &Prim, env: &HashMap<Var, Descr>, atom_names: &[String]) 
         | Prim::BitReaderInit(..)
         | Prim::BitReadField { .. }
         | Prim::BitReaderDone(..) => None,
+        // fz-axu.4 (K3) — brand-mint. The reducer's job is constant
+        // folding; brand-mint is not foldable to a constant (the value
+        // is the source variable's runtime value, just relabelled in
+        // the type system). K6 (fz-axu.7) makes the reducer see through
+        // Brand so a literal source still folds; for now, decline.
+        Prim::Brand(..) => None,
     }
 }
 

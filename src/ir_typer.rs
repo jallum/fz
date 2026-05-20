@@ -2209,6 +2209,19 @@ fn type_prim(
             }
         }
 
+        // fz-axu.4 (K3) — brand-mint. Take the source's structural type
+        // and overlay `brands = {name}`. The result is a *minted brand
+        // value*: its Descr carries both the brand tag (for nominal
+        // identity / visibility) and the underlying structural axes (so
+        // it remains usable as the underlying type wherever the K4 rule
+        // grants `brand(name) ⊆ inner`). Pre-K4, the structural axes
+        // alone keep it usable; the brand tag is just an extra label.
+        Prim::Brand(v, name) => {
+            let mut d = lookup(env, *v);
+            d.brands = crate::types::LiteralSet::lit(name.clone());
+            d
+        }
+
         // Reader and struct ops: conservative Top until later tickets refine.
         Prim::AllocStruct(_, _) => Descr::any(),
         Prim::BitReaderInit(_) => Descr::any(),
@@ -3535,7 +3548,8 @@ pub fn prim_is_pure(p: &crate::fz_ir::Prim) -> Result<(), ImpureKind> {
         | BitReaderInit(_)
         | BitReadField { .. }
         | BitReaderDone(_)
-        | TypeTest(_, _) => Ok(()),
+        | TypeTest(_, _)
+        | Brand(_, _) => Ok(()),
 
         AllocStruct(_, _) => Err(ImpureKind::Allocates("AllocStruct")),
         ListCons(_, _) => Err(ImpureKind::Allocates("ListCons")),

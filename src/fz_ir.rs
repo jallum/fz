@@ -482,6 +482,19 @@ pub enum Prim {
     /// the typer (opaque types have no runtime tag) — the branch is then
     /// eliminated by DCE.
     TypeTest(Var, Box<crate::types::Descr>),
+
+    /// fz-axu.4 (K3) — brand-mint. Tags the source value with the
+    /// nominal brand `name` (resolved against `Module.brand_inners` to
+    /// recover the inner type). Pure at the type-system level: the
+    /// result's Descr keeps the source's structural axes and adds
+    /// `brands = {name}`. Runtime-identity: codegen and the interpreter
+    /// pass the source value through unchanged. K5's erasure pass
+    /// rewrites `Brand(v, _)` to a simple alias for `v` once typing is
+    /// stable, so post-erasure IR contains no `Brand` nodes.
+    ///
+    /// Not user-visible in v1. The L3 desugaring pass inserts these
+    /// for literal `"…"` → utf8 mint sites.
+    Brand(Var, String),
 }
 
 #[derive(Debug, Clone)]
@@ -1234,6 +1247,7 @@ impl fmt::Display for Prim {
             Prim::BitReadField { reader, .. } => write!(f, "bit_read_field({})", reader),
             Prim::BitReaderDone(v) => write!(f, "bit_reader_done({})", v),
             Prim::TypeTest(v, d) => write!(f, "type_test({}, {})", v, d),
+            Prim::Brand(v, name) => write!(f, "brand({}, {})", v, name),
         }
     }
 }

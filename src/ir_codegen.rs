@@ -7542,6 +7542,13 @@ fn lower_prim<M: cranelift_module::Module>(
             }
             cl_ptr
         }
+        // fz-axu.4 (K3) — brand-mint is pure compile-time. At codegen
+        // time it materialises as a pass-through alias (the tagged value
+        // of the source variable). K5's erasure pass typically rewrites
+        // these to `Prim::UnOp` aliases before codegen, but a Brand
+        // surviving past erasure still lowers correctly.
+        Prim::Brand(v, _name) => tagged_get(var_env, b, jmod, runtime, v.0, cache),
+
         Prim::TypeTest(v, descr) => {
             use crate::types::BasicBits;
             use fz_runtime::fz_value::HeapKind;

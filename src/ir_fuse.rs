@@ -234,6 +234,7 @@ fn subst_prim(p: &Prim, subst: &HashMap<Var, Var>) -> Prim {
             is_last: *is_last,
         },
         Prim::TypeTest(a, d) => Prim::TypeTest(sv(*a), d.clone()),
+        Prim::Brand(a, name) => Prim::Brand(sv(*a), name.clone()),
     }
 }
 
