@@ -3327,10 +3327,14 @@ pub fn cont_input_key(
 /// eyeball "are the inferred types what I expect for this fixture?"
 /// without running codegen.
 pub fn pretty_module_types<T: crate::types_seam::Types>(
-    _t: &mut T,
+    t: &mut T,
     m: &Module,
     mt: &ModuleTypes,
 ) -> String {
+    use crate::types_seam::AsDescr;
+    // Captured by reference into the local closures and unwrap_or_else
+    // sites — keeps them `Fn` (no &mut T borrow inside).
+    let any_d: Descr = t.any().as_descr();
     let fn_name = |fid: FnId| -> String {
         m.fns
             .iter()
@@ -3365,7 +3369,7 @@ pub fn pretty_module_types<T: crate::types_seam::Types>(
             .effective_returns
             .get(spec_key)
             .cloned()
-            .unwrap_or_else(Descr::any);
+            .unwrap_or_else(|| any_d.clone());
         out.push_str(&format!(";   return: {}\n", ret));
 
         if !ft.fn_constants.is_empty() {
@@ -3391,14 +3395,14 @@ pub fn pretty_module_types<T: crate::types_seam::Types>(
             let bid = b.id.0;
             match &b.terminator {
                 Term::Return(v) => {
-                    let d = ft.vars.get(v).cloned().unwrap_or_else(Descr::any);
+                    let d = ft.vars.get(v).cloned().unwrap_or_else(|| any_d.clone());
                     out.push_str(&format!(
                         ";     blk{} Return Var({})    :: {}\n",
                         bid, v.0, d
                     ));
                 }
                 Term::Halt(v) => {
-                    let d = ft.vars.get(v).cloned().unwrap_or_else(Descr::any);
+                    let d = ft.vars.get(v).cloned().unwrap_or_else(|| any_d.clone());
                     out.push_str(&format!(
                         ";     blk{} Halt Var({})      :: {}\n",
                         bid, v.0, d
@@ -3407,7 +3411,7 @@ pub fn pretty_module_types<T: crate::types_seam::Types>(
                 Term::TailCall { callee, args, .. } => {
                     let arg_descrs: Vec<Descr> = args
                         .iter()
-                        .map(|av| ft.vars.get(av).cloned().unwrap_or_else(Descr::any))
+                        .map(|av| ft.vars.get(av).cloned().unwrap_or_else(|| any_d.clone()))
                         .collect();
                     let arg_vars: Vec<String> =
                         args.iter().map(|v| format!("Var({})", v.0)).collect();
@@ -3431,7 +3435,7 @@ pub fn pretty_module_types<T: crate::types_seam::Types>(
                 } => {
                     let arg_descrs: Vec<Descr> = args
                         .iter()
-                        .map(|av| ft.vars.get(av).cloned().unwrap_or_else(Descr::any))
+                        .map(|av| ft.vars.get(av).cloned().unwrap_or_else(|| any_d.clone()))
                         .collect();
                     let arg_vars: Vec<String> =
                         args.iter().map(|v| format!("Var({})", v.0)).collect();
