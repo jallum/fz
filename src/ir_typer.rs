@@ -2136,7 +2136,10 @@ fn type_prim<T: crate::types_seam::Types>(
     const_vars: &HashSet<Var>,
 ) -> Descr {
     match prim {
-        Prim::Const(c) => type_const(t, c, &m.atom_names),
+        Prim::Const(c) => {
+            use crate::types_seam::AsDescr;
+            type_const(t, c, &m.atom_names).as_descr()
+        }
 
         Prim::BinOp(op, a, b) => {
             let at = lookup(t, env, *a);
@@ -2429,21 +2432,20 @@ fn type_const<T: crate::types_seam::Types>(
     t: &mut T,
     c: &Const,
     atom_names: &[String],
-) -> Descr {
-    use crate::types_seam::AsDescr;
+) -> T::Ty {
     match c {
-        Const::Int(n) => t.int_lit(*n).as_descr(),
-        Const::Float(f) => t.float_lit(*f).as_descr(),
+        Const::Int(n) => t.int_lit(*n),
+        Const::Float(f) => t.float_lit(*f),
         Const::Atom(id) => {
             let name = atom_names
                 .get(*id as usize)
                 .map(String::as_str)
                 .unwrap_or("?");
-            t.atom_lit(name).as_descr()
+            t.atom_lit(name)
         }
-        Const::Nil => t.nil().as_descr(),
-        Const::True => t.atom_lit("true").as_descr(),
-        Const::False => t.atom_lit("false").as_descr(),
+        Const::Nil => t.nil(),
+        Const::True => t.atom_lit("true"),
+        Const::False => t.atom_lit("false"),
     }
 }
 
