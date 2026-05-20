@@ -2128,10 +2128,18 @@ fn type_prim<T: crate::types_seam::Types>(
         }
 
         Prim::MakeTuple(vs) => {
-            let elems: Vec<Descr> = vs.iter().map(|v| lookup(t, env, *v)).collect();
-            Descr::tuple_of(elems)
+            use crate::types_seam::AsDescr;
+            let elem_tys: Vec<T::Ty> = vs
+                .iter()
+                .map(|v| {
+                    let d = lookup(t, env, *v);
+                    t.from_descr(&d)
+                })
+                .collect();
+            t.tuple(&elem_tys).as_descr()
         }
         Prim::TupleField(v, i) => {
+            use crate::types_seam::AsDescr;
             let vt = lookup(t, env, *v);
             // Find the widest arity in v's tuple clauses that covers index i;
             // project that component. Falls back to any when there's no
@@ -2142,9 +2150,9 @@ fn type_prim<T: crate::types_seam::Types>(
                 comps
                     .into_iter()
                     .nth(*i as usize)
-                    .unwrap_or_else(Descr::any)
+                    .unwrap_or_else(|| t.any().as_descr())
             } else {
-                Descr::any()
+                t.any().as_descr()
             }
         }
 
