@@ -56,8 +56,8 @@ block0(v0: i64):
 }
 
 ; fn k_16_s17
-    ;   @spec   k_16(nil, vec(u8) | vec(bit), int) -> nil
-    ;   @key    [nil, vec(u8) | vec(bit), int]
+    ;   @spec   k_16(nil, str, int) -> nil
+    ;   @key    [nil, str, int]
     ;   @abi    (Tagged, Tagged, RawInt) -> Tagged
 function u0:0(i64, i64, i64, i64) -> i64 tail {
     gv0 = symbol colocated userextname0
@@ -72,7 +72,7 @@ function u0:0(i64, i64, i64, i64) -> i64 tail {
     fn3 = u0:56 sig3
     fn4 = colocated u0:51 sig4
 
-    block0(v0: i64, v1: i64, v2: i64, v3: i64):    ;; v0 :: nil, v1 :: vec(u8) | vec(bit), v2 :: int
+    block0(v0: i64, v1: i64, v2: i64, v3: i64):    ;; v0 :: nil, v1 :: str, v2 :: int
     v4 = symbol_value.i64 gv0           ; @26:25
     v5 = iconst.i64 3                   ; @26:25
     v6 = iconst.i64 24                  ; @26:25
@@ -90,8 +90,8 @@ function u0:0(i64, i64, i64, i64) -> i64 tail {
 }
 
 ; fn k_17_s21
-    ;   @spec   k_17(nil, vec(u8) | vec(bit), int, int) -> nil
-    ;   @key    [nil, vec(u8) | vec(bit), int, int]
+    ;   @spec   k_17(nil, str, int, int) -> nil
+    ;   @key    [nil, str, int, int]
     ;   @abi    (Tagged, Tagged, RawInt, RawInt) -> Tagged
 function u0:0(i64, i64, i64, i64, i64) -> i64 tail {
     sig0 = (i32) -> i64 system_v
@@ -106,7 +106,7 @@ function u0:0(i64, i64, i64, i64, i64) -> i64 tail {
     fn3 = u0:14 sig3
     fn4 = u0:53 sig4
 
-    block0(v0: i64, v1: i64, v2: i64, v3: i64, v4: i64):    ;; v0 :: nil, v1 :: vec(u8) | vec(bit), v2 :: int, v3 :: int
+    block0(v0: i64, v1: i64, v2: i64, v3: i64, v4: i64):    ;; v0 :: nil, v1 :: str, v2 :: int, v3 :: int
     v5 = iconst.i32 13
     v6 = call fn0(v5)  ; v5 = 13    ;; v6 :: &fn13[]:(α832) -> α895
     v7 = ishl_imm v2, 3

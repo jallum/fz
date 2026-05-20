@@ -173,7 +173,7 @@
 ;     Var(9) :: 120
 ;     Var(10) :: 53
 ;     Var(11) :: 109
-;     Var(12) :: vec(u8) | vec(bit)
+;     Var(12) :: str
 ;     Var(13) :: :match_error
 ;     Var(14) :: 420
 ;     Var(15) :: int
@@ -183,22 +183,22 @@
 ;     blk0 Call print#0(Var(17))
 ;              callee_key=[:opened]
 ;              cont k_16#16 captured=[Var(12), Var(15)]
-;              cont_key=[nil, vec(u8) | vec(bit), int]
+;              cont_key=[nil, str, int]
 ;     blk1 Halt Var(0)      :: :match_error
 ;     blk2 Halt Var(13)      :: :match_error
 ;     blk3 Halt Var(16)      :: :match_error
 
 ; spec k_16(3) #fn=16
-;   key:    [nil, vec(u8) | vec(bit), int]
+;   key:    [nil, str, int]
 ;   return: nil
 ;   vars:
 ;     Var(0) :: nil
-;     Var(1) :: vec(u8) | vec(bit)
+;     Var(1) :: str
 ;     Var(2) :: int
 ;     Var(3) :: 104
 ;     Var(4) :: 105
 ;     Var(5) :: 10
-;     Var(6) :: vec(u8) | vec(bit)
+;     Var(6) :: str
 ;     Var(7) :: 3
 ;     Var(8) :: int
 ;     Var(9) :: :match_error
@@ -206,29 +206,29 @@
 ;     blk0 Call print#0(Var(8))
 ;              callee_key=[int]
 ;              cont k_17#17 captured=[Var(1), Var(2), Var(8)]
-;              cont_key=[nil, vec(u8) | vec(bit), int, int]
+;              cont_key=[nil, str, int, int]
 ;     blk1 Halt Var(9)      :: :match_error
 
 ; spec k_17(4) #fn=17
-;   key:    [nil, vec(u8) | vec(bit), int, int]
+;   key:    [nil, str, int, int]
 ;   return: nil
 ;   vars:
 ;     Var(0) :: nil
-;     Var(1) :: vec(u8) | vec(bit)
+;     Var(1) :: str
 ;     Var(2) :: int
 ;     Var(3) :: int
 ;   exits:
 ;     blk0 Call FileHandle.from_fd#14(Var(2))
 ;              callee_key=[int]
 ;              cont k_18#18 captured=[Var(1), Var(2), Var(3)]
-;              cont_key=[any, vec(u8) | vec(bit), int, int]
+;              cont_key=[any, str, int, int]
 
 ; spec k_18(4) #fn=18
-;   key:    [any, vec(u8) | vec(bit), int, int]
+;   key:    [any, str, int, int]
 ;   return: nil
 ;   vars:
 ;     Var(0) :: any
-;     Var(1) :: vec(u8) | vec(bit)
+;     Var(1) :: str
 ;     Var(2) :: int
 ;     Var(3) :: int
 ;     Var(4) :: :match_error

@@ -1994,3 +1994,40 @@ end
             .collect::<Vec<_>>(),
     );
 }
+
+// fz-axu.1 (K0) — bitstring construction types as str_t().
+// Pre-refines, MakeBitstring/ConstBitstring typed as `vec_u8 | vec_bit`. Post-K0
+// they type as `str_t()` — the binary/bitstring top of the strs axis — so that
+// future tickets can layer the `utf8` brand on top as a proper subset.
+
+#[test]
+fn make_bitstring_types_as_str_t() {
+    let mut b = FnBuilder::new(FnId(0), "main");
+    let entry = b.block(vec![]);
+    let bs = b.let_(entry, Prim::MakeBitstring(vec![]));
+    b.set_terminator(entry, Term::Halt(bs));
+    let m = build_module(vec![b.build()]);
+    let mt = type_module(&m);
+    let t = fn_view(&m, &mt, 0).vars.get(&bs).unwrap().clone();
+    assert!(
+        t.is_equiv(&Descr::str_t()),
+        "expected MakeBitstring to type as str_t(); got {:?}",
+        t,
+    );
+}
+
+#[test]
+fn const_bitstring_types_as_str_t() {
+    let mut b = FnBuilder::new(FnId(0), "main");
+    let entry = b.block(vec![]);
+    let bs = b.let_(entry, Prim::ConstBitstring(vec![1, 2, 3], 24));
+    b.set_terminator(entry, Term::Halt(bs));
+    let m = build_module(vec![b.build()]);
+    let mt = type_module(&m);
+    let t = fn_view(&m, &mt, 0).vars.get(&bs).unwrap().clone();
+    assert!(
+        t.is_equiv(&Descr::str_t()),
+        "expected ConstBitstring to type as str_t(); got {:?}",
+        t,
+    );
+}

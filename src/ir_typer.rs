@@ -2163,8 +2163,12 @@ fn type_prim(
             VecKindIr::U8 => Descr::vec_u8(),
             VecKindIr::Bit => Descr::vec_bit(),
         },
-        Prim::MakeBitstring(_) => Descr::vec_u8().union(&Descr::vec_bit()),
-        Prim::ConstBitstring(_, _) => Descr::vec_u8().union(&Descr::vec_bit()),
+        // fz-axu.1 (K0) — bitstring construction types as the binary/bitstring
+        // top (`str_t()`). Branded subset types (e.g. `utf8`) will layer on top
+        // of this in later tickets. vec_u8/vec_bit remain reserved for explicit
+        // vector(u8)/vector(bit) values.
+        Prim::MakeBitstring(_) => Descr::str_t(),
+        Prim::ConstBitstring(_, _) => Descr::str_t(),
 
         Prim::MakeClosure(_, fn_id, captured) => {
             // fz-ul4.27.22.10 — type MakeClosure's result as a closure

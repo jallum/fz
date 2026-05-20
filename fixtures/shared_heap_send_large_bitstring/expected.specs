@@ -131,14 +131,14 @@
 ;     Var(68) :: 68
 ;     Var(69) :: 69
 ;     Var(70) :: 70
-;     Var(71) :: vec(u8) | vec(bit)
+;     Var(71) :: str
 ;     Var(72) :: :match_error
-;     Var(73) :: &fn15[vec(u8) | vec(bit)]:() -> α1023
-;     Var(74) :: &fn16[&fn15[vec(u8) | vec(bit)]:() -> α1023]:() -> α1087
+;     Var(73) :: &fn15[str]:() -> α1023
+;     Var(74) :: &fn16[&fn15[str]:() -> α1023]:() -> α1087
 ;     Var(75) :: any
 ;   exits:
 ;     blk0 Receive cont k_receive_17#17 captured=[Var(71)]
-;              cont_key=[any, vec(u8) | vec(bit)]
+;              cont_key=[any, str]
 ;     blk1 Halt Var(0)      :: :match_error
 ;     blk2 Halt Var(72)      :: :match_error
 
@@ -162,11 +162,11 @@
 ;     blk0 TailCallClosure Var(0)()
 
 ; spec k_receive_17(2) #fn=17
-;   key:    [any, vec(u8) | vec(bit)]
+;   key:    [any, str]
 ;   return: none
 ;   vars:
 ;     Var(0) :: any
-;     Var(1) :: vec(u8) | vec(bit)
+;     Var(1) :: str
 ;   exits:
 ;     blk0 TailCall print#0(Var(0))
 ;              callee_key=[any]
