@@ -379,7 +379,7 @@ impl Interp {
         match &e.node {
             Expr::Int(n) => Ok(Value::Int(*n)),
             Expr::Float(f) => Ok(Value::Float(*f)),
-            Expr::Str(s) => Ok(Value::Str(Rc::from(s.as_str()))),
+            Expr::Str(bytes) => Ok(Value::Str(Rc::from(bytes.as_slice()))),
             Expr::Atom(a) => Ok(Value::Atom(Rc::from(a.as_str()))),
             Expr::Bool(b) => Ok(Value::Bool(*b)),
             Expr::Nil => Ok(Value::Nil),

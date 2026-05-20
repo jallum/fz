@@ -610,12 +610,105 @@ pub mod debug {
         let bytes = unsafe { std::slice::from_raw_parts(byte_ptr, total_bytes) };
         let full_bytes = bit_len / 8;
         let trailing_bits = bit_len % 8;
+
+        // fz-axu.15 (R2) — UTF-8-aware rendering: byte-aligned + valid
+        // UTF-8 + Elixir-style String.printable?/1 heuristic renders as
+        // a quoted string. Anything else falls back to the `<<...>>`
+        // byte-list form. Print intentionally doesn't read the type
+        // system's brand axis — the rendering decision is purely
+        // payload-driven so AOT and JIT agree without sharing type
+        // info at runtime.
+        if trailing_bits == 0
+            && let Ok(s) = std::str::from_utf8(&bytes[..full_bytes])
+            && is_printable_utf8(s)
+        {
+            return format!("\"{}\"", escape_for_display(s));
+        }
+
         let mut parts: Vec<String> = bytes[..full_bytes].iter().map(|b| b.to_string()).collect();
         if trailing_bits > 0 {
             let last = bytes[full_bytes] >> (8 - trailing_bits);
             parts.push(format!("{}::{}", last, trailing_bits));
         }
         format!("<<{}>>", parts.join(", "))
+    }
+
+    /// fz-axu.15 (R2) — matches Elixir's `String.printable?/1`: any
+    /// codepoint outside the C0/C1 control ranges is fine, plus the
+    /// whitelisted control set `\n \r \t \v \b \f \e \a`. Anything else
+    /// (lone NUL, DEL, other C0/C1) disqualifies the slice.
+    #[cfg(test)]
+    mod r2_tests {
+        use super::*;
+
+        #[test]
+        fn ascii_printable_passes() {
+            assert!(is_printable_utf8("hello world"));
+            assert!(is_printable_utf8(""));
+            assert!(is_printable_utf8("/tmp/fz-x5m"));
+        }
+
+        #[test]
+        fn utf8_non_ascii_passes() {
+            assert!(is_printable_utf8("héllo"));
+            assert!(is_printable_utf8("日本語"));
+        }
+
+        #[test]
+        fn whitelisted_controls_pass() {
+            assert!(is_printable_utf8("line\nbreak"));
+            assert!(is_printable_utf8("tab\tseparated"));
+            assert!(is_printable_utf8("\r\n"));
+        }
+
+        #[test]
+        fn other_controls_fail() {
+            assert!(!is_printable_utf8("\x01"));
+            assert!(!is_printable_utf8("\x00"));
+            assert!(!is_printable_utf8("\x7f"));
+            // Any prefix-rejection works elsewhere too.
+            assert!(!is_printable_utf8("hello\x01world"));
+        }
+
+        #[test]
+        fn escape_round_trips_through_display() {
+            assert_eq!(escape_for_display("a\nb"), "a\\nb");
+            assert_eq!(escape_for_display("\"quoted\""), "\\\"quoted\\\"");
+            assert_eq!(escape_for_display("plain"), "plain");
+            // tab + carriage return escape too.
+            assert_eq!(escape_for_display("a\tb\rc"), "a\\tb\\rc");
+        }
+    }
+
+    fn is_printable_utf8(s: &str) -> bool {
+        for c in s.chars() {
+            let cp = c as u32;
+            // Whitelisted control codepoints (Elixir-compatible).
+            if matches!(cp, 0x07 | 0x08 | 0x09 | 0x0A | 0x0B | 0x0C | 0x0D | 0x1B) {
+                continue;
+            }
+            if cp < 0x20 || (0x7F..=0x9F).contains(&cp) {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Escape the bytes that would corrupt the surrounding `"…"` form.
+    /// Inverse of the lexer's canonical escapes (`\n \t \r \\ \"`).
+    fn escape_for_display(s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        for c in s.chars() {
+            match c {
+                '\n' => out.push_str("\\n"),
+                '\r' => out.push_str("\\r"),
+                '\t' => out.push_str("\\t"),
+                '\\' => out.push_str("\\\\"),
+                '"' => out.push_str("\\\""),
+                other => out.push(other),
+            }
+        }
+        out
     }
 
     fn render_float(bits: u64) -> String {

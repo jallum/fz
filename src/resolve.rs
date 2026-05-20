@@ -105,7 +105,14 @@ pub fn flatten_modules(prog: Program) -> Result<Program, ResolveError> {
     let mut module_type_envs: HashMap<String, crate::type_expr::ModuleTypeEnv> = HashMap::new();
     module_type_envs.insert(String::new(), crate::type_expr::ModuleTypeEnv::new());
     let mut opaque_inners: HashMap<String, crate::types::Descr> = HashMap::new();
-    collect_module_type_envs(&prog, "", &mut module_type_envs, &mut opaque_inners)?;
+    let mut brand_inners: HashMap<String, crate::types::Descr> = HashMap::new();
+    collect_module_type_envs(
+        &prog,
+        "",
+        &mut module_type_envs,
+        &mut opaque_inners,
+        &mut brand_inners,
+    )?;
     let no_aliases: HashMap<String, String> = HashMap::new();
     let no_imports: HashMap<(String, usize), String> = HashMap::new();
     for item in &prog.items {
@@ -181,6 +188,7 @@ pub fn flatten_modules(prog: Program) -> Result<Program, ResolveError> {
         module_docs,
         module_type_envs,
         opaque_inners,
+        brand_inners,
     })
 }
 
@@ -198,11 +206,12 @@ fn collect_module_type_envs(
     prog: &Program,
     parent: &str,
     out: &mut HashMap<String, crate::type_expr::ModuleTypeEnv>,
-    inners: &mut HashMap<String, crate::types::Descr>,
+    o_inners: &mut HashMap<String, crate::types::Descr>,
+    b_inners: &mut HashMap<String, crate::types::Descr>,
 ) -> Result<(), ResolveError> {
     for item in &prog.items {
         if let Item::Module(m) = &**item {
-            collect_module_type_envs_recursive(m, parent, out, inners)?;
+            collect_module_type_envs_recursive(m, parent, out, o_inners, b_inners)?;
         }
     }
     Ok(())
@@ -212,23 +221,27 @@ fn collect_module_type_envs_recursive(
     m: &ModuleDef,
     parent: &str,
     out: &mut HashMap<String, crate::type_expr::ModuleTypeEnv>,
-    inners: &mut HashMap<String, crate::types::Descr>,
+    o_inners: &mut HashMap<String, crate::types::Descr>,
+    b_inners: &mut HashMap<String, crate::types::Descr>,
 ) -> Result<(), ResolveError> {
     let path = if parent.is_empty() {
         m.name.clone()
     } else {
         format!("{}.{}", parent, m.name)
     };
-    let (env, opaque_inners) = crate::type_expr::build_module_type_env_for(&m.attrs, &path)
-        .map_err(|e| ResolveError::TypeAliasError {
-            msg: format!("module `{}`: {}", path, e.msg),
-            span: e.span,
+    let (env, opaque_inners, brand_inners) =
+        crate::type_expr::build_module_type_env_for(&m.attrs, &path).map_err(|e| {
+            ResolveError::TypeAliasError {
+                msg: format!("module `{}`: {}", path, e.msg),
+                span: e.span,
+            }
         })?;
     out.insert(path.clone(), env);
-    inners.extend(opaque_inners);
+    o_inners.extend(opaque_inners);
+    b_inners.extend(brand_inners);
     for item in &m.items {
         if let Item::Module(inner) = &**item {
-            collect_module_type_envs_recursive(inner, &path, out, inners)?;
+            collect_module_type_envs_recursive(inner, &path, out, o_inners, b_inners)?;
         }
     }
     Ok(())

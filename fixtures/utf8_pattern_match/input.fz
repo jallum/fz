@@ -1,0 +1,9 @@
+fn greet("hi"), do: :hello
+fn greet("bye"), do: :goodbye
+fn greet(_), do: :unknown
+
+fn main() do
+  print(greet("hi"))
+  print(greet("bye"))
+  print(greet("other"))
+end

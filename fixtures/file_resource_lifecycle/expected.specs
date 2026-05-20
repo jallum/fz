@@ -1,4 +1,4 @@
-; spec print(1) #fn=0
+; spec print(1) #fn=4
 ;   key:    [:before]
 ;   return: nil
 ;   vars:
@@ -9,12 +9,12 @@
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(1)      :: :function_clause
 ;     blk2 If Var(2) ? blk4 : blk3
-;     blk3 TailCall fn_clause_1#10(Var(0))
+;     blk3 TailCall fn_clause_1#19(Var(0))
 ;              callee_key=[:before]
-;     blk4 TailCall fn_clause_0#9(Var(0))
+;     blk4 TailCall fn_clause_0#18(Var(0))
 ;              callee_key=[:before]
 
-; spec print(1) #fn=0
+; spec print(1) #fn=4
 ;   key:    [:dtor_closed]
 ;   return: nil
 ;   vars:
@@ -25,12 +25,12 @@
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(1)      :: :function_clause
 ;     blk2 If Var(2) ? blk4 : blk3
-;     blk3 TailCall fn_clause_1#10(Var(0))
+;     blk3 TailCall fn_clause_1#19(Var(0))
 ;              callee_key=[:dtor_closed]
-;     blk4 TailCall fn_clause_0#9(Var(0))
+;     blk4 TailCall fn_clause_0#18(Var(0))
 ;              callee_key=[:dtor_closed]
 
-; spec print(1) #fn=0
+; spec print(1) #fn=4
 ;   key:    [:opened]
 ;   return: nil
 ;   vars:
@@ -41,26 +41,26 @@
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(1)      :: :function_clause
 ;     blk2 If Var(2) ? blk4 : blk3
-;     blk3 TailCall fn_clause_1#10(Var(0))
+;     blk3 TailCall fn_clause_1#19(Var(0))
 ;              callee_key=[:opened]
-;     blk4 TailCall fn_clause_0#9(Var(0))
+;     blk4 TailCall fn_clause_0#18(Var(0))
 ;              callee_key=[:opened]
 
-; spec make_resource(2) #fn=8
-;   key:    [int, &fn13[]:(α832) -> α895]
+; spec make_resource(2) #fn=12
+;   key:    [int, &fn22[]:(α1408) -> α1471]
 ;   return: any
 ;   fn_constants:
-;     Var(1) = File.dtor#13
+;     Var(1) = File.dtor#22
 ;   vars:
 ;     Var(0) :: int
-;     Var(1) :: &fn13[]:(α832) -> α895
+;     Var(1) :: &fn22[]:(α1408) -> α1471
 ;     Var(2) :: :match_error
 ;     Var(3) :: any
 ;   exits:
 ;     blk0 Return Var(3)    :: any
 ;     blk1 Halt Var(2)      :: :match_error
 
-; spec fn_clause_0(1) #fn=9
+; spec fn_clause_0(1) #fn=18
 ;   key:    [any]
 ;   return: nil
 ;   vars:
@@ -69,7 +69,7 @@
 ;   exits:
 ;     blk0 Return Var(1)    :: nil
 
-; spec fn_clause_1(1) #fn=10
+; spec fn_clause_1(1) #fn=19
 ;   key:    [:before]
 ;   return: nil
 ;   vars:
@@ -78,7 +78,7 @@
 ;   exits:
 ;     blk0 Return Var(1)    :: nil
 
-; spec fn_clause_1(1) #fn=10
+; spec fn_clause_1(1) #fn=19
 ;   key:    [:dtor_closed]
 ;   return: nil
 ;   vars:
@@ -87,7 +87,7 @@
 ;   exits:
 ;     blk0 Return Var(1)    :: nil
 
-; spec fn_clause_1(1) #fn=10
+; spec fn_clause_1(1) #fn=19
 ;   key:    [:opened]
 ;   return: nil
 ;   vars:
@@ -96,7 +96,7 @@
 ;   exits:
 ;     blk0 Return Var(1)    :: nil
 
-; spec File.dtor(1) #fn=13
+; spec File.dtor(1) #fn=22
 ;   key:    [any]
 ;   return: nil
 ;   vars:
@@ -105,25 +105,25 @@
 ;     Var(2) :: int
 ;     Var(3) :: :dtor_closed
 ;   exits:
-;     blk0 TailCall print#0(Var(3))
+;     blk0 TailCall print#4(Var(3))
 ;              callee_key=[:dtor_closed]
 ;     blk1 Halt Var(1)      :: :match_error
 
-; spec File.wrap_fd(1) #fn=14
+; spec File.wrap_fd(1) #fn=23
 ;   key:    [int]
 ;   return: any
 ;   fn_constants:
-;     Var(2) = File.dtor#13
+;     Var(2) = File.dtor#22
 ;   vars:
 ;     Var(0) :: int
 ;     Var(1) :: :match_error
-;     Var(2) :: &fn13[]:(α832) -> α895
+;     Var(2) :: &fn22[]:(α1408) -> α1471
 ;   exits:
-;     blk0 TailCall make_resource#8(Var(0), Var(2))
-;              callee_key=[int, &fn13[]:(α832) -> α895]
+;     blk0 TailCall make_resource#12(Var(0), Var(2))
+;              callee_key=[int, &fn22[]:(α1408) -> α1471]
 ;     blk1 Halt Var(1)      :: :match_error
 
-; spec main(0) #fn=16
+; spec main(0) #fn=25
 ;   key:    []
 ;   return: nil
 ;   vars:
@@ -132,26 +132,26 @@
 ;     Var(2) :: :match_error
 ;     Var(3) :: :opened
 ;   exits:
-;     blk0 Call print#0(Var(3))
+;     blk0 Call print#4(Var(3))
 ;              callee_key=[:opened]
-;              cont k_17#17 captured=[Var(1)]
+;              cont k_26#26 captured=[Var(1)]
 ;              cont_key=[nil, int]
 ;     blk1 Halt Var(0)      :: :match_error
 ;     blk2 Halt Var(2)      :: :match_error
 
-; spec k_17(2) #fn=17
+; spec k_26(2) #fn=26
 ;   key:    [nil, int]
 ;   return: nil
 ;   vars:
 ;     Var(0) :: nil
 ;     Var(1) :: int
 ;   exits:
-;     blk0 Call File.wrap_fd#14(Var(1))
+;     blk0 Call File.wrap_fd#23(Var(1))
 ;              callee_key=[int]
-;              cont k_18#18 captured=[Var(1)]
+;              cont k_27#27 captured=[Var(1)]
 ;              cont_key=[any, int]
 
-; spec k_18(2) #fn=18
+; spec k_27(2) #fn=27
 ;   key:    [any, int]
 ;   return: nil
 ;   vars:
@@ -160,7 +160,7 @@
 ;     Var(2) :: :match_error
 ;     Var(3) :: :before
 ;   exits:
-;     blk0 TailCall print#0(Var(3))
+;     blk0 TailCall print#4(Var(3))
 ;              callee_key=[:before]
 ;     blk1 Halt Var(2)      :: :match_error
 

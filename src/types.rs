@@ -108,6 +108,15 @@ impl<T: Ord + Clone> LiteralSet<T> {
     pub fn is_any(&self) -> bool {
         self.cofinite && self.set.is_empty()
     }
+    /// fz-axu.24 (M3) — true iff this set names a specific, finite,
+    /// non-empty collection of tags (i.e. a target type that
+    /// *requires* a brand membership). Used by `is_subtype_under`'s
+    /// rule (i): a bare-structural value can't satisfy a target that
+    /// names specific brands. Encapsulates the previous inline reach
+    /// into `cofinite` / `set` from outside the type.
+    pub fn requires_tag(&self) -> bool {
+        !self.cofinite && !self.set.is_empty()
+    }
 
     pub fn union(&self, o: &Self) -> Self {
         let (a, b) = (&self.set, &o.set);
@@ -161,7 +170,6 @@ impl<T: Ord + Clone> LiteralSet<T> {
 
 pub type AtomSet = LiteralSet<String>;
 pub type IntSet = LiteralSet<i64>;
-pub type StrSet = LiteralSet<String>;
 pub type FloatSet = LiteralSet<F64Bits>;
 
 /// fz-try.5 — parametric type-variable identifier. Vars are nominal placeholders
@@ -321,7 +329,6 @@ pub struct MapSig {
 pub enum MapKey {
     Atom(String),
     Int(i64),
-    Str(String),
 }
 
 /// One conjunctive clause inside a DNF: `⋀ pos  ∧  ⋀ (¬neg)`.
@@ -360,13 +367,21 @@ pub struct Descr {
     pub(crate) atoms: AtomSet,
     pub(crate) ints: IntSet,
     pub(crate) floats: FloatSet,
-    pub(crate) strs: StrSet,
     /// Nominal opaque-type tags. A value of opaque type `T` (declared as
     /// `@type T :: opaque U`) has `opaques = {"T"}` AND the underlying `U`
     /// axes populated. Opaque types are nominal: `T ⊄ U` even when the
     /// underlying type of `T` is `U`, because the opaques axis is non-empty
     /// and distinct from the plain-`U` descriptor (which has `opaques = ∅`).
     pub(crate) opaques: LiteralSet<String>,
+    /// fz-axu.2 (K1) — nominal brand tags. A value of brand `B` (declared
+    /// as `@type B :: refines U`) has `brands = {"B"}` AND the underlying
+    /// `U` axes populated. Unlike opaques, brands are a *proper subset* of
+    /// `U`: `B ⊆ U` holds because the brand-stripped Descr (drop `brands`,
+    /// keep the structural axes) is structurally `U`. The is_subtype rule
+    /// that makes this work lands in K4; K1 only adds the axis to the
+    /// lattice. brand_inners on Module/Program registers the underlying
+    /// type for each tag (analogous to opaque_inners).
+    pub(crate) brands: LiteralSet<String>,
     /// fz-try.5 — parametric type variables. Operationally identical to
     /// `opaques`: a finite-or-cofinite set of nominal names with
     /// component-wise union/intersect/neg. Semantically distinguished only
@@ -397,8 +412,8 @@ impl Descr {
             atoms: AtomSet::any(),
             ints: IntSet::any(),
             floats: FloatSet::any(),
-            strs: StrSet::any(),
             opaques: LiteralSet::any(),
+            brands: LiteralSet::any(),
             vars: VarSet::any(),
             tuples: vec![Conj::top()],
             lists: vec![Conj::top()],
@@ -413,8 +428,8 @@ impl Descr {
             atoms: AtomSet::none(),
             ints: IntSet::none(),
             floats: FloatSet::none(),
-            strs: StrSet::none(),
             opaques: LiteralSet::none(),
+            brands: LiteralSet::none(),
             vars: VarSet::none(),
             tuples: Vec::new(),
             lists: Vec::new(),
@@ -432,6 +447,19 @@ impl Descr {
     pub fn opaque_of(name: impl Into<String>) -> Self {
         let mut d = Self::none();
         d.opaques = LiteralSet::lit(name.into());
+        d
+    }
+
+    /// fz-axu.2 (K1) — construct a Descr that names exactly the brand
+    /// `name`. Only the brands axis is populated. K1 does not yet thread
+    /// the underlying type through; the K4 is_subtype rule consults
+    /// `Module.brand_inners[name]` at use sites to recognise
+    /// `brand(name) ⊆ inner`. Until K4, this Descr is treated as a pure
+    /// nominal tag, like `opaque_of`.
+    #[allow(dead_code)] // K2 wires it into the `refines` declaration; K3 mints values.
+    pub fn brand_of(name: impl Into<String>) -> Self {
+        let mut d = Self::none();
+        d.brands = LiteralSet::lit(name.into());
         d
     }
 
@@ -626,8 +654,8 @@ impl Descr {
             atoms: self.atoms.clone(),
             ints: self.ints.clone(),
             floats: self.floats.clone(),
-            strs: self.strs.clone(),
             opaques: self.opaques.clone(),
+            brands: self.brands.clone(),
             vars: passthrough_vars,
             tuples: walked_tuples,
             lists: walked_lists,
@@ -758,14 +786,6 @@ impl Descr {
         }
     }
 
-    /// Singleton string.
-    pub fn as_str_singleton(&self) -> Option<&str> {
-        match self.single_component()? {
-            Component::Strs(v) => v.singleton(),
-            _ => None,
-        }
-    }
-
     /// fz-swt.6 — singleton opaque tag. Returns `Some(name)` iff this
     /// Descr's only non-empty axis is `opaques` and it names exactly one
     /// qualified opaque type. Consumers (visibility gating, future
@@ -776,6 +796,23 @@ impl Descr {
     pub fn as_opaque_singleton(&self) -> Option<&str> {
         match self.single_component()? {
             Component::Opaques(v) => v.singleton(),
+            _ => None,
+        }
+    }
+
+    /// fz-axu.2 (K1) — singleton brand tag. Returns `Some(name)` iff this
+    /// Descr's only non-empty axis is `brands` and it names exactly one
+    /// qualified brand. Consumers (K4 visibility gating, K5 erasure)
+    /// pair this with `Module.brand_inners` to resolve the underlying
+    /// type. Note: a *minted* brand value has both `brands = {name}` AND
+    /// the underlying structural axes populated — `as_brand_singleton`
+    /// will NOT match those. K4 brand-membership checks use a different
+    /// predicate that ignores the structural axes once a brand tag is
+    /// present.
+    #[allow(dead_code)] // K3 mint typing wires it in.
+    pub fn as_brand_singleton(&self) -> Option<&str> {
+        match self.single_component()? {
+            Component::Brands(v) => v.singleton(),
             _ => None,
         }
     }
@@ -870,10 +907,12 @@ impl Descr {
                 Component::Floats(_) => other
                     .components()
                     .any(|d| matches!(d, Component::Floats(_))),
-                Component::Strs(_) => other.components().any(|d| matches!(d, Component::Strs(_))),
                 Component::Opaques(_) => other
                     .components()
                     .any(|d| matches!(d, Component::Opaques(_))),
+                Component::Brands(_) => other
+                    .components()
+                    .any(|d| matches!(d, Component::Brands(_))),
                 Component::Vars(_) => other.components().any(|d| matches!(d, Component::Vars(_))),
                 Component::Tuples(_) => other
                     .components()
@@ -902,25 +941,21 @@ impl Descr {
     }
 
     /// True iff this descriptor extracts to a singleton literal on some
-    /// scalar axis (int, atom, str, float).
+    /// scalar axis (int, atom, float).
     pub fn is_singleton_literal(&self) -> bool {
         self.as_int_singleton().is_some()
             || self.as_atom_singleton().is_some()
-            || self.as_str_singleton().is_some()
             || self.as_float_singleton().is_some()
     }
 
     /// If this descriptor is a singleton scalar that can serve as a
-    /// MapKey (int, atom, or str literal), return it.
+    /// MapKey (int or atom literal), return it.
     pub fn as_map_key(&self) -> Option<MapKey> {
         if let Some(n) = self.as_int_singleton() {
             return Some(MapKey::Int(n));
         }
         if let Some(s) = self.as_atom_singleton() {
             return Some(MapKey::Atom(s.to_string()));
-        }
-        if let Some(s) = self.as_str_singleton() {
-            return Some(MapKey::Str(s.to_string()));
         }
         None
     }
@@ -956,9 +991,6 @@ impl Descr {
         }
         if !out.floats.is_none() && !out.floats.is_any() {
             out.floats = FloatSet::any();
-        }
-        if !out.strs.is_none() && !out.strs.is_any() {
-            out.strs = StrSet::any();
         }
         out
     }
@@ -1023,15 +1055,14 @@ impl Descr {
         self
     }
 
-    /// Top of the string/binary axis. Promoted from test-only in
-    /// fz-ul4.31.1 to let the type-expression parser lower `binary` to
-    /// the correct Descr. (`dead_code` allowed: production consumers
-    /// land in .31.4 when @spec wires it in.)
-    #[allow(dead_code)]
+    /// fz-axu.22 (M1) — binary top. `binary` in type-expression syntax
+    /// lowers to this. Pre-M1 this Descr lived on a separate `strs`
+    /// axis; M1 collapses it onto the structural binary kinds the
+    /// runtime already uses (byte-aligned and bit-granular bitstrings),
+    /// which is what every consumer actually meant. The name is kept
+    /// to avoid churning ~30 test sites.
     pub fn str_t() -> Self {
-        let mut d = Self::none();
-        d.strs = StrSet::any();
-        d
+        Self::vec_u8().union(&Self::vec_bit())
     }
 
     pub fn float() -> Self {
@@ -1042,12 +1073,6 @@ impl Descr {
     pub fn float_lit(f: f64) -> Self {
         let mut d = Self::none();
         d.floats = FloatSet::lit(F64Bits::new(f));
-        d
-    }
-
-    pub fn str_lit(s: impl Into<String>) -> Self {
-        let mut d = Self::none();
-        d.strs = StrSet::lit(s.into());
         d
     }
 
@@ -1157,8 +1182,8 @@ impl Descr {
             && self.atoms.is_none()
             && self.ints.is_none()
             && self.floats.is_none()
-            && self.strs.is_none()
             && self.opaques.is_none()
+            && self.brands.is_none()
             && self.vars.is_none()
             && self.tuples.is_empty()
             && self.lists.is_empty()
@@ -1196,8 +1221,8 @@ impl Descr {
             && self.atoms.is_any()
             && self.ints.is_any()
             && self.floats.is_any()
-            && self.strs.is_any()
             && self.opaques.is_any()
+            && self.brands.is_any()
             && self.vars.is_any()
             && is_dnf_top(&self.tuples)
             && is_dnf_top(&self.lists)
@@ -1236,8 +1261,8 @@ impl Descr {
             atoms: self.atoms.union(&other.atoms),
             ints: self.ints.union(&other.ints),
             floats: self.floats.union(&other.floats),
-            strs: self.strs.union(&other.strs),
             opaques: self.opaques.union(&other.opaques),
+            brands: self.brands.union(&other.brands),
             vars: self.vars.union(&other.vars),
             tuples,
             lists,
@@ -1252,8 +1277,8 @@ impl Descr {
             atoms: self.atoms.intersect(&other.atoms),
             ints: self.ints.intersect(&other.ints),
             floats: self.floats.intersect(&other.floats),
-            strs: self.strs.intersect(&other.strs),
             opaques: self.opaques.intersect(&other.opaques),
+            brands: self.brands.intersect(&other.brands),
             vars: self.vars.intersect(&other.vars),
             tuples: dnf_intersect(&self.tuples, &other.tuples),
             lists: dnf_intersect(&self.lists, &other.lists),
@@ -1268,8 +1293,8 @@ impl Descr {
             atoms: self.atoms.neg(),
             ints: self.ints.neg(),
             floats: self.floats.neg(),
-            strs: self.strs.neg(),
             opaques: self.opaques.neg(),
+            brands: self.brands.neg(),
             vars: self.vars.neg(),
             tuples: dnf_neg(&self.tuples),
             lists: dnf_neg(&self.lists),
@@ -1301,6 +1326,68 @@ impl Descr {
         self.diff(other).is_empty()
     }
 
+    /// fz-axu.5 (K4) — brand-aware subtype check. Resolves every brand
+    /// tag in `self.brands` against `brand_inners` to discharge those
+    /// that fit structurally into `other`. Then runs the standard
+    /// `is_subtype` on the discharged Descr.
+    ///
+    /// The rule that this ratifies: `brand_value: brands={B} ∧ T` is a
+    /// subtype of `T'` whenever `brand_inners[B] <: T'` AND the
+    /// structural axes of the value satisfy `<: T'`. The brand tag is a
+    /// label, not a membership barrier — once the inner accepts T', the
+    /// label is irrelevant for the comparison.
+    ///
+    /// `is_subtype` (no inners) is conservative: it treats brand tags
+    /// as a hard axis, so the value-fully-tagged ⊆ untagged-type case
+    /// returns false. Use `is_subtype_under` whenever a Module context
+    /// is available (the typer, codegen, spec dispatch).
+    pub fn is_subtype_under(
+        &self,
+        other: &Descr,
+        brand_inners: &std::collections::HashMap<String, Descr>,
+    ) -> bool {
+        // Rule (i): if `other` names specific brand tags as required,
+        // `self` must already carry one. A bare-structural value
+        // (`brands=none`) cannot satisfy a brand-restricted target —
+        // the standard `is_subtype` misses this because the brands
+        // axis collapses to "none" in the diff. K4 reinstates it.
+        if other.brands.requires_tag() && self.brands.is_none() {
+            return false;
+        }
+        if self.brands.is_none() || self.brands.cofinite {
+            // No finite brand tags to discharge (none / "any brand").
+            return self.is_subtype(other);
+        }
+        // Rule (ii): for each finite tag whose inner ⊆ other, discharge
+        // it. If every tag is dischargeable, drop the brands axis
+        // entirely for the comparison so the standard lattice no
+        // longer trips on the brand-axis mismatch.
+        let mut remaining = self.brands.clone();
+        let tags: Vec<String> = remaining.set.iter().cloned().collect();
+        for tag in &tags {
+            if let Some(inner) = brand_inners.get(tag)
+                && inner.is_subtype(other)
+            {
+                remaining.set.remove(tag);
+            }
+        }
+        let mut adjusted = self.clone();
+        adjusted.brands = remaining;
+        adjusted.is_subtype(other)
+    }
+
+    /// fz-axu.5 (K4) — brand-aware equivalence: mutual `is_subtype_under`.
+    #[allow(dead_code)] // wiring lands in downstream tickets that use it.
+    pub fn is_equiv_under(
+        &self,
+        other: &Descr,
+        brand_inners: &std::collections::HashMap<String, Descr>,
+    ) -> bool {
+        self == other
+            || (self.is_subtype_under(other, brand_inners)
+                && other.is_subtype_under(self, brand_inners))
+    }
+
     /// Mutual subtyping.
     ///
     /// Structural equality is a sufficient (not necessary) condition for
@@ -1324,8 +1411,8 @@ impl Descr {
             && self.atoms.is_none()
             && self.ints.is_none()
             && self.floats.is_none()
-            && self.strs.is_none()
             && self.opaques.is_none()
+            && self.brands.is_none()
             && self.vars.is_none()
             && self.tuples.iter().all(|c| tuple_clause_empty(c, memo))
             && self.lists.iter().all(|c| list_clause_empty(c, memo))
@@ -1960,8 +2047,18 @@ impl fmt::Display for Descr {
 
         let mut parts: Vec<String> = Vec::new();
 
+        // fz-axu.22 (M1) — the VEC_U8 ∪ VEC_BIT combo is the binary
+        // top (`@type … :: binary`). Render it as the user-facing
+        // name rather than the structural "vec(u8) | vec(bit)" pair.
+        let binary_mask = BasicBits::VEC_U8.union(BasicBits::VEC_BIT);
+        let render_binary = self.basic.contains_all(binary_mask);
+        let mut basic_for_loop = self.basic;
+        if render_binary {
+            parts.push("binary".to_string());
+            basic_for_loop = BasicBits(basic_for_loop.0 & !binary_mask.0);
+        }
         for (bit, name) in BASIC_NAMES {
-            if self.basic.contains_all(*bit) {
+            if basic_for_loop.contains_all(*bit) {
                 parts.push((*name).to_string());
             }
         }
@@ -1975,7 +2072,6 @@ impl fmt::Display for Descr {
                 format!("{}", v)
             }
         });
-        format_lit_set(&mut parts, &self.strs, "str", |s| format!("{:?}", s));
         // fz-yan.3 — the reserved atoms render without the `:` sigil to
         // preserve the conventional `nil`/`true`/`false` rendering and
         // collapse `:true | :false` to `bool` for `Descr::bool_t()`.
@@ -1985,6 +2081,10 @@ impl fmt::Display for Descr {
             format_lit_set(&mut parts, &self.atoms, "atom", |a| format!(":{}", a));
         }
         format_lit_set(&mut parts, &self.opaques, "opaque", |n| n.clone());
+        // fz-axu.2 (K1) — brands render as `brand <name>` (singular) or
+        // `brand <name1> | brand <name2>` (multi). Matches the user-facing
+        // `refines` declaration syntax conceptually; tests rely on it.
+        format_lit_set(&mut parts, &self.brands, "brand", |n| n.clone());
         // fz-try.5 — render type variables as `α<id>`. A per-signature
         // greek-letter remap (α, β, γ, …) lands in fz-try.11 (formatter).
         format_lit_set(&mut parts, &self.vars, "var", |v| format!("{}", v));
@@ -2022,8 +2122,15 @@ impl Descr {
 
         let mut parts: Vec<String> = Vec::new();
 
+        // fz-axu.22 (M1) — same binary-combo rendering as Display.
+        let binary_mask = BasicBits::VEC_U8.union(BasicBits::VEC_BIT);
+        let mut basic_for_loop = self.basic;
+        if self.basic.contains_all(binary_mask) {
+            parts.push("binary".to_string());
+            basic_for_loop = BasicBits(basic_for_loop.0 & !binary_mask.0);
+        }
         for (bit, name) in BASIC_NAMES {
-            if self.basic.contains_all(*bit) {
+            if basic_for_loop.contains_all(*bit) {
                 parts.push((*name).to_string());
             }
         }
@@ -2032,13 +2139,13 @@ impl Descr {
         format_lit_set_capped(&mut parts, &self.floats, "float", CAP, |f| {
             format!("{}", f.get())
         });
-        format_lit_set_capped(&mut parts, &self.strs, "str", CAP, |s| format!("{:?}", s));
         if let Some(s) = render_reserved_atom_set(&self.atoms) {
             parts.push(s);
         } else {
             format_lit_set_capped(&mut parts, &self.atoms, "atom", CAP, |a| format!(":{}", a));
         }
         format_lit_set_capped(&mut parts, &self.opaques, "opaque", CAP, |n| n.clone());
+        format_lit_set_capped(&mut parts, &self.brands, "brand", CAP, |n| n.clone());
         format_lit_set_capped(&mut parts, &self.vars, "var", CAP, |v| format!("{}", v));
 
         for c in &self.tuples {
@@ -2223,7 +2330,6 @@ fn format_map_key(k: &MapKey) -> String {
     match k {
         MapKey::Atom(a) => format!(":{}", a),
         MapKey::Int(n) => format!("{}", n),
-        MapKey::Str(s) => format!("{:?}", s),
     }
 }
 fn join_clause(pos: &[String], neg: &[String], top: &str) -> String {
@@ -2268,8 +2374,8 @@ pub enum Component<'a> {
     Atoms(AtomView<'a>),
     Ints(IntView<'a>),
     Floats(FloatView<'a>),
-    Strs(StrView<'a>),
     Opaques(OpaqueView<'a>),
+    Brands(BrandView<'a>),
     Vars(VarView<'a>),
     Tuples(TupleView<'a>),
     Lists(ListView<'a>),
@@ -2338,21 +2444,6 @@ impl<'a> FloatView<'a> {
 }
 
 #[derive(Clone, Copy)]
-pub struct StrView<'a> {
-    inner: &'a StrSet,
-}
-
-impl<'a> StrView<'a> {
-    pub fn singleton(&self) -> Option<&'a str> {
-        if !self.inner.cofinite && self.inner.set.len() == 1 {
-            self.inner.set.iter().next().map(String::as_str)
-        } else {
-            None
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
 #[allow(dead_code)]
 pub struct OpaqueView<'a> {
     inner: &'a LiteralSet<String>,
@@ -2367,6 +2458,28 @@ impl<'a> OpaqueView<'a> {
     /// `crate::type_expr::opaque_owner_module` to discover the declaring
     /// module for visibility gating.
     #[allow(dead_code)] // exercised via Descr::as_opaque_singleton in tests; .8 wires it into typing.
+    pub fn singleton(&self) -> Option<&'a str> {
+        if !self.inner.cofinite && self.inner.set.len() == 1 {
+            self.inner.set.iter().next().map(String::as_str)
+        } else {
+            None
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+#[allow(dead_code)]
+pub struct BrandView<'a> {
+    inner: &'a LiteralSet<String>,
+}
+
+impl<'a> BrandView<'a> {
+    /// fz-axu.2 (K1) — if this view names exactly one brand tag (the
+    /// common case for a freshly minted brand value), return its
+    /// qualified name. Returns `None` for cofinite sets and for empty
+    /// or many-tag sets. Consumers (K4 visibility gating, K5 erasure)
+    /// pair this with brand_inners to resolve the underlying Descr.
+    #[allow(dead_code)] // K3 wires this into brand-mint typing.
     pub fn singleton(&self) -> Option<&'a str> {
         if !self.inner.cofinite && self.inner.set.len() == 1 {
             self.inner.set.iter().next().map(String::as_str)
@@ -2626,9 +2739,11 @@ impl Descr {
         let floats = (!self.floats.is_none()).then_some(Component::Floats(FloatView {
             inner: &self.floats,
         }));
-        let strs = (!self.strs.is_none()).then_some(Component::Strs(StrView { inner: &self.strs }));
         let opaques = (!self.opaques.is_none()).then_some(Component::Opaques(OpaqueView {
             inner: &self.opaques,
+        }));
+        let brands = (!self.brands.is_none()).then_some(Component::Brands(BrandView {
+            inner: &self.brands,
         }));
         let vars = (!self.vars.is_none()).then_some(Component::Vars(VarView { inner: &self.vars }));
         let tuples = (!self.tuples.is_empty()).then_some(Component::Tuples(TupleView {
@@ -2641,7 +2756,7 @@ impl Descr {
         let maps =
             (!self.maps.is_empty()).then_some(Component::Maps(MapView { inner: &self.maps }));
         [
-            basic, atoms, ints, floats, strs, opaques, vars, tuples, lists, funcs, maps,
+            basic, atoms, ints, floats, opaques, brands, vars, tuples, lists, funcs, maps,
         ]
         .into_iter()
         .flatten()
@@ -2675,7 +2790,7 @@ mod tests {
         assert_eq!(Descr::bool_t().to_string(), "bool");
         assert_eq!(Descr::int().to_string(), "int");
         assert_eq!(Descr::float().to_string(), "float");
-        assert_eq!(Descr::str_t().to_string(), "str");
+        assert_eq!(Descr::str_t().to_string(), "binary");
         assert_eq!(Descr::vec_i64().to_string(), "vec(i64)");
         assert_eq!(Descr::vec_f64().to_string(), "vec(f64)");
         assert_eq!(Descr::vec_u8().to_string(), "vec(u8)");
@@ -2692,7 +2807,7 @@ mod tests {
     #[test]
     fn tuple_constructor() {
         let t = Descr::tuple_of([Descr::int(), Descr::str_t()]);
-        assert_eq!(t.to_string(), "{int, str}");
+        assert_eq!(t.to_string(), "{int, binary}");
     }
 
     #[test]
@@ -2858,7 +2973,6 @@ mod tests {
         let n = Descr::int().neg();
         assert!(n.ints.is_none(), "ints axis flipped to empty");
         assert!(n.floats.is_any());
-        assert!(n.strs.is_any());
         assert!(n.atoms.is_any());
         assert!(is_dnf_top(&n.tuples));
     }
@@ -2911,7 +3025,7 @@ mod tests {
         let b = Descr::tuple_of([Descr::atom_lit("error"), Descr::str_t()]);
         let u = a.union(&b);
         assert_eq!(u.tuples.len(), 2, "union concatenates DNF clauses");
-        assert_eq!(u.to_string(), "{:ok, int} | {:error, str}");
+        assert_eq!(u.to_string(), "{:ok, int} | {:error, binary}");
     }
 
     #[test]
@@ -3248,13 +3362,6 @@ mod tests {
     }
 
     #[test]
-    fn str_lit_singletons() {
-        assert!(Descr::str_lit("hello").is_subtype(&Descr::str_t()));
-        assert!(!Descr::str_lit("a").is_subtype(&Descr::str_lit("b")));
-        assert_eq!(Descr::str_lit("hi").to_string(), "\"hi\"");
-    }
-
-    #[test]
     fn singleton_in_tuple() {
         // {:ok, 0} <: {:ok, int} but {:ok, 0} </: {:ok, 1}
         let one = Descr::tuple_of([Descr::atom_lit("ok"), Descr::int_lit(0)]);
@@ -3284,7 +3391,7 @@ mod tests {
         assert_eq!(Descr::map_top().to_string(), "map");
         let m = Descr::map_of([(ak("name"), Descr::str_t()), (ak("age"), Descr::int())]);
         // BTreeMap orders by key, so :age comes before :name
-        assert_eq!(m.to_string(), "%{:age: int, :name: str}");
+        assert_eq!(m.to_string(), "%{:age: int, :name: binary}");
     }
 
     #[test]
@@ -3541,6 +3648,181 @@ mod tests {
     fn opaque_is_subtype_of_itself() {
         let pid = Descr::opaque_of("pid");
         assert!(pid.is_subtype(&pid), "pid should be a subtype of itself");
+    }
+
+    // ------------------------------------------------------------------
+    // fz-axu.2 (K1) — brands axis
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn brand_of_is_non_empty_and_distinguishable() {
+        let utf8 = Descr::brand_of("utf8");
+        assert!(!utf8.is_empty(), "brand_of must not be empty");
+        assert!(!utf8.looks_full(), "brand_of must not look full");
+        // Only the brands axis is populated.
+        assert!(utf8.basic.is_empty());
+        assert!(utf8.atoms.is_none());
+        assert!(utf8.ints.is_none());
+        assert!(
+            utf8.opaques.is_none(),
+            "brands and opaques are distinct axes"
+        );
+        assert!(utf8.vars.is_none());
+        assert!(!utf8.brands.is_none(), "brands axis must carry the tag");
+    }
+
+    #[test]
+    fn brand_is_subtype_of_itself() {
+        let utf8 = Descr::brand_of("utf8");
+        assert!(utf8.is_subtype(&utf8), "utf8 ⊆ utf8");
+    }
+
+    #[test]
+    fn two_distinct_brands_do_not_overlap() {
+        let a = Descr::brand_of("utf8");
+        let b = Descr::brand_of("ascii");
+        let i = a.intersect(&b);
+        assert!(i.is_empty(), "utf8 ∩ ascii must be empty: got {}", i);
+    }
+
+    #[test]
+    fn brand_union_with_any_becomes_any() {
+        let utf8 = Descr::brand_of("utf8");
+        let u = utf8.union(&Descr::any());
+        assert!(u.looks_full(), "utf8 ∪ any must be any: got {}", u);
+    }
+
+    #[test]
+    fn brand_is_disjoint_from_same_name_opaque() {
+        // Brands and opaques live in different axes — even if the tag
+        // text matches, they don't overlap. K4's is_subtype rule reads
+        // the inner; K1 only proves the lattice keeps them separate.
+        let b = Descr::brand_of("X");
+        let o = Descr::opaque_of("X");
+        let i = b.intersect(&o);
+        assert!(i.is_empty(), "brand(X) ∩ opaque(X) must be empty");
+    }
+
+    #[test]
+    fn brand_renders_finite_as_bare_name() {
+        // Matches the opaque-display convention: finite singletons render
+        // just the tag; the "brand" keyword shows up only in cofinite
+        // forms (e.g. `brand \ {utf8}`).
+        let utf8 = Descr::brand_of("utf8");
+        assert_eq!(format!("{}", utf8), "utf8");
+        // Cofinite case: ¬utf8 still belongs to the brands axis at top.
+        let cofinite = utf8.neg();
+        let s = format!("{}", cofinite);
+        assert!(s.contains("brand \\ {utf8}"), "cofinite rendering: {}", s);
+    }
+
+    #[test]
+    fn any_contains_all_brands() {
+        let any = Descr::any();
+        assert!(any.brands.is_any(), "Descr::any().brands must be universe");
+        let utf8 = Descr::brand_of("utf8");
+        assert!(utf8.is_subtype(&any), "brand(utf8) ⊆ any");
+    }
+
+    #[test]
+    fn brand_singleton_extracts_the_tag() {
+        let utf8 = Descr::brand_of("utf8");
+        assert_eq!(utf8.as_brand_singleton(), Some("utf8"));
+        let two = utf8.union(&Descr::brand_of("ascii"));
+        assert_eq!(
+            two.as_brand_singleton(),
+            None,
+            "multi-tag set has no singleton"
+        );
+        assert_eq!(
+            Descr::any().as_brand_singleton(),
+            None,
+            "cofinite has no singleton"
+        );
+        assert_eq!(
+            Descr::int().as_brand_singleton(),
+            None,
+            "non-brand axes don't yield a brand singleton"
+        );
+    }
+
+    // fz-axu.5 (K4) — brand-aware subtype rule. A minted brand value
+    // (brands={B} ∧ structural T) is a subtype of T when brand_inners
+    // ratifies that B's inner is structurally T.
+
+    fn brand_inners(items: &[(&str, Descr)]) -> std::collections::HashMap<String, Descr> {
+        items
+            .iter()
+            .map(|(n, d)| (n.to_string(), d.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn is_subtype_under_discharges_brand_when_inner_fits() {
+        // utf8 :: refines binary. A value typed `brands={utf8} ∧ str_t`
+        // is a subtype of str_t under brand_inners[utf8 → str_t].
+        let inners = brand_inners(&[("utf8", Descr::str_t())]);
+        let mut minted = Descr::str_t();
+        minted.brands = LiteralSet::lit("utf8".to_string());
+        assert!(
+            !minted.is_subtype(&Descr::str_t()),
+            "strict lattice keeps the brand tag — minted is NOT a subtype without K4",
+        );
+        assert!(
+            minted.is_subtype_under(&Descr::str_t(), &inners),
+            "K4 rule: brand-tagged binary IS a subtype of binary",
+        );
+    }
+
+    #[test]
+    fn is_subtype_under_keeps_brand_when_inner_does_not_fit() {
+        // utf8 :: refines binary. A utf8 value is NOT a subtype of int,
+        // because the inner is binary, not int.
+        let inners = brand_inners(&[("utf8", Descr::str_t())]);
+        let mut minted = Descr::str_t();
+        minted.brands = LiteralSet::lit("utf8".to_string());
+        assert!(
+            !minted.is_subtype_under(&Descr::int(), &inners),
+            "K4 rule must not discharge the brand when the inner doesn't fit",
+        );
+    }
+
+    #[test]
+    fn is_subtype_under_no_brand_inners_falls_back_to_strict() {
+        // Empty brand_inners → no tag can be discharged. Behavior is
+        // identical to the strict lattice.
+        let inners = brand_inners(&[]);
+        let mut minted = Descr::str_t();
+        minted.brands = LiteralSet::lit("utf8".to_string());
+        assert_eq!(
+            minted.is_subtype(&Descr::str_t()),
+            minted.is_subtype_under(&Descr::str_t(), &inners),
+            "with no brand_inners the helper degenerates to is_subtype",
+        );
+    }
+
+    #[test]
+    fn is_subtype_under_target_with_brand_restriction_still_works() {
+        // utf8 ⊆ utf8: brand-aware lookup leaves the tag in place when
+        // the target also restricts to that brand. Verifies the K4 rule
+        // doesn't drop tags that the target still wants.
+        let inners = brand_inners(&[("utf8", Descr::str_t())]);
+        let mut minted = Descr::str_t();
+        minted.brands = LiteralSet::lit("utf8".to_string());
+        let mut target = Descr::str_t();
+        target.brands = LiteralSet::lit("utf8".to_string());
+        assert!(minted.is_subtype_under(&target, &inners));
+        // And the inverse: a plain binary (brands=none) is NOT a utf8.
+        assert!(!Descr::str_t().is_subtype_under(&target, &inners));
+    }
+
+    #[test]
+    fn brand_neg_excludes_only_that_brand() {
+        let a = Descr::brand_of("utf8");
+        let b = Descr::brand_of("ascii");
+        let not_a = a.neg();
+        assert!(!a.is_subtype(&not_a), "utf8 ⊄ ¬utf8");
+        assert!(b.is_subtype(&not_a), "ascii ⊆ ¬utf8");
     }
 
     #[test]
@@ -3986,8 +4268,8 @@ mod tests {
 
     #[test]
     fn components_any_yields_one_per_axis() {
-        // 11 axes: basic, atoms, ints, floats, strs, opaques, vars,
-        // tuples, lists, funcs, maps.
+        // 11 axes (fz-axu.22 deleted `strs`): basic, atoms, ints,
+        // floats, opaques, brands, vars, tuples, lists, funcs, maps.
         assert_eq!(count_components(&Descr::any()), 11);
     }
 

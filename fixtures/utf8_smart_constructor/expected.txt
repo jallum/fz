@@ -1,0 +1,4 @@
+true
+false
+{:ok, "hi"}
+{:error, :invalid_utf8}

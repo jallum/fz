@@ -67,7 +67,7 @@ end
         let (name, args) = mc.expect("expected an Item::MacroCall");
         assert_eq!(name, "test");
         assert_eq!(args.len(), 2, "name + body");
-        assert!(matches!(args[0].node, Expr::Str(ref s) if s == "addition"));
+        assert!(matches!(args[0].node, Expr::Str(ref s) if s == b"addition"));
         match &args[1].node {
             Expr::Block(_) | Expr::BinOp(_, _, _) => {}
             other => panic!("unexpected body shape: {:?}", other),
@@ -551,6 +551,7 @@ impl Parser {
             module_docs: Default::default(),
             module_type_envs: Default::default(),
             opaque_inners: Default::default(),
+            brand_inners: Default::default(),
         })
     }
 
@@ -748,7 +749,12 @@ impl Parser {
         match name.as_str() {
             "doc" | "moduledoc" => {
                 let value = match self.bump() {
-                    Tok::Str(s) => s,
+                    Tok::Str(bytes) => match String::from_utf8(bytes) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            return self.err(format!("@{} requires UTF-8 text: {}", name, e));
+                        }
+                    },
                     other => {
                         return self.err(format!(
                             "expected string value after `@{}`, got {:?}",
@@ -1048,7 +1054,12 @@ impl Parser {
     fn parse_extern_item(&mut self) -> PR<FnDef> {
         let start = self.cur_span();
         let abi = match self.bump() {
-            Tok::Str(s) => s,
+            Tok::Str(bytes) => match String::from_utf8(bytes) {
+                Ok(s) => s,
+                Err(e) => {
+                    return self.err(format!("extern ABI string must be valid UTF-8: {}", e));
+                }
+            },
             other => {
                 return self.err(format!(
                     "expected ABI string after `extern`, got {:?}",
@@ -1401,9 +1412,11 @@ impl Parser {
                 self.bump();
                 Pattern::Float(f)
             }
-            Tok::Str(s) => {
+            Tok::Str(bytes) => {
                 self.bump();
-                Pattern::Str(s)
+                // fz-axu.10 (L2) — Pattern::Str carries raw bytes; L3
+                // validates UTF-8 and brands when the subject is utf8.
+                Pattern::Str(bytes)
             }
             Tok::Atom(a) => {
                 self.bump();
@@ -1650,9 +1663,11 @@ impl Parser {
                 self.bump();
                 Expr::Float(f)
             }
-            Tok::Str(s) => {
+            Tok::Str(bytes) => {
                 self.bump();
-                Expr::Str(s)
+                // fz-axu.10 (L2) — Expr::Str carries raw bytes; L3
+                // validates UTF-8 and mints the utf8 brand.
+                Expr::Str(bytes)
             }
             Tok::Atom(a) => {
                 self.bump();

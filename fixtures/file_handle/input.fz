@@ -18,8 +18,8 @@ defmodule FileHandle do
 end
 
 fn main() do
-  # "/tmp/fz-x5m" — created with mode 0o644 = 420
-  path = <<47, 116, 109, 112, 47, 102, 122, 45, 120, 53, 109>>
+  # created with mode 0o644 = 420
+  path = "/tmp/fz-x5m"
   fd = libc::creat(path, 420)
   print(:opened)
   # "hi\n" — exercises the `binary` marshal class

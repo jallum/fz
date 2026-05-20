@@ -1,0 +1,132 @@
+; fn main
+    ;   @spec   main() -> nil
+    ;   @key    []
+    ;   @abi    () -> Tagged
+function u0:0(i64) -> i64 tail {
+    gv0 = symbol colocated userextname0
+    gv1 = symbol colocated userextname0
+    sig0 = (i64, i64, i64) -> i64 system_v
+    sig1 = (i64, i64, i64) -> i64 system_v
+    sig2 = (i64, i64) -> i64 system_v
+    sig3 = (i64) system_v
+    sig4 = (i64, i64) -> i64 tail
+    fn0 = u0:10 sig0
+    fn1 = u0:10 sig1
+    fn2 = u0:25 sig2
+    fn3 = u0:46 sig3
+    fn4 = colocated u0:45 sig4
+
+block0(v0: i64):
+    v1 = symbol_value.i64 gv0           ; @2:9
+    v2 = iconst.i64 2                   ; @2:9
+    v3 = iconst.i64 16                  ; @2:9
+    v4 = call fn0(v1, v2, v3)           ; @2:9  v2 = 2, v3 = 16
+    v5 = symbol_value.i64 gv1           ; @2:9
+    v6 = iconst.i64 2                   ; @2:9
+    v7 = iconst.i64 16                  ; @2:9
+    v8 = call fn1(v5, v6, v7)           ; @2:9  v6 = 2, v7 = 16
+    v9 = bor v4, v8                     ; @2:17
+    v10 = band_imm v9, 7                ; @2:17
+    v11 = icmp_imm eq v10, 0            ; @2:17
+    brif v11, block2, block1            ; @2:17
+
+block1:
+    v13 = icmp.i64 eq v4, v8            ; @2:17
+    v14 = iconst.i64 10                 ; @2:17
+    v15 = iconst.i64 18                 ; @2:17
+    v16 = select v13, v14, v15          ; @2:17  v14 = 10, v15 = 18
+    jump block3(v16)                    ; @2:17
+
+block2:
+    v17 = call fn2(v4, v8)              ; @2:17
+    jump block3(v17)                    ; @2:17
+
+    block3(v12: i64):    ;; v12 :: bool
+    call fn3(v12)                       ; @2:17
+    v18 = iconst.i64 2                  ; @2:17
+    return_call fn4(v18, v0)            ; @2:3  v18 = 2
+}
+
+; fn k_23
+    ;   @spec   k_23(nil) -> nil
+    ;   @key    [nil]
+    ;   @abi    (Tagged) -> Tagged
+function u0:0(i64, i64) -> i64 tail {
+    gv0 = symbol colocated userextname0
+    gv1 = symbol colocated userextname2
+    gv2 = symbol colocated userextname5
+    gv3 = symbol colocated userextname5
+    sig0 = (i64, i64, i64) -> i64 system_v
+    sig1 = (i64, i64, i64) -> i64 system_v
+    sig2 = (i64, i64) -> i64 system_v
+    sig3 = (i64) system_v
+    sig4 = (i64, i64, i64) -> i64 system_v
+    sig5 = (i64, i64, i64) -> i64 system_v
+    sig6 = (i64, i64) -> i64 system_v
+    sig7 = (i64, i64) -> i64 tail
+    fn0 = u0:10 sig0
+    fn1 = u0:10 sig1
+    fn2 = u0:25 sig2
+    fn3 = u0:46 sig3
+    fn4 = u0:10 sig4
+    fn5 = u0:10 sig5
+    fn6 = u0:25 sig6
+
+    block0(v0: i64, v1: i64):    ;; v0 :: nil
+    v2 = symbol_value.i64 gv0           ; @3:9
+    v3 = iconst.i64 2                   ; @3:9
+    v4 = iconst.i64 16                  ; @3:9
+    v5 = call fn0(v2, v3, v4)           ; @3:9  v3 = 2, v4 = 16
+    v6 = symbol_value.i64 gv1           ; @3:9
+    v7 = iconst.i64 3                   ; @3:9
+    v8 = iconst.i64 24                  ; @3:9
+    v9 = call fn1(v6, v7, v8)           ; @3:9  v7 = 3, v8 = 24
+    v10 = bor v5, v9                    ; @3:17
+    v11 = band_imm v10, 7               ; @3:17
+    v12 = icmp_imm eq v11, 0            ; @3:17
+    brif v12, block2, block1            ; @3:17
+
+block1:
+    v14 = icmp.i64 eq v5, v9            ; @3:17
+    v15 = iconst.i64 10                 ; @3:17
+    v16 = iconst.i64 18                 ; @3:17
+    v17 = select v14, v15, v16          ; @3:17  v15 = 10, v16 = 18
+    jump block3(v17)                    ; @3:17
+
+block2:
+    v18 = call fn2(v5, v9)              ; @3:17
+    jump block3(v18)                    ; @3:17
+
+    block3(v13: i64):    ;; v13 :: bool
+    call fn3(v13)                       ; @3:17
+    v19 = symbol_value.i64 gv2          ; @3:9
+    v20 = iconst.i64 6                  ; @3:9
+    v21 = iconst.i64 48                 ; @3:9
+    v22 = call fn4(v19, v20, v21)       ; @3:9  v20 = 6, v21 = 48
+    v23 = symbol_value.i64 gv3
+    v24 = iconst.i64 6
+    v25 = iconst.i64 48
+    v26 = call fn5(v23, v24, v25)  ; v24 = 6, v25 = 48    ;; v26 :: binary
+    v27 = bor v22, v26
+    v28 = band_imm v27, 7
+    v29 = icmp_imm eq v28, 0
+    brif v29, block5, block4
+
+block4:
+    v31 = icmp.i64 eq v22, v26
+    v32 = iconst.i64 10
+    v33 = iconst.i64 18
+    v34 = select v31, v32, v33  ; v32 = 10, v33 = 18
+    jump block6(v34)
+
+block5:
+    v35 = call fn6(v22, v26)
+    jump block6(v35)
+
+    block6(v30: i64):    ;; v30 :: bool
+    call fn3(v30)
+    v36 = iconst.i64 2    ;; v36 :: nil
+    v37 = load.i64 notrap aligned v1+16 ; @3:3
+    return_call_indirect sig7, v37(v36, v1) ; @3:3  v36 = 2
+}
+

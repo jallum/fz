@@ -161,7 +161,7 @@ fn subst_var(v: Var, subst: &HashMap<Var, Var>) -> Var {
     *subst.get(&v).unwrap_or(&v)
 }
 
-fn subst_prim(p: &Prim, subst: &HashMap<Var, Var>) -> Prim {
+pub(crate) fn subst_prim(p: &Prim, subst: &HashMap<Var, Var>) -> Prim {
     let sv = |v: Var| subst_var(v, subst);
     match p {
         Prim::Const(c) => Prim::Const(c.clone()),
@@ -234,6 +234,7 @@ fn subst_prim(p: &Prim, subst: &HashMap<Var, Var>) -> Prim {
             is_last: *is_last,
         },
         Prim::TypeTest(a, d) => Prim::TypeTest(sv(*a), d.clone()),
+        Prim::Brand(a, name) => Prim::Brand(sv(*a), name.clone()),
     }
 }
 

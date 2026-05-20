@@ -33,22 +33,22 @@ function u0:0(i64) -> i64 tail {
 
 block0(v0: i64):
     v1 = iconst.i64 10                  ; @6:22
-    v2 = iconst.i32 13                  ; @6:26
-    v3 = call fn0(v2)                   ; @6:26  v2 = 13
+    v2 = iconst.i32 22                  ; @6:26
+    v3 = call fn0(v2)                   ; @6:26  v2 = 22
     v4 = iconst.i64 81
     v5 = call fn1(v4, v3)  ; v4 = 81    ;; v5 :: any
     v6 = iconst.i64 20    ;; v6 :: 20
-    v7 = iconst.i32 13
-    v8 = call fn2(v7)  ; v7 = 13    ;; v8 :: &fn13[]:(α832) -> α895
+    v7 = iconst.i32 22
+    v8 = call fn2(v7)  ; v7 = 22    ;; v8 :: &fn22[]:(α1408) -> α1471
     v9 = iconst.i64 161
     v10 = call fn1(v9, v8)  ; v9 = 161    ;; v10 :: any
     v11 = iconst.i64 30    ;; v11 :: 30
-    v12 = iconst.i32 13
-    v13 = call fn3(v12)  ; v12 = 13    ;; v13 :: &fn13[]:(α832) -> α895
+    v12 = iconst.i32 22
+    v13 = call fn3(v12)  ; v12 = 22    ;; v13 :: &fn22[]:(α1408) -> α1471
     v14 = iconst.i64 241
     v15 = call fn1(v14, v13)  ; v14 = 241    ;; v15 :: any
-    v16 = iconst.i64 42    ;; v16 :: :before
-    call fn4(v16)  ; v16 = 42
+    v16 = iconst.i64 66    ;; v16 :: :before
+    call fn4(v16)  ; v16 = 66
     v17 = iconst.i64 2    ;; v17 :: nil
     v18 = load.i64 notrap aligned v0+16 ; @6:8
     return_call_indirect sig5, v18(v17, v0) ; @6:8  v17 = 2

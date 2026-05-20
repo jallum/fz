@@ -2163,8 +2163,12 @@ fn type_prim(
             VecKindIr::U8 => Descr::vec_u8(),
             VecKindIr::Bit => Descr::vec_bit(),
         },
-        Prim::MakeBitstring(_) => Descr::vec_u8().union(&Descr::vec_bit()),
-        Prim::ConstBitstring(_, _) => Descr::vec_u8().union(&Descr::vec_bit()),
+        // fz-axu.1 (K0) — bitstring construction types as the binary/bitstring
+        // top (`str_t()`). Branded subset types (e.g. `utf8`) will layer on top
+        // of this in later tickets. vec_u8/vec_bit remain reserved for explicit
+        // vector(u8)/vector(bit) values.
+        Prim::MakeBitstring(_) => Descr::str_t(),
+        Prim::ConstBitstring(_, _) => Descr::str_t(),
 
         Prim::MakeClosure(_, fn_id, captured) => {
             // fz-ul4.27.22.10 — type MakeClosure's result as a closure
@@ -2205,6 +2209,19 @@ fn type_prim(
             }
         }
 
+        // fz-axu.4 (K3) — brand-mint. Take the source's structural type
+        // and overlay `brands = {name}`. The result is a *minted brand
+        // value*: its Descr carries both the brand tag (for nominal
+        // identity / visibility) and the underlying structural axes (so
+        // it remains usable as the underlying type wherever the K4 rule
+        // grants `brand(name) ⊆ inner`). Pre-K4, the structural axes
+        // alone keep it usable; the brand tag is just an extra label.
+        Prim::Brand(v, name) => {
+            let mut d = lookup(env, *v);
+            d.brands = crate::types::LiteralSet::lit(name.clone());
+            d
+        }
+
         // Reader and struct ops: conservative Top until later tickets refine.
         Prim::AllocStruct(_, _) => Descr::any(),
         Prim::BitReaderInit(_) => Descr::any(),
@@ -2232,7 +2249,6 @@ fn type_const(c: &Const, atom_names: &[String]) -> Descr {
     match c {
         Const::Int(n) => Descr::int_lit(*n),
         Const::Float(f) => Descr::float_lit(*f),
-        Const::Str(s) => Descr::str_lit(s.clone()),
         Const::Atom(id) => {
             let name = atom_names
                 .get(*id as usize)
@@ -3531,7 +3547,8 @@ pub fn prim_is_pure(p: &crate::fz_ir::Prim) -> Result<(), ImpureKind> {
         | BitReaderInit(_)
         | BitReadField { .. }
         | BitReaderDone(_)
-        | TypeTest(_, _) => Ok(()),
+        | TypeTest(_, _)
+        | Brand(_, _) => Ok(()),
 
         AllocStruct(_, _) => Err(ImpureKind::Allocates("AllocStruct")),
         ListCons(_, _) => Err(ImpureKind::Allocates("ListCons")),

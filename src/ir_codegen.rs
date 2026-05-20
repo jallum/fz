@@ -1361,6 +1361,15 @@ impl JitBackend {
             "fz_make_resource",
             fz_runtime::ir_runtime::fz_make_resource as *const u8,
         );
+        // fz-axu.14 (R1) / .13 (S2) — utf8 brand support.
+        builder.symbol(
+            "fz_bitstring_valid_utf8",
+            fz_runtime::ir_runtime::fz_bitstring_valid_utf8 as *const u8,
+        );
+        builder.symbol(
+            "fz_brand_bitstring_as_utf8",
+            fz_runtime::ir_runtime::fz_brand_bitstring_as_utf8 as *const u8,
+        );
         // fz-swt.11 — runtime-exported fixture/test dtor. Always bound to
         // the JIT (not gated on cfg(test)) so any `fz dump --emit clif`
         // or `fz run` over a fixture that uses it resolves cleanly — the
@@ -7026,9 +7035,6 @@ fn lower_prim<M: cranelift_module::Module>(
                 let inst = b.ins().call(fref, &[bv]);
                 b.inst_results(inst)[0]
             }
-            Const::Str(_) => {
-                return Err(CodegenError::new("Str codegen lands in a later ticket"));
-            }
         },
         Prim::BinOp(op, a, bv) => {
             // .5.2: tagged operands are materialised lazily by `tag_a` /
@@ -7542,6 +7548,14 @@ fn lower_prim<M: cranelift_module::Module>(
             }
             cl_ptr
         }
+        // fz-axu.23 (M2) — lower_program_full erases all Prim::Brand
+        // before returning. If codegen sees one, ir_brand_erase didn't
+        // run (or a caller injected Brand after lowering); surface it
+        // loudly rather than silently lowering as identity.
+        Prim::Brand(_, _) => unreachable!(
+            "Prim::Brand reached codegen — erasure should run inside lower_program_full"
+        ),
+
         Prim::TypeTest(v, descr) => {
             use crate::types::BasicBits;
             use fz_runtime::fz_value::HeapKind;
@@ -7604,8 +7618,8 @@ fn lower_prim<M: cranelift_module::Module>(
                     // Untyped-by-codegen axes — silent no-match, matching
                     // pre-Component behavior. Compiler exhaustiveness ensures
                     // future axis additions surface this gap.
-                    Component::Strs(_)
-                    | Component::Opaques(_)
+                    Component::Opaques(_)
+                    | Component::Brands(_)
                     | Component::Vars(_)
                     | Component::Lists(_)
                     | Component::Funcs(_)
@@ -7708,8 +7722,8 @@ fn lower_prim<M: cranelift_module::Module>(
                         // Scalar axes handled in Pass 1.
                         Component::Ints(_) | Component::Atoms(_) => {}
                         // Untyped-by-codegen axes — silent no-match.
-                        Component::Strs(_)
-                        | Component::Opaques(_)
+                        Component::Opaques(_)
+                        | Component::Brands(_)
                         | Component::Vars(_)
                         | Component::Lists(_)
                         | Component::Funcs(_)

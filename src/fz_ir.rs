@@ -388,7 +388,6 @@ pub struct ExternDecl {
 pub enum Const {
     Int(i64),
     Float(f64),
-    Str(String),
     Atom(u32),
     Nil,
     True,
@@ -482,6 +481,19 @@ pub enum Prim {
     /// the typer (opaque types have no runtime tag) — the branch is then
     /// eliminated by DCE.
     TypeTest(Var, Box<crate::types::Descr>),
+
+    /// fz-axu.4 (K3) — brand-mint. Tags the source value with the
+    /// nominal brand `name` (resolved against `Module.brand_inners` to
+    /// recover the inner type). Pure at the type-system level: the
+    /// result's Descr keeps the source's structural axes and adds
+    /// `brands = {name}`. Runtime-identity: codegen and the interpreter
+    /// pass the source value through unchanged. K5's erasure pass
+    /// rewrites `Brand(v, _)` to a simple alias for `v` once typing is
+    /// stable, so post-erasure IR contains no `Brand` nodes.
+    ///
+    /// Not user-visible in v1. The L3 desugaring pass inserts these
+    /// for literal `"…"` → utf8 mint sites.
+    Brand(Var, String),
 }
 
 #[derive(Debug, Clone)]
@@ -919,6 +931,13 @@ pub struct Module {
     /// Populated by `ir_lower::lower_program_full` from the resolved
     /// `Program.opaque_inners`.
     pub opaque_inners: HashMap<String, crate::types::Descr>,
+    /// fz-axu.2 (K1) — Inner-type map for `refines` brand declarations,
+    /// parallel to `opaque_inners`. Keyed by the qualified brand tag
+    /// (as stored on `Descr::brand_of(...)`); value is the parsed body
+    /// `T` following the `refines` keyword. Populated by
+    /// `ir_lower::lower_program_full` from the resolved
+    /// `Program.brand_inners`.
+    pub brand_inners: HashMap<String, crate::types::Descr>,
 }
 
 impl Module {
@@ -1078,6 +1097,7 @@ impl ModuleBuilder {
             extern_idx: HashMap::new(),
             boundary_fns: HashSet::new(),
             opaque_inners: HashMap::new(),
+            brand_inners: HashMap::new(),
         }
     }
 }
@@ -1113,7 +1133,6 @@ impl fmt::Display for Const {
         match self {
             Const::Int(n) => write!(f, "{}", n),
             Const::Float(x) => write!(f, "{}f", x),
-            Const::Str(s) => write!(f, "{:?}", s),
             Const::Atom(id) => write!(f, ":atom_{}", id),
             Const::Nil => write!(f, "nil"),
             Const::True => write!(f, "true"),
@@ -1226,6 +1245,7 @@ impl fmt::Display for Prim {
             Prim::BitReadField { reader, .. } => write!(f, "bit_read_field({})", reader),
             Prim::BitReaderDone(v) => write!(f, "bit_reader_done({})", v),
             Prim::TypeTest(v, d) => write!(f, "type_test({}, {})", v, d),
+            Prim::Brand(v, name) => write!(f, "brand({}, {})", v, name),
         }
     }
 }

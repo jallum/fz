@@ -289,10 +289,10 @@ fn unop_neg_runs() {
 #[test]
 fn atom_const_returns_atom_id() {
     // fz-yan.1 — AtomTable reserves ids 0/1/2 for nil/true/false at
-    // construction. match_error (id=3) and function_clause (id=4)
-    // intern during prelude lowering; :ok is the next user atom
-    // (id=5).
-    assert_eq!(run_main("fn main(), do: :ok"), 5);
+    // construction. fz-axu.13 — Utf8.from_bytes in the prelude interns
+    // `:ok` first (id=3), so user references to :ok return that id.
+    // `match_error` / `function_clause` intern later in the prelude.
+    assert_eq!(run_main("fn main(), do: :ok"), 4);
 }
 
 // ----- .11.8 frame-allocation tests -----
@@ -1520,12 +1520,13 @@ fn nil_does_not_match_empty_list_pattern() {
     let halt = run_main("fn f([]), do: 1\nfn main(), do: f(nil)");
     // Halt value of the atom :function_clause is its id (1).
     // Confirmed by the existing atom_const_returns_atom_id test.
-    // fz-yan.1 — function_clause atom id is 4 (nil=0, true=1,
-    // false=2 reserve the first three slots; match_error=3,
-    // function_clause=4).
+    // fz-axu.13 — Utf8 module shifted the prelude's atom-intern order;
+    // function_clause now lands at id 3 (nil=0, true=1, false=2 are
+    // reserved; function_clause interns first among the prelude's
+    // multi-clause dispatch atoms).
     assert_eq!(
-        halt, 4,
-        "expected :function_clause halt (id=4); got {}",
+        halt, 3,
+        "expected :function_clause halt (id=3); got {}",
         halt
     );
 }
@@ -1536,12 +1537,13 @@ fn nil_does_not_match_empty_list_pattern() {
 #[test]
 fn empty_list_does_not_match_nil_pattern() {
     let halt = run_main("fn f(nil), do: 1\nfn main(), do: f([])");
-    // fz-yan.1 — function_clause atom id is 4 (nil=0, true=1,
-    // false=2 reserve the first three slots; match_error=3,
-    // function_clause=4).
+    // fz-axu.13 — Utf8 module shifted the prelude's atom-intern order;
+    // function_clause now lands at id 3 (nil=0, true=1, false=2 are
+    // reserved; function_clause interns first among the prelude's
+    // multi-clause dispatch atoms).
     assert_eq!(
-        halt, 4,
-        "expected :function_clause halt (id=4); got {}",
+        halt, 3,
+        "expected :function_clause halt (id=3); got {}",
         halt
     );
 }

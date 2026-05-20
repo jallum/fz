@@ -15,8 +15,8 @@ block0(v0: i64):
     return_call fn1(v2, v0)             ; @2:3  v2 = 2
 }
 
-; fn k_14
-    ;   @spec   k_14(nil) -> nil
+; fn k_23
+    ;   @spec   k_23(nil) -> nil
     ;   @key    [nil]
     ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
@@ -26,14 +26,14 @@ function u0:0(i64, i64) -> i64 tail {
     fn1 = colocated u0:46 sig1
 
     block0(v0: i64, v1: i64):    ;; v0 :: nil
-    v2 = iconst.i64 42                  ; @3:9
-    call fn0(v2)  ; v2 = 42
+    v2 = iconst.i64 34                  ; @3:9
+    call fn0(v2)  ; v2 = 34
     v3 = iconst.i64 2    ;; v3 :: nil
     return_call fn1(v3, v1)             ; @3:3  v3 = 2
 }
 
-; fn k_15
-    ;   @spec   k_15(nil) -> nil
+; fn k_24
+    ;   @spec   k_24(nil) -> nil
     ;   @key    [nil]
     ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {

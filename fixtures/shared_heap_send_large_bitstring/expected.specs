@@ -1,4 +1,4 @@
-; spec print(1) #fn=0
+; spec print(1) #fn=4
 ;   key:    [any]
 ;   return: none
 ;   vars:
@@ -9,12 +9,12 @@
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(1)      :: :function_clause
 ;     blk2 If Var(2) ? blk4 : blk3
-;     blk3 TailCall fn_clause_1#10(Var(0))
+;     blk3 TailCall fn_clause_1#19(Var(0))
 ;              callee_key=[any]
-;     blk4 TailCall fn_clause_0#9(Var(0))
+;     blk4 TailCall fn_clause_0#18(Var(0))
 ;              callee_key=[any]
 
-; spec send(2) #fn=6
+; spec send(2) #fn=10
 ;   key:    [1, any]
 ;   return: any
 ;   vars:
@@ -26,7 +26,7 @@
 ;     blk0 Return Var(3)    :: any
 ;     blk1 Halt Var(2)      :: :match_error
 
-; spec fn_clause_0(1) #fn=9
+; spec fn_clause_0(1) #fn=18
 ;   key:    [int]
 ;   return: nil
 ;   vars:
@@ -35,16 +35,16 @@
 ;   exits:
 ;     blk0 Return Var(1)    :: nil
 
-; spec fn_clause_1(1) #fn=10
-;   key:    [vec(i64) | vec(f64) | vec(u8) | vec(bit) | float | str | atom | opaque | var | tuple | list | fn | map]
+; spec fn_clause_1(1) #fn=19
+;   key:    [binary | vec(i64) | vec(f64) | float | atom | opaque | brand | var | tuple | list | fn | map]
 ;   return: nil
 ;   vars:
-;     Var(0) :: vec(i64) | vec(f64) | vec(u8) | vec(bit) | float | str | atom | opaque | var | tuple | list | fn | map
+;     Var(0) :: binary | vec(i64) | vec(f64) | float | atom | opaque | brand | var | tuple | list | fn | map
 ;     Var(1) :: nil
 ;   exits:
 ;     blk0 Return Var(1)    :: nil
 
-; spec child(1) #fn=13
+; spec child(1) #fn=22
 ;   key:    [any]
 ;   return: any
 ;   vars:
@@ -52,11 +52,11 @@
 ;     Var(1) :: :match_error
 ;     Var(2) :: 1
 ;   exits:
-;     blk0 TailCall send#6(Var(2), Var(0))
+;     blk0 TailCall send#10(Var(2), Var(0))
 ;              callee_key=[1, any]
 ;     blk1 Halt Var(1)      :: :match_error
 
-; spec main(0) #fn=14
+; spec main(0) #fn=23
 ;   key:    []
 ;   return: none
 ;   vars:
@@ -131,29 +131,29 @@
 ;     Var(68) :: 68
 ;     Var(69) :: 69
 ;     Var(70) :: 70
-;     Var(71) :: vec(u8) | vec(bit)
+;     Var(71) :: binary
 ;     Var(72) :: :match_error
-;     Var(73) :: &fn15[vec(u8) | vec(bit)]:() -> α1023
-;     Var(74) :: &fn16[&fn15[vec(u8) | vec(bit)]:() -> α1023]:() -> α1087
+;     Var(73) :: &fn24[binary]:() -> α1599
+;     Var(74) :: &fn25[&fn24[binary]:() -> α1599]:() -> α1663
 ;     Var(75) :: any
 ;   exits:
-;     blk0 Receive cont k_receive_17#17 captured=[Var(71)]
-;              cont_key=[any, vec(u8) | vec(bit)]
+;     blk0 Receive cont k_receive_26#26 captured=[Var(71)]
+;              cont_key=[any, binary]
 ;     blk1 Halt Var(0)      :: :match_error
 ;     blk2 Halt Var(72)      :: :match_error
 
-; spec lambda_15(1) #fn=15
+; spec lambda_24(1) #fn=24
 ;   key:    [any]
 ;   return: any
 ;   vars:
 ;     Var(0) :: any
 ;     Var(1) :: :match_error
 ;   exits:
-;     blk0 TailCall child#13(Var(0))
+;     blk0 TailCall child#22(Var(0))
 ;              callee_key=[any]
 ;     blk1 Halt Var(1)      :: :match_error
 
-; spec fz_spawn_thunk(1) #fn=16
+; spec fz_spawn_thunk(1) #fn=25
 ;   key:    [any]
 ;   return: any
 ;   vars:
@@ -161,13 +161,13 @@
 ;   exits:
 ;     blk0 TailCallClosure Var(0)()
 
-; spec k_receive_17(2) #fn=17
-;   key:    [any, vec(u8) | vec(bit)]
+; spec k_receive_26(2) #fn=26
+;   key:    [any, binary]
 ;   return: none
 ;   vars:
 ;     Var(0) :: any
-;     Var(1) :: vec(u8) | vec(bit)
+;     Var(1) :: binary
 ;   exits:
-;     blk0 TailCall print#0(Var(0))
+;     blk0 TailCall print#4(Var(0))
 ;              callee_key=[any]
 

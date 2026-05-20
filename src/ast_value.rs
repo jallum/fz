@@ -46,7 +46,7 @@ pub fn expr_to_value(e: &Spanned<Expr>) -> Result<Value, String> {
         Expr::Bool(b) => Value::Bool(*b),
         Expr::Nil => Value::Nil,
         Expr::Atom(s) => Value::Atom(Rc::from(s.as_str())),
-        Expr::Str(s) => Value::Str(Rc::from(s.as_str())),
+        Expr::Str(bytes) => Value::Str(Rc::from(bytes.as_slice())),
 
         Expr::Var(name) => ast_node(name, &[], Some(atom(USER_CTX))),
 
@@ -165,7 +165,7 @@ fn value_to_expr_inner(v: &Value) -> Result<Expr, String> {
         Value::Bool(b) => Ok(Expr::Bool(*b)),
         Value::Nil => Ok(Expr::Nil),
         Value::Atom(s) => Ok(Expr::Atom(s.to_string())),
-        Value::Str(s) => Ok(Expr::Str(s.to_string())),
+        Value::Str(s) => Ok(Expr::Str(s.to_vec())),
 
         Value::List(xs) => {
             let exprs = xs

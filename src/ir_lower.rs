@@ -70,6 +70,19 @@ pub enum LowerError {
         callee_name: String,
         arg_count: usize,
     },
+    /// fz-axu.24 (M3) — a `Prim::Brand(_, T)` mint reaches the
+    /// pre-erasure visibility pass from a fn that doesn't own brand
+    /// `T`. `T` is the qualified brand tag; `owner_module` is the
+    /// module that declared it; `using_module` is the module path of
+    /// the fn doing the mint. v1 only emits Brand prims for the
+    /// built-in `utf8` (no owner), so this fires only when user-
+    /// declared brands acquire a mint syntax. The plumbing is here.
+    BrandMintVisibility {
+        span: Span,
+        brand: String,
+        owner_module: String,
+        using_module: String,
+    },
 }
 
 impl LowerError {
@@ -112,6 +125,26 @@ impl LowerError {
                 format!(
                     "back-edge call from `{}` to `{}` passes {} arguments (max 8 at a yield point)",
                     fn_name, callee_name, arg_count
+                ),
+                *span,
+            ),
+            LowerError::BrandMintVisibility {
+                span,
+                brand,
+                owner_module,
+                using_module,
+            } => Diagnostic::error(
+                codes::LOWER_UNSUPPORTED,
+                format!(
+                    "brand `{}` can only be minted from inside module `{}`; \
+                     minted from `{}` here",
+                    brand,
+                    owner_module,
+                    if using_module.is_empty() {
+                        "<top-level>"
+                    } else {
+                        using_module.as_str()
+                    },
                 ),
                 *span,
             ),
@@ -215,12 +248,19 @@ impl ExternTable {
 /// return-type annotation in an `extern "C" fn` declaration.
 /// fz-y3k — split an extern's fz-visible name into the C symbol it resolves
 /// to. A `lib::name` prefix is fz-side documentation/namespacing only; the
-/// linker sees just the bare suffix. Single-segment names round-trip.
+/// linker sees just the bare suffix. fz-axu — externs declared inside a
+/// `defmodule Foo do ... end` get auto-qualified by the resolver to
+/// `Foo.name` (with a `.`), which is also fz-side decoration; strip
+/// either separator to recover the C symbol. Single-segment names
+/// round-trip.
 fn extern_symbol_from_name(fz_name: &str) -> &str {
+    if let Some((_, sym)) = fz_name.rsplit_once("::") {
+        return sym;
+    }
+    if let Some((_, sym)) = fz_name.rsplit_once('.') {
+        return sym;
+    }
     fz_name
-        .rsplit_once("::")
-        .map(|(_, sym)| sym)
-        .unwrap_or(fz_name)
 }
 
 fn extern_ty_from_name(name: &str) -> Option<ExternTy> {
@@ -560,16 +600,39 @@ impl Default for LowerCtx {
 
 const RUNTIME_FZ: &str = include_str!("runtime.fz");
 
-fn parse_runtime_prelude() -> (Vec<Rc<Item>>, crate::type_expr::ModuleTypeEnv) {
+/// fz-axu.27 (M6) — return the prelude as a flat `Program` whose
+/// `module_type_envs[""]`, `opaque_inners`, and `brand_inners` are all
+/// populated. `flatten_modules` only walks `defmodule`-nested
+/// declarations, so root-scope `@type` aliases (like `@type utf8 ::
+/// refines binary` at the top of runtime.fz) are harvested separately
+/// from attrs and merged into the flat program.
+fn parse_runtime_prelude() -> Program {
     let toks = crate::lexer::Lexer::new(RUNTIME_FZ)
         .tokenize()
         .expect("runtime.fz lex error (bug in built-in prelude)");
     let (items, attrs) = crate::parser::Parser::new(toks)
         .parse_prelude()
         .expect("runtime.fz parse error (bug in built-in prelude)");
-    let env = crate::type_expr::build_module_type_env(&attrs)
-        .expect("runtime.fz @type error (bug in built-in prelude)");
-    (items, env)
+    let (root_env, root_o_inners, root_b_inners) =
+        crate::type_expr::build_module_type_env_for(&attrs, "")
+            .expect("runtime.fz @type error (bug in built-in prelude)");
+    let staged = crate::ast::Program {
+        items,
+        module_docs: Default::default(),
+        module_type_envs: Default::default(),
+        opaque_inners: Default::default(),
+        brand_inners: Default::default(),
+    };
+    let mut flat = crate::resolve::flatten_modules(staged)
+        .expect("runtime.fz module flatten error (bug in built-in prelude)");
+    // Merge root-scope aliases into the flattened program.
+    flat.module_type_envs
+        .entry(String::new())
+        .or_default()
+        .extend(root_env);
+    flat.opaque_inners.extend(root_o_inners);
+    flat.brand_inners.extend(root_b_inners);
+    flat
 }
 
 pub fn lower_program(prog: &Program) -> Result<Module, LowerError> {
@@ -582,7 +645,12 @@ pub fn lower_program_full(prog: &Program) -> Result<(Module, AtomTable), LowerEr
 
     // Prepend the built-in runtime.fz prelude so its externs and wrapper fns
     // are visible to every user program without an explicit import.
-    let (runtime_items, prelude_type_env) = parse_runtime_prelude();
+    let prelude = parse_runtime_prelude();
+    let prelude_type_env = prelude
+        .module_type_envs
+        .get("")
+        .cloned()
+        .unwrap_or_default();
     ctx.prelude_type_env = prelude_type_env.clone();
     // Build the combined type env: prelude aliases + all user-module aliases.
     let mut combined = prelude_type_env;
@@ -590,9 +658,11 @@ pub fn lower_program_full(prog: &Program) -> Result<(Module, AtomTable), LowerEr
         combined.extend(module_env.iter().map(|(k, v)| (k.clone(), v.clone())));
     }
     ctx.combined_type_env = combined;
-    let runtime_item_count = runtime_items.len();
-    let all_items: Vec<Rc<Item>> = runtime_items
-        .into_iter()
+    let runtime_item_count = prelude.items.len();
+    let all_items: Vec<Rc<Item>> = prelude
+        .items
+        .iter()
+        .cloned()
         .chain(prog.items.iter().cloned())
         .collect();
 
@@ -724,9 +794,27 @@ pub fn lower_program_full(prog: &Program) -> Result<(Module, AtomTable), LowerEr
     module.boundary_fns = std::mem::take(&mut ctx.boundary_fns);
     // fz-swt.8 — carry the resolver's opaque-inner-type map onto the
     // Module so the typer can resolve `handle.value` accesses to T.
+    // fz-axu.27 (M6) — prelude inners (utf8 brand, pid opaque, ...) live
+    // in the flat-prelude Program, merged here alongside user inners.
     module.opaque_inners = prog.opaque_inners.clone();
+    module.opaque_inners.extend(prelude.opaque_inners.clone());
+    module.brand_inners = prog.brand_inners.clone();
+    module.brand_inners.extend(prelude.brand_inners.clone());
     // fz-02r.4 — annotate TailCall back-edges from the structural SCC.
     annotate_back_edges(&mut module, &ctx.fn_spans)?;
+    // fz-axu.24 (M3) — brand-mint visibility. Must run before erasure
+    // because erasure drops the Brand prims this pass needs to see.
+    // Built-in brands (utf8, ...) have no module owner and pass
+    // trivially; the gate fires when user-declared brands acquire a
+    // mint syntax and a foreign module tries to use it.
+    check_brand_visibility(&module, &ctx.stmt_spans, &ctx.fn_spans)?;
+    // fz-axu.23 (M2) — brand erasure is the final lowering phase. The
+    // Module returned from lower_program_full has the invariant: no
+    // Prim::Brand survives in any FnIr. Downstream passes (typer,
+    // reducer, codegen, interp, DCE) can treat that as a precondition,
+    // and their Brand match arms become `unreachable!()` rather than
+    // silent identity-fallbacks.
+    crate::ir_brand_erase::erase_brands(&mut module);
     // fz-uwq.1 — verify the unique-cont invariant the post-type pipeline
     // depends on. See `debug_assert_unique_conts` for the contract.
     debug_assert_unique_conts(&module);
@@ -760,6 +848,47 @@ pub fn lower_program_full(prog: &Program) -> Result<(Module, AtomTable), LowerEr
 /// Debug-build only — the check is O(blocks) but redundant in release
 /// when the lowerer is correct. If it ever fires in debug, the lowerer
 /// is wrong (or a new corner case needs the invariant documented away).
+/// fz-axu.24 (M3) — brand-mint visibility pass. Walks every Prim::Brand
+/// stmt in every fn and applies `check_brand_mint_visibility`, using
+/// the containing fn's name to derive the using_module (everything
+/// before the final `.` in the qualified fn name; "" for top-level
+/// fns). Built-in brands like `utf8` carry no `::` qualifier and pass
+/// trivially.
+///
+/// Runs between annotate_back_edges and erase_brands — must see Brand
+/// prims, which erase_brands removes.
+fn check_brand_visibility(
+    module: &Module,
+    stmt_spans: &HashMap<(FnId, BlockId), Vec<Span>>,
+    fn_spans: &HashMap<FnId, Span>,
+) -> Result<(), LowerError> {
+    for f in &module.fns {
+        let using_module = f.name.rfind('.').map(|i| &f.name[..i]).unwrap_or("");
+        for block in &f.blocks {
+            let spans = stmt_spans.get(&(f.id, block.id));
+            for (i, stmt) in block.stmts.iter().enumerate() {
+                let crate::fz_ir::Stmt::Let(_, prim) = stmt;
+                if let crate::fz_ir::Prim::Brand(_, brand_tag) = prim
+                    && let Err(e) =
+                        crate::typer::check_brand_mint_visibility(brand_tag, using_module)
+                {
+                    let span = spans
+                        .and_then(|v| v.get(i).copied())
+                        .or_else(|| fn_spans.get(&f.id).copied())
+                        .unwrap_or(crate::diag::Span::DUMMY);
+                    return Err(LowerError::BrandMintVisibility {
+                        span,
+                        brand: e.opaque,
+                        owner_module: e.owner_module,
+                        using_module: e.using_module,
+                    });
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 fn debug_assert_unique_conts(module: &Module) {
     if !cfg!(debug_assertions) {
         return;
@@ -1756,33 +1885,65 @@ fn lower_matrix_atom_literal(
     body_cb: BodyCb<'_>,
 ) -> Result<(), LowerError> {
     use std::collections::BTreeMap;
+    // fz-axu.11 (L3) — string patterns need a two-stmt materialisation
+    // (ConstBitstring + Brand) whereas other constants are single-Prim.
+    // `KeyLit` lets both shapes share the dispatch table.
+    enum KeyLit {
+        Single(Prim),
+        Utf8(Vec<u8>),
+    }
     let mut by_key: BTreeMap<String, Vec<Row>> = BTreeMap::new();
-    let mut key_prim: HashMap<String, Prim> = HashMap::new();
+    let mut key_lit: HashMap<String, KeyLit> = HashMap::new();
     let mut default_rows: Vec<Row> = Vec::new();
     for row in matrix.rows {
         let p = peel_as_pat(&row.patterns[col]);
-        let (k, prim) = match &p.node {
+        let (k, kl) = match &p.node {
             Pattern::Atom(s) => {
                 let id = ctx.atoms.intern(s);
-                (format!("a:{}", s), Prim::Const(Const::Atom(id)))
+                (
+                    format!("a:{}", s),
+                    KeyLit::Single(Prim::Const(Const::Atom(id))),
+                )
             }
-            Pattern::Int(n) => (format!("i:{}", n), Prim::Const(Const::Int(*n))),
-            Pattern::Bool(true) => ("b:t".to_string(), Prim::Const(Const::True)),
-            Pattern::Bool(false) => ("b:f".to_string(), Prim::Const(Const::False)),
-            Pattern::Nil => ("n".to_string(), Prim::Const(Const::Nil)),
-            Pattern::Str(s) => (format!("s:{}", s), Prim::Const(Const::Str(s.clone()))),
-            Pattern::Float(x) => (format!("f:{}", x), Prim::Const(Const::Float(*x))),
+            Pattern::Int(n) => (
+                format!("i:{}", n),
+                KeyLit::Single(Prim::Const(Const::Int(*n))),
+            ),
+            Pattern::Bool(true) => ("b:t".to_string(), KeyLit::Single(Prim::Const(Const::True))),
+            Pattern::Bool(false) => ("b:f".to_string(), KeyLit::Single(Prim::Const(Const::False))),
+            Pattern::Nil => ("n".to_string(), KeyLit::Single(Prim::Const(Const::Nil))),
+            Pattern::Str(bytes) => {
+                // fz-axu.11 (L3) — same shape as Expr::Str: utf8 brand
+                // over a const bitstring. UTF-8 is a lexer invariant
+                // (see read_string_bytes in src/lexer.rs).
+                let key = format!(
+                    "s:{}",
+                    std::str::from_utf8(bytes).expect("lexer guarantees UTF-8"),
+                );
+                (key, KeyLit::Utf8(bytes.clone()))
+            }
+            Pattern::Float(x) => (
+                format!("f:{}", x),
+                KeyLit::Single(Prim::Const(Const::Float(*x))),
+            ),
             Pattern::Wildcard | Pattern::Var(_) => {
                 default_rows.push(row);
                 continue;
             }
             _ => continue,
         };
-        key_prim.entry(k.clone()).or_insert(prim);
+        key_lit.entry(k.clone()).or_insert(kl);
         by_key.entry(k).or_default().push(row);
     }
     for (k, rows) in by_key {
-        let lit_v = ctx.let_(key_prim.remove(&k).unwrap());
+        let lit_v = match key_lit.remove(&k).unwrap() {
+            KeyLit::Single(p) => ctx.let_(p),
+            KeyLit::Utf8(bytes) => {
+                let bit_len = (bytes.len() * 8) as u64;
+                let bs = ctx.let_(Prim::ConstBitstring(bytes, bit_len));
+                ctx.let_(Prim::Brand(bs, "utf8".to_string()))
+            }
+        };
         let eq = ctx.let_(Prim::BinOp(BinOp::Eq, subject, lit_v));
         let match_b = ctx.cur_mut().block(vec![]);
         let next_b = ctx.cur_mut().block(vec![]);
@@ -1992,7 +2153,15 @@ fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -> Result<Va
     match &e.node {
         Expr::Int(n) => Ok(ctx.let_at(Prim::Const(Const::Int(*n)), sp)),
         Expr::Float(x) => Ok(ctx.let_at(Prim::Const(Const::Float(*x)), sp)),
-        Expr::Str(s) => Ok(ctx.let_at(Prim::Const(Const::Str(s.clone())), sp)),
+        Expr::Str(bytes) => {
+            // fz-axu.11 (L3) — every `"…"` literal lowers to a
+            // `utf8`-branded const bitstring. UTF-8 validity is a lexer
+            // invariant (see read_string_bytes in src/lexer.rs); raw
+            // bytes flow through `<<…>>` syntax instead.
+            let bit_len = (bytes.len() * 8) as u64;
+            let bs = ctx.let_at(Prim::ConstBitstring(bytes.clone(), bit_len), sp);
+            Ok(ctx.let_at(Prim::Brand(bs, "utf8".to_string()), sp))
+        }
         Expr::Atom(s) => {
             let id = ctx.atoms.intern(s);
             Ok(ctx.let_at(Prim::Const(Const::Atom(id)), sp))
@@ -3141,8 +3310,18 @@ fn lower_pattern_bind(
         }),
         Pattern::Int(n) => emit_eq_check(ctx, subject, Prim::Const(Const::Int(*n)), fail_block),
         Pattern::Float(x) => emit_eq_check(ctx, subject, Prim::Const(Const::Float(*x)), fail_block),
-        Pattern::Str(s) => {
-            emit_eq_check(ctx, subject, Prim::Const(Const::Str(s.clone())), fail_block)
+        Pattern::Str(bytes) => {
+            // fz-axu.11 (L3) — string patterns lower the same as
+            // Expr::Str: utf8-branded const bitstring, equality-check
+            // against the subject. UTF-8 validity is a lexer invariant.
+            let bit_len = (bytes.len() * 8) as u64;
+            let bs = ctx.let_(Prim::ConstBitstring(bytes.clone(), bit_len));
+            let lit_v = ctx.let_(Prim::Brand(bs, "utf8".to_string()));
+            let eq_v = ctx.let_(Prim::BinOp(BinOp::Eq, subject, lit_v));
+            let cont_b = ctx.cur_mut().block(vec![]);
+            ctx.set_if_term(eq_v, cont_b, fail_block);
+            ctx.cur_block = Some(cont_b);
+            Ok(())
         }
         Pattern::Atom(s) => {
             let id = ctx.atoms.intern(s);
@@ -3299,7 +3478,14 @@ fn lower_pattern_as_key_expr(ctx: &mut LowerCtx, sp: &Spanned<Pattern>) -> Resul
     Ok(match &sp.node {
         Pattern::Int(n) => ctx.let_(Prim::Const(Const::Int(*n))),
         Pattern::Float(x) => ctx.let_(Prim::Const(Const::Float(*x))),
-        Pattern::Str(s) => ctx.let_(Prim::Const(Const::Str(s.clone()))),
+        Pattern::Str(bytes) => {
+            // fz-axu.11 (L3) — map-key pattern: same lowering as
+            // Expr::Str / Pattern::Str. UTF-8 validity is a lexer
+            // invariant (see read_string_bytes in src/lexer.rs).
+            let bit_len = (bytes.len() * 8) as u64;
+            let bs = ctx.let_(Prim::ConstBitstring(bytes.clone(), bit_len));
+            ctx.let_(Prim::Brand(bs, "utf8".to_string()))
+        }
         Pattern::Atom(s) => {
             let id = ctx.atoms.intern(s);
             ctx.let_(Prim::Const(Const::Atom(id)))
@@ -4754,11 +4940,17 @@ end
         let m = lower_program(&prog).expect("lower");
         let caller = m.fn_by_name("caller").unwrap();
         // The continuation fn is the one whose name starts with "k_".
+        // Filter out continuations from the runtime.fz prelude (e.g.
+        // Utf8.from_bytes also CPS-splits) by checking FnCategory.
         let k = m
             .fns
             .iter()
-            .find(|f| f.name.starts_with("k_"))
-            .expect("expected a continuation fn");
+            .find(|f| {
+                f.name.starts_with("k_")
+                    && f.category == crate::fz_ir::FnCategory::CpsCont
+                    && f.id.0 >= caller.id.0
+            })
+            .expect("expected a continuation fn in user code");
         let cont_span = m.source.fn_span_of(k.id);
         assert!(!cont_span.is_dummy());
         // The originating call is `callee(x)` inside `caller`'s body.
@@ -4897,9 +5089,11 @@ end
             .parse_program()
             .expect("parse");
         let (module, _) = lower_program_full(&prog).expect("lower");
-        // 12 runtime.fz externs + 1 user extern = 13 total.
-        // fz-ht5 added `fz_make_ref`; fz-swt.7 added `fz_make_resource`.
-        assert_eq!(module.externs.len(), 13);
+        // 14 runtime.fz externs + 1 user extern = 15 total.
+        // fz-ht5 added `fz_make_ref`; fz-swt.7 added `fz_make_resource`;
+        // fz-axu.13 added `fz_bitstring_valid_utf8` and
+        // `fz_brand_bitstring_as_utf8`.
+        assert_eq!(module.externs.len(), 15);
         // fz_nop is at the end (user externs follow runtime.fz externs).
         let nop = module
             .externs
@@ -5228,6 +5422,85 @@ end
             impure[0].message.contains("invokes a function"),
             "expected message to call out the fn call, got: {}",
             impure[0].message
+        );
+    }
+
+    // ----------------------------------------------------------------
+    // fz-axu.24 (M3) — brand-mint visibility gate
+    // ----------------------------------------------------------------
+
+    fn module_with_brand_in_fn(
+        fn_name: &str,
+        brand_tag: &str,
+    ) -> (
+        Module,
+        HashMap<(crate::fz_ir::FnId, crate::fz_ir::BlockId), Vec<Span>>,
+    ) {
+        use crate::fz_ir::{FnBuilder, FnId, ModuleBuilder, Prim, Term};
+        let mut b = FnBuilder::new(FnId(0), fn_name);
+        let entry = b.block(vec![]);
+        let bs = b.let_(entry, Prim::ConstBitstring(vec![104], 8));
+        let branded = b.let_(entry, Prim::Brand(bs, brand_tag.to_string()));
+        b.set_terminator(entry, Term::Halt(branded));
+        let mut mb = ModuleBuilder::new();
+        mb.add_fn(b.build());
+        (mb.build(), HashMap::new())
+    }
+
+    #[test]
+    fn brand_visibility_passes_for_builtin_utf8_anywhere() {
+        // Built-in `utf8` (no `::` in tag) has no owner; minting it
+        // from any fn — even a user module — is allowed.
+        let (m, spans) = module_with_brand_in_fn("Mail.send", "utf8");
+        let fn_spans = HashMap::new();
+        check_brand_visibility(&m, &spans, &fn_spans).expect("utf8 mint must be allowed");
+    }
+
+    #[test]
+    fn brand_visibility_passes_when_fn_owns_brand() {
+        // Brand `Mail::Email` minted from fn `Mail.send` (using_module
+        // = "Mail") is fine — same owner.
+        let (m, spans) = module_with_brand_in_fn("Mail.send", "Mail::Email");
+        let fn_spans = HashMap::new();
+        check_brand_visibility(&m, &spans, &fn_spans).expect("same-module mint must be allowed");
+    }
+
+    #[test]
+    fn brand_visibility_rejects_cross_module_mint() {
+        // Brand `Mail::Email` minted from fn `Other.handler`
+        // (using_module = "Other") must be rejected.
+        let (m, spans) = module_with_brand_in_fn("Other.handler", "Mail::Email");
+        let fn_spans = HashMap::new();
+        let err = check_brand_visibility(&m, &spans, &fn_spans)
+            .expect_err("cross-module mint must be rejected");
+        match err {
+            LowerError::BrandMintVisibility {
+                brand,
+                owner_module,
+                using_module,
+                ..
+            } => {
+                assert_eq!(brand, "Mail::Email");
+                assert_eq!(owner_module, "Mail");
+                assert_eq!(using_module, "Other");
+            }
+            _ => panic!("expected BrandMintVisibility, got {:?}", err),
+        }
+    }
+
+    #[test]
+    fn brand_visibility_rejects_top_level_mint_of_owned_brand() {
+        // Top-level fn `main` (no module prefix) trying to mint a
+        // module-owned brand is also rejected.
+        let (m, spans) = module_with_brand_in_fn("main", "Mail::Email");
+        let fn_spans = HashMap::new();
+        let err = check_brand_visibility(&m, &spans, &fn_spans)
+            .expect_err("top-level mint of owned brand must be rejected");
+        let diag = err.to_diagnostic();
+        assert!(
+            diag.message.contains("<top-level>"),
+            "diag should mention top-level using_module: {}",
+            diag.message,
         );
     }
 }

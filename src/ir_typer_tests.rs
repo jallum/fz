@@ -1994,3 +1994,144 @@ end
             .collect::<Vec<_>>(),
     );
 }
+
+// fz-axu.1 (K0) — bitstring construction types as str_t().
+// Pre-refines, MakeBitstring/ConstBitstring typed as `vec_u8 | vec_bit`. Post-K0
+// they type as `str_t()` — the binary/bitstring top of the strs axis — so that
+// future tickets can layer the `utf8` brand on top as a proper subset.
+
+#[test]
+fn make_bitstring_types_as_str_t() {
+    let mut b = FnBuilder::new(FnId(0), "main");
+    let entry = b.block(vec![]);
+    let bs = b.let_(entry, Prim::MakeBitstring(vec![]));
+    b.set_terminator(entry, Term::Halt(bs));
+    let m = build_module(vec![b.build()]);
+    let mt = type_module(&m);
+    let t = fn_view(&m, &mt, 0).vars.get(&bs).unwrap().clone();
+    assert!(
+        t.is_equiv(&Descr::str_t()),
+        "expected MakeBitstring to type as str_t(); got {:?}",
+        t,
+    );
+}
+
+// fz-axu.11 (L3) — string literals lower to a `utf8`-branded
+// const bitstring through ir_lower. End-to-end shape: the typer
+// publishes the literal's Var as having `brands = {utf8}` and the
+// strs axis populated.
+
+#[test]
+fn string_literal_lowers_to_utf8_branded_bitstring() {
+    // fz-axu.23 (M2) — lower_program_full erases Brand prims as its
+    // final phase. The post-erasure invariant is that the ConstBitstring
+    // survives and Module.brand_inners still names utf8 (so the type
+    // system can recover the brand context when needed), but no
+    // Prim::Brand stmt remains in any FnIr.
+    let src = r#"fn main(), do: "hi""#;
+    let toks = crate::lexer::Lexer::new(src).tokenize().expect("lex");
+    let prog = crate::parser::Parser::new(toks)
+        .parse_program()
+        .expect("parse");
+    let prog = crate::resolve::flatten_modules(prog).expect("resolve");
+    let m = crate::ir_lower::lower_program(&prog).expect("lower");
+    let main = m.fn_by_name("main").expect("main");
+    let mut saw_const_bs = false;
+    for block in &main.blocks {
+        for stmt in &block.stmts {
+            let crate::fz_ir::Stmt::Let(_, prim) = stmt;
+            assert!(
+                !matches!(prim, Prim::Brand(..)),
+                "Prim::Brand survived lowering: {:?}",
+                prim,
+            );
+            if let Prim::ConstBitstring(bytes, bit_len) = prim
+                && bytes == b"hi"
+                && *bit_len == 16
+            {
+                saw_const_bs = true;
+            }
+        }
+    }
+    assert!(saw_const_bs, "expected ConstBitstring(b\"hi\", 16)");
+    assert!(
+        m.brand_inners.contains_key("utf8"),
+        "Module.brand_inners must still name utf8 after erasure",
+    );
+}
+
+// fz-axu.4 (K3) — Prim::Brand(v, name) overlays the brand tag on the
+// source's structural type. The runtime sees identity; the type system
+// records the brand membership.
+
+#[test]
+fn brand_overlays_brand_tag_on_source_type() {
+    let mut b = FnBuilder::new(FnId(0), "main");
+    let entry = b.block(vec![]);
+    let bs = b.let_(entry, Prim::ConstBitstring(vec![104, 105], 16));
+    let branded = b.let_(entry, Prim::Brand(bs, "utf8".to_string()));
+    b.set_terminator(entry, Term::Halt(branded));
+    let m = build_module(vec![b.build()]);
+    let mt = type_module(&m);
+    let t = fn_view(&m, &mt, 0).vars.get(&branded).unwrap().clone();
+    // Brand tag is present.
+    assert!(
+        !t.brands.is_none(),
+        "branded value must carry the brand tag; got {}",
+        t,
+    );
+    // Underlying axes (strs / str_t) survive — the value is still a
+    // bitstring at runtime; the K4 is_subtype rule lets it stand in
+    // for the inner type.
+    assert!(
+        Descr::str_t().is_subtype(&Descr {
+            brands: crate::types::LiteralSet::none(),
+            ..t.clone()
+        }),
+        "brand-stripped type must subsume str_t(); got {}",
+        t,
+    );
+}
+
+#[test]
+fn brand_does_not_change_underlying_runtime_shape() {
+    // Sanity: typing of Brand(v, _) preserves the source's non-brand
+    // axes. Distinct from the above by stripping the source from a
+    // singleton bitstring const.
+    let mut b = FnBuilder::new(FnId(0), "main");
+    let entry = b.block(vec![]);
+    let bs = b.let_(entry, Prim::MakeBitstring(vec![]));
+    let branded = b.let_(entry, Prim::Brand(bs, "ascii".to_string()));
+    b.set_terminator(entry, Term::Halt(branded));
+    let m = build_module(vec![b.build()]);
+    let mt = type_module(&m);
+    let source_t = fn_view(&m, &mt, 0).vars.get(&bs).unwrap().clone();
+    let branded_t = fn_view(&m, &mt, 0).vars.get(&branded).unwrap().clone();
+    // Same structural axes; brand tag is the only difference.
+    let stripped = Descr {
+        brands: crate::types::LiteralSet::none(),
+        ..branded_t.clone()
+    };
+    assert!(
+        stripped.is_equiv(&source_t),
+        "Brand must preserve source axes; source={}, branded={}",
+        source_t,
+        branded_t,
+    );
+}
+
+#[test]
+fn const_bitstring_types_as_str_t() {
+    let mut b = FnBuilder::new(FnId(0), "main");
+    let entry = b.block(vec![]);
+    let bs = b.let_(entry, Prim::ConstBitstring(vec![1, 2, 3], 24));
+    b.set_terminator(entry, Term::Halt(bs));
+    let m = build_module(vec![b.build()]);
+    let mt = type_module(&m);
+    let t = fn_view(&m, &mt, 0).vars.get(&bs).unwrap().clone();
+    assert!(
+        t.is_equiv(&Descr::str_t()),
+        "expected ConstBitstring to type as str_t(); got {:?}",
+        t,
+    );
+}

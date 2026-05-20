@@ -15,8 +15,8 @@ block0(v0: i64):
     return_call fn1(v2, v0)             ; @2:3  v2 = 2
 }
 
-; fn k_14
-    ;   @spec   k_14(nil) -> nil
+; fn k_23
+    ;   @spec   k_23(nil) -> nil
     ;   @key    [nil]
     ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
@@ -32,8 +32,8 @@ function u0:0(i64, i64) -> i64 tail {
     return_call fn1(v3, v1)             ; @3:3  v3 = 2
 }
 
-; fn k_15
-    ;   @spec   k_15(nil) -> nil
+; fn k_24
+    ;   @spec   k_24(nil) -> nil
     ;   @key    [nil]
     ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
@@ -42,11 +42,11 @@ function u0:0(i64, i64) -> i64 tail {
     fn0 = u0:47 sig0
 
     block0(v0: i64, v1: i64):    ;; v0 :: nil
-    v2 = iconst.i64 42                  ; @4:9
-    v3 = iconst.i64 50                  ; @4:16
+    v2 = iconst.i64 34                  ; @4:9
+    v3 = iconst.i64 66                  ; @4:16
     v4 = iconst.i64 18                  ; @4:9
     call fn0(v4)  ; v4 = 18
-    v5 = icmp eq v2, v2  ; v2 = 42, v2 = 42
+    v5 = icmp eq v2, v2  ; v2 = 34, v2 = 34
     v6 = iconst.i64 10
     v7 = iconst.i64 18
     v8 = select v5, v6, v7  ; v6 = 10, v7 = 18    ;; v8 :: bool

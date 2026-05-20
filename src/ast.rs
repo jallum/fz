@@ -49,7 +49,12 @@ pub enum Expr {
     // literals
     Int(i64),
     Float(f64),
-    Str(String),
+    /// fz-axu.10 (L2) — raw bytes of the string literal. Pre-L2 this
+    /// was `String`; widened so non-UTF-8 byte literals (e.g. binary
+    /// payloads written as `"…"`) can flow through to L3 desugaring
+    /// without losing precision. The L3 pass validates UTF-8 and mints
+    /// a `utf8`-branded bitstring; bare binaries skip the brand.
+    Str(Vec<u8>),
     Atom(String),
     Bool(bool),
     Nil,
@@ -197,7 +202,9 @@ pub enum Pattern {
     Var(String),
     Int(i64),
     Float(f64),
-    Str(String),
+    /// fz-axu.10 (L2) — see `Expr::Str`. Carries raw bytes; L3 narrows
+    /// to UTF-8 + utf8 brand for matching against branded subjects.
+    Str(Vec<u8>),
     Atom(String),
     Bool(bool),
     Nil,
@@ -493,4 +500,11 @@ pub struct Program {
     /// a singleton-opaque subject) as `T` rather than the generic
     /// map-lookup fallback.
     pub opaque_inners: std::collections::HashMap<String, crate::types::Descr>,
+    /// fz-axu.2 (K1) — Inner-type map for `refines` brand declarations,
+    /// parallel to `opaque_inners`. Keyed by the qualified brand tag (as
+    /// stored on `Descr::brand_of(...)`); value is the parsed body `T`
+    /// following the `refines` keyword. K2 populates this during type-env
+    /// construction; K4's is_subtype rule consults it to recognise that
+    /// `brand("B") ⊆ T` when the declaration is in scope.
+    pub brand_inners: std::collections::HashMap<String, crate::types::Descr>,
 }

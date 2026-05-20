@@ -1037,8 +1037,8 @@ fn eval_prim(module: &Module, prim: &Prim, env: &HashMap<Var, FzValue>) -> Resul
                     // implementation ignored these too. Compiler-enforced
                     // exhaustiveness means any future axis addition surfaces
                     // this gap explicitly rather than silently mis-typing.
-                    Component::Strs(_)
-                    | Component::Opaques(_)
+                    Component::Opaques(_)
+                    | Component::Brands(_)
                     | Component::Vars(_)
                     | Component::Lists(_)
                     | Component::Funcs(_)
@@ -1108,6 +1108,12 @@ fn eval_prim(module: &Module, prim: &Prim, env: &HashMap<Var, FzValue>) -> Resul
             }
             acc
         }
+        // fz-axu.23 (M2) — lower_program_full erases Prim::Brand
+        // before the interp sees the module. Surface a stray Brand
+        // instead of silently aliasing.
+        Prim::Brand(_, _) => unreachable!(
+            "Prim::Brand reached interp — erasure should run inside lower_program_full"
+        ),
         _ => {
             return Err(format!(
                 "interp .5.2: prim {:?} not yet supported (lands in fz-ul4.23.5.3+)",
@@ -1187,10 +1193,6 @@ fn const_to_fz(c: &Const) -> FzValue {
         Const::True => FzValue::TRUE,
         Const::False => FzValue::FALSE,
         Const::Float(f) => FzValue(fz_runtime::ir_runtime::fz_alloc_float(f.to_bits())),
-        // Str: no first-class heap kind yet (.11.x lowers strings to
-        // Bitstring at the AST level). Should never reach the interp as a
-        // raw Const::Str; if it does, surface honestly.
-        Const::Str(_) => FzValue::NIL,
     }
 }
 
@@ -1429,6 +1431,16 @@ fn resolve_symbol(name: &str) -> Result<*const (), String> {
         // the print-dtor binding above: keep the interp leg of the fixture
         // matrix self-contained, no dlsym dependence.
         "fz_test_open_tmpfile" => Some(fz_runtime::resource::fz_test_open_tmpfile as *const ()),
+        // fz-axu.14 (R1) — utf8 runtime support. Bound here so the
+        // interp leg of the matrix can resolve them without relying on
+        // dlsym; statically-linked rlibs don't expose these via
+        // RTLD_DEFAULT on Linux.
+        "fz_bitstring_valid_utf8" => {
+            Some(fz_runtime::ir_runtime::fz_bitstring_valid_utf8 as *const ())
+        }
+        "fz_brand_bitstring_as_utf8" => {
+            Some(fz_runtime::ir_runtime::fz_brand_bitstring_as_utf8 as *const ())
+        }
         _ => None,
     };
     if let Some(fp) = native {

@@ -1,4 +1,4 @@
-; spec print(1) #fn=0
+; spec print(1) #fn=4
 ;   key:    [int]
 ;   return: nil
 ;   vars:
@@ -9,12 +9,12 @@
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(1)      :: :function_clause
 ;     blk2 If Var(2) ? blk4 : blk3
-;     blk3 TailCall fn_clause_1#10(Var(0))
+;     blk3 TailCall fn_clause_1#19(Var(0))
 ;              callee_key=[int]
-;     blk4 TailCall fn_clause_0#9(Var(0))
+;     blk4 TailCall fn_clause_0#18(Var(0))
 ;              callee_key=[int]
 
-; spec print(1) #fn=0
+; spec print(1) #fn=4
 ;   key:    [list(1 | 2 | 3 | 4 | 5)]
 ;   return: nil
 ;   vars:
@@ -25,12 +25,12 @@
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(1)      :: :function_clause
 ;     blk2 If Var(2) ? blk4 : blk3
-;     blk3 TailCall fn_clause_1#10(Var(0))
+;     blk3 TailCall fn_clause_1#19(Var(0))
 ;              callee_key=[list(1 | 2 | 3 | 4 | 5)]
-;     blk4 TailCall fn_clause_0#9(Var(0))
+;     blk4 TailCall fn_clause_0#18(Var(0))
 ;              callee_key=[list(1 | 2 | 3 | 4 | 5)]
 
-; spec print(1) #fn=0
+; spec print(1) #fn=4
 ;   key:    [list(int)]
 ;   return: nil
 ;   vars:
@@ -41,12 +41,12 @@
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(1)      :: :function_clause
 ;     blk2 If Var(2) ? blk4 : blk3
-;     blk3 TailCall fn_clause_1#10(Var(0))
+;     blk3 TailCall fn_clause_1#19(Var(0))
 ;              callee_key=[list(int)]
-;     blk4 TailCall fn_clause_0#9(Var(0))
+;     blk4 TailCall fn_clause_0#18(Var(0))
 ;              callee_key=[list(int)]
 
-; spec fn_clause_0(1) #fn=9
+; spec fn_clause_0(1) #fn=18
 ;   key:    [any]
 ;   return: nil
 ;   vars:
@@ -55,7 +55,7 @@
 ;   exits:
 ;     blk0 Return Var(1)    :: nil
 
-; spec fn_clause_0(1) #fn=9
+; spec fn_clause_0(1) #fn=18
 ;   key:    [int]
 ;   return: nil
 ;   vars:
@@ -64,7 +64,7 @@
 ;   exits:
 ;     blk0 Return Var(1)    :: nil
 
-; spec fn_clause_1(1) #fn=10
+; spec fn_clause_1(1) #fn=19
 ;   key:    [any]
 ;   return: nil
 ;   vars:
@@ -73,7 +73,7 @@
 ;   exits:
 ;     blk0 Return Var(1)    :: nil
 
-; spec fn_clause_1(1) #fn=10
+; spec fn_clause_1(1) #fn=19
 ;   key:    [list(1 | 2 | 3 | 4 | 5)]
 ;   return: nil
 ;   vars:
@@ -82,7 +82,7 @@
 ;   exits:
 ;     blk0 Return Var(1)    :: nil
 
-; spec fn_clause_1(1) #fn=10
+; spec fn_clause_1(1) #fn=19
 ;   key:    [list(int)]
 ;   return: nil
 ;   vars:
@@ -91,7 +91,7 @@
 ;   exits:
 ;     blk0 Return Var(1)    :: nil
 
-; spec length(1) #fn=13
+; spec length(1) #fn=22
 ;   key:    [list(1 | 2 | 3 | 4 | 5)]
 ;   return: int
 ;   vars:
@@ -105,14 +105,14 @@
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(1)      :: :function_clause
 ;     blk2 If Var(2) ? blk3 : blk4
-;     blk3 TailCall fn_clause_0#21()
+;     blk3 TailCall fn_clause_0#30()
 ;              callee_key=[]
 ;     blk4 If Var(3) ? blk5 : blk6
 ;     blk5 Goto blk1()
-;     blk6 TailCall fn_clause_1#22(Var(5))
+;     blk6 TailCall fn_clause_1#31(Var(5))
 ;              callee_key=[list(1 | 2 | 3 | 4 | 5)]
 
-; spec length(1) #fn=13
+; spec length(1) #fn=22
 ;   key:    [list(int)]
 ;   return: int
 ;   vars:
@@ -126,14 +126,14 @@
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(1)      :: :function_clause
 ;     blk2 If Var(2) ? blk3 : blk4
-;     blk3 TailCall fn_clause_0#21()
+;     blk3 TailCall fn_clause_0#30()
 ;              callee_key=[]
 ;     blk4 If Var(3) ? blk5 : blk6
 ;     blk5 Goto blk1()
-;     blk6 TailCall fn_clause_1#22(Var(5))
+;     blk6 TailCall fn_clause_1#31(Var(5))
 ;              callee_key=[list(int)]
 
-; spec reverse(1) #fn=14
+; spec reverse(1) #fn=23
 ;   key:    [list(1 | 2 | 3 | 4 | 5)]
 ;   return: list(1 | 2 | 3 | 4 | 5)
 ;   vars:
@@ -141,11 +141,11 @@
 ;     Var(1) :: :match_error
 ;     Var(2) :: list(none)
 ;   exits:
-;     blk0 TailCall reverse_acc#15(Var(0), Var(2))
+;     blk0 TailCall reverse_acc#24(Var(0), Var(2))
 ;              callee_key=[list(1 | 2 | 3 | 4 | 5), list(none)]
 ;     blk1 Halt Var(1)      :: :match_error
 
-; spec reverse_acc(2) #fn=15
+; spec reverse_acc(2) #fn=24
 ;   key:    [list(1 | 2 | 3 | 4 | 5), list(1 | 2 | 3 | 4 | 5)]
 ;   return: list(1 | 2 | 3 | 4 | 5)
 ;   vars:
@@ -160,14 +160,14 @@
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(2)      :: :function_clause
 ;     blk2 If Var(3) ? blk3 : blk4
-;     blk3 TailCall fn_clause_0#24(Var(1))
+;     blk3 TailCall fn_clause_0#33(Var(1))
 ;              callee_key=[list(1 | 2 | 3 | 4 | 5)]
 ;     blk4 If Var(4) ? blk5 : blk6
 ;     blk5 Goto blk1()
-;     blk6 TailCall fn_clause_1#25(Var(1), Var(5), Var(6))
+;     blk6 TailCall fn_clause_1#34(Var(1), Var(5), Var(6))
 ;              callee_key=[list(1 | 2 | 3 | 4 | 5), 1 | 2 | 3 | 4 | 5, list(1 | 2 | 3 | 4 | 5)]
 
-; spec reverse_acc(2) #fn=15
+; spec reverse_acc(2) #fn=24
 ;   key:    [list(1 | 2 | 3 | 4 | 5), list(none)]
 ;   return: list(1 | 2 | 3 | 4 | 5)
 ;   vars:
@@ -182,20 +182,20 @@
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(2)      :: :function_clause
 ;     blk2 If Var(3) ? blk3 : blk4
-;     blk3 TailCall fn_clause_0#24(Var(1))
+;     blk3 TailCall fn_clause_0#33(Var(1))
 ;              callee_key=[list(none)]
 ;     blk4 If Var(4) ? blk5 : blk6
 ;     blk5 Goto blk1()
-;     blk6 TailCall fn_clause_1#25(Var(1), Var(5), Var(6))
+;     blk6 TailCall fn_clause_1#34(Var(1), Var(5), Var(6))
 ;              callee_key=[list(none), 1 | 2 | 3 | 4 | 5, list(1 | 2 | 3 | 4 | 5)]
 
-; spec map(2) #fn=16
-;   key:    [&fn18[]:(α1152) -> α1215, list(1 | 2 | 3 | 4 | 5)]
+; spec map(2) #fn=25
+;   key:    [&fn27[]:(α1728) -> α1791, list(1 | 2 | 3 | 4 | 5)]
 ;   return: list(int)
 ;   fn_constants:
-;     Var(0) = double#18
+;     Var(0) = double#27
 ;   vars:
-;     Var(0) :: &fn18[]:(α1152) -> α1215
+;     Var(0) :: &fn27[]:(α1728) -> α1791
 ;     Var(1) :: list(1 | 2 | 3 | 4 | 5)
 ;     Var(2) :: :function_clause
 ;     Var(3) :: bool
@@ -206,20 +206,20 @@
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(2)      :: :function_clause
 ;     blk2 If Var(3) ? blk3 : blk4
-;     blk3 TailCall fn_clause_0#26()
+;     blk3 TailCall fn_clause_0#35()
 ;              callee_key=[]
 ;     blk4 If Var(4) ? blk5 : blk6
 ;     blk5 Goto blk1()
-;     blk6 TailCall fn_clause_1#27(Var(0), Var(5), Var(6))
-;              callee_key=[&fn18[]:(α1152) -> α1215, 1 | 2 | 3 | 4 | 5, list(1 | 2 | 3 | 4 | 5)]
+;     blk6 TailCall fn_clause_1#36(Var(0), Var(5), Var(6))
+;              callee_key=[&fn27[]:(α1728) -> α1791, 1 | 2 | 3 | 4 | 5, list(1 | 2 | 3 | 4 | 5)]
 
-; spec map(2) #fn=16
-;   key:    [&fn18[]:(α1152) -> α1215, list(int)]
+; spec map(2) #fn=25
+;   key:    [&fn27[]:(α1728) -> α1791, list(int)]
 ;   return: list(int)
 ;   fn_constants:
-;     Var(0) = double#18
+;     Var(0) = double#27
 ;   vars:
-;     Var(0) :: &fn18[]:(α1152) -> α1215
+;     Var(0) :: &fn27[]:(α1728) -> α1791
 ;     Var(1) :: list(int)
 ;     Var(2) :: :function_clause
 ;     Var(3) :: bool
@@ -230,20 +230,20 @@
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(2)      :: :function_clause
 ;     blk2 If Var(3) ? blk3 : blk4
-;     blk3 TailCall fn_clause_0#26()
+;     blk3 TailCall fn_clause_0#35()
 ;              callee_key=[]
 ;     blk4 If Var(4) ? blk5 : blk6
 ;     blk5 Goto blk1()
-;     blk6 TailCall fn_clause_1#27(Var(0), Var(5), Var(6))
-;              callee_key=[&fn18[]:(α1152) -> α1215, int, list(int)]
+;     blk6 TailCall fn_clause_1#36(Var(0), Var(5), Var(6))
+;              callee_key=[&fn27[]:(α1728) -> α1791, int, list(int)]
 
-; spec foldl(3) #fn=17
-;   key:    [&fn19[]:(α1216, α1217) -> α1279, 0, list(1 | 2 | 3 | 4 | 5)]
+; spec foldl(3) #fn=26
+;   key:    [&fn28[]:(α1792, α1793) -> α1855, 0, list(1 | 2 | 3 | 4 | 5)]
 ;   return: int
 ;   fn_constants:
-;     Var(0) = add#19
+;     Var(0) = add#28
 ;   vars:
-;     Var(0) :: &fn19[]:(α1216, α1217) -> α1279
+;     Var(0) :: &fn28[]:(α1792, α1793) -> α1855
 ;     Var(1) :: 0
 ;     Var(2) :: list(1 | 2 | 3 | 4 | 5)
 ;     Var(3) :: :function_clause
@@ -255,20 +255,20 @@
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(3)      :: :function_clause
 ;     blk2 If Var(4) ? blk3 : blk4
-;     blk3 TailCall fn_clause_0#30(Var(1))
+;     blk3 TailCall fn_clause_0#39(Var(1))
 ;              callee_key=[0]
 ;     blk4 If Var(5) ? blk5 : blk6
 ;     blk5 Goto blk1()
-;     blk6 TailCall fn_clause_1#31(Var(0), Var(1), Var(6), Var(7))
-;              callee_key=[&fn19[]:(α1216, α1217) -> α1279, 0, 1 | 2 | 3 | 4 | 5, list(1 | 2 | 3 | 4 | 5)]
+;     blk6 TailCall fn_clause_1#40(Var(0), Var(1), Var(6), Var(7))
+;              callee_key=[&fn28[]:(α1792, α1793) -> α1855, 0, 1 | 2 | 3 | 4 | 5, list(1 | 2 | 3 | 4 | 5)]
 
-; spec foldl(3) #fn=17
-;   key:    [&fn19[]:(α1216, α1217) -> α1279, int, list(1 | 2 | 3 | 4 | 5)]
+; spec foldl(3) #fn=26
+;   key:    [&fn28[]:(α1792, α1793) -> α1855, int, list(1 | 2 | 3 | 4 | 5)]
 ;   return: int
 ;   fn_constants:
-;     Var(0) = add#19
+;     Var(0) = add#28
 ;   vars:
-;     Var(0) :: &fn19[]:(α1216, α1217) -> α1279
+;     Var(0) :: &fn28[]:(α1792, α1793) -> α1855
 ;     Var(1) :: int
 ;     Var(2) :: list(1 | 2 | 3 | 4 | 5)
 ;     Var(3) :: :function_clause
@@ -280,14 +280,14 @@
 ;     blk0 Goto blk2()
 ;     blk1 Halt Var(3)      :: :function_clause
 ;     blk2 If Var(4) ? blk3 : blk4
-;     blk3 TailCall fn_clause_0#30(Var(1))
+;     blk3 TailCall fn_clause_0#39(Var(1))
 ;              callee_key=[int]
 ;     blk4 If Var(5) ? blk5 : blk6
 ;     blk5 Goto blk1()
-;     blk6 TailCall fn_clause_1#31(Var(0), Var(1), Var(6), Var(7))
-;              callee_key=[&fn19[]:(α1216, α1217) -> α1279, int, 1 | 2 | 3 | 4 | 5, list(1 | 2 | 3 | 4 | 5)]
+;     blk6 TailCall fn_clause_1#40(Var(0), Var(1), Var(6), Var(7))
+;              callee_key=[&fn28[]:(α1792, α1793) -> α1855, int, 1 | 2 | 3 | 4 | 5, list(1 | 2 | 3 | 4 | 5)]
 
-; spec double(1) #fn=18
+; spec double(1) #fn=27
 ;   key:    [any]
 ;   return: int | float
 ;   vars:
@@ -299,7 +299,7 @@
 ;     blk0 Return Var(3)    :: int | float
 ;     blk1 Halt Var(1)      :: :match_error
 
-; spec double(1) #fn=18
+; spec double(1) #fn=27
 ;   key:    [int]
 ;   return: int
 ;   vars:
@@ -311,7 +311,7 @@
 ;     blk0 Return Var(3)    :: int
 ;     blk1 Halt Var(1)      :: :match_error
 
-; spec add(2) #fn=19
+; spec add(2) #fn=28
 ;   key:    [0, 1 | 2 | 3 | 4 | 5]
 ;   return: int
 ;   vars:
@@ -323,7 +323,7 @@
 ;     blk0 Return Var(3)    :: int
 ;     blk1 Halt Var(2)      :: :match_error
 
-; spec add(2) #fn=19
+; spec add(2) #fn=28
 ;   key:    [any, any]
 ;   return: int | float
 ;   vars:
@@ -335,7 +335,7 @@
 ;     blk0 Return Var(3)    :: int | float
 ;     blk1 Halt Var(2)      :: :match_error
 
-; spec add(2) #fn=19
+; spec add(2) #fn=28
 ;   key:    [int, 1 | 2 | 3 | 4 | 5]
 ;   return: int
 ;   vars:
@@ -347,7 +347,7 @@
 ;     blk0 Return Var(3)    :: int
 ;     blk1 Halt Var(2)      :: :match_error
 
-; spec main(0) #fn=20
+; spec main(0) #fn=29
 ;   key:    []
 ;   return: nil
 ;   vars:
@@ -360,14 +360,14 @@
 ;     Var(6) :: list(1 | 2 | 3 | 4 | 5)
 ;     Var(7) :: :match_error
 ;   exits:
-;     blk0 Call length#13(Var(6))
+;     blk0 Call length#22(Var(6))
 ;              callee_key=[list(1 | 2 | 3 | 4 | 5)]
-;              cont k_33#33 captured=[Var(6)]
+;              cont k_42#42 captured=[Var(6)]
 ;              cont_key=[int, list(1 | 2 | 3 | 4 | 5)]
 ;     blk1 Halt Var(0)      :: :match_error
 ;     blk2 Halt Var(7)      :: :match_error
 
-; spec fn_clause_0(0) #fn=21
+; spec fn_clause_0(0) #fn=30
 ;   key:    []
 ;   return: 0
 ;   vars:
@@ -375,19 +375,19 @@
 ;   exits:
 ;     blk0 Return Var(0)    :: 0
 
-; spec fn_clause_1(1) #fn=22
+; spec fn_clause_1(1) #fn=31
 ;   key:    [list(int)]
 ;   return: int
 ;   vars:
 ;     Var(0) :: list(int)
 ;     Var(1) :: 1
 ;   exits:
-;     blk0 Call length#13(Var(0))
+;     blk0 Call length#22(Var(0))
 ;              callee_key=[list(int)]
-;              cont k_23#23 captured=[Var(0), Var(1)]
+;              cont k_32#32 captured=[Var(0), Var(1)]
 ;              cont_key=[int, list(int), 1]
 
-; spec k_23(3) #fn=23
+; spec k_32(3) #fn=32
 ;   key:    [int, list(int), 1]
 ;   return: int
 ;   vars:
@@ -398,7 +398,7 @@
 ;   exits:
 ;     blk0 Return Var(3)    :: int
 
-; spec fn_clause_0(1) #fn=24
+; spec fn_clause_0(1) #fn=33
 ;   key:    [list(1 | 2 | 3 | 4 | 5)]
 ;   return: list(1 | 2 | 3 | 4 | 5)
 ;   vars:
@@ -406,7 +406,7 @@
 ;   exits:
 ;     blk0 Return Var(0)    :: list(1 | 2 | 3 | 4 | 5)
 
-; spec fn_clause_0(1) #fn=24
+; spec fn_clause_0(1) #fn=33
 ;   key:    [list(none)]
 ;   return: list(none)
 ;   vars:
@@ -414,7 +414,7 @@
 ;   exits:
 ;     blk0 Return Var(0)    :: list(none)
 
-; spec fn_clause_1(3) #fn=25
+; spec fn_clause_1(3) #fn=34
 ;   key:    [list(1 | 2 | 3 | 4 | 5), 1 | 2 | 3 | 4 | 5, list(1 | 2 | 3 | 4 | 5)]
 ;   return: list(1 | 2 | 3 | 4 | 5)
 ;   vars:
@@ -423,10 +423,10 @@
 ;     Var(2) :: list(1 | 2 | 3 | 4 | 5)
 ;     Var(3) :: list(1 | 2 | 3 | 4 | 5)
 ;   exits:
-;     blk0 TailCall reverse_acc#15(Var(2), Var(3))
+;     blk0 TailCall reverse_acc#24(Var(2), Var(3))
 ;              callee_key=[list(1 | 2 | 3 | 4 | 5), list(1 | 2 | 3 | 4 | 5)]
 
-; spec fn_clause_1(3) #fn=25
+; spec fn_clause_1(3) #fn=34
 ;   key:    [list(none), 1 | 2 | 3 | 4 | 5, list(1 | 2 | 3 | 4 | 5)]
 ;   return: list(1 | 2 | 3 | 4 | 5)
 ;   vars:
@@ -435,10 +435,10 @@
 ;     Var(2) :: list(1 | 2 | 3 | 4 | 5)
 ;     Var(3) :: list(1 | 2 | 3 | 4 | 5)
 ;   exits:
-;     blk0 TailCall reverse_acc#15(Var(2), Var(3))
+;     blk0 TailCall reverse_acc#24(Var(2), Var(3))
 ;              callee_key=[list(1 | 2 | 3 | 4 | 5), list(1 | 2 | 3 | 4 | 5)]
 
-; spec fn_clause_0(0) #fn=26
+; spec fn_clause_0(0) #fn=35
 ;   key:    []
 ;   return: list(none)
 ;   vars:
@@ -446,44 +446,44 @@
 ;   exits:
 ;     blk0 Return Var(0)    :: list(none)
 
-; spec fn_clause_1(3) #fn=27
-;   key:    [&fn18[]:(α1152) -> α1215, int, list(int)]
+; spec fn_clause_1(3) #fn=36
+;   key:    [&fn27[]:(α1728) -> α1791, int, list(int)]
 ;   return: list(int)
 ;   fn_constants:
-;     Var(0) = double#18
+;     Var(0) = double#27
 ;   vars:
-;     Var(0) :: &fn18[]:(α1152) -> α1215
+;     Var(0) :: &fn27[]:(α1728) -> α1791
 ;     Var(1) :: int
 ;     Var(2) :: list(int)
 ;   exits:
-;     blk0 CallClosure Var(0)(Var(1)) [resolved=double#18]
-;              cont k_28#28 captured=[Var(0), Var(1), Var(2)]
-;              cont_key=[α1215, &fn18[]:(α1152) -> α1215, int, list(int)]
+;     blk0 CallClosure Var(0)(Var(1)) [resolved=double#27]
+;              cont k_37#37 captured=[Var(0), Var(1), Var(2)]
+;              cont_key=[α1791, &fn27[]:(α1728) -> α1791, int, list(int)]
 
-; spec k_28(4) #fn=28
-;   key:    [int, &fn18[]:(α1152) -> α1215, int, list(int)]
+; spec k_37(4) #fn=37
+;   key:    [int, &fn27[]:(α1728) -> α1791, int, list(int)]
 ;   return: list(int)
 ;   fn_constants:
-;     Var(1) = double#18
+;     Var(1) = double#27
 ;   vars:
 ;     Var(0) :: int
-;     Var(1) :: &fn18[]:(α1152) -> α1215
+;     Var(1) :: &fn27[]:(α1728) -> α1791
 ;     Var(2) :: int
 ;     Var(3) :: list(int)
 ;   exits:
-;     blk0 Call map#16(Var(1), Var(3))
-;              callee_key=[&fn18[]:(α1152) -> α1215, list(int)]
-;              cont k_29#29 captured=[Var(1), Var(2), Var(3), Var(0)]
-;              cont_key=[list(int), &fn18[]:(α1152) -> α1215, int, list(int), int]
+;     blk0 Call map#25(Var(1), Var(3))
+;              callee_key=[&fn27[]:(α1728) -> α1791, list(int)]
+;              cont k_38#38 captured=[Var(1), Var(2), Var(3), Var(0)]
+;              cont_key=[list(int), &fn27[]:(α1728) -> α1791, int, list(int), int]
 
-; spec k_29(5) #fn=29
-;   key:    [list(int), &fn18[]:(α1152) -> α1215, int, list(int), int]
+; spec k_38(5) #fn=38
+;   key:    [list(int), &fn27[]:(α1728) -> α1791, int, list(int), int]
 ;   return: list(int)
 ;   fn_constants:
-;     Var(1) = double#18
+;     Var(1) = double#27
 ;   vars:
 ;     Var(0) :: list(int)
-;     Var(1) :: &fn18[]:(α1152) -> α1215
+;     Var(1) :: &fn27[]:(α1728) -> α1791
 ;     Var(2) :: int
 ;     Var(3) :: list(int)
 ;     Var(4) :: int
@@ -491,7 +491,7 @@
 ;   exits:
 ;     blk0 Return Var(5)    :: list(int)
 
-; spec fn_clause_0(1) #fn=30
+; spec fn_clause_0(1) #fn=39
 ;   key:    [0]
 ;   return: 0
 ;   vars:
@@ -499,7 +499,7 @@
 ;   exits:
 ;     blk0 Return Var(0)    :: 0
 
-; spec fn_clause_0(1) #fn=30
+; spec fn_clause_0(1) #fn=39
 ;   key:    [int]
 ;   return: int
 ;   vars:
@@ -507,156 +507,156 @@
 ;   exits:
 ;     blk0 Return Var(0)    :: int
 
-; spec fn_clause_1(4) #fn=31
-;   key:    [&fn19[]:(α1216, α1217) -> α1279, 0, 1 | 2 | 3 | 4 | 5, list(1 | 2 | 3 | 4 | 5)]
+; spec fn_clause_1(4) #fn=40
+;   key:    [&fn28[]:(α1792, α1793) -> α1855, 0, 1 | 2 | 3 | 4 | 5, list(1 | 2 | 3 | 4 | 5)]
 ;   return: int
 ;   fn_constants:
-;     Var(0) = add#19
+;     Var(0) = add#28
 ;   vars:
-;     Var(0) :: &fn19[]:(α1216, α1217) -> α1279
+;     Var(0) :: &fn28[]:(α1792, α1793) -> α1855
 ;     Var(1) :: 0
 ;     Var(2) :: 1 | 2 | 3 | 4 | 5
 ;     Var(3) :: list(1 | 2 | 3 | 4 | 5)
 ;   exits:
-;     blk0 CallClosure Var(0)(Var(1), Var(2)) [resolved=add#19]
-;              cont k_32#32 captured=[Var(0), Var(1), Var(2), Var(3), Var(0)]
-;              cont_key=[α1279, &fn19[]:(α1216, α1217) -> α1279, 0, 1 | 2 | 3 | 4 | 5, list(1 | 2 | 3 | 4 | 5), &fn19[]:(α1216, α1217) -> α1279]
+;     blk0 CallClosure Var(0)(Var(1), Var(2)) [resolved=add#28]
+;              cont k_41#41 captured=[Var(0), Var(1), Var(2), Var(3), Var(0)]
+;              cont_key=[α1855, &fn28[]:(α1792, α1793) -> α1855, 0, 1 | 2 | 3 | 4 | 5, list(1 | 2 | 3 | 4 | 5), &fn28[]:(α1792, α1793) -> α1855]
 
-; spec fn_clause_1(4) #fn=31
-;   key:    [&fn19[]:(α1216, α1217) -> α1279, int, 1 | 2 | 3 | 4 | 5, list(1 | 2 | 3 | 4 | 5)]
+; spec fn_clause_1(4) #fn=40
+;   key:    [&fn28[]:(α1792, α1793) -> α1855, int, 1 | 2 | 3 | 4 | 5, list(1 | 2 | 3 | 4 | 5)]
 ;   return: int
 ;   fn_constants:
-;     Var(0) = add#19
+;     Var(0) = add#28
 ;   vars:
-;     Var(0) :: &fn19[]:(α1216, α1217) -> α1279
+;     Var(0) :: &fn28[]:(α1792, α1793) -> α1855
 ;     Var(1) :: int
 ;     Var(2) :: 1 | 2 | 3 | 4 | 5
 ;     Var(3) :: list(1 | 2 | 3 | 4 | 5)
 ;   exits:
-;     blk0 CallClosure Var(0)(Var(1), Var(2)) [resolved=add#19]
-;              cont k_32#32 captured=[Var(0), Var(1), Var(2), Var(3), Var(0)]
-;              cont_key=[α1279, &fn19[]:(α1216, α1217) -> α1279, int, 1 | 2 | 3 | 4 | 5, list(1 | 2 | 3 | 4 | 5), &fn19[]:(α1216, α1217) -> α1279]
+;     blk0 CallClosure Var(0)(Var(1), Var(2)) [resolved=add#28]
+;              cont k_41#41 captured=[Var(0), Var(1), Var(2), Var(3), Var(0)]
+;              cont_key=[α1855, &fn28[]:(α1792, α1793) -> α1855, int, 1 | 2 | 3 | 4 | 5, list(1 | 2 | 3 | 4 | 5), &fn28[]:(α1792, α1793) -> α1855]
 
-; spec k_32(6) #fn=32
-;   key:    [int, &fn19[]:(α1216, α1217) -> α1279, 0, 1 | 2 | 3 | 4 | 5, list(1 | 2 | 3 | 4 | 5), &fn19[]:(α1216, α1217) -> α1279]
+; spec k_41(6) #fn=41
+;   key:    [int, &fn28[]:(α1792, α1793) -> α1855, 0, 1 | 2 | 3 | 4 | 5, list(1 | 2 | 3 | 4 | 5), &fn28[]:(α1792, α1793) -> α1855]
 ;   return: int
 ;   fn_constants:
-;     Var(1) = add#19
-;     Var(5) = add#19
+;     Var(1) = add#28
+;     Var(5) = add#28
 ;   vars:
 ;     Var(0) :: int
-;     Var(1) :: &fn19[]:(α1216, α1217) -> α1279
+;     Var(1) :: &fn28[]:(α1792, α1793) -> α1855
 ;     Var(2) :: 0
 ;     Var(3) :: 1 | 2 | 3 | 4 | 5
 ;     Var(4) :: list(1 | 2 | 3 | 4 | 5)
-;     Var(5) :: &fn19[]:(α1216, α1217) -> α1279
+;     Var(5) :: &fn28[]:(α1792, α1793) -> α1855
 ;   exits:
-;     blk0 TailCall foldl#17(Var(5), Var(0), Var(4))
-;              callee_key=[&fn19[]:(α1216, α1217) -> α1279, int, list(1 | 2 | 3 | 4 | 5)]
+;     blk0 TailCall foldl#26(Var(5), Var(0), Var(4))
+;              callee_key=[&fn28[]:(α1792, α1793) -> α1855, int, list(1 | 2 | 3 | 4 | 5)]
 
-; spec k_32(6) #fn=32
-;   key:    [int, &fn19[]:(α1216, α1217) -> α1279, int, 1 | 2 | 3 | 4 | 5, list(1 | 2 | 3 | 4 | 5), &fn19[]:(α1216, α1217) -> α1279]
+; spec k_41(6) #fn=41
+;   key:    [int, &fn28[]:(α1792, α1793) -> α1855, int, 1 | 2 | 3 | 4 | 5, list(1 | 2 | 3 | 4 | 5), &fn28[]:(α1792, α1793) -> α1855]
 ;   return: int
 ;   fn_constants:
-;     Var(1) = add#19
-;     Var(5) = add#19
+;     Var(1) = add#28
+;     Var(5) = add#28
 ;   vars:
 ;     Var(0) :: int
-;     Var(1) :: &fn19[]:(α1216, α1217) -> α1279
+;     Var(1) :: &fn28[]:(α1792, α1793) -> α1855
 ;     Var(2) :: int
 ;     Var(3) :: 1 | 2 | 3 | 4 | 5
 ;     Var(4) :: list(1 | 2 | 3 | 4 | 5)
-;     Var(5) :: &fn19[]:(α1216, α1217) -> α1279
+;     Var(5) :: &fn28[]:(α1792, α1793) -> α1855
 ;   exits:
-;     blk0 TailCall foldl#17(Var(5), Var(0), Var(4))
-;              callee_key=[&fn19[]:(α1216, α1217) -> α1279, int, list(1 | 2 | 3 | 4 | 5)]
+;     blk0 TailCall foldl#26(Var(5), Var(0), Var(4))
+;              callee_key=[&fn28[]:(α1792, α1793) -> α1855, int, list(1 | 2 | 3 | 4 | 5)]
 
-; spec k_33(2) #fn=33
+; spec k_42(2) #fn=42
 ;   key:    [int, list(1 | 2 | 3 | 4 | 5)]
 ;   return: nil
 ;   vars:
 ;     Var(0) :: int
 ;     Var(1) :: list(1 | 2 | 3 | 4 | 5)
 ;   exits:
-;     blk0 Call print#0(Var(0))
+;     blk0 Call print#4(Var(0))
 ;              callee_key=[int]
-;              cont k_34#34 captured=[Var(1)]
+;              cont k_43#43 captured=[Var(1)]
 ;              cont_key=[nil, list(1 | 2 | 3 | 4 | 5)]
 
-; spec k_34(2) #fn=34
+; spec k_43(2) #fn=43
 ;   key:    [nil, list(1 | 2 | 3 | 4 | 5)]
 ;   return: nil
 ;   vars:
 ;     Var(0) :: nil
 ;     Var(1) :: list(1 | 2 | 3 | 4 | 5)
 ;   exits:
-;     blk0 Call reverse#14(Var(1))
+;     blk0 Call reverse#23(Var(1))
 ;              callee_key=[list(1 | 2 | 3 | 4 | 5)]
-;              cont k_35#35 captured=[Var(1)]
+;              cont k_44#44 captured=[Var(1)]
 ;              cont_key=[list(1 | 2 | 3 | 4 | 5), list(1 | 2 | 3 | 4 | 5)]
 
-; spec k_35(2) #fn=35
+; spec k_44(2) #fn=44
 ;   key:    [list(1 | 2 | 3 | 4 | 5), list(1 | 2 | 3 | 4 | 5)]
 ;   return: nil
 ;   vars:
 ;     Var(0) :: list(1 | 2 | 3 | 4 | 5)
 ;     Var(1) :: list(1 | 2 | 3 | 4 | 5)
 ;   exits:
-;     blk0 Call print#0(Var(0))
+;     blk0 Call print#4(Var(0))
 ;              callee_key=[list(1 | 2 | 3 | 4 | 5)]
-;              cont k_36#36 captured=[Var(1)]
+;              cont k_45#45 captured=[Var(1)]
 ;              cont_key=[nil, list(1 | 2 | 3 | 4 | 5)]
 
-; spec k_36(2) #fn=36
+; spec k_45(2) #fn=45
 ;   key:    [nil, list(1 | 2 | 3 | 4 | 5)]
 ;   return: nil
 ;   fn_constants:
-;     Var(2) = double#18
+;     Var(2) = double#27
 ;   vars:
 ;     Var(0) :: nil
 ;     Var(1) :: list(1 | 2 | 3 | 4 | 5)
-;     Var(2) :: &fn18[]:(α1152) -> α1215
+;     Var(2) :: &fn27[]:(α1728) -> α1791
 ;   exits:
-;     blk0 Call map#16(Var(2), Var(1))
-;              callee_key=[&fn18[]:(α1152) -> α1215, list(1 | 2 | 3 | 4 | 5)]
-;              cont k_37#37 captured=[Var(1)]
+;     blk0 Call map#25(Var(2), Var(1))
+;              callee_key=[&fn27[]:(α1728) -> α1791, list(1 | 2 | 3 | 4 | 5)]
+;              cont k_46#46 captured=[Var(1)]
 ;              cont_key=[list(int), list(1 | 2 | 3 | 4 | 5)]
 
-; spec k_37(2) #fn=37
+; spec k_46(2) #fn=46
 ;   key:    [list(int), list(1 | 2 | 3 | 4 | 5)]
 ;   return: nil
 ;   vars:
 ;     Var(0) :: list(int)
 ;     Var(1) :: list(1 | 2 | 3 | 4 | 5)
 ;   exits:
-;     blk0 Call print#0(Var(0))
+;     blk0 Call print#4(Var(0))
 ;              callee_key=[list(int)]
-;              cont k_38#38 captured=[Var(1)]
+;              cont k_47#47 captured=[Var(1)]
 ;              cont_key=[nil, list(1 | 2 | 3 | 4 | 5)]
 
-; spec k_38(2) #fn=38
+; spec k_47(2) #fn=47
 ;   key:    [nil, list(1 | 2 | 3 | 4 | 5)]
 ;   return: nil
 ;   fn_constants:
-;     Var(2) = add#19
+;     Var(2) = add#28
 ;   vars:
 ;     Var(0) :: nil
 ;     Var(1) :: list(1 | 2 | 3 | 4 | 5)
-;     Var(2) :: &fn19[]:(α1216, α1217) -> α1279
+;     Var(2) :: &fn28[]:(α1792, α1793) -> α1855
 ;     Var(3) :: 0
 ;   exits:
-;     blk0 Call foldl#17(Var(2), Var(3), Var(1))
-;              callee_key=[&fn19[]:(α1216, α1217) -> α1279, 0, list(1 | 2 | 3 | 4 | 5)]
-;              cont k_39#39 captured=[Var(1)]
+;     blk0 Call foldl#26(Var(2), Var(3), Var(1))
+;              callee_key=[&fn28[]:(α1792, α1793) -> α1855, 0, list(1 | 2 | 3 | 4 | 5)]
+;              cont k_48#48 captured=[Var(1)]
 ;              cont_key=[int, list(1 | 2 | 3 | 4 | 5)]
 
-; spec k_39(2) #fn=39
+; spec k_48(2) #fn=48
 ;   key:    [int, list(1 | 2 | 3 | 4 | 5)]
 ;   return: nil
 ;   vars:
 ;     Var(0) :: int
 ;     Var(1) :: list(1 | 2 | 3 | 4 | 5)
 ;   exits:
-;     blk0 TailCall print#0(Var(0))
+;     blk0 TailCall print#4(Var(0))
 ;              callee_key=[int]
 

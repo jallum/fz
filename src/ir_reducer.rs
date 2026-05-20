@@ -74,8 +74,8 @@ use crate::fz_ir::{
     Term, Var,
 };
 use crate::reducer::{
-    as_atom_lit, as_bool_lit, as_float_lit, as_int_lit, as_str_lit, as_tuple_lit, fold_prim,
-    is_literal, is_nil_only,
+    as_atom_lit, as_bool_lit, as_float_lit, as_int_lit, as_tuple_lit, fold_prim, is_literal,
+    is_nil_only,
 };
 use crate::types::Descr;
 use std::collections::HashMap;
@@ -937,9 +937,6 @@ fn literal_to_const(d: &Descr, m: &mut Module) -> Option<Const> {
             }
         };
         return Some(Const::Atom(id));
-    }
-    if let Some(s) = as_str_lit(d) {
-        return Some(Const::Str(s.to_string()));
     }
     None
 }
