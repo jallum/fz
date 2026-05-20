@@ -248,12 +248,19 @@ impl ExternTable {
 /// return-type annotation in an `extern "C" fn` declaration.
 /// fz-y3k — split an extern's fz-visible name into the C symbol it resolves
 /// to. A `lib::name` prefix is fz-side documentation/namespacing only; the
-/// linker sees just the bare suffix. Single-segment names round-trip.
+/// linker sees just the bare suffix. fz-axu — externs declared inside a
+/// `defmodule Foo do ... end` get auto-qualified by the resolver to
+/// `Foo.name` (with a `.`), which is also fz-side decoration; strip
+/// either separator to recover the C symbol. Single-segment names
+/// round-trip.
 fn extern_symbol_from_name(fz_name: &str) -> &str {
+    if let Some((_, sym)) = fz_name.rsplit_once("::") {
+        return sym;
+    }
+    if let Some((_, sym)) = fz_name.rsplit_once('.') {
+        return sym;
+    }
     fz_name
-        .rsplit_once("::")
-        .map(|(_, sym)| sym)
-        .unwrap_or(fz_name)
 }
 
 fn extern_ty_from_name(name: &str) -> Option<ExternTy> {

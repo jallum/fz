@@ -11,6 +11,9 @@
 # validation and brand-mint; these functions wire them into the user
 # language.
 defmodule Utf8 do
+  extern "C" fn fz_bitstring_valid_utf8(any) :: integer
+  extern "C" fn fz_brand_bitstring_as_utf8(any) :: any
+
   @doc "True iff `bytes` is a valid UTF-8 byte-aligned bitstring."
   @spec valid?(any) :: bool
   fn valid?(bytes), do: fz_bitstring_valid_utf8(bytes) == 1
@@ -87,5 +90,3 @@ extern "C" fn fz_self() :: pid
 extern "C" fn fz_send(pid, any) :: any
 extern "C" fn fz_make_ref() :: ref
 extern "C" fn fz_make_resource(any, any) :: any
-extern "C" fn fz_bitstring_valid_utf8(any) :: integer
-extern "C" fn fz_brand_bitstring_as_utf8(any) :: any

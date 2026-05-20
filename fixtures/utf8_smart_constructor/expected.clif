@@ -62,7 +62,7 @@ function u0:0(i64, i64) -> i64 tail {
     v5 = iconst.i64 1    ;; v5 :: 1
     v6 = sshr_imm v4, 3
     v7 = icmp eq v6, v5  ; v5 = 1    ;; v7 :: bool
-    brif v7, block1, block2             ; @9:846
+    brif v7, block1, block2             ; @9:958
 
 block1:
     v8 = iconst.i64 34    ;; v8 :: :ok
