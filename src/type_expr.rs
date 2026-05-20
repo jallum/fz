@@ -95,7 +95,7 @@ pub fn resolve_spec_decl(
 pub fn build_module_type_env(
     attrs: &[crate::ast::Attribute],
 ) -> Result<ModuleTypeEnv, TypeExprError> {
-    build_module_type_env_for(attrs, "").map(|(env, _inners)| env)
+    build_module_type_env_for(attrs, "").map(|(env, _o, _b)| env)
 }
 
 /// fz-swt.8 — Inner-type map for opaque aliases declared in one
@@ -111,6 +111,18 @@ pub fn build_module_type_env(
 /// payload the gate guards.
 pub type OpaqueInnerTypes = HashMap<String, Descr>;
 
+/// fz-axu.3 (K2) — Inner-type map for `refines` brand aliases
+/// declared in one module. Keyed by the qualified brand tag (matches
+/// the tag stored on `Descr::brand_of(...)`); value is the parsed body
+/// following the `refines` keyword — i.e., the inner type `T` for
+/// `@type B :: refines T`.
+///
+/// Distinct from `OpaqueInnerTypes` because the K4 is_subtype rule
+/// treats brands as a proper subset of their inner, whereas opaques
+/// are nominally disjoint from theirs. K2 only collects the map;
+/// downstream tickets (K3 mint, K4 lattice rule, K5 erasure) read it.
+pub type BrandInnerTypes = HashMap<String, Descr>;
+
 /// fz-swt.6 — like `build_module_type_env`, but threads the enclosing
 /// module's qualified path so opaque-type declarations record their
 /// declaring module. The opaque tag in the resulting `Descr` is
@@ -123,7 +135,7 @@ pub type OpaqueInnerTypes = HashMap<String, Descr>;
 pub fn build_module_type_env_for(
     attrs: &[crate::ast::Attribute],
     module_path: &str,
-) -> Result<(ModuleTypeEnv, OpaqueInnerTypes), TypeExprError> {
+) -> Result<(ModuleTypeEnv, OpaqueInnerTypes, BrandInnerTypes), TypeExprError> {
     use crate::ast::Attribute;
     // Collect aliases keyed by name; reject duplicates.
     let mut pending: HashMap<String, &crate::ast::TypeAliasDecl> = HashMap::new();
@@ -141,13 +153,21 @@ pub fn build_module_type_env_for(
         }
     }
     if pending.is_empty() {
-        return Ok((ModuleTypeEnv::new(), OpaqueInnerTypes::new()));
+        return Ok((
+            ModuleTypeEnv::new(),
+            OpaqueInnerTypes::new(),
+            BrandInnerTypes::new(),
+        ));
     }
     let mut env: ModuleTypeEnv = ModuleTypeEnv::new();
     // fz-swt.8 — Side map: qualified opaque tag → inner T parsed from
     // the body following `opaque`. Populated alongside `env` so the
     // typer's `.value` lowering can look up T without re-parsing.
     let mut opaque_inners: OpaqueInnerTypes = OpaqueInnerTypes::new();
+    // fz-axu.3 (K2) — parallel side map: qualified brand tag → inner T
+    // parsed from the body following `refines`. Consumed by K4's
+    // is_subtype rule and K5 erasure.
+    let mut brand_inners: BrandInnerTypes = BrandInnerTypes::new();
     // Fixed-point resolve: keep walking until no progress.
     loop {
         let mut progressed = false;
@@ -167,6 +187,39 @@ pub fn build_module_type_env_for(
                 .first()
                 .map(|t| matches!(&t.tok, Tok::Ident(n) if n == "opaque"))
                 .unwrap_or(false);
+            // fz-axu.3 (K2) — `@type B :: refines T` declares a brand on
+            // top of an existing structural type T. Mirrors the opaque
+            // branch below but populates `brand_inners` instead.
+            let is_refines = decl
+                .body_tokens
+                .0
+                .first()
+                .map(|t| matches!(&t.tok, Tok::Ident(n) if n == "refines"))
+                .unwrap_or(false);
+            if is_refines {
+                let body_after_refines = &decl.body_tokens.0[1..];
+                if body_after_refines.is_empty() {
+                    return Err(TypeExprError {
+                        msg: format!(
+                            "`@type {} :: refines T` requires an inner type T",
+                            name
+                        ),
+                        span: decl.span,
+                    });
+                }
+                let inner = match parse_type_expr(body_after_refines, &env) {
+                    Ok((d, _)) => d,
+                    Err(_) => {
+                        // Body isn't resolvable yet (forward ref); retry.
+                        continue;
+                    }
+                };
+                let qualified = qualify_opaque_name(module_path, name);
+                env.insert(name.clone(), Descr::brand_of(qualified.clone()));
+                brand_inners.insert(qualified, inner);
+                progressed = true;
+                continue;
+            }
             if is_opaque {
                 // Parse the body after `opaque` and record T in the
                 // side map so the `.value` accessor (fz-swt.8) can
@@ -262,7 +315,7 @@ pub fn build_module_type_env_for(
             }
         }
     }
-    Ok((env, opaque_inners))
+    Ok((env, opaque_inners, brand_inners))
 }
 
 /// fz-swt.6 — build the module-qualified opaque tag stored on a
@@ -338,7 +391,7 @@ fn referenced_names(tokens: &[crate::lexer::Token]) -> Vec<String> {
         .filter_map(|t| match &t.tok {
             Tok::Ident(n) | Tok::Upper(n) => match n.as_str() {
                 "nil" | "bool" | "integer" | "float" | "binary" | "atom" | "any" | "never"
-                | "opaque" | "vector" | "u8" | "bit" | "resource" => None,
+                | "opaque" | "refines" | "vector" | "u8" | "bit" | "resource" => None,
                 _ => Some(n.clone()),
             },
             _ => None,
@@ -1056,7 +1109,7 @@ mod tests {
         // Built under module "File", the alias should carry the
         // qualified tag `"File::t"`.
         let attrs = vec![type_alias_attr("t", "opaque resource(integer)")];
-        let (env, _inners) = build_module_type_env_for(&attrs, "File").unwrap();
+        let (env, _o, _b) = build_module_type_env_for(&attrs, "File").unwrap();
         let t = env.get("t").expect("alias resolved");
         assert_eq!(t.as_opaque_singleton(), Some("File::t"));
     }
@@ -1096,6 +1149,79 @@ mod tests {
             pid.intersect(ts).is_empty(),
             "distinct opaques should be disjoint: pid ∩ timestamp = {}",
             pid.intersect(ts)
+        );
+    }
+
+    // ---- refines / brand aliases (fz-axu.3 K2) ----
+
+    #[test]
+    fn build_env_refines_alias_creates_brand_descr() {
+        let attrs = vec![type_alias_attr("utf8", "refines binary")];
+        let (env, _o, brand_inners) = build_module_type_env_for(&attrs, "").unwrap();
+        let utf8 = env.get("utf8").unwrap();
+        assert_eq!(
+            utf8.as_brand_singleton(),
+            Some("utf8"),
+            "alias resolves to brand-of(name): got {}",
+            utf8,
+        );
+        let inner = brand_inners
+            .get("utf8")
+            .expect("brand_inners records the inner type");
+        assert!(
+            inner.is_equiv(&Descr::str_t()),
+            "inner of `refines binary` is binary (str_t): got {}",
+            inner,
+        );
+    }
+
+    #[test]
+    fn build_env_refines_alias_qualifies_with_module() {
+        let attrs = vec![type_alias_attr("email", "refines binary")];
+        let (env, _o, brand_inners) = build_module_type_env_for(&attrs, "Email").unwrap();
+        let email = env.get("email").unwrap();
+        assert_eq!(email.as_brand_singleton(), Some("Email::email"));
+        assert!(brand_inners.contains_key("Email::email"));
+    }
+
+    #[test]
+    fn build_env_refines_alias_rejects_empty_body() {
+        let attrs = vec![type_alias_attr("bad", "refines")];
+        let err = build_module_type_env_for(&attrs, "M").unwrap_err();
+        assert!(
+            err.msg.contains("requires an inner type"),
+            "expected diag about missing inner; got: {}",
+            err.msg,
+        );
+    }
+
+    #[test]
+    fn build_env_refines_alias_rejects_bad_inner() {
+        let attrs = vec![type_alias_attr("bad", "refines nonesuch")];
+        let err = build_module_type_env_for(&attrs, "M").unwrap_err();
+        assert!(
+            err.msg.contains("unknown type name"),
+            "expected unknown-name diag from refines body; got: {}",
+            err.msg,
+        );
+    }
+
+    #[test]
+    fn refines_distinct_from_opaque_with_same_name() {
+        // Across two modules: M declares brand B = refines integer; N
+        // declares opaque B = opaque integer. Their Descrs come from
+        // different axes, so they are lattice-disjoint.
+        let m_attrs = vec![type_alias_attr("B", "refines integer")];
+        let n_attrs = vec![type_alias_attr("B", "opaque integer")];
+        let (m_env, _, _) = build_module_type_env_for(&m_attrs, "M").unwrap();
+        let (n_env, _, _) = build_module_type_env_for(&n_attrs, "N").unwrap();
+        let b_brand = m_env.get("B").unwrap();
+        let b_opaque = n_env.get("B").unwrap();
+        assert!(
+            b_brand.intersect(b_opaque).is_empty(),
+            "brand and opaque axes are disjoint: {} ∩ {}",
+            b_brand,
+            b_opaque,
         );
     }
 }
