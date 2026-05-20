@@ -1,0 +1,609 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>fz processes guide — spawn, send, receive</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: #0d1117;
+    color: #c9d1d9;
+    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 14px;
+    line-height: 1.7;
+    padding: 40px 24px;
+    max-width: 900px;
+    margin: 0 auto;
+  }
+  h1 { color: #58a6ff; font-size: 1.8em; margin-bottom: 6px; }
+  h2 { color: #79c0ff; font-size: 1.2em; margin: 36px 0 12px; border-bottom: 1px solid #21262d; padding-bottom: 6px; }
+  h3 { color: #a5d6ff; font-size: 1em; margin: 20px 0 8px; }
+  p { margin-bottom: 12px; }
+  .subtitle { color: #8b949e; margin-bottom: 36px; }
+  pre {
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 6px;
+    padding: 16px;
+    overflow-x: auto;
+    margin: 12px 0 20px;
+    line-height: 1.5;
+  }
+  .tag  { color: #ff7b72; }
+  .val  { color: #79c0ff; }
+  .ptr  { color: #d2a8ff; }
+  .hdr  { color: #ffa657; }
+  .live { color: #56d364; }
+  .note { color: #8b949e; font-style: italic; }
+  .warn { color: #e3b341; }
+  .kw   { color: #ff7b72; }
+  .ty   { color: #79c0ff; }
+  .str  { color: #a5d6ff; }
+  .num  { color: #79c0ff; }
+  .com  { color: #8b949e; font-style: italic; }
+  .atm  { color: #d2a8ff; }
+  .fn   { color: #d2a8ff; }
+  .box {
+    border: 1px solid #30363d;
+    border-radius: 6px;
+    padding: 14px 18px;
+    margin: 16px 0;
+    background: #161b22;
+  }
+  .box.green  { border-color: #238636; background: #0d1f0f; }
+  .box.yellow { border-color: #9e6a03; background: #1f1700; }
+  .box.blue   { border-color: #1f6feb; background: #0d1f40; }
+  .box.red    { border-color: #da3633; background: #2d0d0d; }
+  ul { padding-left: 20px; margin-bottom: 12px; }
+  li { margin-bottom: 4px; }
+  .toc { margin-bottom: 32px; }
+  .toc a { color: #58a6ff; text-decoration: none; }
+  .toc a:hover { text-decoration: underline; }
+  .toc li { margin-bottom: 2px; }
+  code { background: #161b22; padding: 2px 5px; border-radius: 3px; color: #ff7b72; }
+  .aside {
+    border-left: 3px solid #58a6ff;
+    padding: 10px 14px;
+    margin: 14px 0;
+    background: #0d1f40;
+    color: #c9d1d9;
+  }
+  table.data {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 12px 0 20px;
+    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 13px;
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  table.data th, table.data td {
+    padding: 6px 16px;
+    text-align: left;
+    vertical-align: top;
+    border: none;
+  }
+  table.data thead th {
+    color: #8b949e;
+    font-weight: normal;
+    padding-top: 12px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid #30363d;
+  }
+  table.data tbody tr:first-child td { padding-top: 10px; }
+  table.data tbody tr:last-child td  { padding-bottom: 12px; }
+  table.data td.cls { color: #ff7b72; }
+  table.data td.shape { color: #79c0ff; }
+  table.data td.note { color: #8b949e; font-style: italic; }
+</style>
+</head>
+<body>
+
+<h1>fz processes guide</h1>
+<p class="subtitle">How fz does concurrency — spawning processes, sending messages, and pulling them out of the mailbox.</p>
+
+<div class="toc">
+<ul>
+  <li><a href="#why">1. Why processes exist</a></li>
+  <li><a href="#spawn">2. <code>spawn</code> — making a new process</a></li>
+  <li><a href="#self">3. <code>self()</code> and pids</a></li>
+  <li><a href="#send">4. <code>send</code> — putting a message in someone's mailbox</a></li>
+  <li><a href="#recv">5. <code>receive</code> — taking it out</a></li>
+  <li><a href="#selective">6. Selective receive — patterns and pins</a></li>
+  <li><a href="#mailbox">7. The mailbox — why selective matters</a></li>
+  <li><a href="#after">8. <code>after</code> — waking up when no message comes</a></li>
+  <li><a href="#example">9. A complete example: a tiny request/reply server</a></li>
+  <li><a href="#footguns">10. Footguns and the contract</a></li>
+</ul>
+</div>
+
+<!-- ─────────────────────────────── 1. WHY ─────────────────────────────── -->
+<h2 id="why">1. Why processes exist</h2>
+
+<p>If your whole program runs in one thread of control, then whenever you
+want to do two things at once — wait on a network reply <em>and</em> keep
+the UI responsive — you have to rewrite both around callbacks, or futures,
+or coroutines, or some other "concurrent-but-not-really" abstraction.</p>
+
+<p>fz takes the other path. A <strong>process</strong> in fz is a
+lightweight unit of execution with its <em>own</em> stack, its <em>own</em>
+heap, and its <em>own</em> mailbox. You make as many of them as you want
+(thousands is normal), they don't share memory, and they talk by passing
+messages. This is the Erlang model — borrowed because it's been proven
+out for forty years and because it composes better than anything else
+that's ever been tried.</p>
+
+<p>Three primitives carry the whole story:</p>
+
+<ul>
+  <li><code>spawn(f)</code> — start a new process running <code>f</code>.</li>
+  <li><code>send(pid, msg)</code> — put <code>msg</code> into the mailbox
+      of the process identified by <code>pid</code>.</li>
+  <li><code>receive do … end</code> — pull a message out of <em>my</em>
+      mailbox, pattern-matching against what's there.</li>
+</ul>
+
+<p>Everything else — request/reply protocols, supervisors, state machines,
+pipelines — is built out of these three.</p>
+
+<div class="aside">
+<strong>Mental model:</strong> a process is a tiny independent program with
+a private inbox. The only way to interact with another process is to drop
+a letter in its inbox. The recipient reads its inbox when it's ready.
+There is no shared whiteboard, no read-across, no peeking. This is what
+makes "two things at once" safe by default — there is no shared mutable
+state to race over.
+</div>
+
+<!-- ─────────────────────────────── 2. SPAWN ─────────────────────────────── -->
+<h2 id="spawn">2. <code>spawn</code> — making a new process</h2>
+
+<p><code>spawn(f)</code> takes a zero-argument function value, starts a new
+process running it, and returns the new process's <strong>pid</strong> —
+an integer that identifies it.</p>
+
+<pre><span class="kw">fn</span> <span class="fn">child</span>() <span class="kw">do</span>
+  <span class="fn">print</span>(<span class="atm">:hello</span>)
+<span class="kw">end</span>
+
+<span class="kw">fn</span> <span class="fn">main</span>() <span class="kw">do</span>
+  pid = <span class="fn">spawn</span>(<span class="fn">child</span>)
+  <span class="fn">print</span>(pid)
+<span class="kw">end</span></pre>
+
+<p>Two processes run concurrently here: <code>main</code> and the new
+process executing <code>child</code>. <code>child</code> prints
+<code>:hello</code>, <code>main</code> prints the pid (an integer like
+<code>2</code>). The order isn't fixed — fz's scheduler decides who gets
+to run next.</p>
+
+<h3>Lambdas with captures</h3>
+
+<p>Often you want to give the new process a parameter. A lambda captures
+variables from its surrounding scope, so:</p>
+
+<pre><span class="kw">fn</span> <span class="fn">parent</span>(tag) <span class="kw">do</span>
+  <span class="fn">spawn</span>(<span class="kw">fn</span> () -&gt; <span class="fn">send</span>(<span class="num">1</span>, tag))
+  <span class="fn">receive</span>()
+<span class="kw">end</span>
+
+<span class="kw">fn</span> <span class="fn">main</span>() <span class="kw">do</span>
+  <span class="fn">print</span>(<span class="fn">parent</span>(<span class="num">99</span>))
+<span class="kw">end</span></pre>
+
+<p>The lambda captures <code>tag</code> by value. Each captured value is
+<em>deep-copied</em> into the new process's heap at spawn time — no
+sharing, no aliasing. From the moment the child starts, its
+<code>tag</code> is a fresh value in its own heap; the parent's
+<code>tag</code> is unchanged regardless of what the child does.</p>
+
+<div class="aside">
+The deep-copy is the load-bearing detail. Two processes that <em>seem</em>
+to share a value actually have two independent copies. You can't write
+through a captured reference because there are no references — only
+values. This is what makes "no shared mutable state" enforceable instead
+of aspirational.
+</div>
+
+<h3>What runs in a new process</h3>
+
+<p>Anything that's a zero-arg function value:</p>
+
+<ul>
+  <li>A top-level fn reference: <code>spawn(worker)</code> (where
+      <code>fn worker(), do: …</code> exists).</li>
+  <li>An explicit reference: <code>spawn(&amp;worker/0)</code>.</li>
+  <li>A lambda: <code>spawn(fn () -&gt; do_thing(x, y))</code>.</li>
+</ul>
+
+<p>If the function returns, the process exits. If it doesn't return — it
+loops with <code>receive</code> or tail-recurses — the process keeps
+running until something else makes it stop.</p>
+
+<!-- ─────────────────────────────── 3. SELF ─────────────────────────────── -->
+<h2 id="self">3. <code>self()</code> and pids</h2>
+
+<p>Every process has a pid. The currently-running process knows its own
+pid via <code>self()</code>:</p>
+
+<pre><span class="kw">fn</span> <span class="fn">main</span>() <span class="kw">do</span>
+  me = <span class="fn">self</span>()
+  <span class="fn">print</span>(me)        <span class="com"># prints 1 (the first process)</span>
+<span class="kw">end</span></pre>
+
+<p>The very first process (the one that runs <code>main</code>) gets
+pid <code>1</code>. Each subsequent <code>spawn</code> gives out the
+next integer: <code>2</code>, <code>3</code>, and so on. Pids are not
+recycled within one run.</p>
+
+<h3>Why pids matter</h3>
+
+<p>To send a message, you have to know the recipient's pid. The
+canonical pattern: a parent spawns a child and passes its own pid in,
+so the child can send back:</p>
+
+<pre><span class="kw">fn</span> <span class="fn">worker</span>(home) <span class="kw">do</span>
+  result = <span class="num">42</span>
+  <span class="fn">send</span>(home, result)
+<span class="kw">end</span>
+
+<span class="kw">fn</span> <span class="fn">main</span>() <span class="kw">do</span>
+  home = <span class="fn">self</span>()
+  <span class="fn">spawn</span>(<span class="kw">fn</span> () -&gt; <span class="fn">worker</span>(home))
+  <span class="fn">print</span>(<span class="fn">receive</span>())
+<span class="kw">end</span></pre>
+
+<p><code>main</code> tells the child where to send the answer. The child
+runs, computes, sends, exits. <code>main</code> blocks on
+<code>receive()</code> until the answer arrives. Output: <code>42</code>.</p>
+
+<!-- ─────────────────────────────── 4. SEND ─────────────────────────────── -->
+<h2 id="send">4. <code>send</code> — putting a message in someone's mailbox</h2>
+
+<p><code>send(pid, msg)</code> drops <code>msg</code> into the mailbox of
+the process identified by <code>pid</code>. It does <em>not</em> wait for
+the message to be read; it does <em>not</em> wait for a reply. It returns
+<code>msg</code> so you can chain it.</p>
+
+<pre><span class="fn">send</span>(child_pid, <span class="atm">:start</span>)</pre>
+
+<p>The message can be anything — an atom, an integer, a tuple, a list, a
+nested structure of all of the above. Whatever it is, fz makes its own
+copy in the recipient's heap before delivering it.</p>
+
+<pre><span class="fn">send</span>(handler, {<span class="atm">:request</span>, id, payload, <span class="fn">self</span>()})</pre>
+
+<p>Tuples are the workhorse here. By convention the first element is an
+atom that names the message kind (<code>:request</code>,
+<code>:reply</code>, <code>:stop</code>, …) and the rest are the payload.
+This makes the receiver's pattern matching read cleanly.</p>
+
+<h3>Deep-copy on send</h3>
+
+<p>Like <code>spawn</code>'s captures, <code>send</code>'s message is
+deep-copied into the recipient's heap. After the call returns, the sender
+and receiver hold independent copies. If the sender mutates its local copy
+(by rebinding the name to something else), the receiver sees no change.
+fz values are immutable anyway, so this rarely surprises you — but it's
+the mechanism that lets two processes safely "share" a complex value.</p>
+
+<!-- ─────────────────────────────── 5. RECV ─────────────────────────────── -->
+<h2 id="recv">5. <code>receive</code> — taking it out</h2>
+
+<p>The simplest form is <code>receive()</code>: take the next message in
+my mailbox, block if there's nothing there yet, return whatever arrives.</p>
+
+<pre><span class="kw">fn</span> <span class="fn">main</span>() <span class="kw">do</span>
+  msg = <span class="fn">receive</span>()
+  <span class="fn">print</span>(msg)
+<span class="kw">end</span></pre>
+
+<p>If <code>main</code>'s mailbox is empty, the call blocks. As soon as
+<em>some</em> message arrives — from any sender, of any shape —
+<code>receive()</code> returns it.</p>
+
+<p>This is the right primitive when "I'm waiting for the next thing, and
+anything that comes is fine." Most real programs want more control:
+match against a shape, ignore messages that don't fit, time out if
+nothing relevant shows up. That's the next form.</p>
+
+<!-- ─────────────────────────────── 6. SELECTIVE ─────────────────────────────── -->
+<h2 id="selective">6. Selective receive — patterns and pins</h2>
+
+<p><code>receive do … end</code> is the workhorse. It takes a list of
+pattern → body clauses, scans the mailbox for the first message that
+matches some clause's pattern, removes that message from the mailbox,
+binds the pattern's variables, and runs the matching body.</p>
+
+<pre>val = <span class="kw">receive do</span>
+  {<span class="atm">:ok</span>, v}    -&gt; v
+  {<span class="atm">:error</span>, e} -&gt; <span class="fn">print</span>(e); <span class="atm">:failed</span>
+<span class="kw">end</span></pre>
+
+<p>If the mailbox holds <code>{:ok, 17}</code>, the first clause matches,
+<code>v</code> binds to <code>17</code>, and <code>val</code> becomes
+<code>17</code>. If the mailbox holds <code>{:error, :timeout}</code>,
+the second clause matches, <code>e</code> binds to <code>:timeout</code>,
+<code>print</code> fires, and <code>val</code> becomes <code>:failed</code>.</p>
+
+<p>If the mailbox holds <code>:something_else</code>, <em>neither clause
+matches</em>. The message stays in the mailbox; the process blocks. As
+soon as a matching message arrives (or as soon as the existing
+non-matching message gets paired up with a matching one), the receive
+resumes.</p>
+
+<h3>Patterns</h3>
+
+<p>The pattern language is the same one <code>case</code> uses:</p>
+
+<ul>
+  <li>Literals match themselves: <code>{:ping, <span class="num">3</span>}</code>
+      matches the tuple <code>{:ping, 3}</code> and nothing else.</li>
+  <li>Variables bind: <code>{:reply, value}</code> matches any 2-tuple
+      whose first element is <code>:reply</code>, binding the second
+      to <code>value</code>.</li>
+  <li>Wildcards skip: <code>{:reply, _}</code> matches but doesn't bind.</li>
+  <li>Nested patterns work: <code>{:user, %{name: n, age: a}}</code>
+      matches a user-tagged map with name and age.</li>
+</ul>
+
+<h3>Pinning — match the value, don't bind the name</h3>
+
+<p>Sometimes you want to match against the <em>current value</em> of a
+variable, not bind a fresh one. <code>^var</code> does that:</p>
+
+<pre><span class="kw">fn</span> <span class="fn">wait_for_reply</span>(my_ref) <span class="kw">do</span>
+  <span class="kw">receive do</span>
+    {<span class="atm">:reply</span>, ^my_ref, value} -&gt; value
+  <span class="kw">end</span>
+<span class="kw">end</span></pre>
+
+<p>Without the caret, <code>my_ref</code> in the pattern would <em>rebind</em>
+the name to whatever the second tuple element is — matching <em>any</em>
+reply, not just one tagged with <code>my_ref</code>'s value.</p>
+
+<p>With the caret, the pattern reads "match a 3-tuple whose first element
+is <code>:reply</code>, whose second element is <em>this specific</em>
+<code>my_ref</code> value, and whose third element is anything (bind to
+<code>value</code>)." Replies tagged with someone <em>else's</em> ref
+stay in the mailbox; ours gets pulled out.</p>
+
+<div class="aside">
+The pin operator is what makes request/reply protocols work. Without it,
+two outstanding requests would race to claim each other's replies. With
+it, each request matches only its own reply — even if the replies arrive
+in the opposite order.
+</div>
+
+<!-- ─────────────────────────────── 7. MAILBOX ─────────────────────────────── -->
+<h2 id="mailbox">7. The mailbox — why selective matters</h2>
+
+<p>The mailbox is a per-process FIFO queue. Messages go in the back in
+arrival order; <code>receive do … end</code> takes them out by pattern
+match, <em>not</em> by position. This is the crucial difference from
+a plain channel.</p>
+
+<p>Consider:</p>
+
+<pre><span class="com"># mailbox already holds: [{:other, ...}, {:reply, ref_a, ...}]</span>
+<span class="kw">receive do</span>
+  {<span class="atm">:reply</span>, ^ref_a, v} -&gt; v
+<span class="kw">end</span></pre>
+
+<p>The first message in the mailbox doesn't match. A FIFO channel would
+either dequeue it (losing it) or block (deadlocking). fz does neither:
+the matcher <em>scans</em> past the unmatched message, finds the second
+one, and pulls just that one out. The first message stays where it was.
+A later <code>receive</code> with a different pattern can pick it up.</p>
+
+<h3>Two paths a matching message can take</h3>
+
+<p>When a <code>receive do … end</code> runs:</p>
+
+<ol>
+  <li><strong>Initial scan.</strong> Walk the existing mailbox in arrival
+      order. If any message matches any clause, remove it, bind, run
+      the body. Done.</li>
+  <li><strong>Park.</strong> No existing message matches. Stash the
+      clause set, mark the process as waiting. The scheduler moves on
+      to other work.</li>
+  <li><strong>Sender-probe.</strong> When another process later
+      <code>send</code>s us a message, the runtime checks: does this
+      new message match the parked patterns? If yes, the parked process
+      wakes up with that message; the message never even enters the
+      mailbox. If no, the message lands in the mailbox normally and the
+      process stays parked.</li>
+</ol>
+
+<p>From your code's perspective the three paths are indistinguishable —
+"the matching message arrived, the body ran." The distinction matters
+for performance (sender-probe avoids a mailbox round-trip) but never
+for correctness.</p>
+
+<!-- ─────────────────────────────── 8. AFTER ─────────────────────────────── -->
+<h2 id="after">8. <code>after</code> — waking up when no message comes</h2>
+
+<p>Sometimes you don't want to wait forever. An <code>after</code> clause
+gives the receive a timeout:</p>
+
+<pre>result = <span class="kw">receive do</span>
+  {<span class="atm">:reply</span>, ^ref, v} -&gt; v
+<span class="kw">after</span>
+  <span class="num">500</span> -&gt; <span class="atm">:timeout</span>
+<span class="kw">end</span></pre>
+
+<p>If a matching message arrives within 500 milliseconds, the matching
+body runs. If 500ms pass with no match, the <code>after</code> body runs
+(<code>result</code> becomes <code>:timeout</code>). The receive always
+returns within roughly the deadline.</p>
+
+<h3>Timeout of zero</h3>
+
+<p><code>after 0 -&gt; …</code> means "look at the mailbox right now, and
+if nothing matches, take the after path immediately." No parking, no
+waiting. Useful for polling-style code, or "drain whatever's there but
+don't block."</p>
+
+<h3>What the timeout doesn't do</h3>
+
+<p>It does not cancel any outstanding work the recipient might be doing
+elsewhere. If you sent a request to a server with <code>send(srv, ...)</code>
+and the server takes too long, the after fires and you get
+<code>:timeout</code> — but the server is still chugging along, and its
+late reply will eventually land in your mailbox. Your next
+<code>receive</code> needs a pattern that either matches the late reply
+(so you can discard it) or pins against a fresh ref so old replies
+can't be mistaken for new ones.</p>
+
+<!-- ─────────────────────────────── 9. EXAMPLE ─────────────────────────────── -->
+<h2 id="example">9. A complete example: a tiny request/reply server</h2>
+
+<p>Everything we've covered, in one fixture:</p>
+
+<pre><span class="kw">fn</span> <span class="fn">handle_get</span>(ref, from, key) <span class="kw">do</span>
+  <span class="fn">send</span>(from, {<span class="atm">:reply</span>, ref, key})
+  <span class="fn">server</span>()
+<span class="kw">end</span>
+
+<span class="kw">fn</span> <span class="fn">server</span>() <span class="kw">do</span>
+  <span class="kw">receive do</span>
+    {<span class="atm">:get</span>, ref, from, key} -&gt; <span class="fn">handle_get</span>(ref, from, key)
+    {<span class="atm">:stop</span>}                 -&gt; <span class="atm">:nil</span>
+  <span class="kw">end</span>
+<span class="kw">end</span>
+
+<span class="kw">fn</span> <span class="fn">main</span>() <span class="kw">do</span>
+  s = <span class="fn">spawn</span>(<span class="fn">server</span>)
+  ref_a = <span class="fn">make_ref</span>()
+  ref_b = <span class="fn">make_ref</span>()
+  me = <span class="fn">self</span>()
+
+  <span class="com"># Server processes in arrival order, so ref_a's reply arrives first.</span>
+  <span class="com"># But we want to receive ref_b's reply first.</span>
+  <span class="fn">send</span>(s, {<span class="atm">:get</span>, ref_a, me, <span class="atm">:k_a</span>})
+  <span class="fn">send</span>(s, {<span class="atm">:get</span>, ref_b, me, <span class="atm">:k_b</span>})
+
+  val_b = <span class="kw">receive do</span>
+    {<span class="atm">:reply</span>, ^ref_b, v} -&gt; v
+  <span class="kw">after</span>
+    <span class="num">500</span> -&gt; <span class="atm">:timeout</span>
+  <span class="kw">end</span>
+
+  <span class="com"># ref_a's reply has been sitting in the mailbox the whole time.</span>
+  val_a = <span class="kw">receive do</span>
+    {<span class="atm">:reply</span>, ^ref_a, v} -&gt; v
+  <span class="kw">end</span>
+
+  <span class="fn">print</span>({val_a, val_b})
+<span class="kw">end</span></pre>
+
+<p>Output:</p>
+
+<pre>{<span class="atm">:k_a</span>, <span class="atm">:k_b</span>}</pre>
+
+<p>What's interesting here — the things this example demonstrates:</p>
+
+<ul>
+  <li><strong>Server pattern.</strong> A long-lived process that loops
+      via tail recursion (<code>handle_get</code> calls <code>server</code>
+      at the end), pulling one request from its mailbox per iteration.
+      <code>{:stop}</code> is a clean shutdown — the body is
+      <code>:nil</code>, the function returns, the process exits.</li>
+  <li><strong>Reply correlation with refs.</strong>
+      <code>make_ref()</code> mints a fresh, globally-unique value. The
+      client puts it in the request; the server echoes it in the reply.
+      The client pins on it to claim its own reply.</li>
+  <li><strong>Out-of-order arrival is fine.</strong> The server replies
+      to <code>ref_a</code> first (since that was the first request),
+      but the client's first receive only matches <code>ref_b</code>.
+      The pinned pattern scans past <code>ref_a</code>'s reply and waits
+      for <code>ref_b</code>'s. When <code>ref_b</code>'s arrives, it
+      gets pulled. The second receive then finds <code>ref_a</code>'s
+      sitting in the mailbox and pulls it immediately — no waiting.</li>
+  <li><strong>Timeout as a safety net.</strong> The
+      <code>after 500</code> on the first receive means the client can't
+      hang forever if the server dies. The second receive trusts
+      <code>ref_a</code>'s reply is there (it was queued before the
+      first send went out).</li>
+</ul>
+
+<!-- ─────────────────────────────── 10. FOOTGUNS ─────────────────────────────── -->
+<h2 id="footguns">10. Footguns and the contract</h2>
+
+<div class="box yellow">
+<strong>A process that doesn't <code>receive</code> can't be talked to.</strong>
+You can <code>send</code> to it, but the message just piles up in the
+mailbox until the process exits, at which point everything is dropped.
+A "server" without a <code>receive</code> loop is a one-shot fire-and-forget.
+</div>
+
+<h3>Things to remember</h3>
+
+<ul>
+  <li><strong>Mailboxes grow.</strong> If senders send faster than a
+      receiver reads, the mailbox grows unbounded. There's no built-in
+      backpressure; design your protocol so senders block on a reply
+      (request/reply) or rate-limit themselves.</li>
+  <li><strong>Selective receive can pile up messages you'll never
+      consume.</strong> If your patterns only match certain shapes and
+      other shapes keep arriving, those other shapes sit in the mailbox
+      forever, slowing every future scan. A wildcard
+      <code>_ -&gt; …</code> clause that drains junk is sometimes the
+      right answer.</li>
+  <li><strong>Pids can outlive their processes.</strong> A pid is just
+      an integer. If you hold one for a process that has exited,
+      <code>send</code>ing to it is silently a no-op — the message goes
+      nowhere. Don't treat pid liveness as ambient truth; design
+      protocols around explicit acks.</li>
+  <li><strong>Don't <code>spawn</code> for trivial work.</strong>
+      Processes are cheap, but they're not free. A whole spawn-and-
+      receive round-trip just to compute <code>x + 1</code> burns more
+      than it saves. Reach for processes when you need concurrency
+      (overlap I/O with work, isolate failures, model independent
+      entities) — not as a substitute for function calls.</li>
+  <li><strong>Order is guaranteed pairwise, not globally.</strong> If
+      <code>A</code> sends <code>m1</code> then <code>m2</code> to
+      <code>B</code>, <code>B</code> sees <code>m1</code> before
+      <code>m2</code>. If <code>A</code> sends <code>m1</code> and
+      <code>C</code> sends <code>m2</code>, the relative order of
+      <code>m1</code> and <code>m2</code> in <code>B</code>'s mailbox
+      is whatever the scheduler decided.</li>
+  <li><strong>Captured values are snapshots.</strong> A lambda passed to
+      <code>spawn</code> sees the captured values <em>as they were at
+      spawn time</em>. The parent rebinding the name later doesn't
+      reach into the child.</li>
+</ul>
+
+<h3>What processes are <em>not</em></h3>
+
+<ul>
+  <li>They're not OS threads. fz runs many processes on a small number
+      of native worker threads (currently 1). A process that blocks on
+      <code>receive</code> yields its worker; one that loops without
+      yielding will hog it. Pure-fz code yields automatically at
+      function-call and receive boundaries — only an extern that blocks
+      on its own (a long <code>read</code>, say) ties up the worker.</li>
+  <li>They're not channels. The mailbox is per-recipient, not
+      per-conversation. If you want a typed channel between two
+      processes, build it on top: agree on a tuple shape, use refs to
+      correlate.</li>
+  <li>They're not lightweight green threads in the Go sense. There's no
+      shared-memory primitive, no mutex, no atomic. Everything goes
+      through messages.</li>
+</ul>
+
+<div class="box green">
+<strong>The contract.</strong> Processes don't share memory. They
+exchange messages, which are deep-copied. <code>receive</code> is
+selective by pattern, not positional. Block on receive when you need to
+wait, time out with <code>after</code> when you can't wait forever, pin
+on a ref when you need to claim a specific reply. Trust the scheduler
+to give every ready process a chance — and trust that no message you
+sent is going anywhere except the recipient's mailbox.
+</div>
+
+</body>
+</html>
