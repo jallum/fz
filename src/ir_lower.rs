@@ -401,11 +401,12 @@ impl LowerCtx {
 
     /// fz-eol — get-or-build a top-level fn that forwards its args to the
     /// named extern. Used by `&libc::close/1` (and any `&<extern>/<arity>`)
-    /// so the resulting closure has a real `FnId` whose IR carries the
-    /// canonical `Prim::Extern` for `resolve_dtor_from_closure` to find,
-    /// and — crucially — *zero captures* so the AOT static dtor table
-    /// can resolve it. See [[fz-9rs]] for the underlying lifter limitation
-    /// that prevents the simpler "desugar to lambda" approach.
+    /// so the resulting closure has a real `FnId` and *zero captures* —
+    /// `&name/arity` requires a top-level fn to point at, and only zero-cap
+    /// closure targets get static-singleton allocation. The wrapper body
+    /// is just `Prim::Extern(eid, params); Return`. See [[fz-9rs]] for the
+    /// underlying lifter limitation that prevents the simpler "desugar to
+    /// lambda" approach.
     fn ensure_extern_wrapper(&mut self, eid: ExternId) -> FnId {
         if let Some(id) = self.extern_wrappers.get(&eid) {
             return *id;

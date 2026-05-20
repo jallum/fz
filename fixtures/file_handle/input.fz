@@ -1,20 +1,20 @@
 extern "C" fn libc::creat(path :: cstring, mode :: integer) :: integer
 extern "C" fn libc::write(integer, binary, integer) :: integer
+extern "C" fn libc::close(integer) :: integer
 extern "C" fn libc::unlink(cstring) :: integer
 
-# Dtor lives in the runtime crate (fz-swt.13). It fcntl-verifies the fd is
-# open, calls libc::close, fcntl-verifies the fd is now closed, and prints
-# `dtor:closed`. We reuse it here instead of `&libc::close/1` because the
-# runtime's resource hook resolves the dtor by extracting the closure's
-# canonical Prim::Extern and invoking that symbol directly — anything else
-# in the wrapper's body is never executed. The only way to *observe* the
-# dtor fired is to have the dtor itself print.
-extern "C" fn fz_test_close_fd(any) :: nil
+# Dtor body runs as real fz code at task-exit (fz-4mk). We can call
+# libc::close directly AND print so the test can observe the dtor fired
+# — the closure body is no longer extracted-then-discarded.
+fn close_observable(fd) do
+  libc::close(fd)
+  print(:dtor_closed)
+end
 
 defmodule FileHandle do
   @type t :: opaque resource(integer)
 
-  fn from_fd(fd), do: make_resource(fd, &fz_test_close_fd/1)
+  fn from_fd(fd), do: make_resource(fd, &close_observable/1)
 end
 
 fn main() do

@@ -174,58 +174,6 @@ pub unsafe extern "C" fn fz_test_open_tmpfile() -> u64 {
     fd as u64
 }
 
-/// fz-swt.13 — resource dtor for fds produced by `fz_test_open_tmpfile`.
-/// Verifies the fd is open *before* the close (catches double-close /
-/// stale payload), closes it, and re-checks with `fcntl` that the
-/// kernel now reports `EBADF`. Prints exactly one line:
-///
-///   * `dtor:closed` — every check passed.
-///   * `dtor:failed(<reason>)` — at least one check failed; the reason
-///     identifies which kernel call disagreed with us so a regression
-///     surfaces in the golden diff rather than silently passing.
-///
-/// # Safety
-/// `payload` must be the tagged bits of an `FzValue::Int` holding a
-/// fd previously returned by `fz_test_open_tmpfile` (or any other
-/// open-for-close fd). Misuse prints a diagnostic; it does not crash.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn fz_test_close_fd(payload: u64) {
-    let fd = match crate::fz_value::FzValue(payload).unbox_int() {
-        Some(n) => n as libc::c_int,
-        None => {
-            println!("dtor:failed(payload-not-int)");
-            return;
-        }
-    };
-    // 1. Must be open before we close it.
-    let pre = unsafe { libc::fcntl(fd, libc::F_GETFD) };
-    if pre == -1 {
-        println!("dtor:failed(fd-already-closed)");
-        return;
-    }
-    // 2. close() must succeed.
-    let rc = unsafe { libc::close(fd) };
-    if rc != 0 {
-        println!(
-            "dtor:failed(close-rc={},errno={})",
-            rc,
-            std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
-        );
-        return;
-    }
-    // 3. Kernel must agree the fd is now closed.
-    let post = unsafe { libc::fcntl(fd, libc::F_GETFD) };
-    let post_errno = std::io::Error::last_os_error().raw_os_error();
-    if post != -1 || post_errno != Some(libc::EBADF) {
-        println!(
-            "dtor:failed(fd-still-open post={},errno={:?})",
-            post, post_errno
-        );
-        return;
-    }
-    println!("dtor:closed");
-}
-
 // ===== Allocation + refcount primitives ====================================
 
 /// Allocate a fresh `Resource` with refcount = 1 carrying `payload` and

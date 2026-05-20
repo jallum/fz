@@ -923,78 +923,31 @@ fn eval_binop(op: BinOp, a: FzValue, b: FzValue) -> Result<FzValue, String> {
     }
 }
 
-/// fz-swt.7 / fz-swt.10 — given a closure FzValue produced by
-/// `&name/arity`, resolve the C-ABI fn pointer to install as the
-/// resource's dtor.
-///
-/// Both interp and JIT/AOT closures store the wrapper fn's `FnId` in the
-/// `_reserved` field of the on-heap `HeapKind::Closure` header. The
-/// closure's `+16` slot holds different things depending on the leg
-/// (interp: null; JIT/AOT: the body's func_addr in closure-target sig,
-/// which is NOT a C-ABI `fn(u64)` and cannot be called directly), so we
-/// uniformly ignore `+16` and resolve the dtor by walking the wrapper
-/// fn's IR to find its underlying `Prim::Extern(eid, _)` call. That
-/// extern's symbol is then resolved through the same machinery
-/// `call_extern` uses below.
-///
-/// Pattern recognised: any block in the fn body that contains
-/// `Let(_, Prim::Extern(eid, _))` — i.e., the canonical
-/// `fn wrap(x), do: some_extern(x)` shape (and any single-extern
-/// wrapper whose CPS lowering produces an Extern stmt anywhere). Richer
-/// dtor wrappers (multiple externs, branching) require evaluating the
-/// closure body, which is out of scope for v0; the contract is "fz-side
-/// dtor must be a thin wrapper around a single C extern."
-pub(crate) fn resolve_dtor_from_closure(
-    module: &Module,
-    closure: FzValue,
-) -> Result<unsafe extern "C" fn(u64), String> {
+/// fz-4mk — shared work behind both the interp `fz_make_resource` BIF and
+/// the JIT/AOT `MakeResourceHook` thunk: validate the dtor closure, then
+/// allocate the off-heap `Resource` + on-heap stub on the current process
+/// heap. The dtor body fires as real fz code at scheduler-boundary drain
+/// via `fz_drain_dtor_entry` (JIT/AOT) or `run_fn` (interp); the
+/// Resource's C-side dtor slot is the no-op so refcount→0 paths that
+/// bypass the drain don't double-fire.
+pub(crate) fn make_resource_in_current_process(
+    _module: &Module,
+    payload: u64,
+    dtor_closure: FzValue,
+) -> Result<FzValue, String> {
     use fz_runtime::fz_value::HeapKind;
-    let p = closure
+    let p = dtor_closure
         .unbox_ptr()
         .ok_or_else(|| "make_resource: dtor arg is not a heap value".to_string())?;
     let header = unsafe { &*p };
     if HeapKind::from_u16(header.kind) != Some(HeapKind::Closure) {
         return Err("make_resource: dtor arg is not a closure".into());
     }
-    let fn_id = crate::fz_ir::FnId(header._reserved);
-    let fnir = module.fn_by_id(fn_id);
-    let eid = fnir.blocks.iter().find_map(|b| {
-        b.stmts.iter().find_map(|s| match s {
-            Stmt::Let(_, Prim::Extern(eid, _)) => Some(*eid),
-            _ => None,
-        })
-    });
-    let eid = eid.ok_or_else(|| {
-        format!(
-            "make_resource: dtor closure for `{}` has no Prim::Extern in body",
-            fnir.name
-        )
-    })?;
-    let decl = module.extern_by_id(eid);
-    let fp = resolve_symbol(&decl.symbol)?;
-    // SAFETY: resolved fn pointer for a C-ABI extern declared in the
-    // module; ExternTy constraints guarantee u64-wide scalar params.
-    let f: unsafe extern "C" fn(u64) = unsafe { std::mem::transmute(fp) };
-    Ok(f)
-}
-
-/// fz-swt.10 — shared work behind both the interp `fz_make_resource` BIF
-/// and the JIT/AOT `MakeResourceHook` thunk: resolve the dtor, allocate
-/// an off-heap `Resource` + on-heap stub on the current process heap,
-/// return the FzValue bits of the stub.
-pub(crate) fn make_resource_in_current_process(
-    module: &Module,
-    payload: u64,
-    dtor_closure: FzValue,
-) -> Result<FzValue, String> {
-    let dtor = resolve_dtor_from_closure(module, dtor_closure)?;
-    let handle = fz_runtime::resource::ResourceHandle::new(payload, dtor);
+    let handle = fz_runtime::resource::ResourceHandle::new(
+        payload,
+        fz_runtime::resource::fz_resource_destructor_noop,
+    );
     let heap = &mut fz_runtime::process::current_process().heap;
-    // fz-4mk — also stash the closure value in the stub so phase 2 can
-    // dispatch the dtor body as fz code at scheduler boundaries. Currently
-    // unused for dispatch — the extracted C fn pointer above is still what
-    // fires at refcount→0 — but Cheney already traces this field so the
-    // closure survives GC for when phase 2 wires up the deferred drain.
     let stub = fz_runtime::resource::alloc_resource(heap, handle, dtor_closure);
     Ok(FzValue::from_ptr(stub.as_raw()))
 }
@@ -1152,11 +1105,10 @@ fn resolve_symbol(name: &str) -> Result<*const (), String> {
         "fz_resource_test_print_dtor" => {
             Some(fz_runtime::resource::fz_resource_test_print_dtor as *const ())
         }
-        // fz-swt.13 — File-module test helpers. Same rationale as the
-        // print-dtor binding above: keep the interp leg of the fixture
+        // fz-swt.13 — tmpfile helper for file fixtures. Same rationale as
+        // the print-dtor binding above: keep the interp leg of the fixture
         // matrix self-contained, no dlsym dependence.
         "fz_test_open_tmpfile" => Some(fz_runtime::resource::fz_test_open_tmpfile as *const ()),
-        "fz_test_close_fd" => Some(fz_runtime::resource::fz_test_close_fd as *const ()),
         _ => None,
     };
     if let Some(fp) = native {

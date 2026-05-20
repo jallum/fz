@@ -15,6 +15,22 @@
 ;              callee_key=[:before]
 
 ; spec print(1) #fn=0
+;   key:    [:dtor_closed]
+;   return: nil
+;   vars:
+;     Var(0) :: :dtor_closed
+;     Var(1) :: :function_clause
+;     Var(2) :: false
+;   exits:
+;     blk0 Goto blk2()
+;     blk1 Halt Var(1)      :: :function_clause
+;     blk2 If Var(2) ? blk4 : blk3
+;     blk3 TailCall fn_clause_1#9(Var(0))
+;              callee_key=[:dtor_closed]
+;     blk4 TailCall fn_clause_0#8(Var(0))
+;              callee_key=[:dtor_closed]
+
+; spec print(1) #fn=0
 ;   key:    [:opened]
 ;   return: nil
 ;   vars:
@@ -63,6 +79,15 @@
 ;     blk0 Return Var(1)    :: nil
 
 ; spec fn_clause_1(1) #fn=9
+;   key:    [:dtor_closed]
+;   return: nil
+;   vars:
+;     Var(0) :: :dtor_closed
+;     Var(1) :: nil
+;   exits:
+;     blk0 Return Var(1)    :: nil
+
+; spec fn_clause_1(1) #fn=9
 ;   key:    [:opened]
 ;   return: nil
 ;   vars:
@@ -77,9 +102,11 @@
 ;   vars:
 ;     Var(0) :: any
 ;     Var(1) :: :match_error
-;     Var(2) :: nil
+;     Var(2) :: int
+;     Var(3) :: :dtor_closed
 ;   exits:
-;     blk0 Return Var(2)    :: nil
+;     blk0 TailCall print#0(Var(3))
+;              callee_key=[:dtor_closed]
 ;     blk1 Halt Var(1)      :: :match_error
 
 ; spec File.wrap_fd(1) #fn=13

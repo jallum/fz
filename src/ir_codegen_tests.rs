@@ -1603,8 +1603,9 @@ end
         );
         assert_eq!(
             tests_support_dtor_last_payload(),
-            fz_runtime::fz_value::FzValue::from_int(42).0,
-            "dtor receives the raw FzValue bits of the boxed payload 42",
+            42,
+            "fz-4mk: dtor body runs as fz code; `:: integer` marshal class unboxes \
+             before the C extern, so the recorded payload is the raw int 42",
         );
     }
 
@@ -1633,10 +1634,7 @@ end
             1,
             "three JIT-bound aliases of one resource must still produce one dtor call",
         );
-        assert_eq!(
-            tests_support_dtor_last_payload(),
-            fz_runtime::fz_value::FzValue::from_int(7).0,
-        );
+        assert_eq!(tests_support_dtor_last_payload(), 7);
     }
 
     /// fz-swt.10 acceptance — two distinct `make_resource` calls each
