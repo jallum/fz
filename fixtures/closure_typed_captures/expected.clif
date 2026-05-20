@@ -2,17 +2,17 @@
     ;   @spec   main() -> nil
     ;   @key    []
     ;   @abi    () -> Tagged
-function u0:0(i64) -> i64 tail {
+function @fz_fn_24(i64) -> i64 tail {
     sig0 = (i32, i32, i32) -> i64 system_v
     sig1 = (i64, i64, i64) -> i64 tail
     sig2 = (i64, i64, i64) -> i64 tail
     sig3 = (i32, i32, i32) -> i64 system_v
     sig4 = (i64, i64) -> i64 tail
-    fn0 = u0:29 sig0
-    fn1 = colocated u0:45 sig1
-    fn2 = colocated u0:46 sig2
-    fn3 = u0:29 sig3
-    fn4 = colocated u0:48 sig4
+    fn0 = @fz_alloc_closure sig0
+    fn1 = colocated @fz_fn_25 sig1
+    fn2 = colocated @fz_fn_26 sig2
+    fn3 = @fz_alloc_closure sig3
+    fn4 = colocated @fz_fn_28 sig4
 
 block0(v0: i64):
     v1 = iconst.i64 10                  ; @5:23
@@ -44,7 +44,7 @@ block0(v0: i64):
     ;   @spec   lambda_25(any, any, any) -> int | float
     ;   @key    [any, any, any]
     ;   @abi    (Tagged, Tagged, Tagged) -> Tagged
-function u0:0(i64, i64, i64) -> i64 tail {
+function @fz_fn_25(i64, i64, i64) -> i64 tail {
     sig0 = (i64) -> f64 system_v
     sig1 = (i64) -> i64 system_v
     sig2 = (f64, f64) -> f64 system_v
@@ -52,12 +52,12 @@ function u0:0(i64, i64, i64) -> i64 tail {
     sig4 = (i64) -> i64 system_v
     sig5 = (f64, f64) -> f64 system_v
     sig6 = (i64, i64) -> i64 tail
-    fn0 = u0:23 sig0
-    fn1 = u0:22 sig1
-    fn2 = u0:24 sig2
-    fn3 = u0:23 sig3
-    fn4 = u0:22 sig4
-    fn5 = u0:24 sig5
+    fn0 = @fz_promote_f64 sig0
+    fn1 = @fz_alloc_float sig1
+    fn2 = @fz_fmod sig2
+    fn3 = @fz_promote_f64 sig3
+    fn4 = @fz_alloc_float sig4
+    fn5 = @fz_fmod sig5
 
     block0(v0: i64, v1: i64, v2: i64):    ;; v0 :: any
     v3 = load.i64 notrap aligned v1+24    ;; v3 :: any
@@ -118,9 +118,9 @@ block5:
     ;   @spec   apply1(&fn25[10, 20]:(α1600) -> α1663, 12) -> int
     ;   @key    [&fn25[10, 20]:(α1600) -> α1663, 12]
     ;   @abi    (Tagged, RawInt) -> Tagged
-function u0:0(i64, i64, i64) -> i64 tail {
+function @fz_fn_26(i64, i64, i64) -> i64 tail {
     sig0 = (i64, i64, i64) -> i64 tail
-    fn0 = colocated u0:47 sig0
+    fn0 = colocated @fz_fn_27 sig0
 
     block0(v0: i64, v1: i64, v2: i64):    ;; v0 :: &fn25[10, 20]:(α1600) -> α1663, v1 :: 12
     return_call fn0(v1, v0, v2)         ; @2:22
@@ -130,7 +130,7 @@ function u0:0(i64, i64, i64) -> i64 tail {
     ;   @spec   lambda_25(10, 20, 12) -> int
     ;   @key    [10, 20, 12]
     ;   @abi    (RawInt, RawInt, RawInt) -> Tagged
-function u0:0(i64, i64, i64) -> i64 tail {
+function @fz_fn_27(i64, i64, i64) -> i64 tail {
     sig0 = (i64, i64) -> i64 tail
 
     block0(v0: i64, v1: i64, v2: i64):    ;; v0 :: 12
@@ -150,10 +150,10 @@ function u0:0(i64, i64, i64) -> i64 tail {
     ;   @spec   k_27(int) -> nil
     ;   @key    [int]
     ;   @abi    (Tagged) -> Tagged
-function u0:0(i64, i64) -> i64 tail {
+function @fz_fn_28(i64, i64) -> i64 tail {
     sig0 = (i64) system_v
     sig1 = (i64, i64) -> i64 tail
-    fn0 = u0:49 sig0
+    fn0 = @fz_print_i64 sig0
 
     block0(v0: i64, v1: i64):    ;; v0 :: int
     v2 = sshr_imm v0, 3

@@ -2,12 +2,12 @@
     ;   @spec   main() -> nil
     ;   @key    []
     ;   @abi    () -> Tagged
-function u0:0(i64) -> i64 tail {
+function @fz_fn_23(i64) -> i64 tail {
     sig0 = (i64) system_v
     sig1 = (i64) -> i64 system_v
     sig2 = (i64, i64) -> i64 tail
-    fn0 = u0:45 sig0
-    fn1 = u0:22 sig1
+    fn0 = @fz_print_value sig0
+    fn1 = @fz_alloc_float sig1
 
 block0(v0: i64):
     v1 = f64const 0x1.8000000000000p0   ; @6:14

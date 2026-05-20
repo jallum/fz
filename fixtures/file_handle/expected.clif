@@ -2,12 +2,12 @@
     ;   @spec   close_observable(any) -> nil
     ;   @key    [any]
     ;   @abi    (Tagged) -> Tagged
-function u0:0(i64, i64, i64) -> i64 tail {
+function @fz_fn_22(i64, i64, i64) -> i64 tail {
     sig0 = (i64) -> i64 system_v
     sig1 = (i64) system_v
     sig2 = (i64, i64) -> i64 tail
-    fn0 = u0:52 sig0
-    fn1 = u0:53 sig1
+    fn0 = @close sig0
+    fn1 = @fz_print_value sig1
 
     block0(v0: i64, v1: i64, v2: i64):    ;; v0 :: any
     v3 = sshr_imm v0, 3                 ; @10:3
@@ -25,18 +25,18 @@ function u0:0(i64, i64, i64) -> i64 tail {
     ;   @spec   main() -> nil
     ;   @key    []
     ;   @abi    () -> Tagged
-function u0:0(i64) -> i64 tail {
+function @fz_fn_24(i64) -> i64 tail {
     gv0 = symbol colocated userextname0
     sig0 = (i64, i64, i64) -> i64 system_v
     sig1 = (i64, i64) -> i64 system_v
     sig2 = (i64) -> i64 system_v
     sig3 = (i64) system_v
     sig4 = (i64, i64, i64, i64) -> i64 tail
-    fn0 = u0:10 sig0
-    fn1 = u0:54 sig1
-    fn2 = u0:14 sig2
-    fn3 = u0:53 sig3
-    fn4 = colocated u0:47 sig4
+    fn0 = @fz_alloc_bitstring_const sig0
+    fn1 = @creat sig1
+    fn2 = @fz_binary_as_cstring sig2
+    fn3 = @fz_print_value sig3
+    fn4 = colocated @fz_fn_26 sig4
 
 block0(v0: i64):
     v1 = symbol_value.i64 gv0           ; @22:10
@@ -59,18 +59,18 @@ block0(v0: i64):
     ;   @spec   k_25(nil, binary, int) -> nil
     ;   @key    [nil, binary, int]
     ;   @abi    (Tagged, Tagged, RawInt) -> Tagged
-function u0:0(i64, i64, i64, i64) -> i64 tail {
+function @fz_fn_26(i64, i64, i64, i64) -> i64 tail {
     gv0 = symbol colocated userextname0
     sig0 = (i64, i64, i64) -> i64 system_v
     sig1 = (i64, i64, i64) -> i64 system_v
     sig2 = (i64) -> i64 system_v
     sig3 = (i64) system_v
     sig4 = (i64, i64, i64, i64, i64) -> i64 tail
-    fn0 = u0:10 sig0
-    fn1 = u0:55 sig1
-    fn2 = u0:13 sig2
-    fn3 = u0:56 sig3
-    fn4 = colocated u0:51 sig4
+    fn0 = @fz_alloc_bitstring_const sig0
+    fn1 = @write sig1
+    fn2 = @fz_binary_as_ptr sig2
+    fn3 = @fz_print_i64 sig3
+    fn4 = colocated @fz_fn_30 sig4
 
     block0(v0: i64, v1: i64, v2: i64, v3: i64):    ;; v0 :: nil, v1 :: binary, v2 :: int
     v4 = symbol_value.i64 gv0           ; @26:25
@@ -93,18 +93,18 @@ function u0:0(i64, i64, i64, i64) -> i64 tail {
     ;   @spec   k_26(nil, binary, int, int) -> nil
     ;   @key    [nil, binary, int, int]
     ;   @abi    (Tagged, Tagged, RawInt, RawInt) -> Tagged
-function u0:0(i64, i64, i64, i64, i64) -> i64 tail {
+function @fz_fn_30(i64, i64, i64, i64, i64) -> i64 tail {
     sig0 = (i32) -> i64 system_v
     sig1 = (i64, i64) -> i64 system_v
     sig2 = (i64) -> i64 system_v
     sig3 = (i64) -> i64 system_v
     sig4 = (i64) system_v
     sig5 = (i64, i64) -> i64 tail
-    fn0 = u0:35 sig0
-    fn1 = u0:57 sig1
-    fn2 = u0:58 sig2
-    fn3 = u0:14 sig3
-    fn4 = u0:53 sig4
+    fn0 = @fz_get_static_closure sig0
+    fn1 = @fz_make_resource sig1
+    fn2 = @unlink sig2
+    fn3 = @fz_binary_as_cstring sig3
+    fn4 = @fz_print_value sig4
 
     block0(v0: i64, v1: i64, v2: i64, v3: i64, v4: i64):    ;; v0 :: nil, v1 :: binary, v2 :: int, v3 :: int
     v5 = iconst.i32 22

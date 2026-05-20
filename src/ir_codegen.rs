@@ -595,6 +595,7 @@ fn build_typer_header(
 fn annotate_clif_dump(
     raw: &str,
     value_descrs: &HashMap<u32, crate::types::Descr>,
+    func_names: &HashMap<u32, String>,
     header: &str,
 ) -> String {
     use std::fmt::Write as _;
@@ -604,10 +605,11 @@ fn annotate_clif_dump(
         out.push('\n');
     }
     for line in raw.lines() {
-        let trimmed = line.trim_start();
+        let resolved = resolve_user_func_refs(line, func_names);
+        let trimmed = resolved.trim_start();
         // Block header: `blockN(v0: ty, v1: ty, ...):`
         if trimmed.starts_with("block") && trimmed.contains('(') && trimmed.ends_with(':') {
-            let _ = writeln!(out, "{}", annotate_block_header(line, value_descrs));
+            let _ = writeln!(out, "{}", annotate_block_header(&resolved, value_descrs));
             continue;
         }
         // Value definition: `    vN = <op> ...`
@@ -618,11 +620,63 @@ fn annotate_clif_dump(
             && rest.split_once(' ').map(|x| x.1.starts_with('=')).unwrap_or(false)
             && let Some(d) = value_descrs.get(&id)
         {
-            let _ = writeln!(out, "{}    ;; v{} :: {}", line.trim_end(), id, d);
+            let _ = writeln!(out, "{}    ;; v{} :: {}", resolved.trim_end(), id, d);
             continue;
         }
-        let _ = writeln!(out, "{}", line);
+        let _ = writeln!(out, "{}", resolved);
     }
+    out
+}
+
+// fz-323 — snapshot every declared function's linkage name keyed by FuncId.
+// Used by the CLIF dumper to swap `u0:N` numeric refs for `@<name>` symbolic
+// refs that are stable across additions of unrelated runtime helpers.
+fn snapshot_func_names(decls: &cranelift_module::ModuleDeclarations) -> HashMap<u32, String> {
+    decls
+        .get_functions()
+        .map(|(id, d)| (id.as_u32(), d.linkage_name(id).into_owned()))
+        .collect()
+}
+
+// fz-323 — rewrite Cranelift's `u0:N` external-name tokens to `@<linkage_name>`.
+// The number N is a `cranelift_module::FuncId` assigned in module-declaration
+// order, so adding any new helper upstream shifts every later N and creates
+// trivial merge conflicts in CLIF goldens. The linkage name was passed to
+// `declare_function` and is source-derived (`fz_alloc_list_cons`, `fz_fn_17`,
+// `fz_resume`, …), so it survives unrelated growth in the module.
+fn resolve_user_func_refs(line: &str, func_names: &HashMap<u32, String>) -> String {
+    if !line.contains("u0:") {
+        return line.to_string();
+    }
+    let bytes = line.as_bytes();
+    let mut out = String::with_capacity(line.len());
+    let mut i = 0;
+    let mut copy_from = 0;
+    while i + 3 < bytes.len() {
+        let at_boundary = i == 0 || {
+            let p = bytes[i - 1];
+            !(p.is_ascii_alphanumeric() || p == b'_')
+        };
+        if at_boundary && &bytes[i..i + 3] == b"u0:" && bytes[i + 3].is_ascii_digit() {
+            let mut j = i + 3;
+            while j < bytes.len() && bytes[j].is_ascii_digit() {
+                j += 1;
+            }
+            let n: u32 = line[i + 3..j].parse().expect("u0:<digits> already matched");
+            if let Some(name) = func_names.get(&n) {
+                out.push_str(&line[copy_from..i]);
+                out.push('@');
+                out.push_str(name);
+                i = j;
+                copy_from = j;
+                continue;
+            }
+            i = j;
+            continue;
+        }
+        i += 1;
+    }
+    out.push_str(&line[copy_from..]);
     out
 }
 
@@ -3330,6 +3384,11 @@ pub fn compile_with_backend<B: Backend>(
         // decided, not just what was lowered.
         IR_TEXT_RECORD.with(|c| {
             if let Some(v) = c.borrow_mut().as_mut() {
+                // fz-323 — pin func.name to the real FuncId so the banner
+                // `function u0:N(...)` carries the same id space as body
+                // refs; cranelift_module's define_function does this
+                // assignment anyway, we just need it before display().
+                ctx.func.name = ir::UserFuncName::user(0, func_id.as_u32());
                 let raw = ctx.func.display().to_string();
                 let header = build_typer_header(
                     f,
@@ -3339,13 +3398,14 @@ pub fn compile_with_backend<B: Backend>(
                     &param_reprs[sid],
                     return_reprs[sid],
                 );
+                let func_names = snapshot_func_names(backend.module_mut().declarations());
                 let annotated = VALUE_DESCR_RECORD.with(|vd| {
                     let b = vd.borrow();
                     match b.as_ref() {
-                        Some(map) => annotate_clif_dump(&raw, map, &header),
+                        Some(map) => annotate_clif_dump(&raw, map, &func_names, &header),
                         None => {
                             let empty = HashMap::new();
-                            annotate_clif_dump(&raw, &empty, &header)
+                            annotate_clif_dump(&raw, &empty, &func_names, &header)
                         }
                     }
                 });

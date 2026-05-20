@@ -2,10 +2,10 @@
     ;   @spec   dwrap(any) -> nil
     ;   @key    [any]
     ;   @abi    (Tagged) -> Tagged
-function u0:0(i64, i64, i64) -> i64 tail {
+function @fz_fn_23(i64, i64, i64) -> i64 tail {
     sig0 = (i64) system_v
     sig1 = (i64, i64) -> i64 tail
-    fn0 = u0:48 sig0
+    fn0 = @fz_resource_test_print_dtor sig0
 
     block0(v0: i64, v1: i64, v2: i64):    ;; v0 :: any
     call fn0(v0)                        ; @9:18
@@ -18,7 +18,7 @@ function u0:0(i64, i64, i64) -> i64 tail {
     ;   @spec   main() -> nil
     ;   @key    []
     ;   @abi    () -> Tagged
-function u0:0(i64) -> i64 tail {
+function @fz_fn_24(i64) -> i64 tail {
     sig0 = (i32) -> i64 system_v
     sig1 = (i64, i64) -> i64 system_v
     sig2 = (i32) -> i64 system_v
@@ -28,15 +28,15 @@ function u0:0(i64) -> i64 tail {
     sig6 = (i64, i64, i64, i64, i64, i64) -> i64 tail
     sig7 = (i64) system_v
     sig8 = (i64, i64, i64, i64, i64, i64) -> i64 tail
-    fn0 = u0:35 sig0
-    fn1 = u0:49 sig1
-    fn2 = u0:35 sig2
-    fn3 = u0:35 sig3
-    fn4 = u0:21 sig4
-    fn5 = u0:50 sig5
-    fn6 = colocated u0:46 sig6
-    fn7 = u0:51 sig7
-    fn8 = colocated u0:46 sig8
+    fn0 = @fz_get_static_closure sig0
+    fn1 = @fz_make_resource sig1
+    fn2 = @fz_get_static_closure sig2
+    fn3 = @fz_get_static_closure sig3
+    fn4 = @fz_map_get sig4
+    fn5 = @fz_print_value sig5
+    fn6 = colocated @fz_fn_25 sig6
+    fn7 = @fz_print_i64 sig7
+    fn8 = colocated @fz_fn_25 sig8
 
 block0(v0: i64):
     v1 = iconst.i64 10                  ; @12:21
@@ -76,17 +76,17 @@ block2:
     ;   @spec   k_29(nil, any, any, any, any) -> nil
     ;   @key    [nil, any, any, any, any]
     ;   @abi    (Tagged, Tagged, Tagged, Tagged, Tagged) -> Tagged
-function u0:0(i64, i64, i64, i64, i64, i64) -> i64 tail {
+function @fz_fn_25(i64, i64, i64, i64, i64, i64) -> i64 tail {
     sig0 = (i64, i64) -> i64 system_v
     sig1 = (i64) system_v
     sig2 = (i64, i64, i64, i64, i64, i64) -> i64 tail
     sig3 = (i64) system_v
     sig4 = (i64, i64, i64, i64, i64, i64) -> i64 tail
-    fn0 = u0:21 sig0
-    fn1 = u0:50 sig1
-    fn2 = colocated u0:47 sig2
-    fn3 = u0:51 sig3
-    fn4 = colocated u0:47 sig4
+    fn0 = @fz_map_get sig0
+    fn1 = @fz_print_value sig1
+    fn2 = colocated @fz_fn_26 sig2
+    fn3 = @fz_print_i64 sig3
+    fn4 = colocated @fz_fn_26 sig4
 
     block0(v0: i64, v1: i64, v2: i64, v3: i64, v4: i64, v5: i64):    ;; v0 :: nil, v1 :: any, v2 :: any, v3 :: any, v4 :: any
     v6 = iconst.i64 66    ;; v6 :: :value
@@ -111,15 +111,15 @@ block2:
     ;   @spec   k_31(nil, any, any, any, any) -> nil
     ;   @key    [nil, any, any, any, any]
     ;   @abi    (Tagged, Tagged, Tagged, Tagged, Tagged) -> Tagged
-function u0:0(i64, i64, i64, i64, i64, i64) -> i64 tail {
+function @fz_fn_26(i64, i64, i64, i64, i64, i64) -> i64 tail {
     sig0 = (i64, i64) -> i64 system_v
     sig1 = (i64) system_v
     sig2 = (i64, i64) -> i64 tail
     sig3 = (i64) system_v
     sig4 = (i64, i64) -> i64 tail
-    fn0 = u0:21 sig0
-    fn1 = u0:50 sig1
-    fn2 = u0:51 sig3
+    fn0 = @fz_map_get sig0
+    fn1 = @fz_print_value sig1
+    fn2 = @fz_print_i64 sig3
 
     block0(v0: i64, v1: i64, v2: i64, v3: i64, v4: i64, v5: i64):    ;; v0 :: nil, v1 :: any, v2 :: any, v3 :: any, v4 :: any
     v6 = iconst.i64 66    ;; v6 :: :value
