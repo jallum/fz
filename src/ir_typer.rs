@@ -741,7 +741,8 @@ fn compute_dead_branches<T: crate::types_seam::Types>(
                 let mut env = ft.block_envs.get(&b.id).cloned().unwrap_or_default();
                 for stmt in &b.stmts {
                     let Stmt::Let(v, prim) = stmt;
-                    let pt = type_prim(t, prim, &env, m, &HashSet::new());
+                    use crate::types_seam::AsDescr;
+                    let pt = type_prim(t, prim, &env, m, &HashSet::new()).as_descr();
                     env.insert(*v, pt);
                 }
                 let (then_env, else_env) = narrow_for_if(t, &env, cond, &b.stmts);
@@ -1316,7 +1317,7 @@ fn walk_spec_for_discovery<T: crate::types_seam::Types>(
                 };
                 out.emits.push((site, (*lam_fn_id, any_key)));
             }
-            env.insert(*v, type_prim(t, prim, &env, m, &HashSet::new()));
+            { use crate::types_seam::AsDescr; env.insert(*v, type_prim(t, prim, &env, m, &HashSet::new()).as_descr()); }
         }
 
         // fz-9pr.17 — opaque-arity detection for unresolved closure
@@ -1787,7 +1788,8 @@ pub fn type_fn<T: crate::types_seam::Types>(
             let mut const_vars: HashSet<Var> = HashSet::new();
             for stmt in &b.stmts {
                 let Stmt::Let(v, prim) = stmt;
-                let pt = type_prim(t, prim, &env, m, &const_vars);
+                use crate::types_seam::AsDescr;
+                let pt = type_prim(t, prim, &env, m, &const_vars).as_descr();
                 // Propagate const-derivation: a Const is trivially const; a
                 // BinOp/UnOp on const vars is also const.
                 match prim {
@@ -1926,7 +1928,7 @@ pub fn type_fn<T: crate::types_seam::Types>(
                 let mut env = block_envs[&bid].clone();
                 for stmt in &b.stmts {
                     let Stmt::Let(v, prim) = stmt;
-                    env.insert(*v, type_prim(t, prim, &env, m, &HashSet::new()));
+                    { use crate::types_seam::AsDescr; env.insert(*v, type_prim(t, prim, &env, m, &HashSet::new()).as_descr()); }
                 }
                 // Use is_subtype to check provable branch deadness.
                 // `ct ⊆ atom_lit("true")` means ct can ONLY be true →
@@ -2134,38 +2136,33 @@ fn type_prim<T: crate::types_seam::Types>(
     env: &HashMap<Var, Descr>,
     m: &Module,
     const_vars: &HashSet<Var>,
-) -> Descr {
+) -> T::Ty {
     match prim {
-        Prim::Const(c) => {
-            use crate::types_seam::AsDescr;
-            type_const(t, c, &m.atom_names).as_descr()
-        }
+        Prim::Const(c) => type_const(t, c, &m.atom_names),
 
         Prim::BinOp(op, a, b) => {
-            use crate::types_seam::AsDescr;
             let at = lookup(t, env, *a);
             let bt = lookup(t, env, *b);
             let fold = const_vars.contains(a) && const_vars.contains(b);
-            type_binop(t, *op, &at, &bt, fold).as_descr()
+            type_binop(t, *op, &at, &bt, fold)
         }
         Prim::UnOp(op, v) => {
-            use crate::types_seam::AsDescr;
             let vt = lookup(t, env, *v);
             match op {
                 UnOp::Neg => {
                     if const_vars.contains(v) {
+                        use crate::types_seam::AsDescr;
                         let zero = t.int_lit(0).as_descr();
-                        numeric_result_fold(t, BinOp::Sub, &zero, &vt).as_descr()
+                        numeric_result_fold(t, BinOp::Sub, &zero, &vt)
                     } else {
-                        numeric_result(t, &vt, &vt).as_descr()
+                        numeric_result(t, &vt, &vt)
                     }
                 }
-                UnOp::Not => t.bool().as_descr(),
+                UnOp::Not => t.bool(),
             }
         }
 
         Prim::MakeTuple(vs) => {
-            use crate::types_seam::AsDescr;
             let elem_tys: Vec<T::Ty> = vs
                 .iter()
                 .map(|v| {
@@ -2173,10 +2170,9 @@ fn type_prim<T: crate::types_seam::Types>(
                     t.from_descr(&d)
                 })
                 .collect();
-            t.tuple(&elem_tys).as_descr()
+            t.tuple(&elem_tys)
         }
         Prim::TupleField(v, i) => {
-            use crate::types_seam::AsDescr;
             let vt = lookup(t, env, *v);
             // Find the widest arity in v's tuple clauses that covers index i;
             // project that component. Falls back to any when there's no
@@ -2184,17 +2180,16 @@ fn type_prim<T: crate::types_seam::Types>(
             let max_arity = vt.max_tuple_arity();
             if (*i as usize) < max_arity {
                 let comps = crate::typer::tuple_projections(&vt, max_arity);
-                comps
-                    .into_iter()
-                    .nth(*i as usize)
-                    .unwrap_or_else(|| t.any().as_descr())
+                match comps.into_iter().nth(*i as usize) {
+                    Some(d) => t.from_descr(&d),
+                    None => t.any(),
+                }
             } else {
-                t.any().as_descr()
+                t.any()
             }
         }
 
         Prim::MakeList(els, tail) => {
-            use crate::types_seam::AsDescr;
             let mut elem = t.none();
             for v in els {
                 let d = lookup(t, env, *v);
@@ -2207,21 +2202,22 @@ fn type_prim<T: crate::types_seam::Types>(
                 let tail_elem_ty = t.from_descr(&tail_elem);
                 elem = t.union(elem, tail_elem_ty);
             }
-            t.list(elem).as_descr()
+            t.list(elem)
         }
         Prim::ListCons(h, tl) => {
-            use crate::types_seam::AsDescr;
             let ht = lookup(t, env, *h);
             let tt = lookup(t, env, *tl);
             let tail_elem = crate::typer::list_element_type(&tt);
             let hy = t.from_descr(&ht);
             let ty_tail = t.from_descr(&tail_elem);
             let elem_ty = t.union(hy, ty_tail);
-            t.list(elem_ty).as_descr()
+            t.list(elem_ty)
         }
-        Prim::ListHead(l) => crate::typer::list_element_type(&lookup(t, env, *l)),
+        Prim::ListHead(l) => {
+            let d = crate::typer::list_element_type(&lookup(t, env, *l));
+            t.from_descr(&d)
+        }
         Prim::ListTail(l) => {
-            use crate::types_seam::AsDescr;
             // fz-s9y.3 — the tail of a list is a list (possibly empty).
             // `Descr::list_of(elem)` covers the empty list via the
             // list_of(none()) subtype rule (see types::list_clause_empty);
@@ -2231,15 +2227,11 @@ fn type_prim<T: crate::types_seam::Types>(
             let lt = lookup(t, env, *l);
             let elem = crate::typer::list_element_type(&lt);
             let elem_ty = t.from_descr(&elem);
-            t.list(elem_ty).as_descr()
+            t.list(elem_ty)
         }
-        Prim::IsEmptyList(_) => {
-            use crate::types_seam::AsDescr;
-            t.bool().as_descr()
-        }
+        Prim::IsEmptyList(_) => t.bool(),
 
         Prim::MakeMap(entries) => {
-            use crate::types_seam::AsDescr;
             let mut fields: Vec<(MapKey, T::Ty)> = Vec::new();
             let mut all_static = true;
             for (k, v) in entries {
@@ -2256,11 +2248,11 @@ fn type_prim<T: crate::types_seam::Types>(
                 }
             }
             if all_static && !entries.is_empty() {
-                t.map(&fields).as_descr()
+                t.map(&fields)
             } else if entries.is_empty() {
-                t.map(&[]).as_descr()
+                t.map(&[])
             } else {
-                t.map_top().as_descr()
+                t.map_top()
             }
         }
         Prim::MapUpdate(base, entries) => {
@@ -2271,10 +2263,9 @@ fn type_prim<T: crate::types_seam::Types>(
                     d = crate::typer::refine_map_field(&d, &mk, &vt);
                 }
             }
-            d
+            t.from_descr(&d)
         }
         Prim::MapGet(map, k) => {
-            use crate::types_seam::AsDescr;
             let mt = lookup(t, env, *map);
             // fz-swt.8 — `handle.value` on an opaque-typed handle.
             // When the subject is a singleton opaque and the key is
@@ -2290,42 +2281,35 @@ fn type_prim<T: crate::types_seam::Types>(
                 && key == "value"
                 && let Some(inner) = m.opaque_inners.get(tag)
             {
-                return inner.clone();
+                return t.from_descr(inner);
             }
             let a = t.any();
             let n = t.nil();
-            let fallback = t.union(a, n).as_descr();
+            let fallback = t.union(a, n);
             if let Some(mk) = var_as_map_key(*k, env) {
-                crate::typer::map_field_lookup(&mt, &mk).unwrap_or(fallback)
+                match crate::typer::map_field_lookup(&mt, &mk) {
+                    Some(d) => t.from_descr(&d),
+                    None => fallback,
+                }
             } else {
                 fallback
             }
         }
 
-        Prim::MakeVec(kind, _) => {
-            use crate::types_seam::AsDescr;
-            match kind {
-                VecKindIr::I64 => t.vec_i64().as_descr(),
-                VecKindIr::F64 => t.vec_f64().as_descr(),
-                VecKindIr::U8 => t.vec_u8().as_descr(),
-                VecKindIr::Bit => t.vec_bit().as_descr(),
-            }
-        }
+        Prim::MakeVec(kind, _) => match kind {
+            VecKindIr::I64 => t.vec_i64(),
+            VecKindIr::F64 => t.vec_f64(),
+            VecKindIr::U8 => t.vec_u8(),
+            VecKindIr::Bit => t.vec_bit(),
+        },
         // fz-axu.1 (K0) — bitstring construction types as the binary/bitstring
         // top (`str_t()`). Branded subset types (e.g. `utf8`) will layer on top
         // of this in later tickets. vec_u8/vec_bit remain reserved for explicit
         // vector(u8)/vector(bit) values.
-        Prim::MakeBitstring(_) => {
-            use crate::types_seam::AsDescr;
-            t.str_t().as_descr()
-        }
-        Prim::ConstBitstring(_, _) => {
-            use crate::types_seam::AsDescr;
-            t.str_t().as_descr()
-        }
+        Prim::MakeBitstring(_) => t.str_t(),
+        Prim::ConstBitstring(_, _) => t.str_t(),
 
         Prim::MakeClosure(_, fn_id, captured) => {
-            use crate::types_seam::AsDescr;
             // fz-ul4.27.22.10 — type MakeClosure's result as a closure
             // literal: a singleton-typed arrow tagged with (fn_id,
             // capture_descrs). Downstream consumers (cont_slot0_descr,
@@ -2344,19 +2328,15 @@ fn type_prim<T: crate::types_seam::Types>(
                     None => t.any(),
                 })
                 .collect();
-            t.closure_lit(*fn_id, captures, n_args).as_descr()
+            t.closure_lit(*fn_id, captures, n_args)
         }
 
-        Prim::Extern(eid, _) => {
-            use crate::types_seam::AsDescr;
-            m.extern_idx
-                .get(eid)
-                .map(|&i| m.externs[i].ret_descr.clone())
-                .unwrap_or_else(|| t.any().as_descr())
-        }
+        Prim::Extern(eid, _) => match m.extern_idx.get(eid) {
+            Some(&i) => t.from_descr(&m.externs[i].ret_descr),
+            None => t.any(),
+        },
 
         Prim::TypeTest(v, descr) => {
-            use crate::types_seam::AsDescr;
             let vt = lookup(t, env, *v);
             // If vt ⊆ descr → always true; if vt ∩ descr = ∅ → always false;
             // otherwise unknown bool. Branch pruning in the typer's If-rewriting
@@ -2364,13 +2344,13 @@ fn type_prim<T: crate::types_seam::Types>(
             let vy = t.from_descr(&vt);
             let dy = t.from_descr(descr);
             if t.is_subtype(&vy, &dy) {
-                t.atom_lit("true").as_descr()
+                t.atom_lit("true")
             } else {
                 let inter = t.intersect(vy, dy);
                 if t.is_empty(&inter) {
-                    t.atom_lit("false").as_descr()
+                    t.atom_lit("false")
                 } else {
-                    t.bool().as_descr()
+                    t.bool()
                 }
             }
         }
@@ -2383,24 +2363,16 @@ fn type_prim<T: crate::types_seam::Types>(
         // grants `brand(name) ⊆ inner`). Pre-K4, the structural axes
         // alone keep it usable; the brand tag is just an extra label.
         Prim::Brand(v, name) => {
-            use crate::types_seam::AsDescr;
             let d = lookup(t, env, *v);
             let inner = t.from_descr(&d);
-            t.mint_brand(inner, name).as_descr()
+            t.mint_brand(inner, name)
         }
 
         // Reader and struct ops: conservative Top until later tickets refine.
-        Prim::AllocStruct(_, _) => {
-            use crate::types_seam::AsDescr;
-            t.any().as_descr()
-        }
-        Prim::BitReaderInit(_) => {
-            use crate::types_seam::AsDescr;
-            t.any().as_descr()
-        }
+        Prim::AllocStruct(_, _) => t.any(),
+        Prim::BitReaderInit(_) => t.any(),
         Prim::BitReadField { ty, .. } => {
             use crate::ast::BitType;
-            use crate::types_seam::AsDescr;
             // Returns Tuple([ok, value, new_reader]) on success, Tuple([false])
             // on failure. We over-approximate to a generic tuple shape; pattern
             // narrowing on TupleField then projects per-position. Field value
@@ -2420,12 +2392,9 @@ fn type_prim<T: crate::types_seam::Types>(
             let success = t.tuple(&[bool1, value_t, any_ty]);
             let bool2 = t.bool();
             let failure = t.tuple(&[bool2]);
-            t.union(success, failure).as_descr()
+            t.union(success, failure)
         }
-        Prim::BitReaderDone(_) => {
-            use crate::types_seam::AsDescr;
-            t.bool().as_descr()
-        }
+        Prim::BitReaderDone(_) => t.bool(),
     }
 }
 
@@ -2794,7 +2763,8 @@ pub fn collect_diagnostics<T: crate::types_seam::Types>(
                 let mut env = ft.block_envs.get(&b.id).cloned().unwrap_or_default();
                 for stmt in &b.stmts {
                     let Stmt::Let(v, prim) = stmt;
-                    let pt = type_prim(t, prim, &env, module, &HashSet::new());
+                    use crate::types_seam::AsDescr;
+                    let pt = type_prim(t, prim, &env, module, &HashSet::new()).as_descr();
                     env.insert(*v, pt);
                 }
                 let (then_env, else_env) = narrow_for_if(t, &env, cond, &b.stmts);
@@ -2983,7 +2953,8 @@ pub fn collect_diagnostics<T: crate::types_seam::Types>(
                         out.push(d);
                     }
                 }
-                let pt = type_prim(t, prim, &env, module, &HashSet::new());
+                use crate::types_seam::AsDescr;
+                    let pt = type_prim(t, prim, &env, module, &HashSet::new()).as_descr();
                 env.insert(*v, pt);
             }
         }
@@ -3177,7 +3148,8 @@ fn env_at_terminator<T: crate::types_seam::Types>(
         .unwrap_or_default();
     for stmt in &block.stmts {
         let Stmt::Let(v, prim) = stmt;
-        let pt = type_prim(t, prim, &env, module, &HashSet::new());
+        use crate::types_seam::AsDescr;
+                    let pt = type_prim(t, prim, &env, module, &HashSet::new()).as_descr();
         env.insert(*v, pt);
     }
     env
