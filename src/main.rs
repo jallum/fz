@@ -16,6 +16,7 @@ mod ir_interp;
 // Cranelift handles temporary spills. The richer per-call liveness was
 // never wired into codegen and the .11.31 root walker reads the existing
 // schema directly. See fz-ul4.11.30 (subsumed).
+mod ir_brand_erase;
 mod ir_branch_fold;
 mod ir_const_bs;
 mod ir_dce;
@@ -238,11 +239,12 @@ fn run_build(args: &[String]) {
         diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         std::process::exit(1);
     }
-    let module = ir_lower::lower_program(&prog).unwrap_or_else(|e| {
+    let mut module = ir_lower::lower_program(&prog).unwrap_or_else(|e| {
         diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         std::process::exit(1);
     });
     run_frontend_gates_or_exit(&prog, &module, &sm);
+    ir_brand_erase::erase_brands(&mut module);
     let obj_name = std::path::Path::new(&src_path)
         .file_stem()
         .and_then(|s| s.to_str())
@@ -343,11 +345,12 @@ fn run_interp(args: &[String]) {
         diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         std::process::exit(1);
     }
-    let module = ir_lower::lower_program(&prog).unwrap_or_else(|e| {
+    let mut module = ir_lower::lower_program(&prog).unwrap_or_else(|e| {
         diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         std::process::exit(1);
     });
     run_frontend_gates_or_exit(&prog, &module, &sm);
+    ir_brand_erase::erase_brands(&mut module);
     match ir_interp::run_main(&module) {
         Ok(_halt) => {}
         Err(msg) => {
@@ -656,11 +659,12 @@ fn dump_specs_pipeline(src: String, source_name: String) -> String {
         diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         std::process::exit(1);
     }
-    let module = ir_lower::lower_program(&prog).unwrap_or_else(|e| {
+    let mut module = ir_lower::lower_program(&prog).unwrap_or_else(|e| {
         diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         std::process::exit(1);
     });
     run_frontend_gates_or_exit(&prog, &module, &sm);
+    ir_brand_erase::erase_brands(&mut module);
     let mt = ir_typer::type_module(&module);
     ir_typer::pretty_module_types(&module, &mt)
 }
@@ -1038,11 +1042,12 @@ fn compile_pipeline(src: String, source_name: String) -> Compiled {
         diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         std::process::exit(1);
     }
-    let module = ir_lower::lower_program(&prog).unwrap_or_else(|e| {
+    let mut module = ir_lower::lower_program(&prog).unwrap_or_else(|e| {
         diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         std::process::exit(1);
     });
     run_frontend_gates_or_exit(&prog, &module, &sm);
+    ir_brand_erase::erase_brands(&mut module);
     let main_fn = module.fn_by_name("main").map(|f| f.id);
     let cm = ir_codegen::compile(&module).unwrap_or_else(|e| {
         diag::render_one_to_stderr(&sm, &e.to_diagnostic());
