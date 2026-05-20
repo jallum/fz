@@ -1,7 +1,7 @@
-fn relay(), do: send(1, receive() + 1)
+fn relay(), do: send(1, receive do x -> x + 1 end)
 
 fn main() do
   spawn(relay)
   send(2, 41)
-  print(receive())
+  print(receive do x -> x end)
 end

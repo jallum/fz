@@ -2,5 +2,5 @@ fn child(), do: send(1, 42)
 
 fn main() do
   spawn(child)
-  print(receive())
+  print(receive do x -> x end)
 end

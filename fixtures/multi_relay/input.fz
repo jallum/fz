@@ -1,10 +1,10 @@
-fn worker(), do: send(1, receive() * 2)
+fn worker(), do: send(1, receive do x -> x * 2 end)
 
 fn main() do
   spawn(worker)
   spawn(worker)
   send(2, 10)
   send(3, 11)
-  print(receive())
-  print(receive())
+  print(receive do x -> x end)
+  print(receive do x -> x end)
 end
