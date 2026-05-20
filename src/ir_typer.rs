@@ -2491,6 +2491,7 @@ pub fn collect_diagnostics<T: crate::types_seam::Types>(
 ) -> crate::diag::Diagnostics {
     use crate::diag::codes::TYPE_DEAD_BINOP;
     use crate::diag::{Diagnostic, Diagnostics, Span};
+    use crate::types_seam::AsDescr;
 
     let mut out = Diagnostics::new();
 
@@ -2522,7 +2523,7 @@ pub fn collect_diagnostics<T: crate::types_seam::Types>(
             continue;
         }
         let n_params = f.block(f.entry).params.len();
-        let any_key: Vec<Descr> = vec![Descr::any(); n_params];
+        let any_key: Vec<Descr> = vec![t.any().as_descr(); n_params];
         let ft = type_fn(t, f, module, Some(&any_key));
         adhoc_specs.insert(f.id, ft);
         specs_by_fn.entry(f.id).or_default().push(any_key);
@@ -2622,7 +2623,7 @@ pub fn collect_diagnostics<T: crate::types_seam::Types>(
             Some(ft) => ft,
             None => {
                 let n_params = f.block(f.entry).params.len();
-                let any_key: Vec<Descr> = vec![Descr::any(); n_params];
+                let any_key: Vec<Descr> = vec![t.any().as_descr(); n_params];
                 ft_owned = Some(type_fn(t, f, module, Some(&any_key)));
                 ft_owned.as_ref().unwrap()
             }
@@ -2637,14 +2638,23 @@ pub fn collect_diagnostics<T: crate::types_seam::Types>(
                 if let Prim::BinOp(op, lhs, rhs) = prim
                     && matches!(op, BinOp::Eq | BinOp::Neq)
                 {
-                    let ta = env.get(lhs).cloned().unwrap_or_else(Descr::any);
-                    let tb = env.get(rhs).cloned().unwrap_or_else(Descr::any);
+                    let ta = env
+                        .get(lhs)
+                        .cloned()
+                        .unwrap_or_else(|| t.any().as_descr());
+                    let tb = env
+                        .get(rhs)
+                        .cloned()
+                        .unwrap_or_else(|| t.any().as_descr());
                     // Lint only on cross-kind disjointness (int vs atom,
                     // float vs nil, etc.). Within a single axis, two
                     // disjoint literal sets (e.g. `1 == 2`) still fold to
                     // false at codegen but are not surprising to the
                     // reader, so we keep them silent.
-                    let cross_kind = !ta.is_empty() && !tb.is_empty() && !axes_overlap(&ta, &tb);
+                    let ta_ty = t.from_descr(&ta);
+                    let tb_ty = t.from_descr(&tb);
+                    let cross_kind =
+                        !t.is_empty(&ta_ty) && !t.is_empty(&tb_ty) && !axes_overlap(&ta, &tb);
                     if cross_kind {
                         let span = spans
                             .and_then(|s| s.get(sidx).copied())
@@ -2683,8 +2693,14 @@ pub fn collect_diagnostics<T: crate::types_seam::Types>(
                         BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod
                     )
                 {
-                    let ta = env.get(lhs).cloned().unwrap_or_else(Descr::any);
-                    let tb = env.get(rhs).cloned().unwrap_or_else(Descr::any);
+                    let ta = env
+                        .get(lhs)
+                        .cloned()
+                        .unwrap_or_else(|| t.any().as_descr());
+                    let tb = env
+                        .get(rhs)
+                        .cloned()
+                        .unwrap_or_else(|| t.any().as_descr());
                     let lhs_opaque = ta.as_opaque_singleton();
                     let rhs_opaque = tb.as_opaque_singleton();
                     if lhs_opaque.is_some() || rhs_opaque.is_some() {
@@ -2736,7 +2752,10 @@ pub fn collect_diagnostics<T: crate::types_seam::Types>(
                 // (i.e. was declared via `@type t :: opaque T`), and
                 // the enclosing fn's module isn't the declaring module.
                 if let Prim::MapGet(map_v, key_v) = prim {
-                    let mt = env.get(map_v).cloned().unwrap_or_else(Descr::any);
+                    let mt = env
+                        .get(map_v)
+                        .cloned()
+                        .unwrap_or_else(|| t.any().as_descr());
                     if let (Some(tag), Some(MapKey::Atom(key))) = (
                         mt.as_opaque_singleton(),
                         var_as_map_key(*key_v, &env).as_ref(),
