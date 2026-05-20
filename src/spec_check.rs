@@ -137,36 +137,33 @@ fn validate_one_fn<T: crate::types_seam::Types>(
                 ));
             }
         }
-        // Compute inferred return Descr: lub over each Term::Return val
-        // typed under this spec's FnTypes.
-        let mut inferred_result: Option<Descr> = None;
+        // Compute inferred return type: lub over each Term::Return val
+        // typed under this spec's FnTypes. Local stays `T::Ty`-typed
+        // through the fold; only the boundary with `ft.vars` (still
+        // Descr-keyed) goes through `from_descr`.
+        let mut inferred_result: Option<T::Ty> = None;
         for b in &ir_fn.blocks {
             if let crate::fz_ir::Term::Return(rv) = &b.terminator {
-                let d = ft
-                    .vars
-                    .get(rv)
-                    .cloned()
-                    .unwrap_or_else(|| t.any().as_descr());
+                let d_ty = match ft.vars.get(rv) {
+                    Some(d) => t.from_descr(d),
+                    None => t.any(),
+                };
                 inferred_result = Some(match inferred_result {
-                    Some(prev) => {
-                        let a = t.from_descr(&prev);
-                        let b = t.from_descr(&d);
-                        t.union(a, b).as_descr()
-                    }
-                    None => d,
+                    Some(prev) => t.union(prev, d_ty),
+                    None => d_ty,
                 });
             }
         }
-        let inferred_result = inferred_result.unwrap_or_else(|| t.any().as_descr());
-        let inferred_ty = t.from_descr(&inferred_result);
+        let inferred_ty = inferred_result.unwrap_or_else(|| t.any());
         let declared_ty = t.from_descr(declared_result);
         if !t.is_subtype(&inferred_ty, &declared_ty) {
+            let inferred_display = t.display(&inferred_ty);
             diags.push(Diagnostic::error(
                 codes::SPEC_VIOLATION,
                 format!(
                     "@spec violation for `{}`: result inferred as `{}` \
                      is not a subtype of declared `{}`",
-                    user_name, inferred_result, declared_result,
+                    user_name, inferred_display, declared_result,
                 ),
                 name_span,
             ));
