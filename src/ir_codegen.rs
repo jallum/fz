@@ -187,7 +187,13 @@ pub struct CompiledModule {
 }
 
 impl CompiledModule {
-    pub fn warnings(&self) -> &crate::diag::Diagnostics {
+    /// All typer-side diagnostics collected during `compile`. Includes
+    /// both warnings (e.g. `TYPE_UNREACHABLE_ARM`, `TYPE_DEAD_BINOP`)
+    /// and errors (e.g. `TYPE_OPAQUE_ARITHMETIC`). Drivers must route
+    /// this through `diag::report_or_exit` so error-severity entries
+    /// actually halt — historically called `warnings()` from when only
+    /// warnings flowed here.
+    pub fn diagnostics(&self) -> &crate::diag::Diagnostics {
         &self.diagnostics
     }
 }

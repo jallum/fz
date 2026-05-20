@@ -25,7 +25,10 @@ pub use diagnostic::{Diagnostic, Diagnostics};
 // fz-0z4.6 — `Severity` re-export retired alongside validate_specs_or_exit;
 // `diag::report_or_exit` now encapsulates the error-vs-warning decision so
 // no external caller needs to inspect it directly.
-pub use driver::{render_one_to_stderr, render_to_stderr, report_or_exit};
+// fz-d5b — `render_to_stderr` intentionally NOT re-exported. Drivers
+// must route diagnostics through `report_or_exit` so Severity::Error
+// entries halt instead of being silently rendered-and-continued.
+pub use driver::{render_one_to_stderr, report_or_exit};
 pub use source_map::SourceMap;
 pub use span::{FileId, Span, SpanOrigin};
 

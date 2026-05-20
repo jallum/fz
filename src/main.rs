@@ -256,7 +256,11 @@ fn run_build(args: &[String]) {
         eprintln!("fz build: no `main/0` fn found; nothing to link.");
         std::process::exit(1);
     }
-    diag::render_to_stderr(&sm, &artifact.diagnostics);
+    // fz-d5b — gate on errors. `collect_diagnostics` emits Severity::Error
+    // for soundness leaks (TYPE_OPAQUE_VISIBILITY, TYPE_OPAQUE_ARITHMETIC,
+    // TYPE_IMPURE_RECEIVE_GUARD); before this gate they rendered but the
+    // build continued, masking the rejection.
+    diag::report_or_exit(artifact.diagnostics.as_slice(), &sm);
 
     // Write the object next to the output, then invoke cc.
     let obj_temp = std::path::PathBuf::from(format!("{}.o", out_path));
@@ -1049,7 +1053,11 @@ fn compile_pipeline(src: String, source_name: String) -> Compiled {
         diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         std::process::exit(1);
     });
-    diag::render_to_stderr(&sm, cm.warnings());
+    // fz-d5b — gate on errors from the typer-side diagnostics
+    // (TYPE_OPAQUE_VISIBILITY, TYPE_OPAQUE_ARITHMETIC,
+    // TYPE_IMPURE_RECEIVE_GUARD). Severity::Warning entries print and
+    // we continue; Severity::Error halts.
+    diag::report_or_exit(cm.diagnostics().as_slice(), &sm);
     Compiled {
         cm,
         main_fn,
