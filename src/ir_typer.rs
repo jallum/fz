@@ -2142,24 +2142,25 @@ fn type_prim<T: crate::types_seam::Types>(
         }
 
         Prim::BinOp(op, a, b) => {
+            use crate::types_seam::AsDescr;
             let at = lookup(t, env, *a);
             let bt = lookup(t, env, *b);
             let fold = const_vars.contains(a) && const_vars.contains(b);
-            type_binop(t, *op, &at, &bt, fold)
+            type_binop(t, *op, &at, &bt, fold).as_descr()
         }
         Prim::UnOp(op, v) => {
+            use crate::types_seam::AsDescr;
             let vt = lookup(t, env, *v);
             match op {
                 UnOp::Neg => {
                     if const_vars.contains(v) {
-                        use crate::types_seam::AsDescr;
                         let zero = t.int_lit(0).as_descr();
-                        numeric_result_fold(t, BinOp::Sub, &zero, &vt)
+                        numeric_result_fold(t, BinOp::Sub, &zero, &vt).as_descr()
                     } else {
-                        numeric_result(t, &vt, &vt)
+                        numeric_result(t, &vt, &vt).as_descr()
                     }
                 }
-                UnOp::Not => Descr::bool_t(),
+                UnOp::Not => t.bool().as_descr(),
             }
         }
 
@@ -2455,7 +2456,7 @@ fn type_binop<T: crate::types_seam::Types>(
     a: &Descr,
     b: &Descr,
     fold: bool,
-) -> Descr {
+) -> T::Ty {
     use BinOp::*;
     match op {
         Add | Sub | Mul | Div | Mod => {
@@ -2467,10 +2468,9 @@ fn type_binop<T: crate::types_seam::Types>(
         }
         Eq | Neq | Lt | Le | Gt | Ge => compare_result(t, op, a, b),
         And | Or => {
-            use crate::types_seam::AsDescr;
             let ay = t.from_descr(a);
             let by = t.from_descr(b);
-            t.union(ay, by).as_descr()
+            t.union(ay, by)
         }
     }
 }
@@ -2484,9 +2484,8 @@ fn compare_result<T: crate::types_seam::Types>(
     op: BinOp,
     a: &Descr,
     b: &Descr,
-) -> Descr {
+) -> T::Ty {
     use BinOp::*;
-    use crate::types_seam::AsDescr;
     if let (Some(ai), Some(bi)) = (a.as_int_singleton(), b.as_int_singleton()) {
         let result = match op {
             Eq => ai == bi,
@@ -2495,12 +2494,12 @@ fn compare_result<T: crate::types_seam::Types>(
             Le => ai <= bi,
             Gt => ai > bi,
             Ge => ai >= bi,
-            _ => return t.bool().as_descr(),
+            _ => return t.bool(),
         };
         return if result {
-            t.atom_lit("true").as_descr()
+            t.atom_lit("true")
         } else {
-            t.atom_lit("false").as_descr()
+            t.atom_lit("false")
         };
     }
     if let (Some(af), Some(bf)) = (float_singleton(a), float_singleton(b)) {
@@ -2511,19 +2510,18 @@ fn compare_result<T: crate::types_seam::Types>(
             Le => af <= bf,
             Gt => af > bf,
             Ge => af >= bf,
-            _ => return t.bool().as_descr(),
+            _ => return t.bool(),
         };
         return if result {
-            t.atom_lit("true").as_descr()
+            t.atom_lit("true")
         } else {
-            t.atom_lit("false").as_descr()
+            t.atom_lit("false")
         };
     }
-    t.bool().as_descr()
+    t.bool()
 }
 
-fn numeric_result<T: crate::types_seam::Types>(t: &mut T, a: &Descr, b: &Descr) -> Descr {
-    use crate::types_seam::AsDescr;
+fn numeric_result<T: crate::types_seam::Types>(t: &mut T, a: &Descr, b: &Descr) -> T::Ty {
     let int_ty = t.int();
     let float_ty = t.float();
     let ay = t.from_descr(a);
@@ -2531,11 +2529,11 @@ fn numeric_result<T: crate::types_seam::Types>(t: &mut T, a: &Descr, b: &Descr) 
     let both_int = t.is_subtype(&ay, &int_ty) && t.is_subtype(&by, &int_ty);
     let both_float = t.is_subtype(&ay, &float_ty) && t.is_subtype(&by, &float_ty);
     if both_int {
-        int_ty.as_descr()
+        int_ty
     } else if both_float {
-        float_ty.as_descr()
+        float_ty
     } else {
-        t.union(int_ty, float_ty).as_descr()
+        t.union(int_ty, float_ty)
     }
 }
 
@@ -2547,9 +2545,8 @@ fn numeric_result_fold<T: crate::types_seam::Types>(
     op: BinOp,
     a: &Descr,
     b: &Descr,
-) -> Descr {
+) -> T::Ty {
     use BinOp::*;
-    use crate::types_seam::AsDescr;
     if let (Some(ai), Some(bi)) = (a.as_int_singleton(), b.as_int_singleton()) {
         let result = match op {
             Add => ai.checked_add(bi),
@@ -2572,7 +2569,7 @@ fn numeric_result_fold<T: crate::types_seam::Types>(
             _ => None,
         };
         if let Some(r) = result {
-            return t.int_lit(r).as_descr();
+            return t.int_lit(r);
         }
     }
     if let (Some(af), Some(bf)) = (float_singleton(a), float_singleton(b)) {
@@ -2585,7 +2582,7 @@ fn numeric_result_fold<T: crate::types_seam::Types>(
             _ => None,
         };
         if let Some(r) = result {
-            return t.float_lit(r).as_descr();
+            return t.float_lit(r);
         }
     }
     numeric_result(t, a, b)
