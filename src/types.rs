@@ -108,6 +108,15 @@ impl<T: Ord + Clone> LiteralSet<T> {
     pub fn is_any(&self) -> bool {
         self.cofinite && self.set.is_empty()
     }
+    /// fz-axu.24 (M3) — true iff this set names a specific, finite,
+    /// non-empty collection of tags (i.e. a target type that
+    /// *requires* a brand membership). Used by `is_subtype_under`'s
+    /// rule (i): a bare-structural value can't satisfy a target that
+    /// names specific brands. Encapsulates the previous inline reach
+    /// into `cofinite` / `set` from outside the type.
+    pub fn requires_tag(&self) -> bool {
+        !self.cofinite && !self.set.is_empty()
+    }
 
     pub fn union(&self, o: &Self) -> Self {
         let (a, b) = (&self.set, &o.set);
@@ -1337,15 +1346,12 @@ impl Descr {
         other: &Descr,
         brand_inners: &std::collections::HashMap<String, Descr>,
     ) -> bool {
-        // Rule (i): if `other` insists on a brand (finite, non-cofinite
-        // brands axis with at least one tag), then `self` must already
-        // carry at least one of those tags. A bare-structural value
+        // Rule (i): if `other` names specific brand tags as required,
+        // `self` must already carry one. A bare-structural value
         // (`brands=none`) cannot satisfy a brand-restricted target —
         // the standard `is_subtype` misses this because the brands
         // axis collapses to "none" in the diff. K4 reinstates it.
-        let other_requires_brand =
-            !other.brands.cofinite && !other.brands.set.is_empty();
-        if other_requires_brand && self.brands.is_none() {
+        if other.brands.requires_tag() && self.brands.is_none() {
             return false;
         }
         if self.brands.is_none() || self.brands.cofinite {

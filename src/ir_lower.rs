@@ -70,6 +70,19 @@ pub enum LowerError {
         callee_name: String,
         arg_count: usize,
     },
+    /// fz-axu.24 (M3) — a `Prim::Brand(_, T)` mint reaches the
+    /// pre-erasure visibility pass from a fn that doesn't own brand
+    /// `T`. `T` is the qualified brand tag; `owner_module` is the
+    /// module that declared it; `using_module` is the module path of
+    /// the fn doing the mint. v1 only emits Brand prims for the
+    /// built-in `utf8` (no owner), so this fires only when user-
+    /// declared brands acquire a mint syntax. The plumbing is here.
+    BrandMintVisibility {
+        span: Span,
+        brand: String,
+        owner_module: String,
+        using_module: String,
+    },
 }
 
 impl LowerError {
@@ -112,6 +125,26 @@ impl LowerError {
                 format!(
                     "back-edge call from `{}` to `{}` passes {} arguments (max 8 at a yield point)",
                     fn_name, callee_name, arg_count
+                ),
+                *span,
+            ),
+            LowerError::BrandMintVisibility {
+                span,
+                brand,
+                owner_module,
+                using_module,
+            } => Diagnostic::error(
+                codes::LOWER_UNSUPPORTED,
+                format!(
+                    "brand `{}` can only be minted from inside module `{}`; \
+                     minted from `{}` here",
+                    brand,
+                    owner_module,
+                    if using_module.is_empty() {
+                        "<top-level>"
+                    } else {
+                        using_module.as_str()
+                    },
                 ),
                 *span,
             ),
@@ -762,13 +795,18 @@ pub fn lower_program_full(prog: &Program) -> Result<(Module, AtomTable), LowerEr
     module.brand_inners.extend(prelude.brand_inners.clone());
     // fz-02r.4 — annotate TailCall back-edges from the structural SCC.
     annotate_back_edges(&mut module, &ctx.fn_spans)?;
+    // fz-axu.24 (M3) — brand-mint visibility. Must run before erasure
+    // because erasure drops the Brand prims this pass needs to see.
+    // Built-in brands (utf8, ...) have no module owner and pass
+    // trivially; the gate fires when user-declared brands acquire a
+    // mint syntax and a foreign module tries to use it.
+    check_brand_visibility(&module, &ctx.stmt_spans, &ctx.fn_spans)?;
     // fz-axu.23 (M2) — brand erasure is the final lowering phase. The
     // Module returned from lower_program_full has the invariant: no
     // Prim::Brand survives in any FnIr. Downstream passes (typer,
     // reducer, codegen, interp, DCE) can treat that as a precondition,
     // and their Brand match arms become `unreachable!()` rather than
-    // silent identity-fallbacks. Callers that need to inspect Brand
-    // (e.g., a future visibility gate) must hook in before this point.
+    // silent identity-fallbacks.
     crate::ir_brand_erase::erase_brands(&mut module);
     // fz-uwq.1 — verify the unique-cont invariant the post-type pipeline
     // depends on. See `debug_assert_unique_conts` for the contract.
@@ -803,6 +841,53 @@ pub fn lower_program_full(prog: &Program) -> Result<(Module, AtomTable), LowerEr
 /// Debug-build only — the check is O(blocks) but redundant in release
 /// when the lowerer is correct. If it ever fires in debug, the lowerer
 /// is wrong (or a new corner case needs the invariant documented away).
+/// fz-axu.24 (M3) — brand-mint visibility pass. Walks every Prim::Brand
+/// stmt in every fn and applies `check_brand_mint_visibility`, using
+/// the containing fn's name to derive the using_module (everything
+/// before the final `.` in the qualified fn name; "" for top-level
+/// fns). Built-in brands like `utf8` carry no `::` qualifier and pass
+/// trivially.
+///
+/// Runs between annotate_back_edges and erase_brands — must see Brand
+/// prims, which erase_brands removes.
+fn check_brand_visibility(
+    module: &Module,
+    stmt_spans: &HashMap<(FnId, BlockId), Vec<Span>>,
+    fn_spans: &HashMap<FnId, Span>,
+) -> Result<(), LowerError> {
+    for f in &module.fns {
+        let using_module = f
+            .name
+            .rfind('.')
+            .map(|i| &f.name[..i])
+            .unwrap_or("");
+        for block in &f.blocks {
+            let spans = stmt_spans.get(&(f.id, block.id));
+            for (i, stmt) in block.stmts.iter().enumerate() {
+                let crate::fz_ir::Stmt::Let(_, prim) = stmt;
+                if let crate::fz_ir::Prim::Brand(_, brand_tag) = prim {
+                    if let Err(e) = crate::typer::check_brand_mint_visibility(
+                        brand_tag,
+                        using_module,
+                    ) {
+                        let span = spans
+                            .and_then(|v| v.get(i).copied())
+                            .or_else(|| fn_spans.get(&f.id).copied())
+                            .unwrap_or(crate::diag::Span::DUMMY);
+                        return Err(LowerError::BrandMintVisibility {
+                            span,
+                            brand: e.opaque,
+                            owner_module: e.owner_module,
+                            using_module: e.using_module,
+                        });
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 fn debug_assert_unique_conts(module: &Module) {
     if !cfg!(debug_assertions) {
         return;
@@ -5336,6 +5421,83 @@ end
             impure[0].message.contains("invokes a function"),
             "expected message to call out the fn call, got: {}",
             impure[0].message
+        );
+    }
+
+    // ----------------------------------------------------------------
+    // fz-axu.24 (M3) — brand-mint visibility gate
+    // ----------------------------------------------------------------
+
+    fn module_with_brand_in_fn(
+        fn_name: &str,
+        brand_tag: &str,
+    ) -> (Module, HashMap<(crate::fz_ir::FnId, crate::fz_ir::BlockId), Vec<Span>>) {
+        use crate::fz_ir::{FnBuilder, FnId, ModuleBuilder, Prim, Term};
+        let mut b = FnBuilder::new(FnId(0), fn_name);
+        let entry = b.block(vec![]);
+        let bs = b.let_(entry, Prim::ConstBitstring(vec![104], 8));
+        let branded = b.let_(entry, Prim::Brand(bs, brand_tag.to_string()));
+        b.set_terminator(entry, Term::Halt(branded));
+        let mut mb = ModuleBuilder::new();
+        mb.add_fn(b.build());
+        (mb.build(), HashMap::new())
+    }
+
+    #[test]
+    fn brand_visibility_passes_for_builtin_utf8_anywhere() {
+        // Built-in `utf8` (no `::` in tag) has no owner; minting it
+        // from any fn — even a user module — is allowed.
+        let (m, spans) = module_with_brand_in_fn("Mail.send", "utf8");
+        let fn_spans = HashMap::new();
+        check_brand_visibility(&m, &spans, &fn_spans).expect("utf8 mint must be allowed");
+    }
+
+    #[test]
+    fn brand_visibility_passes_when_fn_owns_brand() {
+        // Brand `Mail::Email` minted from fn `Mail.send` (using_module
+        // = "Mail") is fine — same owner.
+        let (m, spans) = module_with_brand_in_fn("Mail.send", "Mail::Email");
+        let fn_spans = HashMap::new();
+        check_brand_visibility(&m, &spans, &fn_spans)
+            .expect("same-module mint must be allowed");
+    }
+
+    #[test]
+    fn brand_visibility_rejects_cross_module_mint() {
+        // Brand `Mail::Email` minted from fn `Other.handler`
+        // (using_module = "Other") must be rejected.
+        let (m, spans) = module_with_brand_in_fn("Other.handler", "Mail::Email");
+        let fn_spans = HashMap::new();
+        let err = check_brand_visibility(&m, &spans, &fn_spans)
+            .expect_err("cross-module mint must be rejected");
+        match err {
+            LowerError::BrandMintVisibility {
+                brand,
+                owner_module,
+                using_module,
+                ..
+            } => {
+                assert_eq!(brand, "Mail::Email");
+                assert_eq!(owner_module, "Mail");
+                assert_eq!(using_module, "Other");
+            }
+            _ => panic!("expected BrandMintVisibility, got {:?}", err),
+        }
+    }
+
+    #[test]
+    fn brand_visibility_rejects_top_level_mint_of_owned_brand() {
+        // Top-level fn `main` (no module prefix) trying to mint a
+        // module-owned brand is also rejected.
+        let (m, spans) = module_with_brand_in_fn("main", "Mail::Email");
+        let fn_spans = HashMap::new();
+        let err = check_brand_visibility(&m, &spans, &fn_spans)
+            .expect_err("top-level mint of owned brand must be rejected");
+        let diag = err.to_diagnostic();
+        assert!(
+            diag.message.contains("<top-level>"),
+            "diag should mention top-level using_module: {}",
+            diag.message,
         );
     }
 }

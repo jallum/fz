@@ -132,8 +132,9 @@ pub fn check_opaque_visibility(d: &Descr, using_module: &str) -> Result<(), Opaq
 /// the K4 subtype rule. Only the act of *creating* a B value is gated.
 ///
 /// `using_module` is the qualified module path of the call site;
-/// `brand_tag` is the qualified brand name from the mint IR.
-#[allow(dead_code)] // wiring at brand-mint type-check site lands in downstream tickets.
+/// `brand_tag` is the qualified brand name from the mint IR. Wired
+/// into `ir_lower::check_brand_visibility` as a pre-erasure pass by
+/// fz-axu.24 (M3).
 pub fn check_brand_mint_visibility(
     brand_tag: &str,
     using_module: &str,
