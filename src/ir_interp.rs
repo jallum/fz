@@ -1192,10 +1192,6 @@ fn const_to_fz(c: &Const) -> FzValue {
         Const::True => FzValue::TRUE,
         Const::False => FzValue::FALSE,
         Const::Float(f) => FzValue(fz_runtime::ir_runtime::fz_alloc_float(f.to_bits())),
-        // Str: no first-class heap kind yet (.11.x lowers strings to
-        // Bitstring at the AST level). Should never reach the interp as a
-        // raw Const::Str; if it does, surface honestly.
-        Const::Str(_) => FzValue::NIL,
     }
 }
 

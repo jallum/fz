@@ -7035,9 +7035,6 @@ fn lower_prim<M: cranelift_module::Module>(
                 let inst = b.ins().call(fref, &[bv]);
                 b.inst_results(inst)[0]
             }
-            Const::Str(_) => {
-                return Err(CodegenError::new("Str codegen lands in a later ticket"));
-            }
         },
         Prim::BinOp(op, a, bv) => {
             // .5.2: tagged operands are materialised lazily by `tag_a` /

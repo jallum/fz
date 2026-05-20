@@ -388,7 +388,6 @@ pub struct ExternDecl {
 pub enum Const {
     Int(i64),
     Float(f64),
-    Str(String),
     Atom(u32),
     Nil,
     True,
@@ -1134,7 +1133,6 @@ impl fmt::Display for Const {
         match self {
             Const::Int(n) => write!(f, "{}", n),
             Const::Float(x) => write!(f, "{}f", x),
-            Const::Str(s) => write!(f, "{:?}", s),
             Const::Atom(id) => write!(f, ":atom_{}", id),
             Const::Nil => write!(f, "nil"),
             Const::True => write!(f, "true"),

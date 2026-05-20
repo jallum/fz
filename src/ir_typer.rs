@@ -2249,7 +2249,6 @@ fn type_const(c: &Const, atom_names: &[String]) -> Descr {
     match c {
         Const::Int(n) => Descr::int_lit(*n),
         Const::Float(f) => Descr::float_lit(*f),
-        Const::Str(s) => Descr::str_lit(s.clone()),
         Const::Atom(id) => {
             let name = atom_names
                 .get(*id as usize)

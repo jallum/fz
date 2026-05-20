@@ -165,7 +165,6 @@ fn fold_const(c: &Const, atom_names: &[String]) -> Option<Descr> {
     let d = match c {
         Const::Int(n) => Descr::int_lit(*n),
         Const::Float(f) => Descr::float_lit(*f),
-        Const::Str(s) => Descr::str_lit(s.clone()),
         Const::Nil => Descr::nil(),
         Const::True => Descr::atom_lit("true"),
         Const::False => Descr::atom_lit("false"),
