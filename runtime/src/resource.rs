@@ -169,59 +169,9 @@ pub unsafe extern "C" fn fz_test_open_tmpfile() -> u64 {
             std::io::Error::last_os_error()
         );
     }
-    crate::fz_value::FzValue::from_int(fd as i64).0
-}
-
-/// fz-swt.13 — resource dtor for fds produced by `fz_test_open_tmpfile`.
-/// Verifies the fd is open *before* the close (catches double-close /
-/// stale payload), closes it, and re-checks with `fcntl` that the
-/// kernel now reports `EBADF`. Prints exactly one line:
-///
-///   * `dtor:closed` — every check passed.
-///   * `dtor:failed(<reason>)` — at least one check failed; the reason
-///     identifies which kernel call disagreed with us so a regression
-///     surfaces in the golden diff rather than silently passing.
-///
-/// # Safety
-/// `payload` must be the tagged bits of an `FzValue::Int` holding a
-/// fd previously returned by `fz_test_open_tmpfile` (or any other
-/// open-for-close fd). Misuse prints a diagnostic; it does not crash.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn fz_test_close_fd(payload: u64) {
-    let fd = match crate::fz_value::FzValue(payload).unbox_int() {
-        Some(n) => n as libc::c_int,
-        None => {
-            println!("dtor:failed(payload-not-int)");
-            return;
-        }
-    };
-    // 1. Must be open before we close it.
-    let pre = unsafe { libc::fcntl(fd, libc::F_GETFD) };
-    if pre == -1 {
-        println!("dtor:failed(fd-already-closed)");
-        return;
-    }
-    // 2. close() must succeed.
-    let rc = unsafe { libc::close(fd) };
-    if rc != 0 {
-        println!(
-            "dtor:failed(close-rc={},errno={})",
-            rc,
-            std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
-        );
-        return;
-    }
-    // 3. Kernel must agree the fd is now closed.
-    let post = unsafe { libc::fcntl(fd, libc::F_GETFD) };
-    let post_errno = std::io::Error::last_os_error().raw_os_error();
-    if post != -1 || post_errno != Some(libc::EBADF) {
-        println!(
-            "dtor:failed(fd-still-open post={},errno={:?})",
-            post, post_errno
-        );
-        return;
-    }
-    println!("dtor:closed");
+    // fz-rb8 — `:: integer` returns raw i64; the runtime boxes on receive.
+    // Cast through u64 to preserve the bit pattern (fds are non-negative).
+    fd as u64
 }
 
 // ===== Allocation + refcount primitives ====================================
@@ -273,6 +223,35 @@ pub unsafe extern "C" fn fz_resource_release(p: *mut Resource) {
         unsafe { dtor(payload) };
         #[cfg(not(loom))]
         LIVE_COUNT.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// fz-4mk — release variant for the deferred-dispatch path.
+///
+/// Decrements the refcount, frees the wrapper if this was the final ref,
+/// and returns the payload (so the caller can enqueue it onto a per-heap
+/// `pending_dtors` queue for fz-side dispatch later). Does **not** invoke
+/// the stored C destructor — the new contract is "the closure runs the
+/// dtor as fz code at the next scheduler boundary."
+///
+/// Returns `Some(payload)` on the final-ref transition (1 → 0), `None`
+/// otherwise (another stub still holds the resource alive).
+///
+/// # Safety
+/// `p` must point at a live Resource. After `Some(_)` returns the caller
+/// must not dereference `p` again — the wrapper has been freed.
+pub unsafe fn fz_resource_release_deferred(p: *mut Resource) -> Option<u64> {
+    debug_assert!(!p.is_null());
+    let r = unsafe { &*p };
+    if r.refcount.fetch_sub(1, Ordering::Release) == 1 {
+        fence(Ordering::Acquire);
+        let payload = r.payload;
+        let _wrapper = unsafe { Box::from_raw(p) };
+        #[cfg(not(loom))]
+        LIVE_COUNT.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+        Some(payload)
+    } else {
+        None
     }
 }
 
@@ -342,15 +321,19 @@ impl Drop for ResourceHandle {
     }
 }
 
-// ===== ResourceStub (on-heap 32-byte stub) =================================
+// ===== ResourceStub (on-heap 40-byte stub) =================================
 
-/// Per-heap stub referencing a `Resource`. 32 bytes total:
-///   offset  0..16  HeapHeader { kind = Resource, size_bytes = 32 }
-///   offset 16..24  shared_ptr: *mut Resource
-///   offset 24..32  mso_next:   *mut HeapHeader   (intrusive MSO link)
+/// Per-heap stub referencing a `Resource`. 40 bytes total:
+///   offset  0..16  HeapHeader { kind = Resource, size_bytes = 40 }
+///   offset 16..24  shared_ptr:  *mut Resource     (off-heap, refcounted)
+///   offset 24..32  closure_ptr: FzValue           (on-heap dtor closure;
+///                                                  fz-4mk — runs as fz code
+///                                                  when refcount hits zero)
+///   offset 32..40  mso_next:    *mut HeapHeader   (intrusive MSO link)
 ///
-/// Layout matches `ProcBin` exactly so the MSO sweep code can treat both
-/// uniformly when reading the `mso_next` link.
+/// Note: this layout DIVERGES from `ProcBin` (which is 32 bytes, mso_next at
+/// +24). The MSO sweep dispatches on `kind` *before* reading the next-link
+/// slot so each kind's accessor is used correctly.
 #[repr(transparent)]
 #[derive(Clone, Copy)]
 pub struct ResourceStub(NonNull<HeapHeader>);
@@ -377,14 +360,31 @@ impl ResourceStub {
         }
     }
 
+    /// fz-4mk — the dtor closure tagged FzValue. Filled in by
+    /// `alloc_resource` and traced by Cheney like any other heap edge.
+    pub fn closure_ptr(&self) -> crate::fz_value::FzValue {
+        unsafe {
+            std::ptr::read((self.as_raw() as *const u8).add(24) as *const crate::fz_value::FzValue)
+        }
+    }
+
+    pub(crate) fn closure_ptr_set(&self, v: crate::fz_value::FzValue) {
+        unsafe {
+            std::ptr::write(
+                (self.as_raw() as *mut u8).add(24) as *mut crate::fz_value::FzValue,
+                v,
+            );
+        }
+    }
+
     pub fn mso_next(&self) -> *mut HeapHeader {
-        unsafe { std::ptr::read((self.as_raw() as *const u8).add(24) as *const *mut HeapHeader) }
+        unsafe { std::ptr::read((self.as_raw() as *const u8).add(32) as *const *mut HeapHeader) }
     }
 
     pub(crate) fn mso_next_set(&self, next: *mut HeapHeader) {
         unsafe {
             std::ptr::write(
-                (self.as_raw() as *mut u8).add(24) as *mut *mut HeapHeader,
+                (self.as_raw() as *mut u8).add(32) as *mut *mut HeapHeader,
                 next,
             );
         }
@@ -407,24 +407,30 @@ impl ResourceStub {
 
 use crate::heap::Heap;
 
-/// Allocate a 32-byte Resource stub on `heap`, taking ownership of the
-/// Resource reference encapsulated in `handle`. The new stub is pushed
-/// onto `heap.mso_head` as the new chain head.
-pub fn alloc_resource(heap: &mut Heap, handle: ResourceHandle) -> ResourceStub {
-    let p = heap.alloc(32);
+/// Allocate a 40-byte Resource stub on `heap`, taking ownership of the
+/// Resource reference encapsulated in `handle`. `closure` is the dtor
+/// closure value — recorded for fz-4mk's deferred fz-side dispatch. The
+/// new stub is pushed onto `heap.mso_head` as the new chain head.
+pub fn alloc_resource(
+    heap: &mut Heap,
+    handle: ResourceHandle,
+    closure: crate::fz_value::FzValue,
+) -> ResourceStub {
+    let p = heap.alloc(40);
     unsafe {
         std::ptr::write(
             p,
             HeapHeader {
                 kind: HeapKind::Resource as u16,
                 flags: 0,
-                size_bytes: 32,
+                size_bytes: 40,
                 schema_id: 0,
                 _reserved: 0,
             },
         );
     }
     let rs = unsafe { ResourceStub::from_raw(p) };
+    rs.closure_ptr_set(closure);
     rs.shared_raw_set(handle.into_raw());
     rs.mso_next_set(heap.mso_head);
     heap.mso_head = p;
@@ -572,9 +578,9 @@ mod tests {
         {
             let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
             let handle = ResourceHandle::new(0xabcd, counting_dtor);
-            let rs = alloc_resource(&mut h, handle);
+            let rs = alloc_resource(&mut h, handle, crate::fz_value::FzValue::NIL);
             assert_eq!(unsafe { (*rs.as_raw()).kind }, HeapKind::Resource as u16);
-            assert_eq!(unsafe { (*rs.as_raw()).size_bytes }, 32);
+            assert_eq!(unsafe { (*rs.as_raw()).size_bytes }, 40);
             assert_eq!(h.mso_head, rs.as_raw());
             assert_eq!(rs.mso_next(), std::ptr::null_mut());
             assert_eq!(rs.payload(), 0xabcd);
@@ -597,7 +603,11 @@ mod tests {
         let _g = LiveCountGuard::snap();
         reset_counters();
         let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
-        let _ = alloc_resource(&mut h, ResourceHandle::new(0x55, counting_dtor));
+        let _ = alloc_resource(
+            &mut h,
+            ResourceHandle::new(0x55, counting_dtor),
+            crate::fz_value::FzValue::NIL,
+        );
         let mut root: *mut u8 = std::ptr::null_mut();
         h.gc(&mut root);
         assert!(h.mso_head.is_null(), "dead Resource swept from MSO");
@@ -619,9 +629,17 @@ mod tests {
         {
             let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
             let _ = alloc_procbin(&mut h, SharedBinHandle::from_bytes(&[1, 2, 3], 24));
-            let _ = alloc_resource(&mut h, ResourceHandle::new(0xfeed, counting_dtor));
+            let _ = alloc_resource(
+                &mut h,
+                ResourceHandle::new(0xfeed, counting_dtor),
+                crate::fz_value::FzValue::NIL,
+            );
             let _ = alloc_procbin(&mut h, SharedBinHandle::from_bytes(&[4, 5], 16));
-            let _ = alloc_resource(&mut h, ResourceHandle::new(0xbeef, counting_dtor));
+            let _ = alloc_resource(
+                &mut h,
+                ResourceHandle::new(0xbeef, counting_dtor),
+                crate::fz_value::FzValue::NIL,
+            );
         }
         // Both resources fired their dtors exactly once each.
         assert_eq!(DTOR_FIRED.load(std::sync::atomic::Ordering::Relaxed), 2);

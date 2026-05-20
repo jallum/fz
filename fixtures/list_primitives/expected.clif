@@ -7,9 +7,9 @@ function u0:0(i64, i64, i64) -> i64 tail {
     sig1 = (i64) -> i64 system_v
     sig2 = (f64, f64) -> f64 system_v
     sig3 = (i64, i64) -> i64 tail
-    fn0 = u0:21 sig0
-    fn1 = u0:20 sig1
-    fn2 = u0:22 sig2
+    fn0 = u0:23 sig0
+    fn1 = u0:22 sig1
+    fn2 = u0:24 sig2
 
     block0(v0: i64, v1: i64, v2: i64):    ;; v0 :: any
     v3 = iconst.i64 2                   ; @14:23
@@ -51,9 +51,9 @@ function u0:0(i64, i64, i64, i64) -> i64 tail {
     sig1 = (i64) -> i64 system_v
     sig2 = (f64, f64) -> f64 system_v
     sig3 = (i64, i64) -> i64 tail
-    fn0 = u0:21 sig0
-    fn1 = u0:20 sig1
-    fn2 = u0:22 sig2
+    fn0 = u0:23 sig0
+    fn1 = u0:22 sig1
+    fn2 = u0:24 sig2
 
     block0(v0: i64, v1: i64, v2: i64, v3: i64):    ;; v0 :: any, v1 :: any
     v4 = bxor_imm v0, 1                 ; @15:19
@@ -94,9 +94,9 @@ function u0:0(i64) -> i64 tail {
     sig2 = (i32, i32, i32) -> i64 system_v
     sig3 = (i64, i64) -> i64 tail
     fn0 = u0:5 sig0
-    fn1 = colocated u0:42 sig1
-    fn2 = u0:27 sig2
-    fn3 = colocated u0:63 sig3
+    fn1 = colocated u0:45 sig1
+    fn2 = u0:29 sig2
+    fn3 = colocated u0:66 sig3
 
 block0(v0: i64):
     v1 = iconst.i64 1                   ; @18:9
@@ -137,9 +137,9 @@ function u0:0(i64, i64) -> i64 tail {
     sig3 = (i32, i32, i32) -> i64 system_v
     sig4 = (i64, i64) -> i64 tail
     fn0 = u0:1 sig1
-    fn1 = colocated u0:42 sig2
-    fn2 = u0:27 sig3
-    fn3 = colocated u0:55 sig4
+    fn1 = colocated u0:45 sig2
+    fn2 = u0:29 sig3
+    fn3 = colocated u0:58 sig4
 
     block0(v0: i64, v1: i64):    ;; v0 :: list(1 | 2 | 3 | 4 | 5)
     v2 = iconst.i64 8
@@ -185,7 +185,7 @@ function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64, i64) -> i64 system_v
     sig1 = (i64, i64, i64) -> i64 tail
     fn0 = u0:5 sig0
-    fn1 = colocated u0:46 sig1
+    fn1 = colocated u0:49 sig1
 
     block0(v0: i64, v1: i64):    ;; v0 :: list(1 | 2 | 3 | 4 | 5)
     v2 = iconst.i64 8    ;; v2 :: list(none)
@@ -206,9 +206,9 @@ function u0:0(i64, i64, i64) -> i64 tail {
     sig5 = (i64, i32) -> i64 system_v
     fn0 = u0:1 sig1
     fn1 = u0:5 sig2
-    fn2 = colocated u0:45 sig3
-    fn3 = u0:29 sig4
-    fn4 = u0:30 sig5
+    fn2 = colocated u0:48 sig3
+    fn3 = u0:31 sig4
+    fn4 = u0:32 sig5
 
     block0(v0: i64, v1: i64, v2: i64):    ;; v0 :: list(1 | 2 | 3 | 4 | 5), v1 :: list(1 | 2 | 3 | 4 | 5)
     v3 = iconst.i64 8
@@ -269,9 +269,9 @@ function u0:0(i64, i64, i64) -> i64 tail {
     sig5 = (i64, i32) -> i64 system_v
     fn0 = u0:1 sig1
     fn1 = u0:5 sig2
-    fn2 = colocated u0:45 sig3
-    fn3 = u0:29 sig4
-    fn4 = u0:30 sig5
+    fn2 = colocated u0:48 sig3
+    fn3 = u0:31 sig4
+    fn4 = u0:32 sig5
 
     block0(v0: i64, v1: i64, v2: i64):    ;; v0 :: list(1 | 2 | 3 | 4 | 5), v1 :: list(none)
     v3 = iconst.i64 8
@@ -332,10 +332,10 @@ function u0:0(i64, i64, i64) -> i64 tail {
     sig6 = (i64, i64) -> i64 tail
     fn0 = u0:5 sig0
     fn1 = u0:1 sig2
-    fn2 = colocated u0:51 sig3
-    fn3 = u0:31 sig4
-    fn4 = u0:27 sig5
-    fn5 = colocated u0:57 sig6
+    fn2 = colocated u0:54 sig3
+    fn3 = u0:33 sig4
+    fn4 = u0:29 sig5
+    fn5 = colocated u0:60 sig6
 
     block0(v0: i64, v1: i64, v2: i64):    ;; v0 :: &fn17[]:(α1088) -> α1151, v1 :: list(1 | 2 | 3 | 4 | 5)
     v3 = iconst.i64 8
@@ -390,10 +390,10 @@ function u0:0(i64, i64, i64, i64) -> i64 tail {
     sig4 = (i32, i32, i32) -> i64 system_v
     sig5 = (i64, i64) -> i64 tail
     fn0 = u0:1 sig1
-    fn1 = colocated u0:53 sig2
-    fn2 = u0:31 sig3
-    fn3 = u0:27 sig4
-    fn4 = colocated u0:61 sig5
+    fn1 = colocated u0:56 sig2
+    fn2 = u0:33 sig3
+    fn3 = u0:29 sig4
+    fn4 = colocated u0:64 sig5
 
     block0(v0: i64, v1: i64, v2: i64, v3: i64):    ;; v0 :: &fn18[]:(α1152, α1153) -> α1215, v1 :: 0, v2 :: list(1 | 2 | 3 | 4 | 5)
     v4 = iconst.i64 8
@@ -451,10 +451,10 @@ function u0:0(i64, i64, i64, i64) -> i64 tail {
     sig4 = (i32, i32, i32) -> i64 system_v
     sig5 = (i64, i64) -> i64 tail
     fn0 = u0:1 sig1
-    fn1 = colocated u0:54 sig2
-    fn2 = u0:31 sig3
-    fn3 = u0:27 sig4
-    fn4 = colocated u0:62 sig5
+    fn1 = colocated u0:57 sig2
+    fn2 = u0:33 sig3
+    fn3 = u0:29 sig4
+    fn4 = colocated u0:65 sig5
 
     block0(v0: i64, v1: i64, v2: i64, v3: i64):    ;; v0 :: &fn18[]:(α1152, α1153) -> α1215, v1 :: int, v2 :: list(1 | 2 | 3 | 4 | 5)
     v4 = iconst.i64 8
@@ -586,9 +586,9 @@ function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64, i64, i64) -> i64 tail
     sig1 = (i32, i32, i32) -> i64 system_v
     sig2 = (i64, i64) -> i64 tail
-    fn0 = colocated u0:47 sig0
-    fn1 = u0:27 sig1
-    fn2 = colocated u0:59 sig2
+    fn0 = colocated u0:50 sig0
+    fn1 = u0:29 sig1
+    fn2 = colocated u0:62 sig2
 
     block0(v0: i64, v1: i64):    ;; v0 :: int
     v2 = load.i64 notrap aligned v1+32    ;; v2 :: &fn17[]:(α1088) -> α1151
@@ -638,7 +638,7 @@ function u0:0(i64, i64) -> i64 tail {
     ;   @abi    (Tagged, Tagged, RawInt, RawInt, Tagged, Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64, i64, i64, i64) -> i64 tail
-    fn0 = colocated u0:50 sig0
+    fn0 = colocated u0:53 sig0
 
     block0(v0: i64, v1: i64):    ;; v0 :: int
     v2 = load.i64 notrap aligned v1+32    ;; v2 :: &fn18[]:(α1152, α1153) -> α1215
@@ -657,7 +657,7 @@ function u0:0(i64, i64) -> i64 tail {
     ;   @abi    (Tagged, Tagged, RawInt, RawInt, Tagged, Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64, i64, i64, i64) -> i64 tail
-    fn0 = colocated u0:50 sig0
+    fn0 = colocated u0:53 sig0
 
     block0(v0: i64, v1: i64):    ;; v0 :: int
     v2 = load.i64 notrap aligned v1+32    ;; v2 :: &fn18[]:(α1152, α1153) -> α1215
@@ -677,8 +677,8 @@ function u0:0(i64, i64) -> i64 tail {
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64) system_v
     sig1 = (i64, i64, i64) -> i64 tail
-    fn0 = u0:70 sig0
-    fn1 = colocated u0:64 sig1
+    fn0 = u0:73 sig0
+    fn1 = colocated u0:67 sig1
 
     block0(v0: i64, v1: i64):    ;; v0 :: int
     v2 = load.i64 notrap aligned v1+32    ;; v2 :: list(1 | 2 | 3 | 4 | 5)
@@ -696,9 +696,9 @@ function u0:0(i64, i64, i64) -> i64 tail {
     sig0 = (i64, i64) -> i64 tail
     sig1 = (i32, i32, i32) -> i64 system_v
     sig2 = (i64, i64) -> i64 tail
-    fn0 = colocated u0:44 sig0
-    fn1 = u0:27 sig1
-    fn2 = colocated u0:65 sig2
+    fn0 = colocated u0:47 sig0
+    fn1 = u0:29 sig1
+    fn2 = colocated u0:68 sig2
 
     block0(v0: i64, v1: i64, v2: i64):    ;; v0 :: nil, v1 :: list(1 | 2 | 3 | 4 | 5)
     v3 = iconst.i32 43                  ; @20:9
@@ -719,8 +719,8 @@ function u0:0(i64, i64, i64) -> i64 tail {
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64) system_v
     sig1 = (i64, i64, i64) -> i64 tail
-    fn0 = u0:71 sig0
-    fn1 = colocated u0:66 sig1
+    fn0 = u0:74 sig0
+    fn1 = colocated u0:69 sig1
 
     block0(v0: i64, v1: i64):    ;; v0 :: list(1 | 2 | 3 | 4 | 5)
     v2 = load.i64 notrap aligned v1+32    ;; v2 :: list(1 | 2 | 3 | 4 | 5)
@@ -739,10 +739,10 @@ function u0:0(i64, i64, i64) -> i64 tail {
     sig1 = (i64, i64, i64) -> i64 tail
     sig2 = (i32, i32, i32) -> i64 system_v
     sig3 = (i64, i64) -> i64 tail
-    fn0 = u0:31 sig0
-    fn1 = colocated u0:47 sig1
-    fn2 = u0:27 sig2
-    fn3 = colocated u0:67 sig3
+    fn0 = u0:33 sig0
+    fn1 = colocated u0:50 sig1
+    fn2 = u0:29 sig2
+    fn3 = colocated u0:70 sig3
 
     block0(v0: i64, v1: i64, v2: i64):    ;; v0 :: nil, v1 :: list(1 | 2 | 3 | 4 | 5)
     v3 = iconst.i32 17                  ; @21:13
@@ -765,8 +765,8 @@ function u0:0(i64, i64, i64) -> i64 tail {
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64) system_v
     sig1 = (i64, i64, i64) -> i64 tail
-    fn0 = u0:71 sig0
-    fn1 = colocated u0:68 sig1
+    fn0 = u0:74 sig0
+    fn1 = colocated u0:71 sig1
 
     block0(v0: i64, v1: i64):    ;; v0 :: list(int)
     v2 = load.i64 notrap aligned v1+32    ;; v2 :: list(1 | 2 | 3 | 4 | 5)
@@ -785,10 +785,10 @@ function u0:0(i64, i64, i64) -> i64 tail {
     sig1 = (i64, i64, i64, i64) -> i64 tail
     sig2 = (i32, i32, i32) -> i64 system_v
     sig3 = (i64, i64) -> i64 tail
-    fn0 = u0:31 sig0
-    fn1 = colocated u0:49 sig1
-    fn2 = u0:27 sig2
-    fn3 = colocated u0:69 sig3
+    fn0 = u0:33 sig0
+    fn1 = colocated u0:52 sig1
+    fn2 = u0:29 sig2
+    fn3 = colocated u0:72 sig3
 
     block0(v0: i64, v1: i64, v2: i64):    ;; v0 :: nil, v1 :: list(1 | 2 | 3 | 4 | 5)
     v3 = iconst.i32 18                  ; @22:15
@@ -812,7 +812,7 @@ function u0:0(i64, i64, i64) -> i64 tail {
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64) system_v
     sig1 = (i64, i64) -> i64 tail
-    fn0 = u0:70 sig0
+    fn0 = u0:73 sig0
 
     block0(v0: i64, v1: i64):    ;; v0 :: int
     v2 = load.i64 notrap aligned v1+32    ;; v2 :: list(1 | 2 | 3 | 4 | 5)

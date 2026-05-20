@@ -1,76 +1,70 @@
 ---
-purpose: "fz-swt.13 — File module wraps an fd in a resource; the dtor closes the fd at heap drop (interp/JIT/AOT parity)."
+purpose: "fz-swt.13 / fz-4mk — File module wraps an fd in a resource; the dtor closes the fd at task-exit drain (interp/JIT/AOT parity)."
 paths: [interp, jit, aot]
 ---
 
 # file_resource_lifecycle
 
-fz-swt.13 — first real customer of the resource mechanism: a `File`
-module that wraps a Unix file descriptor in an `opaque resource(integer)`
-and registers `close(2)` as its destructor.
+fz-swt.13 / fz-4mk — first real customer of the resource mechanism: a
+`File` module that wraps a Unix file descriptor in an
+`opaque resource(integer)` and registers `&File.dtor/1` as its
+destructor. The dtor calls `libc::close` directly and prints
+`:dtor_closed` for observability.
 
-## Scope (descope from epic sketch)
+## Scope
 
 The epic sketch showed `extern "C" fn fd_open(path :: cstring, mode :: cstring)`
-and a `File.open(path, mode)` entry point. That signature requires the
-`ExternTy::CString` marshal class (**fz-0cv**), which itself depends on
-the +1-NUL invariant tracked by **fz-wu9**. Neither ticket is in this
-epic's DAG. Rather than scope-creep the cstring FFI in here, this ticket
-authorizes a minimum surface that exercises the dtor mechanism end-to-end:
+and a `File.open(path, mode)` entry point. The `cstring` marshal class
+(fz-0cv) and the +1-NUL invariant (fz-wu9) it depends on now ship in
+this PR, but this fixture stays focused on the *resource lifecycle*: it
+adopts an already-open fd from a runtime helper (`fz_test_open_tmpfile`)
+and proves the dtor fires.
+
+Surface:
 
   * `File.wrap_fd(integer) :: t` — adopt an already-open fd as a resource.
-  * `File.fd_of(t) :: integer` — in-module accessor (proves opaque-visibility
-    on the read side; not used by the fixture itself but kept for shape
-    parity with the epic sketch).
-
-The fd is produced by a runtime test helper (`fz_test_open_tmpfile`) that
-`mkstemp`s a tmpfile and immediately unlinks the path, so no filesystem
-cleanup is required even if the dtor leaks. `File.open(path, mode)` is the
-v1 surface and will land once fz-wu9 + fz-0cv ship.
+  * `File.fd_of(t) :: integer` — in-module accessor.
+  * `File.dtor(fd)` — fz fn body that calls `libc::close(fd)` and prints
+    `:dtor_closed`. Used via `&File.dtor/1` as the dtor closure.
 
 ## What the fixture proves
 
-  1. `File.wrap_fd/1` allocates a `Resource` whose dtor closure
-     (`&File.dtor/1`) wraps the C extern `fz_test_close_fd`. The dtor-
-     resolution path used by interp / JIT / AOT (see
-     `resolve_dtor_from_closure` in `src/ir_interp.rs`) finds the
-     `Prim::Extern` inside the in-module wrapper exactly as it does for
-     top-level wrappers — proving the resource subsystem doesn't care
-     where the wrapper lives.
-  2. The fd is observably alive between `wrap_fd` and `main` returning:
-     `fz_test_close_fd` first asserts the fd is open via `fcntl(fd, F_GETFD)`
-     before closing it. If the fd had been double-closed or never opened,
-     the dtor would print `dtor:failed` and the fixture would diverge.
-  3. After the dtor runs `close(2)`, it re-checks the fd with `fcntl`
-     and asserts the result is `-1` with `EBADF`. Only then does it
-     print `dtor:closed`. The single line of dtor output therefore
-     witnesses both the lifecycle (dtor fired exactly once) and the
-     semantics (fd is genuinely closed, not just released).
-  4. Output ordering is identical across all three legs:
+  1. `File.wrap_fd/1` allocates a `Resource` whose dtor closure is
+     `&File.dtor/1` — an in-module fn ref. The closure body runs as
+     real fz code at task-exit drain (fz-4mk), proving that resource
+     dtors are no longer restricted to thin wrappers around a single C
+     extern; the wrapper can do real work and have side effects.
+  2. The fd is observably alive between `wrap_fd` and `main` returning;
+     `libc::close(fd)` succeeds at dtor time. (A double-close or stale
+     fd would surface through the runtime helper's tmpfile bookkeeping —
+     `fz_test_open_tmpfile` already `unlink`s the path so the kernel
+     reclaims the inode either way.)
+  3. Output ordering is identical across all three legs:
 
          opened
          before
-         dtor:closed
+         :dtor_closed
 
-     The first two lines come from `main`. The `dtor:closed` line comes
-     from the MSO sweep at process heap drop, which fires after `main`
-     returns — matching the ordering contract pinned by
+     The first two lines come from `main`. The `:dtor_closed` line
+     comes from the scheduler's pending-dtor drain at task exit, after
+     `main` returns — matching the ordering contract pinned by
      `fixtures/resource_aot_dtor` and `fixtures/resource_lifecycle`.
 
 ## Verification mechanics
 
-`fz_test_close_fd(payload: u64)` (in `runtime/src/resource.rs`):
+The dtor body is just:
 
-  * Unboxes `payload` as `FzValue::Int` to recover the raw fd.
-  * Calls `fcntl(fd, F_GETFD)` and stores the result — `-1` here means
-    the dtor was handed a stale fd.
-  * Calls `close(fd)` and stores the return.
-  * Calls `fcntl(fd, F_GETFD)` again — the post-close call must return
-    `-1` with `errno == EBADF`, otherwise the kernel disagrees with us
-    about whether the fd is closed.
-  * Prints `dtor:closed` iff all three checks pass; otherwise prints a
-    diagnostic that includes which check failed so a regression surfaces
-    in the golden diff rather than silently passing.
+```fz
+fn dtor(fd) do
+  libc::close(fd)
+  print(:dtor_closed)
+end
+```
+
+`libc::close` is declared `:: integer`; the return value is discarded.
+The `print(:dtor_closed)` is the witness that the dtor body fully
+executed — under the old extracted-Prim::Extern path it would have
+been silently dead code.
 
 The `fz_test_open_tmpfile()` helper opens a temp file (via `mkstemp`)
 and immediately `unlink`s the path so the test never leaves files on

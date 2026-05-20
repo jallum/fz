@@ -426,6 +426,22 @@ impl<'a> Runtime<'a> {
             } else if task.next_frame.is_null() && task.parked_cont.is_null() {
                 task.state = ProcessState::Exited;
                 task.quiet_quanta = task.quiet_quanta.saturating_add(1);
+                // fz-4mk.3a — task is exiting; before the Heap drops at
+                // task-cleanup time, flush surviving MSO resources onto
+                // `pending_dtors` and dispatch each dtor closure body as
+                // real fz code through the `fz_drain_dtor_entry` shim.
+                // CURRENT_PROCESS must be live for the duration so the
+                // dtor body can allocate on the task heap, etc.
+                let ptr: *mut Process = &mut *task;
+                let prev = CURRENT_PROCESS.with(|c| c.replace(ptr));
+                fz_runtime::procbin::mso_drop_all_deferred(&mut task.heap);
+                type DrainDtor = extern "C" fn(u64, u64) -> i64;
+                let drain: DrainDtor =
+                    unsafe { std::mem::transmute(self.compiled.drain_dtor_entry_addr) };
+                while let Some((closure, payload)) = task.heap.pending_dtors.pop_front() {
+                    let _ = drain(closure, payload);
+                }
+                CURRENT_PROCESS.with(|c| c.set(prev));
             } else if task.state == ProcessState::Blocked {
                 // Park: keep in registry, no re-enqueue. send() will
                 // wake.
