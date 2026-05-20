@@ -18,7 +18,7 @@
 use crate::ast::{self, Pattern, Spanned};
 use crate::fz_ir::{BinOp, Const, Prim, UnOp, Var};
 use crate::types::{Descr, F64Bits};
-use crate::types_seam::Types;
+use crate::types_seam::{AsDescr, Types};
 use std::collections::HashMap;
 
 // ---------------------------------------------------------------------------
@@ -493,7 +493,7 @@ pub fn dispatch_clauses<T: Types>(
         // Patterns matched — try guard.
         if let Some(guard) = row.guard {
             match fold_expr(t, &guard.node, &bindings, atom_names) {
-                Some(d) => match as_bool_lit(&d) {
+                Some(d) => match as_bool_lit(&d.as_descr()) {
                     Some(true) => {
                         return Dispatch::MatchedRow {
                             row_idx: idx,
@@ -645,9 +645,9 @@ pub fn fold_expr<T: Types>(
     expr: &ast::Expr,
     bindings: &HashMap<String, Descr>,
     atom_names: &[String],
-) -> Option<Descr> {
+) -> Option<T::Ty> {
     use ast::Expr;
-    match expr {
+    let d = match expr {
         Expr::Var(name) => bindings.get(name).cloned(),
         Expr::Int(n) => Some(Descr::int_lit(*n)),
         Expr::Float(f) => Some(Descr::float_lit(*f)),
@@ -661,16 +661,17 @@ pub fn fold_expr<T: Types>(
         Expr::Bool(b) => Some(bool_descr(*b)),
         Expr::Nil => Some(Descr::nil()),
         Expr::BinOp(op, a, b) => {
-            let ad = fold_expr(t, &a.node, bindings, atom_names)?;
-            let bd = fold_expr(t, &b.node, bindings, atom_names)?;
+            let ad = fold_expr(t, &a.node, bindings, atom_names)?.as_descr();
+            let bd = fold_expr(t, &b.node, bindings, atom_names)?.as_descr();
             ast_binop_fold(t, *op, &ad, &bd)
         }
         Expr::UnOp(op, v) => {
-            let vd = fold_expr(t, &v.node, bindings, atom_names)?;
+            let vd = fold_expr(t, &v.node, bindings, atom_names)?.as_descr();
             ast_unop_fold(t, *op, &vd)
         }
         _ => None,
-    }
+    }?;
+    Some(t.from_descr(&d))
 }
 
 #[allow(dead_code)] // used via fold_expr; cf. RED.3+ wiring.
