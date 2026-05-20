@@ -208,14 +208,14 @@ fn reduce_block<T: crate::types_seam::Types>(
     log: &mut ReducerLog,
 ) {
     // Build a per-block env of Var → literal Descr by folding each stmt.
-    let mut env: HashMap<Var, Descr> = HashMap::new();
+    let mut env: HashMap<Var, T::Ty> = HashMap::new();
     let atom_names = m.atom_names.clone();
     {
         let block = m.fns[fn_idx].block(bid);
         for stmt in &block.stmts {
             let Stmt::Let(v, prim) = stmt;
             if let Some(d) = fold_prim(t, prim, &env, &atom_names) {
-                env.insert(*v, d.as_descr());
+                env.insert(*v, d);
             }
         }
     }
@@ -234,7 +234,7 @@ fn reduce_terminator<T: crate::types_seam::Types>(
     fn_idx: usize,
     bid: BlockId,
     term: &Term,
-    env: &HashMap<Var, Descr>,
+    env: &HashMap<Var, T::Ty>,
     log: &mut ReducerLog,
 ) -> Option<Term> {
     // fz-9pr.17 — slot vocabulary lives in callsite_walk::slot_for_term;
@@ -250,8 +250,8 @@ fn reduce_terminator<T: crate::types_seam::Types>(
             else_b,
             ..
         } => {
-            let cd = env.get(cond)?;
-            let b = as_bool_lit(cd)?;
+            let cd = env.get(cond)?.as_descr();
+            let b = as_bool_lit(&cd)?;
             Some(Term::Goto(if b { *then_b } else { *else_b }, vec![]))
         }
         Term::TailCall {
@@ -313,7 +313,7 @@ fn reduce_terminator<T: crate::types_seam::Types>(
             args,
         } => {
             let slot = slot.unwrap();
-            let Some(cl_lit) = env.get(closure).and_then(|d| d.as_closure_lit()).cloned() else {
+            let Some(cl_lit) = env.get(closure).map(|ty| ty.as_descr()).and_then(|d| d.as_closure_lit().cloned()) else {
                 record_stalled(
                     m,
                     fn_idx,
@@ -326,7 +326,7 @@ fn reduce_terminator<T: crate::types_seam::Types>(
             };
             let mut all_descrs = cl_lit.captures.clone();
             for a in args {
-                let Some(d) = env.get(a).cloned() else {
+                let Some(d) = env.get(a).map(|ty| ty.as_descr()) else {
                     record_stalled(m, fn_idx, ident, slot, StalledReason::OpaqueArg, log);
                     return None;
                 };
@@ -352,7 +352,7 @@ fn reduce_terminator<T: crate::types_seam::Types>(
             continuation,
         } => {
             let slot = slot.unwrap();
-            let Some(cl_lit) = env.get(closure).and_then(|d| d.as_closure_lit()).cloned() else {
+            let Some(cl_lit) = env.get(closure).map(|ty| ty.as_descr()).and_then(|d| d.as_closure_lit().cloned()) else {
                 record_stalled(
                     m,
                     fn_idx,
@@ -365,7 +365,7 @@ fn reduce_terminator<T: crate::types_seam::Types>(
             };
             let mut all_descrs = cl_lit.captures.clone();
             for a in args {
-                let Some(d) = env.get(a).cloned() else {
+                let Some(d) = env.get(a).map(|ty| ty.as_descr()) else {
                     record_stalled(m, fn_idx, ident, slot, StalledReason::OpaqueArg, log);
                     return None;
                 };
@@ -503,11 +503,11 @@ fn try_reduce_call<T: crate::types_seam::Types>(
     ctx: &mut ReduceCtx<'_, T>,
     callee: FnId,
     args: &[Var],
-    env: &HashMap<Var, Descr>,
+    env: &HashMap<Var, T::Ty>,
 ) -> Option<Descr> {
     let mut arg_descrs: Vec<Descr> = Vec::with_capacity(args.len());
     for a in args {
-        let Some(d) = env.get(a).cloned() else {
+        let Some(d) = env.get(a).map(|ty| ty.as_descr()) else {
             ctx.note(StalledReason::OpaqueArg);
             return None;
         };
@@ -577,9 +577,9 @@ fn walk_fn_body<T: crate::types_seam::Types>(
         ctx.note(StalledReason::CalleeBodyShape);
         return None;
     }
-    let mut env: HashMap<Var, Descr> = HashMap::new();
+    let mut env: HashMap<Var, T::Ty> = HashMap::new();
     for (p, d) in entry.params.iter().zip(arg_descrs.iter()) {
-        env.insert(*p, d.clone());
+        env.insert(*p, ctx.t.from_descr(d));
     }
     walk_block(ctx, f, f.entry, env, 0)
 }
@@ -592,7 +592,7 @@ fn walk_block<T: crate::types_seam::Types>(
     ctx: &mut ReduceCtx<'_, T>,
     f: &FnIr,
     bid: BlockId,
-    mut env: HashMap<Var, Descr>,
+    mut env: HashMap<Var, T::Ty>,
     goto_depth: u32,
 ) -> Option<Descr> {
     if goto_depth > 64 {
@@ -615,11 +615,11 @@ fn walk_block<T: crate::types_seam::Types>(
             ctx.note(StalledReason::OpaqueArg);
             return None;
         };
-        env.insert(*v, d.as_descr());
+        env.insert(*v, d);
     }
     match &block.terminator {
         Term::Return(v) => {
-            let Some(d) = env.get(v).cloned() else {
+            let Some(d) = env.get(v).map(|ty| ty.as_descr()) else {
                 ctx.note(StalledReason::OpaqueArg);
                 return None;
             };
@@ -652,12 +652,12 @@ fn walk_block<T: crate::types_seam::Types>(
             else_b,
             ..
         } => {
-            let Some(cd) = env.get(cond) else {
+            let Some(cd) = env.get(cond).map(|ty| ty.as_descr()) else {
                 ctx.note(StalledReason::OpaqueArg);
                 return None;
             };
-            let Some(b) = as_bool_lit(cd) else {
-                ctx.note(stall_reason_for_non_literal(cd));
+            let Some(b) = as_bool_lit(&cd) else {
+                ctx.note(stall_reason_for_non_literal(&cd));
                 return None;
             };
             walk_block(
@@ -694,13 +694,13 @@ fn walk_block<T: crate::types_seam::Types>(
             args,
             ident: _,
         } => {
-            let Some(cl_lit) = env.get(closure).and_then(|d| d.as_closure_lit()).cloned() else {
+            let Some(cl_lit) = env.get(closure).map(|ty| ty.as_descr()).and_then(|d| d.as_closure_lit().cloned()) else {
                 ctx.note(StalledReason::NoClosureLitTarget);
                 return None;
             };
             let mut all_descrs = cl_lit.captures;
             for a in args {
-                let Some(d) = env.get(a).cloned() else {
+                let Some(d) = env.get(a).map(|ty| ty.as_descr()) else {
                     ctx.note(StalledReason::OpaqueArg);
                     return None;
                 };
@@ -714,13 +714,13 @@ fn walk_block<T: crate::types_seam::Types>(
             args,
             continuation,
         } => {
-            let Some(cl_lit) = env.get(closure).and_then(|d| d.as_closure_lit()).cloned() else {
+            let Some(cl_lit) = env.get(closure).map(|ty| ty.as_descr()).and_then(|d| d.as_closure_lit().cloned()) else {
                 ctx.note(StalledReason::NoClosureLitTarget);
                 return None;
             };
             let mut all_descrs = cl_lit.captures;
             for a in args {
-                let Some(d) = env.get(a).cloned() else {
+                let Some(d) = env.get(a).map(|ty| ty.as_descr()) else {
                     ctx.note(StalledReason::OpaqueArg);
                     return None;
                 };
@@ -742,12 +742,12 @@ fn feed_cont<T: crate::types_seam::Types>(
     ctx: &mut ReduceCtx<'_, T>,
     continuation: &crate::fz_ir::Cont,
     result: Descr,
-    env: &HashMap<Var, Descr>,
+    env: &HashMap<Var, T::Ty>,
 ) -> Option<Descr> {
     let mut cont_descrs: Vec<Descr> = Vec::with_capacity(1 + continuation.captured.len());
     cont_descrs.push(result);
     for cap in &continuation.captured {
-        let Some(d) = env.get(cap).cloned() else {
+        let Some(d) = env.get(cap).map(|ty| ty.as_descr()) else {
             ctx.note(StalledReason::OpaqueArg);
             return None;
         };

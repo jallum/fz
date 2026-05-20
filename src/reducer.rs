@@ -107,7 +107,7 @@ fn is_closure_lit_literal(d: &Descr) -> bool {
 pub fn fold_prim<T: Types>(
     t: &mut T,
     prim: &Prim,
-    env: &HashMap<Var, Descr>,
+    env: &HashMap<Var, T::Ty>,
     atom_names: &[String],
 ) -> Option<T::Ty> {
     match prim {
@@ -176,16 +176,16 @@ fn fold_binop<T: Types>(
     op: BinOp,
     a: Var,
     b: Var,
-    env: &HashMap<Var, Descr>,
+    env: &HashMap<Var, T::Ty>,
 ) -> Option<T::Ty> {
-    let ad = env.get(&a)?;
-    let bd = env.get(&b)?;
+    let ad = env.get(&a)?.as_descr();
+    let bd = env.get(&b)?.as_descr();
     use BinOp::*;
     match op {
-        Add | Sub | Mul | Div | Mod => fold_arith(t, op, ad, bd),
-        Eq | Neq => fold_eq(t, op, ad, bd),
-        Lt | Le | Gt | Ge => fold_cmp(t, op, ad, bd),
-        And | Or => fold_logical(t, op, ad, bd),
+        Add | Sub | Mul | Div | Mod => fold_arith(t, op, &ad, &bd),
+        Eq | Neq => fold_eq(t, op, &ad, &bd),
+        Lt | Le | Gt | Ge => fold_cmp(t, op, &ad, &bd),
+        And | Or => fold_logical(t, op, &ad, &bd),
     }
 }
 
@@ -290,35 +290,36 @@ fn fold_unop<T: Types>(
     t: &mut T,
     op: UnOp,
     v: Var,
-    env: &HashMap<Var, Descr>,
+    env: &HashMap<Var, T::Ty>,
 ) -> Option<T::Ty> {
-    let d = env.get(&v)?;
+    let d = env.get(&v)?.as_descr();
     match op {
         UnOp::Neg => {
-            if let Some(n) = as_int_lit(d) {
+            if let Some(n) = as_int_lit(&d) {
                 Some(t.int_lit(n.checked_neg()?))
-            } else if let Some(f) = as_float_lit(d) {
+            } else if let Some(f) = as_float_lit(&d) {
                 Some(t.float_lit(-f.get()))
             } else {
                 None
             }
         }
-        UnOp::Not => Some(t.bool_lit(!as_bool_lit(d)?)),
+        UnOp::Not => Some(t.bool_lit(!as_bool_lit(&d)?)),
     }
 }
 
 fn fold_make_tuple<T: Types>(
     t: &mut T,
     vs: &[Var],
-    env: &HashMap<Var, Descr>,
+    env: &HashMap<Var, T::Ty>,
 ) -> Option<T::Ty> {
     let mut elems: Vec<T::Ty> = Vec::with_capacity(vs.len());
     for v in vs {
-        let d = env.get(v)?;
-        if !is_literal(d) {
+        let ty = env.get(v)?;
+        let d = ty.as_descr();
+        if !is_literal(&d) {
             return None;
         }
-        elems.push(t.from_descr(d));
+        elems.push(ty.clone());
     }
     Some(t.tuple(&elems))
 }
@@ -327,20 +328,20 @@ fn fold_tuple_field<T: Types>(
     t: &mut T,
     v: Var,
     i: usize,
-    env: &HashMap<Var, Descr>,
+    env: &HashMap<Var, T::Ty>,
 ) -> Option<T::Ty> {
-    let d = env.get(&v)?;
-    let elems = as_tuple_lit(d)?;
-    Some(t.from_descr(elems.get(i)?))
+    let d = env.get(&v)?.as_descr();
+    let elem = as_tuple_lit(&d)?.get(i)?.clone();
+    Some(t.from_descr(&elem))
 }
 
 fn fold_type_test<T: Types>(
     t: &mut T,
     v: Var,
     descr: &Descr,
-    env: &HashMap<Var, Descr>,
+    env: &HashMap<Var, T::Ty>,
 ) -> Option<T::Ty> {
-    let vd = env.get(&v)?;
+    let vd = env.get(&v)?.as_descr();
     if vd.is_subtype(descr) {
         Some(t.bool_lit(true))
     } else if vd.intersect(descr).is_empty() {
@@ -357,15 +358,15 @@ fn fold_make_closure<T: Types>(
     t: &mut T,
     fn_id: crate::fz_ir::FnId,
     captured: &[Var],
-    env: &HashMap<Var, Descr>,
+    env: &HashMap<Var, T::Ty>,
 ) -> Option<T::Ty> {
     let mut caps: Vec<T::Ty> = Vec::with_capacity(captured.len());
     for cv in captured {
-        let d = env.get(cv)?;
-        if !is_literal(d) {
+        let ty = env.get(cv)?;
+        if !is_literal(&ty.as_descr()) {
             return None;
         }
-        caps.push(t.from_descr(d));
+        caps.push(ty.clone());
     }
     // n_args is the closure's apparent post-capture arity. We don't
     // know it here without consulting Module.fn_by_id; passing 0 means
@@ -378,15 +379,15 @@ fn fold_make_closure<T: Types>(
 fn fold_list_is_nil<T: Types>(
     t: &mut T,
     v: Var,
-    env: &HashMap<Var, Descr>,
+    env: &HashMap<Var, T::Ty>,
 ) -> Option<T::Ty> {
-    let d = env.get(&v)?;
+    let d = env.get(&v)?.as_descr();
     // fz-yan.1 — post-fz-s9y, `nil` (the atom) and `[]` (the empty list
     // sentinel) are distinct bit patterns. `IsEmptyList` tests for the
     // EMPTY_LIST sentinel, so a value provably equal to `nil` folds to
     // `false`, not `true` as it did pre-s9y. The `list_of(none())` case
     // — i.e. provably the empty list — still folds to `true`.
-    if is_nil_only(d) {
+    if is_nil_only(&d) {
         Some(t.bool_lit(false))
     } else if d.intersect(&Descr::nil()).is_empty()
         && d.components()
@@ -733,8 +734,11 @@ mod tests {
         Var(n)
     }
 
-    fn env(pairs: &[(u32, Descr)]) -> HashMap<Var, Descr> {
-        pairs.iter().map(|(i, d)| (Var(*i), d.clone())).collect()
+    fn env(pairs: &[(u32, Descr)]) -> HashMap<Var, crate::types_seam::Ty> {
+        pairs
+            .iter()
+            .map(|(i, d)| (Var(*i), crate::types_seam::Ty::from_descr(d.clone())))
+            .collect()
     }
 
     // ---- is_literal predicates ----
@@ -904,7 +908,7 @@ mod tests {
         assert_eq!(as_bool_lit(&r), Some(true));
     }
 
-    fn env_with_true() -> HashMap<Var, Descr> {
+    fn env_with_true() -> HashMap<Var, crate::types_seam::Ty> {
         env(&[(0, Descr::atom_lit("true")), (1, Descr::atom_lit("false"))])
     }
 
