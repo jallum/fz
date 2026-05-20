@@ -1640,11 +1640,7 @@ impl Backend for AotBackend {
         let set_resume_sig = sig1(&[types::I64], &[]);
         let set_resume_id = self
             .omod
-            .declare_function(
-                "fz_aot_set_resume_addr",
-                Linkage::Import,
-                &set_resume_sig,
-            )
+            .declare_function("fz_aot_set_resume_addr", Linkage::Import, &set_resume_sig)
             .map_err(|e| CodegenError::new(format!("declare fz_aot_set_resume_addr: {}", e)))?;
 
         // fz-ul4.38 — fz_aot_register_tuple_schemas(proc, arities_ptr, len)
