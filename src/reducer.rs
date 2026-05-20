@@ -663,11 +663,11 @@ pub fn fold_expr<T: Types>(
         Expr::BinOp(op, a, b) => {
             let ad = fold_expr(t, &a.node, bindings, atom_names)?.as_descr();
             let bd = fold_expr(t, &b.node, bindings, atom_names)?.as_descr();
-            ast_binop_fold(t, *op, &ad, &bd)
+            return ast_binop_fold(t, *op, &ad, &bd);
         }
         Expr::UnOp(op, v) => {
             let vd = fold_expr(t, &v.node, bindings, atom_names)?.as_descr();
-            ast_unop_fold(t, *op, &vd)
+            return ast_unop_fold(t, *op, &vd);
         }
         _ => None,
     }?;
@@ -675,7 +675,7 @@ pub fn fold_expr<T: Types>(
 }
 
 #[allow(dead_code)] // used via fold_expr; cf. RED.3+ wiring.
-fn ast_binop_fold<T: Types>(_t: &mut T, op: ast::BinOp, ad: &Descr, bd: &Descr) -> Option<Descr> {
+fn ast_binop_fold<T: Types>(t: &mut T, op: ast::BinOp, ad: &Descr, bd: &Descr) -> Option<T::Ty> {
     use ast::BinOp::*;
     let ir_op = match op {
         Add => BinOp::Add,
@@ -694,33 +694,35 @@ fn ast_binop_fold<T: Types>(_t: &mut T, op: ast::BinOp, ad: &Descr, bd: &Descr) 
         // Pipe and Cons aren't fold-prim-able in the same shape.
         Pipe | Cons => return None,
     };
-    match ir_op {
+    let d = match ir_op {
         BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => fold_arith(ir_op, ad, bd),
         BinOp::Eq | BinOp::Neq => fold_eq(ir_op, ad, bd),
         BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => fold_cmp(ir_op, ad, bd),
         BinOp::And | BinOp::Or => fold_logical(ir_op, ad, bd),
-    }
+    }?;
+    Some(t.from_descr(&d))
 }
 
 #[allow(dead_code)] // used via fold_expr.
-fn ast_unop_fold<T: Types>(_t: &mut T, op: ast::UnOp, d: &Descr) -> Option<Descr> {
+fn ast_unop_fold<T: Types>(t: &mut T, op: ast::UnOp, d: &Descr) -> Option<T::Ty> {
     use ast::UnOp::*;
     let ir_op = match op {
         Neg => UnOp::Neg,
         Not => UnOp::Not,
     };
-    match ir_op {
+    let r = match ir_op {
         UnOp::Neg => {
             if let Some(n) = as_int_lit(d) {
-                return Some(Descr::int_lit(n.checked_neg()?));
+                Some(Descr::int_lit(n.checked_neg()?))
+            } else if let Some(f) = as_float_lit(d) {
+                Some(Descr::float_lit(-f.get()))
+            } else {
+                None
             }
-            if let Some(f) = as_float_lit(d) {
-                return Some(Descr::float_lit(-f.get()));
-            }
-            None
         }
         UnOp::Not => as_bool_lit(d).map(|b| bool_descr(!b)),
-    }
+    }?;
+    Some(t.from_descr(&r))
 }
 
 // ---------------------------------------------------------------------------
