@@ -17,6 +17,7 @@ pub mod park;
 pub mod procbin;
 pub mod process;
 pub mod resource;
+pub mod sched;
 pub mod scheduler_hooks;
 pub mod sync;
 pub mod timer;
