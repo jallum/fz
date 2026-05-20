@@ -206,7 +206,6 @@ fn reduce_block<T: crate::types_seam::Types>(
     bid: BlockId,
     log: &mut ReducerLog,
 ) {
-    let _ = t; // threaded for future seam use; body still on Descr for now
     // Build a per-block env of Var → literal Descr by folding each stmt.
     let mut env: HashMap<Var, Descr> = HashMap::new();
     let atom_names = m.atom_names.clone();
@@ -214,7 +213,7 @@ fn reduce_block<T: crate::types_seam::Types>(
         let block = m.fns[fn_idx].block(bid);
         for stmt in &block.stmts {
             let Stmt::Let(v, prim) = stmt;
-            if let Some(d) = fold_prim(prim, &env, &atom_names) {
+            if let Some(d) = fold_prim(t, prim, &env, &atom_names) {
                 env.insert(*v, d);
             }
         }
@@ -222,13 +221,14 @@ fn reduce_block<T: crate::types_seam::Types>(
 
     // Now consider the terminator.
     let term = m.fns[fn_idx].block(bid).terminator.clone();
-    let new_term = reduce_terminator(m, fn_idx, bid, &term, &env, log);
+    let new_term = reduce_terminator(t, m, fn_idx, bid, &term, &env, log);
     if let Some(nt) = new_term {
         block_mut(&mut m.fns[fn_idx], bid).terminator = nt;
     }
 }
 
-fn reduce_terminator(
+fn reduce_terminator<T: crate::types_seam::Types>(
+    t: &mut T,
     m: &mut Module,
     fn_idx: usize,
     bid: BlockId,
@@ -263,7 +263,7 @@ fn reduce_terminator(
             // with full budget. All-or-nothing: if try_reduce_call returns
             // None, no rewrite is committed.
             let slot = slot.unwrap();
-            let mut ctx = fresh_ctx(m);
+            let mut ctx = fresh_ctx(m, t);
             let Some(lit) = try_reduce_call(&mut ctx, *callee, args, env) else {
                 let reason = ctx.last_reason.unwrap_or(StalledReason::Other);
                 record_stalled(m, fn_idx, ident, slot, reason, log);
@@ -283,7 +283,7 @@ fn reduce_terminator(
             continuation,
         } => {
             let slot = slot.unwrap();
-            let mut ctx = fresh_ctx(m);
+            let mut ctx = fresh_ctx(m, t);
             let Some(lit) = try_reduce_call(&mut ctx, *callee, args, env) else {
                 let reason = ctx.last_reason.unwrap_or(StalledReason::Other);
                 record_stalled(m, fn_idx, ident, slot, reason, log);
@@ -331,7 +331,7 @@ fn reduce_terminator(
                 };
                 all_descrs.push(d);
             }
-            let mut ctx = fresh_ctx(m);
+            let mut ctx = fresh_ctx(m, t);
             let Some(lit) = try_reduce_call_with_descrs(&mut ctx, cl_lit.fn_id, &all_descrs) else {
                 let reason = ctx.last_reason.unwrap_or(StalledReason::Other);
                 record_stalled(m, fn_idx, ident, slot, reason, log);
@@ -370,7 +370,7 @@ fn reduce_terminator(
                 };
                 all_descrs.push(d);
             }
-            let mut ctx = fresh_ctx(m);
+            let mut ctx = fresh_ctx(m, t);
             let Some(lit) = try_reduce_call_with_descrs(&mut ctx, cl_lit.fn_id, &all_descrs) else {
                 let reason = ctx.last_reason.unwrap_or(StalledReason::Other);
                 record_stalled(m, fn_idx, ident, slot, reason, log);
@@ -451,7 +451,7 @@ pub const UNROLL_BUDGET_DEFAULT: u32 = 32;
 /// top-level callsite; the all-or-nothing rule is enforced by
 /// `reduce_terminator` discarding the rewrite when `try_reduce_call`
 /// returns `None`.
-struct ReduceCtx<'m> {
+struct ReduceCtx<'m, T: crate::types_seam::Types> {
     module: &'m Module,
     /// Remaining budget. Decrements on each `try_reduce_call` entry.
     budget: u32,
@@ -464,9 +464,12 @@ struct ReduceCtx<'m> {
     /// leaf survives all the way back to `reduce_terminator` where
     /// it is published into `ReducerLog.stalled`.
     last_reason: Option<StalledReason>,
+    /// fz-mm2.58 — Types seam threaded through the reducer's recursive
+    /// walk so that `fold_prim` can be called with `t`.
+    t: &'m mut T,
 }
 
-impl<'m> ReduceCtx<'m> {
+impl<'m, T: crate::types_seam::Types> ReduceCtx<'m, T> {
     fn note(&mut self, r: StalledReason) {
         if self.last_reason.is_none() {
             self.last_reason = Some(r);
@@ -476,12 +479,13 @@ impl<'m> ReduceCtx<'m> {
 
 /// Build a fresh `ReduceCtx` at top-level callsite entry. Centralises
 /// the boilerplate that used to live in each `reduce_terminator` arm.
-fn fresh_ctx(m: &Module) -> ReduceCtx<'_> {
+fn fresh_ctx<'m, T: crate::types_seam::Types>(m: &'m Module, t: &'m mut T) -> ReduceCtx<'m, T> {
     ReduceCtx {
         module: m,
         budget: UNROLL_BUDGET_DEFAULT,
         stack: Vec::new(),
         last_reason: None,
+        t,
     }
 }
 
@@ -494,8 +498,8 @@ fn fresh_ctx(m: &Module) -> ReduceCtx<'_> {
 /// - The unroll budget is non-zero.
 /// - For same-callee re-entry, the args are strictly structurally smaller
 ///   than the parent's (literal-int magnitude OR Descr depth).
-fn try_reduce_call(
-    ctx: &mut ReduceCtx,
+fn try_reduce_call<T: crate::types_seam::Types>(
+    ctx: &mut ReduceCtx<'_, T>,
     callee: FnId,
     args: &[Var],
     env: &HashMap<Var, Descr>,
@@ -522,8 +526,8 @@ fn stall_reason_for_non_literal(d: &Descr) -> StalledReason {
     }
 }
 
-fn try_reduce_call_with_descrs(
-    ctx: &mut ReduceCtx,
+fn try_reduce_call_with_descrs<T: crate::types_seam::Types>(
+    ctx: &mut ReduceCtx<'_, T>,
     callee: FnId,
     arg_descrs: &[Descr],
 ) -> Option<Descr> {
@@ -561,7 +565,11 @@ fn try_reduce_call_with_descrs(
     result
 }
 
-fn walk_fn_body(ctx: &mut ReduceCtx, callee: FnId, arg_descrs: &[Descr]) -> Option<Descr> {
+fn walk_fn_body<T: crate::types_seam::Types>(
+    ctx: &mut ReduceCtx<'_, T>,
+    callee: FnId,
+    arg_descrs: &[Descr],
+) -> Option<Descr> {
     let f: &FnIr = ctx.module.fn_by_id(callee);
     let entry = f.block(f.entry);
     if entry.params.len() != arg_descrs.len() {
@@ -579,8 +587,8 @@ fn walk_fn_body(ctx: &mut ReduceCtx, callee: FnId, arg_descrs: &[Descr]) -> Opti
 /// `goto_depth` caps inter-block transitions within one fn body to a sane
 /// number (prevents infinite Goto chains; topo guarantees terminate, but
 /// belt-and-braces).
-fn walk_block(
-    ctx: &mut ReduceCtx,
+fn walk_block<T: crate::types_seam::Types>(
+    ctx: &mut ReduceCtx<'_, T>,
     f: &FnIr,
     bid: BlockId,
     mut env: HashMap<Var, Descr>,
@@ -602,7 +610,7 @@ fn walk_block(
     // Fold stmts.
     for stmt in &block.stmts {
         let Stmt::Let(v, prim) = stmt;
-        let Some(d) = fold_prim(prim, &env, &ctx.module.atom_names) else {
+        let Some(d) = fold_prim(ctx.t, prim, &env, &ctx.module.atom_names) else {
             ctx.note(StalledReason::OpaqueArg);
             return None;
         };
@@ -729,8 +737,8 @@ fn walk_block(
 
 /// Build the cont's input Descrs `[result, ...captures]` and reduce
 /// through it. Shared by Term::Call and Term::CallClosure.
-fn feed_cont(
-    ctx: &mut ReduceCtx,
+fn feed_cont<T: crate::types_seam::Types>(
+    ctx: &mut ReduceCtx<'_, T>,
     continuation: &crate::fz_ir::Cont,
     result: Descr,
     env: &HashMap<Var, Descr>,
