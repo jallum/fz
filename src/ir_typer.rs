@@ -2157,23 +2157,34 @@ fn type_prim<T: crate::types_seam::Types>(
         }
 
         Prim::MakeList(els, tail) => {
-            let mut elem = Descr::none();
+            use crate::types_seam::AsDescr;
+            let mut elem = t.none();
             for v in els {
-                elem = elem.union(&lookup(t, env, *v));
+                let d = lookup(t, env, *v);
+                let vy = t.from_descr(&d);
+                elem = t.union(elem, vy);
             }
             if let Some(tl) = tail {
                 let tt = lookup(t, env, *tl);
-                elem = elem.union(&crate::typer::list_element_type(&tt));
+                let tail_elem = crate::typer::list_element_type(&tt);
+                let tail_elem_ty = t.from_descr(&tail_elem);
+                elem = t.union(elem, tail_elem_ty);
             }
-            Descr::list_of(elem)
+            t.list(elem).as_descr()
         }
         Prim::ListCons(h, tl) => {
+            use crate::types_seam::AsDescr;
             let ht = lookup(t, env, *h);
             let tt = lookup(t, env, *tl);
-            Descr::list_of(ht.union(&crate::typer::list_element_type(&tt)))
+            let tail_elem = crate::typer::list_element_type(&tt);
+            let hy = t.from_descr(&ht);
+            let ty_tail = t.from_descr(&tail_elem);
+            let elem_ty = t.union(hy, ty_tail);
+            t.list(elem_ty).as_descr()
         }
         Prim::ListHead(l) => crate::typer::list_element_type(&lookup(t, env, *l)),
         Prim::ListTail(l) => {
+            use crate::types_seam::AsDescr;
             // fz-s9y.3 — the tail of a list is a list (possibly empty).
             // `Descr::list_of(elem)` covers the empty list via the
             // list_of(none()) subtype rule (see types::list_clause_empty);
@@ -2182,9 +2193,13 @@ fn type_prim<T: crate::types_seam::Types>(
             // that artifact polluted inferred spec types with `nil | list(_)`.
             let lt = lookup(t, env, *l);
             let elem = crate::typer::list_element_type(&lt);
-            Descr::list_of(elem)
+            let elem_ty = t.from_descr(&elem);
+            t.list(elem_ty).as_descr()
         }
-        Prim::IsEmptyList(_) => Descr::bool_t(),
+        Prim::IsEmptyList(_) => {
+            use crate::types_seam::AsDescr;
+            t.bool().as_descr()
+        }
 
         Prim::MakeMap(entries) => {
             let mut fields = std::collections::BTreeMap::new();
