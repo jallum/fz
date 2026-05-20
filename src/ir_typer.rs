@@ -591,6 +591,9 @@ struct WalkResult {
 /// which is finite. `VISIT_HARD_BOUND` below is a debug-only
 /// tripwire for invariant violation, NOT a release safety net.
 pub fn type_module<T: crate::types_seam::Types>(t: &mut T, m: &Module) -> ModuleTypes {
+    // fz-mm2.7 — verified: body has no direct Descr operations. The seam
+    // handle is threaded into the worklist driver (process_worklist),
+    // which fans it out to type_fn and the per-call typing work.
     #[cfg(test)]
     TYPE_MODULE_CALLS.with(|c| c.set(c.get() + 1));
 
