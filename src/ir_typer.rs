@@ -2346,9 +2346,10 @@ fn type_prim<T: crate::types_seam::Types>(
         // grants `brand(name) ⊆ inner`). Pre-K4, the structural axes
         // alone keep it usable; the brand tag is just an extra label.
         Prim::Brand(v, name) => {
-            let mut d = lookup(t, env, *v);
-            d.brands = crate::types::LiteralSet::lit(name.clone());
-            d
+            use crate::types_seam::AsDescr;
+            let d = lookup(t, env, *v);
+            let inner = t.from_descr(&d);
+            t.mint_brand(inner, name).as_descr()
         }
 
         // Reader and struct ops: conservative Top until later tickets refine.

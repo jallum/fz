@@ -113,6 +113,11 @@ pub trait Types {
         n_args: usize,
     ) -> Self::Ty;
 
+    /// fz-axu (K3) — brand-mint. Overlay brand tag `name` on inner's
+    /// structural type. Result carries both the brand label (for nominal
+    /// identity / visibility) and the underlying axes.
+    fn mint_brand(&mut self, inner: Self::Ty, name: &str) -> Self::Ty;
+
     // ---- lattice ops ---------------------------------------------------
 
     fn union(&mut self, a: Self::Ty, b: Self::Ty) -> Self::Ty;
@@ -292,6 +297,11 @@ impl Types for ConcreteTypes {
     ) -> Ty {
         let capture_descrs: Vec<Descr> = captures.into_iter().map(|c| c.descr().clone()).collect();
         Ty::from_descr(Descr::closure_lit(fn_id, capture_descrs, n_args))
+    }
+    fn mint_brand(&mut self, inner: Ty, name: &str) -> Ty {
+        let mut d = inner.descr().clone();
+        d.brands = crate::types::LiteralSet::lit(name.to_string());
+        Ty::from_descr(d)
     }
 
     fn union(&mut self, a: Ty, b: Ty) -> Ty {
