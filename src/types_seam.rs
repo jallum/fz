@@ -25,7 +25,7 @@ use crate::types::{Descr, MapKey, TypeVarId};
 /// Opaque handle to a type. Inner representation is private and is
 /// expected to change (interned id, BDD root, ...) without consumer
 /// impact. Consumers must go through `Types` for every operation.
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct Ty(Arc<Descr>);
 
 impl Ty {
@@ -81,7 +81,7 @@ pub type Sigma<T> = HashMap<TypeVarId, T>;
 /// memoization) populate state on construction calls and read it on
 /// queries.
 pub trait Types {
-    type Ty: Clone + AsDescr;
+    type Ty: Clone + Eq + std::hash::Hash + AsDescr;
 
     // ---- constructors --------------------------------------------------
 
