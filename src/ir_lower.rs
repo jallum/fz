@@ -635,12 +635,18 @@ fn parse_runtime_prelude() -> Program {
     flat
 }
 
-pub fn lower_program(prog: &Program) -> Result<Module, LowerError> {
-    let (m, _) = lower_program_full(prog)?;
+pub fn lower_program<T: crate::types_seam::Types>(
+    t: &mut T,
+    prog: &Program,
+) -> Result<Module, LowerError> {
+    let (m, _) = lower_program_full(t, prog)?;
     Ok(m)
 }
 
-pub fn lower_program_full(prog: &Program) -> Result<(Module, AtomTable), LowerError> {
+pub fn lower_program_full<T: crate::types_seam::Types>(
+    t: &mut T,
+    prog: &Program,
+) -> Result<(Module, AtomTable), LowerError> {
     let mut ctx = LowerCtx::new();
 
     // Prepend the built-in runtime.fz prelude so its externs and wrapper fns
@@ -807,7 +813,7 @@ pub fn lower_program_full(prog: &Program) -> Result<(Module, AtomTable), LowerEr
     // Built-in brands (utf8, ...) have no module owner and pass
     // trivially; the gate fires when user-declared brands acquire a
     // mint syntax and a foreign module tries to use it.
-    check_brand_visibility(&module, &ctx.stmt_spans, &ctx.fn_spans)?;
+    check_brand_visibility(t, &module, &ctx.stmt_spans, &ctx.fn_spans)?;
     // fz-axu.23 (M2) — brand erasure is the final lowering phase. The
     // Module returned from lower_program_full has the invariant: no
     // Prim::Brand survives in any FnIr. Downstream passes (typer,
@@ -857,7 +863,8 @@ pub fn lower_program_full(prog: &Program) -> Result<(Module, AtomTable), LowerEr
 ///
 /// Runs between annotate_back_edges and erase_brands — must see Brand
 /// prims, which erase_brands removes.
-fn check_brand_visibility(
+fn check_brand_visibility<T: crate::types_seam::Types>(
+    t: &mut T,
     module: &Module,
     stmt_spans: &HashMap<(FnId, BlockId), Vec<Span>>,
     fn_spans: &HashMap<FnId, Span>,
@@ -870,7 +877,7 @@ fn check_brand_visibility(
                 let crate::fz_ir::Stmt::Let(_, prim) = stmt;
                 if let crate::fz_ir::Prim::Brand(_, brand_tag) = prim
                     && let Err(e) =
-                        crate::typer::check_brand_mint_visibility(brand_tag, using_module)
+                        crate::typer::check_brand_mint_visibility(t, brand_tag, using_module)
                 {
                     let span = spans
                         .and_then(|v| v.get(i).copied())
@@ -4166,13 +4173,13 @@ mod tests {
     fn lower_src(src: &str) -> Module {
         let toks = Lexer::new(src).tokenize().expect("lex");
         let prog = Parser::new(toks).parse_program().expect("parse");
-        lower_program(&prog).expect("lower failed")
+        lower_program(&mut crate::types_seam::ConcreteTypes, &prog).expect("lower failed")
     }
 
     fn lower_src_err(src: &str) -> LowerError {
         let toks = Lexer::new(src).tokenize().expect("lex");
         let prog = Parser::new(toks).parse_program().expect("parse");
-        lower_program(&prog).expect_err("expected lower error")
+        lower_program(&mut crate::types_seam::ConcreteTypes, &prog).expect_err("expected lower error")
     }
 
     /// fz-qbg.4 — Compile + run a fz program through the JIT and return
@@ -4183,7 +4190,7 @@ mod tests {
         let m = lower_src(src);
         let entry = m.fn_by_name("main").expect("no main fn").id;
         let _ = fz_runtime::ir_runtime::test_capture_take();
-        let _ = crate::ir_codegen::compile(&m).unwrap().run(entry);
+        let _ = crate::ir_codegen::compile(&mut crate::types_seam::ConcreteTypes, &m).unwrap().run(entry);
         fz_runtime::ir_runtime::test_capture_take().join("\n")
     }
 
@@ -4494,8 +4501,8 @@ mod tests {
             "  fst(a + b)\n",
             "end\n",
         ));
-        let mt = crate::ir_typer::type_module(&m);
-        let diags = crate::ir_typer::collect_diagnostics(&m, &mt);
+        let mt = crate::ir_typer::type_module(&mut crate::types_seam::ConcreteTypes, &m);
+        let diags = crate::ir_typer::collect_diagnostics(&mut crate::types_seam::ConcreteTypes, &m, &mt);
         let unreachable: Vec<_> = diags
             .iter()
             .filter(|d| d.code == crate::diag::codes::TYPE_UNREACHABLE_ARM)
@@ -4517,7 +4524,7 @@ mod tests {
         // Irrefutable destructure on a known-2-tuple — the typer proves
         // the synthesized fail edge dead under the one live spec.
         let m = lower_src("fn main() do\n  {a, b} = {1, 2}\n  a + b\nend\n");
-        let mt = crate::ir_typer::type_module(&m);
+        let mt = crate::ir_typer::type_module(&mut crate::types_seam::ConcreteTypes, &m);
         assert!(
             mt.dead_branches
                 .values()
@@ -4534,7 +4541,7 @@ mod tests {
             "fn sum([h | t]), do: h + sum(t)\n",
             "fn main(), do: sum([1, 2, 3])\n",
         ));
-        let mt2 = crate::ir_typer::type_module(&m2);
+        let mt2 = crate::ir_typer::type_module(&mut crate::types_seam::ConcreteTypes, &m2);
         // The destructure inside main may itself produce dead branches,
         // but sum's clause-dispatch Ifs must not.
         let sum_fid = m2.fn_by_name("sum").expect("sum exists").id;
@@ -4903,7 +4910,7 @@ end
         let src = "fn double(x), do: x * 2";
         let toks = Lexer::new(src).tokenize().expect("lex");
         let prog = Parser::new(toks).parse_program().expect("parse");
-        let m = lower_program(&prog).expect("lower");
+        let m = lower_program(&mut crate::types_seam::ConcreteTypes, &prog).expect("lower");
         let f = m.fn_by_name("double").unwrap();
         let param = f.blocks[0].params[0];
         assert_eq!(m.source.var_name_of(param), Some("x"));
@@ -4920,7 +4927,7 @@ end
         let src = "fn alpha(), do: 1\nfn beta(), do: 2";
         let toks = Lexer::new(src).tokenize().expect("lex");
         let prog = Parser::new(toks).parse_program().expect("parse");
-        let m = lower_program(&prog).expect("lower");
+        let m = lower_program(&mut crate::types_seam::ConcreteTypes, &prog).expect("lower");
         let beta = m.fn_by_name("beta").unwrap();
         let sp = m.source.fn_span_of(beta.id);
         let txt = &src[sp.start as usize..sp.end as usize];
@@ -4937,7 +4944,7 @@ end
         let src = "fn callee(y), do: y\nfn caller(x), do: callee(x) + 1";
         let toks = Lexer::new(src).tokenize().expect("lex");
         let prog = Parser::new(toks).parse_program().expect("parse");
-        let m = lower_program(&prog).expect("lower");
+        let m = lower_program(&mut crate::types_seam::ConcreteTypes, &prog).expect("lower");
         let caller = m.fn_by_name("caller").unwrap();
         // The continuation fn is the one whose name starts with "k_".
         // Filter out continuations from the runtime.fz prelude (e.g.
@@ -4981,7 +4988,7 @@ end
         let src = "fn add_one(x), do: x + 1";
         let toks = Lexer::new(src).tokenize().expect("lex");
         let prog = Parser::new(toks).parse_program().expect("parse");
-        let m = lower_program(&prog).expect("lower");
+        let m = lower_program(&mut crate::types_seam::ConcreteTypes, &prog).expect("lower");
         let f = m.fn_by_name("add_one").unwrap();
         // Find a Var bound to `Const(Int(1))`.
         let mut const1_var: Option<Var> = None;
@@ -5088,7 +5095,7 @@ end
         let prog = crate::parser::Parser::new(toks)
             .parse_program()
             .expect("parse");
-        let (module, _) = lower_program_full(&prog).expect("lower");
+        let (module, _) = lower_program_full(&mut crate::types_seam::ConcreteTypes, &prog).expect("lower");
         // 14 runtime.fz externs + 1 user extern = 15 total.
         // fz-ht5 added `fz_make_ref`; fz-swt.7 added `fz_make_resource`;
         // fz-axu.13 added `fz_bitstring_valid_utf8` and
@@ -5124,7 +5131,7 @@ fn main() do fz_open(\"x\", 0) end
         let prog = crate::parser::Parser::new(toks)
             .parse_program()
             .expect("parse");
-        let (module, _) = lower_program_full(&prog).expect("lower");
+        let (module, _) = lower_program_full(&mut crate::types_seam::ConcreteTypes, &prog).expect("lower");
         let open = module
             .externs
             .iter()
@@ -5162,7 +5169,7 @@ fn main() do &libc::close/1 end
         let prog = crate::parser::Parser::new(toks)
             .parse_program()
             .expect("parse");
-        let (module, _) = lower_program_full(&prog).expect("lower");
+        let (module, _) = lower_program_full(&mut crate::types_seam::ConcreteTypes, &prog).expect("lower");
         let wrap = module
             .fns
             .iter()
@@ -5194,7 +5201,7 @@ fn main() do libc::open(\"x\", 0) end
         let prog = crate::parser::Parser::new(toks)
             .parse_program()
             .expect("parse");
-        let (module, _) = lower_program_full(&prog).expect("lower");
+        let (module, _) = lower_program_full(&mut crate::types_seam::ConcreteTypes, &prog).expect("lower");
         let open = module
             .externs
             .iter()
@@ -5212,7 +5219,7 @@ fn main() do libc::open(\"x\", 0) end
         let prog = crate::parser::Parser::new(toks)
             .parse_program()
             .expect("parse");
-        let (module, _) = lower_program_full(&prog).expect("lower");
+        let (module, _) = lower_program_full(&mut crate::types_seam::ConcreteTypes, &prog).expect("lower");
         // extern_idx must have an entry for every extern.
         assert_eq!(module.extern_idx.len(), module.externs.len());
         // Each extern's id field must resolve via extern_by_id to itself.
@@ -5259,7 +5266,7 @@ end
         let prog = crate::parser::Parser::new(toks)
             .parse_program()
             .expect("parse");
-        let (module, _) = lower_program_full(&prog).expect("lower");
+        let (module, _) = lower_program_full(&mut crate::types_seam::ConcreteTypes, &prog).expect("lower");
 
         let user_names = ["id", "pick", "make_adder", "main"];
         for f in &module.fns {
@@ -5380,9 +5387,9 @@ end
         // Typing must not panic and must produce a ModuleTypes for the
         // module. We don't pin the return Descr — that depends on the
         // body return type which the bodies set to const ints.
-        let mt = crate::ir_typer::type_module(&m);
+        let mt = crate::ir_typer::type_module(&mut crate::types_seam::ConcreteTypes, &m);
         // No diagnostics from the pure-guard / pure-pattern pass either.
-        let diags = crate::ir_typer::collect_diagnostics(&m, &mt);
+        let diags = crate::ir_typer::collect_diagnostics(&mut crate::types_seam::ConcreteTypes, &m, &mt);
         let impure: Vec<_> = diags
             .iter()
             .filter(|d| {
@@ -5406,8 +5413,8 @@ end
               end
             end";
         let m = lower_src(src);
-        let mt = crate::ir_typer::type_module(&m);
-        let diags = crate::ir_typer::collect_diagnostics(&m, &mt);
+        let mt = crate::ir_typer::type_module(&mut crate::types_seam::ConcreteTypes, &m);
+        let diags = crate::ir_typer::collect_diagnostics(&mut crate::types_seam::ConcreteTypes, &m, &mt);
         let impure: Vec<_> = diags
             .iter()
             .filter(|d| d.code == crate::diag::codes::TYPE_IMPURE_RECEIVE_GUARD)
@@ -5453,7 +5460,7 @@ end
         // from any fn — even a user module — is allowed.
         let (m, spans) = module_with_brand_in_fn("Mail.send", "utf8");
         let fn_spans = HashMap::new();
-        check_brand_visibility(&m, &spans, &fn_spans).expect("utf8 mint must be allowed");
+        check_brand_visibility(&mut crate::types_seam::ConcreteTypes, &m, &spans, &fn_spans).expect("utf8 mint must be allowed");
     }
 
     #[test]
@@ -5462,7 +5469,7 @@ end
         // = "Mail") is fine — same owner.
         let (m, spans) = module_with_brand_in_fn("Mail.send", "Mail::Email");
         let fn_spans = HashMap::new();
-        check_brand_visibility(&m, &spans, &fn_spans).expect("same-module mint must be allowed");
+        check_brand_visibility(&mut crate::types_seam::ConcreteTypes, &m, &spans, &fn_spans).expect("same-module mint must be allowed");
     }
 
     #[test]
@@ -5471,7 +5478,7 @@ end
         // (using_module = "Other") must be rejected.
         let (m, spans) = module_with_brand_in_fn("Other.handler", "Mail::Email");
         let fn_spans = HashMap::new();
-        let err = check_brand_visibility(&m, &spans, &fn_spans)
+        let err = check_brand_visibility(&mut crate::types_seam::ConcreteTypes, &m, &spans, &fn_spans)
             .expect_err("cross-module mint must be rejected");
         match err {
             LowerError::BrandMintVisibility {
@@ -5494,7 +5501,7 @@ end
         // module-owned brand is also rejected.
         let (m, spans) = module_with_brand_in_fn("main", "Mail::Email");
         let fn_spans = HashMap::new();
-        let err = check_brand_visibility(&m, &spans, &fn_spans)
+        let err = check_brand_visibility(&mut crate::types_seam::ConcreteTypes, &m, &spans, &fn_spans)
             .expect_err("top-level mint of owned brand must be rejected");
         let diag = err.to_diagnostic();
         assert!(

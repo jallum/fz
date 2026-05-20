@@ -1874,7 +1874,8 @@ pub(crate) fn emit_fn_body<M: cranelift_module::Module>(
 /// fz-ul4.23.12. Before this, `compile()` and `compile_aot()` duplicated
 /// ~90% of the pipeline side by side. Now they're each ~5-line wrappers
 /// constructing a backend and calling here.
-pub fn compile_with_backend<B: Backend>(
+pub fn compile_with_backend<B: Backend, T: crate::types_seam::Types>(
+    t: &mut T,
     module: &Module,
     mut backend: B,
 ) -> Result<B::Output, CodegenError> {
@@ -2192,8 +2193,8 @@ pub fn compile_with_backend<B: Backend>(
     // orthogonal (VecKindIr mutations vs. CallClosure→Call rewrites);
     // neither rewrite invalidates what the other reads.
     let mut working = module.clone();
-    let pre_types = crate::ir_typer::type_module(&working);
-    crate::ir_typer::rewrite_vec_kinds(&mut working, &pre_types).map_err(CodegenError::new)?;
+    let pre_types = crate::ir_typer::type_module(t, &working);
+    crate::ir_typer::rewrite_vec_kinds(t, &mut working, &pre_types).map_err(CodegenError::new)?;
     // fz-ul4.29.10.3 — lower known-target CallClosure / TailCallClosure
     // to direct Call / TailCall. After this, the final type_module sees
     // direct dispatch where the closure-stub used to live, and
@@ -2205,7 +2206,7 @@ pub fn compile_with_backend<B: Backend>(
     // `Prim::Const(Value::Fn)` / `Prim::MakeClosure`, neither of which
     // is touched. So `pre_types.fn_constants` is identical to whatever
     // a re-type would produce. No separate `mid_types` call needed.
-    crate::ir_typer::rewrite_known_target_closures(&mut working, &pre_types);
+    crate::ir_typer::rewrite_known_target_closures(t, &mut working, &pre_types);
     #[cfg(not(test))]
     crate::ir_inline::inline_module(&mut working);
     #[cfg(test)]
@@ -2233,7 +2234,7 @@ pub fn compile_with_backend<B: Backend>(
     // can be applied before the typer commits to specs. See
     // `docs/dispatch-as-typer-output.md` (Worry 1).
     crate::ir_inline::inline_single_use_conts(&mut working);
-    let module_types = crate::ir_typer::type_module(&working);
+    let module_types = crate::ir_typer::type_module(t, &working);
     // fz-uwq.14 — snapshot per-fn call-shape multisets right after the
     // typer commits to specs. The post-typer passes (branch_fold, fold,
     // const_bs::fold, dce_module, dce_module_level) may FOLD calls away
@@ -3148,6 +3149,7 @@ pub fn compile_with_backend<B: Backend>(
     // explicitly because runtime closure dispatch through `stub_fp` isn't
     // visible to the IR-body BFS. See ir_typer::reachable_specs.
     let reachable: std::collections::HashSet<u32> = crate::ir_typer::reachable_specs(
+        t,
         module,
         &spec_registry,
         &module_types,
@@ -3526,7 +3528,7 @@ pub fn compile_with_backend<B: Backend>(
         })
         .collect();
 
-    let diagnostics = crate::ir_typer::collect_diagnostics(module, &module_types);
+    let diagnostics = crate::ir_typer::collect_diagnostics(t, module, &module_types);
     // fz-ul4.27.22.3 — per-spec chain analysis: for each registered
     // spec, walk its exit terminators and follow callee resolutions
     // transitively. The chain's halt-seam kind = JOIN of every Return
@@ -3784,12 +3786,19 @@ pub fn compile_with_backend<B: Backend>(
     backend.finalize(metadata)
 }
 
-pub fn compile(module: &Module) -> Result<CompiledModule, CodegenError> {
-    compile_with_backend(module, JitBackend::new())
+pub fn compile<T: crate::types_seam::Types>(
+    t: &mut T,
+    module: &Module,
+) -> Result<CompiledModule, CodegenError> {
+    compile_with_backend(t, module, JitBackend::new())
 }
 
-pub fn compile_aot(module: &Module, obj_name: &str) -> Result<AotArtifact, CodegenError> {
-    compile_with_backend(module, AotBackend::new(obj_name))
+pub fn compile_aot<T: crate::types_seam::Types>(
+    t: &mut T,
+    module: &Module,
+    obj_name: &str,
+) -> Result<AotArtifact, CodegenError> {
+    compile_with_backend(t, module, AotBackend::new(obj_name))
 }
 
 /// Emit the AOT C-callable main entry (fz-siu.6.1). Drives the cps-in-clif

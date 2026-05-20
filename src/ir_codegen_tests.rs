@@ -11,7 +11,7 @@ const FALSE_HALT: i64 = fz_runtime::fz_value::FALSE_ATOM_ID as i64;
 fn lower_src(src: &str) -> Module {
     let toks = Lexer::new(src).tokenize().expect("lex");
     let prog = Parser::new(toks).parse_program().expect("parse");
-    lower_program(&prog).expect("lower")
+    lower_program(&mut crate::types_seam::ConcreteTypes, &prog).expect("lower")
 }
 
 fn join_return_descrs(
@@ -55,7 +55,7 @@ fn static_closure_targets_registered_for_zero_cap_make_closure() {
                  print(apply(g, 2))\n\
                end";
     let m = lower_src(src);
-    let compiled = crate::ir_codegen::with_reducer_disabled(|| compile(&m).expect("compile"));
+    let compiled = crate::ir_codegen::with_reducer_disabled(|| compile(&mut crate::types_seam::ConcreteTypes, &m).expect("compile"));
     let targets = compiled.static_closure_targets();
     // At minimum, `f` and `g` are registered.
     assert!(
@@ -95,7 +95,7 @@ fn static_closure_lookup_returns_singleton_pointer() {
                fn main() do print(apply(f, 1)) end";
     let m = lower_src(src);
     // fz-jg5.6: reducer-disabled — see note on the sibling test above.
-    let compiled = crate::ir_codegen::with_reducer_disabled(|| compile(&m).expect("compile"));
+    let compiled = crate::ir_codegen::with_reducer_disabled(|| compile(&mut crate::types_seam::ConcreteTypes, &m).expect("compile"));
     let targets = compiled.static_closure_targets();
     let (cl_sid, _, _, _) = *targets.first().expect("at least one static closure target");
     let mut p = compiled.make_process();
@@ -111,7 +111,7 @@ fn static_closure_lookup_returns_singleton_pointer() {
 fn aot_compile_produces_object_with_main_symbol() {
     let src = "fn add1(n) do n + 1 end\nfn main() do print(add1(41)) end";
     let m = lower_src(src);
-    let artifact = compile_aot(&m, "add1_smoke").expect("compile_aot");
+    let artifact = compile_aot(&mut crate::types_seam::ConcreteTypes, &m, "add1_smoke").expect("compile_aot");
     assert!(
         !artifact.object.is_empty(),
         "AOT object should be non-empty"
@@ -142,14 +142,14 @@ fn aot_compile_produces_object_with_main_symbol() {
 fn run_main(src: &str) -> i64 {
     let m = lower_src(src);
     let entry = m.fn_by_name("main").unwrap().id;
-    compile(&m).unwrap().run(entry)
+    compile(&mut crate::types_seam::ConcreteTypes, &m).unwrap().run(entry)
 }
 
 fn run_main_after_heap_reset(src: &str) -> (i64, Module) {
     let m = lower_src(src);
     let entry = m.fn_by_name("main").unwrap().id;
     heap_reset_for_test();
-    let r = compile(&m).unwrap().run(entry);
+    let r = compile(&mut crate::types_seam::ConcreteTypes, &m).unwrap().run(entry);
     (r, m)
 }
 
@@ -158,7 +158,7 @@ fn capture_main(src: &str) -> Vec<String> {
     let entry = m.fn_by_name("main").unwrap().id;
     heap_reset_for_test();
     let _ = test_capture_take();
-    let _ = compile(&m).unwrap().run(entry);
+    let _ = compile(&mut crate::types_seam::ConcreteTypes, &m).unwrap().run(entry);
     test_capture_take()
 }
 
@@ -178,7 +178,7 @@ fn atom_identity_preserved_across_processes_from_same_module() {
     // at compile time.
     let src = "fn main(), do: :ok";
     let m = lower_src(src);
-    let compiled = compile(&m).unwrap();
+    let compiled = compile(&mut crate::types_seam::ConcreteTypes, &m).unwrap();
     let entry = m.fn_by_name("main").unwrap().id;
 
     let mut pa = compiled.make_process();
@@ -226,8 +226,8 @@ fn two_processes_run_independent_map_builds() {
 
     let ma = lower_src(src_a);
     let mb = lower_src(src_b);
-    let ca = compile(&ma).unwrap();
-    let cb = compile(&mb).unwrap();
+    let ca = compile(&mut crate::types_seam::ConcreteTypes, &ma).unwrap();
+    let cb = compile(&mut crate::types_seam::ConcreteTypes, &mb).unwrap();
     let entry_a = ma.fn_by_name("main").unwrap().id;
     let entry_b = mb.fn_by_name("main").unwrap().id;
 
@@ -730,7 +730,7 @@ fn print_vec_bit_renders_via_jit() {
 fn vec_f64_codegen_blocks_with_pointer_to_followup_ticket() {
     // ~v[1.0, 2.0] lowers fine post-.24.5 but codegen still gates VecF64 at .11.23.
     let m = lower_src("fn main(), do: ~v[1.0, 2.0]");
-    let err = match compile(&m) {
+    let err = match compile(&mut crate::types_seam::ConcreteTypes, &m) {
         Ok(_) => panic!("VecF64 codegen should be gated"),
         Err(e) => e,
     };
@@ -799,7 +799,7 @@ fn build_top_param_add_module() -> Module {
 
 fn get_main_ir(m: &Module) -> String {
     ir_text_record_enable();
-    let _ = compile(m).unwrap();
+    let _ = compile(&mut crate::types_seam::ConcreteTypes, m).unwrap();
     let ir = ir_text_record_take();
     ir.into_iter()
         .find(|(n, _)| n == "main")
@@ -837,7 +837,7 @@ fn signature_uniform_when_not_native() {
     // uniform sig. Should be `(i64, i64) -> i64` regardless of param
     // Descrs.
     let m = lower_src("fn add(a, b) do a + b end\nfn main() do print(add(1, 2)) end");
-    let mt = crate::ir_typer::type_module(&m);
+    let mt = crate::ir_typer::type_module(&mut crate::types_seam::ConcreteTypes, &m);
     let add_idx = m.fns.iter().position(|f| f.name == "add").unwrap();
     let ft = mt.any_spec_for(m.fns[add_idx].id).expect("registered spec");
     let rd = join_return_descrs(&m.fns[add_idx], ft);
@@ -857,7 +857,7 @@ fn signature_native_uses_typed_params_and_cont() {
     // `(i64, i64, cont: i64) -> i64`.
     // fz-cps.1.a (fz-siu.1.1): trailing cont:i64 per §2.1.
     let m = lower_src("fn add(a, b) do a + b end\nfn main() do print(add(1, 2)) end");
-    let mt = crate::ir_typer::type_module(&m);
+    let mt = crate::ir_typer::type_module(&mut crate::types_seam::ConcreteTypes, &m);
     let add_idx = m.fns.iter().position(|f| f.name == "add").unwrap();
     let ft = mt.any_spec_for(m.fns[add_idx].id).expect("registered spec");
     let rd = join_return_descrs(&m.fns[add_idx], ft);
@@ -880,7 +880,7 @@ fn signature_native_arity_matches_entry_params_plus_cont() {
     // Descr; here that's float-only → f64.
     // fz-cps.1.a (fz-siu.1.1): trailing cont:i64 per §2.1.
     let m = lower_src("fn dist(x, y) do x * x + y * y end\nfn main() do print(dist(1.5, 2.5)) end");
-    let mt = crate::ir_typer::type_module(&m);
+    let mt = crate::ir_typer::type_module(&mut crate::types_seam::ConcreteTypes, &m);
     let dist_idx = m.fns.iter().position(|f| f.name == "dist").unwrap();
     let ft = mt
         .any_spec_for(m.fns[dist_idx].id)
@@ -903,11 +903,11 @@ fn signature_native_arity_matches_entry_params_plus_cont() {
 
 #[test]
 fn spec_registry_registers_any_key_per_fn_with_spec_id_eq_fn_id() {
-    // Two-fn module. After compile(), spec_registry holds one any-key
+    // Two-fn module. After compile(&mut crate::types_seam::ConcreteTypes, ), spec_registry holds one any-key
     // spec per fn; the SpecId.0 == FnId.0 invariant is asserted at
     // build time (debug_assert in compile_with_backend).
     let m = lower_src("fn add(a, b) do a + b end\nfn main() do print(add(1, 2)) end");
-    let compiled = compile(&m).unwrap();
+    let compiled = compile(&mut crate::types_seam::ConcreteTypes, &m).unwrap();
     // Drive a run to ensure the pipeline ran the registry construction
     // path; the assertion lives in compile_with_backend.
     let _ = compiled.run(m.fn_by_name("main").unwrap().id);
@@ -916,7 +916,7 @@ fn spec_registry_registers_any_key_per_fn_with_spec_id_eq_fn_id() {
 #[test]
 fn spec_registry_any_key_lookup() {
     // Use the registry directly to verify register/resolve/any_key
-    // contracts. Doesn't go through compile().
+    // contracts. Doesn't go through compile(&mut crate::types_seam::ConcreteTypes, ).
     let mut reg = SpecRegistry::new();
     let fid = FnId(0);
     let any_key_2 = vec![crate::types::Descr::any(); 2];
@@ -1070,7 +1070,7 @@ fn hot_loop_inline_reduces_frame_allocs() {
         let m = lower_src(src);
         fz_runtime::ir_runtime::frame_alloc_count_reset();
         let entry = m.fn_by_name("main").unwrap().id;
-        let r = compile(&m).unwrap().run(entry);
+        let r = compile(&mut crate::types_seam::ConcreteTypes, &m).unwrap().run(entry);
         assert_eq!(r, 10, "pre-inline result must be 10");
         fz_runtime::ir_runtime::frame_alloc_count_take()
     });
@@ -1079,7 +1079,7 @@ fn hot_loop_inline_reduces_frame_allocs() {
     let m = lower_src(src);
     fz_runtime::ir_runtime::frame_alloc_count_reset();
     let entry = m.fn_by_name("main").unwrap().id;
-    let post_result = compile(&m).unwrap().run(entry);
+    let post_result = compile(&mut crate::types_seam::ConcreteTypes, &m).unwrap().run(entry);
     let post_count = fz_runtime::ir_runtime::frame_alloc_count_take();
 
     assert_eq!(post_result, 10, "post-inline result must still be 10");
@@ -1111,7 +1111,7 @@ fn box_int_const_fold_eliminates_ishl_bor() {
                end";
     let m = lower_src(src);
     ir_text_record_enable();
-    let _ = compile(&m).unwrap();
+    let _ = compile(&mut crate::types_seam::ConcreteTypes, &m).unwrap();
     let ir = ir_text_record_take();
     let main_ir = ir
         .iter()
@@ -1147,7 +1147,7 @@ fn receive_native_cont_no_box_unbox_roundtrip() {
                end";
     let m = lower_src(src);
     ir_text_record_enable();
-    let _ = compile(&m).unwrap();
+    let _ = compile(&mut crate::types_seam::ConcreteTypes, &m).unwrap();
     let ir = ir_text_record_take();
     let relay_ir = ir
         .iter()
@@ -1185,7 +1185,7 @@ fn condition_cache_bypasses_is_truthy_in_type_dispatch() {
                end";
     let m = lower_src(src);
     ir_text_record_enable();
-    let _ = compile(&m).unwrap();
+    let _ = compile(&mut crate::types_seam::ConcreteTypes, &m).unwrap();
     let ir = ir_text_record_take();
     // fz-ul4.43.A/B note: per-spec fold may eliminate every brif if it can
     // statically resolve the dispatch. The codegen fast-path is still
@@ -1224,7 +1224,7 @@ fn pure_branch_type_test_emits_no_select() {
                end";
     let m = lower_src(src);
     ir_text_record_enable();
-    let _ = compile(&m).unwrap();
+    let _ = compile(&mut crate::types_seam::ConcreteTypes, &m).unwrap();
     let ir = ir_text_record_take();
     let with_brif: Vec<(&str, &str)> = ir
         .iter()
@@ -1257,7 +1257,7 @@ fn dead_unit_extern_result_elided() {
                end";
     let m = lower_src(src);
     ir_text_record_enable();
-    let _ = compile(&m).unwrap();
+    let _ = compile(&mut crate::types_seam::ConcreteTypes, &m).unwrap();
     let ir = ir_text_record_take();
     let main_ir = ir
         .iter()
@@ -1291,7 +1291,7 @@ fn const_nil_bool_atom_deduplicated_within_block() {
                end";
     let m = lower_src(src);
     ir_text_record_enable();
-    let _ = compile(&m).unwrap();
+    let _ = compile(&mut crate::types_seam::ConcreteTypes, &m).unwrap();
     let ir = ir_text_record_take();
     let main_ir = ir
         .iter()
@@ -1316,7 +1316,7 @@ fn type_module_called_exactly_twice_in_pipeline() {
     let src = "fn main(), do: print(42)";
     let m = lower_src(src);
     crate::ir_typer::TYPE_MODULE_CALLS.with(|c| c.set(0));
-    compile(&m).expect("compile");
+    compile(&mut crate::types_seam::ConcreteTypes, &m).expect("compile");
     let count = crate::ir_typer::TYPE_MODULE_CALLS.with(|c| c.get());
     assert_eq!(count, 2, "type_module called {} times, expected 2", count);
 }
@@ -1336,7 +1336,7 @@ fn main() do
 end
 "#;
     let m = lower_src(src);
-    let mt = crate::ir_typer::type_module(&m);
+    let mt = crate::ir_typer::type_module(&mut crate::types_seam::ConcreteTypes, &m);
     let mut reg = SpecRegistry::new();
     let mut spec_keys: Vec<(FnId, Vec<crate::types::Descr>)> = mt
         .specs
@@ -1440,7 +1440,7 @@ end
 "#;
     let m = lower_src(src);
     ir_text_record_enable();
-    let _ = compile(&m).expect("compile");
+    let _ = compile(&mut crate::types_seam::ConcreteTypes, &m).expect("compile");
     let ir = ir_text_record_take();
     let names: Vec<String> = ir.iter().map(|(name, _)| name.clone()).collect();
     let cont_body = ir
@@ -1476,7 +1476,7 @@ fn main() do
 end
 "#;
     let m = lower_src(src);
-    let mt = crate::ir_typer::type_module(&m);
+    let mt = crate::ir_typer::type_module(&mut crate::types_seam::ConcreteTypes, &m);
     let mut reg = SpecRegistry::new();
     let mut spec_keys: Vec<(FnId, Vec<crate::types::Descr>)> = mt
         .specs
@@ -1501,7 +1501,7 @@ end
         .find(|f| f.name == "main")
         .map(|f| f.id.0)
         .expect("expected main fn");
-    let reachable = crate::ir_typer::reachable_specs(&m, &reg, &mt, [main_fid]);
+    let reachable = crate::ir_typer::reachable_specs(&mut crate::types_seam::ConcreteTypes, &m, &reg, &mt, [main_fid]);
     assert!(
         reachable.contains(&cont_sid.expect("expected k_* spec")),
         "reachable specs should include the synthesized k_* continuation"
@@ -1560,7 +1560,7 @@ fn print_distinguishes_nil_from_empty_list() {
 // ===== fz-swt.10 — refcount + dtor on the JIT path =========================
 //
 // Same shape as the interp-leg tests in `ir_interp::resource_bif_tests` but
-// run through the JIT path: `compile(&module).run(main_fn)`. The JIT lowers
+// run through the JIT path: `compile(&mut crate::types_seam::ConcreteTypes, &module).run(main_fn)`. The JIT lowers
 // the `make_resource(payload, &dwrap/1)` call to an extern call against the
 // `fz_make_resource` symbol bound in `JitBackend::new()`; that symbol
 // dispatches through the `MakeResourceHook` we install for the duration of
@@ -1585,7 +1585,7 @@ mod resource_jit_tests {
     fn run_jit_with_resources(src: &str) {
         let module = lower_src(src);
         let entry = module.fn_by_name("main").expect("main fn").id;
-        let compiled = compile(&module).expect("compile");
+        let compiled = compile(&mut crate::types_seam::ConcreteTypes, &module).expect("compile");
         // Install the make-resource hook against this module so the JIT-
         // emitted call into `fz_make_resource` resolves the dtor closure.
         let prev = crate::runtime::install_make_resource_hook_with_module(&module);

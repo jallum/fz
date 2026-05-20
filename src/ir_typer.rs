@@ -590,7 +590,7 @@ struct WalkResult {
 ///   O(|specs| · (1 + H · |return-edges per spec|))
 /// which is finite. `VISIT_HARD_BOUND` below is a debug-only
 /// tripwire for invariant violation, NOT a release safety net.
-pub fn type_module(m: &Module) -> ModuleTypes {
+pub fn type_module<T: crate::types_seam::Types>(t: &mut T, m: &Module) -> ModuleTypes {
     #[cfg(test)]
     TYPE_MODULE_CALLS.with(|c| c.set(c.get() + 1));
 
@@ -625,6 +625,7 @@ pub fn type_module(m: &Module) -> ModuleTypes {
     let mut in_work: std::collections::HashSet<(FnId, Vec<Descr>)> = work.iter().cloned().collect();
 
     process_worklist(
+        t,
         m,
         &scc_of,
         &scc_members,
@@ -775,7 +776,8 @@ const VISIT_HARD_BOUND: usize = 4096;
 ///   5. Recompute this spec's effective return. If changed, enqueue
 ///      every spec in `return_readers[spec]`.
 #[allow(clippy::too_many_arguments)]
-fn process_worklist(
+fn process_worklist<T: crate::types_seam::Types>(
+    t: &mut T,
     m: &Module,
     scc_of: &HashMap<FnId, usize>,
     scc_members: &HashMap<usize, std::collections::HashSet<FnId>>,
@@ -805,7 +807,7 @@ fn process_worklist(
         if !specs.contains_key(&spec_key) {
             #[cfg(test)]
             TYPE_FN_CALLS.with(|c| c.set(c.get() + 1));
-            let mut ft = type_fn(&m.fns[j], m, Some(&key));
+            let mut ft = type_fn(t, &m.fns[j], m, Some(&key));
             if let Some(arg_consts) = callsite_fn_consts.get(&spec_key) {
                 let entry = m.fns[j].entry;
                 let entry_params = &m.fns[j].block(entry).params;
@@ -1581,7 +1583,11 @@ fn walk_spec_for_discovery(
 /// refresh `ModuleTypes` against the rewritten IR (so the typed-spec
 /// landscape reflects direct dispatch and `.29.12.6` can drop dead
 /// any-keys).
-pub fn rewrite_known_target_closures(module: &mut Module, types: &ModuleTypes) {
+pub fn rewrite_known_target_closures<T: crate::types_seam::Types>(
+    _t: &mut T,
+    module: &mut Module,
+    types: &ModuleTypes,
+) {
     let mut unified: HashMap<FnId, HashMap<Var, Option<FnId>>> = HashMap::new();
     for ((fid, _), ft) in &types.specs {
         let entry = unified.entry(*fid).or_default();
@@ -1687,7 +1693,12 @@ fn topo_order(f: &FnIr) -> Vec<BlockId> {
     order
 }
 
-pub fn type_fn(f: &FnIr, m: &Module, entry_param_types: Option<&[Descr]>) -> FnTypes {
+pub fn type_fn<T: crate::types_seam::Types>(
+    _t: &mut T,
+    f: &FnIr,
+    m: &Module,
+    entry_param_types: Option<&[Descr]>,
+) -> FnTypes {
     let mut vars: HashMap<Var, Descr> = HashMap::new();
     let mut block_envs: HashMap<BlockId, HashMap<Var, Descr>> = HashMap::new();
 
@@ -2473,7 +2484,11 @@ fn emit_unreachable(
 /// Each diagnostic carries the offending block's terminator span (when
 /// recorded by ir_lower in `Module.source.term_span`); .20.8 will enrich
 /// the message with the set-theoretic type vocabulary.
-pub fn collect_diagnostics(module: &Module, types: &ModuleTypes) -> crate::diag::Diagnostics {
+pub fn collect_diagnostics<T: crate::types_seam::Types>(
+    t: &mut T,
+    module: &Module,
+    types: &ModuleTypes,
+) -> crate::diag::Diagnostics {
     use crate::diag::codes::TYPE_DEAD_BINOP;
     use crate::diag::{Diagnostic, Diagnostics, Span};
 
@@ -2508,7 +2523,7 @@ pub fn collect_diagnostics(module: &Module, types: &ModuleTypes) -> crate::diag:
         }
         let n_params = f.block(f.entry).params.len();
         let any_key: Vec<Descr> = vec![Descr::any(); n_params];
-        let ft = type_fn(f, module, Some(&any_key));
+        let ft = type_fn(t, f, module, Some(&any_key));
         adhoc_specs.insert(f.id, ft);
         specs_by_fn.entry(f.id).or_default().push(any_key);
     }
@@ -2608,7 +2623,7 @@ pub fn collect_diagnostics(module: &Module, types: &ModuleTypes) -> crate::diag:
             None => {
                 let n_params = f.block(f.entry).params.len();
                 let any_key: Vec<Descr> = vec![Descr::any(); n_params];
-                ft_owned = Some(type_fn(f, module, Some(&any_key)));
+                ft_owned = Some(type_fn(t, f, module, Some(&any_key)));
                 ft_owned.as_ref().unwrap()
             }
         };
@@ -2844,7 +2859,11 @@ fn axes_overlap(a: &Descr, b: &Descr) -> bool {
 ///
 /// Operates in-place on `module`. Caller supplies a typer output that was
 /// produced from the same module shape (run `type_module(module)` first).
-pub fn rewrite_vec_kinds(module: &mut Module, types: &ModuleTypes) -> Result<(), String> {
+pub fn rewrite_vec_kinds<T: crate::types_seam::Types>(
+    t: &mut T,
+    module: &mut Module,
+    types: &ModuleTypes,
+) -> Result<(), String> {
     use crate::fz_ir::Stmt;
     // fz-pky.2 — for each fn, use the registered spec if any, else
     // type ad-hoc under all-any. This pass runs as a pre-codegen
@@ -2860,7 +2879,7 @@ pub fn rewrite_vec_kinds(module: &mut Module, types: &ModuleTypes) -> Result<(),
                 None => {
                     let n_params = f.block(f.entry).params.len();
                     let any_key: Vec<Descr> = vec![Descr::any(); n_params];
-                    type_fn(f, module, Some(&any_key))
+                    type_fn(t, f, module, Some(&any_key))
                 }
             };
             (f.id, ft)
@@ -3012,7 +3031,8 @@ pub fn cont_slot0_descr(
 ///     resolvable via fn_constants. Use the same `SpecRegistry::resolve`
 ///     subsumption search codegen uses, so a spec marked reachable here
 ///     is exactly a spec codegen will look up.
-pub fn reachable_specs(
+pub fn reachable_specs<T: crate::types_seam::Types>(
+    _t: &mut T,
     module: &Module,
     spec_registry: &crate::spec_registry::SpecRegistry,
     module_types: &ModuleTypes,
@@ -3269,7 +3289,11 @@ pub fn cont_input_key(
 /// should treat the output as opaque text; the goal is that a human can
 /// eyeball "are the inferred types what I expect for this fixture?"
 /// without running codegen.
-pub fn pretty_module_types(m: &Module, t: &ModuleTypes) -> String {
+pub fn pretty_module_types<T: crate::types_seam::Types>(
+    _t: &mut T,
+    m: &Module,
+    mt: &ModuleTypes,
+) -> String {
     let fn_name = |fid: FnId| -> String {
         m.fns
             .iter()
@@ -3282,7 +3306,7 @@ pub fn pretty_module_types(m: &Module, t: &ModuleTypes) -> String {
         format!("[{}]", parts.join(", "))
     };
 
-    let mut keys: Vec<&(FnId, Vec<Descr>)> = t.specs.keys().collect();
+    let mut keys: Vec<&(FnId, Vec<Descr>)> = mt.specs.keys().collect();
     keys.sort_by(|a, b| {
         a.0.0
             .cmp(&b.0.0)
@@ -3292,7 +3316,7 @@ pub fn pretty_module_types(m: &Module, t: &ModuleTypes) -> String {
     let mut out = String::new();
     for spec_key in keys {
         let (fid, key) = spec_key;
-        let ft = &t.specs[spec_key];
+        let ft = &mt.specs[spec_key];
         let f = m.fn_by_id(*fid);
         let entry = f.block(f.entry);
         let arity = entry.params.len();
@@ -3300,7 +3324,7 @@ pub fn pretty_module_types(m: &Module, t: &ModuleTypes) -> String {
         out.push_str(&format!("; spec {}({}) #fn={}\n", f.name, arity, fid.0));
         out.push_str(&format!(";   key:    {}\n", descrs_str(key)));
 
-        let ret = t
+        let ret = mt
             .effective_returns
             .get(spec_key)
             .cloned()
@@ -3379,7 +3403,7 @@ pub fn pretty_module_types(m: &Module, t: &ModuleTypes) -> String {
                         .iter()
                         .map(|v| format!("Var({})", v.0))
                         .collect();
-                    let ck = cont_input_key(b, continuation, ft, m, t);
+                    let ck = cont_input_key(b, continuation, ft, m, mt);
                     out.push_str(&format!(
                         ";     blk{} Call {}#{}({})\n",
                         bid,
@@ -3412,7 +3436,7 @@ pub fn pretty_module_types(m: &Module, t: &ModuleTypes) -> String {
                         .iter()
                         .map(|v| format!("Var({})", v.0))
                         .collect();
-                    let ck = cont_input_key(b, continuation, ft, m, t);
+                    let ck = cont_input_key(b, continuation, ft, m, mt);
                     let target = ft.fn_constants.get(closure).copied();
                     let target_str = match target {
                         Some(fid) => format!(" [resolved={}#{}]", fn_name(fid), fid.0),
@@ -3462,7 +3486,7 @@ pub fn pretty_module_types(m: &Module, t: &ModuleTypes) -> String {
                         .iter()
                         .map(|v| format!("Var({})", v.0))
                         .collect();
-                    let ck = cont_input_key(b, continuation, ft, m, t);
+                    let ck = cont_input_key(b, continuation, ft, m, mt);
                     out.push_str(&format!(
                         ";     blk{} Receive cont {}#{} captured=[{}]\n",
                         bid,

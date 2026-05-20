@@ -1313,7 +1313,7 @@ mod tests {
     fn lower_src(src: &str) -> crate::fz_ir::Module {
         let toks = crate::lexer::Lexer::new(src).tokenize().unwrap();
         let prog = crate::parser::Parser::new(toks).parse_program().unwrap();
-        crate::ir_lower::lower_program(&prog).unwrap()
+        crate::ir_lower::lower_program(&mut crate::types_seam::ConcreteTypes, &prog).unwrap()
     }
 
     fn interp(m: &crate::fz_ir::Module) -> i64 {

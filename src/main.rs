@@ -53,9 +53,13 @@ use std::io::{IsTerminal, Read};
 ///
 /// fz-rh5.2 — types the raw lowered module (`type_module` call #1 of 2
 /// in `fz run`; the other is `ir_codegen::compile`'s post-reduce pass).
-fn check_specs(prog: &ast::Program, module: &fz_ir::Module) -> Vec<diag::Diagnostic> {
-    let mt = ir_typer::type_module(module);
-    spec_check::validate_specs(prog, module, &mt)
+fn check_specs<T: types_seam::Types>(
+    t: &mut T,
+    prog: &ast::Program,
+    module: &fz_ir::Module,
+) -> Vec<diag::Diagnostic> {
+    let mt = ir_typer::type_module(t, module);
+    spec_check::validate_specs(t, prog, module, &mt)
 }
 
 /// fz-ul4.45 — pattern-match correctness analysis. Unreachable clauses
@@ -68,7 +72,11 @@ fn check_specs(prog: &ast::Program, module: &fz_ir::Module) -> Vec<diag::Diagnos
 /// fz-0z4.3 — survivor set sourced from a pure call-graph BFS over
 /// the reduced module (`ir_callgraph::reachable_fns`). No typer pass
 /// on the reduced module — reachability is a call-graph fact.
-fn check_patterns(prog: &ast::Program, module: &fz_ir::Module) -> Vec<diag::Diagnostic> {
+fn check_patterns<T: types_seam::Types>(
+    t: &mut T,
+    prog: &ast::Program,
+    module: &fz_ir::Module,
+) -> Vec<diag::Diagnostic> {
     let mut reduced = module.clone();
     let _ = ir_reducer::reduce_module(&mut reduced);
     let reachable = ir_callgraph::reachable_fns(&reduced);
@@ -81,7 +89,7 @@ fn check_patterns(prog: &ast::Program, module: &fz_ir::Module) -> Vec<diag::Diag
             Some((f.name.clone(), arity))
         })
         .collect();
-    pattern_check::check_program(prog, Some(&survivors))
+    pattern_check::check_program(t, prog, Some(&survivors))
 }
 
 /// fz-ul4.31.6 — front-end diagnostic gate run by every driver
@@ -89,9 +97,14 @@ fn check_patterns(prog: &ast::Program, module: &fz_ir::Module) -> Vec<diag::Diag
 /// so all paths produce identical accept/reject verdicts. Spec errors
 /// halt; pattern warnings print and continue. Diagnostic order:
 /// spec checks before pattern checks, preserved by `extend` order.
-fn run_frontend_gates_or_exit(prog: &ast::Program, module: &fz_ir::Module, sm: &diag::SourceMap) {
-    let mut diags = check_specs(prog, module);
-    diags.extend(check_patterns(prog, module));
+fn run_frontend_gates_or_exit<T: types_seam::Types>(
+    t: &mut T,
+    prog: &ast::Program,
+    module: &fz_ir::Module,
+    sm: &diag::SourceMap,
+) {
+    let mut diags = check_specs(t, prog, module);
+    diags.extend(check_patterns(t, prog, module));
     diag::report_or_exit(&diags, sm);
 }
 
@@ -184,6 +197,7 @@ fn main() {
 ///
 /// Single-task v1 — spawn/send/receive in AOT lands in fz-ul4.23.6.6.
 fn run_build(args: &[String]) {
+    let mut t = types_seam::ConcreteTypes;
     let mut src_path: Option<String> = None;
     let mut out_path: Option<String> = None;
     let mut i = 0;
@@ -240,16 +254,16 @@ fn run_build(args: &[String]) {
         diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         std::process::exit(1);
     }
-    let module = ir_lower::lower_program(&prog).unwrap_or_else(|e| {
+    let module = ir_lower::lower_program(&mut t, &prog).unwrap_or_else(|e| {
         diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         std::process::exit(1);
     });
-    run_frontend_gates_or_exit(&prog, &module, &sm);
+    run_frontend_gates_or_exit(&mut t, &prog, &module, &sm);
     let obj_name = std::path::Path::new(&src_path)
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("fz_program");
-    let artifact = ir_codegen::compile_aot(&module, obj_name).unwrap_or_else(|e| {
+    let artifact = ir_codegen::compile_aot(&mut t, &module, obj_name).unwrap_or_else(|e| {
         diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         std::process::exit(1);
     });
@@ -321,6 +335,7 @@ fn run_build(args: &[String]) {
 /// "not yet supported" error and exits 75 (EX_TEMPFAIL) so the fixture
 /// matrix logs the path as Deferred rather than failing.
 fn run_interp(args: &[String]) {
+    let mut t = types_seam::ConcreteTypes;
     let path = args.first().cloned().unwrap_or_else(|| {
         eprintln!("fz interp <src.fz>");
         std::process::exit(2);
@@ -349,11 +364,11 @@ fn run_interp(args: &[String]) {
         diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         std::process::exit(1);
     }
-    let module = ir_lower::lower_program(&prog).unwrap_or_else(|e| {
+    let module = ir_lower::lower_program(&mut t, &prog).unwrap_or_else(|e| {
         diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         std::process::exit(1);
     });
-    run_frontend_gates_or_exit(&prog, &module, &sm);
+    run_frontend_gates_or_exit(&mut t, &prog, &module, &sm);
     match ir_interp::run_main(&module) {
         Ok(_halt) => {}
         Err(msg) => {
@@ -642,6 +657,7 @@ struct Compiled {
 /// → ir_lower → type_module, then pretty-print `ModuleTypes` for golden
 /// inspection. Skips codegen entirely; the dump is a typer-only view.
 fn dump_specs_pipeline(src: String, source_name: String) -> String {
+    let mut t = types_seam::ConcreteTypes;
     let mut sm = diag::SourceMap::new();
     let file_id = sm.add_file(source_name, src.clone());
     let toks = lexer::Lexer::with_file(&src, file_id)
@@ -662,13 +678,13 @@ fn dump_specs_pipeline(src: String, source_name: String) -> String {
         diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         std::process::exit(1);
     }
-    let module = ir_lower::lower_program(&prog).unwrap_or_else(|e| {
+    let module = ir_lower::lower_program(&mut t, &prog).unwrap_or_else(|e| {
         diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         std::process::exit(1);
     });
-    run_frontend_gates_or_exit(&prog, &module, &sm);
-    let mt = ir_typer::type_module(&module);
-    ir_typer::pretty_module_types(&module, &mt)
+    run_frontend_gates_or_exit(&mut t, &prog, &module, &sm);
+    let mt = ir_typer::type_module(&mut t, &module);
+    ir_typer::pretty_module_types(&mut t, &module, &mt)
 }
 
 /// fz-jg5.8 (RED.7) — `fz dump --emit bodies`: print every user fn that
@@ -681,6 +697,7 @@ fn dump_specs_pipeline(src: String, source_name: String) -> String {
 /// surviving fns and their spec keys are read out of `ModuleTypes`.
 fn dump_bodies_pipeline(src: String, source_name: String) -> String {
     use crate::ir_typer::ModuleTypes;
+    let mut t = types_seam::ConcreteTypes;
     let mut sm = diag::SourceMap::new();
     let file_id = sm.add_file(source_name, src.clone());
     let toks = lexer::Lexer::with_file(&src, file_id)
@@ -701,14 +718,14 @@ fn dump_bodies_pipeline(src: String, source_name: String) -> String {
         diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         std::process::exit(1);
     }
-    let mut module = ir_lower::lower_program(&prog).unwrap_or_else(|e| {
+    let mut module = ir_lower::lower_program(&mut t, &prog).unwrap_or_else(|e| {
         diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         std::process::exit(1);
     });
     // Run the reducer pass directly so the bodies dump reflects what
     // codegen would see, without going all the way to JIT.
     let _ = ir_reducer::reduce_module(&mut module);
-    let mt: ModuleTypes = ir_typer::type_module(&module);
+    let mt: ModuleTypes = ir_typer::type_module(&mut t, &module);
 
     // Group surviving specs by user-fn name. Skip the conventional
     // synthetic helpers (k_*, fn_clause_*, lambda_*) — they're
@@ -786,6 +803,7 @@ fn dump_bodies_pipeline(src: String, source_name: String) -> String {
 fn dump_outcomes_pipeline(src: String, source_name: String, show_all: bool) -> String {
     use crate::fz_ir::{CallsiteId, EmitSlot, FnId};
     use crate::types::Descr;
+    let mut t = types_seam::ConcreteTypes;
     let mut sm = diag::SourceMap::new();
     let file_id = sm.add_file(source_name.clone(), src.clone());
     let toks = lexer::Lexer::with_file(&src, file_id)
@@ -806,12 +824,12 @@ fn dump_outcomes_pipeline(src: String, source_name: String, show_all: bool) -> S
         diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         std::process::exit(1);
     }
-    let mut module = ir_lower::lower_program(&prog).unwrap_or_else(|e| {
+    let mut module = ir_lower::lower_program(&mut t, &prog).unwrap_or_else(|e| {
         diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         std::process::exit(1);
     });
     let reducer_log = ir_reducer::reduce_module(&mut module);
-    let mt = ir_typer::type_module(&module);
+    let mt = ir_typer::type_module(&mut t, &module);
 
     let fn_name = |fid: fz_ir::FnId| -> String {
         module
@@ -1023,6 +1041,7 @@ fn dump_outcomes_pipeline(src: String, source_name: String, show_all: bool) -> S
 }
 
 fn compile_pipeline(src: String, source_name: String) -> Compiled {
+    let mut t = types_seam::ConcreteTypes;
     let mut sm = diag::SourceMap::new();
     let file_id = sm.add_file(source_name, src.clone());
 
@@ -1044,13 +1063,13 @@ fn compile_pipeline(src: String, source_name: String) -> Compiled {
         diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         std::process::exit(1);
     }
-    let module = ir_lower::lower_program(&prog).unwrap_or_else(|e| {
+    let module = ir_lower::lower_program(&mut t, &prog).unwrap_or_else(|e| {
         diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         std::process::exit(1);
     });
-    run_frontend_gates_or_exit(&prog, &module, &sm);
+    run_frontend_gates_or_exit(&mut t, &prog, &module, &sm);
     let main_fn = module.fn_by_name("main").map(|f| f.id);
-    let cm = ir_codegen::compile(&module).unwrap_or_else(|e| {
+    let cm = ir_codegen::compile(&mut t, &module).unwrap_or_else(|e| {
         diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         std::process::exit(1);
     });

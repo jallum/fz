@@ -71,6 +71,7 @@ pub fn run_str(user_src: &str) -> Result<(), TestRunError> {
 }
 
 fn run_named(user_src: &str, user_name: &str) -> Result<(), TestRunError> {
+    let mut t = crate::types_seam::ConcreteTypes;
     // Lex prelude and user source separately into their own FileIds. Token
     // spans then point at the *real* offsets in their respective files, so
     // later stages render user-facing locations against the user's file
@@ -135,7 +136,7 @@ fn run_named(user_src: &str, user_name: &str) -> Result<(), TestRunError> {
     // This is the fz-ul4.23.5.10 migration: runtime execution leaves the
     // AST evaluator (eval::Interp, which stays only for macro expansion
     // above) and runs on the same IR interpreter the fixture matrix uses.
-    let module = crate::ir_lower::lower_program(&prog).map_err(|e| {
+    let module = crate::ir_lower::lower_program(&mut t, &prog).map_err(|e| {
         crate::diag::render_one_to_stderr(&sm, &e.to_diagnostic());
         TestRunError("lower".into())
     })?;

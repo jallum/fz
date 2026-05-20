@@ -1779,7 +1779,7 @@ mod receive_tests {
     fn lower_src(src: &str) -> Module {
         let toks = Lexer::new(src).tokenize().expect("lex");
         let prog = Parser::new(toks).parse_program().expect("parse");
-        crate::ir_lower::lower_program(&prog).expect("lower")
+        crate::ir_lower::lower_program(&mut crate::types_seam::ConcreteTypes, &prog).expect("lower")
     }
 
     fn run_and_capture(src: &str) -> Result<String, String> {

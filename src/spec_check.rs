@@ -37,7 +37,8 @@ use crate::types::Descr;
 /// Validate every `@spec` in `program` against the corresponding
 /// inferred specs in `module_types`. Returns a list of diagnostics
 /// (empty when all specs hold).
-pub fn validate_specs(
+pub fn validate_specs<T: crate::types_seam::Types>(
+    _t: &mut T,
     program: &Program,
     ir_module: &crate::fz_ir::Module,
     module_types: &ModuleTypes,
@@ -171,8 +172,8 @@ mod tests {
         let toks = Lexer::new(src).tokenize().expect("lex");
         let prog = Parser::new(toks).parse_program().expect("parse");
         let prog = flatten_modules(prog).expect("flatten");
-        let ir = ir_lower::lower_program(&prog).expect("lower");
-        let mt = type_module(&ir);
+        let ir = ir_lower::lower_program(&mut crate::types_seam::ConcreteTypes, &prog).expect("lower");
+        let mt = type_module(&mut crate::types_seam::ConcreteTypes, &ir);
         (prog, ir, mt)
     }
 
@@ -187,7 +188,7 @@ end
 fn main(), do: print(M.add1(41))
 "#,
         );
-        let diags = validate_specs(&prog, &ir, &mt);
+        let diags = validate_specs(&mut crate::types_seam::ConcreteTypes, &prog, &ir, &mt);
         assert!(diags.is_empty(), "unexpected diags: {:?}", diags);
     }
 
@@ -204,7 +205,7 @@ end
 fn main(), do: print(M.add1(41))
 "#,
         );
-        let diags = validate_specs(&prog, &ir, &mt);
+        let diags = validate_specs(&mut crate::types_seam::ConcreteTypes, &prog, &ir, &mt);
         assert!(
             diags.is_empty(),
             "wider declared must accept narrower inferred; got: {:?}",
@@ -225,7 +226,7 @@ end
 fn main(), do: print(M.add1(41))
 "#,
         );
-        let diags = validate_specs(&prog, &ir, &mt);
+        let diags = validate_specs(&mut crate::types_seam::ConcreteTypes, &prog, &ir, &mt);
         assert!(!diags.is_empty(), "disjoint spec must fail");
         let msg = format!("{:?}", diags[0].message);
         assert!(
@@ -247,7 +248,7 @@ end
 fn main(), do: print(M.lookup(7))
 "#,
         );
-        let diags = validate_specs(&prog, &ir, &mt);
+        let diags = validate_specs(&mut crate::types_seam::ConcreteTypes, &prog, &ir, &mt);
         assert!(
             diags.is_empty(),
             "alias-based spec should resolve and pass; got: {:?}",
@@ -266,7 +267,7 @@ end
 fn main(), do: print(M.one(0))
 "#,
         );
-        let diags = validate_specs(&prog, &ir, &mt);
+        let diags = validate_specs(&mut crate::types_seam::ConcreteTypes, &prog, &ir, &mt);
         assert!(!diags.is_empty(), "unknown alias must surface a diag");
         let msg = format!("{:?}", diags[0].message);
         assert!(
@@ -296,7 +297,7 @@ fn main(), do: print(M.add1(41))
         );
         // Validation passes — either the any-key was dropped (.29.12.6)
         // or it was kept and validation correctly skipped it.
-        let diags = validate_specs(&prog, &ir, &mt);
+        let diags = validate_specs(&mut crate::types_seam::ConcreteTypes, &prog, &ir, &mt);
         assert!(
             diags.is_empty(),
             "validation must pass regardless of any-key presence; got: {:?}",
@@ -314,7 +315,7 @@ end
 fn main(), do: print(M.double(7))
 "#,
         );
-        let diags = validate_specs(&prog, &ir, &mt);
+        let diags = validate_specs(&mut crate::types_seam::ConcreteTypes, &prog, &ir, &mt);
         assert!(
             diags.is_empty(),
             "fn without @spec should produce no diags; got: {:?}",
@@ -331,7 +332,7 @@ fn one(), do: 1
 fn main(), do: print(one())
 "#,
         );
-        let diags = validate_specs(&prog, &ir, &mt);
+        let diags = validate_specs(&mut crate::types_seam::ConcreteTypes, &prog, &ir, &mt);
         assert!(
             diags.is_empty(),
             "top-level @spec with builtin scalar must pass; got: {:?}",

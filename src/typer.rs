@@ -8,6 +8,7 @@
 //!   `ir_typer::specialize_return` per fz-ul4.11.24.7).
 
 use crate::types::*;
+use crate::types_seam::Types;
 
 // ----------------------------------------------------------------------
 // Tuple / list projection helpers
@@ -135,7 +136,8 @@ pub fn check_opaque_visibility(d: &Descr, using_module: &str) -> Result<(), Opaq
 /// `brand_tag` is the qualified brand name from the mint IR. Wired
 /// into `ir_lower::check_brand_visibility` as a pre-erasure pass by
 /// fz-axu.24 (M3).
-pub fn check_brand_mint_visibility(
+pub fn check_brand_mint_visibility<T: Types>(
+    _t: &mut T,
     brand_tag: &str,
     using_module: &str,
 ) -> Result<(), OpaqueVisibilityError> {
@@ -298,8 +300,8 @@ mod opaque_visibility_tests {
         // `@type B :: refines integer` declared in module `M` qualifies
         // the brand tag as `M::B`. Mint is allowed from M, rejected
         // from other modules.
-        assert!(check_brand_mint_visibility("M::B", "M").is_ok());
-        let err = check_brand_mint_visibility("M::B", "N").expect_err("must reject");
+        assert!(check_brand_mint_visibility(&mut crate::types_seam::ConcreteTypes, "M::B", "M").is_ok());
+        let err = check_brand_mint_visibility(&mut crate::types_seam::ConcreteTypes, "M::B", "N").expect_err("must reject");
         assert_eq!(err.opaque, "M::B");
         assert_eq!(err.owner_module, "M");
         assert_eq!(err.using_module, "N");
@@ -309,8 +311,8 @@ mod opaque_visibility_tests {
     fn brand_mint_visibility_unqualified_is_global() {
         // Runtime-prelude brands (`@type utf8 :: refines binary`) have
         // no module owner — mintable from any module.
-        assert!(check_brand_mint_visibility("utf8", "AnyModule").is_ok());
-        assert!(check_brand_mint_visibility("utf8", "").is_ok());
+        assert!(check_brand_mint_visibility(&mut crate::types_seam::ConcreteTypes, "utf8", "AnyModule").is_ok());
+        assert!(check_brand_mint_visibility(&mut crate::types_seam::ConcreteTypes, "utf8", "").is_ok());
     }
 
     #[test]
