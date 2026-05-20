@@ -133,13 +133,13 @@ fn fresh_var(f: &FnIr) -> Var {
 /// fz-uwq.9 — returns a [`ReducerLog`] of every Consumed / Stalled
 /// fact. Callers that want the diagnostic pass the log to the dump
 /// pipeline; codegen drops it.
-pub fn reduce_module(m: &mut Module) -> ReducerLog {
+pub fn reduce_module<T: crate::types_seam::Types>(t: &mut T, m: &mut Module) -> ReducerLog {
     let mut log = ReducerLog::default();
     let fn_ids: Vec<FnId> = m.fns.iter().map(|f| f.id).collect();
     // Single sweep: each fn's body is reduced in place. RED.3 does not
     // iterate to a fixpoint across fns; later tickets may.
     for fid in fn_ids {
-        reduce_fn(m, fid, &mut log);
+        reduce_fn(t, m, fid, &mut log);
     }
     #[cfg(debug_assertions)]
     assert_every_surviving_call_in_log(m, &log);
@@ -184,17 +184,29 @@ fn assert_every_surviving_call_in_log(m: &Module, log: &ReducerLog) {
     }
 }
 
-fn reduce_fn(m: &mut Module, fid: FnId, log: &mut ReducerLog) {
+fn reduce_fn<T: crate::types_seam::Types>(
+    t: &mut T,
+    m: &mut Module,
+    fid: FnId,
+    log: &mut ReducerLog,
+) {
     let Some(&fn_idx) = m.fn_idx.get(&fid) else {
         return;
     };
     let block_ids: Vec<BlockId> = m.fns[fn_idx].blocks.iter().map(|b| b.id).collect();
     for bid in block_ids {
-        reduce_block(m, fn_idx, bid, log);
+        reduce_block(t, m, fn_idx, bid, log);
     }
 }
 
-fn reduce_block(m: &mut Module, fn_idx: usize, bid: BlockId, log: &mut ReducerLog) {
+fn reduce_block<T: crate::types_seam::Types>(
+    t: &mut T,
+    m: &mut Module,
+    fn_idx: usize,
+    bid: BlockId,
+    log: &mut ReducerLog,
+) {
+    let _ = t; // threaded for future seam use; body still on Descr for now
     // Build a per-block env of Var → literal Descr by folding each stmt.
     let mut env: HashMap<Var, Descr> = HashMap::new();
     let atom_names = m.atom_names.clone();
@@ -976,7 +988,7 @@ mod tests {
         mb.add_fn(id_b.build());
         mb.add_fn(main_b.build());
         let mut m = mb.build();
-        reduce_module(&mut m);
+        reduce_module(&mut crate::types_seam::ConcreteTypes, &mut m);
 
         // main's terminator should now be Return of a freshly bound int_lit(42).
         let main_fn = m.fns.iter().find(|f| f.name == "main").unwrap();
@@ -1025,7 +1037,7 @@ mod tests {
         mb.add_fn(d_b.build());
         mb.add_fn(main_b.build());
         let mut m = mb.build();
-        reduce_module(&mut m);
+        reduce_module(&mut crate::types_seam::ConcreteTypes, &mut m);
 
         let main_fn = m.fns.iter().find(|f| f.name == "main").unwrap();
         let block = &main_fn.blocks[0];
@@ -1069,7 +1081,7 @@ mod tests {
         mb.add_fn(id_b.build());
         mb.add_fn(main_b.build());
         let mut m = mb.build();
-        reduce_module(&mut m);
+        reduce_module(&mut crate::types_seam::ConcreteTypes, &mut m);
 
         let main_fn = m.fns.iter().find(|f| f.name == "main").unwrap();
         match &main_fn.blocks[0].terminator {
@@ -1095,7 +1107,7 @@ mod tests {
         let mut mb = ModuleBuilder::new();
         mb.add_fn(b.build());
         let mut m = mb.build();
-        reduce_module(&mut m);
+        reduce_module(&mut crate::types_seam::ConcreteTypes, &mut m);
 
         match &m.fns[0].block(entry).terminator {
             Term::Goto(tgt, args) if *tgt == t_blk && args.is_empty() => {}
@@ -1171,7 +1183,7 @@ mod tests {
         mb.add_fn(b.build());
         mb.add_fn(main_b.build());
         let mut m = mb.build();
-        reduce_module(&mut m);
+        reduce_module(&mut crate::types_seam::ConcreteTypes, &mut m);
 
         // main's terminator should now Return a literal 0 — count(5)→count(4)→...→count(0)=0.
         let main_fn = m.fns.iter().find(|f| f.name == "main").unwrap();
@@ -1234,7 +1246,7 @@ mod tests {
         mb.add_fn(b.build());
         mb.add_fn(main_b.build());
         let mut m = mb.build();
-        reduce_module(&mut m);
+        reduce_module(&mut crate::types_seam::ConcreteTypes, &mut m);
 
         // main should still TailCall count.
         let main_fn = m.fns.iter().find(|f| f.name == "main").unwrap();
@@ -1319,7 +1331,7 @@ mod tests {
         mb.add_fn(o.build());
         mb.add_fn(main_b.build());
         let mut m = mb.build();
-        reduce_module(&mut m);
+        reduce_module(&mut crate::types_seam::ConcreteTypes, &mut m);
 
         let main_fn = m.fns.iter().find(|f| f.name == "main").unwrap();
         let blk = &main_fn.blocks[0];
@@ -1384,7 +1396,7 @@ mod tests {
         mb.add_fn(f_b.build());
         mb.add_fn(main_b.build());
         let mut m = mb.build();
-        reduce_module(&mut m);
+        reduce_module(&mut crate::types_seam::ConcreteTypes, &mut m);
 
         // main should now Return Const(Int(5)) — fully reduced.
         let main_fn = m.fns.iter().find(|f| f.name == "main").unwrap();
@@ -1435,7 +1447,7 @@ mod tests {
         mb.add_fn(id_b.build());
         mb.add_fn(main_b.build());
         let mut m = mb.build();
-        let log = reduce_module(&mut m);
+        let log = reduce_module(&mut crate::types_seam::ConcreteTypes, &mut m);
 
         let cid = CallsiteId {
             caller: FnId(1),
@@ -1482,7 +1494,7 @@ mod tests {
         mb.add_fn(id_b.build());
         mb.add_fn(main_b.build());
         let mut m = mb.build();
-        let log = reduce_module(&mut m);
+        let log = reduce_module(&mut crate::types_seam::ConcreteTypes, &mut m);
 
         let cid = CallsiteId {
             caller: FnId(1),
@@ -1527,7 +1539,7 @@ mod tests {
         mb.add_fn(pair_b.build());
         mb.add_fn(main_b.build());
         let mut m = mb.build();
-        reduce_module(&mut m);
+        reduce_module(&mut crate::types_seam::ConcreteTypes, &mut m);
 
         let main_fn = m.fns.iter().find(|f| f.name == "main").unwrap();
         let blk = &main_fn.blocks[0];
@@ -1582,7 +1594,7 @@ mod tests {
         mb.add_fn(e_b.build());
         mb.add_fn(main_b.build());
         let mut m = mb.build();
-        reduce_module(&mut m);
+        reduce_module(&mut crate::types_seam::ConcreteTypes, &mut m);
 
         let main_fn = m.fns.iter().find(|f| f.name == "main").unwrap();
         let blk = &main_fn.blocks[0];
