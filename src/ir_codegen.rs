@@ -1473,6 +1473,21 @@ impl Backend for AotBackend {
             .declare_function("fz_aot_set_resume_shims", Linkage::Import, &set_shims_sig)
             .map_err(|e| CodegenError::new(format!("declare fz_aot_set_resume_shims: {}", e)))?;
 
+        // fz-4mk.3b — fz_aot_set_drain_dtor_entry(addr). Registers the
+        // SystemV→Tail-CC `fz_drain_dtor_entry` shim so the AOT run-queue
+        // loop can dispatch pending dtor closures at task-exit.
+        let set_drain_sig = sig1(&[types::I64], &[]);
+        let set_drain_id = self
+            .omod
+            .declare_function(
+                "fz_aot_set_drain_dtor_entry",
+                Linkage::Import,
+                &set_drain_sig,
+            )
+            .map_err(|e| {
+                CodegenError::new(format!("declare fz_aot_set_drain_dtor_entry: {}", e))
+            })?;
+
         // fz-ul4.38 — fz_aot_register_tuple_schemas(proc, arities_ptr, len)
         // populates the AOT process's SchemaRegistry with one Tuple{N} entry
         // per arity, in the order the array was emitted. That order matches
@@ -1630,6 +1645,8 @@ impl Backend for AotBackend {
             reg_dtor_table_id,
             dtor_table_data,
             dtor_table_len,
+            set_drain_id,
+            meta.drain_dtor_entry_id,
         )?;
         Ok(())
     }
@@ -3436,6 +3453,8 @@ fn emit_aot_c_main<M: cranelift_module::Module>(
     reg_dtor_table_id: FuncId,
     dtor_table_data: Option<DataId>,
     dtor_table_len: u32,
+    set_drain_id: FuncId,
+    drain_dtor_entry_id: FuncId,
 ) -> Result<(), CodegenError> {
     use cranelift_frontend::FunctionBuilder;
 
@@ -3550,6 +3569,14 @@ fn emit_aot_c_main<M: cranelift_module::Module>(
             let shims_ptr = b.ins().stack_addr(types::I64, slot, 0);
             let set_fref = jmod.declare_func_in_func(set_shims_id, b.func);
             b.ins().call(set_fref, &[shims_ptr]);
+        }
+
+        // fz-4mk.3b — register the drain-dtor entry shim with the runtime
+        // so the AOT run-queue loop can fire pending dtors at task-exit.
+        {
+            let drain_addr = fn_addr(jmod, drain_dtor_entry_id, &mut b);
+            let set_drain_fref = jmod.declare_func_in_func(set_drain_id, b.func);
+            b.ins().call(set_drain_fref, &[drain_addr]);
         }
 
         // exit = fz_aot_run_main(proc, main_fp, main_entry_addr)

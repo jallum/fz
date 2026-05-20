@@ -54,6 +54,11 @@ thread_local! {
     /// a process that yielded at a back-edge after gc_mid_flight.
     static AOT_RESUME_SHIMS: Cell<[*const u8; 9]> =
         const { Cell::new([std::ptr::null(); 9]) };
+    /// fz-4mk.3b — SystemV `fz_drain_dtor_entry(closure, payload)` shim
+    /// address. Set by `fz_aot_set_drain_dtor_entry` after setup. The
+    /// run-queue loop calls this once per pending dtor at task-exit; the
+    /// shim Tail-CC dispatches the closure body with a fresh halt-cont.
+    static AOT_DRAIN_DTOR_ENTRY: Cell<*const u8> = const { Cell::new(std::ptr::null()) };
     /// fz-swt.11 — dtor lookup table baked into the AOT binary at codegen
     /// time. Each entry is `(FnId of a zero-cap closure body, C-ABI fn ptr
     /// of the underlying extern)`. AOT codegen scans the IR module for
@@ -462,6 +467,19 @@ pub unsafe extern "C" fn fz_aot_set_resume_shims(shims: *const *const u8) {
     AOT_RESUME_SHIMS.with(|c| c.set(arr));
 }
 
+/// fz-4mk.3b — register the `fz_drain_dtor_entry` shim address. Called from
+/// AOT-emitted C main after `fz_aot_setup`. The run-queue loop dispatches
+/// each entry on `process.heap.pending_dtors` through this shim when a
+/// task exits.
+///
+/// # Safety
+/// `addr` must be the address of `fz_drain_dtor_entry` emitted by
+/// compile_with_backend (SystemV `(closure: u64, payload: u64) -> i64`).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fz_aot_set_drain_dtor_entry(addr: *const u8) {
+    AOT_DRAIN_DTOR_ENTRY.with(|c| c.set(addr));
+}
+
 /// Cooperative run-queue loop. Drives all enqueued processes to completion
 /// or Blocked state. Each iteration pops one pid, dispatches one quantum,
 /// and re-enqueues if the process self-sent (state == Ready).
@@ -541,6 +559,7 @@ fn aot_run_queue_loop() {
         // Post-quantum state check.
         let state = unsafe { (*proc_ptr).state };
         let mid_flight = unsafe { (*proc_ptr).mid_flight_fn_ptr };
+        let parked = unsafe { (*proc_ptr).parked_cont };
         if state == ProcessState::Running && mid_flight != 0 {
             // Mid-flight yield: GC the slab, clear flag, re-enqueue.
             let n = unsafe { (*proc_ptr).mid_flight_root_count as usize };
@@ -554,6 +573,22 @@ fn aot_run_queue_loop() {
             AOT_RUN_QUEUE.with(|q| q.borrow_mut().push_back(pid));
         } else if state == ProcessState::Ready {
             AOT_RUN_QUEUE.with(|q| q.borrow_mut().push_back(pid));
+        } else if state == ProcessState::Running && parked.is_null() {
+            // fz-4mk.3b — task halted (Running + no mid-flight + no parked
+            // cont). Mark Exited and flush surviving MSO resources through
+            // the dtor drain shim before the heap drops. CURRENT_PROCESS
+            // remains set so dtor bodies can allocate against the task.
+            unsafe { (*proc_ptr).state = ProcessState::Exited };
+            let drain_addr = AOT_DRAIN_DTOR_ENTRY.with(|c| c.get());
+            if !drain_addr.is_null() {
+                let process = unsafe { &mut *proc_ptr };
+                crate::procbin::mso_drop_all_deferred(&mut process.heap);
+                type DrainDtor = extern "C" fn(u64, u64) -> i64;
+                let drain: DrainDtor = unsafe { std::mem::transmute(drain_addr) };
+                while let Some((closure, payload)) = process.heap.pending_dtors.pop_front() {
+                    let _ = drain(closure, payload);
+                }
+            }
         }
 
         CURRENT_PROCESS.with(|c| c.set(prev));
