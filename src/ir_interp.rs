@@ -422,6 +422,18 @@ pub fn run_main(module: &Module) -> Result<i64, String> {
                         step = run_fn(module, next_fn, next_args);
                         // loop continues
                     } else {
+                        // fz-4mk — shutdown drain: walk the MSO chain to
+                        // enqueue every still-live resource's dtor, then
+                        // dispatch each as a real fz call while the process
+                        // is still alive (CURRENT_PROCESS is `proc_ptr`,
+                        // heap is intact, scheduler can drive callbacks
+                        // into externs the dtor body invokes).
+                        unsafe {
+                            fz_runtime::procbin::mso_drop_all_deferred(&mut (*proc_ptr).heap);
+                        }
+                        if let Err(e) = drain_pending_dtors_interp(module) {
+                            eprintln!("fz-4mk: dtor drain failed: {}", e);
+                        }
                         fz_runtime::process::CURRENT_PROCESS.with(|c| c.set(prev));
                         INTERP_TASKS.with(|t| {
                             if let Some(p) = t.borrow_mut().get_mut(&pid) {
@@ -493,6 +505,15 @@ pub fn run_test_fn(module: &Module, fn_id: FnId) -> Result<(), String> {
     let task_ptr = interp_register_task(1, task);
     let prev = fz_runtime::process::CURRENT_PROCESS.with(|c| c.replace(task_ptr));
     let result = run_fn(module, fn_id, Vec::new());
+    // fz-4mk — shutdown drain mirrors run_main's exit path: enqueue every
+    // surviving resource's dtor and dispatch each as a real fz call while
+    // CURRENT_PROCESS is still pointing at the test task's heap.
+    unsafe {
+        fz_runtime::procbin::mso_drop_all_deferred(&mut (*task_ptr).heap);
+    }
+    if let Err(e) = drain_pending_dtors_interp(module) {
+        eprintln!("fz-4mk: dtor drain failed in test fn: {}", e);
+    }
     fz_runtime::process::CURRENT_PROCESS.with(|c| c.set(prev));
     INTERP_SCHEMAS.with(|s| *s.borrow_mut() = None);
     match result {
@@ -1095,6 +1116,44 @@ fn eval_prim(module: &Module, prim: &Prim, env: &HashMap<Var, FzValue>) -> Resul
 /// Read an interp-side closure value. fz-ul4.29.5 layout:
 ///   header (16) + stub_fp (8) + captured: [FzValue; n] (offset 24+)
 ///   header._reserved = callee FnId; header.flags = captured count.
+/// fz-4mk — interpreter-leg drain of `Heap::pending_dtors`. Pops each
+/// `(closure_bits, payload)` enqueued by `mso_sweep`/`mso_drop_all`,
+/// unpacks the closure to its body FnId + captures, and runs the body
+/// as a fully fz-side call via `run_fn`. The dtor's return value is
+/// discarded. Errors from the dtor body propagate to the caller; the
+/// run-loop logs and continues.
+///
+/// Pre-conditions: `CURRENT_PROCESS` is set to the heap owning the
+/// queue. Closures in the queue point into that heap.
+fn drain_pending_dtors_interp(module: &Module) -> Result<(), String> {
+    loop {
+        let entry = {
+            let p = fz_runtime::process::current_process();
+            p.heap.pending_dtors.pop_front()
+        };
+        let Some((closure_bits, payload)) = entry else {
+            break;
+        };
+        let closure = FzValue(closure_bits);
+        let (fn_id, captured) = match unpack_closure(closure) {
+            Ok(x) => x,
+            Err(e) => {
+                eprintln!("fz-4mk drain: bad dtor closure (skipping): {}", e);
+                continue;
+            }
+        };
+        let mut args = captured;
+        args.push(FzValue(payload));
+        match run_fn(module, fn_id, args)? {
+            InterpStep::Done(_) => {}
+            InterpStep::Blocked(_, _, _) | InterpStep::BlockedMatched(_, _) => {
+                return Err("fz-4mk drain: dtor blocked on receive (unsupported in v1)".into());
+            }
+        }
+    }
+    Ok(())
+}
+
 fn unpack_closure(v: FzValue) -> Result<(FnId, Vec<FzValue>), String> {
     use fz_runtime::fz_value::HeapKind;
     let p = v.unbox_ptr().ok_or_else(|| {
@@ -1172,74 +1231,32 @@ fn eval_binop(op: BinOp, a: FzValue, b: FzValue) -> Result<FzValue, String> {
     }
 }
 
-/// fz-swt.7 / fz-swt.10 — given a closure FzValue produced by
-/// `&name/arity`, resolve the C-ABI fn pointer to install as the
-/// resource's dtor.
-///
-/// Both interp and JIT/AOT closures store the wrapper fn's `FnId` in the
-/// `_reserved` field of the on-heap `HeapKind::Closure` header. The
-/// closure's `+16` slot holds different things depending on the leg
-/// (interp: null; JIT/AOT: the body's func_addr in closure-target sig,
-/// which is NOT a C-ABI `fn(u64)` and cannot be called directly), so we
-/// uniformly ignore `+16` and resolve the dtor by walking the wrapper
-/// fn's IR to find its underlying `Prim::Extern(eid, _)` call. That
-/// extern's symbol is then resolved through the same machinery
-/// `call_extern` uses below.
-///
-/// Pattern recognised: any block in the fn body that contains
-/// `Let(_, Prim::Extern(eid, _))` — i.e., the canonical
-/// `fn wrap(x), do: some_extern(x)` shape (and any single-extern
-/// wrapper whose CPS lowering produces an Extern stmt anywhere). Richer
-/// dtor wrappers (multiple externs, branching) require evaluating the
-/// closure body, which is out of scope for v0; the contract is "fz-side
-/// dtor must be a thin wrapper around a single C extern."
-pub(crate) fn resolve_dtor_from_closure(
-    module: &Module,
-    closure: FzValue,
-) -> Result<unsafe extern "C" fn(u64), String> {
+/// fz-4mk — shared work behind both the interp `fz_make_resource` BIF and
+/// the JIT/AOT `MakeResourceHook` thunk: validate the dtor closure, then
+/// allocate the off-heap `Resource` + on-heap stub on the current process
+/// heap. The dtor body fires as real fz code at scheduler-boundary drain
+/// via `fz_drain_dtor_entry` (JIT/AOT) or `run_fn` (interp); the
+/// Resource's C-side dtor slot is the no-op so refcount→0 paths that
+/// bypass the drain don't double-fire.
+pub(crate) fn make_resource_in_current_process(
+    _module: &Module,
+    payload: u64,
+    dtor_closure: FzValue,
+) -> Result<FzValue, String> {
     use fz_runtime::fz_value::HeapKind;
-    let p = closure
+    let p = dtor_closure
         .unbox_ptr()
         .ok_or_else(|| "make_resource: dtor arg is not a heap value".to_string())?;
     let header = unsafe { &*p };
     if HeapKind::from_u16(header.kind) != Some(HeapKind::Closure) {
         return Err("make_resource: dtor arg is not a closure".into());
     }
-    let fn_id = crate::fz_ir::FnId(header._reserved);
-    let fnir = module.fn_by_id(fn_id);
-    let eid = fnir.blocks.iter().find_map(|b| {
-        b.stmts.iter().find_map(|s| match s {
-            Stmt::Let(_, Prim::Extern(eid, _)) => Some(*eid),
-            _ => None,
-        })
-    });
-    let eid = eid.ok_or_else(|| {
-        format!(
-            "make_resource: dtor closure for `{}` has no Prim::Extern in body",
-            fnir.name
-        )
-    })?;
-    let decl = module.extern_by_id(eid);
-    let fp = resolve_symbol(&decl.symbol)?;
-    // SAFETY: resolved fn pointer for a C-ABI extern declared in the
-    // module; ExternTy constraints guarantee u64-wide scalar params.
-    let f: unsafe extern "C" fn(u64) = unsafe { std::mem::transmute(fp) };
-    Ok(f)
-}
-
-/// fz-swt.10 — shared work behind both the interp `fz_make_resource` BIF
-/// and the JIT/AOT `MakeResourceHook` thunk: resolve the dtor, allocate
-/// an off-heap `Resource` + on-heap stub on the current process heap,
-/// return the FzValue bits of the stub.
-pub(crate) fn make_resource_in_current_process(
-    module: &Module,
-    payload: u64,
-    dtor_closure: FzValue,
-) -> Result<FzValue, String> {
-    let dtor = resolve_dtor_from_closure(module, dtor_closure)?;
-    let handle = fz_runtime::resource::ResourceHandle::new(payload, dtor);
+    let handle = fz_runtime::resource::ResourceHandle::new(
+        payload,
+        fz_runtime::resource::fz_resource_destructor_noop,
+    );
     let heap = &mut fz_runtime::process::current_process().heap;
-    let stub = fz_runtime::resource::alloc_resource(heap, handle);
+    let stub = fz_runtime::resource::alloc_resource(heap, handle, dtor_closure);
     Ok(FzValue::from_ptr(stub.as_raw()))
 }
 
@@ -1343,6 +1360,14 @@ fn call_extern(module: &Module, eid: ExternId, args: &[FzValue]) -> Result<FzVal
         .zip(decl.params.iter())
         .map(|(v, ty)| match ty {
             ExternTy::I64 => v.unbox_int().unwrap_or(0) as u64,
+            // fz-8up — Binary/CString call into the runtime helpers from
+            // [[fz-9ss]] and pass the returned pointer as the C arg.
+            ExternTy::Binary => {
+                (unsafe { fz_runtime::extern_binary::fz_binary_as_ptr(v.0) }) as u64
+            }
+            ExternTy::CString => {
+                (unsafe { fz_runtime::extern_binary::fz_binary_as_cstring(v.0) }) as u64
+            }
             _ => v.0,
         })
         .collect();
@@ -1353,7 +1378,14 @@ fn call_extern(module: &Module, eid: ExternId, args: &[FzValue]) -> Result<FzVal
         unsafe { dispatch_fn_void(fp, &raw_args) };
         0
     };
-    Ok(FzValue(ret))
+    // fz-rb8 — `:: integer` returns a raw signed 64-bit value from C;
+    // auto-box to FzValue::Int. Other return classes treat the bits as
+    // an already-tagged FzValue.
+    let boxed = match decl.ret {
+        ExternTy::I64 => FzValue::from_int(ret as i64).0,
+        _ => ret,
+    };
+    Ok(FzValue(boxed))
 }
 
 /// Return the function pointer for a named C symbol.
@@ -1389,11 +1421,10 @@ fn resolve_symbol(name: &str) -> Result<*const (), String> {
         "fz_resource_test_print_dtor" => {
             Some(fz_runtime::resource::fz_resource_test_print_dtor as *const ())
         }
-        // fz-swt.13 — File-module test helpers. Same rationale as the
-        // print-dtor binding above: keep the interp leg of the fixture
+        // fz-swt.13 — tmpfile helper for file fixtures. Same rationale as
+        // the print-dtor binding above: keep the interp leg of the fixture
         // matrix self-contained, no dlsym dependence.
         "fz_test_open_tmpfile" => Some(fz_runtime::resource::fz_test_open_tmpfile as *const ()),
-        "fz_test_close_fd" => Some(fz_runtime::resource::fz_test_close_fd as *const ()),
         _ => None,
     };
     if let Some(fp) = native {
@@ -1570,14 +1601,14 @@ end
             1,
             "dtor must fire exactly once after process heap drop"
         );
-        // The dtor receives the raw FzValue bits of the payload we stored
-        // (the BIF stores args[0].0 verbatim). For Int 42, FzValue.0 is
-        // `42 << 4 | INT_TAG` (Int tag = 0), i.e. 672.
-        // FzValue Int encoding: (n << 3) | TAG_INT (=1). For n=42 → 337.
+        // fz-4mk — the dtor body runs as ordinary fz code through
+        // dispatched closure; the extern's `:: integer` marshal class
+        // unboxes the payload before the C fn sees it. So the C dtor
+        // receives the *unboxed* int 42, not the tagged FzValue bits.
         assert_eq!(
             tests_support::DTOR_LAST_PAYLOAD.load(Ordering::Relaxed),
-            fz_runtime::fz_value::FzValue::from_int(42).0,
-            "dtor receives the stored FzValue.0 bits of payload 42",
+            42,
+            "dtor (called via fz dispatch + extern unboxing) receives the unboxed int payload"
         );
     }
 
@@ -1615,10 +1646,12 @@ end
             1,
             "aliasing three bindings must still produce exactly one dtor call",
         );
+        // fz-4mk — dtor dispatches as fz code, extern unboxes (see
+        // make_resource_bif_round_trip).
         assert_eq!(
             tests_support::DTOR_LAST_PAYLOAD.load(Ordering::Relaxed),
-            fz_runtime::fz_value::FzValue::from_int(7).0,
-            "dtor receives the stored FzValue.0 bits of payload 7",
+            7,
+            "dtor receives the unboxed int payload",
         );
     }
 
@@ -1710,10 +1743,11 @@ end
             1,
             "dtor fires once on heap drop",
         );
+        // fz-4mk — see make_resource_bif_round_trip; dtor sees unboxed.
         assert_eq!(
             tests_support::DTOR_LAST_PAYLOAD.load(Ordering::Relaxed),
-            fz_runtime::fz_value::FzValue::from_int(99).0,
-            "dtor receives the stored FzValue.0 bits of payload 99",
+            99,
+            "dtor receives the unboxed int payload",
         );
     }
 }

@@ -327,6 +327,13 @@ pub struct Heap {
     /// their to-space copies; `Heap::drop` calls `procbin::mso_drop_all`
     /// before pool reclaim so SharedBin references are balanced.
     pub mso_head: *mut HeapHeader,
+    /// fz-4mk — pending dtor invocations. When an MSO sweep finds a
+    /// `HeapKind::Resource` stub whose off-heap refcount transitioned to
+    /// zero, instead of firing the dtor inline (which would mean running
+    /// fz code from inside the GC pause), we enqueue
+    /// `(closure_bits, payload)` here and the scheduler drains the queue
+    /// at the next quantum boundary. See ticket fz-4mk.
+    pub pending_dtors: std::collections::VecDeque<(u64, u64)>,
     /// fz-q8d.4 — fragment list. Oversized allocations (above the
     /// largest size_class) live here as their own system-allocator
     /// backed singletons. GC marks them via the `mark` bit; survivors
@@ -361,6 +368,7 @@ impl Heap {
             gc_run_count: 0,
             alloc_count: 0,
             mso_head: std::ptr::null_mut(),
+            pending_dtors: std::collections::VecDeque::new(),
             fragments: Vec::new(),
         }
     }
@@ -527,7 +535,10 @@ impl Heap {
             let handle = SharedBinHandle::from_bytes(bytes, bit_len);
             return alloc_procbin(self, handle).as_raw();
         }
-        let total = (16 + 8 + bytes.len() + 15) & !15;
+        // fz-wu9 — reserve at least 1 byte past the payload for the
+        // invisible trailing NUL. The pad-zeroing below guarantees it reads
+        // as 0; bytes_len / bit_len are unchanged.
+        let total = (16 + 8 + bytes.len() + 1 + 15) & !15;
         let p = self.alloc(total);
         unsafe {
             std::ptr::write(
@@ -1073,11 +1084,24 @@ fn cheney_trace_children(
         | HeapKind::VecF64
         | HeapKind::VecU8
         | HeapKind::VecBit
-        | HeapKind::ProcBin
-        | HeapKind::Resource => {
-            // Raw payload, no FzValue children. For ProcBin and Resource
-            // the +16 payload is a refcounted off-heap pointer; the MSO
-            // sweep handles those edges separately.
+        | HeapKind::ProcBin => {
+            // Raw payload, no FzValue children. For ProcBin the +16 payload
+            // is a refcounted off-heap pointer; the MSO sweep handles that
+            // edge separately.
+        }
+        HeapKind::Resource => {
+            // Off-heap refcounted shared_ptr at +16 (handled by MSO sweep).
+            // fz-4mk — dtor closure FzValue at +24; trace like any other
+            // heap edge so the closure survives Cheney for deferred dispatch.
+            let closure_slot = unsafe { (obj as *mut u8).add(24) as *mut FzValue };
+            forward_field(
+                closure_slot,
+                from_ranges,
+                fragments,
+                frag_queue,
+                free,
+                to_end,
+            );
         }
     }
 }
@@ -1310,10 +1334,14 @@ pub fn deep_copy_value(
             // mirroring the ProcBin path. The new handle holds a fresh
             // refcount edge that alloc_resource transfers into the
             // destination stub / MSO chain.
+            // fz-4mk — also deep-copy the dtor closure into dst_heap so the
+            // destination stub points at a closure native to its own heap.
             use crate::resource::{ResourceHandle, ResourceStub, alloc_resource};
             let src_rs = unsafe { ResourceStub::from_raw(sp) };
             let handle = unsafe { ResourceHandle::retain_from_raw(src_rs.shared_raw()) };
-            let new_p = alloc_resource(dst_heap, handle).as_raw();
+            let src_closure = src_rs.closure_ptr();
+            let dst_closure = deep_copy_value(src_closure, src_heap, dst_heap, forwarding);
+            let new_p = alloc_resource(dst_heap, handle, dst_closure).as_raw();
             forwarding.insert(sp, new_p);
             return FzValue(new_p as u64);
         }
@@ -1386,6 +1414,36 @@ mod tests {
         assert_eq!(id_b, 1);
         assert_eq!(reg.get(id_a).name, "A");
         assert_eq!(reg.get(id_b).name, "Pair");
+    }
+
+    /// fz-wu9 — every inline `HeapKind::Bitstring` allocation reserves
+    /// at least one zero byte past its payload at offset
+    /// `bytes_ptr + ceil(bit_len/8)`. Mirrors the SharedBin invariant
+    /// covered by procbin.rs::shared_bin_alloc_has_trailing_nul.
+    #[test]
+    fn alloc_bitstring_inline_has_trailing_nul() {
+        let mut h = Heap::new(1024, empty_registry());
+        // Cover lengths around the 16-byte-alignment boundary so the
+        // formerly-zero pad cases get exercised.
+        for n in [0usize, 1, 7, 8, 9, 15, 16, 17, 24, 25] {
+            let bytes: Vec<u8> = (0..n).map(|i| (i as u8) ^ 0xff).collect();
+            let bit_len = (n as u64) * 8;
+            let p = h.alloc_bitstring(&bytes, bit_len);
+            unsafe {
+                assert_eq!((*p).kind, HeapKind::Bitstring as u16);
+                let payload = (p as *const u8).add(24);
+                for i in 0..n {
+                    assert_eq!(*payload.add(i), bytes[i], "payload byte {} at len {}", i, n);
+                }
+                assert_eq!(
+                    *payload.add(n),
+                    0,
+                    "trailing NUL at offset {} for payload len {}",
+                    n,
+                    n
+                );
+            }
+        }
     }
 
     #[test]

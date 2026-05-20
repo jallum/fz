@@ -1,10 +1,16 @@
 extern "C" fn fz_test_open_tmpfile() :: integer
-extern "C" fn fz_test_close_fd(any) :: nil
+extern "C" fn libc::close(integer) :: integer
 
 defmodule File do
   @type t :: opaque resource(integer)
 
-  fn dtor(fd), do: fz_test_close_fd(fd)
+  # Dtor body runs as fz code at task-exit (fz-4mk); we can call
+  # libc::close directly and emit an observable side-effect so the test
+  # can see the dtor fired.
+  fn dtor(fd) do
+    libc::close(fd)
+    print(:dtor_closed)
+  end
 
   fn wrap_fd(fd), do: make_resource(fd, &dtor/1)
   fn fd_of(h), do: h.value

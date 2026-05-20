@@ -213,13 +213,27 @@ impl ExternTable {
 
 /// Map a single token identifier to an `ExternTy`. Used when resolving the
 /// return-type annotation in an `extern "C" fn` declaration.
+/// fz-y3k — split an extern's fz-visible name into the C symbol it resolves
+/// to. A `lib::name` prefix is fz-side documentation/namespacing only; the
+/// linker sees just the bare suffix. Single-segment names round-trip.
+fn extern_symbol_from_name(fz_name: &str) -> &str {
+    fz_name
+        .rsplit_once("::")
+        .map(|(_, sym)| sym)
+        .unwrap_or(fz_name)
+}
+
 fn extern_ty_from_name(name: &str) -> Option<ExternTy> {
     match name {
-        "any" | "binary" | "atom" | "bool" => Some(ExternTy::Any),
+        "any" | "atom" | "bool" => Some(ExternTy::Any),
         "integer" => Some(ExternTy::I64),
         "float" => Some(ExternTy::F64),
         "nil" => Some(ExternTy::Unit),
         "never" => Some(ExternTy::Never),
+        // fz-0cv — binary marshal classes; one fz binary arg → one
+        // `*const u8` C arg. See [[fz-9ss]] for the runtime helpers.
+        "binary" => Some(ExternTy::Binary),
+        "cstring" => Some(ExternTy::CString),
         _ => None,
     }
 }
@@ -264,6 +278,15 @@ pub struct LowerCtx {
     /// the same FnId and produce a single `MakeClosure(thunk, [x])`
     /// shape in stub generation.
     spawn_thunk_id: Option<FnId>,
+    /// fz-eol — lazily synthesized top-level fn wrappers around extern
+    /// calls, keyed by ExternId. `&libc::close/1` produces a closure
+    /// pointing at the wrapper. The wrapper is a true top-level fn (not
+    /// a lambda) so it has *zero captures*, which is what
+    /// `static_closure_targets` requires for the AOT dtor table.
+    /// (Why not desugar to a lambda? The lambda lifter today captures
+    /// every in-scope local indiscriminately — see `lower_lambda` —
+    /// which would push the closure past the n_caps==0 filter.)
+    extern_wrappers: HashMap<ExternId, FnId>,
     /// fz-ext.7 — FnIds below this threshold belong to the runtime.fz
     /// prelude. `build_source_info` ignores their var_meta entries so
     /// prelude spans (relative to runtime.fz bytes) don't overwrite
@@ -311,6 +334,7 @@ impl LowerCtx {
             term_spans: HashMap::new(),
             fn_spans: HashMap::new(),
             spawn_thunk_id: None,
+            extern_wrappers: HashMap::new(),
             prelude_fn_id_cutoff: 0,
             prelude_type_env: crate::type_expr::ModuleTypeEnv::new(),
             combined_type_env: crate::type_expr::ModuleTypeEnv::new(),
@@ -372,6 +396,47 @@ impl LowerCtx {
         // expression lowering inside another fn.
         self.mb.add_fn(built);
         self.spawn_thunk_id = Some(id);
+        id
+    }
+
+    /// fz-eol — get-or-build a top-level fn that forwards its args to the
+    /// named extern. Used by `&libc::close/1` (and any `&<extern>/<arity>`)
+    /// so the resulting closure has a real `FnId` and *zero captures* —
+    /// `&name/arity` requires a top-level fn to point at, and only zero-cap
+    /// closure targets get static-singleton allocation. The wrapper body
+    /// is just `Prim::Extern(eid, params); Return`. See [[fz-9rs]] for the
+    /// underlying lifter limitation that prevents the simpler "desugar to
+    /// lambda" approach.
+    fn ensure_extern_wrapper(&mut self, eid: ExternId) -> FnId {
+        if let Some(id) = self.extern_wrappers.get(&eid) {
+            return *id;
+        }
+        let decl = self
+            .extern_decls
+            .iter()
+            .find(|d| d.id == eid)
+            .expect("ensure_extern_wrapper: eid not in extern_decls")
+            .clone();
+        let id = self.mb.fresh_fn_id();
+        // Name carries the fz-visible name verbatim (with `::` if any) so
+        // dumps render `&libc::close/1` recognisably.
+        let name = format!("__extern_wrap__{}", decl.fz_name);
+        let mut tb = FnBuilder::new(id, name).with_category(crate::fz_ir::FnCategory::Prelude);
+        let params: Vec<Var> = (0..decl.params.len()).map(|_| tb.fresh_var()).collect();
+        let entry = tb.block(params.clone());
+        let returns_value = !matches!(
+            decl.ret,
+            crate::fz_ir::ExternTy::Unit | crate::fz_ir::ExternTy::Never
+        );
+        let ret_var = if returns_value {
+            tb.let_(entry, Prim::Extern(eid, params))
+        } else {
+            let _ = tb.let_(entry, Prim::Extern(eid, params));
+            tb.let_(entry, Prim::Const(Const::Nil))
+        };
+        tb.set_terminator(entry, Term::Return(ret_var));
+        self.mb.add_fn(tb.build());
+        self.extern_wrappers.insert(eid, id);
         id
     }
 
@@ -549,7 +614,7 @@ pub fn lower_program_full(prog: &Program) -> Result<(Module, AtomTable), LowerEr
                 ctx.extern_decls.push(ExternDecl {
                     id: eid,
                     fz_name: fn_def.name.clone(),
-                    symbol: fn_def.name.clone(),
+                    symbol: extern_symbol_from_name(&fn_def.name).to_string(),
                     params,
                     ret,
                     ret_descr,
@@ -593,7 +658,7 @@ pub fn lower_program_full(prog: &Program) -> Result<(Module, AtomTable), LowerEr
                     ctx.extern_decls.push(ExternDecl {
                         id: eid,
                         fz_name: fn_def.name.clone(),
-                        symbol: fn_def.name.clone(),
+                        symbol: extern_symbol_from_name(&fn_def.name).to_string(),
                         params,
                         ret,
                         ret_descr,
@@ -777,6 +842,11 @@ fn descr_to_extern_ty(d: &crate::types::Descr) -> ExternTy {
     }
     if d.is_subtype(&Descr::float()) {
         return ExternTy::F64;
+    }
+    // fz-rb8 — `:: integer` returns a raw 64-bit signed C int; runtime
+    // auto-boxes to FzValue::Int on receive (interp + JIT).
+    if d.is_subtype(&Descr::int()) {
+        return ExternTy::I64;
     }
     ExternTy::Any
 }
@@ -1960,6 +2030,20 @@ fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -> Result<Va
         Expr::FnRef { name, arity } => {
             if let Some(&fn_id) = ctx.fns.get(&(name.clone(), *arity)) {
                 return Ok(ctx.let_at(Prim::make_closure(sp, fn_id, vec![]), sp));
+            }
+            // fz-eol — `&libc::close/1`: synthesize (and cache) a top-level
+            // wrapper fn that forwards its args to the named extern, then
+            // return a closure pointing at that wrapper.
+            if let Some(eid) = ctx.externs.lookup(name) {
+                let decl = ctx
+                    .extern_decls
+                    .iter()
+                    .find(|d| d.id == eid)
+                    .expect("extern table out of sync with extern_decls");
+                if decl.params.len() == *arity {
+                    let fn_id = ctx.ensure_extern_wrapper(eid);
+                    return Ok(ctx.let_at(Prim::make_closure(sp, fn_id, vec![]), sp));
+                }
             }
             Err(LowerError::Unbound {
                 span: sp,
@@ -4831,6 +4915,99 @@ end
         let ir = format!("{}", module);
         let needle = format!("extern#{}", last_extern_idx);
         assert!(ir.contains(&needle), "expected {} in IR:\n{}", needle, ir);
+    }
+
+    /// fz-0cv — `binary` lowers to ExternTy::Binary; `cstring` lowers to
+    /// ExternTy::CString. Both are distinct from ExternTy::Any.
+    #[test]
+    fn binary_and_cstring_lower_to_distinct_extern_tys() {
+        let src = "\
+extern \"C\" fn fz_open(cstring, integer) :: integer
+extern \"C\" fn fz_write(integer, binary, integer) :: integer
+fn main() do fz_open(\"x\", 0) end
+";
+        let toks = Lexer::new(src).tokenize().expect("lex");
+        let prog = crate::parser::Parser::new(toks)
+            .parse_program()
+            .expect("parse");
+        let (module, _) = lower_program_full(&prog).expect("lower");
+        let open = module
+            .externs
+            .iter()
+            .find(|e| e.fz_name == "fz_open")
+            .expect("fz_open missing");
+        assert_eq!(open.params, vec![ExternTy::CString, ExternTy::I64]);
+        let write = module
+            .externs
+            .iter()
+            .find(|e| e.fz_name == "fz_write")
+            .expect("fz_write missing");
+        assert_eq!(
+            write.params,
+            vec![ExternTy::I64, ExternTy::Binary, ExternTy::I64]
+        );
+        // Sanity: previous `binary` → ExternTy::Any mapping is gone.
+        assert_ne!(write.params[1], ExternTy::Any);
+    }
+
+    /// fz-eol — `&libc::close/1` resolves to a synthesized top-level
+    /// wrapper fn whose body contains a single `Prim::Extern` call. This
+    /// is the canonical shape `resolve_dtor_from_closure` walks at
+    /// runtime so `make_resource(_, &libc::close/1)` resolves to
+    /// libc::close. The wrapper has zero captures so the AOT static dtor
+    /// table accepts it. See [[fz-9rs]] for why the simpler "desugar to
+    /// lambda" approach doesn't yet work.
+    #[test]
+    fn fn_ref_to_extern_synthesizes_wrapper() {
+        use crate::fz_ir::{Prim, Stmt};
+        let src = "\
+extern \"C\" fn libc::close(integer) :: integer
+fn main() do &libc::close/1 end
+";
+        let toks = Lexer::new(src).tokenize().expect("lex");
+        let prog = crate::parser::Parser::new(toks)
+            .parse_program()
+            .expect("parse");
+        let (module, _) = lower_program_full(&prog).expect("lower");
+        let wrap = module
+            .fns
+            .iter()
+            .find(|f| f.name.contains("libc::close"))
+            .expect("synthesized wrapper not found");
+        let has_extern = wrap.blocks.iter().any(|b| {
+            b.stmts
+                .iter()
+                .any(|s| matches!(s, Stmt::Let(_, Prim::Extern(_, _))))
+        });
+        assert!(
+            has_extern,
+            "wrapper fn must contain a Prim::Extern statement; got: {}",
+            wrap.name
+        );
+    }
+
+    /// fz-y3k — `extern "C" fn libc::open(path :: cstring, integer) :: integer`
+    /// produces an extern whose fz_name carries the `libc::` prefix while
+    /// the linker-visible symbol is the bare last segment. Named-typed
+    /// params (`path :: cstring`) parse identically to positional ones.
+    #[test]
+    fn extern_with_library_prefix_splits_fz_name_from_symbol() {
+        let src = "\
+extern \"C\" fn libc::open(path :: cstring, integer) :: integer
+fn main() do libc::open(\"x\", 0) end
+";
+        let toks = Lexer::new(src).tokenize().expect("lex");
+        let prog = crate::parser::Parser::new(toks)
+            .parse_program()
+            .expect("parse");
+        let (module, _) = lower_program_full(&prog).expect("lower");
+        let open = module
+            .externs
+            .iter()
+            .find(|e| e.fz_name == "libc::open")
+            .expect("libc::open missing from module.externs");
+        assert_eq!(open.symbol, "open", "linker symbol is the bare suffix");
+        assert_eq!(open.params, vec![ExternTy::CString, ExternTy::I64]);
     }
 
     #[test]

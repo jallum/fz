@@ -7,10 +7,10 @@ function u0:0(i64) -> i64 tail {
     sig1 = (i64, i64, i64) -> i64 tail
     sig2 = (i64, i64) -> i64 system_v
     sig3 = (i64, i64, i64) -> i64 tail
-    fn0 = u0:27 sig0
-    fn1 = colocated u0:42 sig1
+    fn0 = u0:29 sig0
+    fn1 = colocated u0:45 sig1
     fn2 = u0:5 sig2
-    fn3 = colocated u0:43 sig3
+    fn3 = colocated u0:46 sig3
 
 block0(v0: i64):
     v1 = iconst.i64 10                  ; @9:7
@@ -48,11 +48,11 @@ function u0:0(i64, i64, i64) -> i64 tail {
     sig4 = (i64, i64) -> i64 tail
     sig5 = (i64) system_v
     sig6 = (i64, i64) -> i64 tail
-    fn0 = u0:21 sig0
-    fn1 = u0:20 sig1
-    fn2 = u0:22 sig2
-    fn3 = u0:46 sig3
-    fn4 = u0:47 sig5
+    fn0 = u0:23 sig0
+    fn1 = u0:22 sig1
+    fn2 = u0:24 sig2
+    fn3 = u0:49 sig3
+    fn4 = u0:50 sig5
 
     block0(v0: i64, v1: i64, v2: i64):    ;; v0 :: any
     v3 = load.i64 notrap aligned v1+24    ;; v3 :: any
@@ -109,9 +109,9 @@ function u0:0(i64, i64, i64) -> i64 tail {
     sig3 = (i64, i64) -> i64 tail
     sig4 = (i64, i64, i64) -> i64 tail
     fn0 = u0:1 sig1
-    fn1 = u0:27 sig2
-    fn2 = colocated u0:44 sig3
-    fn3 = colocated u0:45 sig4
+    fn1 = u0:29 sig2
+    fn2 = colocated u0:47 sig3
+    fn3 = colocated u0:48 sig4
 
     block0(v0: i64, v1: i64, v2: i64):    ;; v0 :: &fn18[10]:(α1152) -> α1215, v1 :: list(1 | 2 | 3)
     v3 = iconst.i64 8
@@ -158,7 +158,7 @@ block4:
     ;   @abi    (Tagged, Tagged, RawInt, Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64, i64, i64) -> i64 tail
-    fn0 = colocated u0:43 sig0
+    fn0 = colocated u0:46 sig0
 
     block0(v0: i64, v1: i64):    ;; v0 :: nil
     v2 = load.i64 notrap aligned v1+32    ;; v2 :: &fn18[10]:(α1152) -> α1215
@@ -175,7 +175,7 @@ function u0:0(i64, i64) -> i64 tail {
 function u0:0(i64, i64, i64) -> i64 tail {
     sig0 = (i64) system_v
     sig1 = (i64, i64) -> i64 tail
-    fn0 = u0:47 sig0
+    fn0 = u0:50 sig0
 
     block0(v0: i64, v1: i64, v2: i64):    ;; v0 :: 1 | 2 | 3
     v3 = load.i64 notrap aligned v1+24

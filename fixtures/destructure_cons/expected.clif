@@ -10,8 +10,8 @@ function u0:0(i64) -> i64 tail {
     sig4 = (i64, i64) -> i64 tail
     fn0 = u0:5 sig0
     fn1 = u0:1 sig1
-    fn2 = u0:42 sig2
-    fn3 = u0:43 sig3
+    fn2 = u0:45 sig2
+    fn3 = u0:46 sig3
 
 block0(v0: i64):
     v1 = iconst.i64 10                  ; @2:14

@@ -5,14 +5,13 @@
 function u0:0(i64, i64, i64) -> i64 tail {
     sig0 = (i64) system_v
     sig1 = (i64, i64) -> i64 tail
-    fn0 = u0:45 sig0
+    fn0 = u0:48 sig0
 
     block0(v0: i64, v1: i64, v2: i64):    ;; v0 :: any
-    v3 = sshr_imm v0, 3                 ; @9:18
-    call fn0(v3)                        ; @9:18
-    v4 = iconst.i64 2                   ; @9:18
-    v5 = load.i64 notrap aligned v2+16
-    return_call_indirect sig1, v5(v4, v2)  ; v4 = 2
+    call fn0(v0)                        ; @9:18
+    v3 = iconst.i64 2                   ; @9:18
+    v4 = load.i64 notrap aligned v2+16
+    return_call_indirect sig1, v4(v3, v2)  ; v3 = 2
 }
 
 ; fn main
@@ -29,15 +28,15 @@ function u0:0(i64) -> i64 tail {
     sig6 = (i64, i64, i64, i64, i64, i64) -> i64 tail
     sig7 = (i64) system_v
     sig8 = (i64, i64, i64, i64, i64, i64) -> i64 tail
-    fn0 = u0:33 sig0
-    fn1 = u0:46 sig1
-    fn2 = u0:33 sig2
-    fn3 = u0:33 sig3
-    fn4 = u0:19 sig4
-    fn5 = u0:47 sig5
-    fn6 = colocated u0:43 sig6
-    fn7 = u0:48 sig7
-    fn8 = colocated u0:43 sig8
+    fn0 = u0:35 sig0
+    fn1 = u0:49 sig1
+    fn2 = u0:35 sig2
+    fn3 = u0:35 sig3
+    fn4 = u0:21 sig4
+    fn5 = u0:50 sig5
+    fn6 = colocated u0:46 sig6
+    fn7 = u0:51 sig7
+    fn8 = colocated u0:46 sig8
 
 block0(v0: i64):
     v1 = iconst.i64 10                  ; @12:21
@@ -83,11 +82,11 @@ function u0:0(i64, i64, i64, i64, i64, i64) -> i64 tail {
     sig2 = (i64, i64, i64, i64, i64, i64) -> i64 tail
     sig3 = (i64) system_v
     sig4 = (i64, i64, i64, i64, i64, i64) -> i64 tail
-    fn0 = u0:19 sig0
-    fn1 = u0:47 sig1
-    fn2 = colocated u0:44 sig2
-    fn3 = u0:48 sig3
-    fn4 = colocated u0:44 sig4
+    fn0 = u0:21 sig0
+    fn1 = u0:50 sig1
+    fn2 = colocated u0:47 sig2
+    fn3 = u0:51 sig3
+    fn4 = colocated u0:47 sig4
 
     block0(v0: i64, v1: i64, v2: i64, v3: i64, v4: i64, v5: i64):    ;; v0 :: nil, v1 :: any, v2 :: any, v3 :: any, v4 :: any
     v6 = iconst.i64 42    ;; v6 :: :value
@@ -118,9 +117,9 @@ function u0:0(i64, i64, i64, i64, i64, i64) -> i64 tail {
     sig2 = (i64, i64) -> i64 tail
     sig3 = (i64) system_v
     sig4 = (i64, i64) -> i64 tail
-    fn0 = u0:19 sig0
-    fn1 = u0:47 sig1
-    fn2 = u0:48 sig3
+    fn0 = u0:21 sig0
+    fn1 = u0:50 sig1
+    fn2 = u0:51 sig3
 
     block0(v0: i64, v1: i64, v2: i64, v3: i64, v4: i64, v5: i64):    ;; v0 :: nil, v1 :: any, v2 :: any, v3 :: any, v4 :: any
     v6 = iconst.i64 42    ;; v6 :: :value

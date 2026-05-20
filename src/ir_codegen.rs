@@ -149,6 +149,12 @@ pub struct CompiledModule {
     /// Tail-CC indirect-calls main with `(halt_cont)`. Used by
     /// `Runtime::spawn(fn_id)` / `CompiledModule::run_internal`.
     pub(crate) main_entry_addr: *const u8,
+    /// fz-4mk.3a — finalized address of the SystemV scheduler shim
+    /// `fz_drain_dtor_entry(closure, payload) -> i64`. The scheduler
+    /// calls this once per entry on `process.heap.pending_dtors` at
+    /// task-exit; the shim Tail-CC dispatches the closure body with
+    /// payload + a fresh Tagged halt-cont.
+    pub(crate) drain_dtor_entry_addr: *const u8,
     /// fz-ul4.27.22.3 — finalized addresses of the three Cranelift-emitted
     /// `fz_halt_cont_body_{tagged,i64,f64}` Tail-CC fns, indexed by repr
     /// kind (0=Tagged, 1=RawInt, 2=RawF64). `make_process` seeds matching
@@ -463,6 +469,20 @@ impl CompiledModule {
         type MainEntry = extern "C" fn(u64, u64) -> i64;
         let f: MainEntry = unsafe { std::mem::transmute(self.main_entry_addr) };
         let _ = f(fp as u64, halt_cl);
+        // fz-4mk — single-shot entry path: flush surviving MSO resources
+        // and drain their dtor closures as fz code now, before returning.
+        // Mirrors the JIT scheduler's task-exit drain in
+        // `Runtime::run_until_idle` and the AOT loop's drain in
+        // `aot_run_queue_loop`.
+        {
+            let proc_mut = current_process();
+            fz_runtime::procbin::mso_drop_all_deferred(&mut proc_mut.heap);
+            type DrainDtor = extern "C" fn(u64, u64) -> i64;
+            let drain: DrainDtor = unsafe { std::mem::transmute(self.drain_dtor_entry_addr) };
+            while let Some((closure, payload)) = proc_mut.heap.pending_dtors.pop_front() {
+                let _ = drain(closure, payload);
+            }
+        }
         current_process().halt_value
     }
 }
@@ -1138,6 +1158,8 @@ pub struct CompiledMetadata {
     pub spawn_entry_id: FuncId,
     /// fz-cps.5 — fz_main_entry scheduler-launch shim FuncId.
     pub main_entry_id: FuncId,
+    /// fz-4mk.3a — fz_drain_dtor_entry scheduler-drain shim FuncId.
+    pub drain_dtor_entry_id: FuncId,
     /// fz-ul4.27.22.3 — three fz_halt_cont_body fns indexed by repr
     /// kind (0=Tagged, 1=RawInt, 2=RawF64). Sigs: (Tagged|i64|f64, i64)
     /// -> i64 tail. Bodies call the matching halt_implicit_* and return 0.
@@ -1149,16 +1171,6 @@ pub struct CompiledMetadata {
     pub fn_halt_kinds: HashMap<u32, u32>,
     /// fz-02r.5 — FuncIds for the 9 mid-flight resume shims (arg count 0..=8).
     pub mid_flight_resume_ids: [FuncId; 9],
-    /// fz-swt.11 — AOT dtor lookup table source. One row per zero-cap
-    /// closure-target body whose IR is a thin wrapper around a single
-    /// `Prim::Extern` (the same shape `resolve_dtor_from_closure`
-    /// recognises). Each entry is `(closure body fn_id, extern C
-    /// symbol name)`; AOT codegen declares the symbol as Import and
-    /// bakes a function-address relocation into the emitted
-    /// `fz_aot_dtor_table` data symbol so the runtime hook can look up
-    /// the dtor at `make_resource` time without an IR Module.
-    pub aot_dtor_targets: Vec<(u32, String)>,
-
     /// fz-70q.5.5 — single `fz_resume` SystemV shim FuncId. See
     /// `CompiledModule::resume_addr`.
     pub resume_id: FuncId,
@@ -1252,6 +1264,15 @@ impl JitBackend {
             "shared_bin_destructor_noop",
             fz_runtime::procbin::shared_bin_destructor_noop as *const u8,
         );
+        // fz-9ss — extern binary marshal helpers.
+        builder.symbol(
+            "fz_binary_as_ptr",
+            fz_runtime::extern_binary::fz_binary_as_ptr as *const u8,
+        );
+        builder.symbol(
+            "fz_binary_as_cstring",
+            fz_runtime::extern_binary::fz_binary_as_cstring as *const u8,
+        );
         builder.symbol(
             "fz_bs_reader_init",
             fz_runtime::ir_runtime::fz_bs_reader_init as *const u8,
@@ -1340,17 +1361,13 @@ impl JitBackend {
             "fz_resource_test_print_dtor",
             fz_runtime::resource::fz_resource_test_print_dtor as *const u8,
         );
-        // fz-swt.13 — File-module test helpers exported by the runtime
-        // crate. Same wiring contract as the print-dtor symbol above:
-        // bound unconditionally so any JIT-driven dump/run resolves the
-        // names cleanly.
+        // fz-swt.13 — tmpfile helper exported by the runtime crate for
+        // file fixtures. Same wiring contract as the print-dtor symbol
+        // above: bound unconditionally so any JIT-driven dump/run
+        // resolves the name cleanly.
         builder.symbol(
             "fz_test_open_tmpfile",
             fz_runtime::resource::fz_test_open_tmpfile as *const u8,
-        );
-        builder.symbol(
-            "fz_test_close_fd",
-            fz_runtime::resource::fz_test_close_fd as *const u8,
         );
         builder.symbol(
             "fz_receive_attempt",
@@ -1451,6 +1468,7 @@ impl Backend for JitBackend {
         let resume_park_addr = jmod.get_finalized_function(meta.resume_park_id);
         let spawn_entry_addr = jmod.get_finalized_function(meta.spawn_entry_id);
         let main_entry_addr = jmod.get_finalized_function(meta.main_entry_id);
+        let drain_dtor_entry_addr = jmod.get_finalized_function(meta.drain_dtor_entry_id);
         let halt_cont_body_addrs = [
             jmod.get_finalized_function(meta.halt_cont_body_ids[0]),
             jmod.get_finalized_function(meta.halt_cont_body_ids[1]),
@@ -1477,6 +1495,7 @@ impl Backend for JitBackend {
             resume_park_addr,
             spawn_entry_addr,
             main_entry_addr,
+            drain_dtor_entry_addr,
             halt_cont_body_addrs,
             fn_halt_kinds: meta.fn_halt_kinds,
             mid_flight_resume_addrs,
@@ -1582,6 +1601,21 @@ impl Backend for AotBackend {
             .declare_function("fz_aot_set_resume_shims", Linkage::Import, &set_shims_sig)
             .map_err(|e| CodegenError::new(format!("declare fz_aot_set_resume_shims: {}", e)))?;
 
+        // fz-4mk.3b — fz_aot_set_drain_dtor_entry(addr). Registers the
+        // SystemV→Tail-CC `fz_drain_dtor_entry` shim so the AOT run-queue
+        // loop can dispatch pending dtor closures at task-exit.
+        let set_drain_sig = sig1(&[types::I64], &[]);
+        let set_drain_id = self
+            .omod
+            .declare_function(
+                "fz_aot_set_drain_dtor_entry",
+                Linkage::Import,
+                &set_drain_sig,
+            )
+            .map_err(|e| {
+                CodegenError::new(format!("declare fz_aot_set_drain_dtor_entry: {}", e))
+            })?;
+
         // fz-ul4.38 — fz_aot_register_tuple_schemas(proc, arities_ptr, len)
         // populates the AOT process's SchemaRegistry with one Tuple{N} entry
         // per arity, in the order the array was emitted. That order matches
@@ -1618,65 +1652,6 @@ impl Backend for AotBackend {
                     .define_data(id, &desc)
                     .map_err(|e| CodegenError::new(format!("define tuple arities: {}", e)))?;
                 (Some(id), len)
-            };
-
-        // fz-swt.11 — dtor lookup table. One 16-byte row per recognised
-        // thin-extern-wrapper closure body: `u32 fn_id, u32 _pad, u64
-        // fn_ptr` (fn_ptr written via function-address relocation so the
-        // linker resolves it to the underlying extern's address at link
-        // time). The runtime reads this in `fz_aot_register_dtor_table`.
-        // Declare the registration FFI even when the table is empty so
-        // the C main can emit a `(null, 0)` call uniformly.
-        let reg_dtor_table_sig = sig1(&[types::I64, types::I32], &[]);
-        let reg_dtor_table_id = self
-            .omod
-            .declare_function(
-                "fz_aot_register_dtor_table",
-                Linkage::Import,
-                &reg_dtor_table_sig,
-            )
-            .map_err(|e| CodegenError::new(format!("declare fz_aot_register_dtor_table: {}", e)))?;
-        let (dtor_table_data, dtor_table_len): (Option<DataId>, u32) =
-            if meta.aot_dtor_targets.is_empty() {
-                (None, 0)
-            } else {
-                let table_id = self
-                    .omod
-                    .declare_data("fz_aot_dtor_table", Linkage::Local, false, false)
-                    .map_err(|e| CodegenError::new(format!("declare dtor table: {}", e)))?;
-                // 16 bytes per row: u32 fn_id + 4 pad + 8 fn_ptr.
-                let row_bytes = 16;
-                let mut buf: Vec<u8> = vec![0u8; meta.aot_dtor_targets.len() * row_bytes];
-                for (i, (fn_id, _sym)) in meta.aot_dtor_targets.iter().enumerate() {
-                    let off = i * row_bytes;
-                    buf[off..off + 4].copy_from_slice(&fn_id.to_le_bytes());
-                    // fn_ptr placeholder at [off+8..off+16] — patched
-                    // below by write_function_addr.
-                }
-                let mut desc = DataDescription::new();
-                desc.define(buf.into_boxed_slice());
-                desc.set_align(8);
-                for (i, (_fn_id, sym)) in meta.aot_dtor_targets.iter().enumerate() {
-                    // Declare the extern as Import so the linker resolves
-                    // it. Sig is (i64)->() to match the runtime dtor
-                    // contract (`unsafe extern "C" fn(payload: u64)`).
-                    // Cranelift only needs *some* signature here to track
-                    // the FuncRef; the linker emits a plain address.
-                    let dtor_sig = sig1(&[types::I64], &[]);
-                    let func_id = self
-                        .omod
-                        .declare_function(sym, Linkage::Import, &dtor_sig)
-                        .map_err(|e| {
-                            CodegenError::new(format!("declare dtor extern `{}`: {}", sym, e))
-                        })?;
-                    let fref = self.omod.declare_func_in_data(func_id, &mut desc);
-                    let off = (i * row_bytes + 8) as u32;
-                    desc.write_function_addr(off, fref);
-                }
-                self.omod
-                    .define_data(table_id, &desc)
-                    .map_err(|e| CodegenError::new(format!("define dtor table: {}", e)))?;
-                (Some(table_id), meta.aot_dtor_targets.len() as u32)
             };
 
         let (atom_blob_data, atom_blob_len): (Option<DataId>, u32) = if meta.atom_names.is_empty() {
@@ -1730,9 +1705,8 @@ impl Backend for AotBackend {
             reg_tuples_id,
             tuple_arities_data,
             tuple_arities_len,
-            reg_dtor_table_id,
-            dtor_table_data,
-            dtor_table_len,
+            set_drain_id,
+            meta.drain_dtor_entry_id,
         )?;
         Ok(())
     }
@@ -1888,6 +1862,58 @@ pub fn compile_with_backend<B: Backend>(
             },
         )
         .map_err(|e| CodegenError::new(format!("define fz_main_entry: {}", e)))?;
+    }
+
+    // fz-4mk.3a — emit fz_drain_dtor_entry. SystemV scheduler-callable
+    // shim that invokes a 1-arg resource dtor closure with its payload.
+    // Body: pick a Tagged halt-cont via fz_get_halt_cont, load the body
+    // addr at closure+16, and Tail-CC indirect-call
+    // `(closure, payload, halt_cl)`. Result is discarded by the caller.
+    // Sig: `(closure:i64, payload:i64) -> i64 system_v`.
+    {
+        let mut sig = Signature::new(CallConv::SystemV);
+        sig.params.push(AbiParam::new(types::I64));
+        sig.params.push(AbiParam::new(types::I64));
+        sig.returns.push(AbiParam::new(types::I64));
+        emit_fn_body(
+            backend.module_mut(),
+            &mut fbctx,
+            sig,
+            runtime.drain_dtor_entry_id,
+            |m, b| {
+                let entry = b.create_block();
+                b.append_block_params_for_function_params(entry);
+                b.switch_to_block(entry);
+                b.seal_block(entry);
+                let closure = b.block_params(entry)[0];
+                let payload = b.block_params(entry)[1];
+                // Tagged halt-cont (kind=0). Dtor return is discarded;
+                // Tagged is harmless and avoids RawInt/F64 unboxing.
+                let tagged_addr = fn_addr(m, runtime.halt_cont_body_tagged_id, b);
+                let zero = b.ins().iconst(types::I32, 0);
+                let ghc_fref = m.declare_func_in_func(runtime.get_halt_cont_id, b.func);
+                let halt_inst = b.ins().call(ghc_fref, &[tagged_addr, zero]);
+                let halt_cl = b.inst_results(halt_inst)[0];
+                let code = b
+                    .ins()
+                    .load(types::I64, MemFlags::trusted(), closure, HEADER_SIZE);
+                // fz-cps.1.2 §2.1 closure-target body sig: `(args..., self,
+                // cont) tail -> i64`. For a 1-arg dtor wrapper that's
+                // `(x, self, cont)`.
+                let mut closure_sig = Signature::new(CallConv::Tail);
+                closure_sig.params.push(AbiParam::new(types::I64)); // x (payload)
+                closure_sig.params.push(AbiParam::new(types::I64)); // self
+                closure_sig.params.push(AbiParam::new(types::I64)); // cont
+                closure_sig.returns.push(AbiParam::new(types::I64));
+                let sig_ref = b.func.import_signature(closure_sig);
+                let inst = b
+                    .ins()
+                    .call_indirect(sig_ref, code, &[payload, closure, halt_cl]);
+                let r = b.inst_results(inst)[0];
+                b.ins().return_(&[r]);
+            },
+        )
+        .map_err(|e| CodegenError::new(format!("define fz_drain_dtor_entry: {}", e)))?;
     }
 
     // fz-cps.1.11 — emit fz_spawn_entry. SystemV scheduler-callable shim
@@ -3628,44 +3654,6 @@ pub fn compile_with_backend<B: Backend>(
         }
         ids
     };
-    // fz-swt.11 — scan each zero-cap closure body for the thin-extern-
-    // wrapper shape that `resolve_dtor_from_closure` accepts AND whose
-    // extern matches the dtor C-ABI contract `unsafe extern "C" fn(u64)`.
-    // Recording both the fn_id (matches the closure header's `_reserved`
-    // at runtime) and the extern's C symbol name lets the AOT backend
-    // emit a static dtor lookup table with function-address relocations.
-    //
-    // Sig filter: 1 u64-wide param (I64 or Any), no return (Unit or
-    // Never). Externs that don't match — e.g. `&fz_send/3` taking
-    // (i64,i64) and returning i64 — can never be valid dtors at runtime;
-    // including them in the table would force AOT to redeclare the
-    // extern with a wrong signature (Cranelift rejects sig conflicts)
-    // and would crash at dtor-fire time anyway. Skipping here is safe:
-    // if a user actually tries `make_resource(_, &fz_send/3)`, the
-    // runtime hook reports "no dtor table entry" and aborts — clearer
-    // than a silent calling-convention mismatch.
-    let aot_dtor_targets: Vec<(u32, String)> = static_closure_targets
-        .iter()
-        .filter_map(|(_cl_sid, fn_id, _body_fid, _halt_kind)| {
-            let fnir = module.fn_by_id(FnId(*fn_id));
-            let eid = fnir.blocks.iter().find_map(|b| {
-                b.stmts.iter().find_map(|s| match s {
-                    Stmt::Let(_, Prim::Extern(eid, _)) => Some(*eid),
-                    _ => None,
-                })
-            })?;
-            let decl = module.extern_by_id(eid);
-            use crate::fz_ir::ExternTy;
-            let dtor_shaped = decl.params.len() == 1
-                && matches!(decl.params[0], ExternTy::I64 | ExternTy::Any)
-                && matches!(decl.ret, ExternTy::Unit | ExternTy::Never);
-            if !dtor_shaped {
-                return None;
-            }
-            Some((*fn_id, decl.symbol.clone()))
-        })
-        .collect();
-
     // fz-70q (B3 step A+B) — generate 9 selective-receive resume shims
     // (one per clause bound-arg count 0..=8). Each shim is SystemV
     // fz-70q.5.5 — single SystemV `fz_resume(cont) -> i64` shim. Replaces
@@ -3730,6 +3718,7 @@ pub fn compile_with_backend<B: Backend>(
         resume_park_id: runtime.resume_park_id,
         spawn_entry_id: runtime.spawn_entry_id,
         main_entry_id: runtime.main_entry_id,
+        drain_dtor_entry_id: runtime.drain_dtor_entry_id,
         halt_cont_body_ids: [
             runtime.halt_cont_body_tagged_id,
             runtime.halt_cont_body_i64_id,
@@ -3737,7 +3726,6 @@ pub fn compile_with_backend<B: Backend>(
         ],
         fn_halt_kinds,
         mid_flight_resume_ids,
-        aot_dtor_targets,
         resume_id,
     };
 
@@ -3784,9 +3772,8 @@ fn emit_aot_c_main<M: cranelift_module::Module>(
     reg_tuples_id: FuncId,
     tuple_arities_data: Option<DataId>,
     tuple_arities_len: u32,
-    reg_dtor_table_id: FuncId,
-    dtor_table_data: Option<DataId>,
-    dtor_table_len: u32,
+    set_drain_id: FuncId,
+    drain_dtor_entry_id: FuncId,
 ) -> Result<(), CodegenError> {
     use cranelift_frontend::FunctionBuilder;
 
@@ -3854,24 +3841,6 @@ fn emit_aot_c_main<M: cranelift_module::Module>(
             );
         }
 
-        // fz-swt.11 — register the dtor lookup table (populated by codegen
-        // above with one row per zero-cap closure-target body recognised
-        // as a thin extern wrapper). Always emit the call so the runtime
-        // can clear any prior state; pass null + 0 when the table is
-        // empty.
-        {
-            let table_addr = match dtor_table_data {
-                Some(data_id) => {
-                    let gv = jmod.declare_data_in_func(data_id, b.func);
-                    b.ins().symbol_value(types::I64, gv)
-                }
-                None => b.ins().iconst(types::I64, 0),
-            };
-            let len_v = b.ins().iconst(types::I32, dtor_table_len as i64);
-            let reg_dtor_fref = jmod.declare_func_in_func(reg_dtor_table_id, b.func);
-            b.ins().call(reg_dtor_fref, &[table_addr, len_v]);
-        }
-
         // Register each static closure target.
         for (cl_sid, fn_id, body_func_id, halt_kind) in static_closure_targets {
             let cl_sid_v = b.ins().iconst(types::I32, *cl_sid as i64);
@@ -3901,6 +3870,14 @@ fn emit_aot_c_main<M: cranelift_module::Module>(
             let shims_ptr = b.ins().stack_addr(types::I64, slot, 0);
             let set_fref = jmod.declare_func_in_func(set_shims_id, b.func);
             b.ins().call(set_fref, &[shims_ptr]);
+        }
+
+        // fz-4mk.3b — register the drain-dtor entry shim with the runtime
+        // so the AOT run-queue loop can fire pending dtors at task-exit.
+        {
+            let drain_addr = fn_addr(jmod, drain_dtor_entry_id, &mut b);
+            let set_drain_fref = jmod.declare_func_in_func(set_drain_id, b.func);
+            b.ins().call(set_drain_fref, &[drain_addr]);
         }
 
         // exit = fz_aot_run_main(proc, main_fp, main_entry_addr)
@@ -4000,6 +3977,9 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
     // function-address relocation. Matches the runtime's `extern "C" fn
     // (*mut SharedBin)` signature exactly.
     let shared_bin_destructor_noop_id = decl("shared_bin_destructor_noop", &[types::I64], &[])?;
+    // fz-9ss — extern binary marshal helpers.
+    let binary_as_ptr_id = decl("fz_binary_as_ptr", &[types::I64], &[types::I64])?;
+    let binary_as_cstring_id = decl("fz_binary_as_cstring", &[types::I64], &[types::I64])?;
     let bs_reader_init_id = decl("fz_bs_reader_init", &[types::I64], &[types::I64])?;
     let bs_read_field_id = decl(
         "fz_bs_read_field",
@@ -4127,6 +4107,18 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
     let main_entry_id = jmod
         .declare_function("fz_main_entry", Linkage::Local, &me_sig)
         .map_err(|e| CodegenError::new(format!("declare fz_main_entry: {}", e)))?;
+    // fz-4mk.3a — fz_drain_dtor_entry: SystemV entry the scheduler calls
+    // per pending dtor at task-exit. Sig: `(closure:i64, payload:i64) ->
+    // i64 system_v`. Body loads closure+16 (body addr), allocates a
+    // Tagged halt-cont via fz_get_halt_cont, and Tail-CC indirect-calls
+    // the closure body with `(self, payload, halt_cl)`.
+    let mut dd_sig = Signature::new(CallConv::SystemV);
+    dd_sig.params.push(AbiParam::new(types::I64));
+    dd_sig.params.push(AbiParam::new(types::I64));
+    dd_sig.returns.push(AbiParam::new(types::I64));
+    let drain_dtor_entry_id = jmod
+        .declare_function("fz_drain_dtor_entry", Linkage::Local, &dd_sig)
+        .map_err(|e| CodegenError::new(format!("declare fz_drain_dtor_entry: {}", e)))?;
 
     Ok(RuntimeRefs {
         halt_id,
@@ -4145,6 +4137,8 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         alloc_bitstring_const_id,
         alloc_procbin_from_static_id,
         shared_bin_destructor_noop_id,
+        binary_as_ptr_id,
+        binary_as_cstring_id,
         bs_reader_init_id,
         bs_read_field_id,
         map_begin_id,
@@ -4167,6 +4161,7 @@ fn declare_runtime_symbols<M: cranelift_module::Module>(
         resume_park_id,
         spawn_entry_id,
         main_entry_id,
+        drain_dtor_entry_id,
         mid_flight_roots_ptr_id,
         resume_args_ptr_id,
         yield_back_edge_id,
@@ -4315,6 +4310,10 @@ struct RuntimeRefs {
     alloc_procbin_from_static_id: FuncId,
     // fz-q8d.2 — noop destructor address relocated into static SharedBins.
     shared_bin_destructor_noop_id: FuncId,
+    // fz-9ss — binary/cstring extern marshal helpers. Both have signature
+    // `(i64 FzValue bits) -> i64 *const u8` from Cranelift's perspective.
+    binary_as_ptr_id: FuncId,
+    binary_as_cstring_id: FuncId,
     bs_reader_init_id: FuncId,
     bs_read_field_id: FuncId,
     map_begin_id: FuncId,
@@ -4339,6 +4338,14 @@ struct RuntimeRefs {
     resume_park_id: FuncId,
     spawn_entry_id: FuncId,
     main_entry_id: FuncId,
+    /// fz-4mk.3a — fz_drain_dtor_entry: SystemV→Tail-CC shim for invoking
+    /// a resource dtor closure with its payload. Sig: `(closure:i64,
+    /// payload:i64) -> i64 system_v`. Loads body addr at closure+16 and
+    /// indirect-calls (closure, payload, halt_cl) via Tail-CC; result
+    /// discarded. Scheduler drains `pending_dtors` through this shim at
+    /// task-exit, replacing the legacy `resolve_dtor_from_closure` C
+    /// extraction path.
+    drain_dtor_entry_id: FuncId,
     // fz-02r.5 — mid-flight back-edge yield helpers.
     mid_flight_roots_ptr_id: FuncId,
     /// fz-70q.5.2 — `fz_resume_args_ptr() -> i64 systemv`. Cont stubs
@@ -6780,7 +6787,12 @@ fn lower_collection_prim<M: cranelift_module::Module>(
                         .declare_data(&bytes_name, Linkage::Local, false, false)
                         .map_err(|e| CodegenError::new(format!("declare {}: {}", bytes_name, e)))?;
                     let mut desc = DataDescription::new();
-                    desc.define(bytes.clone().into_boxed_slice());
+                    // fz-wu9 — append invisible trailing NUL; not counted in
+                    // the static SharedBin's bytes_len field. Underwrites the
+                    // cstring extern marshal contract for literal binaries.
+                    let mut payload: Vec<u8> = bytes.clone();
+                    payload.push(0);
+                    desc.define(payload.into_boxed_slice());
                     desc.set_align(1);
                     jmod.define_data(bytes_id, &desc)
                         .map_err(|e| CodegenError::new(format!("define {}: {}", bytes_name, e)))?;
@@ -7359,12 +7371,35 @@ fn lower_prim<M: cranelift_module::Module>(
                 .map(|(v, ty)| match ty {
                     ExternTy::I64 => as_raw_i64(var_env, b, v.0),
                     ExternTy::F64 => as_raw_f64(var_env, b, v.0),
+                    // fz-2yf — Binary/CString: call the runtime helper from
+                    // [[fz-9ss]] with the tagged FzValue bits and use its
+                    // returned `*const u8` as the C arg. Helper aborts on
+                    // non-binary or non-byte-aligned bitstring.
+                    ExternTy::Binary | ExternTy::CString => {
+                        let helper_id = match ty {
+                            ExternTy::CString => runtime.binary_as_cstring_id,
+                            _ => runtime.binary_as_ptr_id,
+                        };
+                        let helper_fref = jmod.declare_func_in_func(helper_id, b.func);
+                        let bits = tagged_get(var_env, b, jmod, runtime, v.0, cache);
+                        let call = b.ins().call(helper_fref, &[bits]);
+                        b.inst_results(call)[0]
+                    }
                     _ => tagged_get(var_env, b, jmod, runtime, v.0, cache),
                 })
                 .collect();
             let inst = b.ins().call(fref, &arg_vals);
             if returns_value {
-                return Ok(LowerOut::Tagged(b.inst_results(inst)[0]));
+                let raw = b.inst_results(inst)[0];
+                // fz-rb8 — `:: integer` returns a raw signed 64-bit C int;
+                // box as a tagged FzValue::Int (`(n << 3) | TAG_INT`).
+                let boxed = if matches!(decl.ret, ExternTy::I64) {
+                    let shifted = b.ins().ishl_imm(raw, 3);
+                    b.ins().bor_imm(shifted, TAG_INT)
+                } else {
+                    raw
+                };
+                return Ok(LowerOut::Tagged(boxed));
             }
             if cache.used_vars.contains(&dest_var.0) {
                 return Ok(LowerOut::Tagged(cached_iconst(b, cache, NIL_BITS)));

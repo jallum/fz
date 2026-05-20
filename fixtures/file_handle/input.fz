@@ -1,0 +1,31 @@
+extern "C" fn libc::creat(path :: cstring, mode :: integer) :: integer
+extern "C" fn libc::write(integer, binary, integer) :: integer
+extern "C" fn libc::close(integer) :: integer
+extern "C" fn libc::unlink(cstring) :: integer
+
+# Dtor body runs as real fz code at task-exit (fz-4mk). We can call
+# libc::close directly AND print so the test can observe the dtor fired
+# — the closure body is no longer extracted-then-discarded.
+fn close_observable(fd) do
+  libc::close(fd)
+  print(:dtor_closed)
+end
+
+defmodule FileHandle do
+  @type t :: opaque resource(integer)
+
+  fn from_fd(fd), do: make_resource(fd, &close_observable/1)
+end
+
+fn main() do
+  # "/tmp/fz-x5m" — created with mode 0o644 = 420
+  path = <<47, 116, 109, 112, 47, 102, 122, 45, 120, 53, 109>>
+  fd = libc::creat(path, 420)
+  print(:opened)
+  # "hi\n" — exercises the `binary` marshal class
+  n = libc::write(fd, <<104, 105, 10>>, 3)
+  print(n)
+  _h = FileHandle.from_fd(fd)
+  libc::unlink(path)
+  print(:done)
+end

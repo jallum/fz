@@ -1,0 +1,505 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>fz externs guide</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: #0d1117;
+    color: #c9d1d9;
+    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 14px;
+    line-height: 1.7;
+    padding: 40px 24px;
+    max-width: 900px;
+    margin: 0 auto;
+  }
+  h1 { color: #58a6ff; font-size: 1.8em; margin-bottom: 6px; }
+  h2 { color: #79c0ff; font-size: 1.2em; margin: 36px 0 12px; border-bottom: 1px solid #21262d; padding-bottom: 6px; }
+  h3 { color: #a5d6ff; font-size: 1em; margin: 20px 0 8px; }
+  p { margin-bottom: 12px; }
+  .subtitle { color: #8b949e; margin-bottom: 36px; }
+  pre {
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 6px;
+    padding: 16px;
+    overflow-x: auto;
+    margin: 12px 0 20px;
+    line-height: 1.5;
+  }
+  .tag  { color: #ff7b72; }
+  .val  { color: #79c0ff; }
+  .ptr  { color: #d2a8ff; }
+  .hdr  { color: #ffa657; }
+  .live { color: #56d364; }
+  .note { color: #8b949e; font-style: italic; }
+  .warn { color: #e3b341; }
+  .kw   { color: #ff7b72; }
+  .ty   { color: #79c0ff; }
+  .str  { color: #a5d6ff; }
+  .num  { color: #79c0ff; }
+  .com  { color: #8b949e; font-style: italic; }
+  .atm  { color: #d2a8ff; }
+  .fn   { color: #d2a8ff; }
+  .box {
+    border: 1px solid #30363d;
+    border-radius: 6px;
+    padding: 14px 18px;
+    margin: 16px 0;
+    background: #161b22;
+  }
+  .box.green  { border-color: #238636; background: #0d1f0f; }
+  .box.yellow { border-color: #9e6a03; background: #1f1700; }
+  .box.blue   { border-color: #1f6feb; background: #0d1f40; }
+  .box.red    { border-color: #da3633; background: #2d0d0d; }
+  ul { padding-left: 20px; margin-bottom: 12px; }
+  li { margin-bottom: 4px; }
+  .toc { margin-bottom: 32px; }
+  .toc a { color: #58a6ff; text-decoration: none; }
+  .toc a:hover { text-decoration: underline; }
+  .toc li { margin-bottom: 2px; }
+  code { background: #161b22; padding: 2px 5px; border-radius: 3px; color: #ff7b72; }
+  .aside {
+    border-left: 3px solid #58a6ff;
+    padding: 10px 14px;
+    margin: 14px 0;
+    background: #0d1f40;
+    color: #c9d1d9;
+  }
+  table.data {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 12px 0 20px;
+    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 13px;
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  table.data th, table.data td {
+    padding: 6px 16px;
+    text-align: left;
+    vertical-align: top;
+    border: none;
+  }
+  table.data thead th {
+    color: #8b949e;
+    font-weight: normal;
+    padding-top: 12px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid #30363d;
+  }
+  table.data tbody tr:first-child td { padding-top: 10px; }
+  table.data tbody tr:last-child td  { padding-bottom: 12px; }
+  table.data td.cls { color: #ff7b72; }
+  table.data td.shape { color: #79c0ff; }
+  table.data td.note { color: #8b949e; font-style: italic; }
+</style>
+</head>
+<body>
+
+<h1>fz externs guide</h1>
+<p class="subtitle">How fz talks to C — declaring extern functions, passing values across the boundary, and using C resources without leaking them.</p>
+
+<div class="toc">
+<ul>
+  <li><a href="#why">1. Why externs exist</a></li>
+  <li><a href="#decl">2. Declaring an extern</a></li>
+  <li><a href="#classes">3. Marshal classes — telling fz what's at the boundary</a></li>
+  <li><a href="#library">4. Library-prefix names — <code>libc::open</code></a></li>
+  <li><a href="#returns">5. Returns — boxing on the way back in</a></li>
+  <li><a href="#refs">6. First-class extern refs — <code>&amp;libc::close/1</code></a></li>
+  <li><a href="#resources">7. Resources — let fz clean up after the C function</a></li>
+  <li><a href="#example">8. A complete example: <code>FileHandle</code></a></li>
+  <li><a href="#footguns">9. Footguns and the contract</a></li>
+</ul>
+</div>
+
+<!-- ─────────────────────────────── 1. WHY ─────────────────────────────── -->
+<h2 id="why">1. Why externs exist</h2>
+
+<p>fz is a small, friendly language. It has integers, atoms, lists, tuples,
+binaries, processes, pattern matching. It does <em>not</em> have, by itself,
+the ability to open a file, send a network packet, take a system clock
+reading, or read an environment variable. None of that is fz's job — it's
+the operating system's job, exposed through C.</p>
+
+<p>An <strong>extern</strong> is a hole punched in the fz universe through
+which you can reach a C function. You declare what the C function looks like,
+fz arranges the arguments correctly, and the C function runs. When it
+returns, fz wraps the result back up as something fz code can use.</p>
+
+<p>This means you can build the standard library — file I/O, time, math,
+regex, JSON, anything — out of fz code that calls C, instead of waiting for
+the compiler team to add each feature one by one.</p>
+
+<div class="aside">
+<strong>Mental model:</strong> an extern declaration is a tiny adapter. It
+says "there's a C function over there with this name and this shape; when
+fz code calls it, here's how to translate the arguments and the return
+value." The compiler turns each call into the matching C-ABI invocation.
+</div>
+
+<!-- ─────────────────────────────── 2. DECL ─────────────────────────────── -->
+<h2 id="decl">2. Declaring an extern</h2>
+
+<p>The smallest possible extern declaration:</p>
+
+<pre><span class="kw">extern</span> <span class="str">"C"</span> <span class="kw">fn</span> <span class="fn">getpid</span>() <span class="kw">::</span> <span class="ty">integer</span></pre>
+
+<p>Read it left to right:</p>
+
+<ul>
+  <li><code>extern "C"</code> — this is a C-ABI function, not a fz function.</li>
+  <li><code>fn getpid()</code> — the name fz code calls it by, and the
+      argument list.</li>
+  <li><code>:: integer</code> — what the return value will be marshalled
+      back as.</li>
+</ul>
+
+<p>Now in fz code:</p>
+
+<pre><span class="kw">fn</span> <span class="fn">main</span>() <span class="kw">do</span>
+  pid = <span class="fn">getpid</span>()
+  <span class="fn">print</span>(pid)
+<span class="kw">end</span></pre>
+
+<p>fz emits a System V call to the C symbol <code>getpid</code>, receives an
+<code>int</code>, and boxes it as an <code>FzValue::Int</code> so the rest
+of fz can work with it.</p>
+
+<h3>Arguments work the same way</h3>
+
+<pre><span class="kw">extern</span> <span class="str">"C"</span> <span class="kw">fn</span> <span class="fn">abs</span>(<span class="ty">integer</span>) <span class="kw">::</span> <span class="ty">integer</span></pre>
+
+<p>One argument, classified as <code>integer</code>. When fz code calls
+<code>abs(-3)</code>, the runtime <em>unboxes</em> the tagged FzValue down to
+a raw machine integer, passes it to <code>abs</code>, then reboxes the
+return.</p>
+
+<p>If you want, you can name the parameters for readability:</p>
+
+<pre><span class="kw">extern</span> <span class="str">"C"</span> <span class="kw">fn</span> <span class="fn">write</span>(fd <span class="kw">::</span> <span class="ty">integer</span>, buf <span class="kw">::</span> <span class="ty">binary</span>, len <span class="kw">::</span> <span class="ty">integer</span>) <span class="kw">::</span> <span class="ty">integer</span></pre>
+
+<p>The names are documentation only — they don't affect what gets passed.</p>
+
+<!-- ─────────────────────────────── 3. CLASSES ─────────────────────────────── -->
+<h2 id="classes">3. Marshal classes — telling fz what's at the boundary</h2>
+
+<p>Every argument and return value has a <em>marshal class</em>. The class
+tells fz two things: <em>what kind of fz value the call site must produce</em>,
+and <em>how to translate that value into the 64 bits the C function
+expects</em> (and vice versa for returns).</p>
+
+<table class="data">
+<thead><tr><th>Class</th><th>What C sees</th><th>What fz sees</th><th>Notes</th></tr></thead>
+<tbody>
+<tr><td class="cls">integer</td><td class="shape">raw <code>i64</code></td><td>tagged <code>FzValue::Int</code></td><td class="note">Unbox on the way out; box on the way back.</td></tr>
+<tr><td class="cls">any</td><td class="shape">raw <code>u64</code></td><td>any <code>FzValue</code></td><td class="note">No translation. You pass the FzValue bits through unchanged.</td></tr>
+<tr><td class="cls">binary</td><td class="shape"><code>*const u8</code></td><td>fz binary <code>&lt;&lt;...&gt;&gt;</code></td><td class="note">Pointer to the binary's bytes. No NUL guarantee.</td></tr>
+<tr><td class="cls">cstring</td><td class="shape"><code>*const u8</code></td><td>fz binary <code>&lt;&lt;...&gt;&gt;</code></td><td class="note">Same pointer, but with a guaranteed trailing zero byte.</td></tr>
+<tr><td class="cls">nil</td><td class="shape">(no return value)</td><td>nil</td><td class="note">For C functions that return <code>void</code>.</td></tr>
+</tbody>
+</table>
+
+<h3>Why <code>integer</code> and <code>any</code> aren't the same</h3>
+
+<p>fz integers are <em>tagged</em>: the low bit of the 64-bit word is set
+to 1, and the actual integer value lives in the upper 63 bits. That's how
+the GC knows which words are pointers and which aren't. So
+<code>FzValue::from_int(42).0</code> is <em>not</em> <code>42</code> — it's
+something like <code>0x55</code> in raw bits.</p>
+
+<p>If you declare an argument as <code>integer</code>, fz strips the tag
+before handing the value to C, so the C function sees a normal
+<code>int</code>. If you declare it as <code>any</code>, the raw bits go
+through unchanged — useful when your C function actually wants to inspect
+the tag itself (rare).</p>
+
+<h3>The <code>cstring</code> trick</h3>
+
+<p>C strings end with a zero byte. fz binaries don't. So how do we hand a
+fz binary to <code>open(2)</code> without copying?</p>
+
+<p>Every binary's backing buffer in fz secretly has one extra zero byte
+past its end. It doesn't count toward the binary's length, doesn't appear
+to fz code, and costs one byte per binary. So if you write</p>
+
+<pre>path = &lt;&lt;<span class="num">104</span>, <span class="num">105</span>&gt;&gt;     <span class="com"># "hi"</span></pre>
+
+<p>the actual bytes in memory look like:</p>
+
+<pre><span class="note">bytes_len = 2</span>
+[ <span class="num">104</span> | <span class="num">105</span> | <span class="num">0</span> ]
+  'h'   'i'   <span class="note">invisible NUL — not part of the binary</span></pre>
+
+<p>When you pass it as <code>cstring</code>, the runtime hands the C function
+<code>bytes_ptr</code>, which is already a valid C string. No copy. No
+branch. The <code>binary</code> class makes no NUL promise; the call site
+picks which contract it wants. Calling <code>write(fd, buf, len)</code>?
+Use <code>binary</code>. Calling <code>open(path, flags)</code>? Use
+<code>cstring</code>.</p>
+
+<!-- ─────────────────────────────── 4. LIBRARY ─────────────────────────────── -->
+<h2 id="library">4. Library-prefix names — <code>libc::open</code></h2>
+
+<p>You can give the fz-side name a library prefix:</p>
+
+<pre><span class="kw">extern</span> <span class="str">"C"</span> <span class="kw">fn</span> <span class="fn">libc::open</span>(<span class="ty">cstring</span>, <span class="ty">integer</span>) <span class="kw">::</span> <span class="ty">integer</span></pre>
+
+<p>The C symbol stays <code>open</code> (that's what the linker resolves).
+The fz-side name becomes <code>libc::open</code>. Two reasons this matters:</p>
+
+<ul>
+  <li>It keeps the public fz namespace clean. A function called
+      <code>open/2</code> can be defined later in fz with totally different
+      semantics — it won't collide with the C extern.</li>
+  <li>It documents <em>which</em> library this symbol comes from. If you're
+      reading <code>libc::open</code> in fz code, you know to look in
+      <code>man 2 open</code>, not in some fz stdlib module.</li>
+</ul>
+
+<p>You call it the same way:</p>
+
+<pre>fd = <span class="fn">libc::open</span>(path, <span class="num">0</span>)</pre>
+
+<p>If you skip the prefix, the fz name is just the C symbol —
+<code>extern "C" fn getpid()</code> is callable as <code>getpid()</code>.
+Use prefixes when the C name is generic enough that you might want it
+back; skip them when it's already distinctive (like
+<code>fz_test_open_tmpfile</code>).</p>
+
+<!-- ─────────────────────────────── 5. RETURNS ─────────────────────────────── -->
+<h2 id="returns">5. Returns — boxing on the way back in</h2>
+
+<p>C returns a raw machine word; fz code wants a tagged FzValue. The
+return-side marshal class fills the gap.</p>
+
+<pre><span class="kw">extern</span> <span class="str">"C"</span> <span class="kw">fn</span> <span class="fn">libc::close</span>(<span class="ty">integer</span>) <span class="kw">::</span> <span class="ty">integer</span>
+
+<span class="kw">fn</span> <span class="fn">main</span>() <span class="kw">do</span>
+  rc = <span class="fn">libc::close</span>(<span class="num">3</span>)
+  <span class="fn">print</span>(rc)         <span class="com"># prints 0, or -1 if close failed</span>
+<span class="kw">end</span></pre>
+
+<p>The C-ABI return value comes back in <code>rax</code> as a raw 64-bit
+integer. The <code>:: integer</code> return class shifts it left by one
+and sets the low bit, producing the tagged FzValue::Int that the rest of
+fz expects. You can write <code>rc == 0</code>, pass <code>rc</code> to
+<code>print</code>, store it in a list — it's a real fz value.</p>
+
+<p>For C functions that return a pointer or some opaque bit pattern, use
+<code>:: any</code> on the return — fz won't try to shift-and-tag a value
+that isn't a small integer.</p>
+
+<!-- ─────────────────────────────── 6. REFS ─────────────────────────────── -->
+<h2 id="refs">6. First-class extern refs — <code>&amp;libc::close/1</code></h2>
+
+<p>You can take a reference to an extern, just like you can to an fz
+function:</p>
+
+<pre>closer = &amp;<span class="fn">libc::close</span>/<span class="num">1</span>
+result = closer(fd)</pre>
+
+<p>The <code>&amp;name/arity</code> syntax produces a first-class closure
+that, when called, invokes the underlying extern. You can pass it as an
+argument, store it in a data structure, or hand it to
+<code>make_resource</code> as a destructor (next section).</p>
+
+<div class="aside">
+Under the hood, <code>&amp;libc::close/1</code> creates a tiny synthesised
+fz function <code>fn(x), do: libc::close(x)</code> and wraps it as a
+zero-capture closure. The closure's body, when invoked, makes a normal
+extern call. So a reference to an extern behaves exactly like a reference
+to any other fz function — no special-case handling at the call site.
+</div>
+
+<!-- ─────────────────────────────── 7. RESOURCES ─────────────────────────────── -->
+<h2 id="resources">7. Resources — let fz clean up after the C function</h2>
+
+<p>C functions often hand back something you have to clean up later:
+a file descriptor from <code>open</code>, an allocated buffer from
+<code>malloc</code>, a handle from a library. If you forget, you leak.
+fz has a primitive for this: <code>make_resource(payload, dtor)</code>.</p>
+
+<pre>fd = <span class="fn">libc::open</span>(path, <span class="num">0</span>)
+handle = <span class="fn">make_resource</span>(fd, &amp;<span class="fn">libc::close</span>/<span class="num">1</span>)</pre>
+
+<p>Now <code>handle</code> is an fz value carrying the fd. When the last
+reference to <code>handle</code> goes out of scope (the GC notices, or the
+process exits), fz calls <code>libc::close(fd)</code> automatically.
+You can <em>never</em> leak this fd by forgetting to close it — there's
+no path through fz code that holds a handle but skips its dtor.</p>
+
+<h3>The dtor is real fz code</h3>
+
+<p>The destructor isn't required to be a bare <code>&amp;libc::close/1</code>.
+It can be any fz function of the right shape:</p>
+
+<pre><span class="kw">fn</span> <span class="fn">close_and_log</span>(fd) <span class="kw">do</span>
+  <span class="fn">libc::close</span>(fd)
+  <span class="fn">print</span>(<span class="atm">:closed</span>)
+<span class="kw">end</span>
+
+handle = <span class="fn">make_resource</span>(fd, &amp;<span class="fn">close_and_log</span>/<span class="num">1</span>)</pre>
+
+<p>When the resource gets cleaned up, the body of <code>close_and_log</code>
+runs as ordinary fz code. The <code>print(:closed)</code> actually fires.
+You can branch, allocate, even call other externs — the dtor is just a
+function call.</p>
+
+<div class="aside">
+<strong>Behind the curtain.</strong> fz doesn't run dtors while the
+garbage collector is in the middle of a sweep (that would be a recipe for
+re-entrant disaster). Instead, when a resource is no longer reachable, it
+gets queued up. The scheduler drains the queue at quiet moments — between
+quanta, at task exit — and dispatches each dtor closure body through the
+normal fz call machinery. From your code's perspective: by the time fz
+"notices" you're done, the dtor has run.
+</div>
+
+<h3>Why opaque?</h3>
+
+<p>The convention is to wrap a resource in a <em>module</em> with an
+opaque type:</p>
+
+<pre><span class="kw">defmodule</span> <span class="ty">File</span> <span class="kw">do</span>
+  @<span class="kw">type</span> t <span class="kw">::</span> opaque <span class="kw">resource</span>(<span class="ty">integer</span>)
+
+  <span class="kw">fn</span> <span class="fn">open</span>(path) <span class="kw">do</span>
+    fd = <span class="fn">libc::open</span>(path, <span class="num">0</span>)
+    <span class="fn">make_resource</span>(fd, &amp;<span class="fn">libc::close</span>/<span class="num">1</span>)
+  <span class="kw">end</span>
+
+  <span class="kw">fn</span> <span class="fn">fd</span>(h), <span class="kw">do:</span> h.value
+<span class="kw">end</span></pre>
+
+<p>Outside <code>File</code>, nobody can fish the raw integer out of the
+handle — only <code>File.fd/1</code> (defined inside the module) can.
+That means a fd from <code>File.open</code> can't be passed to a wrong
+function that expects a different kind of fd, and the dtor contract
+can't be bypassed.</p>
+
+<!-- ─────────────────────────────── 8. EXAMPLE ─────────────────────────────── -->
+<h2 id="example">8. A complete example: <code>FileHandle</code></h2>
+
+<p>Pulling it all together — the actual fixture from the repo:</p>
+
+<pre><span class="kw">extern</span> <span class="str">"C"</span> <span class="kw">fn</span> <span class="fn">libc::creat</span> (<span class="ty">cstring</span>, <span class="ty">integer</span>)          <span class="kw">::</span> <span class="ty">integer</span>
+<span class="kw">extern</span> <span class="str">"C"</span> <span class="kw">fn</span> <span class="fn">libc::write</span> (<span class="ty">integer</span>, <span class="ty">binary</span>, <span class="ty">integer</span>)  <span class="kw">::</span> <span class="ty">integer</span>
+<span class="kw">extern</span> <span class="str">"C"</span> <span class="kw">fn</span> <span class="fn">libc::close</span> (<span class="ty">integer</span>)                   <span class="kw">::</span> <span class="ty">integer</span>
+<span class="kw">extern</span> <span class="str">"C"</span> <span class="kw">fn</span> <span class="fn">libc::unlink</span>(<span class="ty">cstring</span>)                   <span class="kw">::</span> <span class="ty">integer</span>
+
+<span class="kw">fn</span> <span class="fn">close_observable</span>(fd) <span class="kw">do</span>
+  <span class="fn">libc::close</span>(fd)
+  <span class="fn">print</span>(<span class="atm">:dtor_closed</span>)
+<span class="kw">end</span>
+
+<span class="kw">defmodule</span> <span class="ty">FileHandle</span> <span class="kw">do</span>
+  @<span class="kw">type</span> t <span class="kw">::</span> opaque <span class="kw">resource</span>(<span class="ty">integer</span>)
+
+  <span class="kw">fn</span> <span class="fn">from_fd</span>(fd), <span class="kw">do:</span> <span class="fn">make_resource</span>(fd, &amp;<span class="fn">close_observable</span>/<span class="num">1</span>)
+<span class="kw">end</span>
+
+<span class="kw">fn</span> <span class="fn">main</span>() <span class="kw">do</span>
+  <span class="com"># "/tmp/fz-x5m" — created with mode 0o644 = 420</span>
+  path = &lt;&lt;<span class="num">47</span>, <span class="num">116</span>, <span class="num">109</span>, <span class="num">112</span>, <span class="num">47</span>, <span class="num">102</span>, <span class="num">122</span>, <span class="num">45</span>, <span class="num">120</span>, <span class="num">53</span>, <span class="num">109</span>&gt;&gt;
+  fd = <span class="fn">libc::creat</span>(path, <span class="num">420</span>)
+  <span class="fn">print</span>(<span class="atm">:opened</span>)
+  <span class="com"># "hi\n" — exercises the `binary` marshal class</span>
+  n = <span class="fn">libc::write</span>(fd, &lt;&lt;<span class="num">104</span>, <span class="num">105</span>, <span class="num">10</span>&gt;&gt;, <span class="num">3</span>)
+  <span class="fn">print</span>(n)
+  _h = <span class="ty">FileHandle</span>.<span class="fn">from_fd</span>(fd)
+  <span class="fn">libc::unlink</span>(path)
+  <span class="fn">print</span>(<span class="atm">:done</span>)
+<span class="kw">end</span></pre>
+
+<p>Output:</p>
+
+<pre>:opened
+3
+:done
+:dtor_closed</pre>
+
+<p>Step by step:</p>
+
+<ul>
+  <li><code>libc::creat</code> takes a cstring (the path; fz hands the C
+      function a NUL-terminated pointer to the binary's bytes) and an
+      integer (the mode). Returns a tagged fd.</li>
+  <li><code>libc::write</code> takes the fd, a binary (the bytes
+      <code>hi\n</code>), and a length. The runtime hands C a raw pointer
+      to the bytes — no copy, no NUL.</li>
+  <li><code>FileHandle.from_fd(fd)</code> creates a resource. The dtor is
+      <code>&amp;close_observable/1</code>; the fd is the payload.</li>
+  <li>The path is unlinked from the filesystem (the data stays alive as
+      long as <em>some</em> fd points at it).</li>
+  <li><code>main</code> returns. The scheduler notices the task has
+      halted, walks any surviving resources, and drains their dtors.
+      <code>close_observable</code> runs as fz code: it calls
+      <code>libc::close(fd)</code>, then <code>print(:dtor_closed)</code>.</li>
+</ul>
+
+<!-- ─────────────────────────────── 9. FOOTGUNS ─────────────────────────────── -->
+<h2 id="footguns">9. Footguns and the contract</h2>
+
+<div class="box yellow">
+<strong>Externs are an unsafe surface.</strong> fz can't check that your
+declaration matches the real C function. If you declare <code>libc::open</code>
+as taking a single <code>integer</code> argument and call it, the resulting
+machine code will compile happily and then crash (or worse, silently
+corrupt memory) when it runs. Get the declaration right — match the
+prototype in the C header.
+</div>
+
+<h3>Things to remember</h3>
+
+<ul>
+  <li><strong>fz doesn't move buffer bytes during a C call.</strong>
+      A binary passed as <code>binary</code> or <code>cstring</code> stays
+      where it is for the duration of the call. The C function is welcome
+      to read those bytes. It is <em>not</em> welcome to keep the pointer
+      after returning — once control returns to fz, the GC may move things.</li>
+  <li><strong>C is not allowed to mutate the buffer.</strong> Both
+      <code>binary</code> and <code>cstring</code> are passed by const
+      pointer; if the C function writes through it, fz will see corrupted
+      data on the next read. (A "mutable buffer" marshal class will land
+      when we need it.)</li>
+  <li><strong>Non-byte-aligned bitstrings can't be passed.</strong>
+      <code>&lt;&lt;1::1, 0::1&gt;&gt;</code> is a 2-bit bitstring; there's no
+      <code>*const u8</code> that represents it cleanly. The runtime
+      raises an arg exception if you try.</li>
+  <li><strong>Resource dtors should not raise.</strong> If a dtor closure
+      panics or returns an error, the runtime currently aborts. Treat the
+      dtor as a "cleanup, never fail" path.</li>
+  <li><strong>Dtors run at scheduler boundaries, not synchronously.</strong>
+      A resource going out of scope inside a tight loop won't fire its
+      dtor until the loop yields. For most uses this is fine; if you need
+      <em>now</em>, fz isn't the right tool.</li>
+</ul>
+
+<h3>What externs are <em>not</em></h3>
+
+<ul>
+  <li>They're not a way to call <em>fz</em> code from C. (That's a different
+      mechanism — closures and the scheduler hooks.)</li>
+  <li>They're not a portability layer. <code>libc::open</code> works on
+      anything with a libc; <code>kqueue</code> works on BSDs only. fz
+      doesn't paper over that.</li>
+  <li>They're not free. Each extern call crosses an ABI boundary and may
+      block the calling fz process. For hot inner loops, prefer pure fz.</li>
+</ul>
+
+<div class="box green">
+<strong>The contract.</strong> Declare the C signature truthfully. Pick the
+right marshal class for each side. Wrap anything that needs cleanup in a
+<code>make_resource</code> with a dtor. Trust the runtime to call the dtor
+when the value becomes unreachable — and not before.
+</div>
+
+</body>
+</html>

@@ -23,7 +23,8 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `destructure_tuple/` | irrefutable tuple destructure in a let-style bind — first fixture to exercise `{a, b} = expr` across all four legs | jit, interp, aot, repl |
 | `empty_list_distinct_from_nil/` | pin fz-s9y semantics — `nil` and `[]` print as distinct strings | jit, aot, interp, repl |
 | `fib_tailrec/` | fibonacci via two-accumulator tail recursion — three-clause dispatch + tail-call forwarding under load | jit, interp, aot, repl |
-| `file_resource_lifecycle/` | fz-swt.13 — File module wraps an fd in a resource; the dtor closes the fd at heap drop (interp/JIT/AOT parity). | interp, jit, aot |
+| `file_handle/` | FileHandle = fd + dtor, exercising cstring/binary/integer marshal classes against real libc with an observable resource lifecycle | jit, interp, aot |
+| `file_resource_lifecycle/` | fz-swt.13 / fz-4mk — File module wraps an fd in a resource; the dtor closes the fd at task-exit drain (interp/JIT/AOT parity). | interp, jit, aot |
 | `fn_ref_ampersand/` | &name/arity parses as an explicit function reference, disambiguating overloaded names by arity | jit, interp |
 | `hello/` | print each scalar shape — int, atom, bool, nil | jit, interp, repl |
 | `higher_order/` | higher-order patterns — apply2, compose | jit, interp, aot, repl |

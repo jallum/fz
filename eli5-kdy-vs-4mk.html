@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Proposal — fz-4mk base + structural-lowering polish from fz-kdy</title>
+<style>
+body { font: 16px/1.55 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+       max-width: 920px; margin: 2em auto; padding: 0 1em; color: #1d1d1f; }
+h1 { font-size: 1.9em; border-bottom: 2px solid #1d1d1f; padding-bottom: .3em; }
+h2 { font-size: 1.4em; margin-top: 2em; }
+h3 { font-size: 1.1em; }
+code { background: #f5f5f7; padding: 1px 4px; border-radius: 3px; font-family: "SF Mono", Menlo, monospace; font-size: .92em; }
+pre { background: #f5f5f7; padding: .8em 1em; border-radius: 6px; overflow-x: auto; font-size: .9em; line-height: 1.45; }
+table { width: 100%; border-collapse: collapse; margin: 1em 0; }
+th, td { text-align: left; padding: .6em .8em; border-bottom: 1px solid #d2d2d7; vertical-align: top; }
+th { background: #f5f5f7; font-weight: 600; }
+.tldr { background: #fff8d6; border-left: 4px solid #ffcc00; padding: .8em 1em; margin: 1em 0; border-radius: 4px; }
+.add { background: #e8f5e9; border-left: 4px solid #2e7d32; padding: .8em 1em; margin: 1em 0; border-radius: 4px; }
+.keep { background: #e3f2fd; border-left: 4px solid #1565c0; padding: .8em 1em; margin: 1em 0; border-radius: 4px; }
+.drop { background: #ffebee; border-left: 4px solid #c62828; padding: .8em 1em; margin: 1em 0; border-radius: 4px; }
+.step { background: #f5f5f7; border-left: 4px solid #6e6e73; padding: .8em 1em; margin: .8em 0; border-radius: 4px; }
+.pro { color: #0a7f23; }
+.con { color: #b50000; }
+</style>
+</head>
+<body>
+
+<h1>Proposal: fz-4mk base + structural-lowering polish</h1>
+
+<div class="tldr">
+<b>Plan.</b> Reset fz-recv to before our fz-kdy commits, re-merge <code>main</code>
+clean, then file a new follow-up ticket that ports the <i>three</i> ideas from
+fz-kdy that genuinely improve 4mk's IR shape and runtime seam — without
+touching 4mk's drain semantics, which are the load-bearing decision.
+</div>
+
+<h2>What we keep from fz-4mk (it's the base)</h2>
+
+<div class="keep">
+<b>4mk's drain design is correct and stays untouched.</b>
+<ul>
+  <li>Resource stub at 40 bytes, with the dtor closure on the stub at +24.</li>
+  <li><code>pending_dtors: VecDeque&lt;(closure_bits, payload)&gt;</code> on each Heap.</li>
+  <li><code>mso_drop_all_deferred</code> for task-exit; mid-life GC sweep enqueues
+      similarly (future).</li>
+  <li>Scheduler-boundary drain: <code>CURRENT_PROCESS</code> live, call
+      <code>fz_drain_dtor_entry(closure, payload)</code> per pending dtor.</li>
+  <li><code>fz_drain_dtor_entry</code> SystemV→Tail-CC bridge (one per program), with
+      synthesized halt-cont.</li>
+  <li>Multi-statement / branching / non-trivial fz dtor bodies — the entire
+      point of 4mk.</li>
+</ul>
+</div>
+
+<h2>What we port from fz-kdy (three small wins)</h2>
+
+<h3>1. <code>Prim::MakeResource(payload, dtor_fid)</code> as a first-class IR node</h3>
+
+<div class="add">
+<b>Today on main (4mk):</b> <code>make_resource(fd, &amp;dtor/1)</code> lowers to
+<code>MakeClosure(dtor_fid, [])</code> + <code>Extern(fz_make_resource, [payload, closure])</code>.
+The dtor fn pays full closure-target compilation cost (alternate ABI, stub_fp,
+header.flags packing) even though it's only ever invoked through the drain
+bridge.
+</div>
+
+<pre>; Before (4mk on main)
+v0 = iconst 10
+v1 = make_closure dtor#14, []           ; closure-target heap alloc
+v2 = extern fz_make_resource(v0, v1)    ; hook indirection
+
+; After (4mk + kdy structural)
+v0 = iconst 10
+v1 = prim make_resource(v0, dtor=14)    ; structural, dtor_fid baked in</pre>
+
+<p>Codegen of <code>Prim::MakeResource</code> looks up the dtor's static closure (zero-cap
+closures already have one per fz-cps.1.7) and calls
+<code>fz_alloc_resource(payload, static_closure_ptr)</code> directly — no MakeResourceHook
+indirection, no extern declaration of <code>fz_make_resource</code> at all.</p>
+
+<p>Net win: dtor fn no longer needs closure-target ABI compilation; one fewer
+heap alloc per <code>make_resource</code> site; cleaner IR readability.</p>
+
+<h3>2. Lowering-time literal-FnRef enforcement</h3>
+
+<div class="add">
+<b>Today on main:</b> <code>make_resource(fd, x)</code> where <code>x</code> is a variable
+type-checks (the typer sees any callable) but explodes at drain time with a
+generic "closure body has no Prim::Extern" or similar.<br>
+<br>
+<b>After:</b> the lowering intercept requires <code>arg[1]</code> to be an
+<code>Expr::FnRef { name, arity }</code> literal. Anything else (var, lambda, expression)
+fails with the new <code>MAKE_RESOURCE_DTOR_CAPTURES</code> diagnostic at the call site,
+pointing at the offending arg.
+</div>
+
+<pre>error[lower/make-resource-dtor-captures]: make_resource/2: dtor must be a
+literal `&amp;name/arity` fn-ref, got a variable (use `&amp;name/arity` directly)
+  --&gt; mod.fz:14:24
+   |
+14 |   make_resource(fd, x)
+   |                     ^</pre>
+
+<p>This also structurally guarantees the dtor is zero-capture (top-level fns
+don't capture), which makes the heap-stub closure-pointer simpler to reason
+about — no captures slot ever populated, ever.</p>
+
+<h3>3. DCE-impure marking for <code>Prim::MakeResource</code></h3>
+
+<div class="add">
+<b>Today on main:</b> 4mk relies on <code>Prim::Extern(fz_make_resource, …)</code>
+being naturally marked impure (all Extern is impure). That covers it.<br>
+<br>
+<b>After:</b> with <code>Prim::MakeResource</code> as its own variant, we have to
+explicitly add it to <code>is_impure</code> in <code>ir_dce.rs</code> — otherwise
+<code>_h = make_resource(fd, &amp;close/1)</code> gets DCE'd and the dtor never registers.
+One-line addition; cheap insurance.
+</div>
+
+<h2>What we drop from fz-kdy (correctly so)</h2>
+
+<div class="drop">
+<b>The <code>Box&lt;FnOnce(u64)&gt;</code> Resource refactor.</b>
+4mk's stub-carries-the-closure design is incompatible with our boxed-FnOnce
+layout. 4mk wins on this axis: it lets the closure live where it can be
+dispatched as fz code, not as a Rust closure. Our box was clever for the
+narrow-path constraint but unnecessary once drain exists.
+</div>
+
+<div class="drop">
+<b>The "single Prim::Extern wrapper" restriction.</b>
+fz-kdy.12 codegen walked the dtor body structurally to find the extern and
+emit a direct C call. That whole machinery vanishes — 4mk's
+<code>fz_drain_dtor_entry</code> handles arbitrary zero-cap bodies via real
+Tail-CC dispatch, which is strictly more capable.
+</div>
+
+<div class="drop">
+<b>The <code>ir_codegen_dtor_thunk.rs</code> module sketch.</b> Already deleted in
+fz-kdy.12 itself when we hit the process-context problem; we never need it.
+</div>
+
+<h2>Migration steps</h2>
+
+<div class="step">
+<b>Step 1.</b> Abort the in-progress merge, reset fz-recv to before fz-kdy.10
+(the variant-+-stubs commit), force-push fz-recv. <code>main</code> moves forward,
+PR #29 returns to being purely about selective receive.
+</div>
+
+<div class="step">
+<b>Step 2.</b> Re-merge <code>main</code> into fz-recv. Should be clean now — the
+conflicts were entirely about fz-kdy retiring code that 4mk also touched.
+</div>
+
+<div class="step">
+<b>Step 3.</b> Confirm full suite green on fz-recv (selective receive + 4mk
++ everything else). Push, watch CI.
+</div>
+
+<div class="step">
+<b>Step 4 (optional, follow-up).</b> File a new ticket
+<i>"<code>Prim::MakeResource</code> IR node + lowering polish on top of 4mk"</i>
+for the three wins above. Scope is small (~80 lines net):
+<ul>
+  <li><code>Prim::MakeResource(Var, FnId)</code> variant (new file: edits to fz_ir,
+      ir_dce, ir_fuse, ir_inline, ir_typer, reducer — same fan-out as fz-kdy.10).</li>
+  <li>Lowering intercept on <code>Expr::Call</code> + new
+      <code>MAKE_RESOURCE_DTOR_CAPTURES</code> diag code.</li>
+  <li>Codegen arm: look up dtor's static closure, call new
+      <code>fz_alloc_resource(payload, closure_ptr)</code> runtime fn.</li>
+  <li>Retire <code>fz_make_resource</code> extern + <code>MakeResourceHook</code> +
+      <code>install_make_resource_hook_with_module</code> /
+      <code>CURRENT_MODULE</code> — codegen now knows the closure ptr directly.</li>
+  <li>Rebless goldens (fn-id renumber from runtime.fz losing one wrapper).</li>
+</ul>
+This is a pure refinement of 4mk's design, not a competing approach.
+</div>
+
+<h2>Open questions</h2>
+
+<ol>
+  <li><b>Does fz-recv's selective-receive work itself conflict with anything
+      4mk touched?</b> Mostly fixtures (clif/specs goldens — bless after merge)
+      and any cont-stub-vs-dtor-stub overlap. Likely a clean merge for the
+      non-fixture code, but worth verifying.</li>
+  <li><b>Should Step 4 happen on fz-recv or be filed as a separate branch
+      against post-merge main?</b> Probably the latter — keeps fz-recv focused
+      on receive semantics and lets the IR polish ship independently.</li>
+</ol>
+
+</body>
+</html>

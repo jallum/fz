@@ -60,10 +60,12 @@ unsafe impl Sync for SharedBin {}
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn shared_bin_destructor_heap(p: *mut SharedBin) {
     let bin = unsafe { Box::from_raw(p) };
+    // The buffer was overallocated by 1 for the invisible trailing NUL
+    // ([[fz-wu9]]). Free the full allocation.
     let bytes = unsafe {
         Box::from_raw(std::ptr::slice_from_raw_parts_mut(
             bin.bytes_ptr as *mut u8,
-            bin.bytes_len,
+            bin.bytes_len + 1,
         ))
     };
     drop(bytes);
@@ -91,8 +93,15 @@ pub unsafe extern "C" fn shared_bin_destructor_noop(_p: *mut SharedBin) {}
 /// destructor installed. Bytes are leaked separately as a `Box<[u8]>` so
 /// the destructor can reconstruct both boxes independently.
 pub fn shared_bin_alloc(bytes: &[u8], bit_len: u64) -> *mut SharedBin {
-    let buf: Box<[u8]> = bytes.to_vec().into_boxed_slice();
-    let bytes_len = buf.len();
+    // fz-wu9 — overallocate one byte beyond bytes_len and zero it.
+    // The trailing NUL is invisible to the language (bytes_len/bit_len
+    // unchanged) and underwrites the cstring extern marshal contract.
+    let bytes_len = bytes.len();
+    let mut v: Vec<u8> = Vec::with_capacity(bytes_len + 1);
+    v.extend_from_slice(bytes);
+    v.push(0);
+    debug_assert_eq!(v.len(), bytes_len + 1);
+    let buf: Box<[u8]> = v.into_boxed_slice();
     let bytes_ptr: *const u8 = Box::leak(buf).as_ptr();
     let bin = Box::new(SharedBin {
         refcount: AtomicUsize::new(1),
@@ -318,24 +327,27 @@ pub fn mso_sweep(heap: &mut Heap) {
     let mut new_head: *mut HeapHeader = std::ptr::null_mut();
     let mut cur = heap.mso_head;
     while !cur.is_null() {
-        // Read next link BEFORE potentially overwriting from-space copy.
-        // ProcBin and Resource share the same 32-byte layout for header +
-        // shared_ptr + mso_next, so ProcBin's accessors work for either
-        // kind here (we only touch the mso_next slot).
-        let pb_from = unsafe { ProcBin::from_raw(cur) };
-        let next = pb_from.mso_next();
+        // Read kind FIRST so we use the right accessor for the next link.
+        // ProcBin has mso_next at +24; Resource stubs (fz-4mk grew them to
+        // 40 bytes for the dtor closure slot) keep mso_next at +32.
         let kind = unsafe { (*cur).kind };
+        let (next, _) = mso_read_next(cur, kind);
         if kind == crate::heap::FORWARDED_KIND {
             let to_p = unsafe { std::ptr::read((cur as *const u8).add(8) as *const u64) }
                 as *mut HeapHeader;
-            // Same observation: ProcBin's mso_next_set works on Resource
-            // stubs too because the offset is identical.
-            let pb_to = unsafe { ProcBin::from_raw(to_p) };
-            pb_to.mso_next_set(new_head);
+            // The from-header's original kind is gone (overwritten by
+            // FORWARDED_KIND in slot 0..2 plus the to-ptr in slot 8..16).
+            // The to-space copy's kind tells us which accessor to call
+            // for mso_next_set.
+            let to_kind = unsafe { (*to_p).kind };
+            mso_set_next(to_p, to_kind, new_head);
             new_head = to_p;
         } else {
             match HeapKind::from_u16(kind) {
-                Some(HeapKind::ProcBin) => unsafe { shared_bin_release(pb_from.shared_raw()) },
+                Some(HeapKind::ProcBin) => {
+                    let pb = unsafe { ProcBin::from_raw(cur) };
+                    unsafe { shared_bin_release(pb.shared_raw()) };
+                }
                 Some(HeapKind::Resource) => {
                     let rs = unsafe { ResourceStub::from_raw(cur) };
                     unsafe { fz_resource_release(rs.shared_raw()) };
@@ -348,19 +360,95 @@ pub fn mso_sweep(heap: &mut Heap) {
     heap.mso_head = new_head;
 }
 
+/// fz-4mk — deferred variant of `mso_drop_all`. Walks the MSO chain at
+/// process shutdown and, for each dead resource, instead of invoking the
+/// stored C destructor inline, snapshots the closure value and payload
+/// onto `heap.pending_dtors` so the scheduler can dispatch the dtor as
+/// real fz code while the process is still alive. ProcBin entries
+/// continue to release synchronously (their dtor is owned by the runtime,
+/// not user fz code, and has nothing to print or branch on).
+///
+/// Currently called only by the interpreter leg's shutdown path; the
+/// JIT/AOT scheduler loops still use the inline `mso_drop_all` until
+/// phase 3 wires their drain. After this returns, the MSO chain is
+/// empty and `Heap::drop` -> `mso_drop_all` is a no-op.
+pub fn mso_drop_all_deferred(heap: &mut Heap) {
+    use crate::resource::{ResourceStub, fz_resource_release_deferred};
+    let mut cur = heap.mso_head;
+    while !cur.is_null() {
+        let kind = unsafe { (*cur).kind };
+        let (next, _) = mso_read_next(cur, kind);
+        match HeapKind::from_u16(kind) {
+            Some(HeapKind::ProcBin) => {
+                let pb = unsafe { ProcBin::from_raw(cur) };
+                unsafe { shared_bin_release(pb.shared_raw()) };
+            }
+            Some(HeapKind::Resource) => {
+                let rs = unsafe { ResourceStub::from_raw(cur) };
+                let closure = rs.closure_ptr();
+                if let Some(payload) = unsafe { fz_resource_release_deferred(rs.shared_raw()) } {
+                    heap.pending_dtors.push_back((closure.0, payload));
+                }
+            }
+            other => panic!("mso_drop_all_deferred: unexpected MSO kind: {:?}", other),
+        }
+        cur = next;
+    }
+    heap.mso_head = std::ptr::null_mut();
+}
+
+/// Read the `mso_next` link from an MSO chain entry. ProcBin and Resource
+/// stubs disagree on the slot's offset (24 vs 32) since fz-4mk grew the
+/// Resource stub for the dtor-closure slot. `FORWARDED_KIND` headers keep
+/// the original chain link at the same offset the from-header used; we
+/// follow whichever offset the *original* kind dictated.
+///
+/// Returns the next link and the *byte size of the entry* (so the caller
+/// has a one-stop shape lookup if it later wants to scrub or step).
+fn mso_read_next(p: *mut HeapHeader, kind: u16) -> (*mut HeapHeader, usize) {
+    // The from-header has been clobbered with FORWARDED_KIND in low bits,
+    // but the original size_bytes lives further into the header at +4
+    // (untouched by forwarding). We use it to pick the offset.
+    let size = unsafe { (*p).size_bytes } as usize;
+    let off = match size {
+        32 => 24, // ProcBin
+        40 => 32, // Resource (fz-4mk)
+        other => panic!(
+            "mso_read_next: unexpected MSO entry size {}, kind {}",
+            other, kind
+        ),
+    };
+    let next = unsafe { std::ptr::read((p as *const u8).add(off) as *const *mut HeapHeader) };
+    (next, size)
+}
+
+fn mso_set_next(p: *mut HeapHeader, _kind: u16, next: *mut HeapHeader) {
+    let size = unsafe { (*p).size_bytes } as usize;
+    let off = match size {
+        32 => 24,
+        40 => 32,
+        other => panic!("mso_set_next: unexpected MSO entry size {}", other),
+    };
+    unsafe {
+        std::ptr::write((p as *mut u8).add(off) as *mut *mut HeapHeader, next);
+    }
+}
+
 /// Drop every ProcBin in `heap.mso_head`'s chain, releasing each
 /// SharedBin reference. Called from `Heap::drop` before pool reclaim.
 pub fn mso_drop_all(heap: &mut Heap) {
     use crate::resource::{ResourceStub, fz_resource_release};
     let mut cur = heap.mso_head;
     while !cur.is_null() {
-        // ProcBin's `mso_next` accessor reads offset +24, which is the
-        // same slot in a Resource stub; safe for either kind.
-        let pb = unsafe { ProcBin::from_raw(cur) };
-        let next = pb.mso_next();
         let kind = unsafe { (*cur).kind };
+        // ProcBin: mso_next at +24. Resource (fz-4mk): mso_next at +32.
+        // `mso_read_next` consults size_bytes to pick the right offset.
+        let (next, _) = mso_read_next(cur, kind);
         match HeapKind::from_u16(kind) {
-            Some(HeapKind::ProcBin) => unsafe { shared_bin_release(pb.shared_raw()) },
+            Some(HeapKind::ProcBin) => {
+                let pb = unsafe { ProcBin::from_raw(cur) };
+                unsafe { shared_bin_release(pb.shared_raw()) };
+            }
             Some(HeapKind::Resource) => {
                 let rs = unsafe { ResourceStub::from_raw(cur) };
                 unsafe { fz_resource_release(rs.shared_raw()) };
@@ -538,6 +626,40 @@ mod tests {
         }
         unsafe {
             assert_eq!((*p).refcount.load(Ordering::Relaxed), 1);
+            shared_bin_release(p);
+        }
+    }
+
+    /// fz-wu9 — every heap-allocated SharedBin's buffer has a trailing
+    /// zero byte at offset `bytes_len` (not counted toward bytes_len /
+    /// bit_len). Underwrites the cstring extern marshal contract.
+    #[test]
+    #[serial_test::serial]
+    fn shared_bin_alloc_has_trailing_nul() {
+        let _g = LiveCountGuard::snap();
+        // Non-empty payload.
+        let p = shared_bin_alloc(b"hello", 40);
+        unsafe {
+            assert_eq!((*p).bytes_len, 5);
+            assert_eq!(*(*p).bytes_ptr.add(5), 0, "trailing NUL after 'hello'");
+            shared_bin_release(p);
+        }
+        // Empty payload — still gets a trailing zero at offset 0.
+        let p = shared_bin_alloc(b"", 0);
+        unsafe {
+            assert_eq!((*p).bytes_len, 0);
+            assert_eq!(*(*p).bytes_ptr, 0, "trailing NUL on empty payload");
+            shared_bin_release(p);
+        }
+        // Payload containing internal zeros (rare but legal).
+        let p = shared_bin_alloc(&[1u8, 0, 2, 0, 3], 40);
+        unsafe {
+            assert_eq!((*p).bytes_len, 5);
+            assert_eq!(
+                *(*p).bytes_ptr.add(5),
+                0,
+                "trailing NUL after embedded-zero payload"
+            );
             shared_bin_release(p);
         }
     }

@@ -5,8 +5,8 @@
 function u0:0(i64) -> i64 tail {
     sig0 = (i64) system_v
     sig1 = (i64, i64) -> i64 tail
-    fn0 = u0:43 sig0
-    fn1 = colocated u0:42 sig1
+    fn0 = u0:46 sig0
+    fn1 = colocated u0:45 sig1
 
 block0(v0: i64):
     v1 = iconst.i64 42                  ; @6:16
@@ -22,7 +22,7 @@ block0(v0: i64):
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64) system_v
     sig1 = (i64, i64) -> i64 tail
-    fn0 = u0:43 sig0
+    fn0 = u0:46 sig0
 
     block0(v0: i64, v1: i64):    ;; v0 :: nil
     v2 = iconst.i64 -7                  ; @7:16
