@@ -144,6 +144,11 @@ pub trait Types {
         using_module: &str,
     ) -> Result<(), crate::typer::OpaqueVisibilityError>;
 
+    /// True iff `a` is a singleton-literal value — a single int_lit,
+    /// float_lit, atom_lit, etc. Used by if-condition narrowing on
+    /// equality predicates to refine the non-singleton operand.
+    fn is_singleton_lit(&self, a: &Self::Ty) -> bool;
+
     /// Render `a` for user-facing diagnostics. Owned-string return
     /// day-one; consumers `format!("{}", t.display(&ty))`-style.
     fn display(&self, a: &Self::Ty) -> String;
@@ -297,6 +302,10 @@ impl Types for ConcreteTypes {
         using_module: &str,
     ) -> Result<(), crate::typer::OpaqueVisibilityError> {
         crate::typer::check_opaque_visibility(a.descr(), using_module)
+    }
+
+    fn is_singleton_lit(&self, a: &Ty) -> bool {
+        a.descr().is_singleton_literal()
     }
 
     fn display(&self, a: &Ty) -> String {

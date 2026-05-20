@@ -1733,7 +1733,8 @@ fn narrow_for_cond_and_narrows_both_operands_in_then_branch() {
     env.insert(cy, Descr::bool_t());
     env.insert(cand, Descr::bool_t());
 
-    let (then_env, else_env) = narrow_for_cond(cand, &env, &stmts);
+    let (then_env, else_env) =
+        narrow_for_cond(&mut crate::types_seam::ConcreteTypes, cand, &env, &stmts);
 
     // Then branch: x must be :ok and y must be 1.
     assert_eq!(

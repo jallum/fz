@@ -724,7 +724,7 @@ fn compute_dead_branches<T: crate::types_seam::Types>(
                     let pt = type_prim(t, prim, &env, m, &HashSet::new());
                     env.insert(*v, pt);
                 }
-                let (then_env, else_env) = narrow_for_if(&env, cond, &b.stmts);
+                let (then_env, else_env) = narrow_for_if(t, &env, cond, &b.stmts);
                 let mut then_dead = find_emptied_var(&env, &then_env).is_some();
                 let mut else_dead = find_emptied_var(&env, &else_env).is_some();
                 // Fallback: when cond's own type is a singleton truthy/
@@ -1828,7 +1828,7 @@ pub fn type_fn<T: crate::types_seam::Types>(
                     else_b,
                     ..
                 } => {
-                    let (then_env, else_env) = narrow_for_if(&env, *cond, &b.stmts);
+                    let (then_env, else_env) = narrow_for_if(t, &env, *cond, &b.stmts);
                     if merge_into(t, &mut block_envs, *then_b, &then_env) {
                         changed = true;
                     }
@@ -1953,22 +1953,32 @@ fn merge_into<T: crate::types_seam::Types>(
 
 /// Find the stmt that bound `cond` (if any) and split the env into
 /// (then_env, else_env) narrowing the predicate's operands accordingly.
-fn union_envs(a: HashMap<Var, Descr>, b: &HashMap<Var, Descr>) -> HashMap<Var, Descr> {
+fn union_envs<T: crate::types_seam::Types>(
+    t: &mut T,
+    a: HashMap<Var, Descr>,
+    b: &HashMap<Var, Descr>,
+) -> HashMap<Var, Descr> {
+    use crate::types_seam::AsDescr;
     let mut out = a;
     for (v, dt) in b {
-        let entry = out.entry(*v).or_insert_with(Descr::none);
-        *entry = entry.union(dt);
+        let prev = out.remove(v).unwrap_or_else(|| t.none().as_descr());
+        let prev_ty = t.from_descr(&prev);
+        let dt_ty = t.from_descr(dt);
+        let unioned = t.union(prev_ty, dt_ty);
+        out.insert(*v, unioned.as_descr());
     }
     out
 }
 
 /// Recursive core for if-condition narrowing.
 /// Returns (then_env, else_env) with variable types refined for each branch.
-fn narrow_for_cond(
+fn narrow_for_cond<T: crate::types_seam::Types>(
+    t: &mut T,
     cond: Var,
     env: &HashMap<Var, Descr>,
     stmts: &[Stmt],
 ) -> (HashMap<Var, Descr>, HashMap<Var, Descr>) {
+    use crate::types_seam::AsDescr;
     let mut then_env = env.clone();
     let mut else_env = env.clone();
 
@@ -1981,22 +1991,30 @@ fn narrow_for_cond(
         return (then_env, else_env);
     };
 
+    // Helper: env-lookup → T::Ty with `any` fallback.
+    let lookup_ty = |t: &mut T, env: &HashMap<Var, Descr>, v: &Var| -> T::Ty {
+        match env.get(v) {
+            Some(d) => t.from_descr(d),
+            None => t.any(),
+        }
+    };
+
     match prim {
         Prim::BinOp(BinOp::And, a, b) => {
             // Truthy: both sub-conditions hold — narrow by a, then by b.
-            let (then_a, else_a) = narrow_for_cond(*a, env, stmts);
-            let (then_ab, _) = narrow_for_cond(*b, &then_a, stmts);
+            let (then_a, else_a) = narrow_for_cond(t, *a, env, stmts);
+            let (then_ab, _) = narrow_for_cond(t, *b, &then_a, stmts);
             // Falsy: at least one fails — union of the individual false branches.
-            let (_, else_b) = narrow_for_cond(*b, env, stmts);
-            return (then_ab, union_envs(else_a, &else_b));
+            let (_, else_b) = narrow_for_cond(t, *b, env, stmts);
+            return (then_ab, union_envs(t, else_a, &else_b));
         }
         Prim::BinOp(BinOp::Or, a, b) => {
             // Truthy: at least one holds — union of individual true branches.
-            let (then_a, else_a) = narrow_for_cond(*a, env, stmts);
-            let (then_b, _) = narrow_for_cond(*b, env, stmts);
+            let (then_a, else_a) = narrow_for_cond(t, *a, env, stmts);
+            let (then_b, _) = narrow_for_cond(t, *b, env, stmts);
             // Falsy: both fail — narrow by a's false, then b's false.
-            let (_, else_ab) = narrow_for_cond(*b, &else_a, stmts);
-            return (union_envs(then_a, &then_b), else_ab);
+            let (_, else_ab) = narrow_for_cond(t, *b, &else_a, stmts);
+            return (union_envs(t, then_a, &then_b), else_ab);
         }
         Prim::IsEmptyList(v) => {
             // fz-s9y.3 — when IsEmptyList returns true, the value is the
@@ -2007,45 +2025,60 @@ fn narrow_for_cond(
             // value — at the time it was harmless because nil and [] shared
             // bits at runtime, but it produced `nil | list(X)` artifacts
             // throughout inferred spec types.
-            let current = env.get(v).cloned().unwrap_or_else(Descr::any);
-            let then_t = current.intersect(&Descr::list_of(Descr::none()));
-            let else_t = current.intersect(&Descr::list_of(Descr::any()));
-            then_env.insert(*v, then_t);
-            else_env.insert(*v, else_t);
+            let current_ty = lookup_ty(t, env, v);
+            let none_inner = t.none();
+            let empty_list = t.list(none_inner);
+            let then_t = t.intersect(current_ty.clone(), empty_list);
+            let any_inner = t.any();
+            let any_list = t.list(any_inner);
+            let else_t = t.intersect(current_ty, any_list);
+            then_env.insert(*v, then_t.as_descr());
+            else_env.insert(*v, else_t.as_descr());
         }
         Prim::BinOp(BinOp::Eq, a, b) => {
-            let at = env.get(a).cloned().unwrap_or_else(Descr::any);
-            let bt = env.get(b).cloned().unwrap_or_else(Descr::any);
+            let at = lookup_ty(t, env, a);
+            let bt = lookup_ty(t, env, b);
             // Truthy: intersect the non-singleton operand with the singleton.
             // Falsy: subtract the singleton from the non-singleton operand
             // (.24.6 brought this in; .24.3 had it scoped out).
-            if is_singleton_lit(&at) {
-                then_env.insert(*b, bt.intersect(&at));
-                else_env.insert(*b, bt.diff(&at));
+            if t.is_singleton_lit(&at) {
+                let then_b = t.intersect(bt.clone(), at.clone());
+                let else_b = t.difference(bt.clone(), at.clone());
+                then_env.insert(*b, then_b.as_descr());
+                else_env.insert(*b, else_b.as_descr());
             }
-            if is_singleton_lit(&bt) {
-                then_env.insert(*a, at.intersect(&bt));
-                else_env.insert(*a, at.diff(&bt));
+            if t.is_singleton_lit(&bt) {
+                let then_a = t.intersect(at.clone(), bt.clone());
+                let else_a = t.difference(at.clone(), bt.clone());
+                then_env.insert(*a, then_a.as_descr());
+                else_env.insert(*a, else_a.as_descr());
             }
         }
         Prim::BinOp(BinOp::Neq, a, b) => {
             // Mirror of Eq: narrow on the else branch (truthy) and diff on
             // then.
-            let at = env.get(a).cloned().unwrap_or_else(Descr::any);
-            let bt = env.get(b).cloned().unwrap_or_else(Descr::any);
-            if is_singleton_lit(&at) {
-                else_env.insert(*b, bt.intersect(&at));
-                then_env.insert(*b, bt.diff(&at));
+            let at = lookup_ty(t, env, a);
+            let bt = lookup_ty(t, env, b);
+            if t.is_singleton_lit(&at) {
+                let else_b = t.intersect(bt.clone(), at.clone());
+                let then_b = t.difference(bt.clone(), at.clone());
+                else_env.insert(*b, else_b.as_descr());
+                then_env.insert(*b, then_b.as_descr());
             }
-            if is_singleton_lit(&bt) {
-                else_env.insert(*a, at.intersect(&bt));
-                then_env.insert(*a, at.diff(&bt));
+            if t.is_singleton_lit(&bt) {
+                let else_a = t.intersect(at.clone(), bt.clone());
+                let then_a = t.difference(at.clone(), bt.clone());
+                else_env.insert(*a, else_a.as_descr());
+                then_env.insert(*a, then_a.as_descr());
             }
         }
         Prim::TypeTest(v, descr) => {
-            let current = env.get(v).cloned().unwrap_or_else(Descr::any);
-            then_env.insert(*v, current.intersect(descr));
-            else_env.insert(*v, current.diff(descr));
+            let current_ty = lookup_ty(t, env, v);
+            let test_ty = t.from_descr(descr);
+            let then_t = t.intersect(current_ty.clone(), test_ty.clone());
+            let else_t = t.difference(current_ty, test_ty);
+            then_env.insert(*v, then_t.as_descr());
+            else_env.insert(*v, else_t.as_descr());
         }
         _ => {}
     }
@@ -2053,16 +2086,13 @@ fn narrow_for_cond(
     (then_env, else_env)
 }
 
-fn narrow_for_if(
+fn narrow_for_if<T: crate::types_seam::Types>(
+    t: &mut T,
     env: &HashMap<Var, Descr>,
     cond: Var,
     stmts: &[Stmt],
 ) -> (HashMap<Var, Descr>, HashMap<Var, Descr>) {
-    narrow_for_cond(cond, env, stmts)
-}
-
-fn is_singleton_lit(d: &Descr) -> bool {
-    d.is_singleton_literal()
+    narrow_for_cond(t, cond, env, stmts)
 }
 
 fn type_prim<T: crate::types_seam::Types>(
@@ -2623,7 +2653,7 @@ pub fn collect_diagnostics<T: crate::types_seam::Types>(
                     let pt = type_prim(t, prim, &env, module, &HashSet::new());
                     env.insert(*v, pt);
                 }
-                let (then_env, else_env) = narrow_for_if(&env, cond, &b.stmts);
+                let (then_env, else_env) = narrow_for_if(t, &env, cond, &b.stmts);
                 if let Some(d) = find_emptied_var(&env, &then_env) {
                     dead_then.push(d);
                 }
