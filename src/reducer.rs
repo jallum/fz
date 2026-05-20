@@ -37,7 +37,6 @@ pub fn is_literal(d: &Descr) -> bool {
     as_int_lit(d).is_some()
         || as_float_lit(d).is_some()
         || as_atom_lit(d).is_some()
-        || as_str_lit(d).is_some()
         || is_nil_only(d)
         || as_tuple_lit(d).is_some()
         || is_closure_lit_literal(d)
@@ -56,11 +55,6 @@ pub fn as_float_lit(d: &Descr) -> Option<F64Bits> {
 /// Singleton atom name.
 pub fn as_atom_lit(d: &Descr) -> Option<&str> {
     d.as_atom_singleton()
-}
-
-/// Singleton string.
-pub fn as_str_lit(d: &Descr) -> Option<&str> {
-    d.as_str_singleton()
 }
 
 /// `nil` and only nil.
@@ -515,12 +509,12 @@ fn match_pattern(
         }
         Int(n) => match_literal(d, &Descr::int_lit(*n)),
         Float(f) => match_literal(d, &Descr::float_lit(*f)),
-        Str(bytes) => {
-            // fz-axu.10 (L2) shim: Descr::str_lit takes a String; decode
-            // until K7's Const::Str retirement collapses this path.
-            let s = std::str::from_utf8(bytes)
-                .expect("L2 reducer: non-UTF-8 pattern str before L3");
-            match_literal(d, &Descr::str_lit(s))
+        Str(_) => {
+            // Post-fz-axu.11 (L3) lowers Pattern::Str to a bitstring/brand
+            // check at the IR level. The AST evaluator never sees a
+            // singleton string Descr to match against, so defer to the
+            // IR-level reducer.
+            Match::Opaque
         }
         Atom(name) => match_literal(d, &Descr::atom_lit(name)),
         Bool(b) => match_literal(d, &Descr::atom_lit(if *b { "true" } else { "false" })),
@@ -621,9 +615,11 @@ pub fn fold_expr(
         Expr::Var(name) => bindings.get(name).cloned(),
         Expr::Int(n) => Some(Descr::int_lit(*n)),
         Expr::Float(f) => Some(Descr::float_lit(*f)),
-        Expr::Str(bytes) => {
-            let s = std::str::from_utf8(bytes).ok()?;
-            Some(Descr::str_lit(s))
+        Expr::Str(_) => {
+            // Post-fz-axu.11 (L3) lowers Expr::Str at the IR level to a
+            // bitstring+brand. No singleton Descr representation remains,
+            // so AST-level folding gives up here.
+            None
         }
         Expr::Atom(s) => Some(Descr::atom_lit(s)),
         Expr::Bool(b) => Some(bool_descr(*b)),
@@ -715,7 +711,6 @@ mod tests {
         assert!(is_literal(&Descr::int_lit(42)));
         assert!(is_literal(&Descr::float_lit(3.14)));
         assert!(is_literal(&Descr::atom_lit("foo")));
-        assert!(is_literal(&Descr::str_lit("bar")));
         assert!(is_literal(&Descr::nil()));
         assert!(is_literal(&Descr::atom_lit("true")));
         assert!(is_literal(&Descr::atom_lit("false")));

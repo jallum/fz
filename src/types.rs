@@ -1090,12 +1090,6 @@ impl Descr {
         d
     }
 
-    pub fn str_lit(s: impl Into<String>) -> Self {
-        let mut d = Self::none();
-        d.strs = StrSet::lit(s.into());
-        d
-    }
-
     // ---- structurals (single positive clause each — composition lands in fz-ul4.2) ----
 
     pub fn tuple_of(elems: impl IntoIterator<Item = Descr>) -> Self {
@@ -3392,13 +3386,6 @@ mod tests {
         assert!(!Descr::float_lit(1.5).is_subtype(&Descr::float_lit(2.5)));
         let pair = Descr::float_lit(1.5).union(&Descr::float_lit(2.5));
         assert_eq!(pair.to_string(), "1.5 | 2.5");
-    }
-
-    #[test]
-    fn str_lit_singletons() {
-        assert!(Descr::str_lit("hello").is_subtype(&Descr::str_t()));
-        assert!(!Descr::str_lit("a").is_subtype(&Descr::str_lit("b")));
-        assert_eq!(Descr::str_lit("hi").to_string(), "\"hi\"");
     }
 
     #[test]
