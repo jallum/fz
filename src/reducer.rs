@@ -113,9 +113,9 @@ pub fn fold_prim<T: Types>(
     let d: Option<Descr> = match prim {
         Prim::Const(c) => return fold_const(t, c, atom_names),
         Prim::BinOp(op, a, b) => return fold_binop(t, *op, *a, *b, env),
-        Prim::UnOp(op, v) => fold_unop(*op, *v, env),
-        Prim::MakeTuple(vs) => fold_make_tuple(vs, env),
-        Prim::TupleField(v, i) => fold_tuple_field(*v, *i as usize, env),
+        Prim::UnOp(op, v) => return fold_unop(t, *op, *v, env),
+        Prim::MakeTuple(vs) => return fold_make_tuple(t, vs, env),
+        Prim::TupleField(v, i) => return fold_tuple_field(t, *v, *i as usize, env),
         Prim::TypeTest(v, descr) => fold_type_test(*v, descr, env),
         // List structural folding requires IR-walking (RED.3+); the Descr
         // lattice's `list_of(elem)` loses length info. `IsEmptyList` is the
@@ -288,23 +288,33 @@ fn fold_logical(op: BinOp, ad: &Descr, bd: &Descr) -> Option<Descr> {
     Some(bool_descr(r))
 }
 
-fn fold_unop(op: UnOp, v: Var, env: &HashMap<Var, Descr>) -> Option<Descr> {
+fn fold_unop<T: Types>(
+    t: &mut T,
+    op: UnOp,
+    v: Var,
+    env: &HashMap<Var, Descr>,
+) -> Option<T::Ty> {
     let d = env.get(&v)?;
-    match op {
+    let r: Descr = match op {
         UnOp::Neg => {
             if let Some(n) = as_int_lit(d) {
-                return Some(Descr::int_lit(n.checked_neg()?));
+                Descr::int_lit(n.checked_neg()?)
+            } else if let Some(f) = as_float_lit(d) {
+                Descr::float_lit(-f.get())
+            } else {
+                return None;
             }
-            if let Some(f) = as_float_lit(d) {
-                return Some(Descr::float_lit(-f.get()));
-            }
-            None
         }
-        UnOp::Not => as_bool_lit(d).map(|b| bool_descr(!b)),
-    }
+        UnOp::Not => bool_descr(!as_bool_lit(d)?),
+    };
+    Some(t.from_descr(&r))
 }
 
-fn fold_make_tuple(vs: &[Var], env: &HashMap<Var, Descr>) -> Option<Descr> {
+fn fold_make_tuple<T: Types>(
+    t: &mut T,
+    vs: &[Var],
+    env: &HashMap<Var, Descr>,
+) -> Option<T::Ty> {
     let mut elems = Vec::with_capacity(vs.len());
     for v in vs {
         let d = env.get(v)?;
@@ -313,13 +323,18 @@ fn fold_make_tuple(vs: &[Var], env: &HashMap<Var, Descr>) -> Option<Descr> {
         }
         elems.push(d.clone());
     }
-    Some(Descr::tuple_of(elems))
+    Some(t.from_descr(&Descr::tuple_of(elems)))
 }
 
-fn fold_tuple_field(v: Var, i: usize, env: &HashMap<Var, Descr>) -> Option<Descr> {
+fn fold_tuple_field<T: Types>(
+    t: &mut T,
+    v: Var,
+    i: usize,
+    env: &HashMap<Var, Descr>,
+) -> Option<T::Ty> {
     let d = env.get(&v)?;
     let elems = as_tuple_lit(d)?;
-    elems.get(i).cloned()
+    Some(t.from_descr(elems.get(i)?))
 }
 
 fn fold_type_test(v: Var, descr: &Descr, env: &HashMap<Var, Descr>) -> Option<Descr> {
