@@ -42,6 +42,7 @@ mod test_runner;
 mod type_expr;
 mod typer;
 mod types;
+mod types_seam;
 mod value;
 use parser::Parser;
 use std::io::{IsTerminal, Read};
