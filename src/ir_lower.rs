@@ -296,12 +296,6 @@ pub struct LowerCtx {
     /// Available to downstream passes (e.g. lower_extern_ret_ty) for
     /// resolving opaque type names declared in the prelude.
     pub prelude_type_env: crate::type_expr::ModuleTypeEnv,
-    /// fz-axu.3 (K2) — opaque- and brand-inner maps harvested from the
-    /// runtime.fz prelude's `@type` declarations. Merged into the
-    /// program-wide inners on Module build, so unqualified built-in
-    /// brands like `utf8` are visible everywhere.
-    pub prelude_opaque_inners: crate::type_expr::OpaqueInnerTypes,
-    pub prelude_brand_inners: crate::type_expr::BrandInnerTypes,
     /// fz-ty1.9 — Merged type env: prelude + all user-module @type aliases.
     /// Used by `emit_param_type_guards` to resolve annotation tokens in
     /// `fn f(x :: T)` parameter heads.
@@ -343,8 +337,6 @@ impl LowerCtx {
             extern_wrappers: HashMap::new(),
             prelude_fn_id_cutoff: 0,
             prelude_type_env: crate::type_expr::ModuleTypeEnv::new(),
-            prelude_opaque_inners: crate::type_expr::OpaqueInnerTypes::new(),
-            prelude_brand_inners: crate::type_expr::BrandInnerTypes::new(),
             combined_type_env: crate::type_expr::ModuleTypeEnv::new(),
             boundary_fns: HashSet::new(),
             branch_origin: crate::fz_ir::BranchOrigin::User,
@@ -568,34 +560,39 @@ impl Default for LowerCtx {
 
 const RUNTIME_FZ: &str = include_str!("runtime.fz");
 
-fn parse_runtime_prelude() -> (
-    Vec<Rc<Item>>,
-    crate::type_expr::ModuleTypeEnv,
-    crate::type_expr::OpaqueInnerTypes,
-    crate::type_expr::BrandInnerTypes,
-) {
+/// fz-axu.27 (M6) — return the prelude as a flat `Program` whose
+/// `module_type_envs[""]`, `opaque_inners`, and `brand_inners` are all
+/// populated. `flatten_modules` only walks `defmodule`-nested
+/// declarations, so root-scope `@type` aliases (like `@type utf8 ::
+/// refines binary` at the top of runtime.fz) are harvested separately
+/// from attrs and merged into the flat program.
+fn parse_runtime_prelude() -> Program {
     let toks = crate::lexer::Lexer::new(RUNTIME_FZ)
         .tokenize()
         .expect("runtime.fz lex error (bug in built-in prelude)");
     let (items, attrs) = crate::parser::Parser::new(toks)
         .parse_prelude()
         .expect("runtime.fz parse error (bug in built-in prelude)");
-    let (env, o_inners, b_inners) = crate::type_expr::build_module_type_env_for(&attrs, "")
-        .expect("runtime.fz @type error (bug in built-in prelude)");
-    // fz-axu.13 (S2) — runtime.fz now declares `defmodule Utf8`. Flatten
-    // module-nested fns to qualified-name top-level fns so call sites
-    // like `Utf8.valid?(…)` resolve. Pre-S2 the prelude had no
-    // defmodule, so this step is a no-op for the legacy items.
-    let prelude_prog = crate::ast::Program {
+    let (root_env, root_o_inners, root_b_inners) =
+        crate::type_expr::build_module_type_env_for(&attrs, "")
+            .expect("runtime.fz @type error (bug in built-in prelude)");
+    let staged = crate::ast::Program {
         items,
         module_docs: Default::default(),
         module_type_envs: Default::default(),
         opaque_inners: Default::default(),
         brand_inners: Default::default(),
     };
-    let flat = crate::resolve::flatten_modules(prelude_prog)
+    let mut flat = crate::resolve::flatten_modules(staged)
         .expect("runtime.fz module flatten error (bug in built-in prelude)");
-    (flat.items, env, o_inners, b_inners)
+    // Merge root-scope aliases into the flattened program.
+    flat.module_type_envs
+        .entry(String::new())
+        .or_default()
+        .extend(root_env);
+    flat.opaque_inners.extend(root_o_inners);
+    flat.brand_inners.extend(root_b_inners);
+    flat
 }
 
 pub fn lower_program(prog: &Program) -> Result<Module, LowerError> {
@@ -608,23 +605,24 @@ pub fn lower_program_full(prog: &Program) -> Result<(Module, AtomTable), LowerEr
 
     // Prepend the built-in runtime.fz prelude so its externs and wrapper fns
     // are visible to every user program without an explicit import.
-    let (runtime_items, prelude_type_env, prelude_o_inners, prelude_b_inners) =
-        parse_runtime_prelude();
+    let prelude = parse_runtime_prelude();
+    let prelude_type_env = prelude
+        .module_type_envs
+        .get("")
+        .cloned()
+        .unwrap_or_default();
     ctx.prelude_type_env = prelude_type_env.clone();
-    // fz-axu.3 (K2) — runtime prelude declares unqualified brand and
-    // opaque tags (e.g. `@type utf8 :: refines binary`); seed the
-    // program-wide inners so the resulting Module exposes them.
-    ctx.prelude_opaque_inners = prelude_o_inners;
-    ctx.prelude_brand_inners = prelude_b_inners;
     // Build the combined type env: prelude aliases + all user-module aliases.
     let mut combined = prelude_type_env;
     for module_env in prog.module_type_envs.values() {
         combined.extend(module_env.iter().map(|(k, v)| (k.clone(), v.clone())));
     }
     ctx.combined_type_env = combined;
-    let runtime_item_count = runtime_items.len();
-    let all_items: Vec<Rc<Item>> = runtime_items
-        .into_iter()
+    let runtime_item_count = prelude.items.len();
+    let all_items: Vec<Rc<Item>> = prelude
+        .items
+        .iter()
+        .cloned()
         .chain(prog.items.iter().cloned())
         .collect();
 
@@ -756,19 +754,12 @@ pub fn lower_program_full(prog: &Program) -> Result<(Module, AtomTable), LowerEr
     module.boundary_fns = std::mem::take(&mut ctx.boundary_fns);
     // fz-swt.8 — carry the resolver's opaque-inner-type map onto the
     // Module so the typer can resolve `handle.value` accesses to T.
+    // fz-axu.27 (M6) — prelude inners (utf8 brand, pid opaque, ...) live
+    // in the flat-prelude Program, merged here alongside user inners.
     module.opaque_inners = prog.opaque_inners.clone();
-    // fz-axu.3 (K2) — merge runtime.fz prelude's opaque inners (e.g.
-    // `@type pid :: opaque integer`) so they're visible at codegen.
-    module
-        .opaque_inners
-        .extend(ctx.prelude_opaque_inners.clone());
-    // fz-axu.2 (K1) / .3 (K2) — likewise carry the brand-inner-type map
-    // for the K4 is_subtype rule and K5 erasure, merging prelude brands
-    // (e.g. `@type utf8 :: refines binary`) with user-declared ones.
+    module.opaque_inners.extend(prelude.opaque_inners.clone());
     module.brand_inners = prog.brand_inners.clone();
-    module
-        .brand_inners
-        .extend(ctx.prelude_brand_inners.clone());
+    module.brand_inners.extend(prelude.brand_inners.clone());
     // fz-02r.4 — annotate TailCall back-edges from the structural SCC.
     annotate_back_edges(&mut module, &ctx.fn_spans)?;
     // fz-uwq.1 — verify the unique-cont invariant the post-type pipeline
