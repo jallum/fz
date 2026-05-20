@@ -677,7 +677,7 @@ pub fn type_module<T: crate::types_seam::Types>(t: &mut T, m: &Module) -> Module
         dead_branches: HashMap::new(),
         closure_handles,
     };
-    mt.dead_branches = compute_dead_branches(m, &mt);
+    mt.dead_branches = compute_dead_branches(t, m, &mt);
     mt
 }
 
@@ -688,7 +688,8 @@ pub fn type_module<T: crate::types_seam::Types>(t: &mut T, m: &Module) -> Module
 /// matches `collect_diagnostics` (fz-pky.1) which is what made the
 /// `unreachable-arm` warning sound. Consumers: `ir_branch_fold`
 /// (fz-fyq.4) and the unreachable-arm diagnostic (fz-fyq.3).
-fn compute_dead_branches(
+fn compute_dead_branches<T: crate::types_seam::Types>(
+    t: &mut T,
     m: &Module,
     mt: &ModuleTypes,
 ) -> HashMap<(FnId, crate::fz_ir::BlockId), crate::fz_ir::DeadBranch> {
@@ -720,8 +721,8 @@ fn compute_dead_branches(
                 let mut env = ft.block_envs.get(&b.id).cloned().unwrap_or_default();
                 for stmt in &b.stmts {
                     let Stmt::Let(v, prim) = stmt;
-                    let t = type_prim(prim, &env, m, &HashSet::new());
-                    env.insert(*v, t);
+                    let pt = type_prim(t, prim, &env, m, &HashSet::new());
+                    env.insert(*v, pt);
                 }
                 let (then_env, else_env) = narrow_for_if(&env, cond, &b.stmts);
                 let mut then_dead = find_emptied_var(&env, &then_env).is_some();
@@ -841,6 +842,7 @@ fn process_worklist<T: crate::types_seam::Types>(
         let caller_ft = specs.get(&spec_key).unwrap();
         let mut result = WalkResult::default();
         walk_spec_for_discovery(
+            t,
             &m.fns[j],
             caller_ft,
             m,
@@ -916,7 +918,7 @@ fn process_worklist<T: crate::types_seam::Types>(
         // affects this spec.
         let mut compute_reads: Vec<(FnId, Vec<Descr>)> = Vec::new();
         let new_ret =
-            compute_return_for_spec(m, &spec_key, specs, effective_returns, &mut compute_reads);
+            compute_return_for_spec(t, m, &spec_key, specs, effective_returns, &mut compute_reads);
         for callee_key in result.return_reads.into_iter().chain(compute_reads) {
             return_readers
                 .entry(callee_key)
@@ -949,7 +951,8 @@ fn process_worklist<T: crate::types_seam::Types>(
 /// Every (callee_key) whose return is consulted is pushed into
 /// `reads`. The worklist driver folds these into `return_readers`
 /// so callee-return changes re-enqueue this spec.
-fn compute_return_for_spec(
+fn compute_return_for_spec<T: crate::types_seam::Types>(
+    t: &mut T,
     module: &Module,
     spec_key: &(FnId, Vec<Descr>),
     specs: &HashMap<(FnId, Vec<Descr>), FnTypes>,
@@ -1053,7 +1056,7 @@ fn compute_return_for_spec(
                 continuation,
                 ident: _,
             } => {
-                let cont_k = cont_key_for_spec(b, continuation, ft, module, effective_returns);
+                let cont_k = cont_key_for_spec(t, b, continuation, ft, module, effective_returns);
                 joined = joined.union(&lookup((continuation.fn_id, cont_k)));
             }
             // fz-yxs — selective receive: union over each clause body's
@@ -1103,7 +1106,8 @@ fn compute_return_for_spec(
 /// terminator using current `effective_returns` for slot 0. Mirrors
 /// the walker's cont-key construction so the keys we look up are
 /// structurally aligned with the registered specs.
-fn cont_key_for_spec(
+fn cont_key_for_spec<T: crate::types_seam::Types>(
+    t: &mut T,
     block: &Block,
     cont: &crate::fz_ir::Cont,
     ft: &FnTypes,
@@ -1117,7 +1121,7 @@ fn cont_key_for_spec(
     let n_params = cont_fn.block(cont_fn.entry).params.len();
     let mut key: Vec<Descr> = vec![Descr::any(); n_params];
 
-    let env = env_at_terminator(ft, block, module);
+    let env = env_at_terminator(t, ft, block, module);
     let slot0 = match &block.terminator {
         Term::Call { callee, args, .. } => {
             let arg_descrs: Vec<Descr> = args
@@ -1201,7 +1205,8 @@ fn cont_key_for_spec(
 /// widening replaces an emit, and codegen's lookup uses the
 /// narrow caller-derived form.)
 #[allow(clippy::too_many_arguments)]
-fn walk_spec_for_discovery(
+fn walk_spec_for_discovery<T: crate::types_seam::Types>(
+    t: &mut T,
     f: &FnIr,
     caller_ft: &FnTypes,
     m: &Module,
@@ -1278,7 +1283,7 @@ fn walk_spec_for_discovery(
                 };
                 out.emits.push((site, (*lam_fn_id, any_key)));
             }
-            env.insert(*v, type_prim(prim, &env, m, &HashSet::new()));
+            env.insert(*v, type_prim(t, prim, &env, m, &HashSet::new()));
         }
 
         // fz-9pr.17 — opaque-arity detection for unresolved closure
@@ -1749,7 +1754,7 @@ pub fn type_fn<T: crate::types_seam::Types>(
             let mut const_vars: HashSet<Var> = HashSet::new();
             for stmt in &b.stmts {
                 let Stmt::Let(v, prim) = stmt;
-                let pt = type_prim(prim, &env, m, &const_vars);
+                let pt = type_prim(t, prim, &env, m, &const_vars);
                 // Propagate const-derivation: a Const is trivially const; a
                 // BinOp/UnOp on const vars is also const.
                 match prim {
@@ -1888,7 +1893,7 @@ pub fn type_fn<T: crate::types_seam::Types>(
                 let mut env = block_envs[&bid].clone();
                 for stmt in &b.stmts {
                     let Stmt::Let(v, prim) = stmt;
-                    env.insert(*v, type_prim(prim, &env, m, &HashSet::new()));
+                    env.insert(*v, type_prim(t, prim, &env, m, &HashSet::new()));
                 }
                 // Use is_subtype to check provable branch deadness.
                 // `ct ⊆ atom_lit("true")` means ct can ONLY be true →
@@ -2060,7 +2065,8 @@ fn is_singleton_lit(d: &Descr) -> bool {
     d.is_singleton_literal()
 }
 
-fn type_prim(
+fn type_prim<T: crate::types_seam::Types>(
+    _t: &mut T,
     prim: &Prim,
     env: &HashMap<Var, Descr>,
     m: &Module,
@@ -2614,8 +2620,8 @@ pub fn collect_diagnostics<T: crate::types_seam::Types>(
                 let mut env = ft.block_envs.get(&b.id).cloned().unwrap_or_default();
                 for stmt in &b.stmts {
                     let Stmt::Let(v, prim) = stmt;
-                    let t = type_prim(prim, &env, module, &HashSet::new());
-                    env.insert(*v, t);
+                    let pt = type_prim(t, prim, &env, module, &HashSet::new());
+                    env.insert(*v, pt);
                 }
                 let (then_env, else_env) = narrow_for_if(&env, cond, &b.stmts);
                 if let Some(d) = find_emptied_var(&env, &then_env) {
@@ -2803,8 +2809,8 @@ pub fn collect_diagnostics<T: crate::types_seam::Types>(
                         out.push(d);
                     }
                 }
-                let t = type_prim(prim, &env, module, &HashSet::new());
-                env.insert(*v, t);
+                let pt = type_prim(t, prim, &env, module, &HashSet::new());
+                env.insert(*v, pt);
             }
         }
     }
@@ -2984,7 +2990,12 @@ pub fn rewrite_vec_kinds<T: crate::types_seam::Types>(
 /// folds in each Let by re-applying `type_prim`. This mirrors the
 /// typer's own propagation pass at `type_module`'s `callsite_keys`
 /// site (`ir_typer.rs:142-145`).
-fn env_at_terminator(caller_ft: &FnTypes, block: &Block, module: &Module) -> HashMap<Var, Descr> {
+fn env_at_terminator<T: crate::types_seam::Types>(
+    t: &mut T,
+    caller_ft: &FnTypes,
+    block: &Block,
+    module: &Module,
+) -> HashMap<Var, Descr> {
     let mut env = caller_ft
         .block_envs
         .get(&block.id)
@@ -2992,8 +3003,8 @@ fn env_at_terminator(caller_ft: &FnTypes, block: &Block, module: &Module) -> Has
         .unwrap_or_default();
     for stmt in &block.stmts {
         let Stmt::Let(v, prim) = stmt;
-        let t = type_prim(prim, &env, module, &HashSet::new());
-        env.insert(*v, t);
+        let pt = type_prim(t, prim, &env, module, &HashSet::new());
+        env.insert(*v, pt);
     }
     env
 }
@@ -3008,7 +3019,8 @@ fn env_at_terminator(caller_ft: &FnTypes, block: &Block, module: &Module) -> Has
 ///   * `Term::CallClosure` / `Term::Receive`: callee/sender is
 ///     opaque, so slot 0 stays `Descr::any()`.
 ///   * Anything else: not a Cont-producing terminator, returns `any`.
-pub fn cont_slot0_descr(
+pub fn cont_slot0_descr<T: crate::types_seam::Types>(
+    t: &mut T,
     block: &Block,
     caller_ft: &FnTypes,
     module: &Module,
@@ -3016,7 +3028,7 @@ pub fn cont_slot0_descr(
 ) -> Descr {
     match &block.terminator {
         Term::Call { callee, args, .. } => {
-            let env = env_at_terminator(caller_ft, block, module);
+            let env = env_at_terminator(t, caller_ft, block, module);
             let arg_descrs: Vec<Descr> = args
                 .iter()
                 .map(|av| env.get(av).cloned().unwrap_or_else(Descr::any))
@@ -3041,7 +3053,7 @@ pub fn cont_slot0_descr(
         // structural arrow-return join. This is the value the body's
         // Term::Return passes to the cont's slot 0.
         Term::CallClosure { closure, args, .. } => {
-            let env = env_at_terminator(caller_ft, block, module);
+            let env = env_at_terminator(t, caller_ft, block, module);
             let closure_d = env.get(closure).cloned().unwrap_or_else(Descr::any);
             if closure_d
                 .as_closure_lit()
@@ -3173,7 +3185,7 @@ pub fn reachable_specs<T: crate::types_seam::Types>(
             if !ft.reachable_blocks.contains(&blk.id) {
                 continue;
             }
-            let env = env_at_terminator(ft, blk, module);
+            let env = env_at_terminator(t, ft, blk, module);
             // Capture `any` once so the closures stay `Fn` (no &mut T capture).
             let any_d: Descr = t.any().as_descr();
             let arg_descrs = |args: &[Var]| -> Vec<Descr> {
@@ -3202,7 +3214,7 @@ pub fn reachable_specs<T: crate::types_seam::Types>(
                     if let Some(sid) = spec_registry.resolve(*callee, &key) {
                         worklist.push(sid.0);
                     }
-                    let cont_key = cont_input_key(blk, continuation, ft, module, module_types);
+                    let cont_key = cont_input_key(t, blk, continuation, ft, module, module_types);
                     if let Some(sid) = spec_registry.resolve(continuation.fn_id, &cont_key) {
                         worklist.push(sid.0);
                     }
@@ -3225,7 +3237,7 @@ pub fn reachable_specs<T: crate::types_seam::Types>(
                             worklist.push(sid.0);
                         }
                     }
-                    let cont_key = cont_input_key(blk, continuation, ft, module, module_types);
+                    let cont_key = cont_input_key(t, blk, continuation, ft, module, module_types);
                     if let Some(sid) = spec_registry.resolve(continuation.fn_id, &cont_key) {
                         worklist.push(sid.0);
                     }
@@ -3246,7 +3258,7 @@ pub fn reachable_specs<T: crate::types_seam::Types>(
                     continuation,
                     ident: _,
                 } => {
-                    let cont_key = cont_input_key(blk, continuation, ft, module, module_types);
+                    let cont_key = cont_input_key(t, blk, continuation, ft, module, module_types);
                     if let Some(sid) = spec_registry.resolve(continuation.fn_id, &cont_key) {
                         worklist.push(sid.0);
                     }
@@ -3307,7 +3319,8 @@ pub fn reachable_specs<T: crate::types_seam::Types>(
 /// `[slot0, ...captured_descrs]`, padded with `any` to the cont fn's
 /// entry-block arity. Mirrors the typer's key construction at
 /// `ir_typer.rs:233-240` exactly.
-pub fn cont_input_key(
+pub fn cont_input_key<T: crate::types_seam::Types>(
+    t: &mut T,
     block: &Block,
     continuation: &Cont,
     caller_ft: &FnTypes,
@@ -3318,9 +3331,9 @@ pub fn cont_input_key(
     let n_params = cont_fn.block(cont_fn.entry).params.len();
     let mut key: Vec<Descr> = vec![Descr::any(); n_params];
     if !key.is_empty() {
-        key[0] = cont_slot0_descr(block, caller_ft, module, module_types);
+        key[0] = cont_slot0_descr(t, block, caller_ft, module, module_types);
     }
-    let env = env_at_terminator(caller_ft, block, module);
+    let env = env_at_terminator(t, caller_ft, block, module);
     for (k, cv) in continuation.captured.iter().enumerate() {
         if let Some(p) = key.get_mut(k + 1) {
             *p = env.get(cv).cloned().unwrap_or_else(Descr::any);
@@ -3461,7 +3474,7 @@ pub fn pretty_module_types<T: crate::types_seam::Types>(
                         .iter()
                         .map(|v| format!("Var({})", v.0))
                         .collect();
-                    let ck = cont_input_key(b, continuation, ft, m, mt);
+                    let ck = cont_input_key(t, b, continuation, ft, m, mt);
                     out.push_str(&format!(
                         ";     blk{} Call {}#{}({})\n",
                         bid,
@@ -3494,7 +3507,7 @@ pub fn pretty_module_types<T: crate::types_seam::Types>(
                         .iter()
                         .map(|v| format!("Var({})", v.0))
                         .collect();
-                    let ck = cont_input_key(b, continuation, ft, m, mt);
+                    let ck = cont_input_key(t, b, continuation, ft, m, mt);
                     let target = ft.fn_constants.get(closure).copied();
                     let target_str = match target {
                         Some(fid) => format!(" [resolved={}#{}]", fn_name(fid), fid.0),
@@ -3544,7 +3557,7 @@ pub fn pretty_module_types<T: crate::types_seam::Types>(
                         .iter()
                         .map(|v| format!("Var({})", v.0))
                         .collect();
-                    let ck = cont_input_key(b, continuation, ft, m, mt);
+                    let ck = cont_input_key(t, b, continuation, ft, m, mt);
                     out.push_str(&format!(
                         ";     blk{} Receive cont {}#{} captured=[{}]\n",
                         bid,

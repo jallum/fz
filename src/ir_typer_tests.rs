@@ -920,7 +920,7 @@ end
     let mut found_any = false;
     for blk in &main.blocks {
         if let Term::Call { continuation, .. } = &blk.terminator {
-            let key = cont_input_key(blk, continuation, caller_ft, &m, &mt);
+            let key = cont_input_key(&mut crate::types_seam::ConcreteTypes, blk, continuation, caller_ft, &m, &mt);
             assert!(
                 mt.specs.contains_key(&(continuation.fn_id, key.clone())),
                 "helper key {:?} for cont fn_id {:?} not in specs; \
@@ -959,7 +959,7 @@ fn main(), do: print(add1(40) + 2)
     let mut narrow_found = false;
     for blk in &main.blocks {
         if let Term::Call { .. } = &blk.terminator {
-            let s0 = cont_slot0_descr(blk, main_ft, &m, &mt);
+            let s0 = cont_slot0_descr(&mut crate::types_seam::ConcreteTypes, blk, main_ft, &m, &mt);
             // add1's typer-specialized return for arg int_lit(40) is
             // a strict subtype of `int` — and crucially narrower than
             // `any`.
@@ -1328,7 +1328,7 @@ end
     let mut saw_cc = false;
     for blk in &apply_fn.blocks {
         if matches!(&blk.terminator, Term::CallClosure { .. }) {
-            let s0 = cont_slot0_descr(blk, caller_ft, &m, &mt);
+            let s0 = cont_slot0_descr(&mut crate::types_seam::ConcreteTypes, blk, caller_ft, &m, &mt);
             // The helper must not narrow to `int` here — that's refinement
             // work which requires effective_returns. The post-C3 result is
             // Var(β); pre-C3 was `any`. Both are broad/unresolved.
