@@ -120,6 +120,13 @@ pub trait Types {
 
     fn kind_of(&self, a: &Self::Ty) -> Kind;
 
+    /// Coarser than `is_disjoint`: true iff `a` and `b` share at least
+    /// one populated axis (basic kind, atoms, ints, floats, tuples,
+    /// lists, arrows, maps, opaques, brands, vars). Used by lints that
+    /// want to flag cross-kind comparisons (`x == :ok` when `x: int`)
+    /// without firing on within-axis literal-disjoint cases (`1 == 2`).
+    fn kinds_overlap(&self, a: &Self::Ty, b: &Self::Ty) -> bool;
+
     /// Render `a` for user-facing diagnostics. Owned-string return
     /// day-one; consumers `format!("{}", t.display(&ty))`-style.
     fn display(&self, a: &Self::Ty) -> String;
@@ -250,6 +257,10 @@ impl Types for ConcreteTypes {
 
     fn kind_of(&self, a: &Ty) -> Kind {
         descr_kind(a.descr())
+    }
+
+    fn kinds_overlap(&self, a: &Ty, b: &Ty) -> bool {
+        a.descr().kinds_overlap(b.descr())
     }
 
     fn display(&self, a: &Ty) -> String {

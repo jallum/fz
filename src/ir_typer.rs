@@ -2678,8 +2678,9 @@ pub fn collect_diagnostics<T: crate::types_seam::Types>(
                     // reader, so we keep them silent.
                     let ta_ty = t.from_descr(&ta);
                     let tb_ty = t.from_descr(&tb);
-                    let cross_kind =
-                        !t.is_empty(&ta_ty) && !t.is_empty(&tb_ty) && !axes_overlap(&ta, &tb);
+                    let cross_kind = !t.is_empty(&ta_ty)
+                        && !t.is_empty(&tb_ty)
+                        && !t.kinds_overlap(&ta_ty, &tb_ty);
                     if cross_kind {
                         let span = spans
                             .and_then(|s| s.get(sidx).copied())
@@ -2893,9 +2894,6 @@ fn fn_module_of(fn_name: &str) -> &str {
 /// non-empty. Used by the VR.5a `type/dead-binop` lint to distinguish
 /// "different kinds" (worth surfacing) from "same kind, narrowed to
 /// disjoint literals" (silent fold).
-fn axes_overlap(a: &Descr, b: &Descr) -> bool {
-    a.kinds_overlap(b)
-}
 
 /// .11.24.5: refine `MakeVec(I64, els)` to `MakeVec(F64, els)` when any
 /// element is typed Float. Errors on the "mixed Int and Float" case under
