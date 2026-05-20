@@ -118,6 +118,10 @@ pub trait Types {
     /// identity / visibility) and the underlying axes.
     fn mint_brand(&mut self, inner: Self::Ty, name: &str) -> Self::Ty;
 
+    /// Project `a`'s list-axis element type. Returns `any` if `a` has
+    /// no list axis or the list axis is unconstrained.
+    fn list_element_type(&mut self, a: &Self::Ty) -> Self::Ty;
+
     // ---- lattice ops ---------------------------------------------------
 
     fn union(&mut self, a: Self::Ty, b: Self::Ty) -> Self::Ty;
@@ -309,6 +313,10 @@ impl Types for ConcreteTypes {
         let mut d = inner.descr().clone();
         d.brands = crate::types::LiteralSet::lit(name.to_string());
         Ty::from_descr(d)
+    }
+
+    fn list_element_type(&mut self, a: &Ty) -> Ty {
+        Ty::from_descr(crate::typer::list_element_type(a.descr()))
     }
 
     fn union(&mut self, a: Ty, b: Ty) -> Ty {

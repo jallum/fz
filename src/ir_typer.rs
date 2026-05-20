@@ -2243,8 +2243,8 @@ fn type_prim<T: crate::types_seam::Types>(
             }
             if let Some(tl) = tail {
                 let tt = lookup(t, env, *tl);
-                let tail_elem = crate::typer::list_element_type(&tt);
-                let tail_elem_ty = t.from_descr(&tail_elem);
+                let tt_ty = t.from_descr(&tt);
+                let tail_elem_ty = t.list_element_type(&tt_ty);
                 elem = t.union(elem, tail_elem_ty);
             }
             t.list(elem)
@@ -2252,15 +2252,16 @@ fn type_prim<T: crate::types_seam::Types>(
         Prim::ListCons(h, tl) => {
             let ht = lookup(t, env, *h);
             let tt = lookup(t, env, *tl);
-            let tail_elem = crate::typer::list_element_type(&tt);
             let hy = t.from_descr(&ht);
-            let ty_tail = t.from_descr(&tail_elem);
+            let tt_ty = t.from_descr(&tt);
+            let ty_tail = t.list_element_type(&tt_ty);
             let elem_ty = t.union(hy, ty_tail);
             t.list(elem_ty)
         }
         Prim::ListHead(l) => {
-            let d = crate::typer::list_element_type(&lookup(t, env, *l));
-            t.from_descr(&d)
+            let d = lookup(t, env, *l);
+            let dy = t.from_descr(&d);
+            t.list_element_type(&dy)
         }
         Prim::ListTail(l) => {
             // fz-s9y.3 — the tail of a list is a list (possibly empty).
@@ -2270,8 +2271,8 @@ fn type_prim<T: crate::types_seam::Types>(
             // `Descr::nil()` because empty list and nil shared bits, but
             // that artifact polluted inferred spec types with `nil | list(_)`.
             let lt = lookup(t, env, *l);
-            let elem = crate::typer::list_element_type(&lt);
-            let elem_ty = t.from_descr(&elem);
+            let lt_ty = t.from_descr(&lt);
+            let elem_ty = t.list_element_type(&lt_ty);
             t.list(elem_ty)
         }
         Prim::IsEmptyList(_) => t.bool(),
