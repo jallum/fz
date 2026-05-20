@@ -2260,12 +2260,15 @@ fn type_prim<T: crate::types_seam::Types>(
             }
         }
 
-        Prim::MakeVec(kind, _) => match kind {
-            VecKindIr::I64 => Descr::vec_i64(),
-            VecKindIr::F64 => Descr::vec_f64(),
-            VecKindIr::U8 => Descr::vec_u8(),
-            VecKindIr::Bit => Descr::vec_bit(),
-        },
+        Prim::MakeVec(kind, _) => {
+            use crate::types_seam::AsDescr;
+            match kind {
+                VecKindIr::I64 => t.vec_i64().as_descr(),
+                VecKindIr::F64 => t.vec_f64().as_descr(),
+                VecKindIr::U8 => t.vec_u8().as_descr(),
+                VecKindIr::Bit => t.vec_bit().as_descr(),
+            }
+        }
         // fz-axu.1 (K0) — bitstring construction types as the binary/bitstring
         // top (`str_t()`). Branded subset types (e.g. `utf8`) will layer on top
         // of this in later tickets. vec_u8/vec_bit remain reserved for explicit
@@ -2343,20 +2346,28 @@ fn type_prim<T: crate::types_seam::Types>(
             t.any().as_descr()
         }
         Prim::BitReadField { ty, .. } => {
+            use crate::ast::BitType;
+            use crate::types_seam::AsDescr;
             // Returns Tuple([ok, value, new_reader]) on success, Tuple([false])
             // on failure. We over-approximate to a generic tuple shape; pattern
             // narrowing on TupleField then projects per-position. Field value
             // depends on the BitType.
-            use crate::ast::BitType;
             let value_t = match ty {
-                BitType::Integer | BitType::Utf8 | BitType::Utf16 | BitType::Utf32 => Descr::int(),
-                BitType::Float => Descr::float(),
-                BitType::Binary => Descr::vec_u8(),
-                BitType::Bits => Descr::vec_u8().union(&Descr::vec_bit()),
+                BitType::Integer | BitType::Utf8 | BitType::Utf16 | BitType::Utf32 => t.int(),
+                BitType::Float => t.float(),
+                BitType::Binary => t.vec_u8(),
+                BitType::Bits => {
+                    let u8 = t.vec_u8();
+                    let bit = t.vec_bit();
+                    t.union(u8, bit)
+                }
             };
-            let success = Descr::tuple_of([Descr::bool_t(), value_t, Descr::any()]);
-            let failure = Descr::tuple_of([Descr::bool_t()]);
-            success.union(&failure)
+            let bool1 = t.bool();
+            let any_ty = t.any();
+            let success = t.tuple(&[bool1, value_t, any_ty]);
+            let bool2 = t.bool();
+            let failure = t.tuple(&[bool2]);
+            t.union(success, failure).as_descr()
         }
         Prim::BitReaderDone(_) => {
             use crate::types_seam::AsDescr;

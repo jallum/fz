@@ -100,6 +100,10 @@ pub trait Types {
     fn tuple(&mut self, elems: &[Self::Ty]) -> Self::Ty;
     fn list(&mut self, elem: Self::Ty) -> Self::Ty;
     fn map(&mut self, fields: &[(MapKey, Self::Ty)]) -> Self::Ty;
+    fn vec_i64(&mut self) -> Self::Ty;
+    fn vec_f64(&mut self) -> Self::Ty;
+    fn vec_u8(&mut self) -> Self::Ty;
+    fn vec_bit(&mut self) -> Self::Ty;
 
     // ---- lattice ops ---------------------------------------------------
 
@@ -253,6 +257,18 @@ impl Types for ConcreteTypes {
             .map(|(k, t)| (k.clone(), t.descr().clone()))
             .collect();
         Ty::from_descr(Descr::map_of(fields))
+    }
+    fn vec_i64(&mut self) -> Ty {
+        Ty::from_descr(Descr::vec_i64())
+    }
+    fn vec_f64(&mut self) -> Ty {
+        Ty::from_descr(Descr::vec_f64())
+    }
+    fn vec_u8(&mut self) -> Ty {
+        Ty::from_descr(Descr::vec_u8())
+    }
+    fn vec_bit(&mut self) -> Ty {
+        Ty::from_descr(Descr::vec_bit())
     }
 
     fn union(&mut self, a: Ty, b: Ty) -> Ty {
