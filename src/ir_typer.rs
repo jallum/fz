@@ -1584,6 +1584,9 @@ fn walk_spec_for_discovery(
 /// landscape reflects direct dispatch and `.29.12.6` can drop dead
 /// any-keys).
 pub fn rewrite_known_target_closures<T: crate::types_seam::Types>(
+    // fz-mm2.6 — verified: body has no Descr operations. The seam handle
+    // is preserved on the signature so the function stays uniform with
+    // its siblings; if a future Descr op lands here, it routes through t.
     _t: &mut T,
     module: &mut Module,
     types: &ModuleTypes,
