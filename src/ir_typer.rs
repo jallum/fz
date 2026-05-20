@@ -725,8 +725,8 @@ fn compute_dead_branches<T: crate::types_seam::Types>(
                     env.insert(*v, pt);
                 }
                 let (then_env, else_env) = narrow_for_if(t, &env, cond, &b.stmts);
-                let mut then_dead = find_emptied_var(&env, &then_env).is_some();
-                let mut else_dead = find_emptied_var(&env, &else_env).is_some();
+                let mut then_dead = find_emptied_var(t, &env, &then_env).is_some();
+                let mut else_dead = find_emptied_var(t, &env, &else_env).is_some();
                 // Fallback: when cond's own type is a singleton truthy/
                 // falsy value, the opposite branch is unreachable even if
                 // narrow_for_cond didn't fire (e.g. cond bound directly
@@ -2504,16 +2504,23 @@ fn _suppress_block(_: &Block) {}
 /// fz-pky.1 — within ONE spec's narrowed env, find the first Var
 /// whose type became empty post-narrowing. Returns (Var, old_t, new_t)
 /// if found; None if narrowing kept every var inhabited.
-fn find_emptied_var(
+fn find_emptied_var<T: crate::types_seam::Types>(
+    t: &mut T,
     pre_env: &HashMap<crate::fz_ir::Var, Descr>,
     branch_env: &HashMap<crate::fz_ir::Var, Descr>,
 ) -> Option<(crate::fz_ir::Var, Descr, Descr)> {
+    use crate::types_seam::AsDescr;
     let mut keys: Vec<crate::fz_ir::Var> = branch_env.keys().copied().collect();
     keys.sort_by_key(|v| v.0);
     for v in keys {
         let new_t = branch_env.get(&v).unwrap();
-        let old_t = pre_env.get(&v).cloned().unwrap_or_else(Descr::any);
-        if !new_t.is_equiv(&old_t) && new_t.is_empty() && !old_t.is_empty() {
+        let old_t = match pre_env.get(&v) {
+            Some(d) => d.clone(),
+            None => t.any().as_descr(),
+        };
+        let new_ty = t.from_descr(new_t);
+        let old_ty = t.from_descr(&old_t);
+        if !t.is_equivalent(&new_ty, &old_ty) && t.is_empty(&new_ty) && !t.is_empty(&old_ty) {
             return Some((v, old_t, new_t.clone()));
         }
     }
@@ -2525,7 +2532,8 @@ fn find_emptied_var(
 /// reflects every specialization that contributed; new_t is similarly
 /// joined for the narrow-note (in practice, when ALL specs found a
 /// branch dead, each spec's new_t is `none` — joined, still `none`).
-fn emit_unreachable(
+fn emit_unreachable<T: crate::types_seam::Types>(
+    t: &mut T,
     module: &Module,
     fn_name: &str,
     term_span: crate::diag::Span,
@@ -2540,10 +2548,11 @@ fn emit_unreachable(
     let (v, _, _) = pick;
     // Join the offending Var's pre-narrow types across every spec that
     // dropped this branch — that's the source-level view of the value.
-    let mut joined_old = Descr::none();
+    let mut joined_old = t.none();
     for (vv, ot, _) in dead_records {
         if *vv == *v {
-            joined_old = joined_old.union(ot);
+            let ot_ty = t.from_descr(ot);
+            joined_old = t.union(joined_old, ot_ty);
         }
     }
     let var_name = module.source.var_name_of(*v);
@@ -2557,7 +2566,7 @@ fn emit_unreachable(
     let type_note = format!(
         "{} here has type `{}`",
         label_subject,
-        joined_old.display_for_diag(),
+        t.display_for_diag(&joined_old),
     );
     let narrow_note = format!(
         "narrowing for this branch would need `none`, but that intersection \
@@ -2687,10 +2696,10 @@ pub fn collect_diagnostics<T: crate::types_seam::Types>(
                     env.insert(*v, pt);
                 }
                 let (then_env, else_env) = narrow_for_if(t, &env, cond, &b.stmts);
-                if let Some(d) = find_emptied_var(&env, &then_env) {
+                if let Some(d) = find_emptied_var(t, &env, &then_env) {
                     dead_then.push(d);
                 }
-                if let Some(d) = find_emptied_var(&env, &else_env) {
+                if let Some(d) = find_emptied_var(t, &env, &else_env) {
                     dead_else.push(d);
                 }
             }
@@ -2698,12 +2707,12 @@ pub fn collect_diagnostics<T: crate::types_seam::Types>(
             // Emit only when EVERY spec found the branch dead.
             if dead_then.len() == total_specs {
                 out.push(emit_unreachable(
-                    module, &f.name, term_span, "then", then_b, &dead_then,
+                    t, module, &f.name, term_span, "then", then_b, &dead_then,
                 ));
             }
             if dead_else.len() == total_specs {
                 out.push(emit_unreachable(
-                    module, &f.name, term_span, "else", else_b, &dead_else,
+                    t, module, &f.name, term_span, "else", else_b, &dead_else,
                 ));
             }
         }
