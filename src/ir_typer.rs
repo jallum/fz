@@ -2942,11 +2942,10 @@ pub fn rewrite_vec_kinds<T: crate::types_seam::Types>(
                     let mut any_float = false;
                     let mut any_int = false;
                     for &ev in els.iter() {
-                        let d = vars
-                            .get(&ev)
-                            .cloned()
-                            .unwrap_or_else(|| t.any().as_descr());
-                        let d_ty = t.from_descr(&d);
+                        let d_ty: T::Ty = match vars.get(&ev) {
+                            Some(d) => t.from_descr(d),
+                            None => t.any(),
+                        };
                         let f_ty = t.float();
                         let i_ty = t.int();
                         let d_inter_f = t.intersect(d_ty.clone(), f_ty);
