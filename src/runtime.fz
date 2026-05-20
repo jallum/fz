@@ -1,5 +1,15 @@
 @type pid :: opaque integer
 @type ref :: opaque integer
+# fz-axu.12 (S1) — utf8 is a brand on binary. The L3 desugaring pass
+# mints values of this brand for every `"…"` literal that's valid
+# UTF-8. As an unqualified runtime-prelude brand it has no module
+# owner, so any user code can mint and use it without import.
+@type utf8 :: refines binary
+
+# fz-axu.12 (S1) — Utf8 module skeleton. Function bodies land in S2
+# (fz-axu.13) once the R1 runtime externs (fz-axu.14) are in.
+defmodule Utf8 do
+end
 
 @doc "Prints x to standard output."
 @spec print(any) :: nil
