@@ -2292,11 +2292,13 @@ fn type_prim<T: crate::types_seam::Types>(
             Descr::closure_lit(*fn_id, capture_descrs, n_args)
         }
 
-        Prim::Extern(eid, _) => m
-            .extern_idx
-            .get(eid)
-            .map(|&i| m.externs[i].ret_descr.clone())
-            .unwrap_or_else(Descr::any),
+        Prim::Extern(eid, _) => {
+            use crate::types_seam::AsDescr;
+            m.extern_idx
+                .get(eid)
+                .map(|&i| m.externs[i].ret_descr.clone())
+                .unwrap_or_else(|| t.any().as_descr())
+        }
 
         Prim::TypeTest(v, descr) => {
             use crate::types_seam::AsDescr;
@@ -2332,8 +2334,14 @@ fn type_prim<T: crate::types_seam::Types>(
         }
 
         // Reader and struct ops: conservative Top until later tickets refine.
-        Prim::AllocStruct(_, _) => Descr::any(),
-        Prim::BitReaderInit(_) => Descr::any(),
+        Prim::AllocStruct(_, _) => {
+            use crate::types_seam::AsDescr;
+            t.any().as_descr()
+        }
+        Prim::BitReaderInit(_) => {
+            use crate::types_seam::AsDescr;
+            t.any().as_descr()
+        }
         Prim::BitReadField { ty, .. } => {
             // Returns Tuple([ok, value, new_reader]) on success, Tuple([false])
             // on failure. We over-approximate to a generic tuple shape; pattern
@@ -2350,7 +2358,10 @@ fn type_prim<T: crate::types_seam::Types>(
             let failure = Descr::tuple_of([Descr::bool_t()]);
             success.union(&failure)
         }
-        Prim::BitReaderDone(_) => Descr::bool_t(),
+        Prim::BitReaderDone(_) => {
+            use crate::types_seam::AsDescr;
+            t.bool().as_descr()
+        }
     }
 }
 
