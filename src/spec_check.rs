@@ -111,6 +111,17 @@ fn validate_one_fn<T: crate::types_seam::Types>(
     let arity = declared_params.len();
     use crate::types_seam::AsDescr;
     let any_key: Vec<Descr> = vec![t.any().as_descr(); arity];
+    // Hoist: declared_* are constant across spec_key iterations. Convert
+    // once + pre-render displays so the per-key body holds no
+    // Descr-typed view of these values.
+    let declared_param_tys: Vec<T::Ty> =
+        declared_params.iter().map(|d| t.from_descr(d)).collect();
+    let declared_param_displays: Vec<String> = declared_param_tys
+        .iter()
+        .map(|ty| t.display(ty))
+        .collect();
+    let declared_result_ty: T::Ty = t.from_descr(declared_result);
+    let declared_result_display: String = t.display(&declared_result_ty);
     for ((fid, key), ft) in &module_types.specs {
         if *fid != fn_id {
             continue;
@@ -124,14 +135,14 @@ fn validate_one_fn<T: crate::types_seam::Types>(
         // Element-wise inferred ⊆ declared on each input.
         for (i, inferred) in key.iter().enumerate() {
             let inferred_ty = t.from_descr(inferred);
-            let declared_ty = t.from_descr(&declared_params[i]);
-            if !t.is_subtype(&inferred_ty, &declared_ty) {
+            if !t.is_subtype(&inferred_ty, &declared_param_tys[i]) {
+                let inferred_display = t.display(&inferred_ty);
                 diags.push(Diagnostic::error(
                     codes::SPEC_VIOLATION,
                     format!(
                         "@spec violation for `{}`: param {} inferred as `{}` \
                          is not a subtype of declared `{}`",
-                        user_name, i, inferred, declared_params[i],
+                        user_name, i, inferred_display, declared_param_displays[i],
                     ),
                     name_span,
                 ));
@@ -155,15 +166,14 @@ fn validate_one_fn<T: crate::types_seam::Types>(
             }
         }
         let inferred_ty = inferred_result.unwrap_or_else(|| t.any());
-        let declared_ty = t.from_descr(declared_result);
-        if !t.is_subtype(&inferred_ty, &declared_ty) {
+        if !t.is_subtype(&inferred_ty, &declared_result_ty) {
             let inferred_display = t.display(&inferred_ty);
             diags.push(Diagnostic::error(
                 codes::SPEC_VIOLATION,
                 format!(
                     "@spec violation for `{}`: result inferred as `{}` \
                      is not a subtype of declared `{}`",
-                    user_name, inferred_display, declared_result,
+                    user_name, inferred_display, declared_result_display,
                 ),
                 name_span,
             ));
