@@ -401,10 +401,6 @@ fn fold_list_is_nil<T: Types>(
     }
 }
 
-fn bool_descr(b: bool) -> Descr {
-    Descr::atom_lit(if b { "true" } else { "false" })
-}
-
 // ---------------------------------------------------------------------------
 // fz-jg5.3 (RED.2) — Clause dispatch via pattern matrix
 // ---------------------------------------------------------------------------
@@ -643,31 +639,30 @@ pub fn fold_expr<T: Types>(
     atom_names: &[String],
 ) -> Option<T::Ty> {
     use ast::Expr;
-    let d = match expr {
-        Expr::Var(name) => bindings.get(name).cloned(),
-        Expr::Int(n) => Some(Descr::int_lit(*n)),
-        Expr::Float(f) => Some(Descr::float_lit(*f)),
+    match expr {
+        Expr::Var(name) => bindings.get(name).cloned().map(|d| t.from_descr(&d)),
+        Expr::Int(n) => Some(t.int_lit(*n)),
+        Expr::Float(f) => Some(t.float_lit(*f)),
         Expr::Str(_) => {
             // Post-fz-axu.11 (L3) lowers Expr::Str at the IR level to a
             // bitstring+brand. No singleton Descr representation remains,
             // so AST-level folding gives up here.
             None
         }
-        Expr::Atom(s) => Some(Descr::atom_lit(s)),
-        Expr::Bool(b) => Some(bool_descr(*b)),
-        Expr::Nil => Some(Descr::nil()),
+        Expr::Atom(s) => Some(t.atom_lit(s)),
+        Expr::Bool(b) => Some(t.bool_lit(*b)),
+        Expr::Nil => Some(t.nil()),
         Expr::BinOp(op, a, b) => {
             let ad = fold_expr(t, &a.node, bindings, atom_names)?.as_descr();
             let bd = fold_expr(t, &b.node, bindings, atom_names)?.as_descr();
-            return ast_binop_fold(t, *op, &ad, &bd);
+            ast_binop_fold(t, *op, &ad, &bd)
         }
         Expr::UnOp(op, v) => {
             let vd = fold_expr(t, &v.node, bindings, atom_names)?.as_descr();
-            return ast_unop_fold(t, *op, &vd);
+            ast_unop_fold(t, *op, &vd)
         }
         _ => None,
-    }?;
-    Some(t.from_descr(&d))
+    }
 }
 
 #[allow(dead_code)] // used via fold_expr; cf. RED.3+ wiring.
@@ -705,19 +700,18 @@ fn ast_unop_fold<T: Types>(t: &mut T, op: ast::UnOp, d: &Descr) -> Option<T::Ty>
         Neg => UnOp::Neg,
         Not => UnOp::Not,
     };
-    let r = match ir_op {
+    match ir_op {
         UnOp::Neg => {
             if let Some(n) = as_int_lit(d) {
-                Some(Descr::int_lit(n.checked_neg()?))
+                Some(t.int_lit(n.checked_neg()?))
             } else if let Some(f) = as_float_lit(d) {
-                Some(Descr::float_lit(-f.get()))
+                Some(t.float_lit(-f.get()))
             } else {
                 None
             }
         }
-        UnOp::Not => as_bool_lit(d).map(|b| bool_descr(!b)),
-    }?;
-    Some(t.from_descr(&r))
+        UnOp::Not => as_bool_lit(d).map(|b| t.bool_lit(!b)),
+    }
 }
 
 // ---------------------------------------------------------------------------
