@@ -2889,6 +2889,7 @@ pub fn rewrite_vec_kinds<T: crate::types_seam::Types>(
     module: &mut Module,
     types: &ModuleTypes,
 ) -> Result<(), String> {
+    use crate::types_seam::AsDescr;
     use crate::fz_ir::Stmt;
     // fz-pky.2 — for each fn, use the registered spec if any, else
     // type ad-hoc under all-any. This pass runs as a pre-codegen
@@ -2903,7 +2904,7 @@ pub fn rewrite_vec_kinds<T: crate::types_seam::Types>(
                 Some(ft) => ft.clone(),
                 None => {
                     let n_params = f.block(f.entry).params.len();
-                    let any_key: Vec<Descr> = vec![Descr::any(); n_params];
+                    let any_key: Vec<Descr> = vec![t.any().as_descr(); n_params];
                     type_fn(t, f, module, Some(&any_key))
                 }
             };
@@ -2922,12 +2923,20 @@ pub fn rewrite_vec_kinds<T: crate::types_seam::Types>(
                     let mut any_float = false;
                     let mut any_int = false;
                     for &ev in els.iter() {
-                        let d = vars.get(&ev).cloned().unwrap_or_else(Descr::any);
-                        if !d.intersect(&Descr::float()).is_empty()
-                            && d.intersect(&Descr::int()).is_empty()
-                        {
+                        let d = vars
+                            .get(&ev)
+                            .cloned()
+                            .unwrap_or_else(|| t.any().as_descr());
+                        let d_ty = t.from_descr(&d);
+                        let f_ty = t.float();
+                        let i_ty = t.int();
+                        let d_inter_f = t.intersect(d_ty.clone(), f_ty);
+                        let d_inter_i = t.intersect(d_ty.clone(), i_ty.clone());
+                        let meets_float = !t.is_empty(&d_inter_f);
+                        let misses_int = t.is_empty(&d_inter_i);
+                        if meets_float && misses_int {
                             any_float = true;
-                        } else if d.is_subtype(&Descr::int()) {
+                        } else if t.is_subtype(&d_ty, &i_ty) {
                             any_int = true;
                         }
                     }
