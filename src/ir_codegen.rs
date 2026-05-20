@@ -1633,6 +1633,20 @@ impl Backend for AotBackend {
                 CodegenError::new(format!("declare fz_aot_set_drain_dtor_entry: {}", e))
             })?;
 
+        // fz-xx8.1 — fz_aot_set_resume_addr(addr). Registers the SystemV
+        // `fz_resume(cont)` shim so the AOT run-queue loop can dispatch
+        // `pending_resume_matched` (selective-receive wakeup) on parity
+        // with the JIT path (src/ir_codegen.rs:335).
+        let set_resume_sig = sig1(&[types::I64], &[]);
+        let set_resume_id = self
+            .omod
+            .declare_function(
+                "fz_aot_set_resume_addr",
+                Linkage::Import,
+                &set_resume_sig,
+            )
+            .map_err(|e| CodegenError::new(format!("declare fz_aot_set_resume_addr: {}", e)))?;
+
         // fz-ul4.38 — fz_aot_register_tuple_schemas(proc, arities_ptr, len)
         // populates the AOT process's SchemaRegistry with one Tuple{N} entry
         // per arity, in the order the array was emitted. That order matches
@@ -1724,6 +1738,8 @@ impl Backend for AotBackend {
             tuple_arities_len,
             set_drain_id,
             meta.drain_dtor_entry_id,
+            set_resume_id,
+            meta.resume_id,
         )?;
         Ok(())
     }
@@ -3781,6 +3797,8 @@ fn emit_aot_c_main<M: cranelift_module::Module>(
     tuple_arities_len: u32,
     set_drain_id: FuncId,
     drain_dtor_entry_id: FuncId,
+    set_resume_id: FuncId,
+    resume_id: FuncId,
 ) -> Result<(), CodegenError> {
     use cranelift_frontend::FunctionBuilder;
 
@@ -3885,6 +3903,14 @@ fn emit_aot_c_main<M: cranelift_module::Module>(
             let drain_addr = fn_addr(jmod, drain_dtor_entry_id, &mut b);
             let set_drain_fref = jmod.declare_func_in_func(set_drain_id, b.func);
             b.ins().call(set_drain_fref, &[drain_addr]);
+        }
+
+        // fz-xx8.1 — register the `fz_resume` shim with the runtime so the
+        // AOT run-queue loop can dispatch `pending_resume_matched` requests.
+        {
+            let resume_addr_v = fn_addr(jmod, resume_id, &mut b);
+            let set_resume_fref = jmod.declare_func_in_func(set_resume_id, b.func);
+            b.ins().call(set_resume_fref, &[resume_addr_v]);
         }
 
         // exit = fz_aot_run_main(proc, main_fp, main_entry_addr)

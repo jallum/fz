@@ -59,6 +59,14 @@ thread_local! {
     /// run-queue loop calls this once per pending dtor at task-exit; the
     /// shim Tail-CC dispatches the closure body with a fresh halt-cont.
     static AOT_DRAIN_DTOR_ENTRY: Cell<*const u8> = const { Cell::new(std::ptr::null()) };
+    /// fz-xx8.1 — SystemV `fz_resume(cont)` shim address. Set by
+    /// `fz_aot_set_resume_addr` after setup. The run-queue loop will call
+    /// this when `pending_resume_matched` is set (selective-receive wakeup);
+    /// the shim loads `cont+16` and Tail-CC indirect-calls the body with
+    /// args supplied via `Process::resume_args` (read inside the cont stub
+    /// via `fz_resume_args_ptr`). Mirrors `CompiledModule::resume_addr` on
+    /// the JIT side (src/ir_codegen.rs:186).
+    static AOT_RESUME_ADDR: Cell<*const u8> = const { Cell::new(std::ptr::null()) };
 }
 
 /// Decode an atom-name blob emitted by AOT codegen into a `Vec<String>`.
@@ -369,6 +377,7 @@ pub extern "C" fn fz_aot_run_main(
     crate::scheduler_hooks::clear_send_hook();
     crate::scheduler_hooks::clear_make_resource_hook();
     AOT_DRAIN_DTOR_ENTRY.with(|c| c.set(std::ptr::null()));
+    AOT_RESUME_ADDR.with(|c| c.set(std::ptr::null()));
     AOT_SPAWN_ENTRY.with(|c| c.set(std::ptr::null()));
     AOT_RESUME_PARK.with(|c| c.set(std::ptr::null()));
     AOT_MAIN_ENTRY.with(|c| c.set(std::ptr::null()));
@@ -410,6 +419,19 @@ pub unsafe extern "C" fn fz_aot_set_resume_shims(shims: *const *const u8) {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fz_aot_set_drain_dtor_entry(addr: *const u8) {
     AOT_DRAIN_DTOR_ENTRY.with(|c| c.set(addr));
+}
+
+/// fz-xx8.1 — register the `fz_resume` shim address. Called from AOT-emitted
+/// C main after `fz_aot_setup` and before `fz_aot_run_main`. The run-queue
+/// loop dispatches `pending_resume_matched` requests through this shim
+/// (mirrors the JIT path in `src/ir_codegen.rs:335`).
+///
+/// # Safety
+/// `addr` must be the address of `fz_resume` emitted by compile_with_backend
+/// (SystemV `(cont: u64) -> i64`).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fz_aot_set_resume_addr(addr: *const u8) {
+    AOT_RESUME_ADDR.with(|c| c.set(addr));
 }
 
 /// Cooperative run-queue loop. Drives all enqueued processes to completion
@@ -542,5 +564,21 @@ mod tests {
     fn parse_atom_blob_null_pointer_returns_empty() {
         let names = parse_atom_blob(std::ptr::null());
         assert!(names.is_empty());
+    }
+
+    /// fz-xx8.1 — `fz_aot_set_resume_addr` populates the thread-local
+    /// `AOT_RESUME_ADDR`; teardown of `fz_aot_run_main` clears it. We
+    /// can't easily drive a full setup→run→teardown cycle from a unit
+    /// test (it would need a real codegen'd shim), so we exercise the
+    /// register/clear lifecycle directly and assert the cell flips.
+    #[test]
+    fn set_resume_addr_populates_and_clears() {
+        AOT_RESUME_ADDR.with(|c| c.set(std::ptr::null()));
+        let fake = 0xDEAD_BEEFusize as *const u8;
+        unsafe { fz_aot_set_resume_addr(fake) };
+        assert_eq!(AOT_RESUME_ADDR.with(|c| c.get()), fake);
+        // Mirror the teardown clears in fz_aot_run_main.
+        AOT_RESUME_ADDR.with(|c| c.set(std::ptr::null()));
+        assert!(AOT_RESUME_ADDR.with(|c| c.get()).is_null());
     }
 }
