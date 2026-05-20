@@ -1767,9 +1767,11 @@ pub fn type_fn<T: crate::types_seam::Types>(
                 env.insert(*v, pt.clone());
                 // vars is the definition-site type; single assignment so
                 // we just overwrite each iteration (will converge).
-                let prev = vars.get(v).cloned().unwrap_or_else(|| none_d.clone());
+                let prev_ty: T::Ty = match vars.get(v) {
+                    Some(d) => t.from_descr(d),
+                    None => t.none(),
+                };
                 let pt_ty = t.from_descr(&pt);
-                let prev_ty = t.from_descr(&prev);
                 if !t.is_equivalent(&pt_ty, &prev_ty) {
                     vars.insert(*v, pt);
                     changed = true;
@@ -1804,9 +1806,11 @@ pub fn type_fn<T: crate::types_seam::Types>(
                             .get(&p)
                             .cloned()
                             .unwrap_or_else(|| none_d.clone());
-                        let prev = vars.get(&p).cloned().unwrap_or_else(|| none_d.clone());
+                        let prev_ty: T::Ty = match vars.get(&p) {
+                            Some(d) => t.from_descr(d),
+                            None => t.none(),
+                        };
                         let from_ty = t.from_descr(&from_env);
-                        let prev_ty = t.from_descr(&prev);
                         if !t.is_equivalent(&from_ty, &prev_ty) {
                             vars.insert(p, from_env);
                             changed = true;
@@ -1886,13 +1890,15 @@ pub fn type_fn<T: crate::types_seam::Types>(
                     let Stmt::Let(v, prim) = stmt;
                     env.insert(*v, type_prim(prim, &env, m, &HashSet::new()));
                 }
-                let ct = env.get(cond).cloned().unwrap_or_else(|| any_d.clone());
                 // Use is_subtype to check provable branch deadness.
                 // `ct ⊆ atom_lit("true")` means ct can ONLY be true →
                 // else-branch dead. `ct ⊆ atom_lit("false")` → then dead.
                 // bool_t()/any()/etc. are NOT subtypes of either singleton,
                 // so both branches remain reachable.
-                let ct_ty = t.from_descr(&ct);
+                let ct_ty: T::Ty = match env.get(cond) {
+                    Some(d) => t.from_descr(d),
+                    None => t.any(),
+                };
                 let false_ty = t.atom_lit("false");
                 if !t.is_subtype(&ct_ty, &false_ty) {
                     worklist.push(*then_b);
