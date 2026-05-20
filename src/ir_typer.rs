@@ -355,16 +355,15 @@ pub fn resolve_closure_return<T: crate::types_seam::Types>(
     closure_descr: &Descr,
     effective_returns: &HashMap<(FnId, Vec<Descr>), Descr>,
     arg_descrs: &[Descr],
-) -> Option<Descr> {
-    use crate::types_seam::AsDescr;
+) -> Option<T::Ty> {
     let Some(funcs_view) = closure_descr.components().find_map(|c| match c {
         crate::types::Component::Funcs(v) => Some(v),
         _ => None,
     }) else {
-        return Some(t.any().as_descr());
+        return Some(t.any());
     };
     if funcs_view.has_negations() || !funcs_view.all_clauses_have_pos() {
-        return Some(t.any().as_descr());
+        return Some(t.any());
     }
     let mut acc = t.none();
     for arrow in funcs_view.arrows() {
@@ -406,7 +405,7 @@ pub fn resolve_closure_return<T: crate::types_seam::Types>(
                     // Arity mismatch (shouldn't happen if MakeClosure
                     // typing is consistent); fall back broad rather
                     // than miss-look-up.
-                    return Some(t.any().as_descr());
+                    return Some(t.any());
                 }
                 let mut full_key: Vec<Descr> = lit.captures.clone();
                 full_key.extend_from_slice(arg_descrs);
@@ -420,7 +419,7 @@ pub fn resolve_closure_return<T: crate::types_seam::Types>(
             }
         }
     }
-    Some(acc.as_descr())
+    Some(acc)
 }
 
 fn build_any_key_index<T: crate::types_seam::Types>(
@@ -1190,7 +1189,9 @@ fn cont_key_for_spec<T: crate::types_seam::Types>(
                     .iter()
                     .map(|av| env.get(av).cloned().unwrap_or_else(|| any_d.clone()))
                     .collect();
+                use crate::types_seam::AsDescr;
                 resolve_closure_return(t, cv_descr, effective_returns, &arg_descrs)
+                    .map(|ty| ty.as_descr())
                     .unwrap_or_else(|| any_d.clone())
             } else {
                 any_d.clone()
@@ -1487,7 +1488,9 @@ fn walk_spec_for_discovery<T: crate::types_seam::Types>(
                                         }
                                     }
                                 }
+                                use crate::types_seam::AsDescr;
                                 resolve_closure_return(t, cv_descr, effective_returns, &arg_descrs)
+                                    .map(|ty| ty.as_descr())
                             } else {
                                 Some(any_d.clone())
                             }
@@ -3199,7 +3202,9 @@ pub fn cont_slot0_descr<T: crate::types_seam::Types>(
                     .iter()
                     .map(|av| env.get(av).cloned().unwrap_or_else(|| any_d.clone()))
                     .collect();
+                use crate::types_seam::AsDescr;
                 resolve_closure_return(t, &closure_d, &module_types.effective_returns, &arg_descrs)
+                    .map(|ty| ty.as_descr())
                     .unwrap_or_else(|| closure_d.arrow_join_return())
             } else {
                 closure_d.arrow_join_return()
