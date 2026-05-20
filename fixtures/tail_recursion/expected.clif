@@ -2,13 +2,13 @@
     ;   @spec   main() -> nil
     ;   @key    []
     ;   @abi    () -> Tagged
-function u0:0(i64) -> i64 tail {
+function @fz_fn_23(i64) -> i64 tail {
     sig0 = (i64, i64, i64) -> i64 tail
     sig1 = (i32, i32, i32) -> i64 system_v
     sig2 = (i64, i64) -> i64 tail
-    fn0 = colocated u0:45 sig0
-    fn1 = u0:29 sig1
-    fn2 = colocated u0:47 sig2
+    fn0 = colocated @fz_fn_24 sig0
+    fn1 = @fz_alloc_closure sig1
+    fn2 = colocated @fz_fn_26 sig2
 
 block0(v0: i64):
     v1 = iconst.i64 0x0001_86a0         ; @5:15
@@ -27,14 +27,14 @@ block0(v0: i64):
     ;   @spec   count(100000, 0) -> int
     ;   @key    [100000, 0]
     ;   @abi    (RawInt, RawInt) -> RawInt
-function u0:0(i64, i64, i64) -> i64 tail {
+function @fz_fn_24(i64, i64, i64) -> i64 tail {
     gv0 = symbol userextname1
     sig0 = (i64, i64, i64) -> i64 tail
     sig1 = () -> i64 system_v
     sig2 = (i64, i32) -> i64 system_v
-    fn0 = colocated u0:46 sig0
-    fn1 = u0:32 sig1
-    fn2 = u0:34 sig2
+    fn0 = colocated @fz_fn_25 sig0
+    fn1 = @fz_mid_flight_roots_ptr sig1
+    fn2 = @fz_yield_back_edge sig2
 
     block0(v0: i64, v1: i64, v2: i64):    ;; v0 :: 100000, v1 :: 0
     v3 = iconst.i64 1    ;; v3 :: 1
@@ -66,15 +66,15 @@ block2:
     ;   @spec   count(int, int) -> int
     ;   @key    [int, int]
     ;   @abi    (RawInt, RawInt) -> RawInt
-function u0:0(i64, i64, i64) -> i64 tail {
+function @fz_fn_25(i64, i64, i64) -> i64 tail {
     gv0 = symbol userextname1
     sig0 = (i64, i64) -> i64 tail
     sig1 = (i64, i64, i64) -> i64 tail
     sig2 = () -> i64 system_v
     sig3 = (i64, i32) -> i64 system_v
-    fn0 = colocated u0:46 sig1
-    fn1 = u0:32 sig2
-    fn2 = u0:34 sig3
+    fn0 = colocated @fz_fn_25 sig1
+    fn1 = @fz_mid_flight_roots_ptr sig2
+    fn2 = @fz_yield_back_edge sig3
 
     block0(v0: i64, v1: i64, v2: i64):    ;; v0 :: int, v1 :: int
     v3 = iconst.i64 0    ;; v3 :: 0
@@ -115,10 +115,10 @@ block4:
     ;   @spec   k_26(int) -> nil
     ;   @key    [int]
     ;   @abi    (RawInt) -> Tagged
-function u0:0(i64, i64) -> i64 tail {
+function @fz_fn_26(i64, i64) -> i64 tail {
     sig0 = (i64) system_v
     sig1 = (i64, i64) -> i64 tail
-    fn0 = u0:48 sig0
+    fn0 = @fz_print_i64 sig0
 
     block0(v0: i64, v1: i64):    ;; v0 :: int
     call fn0(v0)

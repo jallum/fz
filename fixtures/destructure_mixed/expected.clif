@@ -2,17 +2,17 @@
     ;   @spec   main() -> nil
     ;   @key    []
     ;   @abi    () -> Tagged
-function u0:0(i64) -> i64 tail {
+function @fz_fn_23(i64) -> i64 tail {
     sig0 = (i64, i64) -> i64 system_v
     sig1 = (i32) -> i64 system_v
     sig2 = (i64) system_v
     sig3 = (i64) system_v
     sig4 = (i64, i64, i64, i64, i64) -> i64 tail
-    fn0 = u0:5 sig0
-    fn1 = u0:6 sig1
-    fn2 = u0:1 sig2
-    fn3 = u0:47 sig3
-    fn4 = colocated u0:45 sig4
+    fn0 = @fz_alloc_list_cons sig0
+    fn1 = @fz_alloc_struct sig1
+    fn2 = @fz_halt_implicit sig2
+    fn3 = @fz_print_i64 sig3
+    fn4 = colocated @fz_fn_24 sig4
 
 block0(v0: i64):
     v1 = iconst.i64 1    ;; v1 :: 1
@@ -57,12 +57,12 @@ block2:
     ;   @spec   k_25(nil, 1 | 2 | 3, list(1 | 2 | 3), 99) -> nil
     ;   @key    [nil, 1 | 2 | 3, list(1 | 2 | 3), 99]
     ;   @abi    (Tagged, RawInt, Tagged, RawInt) -> Tagged
-function u0:0(i64, i64, i64, i64, i64) -> i64 tail {
+function @fz_fn_24(i64, i64, i64, i64, i64) -> i64 tail {
     sig0 = (i64) system_v
     sig1 = (i64) system_v
     sig2 = (i64, i64) -> i64 tail
-    fn0 = u0:48 sig0
-    fn1 = u0:47 sig1
+    fn0 = @fz_print_value sig0
+    fn1 = @fz_print_i64 sig1
 
     block0(v0: i64, v1: i64, v2: i64, v3: i64, v4: i64):    ;; v0 :: nil, v1 :: 1 | 2 | 3, v2 :: list(1 | 2 | 3), v3 :: 99
     call fn0(v2)

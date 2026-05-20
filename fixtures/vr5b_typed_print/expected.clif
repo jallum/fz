@@ -2,14 +2,14 @@
     ;   @spec   main() -> nil
     ;   @key    []
     ;   @abi    () -> Tagged
-function u0:0(i64) -> i64 tail {
+function @fz_fn_24(i64) -> i64 tail {
     sig0 = (i64) system_v
     sig1 = (i64) system_v
     sig2 = (i64) -> i64 system_v
     sig3 = (i64, i64) -> i64 tail
-    fn0 = u0:45 sig0
-    fn1 = u0:46 sig1
-    fn2 = u0:22 sig2
+    fn0 = @fz_print_i64 sig0
+    fn1 = @fz_print_value sig1
+    fn2 = @fz_alloc_float sig2
 
 block0(v0: i64):
     v1 = iconst.i64 42    ;; v1 :: 42

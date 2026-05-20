@@ -2,11 +2,11 @@
     ;   @spec   main() -> nil
     ;   @key    []
     ;   @abi    () -> Tagged
-function u0:0(i64) -> i64 tail {
+function @fz_fn_22(i64) -> i64 tail {
     sig0 = (i64) system_v
     sig1 = (i64, i64) -> i64 tail
-    fn0 = u0:47 sig0
-    fn1 = colocated u0:45 sig1
+    fn0 = @fz_print_i64 sig0
+    fn1 = colocated @fz_fn_23 sig1
 
 block0(v0: i64):
     v1 = iconst.i64 42                  ; @2:9
@@ -19,11 +19,11 @@ block0(v0: i64):
     ;   @spec   k_23(nil) -> nil
     ;   @key    [nil]
     ;   @abi    (Tagged) -> Tagged
-function u0:0(i64, i64) -> i64 tail {
+function @fz_fn_23(i64, i64) -> i64 tail {
     sig0 = (i64) system_v
     sig1 = (i64, i64) -> i64 tail
-    fn0 = u0:48 sig0
-    fn1 = colocated u0:46 sig1
+    fn0 = @fz_print_value sig0
+    fn1 = colocated @fz_fn_24 sig1
 
     block0(v0: i64, v1: i64):    ;; v0 :: nil
     v2 = iconst.i64 34                  ; @3:9
@@ -36,10 +36,10 @@ function u0:0(i64, i64) -> i64 tail {
     ;   @spec   k_24(nil) -> nil
     ;   @key    [nil]
     ;   @abi    (Tagged) -> Tagged
-function u0:0(i64, i64) -> i64 tail {
+function @fz_fn_24(i64, i64) -> i64 tail {
     sig0 = (i64) system_v
     sig1 = (i64, i64) -> i64 tail
-    fn0 = u0:48 sig0
+    fn0 = @fz_print_value sig0
 
     block0(v0: i64, v1: i64):    ;; v0 :: nil
     v2 = iconst.i64 10                  ; @4:9

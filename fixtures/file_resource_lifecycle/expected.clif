@@ -2,12 +2,12 @@
     ;   @spec   File.dtor(any) -> nil
     ;   @key    [any]
     ;   @abi    (Tagged) -> Tagged
-function u0:0(i64, i64, i64) -> i64 tail {
+function @fz_fn_22(i64, i64, i64) -> i64 tail {
     sig0 = (i64) -> i64 system_v
     sig1 = (i64) system_v
     sig2 = (i64, i64) -> i64 tail
-    fn0 = u0:48 sig0
-    fn1 = u0:49 sig1
+    fn0 = @close sig0
+    fn1 = @fz_print_value sig1
 
     block0(v0: i64, v1: i64, v2: i64):    ;; v0 :: any
     v3 = sshr_imm v0, 3                 ; @11:5
@@ -25,13 +25,13 @@ function u0:0(i64, i64, i64) -> i64 tail {
     ;   @spec   main() -> nil
     ;   @key    []
     ;   @abi    () -> Tagged
-function u0:0(i64) -> i64 tail {
+function @fz_fn_25(i64) -> i64 tail {
     sig0 = () -> i64 system_v
     sig1 = (i64) system_v
     sig2 = (i64, i64, i64) -> i64 tail
-    fn0 = u0:50 sig0
-    fn1 = u0:49 sig1
-    fn2 = colocated u0:47 sig2
+    fn0 = @fz_test_open_tmpfile sig0
+    fn1 = @fz_print_value sig1
+    fn2 = colocated @fz_fn_27 sig2
 
 block0(v0: i64):
     v1 = call fn0()                     ; @20:8
@@ -48,14 +48,14 @@ block0(v0: i64):
     ;   @spec   k_26(nil, int) -> nil
     ;   @key    [nil, int]
     ;   @abi    (Tagged, RawInt) -> Tagged
-function u0:0(i64, i64, i64) -> i64 tail {
+function @fz_fn_27(i64, i64, i64) -> i64 tail {
     sig0 = (i32) -> i64 system_v
     sig1 = (i64, i64) -> i64 system_v
     sig2 = (i64) system_v
     sig3 = (i64, i64) -> i64 tail
-    fn0 = u0:35 sig0
-    fn1 = u0:51 sig1
-    fn2 = u0:49 sig2
+    fn0 = @fz_get_static_closure sig0
+    fn1 = @fz_make_resource sig1
+    fn2 = @fz_print_value sig2
 
     block0(v0: i64, v1: i64, v2: i64):    ;; v0 :: nil, v1 :: int
     v3 = iconst.i32 22

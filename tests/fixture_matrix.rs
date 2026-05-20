@@ -150,6 +150,10 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             "no_dead_const_operands_after_singleton_fold",
             no_dead_const_operands_after_singleton_fold,
         ),
+        (
+            "clif_dump_uses_symbolic_func_names",
+            clif_dump_uses_symbolic_func_names,
+        ),
         ("golden_clif", golden_clif),
         ("golden_specs", golden_specs),
         ("golden_outcomes", golden_outcomes),
@@ -1208,6 +1212,31 @@ fn no_dead_const_operands_after_singleton_fold() {
 
 fn golden_clif() {
     check_goldens(Emit::Clif);
+}
+
+/// fz-323 — CLIF dumps must use symbolic `@<name>` external-name refs, not
+/// Cranelift's numeric `u0:N` form. The numeric form is `FuncId`-indexed in
+/// module-declaration order, which makes goldens drift on every unrelated
+/// runtime-helper addition. Symbolic names are source-stable.
+fn clif_dump_uses_symbolic_func_names() {
+    let out = Command::new(FZ_BIN)
+        .args(["dump", "--emit", "clif", "fixtures/hello/input.fz"])
+        .output()
+        .expect("spawn fz dump");
+    assert!(out.status.success(), "fz dump exited {}", out.status);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    if let Some(idx) = stdout.find("u0:") {
+        let ctx_start = stdout[..idx].rfind('\n').map(|p| p + 1).unwrap_or(0);
+        let ctx_end = stdout[idx..]
+            .find('\n')
+            .map(|p| idx + p)
+            .unwrap_or(stdout.len());
+        panic!(
+            "CLIF dump still contains a raw `u0:N` external name — the \
+             dumper should rewrite it to `@<name>`. First offending line:\n{}",
+            &stdout[ctx_start..ctx_end]
+        );
+    }
 }
 
 fn golden_specs() {
