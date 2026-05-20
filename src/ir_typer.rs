@@ -3188,12 +3188,14 @@ pub fn cont_slot0_descr<T: crate::types_seam::Types>(
     module: &Module,
     module_types: &ModuleTypes,
 ) -> Descr {
+    use crate::types_seam::AsDescr;
+    let any_d = t.any().as_descr();
     match &block.terminator {
         Term::Call { callee, args, .. } => {
             let env = env_at_terminator(t, caller_ft, block, module);
             let arg_descrs: Vec<Descr> = args
                 .iter()
-                .map(|av| env.get(av).cloned().unwrap_or_else(Descr::any))
+                .map(|av| env.get(av).cloned().unwrap_or_else(|| any_d.clone()))
                 .collect();
             // fz-rh5.6 — subsumption-aware lookup. "What does `callee`
             // return for these args?" is a subsumption query: any
@@ -3206,7 +3208,7 @@ pub fn cont_slot0_descr<T: crate::types_seam::Types>(
             // `ModuleTypes::effective_return_for_call`.
             module_types
                 .effective_return_for_call(*callee, &arg_descrs)
-                .unwrap_or_else(Descr::any)
+                .unwrap_or(any_d)
         }
         // fz-ul4.27.22.6 — at a CallClosure seam, the closure's static
         // Descr names the body's possible return shapes. For singleton
@@ -3216,14 +3218,14 @@ pub fn cont_slot0_descr<T: crate::types_seam::Types>(
         // Term::Return passes to the cont's slot 0.
         Term::CallClosure { closure, args, .. } => {
             let env = env_at_terminator(t, caller_ft, block, module);
-            let closure_d = env.get(closure).cloned().unwrap_or_else(Descr::any);
+            let closure_d = env.get(closure).cloned().unwrap_or_else(|| any_d.clone());
             if closure_d
                 .as_closure_lit()
                 .is_some_and(|lit| !lit.captures.is_empty())
             {
                 let arg_descrs: Vec<Descr> = args
                     .iter()
-                    .map(|av| env.get(av).cloned().unwrap_or_else(Descr::any))
+                    .map(|av| env.get(av).cloned().unwrap_or_else(|| any_d.clone()))
                     .collect();
                 resolve_closure_return(t, &closure_d, &module_types.effective_returns, &arg_descrs)
                     .unwrap_or_else(|| closure_d.arrow_join_return())
@@ -3231,7 +3233,7 @@ pub fn cont_slot0_descr<T: crate::types_seam::Types>(
                 closure_d.arrow_join_return()
             }
         }
-        _ => Descr::any(),
+        _ => any_d,
     }
 }
 
@@ -3489,16 +3491,18 @@ pub fn cont_input_key<T: crate::types_seam::Types>(
     module: &Module,
     module_types: &ModuleTypes,
 ) -> Vec<Descr> {
+    use crate::types_seam::AsDescr;
     let cont_fn = module.fn_by_id(continuation.fn_id);
     let n_params = cont_fn.block(cont_fn.entry).params.len();
-    let mut key: Vec<Descr> = vec![Descr::any(); n_params];
+    let any_d = t.any().as_descr();
+    let mut key: Vec<Descr> = vec![any_d.clone(); n_params];
     if !key.is_empty() {
         key[0] = cont_slot0_descr(t, block, caller_ft, module, module_types);
     }
     let env = env_at_terminator(t, caller_ft, block, module);
     for (k, cv) in continuation.captured.iter().enumerate() {
         if let Some(p) = key.get_mut(k + 1) {
-            *p = env.get(cv).cloned().unwrap_or_else(Descr::any);
+            *p = env.get(cv).cloned().unwrap_or_else(|| any_d.clone());
         }
     }
     key
