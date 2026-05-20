@@ -112,7 +112,7 @@ pub fn fold_prim<T: Types>(
 ) -> Option<T::Ty> {
     let d: Option<Descr> = match prim {
         Prim::Const(c) => return fold_const(t, c, atom_names),
-        Prim::BinOp(op, a, b) => fold_binop(*op, *a, *b, env),
+        Prim::BinOp(op, a, b) => return fold_binop(t, *op, *a, *b, env),
         Prim::UnOp(op, v) => fold_unop(*op, *v, env),
         Prim::MakeTuple(vs) => fold_make_tuple(vs, env),
         Prim::TupleField(v, i) => fold_tuple_field(*v, *i as usize, env),
@@ -172,16 +172,23 @@ fn fold_const<T: Types>(t: &mut T, c: &Const, atom_names: &[String]) -> Option<T
     Some(t.from_descr(&d))
 }
 
-fn fold_binop(op: BinOp, a: Var, b: Var, env: &HashMap<Var, Descr>) -> Option<Descr> {
+fn fold_binop<T: Types>(
+    t: &mut T,
+    op: BinOp,
+    a: Var,
+    b: Var,
+    env: &HashMap<Var, Descr>,
+) -> Option<T::Ty> {
     let ad = env.get(&a)?;
     let bd = env.get(&b)?;
     use BinOp::*;
-    match op {
+    let d = match op {
         Add | Sub | Mul | Div | Mod => fold_arith(op, ad, bd),
         Eq | Neq => fold_eq(op, ad, bd),
         Lt | Le | Gt | Ge => fold_cmp(op, ad, bd),
         And | Or => fold_logical(op, ad, bd),
-    }
+    }?;
+    Some(t.from_descr(&d))
 }
 
 fn fold_arith(op: BinOp, ad: &Descr, bd: &Descr) -> Option<Descr> {
