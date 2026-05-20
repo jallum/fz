@@ -106,7 +106,7 @@ block2:
     v23 = symbol_value.i64 gv3
     v24 = iconst.i64 6
     v25 = iconst.i64 48
-    v26 = call fn5(v23, v24, v25)  ; v24 = 6, v25 = 48    ;; v26 :: str
+    v26 = call fn5(v23, v24, v25)  ; v24 = 6, v25 = 48    ;; v26 :: binary
     v27 = bor v22, v26
     v28 = band_imm v27, 7
     v29 = icmp_imm eq v28, 0

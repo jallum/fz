@@ -161,7 +161,6 @@ impl<T: Ord + Clone> LiteralSet<T> {
 
 pub type AtomSet = LiteralSet<String>;
 pub type IntSet = LiteralSet<i64>;
-pub type StrSet = LiteralSet<String>;
 pub type FloatSet = LiteralSet<F64Bits>;
 
 /// fz-try.5 — parametric type-variable identifier. Vars are nominal placeholders
@@ -321,7 +320,6 @@ pub struct MapSig {
 pub enum MapKey {
     Atom(String),
     Int(i64),
-    Str(String),
 }
 
 /// One conjunctive clause inside a DNF: `⋀ pos  ∧  ⋀ (¬neg)`.
@@ -360,7 +358,6 @@ pub struct Descr {
     pub(crate) atoms: AtomSet,
     pub(crate) ints: IntSet,
     pub(crate) floats: FloatSet,
-    pub(crate) strs: StrSet,
     /// Nominal opaque-type tags. A value of opaque type `T` (declared as
     /// `@type T :: opaque U`) has `opaques = {"T"}` AND the underlying `U`
     /// axes populated. Opaque types are nominal: `T ⊄ U` even when the
@@ -406,7 +403,6 @@ impl Descr {
             atoms: AtomSet::any(),
             ints: IntSet::any(),
             floats: FloatSet::any(),
-            strs: StrSet::any(),
             opaques: LiteralSet::any(),
             brands: LiteralSet::any(),
             vars: VarSet::any(),
@@ -423,7 +419,6 @@ impl Descr {
             atoms: AtomSet::none(),
             ints: IntSet::none(),
             floats: FloatSet::none(),
-            strs: StrSet::none(),
             opaques: LiteralSet::none(),
             brands: LiteralSet::none(),
             vars: VarSet::none(),
@@ -650,7 +645,6 @@ impl Descr {
             atoms: self.atoms.clone(),
             ints: self.ints.clone(),
             floats: self.floats.clone(),
-            strs: self.strs.clone(),
             opaques: self.opaques.clone(),
             brands: self.brands.clone(),
             vars: passthrough_vars,
@@ -783,14 +777,6 @@ impl Descr {
         }
     }
 
-    /// Singleton string.
-    pub fn as_str_singleton(&self) -> Option<&str> {
-        match self.single_component()? {
-            Component::Strs(v) => v.singleton(),
-            _ => None,
-        }
-    }
-
     /// fz-swt.6 — singleton opaque tag. Returns `Some(name)` iff this
     /// Descr's only non-empty axis is `opaques` and it names exactly one
     /// qualified opaque type. Consumers (visibility gating, future
@@ -912,7 +898,6 @@ impl Descr {
                 Component::Floats(_) => other
                     .components()
                     .any(|d| matches!(d, Component::Floats(_))),
-                Component::Strs(_) => other.components().any(|d| matches!(d, Component::Strs(_))),
                 Component::Opaques(_) => other
                     .components()
                     .any(|d| matches!(d, Component::Opaques(_))),
@@ -947,25 +932,21 @@ impl Descr {
     }
 
     /// True iff this descriptor extracts to a singleton literal on some
-    /// scalar axis (int, atom, str, float).
+    /// scalar axis (int, atom, float).
     pub fn is_singleton_literal(&self) -> bool {
         self.as_int_singleton().is_some()
             || self.as_atom_singleton().is_some()
-            || self.as_str_singleton().is_some()
             || self.as_float_singleton().is_some()
     }
 
     /// If this descriptor is a singleton scalar that can serve as a
-    /// MapKey (int, atom, or str literal), return it.
+    /// MapKey (int or atom literal), return it.
     pub fn as_map_key(&self) -> Option<MapKey> {
         if let Some(n) = self.as_int_singleton() {
             return Some(MapKey::Int(n));
         }
         if let Some(s) = self.as_atom_singleton() {
             return Some(MapKey::Atom(s.to_string()));
-        }
-        if let Some(s) = self.as_str_singleton() {
-            return Some(MapKey::Str(s.to_string()));
         }
         None
     }
@@ -1001,9 +982,6 @@ impl Descr {
         }
         if !out.floats.is_none() && !out.floats.is_any() {
             out.floats = FloatSet::any();
-        }
-        if !out.strs.is_none() && !out.strs.is_any() {
-            out.strs = StrSet::any();
         }
         out
     }
@@ -1068,15 +1046,14 @@ impl Descr {
         self
     }
 
-    /// Top of the string/binary axis. Promoted from test-only in
-    /// fz-ul4.31.1 to let the type-expression parser lower `binary` to
-    /// the correct Descr. (`dead_code` allowed: production consumers
-    /// land in .31.4 when @spec wires it in.)
-    #[allow(dead_code)]
+    /// fz-axu.22 (M1) — binary top. `binary` in type-expression syntax
+    /// lowers to this. Pre-M1 this Descr lived on a separate `strs`
+    /// axis; M1 collapses it onto the structural binary kinds the
+    /// runtime already uses (byte-aligned and bit-granular bitstrings),
+    /// which is what every consumer actually meant. The name is kept
+    /// to avoid churning ~30 test sites.
     pub fn str_t() -> Self {
-        let mut d = Self::none();
-        d.strs = StrSet::any();
-        d
+        Self::vec_u8().union(&Self::vec_bit())
     }
 
     pub fn float() -> Self {
@@ -1196,7 +1173,6 @@ impl Descr {
             && self.atoms.is_none()
             && self.ints.is_none()
             && self.floats.is_none()
-            && self.strs.is_none()
             && self.opaques.is_none()
             && self.brands.is_none()
             && self.vars.is_none()
@@ -1236,7 +1212,6 @@ impl Descr {
             && self.atoms.is_any()
             && self.ints.is_any()
             && self.floats.is_any()
-            && self.strs.is_any()
             && self.opaques.is_any()
             && self.brands.is_any()
             && self.vars.is_any()
@@ -1277,7 +1252,6 @@ impl Descr {
             atoms: self.atoms.union(&other.atoms),
             ints: self.ints.union(&other.ints),
             floats: self.floats.union(&other.floats),
-            strs: self.strs.union(&other.strs),
             opaques: self.opaques.union(&other.opaques),
             brands: self.brands.union(&other.brands),
             vars: self.vars.union(&other.vars),
@@ -1294,7 +1268,6 @@ impl Descr {
             atoms: self.atoms.intersect(&other.atoms),
             ints: self.ints.intersect(&other.ints),
             floats: self.floats.intersect(&other.floats),
-            strs: self.strs.intersect(&other.strs),
             opaques: self.opaques.intersect(&other.opaques),
             brands: self.brands.intersect(&other.brands),
             vars: self.vars.intersect(&other.vars),
@@ -1311,7 +1284,6 @@ impl Descr {
             atoms: self.atoms.neg(),
             ints: self.ints.neg(),
             floats: self.floats.neg(),
-            strs: self.strs.neg(),
             opaques: self.opaques.neg(),
             brands: self.brands.neg(),
             vars: self.vars.neg(),
@@ -1433,7 +1405,6 @@ impl Descr {
             && self.atoms.is_none()
             && self.ints.is_none()
             && self.floats.is_none()
-            && self.strs.is_none()
             && self.opaques.is_none()
             && self.brands.is_none()
             && self.vars.is_none()
@@ -2070,8 +2041,18 @@ impl fmt::Display for Descr {
 
         let mut parts: Vec<String> = Vec::new();
 
+        // fz-axu.22 (M1) — the VEC_U8 ∪ VEC_BIT combo is the binary
+        // top (`@type … :: binary`). Render it as the user-facing
+        // name rather than the structural "vec(u8) | vec(bit)" pair.
+        let binary_mask = BasicBits::VEC_U8.union(BasicBits::VEC_BIT);
+        let render_binary = self.basic.contains_all(binary_mask);
+        let mut basic_for_loop = self.basic;
+        if render_binary {
+            parts.push("binary".to_string());
+            basic_for_loop = BasicBits(basic_for_loop.0 & !binary_mask.0);
+        }
         for (bit, name) in BASIC_NAMES {
-            if self.basic.contains_all(*bit) {
+            if basic_for_loop.contains_all(*bit) {
                 parts.push((*name).to_string());
             }
         }
@@ -2085,7 +2066,6 @@ impl fmt::Display for Descr {
                 format!("{}", v)
             }
         });
-        format_lit_set(&mut parts, &self.strs, "str", |s| format!("{:?}", s));
         // fz-yan.3 — the reserved atoms render without the `:` sigil to
         // preserve the conventional `nil`/`true`/`false` rendering and
         // collapse `:true | :false` to `bool` for `Descr::bool_t()`.
@@ -2136,8 +2116,15 @@ impl Descr {
 
         let mut parts: Vec<String> = Vec::new();
 
+        // fz-axu.22 (M1) — same binary-combo rendering as Display.
+        let binary_mask = BasicBits::VEC_U8.union(BasicBits::VEC_BIT);
+        let mut basic_for_loop = self.basic;
+        if self.basic.contains_all(binary_mask) {
+            parts.push("binary".to_string());
+            basic_for_loop = BasicBits(basic_for_loop.0 & !binary_mask.0);
+        }
         for (bit, name) in BASIC_NAMES {
-            if self.basic.contains_all(*bit) {
+            if basic_for_loop.contains_all(*bit) {
                 parts.push((*name).to_string());
             }
         }
@@ -2146,7 +2133,6 @@ impl Descr {
         format_lit_set_capped(&mut parts, &self.floats, "float", CAP, |f| {
             format!("{}", f.get())
         });
-        format_lit_set_capped(&mut parts, &self.strs, "str", CAP, |s| format!("{:?}", s));
         if let Some(s) = render_reserved_atom_set(&self.atoms) {
             parts.push(s);
         } else {
@@ -2338,7 +2324,6 @@ fn format_map_key(k: &MapKey) -> String {
     match k {
         MapKey::Atom(a) => format!(":{}", a),
         MapKey::Int(n) => format!("{}", n),
-        MapKey::Str(s) => format!("{:?}", s),
     }
 }
 fn join_clause(pos: &[String], neg: &[String], top: &str) -> String {
@@ -2383,7 +2368,6 @@ pub enum Component<'a> {
     Atoms(AtomView<'a>),
     Ints(IntView<'a>),
     Floats(FloatView<'a>),
-    Strs(StrView<'a>),
     Opaques(OpaqueView<'a>),
     Brands(BrandView<'a>),
     Vars(VarView<'a>),
@@ -2447,21 +2431,6 @@ impl<'a> FloatView<'a> {
     pub fn singleton(&self) -> Option<F64Bits> {
         if !self.inner.cofinite && self.inner.set.len() == 1 {
             self.inner.set.iter().next().copied()
-        } else {
-            None
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
-pub struct StrView<'a> {
-    inner: &'a StrSet,
-}
-
-impl<'a> StrView<'a> {
-    pub fn singleton(&self) -> Option<&'a str> {
-        if !self.inner.cofinite && self.inner.set.len() == 1 {
-            self.inner.set.iter().next().map(String::as_str)
         } else {
             None
         }
@@ -2764,7 +2733,6 @@ impl Descr {
         let floats = (!self.floats.is_none()).then_some(Component::Floats(FloatView {
             inner: &self.floats,
         }));
-        let strs = (!self.strs.is_none()).then_some(Component::Strs(StrView { inner: &self.strs }));
         let opaques = (!self.opaques.is_none()).then_some(Component::Opaques(OpaqueView {
             inner: &self.opaques,
         }));
@@ -2782,7 +2750,7 @@ impl Descr {
         let maps =
             (!self.maps.is_empty()).then_some(Component::Maps(MapView { inner: &self.maps }));
         [
-            basic, atoms, ints, floats, strs, opaques, brands, vars, tuples, lists, funcs, maps,
+            basic, atoms, ints, floats, opaques, brands, vars, tuples, lists, funcs, maps,
         ]
         .into_iter()
         .flatten()
@@ -2816,7 +2784,7 @@ mod tests {
         assert_eq!(Descr::bool_t().to_string(), "bool");
         assert_eq!(Descr::int().to_string(), "int");
         assert_eq!(Descr::float().to_string(), "float");
-        assert_eq!(Descr::str_t().to_string(), "str");
+        assert_eq!(Descr::str_t().to_string(), "binary");
         assert_eq!(Descr::vec_i64().to_string(), "vec(i64)");
         assert_eq!(Descr::vec_f64().to_string(), "vec(f64)");
         assert_eq!(Descr::vec_u8().to_string(), "vec(u8)");
@@ -2833,7 +2801,7 @@ mod tests {
     #[test]
     fn tuple_constructor() {
         let t = Descr::tuple_of([Descr::int(), Descr::str_t()]);
-        assert_eq!(t.to_string(), "{int, str}");
+        assert_eq!(t.to_string(), "{int, binary}");
     }
 
     #[test]
@@ -2999,7 +2967,6 @@ mod tests {
         let n = Descr::int().neg();
         assert!(n.ints.is_none(), "ints axis flipped to empty");
         assert!(n.floats.is_any());
-        assert!(n.strs.is_any());
         assert!(n.atoms.is_any());
         assert!(is_dnf_top(&n.tuples));
     }
@@ -3052,7 +3019,7 @@ mod tests {
         let b = Descr::tuple_of([Descr::atom_lit("error"), Descr::str_t()]);
         let u = a.union(&b);
         assert_eq!(u.tuples.len(), 2, "union concatenates DNF clauses");
-        assert_eq!(u.to_string(), "{:ok, int} | {:error, str}");
+        assert_eq!(u.to_string(), "{:ok, int} | {:error, binary}");
     }
 
     #[test]
@@ -3418,7 +3385,7 @@ mod tests {
         assert_eq!(Descr::map_top().to_string(), "map");
         let m = Descr::map_of([(ak("name"), Descr::str_t()), (ak("age"), Descr::int())]);
         // BTreeMap orders by key, so :age comes before :name
-        assert_eq!(m.to_string(), "%{:age: int, :name: str}");
+        assert_eq!(m.to_string(), "%{:age: int, :name: binary}");
     }
 
     #[test]
@@ -3690,7 +3657,6 @@ mod tests {
         assert!(utf8.basic.is_empty());
         assert!(utf8.atoms.is_none());
         assert!(utf8.ints.is_none());
-        assert!(utf8.strs.is_none());
         assert!(utf8.opaques.is_none(), "brands and opaques are distinct axes");
         assert!(utf8.vars.is_none());
         assert!(!utf8.brands.is_none(), "brands axis must carry the tag");
@@ -4293,9 +4259,9 @@ mod tests {
 
     #[test]
     fn components_any_yields_one_per_axis() {
-        // 12 axes (fz-axu.2 added `brands`): basic, atoms, ints, floats,
-        // strs, opaques, brands, vars, tuples, lists, funcs, maps.
-        assert_eq!(count_components(&Descr::any()), 12);
+        // 11 axes (fz-axu.22 deleted `strs`): basic, atoms, ints,
+        // floats, opaques, brands, vars, tuples, lists, funcs, maps.
+        assert_eq!(count_components(&Descr::any()), 11);
     }
 
     #[test]

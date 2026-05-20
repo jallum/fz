@@ -64,7 +64,7 @@ block2:
     v24 = symbol_value.i64 gv2
     v25 = iconst.i64 2
     v26 = iconst.i64 16
-    v27 = call fn4(v24, v25, v26)  ; v25 = 2, v26 = 16    ;; v27 :: str
+    v27 = call fn4(v24, v25, v26)  ; v25 = 2, v26 = 16    ;; v27 :: binary
     v28 = bor.i64 v4, v27
     v29 = band_imm v28, 7
     v30 = icmp_imm eq v29, 0
@@ -212,7 +212,7 @@ block2:
     v25 = symbol_value.i64 gv2
     v26 = iconst.i64 2
     v27 = iconst.i64 16
-    v28 = call fn4(v25, v26, v27)  ; v26 = 2, v27 = 16    ;; v28 :: str
+    v28 = call fn4(v25, v26, v27)  ; v26 = 2, v27 = 16    ;; v28 :: binary
     v29 = bor.i64 v5, v28
     v30 = band_imm v29, 7
     v31 = icmp_imm eq v30, 0
@@ -362,7 +362,7 @@ block2:
     v27 = symbol_value.i64 gv2
     v28 = iconst.i64 2
     v29 = iconst.i64 16
-    v30 = call fn4(v27, v28, v29)  ; v28 = 2, v29 = 16    ;; v30 :: str
+    v30 = call fn4(v27, v28, v29)  ; v28 = 2, v29 = 16    ;; v30 :: binary
     v31 = bor.i64 v5, v30
     v32 = band_imm v31, 7
     v33 = icmp_imm eq v32, 0

@@ -7618,8 +7618,7 @@ fn lower_prim<M: cranelift_module::Module>(
                     // Untyped-by-codegen axes — silent no-match, matching
                     // pre-Component behavior. Compiler exhaustiveness ensures
                     // future axis additions surface this gap.
-                    Component::Strs(_)
-                    | Component::Opaques(_)
+                    Component::Opaques(_)
                     | Component::Brands(_)
                     | Component::Vars(_)
                     | Component::Lists(_)
@@ -7723,8 +7722,7 @@ fn lower_prim<M: cranelift_module::Module>(
                         // Scalar axes handled in Pass 1.
                         Component::Ints(_) | Component::Atoms(_) => {}
                         // Untyped-by-codegen axes — silent no-match.
-                        Component::Strs(_)
-                        | Component::Opaques(_)
+                        Component::Opaques(_)
                         | Component::Brands(_)
                         | Component::Vars(_)
                         | Component::Lists(_)

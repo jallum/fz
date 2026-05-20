@@ -1037,8 +1037,7 @@ fn eval_prim(module: &Module, prim: &Prim, env: &HashMap<Var, FzValue>) -> Resul
                     // implementation ignored these too. Compiler-enforced
                     // exhaustiveness means any future axis addition surfaces
                     // this gap explicitly rather than silently mis-typing.
-                    Component::Strs(_)
-                    | Component::Opaques(_)
+                    Component::Opaques(_)
                     | Component::Brands(_)
                     | Component::Vars(_)
                     | Component::Lists(_)

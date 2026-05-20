@@ -37,8 +37,8 @@
 ;   return: nil
 ;   vars:
 ;     Var(0) :: :match_error
-;     Var(1) :: str
-;     Var(3) :: str
+;     Var(1) :: binary
+;     Var(3) :: binary
 ;     Var(5) :: bool
 ;   exits:
 ;     blk0 Call print#4(Var(5))
@@ -52,8 +52,8 @@
 ;   return: nil
 ;   vars:
 ;     Var(0) :: nil
-;     Var(1) :: str
-;     Var(3) :: str
+;     Var(1) :: binary
+;     Var(3) :: binary
 ;     Var(5) :: bool
 ;   exits:
 ;     blk0 Call print#4(Var(5))
@@ -66,8 +66,8 @@
 ;   return: nil
 ;   vars:
 ;     Var(0) :: nil
-;     Var(1) :: str
-;     Var(3) :: str
+;     Var(1) :: binary
+;     Var(3) :: binary
 ;     Var(5) :: bool
 ;   exits:
 ;     blk0 TailCall print#4(Var(5))

@@ -33,14 +33,14 @@
 ;     blk0 Return Var(1)    :: nil
 
 ; spec greet(1) #fn=22
-;   key:    [str]
+;   key:    [binary]
 ;   return: :goodbye | :hello | :unknown
 ;   vars:
-;     Var(0) :: str
+;     Var(0) :: binary
 ;     Var(1) :: :function_clause
-;     Var(2) :: str
+;     Var(2) :: binary
 ;     Var(4) :: bool
-;     Var(5) :: str
+;     Var(5) :: binary
 ;     Var(7) :: bool
 ;   exits:
 ;     blk0 Goto blk2()
@@ -59,10 +59,10 @@
 ;   return: nil
 ;   vars:
 ;     Var(0) :: :match_error
-;     Var(1) :: str
+;     Var(1) :: binary
 ;   exits:
 ;     blk0 Call greet#22(Var(1))
-;              callee_key=[str]
+;              callee_key=[binary]
 ;              cont k_27#27 captured=[]
 ;              cont_key=[:goodbye | :hello | :unknown]
 ;     blk1 Halt Var(0)      :: :match_error
@@ -107,10 +107,10 @@
 ;   return: nil
 ;   vars:
 ;     Var(0) :: nil
-;     Var(1) :: str
+;     Var(1) :: binary
 ;   exits:
 ;     blk0 Call greet#22(Var(1))
-;              callee_key=[str]
+;              callee_key=[binary]
 ;              cont k_29#29 captured=[]
 ;              cont_key=[:goodbye | :hello | :unknown]
 
@@ -130,10 +130,10 @@
 ;   return: nil
 ;   vars:
 ;     Var(0) :: nil
-;     Var(1) :: str
+;     Var(1) :: binary
 ;   exits:
 ;     blk0 Call greet#22(Var(1))
-;              callee_key=[str]
+;              callee_key=[binary]
 ;              cont k_31#31 captured=[]
 ;              cont_key=[:goodbye | :hello | :unknown]
 

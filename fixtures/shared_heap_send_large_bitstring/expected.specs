@@ -36,10 +36,10 @@
 ;     blk0 Return Var(1)    :: nil
 
 ; spec fn_clause_1(1) #fn=19
-;   key:    [vec(i64) | vec(f64) | vec(u8) | vec(bit) | float | str | atom | opaque | brand | var | tuple | list | fn | map]
+;   key:    [binary | vec(i64) | vec(f64) | float | atom | opaque | brand | var | tuple | list | fn | map]
 ;   return: nil
 ;   vars:
-;     Var(0) :: vec(i64) | vec(f64) | vec(u8) | vec(bit) | float | str | atom | opaque | brand | var | tuple | list | fn | map
+;     Var(0) :: binary | vec(i64) | vec(f64) | float | atom | opaque | brand | var | tuple | list | fn | map
 ;     Var(1) :: nil
 ;   exits:
 ;     blk0 Return Var(1)    :: nil
@@ -131,14 +131,14 @@
 ;     Var(68) :: 68
 ;     Var(69) :: 69
 ;     Var(70) :: 70
-;     Var(71) :: str
+;     Var(71) :: binary
 ;     Var(72) :: :match_error
-;     Var(73) :: &fn24[str]:() -> α1599
-;     Var(74) :: &fn25[&fn24[str]:() -> α1599]:() -> α1663
+;     Var(73) :: &fn24[binary]:() -> α1599
+;     Var(74) :: &fn25[&fn24[binary]:() -> α1599]:() -> α1663
 ;     Var(75) :: any
 ;   exits:
 ;     blk0 Receive cont k_receive_26#26 captured=[Var(71)]
-;              cont_key=[any, str]
+;              cont_key=[any, binary]
 ;     blk1 Halt Var(0)      :: :match_error
 ;     blk2 Halt Var(72)      :: :match_error
 
@@ -162,11 +162,11 @@
 ;     blk0 TailCallClosure Var(0)()
 
 ; spec k_receive_26(2) #fn=26
-;   key:    [any, str]
+;   key:    [any, binary]
 ;   return: none
 ;   vars:
 ;     Var(0) :: any
-;     Var(1) :: str
+;     Var(1) :: binary
 ;   exits:
 ;     blk0 TailCall print#4(Var(0))
 ;              callee_key=[any]

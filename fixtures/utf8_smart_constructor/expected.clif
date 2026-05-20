@@ -40,8 +40,8 @@ block0(v0: i64):
 }
 
 ; fn Utf8.from_bytes_s23
-    ;   @spec   Utf8.from_bytes(str) -> {:ok, any} | {:error, :invalid_utf8}
-    ;   @key    [str]
+    ;   @spec   Utf8.from_bytes(binary) -> {:ok, any} | {:error, :invalid_utf8}
+    ;   @key    [binary]
     ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64) -> i64 system_v
@@ -55,7 +55,7 @@ function u0:0(i64, i64) -> i64 tail {
     fn2 = u0:6 sig2
     fn3 = u0:6 sig4
 
-    block0(v0: i64, v1: i64):    ;; v0 :: str
+    block0(v0: i64, v1: i64):    ;; v0 :: binary
     v2 = call fn0(v0)
     v3 = ishl_imm v2, 3
     v4 = bor_imm v3, 1    ;; v4 :: int
@@ -86,8 +86,8 @@ block2:
 }
 
 ; fn k_24
-    ;   @spec   k_24(nil, str, str) -> nil
-    ;   @key    [nil, str, str]
+    ;   @spec   k_24(nil, binary, binary) -> nil
+    ;   @key    [nil, binary, binary]
     ;   @abi    (Tagged, Tagged, Tagged) -> Tagged
 function u0:0(i64, i64, i64, i64) -> i64 tail {
     sig0 = (i64) -> i64 system_v
@@ -97,7 +97,7 @@ function u0:0(i64, i64, i64, i64) -> i64 tail {
     fn1 = u0:52 sig1
     fn2 = colocated u0:47 sig2
 
-    block0(v0: i64, v1: i64, v2: i64, v3: i64):    ;; v0 :: nil, v1 :: str, v2 :: str
+    block0(v0: i64, v1: i64, v2: i64, v3: i64):    ;; v0 :: nil, v1 :: binary, v2 :: binary
     v4 = call fn0(v2)
     v5 = ishl_imm v4, 3
     v6 = bor_imm v5, 1    ;; v6 :: int
@@ -113,8 +113,8 @@ function u0:0(i64, i64, i64, i64) -> i64 tail {
 }
 
 ; fn k_26_s25
-    ;   @spec   k_26(nil, str, str) -> nil
-    ;   @key    [nil, str, str]
+    ;   @spec   k_26(nil, binary, binary) -> nil
+    ;   @key    [nil, binary, binary]
     ;   @abi    (Tagged, Tagged, Tagged) -> Tagged
 function u0:0(i64, i64, i64, i64) -> i64 tail {
     sig0 = (i64, i64) -> i64 tail
@@ -124,7 +124,7 @@ function u0:0(i64, i64, i64, i64) -> i64 tail {
     fn1 = u0:29 sig1
     fn2 = colocated u0:48 sig2
 
-    block0(v0: i64, v1: i64, v2: i64, v3: i64):    ;; v0 :: nil, v1 :: str, v2 :: str
+    block0(v0: i64, v1: i64, v2: i64, v3: i64):    ;; v0 :: nil, v1 :: binary, v2 :: binary
     v4 = iconst.i32 26                  ; @6:9
     v5 = iconst.i32 3                   ; @6:9
     v6 = iconst.i32 0                   ; @6:9
@@ -138,8 +138,8 @@ function u0:0(i64, i64, i64, i64) -> i64 tail {
 }
 
 ; fn k_27_s26
-    ;   @spec   k_27({:ok, any} | {:error, :invalid_utf8}, str, str) -> nil
-    ;   @key    [{:ok, any} | {:error, :invalid_utf8}, str, str]
+    ;   @spec   k_27({:ok, any} | {:error, :invalid_utf8}, binary, binary) -> nil
+    ;   @key    [{:ok, any} | {:error, :invalid_utf8}, binary, binary]
     ;   @abi    (Tagged, Tagged, Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64) system_v
@@ -148,8 +148,8 @@ function u0:0(i64, i64) -> i64 tail {
     fn1 = colocated u0:49 sig1
 
     block0(v0: i64, v1: i64):    ;; v0 :: {:ok, any} | {:error, :invalid_utf8}
-    v2 = load.i64 notrap aligned v1+32    ;; v2 :: str
-    v3 = load.i64 notrap aligned v1+40    ;; v3 :: str
+    v2 = load.i64 notrap aligned v1+32    ;; v2 :: binary
+    v3 = load.i64 notrap aligned v1+40    ;; v3 :: binary
     call fn0(v0)
     v4 = iconst.i64 2    ;; v4 :: nil
     v5 = load.i64 notrap aligned v1+24  ; @6:3
@@ -157,8 +157,8 @@ function u0:0(i64, i64) -> i64 tail {
 }
 
 ; fn k_28_s27
-    ;   @spec   k_28(nil, str, str) -> nil
-    ;   @key    [nil, str, str]
+    ;   @spec   k_28(nil, binary, binary) -> nil
+    ;   @key    [nil, binary, binary]
     ;   @abi    (Tagged, Tagged, Tagged) -> Tagged
 function u0:0(i64, i64, i64, i64) -> i64 tail {
     sig0 = (i64, i64) -> i64 tail
@@ -168,7 +168,7 @@ function u0:0(i64, i64, i64, i64) -> i64 tail {
     fn1 = u0:29 sig1
     fn2 = colocated u0:50 sig2
 
-    block0(v0: i64, v1: i64, v2: i64, v3: i64):    ;; v0 :: nil, v1 :: str, v2 :: str
+    block0(v0: i64, v1: i64, v2: i64, v3: i64):    ;; v0 :: nil, v1 :: binary, v2 :: binary
     v4 = iconst.i32 28                  ; @7:9
     v5 = iconst.i32 3                   ; @7:9
     v6 = iconst.i32 0                   ; @7:9
@@ -182,8 +182,8 @@ function u0:0(i64, i64, i64, i64) -> i64 tail {
 }
 
 ; fn k_29_s28
-    ;   @spec   k_29({:ok, any} | {:error, :invalid_utf8}, str, str) -> nil
-    ;   @key    [{:ok, any} | {:error, :invalid_utf8}, str, str]
+    ;   @spec   k_29({:ok, any} | {:error, :invalid_utf8}, binary, binary) -> nil
+    ;   @key    [{:ok, any} | {:error, :invalid_utf8}, binary, binary]
     ;   @abi    (Tagged, Tagged, Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64) system_v
@@ -191,8 +191,8 @@ function u0:0(i64, i64) -> i64 tail {
     fn0 = u0:52 sig0
 
     block0(v0: i64, v1: i64):    ;; v0 :: {:ok, any} | {:error, :invalid_utf8}
-    v2 = load.i64 notrap aligned v1+32    ;; v2 :: str
-    v3 = load.i64 notrap aligned v1+40    ;; v3 :: str
+    v2 = load.i64 notrap aligned v1+32    ;; v2 :: binary
+    v3 = load.i64 notrap aligned v1+40    ;; v3 :: binary
     call fn0(v0)
     v4 = iconst.i64 2    ;; v4 :: nil
     v5 = load.i64 notrap aligned v1+24  ; @7:3
