@@ -1051,6 +1051,43 @@ fn compute_return_for_spec(
                 let cont_k = cont_key_for_spec(b, continuation, ft, module, effective_returns);
                 joined = joined.union(&lookup((continuation.fn_id, cont_k)));
             }
+            // fz-yxs — selective receive: union over each clause body's
+            // return Descr (called with arg key [bound_anys..., captures...])
+            // and the after body if present (called with captures only).
+            // Pattern bindings can't be narrowed without per-message info,
+            // so each bound param defaults to `any` for the key.
+            Term::ReceiveMatched {
+                clauses,
+                after,
+                captures,
+                ..
+            } => {
+                let cap_descrs: Vec<Descr> = captures
+                    .iter()
+                    .map(|cv| ft.vars.get(cv).cloned().unwrap_or_else(Descr::any))
+                    .collect();
+                for c in clauses {
+                    let body_fn = module.fn_by_id(c.body);
+                    let np = body_fn.block(body_fn.entry).params.len();
+                    let mut key: Vec<Descr> = vec![Descr::any(); c.bound_names.len()];
+                    key.extend(cap_descrs.iter().cloned());
+                    while key.len() < np {
+                        key.push(Descr::any());
+                    }
+                    key.truncate(np);
+                    joined = joined.union(&lookup((c.body, key)));
+                }
+                if let Some(a) = after {
+                    let body_fn = module.fn_by_id(a.body);
+                    let np = body_fn.block(body_fn.entry).params.len();
+                    let mut key = cap_descrs.clone();
+                    while key.len() < np {
+                        key.push(Descr::any());
+                    }
+                    key.truncate(np);
+                    joined = joined.union(&lookup((a.body, key)));
+                }
+            }
             Term::Halt(_) | Term::Goto(_, _) | Term::If { .. } => {}
         }
     }
@@ -1469,6 +1506,67 @@ fn walk_spec_for_discovery(
                 }
             }
         }
+
+        // fz-70q.3 — selective-receive bodies aren't expressed in
+        // `block_callsites` (they're FnId fields on the terminator,
+        // not Cont structs). Walk them inline so the typer's spec
+        // worklist seeds (FnId, key) for each clause body / guard /
+        // after; without this codegen never sees their FuncIds and
+        // the park-site fn_addr lookup faults.
+        //
+        // Key shape mirrors `compute_return_for_spec`'s lookup at
+        // line ~1064: `[any; bound_arity] ++ cap_descrs`, padded to
+        // the body fn's entry-block arity. After bodies take 0
+        // bound vars (captures only).
+        if let Term::ReceiveMatched {
+            clauses,
+            after,
+            captures,
+            ..
+        } = &b.terminator
+        {
+            let cap_descrs: Vec<Descr> = captures
+                .iter()
+                .map(|cv| env.get(cv).cloned().unwrap_or_else(Descr::any))
+                .collect();
+            let mut enq = |fid: FnId, bound_arity: usize, ident: crate::fz_ir::CallsiteIdent| {
+                let Some(&j) = m.fn_idx.get(&fid) else {
+                    return;
+                };
+                let body = &m.fns[j];
+                let np = body.block(body.entry).params.len();
+                let mut key: Vec<Descr> = vec![Descr::any(); bound_arity];
+                key.extend(cap_descrs.iter().cloned());
+                while key.len() < np {
+                    key.push(Descr::any());
+                }
+                key.truncate(np);
+                emit(EmitSlot::Cont, ident, (fid, key), out);
+            };
+            // EmitterSite is keyed (caller, ident, slot); a single
+            // ReceiveMatched term has N clause/after sub-targets but
+            // shares one term_ident, so we synthesize per-target
+            // idents from each body fn's span. Without this the
+            // `produces` HashMap collapses to the last emit and
+            // earlier targets fall out of reachability.
+            for c in clauses {
+                enq(
+                    c.body,
+                    c.bound_names.len(),
+                    crate::fz_ir::CallsiteIdent::from_source(c.span),
+                );
+                if let Some(g) = c.guard {
+                    enq(
+                        g,
+                        c.bound_names.len(),
+                        crate::fz_ir::CallsiteIdent::from_source(c.span),
+                    );
+                }
+            }
+            if let Some(a) = after {
+                enq(a.body, 0, crate::fz_ir::CallsiteIdent::from_source(a.span));
+            }
+        }
     }
 }
 
@@ -1708,7 +1806,8 @@ pub fn type_fn(f: &FnIr, m: &Module, entry_param_types: Option<&[Descr]>) -> FnT
                 | Term::TailCallClosure { .. }
                 | Term::Return(_)
                 | Term::Halt(_)
-                | Term::Receive { .. } => {
+                | Term::Receive { .. }
+                | Term::ReceiveMatched { .. } => {
                     // Inter-fn flow goes through separate FnIr continuations;
                     // intra-fn flow stops here.
                 }
@@ -2574,6 +2673,72 @@ pub fn collect_diagnostics(module: &Module, types: &ModuleTypes) -> crate::diag:
         }
     }
 
+    // fz-yxs — pure-codegen invariant for receive matchers and guards.
+    // Walk every Term::ReceiveMatched; for each clause's guard FnId, walk
+    // every block in the guard fn body and reject any impure Prim or
+    // impure terminator (Call / Receive / Halt). The matcher itself is
+    // backend-materialised from the pattern AST in B3, so there is nothing
+    // to check at the IR level for patterns today; the pattern AST
+    // grammar already forbids fn calls inside patterns, so the second
+    // acceptance bullet ("typer rejects impure pattern") is vacuously
+    // satisfied at parse/lowering.
+    for f in &module.fns {
+        for b in &f.blocks {
+            let Term::ReceiveMatched { clauses, .. } = &b.terminator else {
+                continue;
+            };
+            for c in clauses {
+                let Some(g_fid) = c.guard else { continue };
+                let g_fn = module.fn_by_id(g_fid);
+                let guard_span = c.span;
+                let mut impure: Option<String> = None;
+                for gb in &g_fn.blocks {
+                    if let Err(e) = check_pure_codegen(&gb.stmts) {
+                        impure = Some(match e {
+                            ImpureError::Stmt { kind, .. } => match kind {
+                                ImpureKind::Allocates(what) => {
+                                    format!("guard expression allocates via `{}`", what)
+                                }
+                                ImpureKind::Extern => "guard expression calls an extern".into(),
+                            },
+                            ImpureError::Term(_) => unreachable!(),
+                        });
+                        break;
+                    }
+                    if let Err(e) = check_pure_term(&gb.terminator) {
+                        impure = Some(match e {
+                            ImpureError::Term(ImpureTerm::Call) => {
+                                "guard expression invokes a function (calls are not allowed)".into()
+                            }
+                            ImpureError::Term(ImpureTerm::Receive) => {
+                                "guard expression contains a `receive` (not allowed)".into()
+                            }
+                            ImpureError::Term(ImpureTerm::Halt) => {
+                                "guard expression halts (not allowed)".into()
+                            }
+                            ImpureError::Stmt { .. } => unreachable!(),
+                        });
+                        break;
+                    }
+                }
+                if let Some(reason) = impure {
+                    let d = Diagnostic::error(
+                        crate::diag::codes::TYPE_IMPURE_RECEIVE_GUARD,
+                        reason,
+                        guard_span,
+                    )
+                    .with_label(format!("in fn `{}`", f.name))
+                    .with_note(
+                        "guards in `receive` must stay in the pure-codegen subset: \
+                         constants, comparisons, type tests, and accessors — \
+                         no function calls or allocations",
+                    );
+                    out.push(d);
+                }
+            }
+        }
+    }
+
     out
 }
 
@@ -2937,6 +3102,51 @@ pub fn reachable_specs(
                         worklist.push(sid.0);
                     }
                 }
+                Term::ReceiveMatched {
+                    clauses,
+                    after,
+                    captures,
+                    ..
+                } => {
+                    // fz-70q.3 — clause body / guard / after fns are
+                    // reached only through the selective-receive
+                    // dispatch (matcher hit → trampoline → fz_resume_
+                    // matched_N). The typer registers a spec per body
+                    // at key = [any; bound_arity] ++ cap_descrs (see
+                    // walker / lookup at line ~1064); reproduce that
+                    // shape here so resolve() lands on the same spec.
+                    let cap_descrs: Vec<Descr> = captures
+                        .iter()
+                        .map(|cv| ft.vars.get(cv).cloned().unwrap_or_else(Descr::any))
+                        .collect();
+                    let enq =
+                        |fid: FnId, bound_arity: usize, cap_descrs: &[Descr], wl: &mut Vec<u32>| {
+                            let Some(&j) = module.fn_idx.get(&fid) else {
+                                return;
+                            };
+                            let body = &module.fns[j];
+                            let np = body.block(body.entry).params.len();
+                            let mut key: Vec<Descr> = vec![Descr::any(); bound_arity];
+                            key.extend(cap_descrs.iter().cloned());
+                            while key.len() < np {
+                                key.push(Descr::any());
+                            }
+                            key.truncate(np);
+                            if let Some(sid) = spec_registry.resolve(fid, &key) {
+                                wl.push(sid.0);
+                            }
+                        };
+                    for c in clauses {
+                        enq(c.body, c.bound_names.len(), &cap_descrs, &mut worklist);
+                        if let Some(g) = c.guard {
+                            enq(g, c.bound_names.len(), &cap_descrs, &mut worklist);
+                        }
+                    }
+                    if let Some(a) = after {
+                        // After body takes no bound vars — just captures.
+                        enq(a.body, 0, &cap_descrs, &mut worklist);
+                    }
+                }
                 _ => {}
             }
         }
@@ -3187,6 +3397,49 @@ pub fn pretty_module_types(m: &Module, t: &ModuleTypes) -> String {
                     ));
                     out.push_str(&format!(";              cont_key={}\n", descrs_str(&ck)));
                 }
+                // fz-yxs — selective receive: render clauses (with body
+                // fn ids + bound names) and the after clause if present.
+                Term::ReceiveMatched {
+                    clauses,
+                    after,
+                    pinned,
+                    captures,
+                    ..
+                } => {
+                    let pin_vars: Vec<String> = pinned
+                        .iter()
+                        .map(|(n, v)| format!("^{}=Var({})", n, v.0))
+                        .collect();
+                    let cap_vars: Vec<String> =
+                        captures.iter().map(|v| format!("Var({})", v.0)).collect();
+                    out.push_str(&format!(
+                        ";     blk{} ReceiveMatched pinned=[{}] caps=[{}]\n",
+                        bid,
+                        pin_vars.join(", "),
+                        cap_vars.join(", "),
+                    ));
+                    for (i, c) in clauses.iter().enumerate() {
+                        out.push_str(&format!(
+                            ";              clause[{}] body={}#{} bound=[{}]{}\n",
+                            i,
+                            fn_name(c.body),
+                            c.body.0,
+                            c.bound_names.join(", "),
+                            match c.guard {
+                                Some(g) => format!(" guard={}#{}", fn_name(g), g.0),
+                                None => String::new(),
+                            },
+                        ));
+                    }
+                    if let Some(a) = after {
+                        out.push_str(&format!(
+                            ";              after timeout=Var({}) body={}#{}\n",
+                            a.timeout.0,
+                            fn_name(a.body),
+                            a.body.0,
+                        ));
+                    }
+                }
                 Term::Goto(target, args) => {
                     let arg_vars: Vec<String> =
                         args.iter().map(|v| format!("Var({})", v.0)).collect();
@@ -3213,6 +3466,284 @@ pub fn pretty_module_types(m: &Module, t: &ModuleTypes) -> String {
         out.push('\n');
     }
     out
+}
+
+// ----------------------------------------------------------------------
+// fz-e4u — pure-codegen subset check
+// ----------------------------------------------------------------------
+//
+// Used by fz-recv to enforce that pattern arms and guard expressions in
+// `receive do … end` lower only to read-only / non-allocating primitives.
+// When this property holds for an expression, its compiled matcher can be
+// invoked from the sender thread (per docs/receive-matched.md §2.3,
+// §3.4) with no allocator interaction, no FFI re-entry, and no GC race.
+//
+// The check is a pure structural walk over `&[Stmt]` and an optional
+// terminator. It does **not** consult the typer's worklist results; it
+// runs strictly on the IR produced by lowering. fz-yxs (E2) wires the
+// check into the `Term::ReceiveMatched` typer rule.
+//
+// The API below is consumed by `collect_diagnostics`' Term::ReceiveMatched
+// guard scan (fz-yxs).
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ImpureKind {
+    /// The prim allocates on the per-process heap. Variant name is the
+    /// offending Prim's variant label for diagnostics.
+    Allocates(&'static str),
+    /// `Prim::Extern(_)` — any FFI call. Even a side-effect-free FFI is
+    /// rejected because the check has no way to verify its body, and a
+    /// rogue FFI can allocate, send, receive, or re-enter the scheduler.
+    Extern,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ImpureTerm {
+    /// `Call` / `TailCall` / `CallClosure` / `TailCallClosure` — invoke
+    /// arbitrary user code with arbitrary effects.
+    Call,
+    /// `Receive` — a matcher invoking receive would deadlock the scheduler.
+    Receive,
+    /// `Halt` — exits the task; meaningless inside a matcher.
+    Halt,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ImpureError {
+    Stmt { index: usize, kind: ImpureKind },
+    Term(ImpureTerm),
+}
+
+/// True iff `p` is in the pure-codegen subset. See module-level comment
+/// for the rationale; see `docs/receive-matched.md §2.3` for the design
+/// constraint this enforces.
+pub fn prim_is_pure(p: &crate::fz_ir::Prim) -> Result<(), ImpureKind> {
+    use crate::fz_ir::Prim::*;
+    match p {
+        Const(_)
+        | BinOp(_, _, _)
+        | UnOp(_, _)
+        | ListHead(_)
+        | ListTail(_)
+        | IsEmptyList(_)
+        | TupleField(_, _)
+        | MapGet(_, _)
+        | BitReaderInit(_)
+        | BitReadField { .. }
+        | BitReaderDone(_)
+        | TypeTest(_, _) => Ok(()),
+
+        AllocStruct(_, _) => Err(ImpureKind::Allocates("AllocStruct")),
+        ListCons(_, _) => Err(ImpureKind::Allocates("ListCons")),
+        MakeTuple(_) => Err(ImpureKind::Allocates("MakeTuple")),
+        MakeList(_, _) => Err(ImpureKind::Allocates("MakeList")),
+        MakeClosure(_, _, _) => Err(ImpureKind::Allocates("MakeClosure")),
+        MakeMap(_) => Err(ImpureKind::Allocates("MakeMap")),
+        MapUpdate(_, _) => Err(ImpureKind::Allocates("MapUpdate")),
+        MakeVec(_, _) => Err(ImpureKind::Allocates("MakeVec")),
+        MakeBitstring(_) => Err(ImpureKind::Allocates("MakeBitstring")),
+        ConstBitstring(_, _) => Err(ImpureKind::Allocates("ConstBitstring")),
+
+        Extern(_, _) => Err(ImpureKind::Extern),
+    }
+}
+
+/// Walk every Let-bound Prim in `stmts`; first offender wins.
+pub fn check_pure_codegen(stmts: &[crate::fz_ir::Stmt]) -> Result<(), ImpureError> {
+    use crate::fz_ir::Stmt;
+    for (i, s) in stmts.iter().enumerate() {
+        let Stmt::Let(_, p) = s;
+        prim_is_pure(p).map_err(|kind| ImpureError::Stmt { index: i, kind })?;
+    }
+    Ok(())
+}
+
+/// Only Goto / If / Return are allowed in matcher / guard lowering.
+pub fn check_pure_term(term: &crate::fz_ir::Term) -> Result<(), ImpureError> {
+    use crate::fz_ir::Term::*;
+    match term {
+        Goto(_, _) | If { .. } | Return(_) => Ok(()),
+        Call { .. } | TailCall { .. } | CallClosure { .. } | TailCallClosure { .. } => {
+            Err(ImpureError::Term(ImpureTerm::Call))
+        }
+        Receive { .. } | ReceiveMatched { .. } => Err(ImpureError::Term(ImpureTerm::Receive)),
+        Halt(_) => Err(ImpureError::Term(ImpureTerm::Halt)),
+    }
+}
+
+#[cfg(test)]
+mod purity_tests {
+    use super::*;
+    use crate::fz_ir::{BinOp, BlockId, BranchOrigin, Const, ExternId, Prim, Stmt, Term, Var};
+    use crate::types::Descr;
+
+    fn v(n: u32) -> Var {
+        Var(n)
+    }
+    fn s(p: Prim) -> Stmt {
+        Stmt::Let(v(0), p)
+    }
+
+    #[test]
+    fn pure_const_int_accepted() {
+        assert!(check_pure_codegen(&[s(Prim::Const(Const::Int(42)))]).is_ok());
+    }
+
+    #[test]
+    fn pure_tuple_field_accepted() {
+        assert!(check_pure_codegen(&[s(Prim::TupleField(v(1), 0))]).is_ok());
+    }
+
+    #[test]
+    fn pure_list_head_tail_is_empty_accepted() {
+        let stmts = vec![
+            s(Prim::ListHead(v(1))),
+            s(Prim::ListTail(v(1))),
+            s(Prim::IsEmptyList(v(1))),
+        ];
+        assert!(check_pure_codegen(&stmts).is_ok());
+    }
+
+    #[test]
+    fn pure_binop_unop_accepted() {
+        let stmts = vec![
+            s(Prim::BinOp(BinOp::Eq, v(1), v(2))),
+            s(Prim::BinOp(BinOp::Add, v(1), v(2))),
+        ];
+        assert!(check_pure_codegen(&stmts).is_ok());
+    }
+
+    #[test]
+    fn pure_type_test_accepted() {
+        let stmts = vec![s(Prim::TypeTest(v(1), Box::new(Descr::int())))];
+        assert!(check_pure_codegen(&stmts).is_ok());
+    }
+
+    #[test]
+    fn pure_map_get_accepted() {
+        assert!(check_pure_codegen(&[s(Prim::MapGet(v(1), v(2)))]).is_ok());
+    }
+
+    #[test]
+    fn alloc_struct_rejected() {
+        match check_pure_codegen(&[s(Prim::AllocStruct(0, vec![]))]) {
+            Err(ImpureError::Stmt {
+                index: 0,
+                kind: ImpureKind::Allocates("AllocStruct"),
+            }) => {}
+            other => panic!("expected AllocStruct rejection, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn make_tuple_rejected() {
+        assert!(matches!(
+            check_pure_codegen(&[s(Prim::MakeTuple(vec![v(1), v(2)]))]),
+            Err(ImpureError::Stmt {
+                kind: ImpureKind::Allocates("MakeTuple"),
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn make_list_rejected() {
+        assert!(matches!(
+            check_pure_codegen(&[s(Prim::MakeList(vec![v(1)], None))]),
+            Err(ImpureError::Stmt {
+                kind: ImpureKind::Allocates("MakeList"),
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn list_cons_rejected() {
+        assert!(matches!(
+            check_pure_codegen(&[s(Prim::ListCons(v(1), v(2)))]),
+            Err(ImpureError::Stmt {
+                kind: ImpureKind::Allocates("ListCons"),
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn make_map_and_update_rejected() {
+        assert!(matches!(
+            check_pure_codegen(&[s(Prim::MakeMap(vec![]))]),
+            Err(ImpureError::Stmt {
+                kind: ImpureKind::Allocates("MakeMap"),
+                ..
+            })
+        ));
+        assert!(matches!(
+            check_pure_codegen(&[s(Prim::MapUpdate(v(1), vec![]))]),
+            Err(ImpureError::Stmt {
+                kind: ImpureKind::Allocates("MapUpdate"),
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn make_bitstring_rejected() {
+        assert!(matches!(
+            check_pure_codegen(&[s(Prim::MakeBitstring(vec![]))]),
+            Err(ImpureError::Stmt {
+                kind: ImpureKind::Allocates("MakeBitstring"),
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn extern_rejected_even_if_harmless() {
+        assert!(matches!(
+            check_pure_codegen(&[s(Prim::Extern(ExternId(0), vec![]))]),
+            Err(ImpureError::Stmt {
+                kind: ImpureKind::Extern,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn first_impure_stmt_index_reported() {
+        let stmts = vec![
+            s(Prim::Const(Const::Int(1))),
+            s(Prim::TupleField(v(1), 0)),
+            s(Prim::MakeTuple(vec![v(1)])),
+            s(Prim::MakeList(vec![v(1)], None)),
+        ];
+        match check_pure_codegen(&stmts) {
+            Err(ImpureError::Stmt { index, .. }) => assert_eq!(index, 2),
+            other => panic!("expected Stmt error at index 2, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn term_goto_if_return_accepted() {
+        assert!(check_pure_term(&Term::Goto(BlockId(0), vec![])).is_ok());
+        assert!(check_pure_term(&Term::Return(v(0))).is_ok());
+        assert!(
+            check_pure_term(&Term::If {
+                cond: v(0),
+                then_b: BlockId(0),
+                else_b: BlockId(1),
+                origin: BranchOrigin::PatternBind,
+            })
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn term_halt_rejected() {
+        assert!(matches!(
+            check_pure_term(&Term::Halt(v(0))),
+            Err(ImpureError::Term(ImpureTerm::Halt))
+        ));
+    }
 }
 
 // ----------------------------------------------------------------------

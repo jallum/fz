@@ -4,22 +4,22 @@
     ;   @abi    () -> Tagged
 function u0:0(i64) -> i64 tail {
     sig0 = (i64, i64) -> i64 tail
-    fn0 = colocated u0:43 sig0
+    fn0 = colocated u0:45 sig0
 
 block0(v0: i64):
     v1 = iconst.i64 7                   ; @7:18
     return_call fn0(v1, v0)             ; @7:9  v1 = 7
 }
 
-; fn k_17_s15
-    ;   @spec   k_17(7) -> nil
+; fn k_18_s16
+    ;   @spec   k_18(7) -> nil
     ;   @key    [7]
     ;   @abi    (RawInt) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64) system_v
     sig1 = (i64, i64) -> i64 tail
-    fn0 = u0:46 sig0
-    fn1 = colocated u0:45 sig1
+    fn0 = u0:48 sig0
+    fn1 = colocated u0:47 sig1
 
     block0(v0: i64, v1: i64):    ;; v0 :: 7
     call fn0(v0)
@@ -27,14 +27,14 @@ function u0:0(i64, i64) -> i64 tail {
     return_call fn1(v2, v1)             ; @7:3  v2 = 2
 }
 
-; fn k_18_s17
-    ;   @spec   k_18(nil) -> nil
+; fn k_19_s18
+    ;   @spec   k_19(nil) -> nil
     ;   @key    [nil]
     ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64) system_v
     sig1 = (i64, i64) -> i64 tail
-    fn0 = u0:46 sig0
+    fn0 = u0:48 sig0
 
     block0(v0: i64, v1: i64):    ;; v0 :: nil
     v2 = iconst.i64 99                  ; @8:18

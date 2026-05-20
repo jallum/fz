@@ -842,7 +842,7 @@ fn signature_uniform_when_not_native() {
     let ft = mt.any_spec_for(m.fns[add_idx].id).expect("registered spec");
     let rd = join_return_descrs(&m.fns[add_idx], ft);
     let prs = build_param_reprs(&m.fns[add_idx], ft);
-    let sig = build_fn_signature(&prs, ArgRepr::from_descr(&rd), false, true, None);
+    let sig = build_fn_signature(&prs, ArgRepr::from_descr(&rd), false, true, None, None);
     assert_eq!(sig.params.len(), 2);
     assert_eq!(sig.returns.len(), 1);
     assert_eq!(sig.params[0].value_type, types::I64);
@@ -862,7 +862,7 @@ fn signature_native_uses_typed_params_and_cont() {
     let ft = mt.any_spec_for(m.fns[add_idx].id).expect("registered spec");
     let rd = join_return_descrs(&m.fns[add_idx], ft);
     let prs = build_param_reprs(&m.fns[add_idx], ft);
-    let sig = build_fn_signature(&prs, ArgRepr::from_descr(&rd), true, false, None);
+    let sig = build_fn_signature(&prs, ArgRepr::from_descr(&rd), true, false, None, None);
     // 2 entry params + cont.
     assert_eq!(sig.params.len(), 3);
     assert_eq!(sig.returns.len(), 1);
@@ -887,7 +887,7 @@ fn signature_native_arity_matches_entry_params_plus_cont() {
         .expect("registered spec");
     let rd = join_return_descrs(&m.fns[dist_idx], ft);
     let prs = build_param_reprs(&m.fns[dist_idx], ft);
-    let sig = build_fn_signature(&prs, ArgRepr::from_descr(&rd), true, false, None);
+    let sig = build_fn_signature(&prs, ArgRepr::from_descr(&rd), true, false, None, None);
     // 2 entry params + cont.
     assert_eq!(sig.params.len(), 3);
     assert_eq!(sig.params[0].value_type, types::F64);
@@ -1382,22 +1382,36 @@ end
     let (body_fid, body_sid) =
         resolve_tcc_body(&closure, &args, ft, &m, &reg).expect("closure body should resolve");
     assert_eq!(m.fn_by_id(caller_fid).name, "fn_clause_1");
+    let expected_arg_descr = crate::types::Descr::int_lit(1)
+        .union(&crate::types::Descr::int_lit(2))
+        .union(&crate::types::Descr::int_lit(3));
+    let closure_lit = caller_key[0]
+        .as_closure_lit()
+        .expect("caller key slot 0 should be a singleton closure-lit");
     assert_eq!(
-        caller_key,
-        vec![
-            crate::types::Descr::closure_lit(FnId(17), vec![crate::types::Descr::int_lit(10)], 1),
-            crate::types::Descr::int_lit(1)
-                .union(&crate::types::Descr::int_lit(2))
-                .union(&crate::types::Descr::int_lit(3)),
-            crate::types::Descr::list_of(
-                crate::types::Descr::int_lit(1)
-                    .union(&crate::types::Descr::int_lit(2))
-                    .union(&crate::types::Descr::int_lit(3))
-            ),
-        ],
+        closure_lit.captures,
+        vec![crate::types::Descr::int_lit(10)],
+        "expected the closure-lit capture key to preserve k = 10"
+    );
+    assert_eq!(
+        m.fn_by_id(closure_lit.fn_id).name,
+        m.fn_by_id(body_fid).name,
+        "slot 0 closure-lit should target the same lambda body resolve_tcc_body picked"
+    );
+    assert_eq!(
+        caller_key[1], expected_arg_descr,
         "expected the narrow fn_clause_1 spec, not the any-key fallback"
     );
-    assert_eq!(m.fn_by_id(body_fid).name, "lambda_17");
+    assert_eq!(
+        caller_key[2],
+        crate::types::Descr::list_of(expected_arg_descr.clone()),
+        "expected the narrow fn_clause_1 spec, not the any-key fallback"
+    );
+    assert!(
+        m.fn_by_id(body_fid).name.starts_with("lambda_"),
+        "expected resolved body to be the synthesized lambda, got {}",
+        m.fn_by_id(body_fid).name
+    );
     let resolved_key = reg
         .iter()
         .find(|(sid, _, _)| sid.0 == body_sid)
@@ -1405,12 +1419,7 @@ end
         .expect("resolved sid registered");
     assert_eq!(
         resolved_key,
-        vec![
-            crate::types::Descr::int_lit(10),
-            crate::types::Descr::int_lit(1)
-                .union(&crate::types::Descr::int_lit(2))
-                .union(&crate::types::Descr::int_lit(3)),
-        ],
+        vec![crate::types::Descr::int_lit(10), expected_arg_descr],
         "resolved body key should preserve the capture-first closure key"
     );
 }
@@ -1436,18 +1445,18 @@ end
     let names: Vec<String> = ir.iter().map(|(name, _)| name.clone()).collect();
     let cont_body = ir
         .iter()
-        .find(|(name, _)| name.starts_with("k_16"))
+        .find(|(name, _)| name.starts_with("k_"))
         .map(|(_, body)| body.as_str())
-        .unwrap_or_else(|| panic!("expected emitted k_16 body, saw {:?}", names));
+        .unwrap_or_else(|| panic!("expected emitted k_* body, saw {:?}", names));
     assert!(
         !cont_body.contains("trap user"),
-        "k_16 should not compile as an unreached trap stub:\n{}",
+        "k_* continuation should not compile as an unreached trap stub:\n{}",
         cont_body
     );
     assert!(
         cont_body.contains("load.i64 notrap aligned v1+32")
             && cont_body.contains("load.i64 notrap aligned v1+48"),
-        "k_16 should load its tagged captures from the continuation closure payload:\n{}",
+        "k_* continuation should load its tagged captures from the continuation closure payload:\n{}",
         cont_body
     );
 }
@@ -1482,14 +1491,20 @@ end
     let mut cont_sid = None;
     for (fid, key) in spec_keys {
         let sid = reg.register(fid, key.clone());
-        if m.fn_by_id(fid).name == "k_16" {
+        if m.fn_by_id(fid).name.starts_with("k_") {
             cont_sid = Some(sid.0);
         }
     }
-    let reachable = crate::ir_typer::reachable_specs(&m, &reg, &mt, [17]);
+    let main_fid = m
+        .fns
+        .iter()
+        .find(|f| f.name == "main")
+        .map(|f| f.id.0)
+        .expect("expected main fn");
+    let reachable = crate::ir_typer::reachable_specs(&m, &reg, &mt, [main_fid]);
     assert!(
-        reachable.contains(&cont_sid.expect("expected k_16 spec")),
-        "reachable specs should include k_16 continuation"
+        reachable.contains(&cont_sid.expect("expected k_* spec")),
+        "reachable specs should include the synthesized k_* continuation"
     );
 }
 

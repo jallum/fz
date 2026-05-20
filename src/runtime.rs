@@ -57,6 +57,13 @@ pub struct Runtime<'a> {
     /// will panic with a clear "no module attached" message — fine for
     /// programs that don't use resources.
     module: Option<&'a crate::fz_ir::Module>,
+
+    /// fz-yxs/fz-st5 — sorted-vec timer wheel (F2). Stored inside the
+    /// Runtime so per-Process `parked_matched.after_deadline_ms` can be
+    /// honoured via `dispatch_timer_schedule`; the run loop drains
+    /// expired entries each iteration and emits ResumeMatched for the
+    /// after-cont closure.
+    pub(crate) timers: fz_runtime::timer::TimerWheel,
 }
 
 thread_local! {
@@ -144,6 +151,29 @@ pub fn install_make_resource_hook_with_module(module: &crate::fz_ir::Module) -> 
 pub fn clear_make_resource_hook_with_module(prev: *const ()) {
     fz_runtime::scheduler_hooks::clear_make_resource_hook();
     CURRENT_MODULE.with(|c| c.set(prev));
+}
+
+/// fz-yxs/fz-st5 — installed via `install_timer_schedule_hook`. Called
+/// by `fz_receive_park_matched` when the after-clause carries a real
+/// timeout. Routes through `CURRENT_RUNTIME`'s `TimerWheel`.
+extern "C" fn timer_schedule_hook_thunk(pid: u32, after_ms: u64) -> u64 {
+    let raw = CURRENT_RUNTIME.with(|c| c.get());
+    assert!(
+        !raw.is_null(),
+        "timer_schedule called outside Runtime::run_until_idle"
+    );
+    let rt = unsafe { &mut *(raw as *mut Runtime<'static>) };
+    rt.timers
+        .schedule(pid, std::time::Duration::from_millis(after_ms))
+}
+
+extern "C" fn timer_cancel_hook_thunk(timer_id: u64) {
+    let raw = CURRENT_RUNTIME.with(|c| c.get());
+    if raw.is_null() {
+        return;
+    }
+    let rt = unsafe { &mut *(raw as *mut Runtime<'static>) };
+    rt.timers.cancel(timer_id);
 }
 
 /// fz-ul4.29.5: called from fz_spawn (runtime FFI) to enqueue a new task
@@ -238,6 +268,42 @@ pub fn send_via_current_runtime(receiver_pid: PidId, msg: FzValue) {
     > = std::collections::HashMap::new();
     let copied =
         fz_runtime::heap::deep_copy_value(msg, &sender.heap, &mut receiver.heap, &mut forwarding);
+
+    // fz-yxs/fz-st5 — selective receive sender-probe. If the receiver is
+    // parked on a Term::ReceiveMatched, run its registered matcher against
+    // the arriving message inline. On a hit, splice the (just-copied)
+    // message out so it never sits in the mailbox, stash a pending resume
+    // for the trampoline, flip Ready, and enqueue. On a miss the message
+    // lands in the mailbox like any other delivery and the park stays
+    // in place. Legacy `parked_cont` (Term::Receive) is untouched.
+    if let Some(park) = receiver.parked_matched.as_ref() {
+        match park.try_match(copied) {
+            Some((clause_idx, bound_vals)) => {
+                let cont = park.clause_bodies[clause_idx];
+                let timer_id = park.after_timer_id;
+                receiver.parked_matched = None;
+                if let Some(id) = timer_id {
+                    rt.timers.cancel(id);
+                }
+                receiver.pending_resume_matched = Some(fz_runtime::park::PendingResumeMatched {
+                    cont,
+                    args: bound_vals,
+                });
+                receiver.state = ProcessState::Ready;
+                rt.run_queue.push_back(receiver_pid);
+                return;
+            }
+            None => {
+                // Selective-receive miss: park stays in place. The
+                // legacy Blocked->Ready wake (below) MUST be skipped —
+                // a generic mailbox arrival is not a wake reason once
+                // the receiver has narrowed via Term::ReceiveMatched.
+                receiver.mailbox.push_back(copied);
+                return;
+            }
+        }
+    }
+
     receiver.mailbox.push_back(copied);
     if receiver.state == ProcessState::Blocked {
         receiver.state = ProcessState::Ready;
@@ -260,6 +326,7 @@ impl<'a> Runtime<'a> {
             run_queue: VecDeque::new(),
             next_pid: 1,
             workers,
+            timers: fz_runtime::timer::TimerWheel::new(),
             module: None,
         }
     }
@@ -372,7 +439,17 @@ impl<'a> Runtime<'a> {
         } else {
             std::ptr::null()
         };
-        while let Some(pid) = self.run_queue.pop_front() {
+        fz_runtime::scheduler_hooks::install_timer_schedule_hook(timer_schedule_hook_thunk);
+        fz_runtime::scheduler_hooks::install_timer_cancel_hook(timer_cancel_hook_thunk);
+        loop {
+            // fz-yxs/fz-st5 — service any expired after-timers before
+            // picking the next task. Cheaper to do here than on every
+            // step inside run_quantum: timers only matter at scheduler
+            // boundaries (a task can't park between expirations).
+            self.drain_expired_timers();
+            let Some(pid) = self.run_queue.pop_front() else {
+                break;
+            };
             let mut task = self
                 .tasks
                 .remove(&pid)
@@ -423,7 +500,15 @@ impl<'a> Runtime<'a> {
                 self.tasks.insert(pid, task);
                 self.run_queue.push_back(pid);
                 continue;
-            } else if task.next_frame.is_null() && task.parked_cont.is_null() {
+            } else if task.next_frame.is_null()
+                && task.parked_cont.is_null()
+                && task.parked_matched.is_none()
+            {
+                // fz-70q.4 — `parked_matched` is the selective-receive park
+                // record; like `parked_cont`, its presence means the task is
+                // suspended on a receive, not finished. Without this check
+                // the run loop would mis-classify the receiver as Exited and
+                // never call its initial-scan branch.
                 task.state = ProcessState::Exited;
                 task.quiet_quanta = task.quiet_quanta.saturating_add(1);
                 // fz-4mk.3a — task is exiting; before the Heap drops at
@@ -476,6 +561,38 @@ impl<'a> Runtime<'a> {
         if self.module.is_some() {
             clear_make_resource_hook_with_module(prev_module);
         }
+        fz_runtime::scheduler_hooks::clear_timer_schedule_hook();
+        fz_runtime::scheduler_hooks::clear_timer_cancel_hook();
+    }
+
+    /// fz-yxs/fz-st5 — drain expired timers and wake the matching
+    /// parked tasks. Called by the run loop each iteration. For each
+    /// expired entry whose pid is still parked on a Term::ReceiveMatched
+    /// with that timer id, stash a pending resume of the after-cont
+    /// (no bound args; captures are already baked into the closure)
+    /// and re-enqueue.
+    pub(crate) fn drain_expired_timers(&mut self) {
+        let now = std::time::Instant::now();
+        let expired = self.timers.drain_expired(now);
+        for entry in expired {
+            let Some(task) = self.tasks.get_mut(&entry.pid) else {
+                continue;
+            };
+            let Some(park) = task.parked_matched.as_ref() else {
+                continue;
+            };
+            if park.after_timer_id != Some(entry.id) {
+                continue;
+            }
+            let after_cont = park.after_cont;
+            task.parked_matched = None;
+            task.pending_resume_matched = Some(fz_runtime::park::PendingResumeMatched {
+                cont: after_cont,
+                args: Vec::new(),
+            });
+            task.state = ProcessState::Ready;
+            self.run_queue.push_back(entry.pid);
+        }
     }
 
     /// Read-only access to a task (for tests / inspection).
@@ -486,6 +603,21 @@ impl<'a> Runtime<'a> {
     /// Count of tasks (including Exited ones that haven't been pruned).
     pub fn task_count(&self) -> usize {
         self.tasks.len()
+    }
+
+    /// fz-yxs/fz-st5 — test-only mutable accessor. Lets the unit tests
+    /// in this module pre-seed a receiver with a `parked_matched`
+    /// record before driving the sender-probe path.
+    #[cfg(test)]
+    pub fn task_mut(&mut self, pid: PidId) -> Option<&mut Process> {
+        self.tasks.get_mut(&pid).map(|b| &mut **b)
+    }
+
+    /// fz-yxs/fz-st5 — test-only direct enqueue. Used by the timer-
+    /// drain unit test to confirm the loop wakes the right pid.
+    #[cfg(test)]
+    pub fn run_queue_len(&self) -> usize {
+        self.run_queue.len()
     }
 }
 
@@ -953,5 +1085,193 @@ fn main(), do: sum(10, 0, nil)";
         // just check the computation completed correctly.
         assert_eq!(rt.task(pid).unwrap().halt_value, 55);
         assert_eq!(rt.task(pid).unwrap().state, ProcessState::Exited);
+    }
+
+    // ----- fz-yxs/fz-st5 — sender-probe + timer drain tests -----
+
+    /// Deterministic mock matcher. Returns 1 when `msg == pinned[0]`,
+    /// and writes `msg` into `out[0]` (bound_arity must be >= 1).
+    extern "C" fn mock_eq_matcher(msg: u64, pinned: *const u64, out: *mut u64) -> u32 {
+        let want = unsafe { *pinned };
+        if msg == want {
+            unsafe {
+                *out = msg;
+            }
+            1
+        } else {
+            0
+        }
+    }
+
+    /// Set up a Runtime with two spawned tasks ready for direct
+    /// `send_via_current_runtime` calls. Returns (runtime, sender_pid,
+    /// receiver_pid). Both tasks are spawned but never executed — we
+    /// only drive the send-probe code path.
+    fn two_task_rt<'a>(
+        compiled: &'a crate::ir_codegen::CompiledModule,
+        main_id: FnId,
+    ) -> (Runtime<'a>, PidId, PidId) {
+        let mut rt = Runtime::new(compiled, 1);
+        let sender = rt.spawn(main_id);
+        let receiver = rt.spawn(main_id);
+        (rt, sender, receiver)
+    }
+
+    #[test]
+    fn send_probe_hit_wakes_receiver_with_pending_resume() {
+        let src = "fn main(), do: 0";
+        let m = lower_src(src);
+        let main_id = m.fn_by_name("main").unwrap().id;
+        let compiled = compile(&m).unwrap();
+        let (mut rt, sender_pid, receiver_pid) = two_task_rt(&compiled, main_id);
+
+        // Pre-seed receiver as parked_matched. Pinned wants msg == 42.
+        let receiver = rt.task_mut(receiver_pid).unwrap();
+        receiver.state = ProcessState::Blocked;
+        receiver.parked_matched = Some(Box::new(fz_runtime::park::ParkRecord {
+            matcher_fn: mock_eq_matcher,
+            pinned: vec![42],
+            clause_bodies: vec![0xdead_beefusize as *mut u8],
+            bound_arity: 1,
+            after_deadline_ms: None,
+            after_cont: std::ptr::null_mut(),
+            after_timer_id: None,
+        }));
+        // Clear run queue so both tasks are quiescent.
+        rt.run_queue.clear();
+
+        // Install CURRENT_RUNTIME + CURRENT_PROCESS so send_via_current_runtime
+        // can find the sender and the receiver.
+        let rt_ptr = &mut rt as *mut Runtime<'_> as *mut ();
+        let prev_rt = CURRENT_RUNTIME.with(|c| c.replace(rt_ptr));
+        let sender_ptr = rt.tasks.get_mut(&sender_pid).unwrap().as_mut() as *mut Process;
+        let prev_proc = CURRENT_PROCESS.with(|c| c.replace(sender_ptr));
+
+        // Hit case: msg == 42 matches the pinned.
+        send_via_current_runtime(receiver_pid, FzValue(42));
+
+        CURRENT_PROCESS.with(|c| c.set(prev_proc));
+        CURRENT_RUNTIME.with(|c| c.set(prev_rt));
+
+        let r = rt.task(receiver_pid).unwrap();
+        assert_eq!(r.state, ProcessState::Ready);
+        assert!(r.parked_matched.is_none(), "park should be cleared on hit");
+        let pending = r
+            .pending_resume_matched
+            .as_ref()
+            .expect("pending_resume_matched populated on hit");
+        assert_eq!(pending.cont as usize, 0xdead_beef);
+        assert_eq!(pending.args.len(), 1);
+        assert_eq!(pending.args[0].0, 42);
+        assert!(rt.run_queue.iter().any(|p| *p == receiver_pid));
+    }
+
+    #[test]
+    fn send_probe_miss_leaves_park_in_place_and_appends_to_mailbox() {
+        let src = "fn main(), do: 0";
+        let m = lower_src(src);
+        let main_id = m.fn_by_name("main").unwrap().id;
+        let compiled = compile(&m).unwrap();
+        let (mut rt, sender_pid, receiver_pid) = two_task_rt(&compiled, main_id);
+
+        let receiver = rt.task_mut(receiver_pid).unwrap();
+        receiver.state = ProcessState::Blocked;
+        receiver.parked_matched = Some(Box::new(fz_runtime::park::ParkRecord {
+            matcher_fn: mock_eq_matcher,
+            pinned: vec![42],
+            clause_bodies: vec![0xdead_beefusize as *mut u8],
+            bound_arity: 1,
+            after_deadline_ms: None,
+            after_cont: std::ptr::null_mut(),
+            after_timer_id: None,
+        }));
+        rt.run_queue.clear();
+
+        let rt_ptr = &mut rt as *mut Runtime<'_> as *mut ();
+        let prev_rt = CURRENT_RUNTIME.with(|c| c.replace(rt_ptr));
+        let sender_ptr = rt.tasks.get_mut(&sender_pid).unwrap().as_mut() as *mut Process;
+        let prev_proc = CURRENT_PROCESS.with(|c| c.replace(sender_ptr));
+
+        // Miss case: msg == 7 does not match pinned 42.
+        send_via_current_runtime(receiver_pid, FzValue(7));
+
+        CURRENT_PROCESS.with(|c| c.set(prev_proc));
+        CURRENT_RUNTIME.with(|c| c.set(prev_rt));
+
+        let r = rt.task(receiver_pid).unwrap();
+        assert_eq!(r.state, ProcessState::Blocked, "still parked on miss");
+        assert!(r.parked_matched.is_some(), "park preserved on miss");
+        assert!(r.pending_resume_matched.is_none());
+        assert_eq!(r.mailbox.len(), 1, "miss appends to mailbox");
+        assert_eq!(r.mailbox[0].0, 7);
+        assert!(
+            !rt.run_queue.iter().any(|p| *p == receiver_pid),
+            "miss does not re-enqueue"
+        );
+    }
+
+    #[test]
+    fn drain_expired_timers_wakes_after_cont() {
+        let src = "fn main(), do: 0";
+        let m = lower_src(src);
+        let compiled = compile(&m).unwrap();
+        let main_id = m.fn_by_name("main").unwrap().id;
+        let mut rt = Runtime::new(&compiled, 1);
+        let receiver_pid = rt.spawn(main_id);
+        rt.run_queue.clear();
+
+        // Schedule an immediate-deadline timer (1ms) for the receiver.
+        let timer_id = rt
+            .timers
+            .schedule(receiver_pid, std::time::Duration::from_millis(1));
+
+        let after_cont_addr: usize = 0xcafe_babe;
+        let receiver = rt.task_mut(receiver_pid).unwrap();
+        receiver.state = ProcessState::Blocked;
+        receiver.parked_matched = Some(Box::new(fz_runtime::park::ParkRecord {
+            matcher_fn: mock_eq_matcher,
+            pinned: vec![],
+            clause_bodies: vec![],
+            bound_arity: 0,
+            after_deadline_ms: Some(1),
+            after_cont: after_cont_addr as *mut u8,
+            after_timer_id: Some(timer_id),
+        }));
+
+        // Wait past the deadline (a few millis to be safe) then drain.
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        rt.drain_expired_timers();
+
+        let r = rt.task(receiver_pid).unwrap();
+        assert_eq!(r.state, ProcessState::Ready);
+        assert!(r.parked_matched.is_none());
+        let pending = r
+            .pending_resume_matched
+            .as_ref()
+            .expect("after-timer fire sets pending_resume_matched");
+        assert_eq!(pending.cont as usize, after_cont_addr);
+        assert!(pending.args.is_empty(), "after body takes captures only");
+        assert!(rt.run_queue.iter().any(|p| *p == receiver_pid));
+    }
+
+    // fz-70q.5.5 — the per-arity dispatch test
+    // (run_quantum_dispatches_pending_resume_matched_via_shim) was
+    // retired with the nine-shim family. End-to-end dispatch is now
+    // covered by `fixtures/receive_selective_refs/input.fz` exercising
+    // the cont-stub seam through fz_resume — see the test runner's
+    // matrix suite. The smoke check below ensures the singular shim
+    // exists; structural correctness of the seam itself lives in the
+    // ir_codegen_cont_stub unit tests.
+
+    /// fz-70q.5.5 — single `fz_resume` shim addr is resolved at JIT
+    /// finalize time. The trampoline's pending_resume_matched branch
+    /// transmutes this addr to `extern "C" fn(u64) -> i64` and calls
+    /// once per resume; a null here would null-deref on every
+    /// selective-receive wakeup.
+    #[test]
+    fn resume_addr_is_finalized() {
+        let m = lower_src("fn main(), do: 0");
+        let compiled = compile(&m).unwrap();
+        assert!(!compiled.resume_addr.is_null());
     }
 }

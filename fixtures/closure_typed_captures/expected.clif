@@ -9,18 +9,18 @@ function u0:0(i64) -> i64 tail {
     sig3 = (i32, i32, i32) -> i64 system_v
     sig4 = (i64, i64) -> i64 tail
     fn0 = u0:29 sig0
-    fn1 = colocated u0:43 sig1
-    fn2 = colocated u0:44 sig2
+    fn1 = colocated u0:45 sig1
+    fn2 = colocated u0:46 sig2
     fn3 = u0:29 sig3
-    fn4 = colocated u0:46 sig4
+    fn4 = colocated u0:48 sig4
 
 block0(v0: i64):
     v1 = iconst.i64 10                  ; @5:23
     v2 = iconst.i64 20                  ; @5:27
-    v3 = iconst.i32 15
+    v3 = iconst.i32 16
     v4 = iconst.i32 2
     v5 = iconst.i32 0
-    v6 = call fn0(v3, v4, v5)  ; v3 = 15, v4 = 2, v5 = 0    ;; v6 :: &fn15[10, 20]:(α960) -> α1023
+    v6 = call fn0(v3, v4, v5)  ; v3 = 16, v4 = 2, v5 = 0    ;; v6 :: &fn16[10, 20]:(α1024) -> α1087
     v7 = func_addr.i64 fn1
     store notrap aligned v7, v6+16
     v8 = ishl_imm v1, 3  ; v1 = 10
@@ -30,18 +30,18 @@ block0(v0: i64):
     v11 = bor_imm v10, 1
     store notrap aligned v11, v6+32
     v12 = iconst.i64 12    ;; v12 :: 12
-    v13 = iconst.i32 18                 ; @5:16
+    v13 = iconst.i32 19                 ; @5:16
     v14 = iconst.i32 1                  ; @5:16
     v15 = iconst.i32 0                  ; @5:16
-    v16 = call fn3(v13, v14, v15)       ; @5:16  v13 = 18, v14 = 1, v15 = 0
+    v16 = call fn3(v13, v14, v15)       ; @5:16  v13 = 19, v14 = 1, v15 = 0
     v17 = func_addr.i64 fn4             ; @5:16
     store notrap aligned v17, v16+16    ; @5:16
     store notrap aligned v0, v16+24     ; @5:16
     return_call fn2(v6, v12, v16)       ; @5:16  v12 = 12
 }
 
-; fn lambda_15
-    ;   @spec   lambda_15(any, any, any) -> int | float
+; fn lambda_16
+    ;   @spec   lambda_16(any, any, any) -> int | float
     ;   @key    [any, any, any]
     ;   @abi    (Tagged, Tagged, Tagged) -> Tagged
 function u0:0(i64, i64, i64) -> i64 tail {
@@ -114,20 +114,20 @@ block5:
     return_call_indirect sig6, v37(v26, v2)
 }
 
-; fn apply1_s16
-    ;   @spec   apply1(&fn15[10, 20]:(α960) -> α1023, 12) -> int
-    ;   @key    [&fn15[10, 20]:(α960) -> α1023, 12]
+; fn apply1_s17
+    ;   @spec   apply1(&fn16[10, 20]:(α1024) -> α1087, 12) -> int
+    ;   @key    [&fn16[10, 20]:(α1024) -> α1087, 12]
     ;   @abi    (Tagged, RawInt) -> Tagged
 function u0:0(i64, i64, i64) -> i64 tail {
     sig0 = (i64, i64, i64) -> i64 tail
-    fn0 = colocated u0:45 sig0
+    fn0 = colocated u0:47 sig0
 
-    block0(v0: i64, v1: i64, v2: i64):    ;; v0 :: &fn15[10, 20]:(α960) -> α1023, v1 :: 12
+    block0(v0: i64, v1: i64, v2: i64):    ;; v0 :: &fn16[10, 20]:(α1024) -> α1087, v1 :: 12
     return_call fn0(v1, v0, v2)         ; @2:22
 }
 
-; fn lambda_15_s17
-    ;   @spec   lambda_15(10, 20, 12) -> int
+; fn lambda_16_s18
+    ;   @spec   lambda_16(10, 20, 12) -> int
     ;   @key    [10, 20, 12]
     ;   @abi    (RawInt, RawInt, RawInt) -> Tagged
 function u0:0(i64, i64, i64) -> i64 tail {
@@ -146,14 +146,14 @@ function u0:0(i64, i64, i64) -> i64 tail {
     return_call_indirect sig0, v11(v10, v2)
 }
 
-; fn k_17_s18
-    ;   @spec   k_17(int) -> nil
+; fn k_18_s19
+    ;   @spec   k_18(int) -> nil
     ;   @key    [int]
     ;   @abi    (Tagged) -> Tagged
 function u0:0(i64, i64) -> i64 tail {
     sig0 = (i64) system_v
     sig1 = (i64, i64) -> i64 tail
-    fn0 = u0:47 sig0
+    fn0 = u0:49 sig0
 
     block0(v0: i64, v1: i64):    ;; v0 :: int
     v2 = sshr_imm v0, 3

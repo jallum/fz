@@ -58,6 +58,22 @@ pub fn build_call_graph(m: &Module) -> HashMap<FnId, HashSet<FnId>> {
                 } => {
                     edges.insert(continuation.fn_id);
                 }
+                // fz-70q.3 — clause body / guard / after fns reached via
+                // selective-receive dispatch (matcher hit → trampoline).
+                // Same shape as the Receive cont edge: backends need
+                // them in the spec discovery + reachability graph or
+                // codegen never sees a body FuncId.
+                Term::ReceiveMatched { clauses, after, .. } => {
+                    for c in clauses {
+                        edges.insert(c.body);
+                        if let Some(g) = c.guard {
+                            edges.insert(g);
+                        }
+                    }
+                    if let Some(a) = after {
+                        edges.insert(a.body);
+                    }
+                }
                 _ => {}
             }
         }

@@ -55,6 +55,33 @@ enum InterpStep {
     /// to call in order with each successive return value — built up when
     /// Blocked propagates through Term::Call frames.
     Blocked(FnId, Vec<FzValue>, Vec<(FnId, Vec<FzValue>)>),
+    /// fz-yxs/fz-2v3 — task parked on a selective `receive do … end`. The
+    /// park record snapshots every clause's pattern + body / guard FnId
+    /// plus the pinned ^name and capture FzValues from the receive site
+    /// so that `interp_send` can probe new messages without recreating
+    /// any of that state.
+    BlockedMatched(ParkRecord, Vec<(FnId, Vec<FzValue>)>),
+}
+
+/// fz-yxs/fz-2v3 — interp park record for a selective receive.
+/// `after` is consumed inline at park time (the `after 0` case fires
+/// before we park; non-zero/`:infinity` is treated as "no timer" in the
+/// interp since there's no wall clock — the real timer wiring lands
+/// for JIT/AOT in B2 via F2). So this struct only stores what the
+/// sender-side probe needs.
+#[derive(Clone)]
+struct ParkRecord {
+    clauses: Vec<MatchedClause>,
+    pinned: HashMap<String, FzValue>,
+    captures: Vec<FzValue>,
+}
+
+#[derive(Clone)]
+struct MatchedClause {
+    pattern: crate::ast::Pattern,
+    bound_names: Vec<String>,
+    guard: Option<FnId>,
+    body: FnId,
 }
 
 /// Per-task resume state: fn to call, captures (no message), and after-chain.
@@ -79,7 +106,16 @@ thread_local! {
     /// invoke in order after resume_fn returns, passing each return value on.
     static INTERP_RESUME: RefCell<HashMap<u32, ResumeEntry>> =
         RefCell::new(HashMap::new());
+    /// fz-yxs/fz-2v3 — selective-receive park records. Keyed by pid so
+    /// that `interp_send` can probe an arriving message against the
+    /// receiver's parked matcher without unwinding the scheduler.
+    static INTERP_PARKED: RefCell<HashMap<u32, InterpParked>> =
+        RefCell::new(HashMap::new());
 }
+
+/// fz-yxs/fz-2v3 — value type for `INTERP_PARKED`. Factored out so
+/// the TLS entry doesn't trip clippy's "very complex type" lint.
+type InterpParked = (ParkRecord, Vec<(FnId, Vec<FzValue>)>);
 
 /// fz-ul4.35 — get-or-register a heap schema for a tuple of `arity`,
 /// matching the JIT codegen layout in src/ir_codegen.rs (Tuple{N}, N*8
@@ -109,6 +145,135 @@ fn interp_tuple_schema_id(arity: usize) -> u32 {
     })
 }
 
+/// fz-yxs/fz-2v3 — match an FzValue against a pattern AST. Returns
+/// Some(bindings) on a successful match; None otherwise. `pinned`
+/// supplies the resolved value for every `^name` reference in the
+/// pattern. Bindings are accumulated in source-traversal order to
+/// align with `ReceiveClause::bound_names`.
+///
+/// Equality semantics for pinned values: bit-equality on the
+/// `FzValue.0` u64. Correct for ints / atoms / refs and any other
+/// inline-tagged value. Structural equality for boxed payloads
+/// (deep tuples, lists, maps) is not yet implemented — none of the
+/// fixtures need it, and the matcher's purity restriction already
+/// rules out anything that would allocate.
+fn try_match_pattern(
+    module: &Module,
+    pat: &crate::ast::Pattern,
+    val: FzValue,
+    pinned: &HashMap<String, FzValue>,
+    out: &mut Vec<(String, FzValue)>,
+) -> bool {
+    use crate::ast::Pattern;
+    use fz_runtime::fz_value::Tag;
+    match pat {
+        Pattern::Wildcard => true,
+        Pattern::Var(name) => {
+            out.push((name.clone(), val));
+            true
+        }
+        Pattern::As(name, inner) => {
+            out.push((name.clone(), val));
+            try_match_pattern(module, &inner.node, val, pinned, out)
+        }
+        Pattern::Pinned(name) => match pinned.get(name) {
+            Some(want) => want.0 == val.0,
+            None => false,
+        },
+        Pattern::Int(n) => val.tag() == Tag::Int && val.unbox_int() == Some(*n),
+        Pattern::Float(_) => false, // floats live on the heap; not used by current fixtures
+        Pattern::Str(_) => false,
+        Pattern::Atom(name) => {
+            if val.tag() != Tag::Atom {
+                return false;
+            }
+            let id = match val.unbox_atom() {
+                Some(id) => id,
+                None => return false,
+            };
+            module
+                .atom_names
+                .iter()
+                .position(|n| n == name)
+                .is_some_and(|pos| pos as u32 == id)
+        }
+        Pattern::Bool(true) => val.is_true(),
+        Pattern::Bool(false) => val.is_false(),
+        Pattern::Nil => val.is_nil(),
+        Pattern::Tuple(elems) => {
+            let Some(p) = val.unbox_ptr() else {
+                return false;
+            };
+            let header = unsafe { &*p };
+            use fz_runtime::fz_value::HeapKind;
+            if HeapKind::from_u16(header.kind) != Some(HeapKind::Struct) {
+                return false;
+            }
+            if header.schema_id != interp_tuple_schema_id(elems.len()) {
+                return false;
+            }
+            for (i, e) in elems.iter().enumerate() {
+                let off = 16 + i * 8;
+                let field: FzValue =
+                    unsafe { std::ptr::read((p as *const u8).add(off) as *const FzValue) };
+                if !try_match_pattern(module, &e.node, field, pinned, out) {
+                    return false;
+                }
+            }
+            true
+        }
+        Pattern::List(_, _) | Pattern::Map(_) | Pattern::Bitstring(_) => false,
+    }
+}
+
+/// fz-yxs/fz-2v3 — try matching the message against each clause's
+/// pattern + guard in order; first match wins. Returns the matched
+/// clause index plus the bindings list (in source order, aligned with
+/// `MatchedClause::bound_names`) on success.
+fn try_match_clauses(
+    module: &Module,
+    clauses: &[MatchedClause],
+    msg: FzValue,
+    pinned: &HashMap<String, FzValue>,
+    captures: &[FzValue],
+) -> Result<Option<(usize, Vec<FzValue>)>, String> {
+    for (i, c) in clauses.iter().enumerate() {
+        let mut binds: Vec<(String, FzValue)> = Vec::new();
+        if !try_match_pattern(module, &c.pattern, msg, pinned, &mut binds) {
+            continue;
+        }
+        // Align with declared bound_names order. The matcher walked the
+        // pattern in source order too, so this should always succeed —
+        // but the explicit reorder protects against any future drift.
+        let mut bound_vals: Vec<FzValue> = Vec::with_capacity(c.bound_names.len());
+        for name in &c.bound_names {
+            let Some((_, v)) = binds.iter().rev().find(|(n, _)| n == name) else {
+                return Err(format!(
+                    "try_match_clauses: bound name `{}` missing from pattern walk",
+                    name
+                ));
+            };
+            bound_vals.push(*v);
+        }
+        if let Some(g_fid) = c.guard {
+            let mut g_args = bound_vals.clone();
+            g_args.extend_from_slice(captures);
+            let g_step = run_fn(module, g_fid, g_args)?;
+            let g_val = match g_step {
+                InterpStep::Done(v) => v,
+                InterpStep::Blocked(..) | InterpStep::BlockedMatched(..) => {
+                    return Err("receive guard parked on receive — guards must be pure".into());
+                }
+            };
+            if g_val.is_false() || g_val.is_nil() {
+                continue;
+            }
+        }
+        return Ok(Some((i, bound_vals)));
+    }
+    Ok(None)
+}
+
 fn interp_register_task(pid: u32, process: Box<Process>) -> *mut Process {
     INTERP_TASKS.with(|t| {
         let mut tasks = t.borrow_mut();
@@ -128,8 +293,51 @@ fn interp_next_pid() -> u32 {
     })
 }
 
-fn interp_send(receiver_pid: u32, msg: FzValue) -> Result<(), String> {
+fn interp_send(module: &Module, receiver_pid: u32, msg: FzValue) -> Result<(), String> {
     use fz_runtime::process::ProcessState;
+    // fz-yxs/fz-2v3 — sender-side probe for selective receive. If the
+    // receiver is parked on a Term::ReceiveMatched, run the parked
+    // matcher inline against the new message; on a hit, set up the
+    // matched clause's body as the receiver's next resume and wake it
+    // without touching the mailbox.
+    let parked = INTERP_PARKED.with(|p| p.borrow_mut().remove(&receiver_pid));
+    if let Some((park, after_chain)) = parked {
+        let hit = try_match_clauses(module, &park.clauses, msg, &park.pinned, &park.captures)?;
+        match hit {
+            Some((idx, bound_vals)) => {
+                let body = park.clauses[idx].body;
+                let mut args = bound_vals;
+                args.extend(park.captures.iter().copied());
+                INTERP_RESUME.with(|r| {
+                    r.borrow_mut()
+                        .insert(receiver_pid, (body, args, after_chain));
+                });
+                INTERP_TASKS.with(|t| {
+                    if let Some(task) = t.borrow_mut().get_mut(&receiver_pid) {
+                        task.state = ProcessState::Ready;
+                    }
+                });
+                INTERP_RUN_QUEUE.with(|q| q.borrow_mut().push_back(receiver_pid));
+                return Ok(());
+            }
+            None => {
+                // Miss: park stays in place; message lands in mailbox.
+                INTERP_PARKED.with(|p| {
+                    p.borrow_mut().insert(receiver_pid, (park, after_chain));
+                });
+                INTERP_TASKS.with(|t| {
+                    let mut tasks = t.borrow_mut();
+                    if let Some(task) = tasks.get_mut(&receiver_pid) {
+                        task.mailbox.push_back(msg);
+                    } else {
+                        eprintln!("send: no task with pid {}", receiver_pid);
+                    }
+                });
+                return Ok(());
+            }
+        }
+    }
+
     let was_blocked = INTERP_TASKS.with(|t| {
         let mut tasks = t.borrow_mut();
         match tasks.get_mut(&receiver_pid) {
@@ -167,6 +375,7 @@ fn interp_reset_state() {
     INTERP_NEXT_PID.with(|n| n.set(2));
     INTERP_RUN_QUEUE.with(|q| q.borrow_mut().clear());
     INTERP_RESUME.with(|r| r.borrow_mut().clear());
+    INTERP_PARKED.with(|p| p.borrow_mut().clear());
     INTERP_TUPLE_SCHEMA_IDS.with(|m| m.borrow_mut().clear());
 }
 
@@ -253,6 +462,22 @@ pub fn run_main(module: &Module) -> Result<i64, String> {
                         .with(|r| r.borrow_mut().insert(pid, (resume_fn, cap_vals, new_after)));
                     continue 'sched;
                 }
+                // fz-yxs/fz-2v3 — park record + after-chain stashed under
+                // INTERP_PARKED so the next interp_send can probe the
+                // matcher against the arriving message without unwinding.
+                Ok(InterpStep::BlockedMatched(park, mut new_after)) => {
+                    fz_runtime::process::CURRENT_PROCESS.with(|c| c.set(prev));
+                    new_after.extend(after);
+                    INTERP_TASKS.with(|t| {
+                        if let Some(p) = t.borrow_mut().get_mut(&pid) {
+                            p.state = ProcessState::Blocked;
+                        }
+                    });
+                    INTERP_PARKED.with(|p| {
+                        p.borrow_mut().insert(pid, (park, new_after));
+                    });
+                    continue 'sched;
+                }
                 Err(e) => {
                     fz_runtime::process::CURRENT_PROCESS.with(|c| c.set(prev));
                     INTERP_SCHEMAS.with(|s| *s.borrow_mut() = None);
@@ -297,7 +522,7 @@ pub fn run_test_fn(module: &Module, fn_id: FnId) -> Result<(), String> {
     INTERP_SCHEMAS.with(|s| *s.borrow_mut() = None);
     match result {
         Ok(InterpStep::Done(_)) => Ok(()),
-        Ok(InterpStep::Blocked(..)) => {
+        Ok(InterpStep::Blocked(..)) | Ok(InterpStep::BlockedMatched(..)) => {
             Err("test fn blocked on receive with empty mailbox".to_string())
         }
         Err(e) => Err(e),
@@ -402,6 +627,10 @@ fn run_fn(module: &Module, mut fn_id: FnId, mut args: Vec<FzValue>) -> Result<In
                             inner_after.push((continuation.fn_id, outer_cap_vals));
                             return Ok(InterpStep::Blocked(rf, cv, inner_after));
                         }
+                        InterpStep::BlockedMatched(park, mut inner_after) => {
+                            inner_after.push((continuation.fn_id, outer_cap_vals));
+                            return Ok(InterpStep::BlockedMatched(park, inner_after));
+                        }
                     }
                 }
                 Term::TailCall {
@@ -454,6 +683,10 @@ fn run_fn(module: &Module, mut fn_id: FnId, mut args: Vec<FzValue>) -> Result<In
                             inner_after.push((continuation.fn_id, outer_cap_vals));
                             return Ok(InterpStep::Blocked(rf, cv, inner_after));
                         }
+                        InterpStep::BlockedMatched(park, mut inner_after) => {
+                            inner_after.push((continuation.fn_id, outer_cap_vals));
+                            return Ok(InterpStep::BlockedMatched(park, inner_after));
+                        }
                     }
                 }
                 Term::TailCallClosure {
@@ -487,6 +720,85 @@ fn run_fn(module: &Module, mut fn_id: FnId, mut args: Vec<FzValue>) -> Result<In
                             return Ok(InterpStep::Blocked(continuation.fn_id, cap_vals, vec![]));
                         }
                     }
+                }
+                // fz-yxs/fz-2v3 — selective receive. Walk the mailbox
+                // head-to-tail trying each clause in order; first match
+                // wins. On miss, return BlockedMatched so the scheduler
+                // can stash a park record for `interp_send`'s sender-side
+                // probe to consult on the next arrival.
+                Term::ReceiveMatched {
+                    clauses,
+                    after,
+                    pinned,
+                    captures,
+                    ..
+                } => {
+                    let pinned_map: HashMap<String, FzValue> = pinned
+                        .iter()
+                        .map(|(name, var)| env_get(&env, *var).map(|v| (name.clone(), v)))
+                        .collect::<Result<_, _>>()?;
+                    let capture_vals: Vec<FzValue> = collect(&env, captures)?;
+
+                    let matched_clauses: Vec<MatchedClause> = clauses
+                        .iter()
+                        .map(|c| MatchedClause {
+                            pattern: c.pattern.node.clone(),
+                            bound_names: c.bound_names.clone(),
+                            guard: c.guard,
+                            body: c.body,
+                        })
+                        .collect();
+
+                    // Initial mailbox scan.
+                    let mailbox_len = fz_runtime::process::current_process().mailbox.len();
+                    let mut hit: Option<(usize, usize, Vec<FzValue>)> = None;
+                    for mb_idx in 0..mailbox_len {
+                        let msg = fz_runtime::process::current_process().mailbox[mb_idx];
+                        if let Some((clause_idx, binds)) = try_match_clauses(
+                            module,
+                            &matched_clauses,
+                            msg,
+                            &pinned_map,
+                            &capture_vals,
+                        )? {
+                            hit = Some((mb_idx, clause_idx, binds));
+                            break;
+                        }
+                    }
+
+                    if let Some((mb_idx, clause_idx, bound_vals)) = hit {
+                        fz_runtime::process::current_process()
+                            .mailbox
+                            .remove(mb_idx);
+                        let body = matched_clauses[clause_idx].body;
+                        let mut new_args = bound_vals;
+                        new_args.extend(capture_vals);
+                        fn_id = body;
+                        args = new_args;
+                        continue 'tail;
+                    }
+
+                    // Miss — `after 0` (timeout literal 0) fires the after
+                    // body inline; any other after value (including
+                    // `:infinity`) parks without a timer since the interp
+                    // has no wall clock.
+                    if let Some(a) = after {
+                        let timeout_val = env_get(&env, a.timeout)?;
+                        if timeout_val.tag() == fz_runtime::fz_value::Tag::Int
+                            && timeout_val.unbox_int() == Some(0)
+                        {
+                            fn_id = a.body;
+                            args = capture_vals;
+                            continue 'tail;
+                        }
+                    }
+
+                    let park = ParkRecord {
+                        clauses: matched_clauses,
+                        pinned: pinned_map,
+                        captures: capture_vals,
+                    };
+                    return Ok(InterpStep::BlockedMatched(park, vec![]));
                 }
             }
         }
@@ -838,7 +1150,7 @@ fn drain_pending_dtors_interp(module: &Module) -> Result<(), String> {
         args.push(FzValue(payload));
         match run_fn(module, fn_id, args)? {
             InterpStep::Done(_) => {}
-            InterpStep::Blocked(_, _, _) => {
+            InterpStep::Blocked(_, _, _) | InterpStep::BlockedMatched(_, _) => {
                 return Err("fz-4mk drain: dtor blocked on receive (unsupported in v1)".into());
             }
         }
@@ -1016,6 +1328,13 @@ fn call_extern(module: &Module, eid: ExternId, args: &[FzValue]) -> Result<FzVal
                 fz_runtime::process::current_process().pid as i64,
             ));
         }
+        "fz_make_ref" => {
+            // fz-ht5 — route through the runtime FFI so interp and JIT
+            // share the same counter; otherwise an interp run followed
+            // by a JIT run in the same process could collide.
+            let bits = fz_runtime::ir_runtime::fz_make_ref();
+            return Ok(FzValue(bits));
+        }
         "fz_send" => {
             if args.len() != 2 {
                 return Err(format!("fz_send/2 got {} args", args.len()));
@@ -1024,7 +1343,7 @@ fn call_extern(module: &Module, eid: ExternId, args: &[FzValue]) -> Result<FzVal
                 .unbox_int()
                 .ok_or_else(|| "send/2: pid must be Int".to_string())?
                 as u32;
-            interp_send(receiver, args[1])?;
+            interp_send(module, receiver, args[1])?;
             return Ok(args[1]);
         }
         "fz_make_resource" => {
@@ -1097,6 +1416,7 @@ fn resolve_symbol(name: &str) -> Result<*const (), String> {
         "fz_spawn" => Some(fz_runtime::ir_runtime::fz_spawn as *const ()),
         "fz_spawn_opt" => Some(fz_runtime::ir_runtime::fz_spawn_opt as *const ()),
         "fz_self" => Some(fz_runtime::ir_runtime::fz_self as *const ()),
+        "fz_make_ref" => Some(fz_runtime::ir_runtime::fz_make_ref as *const ()),
         "fz_send" => Some(fz_runtime::ir_runtime::fz_send as *const ()),
         // fz-swt.11 — fixture/test dtor exported from the runtime crate.
         // Bound here so interp-leg invocations of fixtures using this
@@ -1432,6 +1752,125 @@ end
             tests_support::DTOR_LAST_PAYLOAD.load(Ordering::Relaxed),
             99,
             "dtor receives the unboxed int payload",
+        );
+    }
+}
+
+// ----- fz-yxs/fz-2v3 — selective receive interp tests -----
+
+#[cfg(test)]
+mod receive_tests {
+    use super::*;
+    use crate::lexer::Lexer;
+    use crate::parser::Parser;
+
+    fn lower_src(src: &str) -> Module {
+        let toks = Lexer::new(src).tokenize().expect("lex");
+        let prog = Parser::new(toks).parse_program().expect("parse");
+        crate::ir_lower::lower_program(&prog).expect("lower")
+    }
+
+    fn run_and_capture(src: &str) -> Result<String, String> {
+        let m = lower_src(src);
+        let _ = fz_runtime::ir_runtime::test_capture_take();
+        run_main(&m)?;
+        Ok(fz_runtime::ir_runtime::test_capture_take().join("\n"))
+    }
+
+    /// Initial-scan hit: the message is already in the mailbox at the
+    /// point the receive runs (self-send then receive).
+    #[test]
+    fn initial_scan_pinned_match() {
+        let src = r#"
+            fn main() do
+              ref = make_ref()
+              send(self(), {:reply, ref, :ok})
+              v = receive do
+                {:reply, ^ref, val} -> val
+              end
+              print(v)
+            end
+        "#;
+        let out = run_and_capture(src).expect("interp run");
+        assert!(out.contains(":ok"), "expected :ok, got: {}", out);
+    }
+
+    /// Sender-side probe hit: receiver parks, then a sender delivers a
+    /// matching message; the sender-side probe wakes the receiver with
+    /// the matched body.
+    #[test]
+    fn sender_side_probe_match() {
+        let src = r#"
+            fn child(parent) do
+              send(parent, {:reply, :tag, 99})
+            end
+            fn main() do
+              me = self()
+              spawn(fn () -> child(me))
+              v = receive do
+                {:reply, :tag, val} -> val
+              end
+              print(v)
+            end
+        "#;
+        let out = run_and_capture(src).expect("interp run");
+        assert!(out.contains("99"), "expected 99, got: {}", out);
+    }
+
+    /// `after 0` fires the after body when nothing in the mailbox matches.
+    #[test]
+    fn after_zero_fires_immediately_on_empty_mailbox() {
+        let src = r#"
+            fn main() do
+              v = receive do
+                {:never, _} -> :hit
+              after 0 -> :timed_out
+              end
+              print(v)
+            end
+        "#;
+        let out = run_and_capture(src).expect("interp run");
+        assert!(
+            out.contains(":timed_out"),
+            "expected :timed_out, got: {}",
+            out
+        );
+    }
+
+    /// Receiver-side scan finds a message left in the mailbox by an
+    /// earlier `receive` that skipped it.
+    #[test]
+    fn receiver_scan_finds_earlier_skipped_message() {
+        let src = r#"
+            fn main() do
+              me = self()
+              send(me, {:a, 1})
+              send(me, {:b, 2})
+              vb = receive do
+                {:b, x} -> x
+              end
+              va = receive do
+                {:a, x} -> x
+              end
+              print({va, vb})
+            end
+        "#;
+        let out = run_and_capture(src).expect("interp run");
+        assert!(out.contains("{1, 2}"), "expected {{1, 2}}, got: {}", out);
+    }
+
+    /// fixtures/receive_selective_refs/input.fz — the design proof point
+    /// for fz-recv: sender-side miss, sender-side hit, and receiver-side
+    /// scan hit in a single trace. See docs/receive-matched-stress-test.html.
+    #[test]
+    fn fixture_receive_selective_refs() {
+        let src = std::fs::read_to_string("fixtures/receive_selective_refs/input.fz")
+            .expect("read fixture");
+        let out = run_and_capture(&src).expect("interp run");
+        assert!(
+            out.contains("{:k_a, :k_b}"),
+            "expected {{:k_a, :k_b}}, got: {}",
+            out
         );
     }
 }

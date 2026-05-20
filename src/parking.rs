@@ -90,6 +90,21 @@ pub fn natively_callable(m: &Module, parking: &HashSet<FnId>) -> HashSet<FnId> {
                 Term::CallClosure { continuation, .. } | Term::Receive { continuation, .. } => {
                     used_as_cont.insert(continuation.fn_id);
                 }
+                // fz-yxs — each ReceiveMatched body/after fn is a parking-
+                // capable rendezvous target; treat the same way as a cont.
+                // Guards are pure (F3-checked) but the body fns may park,
+                // so they must not be admitted to the native fast path.
+                Term::ReceiveMatched { clauses, after, .. } => {
+                    for c in clauses {
+                        used_as_cont.insert(c.body);
+                        if let Some(g) = c.guard {
+                            used_as_cont.insert(g);
+                        }
+                    }
+                    if let Some(a) = after {
+                        used_as_cont.insert(a.body);
+                    }
+                }
                 _ => {}
             }
             for stmt in &b.stmts {
@@ -175,6 +190,27 @@ pub fn natively_callable(m: &Module, parking: &HashSet<FnId>) -> HashSet<FnId> {
                     continuation,
                     ident: _,
                 } => set.contains(&continuation.fn_id),
+                // fz-70q.5.5 — admit ReceiveMatched on the same terms as
+                // Receive: native iff every body / guard / after fn that
+                // could be reached from the matcher is also native. The
+                // park itself goes through the runtime FFI (matcher fn +
+                // fz_receive_park_matched), neither of which constrains
+                // the enclosing fn's calling convention. The cont-stub
+                // emitted by fz_codegen_cont_stub bridges the scheduler
+                // resume seam into the body's Tail-CC sig at wake time.
+                //
+                // (Pre-fz-70q.5 this was hardcoded `false`, which forced
+                // every ReceiveMatched chain through the legacy uniform
+                // ABI. With the cont-stub seam in place that exclusion
+                // is no longer load-bearing — it was the root cause of
+                // the silent-exit symptom in fz-70q.4.)
+                Term::ReceiveMatched { clauses, after, .. } => {
+                    let body_ok = clauses
+                        .iter()
+                        .all(|c| set.contains(&c.body) && c.guard.is_none_or(|g| set.contains(&g)));
+                    let after_ok = after.as_ref().is_none_or(|a| set.contains(&a.body));
+                    body_ok && after_ok
+                }
             });
             // A cont must only be reachable from native Term::Call sites.
             // If any of its Term::Call callers has a callee that's not in
@@ -211,7 +247,10 @@ pub fn parking_reachable(m: &Module) -> HashSet<FnId> {
         for b in &f.blocks {
             if matches!(
                 b.terminator,
-                Term::Receive { .. } | Term::CallClosure { .. } | Term::TailCallClosure { .. }
+                Term::Receive { .. }
+                    | Term::ReceiveMatched { .. }
+                    | Term::CallClosure { .. }
+                    | Term::TailCallClosure { .. }
             ) {
                 seed = true;
                 break;

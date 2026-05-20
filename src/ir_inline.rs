@@ -198,6 +198,18 @@ fn max_var_in_term(t: &Term) -> u32 {
             continuation,
             ident: _,
         } => continuation.captured.iter().for_each(|x| v(*x)),
+        Term::ReceiveMatched {
+            pinned,
+            captures,
+            after,
+            ..
+        } => {
+            pinned.iter().for_each(|(_, x)| v(*x));
+            captures.iter().for_each(|x| v(*x));
+            if let Some(a) = after {
+                v(a.timeout);
+            }
+        }
     }
     m
 }
@@ -368,6 +380,28 @@ pub fn alpha_rename(callee: &FnIr, caller: &FnIr) -> FnIr {
             } => Term::Receive {
                 ident: fork(ident),
                 continuation: rename_cont(continuation),
+            },
+            // fz-yxs — alpha-rename Vars (pinned/captures/timeout) and
+            // mint fresh idents. Clause/after body FnIds and patterns
+            // are not renamed: they live as module-level fns and source-
+            // level AST respectively, neither participates in the var/
+            // block shift.
+            Term::ReceiveMatched {
+                ident,
+                clauses,
+                after,
+                pinned,
+                captures,
+            } => Term::ReceiveMatched {
+                ident: fork(ident),
+                clauses: clauses.clone(),
+                after: after.as_ref().map(|a| crate::fz_ir::ReceiveAfter {
+                    timeout: sv(a.timeout),
+                    body: a.body,
+                    span: a.span,
+                }),
+                pinned: pinned.iter().map(|(n, v)| (n.clone(), sv(*v))).collect(),
+                captures: captures.iter().map(|x| sv(*x)).collect(),
             },
         }
     };
