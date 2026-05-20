@@ -137,8 +137,8 @@
 ;     Var(74) :: &fn25[&fn24[binary]:() -> α1599]:() -> α1663
 ;     Var(75) :: any
 ;   exits:
-;     blk0 Receive cont k_receive_26#26 captured=[Var(71)]
-;              cont_key=[any, binary]
+;     blk0 ReceiveMatched pinned=[] caps=[Var(71)]
+;              clause[0] body=rx_clause_0_body#27 bound=[x]
 ;     blk1 Halt Var(0)      :: :match_error
 ;     blk2 Halt Var(72)      :: :match_error
 
@@ -161,7 +161,7 @@
 ;   exits:
 ;     blk0 TailCallClosure Var(0)()
 
-; spec k_receive_26(2) #fn=26
+; spec receive_join(2) #fn=26
 ;   key:    [any, binary]
 ;   return: none
 ;   vars:
@@ -170,4 +170,14 @@
 ;   exits:
 ;     blk0 TailCall print#4(Var(0))
 ;              callee_key=[any]
+
+; spec rx_clause_0_body(2) #fn=27
+;   key:    [any, binary]
+;   return: none
+;   vars:
+;     Var(0) :: any
+;     Var(1) :: binary
+;   exits:
+;     blk0 TailCall receive_join#26(Var(0), Var(1))
+;              callee_key=[any, binary]
 

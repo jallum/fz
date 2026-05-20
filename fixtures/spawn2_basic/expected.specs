@@ -68,8 +68,8 @@
 ;     Var(3) :: &fn25[&fn24[]:() -> α1599]:() -> α1663
 ;     Var(4) :: any
 ;   exits:
-;     blk0 Receive cont k_receive_26#26 captured=[]
-;              cont_key=[any]
+;     blk0 ReceiveMatched pinned=[] caps=[]
+;              clause[0] body=rx_clause_0_body#27 bound=[x]
 ;     blk1 Halt Var(0)      :: :match_error
 
 ; spec lambda_24(0) #fn=24
@@ -91,12 +91,21 @@
 ;   exits:
 ;     blk0 TailCallClosure Var(0)()
 
-; spec k_receive_26(1) #fn=26
+; spec receive_join(1) #fn=26
 ;   key:    [any]
 ;   return: none
 ;   vars:
 ;     Var(0) :: any
 ;   exits:
 ;     blk0 TailCall print#4(Var(0))
+;              callee_key=[any]
+
+; spec rx_clause_0_body(1) #fn=27
+;   key:    [any]
+;   return: none
+;   vars:
+;     Var(0) :: any
+;   exits:
+;     blk0 TailCall receive_join#26(Var(0))
 ;              callee_key=[any]
 
