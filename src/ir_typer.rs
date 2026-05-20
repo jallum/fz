@@ -1700,11 +1700,17 @@ fn topo_order(f: &FnIr) -> Vec<BlockId> {
 }
 
 pub fn type_fn<T: crate::types_seam::Types>(
-    _t: &mut T,
+    t: &mut T,
     f: &FnIr,
     m: &Module,
     entry_param_types: Option<&[Descr]>,
 ) -> FnTypes {
+    use crate::types_seam::AsDescr;
+    // Pre-materialized fallbacks for the many `unwrap_or_else(Descr::any/none)`
+    // sites. Re-cloned per fallback hit; future passes (when locals become Ty)
+    // will let these flow as values instead of clone-on-fallback.
+    let any_d: Descr = t.any().as_descr();
+    let none_d: Descr = t.none().as_descr();
     let mut vars: HashMap<Var, Descr> = HashMap::new();
     let mut block_envs: HashMap<BlockId, HashMap<Var, Descr>> = HashMap::new();
 
@@ -1718,12 +1724,12 @@ pub fn type_fn<T: crate::types_seam::Types>(
         let mut env = HashMap::new();
         if b.id == f.entry {
             for (i, &p) in b.params.iter().enumerate() {
-                let t = entry_param_types
+                let pt = entry_param_types
                     .and_then(|ts| ts.get(i))
                     .cloned()
-                    .unwrap_or_else(Descr::any);
-                env.insert(p, t.clone());
-                vars.insert(p, t);
+                    .unwrap_or_else(|| any_d.clone());
+                env.insert(p, pt.clone());
+                vars.insert(p, pt);
             }
         }
         block_envs.insert(b.id, env);
@@ -1743,7 +1749,7 @@ pub fn type_fn<T: crate::types_seam::Types>(
             let mut const_vars: HashSet<Var> = HashSet::new();
             for stmt in &b.stmts {
                 let Stmt::Let(v, prim) = stmt;
-                let t = type_prim(prim, &env, m, &const_vars);
+                let pt = type_prim(prim, &env, m, &const_vars);
                 // Propagate const-derivation: a Const is trivially const; a
                 // BinOp/UnOp on const vars is also const.
                 match prim {
@@ -1758,12 +1764,14 @@ pub fn type_fn<T: crate::types_seam::Types>(
                     }
                     _ => {}
                 }
-                env.insert(*v, t.clone());
+                env.insert(*v, pt.clone());
                 // vars is the definition-site type; single assignment so
                 // we just overwrite each iteration (will converge).
-                let prev = vars.get(v).cloned().unwrap_or_else(Descr::none);
-                if !t.is_equiv(&prev) {
-                    vars.insert(*v, t);
+                let prev = vars.get(v).cloned().unwrap_or_else(|| none_d.clone());
+                let pt_ty = t.from_descr(&pt);
+                let prev_ty = t.from_descr(&prev);
+                if !t.is_equivalent(&pt_ty, &prev_ty) {
+                    vars.insert(*v, pt);
                     changed = true;
                 }
             }
@@ -1776,13 +1784,13 @@ pub fn type_fn<T: crate::types_seam::Types>(
                     // Substitute target's params with the supplied arg types.
                     let arg_ts: Vec<Descr> = args
                         .iter()
-                        .map(|a| env.get(a).cloned().unwrap_or_else(Descr::any))
+                        .map(|a| env.get(a).cloned().unwrap_or_else(|| any_d.clone()))
                         .collect();
                     // Remove anything keyed by the source-block's view of
                     // the args (they're not the same Vars as target params).
                     for (i, &p) in target_b.params.iter().enumerate() {
-                        if let Some(t) = arg_ts.get(i) {
-                            delta.insert(p, t.clone());
+                        if let Some(at) = arg_ts.get(i) {
+                            delta.insert(p, at.clone());
                         }
                     }
                     if merge_into(&mut block_envs, *target, &delta) {
@@ -1795,9 +1803,11 @@ pub fn type_fn<T: crate::types_seam::Types>(
                         let from_env = block_envs[target]
                             .get(&p)
                             .cloned()
-                            .unwrap_or_else(Descr::none);
-                        let prev = vars.get(&p).cloned().unwrap_or_else(Descr::none);
-                        if !from_env.is_equiv(&prev) {
+                            .unwrap_or_else(|| none_d.clone());
+                        let prev = vars.get(&p).cloned().unwrap_or_else(|| none_d.clone());
+                        let from_ty = t.from_descr(&from_env);
+                        let prev_ty = t.from_descr(&prev);
+                        if !t.is_equivalent(&from_ty, &prev_ty) {
                             vars.insert(p, from_env);
                             changed = true;
                         }
@@ -1876,16 +1886,19 @@ pub fn type_fn<T: crate::types_seam::Types>(
                     let Stmt::Let(v, prim) = stmt;
                     env.insert(*v, type_prim(prim, &env, m, &HashSet::new()));
                 }
-                let ct = env.get(cond).cloned().unwrap_or_else(Descr::any);
+                let ct = env.get(cond).cloned().unwrap_or_else(|| any_d.clone());
                 // Use is_subtype to check provable branch deadness.
                 // `ct ⊆ atom_lit("true")` means ct can ONLY be true →
                 // else-branch dead. `ct ⊆ atom_lit("false")` → then dead.
                 // bool_t()/any()/etc. are NOT subtypes of either singleton,
                 // so both branches remain reachable.
-                if !ct.is_subtype(&Descr::atom_lit("false")) {
+                let ct_ty = t.from_descr(&ct);
+                let false_ty = t.atom_lit("false");
+                if !t.is_subtype(&ct_ty, &false_ty) {
                     worklist.push(*then_b);
                 }
-                if !ct.is_subtype(&Descr::atom_lit("true")) {
+                let true_ty = t.atom_lit("true");
+                if !t.is_subtype(&ct_ty, &true_ty) {
                     worklist.push(*else_b);
                 }
             }
