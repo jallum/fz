@@ -38,7 +38,7 @@ use crate::types::Descr;
 /// inferred specs in `module_types`. Returns a list of diagnostics
 /// (empty when all specs hold).
 pub fn validate_specs<T: crate::types_seam::Types>(
-    _t: &mut T,
+    t: &mut T,
     program: &Program,
     ir_module: &crate::fz_ir::Module,
     module_types: &ModuleTypes,
@@ -83,6 +83,7 @@ pub fn validate_specs<T: crate::types_seam::Types>(
         };
         let ir_fn_id = ir_fn.id;
         validate_one_fn(
+            t,
             &resolved.params,
             &resolved.result,
             ir_fn_id,
@@ -96,7 +97,8 @@ pub fn validate_specs<T: crate::types_seam::Types>(
     diags
 }
 
-fn validate_one_fn(
+fn validate_one_fn<T: crate::types_seam::Types>(
+    t: &mut T,
     declared_params: &[Descr],
     declared_result: &Descr,
     fn_id: FnId,
@@ -107,7 +109,8 @@ fn validate_one_fn(
     diags: &mut Vec<Diagnostic>,
 ) {
     let arity = declared_params.len();
-    let any_key: Vec<Descr> = vec![Descr::any(); arity];
+    let any_ty = t.any();
+    let any_key: Vec<Descr> = vec![t.to_descr(&any_ty); arity];
     for ((fid, key), ft) in &module_types.specs {
         if *fid != fn_id {
             continue;
@@ -120,7 +123,9 @@ fn validate_one_fn(
         } // skip any-key per design
         // Element-wise inferred ⊆ declared on each input.
         for (i, inferred) in key.iter().enumerate() {
-            if !inferred.is_subtype(&declared_params[i]) {
+            let inferred_ty = t.from_descr(inferred);
+            let declared_ty = t.from_descr(&declared_params[i]);
+            if !t.is_subtype(&inferred_ty, &declared_ty) {
                 diags.push(Diagnostic::error(
                     codes::SPEC_VIOLATION,
                     format!(
@@ -137,15 +142,28 @@ fn validate_one_fn(
         let mut inferred_result: Option<Descr> = None;
         for b in &ir_fn.blocks {
             if let crate::fz_ir::Term::Return(rv) = &b.terminator {
-                let d = ft.vars.get(rv).cloned().unwrap_or_else(Descr::any);
+                let d = ft.vars.get(rv).cloned().unwrap_or_else(|| {
+                    let any = t.any();
+                    t.to_descr(&any)
+                });
                 inferred_result = Some(match inferred_result {
-                    Some(prev) => prev.union(&d),
+                    Some(prev) => {
+                        let a = t.from_descr(&prev);
+                        let b = t.from_descr(&d);
+                        let u = t.union(a, b);
+                        t.to_descr(&u)
+                    }
                     None => d,
                 });
             }
         }
-        let inferred_result = inferred_result.unwrap_or_else(Descr::any);
-        if !inferred_result.is_subtype(declared_result) {
+        let inferred_result = inferred_result.unwrap_or_else(|| {
+            let any = t.any();
+            t.to_descr(&any)
+        });
+        let inferred_ty = t.from_descr(&inferred_result);
+        let declared_ty = t.from_descr(declared_result);
+        if !t.is_subtype(&inferred_ty, &declared_ty) {
             diags.push(Diagnostic::error(
                 codes::SPEC_VIOLATION,
                 format!(

@@ -114,6 +114,15 @@ pub trait Types {
 
     fn instantiate(&mut self, a: &Self::Ty, sigma: &Sigma<Self::Ty>) -> Self::Ty;
 
+    // ---- migration bridge ---------------------------------------------
+    //
+    // Temporary Descr↔Ty conversion. Lets a body that's still
+    // Descr-typed locally route operations through the seam without
+    // rewriting the carrier all at once. Removed once every consumer
+    // has migrated its locals to `Ty` (the epic's pass 5+).
+    fn from_descr(&mut self, d: &Descr) -> Self::Ty;
+    fn to_descr(&self, a: &Self::Ty) -> Descr;
+
     // ---- adoption-ease predicates (default; built on kind_of) ---------
 
     fn is_integer(&self, a: &Self::Ty) -> bool {
@@ -239,6 +248,13 @@ impl Types for ConcreteTypes {
             .map(|(id, t)| (*id, t.descr().clone()))
             .collect();
         Ty::from_descr(a.descr().instantiate(&inner))
+    }
+
+    fn from_descr(&mut self, d: &Descr) -> Ty {
+        Ty::from_descr(d.clone())
+    }
+    fn to_descr(&self, a: &Ty) -> Descr {
+        a.descr().clone()
     }
 }
 
