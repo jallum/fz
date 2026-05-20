@@ -82,10 +82,13 @@ pub fn validate_specs<T: crate::types_seam::Types>(
             continue;
         };
         let ir_fn_id = ir_fn.id;
+        let declared_param_tys: Vec<<T as crate::types_seam::Types>::Ty> =
+            resolved.params.iter().map(|d| t.from_descr(d)).collect();
+        let declared_result_ty = t.from_descr(&resolved.result);
         validate_one_fn(
             t,
-            &resolved.params,
-            &resolved.result,
+            &declared_param_tys,
+            &declared_result_ty,
             ir_fn_id,
             ir_fn,
             &fn_def.name,
@@ -99,8 +102,8 @@ pub fn validate_specs<T: crate::types_seam::Types>(
 
 fn validate_one_fn<T: crate::types_seam::Types>(
     t: &mut T,
-    declared_params: &[Descr],
-    declared_result: &Descr,
+    declared_param_tys: &[T::Ty],
+    declared_result_ty: &T::Ty,
     fn_id: FnId,
     ir_fn: &crate::fz_ir::FnIr,
     user_name: &str,
@@ -108,20 +111,14 @@ fn validate_one_fn<T: crate::types_seam::Types>(
     module_types: &ModuleTypes,
     diags: &mut Vec<Diagnostic>,
 ) {
-    let arity = declared_params.len();
+    let arity = declared_param_tys.len();
     use crate::types_seam::AsDescr;
     let any_key: Vec<Descr> = vec![t.any().as_descr(); arity];
-    // Hoist: declared_* are constant across spec_key iterations. Convert
-    // once + pre-render displays so the per-key body holds no
-    // Descr-typed view of these values.
-    let declared_param_tys: Vec<T::Ty> =
-        declared_params.iter().map(|d| t.from_descr(d)).collect();
     let declared_param_displays: Vec<String> = declared_param_tys
         .iter()
         .map(|ty| t.display(ty))
         .collect();
-    let declared_result_ty: T::Ty = t.from_descr(declared_result);
-    let declared_result_display: String = t.display(&declared_result_ty);
+    let declared_result_display: String = t.display(declared_result_ty);
     for ((fid, key), ft) in &module_types.specs {
         if *fid != fn_id {
             continue;
@@ -166,7 +163,7 @@ fn validate_one_fn<T: crate::types_seam::Types>(
             }
         }
         let inferred_ty = inferred_result.unwrap_or_else(|| t.any());
-        if !t.is_subtype(&inferred_ty, &declared_result_ty) {
+        if !t.is_subtype(&inferred_ty, declared_result_ty) {
             let inferred_display = t.display(&inferred_ty);
             diags.push(Diagnostic::error(
                 codes::SPEC_VIOLATION,
