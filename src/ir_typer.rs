@@ -3066,12 +3066,13 @@ pub fn cont_slot0_descr(
 ///     subsumption search codegen uses, so a spec marked reachable here
 ///     is exactly a spec codegen will look up.
 pub fn reachable_specs<T: crate::types_seam::Types>(
-    _t: &mut T,
+    t: &mut T,
     module: &Module,
     spec_registry: &crate::spec_registry::SpecRegistry,
     module_types: &ModuleTypes,
     extra_seeds: impl IntoIterator<Item = u32>,
 ) -> HashSet<u32> {
+    use crate::types_seam::AsDescr;
     let mut reached: HashSet<u32> = HashSet::new();
     let mut worklist: Vec<u32> = Vec::new();
 
@@ -3111,7 +3112,7 @@ pub fn reachable_specs<T: crate::types_seam::Types>(
     // reachable any-keys for narrow-only fns now drop too.
     if let Some(main_fn) = module.fns.iter().find(|f| f.name == "main") {
         let n_params = main_fn.block(main_fn.entry).params.len();
-        let key: Vec<Descr> = vec![Descr::any(); n_params];
+        let key: Vec<Descr> = vec![t.any().as_descr(); n_params];
         if let Some(sid) = spec_registry.resolve(main_fn.id, &key) {
             worklist.push(sid.0);
         }
@@ -3156,16 +3157,18 @@ pub fn reachable_specs<T: crate::types_seam::Types>(
                 continue;
             }
             let env = env_at_terminator(ft, blk, module);
+            // Capture `any` once so the closures stay `Fn` (no &mut T capture).
+            let any_d: Descr = t.any().as_descr();
             let arg_descrs = |args: &[Var]| -> Vec<Descr> {
                 args.iter()
-                    .map(|av| env.get(av).cloned().unwrap_or_else(Descr::any))
+                    .map(|av| env.get(av).cloned().unwrap_or_else(|| any_d.clone()))
                     .collect()
             };
             let pad_to_arity = |callee: FnId, mut ad: Vec<Descr>| -> Vec<Descr> {
                 if let Some(&j) = module.fn_idx.get(&callee) {
                     let np = module.fns[j].block(module.fns[j].entry).params.len();
                     while ad.len() < np {
-                        ad.push(Descr::any());
+                        ad.push(any_d.clone());
                     }
                     ad.truncate(np);
                 }
@@ -3246,7 +3249,7 @@ pub fn reachable_specs<T: crate::types_seam::Types>(
                     // shape here so resolve() lands on the same spec.
                     let cap_descrs: Vec<Descr> = captures
                         .iter()
-                        .map(|cv| ft.vars.get(cv).cloned().unwrap_or_else(Descr::any))
+                        .map(|cv| ft.vars.get(cv).cloned().unwrap_or_else(|| any_d.clone()))
                         .collect();
                     let enq =
                         |fid: FnId, bound_arity: usize, cap_descrs: &[Descr], wl: &mut Vec<u32>| {
@@ -3255,10 +3258,10 @@ pub fn reachable_specs<T: crate::types_seam::Types>(
                             };
                             let body = &module.fns[j];
                             let np = body.block(body.entry).params.len();
-                            let mut key: Vec<Descr> = vec![Descr::any(); bound_arity];
+                            let mut key: Vec<Descr> = vec![any_d.clone(); bound_arity];
                             key.extend(cap_descrs.iter().cloned());
                             while key.len() < np {
-                                key.push(Descr::any());
+                                key.push(any_d.clone());
                             }
                             key.truncate(np);
                             if let Some(sid) = spec_registry.resolve(fid, &key) {
