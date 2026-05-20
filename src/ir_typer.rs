@@ -2442,10 +2442,6 @@ fn type_binop<T: crate::types_seam::Types>(
     }
 }
 
-fn float_singleton(d: &Descr) -> Option<f64> {
-    d.as_float_singleton().map(|b| b.get())
-}
-
 fn compare_result<T: crate::types_seam::Types>(
     t: &mut T,
     op: BinOp,
@@ -2453,9 +2449,7 @@ fn compare_result<T: crate::types_seam::Types>(
     b: &T::Ty,
 ) -> T::Ty {
     use BinOp::*;
-    let a_d = t.to_descr(a);
-    let b_d = t.to_descr(b);
-    if let (Some(ai), Some(bi)) = (a_d.as_int_singleton(), b_d.as_int_singleton()) {
+    if let (Some(ai), Some(bi)) = (t.as_int_singleton(a), t.as_int_singleton(b)) {
         let result = match op {
             Eq => ai == bi,
             Neq => ai != bi,
@@ -2471,7 +2465,7 @@ fn compare_result<T: crate::types_seam::Types>(
             t.atom_lit("false")
         };
     }
-    if let (Some(af), Some(bf)) = (float_singleton(&a_d), float_singleton(&b_d)) {
+    if let (Some(af), Some(bf)) = (t.as_float_singleton(a), t.as_float_singleton(b)) {
         let result = match op {
             Eq => af == bf,
             Neq => af != bf,
@@ -2514,9 +2508,7 @@ fn numeric_result_fold<T: crate::types_seam::Types>(
     b: &T::Ty,
 ) -> T::Ty {
     use BinOp::*;
-    let a_d = t.to_descr(a);
-    let b_d = t.to_descr(b);
-    if let (Some(ai), Some(bi)) = (a_d.as_int_singleton(), b_d.as_int_singleton()) {
+    if let (Some(ai), Some(bi)) = (t.as_int_singleton(a), t.as_int_singleton(b)) {
         let result = match op {
             Add => ai.checked_add(bi),
             Sub => ai.checked_sub(bi),
@@ -2541,7 +2533,7 @@ fn numeric_result_fold<T: crate::types_seam::Types>(
             return t.int_lit(r);
         }
     }
-    if let (Some(af), Some(bf)) = (float_singleton(&a_d), float_singleton(&b_d)) {
+    if let (Some(af), Some(bf)) = (t.as_float_singleton(a), t.as_float_singleton(b)) {
         let result = match op {
             Add => Some(af + bf),
             Sub => Some(af - bf),

@@ -166,6 +166,13 @@ pub trait Types {
     /// equality predicates to refine the non-singleton operand.
     fn is_singleton_lit(&self, a: &Self::Ty) -> bool;
 
+    /// If `a` is a singleton integer literal, return its value.
+    /// Used by binop folding (numeric_result_fold, compare_result).
+    fn as_int_singleton(&self, a: &Self::Ty) -> Option<i64>;
+
+    /// If `a` is a singleton float literal, return its value.
+    fn as_float_singleton(&self, a: &Self::Ty) -> Option<f64>;
+
     /// Render `a` for user-facing diagnostics. Owned-string return
     /// day-one; consumers `format!("{}", t.display(&ty))`-style.
     fn display(&self, a: &Self::Ty) -> String;
@@ -355,6 +362,14 @@ impl Types for ConcreteTypes {
 
     fn is_singleton_lit(&self, a: &Ty) -> bool {
         a.descr().is_singleton_literal()
+    }
+
+    fn as_int_singleton(&self, a: &Ty) -> Option<i64> {
+        a.descr().as_int_singleton()
+    }
+
+    fn as_float_singleton(&self, a: &Ty) -> Option<f64> {
+        a.descr().as_float_singleton().map(|b| b.get())
     }
 
     fn display(&self, a: &Ty) -> String {
