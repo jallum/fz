@@ -752,10 +752,16 @@ fn compute_dead_branches<T: crate::types_seam::Types>(
                 // narrow_for_cond didn't fire (e.g. cond bound directly
                 // to a `Const::True`/`Const::False`/`Const::Nil`). This
                 // subsumes the cond-singleton fold ir_fold used to do.
-                let ct = env.get(&cond).cloned().unwrap_or_else(Descr::any);
-                if ct.is_subtype(&Descr::atom_lit("true")) {
+                use crate::types_seam::AsDescr;
+                let any_d = t.any().as_descr();
+                let ct = env.get(&cond).cloned().unwrap_or(any_d);
+                let cy = t.from_descr(&ct);
+                let true_ty = t.atom_lit("true");
+                let false_ty = t.atom_lit("false");
+                let nil_ty = t.nil();
+                if t.is_subtype(&cy, &true_ty) {
                     else_dead = true;
-                } else if ct.is_subtype(&Descr::atom_lit("false")) || ct.is_subtype(&Descr::nil()) {
+                } else if t.is_subtype(&cy, &false_ty) || t.is_subtype(&cy, &nil_ty) {
                     then_dead = true;
                 }
                 if then_dead {
