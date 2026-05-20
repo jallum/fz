@@ -1140,24 +1140,26 @@ fn cont_key_for_spec<T: crate::types_seam::Types>(
     module: &Module,
     effective_returns: &HashMap<(FnId, Vec<Descr>), Descr>,
 ) -> Vec<Descr> {
+    use crate::types_seam::AsDescr;
     let Some(_) = module.fn_idx.get(&cont.fn_id) else {
         return vec![];
     };
+    let any_d = t.any().as_descr();
     let cont_fn = module.fn_by_id(cont.fn_id);
     let n_params = cont_fn.block(cont_fn.entry).params.len();
-    let mut key: Vec<Descr> = vec![Descr::any(); n_params];
+    let mut key: Vec<Descr> = vec![any_d.clone(); n_params];
 
     let env = env_at_terminator(t, ft, block, module);
     let slot0 = match &block.terminator {
         Term::Call { callee, args, .. } => {
             let arg_descrs: Vec<Descr> = args
                 .iter()
-                .map(|av| env.get(av).cloned().unwrap_or_else(Descr::any))
+                .map(|av| env.get(av).cloned().unwrap_or_else(|| any_d.clone()))
                 .collect();
             effective_returns
                 .get(&(*callee, arg_descrs))
                 .cloned()
-                .unwrap_or_else(Descr::any)
+                .unwrap_or_else(|| any_d.clone())
         }
         Term::CallClosure { closure, args, .. } => {
             if let Some(&target) = ft.fn_constants.get(closure) {
@@ -1165,16 +1167,16 @@ fn cont_key_for_spec<T: crate::types_seam::Types>(
                 let np = target_fn.block(target_fn.entry).params.len();
                 let mut ad: Vec<Descr> = args
                     .iter()
-                    .map(|av| env.get(av).cloned().unwrap_or_else(Descr::any))
+                    .map(|av| env.get(av).cloned().unwrap_or_else(|| any_d.clone()))
                     .collect();
                 while ad.len() < np {
-                    ad.push(Descr::any());
+                    ad.push(any_d.clone());
                 }
                 ad.truncate(np);
                 effective_returns
                     .get(&(target, ad))
                     .cloned()
-                    .unwrap_or_else(Descr::any)
+                    .unwrap_or_else(|| any_d.clone())
             } else if let Some(cv_descr) = env.get(closure) {
                 // fz-5j5.3 — mirror walker's closure_lit slot-0 path
                 // (resolve_closure_return). Without this, sweep computes
@@ -1182,22 +1184,22 @@ fn cont_key_for_spec<T: crate::types_seam::Types>(
                 // diverging from registered cont keys.
                 let arg_descrs: Vec<Descr> = args
                     .iter()
-                    .map(|av| env.get(av).cloned().unwrap_or_else(Descr::any))
+                    .map(|av| env.get(av).cloned().unwrap_or_else(|| any_d.clone()))
                     .collect();
                 resolve_closure_return(t, cv_descr, effective_returns, &arg_descrs)
-                    .unwrap_or_else(Descr::any)
+                    .unwrap_or_else(|| any_d.clone())
             } else {
-                Descr::any()
+                any_d.clone()
             }
         }
-        _ => Descr::any(),
+        _ => any_d.clone(),
     };
     if !key.is_empty() {
         key[0] = slot0;
     }
     for (k, cv) in cont.captured.iter().enumerate() {
         if let Some(p) = key.get_mut(k + 1) {
-            *p = env.get(cv).cloned().unwrap_or_else(Descr::any);
+            *p = env.get(cv).cloned().unwrap_or_else(|| any_d.clone());
         }
     }
     key
