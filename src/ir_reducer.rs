@@ -324,16 +324,17 @@ fn reduce_terminator<T: crate::types_seam::Types>(
                 );
                 return None;
             };
-            let mut all_descrs = cl_lit.captures.clone();
+            let mut all_tys: Vec<T::Ty> =
+                cl_lit.captures.iter().map(|d| t.from_descr(d)).collect();
             for a in args {
-                let Some(d) = env.get(a).map(|ty| ty.as_descr()) else {
+                let Some(ty) = env.get(a).cloned() else {
                     record_stalled(m, fn_idx, ident, slot, StalledReason::OpaqueArg, log);
                     return None;
                 };
-                all_descrs.push(d);
+                all_tys.push(ty);
             }
             let mut ctx = fresh_ctx(m, t);
-            let Some(lit) = try_reduce_call_with_descrs(&mut ctx, cl_lit.fn_id, &all_descrs) else {
+            let Some(lit) = try_reduce_call_with_descrs(&mut ctx, cl_lit.fn_id, &all_tys) else {
                 let reason = ctx.last_reason.unwrap_or(StalledReason::Other);
                 record_stalled(m, fn_idx, ident, slot, reason, log);
                 return None;
@@ -363,16 +364,17 @@ fn reduce_terminator<T: crate::types_seam::Types>(
                 );
                 return None;
             };
-            let mut all_descrs = cl_lit.captures.clone();
+            let mut all_tys: Vec<T::Ty> =
+                cl_lit.captures.iter().map(|d| t.from_descr(d)).collect();
             for a in args {
-                let Some(d) = env.get(a).map(|ty| ty.as_descr()) else {
+                let Some(ty) = env.get(a).cloned() else {
                     record_stalled(m, fn_idx, ident, slot, StalledReason::OpaqueArg, log);
                     return None;
                 };
-                all_descrs.push(d);
+                all_tys.push(ty);
             }
             let mut ctx = fresh_ctx(m, t);
-            let Some(lit) = try_reduce_call_with_descrs(&mut ctx, cl_lit.fn_id, &all_descrs) else {
+            let Some(lit) = try_reduce_call_with_descrs(&mut ctx, cl_lit.fn_id, &all_tys) else {
                 let reason = ctx.last_reason.unwrap_or(StalledReason::Other);
                 record_stalled(m, fn_idx, ident, slot, reason, log);
                 return None;
@@ -456,10 +458,10 @@ struct ReduceCtx<'m, T: crate::types_seam::Types> {
     module: &'m Module,
     /// Remaining budget. Decrements on each `try_reduce_call` entry.
     budget: u32,
-    /// Stack of `(callee_fn_id, arg_descrs)` for ancestors of the
+    /// Stack of `(callee_fn_id, arg_tys)` for ancestors of the
     /// current reduction. Same-callee re-entry checks structural
     /// decrease against the most-recent matching ancestor.
-    stack: Vec<(FnId, Vec<Descr>)>,
+    stack: Vec<(FnId, Vec<T::Ty>)>,
     /// fz-9pr.16 — first stall reason hit on the current top-level
     /// reduction attempt. Innermost-set-wins: a deep `OpaqueArg`
     /// leaf survives all the way back to `reduce_terminator` where
@@ -505,15 +507,15 @@ fn try_reduce_call<T: crate::types_seam::Types>(
     args: &[Var],
     env: &HashMap<Var, T::Ty>,
 ) -> Option<Descr> {
-    let mut arg_descrs: Vec<Descr> = Vec::with_capacity(args.len());
+    let mut arg_tys: Vec<T::Ty> = Vec::with_capacity(args.len());
     for a in args {
-        let Some(d) = env.get(a).map(|ty| ty.as_descr()) else {
+        let Some(ty) = env.get(a).cloned() else {
             ctx.note(StalledReason::OpaqueArg);
             return None;
         };
-        arg_descrs.push(d);
+        arg_tys.push(ty);
     }
-    try_reduce_call_with_descrs(ctx, callee, &arg_descrs)
+    try_reduce_call_with_descrs(ctx, callee, &arg_tys)
 }
 
 // fz-try.10 — explicit reason for "arg is not a literal." Distinguishes
@@ -530,7 +532,7 @@ fn stall_reason_for_non_literal(d: &Descr) -> StalledReason {
 fn try_reduce_call_with_descrs<T: crate::types_seam::Types>(
     ctx: &mut ReduceCtx<'_, T>,
     callee: FnId,
-    arg_descrs: &[Descr],
+    arg_tys: &[T::Ty],
 ) -> Option<Descr> {
     if ctx.budget == 0 {
         ctx.note(StalledReason::BudgetExhausted);
@@ -546,22 +548,25 @@ fn try_reduce_call_with_descrs<T: crate::types_seam::Types>(
         ctx.note(StalledReason::BoundaryFn);
         return None;
     }
-    // Every arg must be literal-Descr.
-    for d in arg_descrs {
+    // Every arg must be literal-Descr. Bridge through .as_descr() for the
+    // Descr-domain predicates and structural-decrease guard.
+    let arg_descrs: Vec<Descr> = arg_tys.iter().map(|ty| ty.as_descr()).collect();
+    for d in &arg_descrs {
         if !is_scalar_literal(d) && !is_literal(d) {
             ctx.note(stall_reason_for_non_literal(d));
             return None;
         }
     }
     // Same-callee structural-decrease guard.
-    if let Some((_, parent)) = ctx.stack.iter().rfind(|(fid, _)| *fid == callee)
-        && !strictly_smaller_args(arg_descrs, parent)
-    {
-        ctx.note(StalledReason::StructuralDecrease);
-        return None;
+    if let Some((_, parent)) = ctx.stack.iter().rfind(|(fid, _)| *fid == callee) {
+        let parent_descrs: Vec<Descr> = parent.iter().map(|ty| ty.as_descr()).collect();
+        if !strictly_smaller_args(&arg_descrs, &parent_descrs) {
+            ctx.note(StalledReason::StructuralDecrease);
+            return None;
+        }
     }
-    ctx.stack.push((callee, arg_descrs.to_vec()));
-    let result = walk_fn_body(ctx, callee, arg_descrs);
+    ctx.stack.push((callee, arg_tys.to_vec()));
+    let result = walk_fn_body(ctx, callee, arg_tys);
     ctx.stack.pop();
     result
 }
@@ -569,17 +574,17 @@ fn try_reduce_call_with_descrs<T: crate::types_seam::Types>(
 fn walk_fn_body<T: crate::types_seam::Types>(
     ctx: &mut ReduceCtx<'_, T>,
     callee: FnId,
-    arg_descrs: &[Descr],
+    arg_tys: &[T::Ty],
 ) -> Option<Descr> {
     let f: &FnIr = ctx.module.fn_by_id(callee);
     let entry = f.block(f.entry);
-    if entry.params.len() != arg_descrs.len() {
+    if entry.params.len() != arg_tys.len() {
         ctx.note(StalledReason::CalleeBodyShape);
         return None;
     }
     let mut env: HashMap<Var, T::Ty> = HashMap::new();
-    for (p, d) in entry.params.iter().zip(arg_descrs.iter()) {
-        env.insert(*p, ctx.t.from_descr(d));
+    for (p, ty) in entry.params.iter().zip(arg_tys.iter()) {
+        env.insert(*p, ty.clone());
     }
     walk_block(ctx, f, f.entry, env, 0)
 }
@@ -684,7 +689,8 @@ fn walk_block<T: crate::types_seam::Types>(
             continuation,
         } => {
             let inner_result = try_reduce_call(ctx, *c_callee, c_args, &env)?;
-            feed_cont(ctx, continuation, inner_result, &env)
+            let inner_ty = ctx.t.from_descr(&inner_result);
+            feed_cont(ctx, continuation, inner_ty, &env)
         }
         // fz-jg5.6: closure-call reduction. When the closure operand has
         // a closure_lit(F, captures) Descr, dispatch to F directly with
@@ -698,15 +704,16 @@ fn walk_block<T: crate::types_seam::Types>(
                 ctx.note(StalledReason::NoClosureLitTarget);
                 return None;
             };
-            let mut all_descrs = cl_lit.captures;
+            let mut all_tys: Vec<T::Ty> =
+                cl_lit.captures.iter().map(|d| ctx.t.from_descr(d)).collect();
             for a in args {
-                let Some(d) = env.get(a).map(|ty| ty.as_descr()) else {
+                let Some(ty) = env.get(a).cloned() else {
                     ctx.note(StalledReason::OpaqueArg);
                     return None;
                 };
-                all_descrs.push(d);
+                all_tys.push(ty);
             }
-            try_reduce_call_with_descrs(ctx, cl_lit.fn_id, &all_descrs)
+            try_reduce_call_with_descrs(ctx, cl_lit.fn_id, &all_tys)
         }
         Term::CallClosure {
             ident: _,
@@ -718,16 +725,18 @@ fn walk_block<T: crate::types_seam::Types>(
                 ctx.note(StalledReason::NoClosureLitTarget);
                 return None;
             };
-            let mut all_descrs = cl_lit.captures;
+            let mut all_tys: Vec<T::Ty> =
+                cl_lit.captures.iter().map(|d| ctx.t.from_descr(d)).collect();
             for a in args {
-                let Some(d) = env.get(a).map(|ty| ty.as_descr()) else {
+                let Some(ty) = env.get(a).cloned() else {
                     ctx.note(StalledReason::OpaqueArg);
                     return None;
                 };
-                all_descrs.push(d);
+                all_tys.push(ty);
             }
-            let inner_result = try_reduce_call_with_descrs(ctx, cl_lit.fn_id, &all_descrs)?;
-            feed_cont(ctx, continuation, inner_result, &env)
+            let inner_result = try_reduce_call_with_descrs(ctx, cl_lit.fn_id, &all_tys)?;
+            let inner_ty = ctx.t.from_descr(&inner_result);
+            feed_cont(ctx, continuation, inner_ty, &env)
         }
         Term::Receive { .. } | Term::ReceiveMatched { .. } | Term::Halt(_) => {
             ctx.note(StalledReason::CalleeBodyShape);
@@ -741,23 +750,24 @@ fn walk_block<T: crate::types_seam::Types>(
 fn feed_cont<T: crate::types_seam::Types>(
     ctx: &mut ReduceCtx<'_, T>,
     continuation: &crate::fz_ir::Cont,
-    result: Descr,
+    result: T::Ty,
     env: &HashMap<Var, T::Ty>,
 ) -> Option<Descr> {
-    let mut cont_descrs: Vec<Descr> = Vec::with_capacity(1 + continuation.captured.len());
-    cont_descrs.push(result);
+    let mut cont_tys: Vec<T::Ty> = Vec::with_capacity(1 + continuation.captured.len());
+    cont_tys.push(result);
     for cap in &continuation.captured {
-        let Some(d) = env.get(cap).map(|ty| ty.as_descr()) else {
+        let Some(ty) = env.get(cap).cloned() else {
             ctx.note(StalledReason::OpaqueArg);
             return None;
         };
+        let d = ty.as_descr();
         if !is_literal(&d) {
             ctx.note(stall_reason_for_non_literal(&d));
             return None;
         }
-        cont_descrs.push(d);
+        cont_tys.push(ty);
     }
-    try_reduce_call_with_descrs(ctx, continuation.fn_id, &cont_descrs)
+    try_reduce_call_with_descrs(ctx, continuation.fn_id, &cont_tys)
 }
 
 /// fz-jg5.12 (RED.9) — `@spec`'d fn carries no risk to fold across if
