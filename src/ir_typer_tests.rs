@@ -2016,6 +2016,41 @@ fn make_bitstring_types_as_str_t() {
     );
 }
 
+// fz-axu.11 (L3) — string literals lower to a `utf8`-branded
+// const bitstring through ir_lower. End-to-end shape: the typer
+// publishes the literal's Var as having `brands = {utf8}` and the
+// strs axis populated.
+
+#[test]
+fn string_literal_lowers_to_utf8_branded_bitstring() {
+    let src = r#"fn main(), do: "hi""#;
+    let toks = crate::lexer::Lexer::new(src).tokenize().expect("lex");
+    let prog = crate::parser::Parser::new(toks)
+        .parse_program()
+        .expect("parse");
+    let prog = crate::resolve::flatten_modules(prog).expect("resolve");
+    let m = crate::ir_lower::lower_program(&prog).expect("lower");
+    // The user's main fn must contain a Prim::Brand stmt naming `utf8`
+    // applied to the result of a Prim::ConstBitstring.
+    let main = m.fn_by_name("main").expect("main");
+    let mut saw_brand = false;
+    let mut saw_const_bs = false;
+    for block in &main.blocks {
+        for stmt in &block.stmts {
+            let crate::fz_ir::Stmt::Let(_, prim) = stmt;
+            match prim {
+                Prim::Brand(_, name) if name == "utf8" => saw_brand = true,
+                Prim::ConstBitstring(bytes, bit_len) if bytes == b"hi" && *bit_len == 16 => {
+                    saw_const_bs = true;
+                }
+                _ => {}
+            }
+        }
+    }
+    assert!(saw_const_bs, "expected ConstBitstring(b\"hi\", 16)");
+    assert!(saw_brand, "expected Prim::Brand(_, \"utf8\")");
+}
+
 // fz-axu.4 (K3) — Prim::Brand(v, name) overlays the brand tag on the
 // source's structural type. The runtime sees identity; the type system
 // records the brand membership.

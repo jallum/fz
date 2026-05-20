@@ -1801,12 +1801,17 @@ fn lower_matrix_atom_literal(
             Pattern::Bool(true) => ("b:t".to_string(), Prim::Const(Const::True)),
             Pattern::Bool(false) => ("b:f".to_string(), Prim::Const(Const::False)),
             Pattern::Nil => ("n".to_string(), Prim::Const(Const::Nil)),
-            Pattern::Str(bytes) => {
-                // fz-axu.10 (L2) — shim: decode for Const::Str until K7
-                // retires Const::Str entirely (post-L3 desugaring).
-                let s = std::str::from_utf8(bytes)
-                    .expect("L2 ir_lower: non-UTF-8 pattern str before L3");
-                (format!("s:{}", s), Prim::Const(Const::Str(s.to_string())))
+            Pattern::Str(_) => {
+                // fz-axu.11 (L3) — string patterns now lower to a
+                // two-stmt (ConstBitstring, Brand) sequence; the
+                // matrix dispatch's key/Prim shape can only carry one
+                // Prim. Fall through to the row-by-row lowering at
+                // `lower_pattern_match`, which handles the L3 form
+                // directly. The dispatch optimisation is forfeit for
+                // string columns; nothing in the fixture suite hits
+                // this path today, so the perf loss is theoretical.
+                default_rows.push(row);
+                continue;
             }
             Pattern::Float(x) => (format!("f:{}", x), Prim::Const(Const::Float(*x))),
             Pattern::Wildcard | Pattern::Var(_) => {
@@ -2030,12 +2035,20 @@ fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -> Result<Va
         Expr::Int(n) => Ok(ctx.let_at(Prim::Const(Const::Int(*n)), sp)),
         Expr::Float(x) => Ok(ctx.let_at(Prim::Const(Const::Float(*x)), sp)),
         Expr::Str(bytes) => {
-            // fz-axu.10 (L2) — shim until L3 desugars to bitstring+Brand.
-            let s = std::str::from_utf8(bytes).map_err(|_| LowerError::Unsupported {
-                span: sp,
-                what: "non-UTF-8 string literal (lands once L3 desugaring is in)".into(),
-            })?;
-            Ok(ctx.let_at(Prim::Const(Const::Str(s.to_string())), sp))
+            // fz-axu.11 (L3) — every `"…"` literal must be valid UTF-8;
+            // it lowers to a `utf8`-branded const bitstring. Bare-byte
+            // payloads still flow through `<<…>>` syntax (Const::Str /
+            // Expr::Str is the user-facing "this is text" channel).
+            if std::str::from_utf8(bytes).is_err() {
+                return Err(LowerError::Unsupported {
+                    span: sp,
+                    what: "non-UTF-8 string literal (use `<<…>>` for raw bytes)"
+                        .into(),
+                });
+            }
+            let bit_len = (bytes.len() * 8) as u64;
+            let bs = ctx.let_at(Prim::ConstBitstring(bytes.clone(), bit_len), sp);
+            Ok(ctx.let_at(Prim::Brand(bs, "utf8".to_string()), sp))
         }
         Expr::Atom(s) => {
             let id = ctx.atoms.intern(s);
@@ -3186,10 +3199,23 @@ fn lower_pattern_bind(
         Pattern::Int(n) => emit_eq_check(ctx, subject, Prim::Const(Const::Int(*n)), fail_block),
         Pattern::Float(x) => emit_eq_check(ctx, subject, Prim::Const(Const::Float(*x)), fail_block),
         Pattern::Str(bytes) => {
-            // fz-axu.10 (L2) — shim: decode for Const::Str until K7.
-            let s = std::str::from_utf8(bytes)
-                .expect("L2 ir_lower: non-UTF-8 pattern str before L3");
-            emit_eq_check(ctx, subject, Prim::Const(Const::Str(s.to_string())), fail_block)
+            // fz-axu.11 (L3) — string patterns lower the same as
+            // Expr::Str: validate UTF-8, build a utf8-branded const
+            // bitstring, and equality-check against the subject.
+            if std::str::from_utf8(bytes).is_err() {
+                return Err(LowerError::Unsupported {
+                    span: pat_span,
+                    what: "non-UTF-8 string pattern (use `<<…>>` for raw bytes)".into(),
+                });
+            }
+            let bit_len = (bytes.len() * 8) as u64;
+            let bs = ctx.let_(Prim::ConstBitstring(bytes.clone(), bit_len));
+            let lit_v = ctx.let_(Prim::Brand(bs, "utf8".to_string()));
+            let eq_v = ctx.let_(Prim::BinOp(BinOp::Eq, subject, lit_v));
+            let cont_b = ctx.cur_mut().block(vec![]);
+            ctx.set_if_term(eq_v, cont_b, fail_block);
+            ctx.cur_block = Some(cont_b);
+            Ok(())
         }
         Pattern::Atom(s) => {
             let id = ctx.atoms.intern(s);
@@ -3347,10 +3373,17 @@ fn lower_pattern_as_key_expr(ctx: &mut LowerCtx, sp: &Spanned<Pattern>) -> Resul
         Pattern::Int(n) => ctx.let_(Prim::Const(Const::Int(*n))),
         Pattern::Float(x) => ctx.let_(Prim::Const(Const::Float(*x))),
         Pattern::Str(bytes) => {
-            // fz-axu.10 (L2) shim: decode for Const::Str until K7.
-            let s = std::str::from_utf8(bytes)
-                .expect("L2 ir_lower: non-UTF-8 pattern str before L3");
-            ctx.let_(Prim::Const(Const::Str(s.to_string())))
+            // fz-axu.11 (L3) — map-key pattern: same lowering as
+            // Expr::Str / Pattern::Str. Caller has validated the
+            // pattern, so non-UTF-8 here is a planning bug.
+            assert!(
+                std::str::from_utf8(bytes).is_ok(),
+                "non-UTF-8 string pattern reached map-key lowering — UTF-8 \
+                 should have surfaced at the matrix-key site"
+            );
+            let bit_len = (bytes.len() * 8) as u64;
+            let bs = ctx.let_(Prim::ConstBitstring(bytes.clone(), bit_len));
+            ctx.let_(Prim::Brand(bs, "utf8".to_string()))
         }
         Pattern::Atom(s) => {
             let id = ctx.atoms.intern(s);
