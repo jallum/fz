@@ -110,27 +110,27 @@ pub fn fold_prim<T: Types>(
     env: &HashMap<Var, Descr>,
     atom_names: &[String],
 ) -> Option<T::Ty> {
-    let d: Option<Descr> = match prim {
-        Prim::Const(c) => return fold_const(t, c, atom_names),
-        Prim::BinOp(op, a, b) => return fold_binop(t, *op, *a, *b, env),
-        Prim::UnOp(op, v) => return fold_unop(t, *op, *v, env),
-        Prim::MakeTuple(vs) => return fold_make_tuple(t, vs, env),
-        Prim::TupleField(v, i) => return fold_tuple_field(t, *v, *i as usize, env),
-        Prim::TypeTest(v, descr) => fold_type_test(*v, descr, env),
+    match prim {
+        Prim::Const(c) => fold_const(t, c, atom_names),
+        Prim::BinOp(op, a, b) => fold_binop(t, *op, *a, *b, env),
+        Prim::UnOp(op, v) => fold_unop(t, *op, *v, env),
+        Prim::MakeTuple(vs) => fold_make_tuple(t, vs, env),
+        Prim::TupleField(v, i) => fold_tuple_field(t, *v, *i as usize, env),
+        Prim::TypeTest(v, descr) => fold_type_test(t, *v, descr, env),
         // List structural folding requires IR-walking (RED.3+); the Descr
         // lattice's `list_of(elem)` loses length info. `IsEmptyList` is the
         // exception — Descr-level subtyping is enough.
-        Prim::IsEmptyList(v) => fold_list_is_nil(*v, env),
+        Prim::IsEmptyList(v) => fold_list_is_nil(t, *v, env),
         // fz-f88.3 — empty list literal folds to `list_of(none())`. Non-empty
         // MakeList still loses length info (L1 follow-up fz-4lo).
-        Prim::MakeList(elems, tail) if elems.is_empty() && tail.is_none() => {
-            Some(Descr::list_of(Descr::none()))
+        Prim::MakeList(elems, tail_v) if elems.is_empty() && tail_v.is_none() => {
+            Some(t.from_descr(&Descr::list_of(Descr::none())))
         }
         // fz-jg5.6: closure_lit fold — when MakeClosure's captures are
         // all literal, the closure Var has a closure_lit(F, captures) Descr.
         // The reducer's walk_block uses this to dispatch CallClosure /
         // TailCallClosure to F directly.
-        Prim::MakeClosure(_, fn_id, captured) => fold_make_closure(*fn_id, captured, env),
+        Prim::MakeClosure(_, fn_id, captured) => fold_make_closure(t, *fn_id, captured, env),
         // Other Prims are not foldable via the Descr lattice in v1.
         Prim::Extern(..)
         | Prim::AllocStruct(..)
@@ -153,8 +153,7 @@ pub fn fold_prim<T: Types>(
         Prim::Brand(_, _) => unreachable!(
             "Prim::Brand reached reducer — erasure should run inside lower_program_full"
         ),
-    };
-    d.map(|d| t.from_descr(&d))
+    }
 }
 
 fn fold_const<T: Types>(t: &mut T, c: &Const, atom_names: &[String]) -> Option<T::Ty> {
@@ -337,25 +336,32 @@ fn fold_tuple_field<T: Types>(
     Some(t.from_descr(elems.get(i)?))
 }
 
-fn fold_type_test(v: Var, descr: &Descr, env: &HashMap<Var, Descr>) -> Option<Descr> {
+fn fold_type_test<T: Types>(
+    t: &mut T,
+    v: Var,
+    descr: &Descr,
+    env: &HashMap<Var, Descr>,
+) -> Option<T::Ty> {
     let vd = env.get(&v)?;
-    if vd.is_subtype(descr) {
-        Some(bool_descr(true))
+    let r = if vd.is_subtype(descr) {
+        bool_descr(true)
     } else if vd.intersect(descr).is_empty() {
-        Some(bool_descr(false))
+        bool_descr(false)
     } else {
-        None
-    }
+        return None;
+    };
+    Some(t.from_descr(&r))
 }
 
 /// fz-jg5.6: produce a `closure_lit(F, [literal captures])` Descr when
 /// every captured Var has a literal Descr in `env`. The reducer then
 /// dispatches calls through this closure to `F` directly.
-fn fold_make_closure(
+fn fold_make_closure<T: Types>(
+    t: &mut T,
     fn_id: crate::fz_ir::FnId,
     captured: &[Var],
     env: &HashMap<Var, Descr>,
-) -> Option<Descr> {
+) -> Option<T::Ty> {
     let mut cap_descrs: Vec<Descr> = Vec::with_capacity(captured.len());
     for cv in captured {
         let d = env.get(cv)?.clone();
@@ -369,10 +375,14 @@ fn fold_make_closure(
     // downstream consumers must look up the body's true arity. The
     // reducer's call-dispatch path consults the body directly, so this
     // 0 placeholder is fine.
-    Some(Descr::closure_lit(fn_id, cap_descrs, 0))
+    Some(t.from_descr(&Descr::closure_lit(fn_id, cap_descrs, 0)))
 }
 
-fn fold_list_is_nil(v: Var, env: &HashMap<Var, Descr>) -> Option<Descr> {
+fn fold_list_is_nil<T: Types>(
+    t: &mut T,
+    v: Var,
+    env: &HashMap<Var, Descr>,
+) -> Option<T::Ty> {
     let d = env.get(&v)?;
     // fz-yan.1 — post-fz-s9y, `nil` (the atom) and `[]` (the empty list
     // sentinel) are distinct bit patterns. `IsEmptyList` tests for the
@@ -380,7 +390,7 @@ fn fold_list_is_nil(v: Var, env: &HashMap<Var, Descr>) -> Option<Descr> {
     // `false`, not `true` as it did pre-s9y. The `list_of(none())` case
     // — i.e. provably the empty list — still folds to `true`.
     if is_nil_only(d) {
-        Some(bool_descr(false))
+        Some(t.from_descr(&bool_descr(false)))
     } else if d.intersect(&Descr::nil()).is_empty()
         && d.components()
             .any(|c| matches!(c, crate::types::Component::Lists(_)))
