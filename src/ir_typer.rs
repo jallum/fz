@@ -2655,6 +2655,65 @@ pub fn collect_diagnostics(module: &Module, types: &ModuleTypes) -> crate::diag:
                         out.push(d);
                     }
                 }
+                // fz-l4c — arithmetic on opaque-typed operands is a
+                // soundness leak. `pid`, `ref`, and user opaque aliases
+                // happen to share bit-tag space with `int`, so `self() + 1`
+                // computes a number today; reject it at type-check time.
+                // Comparisons (`==`, `!=`) remain permitted — pid/ref
+                // equality is load-bearing for the selective-receive
+                // matcher.
+                if let Prim::BinOp(op, lhs, rhs) = prim
+                    && matches!(
+                        op,
+                        BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod
+                    )
+                {
+                    let ta = env.get(lhs).cloned().unwrap_or_else(Descr::any);
+                    let tb = env.get(rhs).cloned().unwrap_or_else(Descr::any);
+                    let lhs_opaque = ta.as_opaque_singleton();
+                    let rhs_opaque = tb.as_opaque_singleton();
+                    if lhs_opaque.is_some() || rhs_opaque.is_some() {
+                        let span = spans
+                            .and_then(|s| s.get(sidx).copied())
+                            .unwrap_or(Span::DUMMY);
+                        let opname = match op {
+                            BinOp::Add => "+",
+                            BinOp::Sub => "-",
+                            BinOp::Mul => "*",
+                            BinOp::Div => "/",
+                            BinOp::Mod => "%",
+                            _ => unreachable!(),
+                        };
+                        let (which, tag) = match (lhs_opaque, rhs_opaque) {
+                            (Some(name), _) => ("left", name),
+                            (_, Some(name)) => ("right", name),
+                            _ => unreachable!(),
+                        };
+                        let message = format!(
+                            "arithmetic `{}` is not defined for opaque type `{}`",
+                            opname, tag
+                        );
+                        let note = format!(
+                            "{} operand has type `{}`; opaque types are nominally \
+                             disjoint from `int` and `float`. Use `==` / `!=` for \
+                             identity comparison.",
+                            which,
+                            if which == "left" {
+                                ta.display_for_diag()
+                            } else {
+                                tb.display_for_diag()
+                            },
+                        );
+                        let d = Diagnostic::error(
+                            crate::diag::codes::TYPE_OPAQUE_ARITHMETIC,
+                            message,
+                            span,
+                        )
+                        .with_label(format!("in fn `{}`", f.name))
+                        .with_note(note);
+                        out.push(d);
+                    }
+                }
                 // fz-swt.8 — `handle.value` outside the declaring
                 // module is a type error. Detect at MapGet sites where
                 // the subject is a singleton opaque, the key is the

@@ -269,39 +269,24 @@ pub fn send_via_current_runtime(receiver_pid: PidId, msg: FzValue) {
     let copied =
         fz_runtime::heap::deep_copy_value(msg, &sender.heap, &mut receiver.heap, &mut forwarding);
 
-    // fz-yxs/fz-st5 — selective receive sender-probe. If the receiver is
-    // parked on a Term::ReceiveMatched, run its registered matcher against
-    // the arriving message inline. On a hit, splice the (just-copied)
-    // message out so it never sits in the mailbox, stash a pending resume
-    // for the trampoline, flip Ready, and enqueue. On a miss the message
-    // lands in the mailbox like any other delivery and the park stays
-    // in place. Legacy `parked_cont` (Term::Receive) is untouched.
-    if let Some(park) = receiver.parked_matched.as_ref() {
-        match park.try_match(copied) {
-            Some((clause_idx, bound_vals)) => {
-                let cont = park.clause_bodies[clause_idx];
-                let timer_id = park.after_timer_id;
-                receiver.parked_matched = None;
-                if let Some(id) = timer_id {
-                    rt.timers.cancel(id);
-                }
-                receiver.pending_resume_matched = Some(fz_runtime::park::PendingResumeMatched {
-                    cont,
-                    args: bound_vals,
-                });
-                receiver.state = ProcessState::Ready;
+    // fz-qw6 — selective-receive sender-probe lifted to runtime::sched.
+    // On Hit, helper sets pending_resume_matched + cancels after-timer +
+    // flips Ready; we enqueue and return. On Miss, helper has either
+    // pushed the msg (parked case) or done nothing matcher-specific; we
+    // fall through to the legacy non-selective wake rule. Note: the
+    // helper's mailbox push happens inside `probe_sender`, so we already
+    // returned the receiver to the mailbox in the non-parked branch.
+    if receiver.parked_matched.is_some() {
+        match fz_runtime::sched::probe_sender(receiver, copied) {
+            fz_runtime::sched::ProbeOutcome::Hit => {
                 rt.run_queue.push_back(receiver_pid);
-                return;
             }
-            None => {
-                // Selective-receive miss: park stays in place. The
-                // legacy Blocked->Ready wake (below) MUST be skipped —
-                // a generic mailbox arrival is not a wake reason once
-                // the receiver has narrowed via Term::ReceiveMatched.
-                receiver.mailbox.push_back(copied);
-                return;
+            fz_runtime::sched::ProbeOutcome::Miss => {
+                // Selective park stays in place; generic arrival is not
+                // a wake reason for a narrowed receiver.
             }
         }
+        return;
     }
 
     receiver.mailbox.push_back(copied);
@@ -578,20 +563,9 @@ impl<'a> Runtime<'a> {
             let Some(task) = self.tasks.get_mut(&entry.pid) else {
                 continue;
             };
-            let Some(park) = task.parked_matched.as_ref() else {
-                continue;
-            };
-            if park.after_timer_id != Some(entry.id) {
-                continue;
+            if fz_runtime::sched::fire_after_timer(task, entry.id) {
+                self.run_queue.push_back(entry.pid);
             }
-            let after_cont = park.after_cont;
-            task.parked_matched = None;
-            task.pending_resume_matched = Some(fz_runtime::park::PendingResumeMatched {
-                cont: after_cont,
-                args: Vec::new(),
-            });
-            task.state = ProcessState::Ready;
-            self.run_queue.push_back(entry.pid);
         }
     }
 

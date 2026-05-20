@@ -187,7 +187,13 @@ pub struct CompiledModule {
 }
 
 impl CompiledModule {
-    pub fn warnings(&self) -> &crate::diag::Diagnostics {
+    /// All typer-side diagnostics collected during `compile`. Includes
+    /// both warnings (e.g. `TYPE_UNREACHABLE_ARM`, `TYPE_DEAD_BINOP`)
+    /// and errors (e.g. `TYPE_OPAQUE_ARITHMETIC`). Drivers must route
+    /// this through `diag::report_or_exit` so error-severity entries
+    /// actually halt — historically called `warnings()` from when only
+    /// warnings flowed here.
+    pub fn diagnostics(&self) -> &crate::diag::Diagnostics {
         &self.diagnostics
     }
 }
@@ -265,57 +271,19 @@ impl CompiledModule {
             fz_runtime::yield_flag::FZ_SHOULD_YIELD.store(0, std::sync::atomic::Ordering::Relaxed);
         }
 
-        // fz-70q.6 — selective-receive initial scan. When the task wakes
-        // Ready with a `parked_matched` (typical for a receiver whose
-        // mailbox already had messages when it first parked, or for one
-        // whose mailbox grew while the sender side hadn't been told the
-        // matcher), walk the mailbox in arrival order trying the matcher
-        // on each message. On a hit, splice that message out, restore the
-        // rejected prefix, and stash a `pending_resume_matched` so the
-        // dispatch branch below fires. On no hit, the task stays Blocked
-        // (mailbox is left intact). Erlang-style "save queue" semantics:
-        // non-matching messages keep their relative order.
-        if process.parked_matched.is_some() && !process.mailbox.is_empty() {
-            let mut hit: Option<(usize, Vec<fz_runtime::fz_value::FzValue>)> = None;
-            let mut scanned: std::collections::VecDeque<fz_runtime::fz_value::FzValue> =
-                std::collections::VecDeque::new();
-            while let Some(msg) = process.mailbox.pop_front() {
-                let park = process.parked_matched.as_ref().expect("checked above");
-                match park.try_match(msg) {
-                    Some(h) => {
-                        hit = Some(h);
-                        break;
-                    }
-                    None => scanned.push_back(msg),
-                }
-            }
-            // Restore non-matching messages to the front, preserving the
-            // original order: scanned holds them oldest-first.
-            while let Some(m) = scanned.pop_back() {
-                process.mailbox.push_front(m);
-            }
-            if let Some((clause_idx, bound_vals)) = hit {
-                let park = process.parked_matched.as_ref().expect("checked above");
-                let cont = park.clause_bodies[clause_idx];
-                let timer_id = park.after_timer_id;
-                process.parked_matched = None;
-                if let Some(_id) = timer_id {
-                    // Timer cancellation goes through the scheduler hook; from
-                    // run_quantum we don't hold the Runtime, so leave the timer
-                    // to fire harmlessly — its drain ignores tasks whose
-                    // parked_matched is None.
-                }
-                process.pending_resume_matched = Some(fz_runtime::park::PendingResumeMatched {
-                    cont,
-                    args: bound_vals,
-                });
+        // fz-qw6 — selective-receive initial scan lifted to runtime::sched.
+        // Hit sets pending_resume_matched + cancels after-timer (via the
+        // scheduler hook, which dispatches to whichever wheel is installed);
+        // Miss blocks the task; NotApplicable is a no-op.
+        match fz_runtime::sched::initial_scan(process) {
+            fz_runtime::sched::ScanOutcome::Hit => {
                 // Fall through to the dispatch branch below.
-            } else {
-                // No match — block until a send fires the sender-probe.
-                process.state = fz_runtime::process::ProcessState::Blocked;
+            }
+            fz_runtime::sched::ScanOutcome::Miss => {
                 process.next_frame = std::ptr::null_mut();
                 return;
             }
+            fz_runtime::sched::ScanOutcome::NotApplicable => {}
         }
         // fz-70q.5.5 — selective-receive wakeup. Set by the sender-probe
         // in `send_via_current_runtime` (or the after-timer fire in
@@ -1633,6 +1601,16 @@ impl Backend for AotBackend {
                 CodegenError::new(format!("declare fz_aot_set_drain_dtor_entry: {}", e))
             })?;
 
+        // fz-xx8.1 — fz_aot_set_resume_addr(addr). Registers the SystemV
+        // `fz_resume(cont)` shim so the AOT run-queue loop can dispatch
+        // `pending_resume_matched` (selective-receive wakeup) on parity
+        // with the JIT path (src/ir_codegen.rs:335).
+        let set_resume_sig = sig1(&[types::I64], &[]);
+        let set_resume_id = self
+            .omod
+            .declare_function("fz_aot_set_resume_addr", Linkage::Import, &set_resume_sig)
+            .map_err(|e| CodegenError::new(format!("declare fz_aot_set_resume_addr: {}", e)))?;
+
         // fz-ul4.38 — fz_aot_register_tuple_schemas(proc, arities_ptr, len)
         // populates the AOT process's SchemaRegistry with one Tuple{N} entry
         // per arity, in the order the array was emitted. That order matches
@@ -1724,6 +1702,8 @@ impl Backend for AotBackend {
             tuple_arities_len,
             set_drain_id,
             meta.drain_dtor_entry_id,
+            set_resume_id,
+            meta.resume_id,
         )?;
         Ok(())
     }
@@ -3781,6 +3761,8 @@ fn emit_aot_c_main<M: cranelift_module::Module>(
     tuple_arities_len: u32,
     set_drain_id: FuncId,
     drain_dtor_entry_id: FuncId,
+    set_resume_id: FuncId,
+    resume_id: FuncId,
 ) -> Result<(), CodegenError> {
     use cranelift_frontend::FunctionBuilder;
 
@@ -3885,6 +3867,14 @@ fn emit_aot_c_main<M: cranelift_module::Module>(
             let drain_addr = fn_addr(jmod, drain_dtor_entry_id, &mut b);
             let set_drain_fref = jmod.declare_func_in_func(set_drain_id, b.func);
             b.ins().call(set_drain_fref, &[drain_addr]);
+        }
+
+        // fz-xx8.1 — register the `fz_resume` shim with the runtime so the
+        // AOT run-queue loop can dispatch `pending_resume_matched` requests.
+        {
+            let resume_addr_v = fn_addr(jmod, resume_id, &mut b);
+            let set_resume_fref = jmod.declare_func_in_func(set_resume_id, b.func);
+            b.ins().call(set_resume_fref, &[resume_addr_v]);
         }
 
         // exit = fz_aot_run_main(proc, main_fp, main_entry_addr)

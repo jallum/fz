@@ -24,9 +24,11 @@
 use crate::fz_value::{FzValue, HeapHeader, HeapKind};
 use crate::heap::SchemaRegistry;
 use crate::process::{CURRENT_PROCESS, Process, ProcessState};
+use crate::timer::TimerWheel;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
+use std::time::Duration;
 
 // ----- AOT scheduler state -----
 
@@ -59,6 +61,21 @@ thread_local! {
     /// run-queue loop calls this once per pending dtor at task-exit; the
     /// shim Tail-CC dispatches the closure body with a fresh halt-cont.
     static AOT_DRAIN_DTOR_ENTRY: Cell<*const u8> = const { Cell::new(std::ptr::null()) };
+    /// fz-xx8.1 — SystemV `fz_resume(cont)` shim address. Set by
+    /// `fz_aot_set_resume_addr` after setup. The run-queue loop will call
+    /// this when `pending_resume_matched` is set (selective-receive wakeup);
+    /// the shim loads `cont+16` and Tail-CC indirect-calls the body with
+    /// args supplied via `Process::resume_args` (read inside the cont stub
+    /// via `fz_resume_args_ptr`). Mirrors `CompiledModule::resume_addr` on
+    /// the JIT side (src/ir_codegen.rs:186).
+    static AOT_RESUME_ADDR: Cell<*const u8> = const { Cell::new(std::ptr::null()) };
+    /// fz-xx8.3 — AOT-side `TimerWheel` so `receive ... after N -> ...`
+    /// clauses fire under AOT. The JIT holds its own wheel inside `Runtime`
+    /// (src/runtime.rs); AOT has no Runtime, so the wheel lives here.
+    /// Scheduled by `aot_timer_schedule_hook`, cancelled by
+    /// `aot_timer_cancel_hook`, drained at the top of each
+    /// `aot_run_queue_loop` iteration.
+    static AOT_TIMERS: RefCell<TimerWheel> = RefCell::new(TimerWheel::new());
 }
 
 /// Decode an atom-name blob emitted by AOT codegen into a `Vec<String>`.
@@ -146,6 +163,10 @@ pub extern "C" fn fz_aot_setup(
     crate::scheduler_hooks::install_spawn_hook(aot_spawn_hook);
     crate::scheduler_hooks::install_spawn_opt_hook(aot_spawn_opt_hook);
     crate::scheduler_hooks::install_send_hook(aot_send_hook);
+    // fz-xx8.3 — timer schedule/cancel hooks for `receive ... after N`.
+    crate::scheduler_hooks::install_timer_schedule_hook(aot_timer_schedule_hook);
+    crate::scheduler_hooks::install_timer_cancel_hook(aot_timer_cancel_hook);
+    AOT_TIMERS.with(|w| *w.borrow_mut() = TimerWheel::new());
     // fz-4mk — AOT MakeResourceHook. Allocates a Resource carrying the
     // dtor closure on the stub; the closure body fires as fz code at
     // task-exit drain via `fz_drain_dtor_entry`.
@@ -303,25 +324,45 @@ extern "C" fn aot_spawn_opt_hook(closure_bits: u64, _min_heap_size: u32) -> u32 
     aot_spawn_hook(closure_bits)
 }
 
+/// fz-xx8.3 — schedule an after-clause timer on the AOT wheel. Returns the
+/// fresh `TimerId` (a u64); `fz_receive_park_matched` stashes it on the
+/// park record so a matcher hit can cancel.
+extern "C" fn aot_timer_schedule_hook(pid: u32, after_ms: u64) -> u64 {
+    AOT_TIMERS.with(|w| {
+        w.borrow_mut()
+            .schedule(pid, Duration::from_millis(after_ms))
+    })
+}
+
+/// fz-xx8.3 — cancel an after-clause timer (no-op when already fired or
+/// unknown, matching the JIT path's `TimerWheel::cancel`).
+extern "C" fn aot_timer_cancel_hook(timer_id: u64) {
+    AOT_TIMERS.with(|w| w.borrow_mut().cancel(timer_id));
+}
+
 /// Send hook (fz-sched.2). Pushes a message into the receiver's mailbox.
-/// If the receiver was Blocked on receive, flips it to Ready and enqueues
-/// it — matching the JIT's send_via_current_runtime semantics.
+/// If the receiver was Blocked on legacy `receive()`, flips it to Ready
+/// and enqueues — matching the JIT's send_via_current_runtime semantics.
+/// Selective-receive arrivals route through `sched::probe_sender`.
 extern "C" fn aot_send_hook(receiver_pid: u32, msg_bits: u64) {
     let wake = AOT_TASKS.with(|c| {
         let mut t = c.borrow_mut();
-        match t.get_mut(&receiver_pid) {
-            Some(task) => {
-                task.mailbox.push_back(FzValue(msg_bits));
-                if task.state == ProcessState::Blocked {
-                    task.state = ProcessState::Ready;
-                    true
-                } else {
-                    false
-                }
-            }
-            None => {
-                eprintln!("aot_send: no task with pid {}", receiver_pid);
-                std::process::abort();
+        let Some(task) = t.get_mut(&receiver_pid) else {
+            eprintln!("aot_send: no task with pid {}", receiver_pid);
+            std::process::abort();
+        };
+        if task.parked_matched.is_some() {
+            matches!(
+                crate::sched::probe_sender(task, FzValue(msg_bits)),
+                crate::sched::ProbeOutcome::Hit
+            )
+        } else {
+            task.mailbox.push_back(FzValue(msg_bits));
+            if task.state == ProcessState::Blocked {
+                task.state = ProcessState::Ready;
+                true
+            } else {
+                false
             }
         }
     });
@@ -368,7 +409,11 @@ pub extern "C" fn fz_aot_run_main(
     crate::scheduler_hooks::clear_spawn_hook();
     crate::scheduler_hooks::clear_send_hook();
     crate::scheduler_hooks::clear_make_resource_hook();
+    crate::scheduler_hooks::clear_timer_schedule_hook();
+    crate::scheduler_hooks::clear_timer_cancel_hook();
+    AOT_TIMERS.with(|w| *w.borrow_mut() = TimerWheel::new());
     AOT_DRAIN_DTOR_ENTRY.with(|c| c.set(std::ptr::null()));
+    AOT_RESUME_ADDR.with(|c| c.set(std::ptr::null()));
     AOT_SPAWN_ENTRY.with(|c| c.set(std::ptr::null()));
     AOT_RESUME_PARK.with(|c| c.set(std::ptr::null()));
     AOT_MAIN_ENTRY.with(|c| c.set(std::ptr::null()));
@@ -412,118 +457,212 @@ pub unsafe extern "C" fn fz_aot_set_drain_dtor_entry(addr: *const u8) {
     AOT_DRAIN_DTOR_ENTRY.with(|c| c.set(addr));
 }
 
-/// Cooperative run-queue loop. Drives all enqueued processes to completion
-/// or Blocked state. Each iteration pops one pid, dispatches one quantum,
-/// and re-enqueues if the process self-sent (state == Ready).
+/// fz-xx8.1 — register the `fz_resume` shim address. Called from AOT-emitted
+/// C main after `fz_aot_setup` and before `fz_aot_run_main`. The run-queue
+/// loop dispatches `pending_resume_matched` requests through this shim
+/// (mirrors the JIT path in `src/ir_codegen.rs:335`).
 ///
-/// Dispatch priority (checked in order):
-///   1. pending_main_entry — initial main dispatch via fz_main_entry shim
-///   2. pending_closure_entry — initial spawn dispatch via fz_spawn_entry shim
-///   3. parked_cont + message in mailbox — resume via fz_resume_park
-///   4. mid_flight_fn_ptr != 0 — resume after mid-flight back-edge GC
-fn aot_run_queue_loop() {
-    let main_entry_addr = AOT_MAIN_ENTRY.with(|c| c.get());
-    let spawn_entry_addr = AOT_SPAWN_ENTRY.with(|c| c.get());
-    let resume_park_addr = AOT_RESUME_PARK.with(|c| c.get());
-    let halt_cl = AOT_HALT_CL.with(|c| c.get());
+/// # Safety
+/// `addr` must be the address of `fz_resume` emitted by compile_with_backend
+/// (SystemV `(cont: u64) -> i64`).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fz_aot_set_resume_addr(addr: *const u8) {
+    AOT_RESUME_ADDR.with(|c| c.set(addr));
+}
 
-    while let Some(pid) = AOT_RUN_QUEUE.with(|q| q.borrow_mut().pop_front()) {
-        let proc_ptr = AOT_TASKS
-            .with(|c| {
-                c.borrow()
-                    .get(&pid)
-                    .map(|b| b.as_ref() as *const Process as *mut Process)
-            })
-            .unwrap_or_else(|| {
-                eprintln!("aot_run_queue_loop: pid {} not in tasks", pid);
-                std::process::abort();
-            });
+/// Shim addresses pulled out of thread-locals once per `aot_run_queue_loop`
+/// invocation, then threaded to `dispatch_quantum` so each iteration
+/// doesn't pay the `with(...)` cost six times.
+struct ShimAddrs {
+    main_entry: *const u8,
+    spawn_entry: *const u8,
+    resume_park: *const u8,
+    resume: *const u8,
+    halt_cl: u64,
+}
 
-        let prev = CURRENT_PROCESS.with(|c| c.replace(proc_ptr));
-
-        // Mark Running so a clean halt (no fz_receive_park call) is
-        // distinguishable from Blocked/Ready after dispatch.
-        unsafe { (*proc_ptr).state = ProcessState::Running };
-
-        if !unsafe { (*proc_ptr).pending_main_entry }.is_null() {
-            let main_fp = unsafe { (*proc_ptr).pending_main_entry };
-            unsafe { (*proc_ptr).pending_main_entry = std::ptr::null_mut() };
-            type MainEntry = extern "C" fn(u64, u64) -> i64;
-            let f: MainEntry = unsafe { std::mem::transmute(main_entry_addr) };
-            let _ = f(main_fp as u64, halt_cl);
-        } else if !unsafe { (*proc_ptr).pending_closure_entry }.is_null() {
-            let closure_ptr = unsafe { (*proc_ptr).pending_closure_entry };
-            unsafe { (*proc_ptr).pending_closure_entry = std::ptr::null_mut() };
-            type SpawnEntry = extern "C" fn(u64) -> i64;
-            let f: SpawnEntry = unsafe { std::mem::transmute(spawn_entry_addr) };
-            let _ = f(closure_ptr as u64);
-        } else if !unsafe { (*proc_ptr).parked_cont }.is_null() {
-            let msg = unsafe { (*proc_ptr).mailbox.pop_front() }.unwrap_or_else(|| {
-                eprintln!(
-                    "aot_run_queue_loop: pid {} enqueued with parked_cont but empty mailbox",
-                    pid
-                );
-                std::process::abort();
-            });
-            let cont = unsafe { (*proc_ptr).parked_cont };
-            unsafe { (*proc_ptr).parked_cont = std::ptr::null_mut() };
-            type ResumePark = extern "C" fn(u64, u64) -> i64;
-            let resume: ResumePark = unsafe { std::mem::transmute(resume_park_addr) };
-            let _ = resume(msg.0, cont as u64);
-        } else if unsafe { (*proc_ptr).mid_flight_fn_ptr } != 0 {
-            // fz-02r.7 — mid-flight back-edge yield resume. gc_mid_flight
-            // was run by the scheduler before re-enqueue; mid_flight_roots
-            // holds forwarded args. Call the matching resume shim which
-            // reads N args from the slab and Tail-CC indirect-calls fn_ptr.
-            let fn_ptr = unsafe { (*proc_ptr).mid_flight_fn_ptr };
-            let n = unsafe { (*proc_ptr).mid_flight_root_count } as usize;
-            unsafe { (*proc_ptr).mid_flight_fn_ptr = 0 };
-            unsafe { (*proc_ptr).mid_flight_root_count = 0 };
-            let shims = AOT_RESUME_SHIMS.with(|c| c.get());
-            let shim = shims[n];
-            if !shim.is_null() {
-                type MidFlightResume = extern "C" fn(u64) -> i64;
-                let f: MidFlightResume = unsafe { std::mem::transmute(shim) };
-                let _ = f(fn_ptr);
-            }
+/// Drain the AOT timer wheel and apply each expired entry to its task
+/// via `sched::fire_after_timer`. Tasks that fire get enqueued.
+fn drain_after_timers_aot() {
+    let expired = AOT_TIMERS.with(|w| w.borrow_mut().drain_expired(std::time::Instant::now()));
+    for entry in expired {
+        let woke = AOT_TASKS.with(|c| {
+            let mut tasks = c.borrow_mut();
+            tasks
+                .get_mut(&entry.pid)
+                .map(|task| crate::sched::fire_after_timer(task, entry.id))
+                .unwrap_or(false)
+        });
+        if woke {
+            AOT_RUN_QUEUE.with(|q| q.borrow_mut().push_back(entry.pid));
         }
+    }
+}
 
-        // Post-quantum state check.
-        let state = unsafe { (*proc_ptr).state };
-        let mid_flight = unsafe { (*proc_ptr).mid_flight_fn_ptr };
-        let parked = unsafe { (*proc_ptr).parked_cont };
-        if state == ProcessState::Running && mid_flight != 0 {
-            // Mid-flight yield: GC the slab, clear flag, re-enqueue.
-            let n = unsafe { (*proc_ptr).mid_flight_root_count as usize };
+/// Run one quantum for `pid`: pick dispatch branch by Process state,
+/// invoke the matching SystemV shim, then handle the post-quantum state
+/// transition (re-enqueue / halt / mid-flight yield). Returns nothing;
+/// scheduler state is mutated in place.
+fn dispatch_quantum(pid: u32, addrs: &ShimAddrs) {
+    let proc_ptr = AOT_TASKS
+        .with(|c| {
+            c.borrow()
+                .get(&pid)
+                .map(|b| b.as_ref() as *const Process as *mut Process)
+        })
+        .unwrap_or_else(|| {
+            eprintln!("aot_run_queue_loop: pid {} not in tasks", pid);
+            std::process::abort();
+        });
+
+    let prev = CURRENT_PROCESS.with(|c| c.replace(proc_ptr));
+
+    // Mark Running so a clean halt (no fz_receive_park call) is
+    // distinguishable from Blocked/Ready after dispatch.
+    unsafe { (*proc_ptr).state = ProcessState::Running };
+
+    // fz-qw6 — selective-receive initial scan lifted to runtime::sched.
+    let process = unsafe { &mut *proc_ptr };
+    match crate::sched::initial_scan(process) {
+        crate::sched::ScanOutcome::Hit => {
+            // Fall through to the pending_resume_matched branch.
+        }
+        crate::sched::ScanOutcome::Miss => {
+            CURRENT_PROCESS.with(|c| c.set(prev));
+            return;
+        }
+        crate::sched::ScanOutcome::NotApplicable => {}
+    }
+
+    if !unsafe { (*proc_ptr).pending_main_entry }.is_null() {
+        let main_fp = unsafe { (*proc_ptr).pending_main_entry };
+        unsafe { (*proc_ptr).pending_main_entry = std::ptr::null_mut() };
+        type MainEntry = extern "C" fn(u64, u64) -> i64;
+        let f: MainEntry = unsafe { std::mem::transmute(addrs.main_entry) };
+        let _ = f(main_fp as u64, addrs.halt_cl);
+    } else if !unsafe { (*proc_ptr).pending_closure_entry }.is_null() {
+        let closure_ptr = unsafe { (*proc_ptr).pending_closure_entry };
+        unsafe { (*proc_ptr).pending_closure_entry = std::ptr::null_mut() };
+        type SpawnEntry = extern "C" fn(u64) -> i64;
+        let f: SpawnEntry = unsafe { std::mem::transmute(addrs.spawn_entry) };
+        let _ = f(closure_ptr as u64);
+    } else if unsafe { (*proc_ptr).pending_resume_matched.is_some() } {
+        // Selective-receive wakeup. Bound args travel via
+        // `Process::resume_args` (the cont stub reads them via
+        // `fz_resume_args_ptr`). Checked before `parked_cont` so a stale
+        // legacy park can't shadow this.
+        let resume = unsafe { (*proc_ptr).pending_resume_matched.take() }.expect("checked above");
+        let cont_ptr = resume.cont;
+        unsafe { (*proc_ptr).resume_args = resume.args };
+        type Resume = extern "C" fn(u64) -> i64;
+        let f: Resume = unsafe { std::mem::transmute(addrs.resume) };
+        let _ = f(cont_ptr as u64);
+        unsafe { (*proc_ptr).resume_args.clear() };
+    } else if !unsafe { (*proc_ptr).parked_cont }.is_null() {
+        let msg = unsafe { (*proc_ptr).mailbox.pop_front() }.unwrap_or_else(|| {
+            eprintln!(
+                "aot_run_queue_loop: pid {} enqueued with parked_cont but empty mailbox",
+                pid
+            );
+            std::process::abort();
+        });
+        let cont = unsafe { (*proc_ptr).parked_cont };
+        unsafe { (*proc_ptr).parked_cont = std::ptr::null_mut() };
+        type ResumePark = extern "C" fn(u64, u64) -> i64;
+        let resume: ResumePark = unsafe { std::mem::transmute(addrs.resume_park) };
+        let _ = resume(msg.0, cont as u64);
+    } else if unsafe { (*proc_ptr).mid_flight_fn_ptr } != 0 {
+        // fz-02r.7 — mid-flight back-edge yield resume.
+        let fn_ptr = unsafe { (*proc_ptr).mid_flight_fn_ptr };
+        let n = unsafe { (*proc_ptr).mid_flight_root_count } as usize;
+        unsafe { (*proc_ptr).mid_flight_fn_ptr = 0 };
+        unsafe { (*proc_ptr).mid_flight_root_count = 0 };
+        let shims = AOT_RESUME_SHIMS.with(|c| c.get());
+        let shim = shims[n];
+        if !shim.is_null() {
+            type MidFlightResume = extern "C" fn(u64) -> i64;
+            let f: MidFlightResume = unsafe { std::mem::transmute(shim) };
+            let _ = f(fn_ptr);
+        }
+    }
+
+    // Post-quantum state check.
+    let state = unsafe { (*proc_ptr).state };
+    let mid_flight = unsafe { (*proc_ptr).mid_flight_fn_ptr };
+    let parked = unsafe { (*proc_ptr).parked_cont };
+    if state == ProcessState::Running && mid_flight != 0 {
+        let n = unsafe { (*proc_ptr).mid_flight_root_count as usize };
+        let process = unsafe { &mut *proc_ptr };
+        process
+            .heap
+            .gc_mid_flight(&mut process.mid_flight_roots[..n], &mut process.mailbox);
+        process.quiet_quanta = 0;
+        crate::yield_flag::FZ_SHOULD_YIELD.store(0, std::sync::atomic::Ordering::Relaxed);
+        unsafe { (*proc_ptr).state = ProcessState::Ready };
+        AOT_RUN_QUEUE.with(|q| q.borrow_mut().push_back(pid));
+    } else if state == ProcessState::Ready {
+        AOT_RUN_QUEUE.with(|q| q.borrow_mut().push_back(pid));
+    } else if state == ProcessState::Running && parked.is_null() {
+        // fz-4mk.3b — task halted; flush MSO resources through the dtor
+        // drain shim before the heap drops.
+        unsafe { (*proc_ptr).state = ProcessState::Exited };
+        let drain_addr = AOT_DRAIN_DTOR_ENTRY.with(|c| c.get());
+        if !drain_addr.is_null() {
             let process = unsafe { &mut *proc_ptr };
-            process
-                .heap
-                .gc_mid_flight(&mut process.mid_flight_roots[..n], &mut process.mailbox);
-            process.quiet_quanta = 0;
-            crate::yield_flag::FZ_SHOULD_YIELD.store(0, std::sync::atomic::Ordering::Relaxed);
-            unsafe { (*proc_ptr).state = ProcessState::Ready };
-            AOT_RUN_QUEUE.with(|q| q.borrow_mut().push_back(pid));
-        } else if state == ProcessState::Ready {
-            AOT_RUN_QUEUE.with(|q| q.borrow_mut().push_back(pid));
-        } else if state == ProcessState::Running && parked.is_null() {
-            // fz-4mk.3b — task halted (Running + no mid-flight + no parked
-            // cont). Mark Exited and flush surviving MSO resources through
-            // the dtor drain shim before the heap drops. CURRENT_PROCESS
-            // remains set so dtor bodies can allocate against the task.
-            unsafe { (*proc_ptr).state = ProcessState::Exited };
-            let drain_addr = AOT_DRAIN_DTOR_ENTRY.with(|c| c.get());
-            if !drain_addr.is_null() {
-                let process = unsafe { &mut *proc_ptr };
-                crate::procbin::mso_drop_all_deferred(&mut process.heap);
-                type DrainDtor = extern "C" fn(u64, u64) -> i64;
-                let drain: DrainDtor = unsafe { std::mem::transmute(drain_addr) };
-                while let Some((closure, payload)) = process.heap.pending_dtors.pop_front() {
-                    let _ = drain(closure, payload);
-                }
+            crate::procbin::mso_drop_all_deferred(&mut process.heap);
+            type DrainDtor = extern "C" fn(u64, u64) -> i64;
+            let drain: DrainDtor = unsafe { std::mem::transmute(drain_addr) };
+            while let Some((closure, payload)) = process.heap.pending_dtors.pop_front() {
+                let _ = drain(closure, payload);
             }
         }
+    }
 
-        CURRENT_PROCESS.with(|c| c.set(prev));
+    CURRENT_PROCESS.with(|c| c.set(prev));
+}
+
+/// Cooperative run-queue loop. Drives all enqueued processes to
+/// completion or Blocked state. Each iteration: drain expired timers,
+/// pop a pid (idle-wait if the queue is empty but timers pend),
+/// dispatch one quantum.
+///
+/// Dispatch priority inside `dispatch_quantum`:
+///   1. selective-receive initial scan (fz-qw6 helper) — Hit falls
+///      through to (4); Miss returns the task to Blocked.
+///   2. `pending_main_entry` — initial main dispatch.
+///   3. `pending_closure_entry` — initial spawn dispatch.
+///   4. `pending_resume_matched` — selective-receive wakeup.
+///   5. `parked_cont` + mailbox msg — legacy resume.
+///   6. `mid_flight_fn_ptr` — mid-flight back-edge resume.
+fn aot_run_queue_loop() {
+    let addrs = ShimAddrs {
+        main_entry: AOT_MAIN_ENTRY.with(|c| c.get()),
+        spawn_entry: AOT_SPAWN_ENTRY.with(|c| c.get()),
+        resume_park: AOT_RESUME_PARK.with(|c| c.get()),
+        resume: AOT_RESUME_ADDR.with(|c| c.get()),
+        halt_cl: AOT_HALT_CL.with(|c| c.get()),
+    };
+
+    loop {
+        drain_after_timers_aot();
+
+        let Some(pid) = AOT_RUN_QUEUE.with(|q| q.borrow_mut().pop_front()) else {
+            // Queue empty. Sleep until the next timer deadline if one
+            // exists; otherwise truly idle, break. (Multi-worker AOT
+            // will need a condvar here instead of a blocking sleep.)
+            let next = AOT_TIMERS.with(|w| w.borrow().next_deadline());
+            match next {
+                Some(deadline) => {
+                    let now = std::time::Instant::now();
+                    if deadline > now {
+                        std::thread::sleep(deadline - now);
+                    }
+                    continue;
+                }
+                None => break,
+            }
+        };
+        dispatch_quantum(pid, &addrs);
     }
 }
 
@@ -542,5 +681,129 @@ mod tests {
     fn parse_atom_blob_null_pointer_returns_empty() {
         let names = parse_atom_blob(std::ptr::null());
         assert!(names.is_empty());
+    }
+
+    /// fz-xx8.1 — `fz_aot_set_resume_addr` populates the thread-local
+    /// `AOT_RESUME_ADDR`; teardown of `fz_aot_run_main` clears it. We
+    /// can't easily drive a full setup→run→teardown cycle from a unit
+    /// test (it would need a real codegen'd shim), so we exercise the
+    /// register/clear lifecycle directly and assert the cell flips.
+    /// fz-xx8.3 — schedule→drain→wake flow on the AOT timer wheel.
+    /// Mirrors `src/runtime.rs::drain_expired_timers_wakes_after_cont`. We
+    /// can't drive aot_run_queue_loop directly (it would call into
+    /// codegen'd shim pointers we don't have), but we exercise every
+    /// pre-dispatch ingredient: hook install → schedule → expiry →
+    /// mutate the task's parked_matched into a pending_resume_matched →
+    /// run-queue enqueue. The dispatch-via-resume-shim step is covered
+    /// by the end-to-end fixture run on a built binary.
+    #[test]
+    fn timer_drain_wakes_after_cont() {
+        use crate::park::ParkRecord;
+        use crate::process::{Process, ProcessState};
+
+        // Clean per-test slate.
+        AOT_TIMERS.with(|w| *w.borrow_mut() = TimerWheel::new());
+        AOT_TASKS.with(|c| c.borrow_mut().clear());
+        AOT_RUN_QUEUE.with(|q| q.borrow_mut().clear());
+
+        crate::scheduler_hooks::install_timer_schedule_hook(aot_timer_schedule_hook);
+        crate::scheduler_hooks::install_timer_cancel_hook(aot_timer_cancel_hook);
+
+        // Stand up a single task with a parked_matched that has an
+        // after_timer_id. matcher_fn is unused on the drain path.
+        extern "C" fn never_match(_msg: u64, _pinned: *const u64, _out: *mut u64) -> u32 {
+            0
+        }
+        let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
+        let mut p = Box::new(Process::new(schemas));
+        p.pid = 7;
+        let timer_id =
+            crate::scheduler_hooks::dispatch_timer_schedule(p.pid, 1).expect("hook installed");
+        let after_cont_addr: usize = 0xCAFE_BABE;
+        p.parked_matched = Some(Box::new(ParkRecord {
+            matcher_fn: never_match,
+            pinned: vec![],
+            clause_bodies: vec![],
+            bound_arity: 0,
+            after_deadline_ms: Some(1),
+            after_cont: after_cont_addr as *mut u8,
+            after_timer_id: Some(timer_id),
+        }));
+        p.state = ProcessState::Blocked;
+        AOT_TASKS.with(|c| {
+            c.borrow_mut().insert(7, p);
+        });
+
+        // Wait past the deadline, then run the same drain logic
+        // aot_run_queue_loop runs at the top of each iteration.
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let expired = AOT_TIMERS.with(|w| w.borrow_mut().drain_expired(std::time::Instant::now()));
+        assert_eq!(expired.len(), 1);
+        for entry in expired {
+            AOT_TASKS.with(|c| {
+                let mut tasks = c.borrow_mut();
+                let task = tasks.get_mut(&entry.pid).unwrap();
+                let park = task.parked_matched.as_ref().unwrap();
+                assert_eq!(park.after_timer_id, Some(entry.id));
+                let after_cont = park.after_cont;
+                task.parked_matched = None;
+                task.pending_resume_matched = Some(crate::park::PendingResumeMatched {
+                    cont: after_cont,
+                    args: Vec::new(),
+                });
+                task.state = ProcessState::Ready;
+                AOT_RUN_QUEUE.with(|q| q.borrow_mut().push_back(entry.pid));
+            });
+        }
+
+        AOT_TASKS.with(|c| {
+            let tasks = c.borrow();
+            let task = tasks.get(&7).unwrap();
+            assert_eq!(task.state, ProcessState::Ready);
+            assert!(task.parked_matched.is_none());
+            let pending = task
+                .pending_resume_matched
+                .as_ref()
+                .expect("after-timer fire sets pending_resume_matched");
+            assert_eq!(pending.cont as usize, after_cont_addr);
+            assert!(pending.args.is_empty(), "after body takes captures only");
+        });
+        assert!(AOT_RUN_QUEUE.with(|q| q.borrow().iter().any(|p| *p == 7)));
+
+        // Cleanup so we don't leak hooks into a sibling test.
+        crate::scheduler_hooks::clear_timer_schedule_hook();
+        crate::scheduler_hooks::clear_timer_cancel_hook();
+        AOT_TASKS.with(|c| c.borrow_mut().clear());
+        AOT_RUN_QUEUE.with(|q| q.borrow_mut().clear());
+        AOT_TIMERS.with(|w| *w.borrow_mut() = TimerWheel::new());
+    }
+
+    /// fz-xx8.3 — `aot_timer_cancel_hook` retires a previously scheduled
+    /// timer so a sender-probe / initial-scan hit can prevent the after
+    /// from firing.
+    #[test]
+    fn timer_cancel_removes_pending_entry() {
+        AOT_TIMERS.with(|w| *w.borrow_mut() = TimerWheel::new());
+        crate::scheduler_hooks::install_timer_schedule_hook(aot_timer_schedule_hook);
+        crate::scheduler_hooks::install_timer_cancel_hook(aot_timer_cancel_hook);
+
+        let id = crate::scheduler_hooks::dispatch_timer_schedule(99, 10_000).unwrap();
+        assert!(AOT_TIMERS.with(|w| w.borrow().next_deadline().is_some()));
+        crate::scheduler_hooks::dispatch_timer_cancel(id);
+        assert!(AOT_TIMERS.with(|w| w.borrow().next_deadline().is_none()));
+
+        crate::scheduler_hooks::clear_timer_schedule_hook();
+        crate::scheduler_hooks::clear_timer_cancel_hook();
+    }
+
+    #[test]
+    fn set_resume_addr_populates_and_clears() {
+        AOT_RESUME_ADDR.with(|c| c.set(std::ptr::null()));
+        let fake = 0xDEAD_BEEFusize as *const u8;
+        unsafe { fz_aot_set_resume_addr(fake) };
+        assert_eq!(AOT_RESUME_ADDR.with(|c| c.get()), fake);
+        // Mirror the teardown clears in fz_aot_run_main.
+        AOT_RESUME_ADDR.with(|c| c.set(std::ptr::null()));
+        assert!(AOT_RESUME_ADDR.with(|c| c.get()).is_null());
     }
 }

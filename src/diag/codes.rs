@@ -66,6 +66,14 @@ pub const TYPE_SPEC_QUALITY: DiagCode = DiagCode("type/spec-quality");
 /// `crate::typer::check_opaque_visibility`.
 pub const TYPE_OPAQUE_VISIBILITY: DiagCode = DiagCode("type/opaque-visibility");
 
+/// fz-l4c — arithmetic operator applied to an operand whose declared
+/// type is opaque. Opaque types (`pid`, `ref`, user `opaque` aliases)
+/// are nominally disjoint from `int` / `float`; allowing `pid + 1` to
+/// "work" because of the underlying bit-tagging is a soundness leak.
+/// Comparison (`==`, `!=`) remains permitted — pid/ref equality is
+/// load-bearing for the selective-receive matcher.
+pub const TYPE_OPAQUE_ARITHMETIC: DiagCode = DiagCode("type/opaque-arithmetic");
+
 // fz-yxs — selective receive: matcher / guard impurity. The codegen'd
 // matcher and any guard expression must stay in the pure-codegen subset
 // (no allocation, no externs, no calls). See docs/receive-matched.md §2.3.

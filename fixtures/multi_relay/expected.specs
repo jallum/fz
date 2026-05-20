@@ -75,8 +75,8 @@
 ;     Var(0) :: :match_error
 ;     Var(1) :: 1
 ;   exits:
-;     blk0 Receive cont k_receive_24#24 captured=[Var(1)]
-;              cont_key=[any, 1]
+;     blk0 ReceiveMatched pinned=[] caps=[Var(1)]
+;              clause[0] body=rx_clause_0_body#25 bound=[x]
 ;     blk1 Halt Var(0)      :: :match_error
 
 ; spec main(0) #fn=23
@@ -88,21 +88,31 @@
 ;   vars:
 ;     Var(0) :: :match_error
 ;     Var(1) :: &fn22[]:() -> α1471
-;     Var(2) :: &fn25[&fn22[]:() -> α1471]:() -> α1663
+;     Var(2) :: &fn26[&fn22[]:() -> α1471]:() -> α1727
 ;     Var(3) :: any
 ;     Var(4) :: &fn22[]:() -> α1471
-;     Var(5) :: &fn25[&fn22[]:() -> α1471]:() -> α1663
+;     Var(5) :: &fn26[&fn22[]:() -> α1471]:() -> α1727
 ;     Var(6) :: any
 ;     Var(7) :: 2
 ;     Var(8) :: 10
 ;   exits:
 ;     blk0 Call send#10(Var(7), Var(8))
 ;              callee_key=[2, 10]
-;              cont k_26#26 captured=[]
+;              cont k_27#27 captured=[]
 ;              cont_key=[any]
 ;     blk1 Halt Var(0)      :: :match_error
 
-; spec k_receive_24(2) #fn=24
+; spec receive_join(2) #fn=24
+;   key:    [int | float, 1]
+;   return: any
+;   vars:
+;     Var(0) :: int | float
+;     Var(1) :: 1
+;   exits:
+;     blk0 TailCall send#10(Var(1), Var(0))
+;              callee_key=[1, int | float]
+
+; spec rx_clause_0_body(2) #fn=25
 ;   key:    [any, 1]
 ;   return: any
 ;   vars:
@@ -111,10 +121,10 @@
 ;     Var(2) :: 2
 ;     Var(3) :: int | float
 ;   exits:
-;     blk0 TailCall send#10(Var(1), Var(3))
-;              callee_key=[1, int | float]
+;     blk0 TailCall receive_join#24(Var(3), Var(1))
+;              callee_key=[int | float, 1]
 
-; spec fz_spawn_thunk(1) #fn=25
+; spec fz_spawn_thunk(1) #fn=26
 ;   key:    [any]
 ;   return: any
 ;   vars:
@@ -122,7 +132,7 @@
 ;   exits:
 ;     blk0 TailCallClosure Var(0)()
 
-; spec k_26(1) #fn=26
+; spec k_27(1) #fn=27
 ;   key:    [any]
 ;   return: none
 ;   vars:
@@ -132,19 +142,19 @@
 ;   exits:
 ;     blk0 Call send#10(Var(1), Var(2))
 ;              callee_key=[3, 11]
-;              cont k_27#27 captured=[]
+;              cont k_28#28 captured=[]
 ;              cont_key=[any]
 
-; spec k_27(1) #fn=27
+; spec k_28(1) #fn=28
 ;   key:    [any]
 ;   return: none
 ;   vars:
 ;     Var(0) :: any
 ;   exits:
-;     blk0 Receive cont k_receive_28#28 captured=[]
-;              cont_key=[any]
+;     blk0 ReceiveMatched pinned=[] caps=[]
+;              clause[0] body=rx_clause_0_body#30 bound=[x]
 
-; spec k_receive_28(1) #fn=28
+; spec receive_join(1) #fn=29
 ;   key:    [any]
 ;   return: none
 ;   vars:
@@ -152,24 +162,42 @@
 ;   exits:
 ;     blk0 Call print#4(Var(0))
 ;              callee_key=[any]
-;              cont k_29#29 captured=[]
+;              cont k_31#31 captured=[]
 ;              cont_key=[none]
 
-; spec k_29(1) #fn=29
+; spec rx_clause_0_body(1) #fn=30
+;   key:    [any]
+;   return: none
+;   vars:
+;     Var(0) :: any
+;   exits:
+;     blk0 TailCall receive_join#29(Var(0))
+;              callee_key=[any]
+
+; spec k_31(1) #fn=31
 ;   key:    [none]
 ;   return: none
 ;   vars:
 ;     Var(0) :: none
 ;   exits:
-;     blk0 Receive cont k_receive_30#30 captured=[]
-;              cont_key=[any]
+;     blk0 ReceiveMatched pinned=[] caps=[]
+;              clause[0] body=rx_clause_0_body#33 bound=[x]
 
-; spec k_receive_30(1) #fn=30
+; spec receive_join(1) #fn=32
 ;   key:    [any]
 ;   return: none
 ;   vars:
 ;     Var(0) :: any
 ;   exits:
 ;     blk0 TailCall print#4(Var(0))
+;              callee_key=[any]
+
+; spec rx_clause_0_body(1) #fn=33
+;   key:    [any]
+;   return: none
+;   vars:
+;     Var(0) :: any
+;   exits:
+;     blk0 TailCall receive_join#32(Var(0))
 ;              callee_key=[any]
 

@@ -2135,3 +2135,93 @@ fn const_bitstring_types_as_str_t() {
         t,
     );
 }
+
+// ----- fz-l4c: typer rejects arithmetic on opaque-integer types -----
+
+#[test]
+fn opaque_arithmetic_pid_plus_int_rejected() {
+    let src = "fn main(), do: self() + 1";
+    let (m, mt) = pipeline(src);
+    let diags = crate::ir_typer::collect_diagnostics(&m, &mt);
+    let d = diags
+        .iter()
+        .find(|d| d.code == crate::diag::codes::TYPE_OPAQUE_ARITHMETIC)
+        .unwrap_or_else(|| {
+            panic!(
+                "expected a type/opaque-arithmetic diagnostic; got: {:?}",
+                diags
+                    .iter()
+                    .map(|d| (d.code, &d.message))
+                    .collect::<Vec<_>>(),
+            )
+        });
+    assert!(
+        d.message.contains("pid"),
+        "diag should name `pid`; got: {}",
+        d.message
+    );
+    assert!(
+        d.message.contains("+"),
+        "diag should name the offending operator; got: {}",
+        d.message
+    );
+}
+
+#[test]
+fn opaque_arithmetic_ref_plus_int_rejected() {
+    let src = "fn main(), do: make_ref() + 1";
+    let (m, mt) = pipeline(src);
+    let diags = crate::ir_typer::collect_diagnostics(&m, &mt);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == crate::diag::codes::TYPE_OPAQUE_ARITHMETIC),
+        "expected type/opaque-arithmetic on make_ref() + 1; got: {:?}",
+        diags
+            .iter()
+            .map(|d| (d.code, &d.message))
+            .collect::<Vec<_>>(),
+    );
+}
+
+#[test]
+fn opaque_equality_remains_permitted() {
+    // Pid/ref equality is load-bearing for the selective-receive matcher
+    // (`^pinned == msg_field`); comparison must NOT raise the new diagnostic.
+    let src = r#"
+fn main() do
+  a = self()
+  b = self()
+  a == b
+end
+"#;
+    let (m, mt) = pipeline(src);
+    let diags = crate::ir_typer::collect_diagnostics(&m, &mt);
+    assert!(
+        !diags
+            .iter()
+            .any(|d| d.code == crate::diag::codes::TYPE_OPAQUE_ARITHMETIC),
+        "equality must not raise type/opaque-arithmetic; got: {:?}",
+        diags
+            .iter()
+            .map(|d| (d.code, &d.message))
+            .collect::<Vec<_>>(),
+    );
+}
+
+#[test]
+fn plain_int_arithmetic_still_passes() {
+    let src = "fn main(), do: 1 + 1";
+    let (m, mt) = pipeline(src);
+    let diags = crate::ir_typer::collect_diagnostics(&m, &mt);
+    assert!(
+        !diags
+            .iter()
+            .any(|d| d.code == crate::diag::codes::TYPE_OPAQUE_ARITHMETIC),
+        "plain int arithmetic must not raise the diagnostic; got: {:?}",
+        diags
+            .iter()
+            .map(|d| (d.code, &d.message))
+            .collect::<Vec<_>>(),
+    );
+}

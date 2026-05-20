@@ -1,14 +1,13 @@
 ---
 purpose: "fz-recv epic acceptance — selective receive across two pinned refs with out-of-order replies + after timeout"
-paths: [interp, jit]
-defer: "AOT path still on the legacy trampoline pattern; tracked under the fz-xx8 (B4) follow-up. fz-70q.5 collapsed the JIT shim family, so B4 mostly evaporates — it just needs to wire the singular fz_resume into the AOT scheduler."
+paths: [interp, jit, aot]
 ---
 
 # receive_selective_refs
 
-Acceptance fixture for `docs/receive-matched.md`. **Forward-looking** — the
-parser, typer, and matcher codegen needed to compile this do not yet exist.
-The fixture pins what we are building toward.
+Acceptance fixture for selective receive (see `guides/processes.html`).
+Pins sender-side matcher miss + hit and receiver-side initial-scan hit
+in a single trace.
 
 ## What it exercises
 

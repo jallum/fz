@@ -163,6 +163,12 @@ impl Diagnostics {
         self.diags.iter()
     }
 
+    /// fz-d5b — slice view for callers that want to pass the whole
+    /// collection to `report_or_exit` without cloning.
+    pub fn as_slice(&self) -> &[Diagnostic] {
+        &self.diags
+    }
+
     pub fn into_vec(self) -> Vec<Diagnostic> {
         self.diags
     }
