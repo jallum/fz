@@ -3202,7 +3202,7 @@ pub fn cont_slot0_descr<T: crate::types_seam::Types>(
     caller_ft: &FnTypes,
     module: &Module,
     module_types: &ModuleTypes,
-) -> Descr {
+) -> T::Ty {
     use crate::types_seam::AsDescr;
     let any_d = t.any().as_descr();
     match &block.terminator {
@@ -3221,9 +3221,10 @@ pub fn cont_slot0_descr<T: crate::types_seam::Types>(
             // existed — producing too-wide cont keys that no
             // registered spec could cover. See
             // `ModuleTypes::effective_return_for_call`.
-            module_types
-                .effective_return_for_call(*callee, &arg_descrs)
-                .unwrap_or(any_d)
+            match module_types.effective_return_for_call(*callee, &arg_descrs) {
+                Some(d) => t.from_descr(&d),
+                None => t.any(),
+            }
         }
         // fz-ul4.27.22.6 — at a CallClosure seam, the closure's static
         // Descr names the body's possible return shapes. For singleton
@@ -3242,15 +3243,20 @@ pub fn cont_slot0_descr<T: crate::types_seam::Types>(
                     .iter()
                     .map(|av| env.get(av).cloned().unwrap_or_else(|| any_d.clone()))
                     .collect();
-                use crate::types_seam::AsDescr;
-                resolve_closure_return(t, &closure_d, &module_types.effective_returns, &arg_descrs)
-                    .map(|ty| ty.as_descr())
-                    .unwrap_or_else(|| closure_d.arrow_join_return())
+                match resolve_closure_return(
+                    t,
+                    &closure_d,
+                    &module_types.effective_returns,
+                    &arg_descrs,
+                ) {
+                    Some(ty) => ty,
+                    None => t.from_descr(&closure_d.arrow_join_return()),
+                }
             } else {
-                closure_d.arrow_join_return()
+                t.from_descr(&closure_d.arrow_join_return())
             }
         }
-        _ => any_d,
+        _ => t.any(),
     }
 }
 
@@ -3514,7 +3520,7 @@ pub fn cont_input_key<T: crate::types_seam::Types>(
     let any_d = t.any().as_descr();
     let mut key: Vec<Descr> = vec![any_d.clone(); n_params];
     if !key.is_empty() {
-        key[0] = cont_slot0_descr(t, block, caller_ft, module, module_types);
+        key[0] = cont_slot0_descr(t, block, caller_ft, module, module_types).as_descr();
     }
     let env = env_at_terminator(t, caller_ft, block, module);
     for (k, cv) in continuation.captured.iter().enumerate() {
