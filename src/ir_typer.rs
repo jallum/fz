@@ -2299,16 +2299,22 @@ fn type_prim<T: crate::types_seam::Types>(
             .unwrap_or_else(Descr::any),
 
         Prim::TypeTest(v, descr) => {
+            use crate::types_seam::AsDescr;
             let vt = lookup(t, env, *v);
             // If vt ⊆ descr → always true; if vt ∩ descr = ∅ → always false;
             // otherwise unknown bool. Branch pruning in the typer's If-rewriting
             // pass then eliminates dead branches when the result is a singleton.
-            if vt.is_subtype(descr) {
-                Descr::atom_lit("true")
-            } else if vt.intersect(descr).is_empty() {
-                Descr::atom_lit("false")
+            let vy = t.from_descr(&vt);
+            let dy = t.from_descr(descr);
+            if t.is_subtype(&vy, &dy) {
+                t.atom_lit("true").as_descr()
             } else {
-                Descr::bool_t()
+                let inter = t.intersect(vy, dy);
+                if t.is_empty(&inter) {
+                    t.atom_lit("false").as_descr()
+                } else {
+                    t.bool().as_descr()
+                }
             }
         }
 
