@@ -379,13 +379,7 @@ impl Interp {
         match &e.node {
             Expr::Int(n) => Ok(Value::Int(*n)),
             Expr::Float(f) => Ok(Value::Float(*f)),
-            Expr::Str(bytes) => {
-                // fz-axu.10 (L2) — interim shim until L3 retires this path.
-                let s = std::str::from_utf8(bytes).map_err(|e| {
-                    format!("non-UTF-8 string literal in macro eval: {}", e)
-                })?;
-                Ok(Value::Str(Rc::from(s)))
-            }
+            Expr::Str(bytes) => Ok(Value::Str(Rc::from(bytes.as_slice()))),
             Expr::Atom(a) => Ok(Value::Atom(Rc::from(a.as_str()))),
             Expr::Bool(b) => Ok(Value::Bool(*b)),
             Expr::Nil => Ok(Value::Nil),
