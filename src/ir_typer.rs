@@ -2663,21 +2663,19 @@ pub fn collect_diagnostics<T: crate::types_seam::Types>(
                 if let Prim::BinOp(op, lhs, rhs) = prim
                     && matches!(op, BinOp::Eq | BinOp::Neq)
                 {
-                    let ta = env
-                        .get(lhs)
-                        .cloned()
-                        .unwrap_or_else(|| t.any().as_descr());
-                    let tb = env
-                        .get(rhs)
-                        .cloned()
-                        .unwrap_or_else(|| t.any().as_descr());
                     // Lint only on cross-kind disjointness (int vs atom,
                     // float vs nil, etc.). Within a single axis, two
                     // disjoint literal sets (e.g. `1 == 2`) still fold to
                     // false at codegen but are not surprising to the
                     // reader, so we keep them silent.
-                    let ta_ty = t.from_descr(&ta);
-                    let tb_ty = t.from_descr(&tb);
+                    let ta_ty: T::Ty = match env.get(lhs) {
+                        Some(d) => t.from_descr(d),
+                        None => t.any(),
+                    };
+                    let tb_ty: T::Ty = match env.get(rhs) {
+                        Some(d) => t.from_descr(d),
+                        None => t.any(),
+                    };
                     let cross_kind = !t.is_empty(&ta_ty)
                         && !t.is_empty(&tb_ty)
                         && !t.kinds_overlap(&ta_ty, &tb_ty);
@@ -2697,8 +2695,8 @@ pub fn collect_diagnostics<T: crate::types_seam::Types>(
                         );
                         let note = format!(
                             "left has type `{}`; right has type `{}`",
-                            ta.display_for_diag(),
-                            tb.display_for_diag(),
+                            t.display_for_diag(&ta_ty),
+                            t.display_for_diag(&tb_ty),
                         );
                         let d = Diagnostic::warning(TYPE_DEAD_BINOP, message, span)
                             .with_label(format!("in fn `{}`", f.name))

@@ -131,6 +131,13 @@ pub trait Types {
     /// day-one; consumers `format!("{}", t.display(&ty))`-style.
     fn display(&self, a: &Self::Ty) -> String;
 
+    /// Length-bounded rendering for diagnostic notes. Caps each
+    /// literal-set axis at a small fixed count so a huge union
+    /// (`int_lit(1) | ... | int_lit(N)`) doesn't crowd a `= note:`
+    /// line. Distinct from `display()`, which is exact (used by
+    /// golden tests).
+    fn display_for_diag(&self, a: &Self::Ty) -> String;
+
     // ---- substitution --------------------------------------------------
 
     fn instantiate(&mut self, a: &Self::Ty, sigma: &Sigma<Self::Ty>) -> Self::Ty;
@@ -265,6 +272,10 @@ impl Types for ConcreteTypes {
 
     fn display(&self, a: &Ty) -> String {
         format!("{}", a.descr())
+    }
+
+    fn display_for_diag(&self, a: &Ty) -> String {
+        a.descr().display_for_diag()
     }
 
     fn instantiate(&mut self, a: &Ty, sigma: &Sigma<Ty>) -> Ty {
