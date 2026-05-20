@@ -1207,6 +1207,14 @@ impl JitBackend {
         // fz-ul4.27.7 (VR.5b): typed print helpers — JIT routes here when
         // the arg Descr is monomorphic, skipping the boxing round-trip.
         builder.symbol("fz_print_i64", fz_runtime::fz_print_i64 as *const u8);
+        // Linux JIT needs explicit symbol bindings; macOS happens to
+        // resolve runtime crate exports via dlsym on the executable
+        // image, but Linux's stricter visibility under cargo llvm-cov
+        // drops them. Bind the assert family here so JIT-emitted code
+        // can call them on every platform.
+        builder.symbol("fz_assert", fz_runtime::fz_assert as *const u8);
+        builder.symbol("fz_assert_eq", fz_runtime::fz_assert_eq as *const u8);
+        builder.symbol("fz_assert_neq", fz_runtime::fz_assert_neq as *const u8);
         builder.symbol("fz_print_f64", fz_runtime::fz_print_f64 as *const u8);
         builder.symbol("fz_halt", fz_runtime::ir_runtime::fz_halt as *const u8);
         builder.symbol(
