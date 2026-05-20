@@ -24,9 +24,11 @@
 use crate::fz_value::{FzValue, HeapHeader, HeapKind};
 use crate::heap::SchemaRegistry;
 use crate::process::{CURRENT_PROCESS, Process, ProcessState};
+use crate::timer::TimerWheel;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
+use std::time::Duration;
 
 // ----- AOT scheduler state -----
 
@@ -67,6 +69,13 @@ thread_local! {
     /// via `fz_resume_args_ptr`). Mirrors `CompiledModule::resume_addr` on
     /// the JIT side (src/ir_codegen.rs:186).
     static AOT_RESUME_ADDR: Cell<*const u8> = const { Cell::new(std::ptr::null()) };
+    /// fz-xx8.3 — AOT-side `TimerWheel` so `receive ... after N -> ...`
+    /// clauses fire under AOT. The JIT holds its own wheel inside `Runtime`
+    /// (src/runtime.rs); AOT has no Runtime, so the wheel lives here.
+    /// Scheduled by `aot_timer_schedule_hook`, cancelled by
+    /// `aot_timer_cancel_hook`, drained at the top of each
+    /// `aot_run_queue_loop` iteration.
+    static AOT_TIMERS: RefCell<TimerWheel> = RefCell::new(TimerWheel::new());
 }
 
 /// Decode an atom-name blob emitted by AOT codegen into a `Vec<String>`.
@@ -154,6 +163,10 @@ pub extern "C" fn fz_aot_setup(
     crate::scheduler_hooks::install_spawn_hook(aot_spawn_hook);
     crate::scheduler_hooks::install_spawn_opt_hook(aot_spawn_opt_hook);
     crate::scheduler_hooks::install_send_hook(aot_send_hook);
+    // fz-xx8.3 — timer schedule/cancel hooks for `receive ... after N`.
+    crate::scheduler_hooks::install_timer_schedule_hook(aot_timer_schedule_hook);
+    crate::scheduler_hooks::install_timer_cancel_hook(aot_timer_cancel_hook);
+    AOT_TIMERS.with(|w| *w.borrow_mut() = TimerWheel::new());
     // fz-4mk — AOT MakeResourceHook. Allocates a Resource carrying the
     // dtor closure on the stub; the closure body fires as fz code at
     // task-exit drain via `fz_drain_dtor_entry`.
@@ -311,6 +324,19 @@ extern "C" fn aot_spawn_opt_hook(closure_bits: u64, _min_heap_size: u32) -> u32 
     aot_spawn_hook(closure_bits)
 }
 
+/// fz-xx8.3 — schedule an after-clause timer on the AOT wheel. Returns the
+/// fresh `TimerId` (a u64); `fz_receive_park_matched` stashes it on the
+/// park record so a matcher hit can cancel.
+extern "C" fn aot_timer_schedule_hook(pid: u32, after_ms: u64) -> u64 {
+    AOT_TIMERS.with(|w| w.borrow_mut().schedule(pid, Duration::from_millis(after_ms)))
+}
+
+/// fz-xx8.3 — cancel an after-clause timer (no-op when already fired or
+/// unknown, matching the JIT path's `TimerWheel::cancel`).
+extern "C" fn aot_timer_cancel_hook(timer_id: u64) {
+    AOT_TIMERS.with(|w| w.borrow_mut().cancel(timer_id));
+}
+
 /// Send hook (fz-sched.2). Pushes a message into the receiver's mailbox.
 /// If the receiver was Blocked on receive, flips it to Ready and enqueues
 /// it — matching the JIT's send_via_current_runtime semantics.
@@ -424,6 +450,9 @@ pub extern "C" fn fz_aot_run_main(
     crate::scheduler_hooks::clear_spawn_hook();
     crate::scheduler_hooks::clear_send_hook();
     crate::scheduler_hooks::clear_make_resource_hook();
+    crate::scheduler_hooks::clear_timer_schedule_hook();
+    crate::scheduler_hooks::clear_timer_cancel_hook();
+    AOT_TIMERS.with(|w| *w.borrow_mut() = TimerWheel::new());
     AOT_DRAIN_DTOR_ENTRY.with(|c| c.set(std::ptr::null()));
     AOT_RESUME_ADDR.with(|c| c.set(std::ptr::null()));
     AOT_SPAWN_ENTRY.with(|c| c.set(std::ptr::null()));
@@ -503,7 +532,56 @@ fn aot_run_queue_loop() {
     let resume_addr = AOT_RESUME_ADDR.with(|c| c.get());
     let halt_cl = AOT_HALT_CL.with(|c| c.get());
 
-    while let Some(pid) = AOT_RUN_QUEUE.with(|q| q.borrow_mut().pop_front()) {
+    loop {
+        // fz-xx8.3 — drain expired after-timers before picking the next
+        // task. Timers only matter at scheduler boundaries (a task cannot
+        // park between expirations). Each expired entry whose pid is still
+        // parked on a ReceiveMatched with that timer id becomes a
+        // pending_resume_matched of the after-cont (no bound args; captures
+        // are baked into the closure). Mirrors src/runtime.rs:574.
+        let expired = AOT_TIMERS.with(|w| w.borrow_mut().drain_expired(std::time::Instant::now()));
+        for entry in expired {
+            AOT_TASKS.with(|c| {
+                let mut tasks = c.borrow_mut();
+                let Some(task) = tasks.get_mut(&entry.pid) else {
+                    return;
+                };
+                let Some(park) = task.parked_matched.as_ref() else {
+                    return;
+                };
+                if park.after_timer_id != Some(entry.id) {
+                    return;
+                }
+                let after_cont = park.after_cont;
+                task.parked_matched = None;
+                task.pending_resume_matched = Some(crate::park::PendingResumeMatched {
+                    cont: after_cont,
+                    args: Vec::new(),
+                });
+                task.state = ProcessState::Ready;
+                AOT_RUN_QUEUE.with(|q| q.borrow_mut().push_back(entry.pid));
+            });
+        }
+
+        let Some(pid) = AOT_RUN_QUEUE.with(|q| q.borrow_mut().pop_front()) else {
+            // fz-xx8.3 — queue is empty. If any after-timer is still
+            // pending, sleep until its deadline and loop again. Otherwise
+            // we're truly idle: break. (JIT's run_until_idle does not yet
+            // do this idle-wait; mirroring this behavior there is a
+            // separate ticket.)
+            let next = AOT_TIMERS.with(|w| w.borrow().next_deadline());
+            match next {
+                Some(deadline) => {
+                    let now = std::time::Instant::now();
+                    if deadline > now {
+                        std::thread::sleep(deadline - now);
+                    }
+                    continue;
+                }
+                None => break,
+            }
+        };
+        {
         let proc_ptr = AOT_TASKS
             .with(|c| {
                 c.borrow()
@@ -666,6 +744,7 @@ fn aot_run_queue_loop() {
         }
 
         CURRENT_PROCESS.with(|c| c.set(prev));
+        }
     }
 }
 
@@ -691,6 +770,115 @@ mod tests {
     /// can't easily drive a full setup→run→teardown cycle from a unit
     /// test (it would need a real codegen'd shim), so we exercise the
     /// register/clear lifecycle directly and assert the cell flips.
+    /// fz-xx8.3 — schedule→drain→wake flow on the AOT timer wheel.
+    /// Mirrors `src/runtime.rs::drain_expired_timers_wakes_after_cont`. We
+    /// can't drive aot_run_queue_loop directly (it would call into
+    /// codegen'd shim pointers we don't have), but we exercise every
+    /// pre-dispatch ingredient: hook install → schedule → expiry →
+    /// mutate the task's parked_matched into a pending_resume_matched →
+    /// run-queue enqueue. The dispatch-via-resume-shim step is covered
+    /// by the end-to-end fixture run on a built binary.
+    #[test]
+    fn timer_drain_wakes_after_cont() {
+        use crate::park::ParkRecord;
+        use crate::process::{Process, ProcessState};
+
+        // Clean per-test slate.
+        AOT_TIMERS.with(|w| *w.borrow_mut() = TimerWheel::new());
+        AOT_TASKS.with(|c| c.borrow_mut().clear());
+        AOT_RUN_QUEUE.with(|q| q.borrow_mut().clear());
+
+        crate::scheduler_hooks::install_timer_schedule_hook(aot_timer_schedule_hook);
+        crate::scheduler_hooks::install_timer_cancel_hook(aot_timer_cancel_hook);
+
+        // Stand up a single task with a parked_matched that has an
+        // after_timer_id. matcher_fn is unused on the drain path.
+        extern "C" fn never_match(_msg: u64, _pinned: *const u64, _out: *mut u64) -> u32 {
+            0
+        }
+        let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
+        let mut p = Box::new(Process::new(schemas));
+        p.pid = 7;
+        let timer_id = crate::scheduler_hooks::dispatch_timer_schedule(p.pid, 1)
+            .expect("hook installed");
+        let after_cont_addr: usize = 0xCAFE_BABE;
+        p.parked_matched = Some(Box::new(ParkRecord {
+            matcher_fn: never_match,
+            pinned: vec![],
+            clause_bodies: vec![],
+            bound_arity: 0,
+            after_deadline_ms: Some(1),
+            after_cont: after_cont_addr as *mut u8,
+            after_timer_id: Some(timer_id),
+        }));
+        p.state = ProcessState::Blocked;
+        AOT_TASKS.with(|c| {
+            c.borrow_mut().insert(7, p);
+        });
+
+        // Wait past the deadline, then run the same drain logic
+        // aot_run_queue_loop runs at the top of each iteration.
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let expired =
+            AOT_TIMERS.with(|w| w.borrow_mut().drain_expired(std::time::Instant::now()));
+        assert_eq!(expired.len(), 1);
+        for entry in expired {
+            AOT_TASKS.with(|c| {
+                let mut tasks = c.borrow_mut();
+                let task = tasks.get_mut(&entry.pid).unwrap();
+                let park = task.parked_matched.as_ref().unwrap();
+                assert_eq!(park.after_timer_id, Some(entry.id));
+                let after_cont = park.after_cont;
+                task.parked_matched = None;
+                task.pending_resume_matched = Some(crate::park::PendingResumeMatched {
+                    cont: after_cont,
+                    args: Vec::new(),
+                });
+                task.state = ProcessState::Ready;
+                AOT_RUN_QUEUE.with(|q| q.borrow_mut().push_back(entry.pid));
+            });
+        }
+
+        AOT_TASKS.with(|c| {
+            let tasks = c.borrow();
+            let task = tasks.get(&7).unwrap();
+            assert_eq!(task.state, ProcessState::Ready);
+            assert!(task.parked_matched.is_none());
+            let pending = task
+                .pending_resume_matched
+                .as_ref()
+                .expect("after-timer fire sets pending_resume_matched");
+            assert_eq!(pending.cont as usize, after_cont_addr);
+            assert!(pending.args.is_empty(), "after body takes captures only");
+        });
+        assert!(AOT_RUN_QUEUE.with(|q| q.borrow().iter().any(|p| *p == 7)));
+
+        // Cleanup so we don't leak hooks into a sibling test.
+        crate::scheduler_hooks::clear_timer_schedule_hook();
+        crate::scheduler_hooks::clear_timer_cancel_hook();
+        AOT_TASKS.with(|c| c.borrow_mut().clear());
+        AOT_RUN_QUEUE.with(|q| q.borrow_mut().clear());
+        AOT_TIMERS.with(|w| *w.borrow_mut() = TimerWheel::new());
+    }
+
+    /// fz-xx8.3 — `aot_timer_cancel_hook` retires a previously scheduled
+    /// timer so a sender-probe / initial-scan hit can prevent the after
+    /// from firing.
+    #[test]
+    fn timer_cancel_removes_pending_entry() {
+        AOT_TIMERS.with(|w| *w.borrow_mut() = TimerWheel::new());
+        crate::scheduler_hooks::install_timer_schedule_hook(aot_timer_schedule_hook);
+        crate::scheduler_hooks::install_timer_cancel_hook(aot_timer_cancel_hook);
+
+        let id = crate::scheduler_hooks::dispatch_timer_schedule(99, 10_000).unwrap();
+        assert!(AOT_TIMERS.with(|w| w.borrow().next_deadline().is_some()));
+        crate::scheduler_hooks::dispatch_timer_cancel(id);
+        assert!(AOT_TIMERS.with(|w| w.borrow().next_deadline().is_none()));
+
+        crate::scheduler_hooks::clear_timer_schedule_hook();
+        crate::scheduler_hooks::clear_timer_cancel_hook();
+    }
+
     #[test]
     fn set_resume_addr_populates_and_clears() {
         AOT_RESUME_ADDR.with(|c| c.set(std::ptr::null()));
