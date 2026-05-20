@@ -749,7 +749,15 @@ impl Parser {
         match name.as_str() {
             "doc" | "moduledoc" => {
                 let value = match self.bump() {
-                    Tok::Str(s) => s,
+                    Tok::Str(bytes) => match String::from_utf8(bytes) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            return self.err(format!(
+                                "@{} requires UTF-8 text: {}",
+                                name, e
+                            ));
+                        }
+                    },
                     other => {
                         return self.err(format!(
                             "expected string value after `@{}`, got {:?}",
@@ -1049,7 +1057,15 @@ impl Parser {
     fn parse_extern_item(&mut self) -> PR<FnDef> {
         let start = self.cur_span();
         let abi = match self.bump() {
-            Tok::Str(s) => s,
+            Tok::Str(bytes) => match String::from_utf8(bytes) {
+                Ok(s) => s,
+                Err(e) => {
+                    return self.err(format!(
+                        "extern ABI string must be valid UTF-8: {}",
+                        e
+                    ));
+                }
+            },
             other => {
                 return self.err(format!(
                     "expected ABI string after `extern`, got {:?}",
@@ -1402,9 +1418,20 @@ impl Parser {
                 self.bump();
                 Pattern::Float(f)
             }
-            Tok::Str(s) => {
+            Tok::Str(bytes) => {
                 self.bump();
-                Pattern::Str(s)
+                // fz-axu.9 (L1) — Pattern::Str still carries String until
+                // L2 widens it. Decode here; surface bad UTF-8 as a
+                // parse error so future-utf8 patterns get clean diags.
+                match String::from_utf8(bytes) {
+                    Ok(s) => Pattern::Str(s),
+                    Err(e) => {
+                        return self.err(format!(
+                            "string pattern must be valid UTF-8: {}",
+                            e
+                        ));
+                    }
+                }
             }
             Tok::Atom(a) => {
                 self.bump();
@@ -1651,9 +1678,19 @@ impl Parser {
                 self.bump();
                 Expr::Float(f)
             }
-            Tok::Str(s) => {
+            Tok::Str(bytes) => {
                 self.bump();
-                Expr::Str(s)
+                // fz-axu.9 (L1) — Expr::Str still carries String until
+                // L2 widens it. Decode here; bad UTF-8 → parse error.
+                match String::from_utf8(bytes) {
+                    Ok(s) => Expr::Str(s),
+                    Err(e) => {
+                        return self.err(format!(
+                            "string literal must be valid UTF-8: {}",
+                            e
+                        ));
+                    }
+                }
             }
             Tok::Atom(a) => {
                 self.bump();
