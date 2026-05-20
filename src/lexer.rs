@@ -285,6 +285,13 @@ impl<'a> Lexer<'a> {
     /// recognised: `\n \t \r \\ \"`. Any other backslash sequence is a
     /// hard error (formerly a silent passthrough that mis-encoded UTF-8
     /// for non-ASCII inputs). Caller has positioned at the opening `"`.
+    ///
+    /// fz-axu.25 (M4) UTF-8 invariant: every byte sequence this function
+    /// returns is valid UTF-8. Source input is `&str` (already UTF-8),
+    /// and all recognised escapes (`\n \t \r \\ \"`) produce ASCII bytes
+    /// that preserve UTF-8 validity. Downstream lowering (L3) relies on
+    /// this — when `\x`-style byte escapes are added, this invariant
+    /// moves to the escape parser and L3 may need to re-check.
     fn read_string_bytes(&mut self) -> Result<Vec<u8>, LexError> {
         self.bump(); // consume opening "
         let mut bytes: Vec<u8> = Vec::new();
@@ -735,6 +742,31 @@ mod tests {
     // input is `&str`, so the bytes between `"…"` are always valid
     // UTF-8 today. Future escape forms (e.g. `\xff`) will be the first
     // way to surface that diagnostic.
+
+    /// fz-axu.25 (M4) — guards the UTF-8 invariant L3 lowering relies on:
+    /// every Tok::Str payload produced by the lexer must be valid UTF-8.
+    /// If `\x`-style byte escapes are added later, this test should fail
+    /// and force a re-evaluation of where validation lives.
+    #[test]
+    fn str_tokens_are_invariantly_utf8() {
+        let inputs = [
+            r#""""#,             // empty
+            r#""hello""#,        // ASCII
+            r#""héllo""#,        // multi-byte UTF-8 codepoint
+            r#""日本語""#,       // three-byte CJK
+            r#""a\nb\tc\\d\"e""#, // all canonical escapes
+        ];
+        for src in inputs {
+            let toks = Lexer::new(src).tokenize().expect("lex");
+            match &toks[0].tok {
+                Tok::Str(bytes) => {
+                    std::str::from_utf8(bytes)
+                        .unwrap_or_else(|_| panic!("Tok::Str must be UTF-8 for {}", src));
+                }
+                _ => panic!("expected Tok::Str for {}", src),
+            }
+        }
+    }
 
     #[test]
     fn lex_error_carries_span_at_offending_byte() {

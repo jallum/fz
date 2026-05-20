@@ -1829,17 +1829,12 @@ fn lower_matrix_atom_literal(
             Pattern::Nil => ("n".to_string(), KeyLit::Single(Prim::Const(Const::Nil))),
             Pattern::Str(bytes) => {
                 // fz-axu.11 (L3) — same shape as Expr::Str: utf8 brand
-                // over a const bitstring. UTF-8 validation surfaces as
-                // a LowerError at the matrix entry; non-UTF-8 string
-                // patterns are rejected at compile time.
-                if std::str::from_utf8(bytes).is_err() {
-                    return Err(LowerError::Unsupported {
-                        span: p.span,
-                        what: "non-UTF-8 string pattern (use `<<…>>` for raw bytes)"
-                            .into(),
-                    });
-                }
-                let key = format!("s:{}", String::from_utf8(bytes.clone()).unwrap());
+                // over a const bitstring. UTF-8 is a lexer invariant
+                // (see read_string_bytes in src/lexer.rs).
+                let key = format!(
+                    "s:{}",
+                    std::str::from_utf8(bytes).expect("lexer guarantees UTF-8"),
+                );
                 (key, KeyLit::Utf8(bytes.clone()))
             }
             Pattern::Float(x) => (
@@ -2074,17 +2069,10 @@ fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -> Result<Va
         Expr::Int(n) => Ok(ctx.let_at(Prim::Const(Const::Int(*n)), sp)),
         Expr::Float(x) => Ok(ctx.let_at(Prim::Const(Const::Float(*x)), sp)),
         Expr::Str(bytes) => {
-            // fz-axu.11 (L3) — every `"…"` literal must be valid UTF-8;
-            // it lowers to a `utf8`-branded const bitstring. Bare-byte
-            // payloads still flow through `<<…>>` syntax (Const::Str /
-            // Expr::Str is the user-facing "this is text" channel).
-            if std::str::from_utf8(bytes).is_err() {
-                return Err(LowerError::Unsupported {
-                    span: sp,
-                    what: "non-UTF-8 string literal (use `<<…>>` for raw bytes)"
-                        .into(),
-                });
-            }
+            // fz-axu.11 (L3) — every `"…"` literal lowers to a
+            // `utf8`-branded const bitstring. UTF-8 validity is a lexer
+            // invariant (see read_string_bytes in src/lexer.rs); raw
+            // bytes flow through `<<…>>` syntax instead.
             let bit_len = (bytes.len() * 8) as u64;
             let bs = ctx.let_at(Prim::ConstBitstring(bytes.clone(), bit_len), sp);
             Ok(ctx.let_at(Prim::Brand(bs, "utf8".to_string()), sp))
@@ -3239,14 +3227,8 @@ fn lower_pattern_bind(
         Pattern::Float(x) => emit_eq_check(ctx, subject, Prim::Const(Const::Float(*x)), fail_block),
         Pattern::Str(bytes) => {
             // fz-axu.11 (L3) — string patterns lower the same as
-            // Expr::Str: validate UTF-8, build a utf8-branded const
-            // bitstring, and equality-check against the subject.
-            if std::str::from_utf8(bytes).is_err() {
-                return Err(LowerError::Unsupported {
-                    span: pat_span,
-                    what: "non-UTF-8 string pattern (use `<<…>>` for raw bytes)".into(),
-                });
-            }
+            // Expr::Str: utf8-branded const bitstring, equality-check
+            // against the subject. UTF-8 validity is a lexer invariant.
             let bit_len = (bytes.len() * 8) as u64;
             let bs = ctx.let_(Prim::ConstBitstring(bytes.clone(), bit_len));
             let lit_v = ctx.let_(Prim::Brand(bs, "utf8".to_string()));
@@ -3413,13 +3395,8 @@ fn lower_pattern_as_key_expr(ctx: &mut LowerCtx, sp: &Spanned<Pattern>) -> Resul
         Pattern::Float(x) => ctx.let_(Prim::Const(Const::Float(*x))),
         Pattern::Str(bytes) => {
             // fz-axu.11 (L3) — map-key pattern: same lowering as
-            // Expr::Str / Pattern::Str. Caller has validated the
-            // pattern, so non-UTF-8 here is a planning bug.
-            assert!(
-                std::str::from_utf8(bytes).is_ok(),
-                "non-UTF-8 string pattern reached map-key lowering — UTF-8 \
-                 should have surfaced at the matrix-key site"
-            );
+            // Expr::Str / Pattern::Str. UTF-8 validity is a lexer
+            // invariant (see read_string_bytes in src/lexer.rs).
             let bit_len = (bytes.len() * 8) as u64;
             let bs = ctx.let_(Prim::ConstBitstring(bytes.clone(), bit_len));
             ctx.let_(Prim::Brand(bs, "utf8".to_string()))
