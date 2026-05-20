@@ -2196,16 +2196,13 @@ fn type_prim<T: crate::types_seam::Types>(
         Prim::Const(c) => type_const(t, c, &m.atom_names),
 
         Prim::BinOp(op, a, b) => {
-            let at_d = lookup(t, env, *a);
-            let bt_d = lookup(t, env, *b);
-            let at = t.from_descr(&at_d);
-            let bt = t.from_descr(&bt_d);
+            let at = lookup(t, env, *a);
+            let bt = lookup(t, env, *b);
             let fold = const_vars.contains(a) && const_vars.contains(b);
             type_binop(t, *op, &at, &bt, fold)
         }
         Prim::UnOp(op, v) => {
-            let vt_d = lookup(t, env, *v);
-            let vt = t.from_descr(&vt_d);
+            let vt = lookup(t, env, *v);
             match op {
                 UnOp::Neg => {
                     if const_vars.contains(v) {
@@ -2220,24 +2217,17 @@ fn type_prim<T: crate::types_seam::Types>(
         }
 
         Prim::MakeTuple(vs) => {
-            let elem_tys: Vec<T::Ty> = vs
-                .iter()
-                .map(|v| {
-                    let d = lookup(t, env, *v);
-                    t.from_descr(&d)
-                })
-                .collect();
+            let elem_tys: Vec<T::Ty> = vs.iter().map(|v| lookup(t, env, *v)).collect();
             t.tuple(&elem_tys)
         }
         Prim::TupleField(v, i) => {
             let vt = lookup(t, env, *v);
-            let vt_ty = t.from_descr(&vt);
             // Find the widest arity in v's tuple clauses that covers index i;
             // project that component. Falls back to any when there's no
             // matching tuple shape.
-            let max_arity = t.max_tuple_arity(&vt_ty);
+            let max_arity = t.max_tuple_arity(&vt);
             if (*i as usize) < max_arity {
-                let comps = t.tuple_projections(&vt_ty, max_arity);
+                let comps = t.tuple_projections(&vt, max_arity);
                 comps.into_iter().nth(*i as usize).unwrap_or_else(|| t.any())
             } else {
                 t.any()
@@ -2247,30 +2237,25 @@ fn type_prim<T: crate::types_seam::Types>(
         Prim::MakeList(els, tail) => {
             let mut elem = t.none();
             for v in els {
-                let d = lookup(t, env, *v);
-                let vy = t.from_descr(&d);
+                let vy = lookup(t, env, *v);
                 elem = t.union(elem, vy);
             }
             if let Some(tl) = tail {
                 let tt = lookup(t, env, *tl);
-                let tt_ty = t.from_descr(&tt);
-                let tail_elem_ty = t.list_element_type(&tt_ty);
+                let tail_elem_ty = t.list_element_type(&tt);
                 elem = t.union(elem, tail_elem_ty);
             }
             t.list(elem)
         }
         Prim::ListCons(h, tl) => {
-            let ht = lookup(t, env, *h);
+            let hy = lookup(t, env, *h);
             let tt = lookup(t, env, *tl);
-            let hy = t.from_descr(&ht);
-            let tt_ty = t.from_descr(&tt);
-            let ty_tail = t.list_element_type(&tt_ty);
+            let ty_tail = t.list_element_type(&tt);
             let elem_ty = t.union(hy, ty_tail);
             t.list(elem_ty)
         }
         Prim::ListHead(l) => {
-            let d = lookup(t, env, *l);
-            let dy = t.from_descr(&d);
+            let dy = lookup(t, env, *l);
             t.list_element_type(&dy)
         }
         Prim::ListTail(l) => {
@@ -2281,8 +2266,7 @@ fn type_prim<T: crate::types_seam::Types>(
             // `Descr::nil()` because empty list and nil shared bits, but
             // that artifact polluted inferred spec types with `nil | list(_)`.
             let lt = lookup(t, env, *l);
-            let lt_ty = t.from_descr(&lt);
-            let elem_ty = t.list_element_type(&lt_ty);
+            let elem_ty = t.list_element_type(&lt);
             t.list(elem_ty)
         }
         Prim::IsEmptyList(_) => t.bool(),
@@ -2291,8 +2275,7 @@ fn type_prim<T: crate::types_seam::Types>(
             let mut fields: Vec<(MapKey, T::Ty)> = Vec::new();
             let mut all_static = true;
             for (k, v) in entries {
-                let vt = lookup(t, env, *v);
-                let vy = t.from_descr(&vt);
+                let vy = lookup(t, env, *v);
                 match var_as_map_key(*k, env) {
                     Some(mk) => {
                         fields.push((mk, vy));
@@ -2312,12 +2295,10 @@ fn type_prim<T: crate::types_seam::Types>(
             }
         }
         Prim::MapUpdate(base, entries) => {
-            let base_d = lookup(t, env, *base);
-            let mut dy = t.from_descr(&base_d);
+            let mut dy = lookup(t, env, *base);
             for (k, v) in entries {
-                let vt = lookup(t, env, *v);
+                let vt_ty = lookup(t, env, *v);
                 if let Some(mk) = var_as_map_key(*k, env) {
-                    let vt_ty = t.from_descr(&vt);
                     dy = t.refine_map_field(&dy, &mk, &vt_ty);
                 }
             }
@@ -2335,18 +2316,17 @@ fn type_prim<T: crate::types_seam::Types>(
             // so out-of-module access reads its true T in the dead
             // path before the diagnostic fires.
             if let (Some(tag), Some(MapKey::Atom(key))) =
-                (mt.as_opaque_singleton(), var_as_map_key(*k, env).as_ref())
+                (t.opaque_singleton(&mt), var_as_map_key(*k, env).as_ref())
                 && key == "value"
-                && let Some(inner) = m.opaque_inners.get(tag)
+                && let Some(inner) = m.opaque_inners.get(&tag)
             {
                 return t.from_descr(inner);
             }
-            let mt_ty = t.from_descr(&mt);
             let a = t.any();
             let n = t.nil();
             let fallback = t.union(a, n);
             if let Some(mk) = var_as_map_key(*k, env) {
-                t.map_field_lookup(&mt_ty, &mk).unwrap_or(fallback)
+                t.map_field_lookup(&mt, &mk).unwrap_or(fallback)
             } else {
                 fallback
             }
@@ -2393,11 +2373,10 @@ fn type_prim<T: crate::types_seam::Types>(
         },
 
         Prim::TypeTest(v, descr) => {
-            let vt = lookup(t, env, *v);
+            let vy = lookup(t, env, *v);
             // If vt ⊆ descr → always true; if vt ∩ descr = ∅ → always false;
             // otherwise unknown bool. Branch pruning in the typer's If-rewriting
             // pass then eliminates dead branches when the result is a singleton.
-            let vy = t.from_descr(&vt);
             let dy = t.from_descr(descr);
             if t.is_subtype(&vy, &dy) {
                 t.atom_lit("true")
@@ -2419,8 +2398,7 @@ fn type_prim<T: crate::types_seam::Types>(
         // grants `brand(name) ⊆ inner`). Pre-K4, the structural axes
         // alone keep it usable; the brand tag is just an extra label.
         Prim::Brand(v, name) => {
-            let d = lookup(t, env, *v);
-            let inner = t.from_descr(&d);
+            let inner = lookup(t, env, *v);
             t.mint_brand(inner, name)
         }
 
@@ -2603,11 +2581,11 @@ fn numeric_result_fold<T: crate::types_seam::Types>(
     numeric_result(t, a, b)
 }
 
-fn lookup<T: crate::types_seam::Types>(t: &mut T, env: &HashMap<Var, Descr>, v: Var) -> Descr {
-    use crate::types_seam::AsDescr;
-    env.get(&v)
-        .cloned()
-        .unwrap_or_else(|| t.any().as_descr())
+fn lookup<T: crate::types_seam::Types>(t: &mut T, env: &HashMap<Var, Descr>, v: Var) -> T::Ty {
+    match env.get(&v) {
+        Some(d) => t.from_descr(d),
+        None => t.any(),
+    }
 }
 
 fn var_as_map_key(v: Var, env: &HashMap<Var, Descr>) -> Option<MapKey> {
