@@ -2202,13 +2202,15 @@ fn type_prim<T: crate::types_seam::Types>(
         }
 
         Prim::MakeMap(entries) => {
-            let mut fields = std::collections::BTreeMap::new();
+            use crate::types_seam::AsDescr;
+            let mut fields: Vec<(MapKey, T::Ty)> = Vec::new();
             let mut all_static = true;
             for (k, v) in entries {
                 let vt = lookup(t, env, *v);
+                let vy = t.from_descr(&vt);
                 match var_as_map_key(*k, env) {
                     Some(mk) => {
-                        fields.insert(mk, vt);
+                        fields.push((mk, vy));
                     }
                     None => {
                         all_static = false;
@@ -2217,11 +2219,11 @@ fn type_prim<T: crate::types_seam::Types>(
                 }
             }
             if all_static && !entries.is_empty() {
-                Descr::map_of(fields)
+                t.map(&fields).as_descr()
             } else if entries.is_empty() {
-                Descr::map_of([])
+                t.map(&[]).as_descr()
             } else {
-                Descr::map_top()
+                t.map_top().as_descr()
             }
         }
         Prim::MapUpdate(base, entries) => {
@@ -2235,6 +2237,7 @@ fn type_prim<T: crate::types_seam::Types>(
             d
         }
         Prim::MapGet(map, k) => {
+            use crate::types_seam::AsDescr;
             let mt = lookup(t, env, *map);
             // fz-swt.8 — `handle.value` on an opaque-typed handle.
             // When the subject is a singleton opaque and the key is
@@ -2252,11 +2255,13 @@ fn type_prim<T: crate::types_seam::Types>(
             {
                 return inner.clone();
             }
+            let a = t.any();
+            let n = t.nil();
+            let fallback = t.union(a, n).as_descr();
             if let Some(mk) = var_as_map_key(*k, env) {
-                crate::typer::map_field_lookup(&mt, &mk)
-                    .unwrap_or_else(|| Descr::any().union(&Descr::nil()))
+                crate::typer::map_field_lookup(&mt, &mk).unwrap_or(fallback)
             } else {
-                Descr::any().union(&Descr::nil())
+                fallback
             }
         }
 

@@ -105,6 +105,7 @@ pub trait Types {
     fn vec_u8(&mut self) -> Self::Ty;
     fn vec_bit(&mut self) -> Self::Ty;
     fn str_t(&mut self) -> Self::Ty;
+    fn map_top(&mut self) -> Self::Ty;
 
     // ---- lattice ops ---------------------------------------------------
 
@@ -273,6 +274,9 @@ impl Types for ConcreteTypes {
     }
     fn str_t(&mut self) -> Ty {
         Ty::from_descr(Descr::str_t())
+    }
+    fn map_top(&mut self) -> Ty {
+        Ty::from_descr(Descr::map_top())
     }
 
     fn union(&mut self, a: Ty, b: Ty) -> Ty {
