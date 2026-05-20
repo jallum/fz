@@ -350,21 +350,23 @@ impl ModuleTypes {
 /// `arg_descrs` length must match the closure's apparent arity for lit
 /// clauses; mismatch falls back to `Descr::any()` for that clause.
 #[allow(dead_code)] // Wired into cont_slot0_descr / codegen in fz-ul4.27.22.10/11.
-pub fn resolve_closure_return(
+pub fn resolve_closure_return<T: crate::types_seam::Types>(
+    t: &mut T,
     closure_descr: &Descr,
     effective_returns: &HashMap<(FnId, Vec<Descr>), Descr>,
     arg_descrs: &[Descr],
 ) -> Option<Descr> {
+    use crate::types_seam::AsDescr;
     let Some(funcs_view) = closure_descr.components().find_map(|c| match c {
         crate::types::Component::Funcs(v) => Some(v),
         _ => None,
     }) else {
-        return Some(Descr::any());
+        return Some(t.any().as_descr());
     };
     if funcs_view.has_negations() || !funcs_view.all_clauses_have_pos() {
-        return Some(Descr::any());
+        return Some(t.any().as_descr());
     }
-    let mut acc = Descr::none();
+    let mut acc = t.none();
     for arrow in funcs_view.arrows() {
         let sig_args = arrow.args();
         let sig_ret = arrow.ret();
@@ -376,44 +378,62 @@ pub fn resolve_closure_return(
                 // sig.args ⇄ arg_descrs and instantiate sig.ret. Vars not
                 // pinned by the args pass through; downstream emptiness
                 // checks surface inconsistent witnesses.
-                if sig_ret.has_vars() || sig_args.iter().any(|d| d.has_vars()) {
+                let contrib = if sig_ret.has_vars() || sig_args.iter().any(|d| d.has_vars()) {
                     if sig_args.len() == arg_descrs.len() {
                         let mut sigma = HashMap::new();
                         for (pat, wit) in sig_args.iter().zip(arg_descrs.iter()) {
                             Descr::collect_subst_into(pat, wit, &mut sigma);
                         }
-                        acc = acc.union(&sig_ret.instantiate(&sigma));
+                        // sigma is Descr-typed; bridge into T::Ty sigma
+                        // for the trait's instantiate.
+                        let sig_ret_ty = t.from_descr(sig_ret);
+                        let sigma_ty: crate::types_seam::Sigma<T::Ty> = sigma
+                            .into_iter()
+                            .map(|(k, v)| (k, t.from_descr(&v)))
+                            .collect();
+                        t.instantiate(&sig_ret_ty, &sigma_ty)
                     } else {
                         // Arity mismatch — fall through to broad join.
-                        acc = acc.union(sig_ret);
+                        t.from_descr(sig_ret)
                     }
                 } else {
-                    acc = acc.union(sig_ret);
-                }
+                    t.from_descr(sig_ret)
+                };
+                acc = t.union(acc, contrib);
             }
             Some(lit) => {
                 if sig_args.len() != arg_descrs.len() {
                     // Arity mismatch (shouldn't happen if MakeClosure
                     // typing is consistent); fall back broad rather
                     // than miss-look-up.
-                    return Some(Descr::any());
+                    return Some(t.any().as_descr());
                 }
                 let mut full_key: Vec<Descr> = lit.captures.clone();
                 full_key.extend_from_slice(arg_descrs);
                 match effective_returns.get(&(lit.fn_id, full_key)) {
-                    Some(r) => acc = acc.union(r),
+                    Some(r) => {
+                        let ry = t.from_descr(r);
+                        acc = t.union(acc, ry);
+                    }
                     None => return None, // defer to next fixpoint iter
                 }
             }
         }
     }
-    Some(acc)
+    Some(acc.as_descr())
 }
 
-fn build_any_key_index(specs: &HashMap<(FnId, Vec<Descr>), FnTypes>) -> HashMap<FnId, Vec<Descr>> {
+fn build_any_key_index<T: crate::types_seam::Types>(
+    t: &mut T,
+    specs: &HashMap<(FnId, Vec<Descr>), FnTypes>,
+) -> HashMap<FnId, Vec<Descr>> {
+    let any_ty = t.any();
     let mut idx: HashMap<FnId, Vec<Descr>> = HashMap::new();
     for (fid, key) in specs.keys() {
-        if key.iter().all(|d| d.is_equiv(&Descr::any())) {
+        if key.iter().all(|d| {
+            let dy = t.from_descr(d);
+            t.is_equivalent(&dy, &any_ty)
+        }) {
             idx.entry(*fid).or_insert_with(|| key.clone());
         }
     }
@@ -667,7 +687,7 @@ pub fn type_module<T: crate::types_seam::Types>(t: &mut T, m: &Module) -> Module
     specs.retain(|k, _| reachable.contains(k));
     effective_returns.retain(|k, _| reachable.contains(k));
 
-    let any_key_specs = build_any_key_index(&specs);
+    let any_key_specs = build_any_key_index(t, &specs);
 
     let mut mt = ModuleTypes {
         specs,
@@ -1158,7 +1178,7 @@ fn cont_key_for_spec<T: crate::types_seam::Types>(
                     .iter()
                     .map(|av| env.get(av).cloned().unwrap_or_else(Descr::any))
                     .collect();
-                resolve_closure_return(cv_descr, effective_returns, &arg_descrs)
+                resolve_closure_return(t, cv_descr, effective_returns, &arg_descrs)
                     .unwrap_or_else(Descr::any)
             } else {
                 Descr::any()
@@ -1453,7 +1473,7 @@ fn walk_spec_for_discovery<T: crate::types_seam::Types>(
                                         }
                                     }
                                 }
-                                resolve_closure_return(cv_descr, effective_returns, &arg_descrs)
+                                resolve_closure_return(t, cv_descr, effective_returns, &arg_descrs)
                             } else {
                                 Some(Descr::any())
                             }
@@ -3205,7 +3225,7 @@ pub fn cont_slot0_descr<T: crate::types_seam::Types>(
                     .iter()
                     .map(|av| env.get(av).cloned().unwrap_or_else(Descr::any))
                     .collect();
-                resolve_closure_return(&closure_d, &module_types.effective_returns, &arg_descrs)
+                resolve_closure_return(t, &closure_d, &module_types.effective_returns, &arg_descrs)
                     .unwrap_or_else(|| closure_d.arrow_join_return())
             } else {
                 closure_d.arrow_join_return()
