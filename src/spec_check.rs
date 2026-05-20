@@ -109,8 +109,8 @@ fn validate_one_fn<T: crate::types_seam::Types>(
     diags: &mut Vec<Diagnostic>,
 ) {
     let arity = declared_params.len();
-    let any_ty = t.any();
-    let any_key: Vec<Descr> = vec![t.to_descr(&any_ty); arity];
+    use crate::types_seam::AsDescr;
+    let any_key: Vec<Descr> = vec![t.any().as_descr(); arity];
     for ((fid, key), ft) in &module_types.specs {
         if *fid != fn_id {
             continue;
@@ -142,25 +142,22 @@ fn validate_one_fn<T: crate::types_seam::Types>(
         let mut inferred_result: Option<Descr> = None;
         for b in &ir_fn.blocks {
             if let crate::fz_ir::Term::Return(rv) = &b.terminator {
-                let d = ft.vars.get(rv).cloned().unwrap_or_else(|| {
-                    let any = t.any();
-                    t.to_descr(&any)
-                });
+                let d = ft
+                    .vars
+                    .get(rv)
+                    .cloned()
+                    .unwrap_or_else(|| t.any().as_descr());
                 inferred_result = Some(match inferred_result {
                     Some(prev) => {
                         let a = t.from_descr(&prev);
                         let b = t.from_descr(&d);
-                        let u = t.union(a, b);
-                        t.to_descr(&u)
+                        t.union(a, b).as_descr()
                     }
                     None => d,
                 });
             }
         }
-        let inferred_result = inferred_result.unwrap_or_else(|| {
-            let any = t.any();
-            t.to_descr(&any)
-        });
+        let inferred_result = inferred_result.unwrap_or_else(|| t.any().as_descr());
         let inferred_ty = t.from_descr(&inferred_result);
         let declared_ty = t.from_descr(declared_result);
         if !t.is_subtype(&inferred_ty, &declared_ty) {
