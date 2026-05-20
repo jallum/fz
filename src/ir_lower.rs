@@ -4982,9 +4982,11 @@ end
             .parse_program()
             .expect("parse");
         let (module, _) = lower_program_full(&prog).expect("lower");
-        // 12 runtime.fz externs + 1 user extern = 13 total.
-        // fz-ht5 added `fz_make_ref`; fz-swt.7 added `fz_make_resource`.
-        assert_eq!(module.externs.len(), 13);
+        // 14 runtime.fz externs + 1 user extern = 15 total.
+        // fz-ht5 added `fz_make_ref`; fz-swt.7 added `fz_make_resource`;
+        // fz-axu.13 added `fz_bitstring_valid_utf8` and
+        // `fz_brand_bitstring_as_utf8`.
+        assert_eq!(module.externs.len(), 15);
         // fz_nop is at the end (user externs follow runtime.fz externs).
         let nop = module
             .externs
